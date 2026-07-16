@@ -105,6 +105,17 @@ symbol → data/yf.py 抓取 → ChainSnapshot → snapshot.py 落地 JSON（含
 
 僅存 call。`fetched_at` 用資料源回報時間；若源不提供，用本機抓取時刻（UTC 偏移標明）。價格單位為每股（1 張合約 = 100 股，報告中的金額換算 ×100 並標示）。
 
+**欄位缺失/NaN 清洗規則**（data/yf.py 對映時執行，確定性，測試 #10 覆蓋）：
+
+| 欄位 | 缺失或 NaN 時 | 後果 |
+|---|---|---|
+| bid、ask | 存為 null | 過濾第 2 道視同不過，淘汰並計入統計（不猜值） |
+| implied_volatility | 存為 null | 過濾第 3 道視同不過，淘汰並計入統計 |
+| volume | 存為 0 | 觸發新鮮度警示語意；若 min_volume > 0 則第 4 道淘汰 |
+| open_interest | 存為 0 | min_oi > 0 時第 4 道淘汰 |
+| last | 存為 null | 報告顯示 `-`，不參與任何計算 |
+| spot 缺失 | — | 視同抓取失敗（§8），不產生報告 |
+
 ---
 
 ## 3. 使用者輸入
@@ -125,7 +136,9 @@ symbol → data/yf.py 抓取 → ChainSnapshot → snapshot.py 落地 JSON（含
 | `--spread-floor` | 否，預設 0.10 | spread 絕對地板（美元/股）；spread ≤ 地板者一律放行 | ≥ 0 |
 | `--delta-bands` | 否，預設 `0.35,0.65` | Delta 分級門檻 a,b | 兩個浮點數，0 < a < b < 1 |
 | `--min-return` | 否，預設 0 | 最低要求報酬率（用於買價指引 L3） | ≥ 0 |
-| `--delay-days` | 否，預設 ceil(min-days-after/2) | 延遲壓力情境的延遲天數 | 0 ≤ delay_days ≤ min_days_after（保證延遲時合約未到期）；若 min-days-after=0 且未指定，預設 0（不跑延遲情境） |
+| `--delay-days` | 否，預設 ceil(有效緩衝天數/2) | 延遲壓力情境的延遲天數 | 0 ≤ delay_days ≤ 有效緩衝天數；若有效緩衝天數 = 0 且未指定，預設 0（不跑延遲情境） |
+
+**有效緩衝天數**定義：`effective_buffer = max(min_days_after, max(0, min_expiry − target_date 的日曆日數))`（未給 `--min-expiry` 時第二項為 0）。所有通過過濾的合約皆滿足 `expiry ≥ target_date + effective_buffer`（過濾第 1 道的兩個條件聯合保證），故 `delay_days ≤ effective_buffer` 即保證延遲情境時合約未到期——無論使用者用 `--min-days-after` 還是 `--min-expiry` 表達到期日緩衝，延遲壓力測試都可用。
 | `--force` | 否 | 允許目標價 ≤ 現價的劇本續跑 | 布林旗標 |
 | `--snapshot` | 否 | 離線重跑用快照路徑 | 檔案存在且 schema_version 相容 |
 | `--md` | 否 | Markdown 報告輸出路徑 | 可寫入 |
@@ -139,8 +152,8 @@ symbol → data/yf.py 抓取 → ChainSnapshot → snapshot.py 落地 JSON（含
 依序執行，每道記錄刷掉張數與原因（FilterReport）：
 
 1. **到期日限制**：`expiry ≥ target_date + min_days_after` 且（若給定）`expiry ≥ min_expiry`。
-2. **報價有效**：`bid > 0`、`ask ≥ bid`。
-3. **IV 有效**：`0.01 ≤ implied_volatility ≤ 5.0`。
+2. **報價有效**：`bid > 0`、`ask ≥ bid`（bid 或 ask 為 null 視同不過，§2.3 清洗規則）。
+3. **IV 有效**：`0.01 ≤ implied_volatility ≤ 5.0`（null 視同不過）。
 4. **未平倉/成交量**：`open_interest ≥ min_oi` 且 `volume ≥ min_volume`（min_volume 預設 0，即預設只看 OI；volume 門檻預設不啟用的理由：合約單日成交量波動極大，硬過濾會使同一合約隔日忽進忽出候選名單，破壞結果穩定性）。
 5. **Spread 可交易性**：淘汰條件 `spread > max(spread_floor, max_spread_pct × mid)`，其中 `spread = ask − bid`、`mid = (bid + ask)/2`。相對門檻為主（bid-ask spread 是選擇權流動性的標準量測，主流券商篩選器均採 OI + Volume + Spread 三軸）；絕對地板防止低價合約因最小跳動單位（tick）造成 spread% 虛高而被誤殺（例：bid 0.05 / ask 0.15，spread% = 100% 但 spread 僅 $0.10，屬 tick-bound 而非流動性差）。
 
@@ -196,7 +209,7 @@ C  = S·N(d1) − K·e^(−rT)·N(d2)
 | 情境 | 定義 |
 |---|---|
 | 半程 | target_date 時股價只到 `spot + 0.5×(target_price − spot)`，IV 不變，BS 估值 |
-| 延遲 | 股價於 `target_date + delay_days` 才到 target_price，剩餘時間相應縮短，IV 不變，BS 估值。因 `delay_days ≤ min_days_after`，合約必然尚未到期 |
+| 延遲 | 股價於 `target_date + delay_days` 才到 target_price，剩餘時間相應縮短，IV 不變，BS 估值。因 `delay_days ≤ effective_buffer`（§3），合約必然尚未到期 |
 | 全錯 | target_date 時股價 = 今日 spot（完全沒漲），IV 不變，BS 估值 |
 
 ### 5.5 Greeks（診斷欄位，當前時點）
@@ -221,13 +234,13 @@ C  = S·N(d1) − K·e^(−rT)·N(d2)
 | 層 | 名稱 | 公式 | 語意 |
 |---|---|---|---|
 | L1 | 硬上限 | `max(target_price − strike, 0)` | 劇本成立時的內在價值，模型無關。買價超過它，即使股價完全按劇本到位並持有至目標日，內在價值都不足以回本 |
-| L2 | 保守上限 | `BS(S=target_price, K=strike, T=T_rem, r=rate, σ=IV×(1+min(iv_shifts)))` | 最保守 IV 情境下的目標日估值。買價超過它，需要「IV 不惡化」這個劇本之外的額外假設才能不虧 |
+| L2 | 保守上限 | `BS(S=target_price, K=strike, T=T_rem, r=rate, σ=IV×(1+min(iv_shifts)))` | 最保守 IV 情境（shift = min(iv_shifts)）下的目標日估值。買價超過它，需要比最保守情境更好的 IV 才能不虧。報告動態標示實際 shift 值；若使用者自訂清單不含負 shift，則 min = 0、L2 = 基準估值，報告標示「最保守 IV 情境（shift=0，即基準）」，不使用「IV 走弱」字樣 |
 | L3 | 要求報酬上限 | `基準情境估值 ÷ (1 + min_return)` | 買價超過它，即使劇本成立也達不到使用者設定的最低報酬率 |
 
 恆等式：因 BS call 價值 ≥ 內在價值（r ≥ 0）且 min(iv_shifts) ≤ 0（§3 保證 0 必在清單中），恆有 `L1 ≤ L2 ≤ 基準情境估值`；又 min_return ≥ 0，故 `L3 ≤ 基準情境估值`。L3 與 L1/L2 的相對位置隨 min_return 浮動，因此報告不採固定區間敘事，改為對目前 Ask 逐層獨立判定：
 
 - `Ask > L1` → 「超過劇本內在價值，獲利需時間價值/IV 配合」
-- `Ask > L2` → 「劇本成立但 IV 走弱情境下仍虧損」
+- `Ask > L2` → 「劇本成立但最保守 IV 情境（shift=min(iv_shifts)）下仍虧損」
 - `Ask > L3` → 「以 Ask 進場達不到你設定的最低報酬（min_return）」
 
 三句判定互相獨立，可同時出現多句；全部未觸發時顯示「目前 Ask 低於全部三層天花板」。觸發 L2 的合約仍照常列出與排名，僅明確警示——本產品不替使用者做最終買賣決定（brief §4）。
@@ -259,7 +272,7 @@ C  = S·N(d1) − K·e^(−rT)·N(d2)
 ### 6.3 推薦理由模板（每候選，確定性生成）
 
 - 優點：由級距語意 + 該合約實際數字生成。例：保守型「breakeven 僅高於現價 X%，劇本半對仍獲利」；積極型「N 張合格合約中基準情境報酬率最高」；平衡型「內在價值佔權利金 X%，時間價值負擔適中」。
-- 代價：固定規則生成——Delta < 0.5 提示「若完全不漲權利金可能全損」；成本為三級距首選中最高者提示「本金需求最大」；spread% > 過濾門檻的 2/3 提示「買賣價差偏大」（警示線 = 門檻 × 2/3，保證與 §4 硬過濾一致，不會出現已通過過濾卻觸發矛盾警示的情況）；觸發 §5.7 任一天花板判定的，對應警句納入代價欄。
+- 代價：固定規則生成——Delta < 0.5 提示「若完全不漲權利金可能全損」；成本為三級距首選中最高者提示「本金需求最大」；`spread > max(spread_floor, (2/3) × max_spread_pct × mid)` 提示「買賣價差偏大」（與 §4 硬過濾同構、相對門檻乘 2/3、保留同一絕對地板——單位一致，且經地板放行的低價合約不會被矛盾警示）；觸發 §5.7 任一天花板判定的，對應警句納入代價欄。
 
 ---
 
@@ -301,7 +314,7 @@ C  = S·N(d1) − K·e^(−rT)·N(d2)
 5. **買價指引測試**：L1/L2/L3 公式驗證；恆等式 `L1 ≤ L2 ≤ 基準估值` 在隨機參數組合下成立（參數化測試，非隨機數——用固定參數矩陣）；Ask 逐層判定句觸發條件正確。
 6. **Breakeven/Lambda 測試**：公式對已知值驗證；緩衝為負（breakeven > target）的案例。
 7. **Golden test**：fixture 快照 + 固定參數 → 報告與存檔的預期輸出逐字元相等（決定性 + 回歸雙保險；fixture 需覆蓋三級距皆有候選、volume=0 警示、觸發 L2/L3 判定句的合約各至少一例）。
-8. **輸入驗證測試**：非法日期、負價格、target ≤ spot 無 --force、delta-bands 非法（a ≥ b、越界）、min-return 負值等。
+8. **輸入驗證測試**：非法日期、負價格、target ≤ spot 無 --force、delta-bands 非法（a ≥ b、越界）、min-return 負值等；effective_buffer 計算（僅 min-days-after、僅 min-expiry、兩者並用、min-expiry 早於 target_date 時第二項為 0）與 delay-days 上限/預設值正確。
 9. **快照 round-trip**：存檔→載入→資料等值。
 10. **yf adapter 對映測試**：以存檔的 yfinance 回傳形狀 fixture（mock，不碰網路）驗證欄位對映到 ChainSnapshot 正確（含缺欄位、NaN 處理）。
 
@@ -330,4 +343,4 @@ XYZ 現價 100、45 天後到 120、緩衝 45 天：
 6. 依批准方法提供候選與理由 → Delta 分級（實務標準）+ 級內單一排序尺 + 模板理由，公式全揭露。✓（§6–7）
 
 <!-- codex-peer-reviewed: 2026-07-15T03:45:22Z rounds=4 verdict=approved (第一輪版本) -->
-<!-- 第二輪修訂 2026-07-16：Delta分級制/買價指引/流動性升級，待 codex peer review -->
+<!-- codex-peer-reviewed: 2026-07-16T10:35:00Z rounds=2 verdict=approved (第二輪修訂：Delta分級制/買價指引/流動性升級) -->
