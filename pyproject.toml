@@ -1,0 +1,22 @@
+[project]
+name = "option-chaser"
+version = "0.1.0"
+description = "Long Call scenario optimizer (deterministic, no probability logic)"
+requires-python = ">=3.11"
+dependencies = [
+  "yfinance>=0.2",
+  "tzdata; platform_system == 'Windows'",
+]
+
+[project.scripts]
+option-chaser = "option_chaser.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["option_chaser*"]
+
+[tool.pytest.ini_options]
+addopts = "-q"
