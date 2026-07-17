@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import date
 
 from .models import AnalysisParams, ChainSnapshot, FilterReport
-from .ranking import BAND_LABELS, BAND_ORDER, baseline_return, build_reasons
+from .ranking import BAND_LABELS, BAND_ORDER, build_reasons
 from .valuation import ContractValuation, guidance_judgments
 
 

@@ -56,3 +56,12 @@ def test_expiry_equals_target_date_uses_intrinsic():
     p0 = AnalysisParams(target_price=120.0, target_date="2026-10-16", delay_days=0)
     v = evaluate_contract(make_contract(), spot=100.0, today=TODAY, p=p0)
     assert v.baseline_value == 10.0  # T_rem == 0 -> intrinsic branch
+
+
+def test_breakeven_above_target_negative_cushion():
+    # deep OTM: strike 125, mid 1.0 -> breakeven 126 > target 120 -> negative cushion
+    v = evaluate_contract(make_contract(strike=125.0, bid=0.9, ask=1.1),
+                          spot=100.0, today=TODAY, p=P)
+    assert v.breakeven == 126.0
+    assert v.breakeven_vs_target < 0
+    assert abs(v.breakeven_vs_target - (120.0 - 126.0) / 120.0) < 1e-9
