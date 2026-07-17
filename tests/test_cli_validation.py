@@ -87,3 +87,12 @@ def test_force_followed_by_negative_token_errors(capsys):
 def test_dot_leading_negative_shift_parses():
     p = resolve_params(parse("--iv-shifts", "-.3,0"))
     assert p.iv_shifts == (-0.3, 0.0)
+
+
+def test_empty_symbol_rejected():
+    # spec §3: symbol must be a non-empty string
+    for sym in ("", "   "):
+        argv = [sym, "--target-price", "120", "--target-date", "2026-08-28",
+                "--snapshot", "dummy.json"]
+        with pytest.raises(ParamError):
+            resolve_params(build_parser().parse_args(argv))

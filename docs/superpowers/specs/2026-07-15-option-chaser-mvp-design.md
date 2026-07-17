@@ -64,7 +64,7 @@ option-chaser/
 └── README.md
 ```
 
-依賴原則：`cli → report → ranking → valuation → filters → models`，單向。第三方依賴僅 `yfinance`（及其傳遞依賴）；BS 所需的常態分布 CDF 用 `math.erf` 自行實作，不引入 scipy/numpy。
+依賴原則：`cli → report → ranking → valuation → filters → models`，單向。第三方依賴僅 `yfinance`（及其傳遞依賴），另於 Windows 平台加 `tzdata`（純時區資料 wheel，供標準庫 `zoneinfo` 使用，非計算函式庫——此例外由 plan 全域約束核准）；BS 所需的常態分布 CDF 用 `math.erf` 自行實作，不引入 scipy/numpy。
 
 ### 2.2 資料流
 

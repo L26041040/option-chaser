@@ -104,6 +104,8 @@ def effective_buffer(min_days_after: int, min_expiry: str | None, target_date: s
 
 
 def resolve_params(args: argparse.Namespace) -> AnalysisParams:
+    if not args.symbol or not args.symbol.strip():
+        raise ParamError("symbol 必須為非空字串")
     if args.target_price <= 0:
         raise ParamError("--target-price 必須 > 0")
     _parse_iso("--target-date", args.target_date)
