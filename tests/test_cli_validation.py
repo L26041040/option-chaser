@@ -72,8 +72,18 @@ def test_negative_iv_shifts_parse():
     assert p.iv_shifts == (-0.3, 0.0, 0.3)
 
 
-def test_force_flag_not_swallowed_by_preprocessing():
-    """Test that --force flag is not treated as a value-taking flag by preprocessing."""
-    p = resolve_params(parse("--force", "--iv-shifts", "-0.2,0"))
-    assert p.force is True
-    assert p.iv_shifts == (-0.2, 0.0)
+def test_force_followed_by_negative_token_errors(capsys):
+    # post-fix: --force never merges with a following negative token;
+    # argparse rejects it as an unrecognized argument (pre-fix error differed)
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(
+            ["XYZ", "--target-price", "120", "--target-date", "2026-08-28",
+             "--snapshot", "dummy.json", "--force", "-5"]
+        )
+    err = capsys.readouterr().err
+    assert "unrecognized arguments" in err
+
+
+def test_dot_leading_negative_shift_parses():
+    p = resolve_params(parse("--iv-shifts", "-.3,0"))
+    assert p.iv_shifts == (-0.3, 0.0)
