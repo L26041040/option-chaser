@@ -20,6 +20,8 @@
 - Filters run in fixed order (expiry → quote → IV → OI/volume → spread); a contract is counted against the FIRST stage it fails.
 - No probability / expected-return logic anywhere (brief hard constraint).
 - Every commit message: imperative summary line; commit after each task's tests pass.
+- **Shell**: every command in this plan is POSIX shell — run them in **Git Bash**, NOT PowerShell 5.1 (`&&` is a parser error there). If you must use PowerShell, replace `A && B` with `A; if ($?) { B }`.
+- Report money display (spec §7): per-share price AND per-contract amount (×100) side by side, e.g. `$3.13（$313/張）`; per-contract amounts formatted `{x*100:.0f}`.
 
 ## File Structure
 
@@ -115,7 +117,12 @@ def test_package_imports():
 
 - [ ] **Step 2: Install and run**
 
-Run: `pip install -e . && pip install pytest && python -m pytest`
+Run (Git Bash; one per line):
+```bash
+pip install -e .
+pip install pytest
+python -m pytest
+```
 Expected: `1 passed`
 
 - [ ] **Step 3: Commit**
@@ -1694,6 +1701,15 @@ def _shift_name(shift: float) -> str:
     return "IV 不變" if shift == 0.0 else f"IV {shift * 100:+g}%"
 
 
+def _val_line(name: str, val: float, cost: float) -> str:
+    """spec §7: each scenario line = 估值 + 損益 + 報酬率 (per-share and per-contract)."""
+    pnl = val - cost
+    return (
+        f"- {name}: ${_money(val)}（${val * 100:.0f}/張）"
+        f"損益 {pnl:+.2f}（{pnl * 100:+.0f}/張）-> {_pct(pnl / cost)}"
+    )
+
+
 def _header_lines(snap: ChainSnapshot, p: AnalysisParams, today: date) -> list[str]:
     bands = p.delta_bands
     return [
@@ -1735,7 +1751,9 @@ def _candidate_lines(
     lines = [
         "",
         f"{idx}) {BAND_LABELS[band]}: Strike ${_money(c.strike)} / {c.expiry} 到期",
-        f"- 現在買入: Mid ${_money(v.mid)}（Ask ${_money(c.ask)}）IV {_pct_iv(c.implied_volatility)}",
+        f"- 現在買入: Bid ${_money(c.bid)}（${c.bid * 100:.0f}/張）"
+        f" / Mid ${_money(v.mid)}（${v.mid * 100:.0f}/張）"
+        f" / Ask ${_money(c.ask)}（${c.ask * 100:.0f}/張）IV {_pct_iv(c.implied_volatility)}",
         f"- Delta {v.delta:.2f} / Theta {v.theta_per_day:.3f}每天 / Vega {v.vega_per_pct:.2f}",
         f"- Breakeven: ${_money(v.breakeven)}（高於現價 {_pct(v.breakeven_vs_spot)}；"
         f"對目標價緩衝 {_pct(v.breakeven_vs_target)}）",
@@ -1745,31 +1763,26 @@ def _candidate_lines(
         lines.append("- 警示: 今日無成交，報價新鮮度存疑")
     lines.append("")
     lines.append("劇本成立時:")
-    lines.append(
-        f"- 保守底線: ${_money(v.floor_value)} -> "
-        f"{_pct((v.floor_value - v.mid) / v.mid)}"
-    )
+    lines.append(_val_line("保守底線", v.floor_value, v.mid))
     for shift, val in v.scenario_values:
-        lines.append(
-            f"- {_shift_name(shift)}: ${_money(val)} -> {_pct((val - v.mid) / v.mid)}"
-        )
+        lines.append(_val_line(_shift_name(shift), val, v.mid))
     lines.append(
         f"- 最差進場（Ask）基準報酬率: {_pct((v.baseline_value - c.ask) / c.ask)}"
     )
     lines.append("")
     lines.append("壓力測試（純顯示，不參與排名）:")
-    lines.append(f"- 半程: ${_money(v.stress_half)} -> {_pct((v.stress_half - v.mid) / v.mid)}")
+    lines.append(_val_line("半程", v.stress_half, v.mid))
     if v.stress_delay is not None:
-        lines.append(
-            f"- 延遲 {p.delay_days} 天: ${_money(v.stress_delay)} -> "
-            f"{_pct((v.stress_delay - v.mid) / v.mid)}"
-        )
-    lines.append(f"- 全錯: ${_money(v.stress_flat)} -> {_pct((v.stress_flat - v.mid) / v.mid)}")
+        lines.append(_val_line(f"延遲 {p.delay_days} 天", v.stress_delay, v.mid))
+    lines.append(_val_line("全錯", v.stress_flat, v.mid))
     lines.append("")
     lines.append("買價指引:")
-    lines.append(f"- L1 硬上限（劇本內在價值）: ${_money(v.l1)}")
-    lines.append(f"- L2 保守上限（最保守 IV 情境）: ${_money(v.l2)}")
-    lines.append(f"- L3 要求報酬上限（min-return {_pct(p.min_return)}）: ${_money(v.l3)}")
+    lines.append(f"- L1 硬上限（劇本內在價值）: ${_money(v.l1)}（${v.l1 * 100:.0f}/張）")
+    lines.append(f"- L2 保守上限（最保守 IV 情境）: ${_money(v.l2)}（${v.l2 * 100:.0f}/張）")
+    lines.append(
+        f"- L3 要求報酬上限（min-return {_pct(p.min_return)}）: "
+        f"${_money(v.l3)}（${v.l3 * 100:.0f}/張）"
+    )
     judgments = guidance_judgments(v, p)
     if judgments:
         for m in judgments:
@@ -1897,7 +1910,7 @@ def main(argv: list[str] | None = None) -> int:
     vals = [evaluate_contract(c, snap.spot, today, p) for c in qualified]
     ranked = rank(vals, p)
     text = render(snap, p, freport, ranked, n_qualified=len(qualified), today=today)
-    print(text)
+    print(text, end="")  # render() already ends with \n; keep stdout == --md content
     if args.md:
         Path(args.md).write_text(text, encoding="utf-8")
     return 0
@@ -1925,6 +1938,7 @@ Then MANUALLY verify `tests/fixtures/golden_report.txt` against this checklist b
 - 保守型 has 1 candidate (Strike $90.00), 平衡型 2 (C105 first — higher baseline return than C95), 積極型 2 (C130 first — highest baseline return globally, then C110).
 - C95 candidate shows all three 買價指引 warning sentences.
 - C110 candidate shows the volume-freshness warning line.
+- Every candidate's buy line shows Bid / Mid / Ask each with per-contract（$X/張）amounts; every 保守底線/IV情境/壓力測試 line shows 估值 + 損益（含/張）+ 報酬率; L1/L2/L3 carry（$X/張）.
 - No box-drawing characters anywhere; footer lists formulas and the disclaimer.
 
 - [ ] **Step 5: Write the golden + determinism test**
@@ -1963,6 +1977,15 @@ def test_repeat_run_is_deterministic():
 def test_no_box_drawing_characters():
     _, out = run_capture()
     assert not any(0x2500 <= ord(ch) <= 0x257F for ch in out)
+
+
+def test_report_shows_bid_pnl_and_per_contract_amounts():
+    # spec §7: bid/ask/mid visible; scenario lines carry 估值+損益+報酬率;
+    # per-share and per-contract (x100) side by side
+    _, out = run_capture()
+    assert "Bid $" in out
+    assert "/張）" in out
+    assert "損益 " in out
 
 
 def test_zero_qualified_exit_code(tmp_path):
@@ -2072,3 +2095,5 @@ git push
 - Type consistency: `ContractValuation` field names used in ranking/report match Task 5 definition; `AnalysisParams` fields match Task 2; stage labels in filters/tests/report identical strings.
 - Determinism: only `data/yf.py` reads the clock/network; golden test enforces byte-identity; report avoids dict-iteration nondeterminism by iterating `BAND_ORDER` and sorted scenario tuples.
 ```
+
+<!-- codex-peer-reviewed: 2026-07-17T04:27:18Z rounds=3 verdict=approved -->
