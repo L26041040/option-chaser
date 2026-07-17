@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import sys
 from datetime import date
 from pathlib import Path
 
@@ -25,30 +26,38 @@ _NUMERIC_VALUE_FLAGS = {
 }
 
 
-class _CustomParser(argparse.ArgumentParser):
-    """ArgumentParser that handles negative numbers in values (e.g., -1.0,0 as IV shifts)."""
-    def _parse_known_args(self, arg_strings, namespace):
-        """Override to handle args that look like negative numbers but are actually values."""
-        # Preprocess args: convert "--option negative_value" to "--option=negative_value"
-        # to prevent argparse from treating the negative value as a flag
-        # Only applies to flags that actually take numeric/CSV values
-        processed_args = []
-        i = 0
-        while i < len(arg_strings):
-            arg = arg_strings[i]
-            # Check if this is a numeric-value flag and next arg looks like a negative number
-            if (arg in _NUMERIC_VALUE_FLAGS and i + 1 < len(arg_strings)):
-                next_arg = arg_strings[i + 1]
-                # If next arg starts with - followed by digit or dot (negative/decimal number pattern)
-                if next_arg.startswith('-') and len(next_arg) > 1 and (next_arg[1].isdigit() or next_arg[1] == '.'):
-                    # Combine them as --option=value
-                    processed_args.append(f"{arg}={next_arg}")
-                    i += 2
-                    continue
-            processed_args.append(arg)
-            i += 1
+def _merge_numeric_flag_values(args: list[str]) -> list[str]:
+    """Convert "--option negative_value" to "--option=negative_value" so argparse
+    doesn't mistake a negative-number value (e.g. -1.0,0 as IV shifts) for a flag.
+    Only applies to flags that actually take numeric/CSV values."""
+    processed_args = []
+    i = 0
+    while i < len(args):
+        arg = args[i]
+        # Check if this is a numeric-value flag and next arg looks like a negative number
+        if (arg in _NUMERIC_VALUE_FLAGS and i + 1 < len(args)):
+            next_arg = args[i + 1]
+            # If next arg starts with - followed by digit or dot (negative/decimal number pattern)
+            if next_arg.startswith('-') and len(next_arg) > 1 and (next_arg[1].isdigit() or next_arg[1] == '.'):
+                # Combine them as --option=value
+                processed_args.append(f"{arg}={next_arg}")
+                i += 2
+                continue
+        processed_args.append(arg)
+        i += 1
+    return processed_args
 
-        return super()._parse_known_args(processed_args, namespace)
+
+class _CustomParser(argparse.ArgumentParser):
+    """ArgumentParser that handles negative numbers in values (e.g., -1.0,0 as IV shifts).
+
+    Overrides only the public, stable parse_known_args API (not the private
+    _parse_known_args, whose signature changed in Python 3.13)."""
+    def parse_known_args(self, args=None, namespace=None):
+        if args is None:
+            args = sys.argv[1:]
+        args = _merge_numeric_flag_values(args)
+        return super().parse_known_args(args, namespace)
 
 
 def build_parser() -> argparse.ArgumentParser:

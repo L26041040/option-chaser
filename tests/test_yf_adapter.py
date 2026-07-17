@@ -1,6 +1,13 @@
 import json
+import sys
+import types
+from datetime import datetime
 from pathlib import Path
-from option_chaser.data.yf import map_rows
+
+import pytest
+
+from option_chaser.data.yf import fetch_chain, map_rows
+from option_chaser.models import FetchError
 
 FIXTURE = Path(__file__).parent / "fixtures" / "yf_rows.json"
 
@@ -18,3 +25,81 @@ def test_mapping_and_cleaning():
     assert c1.implied_volatility is None
     # missing lastPrice key -> None
     assert c2.last is None and c2.bid == 1.0
+
+
+class _FakeCalls:
+    """Stand-in for the pandas DataFrame returned by yfinance's option_chain().calls."""
+    def __init__(self, records):
+        self._records = records
+
+    def to_dict(self, orient):
+        assert orient == "records"
+        return [dict(r) for r in self._records]
+
+
+class _FakeChain:
+    def __init__(self, records):
+        self.calls = _FakeCalls(records)
+
+
+class _FakeTicker:
+    def __init__(self, symbol, spot=100.0, options=(), records=None):
+        self.symbol = symbol
+        self.fast_info = {"last_price": spot}
+        self.options = options
+        self._records = records or []
+
+    def option_chain(self, expiry):
+        return _FakeChain(self._records)
+
+
+def _install_fake_yfinance(monkeypatch, ticker_factory):
+    fake = types.ModuleType("yfinance")
+    fake.Ticker = ticker_factory
+    monkeypatch.setitem(sys.modules, "yfinance", fake)
+
+
+def test_fetch_chain_maps_via_fake_yfinance(monkeypatch):
+    record = {
+        "contractSymbol": "XYZ261016C00110000", "strike": 110.0,
+        "bid": 3.0, "ask": 3.25, "lastPrice": 3.1, "volume": 152,
+        "openInterest": 830, "impliedVolatility": 0.38,
+    }
+    _install_fake_yfinance(
+        monkeypatch,
+        lambda symbol: _FakeTicker(symbol, spot=100.0, options=("2026-10-16",), records=[record]),
+    )
+
+    snap = fetch_chain("XYZ")
+
+    assert snap.spot == 100.0
+    assert snap.source == "yfinance"
+    assert len(snap.contracts) == 1
+    c = snap.contracts[0]
+    assert c.expiry == "2026-10-16"
+    assert c.contract_symbol == "XYZ261016C00110000"
+    assert c.strike == 110.0
+    assert c.bid == 3.0 and c.ask == 3.25 and c.last == 3.1
+    assert c.volume == 152 and c.open_interest == 830
+    assert c.implied_volatility == 0.38
+    datetime.fromisoformat(snap.fetched_at)  # fetched_at must parse as ISO datetime
+
+
+def test_fetch_chain_raises_fetcherror_on_yf_exception(monkeypatch):
+    def _raising_ticker(symbol):
+        raise RuntimeError("boom")
+
+    _install_fake_yfinance(monkeypatch, _raising_ticker)
+
+    with pytest.raises(FetchError):
+        fetch_chain("XYZ")
+
+
+def test_fetch_chain_raises_fetcherror_on_empty_chain(monkeypatch):
+    _install_fake_yfinance(
+        monkeypatch,
+        lambda symbol: _FakeTicker(symbol, spot=100.0, options=(), records=[]),
+    )
+
+    with pytest.raises(FetchError):
+        fetch_chain("XYZ")
