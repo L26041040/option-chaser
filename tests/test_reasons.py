@@ -51,3 +51,41 @@ def test_max_cost_con_on_most_expensive_first_pick():
     _, cons = build_reasons(ranked["conservative"][0], "conservative",
                             ranked, 100.0, 3, P)
     assert any("本金需求最大" in s for s in cons)
+
+
+def test_balanced_pro_intrinsic_ratio():
+    vals, ranked = setup_ranked()
+    pros, _ = build_reasons(ranked["balanced"][0], "balanced",
+                            ranked, 100.0, 3, P)
+    assert any("內在價值佔權利金" in s for s in pros)
+
+
+def test_aggressive_fallback_when_not_global_top():
+    # Create two aggressive contracts with different returns
+    vals = [
+        make_val("aggr_high", 110.0, 3.0, 3.25, 0.30, "2026-10-16"),
+        make_val("aggr_low", 115.0, 1.5, 1.75, 0.28, "2026-10-16"),
+    ]
+    ranked = rank(vals, P)
+    # The second contract (lower return) should have fallback sentence
+    pros, _ = build_reasons(ranked["aggressive"][1], "aggressive",
+                            ranked, 100.0, 2, P)
+    assert any("同級距中排名靠前" in s for s in pros)
+    assert not any("基準情境報酬率最高" in s for s in pros)
+
+
+def test_spread_warning_con():
+    vals = [make_val("spread_warn", 110.0, 3.00, 3.35, 0.30, "2026-10-16")]
+    ranked = rank(vals, P)
+    _, cons = build_reasons(ranked["aggressive"][0], "aggressive",
+                            ranked, 100.0, 1, P)
+    assert any("買賣價差偏大" in s for s in cons)
+
+
+def test_guidance_judgments_included_in_cons():
+    vals = [make_val("guidance_all", 95.0, 30.6, 31.0, 0.9, "2026-10-16")]
+    ranked = rank(vals, P)
+    # This contract (strike 95) has delta ~0.64, classified as balanced
+    _, cons = build_reasons(ranked["balanced"][0], "balanced",
+                            ranked, 100.0, 1, P)
+    assert any("超過劇本內在價值" in s for s in cons)
