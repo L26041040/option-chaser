@@ -6,7 +6,7 @@ def test_hull_greeks():
     g = call_greeks(42, 40, 0.5, 0.10, 0.20)
     assert abs(g.delta - 0.7791) < 1e-3
     assert abs(g.gamma - 0.0500) < 1e-3
-    assert abs(g.theta_per_day - (-4.305 / 365.0)) < 1e-3
+    assert abs(g.theta_per_day - (-4.559 / 365.0)) < 1e-4
     assert abs(g.vega_per_pct - 0.0882) < 1e-3
 
 
