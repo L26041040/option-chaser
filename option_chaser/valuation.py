@@ -131,3 +131,24 @@ def evaluate_contract(
         stress_half=stress_half, stress_delay=stress_delay, stress_flat=stress_flat,
         l1=l1, l2=l2, l3=l3,
     )
+
+
+def _shift_label(shift: float) -> str:
+    if shift == 0.0:
+        return "shift=0，即基準"
+    return f"shift={shift * 100:+g}%"
+
+
+def guidance_judgments(v: ContractValuation, p: AnalysisParams) -> list[str]:
+    """Spec §5.7: independent per-ceiling judgments against current Ask."""
+    ask = v.contract.ask
+    msgs: list[str] = []
+    if ask > v.l1:
+        msgs.append("超過劇本內在價值，獲利需時間價值/IV 配合")
+    if ask > v.l2:
+        msgs.append(
+            f"劇本成立但最保守 IV 情境（{_shift_label(min(p.iv_shifts))}）下仍虧損"
+        )
+    if ask > v.l3:
+        msgs.append("以 Ask 進場達不到你設定的最低報酬（min-return）")
+    return msgs
