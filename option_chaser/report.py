@@ -1,0 +1,179 @@
+# option_chaser/report.py
+"""Deterministic plain-text report (spec §7). No box-drawing characters."""
+from __future__ import annotations
+
+from datetime import date
+
+from .models import AnalysisParams, ChainSnapshot, FilterReport
+from .ranking import BAND_LABELS, BAND_ORDER, baseline_return, build_reasons
+from .valuation import ContractValuation, guidance_judgments
+
+
+def _money(x: float) -> str:
+    return f"{x:.2f}"
+
+
+def _pct(x: float) -> str:
+    return f"{x * 100:.1f}%"
+
+
+def _shift_name(shift: float) -> str:
+    return "IV 不變" if shift == 0.0 else f"IV {shift * 100:+g}%"
+
+
+def _val_line(name: str, val: float, cost: float) -> str:
+    """spec §7: each scenario line = 估值 + 損益 + 報酬率 (per-share and per-contract)."""
+    pnl = val - cost
+    return (
+        f"- {name}: ${_money(val)}（${val * 100:.0f}/張）"
+        f"損益 {pnl:+.2f}（{pnl * 100:+.0f}/張）-> {_pct(pnl / cost)}"
+    )
+
+
+def _header_lines(snap: ChainSnapshot, p: AnalysisParams, today: date) -> list[str]:
+    bands = p.delta_bands
+    return [
+        "OPTION CHASER 報告",
+        "",
+        "[使用者假設]",
+        f"- 劇本: {p.target_date} 到達 ${_money(p.target_price)}",
+        f"- 限制: 到期日 >= 劇本日 + {p.min_days_after} 天"
+        + (f"; 到期日 >= {p.min_expiry}" if p.min_expiry else ""),
+        f"- 最低要求報酬率: {_pct(p.min_return)}",
+        "",
+        "[市場資料]",
+        f"- 資料時間: {snap.fetched_at}（來源 {snap.source}，可能延遲）",
+        f"- {snap.symbol} 現價: ${_money(snap.spot)}（分析基準日 {today.isoformat()}）",
+        "",
+        "[模型假設]",
+        f"- 無風險利率 {_pct(p.rate)}、無股利調整、Black-Scholes 歐式近似",
+        f"- IV 情境: {', '.join(_shift_name(s) for s in p.iv_shifts)}",
+        f"- Delta 分級門檻: {bands[0]:g} / {bands[1]:g}（實務慣例級距）",
+        f"- 延遲壓力情境: {p.delay_days} 天" if p.delay_days > 0
+        else "- 延遲壓力情境: 未啟用（delay-days=0）",
+    ]
+
+
+def _filter_lines(freport: FilterReport) -> list[str]:
+    lines = ["", "[過濾統計]", f"- 全部 Long Call: {freport.total} 張"]
+    for s in freport.stages:
+        lines.append(f"- {s.label}刷掉: {s.removed}")
+    lines.append(f"- 合格: {freport.passed} 張")
+    return lines
+
+
+def _candidate_lines(
+    v: ContractValuation, idx: int, band: str,
+    ranked: dict[str, list[ContractValuation]],
+    snap: ChainSnapshot, n_qualified: int, p: AnalysisParams,
+) -> list[str]:
+    c = v.contract
+    lines = [
+        "",
+        f"{idx}) {BAND_LABELS[band]}: Strike ${_money(c.strike)} / {c.expiry} 到期",
+        f"- 現在買入: Bid ${_money(c.bid)}（${c.bid * 100:.0f}/張）"
+        f" / Mid ${_money(v.mid)}（${v.mid * 100:.0f}/張）"
+        f" / Ask ${_money(c.ask)}（${c.ask * 100:.0f}/張）IV {_pct_iv(c.implied_volatility)}",
+        f"- Delta {v.delta:.2f} / Theta {v.theta_per_day:.3f}每天 / Vega {v.vega_per_pct:.2f}",
+        f"- Breakeven: ${_money(v.breakeven)}（高於現價 {_pct(v.breakeven_vs_spot)}；"
+        f"對目標價緩衝 {_pct(v.breakeven_vs_target)}）",
+        f"- Lambda 有效槓桿: {v.effective_leverage:.1f}x",
+    ]
+    if c.volume == 0:
+        lines.append("- 警示: 今日無成交，報價新鮮度存疑")
+    lines.append("")
+    lines.append("劇本成立時:")
+    lines.append(_val_line("保守底線", v.floor_value, v.mid))
+    for shift, val in v.scenario_values:
+        lines.append(_val_line(_shift_name(shift), val, v.mid))
+    lines.append(
+        f"- 最差進場（Ask）基準報酬率: {_pct((v.baseline_value - c.ask) / c.ask)}"
+    )
+    lines.append("")
+    lines.append("壓力測試（純顯示，不參與排名）:")
+    lines.append(_val_line("半程", v.stress_half, v.mid))
+    if v.stress_delay is not None:
+        lines.append(_val_line(f"延遲 {p.delay_days} 天", v.stress_delay, v.mid))
+    lines.append(_val_line("全錯", v.stress_flat, v.mid))
+    lines.append("")
+    lines.append("買價指引:")
+    lines.append(f"- L1 硬上限（劇本內在價值）: ${_money(v.l1)}（${v.l1 * 100:.0f}/張）")
+    lines.append(f"- L2 保守上限（最保守 IV 情境）: ${_money(v.l2)}（${v.l2 * 100:.0f}/張）")
+    lines.append(
+        f"- L3 要求報酬上限（min-return {_pct(p.min_return)}）: "
+        f"${_money(v.l3)}（${v.l3 * 100:.0f}/張）"
+    )
+    judgments = guidance_judgments(v, p)
+    if judgments:
+        for m in judgments:
+            lines.append(f"- 警示: {m}")
+    else:
+        lines.append("- 目前 Ask 低於全部三層天花板")
+    pros, cons = build_reasons(v, band, ranked, snap.spot, n_qualified, p)
+    lines.append("")
+    lines.append("評語:")
+    for s in pros:
+        lines.append(f"- 優點: {s}")
+    for s in cons:
+        lines.append(f"- 代價: {s}")
+    return lines
+
+
+def _pct_iv(iv: float) -> str:
+    return f"{iv * 100:.0f}%"
+
+
+def _footer_lines(p: AnalysisParams) -> list[str]:
+    return [
+        "",
+        "[尾註]",
+        "- 估值: Black-Scholes 歐式 call，N(x) = 0.5*(1+erf(x/sqrt(2)))，T = 日曆日/365",
+        "- T <= 0 時以內在價值 max(S-K, 0) 取代 BS",
+        "- 保守底線 = max(目標價 - Strike, 0)（無套利下限）",
+        "- IV 情境: sigma' = sigma * (1 + shift)",
+        "- 買價天花板: L1 = max(目標價-Strike, 0); L2 = BS(最保守 IV 情境); L3 = 基準估值/(1+min-return)",
+        "- Breakeven = Strike + Mid（到期持有觀點，提前平倉不適用）",
+        "- Lambda = Delta * 現價 / Mid（低權利金合約會放大，僅供量級參考）",
+        f"- 過濾: 到期日 / 報價 / IV(0.01-5.0) / OI>={p.min_oi} 且 Vol>={p.min_volume} / "
+        f"Spread <= max({p.spread_floor:g}, {p.max_spread_pct:g}*Mid)",
+        "- 排名: Delta 分級（實務慣例），級內以基準情境報酬率（Mid 進場）排序",
+        "- 模型限制: 無股利調整（q=0）、歐式近似、IV 乘法情境",
+        "- 免責: 模型估計非保證價格，不構成投資建議",
+    ]
+
+
+def render_filter_only(
+    snap: ChainSnapshot, p: AnalysisParams, freport: FilterReport, today: date
+) -> str:
+    lines = _header_lines(snap, p, today) + _filter_lines(freport)
+    lines += ["", "過濾後無合格合約，不產生推薦。", ""]
+    return "\n".join(lines)
+
+
+def render(
+    snap: ChainSnapshot, p: AnalysisParams, freport: FilterReport,
+    ranked: dict[str, list[ContractValuation]], n_qualified: int, today: date,
+) -> str:
+    lines = _header_lines(snap, p, today) + _filter_lines(freport)
+    idx = 0
+    for band in BAND_ORDER:
+        lines.append("")
+        lines.append(f"=== {BAND_LABELS[band]}（{_band_range(band, p)}） ===")
+        if not ranked[band]:
+            lines.append("- 此級距無合格合約")
+            continue
+        for v in ranked[band]:
+            idx += 1
+            lines += _candidate_lines(v, idx, band, ranked, snap, n_qualified, p)
+    lines += _footer_lines(p)
+    lines.append("")
+    return "\n".join(lines)
+
+
+def _band_range(band: str, p: AnalysisParams) -> str:
+    a, b = p.delta_bands
+    if band == "conservative":
+        return f"Delta > {b:g}"
+    if band == "aggressive":
+        return f"Delta < {a:g}"
+    return f"Delta {a:g}-{b:g}"

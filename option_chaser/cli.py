@@ -156,3 +156,57 @@ def validate_scenario(p: AnalysisParams, spot: float, today: date) -> None:
             f"Long Call 劇本目標價 {p.target_price} 低於現價 {spot}；"
             "確定要跑請加 --force"
         )
+
+
+from .data.snapshot import load_snapshot, save_snapshot, snapshot_today
+from .filters import apply_filters
+from .models import FetchError, SnapshotSchemaError
+from .ranking import rank
+from .report import render, render_filter_only
+from .valuation import evaluate_contract
+
+USAGE_HINT = "用法示例: option-chaser XYZ --target-price 120 --target-date 2026-08-28 --min-days-after 45"
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
+    try:
+        p = resolve_params(args)
+    except ParamError as e:
+        print(f"參數錯誤: {e}")
+        print(USAGE_HINT)
+        return 2
+
+    try:
+        if args.snapshot:
+            snap = load_snapshot(args.snapshot)
+        else:
+            from .data.yf import fetch_chain  # lazy: offline runs never import yfinance
+
+            snap = fetch_chain(args.symbol)
+            out = Path("snapshots") / f"{snap.symbol}_{snap.fetched_at.replace(':', '')}.json"
+            out.parent.mkdir(exist_ok=True)
+            save_snapshot(snap, out)
+    except (FetchError, SnapshotSchemaError, OSError) as e:
+        print(f"資料錯誤: {e}")
+        return 1
+
+    today = snapshot_today(snap.fetched_at)
+    try:
+        validate_scenario(p, snap.spot, today)
+    except ParamError as e:
+        print(f"參數錯誤: {e}")
+        return 2
+
+    qualified, freport = apply_filters(snap.contracts, p, today)
+    if not qualified:
+        print(render_filter_only(snap, p, freport, today))
+        return 1
+
+    vals = [evaluate_contract(c, snap.spot, today, p) for c in qualified]
+    ranked = rank(vals, p)
+    text = render(snap, p, freport, ranked, n_qualified=len(qualified), today=today)
+    print(text, end="")  # render() already ends with \n; keep stdout == --md content
+    if args.md:
+        Path(args.md).write_text(text, encoding="utf-8")
+    return 0
