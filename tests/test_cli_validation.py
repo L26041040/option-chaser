@@ -64,3 +64,16 @@ def test_scenario_target_date_must_be_future():
     p = resolve_params(parse())
     with pytest.raises(ParamError):
         validate_scenario(p, spot=100.0, today=date(2026, 8, 28))
+
+
+def test_negative_iv_shifts_parse():
+    """Test that negative IV shifts are parsed correctly via preprocessing."""
+    p = resolve_params(parse("--iv-shifts", "-0.3,0,0.3"))
+    assert p.iv_shifts == (-0.3, 0.0, 0.3)
+
+
+def test_force_flag_not_swallowed_by_preprocessing():
+    """Test that --force flag is not treated as a value-taking flag by preprocessing."""
+    p = resolve_params(parse("--force", "--iv-shifts", "-0.2,0"))
+    assert p.force is True
+    assert p.iv_shifts == (-0.2, 0.0)

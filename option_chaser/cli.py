@@ -8,21 +8,39 @@ from pathlib import Path
 from .models import AnalysisParams, ParamError
 
 
+# Flags that take numeric/CSV values and need preprocessing for negative numbers
+_NUMERIC_VALUE_FLAGS = {
+    "--iv-shifts",
+    "--delta-bands",
+    "--min-return",
+    "--target-price",
+    "--rate",
+    "--max-spread-pct",
+    "--spread-floor",
+    "--delay-days",
+    "--min-days-after",
+    "--min-oi",
+    "--min-volume",
+    "--top"
+}
+
+
 class _CustomParser(argparse.ArgumentParser):
     """ArgumentParser that handles negative numbers in values (e.g., -1.0,0 as IV shifts)."""
     def _parse_known_args(self, arg_strings, namespace):
         """Override to handle args that look like negative numbers but are actually values."""
         # Preprocess args: convert "--option negative_value" to "--option=negative_value"
         # to prevent argparse from treating the negative value as a flag
+        # Only applies to flags that actually take numeric/CSV values
         processed_args = []
         i = 0
         while i < len(arg_strings):
             arg = arg_strings[i]
-            # Check if this is an option (--something) and next arg looks like a negative number
-            if (arg.startswith('--') and i + 1 < len(arg_strings)):
+            # Check if this is a numeric-value flag and next arg looks like a negative number
+            if (arg in _NUMERIC_VALUE_FLAGS and i + 1 < len(arg_strings)):
                 next_arg = arg_strings[i + 1]
-                # If next arg starts with - and a digit (negative number pattern)
-                if next_arg.startswith('-') and len(next_arg) > 1 and next_arg[1].isdigit():
+                # If next arg starts with - followed by digit or dot (negative/decimal number pattern)
+                if next_arg.startswith('-') and len(next_arg) > 1 and (next_arg[1].isdigit() or next_arg[1] == '.'):
                     # Combine them as --option=value
                     processed_args.append(f"{arg}={next_arg}")
                     i += 2
