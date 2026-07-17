@@ -3,6 +3,9 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
+from datetime import date
+
+from .models import AnalysisParams, OptionContract
 
 DAYS_PER_YEAR = 365.0
 
@@ -47,4 +50,84 @@ def call_greeks(S: float, K: float, T: float, r: float, sigma: float) -> Greeks:
         gamma=norm_pdf(d1) / (S * st),
         theta_per_day=theta_year / DAYS_PER_YEAR,
         vega_per_pct=S * norm_pdf(d1) * math.sqrt(T) / 100.0,
+    )
+
+
+def days_between(d1: date, d2: date) -> int:
+    return (d2 - d1).days
+
+
+@dataclass(frozen=True)
+class ContractValuation:
+    contract: OptionContract
+    mid: float
+    spread: float
+    delta: float
+    gamma: float
+    theta_per_day: float
+    vega_per_pct: float
+    breakeven: float
+    breakeven_vs_spot: float
+    breakeven_vs_target: float
+    effective_leverage: float
+    floor_value: float
+    scenario_values: tuple[tuple[float, float], ...]
+    baseline_value: float
+    stress_half: float
+    stress_delay: float | None
+    stress_flat: float
+    l1: float
+    l2: float
+    l3: float
+
+
+def evaluate_contract(
+    c: OptionContract, spot: float, today: date, p: AnalysisParams
+) -> ContractValuation:
+    assert c.bid is not None and c.ask is not None and c.implied_volatility is not None
+    mid = (c.bid + c.ask) / 2.0
+    spread = c.ask - c.bid
+    iv = c.implied_volatility
+    expiry = date.fromisoformat(c.expiry)
+    target = date.fromisoformat(p.target_date)
+
+    g = call_greeks(spot, c.strike, days_between(today, expiry) / DAYS_PER_YEAR,
+                    p.rate, iv)
+
+    t_rem = days_between(target, expiry) / DAYS_PER_YEAR
+    floor_value = max(p.target_price - c.strike, 0.0)
+    scenario_values = tuple(
+        (shift, bs_call(p.target_price, c.strike, t_rem, p.rate, iv * (1.0 + shift)))
+        for shift in p.iv_shifts
+    )
+    baseline_value = dict(scenario_values)[0.0]
+
+    half_price = spot + 0.5 * (p.target_price - spot)
+    stress_half = bs_call(half_price, c.strike, t_rem, p.rate, iv)
+    stress_flat = bs_call(spot, c.strike, t_rem, p.rate, iv)
+    stress_delay = None
+    if p.delay_days > 0:
+        t_delay = (days_between(target, expiry) - p.delay_days) / DAYS_PER_YEAR
+        stress_delay = bs_call(p.target_price, c.strike, t_delay, p.rate, iv)
+
+    # Price guidance (spec §5.7): L1 <= L2 <= baseline; L3 <= baseline.
+    l1 = floor_value
+    l2 = bs_call(p.target_price, c.strike, t_rem, p.rate,
+                 iv * (1.0 + min(p.iv_shifts)))
+    l3 = baseline_value / (1.0 + p.min_return)
+
+    breakeven = c.strike + mid
+    return ContractValuation(
+        contract=c, mid=mid, spread=spread,
+        delta=g.delta, gamma=g.gamma, theta_per_day=g.theta_per_day,
+        vega_per_pct=g.vega_per_pct,
+        breakeven=breakeven,
+        breakeven_vs_spot=(breakeven - spot) / spot,
+        breakeven_vs_target=(p.target_price - breakeven) / p.target_price,
+        effective_leverage=g.delta * spot / mid,
+        floor_value=floor_value,
+        scenario_values=scenario_values,
+        baseline_value=baseline_value,
+        stress_half=stress_half, stress_delay=stress_delay, stress_flat=stress_flat,
+        l1=l1, l2=l2, l3=l3,
     )
