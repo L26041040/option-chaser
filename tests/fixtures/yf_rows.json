@@ -1,0 +1,11 @@
+[
+  {"contractSymbol": "XYZ261016C00110000", "expiry": "2026-10-16", "strike": 110.0,
+   "bid": 3.0, "ask": 3.25, "lastPrice": 3.1, "volume": 152, "openInterest": 830,
+   "impliedVolatility": 0.38},
+  {"contractSymbol": "XYZ261016C00115000", "expiry": "2026-10-16", "strike": 115.0,
+   "bid": NaN, "ask": 2.0, "lastPrice": NaN, "volume": NaN, "openInterest": NaN,
+   "impliedVolatility": NaN},
+  {"contractSymbol": "XYZ261016C00120000", "expiry": "2026-10-16", "strike": 120.0,
+   "bid": 1.0, "ask": 1.2, "volume": 3, "openInterest": 55,
+   "impliedVolatility": 0.41}
+]
