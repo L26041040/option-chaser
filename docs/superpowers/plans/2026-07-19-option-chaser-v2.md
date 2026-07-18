@@ -80,6 +80,18 @@ def test_strategy_helpers():
     assert not is_bullish("long-put") and not is_bullish("bear-put-spread")
 
 
+def test_schema_mismatch_updated_for_v2(tmp_path):
+    # REPLACES the v1 test_schema_mismatch: saves now write schema 2, so the
+    # old '"schema_version": 1' string-replace would be a silent no-op.
+    snap = make_snap()
+    p = tmp_path / "s.json"
+    save_snapshot(snap, p)
+    text = p.read_text(encoding="utf-8").replace('"schema_version": 2', '"schema_version": 99')
+    p.write_text(text, encoding="utf-8")
+    with pytest.raises(SnapshotSchemaError):
+        load_snapshot(p)
+
+
 def test_schema_v1_rejected_with_refetch_message(tmp_path):
     snap = make_snap()
     p = tmp_path / "s.json"
@@ -557,9 +569,36 @@ from .models import leg_option_type
         pros.append(s)
 ```
 
-（move the imports to the top of `ranking.py`; `half_price` formula is direction-agnostic: `spot + 0.5×(target − spot)` moves halfway toward the target for both families.）Balanced branch: `intrinsic_now = intrinsic_value(v.contract.option_type, spot, v.contract.strike)`（import from valuation）.
+（move the imports to the top of `ranking.py`; `half_price` formula is direction-agnostic: `spot + 0.5×(target − spot)` moves halfway toward the target for both families.）Balanced branch: `intrinsic_now = intrinsic_value(v.contract.option_type, spot, v.contract.strike)`（import from valuation）. **Low-delta con guard MUST use magnitude** — change the existing line to `if abs(v.delta) < 0.5:`（put deltas are negative; raw comparison would warn on every put, including conservative deep-ITM ones）. Append to `tests/test_reasons.py`:
 
-`report.py`: add `STRATEGY_LABELS` dict; header user-assumption block gains `f"- 策略: {STRATEGY_LABELS[p.strategy]}"` as its first bullet; delete 延遲壓力情境 line and the whole 壓力測試 block in `_candidate_lines`; breakeven line wording:
+```python
+def test_conservative_put_gets_no_total_loss_warning():
+    p_put = AnalysisParams(target_price=80.0, target_date="2026-08-28", strategy="long-put")
+    c = OptionContract(contract_symbol="P115", option_type="put", strike=115.0,
+                       expiry="2026-11-20", bid=16.6, ask=17.0, last=None,
+                       volume=50, open_interest=200, implied_volatility=0.30)
+    from option_chaser.valuation import evaluate_contract
+    from option_chaser.ranking import rank
+    v = evaluate_contract(c, spot=100.0, today=TODAY, p=p_put)
+    assert abs(v.delta) > 0.65  # conservative band
+    ranked = rank([v], p_put)
+    _, cons = build_reasons(ranked["conservative"][0], "conservative", ranked, 100.0, 1, p_put)
+    assert not any("權利金可能全損" in s for s in cons)
+```
+
+`report.py`: add `STRATEGY_LABELS` dict; header user-assumption block gains `f"- 策略: {STRATEGY_LABELS[p.strategy]}"` as its first bullet; delete 延遲壓力情境 line and the whole 壓力測試 block in `_candidate_lines`; **`_filter_lines` signature becomes `_filter_lines(freport, p)`** and its first stat line becomes side-aware（the current text hardcodes "全部 Long Call"）:
+
+```python
+def _filter_lines(freport: FilterReport, p: AnalysisParams) -> list[str]:
+    side = "Call 側" if leg_option_type(p.strategy) == "call" else "Put 側"
+    lines = ["", "[過濾統計]", f"- 掃描合約（{side}）: {freport.total} 張"]
+    for s in freport.stages:
+        lines.append(f"- {s.label}刷掉: {s.removed}")
+    lines.append(f"- 合格: {freport.passed} 張")
+    return lines
+```
+
+（update every call site: `render`, `render_filter_only`, and later Task 6's `render_spreads`; import `leg_option_type` from models.）Breakeven line wording:
 
 ```python
     word = "高於" if c.option_type == "call" else "低於"
@@ -1075,7 +1114,7 @@ def _spread_candidate_lines(sv, idx, n_pairs, p) -> list[str]:
 
 
 def render_spreads(snap, p, freport, pair_report, ranked, n_pairs, today) -> str:
-    lines = _header_lines(snap, p, today) + _filter_lines(freport) + _pair_lines(pair_report)
+    lines = _header_lines(snap, p, today) + _filter_lines(freport, p) + _pair_lines(pair_report)
     if not ranked:
         lines += ["", "無合格價差組合，不產生推薦。", ""]
         return "\n".join(lines)
@@ -1447,7 +1486,7 @@ git add -A && git commit -m "feat(v2): matrix placement in reports, v2 fixture, 
 - `map_rows` unchanged signature; each row dict now REQUIRES `"option_type"` (`"call"|"put"`) injected by the fetch loop — remove the Task-1 temporary default (`str(r["option_type"])`, KeyError if missing is acceptable: fetch loop always injects).
 - `fetch_chain`: for each expiry, map BOTH `chain.calls` (option_type "call") and `chain.puts` ("put").
 
-- [ ] **Step 1: Update fixture & failing tests** — in `tests/fixtures/yf_rows.json` add `"option_type": "call"` to rows 1–2 and `"option_type": "put"` to row 3. Append test:
+- [ ] **Step 1: Update fixture & failing tests** — in `tests/fixtures/yf_rows.json` add `"option_type": "call"` to rows 1–2 and `"option_type": "put"` to row 3. **Also update the PRE-EXISTING fetch-path fakes** in `tests/test_yf_adapter.py` (added during the v1 audit): their `FakeChain`/fake ticker objects expose only `.calls`; after this task `fetch_chain` also reads `.puts`, so every existing fake gains `self.puts = FakeCalls([])`（empty list keeps their original single-contract assertions valid — the empty-chain FetchError test stays correct because both sides empty ⇒ no rows）. Append test:
 
 ```python
 def test_option_type_mapped():
@@ -1574,3 +1613,5 @@ git add -A && git commit -m "docs(v2): README for strategies, matrix, retired fl
 - Suite stays green after every task; golden coverage intentionally absent between T3 and T8 (unit/integration tests cover the gap; noted in T3 commit message).
 - Type consistency: `scenario_leg_value(c, S, at, p, shift)` defined T3, consumed T5/T7/T8; `SpreadValuation` fields defined T5, consumed T6/T8; `PairReport` defined T1, produced T4, rendered T6; `price_axis/date_axis/matrix_lines` defined T7, consumed T8; all AnalysisParams constructors in tests use v2 fields only after T3.
 ```
+
+<!-- codex-peer-reviewed: 2026-07-18T22:21:34Z rounds=3 verdict=approved -->
