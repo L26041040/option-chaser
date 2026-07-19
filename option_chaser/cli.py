@@ -6,7 +6,7 @@ import sys
 from datetime import date
 from pathlib import Path
 
-from .models import AnalysisParams, ParamError
+from .models import AnalysisParams, ParamError, STRATEGIES, is_bullish
 
 
 # Flags that take numeric/CSV values and need preprocessing for negative numbers
@@ -18,8 +18,6 @@ _NUMERIC_VALUE_FLAGS = {
     "--rate",
     "--max-spread-pct",
     "--spread-floor",
-    "--delay-days",
-    "--min-days-after",
     "--min-oi",
     "--min-volume",
     "--top"
@@ -68,7 +66,7 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("symbol")
     ap.add_argument("--target-price", type=float, required=True)
     ap.add_argument("--target-date", required=True)
-    ap.add_argument("--min-days-after", type=int, default=0)
+    ap.add_argument("--strategy", choices=list(STRATEGIES), default="long-call")
     ap.add_argument("--min-expiry", default=None)
     ap.add_argument("--top", type=int, default=3)
     ap.add_argument("--iv-shifts", default="-0.2,0,0.2")
@@ -79,7 +77,7 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--spread-floor", type=float, default=0.10)
     ap.add_argument("--delta-bands", default="0.35,0.65")
     ap.add_argument("--min-return", type=float, default=0.0)
-    ap.add_argument("--delay-days", type=int, default=None)
+    ap.add_argument("--matrix-all", action="store_true")
     ap.add_argument("--force", action="store_true")
     ap.add_argument("--snapshot", default=None)
     ap.add_argument("--md", default=None)
@@ -93,24 +91,12 @@ def _parse_iso(name: str, s: str) -> date:
         raise ParamError(f"{name} 必須為 YYYY-MM-DD：{s!r}") from None
 
 
-def effective_buffer(min_days_after: int, min_expiry: str | None, target_date: str) -> int:
-    """Spec §3: max(min_days_after, max(0, min_expiry - target_date))."""
-    via_expiry = 0
-    if min_expiry:
-        via_expiry = max(
-            0, (_parse_iso("--min-expiry", min_expiry) - _parse_iso("--target-date", target_date)).days
-        )
-    return max(min_days_after, via_expiry)
-
-
 def resolve_params(args: argparse.Namespace) -> AnalysisParams:
     if not args.symbol or not args.symbol.strip():
         raise ParamError("symbol 必須為非空字串")
     if args.target_price <= 0:
         raise ParamError("--target-price 必須 > 0")
     _parse_iso("--target-date", args.target_date)
-    if args.min_days_after < 0:
-        raise ParamError("--min-days-after 必須 >= 0")
     if args.min_expiry:
         _parse_iso("--min-expiry", args.min_expiry)
     if not 1 <= args.top <= 10:
@@ -143,40 +129,38 @@ def resolve_params(args: argparse.Namespace) -> AnalysisParams:
     if not (0.0 < a < b < 1.0):
         raise ParamError("--delta-bands 需滿足 0 < a < b < 1")
 
-    eb = effective_buffer(args.min_days_after, args.min_expiry, args.target_date)
-    delay = args.delay_days if args.delay_days is not None else (eb + 1) // 2
-    if not 0 <= delay <= eb:
-        raise ParamError(f"--delay-days 必須在 0–{eb}（有效緩衝天數）")
-
     return AnalysisParams(
         target_price=args.target_price, target_date=args.target_date,
-        min_days_after=args.min_days_after, min_expiry=args.min_expiry,
+        strategy=args.strategy, min_expiry=args.min_expiry,
         top=args.top, iv_shifts=iv_shifts, rate=args.rate,
         min_oi=args.min_oi, min_volume=args.min_volume,
         max_spread_pct=args.max_spread_pct, spread_floor=args.spread_floor,
         delta_bands=(a, b), min_return=args.min_return,
-        delay_days=delay, force=args.force,
+        force=args.force, matrix_all=args.matrix_all,
     )
 
 
 def validate_scenario(p: AnalysisParams, spot: float, today: date) -> None:
     if date.fromisoformat(p.target_date) <= today:
         raise ParamError(f"--target-date 必須晚於資料日 {today.isoformat()}")
-    if p.target_price <= spot and not p.force:
-        raise ParamError(
-            f"Long Call 劇本目標價 {p.target_price} 低於現價 {spot}；"
-            "確定要跑請加 --force"
-        )
+    if is_bullish(p.strategy):
+        if p.target_price <= spot and not p.force:
+            raise ParamError(
+                f"看漲策略目標價 {p.target_price} 低於現價 {spot}；確定要跑請加 --force")
+    else:
+        if p.target_price >= spot and not p.force:
+            raise ParamError(
+                f"看跌策略目標價 {p.target_price} 高於現價 {spot}；確定要跑請加 --force")
 
 
 from .data.snapshot import load_snapshot, save_snapshot, snapshot_today
-from .filters import apply_filters
-from .models import FetchError, SnapshotSchemaError
-from .ranking import rank
-from .report import render, render_filter_only
-from .valuation import evaluate_contract
+from .filters import apply_filters, generate_spread_pairs
+from .models import FetchError, SnapshotSchemaError, SPREAD_STRATEGIES
+from .ranking import rank, rank_spreads
+from .report import render, render_filter_only, render_spreads
+from .valuation import evaluate_contract, evaluate_spread
 
-USAGE_HINT = "用法示例: option-chaser XYZ --target-price 120 --target-date 2026-08-28 --min-days-after 45"
+USAGE_HINT = "用法示例: option-chaser XYZ --target-price 120 --target-date 2026-08-28 --strategy long-call"
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -210,14 +194,23 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     qualified, freport = apply_filters(snap.contracts, p, today)
-    if not qualified:
-        print(render_filter_only(snap, p, freport, today))
-        return 1
-
-    vals = [evaluate_contract(c, snap.spot, today, p) for c in qualified]
-    ranked = rank(vals, p)
-    text = render(snap, p, freport, ranked, n_qualified=len(qualified), today=today)
-    print(text, end="")  # render() already ends with \n; keep stdout == --md content
+    if p.strategy in SPREAD_STRATEGIES:
+        pairs, pair_report = generate_spread_pairs(qualified, p)
+        if not pairs:
+            print(render_spreads(snap, p, freport, pair_report, [], 0, today), end="")
+            return 1
+        spreads = [evaluate_spread(l, s, snap.spot, today, p) for l, s in pairs]
+        ranked = rank_spreads(spreads, p)
+        text = render_spreads(snap, p, freport, pair_report, ranked,
+                              n_pairs=pair_report.passed, today=today)
+    else:
+        if not qualified:
+            print(render_filter_only(snap, p, freport, today))
+            return 1
+        vals = [evaluate_contract(c, snap.spot, today, p) for c in qualified]
+        ranked_bands = rank(vals, p)
+        text = render(snap, p, freport, ranked_bands, n_qualified=len(qualified), today=today)
+    print(text, end="")
     if args.md:
         Path(args.md).write_text(text, encoding="utf-8")
     return 0

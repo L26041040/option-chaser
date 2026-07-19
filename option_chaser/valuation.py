@@ -73,12 +73,20 @@ class ContractValuation:
     floor_value: float
     scenario_values: tuple[tuple[float, float], ...]
     baseline_value: float
-    stress_half: float
-    stress_delay: float | None
-    stress_flat: float
     l1: float
     l2: float
     l3: float
+
+
+def scenario_leg_value(
+    c: OptionContract, S: float, at: date, p: AnalysisParams, shift: float = 0.0
+) -> float:
+    """Spec §3 valuation primitive: value of one leg at date `at` with spot S."""
+    expiry = date.fromisoformat(c.expiry)
+    if at >= expiry:
+        return intrinsic_value(c.option_type, S, c.strike)
+    T = days_between(at, expiry) / DAYS_PER_YEAR
+    return clamped_price(c.option_type, S, c.strike, T, p.rate, c.implied_volatility * (1.0 + shift))
 
 
 def evaluate_contract(
@@ -87,49 +95,36 @@ def evaluate_contract(
     assert c.bid is not None and c.ask is not None and c.implied_volatility is not None
     mid = (c.bid + c.ask) / 2.0
     spread = c.ask - c.bid
-    iv = c.implied_volatility
     expiry = date.fromisoformat(c.expiry)
     target = date.fromisoformat(p.target_date)
-
-    g = call_greeks(spot, c.strike, days_between(today, expiry) / DAYS_PER_YEAR,
-                    p.rate, iv)
-
-    t_rem = days_between(target, expiry) / DAYS_PER_YEAR
-    floor_value = max(p.target_price - c.strike, 0.0)
+    g = leg_greeks(c.option_type, spot, c.strike,
+                   days_between(today, expiry) / DAYS_PER_YEAR, p.rate,
+                   c.implied_volatility)
     scenario_values = tuple(
-        (shift, bs_call(p.target_price, c.strike, t_rem, p.rate, iv * (1.0 + shift)))
+        (shift, scenario_leg_value(c, p.target_price, target, p, shift))
         for shift in p.iv_shifts
     )
     baseline_value = dict(scenario_values)[0.0]
-
-    half_price = spot + 0.5 * (p.target_price - spot)
-    stress_half = bs_call(half_price, c.strike, t_rem, p.rate, iv)
-    stress_flat = bs_call(spot, c.strike, t_rem, p.rate, iv)
-    stress_delay = None
-    if p.delay_days > 0:
-        t_delay = (days_between(target, expiry) - p.delay_days) / DAYS_PER_YEAR
-        stress_delay = bs_call(p.target_price, c.strike, t_delay, p.rate, iv)
-
-    # Price guidance (spec §5.7): L1 <= L2 <= baseline; L3 <= baseline.
-    l1 = floor_value
-    l2 = bs_call(p.target_price, c.strike, t_rem, p.rate,
-                 iv * (1.0 + min(p.iv_shifts)))
-    l3 = baseline_value / (1.0 + p.min_return)
-
-    breakeven = c.strike + mid
+    floor_value = intrinsic_value(c.option_type, p.target_price, c.strike)
+    if c.option_type == "call":
+        breakeven = c.strike + mid
+        be_vs_spot = (breakeven - spot) / spot
+        be_vs_target = (p.target_price - breakeven) / p.target_price
+    else:
+        breakeven = c.strike - mid
+        be_vs_spot = (spot - breakeven) / spot
+        be_vs_target = (breakeven - p.target_price) / p.target_price
+    l2 = scenario_leg_value(c, p.target_price, target, p, min(p.iv_shifts))
     return ContractValuation(
         contract=c, mid=mid, spread=spread,
         delta=g.delta, gamma=g.gamma, theta_per_day=g.theta_per_day,
         vega_per_pct=g.vega_per_pct,
-        breakeven=breakeven,
-        breakeven_vs_spot=(breakeven - spot) / spot,
-        breakeven_vs_target=(p.target_price - breakeven) / p.target_price,
-        effective_leverage=g.delta * spot / mid,
-        floor_value=floor_value,
-        scenario_values=scenario_values,
+        breakeven=breakeven, breakeven_vs_spot=be_vs_spot,
+        breakeven_vs_target=be_vs_target,
+        effective_leverage=abs(g.delta) * spot / mid,
+        floor_value=floor_value, scenario_values=scenario_values,
         baseline_value=baseline_value,
-        stress_half=stress_half, stress_delay=stress_delay, stress_flat=stress_flat,
-        l1=l1, l2=l2, l3=l3,
+        l1=floor_value, l2=l2, l3=baseline_value / (1.0 + p.min_return),
     )
 
 
@@ -151,4 +146,123 @@ def guidance_judgments(v: ContractValuation, p: AnalysisParams) -> list[str]:
         )
     if ask > v.l3:
         msgs.append("以 Ask 進場達不到你設定的最低報酬（min-return）")
+    return msgs
+
+
+def bs_put(S: float, K: float, T: float, r: float, sigma: float) -> float:
+    """European put. T <= 0 -> intrinsic (spec §3.1)."""
+    if T <= 0.0:
+        return max(K - S, 0.0)
+    st = sigma * math.sqrt(T)
+    d1 = (math.log(S / K) + (r + 0.5 * sigma * sigma) * T) / st
+    d2 = d1 - st
+    return K * math.exp(-r * T) * norm_cdf(-d2) - S * norm_cdf(-d1)
+
+
+def bs_price(option_type: str, S: float, K: float, T: float, r: float, sigma: float) -> float:
+    return bs_call(S, K, T, r, sigma) if option_type == "call" else bs_put(S, K, T, r, sigma)
+
+
+def intrinsic_value(option_type: str, S: float, K: float) -> float:
+    return max(S - K, 0.0) if option_type == "call" else max(K - S, 0.0)
+
+
+def clamped_price(option_type: str, S: float, K: float, T: float, r: float, sigma: float) -> float:
+    """Spec §3.2: American no-arbitrage floor applied to every valuation output."""
+    return max(bs_price(option_type, S, K, T, r, sigma), intrinsic_value(option_type, S, K), 0.0)
+
+
+def leg_greeks(option_type: str, S: float, K: float, T: float, r: float, sigma: float) -> Greeks:
+    """Spec §3.1. Caller guarantees T > 0."""
+    g = call_greeks(S, K, T, r, sigma)
+    if option_type == "call":
+        return g
+    st = sigma * math.sqrt(T)
+    d1 = (math.log(S / K) + (r + 0.5 * sigma * sigma) * T) / st
+    d2 = d1 - st
+    theta_year_put = (
+        -(S * norm_pdf(d1) * sigma) / (2.0 * math.sqrt(T))
+        + r * K * math.exp(-r * T) * norm_cdf(-d2)
+    )
+    return Greeks(
+        delta=g.delta - 1.0,
+        gamma=g.gamma,
+        theta_per_day=theta_year_put / DAYS_PER_YEAR,
+        vega_per_pct=g.vega_per_pct,
+    )
+
+
+def spread_scenario_value(
+    long_leg: OptionContract, short_leg: OptionContract,
+    S: float, at: date, p: AnalysisParams, shift: float = 0.0,
+) -> float:
+    width = abs(short_leg.strike - long_leg.strike)
+    raw = (scenario_leg_value(long_leg, S, at, p, shift)
+           - scenario_leg_value(short_leg, S, at, p, shift))
+    return min(max(raw, 0.0), width)
+
+
+@dataclass(frozen=True)
+class SpreadValuation:
+    long_leg: OptionContract
+    short_leg: OptionContract
+    width: float
+    net_mid: float
+    net_worst: float
+    net_delta: float
+    breakeven: float
+    breakeven_vs_target: float
+    effective_leverage: float
+    scenario_values: tuple[tuple[float, float], ...]
+    baseline_value: float
+    l2: float
+    l3: float
+    max_profit: float
+
+
+def evaluate_spread(
+    long_leg: OptionContract, short_leg: OptionContract,
+    spot: float, today: date, p: AnalysisParams,
+) -> SpreadValuation:
+    width = abs(short_leg.strike - long_leg.strike)
+    net_mid = (long_leg.bid + long_leg.ask) / 2.0 - (short_leg.bid + short_leg.ask) / 2.0
+    net_worst = long_leg.ask - short_leg.bid
+    target = date.fromisoformat(p.target_date)
+    expiry = date.fromisoformat(long_leg.expiry)
+    t_now = days_between(today, expiry) / DAYS_PER_YEAR
+    g_l = leg_greeks(long_leg.option_type, spot, long_leg.strike, t_now, p.rate,
+                     long_leg.implied_volatility)
+    g_s = leg_greeks(short_leg.option_type, spot, short_leg.strike, t_now, p.rate,
+                     short_leg.implied_volatility)
+    net_delta = g_l.delta - g_s.delta
+    scenario_values = tuple(
+        (shift, spread_scenario_value(long_leg, short_leg, p.target_price, target, p, shift))
+        for shift in p.iv_shifts
+    )
+    baseline = dict(scenario_values)[0.0]
+    if long_leg.option_type == "call":
+        breakeven = long_leg.strike + net_mid
+        be_vs_target = (p.target_price - breakeven) / p.target_price
+    else:
+        breakeven = long_leg.strike - net_mid
+        be_vs_target = (breakeven - p.target_price) / p.target_price
+    return SpreadValuation(
+        long_leg=long_leg, short_leg=short_leg, width=width,
+        net_mid=net_mid, net_worst=net_worst, net_delta=net_delta,
+        breakeven=breakeven, breakeven_vs_target=be_vs_target,
+        effective_leverage=abs(net_delta) * spot / net_mid,
+        scenario_values=scenario_values, baseline_value=baseline,
+        l2=min(v for _, v in scenario_values),
+        l3=baseline / (1.0 + p.min_return),
+        max_profit=width - net_mid,
+    )
+
+
+def spread_guidance_judgments(sv: SpreadValuation, p: AnalysisParams) -> list[str]:
+    """Spec §3.4: spreads have NO L1; L2 is the scenario envelope minimum."""
+    msgs: list[str] = []
+    if sv.net_worst > sv.l2:
+        msgs.append(f"劇本成立但最保守 IV 情境下仍虧損（IV 情境最低值 ${sv.l2:.2f}）")
+    if sv.net_worst > sv.l3:
+        msgs.append("以最差進場成本達不到你設定的最低報酬（min-return）")
     return msgs

@@ -1,7 +1,7 @@
 from datetime import date
 import pytest
 from option_chaser.models import ParamError
-from option_chaser.cli import build_parser, resolve_params, validate_scenario, effective_buffer
+from option_chaser.cli import build_parser, resolve_params, validate_scenario
 
 
 def parse(*extra):
@@ -10,24 +10,39 @@ def parse(*extra):
     return build_parser().parse_args(argv)
 
 
-def test_effective_buffer_paths():
-    assert effective_buffer(45, None, "2026-08-28") == 45
-    assert effective_buffer(0, "2026-10-12", "2026-08-28") == 45
-    assert effective_buffer(10, "2026-10-12", "2026-08-28") == 45  # max of both
-    assert effective_buffer(50, "2026-10-12", "2026-08-28") == 50
-    assert effective_buffer(0, "2026-08-01", "2026-08-28") == 0    # earlier than target -> 0
+def test_removed_buffer_flags_error(capsys):
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(
+            ["XYZ", "--target-price", "120", "--target-date", "2026-08-28",
+             "--snapshot", "d.json", "--min-days-after", "45"])
+    assert "unrecognized arguments" in capsys.readouterr().err
 
 
-def test_delay_default_from_effective_buffer():
-    p = resolve_params(parse("--min-days-after", "45"))
-    assert p.delay_days == 23  # ceil(45/2)
-    p2 = resolve_params(parse("--min-expiry", "2026-10-12"))
-    assert p2.delay_days == 23  # min-expiry path also enables delay stress
+def test_strategy_choices_and_default():
+    p = resolve_params(parse())
+    assert p.strategy == "long-call" and p.matrix_all is False
+    p2 = resolve_params(parse("--strategy", "bear-put-spread", "--matrix-all"))
+    assert p2.strategy == "bear-put-spread" and p2.matrix_all is True
 
 
-def test_delay_exceeding_buffer_rejected():
-    with pytest.raises(ParamError):
-        resolve_params(parse("--min-days-after", "10", "--delay-days", "11"))
+def test_direction_matrix():
+    from datetime import date
+    today = date(2026, 7, 15)
+    for strat, target, spot, needs_force in [
+        ("long-call", 120.0, 100.0, False), ("long-call", 90.0, 100.0, True),
+        ("bull-call-spread", 120.0, 100.0, False), ("bull-call-spread", 90.0, 100.0, True),
+        ("long-put", 80.0, 100.0, False), ("long-put", 110.0, 100.0, True),
+        ("bear-put-spread", 80.0, 100.0, False), ("bear-put-spread", 110.0, 100.0, True),
+    ]:
+        p = resolve_params(parse("--strategy", strat, "--target-price", str(target)))
+        if needs_force:
+            with pytest.raises(ParamError):
+                validate_scenario(p, spot=spot, today=today)
+            validate_scenario(
+                resolve_params(parse("--strategy", strat, "--target-price", str(target), "--force")),
+                spot=spot, today=today)
+        else:
+            validate_scenario(p, spot=spot, today=today)
 
 
 def test_iv_shifts_normalized():

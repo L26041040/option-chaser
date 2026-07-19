@@ -3,13 +3,13 @@ from option_chaser.models import AnalysisParams, OptionContract
 from option_chaser.filters import apply_filters
 
 TODAY = date(2026, 7, 15)
-P = AnalysisParams(target_price=120.0, target_date="2026-08-28", min_days_after=45)
-# expiry must be >= 2026-10-12
+P = AnalysisParams(target_price=120.0, target_date="2026-08-28")
+# expiry must be >= target date 2026-08-28
 
 
 def make(sym="A", strike=110.0, expiry="2026-10-16", bid=3.0, ask=3.25,
-         iv=0.38, volume=100, oi=100):
-    return OptionContract(contract_symbol=sym, strike=strike, expiry=expiry,
+         iv=0.38, volume=100, oi=100, option_type="call"):
+    return OptionContract(contract_symbol=sym, option_type=option_type, strike=strike, expiry=expiry,
                           bid=bid, ask=ask, last=None, volume=volume,
                           open_interest=oi, implied_volatility=iv)
 
@@ -17,7 +17,7 @@ def make(sym="A", strike=110.0, expiry="2026-10-16", bid=3.0, ask=3.25,
 def test_each_stage_rejects():
     contracts = [
         make("ok"),
-        make("early", expiry="2026-09-18"),          # stage 1
+        make("early", expiry="2026-08-01"),          # stage 1: before target date
         make("zerobid", bid=0.0),                    # stage 2
         make("nullbid", bid=None),                   # stage 2 (null counts as fail)
         make("crossed", bid=3.0, ask=2.0),           # stage 2
@@ -37,9 +37,28 @@ def test_each_stage_rejects():
 
 def test_min_expiry_condition():
     p = AnalysisParams(target_price=120.0, target_date="2026-08-28",
-                       min_days_after=0, min_expiry="2026-11-01")
+                       min_expiry="2026-11-01")
     passed, _ = apply_filters([make("oct"), make("nov", expiry="2026-11-20")], p, TODAY)
     assert [c.contract_symbol for c in passed] == ["nov"]
+
+
+def test_stage1_expiry_vs_target_date_only():
+    p = AnalysisParams(target_price=120.0, target_date="2026-08-28")
+    passed, rep = apply_filters(
+        [make("sep", expiry="2026-09-18"), make("aug", expiry="2026-08-01")], p, TODAY)
+    assert [c.contract_symbol for c in passed] == ["sep"]  # Sep>=target passes now
+    assert rep.stages[0].removed == 1
+
+
+def test_side_selection_defines_total():
+    p = AnalysisParams(target_price=120.0, target_date="2026-08-28")
+    calls = [make("c1"), make("c2")]
+    puts = [make("p1", option_type="put"), ]
+    passed, rep = apply_filters(calls + puts, p, TODAY)
+    assert rep.total == 2  # puts not counted for long-call
+    p2 = AnalysisParams(target_price=80.0, target_date="2026-08-28", strategy="long-put")
+    passed2, rep2 = apply_filters(calls + puts, p2, TODAY)
+    assert rep2.total == 1
 
 
 def test_spread_floor_admits_tick_bound_cheap_contract():
@@ -49,8 +68,7 @@ def test_spread_floor_admits_tick_bound_cheap_contract():
 
 
 def test_min_volume_optional_gate():
-    p = AnalysisParams(target_price=120.0, target_date="2026-08-28",
-                       min_days_after=45, min_volume=1)
+    p = AnalysisParams(target_price=120.0, target_date="2026-08-28", min_volume=1)
     passed, rep = apply_filters([make("novol", volume=0)], p, TODAY)
     assert passed == [] and rep.stages[3].removed == 1
 

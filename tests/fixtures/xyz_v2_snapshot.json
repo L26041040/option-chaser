@@ -1,0 +1,23 @@
+{"schema_version": 2, "symbol": "XYZ", "fetched_at": "2026-07-15T21:30:00-04:00",
+ "spot": 100.0, "source": "yfinance", "contracts": [
+  {"contract_symbol": "XYZC90N",  "option_type": "call", "strike": 90.0,  "expiry": "2026-11-20", "bid": 13.0, "ask": 13.4, "last": 13.2, "volume": 120, "open_interest": 500, "implied_volatility": 0.34},
+  {"contract_symbol": "XYZC105O", "option_type": "call", "strike": 105.0, "expiry": "2026-10-16", "bid": 5.3,  "ask": 5.5,  "last": 5.4,  "volume": 80,  "open_interest": 300, "implied_volatility": 0.36},
+  {"contract_symbol": "XYZC95O",  "option_type": "call", "strike": 95.0,  "expiry": "2026-10-16", "bid": 30.6, "ask": 31.0, "last": 30.8, "volume": 5,   "open_interest": 40,  "implied_volatility": 0.9},
+  {"contract_symbol": "XYZC110O", "option_type": "call", "strike": 110.0, "expiry": "2026-10-16", "bid": 3.0,  "ask": 3.25, "last": 3.1,  "volume": 0,   "open_interest": 830, "implied_volatility": 0.30},
+  {"contract_symbol": "XYZC130O", "option_type": "call", "strike": 130.0, "expiry": "2026-10-16", "bid": 0.05, "ask": 0.15, "last": 0.1,  "volume": 3,   "open_interest": 50,  "implied_volatility": 0.45},
+  {"contract_symbol": "XYZC100A", "option_type": "call", "strike": 100.0, "expiry": "2026-08-01", "bid": 5.0,  "ask": 5.3,  "last": null, "volume": 10,  "open_interest": 100, "implied_volatility": 0.35},
+  {"contract_symbol": "XYZC100B", "option_type": "call", "strike": 100.0, "expiry": "2026-10-16", "bid": 0.0,  "ask": 0.5,  "last": null, "volume": 10,  "open_interest": 100, "implied_volatility": 0.35},
+  {"contract_symbol": "XYZC100C", "option_type": "call", "strike": 100.0, "expiry": "2026-11-20", "bid": 5.0,  "ask": 5.5,  "last": null, "volume": 10,  "open_interest": 100, "implied_volatility": 0.001},
+  {"contract_symbol": "XYZC100D", "option_type": "call", "strike": 100.5, "expiry": "2026-10-16", "bid": 5.0,  "ask": 5.4,  "last": null, "volume": 10,  "open_interest": 5,   "implied_volatility": 0.35},
+  {"contract_symbol": "XYZC102O", "option_type": "call", "strike": 102.0, "expiry": "2026-10-16", "bid": 4.0,  "ask": 6.0,  "last": null, "volume": 10,  "open_interest": 100, "implied_volatility": 0.35},
+  {"contract_symbol": "XYZP115N", "option_type": "put",  "strike": 115.0, "expiry": "2026-11-20", "bid": 16.6, "ask": 17.0, "last": null, "volume": 50,  "open_interest": 200, "implied_volatility": 0.30},
+  {"contract_symbol": "XYZP120O", "option_type": "put",  "strike": 120.0, "expiry": "2026-10-16", "bid": 41.0, "ask": 41.5, "last": null, "volume": 5,   "open_interest": 40,  "implied_volatility": 0.40},
+  {"contract_symbol": "XYZP100O", "option_type": "put",  "strike": 100.0, "expiry": "2026-10-16", "bid": 5.2,  "ask": 5.4,  "last": null, "volume": 60,  "open_interest": 250, "implied_volatility": 0.36},
+  {"contract_symbol": "XYZP85O",  "option_type": "put",  "strike": 85.0,  "expiry": "2026-10-16", "bid": 1.1,  "ask": 1.25, "last": null, "volume": 0,   "open_interest": 300, "implied_volatility": 0.35},
+  {"contract_symbol": "XYZP70O",  "option_type": "put",  "strike": 70.0,  "expiry": "2026-10-16", "bid": 0.06, "ask": 0.16, "last": null, "volume": 2,   "open_interest": 60,  "implied_volatility": 0.50},
+  {"contract_symbol": "XYZP100A", "option_type": "put",  "strike": 100.0, "expiry": "2026-08-01", "bid": 5.0,  "ask": 5.2,  "last": null, "volume": 10,  "open_interest": 100, "implied_volatility": 0.35},
+  {"contract_symbol": "XYZP100B", "option_type": "put",  "strike": 100.0, "expiry": "2026-10-16", "bid": 5.0,  "ask": 4.0,  "last": null, "volume": 10,  "open_interest": 100, "implied_volatility": 0.35},
+  {"contract_symbol": "XYZP100C", "option_type": "put",  "strike": 100.0, "expiry": "2026-11-20", "bid": 5.0,  "ask": 5.5,  "last": null, "volume": 10,  "open_interest": 100, "implied_volatility": 9.9},
+  {"contract_symbol": "XYZP90O",  "option_type": "put",  "strike": 90.0,  "expiry": "2026-10-16", "bid": 3.5,  "ask": 3.7,  "last": null, "volume": 10,  "open_interest": 3,   "implied_volatility": 0.35},
+  {"contract_symbol": "XYZP92O",  "option_type": "put",  "strike": 92.0,  "expiry": "2026-10-16", "bid": 3.0,  "ask": 5.0,  "last": null, "volume": 10,  "open_interest": 100, "implied_volatility": 0.35}
+]}

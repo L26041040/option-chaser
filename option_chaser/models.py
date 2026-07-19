@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 class SnapshotSchemaError(Exception):
@@ -21,6 +21,7 @@ class ParamError(Exception):
 @dataclass(frozen=True)
 class OptionContract:
     contract_symbol: str
+    option_type: str
     strike: float
     expiry: str  # YYYY-MM-DD
     bid: float | None
@@ -45,7 +46,7 @@ class ChainSnapshot:
 class AnalysisParams:
     target_price: float
     target_date: str  # YYYY-MM-DD
-    min_days_after: int = 0
+    strategy: str = "long-call"
     min_expiry: str | None = None
     top: int = 3
     iv_shifts: tuple[float, ...] = (-0.2, 0.0, 0.2)  # normalized: 0 included, sorted
@@ -56,8 +57,8 @@ class AnalysisParams:
     spread_floor: float = 0.10
     delta_bands: tuple[float, float] = (0.35, 0.65)
     min_return: float = 0.0
-    delay_days: int = 0  # resolved from effective_buffer at param resolution
     force: bool = False
+    matrix_all: bool = False
 
 
 @dataclass(frozen=True)
@@ -70,4 +71,25 @@ class FilterStageResult:
 class FilterReport:
     total: int
     stages: tuple[FilterStageResult, ...]
+    passed: int
+
+
+STRATEGIES = ("long-call", "long-put", "bull-call-spread", "bear-put-spread")
+SINGLE_LEG_STRATEGIES = ("long-call", "long-put")
+SPREAD_STRATEGIES = ("bull-call-spread", "bear-put-spread")
+
+
+def leg_option_type(strategy: str) -> str:
+    """Which chain side the strategy trades (spec §4.1)."""
+    return "call" if strategy in ("long-call", "bull-call-spread") else "put"
+
+
+def is_bullish(strategy: str) -> bool:
+    return strategy in ("long-call", "bull-call-spread")
+
+
+@dataclass(frozen=True)
+class PairReport:
+    total_pairs: int
+    removed_sanity: int
     passed: int

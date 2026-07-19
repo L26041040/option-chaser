@@ -21,10 +21,14 @@ def save_snapshot(snap: ChainSnapshot, path: str | Path) -> None:
 
 def load_snapshot(path: str | Path) -> ChainSnapshot:
     data = json.loads(Path(path).read_text(encoding="utf-8"))
-    if data.get("schema_version") != SCHEMA_VERSION:
+    version = data.get("schema_version")
+    if version == 1:
         raise SnapshotSchemaError(
-            f"snapshot schema_version={data.get('schema_version')} incompatible "
-            f"with {SCHEMA_VERSION}; re-fetch the chain"
+            "快照為 v1 格式（僅含 call），請重新抓取（schema_version=1，需要 2）"
+        )
+    if version != SCHEMA_VERSION:
+        raise SnapshotSchemaError(
+            f"snapshot schema_version={version} incompatible with {SCHEMA_VERSION}; re-fetch the chain"
         )
     contracts = tuple(OptionContract(**c) for c in data["contracts"])
     return ChainSnapshot(

@@ -4,12 +4,11 @@ from option_chaser.valuation import evaluate_contract
 from option_chaser.ranking import rank, build_reasons
 
 TODAY = date(2026, 7, 15)
-P = AnalysisParams(target_price=120.0, target_date="2026-08-28",
-                   min_days_after=45, delay_days=0)
+P = AnalysisParams(target_price=120.0, target_date="2026-08-28")
 
 
 def make_val(sym, strike, bid, ask, iv, expiry="2026-11-20"):
-    c = OptionContract(contract_symbol=sym, strike=strike, expiry=expiry,
+    c = OptionContract(contract_symbol=sym, option_type="call", strike=strike, expiry=expiry,
                        bid=bid, ask=ask, last=None, volume=10,
                        open_interest=100, implied_volatility=iv)
     return evaluate_contract(c, spot=100.0, today=TODAY, p=P)
@@ -89,3 +88,17 @@ def test_guidance_judgments_included_in_cons():
     _, cons = build_reasons(ranked["balanced"][0], "balanced",
                             ranked, 100.0, 1, P)
     assert any("超過劇本內在價值" in s for s in cons)
+
+
+def test_conservative_put_gets_no_total_loss_warning():
+    p_put = AnalysisParams(target_price=80.0, target_date="2026-08-28", strategy="long-put")
+    c = OptionContract(contract_symbol="P115", option_type="put", strike=115.0,
+                       expiry="2026-11-20", bid=16.6, ask=17.0, last=None,
+                       volume=50, open_interest=200, implied_volatility=0.30)
+    from option_chaser.valuation import evaluate_contract
+    from option_chaser.ranking import rank
+    v = evaluate_contract(c, spot=100.0, today=TODAY, p=p_put)
+    assert abs(v.delta) > 0.65  # conservative band
+    ranked = rank([v], p_put)
+    _, cons = build_reasons(ranked["conservative"][0], "conservative", ranked, 100.0, 1, p_put)
+    assert not any("權利金可能全損" in s for s in cons)

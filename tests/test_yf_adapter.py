@@ -40,6 +40,7 @@ class _FakeCalls:
 class _FakeChain:
     def __init__(self, records):
         self.calls = _FakeCalls(records)
+        self.puts = _FakeCalls([])
 
 
 class _FakeTicker:
@@ -103,3 +104,39 @@ def test_fetch_chain_raises_fetcherror_on_empty_chain(monkeypatch):
 
     with pytest.raises(FetchError):
         fetch_chain("XYZ")
+
+
+def test_option_type_mapped():
+    rows = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    snap = map_rows("XYZ", 100.0, "2026-07-15T21:30:00-04:00", rows)
+    assert snap.contracts[0].option_type == "call"
+    assert snap.contracts[2].option_type == "put"
+
+
+def test_fetch_chain_maps_both_sides(monkeypatch):
+    fake = types.ModuleType("yfinance")
+
+    class FakeCalls:
+        def __init__(self, records): self._r = records
+        def to_dict(self, kind): return self._r
+
+    class FakeChain:
+        def __init__(self):
+            self.calls = FakeCalls([{"contractSymbol": "C1", "strike": 110.0,
+                "bid": 3.0, "ask": 3.25, "lastPrice": 3.1, "volume": 152,
+                "openInterest": 830, "impliedVolatility": 0.38}])
+            self.puts = FakeCalls([{"contractSymbol": "P1", "strike": 90.0,
+                "bid": 2.8, "ask": 3.0, "lastPrice": 2.9, "volume": 100,
+                "openInterest": 400, "impliedVolatility": 0.40}])
+
+    class FakeTicker:
+        def __init__(self, symbol):
+            self.fast_info = {"last_price": 100.0}
+            self.options = ("2026-10-16",)
+        def option_chain(self, expiry): return FakeChain()
+
+    fake.Ticker = FakeTicker
+    monkeypatch.setitem(sys.modules, "yfinance", fake)
+    snap = fetch_chain("XYZ")
+    types_seen = {c.option_type for c in snap.contracts}
+    assert types_seen == {"call", "put"} and len(snap.contracts) == 2

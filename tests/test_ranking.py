@@ -4,8 +4,7 @@ from option_chaser.valuation import evaluate_contract
 from option_chaser.ranking import classify, rank, baseline_return, BAND_ORDER
 
 TODAY = date(2026, 7, 15)
-P = AnalysisParams(target_price=120.0, target_date="2026-08-28",
-                   min_days_after=45, delay_days=0)
+P = AnalysisParams(target_price=120.0, target_date="2026-08-28")
 
 
 def test_classify_boundaries():
@@ -16,8 +15,15 @@ def test_classify_boundaries():
     assert classify(0.65001, bands) == "conservative"
 
 
+def test_classify_uses_abs_delta():
+    bands = (0.35, 0.65)
+    assert classify(-0.72, bands) == "conservative"
+    assert classify(-0.50, bands) == "balanced"
+    assert classify(-0.20, bands) == "aggressive"
+
+
 def make_val(sym, strike, bid, ask, iv, expiry="2026-10-16"):
-    c = OptionContract(contract_symbol=sym, strike=strike, expiry=expiry,
+    c = OptionContract(contract_symbol=sym, option_type="call", strike=strike, expiry=expiry,
                        bid=bid, ask=ask, last=None, volume=10,
                        open_interest=100, implied_volatility=iv)
     return evaluate_contract(c, spot=100.0, today=TODAY, p=P)
@@ -30,8 +36,7 @@ def test_rank_sorts_by_baseline_return_and_truncates():
         make_val("otm3", 125.0, 0.4, 0.5, 0.30),
         make_val("otm4", 130.0, 0.2, 0.3, 0.30),
     ]
-    p1 = AnalysisParams(target_price=120.0, target_date="2026-08-28",
-                        min_days_after=45, delay_days=0, top=3)
+    p1 = AnalysisParams(target_price=120.0, target_date="2026-08-28", top=3)
     ranked = rank(vals, p1)
     agg = ranked["aggressive"]
     assert len(agg) == 3  # truncated from 4
