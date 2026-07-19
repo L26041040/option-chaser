@@ -4,9 +4,16 @@ from __future__ import annotations
 
 from datetime import date
 
-from .models import AnalysisParams, ChainSnapshot, FilterReport
+from .models import AnalysisParams, ChainSnapshot, FilterReport, leg_option_type
 from .ranking import BAND_LABELS, BAND_ORDER, build_reasons
 from .valuation import ContractValuation, guidance_judgments
+
+STRATEGY_LABELS = {
+    "long-call": "Long Call",
+    "long-put": "Long Put",
+    "bull-call-spread": "Bull Call Spread",
+    "bear-put-spread": "Bear Put Spread",
+}
 
 
 def _money(x: float) -> str:
@@ -36,8 +43,9 @@ def _header_lines(snap: ChainSnapshot, p: AnalysisParams, today: date) -> list[s
         "OPTION CHASER 報告",
         "",
         "[使用者假設]",
+        f"- 策略: {STRATEGY_LABELS[p.strategy]}",
         f"- 劇本: {p.target_date} 到達 ${_money(p.target_price)}",
-        f"- 限制: 到期日 >= 劇本日 + {p.min_days_after} 天"
+        f"- 限制: 到期日 >= 劇本日"
         + (f"; 到期日 >= {p.min_expiry}" if p.min_expiry else ""),
         f"- 最低要求報酬率: {_pct(p.min_return)}",
         "",
@@ -49,13 +57,12 @@ def _header_lines(snap: ChainSnapshot, p: AnalysisParams, today: date) -> list[s
         f"- 無風險利率 {_pct(p.rate)}、無股利調整、Black-Scholes 歐式近似",
         f"- IV 情境: {', '.join(_shift_name(s) for s in p.iv_shifts)}",
         f"- Delta 分級門檻: {bands[0]:g} / {bands[1]:g}（實務慣例級距）",
-        f"- 延遲壓力情境: {p.delay_days} 天" if p.delay_days > 0
-        else "- 延遲壓力情境: 未啟用（delay-days=0）",
     ]
 
 
-def _filter_lines(freport: FilterReport) -> list[str]:
-    lines = ["", "[過濾統計]", f"- 全部 Long Call: {freport.total} 張"]
+def _filter_lines(freport: FilterReport, p: AnalysisParams) -> list[str]:
+    side = "Call 側" if leg_option_type(p.strategy) == "call" else "Put 側"
+    lines = ["", "[過濾統計]", f"- 掃描合約（{side}）: {freport.total} 張"]
     for s in freport.stages:
         lines.append(f"- {s.label}刷掉: {s.removed}")
     lines.append(f"- 合格: {freport.passed} 張")
@@ -68,6 +75,7 @@ def _candidate_lines(
     snap: ChainSnapshot, n_qualified: int, p: AnalysisParams,
 ) -> list[str]:
     c = v.contract
+    word = "高於" if c.option_type == "call" else "低於"
     lines = [
         "",
         f"{idx}) {BAND_LABELS[band]}: Strike ${_money(c.strike)} / {c.expiry} 到期",
@@ -75,7 +83,7 @@ def _candidate_lines(
         f" / Mid ${_money(v.mid)}（${v.mid * 100:.0f}/張）"
         f" / Ask ${_money(c.ask)}（${c.ask * 100:.0f}/張）IV {_pct_iv(c.implied_volatility)}",
         f"- Delta {v.delta:.2f} / Theta {v.theta_per_day:.3f}每天 / Vega {v.vega_per_pct:.2f}",
-        f"- Breakeven: ${_money(v.breakeven)}（高於現價 {_pct(v.breakeven_vs_spot)}；"
+        f"- Breakeven: ${_money(v.breakeven)}（{word}現價 {_pct(v.breakeven_vs_spot)}；"
         f"對目標價緩衝 {_pct(v.breakeven_vs_target)}）",
         f"- Lambda 有效槓桿: {v.effective_leverage:.1f}x",
     ]
@@ -89,12 +97,6 @@ def _candidate_lines(
     lines.append(
         f"- 最差進場（Ask）基準報酬率: {_pct((v.baseline_value - c.ask) / c.ask)}"
     )
-    lines.append("")
-    lines.append("壓力測試（純顯示，不參與排名）:")
-    lines.append(_val_line("半程", v.stress_half, v.mid))
-    if v.stress_delay is not None:
-        lines.append(_val_line(f"延遲 {p.delay_days} 天", v.stress_delay, v.mid))
-    lines.append(_val_line("全錯", v.stress_flat, v.mid))
     lines.append("")
     lines.append("買價指引:")
     lines.append(f"- L1 硬上限（劇本內在價值）: ${_money(v.l1)}（${v.l1 * 100:.0f}/張）")
@@ -145,7 +147,7 @@ def _footer_lines(p: AnalysisParams) -> list[str]:
 def render_filter_only(
     snap: ChainSnapshot, p: AnalysisParams, freport: FilterReport, today: date
 ) -> str:
-    lines = _header_lines(snap, p, today) + _filter_lines(freport)
+    lines = _header_lines(snap, p, today) + _filter_lines(freport, p)
     lines += ["", "過濾後無合格合約，不產生推薦。", ""]
     return "\n".join(lines)
 
@@ -154,7 +156,7 @@ def render(
     snap: ChainSnapshot, p: AnalysisParams, freport: FilterReport,
     ranked: dict[str, list[ContractValuation]], n_qualified: int, today: date,
 ) -> str:
-    lines = _header_lines(snap, p, today) + _filter_lines(freport)
+    lines = _header_lines(snap, p, today) + _filter_lines(freport, p)
     idx = 0
     for band in BAND_ORDER:
         lines.append("")

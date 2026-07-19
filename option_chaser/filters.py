@@ -1,22 +1,24 @@
 """Sequential hard filters with per-stage rejection counts (spec §4)."""
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import date
 from typing import Iterable
 
-from .models import AnalysisParams, FilterReport, FilterStageResult, OptionContract
+from .models import AnalysisParams, FilterReport, FilterStageResult, OptionContract, leg_option_type
 
 
 def apply_filters(
     contracts: Iterable[OptionContract], p: AnalysisParams, today: date
 ) -> tuple[list[OptionContract], FilterReport]:
+    side = leg_option_type(p.strategy)
+    remaining = [c for c in contracts if c.option_type == side]
+    total = len(remaining)
     target = date.fromisoformat(p.target_date)
-    min_expiry_1 = target + timedelta(days=p.min_days_after)
     min_expiry_2 = date.fromisoformat(p.min_expiry) if p.min_expiry else None
 
     def expiry_ok(c: OptionContract) -> bool:
         e = date.fromisoformat(c.expiry)
-        return e >= min_expiry_1 and (min_expiry_2 is None or e >= min_expiry_2)
+        return e >= target and (min_expiry_2 is None or e >= min_expiry_2)
 
     def quote_ok(c: OptionContract) -> bool:
         return c.bid is not None and c.ask is not None and c.bid > 0 and c.ask >= c.bid
@@ -38,8 +40,6 @@ def apply_filters(
         ("OI/成交量不足", oi_volume_ok),
         ("Spread 過寬", spread_ok),
     )
-    remaining = list(contracts)
-    total = len(remaining)
     results: list[FilterStageResult] = []
     for label, pred in stages:
         kept = [c for c in remaining if pred(c)]

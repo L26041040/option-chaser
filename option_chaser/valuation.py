@@ -73,12 +73,20 @@ class ContractValuation:
     floor_value: float
     scenario_values: tuple[tuple[float, float], ...]
     baseline_value: float
-    stress_half: float
-    stress_delay: float | None
-    stress_flat: float
     l1: float
     l2: float
     l3: float
+
+
+def scenario_leg_value(
+    c: OptionContract, S: float, at: date, p: AnalysisParams, shift: float = 0.0
+) -> float:
+    """Spec §3 valuation primitive: value of one leg at date `at` with spot S."""
+    expiry = date.fromisoformat(c.expiry)
+    if at >= expiry:
+        return intrinsic_value(c.option_type, S, c.strike)
+    T = days_between(at, expiry) / DAYS_PER_YEAR
+    return clamped_price(c.option_type, S, c.strike, T, p.rate, c.implied_volatility * (1.0 + shift))
 
 
 def evaluate_contract(
@@ -87,49 +95,36 @@ def evaluate_contract(
     assert c.bid is not None and c.ask is not None and c.implied_volatility is not None
     mid = (c.bid + c.ask) / 2.0
     spread = c.ask - c.bid
-    iv = c.implied_volatility
     expiry = date.fromisoformat(c.expiry)
     target = date.fromisoformat(p.target_date)
-
-    g = call_greeks(spot, c.strike, days_between(today, expiry) / DAYS_PER_YEAR,
-                    p.rate, iv)
-
-    t_rem = days_between(target, expiry) / DAYS_PER_YEAR
-    floor_value = max(p.target_price - c.strike, 0.0)
+    g = leg_greeks(c.option_type, spot, c.strike,
+                   days_between(today, expiry) / DAYS_PER_YEAR, p.rate,
+                   c.implied_volatility)
     scenario_values = tuple(
-        (shift, bs_call(p.target_price, c.strike, t_rem, p.rate, iv * (1.0 + shift)))
+        (shift, scenario_leg_value(c, p.target_price, target, p, shift))
         for shift in p.iv_shifts
     )
     baseline_value = dict(scenario_values)[0.0]
-
-    half_price = spot + 0.5 * (p.target_price - spot)
-    stress_half = bs_call(half_price, c.strike, t_rem, p.rate, iv)
-    stress_flat = bs_call(spot, c.strike, t_rem, p.rate, iv)
-    stress_delay = None
-    if p.delay_days > 0:
-        t_delay = (days_between(target, expiry) - p.delay_days) / DAYS_PER_YEAR
-        stress_delay = bs_call(p.target_price, c.strike, t_delay, p.rate, iv)
-
-    # Price guidance (spec §5.7): L1 <= L2 <= baseline; L3 <= baseline.
-    l1 = floor_value
-    l2 = bs_call(p.target_price, c.strike, t_rem, p.rate,
-                 iv * (1.0 + min(p.iv_shifts)))
-    l3 = baseline_value / (1.0 + p.min_return)
-
-    breakeven = c.strike + mid
+    floor_value = intrinsic_value(c.option_type, p.target_price, c.strike)
+    if c.option_type == "call":
+        breakeven = c.strike + mid
+        be_vs_spot = (breakeven - spot) / spot
+        be_vs_target = (p.target_price - breakeven) / p.target_price
+    else:
+        breakeven = c.strike - mid
+        be_vs_spot = (spot - breakeven) / spot
+        be_vs_target = (breakeven - p.target_price) / p.target_price
+    l2 = scenario_leg_value(c, p.target_price, target, p, min(p.iv_shifts))
     return ContractValuation(
         contract=c, mid=mid, spread=spread,
         delta=g.delta, gamma=g.gamma, theta_per_day=g.theta_per_day,
         vega_per_pct=g.vega_per_pct,
-        breakeven=breakeven,
-        breakeven_vs_spot=(breakeven - spot) / spot,
-        breakeven_vs_target=(p.target_price - breakeven) / p.target_price,
-        effective_leverage=g.delta * spot / mid,
-        floor_value=floor_value,
-        scenario_values=scenario_values,
+        breakeven=breakeven, breakeven_vs_spot=be_vs_spot,
+        breakeven_vs_target=be_vs_target,
+        effective_leverage=abs(g.delta) * spot / mid,
+        floor_value=floor_value, scenario_values=scenario_values,
         baseline_value=baseline_value,
-        stress_half=stress_half, stress_delay=stress_delay, stress_flat=stress_flat,
-        l1=l1, l2=l2, l3=l3,
+        l1=floor_value, l2=l2, l3=baseline_value / (1.0 + p.min_return),
     )
 
 

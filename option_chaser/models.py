@@ -46,7 +46,7 @@ class ChainSnapshot:
 class AnalysisParams:
     target_price: float
     target_date: str  # YYYY-MM-DD
-    min_days_after: int = 0
+    strategy: str = "long-call"
     min_expiry: str | None = None
     top: int = 3
     iv_shifts: tuple[float, ...] = (-0.2, 0.0, 0.2)  # normalized: 0 included, sorted
@@ -57,8 +57,8 @@ class AnalysisParams:
     spread_floor: float = 0.10
     delta_bands: tuple[float, float] = (0.35, 0.65)
     min_return: float = 0.0
-    delay_days: int = 0  # resolved from effective_buffer at param resolution
     force: bool = False
+    matrix_all: bool = False
 
 
 @dataclass(frozen=True)
