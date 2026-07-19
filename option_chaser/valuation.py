@@ -190,3 +190,79 @@ def leg_greeks(option_type: str, S: float, K: float, T: float, r: float, sigma: 
         theta_per_day=theta_year_put / DAYS_PER_YEAR,
         vega_per_pct=g.vega_per_pct,
     )
+
+
+def spread_scenario_value(
+    long_leg: OptionContract, short_leg: OptionContract,
+    S: float, at: date, p: AnalysisParams, shift: float = 0.0,
+) -> float:
+    width = abs(short_leg.strike - long_leg.strike)
+    raw = (scenario_leg_value(long_leg, S, at, p, shift)
+           - scenario_leg_value(short_leg, S, at, p, shift))
+    return min(max(raw, 0.0), width)
+
+
+@dataclass(frozen=True)
+class SpreadValuation:
+    long_leg: OptionContract
+    short_leg: OptionContract
+    width: float
+    net_mid: float
+    net_worst: float
+    net_delta: float
+    breakeven: float
+    breakeven_vs_target: float
+    effective_leverage: float
+    scenario_values: tuple[tuple[float, float], ...]
+    baseline_value: float
+    l2: float
+    l3: float
+    max_profit: float
+
+
+def evaluate_spread(
+    long_leg: OptionContract, short_leg: OptionContract,
+    spot: float, today: date, p: AnalysisParams,
+) -> SpreadValuation:
+    width = abs(short_leg.strike - long_leg.strike)
+    net_mid = (long_leg.bid + long_leg.ask) / 2.0 - (short_leg.bid + short_leg.ask) / 2.0
+    net_worst = long_leg.ask - short_leg.bid
+    target = date.fromisoformat(p.target_date)
+    expiry = date.fromisoformat(long_leg.expiry)
+    t_now = days_between(today, expiry) / DAYS_PER_YEAR
+    g_l = leg_greeks(long_leg.option_type, spot, long_leg.strike, t_now, p.rate,
+                     long_leg.implied_volatility)
+    g_s = leg_greeks(short_leg.option_type, spot, short_leg.strike, t_now, p.rate,
+                     short_leg.implied_volatility)
+    net_delta = g_l.delta - g_s.delta
+    scenario_values = tuple(
+        (shift, spread_scenario_value(long_leg, short_leg, p.target_price, target, p, shift))
+        for shift in p.iv_shifts
+    )
+    baseline = dict(scenario_values)[0.0]
+    if long_leg.option_type == "call":
+        breakeven = long_leg.strike + net_mid
+        be_vs_target = (p.target_price - breakeven) / p.target_price
+    else:
+        breakeven = long_leg.strike - net_mid
+        be_vs_target = (breakeven - p.target_price) / p.target_price
+    return SpreadValuation(
+        long_leg=long_leg, short_leg=short_leg, width=width,
+        net_mid=net_mid, net_worst=net_worst, net_delta=net_delta,
+        breakeven=breakeven, breakeven_vs_target=be_vs_target,
+        effective_leverage=abs(net_delta) * spot / net_mid,
+        scenario_values=scenario_values, baseline_value=baseline,
+        l2=min(v for _, v in scenario_values),
+        l3=baseline / (1.0 + p.min_return),
+        max_profit=width - net_mid,
+    )
+
+
+def spread_guidance_judgments(sv: SpreadValuation, p: AnalysisParams) -> list[str]:
+    """Spec §3.4: spreads have NO L1; L2 is the scenario envelope minimum."""
+    msgs: list[str] = []
+    if sv.net_worst > sv.l2:
+        msgs.append(f"劇本成立但最保守 IV 情境下仍虧損（IV 情境最低值 ${sv.l2:.2f}）")
+    if sv.net_worst > sv.l3:
+        msgs.append("以最差進場成本達不到你設定的最低報酬（min-return）")
+    return msgs
