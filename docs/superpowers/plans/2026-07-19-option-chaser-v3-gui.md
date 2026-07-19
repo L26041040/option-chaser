@@ -255,6 +255,35 @@ def test_matrix_view_matches_grid():
     assert cv.matrix.dates[-1][0] == v.contract.expiry
 
 
+def test_invalid_request_rejected():
+    base = AnalysisParams(target_price=120.0, target_date="2026-08-28")
+    with pytest.raises(ParamError):
+        service.run_offline(service.AnalysisRequest(
+            symbol="XYZ", base_params=base, strategies=()), FIX)
+    with pytest.raises(ParamError):
+        service.run_offline(service.AnalysisRequest(
+            symbol="XYZ", base_params=base, strategies=("straddle",)), FIX)
+
+
+def test_validation_precedes_fetch_and_load(monkeypatch):
+    base = AnalysisParams(target_price=120.0, target_date="2026-08-28")
+    bad = service.AnalysisRequest(symbol="XYZ", base_params=base, strategies=())
+    # run(): fetch must never be touched
+    import option_chaser.data.yf as yf_mod
+    monkeypatch.setattr(yf_mod, "fetch_chain",
+                        lambda symbol: (_ for _ in ()).throw(AssertionError("fetch called")))
+    with pytest.raises(ParamError):
+        service.run(bad)
+    # run_offline(): validation raises ParamError even for nonexistent path (load not reached)
+    with pytest.raises(ParamError):
+        service.run_offline(bad, "does-not-exist.json")
+
+
+def test_result_carries_request():
+    r = service.run_offline(req(["long-call"]), FIX)
+    assert r.request.base_params.target_price == 120.0
+
+
 def test_progress_callback_called():
     calls = []
     service.run_offline(req(["long-call"]), FIX, progress=calls.append)
@@ -279,7 +308,7 @@ from .data.snapshot import load_snapshot, save_snapshot, snapshot_today
 from .filters import apply_filters, generate_spread_pairs
 from .matrix import date_axis, matrix_grid, price_axis
 from .models import (AnalysisParams, ChainSnapshot, FilterReport, PairReport,
-                     ParamError, SPREAD_STRATEGIES, is_bullish)
+                     ParamError, SPREAD_STRATEGIES, STRATEGIES, is_bullish)
 from .ranking import (BAND_ORDER, _tie_break_key, baseline_return,
                       build_reasons, build_spread_reasons, rank, rank_spreads,
                       spread_baseline_return)
@@ -350,6 +379,7 @@ class SnapshotMeta:
 
 @dataclass(frozen=True)
 class AnalysisResult:
+    request: AnalysisRequest
     meta: SnapshotMeta
     snapshot: ChainSnapshot
     today: date
@@ -475,6 +505,15 @@ def _comparison(results: tuple[StrategyResult, ...]) -> tuple[ComparisonRow, ...
     return tuple(rows)
 
 
+def _validate_request(request: AnalysisRequest) -> None:
+    """Spec §2.2 step 0: reject before ANY fetch/load side effect."""
+    if not request.strategies:
+        raise ParamError("至少需要一種策略")
+    invalid = [s for s in request.strategies if s not in STRATEGIES]
+    if invalid:
+        raise ParamError(f"未知策略: {', '.join(invalid)}")
+
+
 def _analyze(request: AnalysisRequest, snap: ChainSnapshot,
              snapshot_path: str, progress: Progress | None) -> AnalysisResult:
     today = snapshot_today(snap.fetched_at)
@@ -510,6 +549,7 @@ def _analyze(request: AnalysisRequest, snap: ChainSnapshot,
                    key=lambda r: (r.baseline_return, -order.index(r.strategy))
                    ).strategy
     return AnalysisResult(
+        request=request,
         meta=SnapshotMeta(symbol=snap.symbol, spot=snap.spot,
                           fetched_at=snap.fetched_at, source=snap.source,
                           snapshot_path=snapshot_path),
@@ -518,6 +558,7 @@ def _analyze(request: AnalysisRequest, snap: ChainSnapshot,
 
 
 def run(request: AnalysisRequest, progress: Progress | None = None) -> AnalysisResult:
+    _validate_request(request)
     _emit(progress, f"正在抓取 {request.symbol} 市場資料……")
     from .data.yf import fetch_chain  # lazy: offline paths never import yfinance
 
@@ -530,6 +571,7 @@ def run(request: AnalysisRequest, progress: Progress | None = None) -> AnalysisR
 
 def run_offline(request: AnalysisRequest, snapshot_path: str,
                 progress: Progress | None = None) -> AnalysisResult:
+    _validate_request(request)
     snap = load_snapshot(snapshot_path)
     return _analyze(request, snap, str(snapshot_path), progress)
 ```
@@ -766,7 +808,9 @@ def _spread_card(cv) -> str:
 def _render_results(result) -> None:
     m = result.meta
     st.subheader("劇本摘要")
+    base = result.request.base_params
     lines = [f"{m.symbol} 現價 ${_money(m.spot)}",
+             f"劇本：{base.target_date} 前到達 ${_money(base.target_price)}",
              f"資料時間：{m.fetched_at}（來源 {m.source}）",
              "已比較：" + "、".join(
                  STRATEGY_LABELS[r.strategy] for r in result.results
@@ -823,9 +867,35 @@ with st.form("scenario"):
     checks = {s: st.checkbox(STRATEGY_LABELS[s], key=f"chk-{s}",
                              value=(s in DEFAULT_CHECKED))
               for s in STRATEGY_ORDER}
-    submitted = st.form_submit_button("開始分析")
+    submitted = st.form_submit_button(
+        "開始分析", disabled=st.session_state.get("running", False))
 
-if submitted:
+def _do_analysis() -> None:
+    """Runs on the rerun AFTER running=True, so the form above is already
+    rendered disabled while this executes (two-phase rerun pattern)."""
+    request = st.session_state.pop("pending_request")
+    try:
+        with st.status("分析中……", expanded=True) as status:
+            result = run_analysis(request, status.write)
+            status.update(label="分析完成", state="complete")
+        st.session_state["result"] = result
+        st.session_state.pop("error_msg", None)
+    except FetchError as e:
+        st.session_state.pop("result", None)
+        st.session_state["error_msg"] = (
+            "找不到此標的，請確認代號是否正確。" if "資料不足" in str(e)
+            else f"目前無法取得 {request.symbol} 的市場資料，請稍後再試。")
+    except ParamError as e:
+        st.session_state.pop("result", None)
+        st.session_state["error_msg"] = str(e)
+    except Exception:
+        st.session_state.pop("result", None)
+        st.session_state["error_msg"] = "分析過程發生錯誤，請稍後再試。"
+    finally:
+        st.session_state["running"] = False
+
+
+if submitted and not st.session_state.get("running", False):
     sym = (symbol_in or "").strip().upper()
     strategies = tuple(s for s in STRATEGY_ORDER if checks[s])
     if not sym:
@@ -835,26 +905,17 @@ if submitted:
     else:
         base = AnalysisParams(target_price=float(target_price_in),
                               target_date=target_date_in.isoformat())
-        request = service.AnalysisRequest(symbol=sym, base_params=base,
-                                          strategies=strategies)
-        try:
-            with st.status("分析中……", expanded=True) as status:
-                result = run_analysis(request, status.write)
-                status.update(label="分析完成", state="complete")
-            st.session_state["result"] = result
-        except FetchError as e:
-            st.session_state.pop("result", None)
-            if "資料不足" in str(e):
-                st.error("找不到此標的，請確認代號是否正確。")
-            else:
-                st.error(f"目前無法取得 {sym} 的市場資料，請稍後再試。")
-        except ParamError as e:
-            st.session_state.pop("result", None)
-            st.error(str(e))
-        except Exception:
-            st.session_state.pop("result", None)
-            st.error("分析過程發生錯誤，請稍後再試。")
+        st.session_state["pending_request"] = service.AnalysisRequest(
+            symbol=sym, base_params=base, strategies=strategies)
+        st.session_state["running"] = True
+        st.rerun()   # next run renders the form with disabled=True, THEN analyzes
 
+if st.session_state.get("running", False) and "pending_request" in st.session_state:
+    _do_analysis()
+    st.rerun()       # re-enable the button and show results/errors
+
+if st.session_state.get("error_msg"):
+    st.error(st.session_state["error_msg"])
 if "result" in st.session_state:
     _render_results(st.session_state["result"])
 ```
@@ -941,6 +1002,15 @@ def test_happy_path_renders_all_sections(monkeypatch):
     assert "最高報酬" in body
     assert "overflow-x:auto" in body          # heatmap html present
     assert not at.exception
+
+
+def test_summary_shows_scenario(monkeypatch):
+    _patched(monkeypatch)
+    at = AppTest.from_file("webapp/app.py")
+    at.run()
+    at = _fill_and_submit(at)
+    body = " ".join(getattr(x, "value", "") for x in at.markdown) +            " ".join(getattr(x, "value", "") for x in at.text)
+    assert "劇本" in body and "120" in body and "2026-08-28" in body
 
 
 def test_direction_mismatch_partial(monkeypatch):
@@ -1115,3 +1185,5 @@ git add -A && git commit -m "feat(v3): dockerfile, compose, gui readme; live smo
 - Type consistency: `MatrixView.dates` ISO strings produced in T2, consumed by T4 `heatmap_html` (`iso[5:7]`), matches; `_tie_break_key` import from ranking exists (v2); `STRATEGY_LABELS` exported by report.py (v2 Task 3); `run_analysis` seam patched via `svc.run` (T5 patches the service module attr the app calls through).
 - Placeholder scan: clean（先前 `_render_results` 內的殘留佔位迴圈已直接自 T4 程式碼移除）.
 ```
+
+<!-- codex-peer-reviewed: 2026-07-19T11:43:43Z rounds=3 verdict=approved -->

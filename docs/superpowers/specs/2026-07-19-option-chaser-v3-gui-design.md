@@ -119,6 +119,8 @@ class SnapshotMeta:
 
 @dataclass(frozen=True)
 class AnalysisResult:
+    request: AnalysisRequest                  # 原始請求（GUI 摘要需顯示劇本目標價/日期，
+                                              # 結果物件自足、不依賴 session 外部狀態）
     meta: SnapshotMeta
     snapshot: ChainSnapshot                   # 引擎原物件（渲染/重算所需）
     today: date                               # snapshot_today() 結果
@@ -136,6 +138,7 @@ class AnalysisResult:
 
 `service.run(request, progress=None) -> AnalysisResult`：
 
+0. **請求驗證**：`strategies` 為空或含非 `models.STRATEGIES` 元素 → raise `ParamError`（不得靜默接受）。
 1. `fetch_chain(symbol)` **一次**，`save_snapshot` 落地（沿用 CLI 的 snapshots/ 命名）。
 2. `today = snapshot_today(fetched_at)`；驗證 `target_date > today`（否則 raise ParamError）。
 3. 逐策略：方向不合（`is_bullish` 與目標價/現價關係矛盾）**且 `base_params.force` 為假** → `skipped_direction` + 說明文字，**不中斷其他策略**；`force` 為真 → 照常執行（保留 CLI `--force` 語意；GUI 永不設 force）。合格 → 既有管線（apply_filters → [generate_spread_pairs] → evaluate → rank/rank_spreads → build_reasons/build_spread_reasons）；0 合格/0 配對 → `empty` + 說明。
