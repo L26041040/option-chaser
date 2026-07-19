@@ -2,9 +2,10 @@
 from __future__ import annotations
 
 from datetime import date
+from itertools import combinations
 from typing import Iterable
 
-from .models import AnalysisParams, FilterReport, FilterStageResult, OptionContract, leg_option_type
+from .models import AnalysisParams, FilterReport, FilterStageResult, OptionContract, PairReport, leg_option_type
 
 
 def apply_filters(
@@ -46,3 +47,31 @@ def apply_filters(
         results.append(FilterStageResult(label=label, removed=len(remaining) - len(kept)))
         remaining = kept
     return remaining, FilterReport(total=total, stages=tuple(results), passed=len(remaining))
+
+
+def generate_spread_pairs(
+    legs: list[OptionContract], p: AnalysisParams
+) -> tuple[list[tuple[OptionContract, OptionContract]], PairReport]:
+    """Spec §4.2: same-expiry exhaustive pairing over qualified legs + sanity."""
+    by_expiry: dict[str, list[OptionContract]] = {}
+    for c in legs:
+        by_expiry.setdefault(c.expiry, []).append(c)
+    long_is_lower = p.strategy == "bull-call-spread"
+    total = 0
+    removed = 0
+    out: list[tuple[OptionContract, OptionContract]] = []
+    for expiry in sorted(by_expiry):
+        group = sorted(by_expiry[expiry], key=lambda c: (c.strike, c.contract_symbol))
+        for a, b in combinations(group, 2):  # a.strike <= b.strike
+            if a.strike == b.strike:
+                continue
+            total += 1
+            lng, sht = (a, b) if long_is_lower else (b, a)
+            width = abs(sht.strike - lng.strike)
+            net_mid = (lng.bid + lng.ask) / 2.0 - (sht.bid + sht.ask) / 2.0
+            net_worst = lng.ask - sht.bid
+            if net_mid <= 0 or net_worst >= width:
+                removed += 1
+                continue
+            out.append((lng, sht))
+    return out, PairReport(total_pairs=total, removed_sanity=removed, passed=len(out))
