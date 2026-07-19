@@ -28,7 +28,7 @@ def map_rows(
     contracts = tuple(
         OptionContract(
             contract_symbol=str(r["contractSymbol"]),
-            option_type=str(r.get("option_type", "call")),
+            option_type=str(r["option_type"]),
             strike=float(r["strike"]),
             expiry=str(r["expiry"]),
             bid=_clean_float(r.get("bid")),
@@ -54,10 +54,12 @@ def fetch_chain(symbol: str) -> ChainSnapshot:
         spot = float(t.fast_info["last_price"])
         rows: list[dict] = []
         for expiry in t.options:
-            calls = t.option_chain(expiry).calls
-            for r in calls.to_dict("records"):
-                r["expiry"] = expiry
-                rows.append(r)
+            chain = t.option_chain(expiry)
+            for side, frame in (("call", chain.calls), ("put", chain.puts)):
+                for r in frame.to_dict("records"):
+                    r["expiry"] = expiry
+                    r["option_type"] = side
+                    rows.append(r)
     except Exception as e:  # noqa: BLE001 — any yfinance failure is a fetch failure
         raise FetchError(f"yfinance 抓取失敗（{symbol}）: {e}") from e
     if not rows or spot <= 0 or math.isnan(spot):
