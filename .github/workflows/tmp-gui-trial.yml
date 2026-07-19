@@ -59,6 +59,9 @@ jobs:
           console_logs = []
           summary = {}
 
+          def snap(page, name):
+              page.screenshot(path=str(OUT / name))
+
           try:
               with sync_playwright() as p:
                   browser = p.chromium.launch()
@@ -71,10 +74,8 @@ jobs:
 
                   page.goto("http://127.0.0.1:8501", wait_until="networkidle", timeout=120_000)
                   page.get_by_text("Option Chaser", exact=True).wait_for(timeout=30_000)
-                  page.screenshot(path=str(OUT / "01-home-desktop.png"), full_page=True)
+                  snap(page, "01-home-desktop.png")
 
-                  # Streamlit's date input does not expose its visible label as an ARIA label.
-                  # The three non-checkbox inputs are symbol, price, date in DOM order.
                   plain_inputs = page.locator('input:not([type="checkbox"])')
                   input_info = []
                   for i in range(plain_inputs.count()):
@@ -90,14 +91,11 @@ jobs:
                   if plain_inputs.count() < 3:
                       raise AssertionError(f"Expected at least 3 form inputs, got {plain_inputs.count()}")
 
-                  symbol = plain_inputs.nth(0)
-                  price = plain_inputs.nth(1)
-                  target_date = plain_inputs.nth(2)
-                  symbol.fill("TLT")
-                  price.fill("105")
-                  target_date.fill("2028/01/01")
-                  target_date.press("Enter")
-                  target_date.press("Tab")
+                  plain_inputs.nth(0).fill("TLT")
+                  plain_inputs.nth(1).fill("105")
+                  plain_inputs.nth(2).fill("2028/01/01")
+                  plain_inputs.nth(2).press("Enter")
+                  plain_inputs.nth(2).press("Tab")
 
                   defaults = {
                       "Long Call": True,
@@ -110,18 +108,17 @@ jobs:
                       if checkbox.is_checked() != desired:
                           checkbox.set_checked(desired)
 
-                  page.screenshot(path=str(OUT / "02-form-filled-desktop.png"), full_page=True)
+                  snap(page, "02-form-filled-desktop.png")
                   page.get_by_role("button", name="開始分析").click()
 
                   page.get_by_text("跨策略比較", exact=True).wait_for(timeout=300_000)
                   page.get_by_text("劇本摘要", exact=True).wait_for(timeout=30_000)
-                  page.screenshot(path=str(OUT / "03-results-desktop.png"), full_page=True)
+                  snap(page, "03-results-top-desktop.png")
 
                   body_text = page.locator("body").inner_text()
                   (OUT / "visible-text.txt").write_text(body_text, encoding="utf-8")
-
                   required = [
-                      "TLT 現價", "2028-01-01 前到達 $105.00",
+                      "TLT 現價", "2028-01-01 前到達 105.00",
                       "跨策略比較", "最高報酬", "Long Call",
                       "Bull Call Spread", "查看 Heatmap", "現價", "目標", "到期",
                   ]
@@ -130,34 +127,58 @@ jobs:
                       raise AssertionError(f"Missing visible UI text: {missing}")
 
                   tables = page.locator("table")
-                  table_count = tables.count()
-                  summary["desktop_table_count"] = table_count
-                  for i in range(min(table_count, 5)):
-                      try:
-                          tables.nth(i).screenshot(path=str(OUT / f"table-{i+1}.png"))
-                      except Exception as exc:
-                          console_logs.append(f"table screenshot {i}: {exc}")
-
+                  summary["desktop_table_count"] = tables.count()
                   summary["body_scroll_width_desktop"] = page.evaluate("document.body.scrollWidth")
                   summary["viewport_width_desktop"] = page.evaluate("window.innerWidth")
 
+                  # Comparison table and the first visible Long Call heatmap.
+                  if tables.count() >= 1:
+                      tables.nth(0).screenshot(path=str(OUT / "04-comparison-table-desktop.png"))
+                  long_heatmap = page.locator('div[style*="overflow-x:auto"]').first
+                  long_heatmap.scroll_into_view_if_needed()
+                  page.wait_for_timeout(500)
+                  snap(page, "05-long-call-heatmap-desktop.png")
+                  long_heatmap.screenshot(path=str(OUT / "06-long-call-heatmap-element.png"))
+
+                  # Switch to Bull Call Spread tab and capture its first candidate + heatmap.
+                  spread_tab = page.get_by_role("tab", name="Bull Call Spread", exact=True)
+                  spread_tab.click()
+                  page.wait_for_timeout(800)
+                  page.get_by_text("買 93 / 賣 100", exact=False).first.wait_for(timeout=30_000)
+                  spread_heatmaps = page.locator('div[style*="overflow-x:auto"]')
+                  summary["heatmap_containers_after_spread_tab"] = spread_heatmaps.count()
+                  visible_spread_heatmap = None
+                  for i in range(spread_heatmaps.count()):
+                      candidate = spread_heatmaps.nth(i)
+                      if candidate.is_visible():
+                          visible_spread_heatmap = candidate
+                          break
+                  if visible_spread_heatmap is None:
+                      raise AssertionError("No visible Bull Call Spread heatmap")
+                  visible_spread_heatmap.scroll_into_view_if_needed()
+                  page.wait_for_timeout(500)
+                  snap(page, "07-bull-call-spread-heatmap-desktop.png")
+                  visible_spread_heatmap.screenshot(path=str(OUT / "08-bull-call-spread-heatmap-element.png"))
+
+                  # Mobile trial: preserve session/result, resize, and check document-level overflow.
                   page.set_viewport_size({"width": 390, "height": 844})
-                  page.wait_for_timeout(1500)
-                  page.screenshot(path=str(OUT / "04-results-mobile.png"), full_page=True)
+                  page.evaluate("window.scrollTo(0, 0)")
+                  page.wait_for_timeout(1000)
+                  snap(page, "09-results-top-mobile.png")
                   summary["body_scroll_width_mobile"] = page.evaluate("document.body.scrollWidth")
                   summary["viewport_width_mobile"] = page.evaluate("window.innerWidth")
+                  summary["mobile_document_overflow"] = (
+                      summary["body_scroll_width_mobile"] > summary["viewport_width_mobile"] + 2)
 
-                  # Confirm at least the currently visible heatmap has horizontal scrolling.
-                  overflow_divs = page.locator('div[style*="overflow-x:auto"]')
-                  summary["horizontal_heatmap_containers"] = overflow_divs.count()
-                  if overflow_divs.count() < 1:
+                  visible_spread_heatmap.scroll_into_view_if_needed()
+                  page.wait_for_timeout(500)
+                  snap(page, "10-spread-heatmap-mobile.png")
+                  visible_spread_heatmap.screenshot(path=str(OUT / "11-spread-heatmap-mobile-element.png"))
+
+                  summary["horizontal_heatmap_containers"] = page.locator(
+                      'div[style*="overflow-x:auto"]').count()
+                  if summary["horizontal_heatmap_containers"] < 1:
                       raise AssertionError("Expected a horizontally scrollable heatmap container")
-
-                  if table_count >= 2:
-                      try:
-                          page.locator("table").nth(1).screenshot(path=str(OUT / "05-first-heatmap-mobile.png"))
-                      except Exception as exc:
-                          console_logs.append(f"mobile heatmap screenshot: {exc}")
 
                   browser.close()
 
