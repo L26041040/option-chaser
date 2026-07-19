@@ -1,0 +1,8 @@
+services:
+  option-chaser:
+    build: .
+    ports:
+      - "${PORT:-8501}:8501"
+    volumes:
+      - ./snapshots:/app/snapshots
+    restart: unless-stopped

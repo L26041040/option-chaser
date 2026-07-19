@@ -133,3 +133,18 @@ docs/superpowers/specs/2026-07-19-option-chaser-v2-design.md (v2)
 - 報價為 yfinance 延遲資料（約15分鐘），volume=0 的合約會加註
   「報價新鮮度存疑」。
 - 模型估計非保證成交價格；本工具不構成投資建議。
+
+## Web GUI
+
+    pip install -e ".[gui]"
+    streamlit run webapp/app.py        # http://localhost:8501
+
+或 Docker：
+
+    docker compose up -d               # http://localhost:8501（PORT 環境變數可改）
+
+網頁只需四項輸入（標的／目標價／到達日期／策略勾選，預設 Long Call
++ Bull Call Spread），一次抓取市場資料後同一快照分析所有勾選策略，
+輸出跨策略比較表、各策略前三名候選與價格×日期 P/L Heatmap。
+進階參數一律採用 CLI 預設值；方向不合的策略會被跳過並提示，
+GUI 不提供 --force。所有計算皆由與 CLI 相同的引擎完成。
