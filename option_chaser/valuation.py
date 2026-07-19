@@ -152,3 +152,46 @@ def guidance_judgments(v: ContractValuation, p: AnalysisParams) -> list[str]:
     if ask > v.l3:
         msgs.append("以 Ask 進場達不到你設定的最低報酬（min-return）")
     return msgs
+
+
+def bs_put(S: float, K: float, T: float, r: float, sigma: float) -> float:
+    """European put. T <= 0 -> intrinsic (spec §3.1)."""
+    if T <= 0.0:
+        return max(K - S, 0.0)
+    st = sigma * math.sqrt(T)
+    d1 = (math.log(S / K) + (r + 0.5 * sigma * sigma) * T) / st
+    d2 = d1 - st
+    return K * math.exp(-r * T) * norm_cdf(-d2) - S * norm_cdf(-d1)
+
+
+def bs_price(option_type: str, S: float, K: float, T: float, r: float, sigma: float) -> float:
+    return bs_call(S, K, T, r, sigma) if option_type == "call" else bs_put(S, K, T, r, sigma)
+
+
+def intrinsic_value(option_type: str, S: float, K: float) -> float:
+    return max(S - K, 0.0) if option_type == "call" else max(K - S, 0.0)
+
+
+def clamped_price(option_type: str, S: float, K: float, T: float, r: float, sigma: float) -> float:
+    """Spec §3.2: American no-arbitrage floor applied to every valuation output."""
+    return max(bs_price(option_type, S, K, T, r, sigma), intrinsic_value(option_type, S, K), 0.0)
+
+
+def leg_greeks(option_type: str, S: float, K: float, T: float, r: float, sigma: float) -> Greeks:
+    """Spec §3.1. Caller guarantees T > 0."""
+    g = call_greeks(S, K, T, r, sigma)
+    if option_type == "call":
+        return g
+    st = sigma * math.sqrt(T)
+    d1 = (math.log(S / K) + (r + 0.5 * sigma * sigma) * T) / st
+    d2 = d1 - st
+    theta_year_put = (
+        -(S * norm_pdf(d1) * sigma) / (2.0 * math.sqrt(T))
+        + r * K * math.exp(-r * T) * norm_cdf(-d2)
+    )
+    return Greeks(
+        delta=g.delta - 1.0,
+        gamma=g.gamma,
+        theta_per_day=theta_year_put / DAYS_PER_YEAR,
+        vega_per_pct=g.vega_per_pct,
+    )
