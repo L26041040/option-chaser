@@ -153,12 +153,8 @@ def validate_scenario(p: AnalysisParams, spot: float, today: date) -> None:
                 f"看跌策略目標價 {p.target_price} 高於現價 {spot}；確定要跑請加 --force")
 
 
-from .data.snapshot import load_snapshot, save_snapshot, snapshot_today
-from .filters import apply_filters, generate_spread_pairs
 from .models import FetchError, SnapshotSchemaError, SPREAD_STRATEGIES
-from .ranking import rank, rank_spreads
-from .report import render, render_filter_only, render_spreads
-from .valuation import evaluate_contract, evaluate_spread
+from . import service
 
 USAGE_HINT = "用法示例: option-chaser XYZ --target-price 120 --target-date 2026-08-28 --strategy long-call"
 
@@ -172,44 +168,35 @@ def main(argv: list[str] | None = None) -> int:
         print(USAGE_HINT)
         return 2
 
+    request = service.AnalysisRequest(symbol=args.symbol, base_params=p,
+                                      strategies=(p.strategy,))
     try:
         if args.snapshot:
-            snap = load_snapshot(args.snapshot)
+            result = service.run_offline(request, args.snapshot)
         else:
-            from .data.yf import fetch_chain  # lazy: offline runs never import yfinance
-
-            snap = fetch_chain(args.symbol)
-            out = Path("snapshots") / f"{snap.symbol}_{snap.fetched_at.replace(':', '')}.json"
-            out.parent.mkdir(exist_ok=True)
-            save_snapshot(snap, out)
+            result = service.run(request)
+    except ParamError as e:
+        print(f"參數錯誤: {e}")
+        return 2
     except (FetchError, SnapshotSchemaError, OSError) as e:
         print(f"資料錯誤: {e}")
         return 1
 
-    today = snapshot_today(snap.fetched_at)
-    try:
-        validate_scenario(p, snap.spot, today)
-    except ParamError as e:
-        print(f"參數錯誤: {e}")
+    res = result.results[0]
+    if res.status == "skipped_direction":
+        try:
+            validate_scenario(p, result.snapshot.spot, result.today)
+        except ParamError as e:
+            print(f"參數錯誤: {e}")
         return 2
 
-    qualified, freport = apply_filters(snap.contracts, p, today)
-    if p.strategy in SPREAD_STRATEGIES:
-        pairs, pair_report = generate_spread_pairs(qualified, p)
-        if not pairs:
-            print(render_spreads(snap, p, freport, pair_report, [], 0, today), end="")
-            return 1
-        spreads = [evaluate_spread(l, s, snap.spot, today, p) for l, s in pairs]
-        ranked = rank_spreads(spreads, p)
-        text = render_spreads(snap, p, freport, pair_report, ranked,
-                              n_pairs=pair_report.passed, today=today)
-    else:
-        if not qualified:
-            print(render_filter_only(snap, p, freport, today))
-            return 1
-        vals = [evaluate_contract(c, snap.spot, today, p) for c in qualified]
-        ranked_bands = rank(vals, p)
-        text = render(snap, p, freport, ranked_bands, n_qualified=len(qualified), today=today)
+    text = res.report_text
+    if res.status == "empty":
+        if p.strategy in SPREAD_STRATEGIES:
+            print(text, end="")
+        else:
+            print(text)
+        return 1
     print(text, end="")
     if args.md:
         Path(args.md).write_text(text, encoding="utf-8")

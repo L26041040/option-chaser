@@ -51,18 +51,28 @@ def date_axis(today: date, target_date: date, expiry: date) -> list[tuple[date, 
     return [(d, "*" if d == target_date else "") for d in uniq]
 
 
+def matrix_grid(
+    value_fn: Callable[[float, date], float], cost: float,
+    prices: list[tuple[float, str]], dates: list[tuple[date, str]],
+) -> tuple[tuple[float, ...], ...]:
+    """Structured cell returns (v3 spec §2.3): single data source for CLI and GUI."""
+    return tuple(
+        tuple((value_fn(price, d) - cost) / cost for d, _ in dates)
+        for price, _ in prices
+    )
+
+
 def matrix_lines(
     value_fn: Callable[[float, date], float], cost: float,
     prices: list[tuple[float, str]], dates: list[tuple[date, str]],
 ) -> list[str]:
+    grid = matrix_grid(value_fn, cost, prices, dates)
     header = "價格".ljust(10) + " ".join(
         (d.strftime("%m/%d") + lbl).rjust(7) for d, lbl in dates
     )
     lines = [header]
-    for price, plabel in reversed(prices):
-        cells = []
-        for d, _ in dates:
-            ret = (value_fn(price, d) - cost) / cost
-            cells.append(f"{ret * 100:+.0f}%".rjust(7))
+    for i in range(len(prices) - 1, -1, -1):
+        price, plabel = prices[i]
+        cells = [f"{grid[i][j] * 100:+.0f}%".rjust(7) for j in range(len(dates))]
         lines.append(f"{price:8.2f}{plabel}".ljust(10) + " ".join(cells))
     return lines

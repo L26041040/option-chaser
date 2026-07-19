@@ -11,6 +11,9 @@ dependencies = [
 [project.scripts]
 option-chaser = "option_chaser.cli:main"
 
+[project.optional-dependencies]
+gui = ["streamlit>=1.30"]
+
 [build-system]
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
