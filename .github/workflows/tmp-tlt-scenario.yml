@@ -56,3 +56,12 @@ jobs:
           echo '===== RAW BULL CALL SPREAD OUTPUT ====='
           cat /tmp/tlt_bull_call_spread.txt
           echo '===== END RAW BULL CALL SPREAD OUTPUT ====='
+
+      - name: Upload raw reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: tlt-scenario-output
+          path: |
+            /tmp/tlt_long_call.txt
+            /tmp/tlt_bull_call_spread.txt
+          if-no-files-found: error
