@@ -56,9 +56,14 @@ option-chaser/
 @dataclass(frozen=True)
 class AnalysisRequest:
     symbol: str                     # 已 strip+upper
-    target_price: float
-    target_date: str                # YYYY-MM-DD
-    strategies: tuple[str, ...]     # 非空，元素 ∈ models.STRATEGIES
+    base_params: AnalysisParams     # 完整引擎參數物件（strategy 欄位在此被忽略）
+    strategies: tuple[str, ...]     # 非空，元素 ∈ models.STRATEGIES；逐策略以
+                                    # dataclasses.replace(base_params, strategy=s) 衍生
+    # target_price/target_date 一律取自 base_params——單一事實來源，
+    # GUI 以預設值建構 base_params（僅填三項輸入），CLI 把 resolve_params
+    # 的完整結果原樣傳入 → CLI 全部旗標（min_expiry/top/iv_shifts/rate/
+    # 流動性門檻/min_return/matrix_all/force）零回歸。
+    # --snapshot 對應 run_offline()；--md 為 CLI 呈現層自理，不進 service。
 
 @dataclass(frozen=True)
 class MatrixView:
@@ -77,9 +82,18 @@ class CandidateView:
 class StrategyResult:
     strategy: str
     status: str                     # "ok" | "skipped_direction" | "empty"
-    candidates: tuple[CandidateView, ...]     # ok 時 = 引擎排名 top 3（引擎 top 預設）
+    candidates: tuple[CandidateView, ...]     # GUI 便利檢視（§3.3 定義取法）
+    ranked_bands: dict[str, list[ContractValuation]] | None   # 單腿：引擎 rank() 原輸出
+    ranked_spreads: tuple[SpreadValuation, ...] | None        # 價差：rank_spreads() 原輸出
+    n_qualified: int                # 單腿合格數 / 價差合格組數
     filter_report: FilterReport | None
     pair_report: PairReport | None  # 價差策略才有
+    report_text: str | None         # ok：service 內呼叫 report.render/render_spreads 產生；
+                                    # empty：單腿 = render_filter_only 輸出、價差 =
+                                    # render_spreads(空清單) 輸出（沿用 v2 空結果報告）；
+                                    # skipped_direction：None。
+                                    # 引擎原物件直渲染，GUI「原始文字報告」與 CLI 輸出
+                                    # 共用同一來源——golden 與空結果行為保真由此結構性成立
     message: str                    # skipped/empty 時的使用者可讀說明
 
 @dataclass(frozen=True)
@@ -91,7 +105,9 @@ class ComparisonRow:
     baseline_return: float
     worst_return: float             # Ask/最差口徑基準報酬率
     breakeven: float
-    max_profit: float | None       # None = 無上限（單腿）
+    max_profit: float | None       # 逐策略定義：long-call → None（無上限，顯示「無上限」）；
+                                   # long-put → strike − Mid（每股，標的跌到 0 的上限）；
+                                   # 價差 → 寬度 − 淨Mid
 
 @dataclass(frozen=True)
 class SnapshotMeta:
@@ -104,21 +120,31 @@ class SnapshotMeta:
 @dataclass(frozen=True)
 class AnalysisResult:
     meta: SnapshotMeta
+    snapshot: ChainSnapshot                   # 引擎原物件（渲染/重算所需）
+    today: date                               # snapshot_today() 結果
     results: tuple[StrategyResult, ...]       # 依 request.strategies 順序
-    comparison: tuple[ComparisonRow, ...]     # 僅 status=="ok" 且有候選的策略，各取第 1 名
+    comparison: tuple[ComparisonRow, ...]     # 僅 status=="ok" 且有候選的策略各一列
     best_strategy: str | None                 # comparison 中 baseline_return 最高者（同分取 request 順序靠前）
+```
+
+**「最佳候選」的確定性定義（Brief §5.2）**：comparison 每列代表該策略「全體合格候選中基準情境報酬率最高者」——單腿為跨三級距的全域最大（同分沿用 v2 四層 tie-break），**不是**保守級距的第一張；價差為 rank_spreads 榜首（本身即全域降冪）。
+
+**策略 Tab 的「前三名候選」定義（Brief §5.3）**：單腿 = 三級距各自的 #1（保守/平衡/積極首選各一張，維持 v2 風險級距語意，恰為三張；某級距空則缺位並註明）；價差 = 清單前三。CandidateView 即按此取法組裝。
+
+```python
 ```
 
 `service.run(request, progress=None) -> AnalysisResult`：
 
 1. `fetch_chain(symbol)` **一次**，`save_snapshot` 落地（沿用 CLI 的 snapshots/ 命名）。
 2. `today = snapshot_today(fetched_at)`；驗證 `target_date > today`（否則 raise ParamError）。
-3. 逐策略：方向不合（`is_bullish` 與目標價/現價關係矛盾）→ `skipped_direction` + 說明文字，**不中斷其他策略**；合格 → 既有管線（apply_filters → [generate_spread_pairs] → evaluate → rank/rank_spreads → build_reasons/build_spread_reasons）；0 合格/0 配對 → `empty` + 說明。
+3. 逐策略：方向不合（`is_bullish` 與目標價/現價關係矛盾）**且 `base_params.force` 為假** → `skipped_direction` + 說明文字，**不中斷其他策略**；`force` 為真 → 照常執行（保留 CLI `--force` 語意；GUI 永不設 force）。合格 → 既有管線（apply_filters → [generate_spread_pairs] → evaluate → rank/rank_spreads → build_reasons/build_spread_reasons）；0 合格/0 配對 → `empty` + 說明。
+   **CLI 對映（行為保真）**：CLI 為單一策略 request——結果為 `skipped_direction` 時，印出既有 ParamError 格式的方向錯誤訊息並 exit 2；`empty` 時印出 `report_text` 並 exit 1；`ok` 印 `report_text` exit 0。與 v2 行為逐一對應。
 4. 每候選附 `MatrixView`（§2.3）。
 5. `progress: Callable[[str], None] | None`——每階段呼叫一次（抓取/過濾/各策略/heatmap），GUI 接 st.status，CLI 傳 None。
 6. 另提供 `service.run_offline(request, snapshot_path, ...)` 供測試與 CLI parity（同快照重現）。
 
-CLI 重構：`cli.main` 的資料抓取＋單策略管線段改為呼叫 service（單一策略 request），報告仍由 `report.py` 以引擎物件渲染。**回歸鐵則：四份 v2 golden 逐位元不變。**
+CLI 重構：`cli.main` 的資料抓取＋管線段改為呼叫 service（單一策略 request，完整 AnalysisParams 原樣傳入），輸出直接印 `StrategyResult.report_text`（service 內以 report.py 渲染——CLI 與 GUI 同一渲染來源）。**回歸鐵則：四份 v2 golden 逐位元不變；CLI 全部旗標行為不變。**
 
 ### 2.3 `matrix_grid()`（matrix.py 新函數，單一資料源）
 
@@ -144,7 +170,7 @@ def matrix_grid(value_fn, cost, prices, dates) -> tuple[tuple[float, ...], ...]
 ### 3.3 結果頁五區（Brief §5 落地）
 
 1. **劇本摘要**：標的/現價/目標價/目標日期/資料時間（UTC標示）/來源/已比較策略清單；被跳過或空結果的策略在此列出原因一句話。
-2. **跨策略比較表**：`AnalysisResult.comparison` 渲染；欄位＝策略/候選/到期日/進場成本/劇本報酬率/最差進場報酬率/Breakeven/最大獲利（單腿顯示「無上限」）；`best_strategy` 列標「最高報酬」badge；表下註明「最高報酬≠最佳投資，本系統不判斷劇本機率」。
+2. **跨策略比較表**：`AnalysisResult.comparison` 渲染；欄位＝策略/候選/到期日/進場成本/劇本報酬率/最差進場報酬率/Breakeven/最大獲利（一律依 `ComparisonRow.max_profit` 語意渲染：long-call 顯示「無上限」、long-put 顯示 `strike − Mid` 金額、價差顯示 `寬度 − 淨Mid` 金額——Long Put 有界，不得顯示「無上限」）；`best_strategy` 列標「最高報酬」badge；表下註明「最高報酬≠最佳投資，本系統不判斷劇本機率」。
 3. **策略 Tabs**：僅顯示本次勾選者；每 Tab 依 status 呈現——ok：top 3 候選卡片（欄位清單照 Brief §5.3，單腿含 K/到期/Bid/Mid/Ask/每張成本/IV/Delta/BE/劇本估值/損益/報酬率/最差報酬率/警示；價差含兩腿/寬度/Net Mid/Natural(最差) Debit/每組成本/BE/最大虧損/最大獲利/劇本估值/損益/報酬率/最差報酬率/警示）；skipped_direction/empty：顯示 message。
 4. **Heatmap**：每候選卡片附「查看 Heatmap」expander，各 Tab 第 1 名預設展開，其餘收合（§4）。
 5. **計算細節 expander**：過濾統計（+價差配對統計）/IV 情境/Greeks/Lambda/買價指引/公式與模型限制/原始文字報告（直接呼叫 `report.render`／`render_spreads` 產生，`st.code` 顯示）。
@@ -216,3 +242,5 @@ FetchError 二分規則：`fetch_chain` 現有兩種訊息（抓取失敗 vs 回
 - plotly/matplotlib heatmap：多依賴、樣式控制反而繞遠，HTML 表格勝出（可逆決策，後續要互動性再議）。
 - 進階設定面板、`--force` in GUI、多標的比較：Brief §9/§3 明文排除。
 - FastAPI+前端框架：單一使用者私人服務，Streamlit 成本低一個量級（Brief §7 已定）。
+
+<!-- codex-peer-reviewed: 2026-07-19T11:20:31Z rounds=3 verdict=approved -->
