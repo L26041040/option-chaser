@@ -111,3 +111,26 @@ def test_empty_symbol_rejected():
                 "--snapshot", "dummy.json"]
         with pytest.raises(ParamError):
             resolve_params(build_parser().parse_args(argv))
+
+
+def test_cli_uses_service_and_goldens_unchanged():
+    # golden byte-identity is asserted by tests/test_golden_v2.py; here assert
+    # the service wiring exists (no subprocess, single entry)
+    import option_chaser.cli as cli
+    import inspect
+    src = inspect.getsource(cli.main)
+    assert "service.run" in src or "run_offline" in src
+    assert "subprocess" not in src
+
+
+def test_cli_skipped_direction_exits_2(capsys, tmp_path):
+    import json, io, contextlib
+    from option_chaser.cli import main
+    snap = json.loads(open("tests/fixtures/xyz_v2_snapshot.json", encoding="utf-8").read())
+    f = tmp_path / "s.json"
+    f.write_text(json.dumps(snap), encoding="utf-8")
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        rc = main(["XYZ", "--target-price", "80", "--target-date", "2026-08-28",
+                   "--snapshot", str(f)])
+    assert rc == 2 and "看漲策略目標價" in buf.getvalue()
