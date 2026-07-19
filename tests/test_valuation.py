@@ -8,7 +8,7 @@ P = AnalysisParams(target_price=120.0, target_date="2026-08-28",
 
 
 def make_contract(**kw):
-    base = dict(contract_symbol="XYZ261016C00110000", strike=110.0,
+    base = dict(contract_symbol="XYZ261016C00110000", option_type="call", strike=110.0,
                 expiry="2026-10-16", bid=3.0, ask=3.25, last=3.1,
                 volume=152, open_interest=830, implied_volatility=0.38)
     base.update(kw)

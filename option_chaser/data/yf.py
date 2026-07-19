@@ -28,6 +28,7 @@ def map_rows(
     contracts = tuple(
         OptionContract(
             contract_symbol=str(r["contractSymbol"]),
+            option_type=str(r.get("option_type", "call")),
             strike=float(r["strike"]),
             expiry=str(r["expiry"]),
             bid=_clean_float(r.get("bid")),

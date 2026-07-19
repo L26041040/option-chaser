@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 class SnapshotSchemaError(Exception):
@@ -21,6 +21,7 @@ class ParamError(Exception):
 @dataclass(frozen=True)
 class OptionContract:
     contract_symbol: str
+    option_type: str
     strike: float
     expiry: str  # YYYY-MM-DD
     bid: float | None
@@ -70,4 +71,25 @@ class FilterStageResult:
 class FilterReport:
     total: int
     stages: tuple[FilterStageResult, ...]
+    passed: int
+
+
+STRATEGIES = ("long-call", "long-put", "bull-call-spread", "bear-put-spread")
+SINGLE_LEG_STRATEGIES = ("long-call", "long-put")
+SPREAD_STRATEGIES = ("bull-call-spread", "bear-put-spread")
+
+
+def leg_option_type(strategy: str) -> str:
+    """Which chain side the strategy trades (spec §4.1)."""
+    return "call" if strategy in ("long-call", "bull-call-spread") else "put"
+
+
+def is_bullish(strategy: str) -> bool:
+    return strategy in ("long-call", "bull-call-spread")
+
+
+@dataclass(frozen=True)
+class PairReport:
+    total_pairs: int
+    removed_sanity: int
     passed: int

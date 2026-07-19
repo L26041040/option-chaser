@@ -8,7 +8,7 @@ TODAY = date(2026, 7, 15)
 
 def make(strike, bid, ask, iv, expiry="2026-10-16"):
     return OptionContract(
-        contract_symbol=f"XYZ-K{strike}", strike=strike, expiry=expiry,
+        contract_symbol=f"XYZ-K{strike}", option_type="call", strike=strike, expiry=expiry,
         bid=bid, ask=ask, last=None, volume=10, open_interest=100,
         implied_volatility=iv,
     )

@@ -9,7 +9,7 @@ P = AnalysisParams(target_price=120.0, target_date="2026-08-28", min_days_after=
 
 def make(sym="A", strike=110.0, expiry="2026-10-16", bid=3.0, ask=3.25,
          iv=0.38, volume=100, oi=100):
-    return OptionContract(contract_symbol=sym, strike=strike, expiry=expiry,
+    return OptionContract(contract_symbol=sym, option_type="call", strike=strike, expiry=expiry,
                           bid=bid, ask=ask, last=None, volume=volume,
                           open_interest=oi, implied_volatility=iv)
 
