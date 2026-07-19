@@ -154,11 +154,11 @@ def validate_scenario(p: AnalysisParams, spot: float, today: date) -> None:
 
 
 from .data.snapshot import load_snapshot, save_snapshot, snapshot_today
-from .filters import apply_filters
+from .filters import apply_filters, generate_spread_pairs
 from .models import FetchError, SnapshotSchemaError, SPREAD_STRATEGIES
-from .ranking import rank
-from .report import render, render_filter_only
-from .valuation import evaluate_contract
+from .ranking import rank, rank_spreads
+from .report import render, render_filter_only, render_spreads
+from .valuation import evaluate_contract, evaluate_spread
 
 USAGE_HINT = "用法示例: option-chaser XYZ --target-price 120 --target-date 2026-08-28 --strategy long-call"
 
@@ -167,8 +167,6 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
         p = resolve_params(args)
-        if p.strategy in SPREAD_STRATEGIES:
-            raise ParamError("價差策略於本版後續任務啟用")
     except ParamError as e:
         print(f"參數錯誤: {e}")
         print(USAGE_HINT)
@@ -196,14 +194,23 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     qualified, freport = apply_filters(snap.contracts, p, today)
-    if not qualified:
-        print(render_filter_only(snap, p, freport, today))
-        return 1
-
-    vals = [evaluate_contract(c, snap.spot, today, p) for c in qualified]
-    ranked = rank(vals, p)
-    text = render(snap, p, freport, ranked, n_qualified=len(qualified), today=today)
-    print(text, end="")  # render() already ends with \n; keep stdout == --md content
+    if p.strategy in SPREAD_STRATEGIES:
+        pairs, pair_report = generate_spread_pairs(qualified, p)
+        if not pairs:
+            print(render_spreads(snap, p, freport, pair_report, [], 0, today), end="")
+            return 1
+        spreads = [evaluate_spread(l, s, snap.spot, today, p) for l, s in pairs]
+        ranked = rank_spreads(spreads, p)
+        text = render_spreads(snap, p, freport, pair_report, ranked,
+                              n_pairs=pair_report.passed, today=today)
+    else:
+        if not qualified:
+            print(render_filter_only(snap, p, freport, today))
+            return 1
+        vals = [evaluate_contract(c, snap.spot, today, p) for c in qualified]
+        ranked_bands = rank(vals, p)
+        text = render(snap, p, freport, ranked_bands, n_qualified=len(qualified), today=today)
+    print(text, end="")
     if args.md:
         Path(args.md).write_text(text, encoding="utf-8")
     return 0

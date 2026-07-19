@@ -179,3 +179,51 @@ def _band_range(band: str, p: AnalysisParams) -> str:
     if band == "aggressive":
         return f"Delta < {a:g}"
     return f"Delta {a:g}-{b:g}"
+
+
+def _pair_lines(pr) -> list[str]:
+    return ["", "[配對統計]", f"- 配對總數: {pr.total_pairs}",
+            f"- 健全性淘汰: {pr.removed_sanity}", f"- 合格組數: {pr.passed}"]
+
+
+def _spread_candidate_lines(sv, idx, n_pairs, p) -> list[str]:
+    from .ranking import build_spread_reasons
+    from .valuation import spread_guidance_judgments
+    ll, sl = sv.long_leg, sv.short_leg
+    lines = [
+        "",
+        f"{idx + 1}) 買 K={_money(ll.strike)} / 賣 K={_money(sl.strike)} / {ll.expiry} 到期（寬度 ${_money(sv.width)}）",
+        f"- 買腿 {ll.contract_symbol}: Bid ${_money(ll.bid)} / Ask ${_money(ll.ask)} IV {_pct_iv(ll.implied_volatility)}",
+        f"- 賣腿 {sl.contract_symbol}: Bid ${_money(sl.bid)} / Ask ${_money(sl.ask)} IV {_pct_iv(sl.implied_volatility)}",
+        f"- 淨成本: Mid ${_money(sv.net_mid)}（${sv.net_mid * 100:.0f}/張） / 最差 ${_money(sv.net_worst)}（${sv.net_worst * 100:.0f}/張）",
+        f"- 最大獲利: ${_money(sv.max_profit)}（${sv.max_profit * 100:.0f}/張） / 淨Delta {sv.net_delta:.2f} / Lambda {sv.effective_leverage:.1f}x",
+        f"- Breakeven: ${_money(sv.breakeven)}（對目標價緩衝 {_pct(sv.breakeven_vs_target)}）",
+        "",
+        "劇本成立時:",
+    ]
+    for shift, val in sv.scenario_values:
+        lines.append(_val_line(_shift_name(shift), val, sv.net_mid))
+    lines.append(_val_line("IV 情境最低值", sv.l2, sv.net_mid))
+    lines += ["", "買價指引:",
+              f"- L2 保守上限（IV 情境最低值）: ${_money(sv.l2)}（${sv.l2 * 100:.0f}/張）",
+              f"- L3 要求報酬上限（min-return {_pct(p.min_return)}）: ${_money(sv.l3)}（${sv.l3 * 100:.0f}/張）"]
+    judgments = spread_guidance_judgments(sv, p)
+    if judgments:
+        lines += [f"- 警示: {m}" for m in judgments]
+    else:
+        lines.append("- 目前最差進場成本低於全部天花板")
+    pros, cons = build_spread_reasons(sv, idx, n_pairs, p)
+    lines += ["", "評語:"] + [f"- 優點: {s}" for s in pros] + [f"- 代價: {s}" for s in cons]
+    return lines
+
+
+def render_spreads(snap, p, freport, pair_report, ranked, n_pairs, today) -> str:
+    lines = _header_lines(snap, p, today) + _filter_lines(freport, p) + _pair_lines(pair_report)
+    if not ranked:
+        lines += ["", "無合格價差組合，不產生推薦。", ""]
+        return "\n".join(lines)
+    for i, sv in enumerate(ranked):
+        lines += _spread_candidate_lines(sv, i, n_pairs, p)
+    lines += _footer_lines(p)
+    lines.append("")
+    return "\n".join(lines)
