@@ -76,9 +76,9 @@ def _single_card(cv) -> str:
             f"（每張 ${v.mid * 100:.0f}）｜IV {c.implied_volatility * 100:.0f}%｜"
             f"Delta {v.delta:.2f}\n"
             f"- Breakeven ${_money(v.breakeven)}｜劇本日估值 ${_money(v.baseline_value)}"
-            f"｜損益 {v.baseline_value - v.mid:+.2f}｜"
-            f"報酬率 {_pct((v.baseline_value - v.mid) / v.mid)}｜"
-            f"最差進場 {_pct((v.baseline_value - c.ask) / c.ask)}\n"
+            f"｜損益 {cv.baseline_pnl:+.2f}｜"
+            f"報酬率 {_pct(cv.baseline_return)}｜"
+            f"最差進場 {_pct(cv.worst_return)}\n"
             f"- 優點：{'；'.join(cv.pros)}\n- 警示：{warn}")
 
 
@@ -91,9 +91,9 @@ def _spread_card(cv) -> str:
             f"最差（Natural）${_money(sv.net_worst)}｜最大虧損 ${_money(sv.net_mid)}｜"
             f"最大獲利 ${_money(sv.max_profit)}\n"
             f"- Breakeven ${_money(sv.breakeven)}｜劇本日估值 ${_money(sv.baseline_value)}"
-            f"｜損益 {sv.baseline_value - sv.net_mid:+.2f}｜"
-            f"報酬率 {_pct((sv.baseline_value - sv.net_mid) / sv.net_mid)}｜"
-            f"最差進場 {_pct((sv.baseline_value - sv.net_worst) / sv.net_worst)}\n"
+            f"｜損益 {cv.baseline_pnl:+.2f}｜"
+            f"報酬率 {_pct(cv.baseline_return)}｜"
+            f"最差進場 {_pct(cv.worst_return)}\n"
             f"- 優點：{'；'.join(cv.pros)}\n- 警示：{warn}")
 
 

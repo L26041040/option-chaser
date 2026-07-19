@@ -43,6 +43,9 @@ class CandidateView:
     pros: tuple[str, ...]
     cons: tuple[str, ...]
     matrix: MatrixView
+    baseline_pnl: float        # 估值 − 成本（Mid 口徑，每股）
+    baseline_return: float     # ranking.baseline_return / spread_baseline_return
+    worst_return: float        # (估值 − 最差成本) / 最差成本
 
 
 @dataclass(frozen=True)
@@ -139,8 +142,11 @@ def _single_leg_result(p: AnalysisParams, snap: ChainSnapshot,
         mv = _matrix_view(
             lambda S, d, c=v.contract: scenario_leg_value(c, S, d, p),
             v.mid, snap.spot, p, today, v.contract.expiry)
-        candidates.append(CandidateView(valuation=v, pros=tuple(pros),
-                                        cons=tuple(cons), matrix=mv))
+        candidates.append(CandidateView(
+            valuation=v, pros=tuple(pros), cons=tuple(cons), matrix=mv,
+            baseline_pnl=v.baseline_value - v.mid,
+            baseline_return=baseline_return(v),
+            worst_return=(v.baseline_value - v.contract.ask) / v.contract.ask))
     return StrategyResult(
         strategy=p.strategy, status="ok", candidates=tuple(candidates),
         ranked_bands=ranked, ranked_spreads=None, n_qualified=len(qualified),
@@ -170,8 +176,11 @@ def _spread_result(p: AnalysisParams, snap: ChainSnapshot,
             lambda S, d, lng=sv.long_leg, sht=sv.short_leg:
                 spread_scenario_value(lng, sht, S, d, p),
             sv.net_mid, snap.spot, p, today, sv.long_leg.expiry)
-        candidates.append(CandidateView(valuation=sv, pros=tuple(pros),
-                                        cons=tuple(cons), matrix=mv))
+        candidates.append(CandidateView(
+            valuation=sv, pros=tuple(pros), cons=tuple(cons), matrix=mv,
+            baseline_pnl=sv.baseline_value - sv.net_mid,
+            baseline_return=spread_baseline_return(sv),
+            worst_return=(sv.baseline_value - sv.net_worst) / sv.net_worst))
     return StrategyResult(
         strategy=p.strategy, status="ok", candidates=tuple(candidates),
         ranked_bands=None, ranked_spreads=tuple(ranked),

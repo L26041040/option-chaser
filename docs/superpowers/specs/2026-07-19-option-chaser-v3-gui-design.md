@@ -77,6 +77,10 @@ class CandidateView:
     pros: tuple[str, ...]
     cons: tuple[str, ...]
     matrix: MatrixView
+    baseline_pnl: float        # 估值 − 成本（Mid 口徑，每股）
+    baseline_return: float     # ranking.baseline_return / spread_baseline_return
+    worst_return: float        # (估值 − 最差成本) / 最差成本
+    # 報酬率於 service 內以引擎函數預算，GUI 僅格式化（紅線落實）
 
 @dataclass(frozen=True)
 class StrategyResult:

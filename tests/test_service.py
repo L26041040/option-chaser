@@ -140,3 +140,13 @@ def test_progress_callback_called():
     calls = []
     service.run_offline(req(["long-call"]), FIX, progress=calls.append)
     assert any("過濾" in c or "比較" in c for c in calls)
+
+
+def test_candidate_view_returns_precomputed():
+    from option_chaser.ranking import baseline_return as br
+    r = service.run_offline(req(["long-call"]), FIX)
+    cv = r.results[0].candidates[0]
+    v = cv.valuation
+    assert cv.baseline_return == br(v)
+    assert abs(cv.baseline_pnl - (v.baseline_value - v.mid)) < 1e-12
+    assert abs(cv.worst_return - (v.baseline_value - v.contract.ask) / v.contract.ask) < 1e-12
