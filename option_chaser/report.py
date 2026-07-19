@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 from datetime import date
+from datetime import date as _date
 
+from .matrix import date_axis, matrix_lines, price_axis
 from .models import AnalysisParams, ChainSnapshot, FilterReport, leg_option_type
 from .ranking import BAND_LABELS, BAND_ORDER, build_reasons
-from .valuation import ContractValuation, guidance_judgments
+from .valuation import ContractValuation, guidance_judgments, scenario_leg_value, spread_scenario_value
 
 STRATEGY_LABELS = {
     "long-call": "Long Call",
@@ -125,17 +127,26 @@ def _pct_iv(iv: float) -> str:
     return f"{iv * 100:.0f}%"
 
 
+def _matrix_block(value_fn, cost, spot, p, today, expiry) -> list[str]:
+    prices = price_axis(spot, p.target_price)
+    dates = date_axis(today, _date.fromisoformat(p.target_date), expiry)
+    return ["", "P/L 矩陣（報酬率，Mid 進場）:"] + matrix_lines(value_fn, cost, prices, dates)
+
+
 def _footer_lines(p: AnalysisParams) -> list[str]:
     return [
         "",
         "[尾註]",
         "- 估值: Black-Scholes 歐式 call，N(x) = 0.5*(1+erf(x/sqrt(2)))，T = 日曆日/365",
+        "- Put: P = K·e^(-rT)·N(-d2) - S·N(-d1)；估值鉗制 value = max(BS, 內在價值, 0)",
         "- T <= 0 時以內在價值 max(S-K, 0) 取代 BS",
         "- 保守底線 = max(目標價 - Strike, 0)（無套利下限）",
         "- IV 情境: sigma' = sigma * (1 + shift)",
         "- 買價天花板: L1 = max(目標價-Strike, 0); L2 = BS(最保守 IV 情境); L3 = 基準估值/(1+min-return)",
+        "- 價差: V = 長腿 − 短腿，鉗制至 [0, 寬度]；價差無 L1，L2 = 全部 IV 情境最小值（情境包絡，非無套利下限）",
         "- Breakeven = Strike + Mid（到期持有觀點，提前平倉不適用）",
         "- Lambda = Delta * 現價 / Mid（低權利金合約會放大，僅供量級參考）",
+        "- 矩陣: 11 價格 × ≤7 日期；IV 按快照值恆定；末欄為到期 payoff；估值含美式內在價值鉗制",
         f"- 過濾: 到期日 / 報價 / IV(0.01-5.0) / OI>={p.min_oi} 且 Vol>={p.min_volume} / "
         f"Spread <= max({p.spread_floor:g}, {p.max_spread_pct:g}*Mid)",
         "- 排名: Delta 分級（實務慣例），級內以基準情境報酬率（Mid 進場）排序",
@@ -164,9 +175,15 @@ def render(
         if not ranked[band]:
             lines.append("- 此級距無合格合約")
             continue
-        for v in ranked[band]:
+        for j, v in enumerate(ranked[band]):
             idx += 1
             lines += _candidate_lines(v, idx, band, ranked, snap, n_qualified, p)
+            if j == 0 or p.matrix_all:
+                c = v.contract
+                lines += _matrix_block(
+                    lambda S, d, c=c: scenario_leg_value(c, S, d, p),
+                    v.mid, snap.spot, p, today, _date.fromisoformat(c.expiry),
+                )
     lines += _footer_lines(p)
     lines.append("")
     return "\n".join(lines)
@@ -224,6 +241,12 @@ def render_spreads(snap, p, freport, pair_report, ranked, n_pairs, today) -> str
         return "\n".join(lines)
     for i, sv in enumerate(ranked):
         lines += _spread_candidate_lines(sv, i, n_pairs, p)
+        if i == 0 or p.matrix_all:
+            lng, sht = sv.long_leg, sv.short_leg
+            lines += _matrix_block(
+                lambda S, d, lng=lng, sht=sht: spread_scenario_value(lng, sht, S, d, p),
+                sv.net_mid, snap.spot, p, today, _date.fromisoformat(lng.expiry),
+            )
     lines += _footer_lines(p)
     lines.append("")
     return "\n".join(lines)
