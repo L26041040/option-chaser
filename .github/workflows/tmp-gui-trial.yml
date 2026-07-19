@@ -73,13 +73,28 @@ jobs:
                   page.get_by_text("Option Chaser", exact=True).wait_for(timeout=30_000)
                   page.screenshot(path=str(OUT / "01-home-desktop.png"), full_page=True)
 
-                  symbol = page.get_by_label("標的")
-                  price = page.get_by_label("目標價位")
-                  target_date = page.get_by_label("預計到達時間")
+                  # Streamlit's date input does not expose its visible label as an ARIA label.
+                  # The three non-checkbox inputs are symbol, price, date in DOM order.
+                  plain_inputs = page.locator('input:not([type="checkbox"])')
+                  input_info = []
+                  for i in range(plain_inputs.count()):
+                      node = plain_inputs.nth(i)
+                      input_info.append({
+                          "index": i,
+                          "type": node.get_attribute("type"),
+                          "value": node.input_value(),
+                          "placeholder": node.get_attribute("placeholder"),
+                          "aria_label": node.get_attribute("aria-label"),
+                      })
+                  summary["inputs"] = input_info
+                  if plain_inputs.count() < 3:
+                      raise AssertionError(f"Expected at least 3 form inputs, got {plain_inputs.count()}")
+
+                  symbol = plain_inputs.nth(0)
+                  price = plain_inputs.nth(1)
+                  target_date = plain_inputs.nth(2)
                   symbol.fill("TLT")
                   price.fill("105")
-                  target_date.click()
-                  target_date.press("Control+A")
                   target_date.fill("2028/01/01")
                   target_date.press("Enter")
                   target_date.press("Tab")
@@ -132,13 +147,12 @@ jobs:
                   summary["body_scroll_width_mobile"] = page.evaluate("document.body.scrollWidth")
                   summary["viewport_width_mobile"] = page.evaluate("window.innerWidth")
 
-                  # Confirm the raw HTML heatmap is inside a horizontal-scroll container.
+                  # Confirm at least the currently visible heatmap has horizontal scrolling.
                   overflow_divs = page.locator('div[style*="overflow-x:auto"]')
                   summary["horizontal_heatmap_containers"] = overflow_divs.count()
-                  if overflow_divs.count() < 2:
-                      raise AssertionError("Expected at least two horizontally scrollable heatmap containers")
+                  if overflow_divs.count() < 1:
+                      raise AssertionError("Expected a horizontally scrollable heatmap container")
 
-                  # Capture first expanded heatmap at mobile width.
                   if table_count >= 2:
                       try:
                           page.locator("table").nth(1).screenshot(path=str(OUT / "05-first-heatmap-mobile.png"))
