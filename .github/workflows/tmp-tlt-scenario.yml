@@ -1,0 +1,58 @@
+name: Temporary TLT Scenario Run
+
+on:
+  pull_request:
+    branches:
+      - tmp-runner-base-20260719
+
+jobs:
+  run-tlt:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout audited commit
+        uses: actions/checkout@v4
+        with:
+          ref: c533a7469f715363fe9468c4a364b998274b104a
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Install Option Chaser
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+
+      - name: Run TLT scenario on one shared live snapshot
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf snapshots
+          mkdir -p snapshots
+
+          option-chaser TLT \
+            --strategy long-call \
+            --target-price 105 \
+            --target-date 2028-01-01 \
+            --top 1 \
+            --md /tmp/tlt_long_call.txt
+
+          SNAPSHOT="$(ls -1t snapshots/TLT_*.json | head -1)"
+          echo "SNAPSHOT=${SNAPSHOT}"
+
+          option-chaser TLT \
+            --strategy bull-call-spread \
+            --target-price 105 \
+            --target-date 2028-01-01 \
+            --top 1 \
+            --snapshot "${SNAPSHOT}" \
+            --md /tmp/tlt_bull_call_spread.txt
+
+          echo '===== RAW LONG CALL OUTPUT ====='
+          cat /tmp/tlt_long_call.txt
+          echo '===== END RAW LONG CALL OUTPUT ====='
+          echo '===== RAW BULL CALL SPREAD OUTPUT ====='
+          cat /tmp/tlt_bull_call_spread.txt
+          echo '===== END RAW BULL CALL SPREAD OUTPUT ====='
