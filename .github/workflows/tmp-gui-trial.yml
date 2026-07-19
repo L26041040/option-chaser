@@ -1,0 +1,169 @@
+name: Temporary GUI Trial
+
+on:
+  pull_request:
+    branches:
+      - tmp-gui-base-20260719
+
+jobs:
+  gui-trial:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - name: Checkout audited GUI commit
+        uses: actions/checkout@v4
+        with:
+          ref: e0286d2a7e71cd7c19bc6f08167a42b06a70780c
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Install application and browser
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[gui]" playwright
+          python -m playwright install --with-deps chromium
+
+      - name: Launch Streamlit
+        shell: bash
+        run: |
+          mkdir -p gui-artifacts
+          streamlit run webapp/app.py \
+            --server.headless true \
+            --server.address 0.0.0.0 \
+            --server.port 8501 \
+            > gui-artifacts/streamlit.log 2>&1 &
+          echo $! > gui-artifacts/streamlit.pid
+          for i in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:8501/_stcore/health; then
+              exit 0
+            fi
+            sleep 2
+          done
+          cat gui-artifacts/streamlit.log
+          exit 1
+
+      - name: Trial GUI with Chromium
+        shell: bash
+        run: |
+          cat > /tmp/gui_trial.py <<'PY'
+          from pathlib import Path
+          import json
+          import traceback
+          from playwright.sync_api import sync_playwright
+
+          OUT = Path("gui-artifacts")
+          OUT.mkdir(exist_ok=True)
+          console_logs = []
+          summary = {}
+
+          try:
+              with sync_playwright() as p:
+                  browser = p.chromium.launch()
+                  page = browser.new_page(
+                      viewport={"width": 1440, "height": 1000},
+                      locale="zh-TW",
+                  )
+                  page.on("console", lambda msg: console_logs.append(f"{msg.type}: {msg.text}"))
+                  page.on("pageerror", lambda exc: console_logs.append(f"pageerror: {exc}"))
+
+                  page.goto("http://127.0.0.1:8501", wait_until="networkidle", timeout=120_000)
+                  page.get_by_text("Option Chaser", exact=True).wait_for(timeout=30_000)
+                  page.screenshot(path=str(OUT / "01-home-desktop.png"), full_page=True)
+
+                  symbol = page.get_by_label("標的")
+                  price = page.get_by_label("目標價位")
+                  target_date = page.get_by_label("預計到達時間")
+                  symbol.fill("TLT")
+                  price.fill("105")
+                  target_date.click()
+                  target_date.press("Control+A")
+                  target_date.fill("2028/01/01")
+                  target_date.press("Enter")
+                  target_date.press("Tab")
+
+                  defaults = {
+                      "Long Call": True,
+                      "Bull Call Spread": True,
+                      "Long Put": False,
+                      "Bear Put Spread": False,
+                  }
+                  for label, desired in defaults.items():
+                      checkbox = page.get_by_label(label, exact=True)
+                      if checkbox.is_checked() != desired:
+                          checkbox.set_checked(desired)
+
+                  page.screenshot(path=str(OUT / "02-form-filled-desktop.png"), full_page=True)
+                  page.get_by_role("button", name="開始分析").click()
+
+                  page.get_by_text("跨策略比較", exact=True).wait_for(timeout=300_000)
+                  page.get_by_text("劇本摘要", exact=True).wait_for(timeout=30_000)
+                  page.screenshot(path=str(OUT / "03-results-desktop.png"), full_page=True)
+
+                  body_text = page.locator("body").inner_text()
+                  (OUT / "visible-text.txt").write_text(body_text, encoding="utf-8")
+
+                  required = [
+                      "TLT 現價", "2028-01-01 前到達 $105.00",
+                      "跨策略比較", "最高報酬", "Long Call",
+                      "Bull Call Spread", "查看 Heatmap", "現價", "目標", "到期",
+                  ]
+                  missing = [item for item in required if item not in body_text]
+                  if missing:
+                      raise AssertionError(f"Missing visible UI text: {missing}")
+
+                  tables = page.locator("table")
+                  table_count = tables.count()
+                  summary["desktop_table_count"] = table_count
+                  for i in range(min(table_count, 5)):
+                      try:
+                          tables.nth(i).screenshot(path=str(OUT / f"table-{i+1}.png"))
+                      except Exception as exc:
+                          console_logs.append(f"table screenshot {i}: {exc}")
+
+                  summary["body_scroll_width_desktop"] = page.evaluate("document.body.scrollWidth")
+                  summary["viewport_width_desktop"] = page.evaluate("window.innerWidth")
+
+                  page.set_viewport_size({"width": 390, "height": 844})
+                  page.wait_for_timeout(1500)
+                  page.screenshot(path=str(OUT / "04-results-mobile.png"), full_page=True)
+                  summary["body_scroll_width_mobile"] = page.evaluate("document.body.scrollWidth")
+                  summary["viewport_width_mobile"] = page.evaluate("window.innerWidth")
+
+                  # Confirm the raw HTML heatmap is inside a horizontal-scroll container.
+                  overflow_divs = page.locator('div[style*="overflow-x:auto"]')
+                  summary["horizontal_heatmap_containers"] = overflow_divs.count()
+                  if overflow_divs.count() < 2:
+                      raise AssertionError("Expected at least two horizontally scrollable heatmap containers")
+
+                  # Capture first expanded heatmap at mobile width.
+                  if table_count >= 2:
+                      try:
+                          page.locator("table").nth(1).screenshot(path=str(OUT / "05-first-heatmap-mobile.png"))
+                      except Exception as exc:
+                          console_logs.append(f"mobile heatmap screenshot: {exc}")
+
+                  browser.close()
+
+              summary["status"] = "PASS"
+          except Exception:
+              summary["status"] = "FAIL"
+              summary["traceback"] = traceback.format_exc()
+              (OUT / "failure-traceback.txt").write_text(summary["traceback"], encoding="utf-8")
+              raise
+          finally:
+              (OUT / "console.log").write_text("\n".join(console_logs), encoding="utf-8")
+              (OUT / "summary.json").write_text(
+                  json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
+          PY
+          python /tmp/gui_trial.py
+
+      - name: Upload GUI trial evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: option-chaser-gui-trial
+          path: gui-artifacts/
+          if-no-files-found: error
