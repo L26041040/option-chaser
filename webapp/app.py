@@ -1,6 +1,7 @@
 """Option Chaser Web GUI（Streamlit）。所有金融計算一律經 option_chaser.service。"""
 from __future__ import annotations
 
+import logging
 from datetime import date, timedelta
 
 import streamlit as st
@@ -181,6 +182,7 @@ def _do_analysis() -> None:
         st.session_state.pop("result", None)
         st.session_state["error_msg"] = str(e)
     except Exception:
+        logging.exception("analysis failed")
         st.session_state.pop("result", None)
         st.session_state["error_msg"] = "分析過程發生錯誤，請稍後再試。"
     finally:
