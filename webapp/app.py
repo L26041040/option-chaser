@@ -210,7 +210,7 @@ def _render_summary(result) -> None:
     base = result.request.base_params
     strategies_used = "、".join(
         STRATEGY_LABELS[r.strategy] for r in result.results if r.status == "ok")
-    pct = (base.target_price - m.spot) / m.spot * 100
+    pct = m.target_move * 100
     chips = (f"**{m.symbol}** 劇本 ｜ 現價 ${_money(m.spot)} ｜ "
              f"目標 ${_money(base.target_price)}（{pct:+.1f}%）｜ "
              f"{base.target_date} ｜ {strategies_used or '（無已完成策略）'}")

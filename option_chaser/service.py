@@ -114,6 +114,7 @@ class SnapshotMeta:
     fetched_at: str
     source: str
     snapshot_path: str
+    target_move: float
 
 
 @dataclass(frozen=True)
@@ -549,7 +550,8 @@ def _analyze(request: AnalysisRequest, snap: ChainSnapshot,
         request=request,
         meta=SnapshotMeta(symbol=snap.symbol, spot=snap.spot,
                           fetched_at=snap.fetched_at, source=snap.source,
-                          snapshot_path=snapshot_path),
+                          snapshot_path=snapshot_path,
+                          target_move=(base.target_price - snap.spot) / snap.spot),
         snapshot=snap, today=today, results=tuple(results),
         comparison=comparison, best_strategy=best,
         expiry_groups=expiry_groups, hidden_expiries=hidden_expiries,

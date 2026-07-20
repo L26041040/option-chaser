@@ -42,6 +42,8 @@ def test_candidate_view_scenario_fields_consistent():
             assert cv.buffer_days == (
                 date.fromisoformat(expiry)
                 - date.fromisoformat(p.target_date)).days
+    assert result.meta.target_move == pytest.approx(
+        (120.0 - result.snapshot.spot) / result.snapshot.spot)
 
 
 def _params_for(result, strategy):
