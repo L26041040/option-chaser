@@ -6,7 +6,7 @@ from datetime import date
 from datetime import date as _date
 
 from .matrix import date_axis, matrix_lines, price_axis
-from .models import AnalysisParams, ChainSnapshot, FilterReport, leg_option_type
+from .models import AnalysisParams, ChainSnapshot, FilterReport, is_bullish, leg_option_type
 from .ranking import BAND_LABELS, BAND_ORDER, build_reasons
 from .valuation import ContractValuation, guidance_judgments, scenario_leg_value, spread_scenario_value
 
@@ -128,7 +128,7 @@ def _pct_iv(iv: float) -> str:
 
 
 def _matrix_block(value_fn, cost, spot, p, today, expiry) -> list[str]:
-    prices = price_axis(spot, p.target_price)
+    prices = price_axis(spot, p.target_price, is_bullish(p.strategy))
     dates = date_axis(today, _date.fromisoformat(p.target_date), expiry)
     return ["", "P/L 矩陣（報酬率，Mid 進場）:"] + matrix_lines(value_fn, cost, prices, dates)
 

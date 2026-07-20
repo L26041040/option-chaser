@@ -98,7 +98,7 @@ def test_matrix_view_matches_grid():
     cv = r.results[0].candidates[0]
     v = cv.valuation
     p = dataclasses.replace(req(["long-call"]).base_params, strategy="long-call")
-    prices = price_axis(100.0, 120.0)
+    prices = price_axis(100.0, 120.0, bullish=True)
     dates = date_axis(r.today, date(2026, 8, 28),
                       date.fromisoformat(v.contract.expiry))
     grid = matrix_grid(lambda S, d, c=v.contract: scenario_leg_value(c, S, d, p),

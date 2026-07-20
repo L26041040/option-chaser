@@ -109,7 +109,7 @@ def _skip_message(strategy: str) -> str:
 
 def _matrix_view(value_fn, cost: float, spot: float, p: AnalysisParams,
                  today: date, expiry_iso: str) -> MatrixView:
-    prices = price_axis(spot, p.target_price)
+    prices = price_axis(spot, p.target_price, is_bullish(p.strategy))
     dates = date_axis(today, date.fromisoformat(p.target_date),
                       date.fromisoformat(expiry_iso))
     cells = matrix_grid(value_fn, cost, prices, dates)
