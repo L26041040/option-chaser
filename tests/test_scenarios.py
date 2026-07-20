@@ -254,3 +254,31 @@ def test_friction():
     sp = evaluate_spread(lng, sht, SPOT, TODAY, _p(strategy="bull-call-spread"))
     assert friction(sp) == pytest.approx(
         ((lng.ask - sht.bid) - sp.net_mid) / sp.net_mid)
+
+
+def test_completion_scan_suffix_semantics_synthetic(monkeypatch):
+    """Spec §7.2 附錄A: same-expiry debit verticals provably cannot produce an
+    up-down-up value(S) shape (the two legs' deltas cross exactly once, so the
+    net value has at most one extremum). The false-threshold guard is
+    therefore locked by injecting a synthetic non-monotone value function at
+    the _value_fn seam: an above-cost island at k in [0.10, 0.20], below-cost
+    gap, then an above-cost suffix from k = 0.50. First-touch semantics would
+    return 0.10; suffix semantics must return 0.50."""
+    import option_chaser.scenarios as sc
+    c = _call(93.0, "2028-01-21", 4.0, 4.4, 0.20)
+    p = _p()
+    v = evaluate_contract(c, SPOT, TODAY, p)
+    cost = v.mid
+
+    def fake_value_fn(val):
+        def fn(S, at, params, shift=0.0):
+            k = (S - SPOT) / (p.target_price - SPOT)
+            if 0.0995 <= k <= 0.2005 or k >= 0.4995:
+                return cost + 1.0
+            return cost - 1.0
+        return fn, cost, v.contract.ask, v.contract.expiry
+
+    monkeypatch.setattr(sc, "_value_fn", fake_value_fn)
+    k_star, be = sc.completion_scan(v, SPOT, TODAY, p)
+    assert k_star == pytest.approx(0.5)
+    assert be == pytest.approx(SPOT + 0.5 * (p.target_price - SPOT))
