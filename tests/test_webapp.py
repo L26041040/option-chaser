@@ -28,13 +28,16 @@ def _fill_and_submit(at, symbol="XYZ", price=120.0,
 
 
 def test_happy_path_renders_all_sections(monkeypatch):
+    """v4 GUI: four-step flow (chips -> heatmap -> grouped table -> advanced)."""
     _patched(monkeypatch)
     at = AppTest.from_file("webapp/app.py")
     at.run()
     at = _fill_and_submit(at)
     body = " ".join(m.value for m in at.markdown)
-    assert "跨策略比較" in " ".join(s.value for s in at.subheader)
-    assert "最高報酬" in body
+    subheaders = " ".join(s.value for s in at.subheader)
+    assert "Step 2" in subheaders and "Step 3" in subheaders and "Step 4" in subheaders
+    assert "到期" in body                     # expiry-grouped comparison table
+    assert "最高報酬" in body                  # 🚀 badge tooltip legend
     assert "overflow-x:auto" in body          # heatmap html present
     assert not at.exception
 
