@@ -267,4 +267,18 @@ TLT 現價 84.52、劇本 2028-01-01 到 105、勾 LC+BCS：
 
 ⚖️/💧標章、任何安全分數、POP/期望值/Sharpe、Heatmap 覆蓋率、Rho、Gamma 標準化欄（v4.1）、最大延遲天數求根、Natural 口徑 heatmap 切換（v4.1）、組內展開全部候選（v4.1）、展開全部到期日（v4.1）、絕對 vol-point IV shift（v4.1）、機率模式（未來獨立模式）。
 
+
+## 附錄A：§7.2「首達後回落」非單調價差案例之修正（2026-07-20，實作期發現）
+
+實作期發現（範圍：**call 垂直價差 BCS**）：同到期日兩腿 call 價差**無法**產生「升-降-升」的 value(S) 形狀——q=0 下 European call ≥ 內在價值，美式鉗制恆不生效，兩腿值皆光滑；兩腿 delta 皆為 N(d1)，d1 對 ln S 仿射且斜率 1/(σ√T) 相異，故兩 delta 恰交叉一次 → 淨值對 S 至多一個內部極值 → 「首達後回落再回升」需兩個極值，不可達（[0,寬度] 鉗制只產生平台、不增加穿越）。
+
+**BPS 不做不可能性主張**：put 的內在價值鉗制（European put < 內在價值於深價內）會實際生效，光滑 delta 論證不適用；數值探索（兩組極端 IV 不對稱 fixture）亦未尋得真實非單調案例，但無證明。故 BPS 的假門檻防護完全依賴下列替代鎖定——其中合成接縫測試與策略型別無關，對 BPS 同樣鎖住掃描語意。
+
+替代鎖定（等效力）：
+1. `test_completion_scan_suffix_semantics_synthetic`——於 `scenarios._value_fn` 接縫以 monkeypatch 注入合成非單調函數（k∈[0.10,0.20] 孤島高於成本、中段低於、k≥0.50 後綴高於），斷言 completion_scan 回傳 0.50（後綴起點）而非 0.10（首達點）——直接區分兩種語意。
+2. `test_completion_scan_four_strategies`——四策略真引擎案例各自驗證後綴性質（∀j∈[k*,1] value≥cost 且 k*−0.001 違反）。
+
+§7.2 原「構造『首達後回落』非單調價差案例」要求由上述兩測試取代；§7A AC 閘之 codex 獨立重算 k* 要求不變。
+
 <!-- codex-peer-reviewed: 2026-07-20T05:38:22Z rounds=4 verdict=approved -->
+<!-- codex-peer-reviewed-amendment: 2026-07-20T08:37:25Z rounds=2 scope=附錄A verdict=approved -->

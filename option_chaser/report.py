@@ -2,11 +2,11 @@
 """Deterministic plain-text report (spec §7). No box-drawing characters."""
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, timedelta
 from datetime import date as _date
 
 from .matrix import date_axis, matrix_lines, price_axis
-from .models import AnalysisParams, ChainSnapshot, FilterReport, leg_option_type
+from .models import AnalysisParams, ChainSnapshot, FilterReport, is_bullish, leg_option_type
 from .ranking import BAND_LABELS, BAND_ORDER, build_reasons
 from .valuation import ContractValuation, guidance_judgments, scenario_leg_value, spread_scenario_value
 
@@ -71,10 +71,48 @@ def _filter_lines(freport: FilterReport, p: AnalysisParams) -> list[str]:
     return lines
 
 
+def _resilience_lines(val, spot: float, today: date, p: AnalysisParams) -> list[str]:
+    """v4 spec §5: 7-scenario resilience section (report layer calls scenarios.py
+    directly, same primitives as service — numbers stay identical)."""
+    from .scenarios import (SCENARIO_NAMES, completion_curve, completion_scan,
+                            friction, natural_cost, scenario_vector)
+    from .valuation import SpreadValuation
+    sv = scenario_vector(val, spot, today, p)
+    expiry = date.fromisoformat(
+        val.long_leg.expiry if isinstance(val, SpreadValuation) else val.contract.expiry
+    )
+    tgt = date.fromisoformat(p.target_date)
+    delay_delta = {"S4": 30, "S5": 90}
+    lines = ["", "韌性向量（7 情境，Mid 口徑）:"]
+    for code, ret in sv.entries:
+        note = ""
+        if code in delay_delta and expiry < tgt + timedelta(days=delay_delta[code]):
+            note = "（合約先到期，內插價 payoff）"
+        mark = "   ◀ 情境最壞" if code == sv.worst_code else ""
+        lines.append(f"- {code} {SCENARIO_NAMES[code]}: {_pct(ret)}{note}{mark}")
+    curve = completion_curve(val, spot, today, p)
+    lines.append("劇本完成度: " + " | ".join(
+        f"{int(k * 100)}%→{_pct(r)}" for k, r in curve))
+    k, be = completion_scan(val, spot, today, p)
+    if k is None:
+        thr = "— ⚠劇本全成仍不保本"
+    elif k <= 0:
+        thr = "0%（已保本）"
+    else:
+        thr = f"完成 {_pct(k)}（目標日保本價 ${_money(be)}，基準IV）"
+    retention = 1.0 + dict(sv.entries)["S1"]
+    mid = val.net_mid if isinstance(val, SpreadValuation) else val.mid
+    friction_amount = natural_cost(val) - mid
+    lines.append(f"保本門檻: {thr} | 不漲保留率: {_pct(retention)}"
+                 f" | 成交摩擦: {_pct(min(friction(val), 9.99))}"
+                 f"（${_money(friction_amount)}/股）")
+    return lines
+
+
 def _candidate_lines(
     v: ContractValuation, idx: int, band: str,
     ranked: dict[str, list[ContractValuation]],
-    snap: ChainSnapshot, n_qualified: int, p: AnalysisParams,
+    snap: ChainSnapshot, n_qualified: int, p: AnalysisParams, today: date,
 ) -> list[str]:
     c = v.contract
     word = "高於" if c.option_type == "call" else "低於"
@@ -97,7 +135,7 @@ def _candidate_lines(
     for shift, val in v.scenario_values:
         lines.append(_val_line(_shift_name(shift), val, v.mid))
     lines.append(
-        f"- 最差進場（Ask）基準報酬率: {_pct((v.baseline_value - c.ask) / c.ask)}"
+        f"- Natural 成交報酬: {_pct((v.baseline_value - c.ask) / c.ask)}"
     )
     lines.append("")
     lines.append("買價指引:")
@@ -113,6 +151,7 @@ def _candidate_lines(
             lines.append(f"- 警示: {m}")
     else:
         lines.append("- 目前 Ask 低於全部三層天花板")
+    lines += _resilience_lines(v, snap.spot, today, p)
     pros, cons = build_reasons(v, band, ranked, snap.spot, n_qualified, p)
     lines.append("")
     lines.append("評語:")
@@ -128,7 +167,7 @@ def _pct_iv(iv: float) -> str:
 
 
 def _matrix_block(value_fn, cost, spot, p, today, expiry) -> list[str]:
-    prices = price_axis(spot, p.target_price)
+    prices = price_axis(spot, p.target_price, is_bullish(p.strategy))
     dates = date_axis(today, _date.fromisoformat(p.target_date), expiry)
     return ["", "P/L 矩陣（報酬率，Mid 進場）:"] + matrix_lines(value_fn, cost, prices, dates)
 
@@ -152,6 +191,18 @@ def _footer_lines(p: AnalysisParams) -> list[str]:
         "- 排名: Delta 分級（實務慣例），級內以基準情境報酬率（Mid 進場）排序",
         "- 模型限制: 無股利調整（q=0）、歐式近似、IV 乘法情境",
         "- 免責: 模型估計非保證價格，不構成投資建議",
+        "- 韌性向量 7 情境: S1 不漲(S=現價) / S2 半程(完成度50%價位) / S3 大半程"
+        "(完成度75%價位) / S4 晚30天到達 / S5 晚90天到達 / S6 IV最保守"
+        "(全部 IV 情境估值之最小值) / S7 Natural成交(成本改採 Ask，價差為長Ask−短Bid)"
+        "；除 S4/S5 外估值日皆為劇本日、基準 IV",
+        "- 延遲情境（S4/S5）路徑假設: 到達日 = 劇本日 + 30 或 90 天；估值日價格採"
+        "現價與目標價之線性內插 S(d) = 現價 + (目標價−現價)×(d−今日)/(到達日−今日)；"
+        "合約先到期時以到期日內插價計算 payoff（模型假設，非市場預測）",
+        "- 保本門檻掃描定義（後綴條件）: 沿劇本路徑網格 k∈[-0.20,1.00]（步長0.001）"
+        "由 k=1.0 反向掃描；k* 為使『對所有 j∈[k*,1.0] 估值皆不低於 Mid 成本』成立的"
+        "最小 k；非單調曲線亦適用，避免『先達標後回落』的假保本門檻",
+        "- 情境最壞＝7 個固定情境的最低值，屬透明情境集合的最壞值，非統計推論、"
+        "亦非所有可能情況的最壞",
     ]
 
 
@@ -177,7 +228,7 @@ def render(
             continue
         for j, v in enumerate(ranked[band]):
             idx += 1
-            lines += _candidate_lines(v, idx, band, ranked, snap, n_qualified, p)
+            lines += _candidate_lines(v, idx, band, ranked, snap, n_qualified, p, today)
             if j == 0 or p.matrix_all:
                 c = v.contract
                 lines += _matrix_block(
@@ -203,7 +254,7 @@ def _pair_lines(pr) -> list[str]:
             f"- 健全性淘汰: {pr.removed_sanity}", f"- 合格組數: {pr.passed}"]
 
 
-def _spread_candidate_lines(sv, idx, n_pairs, p) -> list[str]:
+def _spread_candidate_lines(sv, idx, n_pairs, p, spot: float, today: date) -> list[str]:
     from .ranking import build_spread_reasons
     from .valuation import spread_guidance_judgments
     ll, sl = sv.long_leg, sv.short_leg
@@ -229,6 +280,7 @@ def _spread_candidate_lines(sv, idx, n_pairs, p) -> list[str]:
         lines += [f"- 警示: {m}" for m in judgments]
     else:
         lines.append("- 目前最差進場成本低於全部天花板")
+    lines += _resilience_lines(sv, spot, today, p)
     pros, cons = build_spread_reasons(sv, idx, n_pairs, p)
     lines += ["", "評語:"] + [f"- 優點: {s}" for s in pros] + [f"- 代價: {s}" for s in cons]
     return lines
@@ -240,7 +292,7 @@ def render_spreads(snap, p, freport, pair_report, ranked, n_pairs, today) -> str
         lines += ["", "無合格價差組合，不產生推薦。", ""]
         return "\n".join(lines)
     for i, sv in enumerate(ranked):
-        lines += _spread_candidate_lines(sv, i, n_pairs, p)
+        lines += _spread_candidate_lines(sv, i, n_pairs, p, snap.spot, today)
         if i == 0 or p.matrix_all:
             lng, sht = sv.long_leg, sv.short_leg
             lines += _matrix_block(

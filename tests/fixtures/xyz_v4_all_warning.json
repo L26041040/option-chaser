@@ -1,0 +1,57 @@
+{
+ "schema_version": 2,
+ "symbol": "XYZ",
+ "fetched_at": "2026-07-15T21:30:00-04:00",
+ "spot": 100.0,
+ "source": "test",
+ "contracts": [
+  {
+   "contract_symbol": "XYZC118_0807",
+   "option_type": "call",
+   "strike": 118.0,
+   "expiry": "2026-08-07",
+   "bid": 1.0,
+   "ask": 1.1,
+   "last": null,
+   "volume": 0,
+   "open_interest": 30,
+   "implied_volatility": 0.4
+  },
+  {
+   "contract_symbol": "XYZC122_0807",
+   "option_type": "call",
+   "strike": 122.0,
+   "expiry": "2026-08-07",
+   "bid": 0.6,
+   "ask": 0.68,
+   "last": null,
+   "volume": 0,
+   "open_interest": 20,
+   "implied_volatility": 0.42
+  },
+  {
+   "contract_symbol": "XYZC118_0918",
+   "option_type": "call",
+   "strike": 118.0,
+   "expiry": "2026-09-18",
+   "bid": 2.2,
+   "ask": 2.4,
+   "last": null,
+   "volume": 0,
+   "open_interest": 30,
+   "implied_volatility": 0.36
+  },
+  {
+   "contract_symbol": "XYZC122_0918",
+   "option_type": "call",
+   "strike": 122.0,
+   "expiry": "2026-09-18",
+   "bid": 1.4,
+   "ask": 1.55,
+   "last": null,
+   "volume": 0,
+   "open_interest": 20,
+   "implied_volatility": 0.38
+  }
+ ]
+}

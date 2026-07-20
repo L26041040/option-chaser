@@ -31,7 +31,9 @@ give investment advice. Same snapshot + same params = byte-identical output.
 
 Direction guard: bullish strategies need target > spot, bearish need target < spot
 (override with --force). Band-first candidates include a price×date P/L matrix
-(11 price rows × up to 7 date columns; add --matrix-all for every candidate).
+(11 price rows spanning 4 bold anchor prices — spot, target, overshoot
+(target ±10%), adverse (spot ∓10%) — plus evenly-interpolated rows in between;
+× up to 7 date columns; add --matrix-all for every candidate).
 
 ## Removed in v2
 
@@ -50,12 +52,75 @@ Direction guard: bullish strategies need target > spot, bearish need target < sp
 
 Snapshots are schema v2 (calls + puts). v1 snapshots must be re-fetched.
 
+## Reading the report
+
+- Filter stats: how many contracts got cut from the full chain, and why
+  (expiry / quote / IV / liquidity / spread-too-wide).
+- Single-leg candidates come in three Delta bands (conservative / balanced /
+  aggressive); spreads are a single ranked list.
+- Each candidate: Bid/Mid/Ask (with per-contract dollar amounts), Breakeven,
+  three IV-scenario valuations (value + P/L + return), and a buy-price
+  ceiling guide (flagged if the current Ask exceeds it).
+- Resilience vector (new): 7 fixed stress scenarios — no-move, half-way,
+  mostly-there, arrives 30 days late, arrives 90 days late, most-conservative
+  IV, and a natural-fill (Ask/Bid) entry — all priced on a Mid cost basis
+  except S7 (natural fill, taker price).
+  The reported worst-case return is simply the lowest of those 7 numbers: a
+  transparent worst-of-a-fixed-scenario-set value, not a statistical
+  inference. Also reported: a scenario-completion curve (return at 0/25/
+  50/75/100% of the way from spot to target), a breakeven threshold (a
+  *suffix* condition — once completion clears this threshold, any higher
+  completion also doesn't lose money), a no-move retention ratio (leftover
+  value / entry cost if the underlying never moves), and execution friction
+  (as a percentage, plus the absolute dollar amount per share).
+- P/L matrix: rows = underlying price (the 4 bold anchor rows above, plus
+  interpolated rows), columns = date (* = target date, last column = expiry
+  payoff), cell = Mid-entry return %.
+
+## Known model limitations (read before trusting the numbers)
+
+- No dividend adjustment (q=0): high-yield underlyings make call values look
+  systematically optimistic and put values look conservative; deep-ITM,
+  long-dated contracts are hit hardest — the "floor" line is the built-in
+  guard against this.
+- IV is held constant through the target date; realized IV will differ — the
+  ±20% IV scenarios are the hedge for that.
+- Quotes are yfinance-delayed data (~15 min); zero-volume contracts get a
+  "stale quote" flag.
+- The delayed-arrival scenarios (arrives 30/90 days late) assume a *linear*
+  price path from spot to target between now and the delayed arrival date —
+  a modeling assumption, not a market forecast.
+- Estimates are not guaranteed fills; nothing here is investment advice.
+
+## Web GUI
+
+    pip install -e ".[gui]"
+    streamlit run webapp/app.py        # http://localhost:8501
+
+or Docker:
+
+    docker compose up -d               # http://localhost:8501 (override with PORT)
+
+Four-step flow: scenario chips (symbol / target price / target date /
+strategy checkboxes) -> a single main heatmap (bold rows = the 4 anchor
+prices) -> a comparison table grouped by expiry (🚀 top return / 🛡️ top
+resilience / ⚠ = a leg with zero volume today or entry friction above 25% / ◀ selected; each row carries a thumbnail,
+buffer days, and a buffer-tradeoff note; clicking a row swaps the main
+heatmap) -> an advanced section with three collapsible panels (7-scenario
+resilience vector, return×resilience scatter, Greeks & liquidity). A
+multipage help page documents the same steps plus a glossary; key metric
+columns and strategy abbreviations have hover tooltips, with the full glossary
+on the 說明 (Help) page — GUI performs no financial arithmetic of its own; every number
+comes from the same engine the CLI uses.
+
 ## Tests (all offline)
 
     python -m pytest
 
 Specs: docs/superpowers/specs/2026-07-15-option-chaser-mvp-design.md (v1),
-docs/superpowers/specs/2026-07-19-option-chaser-v2-design.md (v2)
+docs/superpowers/specs/2026-07-19-option-chaser-v2-design.md (v2),
+docs/superpowers/specs/2026-07-19-option-chaser-v3-gui-design.md (v3),
+docs/superpowers/specs/2026-07-20-option-chaser-v4-design.md (v4)
 
 ---
 
@@ -100,8 +165,16 @@ docs/superpowers/specs/2026-07-19-option-chaser-v2-design.md (v2)
   積極型（價外，高槓桿）；價差為單一排名清單
 - 每候選：Bid/Mid/Ask（含每張金額）、Breakeven、IV 三情境估值
   （估值+損益+報酬率）、買價指引天花板（超過就警示）
-- P/L 矩陣：列 = 股價（<現價>/<目標> 有標記）、欄 = 日期（* 為劇本日、
-  末欄為到期日 payoff）、格值 = 以 Mid 進場的報酬率%。
+- 韌性向量（CLI 新增）：7 個固定壓力情境（不漲／半程／大半程／晚30天／
+  晚90天／IV最保守／Natural成交），除 S7（Natural 成交，以吃單價計）外皆以 Mid 進場計；「情境最壞」即這
+  7 個情境報酬率中的最低值——是透明情境集合下的最壞值，非統計推論。
+  另外會列出「劇本完成度」曲線（完成 0/25/50/75/100% 對應的報酬率）、
+  「保本門檻」（後綴條件：一旦完成度達到門檻，之後任何更高完成度也不會
+  虧）、「不漲保留率」（股價完全不動時剩餘價值佔進場成本的比例），以及
+  「成交摩擦」（百分比之外同時換算列出絕對金額）。
+- P/L 矩陣：列 = 股價（11 列，其中 4 個錨點價格粗體標記：現價／目標／
+  超標(目標±10%)／深跌(現價∓10%)，其餘為等距內插價）、欄 = 日期
+  （* 為劇本日、末欄為到期日 payoff）、格值 = 以 Mid 進場的報酬率%。
   「如果只漲一半」「如果晚三個月才到」都直接查表，不用重跑。
 
 ## 離線重跑（可覆核性）
@@ -132,6 +205,8 @@ docs/superpowers/specs/2026-07-19-option-chaser-v2-design.md (v2)
 - IV 假設恆定到劇本日；實際 IV 會變，三情境（±20%）是覆蓋手段。
 - 報價為 yfinance 延遲資料（約15分鐘），volume=0 的合約會加註
   「報價新鮮度存疑」。
+- 延遲到達情境（韌性向量 S4 晚30天／S5 晚90天）假設股價沿現價到目標價
+  「線性內插」到達，屬模型假設，不是市場預測。
 - 模型估計非保證成交價格；本工具不構成投資建議。
 
 ## Web GUI
@@ -143,8 +218,12 @@ docs/superpowers/specs/2026-07-19-option-chaser-v2-design.md (v2)
 
     docker compose up -d               # http://localhost:8501（PORT 環境變數可改）
 
-網頁只需四項輸入（標的／目標價／到達日期／策略勾選，預設 Long Call
-+ Bull Call Spread），一次抓取市場資料後同一快照分析所有勾選策略，
-輸出跨策略比較表、各策略前三名候選與價格×日期 P/L Heatmap。
-進階參數一律採用 CLI 預設值；方向不合的策略會被跳過並提示，
-GUI 不提供 --force。所有計算皆由與 CLI 相同的引擎完成。
+四步版面：劇本 chips（標的／目標價／到達日期／策略勾選，預設 Long Call
++ Bull Call Spread）→ 單一主 heatmap（粗體列＝關鍵價位：現價／目標／
+超標／深跌）→ 按到期日分組的比較表（🚀最高報酬／🛡️最強韌性／⚠＝任一腿今日無成交或成交摩擦>25%／
+◀選中，每列附縮圖、緩衝天數與緩衝取捨註記；點列即可切換主圖）→ 進階區
+三個可摺疊面板（7 情境韌性向量、報酬×韌性散點、Greeks 與流動性）。
+多頁「說明」頁收錄同一套三步教學與名詞表；主要指標欄位與策略縮寫提供滑鼠
+懸浮解釋（hover tooltip），完整名詞表在說明頁。進階參數一律採用 CLI 預設值；方向不合的策略會被跳過並提示，
+GUI 不提供 --force。所有計算皆由與 CLI 相同的引擎完成，GUI 本身不做
+任何金融公式運算。

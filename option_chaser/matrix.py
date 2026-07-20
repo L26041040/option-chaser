@@ -18,12 +18,14 @@ def _insert_anchors(pts: list[float], anchors: list[float]) -> list[float]:
     return vals
 
 
-def price_axis(spot: float, target: float) -> list[tuple[float, str]]:
-    pad = 0.10 * spot
-    lo = max(min(spot, target) - pad, 0.01 * spot)
-    hi = max(spot, target) + pad
+def price_axis(spot: float, target: float, bullish: bool) -> list[tuple[float, str]]:
+    """v4 spec §4.3: anchors {spot, target, overshoot, adverse}; range = anchor hull."""
+    overshoot = target * (1.10 if bullish else 0.90)
+    adverse = spot * (0.90 if bullish else 1.10)
+    anchors = sorted({spot, target, overshoot, adverse})
+    lo = max(min(anchors), 0.01 * spot)
+    hi = max(anchors)
     pts = [lo + (hi - lo) * i / 10.0 for i in range(11)]
-    anchors = sorted({spot, target})
     vals = _insert_anchors(pts, anchors)
 
     def label(v: float) -> str:
@@ -32,6 +34,10 @@ def price_axis(spot: float, target: float) -> list[tuple[float, str]]:
             s += "<現價>"
         if v == target:
             s += "<目標>"
+        if v == overshoot:
+            s += "<超標>"
+        if v == adverse:
+            s += "<深跌>"
         return s
 
     return [(v, label(v)) for v in vals]
@@ -76,3 +82,14 @@ def matrix_lines(
         cells = [f"{grid[i][j] * 100:+.0f}%".rjust(7) for j in range(len(dates))]
         lines.append(f"{price:8.2f}{plabel}".ljust(10) + " ".join(cells))
     return lines
+
+
+def thumbnail_cells(
+    cells: tuple[tuple[float, ...], ...]
+) -> tuple[tuple[float, ...], ...]:
+    """v4 spec §4.4: 4 price rows [10,7,4,1] (high-to-low) x <=5 date cols."""
+    n = len(cells[0])
+    col_idx = sorted(set([0, n // 4, n // 2, (3 * n) // 4, n - 1]))
+    return tuple(
+        tuple(cells[r][c] for c in col_idx) for r in (10, 7, 4, 1)
+    )

@@ -1,0 +1,141 @@
+{
+ "schema_version": 2,
+ "symbol": "XYZ",
+ "fetched_at": "2026-07-15T21:30:00-04:00",
+ "spot": 100.0,
+ "source": "test",
+ "contracts": [
+  {
+   "contract_symbol": "XYZC1180807_0",
+   "option_type": "call",
+   "strike": 118.0,
+   "expiry": "2026-08-07",
+   "bid": 1.0,
+   "ask": 1.1,
+   "last": null,
+   "volume": 30,
+   "open_interest": 100,
+   "implied_volatility": 0.4
+  },
+  {
+   "contract_symbol": "XYZC1220807_1",
+   "option_type": "call",
+   "strike": 122.0,
+   "expiry": "2026-08-07",
+   "bid": 0.5,
+   "ask": 0.6,
+   "last": null,
+   "volume": 20,
+   "open_interest": 80,
+   "implied_volatility": 0.42
+  },
+  {
+   "contract_symbol": "XYZC1180821_0",
+   "option_type": "call",
+   "strike": 118.0,
+   "expiry": "2026-08-21",
+   "bid": 1.4,
+   "ask": 1.55,
+   "last": null,
+   "volume": 30,
+   "open_interest": 120,
+   "implied_volatility": 0.38
+  },
+  {
+   "contract_symbol": "XYZC1220821_1",
+   "option_type": "call",
+   "strike": 122.0,
+   "expiry": "2026-08-21",
+   "bid": 0.8,
+   "ask": 0.95,
+   "last": null,
+   "volume": 20,
+   "open_interest": 90,
+   "implied_volatility": 0.4
+  },
+  {
+   "contract_symbol": "XYZC1180918_0",
+   "option_type": "call",
+   "strike": 118.0,
+   "expiry": "2026-09-18",
+   "bid": 2.2,
+   "ask": 2.4,
+   "last": null,
+   "volume": 30,
+   "open_interest": 150,
+   "implied_volatility": 0.36
+  },
+  {
+   "contract_symbol": "XYZC1220918_1",
+   "option_type": "call",
+   "strike": 122.0,
+   "expiry": "2026-09-18",
+   "bid": 1.4,
+   "ask": 1.6,
+   "last": null,
+   "volume": 20,
+   "open_interest": 100,
+   "implied_volatility": 0.38
+  },
+  {
+   "contract_symbol": "XYZC1181120_0",
+   "option_type": "call",
+   "strike": 118.0,
+   "expiry": "2026-11-20",
+   "bid": 4.3,
+   "ask": 4.6,
+   "last": null,
+   "volume": 30,
+   "open_interest": 180,
+   "implied_volatility": 0.34
+  },
+  {
+   "contract_symbol": "XYZC1221120_1",
+   "option_type": "call",
+   "strike": 122.0,
+   "expiry": "2026-11-20",
+   "bid": 3.2,
+   "ask": 3.45,
+   "last": null,
+   "volume": 20,
+   "open_interest": 120,
+   "implied_volatility": 0.35
+  },
+  {
+   "contract_symbol": "XYZC1181218_0",
+   "option_type": "call",
+   "strike": 118.0,
+   "expiry": "2026-12-18",
+   "bid": 5.6,
+   "ask": 5.95,
+   "last": null,
+   "volume": 30,
+   "open_interest": 200,
+   "implied_volatility": 0.33
+  },
+  {
+   "contract_symbol": "XYZC1221218_1",
+   "option_type": "call",
+   "strike": 122.0,
+   "expiry": "2026-12-18",
+   "bid": 4.3,
+   "ask": 4.6,
+   "last": null,
+   "volume": 20,
+   "open_interest": 140,
+   "implied_volatility": 0.34
+  },
+  {
+   "contract_symbol": "XYZC60_1016_R",
+   "option_type": "call",
+   "strike": 60.0,
+   "expiry": "2026-10-16",
+   "bid": 39.2,
+   "ask": 40.0,
+   "last": null,
+   "volume": 50,
+   "open_interest": 500,
+   "implied_volatility": 0.3
+  }
+ ]
+}
