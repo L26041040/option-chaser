@@ -19,6 +19,7 @@ def test_resilience_section_present_and_formatted():
                        "◀ 情境最壞", "劇本完成度: ", "保本門檻: ",
                        "不漲保留率: ", "成交摩擦: "]:
             assert needle in text, (res.strategy, needle)
+        assert "/股）" in text, "friction absolute amount must be shown (spec §2.3)"
         assert "最差進場（Ask）基準報酬率" not in text
         if res.strategy == "long-call":
             assert "Natural 成交報酬" in text

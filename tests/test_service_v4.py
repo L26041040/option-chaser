@@ -4,7 +4,7 @@ from datetime import date, timedelta
 import pytest
 
 from option_chaser import service
-from option_chaser.scenarios import (completion_scan, friction,
+from option_chaser.scenarios import (completion_scan, friction, natural_cost,
                                      scenario_vector, _grid_price, _value_fn)
 from option_chaser.valuation import SpreadValuation, leg_greeks
 from option_chaser.models import AnalysisParams
@@ -31,6 +31,11 @@ def test_candidate_view_scenario_fields_consistent():
             expect = scenario_vector(cv.valuation, spot, result.today, p)
             assert cv.scenario == expect
             assert cv.friction == pytest.approx(friction(cv.valuation))
+            mid_cost = (cv.valuation.net_mid
+                        if isinstance(cv.valuation, SpreadValuation)
+                        else cv.valuation.mid)
+            assert cv.friction_amount == pytest.approx(
+                natural_cost(cv.valuation) - mid_cost)
             k, be = completion_scan(cv.valuation, spot, result.today, p)
             assert cv.completion_threshold == k
             assert cv.breakeven_at_target == be

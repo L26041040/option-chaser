@@ -17,7 +17,8 @@ from .ranking import (BAND_ORDER, _spread_tie_key, _tie_break_key,
                       classify, rank, rank_spreads, spread_baseline_return)
 from .report import STRATEGY_LABELS, render, render_filter_only, render_spreads
 from .scenarios import (ScenarioVector, completion_curve, completion_scan,
-                        friction, scenario_vector, _grid_price, _value_fn)
+                        friction, natural_cost, scenario_vector, _grid_price,
+                        _value_fn)
 from .valuation import (ContractValuation, SpreadValuation, evaluate_contract,
                         evaluate_spread, leg_greeks, scenario_leg_value,
                         spread_scenario_value)
@@ -55,6 +56,7 @@ class CandidateView:
     breakeven_at_target: float | None
     retention: float
     friction: float
+    friction_amount: float    # natural_cost(val) − mid 成本（spec §2.3, $/股）
     buffer_days: int
     quote_warning: bool
     theta_day_rate: float      # |淨Θ| / Mid 成本
@@ -213,6 +215,7 @@ def _v4_fields(val: ContractValuation | SpreadValuation, spot: float,
                                 for k, _ in curve),
         completion_threshold=k, breakeven_at_target=be,
         retention=1.0 + dict(sv.entries)["S1"], friction=fr,
+        friction_amount=natural_cost(val) - mid_cost,
         buffer_days=(date.fromisoformat(expiry)
                      - date.fromisoformat(p.target_date)).days,
         quote_warning=zero_vol or fr > 0.25,

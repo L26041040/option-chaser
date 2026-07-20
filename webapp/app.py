@@ -431,7 +431,8 @@ def _render_greeks_expander(result, key: str | None) -> None:
         lines.append(f"賣腿 OI/Volume：{v.short_leg.open_interest}/{v.short_leg.volume}")
     else:
         lines.append(f"OI/Volume：{v.contract.open_interest}/{v.contract.volume}")
-    lines.append(f"**{_abbr('成交摩擦')}**：{_pct(min(cv.friction, 9.99))}")
+    lines.append(f"**{_abbr('成交摩擦')}**："
+                 f"{_pct(min(cv.friction, 9.99))}（${cv.friction_amount:.2f}/股）")
     lines.append(f"**30天純時間衰減**：{_pct(cv.decay_30d_return)}"
                  "（S=現價、IV 不變、今日+30天估值）")
     st.markdown(_esc("\n\n".join(lines)), unsafe_allow_html=True)

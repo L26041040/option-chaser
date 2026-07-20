@@ -75,7 +75,7 @@ def _resilience_lines(val, spot: float, today: date, p: AnalysisParams) -> list[
     """v4 spec §5: 7-scenario resilience section (report layer calls scenarios.py
     directly, same primitives as service — numbers stay identical)."""
     from .scenarios import (SCENARIO_NAMES, completion_curve, completion_scan,
-                            friction, scenario_vector)
+                            friction, natural_cost, scenario_vector)
     from .valuation import SpreadValuation
     sv = scenario_vector(val, spot, today, p)
     expiry = date.fromisoformat(
@@ -101,8 +101,11 @@ def _resilience_lines(val, spot: float, today: date, p: AnalysisParams) -> list[
     else:
         thr = f"完成 {_pct(k)}（目標日保本價 ${_money(be)}，基準IV）"
     retention = 1.0 + dict(sv.entries)["S1"]
+    mid = val.net_mid if isinstance(val, SpreadValuation) else val.mid
+    friction_amount = natural_cost(val) - mid
     lines.append(f"保本門檻: {thr} | 不漲保留率: {_pct(retention)}"
-                 f" | 成交摩擦: {_pct(min(friction(val), 9.99))}")
+                 f" | 成交摩擦: {_pct(min(friction(val), 9.99))}"
+                 f"（${_money(friction_amount)}/股）")
     return lines
 
 
