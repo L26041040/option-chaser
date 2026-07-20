@@ -129,6 +129,36 @@ def test_abbr_titles_come_from_glossary(monkeypatch):
         assert f'title="{GLOSSARY[term]}"' in body
 
 
+def test_edit_form_resubmit_triggers_new_analysis(monkeypatch):
+    """Regression test for the ordering bug (fixed in this branch): the
+    collapsed '✎ 修改劇本' form's submit must be dispatched on the SAME rerun
+    it is clicked, even after a result already exists (i.e. the form/button
+    live inside the `else` branch + `st.expander`, not some later-rendered
+    path the dispatch-check block runs before)."""
+    _patched(monkeypatch)
+    at = AppTest.from_file("webapp/app.py")
+    at.run()
+    at = _fill_and_submit(at)
+    assert at.session_state["result"].request.base_params.target_price == (
+        TARGET_PRICE)
+
+    new_target = 125.0
+    at.number_input(key="target_price").set_value(new_target)
+    # The edit-form submit button is `st.form_submit_button("開始分析", ...)`
+    # inside the "✎ 修改劇本" expander — it carries no explicit `key`, so it
+    # is located by label via `at.button` (which lists both `st.button` and
+    # `st.form_submit_button` widgets per streamlit.testing.v1 docs).
+    submit_buttons = [b for b in at.button if b.label == "開始分析"]
+    assert submit_buttons, (
+        "expected the edit-form's submit button to still be reachable "
+        "after a result exists")
+    submit_buttons[0].set_value(True).run(timeout=30)
+
+    assert not at.exception
+    result = at.session_state["result"]
+    assert result.request.base_params.target_price == new_target
+
+
 def test_glossary_importable_without_streamlit():
     src = Path("option_chaser/glossary.py").read_text(encoding="utf-8")
     assert "streamlit" not in src

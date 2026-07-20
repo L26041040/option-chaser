@@ -2,11 +2,13 @@
 
 v4 spec §4: four-step flow (chips -> single heatmap -> grouped comparison ->
 advanced expanders). GUI computes NO financial formulas — every displayed
-number comes from service-produced CandidateView/ScenarioVector fields; the
-few exceptions (bold-anchor detection, buffer-day copy tier, Pareto frontier
-selection, SVG coordinate scaling, completion-curve price labels as a plain
-linear read-out of already-known spot/target) are presentation-only per spec
-§4.2/§4.4/§4.5 and are called out inline.
+number comes from service-produced CandidateView/ScenarioVector fields
+(including the completion-curve price column, `cv.completion_prices`,
+precomputed by `service._v4_fields` via `scenarios._grid_price`); the few
+remaining exceptions (bold-anchor detection, buffer-day copy tier, Pareto
+frontier selection, SVG coordinate scaling) are pure presentation/geometry
+over already-computed values, allowed per spec §4.2/§4.4/§4.5, and are called
+out inline.
 """
 from __future__ import annotations
 
@@ -95,7 +97,10 @@ def heatmap_html(mv: service.MatrixView) -> str:
 
 
 def _thumb_html(cv) -> str:
-    """4x<=5 colour-block thumbnail, no numbers (spec §4.4)."""
+    """4x<=5 colour-block thumbnail, no numbers (spec §4.4). Fixed pixel
+    width (`oc-thumb`, see the global <style> block) so the thumbnail column
+    doesn't reflow/jump between rows on narrow (mobile) viewports — a CSS-only
+    approximation of the mockup's fixed-width thumbnail column."""
     grid = thumbnail_cells(cv.matrix.cells)
     rows = []
     for r in grid:
@@ -104,7 +109,7 @@ def _thumb_html(cv) -> str:
             f'background:{cell_color(v)}"></span>'
             for v in r)
         rows.append(f'<div style="line-height:0">{cells}</div>')
-    return f'<div style="display:inline-block">{"".join(rows)}</div>'
+    return f'<div class="oc-thumb">{"".join(rows)}</div>'
 
 
 def _badge_str(row, selected_key: str | None) -> str:
@@ -258,17 +263,21 @@ def _render_step3(result, key: str | None) -> None:
             with cols[2]:
                 st.markdown(_thumb_html(cv), unsafe_allow_html=True)
             with cols[3]:
-                st.markdown(_abbr("劇本報酬") + f"<br>{_pct(cv.baseline_return)}",
+                st.markdown(_abbr("劇本報酬")
+                            + f'<br><span class="oc-num">{_pct(cv.baseline_return)}</span>',
                             unsafe_allow_html=True)
             with cols[4]:
-                st.markdown(_abbr("情境最壞") + f"<br>{_pct(cv.scenario.worst_return)}",
+                st.markdown(_abbr("情境最壞")
+                            + f'<br><span class="oc-num">{_pct(cv.scenario.worst_return)}</span>',
                             unsafe_allow_html=True)
             with cols[5]:
-                st.markdown(_abbr("不漲保留率") + f"<br>{_pct(cv.retention)}",
+                st.markdown(_abbr("不漲保留率")
+                            + f'<br><span class="oc-num">{_pct(cv.retention)}</span>',
                             unsafe_allow_html=True)
             with cols[6]:
                 fr_mark = " ⚠" if cv.friction > 0.25 else ""
-                st.markdown(_abbr("成交摩擦") + f"<br>{_pct(min(cv.friction, 9.99))}{fr_mark}",
+                st.markdown(_abbr("成交摩擦")
+                            + f'<br><span class="oc-num">{_pct(min(cv.friction, 9.99))}</span>{fr_mark}',
                             unsafe_allow_html=True)
             with cols[7]:
                 if st.button("選看", key=f"sel-{service.candidate_key(cv)}"):
@@ -298,15 +307,10 @@ def _render_resilience_expander(result, key: str | None) -> None:
         lines.append(f"|{code} {SCENARIO_NAMES[code]}|{cell}|")
     st.markdown("\n".join(lines), unsafe_allow_html=True)
 
-    # Presentation-only linear read-out: for k in {0,.25,.5,.75,1} the price is
-    # exactly spot + k*(target-spot) (no clamping ever applies on this range,
-    # since it stays between two already-known, already-displayed numbers).
-    # This mirrors the k=1==target identity already guaranteed by service.
-    spot = result.meta.spot
-    target = result.request.base_params.target_price
+    # Prices are precomputed in service._v4_fields (cv.completion_prices) —
+    # GUI performs zero financial arithmetic, only zips the two tuples.
     curve_lines = ["", "**完成度報酬曲線**", "|完成度|對應價位|報酬|", "|---|---|---|"]
-    for k, ret in cv.completion_curve:
-        price_at_k = spot + k * (target - spot)
+    for (k, ret), price_at_k in zip(cv.completion_curve, cv.completion_prices):
         curve_lines.append(f"|{int(k * 100)}%|${_money(price_at_k)}|{_pct(ret)}|")
     st.markdown(_esc("\n".join(curve_lines)))
 
@@ -448,6 +452,18 @@ def _render_step4(result, key: str | None) -> None:
 
 
 st.set_page_config(page_title="Option Chaser", layout="wide")
+# Mobile CSS approximation (spec §4.4 visual intent, minimal deviation — see
+# task-7 fix-round report for the accepted gap: rows use st.columns/buttons
+# instead of one outer-overflow-x HTML table): fixed thumbnail width so the
+# Step-3 thumbnail column doesn't reflow on narrow viewports, and tabular
+# (monospace-width) digits on the comparison table's numeric columns so
+# stacked percentage values stay vertically aligned.
+st.markdown(
+    "<style>"
+    ".oc-thumb{display:inline-block;width:46px;overflow:hidden}"
+    ".oc-num{font-variant-numeric:tabular-nums}"
+    "</style>",
+    unsafe_allow_html=True)
 st.title("Option Chaser")
 st.caption("輸入你的價格劇本，Option Chaser 會自動掃描目前的選擇權鏈，"
            "比較單腿與價差策略，找出條件式報酬率最高的候選。")

@@ -5,7 +5,7 @@ import pytest
 
 from option_chaser import service
 from option_chaser.scenarios import (completion_scan, friction,
-                                     scenario_vector, _value_fn)
+                                     scenario_vector, _grid_price, _value_fn)
 from option_chaser.valuation import SpreadValuation, leg_greeks
 from option_chaser.models import AnalysisParams
 
@@ -112,3 +112,20 @@ def test_theta_vega_decay_match_direct_engine_recomputation():
             d30 = min(today + timedelta(days=30), expiry)
             expect_decay = (fn(spot, d30, p) - mid_cost) / mid_cost
             assert cv.decay_30d_return == pytest.approx(expect_decay)
+
+
+def test_completion_prices_precomputed_in_service():
+    """Red-line: the GUI must not compute the completion-curve price column
+    itself — service._v4_fields precomputes `completion_prices` via
+    scenarios._grid_price, one price per completion_curve (k, return) pair."""
+    result = service.run_offline(_request(), SNAP)
+    ok = [r for r in result.results if r.status == "ok"]
+    assert ok
+    for res in ok:
+        for cv in res.candidates:
+            spot = result.snapshot.spot
+            p = _params_for(result, res.strategy)
+            expect = tuple(_grid_price(spot, p.target_price, k)
+                          for k, _ in cv.completion_curve)
+            assert cv.completion_prices == expect
+            assert len(cv.completion_prices) == 5

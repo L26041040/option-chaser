@@ -17,7 +17,7 @@ from .ranking import (BAND_ORDER, _spread_tie_key, _tie_break_key,
                       classify, rank, rank_spreads, spread_baseline_return)
 from .report import STRATEGY_LABELS, render, render_filter_only, render_spreads
 from .scenarios import (ScenarioVector, completion_curve, completion_scan,
-                        friction, scenario_vector, _value_fn)
+                        friction, scenario_vector, _grid_price, _value_fn)
 from .valuation import (ContractValuation, SpreadValuation, evaluate_contract,
                         evaluate_spread, leg_greeks, scenario_leg_value,
                         spread_scenario_value)
@@ -50,6 +50,7 @@ class CandidateView:
     natural_return: float      # (基準估值 − Natural成本)/Natural成本
     scenario: ScenarioVector
     completion_curve: tuple[tuple[float, float], ...]
+    completion_prices: tuple[float, ...]
     completion_threshold: float | None
     breakeven_at_target: float | None
     retention: float
@@ -203,9 +204,12 @@ def _v4_fields(val: ContractValuation | SpreadValuation, spot: float,
         expiry = val.contract.expiry
         zero_vol = val.contract.volume == 0
     mid_cost = _mid_cost(val)
+    curve = completion_curve(val, spot, today, p)
     return dict(
         scenario=sv,
-        completion_curve=completion_curve(val, spot, today, p),
+        completion_curve=curve,
+        completion_prices=tuple(_grid_price(spot, p.target_price, k)
+                                for k, _ in curve),
         completion_threshold=k, breakeven_at_target=be,
         retention=1.0 + dict(sv.entries)["S1"], friction=fr,
         buffer_days=(date.fromisoformat(expiry)
