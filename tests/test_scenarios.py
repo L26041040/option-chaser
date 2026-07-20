@@ -4,6 +4,7 @@ from datetime import date
 import pytest
 
 from option_chaser.models import AnalysisParams, OptionContract
+from option_chaser import scenarios
 from option_chaser.scenarios import (ScenarioVector, scenario_vector,
                                      completion_curve, completion_scan, friction)
 from option_chaser.valuation import (evaluate_contract, evaluate_spread,
@@ -22,6 +23,13 @@ def _call(strike, expiry, bid, ask, iv, volume=10, oi=100):
         contract_symbol=f"XYZ{expiry}C{strike}", strike=strike, expiry=expiry,
         bid=bid, ask=ask, last=(bid + ask) / 2, volume=volume,
         open_interest=oi, implied_volatility=iv, option_type="call")
+
+
+def _put(strike, expiry, bid, ask, iv, volume=10, oi=100):
+    return OptionContract(
+        contract_symbol=f"XYZ{expiry}P{strike}", strike=strike, expiry=expiry,
+        bid=bid, ask=ask, last=(bid + ask) / 2, volume=volume,
+        open_interest=oi, implied_volatility=iv, option_type="put")
 
 
 TODAY = date(2026, 7, 1)
@@ -137,6 +145,52 @@ def test_completion_scan_suffix_condition_long_call():
     assert be == pytest.approx(SPOT + k * (p.target_price - SPOT))
 
 
+def test_completion_scan_four_strategies():
+    """spec §7.2: one completion_scan case per strategy; suffix property must
+    hold for long-call, long-put, bull-call-spread, and bear-put-spread."""
+    tgt = date.fromisoformat("2028-01-01")
+
+    def check(val, spot, target_price, value_fn):
+        k, be = completion_scan(val, spot, TODAY, _p(target_price=target_price))
+        assert k is not None, "fixture must have a completion threshold"
+        mid = val.net_mid if hasattr(val, "net_mid") else val.mid
+        for j in [k, (k + 1.0) / 2, 1.0]:
+            s = scenarios._grid_price(spot, target_price, j)
+            assert value_fn(s) >= mid - 1e-12
+        if k > -0.2:
+            s_prev = scenarios._grid_price(spot, target_price, k - 0.001)
+            assert value_fn(s_prev) < mid
+        assert be == pytest.approx(scenarios._grid_price(spot, target_price, k))
+
+    # long-call
+    c = _call(93.0, "2028-01-21", 4.0, 4.4, 0.20)
+    p_call = _p(strategy="long-call", target_price=105.0)
+    v_call = evaluate_contract(c, SPOT, TODAY, p_call)
+    check(v_call, SPOT, 105.0, lambda s: scenario_leg_value(c, s, tgt, p_call))
+
+    # long-put
+    put = _put(80.0, "2028-01-21", 3.0, 3.4, 0.25)
+    p_put = _p(strategy="long-put", target_price=70.0)
+    v_put = evaluate_contract(put, SPOT, TODAY, p_put)
+    check(v_put, SPOT, 70.0, lambda s: scenario_leg_value(put, s, tgt, p_put))
+
+    # bull-call-spread
+    lng_c = _call(93.0, "2028-01-21", 4.0, 4.4, 0.20)
+    sht_c = _call(100.0, "2028-01-21", 1.8, 2.2, 0.22)
+    p_bcs = _p(strategy="bull-call-spread", target_price=105.0)
+    v_bcs = evaluate_spread(lng_c, sht_c, SPOT, TODAY, p_bcs)
+    check(v_bcs, SPOT, 105.0,
+          lambda s: spread_scenario_value(lng_c, sht_c, s, tgt, p_bcs))
+
+    # bear-put-spread
+    lng_p = _put(85.0, "2028-01-21", 6.0, 6.4, 0.25)
+    sht_p = _put(75.0, "2028-01-21", 2.0, 2.4, 0.28)
+    p_bps = _p(strategy="bear-put-spread", target_price=70.0)
+    v_bps = evaluate_spread(lng_p, sht_p, SPOT, TODAY, p_bps)
+    check(v_bps, SPOT, 70.0,
+          lambda s: spread_scenario_value(lng_p, sht_p, s, tgt, p_bps))
+
+
 def test_completion_scan_hopeless_returns_none():
     """Cost above full-completion value -> (None, None)."""
     c = _call(120.0, "2028-01-21", 8.0, 9.0, 0.20)   # deep OTM, huge premium
@@ -165,16 +219,16 @@ def test_completion_scan_floor_extreme_bullish():
 
 
 def test_completion_scan_deep_bearish_k1_exact_target():
-    """target < 0.01*spot: floor must NOT distort k=1 (S_1 == target exactly)."""
-    put = OptionContract(
-        contract_symbol="XYZP05", strike=5.0, expiry="2028-01-21",
-        bid=4.0, ask=4.4, last=4.2, volume=5, open_interest=50,
-        implied_volatility=0.9, option_type="put")
-    p = _p(strategy="long-put", target_price=0.5)
-    spot = 100.0
-    floor = min(0.01 * spot, p.target_price)
-    s1 = max(spot + 1.0 * (p.target_price - spot), floor)
-    assert s1 == pytest.approx(p.target_price)
+    """target < 0.01*spot: floor must NOT distort k=1 (S_1 == target exactly).
+
+    Reviewer finding M1: the previous version recomputed the _grid_price
+    formula inline and could never fail. Assert against the real
+    scenarios._grid_price function directly instead.
+    """
+    assert scenarios._grid_price(100.0, 0.5, 1.0) == pytest.approx(0.5)
+    # floor engages: raw = 1.2*2 - 0.2*15 = -0.6 -> floored to min(0.01*2, 15) = 0.02
+    assert scenarios._grid_price(2.0, 15.0, -0.2) == pytest.approx(
+        min(0.01 * 2.0, 15.0))
 
 
 def test_completion_curve_identities():
