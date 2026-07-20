@@ -159,6 +159,18 @@ def test_edit_form_resubmit_triggers_new_analysis(monkeypatch):
     assert result.request.base_params.target_price == new_target
 
 
+def test_help_page_renders():
+    """Carried item from task-8 review: webapp/pages/1_說明.py is a standalone
+    script (imports only streamlit + GLOSSARY, spec §4.6), so AppTest can load
+    it directly via from_file rather than through the multipage app router."""
+    from option_chaser.glossary import GLOSSARY
+    at = AppTest.from_file("webapp/pages/1_說明.py")
+    at.run()
+    assert not at.exception
+    body = " ".join(m.value for m in at.markdown)
+    assert any(term in body for term in GLOSSARY)
+
+
 def test_glossary_importable_without_streamlit():
     src = Path("option_chaser/glossary.py").read_text(encoding="utf-8")
     assert "streamlit" not in src
