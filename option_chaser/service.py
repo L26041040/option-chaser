@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import dataclasses
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Callable
 
@@ -16,8 +16,10 @@ from .ranking import (BAND_ORDER, _tie_break_key, baseline_return,
                       build_reasons, build_spread_reasons, rank, rank_spreads,
                       spread_baseline_return)
 from .report import STRATEGY_LABELS, render, render_filter_only, render_spreads
+from .scenarios import (ScenarioVector, completion_curve, completion_scan,
+                        friction, scenario_vector, _value_fn)
 from .valuation import (ContractValuation, SpreadValuation, evaluate_contract,
-                        evaluate_spread, scenario_leg_value,
+                        evaluate_spread, leg_greeks, scenario_leg_value,
                         spread_scenario_value)
 
 Progress = Callable[[str], None]
@@ -45,7 +47,18 @@ class CandidateView:
     matrix: MatrixView
     baseline_pnl: float        # 估值 − 成本（Mid 口徑，每股）
     baseline_return: float     # ranking.baseline_return / spread_baseline_return
-    worst_return: float        # (估值 − 最差成本) / 最差成本
+    natural_return: float      # (基準估值 − Natural成本)/Natural成本
+    scenario: ScenarioVector
+    completion_curve: tuple[tuple[float, float], ...]
+    completion_threshold: float | None
+    breakeven_at_target: float | None
+    retention: float
+    friction: float
+    buffer_days: int
+    quote_warning: bool
+    theta_day_rate: float      # |淨Θ| / Mid 成本
+    vega_per_pt: float         # 淨Vega(每1 IV百分點) / Mid 成本
+    decay_30d_return: float    # S=spot、IV不變、today+30(或到期)估值報酬
 
 
 @dataclass(frozen=True)
@@ -69,7 +82,7 @@ class ComparisonRow:
     expiry: str
     cost: float
     baseline_return: float
-    worst_return: float
+    natural_return: float
     breakeven: float
     max_profit: float | None
 
@@ -118,6 +131,69 @@ def _matrix_view(value_fn, cost: float, spot: float, p: AnalysisParams,
                       cells=cells)
 
 
+def _mid_cost(val: ContractValuation | SpreadValuation) -> float:
+    return val.net_mid if isinstance(val, SpreadValuation) else val.mid
+
+
+def _net_theta(val: ContractValuation | SpreadValuation, spot: float,
+              today: date, p: AnalysisParams) -> float:
+    if isinstance(val, SpreadValuation):
+        lng, sht = val.long_leg, val.short_leg
+        t_now = (date.fromisoformat(lng.expiry) - today).days / 365.0
+        g_l = leg_greeks(lng.option_type, spot, lng.strike, t_now, p.rate,
+                         lng.implied_volatility)
+        g_s = leg_greeks(sht.option_type, spot, sht.strike, t_now, p.rate,
+                         sht.implied_volatility)
+        return g_l.theta_per_day - g_s.theta_per_day
+    return val.theta_per_day
+
+
+def _net_vega(val: ContractValuation | SpreadValuation, spot: float,
+             today: date, p: AnalysisParams) -> float:
+    if isinstance(val, SpreadValuation):
+        lng, sht = val.long_leg, val.short_leg
+        t_now = (date.fromisoformat(lng.expiry) - today).days / 365.0
+        g_l = leg_greeks(lng.option_type, spot, lng.strike, t_now, p.rate,
+                         lng.implied_volatility)
+        g_s = leg_greeks(sht.option_type, spot, sht.strike, t_now, p.rate,
+                         sht.implied_volatility)
+        return g_l.vega_per_pct - g_s.vega_per_pct
+    return val.vega_per_pct
+
+
+def _decay_30d(val: ContractValuation | SpreadValuation, spot: float,
+               today: date, p: AnalysisParams) -> float:
+    fn, mid, _, expiry_iso = _value_fn(val)
+    expiry = date.fromisoformat(expiry_iso)
+    d30 = min(today + timedelta(days=30), expiry)
+    return (fn(spot, d30, p) - mid) / mid
+
+
+def _v4_fields(val: ContractValuation | SpreadValuation, spot: float,
+              today: date, p: AnalysisParams) -> dict:
+    sv = scenario_vector(val, spot, today, p)
+    k, be = completion_scan(val, spot, today, p)
+    fr = friction(val)
+    if isinstance(val, SpreadValuation):
+        expiry = val.long_leg.expiry
+        zero_vol = val.long_leg.volume == 0 or val.short_leg.volume == 0
+    else:
+        expiry = val.contract.expiry
+        zero_vol = val.contract.volume == 0
+    mid_cost = _mid_cost(val)
+    return dict(
+        scenario=sv,
+        completion_curve=completion_curve(val, spot, today, p),
+        completion_threshold=k, breakeven_at_target=be,
+        retention=1.0 + dict(sv.entries)["S1"], friction=fr,
+        buffer_days=(date.fromisoformat(expiry)
+                     - date.fromisoformat(p.target_date)).days,
+        quote_warning=zero_vol or fr > 0.25,
+        theta_day_rate=abs(_net_theta(val, spot, today, p)) / mid_cost,
+        vega_per_pt=_net_vega(val, spot, today, p) / mid_cost,
+        decay_30d_return=_decay_30d(val, spot, today, p))
+
+
 def _single_leg_result(p: AnalysisParams, snap: ChainSnapshot,
                        today: date) -> StrategyResult:
     qualified, freport = apply_filters(snap.contracts, p, today)
@@ -146,7 +222,8 @@ def _single_leg_result(p: AnalysisParams, snap: ChainSnapshot,
             valuation=v, pros=tuple(pros), cons=tuple(cons), matrix=mv,
             baseline_pnl=v.baseline_value - v.mid,
             baseline_return=baseline_return(v),
-            worst_return=(v.baseline_value - v.contract.ask) / v.contract.ask))
+            natural_return=(v.baseline_value - v.contract.ask) / v.contract.ask,
+            **_v4_fields(v, snap.spot, today, p)))
     return StrategyResult(
         strategy=p.strategy, status="ok", candidates=tuple(candidates),
         ranked_bands=ranked, ranked_spreads=None, n_qualified=len(qualified),
@@ -180,7 +257,8 @@ def _spread_result(p: AnalysisParams, snap: ChainSnapshot,
             valuation=sv, pros=tuple(pros), cons=tuple(cons), matrix=mv,
             baseline_pnl=sv.baseline_value - sv.net_mid,
             baseline_return=spread_baseline_return(sv),
-            worst_return=(sv.baseline_value - sv.net_worst) / sv.net_worst))
+            natural_return=(sv.baseline_value - sv.net_worst) / sv.net_worst,
+            **_v4_fields(sv, snap.spot, today, p)))
     return StrategyResult(
         strategy=p.strategy, status="ok", candidates=tuple(candidates),
         ranked_bands=None, ranked_spreads=tuple(ranked),
@@ -200,7 +278,7 @@ def _comparison(results: tuple[StrategyResult, ...]) -> tuple[ComparisonRow, ...
                 label=f"買 {sv.long_leg.strike:g} / 賣 {sv.short_leg.strike:g}",
                 expiry=sv.long_leg.expiry, cost=sv.net_mid,
                 baseline_return=spread_baseline_return(sv),
-                worst_return=(sv.baseline_value - sv.net_worst) / sv.net_worst,
+                natural_return=(sv.baseline_value - sv.net_worst) / sv.net_worst,
                 breakeven=sv.breakeven, max_profit=sv.max_profit))
         else:
             firsts = [lst[0] for lst in res.ranked_bands.values() if lst]
@@ -212,7 +290,7 @@ def _comparison(results: tuple[StrategyResult, ...]) -> tuple[ComparisonRow, ...
                 strategy=res.strategy, label=f"K={c.strike:g}",
                 expiry=c.expiry, cost=v.mid,
                 baseline_return=baseline_return(v),
-                worst_return=(v.baseline_value - c.ask) / c.ask,
+                natural_return=(v.baseline_value - c.ask) / c.ask,
                 breakeven=v.breakeven, max_profit=max_profit))
     return tuple(rows)
 

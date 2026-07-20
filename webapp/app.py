@@ -79,7 +79,7 @@ def _single_card(cv) -> str:
             f"- Breakeven ${_money(v.breakeven)}｜劇本日估值 ${_money(v.baseline_value)}"
             f"｜損益 {cv.baseline_pnl:+.2f}｜"
             f"報酬率 {_pct(cv.baseline_return)}｜"
-            f"最差進場 {_pct(cv.worst_return)}\n"
+            f"Natural 成交報酬 {_pct(cv.natural_return)}\n"
             f"- 優點：{'；'.join(cv.pros)}\n- 警示：{warn}")
 
 
@@ -94,7 +94,7 @@ def _spread_card(cv) -> str:
             f"- Breakeven ${_money(sv.breakeven)}｜劇本日估值 ${_money(sv.baseline_value)}"
             f"｜損益 {cv.baseline_pnl:+.2f}｜"
             f"報酬率 {_pct(cv.baseline_return)}｜"
-            f"最差進場 {_pct(cv.worst_return)}\n"
+            f"Natural 成交報酬 {_pct(cv.natural_return)}\n"
             f"- 優點：{'；'.join(cv.pros)}\n- 警示：{warn}")
 
 
@@ -115,7 +115,7 @@ def _render_results(result) -> None:
 
     if result.comparison:
         st.subheader("跨策略比較")
-        header = "|策略|候選|到期日|進場成本|劇本報酬率|最差進場報酬率|Breakeven|最大獲利|\n|---|---|---|---|---|---|---|---|"
+        header = "|策略|候選|到期日|進場成本|劇本報酬率|Natural 成交報酬|Breakeven|最大獲利|\n|---|---|---|---|---|---|---|---|"
         rows = []
         for row in result.comparison:
             badge = "🏆最高報酬 " if row.strategy == result.best_strategy else ""
@@ -123,7 +123,7 @@ def _render_results(result) -> None:
             rows.append(
                 f"|{badge}{STRATEGY_LABELS[row.strategy]}|{row.label}|{row.expiry}"
                 f"|${_money(row.cost)}|{_pct(row.baseline_return)}"
-                f"|{_pct(row.worst_return)}|${_money(row.breakeven)}|{mp}|")
+                f"|{_pct(row.natural_return)}|${_money(row.breakeven)}|{mp}|")
         st.markdown(header + "\n" + "\n".join(rows))
         st.caption("最高報酬 ≠ 最佳投資：本系統不判斷劇本發生機率。")
 

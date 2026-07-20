@@ -149,4 +149,4 @@ def test_candidate_view_returns_precomputed():
     v = cv.valuation
     assert cv.baseline_return == br(v)
     assert abs(cv.baseline_pnl - (v.baseline_value - v.mid)) < 1e-12
-    assert abs(cv.worst_return - (v.baseline_value - v.contract.ask) / v.contract.ask) < 1e-12
+    assert abs(cv.natural_return - (v.baseline_value - v.contract.ask) / v.contract.ask) < 1e-12
