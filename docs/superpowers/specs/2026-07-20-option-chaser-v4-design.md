@@ -44,7 +44,7 @@
 | S3 | 大半程 | S=完成度75%價位，同上 |
 | S4 | 晚30天 | 價格沿線性路徑於 target_date+30 到達 target（§2.2），基準 IV |
 | S5 | 晚90天 | 同上，+90 |
-| S6 | IV最保守 | S=target，估值日=target_date，σ 用 min(iv_shifts) 情境 |
+| S6 | IV最保守（情境包絡） | S=target，估值日=target_date，取**全部 iv_shifts 情境估值的最小值**（含基準）。統一單腿與價差：價差淨 vega 會變號（v2 已以測試鎖定），min(shift) 不保證保守，包絡最小值才保證 |
 | S7 | Natural成交 | S=target，估值日=target_date，基準 IV，成本=Natural（單腿=Ask；價差=長Ask−短Bid） |
 
 - 完成度 k 的價位：`S_k = spot + k×(target − spot)`（看跌自動鏡像，同式即可——target<spot 時方向自帶）。
@@ -64,12 +64,15 @@ S(d) = spot + (target − spot) × (d − today) / (arrive − today)      （�
 
 ### 2.3 目標日保本價與完成度門檻（`scenarios.py`）
 
-- `breakeven_at_target(candidate, p) -> float | None`：bisection 求 `value(S, target_date, 基準IV) − Mid成本 = 0` 之 S。
-  - 單調性：long call／bull-call-spread 對 S 嚴格遞增；long put／bear-put-spread 嚴格遞減——根唯一。
-  - 搜尋區間 `[0.01, 2×max(spot, target, 各腿strike)]`；兩端同號＝區間內無根 → None。
-  - 迭代 80 次或 |f|<1e-9；純函數、決定性。
-- 完成度門檻 `completion_threshold = (BE − spot)/(target − spot)`（看跌鏡像 `(spot − BE)/(spot − target)`）。
-  - 顯示語意：`≤0` → 「0%（已保本）」；`(0,1]` → 百分比；`>1` → 「>100% ⚠」；`BE=None` → 「— ⚠無法保本」。不鉗制數值，只規範顯示。
+- **完成度門檻與保本價：沿劇本路徑的確定性網格掃描**（取代求根——價差兩腿各自 IV 且經雙重鉗制，對 S 不保證嚴格單調，bisection 不成立）：
+  - `completion_scan(legs, spot, p) -> (threshold: float | None, breakeven_price: float | None)`。
+  - 網格：k ∈ [−0.20, 1.00]，步長 0.001（1201 點，固定）；`S_k = max(spot + k×(target − spot), min(0.01×spot, target))`。
+  - 正值地板取 `min(0.01×spot, target)`：地板恆為正且**恆 ≤ target**，故 k=1 必得 S=target（k=1≡目標價恆等式不破）；地板實際只作用於「看漲且 target ≥ 6×spot」時 k=−0.2 端點 `1.2·spot − 0.2·target ≤ 0` 的角落（k∈[0,1] 為 spot 與 target 的內插、恆正，不受影響）。
+  - **門檻定義（後綴條件，對非單調曲線安全）**：`k*` = 最小的 k 使**對所有網格點 j ∈ [k, 1.0] 皆有 value(S_j, target_date, 基準IV) ≥ Mid成本**。實作＝自 k=1.0 往下走，遇首個 value < 成本即停，k* 為其上一格。
+  - 語意：「劇本至少走完 k* 之後，途中任何更高完成度都不虧」——「首達即回落」的假門檻被排除。
+  - `threshold = k*`；`breakeven_price = S_{k*}`。若 value(S_{1.0}) < 成本（劇本全成仍不保本）→ 兩者皆 None。
+  - 函數輸入含 `spot`（service 持有，非 valuation 物件欄位）；純函數、決定性。
+  - 顯示語意：`k* ≤ 0` → 「0%（已保本）」；`(0, 1]` → 百分比；None → 「— ⚠劇本全成仍不保本」。不鉗制數值，只規範顯示。
 - 完成度報酬曲線：k∈{0,0.25,0.5,0.75,1} 五點（k=0 即 S1；k=1 即基準）。
 - 不漲保留率 `retention = 1 + S1報酬`（顯示為百分比）。
 - 成交摩擦 `friction = (Natural − Mid)/Mid`；顯示上限 999% 並並列絕對金額；`>25%` 觸發 ⚠。
@@ -84,8 +87,13 @@ S(d) = spot + (target − spot) × (d − today) / (arrive − today)      （�
 @dataclass(frozen=True)
 class ScenarioVector:
     entries: tuple[tuple[str, float], ...]   # (("S1", ret), ... ("S7", ret)) 固定順序
-    worst_code: str                          # 最壞情境代號
+    worst_code: str                          # 最壞情境代號；同分取 S1→S7 順序中最先者
     worst_return: float
+
+# 命名衝突消解（本版強制改名）：v3 的 CandidateView.worst_return（Natural 口徑
+# 基準報酬）改名為 natural_return，全 codebase 同步（service/webapp/tests）。
+# 「情境最壞」一律綁定 candidate.scenario.worst_return——🛡️ 標章、比較表
+# 「情境最壞」欄、Pareto X 軸皆同；嚴禁綁到 S7/Natural 單一情境。
 
 # CandidateView 追加：
     scenario: ScenarioVector
@@ -121,6 +129,7 @@ class ExpiryGroup:
 ```
 
 - 組內 rows：每策略取「該到期日中劇本報酬最高者」（tie-break 沿用各策略既有全序），依劇本報酬降冪。
+- **標章注入規則**（保證全域標章可見）：分組與抽樣完成後，若 `top_return`／`top_resilience`／`default_selection` 對應之候選不在任何已展示列中——(a) 其到期日組已展示 → 將該候選附加為該組額外列；(b) 其到期日被抽樣剔除 → 追加該到期日組（此時組數可超過 4）。注入後 default_selection 必為可見列。規則決定性。
 - **到期日抽樣**：合格到期日 ≤4 → 全取；>4 → 最近（≥target_date）2 個全取＋其餘按日曆等距抽樣補至 4 組。抽樣規則決定性（等距索引取整，同分取較早）。
 - 標章判定（全場範圍，跨組）：
   - `top_return`：全體合格候選中劇本報酬最高者。
@@ -161,7 +170,7 @@ class ExpiryGroup:
 
 - 結構：`expiry_groups` 渲染；組標題列＝`{expiry} 到期（緩衝 +N 天）— {特性註記}`；特性註記為固定規則文案：緩衝 <45 天「收斂完全、容錯最低」；45–180「中庸帶」；>180「收斂不完全、容錯最高」。
 - 欄位：標章｜組合｜縮圖｜劇本報酬｜情境最壞｜不漲保留率｜摩擦。
-- 縮圖：該候選 heatmap 的純色塊迷你網格（自 MatrixView.cells 降採樣為 5×4：價格取 [10,7,4,1] 索引列、日期取 [0,~1/4,~1/2,~3/4,末] 五欄，色彩函數同 cell_color、無數字）。降採樣規則固定、決定性。
+- 縮圖：該候選 heatmap 的純色塊迷你網格，**4 價格列 × 5 日期欄**：價格取 cells 索引 `[10, 7, 4, 1]`（cells 依價格升冪，故顯示序為由高至低共 4 列）；日期取索引 `[0, n//4, n//2, (3*n)//4, n-1]` 去重（n=欄數，去重後可能 <5 欄）。色彩函數同 `cell_color`、無數字。降採樣規則固定、決定性。
 - 標章渲染：🚀（top_return）、🛡️（top_resilience）、⚠（warning，附懸浮原因：零成交腿／摩擦超標）、◀（目前選中）。
 - 列點擊 → Step 2 主視圖切換至該候選（Streamlit 以每列按鈕實作）。
 - 組尾顯示「＋此到期日其他 N 個候選」（純文字計數，展開為 v4.1）。
@@ -205,17 +214,17 @@ class ExpiryGroup:
 
 - 數字格式：本區段全部百分比**統一取 1 位小數**，與全報告既有紀律一致（mockup 中的整數位為示意，非規格）。
 - 「最差進場（Ask）基準報酬率」行改文案為「Natural 成交報酬」。
-- 尾註增列：7 情境定義、線性延遲路徑假設、保本價求根說明、「情境最壞非機率、非完整最壞」聲明。
+- 尾註增列：7 情境定義、線性延遲路徑假設、保本門檻掃描定義（後綴條件）、「情境最壞＝7 個固定情境的最低值，屬透明情境集合的最壞值，非統計推論、亦非所有可能情況的最壞」聲明（措辭迴避紅線禁詞）。
 - **四份 golden 重生成**（軸改版+新區段+改名），生成時人工核對清單同 v2/v3 慣例。
 
 ---
 
 ## 6. 紅線（引擎/GUI/文案）
 
-1. 全 codebase 禁出現：機率、probability、POP、期望報酬、Sharpe、勝率 等機率語彙（測試以字串掃描鎖定 GUI 與報告輸出）。
+1. 機率語彙紅線（測試以**固定禁詞清單**字串掃描 GUI 原始碼與四份 golden）：`獲利機率`、`機率加權`、`勝率`、`POP`、`probability`、`期望報酬`、`expected profit`、`Sharpe`、`CVaR`。v4 新增之所有文案（含尾註、辭典、說明頁）措辭不得含裸詞「機率」，以免與免責語境混淆；既有 v1-v3 免責句（如「不算機率」）不在禁詞清單內、不受影響。
 2. 不存在任何綜合分數欄位／函數。
 3. GUI 零金融公式（沿用 v3 紅線；情境/門檻/摩擦全部 service 預算）。
-4. 「情境最壞」文案不得寫成「最壞情況」「最大風險」；固定用「情境最壞報酬（7情境）」或欄名「情境最壞」＋懸浮全稱。
+4. 「情境最壞」文案不得寫成「最壞情況」「最大風險」；固定用「情境最壞報酬（7情境）」或欄名「情境最壞」＋懸浮全稱。其懸浮/辭典解釋措辭同受 §6.1 禁詞約束（用「非統計推論」而非「不是機率」）。
 5. 排名/標章/抽樣規則全部確定性、可從 spec 重現。
 
 ---
@@ -223,7 +232,7 @@ class ExpiryGroup:
 ## 7. 測試（增量）
 
 1. **scenarios 單元**：七情境逐一與直接引擎呼叫等值（構造已知案例）；S4/S5 的 `expiry < arrive` 內插分支專測；S7 成本口徑；worst 取 min 正確含代號。
-2. **保本價**：單調四策略各一案例，bisection 結果代回 |value−cost|<1e-6；無根案例回 None；門檻顯示語意四分支（≤0／(0,1]／>1／None）。
+2. **保本門檻掃描**：四策略各一案例，驗證 k* 滿足後綴條件（∀j∈[k*,1] value≥cost 且 k*−0.001 處違反）；構造「首達後回落」非單調價差案例驗證假門檻被排除；value(S₁)<cost → None；S 正值地板案例（看漲 target ≥ 6×spot 之 k=−0.2 角落觸發地板；深看跌 target < 0.01×spot 時 k=1 仍精確等於 target）；顯示語意三分支（≤0／(0,1]／None）。
 3. **完成度曲線**：五點與 M3 定義等值；k=0 == S1、k=1 == 基準（恆等式）。
 4. **分組**：到期日 ≤4 全取；>4 抽樣規則決定性（構造 6 個到期日 fixture 驗證選取集合）；組內各策略最佳與排序；hidden_count 正確。
 5. **標章**：top_return/top_resilience/warning/default_selection 各判定，含「全員 warning 退回全場第一」。
@@ -236,7 +245,7 @@ class ExpiryGroup:
 ## 7A. 審計覆蓋契約（codex-audit §格式，設計期凍結）
 
 - **DC**：乾淨安裝；scenarios.py/glossary.py import；說明頁檔案存在；3.11/3.13 corner。
-- **AC**：全套件 codex 親自跑；七情境 marching walk（每情境一項獨立重算比對）；保本價求根數值驗證（codex 自行 bisection 對照）≥2 案例；分組抽樣規則重現；標章判定矩陣；新 golden 逐位元；紅線掃描（機率語彙+GUI零公式+無分數函數）；縮圖降採樣索引驗證。
+- **AC**：全套件 codex 親自跑；七情境 marching walk（每情境一項獨立重算比對）；保本門檻獨立驗證（codex 以自寫掃描重算 k* 並核後綴條件）≥2 案例；分組抽樣規則重現；標章判定矩陣；新 golden 逐位元；紅線掃描（機率語彙+GUI零公式+無分數函數）；縮圖降採樣索引驗證。
 - **SL**：真實 TLT GUI 路徑（含 expiry_groups 非空、標章存在、主視圖預設無⚠）；同快照 CLI 重跑韌性向量數字一致；Docker compose up + 容器內同快照分析一致。無法執行處依 skill 處方模式，不得豁免。
 
 ---
@@ -257,3 +266,5 @@ TLT 現價 84.52、劇本 2028-01-01 到 105、勾 LC+BCS：
 ## 9. 明確不做（v4）
 
 ⚖️/💧標章、任何安全分數、POP/期望值/Sharpe、Heatmap 覆蓋率、Rho、Gamma 標準化欄（v4.1）、最大延遲天數求根、Natural 口徑 heatmap 切換（v4.1）、組內展開全部候選（v4.1）、展開全部到期日（v4.1）、絕對 vol-point IV shift（v4.1）、機率模式（未來獨立模式）。
+
+<!-- codex-peer-reviewed: 2026-07-20T05:38:22Z rounds=4 verdict=approved -->
