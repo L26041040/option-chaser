@@ -72,3 +72,51 @@ def scenario_vector(val: ContractValuation | SpreadValuation, spot: float,
     code = next(c for c, r in values if r == worst)
     return ScenarioVector(entries=tuple(values), worst_code=code,
                           worst_return=worst)
+
+
+def natural_cost(val: ContractValuation | SpreadValuation) -> float:
+    if isinstance(val, SpreadValuation):
+        return val.long_leg.ask - val.short_leg.bid
+    return val.contract.ask
+
+
+def friction(val: ContractValuation | SpreadValuation) -> float:
+    """(Natural - Mid) / Mid. Display cap handled by presentation layers."""
+    mid = val.net_mid if isinstance(val, SpreadValuation) else val.mid
+    return (natural_cost(val) - mid) / mid
+
+
+def _grid_price(spot: float, target: float, k: float) -> float:
+    """Spec §2.3: positive floor min(0.01*spot, target) keeps k=1 == target."""
+    return max(spot + k * (target - spot), min(0.01 * spot, target))
+
+
+def completion_scan(val: ContractValuation | SpreadValuation, spot: float,
+                    today: date, p: AnalysisParams
+                    ) -> tuple[float | None, float | None]:
+    """Suffix-condition grid scan (spec §2.3): k* = smallest k such that
+    value >= Mid cost at EVERY grid point in [k, 1.0]. Walk down from 1.0."""
+    fn, mid, _, _ = _value_fn(val)
+    tgt = date.fromisoformat(p.target_date)
+    k_star = None
+    for i in range(1000, -201, -1):          # k = 1.000 down to -0.200
+        k = i / 1000.0
+        s = _grid_price(spot, p.target_price, k)
+        if fn(s, tgt, p) < mid:
+            break
+        k_star = k
+    if k_star is None:                        # value(S_1.0) < cost
+        return None, None
+    return k_star, _grid_price(spot, p.target_price, k_star)
+
+
+def completion_curve(val: ContractValuation | SpreadValuation, spot: float,
+                     today: date, p: AnalysisParams
+                     ) -> tuple[tuple[float, float], ...]:
+    fn, mid, _, _ = _value_fn(val)
+    tgt = date.fromisoformat(p.target_date)
+    out = []
+    for k in (0.0, 0.25, 0.5, 0.75, 1.0):
+        s = _grid_price(spot, p.target_price, k)
+        out.append((k, (fn(s, tgt, p) - mid) / mid))
+    return tuple(out)

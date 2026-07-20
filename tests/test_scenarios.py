@@ -4,7 +4,8 @@ from datetime import date
 import pytest
 
 from option_chaser.models import AnalysisParams, OptionContract
-from option_chaser.scenarios import ScenarioVector, scenario_vector
+from option_chaser.scenarios import (ScenarioVector, scenario_vector,
+                                     completion_curve, completion_scan, friction)
 from option_chaser.valuation import (evaluate_contract, evaluate_spread,
                                      scenario_leg_value, spread_scenario_value)
 
@@ -118,3 +119,84 @@ def test_bearish_completion_mirrors():
     tgt = date.fromisoformat(p.target_date)
     assert dict(sv.entries)["S2"] == pytest.approx(
         (scenario_leg_value(put, s50, tgt, p) - v.mid) / v.mid)
+
+
+def test_completion_scan_suffix_condition_long_call():
+    c = _call(93.0, "2028-01-21", 4.0, 4.4, 0.20)
+    p = _p()
+    v = evaluate_contract(c, SPOT, TODAY, p)
+    k, be = completion_scan(v, SPOT, TODAY, p)
+    assert k is not None and 0.0 < k <= 1.0
+    tgt = date.fromisoformat(p.target_date)
+    # suffix property: every grid j in [k, 1] >= cost; k-0.001 violates
+    for j in [k, (k + 1.0) / 2, 1.0]:
+        s = max(SPOT + j * (p.target_price - SPOT), min(0.01 * SPOT, p.target_price))
+        assert scenario_leg_value(c, s, tgt, p) >= v.mid - 1e-12
+    s_prev = SPOT + (k - 0.001) * (p.target_price - SPOT)
+    assert scenario_leg_value(c, s_prev, tgt, p) < v.mid
+    assert be == pytest.approx(SPOT + k * (p.target_price - SPOT))
+
+
+def test_completion_scan_hopeless_returns_none():
+    """Cost above full-completion value -> (None, None)."""
+    c = _call(120.0, "2028-01-21", 8.0, 9.0, 0.20)   # deep OTM, huge premium
+    p = _p()
+    v = evaluate_contract(c, SPOT, TODAY, p)
+    assert completion_scan(v, SPOT, TODAY, p) == (None, None)
+
+
+def test_completion_scan_already_breakeven_negative_k():
+    """Deep ITM low-premium: threshold <= 0 (already at breakeven at k=0)."""
+    c = _call(60.0, "2028-01-21", 24.0, 24.6, 0.18)
+    p = _p()
+    v = evaluate_contract(c, SPOT, TODAY, p)
+    k, _ = completion_scan(v, SPOT, TODAY, p)
+    assert k is not None and k <= 0.0
+
+
+def test_completion_scan_floor_extreme_bullish():
+    """target >= 6*spot: k=-0.2 corner triggers floor min(0.01*spot, target)."""
+    c = _call(3.0, "2028-01-21", 0.4, 0.6, 0.8)
+    p = _p(target_price=15.0)
+    spot = 2.0
+    v = evaluate_contract(c, spot, TODAY, p)
+    k, be = completion_scan(v, spot, TODAY, p)   # must not raise (S<=0 -> BS log)
+    assert be is None or be > 0.0
+
+
+def test_completion_scan_deep_bearish_k1_exact_target():
+    """target < 0.01*spot: floor must NOT distort k=1 (S_1 == target exactly)."""
+    put = OptionContract(
+        contract_symbol="XYZP05", strike=5.0, expiry="2028-01-21",
+        bid=4.0, ask=4.4, last=4.2, volume=5, open_interest=50,
+        implied_volatility=0.9, option_type="put")
+    p = _p(strategy="long-put", target_price=0.5)
+    spot = 100.0
+    floor = min(0.01 * spot, p.target_price)
+    s1 = max(spot + 1.0 * (p.target_price - spot), floor)
+    assert s1 == pytest.approx(p.target_price)
+
+
+def test_completion_curve_identities():
+    c = _call(93.0, "2028-01-21", 4.0, 4.4, 0.20)
+    p = _p()
+    v = evaluate_contract(c, SPOT, TODAY, p)
+    curve = completion_curve(v, SPOT, TODAY, p)
+    assert [k for k, _ in curve] == [0.0, 0.25, 0.5, 0.75, 1.0]
+    sv = scenario_vector(v, SPOT, TODAY, p)
+    assert dict(curve)[0.0] == pytest.approx(dict(sv.entries)["S1"])   # k=0 == S1
+    tgt = date.fromisoformat(p.target_date)
+    base = (scenario_leg_value(c, p.target_price, tgt, p) - v.mid) / v.mid
+    assert dict(curve)[1.0] == pytest.approx(base)                     # k=1 == baseline
+
+
+def test_friction():
+    c = _call(93.0, "2028-01-21", 4.0, 4.4, 0.20)
+    p = _p()
+    v = evaluate_contract(c, SPOT, TODAY, p)
+    assert friction(v) == pytest.approx((4.4 - 4.2) / 4.2)
+    lng = _call(93.0, "2028-01-21", 4.0, 4.4, 0.20)
+    sht = _call(100.0, "2028-01-21", 1.8, 2.2, 0.22)
+    sp = evaluate_spread(lng, sht, SPOT, TODAY, _p(strategy="bull-call-spread"))
+    assert friction(sp) == pytest.approx(
+        ((lng.ask - sht.bid) - sp.net_mid) / sp.net_mid)
