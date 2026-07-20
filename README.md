@@ -63,7 +63,8 @@ Snapshots are schema v2 (calls + puts). v1 snapshots must be re-fetched.
   ceiling guide (flagged if the current Ask exceeds it).
 - Resilience vector (new): 7 fixed stress scenarios — no-move, half-way,
   mostly-there, arrives 30 days late, arrives 90 days late, most-conservative
-  IV, and a natural-fill (Ask/Bid) entry — all priced on a Mid cost basis.
+  IV, and a natural-fill (Ask/Bid) entry — all priced on a Mid cost basis
+  except S7 (natural fill, taker price).
   The reported worst-case return is simply the lowest of those 7 numbers: a
   transparent worst-of-a-fixed-scenario-set value, not a statistical
   inference. Also reported: a scenario-completion curve (return at 0/25/
@@ -103,13 +104,13 @@ or Docker:
 Four-step flow: scenario chips (symbol / target price / target date /
 strategy checkboxes) -> a single main heatmap (bold rows = the 4 anchor
 prices) -> a comparison table grouped by expiry (🚀 top return / 🛡️ top
-resilience / ⚠ quote warning / ◀ selected; each row carries a thumbnail,
+resilience / ⚠ = a leg with zero volume today or entry friction above 25% / ◀ selected; each row carries a thumbnail,
 buffer days, and a buffer-tradeoff note; clicking a row swaps the main
 heatmap) -> an advanced section with three collapsible panels (7-scenario
 resilience vector, return×resilience scatter, Greeks & liquidity). A
-multipage help page documents the same steps plus a glossary, and every
-abbreviation/term shown in the app is a hover tooltip sourced from that same
-glossary — GUI performs no financial arithmetic of its own; every number
+multipage help page documents the same steps plus a glossary; key metric
+columns and strategy abbreviations have hover tooltips, with the full glossary
+on the 說明 (Help) page — GUI performs no financial arithmetic of its own; every number
 comes from the same engine the CLI uses.
 
 ## Tests (all offline)
@@ -165,7 +166,7 @@ docs/superpowers/specs/2026-07-20-option-chaser-v4-design.md (v4)
 - 每候選：Bid/Mid/Ask（含每張金額）、Breakeven、IV 三情境估值
   （估值+損益+報酬率）、買價指引天花板（超過就警示）
 - 韌性向量（CLI 新增）：7 個固定壓力情境（不漲／半程／大半程／晚30天／
-  晚90天／IV最保守／Natural成交），皆以 Mid 口徑估算；「情境最壞」即這
+  晚90天／IV最保守／Natural成交），除 S7（Natural 成交，以吃單價計）外皆以 Mid 進場計；「情境最壞」即這
   7 個情境報酬率中的最低值——是透明情境集合下的最壞值，非統計推論。
   另外會列出「劇本完成度」曲線（完成 0/25/50/75/100% 對應的報酬率）、
   「保本門檻」（後綴條件：一旦完成度達到門檻，之後任何更高完成度也不會
@@ -219,11 +220,10 @@ docs/superpowers/specs/2026-07-20-option-chaser-v4-design.md (v4)
 
 四步版面：劇本 chips（標的／目標價／到達日期／策略勾選，預設 Long Call
 + Bull Call Spread）→ 單一主 heatmap（粗體列＝關鍵價位：現價／目標／
-超標／深跌）→ 按到期日分組的比較表（🚀最高報酬／🛡️最強韌性／⚠報價警示／
+超標／深跌）→ 按到期日分組的比較表（🚀最高報酬／🛡️最強韌性／⚠＝任一腿今日無成交或成交摩擦>25%／
 ◀選中，每列附縮圖、緩衝天數與緩衝取捨註記；點列即可切換主圖）→ 進階區
 三個可摺疊面板（7 情境韌性向量、報酬×韌性散點、Greeks 與流動性）。
-多頁「說明」頁收錄同一套三步教學與名詞表；GUI 內所有名詞縮寫皆為滑鼠
-懸浮提示（hover tooltip），內容與說明頁名詞表同源、單一來源不重複維護。
-進階參數一律採用 CLI 預設值；方向不合的策略會被跳過並提示，
+多頁「說明」頁收錄同一套三步教學與名詞表；主要指標欄位與策略縮寫提供滑鼠
+懸浮解釋（hover tooltip），完整名詞表在說明頁。進階參數一律採用 CLI 預設值；方向不合的策略會被跳過並提示，
 GUI 不提供 --force。所有計算皆由與 CLI 相同的引擎完成，GUI 本身不做
 任何金融公式運算。
