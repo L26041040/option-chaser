@@ -58,7 +58,7 @@ def _p(**kw):
 def _call(strike, expiry, bid, ask, iv, volume=10, oi=100):
     return OptionContract(
         contract_symbol=f"XYZ{expiry}C{strike}", strike=strike, expiry=expiry,
-        bid=bid, ask=ask, last_price=(bid + ask) / 2, volume=volume,
+        bid=bid, ask=ask, last=(bid + ask) / 2, volume=volume,
         open_interest=oi, implied_volatility=iv, option_type="call")
 
 
@@ -148,7 +148,7 @@ def test_bearish_completion_mirrors():
     """target < spot: S2 is halfway DOWN."""
     put = OptionContract(
         contract_symbol="XYZP70", strike=80.0, expiry="2028-01-21",
-        bid=3.0, ask=3.4, last_price=3.2, volume=5, open_interest=50,
+        bid=3.0, ask=3.4, last=3.2, volume=5, open_interest=50,
         implied_volatility=0.25, option_type="put")
     p = _p(strategy="long-put", target_price=70.0)
     v = evaluate_contract(put, SPOT, TODAY, p)
@@ -308,7 +308,7 @@ def test_completion_scan_deep_bearish_k1_exact_target():
     """target < 0.01*spot: floor must NOT distort k=1 (S_1 == target exactly)."""
     put = OptionContract(
         contract_symbol="XYZP05", strike=5.0, expiry="2028-01-21",
-        bid=4.0, ask=4.4, last_price=4.2, volume=5, open_interest=50,
+        bid=4.0, ask=4.4, last=4.2, volume=5, open_interest=50,
         implied_volatility=0.9, option_type="put")
     p = _p(strategy="long-put", target_price=0.5)
     spot = 100.0
@@ -404,6 +404,7 @@ def completion_curve(val: ContractValuation | SpreadValuation, spot: float,
 **Files:**
 - Modify: `option_chaser/matrix.py`（`price_axis` 簽名改為 `price_axis(spot, target, bullish)`）
 - Modify: `option_chaser/service.py:110-118`、`option_chaser/report.py:130-133`（呼叫端補 `bullish` 參數：`is_bullish(p.strategy)`，自 `models` import）
+- Modify: `tests/test_service.py`（既有 `price_axis(100.0, 120.0)` parity 測試改為 `price_axis(100.0, 120.0, bullish=True)` 並更新期望值）
 - Test: `tests/test_matrix.py`（修改既有 + 追加）
 
 **Interfaces:**
@@ -525,7 +526,7 @@ def thumbnail_cells(
 
 **Interfaces:**
 - Consumes: Task 1/2 的 `scenario_vector`、`completion_scan`、`completion_curve`、`friction`
-- Produces: `CandidateView` 追加欄位 `scenario: ScenarioVector`、`completion_curve: tuple[tuple[float, float], ...]`、`completion_threshold: float | None`、`breakeven_at_target: float | None`、`retention: float`、`friction: float`、`buffer_days: int`、`quote_warning: bool`、`theta_day_rate: float`（|淨Θ|/Mid成本）、`vega_per_pt: float`（淨Vega×0.01/Mid成本）、`decay_30d_return: float`（S=spot、IV 不變、today+30 估值之報酬；expiry ≤ today+30 時以到期日估）；`worst_return` 改名 `natural_return`（ComparisonRow 同步改名）。進階區三值必須 service 預算（GUI 零金融公式紅線），Task 7 GUI 僅格式化。
+- Produces: `CandidateView` 追加欄位 `scenario: ScenarioVector`、`completion_curve: tuple[tuple[float, float], ...]`、`completion_threshold: float | None`、`breakeven_at_target: float | None`、`retention: float`、`friction: float`、`buffer_days: int`、`quote_warning: bool`、`theta_day_rate: float`（|淨Θ|/Mid成本）、`vega_per_pt: float`（淨Vega(每1%點)/Mid成本——引擎 `vega_per_pct` 已是每 1 IV 百分點口徑，勿再乘 0.01）、`decay_30d_return: float`（S=spot、IV 不變、today+30 估值之報酬；expiry ≤ today+30 時以到期日估）；`worst_return` 改名 `natural_return`（ComparisonRow 同步改名）。進階區三值必須 service 預算（GUI 零金融公式紅線），Task 7 GUI 僅格式化。
 
 - [ ] **Step 1: Write failing tests**
 
@@ -547,8 +548,8 @@ SNAP = "tests/fixtures/xyz_v2_snapshot.json"
 def _request(strategies=("long-call", "bull-call-spread")):
     return service.AnalysisRequest(
         symbol="XYZ",
-        base_params=AnalysisParams(strategy="long-call", target_price=110.0,
-                                   target_date="2027-12-31", min_return=0.0),
+        base_params=AnalysisParams(strategy="long-call", target_price=120.0,
+                                   target_date="2026-08-28", min_return=0.0),
         strategies=strategies)
 
 
@@ -629,14 +630,14 @@ def _v4_fields(val, spot: float, today: date, p: AnalysisParams) -> dict:
                      - date.fromisoformat(p.target_date)).days,
         quote_warning=zero_vol or fr > 0.25,
         theta_day_rate=abs(_net_theta(val)) / _mid_cost(val),
-        vega_per_pt=_net_vega(val) * 0.01 / _mid_cost(val),
+        vega_per_pt=_net_vega(val) / _mid_cost(val),   # vega_per_pct 已每1%點口徑
         decay_30d_return=_decay_30d(val, spot, today, p))
 ```
 
 輔助：`_mid_cost(val)` = net_mid/mid；`_net_theta`/`_net_vega`：單腿取 `val.theta_per_day`/`val.vega_per_pct`；價差以 `leg_greeks` 對兩腿以現價重算差值（today 為基準，T=today→expiry）。`_decay_30d`：`d30 = min(today+30天, expiry)`，`(fn(spot, d30) − Mid成本)/Mid成本`（fn 同 scenarios._value_fn 取得）。三者各加一條 tests/test_service_v4.py 斷言（與直接引擎呼叫等值）。
 
   建構呼叫 `CandidateView(..., **_v4_fields(v, snap.spot, today, p))`。
-  3. `webapp/app.py` 行 82/97 `cv.worst_return` → `cv.natural_return`；文案「最差進場」→「Natural 成交報酬」（此為過渡，Task 7 整體重寫 GUI）。
+  3. `webapp/app.py` 全檔改名波及：行 82/97 `cv.worst_return` → `cv.natural_return`，比較表 `row.worst_return`（`_render_results` 內）→ `row.natural_return`；文案「最差進場」→「Natural 成交報酬」。grep 驗證 `worst_return` 在 webapp/ 出現次數為 0（此為過渡，Task 7 整體重寫 GUI）。
   4. `tests/test_service.py` 既有斷言中 `worst_return` 全部改 `natural_return`。
 - [ ] **Step 4: Run 全套件** — 除 golden 外全綠。
 - [ ] **Step 5: Commit** — `feat(v4): natural_return rename + CandidateView scenario fields`
@@ -668,8 +669,8 @@ SNAP = "tests/fixtures/xyz_v2_snapshot.json"
 def _run(strategies=("long-call", "bull-call-spread")):
     return service.run_offline(service.AnalysisRequest(
         symbol="XYZ",
-        base_params=AnalysisParams(strategy="long-call", target_price=110.0,
-                                   target_date="2027-12-31", min_return=0.0),
+        base_params=AnalysisParams(strategy="long-call", target_price=120.0,
+                                   target_date="2026-08-28", min_return=0.0),
         strategies=strategies), SNAP)
 
 
@@ -713,11 +714,11 @@ def test_sampling_deterministic_six_expiries():
     """Unit test the sampler directly with 6 synthetic expiries."""
     exps = ["2028-01-21", "2028-03-17", "2028-06-16", "2028-09-15",
             "2028-12-15", "2029-06-15"]
-    kept, hidden = service._sample_expiries(exps, "2027-12-31")
+    kept, hidden = service._sample_expiries(exps, "2027-11-30")
     assert len(kept) == 4
     assert kept[0] == "2028-01-21" and kept[1] == "2028-03-17"  # nearest 2
     assert set(kept) | set(hidden) == set(exps)
-    assert kept == service._sample_expiries(exps, "2027-12-31")[0]  # deterministic
+    assert kept == service._sample_expiries(exps, "2027-11-30")[0]  # deterministic
 ```
 
 - [ ] **Step 2: Run, verify FAIL**
@@ -790,13 +791,13 @@ def test_resilience_section_present_and_formatted():
     from option_chaser.models import AnalysisParams
     result = service.run_offline(service.AnalysisRequest(
         symbol="XYZ",
-        base_params=AnalysisParams(strategy="long-call", target_price=110.0,
-                                   target_date="2027-12-31", min_return=0.0),
+        base_params=AnalysisParams(strategy="long-call", target_price=120.0,
+                                   target_date="2026-08-28", min_return=0.0),
         strategies=("long-call", "bull-call-spread")),
         "tests/fixtures/xyz_v2_snapshot.json")
-    for res in result.results:
-        if res.status != "ok":
-            continue
+    ok = [r for r in result.results if r.status == "ok"]
+    assert ok, "fixture must yield ok results (non-vacuous guard)"
+    for res in ok:
         text = res.report_text
         for needle in ["韌性向量（7 情境，Mid 口徑）:", "- S1 不漲: ",
                        "◀ 情境最壞", "劇本完成度: ", "保本門檻: ",
@@ -954,3 +955,5 @@ def test_new_copy_avoids_bare_probability_word():
 ## 完成後
 
 最終 whole-branch review（最強模型）→ merge → 依 spec §7A 執行 codex-audit（DC/AC/SL）→ push。
+
+<!-- codex-peer-reviewed: 2026-07-20T05:55:08Z rounds=3 verdict=approved -->
