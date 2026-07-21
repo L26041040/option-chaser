@@ -1468,6 +1468,25 @@ def test_groups_rebuilt_on_load_after_manual_delete(tmp_path):
     assert (tmp_path / "groups.json").exists()
 
 
+def test_set_status_reconciles_before_transition(tmp_path):
+    """崩潰窗後直呼 set_status：先修復（實為 Reached），再驗轉移合法性。"""
+    a = _create(tmp_path)
+    store.append_event(tmp_path, TS, a.id, "STATUS_CHANGED",
+                       {"from": "Active", "to": "Reached", "reason": "r",
+                        "by": "user"})   # 快取未更新（崩潰窗）
+    with pytest.raises(ValueError):      # 修復後 Reached→Reached 非法，不重複 append
+        workspace.set_status(tmp_path, a.id, "Reached", reason="again", ts=TS)
+    assert store.load_scenario(store.scenario_path(tmp_path, a.id)).status == "Reached"
+
+
+def test_load_groups_overwrites_tampered_file(tmp_path):
+    a = _create(tmp_path)
+    (tmp_path / "groups.json").write_text(
+        '{"schema_version": 1, "groups": []}', encoding="utf-8")
+    groups = workspace.load_groups(tmp_path)
+    assert groups["groups"][0]["members"] == [a.id]   # 無條件重建，不信磁碟
+
+
 def test_default_direction(tmp_path):
     assert workspace.default_direction("NOPE", 100.0,
                                        snapshots_dir=tmp_path) is None
@@ -1499,7 +1518,6 @@ wall-clock 僅在本層（now_utc_iso / ny_today）；store 保持純函數。
 from __future__ import annotations
 
 import dataclasses
-import json
 import shutil
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -1595,7 +1613,10 @@ def list_scenarios(ws_root, *, observed: date | None = None) -> list[Scenario]:
 
 def set_status(ws_root, sid: str, to: str, reason: str,
                *, ts: str | None = None) -> Scenario:
-    sc = store.load_scenario(store.scenario_path(ws_root, sid))
+    """變更前必先對帳（崩潰窗修復／竄改拋錯）——不信任快取直接轉移。"""
+    events = store.read_events(ws_root)
+    sc = store.reconcile_status(
+        ws_root, store.load_scenario(store.scenario_path(ws_root, sid)), events)
     return store.change_status(ws_root, ts or now_utc_iso(), sc, to, reason)
 
 
@@ -1624,10 +1645,9 @@ def delete_scenario(ws_root, sid: str, *, ts: str | None = None) -> None:
 
 
 def load_groups(ws_root) -> dict:
-    path = Path(ws_root) / "groups.json"
-    if not path.exists():
-        return _rebuild(ws_root)
-    return json.loads(path.read_text(encoding="utf-8"))
+    """spec §2.5: groups.json 任何過時/缺失 → 無條件重建（快取全量可重建，
+    絕不回傳磁碟上可能被手改的版本）。"""
+    return _rebuild(ws_root)
 
 
 def default_direction(symbol: str, target_price: float,
@@ -1648,7 +1668,7 @@ def default_direction(symbol: str, target_price: float,
 - [ ] **Step 4: 跑測試確認通過**
 
 Run: `python -m pytest tests/test_workspace.py -v`
-Expected: 13 passed
+Expected: 15 passed
 
 - [ ] **Step 5: Commit**
 
@@ -1704,6 +1724,17 @@ def test_create_analyze_latest_chain(tmp_path):
     assert events == ["SCENARIO_CREATED", "ANALYSIS_COMPLETED"]
     last = store.read_events(tmp_path)[-1]
     assert last["payload"]["result_path"] == str(path)
+    assert last["payload"]["snapshot_ref"] == view["snapshot_ref"]  # 完整物件
+
+
+def test_analyze_logically_deleted_scenario_raises(tmp_path):
+    """殘檔（已刪但 scenario 檔被復原/殘留）不得被分析。"""
+    import pytest
+    sc = _create(tmp_path)
+    workspace.delete_scenario(tmp_path, sc.id, ts=TS)
+    store.save_scenario(tmp_path, sc)   # 模擬殘檔
+    with pytest.raises(store.WorkspaceIntegrityError):
+        workspace.analyze_scenario(tmp_path, sc.id, snapshot_path=FIX, ts=TS)
 
 
 def test_analyze_uses_capital_snapshot(tmp_path):
@@ -1769,8 +1800,13 @@ def _request_for(sc: Scenario) -> service.AnalysisRequest:
 def analyze_scenario(ws_root, sid: str, progress=None, *,
                      snapshot_path: str | None = None,
                      ts: str | None = None) -> Path:
-    """§2.5 例外次序：result 檔先落盤，ANALYSIS_COMPLETED 後補。"""
-    sc = store.load_scenario(store.scenario_path(ws_root, sid))
+    """§2.5 例外次序：result 檔先落盤，ANALYSIS_COMPLETED 後補。
+    分析前必先對帳：邏輯已刪（殘檔）→ 拋錯；崩潰窗 → 修復後續行。"""
+    events = store.read_events(ws_root)
+    if store.project_status(events, sid) is None:
+        raise store.WorkspaceIntegrityError(f"劇本 {sid} 不存在或已刪除")
+    sc = store.reconcile_status(
+        ws_root, store.load_scenario(store.scenario_path(ws_root, sid)), events)
     req = _request_for(sc)
     if snapshot_path is None:
         result = service.run(req, progress)
@@ -1782,7 +1818,7 @@ def analyze_scenario(ws_root, sid: str, progress=None, *,
     store.append_event(ws_root, ts or now_utc_iso(), sc.id,
                        "ANALYSIS_COMPLETED",
                        {"result_path": str(path),
-                        "snapshot_ref": view["snapshot_ref"]["path"]})
+                        "snapshot_ref": view["snapshot_ref"]})   # 完整物件（spec §2.3）
     return path
 
 
@@ -1993,42 +2029,48 @@ with st.expander("⚙ 設定", expanded=False):
         st.rerun()
 
 # ---------- 建立表單 ----------
+# 不用 st.form：方向推測與策略預設需要即時 rerun 連動（spec §2.2/§5.1）。
 with st.expander("＋ 建立劇本", expanded=False):
-    sym_probe = (st.session_state.get("ws-new-symbol") or "").strip().upper()
-    price_probe = st.session_state.get("ws-new-price", 100.0)
-    inferred = workspace.default_direction(sym_probe, float(price_probe)) \
-        if sym_probe else None
-    dir_index = 1 if inferred == "bearish" else 0
-    direction = st.selectbox("方向", ("bullish", "bearish"), index=dir_index,
-                             format_func=lambda d: "看漲" if d == "bullish" else "看跌",
+    st.text_input("標的", key="ws-new-symbol", placeholder="TLT")
+    st.number_input("目標價位", key="ws-new-price", min_value=0.01,
+                    value=100.0, step=1.0)
+    sym = (st.session_state.get("ws-new-symbol") or "").strip().upper()
+    inferred = (workspace.default_direction(
+        sym, float(st.session_state.get("ws-new-price", 100.0)))
+        if sym else None)
+    # 無 snapshot → 必選（首項為空白佔位）；有 snapshot → 預設推測方向
+    options = ("bullish", "bearish") if inferred else ("", "bullish", "bearish")
+    dir_labels = {"": "（請選擇）", "bullish": "看漲", "bearish": "看跌"}
+    idx = options.index(inferred) if inferred else 0
+    direction = st.selectbox("方向", options, index=idx,
+                             format_func=lambda d: dir_labels[d],
                              key="ws-new-direction")
-    default_checked = ({"long-call", "bull-call-spread"}
-                       if direction == "bullish"
-                       else {"long-put", "bear-put-spread"})
-    with st.form("ws-new"):
-        st.text_input("標的", key="ws-new-symbol", placeholder="TLT")
-        st.number_input("目標價位", key="ws-new-price", min_value=0.01,
-                        value=100.0, step=1.0)
-        st.date_input("目標日", key="ws-new-date",
-                      value=date.today() + timedelta(days=180),
-                      min_value=date.today() + timedelta(days=1))
-        st.text_input("備註", key="ws-new-notes")
+    # 方向變更時重設策略勾選預設（LC+BCS 看漲、LP+BPS 看跌）；
+    # 之後使用者手動勾選不再被覆蓋（僅在方向切換當下重設一次）。
+    if direction and st.session_state.get("ws-new-dir-prev") != direction:
+        st.session_state["ws-new-dir-prev"] = direction
+        defaults = ({"long-call", "bull-call-spread"} if direction == "bullish"
+                    else {"long-put", "bear-put-spread"})
         for s in STRATEGY_ORDER:
-            st.checkbox(STRATEGY_LABELS[s], key=f"ws-new-chk-{s}",
-                        value=(s in default_checked))
-        created = st.form_submit_button("建立")
-    if created:
-        sym = (st.session_state["ws-new-symbol"] or "").strip().upper()
+            st.session_state[f"ws-new-chk-{s}"] = s in defaults
+    for s in STRATEGY_ORDER:
+        st.checkbox(STRATEGY_LABELS[s], key=f"ws-new-chk-{s}")
+    st.date_input("目標日", key="ws-new-date",
+                  value=date.today() + timedelta(days=180),
+                  min_value=date.today() + timedelta(days=1))
+    st.text_input("備註", key="ws-new-notes")
+    if st.button("建立", key="ws-new-create"):
         strategies = tuple(s for s in STRATEGY_ORDER
                            if st.session_state.get(f"ws-new-chk-{s}"))
         if not sym:
             st.error("請輸入標的代號。")
+        elif not direction:
+            st.error("請選擇方向（此標的尚無 snapshot，無法自動推測）。")
         elif not strategies:
             st.error("請至少勾選一種策略。")
         else:
             workspace.create_scenario(
-                WS_ROOT, symbol=sym,
-                direction=st.session_state["ws-new-direction"],
+                WS_ROOT, symbol=sym, direction=direction,
                 target_price=float(st.session_state["ws-new-price"]),
                 target_date=st.session_state["ws-new-date"].isoformat(),
                 notes=st.session_state["ws-new-notes"],
@@ -2083,8 +2125,10 @@ for sc in scenarios:
             st.markdown("尚未分析")
     with cols[8]:
         if st.button("分析", key=f"ws-an-{sc.id}"):
-            _analyze_with_status(workspace.analyze_scenario, WS_ROOT, sc.id)
-            st.rerun()
+            # 僅成功才 rerun——失敗時 st.error 留在本次渲染，不被沖掉
+            if _analyze_with_status(workspace.analyze_scenario, WS_ROOT,
+                                    sc.id) is not None:
+                st.rerun()
         if summary is not None and st.button("詳頁", key=f"ws-det-{sc.id}"):
             st.session_state["ws-detail"] = sc.id
             st.rerun()
@@ -2164,11 +2208,13 @@ for g in groups["groups"]:
                 and prev.status == "Reached"
                 and rel["confirmed"] == "milestone-path"):
             if st.button(f"重新分析 {nxt.id}", key=f"ws-rean-{nxt.id}"):
-                _analyze_with_status(workspace.analyze_scenario, WS_ROOT, nxt.id)
-                st.rerun()
+                if _analyze_with_status(workspace.analyze_scenario, WS_ROOT,
+                                        nxt.id) is not None:
+                    st.rerun()
     if st.button("群組分析", key=f"ws-gan-{g['id']}"):
-        _analyze_with_status(workspace.analyze_group, WS_ROOT, g["id"])
-        st.rerun()
+        if _analyze_with_status(workspace.analyze_group, WS_ROOT,
+                                g["id"]) is not None:
+            st.rerun()
     st.divider()
 
 # ---------- 詳頁 ----------
@@ -2243,10 +2289,43 @@ def test_create_via_form_appears_in_list(ws):
     at.number_input(key="ws-new-price").set_value(120.0)
     at.date_input(key="ws-new-date").set_value(date(2026, 8, 1))
     at.run()
-    next(b for b in at.button if b.label == "建立").set_value(True).run(timeout=30)
+    # 測試 cwd 的 snapshots/ 無 XYZ_*.json → 無法推測 → 必選方向
+    at.selectbox(key="ws-new-direction").set_value("bullish")
+    at.run()
+    assert at.session_state["ws-new-chk-long-call"] is True   # 方向連動預設策略
+    assert at.session_state["ws-new-chk-long-put"] is False
+    next(b for b in at.button
+         if b.key == "ws-new-create").set_value(True).run(timeout=30)
     assert not at.exception
     assert "XYZ" in _body(at)
     assert workspace.list_scenarios(ws)[0].id == "XYZ-120-202608"
+    assert workspace.list_scenarios(ws)[0].direction == "bullish"
+
+
+def test_create_requires_direction_when_no_snapshot(ws):
+    at = AppTest.from_file(PAGE)
+    at.run()
+    at.text_input(key="ws-new-symbol").set_value("XYZ")
+    at.run()
+    next(b for b in at.button
+         if b.key == "ws-new-create").set_value(True).run(timeout=30)
+    assert any("請選擇方向" in e.value for e in at.error)
+    assert workspace.list_scenarios(ws) == []
+
+
+def test_analysis_error_stays_visible(ws, monkeypatch):
+    """失敗不 rerun：st.error 留在畫面上（durable feedback）。"""
+    sc = _mk(ws)
+    import option_chaser.service as svc
+    from option_chaser.models import FetchError
+    monkeypatch.setattr(svc, "run", lambda req, progress=None:
+                        (_ for _ in ()).throw(FetchError("boom")))
+    at = AppTest.from_file(PAGE)
+    at.run()
+    next(b for b in at.button
+         if b.key == f"ws-an-{sc.id}").set_value(True).run(timeout=30)
+    assert any("boom" in e.value for e in at.error)
+    assert not at.exception
 
 
 def test_status_buttons_with_reason(ws):
@@ -2365,7 +2444,7 @@ def test_group_analyze_button_shares_snapshot(ws):
 - [ ] **Step 3: 跑測試**
 
 Run: `python -m pytest tests/test_webapp_workspace.py -v`
-Expected: 9 passed（迭代修頁面直到綠；AppTest 對 st.status 的相容性若有問題，`_analyze_with_status` 允許降級為 `st.spinner`——文案不變）
+Expected: 11 passed（迭代修頁面直到綠；AppTest 對 st.status 的相容性若有問題，`_analyze_with_status` 允許降級為 `st.spinner`——文案不變）
 
 - [ ] **Step 4: 全回歸**
 
@@ -2471,4 +2550,6 @@ git commit -m "feat(v5): redline scan expansion, workspace docs/glossary, docker
 
 - **Spec 覆蓋**：§2.1→T2/T5（佈局、原子寫入、snapshot_ts、compose 掛載 T11）；§2.2→T2/T3/T7（實體、id、轉移、兩型、NY 觀察日）；§2.3→T1/T3（enum、行序權威、生命週期）；§2.4→T4（快取語意、提案、生命週期界定）；§2.5→T3/T7（次序、對帳矩陣）；§2.6→T2；§3→T5（含 doc-sync）；§4→T6/T7/T8；§5→T9/T10（按鈕兩條件、清單 pct 非回溯）；§5.2→T11；§6→T1/T3（值域鎖定）；§7.1-7.9→對應測試檔；§8→T11 Step 6；§9 不做清單→無任務觸碰。
 - **型別一致**：`Scenario`/`serialize_result`/candidate dict 鍵名在 T5 Interfaces 定義一次，T9/T10 引用同名；`analyze_scenario(..., snapshot_path=, ts=)` 簽名 T8 定義、T10 測試同形使用。
-- **已知妥協（review 時檢視）**：(a) T5 `strategy_of_row` 標註「未用即刪」；(b) T10 `st.status` 相容性允許降級 `st.spinner`；(c) 建立表單方向預設依 session probe 推得（form 內無法動態 rerun 的 Streamlit 限制，spec 語意保留——無 snapshot 時 index 0 即必選預設）。
+- **已知妥協（review 時檢視）**：(a) T5 `strategy_of_row` 標註「未用即刪」；(b) T10 `st.status` 相容性允許降級 `st.spinner`；(c) 建立表單不用 `st.form`（方向推測與策略預設需即時 rerun 連動；無 snapshot 時方向為空白佔位必選，測試鎖定）。
+
+<!-- codex-peer-reviewed: 2026-07-21T06:04:29Z rounds=2 verdict=approved -->
