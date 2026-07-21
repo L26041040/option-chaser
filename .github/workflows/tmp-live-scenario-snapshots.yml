@@ -1,0 +1,310 @@
+name: Temporary Live Scenario Snapshots
+
+on:
+  pull_request:
+    branches:
+      - tmp-live-scenarios-base-20260721
+
+jobs:
+  run-live-scenarios:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - name: Checkout latest Option Chaser
+        uses: actions/checkout@v4
+        with:
+          ref: 5f2c22b8b4888cb4b9f1e9f4488fae89aa939c16
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Install app and Chromium
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[gui]" playwright
+          python -m playwright install --with-deps chromium
+
+      - name: Create real scenarios and run live analysis
+        shell: bash
+        run: |
+          mkdir -p live-artifacts/workspace live-artifacts/raw-snapshots
+          python - <<'PY'
+          from __future__ import annotations
+
+          import json
+          import shutil
+          import time
+          import traceback
+          from pathlib import Path
+
+          from option_chaser import service, store, workspace
+          from option_chaser.data.snapshot import load_snapshot
+
+          ROOT = Path('live-artifacts/workspace')
+          OUT = Path('live-artifacts')
+          TS = '2026-07-21T11:00:00+00:00'
+
+          inputs = [
+              {'name': 'TLT 2028-01 到 105', 'symbol': 'TLT', 'target_price': 105.0, 'target_date': '2028-01-01'},
+              {'name': 'TLT 2028-12 到 120', 'symbol': 'TLT', 'target_price': 120.0, 'target_date': '2028-12-01'},
+              {'name': 'ORCL 2027-01 到 250', 'symbol': 'ORCL', 'target_price': 250.0, 'target_date': '2027-01-01'},
+          ]
+
+          def fetch_with_retry(symbol: str):
+              errors = []
+              for attempt in range(1, 4):
+                  try:
+                      return service.fetch_and_save(symbol)
+                  except Exception:
+                      errors.append(f'Attempt {attempt}:\n{traceback.format_exc()}')
+                      if attempt < 3:
+                          time.sleep(10)
+              raise RuntimeError(f'Failed to fetch {symbol}\n' + '\n'.join(errors))
+
+          fetches = {}
+          for symbol in ('TLT', 'ORCL'):
+              snap, path = fetch_with_retry(symbol)
+              fetches[symbol] = {'snapshot': snap, 'path': path}
+              shutil.copy2(path, OUT / 'raw-snapshots' / Path(path).name)
+
+          created = []
+          for item in inputs:
+              snap = fetches[item['symbol']]['snapshot']
+              bullish = item['target_price'] > snap.spot
+              direction = 'bullish' if bullish else 'bearish'
+              strategies = (('long-call', 'bull-call-spread') if bullish
+                            else ('long-put', 'bear-put-spread'))
+              sc = workspace.create_scenario(
+                  ROOT,
+                  symbol=item['symbol'],
+                  direction=direction,
+                  target_price=item['target_price'],
+                  target_date=item['target_date'],
+                  notes=item['name'],
+                  strategies=strategies,
+                  ts=TS,
+              )
+              created.append(sc)
+
+          # Same-symbol TLT scenarios share exactly one live snapshot.
+          workspace.analyze_group(
+              ROOT, 'G-TLT', snapshot_path=fetches['TLT']['path'], ts=TS)
+          orcl = next(sc for sc in created if sc.symbol == 'ORCL')
+          workspace.analyze_scenario(
+              ROOT, orcl.id, snapshot_path=fetches['ORCL']['path'], ts=TS)
+
+          def find_row(view, key):
+              if not key:
+                  return None
+              for group in view.get('expiry_groups', []):
+                  for row in group.get('rows', []):
+                      if row['candidate']['candidate_key'] == key:
+                          return row
+              return None
+
+          def row_label(row):
+              if row is None:
+                  return None
+              c = row['candidate']
+              legs = c['legs']
+              if len(legs) == 2:
+                  contract = f"買 {legs[0]['strike']:g} / 賣 {legs[1]['strike']:g}"
+              else:
+                  contract = f"K={legs[0]['strike']:g}"
+              return {
+                  'strategy': row['strategy'],
+                  'contract': contract,
+                  'expiry': legs[0]['expiry'],
+                  'mid_cost': c['mid_cost'],
+                  'natural_cost': c['natural_cost'],
+                  'baseline_return': c['baseline_return'],
+                  'natural_return': c['natural_return'],
+                  'worst_scenario_code': c['scenario_vector']['worst_code'],
+                  'worst_scenario_return': c['scenario_vector']['worst_return'],
+                  'completion_threshold': c['completion_threshold'],
+                  'retention': c['retention'],
+                  'friction': c['friction'],
+                  'buffer_days': c['buffer_days'],
+                  'quote_warning': c['quote_warning'],
+                  'candidate_key': c['candidate_key'],
+              }
+
+          report = {
+              'engine_commit': '5f2c22b8b4888cb4b9f1e9f4488fae89aa939c16',
+              'snapshots': {},
+              'scenarios': [],
+          }
+          for symbol, info in fetches.items():
+              snap = info['snapshot']
+              report['snapshots'][symbol] = {
+                  'path': info['path'],
+                  'fetched_at': snap.fetched_at,
+                  'spot': snap.spot,
+                  'source': snap.source,
+                  'contracts': len(snap.contracts),
+              }
+
+          for sc in created:
+              view = workspace.latest_result(ROOT, sc.id)
+              key = view['default_selection'][1] if view and view.get('default_selection') else None
+              default_row = find_row(view, key) if view else None
+              top_return = None
+              top_resilience = None
+              if view:
+                  for group in view.get('expiry_groups', []):
+                      for row in group.get('rows', []):
+                          if 'top_return' in row.get('badges', []):
+                              top_return = row_label(row)
+                          if 'top_resilience' in row.get('badges', []):
+                              top_resilience = row_label(row)
+              report['scenarios'].append({
+                  'id': sc.id,
+                  'symbol': sc.symbol,
+                  'direction': sc.direction,
+                  'target_price': sc.target_price,
+                  'target_date': sc.target_date,
+                  'strategies': list(sc.strategies),
+                  'result_available': view is not None,
+                  'snapshot_ref': view.get('snapshot_ref') if view else None,
+                  'data_quality': view.get('data_quality') if view else None,
+                  'default_candidate': row_label(default_row),
+                  'top_return': top_return,
+                  'top_resilience': top_resilience,
+                  'strategy_statuses': ([
+                      {'strategy': r['strategy'], 'status': r['status'],
+                       'message': r['message'], 'n_qualified': r['n_qualified']}
+                      for r in view.get('results', [])
+                  ] if view else []),
+                  'expiry_group_count': len(view.get('expiry_groups', [])) if view else 0,
+                  'result_files': [str(p) for p in sorted((ROOT / 'results' / sc.id).glob('*.json'))],
+              })
+
+          (OUT / 'live-summary.json').write_text(
+              json.dumps(report, ensure_ascii=False, indent=2), encoding='utf-8')
+
+          md = ['# Option Chaser Live Scenario Run', '']
+          for symbol, s in report['snapshots'].items():
+              md.append(f"- {symbol}: spot ${s['spot']:.2f}, fetched {s['fetched_at']}, contracts {s['contracts']}")
+          md.append('')
+          for sc in report['scenarios']:
+              md.append(f"## {sc['id']}")
+              md.append(f"- Input: {sc['symbol']} → ${sc['target_price']:.2f} by {sc['target_date']} ({sc['direction']})")
+              md.append(f"- Strategies: {', '.join(sc['strategies'])}")
+              md.append(f"- Result available: {sc['result_available']}")
+              if sc['default_candidate']:
+                  c = sc['default_candidate']
+                  md.append(f"- Default: {c['strategy']} {c['contract']} / {c['expiry']}")
+                  md.append(f"- Scenario return: {c['baseline_return']*100:.1f}%")
+                  md.append(f"- Fixed-scenario worst: {c['worst_scenario_return']*100:.1f}% ({c['worst_scenario_code']})")
+              for status in sc['strategy_statuses']:
+                  md.append(f"- {status['strategy']}: {status['status']} / qualified {status['n_qualified']} / {status['message']}")
+              md.append('')
+          (OUT / 'live-summary.md').write_text('\n'.join(md), encoding='utf-8')
+          print((OUT / 'live-summary.md').read_text(encoding='utf-8'))
+          PY
+
+      - name: Launch real workspace GUI
+        shell: bash
+        run: |
+          # Latest v5 currently needs the repo root on PYTHONPATH for webapp.render.
+          PYTHONPATH="$PWD" \
+          OC_WORKSPACE="$PWD/live-artifacts/workspace" \
+          streamlit run webapp/app.py \
+            --server.headless true \
+            --server.address 0.0.0.0 \
+            --server.port 8501 \
+            > live-artifacts/streamlit.log 2>&1 &
+          echo $! > live-artifacts/streamlit.pid
+          for i in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:8501/_stcore/health; then exit 0; fi
+            sleep 2
+          done
+          cat live-artifacts/streamlit.log
+          exit 1
+
+      - name: Capture real workspace and scenario snapshots
+        shell: bash
+        run: |
+          cat > /tmp/capture.py <<'PY'
+          from pathlib import Path
+          import json
+          import traceback
+          from playwright.sync_api import sync_playwright
+
+          OUT = Path('live-artifacts')
+          summary = {'status': 'UNKNOWN', 'screenshots': []}
+          console = []
+
+          def shot(page, name, full=True):
+              path = OUT / name
+              page.screenshot(path=str(path), full_page=full)
+              summary['screenshots'].append(name)
+
+          try:
+              with sync_playwright() as p:
+                  browser = p.chromium.launch()
+                  page = browser.new_page(viewport={'width': 1600, 'height': 1100}, locale='zh-TW')
+                  page.on('console', lambda m: console.append(f'{m.type}: {m.text}'))
+                  page.on('pageerror', lambda e: console.append(f'pageerror: {e}'))
+
+                  page.goto('http://127.0.0.1:8501', wait_until='networkidle', timeout=120000)
+                  page.get_by_text('Option Chaser', exact=True).wait_for(timeout=30000)
+                  page.get_by_role('link', name='劇本工作區').first.click()
+                  page.get_by_text('劇本工作區', exact=True).wait_for(timeout=30000)
+                  page.wait_for_timeout(1500)
+                  body = page.locator('body').inner_text()
+                  for text in ['TLT', 'ORCL', 'G-TLT', 'G-ORCL', '105.00', '120.00', '250.00']:
+                      assert text in body, text
+                  shot(page, '01-live-workspace-overview.png')
+
+                  # Sorted scenario order is ORCL, then TLT Jan, then TLT Dec.
+                  scenarios = [
+                      ('ORCL-250-202701', 0, '02-orcl-250-detail.png'),
+                      ('TLT-105-202801', 1, '03-tlt-105-detail.png'),
+                      ('TLT-120-202812', 2, '04-tlt-120-detail.png'),
+                  ]
+                  for sid, idx, filename in scenarios:
+                      buttons = page.get_by_role('button', name='詳頁')
+                      if buttons.count() <= idx:
+                          summary.setdefault('missing_detail', []).append(sid)
+                          continue
+                      buttons.nth(idx).click()
+                      header = page.get_by_text(f'詳頁：{sid}', exact=True)
+                      header.wait_for(timeout=30000)
+                      header.scroll_into_view_if_needed()
+                      page.wait_for_timeout(800)
+                      shot(page, filename)
+                      page.get_by_role('button', name='關閉詳頁').click()
+                      page.wait_for_timeout(800)
+
+                  # Capture TLT same-symbol group area at mobile width too.
+                  page.set_viewport_size({'width': 390, 'height': 844})
+                  page.evaluate('window.scrollTo(0,0)')
+                  page.wait_for_timeout(800)
+                  shot(page, '05-live-workspace-mobile.png')
+                  summary['mobile_scroll_width'] = page.evaluate('document.body.scrollWidth')
+                  summary['mobile_viewport_width'] = page.evaluate('window.innerWidth')
+                  browser.close()
+              summary['status'] = 'PASS'
+          except Exception:
+              summary['status'] = 'FAIL'
+              summary['traceback'] = traceback.format_exc()
+              raise
+          finally:
+              (OUT / 'browser-summary.json').write_text(
+                  json.dumps(summary, ensure_ascii=False, indent=2), encoding='utf-8')
+              (OUT / 'browser-console.log').write_text('\n'.join(console), encoding='utf-8')
+          PY
+          python /tmp/capture.py
+
+      - name: Upload live scenario evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: option-chaser-live-scenario-snapshots
+          path: |
+            live-artifacts/
+            snapshots/
+          if-no-files-found: error
