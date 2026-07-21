@@ -227,3 +227,41 @@ docs/superpowers/specs/2026-07-20-option-chaser-v4-design.md (v4)
 懸浮解釋（hover tooltip），完整名詞表在說明頁。進階參數一律採用 CLI 預設值；方向不合的策略會被跳過並提示，
 GUI 不提供 --force。所有計算皆由與 CLI 相同的引擎完成，GUI 本身不做
 任何金融公式運算。
+
+## 多劇本工作區
+
+從左側頁面選單進入「劇本工作區」（`webapp/pages/0_劇本工作區.py`），資料落地
+在專案根目錄的 `workspace/`（不進版控，已加入 .gitignore）；Docker 部署時
+compose.yaml 已掛載 `./workspace:/app/workspace`。
+
+workspace/ 佈局（五類檔案）：
+
+    workspace/scenarios/<id>.json               每個劇本一份持久化快照（唯讀，改錯請刪除重建）
+    workspace/groups.json                       群組與關係的全量可重建快取（同標的自動歸組）
+    workspace/constraints.json                  資金總額設定
+    workspace/events.jsonl                       只新增、不覆寫既有事件的日誌，唯一真實來源
+    workspace/results/<id>/<snapshot_ts>.json    每次分析的結果快照，機器可讀 JSON 契約（schema_version 1）
+
+**劇本生命週期（四態）**：Active（進行中）→ Reached（已達成）／Invalidated
+（已失效）由你手動標記並必附原因；目標日過後讀取工作區時系統自動轉
+Expired。所有狀態變更皆先寫事件、後更新快取——事件日誌是唯一真實來源，
+scenario 檔的 status 欄位只是投影，可完整重放審計。
+
+**群組與關係確認**：同標的的劇本會自動歸為一組（純顯示分組，不影響任何
+計算）。相鄰兩個劇本（依目標日排序）系統會提出關係提案（里程碑路徑／需
+檢視／互斥候選），但生效與否由你在四個選項中手動確認：里程碑路徑、獨立、
+互斥、暫不定義。只有前一個里程碑標記「已達成」且關係已確認為「里程碑
+路徑」時，下一個劇本才會出現「重新分析」按鈕——全程零自動化。
+
+**群組分析**：對一個群組按下「群組分析」，只會抓取一次市場快照，群組內
+所有成員的分析結果都指向同一份 snapshot（`snapshot_ref.path` 相同），
+確保同組劇本互相可比。
+
+**佔本金%**：每個候選的「佔本金%」＝最佳候選每口成本（Mid×100）除以你
+設定的資金總額，但只有「分析當下」已經在設定區存好資金總額才會記錄這個
+欄位；事後才設定資金不會回填過去已分析過的結果（非回溯）。
+
+**Result 檔案契約**：每次分析都會在 `workspace/results/<scenario_id>/
+<snapshot_ts>.json` 寫入一份新檔（不覆蓋舊檔），`schema_version` 固定為
+1，內容涵蓋候選、比較表、韌性向量、P/L 矩陣等——與 CLI/GUI 顯示用的同一
+份資料結構，可供外部工具直接讀取或重放審計。
