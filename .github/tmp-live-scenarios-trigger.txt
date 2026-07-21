@@ -1,1 +1,1 @@
-temporary live scenarios trigger
+temporary live scenarios trigger — last-trade fallback
