@@ -1,0 +1,143 @@
+name: Temporary v5 Browser Workaround Trial
+
+on:
+  pull_request:
+    branches:
+      - tmp-v5-trial-base-20260721
+
+jobs:
+  browser:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout latest v5
+        uses: actions/checkout@v4
+        with:
+          ref: 5f2c22b8b4888cb4b9f1e9f4488fae89aa939c16
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Install app and browser
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[gui]" playwright
+          python -m playwright install --with-deps chromium
+
+      - name: Seed workspace
+        run: |
+          mkdir -p browser-artifacts
+          python - <<'PY'
+          from pathlib import Path
+          from option_chaser import store, workspace
+          root = Path('browser-artifacts/workspace')
+          ts = '2026-07-21T00:00:00+00:00'
+          fix = 'tests/fixtures/xyz_v4_six_expiries.json'
+          store.save_constraints(root, 100000.0)
+          workspace.create_scenario(root, symbol='XYZ', direction='bullish', target_price=110.0,
+              target_date='2026-08-01', notes='第一里程碑',
+              strategies=('long-call','bull-call-spread'), ts=ts)
+          workspace.create_scenario(root, symbol='XYZ', direction='bullish', target_price=120.0,
+              target_date='2026-09-01', notes='第二里程碑',
+              strategies=('long-call','bull-call-spread'), ts=ts)
+          workspace.create_scenario(root, symbol='ABC', direction='bearish', target_price=80.0,
+              target_date='2026-10-01', notes='獨立劇本',
+              strategies=('long-put','bear-put-spread'), ts=ts)
+          workspace.analyze_group(root, 'G-XYZ', snapshot_path=fix, ts=ts)
+          PY
+
+      - name: Launch with PYTHONPATH workaround
+        shell: bash
+        run: |
+          PYTHONPATH="$PWD" OC_WORKSPACE="$PWD/browser-artifacts/workspace" \
+          streamlit run webapp/app.py \
+            --server.headless true \
+            --server.address 0.0.0.0 \
+            --server.port 8501 \
+            > browser-artifacts/streamlit.log 2>&1 &
+          echo $! > browser-artifacts/streamlit.pid
+          for i in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:8501/_stcore/health; then exit 0; fi
+            sleep 2
+          done
+          cat browser-artifacts/streamlit.log
+          exit 1
+
+      - name: Operate workspace in Chromium
+        shell: bash
+        run: |
+          cat > /tmp/browser.py <<'PY'
+          from pathlib import Path
+          import json, traceback
+          from playwright.sync_api import sync_playwright
+          OUT = Path('browser-artifacts')
+          summary = {}
+          console = []
+          try:
+              with sync_playwright() as p:
+                  browser = p.chromium.launch()
+                  page = browser.new_page(viewport={'width':1440,'height':1000}, locale='zh-TW')
+                  page.on('console', lambda m: console.append(f'{m.type}: {m.text}'))
+                  page.on('pageerror', lambda e: console.append(f'pageerror: {e}'))
+                  page.goto('http://127.0.0.1:8501', wait_until='networkidle', timeout=120000)
+                  page.get_by_text('Option Chaser', exact=True).wait_for(timeout=30000)
+                  page.screenshot(path=str(OUT/'01-home.png'), full_page=True)
+
+                  page.get_by_role('link', name='劇本工作區').first.click()
+                  page.get_by_text('劇本工作區', exact=True).wait_for(timeout=30000)
+                  page.wait_for_timeout(1000)
+                  body = page.locator('body').inner_text()
+                  required = ['劇本清單','XYZ','G-XYZ','ABC','群組分析','里程碑路徑','劇本報酬','情境最壞','佔本金']
+                  missing = [x for x in required if x not in body]
+                  assert not missing, missing
+                  page.screenshot(path=str(OUT/'02-workspace-desktop.png'), full_page=True)
+
+                  details = page.get_by_role('button', name='詳頁')
+                  assert details.count() >= 2
+                  details.nth(0).click()
+                  page.get_by_text('Step 2　劇本主圖', exact=True).wait_for(timeout=30000)
+                  page.screenshot(path=str(OUT/'03-detail.png'), full_page=True)
+                  page.get_by_text('韌性與壓力情境', exact=True).click()
+                  page.get_by_text('完成度報酬曲線', exact=True).wait_for(timeout=30000)
+                  page.screenshot(path=str(OUT/'04-resilience.png'), full_page=True)
+
+                  page.get_by_role('button', name='關閉詳頁').click()
+                  page.wait_for_timeout(800)
+                  reasons = page.locator('input[placeholder="標記原因（必填）"]')
+                  reasons.nth(0).fill('瀏覽器試用：到價')
+                  page.get_by_role('button', name='標記達成').nth(0).click()
+                  page.wait_for_timeout(1000)
+                  page.get_by_role('button', name='確認').nth(0).click()
+                  page.wait_for_timeout(1000)
+                  assert '重新分析 XYZ-120-202609' in page.locator('body').inner_text()
+                  page.screenshot(path=str(OUT/'05-milestone.png'), full_page=True)
+
+                  page.set_viewport_size({'width':390,'height':844})
+                  page.evaluate('window.scrollTo(0,0)')
+                  page.wait_for_timeout(800)
+                  sw = page.evaluate('document.body.scrollWidth')
+                  vw = page.evaluate('window.innerWidth')
+                  summary.update({'mobile_scroll_width':sw,'mobile_viewport_width':vw,
+                                  'mobile_document_overflow':sw > vw + 2})
+                  page.screenshot(path=str(OUT/'06-workspace-mobile.png'), full_page=True)
+                  browser.close()
+              summary['status']='PASS'
+          except Exception:
+              summary['status']='FAIL'
+              summary['traceback']=traceback.format_exc()
+              raise
+          finally:
+              (OUT/'summary.json').write_text(json.dumps(summary,ensure_ascii=False,indent=2),encoding='utf-8')
+              (OUT/'console.log').write_text('\n'.join(console),encoding='utf-8')
+          PY
+          python /tmp/browser.py
+
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: option-chaser-v5-browser-workaround
+          path: browser-artifacts/
+          if-no-files-found: error
