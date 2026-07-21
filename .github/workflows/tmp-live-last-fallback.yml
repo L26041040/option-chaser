@@ -1,0 +1,148 @@
+name: Temporary Live Last-Trade Fallback Snapshots
+
+on:
+  pull_request:
+    branches:
+      - tmp-live-scenarios-base-20260721
+
+jobs:
+  run-fallback-scenarios:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - name: Checkout latest Option Chaser
+        uses: actions/checkout@v4
+        with:
+          ref: 5f2c22b8b4888cb4b9f1e9f4488fae89aa939c16
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Install app and Chromium
+        run: |
+          pip install -e ".[gui]" playwright
+          python -m playwright install --with-deps chromium
+
+      - name: Fetch current data and create explicit last-trade fallback snapshots
+        shell: bash
+        run: |
+          mkdir -p fallback-artifacts/workspace fallback-artifacts/raw-snapshots fallback-artifacts/fallback-snapshots
+          python - <<'PY'
+          from __future__ import annotations
+          import json, shutil, time, traceback
+          from pathlib import Path
+          from option_chaser import service, store, workspace
+
+          ROOT=Path('fallback-artifacts/workspace'); OUT=Path('fallback-artifacts')
+          TS='2026-07-21T12:50:00+00:00'
+          inputs=[
+            ('TLT',105.0,'2028-01-01'),
+            ('TLT',120.0,'2028-12-01'),
+            ('ORCL',250.0,'2027-01-01'),
+          ]
+
+          def fetch(symbol):
+            errs=[]
+            for i in range(3):
+              try: return service.fetch_and_save(symbol)
+              except Exception:
+                errs.append(traceback.format_exc()); time.sleep(8)
+            raise RuntimeError('\n'.join(errs))
+
+          refs={}
+          for sym in ('TLT','ORCL'):
+            snap,path=fetch(sym)
+            raw=Path(path); shutil.copy2(raw,OUT/'raw-snapshots'/raw.name)
+            data=json.loads(raw.read_text(encoding='utf-8'))
+            changed=0
+            for c in data['contracts']:
+              last=float(c.get('last') or 0.0)
+              bid=float(c.get('bid') or 0.0); ask=float(c.get('ask') or 0.0)
+              if last <= 0: continue
+              if bid <= 0 and ask <= 0:
+                c['bid']=max(0.01,last*0.98); c['ask']=max(c['bid'],last*1.02); changed+=1
+              elif bid <= 0:
+                c['bid']=max(0.01,min(last,ask)*0.98); changed+=1
+              elif ask <= 0:
+                c['ask']=max(bid,last*1.02); changed+=1
+            data['source']='yfinance-last-trade-fallback-NOT-EXECUTABLE'
+            fp=OUT/'fallback-snapshots'/f"{sym}_{data['fetched_at'].replace(':','')}_LAST_FALLBACK.json"
+            fp.write_text(json.dumps(data,ensure_ascii=False,sort_keys=True,indent=2)+'\n',encoding='utf-8')
+            refs[sym]={'spot':data['spot'],'fetched_at':data['fetched_at'],'raw':str(raw),'fallback':str(fp),'changed_contracts':changed,'contracts':len(data['contracts'])}
+
+          created=[]
+          for sym,target,tdate in inputs:
+            bullish=target>refs[sym]['spot']; direction='bullish' if bullish else 'bearish'
+            strategies=('long-call','bull-call-spread') if bullish else ('long-put','bear-put-spread')
+            created.append(workspace.create_scenario(ROOT,symbol=sym,direction=direction,target_price=target,target_date=tdate,notes='LAST-TRADE FALLBACK 測試',strategies=strategies,ts=TS))
+          workspace.analyze_group(ROOT,'G-TLT',snapshot_path=refs['TLT']['fallback'],ts=TS)
+          osc=next(s for s in created if s.symbol=='ORCL')
+          workspace.analyze_scenario(ROOT,osc.id,snapshot_path=refs['ORCL']['fallback'],ts=TS)
+
+          def rows(view): return [r for g in view.get('expiry_groups',[]) for r in g.get('rows',[])]
+          def label(row):
+            if row is None: return None
+            c=row['candidate']; legs=c['legs']; structure=(f"買 {legs[0]['strike']:g}/賣 {legs[1]['strike']:g}" if len(legs)==2 else f"K={legs[0]['strike']:g}")
+            return {'strategy':row['strategy'],'structure':structure,'expiry':legs[0]['expiry'],'mid_cost':c['mid_cost'],'natural_cost':c['natural_cost'],'baseline_return':c['baseline_return'],'natural_return':c['natural_return'],'scenario_worst':c['scenario_vector']['worst_return'],'worst_code':c['scenario_vector']['worst_code'],'completion_threshold':c['completion_threshold'],'retention':c['retention'],'friction':c['friction'],'buffer_days':c['buffer_days'],'warning':c['quote_warning'],'candidate_key':c['candidate_key']}
+          report={'warning':'FALLBACK QUOTES ARE SYNTHETIC FROM LAST TRADE; NOT EXECUTABLE','snapshots':refs,'scenarios':[]}
+          for sc in created:
+            v=workspace.latest_result(ROOT,sc.id); allr=rows(v); key=v['default_selection'][1] if v.get('default_selection') else None
+            default=next((r for r in allr if r['candidate']['candidate_key']==key),None)
+            tr=next((r for r in allr if 'top_return' in r.get('badges',[])),None)
+            rs=next((r for r in allr if 'top_resilience' in r.get('badges',[])),None)
+            report['scenarios'].append({'id':sc.id,'symbol':sc.symbol,'target_price':sc.target_price,'target_date':sc.target_date,'direction':sc.direction,'snapshot_ref':v['snapshot_ref'],'default':label(default),'top_return':label(tr),'top_resilience':label(rs),'strategy_statuses':[{'strategy':r['strategy'],'status':r['status'],'n_qualified':r['n_qualified'],'message':r['message']} for r in v['results']],'expiry_groups':len(v['expiry_groups'])})
+          (OUT/'fallback-summary.json').write_text(json.dumps(report,ensure_ascii=False,indent=2),encoding='utf-8')
+          md=['# Live Last-Trade Fallback Scenario Run','','> WARNING: zero Bid/Ask legs were replaced from latest trade solely to exercise the product. Not executable quotes.','']
+          for sym,x in refs.items(): md.append(f"- {sym}: spot ${x['spot']:.2f}, fetched {x['fetched_at']}, {x['contracts']} contracts, {x['changed_contracts']} quote fallbacks")
+          for sc in report['scenarios']:
+            md+=['',f"## {sc['id']}",f"- {sc['symbol']} → ${sc['target_price']:.2f} by {sc['target_date']}"]
+            for name in ('default','top_return','top_resilience'):
+              c=sc[name]
+              if c: md.append(f"- {name}: {c['strategy']} {c['structure']} {c['expiry']} / return {c['baseline_return']*100:.1f}% / worst {c['scenario_worst']*100:.1f}%")
+            for st in sc['strategy_statuses']: md.append(f"- {st['strategy']}: {st['status']} qualified={st['n_qualified']} {st['message']}")
+          (OUT/'fallback-summary.md').write_text('\n'.join(md),encoding='utf-8')
+          print((OUT/'fallback-summary.md').read_text(encoding='utf-8'))
+          PY
+
+      - name: Launch fallback workspace GUI
+        shell: bash
+        run: |
+          PYTHONPATH="$PWD" OC_WORKSPACE="$PWD/fallback-artifacts/workspace" streamlit run webapp/app.py --server.headless true --server.address 0.0.0.0 --server.port 8501 > fallback-artifacts/streamlit.log 2>&1 &
+          for i in $(seq 1 60); do curl -fsS http://127.0.0.1:8501/_stcore/health && exit 0; sleep 2; done
+          exit 1
+
+      - name: Capture populated scenario details
+        shell: bash
+        run: |
+          cat > /tmp/cap.py <<'PY'
+          from pathlib import Path
+          import json,traceback
+          from playwright.sync_api import sync_playwright
+          O=Path('fallback-artifacts'); s={'status':'UNKNOWN','screenshots':[]}
+          def shot(p,n): p.screenshot(path=str(O/n),full_page=True); s['screenshots'].append(n)
+          try:
+            with sync_playwright() as pw:
+              b=pw.chromium.launch(); p=b.new_page(viewport={'width':1600,'height':1100},locale='zh-TW')
+              p.goto('http://127.0.0.1:8501',wait_until='networkidle',timeout=120000); p.get_by_role('link',name='劇本工作區').first.click(); p.get_by_text('劇本工作區',exact=True).wait_for(timeout=30000); p.wait_for_timeout(1200)
+              text=p.locator('body').inner_text(); assert '尚未分析' not in text; shot(p,'01-fallback-workspace-overview.png')
+              cases=[('ORCL-250-202701',0,'02-orcl-250-populated.png'),('TLT-105-202801',1,'03-tlt-105-populated.png'),('TLT-120-202812',2,'04-tlt-120-populated.png')]
+              for sid,i,n in cases:
+                p.get_by_role('button',name='詳頁').nth(i).click(); h=p.get_by_text(f'詳頁：{sid}',exact=True); h.wait_for(timeout=30000); h.scroll_into_view_if_needed(); p.wait_for_timeout(700); shot(p,n)
+                # Open resilience details and capture a focused viewport.
+                p.get_by_text('韌性與壓力情境',exact=True).click(); p.get_by_text('完成度報酬曲線',exact=True).wait_for(timeout=30000); p.wait_for_timeout(400); p.screenshot(path=str(O/n.replace('.png','-resilience.png')),full_page=True); s['screenshots'].append(n.replace('.png','-resilience.png'))
+                p.get_by_role('button',name='關閉詳頁').click(); p.wait_for_timeout(700)
+              b.close(); s['status']='PASS'
+          except Exception: s={'status':'FAIL','traceback':traceback.format_exc()}; raise
+          finally: (O/'browser-summary.json').write_text(json.dumps(s,ensure_ascii=False,indent=2),encoding='utf-8')
+          PY
+          python /tmp/cap.py
+
+      - name: Upload fallback evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: option-chaser-live-last-fallback
+          path: fallback-artifacts/
+          if-no-files-found: error
