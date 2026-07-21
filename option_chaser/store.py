@@ -9,8 +9,13 @@ import dataclasses
 import json
 import os
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
 
+from . import __version__
+from .scenarios import natural_cost
+from .service import AnalysisResult, CandidateView, candidate_key
+from .valuation import SpreadValuation
 from .vocabulary import EVENT_TYPES_V5
 
 
@@ -237,3 +242,154 @@ def rebuild_groups(ws_root, scenarios: list[Scenario],
     data = {"schema_version": 1, "groups": groups}
     atomic_write_json(Path(ws_root) / "groups.json", data)
     return data
+
+
+# ---------- ScenarioResult 契約（spec §3） ----------
+
+def _leg(c) -> dict:
+    return {"contract_symbol": c.contract_symbol, "option_type": c.option_type,
+            "strike": c.strike, "expiry": c.expiry, "bid": c.bid,
+            "ask": c.ask, "iv": c.implied_volatility, "volume": c.volume,
+            "open_interest": c.open_interest}
+
+
+def _candidate(cv: CandidateView, strategy: str, capital: float | None,
+               today: date, target_date: str) -> dict:
+    v = cv.valuation
+    if isinstance(v, SpreadValuation):
+        legs = [_leg(v.long_leg), _leg(v.short_leg)]   # [0]=long, [1]=short
+        mid_cost, expiry = v.net_mid, v.long_leg.expiry
+        max_profit, net_delta = v.max_profit, v.net_delta
+    else:
+        legs = [_leg(v.contract)]
+        mid_cost, expiry = v.mid, v.contract.expiry
+        # 與 service._comparison 相同定義（long-call 無上限 → None）
+        max_profit = None if strategy == "long-call" else v.contract.strike - v.mid
+        net_delta = v.delta
+    cap_per = mid_cost * 100
+    return {
+        "candidate_key": candidate_key(cv),
+        "strategy": strategy,
+        "legs": legs,
+        "mid_cost": mid_cost,
+        "natural_cost": natural_cost(v),
+        "baseline_pnl": cv.baseline_pnl,
+        "baseline_return": cv.baseline_return,
+        "natural_return": cv.natural_return,
+        "scenario_vector": {"entries": [list(e) for e in cv.scenario.entries],
+                            "worst_code": cv.scenario.worst_code,
+                            "worst_return": cv.scenario.worst_return},
+        "completion_curve": [list(e) for e in cv.completion_curve],
+        "completion_prices": list(cv.completion_prices),
+        "completion_threshold": cv.completion_threshold,
+        "breakeven_at_target": cv.breakeven_at_target,
+        "retention": cv.retention,
+        "friction": cv.friction,
+        "friction_amount": cv.friction_amount,
+        "buffer_days": cv.buffer_days,
+        "quote_warning": cv.quote_warning,
+        "theta_day_rate": cv.theta_day_rate,
+        "vega_per_pt": cv.vega_per_pt,
+        "decay_30d_return": cv.decay_30d_return,
+        "net_delta": net_delta,
+        "breakeven": v.breakeven,
+        "max_profit": max_profit,
+        "effective_leverage": v.effective_leverage,
+        "matrix": {"prices": [list(p) for p in cv.matrix.prices],
+                   "dates": [list(d) for d in cv.matrix.dates],
+                   "cells": [list(r) for r in cv.matrix.cells]},
+        # spec §3 新增四組（乘除法與日期差，非估值邏輯）
+        "capital_per_contract": cap_per,
+        "max_loss_per_contract": cap_per,   # debit 恆等於成本
+        "pct_of_capital": (cap_per / capital) if capital else None,
+        "days_to_target": (date.fromisoformat(target_date) - today).days,
+        "days_to_expiry": (date.fromisoformat(expiry) - today).days,
+    }
+
+
+def serialize_result(result: AnalysisResult, scenario_id: str,
+                     capital: float | None) -> dict:
+    base = result.request.base_params
+    today = result.today
+
+    def cand(cv, strategy):
+        return _candidate(cv, strategy, capital, today, base.target_date)
+
+    def strat(r):
+        return {
+            "strategy": r.strategy, "status": r.status, "message": r.message,
+            "n_qualified": r.n_qualified,
+            "filter_stages": ([{"label": s.label, "removed": s.removed}
+                               for s in r.filter_report.stages]
+                              if r.filter_report else []),
+            "pair_report": ({"total_pairs": r.pair_report.total_pairs,
+                             "removed_sanity": r.pair_report.removed_sanity,
+                             "passed": r.pair_report.passed}
+                            if r.pair_report else None),
+            "candidates": [cand(cv, r.strategy) for cv in r.candidates],
+            "expiry_best": [cand(cv, r.strategy) for cv in r.expiry_best],
+            "expiry_counts": [list(e) for e in r.expiry_counts],
+            "report_text": r.report_text,
+        }
+
+    def group(g):
+        return {"expiry": g.expiry, "buffer_days": g.buffer_days,
+                "hidden_count": g.hidden_count,
+                "rows": [{"strategy": row.strategy,
+                          "badges": list(row.badges),
+                          "candidate": cand(row.candidate, row.strategy)}
+                         for row in g.rows]}
+
+    all_quotes_filtered = bool(result.results) and all(
+        r.status == "empty" and r.filter_report is not None and any(
+            s.label == "報價異常" and s.removed >= 1
+            for s in r.filter_report.stages)
+        for r in result.results)
+
+    m = result.meta
+    return {
+        "schema_version": 1,
+        "engine_version": __version__,
+        "analyzed_at": m.fetched_at,
+        "scenario_id": scenario_id,
+        "params": {**dataclasses.asdict(base),
+                   "iv_shifts": list(base.iv_shifts),
+                   "delta_bands": list(base.delta_bands)},
+        "snapshot_ref": {"path": m.snapshot_path, "fetched_at": m.fetched_at,
+                         "source": m.source, "spot": m.spot},
+        "meta": {"symbol": m.symbol, "spot": m.spot,
+                 "fetched_at": m.fetched_at, "source": m.source,
+                 "snapshot_path": m.snapshot_path,
+                 "target_move": m.target_move},
+        "capital_assumed": capital,
+        "data_quality": {"fetched_at": m.fetched_at,
+                         "all_quotes_filtered": all_quotes_filtered},
+        "results": [strat(r) for r in result.results],
+        "expiry_groups": [group(g) for g in result.expiry_groups],
+        "hidden_expiries": list(result.hidden_expiries),
+        "default_selection": (list(result.default_selection)
+                              if result.default_selection else None),
+        "comparison": [dataclasses.asdict(c) for c in result.comparison],
+        "best_strategy": result.best_strategy,
+        "today": today.isoformat(),
+    }
+
+
+def save_result(ws_root, scenario_id: str, view: dict) -> Path:
+    """檔名 = fetched_at.replace(':','')（Windows 安全；字典序＝時間序）。"""
+    ts = view["snapshot_ref"]["fetched_at"].replace(":", "")
+    path = Path(ws_root) / "results" / scenario_id / f"{ts}.json"
+    atomic_write_json(path, view)
+    return path
+
+
+def load_result(path) -> dict:
+    return json.loads(Path(path).read_text(encoding="utf-8"))
+
+
+def latest_result_path(ws_root, scenario_id: str) -> Path | None:
+    d = Path(ws_root) / "results" / scenario_id
+    if not d.is_dir():
+        return None
+    files = sorted(d.glob("*.json"))
+    return files[-1] if files else None

@@ -167,6 +167,7 @@ results[]: per strategy —— status / message / n_qualified / filter_stages[{l
   / report_text（原文保留）
 expiry_groups / hidden_expiries / default_selection / comparison / best_strategy（v4 原樣）
 today: ISO date（snapshot 推導，決定性）
+meta（SnapshotMeta 全欄含 target_move）與各 strategy result 的 expiry_best[]/expiry_counts[] 亦序列化（「全量」原則；render/散點圖依賴 expiry_best）。
 ```
 
 - **決定性**：同 snapshot＋同 params＋同 capital → 序列化後逐位元相同（`json.dumps(..., sort_keys=True, ensure_ascii=False)`，浮點原值不四捨五入）。
