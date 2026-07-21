@@ -1,0 +1,80 @@
+name: Temporary v5 Final Browser Trial
+
+on:
+  pull_request:
+    branches:
+      - tmp-v5-trial-base-20260721
+
+jobs:
+  browser-final:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 5f2c22b8b4888cb4b9f1e9f4488fae89aa939c16
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Install
+        run: |
+          pip install -e ".[gui]" playwright
+          python -m playwright install --with-deps chromium
+      - name: Seed
+        run: |
+          mkdir -p final-artifacts
+          python - <<'PY'
+          from pathlib import Path
+          from option_chaser import store, workspace
+          root=Path('final-artifacts/workspace'); ts='2026-07-21T00:00:00+00:00'; fix='tests/fixtures/xyz_v4_six_expiries.json'
+          store.save_constraints(root,100000.0)
+          workspace.create_scenario(root,symbol='XYZ',direction='bullish',target_price=110,target_date='2026-08-01',notes='第一',strategies=('long-call','bull-call-spread'),ts=ts)
+          workspace.create_scenario(root,symbol='XYZ',direction='bullish',target_price=120,target_date='2026-09-01',notes='第二',strategies=('long-call','bull-call-spread'),ts=ts)
+          workspace.create_scenario(root,symbol='ABC',direction='bearish',target_price=80,target_date='2026-10-01',notes='獨立',strategies=('long-put','bear-put-spread'),ts=ts)
+          workspace.analyze_group(root,'G-XYZ',snapshot_path=fix,ts=ts)
+          PY
+      - name: Launch workaround
+        run: |
+          PYTHONPATH="$PWD" OC_WORKSPACE="$PWD/final-artifacts/workspace" streamlit run webapp/app.py --server.headless true --server.address 0.0.0.0 --server.port 8501 > final-artifacts/streamlit.log 2>&1 &
+          for i in $(seq 1 60); do curl -fsS http://127.0.0.1:8501/_stcore/health && exit 0; sleep 2; done
+          exit 1
+      - name: Browser
+        run: |
+          cat > /tmp/final.py <<'PY'
+          import json, traceback
+          from pathlib import Path
+          from playwright.sync_api import sync_playwright
+          out=Path('final-artifacts'); s={}
+          try:
+            with sync_playwright() as p:
+              b=p.chromium.launch(); page=b.new_page(viewport={'width':1440,'height':1000},locale='zh-TW')
+              page.goto('http://127.0.0.1:8501',wait_until='networkidle',timeout=120000)
+              page.get_by_role('link',name='劇本工作區').first.click()
+              page.get_by_text('劇本工作區',exact=True).wait_for(timeout=30000)
+              page.wait_for_timeout(800)
+              reasons=page.locator('input[placeholder="標記原因（必填）"]')
+              assert reasons.count()==3
+              reasons.nth(1).fill('XYZ第一里程碑達成')
+              page.get_by_role('button',name='標記達成').nth(1).click()
+              page.wait_for_timeout(900)
+              page.get_by_role('button',name='確認').nth(0).click()
+              page.wait_for_timeout(900)
+              text=page.locator('body').inner_text()
+              assert '重新分析 XYZ-120-202609' in text
+              page.screenshot(path=str(out/'01-milestone-confirmed.png'),full_page=True)
+              page.set_viewport_size({'width':390,'height':844}); page.evaluate('window.scrollTo(0,0)'); page.wait_for_timeout(700)
+              sw=page.evaluate('document.body.scrollWidth'); vw=page.evaluate('window.innerWidth')
+              s={'status':'PASS','mobile_scroll_width':sw,'mobile_viewport_width':vw,'mobile_document_overflow':sw>vw+2}
+              page.screenshot(path=str(out/'02-mobile.png'),full_page=True)
+              b.close()
+          except Exception:
+            s={'status':'FAIL','traceback':traceback.format_exc()}; raise
+          finally:
+            (out/'summary.json').write_text(json.dumps(s,ensure_ascii=False,indent=2),encoding='utf-8')
+          PY
+          python /tmp/final.py
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: option-chaser-v5-final-browser
+          path: final-artifacts/
