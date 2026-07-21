@@ -561,16 +561,22 @@ def _analyze(request: AnalysisRequest, snap: ChainSnapshot,
         default_selection=default_selection)
 
 
-def run(request: AnalysisRequest, progress: Progress | None = None) -> AnalysisResult:
-    _validate_request(request)
-    _emit(progress, f"正在抓取 {request.symbol} 市場資料……")
+def fetch_and_save(symbol: str) -> tuple[ChainSnapshot, str]:
+    """v5 spec §4: 抓取＋落盤 snapshot（run 與 workspace.analyze_group 共用）。"""
     from .data.yf import fetch_chain  # lazy: offline paths never import yfinance
 
-    snap = fetch_chain(request.symbol)
+    snap = fetch_chain(symbol)
     out = Path("snapshots") / f"{snap.symbol}_{snap.fetched_at.replace(':', '')}.json"
     out.parent.mkdir(exist_ok=True)
     save_snapshot(snap, out)
-    return _analyze(request, snap, str(out), progress)
+    return snap, str(out)
+
+
+def run(request: AnalysisRequest, progress: Progress | None = None) -> AnalysisResult:
+    _validate_request(request)
+    _emit(progress, f"正在抓取 {request.symbol} 市場資料……")
+    snap, out = fetch_and_save(request.symbol)
+    return _analyze(request, snap, out, progress)
 
 
 def run_offline(request: AnalysisRequest, snapshot_path: str,
