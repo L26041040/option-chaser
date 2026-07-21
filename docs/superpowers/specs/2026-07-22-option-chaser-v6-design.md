@@ -15,7 +15,7 @@
 
 ### 0.2 已拍板決議（brainstorm 定案，審核時不再翻案）
 
-1. **深色方向＝照 Artifact 原樣**：深色框架（頁面底、chrome、膠囊）＋淺色資料視窗（heatmap、表格、縮圖**零改色**）。不做全深色、不做雙主題。
+1. **視覺方向＝照 Artifact 原樣（淺色）**：使用者確認其看到的 Artifact 為淺色呈現——淺灰頁面底（`#eef0f3`）＋白色卡片視窗＋膠囊；資料視窗（heatmap、表格、縮圖）**零改色**。不做深色主題、不做雙主題（Brief §3「深色專業交易介面」一詞依使用者本輪澄清，修正為此淺色基準）。
 2. **技術路線＝Streamlit 深度定製**＋ dict 視圖介面正式文件化（未來換前端的接縫）；不換 React、不加 API 層。
 3. **BAT＝單一自癒啟動檔**：首次雙擊自動建 `.venv` 並安裝依賴（中文進度），之後直接啟動。不做獨立安裝檔。
 4. **停止方式＝關窗即停**：同視窗執行 streamlit，關閉視窗或 Ctrl+C 即停止。不做停止.bat、不獵殺程序。
@@ -56,14 +56,15 @@
 
 ### 2.1 Token 來源與落地
 
-Artifact 外殼 CSS 是本版視覺規格的權威。其 token 全文收錄為新檔 **`webapp/theme.py`**（唯一來源；`THEME_CSS` 常數＋`inject()` 函數，各 view 開頭呼叫）。核心 token（自 Artifact 原樣移植，深色值為正式值）：
+Artifact 外殼 CSS 是本版視覺規格的權威。其 token 全文收錄為新檔 **`webapp/theme.py`**（唯一來源；`THEME_CSS` 常數＋`inject()` 函數，各 view 開頭呼叫）。核心 token（自 Artifact 淺色呈現原樣移植——即其 `:root` 預設值，正式值如下；Artifact 源碼中的 dark 變體棄用）：
 
 ```
---bg: #0e1117          頁面底（深）
---chrome: #161a22      chrome/膠囊底（深）
---chrome-ink: #9aa3b2  chrome 文字
---surface: #ffffff     資料視窗底（淺——混合式核心）
---ink: #1c1f26         資料視窗文字
+--bg: #eef0f3          頁面底（淺灰）
+--chrome: #f3f4f6      chrome/膠囊底
+--chrome-ink: #374151  chrome 文字
+--surface: #ffffff     卡片/資料視窗底（白）
+--ink: #1c1f26         主文字
+--dim: #6b7280         次要文字
 --line: #e3e6ea        邊線
 --accent: #ff4b4b      主色（Streamlit 紅，延續品牌）
 --pos: #1a7f37  --neg: #b22222
@@ -72,9 +73,9 @@ Artifact 外殼 CSS 是本版視覺規格的權威。其 token 全文收錄為�
 膠囊（pill）：999px 圓角、1px 邊；狀態色 Active 綠框淺綠底、Reached 金框淺黃底
 ```
 
-- `.streamlit/config.toml` 設定 dark base theme（`base="dark"`、primaryColor=`#ff4b4b`、backgroundColor=`#0e1117`、secondaryBackgroundColor=`#161a22`）——原生元件（按鈕、輸入框、下拉）吃主題色。
-- 資料視窗（heatmap、mini 表、縮圖）包在淺色 `.data-window` 容器內；**heatmap 色階函數 `cell_color` 與所有渲染輸出零修改**。
-- 側欄（st.navigation 產生）以 CSS 調為深色 chrome 風格。
+- `.streamlit/config.toml` 設定 light base theme（`base="light"`、primaryColor=`#ff4b4b`、backgroundColor=`#eef0f3`、secondaryBackgroundColor=`#f3f4f6`、textColor=`#1c1f26`）——原生元件（按鈕、輸入框、下拉）吃主題色。
+- 資料視窗（heatmap、mini 表、縮圖）置於白色卡片容器內；**heatmap 色階函數 `cell_color` 與所有渲染輸出零修改**。
+- 側欄（st.navigation 產生）以 CSS 調為 `--chrome` 淺灰風格＋選中項 accent 淺紅底（Artifact 側欄樣式）。
 
 ### 2.2 卡片元件庫（新檔 `webapp/components.py`）
 
@@ -289,4 +290,4 @@ Windows 實機：刪除 `.venv` 從零雙擊→自動安裝→瀏覽器開啟→
 
 ## 13. 明確不做（v6）
 
-全深色資料區、雙主題、React/API 層（僅文件化接縫）、停止.bat、資料目錄遷移、Last-Trade/Synthetic fallback 實作、韌性排名重構、Scenario Decision 持久化、持倉/追蹤面板/倉位配置、Policy Engine、自動事件、券商 API、自動下單、劇本備註編輯（唯讀原則沿用）。順手項（不擋主線、時間允許才做）：「每口成本占本金」改名、最近有效 Snapshot 重試、Top 5 顯示、候選展開。
+深色主題、雙主題、React/API 層（僅文件化接縫）、停止.bat、資料目錄遷移、Last-Trade/Synthetic fallback 實作、韌性排名重構、Scenario Decision 持久化、持倉/追蹤面板/倉位配置、Policy Engine、自動事件、券商 API、自動下單、劇本備註編輯（唯讀原則沿用）。順手項（不擋主線、時間允許才做）：「每口成本占本金」改名、最近有效 Snapshot 重試、Top 5 顯示、候選展開。
