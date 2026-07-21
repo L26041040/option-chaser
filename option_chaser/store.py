@@ -189,3 +189,51 @@ def change_status(ws_root, ts: str, sc: Scenario, to: str, reason: str,
     updated = dataclasses.replace(sc, status=to)
     save_scenario(ws_root, updated)
     return updated
+
+
+# ---------- groups.json（全量可重建快取，spec §2.4） ----------
+
+def propose_relation(a: Scenario, b: Scenario) -> str:
+    """相鄰提案（a 為 target_date 較早者）。確定性，零 LLM。"""
+    if a.direction != b.direction:
+        return "exclusive-candidate"
+    if a.direction == "bullish":
+        progressing = a.target_price <= b.target_price
+    else:
+        progressing = a.target_price >= b.target_price
+    return "milestone-path" if progressing else "review-needed"
+
+
+def rebuild_groups(ws_root, scenarios: list[Scenario],
+                   events: list[dict]) -> dict:
+    """members/proposed 由 scenario 檔決定性重建；confirmed 由事件投影
+    （行序權威＋生命週期界定：僅計入 pair 兩成員各自最新 CREATED 之後者）。"""
+    by_symbol: dict[str, list[Scenario]] = {}
+    for sc in scenarios:
+        by_symbol.setdefault(sc.symbol, []).append(sc)
+
+    groups = []
+    for symbol in sorted(by_symbol):
+        members = sorted(by_symbol[symbol],
+                         key=lambda s: (s.target_date, s.id))
+        relations = []
+        for a, b in zip(members, members[1:]):
+            confirmed, confirmed_at = "undefined", None
+            created_a = _last_index(events, a.id, "SCENARIO_CREATED")
+            created_b = _last_index(events, b.id, "SCENARIO_CREATED")
+            for i, e in enumerate(events):
+                if (e.get("event") == "GROUP_RELATION_CONFIRMED"
+                        and set(e["payload"].get("pair", [])) == {a.id, b.id}
+                        and i > created_a and i > created_b):
+                    confirmed = e["payload"]["choice"]
+                    confirmed_at = e["ts"]
+            relations.append({"pair": [a.id, b.id],
+                              "proposed": propose_relation(a, b),
+                              "confirmed": confirmed,
+                              "confirmed_at": confirmed_at})
+        groups.append({"id": f"G-{symbol}", "symbol": symbol,
+                       "members": [m.id for m in members],
+                       "relations": relations})
+    data = {"schema_version": 1, "groups": groups}
+    atomic_write_json(Path(ws_root) / "groups.json", data)
+    return data
