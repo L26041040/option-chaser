@@ -11,8 +11,9 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from . import store
+from . import service, store
 from .data.snapshot import load_snapshot
+from .models import AnalysisParams
 from .store import Scenario
 from .vocabulary import RELATION_CHOICES
 
@@ -148,3 +149,55 @@ def default_direction(symbol: str, target_price: float,
         return None
     snap = load_snapshot(files[-1])
     return "bullish" if target_price > snap.spot else "bearish"
+
+
+def _request_for(sc: Scenario) -> service.AnalysisRequest:
+    """base_params 自 scenario 欄位；其餘 CLI 預設（spec §4）。"""
+    base = AnalysisParams(target_price=sc.target_price,
+                          target_date=sc.target_date,
+                          strategy=sc.strategies[0])
+    return service.AnalysisRequest(symbol=sc.symbol, base_params=base,
+                                   strategies=tuple(sc.strategies))
+
+
+def analyze_scenario(ws_root, sid: str, progress=None, *,
+                     snapshot_path: str | None = None,
+                     ts: str | None = None) -> Path:
+    """§2.5 例外次序：result 檔先落盤，ANALYSIS_COMPLETED 後補。
+    分析前必先對帳：邏輯已刪（殘檔）→ 拋錯；崩潰窗 → 修復後續行。"""
+    events = store.read_events(ws_root)
+    if store.project_status(events, sid) is None:
+        raise store.WorkspaceIntegrityError(f"劇本 {sid} 不存在或已刪除")
+    sc = store.reconcile_status(
+        ws_root, store.load_scenario(store.scenario_path(ws_root, sid)), events)
+    req = _request_for(sc)
+    if snapshot_path is None:
+        result = service.run(req, progress)
+    else:
+        result = service.run_offline(req, snapshot_path, progress)
+    capital = store.load_constraints(ws_root)["total_capital"]
+    view = store.serialize_result(result, sc.id, capital)
+    path = store.save_result(ws_root, sc.id, view)
+    store.append_event(ws_root, ts or now_utc_iso(), sc.id,
+                       "ANALYSIS_COMPLETED",
+                       {"result_path": str(path),
+                        "snapshot_ref": view["snapshot_ref"]})   # 完整物件（spec §2.3）
+    return path
+
+
+def analyze_group(ws_root, group_id: str, progress=None, *,
+                  snapshot_path: str | None = None,
+                  ts: str | None = None) -> list[Path]:
+    """一次抓取共用 snapshot；全成員 result 的 snapshot_ref.path 相同（spec §4）。"""
+    groups = load_groups(ws_root)
+    group = next(g for g in groups["groups"] if g["id"] == group_id)
+    if snapshot_path is None:
+        _, snapshot_path = service.fetch_and_save(group["symbol"])
+    return [analyze_scenario(ws_root, sid, progress,
+                             snapshot_path=snapshot_path, ts=ts)
+            for sid in group["members"]]
+
+
+def latest_result(ws_root, sid: str) -> dict | None:
+    path = store.latest_result_path(ws_root, sid)
+    return store.load_result(path) if path else None
