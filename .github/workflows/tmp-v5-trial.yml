@@ -1,0 +1,226 @@
+name: Temporary Option Chaser v5 Trial
+
+on:
+  pull_request:
+    branches:
+      - tmp-v5-trial-base-20260721
+
+jobs:
+  trial:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - name: Checkout latest v5
+        uses: actions/checkout@v4
+        with:
+          ref: 5f2c22b8b4888cb4b9f1e9f4488fae89aa939c16
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Install app, tests, and browser
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[gui]" pytest playwright
+          python -m playwright install --with-deps chromium
+
+      - name: Run full test suite
+        shell: bash
+        run: |
+          mkdir -p trial-artifacts
+          set -o pipefail
+          python -m pytest -q | tee trial-artifacts/pytest.txt
+
+      - name: Seed deterministic multi-scenario workspace
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          from option_chaser import store, workspace
+
+          root = Path('trial-artifacts/workspace')
+          ts = '2026-07-21T00:00:00+00:00'
+          fix = 'tests/fixtures/xyz_v4_six_expiries.json'
+          store.save_constraints(root, 100000.0)
+          a = workspace.create_scenario(
+              root, symbol='XYZ', direction='bullish', target_price=110.0,
+              target_date='2026-08-01', notes='第一里程碑',
+              strategies=('long-call','bull-call-spread'), ts=ts)
+          b = workspace.create_scenario(
+              root, symbol='XYZ', direction='bullish', target_price=120.0,
+              target_date='2026-09-01', notes='第二里程碑',
+              strategies=('long-call','bull-call-spread'), ts=ts)
+          c = workspace.create_scenario(
+              root, symbol='ABC', direction='bearish', target_price=80.0,
+              target_date='2026-10-01', notes='獨立劇本',
+              strategies=('long-put','bear-put-spread'), ts=ts)
+          workspace.analyze_group(root, 'G-XYZ', snapshot_path=fix, ts=ts)
+          print(a.id, b.id, c.id)
+          PY
+
+      - name: Live TLT service smoke
+        continue-on-error: true
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json, traceback
+          from pathlib import Path
+          from option_chaser import service
+          from option_chaser.models import AnalysisParams
+
+          out = Path('trial-artifacts/live-smoke.json')
+          try:
+              req = service.AnalysisRequest(
+                  symbol='TLT',
+                  base_params=AnalysisParams(
+                      strategy='long-call', target_price=105.0,
+                      target_date='2028-01-01'),
+                  strategies=('long-call','bull-call-spread'))
+              r = service.run(req)
+              payload = {
+                  'status': 'completed',
+                  'fetched_at': r.meta.fetched_at,
+                  'spot': r.meta.spot,
+                  'strategy_statuses': [
+                      {'strategy': x.strategy, 'status': x.status,
+                       'n_qualified': x.n_qualified,
+                       'message': x.message}
+                      for x in r.results],
+                  'expiry_groups': len(r.expiry_groups),
+                  'default_selection': r.default_selection,
+              }
+          except Exception:
+              payload = {'status': 'error', 'traceback': traceback.format_exc()}
+          out.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding='utf-8')
+          print(out.read_text(encoding='utf-8'))
+          PY
+
+      - name: Launch Streamlit with seeded workspace
+        shell: bash
+        run: |
+          OC_WORKSPACE="$PWD/trial-artifacts/workspace" \
+          streamlit run webapp/app.py \
+            --server.headless true \
+            --server.address 0.0.0.0 \
+            --server.port 8501 \
+            > trial-artifacts/streamlit.log 2>&1 &
+          echo $! > trial-artifacts/streamlit.pid
+          for i in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:8501/_stcore/health; then
+              exit 0
+            fi
+            sleep 2
+          done
+          cat trial-artifacts/streamlit.log
+          exit 1
+
+      - name: Browser trial of v4 and v5 pages
+        shell: bash
+        run: |
+          cat > /tmp/v5_trial.py <<'PY'
+          from pathlib import Path
+          import json, traceback
+          from playwright.sync_api import sync_playwright
+
+          OUT = Path('trial-artifacts')
+          console = []
+          summary = {}
+
+          def screenshot(page, name, full=False):
+              page.screenshot(path=str(OUT / name), full_page=full)
+
+          try:
+              with sync_playwright() as p:
+                  browser = p.chromium.launch()
+                  page = browser.new_page(viewport={'width': 1440, 'height': 1000}, locale='zh-TW')
+                  page.on('console', lambda m: console.append(f'{m.type}: {m.text}'))
+                  page.on('pageerror', lambda e: console.append(f'pageerror: {e}'))
+
+                  page.goto('http://127.0.0.1:8501', wait_until='networkidle', timeout=120000)
+                  page.get_by_text('Option Chaser', exact=True).wait_for(timeout=30000)
+                  home_text = page.locator('body').inner_text()
+                  for expected in ['標的', '目標價位', '預計到達時間', 'Long Call', 'Bull Call Spread']:
+                      assert expected in home_text, expected
+                  screenshot(page, '01-quick-analysis-home.png', full=True)
+
+                  # Open workspace through sidebar navigation.
+                  link = page.get_by_role('link', name='劇本工作區')
+                  assert link.count() >= 1
+                  link.first.click()
+                  page.get_by_text('劇本工作區', exact=True).wait_for(timeout=30000)
+                  page.wait_for_timeout(1200)
+                  body = page.locator('body').inner_text()
+                  required = [
+                      '劇本清單', 'XYZ', 'G-XYZ', 'ABC', '群組分析',
+                      '里程碑路徑', '劇本報酬', '情境最壞', '佔本金'
+                  ]
+                  missing = [x for x in required if x not in body]
+                  assert not missing, f'missing workspace text: {missing}'
+                  summary['workspace_body_has'] = required
+                  screenshot(page, '02-workspace-desktop.png', full=True)
+
+                  # Open first analyzed scenario detail and verify the four-step v4 view is reusable.
+                  details = page.get_by_role('button', name='詳頁')
+                  assert details.count() >= 2
+                  details.nth(0).click()
+                  page.get_by_text('Step 2　劇本主圖', exact=True).wait_for(timeout=30000)
+                  detail_body = page.locator('body').inner_text()
+                  for expected in ['Step 2', 'Step 3', 'Step 4', '最高報酬', '最強韌性', '成交摩擦']:
+                      assert expected in detail_body, expected
+                  screenshot(page, '03-workspace-detail-desktop.png', full=True)
+
+                  # Open resilience panel.
+                  page.get_by_text('韌性與壓力情境', exact=True).click()
+                  page.get_by_text('完成度報酬曲線', exact=True).wait_for(timeout=30000)
+                  screenshot(page, '04-resilience-panel.png', full=True)
+
+                  # Close detail; mark first milestone reached and confirm relation.
+                  page.get_by_role('button', name='關閉詳頁').click()
+                  page.wait_for_timeout(800)
+                  reasons = page.locator('input[placeholder="標記原因（必填）"]')
+                  assert reasons.count() >= 2
+                  reasons.nth(0).fill('瀏覽器試用：到價')
+                  page.get_by_role('button', name='標記達成').nth(0).click()
+                  page.wait_for_timeout(1000)
+
+                  confirms = page.get_by_role('button', name='確認')
+                  assert confirms.count() >= 1
+                  confirms.nth(0).click()
+                  page.wait_for_timeout(1000)
+                  body_after = page.locator('body').inner_text()
+                  assert '重新分析 XYZ-120-202609' in body_after
+                  screenshot(page, '05-milestone-confirmed.png', full=True)
+
+                  # Mobile view must not overflow as a whole document.
+                  page.set_viewport_size({'width': 390, 'height': 844})
+                  page.evaluate('window.scrollTo(0, 0)')
+                  page.wait_for_timeout(800)
+                  sw = page.evaluate('document.body.scrollWidth')
+                  vw = page.evaluate('window.innerWidth')
+                  summary['mobile_scroll_width'] = sw
+                  summary['mobile_viewport_width'] = vw
+                  summary['mobile_document_overflow'] = sw > vw + 2
+                  screenshot(page, '06-workspace-mobile.png', full=True)
+
+                  browser.close()
+              summary['status'] = 'PASS'
+          except Exception:
+              summary['status'] = 'FAIL'
+              summary['traceback'] = traceback.format_exc()
+              raise
+          finally:
+              (OUT / 'browser-summary.json').write_text(
+                  json.dumps(summary, ensure_ascii=False, indent=2), encoding='utf-8')
+              (OUT / 'browser-console.log').write_text('\n'.join(console), encoding='utf-8')
+          PY
+          python /tmp/v5_trial.py
+
+      - name: Upload trial evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: option-chaser-v5-trial
+          path: trial-artifacts/
+          if-no-files-found: error
