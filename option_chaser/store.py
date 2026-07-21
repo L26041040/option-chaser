@@ -11,6 +11,8 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
+from .vocabulary import EVENT_TYPES_V5
+
 
 class WorkspaceIntegrityError(Exception):
     """快取與事件投影不一致（竄改型，spec §2.2）。"""
@@ -93,3 +95,97 @@ def load_constraints(ws_root) -> dict:
 def save_constraints(ws_root, total_capital: float | None) -> None:
     atomic_write_json(Path(ws_root) / "constraints.json",
                       {"schema_version": 1, "total_capital": total_capital})
+
+
+# ---------- events.jsonl ----------
+
+ALLOWED_TRANSITIONS: set[tuple[str, str]] = {
+    ("Active", "Reached"), ("Active", "Invalidated"), ("Active", "Expired")}
+
+
+def _events_path(ws_root) -> Path:
+    return Path(ws_root) / "events.jsonl"
+
+
+def append_event(ws_root, ts: str, scenario_id: str | None, event: str,
+                 payload: dict) -> None:
+    """spec §6: event 值域鎖定 EVENT_TYPES_V5（v7 預留在 v5 拒寫）。"""
+    if event not in EVENT_TYPES_V5:
+        raise ValueError(f"事件值不在 v5 詞彙表內: {event}")
+    line = json.dumps({"ts": ts, "scenario_id": scenario_id,
+                       "event": event, "payload": payload},
+                      ensure_ascii=False, sort_keys=True)
+    path = _events_path(ws_root)
+    existing = path.read_text(encoding="utf-8") if path.exists() else ""
+    _atomic_write_text(path, existing + line + "\n")
+
+
+def read_events(ws_root) -> list[dict]:
+    path = _events_path(ws_root)
+    if not path.exists():
+        return []
+    return [json.loads(ln) for ln in
+            path.read_text(encoding="utf-8").splitlines() if ln.strip()]
+
+
+def _last_index(events: list[dict], sid: str, etype: str) -> int:
+    idx = -1
+    for i, e in enumerate(events):
+        if e.get("scenario_id") == sid and e.get("event") == etype:
+            idx = i
+    return idx
+
+
+def lifecycle_events(events: list[dict], sid: str) -> list[dict]:
+    """spec §2.3: 行序權威。最後一筆 CREATED 之後的該 id 事件；
+    若其後有 DELETED（或根本無 CREATED）→ 無現行生命週期。"""
+    created = _last_index(events, sid, "SCENARIO_CREATED")
+    deleted = _last_index(events, sid, "SCENARIO_DELETED")
+    if created == -1 or deleted > created:
+        return []
+    return [e for i, e in enumerate(events)
+            if i > created and e.get("scenario_id") == sid]
+
+
+def project_status(events: list[dict], sid: str) -> str | None:
+    created = _last_index(events, sid, "SCENARIO_CREATED")
+    deleted = _last_index(events, sid, "SCENARIO_DELETED")
+    if created == -1 or deleted > created:
+        return None
+    status = "Active"
+    for e in lifecycle_events(events, sid):
+        if e["event"] == "STATUS_CHANGED":
+            status = e["payload"]["to"]
+    return status
+
+
+def reconcile_status(ws_root, sc: Scenario, events: list[dict]) -> Scenario:
+    """spec §2.2 兩型：崩潰窗修復（快取==最後 STATUS_CHANGED 的 from）／竄改拋錯。"""
+    projected = project_status(events, sc.id)
+    if projected is None:
+        raise WorkspaceIntegrityError(
+            f"劇本 {sc.id} 檔案存在但事件投影無現行生命週期")
+    if sc.status == projected:
+        return sc
+    changes = [e for e in lifecycle_events(events, sc.id)
+               if e["event"] == "STATUS_CHANGED"]
+    if changes and sc.status == changes[-1]["payload"]["from"]:
+        repaired = dataclasses.replace(sc, status=projected)
+        save_scenario(ws_root, repaired)     # 修復快取，不追加事件
+        return repaired
+    raise WorkspaceIntegrityError(
+        f"劇本 {sc.id} 狀態快取 {sc.status} 與事件投影 {projected} 不一致（非崩潰窗型）")
+
+
+def change_status(ws_root, ts: str, sc: Scenario, to: str, reason: str,
+                  by: str = "user", extra_payload: dict | None = None) -> Scenario:
+    """先 append 事件、再改快取（spec §2.5 統一寫入次序）。"""
+    if (sc.status, to) not in ALLOWED_TRANSITIONS:
+        raise ValueError(f"非法狀態轉移: {sc.status} -> {to}")
+    payload = {"from": sc.status, "to": to, "reason": reason, "by": by}
+    if extra_payload:
+        payload.update(extra_payload)
+    append_event(ws_root, ts, sc.id, "STATUS_CHANGED", payload)
+    updated = dataclasses.replace(sc, status=to)
+    save_scenario(ws_root, updated)
+    return updated
