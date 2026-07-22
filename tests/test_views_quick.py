@@ -79,7 +79,13 @@ def test_analysis_does_not_write_workspace(monkeypatch, tmp_path):
 def test_save_as_scenario_button_persists(monkeypatch, tmp_path):
     monkeypatch.setenv("OC_WORKSPACE", str(tmp_path))
     _patched(monkeypatch)
-    at = AppTest.from_file(PAGE)
+    # quick.py 保存成功分支現含 st.page_link，須經真實入口到達本頁。
+    # AppTest.switch_page 不會自動 rerun（官方文件："does not automatically
+    # rerun the app. Use a follow-up call to AppTest.run()"）——必須緊接 at.run()
+    # 才能在正確頁面上操作 widget，否則後續 _fill_and_submit 仍作用在總覽頁。
+    at = AppTest.from_file("webapp/app.py")
+    at.run()
+    at.switch_page("views/quick.py")
     at.run()
     at = _fill_and_submit(at)
     save_buttons = [b for b in at.button if b.label == "保存為劇本"]
@@ -96,7 +102,11 @@ def test_save_as_scenario_duplicate_shows_link(monkeypatch, tmp_path):
     _patched(monkeypatch)
     workspace.create_scenario(tmp_path, "XYZ", "bullish", 120.0, "2026-08-01", "",
                               ("long-call",), ts="2026-07-22T00:00:00+00:00")
-    at = AppTest.from_file(PAGE)
+    # quick.py 撞名分支現含 st.page_link，須經真實入口到達本頁；
+    # switch_page 後同樣須緊接 at.run()（見上一則同理）。
+    at = AppTest.from_file("webapp/app.py")
+    at.run()
+    at.switch_page("views/quick.py")
     at.run()
     at = _fill_and_submit(at)
     body = " ".join(m.value for m in at.markdown)

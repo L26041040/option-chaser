@@ -126,8 +126,12 @@ if "result" in st.session_state:
     _existing = workspace.scenario_exists(
         WS_ROOT, _final_result.request.symbol, _base.target_price, _base.target_date)
     if _existing is not None:
-        st.markdown(f"已有同名劇本：`{_existing}`，前往劇本工作區查看。")
+        st.markdown(f"已有同名劇本：`{_existing}`。")
+        st.page_link("views/detail.py", label="前往查看", icon="📄",
+                     query_params={"sid": _existing})
     else:
         if st.button("保存為劇本", key="save-as-scenario"):
             sc, _ = workspace.adopt_result(WS_ROOT, _final_result)
-            st.success(f"已保存為劇本 `{sc.id}`，前往劇本工作區查看。")
+            st.success(f"已保存為劇本 `{sc.id}`。")
+            st.page_link("views/detail.py", label="前往查看", icon="📄",
+                         query_params={"sid": sc.id})

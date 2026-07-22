@@ -22,7 +22,9 @@ def ws(tmp_path, monkeypatch):
 
 
 def test_overview_empty_workspace_shows_guidance(ws):
-    at = AppTest.from_file("webapp/views/overview.py")
+    # overview.py 現含 st.page_link（空工作區分支）——st.page_link 要求入口腳本
+    # 已宣告 st.navigation，故經真實路由到達本頁，而非直接載入本檔。
+    at = AppTest.from_file("webapp/app.py")
     at.run()
     assert not at.exception
     body = " ".join(m.value for m in at.markdown)
@@ -40,7 +42,7 @@ def test_overview_metrics_reflect_workspace(ws):
 
 
 def test_overview_no_position_language(ws):
-    at = AppTest.from_file("webapp/views/overview.py")
+    at = AppTest.from_file("webapp/app.py")
     at.run()
     body = " ".join(m.value for m in at.markdown)
     for banned in ("持倉損益", "已投入資金", "Portfolio Greeks"):

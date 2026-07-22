@@ -20,11 +20,8 @@ st.title("戰情總覽")
 scenarios = workspace.list_scenarios(WS_ROOT)
 
 if not scenarios:
-    # 注意：本頁獨立測試時（AppTest.from_file 直接載入本檔）尚無 st.navigation
-    # 路由存在，st.page_link 要求目標檔案必須是「已在 st.navigation 註冊的頁面」
-    # 否則丟例外——此處故意只用純文字指引，可點擊的頁面連結延後到 Task 12（路由
-    # 建好後）以 st.page_link 升級並於 test_app_navigation.py 驗證整合行為。
     st.markdown("尚無劇本。前往「劇本工作區」建立第一個劇本。")
+    st.page_link("views/workspace.py", label="建立第一個劇本", icon="🗂")
 else:
     views = {sc.id: workspace.latest_result(WS_ROOT, sc.id) for sc in scenarios}
     groups = workspace.load_groups(WS_ROOT)
