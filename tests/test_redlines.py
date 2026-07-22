@@ -4,7 +4,7 @@ from pathlib import Path
 
 BANNED = ["獲利機率", "機率加權", "勝率", "POP", "probability",
           "期望報酬", "expected profit", "Sharpe", "CVaR"]
-TARGETS = [Path("webapp/app.py"), Path("webapp/pages/1_說明.py"),
+TARGETS = [Path("webapp/app.py"), Path("webapp/views/help.py"),
            Path("option_chaser/glossary.py"),
            Path("option_chaser/store.py"), Path("option_chaser/workspace.py"),
            Path("option_chaser/vocabulary.py"),
@@ -22,7 +22,7 @@ def test_no_banned_vocabulary():
 def test_new_copy_avoids_bare_probability_word():
     """v4-new files must not contain the bare word 機率 at all."""
     for path in [Path("option_chaser/glossary.py"),
-                 Path("webapp/pages/1_說明.py"),
+                 Path("webapp/views/help.py"),
                  Path("option_chaser/scenarios.py"),
                  Path("option_chaser/store.py"),
                  Path("option_chaser/workspace.py"),
