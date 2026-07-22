@@ -201,3 +201,33 @@ def analyze_group(ws_root, group_id: str, progress=None, *,
 def latest_result(ws_root, sid: str) -> dict | None:
     path = store.latest_result_path(ws_root, sid)
     return store.load_result(path) if path else None
+
+
+def scenario_exists(ws_root, symbol: str, target_price: float,
+                    target_date: str) -> str | None:
+    """base id（無撞名後綴）是否已有劇本檔。供 UI 撞名預檢與 adopt_result 共用。"""
+    base_id = store.scenario_id(symbol, target_price, target_date, set())
+    return base_id if store.scenario_path(ws_root, base_id).exists() else None
+
+
+def adopt_result(ws_root, result: service.AnalysisResult, notes: str = "",
+                 *, ts: str | None = None) -> tuple[Scenario, Path]:
+    """v6 spec §1.2：快速試算「保存為劇本」——重用當次分析結果，不重新分析。
+    §2.5 次序：create_scenario（事件先行）→ result 檔先落盤 → ANALYSIS_COMPLETED。"""
+    ts = ts or now_utc_iso()
+    req = result.request
+    base = req.base_params
+    symbol, target_price, target_date = req.symbol, base.target_price, base.target_date
+    if scenario_exists(ws_root, symbol, target_price, target_date) is not None:
+        raise ValueError(f"劇本已存在：{symbol} {target_price:g} {target_date}")
+    direction = "bullish" if target_price > result.meta.spot else "bearish"
+    sc = create_scenario(ws_root, symbol=symbol, direction=direction,
+                         target_price=target_price, target_date=target_date,
+                         notes=notes, strategies=req.strategies, ts=ts)
+    capital = store.load_constraints(ws_root)["total_capital"]
+    view = store.serialize_result(result, sc.id, capital)
+    path = store.save_result(ws_root, sc.id, view)
+    store.append_event(ws_root, ts, sc.id, "ANALYSIS_COMPLETED",
+                       {"result_path": str(path),
+                        "snapshot_ref": view["snapshot_ref"]})
+    return sc, path
