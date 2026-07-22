@@ -12,8 +12,7 @@ import streamlit as st
 from option_chaser import store, workspace
 from option_chaser.models import FetchError, ParamError
 from option_chaser.report import STRATEGY_LABELS
-from webapp.components import candidate_card, quality_badge, scenario_card, status_pill
-from webapp.status import quality_tone
+from webapp.components import scenario_card
 from webapp.theme import inject
 
 WS_ROOT = Path(os.environ.get("OC_WORKSPACE", "workspace"))
