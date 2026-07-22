@@ -132,10 +132,12 @@ def heatmap_html(matrix: dict, cand: dict | None = None) -> str:
           '以目前 Mid 價進場的模型報酬率。'
           '<b>粗體</b>價格列為錨點（現價／目標／超標／深跌），其餘為等距內插價。</p>'
           + cap_note)
-    # v5 原函數本無 $ 字元（僅百分比），故不需 esc()；v6 新增的 cap_note 含
-    # 裸 $ 金額，經 unsafe_allow_html=True 仍可能被誤判為 LaTeX 定界符，
-    # 整段回傳統一經 esc() 處理（cap_note 為空字串時 esc() 為 no-op）。
-    return esc(out)
+    # 整段回傳以 <div> 開頭，屬 CommonMark HTML block，呼叫端一律
+    # st.markdown(..., unsafe_allow_html=True) 整段輸出——HTML block 內文字
+    # 不會再被當作行內 markdown 解析，故裸 $ 沒有被誤判為 LaTeX 定界符的風險，
+    # 不需要（也不可以）esc() 跳脫，否則反斜線「\$」會原樣顯示（見 components.py
+    # 檔頭說明，同一慣例）。
+    return out
 
 
 def _thumb_html(cand: dict) -> str:
@@ -497,5 +499,6 @@ def comparison_table_html(view: dict) -> str:
     header = ("<tr><th>策略</th><th>結構</th><th>到期日</th><th>Bid/Mid/Ask 或 Net Mid/Natural</th>"
              "<th>每張・每組成本</th><th>最大損失</th><th>最大獲利</th><th>Breakeven</th>"
              "<th>劇本報酬</th><th>情境最壞</th><th>不漲保留率</th><th>成交摩擦</th><th>資料品質</th></tr>")
-    return esc('<div style="overflow-x:auto"><table style="border-collapse:collapse;font-size:13px">'
-              + header + "".join(rows_html) + "</table></div>")
+    # <div> 開頭的完整 HTML block，同 heatmap_html 不套用 esc()（理由同上）。
+    return ('<div style="overflow-x:auto"><table style="border-collapse:collapse;font-size:13px">'
+           + header + "".join(rows_html) + "</table></div>")

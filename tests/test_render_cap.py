@@ -33,9 +33,9 @@ def test_single_leg_heatmap_unchanged_no_cap_marker():
 def test_bcs_caps_at_and_above_cap_price():
     html = heatmap_html(MATRIX, BCS_CAND)
     assert "收益封頂" in html
-    # 回傳字串整體經 esc() 處理（$ -> \$，見 render.py 既有慣例，v6 新增 cap_note
-    # 含 $ 金額必須跳脫），故斷言比對跳脫後的實際輸出，而非原始未跳脫字面。
-    assert "股價 ≥ \\$120" in html
+    # 回傳字串整段為 <div> 開頭的 HTML block（見 render.py heatmap_html 說明），
+    # 不套用 esc()，故斷言比對未跳脫的原始字面 "$"。
+    assert "股價 ≥ $120" in html
     assert "1,905" in html or "1905" in html
     # 對稱邊界偵測修復後，封頂區（120/130，陣列高索引端）與非封頂區（80/100）
     # 的交界須恰好畫出 1 條分隔線（先前 bug：BCS 方向 0 條分隔線永遠不會觸發）。
@@ -48,7 +48,7 @@ def test_bcs_caps_at_and_above_cap_price():
 def test_bps_caps_at_and_below_cap_price():
     html = heatmap_html(MATRIX, BPS_CAND)
     assert "收益封頂" in html
-    assert "股價 ≤ \\$80" in html
+    assert "股價 ≤ $80" in html
     # BPS 封頂區在陣列低索引端（80），與非封頂區（100/120/130）交界同樣須恰好
     # 1 條分隔線。
     assert html.count("border-top:2px solid #888") == 1
