@@ -8,7 +8,7 @@ TARGETS = [Path("webapp/app.py"), Path("webapp/views/help.py"),
            Path("option_chaser/glossary.py"),
            Path("option_chaser/store.py"), Path("option_chaser/workspace.py"),
            Path("option_chaser/vocabulary.py"),
-           Path("webapp/render.py"), Path("webapp/pages/0_劇本工作區.py"),
+           Path("webapp/render.py"), Path("webapp/views/workspace.py"),
            *sorted(Path("tests/fixtures").glob("golden_*.txt"))]
 
 
@@ -28,5 +28,5 @@ def test_new_copy_avoids_bare_probability_word():
                  Path("option_chaser/workspace.py"),
                  Path("option_chaser/vocabulary.py"),
                  Path("webapp/render.py"),
-                 Path("webapp/pages/0_劇本工作區.py")]:
+                 Path("webapp/views/workspace.py")]:
         assert "機率" not in path.read_text(encoding="utf-8"), path
