@@ -26,7 +26,7 @@ def _result(strategies=("long-call", "bull-call-spread")):
 
 def test_top_level_fields_and_versions():
     view = store.serialize_result(_result(), "XYZ-120-202608", 100000.0)
-    assert view["schema_version"] == 1
+    assert view["schema_version"] == 2
     assert view["engine_version"] == option_chaser.__version__ == "0.6.0"
     assert view["scenario_id"] == "XYZ-120-202608"
     assert view["analyzed_at"] == view["snapshot_ref"]["fetched_at"]

@@ -267,6 +267,9 @@ def _candidate(cv: CandidateView, strategy: str, capital: float | None,
         max_profit = None if strategy == "long-call" else v.contract.strike - v.mid
         net_delta = v.delta
     cap_per = mid_cost * 100
+    natural_per = natural_cost(v) * 100
+    max_profit_per = None if max_profit is None else max_profit * 100
+    cap_price = legs[1]["strike"] if len(legs) == 2 else None
     return {
         "candidate_key": candidate_key(cv),
         "strategy": strategy,
@@ -304,6 +307,9 @@ def _candidate(cv: CandidateView, strategy: str, capital: float | None,
         "pct_of_capital": (cap_per / capital) if capital else None,
         "days_to_target": (date.fromisoformat(target_date) - today).days,
         "days_to_expiry": (date.fromisoformat(expiry) - today).days,
+        "natural_per_contract": natural_per,
+        "max_profit_per_contract": max_profit_per,
+        "cap_price": cap_price,
     }
 
 
@@ -348,7 +354,7 @@ def serialize_result(result: AnalysisResult, scenario_id: str,
 
     m = result.meta
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "engine_version": __version__,
         "analyzed_at": m.fetched_at,
         "scenario_id": scenario_id,
