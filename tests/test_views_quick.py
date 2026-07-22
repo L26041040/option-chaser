@@ -102,3 +102,22 @@ def test_save_as_scenario_duplicate_shows_link(monkeypatch, tmp_path):
     body = " ".join(m.value for m in at.markdown)
     assert "已有同名劇本" in body
     assert not any(b.label == "保存為劇本" for b in at.button)
+
+
+def test_edit_form_resubmit_triggers_new_analysis(monkeypatch):
+    """Migrated from tests/test_webapp_v4.py (Task 11 Step 5): regression test
+    for the ordering bug where the collapsed '✎ 修改劇本' form's submit must be
+    dispatched on the SAME rerun it is clicked, even after a result already
+    exists."""
+    _patched(monkeypatch)
+    at = AppTest.from_file(PAGE)
+    at.run()
+    at = _fill_and_submit(at)
+    assert at.session_state["result"].request.base_params.target_price == 120.0
+    new_target = 125.0
+    at.number_input(key="target_price").set_value(new_target)
+    submit_buttons = [b for b in at.button if b.label == "開始分析"]
+    assert submit_buttons
+    submit_buttons[0].set_value(True).run(timeout=30)
+    assert not at.exception
+    assert at.session_state["result"].request.base_params.target_price == new_target

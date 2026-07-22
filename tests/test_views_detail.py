@@ -148,7 +148,8 @@ def test_v1_legacy_result_renders_without_crash(ws):
 
 # ---------------------------------------------------------------------------
 # Migrated from tests/test_webapp_v4.py (v5 workspace-detail assertions).
-# See task-11-report.md for the full per-test disposition rationale — summary:
+# See task-11-report.md ("Fix round 1") for the full per-test disposition
+# rationale — summary:
 #   - grouped/badge/選看 (test_grouped_table_renders,
 #     test_default_selection_matches_service_and_has_no_warning,
 #     test_row_button_switches_selected_key) targeted render_step3's
@@ -165,25 +166,22 @@ def test_v1_legacy_result_renders_without_crash(ws):
 #   - test_edit_form_resubmit_triggers_new_analysis is quick.py's edit-form
 #     resubmit behavior; detail.py has no form, only the "重新分析" button
 #     already covered by test_reanalyze_button_present.
-#   - test_dollar_amounts_are_escaped, test_abbr_titles_come_from_glossary,
-#     and test_glossary_importable_without_streamlit exercise page-agnostic
-#     escaping/glossary semantics that genuinely apply to detail.py too —
-#     migrated below (adapted to PAGE=detail.py where relevant).
+#   - test_dollar_amounts_are_escaped and test_glossary_importable_without_streamlit
+#     were removed here in fix round 1: both are now restored, page-agnostic,
+#     in tests/test_render_v4_regression.py (pointed at quick.py per the plan),
+#     and duplicating them here added no detail.py-specific signal — the
+#     `$`-escaping of comparison_table_html itself already has a precise,
+#     non-AppTest unit test in tests/test_render_cap.py (asserts "\\$120"/
+#     "\\$80" directly against comparison_table_html()'s output).
+#   - test_abbr_titles_come_from_glossary is KEPT (adapted): unlike the
+#     restored test_render_v4_regression.py version (which asserts
+#     render_step3's grouped-table terms 劇本報酬/情境最壞/不漲保留率 — a
+#     function detail.py never calls), this version asserts render_step4's
+#     Greeks/liquidity-expander terms (Delta/Vega/成交摩擦). render_step4 is
+#     used verbatim by both quick.py and detail.py, but no other test file
+#     asserts its glossary-abbr wiring, so this is genuinely independent
+#     coverage, not a duplicate.
 # ---------------------------------------------------------------------------
-
-def test_dollar_amounts_are_escaped(ws):
-    """Migrated from test_webapp_v4.py::test_dollar_amounts_are_escaped.
-    detail.py's header/candidate card/comparison table all interpolate
-    '$'-prefixed money figures through render.esc()/components.esc() before
-    unsafe_allow_html=True — this must survive on the new independent page."""
-    sc = _mk_analyzed(ws)
-    at = AppTest.from_file(PAGE)
-    at.query_params["sid"] = sc.id
-    at.run()
-    body = " ".join(m.value for m in at.markdown)
-    assert not at.exception
-    assert "\\$" in body
-
 
 def test_abbr_titles_come_from_glossary(ws):
     r"""Migrated from test_webapp_v4.py::test_abbr_titles_come_from_glossary,
@@ -208,20 +206,3 @@ def test_abbr_titles_come_from_glossary(ws):
     body = " ".join(m.value for m in at.markdown)
     for term in ("Delta", "Vega", "成交摩擦"):
         assert f'title="{esc(GLOSSARY[term])}"' in body
-
-
-def test_glossary_importable_without_streamlit():
-    """Migrated verbatim from test_webapp_v4.py — page-agnostic module
-    hygiene check (glossary.py must stay a pure-stdlib data module), not
-    specific to any view, so it has no structural dependency on detail.py."""
-    from pathlib import Path
-    src = Path("option_chaser/glossary.py").read_text(encoding="utf-8")
-    assert "streamlit" not in src
-
-    import option_chaser.glossary as g
-    assert len(g.GLOSSARY) >= 16
-    required = ["劇本報酬", "情境最壞", "Natural 成交報酬", "成交摩擦",
-                "完成度門檻", "不漲保留率", "到期緩衝", "保本價", "Mid",
-                "Natural", "BCS", "BPS", "Delta", "Theta", "Vega", "IV"]
-    for term in required:
-        assert term in g.GLOSSARY
