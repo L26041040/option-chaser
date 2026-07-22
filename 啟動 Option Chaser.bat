@@ -1,4 +1,7 @@
 @echo off
+rem *** 本檔編碼為 cp950 (Big5) + CRLF，勿以 UTF-8 重新儲存 ***
+rem *** DO NOT re-save as UTF-8 -- chcp 65001 does not survive this machine's
+rem *** default codepage parsing; cp950 is required (see task-13 report) ***
 setlocal enabledelayedexpansion
 cd /d "%~dp0"
 
