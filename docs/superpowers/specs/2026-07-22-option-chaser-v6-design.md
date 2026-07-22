@@ -1,7 +1,7 @@
 # Option Chaser v6 Design Spec — Artifact Parity、正式產品化與一鍵啟動
 
 日期：2026-07-22
-狀態：待審
+狀態：已審（codex peer review APPROVED，2 rounds）
 上游文件：`Brief_v4.md`（Artifact Parity 與 Windows 一鍵啟動）、v5 spec `2026-07-21-option-chaser-v5-design.md`（已實作；audit DC/AC PASS，SL 使用者中止）
 本 spec 為 v5 之增量修訂；未提及處沿用既有 spec；衝突處以本文為準。
 
@@ -40,14 +40,15 @@
 ```
 
 - **紅線：導覽任何位置不得出現 `app` 字樣**（brief §4.2）。
-- 詳頁為獨立頁面：`st.query_params["sid"]` 指定劇本；sid 不存在→顯示錯誤卡＋返回工作區連結。
+- **Streamlit 版本地板**：`st.navigation`/`st.Page`（1.36+）、`st.popover`（1.32+）、`st.Page(visibility="hidden")`（1.55+）為本 spec 依賴；`pyproject.toml` 的 gui extra 升為 **`streamlit>=1.57`**（開發環境現裝 1.59.x）。
+- 詳頁為獨立頁面：以 `st.Page(..., visibility="hidden")` 註冊（可路由、不入導覽列）；`st.query_params["sid"]` 指定劇本；sid 不存在→顯示錯誤卡＋返回工作區連結。
 - 頁面圖示（st.Page icon）：總覽 📊、工作區 🗂、試算 ⚡、說明 📖——具體以實作視覺協調為準，非驗收項。
 
 ### 1.2 快速試算與工作區的定位區隔（brief §4.3）
 
 - 快速試算頁標題下固定副標：「**一次性分析，結果不會自動保存。**」
 - 分析完成後結果區頂部提供「**保存為劇本**」按鈕：呼叫**新增的編排函數 `workspace.adopt_result(ws_root, result, notes="", ts=None) -> (Scenario, Path)`**——內部：`create_scenario`（direction 依現價 vs 目標價推得；strategies 取自 request）→ `store.serialize_result`（capital 取當下 constraints）→ `save_result` → append `ANALYSIS_COMPLETED`（§2.5 次序：result 檔先、事件後）。**重用當次分析結果，不重新分析**；snapshot 已由 `service.run` 落盤，`snapshot_ref` 直接引用。成功後顯示連結跳轉至該劇本詳頁。view 層不得繞過 workspace 直呼 store 寫入。
-- 已存在同 id 劇本→按鈕改為「已有同名劇本，前往查看」（不覆寫）。
+- **撞名預檢**：按鈕渲染前先以 base id（`store.scenario_id(symbol, price, date, set())` 之無撞名結果）檢查 `scenarios/<base_id>.json` 是否已存在——存在→按鈕改為「已有同名劇本，前往查看」（連結至該劇本詳頁），**不得**落入 `create_scenario` 的 `-2` 撞名追加機制產生重複劇本。`adopt_result` 內亦做同一預檢（存在→拋 `ValueError`，防繞過 UI 直呼）。
 - 快速試算頁**不寫任何 workspace 檔案**除非按下保存（測試鎖定：分析後 workspace 目錄無新檔）。
 
 ---
@@ -175,11 +176,12 @@ candidate dict 新增（乘法與取值，非估值邏輯——v5 §3 慣例）�
 
 `render.py` 的 heatmap 渲染對 Spread 候選（`len(legs)==2`）增加：
 
-1. 價格列 ≥ `cap_price` 的資料列：列首價格標注「**收益封頂**」，該區塊上緣畫分隔線＋右側直欄標「最大獲利區」。
-2. 圖下說明行：「股價 ≥ $\{cap_price\} 後，收益固定於最大獲利 ≈ $\{max_profit_per_contract\}／每組。」
-3. 封頂價本身若不在價格軸上，於最接近的兩列間標注封頂線（展示層插行標記，不改引擎價格軸）。
+1. **封頂區方向依策略**：BCS（call spread）→ 價格 **≥** `cap_price` 的資料列為封頂區；BPS（put spread）→ 價格 **≤** `cap_price` 的資料列為封頂區（賣腿在下方，最大獲利平台在賣腿 strike 之下）。方向由候選的 `strategy` 判定（`bull-call-spread`/`bear-put-spread`），非硬編 ≥。
+2. 封頂區資料列：列首價格標注「**收益封頂**」，區塊與非封頂區交界畫分隔線＋右側直欄標「最大獲利區」。
+3. 圖下說明行（同樣依方向措辭）：BCS「股價 ≥ $\{cap_price\} 後，收益固定於最大獲利 ≈ $\{max_profit_per_contract\}／每組。」；BPS「股價 ≤ $\{cap_price\} 後，收益固定於最大獲利 ≈ $\{max_profit_per_contract\}／每組。」
+4. 封頂價本身若不在價格軸上，於最接近的兩列間標注封頂線（展示層插行標記，不改引擎價格軸）。
 
-判斷僅為「價格 vs cap_price 比較＋讀 max_profit」——展示層邏輯（v4 粗體錨點同類）。單腿主圖零變化 → 兩策略主圖一眼可辨（brief §6 要求 1-5 全數滿足）。
+判斷僅為「價格 vs cap_price 比較＋讀 max_profit＋策略字串分支」——展示層邏輯（v4 粗體錨點同類）。單腿主圖零變化 → 兩策略主圖一眼可辨（brief §6 要求 1-5 全數滿足）。測試須含 BCS 與 BPS 鏡像案例。
 
 ---
 
@@ -218,6 +220,8 @@ candidate dict 新增（乘法與取值，非估值邏輯——v5 §3 慣例）�
 - `pyproject.toml`：`packages.find` include 加 `webapp*`；確保 `webapp/`、`webapp/views/` 均有 `__init__.py`。驗收：乾淨 venv `pip install -e ".[gui]"` 後，任意 cwd `python -c "import webapp.render"` 成功；`streamlit run webapp/app.py` 於專案根正常；Docker build/run 正常；**全程無 PYTHONPATH 設定**。
 - 版本統一 **0.6.0**：`option_chaser/__init__.__version__` 與 pyproject `version` 同值（測試鎖定兩者相等——讀 pyproject 比對）。
 - `webapp/pages/` 舊檔（`0_劇本工作區.py`、`1_說明.py`）刪除（內容遷入 views）；`egg-info` 重生。
+- Dockerfile 增 COPY `.streamlit/`（現 Dockerfile 僅複製 pyproject/README/option_chaser/webapp——config.toml 必須進容器，否則容器內主題錯誤）。
+- gui extra 版本地板同步 §1.1：`streamlit>=1.57`。
 
 ---
 
@@ -231,8 +235,12 @@ candidate dict 新增（乘法與取值，非估值邏輯——v5 §3 慣例）�
 2. 找 Python：依序試 `py -3` → `python`；版本 <3.11 或不存在→中文訊息（「找不到 Python。請先安裝 Python 3.11 以上版本。」）＋`pause`。
 3. `.venv\` 不存在→顯示「首次啟動，正在安裝必要元件（約 2-3 分鐘，僅此一次）……」→ `python -m venv .venv` ＋ `.venv\Scripts\python -m pip install -e ".[gui]"`；失敗→錯誤訊息＋log 路徑＋`pause`。
 4. 依賴健檢：`.venv\Scripts\python -c "import streamlit, option_chaser, webapp"`；失敗視同步驟 3 失敗。
-5. Port 8501 檢查：`http://localhost:8501/_stcore/health` 有回應→「Option Chaser 已在執行，為你開啟瀏覽器。」→ `start http://localhost:8501` → 結束；port 被占但健檢無回應→「連接埠 8501 被其他程式占用，請關閉該程式後重試。」＋`pause`。
-6. `start http://localhost:8501`（延遲數秒）＋前景執行 `.venv\Scripts\python -m streamlit run webapp/app.py`——視窗保留＝服務執行中；**關窗/Ctrl+C 即停**。
+5. Port 8501 檢查（含**身分驗證**，防開到別人的 Streamlit）：
+   - `logs\running.lock` 記錄本 app 上次啟動的 PID（步驟 6 寫入、正常結束刪除）。
+   - `/_stcore/health` 有回應 **且** lock 檔存在且其 PID 對應之程序仍存活→「Option Chaser 已在執行，為你開啟瀏覽器。」→ `start http://localhost:8501` → 結束。
+   - `/_stcore/health` 有回應但無有效 lock→「連接埠 8501 上有其他 Streamlit 程式，請關閉後重試。」＋`pause`。
+   - port 被占但健檢無回應→「連接埠 8501 被其他程式占用，請關閉該程式後重試。」＋`pause`。
+6. 前景執行 `.venv\Scripts\python -m streamlit run webapp/app.py`（**非 headless——瀏覽器由 Streamlit 於伺服器就緒後原生自動開啟**，消除先開瀏覽器的連線失敗競態；BAT 不手動 `start` URL，「已在執行」路徑除外）。啟動前寫入 `logs\running.lock`（PID）。視窗保留＝服務執行中；**關窗/Ctrl+C 即停**（殘留 lock 由下次啟動的存活檢查自然失效）。
 7. 全程輸出併寫 `logs\launch-YYYYMMDD-HHMMSS.log`；任何錯誤路徑以 `pause` 結尾（brief §10.2）。
 
 ### 9.2 `建立桌面捷徑.bat`（一次性，可選）
@@ -291,3 +299,5 @@ Windows 實機：刪除 `.venv` 從零雙擊→自動安裝→瀏覽器開啟→
 ## 13. 明確不做（v6）
 
 深色主題、雙主題、React/API 層（僅文件化接縫）、停止.bat、資料目錄遷移、Last-Trade/Synthetic fallback 實作、韌性排名重構、Scenario Decision 持久化、持倉/追蹤面板/倉位配置、Policy Engine、自動事件、券商 API、自動下單、劇本備註編輯（唯讀原則沿用）。順手項（不擋主線、時間允許才做）：「每口成本占本金」改名、最近有效 Snapshot 重試、Top 5 顯示、候選展開。
+
+<!-- codex-peer-reviewed: 2026-07-22T03:22:02Z rounds=2 verdict=approved -->
