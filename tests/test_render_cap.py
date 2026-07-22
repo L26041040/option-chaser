@@ -1,10 +1,15 @@
 """v6 spec §5: Spread heatmap 封頂標示（BCS/BPS 鏡像）；§4.4 候選比較表。"""
 from webapp.render import comparison_table_html, heatmap_html
 
+
+# matrix.py::price_axis 恆產生「由低到高」排序的 prices（index 0 = 最低價、
+# 最後一個 index = 最高價）。此 fixture 依照真實排序方式建置（先前版本反過來
+# 排列，導致 BCS 分隔線的漏洞未被測到），cells[i] 與 prices[i] 一一對應的語意
+# 維持不變，只是整體依價格由低到高重新排序。
 MATRIX = {
-    "prices": [[130.0, ""], [120.0, "<目標>"], [100.0, "<現價>"], [80.0, ""]],
+    "prices": [[80.0, ""], [100.0, "<現價>"], [120.0, "<目標>"], [130.0, ""]],
     "dates": [["2026-08-01", ""], ["2026-09-01", "*"]],
-    "cells": [[0.9, 0.9], [0.8, 0.8], [-0.3, -0.3], [-1.0, -1.0]],
+    "cells": [[-1.0, -1.0], [-0.3, -0.3], [0.8, 0.8], [0.9, 0.9]],
 }
 
 BCS_CAND = {"strategy": "bull-call-spread",
@@ -32,12 +37,23 @@ def test_bcs_caps_at_and_above_cap_price():
     # 含 $ 金額必須跳脫），故斷言比對跳脫後的實際輸出，而非原始未跳脫字面。
     assert "股價 ≥ \\$120" in html
     assert "1,905" in html or "1905" in html
+    # 對稱邊界偵測修復後，封頂區（120/130，陣列高索引端）與非封頂區（80/100）
+    # 的交界須恰好畫出 1 條分隔線（先前 bug：BCS 方向 0 條分隔線永遠不會觸發）。
+    assert html.count("border-top:2px solid #888") == 1
+    # 右側「封頂註記」欄須以實際表格欄位呈現，而非僅出現在下方註腳文字。
+    assert '<th style="padding:4px 8px">封頂註記</th>' in html
+    assert html.count("最大獲利區") >= 2  # 至少：欄位資料列 + 註腳各一次
 
 
 def test_bps_caps_at_and_below_cap_price():
     html = heatmap_html(MATRIX, BPS_CAND)
     assert "收益封頂" in html
     assert "股價 ≤ \\$80" in html
+    # BPS 封頂區在陣列低索引端（80），與非封頂區（100/120/130）交界同樣須恰好
+    # 1 條分隔線。
+    assert html.count("border-top:2px solid #888") == 1
+    assert '<th style="padding:4px 8px">封頂註記</th>' in html
+    assert html.count("最大獲利區") >= 2
 
 
 def test_bcs_v1_legacy_no_cap_price_degrades_silently():

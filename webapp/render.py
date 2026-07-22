@@ -98,12 +98,21 @@ def heatmap_html(matrix: dict, cand: dict | None = None) -> str:
             price_text = f"{price_text} 收益封頂"
         if plabel:
             price_text = f"<b>{price_text}</b>"
-        row_style = ' style="border-top:2px solid #888"' if (
-            cap_price is not None and _is_capped(price) and
-            i < len(prices) - 1 and not _is_capped(prices[i + 1][0])) else ""
+        # 對稱邊界偵測：`prices` 恆為價格由低到高排序（見 matrix.py::price_axis），
+        # 此迴圈由高索引往低索引渲染（表格由高價往低價往下排）。無論封頂區落在
+        # 高價那端（BCS）還是低價那端（BPS），只要本列與「上一列」（i+1，價格
+        # 更高、渲染在本列之上）的封頂狀態不同，就代表跨過了封頂/非封頂交界，
+        # 應畫分隔線——不需要依策略方向另開分支。
+        row_style = ""
+        if cap_price is not None and i < len(prices) - 1:
+            if _is_capped(price) != _is_capped(prices[i + 1][0]):
+                row_style = ' style="border-top:2px solid #888"'
+        cap_col = (f'<td style="padding:4px 8px;color:#888">'
+                   f'{"最大獲利區" if _is_capped(price) else ""}</td>'
+                   ) if cap_price is not None else ""
         rows.append(
             f'<tr{row_style}><td style="padding:4px 8px;white-space:nowrap">'
-            f'{price_text}</td>{cells_html}</tr>')
+            f'{price_text}</td>{cells_html}{cap_col}</tr>')
 
     cap_note = ""
     if cap_price is not None and cand is not None and cand.get("max_profit_per_contract") is not None:
@@ -113,9 +122,11 @@ def heatmap_html(matrix: dict, cand: dict | None = None) -> str:
                     f'${cand["max_profit_per_contract"]:,.0f}／每組。'
                     f'<span style="color:#888">（最大獲利區）</span></p>')
 
+    cap_head = ('<th style="padding:4px 8px">封頂註記</th>'
+               if cap_price is not None else "")
     out = ('<div style="overflow-x:auto"><table style="border-collapse:collapse;'
           'font-family:monospace;font-size:13px">'
-          f'<tr><th style="padding:4px 8px">價格</th>{"".join(head_cells)}</tr>'
+          f'<tr><th style="padding:4px 8px">價格</th>{"".join(head_cells)}{cap_head}</tr>'
           + "".join(rows) + "</table></div>"
           '<p style="font-size:12px;color:#666">此圖顯示在不同標的價格與日期下，'
           '以目前 Mid 價進場的模型報酬率。'
