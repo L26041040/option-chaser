@@ -52,10 +52,15 @@ def _price_tag(label: str) -> str:
     return tag
 
 
-def heatmap_html(matrix: dict) -> str:
+def heatmap_html(matrix: dict, cand: dict | None = None) -> str:
     """v4 spec §4.2/§4.3: bold rows are exactly those whose price_axis label is
     non-empty (spot/target/overshoot/adverse) — GUI reads the label, it never
-    recomputes the anchor prices itself."""
+    recomputes the anchor prices itself.
+
+    v6 spec §5: 若傳入 Spread 候選（`cand` 含非 null `cap_price`），封頂區依
+    策略方向標示——BCS（賣腿在上）價格 >= cap_price 為封頂區；BPS（賣腿在下）
+    價格 <= cap_price 為封頂區。純展示層比較（價格 vs cap_price）＋讀
+    max_profit_per_contract，不做估值。"""
     dates = matrix["dates"]
     prices = matrix["prices"]
     cells = matrix["cells"]
@@ -65,6 +70,22 @@ def heatmap_html(matrix: dict) -> str:
         suffix = ("*" if lbl == "*" else "") + ("（到期）" if j == n - 1 else "")
         head_cells.append(
             f'<th style="padding:4px 8px;white-space:nowrap">{iso[5:7]}/{iso[8:10]}{suffix}</th>')
+
+    # .get(...) 而非直接索引：v1 舊 result 檔缺 cap_price/max_profit_per_contract
+    # （Task 2 v2 新欄）時應靜默降級為「無封頂標示」，不得 KeyError。
+    cap_price = cand.get("cap_price") if cand else None
+    is_bcs = cand is not None and cand["strategy"] == "bull-call-spread"
+    is_bps = cand is not None and cand["strategy"] == "bear-put-spread"
+
+    def _is_capped(price: float) -> bool:
+        if cap_price is None:
+            return False
+        if is_bcs:
+            return price >= cap_price
+        if is_bps:
+            return price <= cap_price
+        return False
+
     rows = []
     for i in range(len(prices) - 1, -1, -1):
         price, plabel = prices[i]
@@ -73,18 +94,37 @@ def heatmap_html(matrix: dict) -> str:
             f'padding:4px 8px">{v * 100:+.0f}%</td>'
             for v in cells[i])
         price_text = f"{price:.2f}{_price_tag(plabel)}"
+        if _is_capped(price):
+            price_text = f"{price_text} 收益封頂"
         if plabel:
             price_text = f"<b>{price_text}</b>"
+        row_style = ' style="border-top:2px solid #888"' if (
+            cap_price is not None and _is_capped(price) and
+            i < len(prices) - 1 and not _is_capped(prices[i + 1][0])) else ""
         rows.append(
-            f'<tr><td style="padding:4px 8px;white-space:nowrap">'
+            f'<tr{row_style}><td style="padding:4px 8px;white-space:nowrap">'
             f'{price_text}</td>{cells_html}</tr>')
-    return ('<div style="overflow-x:auto"><table style="border-collapse:collapse;'
-            'font-family:monospace;font-size:13px">'
-            f'<tr><th style="padding:4px 8px">價格</th>{"".join(head_cells)}</tr>'
-            + "".join(rows) + "</table></div>"
-            '<p style="font-size:12px;color:#666">此圖顯示在不同標的價格與日期下，'
-            '以目前 Mid 價進場的模型報酬率。'
-            '<b>粗體</b>價格列為錨點（現價／目標／超標／深跌），其餘為等距內插價。</p>')
+
+    cap_note = ""
+    if cap_price is not None and cand is not None and cand.get("max_profit_per_contract") is not None:
+        direction = "≥" if is_bcs else "≤"
+        cap_note = (f'<p style="font-size:12px;color:#666">'
+                    f'股價 {direction} ${cap_price:g} 後，收益固定於最大獲利 ≈ '
+                    f'${cand["max_profit_per_contract"]:,.0f}／每組。'
+                    f'<span style="color:#888">（最大獲利區）</span></p>')
+
+    out = ('<div style="overflow-x:auto"><table style="border-collapse:collapse;'
+          'font-family:monospace;font-size:13px">'
+          f'<tr><th style="padding:4px 8px">價格</th>{"".join(head_cells)}</tr>'
+          + "".join(rows) + "</table></div>"
+          '<p style="font-size:12px;color:#666">此圖顯示在不同標的價格與日期下，'
+          '以目前 Mid 價進場的模型報酬率。'
+          '<b>粗體</b>價格列為錨點（現價／目標／超標／深跌），其餘為等距內插價。</p>'
+          + cap_note)
+    # v5 原函數本無 $ 字元（僅百分比），故不需 esc()；v6 新增的 cap_note 含
+    # 裸 $ 金額，經 unsafe_allow_html=True 仍可能被誤判為 LaTeX 定界符，
+    # 整段回傳統一經 esc() 處理（cap_note 為空字串時 esc() 為 no-op）。
+    return esc(out)
 
 
 def _thumb_html(cand: dict) -> str:
@@ -200,7 +240,7 @@ def render_step2(view: dict, key: str | None) -> None:
     cand = row["candidate"]
     st.markdown(esc(f"**{_candidate_title(row['strategy'], cand)}**"),
                 unsafe_allow_html=True)
-    st.markdown(heatmap_html(cand["matrix"]), unsafe_allow_html=True)
+    st.markdown(heatmap_html(cand["matrix"], cand), unsafe_allow_html=True)
 
 
 def render_step3(view: dict, key: str | None, state_key: str = "selected_key") -> None:
@@ -413,3 +453,38 @@ def render_step4(view: dict, key: str | None) -> None:
         _render_scatter_expander(view)
     with st.expander("Greeks 與流動性", expanded=False):
         _render_greeks_expander(view, key)
+
+
+def comparison_table_html(view: dict) -> str:
+    """v6 spec §4.4：詳頁候選比較表，13 欄，overflow-x 手機橫向捲動。"""
+    rows_html = []
+    for g in view["expiry_groups"]:
+        for row in g["rows"]:
+            cand = row["candidate"]
+            legs = cand["legs"]
+            is_spread = len(legs) == 2
+            structure = (f"買{legs[0]['strike']:g}/賣{legs[1]['strike']:g}"
+                        if is_spread else f"K={legs[0]['strike']:g}")
+            price_col = (f"Net Mid ${money(cand['mid_cost'])} / "
+                        f"Natural ${money(cand['natural_cost'])}" if is_spread
+                        else f"{money(legs[0]['bid'])}/{money(cand['mid_cost'])}/{money(legs[0]['ask'])}")
+            _mp = cand.get("max_profit_per_contract")   # .get(): v1 舊檔缺此欄不得 KeyError
+            max_profit_col = ("無上限" if (not is_spread and row["strategy"] == "long-call")
+                              else (f"${_mp:,.0f}" if _mp is not None else "—"))
+            fr = cand["friction"]
+            fr_html = f'{pct(min(fr, 9.99))}' + (" ⚠" if fr > 0.25 else "")
+            rows_html.append(
+                f"<tr><td>{STRATEGY_LABELS[row['strategy']]}</td><td>{structure}</td>"
+                f"<td>{legs[0]['expiry']}</td><td>{price_col}</td>"
+                f"<td>${cand['capital_per_contract']:.0f}</td>"
+                f"<td>${cand['max_loss_per_contract']:.0f}</td>"
+                f"<td>{max_profit_col}</td><td>${money(cand['breakeven'])}</td>"
+                f"<td>{pct(cand['baseline_return'])}</td>"
+                f"<td>{pct(cand['scenario_vector']['worst_return'])}</td>"
+                f"<td>{pct(cand['retention'])}</td><td>{fr_html}</td>"
+                f"<td>{'⚠' if cand['quote_warning'] else '正常'}</td></tr>")
+    header = ("<tr><th>策略</th><th>結構</th><th>到期日</th><th>Bid/Mid/Ask 或 Net Mid/Natural</th>"
+             "<th>每張・每組成本</th><th>最大損失</th><th>最大獲利</th><th>Breakeven</th>"
+             "<th>劇本報酬</th><th>情境最壞</th><th>不漲保留率</th><th>成交摩擦</th><th>資料品質</th></tr>")
+    return esc('<div style="overflow-x:auto"><table style="border-collapse:collapse;font-size:13px">'
+              + header + "".join(rows_html) + "</table></div>")
