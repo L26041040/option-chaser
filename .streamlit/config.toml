@@ -1,0 +1,12 @@
+# v6 spec §2.1: Artifact 淺色視覺基準（唯一色彩來源，views/components 不得另覆寫全站色彩）
+[theme]
+base = "light"
+primaryColor = "#ff4b4b"
+backgroundColor = "#eef0f3"
+secondaryBackgroundColor = "#f3f4f6"
+textColor = "#1c1f26"
+borderColor = "#e3e6ea"
+baseRadius = "10px"
+buttonRadius = "8px"
+showWidgetBorder = true
+font = "sans-serif"

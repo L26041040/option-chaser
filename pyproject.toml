@@ -1,6 +1,6 @@
 [project]
 name = "option-chaser"
-version = "0.1.0"
+version = "0.6.0"
 description = "Long Call scenario optimizer (deterministic, no probability logic)"
 requires-python = ">=3.11"
 dependencies = [
@@ -12,14 +12,14 @@ dependencies = [
 option-chaser = "option_chaser.cli:main"
 
 [project.optional-dependencies]
-gui = ["streamlit>=1.30"]
+gui = ["streamlit>=1.57"]
 
 [build-system]
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
-include = ["option_chaser*"]
+include = ["option_chaser*", "webapp*"]
 
 [tool.pytest.ini_options]
 addopts = "-q"

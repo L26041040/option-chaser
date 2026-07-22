@@ -4,7 +4,7 @@ from option_chaser import vocabulary as voc
 
 
 def test_version():
-    assert option_chaser.__version__ == "0.5.0"
+    assert option_chaser.__version__ == "0.6.0"
 
 
 def test_statuses():

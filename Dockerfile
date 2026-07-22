@@ -3,6 +3,7 @@ WORKDIR /app
 COPY pyproject.toml README.md ./
 COPY option_chaser ./option_chaser
 COPY webapp ./webapp
+COPY .streamlit ./.streamlit
 RUN pip install --no-cache-dir ".[gui]"
 ENV PORT=8501
 EXPOSE 8501

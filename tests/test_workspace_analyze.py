@@ -21,7 +21,7 @@ def test_create_analyze_latest_chain(tmp_path):
     view = workspace.latest_result(tmp_path, sc.id)
     assert view["scenario_id"] == sc.id
     assert view["snapshot_ref"]["path"] == FIX
-    assert view["engine_version"] == "0.5.0"
+    assert view["engine_version"] == "0.6.0"
     events = [e["event"] for e in store.read_events(tmp_path)]
     assert events == ["SCENARIO_CREATED", "ANALYSIS_COMPLETED"]
     last = store.read_events(tmp_path)[-1]
