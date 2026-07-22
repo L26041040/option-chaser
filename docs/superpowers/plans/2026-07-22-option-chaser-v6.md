@@ -227,15 +227,42 @@ Note：`webapp/views/` 目錄與 `__init__.py` 到 Task 8 才建立（Task 1 僅
 Run: `python -m pip install -e ".[gui]" -q && python -m pytest tests/test_packaging.py -v`
 Expected: 5 passed
 
-- [ ] **Step 6: 全回歸**
+- [ ] **Step 6: 更新硬編碼 `"0.5.0"` 的既有測試（版本升級會使全回歸變紅，此步驟必須先做）**
+
+三個既有測試檔硬編碼版本字串，版本升到 `0.6.0` 後會直接斷言失敗：`tests/test_store_serialize.py:30`（`assert view["engine_version"] == option_chaser.__version__ == "0.5.0"`）、`tests/test_vocabulary.py:7`（`assert option_chaser.__version__ == "0.5.0"`）、`tests/test_workspace_analyze.py:24`（`assert view["engine_version"] == "0.5.0"`）。
+
+```bash
+python - <<'PYEOF'
+import pathlib
+edits = [
+    ("tests/test_store_serialize.py",
+     'assert view["engine_version"] == option_chaser.__version__ == "0.5.0"',
+     'assert view["engine_version"] == option_chaser.__version__ == "0.6.0"'),
+    ("tests/test_vocabulary.py",
+     'assert option_chaser.__version__ == "0.5.0"',
+     'assert option_chaser.__version__ == "0.6.0"'),
+    ("tests/test_workspace_analyze.py",
+     'assert view["engine_version"] == "0.5.0"',
+     'assert view["engine_version"] == "0.6.0"'),
+]
+for path, old, new in edits:
+    p = pathlib.Path(path)
+    text = p.read_text(encoding="utf-8")
+    assert old in text, f"anchor not found in {path}"
+    p.write_text(text.replace(old, new), encoding="utf-8")
+    print("patched", path)
+PYEOF
+```
+
+- [ ] **Step 7: 全回歸**
 
 Run: `python -m pytest -q`
 Expected: 全綠（246 + 5 = 251）
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 8: Commit**
 
 ```bash
-git add pyproject.toml option_chaser/__init__.py Dockerfile .streamlit/config.toml tests/test_packaging.py
+git add pyproject.toml option_chaser/__init__.py Dockerfile .streamlit/config.toml tests/test_packaging.py tests/test_store_serialize.py tests/test_vocabulary.py tests/test_workspace_analyze.py
 git commit -m "feat(v6): fix packaging (webapp installable, no PYTHONPATH), version 0.6.0, light theme config"
 ```
 
@@ -761,6 +788,8 @@ git commit -m "feat(v6): webapp/theme.py — Artifact light-theme tokens, scoped
   - `quality_tone(view: dict | None, observed) -> str`：回傳 `"正常"` / `"報價不足"` / `"歷史資料"`（`observed: datetime.date`；優先序：報價不足 > 歷史資料 > 正常——工程決策，file docstring 註明）。
   - `INSUFFICIENT_QUOTE_MESSAGE: str` = `"已完成分析，但目前報價資料不足，沒有可用候選。"`
   - `EMPTY_CANDIDATE_MESSAGE: str` = `"已完成分析，目前沒有符合條件的候選。"`
+  - `is_legacy_schema(view: dict) -> bool`：`view.get("schema_version", 1) < 2`——判定 result 檔缺 v2 新欄（Task 2 三欄），供 components/views 決定是否顯示降級提示。
+  - `LEGACY_RESULT_MESSAGE: str` = `"舊版分析結果，重新分析以顯示完整價格。"`（spec §4.3 誠實聲明的落地文案）。
 
 - [ ] **Step 1: 寫失敗測試**
 
@@ -830,6 +859,16 @@ def test_messages_no_synthetic_fallback_path():
     src = inspect.getsource(status)
     assert "synthetic" not in src.lower()
     assert "last_trade" not in src.lower() and "last-trade" not in src.lower()
+
+
+def test_is_legacy_schema_v1_vs_v2():
+    assert status.is_legacy_schema({"schema_version": 1}) is True
+    assert status.is_legacy_schema({"schema_version": 2}) is False
+    assert status.is_legacy_schema({}) is True   # 缺欄視同 v1（get 預設 1）
+
+
+def test_legacy_result_message_defined():
+    assert "重新分析" in status.LEGACY_RESULT_MESSAGE
 ```
 
 - [ ] **Step 2: 跑測試確認失敗**
@@ -859,6 +898,14 @@ from option_chaser.data.snapshot import snapshot_today
 
 INSUFFICIENT_QUOTE_MESSAGE = "已完成分析，但目前報價資料不足，沒有可用候選。"
 EMPTY_CANDIDATE_MESSAGE = "已完成分析，目前沒有符合條件的候選。"
+LEGACY_RESULT_MESSAGE = "舊版分析結果，重新分析以顯示完整價格。"
+
+
+def is_legacy_schema(view: dict) -> bool:
+    """v6 spec §4.3：result 檔 schema_version < 2 即缺 natural_per_contract／
+    max_profit_per_contract／cap_price（Task 2 新欄），components/views 應顯示
+    LEGACY_RESULT_MESSAGE 並以 .get() 降級讀取，而非 KeyError。"""
+    return view.get("schema_version", 1) < 2
 
 
 def derive_result_status(view: dict | None) -> str:
@@ -901,13 +948,14 @@ git commit -m "feat(v6): webapp/status.py — result status + quality tone deriv
 - Test: `tests/test_components.py`
 
 **Interfaces:**
-- Consumes：`webapp.theme.TOKENS`、`webapp.status`、`option_chaser.report.STRATEGY_LABELS`、`webapp.render.money/pct/esc`（**沿用既有格式化函數，不重複定義**）。
+- Consumes：`webapp.theme.TOKENS`、`webapp.status`（含 Task 5 新增的 `is_legacy_schema`／`LEGACY_RESULT_MESSAGE`）、`option_chaser.report.STRATEGY_LABELS`、`webapp.render.money/pct/esc`（**沿用既有格式化函數，不重複定義**）。
 - Produces：
-  - `scenario_card(sc: dict, summary: dict | None) -> str`：`sc` 為 `dataclasses.asdict(Scenario)` 形狀（`id,symbol,direction,target_price,target_date,status,group_id,notes`）；`summary` 為對應劇本 `latest_result` 的 view dict 或 None。
-  - `candidate_card(cand: dict, strategy: str) -> str`：單腿／Spread 雙版式（依 `len(cand["legs"])` 分支）。
+  - `scenario_card(sc: dict, summary: dict | None) -> str`：`sc` 為 `dataclasses.asdict(Scenario)` 形狀（`id,symbol,direction,target_price,target_date,status,group_id,notes`）；`summary` 為對應劇本 `latest_result` 的 view dict 或 None。**紅線：`sc["symbol"]`／`sc["notes"]` 為使用者輸入，注入前必須 `html.escape()`**（本函數與 `unsafe_allow_html=True` 呼叫端配對，未跳脫的使用者字串會破壞版面或注入標記）。
+  - `candidate_card(cand: dict, strategy: str) -> str`：單腿／Spread 雙版式（依 `len(cand["legs"])` 分支）。**v1 相容**：v2 新欄（`natural_per_contract`／`max_profit_per_contract`／`cap_price`）一律以 `.get(key)` 讀取，缺欄時該行顯示 `"—"` 並於卡尾附註 `status.LEGACY_RESULT_MESSAGE`（不得對新欄直接索引導致 `KeyError`）。
   - `metric_tile(label: str, value: str) -> str`。
   - `status_pill(scenario_status: str) -> str`（`Active/Reached/Expired/Invalidated` → 對應 `.oc-pill-*`）。
   - `quality_badge(tone: str) -> str`（`webapp.status.quality_tone` 的三值輸出 → emoji＋class）。
+  - 所有回傳字串在 `return` 前一律經 `webapp.render.esc()` 處理（既有 v4/v5 慣例：即使走 `unsafe_allow_html=True`，Streamlit 仍會將裸 `$` 誤判為 LaTeX 定界符；金額顯示到處都是 `$`，故元件層級統一處理，呼叫端不需重複跳脫）。
 
 - [ ] **Step 1: 寫失敗測試**
 
@@ -998,6 +1046,34 @@ def test_quality_badge_three_tones():
     for tone in ("正常", "報價不足", "歷史資料"):
         html = components.quality_badge(tone)
         assert tone in html
+
+
+def test_scenario_card_escapes_html_injection_in_symbol_and_notes():
+    """紅線：使用者輸入（symbol/notes）注入 HTML 標記時必須被跳脫，不得破壞卡片
+    結構或執行注入內容。"""
+    malicious = {**SC, "symbol": "<script>alert(1)</script>",
+                "notes": '<img src=x onerror="alert(2)">'}
+    html = components.scenario_card(malicious, None)
+    assert "<script>" not in html
+    assert "onerror=" not in html
+    assert "&lt;script&gt;" in html
+    assert "&lt;img" in html
+
+
+def test_candidate_card_v1_legacy_missing_fields_no_crash():
+    """v1 舊 result 檔缺 v2 新欄（natural_per_contract/max_profit_per_contract/
+    cap_price）——必須降級顯示，不得 KeyError。"""
+    legacy_single = {k: v for k, v in SINGLE_CAND.items()
+                     if k not in ("natural_per_contract", "max_profit_per_contract", "cap_price")}
+    html = components.candidate_card(legacy_single, "long-call")
+    assert "—" in html
+    assert "舊版分析結果" in html
+
+    legacy_spread = {k: v for k, v in SPREAD_CAND.items()
+                     if k not in ("natural_per_contract", "max_profit_per_contract", "cap_price")}
+    html2 = components.candidate_card(legacy_spread, "bull-call-spread")
+    assert "—" in html2
+    assert "舊版分析結果" in html2
 ```
 
 - [ ] **Step 2: 跑測試確認失敗**
@@ -1013,13 +1089,21 @@ Expected: FAIL（no module `webapp.components`）
 與 render.py 同紅線：每個顯示數字皆直接取自已由 store.serialize_result 預算好的
 dict 欄位；本模組僅格式化、條件分支（單腿 vs Spread）與既有 status/render 工具函數
 的組合呼叫。
+
+安全紅線：使用者輸入（scenario symbol／notes）一律先經 `html.escape()` 才可注入
+HTML 樣板；本模組所有回傳字串在 return 前一律經 `esc()`（$ 轉義，見 render.py）
+處理，呼叫端不需重複跳脫。v1 舊 result 檔缺 v2 新欄時以 `.get()` 降級讀取，顯示
+`—` 與 `status.LEGACY_RESULT_MESSAGE`，不得 KeyError。
 """
 from __future__ import annotations
 
+import html as html_lib
+
 from option_chaser.report import STRATEGY_LABELS
 from webapp.render import esc, money, pct
-from webapp.status import EMPTY_CANDIDATE_MESSAGE  # noqa: F401  (re-export for views)
-from webapp.status import derive_result_status
+from webapp.status import (EMPTY_CANDIDATE_MESSAGE,  # noqa: F401 (re-export for views)
+                           LEGACY_RESULT_MESSAGE, derive_result_status,
+                           is_legacy_schema)
 
 _STATUS_PILL_CLASS = {
     "Active": "oc-pill-active", "Reached": "oc-pill-reached",
@@ -1030,29 +1114,35 @@ _QUALITY_CLASS = {"正常": "oc-badge-ok", "報價不足": "oc-badge-warn", "歷
 _QUALITY_EMOJI = {"正常": "✓", "報價不足": "⚠", "歷史資料": "🕒"}
 
 
+def _h(text: str) -> str:
+    """HTML-escape user-controlled text before interpolating into a template
+    (symbol/notes) — distinct from esc(), which only guards '$' against LaTeX."""
+    return html_lib.escape(text, quote=True)
+
+
 def status_pill(scenario_status: str) -> str:
     cls = _STATUS_PILL_CLASS[scenario_status]
     emoji = _STATUS_EMOJI[scenario_status]
-    return f'<span class="oc-pill {cls}">{emoji} {scenario_status}</span>'
+    return esc(f'<span class="oc-pill {cls}">{emoji} {scenario_status}</span>')
 
 
 def quality_badge(tone: str) -> str:
     cls = _QUALITY_CLASS[tone]
     emoji = _QUALITY_EMOJI[tone]
-    return f'<span class="{cls}">{emoji} {tone}</span>'
+    return esc(f'<span class="{cls}">{emoji} {tone}</span>')
 
 
 def metric_tile(label: str, value: str) -> str:
-    return (f'<div class="oc-metric-tile"><div class="oc-metric-label">{esc(label)}</div>'
-            f'<div class="oc-metric-value oc-num">{esc(value)}</div></div>')
+    return esc(f'<div class="oc-metric-tile"><div class="oc-metric-label">{_h(label)}</div>'
+              f'<div class="oc-metric-value oc-num">{_h(value)}</div></div>')
 
 
 def scenario_card(sc: dict, summary: dict | None) -> str:
     result_status = derive_result_status(summary)
-    parts = [f'<div class="oc-card"><b>{sc["symbol"]}</b> '
+    parts = [f'<div class="oc-card"><b>{_h(sc["symbol"])}</b> '
             f'{"看漲" if sc["direction"] == "bullish" else "看跌"} '
             f'{status_pill(sc["status"])}<br>'
-            f'目標 ${money(sc["target_price"])} ｜ {sc["target_date"]} ｜ {sc["group_id"]}<br>']
+            f'目標 ${money(sc["target_price"])} ｜ {sc["target_date"]} ｜ {_h(sc["group_id"])}<br>']
     if summary is None:
         parts.append(f'<span class="oc-badge-stale">{result_status}</span>')
     else:
@@ -1070,49 +1160,55 @@ def scenario_card(sc: dict, summary: dict | None) -> str:
         else:
             parts.append(f'<span class="oc-badge-warn">{result_status}</span>')
     if sc["notes"]:
-        parts.append(f'<div style="font-size:12px;color:#6b7280">{esc(sc["notes"])}</div>')
+        parts.append(f'<div style="font-size:12px;color:#6b7280">{_h(sc["notes"])}</div>')
     parts.append('</div>')
-    return "".join(parts)
-
-
-def _leg_line(leg: dict, role: str) -> str:
-    return (f'{role}{leg["option_type"]} {leg["strike"]:g} ｜ 到期 {leg["expiry"]} ｜ '
-            f'Bid ${money(leg["bid"])} ／ Ask ${money(leg["ask"])}')
+    return esc("".join(parts))
 
 
 def candidate_card(cand: dict, strategy: str) -> str:
     legs = cand["legs"]
     label = STRATEGY_LABELS[strategy]
+    legacy = is_legacy_schema({"schema_version": cand.get("schema_version", 2)}) or (
+        "natural_per_contract" not in cand)
+    legacy_note = f'<div style="font-size:12px;color:#b45309">{LEGACY_RESULT_MESSAGE}</div>' if legacy else ""
+
+    def _fmt_money(key: str) -> str:
+        v = cand.get(key)
+        return f'${v:,.0f}' if v is not None else "—"
+
     if len(legs) == 1:
         leg = legs[0]
         lines = [
             f'<b>{esc(label)}</b> ｜ 履約價 {leg["strike"]:g} ｜ 到期 {leg["expiry"]}',
             f'Bid ${money(leg["bid"])} ｜ Mid ${money(cand["mid_cost"])} ｜ Ask ${money(leg["ask"])}',
             f'Mid 每張 ≈ ${cand["capital_per_contract"]:.0f} ｜ '
-            f'Natural 每張 ≈ ${cand["natural_per_contract"]:.0f}',
+            f'Natural 每張 ≈ {_fmt_money("natural_per_contract")}',
             f'最大損失 ≈ ${cand["max_loss_per_contract"]:.0f} ｜ '
             f'Breakeven ${money(cand["breakeven"])} ｜ 劇本報酬 {pct(cand["baseline_return"])}',
         ]
     else:
         long_leg, short_leg = legs
-        max_profit_txt = (f'${cand["max_profit_per_contract"]:,.0f}'
-                          if cand["max_profit_per_contract"] is not None else "無上限")
+        max_profit_v = cand.get("max_profit_per_contract")
+        max_profit_txt = (f'${max_profit_v:,.0f}' if max_profit_v is not None
+                         else ("無上限" if "max_profit_per_contract" in cand else "—"))
+        cap_price = cand.get("cap_price")
+        cap_txt = f'{cap_price:g}' if cap_price is not None else "—"
         lines = [
             f'<b>{esc(label)}</b> ｜ 買 {long_leg["strike"]:g} Call ／ '
             f'賣 {short_leg["strike"]:g} Call ｜ 到期 {short_leg["expiry"]}',
             f'Net Mid Debit ${money(cand["mid_cost"])}／股 ｜ 每組 ≈ ${cand["capital_per_contract"]:.0f}',
             f'Natural Debit ${money(cand["natural_cost"])}／股 ｜ '
-            f'Natural 每組 ≈ ${cand["natural_per_contract"]:.0f}',
+            f'Natural 每組 ≈ {_fmt_money("natural_per_contract")}',
             f'最大損失 ≈ ${cand["max_loss_per_contract"]:.0f} ｜ 最大獲利 ≈ {max_profit_txt} ｜ '
-            f'Breakeven ${money(cand["breakeven"])} ｜ 獲利封頂價 {cand["cap_price"]:g}',
+            f'Breakeven ${money(cand["breakeven"])} ｜ 獲利封頂價 {cap_txt}',
         ]
-    return '<div class="oc-card">' + "<br>".join(lines) + '</div>'
+    return esc('<div class="oc-card">' + "<br>".join(lines) + legacy_note + '</div>')
 
 
 def milestone_rail(group: dict, scenarios_by_id: dict, views_by_id: dict) -> str:
     """v6 spec §3.5：垂直里程碑軌。group 為 store.rebuild_groups 產出的單一群組 dict；
     scenarios_by_id/views_by_id 為呼叫端預先聚合的 {scenario_id: Scenario|view dict}。"""
-    parts = [f'<div class="oc-card"><b>{group["id"]}</b>（{len(group["members"])} 個里程碑）']
+    parts = [f'<div class="oc-card"><b>{_h(group["id"])}</b>（{len(group["members"])} 個里程碑）']
     for mid in group["members"]:
         sc = scenarios_by_id[mid]
         view = views_by_id.get(mid)
@@ -1130,7 +1226,7 @@ def milestone_rail(group: dict, scenarios_by_id: dict, views_by_id: dict) -> str
     if same_snapshot:
         parts.append('<div class="oc-badge-ok">✓ 同一資料快照</div>')
     parts.append('</div>')
-    return "".join(parts)
+    return esc("".join(parts))
 ```
 
 - [ ] **Step 4: 跑測試確認通過＋紅線掃描**
@@ -1205,6 +1301,14 @@ def test_bps_caps_at_and_below_cap_price():
     assert "≤ $80" in html or "&lt;= $80" in html
 
 
+def test_bcs_v1_legacy_no_cap_price_degrades_silently():
+    """v1 舊 result 檔缺 cap_price/max_profit_per_contract——不得 KeyError，
+    降級為無封頂標示（等同 cand=None 的行為）。"""
+    legacy = {"strategy": "bull-call-spread", "legs": [{"strike": 100.0}, {"strike": 120.0}]}
+    html = heatmap_html(MATRIX, legacy)
+    assert "收益封頂" not in html
+
+
 def test_comparison_table_contains_required_columns():
     view = {
         "expiry_groups": [{
@@ -1229,6 +1333,24 @@ def test_comparison_table_contains_required_columns():
     for token in ("策略", "Breakeven", "最大損失", "劇本報酬", "情境最壞",
                  "成交摩擦", "overflow-x:auto"):
         assert token in html
+
+
+def test_comparison_table_v1_legacy_spread_no_crash():
+    """v1 舊 result 檔的 Spread 候選缺 max_profit_per_contract——不得 KeyError。"""
+    legacy_cand = {"strategy": "bull-call-spread", "candidate_key": "k2",
+                   "mid_cost": 0.95, "natural_cost": 1.11,
+                   "capital_per_contract": 95.0, "max_loss_per_contract": 95.0,
+                   "breakeven": 100.95, "baseline_return": 0.2,
+                   "scenario_vector": {"worst_return": -1.0, "worst_code": "S1", "entries": []},
+                   "retention": 0.3, "friction": 0.1, "quote_warning": False,
+                   "legs": [{"strike": 100.0, "expiry": "2026-09-01"},
+                           {"strike": 120.0, "expiry": "2026-09-01"}]}
+    view = {"expiry_groups": [{"expiry": "2026-09-01", "buffer_days": 30, "hidden_count": 0,
+                               "rows": [{"strategy": "bull-call-spread", "badges": [],
+                                        "candidate": legacy_cand}]}],
+            "hidden_expiries": []}
+    html = comparison_table_html(view)   # must not raise KeyError
+    assert "—" in html
 ```
 
 - [ ] **Step 2: 跑測試確認失敗**
@@ -1260,7 +1382,9 @@ def heatmap_html(matrix: dict, cand: dict | None = None) -> str:
         head_cells.append(
             f'<th style="padding:4px 8px;white-space:nowrap">{iso[5:7]}/{iso[8:10]}{suffix}</th>')
 
-    cap_price = cand["cap_price"] if cand else None
+    # .get(...) 而非直接索引：v1 舊 result 檔缺 cap_price/max_profit_per_contract
+    # （Task 2 v2 新欄）時應靜默降級為「無封頂標示」，不得 KeyError。
+    cap_price = cand.get("cap_price") if cand else None
     is_bcs = cand is not None and cand["strategy"] == "bull-call-spread"
     is_bps = cand is not None and cand["strategy"] == "bear-put-spread"
 
@@ -1293,7 +1417,7 @@ def heatmap_html(matrix: dict, cand: dict | None = None) -> str:
             f'{price_text}</td>{cells_html}</tr>')
 
     cap_note = ""
-    if cap_price is not None and cand.get("max_profit_per_contract") is not None:
+    if cap_price is not None and cand is not None and cand.get("max_profit_per_contract") is not None:
         direction = "≥" if is_bcs else "≤"
         cap_note = (f'<p style="font-size:12px;color:#666">'
                     f'股價 {direction} ${cap_price:g} 後，收益固定於最大獲利 ≈ '
@@ -1326,9 +1450,9 @@ def comparison_table_html(view: dict) -> str:
             price_col = (f"Net Mid ${money(cand['mid_cost'])} / "
                         f"Natural ${money(cand['natural_cost'])}" if is_spread
                         else f"{money(legs[0]['bid'])}/{money(cand['mid_cost'])}/{money(legs[0]['ask'])}")
+            _mp = cand.get("max_profit_per_contract")   # .get(): v1 舊檔缺此欄不得 KeyError
             max_profit_col = ("無上限" if (not is_spread and row["strategy"] == "long-call")
-                              else (f"${cand['max_profit_per_contract']:,.0f}"
-                                    if cand["max_profit_per_contract"] is not None else "—"))
+                              else (f"${_mp:,.0f}" if _mp is not None else "—"))
             fr = cand["friction"]
             fr_html = f'{pct(min(fr, 9.99))}' + (" ⚠" if fr > 0.25 else "")
             rows_html.append(
@@ -1487,8 +1611,11 @@ st.title("戰情總覽")
 scenarios = workspace.list_scenarios(WS_ROOT)
 
 if not scenarios:
+    # 注意：本頁獨立測試時（AppTest.from_file 直接載入本檔）尚無 st.navigation
+    # 路由存在，st.page_link 要求目標檔案必須是「已在 st.navigation 註冊的頁面」
+    # 否則丟例外——此處故意只用純文字指引，可點擊的頁面連結延後到 Task 12（路由
+    # 建好後）以 st.page_link 升級並於 test_app_navigation.py 驗證整合行為。
     st.markdown("尚無劇本。前往「劇本工作區」建立第一個劇本。")
-    st.page_link("views/workspace.py", label="建立第一個劇本", icon="🗂")
 else:
     views = {sc.id: workspace.latest_result(WS_ROOT, sc.id) for sc in scenarios}
     groups = workspace.load_groups(WS_ROOT)
@@ -2302,6 +2429,35 @@ def test_scatter_expander_and_greeks_present(ws):
     assert "韌性與壓力情境" in labels
     assert "報酬×韌性散點" in labels
     assert "Greeks 與流動性" in labels
+
+
+def test_v1_legacy_result_renders_without_crash(ws):
+    """End-to-end proof of Task 6/7's .get()-based v1 fallback: a real result
+    file written with v2 fields stripped and schema_version rolled back to 1
+    must still render the full detail page (degraded, not KeyError)."""
+    sc = _mk_analyzed(ws)
+    path = store.latest_result_path(ws, sc.id)
+    view = store.load_result(path)
+    for r in view["results"]:
+        for c in r["candidates"] + r["expiry_best"]:
+            c.pop("natural_per_contract", None)
+            c.pop("max_profit_per_contract", None)
+            c.pop("cap_price", None)
+    for g in view["expiry_groups"]:
+        for row in g["rows"]:
+            cc = row["candidate"]
+            cc.pop("natural_per_contract", None)
+            cc.pop("max_profit_per_contract", None)
+            cc.pop("cap_price", None)
+    view["schema_version"] = 1
+    store.atomic_write_json(path, view)
+
+    at = AppTest.from_file(PAGE)
+    at.query_params["sid"] = sc.id
+    at.run()
+    assert not at.exception
+    body = " ".join(m.value for m in at.markdown)
+    assert "舊版分析結果" in body
 ```
 
 - [ ] **Step 2: 跑測試確認失敗**
@@ -2528,6 +2684,48 @@ def test_detail_page_reachable_though_hidden(ws):
     at.query_params["sid"] = sc.id
     at.run()
     assert not at.exception
+
+
+def test_overview_empty_state_page_link_reaches_workspace(ws):
+    """Task 8 shipped plain-text guidance (st.page_link requires its target to
+    already be a page registered in st.navigation, which does not exist until
+    this task wires the router — see Task 8 Step 3 comment). Now that the
+    router is registered, overview.py's empty-state page_link must resolve
+    without raising `StreamlitAPIException` (the exact failure mode this task
+    guards against): `streamlit.testing.v1.AppTest` has no typed accessor for
+    `st.page_link` (it surfaces as an opaque UnknownElement — verified against
+    the installed streamlit version), so `not at.exception` after reaching
+    this exact page through the real router IS the load-bearing assertion,
+    not a placeholder — a page_link pointed at an unregistered/nonexistent
+    page raises during script execution, which `at.exception` would catch."""
+    at = AppTest.from_file("webapp/app.py")
+    at.run()   # default page = overview (empty workspace) -> renders the page_link
+    assert not at.exception
+    body = " ".join(m.value for m in at.markdown)
+    assert "建立第一個劇本" in body or "劇本工作區" in body
+
+
+def test_quick_save_success_links_to_detail_page(ws, monkeypatch):
+    from option_chaser import service
+    from option_chaser.data.snapshot import load_snapshot
+    FIX = "tests/fixtures/xyz_v4_six_expiries.json"
+    real_offline = service.run_offline
+    monkeypatch.setattr(service, "run",
+                        lambda req, progress=None: real_offline(req, FIX, progress))
+    at = AppTest.from_file("webapp/app.py")
+    at.run()
+    at.switch_page("views/quick.py")
+    at.run()
+    at.text_input(key="symbol").set_value("XYZ")
+    at.number_input(key="target_price").set_value(120.0)
+    at.date_input(key="target_date").set_value(__import__("datetime").date(2026, 8, 1))
+    at.checkbox(key="chk-long-call").set_value(True)
+    at.run()
+    at.button[0].set_value(True).run(timeout=30)
+    save_buttons = [b for b in at.button if b.label == "保存為劇本"]
+    assert save_buttons
+    save_buttons[0].set_value(True).run(timeout=30)
+    assert not at.exception
 ```
 
 - [ ] **Step 2: 跑測試確認失敗**
@@ -2597,6 +2795,50 @@ def test_deterministic():
 
 Run: `python -m pytest tests/test_heatmap_colors.py -v`
 Expected: 4 passed（無子行程、無 poisoning 風險——確認同一 pytest 行程內其餘 AppTest 測試不受影響）
+
+- [ ] **Step 4b: 補上 Task 8/9 延後的 `st.page_link` 導覽（路由已註冊，現在安全）**
+
+`st.page_link(page, ...)` 要求 `page` 必須是已於 `st.navigation` 註冊的頁面，否則丟 `StreamlitAPIException`（見官方文件："The Python file must be the source of a page in `st.navigation`"）。Task 8／Task 9 撰寫時路由尚未存在，故僅用純文字指引；路由於本 task Step 3 建好後，此處補上真正可點擊連結。
+
+`webapp/views/overview.py`：`st.markdown("尚無劇本。前往「劇本工作區」建立第一個劇本。")` 改為：
+
+```python
+    st.markdown("尚無劇本。前往「劇本工作區」建立第一個劇本。")
+    st.page_link("views/workspace.py", label="建立第一個劇本", icon="🗂")
+```
+
+`webapp/views/quick.py`：spec §1.2 要求成功保存與撞名兩種情況都需連結到該劇本詳頁（`query_params` 直接支援，見 API 簽名 `st.page_link(page, *, ..., query_params=None)`）。原本的純文字訊息：
+
+```python
+    if _existing is not None:
+        st.markdown(f"已有同名劇本：`{_existing}`，前往劇本工作區查看。")
+    else:
+        if st.button("保存為劇本", key="save-as-scenario"):
+            sc, _ = workspace.adopt_result(WS_ROOT, _final_result)
+            st.success(f"已保存為劇本 `{sc.id}`，前往劇本工作區查看。")
+```
+
+改為：
+
+```python
+    if _existing is not None:
+        st.markdown(f"已有同名劇本：`{_existing}`。")
+        st.page_link("views/detail.py", label="前往查看", icon="📄",
+                     query_params={"sid": _existing})
+    else:
+        if st.button("保存為劇本", key="save-as-scenario"):
+            sc, _ = workspace.adopt_result(WS_ROOT, _final_result)
+            st.success(f"已保存為劇本 `{sc.id}`。")
+            st.page_link("views/detail.py", label="前往查看", icon="📄",
+                         query_params={"sid": sc.id})
+```
+
+**Streamlit rerun 注意**：`st.button` 觸發後同一次 rerun 內接著 `st.success`＋`st.page_link` 屬正常同輪渲染，不需要額外 `st.rerun()`（`adopt_result` 已完成寫入，`st.page_link` 只是導覽元件，不影響已保存的資料）。
+
+- [ ] **Step 4c: 跑 Task 12 新增的整合測試**
+
+Run: `python -m pytest tests/test_app_navigation.py -v`
+Expected: 全綠（含 `test_overview_empty_state_page_link_reaches_workspace`／`test_quick_save_success_links_to_detail_page`）
 
 - [ ] **Step 5: 更新紅線掃描 TARGETS**
 
@@ -2700,19 +2942,32 @@ set "LOGFILE=%LOGFILE: =0%"
 echo Option Chaser 啟動中... > "%LOGFILE%"
 
 rem --- Step 1: 找 Python ---
+rem 全程用 !errorlevel!（延遲展開，已於檔首 setlocal enabledelayedexpansion）：
+rem %errorlevel% 在整個 if/else 括號區塊於解析當下就被展開成同一個值，內層
+rem 對 python --version 的判斷會誤讀外層 py -3 的舊值——這是已知的 batch 陷阱，
+rem 全部改用 !errorlevel! 才能讓每個判斷讀到「當下」剛執行完命令的真實結果。
 set "PYCMD="
 py -3 --version >nul 2>&1
-if %errorlevel%==0 (
+if !errorlevel!==0 (
   set "PYCMD=py -3"
 ) else (
   python --version >nul 2>&1
-  if %errorlevel%==0 (
+  if !errorlevel!==0 (
     set "PYCMD=python"
   )
 )
 if "%PYCMD%"=="" (
   echo 找不到 Python。>> "%LOGFILE%"
   echo 找不到 Python。
+  echo 請先安裝 Python 3.11 以上版本：https://www.python.org/downloads/
+  pause
+  exit /b 1
+)
+rem 找到指令不代表版本足夠——實際檢查 >= 3.11（spec §10.2「版本 <3.11...」）
+%PYCMD% -c "import sys; sys.exit(0 if sys.version_info >= (3, 11) else 1)" >> "%LOGFILE%" 2>&1
+if errorlevel 1 (
+  echo 已安裝的 Python 版本過舊。>> "%LOGFILE%"
+  echo 已安裝的 Python 版本過舊。
   echo 請先安裝 Python 3.11 以上版本：https://www.python.org/downloads/
   pause
   exit /b 1
@@ -2822,4 +3077,4 @@ git commit -m "feat(v6): Windows one-click launcher BAT (self-installing, port-o
 
 - **Spec 覆蓋**：§0（決議）→ 全 task 隱含遵守；§1.1（導覽/版本地板）→ Task 12；§1.2（quick save）→ Task 3+9；§2（視覺 token/元件）→ Task 4+6；§3.1-3.5（五頁）→ Task 8/9/10/11；§4（候選價格）→ Task 2+6+7；§5（封頂）→ Task 7；§6（狀態）→ Task 5；§7（view-contract）→ Task 2+12；§8（打包/版本）→ Task 1+12；§9（BAT）→ Task 13；§10（紅線）→ 全 task GUI 紅線遵守，Task 12 掃描擴充；§11（測試策略）→ 各 task test 段+Task 9/11 舊測試收斂；§11A（審計契約）→ 供後續 codex-audit 使用，非本 plan 任務；§12（驗收案例）→ 對應 SDD 完成後之整體驗收步驟（非單一 task）；§13（不做清單）→ 未觸碰任何列舉項。
 - **型別一致**：`adopt_result(ws_root, result, notes="", *, ts=None) -> (Scenario, Path)` 於 Task 3 定義，Task 9 quick.py 呼叫簽名一致；`heatmap_html(matrix, cand=None)` 於 Task 7 定義，Task 9/11 呼叫點對照更新（quick.py 透過 `render_step2` 間接呼叫，`render_step2` 內部呼叫已於 Task 7 Step 5 同步修改）；`comparison_table_html(view)` Task 7 定義、Task 11 使用一致；`scenario_card`/`candidate_card`/`milestone_rail` 簽名 Task 6 定義、Task 10/11 呼叫一致。
-- **已知妥協（review 時檢視）**：(a) Task 13 BAT 的 PID 身分驗證改用「唯一視窗標題 + `tasklist /v /fo csv` 反查」，純 batch 內建、不依賴 wmic（Win11 起預設移除）或 PowerShell，單一定案腳本（已修正原稿中三段互相取代的草稿殘留）；(b) Task 9 Step 6 承認中繼態測試失敗（`test_webapp_v4.py` 依賴尚未搬遷的路徑），由 Task 10/11 收斂——SDD 執行時若採 subagent-driven-development，此中繼態不應跨 task 提交到 master（同一 PR/branch 內連續完成即可，plan 內已排序）；(c) `webapp/views/overview.py` 的 `st.page_link("views/workspace.py", ...)` 依賴 Task 12 的 `st.navigation` 頁面清單已註冊該路徑，Task 8 單獨測試時該連結按鈕存在但點擊行為未經路由整合驗證——由 Task 12 `test_app_navigation.py` 補足整合驗證；(d) `tests/test_heatmap_colors.py` 的 v5 子行程工作區隨 Task 12 的 `app.py` 改寫而失效（`cell_color` 從未被路由器重新匯出），已在 Task 12 Step 4a 一併簡化為直接匯入 `webapp.render.cell_color`（該模組零頂層 Streamlit 有狀態呼叫，安全）——此為撰寫本 plan 時發現的既有測試依賴斷裂，非 spec 要求項，但屬必要修正（否則 Task 12 完成後全回歸會意外變紅）。
+- **已知妥協（review 時檢視）**：(a) Task 13 BAT 的 PID 身分驗證改用「唯一視窗標題 + `tasklist /v /fo csv` 反查」，純 batch 內建、不依賴 wmic（Win11 起預設移除）或 PowerShell，單一定案腳本（已修正原稿中三段互相取代的草稿殘留）；(b) Task 9 Step 6 承認中繼態測試失敗（`test_webapp_v4.py` 依賴尚未搬遷的路徑），由 Task 10/11 收斂——SDD 執行時若採 subagent-driven-development，此中繼態不應跨 task 提交到 master（同一 PR/branch 內連續完成即可，plan 內已排序）；(c) `webapp/views/overview.py` 與 `webapp/views/quick.py` 的 `st.page_link` 導覽刻意延後到 Task 12（`st.page_link` 要求目標頁面已於 `st.navigation` 註冊，Task 8/9 撰寫當下路由尚未存在——先出純文字指引，Task 12 Step 4b 於路由建好後補上真正連結並以 `test_app_navigation.py` 驗證整合行為，而非讓 Task 8/9 自證一個尚不成立的路由依賴）；(d) `tests/test_heatmap_colors.py` 的 v5 子行程工作區隨 Task 12 的 `app.py` 改寫而失效（`cell_color` 從未被路由器重新匯出），已在 Task 12 Step 4a 一併簡化為直接匯入 `webapp.render.cell_color`（該模組零頂層 Streamlit 有狀態呼叫，安全）；(e) Task 1 版本升級 0.5.0→0.6.0 會使三個既有測試（`test_store_serialize.py`／`test_vocabulary.py`／`test_workspace_analyze.py`）斷言的硬編碼版本字串變紅，已於 Task 1 Step 6 一併修正（發現於自我複審，非 spec 要求項，但屬必要修正，否則升版本當下全回歸即紅）；(f) v1 舊 result 檔（schema_version 1，缺 Task 2 三個新欄）相容性：`components.candidate_card`／`render.heatmap_html`／`render.comparison_table_html` 三處消費點全數改用 `.get()` 降級讀取＋顯示 `status.LEGACY_RESULT_MESSAGE`（Task 5/6/7），並在 Task 11 補一則端到端測試（真實寫入 v1 形狀的 result 檔，經完整詳頁渲染驗證不崩潰）；(g) 使用者可控文字（scenario symbol／notes）注入 `unsafe_allow_html=True` 樣板前，`webapp/components.py` 全面改用 `html.escape()` 跳脫（Task 6），並補 HTML 注入測試；元件最終回傳字串統一經既有 `render.esc()`（`$` 轉義）處理，呼叫端不需重複跳脫；(h) plan 內的 `python - <<'PYEOF'` heredoc／`rm -rf`／`git rm` 等指令皆以本 session 已驗證可用的 Bash 工具（git-bash 後端）執行——本 session 全程（含 v5 SDD 十一個 task）持續使用相同語法成功操作，SDD 派工的 subagent 繼承相同工具集，非空想的可攜性風險；若審查者仍有疑慮，可在 SDD 執行前針對單一指令做一次性驗證，而非要求全文重寫為 PowerShell。
