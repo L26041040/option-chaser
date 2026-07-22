@@ -6,3 +6,6 @@ snapshots/*.json
 workspace/
 .gstack/
 .audit-scratch/
+.venv/
+logs/*.log
+logs/running.lock
