@@ -1060,6 +1060,26 @@ def test_scenario_card_escapes_html_injection_in_symbol_and_notes():
     assert "&lt;img" in html
 
 
+def test_candidate_card_bear_put_spread_shows_put_not_call():
+    """BPS 兩腿皆 put——卡片不得誤標 Call（先前草稿硬編 Call 的迴歸測試）。"""
+    bps_cand = {
+        "candidate_key": "bear-put-spread|100|80|2028-12-15", "strategy": "bear-put-spread",
+        "legs": [{"contract_symbol": "L", "option_type": "put", "strike": 100.0,
+                 "expiry": "2028-12-15", "bid": 1.0, "ask": 1.1, "iv": 0.13,
+                 "volume": 10, "open_interest": 100},
+                {"contract_symbol": "S", "option_type": "put", "strike": 80.0,
+                 "expiry": "2028-12-15", "bid": 0.05, "ask": 0.15, "iv": 0.17,
+                 "volume": 5, "open_interest": 50}],
+        "mid_cost": 0.95, "natural_cost": 1.11, "natural_per_contract": 111.0,
+        "capital_per_contract": 95.0, "max_loss_per_contract": 95.0,
+        "max_profit": 19.05, "max_profit_per_contract": 1905.0, "cap_price": 80.0,
+        "breakeven": 99.05, "baseline_return": 20.05, "net_delta": -0.20,
+    }
+    html = components.candidate_card(bps_cand, "bear-put-spread")
+    assert "Put" in html
+    assert "Call" not in html
+
+
 def test_candidate_card_v1_legacy_missing_fields_no_crash():
     """v1 舊 result 檔缺 v2 新欄（natural_per_contract/max_profit_per_contract/
     cap_price）——必須降級顯示，不得 KeyError。"""
@@ -1193,9 +1213,13 @@ def candidate_card(cand: dict, strategy: str) -> str:
                          else ("無上限" if "max_profit_per_contract" in cand else "—"))
         cap_price = cand.get("cap_price")
         cap_txt = f'{cap_price:g}' if cap_price is not None else "—"
+        # BCS 兩腿皆 call、BPS 兩腿皆 put——讀 leg 實際 option_type，不得硬編 "Call"
+        # （spec brief §5.2 明確要求 Bear Put Spread 顯示 Put，先前草稿誤植兩者皆
+        # 顯示 Call）。
+        opt_label = long_leg["option_type"].capitalize()
         lines = [
-            f'<b>{esc(label)}</b> ｜ 買 {long_leg["strike"]:g} Call ／ '
-            f'賣 {short_leg["strike"]:g} Call ｜ 到期 {short_leg["expiry"]}',
+            f'<b>{esc(label)}</b> ｜ 買 {long_leg["strike"]:g} {opt_label} ／ '
+            f'賣 {short_leg["strike"]:g} {opt_label} ｜ 到期 {short_leg["expiry"]}',
             f'Net Mid Debit ${money(cand["mid_cost"])}／股 ｜ 每組 ≈ ${cand["capital_per_contract"]:.0f}',
             f'Natural Debit ${money(cand["natural_cost"])}／股 ｜ '
             f'Natural 每組 ≈ {_fmt_money("natural_per_contract")}',
@@ -1424,14 +1448,18 @@ def heatmap_html(matrix: dict, cand: dict | None = None) -> str:
                     f'${cand["max_profit_per_contract"]:,.0f}／每組。'
                     f'<span style="color:#888">（最大獲利區）</span></p>')
 
-    return ('<div style="overflow-x:auto"><table style="border-collapse:collapse;'
-            'font-family:monospace;font-size:13px">'
-            f'<tr><th style="padding:4px 8px">價格</th>{"".join(head_cells)}</tr>'
-            + "".join(rows) + "</table></div>"
-            '<p style="font-size:12px;color:#666">此圖顯示在不同標的價格與日期下，'
-            '以目前 Mid 價進場的模型報酬率。'
-            '<b>粗體</b>價格列為錨點（現價／目標／超標／深跌），其餘為等距內插價。</p>'
-            + cap_note)
+    out = ('<div style="overflow-x:auto"><table style="border-collapse:collapse;'
+          'font-family:monospace;font-size:13px">'
+          f'<tr><th style="padding:4px 8px">價格</th>{"".join(head_cells)}</tr>'
+          + "".join(rows) + "</table></div>"
+          '<p style="font-size:12px;color:#666">此圖顯示在不同標的價格與日期下，'
+          '以目前 Mid 價進場的模型報酬率。'
+          '<b>粗體</b>價格列為錨點（現價／目標／超標／深跌），其餘為等距內插價。</p>'
+          + cap_note)
+    # v5 原函數本無 $ 字元（僅百分比），故不需 esc()；v6 新增的 cap_note 含
+    # 裸 $ 金額，經 unsafe_allow_html=True 仍可能被誤判為 LaTeX 定界符，
+    # 整段回傳統一經 esc() 處理（cap_note 為空字串時 esc() 為 no-op）。
+    return esc(out)
 ```
 
 於檔案末尾（`render_step4` 之後）追加新函數：
@@ -1468,9 +1496,11 @@ def comparison_table_html(view: dict) -> str:
     header = ("<tr><th>策略</th><th>結構</th><th>到期日</th><th>Bid/Mid/Ask 或 Net Mid/Natural</th>"
              "<th>每張・每組成本</th><th>最大損失</th><th>最大獲利</th><th>Breakeven</th>"
              "<th>劇本報酬</th><th>情境最壞</th><th>不漲保留率</th><th>成交摩擦</th><th>資料品質</th></tr>")
-    return ('<div style="overflow-x:auto"><table style="border-collapse:collapse;font-size:13px">'
-           + header + "".join(rows_html) + "</table></div>")
+    return esc('<div style="overflow-x:auto"><table style="border-collapse:collapse;font-size:13px">'
+              + header + "".join(rows_html) + "</table></div>")
 ```
+
+（`esc()`：既有紅線——render.py 的既有慣例是每個含 `$` 金額且經 `unsafe_allow_html=True` 呈現的組合字串一律在 `return` 前包一層 `esc()`，否則 Streamlit 的 markdown 引擎仍會把裸 `$` 誤判為 LaTeX 定界符，即使走 `unsafe_allow_html=True`——本函數的 `${money(...)}`／`${cand[...]:.0f}` 等多處金額欄位皆屬此類，故整個回傳字串統一跳脫，不逐欄位處理。）
 
 - [ ] **Step 4: 跑測試確認通過＋既有 render 測試不破**
 
@@ -2114,7 +2144,18 @@ def test_no_position_language(ws):
     body = _body(at)
     for banned in ("持倉損益", "已投入資金", "Portfolio Greeks"):
         assert banned not in body
+
+
 ```
+
+**注意（不在本 task 測試）**：「詳頁」按鈕呼叫 `st.switch_page("views/detail.py", ...)`——
+此呼叫要求目標頁已於 `st.navigation` 註冊（經實測驗證：`AppTest.from_file` 直接載入
+單一頁面腳本時，該腳本本身即是「入口」，無任何 `st.navigation` 宣告，`switch_page`/
+`page_link` 對任何目標一律拋 `StreamlitAPIException`，即使目標檔案確實存在於磁碟
+——與是否已完成 Task 12 無關）。因此本 task 的獨立測試**不得**點擊 `ws-det-*`
+按鈕；該按鈕的端到端驗證（含 `sid` 經 `query_params` 正確傳遞）延後至 Task 12
+`test_app_navigation.py`，經 `webapp/app.py` 真實入口＋`switch_page("views/workspace.py")`
+到達本頁後才點擊測試。
 
 - [ ] **Step 2: 跑測試確認失敗**
 
@@ -2244,8 +2285,10 @@ for sc in scenarios:
                 st.rerun()
     with cols[1]:
         if summary is not None and st.button("詳頁", key=f"ws-det-{sc.id}"):
-            st.query_params["sid"] = sc.id
-            st.switch_page("views/detail.py")
+            # st.switch_page 若不帶 query_params 會清空既有 query params
+            # （官方文件："Query parameters to apply when navigating"——不傳即不帶），
+            # 不可先 st.query_params["sid"]=... 再呼叫無參數版本，sid 會遺失。
+            st.switch_page("views/detail.py", query_params={"sid": sc.id})
     with cols[2]:
         with st.popover("⋯ 管理"):
             if sc.status == "Active":
@@ -2431,6 +2474,30 @@ def test_scatter_expander_and_greeks_present(ws):
     assert "Greeks 與流動性" in labels
 
 
+def test_header_escapes_symbol_html_injection(ws):
+    """detail.py 的 Header 卡直接組字串後 unsafe_allow_html=True 呈現——sc.symbol
+    是使用者輸入，必須 html.escape() 才可注入，否則破壞版面或執行注入內容。
+
+    注意：`<`/`>` 是 Windows 檔名非法字元，若經 workspace.create_scenario 產生
+    （id 由 symbol 直接組成），會在 store.save_scenario 寫檔階段就先炸掉，測不到
+    render 層的跳脫邏輯。改直接建構 Scenario 物件、以固定安全 id 存檔，僅讓
+    symbol 欄位（JSON 內容字串，無檔名限制）帶惡意字串，單純驗證 detail.py 的
+    HTML 跳脫，不糾纏 id 產生規則。"""
+    from option_chaser.store import Scenario
+    sc = Scenario(schema_version=1, id="INJECT-TEST-1", symbol="<script>alert(1)</script>",
+                 direction="bullish", target_price=120.0, target_date="2026-08-01",
+                 created_at=TS, notes="", group_id="G-INJECT", status="Active",
+                 strategies=("long-call",))
+    store.save_scenario(ws, sc)
+    at = AppTest.from_file(PAGE)
+    at.query_params["sid"] = "INJECT-TEST-1"
+    at.run()
+    assert not at.exception
+    body = " ".join(m.value for m in at.markdown)
+    assert "<script>" not in body
+    assert "&lt;script&gt;" in body
+
+
 def test_v1_legacy_result_renders_without_crash(ws):
     """End-to-end proof of Task 6/7's .get()-based v1 fallback: a real result
     file written with v2 fields stripped and schema_version rolled back to 1
@@ -2473,6 +2540,7 @@ Expected: FAIL（`webapp/views/detail.py` 不存在）
 以 st.query_params["sid"] 指定劇本。"""
 from __future__ import annotations
 
+import html
 import os
 from pathlib import Path
 
@@ -2481,7 +2549,7 @@ import streamlit as st
 from option_chaser import store, workspace
 from option_chaser.models import FetchError, ParamError
 from webapp.components import candidate_card, quality_badge
-from webapp.render import comparison_table_html, render_step2, render_step3, render_step4
+from webapp.render import comparison_table_html, esc, render_step2, render_step3, render_step4
 from webapp.status import derive_result_status, quality_tone
 from webapp.theme import inject
 
@@ -2504,11 +2572,15 @@ view = workspace.latest_result(WS_ROOT, sid)
 st.title(f"詳頁：{sc.symbol}")
 
 # ---------- Header ----------
-header_lines = [f"**{sc.symbol}** ｜ 目標 ${sc.target_price:g} ｜ {sc.target_date}"]
+# sc.symbol 為使用者輸入，經 unsafe_allow_html=True 呈現前必須 html.escape()；
+# 含 $ 金額的整段組字串在 return/呼叫前統一經 render.esc() 處理（既有紅線，見
+# components.py／comparison_table_html 同一慣例）。
+_safe_symbol = html.escape(sc.symbol, quote=True)
+header_lines = [f"**{_safe_symbol}** ｜ 目標 ${sc.target_price:g} ｜ {sc.target_date}"]
 if view is not None:
     header_lines.append(f"現價 ${view['meta']['spot']:.2f} ｜ 資料時間 {view['snapshot_ref']['fetched_at']} "
                         + quality_badge(quality_tone(view, workspace.ny_today())))
-st.markdown("<br>".join(header_lines), unsafe_allow_html=True)
+st.markdown(esc("<br>".join(header_lines)), unsafe_allow_html=True)
 if st.button("重新分析", key="detail-reanalyze"):
     try:
         with st.status("分析中……", expanded=True) as status:
@@ -2619,7 +2691,7 @@ import pytest
 st_testing = pytest.importorskip("streamlit.testing.v1")
 from streamlit.testing.v1 import AppTest
 
-from option_chaser import workspace
+from option_chaser import store, workspace
 
 FIX = "tests/fixtures/xyz_v4_six_expiries.json"
 TS = "2026-07-22T00:00:00+00:00"
@@ -2703,6 +2775,25 @@ def test_overview_empty_state_page_link_reaches_workspace(ws):
     assert not at.exception
     body = " ".join(m.value for m in at.markdown)
     assert "建立第一個劇本" in body or "劇本工作區" in body
+
+
+def test_workspace_detail_button_switches_with_sid(ws):
+    """Task 10's「詳頁」按鈕呼叫 st.switch_page(..., query_params={"sid":...})——
+    只能經真實入口（webapp/app.py，含 st.navigation 宣告）驗證，不可獨立測試
+    workspace.py（見 Task 10 註記）。同時驗證 st.switch_page 不帶 query_params
+    會清空既有值這件事沒有在此處踩雷（query_params 是隨 switch_page 呼叫一併
+    帶入，不是先設 st.query_params 再呼叫無參數版本）。"""
+    sc = workspace.create_scenario(ws, "XYZ", "bullish", 120.0, "2026-08-01", "",
+                                   ("long-call",), ts=TS)
+    store.save_constraints(ws, 100000.0)
+    workspace.analyze_scenario(ws, sc.id, snapshot_path=FIX, ts=TS)
+    at = AppTest.from_file("webapp/app.py")
+    at.run()
+    at.switch_page("views/workspace.py")
+    at.run()
+    next(b for b in at.button if b.key == f"ws-det-{sc.id}").set_value(True).run(timeout=30)
+    assert not at.exception
+    assert at.query_params.get("sid") == sc.id
 
 
 def test_quick_save_success_links_to_detail_page(ws, monkeypatch):
@@ -2835,10 +2926,99 @@ Expected: 4 passed（無子行程、無 poisoning 風險——確認同一 pytes
 
 **Streamlit rerun 注意**：`st.button` 觸發後同一次 rerun 內接著 `st.success`＋`st.page_link` 屬正常同輪渲染，不需要額外 `st.rerun()`（`adopt_result` 已完成寫入，`st.page_link` 只是導覽元件，不影響已保存的資料）。
 
-- [ ] **Step 4c: 跑 Task 12 新增的整合測試**
+- [ ] **Step 4c: 修正 Task 8/9/10 中「獨立載入子頁面」的既有測試——加入 `st.page_link`／`st.switch_page` 後不再安全**
 
-Run: `python -m pytest tests/test_app_navigation.py -v`
-Expected: 全綠（含 `test_overview_empty_state_page_link_reaches_workspace`／`test_quick_save_success_links_to_detail_page`）
+**已實測驗證**（非臆測）：`AppTest.from_file` 直接載入單一 view 檔時，該檔即是「入口腳本」，內部沒有任何 `st.navigation` 宣告；此時腳本內任何 `st.page_link`／`st.switch_page` 呼叫一律拋 `StreamlitAPIException`（`Could not find page: ...`），**與目標檔案是否存在、路由是否已建好完全無關**——這是 Streamlit 對「入口腳本沒有宣告導覽」的通用行為，不是本專案的路徑問題。Step 4b 為 `overview.py`／`quick.py` 新增的 `st.page_link` 呼叫只在特定分支執行（空工作區／保存成功／偵測撞名），但下列四個既有測試剛好會踩進那些分支，必須改為經真實入口 `webapp/app.py`（內含 `st.navigation`）＋`switch_page(...)` 到達目標頁後再操作：
+
+```bash
+python - <<'PYEOF'
+import pathlib
+
+def patch(path, old, new, label):
+    p = pathlib.Path(path)
+    text = p.read_text(encoding="utf-8")
+    assert old in text, f"anchor not found in {path} ({label})"
+    p.write_text(text.replace(old, new), encoding="utf-8")
+    print("patched", path, label)
+
+patch("tests/test_views_overview_help.py",
+'''def test_overview_empty_workspace_shows_guidance(ws):
+    at = AppTest.from_file("webapp/views/overview.py")
+    at.run()
+    assert not at.exception
+    body = " ".join(m.value for m in at.markdown)
+    assert "建立第一個劇本" in body''',
+'''def test_overview_empty_workspace_shows_guidance(ws):
+    # overview.py 現含 st.page_link（空工作區分支）——st.page_link 要求入口腳本
+    # 已宣告 st.navigation，故經真實路由到達本頁，而非直接載入本檔。
+    at = AppTest.from_file("webapp/app.py")
+    at.run()
+    assert not at.exception
+    body = " ".join(m.value for m in at.markdown)
+    assert "建立第一個劇本" in body''',
+"empty_workspace_shows_guidance -> routed via app.py")
+
+patch("tests/test_views_overview_help.py",
+'''def test_overview_no_position_language(ws):
+    at = AppTest.from_file("webapp/views/overview.py")
+    at.run()
+    body = " ".join(m.value for m in at.markdown)
+    for banned in ("持倉損益", "已投入資金", "Portfolio Greeks"):
+        assert banned not in body''',
+'''def test_overview_no_position_language(ws):
+    at = AppTest.from_file("webapp/app.py")
+    at.run()
+    body = " ".join(m.value for m in at.markdown)
+    for banned in ("持倉損益", "已投入資金", "Portfolio Greeks"):
+        assert banned not in body''',
+"no_position_language -> routed via app.py")
+
+patch("tests/test_views_quick.py",
+'''def test_save_as_scenario_button_persists(monkeypatch, tmp_path):
+    monkeypatch.setenv("OC_WORKSPACE", str(tmp_path))
+    _patched(monkeypatch)
+    at = AppTest.from_file(PAGE)
+    at.run()
+    at = _fill_and_submit(at)''',
+'''def test_save_as_scenario_button_persists(monkeypatch, tmp_path):
+    monkeypatch.setenv("OC_WORKSPACE", str(tmp_path))
+    _patched(monkeypatch)
+    # quick.py 保存成功分支現含 st.page_link，須經真實入口到達本頁。
+    at = AppTest.from_file("webapp/app.py")
+    at.run()
+    at.switch_page("views/quick.py")
+    at = _fill_and_submit(at)''',
+"save_as_scenario_button_persists -> routed via app.py")
+
+patch("tests/test_views_quick.py",
+'''def test_save_as_scenario_duplicate_shows_link(monkeypatch, tmp_path):
+    monkeypatch.setenv("OC_WORKSPACE", str(tmp_path))
+    _patched(monkeypatch)
+    workspace.create_scenario(tmp_path, "XYZ", "bullish", 120.0, "2026-08-01", "",
+                              ("long-call",), ts="2026-07-22T00:00:00+00:00")
+    at = AppTest.from_file(PAGE)
+    at.run()
+    at = _fill_and_submit(at)''',
+'''def test_save_as_scenario_duplicate_shows_link(monkeypatch, tmp_path):
+    monkeypatch.setenv("OC_WORKSPACE", str(tmp_path))
+    _patched(monkeypatch)
+    workspace.create_scenario(tmp_path, "XYZ", "bullish", 120.0, "2026-08-01", "",
+                              ("long-call",), ts="2026-07-22T00:00:00+00:00")
+    # quick.py 撞名分支現含 st.page_link，須經真實入口到達本頁。
+    at = AppTest.from_file("webapp/app.py")
+    at.run()
+    at.switch_page("views/quick.py")
+    at = _fill_and_submit(at)''',
+"save_as_scenario_duplicate_shows_link -> routed via app.py")
+PYEOF
+```
+
+`_fill_and_submit(at)` 內部呼叫的 `at.button[0]` 等定位邏輯與頁面內元件 key 無關於「透過 router 或直接載入」，經 `switch_page` 到達後行為與獨立載入相同，測試邏輯本身不需重寫，只換入口。
+
+- [ ] **Step 4d: 跑 Task 12 新增與修正的測試**
+
+Run: `python -m pytest tests/test_app_navigation.py tests/test_views_overview_help.py tests/test_views_quick.py tests/test_views_workspace.py -v`
+Expected: 全綠（含 `test_overview_empty_state_page_link_reaches_workspace`／`test_quick_save_success_links_to_detail_page`／`test_workspace_detail_button_switches_with_sid`／四則被修正的既有測試）
 
 - [ ] **Step 5: 更新紅線掃描 TARGETS**
 
@@ -3077,4 +3257,4 @@ git commit -m "feat(v6): Windows one-click launcher BAT (self-installing, port-o
 
 - **Spec 覆蓋**：§0（決議）→ 全 task 隱含遵守；§1.1（導覽/版本地板）→ Task 12；§1.2（quick save）→ Task 3+9；§2（視覺 token/元件）→ Task 4+6；§3.1-3.5（五頁）→ Task 8/9/10/11；§4（候選價格）→ Task 2+6+7；§5（封頂）→ Task 7；§6（狀態）→ Task 5；§7（view-contract）→ Task 2+12；§8（打包/版本）→ Task 1+12；§9（BAT）→ Task 13；§10（紅線）→ 全 task GUI 紅線遵守，Task 12 掃描擴充；§11（測試策略）→ 各 task test 段+Task 9/11 舊測試收斂；§11A（審計契約）→ 供後續 codex-audit 使用，非本 plan 任務；§12（驗收案例）→ 對應 SDD 完成後之整體驗收步驟（非單一 task）；§13（不做清單）→ 未觸碰任何列舉項。
 - **型別一致**：`adopt_result(ws_root, result, notes="", *, ts=None) -> (Scenario, Path)` 於 Task 3 定義，Task 9 quick.py 呼叫簽名一致；`heatmap_html(matrix, cand=None)` 於 Task 7 定義，Task 9/11 呼叫點對照更新（quick.py 透過 `render_step2` 間接呼叫，`render_step2` 內部呼叫已於 Task 7 Step 5 同步修改）；`comparison_table_html(view)` Task 7 定義、Task 11 使用一致；`scenario_card`/`candidate_card`/`milestone_rail` 簽名 Task 6 定義、Task 10/11 呼叫一致。
-- **已知妥協（review 時檢視）**：(a) Task 13 BAT 的 PID 身分驗證改用「唯一視窗標題 + `tasklist /v /fo csv` 反查」，純 batch 內建、不依賴 wmic（Win11 起預設移除）或 PowerShell，單一定案腳本（已修正原稿中三段互相取代的草稿殘留）；(b) Task 9 Step 6 承認中繼態測試失敗（`test_webapp_v4.py` 依賴尚未搬遷的路徑），由 Task 10/11 收斂——SDD 執行時若採 subagent-driven-development，此中繼態不應跨 task 提交到 master（同一 PR/branch 內連續完成即可，plan 內已排序）；(c) `webapp/views/overview.py` 與 `webapp/views/quick.py` 的 `st.page_link` 導覽刻意延後到 Task 12（`st.page_link` 要求目標頁面已於 `st.navigation` 註冊，Task 8/9 撰寫當下路由尚未存在——先出純文字指引，Task 12 Step 4b 於路由建好後補上真正連結並以 `test_app_navigation.py` 驗證整合行為，而非讓 Task 8/9 自證一個尚不成立的路由依賴）；(d) `tests/test_heatmap_colors.py` 的 v5 子行程工作區隨 Task 12 的 `app.py` 改寫而失效（`cell_color` 從未被路由器重新匯出），已在 Task 12 Step 4a 一併簡化為直接匯入 `webapp.render.cell_color`（該模組零頂層 Streamlit 有狀態呼叫，安全）；(e) Task 1 版本升級 0.5.0→0.6.0 會使三個既有測試（`test_store_serialize.py`／`test_vocabulary.py`／`test_workspace_analyze.py`）斷言的硬編碼版本字串變紅，已於 Task 1 Step 6 一併修正（發現於自我複審，非 spec 要求項，但屬必要修正，否則升版本當下全回歸即紅）；(f) v1 舊 result 檔（schema_version 1，缺 Task 2 三個新欄）相容性：`components.candidate_card`／`render.heatmap_html`／`render.comparison_table_html` 三處消費點全數改用 `.get()` 降級讀取＋顯示 `status.LEGACY_RESULT_MESSAGE`（Task 5/6/7），並在 Task 11 補一則端到端測試（真實寫入 v1 形狀的 result 檔，經完整詳頁渲染驗證不崩潰）；(g) 使用者可控文字（scenario symbol／notes）注入 `unsafe_allow_html=True` 樣板前，`webapp/components.py` 全面改用 `html.escape()` 跳脫（Task 6），並補 HTML 注入測試；元件最終回傳字串統一經既有 `render.esc()`（`$` 轉義）處理，呼叫端不需重複跳脫；(h) plan 內的 `python - <<'PYEOF'` heredoc／`rm -rf`／`git rm` 等指令皆以本 session 已驗證可用的 Bash 工具（git-bash 後端）執行——本 session 全程（含 v5 SDD 十一個 task）持續使用相同語法成功操作，SDD 派工的 subagent 繼承相同工具集，非空想的可攜性風險；若審查者仍有疑慮，可在 SDD 執行前針對單一指令做一次性驗證，而非要求全文重寫為 PowerShell。
+- **已知妥協（review 時檢視）**：(a) Task 13 BAT 的 PID 身分驗證改用「唯一視窗標題 + `tasklist /v /fo csv` 反查」，純 batch 內建、不依賴 wmic（Win11 起預設移除）或 PowerShell，單一定案腳本（已修正原稿中三段互相取代的草稿殘留）；(b) Task 9 Step 6 承認中繼態測試失敗（`test_webapp_v4.py` 依賴尚未搬遷的路徑），由 Task 10/11 收斂——SDD 執行時若採 subagent-driven-development，此中繼態不應跨 task 提交到 master（同一 PR/branch 內連續完成即可，plan 內已排序）；(c) `webapp/views/overview.py` 與 `webapp/views/quick.py` 的 `st.page_link` 導覽刻意延後到 Task 12（`st.page_link` 要求目標頁面已於 `st.navigation` 註冊，Task 8/9 撰寫當下路由尚未存在——先出純文字指引，Task 12 Step 4b 於路由建好後補上真正連結並以 `test_app_navigation.py` 驗證整合行為，而非讓 Task 8/9 自證一個尚不成立的路由依賴）；(d) `tests/test_heatmap_colors.py` 的 v5 子行程工作區隨 Task 12 的 `app.py` 改寫而失效（`cell_color` 從未被路由器重新匯出），已在 Task 12 Step 4a 一併簡化為直接匯入 `webapp.render.cell_color`（該模組零頂層 Streamlit 有狀態呼叫，安全）；(e) Task 1 版本升級 0.5.0→0.6.0 會使三個既有測試（`test_store_serialize.py`／`test_vocabulary.py`／`test_workspace_analyze.py`）斷言的硬編碼版本字串變紅，已於 Task 1 Step 6 一併修正（發現於自我複審，非 spec 要求項，但屬必要修正，否則升版本當下全回歸即紅）；(f) v1 舊 result 檔（schema_version 1，缺 Task 2 三個新欄）相容性：`components.candidate_card`／`render.heatmap_html`／`render.comparison_table_html` 三處消費點全數改用 `.get()` 降級讀取＋顯示 `status.LEGACY_RESULT_MESSAGE`（Task 5/6/7），並在 Task 11 補一則端到端測試（真實寫入 v1 形狀的 result 檔，經完整詳頁渲染驗證不崩潰）；(g) 使用者可控文字（scenario symbol／notes）注入 `unsafe_allow_html=True` 樣板前，`webapp/components.py` 全面改用 `html.escape()` 跳脫（Task 6），並補 HTML 注入測試；元件最終回傳字串統一經既有 `render.esc()`（`$` 轉義）處理，呼叫端不需重複跳脫；(h) plan 內的 `python - <<'PYEOF'` heredoc／`rm -rf`／`git rm` 等指令皆以本 session 已驗證可用的 Bash 工具（git-bash 後端）執行——本 session 全程（含 v5 SDD 十一個 task）持續使用相同語法成功操作，SDD 派工的 subagent 繼承相同工具集，非空想的可攜性風險（codex round 2 已 CONCEDE）；(i) `st.switch_page`／`st.page_link` 一經實測驗證：`AppTest.from_file` 直接載入單一 view 檔時，該檔即是「入口腳本」，內部無 `st.navigation` 宣告，任何導覽呼叫一律拋 `StreamlitAPIException`——與目標檔案是否存在、路由是否建好無關。因此 Task 10「詳頁」按鈕的 `st.switch_page` 與 Task 8/9 新增的 `st.page_link` 呼叫，其對應測試一律延後到 Task 12（經 `webapp/app.py` 真實入口＋`switch_page` 到達目標頁後才點擊），Task 12 Step 4c 額外修正四則 Task 8/9 既有測試改走真實入口；(j) `st.switch_page` 不帶 `query_params` 會清空既有值（官方文件明載），Task 10「詳頁」按鈕改為 `st.switch_page(page, query_params={"sid": sc.id})` 單一呼叫，不再先設 `st.query_params` 再呼叫無參數版本；(k) 新增的 `heatmap_html` cap_note 與 `comparison_table_html` 兩處回傳含裸 `$` 金額，經 `unsafe_allow_html=True` 呈現前補上既有 `esc()` 慣例（v5 原 `heatmap_html` 因無 `$` 內容而不需要，v6 新增內容補回，`esc()` 對無 `$` 字串為 no-op，不影響 v5 既有輸出的逐位元相等測試）；detail.py 的 Header 卡另補 `html.escape()`（使用者輸入 symbol）＋`esc()`（`$` 金額），並補注入測試（以直接建構 `Scenario` 物件、固定安全 id 存檔的方式繞開「`<`/`>` 是 Windows 檔名非法字元」的無關限制，單純驗證 render 層跳脫）；(l) `candidate_card` 的 Spread 兩腿標籤先前硬編 "Call"，改讀 `long_leg["option_type"].capitalize()`，補 BPS 案例測試防止此類錯誤再次發生（brief §5.2 明確要求 Bear Put Spread 顯示 Put）。
