@@ -30,6 +30,12 @@ def _summary_of(sid: str):
     return workspace.latest_result(WS_ROOT, sid)
 
 
+def _default_candidate_key(summary: dict | None) -> str | None:
+    if summary is None or summary["default_selection"] is None:
+        return None
+    return summary["default_selection"][1]
+
+
 def _analyze_with_status(fn, *args, **kw):
     try:
         with st.status("分析中……", expanded=True) as status:
@@ -45,52 +51,53 @@ def _analyze_with_status(fn, *args, **kw):
 
 # ---------- 設定 ----------
 constraints = store.load_constraints(WS_ROOT)
-with st.popover("⚙ 設定"):
-    cur = constraints["total_capital"]
-    cap_in = st.number_input("資金總額（0＝未設定）", min_value=0.0,
-                             value=float(cur or 0.0), step=1000.0, key="ws-capital")
-    if st.button("儲存設定", key="ws-save-capital"):
-        store.save_constraints(WS_ROOT, cap_in if cap_in > 0 else None)
-        st.rerun()
-
-# ---------- 建立劇本 ----------
-with st.popover("＋ 建立劇本"):
-    st.text_input("標的", key="ws-new-symbol", placeholder="TLT")
-    st.number_input("目標價位", key="ws-new-price", min_value=0.01, value=100.0, step=1.0)
-    sym = (st.session_state.get("ws-new-symbol") or "").strip().upper()
-    inferred = (workspace.default_direction(sym, float(st.session_state.get("ws-new-price", 100.0)))
-               if sym else None)
-    options = ("bullish", "bearish") if inferred else ("", "bullish", "bearish")
-    dir_labels = {"": "（請選擇）", "bullish": "看漲", "bearish": "看跌"}
-    idx = options.index(inferred) if inferred else 0
-    direction = st.selectbox("方向", options, index=idx, format_func=lambda d: dir_labels[d],
-                             key="ws-new-direction")
-    if direction and st.session_state.get("ws-new-dir-prev") != direction:
-        st.session_state["ws-new-dir-prev"] = direction
-        defaults = ({"long-call", "bull-call-spread"} if direction == "bullish"
-                    else {"long-put", "bear-put-spread"})
-        for s in STRATEGY_ORDER:
-            st.session_state[f"ws-new-chk-{s}"] = s in defaults
-    for s in STRATEGY_ORDER:
-        st.checkbox(STRATEGY_LABELS[s], key=f"ws-new-chk-{s}")
-    st.date_input("目標日", key="ws-new-date", value=date.today() + timedelta(days=180),
-                  min_value=date.today() + timedelta(days=1))
-    st.text_input("備註", key="ws-new-notes")
-    if st.button("建立", key="ws-new-create"):
-        strategies = tuple(s for s in STRATEGY_ORDER if st.session_state.get(f"ws-new-chk-{s}"))
-        if not sym:
-            st.error("請輸入標的代號。")
-        elif not direction:
-            st.error("請選擇方向（此標的尚無 snapshot，無法自動推測）。")
-        elif not strategies:
-            st.error("請至少勾選一種策略。")
-        else:
-            workspace.create_scenario(
-                WS_ROOT, symbol=sym, direction=direction,
-                target_price=float(st.session_state["ws-new-price"]),
-                target_date=st.session_state["ws-new-date"].isoformat(),
-                notes=st.session_state["ws-new-notes"], strategies=strategies)
+with st.container(horizontal=True, gap="small", vertical_alignment="center"):
+    with st.popover("⚙ 設定"):
+        cur = constraints["total_capital"]
+        cap_in = st.number_input("資金總額（0＝未設定）", min_value=0.0,
+                                 value=float(cur or 0.0), step=1000.0, key="ws-capital")
+        if st.button("儲存設定", key="ws-save-capital"):
+            store.save_constraints(WS_ROOT, cap_in if cap_in > 0 else None)
             st.rerun()
+
+    # ---------- 建立劇本 ----------
+    with st.popover("＋ 建立劇本"):
+        st.text_input("標的", key="ws-new-symbol", placeholder="TLT")
+        st.number_input("目標價位", key="ws-new-price", min_value=0.01, value=100.0, step=1.0)
+        sym = (st.session_state.get("ws-new-symbol") or "").strip().upper()
+        inferred = (workspace.default_direction(sym, float(st.session_state.get("ws-new-price", 100.0)))
+                   if sym else None)
+        options = ("bullish", "bearish") if inferred else ("", "bullish", "bearish")
+        dir_labels = {"": "（請選擇）", "bullish": "看漲", "bearish": "看跌"}
+        idx = options.index(inferred) if inferred else 0
+        direction = st.selectbox("方向", options, index=idx, format_func=lambda d: dir_labels[d],
+                                 key="ws-new-direction")
+        if direction and st.session_state.get("ws-new-dir-prev") != direction:
+            st.session_state["ws-new-dir-prev"] = direction
+            defaults = ({"long-call", "bull-call-spread"} if direction == "bullish"
+                        else {"long-put", "bear-put-spread"})
+            for s in STRATEGY_ORDER:
+                st.session_state[f"ws-new-chk-{s}"] = s in defaults
+        for s in STRATEGY_ORDER:
+            st.checkbox(STRATEGY_LABELS[s], key=f"ws-new-chk-{s}")
+        st.date_input("目標日", key="ws-new-date", value=date.today() + timedelta(days=180),
+                      min_value=date.today() + timedelta(days=1))
+        st.text_input("備註", key="ws-new-notes")
+        if st.button("建立", key="ws-new-create"):
+            strategies = tuple(s for s in STRATEGY_ORDER if st.session_state.get(f"ws-new-chk-{s}"))
+            if not sym:
+                st.error("請輸入標的代號。")
+            elif not direction:
+                st.error("請選擇方向（此標的尚無 snapshot，無法自動推測）。")
+            elif not strategies:
+                st.error("請至少勾選一種策略。")
+            else:
+                workspace.create_scenario(
+                    WS_ROOT, symbol=sym, direction=direction,
+                    target_price=float(st.session_state["ws-new-price"]),
+                    target_date=st.session_state["ws-new-date"].isoformat(),
+                    notes=st.session_state["ws-new-notes"], strategies=strategies)
+                st.rerun()
 
 # ---------- 載入 ----------
 scenarios = workspace.list_scenarios(WS_ROOT)
@@ -110,18 +117,25 @@ for sc in scenarios:
          "target_price": sc.target_price, "target_date": sc.target_date,
          "status": sc.status, "group_id": sc.group_id, "notes": sc.notes},
         summary), unsafe_allow_html=True)
-    cols = st.columns([1, 1, 1])
+    candidate_key = _default_candidate_key(summary)
+    cols = st.columns([1, 1, 1, 0.85])
     with cols[0]:
-        if st.button("分析", key=f"ws-an-{sc.id}"):
+        if st.button("分析", key=f"ws-an-{sc.id}", icon=":material/play_arrow:", width="stretch"):
             if _analyze_with_status(workspace.analyze_scenario, WS_ROOT, sc.id) is not None:
                 st.rerun()
     with cols[1]:
-        if summary is not None and st.button("詳頁", key=f"ws-det-{sc.id}"):
+        if st.button("詳頁", key=f"ws-det-{sc.id}", icon=":material/open_in_new:",
+                     disabled=summary is None, width="stretch"):
             # st.switch_page 若不帶 query_params 會清空既有 query params
             # （官方文件："Query parameters to apply when navigating"——不傳即不帶），
             # 不可先 st.query_params["sid"]=... 再呼叫無參數版本，sid 會遺失。
             st.switch_page("views/detail.py", query_params={"sid": sc.id})
     with cols[2]:
+        if st.button("選定候選", key=f"ws-select-{sc.id}", icon=":material/check_circle:",
+                     disabled=candidate_key is None, width="stretch"):
+            st.session_state[f"ws-selected-candidate-{sc.id}"] = candidate_key
+            st.toast("已選定最新推薦候選。", icon=":material/check_circle:")
+    with cols[3]:
         with st.popover("⋯ 管理"):
             if sc.status == "Active":
                 st.text_input("原因", key=f"ws-reason-{sc.id}", placeholder="標記原因（必填）")

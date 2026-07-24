@@ -33,6 +33,12 @@ def test_single_leg_heatmap_unchanged_no_cap_marker():
 def test_bcs_caps_at_and_above_cap_price():
     html = heatmap_html(MATRIX, BCS_CAND)
     assert "收益封頂" in html
+    assert 'class="oc-heatmap-panel"' in html
+    assert "報酬情境矩陣" in html
+    assert 'class="oc-heatmap-cap-zone"' in html
+    assert 'class="oc-heatmap-cap-row"' in html
+    assert '<tr class="oc-heatmap-cap-zone"' not in html
+    assert 'class="oc-cap-boundary"' in html
     # 回傳字串整段為 <div> 開頭的 HTML block（見 render.py heatmap_html 說明），
     # 不套用 esc()，故斷言比對未跳脫的原始字面 "$"。
     assert "股價 ≥ $120" in html
@@ -88,6 +94,45 @@ def test_comparison_table_contains_required_columns():
     for token in ("策略", "Breakeven", "最大損失", "劇本報酬", "情境最壞",
                  "成交摩擦", "overflow-x:auto"):
         assert token in html
+
+
+def test_comparison_is_productized_candidate_board():
+    spread = {
+        "strategy": "bull-call-spread", "candidate_key": "k-spread",
+        "mid_cost": 0.95, "natural_cost": 1.11,
+        "capital_per_contract": 95.0, "max_loss_per_contract": 95.0,
+        "max_profit_per_contract": 1905.0, "cap_price": 120.0,
+        "breakeven": 100.95, "baseline_return": 20.05,
+        "scenario_vector": {"worst_return": -1.0, "worst_code": "S1", "entries": []},
+        "retention": 0.3, "friction": 0.1, "quote_warning": False,
+        "legs": [
+            {"strike": 100.0, "bid": 1.0, "ask": 1.1,
+             "option_type": "call", "expiry": "2026-09-01"},
+            {"strike": 120.0, "bid": 0.05, "ask": 0.15,
+             "option_type": "call", "expiry": "2026-09-01"},
+        ],
+    }
+    view = {
+        "expiry_groups": [{
+            "expiry": "2026-09-01", "buffer_days": 30, "hidden_count": 0,
+            "rows": [{"strategy": "bull-call-spread",
+                      "badges": ["top_return"], "candidate": spread}],
+        }],
+        "hidden_expiries": [],
+    }
+    html = comparison_table_html(view)
+    for css_class in (
+        "oc-comparison-board", "oc-comparison-row", "oc-comparison-return",
+        "oc-comparison-quotes", "oc-comparison-cost", "oc-comparison-risk",
+        "oc-spread-cap",
+    ):
+        assert css_class in html
+    for label in (
+        "Bid", "Mid", "Ask", "每股價格", "每組成本", "最大損失",
+        "Spread 最大獲利", "Breakeven", "Spread 封頂價",
+    ):
+        assert label in html
+    assert "$120.00" in html
 
 
 def test_comparison_table_v1_legacy_spread_no_crash():

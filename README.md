@@ -9,6 +9,12 @@ plain-text report with price-ceiling guidance.
 It does NOT predict stocks, judge your scenario, estimate probabilities, or
 give investment advice. Same snapshot + same params = byte-identical output.
 
+## Streamlit Community Cloud 測試版
+
+Cloud 測試版使用共用密碼保護，密碼只透過 Streamlit secrets 的
+`APP_PASSWORD` 設定，不會寫入 repository。雲端 workspace 與 snapshots
+使用暫存檔案系統；**測試版資料可能重啟後消失**，請勿將它視為永久儲存。
+
 ## Install
 
     pip install -e .

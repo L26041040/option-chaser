@@ -30,6 +30,21 @@ def test_streamlit_config_exists_and_light():
     assert "#ff4b4b" in text  # primaryColor
 
 
+def test_streamlit_cloud_requirements_install_project_with_gui():
+    text = Path("requirements.txt").read_text(encoding="utf-8")
+    assert "-e .[gui]" in text.splitlines()
+
+
+def test_streamlit_secret_file_is_ignored():
+    ignored = Path(".gitignore").read_text(encoding="utf-8").splitlines()
+    assert ".streamlit/secrets.toml" in ignored
+
+
+def test_cloud_preview_persistence_warning_is_documented():
+    readme = Path("README.md").read_text(encoding="utf-8")
+    assert "測試版資料可能重啟後消失" in readme
+
+
 def test_webapp_importable_from_subprocess_without_pythonpath(tmp_path):
     """No-PYTHONPATH import proof: subprocess run from an unrelated cwd."""
     import os

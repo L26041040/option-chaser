@@ -7,5 +7,6 @@ workspace/
 .gstack/
 .audit-scratch/
 .venv/
+.streamlit/secrets.toml
 logs/*.log
 logs/running.lock

@@ -55,30 +55,75 @@ def metric_tile(label: str, value: str) -> str:
            f'<div class="oc-metric-value oc-num">{_h(value)}</div></div>')
 
 
+def _default_candidate(summary: dict | None) -> dict | None:
+    if not summary or not summary["default_selection"]:
+        return None
+    key = summary["default_selection"][1]
+    return next(
+        (
+            row["candidate"]
+            for group in summary["expiry_groups"]
+            for row in group["rows"]
+            if row["candidate"]["candidate_key"] == key
+        ),
+        None,
+    )
+
+
+def _data_quality_label(summary: dict | None) -> str:
+    if summary is None:
+        return "尚未分析"
+    if summary["data_quality"]["all_quotes_filtered"]:
+        return "報價不足"
+    return "正常"
+
+
+def _data_source_label(summary: dict | None) -> str:
+    if summary is None:
+        return "—"
+    snapshot = summary["snapshot_ref"]
+    fetched_date = str(snapshot["fetched_at"]).split("T", 1)[0]
+    source = snapshot.get("source") or summary.get("meta", {}).get("source") or "來源未標示"
+    return f"最近有效快照 · {source} · {fetched_date}"
+
+
 def scenario_card(sc: dict, summary: dict | None) -> str:
     result_status = derive_result_status(summary)
-    parts = [f'<div class="oc-card"><b>{_h(sc["symbol"])}</b> '
-            f'{"看漲" if sc["direction"] == "bullish" else "看跌"} '
-            f'{status_pill(sc["status"])}<br>'
-            f'目標 ${money(sc["target_price"])} ｜ {sc["target_date"]} ｜ {_h(sc["group_id"])}<br>']
-    if summary is None:
-        parts.append(f'<span class="oc-badge-stale">{result_status}</span>')
-    else:
-        cand = None
-        if summary["default_selection"]:
-            key = summary["default_selection"][1]
-            for g in summary["expiry_groups"]:
-                for row in g["rows"]:
-                    if row["candidate"]["candidate_key"] == key:
-                        cand = row["candidate"]
-                        break
-        if cand is not None:
-            parts.append(f'{STRATEGY_LABELS[cand["strategy"]]}｜每張/組 ≈ '
-                        f'${cand["capital_per_contract"]:.0f}｜劇本報酬 {pct(cand["baseline_return"])}')
-        else:
-            parts.append(f'<span class="oc-badge-warn">{result_status}</span>')
+    cand = _default_candidate(summary)
+    direction = "看漲" if sc["direction"] == "bullish" else "看跌"
+    spot = f'${money(summary["meta"]["spot"])}' if summary is not None else "—"
+    candidate = STRATEGY_LABELS[cand["strategy"]] if cand is not None else result_status
+    scenario_return = pct(cand["baseline_return"]) if cand is not None else "—"
+    cost = f'${cand["capital_per_contract"]:,.0f}' if cand is not None else "—"
+    quality = _data_quality_label(summary)
+    quality_cls = _QUALITY_CLASS.get(quality, "oc-badge-stale")
+
+    parts = [
+        '<div class="oc-card oc-scenario-list-item">',
+        '<div class="oc-scenario-main">',
+        f'<div class="oc-scenario-symbol"><span class="oc-field-label">Symbol</span>'
+        f'<strong>{_h(sc["symbol"])}</strong></div>',
+        f'<div class="oc-scenario-direction">{_h(direction)}</div>',
+        f'{status_pill(sc["status"])}',
+        '</div>',
+        '<div class="oc-scenario-grid">',
+        f'<div class="oc-scenario-field"><span>方向</span><strong>{_h(direction)}</strong></div>',
+        f'<div class="oc-scenario-field"><span>現價</span><strong class="oc-num">{spot}</strong></div>',
+        f'<div class="oc-scenario-field"><span>目標價</span><strong class="oc-num">${money(sc["target_price"])}</strong></div>',
+        f'<div class="oc-scenario-field"><span>目標日</span><strong>{_h(str(sc["target_date"]))}</strong></div>',
+        f'<div class="oc-scenario-field"><span>狀態</span><strong>{_h(sc["status"])}</strong></div>',
+        f'<div class="oc-scenario-field"><span>群組</span><strong>{_h(sc["group_id"])}</strong></div>',
+        f'<div class="oc-scenario-field oc-scenario-wide"><span>最新推薦候選</span>'
+        f'<strong>{_h(candidate)}</strong></div>',
+        f'<div class="oc-scenario-field"><span>劇本報酬</span><strong class="oc-num">{scenario_return}</strong></div>',
+        f'<div class="oc-scenario-field"><span>每張或每組成本</span><strong class="oc-num">{cost}</strong></div>',
+        f'<div class="oc-scenario-field"><span>資料品質</span><strong class="{quality_cls}">{_h(quality)}</strong></div>',
+        f'<div class="oc-scenario-field oc-scenario-wide"><span>資料來源</span>'
+        f'<strong>{_h(_data_source_label(summary))}</strong></div>',
+        '</div>',
+    ]
     if sc["notes"]:
-        parts.append(f'<div style="font-size:12px;color:#6b7280">{_h(sc["notes"])}</div>')
+        parts.append(f'<div class="oc-scenario-notes">{_h(sc["notes"])}</div>')
     parts.append('</div>')
     return "".join(parts)
 
@@ -88,43 +133,109 @@ def candidate_card(cand: dict, strategy: str) -> str:
     label = STRATEGY_LABELS[strategy]
     legacy = is_legacy_schema({"schema_version": cand.get("schema_version", 2)}) or (
         "natural_per_contract" not in cand)
-    legacy_note = f'<div style="font-size:12px;color:#b45309">{LEGACY_RESULT_MESSAGE}</div>' if legacy else ""
+    legacy_note = (
+        f'<div class="oc-candidate-legacy">{LEGACY_RESULT_MESSAGE}</div>'
+        if legacy else ""
+    )
 
     def _fmt_money(key: str) -> str:
         v = cand.get(key)
         return f'${v:,.0f}' if v is not None else "—"
 
+    is_spread = len(legs) == 2
+    unit_label = "每組成本" if is_spread else "每張成本"
+    natural_unit_label = "Natural 每組" if is_spread else "Natural 每張"
+    structure = ""
+    quotes = []
+
     if len(legs) == 1:
         leg = legs[0]
-        lines = [
-            f'<b>{label}</b> ｜ 履約價 {leg["strike"]:g} ｜ 到期 {leg["expiry"]}',
-            f'Bid ${money(leg["bid"])} ｜ Mid ${money(cand["mid_cost"])} ｜ Ask ${money(leg["ask"])}',
-            f'Mid 每張 ≈ ${cand["capital_per_contract"]:.0f} ｜ '
-            f'Natural 每張 ≈ {_fmt_money("natural_per_contract")}',
-            f'最大損失 ≈ ${cand["max_loss_per_contract"]:.0f} ｜ '
-            f'Breakeven ${money(cand["breakeven"])} ｜ 劇本報酬 {pct(cand["baseline_return"])}',
+        structure = f'{leg["option_type"].capitalize()} · 履約價 {leg["strike"]:g}'
+        quotes = [
+            ("Bid", f'${money(leg["bid"])}'),
+            ("Mid", f'${money(cand["mid_cost"])}'),
+            ("Ask", f'${money(leg["ask"])}'),
         ]
+        max_profit_label = "最大獲利無上限" if strategy == "long-call" else "最大獲利"
+        max_profit_value = "無上限" if strategy == "long-call" else "—"
+        cap_panel = ""
     else:
         long_leg, short_leg = legs
         max_profit_v = cand.get("max_profit_per_contract")
-        max_profit_txt = (f'${max_profit_v:,.0f}' if max_profit_v is not None
-                         else ("無上限" if "max_profit_per_contract" in cand else "—"))
+        max_profit_value = f'${max_profit_v:,.0f}' if max_profit_v is not None else "—"
+        max_profit_label = "Spread 最大獲利"
         cap_price = cand.get("cap_price")
-        cap_txt = f'{cap_price:g}' if cap_price is not None else "—"
         # BCS 兩腿皆 call、BPS 兩腿皆 put——讀 leg 實際 option_type，不得硬編 "Call"
         # （spec brief §5.2 明確要求 Bear Put Spread 顯示 Put，先前草稿誤植兩者皆
         # 顯示 Call）。
         opt_label = long_leg["option_type"].capitalize()
-        lines = [
-            f'<b>{label}</b> ｜ 買 {long_leg["strike"]:g} {opt_label} ／ '
-            f'賣 {short_leg["strike"]:g} {opt_label} ｜ 到期 {short_leg["expiry"]}',
-            f'Net Mid Debit ${money(cand["mid_cost"])}／股 ｜ 每組 ≈ ${cand["capital_per_contract"]:.0f}',
-            f'Natural Debit ${money(cand["natural_cost"])}／股 ｜ '
-            f'Natural 每組 ≈ {_fmt_money("natural_per_contract")}',
-            f'最大損失 ≈ ${cand["max_loss_per_contract"]:.0f} ｜ 最大獲利 ≈ {max_profit_txt} ｜ '
-            f'Breakeven ${money(cand["breakeven"])} ｜ 獲利封頂價 {cap_txt}',
+        structure = (
+            f'買 {long_leg["strike"]:g} {opt_label} · '
+            f'賣 {short_leg["strike"]:g} {opt_label}'
+        )
+        quotes = [
+            ("買腿 Bid", f'${money(long_leg["bid"])}'),
+            ("買腿 Ask", f'${money(long_leg["ask"])}'),
+            ("Net Mid", f'${money(cand["mid_cost"])}'),
+            ("賣腿 Bid", f'${money(short_leg["bid"])}'),
+            ("賣腿 Ask", f'${money(short_leg["ask"])}'),
         ]
-    return '<div class="oc-card">' + "<br>".join(lines) + legacy_note + '</div>'
+        cap_value = f'${money(cap_price)}' if cap_price is not None else "—"
+        cap_panel = (
+            '<div class="oc-spread-cap">'
+            '<span>Spread 封頂價</span>'
+            f'<strong class="oc-num">{cap_value}</strong>'
+            '<small>到達此價位後進入最大獲利區</small>'
+            '</div>'
+        )
+
+    quote_items = "".join(
+        '<div class="oc-quote-item">'
+        f'<span>{quote_label}</span><strong class="oc-num">{quote_value}</strong>'
+        '</div>'
+        for quote_label, quote_value in quotes
+    )
+    expiry = legs[-1]["expiry"]
+    return (
+        '<article class="oc-card oc-candidate-card">'
+        '<header class="oc-candidate-header">'
+        '<div><span class="oc-eyebrow">最新推薦候選</span>'
+        f'<h3>{label}</h3><p>{structure} · 到期 {expiry}</p></div>'
+        '<div class="oc-candidate-return">'
+        '<span>劇本報酬</span>'
+        f'<strong class="oc-num">{pct(cand["baseline_return"])}</strong>'
+        '</div>'
+        '</header>'
+        '<section class="oc-candidate-quotes">'
+        '<div class="oc-section-label">Bid / Mid / Ask <small>每股價格</small></div>'
+        f'<div class="oc-quote-grid">{quote_items}</div>'
+        '</section>'
+        '<div class="oc-candidate-fundamentals">'
+        '<section class="oc-candidate-cost">'
+        '<div class="oc-section-label">成本</div>'
+        '<div class="oc-value-pair">'
+        f'<span>{unit_label}</span><strong class="oc-num">${cand["capital_per_contract"]:,.0f}</strong>'
+        '</div>'
+        '<div class="oc-value-pair oc-value-pair-secondary">'
+        f'<span>{natural_unit_label}</span><strong class="oc-num">{_fmt_money("natural_per_contract")}</strong>'
+        '</div>'
+        '</section>'
+        '<section class="oc-candidate-risk">'
+        '<div class="oc-section-label">風險與損益邊界</div>'
+        '<div class="oc-risk-grid">'
+        '<div class="oc-value-pair"><span>最大損失</span>'
+        f'<strong class="oc-num">${cand["max_loss_per_contract"]:,.0f}</strong></div>'
+        f'<div class="oc-value-pair"><span>{max_profit_label}</span>'
+        f'<strong class="oc-num">{max_profit_value}</strong></div>'
+        '<div class="oc-value-pair"><span>Breakeven</span>'
+        f'<strong class="oc-num">${money(cand["breakeven"])}</strong></div>'
+        '</div>'
+        '</section>'
+        f'{cap_panel}'
+        '</div>'
+        f'{legacy_note}'
+        '</article>'
+    )
 
 
 def milestone_rail(group: dict, scenarios_by_id: dict, views_by_id: dict) -> str:

@@ -61,8 +61,22 @@ def test_four_step_structure_renders(ws):
     # joins at.markdown). The literal brief assertion can never pass against
     # the brief's own given implementation. Checking `subheaders` (where the
     # text actually is) instead of `body` is the minimal faithful fix.
-    assert "Step 3" in subheaders or "比較" in subheaders
+    assert "Step 3" in subheaders or "比較" in subheaders or "比較" in body
     assert "Step 4" in subheaders or "進階" in body
+
+
+def test_productized_candidate_sections_do_not_repeat_step_or_comparison_headings(ws):
+    sc = _mk_analyzed(ws)
+    at = AppTest.from_file(PAGE)
+    at.query_params["sid"] = sc.id
+    at.run()
+    assert not at.exception
+    subheaders = [s.value for s in at.subheader]
+    body = " ".join(m.value for m in at.markdown)
+    assert not any("Step 2" in text for text in subheaders)
+    assert "候選比較" not in subheaders
+    assert "報酬情境矩陣" in body
+    assert "候選比較" in body
 
 
 def test_candidate_card_price_visible(ws):
@@ -71,6 +85,9 @@ def test_candidate_card_price_visible(ws):
     at.query_params["sid"] = sc.id
     at.run()
     body = " ".join(m.value for m in at.markdown)
+    source = workspace.latest_result(ws, sc.id)["snapshot_ref"]["source"]
+    assert "資料來源：最近有效快照" in body
+    assert source in body
     assert "Breakeven" in body or "保本" in body
 
 

@@ -1,4 +1,7 @@
 """v6 spec §1.1：st.navigation 路由——四頁載入無例外、無 app 字樣、詳頁隱藏可達。"""
+from pathlib import Path
+import re
+
 import pytest
 
 st_testing = pytest.importorskip("streamlit.testing.v1")
@@ -10,6 +13,13 @@ FIX = "tests/fixtures/xyz_v4_six_expiries.json"
 TS = "2026-07-22T00:00:00+00:00"
 
 
+def _authenticated_app() -> AppTest:
+    at = AppTest.from_file("webapp/app.py")
+    at.secrets["APP_PASSWORD"] = "test-password"
+    at.session_state["oc_authenticated"] = True
+    return at
+
+
 @pytest.fixture
 def ws(tmp_path, monkeypatch):
     monkeypatch.setenv("OC_WORKSPACE", str(tmp_path))
@@ -17,15 +27,46 @@ def ws(tmp_path, monkeypatch):
 
 
 def test_default_page_is_overview(ws):
-    at = AppTest.from_file("webapp/app.py")
+    at = _authenticated_app()
     at.run()
     assert not at.exception
     titles = " ".join(t.value for t in at.title)
     assert "戰情總覽" in titles
 
 
+def test_app_shell_uses_top_navigation_and_material_icons():
+    source = Path("webapp/app.py").read_text(encoding="utf-8")
+    assert 'position="top"' in source
+    expected = {
+        "戰情總覽": "space_dashboard",
+        "劇本工作區": "view_list",
+        "快速試算": "bolt",
+        "使用說明": "help",
+    }
+    for title, icon in expected.items():
+        assert re.search(
+            rf'title="{title}",\s*icon=":material/{icon}:"',
+            source,
+        )
+    for emoji in ("📊", "🗂", "⚡", "📖"):
+        assert emoji not in source
+
+
+def test_app_shell_renders_product_header_and_constrains_content(ws):
+    at = _authenticated_app()
+    at.run()
+    assert not at.exception
+    body = " ".join(m.value for m in at.markdown)
+    assert "Option Chaser" in body
+    assert "選擇權劇本分析" in body
+
+    source = Path("webapp/app.py").read_text(encoding="utf-8")
+    assert 'key="oc-page-shell"' in source
+    assert "width=1180" in source
+
+
 def test_no_app_literal_in_navigation(ws):
-    at = AppTest.from_file("webapp/app.py")
+    at = _authenticated_app()
     at.run()
     body = " ".join(m.value for m in at.markdown) + " ".join(t.value for t in at.title)
     assert body.strip() != "app"
@@ -33,7 +74,7 @@ def test_no_app_literal_in_navigation(ws):
 
 
 def test_switch_to_workspace_page(ws):
-    at = AppTest.from_file("webapp/app.py")
+    at = _authenticated_app()
     at.run()
     at.switch_page("views/workspace.py")
     at.run()
@@ -43,7 +84,7 @@ def test_switch_to_workspace_page(ws):
 
 
 def test_switch_to_quick_page(ws):
-    at = AppTest.from_file("webapp/app.py")
+    at = _authenticated_app()
     at.run()
     at.switch_page("views/quick.py")
     at.run()
@@ -53,7 +94,7 @@ def test_switch_to_quick_page(ws):
 
 
 def test_switch_to_help_page(ws):
-    at = AppTest.from_file("webapp/app.py")
+    at = _authenticated_app()
     at.run()
     at.switch_page("views/help.py")
     at.run()
@@ -63,7 +104,7 @@ def test_switch_to_help_page(ws):
 def test_detail_page_reachable_though_hidden(ws):
     sc = workspace.create_scenario(ws, "XYZ", "bullish", 120.0, "2026-08-01", "",
                                    ("long-call",), ts=TS)
-    at = AppTest.from_file("webapp/app.py")
+    at = _authenticated_app()
     at.run()
     at.switch_page("views/detail.py")
     at.query_params["sid"] = sc.id
@@ -83,7 +124,7 @@ def test_overview_empty_state_page_link_reaches_workspace(ws):
     this exact page through the real router IS the load-bearing assertion,
     not a placeholder — a page_link pointed at an unregistered/nonexistent
     page raises during script execution, which `at.exception` would catch."""
-    at = AppTest.from_file("webapp/app.py")
+    at = _authenticated_app()
     at.run()   # default page = overview (empty workspace) -> renders the page_link
     assert not at.exception
     body = " ".join(m.value for m in at.markdown)
@@ -100,7 +141,7 @@ def test_workspace_detail_button_switches_with_sid(ws):
                                    ("long-call",), ts=TS)
     store.save_constraints(ws, 100000.0)
     workspace.analyze_scenario(ws, sc.id, snapshot_path=FIX, ts=TS)
-    at = AppTest.from_file("webapp/app.py")
+    at = _authenticated_app()
     at.run()
     at.switch_page("views/workspace.py")
     at.run()
@@ -122,7 +163,7 @@ def test_quick_save_success_links_to_detail_page(ws, monkeypatch):
     real_offline = service.run_offline
     monkeypatch.setattr(service, "run",
                         lambda req, progress=None: real_offline(req, FIX, progress))
-    at = AppTest.from_file("webapp/app.py")
+    at = _authenticated_app()
     at.run()
     at.switch_page("views/quick.py")
     at.run()

@@ -15,6 +15,13 @@ from option_chaser import store, workspace
 TS = "2026-07-22T00:00:00+00:00"
 
 
+def _authenticated_app() -> AppTest:
+    at = AppTest.from_file("webapp/app.py")
+    at.secrets["APP_PASSWORD"] = "test-password"
+    at.session_state["oc_authenticated"] = True
+    return at
+
+
 @pytest.fixture
 def ws(tmp_path, monkeypatch):
     monkeypatch.setenv("OC_WORKSPACE", str(tmp_path))
@@ -24,7 +31,7 @@ def ws(tmp_path, monkeypatch):
 def test_overview_empty_workspace_shows_guidance(ws):
     # overview.py 現含 st.page_link（空工作區分支）——st.page_link 要求入口腳本
     # 已宣告 st.navigation，故經真實路由到達本頁，而非直接載入本檔。
-    at = AppTest.from_file("webapp/app.py")
+    at = _authenticated_app()
     at.run()
     assert not at.exception
     body = " ".join(m.value for m in at.markdown)
@@ -42,7 +49,7 @@ def test_overview_metrics_reflect_workspace(ws):
 
 
 def test_overview_no_position_language(ws):
-    at = AppTest.from_file("webapp/app.py")
+    at = _authenticated_app()
     at.run()
     body = " ".join(m.value for m in at.markdown)
     for banned in ("持倉損益", "已投入資金", "Portfolio Greeks"):

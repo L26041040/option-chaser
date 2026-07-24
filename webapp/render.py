@@ -104,34 +104,61 @@ def heatmap_html(matrix: dict, cand: dict | None = None) -> str:
         # 更高、渲染在本列之上）的封頂狀態不同，就代表跨過了封頂/非封頂交界，
         # 應畫分隔線——不需要依策略方向另開分支。
         row_style = ""
+        row_class = ""
         if cap_price is not None and i < len(prices) - 1:
             if _is_capped(price) != _is_capped(prices[i + 1][0]):
                 row_style = ' style="border-top:2px solid #888"'
+                row_class = ' class="oc-cap-boundary"'
+        if _is_capped(price) and not row_class:
+            row_class = ' class="oc-heatmap-cap-row"'
+        cap_badge = (
+            '<span class="oc-heatmap-cap-zone">最大獲利區</span>'
+            if _is_capped(price) else ""
+        )
         cap_col = (f'<td style="padding:4px 8px;color:#888">'
-                   f'{"最大獲利區" if _is_capped(price) else ""}</td>'
+                   f'{cap_badge}</td>'
                    ) if cap_price is not None else ""
         rows.append(
-            f'<tr{row_style}><td style="padding:4px 8px;white-space:nowrap">'
+            f'<tr{row_class}{row_style}><td style="padding:4px 8px;white-space:nowrap">'
             f'{price_text}</td>{cells_html}{cap_col}</tr>')
 
     cap_note = ""
     if cap_price is not None and cand is not None and cand.get("max_profit_per_contract") is not None:
         direction = "≥" if is_bcs else "≤"
-        cap_note = (f'<p style="font-size:12px;color:#666">'
-                    f'股價 {direction} ${cap_price:g} 後，收益固定於最大獲利 ≈ '
-                    f'${cand["max_profit_per_contract"]:,.0f}／每組。'
-                    f'<span style="color:#888">（最大獲利區）</span></p>')
+        cap_note = (
+            '<div class="oc-spread-cap oc-heatmap-cap-note">'
+            '<span>Spread 最大獲利區</span>'
+            f'<strong>股價 {direction} ${cap_price:g}</strong>'
+            f'<small>最大獲利 ≈ ${cand["max_profit_per_contract"]:,.0f}／每組；'
+            '超過封頂價後報酬不再增加。</small>'
+            '</div>'
+        )
 
     cap_head = ('<th style="padding:4px 8px">封頂註記</th>'
                if cap_price is not None else "")
-    out = ('<div style="overflow-x:auto"><table style="border-collapse:collapse;'
+    out = (
+          '<div class="oc-heatmap-panel">'
+          '<header class="oc-heatmap-header">'
+          '<div><span class="oc-eyebrow">劇本主圖</span>'
+          '<h3>報酬情境矩陣</h3>'
+          '<p>橫向比較日期，縱向比較標的價格；色彩只表示模型報酬方向與幅度。</p></div>'
+          '<div class="oc-heatmap-legend">'
+          '<span><i class="oc-legend-loss"></i>損失</span>'
+          '<span><i class="oc-legend-flat"></i>接近損益兩平</span>'
+          '<span><i class="oc-legend-gain"></i>獲利</span>'
+          '</div></header>'
+          '<div class="oc-heatmap-scroll" style="overflow-x:auto">'
+          '<table class="oc-heatmap-table" style="border-collapse:collapse;'
           'font-family:monospace;font-size:13px">'
           f'<tr><th style="padding:4px 8px">價格</th>{"".join(head_cells)}{cap_head}</tr>'
-          + "".join(rows) + "</table></div>"
-          '<p style="font-size:12px;color:#666">此圖顯示在不同標的價格與日期下，'
-          '以目前 Mid 價進場的模型報酬率。'
-          '<b>粗體</b>價格列為錨點（現價／目標／超標／深跌），其餘為等距內插價。</p>'
-          + cap_note)
+          + "".join(rows)
+          + "</table></div>"
+          '<div class="oc-heatmap-caption">'
+          '<p>以目前 Mid 價進場的模型報酬率。'
+          '<b>粗體</b>價格列是現價、目標、超標與深跌錨點；其餘為等距內插價。</p>'
+          + cap_note
+          + "</div></div>"
+    )
     # 整段回傳以 <div> 開頭，屬 CommonMark HTML block，呼叫端一律
     # st.markdown(..., unsafe_allow_html=True) 整段輸出——HTML block 內文字
     # 不會再被當作行內 markdown 解析，故裸 $ 沒有被誤判為 LaTeX 定界符的風險，
@@ -245,14 +272,11 @@ def render_summary(view: dict) -> None:
 
 
 def render_step2(view: dict, key: str | None) -> None:
-    st.subheader("Step 2　劇本主圖")
     row = find_row(view, key)
     if row is None:
         st.info("目前沒有可顯示的候選（所有策略皆未產生合格合約）。")
         return
     cand = row["candidate"]
-    st.markdown(esc(f"**{_candidate_title(row['strategy'], cand)}**"),
-                unsafe_allow_html=True)
     st.markdown(heatmap_html(cand["matrix"], cand), unsafe_allow_html=True)
 
 
@@ -469,36 +493,138 @@ def render_step4(view: dict, key: str | None) -> None:
 
 
 def comparison_table_html(view: dict) -> str:
-    """v6 spec §4.4：詳頁候選比較表，13 欄，overflow-x 手機橫向捲動。"""
-    rows_html = []
+    """詳頁候選比較板；只重組 store view dict，不計算任何金融值。"""
+    groups_html = []
+
+    def _quote(value) -> str:
+        return f"${money(value)}" if value is not None else "—"
+
+    def _quote_item(label: str, value) -> str:
+        return (
+            '<div class="oc-quote-item">'
+            f'<span>{label}</span><strong class="oc-num">{_quote(value)}</strong>'
+            '</div>'
+        )
+
+    def _value_pair(label: str, value: str, extra_class: str = "") -> str:
+        return (
+            f'<div class="oc-value-pair {extra_class}">'
+            f'<span>{label}</span><strong class="oc-num">{value}</strong></div>'
+        )
+
     for g in view["expiry_groups"]:
+        rows_html = []
         for row in g["rows"]:
             cand = row["candidate"]
             legs = cand["legs"]
             is_spread = len(legs) == 2
             structure = (f"買{legs[0]['strike']:g}/賣{legs[1]['strike']:g}"
                         if is_spread else f"K={legs[0]['strike']:g}")
-            price_col = (f"Net Mid ${money(cand['mid_cost'])} / "
-                        f"Natural ${money(cand['natural_cost'])}" if is_spread
-                        else f"{money(legs[0]['bid'])}/{money(cand['mid_cost'])}/{money(legs[0]['ask'])}")
             _mp = cand.get("max_profit_per_contract")   # .get(): v1 舊檔缺此欄不得 KeyError
-            max_profit_col = ("無上限" if (not is_spread and row["strategy"] == "long-call")
-                              else (f"${_mp:,.0f}" if _mp is not None else "—"))
+            max_profit_col = (
+                "無上限"
+                if (not is_spread and row["strategy"] == "long-call")
+                else (f"${_mp:,.0f}" if _mp is not None else "—")
+            )
             fr = cand["friction"]
             fr_html = f'{pct(min(fr, 9.99))}' + (" ⚠" if fr > 0.25 else "")
+            quote_items = (
+                _quote_item("Bid", legs[0].get("bid"))
+                + _quote_item("Mid", cand.get("mid_cost"))
+                + _quote_item("Ask", legs[0].get("ask"))
+            )
+            if is_spread:
+                quote_items = (
+                    _quote_item("買腿 Bid", legs[0].get("bid"))
+                    + _quote_item("Net Mid", cand.get("mid_cost"))
+                    + _quote_item("買腿 Ask", legs[0].get("ask"))
+                    + _quote_item("賣腿 Bid", legs[1].get("bid"))
+                    + _quote_item("賣腿 Ask", legs[1].get("ask"))
+                )
+
+            badge_labels = {
+                "top_return": "最高報酬",
+                "top_resilience": "最強韌性",
+                "warning": "報價注意",
+            }
+            badges = "".join(
+                f'<span class="oc-comparison-badge">{badge_labels[b]}</span>'
+                for b in row["badges"] if b in badge_labels
+            )
+            unit = "每組成本" if is_spread else "每張成本"
+            natural_unit = "Natural 每組" if is_spread else "Natural 每張"
+            natural_value = cand.get("natural_per_contract")
+            natural_text = f"${natural_value:,.0f}" if natural_value is not None else "—"
+            risk_label = "Spread 最大獲利" if is_spread else "最大獲利"
+            cap_price = cand.get("cap_price")
+            cap_html = ""
+            if is_spread:
+                cap_value = f"${money(cap_price)}" if cap_price is not None else "—"
+                cap_html = (
+                    '<div class="oc-spread-cap">'
+                    '<span>Spread 封頂價</span>'
+                    f'<strong class="oc-num">{cap_value}</strong>'
+                    '<small>此價位起進入最大獲利區</small>'
+                    '</div>'
+                )
+
+            cost_text = f'${cand["capital_per_contract"]:,.0f}'
+            max_loss_text = f'${cand["max_loss_per_contract"]:,.0f}'
+            breakeven_text = f'${money(cand["breakeven"])}'
+            quality_text = "報價注意" if cand["quote_warning"] else "正常"
             rows_html.append(
-                f"<tr><td>{STRATEGY_LABELS[row['strategy']]}</td><td>{structure}</td>"
-                f"<td>{legs[0]['expiry']}</td><td>{price_col}</td>"
-                f"<td>${cand['capital_per_contract']:.0f}</td>"
-                f"<td>${cand['max_loss_per_contract']:.0f}</td>"
-                f"<td>{max_profit_col}</td><td>${money(cand['breakeven'])}</td>"
-                f"<td>{pct(cand['baseline_return'])}</td>"
-                f"<td>{pct(cand['scenario_vector']['worst_return'])}</td>"
-                f"<td>{pct(cand['retention'])}</td><td>{fr_html}</td>"
-                f"<td>{'⚠' if cand['quote_warning'] else '正常'}</td></tr>")
-    header = ("<tr><th>策略</th><th>結構</th><th>到期日</th><th>Bid/Mid/Ask 或 Net Mid/Natural</th>"
-             "<th>每張・每組成本</th><th>最大損失</th><th>最大獲利</th><th>Breakeven</th>"
-             "<th>劇本報酬</th><th>情境最壞</th><th>不漲保留率</th><th>成交摩擦</th><th>資料品質</th></tr>")
-    # <div> 開頭的完整 HTML block，同 heatmap_html 不套用 esc()（理由同上）。
-    return ('<div style="overflow-x:auto"><table style="border-collapse:collapse;font-size:13px">'
-           + header + "".join(rows_html) + "</table></div>")
+                '<article class="oc-comparison-row">'
+                '<header class="oc-comparison-row-header">'
+                '<div><div class="oc-comparison-title">'
+                f'<strong>{STRATEGY_LABELS[row["strategy"]]}</strong>{badges}</div>'
+                f'<p>{structure} · 到期 {legs[0]["expiry"]}</p></div>'
+                '<div class="oc-comparison-return">'
+                '<span>劇本報酬</span>'
+                f'<strong class="oc-num">{pct(cand["baseline_return"])}</strong>'
+                f'<small>情境最壞 {pct(cand["scenario_vector"]["worst_return"])}</small>'
+                '</div></header>'
+                '<div class="oc-comparison-grid">'
+                '<section class="oc-comparison-quotes">'
+                '<div class="oc-section-label">Bid / Mid / Ask <small>每股價格</small></div>'
+                f'<div class="oc-quote-grid">{quote_items}</div>'
+                '</section>'
+                '<section class="oc-comparison-cost">'
+                '<div class="oc-section-label">成本</div>'
+                f'{_value_pair(unit, cost_text)}'
+                f'{_value_pair(natural_unit, natural_text, "oc-value-pair-secondary")}'
+                '</section>'
+                '<section class="oc-comparison-risk">'
+                '<div class="oc-section-label">風險與損益邊界</div>'
+                '<div class="oc-risk-grid">'
+                f'{_value_pair("最大損失", max_loss_text)}'
+                f'{_value_pair(risk_label, max_profit_col)}'
+                f'{_value_pair("Breakeven", breakeven_text)}'
+                '</div></section>'
+                f'{cap_html}'
+                '</div>'
+                '<footer class="oc-comparison-footer">'
+                f'<span>不漲保留率 <strong>{pct(cand["retention"])}</strong></span>'
+                f'<span>成交摩擦 <strong>{fr_html}</strong></span>'
+                f'<span>資料品質 <strong>{quality_text}</strong></span>'
+                '</footer>'
+                '</article>'
+            )
+        groups_html.append(
+            '<section class="oc-comparison-expiry">'
+            f'<div class="oc-comparison-expiry-title"><strong>{g["expiry"]}</strong>'
+            f'<span>到期 · 緩衝 +{g["buffer_days"]} 天</span></div>'
+            + "".join(rows_html)
+            + "</section>"
+        )
+
+    # 保留 overflow-x:auto 作為舊呼叫契約與極窄 viewport 的最後防線。
+    return (
+        '<div class="oc-comparison-board" style="overflow-x:auto">'
+        '<header class="oc-comparison-board-header">'
+        '<div><span class="oc-eyebrow">策略 · Candidate comparison</span>'
+        '<h3>候選比較</h3></div>'
+        '<p>先看劇本報酬，再核對成本與最大損失；spread 另標示最大獲利與封頂價。</p>'
+        '</header>'
+        + "".join(groups_html)
+        + "</div>"
+    )

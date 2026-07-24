@@ -14,6 +14,13 @@ FIX = "tests/fixtures/xyz_v4_six_expiries.json"
 PAGE = "webapp/views/quick.py"
 
 
+def _authenticated_app() -> AppTest:
+    at = AppTest.from_file("webapp/app.py")
+    at.secrets["APP_PASSWORD"] = "test-password"
+    at.session_state["oc_authenticated"] = True
+    return at
+
+
 def _patched(monkeypatch):
     real_offline = service.run_offline
     monkeypatch.setattr(service, "run",
@@ -45,7 +52,9 @@ def test_happy_path_renders_four_steps(monkeypatch):
     at.run()
     at = _fill_and_submit(at)
     subheaders = " ".join(s.value for s in at.subheader)
-    assert "Step 2" in subheaders and "Step 3" in subheaders and "Step 4" in subheaders
+    body = " ".join(m.value for m in at.markdown)
+    assert ("Step 2" in subheaders or "報酬情境矩陣" in body)
+    assert "Step 3" in subheaders and "Step 4" in subheaders
     assert not at.exception
 
 
@@ -83,7 +92,7 @@ def test_save_as_scenario_button_persists(monkeypatch, tmp_path):
     # AppTest.switch_page 不會自動 rerun（官方文件："does not automatically
     # rerun the app. Use a follow-up call to AppTest.run()"）——必須緊接 at.run()
     # 才能在正確頁面上操作 widget，否則後續 _fill_and_submit 仍作用在總覽頁。
-    at = AppTest.from_file("webapp/app.py")
+    at = _authenticated_app()
     at.run()
     at.switch_page("views/quick.py")
     at.run()
@@ -104,7 +113,7 @@ def test_save_as_scenario_duplicate_shows_link(monkeypatch, tmp_path):
                               ("long-call",), ts="2026-07-22T00:00:00+00:00")
     # quick.py 撞名分支現含 st.page_link，須經真實入口到達本頁；
     # switch_page 後同樣須緊接 at.run()（見上一則同理）。
-    at = AppTest.from_file("webapp/app.py")
+    at = _authenticated_app()
     at.run()
     at.switch_page("views/quick.py")
     at.run()

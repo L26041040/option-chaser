@@ -1,4 +1,10 @@
-# v6 spec §2.1: Artifact 淺色視覺基準（唯一色彩來源，views/components 不得另覆寫全站色彩）
+# Option Chaser 產品外殼：保留 Artifact 的資料視覺 token，
+# 但導覽、字體層級與瀏覽器 chrome 採正式產品設定。
+[client]
+toolbarMode = "minimal"
+showErrorDetails = "none"
+showErrorLinks = false
+
 [theme]
 base = "light"
 primaryColor = "#ff4b4b"
@@ -6,7 +12,17 @@ backgroundColor = "#eef0f3"
 secondaryBackgroundColor = "#f3f4f6"
 textColor = "#1c1f26"
 borderColor = "#e3e6ea"
+redColor = "#b22222"
+greenColor = "#1a7f37"
+grayColor = "#6b7280"
 baseRadius = "10px"
 buttonRadius = "8px"
 showWidgetBorder = true
 font = "sans-serif"
+headingFont = "sans-serif"
+codeFont = "monospace"
+baseFontSize = 15
+baseFontWeight = 400
+headingFontSizes = ["2rem", "1.45rem", "1.15rem", "1rem", "0.9rem", "0.8rem"]
+headingFontWeights = [700, 600, 600, 600, 600, 600]
+linkUnderline = false

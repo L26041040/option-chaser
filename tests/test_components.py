@@ -31,11 +31,42 @@ SPREAD_CAND = {
     "breakeven": 100.95, "baseline_return": 20.05, "net_delta": 0.20,
 }
 
+SUMMARY = {
+    "meta": {"spot": 100.0},
+    "snapshot_ref": {
+        "fetched_at": "2026-07-22T00:00:00+00:00",
+        "source": "UnitFixture",
+    },
+    "data_quality": {"all_quotes_filtered": False},
+    "default_selection": ["2028-01-21", "long-call|93|2028-01-21"],
+    "expiry_groups": [{
+        "expiry": "2028-01-21",
+        "rows": [{"strategy": "long-call", "candidate": SINGLE_CAND}],
+    }],
+}
+
 
 def test_scenario_card_shows_core_fields():
     html = components.scenario_card(SC, None)
     assert "XYZ" in html and "120.00" in html and "2026-08-01" in html
     assert "尚未分析" in html
+
+
+def test_scenario_card_productized_list_item_fields():
+    html = components.scenario_card(SC, SUMMARY)
+    for text in (
+        "Symbol", "方向", "現價", "目標價", "目標日", "狀態", "群組",
+        "最新推薦候選", "劇本報酬", "每張或每組成本", "資料品質",
+    ):
+        assert text in html
+    assert "oc-scenario-list-item" in html
+    assert "Long Call" in html
+    assert "$100.00" in html
+    assert "$120.00" in html
+    assert "749.4%" in html
+    assert "$142" in html
+    assert "最近有效快照" in html
+    assert "UnitFixture" in html
 
 
 def test_scenario_card_no_position_language():
@@ -60,6 +91,32 @@ def test_candidate_card_spread_shows_max_profit_and_cap_price():
     assert "1,905" in html or "1905" in html   # 最大獲利每組
     assert "120" in html           # 封頂價
     assert "買" in html and "賣" in html
+
+
+def test_candidate_card_has_product_quote_return_cost_risk_hierarchy():
+    html = components.candidate_card(SPREAD_CAND, "bull-call-spread")
+    for css_class in (
+        "oc-candidate-card", "oc-candidate-return", "oc-candidate-quotes",
+        "oc-candidate-cost", "oc-candidate-risk", "oc-spread-cap",
+    ):
+        assert css_class in html
+    for label in (
+        "Bid", "Mid", "Ask", "每股價格", "每組成本", "最大損失",
+        "Spread 最大獲利", "Breakeven", "Spread 封頂價",
+    ):
+        assert label in html
+    assert "$0.95" in html
+    assert "$95" in html
+    assert "$1,905" in html
+    assert "$120.00" in html
+
+
+def test_single_leg_candidate_card_uses_per_contract_language():
+    html = components.candidate_card(SINGLE_CAND, "long-call")
+    assert "每張成本" in html
+    assert "每組成本" not in html
+    assert "最大獲利無上限" in html
+    assert "Spread 封頂價" not in html
 
 
 def test_candidate_card_no_formula_arithmetic():

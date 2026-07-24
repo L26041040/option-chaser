@@ -42,6 +42,11 @@ header_lines = [f"**{_safe_symbol}** ｜ 目標 ${sc.target_price:g} ｜ {sc.tar
 if view is not None:
     header_lines.append(f"現價 ${view['meta']['spot']:.2f} ｜ 資料時間 {view['snapshot_ref']['fetched_at']} "
                         + quality_badge(quality_tone(view, workspace.ny_today())))
+    header_lines.append(
+        "資料來源：最近有效快照"
+        f"（{html.escape(str(view['snapshot_ref']['source']), quote=True)}，"
+        f"{html.escape(str(view['snapshot_ref']['fetched_at']).split('T', 1)[0], quote=True)}）"
+    )
 st.markdown(esc("<br>".join(header_lines)), unsafe_allow_html=True)
 if st.button("重新分析", key="detail-reanalyze"):
     try:
@@ -75,6 +80,5 @@ if key is not None:
     st.markdown(candidate_card(cand, strategy), unsafe_allow_html=True)
 
 render_step2(view, key)
-st.subheader("候選比較")
 st.markdown(comparison_table_html(view), unsafe_allow_html=True)
 render_step4(view, key)

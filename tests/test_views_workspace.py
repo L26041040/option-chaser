@@ -53,7 +53,23 @@ def test_scenario_card_price_after_analysis(ws):
     at = AppTest.from_file(PAGE)
     at.run()
     body = _body(at)
+    source = workspace.latest_result(ws, sc.id)["snapshot_ref"]["source"]
     assert "每張/組" in body or "每張" in body   # candidate_card 摘要含成本
+    assert "最近有效快照" in body
+    assert source in body
+
+
+def test_workspace_primary_actions_include_select_candidate(ws):
+    sc = _mk(ws)
+    workspace.analyze_scenario(ws, sc.id, snapshot_path=FIX, ts=TS)
+    at = AppTest.from_file(PAGE)
+    at.run()
+    labels = [b.label for b in at.button]
+    assert "分析" in labels
+    assert "詳頁" in labels
+    assert "選定候選" in labels
+    next(b for b in at.button if b.key == f"ws-select-{sc.id}").set_value(True).run(timeout=30)
+    assert at.session_state[f"ws-selected-candidate-{sc.id}"]
 
 
 def test_manage_popover_contains_status_actions(ws):
