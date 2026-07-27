@@ -15,6 +15,12 @@ from option_chaser.v2.months import (
     normalize_target_month,
 )
 from option_chaser.v2.pairing import enumerate_contract_pairs
+from option_chaser.v2.pricing import (
+    QuoteCalculationError,
+    SpreadQuote,
+    calculate_midpoint,
+    calculate_spread_quote,
+)
 from option_chaser.v2.settings import (
     DEFAULT_V2_SETTINGS,
     SettingsError,
@@ -26,11 +32,15 @@ __all__ = [
     "DEFAULT_V2_SETTINGS",
     "ExpiryResolutionError",
     "OptionContract",
+    "QuoteCalculationError",
     "SettingsError",
     "SpreadPair",
+    "SpreadQuote",
     "SpreadStrategy",
     "TargetMonthError",
     "V2Settings",
+    "calculate_midpoint",
+    "calculate_spread_quote",
     "enumerate_contract_pairs",
     "normalize_target_month",
     "resolve_expiries",
