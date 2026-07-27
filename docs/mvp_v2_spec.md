@@ -4,6 +4,8 @@ Status: FROZEN FOR IMPLEMENTATION
 Version: MVP V2
 Branch: feature/mvp-v2-simplification
 
+⸻
+
 1. Product Goal
 
 Option Chaser MVP V2 accepts a simple market scenario and enumerates option debit spreads that could benefit if the scenario occurs.
@@ -14,7 +16,7 @@ The user provides only:
 2. Target month
 3. Target price
 
-The system automatically determines the trade direction, selects five relevant expiries, enumerates every valid spread pair within each expiry, and ranks the results by return calculated from the executable Ask-side entry cost.
+The system automatically determines the trade direction, selects up to the configured number of relevant expiries, enumerates every valid spread pair within each expiry, and ranks the results by return calculated from the executable Ask-side entry cost.
 
 MVP V2 prioritizes:
 
@@ -23,6 +25,8 @@ MVP V2 prioritizes:
 * Independent ranking for each expiry
 * Minimal user input
 * Reproducible results
+* Explicit system settings
+* Deterministic core behavior
 
 It does not attempt to predict whether the scenario is correct.
 
@@ -97,21 +101,95 @@ The automatically inferred direction is shown to the user.
 
 ⸻
 
-3. Expiry Selection
+3. System Settings Boundary
+
+MVP V2 contains explicit system settings that control configurable output limits without changing the core financial formulas.
+
+The initial settings are:
+
+max_expiries = 5
+top_spreads_per_expiry = 10
+
+These values are defaults rather than permanent product limits.
+
+The settings architecture must follow these rules:
+
+1. Core functions must not directly read UI state.
+2. Core functions must not directly read mutable global settings.
+3. The UI or application layer creates or loads the settings.
+4. The service layer passes the required setting values into the core functions.
+5. Core functions remain deterministic for identical arguments.
+6. Unit tests may provide explicit non-default setting values.
+7. Changing a display or selection limit must not change structural pairing rules.
+8. Changing a display or selection limit must not change quote formulas.
+9. Changing a display or selection limit must not change payoff formulas.
+10. Changing a display or selection limit must not change return formulas.
+
+The initial settings model contains:
+
+V2Settings
+├─ max_expiries
+└─ top_spreads_per_expiry
+
+The initial default values are:
+
+V2Settings(
+    max_expiries=5,
+    top_spreads_per_expiry=10,
+)
+
+Both values must be positive integers.
+
+The settings interface may later be exposed through a gear icon or other application settings page.
+
+Settings persistence and settings UI are later implementation stages.
+
+⸻
+
+4. Expiry Selection
 
 The system retrieves the actual expiries available for the symbol.
 
-It then selects no more than five expiries surrounding the requested target month:
+It then selects no more than:
+
+max_expiries
+
+actual expiries surrounding the requested target month.
+
+The default value is:
+
+max_expiries = 5
+
+The selection process is:
 
 1. Resolve one actual expiry as the target-month baseline.
-2. Select up to two expiries before the baseline.
-3. Select up to two expiries after the baseline.
-4. Include the baseline.
-5. If one side has insufficient expiries, fill the remaining positions from the other side.
-6. Return no duplicate expiries.
-7. Return expiries in chronological order.
+2. Include the baseline.
+3. Divide the remaining preferred slots around the baseline.
+4. Prefer the nearest expiries on each side.
+5. When the configured limit is odd, distribute the remaining slots evenly around the baseline.
+6. When the configured limit is even, give the later side the additional preferred slot.
+7. If one side has insufficient expiries, fill the unused capacity from the other side.
+8. Return no duplicate expiries.
+9. Return expiries in chronological order.
+10. Never return more than max_expiries.
+11. If fewer actual expiries exist, return all available valid expiries.
+
+Examples:
+
+max_expiries = 5
+→ baseline + up to 2 before + up to 2 after
+max_expiries = 7
+→ baseline + up to 3 before + up to 3 after
+max_expiries = 4
+→ baseline + up to 1 before + up to 2 after
 
 The exact deterministic baseline and tie-breaking algorithm must be implemented and tested in the dedicated expiry resolver.
+
+The target-month reference date is the third Friday of the requested month.
+
+The actual available expiry nearest to that reference date becomes the baseline.
+
+If two actual expiries are equally distant from the reference date, the later expiry becomes the baseline.
 
 The system must not invent expiry dates.
 
@@ -119,7 +197,7 @@ Each selected expiry is analyzed independently.
 
 ⸻
 
-4. Core Enumeration
+5. Core Enumeration
 
 For each selected expiry, the system loads every available contract of the required option type:
 
@@ -151,9 +229,11 @@ Quote validity is separate from liquidity filtering.
 
 A pair that lacks the numeric quotes required to calculate an entry cost may be marked unrankable, but it must not silently alter the structural pairing rules.
 
+Duplicate strikes inside one expiry chain are invalid because one structural strike pair must map to one unambiguous pair of contracts.
+
 ⸻
 
-5. Bull Call Spread
+6. Bull Call Spread
 
 For a Bull Call Spread:
 
@@ -189,7 +269,7 @@ max_payoff = spread_width
 
 ⸻
 
-6. Bear Put Spread
+7. Bear Put Spread
 
 For a Bear Put Spread:
 
@@ -225,13 +305,107 @@ max_payoff = spread_width
 
 ⸻
 
-7. Entry Cost and Return
+8. Pricing Architecture
+
+Pricing responsibilities must be separated into three deterministic layers.
+
+8.1 Quote Engine
+
+The Quote Engine calculates market-quote-derived values only.
+
+It may calculate:
+
+long_mid
+short_mid
+spread_bid
+spread_mid
+spread_ask
+
+It must not calculate:
+
+* Spread payoff
+* Target payoff
+* Maximum payoff
+* Entry cost
+* Return
+* Ranking
+
+If a necessary quote is unavailable, the corresponding derived quote is unavailable.
+
+Missing values must not be silently replaced with zero.
+
+Quote validity must not alter the structural spread pairs produced by the enumerator.
+
+8.2 Payoff Engine
+
+The Payoff Engine calculates strategy payoff values only.
+
+It receives values such as:
+
+strategy
+long_strike
+short_strike
+target_price
+
+It must not require:
+
+* Bid
+* Ask
+* Mid
+* Implied volatility
+* Open interest
+* Volume
+
+The Payoff Engine may calculate:
+
+spread_width
+target_payoff
+max_payoff
+
+8.3 Return Engine
+
+The Return Engine combines quote-derived values with payoff-derived values.
+
+It may calculate:
+
+entry_cost
+ask_return
+ask_return_percent
+rankable
+
+It must not perform ranking or truncate the result collection.
+
+The intended dependency flow is:
+
+SpreadPair
+↓
+Quote Engine
+↓
+Payoff Engine
+↓
+Return Engine
+↓
+Ranking Engine
+
+These responsibilities must not be merged into one function merely for convenience.
+
+⸻
+
+9. Entry Cost and Return
 
 Option quotes are expressed per share.
 
+The standard option contract multiplier is initially:
+
+contract_multiplier = 100
+
+The multiplier must be passed explicitly or use a deterministic default.
+
+It must not be inferred from UI state inside the core calculation.
+
 The displayed contract entry cost is:
 
-entry_cost = spread_ask × 100
+entry_cost = spread_ask × contract_multiplier
 
 The primary ranking metric is Ask Return:
 
@@ -243,6 +417,15 @@ Percentage display:
 ask_return_percent = ask_return × 100
 
 Only rows with a finite and strictly positive spread_ask can receive an Ask Return ranking.
+
+A spread is unrankable when spread_ask is:
+
+* Missing
+* Non-finite
+* Zero
+* Negative
+
+An unrankable spread remains part of the complete structural enumeration count.
 
 The system must not replace Ask Return with:
 
@@ -259,7 +442,7 @@ Bid and Mid values may be displayed for reference, but they do not control ranki
 
 ⸻
 
-8. Ranking Output
+10. Ranking Output
 
 Each expiry has its own independent ranking table.
 
@@ -270,9 +453,31 @@ For every expiry:
 3. Calculate target payoff.
 4. Calculate Ask Return for rankable rows.
 5. Sort Ask Return from highest to lowest.
-6. Return the first ten rows.
+6. Apply deterministic tie-breaking.
+7. Return no more than:
 
-The system must not combine all expiries into one global Top 10.
+top_spreads_per_expiry
+
+    ranked rows.
+
+The default value is:
+
+top_spreads_per_expiry = 10
+
+If fewer rankable rows exist, return all rankable rows.
+
+The system must not combine all expiries into one global ranking table.
+
+The configured row limit changes only the number of ranked rows returned.
+
+It must not change:
+
+* Total structural pair count
+* Rankable pair count
+* Pair construction
+* Quote calculations
+* Payoff calculations
+* Return calculations
 
 Each expiry result must retain at least:
 
@@ -305,9 +510,9 @@ is_historical
 
 ⸻
 
-9. Market Data Boundary
+11. Market Data Boundary
 
-The V2 core enumerator must not directly download market data.
+The V2 core enumerator and pricing functions must not directly download market data.
 
 Market-data responsibilities belong to a separate adapter or service layer.
 
@@ -320,12 +525,14 @@ fetch_expiry_chain(symbol, expiry, option_type)
 The service layer is responsible for:
 
 1. Reading the three user inputs.
-2. Fetching spot price.
-3. Inferring strategy direction.
-4. Resolving five expiries.
-5. Fetching only the required option chains.
-6. Calling the pure enumerator once per expiry.
-7. Returning five independent expiry results.
+2. Loading or receiving V2Settings.
+3. Fetching spot price.
+4. Inferring strategy direction.
+5. Resolving up to settings.max_expiries expiries.
+6. Fetching only the required option chains.
+7. Calling the pure core analysis once per expiry.
+8. Ranking up to settings.top_spreads_per_expiry rows per expiry.
+9. Returning independent expiry results.
 
 Every market-data response must identify:
 
@@ -333,11 +540,11 @@ source
 fetched_at
 is_historical
 
-Fallback data sources are implemented later and must not change the core payoff or ranking formulas.
+Fallback data sources are implemented later and must not change the core pairing, quote, payoff, return, or ranking formulas.
 
 ⸻
 
-10. MVP V2 User Interface
+12. MVP V2 User Interface
 
 The functional V2 interface will contain:
 
@@ -349,21 +556,35 @@ The main result view will show:
 
 * Automatically inferred direction
 * Current spot price
-* Up to five expiry tabs
+* Up to settings.max_expiries expiry tabs
 * Total pair count for each expiry
 * Rankable pair count
 * Data source and timestamp
-* Top 10 spreads for each expiry
+* Up to settings.top_spreads_per_expiry ranked spreads for each expiry
+
+With default settings, this means:
+
+Up to 5 expiry tabs
+Up to 10 ranked spreads per expiry
 
 Spread results are the primary output.
 
 Single-leg Call or Put analysis is secondary and must not affect spread ranking.
 
-Heatmaps, watchlists, saved snapshots, and iOS visual styling are later implementation stages.
+A later settings interface may allow the user to change:
+
+Max expiries
+Rows per expiry
+
+The settings interface must create or update a validated settings object.
+
+It must not directly modify the internal state of core calculation modules.
+
+Heatmaps, watchlists, saved snapshots, settings persistence, and iOS visual styling are later implementation stages.
 
 ⸻
 
-11. Explicit Non-Goals
+13. Explicit Non-Goals
 
 The first V2 implementation does not include:
 
@@ -382,14 +603,20 @@ The first V2 implementation does not include:
 * Portfolio interaction analysis
 * Watchlist persistence
 * Scheduled snapshots
+* Settings persistence
+* Full settings UI
 * iOS styling
 * Removal of legacy files
+* Generic strategy plug-in framework
+* Multi-leg strategies beyond the initial debit spreads
 
 These features must not be added incidentally while implementing the V2 core.
 
+The initial architecture may preserve clean boundaries for later strategy expansion, but it must not prematurely implement an abstract strategy framework.
+
 ⸻
 
-12. Implementation Discipline
+14. Implementation Discipline
 
 MVP V2 is built as a separate path from the legacy application.
 
@@ -403,5 +630,11 @@ Rules:
 6. Use fixed fixtures for service and market-data tests.
 7. Preserve the legacy application until V2 passes final acceptance.
 8. Clean up legacy code only in the final dedicated cleanup stage.
+9. Keep quote, payoff, return, and ranking responsibilities separated.
+10. Do not make core functions depend directly on mutable global settings.
+11. Do not allow output limits to change underlying financial calculations.
+12. Do not add new strategies while constructing the initial pricing foundation.
+13. Public compatibility imports must remain stable unless changed in a dedicated migration.
+14. Every configurable limit must be validated and explicitly passed through the application or service boundary.
 
 This specification is authoritative for MVP V2 unless it is changed through a dedicated specification commit.
