@@ -1,5 +1,10 @@
 """Public pricing API for Option Chaser MVP V2."""
 
+from option_chaser.v2.pricing.payoff import (
+    PayoffCalculationError,
+    SpreadPayoff,
+    calculate_spread_payoff,
+)
 from option_chaser.v2.pricing.quote import (
     QuoteCalculationError,
     SpreadQuote,
@@ -8,8 +13,11 @@ from option_chaser.v2.pricing.quote import (
 )
 
 __all__ = [
+    "PayoffCalculationError",
     "QuoteCalculationError",
+    "SpreadPayoff",
     "SpreadQuote",
     "calculate_midpoint",
+    "calculate_spread_payoff",
     "calculate_spread_quote",
 ]
