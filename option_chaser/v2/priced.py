@@ -103,6 +103,35 @@ class PricedSpread:
             ),
         )
 
+        expected_quote = calculate_spread_quote(self.pair)
+
+        if self.quote != expected_quote:
+            raise PricedSpreadError(
+                "quote is inconsistent with pair"
+            )
+
+        expected_payoff = calculate_spread_payoff(
+            self.pair,
+            self.target_price,
+        )
+
+        if self.payoff != expected_payoff:
+            raise PricedSpreadError(
+                "payoff is inconsistent with pair and target_price"
+            )
+
+        expected_return_metrics = calculate_spread_return(
+            expected_quote,
+            expected_payoff,
+            contract_multiplier=self.contract_multiplier,
+        )
+
+        if self.return_metrics != expected_return_metrics:
+            raise PricedSpreadError(
+                "return_metrics is inconsistent with quote, payoff, "
+                "and contract_multiplier"
+            )
+
 
 def price_spread(
     pair: SpreadPair,
