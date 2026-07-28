@@ -1,5 +1,10 @@
 """Stable public API for the Option Chaser MVP V2 core."""
 
+from option_chaser.v2.evaluation import (
+    CandidateEvaluationError,
+    CandidateEvaluationResult,
+    evaluate_candidates,
+)
 from option_chaser.v2.expiries import (
     ExpiryResolutionError,
     resolve_expiries,
@@ -39,6 +44,8 @@ from option_chaser.v2.settings import (
 )
 
 __all__ = [
+    "CandidateEvaluationError",
+    "CandidateEvaluationResult",
     "ContractEnumerationError",
     "DEFAULT_V2_SETTINGS",
     "ExpiryResolutionError",
@@ -61,6 +68,7 @@ __all__ = [
     "calculate_spread_quote",
     "calculate_spread_return",
     "enumerate_contract_pairs",
+    "evaluate_candidates",
     "normalize_target_month",
     "price_spread",
     "resolve_expiries",
