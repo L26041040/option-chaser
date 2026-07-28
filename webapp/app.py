@@ -27,10 +27,32 @@ page = st.navigation([
         icon=":material/space_dashboard:",
         default=True,
     ),
-    st.Page("views/workspace.py", title="劇本工作區", icon=":material/view_list:"),
-    st.Page("views/quick.py", title="快速試算", icon=":material/bolt:"),
-    st.Page("views/help.py", title="使用說明", icon=":material/help:"),
-    st.Page("views/detail.py", title="詳頁", url_path="detail", visibility="hidden"),
+    st.Page(
+        "views/workspace.py",
+        title="劇本工作區",
+        icon=":material/view_list:",
+    ),
+    st.Page(
+        "views/v2_quick.py",
+        title="V2 試算",
+        icon=":material/science:",
+    ),
+    st.Page(
+        "views/quick.py",
+        title="舊版試算",
+        icon=":material/history:",
+    ),
+    st.Page(
+        "views/help.py",
+        title="使用說明",
+        icon=":material/help:",
+    ),
+    st.Page(
+        "views/detail.py",
+        title="詳頁",
+        url_path="detail",
+        visibility="hidden",
+    ),
 ], position="top")
 
 inject()
