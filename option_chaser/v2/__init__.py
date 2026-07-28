@@ -15,6 +15,11 @@ from option_chaser.v2.months import (
     normalize_target_month,
 )
 from option_chaser.v2.pairing import enumerate_contract_pairs
+from option_chaser.v2.priced import (
+    PricedSpread,
+    PricedSpreadError,
+    price_spread,
+)
 from option_chaser.v2.pricing import (
     PayoffCalculationError,
     QuoteCalculationError,
@@ -39,6 +44,8 @@ __all__ = [
     "ExpiryResolutionError",
     "OptionContract",
     "PayoffCalculationError",
+    "PricedSpread",
+    "PricedSpreadError",
     "QuoteCalculationError",
     "ReturnCalculationError",
     "SettingsError",
@@ -55,5 +62,6 @@ __all__ = [
     "calculate_spread_return",
     "enumerate_contract_pairs",
     "normalize_target_month",
+    "price_spread",
     "resolve_expiries",
 ]
