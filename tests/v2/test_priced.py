@@ -359,3 +359,92 @@ def test_priced_spread_is_immutable() -> None:
 
     with pytest.raises(AttributeError):
         result.target_price = 999.0  # type: ignore[misc]
+        
+        
+def test_rejects_quote_from_different_candidate() -> None:
+    result = price_spread(
+        _bull_call_pair(),
+        expiry="2028-01-21",
+        target_price=108,
+    )
+    other_result = price_spread(
+        _bear_put_pair(),
+        expiry="2028-01-21",
+        target_price=102,
+    )
+
+    with pytest.raises(
+        PricedSpreadError,
+        match="quote is inconsistent",
+    ):
+        replace(
+            result,
+            quote=other_result.quote,
+        )
+
+
+def test_rejects_payoff_from_different_target_price() -> None:
+    pair = _bull_call_pair()
+
+    result = price_spread(
+        pair,
+        expiry="2028-01-21",
+        target_price=108,
+    )
+    other_result = price_spread(
+        pair,
+        expiry="2028-01-21",
+        target_price=105,
+    )
+
+    with pytest.raises(
+        PricedSpreadError,
+        match="payoff is inconsistent",
+    ):
+        replace(
+            result,
+            payoff=other_result.payoff,
+        )
+
+
+def test_rejects_return_from_different_multiplier() -> None:
+    pair = _bull_call_pair()
+
+    result = price_spread(
+        pair,
+        expiry="2028-01-21",
+        target_price=108,
+        contract_multiplier=100,
+    )
+    other_result = price_spread(
+        pair,
+        expiry="2028-01-21",
+        target_price=108,
+        contract_multiplier=50,
+    )
+
+    with pytest.raises(
+        PricedSpreadError,
+        match="return_metrics is inconsistent",
+    ):
+        replace(
+            result,
+            return_metrics=other_result.return_metrics,
+        )
+
+
+def test_rejects_valid_pair_with_foreign_components() -> None:
+    result = price_spread(
+        _bull_call_pair(),
+        expiry="2028-01-21",
+        target_price=108,
+    )
+
+    with pytest.raises(
+        PricedSpreadError,
+        match="quote is inconsistent",
+    ):
+        replace(
+            result,
+            pair=_bear_put_pair(),
+        )
