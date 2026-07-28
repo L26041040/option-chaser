@@ -9,6 +9,8 @@ def test_compatibility_entry_point_reexports_v2_objects() -> None:
         "ExpiryResolutionError",
         "OptionContract",
         "PayoffCalculationError",
+        "PricedSpread",
+        "PricedSpreadError",
         "QuoteCalculationError",
         "ReturnCalculationError",
         "SettingsError",
@@ -25,6 +27,7 @@ def test_compatibility_entry_point_reexports_v2_objects() -> None:
         "calculate_spread_return",
         "enumerate_contract_pairs",
         "normalize_target_month",
+        "price_spread",
         "resolve_expiries",
     ]
 
