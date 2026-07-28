@@ -1,25 +1,38 @@
-"""Streamlit Community Cloud 的輕量密碼閘門。"""
+"""Streamlit 的輕量密碼閘門。"""
 from __future__ import annotations
 
 import hmac
+import os
 
 import streamlit as st
 
 
-def require_password() -> None:
-    """在目前 session 通過密碼前停止執行 App。
+def _configured_password() -> object:
+    """Read local launcher password first, then deployment secrets."""
 
-    密碼只從 Streamlit secrets 讀取；未設定時採 fail-closed，避免公開部署
-    意外暴露。這是測試版的單一共用密碼，不是使用者帳號系統。
-    """
+    environment_password = os.environ.get("APP_PASSWORD")
+
+    if environment_password is not None:
+        return environment_password
+
     try:
-        configured_password = st.secrets["APP_PASSWORD"]
+        return st.secrets["APP_PASSWORD"]
     except (KeyError, FileNotFoundError):
-        st.error("部署尚未設定 APP_PASSWORD，App 已安全鎖定。")
-        st.stop()
+        return None
+
+
+def require_password() -> None:
+    """Stop the app until the current session passes the shared password.
+
+    Local launchers may provide ``APP_PASSWORD`` as an environment variable.
+    Hosted deployments continue to use Streamlit secrets. Missing or invalid
+    configuration remains fail-closed.
+    """
+
+    configured_password = _configured_password()
 
     if not isinstance(configured_password, str) or not configured_password:
-        st.error("APP_PASSWORD 必須是非空白字串，App 已安全鎖定。")
+        st.error("尚未設定 APP_PASSWORD，App 已安全鎖定。")
         st.stop()
 
     if st.session_state.get("oc_authenticated") is True:
@@ -27,6 +40,7 @@ def require_password() -> None:
 
     st.markdown("## Option Chaser")
     st.caption("私人測試版 · 請輸入存取密碼")
+
     with st.form("oc_password_form"):
         entered_password = st.text_input(
             "密碼",
@@ -38,7 +52,7 @@ def require_password() -> None:
             "進入 Option Chaser",
             key="oc_password_submit",
             type="primary",
-            use_container_width=True,
+            width="stretch",
         )
 
     if submitted:
@@ -46,6 +60,7 @@ def require_password() -> None:
             st.session_state["oc_authenticated"] = True
             st.session_state.pop("oc_password", None)
             st.rerun()
+
         st.error("密碼不正確，請再試一次。")
 
     st.stop()
