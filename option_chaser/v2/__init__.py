@@ -1,5 +1,11 @@
 """Stable public API for the Option Chaser MVP V2 core."""
 
+from option_chaser.v2.api import (
+    API_SCHEMA_VERSION,
+    ApiContractError,
+    evaluate_api_payload,
+    serialize_evaluation_result,
+)
 from option_chaser.v2.evaluation import (
     CandidateEvaluationError,
     CandidateEvaluationResult,
@@ -44,6 +50,8 @@ from option_chaser.v2.settings import (
 )
 
 __all__ = [
+    "API_SCHEMA_VERSION",
+    "ApiContractError",
     "CandidateEvaluationError",
     "CandidateEvaluationResult",
     "ContractEnumerationError",
@@ -68,8 +76,10 @@ __all__ = [
     "calculate_spread_quote",
     "calculate_spread_return",
     "enumerate_contract_pairs",
+    "evaluate_api_payload",
     "evaluate_candidates",
     "normalize_target_month",
     "price_spread",
     "resolve_expiries",
+    "serialize_evaluation_result",
 ]
