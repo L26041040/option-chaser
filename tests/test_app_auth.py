@@ -9,10 +9,17 @@ from streamlit.testing.v1 import AppTest
 
 def _locked_app(password: str | None = "test-password") -> AppTest:
     at = AppTest.from_file("webapp/app.py")
-    if password is not None:
-        at.secrets["APP_PASSWORD"] = password
-    return at
 
+    if password is None:
+        # AppTest only replaces the real Streamlit secrets when its test
+        # secrets dictionary is non-empty. A harmless sentinel forces that
+        # replacement while intentionally leaving APP_PASSWORD absent.
+        at.secrets["_TEST_SENTINEL"] = True
+    else:
+        at.secrets["APP_PASSWORD"] = password
+
+    return at
+    
 
 def test_missing_secret_fails_closed(tmp_path, monkeypatch):
     monkeypatch.setenv("OC_WORKSPACE", str(tmp_path))
