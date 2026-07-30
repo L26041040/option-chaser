@@ -11,6 +11,13 @@ models,ranking,valuation,scenarios,matrix}.py`（被前述檔案實際 import �
 > 「依收益率重排卡片」的遺漏（併入 Step 5）。詳見
 > `docs/modify-route-map-v1-review.md`。
 
+> 2026-07-30 Grill 更新①：需求方確認到期日探索規則（六點，見
+> `modifyRequestV1.md` §三與附錄A）與日期語意分離原則（附錄A2）。
+> 據此：(1) §2（三）第一項改判「實作錯誤」——選取必須發生在窮舉之前；
+> (2) §2（三）排名情境改判「實作錯誤」——估值日應為各 Spread 自身到期日，
+> 非 `p.target_date`；(3) Step 1 改為解析年月＋計算日曆錨點，不映射單日；
+> (4) 新增 Step 1-1／1-2。覆核報告中「建議月底映射」之建議作廢。
+
 ---
 
 ## 1. 總結判斷：TARGETED_REFACTOR（針對性重構）
@@ -55,23 +62,34 @@ models,ranking,valuation,scenarios,matrix}.py`（被前述檔案實際 import �
   「方向」（`ws-new-direction`, L81）與「策略勾選」（`ws-new-chk-*`, L92-93），
   且「預計年月」用 `st.date_input`（L94，精確到日）而非年月合併輸入。
 - 年月合併輸入＋格式正規化（2028/1、2028/01、28/1、28/01） — 缺少。全 repo
-  grep 找不到對應正規化函式。
+  grep 找不到對應正規化函式。（2026-07-30 補註：解析目標是 (年, 月) 二元組
+  ＋據此計算日曆錨點（第三個星期五），不是映射成單一 target_date；
+  見附錄A2 日期語意分離原則。）
 - 不需輸入到期日／買入履約價／賣出履約價／Spread 寬度 — 已完成。這三項在
   `_spread_result()`（`service.py:432-475`）由系統窮舉決定，UI 與
   `AnalysisRequest` 都不含這些欄位。
 
 **三、到期日探索與 Spread 排名**
-- 探索目標月份附近約 5 個代表到期日 — 部分完成。`service._sample_expiries()`
-  （`service.py:278-293`）是「先窮舉全部未來到期日→事後取樣最多 4 個供分組
-  *顯示*」，數量上限是 4 非 5，且順序與文件描述（先選 5 個代表到期日→只窮舉
-  這 5 個）相反。文件本身允許「具體挑選方式列為後續研究事項」，故不判定為錯誤。
+- 探索目標月份附近約 5 個代表到期日 — 實作錯誤（2026-07-30 改判，原
+  「部分完成」的豁免依據「列為後續研究事項」已被需求方六點規則取代）。
+  現況 `service._sample_expiries()`（`service.py:278-293`）是「先窮舉全部
+  未來到期日→事後取樣最多 4 個供分組*顯示*」；規則要求「日曆錨點（目標月
+  第三個星期五）→ baseline＝距錨點最近的實際到期日（同距取較晚）→
+  baseline 前2後2共至多5檔（一側不足由另一側補）→ 只對這5檔窮舉，
+  各自產生排名」。選取必須發生在窮舉之前，且窮舉範圍限縮至選取的5檔。
 - 窮舉這些到期日中符合條件的 Call Debit Spread — 已完成。`bull-call-spread`
   即文件所稱 Call Debit Spread（`models.py:79` `SPREAD_STRATEGIES`），
   `_spread_result()` 對同到期日內所有多空腳配對呼叫 `evaluate_spread()`。
-- 排名情境（目標價、持有至到期、相對淨支出 %） — 已完成。
-  `ranking.py:110-111` `spread_baseline_return = (baseline_value - net_mid) /
-  net_mid`，`baseline_value` 即 shift=0 情境下 `spread_scenario_value(...,
-  target_date, ...)`。
+- 排名情境（目標價、持有至到期、相對淨支出 %） — 實作錯誤（2026-07-30
+  改判，原「已完成」判定經定向核對推翻）。公式形狀正確
+  （`ranking.py:110-111` `spread_baseline_return = (baseline_value -
+  net_mid) / net_mid`），但估值時點錯誤：`evaluate_spread()`
+  （`valuation.py:230,238-242`）把 baseline 定在 `p.target_date` 當天——
+  對到期日晚於該日的 Spread，`scenario_leg_value()`（`valuation.py:86-89`）
+  走 `at < expiry` 分支，帶入 BS 剩餘時間價值。需求 §三/§四明定
+  「標的在該 Spread 到期時＝目標價、持有至到期」＝各 Spread 自身到期日
+  的內在價值（附錄A2 第2點已確認此語意不使用共用日期）。到期日早於或
+  等於估值日的 Spread 兩種算法重合，晚於者數字與名次都會不同。
 - 跨到期日總排名 Top10 — 缺少。`rank_spreads()`（`ranking.py:120-122`）在
   回傳前就截斷至 `p.top`（預設 3，`models.py:51`），因此
   `StrategyResult.ranked_spreads` 只含 3 筆，且 `store.serialize_result()`
@@ -189,7 +207,10 @@ MVP 範圍的功能；不需移除，只需在新首頁流程中不曝露/不強
 ## 3. Keep / Modify / Remove / Add
 
 **保留（不動）**
-- `option_chaser/valuation.py` 全部 — 已正確，是 Heatmap/排名的地基。
+- `option_chaser/valuation.py` 的估值原語（`scenario_leg_value`/
+  `spread_scenario_value`/BS/greeks）— 已正確，是 Heatmap 的地基。
+  （2026-07-30 修訂：`evaluate_spread` 的 baseline 估值時點除外，
+  改列 Step 1-2 修改範圍。）
 - `option_chaser/scenarios.py` 全部 — 本輪未要求變更 7 情境向量/completion curve。
 - `option_chaser/store.py` 的事件溯源機制（`append_event`/`read_events`/
   `reconcile_status`/`rebuild_groups`）— 架構已達標。
@@ -239,14 +260,39 @@ MVP 範圍的功能；不需移除，只需在新首頁流程中不曝露/不強
   排名公式（`ranking.py`）、`date_axis`、`matrix_grid` 未被改動。
 
 **Step 1 — 年月合併輸入與正規化**（輸入層，阻塞後續首頁改版）
-- 目標：新增年月解析函式，支援 4 種格式；需先確認「年月代表哪一天」的映射
-  慣例（文件未指定，見第 6 節）
+- 目標：新增年月解析函式，支援 4 種格式，輸出 (年, 月) 二元組；另提供
+  日曆錨點函式（該月第三個星期五，純日曆計算）。不得把年月映射成單一
+  「目標日」供全流程共用（附錄A2；原「映射慣例待確認」問題已解消——
+  答案是不映射）
 - 檔案：新增解析函式（`option_chaser/models.py` 或新檔），
   `webapp/pages/0_劇本工作區.py` 建立表單欄位替換
-- 驗證：新增單元測試（4 種格式→相同標準化年月）；確認
-  `tests/test_workspace.py`/`tests/test_scenarios.py` 不受影響
-- 不得順便改動：`AnalysisParams` 資料結構（仍為 YYYY-MM-DD 字串）、
-  `service.py` 分析主流程
+- 驗證：新增單元測試（4 種格式→相同 (年, 月)；第三個星期五計算含
+  跨年/閏年案例）；確認 `tests/test_workspace.py`/`tests/test_scenarios.py`
+  不受影響
+- 不得順便改動：`service.py` 分析主流程。`AnalysisParams` 若需增欄位
+  以承載年月/錨點語意，屬 Step 1-1 範圍，本步不動
+
+**Step 1-1 — 到期日選取規則**（依賴 Step 1 的日曆錨點函式）
+- 目標：實作 `modifyRequestV1.md` §三六點規則：日曆錨點 → baseline
+  （距錨點最近的實際到期日，同距取較晚）→ baseline 前2後2共至多5檔
+  （一側不足由另一側依距離補足）→ 窮舉範圍限縮至選取的5檔
+- 檔案：`option_chaser/service.py`（取代/改寫 `_sample_expiries` 的
+  「先窮舉後取樣」流程）
+- 驗證：新增單元測試（錨點命中/未命中實際到期日、同距 tie-break 取較晚、
+  一側不足補足、鏈上到期日少於5檔）；確認 `tests/test_service*.py` 回歸
+- 不得順便改動：排名公式本體（估值時點修正屬 Step 1-2）、Heatmap
+
+**Step 1-2 — 排名估值時點修正**（可與 Step 1-1 平行；建議同一輪完成）
+- 目標：baseline 估值日由 `p.target_date` 改為各 Spread 自身到期日
+  （＝內在價值 payoff），對齊需求 §三「持有至到期」（附錄A2 第2點）
+- 檔案：`option_chaser/valuation.py`（`evaluate_spread`；單腳
+  `evaluate_contract` 是否同步修改，隨 Long Call 比較功能屬可延後項目，
+  本步不強制）
+- 驗證：新增測試（到期日晚於/早於/等於舊估值日三情境的 baseline 值）；
+  `tests/test_spread_valuation.py`/`tests/test_spread_ranking.py` 斷言
+  同步更新；golden fixtures 重產
+- 不得順便改動：Heatmap 估值路徑（`matrix_grid`/`scenario_leg_value`
+  本體——Heatmap 必須維持到期前時間價值，這正是兩者語意分離的原因）
 
 **Step 2 — 首頁建立表單簡化**（依賴 Step 1）
 - 目標：移除方向/策略勾選 UI，預設帶入 bullish + bull-call-spread
@@ -326,9 +372,10 @@ MVP 範圍的功能；不需移除，只需在新首頁流程中不曝露/不強
 
 - 手機版 UI 是否真的完整可操作（需瀏覽器/viewport 實測，非讀程式碼可判斷）—
   對應文件十一節。
-- 年月合併輸入正規化後「代表哪一天」的映射慣例文件未指定（15 日？月底？
-  到期日附近？），需與需求提出者確認，否則 Step 1 會卡在設計決策而非程式
-  問題。
+- ~~年月合併輸入正規化後「代表哪一天」的映射慣例~~ — 已解消
+  （2026-07-30，附錄A2：不映射單日；探索中心＝日曆錨點，排名估值日＝
+  各 Spread 自身到期日）。仍待定：Heatmap 目標時間錨點欄用哪個日期、
+  紅燈「年月已過期」判定日（Grill 進行中）。
 - Heatmap 的 IV 假設（逐腳固定 IV，不隨日期變動）是否需要對照
   optionsprofitcalculator.com 做進一步比對——README 已知揭露此為模型限制，
   但文件第四節明確要求「需要研究及比對」，本輪未實際跑該網站比對數據，只能
