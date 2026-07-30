@@ -6,6 +6,11 @@
 models,ranking,valuation,scenarios,matrix}.py`（被前述檔案實際 import 到才追）→
 `webapp/render.py`（被 app.py / 0_劇本工作區.py import）。未修改任何程式碼。
 
+> 2026-07-30 獨立覆核更新：Step 0 已由 commit `5e6b1bb` 完成；修正一處
+> `ranked_spreads` 證據錯誤（影響 Step 6 施工方式）；補上需求七.8
+> 「依收益率重排卡片」的遺漏（併入 Step 5）。詳見
+> `docs/modify-route-map-v1-review.md`。
+
 ---
 
 ## 1. 總結判斷：TARGETED_REFACTOR（針對性重構）
@@ -25,9 +30,11 @@ models,ranking,valuation,scenarios,matrix}.py`（被前述檔案實際 import �
   第十節的保存需求。
 - 缺口集中在呈現層聚合（跨到期日 Top10、資料狀態燈號、Spread 獨立歷史查詢）、
   輸入層欄位（年月合併輸入、桌面 20/80 版面、卡片精簡）、一項全新但高度可重用的
-  計算（Long Call 追平比較）、以及一個具體數值錯誤（Heatmap 超標僅 +10%，文件要求
-  ≥15%）。這些都是在既有模組邊界內新增/局部修改函式與呼叫點，不需更動
-  valuation/matrix/store 的資料結構或演算法本體。
+  計算（Long Call 追平比較）。原列的具體數值錯誤（Heatmap 超標僅 +10%，文件要求
+  ≥15%）已由 commit `5e6b1bb` 修正（`matrix.py:23` 現為 1.15/0.85，
+  `tests/test_matrix.py` 四處斷言與 golden fixtures 已同步）。其餘缺口都是在
+  既有模組邊界內新增/局部修改函式與呼叫點，不需更動 valuation/matrix/store
+  的資料結構或演算法本體。
 
 → 不構成 PARTIAL_REWRITE 或 FULL_REBUILD 的條件（見第 8 節停止條件供對照）。
 
@@ -65,10 +72,14 @@ models,ranking,valuation,scenarios,matrix}.py`（被前述檔案實際 import �
   `ranking.py:110-111` `spread_baseline_return = (baseline_value - net_mid) /
   net_mid`，`baseline_value` 即 shift=0 情境下 `spread_scenario_value(...,
   target_date, ...)`。
-- 跨到期日總排名 Top10 — 缺少。`rank_spreads()`（`ranking.py:120-122`）排序後
-  只取 `p.top`（預設 3，`models.py:51`）筆建成 `CandidateView`；`ranked_spreads`
-  本身雖是全域排序（`service.py:445`），但沒有任何 UI 把它攤平成 Top10 榜單
-  （`render.py:206-250` `render_step3` 是依到期日分組的表格）。
+- 跨到期日總排名 Top10 — 缺少。`rank_spreads()`（`ranking.py:120-122`）在
+  回傳前就截斷至 `p.top`（預設 3，`models.py:51`），因此
+  `StrategyResult.ranked_spreads` 只含 3 筆，且 `store.serialize_result()`
+  完全沒有序列化此欄位——結果 JSON 中不存在可直接取 Top10 的資料。真正的
+  全域完整排序是 `_spread_result()` 內的區域變數 `all_ranked`
+  （`service.py:455-456`，已為 `expiry_best` 而存在），Top10 應從此處切片
+  外露，不能只靠 UI 攤平既有資料（`render.py:206` `render_step3` 是依到期日
+  分組的表格）。
 - 各到期日最佳結果 — 已完成。`_spread_result()` 內 `best_by_expiry` 迴圈
   （`service.py:453-468`）+ `_build_groups()`（`service.py:296-383`）已產出。
 - 各到期日最佳結果需附 Heatmap 縮圖 — 已完成。`render.py:90-103`
@@ -82,10 +93,11 @@ models,ranking,valuation,scenarios,matrix}.py`（被前述檔案實際 import �
 - 正確呈現到期前時間價值，不可套用到期 payoff 公式 — 已完成（核心正確，見
   第 1 節證據）。`tests/test_matrix.py`、`tests/test_spread_valuation.py` 有
   覆蓋。
-- 價格範圍需延伸至目標價以上至少 15% — 實作錯誤。`matrix.py:23`
-  `overshoot = target * (1.10 if bullish else 0.90)`，只有 +10%。
-  `tests/test_matrix.py:36,47,68,76` 把 1.10/0.90 寫死斷言，證實是目前設計值
-  而非筆誤，修改需連測試一起改。
+- 價格範圍需延伸至目標價以上至少 15% — 已完成（覆核時確認由 commit
+  `5e6b1bb` 修正）。`matrix.py:23` 現為
+  `overshoot = target * (1.15 if bullish else 0.85)`；
+  `tests/test_matrix.py:36,47,68,76` 斷言與 golden fixtures 已同步更新，
+  `pytest tests/test_matrix.py` 為綠。
 - 修正不得改變排名公式 — 現況未違反：排名用 `spread_baseline_return`，與
   `matrix.py` 的價格軸無耦合。
 
@@ -186,8 +198,8 @@ MVP 範圍的功能；不需移除，只需在新首頁流程中不曝露/不強
   `_spread_result` 主流程。
 
 **修改（局部）**
-- `option_chaser/matrix.py:23` — overshoot 倍率 1.10→至少 1.15（連動
-  `tests/test_matrix.py:36,47,68,76`）。
+- ~~`option_chaser/matrix.py:23` — overshoot 倍率 1.10→至少 1.15~~ 已完成
+  （commit `5e6b1bb`，含測試與 golden fixtures）。
 - `webapp/pages/0_劇本工作區.py` 建立表單（L69-114） — 移除方向/策略勾選欄位，
   改為 3 欄輸入 + 年月合併框。
 - `webapp/pages/0_劇本工作區.py` 清單區（L122-202） — 表格列改為緊湊卡片，
@@ -221,11 +233,10 @@ MVP 範圍的功能；不需移除，只需在新首頁流程中不曝露/不強
 
 ## 4-5. 最短安全施工路線圖
 
-**Step 0 — Heatmap 價格範圍修正**（獨立、風險最低、無依賴）
-- 檔案：`option_chaser/matrix.py`（`price_axis`），`tests/test_matrix.py`
-- 驗證：`pytest tests/test_matrix.py tests/test_spread_valuation.py
-  tests/test_matrix_grid.py`
-- 不得順便改動：排名公式（`ranking.py`）、`date_axis`、`matrix_grid` 估值邏輯本身
+**Step 0 — Heatmap 價格範圍修正 ✅ 已完成**（commit `5e6b1bb`）
+- 完成證據：`matrix.py:23` 為 1.15/0.85；`tests/test_matrix.py:36,47,68,76`
+  斷言同步；golden fixtures（`tests/fixtures/golden_*.txt`）重新產生；
+  排名公式（`ranking.py`）、`date_axis`、`matrix_grid` 未被改動。
 
 **Step 1 — 年月合併輸入與正規化**（輸入層，阻塞後續首頁改版）
 - 目標：新增年月解析函式，支援 4 種格式；需先確認「年月代表哪一天」的映射
@@ -259,18 +270,31 @@ MVP 範圍的功能；不需移除，只需在新首頁流程中不曝露/不強
   紅燈優先於黃燈情境）
 - 不得順便改動：`analyze_scenario` 本身的分析邏輯，只讀取其成功/失敗結果
 
-**Step 5 — 開站自動更新迴圈**（依賴 Step 4 燈號需要更新時機）
-- 目標：頁面載入時對所有 Active 劇本呼叫 `analyze_scenario`，單一失敗不擋
-  其他
-- 檔案：`webapp/pages/0_劇本工作區.py` 頁面頂部
-- 驗證：新增測試模擬多劇本其中一個 `FetchError`，確認其餘仍完成；建議先
-  量測目前手動分析耗時，評估多劇本情境下頁面載入時間是否可接受
-- 不得順便改動：`workspace.analyze_scenario`/`analyze_group` 函式本身
+**Step 5 — 開站自動更新迴圈＋卡片依收益率重排**（依賴 Step 4 燈號需要更新
+時機）
+- 目標：(a) 頁面載入時對所有 Active 劇本呼叫 `analyze_scenario`，單一失敗
+  不擋其他；(b) 需求七.8：更新後劇本卡片依最新收益率重新排序——現況
+  `list_scenarios` 固定以 `(symbol, target_date, id)` 排序
+  （`workspace.py:99`），需在 UI 層（或新聚合函式）改以最新
+  `baseline_return` 排序，`list_scenarios` 本身的回傳順序可不動
+- 檔案：`webapp/pages/0_劇本工作區.py` 頁面頂部與清單區排序
+- 驗證：新增測試模擬多劇本其中一個 `FetchError`，確認其餘仍完成；卡片排序
+  測試（兩劇本收益率互換後順序反轉）；建議先量測目前手動分析耗時，評估多
+  劇本情境下頁面載入時間是否可接受
+- 不得順便改動：`workspace.analyze_scenario`/`analyze_group` 函式本身、
+  `list_scenarios` 的排序（其順序被對帳/群組邏輯依賴的風險未查證，改 UI 層
+  較安全）
 
 **Step 6 — 跨到期日 Top10 聚合**（可與 Step 4/5 平行，建議在卡片穩定後做以
 降低 UI 變動衝突）
 - 目標：新增跨到期日聚合函式（`service.py`），`render_top10`（`render.py`），
-  詳細頁串接；`store.py` 補「當時排名」欄位
+  詳細頁串接；`store.py` 補「當時排名」欄位。注意：不能從
+  `StrategyResult.ranked_spreads` 切片——它已被 `rank_spreads()` 截斷至
+  `p.top`（預設 3）且未被 `serialize_result()` 序列化。正確做法是在
+  `_spread_result()` 把既有完整排序 `all_ranked`（`service.py:455-456`）的
+  前 10 名外露為新欄位（建 `CandidateView` 含 Heatmap），並在
+  `store.serialize_result()` 新增對應序列化，結果 JSON 才能供 UI 與歷史
+  查詢使用
 - 檔案：`option_chaser/service.py`、`option_chaser/store.py`、
   `webapp/render.py`、`webapp/pages/0_劇本工作區.py` 詳頁
 - 驗證：新增測試（合成多到期日 spread 資料，驗證 Top10 正確合併排序）；確認
