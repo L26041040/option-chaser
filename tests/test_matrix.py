@@ -33,7 +33,7 @@ def test_price_axis_v4_anchors_bullish():
     pts = price_axis(spot, target, bullish=True)
     vals = [v for v, _ in pts]
     assert len(vals) == 11
-    overshoot, adverse = target * 1.10, spot * 0.90
+    overshoot, adverse = target * 1.15, spot * 0.90
     for anchor in (spot, target, overshoot, adverse):
         assert anchor in vals
     assert min(vals) == pytest.approx(adverse)
@@ -44,7 +44,7 @@ def test_price_axis_v4_anchors_bearish():
     spot, target = 84.52, 70.0
     pts = price_axis(spot, target, bullish=False)
     vals = [v for v, _ in pts]
-    overshoot, adverse = target * 0.90, spot * 1.10
+    overshoot, adverse = target * 0.85, spot * 1.10
     for anchor in (spot, target, overshoot, adverse):
         assert anchor in vals
     assert min(vals) == pytest.approx(overshoot)
@@ -65,7 +65,7 @@ def test_price_axis_anchor_collision_dedup():
 
 def test_price_axis_v4_anchor_labels():
     spot, target = 84.52, 105.0
-    overshoot, adverse = target * 1.10, spot * 0.90
+    overshoot, adverse = target * 1.15, spot * 0.90
     labels = dict(price_axis(spot, target, bullish=True))
     assert labels[spot] == "<現價>"
     assert labels[target] == "<目標>"
@@ -73,7 +73,7 @@ def test_price_axis_v4_anchor_labels():
     assert labels[adverse] == "<深跌>"
 
     spot2, target2 = 84.52, 70.0
-    overshoot2, adverse2 = target2 * 0.90, spot2 * 1.10
+    overshoot2, adverse2 = target2 * 0.85, spot2 * 1.10
     labels2 = dict(price_axis(spot2, target2, bullish=False))
     assert labels2[spot2] == "<現價>"
     assert labels2[target2] == "<目標>"

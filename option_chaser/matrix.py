@@ -20,7 +20,7 @@ def _insert_anchors(pts: list[float], anchors: list[float]) -> list[float]:
 
 def price_axis(spot: float, target: float, bullish: bool) -> list[tuple[float, str]]:
     """v4 spec §4.3: anchors {spot, target, overshoot, adverse}; range = anchor hull."""
-    overshoot = target * (1.10 if bullish else 0.90)
+    overshoot = target * (1.15 if bullish else 0.85)
     adverse = spot * (0.90 if bullish else 1.10)
     anchors = sorted({spot, target, overshoot, adverse})
     lo = max(min(anchors), 0.01 * spot)
