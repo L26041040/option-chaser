@@ -62,6 +62,14 @@ models,ranking,valuation,scenarios,matrix}.py`（被前述檔案實際 import �
 > 衛生修正（§三殘留重複句刪除、§八「五個到期日」改「至多五個」）。
 > 其餘尚未定案事項統一列於 §6 待決清單，不再逐題散問。
 
+> 2026-07-30 Grill 更新⑥（收尾定案）：§6A 全部待決項經需求方「全按建議」
+> 一次批准，定案於附錄A8（A-F 六項＋三項預設）與 A9（舊表面 anchor
+> 例外）。A9 同時解掉本文件 §3 保留清單的內部矛盾——原「`scenarios.py`
+> 全部不動」「`ranking.py` 全部不動」與 Step 1 移除單日目標欄位不相容
+> （該二檔仍有多處消費 `p.target_date`）；現改為「曲線／排名邏輯不動，
+> 消費單日目標欄位之處改吃 anchor，屬 Step 1 範圍」。Step 1 spec 據此
+> 發佈至 GitHub Issues（ready-for-agent）。
+
 ---
 
 ## 1. 總結判斷：TARGETED_REFACTOR（針對性重構）
@@ -298,10 +306,14 @@ MVP 範圍的功能；不需移除，只需在新首頁流程中不曝露/不強
   `spread_scenario_value`/BS/greeks）— 已正確，是 Heatmap 的地基。
   （2026-07-30 修訂：`evaluate_spread` 的 baseline 估值時點除外，
   改列 Step 1-2 修改範圍。）
-- `option_chaser/scenarios.py` 全部 — 本輪未要求變更 7 情境向量/completion curve。
+- `option_chaser/scenarios.py` 的曲線邏輯 — 本輪未要求變更 7 情境向量/
+  completion curve。（2026-07-30 修訂：其消費單日目標欄位之處改吃
+  anchor——附錄A9，屬 Step 1 範圍；曲線演算法本身不動。）
 - `option_chaser/store.py` 的事件溯源機制（`append_event`/`read_events`/
   `reconcile_status`/`rebuild_groups`）— 架構已達標。
-- `option_chaser/ranking.py` 全部。
+- `option_chaser/ranking.py` 的排名與指引邏輯。（2026-07-30 修訂：單腳
+  指引消費單日目標欄位之處改吃 anchor——附錄A9，屬 Step 1 範圍；
+  排名公式不動。）
 - `option_chaser/service.py` 的 `_analyze`/`_single_leg_result`/
   `_spread_result` 主流程。
 
@@ -397,10 +409,16 @@ MVP 範圍的功能；不需移除，只需在新首頁流程中不曝露/不強
   7. UI：**兩個**入口的 `st.date_input` 一併改為年月輸入框——
      `webapp/pages/0_劇本工作區.py:94,111` 與
      `webapp/app.py:49,128`（後者原路線圖從未提及，見更新④b）
+  8. 舊表面 anchor 例外（附錄A9）：CLI 報告、單腳指引、情境曲線、
+     `days_to_target` 等消費 `p.target_date` 的舊路徑，一律改吃日曆
+     錨點（欄位名 `anchor`，僅顯示/指引參考）；Heatmap 日期軸的
+     target-date * 標記依 A2.3 移除，不得為其映射日期
 - 檔案：`option_chaser/models.py`（或新檔，解析/錨點函式）、
   `option_chaser/store.py`、`option_chaser/workspace.py`、
   `option_chaser/filters.py`、`option_chaser/service.py`、
-  `option_chaser/cli.py`、`webapp/pages/0_劇本工作區.py`、`webapp/app.py`
+  `option_chaser/cli.py`、`option_chaser/ranking.py`、
+  `option_chaser/scenarios.py`、`option_chaser/report.py`、
+  `webapp/pages/0_劇本工作區.py`、`webapp/app.py`
 - 驗證：新增單元測試（4 種格式→相同 (年, 月)；第三個星期五含跨年/閏年；
   目標月最後一天前後的過期判定邊界；錨點命中/未命中實際到期日；同距
   tie-break 取較晚；一側不足由另一側補足；鏈上到期日少於 5 檔；
@@ -435,8 +453,9 @@ MVP 範圍的功能；不需移除，只需在新首頁流程中不曝露/不強
 
 **Step 3 — 桌面 20/80 版面 + 劇本卡片重製 + 清單編輯工具**（依賴 Step 2）
 - 目標：`st.columns` 左右分割、緊湊卡片（5 欄位+單一燈號位置）、收益正負色；
-  左側清單編輯工具（手動移除劇本，附錄A6——移除的儲存語意見 §6 待決
-  清單 B 項，UI 位置本步先落地）
+  左側清單編輯工具（手動移除劇本，附錄A6；儲存語意已定＝事件溯源軟
+  刪除，歷史保留，附錄A8.2）；群組區自新版首頁隱藏（附錄A8.6，底層
+  邏輯保留）
 - 檔案：`webapp/pages/0_劇本工作區.py` 版面與清單區
 - 驗證：`tests/test_webapp_workspace.py`；手動截圖確認版面
 - 不得順便改動：群組區/詳頁邏輯（L204-275 暫不動）
@@ -465,7 +484,10 @@ MVP 範圍的功能；不需移除，只需在新首頁流程中不曝露/不強
       也不得用部分成功結果重新排名
   (e) 左側依**各劇本此次分析結果中的最高收益率**由高至低排序；黃燈劇本用
       上一份完整成功快照的最高收益率參與排序；**紅燈劇本一律沉底**
-      （附錄A6；紅燈組內排序預設沿用同一收益率規則，見 §6 待決清單）
+      （附錄A6；紅燈組內排序沿用同一收益率規則，附錄A8.7）
+  (f) 建立劇本當下立即觸發該劇本首次刷新；無快照劇本收益率顯示「—」、
+      排序在綠／黃之後紅燈之前（附錄A8.1）；MVP 刷新不計算 Long Call
+      （附錄A8.3）
 - 檔案：`webapp/pages/0_劇本工作區.py`（頁面頂部、刷新鈕、清單排序）；
   若原子性需在儲存層加固，`option_chaser/workspace.py`
 - 驗證：多劇本其中一個關鍵資料失敗→其餘完成且該劇本保留舊快照＋黃燈；
@@ -489,9 +511,10 @@ MVP 範圍的功能；不需移除，只需在新首頁流程中不曝露/不強
       per-expiry Top 10 為其上的標記或視圖，不是保存範圍的上限；
       注意全量序列化的檔案體積會明顯成長（5 檔 × 全部配對），屬已接受
       的取捨，後續依需求縮減
-  (c) `render.py`＋詳頁：第一層五個到期日摘要各顯示第 1 名＋Heatmap 縮圖；
-      第二層預設顯示 **baseline 到期日**的 Top 10，點其他到期日才切換
-      （切換屬 UI 互動，不得觸發新的 API 呼叫，見 Step 5(a)）
+  (c) `render.py`＋詳頁：第一層被選中到期日（至多五個）摘要各顯示第 1 名
+      ＋Heatmap 縮圖；第二層預設顯示 **baseline 到期日**的 Top 10，點其他
+      到期日才切換（切換屬 UI 互動，不得觸發新的 API 呼叫，見 Step 5(a)）；
+      進入詳頁預設選中 baseline 第 1 名 Spread（附錄A8.5）
 - 檔案：`option_chaser/service.py`、`option_chaser/store.py`、
   `webapp/render.py`、`webapp/pages/0_劇本工作區.py` 詳頁
 - 驗證：新增測試（合成多到期日 spread 資料，驗證**每個到期日各自**前 10
@@ -522,47 +545,25 @@ MVP 範圍的功能；不需移除，只需在新首頁流程中不曝露/不強
 
 ---
 
-## 6A. 待決產品決策清單（2026-07-30 一次性彙整，取代逐題提問）
+## 6A. 待決產品決策清單 — ✅ 已全數定案（2026-07-30「全按建議」批准）
 
-**阻塞完整 spec（Step 5-7）、不阻塞 Step 1 spec 的決策：**
+全部決議收錄於 `modifyRequestV1.md` 附錄A8/A9，摘要：
 
-- **A. 新建劇本的首次刷新與空狀態**（影響 Step 5）
-  1. 建立劇本當下是否立即觸發該劇本的首次刷新？（§七只定義了開站
-     自動刷新與手動全量刷新，建立當下行為未定義）
-  2. 尚無任何成功快照的劇本（首次刷新失敗即黃燈、或尚未刷新），
-     左側排序值與卡片收益率欄顯示什麼？
-- **B. 「手動移除劇本」的儲存語意**（影響 Step 3 工具與 store）
-  移除是事件溯源下的軟刪除（新事件類型或復用既有 Invalidated 狀態，
-  歷史保留）還是硬刪除（檔案與事件一併清除）？
-- **C. Long Call 在刷新流程中的角色矛盾**（影響 Step 5 與 D1 邊界）
-  §七流程第 6 步「同時重新計算符合條件的 Long Call」把 Long Call 納入
-  每次刷新；§九與 Step D1 又把 Long Call 比較列為 MVP 後續可延後項。
-  兩者需擇一：MVP 刷新即計算並保存 Long Call（僅比較 UI 延後），或
-  流程第 6 步整體隨 D1 生效（MVP 刷新不算 Long Call）。
-- **D. 「符合條件的 Spread」之條件來源**（影響 Step 1/6 spec 用語）
-  需求文件從未定義窮舉配對的合格條件（報價有效性以外的 OI/成交量門檻、
-  買賣價差上限、寬度限制等）。是否授權「沿用現行 filters 的合約品質
-  參數作為預設，未來另行調整」？
-- **E. 詳細頁預設選中的 Spread**（影響 Step 6）
-  兩層結構已定（預設 baseline 到期日的 Top 10），但進入詳頁時「被選中
-  Spread 的詳細 Heatmap／歷史」預設是誰——baseline 第 1 名，還是不預選、
-  等使用者點擊？
-- **F. 群組（Group）區塊的去留**（影響 Step 3 版面）
-  現有 UI 有群組區與群組分析，需求文件全文未提及群組。新版首頁是否
-  隱藏群組區（底層邏輯保留）？
+- **A** 建立劇本即觸發首次刷新；無快照劇本收益率顯示「—」，排序在
+  綠／黃之後、紅燈之前（→ Step 5）
+- **B** 手動移除＝事件溯源軟刪除，歷史保留（→ Step 3）
+- **C** MVP 刷新不計算 Long Call，§七流程第 6 步隨 D1 生效（→ Step 5/D1）
+- **D** 「符合條件」沿用現行 filters 合約品質參數作預設（→ Step 1/6）
+- **E** 詳頁預設選中 baseline 到期日第 1 名（→ Step 6）
+- **F** 群組區自新版首頁隱藏，底層保留（→ Step 3）
+- **G** 舊表面（CLI 報告/單腳指引/情境曲線/days_to_target）改吃日曆
+  錨點 `anchor`，A2 原則唯一授權例外（→ Step 1，附錄A9）
+- 三項預設一併確認：紅燈組內依最後已知收益率排序；已過完月份拒絕建立、
+  當月允許；同標的多劇本各自獨立原子刷新
 
-**已採預設、可一句話推翻的項目：**
+**仍屬驗證／後續活動（非決策，不阻塞）：**
 
-- 紅燈組內部排序：預設沿用同一「最後已知最高收益率」規則排序。
-- 建立劇本時輸入「已過完的月份」：預設拒絕建立（與紅燈判定同一規則：
-  目標月最後一天已過完即無效）；輸入當月（尚未過完）允許。
-- 跨劇本一致性：同標的多劇本各自獨立刷新、各自原子；不要求跨劇本
-  共用同一份報價。
-
-**不阻塞 spec、屬驗證或後續活動：**
-
-- Heatmap 與 optionsprofitcalculator.com 的數值比對（§四要求的研究，
-  屬驗收活動，spec 可將其列為驗收項而非前置）。
+- Heatmap 與 optionsprofitcalculator.com 的數值比對（列為驗收項）。
 - 手機版完整可操作性實測（§十一）。
 - 全量歷史保存的檔案體積成長觀察（附錄A7 已接受的取捨）。
 
