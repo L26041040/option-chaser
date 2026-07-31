@@ -36,6 +36,24 @@ models,ranking,valuation,scenarios,matrix}.py`（被前述檔案實際 import �
 > ≠ 劇本失敗」（§2六）、session 級自動刷新一次＋手動刷新鈕（§2七）、
 > 左側依各劇本最高收益率排序（§2五）。
 
+> 2026-07-30 Grill 更新④（Step 1 排序缺陷修正）：原 Step 1「改 UI 但
+> 本步不動 `AnalysisParams`」是**不可施工的約束**——`create_scenario()`
+> 簽章要求 `target_date: str`（`workspace.py:36`），UI 改年月後只剩
+> 「無法建立劇本」或「偷把月份轉成某一天塞回去」兩條路，後者正是附錄A2
+> 明令禁止的。需求方裁示：`Scenario.target_month`（YYYY-MM）直接取代
+> `target_date`（附錄A5），**原 Step 1 與 Step 1-1 合併為一個縱切步驟**。
+> 本次核對另發現三項原文未提及、同樣阻塞施工的事實：
+> (a) `filters.py:22` `e >= target` 會硬砍所有早於目標日的到期日，
+>     使六點規則的「baseline 前方最近兩檔」無法實作——Step 1-1 原檔案
+>     清單漏列 `filters.py`；
+> (b) `webapp/app.py:49,128` 是**第二個** `st.date_input` 入口，
+>     原 Step 1/2/3 完全未提及；
+> (c) `service.py:520`／`cli.py:144` 的 `target_date <= today` 驗證在
+>     月語意下無定義（「本月」是部分已過去的）。
+> 另確認一項有利事實：`store.py:57-61` `scenario_id()` 本來就只取
+> `target_date[:4]+[5:7]`，ID 格式（`TLT-105-202801`）已是月粒度，
+> 改為 target_month 後 ID 格式不變。
+
 ---
 
 ## 1. 總結判斷：TARGETED_REFACTOR（針對性重構）
@@ -82,7 +100,9 @@ models,ranking,valuation,scenarios,matrix}.py`（被前述檔案實際 import �
 - 年月合併輸入＋格式正規化（2028/1、2028/01、28/1、28/01） — 缺少。全 repo
   grep 找不到對應正規化函式。（2026-07-30 補註：解析目標是 (年, 月) 二元組
   ＋據此計算日曆錨點（第三個星期五），不是映射成單一 target_date；
-  見附錄A2 日期語意分離原則。）
+  見附錄A2 日期語意分離原則。**兩個** UI 入口都要改：
+  `0_劇本工作區.py:94,111` 與 `app.py:49,128`。持久化欄位改為
+  `Scenario.target_month`，見附錄A5 與 Step 1。）
 - 不需輸入到期日／買入履約價／賣出履約價／Spread 寬度 — 已完成。這三項在
   `_spread_result()`（`service.py:432-475`）由系統窮舉決定，UI 與
   `AnalysisRequest` 都不含這些欄位。
@@ -95,6 +115,11 @@ models,ranking,valuation,scenarios,matrix}.py`（被前述檔案實際 import �
   第三個星期五）→ baseline＝距錨點最近的實際到期日（同距取較晚）→
   baseline 前2後2共至多5檔（一側不足由另一側補）→ 只對這5檔窮舉，
   各自產生排名」。選取必須發生在窮舉之前，且窮舉範圍限縮至選取的5檔。
+  另有一項**阻塞事實**（2026-07-30 新查得）：`filters.py:22` 的
+  `e >= target`（target 即 `p.target_date`）會硬砍掉所有早於目標日的
+  到期日，而六點規則明確要求選取 baseline **前方**最近兩檔——那些到期日
+  可能早於目標月。不解耦這道下限，六點規則無法實作。已納入 Step 1
+  第 5 小段。
 - 窮舉這些到期日中符合條件的 Call Debit Spread — 已完成。`bull-call-spread`
   即文件所稱 Call Debit Spread（`models.py:79` `SPREAD_STRATEGIES`），
   `_spread_result()` 對同到期日內所有多空腳配對呼叫 `evaluate_spread()`。
@@ -275,6 +300,18 @@ MVP 範圍的功能；不需移除，只需在新首頁流程中不曝露/不強
 **修改（局部）**
 - ~~`option_chaser/matrix.py:23` — overshoot 倍率 1.10→至少 1.15~~ 已完成
   （commit `5e6b1bb`，含測試與 golden fixtures）。
+- `option_chaser/store.py` `Scenario`（L26-38）— `target_date` 改為
+  `target_month`（YYYY-MM），`schema_version` 升版＋既有資料遷移；
+  `scenario_id()`（L57-61）輸入改 (年, 月)，**輸出格式不變**。
+- `option_chaser/models.py` `AnalysisParams`（L46-52）— 承載年月/錨點語意，
+  移除可被填入任意單日的 `target_date`。
+- `option_chaser/filters.py`（L17,22）— 解除 `e >= target_date` 到期日
+  硬性下限（阻塞六點規則，見 §2三）；保留報價/IV/OI 等合約品質過濾。
+- `option_chaser/workspace.py` — `create_scenario()` 簽章（L35-46）、
+  過期判定（L86-94）改月級。
+- `option_chaser/service.py`（L520）／`cli.py`（L144）— `target_date <=
+  today` 驗證改月級語意。
+- `webapp/app.py`（L49,128）— 第二個 `st.date_input` 入口，同步改年月。
 - `webapp/pages/0_劇本工作區.py` 建立表單（L69-114） — 移除方向/策略勾選欄位，
   改為 3 欄輸入 + 年月合併框。
 - `webapp/pages/0_劇本工作區.py` 清單區（L122-202） — 表格列改為緊湊卡片，
@@ -290,7 +327,10 @@ MVP 範圍的功能；不需移除，只需在新首頁流程中不曝露/不強
 
 **新增**
 - 年月輸入解析/正規化函式（建議 `option_chaser/models.py` 或新檔） — 處理
-  2028/1、2028/01、28/1、28/01。
+  2028/1、2028/01、28/1、28/01，輸出 (年, 月)。
+- 日曆錨點函式（該月第三個星期五，純日曆計算）與「目標月是否已過完」判定。
+- 到期日選取六點規則函式（`service.py`；取代 `_sample_expiries`）。
+- `Scenario` schema 遷移函式（`target_date` → `target_month`）。
 - 資料狀態燈號計算函式（建議加入 `workspace.py`，依賴既有
   `analyze_scenario` 成功/失敗與 `list_scenarios` 的 Expired 判定）。
 - Long Call 追平比較函式（建議加入 `option_chaser/scenarios.py` 或新模組，
@@ -320,30 +360,52 @@ MVP 範圍的功能；不需移除，只需在新首頁流程中不曝露/不強
   斷言同步；golden fixtures（`tests/fixtures/golden_*.txt`）重新產生；
   排名公式（`ranking.py`）、`date_axis`、`matrix_grid` 未被改動。
 
-**Step 1 — 年月合併輸入與正規化**（輸入層，阻塞後續首頁改版）
-- 目標：新增年月解析函式，支援 4 種格式，輸出 (年, 月) 二元組；另提供
-  日曆錨點函式（該月第三個星期五，純日曆計算）。不得把年月映射成單一
-  「目標日」供全流程共用（附錄A2；原「映射慣例待確認」問題已解消——
-  答案是不映射）
-- 檔案：新增解析函式（`option_chaser/models.py` 或新檔），
-  `webapp/pages/0_劇本工作區.py` 建立表單欄位替換
-- 驗證：新增單元測試（4 種格式→相同 (年, 月)；第三個星期五計算含
-  跨年/閏年案例）；確認 `tests/test_workspace.py`/`tests/test_scenarios.py`
-  不受影響
-- 不得順便改動：`service.py` 分析主流程。`AnalysisParams` 若需增欄位
-  以承載年月/錨點語意，屬 Step 1-1 範圍，本步不動
+**Step 1 — 年月資料模型縱切**（2026-07-30 合併原 Step 1＋Step 1-1；
+阻塞後續所有首頁改版）
 
-**Step 1-1 — 到期日選取規則**（依賴 Step 1 的日曆錨點函式）
-- 目標：實作 `modifyRequestV1.md` §三六點規則：日曆錨點 → baseline
-  （距錨點最近的實際到期日，同距取較晚）→ baseline 前2後2共至多5檔
-  （一側不足由另一側依距離補足）→ 窮舉範圍限縮至選取的5檔
-- 檔案：`option_chaser/service.py`（取代/改寫 `_sample_expiries` 的
-  「先窮舉後取樣」流程）
-- 驗證：新增單元測試（錨點命中/未命中實際到期日、同距 tie-break 取較晚、
-  一側不足補足、鏈上到期日少於5檔）；確認 `tests/test_service*.py` 回歸
-- 不得順便改動：排名公式本體（估值時點修正屬 Step 1-2）、Heatmap
+本步是**縱切**：UI、資料模型、持久化、過濾器必須同批落地。理由見更新④
+——`create_scenario()` 的簽章是硬邊界，中間沒有可運行的半成品狀態。
 
-**Step 1-2 — 排名估值時點修正**（可與 Step 1-1 平行；建議同一輪完成）
+- 目標（建議依此內部順序施工，每一小段都不破壞既有測試）：
+  1. 純函式先行：年月解析（4 格式 → (年, 月)）＋日曆錨點（該月第三個
+     星期五，純日曆計算）＋「目標月是否已過完」判定
+  2. 資料模型：`Scenario.target_date` → `target_month: str  # YYYY-MM`，
+     `schema_version` 升版並提供既有資料遷移；`AnalysisParams` 相應調整
+     （承載年月/錨點語意，不得保留可被填入任意單日的 target_date）
+  3. 持久化與查詢：`workspace.create_scenario()` 簽章改吃 target_month；
+     `store.scenario_id()` 輸入改為 (年, 月)——**ID 格式不變**
+     （`{symbol}-{price}-{yyyymm}`，本來就是月粒度，見更新④）
+  4. 過期判定：`workspace.py:90` `observed > target_date` 改為
+     「目標月最後一天過完」；`service.py:520`／`cli.py:144` 的
+     `target_date <= today` 驗證同步改為月級語意
+  5. **`filters.py:22` 到期日下限解耦**：現行 `e >= target` 會砍掉所有
+     早於目標日的到期日，使六點規則的「baseline 前方最近兩檔」無法實作。
+     到期日的取捨改由 Step 1 的選取規則負責，filters 只保留報價/IV/OI
+     等合約品質過濾
+  6. 到期日選取六點規則（原 Step 1-1）：日曆錨點 → baseline（距錨點最近
+     的實際到期日，同距取較晚）→ baseline 前2後2共至多5檔（一側不足由
+     另一側依距離補足）→ **窮舉範圍限縮至選取的5檔**，取代
+     `_sample_expiries()` 的「先窮舉後取樣」
+  7. UI：**兩個**入口的 `st.date_input` 一併改為年月輸入框——
+     `webapp/pages/0_劇本工作區.py:94,111` 與
+     `webapp/app.py:49,128`（後者原路線圖從未提及，見更新④b）
+- 檔案：`option_chaser/models.py`（或新檔，解析/錨點函式）、
+  `option_chaser/store.py`、`option_chaser/workspace.py`、
+  `option_chaser/filters.py`、`option_chaser/service.py`、
+  `option_chaser/cli.py`、`webapp/pages/0_劇本工作區.py`、`webapp/app.py`
+- 驗證：新增單元測試（4 種格式→相同 (年, 月)；第三個星期五含跨年/閏年；
+  目標月最後一天前後的過期判定邊界；錨點命中/未命中實際到期日；同距
+  tie-break 取較晚；一側不足由另一側補足；鏈上到期日少於 5 檔；
+  **baseline 前方到期日早於目標月時不被 filters 濾掉**）；
+  `tests/test_workspace.py`／`test_scenarios.py`／`test_service*.py`／
+  `test_filters.py`／`test_store_*.py` 同步更新；全套 pytest 綠
+- 不得順便改動：排名公式本體與估值時點（屬 Step 1-2）；Heatmap 估值路徑；
+  卡片/版面（屬 Step 2-3）。**特別禁止**：為了餵任何既有 API 一個
+  `date`，而把 target_month 補成某一天（附錄A2/A5）
+
+**Step 1-1 — 已併入 Step 1**（原「到期日選取規則」，見上）
+
+**Step 1-2 — 排名估值時點修正**（可與 Step 1 平行；建議同一輪完成）
 - 目標：baseline 估值日由 `p.target_date` 改為各 Spread 自身到期日
   （＝內在價值 payoff），對齊需求 §三「持有至到期」（附錄A2 第2點）
 - 檔案：`option_chaser/valuation.py`（`evaluate_spread`；單腳
@@ -464,7 +526,7 @@ MVP 範圍的功能；不需移除，只需在新首頁流程中不曝露/不強
   本輪只讀了原始碼定義，未逐一開啟這些測試檔案核對斷言內容。
 - ~~目前「全鏈窮舉 vs 先選 5 檔」需效能量測佐證~~ — 已由產品決策解消
   （2026-07-30）：需求方確認「先依六點規則選出最多 5 檔實際到期日，再對
-  這 5 檔各自完整窮舉」，見 Step 1-1。仍待觀察的是每次刷新重算全部有效
+  這 5 檔各自完整窮舉」，見 Step 1。仍待觀察的是每次刷新重算全部有效
   候選（5 檔 × 全部配對）在多劇本自動刷新下的頁面載入耗時，屬 Step 5
   的效能量測項，不影響規則本身。
 - `tests/test_webapp_workspace.py`/`tests/test_webapp_v4.py` 的 AppTest

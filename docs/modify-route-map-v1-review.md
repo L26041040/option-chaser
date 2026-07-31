@@ -99,6 +99,10 @@ store 都要動。
 3. **建議下一步：執行 Step 1（年月合併輸入與正規化）。**
    ⚠️ 2026-07-30 更新：本項原建議「年月 → `target_date` 預設取當月月底」
    **已作廢**。需求方確認年月**不映射成任何單一日期**；Step 1 產出 (年, 月)
-   二元組＋日曆錨點（該月第三個星期五）函式，其後 Step 1-1（到期日選取
-   六點規則）、Step 1-2（排名估值時點修正）、Step 2、3 依序推進。
-   詳見 `modifyRequestV1.md` 附錄A2。
+   二元組＋日曆錨點（該月第三個星期五）函式。⚠️ 再更新：Step 1 已與原
+   Step 1-1（到期日選取六點規則）合併為一個縱切步驟（UI＋資料模型＋
+   持久化＋filters 同批落地），因為 `create_scenario()` 簽章是硬邊界、
+   中間無可運行的半成品狀態；`Scenario.target_date` 改為
+   `target_month`（YYYY-MM）。其後 Step 1-2（排名估值時點修正）、
+   Step 2、3 依序推進。詳見 `modifyRequestV1.md` 附錄A2/A5 與 route map
+   更新④。
