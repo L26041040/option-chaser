@@ -70,6 +70,13 @@ models,ranking,valuation,scenarios,matrix}.py`（被前述檔案實際 import �
 > 消費單日目標欄位之處改吃 anchor，屬 Step 1 範圍」。Step 1 spec 據此
 > 發佈至 GitHub Issues（ready-for-agent）。
 
+> 2026-07-30 Grill 更新⑦（spec 階段完成）：最終六題全按建議定案
+> （附錄A10：備註欄移除、零候選＝綠燈＋「—」、Heatmap 僅隨各期
+> Top 10 入快照、一步一張 issue、手機版與 OPC 比對列驗收項）。
+> 全部施工 spec（Step 1、1-2、2、3、4、5、6、7、D1）已發佈至
+> GitHub Issues 並掛 `ready-for-agent`；D1 標 deferred。本文件自此
+> 為決策紀錄與依賴地圖，施工細節以各 issue 為準。
+
 ---
 
 ## 1. 總結判斷：TARGETED_REFACTOR（針對性重構）
