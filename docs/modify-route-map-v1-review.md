@@ -3,6 +3,12 @@
 覆核日期：2026-07-30
 覆核對象：`docs/modify-route-map-v1.md`（commit `85af90f` 版本）
 需求來源：`docs/modifyRequestV1.md`
+> ⚠️ 2026-07-30 後續更新：本報告 §2.2 問題 2 與 §三 建議事項中，關於
+> 「跨到期日全域 Top 10」與「年月映射建議取月底」的結論**已被需求方作廢**。
+> 現行有效模型見 `docs/modifyRequestV1.md` §三/§五/§六/§七/§八與附錄A：
+> 排名為**每個到期日各自 Top 10**（摘要層每期第 1 名、詳細層預設 baseline
+> 的 Top 10）；年月**不映射單一日期**。本報告其餘逐項核對結果仍有效。
+
 方法：不預設路線圖正確，對其引用的每一處檔案/行號/函式實際開檔核對，
 並回查 `service.py`／`ranking.py`／`store.py`／`workspace.py`／
 `valuation.py`／`matrix.py`／`webapp/app.py`／`webapp/pages/0_劇本工作區.py`
@@ -50,7 +56,13 @@ commit `5e6b1bb`（2026-07-30 06:22，晚於路線圖 commit `85af90f` 06:06）�
 tests/test_matrix_grid.py tests/test_golden_v2.py` 全綠。
 → 已將路線圖 §1、§2（四）、§3、Step 0 標記為完成。
 
-**問題 2（證據錯誤，影響 Step 6 施工方式）：**
+**問題 2（證據錯誤，影響 Step 6 施工方式）** ⚠️ 2026-07-30：本項的**證據
+部分仍成立**（`ranked_spreads` 確實被截斷至 `p.top` 且未序列化），但其
+**結論部分已作廢**——需求方確認不採用「跨到期日全域 Top 10」，改為每個
+到期日各自 Top 10。因此正確做法是把 `all_ranked` **依到期日分組後各自取
+前 10**，而非取全域前 10。詳見 route map Step 6（已改寫）。**
+
+原文：
 原文稱「`ranked_spreads` 本身雖是全域排序（service.py:445）」。實際上
 `rank_spreads()`（`ranking.py:120-122`）在回傳前即截斷至 `p.top`
 （`models.py:51` 預設 3），故 `StrategyResult.ranked_spreads` 只含 3 筆；
@@ -84,7 +96,9 @@ store 都要動。
 1. **是否可以進入施工：YES**（以修正後的路線圖為準）。
 2. **阻塞點：無**（原本最大的隱患——Step 6 的 ranked_spreads 證據錯誤——
    已在路線圖中修正）。
-3. **建議下一步：執行 Step 1（年月合併輸入與正規化）。** 開工第一件事是
-   決定「年月 → 內部 `target_date`（YYYY-MM-DD）」的映射慣例（路線圖 §6
-   已標記需求未指定；建議預設取當月月底並寫入函式 docstring 與測試，若
-   需求方另有偏好再一行改常數），其後 Step 2、3 依序推進。
+3. **建議下一步：執行 Step 1（年月合併輸入與正規化）。**
+   ⚠️ 2026-07-30 更新：本項原建議「年月 → `target_date` 預設取當月月底」
+   **已作廢**。需求方確認年月**不映射成任何單一日期**；Step 1 產出 (年, 月)
+   二元組＋日曆錨點（該月第三個星期五）函式，其後 Step 1-1（到期日選取
+   六點規則）、Step 1-2（排名估值時點修正）、Step 2、3 依序推進。
+   詳見 `modifyRequestV1.md` 附錄A2。

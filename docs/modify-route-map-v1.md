@@ -23,6 +23,19 @@ models,ranking,valuation,scenarios,matrix}.py`（被前述檔案實際 import �
 > 日後另行確認的非阻塞顯示項目」（§2四、§3），不得反向製造產品需求；
 > §6 對應兩項待定據此解消。
 
+> 2026-07-30 Grill 更新③（資料模型定案，取代先前多項結論）：
+> 需求方確認刷新／燈號／原子更新單位全部是「劇本」，且**每次刷新都必須
+> 重新計算該劇本全部有效候選**（系統無 Spread API，Spread 由 Option 基礎
+> 資料即時算出）。據此本路線圖移除兩項錯誤假設：
+> (1) **「跨到期日全域 Top 10」不再是主要詳細頁模型**——改為「每個到期日
+>     各自 Top 10、摘要層每期只顯示第 1 名、詳細層預設 baseline 的 Top 10」；
+>     原 Step 6「跨到期日 Top10 聚合」據此改寫。
+> (2) **不得只刷新曾入榜／曾顯示／曾被追蹤的 Spread**——歷史保存範圍與
+>     刷新計算範圍必須分離（§2八、Step 7）。
+> 另新增：原子快照更新（§2七/八）、燈號劇本級粒度與「個別 Option 無報價
+> ≠ 劇本失敗」（§2六）、session 級自動刷新一次＋手動刷新鈕（§2七）、
+> 左側依各劇本最高收益率排序（§2五）。
+
 ---
 
 ## 1. 總結判斷：TARGETED_REFACTOR（針對性重構）
@@ -40,7 +53,7 @@ models,ranking,valuation,scenarios,matrix}.py`（被前述檔案實際 import �
   （`events.jsonl` 唯一事實來源、`scenarios/<id>.json` 投影快取、`groups.json`
   全量可重建、`results/<id>/<ts>.json` 逐次快照）已是成熟架構，足以承載文件第八、
   第十節的保存需求。
-- 缺口集中在呈現層聚合（跨到期日 Top10、資料狀態燈號、Spread 獨立歷史查詢）、
+- 缺口集中在呈現層聚合（每到期日 Top 10、資料狀態燈號、Spread 獨立歷史查詢）、
   輸入層欄位（年月合併輸入、桌面 20/80 版面、卡片精簡）、一項全新但高度可重用的
   計算（Long Call 追平比較）。原列的具體數值錯誤（Heatmap 超標僅 +10%，文件要求
   ≥15%）已由 commit `5e6b1bb` 修正（`matrix.py:23` 現為 1.15/0.85，
@@ -95,16 +108,20 @@ models,ranking,valuation,scenarios,matrix}.py`（被前述檔案實際 import �
   「標的在該 Spread 到期時＝目標價、持有至到期」＝各 Spread 自身到期日
   的內在價值（附錄A2 第2點已確認此語意不使用共用日期）。到期日早於或
   等於估值日的 Spread 兩種算法重合，晚於者數字與名次都會不同。
-- 跨到期日總排名 Top10 — 缺少。`rank_spreads()`（`ranking.py:120-122`）在
-  回傳前就截斷至 `p.top`（預設 3，`models.py:51`），因此
-  `StrategyResult.ranked_spreads` 只含 3 筆，且 `store.serialize_result()`
-  完全沒有序列化此欄位——結果 JSON 中不存在可直接取 Top10 的資料。真正的
-  全域完整排序是 `_spread_result()` 內的區域變數 `all_ranked`
-  （`service.py:455-456`，已為 `expiry_best` 而存在），Top10 應從此處切片
-  外露，不能只靠 UI 攤平既有資料（`render.py:206` `render_step3` 是依到期日
-  分組的表格）。
-- 各到期日最佳結果 — 已完成。`_spread_result()` 內 `best_by_expiry` 迴圈
-  （`service.py:453-468`）+ `_build_groups()`（`service.py:296-383`）已產出。
+- 每個到期日各自 Top 10 — 缺少（2026-07-30 改寫：原「跨到期日總排名
+  Top10」模型已被需求方作廢，見更新③）。`rank_spreads()`
+  （`ranking.py:120-122`）在回傳前就截斷至 `p.top`（預設 3，
+  `models.py:51`），且 `store.serialize_result()` 沒有序列化
+  `StrategyResult.ranked_spreads`——結果 JSON 中不存在任何一個到期日的
+  完整前十名。正確做法是在 `_spread_result()` 內**依到期日分組**後各自
+  取前 10（既有區域變數 `all_ranked`，`service.py:455-456`，是全域排序，
+  需先分組再切片，不是直接取前十），並在 `serialize_result()` 新增
+  per-expiry Top 10 的序列化。`p.top=3` 是舊參數，不構成「只顯示 3 筆」
+  的產品理由。
+- 各到期日第 1 名（摘要層） — 已完成。`_spread_result()` 內
+  `best_by_expiry` 迴圈（`service.py:453-468`）+ `_build_groups()`
+  （`service.py:296-383`）已產出，語意與需求「每個到期日摘要只顯示
+  該期第 1 名」相符。
 - 各到期日最佳結果需附 Heatmap 縮圖 — 已完成。`render.py:90-103`
   `_thumb_html()` 用 `matrix.thumbnail_cells()`，`render_step3` 每列呼叫。
 
@@ -140,41 +157,67 @@ models,ranking,valuation,scenarios,matrix}.py`（被前述檔案實際 import �
 - 點卡片進詳細頁 — 已完成。「詳頁」按鈕（L168-170）+ 詳頁區塊（L257-275）。
 
 **六、資料狀態燈號（綠/黃/紅，紅優先）** — 缺少。（2026-07-30 已確認：
-紅燈判定＝目標月份最後一天過完，純日曆、離線可判，不依賴市場資料。）現況只有生命週期 badge
+紅燈判定＝目標月份最後一天過完，純日曆、離線可判；燈號為**劇本級**狀態，
+不存在「部分到期日綠、部分黃」；黃燈＝關鍵資料失敗→丟棄本次全部部分結果、
+完整保留上一份成功快照並顯示其時間；個別 Option 無有效報價僅是候選過濾，
+不影響燈號，只有整個到期日 chain／標的價格等關鍵資料失敗才是劇本級失敗。
+需注意現況 `filters.py` 的個別合約過濾與「劇本級失敗」目前沒有分層區分，
+新燈號函式必須明確劃開這兩類。）現況只有生命週期 badge
 （`STATUS_BADGE`, `0_劇本工作區.py:20-21`：🟢Active/🏁Reached/⌛Expired/
 ❌Invalidated），語意是使用者手動或到期判定的生命週期，不是文件定義的
 「綠=成功取得最新報價並完成重新分析／黃=報價 API 連不上、顯示上次成功結果／
 紅=劇本年月已過期，優先於報價連線狀態」。Repo-wide grep 除此 badge 外找不到
 其他相符實作。
 
-**七、動態更新（開站自動更新所有未過期劇本，單一失敗不擋其他）** — 缺少。
+**七、動態更新** — 缺少。
 `workspace.analyze_scenario`/`analyze_group`（`workspace.py:163-198`）都是
 「使用者按下『分析』/『群組分析』按鈕」觸發（`0_劇本工作區.py:163-167,
 250-253`），頁面載入的 top-level 程式碼沒有任何自動迴圈呼叫。「單一失敗不擋
 其他」的例外隔離語意已存在於 `_analyze_with_status()`
-（`0_劇本工作區.py:43-53` 的 try/except），只是還沒被包進「開站對所有 Active
+（`0_劇本工作區.py:43-53` 的 try/except），只是還沒被包進「開站對所有未過期
 劇本迴圈呼叫」的邏輯。
 
+（2026-07-30 補充需求，均為缺少）
+- 刷新單位是劇本，每次刷新重算全部有效候選 — 現況 `_analyze()` 主流程本來
+  就是「每次呼叫從 chain 重新窮舉」，語意相符；需確保新增 Top 10／歷史功能
+  時不得退化成「只重算曾入榜候選」。
+- Session 級自動刷新一次 — 缺少。需以 `st.session_state` 旗標控制，避免
+  Streamlit 每次 rerun（切頁/點卡片/切到期日/展開）都打 API。
+- 手動刷新圖示按鈕（左側清單旁） — 缺少。
+- 原子快照替換 — 部分完成。`store.save_result()`（`store.py:378-383`）本來
+  就是「整份 view 寫成一個新 timestamp 檔案」，天然具備整組替換語意；但
+  失敗路徑目前由 UI 層 try/except 處理（`0_劇本工作區.py:43-53`），需確認
+  失敗時**不寫入任何部分結果**、且 latest 指標仍指向上一份成功快照。
+- 左側依各劇本最高收益率排序（黃燈用上一份成功快照的值） — 缺少。
+  `workspace.list_scenarios()` 固定以 `(symbol, target_date, id)` 排序
+  （`workspace.py:99`）。
+
 **八、Spread 詳細頁與歷史**
-- 詳細頁顯示劇本摘要/各到期日最佳/被選 Spread 的詳細 Heatmap — 部分完成。
+- 詳細頁兩層結構（第一層五個到期日摘要各顯示第 1 名＋縮圖；第二層預設
+  baseline 的 Top 10，點其他到期日才切換） — 部分完成。
   `render_summary`/`render_step2`/`render_step3`/`render_step4` 都已存在且被
-  詳頁區塊呼叫（L265-275），但「跨到期日 Top10」如第三節所述不存在。
+  詳頁區塊呼叫（L265-275），`render_step3` 本來就是「依到期日分組的表格」，
+  結構上與第一層摘要相近；缺的是「每個到期日自己的 Top 10」資料
+  （見第三節）與「預設選中 baseline＋切換」的互動。原「跨到期日 Top10」
+  結論已作廢（見更新③）。
 - Spread 身份（標的+到期日+買入履約價+賣出履約價） — 已完成。
   `service.py:258-263` `candidate_key()` 用 strategy（隱含標的方向）+
   `long_leg.strike` + `short_leg.strike` + `long_leg.expiry` 組成穩定 id。
-- 同一 Spread 排名升降/掉出/重進 Top10 都延續同一份歷史 — 缺少。
-  `store.save_result()`（`store.py:378-383`）每次分析把整份 view 存成新的
-  timestamp 檔案；`candidate_key` 雖穩定，但沒有函式依 `candidate_key` 跨多個
-  歷史快照檔案抽取單一 Spread 的時間序列。若某次分析該 Spread 掉出 top-3 且
-  不是任何到期日最佳，該次快照甚至不含它的資料點，歷史會出現斷點。現有
-  `events.jsonl` + `results/<id>/<ts>.json` 檔案配置本身可支撐（欄位都在，只
-  是缺查詢函式），不需改資料格式。
+- 同一 Spread 排名升降/掉出/重進（該到期日自己的）Top 10 都延續同一份歷史
+  — 缺少。`store.save_result()`（`store.py:378-383`）每次分析把整份 view 存成
+  新的 timestamp 檔案；`candidate_key` 雖穩定，但沒有函式依 `candidate_key`
+  跨多個歷史快照檔案抽取單一 Spread 的時間序列。若某次分析該 Spread 掉出
+  保存範圍，該次快照不含它的資料點，歷史會出現斷點。現有 `events.jsonl` +
+  `results/<id>/<ts>.json` 檔案配置本身可支撐（欄位都在，只是缺查詢函式），
+  不需改資料格式。
 - 每次成功更新至少保存更新時間/標的價格/建倉淨成本/收益率/當時排名 — 部分
   完成。`store._candidate()`（L256-307）已存 `mid_cost`/`baseline_return`/
   `candidate_key`，快照檔名即 `fetched_at`（`store.py:380`），`meta.spot`
-  （L360-363）即標的價格；但「當時排名」沒有獨立欄位——只能靠 candidate 在
-  `candidates` 陣列的 index 間接推得，而該陣列只留 top-3，不在 top-3 但在
-  `expiry_best` 的候選無法得知全域排名。與第三節 Top10 缺口直接相關。
+  （L360-363）即標的價格；但「當時排名」沒有獨立欄位。新模型下「當時排名」
+  ＝該 Spread 在**其所屬到期日** Top 10 中的名次（不是全域名次）。
+- 歷史保存範圍與刷新計算範圍分離（2026-07-30 新增） — 施工約束，非現況缺口。
+  歷史最終保存每期第 1 名／每期 Top 10／或特定曾入榜結果，都不得回過頭限縮
+  每次刷新的計算範圍；每次刷新一律重算該劇本全部有效候選。
 
 **九、Long Call 比較** — 缺少，但有高度可重用基礎。Repo-wide grep 找不到「Long
 Call 需用多少價格買入才能追上 Spread 報酬」的計算或 UI。但
@@ -239,9 +282,11 @@ MVP 範圍的功能；不需移除，只需在新首頁流程中不曝露/不強
 - `webapp/pages/0_劇本工作區.py` 版面配置 — 加入 `st.columns([0.2, 0.8])`
   左右分割（桌面）。
 - `option_chaser/service.py` `_build_groups`/`_sample_expiries`
-  （L278-383） — 新增跨到期日 Top10 聚合（可新增獨立函式與既有分組邏輯並存，
-  不必互斥）。
-- `option_chaser/store.py` `_candidate()`（L256-307） — 新增「當時排名」欄位。
+  （L278-383） — `_sample_expiries` 的「先窮舉後取樣」須改為六點規則的
+  「先選 5 檔再窮舉」；另新增 per-expiry Top 10 聚合（2026-07-30 修訂：
+  非跨到期日全域 Top 10）。
+- `option_chaser/store.py` `_candidate()`（L256-307） — 新增「當時排名」
+  欄位（該 Spread 在其所屬到期日 Top 10 中的名次）。
 
 **新增**
 - 年月輸入解析/正規化函式（建議 `option_chaser/models.py` 或新檔） — 處理
@@ -252,8 +297,11 @@ MVP 範圍的功能；不需移除，只需在新首頁流程中不曝露/不強
   重用 `valuation.py` 的 `l3` 公式形狀）。
 - Spread 歷史查詢函式（依 `candidate_key` 跨 `results/<id>/*.json` 聚合時間
   序列，建議加入 `workspace.py`）。
-- 開站自動更新迴圈（建議加入 `0_劇本工作區.py` 頁面載入區塊）。
-- 跨到期日 Top10 的 UI 渲染（建議加入 `webapp/render.py`）。
+- 開站自動更新迴圈（建議加入 `0_劇本工作區.py` 頁面載入區塊），含
+  session 級「只自動刷新一次」旗標與手動刷新圖示按鈕。
+- 每到期日 Top 10 的 UI 渲染＋詳細頁兩層結構（摘要層各期第 1 名／詳細層
+  預設 baseline）（建議加入 `webapp/render.py`）。
+- 劇本最高收益率取值與左側排序函式（黃燈用上一份成功快照的值）。
 
 **移除/隱藏（不刪除底層邏輯）**
 - Heatmap 日期軸的 target-date * 目標欄（`matrix.date_axis`）— 可移除
@@ -321,52 +369,69 @@ MVP 範圍的功能；不需移除，只需在新首頁流程中不曝露/不強
 - 驗證：`tests/test_webapp_workspace.py`；手動截圖確認版面
 - 不得順便改動：群組區/詳頁邏輯（L204-275 暫不動）
 
-**Step 4 — 資料狀態燈號計算**（依賴 Step 3 有燈號 UI 位置）
-- 目標：新增燈號計算函式（綠/黃/紅，紅優先），接上卡片
+**Step 4 — 劇本級狀態燈號＋失敗分層**（依賴 Step 3 有燈號 UI 位置）
+- 目標：(a) 新增**劇本級**燈號計算函式（綠/黃/紅，紅優先；紅＝目標月最後
+  一天過完，純日曆判定，不依賴市場資料）；(b) 明確劃開兩類失敗——個別
+  Option 無有效報價＝候選過濾（不影響燈號），整個到期日 chain／標的價格等
+  關鍵資料失敗＝劇本級失敗（黃燈）；(c) 黃燈時顯示上次成功更新時間
 - 檔案：`option_chaser/workspace.py`（新函式），
   `webapp/pages/0_劇本工作區.py`（消費）
-- 驗證：新增單元測試（模擬 `FetchError`→黃燈、Expired→紅燈、成功→綠燈、
-  紅燈優先於黃燈情境）
-- 不得順便改動：`analyze_scenario` 本身的分析邏輯，只讀取其成功/失敗結果
+- 驗證：新增單元測試（關鍵資料 `FetchError`→黃燈、目標月已過完→紅燈、
+  成功→綠燈、紅燈優先於黃燈、**個別合約缺報價但 chain 成功→仍綠燈**）
+- 不得順便改動：`analyze_scenario` 本身的分析邏輯，只讀取其成功/失敗結果；
+  `filters.py` 既有個別合約過濾規則
 
-**Step 5 — 開站自動更新迴圈＋卡片依收益率重排**（依賴 Step 4 燈號需要更新
-時機）
-- 目標：(a) 頁面載入時對所有 Active 劇本呼叫 `analyze_scenario`，單一失敗
-  不擋其他；(b) 需求七.8：更新後劇本卡片依最新收益率重新排序——現況
-  `list_scenarios` 固定以 `(symbol, target_date, id)` 排序
-  （`workspace.py:99`），需在 UI 層（或新聚合函式）改以最新
-  `baseline_return` 排序，`list_scenarios` 本身的回傳順序可不動
-- 檔案：`webapp/pages/0_劇本工作區.py` 頁面頂部與清單區排序
-- 驗證：新增測試模擬多劇本其中一個 `FetchError`，確認其餘仍完成；卡片排序
-  測試（兩劇本收益率互換後順序反轉）；建議先量測目前手動分析耗時，評估多
-  劇本情境下頁面載入時間是否可接受
-- 不得順便改動：`workspace.analyze_scenario`/`analyze_group` 函式本身、
-  `list_scenarios` 的排序（其順序被對帳/群組邏輯依賴的風險未查證，改 UI 層
-  較安全）
+**Step 5 — 自動／手動刷新＋原子快照＋卡片依最高收益率重排**（依賴 Step 4）
+- 目標：
+  (a) 開站自動刷新所有**未過期**劇本；**同一 Streamlit session 只在首次
+      載入時自動刷新一次**，一般切頁／點卡片／切到期日／展開內容不得再次
+      呼叫 API（以 `st.session_state` 旗標控制）
+  (b) 左側清單旁新增常見的網頁刷新圖示按鈕，點擊時重新刷新所有未過期劇本
+  (c) 單一劇本失敗不擋其他
+  (d) **原子快照**：本次刷新失敗時丟棄所有部分結果、完整保留上一份成功
+      快照；嚴禁混合今天的標的價格／今天部分到期日資料／上次其他到期日資料，
+      也不得用部分成功結果重新排名
+  (e) 左側依**各劇本此次分析結果中的最高收益率**由高至低排序；黃燈劇本用
+      上一份完整成功快照的最高收益率參與排序
+- 檔案：`webapp/pages/0_劇本工作區.py`（頁面頂部、刷新鈕、清單排序）；
+  若原子性需在儲存層加固，`option_chaser/workspace.py`
+- 驗證：多劇本其中一個關鍵資料失敗→其餘完成且該劇本保留舊快照＋黃燈；
+  session 內多次 rerun 只打一次 API；點刷新鈕會再打一次；排序測試
+  （兩劇本最高收益率互換後順序反轉）；失敗路徑不得留下部分寫入的快照檔
+- 不得順便改動：`list_scenarios` 的既有回傳排序（其順序被對帳/群組邏輯依賴
+  的風險未查證，排序改在 UI 層／新聚合函式較安全）；每次刷新的**計算範圍**
+  （一律重算全部有效候選，不得因歷史保存範圍而限縮）
 
-**Step 6 — 跨到期日 Top10 聚合**（可與 Step 4/5 平行，建議在卡片穩定後做以
-降低 UI 變動衝突）
-- 目標：新增跨到期日聚合函式（`service.py`），`render_top10`（`render.py`），
-  詳細頁串接；`store.py` 補「當時排名」欄位。注意：不能從
-  `StrategyResult.ranked_spreads` 切片——它已被 `rank_spreads()` 截斷至
-  `p.top`（預設 3）且未被 `serialize_result()` 序列化。正確做法是在
-  `_spread_result()` 把既有完整排序 `all_ranked`（`service.py:455-456`）的
-  前 10 名外露為新欄位（建 `CandidateView` 含 Heatmap），並在
-  `store.serialize_result()` 新增對應序列化，結果 JSON 才能供 UI 與歷史
-  查詢使用
+**Step 6 — 每到期日 Top 10＋詳細頁兩層結構**（2026-07-30 依更新③改寫，
+原「跨到期日全域 Top10 聚合」已作廢；可與 Step 4/5 平行，建議在卡片穩定
+後做以降低 UI 變動衝突）
+- 目標：
+  (a) `service.py`：把既有完整排序 `all_ranked`（`service.py:455-456`）
+      **依到期日分組後各自取前 10**，外露為新欄位（建 `CandidateView`
+      含 Heatmap）。不可從 `StrategyResult.ranked_spreads` 切片——它已被
+      `rank_spreads()` 截斷至 `p.top`（預設 3）且未被序列化；也不可只取
+      全域前十
+  (b) `store.serialize_result()` 新增 per-expiry Top 10 序列化；「當時排名」
+      ＝該 Spread 在**其所屬到期日** Top 10 中的名次
+  (c) `render.py`＋詳頁：第一層五個到期日摘要各顯示第 1 名＋Heatmap 縮圖；
+      第二層預設顯示 **baseline 到期日**的 Top 10，點其他到期日才切換
+      （切換屬 UI 互動，不得觸發新的 API 呼叫，見 Step 5(a)）
 - 檔案：`option_chaser/service.py`、`option_chaser/store.py`、
   `webapp/render.py`、`webapp/pages/0_劇本工作區.py` 詳頁
-- 驗證：新增測試（合成多到期日 spread 資料，驗證 Top10 正確合併排序）；確認
+- 驗證：新增測試（合成多到期日 spread 資料，驗證**每個到期日各自**前 10
+  正確、baseline 預設選中、切換到期日顯示對應 Top 10）；確認
   `tests/test_spread_ranking.py` 無回歸
-- 不得順便改動：既有依到期日分組的 `render_step3` 顯示（並存，不砍掉重練）
+- 不得順便改動：既有依到期日分組的 `render_step3` 顯示（可作為第一層摘要
+  的基礎，不砍掉重練）；每次刷新的計算範圍
 
-**Step 7 — Spread 獨立歷史查詢**（依賴 Step 6 的候選當時排名欄位）
+**Step 7 — Spread 獨立歷史查詢**（依賴 Step 6 的 per-expiry 名次欄位）
 - 目標：新增依 `candidate_key` 跨 `results/<id>/*.json` 聚合時間序列的函式
 - 檔案：`option_chaser/workspace.py`，`webapp/pages/0_劇本工作區.py` 詳頁
-- 驗證：新增測試（合成 3 次 `analyze_scenario` 產生 3 份快照，同一
-  `candidate_key` 在其中 1 份缺席，驗證查詢函式正確回傳含斷點的時間序列而非
-  報錯）
-- 不得順便改動：`save_result` 的檔案格式
+- 驗證：新增測試（合成 3 次刷新產生 3 份快照，同一 `candidate_key` 在其中
+  1 份缺席，驗證查詢函式正確回傳含斷點的時間序列而非報錯）
+- 不得順便改動：`save_result` 的檔案格式；**每次刷新的計算範圍**——歷史
+  最終保存每期第 1 名／每期 Top 10／或特定曾入榜結果，都不得回過頭限縮
+  刷新時「重算全部有效候選」的行為
 
 **可延後項目（依文件第九節，獨立於核心 MVP，不得混入 Step 0-7）**
 
@@ -397,10 +462,11 @@ MVP 範圍的功能；不需移除，只需在新首頁流程中不曝露/不強
 - `candidate_key` 在測試中的實際覆蓋範圍（`tests/test_service.py`、
   `tests/test_store_serialize.py` 等是否已驗證 Spread 身份跨快照穩定）——
   本輪只讀了原始碼定義，未逐一開啟這些測試檔案核對斷言內容。
-- 目前「跨到期日全窮舉」（`_spread_result` 對整條 chain 窮舉所有未來到期日，
-  而非文件建議的「先選 5 個代表到期日」）在真實市場資料（數十個到期日）下的
-  效能與雜訊——是否需要在窮舉前先做到期日篩選而非只在顯示時取樣，需要效能
-  量測佐證。
+- ~~目前「全鏈窮舉 vs 先選 5 檔」需效能量測佐證~~ — 已由產品決策解消
+  （2026-07-30）：需求方確認「先依六點規則選出最多 5 檔實際到期日，再對
+  這 5 檔各自完整窮舉」，見 Step 1-1。仍待觀察的是每次刷新重算全部有效
+  候選（5 檔 × 全部配對）在多劇本自動刷新下的頁面載入耗時，屬 Step 5
+  的效能量測項，不影響規則本身。
 - `tests/test_webapp_workspace.py`/`tests/test_webapp_v4.py` 的 AppTest
   涵蓋範圍，決定 Step 2-3 改動 UI 時有多少既有測試需同步更新——本輪只確認
   檔案存在，未讀取內容。
