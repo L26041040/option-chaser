@@ -16,7 +16,6 @@ from webapp.render import (esc, money, pct, render_step2, render_step3,
                            render_step4, render_summary)
 
 WS_ROOT = Path(os.environ.get("OC_WORKSPACE", "workspace"))
-STRATEGY_ORDER = ("long-call", "bull-call-spread", "long-put", "bear-put-spread")
 STATUS_BADGE = {"Active": "🟢 Active", "Reached": "🏁 Reached",
                 "Expired": "⌛ Expired", "Invalidated": "❌ Invalidated"}
 RELATION_LABELS = {"milestone-path": "里程碑路徑", "independent": "獨立",
@@ -65,54 +64,28 @@ with st.expander("⚙ 設定", expanded=False):
         st.rerun()
 
 # ---------- 建立表單 ----------
-# 不用 st.form：方向推測與策略預設需要即時 rerun 連動（spec §2.2/§5.1）。
+# T4（#18）：只問標的／目標價／目標年月三欄。方向與策略不曝露於 UI，
+# 帶入 MVP 預設（bullish + bull-call-spread）；create 簽章保留全部參數。
 with st.expander("＋ 建立劇本", expanded=False):
     st.text_input("標的", key="ws-new-symbol", placeholder="TLT")
     st.number_input("目標價位", key="ws-new-price", min_value=0.01,
                     value=100.0, step=1.0)
-    sym = (st.session_state.get("ws-new-symbol") or "").strip().upper()
-    inferred = (workspace.default_direction(
-        sym, float(st.session_state.get("ws-new-price", 100.0)))
-        if sym else None)
-    # 無 snapshot → 必選（首項為空白佔位）；有 snapshot → 預設推測方向
-    options = ("bullish", "bearish") if inferred else ("", "bullish", "bearish")
-    dir_labels = {"": "（請選擇）", "bullish": "看漲", "bearish": "看跌"}
-    idx = options.index(inferred) if inferred else 0
-    direction = st.selectbox("方向", options, index=idx,
-                             format_func=lambda d: dir_labels[d],
-                             key="ws-new-direction")
-    # 方向變更時重設策略勾選預設（LC+BCS 看漲、LP+BPS 看跌）；
-    # 之後使用者手動勾選不再被覆蓋（僅在方向切換當下重設一次）。
-    if direction and st.session_state.get("ws-new-dir-prev") != direction:
-        st.session_state["ws-new-dir-prev"] = direction
-        defaults = ({"long-call", "bull-call-spread"} if direction == "bullish"
-                    else {"long-put", "bear-put-spread"})
-        for s in STRATEGY_ORDER:
-            st.session_state[f"ws-new-chk-{s}"] = s in defaults
-    for s in STRATEGY_ORDER:
-        st.checkbox(STRATEGY_LABELS[s], key=f"ws-new-chk-{s}")
     st.text_input("目標年月", key="ws-new-month", placeholder="2028/1")
-    st.text_input("備註", key="ws-new-notes")
     if st.button("建立", key="ws-new-create"):
-        strategies = tuple(s for s in STRATEGY_ORDER
-                           if st.session_state.get(f"ws-new-chk-{s}"))
+        sym = (st.session_state.get("ws-new-symbol") or "").strip().upper()
         if not sym:
             st.error("請輸入標的代號。")
-        elif not direction:
-            st.error("請選擇方向（此標的尚無 snapshot，無法自動推測）。")
-        elif not strategies:
-            st.error("請至少勾選一種策略。")
         else:
             # 格式錯誤與「已過完的月份」都由 ParamError 表達（後者在 create 裡把關）
             try:
                 month = parse_target_month(
                     st.session_state.get("ws-new-month") or "")
                 workspace.create_scenario(
-                    WS_ROOT, symbol=sym, direction=direction,
+                    WS_ROOT, symbol=sym, direction="bullish",
                     target_price=float(st.session_state["ws-new-price"]),
                     target_month=month.key(),
-                    notes=st.session_state["ws-new-notes"],
-                    strategies=strategies)
+                    notes="",
+                    strategies=("bull-call-spread",))
             except ParamError as e:
                 st.error(str(e))
             else:

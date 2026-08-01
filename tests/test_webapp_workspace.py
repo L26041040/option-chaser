@@ -41,24 +41,36 @@ def _body(at):
 
 
 def test_create_via_form_appears_in_list(ws):
+    """T4：三欄填寫即可建立；方向／策略由系統帶入 MVP 預設。"""
     at = AppTest.from_file(PAGE)
     at.run()
     at.text_input(key="ws-new-symbol").set_value("XYZ")
     at.number_input(key="ws-new-price").set_value(120.0)
     at.text_input(key="ws-new-month").set_value("2028/1")   # 四種寫法之一
     at.run()
-    # 測試 cwd 的 snapshots/ 無 XYZ_*.json → 無法推測 → 必選方向
-    at.selectbox(key="ws-new-direction").set_value("bullish")
-    at.run()
-    assert at.session_state["ws-new-chk-long-call"] is True   # 方向連動預設策略
-    assert at.session_state["ws-new-chk-long-put"] is False
     next(b for b in at.button
          if b.key == "ws-new-create").set_value(True).run(timeout=30)
     assert not at.exception
     assert "XYZ" in _body(at)
-    assert workspace.list_scenarios(ws)[0].id == "XYZ-120-202801"
-    assert workspace.list_scenarios(ws)[0].target_month == "2028-01"
-    assert workspace.list_scenarios(ws)[0].direction == "bullish"
+    sc = workspace.list_scenarios(ws)[0]
+    assert sc.id == "XYZ-120-202801"
+    assert sc.target_month == "2028-01"
+    assert sc.direction == "bullish"                 # 預設帶入,不經 UI
+    assert sc.strategies == ("bull-call-spread",)    # MVP 預設策略
+    assert sc.notes == ""                            # 備註欄已移除
+
+
+def test_create_form_exposes_only_three_inputs(ws):
+    """T4：方向／策略／備註不出現在建立表單。"""
+    at = AppTest.from_file(PAGE)
+    at.run()
+    form_text_keys = {t.key for t in at.text_input}
+    assert "ws-new-symbol" in form_text_keys
+    assert "ws-new-month" in form_text_keys
+    assert "ws-new-notes" not in form_text_keys
+    assert not any(sb.key == "ws-new-direction" for sb in at.selectbox)
+    assert not any((cb.key or "").startswith("ws-new-chk-")
+                   for cb in at.checkbox)
 
 
 def test_create_rejects_unparseable_month(ws):
@@ -67,22 +79,9 @@ def test_create_rejects_unparseable_month(ws):
     at.text_input(key="ws-new-symbol").set_value("XYZ")
     at.text_input(key="ws-new-month").set_value("明年一月")
     at.run()
-    at.selectbox(key="ws-new-direction").set_value("bullish")
-    at.run()
     next(b for b in at.button
          if b.key == "ws-new-create").set_value(True).run(timeout=30)
     assert any("目標年月" in e.value for e in at.error)
-    assert workspace.list_scenarios(ws) == []
-
-
-def test_create_requires_direction_when_no_snapshot(ws):
-    at = AppTest.from_file(PAGE)
-    at.run()
-    at.text_input(key="ws-new-symbol").set_value("XYZ")
-    at.run()
-    next(b for b in at.button
-         if b.key == "ws-new-create").set_value(True).run(timeout=30)
-    assert any("請選擇方向" in e.value for e in at.error)
     assert workspace.list_scenarios(ws) == []
 
 
