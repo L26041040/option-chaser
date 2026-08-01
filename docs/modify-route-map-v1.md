@@ -267,15 +267,12 @@ models,ranking,valuation,scenarios,matrix}.py`（被前述檔案實際 import �
   歷史最終保存每期第 1 名／每期 Top 10／或特定曾入榜結果，都不得回過頭限縮
   每次刷新的計算範圍；每次刷新一律重算該劇本全部有效候選。
 
-**九、Long Call 比較** — 缺少，但有高度可重用基礎。Repo-wide grep 找不到「Long
-Call 需用多少價格買入才能追上 Spread 報酬」的計算或 UI。但
-`valuation.py:127` `l3 = baseline_value / (1.0 + p.min_return)` 這行公式，
-形狀與文件要求完全相同（用「目標情境估值 / (1+目標報酬率)」反推成本上限）；
-只要把 `p.min_return` 換成「所選 Spread 的 `baseline_return`」、
-`baseline_value` 換成同到期日 Long Call 的 `baseline_value`，就是文件要的
-比較數字。CLI 既有 `guidance_judgments()`（`valuation.py:137-149`）已在用
-同一族公式做「買價天花板」提示。故此為新增一個小函式 + 一個 UI 區塊，不是
-新建估值引擎。
+**九、Long Call 比較** — 缺少。（2026-08-01 語意修正，附錄A11：原
+「買價天花板」定義作廢，改為「追平價格」——同快照、買腿同履約價的
+Long Call，標的需漲到 S* ＝ K ＋ C×(1＋R) 才追平 Spread 的目標情境
+到期報酬率 R。原評估「可重用 `valuation.py:127` l3 公式」之結論隨舊
+定義一併作廢——新公式是封閉式算術，不需要任何估值引擎，仍是一個
+小函式＋一個 UI 區塊。）Repo-wide grep 找不到對應計算或 UI。
 
 **十、劇本保存** — 結構層面已完成，功能完整度受限於第六、八節缺口。
 `workspace.py`+`store.py` 的 event-sourcing 設計完整支援劇本輸入
@@ -541,13 +538,14 @@ MVP 範圍的功能；不需移除，只需在新首頁流程中不曝露/不強
 
 **可延後項目（依文件第九節，獨立於核心 MVP，不得混入 Step 0-7）**
 
-**Step D1 — Long Call 追平比較**
-- 目標：新增比較函式（重用 `valuation.py` 的 `l3` 公式形狀）+ 一個 UI 顯示
-  區塊
-- 檔案：建議 `option_chaser/scenarios.py` 新函式，`webapp/render.py` 新增
-  顯示
-- 驗證：新增單元測試（構造已知 Spread 報酬率，反推 Long Call 價格，驗證數學
-  一致性）
+**Step D1 — Long Call 追平比較**（2026-08-01 依附錄A11 改寫）
+- 目標：新增追平價格函式 S* ＝ K ＋ C×(1＋R)（K＝所選 Spread 買腿
+  履約價、C＝同快照 Long Call 實際成本、R＝Spread 目標情境到期報酬率）
+  ＋ 一個 UI 顯示區塊（含與目標價對照；S* ≤ 目標價時醒目提示）
+- 檔案：純算術小函式＋`webapp/render.py` 新增顯示
+- 驗證：新增單元測試（構造已知 R，驗證標的在 S* 時 Long Call 報酬率
+  恰等於 R；S* ≤ 目標價情境；R 為負值情境；買腿報價缺失→顯示無法
+  計算而非報錯）
 - 明確不得因此延遲或擴大 Step 0-7 範圍
 
 ---
