@@ -5,11 +5,14 @@
 任何金融計算。
 """
 import dataclasses
+from datetime import date
 
 from option_chaser import workspace
 from option_chaser.store import Scenario
 
 TS = "2026-07-21T00:00:00+00:00"
+NOT_OVER = date(2028, 1, 15)   # 2028-01 尚未過完
+OVER = date(2028, 2, 1)        # 2028-01 已過完
 
 SC = Scenario(schema_version=2, id="XYZ-120-202801", symbol="XYZ",
               direction="bullish", target_price=120.0, target_month="2028-01",
@@ -61,6 +64,38 @@ def test_negative_best_return_is_reported_as_is():
         == -0.31
 
 
-def test_signal_is_a_placeholder_until_the_light_ticket():
-    """T6（#20）接手燈號邏輯；本票只保留卡片上的單一顯示位置。"""
-    assert workspace.card_of(SC, None).signal == "unknown"
+def test_never_refreshed_scenario_shows_unknown_signal():
+    """尚無任何一次刷新（成功或失敗）→ 燈號中性佔位，不是三色之一。"""
+    assert workspace.card_of(SC, None, observed=NOT_OVER).signal == \
+        workspace.SIGNAL_UNKNOWN
+
+
+def test_successful_refresh_shows_green():
+    card = workspace.card_of(SC, _view(expiry_best=(1.2,)), observed=NOT_OVER)
+    assert card.signal == workspace.SIGNAL_GREEN
+
+
+def test_critical_failure_shows_yellow_even_with_a_prior_view():
+    """關鍵資料失敗 → 黃燈，即使仍有（舊的）成功快照可顯示。"""
+    card = workspace.card_of(SC, _view(expiry_best=(1.2,)), observed=NOT_OVER,
+                             critical_failure=True)
+    assert card.signal == workspace.SIGNAL_YELLOW
+
+
+def test_month_over_is_red_regardless_of_view_or_failure():
+    """需求六：紅燈優先於綠與黃——月份過完的劇本不會因為有快照而偽裝成綠燈，
+    也不會因為同時發生刷新失敗而被誤判成只是黃燈。"""
+    assert workspace.card_of(
+        SC, _view(expiry_best=(1.2,)), observed=OVER).signal == \
+        workspace.SIGNAL_RED
+    assert workspace.card_of(
+        SC, None, observed=OVER, critical_failure=True).signal == \
+        workspace.SIGNAL_RED
+
+
+def test_individual_quote_failure_still_shows_green():
+    """需求六關鍵分層：個別合約缺報價（過濾後零候選）不是關鍵資料失敗，
+    chain 本身成功 → 仍為綠燈，收益率顯示「—」。"""
+    card = workspace.card_of(SC, _view(status="empty"), observed=NOT_OVER)
+    assert card.signal == workspace.SIGNAL_GREEN
+    assert card.best_return is None

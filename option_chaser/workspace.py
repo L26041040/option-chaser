@@ -225,9 +225,41 @@ def latest_result(ws_root, sid: str) -> dict | None:
     return store.load_result(path) if path else None
 
 
-# ---------- 劇本卡片（需求五；純函式，GUI 只負責排版） ----------
+# ---------- 劇本級狀態燈號（需求六／T6，純函式） ----------
 
-SIGNAL_UNKNOWN = "unknown"   # 燈號邏輯屬 T6（#20），本票只保留卡片上的位置
+SIGNAL_GREEN = "green"
+SIGNAL_YELLOW = "yellow"
+SIGNAL_RED = "red"
+SIGNAL_UNKNOWN = "unknown"   # 尚未有過任何一次刷新，燈號無從判讀（非三色之一）
+
+# 「刷新結果」的三種輸入態——與燈號顏色刻意分開命名，避免混淆「這次發生了
+# 什麼」與「因此要顯示什麼顏色」。
+REFRESH_OK = "ok"                            # 本次完整刷新成功
+REFRESH_CRITICAL_FAILURE = "critical_failure"  # 關鍵資料（標的價格／到期日
+                                              # option chain）取得或分析失敗
+REFRESH_NEVER = "never"                      # 這張劇本從未成功或失敗過刷新
+
+
+def scenario_signal(target_month: TargetMonth, observed: date,
+                    refresh: str) -> str:
+    """劇本級狀態燈號（需求六）：輸入刷新結果與日曆，輸出顏色。
+
+    紅燈只問日曆（目標月最後一天是否已過完），不問任何刷新結果，且優先於
+    綠與黃（附錄 A2.4：失效劇本不會偽裝成活的）。
+
+    個別合約缺報價屬於候選過濾（`filters.py`/`FilterReport`），走另一個不
+    拋例外的通道，因此根本不會、也不該被轉譯成 `REFRESH_CRITICAL_FAILURE`
+    餵進來——只有整個到期日 chain 或標的價格等關鍵資料失敗（`FetchError`）
+    才算。`REFRESH_NEVER` 對應尚無任何成功快照的劇本，回傳 `SIGNAL_UNKNOWN`
+    （非三色之一，卡片上的中性佔位）。
+    """
+    if month_is_over(target_month, observed):
+        return SIGNAL_RED
+    if refresh == REFRESH_CRITICAL_FAILURE:
+        return SIGNAL_YELLOW
+    if refresh == REFRESH_NEVER:
+        return SIGNAL_UNKNOWN
+    return SIGNAL_GREEN
 
 
 @dataclasses.dataclass(frozen=True)
@@ -262,10 +294,24 @@ def _best_return(view: dict | None) -> float | None:
     return max(returns) if returns else None
 
 
-def card_of(sc: Scenario, view: dict | None) -> ScenarioCard:
-    """劇本＋其最新分析結果 → 卡片。view 為 None 代表尚無成功快照。"""
+def card_of(sc: Scenario, view: dict | None, *, observed: date | None = None,
+           critical_failure: bool = False) -> ScenarioCard:
+    """劇本＋其最新分析結果 → 卡片。view 為 None 代表尚無成功快照。
+
+    `critical_failure`＝目前這次（session 內）刷新是否為關鍵資料（標的價格／
+    到期日 option chain）取得或分析失敗——個別合約缺報價的候選過濾走另一個
+    不拋例外的通道（`filters.py`），不會、也不該被轉譯成這個旗標（需求六）。
+    """
+    if critical_failure:
+        refresh = REFRESH_CRITICAL_FAILURE
+    elif view is None:
+        refresh = REFRESH_NEVER
+    else:
+        refresh = REFRESH_OK
+    signal = scenario_signal(TargetMonth.from_key(sc.target_month),
+                             observed or ny_today(), refresh)
     return ScenarioCard(id=sc.id, symbol=sc.symbol,
                         target_price=sc.target_price,
                         target_month=sc.target_month,
                         best_return=_best_return(view),
-                        signal=SIGNAL_UNKNOWN)
+                        signal=signal)

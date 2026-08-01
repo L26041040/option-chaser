@@ -489,11 +489,17 @@ def _scoped_to_selected_expiries(snap: ChainSnapshot, anchor: date,
     候選到期日必須晚於資料日：已到期／當日到期的合約 T <= 0，Greeks 無定義，
     根本不是可分析的標的。這是資料有效性前提，與「到期日 >= 目標日」那條被移除
     的目標導向下限無關——錨點前方、早於目標月的到期日一律照常入選。
+
+    附錄 A12 第 2 點：鏈上零個到期日但抓取本身未拋例外時，不得逕自判為刷新
+    失敗——比照零合格候選（A10.2）處理，回傳零合約快照，讓下游每個策略走
+    既有的空結果分支（綠燈＋「—」）。`select_expiries` 這個純函式本身在被
+    直接餵入空清單時仍然拋錯，這裡只是不讓服務層把「沒有到期日可選」誤讀成
+    產品異常。
     """
     tradable = {c.expiry for c in snap.contracts
                 if date.fromisoformat(c.expiry) > today}
     if not tradable:
-        raise ParamError(f"快照中沒有晚於資料日 {today.isoformat()} 的到期日")
+        return dataclasses.replace(snap, contracts=())
     selected = set(select_expiries(tradable, anchor).expiries)
     return dataclasses.replace(
         snap, contracts=tuple(c for c in snap.contracts

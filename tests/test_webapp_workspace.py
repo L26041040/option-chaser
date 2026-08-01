@@ -118,7 +118,7 @@ def test_card_carries_the_five_items_and_nothing_technical(ws):
     card = workspace.card_of(sc, workspace.latest_result(ws, sc.id))
     assert "XYZ" in text and "120.00" in text and "2028-01" in text
     assert return_md(card.best_return) in text          # 最高收益率
-    assert "⚪" in text                                   # 燈號位置（T6 接手）
+    assert "🟢" in text                                   # 需求六：完整刷新成功＝綠燈
     # 不得出現：完整腿資訊、佔本金等技術數字、生命週期 badge
     assert "買 " not in text and "賣 " not in text
     assert "佔本金" not in text and "情境最壞" not in text
@@ -141,6 +141,18 @@ def test_card_without_analysis_shows_a_dash(ws):
     at = AppTest.from_file(PAGE)
     at.run()
     assert "—" in _list_text(at)
+    assert "⚪" in _list_text(at)          # 需求六：從未刷新過＝中性佔位
+
+
+def test_month_over_scenario_shows_red_signal(ws):
+    """需求六：紅燈只問日曆、不依賴市場資料，優先於綠與黃。"""
+    workspace.create_scenario(
+        ws, symbol="OLD", direction="bullish", target_price=100.0,
+        target_month="2026-01", notes="", strategies=("long-call",),
+        ts=TS, observed=date(2026, 1, 15))
+    at = AppTest.from_file(PAGE)
+    at.run()
+    assert "🔴" in _list_text(at)
 
 
 def test_card_click_opens_that_scenario_detail(ws):
@@ -229,6 +241,51 @@ def test_analysis_error_stays_visible(ws, monkeypatch):
          if b.key == f"ws-an-{sc.id}").set_value(True).run(timeout=30)
     assert any("boom" in e.value for e in at.error)
     assert not at.exception
+
+
+def test_critical_failure_marks_signal_yellow_on_next_render(ws, monkeypatch):
+    """需求六：關鍵資料（FetchError）失敗 → 黃燈；卡片顯示上次成功更新時間。
+
+    失敗當下刻意不 rerun（見上一測試），黃燈因此反映在下一次渲染——與同一
+    session 內任何後續互動（切頁、點其他卡片）等效，這裡用再呼叫一次
+    `at.run()` 模擬。
+    """
+    sc = _mk(ws)
+    workspace.analyze_scenario(ws, sc.id, snapshot_path=FIX, ts=TS)
+    prior = workspace.latest_result(ws, sc.id)
+    import option_chaser.service as svc
+    from option_chaser.models import FetchError
+    monkeypatch.setattr(svc, "run", lambda req, progress=None:
+                        (_ for _ in ()).throw(FetchError("網路不通")))
+    at = AppTest.from_file(PAGE)
+    at.run()
+    next(b for b in at.button
+         if b.key == f"ws-an-{sc.id}").set_value(True).run(timeout=30)
+    assert any("網路不通" in e.value for e in at.error)
+    at.run()
+    text = _list_text(at)
+    assert "🟡" in text
+    assert prior["analyzed_at"] in text
+
+
+def test_param_error_does_not_flip_signal_to_yellow(ws, monkeypatch):
+    """附錄 A12／需求六：個別合約報價失敗與關鍵資料失敗是可辨識的不同通道
+    ——非 `FetchError` 的例外（如 `ParamError`）不得被誤判為刷新失敗。"""
+    sc = _mk(ws)
+    workspace.analyze_scenario(ws, sc.id, snapshot_path=FIX, ts=TS)
+    import option_chaser.service as svc
+    from option_chaser.models import ParamError
+    monkeypatch.setattr(svc, "run", lambda req, progress=None:
+                        (_ for _ in ()).throw(ParamError("不相干的驗證錯誤")))
+    at = AppTest.from_file(PAGE)
+    at.run()
+    next(b for b in at.button
+         if b.key == f"ws-an-{sc.id}").set_value(True).run(timeout=30)
+    assert any("不相干的驗證錯誤" in e.value for e in at.error)
+    at.run()
+    text = _list_text(at)
+    assert "🟢" in text
+    assert "🟡" not in text
 
 
 def test_status_buttons_with_reason(ws):

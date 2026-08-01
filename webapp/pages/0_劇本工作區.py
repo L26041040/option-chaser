@@ -27,20 +27,33 @@ from webapp.render import (default_key, esc, find_row, money, pct, return_md,
 WS_ROOT = Path(os.environ.get("OC_WORKSPACE", "workspace"))
 STATUS_BADGE = {"Active": "🟢 Active", "Reached": "🏁 Reached",
                 "Expired": "⌛ Expired", "Invalidated": "❌ Invalidated"}
-# 卡片上的單一燈號位置。綠／黃／紅的判定屬 T6（#20）；此處只有佔位。
-SIGNAL_ICON = {workspace.SIGNAL_UNKNOWN: "⚪"}
+# 卡片上的單一燈號位置（需求六／T6）。
+SIGNAL_ICON = {workspace.SIGNAL_GREEN: "🟢", workspace.SIGNAL_YELLOW: "🟡",
+              workspace.SIGNAL_RED: "🔴", workspace.SIGNAL_UNKNOWN: "⚪"}
+# session 內「這張劇本最近一次刷新是否為關鍵資料失敗」——只有 FetchError
+# （標的價格／到期日 option chain 取得失敗）才算；ParamError 等其他例外
+# 不代表關鍵資料失敗（附錄 A12），不動這個旗標。
+_FAILURE_KEY = "ws-critical-failure"
 
 st.set_page_config(page_title="劇本工作區", layout="wide")
 st.title("劇本工作區")
 
 
-def _analyze_with_status(fn, *args, **kw):
+def _mark_refresh(sid: str, *, critical_failure: bool) -> None:
+    st.session_state.setdefault(_FAILURE_KEY, {})[sid] = critical_failure
+
+
+def _analyze_with_status(sid: str, fn, *args, **kw):
     try:
         with st.status("分析中……", expanded=True) as status:
             out = fn(*args, progress=status.write, **kw)
             status.update(label="分析完成", state="complete")
+        _mark_refresh(sid, critical_failure=False)
         return out
-    except (FetchError, ParamError) as e:
+    except FetchError as e:
+        _mark_refresh(sid, critical_failure=True)
+        st.error(str(e))
+    except ParamError as e:
         st.error(str(e))
     except Exception:
         st.error("分析過程發生錯誤，請稍後再試。")
@@ -51,7 +64,10 @@ def _analyze_with_status(fn, *args, **kw):
 scenarios = workspace.list_scenarios(WS_ROOT)
 by_id = {sc.id: sc for sc in scenarios}
 views = {sc.id: workspace.latest_result(WS_ROOT, sc.id) for sc in scenarios}
-cards = [workspace.card_of(sc, views[sc.id]) for sc in scenarios]
+failure_flags = st.session_state.setdefault(_FAILURE_KEY, {})
+cards = [workspace.card_of(sc, views[sc.id],
+                           critical_failure=failure_flags.get(sc.id, False))
+        for sc in scenarios]
 
 # 選中的劇本：預設第一張卡，右欄因此一載入就有東西可看。
 selected = st.session_state.get("ws-detail")
@@ -75,6 +91,13 @@ def _render_card(card) -> None:
             st.session_state["ws-detail"] = card.id
             st.rerun()
         st.markdown(f"{SIGNAL_ICON[card.signal]}　{return_md(card.best_return)}")
+        if card.signal == workspace.SIGNAL_YELLOW:
+            prev = views[card.id]
+            if prev is not None:
+                st.caption(f"關鍵資料刷新失敗，顯示上次成功更新："
+                          f"{prev['analyzed_at']}")
+            else:
+                st.caption("關鍵資料刷新失敗，尚無任何成功快照可顯示。")
         if st.session_state.get("ws-edit"):
             _render_remove_tool(card.id)
 
@@ -106,7 +129,7 @@ def _render_detail(sc) -> None:
                      f"{sc.target_month}　{STATUS_BADGE[sc.status]}"))
     if st.button("分析", key=f"ws-an-{sc.id}"):
         # 僅成功才 rerun——失敗時 st.error 留在本次渲染，不被沖掉
-        if _analyze_with_status(workspace.analyze_scenario, WS_ROOT,
+        if _analyze_with_status(sc.id, workspace.analyze_scenario, WS_ROOT,
                                 sc.id) is not None:
             st.rerun()
     if sc.status == "Active":
