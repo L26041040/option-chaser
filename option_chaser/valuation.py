@@ -227,7 +227,6 @@ def evaluate_spread(
     width = abs(short_leg.strike - long_leg.strike)
     net_mid = (long_leg.bid + long_leg.ask) / 2.0 - (short_leg.bid + short_leg.ask) / 2.0
     net_worst = long_leg.ask - short_leg.bid
-    target = p.anchor          # 附錄 A9 錨點：估值參考日
     expiry = date.fromisoformat(long_leg.expiry)
     t_now = days_between(today, expiry) / DAYS_PER_YEAR
     g_l = leg_greeks(long_leg.option_type, spot, long_leg.strike, t_now, p.rate,
@@ -235,8 +234,10 @@ def evaluate_spread(
     g_s = leg_greeks(short_leg.option_type, spot, short_leg.strike, t_now, p.rate,
                      short_leg.implied_volatility)
     net_delta = g_l.delta - g_s.delta
+    # 需求 §三：排名情境＝標的在該 Spread **自身到期日**等於目標價、持有至到期。
+    # 估值日即 expiry → 內在價值；IV shift 到期時無作用，情境向量同值屬必然。
     scenario_values = tuple(
-        (shift, spread_scenario_value(long_leg, short_leg, p.target_price, target, p, shift))
+        (shift, spread_scenario_value(long_leg, short_leg, p.target_price, expiry, p, shift))
         for shift in p.iv_shifts
     )
     baseline = dict(scenario_values)[0.0]

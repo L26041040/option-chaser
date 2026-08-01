@@ -64,9 +64,13 @@ def test_bear_put_breakeven():
 
 
 def test_spread_judgments_trigger():
-    # overpriced quotes: net_worst above every ceiling
-    lng = make("L", 110.0, 9.4, 9.6, iv=0.30)
+    # overpriced quotes: net_worst above every ceiling. T3 起基準值＝到期
+    # payoff，目標價 115 落在兩腳之間 → payoff 5.0，而 net_worst 6.1 高於它。
+    p = AnalysisParams(target_price=115.0, target_month="2026-08",
+                       strategy="bull-call-spread")
+    lng = make("L", 110.0, 6.2, 6.5, iv=0.30)
     sht = make("S", 120.0, 0.4, 0.5, iv=0.30)
-    sv = evaluate_spread(lng, sht, spot=100.0, today=TODAY, p=P)
-    msgs = spread_guidance_judgments(sv, P)
+    sv = evaluate_spread(lng, sht, spot=100.0, today=TODAY, p=p)
+    assert sv.baseline_value == 5.0 and sv.net_worst > sv.baseline_value
+    msgs = spread_guidance_judgments(sv, p)
     assert any("最保守 IV 情境" in m for m in msgs)
