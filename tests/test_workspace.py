@@ -2,7 +2,6 @@
 import dataclasses
 import json
 from datetime import date
-from pathlib import Path
 
 import pytest
 
@@ -166,15 +165,3 @@ def test_load_groups_overwrites_tampered_file(tmp_path):
     assert groups["groups"][0]["members"] == [a.id]   # 無條件重建，不信磁碟
 
 
-def test_default_direction(tmp_path):
-    assert workspace.default_direction("NOPE", 100.0,
-                                       snapshots_dir=tmp_path) is None
-    snap = json.loads(Path("tests/fixtures/xyz_v4_six_expiries.json")
-                      .read_text(encoding="utf-8"))
-    (tmp_path / "XYZ_20260721T000000+0000.json").write_text(
-        json.dumps(snap), encoding="utf-8")
-    spot = snap["spot"]
-    assert workspace.default_direction("XYZ", spot + 10,
-                                       snapshots_dir=tmp_path) == "bullish"
-    assert workspace.default_direction("XYZ", spot - 10,
-                                       snapshots_dir=tmp_path) == "bearish"

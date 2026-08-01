@@ -12,7 +12,6 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from . import service, store
-from .data.snapshot import load_snapshot
 from .models import AnalysisParams
 from .store import Scenario
 from .timeframe import TargetMonth, ensure_month_open, month_is_over
@@ -143,19 +142,6 @@ def load_groups(ws_root) -> dict:
     """spec §2.5: groups.json 任何過時/缺失 → 無條件重建（快取全量可重建，
     絕不回傳磁碟上可能被手改的版本）。"""
     return _rebuild(ws_root)
-
-
-def default_direction(symbol: str, target_price: float,
-                      snapshots_dir="snapshots") -> str | None:
-    """建立表單預設方向：該 symbol 最近 snapshot 的 spot 推得（spec §2.2）。"""
-    d = Path(snapshots_dir)
-    if not d.is_dir():
-        return None
-    files = sorted(d.glob(f"{symbol}_*.json"))
-    if not files:
-        return None
-    snap = load_snapshot(files[-1])
-    return "bullish" if target_price > snap.spot else "bearish"
 
 
 def _request_for(sc: Scenario) -> service.AnalysisRequest:
