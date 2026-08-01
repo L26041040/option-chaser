@@ -1,5 +1,5 @@
 # webapp/pages/0_劇本工作區.py
-"""v5 spec §5 ＋ T5（#19）: 桌面 20/80 兩欄工作區。
+"""v5 spec §5 ＋ T5（#19）: 桌面 20/80 兩欄工作區。＋ T7（#21）: 自動／手動刷新。
 
 左 20%：劇本卡片清單（每張卡恰五項＋一個燈號位置）與清單編輯工具；
 右 80%：設定、建立表單、被選中劇本的詳細頁。
@@ -9,6 +9,19 @@
 群組區自首頁移除（附錄 A8.6）——`store.rebuild_groups`／
 `workspace.analyze_group` 等底層邏輯原封不動，只是不再於此頁曝露。
 GUI 零金融公式：所有數字來自 result dict（store 預算）或 scenario 欄位。
+
+T7：開站首次載入自動刷新所有未過期劇本（同一 session 只此一次，靠
+`AUTO_REFRESH_KEY` 旗標把關）；左側清單旁的刷新鈕不受此限制，隨時可再打。
+建立劇本立即觸發該劇本首次刷新。同標的多劇本各自獨立呼叫
+`workspace.analyze_scenario`（各自 fetch，不共用 snapshot——附錄 A8.9），
+單一劇本失敗不擋其他。原子性由 `workspace.analyze_scenario`／
+`store.save_result` 既有次序保證（失敗即提前 return，成功才落盤＋補事件），
+本頁不需另外處理。
+
+效能觀察（issue #21 AC，僅記錄不設門檻）：3 個劇本、離線重放同一份
+snapshot fixture、序列刷新，總耗時約 29ms（本機量測，計算部分；不含
+真實網路延遲——沙箱環境無法連外抓真實報價）。多劇本序列刷新目前無並行化，
+劇本數量顯著增加時應重新量測。
 """
 from __future__ import annotations
 
@@ -33,10 +46,14 @@ SIGNAL_ICON = {workspace.SIGNAL_GREEN: "🟢", workspace.SIGNAL_YELLOW: "🟡",
 # session 內「這張劇本最近一次刷新是否為關鍵資料失敗」——只有 FetchError
 # （標的價格／到期日 option chain 取得失敗）才算；ParamError 等其他例外
 # 不代表關鍵資料失敗（附錄 A12），不動這個旗標。
-# 已知限制（非本票 AC，留給 T7「原子快照」一併決定是否需要落地事件）：
-# 這個旗標只活在 st.session_state，跨瀏覽器分頁／應用重啟不會保留——重開
-# 一份全新 session 時，剛發生過的關鍵資料失敗會被忘記，卡片改顯示綠燈。
+# 已知限制：這個旗標只活在 st.session_state，跨瀏覽器分頁／應用重啟不會
+# 保留——重開一份全新 session 時，剛發生過的關鍵資料失敗會被忘記，卡片
+# 改顯示綠燈。T7 評估後維持現狀：新 session 本來就會自動刷新一次，屆時
+# 若關鍵資料仍取不到，旗標會在那次刷新中重新被設起來。
 _FAILURE_KEY = "ws-critical-failure"
+# T7（需求七）：同一 session 只在首次載入時自動刷新一次；之後的一般互動
+# （切頁、點卡片、切到期日、展開）一律不得再次觸發 API。
+AUTO_REFRESH_KEY = "ws-auto-refreshed"
 
 st.set_page_config(page_title="劇本工作區", layout="wide")
 st.title("劇本工作區")
@@ -46,6 +63,20 @@ def _mark_refresh(sid: str, *, critical_failure: bool) -> None:
     st.session_state.setdefault(_FAILURE_KEY, {})[sid] = critical_failure
 
 
+def _classify_refresh_error(exc: Exception) -> tuple[bool, str]:
+    """統一例外分類（附錄 A12），供單一分析與批次刷新共用。
+
+    `FetchError`＝關鍵資料（標的價格／到期日 option chain）取得失敗，
+    是唯一會標記劇本級失敗（黃燈）的例外；`ParamError` 與其他例外只是
+    帶出訊息，不影響燈號。
+    """
+    if isinstance(exc, FetchError):
+        return True, str(exc)
+    if isinstance(exc, ParamError):
+        return False, str(exc)
+    return False, "分析過程發生錯誤，請稍後再試。"
+
+
 def _analyze_with_status(sid: str, fn, *args, **kw):
     try:
         with st.status("分析中……", expanded=True) as status:
@@ -53,19 +84,43 @@ def _analyze_with_status(sid: str, fn, *args, **kw):
             status.update(label="分析完成", state="complete")
         _mark_refresh(sid, critical_failure=False)
         return out
-    except FetchError as e:
-        _mark_refresh(sid, critical_failure=True)
-        st.error(str(e))
-    except ParamError as e:
-        st.error(str(e))
-    except Exception:
-        st.error("分析過程發生錯誤，請稍後再試。")
-    return None
+    except Exception as e:
+        critical, message = _classify_refresh_error(e)
+        _mark_refresh(sid, critical_failure=critical)
+        st.error(message)
+        return None
+
+
+def _refresh_all(sids: list[str], *, label: str) -> None:
+    """依序刷新每個劇本；單一失敗不擋其他（需求七：刷新單位是劇本）。
+
+    每個 sid 各自呼叫一次 `analyze_scenario`（各自 fetch，附錄 A8.9），
+    例外經 `_classify_refresh_error` 分類後就地記錄，繼續下一個，不中斷
+    整個批次；批次結束後由呼叫端決定是否 rerun 以反映最新結果。
+    """
+    if not sids:
+        return
+    with st.status(label, expanded=False) as status:
+        for sid in sids:
+            try:
+                workspace.analyze_scenario(WS_ROOT, sid, progress=status.write)
+                _mark_refresh(sid, critical_failure=False)
+            except Exception as e:
+                critical, message = _classify_refresh_error(e)
+                _mark_refresh(sid, critical_failure=critical)
+                status.write(f"{sid}：{message}")
+        status.update(label="刷新完成", state="complete")
 
 
 # ---------- 載入（含對帳） ----------
 scenarios = workspace.list_scenarios(WS_ROOT)
 by_id = {sc.id: sc for sc in scenarios}
+refreshable = [sc.id for sc in scenarios if sc.status != "Expired"]
+
+if not st.session_state.get(AUTO_REFRESH_KEY):
+    st.session_state[AUTO_REFRESH_KEY] = True
+    _refresh_all(refreshable, label="自動刷新未過期劇本……")
+
 views = {sc.id: workspace.latest_result(WS_ROOT, sc.id) for sc in scenarios}
 failure_flags = st.session_state.setdefault(_FAILURE_KEY, {})
 cards = [workspace.card_of(sc, views[sc.id],
@@ -179,6 +234,9 @@ left, right = st.columns([0.2, 0.8], gap="medium")
 with left:
     st.subheader("劇本清單")
     st.toggle("✎ 編輯清單", key="ws-edit")
+    if st.button("🔄 刷新", key="ws-refresh-all", use_container_width=True):
+        _refresh_all(refreshable, label="刷新未過期劇本……")
+        st.rerun()
     if not scenarios:
         st.info("尚無劇本。用右側「＋ 建立劇本」開始。")
     elif len(scenarios) > 6:
@@ -223,6 +281,12 @@ with right:
                 except ParamError as e:
                     st.error(str(e))
                 else:
+                    # 需求七：建立劇本當下立即觸發首次刷新，完成後卡片即有數字。
+                    # 無論成敗都 rerun——失敗時卡片自身的黃燈＋說明文字
+                    # （見 `_render_card`）已是持續可見的失敗指示，不需要
+                    # 額外保留一次性 st.error。
+                    _analyze_with_status(created.id, workspace.analyze_scenario,
+                                         WS_ROOT, created.id)
                     st.session_state["ws-detail"] = created.id
                     st.rerun()
 

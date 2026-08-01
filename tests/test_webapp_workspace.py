@@ -19,6 +19,9 @@ PAGE = "webapp/pages/0_劇本工作區.py"
 FIX = "tests/fixtures/xyz_v4_six_expiries.json"
 TS = "2026-07-21T00:00:00+00:00"
 OBSERVED = date(2026, 7, 21)   # 與 TS 同日：建立驗證不吃真實時鐘
+# 與頁面同名的 session_state 旗標鍵（頁面檔名含數字前綴的中文字元，無法
+# import，故在此複製常數字面值；兩邊改動需同步）。
+AUTO_REFRESH_KEY = "ws-auto-refreshed"
 
 
 @pytest.fixture
@@ -142,9 +145,14 @@ def test_card_return_is_coloured_by_sign(ws):
 
 
 def test_card_without_analysis_shows_a_dash(ws):
-    """附錄 A8.1：尚無成功快照的劇本，卡片收益率顯示「—」。"""
+    """附錄 A8.1：尚無成功快照的劇本，卡片收益率顯示「—」。
+
+    停用 T7 自動刷新（見下方 `AUTO_REFRESH_KEY`）：本測試驗證的是卡片渲染邏輯，
+    與「開站是否自動刷新」正交——T7 的自動刷新行為由專屬測試涵蓋。
+    """
     _mk(ws)
     at = AppTest.from_file(PAGE)
+    at.session_state[AUTO_REFRESH_KEY] = True
     at.run()
     assert "—" in _list_text(at)
     assert "⚪" in _list_text(at)          # 需求六：從未刷新過＝中性佔位
@@ -334,7 +342,111 @@ def test_detail_page_renders_four_steps(ws):
 
 
 def test_unanalyzed_scenario_detail_invites_analysis(ws):
+    """停用 T7 自動刷新——見 `test_card_without_analysis_shows_a_dash` 的說明。"""
     _mk(ws)
     at = AppTest.from_file(PAGE)
+    at.session_state[AUTO_REFRESH_KEY] = True
     at.run()
     assert any("尚無分析結果" in i.value for i in at.info)
+
+
+# ---------- 自動／手動刷新與原子快照（T7，#21） ----------
+
+def test_auto_refresh_happens_once_per_session(ws, monkeypatch):
+    """需求七：開站首次載入自動刷新；同一 session 內多次 rerun 只打一次 API。"""
+    sc = _mk(ws)
+    calls = []
+    import option_chaser.service as svc
+    real_offline = svc.run_offline
+
+    def counting_run(req, progress=None):
+        calls.append(1)
+        return real_offline(req, FIX, progress)
+
+    monkeypatch.setattr(svc, "run", counting_run)
+    at = AppTest.from_file(PAGE)
+    at.run()
+    assert len(calls) == 1
+    assert workspace.latest_result(ws, sc.id) is not None
+    at.run()   # 模擬同 session 內任何互動（切頁／點卡片／展開）造成的 rerun
+    at.run()
+    assert len(calls) == 1
+
+
+def test_auto_refresh_skips_expired_scenarios(ws, monkeypatch):
+    """需求七：只刷新未過期劇本——紅燈（目標月已過完）劇本不消耗 API。
+
+    月份必須在「建立當下」合法（`observed` 落在該月內），靠真實時鐘在
+    測試執行當下（沙箱日期晚於 2026-06）已經過完，模擬「建立後時間流逝」。
+    """
+    workspace.create_scenario(
+        ws, symbol="OLD", direction="bullish", target_price=100.0,
+        target_month="2026-06", notes="", strategies=("long-call",), ts=TS,
+        observed=date(2026, 6, 15))
+    calls = []
+    import option_chaser.service as svc
+    monkeypatch.setattr(svc, "run", lambda req, progress=None: calls.append(1))
+    at = AppTest.from_file(PAGE)
+    at.run()
+    assert calls == []
+
+
+def test_manual_refresh_button_refetches_all(ws, monkeypatch):
+    """需求七：手動刷新鈕可再次刷新——不受「同 session 只自動一次」限制。"""
+    sc = _mk(ws)
+    calls = []
+    import option_chaser.service as svc
+    real_offline = svc.run_offline
+
+    def counting_run(req, progress=None):
+        calls.append(1)
+        return real_offline(req, FIX, progress)
+
+    monkeypatch.setattr(svc, "run", counting_run)
+    at = AppTest.from_file(PAGE)
+    at.run()
+    assert len(calls) == 1                          # 自動刷新
+    next(b for b in at.button
+         if b.key == "ws-refresh-all").set_value(True).run(timeout=30)
+    assert len(calls) == 2                           # 手動刷新再打一次
+    assert not at.exception
+    assert workspace.latest_result(ws, sc.id) is not None
+
+
+def test_refresh_all_one_failure_does_not_block_others(ws, monkeypatch):
+    """需求七：多劇本其一關鍵資料失敗時，其餘劇本照常完成。"""
+    a = _mk(ws, price=110.0, tmonth="2028-01")
+    b = _mk(ws, price=130.0, tmonth="2028-12")
+    import option_chaser.service as svc
+    from option_chaser.models import FetchError
+    real_offline = svc.run_offline
+
+    def flaky_run(req, progress=None):
+        if req.base_params.target_price == a.target_price:
+            raise FetchError("boom")
+        return real_offline(req, FIX, progress)
+
+    monkeypatch.setattr(svc, "run", flaky_run)
+    at = AppTest.from_file(PAGE)
+    at.run()
+    assert not at.exception
+    assert workspace.latest_result(ws, a.id) is None       # 失敗，無快照
+    assert workspace.latest_result(ws, b.id) is not None   # 照常完成
+    text = _list_text(at)
+    assert "🟡" in text and "🟢" in text
+
+
+def test_create_triggers_immediate_first_analysis(ws):
+    """需求七：建立劇本立即觸發首次刷新，完成後卡片即有數字。"""
+    at = AppTest.from_file(PAGE)
+    at.run()
+    at.text_input(key="ws-new-symbol").set_value("XYZ")
+    at.number_input(key="ws-new-price").set_value(120.0)
+    at.text_input(key="ws-new-month").set_value("2028/1")
+    at.run()
+    next(b for b in at.button
+         if b.key == "ws-new-create").set_value(True).run(timeout=30)
+    sc = workspace.list_scenarios(ws)[0]
+    view = workspace.latest_result(ws, sc.id)
+    assert view is not None
+    assert return_md(workspace.card_of(sc, view).best_return) in _list_text(at)

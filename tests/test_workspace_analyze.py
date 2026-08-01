@@ -82,3 +82,25 @@ def test_analyze_group_online_fetches_once(tmp_path, monkeypatch):
 def test_latest_result_none_without_analysis(tmp_path):
     sc = _create(tmp_path)
     assert workspace.latest_result(tmp_path, sc.id) is None
+
+
+def test_failed_refresh_leaves_prior_snapshot_intact(tmp_path, monkeypatch):
+    """T7（#21）原子快照：失敗不得寫入任何部分結果，latest 仍指向上一份成功快照。"""
+    import pytest
+    from option_chaser import service
+    from option_chaser.models import FetchError
+
+    sc = _create(tmp_path)
+    workspace.analyze_scenario(tmp_path, sc.id, snapshot_path=FIX, ts=TS)
+    prior = workspace.latest_result(tmp_path, sc.id)
+    prior_files = sorted((tmp_path / "results" / sc.id).glob("*.json"))
+
+    monkeypatch.setattr(service, "run", lambda req, progress=None:
+                        (_ for _ in ()).throw(FetchError("網路不通")))
+    with pytest.raises(FetchError):
+        workspace.analyze_scenario(tmp_path, sc.id)   # 網路路徑：snapshot_path=None
+
+    assert workspace.latest_result(tmp_path, sc.id) == prior
+    assert sorted((tmp_path / "results" / sc.id).glob("*.json")) == prior_files
+    events = [e["event"] for e in store.read_events(tmp_path)]
+    assert events.count("ANALYSIS_COMPLETED") == 1
