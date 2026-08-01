@@ -30,7 +30,9 @@ def test_single_leg_result_matches_engine_and_report():
     r = service.run_offline(req(["long-call"]), FIX)
     res = r.results[0]
     assert res.status == "ok"
-    p = dataclasses.replace(req(["long-call"]).base_params, strategy="long-call")
+    # T12：service 會把解出的利率欄位（rate_note 等）回寫 request——
+    # 對照重算須用同一份解出後的參數
+    p = dataclasses.replace(r.request.base_params, strategy="long-call")
     snap = load_snapshot(FIX)
     today = snapshot_today(snap.fetched_at)
     snap = service._scoped_to_selected_expiries(snap, p.anchor, today)

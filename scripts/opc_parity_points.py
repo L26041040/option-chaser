@@ -15,6 +15,7 @@ import argparse
 from datetime import date, timedelta
 
 from option_chaser import service
+from option_chaser.cli import build_parser as cli_parser
 from option_chaser.cli import resolve_params
 from option_chaser.models import SPREAD_STRATEGIES, STRATEGIES
 from option_chaser.valuation import (SpreadValuation, leg_rate,
@@ -35,14 +36,14 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    # 借用 CLI 的參數歸一（含 --rate 明示語意），其餘欄位取預設
-    cli_args = argparse.Namespace(
-        symbol="X", target_price=args.target_price,
-        target_month=args.target_month, strategy=args.strategy, top=3,
-        iv_shifts="-0.2,0,0.2", rate=args.rate, min_oi=10, min_volume=0,
-        max_spread_pct=0.15, spread_floor=0.10, delta_bands="0.35,0.65",
-        min_return=0.0, force=False, matrix_all=False)
-    p = resolve_params(cli_args)
+    # 借用 CLI 的 parser 與參數歸一（含 --rate 明示語意）——預設值單一來源，
+    # 不在此處手抄
+    cli_argv = ["X", "--target-price", str(args.target_price),
+                "--target-month", args.target_month,
+                "--strategy", args.strategy]
+    if args.rate is not None:
+        cli_argv += ["--rate", str(args.rate)]
+    p = resolve_params(cli_parser().parse_args(cli_argv))
     request = service.AnalysisRequest(symbol="X", base_params=p,
                                       strategies=(p.strategy,))
     loader = service.default_rate_curve_loader if args.use_curve else None

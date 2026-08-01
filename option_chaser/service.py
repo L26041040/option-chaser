@@ -21,7 +21,7 @@ from .scenarios import (ScenarioVector, completion_curve, completion_scan,
                         _value_fn)
 from .timeframe import (TargetMonth, calendar_anchor, ensure_month_open,
                         select_expiries)
-from .ratecurve import rate_for_tenor
+from .ratecurve import RateCurve, rate_for_tenor
 from .valuation import (ContractValuation, DAYS_PER_YEAR, SpreadValuation,
                         evaluate_contract, evaluate_spread, leg_greeks,
                         leg_rate, scenario_leg_value, spread_scenario_value)
@@ -31,7 +31,7 @@ Progress = Callable[[str], None]
 # T12（附錄 A14.1）：利率曲線 loader = (today) -> (RateCurve | None, 報告註記)。
 # 只有網路路徑（run／workspace 群組刷新）預設接真管線；run_offline 預設 None，
 # 快照重放與測試因此決定性且零網路。
-RateCurveLoader = Callable[[date], tuple[object, str]]
+RateCurveLoader = Callable[[date], tuple[RateCurve | None, str]]
 
 
 def default_rate_curve_loader(today: date):
@@ -504,12 +504,16 @@ def _resolve_rates(p: AnalysisParams, snap: ChainSnapshot, today: date,
                    loader: RateCurveLoader | None) -> AnalysisParams:
     """T12（附錄 A14.1）：每個入選到期日以「分析日→到期日」年期取期限對齊利率。
 
-    `--rate` 明示（rate_explicit）或無 loader（離線重放）→ 原樣返回，行為與
-    現行完全一致。曲線不可得 → 保持常數 `p.rate`，僅設 `rate_note` 供報告
-    參數行標示。解出的表以到期日為鍵：同一腿在 Heatmap 全格共用一個 r。
+    `--rate` 明示（rate_explicit）→ 原樣返回，行為與現行完全一致。
+    無 loader（離線重放）→ 估值同樣用常數，但報告參數行必須標示——只有
+    明示 --rate 被授權沿用現行寫法（issue #26），其餘固定值一律說明原因。
+    曲線不可得 → 保持常數 `p.rate`，僅設 `rate_note` 供報告參數行標示。
+    解出的表以到期日為鍵：同一腿在 Heatmap 全格共用一個 r。
     """
-    if loader is None or p.rate_explicit:
+    if p.rate_explicit:
         return p
+    if loader is None:
+        return dataclasses.replace(p, rate_note="離線重放，未啟用利率曲線")
     curve, note = loader(today)
     if curve is None:
         return dataclasses.replace(p, rate_note=note)

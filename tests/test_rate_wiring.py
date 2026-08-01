@@ -97,11 +97,14 @@ def test_run_offline_with_loader_resolves_per_expiry_rates():
     assert "Treasury 曲線 2026-07-31" in res.report_text
 
 
-def test_run_offline_without_loader_keeps_legacy_behavior():
+def test_run_offline_without_loader_fixed_rate_is_marked():
+    """離線重放用常數估值，但報告參數行必須標示原因（issue #26：只有明示
+    --rate 被授權沿用現行寫法，其餘固定值一律說明）。"""
     result = service.run_offline(_request(), SNAP)
     p = result.request.base_params
-    assert p.rate_by_expiry == () and p.rate_note == ""
-    assert "無風險利率 4.0%" in result.results[0].report_text
+    assert p.rate_by_expiry == ()
+    text = result.results[0].report_text
+    assert "固定 4.0%" in text and "離線重放" in text
 
 
 def test_loader_failure_falls_back_to_fixed_rate_with_note():
