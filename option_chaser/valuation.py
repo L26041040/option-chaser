@@ -57,6 +57,19 @@ def days_between(d1: date, d2: date) -> int:
     return (d2 - d1).days
 
 
+def leg_rate(p: AnalysisParams, expiry: str) -> float:
+    """T12（附錄 A14.1）：每腿以**自身到期日**查表取期限對齊利率。
+
+    表由 service 以「分析日→到期日」年期自 Treasury 曲線預先解出；同一腿在
+    Heatmap 全格共用同一個 r（與恆定 IV 假設一致），因此以到期日查表而非逐格
+    重算年期。無表（`--rate` 明示、離線路徑、曲線 fallback）時用常數 `p.rate`。
+    """
+    for exp, r in p.rate_by_expiry:
+        if exp == expiry:
+            return r
+    return p.rate
+
+
 @dataclass(frozen=True)
 class ContractValuation:
     contract: OptionContract
@@ -86,7 +99,8 @@ def scenario_leg_value(
     if at >= expiry:
         return intrinsic_value(c.option_type, S, c.strike)
     T = days_between(at, expiry) / DAYS_PER_YEAR
-    return clamped_price(c.option_type, S, c.strike, T, p.rate, c.implied_volatility * (1.0 + shift))
+    return clamped_price(c.option_type, S, c.strike, T, leg_rate(p, c.expiry),
+                         c.implied_volatility * (1.0 + shift))
 
 
 def evaluate_contract(
@@ -98,8 +112,8 @@ def evaluate_contract(
     expiry = date.fromisoformat(c.expiry)
     target = p.anchor          # 附錄 A9 錨點：估值參考日
     g = leg_greeks(c.option_type, spot, c.strike,
-                   days_between(today, expiry) / DAYS_PER_YEAR, p.rate,
-                   c.implied_volatility)
+                   days_between(today, expiry) / DAYS_PER_YEAR,
+                   leg_rate(p, c.expiry), c.implied_volatility)
     scenario_values = tuple(
         (shift, scenario_leg_value(c, p.target_price, target, p, shift))
         for shift in p.iv_shifts
@@ -229,10 +243,10 @@ def evaluate_spread(
     net_worst = long_leg.ask - short_leg.bid
     expiry = date.fromisoformat(long_leg.expiry)
     t_now = days_between(today, expiry) / DAYS_PER_YEAR
-    g_l = leg_greeks(long_leg.option_type, spot, long_leg.strike, t_now, p.rate,
-                     long_leg.implied_volatility)
-    g_s = leg_greeks(short_leg.option_type, spot, short_leg.strike, t_now, p.rate,
-                     short_leg.implied_volatility)
+    g_l = leg_greeks(long_leg.option_type, spot, long_leg.strike, t_now,
+                     leg_rate(p, long_leg.expiry), long_leg.implied_volatility)
+    g_s = leg_greeks(short_leg.option_type, spot, short_leg.strike, t_now,
+                     leg_rate(p, short_leg.expiry), short_leg.implied_volatility)
     net_delta = g_l.delta - g_s.delta
     # 需求 §三：排名情境＝標的在該 Spread **自身到期日**等於目標價、持有至到期。
     # 估值日即 expiry → 內在價值；IV shift 到期時無作用，情境向量同值屬必然。

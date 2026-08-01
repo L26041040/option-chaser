@@ -21,11 +21,22 @@ from .scenarios import (ScenarioVector, completion_curve, completion_scan,
                         _value_fn)
 from .timeframe import (TargetMonth, calendar_anchor, ensure_month_open,
                         select_expiries)
-from .valuation import (ContractValuation, SpreadValuation, evaluate_contract,
-                        evaluate_spread, leg_greeks, scenario_leg_value,
-                        spread_scenario_value)
+from .ratecurve import rate_for_tenor
+from .valuation import (ContractValuation, DAYS_PER_YEAR, SpreadValuation,
+                        evaluate_contract, evaluate_spread, leg_greeks,
+                        leg_rate, scenario_leg_value, spread_scenario_value)
 
 Progress = Callable[[str], None]
+
+# T12（附錄 A14.1）：利率曲線 loader = (today) -> (RateCurve | None, 報告註記)。
+# 只有網路路徑（run／workspace 群組刷新）預設接真管線；run_offline 預設 None，
+# 快照重放與測試因此決定性且零網路。
+RateCurveLoader = Callable[[date], tuple[object, str]]
+
+
+def default_rate_curve_loader(today: date):
+    from .data.treasury import load_rate_curve  # lazy: offline paths never觸網
+    return load_rate_curve(today)
 
 
 @dataclass(frozen=True)
@@ -167,10 +178,10 @@ def _net_theta(val: ContractValuation | SpreadValuation, spot: float,
     if isinstance(val, SpreadValuation):
         lng, sht = val.long_leg, val.short_leg
         t_now = (date.fromisoformat(lng.expiry) - today).days / 365.0
-        g_l = leg_greeks(lng.option_type, spot, lng.strike, t_now, p.rate,
-                         lng.implied_volatility)
-        g_s = leg_greeks(sht.option_type, spot, sht.strike, t_now, p.rate,
-                         sht.implied_volatility)
+        g_l = leg_greeks(lng.option_type, spot, lng.strike, t_now,
+                         leg_rate(p, lng.expiry), lng.implied_volatility)
+        g_s = leg_greeks(sht.option_type, spot, sht.strike, t_now,
+                         leg_rate(p, sht.expiry), sht.implied_volatility)
         return g_l.theta_per_day - g_s.theta_per_day
     return val.theta_per_day
 
@@ -180,10 +191,10 @@ def _net_vega(val: ContractValuation | SpreadValuation, spot: float,
     if isinstance(val, SpreadValuation):
         lng, sht = val.long_leg, val.short_leg
         t_now = (date.fromisoformat(lng.expiry) - today).days / 365.0
-        g_l = leg_greeks(lng.option_type, spot, lng.strike, t_now, p.rate,
-                         lng.implied_volatility)
-        g_s = leg_greeks(sht.option_type, spot, sht.strike, t_now, p.rate,
-                         sht.implied_volatility)
+        g_l = leg_greeks(lng.option_type, spot, lng.strike, t_now,
+                         leg_rate(p, lng.expiry), lng.implied_volatility)
+        g_s = leg_greeks(sht.option_type, spot, sht.strike, t_now,
+                         leg_rate(p, sht.expiry), sht.implied_volatility)
         return g_l.vega_per_pct - g_s.vega_per_pct
     return val.vega_per_pct
 
@@ -493,14 +504,39 @@ def _scoped_to_selected_expiries(snap: ChainSnapshot, anchor: date,
                               if c.expiry in selected))
 
 
+def _resolve_rates(p: AnalysisParams, snap: ChainSnapshot, today: date,
+                   loader: RateCurveLoader | None) -> AnalysisParams:
+    """T12（附錄 A14.1）：每個入選到期日以「分析日→到期日」年期取期限對齊利率。
+
+    `--rate` 明示（rate_explicit）或無 loader（離線重放）→ 原樣返回，行為與
+    現行完全一致。曲線不可得 → 保持常數 `p.rate`，僅設 `rate_note` 供報告
+    參數行標示。解出的表以到期日為鍵：同一腿在 Heatmap 全格共用一個 r。
+    """
+    if loader is None or p.rate_explicit:
+        return p
+    curve, note = loader(today)
+    if curve is None:
+        return dataclasses.replace(p, rate_note=note)
+    pairs = tuple(
+        (e, rate_for_tenor(
+            curve, (date.fromisoformat(e) - today).days / DAYS_PER_YEAR))
+        for e in sorted({c.expiry for c in snap.contracts}))
+    return dataclasses.replace(p, rate_by_expiry=pairs, rate_note=note)
+
+
 def _analyze(request: AnalysisRequest, snap: ChainSnapshot,
-             snapshot_path: str, progress: Progress | None) -> AnalysisResult:
+             snapshot_path: str, progress: Progress | None,
+             rate_curve_loader: RateCurveLoader | None = None) -> AnalysisResult:
     today = snapshot_today(snap.fetched_at)
     base = request.base_params
     month = ensure_month_open(TargetMonth.from_key(base.target_month), today)
     anchor = calendar_anchor(month)
     _emit(progress, "正在依日曆錨點選取到期日……")
     snap = _scoped_to_selected_expiries(snap, anchor, today)
+    _emit(progress, "正在解析無風險利率……")
+    base = _resolve_rates(base, snap, today, rate_curve_loader)
+    # 解出的利率是估值輸入的一部分：回寫 request，讓結果持久化與呼叫端可見。
+    request = dataclasses.replace(request, base_params=base)
     results = []
     _emit(progress, "正在過濾合約……")
     for s in request.strategies:
@@ -558,11 +594,17 @@ def run(request: AnalysisRequest, progress: Progress | None = None) -> AnalysisR
     _validate_request(request)
     _emit(progress, f"正在抓取 {request.symbol} 市場資料……")
     snap, out = fetch_and_save(request.symbol)
-    return _analyze(request, snap, out, progress)
+    return _analyze(request, snap, out, progress,
+                    rate_curve_loader=default_rate_curve_loader)
 
 
 def run_offline(request: AnalysisRequest, snapshot_path: str,
-                progress: Progress | None = None) -> AnalysisResult:
+                progress: Progress | None = None, *,
+                rate_curve_loader: RateCurveLoader | None = None
+                ) -> AnalysisResult:
+    """離線重放預設不接利率管線（決定性、零網路）；networked 呼叫端（如
+    workspace 群組刷新，自己剛抓完 chain）可明示傳 loader 啟用曲線。"""
     _validate_request(request)
     snap = load_snapshot(snapshot_path)
-    return _analyze(request, snap, str(snapshot_path), progress)
+    return _analyze(request, snap, str(snapshot_path), progress,
+                    rate_curve_loader=rate_curve_loader)

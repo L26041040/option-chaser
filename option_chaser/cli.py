@@ -71,7 +71,9 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--strategy", choices=list(STRATEGIES), default="long-call")
     ap.add_argument("--top", type=int, default=3)
     ap.add_argument("--iv-shifts", default="-0.2,0,0.2")
-    ap.add_argument("--rate", type=float, default=0.04)
+    # default=None 以分辨「使用者明示」與「未指定」：明示 → 跳過利率曲線管線
+    # （保留現有語意）；未指定 → 網路路徑走期限對齊曲線，fallback 0.04。
+    ap.add_argument("--rate", type=float, default=None)
     ap.add_argument("--min-oi", type=int, default=10)
     ap.add_argument("--min-volume", type=int, default=0)
     ap.add_argument("--max-spread-pct", type=float, default=0.15)
@@ -93,7 +95,7 @@ def resolve_params(args: argparse.Namespace) -> AnalysisParams:
     target_month = parse_target_month(args.target_month).key()
     if not 1 <= args.top <= 10:
         raise ParamError("--top 必須在 1–10")
-    if args.rate < 0:
+    if args.rate is not None and args.rate < 0:
         raise ParamError("--rate 必須 >= 0")
     if args.min_oi < 0 or args.min_volume < 0:
         raise ParamError("--min-oi / --min-volume 必須 >= 0")
@@ -124,7 +126,9 @@ def resolve_params(args: argparse.Namespace) -> AnalysisParams:
     return AnalysisParams(
         target_price=args.target_price, target_month=target_month,
         strategy=args.strategy,
-        top=args.top, iv_shifts=iv_shifts, rate=args.rate,
+        top=args.top, iv_shifts=iv_shifts,
+        rate=args.rate if args.rate is not None else 0.04,
+        rate_explicit=args.rate is not None,
         min_oi=args.min_oi, min_volume=args.min_volume,
         max_spread_pct=args.max_spread_pct, spread_floor=args.spread_floor,
         delta_bands=(a, b), min_return=args.min_return,

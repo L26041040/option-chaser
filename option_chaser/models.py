@@ -58,6 +58,13 @@ class AnalysisParams:
     top: int = 3
     iv_shifts: tuple[float, ...] = (-0.2, 0.0, 0.2)  # normalized: 0 included, sorted
     rate: float = 0.04
+    # T12（附錄 A14.1）利率三欄：`rate` 是明示值或 fallback 常數；
+    # `rate_explicit` 由 CLI 在使用者明示 --rate 時設起（跳過整條曲線管線）；
+    # `rate_by_expiry`/`rate_note` 由 service 依「分析日→各到期日」年期自
+    # Treasury 曲線解出（每腿自身剩餘年期，附錄 A14.1），使用者不直接填。
+    rate_explicit: bool = False
+    rate_by_expiry: tuple[tuple[str, float], ...] = ()
+    rate_note: str = ""
     min_oi: int = 10
     min_volume: int = 0
     max_spread_pct: float = 0.15

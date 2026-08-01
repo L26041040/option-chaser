@@ -39,6 +39,19 @@ def _val_line(name: str, val: float, cost: float) -> str:
     )
 
 
+def _rate_line(p: AnalysisParams) -> str:
+    """T12（附錄 A14.1）三態：期限對齊曲線／fallback 固定值（標示原因）／
+    明示或離線的固定值（維持現行寫法）。"""
+    if p.rate_by_expiry:
+        rates = "、".join(f"{e} {r * 100:.2f}%" for e, r in p.rate_by_expiry)
+        return (f"- 無風險利率 期限對齊（{p.rate_note}；各到期日 r: {rates}）、"
+                "無股利調整、Black-Scholes 歐式近似")
+    if p.rate_note:
+        return (f"- 無風險利率 固定 {_pct(p.rate)}（{p.rate_note}，退回預設）、"
+                "無股利調整、Black-Scholes 歐式近似")
+    return f"- 無風險利率 {_pct(p.rate)}、無股利調整、Black-Scholes 歐式近似"
+
+
 def _header_lines(snap: ChainSnapshot, p: AnalysisParams, today: date) -> list[str]:
     bands = p.delta_bands
     return [
@@ -55,7 +68,7 @@ def _header_lines(snap: ChainSnapshot, p: AnalysisParams, today: date) -> list[s
         f"- {snap.symbol} 現價: ${_money(snap.spot)}（分析基準日 {today.isoformat()}）",
         "",
         "[模型假設]",
-        f"- 無風險利率 {_pct(p.rate)}、無股利調整、Black-Scholes 歐式近似",
+        _rate_line(p),
         f"- IV 情境: {', '.join(_shift_name(s) for s in p.iv_shifts)}",
         f"- Delta 分級門檻: {bands[0]:g} / {bands[1]:g}（實務慣例級距）",
     ]
