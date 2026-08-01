@@ -3,8 +3,8 @@ from option_chaser.models import AnalysisParams, OptionContract
 from option_chaser.valuation import bs_call, bs_put, evaluate_contract, scenario_leg_value
 
 TODAY = date(2026, 7, 15)
-P = AnalysisParams(target_price=120.0, target_date="2026-08-28")
-P_PUT = AnalysisParams(target_price=80.0, target_date="2026-08-28", strategy="long-put")
+P = AnalysisParams(target_price=120.0, target_month="2026-08")
+P_PUT = AnalysisParams(target_price=80.0, target_month="2026-08", strategy="long-put")
 
 
 def make_contract(**kw):
@@ -20,7 +20,7 @@ def test_call_anchors_and_scenarios():
     assert v.mid == 3.125 and v.breakeven == 113.125
     assert abs(v.breakeven_vs_spot - 0.13125) < 1e-9
     assert abs(v.breakeven_vs_target - (120 - 113.125) / 120) < 1e-9
-    t_rem = (date(2026, 10, 16) - date(2026, 8, 28)).days / 365.0
+    t_rem = (date(2026, 10, 16) - P.anchor).days / 365.0
     assert v.floor_value == 10.0 == v.l1
     for shift, val in v.scenario_values:
         assert abs(val - max(bs_call(120.0, 110.0, t_rem, P.rate, 0.38 * (1 + shift)), 10.0)) < 1e-12

@@ -1,6 +1,5 @@
 # tests/test_webapp_workspace.py
 """v5 spec §7.7: 工作區 GUI（AppTest）。OC_WORKSPACE 隔離＋service seam 注入。"""
-from datetime import date
 from pathlib import Path
 
 import pytest
@@ -28,10 +27,10 @@ def ws(tmp_path, monkeypatch):
     return tmp_path
 
 
-def _mk(ws_root, price=120.0, tdate="2026-08-01"):
+def _mk(ws_root, price=120.0, tmonth="2026-08"):
     return workspace.create_scenario(
         ws_root, symbol="XYZ", direction="bullish", target_price=price,
-        target_date=tdate, notes="", strategies=("long-call",), ts=TS)
+        target_month=tmonth, notes="", strategies=("long-call",), ts=TS)
 
 
 def _body(at):
@@ -43,7 +42,7 @@ def test_create_via_form_appears_in_list(ws):
     at.run()
     at.text_input(key="ws-new-symbol").set_value("XYZ")
     at.number_input(key="ws-new-price").set_value(120.0)
-    at.date_input(key="ws-new-date").set_value(date(2026, 8, 1))
+    at.text_input(key="ws-new-month").set_value("2028/1")   # 四種寫法之一
     at.run()
     # 測試 cwd 的 snapshots/ 無 XYZ_*.json → 無法推測 → 必選方向
     at.selectbox(key="ws-new-direction").set_value("bullish")
@@ -54,8 +53,23 @@ def test_create_via_form_appears_in_list(ws):
          if b.key == "ws-new-create").set_value(True).run(timeout=30)
     assert not at.exception
     assert "XYZ" in _body(at)
-    assert workspace.list_scenarios(ws)[0].id == "XYZ-120-202608"
+    assert workspace.list_scenarios(ws)[0].id == "XYZ-120-202801"
+    assert workspace.list_scenarios(ws)[0].target_month == "2028-01"
     assert workspace.list_scenarios(ws)[0].direction == "bullish"
+
+
+def test_create_rejects_unparseable_month(ws):
+    at = AppTest.from_file(PAGE)
+    at.run()
+    at.text_input(key="ws-new-symbol").set_value("XYZ")
+    at.text_input(key="ws-new-month").set_value("明年一月")
+    at.run()
+    at.selectbox(key="ws-new-direction").set_value("bullish")
+    at.run()
+    next(b for b in at.button
+         if b.key == "ws-new-create").set_value(True).run(timeout=30)
+    assert any("目標年月" in e.value for e in at.error)
+    assert workspace.list_scenarios(ws) == []
 
 
 def test_create_requires_direction_when_no_snapshot(ws):
@@ -107,8 +121,8 @@ def test_status_button_requires_reason(ws):
 
 
 def test_group_card_and_relation_confirm(ws):
-    a = _mk(ws, price=110.0, tdate="2026-08-01")
-    b = _mk(ws, price=120.0, tdate="2026-09-01")
+    a = _mk(ws, price=110.0, tmonth="2026-08")
+    b = _mk(ws, price=120.0, tmonth="2026-09")
     at = AppTest.from_file(PAGE)
     at.run()
     body = _body(at)
@@ -122,8 +136,8 @@ def test_group_card_and_relation_confirm(ws):
 
 def test_reanalyze_button_requires_both_conditions(ws):
     """負例×2＋正例：單一條件成立不出現（spec §7.7）。"""
-    a = _mk(ws, price=110.0, tdate="2026-08-01")
-    b = _mk(ws, price=120.0, tdate="2026-09-01")
+    a = _mk(ws, price=110.0, tmonth="2026-08")
+    b = _mk(ws, price=120.0, tmonth="2026-09")
 
     def has_rean(at):
         return any(bt.key == f"ws-rean-{b.id}" for bt in at.button)
@@ -142,7 +156,7 @@ def test_reanalyze_button_requires_both_conditions(ws):
     assert has_rean(at)                           # 兩條件成立
     # 反向單一條件：只確認、未 Reached
     workspace.delete_scenario(ws, a.id, ts=TS)
-    c = _mk(ws, price=110.0, tdate="2026-08-01")
+    c = _mk(ws, price=110.0, tmonth="2026-08")
     workspace.confirm_relation(ws, "G-XYZ", (c.id, b.id), "milestone-path",
                                ts=TS)
     at = AppTest.from_file(PAGE)
@@ -185,8 +199,8 @@ def test_delete_button_full_chain(ws):
 
 
 def test_group_analyze_button_shares_snapshot(ws):
-    a = _mk(ws, price=110.0, tdate="2026-08-01")
-    b = _mk(ws, price=120.0, tdate="2026-09-01")
+    a = _mk(ws, price=110.0, tmonth="2026-08")
+    b = _mk(ws, price=120.0, tmonth="2026-09")
     at = AppTest.from_file(PAGE)
     at.run()
     next(bt for bt in at.button

@@ -1,10 +1,12 @@
-from datetime import date
 import pytest
 
 st_testing = pytest.importorskip("streamlit.testing.v1")
 from streamlit.testing.v1 import AppTest
 
 FIX = "tests/fixtures/xyz_v2_snapshot.json"
+# 遠期年月：不隨真實時鐘過期，四種寫法之一
+TARGET_MONTH_INPUT = "2028/1"
+TARGET_MONTH = "2028-01"
 
 
 def _patched(monkeypatch):
@@ -19,7 +21,7 @@ def _fill_and_submit(at, symbol="XYZ", price=120.0,
                      checks=("long-call", "bull-call-spread")):
     at.text_input(key="symbol").set_value(symbol)
     at.number_input(key="target_price").set_value(price)
-    at.date_input(key="target_date").set_value(date(2026, 8, 28))
+    at.text_input(key="target_month").set_value(TARGET_MONTH_INPUT)
     for s in ("long-call", "bull-call-spread", "long-put", "bear-put-spread"):
         at.checkbox(key=f"chk-{s}").set_value(s in checks)
     at.run()  # register widget states
@@ -49,7 +51,7 @@ def test_summary_shows_scenario(monkeypatch):
     at = _fill_and_submit(at)
     body = " ".join(getattr(x, "value", "") for x in at.markdown) + \
            " ".join(getattr(x, "value", "") for x in at.text)
-    assert "劇本" in body and "120" in body and "2026-08-28" in body
+    assert "劇本" in body and "120" in body and TARGET_MONTH in body
 
 
 def test_direction_mismatch_partial(monkeypatch):

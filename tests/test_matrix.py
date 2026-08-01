@@ -97,23 +97,22 @@ def test_thumbnail_cells_few_dates_dedup():
     assert len(th[0]) == 2                  # dedup: n=2 -> cols [0, 1]
 
 
-def test_date_axis_endpoints_and_anchor():
-    cols = date_axis(date(2026, 7, 15), date(2026, 8, 28), date(2026, 10, 16))
+def test_date_axis_spans_today_to_own_expiry():
+    cols = date_axis(date(2026, 7, 15), date(2026, 10, 16))
     ds = [d for d, _ in cols]
     assert ds[0] == date(2026, 7, 15) and ds[-1] == date(2026, 10, 16)
-    assert date(2026, 8, 28) in ds
-    assert dict(cols)[date(2026, 8, 28)] == "*"
+    assert ds == sorted(set(ds)) and len(ds) <= 7
 
 
-def test_date_axis_target_equals_expiry_shares_column():
-    cols = date_axis(date(2026, 7, 15), date(2026, 10, 16), date(2026, 10, 16))
-    ds = [d for d, _ in cols]
-    assert ds[-1] == date(2026, 10, 16) and dict(cols)[date(2026, 10, 16)] == "*"
+def test_date_axis_has_no_target_marker():
+    """A2.3：年月語意下不存在「目標日」欄，「*」標記連同日期映射一併移除。"""
+    cols = date_axis(date(2026, 7, 15), date(2026, 10, 16))
+    assert {lbl for _, lbl in cols} == {""}
 
 
 def test_matrix_lines_shape_and_determinism():
     prices = price_axis(100.0, 120.0, bullish=True)
-    dates = date_axis(date(2026, 7, 15), date(2026, 8, 28), date(2026, 10, 16))
+    dates = date_axis(date(2026, 7, 15), date(2026, 10, 16))
 
     def fn(S, d):  # deterministic dummy
         return max(S - 110.0, 0.0)

@@ -21,7 +21,7 @@ def _request():
     return service.AnalysisRequest(
         symbol="XYZ",
         base_params=AnalysisParams(strategy="long-call", target_price=120.0,
-                                   target_date="2026-08-28", min_return=0.0),
+                                   target_month="2026-08", min_return=0.0),
         strategies=("long-call", "bull-call-spread"))
 
 
@@ -43,7 +43,7 @@ def _threshold_str(cv) -> str:
         thr = "0%（已保本）"
     else:
         thr = (f"完成 {_pct(cv.completion_threshold)}"
-               f"（目標日保本價 ${_money(cv.breakeven_at_target)}，基準IV）")
+               f"（錨點日保本價 ${_money(cv.breakeven_at_target)}，基準IV）")
     return f"保本門檻: {thr}"
 
 

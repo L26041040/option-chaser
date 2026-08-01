@@ -1,8 +1,6 @@
 """Delta banding and in-band ranking (spec §6). No custom weights."""
 from __future__ import annotations
 
-from datetime import date as _date
-
 from .models import AnalysisParams
 from .valuation import (
     ContractValuation,
@@ -77,7 +75,7 @@ def build_reasons(
         word = "高於" if v.contract.option_type == "call" else "低於"
         s = f"breakeven 僅{word}現價 {_pct(v.breakeven_vs_spot)}"
         half_price = spot + 0.5 * (p.target_price - spot)
-        if scenario_leg_value(v.contract, half_price, _date.fromisoformat(p.target_date), p) > v.mid:
+        if scenario_leg_value(v.contract, half_price, p.anchor, p) > v.mid:
             s += "，劇本半對仍獲利"
         pros.append(s)
     elif band == BAND_BALANCED:

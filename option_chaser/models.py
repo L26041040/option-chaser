@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date
 
 SCHEMA_VERSION = 2
 
@@ -44,10 +45,16 @@ class ChainSnapshot:
 
 @dataclass(frozen=True)
 class AnalysisParams:
+    """使用者主張的劇本參數。
+
+    時間語意是**月級**的：`target_month`（YYYY-MM）是唯一的時間欄位，刻意不存在
+    任何可被填入單一日期的目標日期欄位（附錄 A9 守則）。舊表面需要一個參考日時，
+    一律取衍生的 `anchor`——它由年月純日曆算出，無法被外部覆寫、也不持久化。
+    """
+
     target_price: float
-    target_date: str  # YYYY-MM-DD
+    target_month: str  # YYYY-MM
     strategy: str = "long-call"
-    min_expiry: str | None = None
     top: int = 3
     iv_shifts: tuple[float, ...] = (-0.2, 0.0, 0.2)  # normalized: 0 included, sorted
     rate: float = 0.04
@@ -59,6 +66,17 @@ class AnalysisParams:
     min_return: float = 0.0
     force: bool = False
     matrix_all: bool = False
+
+    @property
+    def anchor(self) -> date:
+        """目標月的日曆錨點（該月第三個星期五）。
+
+        附錄 A9 授權的唯一例外：CLI 報告、單腳買價指引、情境曲線、days_to_target
+        等舊表面需要一個參考日時取本值。是**衍生值**不是欄位——沒有任何入口能把
+        它設成別的日子，也不會出現在 `dataclasses.asdict()` 的持久化結果裡。
+        """
+        from .timeframe import TargetMonth, calendar_anchor   # 避免模組循環匯入
+        return calendar_anchor(TargetMonth.from_key(self.target_month))
 
 
 @dataclass(frozen=True)

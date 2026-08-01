@@ -8,7 +8,7 @@ def test_resilience_section_present_and_formatted():
     result = service.run_offline(service.AnalysisRequest(
         symbol="XYZ",
         base_params=AnalysisParams(strategy="long-call", target_price=120.0,
-                                   target_date="2026-08-28", min_return=0.0),
+                                   target_month="2026-08", min_return=0.0),
         strategies=("long-call", "bull-call-spread")),
         "tests/fixtures/xyz_v2_snapshot.json")
     ok = [r for r in result.results if r.status == "ok"]

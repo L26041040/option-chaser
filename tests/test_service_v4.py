@@ -16,7 +16,7 @@ def _request(strategies=("long-call", "bull-call-spread")):
     return service.AnalysisRequest(
         symbol="XYZ",
         base_params=AnalysisParams(strategy="long-call", target_price=120.0,
-                                   target_date="2026-08-28", min_return=0.0),
+                                   target_month="2026-08", min_return=0.0),
         strategies=strategies)
 
 
@@ -44,9 +44,9 @@ def test_candidate_view_scenario_fields_consistent():
             expiry = (cv.valuation.long_leg.expiry
                       if hasattr(cv.valuation, "long_leg")
                       else cv.valuation.contract.expiry)
+            # 參考日＝日曆錨點（附錄 A9），不是任何被發明出來的目標日
             assert cv.buffer_days == (
-                date.fromisoformat(expiry)
-                - date.fromisoformat(p.target_date)).days
+                date.fromisoformat(expiry) - p.anchor).days
     assert result.meta.target_move == pytest.approx(
         (120.0 - result.snapshot.spot) / result.snapshot.spot)
 

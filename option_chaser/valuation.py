@@ -96,7 +96,7 @@ def evaluate_contract(
     mid = (c.bid + c.ask) / 2.0
     spread = c.ask - c.bid
     expiry = date.fromisoformat(c.expiry)
-    target = date.fromisoformat(p.target_date)
+    target = p.anchor          # 附錄 A9 錨點：估值參考日
     g = leg_greeks(c.option_type, spot, c.strike,
                    days_between(today, expiry) / DAYS_PER_YEAR, p.rate,
                    c.implied_volatility)
@@ -227,7 +227,7 @@ def evaluate_spread(
     width = abs(short_leg.strike - long_leg.strike)
     net_mid = (long_leg.bid + long_leg.ask) / 2.0 - (short_leg.bid + short_leg.ask) / 2.0
     net_worst = long_leg.ask - short_leg.bid
-    target = date.fromisoformat(p.target_date)
+    target = p.anchor          # 附錄 A9 錨點：估值參考日
     expiry = date.fromisoformat(long_leg.expiry)
     t_now = days_between(today, expiry) / DAYS_PER_YEAR
     g_l = leg_greeks(long_leg.option_type, spot, long_leg.strike, t_now, p.rate,

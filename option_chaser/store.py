@@ -19,6 +19,9 @@ from .valuation import SpreadValuation
 from .vocabulary import EVENT_TYPES_V5
 
 
+SCENARIO_SCHEMA_VERSION = 2   # v2: target_date（YYYY-MM-DD）→ target_month（YYYY-MM）
+
+
 class WorkspaceIntegrityError(Exception):
     """快取與事件投影不一致（竄改型，spec §2.2）。"""
 
@@ -30,7 +33,7 @@ class Scenario:
     symbol: str
     direction: str          # "bullish" | "bearish"
     target_price: float
-    target_date: str        # YYYY-MM-DD
+    target_month: str       # YYYY-MM（年月語意；不並存任何目標日期欄位）
     created_at: str         # ISO 8601 UTC
     notes: str
     group_id: str
@@ -54,11 +57,15 @@ def atomic_write_json(path: Path, obj) -> None:
 
 # ---------- Scenario ----------
 
-def scenario_id(symbol: str, target_price: float, target_date: str,
+def scenario_id(symbol: str, target_price: float, target_month: str,
                 existing_ids: set[str]) -> str:
-    """spec §2.2: {symbol}-{target:g 且 '.'→'p'}-{yyyymm}; 撞名 -2、-3（決定性）。"""
+    """spec §2.2: {symbol}-{target:g 且 '.'→'p'}-{yyyymm}; 撞名 -2、-3（決定性）。
+
+    ID 格式不變——原本就只取年月，換成年月輸入後輸出逐字相同，既有結果檔案與
+    歷史仍然對得上。
+    """
     price = format(target_price, "g").replace(".", "p")
-    base = f"{symbol}-{price}-{target_date[:4]}{target_date[5:7]}"
+    base = f"{symbol}-{price}-{target_month[:4]}{target_month[5:7]}"
     if base not in existing_ids:
         return base
     n = 2
@@ -75,8 +82,22 @@ def save_scenario(ws_root, sc: Scenario) -> None:
     atomic_write_json(scenario_path(ws_root, sc.id), dataclasses.asdict(sc))
 
 
+def migrate_scenario(data: dict) -> dict:
+    """schema_version 1 → 2：舊的 target_date 取其年月成為 target_month。
+
+    一個劇本都不丟，ID 不變（ID 本來就只用到年月）。遷移在載入時發生，遷移後的
+    物件在任何一次 `save_scenario` 落盤——不做額外的原地改寫。
+    """
+    if "target_date" not in data:
+        return data
+    data = dict(data)
+    data["target_month"] = data.pop("target_date")[:7]
+    data["schema_version"] = SCENARIO_SCHEMA_VERSION
+    return data
+
+
 def load_scenario(path) -> Scenario:
-    data = json.loads(Path(path).read_text(encoding="utf-8"))
+    data = migrate_scenario(json.loads(Path(path).read_text(encoding="utf-8")))
     data["strategies"] = tuple(data["strategies"])
     return Scenario(**data)
 
@@ -199,7 +220,7 @@ def change_status(ws_root, ts: str, sc: Scenario, to: str, reason: str,
 # ---------- groups.json（全量可重建快取，spec §2.4） ----------
 
 def propose_relation(a: Scenario, b: Scenario) -> str:
-    """相鄰提案（a 為 target_date 較早者）。確定性，零 LLM。"""
+    """相鄰提案（a 為 target_month 較早者）。確定性，零 LLM。"""
     if a.direction != b.direction:
         return "exclusive-candidate"
     if a.direction == "bullish":
@@ -220,7 +241,7 @@ def rebuild_groups(ws_root, scenarios: list[Scenario],
     groups = []
     for symbol in sorted(by_symbol):
         members = sorted(by_symbol[symbol],
-                         key=lambda s: (s.target_date, s.id))
+                         key=lambda s: (s.target_month, s.id))
         relations = []
         for a, b in zip(members, members[1:]):
             confirmed, confirmed_at = "undefined", None
@@ -254,7 +275,7 @@ def _leg(c) -> dict:
 
 
 def _candidate(cv: CandidateView, strategy: str, capital: float | None,
-               today: date, target_date: str) -> dict:
+               today: date, anchor: date) -> dict:
     v = cv.valuation
     if isinstance(v, SpreadValuation):
         legs = [_leg(v.long_leg), _leg(v.short_leg)]   # [0]=long, [1]=short
@@ -302,7 +323,8 @@ def _candidate(cv: CandidateView, strategy: str, capital: float | None,
         "capital_per_contract": cap_per,
         "max_loss_per_contract": cap_per,   # debit 恆等於成本
         "pct_of_capital": (cap_per / capital) if capital else None,
-        "days_to_target": (date.fromisoformat(target_date) - today).days,
+        # 參考日＝日曆錨點（附錄 A9）；年月本身不映射成任何一天。
+        "days_to_target": (anchor - today).days,
         "days_to_expiry": (date.fromisoformat(expiry) - today).days,
     }
 
@@ -313,7 +335,7 @@ def serialize_result(result: AnalysisResult, scenario_id: str,
     today = result.today
 
     def cand(cv, strategy):
-        return _candidate(cv, strategy, capital, today, base.target_date)
+        return _candidate(cv, strategy, capital, today, base.anchor)
 
     def strat(r):
         return {

@@ -184,7 +184,7 @@ def render_summary(view: dict) -> None:
     move_pct = m["target_move"] * 100
     chips = (f"**{m['symbol']}** 劇本 ｜ 現價 ${money(m['spot'])} ｜ "
              f"目標 ${money(base['target_price'])}（{move_pct:+.1f}%）｜ "
-             f"{base['target_date']} ｜ {strategies_used or '（無已完成策略）'}")
+             f"{base['target_month']} ｜ {strategies_used or '（無已完成策略）'}")
     st.markdown(esc(chips))
     for r in view["results"]:
         if r["status"] != "ok":

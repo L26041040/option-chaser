@@ -9,7 +9,7 @@ def _fn(S, d):
 
 def test_grid_shape_and_values():
     prices = price_axis(100.0, 120.0, bullish=True)
-    dates = date_axis(date(2026, 7, 15), date(2026, 8, 28), date(2026, 10, 16))
+    dates = date_axis(date(2026, 7, 15), date(2026, 10, 16))
     grid = matrix_grid(_fn, 3.0, prices, dates)
     assert len(grid) == len(prices) and len(grid[0]) == len(dates)
     for i, (price, _) in enumerate(prices):
@@ -19,7 +19,7 @@ def test_grid_shape_and_values():
 
 def test_lines_formats_grid_cell_for_cell():
     prices = price_axis(100.0, 120.0, bullish=True)
-    dates = date_axis(date(2026, 7, 15), date(2026, 8, 28), date(2026, 10, 16))
+    dates = date_axis(date(2026, 7, 15), date(2026, 10, 16))
     grid = matrix_grid(_fn, 3.0, prices, dates)
     lines = matrix_lines(_fn, 3.0, prices, dates)
     # data rows are displayed descending; parse each cell and compare to grid

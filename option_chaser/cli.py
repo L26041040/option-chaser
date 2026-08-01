@@ -7,6 +7,7 @@ from datetime import date
 from pathlib import Path
 
 from .models import AnalysisParams, ParamError, STRATEGIES, is_bullish
+from .timeframe import TargetMonth, month_is_over, parse_target_month
 
 
 # Flags that take numeric/CSV values and need preprocessing for negative numbers
@@ -65,9 +66,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     ap.add_argument("symbol")
     ap.add_argument("--target-price", type=float, required=True)
-    ap.add_argument("--target-date", required=True)
+    ap.add_argument("--target-month", required=True,
+                    help="目標年月：2028/1、2028/01、28/1、28/01 皆可")
     ap.add_argument("--strategy", choices=list(STRATEGIES), default="long-call")
-    ap.add_argument("--min-expiry", default=None)
     ap.add_argument("--top", type=int, default=3)
     ap.add_argument("--iv-shifts", default="-0.2,0,0.2")
     ap.add_argument("--rate", type=float, default=0.04)
@@ -84,21 +85,12 @@ def build_parser() -> argparse.ArgumentParser:
     return ap
 
 
-def _parse_iso(name: str, s: str) -> date:
-    try:
-        return date.fromisoformat(s)
-    except ValueError:
-        raise ParamError(f"{name} 必須為 YYYY-MM-DD：{s!r}") from None
-
-
 def resolve_params(args: argparse.Namespace) -> AnalysisParams:
     if not args.symbol or not args.symbol.strip():
         raise ParamError("symbol 必須為非空字串")
     if args.target_price <= 0:
         raise ParamError("--target-price 必須 > 0")
-    _parse_iso("--target-date", args.target_date)
-    if args.min_expiry:
-        _parse_iso("--min-expiry", args.min_expiry)
+    target_month = parse_target_month(args.target_month).key()
     if not 1 <= args.top <= 10:
         raise ParamError("--top 必須在 1–10")
     if args.rate < 0:
@@ -130,8 +122,8 @@ def resolve_params(args: argparse.Namespace) -> AnalysisParams:
         raise ParamError("--delta-bands 需滿足 0 < a < b < 1")
 
     return AnalysisParams(
-        target_price=args.target_price, target_date=args.target_date,
-        strategy=args.strategy, min_expiry=args.min_expiry,
+        target_price=args.target_price, target_month=target_month,
+        strategy=args.strategy,
         top=args.top, iv_shifts=iv_shifts, rate=args.rate,
         min_oi=args.min_oi, min_volume=args.min_volume,
         max_spread_pct=args.max_spread_pct, spread_floor=args.spread_floor,
@@ -141,8 +133,9 @@ def resolve_params(args: argparse.Namespace) -> AnalysisParams:
 
 
 def validate_scenario(p: AnalysisParams, spot: float, today: date) -> None:
-    if date.fromisoformat(p.target_date) <= today:
-        raise ParamError(f"--target-date 必須晚於資料日 {today.isoformat()}")
+    if month_is_over(TargetMonth.from_key(p.target_month), today):
+        raise ParamError(
+            f"--target-month {p.target_month} 已過完（資料日 {today.isoformat()}）")
     if is_bullish(p.strategy):
         if p.target_price <= spot and not p.force:
             raise ParamError(
@@ -156,7 +149,7 @@ def validate_scenario(p: AnalysisParams, spot: float, today: date) -> None:
 from .models import FetchError, SnapshotSchemaError, SPREAD_STRATEGIES
 from . import service
 
-USAGE_HINT = "用法示例: option-chaser XYZ --target-price 120 --target-date 2026-08-28 --strategy long-call"
+USAGE_HINT = "用法示例: option-chaser XYZ --target-price 120 --target-month 2026/8 --strategy long-call"
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -16,7 +16,7 @@ def make(strike, bid, ask, iv, expiry="2026-10-16"):
 
 def test_ceiling_identity_matrix():
     # Spec §9 test 5: L1 <= L2 <= baseline over a fixed parameter matrix.
-    p = AnalysisParams(target_price=120.0, target_date="2026-08-28")
+    p = AnalysisParams(target_price=120.0, target_month="2026-08")
     for strike in (80.0, 100.0, 110.0, 119.0, 130.0, 150.0):
         for iv in (0.15, 0.38, 0.9):
             for expiry in ("2026-10-16", "2027-01-15"):
@@ -28,7 +28,7 @@ def test_ceiling_identity_matrix():
 
 
 def test_no_negative_shift_l2_equals_baseline():
-    p = AnalysisParams(target_price=120.0, target_date="2026-08-28",
+    p = AnalysisParams(target_price=120.0, target_month="2026-08",
                        iv_shifts=(0.0, 0.2))
     v = evaluate_contract(make(110.0, 3.0, 3.2, 0.38), spot=100.0, today=TODAY, p=p)
     assert v.l2 == v.baseline_value
@@ -36,8 +36,9 @@ def test_no_negative_shift_l2_equals_baseline():
 
 def test_judgments_all_trigger():
     # ask above every ceiling -> all three sentences
-    p = AnalysisParams(target_price=120.0, target_date="2026-08-28")
-    v = evaluate_contract(make(95.0, 30.6, 31.0, 0.9), spot=100.0, today=TODAY, p=p)
+    p = AnalysisParams(target_price=120.0, target_month="2026-08")
+    v = evaluate_contract(make(95.0, 31.4, 31.8, 0.9), spot=100.0, today=TODAY, p=p)
+    assert v.contract.ask > v.l3 > v.l2 > v.l1     # 三層天花板都被越過
     msgs = guidance_judgments(v, p)
     assert len(msgs) == 3
     assert "超過劇本內在價值" in msgs[0]
@@ -46,6 +47,6 @@ def test_judgments_all_trigger():
 
 
 def test_judgments_none_trigger():
-    p = AnalysisParams(target_price=120.0, target_date="2026-08-28")
+    p = AnalysisParams(target_price=120.0, target_month="2026-08")
     v = evaluate_contract(make(110.0, 3.0, 3.25, 0.38), spot=100.0, today=TODAY, p=p)
     assert guidance_judgments(v, p) == []

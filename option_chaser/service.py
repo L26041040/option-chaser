@@ -19,6 +19,8 @@ from .report import STRATEGY_LABELS, render, render_filter_only, render_spreads
 from .scenarios import (ScenarioVector, completion_curve, completion_scan,
                         friction, natural_cost, scenario_vector, _grid_price,
                         _value_fn)
+from .timeframe import (TargetMonth, calendar_anchor, month_is_over,
+                        select_expiries)
 from .valuation import (ContractValuation, SpreadValuation, evaluate_contract,
                         evaluate_spread, leg_greeks, scenario_leg_value,
                         spread_scenario_value)
@@ -149,8 +151,7 @@ def _skip_message(strategy: str) -> str:
 def _matrix_view(value_fn, cost: float, spot: float, p: AnalysisParams,
                  today: date, expiry_iso: str) -> MatrixView:
     prices = price_axis(spot, p.target_price, is_bullish(p.strategy))
-    dates = date_axis(today, date.fromisoformat(p.target_date),
-                      date.fromisoformat(expiry_iso))
+    dates = date_axis(today, date.fromisoformat(expiry_iso))
     cells = matrix_grid(value_fn, cost, prices, dates)
     return MatrixView(prices=tuple(prices),
                       dates=tuple((d.isoformat(), lbl) for d, lbl in dates),
@@ -216,8 +217,7 @@ def _v4_fields(val: ContractValuation | SpreadValuation, spot: float,
         completion_threshold=k, breakeven_at_target=be,
         retention=1.0 + dict(sv.entries)["S1"], friction=fr,
         friction_amount=natural_cost(val) - mid_cost,
-        buffer_days=(date.fromisoformat(expiry)
-                     - date.fromisoformat(p.target_date)).days,
+        buffer_days=(date.fromisoformat(expiry) - p.anchor).days,
         quote_warning=zero_vol or fr > 0.25,
         theta_day_rate=abs(_net_theta(val, spot, today, p)) / mid_cost,
         vega_per_pt=_net_vega(val, spot, today, p) / mid_cost,
@@ -275,29 +275,15 @@ def _expiry_of(cv: CandidateView) -> str:
     return v.long_leg.expiry if isinstance(v, SpreadValuation) else v.contract.expiry
 
 
-def _sample_expiries(expiries: list[str], target_date: str
-                     ) -> tuple[list[str], list[str]]:
-    """Spec §3.2: <=4 keep all; else nearest-2 (>= target) + evenly spaced to 4."""
-    exps = sorted(set(expiries))
-    if len(exps) <= 4:
-        return exps, []
-    kept = exps[:2]                       # expiry >= target_date guaranteed by filters
-    rest = exps[2:]
-    need = 2
-    idx = [round(i * (len(rest) - 1) / (need - 1)) for i in range(need)] \
-        if need > 1 else [0]
-    for i in sorted(set(idx)):
-        kept.append(rest[i])
-    kept = sorted(set(kept))
-    hidden = [e for e in exps if e not in kept]
-    return kept, hidden
-
-
 def _build_groups(results: tuple[StrategyResult, ...],
-                  strategies_order: tuple[str, ...], target_date: str
+                  strategies_order: tuple[str, ...], anchor: date
                   ) -> tuple[tuple[ExpiryGroup, ...], tuple[str, ...],
                             tuple[str, str] | None]:
-    """v4 spec §3.2: assemble expiry groups, global badges, sampling + injection."""
+    """v4 spec §3.2 的分組與全域徽章。
+
+    窮舉範圍已由六點規則收斂到至多五檔到期日，原本「先窮舉全鏈、事後取樣顯示」
+    的抽樣層因此整個消失：每一檔被選中的到期日都是一組，`hidden_expiries` 恆空。
+    """
     order_index = {s: i for i, s in enumerate(strategies_order)}
     all_pairs: list[tuple[str, CandidateView]] = []
     pe_best: dict[tuple[str, str], CandidateView] = {}
@@ -348,44 +334,20 @@ def _build_groups(results: tuple[StrategyResult, ...],
     def _make_group(exp: str) -> ExpiryGroup:
         rows = _make_rows(exp)
         hidden_count = total_counts.get(exp, 0) - len(rows)
-        buffer_days = (date.fromisoformat(exp) - date.fromisoformat(target_date)).days
-        return ExpiryGroup(expiry=exp, buffer_days=buffer_days, rows=rows,
-                           hidden_count=hidden_count)
+        # 緩衝天數的參考日＝日曆錨點（附錄 A9），不是任何被發明出來的目標日。
+        return ExpiryGroup(expiry=exp,
+                           buffer_days=(date.fromisoformat(exp) - anchor).days,
+                           rows=rows, hidden_count=hidden_count)
 
     expiries = sorted({_expiry_of(cv) for _, cv in all_pairs})
-    kept, hidden = _sample_expiries(expiries, target_date)
-    groups: dict[str, ExpiryGroup] = {exp: _make_group(exp) for exp in kept}
-    hidden_list = list(hidden)
-
-    def _ensure_visible(pair: tuple[str, CandidateView]) -> None:
-        s, cv = pair
-        exp = _expiry_of(cv)
-        if exp in groups:
-            rows = groups[exp].rows
-            if any(r.strategy == s and r.candidate is cv for r in rows):
-                return
-            new_row = ExpiryGroupRow(strategy=s, candidate=cv, badges=_row_badges(s, cv))
-            new_rows = tuple(sorted(rows + (new_row,),
-                                    key=lambda r: -r.candidate.baseline_return))
-            groups[exp] = dataclasses.replace(groups[exp], rows=new_rows)
-        else:
-            groups[exp] = _make_group(exp)
-            if exp in hidden_list:
-                hidden_list.remove(exp)
-
-    for pair in (top_return_pair, top_resilience_pair, default_pair):
-        _ensure_visible(pair)
-
-    ordered_expiries = sorted(groups.keys())
-    expiry_groups = tuple(groups[e] for e in ordered_expiries)
-    hidden_expiries = tuple(sorted(hidden_list))
+    expiry_groups = tuple(_make_group(exp) for exp in expiries)
     default_selection = (_expiry_of(default_pair[1]), candidate_key(default_pair[1]))
-    return expiry_groups, hidden_expiries, default_selection
+    return expiry_groups, (), default_selection
 
 
 def _single_leg_result(p: AnalysisParams, snap: ChainSnapshot,
                        today: date) -> StrategyResult:
-    qualified, freport = apply_filters(snap.contracts, p, today)
+    qualified, freport = apply_filters(snap.contracts, p)
     if not qualified:
         return StrategyResult(
             strategy=p.strategy, status="empty", candidates=(),
@@ -431,7 +393,7 @@ def _single_leg_result(p: AnalysisParams, snap: ChainSnapshot,
 
 def _spread_result(p: AnalysisParams, snap: ChainSnapshot,
                    today: date) -> StrategyResult:
-    qualified, freport = apply_filters(snap.contracts, p, today)
+    qualified, freport = apply_filters(snap.contracts, p)
     pairs, pair_report = generate_spread_pairs(qualified, p)
     if not pairs:
         return StrategyResult(
@@ -513,12 +475,35 @@ def _validate_request(request: AnalysisRequest) -> None:
         raise ParamError(f"未知策略: {', '.join(invalid)}")
 
 
+def _scoped_to_selected_expiries(snap: ChainSnapshot, anchor: date,
+                                 today: date) -> ChainSnapshot:
+    """把快照收斂到六點規則選中的至多五檔到期日——窮舉只發生在這個範圍內。
+
+    候選到期日必須晚於資料日：已到期／當日到期的合約 T <= 0，Greeks 無定義，
+    根本不是可分析的標的。這是資料有效性前提，與「到期日 >= 目標日」那條被移除
+    的目標導向下限無關——錨點前方、早於目標月的到期日一律照常入選。
+    """
+    tradable = {c.expiry for c in snap.contracts
+                if date.fromisoformat(c.expiry) > today}
+    if not tradable:
+        raise ParamError(f"快照中沒有晚於資料日 {today.isoformat()} 的到期日")
+    selected = set(select_expiries(tradable, anchor).expiries)
+    return dataclasses.replace(
+        snap, contracts=tuple(c for c in snap.contracts
+                              if c.expiry in selected))
+
+
 def _analyze(request: AnalysisRequest, snap: ChainSnapshot,
              snapshot_path: str, progress: Progress | None) -> AnalysisResult:
     today = snapshot_today(snap.fetched_at)
     base = request.base_params
-    if date.fromisoformat(base.target_date) <= today:
-        raise ParamError(f"--target-date 必須晚於資料日 {today.isoformat()}")
+    month = TargetMonth.from_key(base.target_month)
+    if month_is_over(month, today):
+        raise ParamError(
+            f"--target-month {base.target_month} 已過完（資料日 {today.isoformat()}）")
+    anchor = calendar_anchor(month)
+    _emit(progress, "正在依日曆錨點選取到期日……")
+    snap = _scoped_to_selected_expiries(snap, anchor, today)
     results = []
     _emit(progress, "正在過濾合約……")
     for s in request.strategies:
@@ -548,7 +533,7 @@ def _analyze(request: AnalysisRequest, snap: ChainSnapshot,
                    key=lambda r: (r.baseline_return, -order.index(r.strategy))
                    ).strategy
     expiry_groups, hidden_expiries, default_selection = _build_groups(
-        tuple(results), request.strategies, base.target_date)
+        tuple(results), request.strategies, anchor)
     return AnalysisResult(
         request=request,
         meta=SnapshotMeta(symbol=snap.symbol, spot=snap.spot,

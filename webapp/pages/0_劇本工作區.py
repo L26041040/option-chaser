@@ -4,7 +4,6 @@ GUI 零金融公式：所有數字來自 result dict（store 預算）或 scenar
 from __future__ import annotations
 
 import os
-from datetime import date, timedelta
 from pathlib import Path
 
 import streamlit as st
@@ -12,6 +11,7 @@ import streamlit as st
 from option_chaser import store, workspace
 from option_chaser.models import FetchError, ParamError
 from option_chaser.report import STRATEGY_LABELS
+from option_chaser.timeframe import parse_target_month
 from webapp.render import (esc, money, pct, render_step2, render_step3,
                            render_step4, render_summary)
 
@@ -91,9 +91,7 @@ with st.expander("＋ 建立劇本", expanded=False):
             st.session_state[f"ws-new-chk-{s}"] = s in defaults
     for s in STRATEGY_ORDER:
         st.checkbox(STRATEGY_LABELS[s], key=f"ws-new-chk-{s}")
-    st.date_input("目標日", key="ws-new-date",
-                  value=date.today() + timedelta(days=180),
-                  min_value=date.today() + timedelta(days=1))
+    st.text_input("目標年月", key="ws-new-month", placeholder="2028/1")
     st.text_input("備註", key="ws-new-notes")
     if st.button("建立", key="ws-new-create"):
         strategies = tuple(s for s in STRATEGY_ORDER
@@ -105,13 +103,20 @@ with st.expander("＋ 建立劇本", expanded=False):
         elif not strategies:
             st.error("請至少勾選一種策略。")
         else:
-            workspace.create_scenario(
-                WS_ROOT, symbol=sym, direction=direction,
-                target_price=float(st.session_state["ws-new-price"]),
-                target_date=st.session_state["ws-new-date"].isoformat(),
-                notes=st.session_state["ws-new-notes"],
-                strategies=strategies)
-            st.rerun()
+            # 格式錯誤與「已過完的月份」都由 ParamError 表達（後者在 create 裡把關）
+            try:
+                month = parse_target_month(
+                    st.session_state.get("ws-new-month") or "")
+                workspace.create_scenario(
+                    WS_ROOT, symbol=sym, direction=direction,
+                    target_price=float(st.session_state["ws-new-price"]),
+                    target_month=month.key(),
+                    notes=st.session_state["ws-new-notes"],
+                    strategies=strategies)
+            except ParamError as e:
+                st.error(str(e))
+            else:
+                st.rerun()
 
 # ---------- 載入（含對帳） ----------
 scenarios = workspace.list_scenarios(WS_ROOT)
@@ -133,7 +138,7 @@ for sc in scenarios:
     with cols[2]:
         st.markdown(esc(f"${money(sc.target_price)}"))
     with cols[3]:
-        st.markdown(sc.target_date)
+        st.markdown(sc.target_month)
     with cols[4]:
         st.markdown(STATUS_BADGE[sc.status])
     with cols[5]:
@@ -212,13 +217,13 @@ for g in groups["groups"]:
         summary = _summary_of(sc.id)
         if summary is not None:
             cand = summary[1]["candidate"]
-            line = (f"{sc.target_date} ${money(sc.target_price)}｜"
+            line = (f"{sc.target_month} ${money(sc.target_price)}｜"
                     f"{STATUS_BADGE[sc.status]}｜"
                     f"劇本報酬 {pct(cand['baseline_return'])}｜"
                     f"情境最壞 {pct(cand['scenario_vector']['worst_return'])}｜"
                     f"緩衝 +{cand['buffer_days']} 天")
         else:
-            line = (f"{sc.target_date} ${money(sc.target_price)}｜"
+            line = (f"{sc.target_month} ${money(sc.target_price)}｜"
                     f"{STATUS_BADGE[sc.status]}｜尚未分析")
         st.markdown(esc(line))
     for i, rel in enumerate(g["relations"]):

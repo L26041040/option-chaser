@@ -46,9 +46,8 @@ def _header_lines(snap: ChainSnapshot, p: AnalysisParams, today: date) -> list[s
         "",
         "[使用者假設]",
         f"- 策略: {STRATEGY_LABELS[p.strategy]}",
-        f"- 劇本: {p.target_date} 到達 ${_money(p.target_price)}",
-        f"- 限制: 到期日 >= 劇本日"
-        + (f"; 到期日 >= {p.min_expiry}" if p.min_expiry else ""),
+        f"- 劇本: {p.target_month} 到達 ${_money(p.target_price)}",
+        f"- 到期日選取: 日曆錨點 {p.anchor.isoformat()} 前後至多五檔實際到期日",
         f"- 最低要求報酬率: {_pct(p.min_return)}",
         "",
         "[市場資料]",
@@ -81,7 +80,7 @@ def _resilience_lines(val, spot: float, today: date, p: AnalysisParams) -> list[
     expiry = date.fromisoformat(
         val.long_leg.expiry if isinstance(val, SpreadValuation) else val.contract.expiry
     )
-    tgt = date.fromisoformat(p.target_date)
+    tgt = p.anchor                            # 附錄 A9 錨點：估值參考日
     delay_delta = {"S4": 30, "S5": 90}
     lines = ["", "韌性向量（7 情境，Mid 口徑）:"]
     for code, ret in sv.entries:
@@ -99,7 +98,7 @@ def _resilience_lines(val, spot: float, today: date, p: AnalysisParams) -> list[
     elif k <= 0:
         thr = "0%（已保本）"
     else:
-        thr = f"完成 {_pct(k)}（目標日保本價 ${_money(be)}，基準IV）"
+        thr = f"完成 {_pct(k)}（錨點日保本價 ${_money(be)}，基準IV）"
     retention = 1.0 + dict(sv.entries)["S1"]
     mid = val.net_mid if isinstance(val, SpreadValuation) else val.mid
     friction_amount = natural_cost(val) - mid
@@ -168,7 +167,7 @@ def _pct_iv(iv: float) -> str:
 
 def _matrix_block(value_fn, cost, spot, p, today, expiry) -> list[str]:
     prices = price_axis(spot, p.target_price, is_bullish(p.strategy))
-    dates = date_axis(today, _date.fromisoformat(p.target_date), expiry)
+    dates = date_axis(today, expiry)
     return ["", "P/L 矩陣（報酬率，Mid 進場）:"] + matrix_lines(value_fn, cost, prices, dates)
 
 
@@ -186,16 +185,19 @@ def _footer_lines(p: AnalysisParams) -> list[str]:
         "- Breakeven = Strike + Mid（到期持有觀點，提前平倉不適用）",
         "- Lambda = Delta * 現價 / Mid（低權利金合約會放大，僅供量級參考）",
         "- 矩陣: 11 價格 × ≤7 日期；IV 按快照值恆定；末欄為到期 payoff；估值含美式內在價值鉗制",
-        f"- 過濾: 到期日 / 報價 / IV(0.01-5.0) / OI>={p.min_oi} 且 Vol>={p.min_volume} / "
-        f"Spread <= max({p.spread_floor:g}, {p.max_spread_pct:g}*Mid)",
+        "- 到期日選取: 目標月第三個星期五為日曆錨點，取距錨點最近的實際到期日為"
+        "baseline（同距取較晚），再取其前 2 後 2（一側不足由另一側補足），至多五檔；"
+        "窮舉僅及於這些到期日",
+        f"- 過濾: 報價 / IV(0.01-5.0) / OI>={p.min_oi} 且 Vol>={p.min_volume} / "
+        f"Spread <= max({p.spread_floor:g}, {p.max_spread_pct:g}*Mid)（不含任何到期日條件）",
         "- 排名: Delta 分級（實務慣例），級內以基準情境報酬率（Mid 進場）排序",
         "- 模型限制: 無股利調整（q=0）、歐式近似、IV 乘法情境",
         "- 免責: 模型估計非保證價格，不構成投資建議",
         "- 韌性向量 7 情境: S1 不漲(S=現價) / S2 半程(完成度50%價位) / S3 大半程"
         "(完成度75%價位) / S4 晚30天到達 / S5 晚90天到達 / S6 IV最保守"
         "(全部 IV 情境估值之最小值) / S7 Natural成交(成本改採 Ask，價差為長Ask−短Bid)"
-        "；除 S4/S5 外估值日皆為劇本日、基準 IV",
-        "- 延遲情境（S4/S5）路徑假設: 到達日 = 劇本日 + 30 或 90 天；估值日價格採"
+        "；除 S4/S5 外估值日皆為日曆錨點、基準 IV",
+        "- 延遲情境（S4/S5）路徑假設: 到達日 = 日曆錨點 + 30 或 90 天；估值日價格採"
         "現價與目標價之線性內插 S(d) = 現價 + (目標價−現價)×(d−今日)/(到達日−今日)；"
         "合約先到期時以到期日內插價計算 payoff（模型假設，非市場預測）",
         "- 保本門檻掃描定義（後綴條件）: 沿劇本路徑網格 k∈[-0.20,1.00]（步長0.001）"

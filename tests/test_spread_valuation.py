@@ -5,7 +5,7 @@ from option_chaser.valuation import (
 )
 
 TODAY = date(2026, 7, 15)
-P = AnalysisParams(target_price=120.0, target_date="2026-08-28",
+P = AnalysisParams(target_price=120.0, target_month="2026-08",
                    strategy="bull-call-spread")
 
 
@@ -54,7 +54,7 @@ def test_evaluate_spread_fields_and_l2_min():
 
 
 def test_bear_put_breakeven():
-    p = AnalysisParams(target_price=80.0, target_date="2026-08-28",
+    p = AnalysisParams(target_price=80.0, target_month="2026-08",
                        strategy="bear-put-spread")
     lng = make("L", 100.0, 5.2, 5.4, iv=0.36, opt="put")
     sht = make("S", 85.0, 1.1, 1.25, iv=0.35, opt="put")

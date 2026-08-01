@@ -11,9 +11,9 @@ TS = "2026-07-21T00:00:00+00:00"
 
 
 def _sc(sid, symbol="TLT", direction="bullish", price=105.0,
-        tdate="2028-01-01"):
-    return Scenario(schema_version=1, id=sid, symbol=symbol,
-                    direction=direction, target_price=price, target_date=tdate,
+        tmonth="2028-01"):
+    return Scenario(schema_version=store.SCENARIO_SCHEMA_VERSION, id=sid, symbol=symbol,
+                    direction=direction, target_price=price, target_month=tmonth,
                     created_at=TS, notes="", group_id=f"G-{symbol}",
                     status="Active", strategies=("long-call",))
 
@@ -23,8 +23,8 @@ def _created(ws, sc):
 
 
 def test_same_symbol_grouped_members_sorted(tmp_path):
-    a = _sc("TLT-115-202812", price=115.0, tdate="2028-12-01")
-    b = _sc("TLT-105-202801", price=105.0, tdate="2028-01-01")
+    a = _sc("TLT-115-202812", price=115.0, tmonth="2028-12")
+    b = _sc("TLT-105-202801", price=105.0, tmonth="2028-01")
     c = _sc("SPY-500-202801", symbol="SPY", price=500.0)
     for s in (a, b, c):
         _created(tmp_path, s)
@@ -38,8 +38,8 @@ def test_same_symbol_grouped_members_sorted(tmp_path):
 
 
 def test_same_date_tie_breaks_by_id(tmp_path):
-    a = _sc("TLT-110-202801", price=110.0, tdate="2028-01-01")
-    b = _sc("TLT-105-202801", price=105.0, tdate="2028-01-01")
+    a = _sc("TLT-110-202801", price=110.0, tmonth="2028-01")
+    b = _sc("TLT-105-202801", price=105.0, tmonth="2028-01")
     for s in (a, b):
         _created(tmp_path, s)
     data = store.rebuild_groups(tmp_path, [a, b], store.read_events(tmp_path))
@@ -47,24 +47,24 @@ def test_same_date_tie_breaks_by_id(tmp_path):
 
 
 def test_proposal_three_branches_and_bearish_mirror():
-    early_b = _sc("A", price=105.0, tdate="2028-01-01")
-    late_b = _sc("B", price=115.0, tdate="2028-12-01")
+    early_b = _sc("A", price=105.0, tmonth="2028-01")
+    late_b = _sc("B", price=115.0, tmonth="2028-12")
     assert store.propose_relation(early_b, late_b) == "milestone-path"
-    late_lower = _sc("C", price=95.0, tdate="2028-12-01")
+    late_lower = _sc("C", price=95.0, tmonth="2028-12")
     assert store.propose_relation(early_b, late_lower) == "review-needed"
-    bear = _sc("D", direction="bearish", price=90.0, tdate="2028-12-01")
+    bear = _sc("D", direction="bearish", price=90.0, tmonth="2028-12")
     assert store.propose_relation(early_b, bear) == "exclusive-candidate"
     # bearish 鏡像：價格沿方向遞減 = milestone-path
-    b1 = _sc("E", direction="bearish", price=95.0, tdate="2028-01-01")
-    b2 = _sc("F", direction="bearish", price=85.0, tdate="2028-12-01")
+    b1 = _sc("E", direction="bearish", price=95.0, tmonth="2028-01")
+    b2 = _sc("F", direction="bearish", price=85.0, tmonth="2028-12")
     assert store.propose_relation(b1, b2) == "milestone-path"
-    b3 = _sc("G", direction="bearish", price=99.0, tdate="2028-12-01")
+    b3 = _sc("G", direction="bearish", price=99.0, tmonth="2028-12")
     assert store.propose_relation(b1, b3) == "review-needed"
 
 
 def test_confirm_projection_and_default_undefined(tmp_path):
-    a = _sc("TLT-105-202801", price=105.0, tdate="2028-01-01")
-    b = _sc("TLT-115-202812", price=115.0, tdate="2028-12-01")
+    a = _sc("TLT-105-202801", price=105.0, tmonth="2028-01")
+    b = _sc("TLT-115-202812", price=115.0, tmonth="2028-12")
     for s in (a, b):
         _created(tmp_path, s)
     data = store.rebuild_groups(tmp_path, [a, b], store.read_events(tmp_path))
@@ -83,8 +83,8 @@ def test_confirm_projection_and_default_undefined(tmp_path):
 
 def test_recreate_does_not_resurrect_confirmation(tmp_path):
     """spec §2.4 生命週期界定負例（行序，非 ts）。"""
-    a = _sc("TLT-105-202801", price=105.0, tdate="2028-01-01")
-    b = _sc("TLT-115-202812", price=115.0, tdate="2028-12-01")
+    a = _sc("TLT-105-202801", price=105.0, tmonth="2028-01")
+    b = _sc("TLT-115-202812", price=115.0, tmonth="2028-12")
     for s in (a, b):
         _created(tmp_path, s)
     store.append_event(tmp_path, TS, None, "GROUP_RELATION_CONFIRMED",

@@ -15,11 +15,11 @@ give investment advice. Same snapshot + same params = byte-identical output.
 
 ## Run (online; saves a snapshot under snapshots/)
 
-    option-chaser NVDA --target-price 220 --target-date 2026-09-30
+    option-chaser NVDA --target-price 220 --target-month 2026/9
 
 ## Re-run offline from a snapshot
 
-    option-chaser NVDA --target-price 220 --target-date 2026-09-30 \
+    option-chaser NVDA --target-price 220 --target-month 2026/9 \
         --snapshot snapshots/NVDA_xxxx.json
 
 ## Strategies
@@ -38,11 +38,13 @@ Direction guard: bullish strategies need target > spot, bearish need target < sp
 ## Removed in v2
 
     --min-days-after / --delay-days and the stress-test section are gone —
-    the matrix supersedes them. Manage your own expiry buffer via --min-expiry.
+    the matrix supersedes them.
 
 ## Key flags
 
-    --min-expiry DATE     absolute expiry floor (expiry >= target-date is always enforced)
+    --target-month YYYY/M the scenario's target month; 2028/1, 2028/01, 28/1 and
+                          28/01 all mean the same month. Expiries are chosen from
+                          the chain around that month's third Friday (see below).
     --iv-shifts CSV       IV scenarios, default -0.2,0,0.2 (0 always included)
     --min-return X        L3 price ceiling = baseline value / (1+X)
     --max-spread-pct / --spread-floor / --min-oi / --min-volume   tradeability gates
@@ -55,7 +57,8 @@ Snapshots are schema v2 (calls + puts). v1 snapshots must be re-fetched.
 ## Reading the report
 
 - Filter stats: how many contracts got cut from the full chain, and why
-  (expiry / quote / IV / liquidity / spread-too-wide).
+  (quote / IV / liquidity / spread-too-wide). Which expiries get analysed
+  is decided beforehand by the selection rule, not by a filter.
 - Single-leg candidates come in three Delta bands (conservative / balanced /
   aggressive); spreads are a single ranked list.
 - Each candidate: Bid/Mid/Ask (with per-contract dollar amounts), Breakeven,
@@ -144,23 +147,24 @@ docs/superpowers/specs/2026-07-20-option-chaser-v4-design.md (v4)
 ## 四種策略與範例
 
     # 看漲單腿（預設）：TLT 在 2027-12-31 前到 110
-    option-chaser TLT --target-price 110 --target-date 2027-12-31
+    option-chaser TLT --target-price 110 --target-month 2027/12
 
     # 看漲垂直價差（同到期日全配對窮舉，降低成本、獲利封頂）
-    option-chaser TLT --strategy bull-call-spread --target-price 110 --target-date 2027-12-31
+    option-chaser TLT --strategy bull-call-spread --target-price 110 --target-month 2027/12
 
     # 看跌單腿：TLT 在 2027-06-30 前跌到 70
-    option-chaser TLT --strategy long-put --target-price 70 --target-date 2027-06-30
+    option-chaser TLT --strategy long-put --target-price 70 --target-month 2027/6
 
     # 看跌垂直價差
-    option-chaser TLT --strategy bear-put-spread --target-price 70 --target-date 2027-06-30
+    option-chaser TLT --strategy bear-put-spread --target-price 70 --target-month 2027/6
 
 方向守衛：看漲策略要求目標價 > 現價、看跌策略要求目標價 < 現價，
 方向相反時會擋下並提示加 --force 才放行。
 
 ## 怎麼讀報告
 
-- 過濾統計：整條鏈刷掉多少、為什麼刷（到期日/報價/IV/流動性/價差過寬）
+- 過濾統計：選中的到期日內刷掉多少、為什麼刷（報價/IV/流動性/價差過寬）；
+  到期日本身的取捨在過濾之前，由選取規則負責
 - 單腿分三級距（依 |Delta|）：保守型（深價內，容錯大）、平衡型、
   積極型（價外，高槓桿）；價差為單一排名清單
 - 每候選：Bid/Mid/Ask（含每張金額）、Breakeven、IV 三情境估值
@@ -174,7 +178,7 @@ docs/superpowers/specs/2026-07-20-option-chaser-v4-design.md (v4)
   「成交摩擦」（百分比之外同時換算列出絕對金額）。
 - P/L 矩陣：列 = 股價（11 列，其中 4 個錨點價格粗體標記：現價／目標／
   超標(目標±10%)／深跌(現價∓10%)，其餘為等距內插價）、欄 = 日期
-  （* 為劇本日、末欄為到期日 payoff）、格值 = 以 Mid 進場的報酬率%。
+  （末欄為該合約自身的到期日 payoff）、格值 = 以 Mid 進場的報酬率%。
   「如果只漲一半」「如果晚三個月才到」都直接查表，不用重跑。
 
 ## 離線重跑（可覆核性）
@@ -182,12 +186,12 @@ docs/superpowers/specs/2026-07-20-option-chaser-v4-design.md (v4)
 每次線上執行會把市場快照存進 snapshots/。之後用 --snapshot 指定該檔
 即可完全離線重現同一份報告（逐位元相同）：
 
-    option-chaser TLT --target-price 110 --target-date 2027-12-31 \
+    option-chaser TLT --target-price 110 --target-month 2027/12 \
         --snapshot snapshots/TLT_xxxx.json
 
 ## 常用參數（中文對照）
 
-    --min-expiry 日期      到期日下限（到期日 >= 劇本日 恆強制）
+    --target-month 年月    目標年月，2028/1、2028/01、28/1、28/01 皆可
     --iv-shifts CSV        IV 情境，預設 -0.2,0,0.2（0 必含）
     --min-return X         要求報酬上限 L3 = 基準估值/(1+X)
     --min-oi / --min-volume / --max-spread-pct / --spread-floor   可交易性門檻
@@ -202,7 +206,7 @@ docs/superpowers/specs/2026-07-20-option-chaser-v4-design.md (v4)
 - 無股利調整（q=0）：高殖利率標的（如 TLT 約 4%）的 call 殘值會
   「系統性偏樂觀」、put 偏保守。深價內長天期偏差最大，
   「保守底線」行是對這個偏誤的天然防線。
-- IV 假設恆定到劇本日；實際 IV 會變，三情境（±20%）是覆蓋手段。
+- IV 假設恆定到日曆錨點日；實際 IV 會變，三情境（±20%）是覆蓋手段。
 - 報價為 yfinance 延遲資料（約15分鐘），volume=0 的合約會加註
   「報價新鮮度存疑」。
 - 延遲到達情境（韌性向量 S4 晚30天／S5 晚90天）假設股價沿現價到目標價

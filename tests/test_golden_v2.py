@@ -18,7 +18,7 @@ def run(strategy, target, *extra):
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf):
         rc = main(["XYZ", "--strategy", strategy, "--target-price", target,
-                   "--target-date", "2026-08-28",
+                   "--target-month", "2026/8",
                    "--snapshot", str(FIX / "xyz_v2_snapshot.json"), *extra])
     return rc, buf.getvalue()
 

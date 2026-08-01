@@ -13,8 +13,9 @@ from zoneinfo import ZoneInfo
 
 from . import service, store
 from .data.snapshot import load_snapshot
-from .models import AnalysisParams
+from .models import AnalysisParams, ParamError
 from .store import Scenario
+from .timeframe import TargetMonth, month_is_over
 from .vocabulary import RELATION_CHOICES
 
 _EASTERN = ZoneInfo("America/New_York")
@@ -33,15 +34,22 @@ def _existing_ids(ws_root) -> set[str]:
 
 
 def create_scenario(ws_root, symbol: str, direction: str, target_price: float,
-                    target_date: str, notes: str,
-                    strategies: tuple[str, ...], *, ts: str | None = None
-                    ) -> Scenario:
-    """§2.5 次序：產 id → append CREATED → 寫檔 → 重建 groups。"""
+                    target_month: str, notes: str,
+                    strategies: tuple[str, ...], *, ts: str | None = None,
+                    observed: date | None = None) -> Scenario:
+    """§2.5 次序：驗證年月 → 產 id → append CREATED → 寫檔 → 重建 groups。
+
+    月級驗證：目標月已過完 → 拒絕（生下來就過期的劇本不該存在）；當月 → 允許。
+    """
     ts = ts or now_utc_iso()
-    sid = store.scenario_id(symbol, target_price, target_date,
+    month = TargetMonth.from_key(target_month)
+    if month_is_over(month, observed or ny_today()):
+        raise ParamError(f"目標年月 {target_month} 已經過完，無法建立劇本")
+    sid = store.scenario_id(symbol, target_price, target_month,
                             _existing_ids(ws_root))
-    sc = Scenario(schema_version=1, id=sid, symbol=symbol, direction=direction,
-                  target_price=target_price, target_date=target_date,
+    sc = Scenario(schema_version=store.SCENARIO_SCHEMA_VERSION, id=sid,
+                  symbol=symbol, direction=direction,
+                  target_price=target_price, target_month=target_month,
                   created_at=ts, notes=notes, group_id=f"G-{symbol}",
                   status="Active", strategies=tuple(strategies))
     store.append_event(ws_root, ts, sid, "SCENARIO_CREATED",
@@ -83,20 +91,21 @@ def list_scenarios(ws_root, *, observed: date | None = None) -> list[Scenario]:
     scenarios = [store.reconcile_status(ws_root, sc, events)
                  for sc in scenarios]
 
-    # 4. Expired 觀察式轉移（觀察日 > target_date 且 Active）
+    # 4. Expired 觀察式轉移（目標月最後一天過完且 Active——整個目標月內都有效）
     out = []
     for sc in scenarios:
         if (sc.status == "Active"
-                and observed > date.fromisoformat(sc.target_date)):
+                and month_is_over(TargetMonth.from_key(sc.target_month),
+                                  observed)):
             sc = store.change_status(
                 ws_root, now_utc_iso(), sc, "Expired",
-                reason="target_date 已過", by="system",
+                reason="目標月已過完", by="system",
                 extra_payload={"observed_at": observed.isoformat()})
         out.append(sc)
 
     # 5. groups 無條件重建（快取全量可重建）
     store.rebuild_groups(ws_root, out, store.read_events(ws_root))
-    return sorted(out, key=lambda s: (s.symbol, s.target_date, s.id))
+    return sorted(out, key=lambda s: (s.symbol, s.target_month, s.id))
 
 
 def set_status(ws_root, sid: str, to: str, reason: str,
@@ -154,7 +163,7 @@ def default_direction(symbol: str, target_price: float,
 def _request_for(sc: Scenario) -> service.AnalysisRequest:
     """base_params 自 scenario 欄位；其餘 CLI 預設（spec §4）。"""
     base = AnalysisParams(target_price=sc.target_price,
-                          target_date=sc.target_date,
+                          target_month=sc.target_month,
                           strategy=sc.strategies[0])
     return service.AnalysisRequest(symbol=sc.symbol, base_params=base,
                                    strategies=tuple(sc.strategies))

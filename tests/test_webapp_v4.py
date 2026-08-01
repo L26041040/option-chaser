@@ -1,7 +1,6 @@
 """v4 spec §4/§7.7: four-step GUI (glossary, grouped comparison, thumbnails,
 badges, advanced expanders). Follows the existing tests/test_webapp.py
 AppTest bootstrap pattern (subprocess-isolated streamlit runtime)."""
-from datetime import date
 from pathlib import Path
 
 import pytest
@@ -15,7 +14,9 @@ from option_chaser.models import AnalysisParams
 FIX = "tests/fixtures/xyz_v4_six_expiries.json"
 SYMBOL = "XYZ"
 TARGET_PRICE = 120.0
-TARGET_DATE = date(2026, 8, 1)
+# 遠期年月：不隨真實時鐘過期
+TARGET_MONTH_INPUT = "2028/1"
+TARGET_MONTH = "2028-01"
 
 
 def _patched(monkeypatch):
@@ -28,7 +29,7 @@ def _patched(monkeypatch):
 def _fill_and_submit(at, checks=("long-call",)):
     at.text_input(key="symbol").set_value(SYMBOL)
     at.number_input(key="target_price").set_value(TARGET_PRICE)
-    at.date_input(key="target_date").set_value(TARGET_DATE)
+    at.text_input(key="target_month").set_value(TARGET_MONTH_INPUT)
     for s in ("long-call", "bull-call-spread", "long-put", "bear-put-spread"):
         at.checkbox(key=f"chk-{s}").set_value(s in checks)
     at.run()
@@ -42,7 +43,7 @@ def _expected_result():
             symbol=SYMBOL,
             base_params=AnalysisParams(strategy="long-call",
                                        target_price=TARGET_PRICE,
-                                       target_date=TARGET_DATE.isoformat(),
+                                       target_month=TARGET_MONTH,
                                        min_return=0.0),
             strategies=("long-call",)),
         FIX)
@@ -55,8 +56,9 @@ def test_grouped_table_renders(monkeypatch):
     at = _fill_and_submit(at)
     body = " ".join(m.value for m in at.markdown)
     assert not at.exception
-    # nearest expiry is always kept by the sampler (spec §3.2)
-    assert "2026-08-07 到期" in body
+    # 選中的每一檔到期日都成組（六點規則已把範圍收到至多五檔）
+    for g in _expected_result().expiry_groups:
+        assert f"{g.expiry} 到期" in body
     assert "緩衝" in body
 
 

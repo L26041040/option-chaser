@@ -12,9 +12,9 @@ TS = "2026-07-21T00:00:00+00:00"
 
 
 def _sc(**kw):
-    base = dict(schema_version=1, id="TLT-105-202801", symbol="TLT",
+    base = dict(schema_version=store.SCENARIO_SCHEMA_VERSION, id="TLT-105-202801", symbol="TLT",
                 direction="bullish", target_price=105.0,
-                target_date="2028-01-01", created_at=TS, notes="",
+                target_month="2028-01", created_at=TS, notes="",
                 group_id="G-TLT", status="Active",
                 strategies=("long-call",))
     base.update(kw)

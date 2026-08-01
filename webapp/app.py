@@ -13,13 +13,14 @@ out inline.
 from __future__ import annotations
 
 import logging
-from datetime import date, timedelta
+from datetime import date
 
 import streamlit as st
 
 from option_chaser import service, store
 from option_chaser.models import AnalysisParams, FetchError, ParamError
 from option_chaser.report import STRATEGY_LABELS
+from option_chaser.timeframe import month_is_over, parse_target_month
 from webapp.render import (cell_color, default_key, find_row, heatmap_html,
                            render_step2, render_step3, render_step4,
                            render_summary)
@@ -46,9 +47,7 @@ def _scenario_form_fields():
     st.text_input("標的", key="symbol", placeholder="TLT")
     st.number_input("目標價位", key="target_price",
                     min_value=0.01, value=100.0, step=1.0)
-    st.date_input("預計到達時間", key="target_date",
-                  value=date.today() + timedelta(days=180),
-                  min_value=date.today() + timedelta(days=1))
+    st.text_input("預計到達年月", key="target_month", placeholder="2028/1")
     for s in STRATEGY_ORDER:
         st.checkbox(STRATEGY_LABELS[s], key=f"chk-{s}", value=(s in DEFAULT_CHECKED))
 
@@ -116,6 +115,14 @@ def _do_analysis() -> None:
         st.session_state["running"] = False
 
 
+def _resolve_target_month() -> str:
+    """年月輸入 → YYYY-MM。格式錯誤與「已過完的月份」都是明確錯誤，不猜測。"""
+    month = parse_target_month(st.session_state.get("target_month") or "")
+    if month_is_over(month, date.today()):
+        raise ParamError(f"目標年月 {month.key()} 已經過完，請改填未來的年月。")
+    return month.key()
+
+
 if submitted and not st.session_state.get("running", False):
     sym = (st.session_state.get("symbol") or "").strip().upper()
     strategies = tuple(s for s in STRATEGY_ORDER if st.session_state.get(f"chk-{s}"))
@@ -124,12 +131,18 @@ if submitted and not st.session_state.get("running", False):
     elif not strategies:
         st.error("請至少勾選一種策略。")
     else:
-        base = AnalysisParams(target_price=float(st.session_state["target_price"]),
-                              target_date=st.session_state["target_date"].isoformat())
-        st.session_state["pending_request"] = service.AnalysisRequest(
-            symbol=sym, base_params=base, strategies=strategies)
-        st.session_state["running"] = True
-        st.rerun()   # next run renders the form with disabled=True, THEN analyzes
+        try:
+            target_month = _resolve_target_month()
+        except ParamError as e:
+            st.error(str(e))
+        else:
+            base = AnalysisParams(
+                target_price=float(st.session_state["target_price"]),
+                target_month=target_month)
+            st.session_state["pending_request"] = service.AnalysisRequest(
+                symbol=sym, base_params=base, strategies=strategies)
+            st.session_state["running"] = True
+            st.rerun()   # next run renders the form disabled, THEN analyzes
 
 if st.session_state.get("running", False) and "pending_request" in st.session_state:
     _do_analysis()

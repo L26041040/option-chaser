@@ -8,10 +8,10 @@ FIX = "tests/fixtures/xyz_v4_six_expiries.json"
 TS = "2026-07-21T00:00:00+00:00"
 
 
-def _create(ws, price=120.0, tdate="2026-08-01"):
+def _create(ws, price=120.0, tmonth="2026-08"):
     return workspace.create_scenario(
         ws, symbol="XYZ", direction="bullish", target_price=price,
-        target_date=tdate, notes="", strategies=("long-call",), ts=TS)
+        target_month=tmonth, notes="", strategies=("long-call",), ts=TS)
 
 
 def test_create_analyze_latest_chain(tmp_path):
@@ -50,8 +50,8 @@ def test_analyze_uses_capital_snapshot(tmp_path):
 
 
 def test_analyze_group_shares_snapshot(tmp_path):
-    a = _create(tmp_path, price=110.0, tdate="2026-08-01")
-    b = _create(tmp_path, price=120.0, tdate="2026-09-01")
+    a = _create(tmp_path, price=110.0, tmonth="2026-08")
+    b = _create(tmp_path, price=120.0, tmonth="2026-09")
     paths = workspace.analyze_group(tmp_path, "G-XYZ",
                                     snapshot_path=FIX, ts=TS)
     assert len(paths) == 2
@@ -63,8 +63,8 @@ def test_analyze_group_shares_snapshot(tmp_path):
 def test_analyze_group_online_fetches_once(tmp_path, monkeypatch):
     from option_chaser import service
     from option_chaser.data.snapshot import load_snapshot
-    _create(tmp_path, price=110.0, tdate="2026-08-01")
-    _create(tmp_path, price=120.0, tdate="2026-09-01")
+    _create(tmp_path, price=110.0, tmonth="2026-08")
+    _create(tmp_path, price=120.0, tmonth="2026-09")
     calls = []
 
     def fake_fetch_and_save(symbol):
