@@ -56,10 +56,19 @@ def create_scenario(ws_root, symbol: str, direction: str, target_price: float,
     return sc
 
 
+def _load_live(ws_root, events: list[dict]) -> list[Scenario]:
+    """磁碟上的劇本檔，減去已被軟刪除者——移除後檔案仍在，只是不再現身。"""
+    live = []
+    for p in store.list_scenario_files(ws_root):
+        sc = store.load_scenario(p)
+        if not store.is_removed(events, sc.id):
+            live.append(sc)
+    return live
+
+
 def _rebuild(ws_root) -> dict:
-    scenarios = [store.load_scenario(p)
-                 for p in store.list_scenario_files(ws_root)]
-    return store.rebuild_groups(ws_root, scenarios, store.read_events(ws_root))
+    events = store.read_events(ws_root)
+    return store.rebuild_groups(ws_root, _load_live(ws_root, events), events)
 
 
 def list_scenarios(ws_root, *, observed: date | None = None) -> list[Scenario]:
@@ -81,8 +90,7 @@ def list_scenarios(ws_root, *, observed: date | None = None) -> list[Scenario]:
             shutil.rmtree(rdir)
 
     # 2. 載入 scenario 檔（CREATED 無檔 → 自然忽略：只迭代存在的檔）
-    scenarios = [store.load_scenario(p)
-                 for p in store.list_scenario_files(ws_root)]
+    scenarios = _load_live(ws_root, events)
 
     # 3. 快取驗證/崩潰窗修復（竄改 → WorkspaceIntegrityError 上拋）
     scenarios = [store.reconcile_status(ws_root, sc, events)
@@ -138,6 +146,20 @@ def delete_scenario(ws_root, sid: str, *, ts: str | None = None) -> None:
     _rebuild(ws_root)
 
 
+def remove_scenario(ws_root, sid: str, *, ts: str | None = None) -> None:
+    """附錄 A8.2 手動移除＝事件溯源軟刪除：只寫一筆事件，檔案一個都不動。
+
+    清單、群組與刷新都改由 `store.is_removed` 投影決定，因此移除後該劇本自然
+    退場，而 events.jsonl 與 results/ 下的歷史仍可完整回溯。已移除者再移除
+    不追加同義事件（冪等）。硬刪除仍在 `delete_scenario`，兩者不互相取代。
+    """
+    if store.is_removed(store.read_events(ws_root), sid):
+        return
+    store.append_event(ws_root, ts or now_utc_iso(), sid,
+                       "SCENARIO_REMOVED", {})
+    _rebuild(ws_root)
+
+
 def load_groups(ws_root) -> dict:
     """spec §2.5: groups.json 任何過時/缺失 → 無條件重建（快取全量可重建，
     絕不回傳磁碟上可能被手改的版本）。"""
@@ -163,7 +185,7 @@ def analyze_scenario(ws_root, sid: str, progress=None, *,
     傳入以啟用 T12 利率曲線；直接給 snapshot_path 的離線重放維持零網路。"""
     events = store.read_events(ws_root)
     if store.project_status(events, sid) is None:
-        raise store.WorkspaceIntegrityError(f"劇本 {sid} 不存在或已刪除")
+        raise store.WorkspaceIntegrityError(f"劇本 {sid} 不存在、已刪除或已移除")
     sc = store.reconcile_status(
         ws_root, store.load_scenario(store.scenario_path(ws_root, sid)), events)
     req = _request_for(sc)
@@ -201,3 +223,49 @@ def analyze_group(ws_root, group_id: str, progress=None, *,
 def latest_result(ws_root, sid: str) -> dict | None:
     path = store.latest_result_path(ws_root, sid)
     return store.load_result(path) if path else None
+
+
+# ---------- 劇本卡片（需求五；純函式，GUI 只負責排版） ----------
+
+SIGNAL_UNKNOWN = "unknown"   # 燈號邏輯屬 T6（#20），本票只保留卡片上的位置
+
+
+@dataclasses.dataclass(frozen=True)
+class ScenarioCard:
+    """左側清單卡片的完整內容——恰五項，多一項都不放（需求五）。
+
+    刻意不含腿別、成本、佔本金等技術數字：那些屬於詳細頁。
+    """
+    id: str
+    symbol: str
+    target_price: float
+    target_month: str
+    best_return: float | None   # 無快照／零候選 → None（卡片顯示「—」）
+    signal: str
+
+
+def _best_return(view: dict | None) -> float | None:
+    """該次分析結果中最高的「目標達成並持有至到期收益率」。
+
+    baseline_return 是 service 已預算好的欄位（T3 起＝各 Spread 自身到期日的
+    內在價值），這裡只取最大值，不做任何金融計算。掃描 `expiry_best`（每個
+    到期日的最佳）與 `candidates`（整體前三名）的聯集，最大值必在其中。
+
+    無快照 → None（附錄 A8.1）；抓取成功但零候選 → 同樣 None，不是 0%
+    （附錄 A10.2：那是綠燈＋「—」，不是一個真的收益率）。
+    """
+    if view is None:
+        return None
+    returns = [c["baseline_return"]
+               for r in view["results"] if r["status"] == "ok"
+               for c in (*r["candidates"], *r["expiry_best"])]
+    return max(returns) if returns else None
+
+
+def card_of(sc: Scenario, view: dict | None) -> ScenarioCard:
+    """劇本＋其最新分析結果 → 卡片。view 為 None 代表尚無成功快照。"""
+    return ScenarioCard(id=sc.id, symbol=sc.symbol,
+                        target_price=sc.target_price,
+                        target_month=sc.target_month,
+                        best_return=_best_return(view),
+                        signal=SIGNAL_UNKNOWN)

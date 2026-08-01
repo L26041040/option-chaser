@@ -102,6 +102,27 @@ def test_tamper_raises(tmp_path):
         store.reconcile_status(tmp_path, hacked, store.read_events(tmp_path))
 
 
+def test_removed_scenario_has_no_current_lifecycle(tmp_path):
+    """T5／附錄 A8.2：軟刪除同樣終結現行生命週期——只是不動任何檔案。"""
+    sc = _boot(tmp_path)
+    store.append_event(tmp_path, TS, sc.id, "SCENARIO_REMOVED", {})
+    events = store.read_events(tmp_path)
+    assert store.is_removed(events, sc.id) is True
+    assert store.project_status(events, sc.id) is None
+    assert store.scenario_path(tmp_path, sc.id).exists()
+
+
+def test_removal_before_a_newer_creation_does_not_shadow_it(tmp_path):
+    """行序權威：移除只遮蔽它之前的那次建立。"""
+    sc = _boot(tmp_path)
+    store.append_event(tmp_path, TS, sc.id, "SCENARIO_REMOVED", {})
+    store.append_event(tmp_path, TS, sc.id, "SCENARIO_CREATED",
+                       dataclasses.asdict(_sc()))
+    events = store.read_events(tmp_path)
+    assert store.is_removed(events, sc.id) is False
+    assert store.project_status(events, sc.id) == "Active"
+
+
 def test_deleted_then_recreated_restarts_projection(tmp_path):
     sc = _boot(tmp_path)
     sc = store.change_status(tmp_path, TS, sc, "Reached", reason="r")

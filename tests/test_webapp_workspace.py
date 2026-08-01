@@ -1,7 +1,11 @@
 # tests/test_webapp_workspace.py
-"""v5 spec §7.7: 工作區 GUI（AppTest）。OC_WORKSPACE 隔離＋service seam 注入。"""
+"""v5 spec §7.7 ＋ T5（#19）: 工作區 GUI（AppTest）。
+
+OC_WORKSPACE 隔離＋service seam 注入。群組區的 GUI 測試隨 T5 的
+「群組區自首頁移除」一併撤下；其底層行為（關係確認、群組共用 snapshot、
+群組重建）在 tests/test_workspace*.py 與 tests/test_store_groups.py 續測。
+"""
 from datetime import date
-from pathlib import Path
 
 import pytest
 
@@ -9,6 +13,7 @@ st_testing = pytest.importorskip("streamlit.testing.v1")
 from streamlit.testing.v1 import AppTest
 
 from option_chaser import store, workspace
+from webapp.render import return_md
 
 PAGE = "webapp/pages/0_劇本工作區.py"
 FIX = "tests/fixtures/xyz_v4_six_expiries.json"
@@ -40,6 +45,16 @@ def _body(at):
     return " ".join(m.value for m in at.markdown)
 
 
+def _list_text(at):
+    """左欄（清單）內的所有文字——卡片內容的斷言範圍。"""
+    col = at.columns[0]
+    return " ".join([m.value for m in col.markdown]
+                    + [b.label for b in col.button]
+                    + [c.value for c in col.caption])
+
+
+# ---------- 建立表單（T4，#18） ----------
+
 def test_create_via_form_appears_in_list(ws):
     """T4：三欄填寫即可建立；方向／策略由系統帶入 MVP 預設。"""
     at = AppTest.from_file(PAGE)
@@ -51,7 +66,7 @@ def test_create_via_form_appears_in_list(ws):
     next(b for b in at.button
          if b.key == "ws-new-create").set_value(True).run(timeout=30)
     assert not at.exception
-    assert "XYZ" in _body(at)
+    assert "XYZ" in _list_text(at)
     sc = workspace.list_scenarios(ws)[0]
     assert sc.id == "XYZ-120-202801"
     assert sc.target_month == "2028-01"
@@ -84,6 +99,122 @@ def test_create_rejects_unparseable_month(ws):
     assert any("目標年月" in e.value for e in at.error)
     assert workspace.list_scenarios(ws) == []
 
+
+# ---------- 版面與卡片（T5，#19） ----------
+
+def test_desktop_layout_is_twenty_eighty(ws):
+    _mk(ws)
+    at = AppTest.from_file(PAGE)
+    at.run()
+    assert [round(c.weight, 2) for c in at.columns[:2]] == [0.2, 0.8]
+
+
+def test_card_carries_the_five_items_and_nothing_technical(ws):
+    sc = _mk(ws)
+    workspace.analyze_scenario(ws, sc.id, snapshot_path=FIX, ts=TS)
+    at = AppTest.from_file(PAGE)
+    at.run()
+    text = _list_text(at)
+    card = workspace.card_of(sc, workspace.latest_result(ws, sc.id))
+    assert "XYZ" in text and "120.00" in text and "2028-01" in text
+    assert return_md(card.best_return) in text          # 最高收益率
+    assert "⚪" in text                                   # 燈號位置（T6 接手）
+    # 不得出現：完整腿資訊、佔本金等技術數字、生命週期 badge
+    assert "買 " not in text and "賣 " not in text
+    assert "佔本金" not in text and "情境最壞" not in text
+    assert "Active" not in text
+
+
+def test_card_return_is_coloured_by_sign(ws):
+    sc = _mk(ws)
+    workspace.analyze_scenario(ws, sc.id, snapshot_path=FIX, ts=TS)
+    at = AppTest.from_file(PAGE)
+    at.run()
+    card = workspace.card_of(sc, workspace.latest_result(ws, sc.id))
+    assert card.best_return is not None and card.best_return > 0
+    assert ":green[" in _list_text(at)                   # 正數＝綠
+
+
+def test_card_without_analysis_shows_a_dash(ws):
+    """附錄 A8.1：尚無成功快照的劇本，卡片收益率顯示「—」。"""
+    _mk(ws)
+    at = AppTest.from_file(PAGE)
+    at.run()
+    assert "—" in _list_text(at)
+
+
+def test_card_click_opens_that_scenario_detail(ws):
+    a = _mk(ws, price=110.0, tmonth="2028-01")
+    b = _mk(ws, price=130.0, tmonth="2028-12")
+    workspace.analyze_scenario(ws, b.id, snapshot_path=FIX, ts=TS)
+    at = AppTest.from_file(PAGE)
+    at.run()
+    next(bt for bt in at.button
+         if bt.key == f"ws-card-{b.id}").set_value(True).run(timeout=30)
+    assert not at.exception
+    assert at.session_state["ws-detail"] == b.id
+    subheaders = " ".join(s.value for s in at.subheader)
+    assert "130.00" in subheaders and "Step 2" in subheaders
+    assert a.id != b.id
+
+
+def test_group_section_is_not_rendered(ws):
+    """附錄 A8.6：群組區自首頁隱藏（底層邏輯保留，見 test_store_groups.py）。"""
+    _mk(ws, price=110.0, tmonth="2028-01")
+    _mk(ws, price=120.0, tmonth="2028-12")
+    at = AppTest.from_file(PAGE)
+    at.run()
+    page = _body(at) + " ".join(s.value for s in at.subheader)
+    assert "劇本群組" not in page and "里程碑路徑" not in page
+    assert not any((bt.key or "").startswith(("ws-rel-", "ws-gan-", "ws-rean-"))
+                   for bt in at.button)
+    # 底層仍然重建群組（只是不再曝露於此頁）
+    assert len(workspace.load_groups(ws)["groups"][0]["members"]) == 2
+
+
+# ---------- 清單編輯工具（T5，#19；附錄 A6/A8.2） ----------
+
+def test_remove_tool_is_hidden_until_edit_mode(ws):
+    sc = _mk(ws)
+    at = AppTest.from_file(PAGE)
+    at.run()
+    assert not any(bt.key == f"ws-rm-{sc.id}" for bt in at.button)
+    at.toggle(key="ws-edit").set_value(True).run(timeout=30)
+    assert any(bt.key == f"ws-rm-{sc.id}" for bt in at.button)
+
+
+def test_remove_takes_a_second_confirmation(ws):
+    sc = _mk(ws)
+    at = AppTest.from_file(PAGE)
+    at.run()
+    at.toggle(key="ws-edit").set_value(True).run(timeout=30)
+    next(bt for bt in at.button
+         if bt.key == f"ws-rm-{sc.id}").set_value(True).run(timeout=30)
+    assert workspace.list_scenarios(ws) != []            # 還沒真的移除
+    next(bt for bt in at.button
+         if bt.key == f"ws-rm-no-{sc.id}").set_value(True).run(timeout=30)
+    assert workspace.list_scenarios(ws) != []            # 取消＝什麼都沒發生
+
+
+def test_remove_soft_deletes_and_keeps_history(ws):
+    sc = _mk(ws)
+    workspace.analyze_scenario(ws, sc.id, snapshot_path=FIX, ts=TS)
+    at = AppTest.from_file(PAGE)
+    at.run()
+    at.toggle(key="ws-edit").set_value(True).run(timeout=30)
+    next(bt for bt in at.button
+         if bt.key == f"ws-rm-{sc.id}").set_value(True).run(timeout=30)
+    next(bt for bt in at.button
+         if bt.key == f"ws-rm-yes-{sc.id}").set_value(True).run(timeout=30)
+    assert not at.exception
+    assert workspace.list_scenarios(ws) == []            # 清單不再包含
+    assert "XYZ" not in _list_text(at)
+    assert list((ws / "results" / sc.id).glob("*.json"))  # 歷史檔案還在
+    assert any(e["event"] == "SCENARIO_REMOVED"
+               for e in store.read_events(ws))
+
+
+# ---------- 詳細頁（右欄） ----------
 
 def test_analysis_error_stays_visible(ws, monkeypatch):
     """失敗不 rerun：st.error 留在畫面上（durable feedback）。"""
@@ -122,57 +253,13 @@ def test_status_button_requires_reason(ws):
     assert store.load_scenario(store.scenario_path(ws, sc.id)).status == "Active"
 
 
-def test_group_card_and_relation_confirm(ws):
-    a = _mk(ws, price=110.0, tmonth="2028-01")
-    b = _mk(ws, price=120.0, tmonth="2028-12")
-    at = AppTest.from_file(PAGE)
-    at.run()
-    body = _body(at)
-    assert "G-XYZ" in body and "里程碑路徑" in body     # proposed 顯示
-    next(bt for bt in at.button
-         if bt.key == "ws-rel-btn-G-XYZ-0").set_value(True).run(timeout=30)
-    assert not at.exception
-    groups = workspace.load_groups(ws)
-    assert groups["groups"][0]["relations"][0]["confirmed"] == "milestone-path"
-
-
-def test_reanalyze_button_requires_both_conditions(ws):
-    """負例×2＋正例：單一條件成立不出現（spec §7.7）。"""
-    a = _mk(ws, price=110.0, tmonth="2028-01")
-    b = _mk(ws, price=120.0, tmonth="2028-12")
-
-    def has_rean(at):
-        return any(bt.key == f"ws-rean-{b.id}" for bt in at.button)
-
-    at = AppTest.from_file(PAGE)
-    at.run()
-    assert not has_rean(at)                       # 皆不成立
-    workspace.set_status(ws, a.id, "Reached", reason="到價", ts=TS)
-    at = AppTest.from_file(PAGE)
-    at.run()
-    assert not has_rean(at)                       # 僅 Reached，未確認
-    workspace.confirm_relation(ws, "G-XYZ", (a.id, b.id), "milestone-path",
-                               ts=TS)
-    at = AppTest.from_file(PAGE)
-    at.run()
-    assert has_rean(at)                           # 兩條件成立
-    # 反向單一條件：只確認、未 Reached
-    workspace.delete_scenario(ws, a.id, ts=TS)
-    c = _mk(ws, price=110.0, tmonth="2028-01")
-    workspace.confirm_relation(ws, "G-XYZ", (c.id, b.id), "milestone-path",
-                               ts=TS)
-    at = AppTest.from_file(PAGE)
-    at.run()
-    assert not has_rean(at)
-
-
-def test_capital_pct_shown_after_analysis(ws):
+def test_capital_pct_shown_in_detail_after_analysis(ws):
     sc = _mk(ws)
     store.save_constraints(ws, 100000.0)
     workspace.analyze_scenario(ws, sc.id, snapshot_path=FIX, ts=TS)
     at = AppTest.from_file(PAGE)
     at.run()
-    assert "佔本金" in _body(at)
+    assert any("佔本金" in c.value for c in at.caption)
 
 
 def test_detail_page_renders_four_steps(ws):
@@ -180,34 +267,14 @@ def test_detail_page_renders_four_steps(ws):
     workspace.analyze_scenario(ws, sc.id, snapshot_path=FIX, ts=TS)
     at = AppTest.from_file(PAGE)
     at.run()
-    next(b for b in at.button
-         if b.key == f"ws-det-{sc.id}").set_value(True).run(timeout=30)
     assert not at.exception
     subheaders = " ".join(s.value for s in at.subheader)
     assert "Step 2" in subheaders and "Step 3" in subheaders \
         and "Step 4" in subheaders
 
 
-def test_delete_button_full_chain(ws):
-    sc = _mk(ws)
+def test_unanalyzed_scenario_detail_invites_analysis(ws):
+    _mk(ws)
     at = AppTest.from_file(PAGE)
     at.run()
-    at.checkbox(key=f"ws-delok-{sc.id}").set_value(True)
-    at.run()
-    next(b for b in at.button
-         if b.key == f"ws-del-{sc.id}").set_value(True).run(timeout=30)
-    assert not at.exception
-    assert workspace.list_scenarios(ws) == []
-
-
-def test_group_analyze_button_shares_snapshot(ws):
-    a = _mk(ws, price=110.0, tmonth="2028-01")
-    b = _mk(ws, price=120.0, tmonth="2028-12")
-    at = AppTest.from_file(PAGE)
-    at.run()
-    next(bt for bt in at.button
-         if bt.key == "ws-gan-G-XYZ").set_value(True).run(timeout=60)
-    assert not at.exception
-    va = workspace.latest_result(ws, a.id)
-    vb = workspace.latest_result(ws, b.id)
-    assert va["snapshot_ref"]["path"] == vb["snapshot_ref"]["path"]
+    assert any("尚無分析結果" in i.value for i in at.info)

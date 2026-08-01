@@ -126,6 +126,22 @@ def pct(x: float) -> str:
     return f"{x * 100:.1f}%"
 
 
+def return_md(value: float | None) -> str:
+    """劇本卡片的收益率寫法（需求五）：正數綠、負數紅、無快照「—」。
+
+    純字串函式：色彩用 Streamlit 的 `:green[]`／`:red[]` 指令而非 HTML，
+    卡片因此在深淺色主題下都讀得到。恰好 0 不著色——它既不是盈也不是虧。
+    """
+    if value is None:
+        return "—"
+    text = f"{value * 100:+.1f}%"
+    if value > 0:
+        return f":green[{text}]"
+    if value < 0:
+        return f":red[{text}]"
+    return text
+
+
 def _candidate_label(cand: dict) -> str:
     legs = cand["legs"]
     if len(legs) == 2:

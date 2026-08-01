@@ -175,21 +175,37 @@ def _last_index(events: list[dict], sid: str, etype: str) -> int:
     return idx
 
 
-def lifecycle_events(events: list[dict], sid: str) -> list[dict]:
-    """spec §2.3: 行序權威。最後一筆 CREATED 之後的該 id 事件；
-    若其後有 DELETED（或根本無 CREATED）→ 無現行生命週期。"""
+# 終結現行生命週期的兩種事件：硬刪除與軟刪除（附錄 A8.2）。兩者對投影的
+# 作用相同——差別只在檔案，不在語意。
+_LIFECYCLE_ENDING = ("SCENARIO_DELETED", "SCENARIO_REMOVED")
+
+
+def _lifecycle_start(events: list[dict], sid: str) -> int:
+    """spec §2.3: 行序權威。回傳最後一筆 CREATED 的行序；
+    其後若有刪除／移除（或根本無 CREATED）→ -1（無現行生命週期）。"""
     created = _last_index(events, sid, "SCENARIO_CREATED")
-    deleted = _last_index(events, sid, "SCENARIO_DELETED")
-    if created == -1 or deleted > created:
+    if created == -1:
+        return -1
+    ended = max(_last_index(events, sid, e) for e in _LIFECYCLE_ENDING)
+    return -1 if ended > created else created
+
+
+def is_removed(events: list[dict], sid: str) -> bool:
+    """附錄 A8.2 軟刪除投影：最後一筆移除事件晚於最後一筆建立 → 已移除。"""
+    return (_last_index(events, sid, "SCENARIO_REMOVED")
+            > _last_index(events, sid, "SCENARIO_CREATED"))
+
+
+def lifecycle_events(events: list[dict], sid: str) -> list[dict]:
+    start = _lifecycle_start(events, sid)
+    if start == -1:
         return []
     return [e for i, e in enumerate(events)
-            if i > created and e.get("scenario_id") == sid]
+            if i > start and e.get("scenario_id") == sid]
 
 
 def project_status(events: list[dict], sid: str) -> str | None:
-    created = _last_index(events, sid, "SCENARIO_CREATED")
-    deleted = _last_index(events, sid, "SCENARIO_DELETED")
-    if created == -1 or deleted > created:
+    if _lifecycle_start(events, sid) == -1:
         return None
     status = "Active"
     for e in lifecycle_events(events, sid):
