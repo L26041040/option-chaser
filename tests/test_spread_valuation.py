@@ -46,11 +46,12 @@ def test_evaluate_spread_fields_and_l2_min():
     assert sv.width == 20.0
     assert abs(sv.net_mid - (3.125 - 0.10)) < 1e-12
     assert abs(sv.net_worst - (3.25 - 0.05)) < 1e-12
-    assert sv.breakeven == 110.0 + sv.net_mid
+    # T12（附錄 A14.2）：成本衍生數字＝net_worst 口徑
+    assert sv.breakeven == 110.0 + sv.net_worst
     assert sv.l2 == min(v for _, v in sv.scenario_values)
     assert sv.l2 <= sv.baseline_value + 1e-12
     assert not hasattr(sv, "l1")
-    assert abs(sv.max_profit - (20.0 - sv.net_mid)) < 1e-12
+    assert abs(sv.max_profit - (20.0 - sv.net_worst)) < 1e-12
 
 
 def test_bear_put_breakeven():
@@ -59,7 +60,7 @@ def test_bear_put_breakeven():
     lng = make("L", 100.0, 5.2, 5.4, iv=0.36, opt="put")
     sht = make("S", 85.0, 1.1, 1.25, iv=0.35, opt="put")
     sv = evaluate_spread(lng, sht, spot=100.0, today=TODAY, p=p)
-    assert sv.breakeven == 100.0 - sv.net_mid
+    assert sv.breakeven == 100.0 - sv.net_worst
     assert abs(sv.breakeven_vs_target - (sv.breakeven - 80.0) / 80.0) < 1e-9
 
 

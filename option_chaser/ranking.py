@@ -33,11 +33,12 @@ def classify(delta: float, bands: tuple[float, float]) -> str:
 
 
 def baseline_return(v: ContractValuation) -> float:
-    return (v.baseline_value - v.mid) / v.mid
+    """主排名數字。成本口徑＝最差成交假設（單腿＝Ask，附錄 A14.2）。"""
+    return (v.baseline_value - v.contract.ask) / v.contract.ask
 
 
 def _tie_break_key(v: ContractValuation) -> tuple:
-    return (v.spread / v.mid, v.contract.strike, v.contract.expiry,
+    return (v.spread / v.contract.ask, v.contract.strike, v.contract.expiry,
             v.contract.contract_symbol)
 
 
@@ -75,13 +76,13 @@ def build_reasons(
         word = "高於" if v.contract.option_type == "call" else "低於"
         s = f"breakeven 僅{word}現價 {_pct(v.breakeven_vs_spot)}"
         half_price = spot + 0.5 * (p.target_price - spot)
-        if scenario_leg_value(v.contract, half_price, p.anchor, p) > v.mid:
+        if scenario_leg_value(v.contract, half_price, p.anchor, p) > v.contract.ask:
             s += "，劇本半對仍獲利"
         pros.append(s)
     elif band == BAND_BALANCED:
         intrinsic_now = intrinsic_value(v.contract.option_type, spot, v.contract.strike)
         pros.append(
-            f"內在價值佔權利金 {_pct(intrinsic_now / v.mid)}，時間價值負擔適中"
+            f"內在價值佔權利金 {_pct(intrinsic_now / v.contract.ask)}，時間價值負擔適中"
         )
     else:  # aggressive
         if baseline_return(v) == max_ret:
@@ -93,11 +94,11 @@ def build_reasons(
 
     if abs(v.delta) < 0.5:
         cons.append(
-            f"若完全不漲權利金可能全損（最大虧損 ${v.mid * 100:.2f}/張）"
+            f"若完全不漲權利金可能全損（最大虧損 ${v.contract.ask * 100:.2f}/張）"
         )
     first_picks = [lst[0] for lst in ranked.values() if lst]
-    if first_picks and v is max(first_picks, key=lambda x: x.mid):
-        cons.append(f"本金需求最大（${v.mid * 100:.2f}/張）")
+    if first_picks and v is max(first_picks, key=lambda x: x.contract.ask):
+        cons.append(f"本金需求最大（${v.contract.ask * 100:.2f}/張）")
     # spread warning: same structure as the §4 hard filter, relative part scaled 2/3
     if v.spread > max(p.spread_floor, (2.0 / 3.0) * p.max_spread_pct * v.mid):
         cons.append("買賣價差偏大")
@@ -106,12 +107,15 @@ def build_reasons(
 
 
 def spread_baseline_return(sv: SpreadValuation) -> float:
-    return (sv.baseline_value - sv.net_mid) / sv.net_mid
+    """主排名數字。成本口徑＝net_worst（買腿 Ask − 賣腿 Bid，附錄 A14.2）：
+    bid/ask 寬、難成交在 mid 的 Spread 由口徑自然懲罰。公式形狀
+    (基準值−成本)/成本 不變，僅成本口徑改變。"""
+    return (sv.baseline_value - sv.net_worst) / sv.net_worst
 
 
 def _spread_tie_key(sv: SpreadValuation) -> tuple:
     legs_spread = (sv.long_leg.ask - sv.long_leg.bid) + (sv.short_leg.ask - sv.short_leg.bid)
-    return (legs_spread / sv.net_mid, sv.long_leg.strike, sv.long_leg.expiry,
+    return (legs_spread / sv.net_worst, sv.long_leg.strike, sv.long_leg.expiry,
             sv.long_leg.contract_symbol)
 
 

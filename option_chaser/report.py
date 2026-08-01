@@ -142,13 +142,12 @@ def _candidate_lines(
     if c.volume == 0:
         lines.append("- 警示: 今日無成交，報價新鮮度存疑")
     lines.append("")
-    lines.append("劇本成立時:")
-    lines.append(_val_line("保守底線", v.floor_value, v.mid))
+    # T12（附錄 A14.2）：主數字成本口徑＝Ask（保守成交假設）。原「Natural
+    # 成交報酬」與基準情境列因此重合，已合併，不再另列。
+    lines.append("劇本成立時（Ask 進場）:")
+    lines.append(_val_line("保守底線", v.floor_value, c.ask))
     for shift, val in v.scenario_values:
-        lines.append(_val_line(_shift_name(shift), val, v.mid))
-    lines.append(
-        f"- Natural 成交報酬: {_pct((v.baseline_value - c.ask) / c.ask)}"
-    )
+        lines.append(_val_line(_shift_name(shift), val, c.ask))
     lines.append("")
     lines.append("買價指引:")
     lines.append(f"- L1 硬上限（劇本內在價值）: ${_money(v.l1)}（${v.l1 * 100:.0f}/張）")
@@ -181,7 +180,8 @@ def _pct_iv(iv: float) -> str:
 def _matrix_block(value_fn, cost, spot, p, today, expiry) -> list[str]:
     prices = price_axis(spot, p.target_price, is_bullish(p.strategy))
     dates = date_axis(today, expiry)
-    return ["", "P/L 矩陣（報酬率，Mid 進場）:"] + matrix_lines(value_fn, cost, prices, dates)
+    return (["", "P/L 矩陣（報酬率，最差進場）:"]
+            + matrix_lines(value_fn, cost, prices, dates))
 
 
 def _footer_lines(p: AnalysisParams) -> list[str]:
@@ -195,15 +195,18 @@ def _footer_lines(p: AnalysisParams) -> list[str]:
         "- IV 情境: sigma' = sigma * (1 + shift)",
         "- 買價天花板: L1 = max(目標價-Strike, 0); L2 = BS(最保守 IV 情境); L3 = 基準估值/(1+min-return)",
         "- 價差: V = 長腿 − 短腿，鉗制至 [0, 寬度]；價差無 L1，L2 = 全部 IV 情境最小值（情境包絡，非無套利下限）",
-        "- Breakeven = Strike + Mid（到期持有觀點，提前平倉不適用）",
-        "- Lambda = Delta * 現價 / Mid（低權利金合約會放大，僅供量級參考）",
+        "- 成本口徑: 主數字（排名、矩陣、Breakeven、佔本金）＝最差成交假設"
+        "（單腿=Ask；價差=買 Ask − 賣 Bid），定位保守成交假設收益；實際成交"
+        "可能更好或更差，非理論下限。Mid 僅供參考",
+        "- Breakeven = Strike ± 最差成本（到期持有觀點，提前平倉不適用）",
+        "- Lambda = Delta * 現價 / 最差成本（低權利金合約會放大，僅供量級參考）",
         "- 矩陣: 11 價格 × ≤7 日期；IV 按快照值恆定；末欄為到期 payoff；估值含美式內在價值鉗制",
         "- 到期日選取: 目標月第三個星期五為日曆錨點，取距錨點最近的實際到期日為"
         "baseline（同距取較晚），再取其前 2 後 2（一側不足由另一側補足），至多五檔；"
         "窮舉僅及於這些到期日",
         f"- 過濾: 報價 / IV(0.01-5.0) / OI>={p.min_oi} 且 Vol>={p.min_volume} / "
         f"Spread <= max({p.spread_floor:g}, {p.max_spread_pct:g}*Mid)（不含任何到期日條件）",
-        "- 排名: Delta 分級（實務慣例），級內以基準情境報酬率（Mid 進場）排序",
+        "- 排名: Delta 分級（實務慣例），級內以基準情境報酬率（最差進場）排序",
         "- 模型限制: 無股利調整（q=0）、歐式近似、IV 乘法情境",
         "- 免責: 模型估計非保證價格，不構成投資建議",
         "- 韌性向量 7 情境: S1 不漲(S=現價) / S2 半程(完成度50%價位) / S3 大半程"
@@ -248,7 +251,7 @@ def render(
                 c = v.contract
                 lines += _matrix_block(
                     lambda S, d, c=c: scenario_leg_value(c, S, d, p),
-                    v.mid, snap.spot, p, today, _date.fromisoformat(c.expiry),
+                    c.ask, snap.spot, p, today, _date.fromisoformat(c.expiry),
                 )
     lines += _footer_lines(p)
     lines.append("")
@@ -282,11 +285,11 @@ def _spread_candidate_lines(sv, idx, n_pairs, p, spot: float, today: date) -> li
         f"- 最大獲利: ${_money(sv.max_profit)}（${sv.max_profit * 100:.0f}/張） / 淨Delta {sv.net_delta:.2f} / Lambda {sv.effective_leverage:.1f}x",
         f"- Breakeven: ${_money(sv.breakeven)}（對目標價緩衝 {_pct(sv.breakeven_vs_target)}）",
         "",
-        "劇本成立時:",
+        "劇本成立時（最差進場）:",
     ]
     for shift, val in sv.scenario_values:
-        lines.append(_val_line(_shift_name(shift), val, sv.net_mid))
-    lines.append(_val_line("IV 情境最低值", sv.l2, sv.net_mid))
+        lines.append(_val_line(_shift_name(shift), val, sv.net_worst))
+    lines.append(_val_line("IV 情境最低值", sv.l2, sv.net_worst))
     lines += ["", "買價指引:",
               f"- L2 保守上限（IV 情境最低值）: ${_money(sv.l2)}（${sv.l2 * 100:.0f}/張）",
               f"- L3 要求報酬上限（min-return {_pct(p.min_return)}）: ${_money(sv.l3)}（${sv.l3 * 100:.0f}/張）"]
@@ -312,7 +315,7 @@ def render_spreads(snap, p, freport, pair_report, ranked, n_pairs, today) -> str
             lng, sht = sv.long_leg, sv.short_leg
             lines += _matrix_block(
                 lambda S, d, lng=lng, sht=sht: spread_scenario_value(lng, sht, S, d, p),
-                sv.net_mid, snap.spot, p, today, _date.fromisoformat(lng.expiry),
+                sv.net_worst, snap.spot, p, today, _date.fromisoformat(lng.expiry),
             )
     lines += _footer_lines(p)
     lines.append("")

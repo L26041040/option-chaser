@@ -133,7 +133,7 @@ def test_matrix_view_matches_grid():
     prices = price_axis(100.0, 120.0, bullish=True)
     dates = date_axis(r.today, date.fromisoformat(v.contract.expiry))
     grid = matrix_grid(lambda S, d, c=v.contract: scenario_leg_value(c, S, d, p),
-                       v.mid, prices, dates)
+                       v.contract.ask, prices, dates)   # T12：Heatmap 成本＝最差口徑
     assert cv.matrix.cells == grid
     assert cv.matrix.dates[-1][0] == v.contract.expiry
 
@@ -179,5 +179,6 @@ def test_candidate_view_returns_precomputed():
     cv = r.results[0].candidates[0]
     v = cv.valuation
     assert cv.baseline_return == br(v)
-    assert abs(cv.baseline_pnl - (v.baseline_value - v.mid)) < 1e-12
-    assert abs(cv.natural_return - (v.baseline_value - v.contract.ask) / v.contract.ask) < 1e-12
+    # T12（附錄 A14.2）：主數字成本口徑＝Ask；natural_return 與其重合已合併
+    assert abs(cv.baseline_pnl - (v.baseline_value - v.contract.ask)) < 1e-12
+    assert not hasattr(cv, "natural_return")

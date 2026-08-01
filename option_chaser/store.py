@@ -298,9 +298,12 @@ def _candidate(cv: CandidateView, strategy: str, capital: float | None,
         legs = [_leg(v.contract)]
         mid_cost, expiry = v.mid, v.contract.expiry
         # 與 service._comparison 相同定義（long-call 無上限 → None）
-        max_profit = None if strategy == "long-call" else v.contract.strike - v.mid
+        max_profit = (None if strategy == "long-call"
+                      else v.contract.strike - v.contract.ask)
         net_delta = v.delta
-    cap_per = mid_cost * 100
+    # T12（附錄 A14.2）：資本／最大虧損以最差成交成本計（natural_cost 即
+    # 買 Ask／賣 Bid 口徑）；mid_cost 保留為次要顯示欄位。
+    cap_per = natural_cost(v) * 100
     return {
         "candidate_key": candidate_key(cv),
         "strategy": strategy,
@@ -309,7 +312,6 @@ def _candidate(cv: CandidateView, strategy: str, capital: float | None,
         "natural_cost": natural_cost(v),
         "baseline_pnl": cv.baseline_pnl,
         "baseline_return": cv.baseline_return,
-        "natural_return": cv.natural_return,
         "scenario_vector": {"entries": [list(e) for e in cv.scenario.entries],
                             "worst_code": cv.scenario.worst_code,
                             "worst_return": cv.scenario.worst_return},

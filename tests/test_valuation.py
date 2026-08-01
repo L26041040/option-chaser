@@ -17,9 +17,10 @@ def make_contract(**kw):
 
 def test_call_anchors_and_scenarios():
     v = evaluate_contract(make_contract(), spot=100.0, today=TODAY, p=P)
-    assert v.mid == 3.125 and v.breakeven == 113.125
-    assert abs(v.breakeven_vs_spot - 0.13125) < 1e-9
-    assert abs(v.breakeven_vs_target - (120 - 113.125) / 120) < 1e-9
+    # T12（附錄 A14.2）：breakeven 等成本衍生數字＝Ask 口徑
+    assert v.mid == 3.125 and v.breakeven == 113.25
+    assert abs(v.breakeven_vs_spot - 0.1325) < 1e-9
+    assert abs(v.breakeven_vs_target - (120 - 113.25) / 120) < 1e-9
     t_rem = (date(2026, 10, 16) - P.anchor).days / 365.0
     assert v.floor_value == 10.0 == v.l1
     for shift, val in v.scenario_values:
@@ -31,9 +32,9 @@ def test_put_anchors_mirror():
     c = make_contract(contract_symbol="XYZ261016P00090000", option_type="put",
                       strike=90.0, bid=2.8, ask=3.0, implied_volatility=0.40)
     v = evaluate_contract(c, spot=100.0, today=TODAY, p=P_PUT)
-    assert v.breakeven == 90.0 - 2.9
-    assert abs(v.breakeven_vs_spot - (100.0 - 87.1) / 100.0) < 1e-9
-    assert abs(v.breakeven_vs_target - (87.1 - 80.0) / 80.0) < 1e-9  # put cushion = (BE−target)/target
+    assert v.breakeven == 90.0 - 3.0                 # T12：Ask 口徑
+    assert abs(v.breakeven_vs_spot - (100.0 - 87.0) / 100.0) < 1e-9
+    assert abs(v.breakeven_vs_target - (87.0 - 80.0) / 80.0) < 1e-9  # put cushion = (BE−target)/target
     assert v.floor_value == 10.0 == v.l1  # max(90−80,0)
     assert v.delta < 0
     assert v.l1 <= v.l2 <= v.baseline_value + 1e-12

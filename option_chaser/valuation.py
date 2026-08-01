@@ -120,12 +120,14 @@ def evaluate_contract(
     )
     baseline_value = dict(scenario_values)[0.0]
     floor_value = intrinsic_value(c.option_type, p.target_price, c.strike)
+    # T12（附錄 A14.2）：主數字成本口徑＝最差成交假設（單腿＝Ask）。
+    # breakeven／槓桿等成本衍生數字同口徑；mid 保留為次要顯示。
     if c.option_type == "call":
-        breakeven = c.strike + mid
+        breakeven = c.strike + c.ask
         be_vs_spot = (breakeven - spot) / spot
         be_vs_target = (p.target_price - breakeven) / p.target_price
     else:
-        breakeven = c.strike - mid
+        breakeven = c.strike - c.ask
         be_vs_spot = (spot - breakeven) / spot
         be_vs_target = (breakeven - p.target_price) / p.target_price
     l2 = scenario_leg_value(c, p.target_price, target, p, min(p.iv_shifts))
@@ -135,7 +137,7 @@ def evaluate_contract(
         vega_per_pct=g.vega_per_pct,
         breakeven=breakeven, breakeven_vs_spot=be_vs_spot,
         breakeven_vs_target=be_vs_target,
-        effective_leverage=abs(g.delta) * spot / mid,
+        effective_leverage=abs(g.delta) * spot / c.ask,
         floor_value=floor_value, scenario_values=scenario_values,
         baseline_value=baseline_value,
         l1=floor_value, l2=l2, l3=baseline_value / (1.0 + p.min_return),
@@ -255,21 +257,24 @@ def evaluate_spread(
         for shift in p.iv_shifts
     )
     baseline = dict(scenario_values)[0.0]
+    # T12（附錄 A14.2）：主數字成本口徑＝net_worst（買腿 Ask − 賣腿 Bid），
+    # 定位「保守成交假設收益」。breakeven／最大獲利／槓桿同口徑；net_mid
+    # 保留為次要顯示。
     if long_leg.option_type == "call":
-        breakeven = long_leg.strike + net_mid
+        breakeven = long_leg.strike + net_worst
         be_vs_target = (p.target_price - breakeven) / p.target_price
     else:
-        breakeven = long_leg.strike - net_mid
+        breakeven = long_leg.strike - net_worst
         be_vs_target = (breakeven - p.target_price) / p.target_price
     return SpreadValuation(
         long_leg=long_leg, short_leg=short_leg, width=width,
         net_mid=net_mid, net_worst=net_worst, net_delta=net_delta,
         breakeven=breakeven, breakeven_vs_target=be_vs_target,
-        effective_leverage=abs(net_delta) * spot / net_mid,
+        effective_leverage=abs(net_delta) * spot / net_worst,
         scenario_values=scenario_values, baseline_value=baseline,
         l2=min(v for _, v in scenario_values),
         l3=baseline / (1.0 + p.min_return),
-        max_profit=width - net_mid,
+        max_profit=width - net_worst,
     )
 
 

@@ -49,9 +49,11 @@ def test_candidate_fields_hand_checked():
     v = cv.valuation
     assert cand["candidate_key"] == service.candidate_key(cv)
     assert cand["mid_cost"] == v.mid
-    assert cand["capital_per_contract"] == v.mid * 100
-    assert cand["max_loss_per_contract"] == v.mid * 100          # debit 恆等於成本
-    assert cand["pct_of_capital"] == (v.mid * 100) / 100000.0
+    # T12（附錄 A14.2）：資本／最大虧損以最差成交成本（單腿＝Ask）計
+    assert cand["natural_cost"] == v.contract.ask
+    assert cand["capital_per_contract"] == v.contract.ask * 100
+    assert cand["max_loss_per_contract"] == v.contract.ask * 100  # debit 恆等於成本
+    assert cand["pct_of_capital"] == (v.contract.ask * 100) / 100000.0
     today = result.today
     # 參考日＝日曆錨點（2026-08 的第三個星期五），不是任何被發明出來的目標日
     assert cand["days_to_target"] == (

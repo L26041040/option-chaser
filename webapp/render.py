@@ -84,7 +84,7 @@ def heatmap_html(matrix: dict) -> str:
             f'<tr><th style="padding:4px 8px">價格</th>{"".join(head_cells)}</tr>'
             + "".join(rows) + "</table></div>"
             '<p style="font-size:12px;color:#666">此圖顯示在不同標的價格與日期下，'
-            '以目前 Mid 價進場的模型報酬率。'
+            '以最差進場成本（買付 Ask、賣收 Bid）進場的模型報酬率。'
             '<b>粗體</b>價格列為錨點（現價／目標／超標／深跌），其餘為等距內插價。</p>')
 
 

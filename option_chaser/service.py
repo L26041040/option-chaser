@@ -59,9 +59,10 @@ class CandidateView:
     pros: tuple[str, ...]
     cons: tuple[str, ...]
     matrix: MatrixView
-    baseline_pnl: float        # 估值 − 成本（Mid 口徑，每股）
+    # T12（附錄 A14.2）：主數字成本口徑＝最差成交假設（單腿 Ask／價差
+    # net_worst）。原 natural_return 與主數字重合，已合併進 baseline_return。
+    baseline_pnl: float        # 估值 − 成本（最差口徑，每股）
     baseline_return: float     # ranking.baseline_return / spread_baseline_return
-    natural_return: float      # (基準估值 − Natural成本)/Natural成本
     scenario: ScenarioVector
     completion_curve: tuple[tuple[float, float], ...]
     completion_prices: tuple[float, ...]
@@ -115,9 +116,8 @@ class ComparisonRow:
     strategy: str
     label: str
     expiry: str
-    cost: float
+    cost: float                # 最差成交口徑（單腿 Ask／價差 net_worst）
     baseline_return: float
-    natural_return: float
     breakeven: float
     max_profit: float | None
 
@@ -242,12 +242,11 @@ def _single_leg_view(v: ContractValuation, band: str,
     pros, cons = build_reasons(v, band, ranked, spot, n_qualified, p)
     mv = _matrix_view(
         lambda S, d, c=v.contract: scenario_leg_value(c, S, d, p),
-        v.mid, spot, p, today, v.contract.expiry)
+        v.contract.ask, spot, p, today, v.contract.expiry)
     return CandidateView(
         valuation=v, pros=tuple(pros), cons=tuple(cons), matrix=mv,
-        baseline_pnl=v.baseline_value - v.mid,
+        baseline_pnl=v.baseline_value - v.contract.ask,
         baseline_return=baseline_return(v),
-        natural_return=(v.baseline_value - v.contract.ask) / v.contract.ask,
         **_v4_fields(v, spot, today, p))
 
 
@@ -257,12 +256,11 @@ def _spread_view(sv: SpreadValuation, idx: int, n_pairs: int, spot: float,
     mv = _matrix_view(
         lambda S, d, lng=sv.long_leg, sht=sv.short_leg:
             spread_scenario_value(lng, sht, S, d, p),
-        sv.net_mid, spot, p, today, sv.long_leg.expiry)
+        sv.net_worst, spot, p, today, sv.long_leg.expiry)
     return CandidateView(
         valuation=sv, pros=tuple(pros), cons=tuple(cons), matrix=mv,
-        baseline_pnl=sv.baseline_value - sv.net_mid,
+        baseline_pnl=sv.baseline_value - sv.net_worst,
         baseline_return=spread_baseline_return(sv),
-        natural_return=(sv.baseline_value - sv.net_worst) / sv.net_worst,
         **_v4_fields(sv, spot, today, p))
 
 
@@ -458,21 +456,19 @@ def _comparison(results: tuple[StrategyResult, ...]) -> tuple[ComparisonRow, ...
             rows.append(ComparisonRow(
                 strategy=res.strategy,
                 label=f"買 {sv.long_leg.strike:g} / 賣 {sv.short_leg.strike:g}",
-                expiry=sv.long_leg.expiry, cost=sv.net_mid,
+                expiry=sv.long_leg.expiry, cost=sv.net_worst,
                 baseline_return=spread_baseline_return(sv),
-                natural_return=(sv.baseline_value - sv.net_worst) / sv.net_worst,
                 breakeven=sv.breakeven, max_profit=sv.max_profit))
         else:
             firsts = [lst[0] for lst in res.ranked_bands.values() if lst]
             v = sorted(firsts,
                        key=lambda x: (-baseline_return(x), *_tie_break_key(x)))[0]
             c = v.contract
-            max_profit = None if res.strategy == "long-call" else c.strike - v.mid
+            max_profit = None if res.strategy == "long-call" else c.strike - c.ask
             rows.append(ComparisonRow(
                 strategy=res.strategy, label=f"K={c.strike:g}",
-                expiry=c.expiry, cost=v.mid,
+                expiry=c.expiry, cost=c.ask,
                 baseline_return=baseline_return(v),
-                natural_return=(v.baseline_value - c.ask) / c.ask,
                 breakeven=v.breakeven, max_profit=max_profit))
     return tuple(rows)
 
