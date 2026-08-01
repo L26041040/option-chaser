@@ -14,6 +14,14 @@ def req(strategies, target=120.0, force=False):
                                    strategies=tuple(strategies))
 
 
+def _empty_snapshot():
+    """鏈上零個到期日、但抓取本身成功的合成快照（附錄 A12 第 2 點）。"""
+    from option_chaser.models import ChainSnapshot
+    return ChainSnapshot(schema_version=2, symbol="XYZ",
+                         fetched_at="2026-07-15T21:30:00-04:00", spot=100.0,
+                         source="yfinance", contracts=())
+
+
 def test_multi_strategy_shared_snapshot_and_order():
     r = service.run_offline(req(["long-call", "bull-call-spread"]), FIX)
     assert [s.strategy for s in r.results] == ["long-call", "bull-call-spread"]
@@ -106,11 +114,7 @@ def test_current_month_accepted():
 def test_zero_tradable_expiries_is_empty_result_not_error():
     """附錄 A12 第 2 點：抓取本身未拋例外、鏈上零個到期日 → 視為零候選的
     成功結果（比照 A10.2 綠燈＋「—」），不是刷新失敗，因此不得拋錯。"""
-    from option_chaser.models import ChainSnapshot
-    snap = ChainSnapshot(schema_version=2, symbol="XYZ",
-                         fetched_at="2026-07-15T21:30:00-04:00", spot=100.0,
-                         source="yfinance", contracts=())
-    r = service._analyze(req(["bull-call-spread"]), snap, "n/a", None)
+    r = service._analyze(req(["bull-call-spread"]), _empty_snapshot(), "n/a", None)
     assert [s.status for s in r.results] == ["empty"]
     assert r.results[0].n_qualified == 0
     assert r.best_strategy is None
@@ -120,11 +124,8 @@ def test_zero_tradable_expiries_is_empty_result_not_error():
 def test_scoped_to_selected_expiries_returns_empty_snapshot_when_none_tradable():
     """`_scoped_to_selected_expiries` 本身（非透過 `_analyze`）也不拋錯：
     回傳零合約快照，讓下游各策略走既有的空結果分支。"""
-    from option_chaser.models import ChainSnapshot
-    snap = ChainSnapshot(schema_version=2, symbol="XYZ",
-                         fetched_at="2026-07-15T21:30:00-04:00", spot=100.0,
-                         source="yfinance", contracts=())
-    out = service._scoped_to_selected_expiries(snap, date(2026, 8, 21),
+    out = service._scoped_to_selected_expiries(_empty_snapshot(),
+                                               date(2026, 8, 21),
                                                date(2026, 7, 15))
     assert out.contracts == ()
 

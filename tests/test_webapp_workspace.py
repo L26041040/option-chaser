@@ -53,6 +53,12 @@ def _list_text(at):
                     + [c.value for c in col.caption])
 
 
+def _click_analyze(at, sid):
+    """點右欄「分析」鈕並跑一輪（成功或失敗都可能發生，呼叫端自行斷言）。"""
+    next(b for b in at.button
+        if b.key == f"ws-an-{sid}").set_value(True).run(timeout=30)
+
+
 # ---------- 建立表單（T4，#18） ----------
 
 def test_create_via_form_appears_in_list(ws):
@@ -237,8 +243,7 @@ def test_analysis_error_stays_visible(ws, monkeypatch):
                         (_ for _ in ()).throw(FetchError("boom")))
     at = AppTest.from_file(PAGE)
     at.run()
-    next(b for b in at.button
-         if b.key == f"ws-an-{sc.id}").set_value(True).run(timeout=30)
+    _click_analyze(at, sc.id)
     assert any("boom" in e.value for e in at.error)
     assert not at.exception
 
@@ -259,8 +264,7 @@ def test_critical_failure_marks_signal_yellow_on_next_render(ws, monkeypatch):
                         (_ for _ in ()).throw(FetchError("網路不通")))
     at = AppTest.from_file(PAGE)
     at.run()
-    next(b for b in at.button
-         if b.key == f"ws-an-{sc.id}").set_value(True).run(timeout=30)
+    _click_analyze(at, sc.id)
     assert any("網路不通" in e.value for e in at.error)
     at.run()
     text = _list_text(at)
@@ -279,8 +283,7 @@ def test_param_error_does_not_flip_signal_to_yellow(ws, monkeypatch):
                         (_ for _ in ()).throw(ParamError("不相干的驗證錯誤")))
     at = AppTest.from_file(PAGE)
     at.run()
-    next(b for b in at.button
-         if b.key == f"ws-an-{sc.id}").set_value(True).run(timeout=30)
+    _click_analyze(at, sc.id)
     assert any("不相干的驗證錯誤" in e.value for e in at.error)
     at.run()
     text = _list_text(at)

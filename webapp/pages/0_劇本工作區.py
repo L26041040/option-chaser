@@ -33,6 +33,9 @@ SIGNAL_ICON = {workspace.SIGNAL_GREEN: "🟢", workspace.SIGNAL_YELLOW: "🟡",
 # session 內「這張劇本最近一次刷新是否為關鍵資料失敗」——只有 FetchError
 # （標的價格／到期日 option chain 取得失敗）才算；ParamError 等其他例外
 # 不代表關鍵資料失敗（附錄 A12），不動這個旗標。
+# 已知限制（非本票 AC，留給 T7「原子快照」一併決定是否需要落地事件）：
+# 這個旗標只活在 st.session_state，跨瀏覽器分頁／應用重啟不會保留——重開
+# 一份全新 session 時，剛發生過的關鍵資料失敗會被忘記，卡片改顯示綠燈。
 _FAILURE_KEY = "ws-critical-failure"
 
 st.set_page_config(page_title="劇本工作區", layout="wide")
