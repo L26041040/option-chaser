@@ -61,8 +61,9 @@ def heatmap_html(matrix: dict) -> str:
     cells = matrix["cells"]
     n = len(dates)
     head_cells = []
-    for j, (iso, lbl) in enumerate(dates):
-        suffix = ("*" if lbl == "*" else "") + ("（到期）" if j == n - 1 else "")
+    for j, (iso, _lbl) in enumerate(dates):
+        # A2.3：日期軸已無「*」目標欄，末欄仍標到期
+        suffix = "（到期）" if j == n - 1 else ""
         head_cells.append(
             f'<th style="padding:4px 8px;white-space:nowrap">{iso[5:7]}/{iso[8:10]}{suffix}</th>')
     rows = []

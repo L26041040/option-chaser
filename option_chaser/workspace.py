@@ -13,9 +13,9 @@ from zoneinfo import ZoneInfo
 
 from . import service, store
 from .data.snapshot import load_snapshot
-from .models import AnalysisParams, ParamError
+from .models import AnalysisParams
 from .store import Scenario
-from .timeframe import TargetMonth, month_is_over
+from .timeframe import TargetMonth, ensure_month_open, month_is_over
 from .vocabulary import RELATION_CHOICES
 
 _EASTERN = ZoneInfo("America/New_York")
@@ -42,9 +42,7 @@ def create_scenario(ws_root, symbol: str, direction: str, target_price: float,
     月級驗證：目標月已過完 → 拒絕（生下來就過期的劇本不該存在）；當月 → 允許。
     """
     ts = ts or now_utc_iso()
-    month = TargetMonth.from_key(target_month)
-    if month_is_over(month, observed or ny_today()):
-        raise ParamError(f"目標年月 {target_month} 已經過完，無法建立劇本")
+    ensure_month_open(TargetMonth.from_key(target_month), observed or ny_today())
     sid = store.scenario_id(symbol, target_price, target_month,
                             _existing_ids(ws_root))
     sc = Scenario(schema_version=store.SCENARIO_SCHEMA_VERSION, id=sid,

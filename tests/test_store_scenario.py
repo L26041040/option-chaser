@@ -57,19 +57,26 @@ def test_legacy_scenario_migrates_on_load(tmp_path):
     assert not hasattr(sc, "target_date")
 
 
-def test_migration_never_stores_a_target_date_field(tmp_path):
-    """遷移後落盤的檔案不並存任何 YYYY-MM-DD 的目標日期欄位。"""
+def test_migration_rewrites_the_file_so_no_target_date_survives(tmp_path):
+    """「不並存任何目標日期欄位」是對磁碟的要求：光是載入就要把舊欄位清掉，
+    否則只被列出、從不分析的舊劇本會永遠留著 target_date。"""
     legacy = {"schema_version": 1, "id": "S", "symbol": "TLT",
               "direction": "bullish", "target_price": 105.0,
               "target_date": "2028-01-21", "created_at": "t", "notes": "",
               "group_id": "G-TLT", "status": "Active",
               "strategies": ["long-call"]}
-    store.atomic_write_json(store.scenario_path(tmp_path, "S"), legacy)
-    store.save_scenario(tmp_path, store.load_scenario(
-        store.scenario_path(tmp_path, "S")))
-    on_disk = json.loads(store.scenario_path(tmp_path, "S")
-                         .read_text(encoding="utf-8"))
-    assert "target_date" not in on_disk and on_disk["target_month"] == "2028-01"
+    path = store.scenario_path(tmp_path, "S")
+    store.atomic_write_json(path, legacy)
+
+    store.load_scenario(path)                     # 只載入，不另外存檔
+    on_disk = json.loads(path.read_text(encoding="utf-8"))
+    assert "target_date" not in on_disk
+    assert on_disk["target_month"] == "2028-01"
+    assert on_disk["schema_version"] == store.SCENARIO_SCHEMA_VERSION
+
+    # 冪等：再載入一次不會產生第二種結果
+    store.load_scenario(path)
+    assert json.loads(path.read_text(encoding="utf-8")) == on_disk
 
 
 def test_atomic_write_uses_tmp_and_replace(tmp_path, monkeypatch):

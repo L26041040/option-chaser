@@ -15,6 +15,7 @@ from pathlib import Path
 from . import __version__
 from .scenarios import natural_cost
 from .service import AnalysisResult, CandidateView, candidate_key
+from .timeframe import TargetMonth
 from .valuation import SpreadValuation
 from .vocabulary import EVENT_TYPES_V5
 
@@ -64,8 +65,9 @@ def scenario_id(symbol: str, target_price: float, target_month: str,
     ID 格式不變——原本就只取年月，換成年月輸入後輸出逐字相同，既有結果檔案與
     歷史仍然對得上。
     """
+    month = TargetMonth.from_key(target_month)   # 順帶把關格式，不做字串切片
     price = format(target_price, "g").replace(".", "p")
-    base = f"{symbol}-{price}-{target_month[:4]}{target_month[5:7]}"
+    base = f"{symbol}-{price}-{month.year:04d}{month.month:02d}"
     if base not in existing_ids:
         return base
     n = 2
@@ -83,10 +85,12 @@ def save_scenario(ws_root, sc: Scenario) -> None:
 
 
 def migrate_scenario(data: dict) -> dict:
-    """schema_version 1 → 2：舊的 target_date 取其年月成為 target_month。
+    """v1 → v2：舊的 target_date 取其年月成為 target_month。
 
-    一個劇本都不丟，ID 不變（ID 本來就只用到年月）。遷移在載入時發生，遷移後的
-    物件在任何一次 `save_scenario` 落盤——不做額外的原地改寫。
+    以「舊欄位是否還在」而非 schema_version 分派：版本號是敘述，欄位才是事實，
+    而遷移要修的正是欄位。版本號因此是遷移的結果，不是它的前提。
+
+    一個劇本都不丟，ID 不變（ID 本來就只用到年月）。
     """
     if "target_date" not in data:
         return data
@@ -97,8 +101,17 @@ def migrate_scenario(data: dict) -> dict:
 
 
 def load_scenario(path) -> Scenario:
-    data = migrate_scenario(json.loads(Path(path).read_text(encoding="utf-8")))
-    data["strategies"] = tuple(data["strategies"])
+    """載入劇本；遇到舊格式就地遷移並落盤。
+
+    落盤是必要的：「不並存任何目標日期欄位」是對**磁碟**的要求，只在記憶體裡
+    改名的話，一個從此只被列出、never 分析的舊劇本會永遠留著 target_date。
+    寫入沿用 atomic replace，且遷移冪等——重跑不會產生第二種結果。
+    """
+    raw = json.loads(Path(path).read_text(encoding="utf-8"))
+    data = migrate_scenario(raw)
+    if data is not raw:
+        atomic_write_json(Path(path), data)
+    data = dict(data, strategies=tuple(data["strategies"]))
     return Scenario(**data)
 
 

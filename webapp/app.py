@@ -20,7 +20,7 @@ import streamlit as st
 from option_chaser import service, store
 from option_chaser.models import AnalysisParams, FetchError, ParamError
 from option_chaser.report import STRATEGY_LABELS
-from option_chaser.timeframe import month_is_over, parse_target_month
+from option_chaser.timeframe import ensure_month_open, parse_target_month
 from webapp.render import (cell_color, default_key, find_row, heatmap_html,
                            render_step2, render_step3, render_step4,
                            render_summary)
@@ -118,9 +118,7 @@ def _do_analysis() -> None:
 def _resolve_target_month() -> str:
     """年月輸入 → YYYY-MM。格式錯誤與「已過完的月份」都是明確錯誤，不猜測。"""
     month = parse_target_month(st.session_state.get("target_month") or "")
-    if month_is_over(month, date.today()):
-        raise ParamError(f"目標年月 {month.key()} 已經過完，請改填未來的年月。")
-    return month.key()
+    return ensure_month_open(month, date.today()).key()
 
 
 if submitted and not st.session_state.get("running", False):

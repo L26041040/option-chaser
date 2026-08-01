@@ -7,10 +7,11 @@
 `calendar_anchor()` 回傳的是**日曆錨點**（探索中心／舊表面的顯示參考日），
 不是「目標日期」，也不得被持久化成 target_date。
 
-四件事：
+五件事：
 - `parse_target_month()` — 四種寫法歸一為 (年, 月)
 - `calendar_anchor()`    — 該月第三個星期五，純日曆計算
 - `month_is_over()`      — 目標月最後一天是否已過完
+- `ensure_month_open()`  — 把上一條變成所有入口共用的拒絕規則
 - `select_expiries()`    — 六點規則，從實際到期日中選出至多五檔
 """
 from __future__ import annotations
@@ -93,6 +94,18 @@ def calendar_anchor(month: TargetMonth) -> date:
 def month_is_over(month: TargetMonth, today: date) -> bool:
     """目標月最後一天是否已過完。最後一天當天不算過完，翌日才算。"""
     return today > month.last_day()
+
+
+def ensure_month_open(month: TargetMonth, today: date) -> TargetMonth:
+    """月級驗證的單一出口：已過完 → 拒絕；當月（含最後一天）→ 放行。
+
+    建立劇本、CLI、service 三個入口共用同一條規則與同一句錯誤訊息——判定散落
+    在各層是「某一層偷偷放寬」的溫床。回傳原 month 以便串接。
+    """
+    if month_is_over(month, today):
+        raise ParamError(
+            f"目標年月 {month.key()} 已經過完（判定日 {today.isoformat()}）")
+    return month
 
 
 def select_expiries(expiries: Iterable[str], anchor: date) -> ExpirySelection:

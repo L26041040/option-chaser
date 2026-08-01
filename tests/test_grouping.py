@@ -1,4 +1,6 @@
-"""v4 spec §3.2: expiry grouping, sampling, badges, injection."""
+"""v4 spec §3.2: expiry grouping, badges；選取取代事後抽樣。"""
+from datetime import date
+
 from option_chaser import service
 from option_chaser.models import AnalysisParams
 
@@ -95,9 +97,8 @@ def test_all_badged_rows_visible():
 def test_buffer_days_measured_from_calendar_anchor():
     r = _run_six_expiry()
     anchor = r.request.base_params.anchor
-    from datetime import date as _d
     for g in r.expiry_groups:
-        assert g.buffer_days == (_d.fromisoformat(g.expiry) - anchor).days
+        assert g.buffer_days == (date.fromisoformat(g.expiry) - anchor).days
 
 
 def test_all_warning_fallback():

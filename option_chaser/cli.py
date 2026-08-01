@@ -7,7 +7,7 @@ from datetime import date
 from pathlib import Path
 
 from .models import AnalysisParams, ParamError, STRATEGIES, is_bullish
-from .timeframe import TargetMonth, month_is_over, parse_target_month
+from .timeframe import TargetMonth, ensure_month_open, parse_target_month
 
 
 # Flags that take numeric/CSV values and need preprocessing for negative numbers
@@ -133,9 +133,7 @@ def resolve_params(args: argparse.Namespace) -> AnalysisParams:
 
 
 def validate_scenario(p: AnalysisParams, spot: float, today: date) -> None:
-    if month_is_over(TargetMonth.from_key(p.target_month), today):
-        raise ParamError(
-            f"--target-month {p.target_month} 已過完（資料日 {today.isoformat()}）")
+    ensure_month_open(TargetMonth.from_key(p.target_month), today)
     if is_bullish(p.strategy):
         if p.target_price <= spot and not p.force:
             raise ParamError(

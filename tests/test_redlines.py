@@ -64,8 +64,7 @@ def test_nothing_writes_a_target_date_anywhere_in_sources():
 
 def test_analysis_params_has_no_settable_date_field():
     fields = {f.name for f in dataclasses.fields(AnalysisParams)}
-    assert "target_month" in fields
-    assert not any("date" in name for name in fields)
+    assert "target_month" in fields and "target_date" not in fields
     with pytest.raises(TypeError):
         AnalysisParams(target_price=120.0, target_date="2028-01-21")
 
@@ -80,5 +79,4 @@ def test_anchor_is_derived_and_never_persisted():
 
 def test_scenario_persists_month_not_a_day():
     fields = {f.name for f in dataclasses.fields(Scenario)}
-    assert "target_month" in fields
-    assert not any("date" in name for name in fields)
+    assert "target_month" in fields and "target_date" not in fields

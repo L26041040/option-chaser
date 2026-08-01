@@ -19,7 +19,7 @@ from .report import STRATEGY_LABELS, render, render_filter_only, render_spreads
 from .scenarios import (ScenarioVector, completion_curve, completion_scan,
                         friction, natural_cost, scenario_vector, _grid_price,
                         _value_fn)
-from .timeframe import (TargetMonth, calendar_anchor, month_is_over,
+from .timeframe import (TargetMonth, calendar_anchor, ensure_month_open,
                         select_expiries)
 from .valuation import (ContractValuation, SpreadValuation, evaluate_contract,
                         evaluate_spread, leg_greeks, scenario_leg_value,
@@ -497,10 +497,7 @@ def _analyze(request: AnalysisRequest, snap: ChainSnapshot,
              snapshot_path: str, progress: Progress | None) -> AnalysisResult:
     today = snapshot_today(snap.fetched_at)
     base = request.base_params
-    month = TargetMonth.from_key(base.target_month)
-    if month_is_over(month, today):
-        raise ParamError(
-            f"--target-month {base.target_month} 已過完（資料日 {today.isoformat()}）")
+    month = ensure_month_open(TargetMonth.from_key(base.target_month), today)
     anchor = calendar_anchor(month)
     _emit(progress, "正在依日曆錨點選取到期日……")
     snap = _scoped_to_selected_expiries(snap, anchor, today)

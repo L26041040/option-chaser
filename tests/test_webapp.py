@@ -17,11 +17,11 @@ def _patched(monkeypatch):
         lambda req, progress=None: real_offline(req, FIX, progress))
 
 
-def _fill_and_submit(at, symbol="XYZ", price=120.0,
+def _fill_and_submit(at, symbol="XYZ", price=120.0, month=TARGET_MONTH_INPUT,
                      checks=("long-call", "bull-call-spread")):
     at.text_input(key="symbol").set_value(symbol)
     at.number_input(key="target_price").set_value(price)
-    at.text_input(key="target_month").set_value(TARGET_MONTH_INPUT)
+    at.text_input(key="target_month").set_value(month)
     for s in ("long-call", "bull-call-spread", "long-put", "bear-put-spread"):
         at.checkbox(key=f"chk-{s}").set_value(s in checks)
     at.run()  # register widget states
@@ -72,6 +72,25 @@ def test_empty_symbol_error(monkeypatch):
     at.run()
     at = _fill_and_submit(at, symbol="   ")
     assert any("請輸入標的代號" in e.value for e in at.error)
+
+
+def test_unparseable_month_error(monkeypatch):
+    """單次分析頁與工作區頁同樣把無法解析的年月報成明確錯誤，不默默吞掉。"""
+    _patched(monkeypatch)
+    at = AppTest.from_file("webapp/app.py")
+    at.run()
+    at = _fill_and_submit(at, month="下個十月")
+    assert any("目標年月" in e.value for e in at.error)
+    assert "result" not in at.session_state
+
+
+def test_month_already_over_error(monkeypatch):
+    _patched(monkeypatch)
+    at = AppTest.from_file("webapp/app.py")
+    at.run()
+    at = _fill_and_submit(at, month="2020/1")
+    assert any("已經過完" in e.value for e in at.error)
+    assert "result" not in at.session_state
 
 
 def test_no_strategy_error(monkeypatch):

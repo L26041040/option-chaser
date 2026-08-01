@@ -1,5 +1,6 @@
 # tests/test_webapp_workspace.py
 """v5 spec §7.7: 工作區 GUI（AppTest）。OC_WORKSPACE 隔離＋service seam 注入。"""
+from datetime import date
 from pathlib import Path
 
 import pytest
@@ -12,6 +13,7 @@ from option_chaser import store, workspace
 PAGE = "webapp/pages/0_劇本工作區.py"
 FIX = "tests/fixtures/xyz_v4_six_expiries.json"
 TS = "2026-07-21T00:00:00+00:00"
+OBSERVED = date(2026, 7, 21)   # 與 TS 同日：建立驗證不吃真實時鐘
 
 
 @pytest.fixture
@@ -27,10 +29,11 @@ def ws(tmp_path, monkeypatch):
     return tmp_path
 
 
-def _mk(ws_root, price=120.0, tmonth="2026-08"):
+def _mk(ws_root, price=120.0, tmonth="2028-01"):
     return workspace.create_scenario(
         ws_root, symbol="XYZ", direction="bullish", target_price=price,
-        target_month=tmonth, notes="", strategies=("long-call",), ts=TS)
+        target_month=tmonth, notes="", strategies=("long-call",), ts=TS,
+        observed=OBSERVED)
 
 
 def _body(at):
@@ -121,8 +124,8 @@ def test_status_button_requires_reason(ws):
 
 
 def test_group_card_and_relation_confirm(ws):
-    a = _mk(ws, price=110.0, tmonth="2026-08")
-    b = _mk(ws, price=120.0, tmonth="2026-09")
+    a = _mk(ws, price=110.0, tmonth="2028-01")
+    b = _mk(ws, price=120.0, tmonth="2028-12")
     at = AppTest.from_file(PAGE)
     at.run()
     body = _body(at)
@@ -136,8 +139,8 @@ def test_group_card_and_relation_confirm(ws):
 
 def test_reanalyze_button_requires_both_conditions(ws):
     """負例×2＋正例：單一條件成立不出現（spec §7.7）。"""
-    a = _mk(ws, price=110.0, tmonth="2026-08")
-    b = _mk(ws, price=120.0, tmonth="2026-09")
+    a = _mk(ws, price=110.0, tmonth="2028-01")
+    b = _mk(ws, price=120.0, tmonth="2028-12")
 
     def has_rean(at):
         return any(bt.key == f"ws-rean-{b.id}" for bt in at.button)
@@ -156,7 +159,7 @@ def test_reanalyze_button_requires_both_conditions(ws):
     assert has_rean(at)                           # 兩條件成立
     # 反向單一條件：只確認、未 Reached
     workspace.delete_scenario(ws, a.id, ts=TS)
-    c = _mk(ws, price=110.0, tmonth="2026-08")
+    c = _mk(ws, price=110.0, tmonth="2028-01")
     workspace.confirm_relation(ws, "G-XYZ", (c.id, b.id), "milestone-path",
                                ts=TS)
     at = AppTest.from_file(PAGE)
@@ -199,8 +202,8 @@ def test_delete_button_full_chain(ws):
 
 
 def test_group_analyze_button_shares_snapshot(ws):
-    a = _mk(ws, price=110.0, tmonth="2026-08")
-    b = _mk(ws, price=120.0, tmonth="2026-09")
+    a = _mk(ws, price=110.0, tmonth="2028-01")
+    b = _mk(ws, price=120.0, tmonth="2028-12")
     at = AppTest.from_file(PAGE)
     at.run()
     next(bt for bt in at.button
