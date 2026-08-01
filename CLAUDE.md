@@ -17,11 +17,11 @@
 - **T12** [#26] — 估值輸入層：期限對齊利率曲線＋worst 成本口徑
   （commits `c2f7ec2`/`8be24b9`/`d1881fc`；parity 測試點腳本
   `scripts/opc_parity_points.py`，OPC 人工驗證 A13.5 待需求方執行）
+- **T4** [#18] — 建立表單簡化為三欄輸入（commits `cd8e0cc`/`a524f1d`）
 
 ### 待辦（依序，← 為下一張）
 
-- **T4** [#18] — 建立表單簡化為三欄輸入　← 下一張
-- **T5** [#19] — 桌面 20/80 版面、緊湊劇本卡片、清單移除工具
+- **T5** [#19] — 桌面 20/80 版面、緊湊劇本卡片、清單移除工具　← 下一張
 - **T6** [#20] — 劇本級狀態燈號與失敗分層
 - **T7** [#21] — 自動／手動刷新與原子快照
 - **T8** [#22] — 劇本清單依最新收益率排序
@@ -41,6 +41,4 @@
 - 跑測試：`PYTHONPATH=. .venv/bin/python -m pytest`
   （`pyproject.toml` 的 `packages.find` 只收 `option_chaser*`，`webapp` 不在裡面）
 - 建 venv：`uv venv --python 3.11 .venv && uv pip install --python .venv/bin/python -e ".[gui]" pytest`
-- `tests/test_webapp_v4.py`／`tests/test_webapp_workspace.py` 有 **5 個既有失敗**，
-  來自 streamlit 1.60 版本漂移（repo 只要求 `>=1.30`），與新工作無關。
-  改動前後用 `git stash` 對照，確認數字沒變即可。
+- 全套測試現為全綠（舊紀錄提到的 5 個 streamlit 版本漂移失敗已隨 T2 改寫消失）。
