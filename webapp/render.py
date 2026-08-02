@@ -380,6 +380,15 @@ def render_expiry_top10(view: dict, key: str | None, state_key: str) -> None:
             st.caption(return_md(top))
 
     group = next(g for g in groups if g["expiry"] == viewing)
+    # FB3-02（#45）：品質過濾把該期候選殺到只剩少數幾組時明確警示，
+    # 不再無聲端出唯一倖存者當「該期最高收益」（41% 誤導事件的產品層
+    # 修正；引擎層病因＝盤外報價歸零，由 #44 換 Cboe 主源處理）。
+    # `expiry_counts` 是該期通過品質過濾＋配對的全部有效組數（T9 既有
+    # 欄位），不是 Top 10 的長度。
+    n_valid = dict(strat.get("expiry_counts", ())).get(viewing)
+    if n_valid is not None and n_valid < 3:
+        st.warning(f"⚠ 該期僅 {n_valid} 組候選通過品質過濾，"
+                   "排名參考價值有限")
     for i, cand in enumerate(group["candidates"], start=1):
         mark = "▸" if cand["candidate_key"] == key else ""
         _render_candidate_expander(strat["strategy"], cand, mark=mark, rank=i)
