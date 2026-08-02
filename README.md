@@ -104,17 +104,19 @@ or Docker:
 
     docker compose up -d               # http://localhost:8501 (override with PORT)
 
-Four-step flow: scenario chips (symbol / target price / target date /
-strategy checkboxes) -> a single main heatmap (bold rows = the 4 anchor
-prices) -> a comparison table grouped by expiry (🚀 top return / 🛡️ top
-resilience / ⚠ = a leg with zero volume today or entry friction above 25% / ◀ selected; each row carries a thumbnail,
-buffer days, and a buffer-tradeoff note; clicking a row swaps the main
-heatmap) -> an advanced section with three collapsible panels (7-scenario
-resilience vector, return×resilience scatter, Greeks & liquidity). A
-multipage help page documents the same steps plus a glossary; key metric
-columns and strategy abbreviations have hover tooltips, with the full glossary
-on the 說明 (Help) page — GUI performs no financial arithmetic of its own; every number
-comes from the same engine the CLI uses.
+Opening the app lands directly on the scenario workspace (single main
+screen, no separate quick-analysis entry and no help page) — see "多劇本
+工作區" below for the persistent workspace, and its detail view for the
+per-scenario flow: a single main heatmap (bold rows = the 4 anchor prices)
+-> a comparison table grouped by expiry (🚀 top return / 🛡️ top resilience /
+⚠ = a leg with zero volume today or entry friction above 25% / ◀ selected;
+each row carries a thumbnail, buffer days, and a buffer-tradeoff note;
+clicking a row swaps the main heatmap) -> a per-expiry Top 10 list -> an
+advanced section with collapsible panels (7-scenario resilience vector,
+return×resilience scatter, Greeks & liquidity, Spread history). Key metric
+columns and strategy abbreviations have hover tooltips. GUI performs no
+financial arithmetic of its own; every number comes from the same engine
+the CLI uses.
 
 ## Tests (all offline)
 
@@ -222,21 +224,21 @@ docs/superpowers/specs/2026-07-20-option-chaser-v4-design.md (v4)
 
     docker compose up -d               # http://localhost:8501（PORT 環境變數可改）
 
-四步版面：劇本 chips（標的／目標價／到達日期／策略勾選，預設 Long Call
-+ Bull Call Spread）→ 單一主 heatmap（粗體列＝關鍵價位：現價／目標／
-超標／深跌）→ 按到期日分組的比較表（🚀最高報酬／🛡️最強韌性／⚠＝任一腿今日無成交或成交摩擦>25%／
-◀選中，每列附縮圖、緩衝天數與緩衝取捨註記；點列即可切換主圖）→ 進階區
-三個可摺疊面板（7 情境韌性向量、報酬×韌性散點、Greeks 與流動性）。
-多頁「說明」頁收錄同一套三步教學與名詞表；主要指標欄位與策略縮寫提供滑鼠
-懸浮解釋（hover tooltip），完整名詞表在說明頁。進階參數一律採用 CLI 預設值；方向不合的策略會被跳過並提示，
-GUI 不提供 --force。所有計算皆由與 CLI 相同的引擎完成，GUI 本身不做
-任何金融公式運算。
+開啟網站直接落地劇本工作區（單一主畫面，不存在另一個快速分析入口，也
+沒有「說明」頁）——見下方「多劇本工作區」。詳細頁流程：單一主 heatmap
+（粗體列＝關鍵價位：現價／目標／超標／深跌）→ 按到期日分組的比較表
+（🚀最高報酬／🛡️最強韌性／⚠＝任一腿今日無成交或成交摩擦>25%／◀選中，
+每列附縮圖、緩衝天數與緩衝取捨註記；點列即可切換主圖）→ 單期 Top 10
+→ 進階區可摺疊面板（7 情境韌性向量、報酬×韌性散點、Greeks 與流動性、
+Spread 歷史）。主要指標欄位與策略縮寫提供滑鼠懸浮解釋（hover tooltip）。
+進階參數一律採用 CLI 預設值；方向不合的策略會被跳過並提示，GUI 不提供
+--force。所有計算皆由與 CLI 相同的引擎完成，GUI 本身不做任何金融公式運算。
 
 ## 多劇本工作區
 
-從左側頁面選單進入「劇本工作區」（`webapp/pages/0_劇本工作區.py`），資料落地
-在專案根目錄的 `workspace/`（不進版控，已加入 .gitignore）；Docker 部署時
-compose.yaml 已掛載 `./workspace:/app/workspace`。
+開啟網站（`webapp/app.py`）即是劇本工作區，資料落地在專案根目錄的
+`workspace/`（不進版控，已加入 .gitignore）；Docker 部署時 compose.yaml
+已掛載 `./workspace:/app/workspace`。
 
 workspace/ 佈局（五類檔案）：
 
