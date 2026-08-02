@@ -72,7 +72,7 @@ def test_top10_is_the_best_ten_within_its_own_expiry(tmp_path):
     ranked_returns = [spread_baseline_return(sv) for sv in ranked]
     assert ranked_returns == sorted(ranked_returns, reverse=True)
     assert [service.candidate_key(cv) for cv in top10] == \
-        [service._valuation_key(sv) for sv in ranked[:10]]
+        [service.valuation_key(sv) for sv in ranked[:10]]
 
 
 def test_no_cross_expiry_contamination(tmp_path):

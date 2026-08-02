@@ -271,10 +271,11 @@ def _spread_view(sv: SpreadValuation, idx: int, n_pairs: int, spot: float,
         **_v4_fields(sv, spot, today, p))
 
 
-def _valuation_key(v: ContractValuation | SpreadValuation) -> str:
+def valuation_key(v: ContractValuation | SpreadValuation) -> str:
     """需求八：Spread／單腳身分鍵，直接吃估值物件——`candidate_key()` 的
     CandidateView 包裝只是它的一層外皮。T9 序列化全部有效候選的歷史五欄位
-    時不需要（也不划算）先建 CandidateView，所以底層鍵在這裡獨立出來重用。"""
+    時不需要（也不划算）先建 CandidateView，所以底層鍵在這裡獨立出來重用，
+    公開給 `store.py` 跨模組呼叫（非本模組私用，因此不加底線）。"""
     if isinstance(v, SpreadValuation):
         return (f"{_strategy_of(v)}|{v.long_leg.strike:g}|"
                 f"{v.short_leg.strike:g}|{v.long_leg.expiry}")
@@ -282,7 +283,7 @@ def _valuation_key(v: ContractValuation | SpreadValuation) -> str:
 
 
 def candidate_key(cv: CandidateView) -> str:
-    return _valuation_key(cv.valuation)
+    return valuation_key(cv.valuation)
 
 
 def _strategy_of(v) -> str:

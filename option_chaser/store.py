@@ -15,7 +15,7 @@ from pathlib import Path
 from . import __version__
 from .ranking import spread_baseline_return
 from .scenarios import natural_cost
-from .service import AnalysisResult, CandidateView, candidate_key, _valuation_key
+from .service import AnalysisResult, CandidateView, candidate_key, valuation_key
 from .timeframe import TargetMonth
 from .valuation import SpreadValuation
 from .vocabulary import EVENT_TYPES_V5
@@ -303,9 +303,12 @@ def _history_entry(sv: SpreadValuation, expiry: str, rank_in_expiry: int) -> dic
     `meta.spot`（既有設計，`_candidate()` 對完整 CandidateView 同樣不重複）。
     不建 CandidateView：這裡只需要輕量欄位，沒有 Heatmap 矩陣（附錄A10.3）。"""
     return {
-        "candidate_key": _valuation_key(sv),
+        "candidate_key": valuation_key(sv),
         "expiry": expiry,
-        "cost": sv.net_worst,
+        # T12（附錄A14.2）：成本口徑統一走 natural_cost（＝最差成交假設），
+        # 與 `_candidate()` 的 `natural_cost`／`cap_per` 同一條路徑，不直接
+        # 讀 `sv.net_worst`（spread 之下數值恆等，但少一層轉譯依賴）。
+        "cost": natural_cost(sv),
         "baseline_return": spread_baseline_return(sv),
         "rank_in_expiry": rank_in_expiry,
     }
