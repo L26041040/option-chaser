@@ -30,6 +30,10 @@
   關鍵失敗旗標的已知限制沿用 T6 現狀，評估後維持不落地事件）
 - **T8** [#22] — 劇本清單依最新收益率排序（commit `cb49c96`；新增
   `workspace.sort_cards()` 聚合函式，`list_scenarios()` 既有回傳順序未動）
+- **T9** [#23] — 每到期日 Top 10 與全候選快照序列化（commit `4285215`；
+  `StrategyResult.expiry_top10`／`expiry_ranked` 新增，`serialize_result()`
+  新增 `expiry_top10`／`all_candidates` 兩欄位；範圍限定 Spread 路徑，
+  single-leg 依 MVP 範圍不動）
 
 ### 待辦（依序，← 為下一張）
 
@@ -39,8 +43,7 @@
 > 任一種做法都會改變產品行為、或是要動到已定案的附錄決策。
 > 純工程判斷（命名、重構、測試怎麼寫、既有 lint 問題）自己決定就好。
 
-- **T9** [#23] — 每到期日 Top 10 與全候選快照序列化　← 下一張
-- **T10** [#24] — 詳細頁兩層結構（各期摘要 → 單期 Top 10）
+- **T10** [#24] — 詳細頁兩層結構（各期摘要 → 單期 Top 10）　← 下一張
 - **T11** [#25] — Spread 歷史時間序列查詢
 - **D1** [#14] — Long Call 追平比較（deferred，不得混入 T2–T11）
 
