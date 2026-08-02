@@ -3,8 +3,8 @@
 所有函數皆消費 `option_chaser.store.serialize_result` 產出的 view dict
 （及其中的 candidate dict），僅做格式化與座標幾何（顏色色階、Pareto 邊界、
 SVG 座標映射），不執行任何金融估值——每個顯示數字都取自已由 service 預算好的
-dict 欄位。此模組刻意與 Streamlit 以外的計算解耦，供 quick-analysis GUI 與
-工作區詳頁共用。
+dict 欄位。此模組刻意與 Streamlit 以外的計算解耦，供 webapp/app.py（劇本
+工作區單一主畫面）共用。
 """
 from __future__ import annotations
 
@@ -189,14 +189,10 @@ def find_row(view: dict, key: str | None) -> dict | None:
     return None
 
 
-def default_key(view: dict) -> str | None:
-    return view["default_selection"][1] if view["default_selection"] else None
-
-
 def baseline_key(view: dict) -> str | None:
     """T10（附錄A8.5）：詳細頁進頁預設選中——baseline 期自己的第 1 名。
-    與 `default_key()`（v4 舊有、app.py 快速分析頁仍在用的全域最高報酬
-    避警示語意）刻意分開，見 `service.AnalysisResult` 的欄位註解。"""
+    與全域最高報酬語意（`view["default_selection"]`，QA1-01 隨快速分析頁
+    一併移除）刻意分開，見 `service.AnalysisResult` 的欄位註解。"""
     sel = view.get("baseline_selection")
     return sel[1] if sel else None
 
@@ -515,9 +511,9 @@ def render_step4(view: dict, key: str | None,
         _render_scatter_expander(view)
     with st.expander("Greeks 與流動性", expanded=False):
         _render_greeks_expander(view, key)
-    # T11（#25）：只有真的選中 Spread、且呼叫端有提供歷史資料（目前只有
-    # 劇本工作區的詳細頁；app.py 快速分析頁沒有持久化劇本，不傳 history，
-    # 因此不會顯示這個區塊——不是「尚無歷史」，是「不適用」）才顯示。
+    # T11（#25）：只有真的選中 Spread、且呼叫端有提供歷史資料才顯示——沒
+    # 選中候選、或呼叫端不傳 history（不適用持久化劇本的場景）時不顯示這
+    # 個區塊，不是「尚無歷史」，是「不適用」。
     if key is not None and history is not None:
         with st.expander("Spread 歷史", expanded=False):
             render_spread_history(history)

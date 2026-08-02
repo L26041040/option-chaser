@@ -21,7 +21,7 @@ from streamlit.testing.v1 import AppTest
 from option_chaser import service, workspace
 from option_chaser.models import AnalysisParams
 
-PAGE = "webapp/pages/0_劇本工作區.py"
+PAGE = "webapp/app.py"
 TS = "2026-07-15T21:30:00-04:00"
 AUTO_REFRESH_KEY = "ws-auto-refreshed"
 E1, E2, E3 = "2026-08-21", "2026-09-18", "2026-10-16"   # E1＝baseline

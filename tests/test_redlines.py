@@ -12,11 +12,11 @@ from option_chaser.store import Scenario
 
 BANNED = ["獲利機率", "機率加權", "勝率", "POP", "probability",
           "期望報酬", "expected profit", "Sharpe", "CVaR"]
-TARGETS = [Path("webapp/app.py"), Path("webapp/pages/1_說明.py"),
+TARGETS = [Path("webapp/app.py"),
            Path("option_chaser/glossary.py"),
            Path("option_chaser/store.py"), Path("option_chaser/workspace.py"),
            Path("option_chaser/vocabulary.py"),
-           Path("webapp/render.py"), Path("webapp/pages/0_劇本工作區.py"),
+           Path("webapp/render.py"),
            *sorted(Path("tests/fixtures").glob("golden_*.txt"))]
 
 
@@ -30,13 +30,12 @@ def test_no_banned_vocabulary():
 def test_new_copy_avoids_bare_probability_word():
     """v4-new files must not contain the bare word 機率 at all."""
     for path in [Path("option_chaser/glossary.py"),
-                 Path("webapp/pages/1_說明.py"),
                  Path("option_chaser/scenarios.py"),
                  Path("option_chaser/store.py"),
                  Path("option_chaser/workspace.py"),
                  Path("option_chaser/vocabulary.py"),
                  Path("webapp/render.py"),
-                 Path("webapp/pages/0_劇本工作區.py")]:
+                 Path("webapp/app.py")]:
         assert "機率" not in path.read_text(encoding="utf-8"), path
 
 

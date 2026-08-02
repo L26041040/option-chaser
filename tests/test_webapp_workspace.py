@@ -15,7 +15,7 @@ from streamlit.testing.v1 import AppTest
 from option_chaser import store, workspace
 from webapp.render import return_md
 
-PAGE = "webapp/pages/0_劇本工作區.py"
+PAGE = "webapp/app.py"
 FIX = "tests/fixtures/xyz_v4_six_expiries.json"
 TS = "2026-07-21T00:00:00+00:00"
 OBSERVED = date(2026, 7, 21)   # 與 TS 同日：建立驗證不吃真實時鐘
