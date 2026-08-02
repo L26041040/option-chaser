@@ -59,17 +59,21 @@ def _run_page():
 
 
 def test_history_expander_shows_the_selected_candidates_own_series(ws):
+    """QA1-11（#38）：表格重做成折線圖後，AppTest 沒有專屬的 chart 存取器
+    （`Block.get("vega_lite_chart")` 是唯一的通用逃生口），改成只驗證
+    Spread 歷史展開區確實畫出一張圖、且圖存在於正確身份鍵下——精確的
+    資料對應（時間／淨成本）已由 `tests/test_render_spread_history.py`
+    在純函式層驗證過，這裡只驗證整頁串接沒有斷。"""
     ws_root, sid = ws
     at = _run_page()
     assert not at.exception
     expander = next(e for e in at.expander if e.label == "Spread 歷史")
-    table = expander.markdown[0].value
+    charts = expander.get("vega_lite_chart")
+    assert len(charts) == 1
 
     key = at.session_state["ws-selected-key"]
     expected = workspace.spread_history(ws_root, sid, key)
     assert len(expected) == 1
-    assert f"{expected[0]['rank_in_expiry']}" in table.splitlines()[-1]
-    assert TS in table
 
 
 def test_history_reflects_a_second_refresh_as_one_growing_series(ws, monkeypatch):
@@ -86,10 +90,11 @@ def test_history_reflects_a_second_refresh_as_one_growing_series(ws, monkeypatch
                                ts="2026-07-22T21:30:00-04:00")
 
     at = _run_page()
+    assert not at.exception
     key = at.session_state["ws-selected-key"]
     expected = workspace.spread_history(ws_root, sid, key)
     assert len(expected) == 2   # 兩次刷新，同一 Spread 身份的連續序列
 
     expander = next(e for e in at.expander if e.label == "Spread 歷史")
-    table = expander.markdown[0].value
-    assert TS in table and "2026-07-22T21:30:00-04:00" in table
+    charts = expander.get("vega_lite_chart")
+    assert len(charts) == 1   # 兩筆快照畫在同一張圖（同一條序列），不是兩張圖

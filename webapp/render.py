@@ -8,6 +8,8 @@ dict 欄位。此模組刻意與 Streamlit 以外的計算解耦，供 webapp/ap
 """
 from __future__ import annotations
 
+from datetime import datetime
+
 import streamlit as st
 
 from option_chaser.data.snapshot import load_snapshot, snapshot_to_csv
@@ -551,19 +553,22 @@ def _render_raw_data_expander(view: dict) -> None:
 
 
 def render_spread_history(history: list[dict]) -> None:
-    """T11（#25）：選中 Spread 的專屬歷史時間序列——純表格呈現，數字直接來自
-    `workspace.spread_history()` 的聚合結果，本函式不做任何金融計算。
-    缺席快照（斷點）顯示「—」：如實呈現，不插值、不平滑掉（需求）。"""
+    """T11（#25）→ QA1-11（#38，重做）：選中 Spread 的專屬歷史時間序列
+    ——原表格版本「變成表格很奇怪」，需求方裁示重做成跟 Yahoo Finance
+    單張選擇權價格走勢一樣的折線圖，繪淨成本（Spread 自身的「價格」）
+    對時間。純資料組裝，數字直接來自 `workspace.spread_history()` 的
+    聚合結果，本函式不做任何金融計算。
+
+    缺席快照（`cost` 為 `None`）如實傳給 `st.line_chart`，不插值、不
+    跳過、不代成 0（既有決策不變）——Vega-Lite（`st.line_chart` 底層）
+    對 null 值預設不連線，恰好是「維持斷點」要的效果，不需要額外處理。
+    """
     if not history:
         st.info("尚無歷史紀錄。")
         return
-    lines = ["|更新時間|標的價|淨成本|收益率|期內名次|", "|---|---|---|---|---|"]
-    for e in history:
-        cost = f"${money(e['cost'])}" if e["cost"] is not None else "—"
-        ret = pct(e["baseline_return"]) if e["baseline_return"] is not None else "—"
-        rank = str(e["rank_in_expiry"]) if e["rank_in_expiry"] is not None else "—"
-        lines.append(f"|{e['analyzed_at']}|${money(e['spot'])}|{cost}|{ret}|{rank}|")
-    st.markdown(esc("\n".join(lines)))
+    rows = [{"更新時間": datetime.fromisoformat(e["analyzed_at"]),
+            "淨成本": e["cost"]} for e in history]
+    st.line_chart(rows, x="更新時間", y="淨成本")
 
 
 def render_step4(view: dict, key: str | None,
