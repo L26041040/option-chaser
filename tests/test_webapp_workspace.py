@@ -424,6 +424,42 @@ def test_detail_page_has_no_evaluative_commentary_or_invented_terms(ws):
     assert "Bid-Ask Spread" in body
 
 
+def test_report_section_is_labelled_and_no_longer_buried_in_greeks(ws):
+    """QA1-10（#37）：純文字報告獨立成明確標示的「Option Chaser 分析報告」
+    展開區，不再埋在「Greeks 與流動性」展開區最底部、沒有標題。"""
+    sc = _mk(ws)
+    workspace.analyze_scenario(ws, sc.id, snapshot_path=FIX, ts=TS)
+    at = AppTest.from_file(PAGE)
+    at.run()
+    assert not at.exception
+    labels = [e.label for e in at.expander]
+    assert any("Option Chaser 分析報告" in lbl for lbl in labels)
+    report_expander = next(e for e in at.expander
+                           if "Option Chaser 分析報告" in e.label)
+    assert any("OPTION CHASER" in c.value.upper() for c in report_expander.code)
+    greeks_expander = next(e for e in at.expander if "Greeks 與流動性" in e.label)
+    assert not any("OPTION CHASER" in c.value.upper()
+                  for c in greeks_expander.code)
+
+
+def test_raw_snapshot_data_is_viewable_and_downloadable(ws):
+    """QA1-10（#37）：原始資料可在畫面查看並下載 CSV——需求方原話
+    「免得你亂掰我卻查不到證據」。只做「當下快照」，不接外部持久化
+    （Streamlit Community Cloud 只是測試環境，本票裁示不為它做持久化）。"""
+    sc = _mk(ws)
+    workspace.analyze_scenario(ws, sc.id, snapshot_path=FIX, ts=TS)
+    at = AppTest.from_file(PAGE)
+    at.run()
+    assert not at.exception
+    raw_expander = next(e for e in at.expander
+                        if "原始資料" in e.label)
+    assert raw_expander.dataframe, "應有可查看的原始資料表格"
+    dl = next(b for b in raw_expander.download_button)
+    assert dl.label and "CSV" in dl.label.upper()
+    # CSV 內容本身的轉換正確性由 test_models_snapshot.py 對
+    # `snapshot_to_csv()` 這個純函式獨立覆蓋，這裡只驗證下載入口有接上。
+
+
 def test_unanalyzed_scenario_detail_invites_analysis(ws):
     """停用 T7 自動刷新——見 `test_card_without_analysis_shows_a_dash` 的說明。"""
     _mk(ws)

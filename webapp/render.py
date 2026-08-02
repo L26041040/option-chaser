@@ -10,7 +10,9 @@ from __future__ import annotations
 
 import streamlit as st
 
+from option_chaser.data.snapshot import load_snapshot, snapshot_to_csv
 from option_chaser.glossary import GLOSSARY
+from option_chaser.models import SnapshotSchemaError
 from option_chaser.report import STRATEGY_LABELS
 
 STRATEGY_COLOR = {
@@ -497,9 +499,55 @@ def _render_greeks_expander(view: dict, key: str | None) -> None:
                  "（S=現價、IV 不變、今日+30天估值）")
     st.markdown(esc("\n\n".join(lines)), unsafe_allow_html=True)
 
+
+def _render_report_expander(view: dict, key: str | None) -> None:
+    """QA1-10（#37）：純文字報告獨立成明確標示的展開區——原本埋在
+    「Greeks 與流動性」展開區最底部，沒有標題、不易發現（問題陳述原話）。
+    內容不變，只是搬家：`res["report_text"]` 本來就存在，這裡不重算。"""
+    row = find_row(view, key)
+    if row is None:
+        st.info("無選中候選。")
+        return
     res = next((r for r in view["results"] if r["strategy"] == row["strategy"]), None)
-    if res is not None and res["report_text"]:
-        st.code(res["report_text"], language=None)
+    if res is None or not res["report_text"]:
+        st.info("尚無分析報告。")
+        return
+    st.code(res["report_text"], language=None)
+
+
+def _render_raw_data_expander(view: dict) -> None:
+    """QA1-10（#37）：原始資料查看＋下載——需求方原話「免得你亂掰我卻查不到
+    證據」。範圍依裁示只做「當下快照」：不接外部持久化儲存（Streamlit
+    Community Cloud 會自動重啟清空磁碟，只是測試環境，非上線後的去處）。
+
+    取得（`load_snapshot`）／轉換（`snapshot_to_csv`）／輸出（本函式）
+    三層清楚分離——換儲存後端時只需替換取得層，這裡與 CSV 轉換邏輯不動。
+    不吃 `key`：快照跟哪個候選被選中無關，一次分析只有一份快照。
+    """
+    ref = view["snapshot_ref"]
+    try:
+        snap = load_snapshot(ref["path"])
+    except OSError:
+        st.warning(f"原始快照檔案已不在（{ref['path']}）——不是資料錯誤，"
+                  "是部署環境的磁碟在重啟後被清空（已知限制）。")
+        return
+    except SnapshotSchemaError as e:
+        st.warning(f"原始快照檔案格式不相容：{e}")
+        return
+    st.caption(f"標的 {snap.symbol}｜現價 ${money(snap.spot)}｜"
+              f"資料時間 {snap.fetched_at}｜來源 {snap.source}｜"
+              f"{len(snap.contracts)} 筆合約")
+    st.dataframe(
+        [{"contract_symbol": c.contract_symbol, "option_type": c.option_type,
+          "strike": c.strike, "expiry": c.expiry, "bid": c.bid, "ask": c.ask,
+          "last": c.last, "volume": c.volume, "open_interest": c.open_interest,
+          "implied_volatility": c.implied_volatility}
+         for c in snap.contracts],
+        width="stretch", height=240)
+    st.download_button(
+        "⬇ 下載原始資料（CSV）", snapshot_to_csv(snap),
+        file_name=f"{snap.symbol}_{snap.fetched_at.replace(':', '')}.csv",
+        mime="text/csv")
 
 
 def render_spread_history(history: list[dict]) -> None:
@@ -527,6 +575,10 @@ def render_step4(view: dict, key: str | None,
         _render_scatter_expander(view)
     with st.expander("Greeks 與流動性", expanded=False):
         _render_greeks_expander(view, key)
+    with st.expander("📄 Option Chaser 分析報告", expanded=False):
+        _render_report_expander(view, key)
+    with st.expander("原始資料（當次快照）", expanded=False):
+        _render_raw_data_expander(view)
     # T11（#25）：只有真的選中 Spread、且呼叫端有提供歷史資料才顯示——沒
     # 選中候選、或呼叫端不傳 history（不適用持久化劇本的場景）時不顯示這
     # 個區塊，不是「尚無歷史」，是「不適用」。
