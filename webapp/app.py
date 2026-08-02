@@ -50,17 +50,27 @@ QA1-06（#33）：候選展開列不再是會改寫 Step 2 主圖的「選看」
 GUI 零金融公式：所有數字來自 result dict（store 預算）或 scenario 欄位。
 
 T7：開站首次載入自動刷新所有未過期劇本（同一 session 只此一次，靠
-`AUTO_REFRESH_KEY` 旗標把關）；左側清單旁的刷新鈕不受此限制，隨時可再打。
-建立劇本立即觸發該劇本首次刷新。同標的多劇本各自獨立呼叫
-`workspace.analyze_scenario`（各自 fetch，不共用 snapshot——附錄 A8.9），
-單一劇本失敗不擋其他。原子性由 `workspace.analyze_scenario`／
-`store.save_result` 既有次序保證（失敗即提前 return，成功才落盤＋補事件），
-本頁不需另外處理。
+`AUTO_REFRESH_KEY` 旗標把關）。建立劇本立即觸發該劇本首次刷新。同標的
+多劇本各自獨立呼叫 `workspace.analyze_scenario`（各自 fetch，不共用
+snapshot——附錄 A8.9），單一劇本失敗不擋其他。原子性由
+`workspace.analyze_scenario`／`store.save_result` 既有次序保證（失敗即
+提前 return，成功才落盤＋補事件），本頁不需另外處理。
 
 效能觀察（issue #21 AC，僅記錄不設門檻）：3 個劇本、離線重放同一份
 snapshot fixture、序列刷新，總耗時約 29ms（本機量測，計算部分；不含
 真實網路延遲——沙箱環境無法連外抓真實報價）。多劇本序列刷新目前無並行化，
 劇本數量顯著增加時應重新量測。
+
+QA1-07（#34）：刷新時機收斂為嚴格三種——開站首次載入、新增劇本當下、
+頁面**最上方**的刷新鈕（原本放在側欄清單旁，移到主畫面頂部）。詳細頁
+原本每張劇本各自的「分析」重刷按鈕**移除**（2026-08-02 需求方裁示：
+嚴格照三種情況解讀，不屬於任何一種，拿掉而非保留成第四種管道）；
+`_analyze_with_status` 因此失去唯一有意義的呼叫端（建立流程原本呼叫它，
+但無論成敗都接著 `st.rerun()`，其 `st.error` 分支其實從未真的被使用者
+看到），一併刪除、改走 `_refresh_all`，統一成單一刷新路徑。「到期日
+選擇」橫向按鈕原本「按鈕觸發重跑後又手動 `st.rerun()` 一次」＝多刷一輪
+（見 `render.py` 的 `render_expiry_top10`），改用 `on_click` 回呼，回呼
+在重跑前執行，同一輪重跑即讀到新值，不需要第二輪。
 """
 from __future__ import annotations
 
@@ -117,20 +127,6 @@ def _classify_refresh_error(exc: Exception) -> tuple[bool, str]:
     return False, "分析過程發生錯誤，請稍後再試。"
 
 
-def _analyze_with_status(sid: str, fn, *args, **kw):
-    try:
-        with st.status("分析中……", expanded=True) as status:
-            out = fn(*args, progress=status.write, **kw)
-            status.update(label="分析完成", state="complete")
-        _mark_refresh(sid, critical_failure=False)
-        return out
-    except Exception as e:
-        critical, message = _classify_refresh_error(e)
-        _mark_refresh(sid, critical_failure=critical)
-        st.error(message)
-        return None
-
-
 def _refresh_all(sids: list[str], *, label: str) -> None:
     """依序刷新每個劇本；單一失敗不擋其他（需求七：刷新單位是劇本）。
 
@@ -160,6 +156,12 @@ refreshable = [sc.id for sc in scenarios if sc.status != "Expired"]
 if not st.session_state.get(AUTO_REFRESH_KEY):
     st.session_state[AUTO_REFRESH_KEY] = True
     _refresh_all(refreshable, label="自動刷新未過期劇本……")
+
+# QA1-07（#34）：手動刷新鈕移到頁面最上方——需求七三種刷新時機之一
+# （開站／新增劇本按分析／頂部刷新鈕），其他操作一律不得觸發資料重抓。
+if st.button("🔄 刷新", key="ws-refresh-all"):
+    _refresh_all(refreshable, label="刷新未過期劇本……")
+    st.rerun()
 
 views = {sc.id: workspace.latest_result(WS_ROOT, sc.id) for sc in scenarios}
 failure_flags = st.session_state.setdefault(_FAILURE_KEY, {})
@@ -224,13 +226,12 @@ def _render_remove_tool(sid: str) -> None:
 
 
 def _render_detail(sc) -> None:
+    """QA1-07（#34）：詳細頁不再有單一劇本專屬的「分析」重刷按鈕——需求七
+    只認三種刷新時機（開站／新增劇本／頁面頂部刷新鈕），不含「進了某個
+    劇本的詳細頁後再點一次分析」這個第四種管道。要重刷這張劇本，走最上方
+    的刷新鈕（會刷新全部未過期劇本，含這張）。"""
     st.subheader(esc(f"{sc.symbol}　${money(sc.target_price)}　"
                      f"{sc.target_month}　{STATUS_BADGE[sc.status]}"))
-    if st.button("分析", key=f"ws-an-{sc.id}"):
-        # 僅成功才 rerun——失敗時 st.error 留在本次渲染，不被沖掉
-        if _analyze_with_status(sc.id, workspace.analyze_scenario, WS_ROOT,
-                                sc.id) is not None:
-            st.rerun()
     if sc.status == "Active":
         rcols = st.columns([3.0, 1.2, 1.2, 4.0])
         with rcols[0]:
@@ -254,7 +255,7 @@ def _render_detail(sc) -> None:
 
     view = views[sc.id]
     if view is None:
-        st.info("尚無分析結果。按上方「分析」取得目前報價與候選。")
+        st.info("尚無分析結果。使用頁面最上方的「🔄 刷新」按鈕取得目前報價與候選。")
         return
     render_summary(view)
     key = st.session_state.get("ws-selected-key")
@@ -279,12 +280,10 @@ def _render_detail(sc) -> None:
 
 
 # ---------- 側欄：劇本卡片清單（QA1-02／#29：桌面常駐、窄螢幕收合漢堡） ----------
+# QA1-07（#34）：刷新鈕移到頁面最上方，此處不再重複。
 with st.sidebar:
     st.subheader("劇本清單")
     st.toggle("✎ 編輯清單", key="ws-edit")
-    if st.button("🔄 刷新", key="ws-refresh-all", use_container_width=True):
-        _refresh_all(refreshable, label="刷新未過期劇本……")
-        st.rerun()
     if not scenarios:
         st.info("尚無劇本。用主畫面「＋ 建立劇本」開始。")
     elif len(scenarios) > 6:
@@ -373,11 +372,12 @@ with st.expander("＋ 建立劇本", expanded=not scenarios):
                 st.error(str(e))
             else:
                 # 需求七：建立劇本當下立即觸發首次刷新，完成後卡片即有數字。
-                # 無論成敗都 rerun——失敗時卡片自身的黃燈＋說明文字
-                # （見 `_render_card`）已是持續可見的失敗指示，不需要
-                # 額外保留一次性 st.error。
-                _analyze_with_status(created.id, workspace.analyze_scenario,
-                                     WS_ROOT, created.id)
+                # 走 `_refresh_all`（QA1-07／#34 後單一劇本刷新管道
+                # `_analyze_with_status` 已隨詳細頁「分析」按鈕一併移除）。
+                # 無論成敗都 rerun——失敗時卡片自身的黃燈＋說明文字（見
+                # `_render_card`）已是持續可見的失敗指示，不需要額外保留
+                # 一次性 st.error。
+                _refresh_all([created.id], label="分析新劇本……")
                 st.session_state["ws-detail"] = created.id
                 st.rerun()
 

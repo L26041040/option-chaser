@@ -292,6 +292,13 @@ def render_expiry_comparison(view: dict, key: str | None) -> None:
         st.caption(f"另有 {len(view['hidden_expiries'])} 個到期日未展示。")
 
 
+def _set_session_key(session_key: str, value: str) -> None:
+    """`st.button(on_click=...)` 回呼：純寫入，不觸發額外 `st.rerun()`
+    （QA1-07／#34）——回呼在 Streamlit 自身的重跑*之前*執行，因此接下來
+    這一輪重跑一開始讀 `session_state` 就已經是新值，不需要第二輪重跑。"""
+    st.session_state[session_key] = value
+
+
 def render_expiry_top10(view: dict, key: str | None, state_key: str) -> None:
     """QA1-05（#32）：到期日選擇緊接 Step 2 主圖之後——原本壓在冗長的
     到期日分組比較表（`render_expiry_comparison`）下方要捲很久才到，
@@ -312,6 +319,12 @@ def render_expiry_top10(view: dict, key: str | None, state_key: str) -> None:
     T10 AC 沿用）。第一層（各期摘要）沿用既有的
     `render_expiry_comparison`／`expiry_groups`，本函式不重複那份資料，
     只負責「深入單期」這一層。
+
+    QA1-07（#34）：切換到期日改用 `on_click` 回呼寫入 `session_state`，
+    不再額外呼叫 `st.rerun()`。原本「按鈕觸發的自動重跑」之後又手動再
+    `st.rerun()` 一次＝重跑兩輪，是多餘的整頁重載（閃爍／捲動跳位）；
+    `on_click` 回呼在 Streamlit 重跑*之前*執行，`viewing` 在這次重跑一開始
+    就讀到新值，同一輪就能畫對，不需要第二輪。
     """
     st.subheader("Step 3　到期日選擇")
     strat = next((r for r in view["results"] if r.get("expiry_top10")), None)
@@ -334,10 +347,9 @@ def render_expiry_top10(view: dict, key: str | None, state_key: str) -> None:
             label = f"{int(g['expiry'][5:7])}/{int(g['expiry'][8:10])}"
             if g["expiry"] == viewing:
                 label = f"▸{label}"
-            if st.button(label, key=f"{viewing_key}-{g['expiry']}",
-                        use_container_width=True):
-                st.session_state[viewing_key] = g["expiry"]
-                st.rerun()
+            st.button(label, key=f"{viewing_key}-{g['expiry']}",
+                     use_container_width=True, on_click=_set_session_key,
+                     args=(viewing_key, g["expiry"]))
             top = (max(c["baseline_return"] for c in g["candidates"])
                   if g["candidates"] else None)
             st.caption(return_md(top))

@@ -56,12 +56,6 @@ def _list_text(at):
                     + [c.value for c in col.caption])
 
 
-def _click_analyze(at, sid):
-    """點右欄「分析」鈕並跑一輪（成功或失敗都可能發生，呼叫端自行斷言）。"""
-    next(b for b in at.button
-        if b.key == f"ws-an-{sid}").set_value(True).run(timeout=30)
-
-
 # ---------- 建立表單（T4，#18） ----------
 
 def test_create_via_form_appears_in_list(ws):
@@ -164,8 +158,16 @@ def test_scenario_list_lives_in_collapsible_sidebar(ws):
     _mk(ws)
     at = AppTest.from_file(PAGE)
     at.run()
-    assert any(b.key == "ws-refresh-all" for b in at.sidebar.button)
     assert not any(round(c.weight, 2) == 0.2 for c in at.columns)
+
+
+def test_refresh_button_lives_at_the_page_top_not_the_sidebar(ws):
+    """QA1-07（#34）：刷新鈕是頁面最上方，不在側欄清單裡。"""
+    _mk(ws)
+    at = AppTest.from_file(PAGE)
+    at.run()
+    assert not any(b.key == "ws-refresh-all" for b in at.sidebar.button)
+    assert any(b.key == "ws-refresh-all" for b in at.main.button)
 
 
 def test_card_carries_the_five_items_and_nothing_technical(ws):
@@ -296,26 +298,28 @@ def test_remove_soft_deletes_and_keeps_history(ws):
 
 # ---------- 詳細頁（右欄） ----------
 
-def test_analysis_error_stays_visible(ws, monkeypatch):
-    """失敗不 rerun：st.error 留在畫面上（durable feedback）。"""
-    sc = _mk(ws)
+def test_fetch_error_on_first_load_marks_yellow_without_a_prior_result(ws, monkeypatch):
+    """QA1-07（#34）後刷新只剩開站／新增／頂部按鈕三種時機，不再有單一
+    劇本的「分析」重刷鈕。這裡用開站自動刷新觸發失敗，驗證頁面不崩潰、
+    且失敗不會被誤吞——反映為黃燈（無先前成功快照時的最簡情境；有先前
+    快照時「上次成功時間」是否保留，見下一測試）。"""
+    _mk(ws)
     import option_chaser.service as svc
     from option_chaser.models import FetchError
     monkeypatch.setattr(svc, "run", lambda req, progress=None:
                         (_ for _ in ()).throw(FetchError("boom")))
     at = AppTest.from_file(PAGE)
     at.run()
-    _click_analyze(at, sc.id)
-    assert any("boom" in e.value for e in at.error)
     assert not at.exception
+    assert "🟡" in _list_text(at)
 
 
 def test_critical_failure_marks_signal_yellow_on_next_render(ws, monkeypatch):
     """需求六：關鍵資料（FetchError）失敗 → 黃燈；卡片顯示上次成功更新時間。
 
-    失敗當下刻意不 rerun（見上一測試），黃燈因此反映在下一次渲染——與同一
-    session 內任何後續互動（切頁、點其他卡片）等效，這裡用再呼叫一次
-    `at.run()` 模擬。
+    QA1-07（#34）後刷新只在開站／新增／頂部按鈕三種時機發生，且都在同一次
+    `at.run()` 內完成（沒有「先點分析、下一輪才反映黃燈」的兩階段），因此
+    用開站自動刷新一輪即可驗證。
     """
     sc = _mk(ws)
     workspace.analyze_scenario(ws, sc.id, snapshot_path=FIX, ts=TS)
@@ -326,9 +330,7 @@ def test_critical_failure_marks_signal_yellow_on_next_render(ws, monkeypatch):
                         (_ for _ in ()).throw(FetchError("網路不通")))
     at = AppTest.from_file(PAGE)
     at.run()
-    _click_analyze(at, sc.id)
-    assert any("網路不通" in e.value for e in at.error)
-    at.run()
+    assert not at.exception
     text = _list_text(at)
     assert "🟡" in text
     assert prior["analyzed_at"] in text
@@ -345,9 +347,7 @@ def test_param_error_does_not_flip_signal_to_yellow(ws, monkeypatch):
                         (_ for _ in ()).throw(ParamError("不相干的驗證錯誤")))
     at = AppTest.from_file(PAGE)
     at.run()
-    _click_analyze(at, sc.id)
-    assert any("不相干的驗證錯誤" in e.value for e in at.error)
-    at.run()
+    assert not at.exception
     text = _list_text(at)
     assert "🟢" in text
     assert "🟡" not in text
