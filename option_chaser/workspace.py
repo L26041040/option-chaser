@@ -239,11 +239,8 @@ def spread_history(ws_root, sid: str, candidate_key: str) -> list[dict]:
     但 cost／baseline_return／rank_in_expiry 皆為 None：如實呈現斷點，
     不插值、不跳過、不報錯；`analyzed_at`／`spot` 仍取自那次成功更新本身。
     """
-    d = Path(ws_root) / "results" / sid
-    if not d.is_dir():
-        return []
     out = []
-    for p in sorted(d.glob("*.json")):
+    for p in store.list_result_paths(ws_root, sid):
         view = store.load_result(p)
         entry = next((e for r in view["results"]
                      for e in r.get("all_candidates", [])

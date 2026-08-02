@@ -473,9 +473,16 @@ def load_result(path) -> dict:
     return json.loads(Path(path).read_text(encoding="utf-8"))
 
 
-def latest_result_path(ws_root, scenario_id: str) -> Path | None:
+def list_result_paths(ws_root, scenario_id: str) -> list[Path]:
+    """該劇本全部歷史快照檔案，依檔名（＝fetched_at，字典序＝時間序）排序。
+    `results/<sid>/` 目錄結構的唯一存取點——`latest_result_path()`／
+    `workspace.spread_history()`（T11，#25）都透過這裡讀，不各自 glob。"""
     d = Path(ws_root) / "results" / scenario_id
     if not d.is_dir():
-        return None
-    files = sorted(d.glob("*.json"))
+        return []
+    return sorted(d.glob("*.json"))
+
+
+def latest_result_path(ws_root, scenario_id: str) -> Path | None:
+    files = list_result_paths(ws_root, scenario_id)
     return files[-1] if files else None
