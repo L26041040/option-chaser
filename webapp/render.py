@@ -88,22 +88,9 @@ def heatmap_html(matrix: dict) -> str:
 
 
 def _badge_str(row: dict, selected_key: str | None) -> str:
-    parts = []
-    badges = row["badges"]
-    if "top_return" in badges:
-        parts.append('<abbr title="全體合格候選中劇本報酬最高">🚀</abbr>')
-    if "top_resilience" in badges:
-        parts.append('<abbr title="全體合格候選中情境最壞報酬最高（最強韌性）">🛡️</abbr>')
-    if "warning" in badges:
-        parts.append('<abbr title="零成交腿／摩擦超標">⚠</abbr>')
-    if selected_key is not None and row["candidate"]["candidate_key"] == selected_key:
-        parts.append("◀")
-    return "".join(parts)
-
-
-def _badge_str_plain(row: dict, selected_key: str | None) -> str:
-    """同 `_badge_str`，但不含 `<abbr>` HTML——`st.button` 標籤不支援
-    unsafe_allow_html，QA1-05（#32）窄版可點列使用。"""
+    """QA1-05（#32）：候選卡片全面改窄版可點列後，`st.button` 標籤不支援
+    unsafe_allow_html，原本與此函式並存的 `<abbr>` HTML 版本已無呼叫端，
+    直接刪除（不是留著沒用）。"""
     badges = row["badges"]
     parts = []
     if "top_return" in badges:
@@ -244,6 +231,18 @@ def render_step2(view: dict, key: str | None) -> None:
     st.markdown(heatmap_html(cand["matrix"]), unsafe_allow_html=True)
 
 
+def _render_selectable_row(title: str, *, key: str, candidate_key: str,
+                           state_key: str, baseline_return: float) -> None:
+    """QA1-05（#32）共用窄版可點列：整列即按鈕（TradingView 手機版標的列
+    風格），副標只留劇本報酬；點擊把 `candidate_key` 寫入 `state_key`。
+    `render_expiry_comparison`／`render_expiry_top10` 共用同一個形狀。"""
+    with st.container(border=True):
+        if st.button(title, key=key, use_container_width=True):
+            st.session_state[state_key] = candidate_key
+            st.rerun()
+        st.caption(return_md(baseline_return))
+
+
 def render_expiry_comparison(view: dict, key: str | None,
                              state_key: str = "selected_key") -> None:
     """到期日分組比較表（QA1-05／#32：原「Step 3」，編號已讓給
@@ -269,15 +268,13 @@ def render_expiry_comparison(view: dict, key: str | None,
         st.markdown(f"**{esc(header)}**")
         for row in g["rows"]:
             cand = row["candidate"]
-            with st.container(border=True):
-                mark = _badge_str_plain(row, key)
-                title = f"{mark} " if mark else ""
-                title += _candidate_title_plain(row["strategy"], cand)
-                if st.button(title, key=f"sel-{cand['candidate_key']}",
-                            use_container_width=True):
-                    st.session_state[state_key] = cand["candidate_key"]
-                    st.rerun()
-                st.caption(return_md(cand["baseline_return"]))
+            mark = _badge_str(row, key)
+            title = f"{mark} " if mark else ""
+            title += _candidate_title_plain(row["strategy"], cand)
+            _render_selectable_row(
+                title, key=f"sel-{cand['candidate_key']}",
+                candidate_key=cand["candidate_key"], state_key=state_key,
+                baseline_return=cand["baseline_return"])
         if g["hidden_count"] > 0:
             st.caption(f"＋此到期日其他 {g['hidden_count']} 個候選")
     if view["hidden_expiries"]:
@@ -332,14 +329,12 @@ def render_expiry_top10(view: dict, key: str | None, state_key: str) -> None:
 
     group = next(g for g in groups if g["expiry"] == viewing)
     for i, cand in enumerate(group["candidates"], start=1):
-        with st.container(border=True):
-            mark = "▸ " if cand["candidate_key"] == key else ""
-            title = f"{mark}#{i}　{_candidate_title_plain(strat['strategy'], cand)}"
-            btn_key = f"sel-top10-{group['expiry']}-{cand['candidate_key']}"
-            if st.button(title, key=btn_key, use_container_width=True):
-                st.session_state[state_key] = cand["candidate_key"]
-                st.rerun()
-            st.caption(return_md(cand["baseline_return"]))
+        mark = "▸ " if cand["candidate_key"] == key else ""
+        title = f"{mark}#{i}　{_candidate_title_plain(strat['strategy'], cand)}"
+        _render_selectable_row(
+            title, key=f"sel-top10-{group['expiry']}-{cand['candidate_key']}",
+            candidate_key=cand["candidate_key"], state_key=state_key,
+            baseline_return=cand["baseline_return"])
 
 
 def _render_resilience_expander(view: dict, key: str | None) -> None:
