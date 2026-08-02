@@ -307,21 +307,22 @@ class ScenarioCard:
 
 
 def _best_return(view: dict | None) -> float | None:
-    """該次分析結果中最高的「目標達成並持有至到期收益率」。
+    """baseline 期（最接近目標年月的到期日）本身的最高收益率——與 Step 2
+    主圖同一口徑（QA1-03／#30：先前誤取全部到期日的全域最大值，較早到期日
+    剛好報酬更高時卡片數字就會跟主圖對不上）。
 
     baseline_return 是 service 已預算好的欄位（T3 起＝各 Spread 自身到期日的
-    內在價值），這裡只取最大值，不做任何金融計算。掃描 `expiry_best`（每個
-    到期日的最佳）與 `candidates`（整體前三名）的聯集，最大值必在其中。
-
-    無快照 → None（附錄 A8.1）；抓取成功但零候選 → 同樣 None，不是 0%
-    （附錄 A10.2：那是綠燈＋「—」，不是一個真的收益率）。
+    內在價值），這裡只在 baseline 期那組 `rows` 內取最大值，不做任何金融
+    計算。baseline 期不在 `expiry_groups`、或該期零合格候選 → None（附錄
+    A10.2／A12：綠燈＋「—」，不是一個真的收益率）；無快照 → None（附錄 A8.1）。
     """
     if view is None:
         return None
-    returns = [c["baseline_return"]
-               for r in view["results"] if r["status"] == "ok"
-               for c in (*r["candidates"], *r["expiry_best"])]
-    return max(returns) if returns else None
+    group = next((g for g in view["expiry_groups"]
+                 if g["expiry"] == view.get("baseline_expiry")), None)
+    if group is None or not group["rows"]:
+        return None
+    return max(row["candidate"]["baseline_return"] for row in group["rows"])
 
 
 def _card_sort_key(card: ScenarioCard) -> tuple[int, float]:

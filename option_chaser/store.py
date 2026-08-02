@@ -450,8 +450,8 @@ def serialize_result(result: AnalysisResult, scenario_id: str,
         "default_selection": (list(result.default_selection)
                               if result.default_selection else None),
         # T10（#24，附錄A8.5）：詳細頁進頁預設——baseline 期本身、及其第 1 名。
-        # 與 `default_selection`（v4 舊有、跨到期日全域最高報酬避警示語意，
-        # app.py 快速分析頁仍在用）刻意分開，兩者服務不同的產品決策。
+        # 與 `default_selection`（v4 舊有、跨到期日全域最高報酬避警示語意）
+        # 刻意分開，兩者服務不同的產品決策。
         "baseline_expiry": result.baseline_expiry,
         "baseline_selection": (list(result.baseline_selection)
                                if result.baseline_selection else None),

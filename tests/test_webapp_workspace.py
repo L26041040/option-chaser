@@ -140,13 +140,17 @@ def test_card_carries_the_five_items_and_nothing_technical(ws):
 
 
 def test_card_return_is_coloured_by_sign(ws):
+    """著色規則本身（正綠負紅）由 `test_card_render.py` 對 `return_md` 純函式
+    覆蓋；這裡只驗證卡片實際顯示的字串跟 `return_md(card.best_return)`
+    一致——不管 baseline 期真實報酬的正負號（QA1-03／#30：取值口徑改為
+    baseline 期後，同一份 fixture 的正負號本就可能與舊口徑不同）。"""
     sc = _mk(ws)
     workspace.analyze_scenario(ws, sc.id, snapshot_path=FIX, ts=TS)
     at = AppTest.from_file(PAGE)
     at.run()
     card = workspace.card_of(sc, workspace.latest_result(ws, sc.id))
-    assert card.best_return is not None and card.best_return > 0
-    assert ":green[" in _list_text(at)                   # 正數＝綠
+    assert card.best_return is not None
+    assert return_md(card.best_return) in _list_text(at)
 
 
 def test_card_without_analysis_shows_a_dash(ws):
