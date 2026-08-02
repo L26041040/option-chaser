@@ -1,6 +1,9 @@
 from datetime import date
 from option_chaser.models import AnalysisParams, OptionContract
-from option_chaser.valuation import bs_call, bs_put, evaluate_contract, scenario_leg_value
+from option_chaser.valuation import (
+    bs_call, bs_put, catchup_price, evaluate_contract, intrinsic_value,
+    scenario_leg_value,
+)
 
 TODAY = date(2026, 7, 15)
 P = AnalysisParams(target_price=120.0, target_month="2026-08")
@@ -51,3 +54,30 @@ def test_deep_itm_put_scenario_clamped():
                       bid=41.0, ask=41.5, implied_volatility=0.40)
     v = evaluate_contract(c, spot=100.0, today=TODAY, p=P_PUT)
     assert v.baseline_value == 40.0  # BS European below intrinsic -> clamped
+
+
+# ---------- D1（#14）：catchup_price —— Long Call 追平價格 S*=K+C×(1+R) ----------
+
+def test_catchup_price_matches_the_spec_example():
+    # 需求文件例：TLT K=100、C=2.5、R=500%（5.0）-> S*=115
+    assert catchup_price(strike=100.0, call_cost=2.5, baseline_return=5.0) == 115.0
+
+
+def test_catchup_price_is_where_the_long_call_return_equals_r():
+    """數學一致性（D1 Testing Decisions）：標的在 S* 時，該 Long Call 的到期
+    報酬率恰等於 R。"""
+    strike, cost, r = 100.0, 2.5, 5.0
+    s_star = catchup_price(strike=strike, call_cost=cost, baseline_return=r)
+    intrinsic = intrinsic_value("call", s_star, strike)
+    actual_return = (intrinsic - cost) / cost
+    assert abs(actual_return - r) < 1e-9
+
+
+def test_catchup_price_negative_return_still_meaningful():
+    """R 為負值情境 → S* 仍有意義（低於損益兩平也算數），正常算出。"""
+    strike, cost, r = 50.0, 4.0, -0.3
+    s_star = catchup_price(strike=strike, call_cost=cost, baseline_return=r)
+    assert s_star == 50.0 + 4.0 * 0.7
+    intrinsic = intrinsic_value("call", s_star, strike)
+    actual_return = (intrinsic - cost) / cost
+    assert abs(actual_return - r) < 1e-9

@@ -83,9 +83,9 @@ from option_chaser import store, workspace
 from option_chaser.models import FetchError, ParamError
 from option_chaser.timeframe import parse_target_month
 from webapp.render import (baseline_key, esc, find_row, money, pct,
-                           render_expiry_comparison, render_expiry_top10,
-                           return_md, render_step2, render_step4,
-                           render_summary)
+                           render_catchup_price, render_expiry_comparison,
+                           render_expiry_top10, return_md, render_step2,
+                           render_step4, render_summary)
 
 WS_ROOT = Path(os.environ.get("OC_WORKSPACE", "workspace"))
 STATUS_BADGE = {"Active": "🟢 Active", "Reached": "🏁 Reached",
@@ -255,6 +255,9 @@ def _render_detail(sc) -> None:
     if row is not None and row["candidate"]["pct_of_capital"] is not None:
         st.caption(f"佔本金 {pct(row['candidate']['pct_of_capital'])}")
     render_step2(view, key)
+    # D1（#14）：追平價格緊接主圖之後——「被選中 Spread 旁」，不是藏進
+    # Step 4 進階區（該區近期才依 QA1-12 收斂到只剩三個區塊，見 CLAUDE.md）。
+    render_catchup_price(view, key)
     # QA1-05（#32）：到期日選擇緊接主圖之後，長列比較表退居其後（見
     # render.py 兩函式各自的 docstring）。
     render_expiry_top10(view, key, state_key="ws-selected-key")

@@ -278,6 +278,15 @@ def evaluate_spread(
     )
 
 
+def catchup_price(strike: float, call_cost: float, baseline_return: float) -> float:
+    """D1（#14）：所選 Spread 的 Long Call 追平價格 S*＝K＋C×(1+R)——標的要
+    漲到哪個價格，同履約價 K 的 Long Call 持有至到期的報酬率才追得上這組
+    Spread 的目標情境到期報酬率 R。K＝買腿履約價，C＝同快照中該 Call 的
+    實際成本（Ask，worst 成本口徑，見 T12／附錄A14.2），R＝該 Spread 的
+    baseline_return。封閉式算術，不需估值引擎。"""
+    return strike + call_cost * (1 + baseline_return)
+
+
 def spread_guidance_judgments(sv: SpreadValuation, p: AnalysisParams) -> list[str]:
     """Spec §3.4: spreads have NO L1; L2 is the scenario envelope minimum."""
     msgs: list[str] = []

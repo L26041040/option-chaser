@@ -53,6 +53,18 @@ def snapshot_to_csv(snap: ChainSnapshot) -> str:
     return buf.getvalue()
 
 
+def find_contract(
+    snap: ChainSnapshot, option_type: str, strike: float, expiry: str
+) -> OptionContract | None:
+    """D1（#14）：依 option_type／strike／expiry 精確比對，從快照裡找出單一
+    合約——用於「同履約價、不同 option_type」的查找（Spread 買腿是 put 時，
+    找同履約價的 call 來算 Long Call 追平價格）。找不到回傳 None，不拋錯。"""
+    for c in snap.contracts:
+        if c.option_type == option_type and c.strike == strike and c.expiry == expiry:
+            return c
+    return None
+
+
 def snapshot_today(fetched_at: str) -> date:
     """Spec §8: 'today' = fetched_at converted to US/Eastern, date part."""
     return datetime.fromisoformat(fetched_at).astimezone(_EASTERN).date()

@@ -7,7 +7,7 @@ from datetime import date, timedelta
 from pathlib import Path
 from typing import Callable
 
-from .data.snapshot import load_snapshot, save_snapshot, snapshot_today
+from .data.snapshot import find_contract, load_snapshot, save_snapshot, snapshot_today
 from .filters import apply_filters, generate_spread_pairs
 from .matrix import date_axis, matrix_grid, price_axis
 from .models import (AnalysisParams, ChainSnapshot, FilterReport, PairReport,
@@ -23,8 +23,9 @@ from .timeframe import (TargetMonth, calendar_anchor, ensure_month_open,
                         select_expiries)
 from .ratecurve import RateCurve, rate_for_tenor
 from .valuation import (ContractValuation, DAYS_PER_YEAR, SpreadValuation,
-                        evaluate_contract, evaluate_spread, leg_greeks,
-                        leg_rate, scenario_leg_value, spread_scenario_value)
+                        catchup_price, evaluate_contract, evaluate_spread,
+                        leg_greeks, leg_rate, scenario_leg_value,
+                        spread_scenario_value)
 
 Progress = Callable[[str], None]
 
@@ -76,6 +77,9 @@ class CandidateView:
     theta_day_rate: float      # |淨Θ| / Mid 成本
     vega_per_pt: float         # 淨Vega(每1 IV百分點) / Mid 成本
     decay_30d_return: float    # S=spot、IV不變、today+30(或到期)估值報酬
+    # D1（#14）：Long Call 追平價格 S*=K+C×(1+R)——只對 Spread 有意義
+    # （買腿履約價 K 的同履約價 Call 若報價缺失也是 None）；單腳恆為 None。
+    catchup_price: float | None = None
 
 
 @dataclass(frozen=True)
@@ -264,8 +268,24 @@ def _single_leg_view(v: ContractValuation, band: str,
         **_v4_fields(v, spot, today, p))
 
 
+def _spread_catchup_price(sv: SpreadValuation, snap: ChainSnapshot) -> float | None:
+    """D1（#14）：S*=K+C×(1+R)。K／R 固定用買腿（long_leg）本身；C＝同履約價
+    Call 的實際成本——買腿本身是 call（bull-call-spread）時就是它自己的
+    Ask，是 put（bear-put-spread）時得從同一快照另外找同履約價的 call。
+    找不到報價回傳 None（render 層負責顯示「無法計算」，不拋錯）。"""
+    strike, expiry = sv.long_leg.strike, sv.long_leg.expiry
+    if sv.long_leg.option_type == "call":
+        call_cost = sv.long_leg.ask
+    else:
+        call = find_contract(snap, "call", strike, expiry)
+        call_cost = call.ask if call is not None else None
+    if call_cost is None:
+        return None
+    return catchup_price(strike, call_cost, spread_baseline_return(sv))
+
+
 def _spread_view(sv: SpreadValuation, idx: int, n_pairs: int, spot: float,
-                 today: date, p: AnalysisParams) -> CandidateView:
+                 today: date, p: AnalysisParams, snap: ChainSnapshot) -> CandidateView:
     pros, cons = build_spread_reasons(sv, idx, n_pairs, p)
     mv = _matrix_view(
         lambda S, d, lng=sv.long_leg, sht=sv.short_leg:
@@ -275,6 +295,7 @@ def _spread_view(sv: SpreadValuation, idx: int, n_pairs: int, spot: float,
         valuation=sv, pros=tuple(pros), cons=tuple(cons), matrix=mv,
         baseline_pnl=sv.baseline_value - sv.net_worst,
         baseline_return=spread_baseline_return(sv),
+        catchup_price=_spread_catchup_price(sv, snap),
         **_v4_fields(sv, spot, today, p))
 
 
@@ -458,7 +479,7 @@ def _spread_result(p: AnalysisParams, snap: ChainSnapshot,
     candidates = []
     for i, sv in enumerate(ranked[:3]):
         candidates.append(_spread_view(sv, i, pair_report.passed, snap.spot,
-                                       today, p))
+                                       today, p, snap))
 
     # v4 spec §3.2: per-expiry best over ALL qualified spreads (not just the
     # top-3 in `candidates`), for expiry grouping. T9（#23）：同一輪順便把
@@ -478,7 +499,7 @@ def _spread_result(p: AnalysisParams, snap: ChainSnapshot,
         by_expiry.setdefault(exp, []).append(sv)
     expiry_best = tuple(
         _spread_view(best_by_expiry[exp][1], best_by_expiry[exp][0],
-                     pair_report.passed, snap.spot, today, p)
+                     pair_report.passed, snap.spot, today, p, snap)
         for exp in sorted(best_by_expiry))
     expiry_counts = tuple(sorted(counts.items()))
     # 各到期日自己的前十名（Heatmap 矩陣只隨這至多 5×10 檔入快照，附錄A10.3）；
@@ -486,7 +507,7 @@ def _spread_result(p: AnalysisParams, snap: ChainSnapshot,
     # 前十名的節錄。
     expiry_top10 = tuple(
         (exp, tuple(_spread_view(sv, i, len(by_expiry[exp]), snap.spot,
-                                 today, p)
+                                 today, p, snap)
                     for i, sv in enumerate(by_expiry[exp][:10])))
         for exp in sorted(by_expiry))
     expiry_ranked = tuple((exp, tuple(by_expiry[exp]))

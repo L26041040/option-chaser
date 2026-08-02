@@ -14,7 +14,7 @@ import streamlit as st
 
 from option_chaser.data.snapshot import load_snapshot, snapshot_to_csv
 from option_chaser.glossary import GLOSSARY
-from option_chaser.models import SnapshotSchemaError
+from option_chaser.models import SPREAD_STRATEGIES, SnapshotSchemaError
 from option_chaser.report import STRATEGY_LABELS
 
 STRATEGY_COLOR = {
@@ -227,6 +227,29 @@ def render_step2(view: dict, key: str | None) -> None:
     st.markdown(esc(f"**{_candidate_title(row['strategy'], cand)}**"),
                 unsafe_allow_html=True)
     st.markdown(heatmap_html(cand["matrix"]), unsafe_allow_html=True)
+
+
+def render_catchup_price(view: dict, key: str | None) -> None:
+    """D1（#14）：所選 Spread 旁顯示 Long Call 追平價格 S*＝K＋C×(1+R)——
+    賣腿封頂所放棄空間的直接定價。S* 本身已由服務層算好放進
+    `cand["catchup_price"]`（`option_chaser.service._spread_catchup_price`），
+    這裡零金融計算，純格式化：只對 Spread 候選顯示（Long Call／Long Put
+    本身沒有「與 Long Call 比較」的意義）；`catchup_price` 為 None 表示
+    同履約價 Call 報價缺失，顯示「無法計算」而非拋錯；S* ≤ 目標價時
+    醒目提示「Long Call 在本劇本內即勝過此 Spread」。"""
+    row = find_row(view, key)
+    if row is None or row["strategy"] not in SPREAD_STRATEGIES:
+        return
+    s_star = row["candidate"]["catchup_price"]
+    if s_star is None:
+        st.caption("Long Call 追平價格：無法計算（同履約價 Call 報價缺失）")
+        return
+    target_price = view["params"]["target_price"]
+    gap = (s_star - target_price) / target_price
+    label = "超出目標" if gap >= 0 else "低於目標"
+    st.caption(f"Long Call 追平價格：${money(s_star)}（{label} {gap:+.1%}）")
+    if s_star <= target_price:
+        st.success("Long Call 在本劇本內即勝過此 Spread")
 
 
 def _render_candidate_expander(strategy: str, cand: dict, *, mark: str = "",

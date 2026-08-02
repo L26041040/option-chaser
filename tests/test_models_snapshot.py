@@ -7,7 +7,7 @@ from option_chaser.models import (
     leg_option_type, is_bullish, PairReport,
 )
 from option_chaser.data.snapshot import (
-    save_snapshot, load_snapshot, snapshot_today, snapshot_to_csv,
+    save_snapshot, load_snapshot, snapshot_today, snapshot_to_csv, find_contract,
 )
 import pytest
 
@@ -126,3 +126,26 @@ def test_snapshot_to_csv_empty_chain_is_header_only():
                          source="yfinance", contracts=())
     rows = list(csv.reader(io.StringIO(snapshot_to_csv(snap))))
     assert len(rows) == 1
+
+
+# ---------- 精確合約查找（D1／#14：找同履約價的另一 option_type 合約） ----------
+
+def test_find_contract_returns_the_matching_contract():
+    call = OptionContract(contract_symbol="C100", option_type="call", strike=100.0,
+                          expiry="2026-10-16", bid=2.4, ask=2.5, last=2.45,
+                          volume=10, open_interest=20, implied_volatility=0.3)
+    put = OptionContract(contract_symbol="P100", option_type="put", strike=100.0,
+                         expiry="2026-10-16", bid=1.4, ask=1.5, last=1.45,
+                         volume=10, open_interest=20, implied_volatility=0.3)
+    snap = ChainSnapshot(schema_version=SCHEMA_VERSION, symbol="XYZ",
+                         fetched_at="2026-07-15T21:30:00-04:00", spot=100.0,
+                         source="yfinance", contracts=(call, put))
+    assert find_contract(snap, "call", 100.0, "2026-10-16") is call
+    assert find_contract(snap, "put", 100.0, "2026-10-16") is put
+
+
+def test_find_contract_returns_none_when_no_match():
+    snap = ChainSnapshot(schema_version=SCHEMA_VERSION, symbol="XYZ",
+                         fetched_at="2026-07-15T21:30:00-04:00", spot=100.0,
+                         source="yfinance", contracts=())
+    assert find_contract(snap, "call", 100.0, "2026-10-16") is None
