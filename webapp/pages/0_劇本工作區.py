@@ -1,5 +1,6 @@
 # webapp/pages/0_劇本工作區.py
 """v5 spec §5 ＋ T5（#19）: 桌面 20/80 兩欄工作區。＋ T7（#21）: 自動／手動刷新。
+＋ T8（#22）: 左側清單依 `workspace.sort_cards()` 依最新收益率重排。
 
 左 20%：劇本卡片清單（每張卡恰五項＋一個燈號位置）與清單編輯工具；
 右 80%：設定、建立表單、被選中劇本的詳細頁。
@@ -123,9 +124,10 @@ if not st.session_state.get(AUTO_REFRESH_KEY):
 
 views = {sc.id: workspace.latest_result(WS_ROOT, sc.id) for sc in scenarios}
 failure_flags = st.session_state.setdefault(_FAILURE_KEY, {})
-cards = [workspace.card_of(sc, views[sc.id],
-                           critical_failure=failure_flags.get(sc.id, False))
-        for sc in scenarios]
+cards = workspace.sort_cards(
+    [workspace.card_of(sc, views[sc.id],
+                       critical_failure=failure_flags.get(sc.id, False))
+     for sc in scenarios])
 
 # 選中的劇本：預設第一張卡，右欄因此一載入就有東西可看。
 selected = st.session_state.get("ws-detail")

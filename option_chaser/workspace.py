@@ -294,6 +294,32 @@ def _best_return(view: dict | None) -> float | None:
     return max(returns) if returns else None
 
 
+def _card_sort_key(card: ScenarioCard) -> tuple[int, float]:
+    """紅燈沉底；其餘依 best_return 降序；無值者（無快照或零候選）居中，
+    落在有值者之後、紅燈之前——同一分組內若同樣無值，靠 sort 的穩定性
+    沿用呼叫端傳入的原始順序（需求五、附錄A6、T8）。"""
+    if card.signal == SIGNAL_RED:
+        group = 2
+    elif card.best_return is None:
+        group = 1
+    else:
+        group = 0
+    value = card.best_return if card.best_return is not None else float("-inf")
+    return (group, -value)
+
+
+def sort_cards(cards: list[ScenarioCard]) -> list[ScenarioCard]:
+    """左側清單排序（需求五／附錄A6／T8）：聚合函式，只重排卡片視圖——不碰
+    `list_scenarios()` 既有的 (symbol, target_month, id) 回傳順序。
+
+    規則：
+    - 依各卡片 `best_return`（黃燈已是上一份成功快照的值，見 `card_of`）降序。
+    - 紅燈一律沉底，組內仍依 `best_return`（最後已知值）降序。
+    - 無值（無快照或零候選，`best_return is None`）者排在有值者之後、紅燈之前。
+    """
+    return sorted(cards, key=_card_sort_key)
+
+
 def card_of(sc: Scenario, view: dict | None, *, observed: date | None = None,
            critical_failure: bool = False) -> ScenarioCard:
     """劇本＋其最新分析結果 → 卡片。view 為 None 代表尚無成功快照。
