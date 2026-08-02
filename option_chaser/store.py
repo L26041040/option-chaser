@@ -13,8 +13,9 @@ from datetime import date
 from pathlib import Path
 
 from . import __version__
+from .ranking import spread_baseline_return
 from .scenarios import natural_cost
-from .service import AnalysisResult, CandidateView, candidate_key
+from .service import AnalysisResult, CandidateView, candidate_key, _valuation_key
 from .timeframe import TargetMonth
 from .valuation import SpreadValuation
 from .vocabulary import EVENT_TYPES_V5
@@ -296,6 +297,20 @@ def rebuild_groups(ws_root, scenarios: list[Scenario],
 
 # ---------- ScenarioResult 契約（spec §3） ----------
 
+def _history_entry(sv: SpreadValuation, expiry: str, rank_in_expiry: int) -> dict:
+    """T9（#23，附錄A7）：全部有效候選的歷史五欄位之三（成本／收益率／期內
+    名次）；另外兩欄（更新時間、標的價）不逐候選重複，共用父層 `analyzed_at`／
+    `meta.spot`（既有設計，`_candidate()` 對完整 CandidateView 同樣不重複）。
+    不建 CandidateView：這裡只需要輕量欄位，沒有 Heatmap 矩陣（附錄A10.3）。"""
+    return {
+        "candidate_key": _valuation_key(sv),
+        "expiry": expiry,
+        "cost": sv.net_worst,
+        "baseline_return": spread_baseline_return(sv),
+        "rank_in_expiry": rank_in_expiry,
+    }
+
+
 def _leg(c) -> dict:
     return {"contract_symbol": c.contract_symbol, "option_type": c.option_type,
             "strike": c.strike, "expiry": c.expiry, "bid": c.bid,
@@ -382,6 +397,15 @@ def serialize_result(result: AnalysisResult, scenario_id: str,
             "candidates": [cand(cv, r.strategy) for cv in r.candidates],
             "expiry_best": [cand(cv, r.strategy) for cv in r.expiry_best],
             "expiry_counts": [list(e) for e in r.expiry_counts],
+            # T9（#23）：各到期日自己的前十名（含 Heatmap 矩陣，供 T10 詳細頁）。
+            "expiry_top10": [{"expiry": exp,
+                              "candidates": [cand(cv, r.strategy) for cv in cvs]}
+                             for exp, cvs in r.expiry_top10],
+            # T9（附錄A7）：該次全部有效候選的歷史五欄位（不只入榜者）；
+            # 更新時間／標的價共用父層 analyzed_at／meta.spot，不逐候選重複。
+            "all_candidates": [_history_entry(sv, exp, rank)
+                              for exp, ranked_group in r.expiry_ranked
+                              for rank, sv in enumerate(ranked_group, start=1)],
             "report_text": r.report_text,
         }
 

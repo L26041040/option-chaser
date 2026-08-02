@@ -94,6 +94,13 @@ class StrategyResult:
     # candidates (not just the top-3 kept in `candidates`), used for grouping.
     expiry_best: tuple[CandidateView, ...] = ()
     expiry_counts: tuple[tuple[str, int], ...] = ()
+    # T9（#23，需求三）：每個到期日各自的完整前十名——分組後各自取前 10，
+    # 不是跨到期日的全域前 10；只有 spread 策略填入（MVP 範圍，附錄A13）。
+    expiry_top10: tuple[tuple[str, tuple[CandidateView, ...]], ...] = ()
+    # T9（附錄A7）：該次全部有效候選，依到期日分組、組內已排序——供 store 層
+    # 序列化「所屬到期日內名次」等歷史五欄位；不建 CandidateView（無 Heatmap
+    # 矩陣），成本控制同 `expiry_best` 的既有取捨。
+    expiry_ranked: tuple[tuple[str, tuple[SpreadValuation, ...]], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -264,12 +271,18 @@ def _spread_view(sv: SpreadValuation, idx: int, n_pairs: int, spot: float,
         **_v4_fields(sv, spot, today, p))
 
 
-def candidate_key(cv: CandidateView) -> str:
-    v = cv.valuation
+def _valuation_key(v: ContractValuation | SpreadValuation) -> str:
+    """需求八：Spread／單腳身分鍵，直接吃估值物件——`candidate_key()` 的
+    CandidateView 包裝只是它的一層外皮。T9 序列化全部有效候選的歷史五欄位
+    時不需要（也不划算）先建 CandidateView，所以底層鍵在這裡獨立出來重用。"""
     if isinstance(v, SpreadValuation):
         return (f"{_strategy_of(v)}|{v.long_leg.strike:g}|"
                 f"{v.short_leg.strike:g}|{v.long_leg.expiry}")
     return f"{_strategy_of(v)}|{v.contract.strike:g}|{v.contract.expiry}"
+
+
+def candidate_key(cv: CandidateView) -> str:
+    return _valuation_key(cv.valuation)
 
 
 def _strategy_of(v) -> str:
@@ -422,28 +435,44 @@ def _spread_result(p: AnalysisParams, snap: ChainSnapshot,
                                        today, p))
 
     # v4 spec §3.2: per-expiry best over ALL qualified spreads (not just the
-    # top-3 in `candidates`), for expiry grouping.
+    # top-3 in `candidates`), for expiry grouping. T9（#23）：同一輪順便把
+    # 每個到期日各自的完整排序分組收集起來（`by_expiry`）——分組後各自的
+    # 相對順序與獨立對該組排序等價（全域鍵不依賴其他組），因此不必為
+    # `expiry_top10`/`expiry_ranked` 另跑一次排序。
     all_ranked = sorted(spreads, key=lambda s: (-spread_baseline_return(s),
                                                 *_spread_tie_key(s)))
     counts: dict[str, int] = {}
     best_by_expiry: dict[str, tuple[int, SpreadValuation]] = {}
+    by_expiry: dict[str, list[SpreadValuation]] = {}
     for idx, sv in enumerate(all_ranked):
         exp = sv.long_leg.expiry
         counts[exp] = counts.get(exp, 0) + 1
         if exp not in best_by_expiry:
             best_by_expiry[exp] = (idx, sv)
+        by_expiry.setdefault(exp, []).append(sv)
     expiry_best = tuple(
         _spread_view(best_by_expiry[exp][1], best_by_expiry[exp][0],
                      pair_report.passed, snap.spot, today, p)
         for exp in sorted(best_by_expiry))
     expiry_counts = tuple(sorted(counts.items()))
+    # 各到期日自己的前十名（Heatmap 矩陣只隨這至多 5×10 檔入快照，附錄A10.3）；
+    # idx/組內大小都是「本期」的，不是全域——這是各期自己的排名，不是全域
+    # 前十名的節錄。
+    expiry_top10 = tuple(
+        (exp, tuple(_spread_view(sv, i, len(by_expiry[exp]), snap.spot,
+                                 today, p)
+                    for i, sv in enumerate(by_expiry[exp][:10])))
+        for exp in sorted(by_expiry))
+    expiry_ranked = tuple((exp, tuple(by_expiry[exp]))
+                          for exp in sorted(by_expiry))
 
     return StrategyResult(
         strategy=p.strategy, status="ok", candidates=tuple(candidates),
         ranked_bands=None, ranked_spreads=tuple(ranked),
         n_qualified=pair_report.passed, filter_report=freport,
         pair_report=pair_report, report_text=text, message="",
-        expiry_best=expiry_best, expiry_counts=expiry_counts)
+        expiry_best=expiry_best, expiry_counts=expiry_counts,
+        expiry_top10=expiry_top10, expiry_ranked=expiry_ranked)
 
 
 def _comparison(results: tuple[StrategyResult, ...]) -> tuple[ComparisonRow, ...]:
