@@ -169,9 +169,19 @@ PR #43 已 merge 回 master；工作分支 `claude/implement-tfm9oa` 已從
 
 ### 待辦（依序，← 為下一張）
 
-- **FB3-01** [#44] — Cboe 延遲報價 JSON 換主源、yfinance 降備援 ←
-- **FB3-02** [#45] — 到期日候選池過少警示（與 #44 獨立可並行）
-- 做完 FB3-01/02 →回報需求方→需求方 cue `/to-spec` 進新前端輪
+FB3-01/02 已完成（見下）→**已回報需求方，等需求方 cue `/to-spec`
+進新前端輪**。
+
+- **FB3-01** [#44] — Cboe 延遲報價換主源（commit `69dd99d`）：新增
+  `option_chaser/data/cboe.py`（OCC 解析＋欄位映射＋stdlib urllib，
+  iv=0.0/last=0.0 映射 None 為缺值口徑統一、不改過濾結果；任何失敗
+  收斂成 FetchError），`service.fetch_and_save` 改 Cboe 優先、失敗退
+  yfinance、快照 `source` 如實記錄。測試 fixture 取自需求方實測回傳。
+  ⚠ 部署後待確認：Streamlit Cloud／未來 Vercel 的出口 IP 能否連
+  `cdn.cboe.com`（沙箱 proxy 擋住無法代測，備援鏈已就位）
+- **FB3-02** [#45] — 到期日候選池過少警示（commit `2ead43e`）：該期
+  有效組數 < 3 時 `render_expiry_top10` 顯示「⚠ 該期僅 N 組候選通過
+  品質過濾」；讀 T9 既有 `expiry_counts`，純顯示層
 
 > 沿用規則：反饋要先逐點跟需求方確認打算怎麼改、為什麼，確認完才
 > 開票施工；`/implement` 進行中沒遇到需人類裁示的事就不停。
