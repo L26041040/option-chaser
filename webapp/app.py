@@ -229,29 +229,16 @@ def _render_detail(sc) -> None:
     """QA1-07（#34）：詳細頁不再有單一劇本專屬的「分析」重刷按鈕——需求七
     只認三種刷新時機（開站／新增劇本／頁面頂部刷新鈕），不含「進了某個
     劇本的詳細頁後再點一次分析」這個第四種管道。要重刷這張劇本，走最上方
-    的刷新鈕（會刷新全部未過期劇本，含這張）。"""
+    的刷新鈕（會刷新全部未過期劇本，含這張）。
+
+    QA1-08（#35）：原本這裡還有「原因」輸入欄＋「標記達成」／「標記失效」
+    兩顆按鈕——當初是預留給持倉紀錄工具的操作入口，目前沒有用處，依需求方
+    裁示整組拿掉。`workspace.set_status()` 與其資料模型／事件紀錄／燈號
+    邏輯不在本票範圍，原封不動（`test_workspace.py` 仍在測），只移除這裡
+    的操作入口；`Scenario.status`／`STATUS_BADGE` 生命週期徽章維持顯示。
+    """
     st.subheader(esc(f"{sc.symbol}　${money(sc.target_price)}　"
                      f"{sc.target_month}　{STATUS_BADGE[sc.status]}"))
-    if sc.status == "Active":
-        rcols = st.columns([3.0, 1.2, 1.2, 4.0])
-        with rcols[0]:
-            st.text_input("原因", key=f"ws-reason-{sc.id}",
-                          placeholder="標記原因（必填）")
-        reason = (st.session_state.get(f"ws-reason-{sc.id}") or "").strip()
-        with rcols[1]:
-            if st.button("標記達成", key=f"ws-reach-{sc.id}"):
-                if reason:
-                    workspace.set_status(WS_ROOT, sc.id, "Reached", reason)
-                    st.rerun()
-                else:
-                    st.error("請填原因。")
-        with rcols[2]:
-            if st.button("標記失效", key=f"ws-inv-{sc.id}"):
-                if reason:
-                    workspace.set_status(WS_ROOT, sc.id, "Invalidated", reason)
-                    st.rerun()
-                else:
-                    st.error("請填原因。")
 
     view = views[sc.id]
     if view is None:

@@ -353,26 +353,17 @@ def test_param_error_does_not_flip_signal_to_yellow(ws, monkeypatch):
     assert "🟡" not in text
 
 
-def test_status_buttons_with_reason(ws):
+def test_detail_page_has_no_status_marking_controls(ws):
+    """QA1-08（#35）：「原因」欄與「標記達成」／「標記失效」按鈕已移除
+    ——`workspace.set_status()` 本身在 `test_workspace.py` 續測，本票只
+    驗證操作入口不再出現於 UI。"""
     sc = _mk(ws)
     at = AppTest.from_file(PAGE)
     at.run()
-    at.text_input(key=f"ws-reason-{sc.id}").set_value("到價")
-    at.run()
-    next(b for b in at.button
-         if b.key == f"ws-reach-{sc.id}").set_value(True).run(timeout=30)
     assert not at.exception
-    assert store.load_scenario(store.scenario_path(ws, sc.id)).status == "Reached"
-
-
-def test_status_button_requires_reason(ws):
-    sc = _mk(ws)
-    at = AppTest.from_file(PAGE)
-    at.run()
-    next(b for b in at.button
-         if b.key == f"ws-reach-{sc.id}").set_value(True).run(timeout=30)
-    assert any("請填原因" in e.value for e in at.error)
-    assert store.load_scenario(store.scenario_path(ws, sc.id)).status == "Active"
+    assert not any(t.key == f"ws-reason-{sc.id}" for t in at.text_input)
+    assert not any(b.key == f"ws-reach-{sc.id}" for b in at.button)
+    assert not any(b.key == f"ws-inv-{sc.id}" for b in at.button)
 
 
 def test_capital_pct_shown_in_detail_after_analysis(ws):
