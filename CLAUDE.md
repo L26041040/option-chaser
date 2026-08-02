@@ -161,8 +161,19 @@ merge 回 master，部署版待需求方驗證（`source` 是否 `cboe`＋TLT 20
 
 ### 待辦（依序，← 為下一張；標注「被誰擋」）
 
-- **V1** [#48] — 走通骨架：Vercel 前端＋Python API＋引擎部署上線 ←
-- **R1** [#49] — Research：專業報告版型慣例（無阻擋，可與 V1–V5 並行）
+- **V1** [#48] — 走通骨架（commit `7330ddb`，**部署待需求方執行**）：
+  Vite＋React＋TS 手機優先前端／FastAPI serverless（`api_app/`，進入點
+  `api/index.py`）／既有引擎。引擎只做 prefactor 不動計算：新增
+  `service.fetch_chain()`（只抓不落盤，serverless 唯讀）與
+  `run_with_snapshot()`（分析記憶體快照，不碰私有 `_analyze`）。
+  契約＝既有 view dict，前端零金融計算。測試 24 條四層分工，契約樣本
+  `contracts/analysis_sample.json` 前後端共用、漂移必紅燈。
+  ⚠ **兩件待需求方處理**：(1) 到 vercel.com/new 匯入 repo 完成首次
+  部署（步驟見 `docs/deploy-vercel.md`），部署後看畫面「資料來源」
+  一行即知 Cboe 可達性；(2) 裁示 `requirements.txt` 是否要含 yfinance
+  ——目前刻意不含（pandas/numpy 體積），故雲端 Cboe 失敗時是 502 而
+  非退回 yfinance，與 spec #47 的降級鏈說法有出入
+- **R1** [#49] — Research：專業報告版型慣例（無阻擋，可與 V1–V5 並行）←
 - **V2** [#50] — 儲存層 port/adapter＋Neon 接通（被 #48 擋）
 - **V3** [#51] — 劇本庫＋建立表單＋釘選功能列（被 #50 擋）
 - **V4** [#52] — 刷新與分析：進度／失敗指引／新鮮度（被 #51 擋）
