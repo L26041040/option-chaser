@@ -14,10 +14,13 @@ baseline 期，見附錄A8.5）。切換到期日／點選候選皆純 UI 互動
 ＋ T11（#25）: 選中 Spread 後，Step 4 進階區新增「Spread 歷史」——依身份鍵
 跨該劇本全部歷史快照聚合（`workspace.spread_history`），唯讀查詢。
 
-左 20%：劇本卡片清單（每張卡恰五項＋一個燈號位置）與清單編輯工具；
-右 80%：設定、建立表單、被選中劇本的詳細頁。
-窄螢幕由 Streamlit 自然堆疊成上下兩段，三件核心事（瀏覽／建立／進詳頁）
-在窄 viewport 下都還在（附錄 A10.5）。
+QA1-02（#29）：劇本卡片清單改放 `st.sidebar`（每張卡恰五項＋一個燈號
+位置＋清單編輯工具），主畫面（設定、建立表單、被選中劇本的詳細頁）永遠
+是唯一主角。Streamlit 的 sidebar 桌面上是常駐左欄、窄螢幕（手機）上自動
+收合成漢堡選單拉出的側欄——同一份程式碼滿足需求方裁示的兩種行為（桌面
+維持左欄／手機改收合側欄），不需要另外判斷視窗寬度。舊版 `st.columns
+([0.2, 0.8])` 分欄在窄螢幕會自然堆疊成清單壓在主畫面上方（QA1-02 回報
+的缺陷），故不再使用。
 
 群組區自首頁移除（附錄 A8.6）——`store.rebuild_groups`／
 `workspace.analyze_group` 等底層邏輯原封不動，只是不再於此頁曝露。
@@ -141,7 +144,7 @@ cards = workspace.sort_cards(
                        critical_failure=failure_flags.get(sc.id, False))
      for sc in scenarios])
 
-# 選中的劇本：預設第一張卡，右欄因此一載入就有東西可看。
+# 選中的劇本：預設第一張卡，主畫面因此一載入就有東西可看。
 selected = st.session_state.get("ws-detail")
 if selected not in by_id:
     selected = scenarios[0].id if scenarios else None
@@ -151,7 +154,7 @@ if selected not in by_id:
 def _render_card(card) -> None:
     """恰五項：標的／目標價／目標年月／最高收益率／一個燈號（需求五）。
 
-    整張卡片就是進詳細頁的按鈕；腿別、成本、佔本金等技術數字一律留給右欄。
+    整張卡片就是進詳細頁的按鈕；腿別、成本、佔本金等技術數字一律留給主畫面。
     """
     with st.container(border=True):
         # 選中以「▸」標示，不用 primary 按鈕——那是紅色的，會和「負數＝紅」
@@ -249,69 +252,66 @@ def _render_detail(sc) -> None:
     render_step4(view, key, history=history)
 
 
-left, right = st.columns([0.2, 0.8], gap="medium")
-
-# ---------- 左：劇本卡片清單 ----------
-with left:
+# ---------- 側欄：劇本卡片清單（QA1-02／#29：桌面常駐、窄螢幕收合漢堡） ----------
+with st.sidebar:
     st.subheader("劇本清單")
     st.toggle("✎ 編輯清單", key="ws-edit")
     if st.button("🔄 刷新", key="ws-refresh-all", use_container_width=True):
         _refresh_all(refreshable, label="刷新未過期劇本……")
         st.rerun()
     if not scenarios:
-        st.info("尚無劇本。用右側「＋ 建立劇本」開始。")
+        st.info("尚無劇本。用主畫面「＋ 建立劇本」開始。")
     elif len(scenarios) > 6:
         st.warning(f"目前 {len(scenarios)} 個劇本（建議上限 6，僅提示不限制）。")
     for card in cards:
         _render_card(card)
 
-# ---------- 右：設定、建立、詳細頁 ----------
-with right:
-    constraints = store.load_constraints(WS_ROOT)
-    with st.expander("⚙ 設定", expanded=False):
-        cur = constraints["total_capital"]
-        cap_in = st.number_input("資金總額（0＝未設定）", min_value=0.0,
-                                 value=float(cur or 0.0), step=1000.0,
-                                 key="ws-capital")
-        if st.button("儲存設定", key="ws-save-capital"):
-            store.save_constraints(WS_ROOT, cap_in if cap_in > 0 else None)
-            st.rerun()
+# ---------- 主畫面：設定、建立、詳細頁 ----------
+constraints = store.load_constraints(WS_ROOT)
+with st.expander("⚙ 設定", expanded=False):
+    cur = constraints["total_capital"]
+    cap_in = st.number_input("資金總額（0＝未設定）", min_value=0.0,
+                             value=float(cur or 0.0), step=1000.0,
+                             key="ws-capital")
+    if st.button("儲存設定", key="ws-save-capital"):
+        store.save_constraints(WS_ROOT, cap_in if cap_in > 0 else None)
+        st.rerun()
 
-    # T4（#18）：只問標的／目標價／目標年月三欄。方向與策略不曝露於 UI，
-    # 帶入 MVP 預設（bullish + bull-call-spread）；create 簽章保留全部參數。
-    with st.expander("＋ 建立劇本", expanded=not scenarios):
-        st.text_input("標的", key="ws-new-symbol", placeholder="TLT")
-        st.number_input("目標價位", key="ws-new-price", min_value=0.01,
-                        value=100.0, step=1.0)
-        st.text_input("目標年月", key="ws-new-month", placeholder="2028/1")
-        if st.button("建立", key="ws-new-create"):
-            sym = (st.session_state.get("ws-new-symbol") or "").strip().upper()
-            if not sym:
-                st.error("請輸入標的代號。")
+# T4（#18）：只問標的／目標價／目標年月三欄。方向與策略不曝露於 UI，
+# 帶入 MVP 預設（bullish + bull-call-spread）；create 簽章保留全部參數。
+with st.expander("＋ 建立劇本", expanded=not scenarios):
+    st.text_input("標的", key="ws-new-symbol", placeholder="TLT")
+    st.number_input("目標價位", key="ws-new-price", min_value=0.01,
+                    value=100.0, step=1.0)
+    st.text_input("目標年月", key="ws-new-month", placeholder="2028/1")
+    if st.button("建立", key="ws-new-create"):
+        sym = (st.session_state.get("ws-new-symbol") or "").strip().upper()
+        if not sym:
+            st.error("請輸入標的代號。")
+        else:
+            # 格式錯誤與「已過完的月份」都由 ParamError 表達（後者在 create 裡把關）
+            try:
+                month = parse_target_month(
+                    st.session_state.get("ws-new-month") or "")
+                created = workspace.create_scenario(
+                    WS_ROOT, symbol=sym, direction="bullish",
+                    target_price=float(st.session_state["ws-new-price"]),
+                    target_month=month.key(),
+                    notes="",
+                    strategies=("bull-call-spread",))
+            except ParamError as e:
+                st.error(str(e))
             else:
-                # 格式錯誤與「已過完的月份」都由 ParamError 表達（後者在 create 裡把關）
-                try:
-                    month = parse_target_month(
-                        st.session_state.get("ws-new-month") or "")
-                    created = workspace.create_scenario(
-                        WS_ROOT, symbol=sym, direction="bullish",
-                        target_price=float(st.session_state["ws-new-price"]),
-                        target_month=month.key(),
-                        notes="",
-                        strategies=("bull-call-spread",))
-                except ParamError as e:
-                    st.error(str(e))
-                else:
-                    # 需求七：建立劇本當下立即觸發首次刷新，完成後卡片即有數字。
-                    # 無論成敗都 rerun——失敗時卡片自身的黃燈＋說明文字
-                    # （見 `_render_card`）已是持續可見的失敗指示，不需要
-                    # 額外保留一次性 st.error。
-                    _analyze_with_status(created.id, workspace.analyze_scenario,
-                                         WS_ROOT, created.id)
-                    st.session_state["ws-detail"] = created.id
-                    st.rerun()
+                # 需求七：建立劇本當下立即觸發首次刷新，完成後卡片即有數字。
+                # 無論成敗都 rerun——失敗時卡片自身的黃燈＋說明文字
+                # （見 `_render_card`）已是持續可見的失敗指示，不需要
+                # 額外保留一次性 st.error。
+                _analyze_with_status(created.id, workspace.analyze_scenario,
+                                     WS_ROOT, created.id)
+                st.session_state["ws-detail"] = created.id
+                st.rerun()
 
-    if selected is None:
-        st.info("尚無劇本可顯示。")
-    else:
-        _render_detail(by_id[selected])
+if selected is None:
+    st.info("尚無劇本可顯示。")
+else:
+    _render_detail(by_id[selected])

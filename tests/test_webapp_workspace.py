@@ -49,8 +49,8 @@ def _body(at):
 
 
 def _list_text(at):
-    """左欄（清單）內的所有文字——卡片內容的斷言範圍。"""
-    col = at.columns[0]
+    """側欄（清單）內的所有文字——卡片內容的斷言範圍。"""
+    col = at.sidebar
     return " ".join([m.value for m in col.markdown]
                     + [b.label for b in col.button]
                     + [c.value for c in col.caption])
@@ -111,11 +111,16 @@ def test_create_rejects_unparseable_month(ws):
 
 # ---------- 版面與卡片（T5，#19） ----------
 
-def test_desktop_layout_is_twenty_eighty(ws):
+def test_scenario_list_lives_in_collapsible_sidebar(ws):
+    """QA1-02（#29）：清單改放 `st.sidebar`，不再是 `st.columns([0.2, 0.8])`
+    ——後者窄螢幕會自然堆疊、清單整段疊在主畫面上方（回報的缺陷）。
+    sidebar 在桌面上是常駐左欄、窄螢幕自動收合成漢堡選單拉出的側欄，兩種
+    行為皆由 Streamlit 框架本身保證，不需要應用層另外判斷視窗寬度。"""
     _mk(ws)
     at = AppTest.from_file(PAGE)
     at.run()
-    assert [round(c.weight, 2) for c in at.columns[:2]] == [0.2, 0.8]
+    assert any(b.key == "ws-refresh-all" for b in at.sidebar.button)
+    assert not any(round(c.weight, 2) == 0.2 for c in at.columns)
 
 
 def test_card_carries_the_five_items_and_nothing_technical(ws):
