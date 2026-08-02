@@ -10,8 +10,9 @@ from typing import Callable
 from .data.snapshot import find_contract, load_snapshot, save_snapshot, snapshot_today
 from .filters import apply_filters, generate_spread_pairs
 from .matrix import date_axis, matrix_grid, price_axis
-from .models import (AnalysisParams, ChainSnapshot, FilterReport, PairReport,
-                     ParamError, SPREAD_STRATEGIES, STRATEGIES, is_bullish)
+from .models import (AnalysisParams, ChainSnapshot, FetchError, FilterReport,
+                     PairReport, ParamError, SPREAD_STRATEGIES, STRATEGIES,
+                     is_bullish)
 from .ranking import (BAND_ORDER, _spread_tie_key, _tie_break_key,
                       baseline_return, build_reasons, build_spread_reasons,
                       classify, rank, rank_spreads, spread_baseline_return)
@@ -669,10 +670,19 @@ def _analyze(request: AnalysisRequest, snap: ChainSnapshot,
 
 
 def fetch_and_save(symbol: str) -> tuple[ChainSnapshot, str]:
-    """v5 spec §4: 抓取＋落盤 snapshot（run 與 workspace.analyze_group 共用）。"""
-    from .data.yf import fetch_chain  # lazy: offline paths never import yfinance
+    """v5 spec §4: 抓取＋落盤 snapshot（run 與 workspace.analyze_group 共用）。
 
-    snap = fetch_chain(symbol)
+    FB3-01（#44）：Cboe 延遲報價為主源（盤外凍結收盤 bid/ask 不歸零、
+    單一 GET 回全鏈），失敗自動退回 yfinance；快照 `source` 欄位如實
+    記錄實際用了哪個源。lazy import：離線路徑永不碰網路模組。"""
+    from .data import cboe
+
+    try:
+        snap = cboe.fetch_chain(symbol)
+    except FetchError:
+        from .data import yf
+
+        snap = yf.fetch_chain(symbol)
     out = Path("snapshots") / f"{snap.symbol}_{snap.fetched_at.replace(':', '')}.json"
     out.parent.mkdir(exist_ok=True)
     save_snapshot(snap, out)
