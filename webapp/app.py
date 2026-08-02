@@ -28,6 +28,11 @@ QA1-04（#31）：建立表單三欄全部留白，不預填任何值；目標�
 （見 `_sync_month_dropdown_to_text`）——Streamlit 只在 widget 提交時重跑，
 沒有逐鍵盤事件，因此連動僅單向（下拉→文字），無法做到打字時即時反向連動。
 
+QA1-05（#32）：`_render_detail` 呼叫順序改為 Step2 → 到期日選擇
+（`render_expiry_top10`）→ 到期日分組比較（`render_step3`）→ Step4——
+到期日選擇緊接主圖之後，不再壓在冗長比較表下方；細節見 render.py 兩函式
+各自的 docstring。
+
 群組區自首頁移除（附錄 A8.6）——`store.rebuild_groups`／
 `workspace.analyze_group` 等底層邏輯原封不動，只是不再於此頁曝露。
 GUI 零金融公式：所有數字來自 result dict（store 預算）或 scenario 欄位。
@@ -249,8 +254,10 @@ def _render_detail(sc) -> None:
     if row is not None and row["candidate"]["pct_of_capital"] is not None:
         st.caption(f"佔本金 {pct(row['candidate']['pct_of_capital'])}")
     render_step2(view, key)
-    render_step3(view, key, state_key="ws-selected-key")
+    # QA1-05（#32）：到期日選擇緊接主圖之後，長列比較表退居其後（見
+    # render.py 兩函式各自的 docstring）。
     render_expiry_top10(view, key, state_key="ws-selected-key")
+    render_step3(view, key, state_key="ws-selected-key")
     # T11（#25）：唯讀跨快照聚合，只在選中候選時才查——避免無謂重複掃描
     # results/<sid>/*.json（劇本刷新次數多時，這個目錄可能不小）。
     history = (workspace.spread_history(WS_ROOT, sc.id, key)

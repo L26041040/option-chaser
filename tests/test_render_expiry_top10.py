@@ -4,7 +4,7 @@ import pytest
 
 pytest.importorskip("streamlit")
 
-from webapp.render import baseline_key, find_row
+from webapp.render import baseline_key, find_row, _candidate_title_plain
 
 
 def _cand(key, baseline_return=0.5):
@@ -52,3 +52,13 @@ def test_baseline_key_reads_baseline_selection_not_default_selection():
 def test_baseline_key_is_none_when_no_baseline_selection():
     """例如 baseline 期零合格候選（附錄A10.2）——沒有任何值可預設選中。"""
     assert baseline_key(_view(baseline_selection=None)) is None
+
+
+def test_candidate_title_plain_has_no_html_tags():
+    """QA1-05（#32）：窄版可點列直接把標題塞進 `st.button` 的標籤——
+    button 不支援 unsafe_allow_html，`_candidate_title` 的 `<abbr>` HTML
+    （見 `abbr()`）不能直接拿來用，必須是純文字版本。"""
+    cand = _cand("K1")
+    title = _candidate_title_plain("bull-call-spread", cand)
+    assert "<" not in title and ">" not in title
+    assert "BCS" in title

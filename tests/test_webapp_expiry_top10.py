@@ -20,6 +20,7 @@ from streamlit.testing.v1 import AppTest
 
 from option_chaser import service, workspace
 from option_chaser.models import AnalysisParams
+from webapp.render import return_md
 
 PAGE = "webapp/app.py"
 TS = "2026-07-15T21:30:00-04:00"
@@ -87,11 +88,16 @@ def test_detail_page_defaults_to_baseline_top1(ws):
     assert at.session_state["ws-selected-key"] == expected.baseline_selection[1]
 
 
+def _expiry_button(at, exp):
+    return next(b for b in at.button
+               if b.key == f"ws-selected-key-viewing-expiry-{exp}")
+
+
 def test_expiry_tab_defaults_to_baseline_and_lists_its_candidates(ws):
     at = _run_page()
-    radio = next(r for r in at.radio if r.key == "ws-selected-key-viewing-expiry")
-    assert set(radio.options) == {E1, E2, E3}
-    assert radio.value == E1
+    for e in (E1, E2, E3):
+        _expiry_button(at, e)   # 存在即可，不存在會拋 StopIteration
+    assert at.session_state["ws-selected-key-viewing-expiry"] == E1
     assert any(b.key == f"sel-top10-{E1}-bull-call-spread|100|110|{E1}"
               for b in at.button)
 
@@ -107,13 +113,11 @@ def test_switching_tab_shows_that_periods_top10_without_new_api_call(ws, monkeyp
 
     at = _run_page()
     before = calls["n"]
-    radio = next(r for r in at.radio if r.key == "ws-selected-key-viewing-expiry")
-    radio.set_value(E2).run(timeout=30)
+    _expiry_button(at, E2).set_value(True).run(timeout=30)
     assert not at.exception
     assert calls["n"] == before   # 切換到期日純 UI 互動，不呼叫 service.run
 
-    radio2 = next(r for r in at.radio if r.key == "ws-selected-key-viewing-expiry")
-    assert radio2.value == E2
+    assert at.session_state["ws-selected-key-viewing-expiry"] == E2
     assert any(b.key == f"sel-top10-{E2}-bull-call-spread|100|110|{E2}"
               for b in at.button)
     assert not any(b.key == f"sel-top10-{E1}-bull-call-spread|100|110|{E1}"
@@ -131,8 +135,7 @@ def test_selecting_a_non_baseline_candidate_shows_its_own_heatmap_without_api_ca
 
     at = _run_page()
     before = calls["n"]
-    radio = next(r for r in at.radio if r.key == "ws-selected-key-viewing-expiry")
-    radio.set_value(E2).run(timeout=30)
+    _expiry_button(at, E2).set_value(True).run(timeout=30)
     btn = next(b for b in at.button
               if b.key == f"sel-top10-{E2}-bull-call-spread|100|110|{E2}")
     btn.set_value(True).run(timeout=30)
@@ -143,3 +146,23 @@ def test_selecting_a_non_baseline_candidate_shows_its_own_heatmap_without_api_ca
     # Step 2 主圖標題含該候選的履約價（同履約價跨期都是 100/110，但
     # selected_key 已證明選中的正是 E2 那一份，Heatmap 隨之重繪不報錯即可）。
     assert any("100" in m.value and "110" in m.value for m in at.markdown)
+
+
+def test_each_expiry_option_shows_its_own_top_return(ws):
+    """QA1-05（#32）：橫向並排的到期日選項下方要顯示「該期」最高收益，
+    不是全體共用同一個數字——三檔到期日的合成快照報酬各不相同（`_leg`
+    依 `i` 遞減報價），確保驗證的是逐期取值，不是巧合。"""
+    _, fix = ws
+    at = _run_page()
+    expected = service.run_offline(service.AnalysisRequest(
+        symbol="XYZ",
+        base_params=AnalysisParams(strategy="bull-call-spread",
+                                   target_price=130.0, target_month="2026-08",
+                                   min_return=0.0),
+        strategies=("bull-call-spread",)), fix)
+    top10_by_expiry = dict(expected.results[0].expiry_top10)
+    captions = {c.value for c in at.caption}
+    tops = {return_md(max(cv.baseline_return for cv in top10_by_expiry[e]))
+            for e in (E1, E2, E3)}
+    assert len(tops) == 3, "fixture 設計前提：三檔到期日的最高收益需互不相同"
+    assert tops <= captions

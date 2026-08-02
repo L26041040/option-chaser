@@ -163,6 +163,14 @@ def _candidate_title(strategy: str, cand: dict) -> str:
     return f"{_strategy_title(strategy)} {_candidate_label(cand)}"
 
 
+def _candidate_title_plain(strategy: str, cand: dict) -> str:
+    """同 `_candidate_title`，但策略縮寫不含 `abbr()` 的 `<abbr>` HTML——
+    `st.button` 的標籤不支援 unsafe_allow_html，QA1-05（#32）窄版可點列
+    需要純文字版本。"""
+    term = _STRATEGY_ABBR_TERM.get(strategy, STRATEGY_LABELS[strategy])
+    return f"{term} {_candidate_label(cand)}"
+
+
 def all_rows(view: dict) -> list[dict]:
     return [row for g in view["expiry_groups"] for row in g["rows"]]
 
@@ -238,7 +246,10 @@ def render_step2(view: dict, key: str | None) -> None:
 
 
 def render_step3(view: dict, key: str | None, state_key: str = "selected_key") -> None:
-    st.subheader("Step 3　到期日分組比較")
+    """QA1-05（#32）：「Step 3」的編號已讓給 `render_expiry_top10`（現在
+    緊接 Step 2 主圖之後）——本函式的到期日分組比較表退居次要參考，
+    標題不再帶編號。"""
+    st.subheader("到期日分組比較")
     if not view["expiry_groups"]:
         st.info("目前沒有可比較的候選。")
         return
@@ -285,15 +296,22 @@ def render_step3(view: dict, key: str | None, state_key: str = "selected_key") -
 
 
 def render_expiry_top10(view: dict, key: str | None, state_key: str) -> None:
-    """T10（#24）第二層：單期 Top 10。預設顯示 baseline 期，點其他到期日
-    切換；點任一入榜 Spread 更新 `state_key`，Step 2 主圖（`render_step2`）
-    隨之顯示它專屬的 Heatmap。純 UI 互動，`st.radio`／按鈕都不呼叫任何
-    `workspace`／`service` 函式，因此不觸發 API（需求七、本票 AC）。
+    """QA1-05（#32）：到期日選擇緊接 Step 2 主圖之後——原本壓在冗長的
+    到期日分組比較表（`render_step3`）下方要捲很久才到，現在編號讓給這裡。
+    到期日橫向並排（`10/1`／`11/1`……），每個日期選項下方附該期最高收益，
+    一眼可橫向比較；候選卡片改窄版單行可點列（TradingView 手機版標的列
+    風格：只留排名、策略／履約、劇本報酬），取代原本的 thumbnail＋多欄位
+    ＋獨立「選看」鈕。到期日連同前十名並排、可橫向滑動對比的大表格本票
+    明確不做（需求方裁示：先做本票範圍，之後再評估是否需要）。
 
-    第一層（各期摘要）沿用既有的 `render_step3`／`expiry_groups`，本函式
-    不重複那份資料，只負責「深入單期」這一層。
+    預設顯示 baseline 期，點其他到期日切換；點任一入榜 Spread 更新
+    `state_key`，Step 2 主圖（`render_step2`）隨之顯示它專屬的 Heatmap。
+    純 UI 互動，按鈕都不呼叫任何 `workspace`／`service` 函式，因此不觸發
+    API（需求七、T10 AC 沿用）。第一層（各期摘要）沿用既有的
+    `render_step3`／`expiry_groups`，本函式不重複那份資料，只負責
+    「深入單期」這一層。
     """
-    st.subheader("到期日 Top 10")
+    st.subheader("Step 3　到期日選擇")
     strat = next((r for r in view["results"] if r.get("expiry_top10")), None)
     if strat is None or not strat["expiry_top10"]:
         st.info("目前沒有可顯示的到期日排名。")
@@ -306,29 +324,32 @@ def render_expiry_top10(view: dict, key: str | None, state_key: str) -> None:
         baseline = view.get("baseline_expiry")
         st.session_state[viewing_key] = baseline if baseline in expiries \
             else expiries[0]
-    viewing = st.radio("切換到期日", expiries, key=viewing_key,
-                       horizontal=True)
+    viewing = st.session_state[viewing_key]
+
+    cols = st.columns(len(groups))
+    for col, g in zip(cols, groups):
+        with col:
+            label = f"{int(g['expiry'][5:7])}/{int(g['expiry'][8:10])}"
+            if g["expiry"] == viewing:
+                label = f"▸{label}"
+            if st.button(label, key=f"{viewing_key}-{g['expiry']}",
+                        use_container_width=True):
+                st.session_state[viewing_key] = g["expiry"]
+                st.rerun()
+            top = (max(c["baseline_return"] for c in g["candidates"])
+                  if g["candidates"] else None)
+            st.caption(return_md(top))
 
     group = next(g for g in groups if g["expiry"] == viewing)
     for i, cand in enumerate(group["candidates"], start=1):
-        cols = st.columns([0.5, 2.4, 1.6, 1.1, 0.7])
-        with cols[0]:
-            mark = "◀" if cand["candidate_key"] == key else ""
-            st.markdown(f"**#{i}** {mark}")
-        with cols[1]:
-            st.markdown(esc(_candidate_title(strat["strategy"], cand)),
-                        unsafe_allow_html=True)
-        with cols[2]:
-            st.markdown(_thumb_html(cand), unsafe_allow_html=True)
-        with cols[3]:
-            st.markdown(abbr("劇本報酬")
-                        + f'<br><span class="oc-num">{pct(cand["baseline_return"])}</span>',
-                        unsafe_allow_html=True)
-        with cols[4]:
+        with st.container(border=True):
+            mark = "▸ " if cand["candidate_key"] == key else ""
+            title = f"{mark}#{i}　{_candidate_title_plain(strat['strategy'], cand)}"
             btn_key = f"sel-top10-{group['expiry']}-{cand['candidate_key']}"
-            if st.button("選看", key=btn_key):
+            if st.button(title, key=btn_key, use_container_width=True):
                 st.session_state[state_key] = cand["candidate_key"]
                 st.rerun()
+            st.caption(return_md(cand["baseline_return"]))
 
 
 def _render_resilience_expander(view: dict, key: str | None) -> None:
