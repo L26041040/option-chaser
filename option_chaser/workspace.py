@@ -225,6 +225,39 @@ def latest_result(ws_root, sid: str) -> dict | None:
     return store.load_result(path) if path else None
 
 
+def spread_history(ws_root, sid: str, candidate_key: str) -> list[dict]:
+    """T11（#25）：跨該劇本全部歷史快照，依 Spread 身份鍵（`candidate_key`，
+    已含到期日／買入履約價／賣出履約價；symbol 由劇本本身固定，見 T9
+    `service.valuation_key`）聚合出時間序列。
+
+    唯讀聚合：只讀取既有快照檔案，不寫入、不改變刷新的計算或保存範圍——
+    T9 附錄A7 已保證每份快照全量保存該次全部有效候選，這裡只是換一種
+    切法（按 Spread 身份橫向串接，而非單次快照縱向羅列）。
+
+    某次快照的 `all_candidates` 找不到這個鍵（該候選當次不是有效候選，
+    例如缺報價被過濾——非關鍵資料失敗，見附錄A12）→ 該筆仍然入列，
+    但 cost／baseline_return／rank_in_expiry 皆為 None：如實呈現斷點，
+    不插值、不跳過、不報錯；`analyzed_at`／`spot` 仍取自那次成功更新本身。
+    """
+    d = Path(ws_root) / "results" / sid
+    if not d.is_dir():
+        return []
+    out = []
+    for p in sorted(d.glob("*.json")):
+        view = store.load_result(p)
+        entry = next((e for r in view["results"]
+                     for e in r.get("all_candidates", [])
+                     if e["candidate_key"] == candidate_key), None)
+        out.append({
+            "analyzed_at": view["analyzed_at"],
+            "spot": view["meta"]["spot"],
+            "cost": entry["cost"] if entry else None,
+            "baseline_return": entry["baseline_return"] if entry else None,
+            "rank_in_expiry": entry["rank_in_expiry"] if entry else None,
+        })
+    return out
+
+
 # ---------- 劇本級狀態燈號（需求六／T6，純函式） ----------
 
 SIGNAL_GREEN = "green"

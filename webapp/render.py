@@ -490,7 +490,24 @@ def _render_greeks_expander(view: dict, key: str | None) -> None:
         st.code(res["report_text"], language=None)
 
 
-def render_step4(view: dict, key: str | None) -> None:
+def render_spread_history(history: list[dict]) -> None:
+    """T11（#25）：選中 Spread 的專屬歷史時間序列——純表格呈現，數字直接來自
+    `workspace.spread_history()` 的聚合結果，本函式不做任何金融計算。
+    缺席快照（斷點）顯示「—」：如實呈現，不插值、不平滑掉（需求）。"""
+    if not history:
+        st.info("尚無歷史紀錄。")
+        return
+    lines = ["|更新時間|標的價|淨成本|收益率|期內名次|", "|---|---|---|---|---|"]
+    for e in history:
+        cost = f"${money(e['cost'])}" if e["cost"] is not None else "—"
+        ret = pct(e["baseline_return"]) if e["baseline_return"] is not None else "—"
+        rank = str(e["rank_in_expiry"]) if e["rank_in_expiry"] is not None else "—"
+        lines.append(f"|{e['analyzed_at']}|${money(e['spot'])}|{cost}|{ret}|{rank}|")
+    st.markdown(esc("\n".join(lines)))
+
+
+def render_step4(view: dict, key: str | None,
+                 history: list[dict] | None = None) -> None:
     st.subheader("Step 4　進階區")
     with st.expander("韌性與壓力情境", expanded=False):
         _render_resilience_expander(view, key)
@@ -498,3 +515,9 @@ def render_step4(view: dict, key: str | None) -> None:
         _render_scatter_expander(view)
     with st.expander("Greeks 與流動性", expanded=False):
         _render_greeks_expander(view, key)
+    # T11（#25）：只有真的選中 Spread、且呼叫端有提供歷史資料（目前只有
+    # 劇本工作區的詳細頁；app.py 快速分析頁沒有持久化劇本，不傳 history，
+    # 因此不會顯示這個區塊——不是「尚無歷史」，是「不適用」）才顯示。
+    if key is not None and history is not None:
+        with st.expander("Spread 歷史", expanded=False):
+            render_spread_history(history)

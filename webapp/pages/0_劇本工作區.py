@@ -4,6 +4,8 @@
 ＋ T10（#24）: 詳細頁兩層結構——第一層沿用既有 `render_step3`（各期第 1
 名＋Heatmap 縮圖），第二層新增 `render_expiry_top10`（單期 Top 10，預設
 baseline 期，見附錄A8.5）。切換到期日／點選候選皆純 UI 互動，不觸發 API。
+＋ T11（#25）: 選中 Spread 後，Step 4 進階區新增「Spread 歷史」——依身份鍵
+跨該劇本全部歷史快照聚合（`workspace.spread_history`），唯讀查詢。
 
 左 20%：劇本卡片清單（每張卡恰五項＋一個燈號位置）與清單編輯工具；
 右 80%：設定、建立表單、被選中劇本的詳細頁。
@@ -233,7 +235,11 @@ def _render_detail(sc) -> None:
     render_step2(view, key)
     render_step3(view, key, state_key="ws-selected-key")
     render_expiry_top10(view, key, state_key="ws-selected-key")
-    render_step4(view, key)
+    # T11（#25）：唯讀跨快照聚合，只在選中候選時才查——避免無謂重複掃描
+    # results/<sid>/*.json（劇本刷新次數多時，這個目錄可能不小）。
+    history = (workspace.spread_history(WS_ROOT, sc.id, key)
+              if key is not None else None)
+    render_step4(view, key, history=history)
 
 
 left, right = st.columns([0.2, 0.8], gap="medium")
