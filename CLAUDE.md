@@ -134,11 +134,13 @@
   `render_summary` 的 `move_pct` 同類手法一致，非新模式），未額外
   搬進服務層——標準面審查列為非阻塞建議，判斷維持現狀
 
-### 目前狀態（2026-08-02，PR #43 已 merge）
+### 目前狀態（2026-08-02，PR #43、#46 已 merge）
 
-**第二輪 MVP 已完結**：T1–T12、QA1-01–QA1-12、D1 全數完成，
-PR #43 已 merge 回 master；工作分支 `claude/implement-tfm9oa` 已從
-最新 master 重開，後續工作屬新一輪、將開新 PR。
+**第二輪 MVP 已完結**：T1–T12、QA1-01–QA1-12、D1 全數完成（PR #43）；
+**FB3 修正輪已完結**：FB3-01/02（feedback-v3 第 4 點）已隨 PR #46
+merge 回 master，部署版待需求方驗證（`source` 是否 `cboe`＋TLT 2028/5
+重驗）。工作分支 `claude/implement-tfm9oa` 已從最新 master 重開，
+後續工作屬新一輪（前端重練）、將開新 PR。
 
 **下一階段（已裁示，spec 未寫、票未開）**——前端砍掉重練：
 
