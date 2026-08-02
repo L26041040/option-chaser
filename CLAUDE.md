@@ -142,17 +142,22 @@ merge 回 master，部署版待需求方驗證（`source` 是否 `cboe`＋TLT 20
 重驗）。工作分支 `claude/implement-tfm9oa` 已從最新 master 重開，
 後續工作屬新一輪（前端重練）、將開新 PR。
 
-**下一階段（已裁示，spec 未寫、票未開）**——前端砍掉重練：
+**下一階段（spec 已發佈 [#47]，票未開）**——前端砍掉重練：
 
-- **架構**：Vercel 整包（前端＋Python serverless API），
-  `option_chaser/` 引擎不動，只換掉 `webapp/`
-- **資料層**：免費雲端 DB（屬意 Vercel Marketplace 的 Neon Postgres
-  免費層；建立時需求方要在 Vercel 後台按一次授權，屆時給步驟）
-- **UI**：iOS 風格、手機優先
-- **流程**：需求方 cue `/to-spec` 寫 spec →疑義點先確認→ 需求方 cue
-  `/to-ticket` 拆票登錄 GitHub →照舊 `/implement` 一張張做
-- spec 要順帶裁示：QA1-13 [#40]／QA1-14 [#41]（原「下一版施工」）
-  要不要併進新前端 spec；QA1-15 [#42] 仍待裁示
+- **Spec：issue #47**（2026-08-02 發佈，涵蓋 2026-08-02 全部裁示）：
+  Vercel 整包（前端＋Python serverless API，`option_chaser/` 引擎
+  不動）、Neon Postgres 免費層持久化（建立時需求方在 Vercel 後台
+  授權一次）、iOS 風格手機優先
+- **測試裁示**：後端唯一接縫＝HTTP API（測試客戶端直測、儲存層
+  記憶體假體）；**前端完整測試**（元件層 mock API＋Playwright E2E，
+  需求方明示不只煙霧測試）；前端 mock 與後端 fixture 共用同一份
+  契約樣本
+- **範圍裁示**：QA1-13 [#40]、QA1-14 [#41]、QA1-15 [#42] 六項
+  **全數併入** spec；feedback-v3 前端各點（2/3/6/7/7'/8/9/10）併入；
+  舊「到期日分組比較」不搬遷（v3 #7' 與新層重複）；Streamlit
+  `webapp/` 凍結至 cutover 後整目錄移除
+- **流程**：需求方過目 spec →cue `/to-ticket` 拆票→照舊 `/implement`
+  一張張做
 
 **第三輪反饋**：`docs/user-feedback-v3.md`（2026-08-02，需求方測試
 部署版後由 GitHub 直接 commit 進 master）。共 10 點：
