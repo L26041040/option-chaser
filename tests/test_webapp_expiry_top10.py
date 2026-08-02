@@ -94,13 +94,20 @@ def _expiry_button(at, exp):
                if b.key == f"ws-selected-key-viewing-expiry-{exp}")
 
 
+def _top10_candidate_expander(at, rank=1):
+    """展開列標籤固定以 🔽 開頭並帶 #排名（見 `render_expiry_top10`），
+    足以與頁面上其他 expander（Step 4 進階區、設定、建立劇本）區分。"""
+    return next(e for e in at.expander
+               if e.label.startswith("🔽") and f"#{rank}" in e.label)
+
+
 def test_expiry_tab_defaults_to_baseline_and_lists_its_candidates(ws):
     at = _run_page()
     for e in (E1, E2, E3):
         _expiry_button(at, e)   # 存在即可，不存在會拋 StopIteration
     assert at.session_state["ws-selected-key-viewing-expiry"] == E1
-    assert any(b.key == f"sel-top10-{E1}-bull-call-spread|100|110|{E1}"
-              for b in at.button)
+    exp = _top10_candidate_expander(at, 1)
+    assert "100" in exp.label and "110" in exp.label
 
 
 def test_switching_tab_shows_that_periods_top10_without_new_api_call(ws, monkeypatch):
@@ -119,13 +126,15 @@ def test_switching_tab_shows_that_periods_top10_without_new_api_call(ws, monkeyp
     assert calls["n"] == before   # 切換到期日純 UI 互動，不呼叫 service.run
 
     assert at.session_state["ws-selected-key-viewing-expiry"] == E2
-    assert any(b.key == f"sel-top10-{E2}-bull-call-spread|100|110|{E2}"
-              for b in at.button)
-    assert not any(b.key == f"sel-top10-{E1}-bull-call-spread|100|110|{E1}"
-                  for b in at.button)   # E1 不再顯示——已切到 E2 的 Top10
+    exp = _top10_candidate_expander(at, 1)
+    assert "100" in exp.label and "110" in exp.label
 
 
-def test_selecting_a_non_baseline_candidate_shows_its_own_heatmap_without_api_call(ws, monkeypatch):
+def test_expanding_a_non_baseline_candidate_shows_its_heatmap_without_selecting_it(ws, monkeypatch):
+    """QA1-06（#33）：展開候選只是就地顯示它的 Heatmap（`st.expander` 展開
+    ／收合是純前端互動，內容本就一律渲染，不需要點擊也看得到）；不寫入
+    `ws-selected-key`、不觸發 API、不影響 Step 2 主圖——不再是會把候選
+    寫進共用選中狀態、整頁重跑跳回主圖的舊版「選看」按鈕。"""
     calls = {"n": 0}
     real_run = service.run
 
@@ -136,17 +145,16 @@ def test_selecting_a_non_baseline_candidate_shows_its_own_heatmap_without_api_ca
 
     at = _run_page()
     before = calls["n"]
+    before_selected = at.session_state["ws-selected-key"]
     _expiry_button(at, E2).set_value(True).run(timeout=30)
-    btn = next(b for b in at.button
-              if b.key == f"sel-top10-{E2}-bull-call-spread|100|110|{E2}")
-    btn.set_value(True).run(timeout=30)
 
     assert not at.exception
-    assert calls["n"] == before   # 點選候選純 UI 互動，同樣不觸發 API
-    assert at.session_state["ws-selected-key"] == f"bull-call-spread|100|110|{E2}"
-    # Step 2 主圖標題含該候選的履約價（同履約價跨期都是 100/110，但
-    # selected_key 已證明選中的正是 E2 那一份，Heatmap 隨之重繪不報錯即可）。
-    assert any("100" in m.value and "110" in m.value for m in at.markdown)
+    assert calls["n"] == before   # 切換到期日純 UI 互動，不觸發 API
+    assert at.session_state["ws-selected-key"] == before_selected   # Step 2 選中不受影響
+    assert not any(b.key and b.key.startswith("sel-") for b in at.button)
+
+    exp = _top10_candidate_expander(at, 1)
+    assert "overflow-x:auto" in " ".join(m.value for m in exp.markdown)
 
 
 def test_each_expiry_option_shows_its_own_top_return(ws):

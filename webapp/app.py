@@ -32,10 +32,18 @@ QA1-04（#31）：建立表單三欄全部留白，不預填任何值；目標�
 QA1-05（#32）：`_render_detail` 呼叫順序改為 Step2 → 到期日選擇
 （`render_expiry_top10`）→ 到期日分組比較（`render_expiry_comparison`，
 原名 `render_step3`）→ Step4——到期日選擇緊接主圖之後，不再壓在冗長比較
-表下方。兩函式的候選卡片皆改窄版整列可點（拿掉 thumbnail 與多指標欄，
+表下方。兩函式的候選卡片皆改窄版展開列（拿掉 thumbnail 與多指標欄，
 只留徽章、策略／履約、劇本報酬），問題陳述明確點名「每個候選都是一整條
 寬列」正是 `render_expiry_comparison`；細節見 render.py 兩函式各自的
 docstring。
+
+QA1-06（#33）：候選展開列不再是會改寫 Step 2 主圖的「選看」按鈕——改用
+`st.expander` 就地展開該候選的 Heatmap（`render.py` 的
+`_render_candidate_expander`）。`st.expander` 展開／收合是純前端互動，
+不觸發重跑，因此不寫入 `ws-selected-key`、不影響 Step 2。`ws-selected-key`
+自此固定為 baseline 期預設候選（見上方 `_render_detail` 的
+`baseline_key` 初始化邏輯），Step 2／Step 4／「佔本金」／Spread 歷史皆
+沿用這個固定值，不再跟著候選展開互動改變。
 
 群組區自首頁移除（附錄 A8.6）——`store.rebuild_groups`／
 `workspace.analyze_group` 等底層邏輯原封不動，只是不再於此頁曝露。
@@ -262,7 +270,7 @@ def _render_detail(sc) -> None:
     # QA1-05（#32）：到期日選擇緊接主圖之後，長列比較表退居其後（見
     # render.py 兩函式各自的 docstring）。
     render_expiry_top10(view, key, state_key="ws-selected-key")
-    render_expiry_comparison(view, key, state_key="ws-selected-key")
+    render_expiry_comparison(view, key)
     # T11（#25）：唯讀跨快照聚合，只在選中候選時才查——避免無謂重複掃描
     # results/<sid>/*.json（劇本刷新次數多時，這個目錄可能不小）。
     history = (workspace.spread_history(WS_ROOT, sc.id, key)

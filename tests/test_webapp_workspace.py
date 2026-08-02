@@ -395,9 +395,11 @@ def test_detail_page_renders_four_steps(ws):
         and "Step 4" in subheaders
 
 
-def test_comparison_table_has_no_thumbnails_and_row_selects_on_click(ws):
-    """QA1-05（#32）：到期日分組比較表的候選卡片改窄版整列可點——舊版
-    「一整條寬列」＋thumbnail＋獨立「選看」鈕已拿掉，點整列即選中該候選。"""
+def test_comparison_table_has_no_thumbnails_and_expands_in_place(ws):
+    """QA1-05（#32）：到期日分組比較表的候選卡片改窄版展開列——舊版
+    「一整條寬列」＋thumbnail＋獨立「選看」鈕已拿掉。QA1-06（#33）：展開
+    只是就地顯示 Heatmap（`st.expander` 內容一律渲染，不需要點擊），不再
+    是會把候選寫進共用選中狀態、整頁重跑跳回 Step 2 主圖的「選看」按鈕。"""
     sc = _mk(ws)
     workspace.analyze_scenario(ws, sc.id, snapshot_path=FIX, ts=TS)
     at = AppTest.from_file(PAGE)
@@ -407,15 +409,12 @@ def test_comparison_table_has_no_thumbnails_and_row_selects_on_click(ws):
     assert 'class="oc-thumb"' not in body
 
     before = at.session_state["ws-selected-key"]
-    row_buttons = [b for b in at.button
-                  if b.key and b.key.startswith("sel-")
-                  and not b.key.startswith("sel-top10-")]
-    assert row_buttons, "到期日分組比較表應至少有一個可點的候選列"
-    other = next((b for b in row_buttons if b.key != f"sel-{before}"),
-                row_buttons[0])
-    other.set_value(True).run(timeout=30)
-    assert not at.exception
-    assert at.session_state["ws-selected-key"] == other.key[len("sel-"):]
+    row_expanders = [e for e in at.expander if e.label.startswith("🔽")]
+    assert row_expanders, "到期日分組比較表應至少有一個展開列"
+    assert not any(b.key and b.key.startswith("sel-") for b in at.button)
+    assert "overflow-x:auto" in " ".join(
+        m.value for e in row_expanders for m in e.markdown)
+    assert at.session_state["ws-selected-key"] == before
 
 
 def test_unanalyzed_scenario_detail_invites_analysis(ws):

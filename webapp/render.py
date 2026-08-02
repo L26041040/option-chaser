@@ -231,50 +231,59 @@ def render_step2(view: dict, key: str | None) -> None:
     st.markdown(heatmap_html(cand["matrix"]), unsafe_allow_html=True)
 
 
-def _render_selectable_row(title: str, *, key: str, candidate_key: str,
-                           state_key: str, baseline_return: float) -> None:
-    """QA1-05（#32）共用窄版可點列：整列即按鈕（TradingView 手機版標的列
-    風格），副標只留劇本報酬；點擊把 `candidate_key` 寫入 `state_key`。
-    `render_expiry_comparison`／`render_expiry_top10` 共用同一個形狀。"""
-    with st.container(border=True):
-        if st.button(title, key=key, use_container_width=True):
-            st.session_state[state_key] = candidate_key
-            st.rerun()
-        st.caption(return_md(baseline_return))
+def _render_candidate_expander(label: str, strategy: str, cand: dict) -> None:
+    """QA1-06（#33）共用窄版展開列：收起時只顯示一行摘要（徽章／排名／
+    策略／履約／劇本報酬）；展開才就地顯示該候選專屬的 Heatmap。
+
+    `st.expander` 展開／收合是純前端互動，不觸發任何重跑，因此不寫入
+    `session_state`、不影響 Step 2 主圖——正是本票要的「不跳動頁面位置、
+    不改寫主圖」：先前「選看」按鈕會把候選寫進共用的選中狀態、觸發
+    `st.rerun()`，導致整頁重繪並跳回最上方的 Step 2；使用者在下面比較
+    候選時，主圖被迫跟著每次點擊改寫、視角也被拋回上面。`render_step2`
+    如今固定顯示 baseline 期的預設候選，只在初次進頁或找不到候選時才會
+    更新，不再跟著這裡的展開互動改變。`render_expiry_comparison`／
+    `render_expiry_top10` 共用同一個形狀。"""
+    with st.expander(label, expanded=False):
+        st.markdown(esc(f"**{_candidate_title(strategy, cand)}**"),
+                    unsafe_allow_html=True)
+        st.markdown(heatmap_html(cand["matrix"]), unsafe_allow_html=True)
 
 
-def render_expiry_comparison(view: dict, key: str | None,
-                             state_key: str = "selected_key") -> None:
+def render_expiry_comparison(view: dict, key: str | None) -> None:
     """到期日分組比較表（QA1-05／#32：原「Step 3」，編號已讓給
     `render_expiry_top10`——現在緊接 Step 2 主圖之後——本函式退居次要
     參考，標題不再帶編號，函式名稱也一併改掉以免與新的 Step 3 混淆）。
 
-    候選卡片改窄版單行可點列（問題陳述明確點名的「每個候選都是一整條寬列，
+    候選卡片改窄版展開列（問題陳述明確點名的「每個候選都是一整條寬列，
     卡片太長」正是本函式——原本的 8 欄 thumbnail＋多指標列＋獨立「選看」鈕
-    拿掉，只留徽章、策略／履約、劇本報酬，仿 `render_expiry_top10` 的
-    TradingView 手機版標的列風格。情境最壞／不漲保留率／成交摩擦不在這張
-    快速比較表顯示：情境最壞與成交摩擦超標已透過 ⚠／🛡️ 徽章標示，數字細節
-    留給選中候選後的 Step 4 進階區（`_render_resilience_expander`／
+    拿掉，只留徽章、策略／履約、劇本報酬一行，仿 `render_expiry_top10` 的
+    TradingView 手機版標的列風格；QA1-06（#33）：改為 `st.expander` 就地
+    展開 Heatmap，不再是會改寫 Step 2 主圖的「選看」按鈕，見
+    `_render_candidate_expander` 說明）。情境最壞／不漲保留率／成交摩擦
+    不在這張快速比較表顯示：情境最壞與成交摩擦超標已透過 ⚠／🛡️ 徽章標示，
+    數字細節留給 Step 4 進階區（`_render_resilience_expander`／
     `_render_greeks_expander`），與 T5／需求五「劇本卡片恰五項」的精簡
-    先例一致，不在快速比較列重複鋪陳。"""
+    先例一致，不在快速比較列重複鋪陳。
+
+    `key` 僅用於標示「目前 Step 2 主圖顯示的是哪一個」（◀ 徽章），本函式
+    不再有寫入任何選中狀態的機制（不需要 `state_key` 參數）。"""
     st.subheader("到期日分組比較")
     if not view["expiry_groups"]:
         st.info("目前沒有可比較的候選。")
         return
     st.markdown('<p style="font-size:12px;color:#666">🚀 最高報酬｜🛡️ 最強韌性｜'
-                '⚠ 警示（零成交腿／摩擦超標）｜◀ 目前選中</p>', unsafe_allow_html=True)
+                '⚠ 警示（零成交腿／摩擦超標）｜◀ Step 2 主圖顯示中</p>',
+                unsafe_allow_html=True)
     for g in view["expiry_groups"]:
         header = f"{g['expiry']} 到期（緩衝 +{g['buffer_days']} 天）— {_buffer_note(g['buffer_days'])}"
         st.markdown(f"**{esc(header)}**")
         for row in g["rows"]:
             cand = row["candidate"]
             mark = _badge_str(row, key)
-            title = f"{mark} " if mark else ""
-            title += _candidate_title_plain(row["strategy"], cand)
-            _render_selectable_row(
-                title, key=f"sel-{cand['candidate_key']}",
-                candidate_key=cand["candidate_key"], state_key=state_key,
-                baseline_return=cand["baseline_return"])
+            label = f"🔽 {mark} " if mark else "🔽 "
+            label += (f"{_candidate_title_plain(row['strategy'], cand)}"
+                      f"　{pct(cand['baseline_return'])}")
+            _render_candidate_expander(label, row["strategy"], cand)
         if g["hidden_count"] > 0:
             st.caption(f"＋此到期日其他 {g['hidden_count']} 個候選")
     if view["hidden_expiries"]:
@@ -286,15 +295,19 @@ def render_expiry_top10(view: dict, key: str | None, state_key: str) -> None:
     到期日分組比較表（`render_expiry_comparison`）下方要捲很久才到，
     現在編號讓給這裡。
     到期日橫向並排（`10/1`／`11/1`……），每個日期選項下方附該期最高收益，
-    一眼可橫向比較；候選卡片改窄版單行可點列（TradingView 手機版標的列
-    風格：只留排名、策略／履約、劇本報酬），取代原本的 thumbnail＋多欄位
-    ＋獨立「選看」鈕。到期日連同前十名並排、可橫向滑動對比的大表格本票
+    一眼可橫向比較；候選卡片改窄版展開列（TradingView 手機版標的列風格：
+    只留排名、策略／履約、劇本報酬），取代原本的 thumbnail＋多欄位＋
+    獨立「選看」鈕。到期日連同前十名並排、可橫向滑動對比的大表格本票
     明確不做（需求方裁示：先做本票範圍，之後再評估是否需要）。
 
-    預設顯示 baseline 期，點其他到期日切換；點任一入榜 Spread 更新
-    `state_key`，Step 2 主圖（`render_step2`）隨之顯示它專屬的 Heatmap。
-    純 UI 互動，按鈕都不呼叫任何 `workspace`／`service` 函式，因此不觸發
-    API（需求七、T10 AC 沿用）。第一層（各期摘要）沿用既有的
+    預設顯示 baseline 期，點其他到期日切換——這裡的 `state_key` 只用來
+    命名切換到期日的 `viewing_key`（`f"{state_key}-viewing-expiry"`），
+    純粹是這個橫向選單自己的局部狀態，與「哪個候選在 Step 2 主圖顯示」
+    無關。QA1-06（#33）：點入榜 Spread 已不再改寫 `state_key`／觸發
+    `st.rerun()`——就地展開該候選的 Heatmap（`_render_candidate_expander`），
+    Step 2 主圖不受影響、頁面位置不跳動。切換到期日、展開候選都是純 UI
+    互動，不呼叫任何 `workspace`／`service` 函式，因此不觸發 API（需求七、
+    T10 AC 沿用）。第一層（各期摘要）沿用既有的
     `render_expiry_comparison`／`expiry_groups`，本函式不重複那份資料，
     只負責「深入單期」這一層。
     """
@@ -330,11 +343,9 @@ def render_expiry_top10(view: dict, key: str | None, state_key: str) -> None:
     group = next(g for g in groups if g["expiry"] == viewing)
     for i, cand in enumerate(group["candidates"], start=1):
         mark = "▸ " if cand["candidate_key"] == key else ""
-        title = f"{mark}#{i}　{_candidate_title_plain(strat['strategy'], cand)}"
-        _render_selectable_row(
-            title, key=f"sel-top10-{group['expiry']}-{cand['candidate_key']}",
-            candidate_key=cand["candidate_key"], state_key=state_key,
-            baseline_return=cand["baseline_return"])
+        label = (f"🔽 {mark}#{i}　{_candidate_title_plain(strat['strategy'], cand)}"
+                f"　{pct(cand['baseline_return'])}")
+        _render_candidate_expander(label, strat["strategy"], cand)
 
 
 def _render_resilience_expander(view: dict, key: str | None) -> None:
