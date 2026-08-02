@@ -39,6 +39,10 @@
   `AnalysisResult.baseline_expiry`／`baseline_selection`（附錄A8.5），
   與 app.py 快速分析頁仍在用的 `default_selection` 並存不衝突。
   A10.5 窄 viewport 驗收待需求方執行
+- **T11** [#25] — Spread 歷史時間序列查詢（commits `5474742`/`5565906`；
+  新增 `workspace.spread_history()`，依身份鍵跨劇本全部歷史快照唯讀聚合，
+  缺席即斷點不插值；`store.list_result_paths()` 一併抽出供
+  `latest_result_path()` 共用）
 
 ### 待辦（依序，← 為下一張）
 
@@ -48,7 +52,6 @@
 > 任一種做法都會改變產品行為、或是要動到已定案的附錄決策。
 > 純工程判斷（命名、重構、測試怎麼寫、既有 lint 問題）自己決定就好。
 
-- **T11** [#25] — Spread 歷史時間序列查詢　← 下一張
 - **D1** [#14] — Long Call 追平比較（deferred，不得混入 T2–T11）
 
 ### 施工依據
