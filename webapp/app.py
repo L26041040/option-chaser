@@ -9,9 +9,10 @@ QA1-01（#28）：拿掉「app／劇本工作區／說明」三分頁疊床架�
 v5 spec §5 ＋ T5（#19）: 桌面兩欄工作區雛形（`st.columns([0.2, 0.8])`，
 已由下述 QA1-02 換成 `st.sidebar`）。＋ T7（#21）: 自動／手動刷新。
 ＋ T8（#22）: 左側清單依 `workspace.sort_cards()` 依最新收益率重排。
-＋ T10（#24）: 詳細頁兩層結構——第一層沿用既有 `render_step3`（各期第 1
-名＋Heatmap 縮圖），第二層新增 `render_expiry_top10`（單期 Top 10，預設
-baseline 期，見附錄A8.5）。切換到期日／點選候選皆純 UI 互動，不觸發 API。
+＋ T10（#24）: 詳細頁兩層結構——第一層沿用既有 `render_expiry_comparison`
+（各期第 1 名＋Heatmap 縮圖，QA1-05 前名為 `render_step3`），第二層新增
+`render_expiry_top10`（單期 Top 10，預設 baseline 期，見附錄A8.5）。
+切換到期日／點選候選皆純 UI 互動，不觸發 API。
 ＋ T11（#25）: 選中 Spread 後，Step 4 進階區新增「Spread 歷史」——依身份鍵
 跨該劇本全部歷史快照聚合（`workspace.spread_history`），唯讀查詢。
 
@@ -29,9 +30,12 @@ QA1-04（#31）：建立表單三欄全部留白，不預填任何值；目標�
 沒有逐鍵盤事件，因此連動僅單向（下拉→文字），無法做到打字時即時反向連動。
 
 QA1-05（#32）：`_render_detail` 呼叫順序改為 Step2 → 到期日選擇
-（`render_expiry_top10`）→ 到期日分組比較（`render_step3`）→ Step4——
-到期日選擇緊接主圖之後，不再壓在冗長比較表下方；細節見 render.py 兩函式
-各自的 docstring。
+（`render_expiry_top10`）→ 到期日分組比較（`render_expiry_comparison`，
+原名 `render_step3`）→ Step4——到期日選擇緊接主圖之後，不再壓在冗長比較
+表下方。兩函式的候選卡片皆改窄版整列可點（拿掉 thumbnail 與多指標欄，
+只留徽章、策略／履約、劇本報酬），問題陳述明確點名「每個候選都是一整條
+寬列」正是 `render_expiry_comparison`；細節見 render.py 兩函式各自的
+docstring。
 
 群組區自首頁移除（附錄 A8.6）——`store.rebuild_groups`／
 `workspace.analyze_group` 等底層邏輯原封不動，只是不再於此頁曝露。
@@ -61,8 +65,9 @@ from option_chaser import store, workspace
 from option_chaser.models import FetchError, ParamError
 from option_chaser.timeframe import parse_target_month
 from webapp.render import (baseline_key, esc, find_row, money, pct,
-                           render_expiry_top10, return_md, render_step2,
-                           render_step3, render_step4, render_summary)
+                           render_expiry_comparison, render_expiry_top10,
+                           return_md, render_step2, render_step4,
+                           render_summary)
 
 WS_ROOT = Path(os.environ.get("OC_WORKSPACE", "workspace"))
 STATUS_BADGE = {"Active": "🟢 Active", "Reached": "🏁 Reached",
@@ -257,7 +262,7 @@ def _render_detail(sc) -> None:
     # QA1-05（#32）：到期日選擇緊接主圖之後，長列比較表退居其後（見
     # render.py 兩函式各自的 docstring）。
     render_expiry_top10(view, key, state_key="ws-selected-key")
-    render_step3(view, key, state_key="ws-selected-key")
+    render_expiry_comparison(view, key, state_key="ws-selected-key")
     # T11（#25）：唯讀跨快照聚合，只在選中候選時才查——避免無謂重複掃描
     # results/<sid>/*.json（劇本刷新次數多時，這個目錄可能不小）。
     history = (workspace.spread_history(WS_ROOT, sc.id, key)

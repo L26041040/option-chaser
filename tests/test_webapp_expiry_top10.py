@@ -1,6 +1,7 @@
 """T10（#24）：劇本詳細頁兩層結構（AppTest）。
 
-第一層（各期摘要，`render_step3`）沿用既有測試覆蓋；本檔專注第二層
+第一層（各期摘要，`render_expiry_comparison`，QA1-05 前名為
+`render_step3`）沿用既有測試覆蓋；本檔專注第二層
 （單期 Top 10 切換）與 baseline 預設選中——這是本票新增的行為。
 
 自建三檔到期日的合成快照（不重用既有 fixture）：`xyz_v4_six_expiries.json`

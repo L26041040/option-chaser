@@ -395,6 +395,29 @@ def test_detail_page_renders_four_steps(ws):
         and "Step 4" in subheaders
 
 
+def test_comparison_table_has_no_thumbnails_and_row_selects_on_click(ws):
+    """QA1-05（#32）：到期日分組比較表的候選卡片改窄版整列可點——舊版
+    「一整條寬列」＋thumbnail＋獨立「選看」鈕已拿掉，點整列即選中該候選。"""
+    sc = _mk(ws)
+    workspace.analyze_scenario(ws, sc.id, snapshot_path=FIX, ts=TS)
+    at = AppTest.from_file(PAGE)
+    at.run()
+    assert not at.exception
+    body = " ".join(m.value for m in at.markdown)
+    assert 'class="oc-thumb"' not in body
+
+    before = at.session_state["ws-selected-key"]
+    row_buttons = [b for b in at.button
+                  if b.key and b.key.startswith("sel-")
+                  and not b.key.startswith("sel-top10-")]
+    assert row_buttons, "到期日分組比較表應至少有一個可點的候選列"
+    other = next((b for b in row_buttons if b.key != f"sel-{before}"),
+                row_buttons[0])
+    other.set_value(True).run(timeout=30)
+    assert not at.exception
+    assert at.session_state["ws-selected-key"] == other.key[len("sel-"):]
+
+
 def test_unanalyzed_scenario_detail_invites_analysis(ws):
     """停用 T7 自動刷新——見 `test_card_without_analysis_shows_a_dash` 的說明。"""
     _mk(ws)

@@ -11,7 +11,6 @@ from __future__ import annotations
 import streamlit as st
 
 from option_chaser.glossary import GLOSSARY
-from option_chaser.matrix import thumbnail_cells
 from option_chaser.report import STRATEGY_LABELS
 
 STRATEGY_COLOR = {
@@ -88,22 +87,6 @@ def heatmap_html(matrix: dict) -> str:
             '<b>粗體</b>價格列為錨點（現價／目標／超標／深跌），其餘為等距內插價。</p>')
 
 
-def _thumb_html(cand: dict) -> str:
-    """4x<=5 colour-block thumbnail, no numbers (spec §4.4). Fixed pixel
-    width (`oc-thumb`, see the global <style> block) so the thumbnail column
-    doesn't reflow/jump between rows on narrow (mobile) viewports — a CSS-only
-    approximation of the mockup's fixed-width thumbnail column."""
-    grid = thumbnail_cells(cand["matrix"]["cells"])
-    rows = []
-    for r in grid:
-        cells = "".join(
-            f'<span style="display:inline-block;width:9px;height:9px;'
-            f'background:{cell_color(v)}"></span>'
-            for v in r)
-        rows.append(f'<div style="line-height:0">{cells}</div>')
-    return f'<div class="oc-thumb">{"".join(rows)}</div>'
-
-
 def _badge_str(row: dict, selected_key: str | None) -> str:
     parts = []
     badges = row["badges"]
@@ -113,6 +96,22 @@ def _badge_str(row: dict, selected_key: str | None) -> str:
         parts.append('<abbr title="全體合格候選中情境最壞報酬最高（最強韌性）">🛡️</abbr>')
     if "warning" in badges:
         parts.append('<abbr title="零成交腿／摩擦超標">⚠</abbr>')
+    if selected_key is not None and row["candidate"]["candidate_key"] == selected_key:
+        parts.append("◀")
+    return "".join(parts)
+
+
+def _badge_str_plain(row: dict, selected_key: str | None) -> str:
+    """同 `_badge_str`，但不含 `<abbr>` HTML——`st.button` 標籤不支援
+    unsafe_allow_html，QA1-05（#32）窄版可點列使用。"""
+    badges = row["badges"]
+    parts = []
+    if "top_return" in badges:
+        parts.append("🚀")
+    if "top_resilience" in badges:
+        parts.append("🛡️")
+    if "warning" in badges:
+        parts.append("⚠")
     if selected_key is not None and row["candidate"]["candidate_key"] == selected_key:
         parts.append("◀")
     return "".join(parts)
@@ -245,10 +244,20 @@ def render_step2(view: dict, key: str | None) -> None:
     st.markdown(heatmap_html(cand["matrix"]), unsafe_allow_html=True)
 
 
-def render_step3(view: dict, key: str | None, state_key: str = "selected_key") -> None:
-    """QA1-05（#32）：「Step 3」的編號已讓給 `render_expiry_top10`（現在
-    緊接 Step 2 主圖之後）——本函式的到期日分組比較表退居次要參考，
-    標題不再帶編號。"""
+def render_expiry_comparison(view: dict, key: str | None,
+                             state_key: str = "selected_key") -> None:
+    """到期日分組比較表（QA1-05／#32：原「Step 3」，編號已讓給
+    `render_expiry_top10`——現在緊接 Step 2 主圖之後——本函式退居次要
+    參考，標題不再帶編號，函式名稱也一併改掉以免與新的 Step 3 混淆）。
+
+    候選卡片改窄版單行可點列（問題陳述明確點名的「每個候選都是一整條寬列，
+    卡片太長」正是本函式——原本的 8 欄 thumbnail＋多指標列＋獨立「選看」鈕
+    拿掉，只留徽章、策略／履約、劇本報酬，仿 `render_expiry_top10` 的
+    TradingView 手機版標的列風格。情境最壞／不漲保留率／成交摩擦不在這張
+    快速比較表顯示：情境最壞與成交摩擦超標已透過 ⚠／🛡️ 徽章標示，數字細節
+    留給選中候選後的 Step 4 進階區（`_render_resilience_expander`／
+    `_render_greeks_expander`），與 T5／需求五「劇本卡片恰五項」的精簡
+    先例一致，不在快速比較列重複鋪陳。"""
     st.subheader("到期日分組比較")
     if not view["expiry_groups"]:
         st.info("目前沒有可比較的候選。")
@@ -260,35 +269,15 @@ def render_step3(view: dict, key: str | None, state_key: str = "selected_key") -
         st.markdown(f"**{esc(header)}**")
         for row in g["rows"]:
             cand = row["candidate"]
-            cols = st.columns([0.6, 2.2, 1.6, 1.1, 1.1, 1.1, 1.1, 0.7])
-            with cols[0]:
-                st.markdown(_badge_str(row, key), unsafe_allow_html=True)
-            with cols[1]:
-                st.markdown(esc(_candidate_title(row["strategy"], cand)),
-                            unsafe_allow_html=True)
-            with cols[2]:
-                st.markdown(_thumb_html(cand), unsafe_allow_html=True)
-            with cols[3]:
-                st.markdown(abbr("劇本報酬")
-                            + f'<br><span class="oc-num">{pct(cand["baseline_return"])}</span>',
-                            unsafe_allow_html=True)
-            with cols[4]:
-                st.markdown(abbr("情境最壞")
-                            + f'<br><span class="oc-num">{pct(cand["scenario_vector"]["worst_return"])}</span>',
-                            unsafe_allow_html=True)
-            with cols[5]:
-                st.markdown(abbr("不漲保留率")
-                            + f'<br><span class="oc-num">{pct(cand["retention"])}</span>',
-                            unsafe_allow_html=True)
-            with cols[6]:
-                fr_mark = " ⚠" if cand["friction"] > 0.25 else ""
-                st.markdown(abbr("成交摩擦")
-                            + f'<br><span class="oc-num">{pct(min(cand["friction"], 9.99))}</span>{fr_mark}',
-                            unsafe_allow_html=True)
-            with cols[7]:
-                if st.button("選看", key=f"sel-{cand['candidate_key']}"):
+            with st.container(border=True):
+                mark = _badge_str_plain(row, key)
+                title = f"{mark} " if mark else ""
+                title += _candidate_title_plain(row["strategy"], cand)
+                if st.button(title, key=f"sel-{cand['candidate_key']}",
+                            use_container_width=True):
                     st.session_state[state_key] = cand["candidate_key"]
                     st.rerun()
+                st.caption(return_md(cand["baseline_return"]))
         if g["hidden_count"] > 0:
             st.caption(f"＋此到期日其他 {g['hidden_count']} 個候選")
     if view["hidden_expiries"]:
@@ -297,7 +286,8 @@ def render_step3(view: dict, key: str | None, state_key: str = "selected_key") -
 
 def render_expiry_top10(view: dict, key: str | None, state_key: str) -> None:
     """QA1-05（#32）：到期日選擇緊接 Step 2 主圖之後——原本壓在冗長的
-    到期日分組比較表（`render_step3`）下方要捲很久才到，現在編號讓給這裡。
+    到期日分組比較表（`render_expiry_comparison`）下方要捲很久才到，
+    現在編號讓給這裡。
     到期日橫向並排（`10/1`／`11/1`……），每個日期選項下方附該期最高收益，
     一眼可橫向比較；候選卡片改窄版單行可點列（TradingView 手機版標的列
     風格：只留排名、策略／履約、劇本報酬），取代原本的 thumbnail＋多欄位
@@ -308,8 +298,8 @@ def render_expiry_top10(view: dict, key: str | None, state_key: str) -> None:
     `state_key`，Step 2 主圖（`render_step2`）隨之顯示它專屬的 Heatmap。
     純 UI 互動，按鈕都不呼叫任何 `workspace`／`service` 函式，因此不觸發
     API（需求七、T10 AC 沿用）。第一層（各期摘要）沿用既有的
-    `render_step3`／`expiry_groups`，本函式不重複那份資料，只負責
-    「深入單期」這一層。
+    `render_expiry_comparison`／`expiry_groups`，本函式不重複那份資料，
+    只負責「深入單期」這一層。
     """
     st.subheader("Step 3　到期日選擇")
     strat = next((r for r in view["results"] if r.get("expiry_top10")), None)
