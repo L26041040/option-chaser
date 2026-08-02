@@ -228,8 +228,8 @@ docs/superpowers/specs/2026-07-20-option-chaser-v4-design.md (v4)
 （粗體列＝關鍵價位：現價／目標／超標／深跌）→ 按到期日分組的比較表
 （⚠＝任一腿今日無成交或 Bid-Ask Spread >25%／◀選中，每列附縮圖與緩衝
 天數；點列即可切換主圖）→ 單期 Top 10
-→ 進階區可摺疊面板（7 情境韌性向量、報酬×韌性散點、Greeks 與流動性、
-Spread 歷史）。主要指標欄位與策略縮寫提供滑鼠懸浮解釋（hover tooltip）。
+→ 進階區可摺疊面板（Option Chaser 分析報告、原始資料、Spread 歷史走勢
+圖）。主要指標欄位與策略縮寫提供滑鼠懸浮解釋（hover tooltip）。
 進階參數一律採用 CLI 預設值；方向不合的策略會被跳過並提示，GUI 不提供
 --force。所有計算皆由與 CLI 相同的引擎完成，GUI 本身不做任何金融公式運算。
 

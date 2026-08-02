@@ -263,10 +263,11 @@ def render_expiry_comparison(view: dict, key: str | None) -> None:
     TradingView 手機版標的列風格；QA1-06（#33）：改為 `st.expander` 就地
     展開 Heatmap，不再是會改寫 Step 2 主圖的「選看」按鈕，見
     `_render_candidate_expander` 說明）。情境最壞／不漲保留率／Bid-Ask
-    Spread 不在這張快速比較表顯示：資料品質異常已透過 ⚠ 徽章標示，數字
-    細節留給 Step 4 進階區（`_render_resilience_expander`／
-    `_render_greeks_expander`），與 T5／需求五「劇本卡片恰五項」的精簡
-    先例一致，不在快速比較列重複鋪陳。
+    Spread 不在這張快速比較表顯示：資料品質異常已透過 ⚠ 徽章標示，與
+    T5／需求五「劇本卡片恰五項」的精簡先例一致，不在快速比較列重複鋪陳
+    （QA1-12／#39：這些數字細節原本留給 Step 4 進階區的
+    `_render_resilience_expander`／`_render_greeks_expander`，該兩區已
+    移入封存區、拔掉與主程式的連結）。
 
     QA1-09（#36）：不再顯示 🚀「最高報酬」／🛡️「最強韌性」徽章與圖例
     ——需求方判定為會誤導判斷的評語式標記，一併從圖例拿掉。
@@ -573,13 +574,11 @@ def render_spread_history(history: list[dict]) -> None:
 
 def render_step4(view: dict, key: str | None,
                  history: list[dict] | None = None) -> None:
+    """QA1-12（#39）：進階區只留分析報告＋原始資料（#37）與 Spread 歷史
+    走勢圖（#38）；「韌性與壓力情境」「報酬×韌性散點」「Greeks 與流動性」
+    移入封存區，拔掉與主程式的連結。三個渲染函式本身保留（本票裁示：
+    程式碼保留與否屬工程判斷），只是不再從這裡呼叫。"""
     st.subheader("Step 4　進階區")
-    with st.expander("韌性與壓力情境", expanded=False):
-        _render_resilience_expander(view, key)
-    with st.expander("報酬×韌性散點", expanded=False):
-        _render_scatter_expander(view)
-    with st.expander("Greeks 與流動性", expanded=False):
-        _render_greeks_expander(view, key)
     with st.expander("📄 Option Chaser 分析報告", expanded=False):
         _render_report_expander(view, key)
     with st.expander("原始資料（當次快照）", expanded=False):

@@ -426,7 +426,9 @@ def test_detail_page_has_no_evaluative_commentary_or_invented_terms(ws):
 
 def test_report_section_is_labelled_and_no_longer_buried_in_greeks(ws):
     """QA1-10（#37）：純文字報告獨立成明確標示的「Option Chaser 分析報告」
-    展開區，不再埋在「Greeks 與流動性」展開區最底部、沒有標題。"""
+    展開區，不再埋在「Greeks 與流動性」展開區最底部、沒有標題（該展開區
+    本身已隨 QA1-12／#39 從主程式拔掉，見
+    `test_advanced_area_only_shows_report_raw_data_and_spread_history`）。"""
     sc = _mk(ws)
     workspace.analyze_scenario(ws, sc.id, snapshot_path=FIX, ts=TS)
     at = AppTest.from_file(PAGE)
@@ -437,9 +439,23 @@ def test_report_section_is_labelled_and_no_longer_buried_in_greeks(ws):
     report_expander = next(e for e in at.expander
                            if "Option Chaser 分析報告" in e.label)
     assert any("OPTION CHASER" in c.value.upper() for c in report_expander.code)
-    greeks_expander = next(e for e in at.expander if "Greeks 與流動性" in e.label)
-    assert not any("OPTION CHASER" in c.value.upper()
-                  for c in greeks_expander.code)
+
+
+def test_advanced_area_only_shows_report_raw_data_and_spread_history(ws):
+    """QA1-12（#39）：進階區「韌性與壓力情境」「報酬×韌性散點」
+    「Greeks 與流動性」拔掉與主程式的連結、不再顯示；只留 #37 的分析
+    報告＋原始資料，與 #38 重做後的 Spread 歷史走勢圖。程式碼本身是否
+    保留屬工程判斷（本票裁示），這裡只驗證主畫面不再顯示這三個展開區。"""
+    sc = _mk(ws)
+    workspace.analyze_scenario(ws, sc.id, snapshot_path=FIX, ts=TS)
+    at = AppTest.from_file(PAGE)
+    at.run()
+    assert not at.exception
+    labels = [e.label for e in at.expander]
+    for archived in ("韌性與壓力情境", "報酬×韌性散點", "Greeks 與流動性"):
+        assert archived not in labels, f"{archived!r} 應已從主程式拔掉"
+    for kept in ("📄 Option Chaser 分析報告", "原始資料（當次快照）", "Spread 歷史"):
+        assert kept in labels, f"{kept!r} 應仍留在進階區"
 
 
 def test_raw_snapshot_data_is_viewable_and_downloadable(ws):
