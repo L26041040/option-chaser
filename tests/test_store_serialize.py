@@ -36,6 +36,9 @@ def test_top_level_fields_and_versions():
     assert view["today"] == _result().today.isoformat()
     assert view["meta"]["target_move"] == _result().meta.target_move
     assert isinstance(view["default_selection"], list)
+    # T10（#24）：baseline 期本身＋其第 1 名，與既有 default_selection 並存。
+    assert view["baseline_expiry"] == _result().baseline_expiry
+    assert isinstance(view["baseline_selection"], list)
     json.dumps(view)   # 全結構可 JSON 化
 
 

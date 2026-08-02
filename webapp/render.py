@@ -167,10 +167,23 @@ def all_rows(view: dict) -> list[dict]:
     return [row for g in view["expiry_groups"] for row in g["rows"]]
 
 
+def _expiry_top10_rows(view: dict) -> list[dict]:
+    """T10（#24）：把 `expiry_top10`（T9 新增，各期自己的前十名）攤平成
+    跟 `all_rows()` 一樣的 {strategy, candidate} 形狀，供 `find_row()` 共用
+    ——第二層 Top10 清單選中的 Spread（不只是各期第 1 名）也要能被
+    `render_step2`（Step 2 主圖）找到、畫出它專屬的 Heatmap。"""
+    return [{"strategy": r["strategy"], "candidate": cand}
+            for r in view["results"] for g in r.get("expiry_top10", [])
+            for cand in g["candidates"]]
+
+
 def find_row(view: dict, key: str | None) -> dict | None:
     if key is None:
         return None
     for row in all_rows(view):
+        if row["candidate"]["candidate_key"] == key:
+            return row
+    for row in _expiry_top10_rows(view):
         if row["candidate"]["candidate_key"] == key:
             return row
     return None
@@ -178,6 +191,14 @@ def find_row(view: dict, key: str | None) -> dict | None:
 
 def default_key(view: dict) -> str | None:
     return view["default_selection"][1] if view["default_selection"] else None
+
+
+def baseline_key(view: dict) -> str | None:
+    """T10（附錄A8.5）：詳細頁進頁預設選中——baseline 期自己的第 1 名。
+    與 `default_key()`（v4 舊有、app.py 快速分析頁仍在用的全域最高報酬
+    避警示語意）刻意分開，見 `service.AnalysisResult` 的欄位註解。"""
+    sel = view.get("baseline_selection")
+    return sel[1] if sel else None
 
 
 def _buffer_note(buffer_days: int) -> str:
@@ -265,6 +286,53 @@ def render_step3(view: dict, key: str | None, state_key: str = "selected_key") -
             st.caption(f"＋此到期日其他 {g['hidden_count']} 個候選")
     if view["hidden_expiries"]:
         st.caption(f"另有 {len(view['hidden_expiries'])} 個到期日未展示。")
+
+
+def render_expiry_top10(view: dict, key: str | None, state_key: str) -> None:
+    """T10（#24）第二層：單期 Top 10。預設顯示 baseline 期，點其他到期日
+    切換；點任一入榜 Spread 更新 `state_key`，Step 2 主圖（`render_step2`）
+    隨之顯示它專屬的 Heatmap。純 UI 互動，`st.radio`／按鈕都不呼叫任何
+    `workspace`／`service` 函式，因此不觸發 API（需求七、本票 AC）。
+
+    第一層（各期摘要）沿用既有的 `render_step3`／`expiry_groups`，本函式
+    不重複那份資料，只負責「深入單期」這一層。
+    """
+    st.subheader("到期日 Top 10")
+    strat = next((r for r in view["results"] if r.get("expiry_top10")), None)
+    if strat is None or not strat["expiry_top10"]:
+        st.info("目前沒有可顯示的到期日排名。")
+        return
+
+    groups = strat["expiry_top10"]
+    expiries = [g["expiry"] for g in groups]
+    viewing_key = f"{state_key}-viewing-expiry"
+    if st.session_state.get(viewing_key) not in expiries:
+        baseline = view.get("baseline_expiry")
+        st.session_state[viewing_key] = baseline if baseline in expiries \
+            else expiries[0]
+    viewing = st.radio("切換到期日", expiries, key=viewing_key,
+                       horizontal=True)
+
+    group = next(g for g in groups if g["expiry"] == viewing)
+    for i, cand in enumerate(group["candidates"], start=1):
+        cols = st.columns([0.5, 2.4, 1.6, 1.1, 0.7])
+        with cols[0]:
+            mark = "◀" if cand["candidate_key"] == key else ""
+            st.markdown(f"**#{i}** {mark}")
+        with cols[1]:
+            st.markdown(esc(_candidate_title(strat["strategy"], cand)),
+                        unsafe_allow_html=True)
+        with cols[2]:
+            st.markdown(_thumb_html(cand), unsafe_allow_html=True)
+        with cols[3]:
+            st.markdown(abbr("劇本報酬")
+                        + f'<br><span class="oc-num">{pct(cand["baseline_return"])}</span>',
+                        unsafe_allow_html=True)
+        with cols[4]:
+            btn_key = f"sel-top10-{group['expiry']}-{cand['candidate_key']}"
+            if st.button("選看", key=btn_key):
+                st.session_state[state_key] = cand["candidate_key"]
+                st.rerun()
 
 
 def _render_resilience_expander(view: dict, key: str | None) -> None:

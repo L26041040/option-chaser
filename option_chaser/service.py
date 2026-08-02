@@ -151,6 +151,13 @@ class AnalysisResult:
     expiry_groups: tuple[ExpiryGroup, ...]
     hidden_expiries: tuple[str, ...]
     default_selection: tuple[str, str] | None
+    # T10（#24，附錄A8.5）：baseline＝距日曆錨點最近的實際到期日（六點規則，
+    # `timeframe.select_expiries`）；None 僅見於鏈上零到期日（附錄A12.2）。
+    baseline_expiry: str | None
+    # 詳細頁進頁預設選中：baseline 期自己的第 1 名（不是 `default_selection`
+    # 的全域最高報酬避警示邏輯——那是 v4 舊有、與 app.py 快速分析頁共用的
+    # 語意，T10 不動它）。baseline 期若沒有任何候選（如零合格候選）→ None。
+    baseline_selection: tuple[str, str] | None
 
 
 def _emit(progress: Progress | None, msg: str) -> None:
@@ -368,6 +375,24 @@ def _build_groups(results: tuple[StrategyResult, ...],
     return expiry_groups, (), default_selection
 
 
+def _baseline_selection(expiry_groups: tuple[ExpiryGroup, ...],
+                        baseline_expiry: str | None
+                        ) -> tuple[str, str] | None:
+    """T10（#24，附錄A8.5）：詳細頁預設選中＝baseline 期自己的第 1 名。
+
+    `_make_rows()` 已把每組 `rows` 依 baseline_return 由高到低排過序，
+    第 0 個就是該期第 1 名——不必另建排序或另跑一次全域比較（那是
+    `default_selection` 的既有語意，與此處刻意不同，見 AnalysisResult
+    欄位註解）。baseline 期若不在 `expiry_groups`（如零合格候選、或鏈上
+    零到期日）→ None，UI 端自行處理「無可選」的顯示。
+    """
+    group = next((g for g in expiry_groups if g.expiry == baseline_expiry),
+                None)
+    if group is None or not group.rows:
+        return None
+    return (baseline_expiry, candidate_key(group.rows[0].candidate))
+
+
 def _single_leg_result(p: AnalysisParams, snap: ChainSnapshot,
                        today: date) -> StrategyResult:
     qualified, freport = apply_filters(snap.contracts, p)
@@ -513,8 +538,11 @@ def _validate_request(request: AnalysisRequest) -> None:
 
 
 def _scoped_to_selected_expiries(snap: ChainSnapshot, anchor: date,
-                                 today: date) -> ChainSnapshot:
+                                 today: date
+                                 ) -> tuple[ChainSnapshot, str | None]:
     """把快照收斂到六點規則選中的至多五檔到期日——窮舉只發生在這個範圍內。
+    同時交回 baseline（T10／附錄A8.5：詳細頁預設選中的到期日），供
+    `_analyze` 往下傳遞到 `AnalysisResult`——不在這裡之外重算一次。
 
     候選到期日必須晚於資料日：已到期／當日到期的合約 T <= 0，Greeks 無定義，
     根本不是可分析的標的。這是資料有效性前提，與「到期日 >= 目標日」那條被移除
@@ -524,16 +552,18 @@ def _scoped_to_selected_expiries(snap: ChainSnapshot, anchor: date,
     失敗——比照零合格候選（A10.2）處理，回傳零合約快照，讓下游每個策略走
     既有的空結果分支（綠燈＋「—」）。`select_expiries` 這個純函式本身在被
     直接餵入空清單時仍然拋錯，這裡只是不讓服務層把「沒有到期日可選」誤讀成
-    產品異常。
+    產品異常；此時 baseline 也無從定義，回傳 None。
     """
     tradable = {c.expiry for c in snap.contracts
                 if date.fromisoformat(c.expiry) > today}
     if not tradable:
-        return dataclasses.replace(snap, contracts=())
-    selected = set(select_expiries(tradable, anchor).expiries)
-    return dataclasses.replace(
+        return dataclasses.replace(snap, contracts=()), None
+    selection = select_expiries(tradable, anchor)
+    selected = set(selection.expiries)
+    scoped = dataclasses.replace(
         snap, contracts=tuple(c for c in snap.contracts
                               if c.expiry in selected))
+    return scoped, selection.baseline
 
 
 def _resolve_rates(p: AnalysisParams, snap: ChainSnapshot, today: date,
@@ -568,7 +598,7 @@ def _analyze(request: AnalysisRequest, snap: ChainSnapshot,
     month = ensure_month_open(TargetMonth.from_key(base.target_month), today)
     anchor = calendar_anchor(month)
     _emit(progress, "正在依日曆錨點選取到期日……")
-    snap = _scoped_to_selected_expiries(snap, anchor, today)
+    snap, baseline_expiry = _scoped_to_selected_expiries(snap, anchor, today)
     _emit(progress, "正在解析無風險利率……")
     base = _resolve_rates(base, snap, today, rate_curve_loader)
     # 解出的利率是估值輸入的一部分：回寫 request，讓結果持久化與呼叫端可見。
@@ -603,6 +633,7 @@ def _analyze(request: AnalysisRequest, snap: ChainSnapshot,
                    ).strategy
     expiry_groups, hidden_expiries, default_selection = _build_groups(
         tuple(results), request.strategies, anchor)
+    baseline_selection = _baseline_selection(expiry_groups, baseline_expiry)
     return AnalysisResult(
         request=request,
         meta=SnapshotMeta(symbol=snap.symbol, spot=snap.spot,
@@ -612,7 +643,8 @@ def _analyze(request: AnalysisRequest, snap: ChainSnapshot,
         snapshot=snap, today=today, results=tuple(results),
         comparison=comparison, best_strategy=best,
         expiry_groups=expiry_groups, hidden_expiries=hidden_expiries,
-        default_selection=default_selection)
+        default_selection=default_selection, baseline_expiry=baseline_expiry,
+        baseline_selection=baseline_selection)
 
 
 def fetch_and_save(symbol: str) -> tuple[ChainSnapshot, str]:

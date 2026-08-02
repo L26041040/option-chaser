@@ -43,7 +43,7 @@ def test_single_leg_result_matches_engine_and_report():
     p = dataclasses.replace(r.request.base_params, strategy="long-call")
     snap = load_snapshot(FIX)
     today = snapshot_today(snap.fetched_at)
-    snap = service._scoped_to_selected_expiries(snap, p.anchor, today)
+    snap, _ = service._scoped_to_selected_expiries(snap, p.anchor, today)
     qualified, freport = apply_filters(snap.contracts, p)
     assert res.n_qualified == len(qualified)
     vals = [evaluate_contract(c, snap.spot, today, p) for c in qualified]
@@ -123,11 +123,12 @@ def test_zero_tradable_expiries_is_empty_result_not_error():
 
 def test_scoped_to_selected_expiries_returns_empty_snapshot_when_none_tradable():
     """`_scoped_to_selected_expiries` 本身（非透過 `_analyze`）也不拋錯：
-    回傳零合約快照，讓下游各策略走既有的空結果分支。"""
-    out = service._scoped_to_selected_expiries(_empty_snapshot(),
-                                               date(2026, 8, 21),
-                                               date(2026, 7, 15))
-    assert out.contracts == ()
+    回傳零合約快照＋無 baseline，讓下游各策略走既有的空結果分支。"""
+    snap, baseline = service._scoped_to_selected_expiries(_empty_snapshot(),
+                                                          date(2026, 8, 21),
+                                                          date(2026, 7, 15))
+    assert snap.contracts == ()
+    assert baseline is None
 
 
 def test_enumeration_limited_to_selected_expiries():

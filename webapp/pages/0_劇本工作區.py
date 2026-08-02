@@ -1,6 +1,9 @@
 # webapp/pages/0_劇本工作區.py
 """v5 spec §5 ＋ T5（#19）: 桌面 20/80 兩欄工作區。＋ T7（#21）: 自動／手動刷新。
 ＋ T8（#22）: 左側清單依 `workspace.sort_cards()` 依最新收益率重排。
+＋ T10（#24）: 詳細頁兩層結構——第一層沿用既有 `render_step3`（各期第 1
+名＋Heatmap 縮圖），第二層新增 `render_expiry_top10`（單期 Top 10，預設
+baseline 期，見附錄A8.5）。切換到期日／點選候選皆純 UI 互動，不觸發 API。
 
 左 20%：劇本卡片清單（每張卡恰五項＋一個燈號位置）與清單編輯工具；
 右 80%：設定、建立表單、被選中劇本的詳細頁。
@@ -34,9 +37,9 @@ import streamlit as st
 from option_chaser import store, workspace
 from option_chaser.models import FetchError, ParamError
 from option_chaser.timeframe import parse_target_month
-from webapp.render import (default_key, esc, find_row, money, pct, return_md,
-                           render_step2, render_step3, render_step4,
-                           render_summary)
+from webapp.render import (baseline_key, esc, find_row, money, pct,
+                           render_expiry_top10, return_md, render_step2,
+                           render_step3, render_step4, render_summary)
 
 WS_ROOT = Path(os.environ.get("OC_WORKSPACE", "workspace"))
 STATUS_BADGE = {"Active": "🟢 Active", "Reached": "🏁 Reached",
@@ -220,13 +223,16 @@ def _render_detail(sc) -> None:
     render_summary(view)
     key = st.session_state.get("ws-selected-key")
     if find_row(view, key) is None:
-        key = default_key(view)
+        # T10（附錄A8.5）：詳細頁預設選中 baseline 期第 1 名，不是 app.py
+        # 快速分析頁沿用的全域最高報酬語意（`default_key`，見 render.py 註解）。
+        key = baseline_key(view)
         st.session_state["ws-selected-key"] = key
     row = find_row(view, key)
     if row is not None and row["candidate"]["pct_of_capital"] is not None:
         st.caption(f"佔本金 {pct(row['candidate']['pct_of_capital'])}")
     render_step2(view, key)
     render_step3(view, key, state_key="ws-selected-key")
+    render_expiry_top10(view, key, state_key="ws-selected-key")
     render_step4(view, key)
 
 
