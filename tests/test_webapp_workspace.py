@@ -408,6 +408,22 @@ def test_comparison_table_has_no_thumbnails_and_expands_in_place(ws):
     assert at.session_state["ws-selected-key"] == before
 
 
+def test_detail_page_has_no_evaluative_commentary_or_invented_terms(ws):
+    """QA1-09（#36）：人工評語（收斂完全／收斂不完全／中庸帶）、🚀最高報酬／
+    🛡️最強韌性徽章與圖例、以及自創名詞「成交摩擦」皆已移除；後者改用
+    專有名詞 Bid-Ask Spread（計算口徑不變，只是不再自創中文名詞）。"""
+    sc = _mk(ws)
+    workspace.analyze_scenario(ws, sc.id, snapshot_path=FIX, ts=TS)
+    at = AppTest.from_file(PAGE)
+    at.run()
+    assert not at.exception
+    body = " ".join(m.value for m in at.markdown)
+    for phrase in ("收斂完全", "收斂不完全", "中庸帶", "最高報酬", "最強韌性",
+                  "🚀", "🛡️", "成交摩擦"):
+        assert phrase not in body, f"{phrase!r} 不該再出現於詳細頁"
+    assert "Bid-Ask Spread" in body
+
+
 def test_unanalyzed_scenario_detail_invites_analysis(ws):
     """停用 T7 自動刷新——見 `test_card_without_analysis_shows_a_dash` 的說明。"""
     _mk(ws)

@@ -17,7 +17,7 @@ def test_resilience_section_present_and_formatted():
         text = res.report_text
         for needle in ["韌性向量（7 情境，Mid 口徑）:", "- S1 不漲: ",
                        "◀ 情境最壞", "劇本完成度: ", "保本門檻: ",
-                       "不漲保留率: ", "成交摩擦: "]:
+                       "不漲保留率: ", "Bid-Ask Spread: "]:
             assert needle in text, (res.strategy, needle)
         assert "/股）" in text, "friction absolute amount must be shown (spec §2.3)"
         # T12（附錄 A14.2）：主數字改最差口徑後，原「Natural 成交報酬」列

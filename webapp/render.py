@@ -90,13 +90,16 @@ def heatmap_html(matrix: dict) -> str:
 def _badge_str(row: dict, selected_key: str | None) -> str:
     """QA1-05（#32）：候選卡片全面改窄版可點列後，`st.button` 標籤不支援
     unsafe_allow_html，原本與此函式並存的 `<abbr>` HTML 版本已無呼叫端，
-    直接刪除（不是留著沒用）。"""
+    直接刪除（不是留著沒用）。
+
+    QA1-09（#36）：不再顯示 🚀「最高報酬」／🛡️「最強韌性」——這兩個徽章
+    在需求方眼中是會誤導判斷的評語式標記，已下令刪除。`row["badges"]`
+    後端仍可能含 `top_return`／`top_resilience`（`service._build_groups()`
+    計算，本票不動），這裡只是不再讀取、不再顯示這兩種；⚠ 警示（資料
+    品質旗標，非評語）維持。
+    """
     badges = row["badges"]
     parts = []
-    if "top_return" in badges:
-        parts.append("🚀")
-    if "top_resilience" in badges:
-        parts.append("🛡️")
     if "warning" in badges:
         parts.append("⚠")
     if selected_key is not None and row["candidate"]["candidate_key"] == selected_key:
@@ -191,15 +194,6 @@ def baseline_key(view: dict) -> str | None:
     return sel[1] if sel else None
 
 
-def _buffer_note(buffer_days: int) -> str:
-    """Display-tier copy only (spec §4.4), not a financial computation."""
-    if buffer_days < 45:
-        return "收斂完全、容錯最低"
-    if buffer_days <= 180:
-        return "中庸帶"
-    return "收斂不完全、容錯最高"
-
-
 def render_summary(view: dict) -> None:
     """Step 1 chips (spec §4.1): summary line + any per-strategy skip/empty
     notices. The edit form itself is rendered separately by the main script
@@ -264,11 +258,14 @@ def render_expiry_comparison(view: dict, key: str | None) -> None:
     拿掉，只留徽章、策略／履約、劇本報酬一行，仿 `render_expiry_top10` 的
     TradingView 手機版標的列風格；QA1-06（#33）：改為 `st.expander` 就地
     展開 Heatmap，不再是會改寫 Step 2 主圖的「選看」按鈕，見
-    `_render_candidate_expander` 說明）。情境最壞／不漲保留率／成交摩擦
-    不在這張快速比較表顯示：情境最壞與成交摩擦超標已透過 ⚠／🛡️ 徽章標示，
-    數字細節留給 Step 4 進階區（`_render_resilience_expander`／
+    `_render_candidate_expander` 說明）。情境最壞／不漲保留率／Bid-Ask
+    Spread 不在這張快速比較表顯示：資料品質異常已透過 ⚠ 徽章標示，數字
+    細節留給 Step 4 進階區（`_render_resilience_expander`／
     `_render_greeks_expander`），與 T5／需求五「劇本卡片恰五項」的精簡
     先例一致，不在快速比較列重複鋪陳。
+
+    QA1-09（#36）：不再顯示 🚀「最高報酬」／🛡️「最強韌性」徽章與圖例
+    ——需求方判定為會誤導判斷的評語式標記，一併從圖例拿掉。
 
     `key` 僅用於標示「目前 Step 2 主圖顯示的是哪一個」（◀ 徽章），本函式
     不再有寫入任何選中狀態的機制（不需要 `state_key` 參數）。"""
@@ -276,11 +273,11 @@ def render_expiry_comparison(view: dict, key: str | None) -> None:
     if not view["expiry_groups"]:
         st.info("目前沒有可比較的候選。")
         return
-    st.markdown('<p style="font-size:12px;color:#666">🚀 最高報酬｜🛡️ 最強韌性｜'
-                '⚠ 警示（零成交腿／摩擦超標）｜◀ Step 2 主圖顯示中</p>',
+    st.markdown('<p style="font-size:12px;color:#666">⚠ 警示（零成交腿／'
+                'Bid-Ask Spread 超標）｜◀ Step 2 主圖顯示中</p>',
                 unsafe_allow_html=True)
     for g in view["expiry_groups"]:
-        header = f"{g['expiry']} 到期（緩衝 +{g['buffer_days']} 天）— {_buffer_note(g['buffer_days'])}"
+        header = f"{g['expiry']} 到期（緩衝 +{g['buffer_days']} 天）"
         st.markdown(f"**{esc(header)}**")
         for row in g["rows"]:
             cand = row["candidate"]
@@ -409,7 +406,7 @@ def _pareto_frontier(points: list[tuple[float, float]]) -> list[tuple[float, flo
     return frontier
 
 
-def _scatter_svg(all_pairs, badge_of) -> str:
+def _scatter_svg(all_pairs) -> str:
     W, H, PAD = 600, 360, 44
     points = [(cand["scenario_vector"]["worst_return"], cand["baseline_return"], s, cand)
               for s, cand in all_pairs]
@@ -450,34 +447,24 @@ def _scatter_svg(all_pairs, badge_of) -> str:
         color = STRATEGY_COLOR.get(s, "#888888")
         opacity = 0.35 if dominated else 0.9
         r = radius(cand["mid_cost"])
-        mark = badge_of(cand["candidate_key"])
         svg.append(f'<circle cx="{px(x):.1f}" cy="{py(y):.1f}" r="{r:.1f}" '
                     f'fill="{color}" fill-opacity="{opacity}" stroke="#333" stroke-width="0.5">'
                     f'<title>{STRATEGY_LABELS[s]} {pct(x)}/{pct(y)}</title></circle>')
-        if mark:
-            svg.append(f'<text x="{px(x):.1f}" y="{py(y) - 7:.1f}" '
-                       f'text-anchor="middle">{mark}</text>')
     svg.append("</svg>")
     return "".join(svg)
 
 
 def _render_scatter_expander(view: dict) -> None:
+    """QA1-09（#36）：散點原本會疊 🚀「最高報酬」／🛡️「最強韌性」文字標記
+    （由 `top_return`／`top_resilience` 徽章驅動），需求方判定為評語式
+    標記一併刪除；`_scatter_svg` 因此不再需要 `badge_of` 回呼參數。"""
     all_pairs = [(r["strategy"], cand) for r in view["results"] if r["status"] == "ok"
                  for cand in r["expiry_best"]]
     if not all_pairs:
         st.info("目前沒有可比較的候選。")
         return
-    badge_map: dict[str, str] = {}
-    for row in all_rows(view):
-        marks = ""
-        if "top_return" in row["badges"]:
-            marks += "🚀"
-        if "top_resilience" in row["badges"]:
-            marks += "🛡️"
-        if marks:
-            badge_map[row["candidate"]["candidate_key"]] = marks
     st.markdown('<div style="overflow-x:auto">' +
-                _scatter_svg(all_pairs, lambda k: badge_map.get(k, "")) +
+                _scatter_svg(all_pairs) +
                 "</div>", unsafe_allow_html=True)
     legend = "｜".join(f'<span style="color:{c}">●</span> {STRATEGY_LABELS[s]}'
                        for s, c in STRATEGY_COLOR.items())
@@ -504,7 +491,7 @@ def _render_greeks_expander(view: dict, key: str | None) -> None:
         lines.append(f"賣腿 OI/Volume：{legs[1]['open_interest']}/{legs[1]['volume']}")
     else:
         lines.append(f"OI/Volume：{legs[0]['open_interest']}/{legs[0]['volume']}")
-    lines.append(f"**{abbr('成交摩擦')}**："
+    lines.append(f"**{abbr('Bid-Ask Spread')}**："
                  f"{pct(min(cand['friction'], 9.99))}（${cand['friction_amount']:.2f}/股）")
     lines.append(f"**30天純時間衰減**：{pct(cand['decay_30d_return'])}"
                  "（S=現價、IV 不變、今日+30天估值）")

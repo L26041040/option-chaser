@@ -75,7 +75,7 @@ def test_retention_matches_report_text():
 def test_friction_matches_report_text():
     for res in _ok_results():
         for cv in res.candidates:
-            expect = (f"成交摩擦: {_pct(min(cv.friction, 9.99))}"
+            expect = (f"Bid-Ask Spread: {_pct(min(cv.friction, 9.99))}"
                       f"（${_money(cv.friction_amount)}/股）")
             assert expect in res.report_text, (
                 f"{res.strategy}: {expect!r} missing from report_text")

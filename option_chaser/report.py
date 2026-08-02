@@ -116,7 +116,7 @@ def _resilience_lines(val, spot: float, today: date, p: AnalysisParams) -> list[
     mid = val.net_mid if isinstance(val, SpreadValuation) else val.mid
     friction_amount = natural_cost(val) - mid
     lines.append(f"保本門檻: {thr} | 不漲保留率: {_pct(retention)}"
-                 f" | 成交摩擦: {_pct(min(friction(val), 9.99))}"
+                 f" | Bid-Ask Spread: {_pct(min(friction(val), 9.99))}"
                  f"（${_money(friction_amount)}/股）")
     return lines
 

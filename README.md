@@ -108,9 +108,8 @@ Opening the app lands directly on the scenario workspace (single main
 screen, no separate quick-analysis entry and no help page) — see "多劇本
 工作區" below for the persistent workspace, and its detail view for the
 per-scenario flow: a single main heatmap (bold rows = the 4 anchor prices)
--> a comparison table grouped by expiry (🚀 top return / 🛡️ top resilience /
-⚠ = a leg with zero volume today or entry friction above 25% / ◀ selected;
-each row carries a thumbnail, buffer days, and a buffer-tradeoff note;
+-> a comparison table grouped by expiry (⚠ = a leg with zero volume today or
+bid-ask spread above 25% / ◀ selected; each row carries buffer days;
 clicking a row swaps the main heatmap) -> a per-expiry Top 10 list -> an
 advanced section with collapsible panels (7-scenario resilience vector,
 return×resilience scatter, Greeks & liquidity, Spread history). Key metric
@@ -177,7 +176,7 @@ docs/superpowers/specs/2026-07-20-option-chaser-v4-design.md (v4)
   另外會列出「劇本完成度」曲線（完成 0/25/50/75/100% 對應的報酬率）、
   「保本門檻」（後綴條件：一旦完成度達到門檻，之後任何更高完成度也不會
   虧）、「不漲保留率」（股價完全不動時剩餘價值佔進場成本的比例），以及
-  「成交摩擦」（百分比之外同時換算列出絕對金額）。
+  「Bid-Ask Spread」（百分比之外同時換算列出絕對金額）。
 - P/L 矩陣：列 = 股價（11 列，其中 4 個錨點價格粗體標記：現價／目標／
   超標(目標±10%)／深跌(現價∓10%)，其餘為等距內插價）、欄 = 日期
   （末欄為該合約自身的到期日 payoff）、格值 = 以 Mid 進場的報酬率%。
@@ -227,8 +226,8 @@ docs/superpowers/specs/2026-07-20-option-chaser-v4-design.md (v4)
 開啟網站直接落地劇本工作區（單一主畫面，不存在另一個快速分析入口，也
 沒有「說明」頁）——見下方「多劇本工作區」。詳細頁流程：單一主 heatmap
 （粗體列＝關鍵價位：現價／目標／超標／深跌）→ 按到期日分組的比較表
-（🚀最高報酬／🛡️最強韌性／⚠＝任一腿今日無成交或成交摩擦>25%／◀選中，
-每列附縮圖、緩衝天數與緩衝取捨註記；點列即可切換主圖）→ 單期 Top 10
+（⚠＝任一腿今日無成交或 Bid-Ask Spread >25%／◀選中，每列附縮圖與緩衝
+天數；點列即可切換主圖）→ 單期 Top 10
 → 進階區可摺疊面板（7 情境韌性向量、報酬×韌性散點、Greeks 與流動性、
 Spread 歷史）。主要指標欄位與策略縮寫提供滑鼠懸浮解釋（hover tooltip）。
 進階參數一律採用 CLI 預設值；方向不合的策略會被跳過並提示，GUI 不提供
