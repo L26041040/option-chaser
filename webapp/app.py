@@ -21,6 +21,13 @@ QA1-02（#29）：`st.columns([0.2, 0.8])` 在窄螢幕會自然堆疊、清單�
 程式碼即涵蓋兩種螢幕寬度下的行為，不需要應用層另外判斷視窗寬度。主畫面
 （設定、建立表單、被選中劇本的詳細頁）永遠是唯一主角。
 
+QA1-04（#31）：建立表單三欄全部留白，不預填任何值；目標價位改用純文字
+輸入（`_parse_target_price`）以支援真正的空白，取代原本的
+`st.number_input(value=100.0)`。目標年月除了既有的自由格式文字輸入，
+新增年／月輔助下拉，兩者並存；選好兩個下拉即自動把 `YYYY/M` 填進文字框
+（見 `_sync_month_dropdown_to_text`）——Streamlit 只在 widget 提交時重跑，
+沒有逐鍵盤事件，因此連動僅單向（下拉→文字），無法做到打字時即時反向連動。
+
 群組區自首頁移除（附錄 A8.6）——`store.rebuild_groups`／
 `workspace.analyze_group` 等底層邏輯原封不動，只是不再於此頁曝露。
 GUI 零金融公式：所有數字來自 result dict（store 預算）或 scenario 欄位。
@@ -276,25 +283,69 @@ with st.expander("⚙ 設定", expanded=False):
         store.save_constraints(WS_ROOT, cap_in if cap_in > 0 else None)
         st.rerun()
 
+
+def _parse_target_price(text: str | None) -> float:
+    """目標價位改用純文字輸入以支援真正留白（QA1-04／#31：不留預設值），
+    在此手動解析與驗證，用 ParamError 表達錯誤，與年月解析同一套機制。"""
+    text = (text or "").strip()
+    if not text:
+        raise ParamError("請輸入目標價位。")
+    try:
+        price = float(text)
+    except ValueError:
+        raise ParamError(f"目標價位請輸入數字：{text!r}")
+    if price <= 0:
+        raise ParamError(f"目標價位必須為正數：{text!r}")
+    return price
+
+
+def _sync_month_dropdown_to_text() -> None:
+    """QA1-04（#31）：年／月輔助下拉與文字輸入並存，選好兩個下拉即自動把
+    `YYYY/M` 填進文字框。掛在 `on_change`——只在下拉「改變」的那次重跑觸發，
+    且發生在本次重跑的其餘 widget 尚未建立之前，因此可以安全覆寫文字框的
+    session_state，也不會每次重跑都覆寫使用者手動修改過的文字內容。
+
+    Streamlit 只在 widget 提交（失焦／Enter）時重跑，沒有逐鍵盤事件，因此
+    無法做到「打字時即時反向連動下拉」；本票允許依框架可行性決定連動程度，
+    這是可行範圍內做到的單向（下拉→文字）連動。
+    """
+    y = st.session_state.get("ws-new-year")
+    m = st.session_state.get("ws-new-month-dd")
+    if y is not None and m is not None:
+        st.session_state["ws-new-month"] = f"{y}/{m}"
+
+
 # T4（#18）：只問標的／目標價／目標年月三欄。方向與策略不曝露於 UI，
 # 帶入 MVP 預設（bullish + bull-call-spread）；create 簽章保留全部參數。
+# QA1-04（#31）：三欄全部留白，不預填任何值。
 with st.expander("＋ 建立劇本", expanded=not scenarios):
     st.text_input("標的", key="ws-new-symbol", placeholder="TLT")
-    st.number_input("目標價位", key="ws-new-price", min_value=0.01,
-                    value=100.0, step=1.0)
+    st.text_input("目標價位", key="ws-new-price", placeholder="120.00")
+    year_now = workspace.ny_today().year
+    ycol, mcol = st.columns(2)
+    with ycol:
+        st.selectbox("年（輔助選單）", list(range(year_now, year_now + 11)),
+                     index=None, placeholder="年", key="ws-new-year",
+                     on_change=_sync_month_dropdown_to_text)
+    with mcol:
+        st.selectbox("月（輔助選單）", list(range(1, 13)),
+                     index=None, placeholder="月", key="ws-new-month-dd",
+                     on_change=_sync_month_dropdown_to_text)
     st.text_input("目標年月", key="ws-new-month", placeholder="2028/1")
     if st.button("建立", key="ws-new-create"):
         sym = (st.session_state.get("ws-new-symbol") or "").strip().upper()
         if not sym:
             st.error("請輸入標的代號。")
         else:
-            # 格式錯誤與「已過完的月份」都由 ParamError 表達（後者在 create 裡把關）
+            # 格式錯誤、價位非數字／非正數、與「已過完的月份」都由 ParamError
+            # 表達（後兩者分別在 `_parse_target_price` 與 create 裡把關）
             try:
+                price = _parse_target_price(st.session_state.get("ws-new-price"))
                 month = parse_target_month(
                     st.session_state.get("ws-new-month") or "")
                 created = workspace.create_scenario(
                     WS_ROOT, symbol=sym, direction="bullish",
-                    target_price=float(st.session_state["ws-new-price"]),
+                    target_price=price,
                     target_month=month.key(),
                     notes="",
                     strategies=("bull-call-spread",))

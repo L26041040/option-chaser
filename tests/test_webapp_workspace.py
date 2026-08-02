@@ -69,7 +69,7 @@ def test_create_via_form_appears_in_list(ws):
     at = AppTest.from_file(PAGE)
     at.run()
     at.text_input(key="ws-new-symbol").set_value("XYZ")
-    at.number_input(key="ws-new-price").set_value(120.0)
+    at.text_input(key="ws-new-price").set_value("120")
     at.text_input(key="ws-new-month").set_value("2028/1")   # 四種寫法之一
     at.run()
     next(b for b in at.button
@@ -97,15 +97,60 @@ def test_create_form_exposes_only_three_inputs(ws):
                    for cb in at.checkbox)
 
 
+def test_create_form_fields_start_blank(ws):
+    """QA1-04（#31）：標的／目標價位／目標年月全部留白，不預填任何值
+    （年月輔助下拉同樣不預先選中）。"""
+    at = AppTest.from_file(PAGE)
+    at.run()
+    assert at.text_input(key="ws-new-symbol").value in (None, "")
+    assert at.text_input(key="ws-new-price").value in (None, "")
+    assert at.text_input(key="ws-new-month").value in (None, "")
+    assert at.selectbox(key="ws-new-year").value is None
+    assert at.selectbox(key="ws-new-month-dd").value is None
+
+
+def test_month_dropdown_selection_fills_the_text_input(ws):
+    """QA1-04（#31）：年／月輔助下拉與文字輸入並存；選好兩個下拉即自動把
+    `YYYY/M` 填進文字框（可行範圍內的下拉→文字連動，見
+    `_sync_month_dropdown_to_text` 註解）。"""
+    at = AppTest.from_file(PAGE)
+    at.run()
+    at.selectbox(key="ws-new-year").set_value(2028).run(timeout=30)
+    at.selectbox(key="ws-new-month-dd").set_value(1).run(timeout=30)
+    assert at.text_input(key="ws-new-month").value == "2028/1"
+
+
 def test_create_rejects_unparseable_month(ws):
     at = AppTest.from_file(PAGE)
     at.run()
     at.text_input(key="ws-new-symbol").set_value("XYZ")
+    at.text_input(key="ws-new-price").set_value("120")
     at.text_input(key="ws-new-month").set_value("明年一月")
     at.run()
     next(b for b in at.button
          if b.key == "ws-new-create").set_value(True).run(timeout=30)
     assert any("目標年月" in e.value for e in at.error)
+    assert workspace.list_scenarios(ws) == []
+
+
+def test_create_rejects_blank_or_non_positive_price(ws):
+    """QA1-04（#31）：目標價位改純文字輸入、不留預設值——留白、非數字、
+    非正數皆須擋下，不得像舊版 `st.number_input` 一樣悄悄落回某個預設值。"""
+    at = AppTest.from_file(PAGE)
+    at.run()
+    at.text_input(key="ws-new-symbol").set_value("XYZ")
+    at.text_input(key="ws-new-month").set_value("2028/1")
+    at.run()
+    next(b for b in at.button
+         if b.key == "ws-new-create").set_value(True).run(timeout=30)
+    assert any("目標價位" in e.value for e in at.error)
+    assert workspace.list_scenarios(ws) == []
+
+    at.text_input(key="ws-new-price").set_value("-5")
+    at.run()
+    next(b for b in at.button
+         if b.key == "ws-new-create").set_value(True).run(timeout=30)
+    assert any("目標價位" in e.value for e in at.error)
     assert workspace.list_scenarios(ws) == []
 
 
@@ -450,7 +495,7 @@ def test_create_triggers_immediate_first_analysis(ws):
     at = AppTest.from_file(PAGE)
     at.run()
     at.text_input(key="ws-new-symbol").set_value("XYZ")
-    at.number_input(key="ws-new-price").set_value(120.0)
+    at.text_input(key="ws-new-price").set_value("120")
     at.text_input(key="ws-new-month").set_value("2028/1")
     at.run()
     next(b for b in at.button
