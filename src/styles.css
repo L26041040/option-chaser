@@ -1,0 +1,166 @@
+/**
+ * iOS 風格基礎（V1／#48）——手機優先。
+ *
+ * 這一版只鋪設語彙：系統字體棧、iOS 系統色、安全區內距、卡片與分組列表
+ * 的圓角/間距節奏、深淺色自動切換。後續票的畫面都從這組 token 長出來，
+ * 不各自發明尺寸與顏色。
+ */
+
+:root {
+  /* iOS system font stack */
+  --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto,
+    "Helvetica Neue", "PingFang TC", "Noto Sans TC", sans-serif;
+
+  /* iOS system colours (light) */
+  --bg: #f2f2f7;
+  --bg-elevated: #ffffff;
+  --separator: rgba(60, 60, 67, 0.18);
+  --label: #000000;
+  --label-secondary: rgba(60, 60, 67, 0.6);
+  --label-tertiary: rgba(60, 60, 67, 0.3);
+  --tint: #007aff;
+  --green: #34c759;
+  --red: #ff3b30;
+  --orange: #ff9500;
+
+  --radius: 12px;
+  --gap: 16px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #000000;
+    --bg-elevated: #1c1c1e;
+    --separator: rgba(84, 84, 88, 0.65);
+    --label: #ffffff;
+    --label-secondary: rgba(235, 235, 245, 0.6);
+    --label-tertiary: rgba(235, 235, 245, 0.3);
+    --tint: #0a84ff;
+    --green: #30d158;
+    --red: #ff453a;
+    --orange: #ff9f0a;
+  }
+}
+
+* {
+  box-sizing: border-box;
+  -webkit-tap-highlight-color: transparent;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: var(--font);
+  background: var(--bg);
+  color: var(--label);
+  font-size: 17px; /* iOS body */
+  line-height: 1.45;
+  -webkit-font-smoothing: antialiased;
+}
+
+#root {
+  min-height: 100dvh;
+  padding: env(safe-area-inset-top) env(safe-area-inset-right)
+    env(safe-area-inset-bottom) env(safe-area-inset-left);
+}
+
+.screen {
+  max-width: 640px; /* 手機優先，桌面置中不拉滿 */
+  margin: 0 auto;
+  padding: var(--gap);
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap);
+}
+
+.title {
+  font-size: 34px; /* iOS large title */
+  font-weight: 700;
+  letter-spacing: -0.4px;
+  margin: 8px 0 0;
+}
+
+.card {
+  background: var(--bg-elevated);
+  border-radius: var(--radius);
+  padding: var(--gap);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.row + .row {
+  border-top: 0.5px solid var(--separator);
+  padding-top: 12px;
+}
+
+.row-label {
+  color: var(--label-secondary);
+  font-size: 15px;
+}
+
+.row-value {
+  font-size: 17px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.metric {
+  font-size: 28px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.3px;
+}
+
+.positive {
+  color: var(--green);
+}
+.negative {
+  color: var(--red);
+}
+
+.caption {
+  color: var(--label-secondary);
+  font-size: 13px;
+}
+
+.button {
+  appearance: none;
+  border: 0;
+  border-radius: var(--radius);
+  background: var(--tint);
+  color: #fff;
+  font-family: inherit;
+  font-size: 17px;
+  font-weight: 600;
+  padding: 14px 20px;
+  min-height: 48px; /* 觸控目標 */
+  cursor: pointer;
+}
+
+.button:disabled {
+  opacity: 0.4;
+}
+
+.notice {
+  border-radius: var(--radius);
+  padding: 12px var(--gap);
+  font-size: 15px;
+  background: var(--bg-elevated);
+  border-left: 3px solid var(--orange);
+}
+
+.notice.error {
+  border-left-color: var(--red);
+}

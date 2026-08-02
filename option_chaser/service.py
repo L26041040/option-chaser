@@ -669,20 +669,33 @@ def _analyze(request: AnalysisRequest, snap: ChainSnapshot,
         baseline_selection=baseline_selection)
 
 
-def fetch_and_save(symbol: str) -> tuple[ChainSnapshot, str]:
-    """v5 spec §4: 抓取＋落盤 snapshot（run 與 workspace.analyze_group 共用）。
+def fetch_chain(symbol: str) -> ChainSnapshot:
+    """抓取選擇權鏈，**不落盤**。
 
     FB3-01（#44）：Cboe 延遲報價為主源（盤外凍結收盤 bid/ask 不歸零、
     單一 GET 回全鏈），失敗自動退回 yfinance；快照 `source` 欄位如實
-    記錄實際用了哪個源。lazy import：離線路徑永不碰網路模組。"""
+    記錄實際用了哪個源。lazy import：離線路徑永不碰網路模組。
+
+    V1（#48）：自 `fetch_and_save` 抽出——serverless 檔案系統唯讀，
+    API 層需要「只抓不存」的入口，降級鏈本身則不重複實作。
+
+    serverless 部署刻意不裝 yfinance（帶 pandas/numpy，體積不划算）：
+    `data/yf.py` 模組本身只依賴 stdlib，真正的 `import yfinance` 在它的
+    `fetch_chain` 內部、且已被收斂成 FetchError，因此「備援不存在」在
+    這裡自然表現為 FetchError，不需要額外防護。"""
     from .data import cboe
 
     try:
-        snap = cboe.fetch_chain(symbol)
+        return cboe.fetch_chain(symbol)
     except FetchError:
         from .data import yf
 
-        snap = yf.fetch_chain(symbol)
+        return yf.fetch_chain(symbol)
+
+
+def fetch_and_save(symbol: str) -> tuple[ChainSnapshot, str]:
+    """v5 spec §4: 抓取＋落盤 snapshot（run 與 workspace.analyze_group 共用）。"""
+    snap = fetch_chain(symbol)
     out = Path("snapshots") / f"{snap.symbol}_{snap.fetched_at.replace(':', '')}.json"
     out.parent.mkdir(exist_ok=True)
     save_snapshot(snap, out)
@@ -695,6 +708,26 @@ def run(request: AnalysisRequest, progress: Progress | None = None) -> AnalysisR
     snap, out = fetch_and_save(request.symbol)
     return _analyze(request, snap, out, progress,
                     rate_curve_loader=default_rate_curve_loader)
+
+
+def run_with_snapshot(request: AnalysisRequest, snap: ChainSnapshot,
+                      snapshot_ref: str = "(in-memory)",
+                      progress: Progress | None = None, *,
+                      rate_curve_loader: RateCurveLoader | None = None
+                      ) -> AnalysisResult:
+    """V1（#48）：分析一份**已在記憶體中**的快照，不讀寫檔案系統。
+
+    serverless（Vercel）檔案系統唯讀，API 層既不能落盤也不該從磁碟
+    重載；`snapshot_ref` 只是記在結果 meta 裡的來源標示字串。注意舊
+    Streamlit 版的「原始資料」區塊會拿 `snapshot_ref.path` 去
+    `load_snapshot()`——傳入非路徑字串時該區塊會顯示「檔案已不在」的
+    既有警告（安全降級，不會拋錯）。新前端的原始資料區（V8／#56）
+    改由 API 提供，不再從路徑重讀。
+
+    與 `run_offline` 同樣預設不接利率管線（決定性）。"""
+    _validate_request(request)
+    return _analyze(request, snap, snapshot_ref, progress,
+                    rate_curve_loader=rate_curve_loader)
 
 
 def run_offline(request: AnalysisRequest, snapshot_path: str,

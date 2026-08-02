@@ -13,6 +13,10 @@ option-chaser = "option_chaser.cli:main"
 
 [project.optional-dependencies]
 gui = ["streamlit>=1.30"]
+# 新前端輪（V1／#48）：HTTP API 是後端唯一測試接縫，其契約測試必須跑得起來
+# ——不裝就會被靜默跳過、CI 綠燈失去意義。與 requirements.txt（Vercel 執行期）
+# 保持同步。
+api = ["fastapi>=0.117.1", "httpx"]
 
 [build-system]
 requires = ["setuptools>=68"]

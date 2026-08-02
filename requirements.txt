@@ -1,0 +1,7 @@
+# Vercel Python function 的執行期依賴（V1／#48）。
+#
+# 刻意**不含 yfinance**：它帶 pandas/numpy，塞進 serverless 函式體積
+# 不划算，而主資料源 Cboe adapter 是 stdlib-only。Cboe 不可用時
+# `service.fetch_chain` 會如實回報「兩層都不可用」（502），不會崩。
+# 本機開發／Streamlit 版仍由 pyproject.toml 安裝完整降級鏈。
+fastapi>=0.117.1

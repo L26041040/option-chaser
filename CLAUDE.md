@@ -223,6 +223,14 @@ FB3-01/02 已完成（見下）→**已回報需求方，等需求方 cue `/to-s
 ## 環境
 
 - 跑測試：`PYTHONPATH=. .venv/bin/python -m pytest`
-  （`pyproject.toml` 的 `packages.find` 只收 `option_chaser*`，`webapp` 不在裡面）
-- 建 venv：`uv venv --python 3.11 .venv && uv pip install --python .venv/bin/python -e ".[gui]" pytest`
+  （`pyproject.toml` 的 `packages.find` 只收 `option_chaser*`，`webapp`／
+  `api_app` 不在裡面，靠 PYTHONPATH 匯入）
+- 建 venv：`uv venv --python 3.11 .venv && uv pip install --python .venv/bin/python -e ".[gui,api]" pytest`
+  （**`api` extra 必裝**：HTTP API 是後端唯一測試接縫，缺 fastapi 會讓
+  契約測試整組紅燈——這是刻意的，不要改成靜默跳過）
+- 前端（V1／#48 起）：`npm install`；`npm run typecheck`／`npm test`
+  （Vitest 元件測試）／`npm run e2e`（Playwright，手機 viewport）／
+  `npm run build`。沙箱有預裝 Chromium 時用
+  `PLAYWRIGHT_CHROMIUM_PATH=/opt/pw-browsers/chromium npm run e2e`
+- 部署與契約樣本：見 `docs/deploy-vercel.md`
 - 全套測試現為全綠（舊紀錄提到的 5 個 streamlit 版本漂移失敗已隨 T2 改寫消失）。
