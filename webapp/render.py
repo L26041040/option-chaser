@@ -231,9 +231,12 @@ def render_step2(view: dict, key: str | None) -> None:
     st.markdown(heatmap_html(cand["matrix"]), unsafe_allow_html=True)
 
 
-def _render_candidate_expander(label: str, strategy: str, cand: dict) -> None:
+def _render_candidate_expander(strategy: str, cand: dict, *, mark: str = "",
+                               rank: int | None = None) -> None:
     """QA1-06（#33）共用窄版展開列：收起時只顯示一行摘要（徽章／排名／
-    策略／履約／劇本報酬）；展開才就地顯示該候選專屬的 Heatmap。
+    策略／履約／劇本報酬）；展開才就地顯示該候選專屬的 Heatmap。標籤
+    本身也在這裡組裝（`mark`／`rank` 是呼叫端僅有的兩個差異點），避免
+    `render_expiry_comparison`／`render_expiry_top10` 各自重複組字串。
 
     `st.expander` 展開／收合是純前端互動，不觸發任何重跑，因此不寫入
     `session_state`、不影響 Step 2 主圖——正是本票要的「不跳動頁面位置、
@@ -241,8 +244,10 @@ def _render_candidate_expander(label: str, strategy: str, cand: dict) -> None:
     `st.rerun()`，導致整頁重繪並跳回最上方的 Step 2；使用者在下面比較
     候選時，主圖被迫跟著每次點擊改寫、視角也被拋回上面。`render_step2`
     如今固定顯示 baseline 期的預設候選，只在初次進頁或找不到候選時才會
-    更新，不再跟著這裡的展開互動改變。`render_expiry_comparison`／
-    `render_expiry_top10` 共用同一個形狀。"""
+    更新，不再跟著這裡的展開互動改變。"""
+    parts = [p for p in (mark, f"#{rank}" if rank is not None else "",
+                        _candidate_title_plain(strategy, cand)) if p]
+    label = "🔽 " + "　".join(parts) + f"　{pct(cand['baseline_return'])}"
     with st.expander(label, expanded=False):
         st.markdown(esc(f"**{_candidate_title(strategy, cand)}**"),
                     unsafe_allow_html=True)
@@ -279,11 +284,8 @@ def render_expiry_comparison(view: dict, key: str | None) -> None:
         st.markdown(f"**{esc(header)}**")
         for row in g["rows"]:
             cand = row["candidate"]
-            mark = _badge_str(row, key)
-            label = f"🔽 {mark} " if mark else "🔽 "
-            label += (f"{_candidate_title_plain(row['strategy'], cand)}"
-                      f"　{pct(cand['baseline_return'])}")
-            _render_candidate_expander(label, row["strategy"], cand)
+            _render_candidate_expander(row["strategy"], cand,
+                                       mark=_badge_str(row, key))
         if g["hidden_count"] > 0:
             st.caption(f"＋此到期日其他 {g['hidden_count']} 個候選")
     if view["hidden_expiries"]:
@@ -342,10 +344,8 @@ def render_expiry_top10(view: dict, key: str | None, state_key: str) -> None:
 
     group = next(g for g in groups if g["expiry"] == viewing)
     for i, cand in enumerate(group["candidates"], start=1):
-        mark = "▸ " if cand["candidate_key"] == key else ""
-        label = (f"🔽 {mark}#{i}　{_candidate_title_plain(strat['strategy'], cand)}"
-                f"　{pct(cand['baseline_return'])}")
-        _render_candidate_expander(label, strat["strategy"], cand)
+        mark = "▸" if cand["candidate_key"] == key else ""
+        _render_candidate_expander(strat["strategy"], cand, mark=mark, rank=i)
 
 
 def _render_resilience_expander(view: dict, key: str | None) -> None:
