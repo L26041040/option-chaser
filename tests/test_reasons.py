@@ -4,7 +4,7 @@ from option_chaser.valuation import evaluate_contract
 from option_chaser.ranking import rank, build_reasons
 
 TODAY = date(2026, 7, 15)
-P = AnalysisParams(target_price=120.0, target_date="2026-08-28")
+P = AnalysisParams(target_price=120.0, target_month="2026-08")
 
 
 def make_val(sym, strike, bid, ask, iv, expiry="2026-11-20"):
@@ -91,7 +91,7 @@ def test_guidance_judgments_included_in_cons():
 
 
 def test_conservative_put_gets_no_total_loss_warning():
-    p_put = AnalysisParams(target_price=80.0, target_date="2026-08-28", strategy="long-put")
+    p_put = AnalysisParams(target_price=80.0, target_month="2026-08", strategy="long-put")
     c = OptionContract(contract_symbol="P115", option_type="put", strike=115.0,
                        expiry="2026-11-20", bid=16.6, ask=17.0, last=None,
                        volume=50, open_interest=200, implied_volatility=0.30)

@@ -2,7 +2,7 @@ from datetime import date
 from option_chaser.models import AnalysisParams, OptionContract
 from option_chaser.filters import generate_spread_pairs
 
-P_BCS = AnalysisParams(target_price=120.0, target_date="2026-08-28",
+P_BCS = AnalysisParams(target_price=120.0, target_month="2026-08",
                        strategy="bull-call-spread")
 
 
@@ -34,7 +34,7 @@ def test_sanity_rejects_counted():
 
 
 def test_bear_put_long_is_higher_strike():
-    p = AnalysisParams(target_price=80.0, target_date="2026-08-28",
+    p = AnalysisParams(target_price=80.0, target_month="2026-08",
                        strategy="bear-put-spread")
     legs = [make("L", 100.0, 5.0, 5.2, opt="put"), make("S", 85.0, 1.0, 1.2, opt="put")]
     pairs, rep = generate_spread_pairs(legs, p)

@@ -4,7 +4,7 @@ from option_chaser.valuation import evaluate_contract
 from option_chaser.ranking import classify, rank, baseline_return, BAND_ORDER
 
 TODAY = date(2026, 7, 15)
-P = AnalysisParams(target_price=120.0, target_date="2026-08-28")
+P = AnalysisParams(target_price=120.0, target_month="2026-08")
 
 
 def test_classify_boundaries():
@@ -36,7 +36,7 @@ def test_rank_sorts_by_baseline_return_and_truncates():
         make_val("otm3", 125.0, 0.4, 0.5, 0.30),
         make_val("otm4", 130.0, 0.2, 0.3, 0.30),
     ]
-    p1 = AnalysisParams(target_price=120.0, target_date="2026-08-28", top=3)
+    p1 = AnalysisParams(target_price=120.0, target_month="2026-08", top=3)
     ranked = rank(vals, p1)
     agg = ranked["aggressive"]
     assert len(agg) == 3  # truncated from 4

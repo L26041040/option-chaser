@@ -13,7 +13,7 @@ from option_chaser.valuation import (evaluate_contract, evaluate_spread,
 
 def _p(**kw):
     base = dict(strategy="long-call", target_price=105.0,
-                target_date="2028-01-01", min_return=0.0)
+                target_month="2028-01", min_return=0.0)
     base.update(kw)
     return AnalysisParams(**base)
 
@@ -43,9 +43,9 @@ def test_single_leg_seven_entries_match_engine():
     sv = scenario_vector(v, SPOT, TODAY, p)
     assert [code for code, _ in sv.entries] == [
         "S1", "S2", "S3", "S4", "S5", "S6", "S7"]
-    tgt = date.fromisoformat(p.target_date)
+    tgt = p.anchor
     mid = v.mid
-    # S1: S=spot at target_date, base IV
+    # S1: S=spot at anchor, base IV
     exp_s1 = (scenario_leg_value(c, SPOT, tgt, p) - mid) / mid
     assert dict(sv.entries)["S1"] == pytest.approx(exp_s1)
     # S2/S3: completion 50%/75%
@@ -75,7 +75,7 @@ def test_delay_scenarios_arrive_before_expiry():
     v = evaluate_contract(c, SPOT, TODAY, p)
     sv = scenario_vector(v, SPOT, TODAY, p)
     from datetime import timedelta
-    arrive = date.fromisoformat(p.target_date) + timedelta(days=30)
+    arrive = p.anchor + timedelta(days=30)
     exp = (scenario_leg_value(c, p.target_price, arrive, p) - v.mid) / v.mid
     assert dict(sv.entries)["S4"] == pytest.approx(exp)
 
@@ -88,7 +88,7 @@ def test_delay_scenario_expiry_before_arrive_interpolates():
     v = evaluate_contract(c, SPOT, TODAY, p)
     sv = scenario_vector(v, SPOT, TODAY, p)
     from datetime import timedelta
-    arrive = date.fromisoformat(p.target_date) + timedelta(days=90)
+    arrive = p.anchor + timedelta(days=90)
     frac = (expiry - TODAY).days / (arrive - TODAY).days
     s_at_expiry = SPOT + (p.target_price - SPOT) * frac
     exp = (scenario_leg_value(c, s_at_expiry, expiry, p) - v.mid) / v.mid
@@ -101,7 +101,7 @@ def test_spread_vector_uses_spread_engine_and_natural_cost():
     p = _p(strategy="bull-call-spread")
     sv_val = evaluate_spread(lng, sht, SPOT, TODAY, p)
     sv = scenario_vector(sv_val, SPOT, TODAY, p)
-    tgt = date.fromisoformat(p.target_date)
+    tgt = p.anchor
     exp_s1 = (spread_scenario_value(lng, sht, SPOT, tgt, p) - sv_val.net_mid) / sv_val.net_mid
     assert dict(sv.entries)["S1"] == pytest.approx(exp_s1)
     natural = lng.ask - sht.bid
@@ -124,7 +124,7 @@ def test_bearish_completion_mirrors():
     v = evaluate_contract(put, SPOT, TODAY, p)
     sv = scenario_vector(v, SPOT, TODAY, p)
     s50 = SPOT + 0.5 * (70.0 - SPOT)
-    tgt = date.fromisoformat(p.target_date)
+    tgt = p.anchor
     assert dict(sv.entries)["S2"] == pytest.approx(
         (scenario_leg_value(put, s50, tgt, p) - v.mid) / v.mid)
 
@@ -135,7 +135,7 @@ def test_completion_scan_suffix_condition_long_call():
     v = evaluate_contract(c, SPOT, TODAY, p)
     k, be = completion_scan(v, SPOT, TODAY, p)
     assert k is not None and 0.0 < k <= 1.0
-    tgt = date.fromisoformat(p.target_date)
+    tgt = p.anchor
     # suffix property: every grid j in [k, 1] >= cost; k-0.001 violates
     for j in [k, (k + 1.0) / 2, 1.0]:
         s = max(SPOT + j * (p.target_price - SPOT), min(0.01 * SPOT, p.target_price))
@@ -148,7 +148,7 @@ def test_completion_scan_suffix_condition_long_call():
 def test_completion_scan_four_strategies():
     """spec §7.2: one completion_scan case per strategy; suffix property must
     hold for long-call, long-put, bull-call-spread, and bear-put-spread."""
-    tgt = date.fromisoformat("2028-01-01")
+    tgt = _p().anchor          # 2028-01 的日曆錨點
 
     def check(val, spot, target_price, value_fn):
         k, be = completion_scan(val, spot, TODAY, _p(target_price=target_price))
@@ -239,7 +239,7 @@ def test_completion_curve_identities():
     assert [k for k, _ in curve] == [0.0, 0.25, 0.5, 0.75, 1.0]
     sv = scenario_vector(v, SPOT, TODAY, p)
     assert dict(curve)[0.0] == pytest.approx(dict(sv.entries)["S1"])   # k=0 == S1
-    tgt = date.fromisoformat(p.target_date)
+    tgt = p.anchor
     base = (scenario_leg_value(c, p.target_price, tgt, p) - v.mid) / v.mid
     assert dict(curve)[1.0] == pytest.approx(base)                     # k=1 == baseline
 

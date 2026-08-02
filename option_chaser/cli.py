@@ -7,6 +7,7 @@ from datetime import date
 from pathlib import Path
 
 from .models import AnalysisParams, ParamError, STRATEGIES, is_bullish
+from .timeframe import TargetMonth, ensure_month_open, parse_target_month
 
 
 # Flags that take numeric/CSV values and need preprocessing for negative numbers
@@ -65,12 +66,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     ap.add_argument("symbol")
     ap.add_argument("--target-price", type=float, required=True)
-    ap.add_argument("--target-date", required=True)
+    ap.add_argument("--target-month", required=True,
+                    help="目標年月：2028/1、2028/01、28/1、28/01 皆可")
     ap.add_argument("--strategy", choices=list(STRATEGIES), default="long-call")
-    ap.add_argument("--min-expiry", default=None)
     ap.add_argument("--top", type=int, default=3)
     ap.add_argument("--iv-shifts", default="-0.2,0,0.2")
-    ap.add_argument("--rate", type=float, default=0.04)
+    # default=None 以分辨「使用者明示」與「未指定」：明示 → 跳過利率曲線管線
+    # （保留現有語意）；未指定 → 網路路徑走期限對齊曲線，fallback 0.04。
+    ap.add_argument("--rate", type=float, default=None)
     ap.add_argument("--min-oi", type=int, default=10)
     ap.add_argument("--min-volume", type=int, default=0)
     ap.add_argument("--max-spread-pct", type=float, default=0.15)
@@ -84,24 +87,15 @@ def build_parser() -> argparse.ArgumentParser:
     return ap
 
 
-def _parse_iso(name: str, s: str) -> date:
-    try:
-        return date.fromisoformat(s)
-    except ValueError:
-        raise ParamError(f"{name} 必須為 YYYY-MM-DD：{s!r}") from None
-
-
 def resolve_params(args: argparse.Namespace) -> AnalysisParams:
     if not args.symbol or not args.symbol.strip():
         raise ParamError("symbol 必須為非空字串")
     if args.target_price <= 0:
         raise ParamError("--target-price 必須 > 0")
-    _parse_iso("--target-date", args.target_date)
-    if args.min_expiry:
-        _parse_iso("--min-expiry", args.min_expiry)
+    target_month = parse_target_month(args.target_month).key()
     if not 1 <= args.top <= 10:
         raise ParamError("--top 必須在 1–10")
-    if args.rate < 0:
+    if args.rate is not None and args.rate < 0:
         raise ParamError("--rate 必須 >= 0")
     if args.min_oi < 0 or args.min_volume < 0:
         raise ParamError("--min-oi / --min-volume 必須 >= 0")
@@ -130,9 +124,11 @@ def resolve_params(args: argparse.Namespace) -> AnalysisParams:
         raise ParamError("--delta-bands 需滿足 0 < a < b < 1")
 
     return AnalysisParams(
-        target_price=args.target_price, target_date=args.target_date,
-        strategy=args.strategy, min_expiry=args.min_expiry,
-        top=args.top, iv_shifts=iv_shifts, rate=args.rate,
+        target_price=args.target_price, target_month=target_month,
+        strategy=args.strategy,
+        top=args.top, iv_shifts=iv_shifts,
+        rate=args.rate if args.rate is not None else 0.04,
+        rate_explicit=args.rate is not None,
         min_oi=args.min_oi, min_volume=args.min_volume,
         max_spread_pct=args.max_spread_pct, spread_floor=args.spread_floor,
         delta_bands=(a, b), min_return=args.min_return,
@@ -141,8 +137,7 @@ def resolve_params(args: argparse.Namespace) -> AnalysisParams:
 
 
 def validate_scenario(p: AnalysisParams, spot: float, today: date) -> None:
-    if date.fromisoformat(p.target_date) <= today:
-        raise ParamError(f"--target-date 必須晚於資料日 {today.isoformat()}")
+    ensure_month_open(TargetMonth.from_key(p.target_month), today)
     if is_bullish(p.strategy):
         if p.target_price <= spot and not p.force:
             raise ParamError(
@@ -156,7 +151,7 @@ def validate_scenario(p: AnalysisParams, spot: float, today: date) -> None:
 from .models import FetchError, SnapshotSchemaError, SPREAD_STRATEGIES
 from . import service
 
-USAGE_HINT = "用法示例: option-chaser XYZ --target-price 120 --target-date 2026-08-28 --strategy long-call"
+USAGE_HINT = "用法示例: option-chaser XYZ --target-price 120 --target-month 2026/8 --strategy long-call"
 
 
 def main(argv: list[str] | None = None) -> int:

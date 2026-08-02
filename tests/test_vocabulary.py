@@ -14,7 +14,7 @@ def test_statuses():
 def test_event_types_v5():
     assert voc.EVENT_TYPES_V5 == (
         "SCENARIO_CREATED", "STATUS_CHANGED", "ANALYSIS_COMPLETED",
-        "GROUP_RELATION_CONFIRMED", "SCENARIO_DELETED")
+        "GROUP_RELATION_CONFIRMED", "SCENARIO_DELETED", "SCENARIO_REMOVED")
 
 
 def test_event_types_v7_reserved():

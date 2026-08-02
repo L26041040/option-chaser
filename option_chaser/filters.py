@@ -1,7 +1,12 @@
-"""Sequential hard filters with per-stage rejection counts (spec §4)."""
+"""Sequential hard filters with per-stage rejection counts (spec §4).
+
+到期日的取捨**完全**由 `timeframe.select_expiries` 的六點規則負責，在窮舉之前就
+已發生；本模組因此不設任何到期日條件——只做合約品質過濾（報價／IV／流動性／
+買賣價差），參數沿用現行值（附錄 A8.4）。錨點前方、早於目標月的到期日進到這裡
+時，與其他到期日受完全相同的品質標準檢驗。
+"""
 from __future__ import annotations
 
-from datetime import date
 from itertools import combinations
 from typing import Iterable
 
@@ -9,17 +14,11 @@ from .models import AnalysisParams, FilterReport, FilterStageResult, OptionContr
 
 
 def apply_filters(
-    contracts: Iterable[OptionContract], p: AnalysisParams, today: date
+    contracts: Iterable[OptionContract], p: AnalysisParams
 ) -> tuple[list[OptionContract], FilterReport]:
     side = leg_option_type(p.strategy)
     remaining = [c for c in contracts if c.option_type == side]
     total = len(remaining)
-    target = date.fromisoformat(p.target_date)
-    min_expiry_2 = date.fromisoformat(p.min_expiry) if p.min_expiry else None
-
-    def expiry_ok(c: OptionContract) -> bool:
-        e = date.fromisoformat(c.expiry)
-        return e >= target and (min_expiry_2 is None or e >= min_expiry_2)
 
     def quote_ok(c: OptionContract) -> bool:
         return c.bid is not None and c.ask is not None and c.bid > 0 and c.ask >= c.bid
@@ -35,7 +34,6 @@ def apply_filters(
         return (c.ask - c.bid) <= max(p.spread_floor, p.max_spread_pct * mid)
 
     stages = (
-        ("到期日不符", expiry_ok),
         ("報價異常", quote_ok),
         ("IV 異常", iv_ok),
         ("OI/成交量不足", oi_volume_ok),

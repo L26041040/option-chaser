@@ -13,10 +13,15 @@ from datetime import date
 from pathlib import Path
 
 from . import __version__
+from .ranking import spread_baseline_return
 from .scenarios import natural_cost
-from .service import AnalysisResult, CandidateView, candidate_key
+from .service import AnalysisResult, CandidateView, candidate_key, valuation_key
+from .timeframe import TargetMonth
 from .valuation import SpreadValuation
 from .vocabulary import EVENT_TYPES_V5
+
+
+SCENARIO_SCHEMA_VERSION = 2   # v2: target_date（YYYY-MM-DD）→ target_month（YYYY-MM）
 
 
 class WorkspaceIntegrityError(Exception):
@@ -30,7 +35,7 @@ class Scenario:
     symbol: str
     direction: str          # "bullish" | "bearish"
     target_price: float
-    target_date: str        # YYYY-MM-DD
+    target_month: str       # YYYY-MM（年月語意；不並存任何目標日期欄位）
     created_at: str         # ISO 8601 UTC
     notes: str
     group_id: str
@@ -54,11 +59,16 @@ def atomic_write_json(path: Path, obj) -> None:
 
 # ---------- Scenario ----------
 
-def scenario_id(symbol: str, target_price: float, target_date: str,
+def scenario_id(symbol: str, target_price: float, target_month: str,
                 existing_ids: set[str]) -> str:
-    """spec §2.2: {symbol}-{target:g 且 '.'→'p'}-{yyyymm}; 撞名 -2、-3（決定性）。"""
+    """spec §2.2: {symbol}-{target:g 且 '.'→'p'}-{yyyymm}; 撞名 -2、-3（決定性）。
+
+    ID 格式不變——原本就只取年月，換成年月輸入後輸出逐字相同，既有結果檔案與
+    歷史仍然對得上。
+    """
+    month = TargetMonth.from_key(target_month)   # 順帶把關格式，不做字串切片
     price = format(target_price, "g").replace(".", "p")
-    base = f"{symbol}-{price}-{target_date[:4]}{target_date[5:7]}"
+    base = f"{symbol}-{price}-{month.year:04d}{month.month:02d}"
     if base not in existing_ids:
         return base
     n = 2
@@ -75,9 +85,34 @@ def save_scenario(ws_root, sc: Scenario) -> None:
     atomic_write_json(scenario_path(ws_root, sc.id), dataclasses.asdict(sc))
 
 
+def migrate_scenario(data: dict) -> dict:
+    """v1 → v2：舊的 target_date 取其年月成為 target_month。
+
+    以「舊欄位是否還在」而非 schema_version 分派：版本號是敘述，欄位才是事實，
+    而遷移要修的正是欄位。版本號因此是遷移的結果，不是它的前提。
+
+    一個劇本都不丟，ID 不變（ID 本來就只用到年月）。
+    """
+    if "target_date" not in data:
+        return data
+    data = dict(data)
+    data["target_month"] = data.pop("target_date")[:7]
+    data["schema_version"] = SCENARIO_SCHEMA_VERSION
+    return data
+
+
 def load_scenario(path) -> Scenario:
-    data = json.loads(Path(path).read_text(encoding="utf-8"))
-    data["strategies"] = tuple(data["strategies"])
+    """載入劇本；遇到舊格式就地遷移並落盤。
+
+    落盤是必要的：「不並存任何目標日期欄位」是對**磁碟**的要求，只在記憶體裡
+    改名的話，一個從此只被列出、never 分析的舊劇本會永遠留著 target_date。
+    寫入沿用 atomic replace，且遷移冪等——重跑不會產生第二種結果。
+    """
+    raw = json.loads(Path(path).read_text(encoding="utf-8"))
+    data = migrate_scenario(raw)
+    if data is not raw:
+        atomic_write_json(Path(path), data)
+    data = dict(data, strategies=tuple(data["strategies"]))
     return Scenario(**data)
 
 
@@ -141,21 +176,37 @@ def _last_index(events: list[dict], sid: str, etype: str) -> int:
     return idx
 
 
-def lifecycle_events(events: list[dict], sid: str) -> list[dict]:
-    """spec §2.3: 行序權威。最後一筆 CREATED 之後的該 id 事件；
-    若其後有 DELETED（或根本無 CREATED）→ 無現行生命週期。"""
+# 終結現行生命週期的兩種事件：硬刪除與軟刪除（附錄 A8.2）。兩者對投影的
+# 作用相同——差別只在檔案，不在語意。
+_LIFECYCLE_ENDING = ("SCENARIO_DELETED", "SCENARIO_REMOVED")
+
+
+def _lifecycle_start(events: list[dict], sid: str) -> int:
+    """spec §2.3: 行序權威。回傳最後一筆 CREATED 的行序；
+    其後若有刪除／移除（或根本無 CREATED）→ -1（無現行生命週期）。"""
     created = _last_index(events, sid, "SCENARIO_CREATED")
-    deleted = _last_index(events, sid, "SCENARIO_DELETED")
-    if created == -1 or deleted > created:
+    if created == -1:
+        return -1
+    ended = max(_last_index(events, sid, e) for e in _LIFECYCLE_ENDING)
+    return -1 if ended > created else created
+
+
+def is_removed(events: list[dict], sid: str) -> bool:
+    """附錄 A8.2 軟刪除投影：最後一筆移除事件晚於最後一筆建立 → 已移除。"""
+    return (_last_index(events, sid, "SCENARIO_REMOVED")
+            > _last_index(events, sid, "SCENARIO_CREATED"))
+
+
+def lifecycle_events(events: list[dict], sid: str) -> list[dict]:
+    start = _lifecycle_start(events, sid)
+    if start == -1:
         return []
     return [e for i, e in enumerate(events)
-            if i > created and e.get("scenario_id") == sid]
+            if i > start and e.get("scenario_id") == sid]
 
 
 def project_status(events: list[dict], sid: str) -> str | None:
-    created = _last_index(events, sid, "SCENARIO_CREATED")
-    deleted = _last_index(events, sid, "SCENARIO_DELETED")
-    if created == -1 or deleted > created:
+    if _lifecycle_start(events, sid) == -1:
         return None
     status = "Active"
     for e in lifecycle_events(events, sid):
@@ -199,7 +250,7 @@ def change_status(ws_root, ts: str, sc: Scenario, to: str, reason: str,
 # ---------- groups.json（全量可重建快取，spec §2.4） ----------
 
 def propose_relation(a: Scenario, b: Scenario) -> str:
-    """相鄰提案（a 為 target_date 較早者）。確定性，零 LLM。"""
+    """相鄰提案（a 為 target_month 較早者）。確定性，零 LLM。"""
     if a.direction != b.direction:
         return "exclusive-candidate"
     if a.direction == "bullish":
@@ -220,7 +271,7 @@ def rebuild_groups(ws_root, scenarios: list[Scenario],
     groups = []
     for symbol in sorted(by_symbol):
         members = sorted(by_symbol[symbol],
-                         key=lambda s: (s.target_date, s.id))
+                         key=lambda s: (s.target_month, s.id))
         relations = []
         for a, b in zip(members, members[1:]):
             confirmed, confirmed_at = "undefined", None
@@ -246,6 +297,23 @@ def rebuild_groups(ws_root, scenarios: list[Scenario],
 
 # ---------- ScenarioResult 契約（spec §3） ----------
 
+def _history_entry(sv: SpreadValuation, expiry: str, rank_in_expiry: int) -> dict:
+    """T9（#23，附錄A7）：全部有效候選的歷史五欄位之三（成本／收益率／期內
+    名次）；另外兩欄（更新時間、標的價）不逐候選重複，共用父層 `analyzed_at`／
+    `meta.spot`（既有設計，`_candidate()` 對完整 CandidateView 同樣不重複）。
+    不建 CandidateView：這裡只需要輕量欄位，沒有 Heatmap 矩陣（附錄A10.3）。"""
+    return {
+        "candidate_key": valuation_key(sv),
+        "expiry": expiry,
+        # T12（附錄A14.2）：成本口徑統一走 natural_cost（＝最差成交假設），
+        # 與 `_candidate()` 的 `natural_cost`／`cap_per` 同一條路徑，不直接
+        # 讀 `sv.net_worst`（spread 之下數值恆等，但少一層轉譯依賴）。
+        "cost": natural_cost(sv),
+        "baseline_return": spread_baseline_return(sv),
+        "rank_in_expiry": rank_in_expiry,
+    }
+
+
 def _leg(c) -> dict:
     return {"contract_symbol": c.contract_symbol, "option_type": c.option_type,
             "strike": c.strike, "expiry": c.expiry, "bid": c.bid,
@@ -254,7 +322,7 @@ def _leg(c) -> dict:
 
 
 def _candidate(cv: CandidateView, strategy: str, capital: float | None,
-               today: date, target_date: str) -> dict:
+               today: date, anchor: date) -> dict:
     v = cv.valuation
     if isinstance(v, SpreadValuation):
         legs = [_leg(v.long_leg), _leg(v.short_leg)]   # [0]=long, [1]=short
@@ -264,9 +332,12 @@ def _candidate(cv: CandidateView, strategy: str, capital: float | None,
         legs = [_leg(v.contract)]
         mid_cost, expiry = v.mid, v.contract.expiry
         # 與 service._comparison 相同定義（long-call 無上限 → None）
-        max_profit = None if strategy == "long-call" else v.contract.strike - v.mid
+        max_profit = (None if strategy == "long-call"
+                      else v.contract.strike - v.contract.ask)
         net_delta = v.delta
-    cap_per = mid_cost * 100
+    # T12（附錄 A14.2）：資本／最大虧損以最差成交成本計（natural_cost 即
+    # 買 Ask／賣 Bid 口徑）；mid_cost 保留為次要顯示欄位。
+    cap_per = natural_cost(v) * 100
     return {
         "candidate_key": candidate_key(cv),
         "strategy": strategy,
@@ -275,7 +346,6 @@ def _candidate(cv: CandidateView, strategy: str, capital: float | None,
         "natural_cost": natural_cost(v),
         "baseline_pnl": cv.baseline_pnl,
         "baseline_return": cv.baseline_return,
-        "natural_return": cv.natural_return,
         "scenario_vector": {"entries": [list(e) for e in cv.scenario.entries],
                             "worst_code": cv.scenario.worst_code,
                             "worst_return": cv.scenario.worst_return},
@@ -295,6 +365,9 @@ def _candidate(cv: CandidateView, strategy: str, capital: float | None,
         "breakeven": v.breakeven,
         "max_profit": max_profit,
         "effective_leverage": v.effective_leverage,
+        # D1（#14）：Long Call 追平價格——None＝不適用（單腳）或無法計算
+        # （同履約價 Call 報價缺失），render 層負責區分並顯示。
+        "catchup_price": cv.catchup_price,
         "matrix": {"prices": [list(p) for p in cv.matrix.prices],
                    "dates": [list(d) for d in cv.matrix.dates],
                    "cells": [list(r) for r in cv.matrix.cells]},
@@ -302,7 +375,8 @@ def _candidate(cv: CandidateView, strategy: str, capital: float | None,
         "capital_per_contract": cap_per,
         "max_loss_per_contract": cap_per,   # debit 恆等於成本
         "pct_of_capital": (cap_per / capital) if capital else None,
-        "days_to_target": (date.fromisoformat(target_date) - today).days,
+        # 參考日＝日曆錨點（附錄 A9）；年月本身不映射成任何一天。
+        "days_to_target": (anchor - today).days,
         "days_to_expiry": (date.fromisoformat(expiry) - today).days,
     }
 
@@ -313,7 +387,7 @@ def serialize_result(result: AnalysisResult, scenario_id: str,
     today = result.today
 
     def cand(cv, strategy):
-        return _candidate(cv, strategy, capital, today, base.target_date)
+        return _candidate(cv, strategy, capital, today, base.anchor)
 
     def strat(r):
         return {
@@ -329,6 +403,15 @@ def serialize_result(result: AnalysisResult, scenario_id: str,
             "candidates": [cand(cv, r.strategy) for cv in r.candidates],
             "expiry_best": [cand(cv, r.strategy) for cv in r.expiry_best],
             "expiry_counts": [list(e) for e in r.expiry_counts],
+            # T9（#23）：各到期日自己的前十名（含 Heatmap 矩陣，供 T10 詳細頁）。
+            "expiry_top10": [{"expiry": exp,
+                              "candidates": [cand(cv, r.strategy) for cv in cvs]}
+                             for exp, cvs in r.expiry_top10],
+            # T9（附錄A7）：該次全部有效候選的歷史五欄位（不只入榜者）；
+            # 更新時間／標的價共用父層 analyzed_at／meta.spot，不逐候選重複。
+            "all_candidates": [_history_entry(sv, exp, rank)
+                              for exp, ranked_group in r.expiry_ranked
+                              for rank, sv in enumerate(ranked_group, start=1)],
             "report_text": r.report_text,
         }
 
@@ -369,6 +452,12 @@ def serialize_result(result: AnalysisResult, scenario_id: str,
         "hidden_expiries": list(result.hidden_expiries),
         "default_selection": (list(result.default_selection)
                               if result.default_selection else None),
+        # T10（#24，附錄A8.5）：詳細頁進頁預設——baseline 期本身、及其第 1 名。
+        # 與 `default_selection`（v4 舊有、跨到期日全域最高報酬避警示語意）
+        # 刻意分開，兩者服務不同的產品決策。
+        "baseline_expiry": result.baseline_expiry,
+        "baseline_selection": (list(result.baseline_selection)
+                               if result.baseline_selection else None),
         "comparison": [dataclasses.asdict(c) for c in result.comparison],
         "best_strategy": result.best_strategy,
         "today": today.isoformat(),
@@ -387,9 +476,16 @@ def load_result(path) -> dict:
     return json.loads(Path(path).read_text(encoding="utf-8"))
 
 
-def latest_result_path(ws_root, scenario_id: str) -> Path | None:
+def list_result_paths(ws_root, scenario_id: str) -> list[Path]:
+    """該劇本全部歷史快照檔案，依檔名（＝fetched_at，字典序＝時間序）排序。
+    `results/<sid>/` 目錄結構的唯一存取點——`latest_result_path()`／
+    `workspace.spread_history()`（T11，#25）都透過這裡讀，不各自 glob。"""
     d = Path(ws_root) / "results" / scenario_id
     if not d.is_dir():
-        return None
-    files = sorted(d.glob("*.json"))
+        return []
+    return sorted(d.glob("*.json"))
+
+
+def latest_result_path(ws_root, scenario_id: str) -> Path | None:
+    files = list_result_paths(ws_root, scenario_id)
     return files[-1] if files else None

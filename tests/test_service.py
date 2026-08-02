@@ -9,9 +9,17 @@ FIX = "tests/fixtures/xyz_v2_snapshot.json"
 
 
 def req(strategies, target=120.0, force=False):
-    base = AnalysisParams(target_price=target, target_date="2026-08-28", force=force)
+    base = AnalysisParams(target_price=target, target_month="2026-08", force=force)
     return service.AnalysisRequest(symbol="XYZ", base_params=base,
                                    strategies=tuple(strategies))
+
+
+def _empty_snapshot():
+    """鏈上零個到期日、但抓取本身成功的合成快照（附錄 A12 第 2 點）。"""
+    from option_chaser.models import ChainSnapshot
+    return ChainSnapshot(schema_version=2, symbol="XYZ",
+                         fetched_at="2026-07-15T21:30:00-04:00", spot=100.0,
+                         source="yfinance", contracts=())
 
 
 def test_multi_strategy_shared_snapshot_and_order():
@@ -29,11 +37,15 @@ def test_single_leg_result_matches_engine_and_report():
     from option_chaser.data.snapshot import load_snapshot, snapshot_today
     r = service.run_offline(req(["long-call"]), FIX)
     res = r.results[0]
-    assert res.status == "ok" and res.n_qualified == 5
-    p = dataclasses.replace(req(["long-call"]).base_params, strategy="long-call")
+    assert res.status == "ok"
+    # T12：service 會把解出的利率欄位（rate_note 等）回寫 request——
+    # 對照重算須用同一份解出後的參數
+    p = dataclasses.replace(r.request.base_params, strategy="long-call")
     snap = load_snapshot(FIX)
     today = snapshot_today(snap.fetched_at)
-    qualified, freport = apply_filters(snap.contracts, p, today)
+    snap, _ = service._scoped_to_selected_expiries(snap, p.anchor, today)
+    qualified, freport = apply_filters(snap.contracts, p)
+    assert res.n_qualified == len(qualified)
     vals = [evaluate_contract(c, snap.spot, today, p) for c in qualified]
     ranked = rank(vals, p)
     assert res.report_text == render(snap, p, freport, ranked,
@@ -75,8 +87,8 @@ def test_force_runs_mismatched_direction():
 
 
 def test_empty_carries_filter_only_report():
-    base = AnalysisParams(target_price=120.0, target_date="2026-08-28",
-                          min_expiry="2030-01-01")
+    base = AnalysisParams(target_price=120.0, target_month="2026-08",
+                          min_oi=10 ** 9)
     r = service.run_offline(service.AnalysisRequest(
         symbol="XYZ", base_params=base, strategies=("long-call",)), FIX)
     res = r.results[0]
@@ -84,11 +96,61 @@ def test_empty_carries_filter_only_report():
     assert r.comparison == () and r.best_strategy is None
 
 
-def test_target_date_not_after_snapshot_raises():
-    base = AnalysisParams(target_price=120.0, target_date="2026-07-15")
+def test_target_month_already_over_raises():
+    base = AnalysisParams(target_price=120.0, target_month="2026-06")
     with pytest.raises(ParamError):
         service.run_offline(service.AnalysisRequest(
             symbol="XYZ", base_params=base, strategies=("long-call",)), FIX)
+
+
+def test_current_month_accepted():
+    """資料日 2026-07-15 落在目標月 2026-07 內 → 尚未過完，允許分析。"""
+    base = AnalysisParams(target_price=120.0, target_month="2026-07")
+    r = service.run_offline(service.AnalysisRequest(
+        symbol="XYZ", base_params=base, strategies=("long-call",)), FIX)
+    assert r.results[0].status == "ok"
+
+
+def test_zero_tradable_expiries_is_empty_result_not_error():
+    """附錄 A12 第 2 點：抓取本身未拋例外、鏈上零個到期日 → 視為零候選的
+    成功結果（比照 A10.2 綠燈＋「—」），不是刷新失敗，因此不得拋錯。"""
+    r = service._analyze(req(["bull-call-spread"]), _empty_snapshot(), "n/a", None)
+    assert [s.status for s in r.results] == ["empty"]
+    assert r.results[0].n_qualified == 0
+    assert r.best_strategy is None
+    assert r.expiry_groups == ()
+
+
+def test_scoped_to_selected_expiries_returns_empty_snapshot_when_none_tradable():
+    """`_scoped_to_selected_expiries` 本身（非透過 `_analyze`）也不拋錯：
+    回傳零合約快照＋無 baseline，讓下游各策略走既有的空結果分支。"""
+    snap, baseline = service._scoped_to_selected_expiries(_empty_snapshot(),
+                                                          date(2026, 8, 21),
+                                                          date(2026, 7, 15))
+    assert snap.contracts == ()
+    assert baseline is None
+
+
+def test_enumeration_limited_to_selected_expiries():
+    """選取發生在窮舉之前：結果只會出現六點規則選中的到期日。"""
+    from option_chaser.data.snapshot import load_snapshot as _load
+    from option_chaser.timeframe import select_expiries
+    r = service.run_offline(req(["long-call"]), FIX)
+    snap = _load(FIX)
+    tradable = {c.expiry for c in snap.contracts
+                if date.fromisoformat(c.expiry) > r.today}
+    selected = set(select_expiries(
+        tradable, r.request.base_params.anchor).expiries)
+    assert len(selected) <= 5
+    assert {g.expiry for g in r.expiry_groups} <= selected
+    assert {e for e, _ in r.results[0].expiry_counts} <= selected
+
+
+def test_expiry_before_target_month_survives_to_results():
+    """baseline 前方、早於目標月的到期日不被品質過濾誤殺，會如實出現。"""
+    r = service.run_offline(req(["long-call"]), FIX)
+    # 目標月 2026-08、錨點 2026-08-21；2026-08-01 早於錨點且早於月中
+    assert "2026-08-01" in {e for e, _ in r.results[0].expiry_counts}
 
 
 def test_matrix_view_matches_grid():
@@ -99,16 +161,15 @@ def test_matrix_view_matches_grid():
     v = cv.valuation
     p = dataclasses.replace(req(["long-call"]).base_params, strategy="long-call")
     prices = price_axis(100.0, 120.0, bullish=True)
-    dates = date_axis(r.today, date(2026, 8, 28),
-                      date.fromisoformat(v.contract.expiry))
+    dates = date_axis(r.today, date.fromisoformat(v.contract.expiry))
     grid = matrix_grid(lambda S, d, c=v.contract: scenario_leg_value(c, S, d, p),
-                       v.mid, prices, dates)
+                       v.contract.ask, prices, dates)   # T12：Heatmap 成本＝最差口徑
     assert cv.matrix.cells == grid
     assert cv.matrix.dates[-1][0] == v.contract.expiry
 
 
 def test_invalid_request_rejected():
-    base = AnalysisParams(target_price=120.0, target_date="2026-08-28")
+    base = AnalysisParams(target_price=120.0, target_month="2026-08")
     with pytest.raises(ParamError):
         service.run_offline(service.AnalysisRequest(
             symbol="XYZ", base_params=base, strategies=()), FIX)
@@ -118,7 +179,7 @@ def test_invalid_request_rejected():
 
 
 def test_validation_precedes_fetch_and_load(monkeypatch):
-    base = AnalysisParams(target_price=120.0, target_date="2026-08-28")
+    base = AnalysisParams(target_price=120.0, target_month="2026-08")
     bad = service.AnalysisRequest(symbol="XYZ", base_params=base, strategies=())
     # run(): fetch must never be touched
     import option_chaser.data.yf as yf_mod
@@ -148,5 +209,6 @@ def test_candidate_view_returns_precomputed():
     cv = r.results[0].candidates[0]
     v = cv.valuation
     assert cv.baseline_return == br(v)
-    assert abs(cv.baseline_pnl - (v.baseline_value - v.mid)) < 1e-12
-    assert abs(cv.natural_return - (v.baseline_value - v.contract.ask) / v.contract.ask) < 1e-12
+    # T12（附錄 A14.2）：主數字成本口徑＝Ask；natural_return 與其重合已合併
+    assert abs(cv.baseline_pnl - (v.baseline_value - v.contract.ask)) < 1e-12
+    assert not hasattr(cv, "natural_return")

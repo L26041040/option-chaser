@@ -1,4 +1,6 @@
-"""v4 spec §3.2: expiry grouping, sampling, badges, injection."""
+"""v4 spec §3.2: expiry grouping, badges；選取取代事後抽樣。"""
+from datetime import date
+
 from option_chaser import service
 from option_chaser.models import AnalysisParams
 
@@ -9,7 +11,7 @@ def _run(strategies=("long-call", "bull-call-spread")):
     return service.run_offline(service.AnalysisRequest(
         symbol="XYZ",
         base_params=AnalysisParams(strategy="long-call", target_price=120.0,
-                                   target_date="2026-08-28", min_return=0.0),
+                                   target_month="2026-08", min_return=0.0),
         strategies=strategies), SNAP)
 
 
@@ -49,18 +51,7 @@ def test_default_selection_no_warning_and_visible():
         assert not match[0].candidate.quote_warning
 
 
-def test_sampling_deterministic_six_expiries():
-    """Unit test the sampler directly with 6 synthetic expiries."""
-    exps = ["2028-01-21", "2028-03-17", "2028-06-16", "2028-09-15",
-            "2028-12-15", "2029-06-15"]
-    kept, hidden = service._sample_expiries(exps, "2027-11-30")
-    assert len(kept) == 4
-    assert kept[0] == "2028-01-21" and kept[1] == "2028-03-17"  # nearest 2
-    assert set(kept) | set(hidden) == set(exps)
-    assert kept == service._sample_expiries(exps, "2027-11-30")[0]  # deterministic
-
-
-# --- v4 task-review coverage gap: full-pipeline sampling + injection + all-warning fallback ---
+# --- 六到期日鏈：選取取代抽樣 + all-warning fallback ---
 
 SIX_EXPIRY_SNAP = "tests/fixtures/xyz_v4_six_expiries.json"
 ALL_WARNING_SNAP = "tests/fixtures/xyz_v4_all_warning.json"
@@ -73,47 +64,41 @@ def _run_six_expiry():
     return service.run_offline(service.AnalysisRequest(
         symbol="XYZ",
         base_params=AnalysisParams(strategy="long-call", target_price=120.0,
-                                   target_date="2026-08-01", min_return=0.0),
+                                   target_month="2026-08", min_return=0.0),
         strategies=("long-call",)), SIX_EXPIRY_SNAP)
 
 
-def test_six_expiry_pipeline_sampling_and_hidden():
-    """(a) >4-expiry sampling through the FULL pipeline: hidden_expiries
-    populated and per-group hidden_count correct."""
+def test_selection_replaces_sampling_no_hidden_expiries():
+    """六檔鏈、目標月 2026-08（錨點 2026-08-21，恰好命中實際到期日）：
+    baseline 前 1（鏈上只有一檔）＋ 後 3（缺額由另一側補足）＝ 五檔。
+    每一檔選中的到期日都是一組，事後抽樣層已整個消失。"""
     r = _run_six_expiry()
-    assert len(r.expiry_groups) >= 4
-
     group_expiries = [g.expiry for g in r.expiry_groups]
-    assert group_expiries == sorted(group_expiries)  # ascending
-    assert set(group_expiries) | set(r.hidden_expiries) == set(SIX_EXPIRIES)
-    assert set(group_expiries).isdisjoint(r.hidden_expiries)
+    assert group_expiries == ["2026-08-07", "2026-08-21", "2026-09-18",
+                              "2026-10-16", "2026-11-20"]
+    assert r.hidden_expiries == ()
+    assert "2026-12-18" not in group_expiries      # 超出五檔窗，未被窮舉
 
     res = r.results[0]
     qualified_counts = dict(res.expiry_counts)
+    assert set(qualified_counts) == set(group_expiries)
     for g in r.expiry_groups:
         assert g.hidden_count == qualified_counts[g.expiry] - len(g.rows)
 
 
-def test_injection_of_sampled_out_resilience():
-    """(b) A global top_resilience candidate whose expiry is sampled OUT of
-    the base <=4-group sample must be re-added to expiry_groups and removed
-    from hidden_expiries (spec §3.2 injection)."""
+def test_all_badged_rows_visible():
+    """全域徽章（最高報酬／最強韌性）恆在可見分組內——不再需要注入補救。"""
     r = _run_six_expiry()
     rows = [row for g in r.expiry_groups for row in g.rows]
-    resilient_rows = [row for row in rows if "top_resilience" in row.badges]
-    assert len(resilient_rows) == 1
-    resilient_row = resilient_rows[0]
-    resilient_expiry = service._expiry_of(resilient_row.candidate)
+    for badge in ("top_return", "top_resilience"):
+        assert len([row for row in rows if badge in row.badges]) == 1
 
-    # visible in expiry_groups, not in hidden_expiries
-    assert resilient_expiry in [g.expiry for g in r.expiry_groups]
-    assert resilient_expiry not in r.hidden_expiries
 
-    # prove it was actually sampled OUT of the base <=4 sample (i.e. injection fired)
-    kept, hidden = service._sample_expiries(list(SIX_EXPIRIES), "2026-08-01")
-    assert resilient_expiry in hidden
-    assert resilient_expiry not in kept
-    assert len(r.expiry_groups) > 4
+def test_buffer_days_measured_from_calendar_anchor():
+    r = _run_six_expiry()
+    anchor = r.request.base_params.anchor
+    for g in r.expiry_groups:
+        assert g.buffer_days == (date.fromisoformat(g.expiry) - anchor).days
 
 
 def test_all_warning_fallback():
@@ -122,7 +107,7 @@ def test_all_warning_fallback():
     r = service.run_offline(service.AnalysisRequest(
         symbol="XYZ",
         base_params=AnalysisParams(strategy="long-call", target_price=120.0,
-                                   target_date="2026-08-01", min_return=0.0),
+                                   target_month="2026-08", min_return=0.0),
         strategies=("long-call",)), ALL_WARNING_SNAP)
 
     rows = [row for g in r.expiry_groups for row in g.rows]

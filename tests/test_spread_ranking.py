@@ -5,7 +5,7 @@ from option_chaser.valuation import evaluate_spread
 from option_chaser.ranking import rank_spreads, spread_baseline_return, build_spread_reasons
 
 TODAY = date(2026, 7, 15)
-P = AnalysisParams(target_price=120.0, target_date="2026-08-28",
+P = AnalysisParams(target_price=120.0, target_month="2026-08",
                    strategy="bull-call-spread")
 
 
@@ -55,7 +55,7 @@ def test_cli_spread_end_to_end(tmp_path):
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf):
         rc = main(["XYZ", "--strategy", "bull-call-spread", "--target-price", "120",
-                   "--target-date", "2026-08-28", "--snapshot", str(f)])
+                   "--target-month", "2026/8", "--snapshot", str(f)])
     out = buf.getvalue()
     assert rc == 0
     assert "配對總數" in out and "Bull Call Spread" in out

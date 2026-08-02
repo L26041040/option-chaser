@@ -16,7 +16,7 @@ def _request(strategies=("long-call", "bull-call-spread")):
     return service.AnalysisRequest(
         symbol="XYZ",
         base_params=AnalysisParams(strategy="long-call", target_price=120.0,
-                                   target_date="2026-08-28", min_return=0.0),
+                                   target_month="2026-08", min_return=0.0),
         strategies=strategies)
 
 
@@ -44,9 +44,9 @@ def test_candidate_view_scenario_fields_consistent():
             expiry = (cv.valuation.long_leg.expiry
                       if hasattr(cv.valuation, "long_leg")
                       else cv.valuation.contract.expiry)
+            # 參考日＝日曆錨點（附錄 A9），不是任何被發明出來的目標日
             assert cv.buffer_days == (
-                date.fromisoformat(expiry)
-                - date.fromisoformat(p.target_date)).days
+                date.fromisoformat(expiry) - p.anchor).days
     assert result.meta.target_move == pytest.approx(
         (120.0 - result.snapshot.spot) / result.snapshot.spot)
 
@@ -56,13 +56,15 @@ def _params_for(result, strategy):
     return dataclasses.replace(result.request.base_params, strategy=strategy)
 
 
-def test_natural_return_renamed():
+def test_natural_return_merged_into_baseline():
+    """T12（附錄 A14.2）：主數字改最差口徑後與原 natural_return 重合，
+    欄位合併——CandidateView / ComparisonRow 均不再有 natural_return。"""
     result = service.run_offline(_request(), SNAP)
     cv = next(r for r in result.results if r.status == "ok").candidates[0]
-    assert hasattr(cv, "natural_return")
+    assert not hasattr(cv, "natural_return")
     assert not hasattr(cv, "worst_return")
     row = result.comparison[0]
-    assert hasattr(row, "natural_return")
+    assert not hasattr(row, "natural_return")
 
 
 def test_quote_warning_friction_over_25pct():

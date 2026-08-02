@@ -43,18 +43,16 @@ def price_axis(spot: float, target: float, bullish: bool) -> list[tuple[float, s
     return [(v, label(v)) for v in vals]
 
 
-def date_axis(today: date, target_date: date, expiry: date) -> list[tuple[date, str]]:
+def date_axis(today: date, expiry: date) -> list[tuple[date, str]]:
+    """日期軸＝今天 → 該合約自身的到期日，等分至多七欄。
+
+    附錄 A2.3：年月語意下不存在「目標日」那一欄，原本的「*」標記連同它所需的
+    日期映射一併移除。標籤欄保留（恆為空字串）以維持與價格軸相同的欄位形狀。
+    """
     total = (expiry - today).days
     pts = [today + timedelta(days=round(total * i / 6.0)) for i in range(7)]
     pts[-1] = expiry
-    uniq = sorted(set(pts))
-    if target_date not in uniq:
-        interior = [i for i in range(len(uniq)) if 0 < i < len(uniq) - 1]
-        if interior:
-            best = min((abs((uniq[i] - target_date).days), i) for i in interior)[1]
-            uniq[best] = target_date
-            uniq = sorted(set(uniq))
-    return [(d, "*" if d == target_date else "") for d in uniq]
+    return [(d, "") for d in sorted(set(pts))]
 
 
 def matrix_grid(

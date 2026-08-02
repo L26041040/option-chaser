@@ -57,6 +57,19 @@ def days_between(d1: date, d2: date) -> int:
     return (d2 - d1).days
 
 
+def leg_rate(p: AnalysisParams, expiry: str) -> float:
+    """T12（附錄 A14.1）：每腿以**自身到期日**查表取期限對齊利率。
+
+    表由 service 以「分析日→到期日」年期自 Treasury 曲線預先解出；同一腿在
+    Heatmap 全格共用同一個 r（與恆定 IV 假設一致），因此以到期日查表而非逐格
+    重算年期。無表（`--rate` 明示、離線路徑、曲線 fallback）時用常數 `p.rate`。
+    """
+    for exp, r in p.rate_by_expiry:
+        if exp == expiry:
+            return r
+    return p.rate
+
+
 @dataclass(frozen=True)
 class ContractValuation:
     contract: OptionContract
@@ -86,7 +99,8 @@ def scenario_leg_value(
     if at >= expiry:
         return intrinsic_value(c.option_type, S, c.strike)
     T = days_between(at, expiry) / DAYS_PER_YEAR
-    return clamped_price(c.option_type, S, c.strike, T, p.rate, c.implied_volatility * (1.0 + shift))
+    return clamped_price(c.option_type, S, c.strike, T, leg_rate(p, c.expiry),
+                         c.implied_volatility * (1.0 + shift))
 
 
 def evaluate_contract(
@@ -96,22 +110,24 @@ def evaluate_contract(
     mid = (c.bid + c.ask) / 2.0
     spread = c.ask - c.bid
     expiry = date.fromisoformat(c.expiry)
-    target = date.fromisoformat(p.target_date)
+    target = p.anchor          # 附錄 A9 錨點：估值參考日
     g = leg_greeks(c.option_type, spot, c.strike,
-                   days_between(today, expiry) / DAYS_PER_YEAR, p.rate,
-                   c.implied_volatility)
+                   days_between(today, expiry) / DAYS_PER_YEAR,
+                   leg_rate(p, c.expiry), c.implied_volatility)
     scenario_values = tuple(
         (shift, scenario_leg_value(c, p.target_price, target, p, shift))
         for shift in p.iv_shifts
     )
     baseline_value = dict(scenario_values)[0.0]
     floor_value = intrinsic_value(c.option_type, p.target_price, c.strike)
+    # T12（附錄 A14.2）：主數字成本口徑＝最差成交假設（單腿＝Ask）。
+    # breakeven／槓桿等成本衍生數字同口徑；mid 保留為次要顯示。
     if c.option_type == "call":
-        breakeven = c.strike + mid
+        breakeven = c.strike + c.ask
         be_vs_spot = (breakeven - spot) / spot
         be_vs_target = (p.target_price - breakeven) / p.target_price
     else:
-        breakeven = c.strike - mid
+        breakeven = c.strike - c.ask
         be_vs_spot = (spot - breakeven) / spot
         be_vs_target = (breakeven - p.target_price) / p.target_price
     l2 = scenario_leg_value(c, p.target_price, target, p, min(p.iv_shifts))
@@ -121,7 +137,7 @@ def evaluate_contract(
         vega_per_pct=g.vega_per_pct,
         breakeven=breakeven, breakeven_vs_spot=be_vs_spot,
         breakeven_vs_target=be_vs_target,
-        effective_leverage=abs(g.delta) * spot / mid,
+        effective_leverage=abs(g.delta) * spot / c.ask,
         floor_value=floor_value, scenario_values=scenario_values,
         baseline_value=baseline_value,
         l1=floor_value, l2=l2, l3=baseline_value / (1.0 + p.min_return),
@@ -227,35 +243,48 @@ def evaluate_spread(
     width = abs(short_leg.strike - long_leg.strike)
     net_mid = (long_leg.bid + long_leg.ask) / 2.0 - (short_leg.bid + short_leg.ask) / 2.0
     net_worst = long_leg.ask - short_leg.bid
-    target = date.fromisoformat(p.target_date)
     expiry = date.fromisoformat(long_leg.expiry)
     t_now = days_between(today, expiry) / DAYS_PER_YEAR
-    g_l = leg_greeks(long_leg.option_type, spot, long_leg.strike, t_now, p.rate,
-                     long_leg.implied_volatility)
-    g_s = leg_greeks(short_leg.option_type, spot, short_leg.strike, t_now, p.rate,
-                     short_leg.implied_volatility)
+    g_l = leg_greeks(long_leg.option_type, spot, long_leg.strike, t_now,
+                     leg_rate(p, long_leg.expiry), long_leg.implied_volatility)
+    g_s = leg_greeks(short_leg.option_type, spot, short_leg.strike, t_now,
+                     leg_rate(p, short_leg.expiry), short_leg.implied_volatility)
     net_delta = g_l.delta - g_s.delta
+    # 需求 §三：排名情境＝標的在該 Spread **自身到期日**等於目標價、持有至到期。
+    # 估值日即 expiry → 內在價值；IV shift 到期時無作用，情境向量同值屬必然。
     scenario_values = tuple(
-        (shift, spread_scenario_value(long_leg, short_leg, p.target_price, target, p, shift))
+        (shift, spread_scenario_value(long_leg, short_leg, p.target_price, expiry, p, shift))
         for shift in p.iv_shifts
     )
     baseline = dict(scenario_values)[0.0]
+    # T12（附錄 A14.2）：主數字成本口徑＝net_worst（買腿 Ask − 賣腿 Bid），
+    # 定位「保守成交假設收益」。breakeven／最大獲利／槓桿同口徑；net_mid
+    # 保留為次要顯示。
     if long_leg.option_type == "call":
-        breakeven = long_leg.strike + net_mid
+        breakeven = long_leg.strike + net_worst
         be_vs_target = (p.target_price - breakeven) / p.target_price
     else:
-        breakeven = long_leg.strike - net_mid
+        breakeven = long_leg.strike - net_worst
         be_vs_target = (breakeven - p.target_price) / p.target_price
     return SpreadValuation(
         long_leg=long_leg, short_leg=short_leg, width=width,
         net_mid=net_mid, net_worst=net_worst, net_delta=net_delta,
         breakeven=breakeven, breakeven_vs_target=be_vs_target,
-        effective_leverage=abs(net_delta) * spot / net_mid,
+        effective_leverage=abs(net_delta) * spot / net_worst,
         scenario_values=scenario_values, baseline_value=baseline,
         l2=min(v for _, v in scenario_values),
         l3=baseline / (1.0 + p.min_return),
-        max_profit=width - net_mid,
+        max_profit=width - net_worst,
     )
+
+
+def catchup_price(strike: float, call_cost: float, baseline_return: float) -> float:
+    """D1（#14）：所選 Spread 的 Long Call 追平價格 S*＝K＋C×(1+R)——標的要
+    漲到哪個價格，同履約價 K 的 Long Call 持有至到期的報酬率才追得上這組
+    Spread 的目標情境到期報酬率 R。K＝買腿履約價，C＝同快照中該 Call 的
+    實際成本（Ask，worst 成本口徑，見 T12／附錄A14.2），R＝該 Spread 的
+    baseline_return。封閉式算術，不需估值引擎。"""
+    return strike + call_cost * (1 + baseline_return)
 
 
 def spread_guidance_judgments(sv: SpreadValuation, p: AnalysisParams) -> list[str]:

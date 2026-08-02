@@ -35,7 +35,7 @@ def test_run_delegates_to_fetch_and_save(monkeypatch):
     result = service.run(service.AnalysisRequest(
         symbol="XYZ",
         base_params=AnalysisParams(strategy="long-call", target_price=120.0,
-                                   target_date="2026-08-01"),
+                                   target_month="2026-08"),
         strategies=("long-call",)))
     assert calls == ["XYZ"]
     assert result.meta.snapshot_path == FIX

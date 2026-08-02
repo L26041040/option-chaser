@@ -2,20 +2,20 @@
 import dataclasses
 import json
 from datetime import date
-from pathlib import Path
 
 import pytest
 
 from option_chaser import store, workspace
+from option_chaser.models import ParamError
 
 TS = "2026-07-21T00:00:00+00:00"
 
 
-def _create(ws, symbol="TLT", price=105.0, tdate="2028-01-01",
+def _create(ws, symbol="TLT", price=105.0, tmonth="2028-01",
             direction="bullish"):
     return workspace.create_scenario(
         ws, symbol=symbol, direction=direction, target_price=price,
-        target_date=tdate, notes="", strategies=("long-call",), ts=TS)
+        target_month=tmonth, notes="", strategies=("long-call",), ts=TS)
 
 
 def test_create_writes_event_file_and_groups(tmp_path):
@@ -35,17 +35,17 @@ def test_create_collision_deterministic(tmp_path):
 
 
 def test_list_returns_sorted_and_validated(tmp_path):
-    _create(tmp_path, symbol="TLT", tdate="2028-12-01", price=115.0)
+    _create(tmp_path, symbol="TLT", tmonth="2028-12", price=115.0)
     _create(tmp_path, symbol="SPY", price=500.0)
-    _create(tmp_path, symbol="TLT", tdate="2028-01-01", price=105.0)
+    _create(tmp_path, symbol="TLT", tmonth="2028-01", price=105.0)
     got = workspace.list_scenarios(tmp_path, observed=date(2026, 7, 21))
     assert [s.symbol for s in got] == ["SPY", "TLT", "TLT"]
-    assert got[1].target_date == "2028-01-01"
+    assert got[1].target_month == "2028-01"
 
 
 def test_set_status_and_confirm_relation(tmp_path):
-    a = _create(tmp_path, tdate="2028-01-01", price=105.0)
-    b = _create(tmp_path, tdate="2028-12-01", price=115.0)
+    a = _create(tmp_path, tmonth="2028-01", price=105.0)
+    b = _create(tmp_path, tmonth="2028-12", price=115.0)
     workspace.set_status(tmp_path, a.id, "Reached", reason="到價", ts=TS)
     assert store.load_scenario(store.scenario_path(tmp_path, a.id)).status == "Reached"
     workspace.confirm_relation(tmp_path, "G-TLT", (a.id, b.id),
@@ -57,26 +57,43 @@ def test_set_status_and_confirm_relation(tmp_path):
 
 
 def test_expired_observational_transition(tmp_path):
-    sc = _create(tmp_path, tdate="2027-01-01")
-    got = workspace.list_scenarios(tmp_path, observed=date(2027, 1, 2))
+    _create(tmp_path, tmonth="2027-01")
+    got = workspace.list_scenarios(tmp_path, observed=date(2027, 2, 1))
     assert got[0].status == "Expired"
     last = store.read_events(tmp_path)[-1]
     assert last["event"] == "STATUS_CHANGED"
     assert last["payload"]["to"] == "Expired"
-    assert last["payload"]["observed_at"] == "2027-01-02"
+    assert last["payload"]["observed_at"] == "2027-02-01"
     assert last["payload"]["by"] == "system"
 
 
-def test_not_expired_on_boundary_date(tmp_path):
-    """觀察日 == target_date 不過期（規則是 觀察日 > target_date）。"""
-    _create(tmp_path, tdate="2027-01-01")
-    got = workspace.list_scenarios(tmp_path, observed=date(2027, 1, 1))
-    assert got[0].status == "Active"
+def test_active_through_the_whole_target_month(tmp_path):
+    """目標月最後一天過完後才過期——整個目標月內劇本都有效。"""
+    _create(tmp_path, tmonth="2027-01")
+    for day in (date(2027, 1, 1), date(2027, 1, 31)):
+        assert workspace.list_scenarios(tmp_path, observed=day)[0].status == "Active"
+
+
+def test_create_rejects_month_already_over(tmp_path):
+    with pytest.raises(ParamError):
+        workspace.create_scenario(
+            tmp_path, symbol="TLT", direction="bullish", target_price=105.0,
+            target_month="2026-06", notes="", strategies=("long-call",),
+            ts=TS, observed=date(2026, 7, 1))
+
+
+def test_create_allows_current_month(tmp_path):
+    """當月（尚未過完）允許建立——短期劇本不被誤擋。"""
+    sc = workspace.create_scenario(
+        tmp_path, symbol="TLT", direction="bullish", target_price=105.0,
+        target_month="2026-07", notes="", strategies=("long-call",),
+        ts=TS, observed=date(2026, 7, 31))
+    assert sc.target_month == "2026-07" and sc.id == "TLT-105-202607"
 
 
 def test_delete_scenario_full_chain(tmp_path):
-    a = _create(tmp_path, tdate="2028-01-01", price=105.0)
-    b = _create(tmp_path, tdate="2028-12-01", price=115.0)
+    a = _create(tmp_path, tmonth="2028-01", price=105.0)
+    b = _create(tmp_path, tmonth="2028-12", price=115.0)
     (tmp_path / "results" / a.id).mkdir(parents=True)
     (tmp_path / "results" / a.id / "x.json").write_text("{}", encoding="utf-8")
     workspace.delete_scenario(tmp_path, a.id, ts=TS)
@@ -148,15 +165,3 @@ def test_load_groups_overwrites_tampered_file(tmp_path):
     assert groups["groups"][0]["members"] == [a.id]   # 無條件重建，不信磁碟
 
 
-def test_default_direction(tmp_path):
-    assert workspace.default_direction("NOPE", 100.0,
-                                       snapshots_dir=tmp_path) is None
-    snap = json.loads(Path("tests/fixtures/xyz_v4_six_expiries.json")
-                      .read_text(encoding="utf-8"))
-    (tmp_path / "XYZ_20260721T000000+0000.json").write_text(
-        json.dumps(snap), encoding="utf-8")
-    spot = snap["spot"]
-    assert workspace.default_direction("XYZ", spot + 10,
-                                       snapshots_dir=tmp_path) == "bullish"
-    assert workspace.default_direction("XYZ", spot - 10,
-                                       snapshots_dir=tmp_path) == "bearish"

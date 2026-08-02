@@ -39,8 +39,8 @@ def _value_fn(val):
 
 def _delay_value(fn, spot: float, today: date, p: AnalysisParams,
                  expiry: date, delta_days: int) -> float:
-    """Spec §2.2: linear path spot->target over [today, target+delta]."""
-    arrive = date.fromisoformat(p.target_date) + timedelta(days=delta_days)
+    """Spec §2.2: linear path spot->target over [today, anchor+delta]."""
+    arrive = p.anchor + timedelta(days=delta_days)
     d = min(arrive, expiry)
     frac = (d - today).days / (arrive - today).days
     s_at_d = spot + (p.target_price - spot) * frac
@@ -51,7 +51,7 @@ def scenario_vector(val: ContractValuation | SpreadValuation, spot: float,
                     today: date, p: AnalysisParams) -> ScenarioVector:
     fn, mid, natural, expiry_iso = _value_fn(val)
     expiry = date.fromisoformat(expiry_iso)
-    tgt = date.fromisoformat(p.target_date)
+    tgt = p.anchor                            # 附錄 A9 錨點：估值參考日
 
     def ret(value: float, cost: float) -> float:
         return (value - cost) / cost
@@ -97,7 +97,7 @@ def completion_scan(val: ContractValuation | SpreadValuation, spot: float,
     """Suffix-condition grid scan (spec §2.3): k* = smallest k such that
     value >= Mid cost at EVERY grid point in [k, 1.0]. Walk down from 1.0."""
     fn, mid, _, _ = _value_fn(val)
-    tgt = date.fromisoformat(p.target_date)
+    tgt = p.anchor                            # 附錄 A9 錨點：估值參考日
     k_star = None
     for i in range(1000, -201, -1):          # k = 1.000 down to -0.200
         k = i / 1000.0
@@ -114,7 +114,7 @@ def completion_curve(val: ContractValuation | SpreadValuation, spot: float,
                      today: date, p: AnalysisParams
                      ) -> tuple[tuple[float, float], ...]:
     fn, mid, _, _ = _value_fn(val)
-    tgt = date.fromisoformat(p.target_date)
+    tgt = p.anchor                            # 附錄 A9 錨點：估值參考日
     out = []
     for k in (0.0, 0.25, 0.5, 0.75, 1.0):
         s = _grid_price(spot, p.target_price, k)

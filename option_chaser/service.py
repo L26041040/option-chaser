@@ -7,7 +7,7 @@ from datetime import date, timedelta
 from pathlib import Path
 from typing import Callable
 
-from .data.snapshot import load_snapshot, save_snapshot, snapshot_today
+from .data.snapshot import find_contract, load_snapshot, save_snapshot, snapshot_today
 from .filters import apply_filters, generate_spread_pairs
 from .matrix import date_axis, matrix_grid, price_axis
 from .models import (AnalysisParams, ChainSnapshot, FilterReport, PairReport,
@@ -19,11 +19,25 @@ from .report import STRATEGY_LABELS, render, render_filter_only, render_spreads
 from .scenarios import (ScenarioVector, completion_curve, completion_scan,
                         friction, natural_cost, scenario_vector, _grid_price,
                         _value_fn)
-from .valuation import (ContractValuation, SpreadValuation, evaluate_contract,
-                        evaluate_spread, leg_greeks, scenario_leg_value,
+from .timeframe import (TargetMonth, calendar_anchor, ensure_month_open,
+                        select_expiries)
+from .ratecurve import RateCurve, rate_for_tenor
+from .valuation import (ContractValuation, DAYS_PER_YEAR, SpreadValuation,
+                        catchup_price, evaluate_contract, evaluate_spread,
+                        leg_greeks, leg_rate, scenario_leg_value,
                         spread_scenario_value)
 
 Progress = Callable[[str], None]
+
+# T12（附錄 A14.1）：利率曲線 loader = (today) -> (RateCurve | None, 報告註記)。
+# 只有網路路徑（run／workspace 群組刷新）預設接真管線；run_offline 預設 None，
+# 快照重放與測試因此決定性且零網路。
+RateCurveLoader = Callable[[date], tuple[RateCurve | None, str]]
+
+
+def default_rate_curve_loader(today: date):
+    from .data.treasury import load_rate_curve  # lazy: offline paths never觸網
+    return load_rate_curve(today)
 
 
 @dataclass(frozen=True)
@@ -46,9 +60,10 @@ class CandidateView:
     pros: tuple[str, ...]
     cons: tuple[str, ...]
     matrix: MatrixView
-    baseline_pnl: float        # 估值 − 成本（Mid 口徑，每股）
+    # T12（附錄 A14.2）：主數字成本口徑＝最差成交假設（單腿 Ask／價差
+    # net_worst）。原 natural_return 與主數字重合，已合併進 baseline_return。
+    baseline_pnl: float        # 估值 − 成本（最差口徑，每股）
     baseline_return: float     # ranking.baseline_return / spread_baseline_return
-    natural_return: float      # (基準估值 − Natural成本)/Natural成本
     scenario: ScenarioVector
     completion_curve: tuple[tuple[float, float], ...]
     completion_prices: tuple[float, ...]
@@ -62,6 +77,9 @@ class CandidateView:
     theta_day_rate: float      # |淨Θ| / Mid 成本
     vega_per_pt: float         # 淨Vega(每1 IV百分點) / Mid 成本
     decay_30d_return: float    # S=spot、IV不變、today+30(或到期)估值報酬
+    # D1（#14）：Long Call 追平價格 S*=K+C×(1+R)——只對 Spread 有意義
+    # （買腿履約價 K 的同履約價 Call 若報價缺失也是 None）；單腳恆為 None。
+    catchup_price: float | None = None
 
 
 @dataclass(frozen=True)
@@ -80,6 +98,13 @@ class StrategyResult:
     # candidates (not just the top-3 kept in `candidates`), used for grouping.
     expiry_best: tuple[CandidateView, ...] = ()
     expiry_counts: tuple[tuple[str, int], ...] = ()
+    # T9（#23，需求三）：每個到期日各自的完整前十名——分組後各自取前 10，
+    # 不是跨到期日的全域前 10；只有 spread 策略填入（MVP 範圍，附錄A13）。
+    expiry_top10: tuple[tuple[str, tuple[CandidateView, ...]], ...] = ()
+    # T9（附錄A7）：該次全部有效候選，依到期日分組、組內已排序——供 store 層
+    # 序列化「所屬到期日內名次」等歷史五欄位；不建 CandidateView（無 Heatmap
+    # 矩陣），成本控制同 `expiry_best` 的既有取捨。
+    expiry_ranked: tuple[tuple[str, tuple[SpreadValuation, ...]], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -102,9 +127,8 @@ class ComparisonRow:
     strategy: str
     label: str
     expiry: str
-    cost: float
+    cost: float                # 最差成交口徑（單腿 Ask／價差 net_worst）
     baseline_return: float
-    natural_return: float
     breakeven: float
     max_profit: float | None
 
@@ -131,6 +155,13 @@ class AnalysisResult:
     expiry_groups: tuple[ExpiryGroup, ...]
     hidden_expiries: tuple[str, ...]
     default_selection: tuple[str, str] | None
+    # T10（#24，附錄A8.5）：baseline＝距日曆錨點最近的實際到期日（六點規則，
+    # `timeframe.select_expiries`）；None 僅見於鏈上零到期日（附錄A12.2）。
+    baseline_expiry: str | None
+    # 詳細頁進頁預設選中：baseline 期自己的第 1 名（不是 `default_selection`
+    # 的全域最高報酬避警示邏輯——那是 v4 舊有、與 app.py 快速分析頁共用的
+    # 語意，T10 不動它）。baseline 期若沒有任何候選（如零合格候選）→ None。
+    baseline_selection: tuple[str, str] | None
 
 
 def _emit(progress: Progress | None, msg: str) -> None:
@@ -149,8 +180,7 @@ def _skip_message(strategy: str) -> str:
 def _matrix_view(value_fn, cost: float, spot: float, p: AnalysisParams,
                  today: date, expiry_iso: str) -> MatrixView:
     prices = price_axis(spot, p.target_price, is_bullish(p.strategy))
-    dates = date_axis(today, date.fromisoformat(p.target_date),
-                      date.fromisoformat(expiry_iso))
+    dates = date_axis(today, date.fromisoformat(expiry_iso))
     cells = matrix_grid(value_fn, cost, prices, dates)
     return MatrixView(prices=tuple(prices),
                       dates=tuple((d.isoformat(), lbl) for d, lbl in dates),
@@ -166,10 +196,10 @@ def _net_theta(val: ContractValuation | SpreadValuation, spot: float,
     if isinstance(val, SpreadValuation):
         lng, sht = val.long_leg, val.short_leg
         t_now = (date.fromisoformat(lng.expiry) - today).days / 365.0
-        g_l = leg_greeks(lng.option_type, spot, lng.strike, t_now, p.rate,
-                         lng.implied_volatility)
-        g_s = leg_greeks(sht.option_type, spot, sht.strike, t_now, p.rate,
-                         sht.implied_volatility)
+        g_l = leg_greeks(lng.option_type, spot, lng.strike, t_now,
+                         leg_rate(p, lng.expiry), lng.implied_volatility)
+        g_s = leg_greeks(sht.option_type, spot, sht.strike, t_now,
+                         leg_rate(p, sht.expiry), sht.implied_volatility)
         return g_l.theta_per_day - g_s.theta_per_day
     return val.theta_per_day
 
@@ -179,10 +209,10 @@ def _net_vega(val: ContractValuation | SpreadValuation, spot: float,
     if isinstance(val, SpreadValuation):
         lng, sht = val.long_leg, val.short_leg
         t_now = (date.fromisoformat(lng.expiry) - today).days / 365.0
-        g_l = leg_greeks(lng.option_type, spot, lng.strike, t_now, p.rate,
-                         lng.implied_volatility)
-        g_s = leg_greeks(sht.option_type, spot, sht.strike, t_now, p.rate,
-                         sht.implied_volatility)
+        g_l = leg_greeks(lng.option_type, spot, lng.strike, t_now,
+                         leg_rate(p, lng.expiry), lng.implied_volatility)
+        g_s = leg_greeks(sht.option_type, spot, sht.strike, t_now,
+                         leg_rate(p, sht.expiry), sht.implied_volatility)
         return g_l.vega_per_pct - g_s.vega_per_pct
     return val.vega_per_pct
 
@@ -216,8 +246,7 @@ def _v4_fields(val: ContractValuation | SpreadValuation, spot: float,
         completion_threshold=k, breakeven_at_target=be,
         retention=1.0 + dict(sv.entries)["S1"], friction=fr,
         friction_amount=natural_cost(val) - mid_cost,
-        buffer_days=(date.fromisoformat(expiry)
-                     - date.fromisoformat(p.target_date)).days,
+        buffer_days=(date.fromisoformat(expiry) - p.anchor).days,
         quote_warning=zero_vol or fr > 0.25,
         theta_day_rate=abs(_net_theta(val, spot, today, p)) / mid_cost,
         vega_per_pt=_net_vega(val, spot, today, p) / mid_cost,
@@ -231,36 +260,58 @@ def _single_leg_view(v: ContractValuation, band: str,
     pros, cons = build_reasons(v, band, ranked, spot, n_qualified, p)
     mv = _matrix_view(
         lambda S, d, c=v.contract: scenario_leg_value(c, S, d, p),
-        v.mid, spot, p, today, v.contract.expiry)
+        v.contract.ask, spot, p, today, v.contract.expiry)
     return CandidateView(
         valuation=v, pros=tuple(pros), cons=tuple(cons), matrix=mv,
-        baseline_pnl=v.baseline_value - v.mid,
+        baseline_pnl=v.baseline_value - v.contract.ask,
         baseline_return=baseline_return(v),
-        natural_return=(v.baseline_value - v.contract.ask) / v.contract.ask,
         **_v4_fields(v, spot, today, p))
 
 
+def _spread_catchup_price(sv: SpreadValuation, snap: ChainSnapshot) -> float | None:
+    """D1（#14）：S*=K+C×(1+R)。K／R 固定用買腿（long_leg）本身；C＝同履約價
+    Call 的實際成本——買腿本身是 call（bull-call-spread）時就是它自己的
+    Ask，是 put（bear-put-spread）時得從同一快照另外找同履約價的 call。
+    找不到報價回傳 None（render 層負責顯示「無法計算」，不拋錯）。"""
+    strike, expiry = sv.long_leg.strike, sv.long_leg.expiry
+    if sv.long_leg.option_type == "call":
+        call_cost = sv.long_leg.ask
+    else:
+        call = find_contract(snap, "call", strike, expiry)
+        call_cost = call.ask if call is not None else None
+    if call_cost is None:
+        return None
+    return catchup_price(strike, call_cost, spread_baseline_return(sv))
+
+
 def _spread_view(sv: SpreadValuation, idx: int, n_pairs: int, spot: float,
-                 today: date, p: AnalysisParams) -> CandidateView:
+                 today: date, p: AnalysisParams, snap: ChainSnapshot) -> CandidateView:
     pros, cons = build_spread_reasons(sv, idx, n_pairs, p)
     mv = _matrix_view(
         lambda S, d, lng=sv.long_leg, sht=sv.short_leg:
             spread_scenario_value(lng, sht, S, d, p),
-        sv.net_mid, spot, p, today, sv.long_leg.expiry)
+        sv.net_worst, spot, p, today, sv.long_leg.expiry)
     return CandidateView(
         valuation=sv, pros=tuple(pros), cons=tuple(cons), matrix=mv,
-        baseline_pnl=sv.baseline_value - sv.net_mid,
+        baseline_pnl=sv.baseline_value - sv.net_worst,
         baseline_return=spread_baseline_return(sv),
-        natural_return=(sv.baseline_value - sv.net_worst) / sv.net_worst,
+        catchup_price=_spread_catchup_price(sv, snap),
         **_v4_fields(sv, spot, today, p))
 
 
-def candidate_key(cv: CandidateView) -> str:
-    v = cv.valuation
+def valuation_key(v: ContractValuation | SpreadValuation) -> str:
+    """需求八：Spread／單腳身分鍵，直接吃估值物件——`candidate_key()` 的
+    CandidateView 包裝只是它的一層外皮。T9 序列化全部有效候選的歷史五欄位
+    時不需要（也不划算）先建 CandidateView，所以底層鍵在這裡獨立出來重用，
+    公開給 `store.py` 跨模組呼叫（非本模組私用，因此不加底線）。"""
     if isinstance(v, SpreadValuation):
         return (f"{_strategy_of(v)}|{v.long_leg.strike:g}|"
                 f"{v.short_leg.strike:g}|{v.long_leg.expiry}")
     return f"{_strategy_of(v)}|{v.contract.strike:g}|{v.contract.expiry}"
+
+
+def candidate_key(cv: CandidateView) -> str:
+    return valuation_key(cv.valuation)
 
 
 def _strategy_of(v) -> str:
@@ -275,29 +326,15 @@ def _expiry_of(cv: CandidateView) -> str:
     return v.long_leg.expiry if isinstance(v, SpreadValuation) else v.contract.expiry
 
 
-def _sample_expiries(expiries: list[str], target_date: str
-                     ) -> tuple[list[str], list[str]]:
-    """Spec §3.2: <=4 keep all; else nearest-2 (>= target) + evenly spaced to 4."""
-    exps = sorted(set(expiries))
-    if len(exps) <= 4:
-        return exps, []
-    kept = exps[:2]                       # expiry >= target_date guaranteed by filters
-    rest = exps[2:]
-    need = 2
-    idx = [round(i * (len(rest) - 1) / (need - 1)) for i in range(need)] \
-        if need > 1 else [0]
-    for i in sorted(set(idx)):
-        kept.append(rest[i])
-    kept = sorted(set(kept))
-    hidden = [e for e in exps if e not in kept]
-    return kept, hidden
-
-
 def _build_groups(results: tuple[StrategyResult, ...],
-                  strategies_order: tuple[str, ...], target_date: str
+                  strategies_order: tuple[str, ...], anchor: date
                   ) -> tuple[tuple[ExpiryGroup, ...], tuple[str, ...],
                             tuple[str, str] | None]:
-    """v4 spec §3.2: assemble expiry groups, global badges, sampling + injection."""
+    """v4 spec §3.2 的分組與全域徽章。
+
+    窮舉範圍已由六點規則收斂到至多五檔到期日，原本「先窮舉全鏈、事後取樣顯示」
+    的抽樣層因此整個消失：每一檔被選中的到期日都是一組，`hidden_expiries` 恆空。
+    """
     order_index = {s: i for i, s in enumerate(strategies_order)}
     all_pairs: list[tuple[str, CandidateView]] = []
     pe_best: dict[tuple[str, str], CandidateView] = {}
@@ -348,44 +385,38 @@ def _build_groups(results: tuple[StrategyResult, ...],
     def _make_group(exp: str) -> ExpiryGroup:
         rows = _make_rows(exp)
         hidden_count = total_counts.get(exp, 0) - len(rows)
-        buffer_days = (date.fromisoformat(exp) - date.fromisoformat(target_date)).days
-        return ExpiryGroup(expiry=exp, buffer_days=buffer_days, rows=rows,
-                           hidden_count=hidden_count)
+        # 緩衝天數的參考日＝日曆錨點（附錄 A9），不是任何被發明出來的目標日。
+        return ExpiryGroup(expiry=exp,
+                           buffer_days=(date.fromisoformat(exp) - anchor).days,
+                           rows=rows, hidden_count=hidden_count)
 
     expiries = sorted({_expiry_of(cv) for _, cv in all_pairs})
-    kept, hidden = _sample_expiries(expiries, target_date)
-    groups: dict[str, ExpiryGroup] = {exp: _make_group(exp) for exp in kept}
-    hidden_list = list(hidden)
-
-    def _ensure_visible(pair: tuple[str, CandidateView]) -> None:
-        s, cv = pair
-        exp = _expiry_of(cv)
-        if exp in groups:
-            rows = groups[exp].rows
-            if any(r.strategy == s and r.candidate is cv for r in rows):
-                return
-            new_row = ExpiryGroupRow(strategy=s, candidate=cv, badges=_row_badges(s, cv))
-            new_rows = tuple(sorted(rows + (new_row,),
-                                    key=lambda r: -r.candidate.baseline_return))
-            groups[exp] = dataclasses.replace(groups[exp], rows=new_rows)
-        else:
-            groups[exp] = _make_group(exp)
-            if exp in hidden_list:
-                hidden_list.remove(exp)
-
-    for pair in (top_return_pair, top_resilience_pair, default_pair):
-        _ensure_visible(pair)
-
-    ordered_expiries = sorted(groups.keys())
-    expiry_groups = tuple(groups[e] for e in ordered_expiries)
-    hidden_expiries = tuple(sorted(hidden_list))
+    expiry_groups = tuple(_make_group(exp) for exp in expiries)
     default_selection = (_expiry_of(default_pair[1]), candidate_key(default_pair[1]))
-    return expiry_groups, hidden_expiries, default_selection
+    return expiry_groups, (), default_selection
+
+
+def _baseline_selection(expiry_groups: tuple[ExpiryGroup, ...],
+                        baseline_expiry: str | None
+                        ) -> tuple[str, str] | None:
+    """T10（#24，附錄A8.5）：詳細頁預設選中＝baseline 期自己的第 1 名。
+
+    `_make_rows()` 已把每組 `rows` 依 baseline_return 由高到低排過序，
+    第 0 個就是該期第 1 名——不必另建排序或另跑一次全域比較（那是
+    `default_selection` 的既有語意，與此處刻意不同，見 AnalysisResult
+    欄位註解）。baseline 期若不在 `expiry_groups`（如零合格候選、或鏈上
+    零到期日）→ None，UI 端自行處理「無可選」的顯示。
+    """
+    group = next((g for g in expiry_groups if g.expiry == baseline_expiry),
+                None)
+    if group is None or not group.rows:
+        return None
+    return (baseline_expiry, candidate_key(group.rows[0].candidate))
 
 
 def _single_leg_result(p: AnalysisParams, snap: ChainSnapshot,
                        today: date) -> StrategyResult:
-    qualified, freport = apply_filters(snap.contracts, p, today)
+    qualified, freport = apply_filters(snap.contracts, p)
     if not qualified:
         return StrategyResult(
             strategy=p.strategy, status="empty", candidates=(),
@@ -431,7 +462,7 @@ def _single_leg_result(p: AnalysisParams, snap: ChainSnapshot,
 
 def _spread_result(p: AnalysisParams, snap: ChainSnapshot,
                    today: date) -> StrategyResult:
-    qualified, freport = apply_filters(snap.contracts, p, today)
+    qualified, freport = apply_filters(snap.contracts, p)
     pairs, pair_report = generate_spread_pairs(qualified, p)
     if not pairs:
         return StrategyResult(
@@ -448,31 +479,47 @@ def _spread_result(p: AnalysisParams, snap: ChainSnapshot,
     candidates = []
     for i, sv in enumerate(ranked[:3]):
         candidates.append(_spread_view(sv, i, pair_report.passed, snap.spot,
-                                       today, p))
+                                       today, p, snap))
 
     # v4 spec §3.2: per-expiry best over ALL qualified spreads (not just the
-    # top-3 in `candidates`), for expiry grouping.
+    # top-3 in `candidates`), for expiry grouping. T9（#23）：同一輪順便把
+    # 每個到期日各自的完整排序分組收集起來（`by_expiry`）——分組後各自的
+    # 相對順序與獨立對該組排序等價（全域鍵不依賴其他組），因此不必為
+    # `expiry_top10`/`expiry_ranked` 另跑一次排序。
     all_ranked = sorted(spreads, key=lambda s: (-spread_baseline_return(s),
                                                 *_spread_tie_key(s)))
     counts: dict[str, int] = {}
     best_by_expiry: dict[str, tuple[int, SpreadValuation]] = {}
+    by_expiry: dict[str, list[SpreadValuation]] = {}
     for idx, sv in enumerate(all_ranked):
         exp = sv.long_leg.expiry
         counts[exp] = counts.get(exp, 0) + 1
         if exp not in best_by_expiry:
             best_by_expiry[exp] = (idx, sv)
+        by_expiry.setdefault(exp, []).append(sv)
     expiry_best = tuple(
         _spread_view(best_by_expiry[exp][1], best_by_expiry[exp][0],
-                     pair_report.passed, snap.spot, today, p)
+                     pair_report.passed, snap.spot, today, p, snap)
         for exp in sorted(best_by_expiry))
     expiry_counts = tuple(sorted(counts.items()))
+    # 各到期日自己的前十名（Heatmap 矩陣只隨這至多 5×10 檔入快照，附錄A10.3）；
+    # idx/組內大小都是「本期」的，不是全域——這是各期自己的排名，不是全域
+    # 前十名的節錄。
+    expiry_top10 = tuple(
+        (exp, tuple(_spread_view(sv, i, len(by_expiry[exp]), snap.spot,
+                                 today, p, snap)
+                    for i, sv in enumerate(by_expiry[exp][:10])))
+        for exp in sorted(by_expiry))
+    expiry_ranked = tuple((exp, tuple(by_expiry[exp]))
+                          for exp in sorted(by_expiry))
 
     return StrategyResult(
         strategy=p.strategy, status="ok", candidates=tuple(candidates),
         ranked_bands=None, ranked_spreads=tuple(ranked),
         n_qualified=pair_report.passed, filter_report=freport,
         pair_report=pair_report, report_text=text, message="",
-        expiry_best=expiry_best, expiry_counts=expiry_counts)
+        expiry_best=expiry_best, expiry_counts=expiry_counts,
+        expiry_top10=expiry_top10, expiry_ranked=expiry_ranked)
 
 
 def _comparison(results: tuple[StrategyResult, ...]) -> tuple[ComparisonRow, ...]:
@@ -485,21 +532,19 @@ def _comparison(results: tuple[StrategyResult, ...]) -> tuple[ComparisonRow, ...
             rows.append(ComparisonRow(
                 strategy=res.strategy,
                 label=f"買 {sv.long_leg.strike:g} / 賣 {sv.short_leg.strike:g}",
-                expiry=sv.long_leg.expiry, cost=sv.net_mid,
+                expiry=sv.long_leg.expiry, cost=sv.net_worst,
                 baseline_return=spread_baseline_return(sv),
-                natural_return=(sv.baseline_value - sv.net_worst) / sv.net_worst,
                 breakeven=sv.breakeven, max_profit=sv.max_profit))
         else:
             firsts = [lst[0] for lst in res.ranked_bands.values() if lst]
             v = sorted(firsts,
                        key=lambda x: (-baseline_return(x), *_tie_break_key(x)))[0]
             c = v.contract
-            max_profit = None if res.strategy == "long-call" else c.strike - v.mid
+            max_profit = None if res.strategy == "long-call" else c.strike - c.ask
             rows.append(ComparisonRow(
                 strategy=res.strategy, label=f"K={c.strike:g}",
-                expiry=c.expiry, cost=v.mid,
+                expiry=c.expiry, cost=c.ask,
                 baseline_return=baseline_return(v),
-                natural_return=(v.baseline_value - c.ask) / c.ask,
                 breakeven=v.breakeven, max_profit=max_profit))
     return tuple(rows)
 
@@ -513,12 +558,72 @@ def _validate_request(request: AnalysisRequest) -> None:
         raise ParamError(f"未知策略: {', '.join(invalid)}")
 
 
+def _scoped_to_selected_expiries(snap: ChainSnapshot, anchor: date,
+                                 today: date
+                                 ) -> tuple[ChainSnapshot, str | None]:
+    """把快照收斂到六點規則選中的至多五檔到期日——窮舉只發生在這個範圍內。
+    同時交回 baseline（T10／附錄A8.5：詳細頁預設選中的到期日），供
+    `_analyze` 往下傳遞到 `AnalysisResult`——不在這裡之外重算一次。
+
+    候選到期日必須晚於資料日：已到期／當日到期的合約 T <= 0，Greeks 無定義，
+    根本不是可分析的標的。這是資料有效性前提，與「到期日 >= 目標日」那條被移除
+    的目標導向下限無關——錨點前方、早於目標月的到期日一律照常入選。
+
+    附錄 A12 第 2 點：鏈上零個到期日但抓取本身未拋例外時，不得逕自判為刷新
+    失敗——比照零合格候選（A10.2）處理，回傳零合約快照，讓下游每個策略走
+    既有的空結果分支（綠燈＋「—」）。`select_expiries` 這個純函式本身在被
+    直接餵入空清單時仍然拋錯，這裡只是不讓服務層把「沒有到期日可選」誤讀成
+    產品異常；此時 baseline 也無從定義，回傳 None。
+    """
+    tradable = {c.expiry for c in snap.contracts
+                if date.fromisoformat(c.expiry) > today}
+    if not tradable:
+        return dataclasses.replace(snap, contracts=()), None
+    selection = select_expiries(tradable, anchor)
+    selected = set(selection.expiries)
+    scoped = dataclasses.replace(
+        snap, contracts=tuple(c for c in snap.contracts
+                              if c.expiry in selected))
+    return scoped, selection.baseline
+
+
+def _resolve_rates(p: AnalysisParams, snap: ChainSnapshot, today: date,
+                   loader: RateCurveLoader | None) -> AnalysisParams:
+    """T12（附錄 A14.1）：每個入選到期日以「分析日→到期日」年期取期限對齊利率。
+
+    `--rate` 明示（rate_explicit）→ 原樣返回，行為與現行完全一致。
+    無 loader（離線重放）→ 估值同樣用常數，但報告參數行必須標示——只有
+    明示 --rate 被授權沿用現行寫法（issue #26），其餘固定值一律說明原因。
+    曲線不可得 → 保持常數 `p.rate`，僅設 `rate_note` 供報告參數行標示。
+    解出的表以到期日為鍵：同一腿在 Heatmap 全格共用一個 r。
+    """
+    if p.rate_explicit:
+        return p
+    if loader is None:
+        return dataclasses.replace(p, rate_note="離線重放，未啟用利率曲線")
+    curve, note = loader(today)
+    if curve is None:
+        return dataclasses.replace(p, rate_note=note)
+    pairs = tuple(
+        (e, rate_for_tenor(
+            curve, (date.fromisoformat(e) - today).days / DAYS_PER_YEAR))
+        for e in sorted({c.expiry for c in snap.contracts}))
+    return dataclasses.replace(p, rate_by_expiry=pairs, rate_note=note)
+
+
 def _analyze(request: AnalysisRequest, snap: ChainSnapshot,
-             snapshot_path: str, progress: Progress | None) -> AnalysisResult:
+             snapshot_path: str, progress: Progress | None,
+             rate_curve_loader: RateCurveLoader | None = None) -> AnalysisResult:
     today = snapshot_today(snap.fetched_at)
     base = request.base_params
-    if date.fromisoformat(base.target_date) <= today:
-        raise ParamError(f"--target-date 必須晚於資料日 {today.isoformat()}")
+    month = ensure_month_open(TargetMonth.from_key(base.target_month), today)
+    anchor = calendar_anchor(month)
+    _emit(progress, "正在依日曆錨點選取到期日……")
+    snap, baseline_expiry = _scoped_to_selected_expiries(snap, anchor, today)
+    _emit(progress, "正在解析無風險利率……")
+    base = _resolve_rates(base, snap, today, rate_curve_loader)
+    # 解出的利率是估值輸入的一部分：回寫 request，讓結果持久化與呼叫端可見。
+    request = dataclasses.replace(request, base_params=base)
     results = []
     _emit(progress, "正在過濾合約……")
     for s in request.strategies:
@@ -548,7 +653,8 @@ def _analyze(request: AnalysisRequest, snap: ChainSnapshot,
                    key=lambda r: (r.baseline_return, -order.index(r.strategy))
                    ).strategy
     expiry_groups, hidden_expiries, default_selection = _build_groups(
-        tuple(results), request.strategies, base.target_date)
+        tuple(results), request.strategies, anchor)
+    baseline_selection = _baseline_selection(expiry_groups, baseline_expiry)
     return AnalysisResult(
         request=request,
         meta=SnapshotMeta(symbol=snap.symbol, spot=snap.spot,
@@ -558,7 +664,8 @@ def _analyze(request: AnalysisRequest, snap: ChainSnapshot,
         snapshot=snap, today=today, results=tuple(results),
         comparison=comparison, best_strategy=best,
         expiry_groups=expiry_groups, hidden_expiries=hidden_expiries,
-        default_selection=default_selection)
+        default_selection=default_selection, baseline_expiry=baseline_expiry,
+        baseline_selection=baseline_selection)
 
 
 def fetch_and_save(symbol: str) -> tuple[ChainSnapshot, str]:
@@ -576,11 +683,17 @@ def run(request: AnalysisRequest, progress: Progress | None = None) -> AnalysisR
     _validate_request(request)
     _emit(progress, f"正在抓取 {request.symbol} 市場資料……")
     snap, out = fetch_and_save(request.symbol)
-    return _analyze(request, snap, out, progress)
+    return _analyze(request, snap, out, progress,
+                    rate_curve_loader=default_rate_curve_loader)
 
 
 def run_offline(request: AnalysisRequest, snapshot_path: str,
-                progress: Progress | None = None) -> AnalysisResult:
+                progress: Progress | None = None, *,
+                rate_curve_loader: RateCurveLoader | None = None
+                ) -> AnalysisResult:
+    """離線重放預設不接利率管線（決定性、零網路）；networked 呼叫端（如
+    workspace 群組刷新，自己剛抓完 chain）可明示傳 loader 啟用曲線。"""
     _validate_request(request)
     snap = load_snapshot(snapshot_path)
-    return _analyze(request, snap, str(snapshot_path), progress)
+    return _analyze(request, snap, str(snapshot_path), progress,
+                    rate_curve_loader=rate_curve_loader)

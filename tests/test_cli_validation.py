@@ -5,15 +5,21 @@ from option_chaser.cli import build_parser, resolve_params, validate_scenario
 
 
 def parse(*extra):
-    argv = ["XYZ", "--target-price", "120", "--target-date", "2026-08-28",
+    argv = ["XYZ", "--target-price", "120", "--target-month", "2026/8",
             "--snapshot", "dummy.json"] + list(extra)
     return build_parser().parse_args(argv)
+
+
+def parse_with_month(text):
+    return build_parser().parse_args(
+        ["XYZ", "--target-price", "120", "--target-month", text,
+         "--snapshot", "dummy.json"])
 
 
 def test_removed_buffer_flags_error(capsys):
     with pytest.raises(SystemExit):
         build_parser().parse_args(
-            ["XYZ", "--target-price", "120", "--target-date", "2026-08-28",
+            ["XYZ", "--target-price", "120", "--target-month", "2026/8",
              "--snapshot", "d.json", "--min-days-after", "45"])
     assert "unrecognized arguments" in capsys.readouterr().err
 
@@ -75,10 +81,24 @@ def test_scenario_target_below_spot_needs_force():
     validate_scenario(pf, spot=130.0, today=date(2026, 7, 15))  # no raise
 
 
-def test_scenario_target_date_must_be_future():
-    p = resolve_params(parse())
+def test_four_input_formats_normalize_to_same_month():
+    for text in ("2026/8", "2026/08", "26/8", "26/08"):
+        assert resolve_params(
+            parse_with_month(text)).target_month == "2026-08"
+
+
+def test_unparseable_month_rejected():
+    for text in ("2026-08", "August 2026", "2026/13", ""):
+        with pytest.raises(ParamError):
+            resolve_params(parse_with_month(text))
+
+
+def test_scenario_month_must_not_be_over():
+    """目標月最後一天當天不算過完，翌日才算（月級語意）。"""
+    p = resolve_params(parse())          # 2026-08
+    validate_scenario(p, spot=100.0, today=date(2026, 8, 31))   # 當月末日仍可
     with pytest.raises(ParamError):
-        validate_scenario(p, spot=100.0, today=date(2026, 8, 28))
+        validate_scenario(p, spot=100.0, today=date(2026, 9, 1))
 
 
 def test_negative_iv_shifts_parse():
@@ -92,7 +112,7 @@ def test_force_followed_by_negative_token_errors(capsys):
     # argparse rejects it as an unrecognized argument (pre-fix error differed)
     with pytest.raises(SystemExit):
         build_parser().parse_args(
-            ["XYZ", "--target-price", "120", "--target-date", "2026-08-28",
+            ["XYZ", "--target-price", "120", "--target-month", "2026/8",
              "--snapshot", "dummy.json", "--force", "-5"]
         )
     err = capsys.readouterr().err
@@ -107,7 +127,7 @@ def test_dot_leading_negative_shift_parses():
 def test_empty_symbol_rejected():
     # spec §3: symbol must be a non-empty string
     for sym in ("", "   "):
-        argv = [sym, "--target-price", "120", "--target-date", "2026-08-28",
+        argv = [sym, "--target-price", "120", "--target-month", "2026/8",
                 "--snapshot", "dummy.json"]
         with pytest.raises(ParamError):
             resolve_params(build_parser().parse_args(argv))
@@ -131,6 +151,6 @@ def test_cli_skipped_direction_exits_2(capsys, tmp_path):
     f.write_text(json.dumps(snap), encoding="utf-8")
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf):
-        rc = main(["XYZ", "--target-price", "80", "--target-date", "2026-08-28",
+        rc = main(["XYZ", "--target-price", "80", "--target-month", "2026/8",
                    "--snapshot", str(f)])
     assert rc == 2 and "看漲策略目標價" in buf.getvalue()

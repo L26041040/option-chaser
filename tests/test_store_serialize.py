@@ -19,7 +19,7 @@ def _result(strategies=("long-call", "bull-call-spread")):
             symbol="XYZ",
             base_params=AnalysisParams(strategy=strategies[0],
                                        target_price=120.0,
-                                       target_date="2026-08-01"),
+                                       target_month="2026-08"),
             strategies=strategies),
         FIX)
 
@@ -36,6 +36,9 @@ def test_top_level_fields_and_versions():
     assert view["today"] == _result().today.isoformat()
     assert view["meta"]["target_move"] == _result().meta.target_move
     assert isinstance(view["default_selection"], list)
+    # T10（#24）：baseline 期本身＋其第 1 名，與既有 default_selection 並存。
+    assert view["baseline_expiry"] == _result().baseline_expiry
+    assert isinstance(view["baseline_selection"], list)
     json.dumps(view)   # 全結構可 JSON 化
 
 
@@ -49,11 +52,16 @@ def test_candidate_fields_hand_checked():
     v = cv.valuation
     assert cand["candidate_key"] == service.candidate_key(cv)
     assert cand["mid_cost"] == v.mid
-    assert cand["capital_per_contract"] == v.mid * 100
-    assert cand["max_loss_per_contract"] == v.mid * 100          # debit 恆等於成本
-    assert cand["pct_of_capital"] == (v.mid * 100) / 100000.0
+    # T12（附錄 A14.2）：資本／最大虧損以最差成交成本（單腿＝Ask）計
+    assert cand["natural_cost"] == v.contract.ask
+    assert cand["capital_per_contract"] == v.contract.ask * 100
+    assert cand["max_loss_per_contract"] == v.contract.ask * 100  # debit 恆等於成本
+    assert cand["pct_of_capital"] == (v.contract.ask * 100) / 100000.0
     today = result.today
-    assert cand["days_to_target"] == (date.fromisoformat("2026-08-01") - today).days
+    # 參考日＝日曆錨點（2026-08 的第三個星期五），不是任何被發明出來的目標日
+    assert cand["days_to_target"] == (
+        result.request.base_params.anchor - today).days
+    assert result.request.base_params.anchor == date(2026, 8, 21)
     assert cand["days_to_expiry"] == (
         date.fromisoformat(v.contract.expiry) - today).days
     assert cand["legs"][0]["strike"] == v.contract.strike
@@ -126,7 +134,7 @@ def test_data_quality_all_quotes_filtered(tmp_path):
             symbol="XYZ",
             base_params=AnalysisParams(strategy="long-call",
                                        target_price=120.0,
-                                       target_date="2026-08-01"),
+                                       target_month="2026-08"),
             strategies=("long-call", "bull-call-spread")),
         str(bad))
     view = store.serialize_result(result, "S", None)

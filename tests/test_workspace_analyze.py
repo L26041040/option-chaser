@@ -6,12 +6,14 @@ from option_chaser import store, workspace
 
 FIX = "tests/fixtures/xyz_v4_six_expiries.json"
 TS = "2026-07-21T00:00:00+00:00"
+OBSERVED = date(2026, 7, 21)   # 與 TS 同日：建立驗證不吃真實時鐘
 
 
-def _create(ws, price=120.0, tdate="2026-08-01"):
+def _create(ws, price=120.0, tmonth="2026-08"):
     return workspace.create_scenario(
         ws, symbol="XYZ", direction="bullish", target_price=price,
-        target_date=tdate, notes="", strategies=("long-call",), ts=TS)
+        target_month=tmonth, notes="", strategies=("long-call",), ts=TS,
+        observed=OBSERVED)
 
 
 def test_create_analyze_latest_chain(tmp_path):
@@ -50,8 +52,8 @@ def test_analyze_uses_capital_snapshot(tmp_path):
 
 
 def test_analyze_group_shares_snapshot(tmp_path):
-    a = _create(tmp_path, price=110.0, tdate="2026-08-01")
-    b = _create(tmp_path, price=120.0, tdate="2026-09-01")
+    a = _create(tmp_path, price=110.0, tmonth="2026-08")
+    b = _create(tmp_path, price=120.0, tmonth="2026-09")
     paths = workspace.analyze_group(tmp_path, "G-XYZ",
                                     snapshot_path=FIX, ts=TS)
     assert len(paths) == 2
@@ -63,8 +65,8 @@ def test_analyze_group_shares_snapshot(tmp_path):
 def test_analyze_group_online_fetches_once(tmp_path, monkeypatch):
     from option_chaser import service
     from option_chaser.data.snapshot import load_snapshot
-    _create(tmp_path, price=110.0, tdate="2026-08-01")
-    _create(tmp_path, price=120.0, tdate="2026-09-01")
+    _create(tmp_path, price=110.0, tmonth="2026-08")
+    _create(tmp_path, price=120.0, tmonth="2026-09")
     calls = []
 
     def fake_fetch_and_save(symbol):
@@ -80,3 +82,25 @@ def test_analyze_group_online_fetches_once(tmp_path, monkeypatch):
 def test_latest_result_none_without_analysis(tmp_path):
     sc = _create(tmp_path)
     assert workspace.latest_result(tmp_path, sc.id) is None
+
+
+def test_failed_refresh_leaves_prior_snapshot_intact(tmp_path, monkeypatch):
+    """T7（#21）原子快照：失敗不得寫入任何部分結果，latest 仍指向上一份成功快照。"""
+    import pytest
+    from option_chaser import service
+    from option_chaser.models import FetchError
+
+    sc = _create(tmp_path)
+    workspace.analyze_scenario(tmp_path, sc.id, snapshot_path=FIX, ts=TS)
+    prior = workspace.latest_result(tmp_path, sc.id)
+    prior_files = sorted((tmp_path / "results" / sc.id).glob("*.json"))
+
+    monkeypatch.setattr(service, "run", lambda req, progress=None:
+                        (_ for _ in ()).throw(FetchError("網路不通")))
+    with pytest.raises(FetchError):
+        workspace.analyze_scenario(tmp_path, sc.id)   # 網路路徑：snapshot_path=None
+
+    assert workspace.latest_result(tmp_path, sc.id) == prior
+    assert sorted((tmp_path / "results" / sc.id).glob("*.json")) == prior_files
+    events = [e["event"] for e in store.read_events(tmp_path)]
+    assert events.count("ANALYSIS_COMPLETED") == 1
