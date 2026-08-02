@@ -34,6 +34,11 @@
   `StrategyResult.expiry_top10`／`expiry_ranked` 新增，`serialize_result()`
   新增 `expiry_top10`／`all_candidates` 兩欄位；範圍限定 Spread 路徑，
   single-leg 依 MVP 範圍不動）
+- **T10** [#24] — 詳細頁兩層結構：各期摘要（沿用既有 `render_step3`）→
+  單期 Top 10（新增 `render_expiry_top10`，commit `cc93053`）。新增
+  `AnalysisResult.baseline_expiry`／`baseline_selection`（附錄A8.5），
+  與 app.py 快速分析頁仍在用的 `default_selection` 並存不衝突。
+  A10.5 窄 viewport 驗收待需求方執行
 
 ### 待辦（依序，← 為下一張）
 
@@ -43,8 +48,7 @@
 > 任一種做法都會改變產品行為、或是要動到已定案的附錄決策。
 > 純工程判斷（命名、重構、測試怎麼寫、既有 lint 問題）自己決定就好。
 
-- **T10** [#24] — 詳細頁兩層結構（各期摘要 → 單期 Top 10）　← 下一張
-- **T11** [#25] — Spread 歷史時間序列查詢
+- **T11** [#25] — Spread 歷史時間序列查詢　← 下一張
 - **D1** [#14] — Long Call 追平比較（deferred，不得混入 T2–T11）
 
 ### 施工依據
