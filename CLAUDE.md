@@ -163,8 +163,8 @@ merge 回 master，部署版待需求方驗證（`source` 是否 `cboe`＋TLT 20
 
 - **V1** [#48] — 走通骨架 ✅ **雲端實測通過**（commits `7330ddb`
   → `4d3cea3` → `4225da4` → `2ab1a16`）：Vite＋React＋TS 手機優先前端／
-  FastAPI serverless（`api_app/`，進入點 `api/analyze.py`＋`api/health.py`）／
-  既有引擎。引擎只做 prefactor 不動計算：新增 `service.fetch_chain()`
+  FastAPI serverless（`api_app/`，進入點 `api/index.py`，`/api/(.*)`
+  全部 rewrite 到它、由 FastAPI 依原始路徑自行路由）／既有引擎。引擎只做 prefactor 不動計算：新增 `service.fetch_chain()`
   （只抓不落盤，serverless 唯讀）與 `run_with_snapshot()`（分析記憶體
   快照，不碰私有 `_analyze`）。契約＝既有 view dict，前端零金融計算。
   測試 24 條四層分工，契約樣本 `contracts/analysis_sample.json`

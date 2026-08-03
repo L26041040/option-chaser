@@ -8,3 +8,4 @@
 # 要改 lambda 的依賴，請改 pyproject.toml。這裡保留同一份內容只是為了
 # 讓「直接 pip install -r」的人也能跑起來，兩邊必須一致。
 fastapi>=0.117.1
+psycopg[binary]>=3.2

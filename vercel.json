@@ -2,14 +2,14 @@
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "framework": "vite",
   "functions": {
-    "api/*.py": {
+    "api/index.py": {
       "maxDuration": 60
     }
   },
   "rewrites": [
     {
-      "source": "/api/probe/(.*)",
-      "destination": "/api/health"
+      "source": "/api/(.*)",
+      "destination": "/api/index"
     },
     {
       "source": "/((?!api/).*)",

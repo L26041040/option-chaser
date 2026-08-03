@@ -10,6 +10,7 @@ requires-python = ">=3.11"
 # 引擎與 Cboe 主資料源都是 stdlib-only，只有 API 層需要第三方套件。
 dependencies = [
   "fastapi>=0.117.1",
+  "psycopg[binary]>=3.2",
   "tzdata; platform_system == 'Windows'",
 ]
 
