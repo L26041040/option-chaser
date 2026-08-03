@@ -27,3 +27,10 @@ include = ["option_chaser*"]
 
 [tool.pytest.ini_options]
 addopts = "-q"
+
+[tool.vercel]
+# V1（#48）部署踩坑：Vercel 的 Python 進入點自動偵測是靜態掃描找
+# `app = ...` 這種賦值寫法，認不出 `api/index.py` 的
+# `from api_app.main import app`（匯入再轉出）。明確指定進入點繞過
+# 自動偵測，指向 FastAPI app 物件實際定義的位置。
+entrypoint = "api_app.main:app"
