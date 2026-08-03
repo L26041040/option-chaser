@@ -161,18 +161,28 @@ merge 回 master，部署版待需求方驗證（`source` 是否 `cboe`＋TLT 20
 
 ### 待辦（依序，← 為下一張；標注「被誰擋」）
 
-- **V1** [#48] — 走通骨架（commit `7330ddb`，**部署待需求方執行**）：
-  Vite＋React＋TS 手機優先前端／FastAPI serverless（`api_app/`，進入點
-  `api/index.py`）／既有引擎。引擎只做 prefactor 不動計算：新增
-  `service.fetch_chain()`（只抓不落盤，serverless 唯讀）與
-  `run_with_snapshot()`（分析記憶體快照，不碰私有 `_analyze`）。
-  契約＝既有 view dict，前端零金融計算。測試 24 條四層分工，契約樣本
-  `contracts/analysis_sample.json` 前後端共用、漂移必紅燈。
-  ⚠ **兩件待需求方處理**：(1) 到 vercel.com/new 匯入 repo 完成首次
-  部署（步驟見 `docs/deploy-vercel.md`），部署後看畫面「資料來源」
-  一行即知 Cboe 可達性；(2) 裁示 `requirements.txt` 是否要含 yfinance
-  ——目前刻意不含（pandas/numpy 體積），故雲端 Cboe 失敗時是 502 而
-  非退回 yfinance，與 spec #47 的降級鏈說法有出入
+- **V1** [#48] — 走通骨架 ✅ **雲端實測通過**（commits `7330ddb`
+  → `4d3cea3` → `4225da4` → `2ab1a16`）：Vite＋React＋TS 手機優先前端／
+  FastAPI serverless（`api_app/`，進入點 `api/analyze.py`＋`api/health.py`）／
+  既有引擎。引擎只做 prefactor 不動計算：新增 `service.fetch_chain()`
+  （只抓不落盤，serverless 唯讀）與 `run_with_snapshot()`（分析記憶體
+  快照，不碰私有 `_analyze`）。契約＝既有 view dict，前端零金融計算。
+  測試 24 條四層分工，契約樣本 `contracts/analysis_sample.json`
+  前後端共用、漂移必紅燈。
+
+  **部署踩過的三個坑**（全記在 `docs/deploy-vercel.md`，別再踩）：
+  (1) 進入點偵測認不出「匯入再轉出」→ 改直接 `app = create_app()`；
+  (2) `[tool.vercel]` 會讓整包被判成「Python 後端框架」、前端完全不被
+  建置 → 撤掉，改用 `vercel.json` 的 `framework: "vite"`；
+  (3) **pyproject.toml 存在時 Vercel 認它、不認 requirements.txt**
+  → fastapi 移進 `[project] dependencies`，yfinance 移出改為 `yf`
+  extra（免得 pandas/numpy 進 lambda）。路由靠檔名對齊、不靠 rewrite。
+
+  **雲端驗收結果（2026-08-03）**：`資料來源 cboe` ← Vercel 出口打得到
+  `cdn.cboe.com`，主資料源在雲端生效。且同一組輸入（TLT／2028-05／120）
+  對照 feedback-v3 第 4 點的原始抱怨，**確認 FB3-01 的修正在雲端成立**：
+  第 1 名從「買75/賣80、41%」（深度 ITM，候選池被盤外歸零報價餓死的
+  產物）變成「買100/賣120、2566.7%」（淨成本 $0.75，數字自洽）。
 - **R1** [#49] — Research：專業報告版型慣例（無阻擋，可與 V1–V5 並行）←
 - **V2** [#50] — 儲存層 port/adapter＋Neon 接通（被 #48 擋）
 - **V3** [#51] — 劇本庫＋建立表單＋釘選功能列（被 #50 擋）
