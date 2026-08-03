@@ -12,11 +12,26 @@ serverless API（FastAPI，直接 import 既有 `option_chaser/` 引擎）。
 Vercel 會自動：
 
 - `npm install` → `npm run build` → 靜態檔輸出到 `dist/`
-- 以 `requirements.txt` 安裝 Python 依賴，把 `api/index.py` 部署成
+- 以 `requirements.txt` 安裝 Python 依賴，把 `api/*.py` 各自部署成
   serverless function（`vercel.json` 設 `maxDuration: 60`，一次分析的
   抓鏈＋計算要在這個時限內完成）
 
 之後每次 push 到 master 就自動重新部署。
+
+### ⚠ 專案模式必須是 Vite，不能是「Python 後端框架」
+
+`vercel.json` 的 `"framework": "vite"` 是必要的，且 `pyproject.toml`
+**不可以**有 `[tool.vercel]` 區段。實測過的坑（2026-08-02）：加上
+`[tool.vercel] entrypoint` 之後，Vercel 把整個專案判定成 Python 後端
+框架——build log 只剩 `Installing required dependencies from
+pyproject.toml`，完全不跑 npm/vite build（前端根本沒被建置），而且
+依賴改從 `pyproject.toml` 裝（那裡沒有 fastapi），函式啟動即
+`FUNCTION_INVOCATION_FAILED`。
+
+路由靠檔名對齊、不靠 rewrite：`api/analyze.py` ＝ `/api/analyze`、
+`api/health.py` ＝ `/api/health`，與 FastAPI 內部的路由路徑一致。
+（rewrite 送給函式的究竟是原始路徑還是改寫後路徑，在不同專案模式下
+行為不同，靠檔名對齊可完全避開這個不確定性。）
 
 ## 部署後的第一件事：確認 Cboe 可達性
 

@@ -28,9 +28,8 @@ include = ["option_chaser*"]
 [tool.pytest.ini_options]
 addopts = "-q"
 
-[tool.vercel]
-# V1（#48）部署踩坑：Vercel 的 Python 進入點自動偵測是靜態掃描找
-# `app = ...` 這種賦值寫法，認不出 `api/index.py` 的
-# `from api_app.main import app`（匯入再轉出）。明確指定進入點繞過
-# 自動偵測，指向 FastAPI app 物件實際定義的位置。
-entrypoint = "api_app.main:app"
+# 注意：這裡刻意**沒有** `[tool.vercel]`。加上它會讓 Vercel 把整個專案
+# 判定為「Python 後端框架」，於是只跑 pyproject 的依賴安裝、完全不跑
+# 前端的 npm/vite build（實測 build log 證實），函式也因為 pyproject
+# 沒有 fastapi 而啟動即崩。本專案是「Vite 前端＋api/ 底下的 Python
+# 函式」，模式由 vercel.json 的 `framework: vite` 指定。
