@@ -3,8 +3,13 @@ name = "option-chaser"
 version = "0.1.0"
 description = "Long Call scenario optimizer (deterministic, no probability logic)"
 requires-python = ">=3.11"
+# ⚠ 這份清單就是 serverless 函式實際會裝的東西。實測（V1／#48）：
+# pyproject.toml 存在時，Vercel 的 Python builder 認的是它、**不是**
+# requirements.txt——build log 明寫「Installing required dependencies
+# from pyproject.toml」。放進來的每個套件都會進 lambda，因此刻意精簡：
+# 引擎與 Cboe 主資料源都是 stdlib-only，只有 API 層需要第三方套件。
 dependencies = [
-  "yfinance>=0.2",
+  "fastapi>=0.117.1",
   "tzdata; platform_system == 'Windows'",
 ]
 
@@ -13,10 +18,13 @@ option-chaser = "option_chaser.cli:main"
 
 [project.optional-dependencies]
 gui = ["streamlit>=1.30"]
-# 新前端輪（V1／#48）：HTTP API 是後端唯一測試接縫，其契約測試必須跑得起來
-# ——不裝就會被靜默跳過、CI 綠燈失去意義。與 requirements.txt（Vercel 執行期）
-# 保持同步。
-api = ["fastapi>=0.117.1", "httpx"]
+# HTTP API 是後端唯一測試接縫，其契約測試必須跑得起來——不裝 httpx
+# （FastAPI TestClient 的依賴）就會整組紅燈，這是刻意的。
+api = ["httpx"]
+# 備援資料源：Cboe（stdlib-only）是主源，yfinance 只在它失敗時才用到，
+# 且 `data/yf.py` 是在函式內部才 import。移出核心依賴是為了不把
+# pandas/numpy 拖進 serverless 函式；本機／CLI／Streamlit 仍應安裝。
+yf = ["yfinance>=0.2"]
 
 [build-system]
 requires = ["setuptools>=68"]

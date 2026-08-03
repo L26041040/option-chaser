@@ -1,7 +1,10 @@
-# Vercel Python function 的執行期依賴（V1／#48）。
+# ⚠ 這份檔案**不是** serverless 函式實際安裝依賴的來源。
 #
-# 刻意**不含 yfinance**：它帶 pandas/numpy，塞進 serverless 函式體積
-# 不划算，而主資料源 Cboe adapter 是 stdlib-only。Cboe 不可用時
-# `service.fetch_chain` 會如實回報「兩層都不可用」（502），不會崩。
-# 本機開發／Streamlit 版仍由 pyproject.toml 安裝完整降級鏈。
+# 實測（V1／#48）：pyproject.toml 存在時，Vercel 的 Python builder 認
+# pyproject 的 `[project] dependencies`（build log 明寫「Installing
+# required dependencies from pyproject.toml」），requirements.txt 只被
+# 另一個不同 Python 版本的前置步驟裝過、與函式執行環境無關。
+#
+# 要改 lambda 的依賴，請改 pyproject.toml。這裡保留同一份內容只是為了
+# 讓「直接 pip install -r」的人也能跑起來，兩邊必須一致。
 fastapi>=0.117.1

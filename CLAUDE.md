@@ -236,9 +236,11 @@ FB3-01/02 已完成（見下）→**已回報需求方，等需求方 cue `/to-s
 - 跑測試：`PYTHONPATH=. .venv/bin/python -m pytest`
   （`pyproject.toml` 的 `packages.find` 只收 `option_chaser*`，`webapp`／
   `api_app` 不在裡面，靠 PYTHONPATH 匯入）
-- 建 venv：`uv venv --python 3.11 .venv && uv pip install --python .venv/bin/python -e ".[gui,api]" pytest`
-  （**`api` extra 必裝**：HTTP API 是後端唯一測試接縫，缺 fastapi 會讓
-  契約測試整組紅燈——這是刻意的，不要改成靜默跳過）
+- 建 venv：`uv venv --python 3.11 .venv && uv pip install --python .venv/bin/python -e ".[gui,api,yf]" pytest`
+  （**`api` extra 必裝**：HTTP API 是後端唯一測試接縫，缺 httpx 會讓
+  契約測試整組紅燈——這是刻意的，不要改成靜默跳過。**`yf` extra**＝
+  備援資料源 yfinance，已移出核心依賴以免 pandas/numpy 進 serverless
+  函式——pyproject 的核心依賴就是 lambda 實際安裝的清單）
 - 前端（V1／#48 起）：`npm install`；`npm run typecheck`／`npm test`
   （Vitest 元件測試）／`npm run e2e`（Playwright，手機 viewport）／
   `npm run build`。沙箱有預裝 Chromium 時用
