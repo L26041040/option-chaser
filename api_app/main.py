@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from typing import Callable, Literal
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel, Field, field_validator
 
 from option_chaser import __version__, service, store
@@ -46,8 +46,12 @@ def create_app(*, fetch: FetchChain = service.fetch_chain) -> FastAPI:
     app = FastAPI(title="Option Chaser API", version=__version__)
 
     @app.get("/api/health")
-    def health() -> dict:
-        return {"status": "ok", "engine_version": __version__}
+    def health(request: Request) -> dict:
+        # `path` 回報 app 實際收到的路徑：部署在 Vercel 上時，這是判斷
+        # rewrite 究竟送來原始路徑還是改寫後路徑的唯一可靠方式（決定了
+        # 端點要用單一 catch-all 函式還是逐路由拆檔）。
+        return {"status": "ok", "engine_version": __version__,
+                "path": request.url.path}
 
     @app.post("/api/analyze")
     def analyze(req: AnalyzeRequest) -> dict:
