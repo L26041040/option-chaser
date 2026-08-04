@@ -9,7 +9,7 @@ from typing import Callable
 
 from .data.snapshot import find_contract, load_snapshot, save_snapshot, snapshot_today
 from .filters import (apply_filters, generate_spread_pairs, is_spread_wide,
-                      monotonicity_violations)
+                      monotonicity_violations, quality_flag_counts)
 from .matrix import date_axis, matrix_grid, price_axis
 from .models import (AnalysisParams, ChainSnapshot, FetchError, FilterReport,
                      PairReport, ParamError, SPREAD_STRATEGIES, STRATEGIES,
@@ -129,6 +129,11 @@ class StrategyResult:
     # 序列化「所屬到期日內名次」等歷史五欄位；不建 CandidateView（無 Heatmap
     # 矩陣），成本控制同 `expiry_best` 的既有取捨。
     expiry_ranked: tuple[tuple[str, tuple[SpreadValuation, ...]], ...] = ()
+    # FB5-04（#65，spec #61）：C 類品質標示在**整個合格池**（腿級，`filters.
+    # quality_flag_counts()`）裡各出現幾次——單腿／價差都用同一份 `qualified`
+    # 計算，不受 `expiry_top10` 只填價差策略那個既有 MVP 範圍限制影響
+    # （附錄A13）。空池（`status == "empty"`）維持預設空 tuple。
+    quality_flags: tuple[tuple[str, int], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -486,10 +491,11 @@ def _single_leg_result(p: AnalysisParams, snap: ChainSnapshot,
     # FB5-03（#64）：無套利一致性只在**通過 A/B 類硬門檻的合約**之間比較
     # ——跟不合格的報價比較沒有意義，也算一次就好，不必每個候選各自重算。
     violations = monotonicity_violations(qualified)
+    quality_flags = quality_flag_counts(qualified, violations, p)
     vals = [evaluate_contract(c, snap.spot, today, p) for c in qualified]
     ranked = rank(vals, p)
     text = render(snap, p, freport, ranked, n_qualified=len(qualified),
-                  today=today, violations=violations)
+                  today=today, violations=violations, quality_flags=quality_flags)
     candidates = []
     for band in BAND_ORDER:
         if not ranked[band]:
@@ -521,7 +527,8 @@ def _single_leg_result(p: AnalysisParams, snap: ChainSnapshot,
         strategy=p.strategy, status="ok", candidates=tuple(candidates),
         ranked_bands=ranked, ranked_spreads=None, n_qualified=len(qualified),
         filter_report=freport, pair_report=None, report_text=text, message="",
-        expiry_best=expiry_best, expiry_counts=expiry_counts)
+        expiry_best=expiry_best, expiry_counts=expiry_counts,
+        quality_flags=quality_flags)
 
 
 def _spread_result(p: AnalysisParams, snap: ChainSnapshot,
@@ -539,11 +546,12 @@ def _spread_result(p: AnalysisParams, snap: ChainSnapshot,
     # FB5-03（#64）：同一批 qualified 腿的無套利一致性只算一次，兩隻腿
     # 各自查表——跟單腿路徑同一個函式、同一個口徑。
     violations = monotonicity_violations(qualified)
+    quality_flags = quality_flag_counts(qualified, violations, p)
     spreads = [evaluate_spread(l, s, snap.spot, today, p) for l, s in pairs]
     ranked = rank_spreads(spreads, p)
     text = render_spreads(snap, p, freport, pair_report, ranked,
                           n_pairs=pair_report.passed, today=today,
-                          violations=violations)
+                          violations=violations, quality_flags=quality_flags)
     candidates = []
     for i, sv in enumerate(ranked[:3]):
         candidates.append(_spread_view(sv, i, pair_report.passed, snap.spot,
@@ -587,7 +595,8 @@ def _spread_result(p: AnalysisParams, snap: ChainSnapshot,
         n_qualified=pair_report.passed, filter_report=freport,
         pair_report=pair_report, report_text=text, message="",
         expiry_best=expiry_best, expiry_counts=expiry_counts,
-        expiry_top10=expiry_top10, expiry_ranked=expiry_ranked)
+        expiry_top10=expiry_top10, expiry_ranked=expiry_ranked,
+        quality_flags=quality_flags)
 
 
 def _comparison(results: tuple[StrategyResult, ...]) -> tuple[ComparisonRow, ...]:

@@ -17,11 +17,13 @@ import type {
   FilterReportCounts,
   FilterStage,
   PairReport,
+  QualityFlag,
 } from "./api";
 
 /** 型別一律從 `./api` 匯入——這裡自己重打一份，就是契約漂移的起點。 */
 interface Overrides {
   stages: FilterStage[];
+  flags: QualityFlag[];
   report: FilterReportCounts | null;
   pairs: PairReport | null;
   counts: [string, number][];
@@ -50,10 +52,17 @@ function view(overrides: Partial<Overrides> = {}): AnalysisView {
         : overrides.report,
       // FB5-01／FB5-02（#62／#63）：關卡組成只剩兩關（OI／成交量／價差
       // 寬度皆已從硬門檻移除，spec #61 三分類），這裡的假資料照實際
-      // 形狀給。
+      // 形狀給。FB5-04（#65）：每關現在帶著三分類的 `cls`。
       filter_stages: overrides.stages ?? [
-        { label: "報價異常", removed: 12 },
-        { label: "IV 異常", removed: 8 },
+        { label: "報價異常", removed: 12, cls: "A" },
+        { label: "IV 異常", removed: 8, cls: "B" },
+      ],
+      // FB5-04（#65，spec #61）：C 類品質標示——整個合格池裡的計數，
+      // 跟 `filter_stages` 分開放，不影響入選。
+      quality_flags: overrides.flags ?? [
+        { label: "報價非最新（今日無成交）", count: 3 },
+        { label: "買賣價差偏大", count: 5 },
+        { label: "報價與鄰近履約價不一致，疑似陳舊報價", count: 0 },
       ],
       pair_report: overrides.pairs === undefined
         ? { total_pairs: 780, removed_sanity: 100, passed: 680 }
@@ -77,6 +86,13 @@ describe("候選池診斷", () => {
 
     expect(screen.getByText("68 筆")).toBeInTheDocument();
     expect(screen.getByText("40 筆")).toBeInTheDocument();
+  });
+
+  it("每一關標出屬於三分類的哪一類（FB5-04／#65，在程式碼裡明確可讀，"
+     + "也反映在畫面上）", () => {
+    render(<CandidatePool view={view()} />);
+    expect(screen.getByText("A 類")).toBeInTheDocument();
+    expect(screen.getByText("B 類")).toBeInTheDocument();
   });
 
   it("合約數只認 filter_report，不拿 n_qualified 當合約數", () => {
@@ -132,7 +148,7 @@ describe("候選池診斷", () => {
     render(<CandidatePool view={view({
       results: [{ strategy: "bull-call-spread", status: "empty", message: "",
                   n_qualified: 0, filter_report: null, filter_stages: [],
-                  pair_report: null, expiry_counts: [] }],
+                  quality_flags: [], pair_report: null, expiry_counts: [] }],
     })} />);
     expect(screen.getByText("這個策略沒有產生結果。")).toBeInTheDocument();
   });
@@ -143,11 +159,34 @@ describe("候選池診斷", () => {
       results: [{ strategy: "bull-call-spread", status: "empty",
                   message: "目前沒有符合流動性與報價條件的合約。",
                   n_qualified: 0, filter_report: null, filter_stages: [],
-                  pair_report: null, expiry_counts: [] }],
+                  quality_flags: [], pair_report: null, expiry_counts: [] }],
     };
     render(<CandidatePool view={empty} />);
     expect(
       screen.getByText("目前沒有符合流動性與報價條件的合約。"),
     ).toBeInTheDocument();
+  });
+});
+
+describe("品質標示（FB5-04／#65，spec #61）", () => {
+  it("與排除的關卡分開呈現，橙色計數不跟紅色「−」混在一起", () => {
+    render(<CandidatePool view={view()} />);
+    expect(screen.getByText("品質標示（不影響入選）")).toBeInTheDocument();
+    expect(screen.getByText("買賣價差偏大")).toBeInTheDocument();
+    expect(screen.getByText("5 筆")).toHaveClass("flagged");
+    // 排除關卡的「−」寫法完全不會出現在品質標示這幾筆上——兩者是不同
+    // 的視覺語言（「排除」用負數，「標示」用計數）。
+    expect(screen.queryByText("−5")).not.toBeInTheDocument();
+  });
+
+  it("三項全是 0 時，整個小節不出現——沒有東西好標示就不佔畫面", () => {
+    render(<CandidatePool view={view({
+      flags: [
+        { label: "報價非最新（今日無成交）", count: 0 },
+        { label: "買賣價差偏大", count: 0 },
+        { label: "報價與鄰近履約價不一致，疑似陳舊報價", count: 0 },
+      ],
+    })} />);
+    expect(screen.queryByText("品質標示（不影響入選）")).not.toBeInTheDocument();
   });
 });

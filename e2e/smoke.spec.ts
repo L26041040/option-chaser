@@ -85,6 +85,11 @@ test("清單 → 詳細頁：摘要、主圖、追平價格、候選池（V5／#
   await expect(page.getByText("候選池")).toBeVisible();
   await expect(page.getByRole("status")).toContainText("參考價值有限");
 
+  // FB5-04（#65，spec #61）：C 類品質標示——契約樣本本身帶著一筆「買賣
+  // 價差偏大」，整條流程（後端契約 → API → 詳細頁）走一次就看得到。
+  await expect(page.getByText("品質標示（不影響入選）")).toBeVisible();
+  await expect(page.getByText("買賣價差偏大")).toBeVisible();
+
   // 返回劇本庫
   await page.getByRole("link", { name: /劇本庫/ }).click();
   await expect(page.getByRole("heading", { name: "劇本庫" })).toBeVisible();

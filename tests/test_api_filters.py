@@ -158,3 +158,31 @@ def test_monotonicity_violation_does_not_shrink_the_pool():
     r = _client().post("/api/analyze", json=REQUEST)
     result = r.json()["results"][0]
     assert result["filter_report"]["passed"] == 8
+
+
+def test_filter_stages_carry_their_class_over_http():
+    """FB5-04（#65，spec #61）票上驗收標準：分類要「在程式碼中明確可讀」
+    ——這裡驗證它也確實走過序列化，到得了實際的 HTTP 回應，不是只活在
+    `filters.py` 內部。"""
+    r = _client().post("/api/analyze", json=REQUEST)
+    result = r.json()["results"][0]
+    assert [(s["label"], s["cls"]) for s in result["filter_stages"]] == [
+        ("報價異常", "A"), ("IV 異常", "B"),
+    ]
+
+
+def test_quality_flags_reach_http_response_and_never_shrink_the_pool():
+    """FB5-04（#65，spec #61）：C 類品質標示在整個合格池裡的計數要到得了
+    HTTP 回應——這份 fixture 已知的三筆疑慮全部疊加：XYZC102O 買賣價差
+    偏大（見上面 `test_wide_spread_candidate_survives_and_would_be_flagged`）、
+    XYZC100D／XYZC102O 這對單調性違反（見
+    `test_monotonicity_warning_reaches_the_serialized_candidate`），
+    另有 1 筆今日無成交。無論標示多少筆，`filter_report.passed` 都維持
+    8——這是「標示」不是「排除」的直接證明。"""
+    r = _client().post("/api/analyze", json=REQUEST)
+    result = r.json()["results"][0]
+    flags = dict((f["label"], f["count"]) for f in result["quality_flags"])
+    assert flags["買賣價差偏大"] == 1
+    assert flags["報價與鄰近履約價不一致，疑似陳舊報價"] == 2
+    assert flags["報價非最新（今日無成交）"] == 1
+    assert result["filter_report"]["passed"] == 8

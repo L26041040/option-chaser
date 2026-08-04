@@ -1,5 +1,6 @@
 from option_chaser.models import AnalysisParams, OptionContract
-from option_chaser.filters import apply_filters, is_spread_wide, monotonicity_violations
+from option_chaser.filters import (apply_filters, is_spread_wide,
+                                   monotonicity_violations, quality_flag_counts)
 
 P = AnalysisParams(target_price=120.0, target_month="2026-08")
 
@@ -32,6 +33,15 @@ def test_each_stage_rejects():
     assert rep.total == 8 and rep.passed == 3
     assert [(s.label, s.removed) for s in rep.stages] == [
         ("報價異常", 3), ("IV 異常", 2),
+    ]
+
+
+def test_each_stage_is_tagged_with_its_class():
+    """FB5-04（#65）：分類要「在程式碼中明確可讀」——`apply_filters` 的
+    兩關各自標好 A／B，不必靠標籤字串猜測。"""
+    _, rep = apply_filters([make("ok")], P)
+    assert [(s.cls, s.label) for s in rep.stages] == [
+        ("A", "報價異常"), ("B", "IV 異常"),
     ]
 
 
@@ -180,3 +190,48 @@ def test_pool_does_not_collapse_to_a_single_survivor_from_liquidity_alone():
     passed, rep = apply_filters(thin_contracts, P)
     assert len(passed) == 9
     assert rep.passed == 9
+
+
+# --- quality_flag_counts：FB5-04（#65），三分類收尾票——把 C 類三個既有
+# 判準（零成交量／`is_spread_wide`／`monotonicity_violations`）攤開算整個
+# 合格池裡各出現幾次，供過濾統計區與報告尾註呈現「標示」而非「排除」。
+
+def test_quality_flag_counts_tallies_each_class_c_check_over_the_pool():
+    # 各自用不同到期日隔開，避免互相被拿去比對單調性（單調性只在同到期日
+    # 同類型之間比較），三個判準才能獨立驗證互不干擾。
+    quiet = make("quiet", volume=0, expiry="2026-11-20")          # 零成交量
+    wide = make("wide", bid=1.0, ask=9.0, expiry="2026-12-18")    # 買賣價差偏大
+    low = make("K100", strike=100.0, bid=9.8, ask=10.0)           # 單調性違反的一對
+    mid = make("K105", strike=105.0, bid=11.8, ask=12.0)
+    clean = make("clean", expiry="2027-01-15")
+    contracts = [quiet, wide, low, mid, clean]
+    violations = monotonicity_violations(contracts)
+    counts = dict(quality_flag_counts(contracts, violations, P))
+    assert counts["報價非最新（今日無成交）"] == 1
+    assert counts["買賣價差偏大"] == 1
+    assert counts["報價與鄰近履約價不一致，疑似陳舊報價"] == 2
+
+
+def test_quality_flag_counts_never_shrinks_the_pool():
+    """驗收標準：只是計數，不是門檻——`apply_filters` 通過的筆數不因
+    `quality_flag_counts` 存在而改變（它甚至不被 `apply_filters` 呼叫）。"""
+    contracts = [make("quiet", volume=0), make("wide", bid=1.0, ask=9.0)]
+    passed, rep = apply_filters(contracts, P)
+    quality_flag_counts(passed, frozenset(), P)  # 呼叫本身不應有副作用
+    assert len(passed) == 2 and rep.passed == 2
+
+
+def test_quality_flag_counts_reuses_is_spread_wide_not_a_new_threshold():
+    """C 類不發明新門檻——`quality_flag_counts` 的「買賣價差偏大」與
+    `is_spread_wide` 對同一組報價的判斷必須完全一致。"""
+    c = make("edge", bid=4.0, ask=6.0)   # is_spread_wide(4.0, 6.0, P) is True
+    assert is_spread_wide(c.bid, c.ask, P) is True
+    counts = dict(quality_flag_counts([c], frozenset(), P))
+    assert counts["買賣價差偏大"] == 1
+
+
+def test_quality_flag_counts_open_interest_not_included():
+    """FB5-01 只把 OI 從硬門檻移除、原樣顯示，沒定義「多低算有疑慮」的
+    門檻——這裡不發明一個，回傳的三個 key 裡沒有未平倉量。"""
+    counts = dict(quality_flag_counts([make("zerooi", oi=0)], frozenset(), P))
+    assert not any("未平倉" in k or "OI" in k for k in counts)

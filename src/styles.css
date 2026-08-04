@@ -135,6 +135,12 @@ body {
   color: var(--red);
 }
 
+/* FB5-04（#65，spec #61）：C 類品質標示的計數——橙色，跟排除用的
+   `.negative`（紅色）刻意不同，這些候選一筆都沒被刪掉。 */
+.flagged {
+  color: var(--orange);
+}
+
 .caption {
   color: var(--label-secondary);
   font-size: 13px;

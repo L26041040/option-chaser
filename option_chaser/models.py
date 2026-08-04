@@ -97,6 +97,10 @@ class AnalysisParams:
 class FilterStageResult:
     label: str
     removed: int
+    # FB5-04（#65，spec #61）：這一關屬於三分類的哪一類——"A"＝資料健全性、
+    # "B"＝數學前提。C 類（品質標示）從不出現在這裡：它從不淘汰候選，所以
+    # 不是「一關」，是 `service.quality_flag_counts()` 另外算的計數。
+    cls: str
 
 
 @dataclass(frozen=True)

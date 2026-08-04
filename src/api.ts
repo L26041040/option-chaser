@@ -78,6 +78,22 @@ export interface ExpiryTop10 {
 export interface FilterStage {
   label: string;
   removed: number;
+  /**
+   * FB5-04（#65，spec #61）：這一關屬於三分類的哪一類——"A"＝資料健全性、
+   * "B"＝數學前提，兩者都是硬門檻（會排除候選）。C 類（品質標示）從不
+   * 出現在這裡，見 `QualityFlag`。
+   */
+  cls: string;
+}
+
+/**
+ * FB5-04（#65，spec #61）：C 類品質標示在整個合格池裡的計數（引擎的
+ * `filters.quality_flag_counts()`）——跟 `FilterStage` 的差別是「排除」
+ * 跟「標示」：這裡的候選一個都沒被刪掉，只是被記下「這筆不夠好看」。
+ */
+export interface QualityFlag {
+  label: string;
+  count: number;
 }
 
 /**
@@ -107,6 +123,7 @@ export interface StrategyResult {
   n_qualified: number;
   filter_report: FilterReportCounts | null;
   filter_stages: FilterStage[];
+  quality_flags: QualityFlag[];
   pair_report: PairReport | null;
   /** [到期日, 該期通過配對的有效候選組數]，引擎的 `expiry_counts`。 */
   expiry_counts: [string, number][];

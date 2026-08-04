@@ -26,6 +26,13 @@ Bid，T12／附錄 A14.2），流動性差的候選成本已經被誠實算高�
 壓低；再用硬門檻刪掉它們是同一件事罰兩次，而且是更糟的罰法——刪掉資訊，
 而不是把資訊定價進去。實測未平倉量是 OCC 收盤後才發布的 T+1 落後數字，
 硬門檻換來的是把候選池砍到只剩唯一倖存者，而不是篩掉真正有問題的報價。
+
+FB5-04（#65）：分類本身現在是`程式碼裡的一個結構，不只是文件——`FILTER_CLASS_LABELS`
+是三類的人話對照表；A／B 兩類的 `cls` 標籤隨 `apply_filters()` 逐關寫進
+`FilterStageResult.cls`；C 類則由 `quality_flag_counts()` 把既有的三個
+品質判準（零成交量／`is_spread_wide`／`monotonicity_violations`）攤開算
+成整個合格池裡的計數，供過濾統計區與報告尾註呈現「排除了幾筆」與「標示了
+幾筆」的差別——前者是「算不出來」，後者是「算得出來但不夠好看」。
 """
 from __future__ import annotations
 
@@ -33,6 +40,15 @@ from itertools import combinations
 from typing import Iterable
 
 from .models import AnalysisParams, FilterReport, FilterStageResult, OptionContract, PairReport, leg_option_type
+
+# FB5-04（#65，spec #61）：三分類的人話說明，`FilterStageResult.cls` 與
+# `quality_flag_counts()` 的呼叫端（report.py／store.py）共用同一份措辭，
+# 不各自重複硬編碼一次。
+FILTER_CLASS_LABELS = {
+    "A": "資料健全性",
+    "B": "數學前提",
+    "C": "品質標示",
+}
 
 
 def is_spread_wide(bid: float, ask: float, p: AnalysisParams) -> bool:
@@ -94,15 +110,38 @@ def apply_filters(
         return c.implied_volatility is not None and 0.01 <= c.implied_volatility <= 5.0
 
     stages = (
-        ("報價異常", quote_ok),
-        ("IV 異常", iv_ok),
+        ("A", "報價異常", quote_ok),
+        ("B", "IV 異常", iv_ok),
     )
     results: list[FilterStageResult] = []
-    for label, pred in stages:
+    for cls, label, pred in stages:
         kept = [c for c in remaining if pred(c)]
-        results.append(FilterStageResult(label=label, removed=len(remaining) - len(kept)))
+        results.append(FilterStageResult(label=label, removed=len(remaining) - len(kept), cls=cls))
         remaining = kept
     return remaining, FilterReport(total=total, stages=tuple(results), passed=len(remaining))
+
+
+def quality_flag_counts(
+    qualified: Iterable[OptionContract], violations: frozenset[str], p: AnalysisParams
+) -> tuple[tuple[str, int], ...]:
+    """FB5-04（#65，spec #61）：C 類品質標示在**整個合格池**（`apply_filters`
+    的輸出，價差策略是配對前的腿級池，與 `FilterReport.passed` 同一個口徑）
+    上各自出現幾次。三項對應 `service._v4_fields()` 已經在算的三個判準
+    （`zero_vol`／`is_spread_wide`／`monotonicity_violations`）——這裡只是
+    把同一組既有判準攤開來算「整池有幾筆」，不是新規則、也不新增門檻。
+
+    未平倉量（OI）刻意不在這裡：FB5-01 只把它從硬門檻移除、原樣顯示，
+    沒有定義「多低算有疑慮」的新門檻，這裡跟著不發明一個。
+    """
+    quals = list(qualified)
+    return (
+        ("報價非最新（今日無成交）",
+         sum(1 for c in quals if c.volume == 0)),
+        ("買賣價差偏大",
+         sum(1 for c in quals if is_spread_wide(c.bid, c.ask, p))),
+        ("報價與鄰近履約價不一致，疑似陳舊報價",
+         sum(1 for c in quals if c.contract_symbol in violations)),
+    )
 
 
 def generate_spread_pairs(

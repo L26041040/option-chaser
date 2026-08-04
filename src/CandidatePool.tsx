@@ -6,13 +6,19 @@
  * 被「倖存者」誤導——這正是需求方遇到「盤後跑出買77/賣85」時，畫面上
  * 完全沒有線索的那個問題。
  *
- * 數字全部由引擎算好（`filter_stages`／`pair_report`／`expiry_counts`），
- * 這裡只做計數加總與呈現，零金融計算。
+ * 數字全部由引擎算好（`filter_stages`／`quality_flags`／`pair_report`／
+ * `expiry_counts`），這裡只做計數加總與呈現，零金融計算。
  *
  * V6（#54）起「該期組數過少」的**警示**不在這裡：它已經貼在到期日結構
  * 那份清單旁邊（`ExpiryStructure`），而且跟著使用者切換的到期日走。同一
  * 句話在一頁上出現兩次，第二次就只是噪音。這裡保留「該期有效組數」那
  * 一列數字，因為它是整份池子診斷的一部分。
+ *
+ * FB5-04（#65，spec #61）：`filter_stages`（A／B 兩類，紅色「−」）與
+ * `quality_flags`（C 類，橙色計數）刻意分成兩個小節、用不同顏色——前者
+ * 是「排除」（這幾筆真的不在合格池裡了），後者是「標示」（合格池裡有
+ * 這麼多筆帶著品質疑慮，但一筆都沒少）。混在同一個列表裡，使用者會分
+ * 不出哪個數字代表候選變少、哪個只是備註。
  */
 import { primaryResult, type AnalysisView } from "./api";
 import { validPairsForExpiry } from "./expiry";
@@ -51,8 +57,14 @@ export default function CandidatePool({ view }: { view: AnalysisView }) {
       {result.filter_stages.map((stage) => (
         <div className="row sub" key={stage.label}>
           <span className="row-label">{stage.label}</span>
-          <span className={stage.removed > 0 ? "row-value negative" : "row-value"}>
-            {stage.removed > 0 ? `−${stage.removed}` : "0"}
+          <span className="row-value">
+            {/* FB5-04（#65，spec #61）：這關屬於哪一類（A＝資料健全性、
+                B＝數學前提），跟著被排除的筆數一起顯示——`row-note` 用
+                次要色，不搶「−N」那個真正要看的數字。 */}
+            <span className="row-note">{stage.cls} 類 </span>
+            <span className={stage.removed > 0 ? "negative" : undefined}>
+              {stage.removed > 0 ? `−${stage.removed}` : "0"}
+            </span>
           </span>
         </div>
       ))}
@@ -63,6 +75,25 @@ export default function CandidatePool({ view }: { view: AnalysisView }) {
           {counts === null ? "—" : `${counts.passed} 筆`}
         </span>
       </div>
+
+      {/* FB5-04（#65，spec #61）：C 類品質標示——上面通過品質過濾的筆數
+          裡，有幾筆帶著這些疑慮。橙色計數，跟上面「排除」的紅色「−」
+          刻意不同色，避免使用者誤以為這些筆數也被刪掉了。 */}
+      {result.quality_flags.some((f) => f.count > 0) && (
+        <>
+          <div className="row sub">
+            <span className="row-label">品質標示（不影響入選）</span>
+          </div>
+          {result.quality_flags.map((flag) => (
+            <div className="row sub" key={flag.label}>
+              <span className="row-label">{flag.label}</span>
+              <span className={flag.count > 0 ? "row-value flagged" : "row-value"}>
+                {flag.count} 筆
+              </span>
+            </div>
+          ))}
+        </>
+      )}
 
       {pairs && (
         <>
