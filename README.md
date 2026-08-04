@@ -47,9 +47,10 @@ Direction guard: bullish strategies need target > spot, bearish need target < sp
                           the chain around that month's third Friday (see below).
     --iv-shifts CSV       IV scenarios, default -0.2,0,0.2 (0 always included)
     --min-return X        L3 price ceiling = baseline value / (1+X)
-    --max-spread-pct / --spread-floor   tradeability gates (open interest and
-                          volume are shown for reference but no longer gate
-                          candidates — spec #61)
+    --max-spread-pct / --spread-floor   quality-flag threshold, not a hard
+                          gate — open interest, volume, and spread width no
+                          longer exclude candidates, they set the ⚠ flag
+                          shown on each candidate — spec #61
     --delta-bands A,B     |Delta| banding thresholds, default 0.35,0.65
     --matrix-all          matrix on every candidate
     --md PATH             also write the report to a file
@@ -59,8 +60,10 @@ Snapshots are schema v2 (calls + puts). v1 snapshots must be re-fetched.
 ## Reading the report
 
 - Filter stats: how many contracts got cut from the full chain, and why
-  (quote / IV / liquidity / spread-too-wide). Which expiries get analysed
-  is decided beforehand by the selection rule, not by a filter.
+  (quote validity / IV solvable). Liquidity and spread width no longer cut
+  candidates — they show up as a per-candidate ⚠ warning instead (spec #61).
+  Which expiries get analysed is decided beforehand by the selection rule,
+  not by a filter.
 - Single-leg candidates come in three Delta bands (conservative / balanced /
   aggressive); spreads are a single ranked list.
 - Each candidate: Bid/Mid/Ask (with per-contract dollar amounts), Breakeven,
@@ -166,7 +169,8 @@ docs/superpowers/specs/2026-07-20-option-chaser-v4-design.md (v4)
 
 ## 怎麼讀報告
 
-- 過濾統計：選中的到期日內刷掉多少、為什麼刷（報價/IV/流動性/價差過寬）；
+- 過濾統計：選中的到期日內刷掉多少、為什麼刷（報價異常／IV 無法求解）；
+  流動性與價差寬度不再刷掉候選，改成每個候選上的 ⚠ 標示（spec #61）；
   到期日本身的取捨在過濾之前，由選取規則負責
 - 單腿分三級距（依 |Delta|）：保守型（深價內，容錯大）、平衡型、
   積極型（價外，高槓桿）；價差為單一排名清單
@@ -197,8 +201,9 @@ docs/superpowers/specs/2026-07-20-option-chaser-v4-design.md (v4)
     --target-month 年月    目標年月，2028/1、2028/01、28/1、28/01 皆可
     --iv-shifts CSV        IV 情境，預設 -0.2,0,0.2（0 必含）
     --min-return X         要求報酬上限 L3 = 基準估值/(1+X)
-    --max-spread-pct / --spread-floor   可交易性門檻（未平倉量與成交量僅
-                          供參考顯示，不影響候選是否入選，spec #61）
+    --max-spread-pct / --spread-floor   品質標示門檻，不是硬過濾——未平
+                          倉量、成交量、買賣價差寬度皆不影響候選是否
+                          入選，只決定每個候選上的 ⚠ 標示，spec #61
     --delta-bands A,B      |Delta| 分級門檻，預設 0.35,0.65
     --top N                每級距/清單候選數，預設 3
     --matrix-all           每個候選都附矩陣（預設只有各級首選）

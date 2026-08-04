@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import date, timedelta
 from datetime import date as _date
 
+from .filters import is_spread_wide
 from .matrix import date_axis, matrix_lines, price_axis
 from .models import AnalysisParams, ChainSnapshot, FilterReport, is_bullish, leg_option_type
 from .ranking import BAND_LABELS, BAND_ORDER, build_reasons
@@ -28,6 +29,17 @@ def _pct(x: float) -> str:
 
 def _shift_name(shift: float) -> str:
     return "IV 不變" if shift == 0.0 else f"IV {shift * 100:+g}%"
+
+
+def _spread_width_warning(prefix: str, bid: float, ask: float, p: AnalysisParams) -> str | None:
+    """FB5-02（#63）：買賣價差過寬只標示、不刪除候選；訊息本身要說得出
+    「寬到什麼程度」（票上明列的驗收標準），不能只給一個沒有量級的警告。
+    `prefix` 供價差策略區分是買腿還是賣腿，單腿傳空字串。"""
+    if not is_spread_wide(bid, ask, p):
+        return None
+    mid = (bid + ask) / 2.0
+    return (f"- 警示: {prefix}買賣價差偏大（達 Mid 的 {_pct((ask - bid) / mid)}，"
+            f"Bid ${_money(bid)} / Ask ${_money(ask)}）")
 
 
 def _val_line(name: str, val: float, cost: float) -> str:
@@ -141,6 +153,9 @@ def _candidate_lines(
     ]
     if c.volume == 0:
         lines.append("- 警示: 今日無成交，報價新鮮度存疑")
+    width_warning = _spread_width_warning("", c.bid, c.ask, p)
+    if width_warning:
+        lines.append(width_warning)
     lines.append("")
     # T12（附錄 A14.2）：主數字成本口徑＝Ask（保守成交假設）。原「Natural
     # 成交報酬」與基準情境列因此重合，已合併，不再另列。
@@ -204,9 +219,10 @@ def _footer_lines(p: AnalysisParams) -> list[str]:
         "- 到期日選取: 目標月第三個星期五為日曆錨點，取距錨點最近的實際到期日為"
         "baseline（同距取較晚），再取其前 2 後 2（一側不足由另一側補足），至多五檔；"
         "窮舉僅及於這些到期日",
-        f"- 過濾: 報價 / IV(0.01-5.0) / "
-        f"Spread <= max({p.spread_floor:g}, {p.max_spread_pct:g}*Mid)（不含任何到期日條件；"
-        "未平倉量與成交量僅供參考顯示，不影響候選是否入選，spec #61）",
+        "- 過濾: 報價 / IV(0.01-5.0)（不含任何到期日條件；未平倉量、成交量、"
+        f"買賣價差寬度僅供參考顯示，不影響候選是否入選，spec #61；買賣價差"
+        f"超過 max({p.spread_floor:g}, {p.max_spread_pct:g}*Mid) 時逐候選附警示，"
+        "見各候選「買賣價差偏大」）",
         "- 排名: Delta 分級（實務慣例），級內以基準情境報酬率（最差進場）排序",
         "- 模型限制: 無股利調整（q=0）、歐式近似、IV 乘法情境",
         "- 免責: 模型估計非保證價格，不構成投資建議",
@@ -285,6 +301,12 @@ def _spread_candidate_lines(sv, idx, n_pairs, p, spot: float, today: date) -> li
         f"- 淨成本: Mid ${_money(sv.net_mid)}（${sv.net_mid * 100:.0f}/張） / 最差 ${_money(sv.net_worst)}（${sv.net_worst * 100:.0f}/張）",
         f"- 最大獲利: ${_money(sv.max_profit)}（${sv.max_profit * 100:.0f}/張） / 淨Delta {sv.net_delta:.2f} / Lambda {sv.effective_leverage:.1f}x",
         f"- Breakeven: ${_money(sv.breakeven)}（對目標價緩衝 {_pct(sv.breakeven_vs_target)}）",
+    ]
+    for prefix, leg in (("買腿", ll), ("賣腿", sl)):
+        warning = _spread_width_warning(prefix, leg.bid, leg.ask, p)
+        if warning:
+            lines.append(warning)
+    lines += [
         "",
         "劇本成立時（最差進場）:",
     ]

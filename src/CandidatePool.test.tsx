@@ -48,12 +48,12 @@ function view(overrides: Partial<Overrides> = {}): AnalysisView {
       filter_report: overrides.report === undefined
         ? { total: 68, passed: 40 }
         : overrides.report,
-      // FB5-01（#62）：關卡組成只剩三關（OI／成交量已從硬門檻移除，
-      // spec #61 三分類），這裡的假資料照實際形狀給。
+      // FB5-01／FB5-02（#62／#63）：關卡組成只剩兩關（OI／成交量／價差
+      // 寬度皆已從硬門檻移除，spec #61 三分類），這裡的假資料照實際
+      // 形狀給。
       filter_stages: overrides.stages ?? [
         { label: "報價異常", removed: 12 },
         { label: "IV 異常", removed: 8 },
-        { label: "Spread 過寬", removed: 5 },
       ],
       pair_report: overrides.pairs === undefined
         ? { total_pairs: 780, removed_sanity: 100, passed: 680 }
@@ -70,7 +70,6 @@ describe("候選池診斷", () => {
 
     expect(screen.getByText("報價異常")).toBeInTheDocument();
     expect(screen.getByText("IV 異常")).toBeInTheDocument();
-    expect(screen.getByText("Spread 過寬")).toBeInTheDocument();
 
     // 每關砍掉的筆數
     expect(screen.getByText("−12")).toBeInTheDocument();

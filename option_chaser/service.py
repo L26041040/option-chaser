@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Callable
 
 from .data.snapshot import find_contract, load_snapshot, save_snapshot, snapshot_today
-from .filters import apply_filters, generate_spread_pairs
+from .filters import apply_filters, generate_spread_pairs, is_spread_wide
 from .matrix import date_axis, matrix_grid, price_axis
 from .models import (AnalysisParams, ChainSnapshot, FetchError, FilterReport,
                      PairReport, ParamError, SPREAD_STRATEGIES, STRATEGIES,
@@ -266,9 +266,14 @@ def _v4_fields(val: ContractValuation | SpreadValuation, spot: float,
     if isinstance(val, SpreadValuation):
         expiry = val.long_leg.expiry
         zero_vol = val.long_leg.volume == 0 or val.short_leg.volume == 0
+        # FB5-02（#63）：任一腿的買賣價差超過舊硬門檻公式就標——兩腿各自
+        # 的報價品質，不是合成後的淨值，合成淨值那個訊號已經有 fr>0.25。
+        wide_spread = (is_spread_wide(val.long_leg.bid, val.long_leg.ask, p)
+                      or is_spread_wide(val.short_leg.bid, val.short_leg.ask, p))
     else:
         expiry = val.contract.expiry
         zero_vol = val.contract.volume == 0
+        wide_spread = is_spread_wide(val.contract.bid, val.contract.ask, p)
     mid_cost = _mid_cost(val)
     curve = completion_curve(val, spot, today, p)
     return dict(
@@ -280,7 +285,9 @@ def _v4_fields(val: ContractValuation | SpreadValuation, spot: float,
         retention=1.0 + dict(sv.entries)["S1"], friction=fr,
         friction_amount=natural_cost(val) - mid_cost,
         buffer_days=(date.fromisoformat(expiry) - p.anchor).days,
-        quote_warning=zero_vol or fr > 0.25,
+        # FB5-02（#63）：沿用既有的 `quote_warning` 機制，不新造一套——
+        # 買賣價差過寬只是這個既有布林旗標的第三個觸發條件。
+        quote_warning=zero_vol or wide_spread or fr > 0.25,
         theta_day_rate=abs(_net_theta(val, spot, today, p)) / mid_cost,
         vega_per_pt=_net_vega(val, spot, today, p) / mid_cost,
         decay_30d_return=_decay_30d(val, spot, today, p),

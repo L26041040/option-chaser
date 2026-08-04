@@ -86,14 +86,32 @@ def test_force_runs_mismatched_direction():
     assert r.results[0].status == "ok"
 
 
+def _all_quotes_broken_snapshot():
+    """鏈上有合約、但全部沒有可用報價（附錄 A12 第 2 點以外的另一種
+    「零候選」：抓取成功、但通不了 A 類資料健全性）。
+
+    FB5-01／FB5-02（#62／#63）之後，`filters.py` 只剩報價（A 類）與 IV
+    （B 類）兩道硬門檻，`AnalysisParams` 也沒有任何旋鈕能調鬆調緊這兩關
+    ——要讓全部候選落空，唯一誠實的辦法是資料本身就過不了關，不是調
+    參數去湊。"""
+    from option_chaser.models import ChainSnapshot, OptionContract
+    contracts = tuple(
+        OptionContract(contract_symbol=f"c{i}", option_type="call",
+                       strike=100.0 + i, expiry="2026-10-16", bid=0.0,
+                       ask=1.0, last=None, volume=10, open_interest=100,
+                       implied_volatility=0.30)
+        for i in range(3)
+    )
+    return ChainSnapshot(schema_version=2, symbol="XYZ",
+                         fetched_at="2026-07-15T21:30:00-04:00", spot=100.0,
+                         source="yfinance", contracts=contracts)
+
+
 def test_empty_carries_filter_only_report():
-    # FB5-01（#62）：OI 不再是硬門檻，無法再用它讓全部候選落空——改用
-    # 依然是硬門檻的 spread_ok（歸零容差），fixture 裡沒有任何合約
-    # bid==ask，全數落在這一關。
-    base = AnalysisParams(target_price=120.0, target_month="2026-08",
-                          spread_floor=0.0, max_spread_pct=0.0)
-    r = service.run_offline(service.AnalysisRequest(
-        symbol="XYZ", base_params=base, strategies=("long-call",)), FIX)
+    base = AnalysisParams(target_price=120.0, target_month="2026-08")
+    r = service._analyze(service.AnalysisRequest(
+        symbol="XYZ", base_params=base, strategies=("long-call",)),
+        _all_quotes_broken_snapshot(), "n/a", None)
     res = r.results[0]
     assert res.status == "empty" and "無合格" in res.report_text
     assert r.comparison == () and r.best_strategy is None

@@ -1,17 +1,21 @@
 """Sequential hard filters with per-stage rejection counts (spec §4).
 
 到期日的取捨**完全**由 `timeframe.select_expiries` 的六點規則負責，在窮舉之前就
-已發生；本模組因此不設任何到期日條件——只做合約品質過濾（報價／IV／買賣價差），
-參數沿用現行值（附錄 A8.4）。錨點前方、早於目標月的到期日進到這裡時，與其他
-到期日受完全相同的品質標準檢驗。
+已發生；本模組因此不設任何到期日條件——只做合約品質過濾（報價／IV），參數沿用
+現行值（附錄 A8.4）。錨點前方、早於目標月的到期日進到這裡時，與其他到期日受
+完全相同的品質標準檢驗。
 
-FB5-01（#62，spec #61）：過濾器的每一關都歸入三類之一，只有前兩類仍是硬門檻——
+FB5-01／FB5-02（#62／#63，spec #61）：過濾器的每一關都歸入三類之一，只有前兩類
+仍是硬門檻——
 - A 類「資料健全性」：算不出來就必須排除（報價存在且不交叉）
 - B 類「數學前提」：模型算不出有意義的值（IV 落在可解區間）
 - C 類「品質標示」：跟能不能算無關，只影響「這筆好不好」（未平倉量、成交量、
-  買賣價差寬度）——**本輪起不再是硬門檻**，未平倉量與價差改為隨候選一併呈現
-  的資訊（`OptionContract.open_interest`／`.bid`／`.ask` 序列化原樣保留），
-  成交量條件（`min_volume` 恆真的半條件）直接移除。
+  買賣價差寬度）——**本輪起不再是硬門檻**，全部改為隨候選一併呈現的資訊。
+  未平倉量／報價原樣序列化（`OptionContract.open_interest`／`.bid`／`.ask`）；
+  買賣價差寬度改用本模組匯出的 `is_spread_wide()`（公式與舊硬門檻完全相同，
+  只是從「刷掉」改成供 `service.py` 判定要不要標「品質標示」），沿用既有的
+  `CandidateView.quote_warning` 機制，不新造一套；成交量條件（`min_volume`
+  恆真的半條件）直接移除。
 
 三分類的理由（spec #61）：本 repo 主數字一律採最差成交口徑（買腿 Ask、賣腿
 Bid，T12／附錄 A14.2），流動性差的候選成本已經被誠實算高、報酬率已經被誠實
@@ -27,6 +31,17 @@ from typing import Iterable
 from .models import AnalysisParams, FilterReport, FilterStageResult, OptionContract, PairReport, leg_option_type
 
 
+def is_spread_wide(bid: float, ask: float, p: AnalysisParams) -> bool:
+    """FB5-02（#63）：買賣價差是否超過舊硬門檻的公式（現在只用來標示，
+    不再刪除候選）。公式逐字沿用舊 `spread_ok`：`spread > max(spread_floor,
+    max_spread_pct * mid)`。呼叫端＝`service._v4_fields`，用來決定
+    `CandidateView.quote_warning`；`bid`/`ask` 皆需已知（None 屬 A 類報價
+    健全性，在 `apply_filters` 那一關就已經被擋下，不會走到這裡）。
+    """
+    mid = (bid + ask) / 2.0
+    return (ask - bid) > max(p.spread_floor, p.max_spread_pct * mid)
+
+
 def apply_filters(
     contracts: Iterable[OptionContract], p: AnalysisParams
 ) -> tuple[list[OptionContract], FilterReport]:
@@ -40,14 +55,9 @@ def apply_filters(
     def iv_ok(c: OptionContract) -> bool:
         return c.implied_volatility is not None and 0.01 <= c.implied_volatility <= 5.0
 
-    def spread_ok(c: OptionContract) -> bool:
-        mid = (c.bid + c.ask) / 2.0
-        return (c.ask - c.bid) <= max(p.spread_floor, p.max_spread_pct * mid)
-
     stages = (
         ("報價異常", quote_ok),
         ("IV 異常", iv_ok),
-        ("Spread 過寬", spread_ok),
     )
     results: list[FilterStageResult] = []
     for label, pred in stages:
