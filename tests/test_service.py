@@ -109,9 +109,9 @@ def _all_quotes_broken_snapshot():
 
 def test_empty_carries_filter_only_report():
     base = AnalysisParams(target_price=120.0, target_month="2026-08")
-    r = service._analyze(service.AnalysisRequest(
+    r = service.run_with_snapshot(service.AnalysisRequest(
         symbol="XYZ", base_params=base, strategies=("long-call",)),
-        _all_quotes_broken_snapshot(), "n/a", None)
+        _all_quotes_broken_snapshot())
     res = r.results[0]
     assert res.status == "empty" and "無合格" in res.report_text
     assert r.comparison == () and r.best_strategy is None

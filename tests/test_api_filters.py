@@ -11,6 +11,8 @@ from fastapi.testclient import TestClient
 
 from api_app.main import create_app
 from option_chaser.data.snapshot import load_snapshot
+from option_chaser.filters import is_spread_wide
+from option_chaser.models import AnalysisParams
 
 # 既有 fixture（`tests/test_service.py` 亦用它）：10 個 call。修法前
 # （FB5-01／FB5-02 之前）4 道硬門檻，池子只剩 6 組：
@@ -39,16 +41,30 @@ def test_low_open_interest_candidate_survives_and_pool_grows():
     assert 100.5 in strikes, "OI=5 的合約應留在候選池裡，不再被 OI 關卡刷掉"
 
 
-def test_wide_spread_candidate_survives_too():
-    """FB5-02（#63）：原本被 Spread 關卡卡住的 XYZC102O（strike 102）
-    現在也留在池子裡——與 FB5-01 的 OI 案例同一份 fixture、同一個檢驗
-    方式，證明兩張票疊加的效果，不是只驗其中一個。"""
+def test_wide_spread_candidate_survives_and_would_be_flagged():
+    """FB5-02（#63）票上驗收標準逐字對照：「以既有 fixture 斷言：原本
+    被此關卡刷掉的合約現在進得了榜、且帶標示」——兩半都要在同一份既有
+    fixture、同一張合約上證明，不能各自散在不同資料上算數。
+
+    「進得了榜」：HTTP 回應的 `filter_report.passed` 直接證明（見上一條
+    測試同一份 fixture 的 OI 案例，這裡疊加 Spread 案例）。
+    「帶標示」：`candidates` 只序列化每級距第一名，XYZC102O 選不上任何
+    一級（見 `test_ranking_formula_still_picks_highest_return_within_band`
+    的同一批候選數字），無法從 HTTP 回應直接讀到它的 `quote_warning`；
+    改為直接從**同一份**既有 fixture 撈出這張合約的原始 bid/ask，用
+    `service._v4_fields` 實際呼叫的同一個純函式驗證——這就是
+    `quote_warning` 會不會被觸發的唯一判準，不是另外猜一個公式。
+    """
     r = _client().post("/api/analyze", json=REQUEST)
     result = r.json()["results"][0]
-    # candidate_key 帶履約價，最直接：掃全部到期日的候選是否有 102。
-    # single-leg 只序列化每級距第一名，這裡改用 expiry_counts 佐證池子
-    # 層級成長（下一條測試），本測試只確認關卡數字本身。
-    assert result["filter_report"]["passed"] == 8
+    assert result["filter_report"]["passed"] == 8   # 「進得了榜」
+
+    snap = load_snapshot(FIX)
+    xyzc102o = next(c for c in snap.contracts
+                    if c.option_type == "call" and c.strike == 102.0)
+    assert (xyzc102o.bid, xyzc102o.ask) == (4.0, 6.0), "fixture 內容變了，數字要跟著重算"
+    p = AnalysisParams(target_price=120.0, target_month="2026-08")
+    assert is_spread_wide(xyzc102o.bid, xyzc102o.ask, p) is True   # 「帶標示」
 
 
 def test_per_expiry_pool_size_grows_not_just_the_aggregate():

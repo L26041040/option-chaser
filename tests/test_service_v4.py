@@ -4,6 +4,7 @@ from datetime import date, timedelta
 import pytest
 
 from option_chaser import service
+from option_chaser.filters import is_spread_wide
 from option_chaser.scenarios import (completion_scan, friction, natural_cost,
                                      scenario_vector, _grid_price, _value_fn)
 from option_chaser.valuation import SpreadValuation, leg_greeks
@@ -68,17 +69,30 @@ def test_natural_return_merged_into_baseline():
 
 
 def test_quote_warning_friction_over_25pct():
+    """FB5-02（#63）：`quote_warning` 現在是三個 OR 條件，不是兩個——
+    這條測試原本（FB5-02 之前）只驗兩個，本次改動之前一直沒真的紅燈，
+    是因為這份 fixture 剛好沒有任何候選在「價差寬但 friction 不到
+    25%」這個交集裡；那不代表公式沒變，只代表這份資料沒踩到差異。"""
     result = service.run_offline(_request(), SNAP)
     for res in result.results:
+        p = _params_for(result, res.strategy)
         for cv in res.candidates:
             legs_zero = _any_zero_volume(cv.valuation)
-            assert cv.quote_warning == (legs_zero or cv.friction > 0.25)
+            wide = _any_wide_spread(cv.valuation, p)
+            assert cv.quote_warning == (legs_zero or wide or cv.friction > 0.25)
 
 
 def _any_zero_volume(val):
     if hasattr(val, "long_leg"):
         return val.long_leg.volume == 0 or val.short_leg.volume == 0
     return val.contract.volume == 0
+
+
+def _any_wide_spread(val, p):
+    if hasattr(val, "long_leg"):
+        return (is_spread_wide(val.long_leg.bid, val.long_leg.ask, p)
+                or is_spread_wide(val.short_leg.bid, val.short_leg.ask, p))
+    return is_spread_wide(val.contract.bid, val.contract.ask, p)
 
 
 def test_theta_vega_decay_match_direct_engine_recomputation():
