@@ -44,8 +44,9 @@ describe("劇本清單", () => {
     list([row()]);
 
     expect(screen.getByText("TLT")).toBeInTheDocument();
-    expect(screen.getByText(/\$120\.00/)).toBeInTheDocument();
-    expect(screen.getByText(/2028-05/)).toBeInTheDocument();
+    // 目標價與目標年月同在一列；`2028-05` 另外也出現在只給輔助技術讀的
+    // 那段字裡，所以連著價格一起比對，鎖定的是畫面上那一列。
+    expect(screen.getByText(/\$120\.00.*2028-05/)).toBeInTheDocument();
     expect(screen.getByText("123.4%")).toBeInTheDocument();
     expect(screen.getByText("653 天")).toBeInTheDocument();
   });

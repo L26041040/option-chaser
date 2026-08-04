@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 // Playwright 的 ESM 載入器要求 JSON import attribute；直接讀檔避免版本差異。
-const sample: any = JSON.parse(
+const sample = JSON.parse(
   readFileSync(
     fileURLToPath(new URL("../contracts/analysis_sample.json", import.meta.url)),
     "utf-8",
@@ -31,20 +31,31 @@ test.beforeEach(async ({ page }) => {
   await page.route("**/api/scenarios", (route) => route.fulfill({ json: [] }));
 });
 
-test("清單 → 詳細頁：摘要、主圖、追平價格、候選池（V5／#53）", async ({ page }) => {
-  const row = {
+/** 劇本清單列：形狀取自前後端共用的契約樣本，只覆寫測試在意的欄位。 */
+function libraryRow(overrides: Record<string, unknown> = {}) {
+  return {
     ...sampleRow,
     id: "s1", symbol: "XYZ",
-    target_price: sample.params.target_price,
-    target_month: sample.params.target_month,
+    target_price: view.params.target_price,
+    target_month: view.params.target_month,
     latest_analyzed_at: "2026-08-04T09:30:00+00:00", best_return: 5.67,
     target_anchor: "2026-09-18", days_to_anchor: 45,
+    ...overrides,
   };
+}
+
+/** 詳細頁測試共用的路由：清單、單一劇本、刷新。 */
+async function routeLibrary(page: import("@playwright/test").Page, row: unknown) {
   await page.route("**/api/scenarios", (route) => route.fulfill({ json: [row] }));
   await page.route("**/api/scenarios/s1", (route) =>
-    route.fulfill({ json: { ...row, latest_result: sample } }));
+    route.fulfill({ json: { ...(row as object), latest_result: sample } }));
   await page.route("**/api/scenarios/*/refresh", (route) =>
     route.fulfill({ json: row }));
+}
+
+test("清單 → 詳細頁：摘要、主圖、追平價格、候選池（V5／#53）", async ({ page }) => {
+  const row = libraryRow();
+  await routeLibrary(page, row);
 
   await page.goto("/");
   await page.getByRole("link", { name: /XYZ/ }).click();
@@ -77,18 +88,7 @@ test("清單 → 詳細頁：摘要、主圖、追平價格、候選池（V5／#
 });
 
 test("詳細頁的 Heatmap 可橫向滑動（手機塞不下七欄）", async ({ page }) => {
-  const row = {
-    ...sampleRow, id: "s1", symbol: "XYZ",
-    target_price: sample.params.target_price,
-    target_month: sample.params.target_month,
-    latest_analyzed_at: "2026-08-04T09:30:00+00:00", best_return: 5.67,
-    target_anchor: "2026-09-18", days_to_anchor: 45,
-  };
-  await page.route("**/api/scenarios", (route) => route.fulfill({ json: [row] }));
-  await page.route("**/api/scenarios/s1", (route) =>
-    route.fulfill({ json: { ...row, latest_result: sample } }));
-  await page.route("**/api/scenarios/*/refresh", (route) =>
-    route.fulfill({ json: row }));
+  await routeLibrary(page, libraryRow());
 
   await page.goto("/#/s/s1");
   await expect(page.locator("table.heatmap-table")).toBeVisible();
@@ -149,12 +149,9 @@ test("功能列捲動時仍釘在頂部、而且按得到（V3／#51 驗收第 1
   // V4（#52）把刷新接上之後才補得起來，所以這條測試在這一票才完整。
   // 頁面要夠長才捲得動——V5 移除頁面下方的 V1 遺留區塊後，空清單的
   // 劇本庫只有一屏高，捲不動就測不到「釘住」。
-  const rows = Array.from({ length: 8 }, (_, i) => ({
-    ...sampleRow, id: `s${i}`, symbol: `SYM${i}`,
-    target_price: 120, target_month: "2028-05",
-    latest_analyzed_at: null, best_return: null,
-    target_anchor: "2028-05-19", days_to_anchor: 653,
-  }));
+  const rows = Array.from({ length: 8 }, (_, i) =>
+    libraryRow({ id: `s${i}`, symbol: `SYM${i}`,
+                 latest_analyzed_at: null, best_return: null }));
   let listCalls = 0;
   await page.route("**/api/scenarios", (route) => {
     listCalls += 1;

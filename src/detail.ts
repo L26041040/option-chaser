@@ -25,13 +25,26 @@ export function strategyLabel(strategy: string): string {
   return STRATEGY_LABELS[strategy] ?? strategy;
 }
 
-/** 帶正負號的百分比（目標漲幅、追平價差距共用）。 */
-export function formatMove(ratio: number): string {
-  return `${ratio >= 0 ? "+" : "-"}${Math.abs(ratio * 100).toFixed(1)}%`;
+/** 百分比的大小（不含方向）。方向由呼叫端自己說：有的地方用正負號，
+ *  有的地方用「超出／低於」。 */
+function magnitude(ratio: number): string {
+  return `${Math.abs(ratio * 100).toFixed(1)}%`;
 }
 
-/** 比較對象的寫法：`28/1 110 Long Call`（v3 #9 指定格式）。 */
-export function contractLabel(leg: Leg): string {
+/** 帶正負號的百分比（目標漲幅）。 */
+export function formatMove(ratio: number): string {
+  return `${ratio >= 0 ? "+" : "-"}${magnitude(ratio)}`;
+}
+
+/**
+ * 追平價格的比較對象怎麼寫：`28/1 110 Long Call`（v3 #9 指定格式）。
+ *
+ * 名字裡有 `catchup` 是刻意的——它**恆為 Long Call**，不看 `leg.option_type`：
+ * 追平比較的對象就是「同履約價、同到期的 Long Call」（D1／#14 的定義），
+ * 買腿本身是 put 時後端也是去快照裡找同履約價的 call。叫
+ * `contractLabel` 會讓人以為它會照著腿的權別走。
+ */
+export function catchupContractLabel(leg: Leg): string {
   const [year, month] = leg.expiry.split("-");
   // `String(110)` ＝ "110"、`String(122.5)` ＝ "122.5"：整數不拖 `.0`，
   // 半檔履約價原樣保留，不必自己判斷。
@@ -71,14 +84,14 @@ export function catchupView(
   // 兩腿才有賣腿封頂可言；單腳候選跟 Long Call 比較是跟自己比。
   if (!buy || candidate.legs.length < 2) return null;
 
-  const contract = contractLabel(buy);
+  const contract = catchupContractLabel(buy);
   const star = candidate.catchup_price;
   if (star === null) return { contract, price: null, gap: null, beatsTarget: false };
 
   const ratio = (star - targetPrice) / targetPrice;
   // 小數一位而非票上示例的整數：整數會把「超出 0.4%」寫成「超出 0%」，
   // 而且全站其他百分比都是一位小數。
-  const gap = `${ratio >= 0 ? "超出" : "低於"}目標價 ${Math.abs(ratio * 100).toFixed(1)}%`;
+  const gap = `${ratio >= 0 ? "超出" : "低於"}目標價 ${magnitude(ratio)}`;
   return {
     contract,
     price: money(star),

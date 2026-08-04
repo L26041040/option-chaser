@@ -28,9 +28,11 @@ def test_every_failure_stage_the_backend_emits_is_one_the_frontend_knows():
     emitted = set(re.findall(r'_fail\("(\w+)"', _read("api_app/main.py")))
     assert emitted, "沒抓到任何 _fail(...)——這條測試的抓法過時了"
 
-    api_ts = _read("src/api.ts")
-    known = set(re.findall(
-        r'"(\w+)"', re.search(r"const STAGES = \[(.*?)\]", api_ts).group(1)))
+    # re.S：STAGES 被格式化成跨行時仍抓得到。抓不到就明說是這條測試的
+    # 抓法過時了，而不是丟一個 AttributeError 讓人去猜。
+    declared = re.search(r"const STAGES = \[(.*?)\]", _read("src/api.ts"), re.S)
+    assert declared, "在 src/api.ts 找不到 STAGES 宣告——這條測試的抓法過時了"
+    known = set(re.findall(r'"(\w+)"', declared.group(1)))
     labels = _read("src/scenarios.ts")
 
     assert emitted <= known, f"前端 api.ts 不認得這些分層：{emitted - known}"

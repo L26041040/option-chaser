@@ -302,7 +302,30 @@ merge 回 master，部署版待需求方驗證（`source` 是否 `cboe`＋TLT 20
   卡片）、封存／重試改 tint 色文字動作（一張卡三個帶框按鈕會把視線從
   數字上拉走）、新增 `--fill`／`--card-shadow` token。
   新增 `tests/test_frontend_contract.py` 收攏前後端**字串值**的漂移防線
-  （失敗分層 stage ＋策略代號顯示名），V4 那條 stage 測試一併移過去
+  （失敗分層 stage ＋策略代號顯示名），V4 那條 stage 測試一併移過去。
+
+  **兩份檢視均已處理**（commit `b895e5c`）。最實的一條：直接開
+  `#/s/{id}` 會永遠停在開站刷新**之前**的那份快照——詳細頁沒有功能列、
+  也沒有第四種刷新管道可按。修法是把該劇本在清單上的 `latest_analyzed_at`
+  當作 `refreshedAt` 傳進詳細頁並列入 effect 相依，刷新輪一跑完詳細頁
+  就重取（換劇本才清空畫面，刷新重取不清空，免得閃一下）。其餘：
+  詳細頁三個子區塊改吃 `view`／`candidate`（拿掉三處 `!`，baseline 第 1
+  名只取一次）、主圖補上區塊標題、`contractLabel` 更名
+  `catchupContractLabel`（它恆為 Long Call、不看腿的權別，舊名會誤導）、
+  百分比大小抽成共用 `magnitude()`。可及性三項：卡片連結拿掉
+  `aria-label`（那會**取代**內容當可及名稱，收益率等全被吃掉）改用
+  `.sr-only` 補述、Heatmap 表格補 `<caption>`、`role="status"` 只留給
+  真正會變的候選池警示。CSS 三項：刪掉一條其實沒作用的
+  `.card-tap .row + .row`、sticky 價格欄用特異性取代 `!important`、
+  `.caption.progress` 與 `.card .notice.error/.warn` 不再靠寫在後面決勝。
+  測試品質兩項：刪掉「查得到 `.heatmap-scroll` 就算過」這種拿掉
+  `overflow-x` 也不會紅的裝飾性斷言（真正守門的是 E2E 實測
+  `scrollWidth > clientWidth`）、字彙漂移測試補 `re.S` 與抓不到時的說明。
+  **判斷維持現狀**：S* ≤ 目標價的醒目提示用警示橘而非舊 Streamlit 的
+  成功綠——「你這組價差被更簡單的 Long Call 比下去」對使用者不是好消息
+  （已在 CSS 註解寫明理由，若需求方偏好綠色再改）；追平價差距
+  （gap）的除法仍留在前端，與 D1 已記錄的取捨一致；`/api/analyze`
+  端點無呼叫端但留到 V10 cutover 一併掃
 - **V6** [#54] — 到期日結構：橫向按鈕＋Top 10 含腿價 ←**下一張**
   （#53 已完成、已解鎖）
 - **V7** [#55] — 最好／最差價位三價位對照（被 #51、#53 擋）

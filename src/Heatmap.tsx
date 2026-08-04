@@ -22,6 +22,9 @@ export default function Heatmap({ matrix }: { matrix: Matrix }) {
     <div className="heatmap">
       <div className="heatmap-scroll">
         <table className="heatmap-table">
+          {/* 表格要有可及名稱。底下那段說明是 `<p>`、與表格只是兄弟關係，
+              輔助技術不會把它當成這張表的標題。 */}
+          <caption className="sr-only">標的價格×日期的模型報酬率</caption>
           <thead>
             <tr>
               <th scope="col" className="heatmap-price-head">

@@ -140,3 +140,26 @@ describe("詳細頁的空狀態", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent("劇本不存在");
   });
 });
+
+describe("刷新完成後詳細頁跟著更新（V5／#53 檢視回饋）", () => {
+  it("直接開詳細頁網址時，不會永遠停在刷新前的那份快照", async () => {
+    // 開站的刷新輪跑在背景，詳細頁沒有功能列也沒有刷新入口——不跟著
+    // 重取的話，直接開 `#/s/{id}` 的人看到的永遠是刷新前的數字。
+    let call = 0;
+    vi.stubGlobal("fetch", vi.fn(async () => ({
+      ok: true, status: 200,
+      json: async () => (call++ === 0
+        ? detail({ latest_result: null, latest_analyzed_at: null })
+        : detail()),
+    })));
+
+    const { rerender } = render(<ScenarioDetail id="s1" refreshedAt={null} />);
+    expect(await screen.findByText(/尚未分析/)).toBeInTheDocument();
+
+    // 劇本庫那一列的資料時間變了＝這個劇本剛剛被刷新過
+    rerender(<ScenarioDetail id="s1" refreshedAt="2026-08-04T09:30:00+00:00" />);
+
+    expect(await screen.findByRole("table")).toBeInTheDocument();
+    expect(screen.queryByText(/尚未分析/)).not.toBeInTheDocument();
+  });
+});

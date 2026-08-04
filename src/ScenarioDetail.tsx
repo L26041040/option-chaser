@@ -17,6 +17,8 @@ import {
   baselineTopCandidate,
   getScenario,
   primaryResult,
+  type AnalysisView,
+  type Candidate,
   type ScenarioDetail as Detail,
 } from "./api";
 import { candidateTitle, catchupView, formatMove, strategyLabel } from "./detail";
@@ -32,9 +34,7 @@ function Row({ label, children }: { label: string; children: React.ReactNode }) 
 }
 
 /** 追平價格區塊。三態各自有話說，沒有一態是留白或拋錯。 */
-function Catchup({ detail }: { detail: Detail }) {
-  const view = detail.latest_result!;
-  const candidate = baselineTopCandidate(view);
+function Catchup({ view, candidate }: { view: AnalysisView; candidate: Candidate | null }) {
   const catchup = candidate && catchupView(candidate, view.params.target_price);
   if (!catchup) return null;
 
@@ -71,9 +71,7 @@ function Catchup({ detail }: { detail: Detail }) {
   );
 }
 
-function Chart({ detail }: { detail: Detail }) {
-  const view = detail.latest_result!;
-  const candidate = baselineTopCandidate(view);
+function Chart({ view, candidate }: { view: AnalysisView; candidate: Candidate | null }) {
   if (!candidate) {
     return (
       <section className="card">
@@ -86,6 +84,7 @@ function Chart({ detail }: { detail: Detail }) {
   }
   return (
     <section className="card">
+      <h2 className="section-title">劇本主圖</h2>
       <div className="row">
         <span className="row-value big">{candidateTitle(candidate)}</span>
         <span
@@ -100,8 +99,7 @@ function Chart({ detail }: { detail: Detail }) {
   );
 }
 
-function Summary({ detail }: { detail: Detail }) {
-  const view = detail.latest_result!;
+function Summary({ view, analyzedAt }: { view: AnalysisView; analyzedAt: string | null }) {
   const strategy = primaryResult(view)?.strategy ?? view.params.strategy;
   return (
     <section className="card">
@@ -113,7 +111,7 @@ function Summary({ detail }: { detail: Detail }) {
       </Row>
       <Row label="目標年月">{view.params.target_month}</Row>
       <Row label="策略">{strategyLabel(strategy)}</Row>
-      <Row label="資料時間">{formatAnalyzedAt(detail.latest_analyzed_at)}</Row>
+      <Row label="資料時間">{formatAnalyzedAt(analyzedAt)}</Row>
       {/* 資料來源不是裝飾：`cboe` ＝ 打得到主源、`yfinance` ＝ 走了備援。
           部署後要確認雲端出口對 Cboe 的可達性，看的就是這一行。 */}
       <Row label="資料來源">{view.meta.source}</Row>
@@ -121,13 +119,42 @@ function Summary({ detail }: { detail: Detail }) {
   );
 }
 
-export default function ScenarioDetail({ id }: { id: string }) {
+/** 有結果時的頁面主體。baseline 期第 1 名只在這裡取一次，三個區塊共用。 */
+function DetailBody({ view, analyzedAt }: {
+  view: AnalysisView;
+  analyzedAt: string | null;
+}) {
+  const candidate = baselineTopCandidate(view);
+  return (
+    <>
+      <Summary view={view} analyzedAt={analyzedAt} />
+      <Chart view={view} candidate={candidate} />
+      <Catchup view={view} candidate={candidate} />
+      {/* 候選池診斷（FB4-01／#60）：第 1 名如果是整池僅存者，那個名次
+          沒有意義。它本來掛在 V1 的一次性分析畫面上，隨那塊一起搬進
+          詳細頁——池子本來就是「這個劇本這次分析」的事。 */}
+      <CandidatePool view={view} />
+    </>
+  );
+}
+
+export default function ScenarioDetail({
+  id,
+  refreshedAt = null,
+}: {
+  id: string;
+  /**
+   * 這個劇本在劇本庫那份清單上的資料時間。開站的刷新輪跑完之後它會變，
+   * 詳細頁跟著重新取一次——否則直接開 `#/s/{id}` 的人會永遠停在刷新
+   * 前的那份快照上：詳細頁沒有功能列、也沒有第四種刷新管道可按。
+   */
+  refreshedAt?: string | null;
+}) {
   const [detail, setDetail] = useState<Detail | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     let live = true;
-    setDetail(null);
     setError(null);
     getScenario(id)
       .then((d) => { if (live) setDetail(d); })
@@ -136,7 +163,11 @@ export default function ScenarioDetail({ id }: { id: string }) {
         if (live) setError(e instanceof Error ? e.message : String(e));
       });
     return () => { live = false; };
-  }, [id]);
+  }, [id, refreshedAt]);
+
+  // 換劇本時先清空，免得新劇本的標題底下短暫掛著上一個劇本的數字。
+  // 刷新造成的重取不清空——那只是同一個劇本換一份較新的數字。
+  useEffect(() => { setDetail(null); }, [id]);
 
   return (
     <div className="screen">
@@ -167,15 +198,8 @@ export default function ScenarioDetail({ id }: { id: string }) {
       )}
 
       {detail && detail.latest_result && (
-        <>
-          <Summary detail={detail} />
-          <Chart detail={detail} />
-          <Catchup detail={detail} />
-          {/* 候選池診斷（FB4-01／#60）：第 1 名如果是整池僅存者，那個
-              名次沒有意義。它本來掛在 V1 的一次性分析畫面上，隨那塊一起
-              搬進詳細頁——池子本來就是「這個劇本這次分析」的事。 */}
-          <CandidatePool view={detail.latest_result} />
-        </>
+        <DetailBody view={detail.latest_result}
+                    analyzedAt={detail.latest_analyzed_at} />
       )}
     </div>
   );

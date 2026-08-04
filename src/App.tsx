@@ -185,7 +185,16 @@ export default function App() {
   }
 
   // 詳細頁（V5／#53）。所有 hook 都在這一行之前跑完，順序不受影響。
-  if (detailId !== null) return <ScenarioDetail id={detailId} />;
+  // 把該劇本在清單上的資料時間一起交出去：開站那輪刷新完成後它會變，
+  // 詳細頁據此重新取一次，直接開詳細頁網址的人才不會停在舊快照上。
+  if (detailId !== null) {
+    return (
+      <ScenarioDetail
+        id={detailId}
+        refreshedAt={rows.find((r) => r.id === detailId)?.latest_analyzed_at ?? null}
+      />
+    );
+  }
 
   return (
     <div className="screen">

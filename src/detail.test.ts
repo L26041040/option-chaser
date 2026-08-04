@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import sample from "../contracts/analysis_sample.json";
 import { baselineTopCandidate, type AnalysisView, type Candidate } from "./api";
-import { catchupView, contractLabel, formatMove, strategyLabel } from "./detail";
+import { catchupContractLabel, catchupView, formatMove, strategyLabel } from "./detail";
 
 const view = sample as unknown as AnalysisView;
 const real = baselineTopCandidate(view)!;
@@ -30,12 +30,12 @@ describe("漲幅格式", () => {
 
 describe("比較對象的寫法（v3 #9 指定格式）", () => {
   it("到期年月＋履約價＋Long Call", () => {
-    expect(contractLabel({ strike: 110, option_type: "call", expiry: "2028-01-21" }))
+    expect(catchupContractLabel({ strike: 110, option_type: "call", expiry: "2028-01-21" }))
       .toBe("28/1 110 Long Call");
   });
 
   it("半檔履約價保留小數，整數不拖著 .0", () => {
-    expect(contractLabel({ strike: 122.5, option_type: "call", expiry: "2026-08-07" }))
+    expect(catchupContractLabel({ strike: 122.5, option_type: "call", expiry: "2026-08-07" }))
       .toBe("26/8 122.5 Long Call");
   });
 });

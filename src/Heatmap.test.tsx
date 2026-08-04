@@ -58,8 +58,12 @@ describe("主圖 Heatmap", () => {
     expect(screen.getByRole("cell")).not.toHaveStyle({ background: "transparent" });
   });
 
-  it("整張表放在可橫向捲動的容器裡——手機塞不下七欄，不靠縮小字級硬擠", () => {
-    const { container } = render(<Heatmap matrix={matrix} />);
-    expect(container.querySelector(".heatmap-scroll")).toBeInTheDocument();
+  it("表格有可及名稱——底下那段說明是兄弟節點，輔助技術不會當成標題", () => {
+    render(<Heatmap matrix={matrix} />);
+    expect(screen.getByRole("table", { name: /報酬率/ })).toBeInTheDocument();
   });
+
+  // 「可橫向滑動」在 jsdom 測不到（沒有版面，也沒載入 CSS）：拿
+  // `querySelector(".heatmap-scroll")` 當斷言的話，把 `overflow-x` 刪掉
+  // 測試照樣綠。真正的守門在 E2E（實測 scrollWidth > clientWidth）。
 });

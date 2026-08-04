@@ -43,7 +43,10 @@ function ScenarioCard({
       {/* 整張卡就是進詳細頁的入口。用真的 `<a>` 而不是掛 onClick 的
           div：長按可以複製連結、返回手勢可用、鍵盤與螢幕閱讀器也認得。
           封存鈕留在連結外面——按鈕不能包在連結裡。 */}
-      <a className="card-tap" href={detailHash(row.id)} aria-label={`${who} 詳細`}>
+      {/* 不掛 `aria-label`：那會**取代**連結內容當成可及名稱，螢幕閱讀器
+          就只聽得到「TLT 2028-05 詳細」，收益率／目標／距到期／資料時間
+          全部被吃掉。改在結尾補一段只有輔助技術讀得到的字。 */}
+      <a className="card-tap" href={detailHash(row.id)}>
         <div className="row">
           <span className="row-value big">{row.symbol}</span>
           <span className="metric-group">
@@ -83,6 +86,7 @@ function ScenarioCard({
             {stale && <span className="tag warn">舊資料</span>}
           </span>
         </div>
+        <span className="sr-only">查看 {who} 詳細</span>
       </a>
 
       {failure && (
