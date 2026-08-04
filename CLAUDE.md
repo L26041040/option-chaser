@@ -404,10 +404,42 @@ merge 回 master，部署版待需求方驗證（`source` 是否 `cboe`＋TLT 20
   ⚠ **票上「建立／編輯表單」的編輯路徑不存在**（全站無 scenario 更新
   端點與編輯 UI），本票不新增——編輯功能未被任何 spec 要求過，要做
   應另開票
-- **V8** [#56] — 分析報告新版型＋原始資料（被 #53 擋，已完成；#49 亦已
-  完成——施工依據＝`docs/research/option-strategy-report-conventions.md`
-  §4，**含 §4.2 A2 的補序列化清單**）←
-- **V9** [#57] — Spread 歷史走勢圖：日粒度＋固定 y 軸（被 #53 擋）
+- **V8** [#56] — 分析報告新版型＋原始資料查看/下載 ✅
+  （commits `8faf76f`／`a3ec3fd`）：後端序列化補齊 R1 §4.2 A2 明列的
+  四項（值早算好、只是沒吐）——`store._candidate()` 新增 `l2`／`l3`
+  （買價指引天花板）、`cons`（評語代價，pros 依 §4.2 C 裁示不補）、
+  `guidance_warnings`（`valuation.guidance_judgments`／
+  `spread_guidance_judgments`）；`serialize_result()` 每策略新增
+  `methodology_text`（`report.methodology_lines()`，與 CLI 報告尾註
+  同一事實來源，免責從中段移到尾端）、`disclaimer_text`（R1 §4.4.4
+  擴充版，CLI 精簡版維持不變）。新增 `store.raw_snapshot_json()`／
+  `data.snapshot.snapshot_from_dict()`（還原 `Storage.get_snapshot()`
+  的 dict 形式，與 `load_snapshot` 共用同一段還原邏輯）與兩個 API
+  端點 `GET /api/scenarios/{id}/raw-data`（JSON 查看）／`/raw-data.csv`
+  （下載，內容走既有 `snapshot_to_csv`）——兩者皆跟著劇本「最新一次
+  結果」的 `analyzed_at` 走，不接受指定歷史版本。
+  前端新增兩個進階區元件（詳細頁預設收合）：`AnalysisReport.tsx`
+  對齊 R1 §4.1 章節骨架（結論先行、方法論墊底、最大獲利與最大損失
+  同框、情境最壞與劇本報酬並排），刻意不重複頁面上方已無條件顯示的
+  數字（目標/追平價格/策略/P·L矩陣）；`RawData.tsx` 展開才打
+  `/raw-data`，逐筆合約表＋CSV 下載連結（純 `<a href download>`）。
+  新增純函式（`detail.ts`）：`reportConclusion`／`maxPayoutRatioText`／
+  `costPctOfSpot`／`breakevenDistancePct`／`completionThresholdText`／
+  `SCENARIO_NAMES`（新增字彙漂移防線測試）。
+
+  **兩份檢視均已處理**（commit `a3ec3fd`）。Spec 檢視抓到三個真缺口：
+  (1) ⑥ 方法與假設漏掉 R1「[模型假設]→⑥」重排——利率／IV 情境／
+  Delta 門檻／最低要求報酬率從沒進新版型，`AnalysisParams` TS 型別
+  補上這些早就在契約裡的欄位；(2) ⑤ 進場執行原本每隻腿只印「最差
+  成交會用到的那一邊」（買腿只印 Ask、賣腿只印 Bid），R1 §4.2 A
+  明講逐腿報價要雙邊都給，新增 `LegRow` 印完整 Bid/Ask/IV；
+  (3) 剩餘天數（`days_to_expiry`，R1 §4.2 B 明列的新增顯示項）完全
+  漏掉，`Candidate` 型別漏了這個早就序列化的欄位。Standards 判斷後
+  採納兩項：`store.py` 生成式借用 `p` 當迴圈變數跟函式自己的
+  `p: AnalysisParams` 參數同名，改名 `pt`；`cons`／`guidance_warnings`
+  原本攤成同一堆看不出差別的警示列表，改用 CLI 既有的「代價:」／
+  「警示:」文字區分並拆成兩個獨立區塊
+- **V9** [#57] — Spread 歷史走勢圖：日粒度＋固定 y 軸（被 #53 擋）←
 - **V10** [#58] — Cutover：移除 Streamlit、文件、全站驗收（被 #54–#57 擋）
 
 > 全部票做完＋需求方實機驗收通過才開 PR（V10 驗收清單）。
@@ -671,10 +703,10 @@ merge 回 master，部署版待需求方驗證（`source` 是否 `cboe`＋TLT 20
   未抽共用 helper——單一比較式的重複不足以立一個新符號，Standards
   review 本身也只列為 judgement call，非違規。
 
-**過濾器修正輪（spec #61，FB5-01～04／#62–#65）全數完結。** 依
-2026-08-04 需求方裁示的優先序（過濾器插隊最優先 → 功能票 V7–V9 →
-年月選擇器 → 外觀已延後），下一張是 **V8**（#56，見「下一階段」小節，
-已標 ←）。
+**過濾器修正輪（spec #61，FB5-01～04／#62–#65）全數完結。V8（#56）
+亦已完結。** 依 2026-08-04 需求方裁示的優先序（過濾器插隊最優先 →
+功能票 V7–V9 → 年月選擇器 → 外觀已延後），下一張是 **V9**（#57，見
+「下一階段」小節，已標 ←）。
 
 ### 下一版 MVP（本輪明確不施工，已立案）
 
