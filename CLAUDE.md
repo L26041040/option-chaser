@@ -406,7 +406,7 @@ merge 回 master，部署版待需求方驗證（`source` 是否 `cboe`＋TLT 20
   應另開票
 - **V8** [#56] — 分析報告新版型＋原始資料（被 #53 擋，已完成；#49 亦已
   完成——施工依據＝`docs/research/option-strategy-report-conventions.md`
-  §4，**含 §4.2 A2 的補序列化清單**）
+  §4，**含 §4.2 A2 的補序列化清單**）←
 - **V9** [#57] — Spread 歷史走勢圖：日粒度＋固定 y 軸（被 #53 擋）
 - **V10** [#58] — Cutover：移除 Streamlit、文件、全站驗收（被 #54–#57 擋）
 
@@ -631,7 +631,50 @@ merge 回 master，部署版待需求方驗證（`source` 是否 `cboe`＋TLT 20
   `_monotonicity_warning_line()`，`violations` 集合原本就已經算好，
   這次只是多傳一手給 `render()`／`render_spreads()`。golden fixtures
   一併重產
-- **FB5-04** [#65] — 三分類定位＋品質標示的畫面揭露（被 #62–#64 擋）←
+- **FB5-04** [#65] — 三分類定位＋品質標示的畫面揭露 ✅
+  （commits `be7e293`／`f9c7969`）：`FilterStageResult` 新增
+  `filter_class` 欄位（"A"＝資料健全性、"B"＝數學前提，隨
+  `apply_filters` 逐關寫入），新增 `filters.FILTER_CLASS_LABELS` 三類
+  人話對照表。C 類三個既有判準（零成交量／`is_spread_wide`／
+  `monotonicity_violations`）透過新的 `filters.quality_flag_counts()`
+  攤開成整個合格池（腿級，單腿與價差共用同一份 `apply_filters` 輸出的
+  `qualified`，刻意不依賴 `expiry_top10` 那個只填 spread 策略的既有
+  MVP 範圍限制，附錄A13）裡的計數，回傳具名型別
+  `models.QualityFlagCount`（不用裸 tuple，跟 `FilterStageResult` 同
+  一種模式）；未平倉量刻意不在這三項裡——FB5-01 只把它從硬門檻移除、
+  原樣顯示，沒定義「多低算有疑慮」的新門檻，這裡跟著不發明一個。
+  CLI `[過濾統計]` 每關標出 `[A類排除]`／`[B類排除]`，新增
+  `[C類標示，不影響入選]` 小節列出三項計數；尾註「過濾」條目拆成
+  A／B／C 三行分別說明。前端 `CandidatePool` 新增「品質標示（不影響
+  入選）」小節，橙色計數（`.flagged`，`--orange`）跟排除的紅色「−」
+  （`.negative`，`--red`）視覺分開，全零時整節不顯示；每一關的 A/B
+  類別也標在畫面上（`.row-note`）。品質標示徽章（⚠／🚩）本已在候選
+  列上（FB5-02／FB5-03 既有機制，`ExpiryStructure.tsx`），本票依票上
+  「沿用既有機制不重造」的裁示未新增新徽章。後端 HTTP 層
+  （`test_api_filters.py`）、前端元件層（`CandidatePool.test.tsx`）、
+  E2E（`smoke.spec.ts` 新增「品質標示（不影響入選）」與「買賣價差
+  偏大」斷言，走真實契約樣本）各補測試。契約樣本／CLI 黃金 fixture
+  隨之重產。
+
+  **兩份檢視均已處理**（commit `f9c7969`）。真 bug 一個（Spec，對照
+  AC3「尾註與實際行為完全一致」）：尾註原文聲稱未平倉量／成交量／
+  買賣價差寬度／無套利一致性四項都在 `[過濾統計]` 逐項計數，但
+  `quality_flag_counts()` 只算後三項——讀者照著尾註回頭找「未平倉量」
+  那一列會撲空。已改寫措辭，把未平倉量獨立說清楚：原樣顯示、不設
+  門檻、不在該區計數。Standards 判斷後採納兩項（皆為 judgement call，
+  非硬性違規）：`FilterStageResult.cls` 更名 `filter_class`（`cls` 是
+  Python classmethod 慣用參數名，容易誤讀，全鏈路含 JSON 欄位與 TS
+  型別一併對齊）；`quality_flags` 改回傳 `QualityFlagCount` 具名型別
+  取代裸 tuple（Primitive Obsession／Data Clumps，跟 A／B 兩類已有的
+  具名模式一致）。**判斷維持不改**：`filters.py` 的零成交量判準與
+  `service._v4_fields` 裡同一個比較式（`volume == 0`）各自寫一次，
+  未抽共用 helper——單一比較式的重複不足以立一個新符號，Standards
+  review 本身也只列為 judgement call，非違規。
+
+**過濾器修正輪（spec #61，FB5-01～04／#62–#65）全數完結。** 依
+2026-08-04 需求方裁示的優先序（過濾器插隊最優先 → 功能票 V7–V9 →
+年月選擇器 → 外觀已延後），下一張是 **V8**（#56，見「下一階段」小節，
+已標 ←）。
 
 ### 下一版 MVP（本輪明確不施工，已立案）
 
