@@ -469,10 +469,38 @@ merge 回 master，部署版待需求方驗證（`source` 是否 `cboe`＋TLT 20
   (2) y 軸範圍依「目前顯示的降採樣序列」算，不是「原始日粒度序列」——
   切換粒度時範圍可能跟著變。這是多數行情圖表（含 TradingView 等）換
   時間尺度時的常態行為，非本票造成的缺陷
-- **V10** [#58] — Cutover：移除 Streamlit、文件、全站驗收（被 #54–#57
-  擋，全數已完成）←
+- **V10** [#58] — Cutover：移除 Streamlit 前端、文件更新、全站驗收 ✅
+  （commits `9115452`／`d899682`）：移除 `webapp/`（Streamlit 前端）及
+  其 10 個專屬測試檔案（`test_webapp_*.py`、走 `webapp.render` 的
+  `test_render_*.py`／`test_card_render.py`／`test_heatmap_colors.py`）；
+  `tests/test_redlines.py` 的禁詞掃描與年月守則測試收斂回只掃
+  `option_chaser/`（範圍不變，只是拿掉已刪除的 webapp 路徑）；引擎與
+  其測試不受影響，全套維持全綠。`pyproject.toml` 移除 `gui`
+  （Streamlit）extra；`scripts/dev_env.sh`／`.devcontainer/
+  devcontainer.json` 跟著更新（後者原本還停在 `streamlit run
+  webapp/app.py`，改成 `.venv`＋`npm run dev`）。README（英文＋中文）
+  的「Web GUI」「多劇本工作區」兩節改寫成新架構（Neon Postgres 取代
+  Streamlit 檔案式 workspace），`docs/deploy-vercel.md` 修正一處過期
+  陳述。新增 `docs/v10-acceptance-checklist.md`：逐條對照 spec #47 的
+  30 條 user stories，24 條 ✅ 自動化覆蓋、4 條 ⚠ 需求方需在真機／環境
+  上覆核（#11 刷新變快主觀感受、#15 橫向並排視覺印象、#27 y 軸切換
+  粒度時的範圍變動、#28 Neon 連線狀態）、2 條 ❌ 明確未完成但皆為需求方
+  本人已裁示的延後項（#2 年月選擇器、#29 iOS 外觀優化），不是本票疏漏。
 
-> 全部票做完＋需求方實機驗收通過才開 PR（V10 驗收清單）。
+  **兩份檢視均已處理**（commit `d899682`）。真遺漏一個（Standards）：
+  `Dockerfile`／`compose.yaml` 這次提交完全沒碰到，但兩者都在建置／
+  執行舊 Streamlit（`COPY webapp`、`pip install ".[gui]"`、
+  `streamlit run webapp/app.py`），`webapp/`／`gui` extra 都已刪除，
+  建置會直接失敗——新架構部署路徑只有 Vercel，沒有 Docker 這條路，
+  直接移除兩個檔案而非修復。另修正 `.devcontainer/devcontainer.json`
+  裝到系統 Python、跟全專案 `.venv` 工作流不一致的問題，以及 CLAUDE.md
+  本身（雖不在 AC 明列的 README／deploy 範圍內，但檢視判斷它也算
+  「目前具權威性文件」）殘留的 `gui` extra 指令與指向已刪除測試檔案的
+  已知偶發備註。
+
+**全部票（T1–T12、QA1 系列、D1、FB3、FB5、V1–V10）已完結。** 依既有
+規則，這輪不主動開 PR——`docs/v10-acceptance-checklist.md` 已備妥，
+等需求方以手機實機走一遍、給出 go-ahead 後才開 PR、準備合併回 master。
 
 ### ⚠ 未決事項：盤後候選池仍會被餓死（2026-08-04 發現，票未開）
 
@@ -734,9 +762,9 @@ merge 回 master，部署版待需求方驗證（`source` 是否 `cboe`＋TLT 20
   review 本身也只列為 judgement call，非違規。
 
 **過濾器修正輪（spec #61，FB5-01～04／#62–#65）全數完結。V8（#56）／
-V9（#57）亦已完結——功能票 V7–V9 全數做完。** 依 2026-08-04 需求方
-裁示的優先序，下一張是 **V10**（#58，Cutover，見「下一階段」小節，
-已標 ←），完成後才輪到年月選擇器（第 1 項）與外觀（第 3 項，已延後）。
+V9（#57）／V10（#58）亦已完結——全部票做完。** 下一步不是新票，是等
+需求方以 `docs/v10-acceptance-checklist.md` 實機驗收；驗收通過才輪到
+年月選擇器（第 1 項）與外觀（第 3 項，已延後）另開新一輪。
 
 ### 下一版 MVP（本輪明確不施工，已立案）
 
