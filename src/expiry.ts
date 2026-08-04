@@ -28,13 +28,32 @@ export interface ExpiryOption {
  * 而不是各自去別的欄位撈（`expiry_best` 是另一份，容易對不上）。
  */
 export function expiryOptions(result: StrategyResult): ExpiryOption[] {
-  const counts = new Map(result.expiry_counts);
   return (result.expiry_top10 ?? []).map((group) => ({
     expiry: group.expiry,
     bestReturn: group.candidates[0]?.baseline_return ?? null,
-    count: counts.has(group.expiry) ? counts.get(group.expiry)! : null,
+    count: validPairsForExpiry(result, group.expiry),
     candidates: group.candidates,
   }));
+}
+
+/**
+ * 某一期通過品質過濾的有效組數（FB4-01／#60）。找不到該期回傳 null——
+ * 「不知道」與「0 組」是不同的事，不能混為一談。
+ *
+ * 到期日結構與候選池診斷都問這一件事，所以只有這一份實作。
+ */
+export function validPairsForExpiry(
+  result: StrategyResult,
+  expiry: string | null,
+): number | null {
+  if (expiry === null) return null;
+  const hit = result.expiry_counts.find(([e]) => e === expiry);
+  return hit ? hit[1] : null;
+}
+
+/** 這個組數是否少到讓名次失去參考價值。null（不知道）不算。 */
+export function isThinPool(count: number | null): boolean {
+  return count !== null && count < THIN_POOL;
 }
 
 export interface LegPrices {

@@ -285,19 +285,6 @@ export function baselineTopCandidate(view: AnalysisView): Candidate | null {
 }
 
 /**
- * FB4-01（#60）：拿引擎已算好的每期有效組數。找不到該期回傳 null——
- * 「不知道」與「0 組」是不同的事，不能混為一談。
- */
-export function validPairsForExpiry(
-  result: StrategyResult,
-  expiry: string | null,
-): number | null {
-  if (expiry === null) return null;
-  const hit = result.expiry_counts.find(([e]) => e === expiry);
-  return hit ? hit[1] : null;
-}
-
-/**
  * 該次分析要顯示的那個策略（MVP 只請求一個）。摘要卡與候選池診斷都走
  * 這個函式——兩處各自挑一個 result 的話，畫面會出現「第 1 名講 A 策略、
  * 池子講 B 策略」的自相矛盾。

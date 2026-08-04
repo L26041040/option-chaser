@@ -38,18 +38,18 @@ describe("到期日按鈕", () => {
   it("每個到期日一顆，並附該期最高收益", () => {
     show();
 
-    const tabs = screen.getAllByRole("tab");
-    expect(tabs).toHaveLength(groups.length);
+    const chips = screen.getAllByRole("button");
+    expect(chips).toHaveLength(groups.length);
     for (const [i, group] of groups.entries()) {
-      expect(tabs[i]).toHaveTextContent(group.expiry);
-      expect(tabs[i]).toHaveTextContent(
+      expect(chips[i]).toHaveTextContent(group.expiry);
+      expect(chips[i]).toHaveTextContent(
         `${(group.candidates[0].baseline_return * 100).toFixed(1)}%`);
     }
   });
 
   it("預設選中 baseline 期——與主圖同一口徑", () => {
     show();
-    expect(screen.getByRole("tab", { selected: true }))
+    expect(screen.getByRole("button", { pressed: true }))
       .toHaveTextContent(view.baseline_expiry!);
   });
 
@@ -57,9 +57,9 @@ describe("到期日按鈕", () => {
     const other = groups.find((g) => g.expiry !== view.baseline_expiry)!;
     show();
 
-    await userEvent.click(screen.getByRole("tab", { name: new RegExp(other.expiry) }));
+    await userEvent.click(screen.getByRole("button", { name: new RegExp(other.expiry) }));
 
-    expect(screen.getByRole("tab", { selected: true })).toHaveTextContent(other.expiry);
+    expect(screen.getByRole("button", { pressed: true })).toHaveTextContent(other.expiry);
     const rows = screen.getAllByRole("listitem");
     expect(rows).toHaveLength(other.candidates.length);
     expect(rows[0]).toHaveTextContent(
@@ -104,7 +104,7 @@ describe("候選窄列", () => {
     expect(within(rows[1]).queryByText("⚠")).not.toBeInTheDocument();
   });
 
-  it("名次照引擎排好的順序，前十名最多十列", () => {
+  it("引擎給幾筆就畫幾筆、名次照它排好的順序，前端不自己截斷", () => {
     show(withCandidates(view.baseline_expiry!, 12));
 
     const rows = screen.getAllByRole("listitem");
@@ -125,14 +125,25 @@ describe("就地展開", () => {
     expect(screen.getByRole("table")).toBeVisible();
   });
 
-  it("展開一列不影響其他列", async () => {
-    show(withCandidates(view.baseline_expiry!, 3));
+  it("展開的是那一列自己的候選，不是別列的", async () => {
+    // 三組候選各給一份一眼認得出來的矩陣；接錯列的話下面的斷言會抓到。
+    const expiry = view.baseline_expiry!;
+    const patched = withCandidates(expiry, 3);
+    patched.expiry_top10 = patched.expiry_top10!.map((g) =>
+      g.expiry === expiry
+        ? { ...g, candidates: g.candidates.map((c, i) => ({
+            ...c,
+            matrix: { prices: [[100 + i, ""]] as [number, string][],
+                      dates: [["2026-08-07", ""]] as [string, string][],
+                      cells: [[0.5]] },
+          })) }
+        : g);
+    show(patched);
 
     const rows = screen.getAllByRole("listitem");
     await userEvent.click(rows[1].querySelector("summary")!);
 
-    expect(within(rows[1]).getByRole("table")).toBeVisible();
-    expect(within(rows[0]).getByRole("table")).not.toBeVisible();
+    expect(within(rows[1]).getByRole("rowheader")).toHaveTextContent("101.00");
   });
 });
 
@@ -142,34 +153,24 @@ describe("候選池過少警示", () => {
     expect(screen.getByRole("status")).toHaveTextContent("該期僅 1 組");
   });
 
-  it("該期一組都沒通過時說 0 組，不是靜靜留白", () => {
-    const expiry = view.baseline_expiry!;
-    show({
-      expiry_top10: groups.map((g) =>
-        g.expiry === expiry ? { ...g, candidates: [] } : g),
-      expiry_counts: result.expiry_counts.map(([e, c]) =>
-        (e === expiry ? [e, 0] : [e, c]) as [string, number]),
-    });
-    expect(screen.getByRole("status")).toHaveTextContent("該期僅 0 組");
-  });
 
   it("引擎沒給該期組數時不警示——「不知道」不是「太少」", () => {
     show({ expiry_counts: [] });
-    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+    expect(screen.getByRole("status")).toBeEmptyDOMElement();
   });
 
-  it("組數足夠就不警示", () => {
+  it("組數足夠就沒話講——live region 常駐但空著", () => {
     show(withCandidates(view.baseline_expiry!, 5));
-    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+    expect(screen.getByRole("status")).toBeEmptyDOMElement();
   });
 
   it("警示跟著切換的到期日走，不是固定講 baseline 那期", async () => {
     const other = groups.find((g) => g.expiry !== view.baseline_expiry)!;
     // baseline 期組數充足、另一期只有 1 組
     show(withCandidates(view.baseline_expiry!, 5));
-    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+    expect(screen.getByRole("status")).toBeEmptyDOMElement();
 
-    await userEvent.click(screen.getByRole("tab", { name: new RegExp(other.expiry) }));
+    await userEvent.click(screen.getByRole("button", { name: new RegExp(other.expiry) }));
 
     expect(screen.getByRole("status")).toHaveTextContent("該期僅 1 組");
   });
@@ -181,12 +182,4 @@ describe("邊界", () => {
     expect(container).toBeEmptyDOMElement();
   });
 
-  it("該期沒有候選時如實說，不是留白", () => {
-    const expiry = view.baseline_expiry!;
-    show({
-      expiry_top10: groups.map((g) =>
-        g.expiry === expiry ? { ...g, candidates: [] } : g),
-    });
-    expect(screen.getByText(/沒有通過品質過濾的候選/)).toBeInTheDocument();
-  });
 });

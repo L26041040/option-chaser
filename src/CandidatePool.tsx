@@ -14,7 +14,8 @@
  * 句話在一頁上出現兩次，第二次就只是噪音。這裡保留「該期有效組數」那
  * 一列數字，因為它是整份池子診斷的一部分。
  */
-import { primaryResult, validPairsForExpiry, type AnalysisView } from "./api";
+import { primaryResult, type AnalysisView } from "./api";
+import { validPairsForExpiry } from "./expiry";
 
 export default function CandidatePool({ view }: { view: AnalysisView }) {
   const result = primaryResult(view);

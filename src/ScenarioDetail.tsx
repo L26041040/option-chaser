@@ -23,6 +23,7 @@ import {
   type ScenarioDetail as Detail,
 } from "./api";
 import { candidateTitle, catchupView, formatMove, strategyLabel } from "./detail";
+import { isThinPool, validPairsForExpiry } from "./expiry";
 import { formatAnalyzedAt, formatReturn, money } from "./scenarios";
 
 function Row({ label, children }: { label: string; children: React.ReactNode }) {
@@ -83,6 +84,10 @@ function Chart({ view, candidate }: { view: AnalysisView; candidate: Candidate |
       </section>
     );
   }
+  // 主圖這組的名次是在 **baseline 期**的池子裡排出來的，所以這句提醒得
+  // 跟著主圖走。只掛在下面那份會切換的清單上的話，使用者一切到別期，
+  // 主圖仍是這一組、警語卻跟著跑掉，頭條數字就沒人幫它說話。
+  const pool = validPairsForExpiry(primaryResult(view)!, view.baseline_expiry);
   return (
     <section className="card">
       <h2 className="section-title">劇本主圖</h2>
@@ -95,6 +100,13 @@ function Chart({ view, candidate }: { view: AnalysisView; candidate: Candidate |
         </span>
       </div>
       <Row label="到期日">{view.baseline_expiry}</Row>
+      {isThinPool(pool) && (
+        <p className="notice warn">
+          <span aria-hidden="true">⚠ </span>
+          這一期只有 {pool} 組候選通過品質過濾，主圖這組可能只是「整池剩下
+          的那一個」。
+        </p>
+      )}
       <Heatmap matrix={candidate.matrix} />
     </section>
   );

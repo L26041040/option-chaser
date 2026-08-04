@@ -16,7 +16,7 @@ import { useState } from "react";
 import Heatmap from "./Heatmap";
 import type { Candidate, StrategyResult } from "./api";
 import { candidateTitle } from "./detail";
-import { THIN_POOL, expiryOptions, legPrices, resolveExpiry } from "./expiry";
+import { expiryOptions, isThinPool, legPrices, resolveExpiry } from "./expiry";
 import { formatReturn, money } from "./scenarios";
 
 function CandidateRow({ candidate, rank }: { candidate: Candidate; rank: number }) {
@@ -81,13 +81,15 @@ export default function ExpiryStructure({
     <section className="card">
       <h2 className="section-title">到期日</h2>
 
-      {/* 真正橫向並排、可橫向滑動——不是換行成好幾列的按鈕堆。 */}
-      <div className="chip-strip" role="tablist" aria-label="到期日">
+      {/* 真正橫向並排、可橫向滑動——不是換行成好幾列的按鈕堆。
+          刻意**不用** `role="tablist"/"tab"`：那個模式還要求 tabpanel、
+          aria-controls 與方向鍵巡覽，只掛角色名等於對輔助技術宣告一套
+          自己沒實作的操作方式。一排 `aria-pressed` 的按鈕就是它真正的樣子。 */}
+      <div className="chip-strip" role="group" aria-label="到期日">
         {options.map((option) => (
           <button
             key={option.expiry}
-            role="tab"
-            aria-selected={option.expiry === current}
+            aria-pressed={option.expiry === current}
             className={option.expiry === current ? "chip selected" : "chip"}
             onClick={() => setPicked(option.expiry)}
           >
@@ -97,30 +99,29 @@ export default function ExpiryStructure({
         ))}
       </div>
 
-      {shown && (
-        <>
-          {shown.count !== null && shown.count < THIN_POOL && (
-            <div className="notice warn" role="status">
-              <span aria-hidden="true">⚠ </span>
-              該期僅 {shown.count} 組候選通過品質過濾，排名參考價值有限——
-              名次第一可能只是「整池剩下的那一個」。
-            </div>
-          )}
+      {/* 常駐的 live region：切到組數過少的那一期時，變的是**內容**，
+          螢幕閱讀器才會唸出來。整塊連同容器一起掛上去的話，插入的瞬間
+          內容就已經在了，播報與否各家實作不一。空的時候用 CSS 收起來。 */}
+      <div className="notice warn" role="status">
+        {shown && isThinPool(shown.count) && (
+          <>
+            <span aria-hidden="true">⚠ </span>
+            該期僅 {shown.count} 組候選通過品質過濾，排名參考價值有限——
+            名次第一可能只是「整池剩下的那一個」。
+          </>
+        )}
+      </div>
 
-          {shown.candidates.length === 0 ? (
-            <p className="caption">這一期沒有通過品質過濾的候選。</p>
-          ) : (
-            <ul className="candidate-list">
-              {shown.candidates.map((candidate, i) => (
-                <CandidateRow
-                  key={candidate.candidate_key}
-                  candidate={candidate}
-                  rank={i + 1}
-                />
-              ))}
-            </ul>
-          )}
-        </>
+      {shown && (
+        <ul className="candidate-list">
+          {shown.candidates.map((candidate, i) => (
+            <CandidateRow
+              key={candidate.candidate_key}
+              candidate={candidate}
+              rank={i + 1}
+            />
+          ))}
+        </ul>
       )}
     </section>
   );

@@ -1,4 +1,5 @@
 import { render, screen, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import ScenarioDetail from "./ScenarioDetail";
@@ -173,5 +174,24 @@ describe("刷新完成後詳細頁跟著更新（V5／#53 檢視回饋）", () =
     expect(await screen.findByText(/劇本主圖/)).toBeInTheDocument();
     expect(mainChart().getByRole("table")).toBeInTheDocument();
     expect(screen.queryByText(/尚未分析/)).not.toBeInTheDocument();
+  });
+});
+
+describe("主圖的候選池警語（V6／#54 檢視回饋）", () => {
+  it("警語跟著主圖走，不會因為把清單切到別期就消失", async () => {
+    // 主圖固定是 baseline 期第 1 名。警語只掛在下面那份會切換的清單上
+    // 的話，使用者一切到別期，頭條數字就沒人幫它說「這只是整池僅存者」。
+    mockDetail(detail());
+    render(<ScenarioDetail id="s1" />);
+    await screen.findByText(/劇本主圖/);
+
+    expect(mainChart().getByText(/只有 1 組候選/)).toBeInTheDocument();
+
+    const other = view.results[0].expiry_top10!
+      .find((g) => g.expiry !== view.baseline_expiry)!;
+    await userEvent.click(
+      screen.getByRole("button", { name: new RegExp(other.expiry) }));
+
+    expect(mainChart().getByText(/只有 1 組候選/)).toBeInTheDocument();
   });
 });

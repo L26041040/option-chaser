@@ -622,6 +622,11 @@ body {
   color: #fff;
 }
 
+/* 常駐但目前沒話講的 live region 不該佔掉卡片的一段間距。 */
+.notice:empty {
+  display: none;
+}
+
 .candidate-list {
   list-style: none;
   margin: 0;
@@ -645,14 +650,26 @@ body {
   list-style: none;
 }
 
-/* Safari 用 -webkit-details-marker，其他瀏覽器用 ::marker。兩個都關掉，
-   自訂的三角形交給 ::after。 */
+/* `display: flex` 的 summary 本來就不會生出 marker box（上面的
+   `list-style: none` 同理，是防守用的）；舊版 Safari 另有自己的
+   `-webkit-details-marker`，一併關掉。展開提示改用下面自畫的角括號。 */
 .candidate > summary::-webkit-details-marker {
   display: none;
 }
 
-.candidate > summary::marker {
-  content: "";
+/* 沒有這個角括號，列上就完全沒有「可以展開」的線索。展開時轉 90 度，
+   狀態自己說得出來。 */
+.candidate-head::after {
+  content: "›";
+  color: var(--label-tertiary);
+  font-size: 20px;
+  font-weight: 600;
+  line-height: 1;
+  transition: transform 0.15s ease;
+}
+
+.candidate[open] .candidate-head::after {
+  transform: rotate(90deg);
 }
 
 .candidate > summary:active {

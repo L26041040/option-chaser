@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 // Playwright 的 ESM 載入器要求 JSON import attribute；直接讀檔避免版本差異。
-const sample = JSON.parse(
+const sample: any = JSON.parse(
   readFileSync(
     fileURLToPath(new URL("../contracts/analysis_sample.json", import.meta.url)),
     "utf-8",
@@ -94,18 +94,18 @@ test("到期日結構：切換到期日 → 就地展開候選（V6／#54）", a
   await routeLibrary(page, libraryRow());
   await page.goto("/#/s/s1");
 
-  const tabs = page.getByRole("tab");
-  await expect(tabs).toHaveCount(view.results[0].expiry_top10!.length);
+  const chips = page.locator(".chip-strip button");
+  await expect(chips).toHaveCount(view.results[0].expiry_top10!.length);
 
   // 預設選中 baseline 期，按鈕上帶著該期最高收益
-  await expect(page.getByRole("tab", { selected: true }))
+  await expect(page.getByRole("button", { pressed: true }))
     .toContainText(view.baseline_expiry);
 
   // 切到另一期：清單換成那一期的候選
   const other = view.results[0].expiry_top10!
     .find((g) => g.expiry !== view.baseline_expiry)!;
-  await page.getByRole("tab", { name: new RegExp(other.expiry) }).click();
-  await expect(page.getByRole("tab", { selected: true })).toContainText(other.expiry);
+  await page.getByRole("button", { name: new RegExp(other.expiry) }).click();
+  await expect(page.getByRole("button", { pressed: true })).toContainText(other.expiry);
 
   const row = page.getByRole("listitem").first();
   // 三個價格在收合狀態就看得到
@@ -116,7 +116,12 @@ test("到期日結構：切換到期日 → 就地展開候選（V6／#54）", a
   // 就地展開該候選的 Heatmap：主圖不受影響、頁面不跳動
   const mainChart = page.locator("section").filter({ hasText: "劇本主圖" }).first();
   const before = await mainChart.locator("table").innerText();
+
+  // 先把那一列捲進視野內再量。少了這一步，Playwright 點擊前的自動捲動
+  // 本身就會改變 scrollY，量到的兩個值必然相等——那條斷言就永遠是綠的。
+  await row.locator("summary").scrollIntoViewIfNeeded();
   const scrollBefore = await page.evaluate(() => window.scrollY);
+  expect(scrollBefore).toBeGreaterThan(0);
 
   await expect(row.locator("table")).toBeHidden();
   await row.locator("summary").click();
@@ -124,6 +129,42 @@ test("到期日結構：切換到期日 → 就地展開候選（V6／#54）", a
 
   expect(await mainChart.locator("table").innerText()).toBe(before);
   expect(await page.evaluate(() => window.scrollY)).toBe(scrollBefore);
+});
+
+test("到期日按鈕真的橫向並排可滑動，不是換行成好幾列（V6／#54）", async ({ page }) => {
+  // 契約樣本只有三期，在手機寬度下塞得下——塞得下就證明不了「可滑動」。
+  // 這裡把分組複製成十二期，逼出真正的橫向捲動。
+  const group = sample.results[0].expiry_top10[0];
+  const many = Array.from({ length: 12 }, (_, i) => ({
+    ...group,
+    expiry: `2027-${String(i + 1).padStart(2, "0")}-15`,
+  }));
+  const wide = {
+    ...sample,
+    baseline_expiry: many[0].expiry,
+    results: [{ ...sample.results[0], expiry_top10: many,
+                expiry_counts: many.map((g) => [g.expiry, 25]) }],
+  };
+  const row = libraryRow();
+  await page.route("**/api/scenarios", (route) => route.fulfill({ json: [row] }));
+  await page.route("**/api/scenarios/s1", (route) =>
+    route.fulfill({ json: { ...row, latest_result: wide } }));
+
+  await page.goto("/#/s/s1");
+  await expect(page.getByRole("button", { pressed: true })).toBeVisible();
+
+  const strip = page.locator(".chip-strip");
+  const box = await strip.evaluate((el) => ({
+    scrollWidth: el.scrollWidth, clientWidth: el.clientWidth,
+    height: el.getBoundingClientRect().height,
+    chip: (el.firstElementChild as HTMLElement).getBoundingClientRect().height,
+  }));
+  // 內容比容器寬＝真的要捲；而且整條的高度就是一顆按鈕的高度＝沒有換行
+  expect(box.scrollWidth).toBeGreaterThan(box.clientWidth);
+  expect(box.height).toBeLessThan(box.chip * 1.6);
+  // 頁面本身仍然不橫向捲動
+  expect(await page.evaluate(
+    () => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 });
 
 test("詳細頁的 Heatmap 可橫向滑動（手機塞不下七欄）", async ({ page }) => {
