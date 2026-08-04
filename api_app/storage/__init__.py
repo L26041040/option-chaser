@@ -34,6 +34,17 @@ class ResultRecord:
     scenario_id: str
     analyzed_at: str          # ISO 8601（＝快照的 fetched_at）
     view: dict                # store.serialize_result 的完整 view dict
+    # baseline 期最高收益率（`store.best_return(view)`）。存成獨立欄位而
+    # 不是每次從 view 現算：劇本清單只要這一個數字，卻得為此把整份 view
+    # 撈回來。規則仍只有一份（引擎的純函式），這裡只是它的落盤結果。
+    best_return: float | None = None
+
+
+@dataclass(frozen=True)
+class ResultSummary:
+    """劇本清單卡片要的兩個數字——不含 view。"""
+    analyzed_at: str
+    best_return: float | None
 
 
 class Storage(Protocol):
@@ -54,6 +65,13 @@ class Storage(Protocol):
         """同一 (scenario_id, analyzed_at) 重複寫入即覆蓋（冪等）。"""
 
     def latest_result(self, scenario_id: str) -> ResultRecord | None: ...
+
+    def latest_summaries(self) -> dict[str, ResultSummary]:
+        """每個劇本最新一次結果的摘要，key ＝ scenario_id。
+
+        沒跑過的劇本不出現在結果裡（呼叫端據此顯示「—」，而不是拿一個
+        假的零值當成真的收益率）。專屬查詢的理由見契約測試：清單頁
+        不該為了一個數字把每份 view（十萬字元等級）都搬一次。"""
 
     def result_history(self, scenario_id: str) -> list[ResultRecord]:
         """依 analyzed_at 遞增排序的完整歷史。

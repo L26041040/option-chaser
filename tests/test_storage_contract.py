@@ -226,3 +226,44 @@ def test_both_implementations_expose_the_whole_port(storage):
     missing = [n for n in required if not callable(getattr(storage, n, None))]
     assert not missing, f"{type(storage).__name__} 缺少：{missing}"
     assert isinstance(storage.kind, str)
+
+
+# ---------- 清單摘要（V3／#51） ----------
+
+def test_latest_summaries_returns_the_newest_result_per_scenario(storage):
+    """劇本清單要顯示每個劇本的最新收益率與資料時間。
+
+    做成專屬查詢而不是「每個劇本各叫一次 `latest_result`」：view 一份
+    十萬字元等級，清單頁把每個劇本的完整 view 都撈回來只為了取一個數字，
+    在手機網路上是實打實的浪費。
+    """
+    storage.create_scenario(_scenario("s1"))
+    storage.create_scenario(_scenario("s2", created_at="2026-08-02T00:00:00+00:00"))
+    storage.save_result(ResultRecord("s1", "2026-08-01T00:00:00+00:00",
+                                     {"n": 1}, 0.5))
+    storage.save_result(ResultRecord("s1", "2026-08-03T00:00:00+00:00",
+                                     {"n": 2}, 1.25))
+    storage.save_result(ResultRecord("s2", "2026-08-02T00:00:00+00:00",
+                                     {"n": 3}, None))
+
+    summaries = storage.latest_summaries()
+    assert summaries["s1"].analyzed_at == "2026-08-03T00:00:00+00:00"
+    assert summaries["s1"].best_return == 1.25
+    # 有跑過但該期零候選 → 有時間戳、收益率是 None（≠ 沒跑過）
+    assert summaries["s2"].analyzed_at == "2026-08-02T00:00:00+00:00"
+    assert summaries["s2"].best_return is None
+
+
+def test_latest_summaries_omits_scenarios_that_never_ran(storage):
+    """沒跑過就不該出現在摘要裡——卡片顯示「—」是呼叫端看不到鍵的結果，
+    而不是靠一個假的零值。"""
+    storage.create_scenario(_scenario("s1"))
+    assert storage.latest_summaries() == {}
+
+
+def test_best_return_survives_the_result_roundtrip(storage):
+    storage.create_scenario(_scenario("s1"))
+    storage.save_result(ResultRecord("s1", "2026-08-01T00:00:00+00:00",
+                                     {"n": 1}, -0.4))
+    assert storage.latest_result("s1").best_return == -0.4
+    assert storage.result_history("s1")[0].best_return == -0.4

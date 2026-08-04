@@ -297,6 +297,29 @@ def rebuild_groups(ws_root, scenarios: list[Scenario],
 
 # ---------- ScenarioResult 契約（spec §3） ----------
 
+def best_return(view: dict | None) -> float | None:
+    """baseline 期（最接近目標年月的到期日）本身的最高收益率——與 Step 2
+    主圖同一口徑（QA1-03／#30：先前誤取全部到期日的全域最大值，較早到期日
+    剛好報酬更高時卡片數字就會跟主圖對不上）。
+
+    `baseline_return` 是 service 已預算好的欄位（T3 起＝各 Spread 自身到期日
+    的內在價值），這裡只在 baseline 期那組 `rows` 內取最大值，不做任何金融
+    計算。baseline 期不在 `expiry_groups`、或該期零合格候選 → None（附錄
+    A10.2／A12：綠燈＋「—」，不是一個真的收益率）；無快照 → None（附錄 A8.1）。
+
+    住在 view 契約這一層而不是 `workspace`：V3（#51）起 HTTP API 的劇本
+    清單也要這個數字，而規則只能有一份——`workspace._best_return` 因此
+    改為委派。
+    """
+    if view is None:
+        return None
+    group = next((g for g in view["expiry_groups"]
+                 if g["expiry"] == view.get("baseline_expiry")), None)
+    if group is None or not group["rows"]:
+        return None
+    return max(row["candidate"]["baseline_return"] for row in group["rows"])
+
+
 def _history_entry(sv: SpreadValuation, expiry: str, rank_in_expiry: int) -> dict:
     """T9（#23，附錄A7）：全部有效候選的歷史五欄位之三（成本／收益率／期內
     名次）；另外兩欄（更新時間、標的價）不逐候選重複，共用父層 `analyzed_at`／

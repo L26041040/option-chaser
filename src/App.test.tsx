@@ -17,10 +17,29 @@ import { baselineTopCandidate, type AnalysisView } from "./api";
 
 const view = sample as unknown as AnalysisView;
 
-function mockFetch(resp: Partial<Response> & { json: () => Promise<unknown> }) {
-  const spy = vi.fn().mockResolvedValue({ ok: true, status: 200, ...resp });
+/**
+ * V3 起 App 開站就會打 `/api/scenarios`，所以 mock 必須依 URL 分流——
+ * 一個「不管問什麼都回同一份分析結果」的 stub 會讓劇本清單收到一份
+ * 不是陣列的東西，測出來的東西也就不代表真實行為。
+ */
+function mockRoutes(
+  routes: Record<string, Partial<Response> & { json: () => Promise<unknown> }>,
+) {
+  const spy = vi.fn(async (url: string, _init?: RequestInit) => {
+    const key = Object.keys(routes).find((k) => url.startsWith(k));
+    if (key === undefined) throw new Error(`測試沒有為 ${url} 準備回應`);
+    return { ok: true, status: 200, ...routes[key] };
+  });
   vi.stubGlobal("fetch", spy);
   return spy;
+}
+
+/** 分析端點以外一律回空劇本清單——V1 遺留畫面的測試只關心分析。 */
+function mockFetch(resp: Partial<Response> & { json: () => Promise<unknown> }) {
+  return mockRoutes({
+    "/api/scenarios": { json: async () => [] },
+    "/api/analyze": resp,
+  });
 }
 
 afterEach(() => {
@@ -29,8 +48,12 @@ afterEach(() => {
 });
 
 describe("走通骨架畫面", () => {
-  it("分析前不顯示任何結果數字", () => {
+  it("分析前不顯示任何結果數字", async () => {
+    mockFetch({ json: async () => view });
     render(<App />);
+    // 等開站的劇本清單載完，否則斷言會落在畫面還沒定下來的一瞬間
+    await screen.findByText(/還沒有劇本/);
+
     expect(screen.getByRole("button", { name: "跑一次分析" })).toBeEnabled();
     expect(screen.queryByText("現價")).not.toBeInTheDocument();
   });
@@ -66,9 +89,9 @@ describe("走通骨架畫面", () => {
     await userEvent.click(screen.getByRole("button", { name: "跑一次分析" }));
     await screen.findByText("現價");
 
-    const [url, init] = spy.mock.calls[0];
-    expect(url).toBe("/api/analyze");
-    const body = JSON.parse(init.body);
+    // 開站的劇本清單請求也在裡面，挑出分析那一筆。
+    const call = spy.mock.calls.find(([url]) => url === "/api/analyze")!;
+    const body = JSON.parse(String(call[1]!.body));
     expect(body).toMatchObject({
       symbol: expect.any(String),
       target_price: expect.any(Number),
@@ -134,8 +157,99 @@ describe("候選池診斷（FB4-01／#60）", () => {
     expect(screen.getByText("通過品質過濾")).toBeInTheDocument();
   });
 
-  it("分析前不顯示候選池", () => {
+  it("分析前不顯示候選池", async () => {
+    mockFetch({ json: async () => view });
     render(<App />);
+    await screen.findByText(/還沒有劇本/);
+
     expect(screen.queryByText("候選池")).not.toBeInTheDocument();
+  });
+});
+
+describe("劇本庫（V3／#51）", () => {
+  const row = {
+    id: "s1", symbol: "TLT", target_price: 120, target_month: "2028-05",
+    created_at: "2026-08-01T00:00:00+00:00", archived_at: null,
+    latest_analyzed_at: "2026-08-04T09:30:00+00:00", best_return: 1.5,
+    target_anchor: "2028-05-19", days_to_anchor: 653,
+  };
+
+  it("開站就載入劇本清單並畫成卡片", async () => {
+    mockRoutes({ "/api/scenarios": { json: async () => [row] } });
+    render(<App />);
+
+    expect(await screen.findByText("TLT")).toBeInTheDocument();
+    expect(screen.getByText("150.0%")).toBeInTheDocument();
+    expect(screen.getByText("劇本庫")).toBeInTheDocument();
+  });
+
+  it("清單載不動時說明原因，不是空白的「還沒有劇本」", async () => {
+    mockRoutes({
+      "/api/scenarios": {
+        ok: false, status: 500, json: async () => ({ detail: "資料庫連不上" }),
+      },
+    });
+    render(<App />);
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("資料庫連不上");
+  });
+
+  it("建立後新劇本立刻出現在清單上", async () => {
+    const created = { ...row, id: "s2", symbol: "SPY",
+                      latest_analyzed_at: null, best_return: null };
+    const spy = mockRoutes({
+      "/api/scenarios": { json: async () => [] },
+    });
+    spy.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url === "/api/scenarios" && init?.method === "POST") {
+        return { ok: true, status: 201, json: async () => created };
+      }
+      return { ok: true, status: 200, json: async () => [] };
+    });
+    render(<App />);
+
+    await userEvent.type(await screen.findByLabelText("標的代號"), "spy");
+    await userEvent.type(screen.getByLabelText("目標價位"), "700");
+    await userEvent.type(screen.getByLabelText("目標年月"), "2028-05");
+    await userEvent.click(screen.getByRole("button", { name: "建立" }));
+
+    expect(await screen.findByText("SPY")).toBeInTheDocument();
+    // 還沒分析過 → 收益率欄位是「—」，不是 0%
+    expect(screen.getByText("—")).toBeInTheDocument();
+  });
+
+  it("封存後卡片從清單消失", async () => {
+    const spy = mockRoutes({ "/api/scenarios": { json: async () => [row] } });
+    spy.mockImplementation(async (url: string) => {
+      if (url.endsWith("/archive")) {
+        return { ok: true, status: 200, json: async () => ({ archived: true }) };
+      }
+      return { ok: true, status: 200, json: async () => [row] };
+    });
+    render(<App />);
+
+    await userEvent.click(
+      await screen.findByRole("button", { name: "封存 TLT 2028-05" }));
+
+    expect(screen.queryByText("TLT")).not.toBeInTheDocument();
+  });
+
+  it("封存失敗時卡片回到清單上，並說明原因", async () => {
+    const spy = mockRoutes({ "/api/scenarios": { json: async () => [row] } });
+    spy.mockImplementation(async (url: string) => {
+      if (url.endsWith("/archive")) {
+        return { ok: false, status: 404,
+                 json: async () => ({ detail: "劇本不存在" }) };
+      }
+      return { ok: true, status: 200, json: async () => [row] };
+    });
+    render(<App />);
+
+    await userEvent.click(
+      await screen.findByRole("button", { name: "封存 TLT 2028-05" }));
+
+    // 樂觀移除必須可回復——否則畫面會宣稱一件沒發生的事
+    expect(await screen.findByRole("alert")).toHaveTextContent("劇本不存在");
+    expect(screen.getByText("TLT")).toBeInTheDocument();
   });
 });

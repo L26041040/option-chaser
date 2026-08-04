@@ -83,12 +83,34 @@ export interface AnalyzeRequest {
 
 export class ApiError extends Error {}
 
-export async function analyze(req: AnalyzeRequest): Promise<AnalysisView> {
-  const resp = await fetch("/api/analyze", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(req),
-  });
+/**
+ * 一個劇本在清單上的樣子。`latest_analyzed_at` 與 `best_return` 由清單
+ * 端點一起帶回（後端 V3／#51），前端不必為每張卡再打一次 detail。
+ * 兩者為 null ＝ 這個劇本還沒跑過分析，卡片顯示「—」。
+ */
+export interface ScenarioSummary {
+  id: string;
+  symbol: string;
+  target_price: number;
+  target_month: string;
+  created_at: string;
+  archived_at: string | null;
+  latest_analyzed_at: string | null;
+  best_return: number | null;
+  /** 目標月的到期錨點（該月第三個星期五）與距今天數，皆由後端算好。
+   *  負數＝已過期，不夾成 0。 */
+  target_anchor: string;
+  days_to_anchor: number;
+}
+
+export interface CreateScenarioRequest {
+  symbol: string;
+  target_price: number;
+  target_month: string;
+}
+
+async function request<T>(url: string, init?: RequestInit): Promise<T> {
+  const resp = await fetch(url, init);
   if (!resp.ok) {
     const detail = await resp
       .json()
@@ -97,10 +119,37 @@ export async function analyze(req: AnalyzeRequest): Promise<AnalysisView> {
     // FastAPI 的驗證錯誤（422）detail 是物件陣列，直接丟進畫面會變成
     // [object Object]；只有字串才拿來當人看的訊息。
     const message =
-      typeof detail === "string" ? detail : `分析失敗（HTTP ${resp.status}）`;
+      typeof detail === "string" ? detail : `請求失敗（HTTP ${resp.status}）`;
     throw new ApiError(message);
   }
   return resp.json();
+}
+
+const POST_JSON = (body: unknown): RequestInit => ({
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify(body),
+});
+
+export function analyze(req: AnalyzeRequest): Promise<AnalysisView> {
+  return request<AnalysisView>("/api/analyze", POST_JSON(req));
+}
+
+export function listScenarios(): Promise<ScenarioSummary[]> {
+  return request<ScenarioSummary[]>("/api/scenarios");
+}
+
+export function createScenario(
+  req: CreateScenarioRequest,
+): Promise<ScenarioSummary> {
+  return request<ScenarioSummary>("/api/scenarios", POST_JSON(req));
+}
+
+export function archiveScenario(id: string): Promise<{ archived: boolean }> {
+  return request<{ archived: boolean }>(
+    `/api/scenarios/${encodeURIComponent(id)}/archive`,
+    { method: "POST" },
+  );
 }
 
 /**

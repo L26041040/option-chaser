@@ -164,3 +164,31 @@ def test_filter_report_carries_contract_level_counts():
     # 這正是不能用 n_qualified 當合約數的證據：spread 路徑兩者不同意義。
     assert spread["n_qualified"] == spread["pair_report"]["passed"]
     assert spread["filter_report"]["passed"] != spread["n_qualified"]
+
+
+def test_best_return_is_public_and_baseline_expiry_only():
+    """V3（#51）：劇本卡片的「最新收益率」與 Step 2 主圖同一口徑。
+
+    這條規則原本只活在 `workspace._best_return`（Streamlit 檔案層的私有
+    函式）。API 也要用同一條規則，複製一份等於讓 QA1-03（#30）修好的
+    「卡片數字對不上主圖」有機會在新前端重演——所以提升為公開純函式，
+    `workspace` 改為委派。
+    """
+    view = store.serialize_result(_result(), "S", None)
+    group = next(g for g in view["expiry_groups"]
+                 if g["expiry"] == view["baseline_expiry"])
+    expected = max(row["candidate"]["baseline_return"] for row in group["rows"])
+
+    assert store.best_return(view) == expected
+    assert store.best_return(None) is None
+
+    # 全域最大值可能落在別的到期日——取全域就是 QA1-03 修掉的那個 bug。
+    everything = max(row["candidate"]["baseline_return"]
+                     for g in view["expiry_groups"] for row in g["rows"])
+    assert store.best_return(view) <= everything
+
+
+def test_best_return_is_none_when_baseline_expiry_has_no_candidates():
+    view = store.serialize_result(_result(), "S", None)
+    empty = dict(view, baseline_expiry="2099-12-31")
+    assert store.best_return(empty) is None

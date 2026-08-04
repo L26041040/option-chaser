@@ -188,3 +188,96 @@ body {
 .row.sub .row-value {
   font-size: 15px;
 }
+
+/* ---------- V3（#51）：釘選功能列、卡片清單、建立表單 ---------- */
+
+/* `position: sticky` 而非 fixed：sticky 留在文件流裡，不必為它補一塊
+   等高的 padding，鍵盤彈出時也不會蓋住輸入欄。top 要扣掉安全區，
+   否則 iPhone 上會頂到瀏海底下。 */
+.toolbar {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  margin: calc(var(--gap) * -1) calc(var(--gap) * -1) 0;
+  padding: max(env(safe-area-inset-top), 8px) var(--gap) 12px;
+  background: color-mix(in srgb, var(--bg) 88%, transparent);
+  backdrop-filter: saturate(180%) blur(20px);
+  border-bottom: 0.5px solid var(--separator);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.toolbar-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.toolbar-title {
+  font-size: 28px;
+  font-weight: 700;
+  letter-spacing: -0.4px;
+  margin: 0;
+}
+
+.list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.row-value.big {
+  font-size: 22px;
+  font-weight: 700;
+  letter-spacing: -0.3px;
+}
+
+/* 沒跑過分析的「—」：不上漲跌色，因為它不是一個收益率。 */
+.metric.muted {
+  color: var(--label-tertiary);
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.input {
+  appearance: none;
+  font-family: inherit;
+  /* 16px 是 iOS Safari 不自動放大頁面的下限——小一點就會在聚焦時
+     整頁縮放，使用者得再手動縮回去。 */
+  font-size: 17px;
+  color: var(--label);
+  background: var(--bg);
+  border: 0.5px solid var(--separator);
+  border-radius: 10px;
+  padding: 12px;
+  min-height: 48px;
+  width: 100%;
+}
+
+.input:focus {
+  outline: 2px solid var(--tint);
+  outline-offset: -1px;
+}
+
+.button.subtle {
+  background: transparent;
+  color: var(--tint);
+  border: 0.5px solid var(--separator);
+}
+
+.screen-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap);
+  padding-top: var(--gap);
+  border-top: 0.5px solid var(--separator);
+}

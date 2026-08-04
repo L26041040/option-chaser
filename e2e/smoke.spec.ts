@@ -16,13 +16,21 @@ const view = sample as unknown as {
   results: { status: string; expiry_top10?: { expiry: string; candidates: { baseline_return: number }[] }[] }[];
 };
 
+test.beforeEach(async ({ page }) => {
+  // V3 起開站就打劇本清單。E2E 沒有後端，預設回空清單；需要劇本的
+  // 測試自己覆寫這條路由。
+  await page.route("**/api/scenarios", (route) => route.fulfill({ json: [] }));
+});
+
 test("手機開站 → 跑分析 → 顯示引擎算出的數字", async ({ page }) => {
   await page.route("**/api/analyze", (route) =>
     route.fulfill({ json: view }),
   );
 
   await page.goto("/");
-  await expect(page.getByRole("heading", { name: "Option Chaser" })).toBeVisible();
+  // V3 起頁面標題是當前畫面（劇本庫），符合 iOS 導覽列慣例；
+  // 產品名留在瀏覽器分頁標題，不佔手機畫面高度。
+  await expect(page.getByRole("heading", { name: "劇本庫" })).toBeVisible();
 
   await page.getByRole("button", { name: "跑一次分析" }).click();
 
@@ -66,4 +74,52 @@ test("候選池狀態隨分析結果一併顯示（FB4-01／#60）", async ({ pa
   // 契約樣本的 baseline 期只有 1 組有效候選——警示必須出現，
   // 這正是「第 1 名其實是整池僅存者」的情境。
   await expect(page.getByRole("status")).toContainText("參考價值有限");
+});
+
+test("劇本庫：建立 → 出現在清單 → 封存後消失（V3／#51）", async ({ page }) => {
+  const created = {
+    id: "s1", symbol: "TLT", target_price: 120, target_month: "2028-05",
+    created_at: "2026-08-04T00:00:00+00:00", archived_at: null,
+    latest_analyzed_at: null, best_return: null,
+    target_anchor: "2028-05-19", days_to_anchor: 653,
+  };
+  // 這條路由要蓋掉 beforeEach 的空清單版本，因此得處理 GET 與 POST 兩種。
+  await page.route("**/api/scenarios", (route) =>
+    route.request().method() === "POST"
+      ? route.fulfill({ status: 201, json: created })
+      : route.fulfill({ json: [] }),
+  );
+  await page.route("**/api/scenarios/*/archive", (route) =>
+    route.fulfill({ json: { archived: true } }),
+  );
+
+  await page.goto("/");
+  await expect(page.getByText("劇本庫")).toBeVisible();
+  await expect(page.getByText(/還沒有劇本/)).toBeVisible();
+
+  await page.getByLabel("標的代號").fill("tlt");
+  await page.getByLabel("目標價位").fill("120");
+  await page.getByLabel("目標年月").fill("2028-05");
+  await page.getByRole("button", { name: "建立" }).click();
+
+  // 頁面下方的 V1 遺留區塊也有 "TLT" 字樣，因此鎖定清單裡那一張卡。
+  const card = page.getByRole("listitem").filter({ hasText: "2028-05" });
+  await expect(card.getByText("TLT", { exact: true })).toBeVisible();
+  await expect(page.getByText("653 天")).toBeVisible();
+  // 還沒分析過：收益率是「—」、資料時間說尚未分析，而不是假的 0%
+  await expect(page.getByText("尚未分析")).toBeVisible();
+
+  await page.getByRole("button", { name: "封存 TLT 2028-05" }).click();
+  await expect(page.getByRole("listitem")).toHaveCount(0);
+  await expect(page.getByText(/還沒有劇本/)).toBeVisible();
+});
+
+test("功能列捲動時仍釘在頂部（V3／#51）", async ({ page }) => {
+  await page.goto("/");
+  const toolbar = page.getByText("劇本庫");
+  await expect(toolbar).toBeVisible();
+
+  await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+  // 捲到底之後功能列仍要在視窗內，而不是被捲走
+  await expect(toolbar).toBeInViewport();
 });

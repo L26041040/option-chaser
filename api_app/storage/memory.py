@@ -6,7 +6,7 @@
 """
 from __future__ import annotations
 
-from . import ResultRecord, Scenario, ScenarioExists
+from . import ResultRecord, ResultSummary, Scenario, ScenarioExists
 
 
 class MemoryStorage:
@@ -50,6 +50,15 @@ class MemoryStorage:
     def latest_result(self, scenario_id: str) -> ResultRecord | None:
         hist = self.result_history(scenario_id)
         return hist[-1] if hist else None
+
+    def latest_summaries(self) -> dict[str, ResultSummary]:
+        out: dict[str, ResultSummary] = {}
+        for sid in self._results:
+            rec = self.latest_result(sid)
+            if rec is not None:
+                out[sid] = ResultSummary(analyzed_at=rec.analyzed_at,
+                                         best_return=rec.best_return)
+        return out
 
     def result_history(self, scenario_id: str) -> list[ResultRecord]:
         by_ts = self._results.get(scenario_id, {})

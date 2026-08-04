@@ -12,7 +12,7 @@ from __future__ import annotations
 import psycopg
 from psycopg.types.json import Jsonb
 
-from . import ResultRecord, Scenario, ScenarioExists
+from . import ResultRecord, ResultSummary, Scenario, ScenarioExists
 
 # 每個 lambda 程序只需建表一次。`IF NOT EXISTS` 在 Postgres 並非完全
 # race-free（同時冷啟動可能撞上 duplicate 錯誤），因此除了這個旗標，
@@ -35,8 +35,13 @@ CREATE TABLE IF NOT EXISTS results (
     scenario_id   TEXT NOT NULL,
     analyzed_at   TEXT NOT NULL,
     view          JSONB NOT NULL,
+    best_return   DOUBLE PRECISION,
     PRIMARY KEY (scenario_id, analyzed_at)
 );
+-- V3（#51）加的欄位。既有部署已經有 results 表，`CREATE TABLE IF NOT
+-- EXISTS` 不會補欄位——沒有這一行，正式環境會在 INSERT 時炸
+-- UndefinedColumn。
+ALTER TABLE results ADD COLUMN IF NOT EXISTS best_return DOUBLE PRECISION;
 CREATE TABLE IF NOT EXISTS snapshots (
     scenario_id   TEXT NOT NULL,
     analyzed_at   TEXT NOT NULL,
@@ -53,6 +58,8 @@ CREATE TABLE IF NOT EXISTS events (
 CREATE INDEX IF NOT EXISTS results_scenario_idx ON results (scenario_id, analyzed_at);
 CREATE INDEX IF NOT EXISTS events_scenario_idx ON events (scenario_id, seq);
 """
+
+_RESULT_COLS = "scenario_id, analyzed_at, view, best_return"
 
 _SCENARIO_COLS = ("id, symbol, direction, target_price, target_month, "
                   "notes, strategies, created_at, archived_at")
@@ -136,24 +143,36 @@ class PostgresStorage:
     def save_result(self, rec: ResultRecord) -> None:
         with self._connect() as conn:
             conn.execute(
-                "INSERT INTO results (scenario_id, analyzed_at, view) "
-                "VALUES (%s, %s, %s) "
+                "INSERT INTO results (scenario_id, analyzed_at, view, best_return) "
+                "VALUES (%s, %s, %s, %s) "
                 "ON CONFLICT (scenario_id, analyzed_at) DO UPDATE "
-                "SET view = EXCLUDED.view",
-                (rec.scenario_id, rec.analyzed_at, Jsonb(rec.view)))
+                "SET view = EXCLUDED.view, best_return = EXCLUDED.best_return",
+                (rec.scenario_id, rec.analyzed_at, Jsonb(rec.view),
+                 rec.best_return))
 
     def latest_result(self, scenario_id: str) -> ResultRecord | None:
         with self._connect() as conn:
             row = conn.execute(
-                "SELECT scenario_id, analyzed_at, view FROM results "
+                f"SELECT {_RESULT_COLS} FROM results "
                 "WHERE scenario_id = %s ORDER BY analyzed_at DESC LIMIT 1",
                 (scenario_id,)).fetchone()
         return ResultRecord(*row) if row else None
 
+    def latest_summaries(self) -> dict[str, ResultSummary]:
+        """`DISTINCT ON` 一趟取回每個劇本的最新一筆——**不選 view 欄位**，
+        清單頁因此不會把每份十萬字元的 view 從資料庫搬過來。"""
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT DISTINCT ON (scenario_id) scenario_id, analyzed_at, "
+                "best_return FROM results "
+                "ORDER BY scenario_id, analyzed_at DESC").fetchall()
+        return {r[0]: ResultSummary(analyzed_at=r[1], best_return=r[2])
+                for r in rows}
+
     def result_history(self, scenario_id: str) -> list[ResultRecord]:
         with self._connect() as conn:
             rows = conn.execute(
-                "SELECT scenario_id, analyzed_at, view FROM results "
+                f"SELECT {_RESULT_COLS} FROM results "
                 "WHERE scenario_id = %s ORDER BY analyzed_at",
                 (scenario_id,)).fetchall()
         return [ResultRecord(*r) for r in rows]

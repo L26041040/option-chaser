@@ -20,7 +20,8 @@ from pydantic import BaseModel, Field, field_validator
 from option_chaser import __version__, service, store
 from option_chaser.models import (AnalysisParams, ChainSnapshot, FetchError,
                                   ParamError, STRATEGIES)
-from option_chaser.timeframe import TargetMonth, ensure_month_open
+from option_chaser.timeframe import (TargetMonth, calendar_anchor,
+                                     ensure_month_open)
 from option_chaser.workspace import now_utc_iso, ny_today
 
 from .storage import ResultRecord, Scenario, ScenarioExists, Storage
@@ -61,6 +62,21 @@ class CreateScenarioRequest(BaseModel):
     target_price: float = Field(gt=0)
     target_month: str = _MONTH
     notes: str = ""
+
+
+def _timing_json(sc: Scenario) -> dict:
+    """卡片的「距到期天數」（V3／#51）。
+
+    兩件事都是領域規則、都不該讓瀏覽器自己猜：錨點＝該月第三個星期五
+    （`timeframe.calendar_anchor`），「今天」＝紐約日曆（`ny_today`）。
+    已過期就是負數，夾成 0 會讓過期劇本看起來還有救。
+
+    刻意不放進 `_scenario_json`：那個結構會原樣寫進 `SCENARIO_CREATED`
+    事件，而事件是不可變的事實，不能塞「距今幾天」這種隨時間改變的值。
+    """
+    anchor = calendar_anchor(TargetMonth.from_key(sc.target_month))
+    return {"target_anchor": anchor.isoformat(),
+            "days_to_anchor": (anchor - ny_today()).days}
 
 
 def _scenario_json(sc: Scenario) -> dict:
@@ -170,18 +186,32 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
             raise HTTPException(status_code=409, detail=str(e)) from e
         _db().append_event(ts=ts, scenario_id=sc.id,
                            event="SCENARIO_CREATED", payload=_scenario_json(sc))
-        return _scenario_json(sc)
+        # 回傳與清單同一個形狀（含 timing、尚未分析故兩個摘要欄位為 None），
+        # 客戶端才不必為「剛建立的」與「列出來的」維護兩種型別。
+        return {**_scenario_json(sc), **_timing_json(sc),
+                "latest_analyzed_at": None, "best_return": None}
 
     @app.get("/api/scenarios")
     def list_scenarios(include_archived: bool = False) -> list[dict]:
-        return [_scenario_json(s)
-                for s in _db().list_scenarios(include_archived=include_archived)]
+        # 卡片要的兩個數字跟著清單一起回（V3／#51）：否則前端得為每張卡
+        # 各打一次 detail，而 detail 會拖回整份 view（十萬字元等級）。
+        # 沒跑過的劇本兩欄皆 None ＝ 卡片顯示「—」，不是 0。
+        summaries = _db().latest_summaries()
+        rows = []
+        for s in _db().list_scenarios(include_archived=include_archived):
+            summary = summaries.get(s.id)
+            rows.append({
+                **_scenario_json(s), **_timing_json(s),
+                "latest_analyzed_at": summary.analyzed_at if summary else None,
+                "best_return": summary.best_return if summary else None,
+            })
+        return rows
 
     @app.get("/api/scenarios/{scenario_id}")
     def get_scenario(scenario_id: str) -> dict:
         sc = _require(scenario_id)
         latest = _db().latest_result(scenario_id)
-        return {**_scenario_json(sc),
+        return {**_scenario_json(sc), **_timing_json(sc),
                 "latest_analyzed_at": latest.analyzed_at if latest else None,
                 "latest_result": latest.view if latest else None}
 
@@ -204,7 +234,8 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
             target_month=sc.target_month, strategies=sc.strategies)
         analyzed_at = view["analyzed_at"]
         _db().save_result(ResultRecord(scenario_id=sc.id,
-                                       analyzed_at=analyzed_at, view=view))
+                                       analyzed_at=analyzed_at, view=view,
+                                       best_return=store.best_return(view)))
         _db().save_snapshot(sc.id, analyzed_at, snapshot)
         _db().append_event(ts=now_utc_iso(), scenario_id=sc.id,
                            event="ANALYSIS_COMPLETED",

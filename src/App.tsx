@@ -1,75 +1,73 @@
 /**
- * V1（#48）走通骨架的畫面：呼叫 API 跑一次真實分析，顯示現價、baseline
- * 期第 1 名收益率、以及資料來源。
+ * 主畫面（V3／#51）：劇本庫。
  *
- * 資料來源那一行不是裝飾——它就是 Vercel 出口對 Cboe 可達性的驗證方式
- * （`cboe` ＝ 打得到主源；`yfinance` ＝ 走了備援）。
+ * 頂部釘選功能列 → 劇本卡片清單（依最新收益率排序）→ 建立表單。
+ * 詳細頁是 V5（#53）；在它落地之前，頁面最下方保留 V1 的一次性分析
+ * （`DemoAnalysis`），那是目前唯一看得到候選池診斷的地方。
  *
- * 這一版刻意只有一個畫面：劇本庫、建立表單、詳細頁等是後續票（#51 起）。
+ * 這一層只做編排與狀態：排序、格式化在 `./scenarios`，驗證在
+ * `./CreateForm`，金融計算全部在後端引擎。
  */
-import { useState } from "react";
-import CandidatePool from "./CandidatePool";
+import { useCallback, useEffect, useState } from "react";
+
+import CreateForm, { type DraftScenario } from "./CreateForm";
+import DemoAnalysis from "./DemoAnalysis";
+import ScenarioList from "./ScenarioList";
+import Toolbar from "./Toolbar";
 import {
-  analyze,
-  baselineTopCandidate,
-  type AnalysisView,
-  type Candidate,
+  archiveScenario,
+  createScenario,
+  listScenarios,
+  type ScenarioSummary,
 } from "./api";
 
-const DEMO_REQUEST = {
-  symbol: "TLT",
-  target_price: 120,
-  target_month: "2028-05",
-  strategies: ["bull-call-spread"],
-};
-
-function pct(x: number): string {
-  return `${(x * 100).toFixed(1)}%`;
-}
-
-function money(x: number): string {
-  return `$${x.toFixed(2)}`;
-}
-
-function legLabel(cand: Candidate): string {
-  const [long, short] = cand.legs;
-  if (!long) return "—";
-  return short
-    ? `買 ${long.strike} / 賣 ${short.strike}`
-    : `K=${long.strike}`;
-}
-
 export default function App() {
-  const [view, setView] = useState<AnalysisView | null>(null);
+  const [rows, setRows] = useState<ScenarioSummary[]>([]);
   const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
+  const [busy, setBusy] = useState(false);
 
-  async function run() {
-    setLoading(true);
-    setError(null);
+  const reload = useCallback(async () => {
     try {
-      setView(await analyze(DEMO_REQUEST));
+      setRows(await listScenarios());
+      setError(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
-      setView(null);
+    }
+  }, []);
+
+  useEffect(() => {
+    void reload();
+  }, [reload]);
+
+  async function create(draft: DraftScenario) {
+    setBusy(true);
+    try {
+      // 建立端點回傳的形狀與清單列相同，直接併進畫面——不必為了看到
+      // 剛建立的那一張卡再打一次清單。
+      const created = await createScenario(draft);
+      setRows((prev) => [...prev, created]);
+      setError(null);
     } finally {
-      setLoading(false);
+      setBusy(false);
     }
   }
 
-  const top = view ? baselineTopCandidate(view) : null;
+  async function archive(id: string) {
+    // 樂觀移除：封存是軟刪除，後端保留資料與紀錄，畫面先反應。失敗時
+    // 把它放回去並說明原因——不能讓一張其實還在的卡片就這樣消失。
+    const before = rows;
+    setRows((prev) => prev.filter((r) => r.id !== id));
+    try {
+      await archiveScenario(id);
+    } catch (e) {
+      setRows(before);
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  }
 
   return (
     <div className="screen">
-      <h1 className="title">Option Chaser</h1>
-      <p className="caption">
-        {DEMO_REQUEST.symbol}　目標 {money(DEMO_REQUEST.target_price)}
-        {DEMO_REQUEST.target_month}
-      </p>
-
-      <button className="button" onClick={run} disabled={loading}>
-        {loading ? "分析中……" : "跑一次分析"}
-      </button>
+      <Toolbar count={rows.length} />
 
       {error && (
         <div className="notice error" role="alert">
@@ -77,48 +75,9 @@ export default function App() {
         </div>
       )}
 
-      {view && (
-        <div className="card">
-          <div className="row">
-            <span className="row-label">現價</span>
-            <span className="row-value">{money(view.meta.spot)}</span>
-          </div>
-          <div className="row">
-            <span className="row-label">到期日（baseline）</span>
-            <span className="row-value">{view.baseline_expiry ?? "—"}</span>
-          </div>
-          {top ? (
-            <>
-              <div className="row">
-                <span className="row-label">該期第 1 名</span>
-                <span className="row-value">{legLabel(top)}</span>
-              </div>
-              <div className="row">
-                <span className="row-label">劇本報酬</span>
-                <span
-                  className={`metric ${
-                    top.baseline_return >= 0 ? "positive" : "negative"
-                  }`}
-                >
-                  {pct(top.baseline_return)}
-                </span>
-              </div>
-            </>
-          ) : (
-            <div className="row">
-              <span className="row-label">該期第 1 名</span>
-              <span className="row-value">無合格候選</span>
-            </div>
-          )}
-          <p className="caption">
-            資料來源 {view.meta.source}　·　{view.meta.fetched_at}
-          </p>
-        </div>
-      )}
-
-      {/* FB4-01（#60）：候選池狀態——沒有它，「第 1 名」看起來永遠正常，
-          但可能只是整池剩下的那一個。 */}
-      {view && <CandidatePool view={view} />}
+      <ScenarioList rows={rows} onArchive={archive} />
+      <CreateForm onCreate={create} busy={busy} />
+      <DemoAnalysis />
     </div>
   );
 }

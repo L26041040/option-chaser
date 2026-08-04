@@ -182,3 +182,102 @@ def test_analyze_also_persists_the_raw_option_chain_snapshot():
     assert snap is not None
     assert snap["symbol"] == "XYZ"
     assert snap["contracts"], "快照要含逐筆合約，不是只有 meta"
+
+
+# ---------- 清單卡片欄位（V3／#51） ----------
+
+def test_list_carries_the_card_numbers_so_the_client_needs_one_request():
+    """劇本清單卡片要顯示最新收益率與資料時間。若清單只回劇本欄位，
+    前端就得為每張卡各打一次 detail（每次拖回十萬字元的 view）——
+    手機上這是實打實的浪費，所以清單自己帶。"""
+    client = _client()
+    ran = _create(client, target_price=130.0)
+    never = _create(client, target_price=140.0)
+    client.post(f"/api/scenarios/{ran['id']}/analyze").raise_for_status()
+
+    rows = {r["id"]: r for r in client.get("/api/scenarios").json()}
+
+    assert rows[ran["id"]]["latest_analyzed_at"]
+    # 與詳細頁 baseline 期的最高收益率同一個數字（同一條純函式）
+    view = client.get(f"/api/scenarios/{ran['id']}").json()["latest_result"]
+    from option_chaser import store
+    assert rows[ran["id"]]["best_return"] == store.best_return(view)
+
+    # 沒跑過的劇本：兩個欄位都是 None（＝卡片顯示「—」），不是 0
+    assert rows[never["id"]]["latest_analyzed_at"] is None
+    assert rows[never["id"]]["best_return"] is None
+
+
+def test_list_does_not_ship_the_whole_view():
+    """卡片只要兩個數字。清單順手把 view 塞進去的話，一頁十個劇本就是
+    一 MB 級的回應。"""
+    client = _client()
+    sc = _create(client)
+    client.post(f"/api/scenarios/{sc['id']}/analyze").raise_for_status()
+
+    row = client.get("/api/scenarios").json()[0]
+    assert "latest_result" not in row
+    assert "view" not in row
+
+
+def test_reanalysis_updates_the_card_number():
+    client = _client()
+    sc = _create(client)
+    client.post(f"/api/scenarios/{sc['id']}/analyze").raise_for_status()
+    first = client.get("/api/scenarios").json()[0]
+
+    client.post(f"/api/scenarios/{sc['id']}/analyze").raise_for_status()
+    again = client.get("/api/scenarios").json()[0]
+
+    # 同一份 fixture 重跑 → 同一個數字；重點是清單讀的是最新那筆而不是
+    # 第一筆（時間戳相同即證明覆蓋語意成立）。
+    assert again["best_return"] == first["best_return"]
+    assert again["latest_analyzed_at"] == first["latest_analyzed_at"]
+
+
+def test_list_carries_the_target_month_anchor_and_days_left():
+    """卡片要顯示「距到期天數」。錨點是「該月第三個星期五」這條領域規則
+    （`timeframe.calendar_anchor`），而「今天」在後端是紐約日曆
+    （`ny_today`）——兩者都不該讓瀏覽器自己猜，所以由後端算好送出。"""
+    from datetime import date
+
+    from option_chaser.timeframe import TargetMonth, calendar_anchor
+    from option_chaser.workspace import ny_today
+
+    client = _client()
+    _create(client)
+    row = client.get("/api/scenarios").json()[0]
+
+    anchor = calendar_anchor(TargetMonth.from_key("2026-09"))
+    assert row["target_anchor"] == anchor.isoformat()
+    assert row["days_to_anchor"] == (anchor - ny_today()).days
+    assert date.fromisoformat(row["target_anchor"]).weekday() == 4   # 星期五
+
+
+def test_days_left_goes_negative_rather_than_clamping_to_zero():
+    """目標月已過的舊劇本（建立時還沒過）要如實顯示已經過期幾天，
+    夾到 0 會讓它看起來還有救。"""
+    from datetime import date
+
+    from option_chaser.timeframe import TargetMonth, calendar_anchor
+    from api_app.storage import Scenario as StoredScenario
+
+    storage = MemoryStorage()
+    storage.create_scenario(StoredScenario(
+        id="old", symbol="XYZ", direction="bullish", target_price=130.0,
+        target_month="2020-01", notes="", strategies=("bull-call-spread",),
+        created_at="2019-06-01T00:00:00+00:00"))
+    row = _client(storage).get("/api/scenarios").json()[0]
+
+    anchor = calendar_anchor(TargetMonth.from_key("2020-01"))
+    assert row["target_anchor"] == anchor.isoformat()
+    assert row["days_to_anchor"] < 0
+
+
+def test_create_returns_the_same_shape_as_a_list_row():
+    """建立後前端要能直接把回傳值放進清單。回傳一個少了欄位的變體，
+    客戶端就得為「剛建立的」與「列出來的」維護兩種型別。"""
+    client = _client()
+    created = _create(client)
+    listed = client.get("/api/scenarios").json()[0]
+    assert created == listed
