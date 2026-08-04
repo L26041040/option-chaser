@@ -1,15 +1,20 @@
 import { describe, expect, it } from "vitest";
 
+import sampleRow from "../contracts/scenario_row_sample.json";
 import type { ScenarioSummary } from "./api";
 import { formatDaysLeft, formatReturn, sortScenarios } from "./scenarios";
 
+// 形狀取自前後端共用的契約樣本；後端改欄位時後端的
+// `test_scenario_row_sample_matches_the_live_list_response` 會先紅。
+const base = sampleRow as unknown as ScenarioSummary;
+
 function row(id: string, best_return: number | null): ScenarioSummary {
   return {
-    id, symbol: "TLT", target_price: 120, target_month: "2028-05",
-    created_at: `2026-08-0${id}T00:00:00+00:00`, archived_at: null,
+    ...base,
+    id, symbol: "TLT",
+    created_at: `2026-08-0${id}T00:00:00+00:00`,
     latest_analyzed_at: best_return === null ? null : "2026-08-04T00:00:00+00:00",
     best_return,
-    target_anchor: "2028-05-19", days_to_anchor: 653,
   };
 }
 

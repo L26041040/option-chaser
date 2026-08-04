@@ -7,11 +7,13 @@
  * 排序與格式化都在 `./scenarios` 的純函式裡，這裡只負責畫。
  */
 import type { ScenarioSummary } from "./api";
-import { formatDaysLeft, formatReturn, sortScenarios } from "./scenarios";
-
-function money(x: number): string {
-  return `$${x.toFixed(2)}`;
-}
+import {
+  formatAnalyzedAt,
+  formatDaysLeft,
+  formatReturn,
+  money,
+  sortScenarios,
+} from "./scenarios";
 
 function ScenarioCard({
   row,
@@ -51,7 +53,9 @@ function ScenarioCard({
         <span className="row-label">資料時間</span>
         {/* 還沒跑過就說還沒跑過——顯示一個空白或舊時間都會讓人以為
             這張卡上的數字是新的。 */}
-        <span className="row-value">{row.latest_analyzed_at ?? "尚未分析"}</span>
+        <span className="row-value">
+          {formatAnalyzedAt(row.latest_analyzed_at)}
+        </span>
       </div>
 
       <button

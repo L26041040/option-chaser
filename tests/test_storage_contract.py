@@ -305,3 +305,39 @@ def test_existing_results_table_gains_the_new_column():
     st.create_scenario(_scenario("mig"))
     st.save_result(ResultRecord("mig", "2026-08-01T00:00:00+00:00", {"n": 1}, 0.75))
     assert st.latest_summaries()["mig"].best_return == 0.75
+
+
+def test_migration_still_applies_when_table_creation_hits_a_race():
+    """冷啟動競爭：建表那一批已經被別人建好而拋錯時，遷移**不能**跟著死。
+
+    同一批 DDL 送出去會被包成一個 implicit transaction——建表拋錯就整批
+    rollback（含 ALTER），而 `_schema_ready` 仍會被標記，該 process 從此
+    每次寫入都撞 UndefinedColumn，直到 lambda 被回收。
+    """
+    if not TEST_DB_URL:
+        pytest.skip("需要 OC_TEST_DATABASE_URL（一個跑著的 Postgres）")
+    import psycopg
+
+    from api_app.storage import postgres as pg
+
+    with psycopg.connect(TEST_DB_URL, autocommit=True) as conn:
+        conn.execute("TRUNCATE scenarios, results, snapshots, events "
+                     "RESTART IDENTITY")
+        conn.execute("DROP TABLE IF EXISTS results")
+        conn.execute("CREATE TABLE results ("
+                     "scenario_id TEXT NOT NULL, analyzed_at TEXT NOT NULL, "
+                     "view JSONB NOT NULL, PRIMARY KEY (scenario_id, analyzed_at))")
+
+    # 讓建表那一批拋出「已存在」——模擬另一個冷啟動剛好搶先建好
+    original = pg._SCHEMA
+    pg._schema_ready.discard(TEST_DB_URL)
+    try:
+        pg._SCHEMA = "CREATE TABLE scenarios (id TEXT PRIMARY KEY);"   # 已存在 → DuplicateTable
+        st = pg.PostgresStorage(TEST_DB_URL)
+    finally:
+        pg._SCHEMA = original
+
+    # 建表批失敗了，遷移批仍要生效
+    st.create_scenario(_scenario("race"))
+    st.save_result(ResultRecord("race", "2026-08-01T00:00:00+00:00", {"n": 1}, 0.5))
+    assert st.latest_summaries()["race"].best_return == 0.5

@@ -55,12 +55,19 @@ export default function App() {
   async function archive(id: string) {
     // 樂觀移除：封存是軟刪除，後端保留資料與紀錄，畫面先反應。失敗時
     // 把它放回去並說明原因——不能讓一張其實還在的卡片就這樣消失。
-    const before = rows;
+    //
+    // 回滾只還原**那一列**，而不是把整份陣列存起來蓋回去：存整份的話，
+    // 「封存 A（未回應）→ 封存 B（成功）→ A 失敗」會讓已封存的 B 復活，
+    // 「封存 A（未回應）→ 建立 C → A 失敗」會讓剛建好的 C 消失。
+    const removed = rows.find((r) => r.id === id);
     setRows((prev) => prev.filter((r) => r.id !== id));
     try {
       await archiveScenario(id);
     } catch (e) {
-      setRows(before);
+      if (removed) {
+        setRows((prev) =>
+          prev.some((r) => r.id === id) ? prev : [...prev, removed]);
+      }
       setError(e instanceof Error ? e.message : String(e));
     }
   }

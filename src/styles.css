@@ -64,8 +64,11 @@ body {
 
 #root {
   min-height: 100dvh;
-  padding: env(safe-area-inset-top) env(safe-area-inset-right)
-    env(safe-area-inset-bottom) env(safe-area-inset-left);
+  /* 頂部安全區**不**在這一層處理——釘選功能列自己吃（`.toolbar`）。
+     兩層都加的話，靜止時頂部空一倍多，而且捲動時 sticky 貼到 top:0
+     的瞬間標題會往上跳一個 inset 的距離。 */
+  padding: 0 env(safe-area-inset-right) env(safe-area-inset-bottom)
+    env(safe-area-inset-left);
 }
 
 .screen {
@@ -75,13 +78,6 @@ body {
   display: flex;
   flex-direction: column;
   gap: var(--gap);
-}
-
-.title {
-  font-size: 34px; /* iOS large title */
-  font-weight: 700;
-  letter-spacing: -0.4px;
-  margin: 8px 0 0;
 }
 
 .card {
@@ -201,11 +197,24 @@ body {
   margin: calc(var(--gap) * -1) calc(var(--gap) * -1) 0;
   padding: max(env(safe-area-inset-top), 8px) var(--gap) 12px;
   background: color-mix(in srgb, var(--bg) 88%, transparent);
+  /* iOS Safari 要到 18 才支援去前綴的 backdrop-filter。少了 -webkit-
+     的話，16／17 上功能列只剩 88% 不透明底、沒有模糊，捲動時底下的
+     文字會透出來疊在標題上。 */
+  -webkit-backdrop-filter: saturate(180%) blur(20px);
   backdrop-filter: saturate(180%) blur(20px);
   border-bottom: 0.5px solid var(--separator);
   display: flex;
   flex-direction: column;
   gap: 8px;
+}
+
+/* 兩種前綴都不支援時退成不透明底——半透明加不模糊，底下的字會透上來。 */
+@supports not (
+  (backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))
+) {
+  .toolbar {
+    background: var(--bg);
+  }
 }
 
 .toolbar-row {

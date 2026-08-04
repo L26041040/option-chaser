@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import dataclasses
 import uuid
+from datetime import date
 from typing import Callable, Literal
 
 from fastapi import FastAPI, HTTPException, Request
@@ -64,19 +65,24 @@ class CreateScenarioRequest(BaseModel):
     notes: str = ""
 
 
-def _timing_json(sc: Scenario) -> dict:
+def _timing_json(sc: Scenario, today: date) -> dict:
     """卡片的「距到期天數」（V3／#51）。
 
     兩件事都是領域規則、都不該讓瀏覽器自己猜：錨點＝該月第三個星期五
     （`timeframe.calendar_anchor`），「今天」＝紐約日曆（`ny_today`）。
     已過期就是負數，夾成 0 會讓過期劇本看起來還有救。
 
+    `today` 由呼叫端傳入、整個回應只取一次——沿用專案既有原則
+    （`workspace.card_of(observed=...)`、`ensure_month_open(month, today)`、
+    儲存層零 wall-clock）：可測，而且跨午夜的請求不會在同一份清單裡
+    出現兩個「今天」。
+
     刻意不放進 `_scenario_json`：那個結構會原樣寫進 `SCENARIO_CREATED`
     事件，而事件是不可變的事實，不能塞「距今幾天」這種隨時間改變的值。
     """
     anchor = calendar_anchor(TargetMonth.from_key(sc.target_month))
     return {"target_anchor": anchor.isoformat(),
-            "days_to_anchor": (anchor - ny_today()).days}
+            "days_to_anchor": (anchor - today).days}
 
 
 def _scenario_json(sc: Scenario) -> dict:
@@ -188,7 +194,7 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
                            event="SCENARIO_CREATED", payload=_scenario_json(sc))
         # 回傳與清單同一個形狀（含 timing、尚未分析故兩個摘要欄位為 None），
         # 客戶端才不必為「剛建立的」與「列出來的」維護兩種型別。
-        return {**_scenario_json(sc), **_timing_json(sc),
+        return {**_scenario_json(sc), **_timing_json(sc, ny_today()),
                 "latest_analyzed_at": None, "best_return": None}
 
     @app.get("/api/scenarios")
@@ -197,11 +203,12 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         # 各打一次 detail，而 detail 會拖回整份 view（十萬字元等級）。
         # 沒跑過的劇本兩欄皆 None ＝ 卡片顯示「—」，不是 0。
         summaries = _db().latest_summaries()
+        today = ny_today()          # 整份清單共用同一個「今天」
         rows = []
         for s in _db().list_scenarios(include_archived=include_archived):
             summary = summaries.get(s.id)
             rows.append({
-                **_scenario_json(s), **_timing_json(s),
+                **_scenario_json(s), **_timing_json(s, today),
                 "latest_analyzed_at": summary.analyzed_at if summary else None,
                 "best_return": summary.best_return if summary else None,
             })
@@ -211,8 +218,11 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
     def get_scenario(scenario_id: str) -> dict:
         sc = _require(scenario_id)
         latest = _db().latest_result(scenario_id)
-        return {**_scenario_json(sc), **_timing_json(sc),
+        # `best_return` 也要在——detail 少一個欄位的話，客戶端就沒辦法把
+        # 同一個型別套用在清單列與詳細回應上（V5 的詳細頁會踩到）。
+        return {**_scenario_json(sc), **_timing_json(sc, ny_today()),
                 "latest_analyzed_at": latest.analyzed_at if latest else None,
+                "best_return": latest.best_return if latest else None,
                 "latest_result": latest.view if latest else None}
 
     @app.post("/api/scenarios/{scenario_id}/archive")

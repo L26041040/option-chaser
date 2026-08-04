@@ -182,10 +182,13 @@ def test_best_return_is_public_and_baseline_expiry_only():
     assert store.best_return(view) == expected
     assert store.best_return(None) is None
 
-    # 全域最大值可能落在別的到期日——取全域就是 QA1-03 修掉的那個 bug。
+    # QA1-03 的 bug 版本是「取全部到期日的全域最大值」。要抓得到它，
+    # 必須確認全域最大值真的落在**別的**到期日，然後斷言兩者不同——
+    # 只斷言「子集最大值 ≤ 全集最大值」的話恆真，bug 版本照樣通過。
     everything = max(row["candidate"]["baseline_return"]
                      for g in view["expiry_groups"] for row in g["rows"])
-    assert store.best_return(view) <= everything
+    assert everything > expected, "這份 fixture 的全域最大值不在別期，測不到 QA1-03"
+    assert store.best_return(view) != everything
 
 
 def test_best_return_is_none_when_baseline_expiry_has_no_candidates():

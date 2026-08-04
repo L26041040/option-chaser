@@ -59,6 +59,18 @@ CREATE INDEX IF NOT EXISTS results_scenario_idx ON results (scenario_id, analyze
 CREATE INDEX IF NOT EXISTS events_scenario_idx ON events (scenario_id, seq);
 """
 
+# 遷移**必須與建表分開送**。psycopg 對「無參數、多語句」的 execute 走
+# simple-query 協定，Postgres 會把整批包成一個 implicit transaction——
+# 同時冷啟動撞上 DuplicateTable 時，整批（含這行 ALTER）會一起 rollback，
+# 而下面仍會把 dsn 標成 ready，該 process 從此每次寫入都撞 UndefinedColumn。
+_MIGRATIONS = """
+ALTER TABLE results ADD COLUMN IF NOT EXISTS best_return DOUBLE PRECISION;
+"""
+
+# 冷啟動競爭下的良性錯誤：別人已經建好／加好了。
+_BENIGN = (psycopg.errors.DuplicateTable, psycopg.errors.DuplicateObject,
+           psycopg.errors.DuplicateColumn, psycopg.errors.UniqueViolation)
+
 _RESULT_COLS = "scenario_id, analyzed_at, view, best_return"
 
 _SCENARIO_COLS = ("id, symbol, direction, target_price, target_month, "
@@ -90,15 +102,19 @@ class PostgresStorage:
 
         每個程序只跑一次（省下每次冷啟動的一趟 DDL 往返）；多個冷啟動
         同時建表時 Postgres 可能拋 duplicate-object，那代表別人已經建好
-        了，視為良性。"""
+        了，視為良性。
+
+        建表與遷移**各送一次**：同批送的話，建表撞上冷啟動競爭會讓遷移
+        跟著 rollback（見 `_MIGRATIONS` 的說明）。ready 只在兩批都不是
+        致命錯誤時才標記——標了卻沒真的建好，後面每次寫入都會炸。"""
         if self._dsn in _schema_ready:
             return
-        try:
-            with self._connect() as conn:
-                conn.execute(_SCHEMA)
-        except (psycopg.errors.DuplicateTable, psycopg.errors.DuplicateObject,
-                psycopg.errors.UniqueViolation):
-            pass
+        for stmt in (_SCHEMA, _MIGRATIONS):
+            try:
+                with self._connect() as conn:
+                    conn.execute(stmt)
+            except _BENIGN:
+                pass
         _schema_ready.add(self._dsn)
 
     # ---------- 劇本 ----------

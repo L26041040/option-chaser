@@ -10,6 +10,14 @@ const sample = JSON.parse(
   ),
 );
 
+const sampleRow = JSON.parse(
+  readFileSync(
+    fileURLToPath(
+      new URL("../contracts/scenario_row_sample.json", import.meta.url)),
+    "utf-8",
+  ),
+);
+
 const view = sample as unknown as {
   meta: { spot: number; source: string };
   baseline_expiry: string;
@@ -78,8 +86,8 @@ test("候選池狀態隨分析結果一併顯示（FB4-01／#60）", async ({ pa
 
 test("劇本庫：建立 → 出現在清單 → 封存後消失（V3／#51）", async ({ page }) => {
   const created = {
+    ...sampleRow,
     id: "s1", symbol: "TLT", target_price: 120, target_month: "2028-05",
-    created_at: "2026-08-04T00:00:00+00:00", archived_at: null,
     latest_analyzed_at: null, best_return: null,
     target_anchor: "2028-05-19", days_to_anchor: 653,
   };
@@ -120,6 +128,13 @@ test("功能列捲動時仍釘在頂部（V3／#51）", async ({ page }) => {
   await expect(toolbar).toBeVisible();
 
   await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
-  // 捲到底之後功能列仍要在視窗內，而不是被捲走
+
+  // 先確認頁面真的捲動了——頁面短到不需要捲時，`toBeInViewport()` 恆真，
+  // 這條測試就會在功能列根本沒釘住的情況下照樣綠。
+  expect(await page.evaluate(() => window.scrollY)).toBeGreaterThan(0);
+  // 量釘住的那個元素本身（`<header>`），不是裡面的標題——標題的 y 還含
+  // 功能列自己的上內距（安全區），量它會得到一個不為 0 的正常值。
+  const box = (await page.locator("header.toolbar").boundingBox())!;
+  expect(box.y).toBeLessThan(2);
   await expect(toolbar).toBeInViewport();
 });

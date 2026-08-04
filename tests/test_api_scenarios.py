@@ -220,19 +220,38 @@ def test_list_does_not_ship_the_whole_view():
     assert "view" not in row
 
 
-def test_reanalysis_updates_the_card_number():
-    client = _client()
+def test_reanalysis_updates_the_card_to_the_newer_numbers():
+    """清單讀的必須是**最新**那一筆結果，不是第一筆。
+
+    兩次都餵同一份快照的話，時間戳與數字都一樣，測不出讀新讀舊的差別
+    ——所以第二次餵一份 `fetched_at` 與價格都不同的快照。
+    """
+    import dataclasses
+
+    snaps = [load_snapshot(FIX)]
+    # 同一天稍晚的一次刷新（跨到未來會讓目標月變成過去式，引擎會擋）
+    snaps.append(dataclasses.replace(
+        snaps[0], fetched_at="2026-07-15T21:45:00-04:00", spot=snaps[0].spot * 1.5))
+    calls = {"n": 0}
+
+    def fetch(symbol):
+        snap = snaps[min(calls["n"], len(snaps) - 1)]
+        calls["n"] += 1
+        return snap
+
+    client = TestClient(create_app(fetch=fetch, storage=MemoryStorage()))
     sc = _create(client)
+
     client.post(f"/api/scenarios/{sc['id']}/analyze").raise_for_status()
     first = client.get("/api/scenarios").json()[0]
 
     client.post(f"/api/scenarios/{sc['id']}/analyze").raise_for_status()
     again = client.get("/api/scenarios").json()[0]
 
-    # 同一份 fixture 重跑 → 同一個數字；重點是清單讀的是最新那筆而不是
-    # 第一筆（時間戳相同即證明覆蓋語意成立）。
-    assert again["best_return"] == first["best_return"]
-    assert again["latest_analyzed_at"] == first["latest_analyzed_at"]
+    assert first["latest_analyzed_at"] == "2026-07-15T21:30:00-04:00"
+    assert again["latest_analyzed_at"] == "2026-07-15T21:45:00-04:00"
+    # 標的價漲五成，baseline 期的收益率不可能原封不動
+    assert again["best_return"] != first["best_return"]
 
 
 def test_list_carries_the_target_month_anchor_and_days_left():
@@ -281,3 +300,27 @@ def test_create_returns_the_same_shape_as_a_list_row():
     created = _create(client)
     listed = client.get("/api/scenarios").json()[0]
     assert created == listed
+
+
+def test_scenario_row_sample_matches_the_live_list_response():
+    """劇本清單列的形狀也走共用契約樣本（V1 立下的紀律，V3 補上）。
+
+    前端四處 fixture 與 E2E 都吃 `contracts/scenario_row_sample.json`；
+    沒有這條，後端把 `days_to_anchor` 改名或拿掉 `target_anchor`，前端
+    測試一條都不會紅。只比對**欄位集合**——值裡有時間，會隨執行時間變。
+    """
+    import json
+    from pathlib import Path
+
+    sample_path = Path("contracts/scenario_row_sample.json")
+    assert sample_path.exists(), "請跑 scripts/gen_contract_sample.py"
+    sample = json.loads(sample_path.read_text(encoding="utf-8"))
+
+    client = _client()
+    sc = _create(client)
+    client.post(f"/api/scenarios/{sc['id']}/analyze").raise_for_status()
+    row = client.get("/api/scenarios").json()[0]
+
+    assert set(row) == set(sample), (
+        "清單列的欄位與契約樣本不一致——請跑 scripts/gen_contract_sample.py "
+        "重產，並確認前端 fixture 跟著更新")

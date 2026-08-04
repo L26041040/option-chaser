@@ -13,6 +13,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import App from "./App";
 import sample from "../contracts/analysis_sample.json";
+import sampleRow from "../contracts/scenario_row_sample.json";
 import { baselineTopCandidate, type AnalysisView } from "./api";
 
 const view = sample as unknown as AnalysisView;
@@ -168,8 +169,8 @@ describe("候選池診斷（FB4-01／#60）", () => {
 
 describe("劇本庫（V3／#51）", () => {
   const row = {
+    ...(sampleRow as unknown as Record<string, unknown>),
     id: "s1", symbol: "TLT", target_price: 120, target_month: "2028-05",
-    created_at: "2026-08-01T00:00:00+00:00", archived_at: null,
     latest_analyzed_at: "2026-08-04T09:30:00+00:00", best_return: 1.5,
     target_anchor: "2028-05-19", days_to_anchor: 653,
   };
@@ -251,5 +252,44 @@ describe("劇本庫（V3／#51）", () => {
     // 樂觀移除必須可回復——否則畫面會宣稱一件沒發生的事
     expect(await screen.findByRole("alert")).toHaveTextContent("劇本不存在");
     expect(screen.getByText("TLT")).toBeInTheDocument();
+  });
+});
+
+describe("樂觀封存的併發（V3／#51 檢視回饋）", () => {
+  const row = {
+    ...(sampleRow as unknown as Record<string, unknown>),
+    id: "s1", symbol: "TLT", target_price: 120, target_month: "2028-05",
+    latest_analyzed_at: null, best_return: null,
+    target_anchor: "2028-05-19", days_to_anchor: 653,
+  };
+
+  it("A 封存失敗回滾時，不會讓已成功封存的 B 復活", async () => {
+    const rowB = { ...row, id: "s2", symbol: "SPY" };
+    let failA: (() => void) | null = null;
+    const spy = vi.fn(async (url: string) => {
+      if (url.includes("/s1/archive")) {
+        // A 停在半空中，讓 B 先完成——回滾若存整份陣列就會蓋回 B
+        await new Promise<void>((resolve) => { failA = resolve; });
+        return { ok: false, status: 404, json: async () => ({ detail: "劇本不存在" }) };
+      }
+      if (url.includes("/s2/archive")) {
+        return { ok: true, status: 200, json: async () => ({ archived: true }) };
+      }
+      return { ok: true, status: 200, json: async () => [row, rowB] };
+    });
+    vi.stubGlobal("fetch", spy);
+    render(<App />);
+
+    await userEvent.click(
+      await screen.findByRole("button", { name: "封存 TLT 2028-05" }));
+    await userEvent.click(
+      screen.getByRole("button", { name: "封存 SPY 2028-05" }));
+    expect(screen.queryByText("SPY")).not.toBeInTheDocument();
+
+    failA!();
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("劇本不存在");
+    expect(screen.getByText("TLT")).toBeInTheDocument();   // A 回來了
+    expect(screen.queryByText("SPY")).not.toBeInTheDocument();  // B 沒被復活
   });
 });

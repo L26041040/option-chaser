@@ -3,12 +3,13 @@ import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
 import ScenarioList from "./ScenarioList";
+import sampleRow from "../contracts/scenario_row_sample.json";
 import type { ScenarioSummary } from "./api";
 
 function row(overrides: Partial<ScenarioSummary> = {}): ScenarioSummary {
   return {
+    ...(sampleRow as unknown as ScenarioSummary),
     id: "a", symbol: "TLT", target_price: 120, target_month: "2028-05",
-    created_at: "2026-08-01T00:00:00+00:00", archived_at: null,
     latest_analyzed_at: "2026-08-04T09:30:00+00:00", best_return: 1.234,
     target_anchor: "2028-05-19", days_to_anchor: 653,
     ...overrides,

@@ -38,3 +38,25 @@ export function formatReturn(value: number | null): string {
 export function formatDaysLeft(days: number): string {
   return days < 0 ? `已過期 ${-days} 天` : `${days} 天`;
 }
+
+/**
+ * 資料時間。後端給的是 UTC 的 ISO 字串（25 字元），直接印在手機卡片上
+ * 又長又不是使用者關心的時區——全站的領域時鐘是紐約（`ny_today`），
+ * 這裡也用紐約時間顯示，口徑才一致。
+ *
+ * 尚未分析（null）說「尚未分析」，不是留白也不是一個舊時間。
+ */
+export function formatAnalyzedAt(iso: string | null): string {
+  if (iso === null) return "尚未分析";
+  const at = new Date(iso);
+  if (Number.isNaN(at.getTime())) return iso;   // 看不懂就原樣顯示，不假裝
+  return at.toLocaleString("zh-TW", {
+    timeZone: "America/New_York",
+    month: "numeric", day: "numeric",
+    hour: "2-digit", minute: "2-digit", hour12: false,
+  });
+}
+
+export function money(x: number): string {
+  return `$${x.toFixed(2)}`;
+}

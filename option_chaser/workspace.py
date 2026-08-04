@@ -306,11 +306,6 @@ class ScenarioCard:
     signal: str
 
 
-# 規則本體搬到 `store.best_return`（view 契約層），V3（#51）起 HTTP API
-# 的劇本清單也要同一個數字。這裡保留名字純粹是既有呼叫端與測試的入口。
-_best_return = store.best_return
-
-
 def _card_sort_key(card: ScenarioCard) -> tuple[int, float]:
     """紅燈沉底；其餘依 best_return 降序；無值者（無快照或零候選）居中，
     落在有值者之後、紅燈之前——同一分組內若同樣無值，靠 sort 的穩定性
@@ -356,5 +351,5 @@ def card_of(sc: Scenario, view: dict | None, *, observed: date | None = None,
     return ScenarioCard(id=sc.id, symbol=sc.symbol,
                         target_price=sc.target_price,
                         target_month=sc.target_month,
-                        best_return=_best_return(view),
+                        best_return=store.best_return(view),
                         signal=signal)

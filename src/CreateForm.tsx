@@ -31,10 +31,23 @@ export function validateDraft(
     return { ok: false, error: "標的代號只能是英文字母、點或連字號" };
   }
   if (!price.trim()) return { ok: false, error: "請填目標價位" };
+  // 只收十進位寫法：`Number()` 會把 "0x1f" 讀成 31、"1e5" 讀成 100000，
+  // 那不是使用者以為自己填的價格。
+  // 負號放行，讓 "-5" 落到下面的「要大於 0」——那句話比「要是數字」
+  // 更貼近使用者真正做錯的事。
+  if (!/^-?\d+(\.\d+)?$/.test(price.trim())) {
+    return { ok: false, error: "目標價位要是數字" };
+  }
   const value = Number(price);
   if (!Number.isFinite(value)) return { ok: false, error: "目標價位要是數字" };
   if (value <= 0) return { ok: false, error: "目標價位要大於 0" };
   if (!month) return { ok: false, error: "請選目標年月" };
+  // `type="month"` 在桌面 Safari／Firefox 會退化成純文字框，使用者可以
+  // 打「May 2028」。不擋的話會換來一個後端 422，而 422 的 detail 是物件
+  // 陣列、被壓成「請求失敗（HTTP 422）」，完全沒說哪裡錯。
+  if (!/^\d{4}-\d{2}$/.test(month)) {
+    return { ok: false, error: "目標年月格式為 YYYY-MM（例如 2028-05）" };
+  }
   return { ok: true, draft: { symbol: sym, target_price: value,
                               target_month: month } };
 }

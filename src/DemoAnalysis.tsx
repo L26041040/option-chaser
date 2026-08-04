@@ -17,6 +17,7 @@ import {
   type AnalysisView,
   type Candidate,
 } from "./api";
+import { money } from "./scenarios";
 
 const DEMO_REQUEST = {
   symbol: "TLT",
@@ -27,10 +28,6 @@ const DEMO_REQUEST = {
 
 function pct(x: number): string {
   return `${(x * 100).toFixed(1)}%`;
-}
-
-function money(x: number): string {
-  return `$${x.toFixed(2)}`;
 }
 
 function legLabel(cand: Candidate): string {

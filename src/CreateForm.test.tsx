@@ -96,3 +96,24 @@ describe("建立表單的畫面", () => {
     expect(screen.getByLabelText("標的代號")).toHaveValue("TLT");
   });
 });
+
+describe("建立表單驗證的邊界（V3／#51 檢視回饋）", () => {
+  it("目標年月格式不對時明講格式，不丟一個看不懂的 422 回來", () => {
+    // 桌面 Safari／Firefox 的 type="month" 會退化成純文字框
+    expect(validateDraft("TLT", "120", "May 2028")).toEqual({
+      ok: false, error: "目標年月格式為 YYYY-MM（例如 2028-05）",
+    });
+    expect(validateDraft("TLT", "120", "2028-5").ok).toBe(false);
+  });
+
+  it("不把十六進位／科學記號讀成價格", () => {
+    // Number("0x1f") 是 31、Number("1e5") 是 100000——都不是使用者
+    // 以為自己填的那個價格
+    expect(validateDraft("TLT", "0x1f", "2028-05")).toEqual({
+      ok: false, error: "目標價位要是數字",
+    });
+    expect(validateDraft("TLT", "1e5", "2028-05")).toEqual({
+      ok: false, error: "目標價位要是數字",
+    });
+  });
+});
