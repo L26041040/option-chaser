@@ -611,8 +611,27 @@ merge 回 master，部署版待需求方驗證（`source` 是否 `cboe`＋TLT 20
   一個相似的「買賣價差偏大」cons 訊息，用的是不同門檻（`2/3 *
   max_spread_pct`，而非 `is_spread_wide` 的完整 `max_spread_pct`）——
   同一個關注點現在有兩個獨立公式，未來若要統一屬另開票的範圍
-- **FB5-03** [#64] — 單調性違反偵測，只標不刪（被 #63 擋）←
-- **FB5-04** [#65] — 三分類定位＋品質標示的畫面揭露（被 #62–#64 擋）
+- **FB5-03** [#64] — 單調性違反偵測，只標不刪 ✅
+  （commits `063a48e`／`b07709a`）：`filters.py` 新增
+  `monotonicity_violations(contracts)`——依 (到期日, 類型) 分組、依履約價
+  排序、只比對相鄰配對，用 ask 欄位（call 非遞增／put 非遞減），違反
+  時兩邊都標記（配對關係違反，無法從單一報價判斷是哪邊陳舊）。**不被
+  `apply_filters` 呼叫**，純查詢用。走**獨立欄位**
+  `CandidateView.monotonicity_warning`（不併入 `quote_warning`——成因
+  與嚴重性都不同，混在一起會讓使用者分不出「疑似陳舊報價」跟「這組
+  候選價差比較寬」是同一等級的事），前端徽章也分開（🚩 紅色 vs ⚠
+  橙色，`ExpiryStructure.tsx`）。方法論依據
+  `docs/research/option-liquidity-filtering.md` §6.3（307 組相鄰配對僅
+  3 組違反，訊噪比極佳）；明確不做凸性檢查（同份研究 50/305 誤判過高，
+  且期權市場本質非凸）。契約樣本重產
+  ⚠ **檢視面補了一項**：票上（#64）跟兩張姊妹票不同，AC 清單沒明列
+  「分析報告尾註同步更新」，一開始沒動 `report.py`；檢視判斷這是漏寫
+  不是刻意排除（`filters.py` 自己的 docstring 把三個 C 類標示並列成
+  同一套哲學，FB5-02 已替價差寬度開了 CLI 先例），已比照補上
+  `_monotonicity_warning_line()`，`violations` 集合原本就已經算好，
+  這次只是多傳一手給 `render()`／`render_spreads()`。golden fixtures
+  一併重產
+- **FB5-04** [#65] — 三分類定位＋品質標示的畫面揭露（被 #62–#64 擋）←
 
 ### 下一版 MVP（本輪明確不施工，已立案）
 
