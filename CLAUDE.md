@@ -195,11 +195,11 @@ merge 回 master，部署版待需求方驗證（`source` 是否 `cboe`＋TLT 20
   **測試亮點**：儲存契約 22 條同時跑記憶體與**真 Postgres**兩個實作
   （沙箱可起 PG，指令見 `docs/deploy-vercel.md`）——假體綠燈才代表
   正式環境也成立。全套 567 條綠。
-  ⚠ **待需求方**：在 Vercel 後台接上 Neon（步驟見 `docs/deploy-vercel.md`），
-  接好後 `/api/health` 的 `storage` 要顯示 `postgres`（顯示 `memory`
-  ＝環境變數沒讀到、資料不會存活）
-- **R1** [#49] — Research：專業報告版型慣例（無阻擋，可與 V3–V5 並行）←
-- **V3** [#51] — 劇本庫＋建立表單＋釘選功能列（#50 已完成，**已解鎖**）
+  ✅ 需求方已於 2026-08-04 接上 Neon 並重新部署；最終確認方式：
+  `/api/health` 的 `storage` 要顯示 `postgres`（顯示 `memory` ＝環境
+  變數沒讀到、資料不會存活）
+- **R1** [#49] — Research：專業報告版型慣例（無阻擋；只擋 V8，可在 V8 之前任意時點插入）
+- **V3** [#51] — 劇本庫＋建立表單＋釘選功能列 ←**下一張**（#50 已完成、已解鎖）
 - **V4** [#52] — 刷新與分析：進度／失敗指引／新鮮度（被 #51 擋）
 - **V5** [#53] — 詳細頁核心：Heatmap＋摘要＋追平標示（被 #52 擋）
 - **V6** [#54] — 到期日結構：橫向按鈕＋Top 10 含腿價（被 #53 擋）
@@ -209,6 +209,13 @@ merge 回 master，部署版待需求方驗證（`source` 是否 `cboe`＋TLT 20
 - **V10** [#58] — Cutover：移除 Streamlit、文件、全站驗收（被 #54–#57 擋）
 
 > 全部票做完＋需求方實機驗收通過才開 PR（V10 驗收清單）。
+
+### 下一版 MVP（本輪明確不施工，已立案）
+
+- **多使用者隔離** [#59]（2026-08-04 需求方裁示）：現在 API 有可寫入的
+  共用儲存但無任何保護，正式部署會是公開的。需求方要的是「自己只看得到
+  自己的」——讀使用者 id 或發憑證皆可，屆時再裁示。該票**未標**
+  `ready-for-agent`，`/implement` 不會取到
 
 **第三輪反饋**：`docs/user-feedback-v3.md`（2026-08-02，需求方測試
 部署版後由 GitHub 直接 commit 進 master）。共 10 點：
@@ -225,10 +232,7 @@ merge 回 master，部署版待需求方驗證（`source` 是否 `cboe`＋TLT 20
   風格＝已裁示方向、第 7 點釘選功能列＝QA1-14 範圍），待 `/to-spec`
   時合併考量，避免在舊 Streamlit 前端上做白工
 
-### 待辦（依序，← 為下一張）
-
-FB3-01/02 已完成（見下）→**已回報需求方，等需求方 cue `/to-spec`
-進新前端輪**。
+#### FB3 修正輪（已完結，PR #46 已 merge；保留供追溯）
 
 - **FB3-01** [#44] — Cboe 延遲報價換主源（commit `69dd99d`）：新增
   `option_chaser/data/cboe.py`（OCC 解析＋欄位映射＋stdlib urllib，
@@ -270,4 +274,10 @@ FB3-01/02 已完成（見下）→**已回報需求方，等需求方 cue `/to-s
   `npm run build`。沙箱有預裝 Chromium 時用
   `PLAYWRIGHT_CHROMIUM_PATH=/opt/pw-browsers/chromium npm run e2e`
 - 部署與契約樣本：見 `docs/deploy-vercel.md`
+- **部署網址只認這一個**（每次 push 都會自動產生一個一次性 preview
+  網址，那些不要收藏）：
+  `https://option-chaser-git-claude-imp-aef368-ofriedoriceo-5352s-projects.vercel.app`
+  ——分支別名，永遠指向工作分支的最新一次部署。
+  master 的 production 網址在 V10 merge 前必定是 ERROR（master 還沒有
+  前端程式碼），屬預期，不必理會
 - 全套測試現為全綠（舊紀錄提到的 5 個 streamlit 版本漂移失敗已隨 T2 改寫消失）。
