@@ -212,7 +212,27 @@ merge 回 master，部署版待需求方驗證（`source` 是否 `cboe`＋TLT 20
   正好是這張票要消滅的無聲誤導。因此 `store.serialize_result` 新增
   `filter_report`（`total`／`passed`）純新增欄位、契約樣本重產；
   引擎、`filters.py`、任何門檻皆未動（檢視已逐一核對）
-- **R1** [#49] — Research：專業報告版型慣例（無阻擋；只擋 V8，可在 V8 之前任意時點插入）
+- **R1** [#49] — Research：專業機構選擇權策略報告的版型慣例 ✅
+  （產出 `docs/research/option-strategy-report-conventions.md`）。四個獨立
+  來源家族（賣方寫作指引／課綱與教育機構／實際發行的 trade idea／專業
+  平台策略單），外加法規面的語氣與免責約束（FINRA 2210(d)(1)、2220、
+  OCC ODD——**本產品不受管轄，僅借為品質標準**）。核心結論：專業版型
+  一律「結論先行、方法論墊底」，本產品 `report.py` 目前**正好相反**
+  （30 行前言，第一組候選淨成本在第 34 行）；「最大獲利／最大損失／
+  損益兩平」是不可拆的三件套，而純文字報告只印最大獲利；Greeks 屬
+  第二層明細不進頭條列；報酬數字不得單獨出現、須與情境最壞並排。
+  §4 給 V8 的欄位對照表分 A（重排）／A2（需補序列化）／B（呈現層
+  算術）／C（刪除降級）四類。
+  ⚠ **V8 施工前必讀 §4.2 A2**：買價指引 L2/L3、評語 cons、方法論尾註、
+  免責這四項**只以散文活在 `report_text` 字串裡，沒有結構化欄位**
+  （值已由 `CandidateView.pros/cons` 與 `valuation.l2/l3` 算好，只是
+  `store._candidate()` 沒吐），V8 需順手補序列化——屬序列化層加欄位、
+  非新增金融計算，仍在「引擎 report 內容來源不變」界線內。另 Greeks
+  序列化的是**正規化比率**（`theta_day_rate`／`vega_per_pt` 分母為 Mid
+  成本），非原始美元 Greeks，標籤不可寫成「Theta」了事。
+  ⚠ 取材限制：本沙箱 WebFetch 對**所有**網域回 403（連 Wikipedia 亦然），
+  全文一手資料皆為搜尋索引轉述，逐字法規措辭與機構報告原件無法查證，
+  已逐項列於 §6；要寫進產品免責的法規措辭建議由需求方覆核原文後定稿
 - **V3** [#51] — 劇本庫＋建立表單＋釘選功能列（commits `8e3b3be`／
   `868c86d`）：主畫面從「一顆分析按鈕」變成劇本庫（`Toolbar` sticky ／
   `ScenarioList` ／ `CreateForm`）。三個關鍵決定：
@@ -369,7 +389,9 @@ merge 回 master，部署版待需求方驗證（`source` 是否 `cboe`＋TLT 20
   歷史上。全部改正並加驗：`git merge-base --is-ancestor <sha> HEAD`
 - **V7** [#55] — 最好／最差價位三價位對照 ←**下一張**（被 #51、#53 擋，
   兩者皆已完成）
-- **V8** [#56] — 分析報告新版型＋原始資料（被 #53、#49 擋）
+- **V8** [#56] — 分析報告新版型＋原始資料（被 #53 擋，已完成；#49 亦已
+  完成——施工依據＝`docs/research/option-strategy-report-conventions.md`
+  §4，**含 §4.2 A2 的補序列化清單**）
 - **V9** [#57] — Spread 歷史走勢圖：日粒度＋固定 y 軸（被 #53 擋）
 - **V10** [#58] — Cutover：移除 Streamlit、文件、全站驗收（被 #54–#57 擋）
 
