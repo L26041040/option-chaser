@@ -587,8 +587,31 @@ merge 回 master，部署版待需求方驗證（`source` 是否 `cboe`＋TLT 20
   平衡型級距修法後恰好有 4 組候選競爭的事實——新留下來的 100.5
   （報酬率 2.841）確實比 100.0／105.0／95.0 都高，若排名公式或排序
   方向壞了，中選的不會是它
-- **FB5-02** [#63] — 買賣價差寬度降級為品質標示（被 #62 擋）←
-- **FB5-03** [#64] — 單調性違反偵測，只標不刪（被 #63 擋）
+- **FB5-02** [#63] — 買賣價差寬度降級為品質標示 ✅
+  （commits `c3caf7e`／`e31891c`）：`filters.py` 移除 `spread_ok` 硬關卡
+  （只剩報價／IV 兩關），公式原封不動搬進新公開函式 `is_spread_wide()`；
+  `service._v4_fields` 用它多加一個 OR 項到既有的 `CandidateView.
+  quote_warning`（沿用既有機制，不新造一套）。「標示內容說得出寬到
+  什麼程度」不新增序列化欄位——既有的 `friction`／`friction_amount`
+  已是量級資訊，`report.py` 另補逐候選文字警示（單腿與價差兩路徑，
+  比照既有「今日無成交」警示寫法）。前端零變更（`CandidatePool` 對
+  `filter_stages` 泛型渲染）。Golden fixtures 與契約樣本重產，README
+  兩處 CLI 說明同步更新
+  ⚠ **檢視抓到一個真的會錯的舊斷言**：`test_service_v4.py::
+  test_quote_warning_friction_over_25pct` 原本斷言只含兩個 OR 項，
+  少了新加的 `wide_spread`；全套測試仍綠純粹是這份 fixture 的候選剛好
+  沒踩到「價差寬但 friction 不到 25%」的交集，不代表公式沒變。已補上
+  `_any_wide_spread` helper 與正確的三項 OR。另外票上「以既有 fixture
+  斷言……且帶標示」原本「進得了榜」與「帶標示」兩半分別證明在不同資料
+  上（前者用真 fixture、後者用合成 fixture），已改為直接從真 fixture
+  撈出那張合約的原始 bid/ask、用 `is_spread_wide` 在**同一張合約**上
+  驗證兩半
+  ⚠ **判斷為不修的既有觀察**（兩者皆非本票引入，屬既有狀態）：
+  `ranking.py` 的 `build_reasons`／`build_spread_reasons` 早就獨立算了
+  一個相似的「買賣價差偏大」cons 訊息，用的是不同門檻（`2/3 *
+  max_spread_pct`，而非 `is_spread_wide` 的完整 `max_spread_pct`）——
+  同一個關注點現在有兩個獨立公式，未來若要統一屬另開票的範圍
+- **FB5-03** [#64] — 單調性違反偵測，只標不刪（被 #63 擋）←
 - **FB5-04** [#65] — 三分類定位＋品質標示的畫面揭露（被 #62–#64 擋）
 
 ### 下一版 MVP（本輪明確不施工，已立案）
