@@ -2,8 +2,8 @@
  * 主畫面（V3／#51）：劇本庫。V4（#52）在此接上刷新編排。
  *
  * 頂部釘選功能列 → 劇本卡片清單（依最新收益率排序）→ 建立表單。
- * 詳細頁是 V5（#53）；在它落地之前，頁面最下方保留 V1 的一次性分析
- * （`DemoAnalysis`），那是目前唯一看得到候選池診斷的地方。
+ * 點卡片進詳細頁（`ScenarioDetail`，V5／#53）；V1 的一次性分析畫面
+ * 隨詳細頁落地一併移除，候選池診斷搬進詳細頁。
  *
  * 刷新時機只有三種（沿用 QA1-07／#34 的既有裁示）：開站、建立劇本後、
  * 功能列的刷新鈕。卡片上的「重試」不是第四種——它重跑的是**那一次
@@ -15,7 +15,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import CreateForm, { type DraftScenario } from "./CreateForm";
-import DemoAnalysis from "./DemoAnalysis";
+import ScenarioDetail from "./ScenarioDetail";
 import ScenarioList from "./ScenarioList";
 import Toolbar, { type RefreshProgress } from "./Toolbar";
 import {
@@ -27,6 +27,7 @@ import {
   type RefreshFailure,
   type ScenarioSummary,
 } from "./api";
+import { scenarioIdFromHash } from "./route";
 
 export default function App() {
   const [rows, setRows] = useState<ScenarioSummary[]>([]);
@@ -123,6 +124,16 @@ export default function App() {
     void reloadAndRefresh();
   }, [reloadAndRefresh]);
 
+  // 網址 hash ＝ 目前在哪一頁（見 `./route`）。監聽 hashchange 而不是
+  // 自己記狀態，返回手勢與返回鍵才會如使用者預期地運作。
+  const [hash, setHash] = useState(() => window.location.hash);
+  useEffect(() => {
+    const sync = () => setHash(window.location.hash);
+    window.addEventListener("hashchange", sync);
+    return () => window.removeEventListener("hashchange", sync);
+  }, []);
+  const detailId = scenarioIdFromHash(hash);
+
   // 新鮮度會隨時間變舊，所以「現在」要自己走。只在渲染時取一次的話，
   // 頁面開著放到隔天，那份 12 小時前的資料永遠不會長出「舊資料」標記
   // ——而那正是最需要它的情況。門檻是 12 小時，5 分鐘一跳綽綽有餘。
@@ -173,6 +184,9 @@ export default function App() {
     }
   }
 
+  // 詳細頁（V5／#53）。所有 hook 都在這一行之前跑完，順序不受影響。
+  if (detailId !== null) return <ScenarioDetail id={detailId} />;
+
   return (
     <div className="screen">
       <Toolbar
@@ -198,7 +212,6 @@ export default function App() {
         onRetry={(id) => void enqueue([id])}
       />
       <CreateForm onCreate={create} busy={busy} />
-      <DemoAnalysis />
     </div>
   );
 }

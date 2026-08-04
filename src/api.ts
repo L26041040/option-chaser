@@ -17,11 +17,31 @@ export interface AnalysisMeta {
   target_move: number;
 }
 
+/** 一隻腿。契約裡還有 bid／ask／iv 等欄位，畫面用到再加。 */
+export interface Leg {
+  strike: number;
+  option_type: string;
+  expiry: string;
+}
+
+/**
+ * 價格×日期報酬矩陣（引擎的 `MatrixView`）。`prices`／`dates` 的第二欄是
+ * **引擎給的**錨點標籤，GUI 只讀不算（v4 spec §4.3 的既有原則）。
+ */
+export interface Matrix {
+  prices: [number, string][];
+  dates: [string, string][];
+  cells: number[][];
+}
+
 export interface Candidate {
   candidate_key: string;
   baseline_return: number;
   natural_cost: number;
-  legs: { strike: number; option_type: string; expiry: string }[];
+  /** Long Call 追平價格 S*。同履約價 Call 報價缺失時為 null＝無法計算。 */
+  catchup_price: number | null;
+  legs: Leg[];
+  matrix: Matrix;
 }
 
 export interface ExpiryTop10 {
@@ -68,17 +88,18 @@ export interface StrategyResult {
   expiry_top10?: ExpiryTop10[];
 }
 
-export interface AnalysisView {
-  meta: AnalysisMeta;
-  baseline_expiry: string | null;
-  results: StrategyResult[];
-}
-
-export interface AnalyzeRequest {
-  symbol: string;
+/** 這次分析用的劇本參數（引擎回填的那一份，非前端送出的原樣）。 */
+export interface AnalysisParams {
   target_price: number;
   target_month: string;
-  strategies: string[];
+  strategy: string;
+}
+
+export interface AnalysisView {
+  meta: AnalysisMeta;
+  params: AnalysisParams;
+  baseline_expiry: string | null;
+  results: StrategyResult[];
 }
 
 /**
@@ -131,6 +152,15 @@ export interface ScenarioSummary {
    *  負數＝已過期，不夾成 0。 */
   target_anchor: string;
   days_to_anchor: number;
+}
+
+/**
+ * 詳細頁要的東西：清單列的所有欄位，外加最新一次的完整分析結果。
+ * `latest_result` 為 null ＝ 還沒跑過分析，詳細頁據此說「尚未分析」，
+ * 而不是畫一張空圖。
+ */
+export interface ScenarioDetail extends ScenarioSummary {
+  latest_result: AnalysisView | null;
 }
 
 export interface CreateScenarioRequest {
@@ -200,10 +230,6 @@ const POST_JSON = (body: unknown): RequestInit => ({
   body: JSON.stringify(body),
 });
 
-export function analyze(req: AnalyzeRequest): Promise<AnalysisView> {
-  return request<AnalysisView>("/api/analyze", POST_JSON(req));
-}
-
 export function listScenarios(): Promise<ScenarioSummary[]> {
   return request<ScenarioSummary[]>("/api/scenarios");
 }
@@ -223,6 +249,11 @@ export function refreshScenario(id: string): Promise<ScenarioSummary> {
     `/api/scenarios/${encodeURIComponent(id)}/refresh`,
     { method: "POST" },
   );
+}
+
+/** 詳細頁用（V5／#53）：整份 view 只有這裡會拖，清單列不帶。 */
+export function getScenario(id: string): Promise<ScenarioDetail> {
+  return request<ScenarioDetail>(`/api/scenarios/${encodeURIComponent(id)}`);
 }
 
 export function archiveScenario(id: string): Promise<{ archived: boolean }> {

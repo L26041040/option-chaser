@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 // Playwright 的 ESM 載入器要求 JSON import attribute；直接讀檔避免版本差異。
-const sample = JSON.parse(
+const sample: any = JSON.parse(
   readFileSync(
     fileURLToPath(new URL("../contracts/analysis_sample.json", import.meta.url)),
     "utf-8",
@@ -19,7 +19,8 @@ const sampleRow = JSON.parse(
 );
 
 const view = sample as unknown as {
-  meta: { spot: number; source: string };
+  meta: { spot: number; source: string; target_move: number };
+  params: { target_price: number; target_month: string };
   baseline_expiry: string;
   results: { status: string; expiry_top10?: { expiry: string; candidates: { baseline_return: number }[] }[] }[];
 };
@@ -30,58 +31,75 @@ test.beforeEach(async ({ page }) => {
   await page.route("**/api/scenarios", (route) => route.fulfill({ json: [] }));
 });
 
-test("手機開站 → 跑分析 → 顯示引擎算出的數字", async ({ page }) => {
-  await page.route("**/api/analyze", (route) =>
-    route.fulfill({ json: view }),
-  );
+test("清單 → 詳細頁：摘要、主圖、追平價格、候選池（V5／#53）", async ({ page }) => {
+  const row = {
+    ...sampleRow,
+    id: "s1", symbol: "XYZ",
+    target_price: sample.params.target_price,
+    target_month: sample.params.target_month,
+    latest_analyzed_at: "2026-08-04T09:30:00+00:00", best_return: 5.67,
+    target_anchor: "2026-09-18", days_to_anchor: 45,
+  };
+  await page.route("**/api/scenarios", (route) => route.fulfill({ json: [row] }));
+  await page.route("**/api/scenarios/s1", (route) =>
+    route.fulfill({ json: { ...row, latest_result: sample } }));
+  await page.route("**/api/scenarios/*/refresh", (route) =>
+    route.fulfill({ json: row }));
 
   await page.goto("/");
-  // V3 起頁面標題是當前畫面（劇本庫），符合 iOS 導覽列慣例；
-  // 產品名留在瀏覽器分頁標題，不佔手機畫面高度。
-  await expect(page.getByRole("heading", { name: "劇本庫" })).toBeVisible();
+  await page.getByRole("link", { name: /XYZ/ }).click();
 
-  await page.getByRole("button", { name: "跑一次分析" }).click();
-
+  // 摘要：現價與目標（含所需漲幅）、資料來源——最後這行就是雲端
+  // 對 Cboe 可達性的驗證方式
   await expect(page.getByText(`$${view.meta.spot.toFixed(2)}`)).toBeVisible();
-  await expect(page.getByText(view.baseline_expiry)).toBeVisible();
+  await expect(page.getByText(/\+30\.0%/)).toBeVisible();
+  await expect(page.getByText(view.meta.source, { exact: true })).toBeVisible();
 
+  // 主圖：baseline 期第 1 名候選的 Heatmap
   const top = view.results.find((r) => r.status === "ok" && r.expiry_top10)!
     .expiry_top10!.find((g) => g.expiry === view.baseline_expiry)!.candidates[0];
-  await expect(
-    page.getByText(`${(top.baseline_return * 100).toFixed(1)}%`),
-  ).toBeVisible();
+  await expect(page.getByText(`${(top.baseline_return * 100).toFixed(1)}%`)).toBeVisible();
+  await expect(page.locator("table.heatmap-table")).toBeVisible();
+  // 「現價」在摘要與 Heatmap 錨點列各有一個，這裡要驗的是圖上那個
+  await expect(page.locator("table.heatmap-table").getByText("現價")).toBeVisible();
 
-  // 資料來源可見＝部署後一眼確認 Cboe 是否打得通
-  await expect(page.getByText(new RegExp(`資料來源 ${view.meta.source}`))).toBeVisible();
-});
+  // 追平價格：契約樣本的 S* 低於目標價＝醒目那一態
+  await expect(page.getByText(/Long Call 追平價格/)).toBeVisible();
+  await expect(page.getByText(/即勝過此 Spread/)).toBeVisible();
 
-test("上游掛掉時顯示錯誤，不是白畫面", async ({ page }) => {
-  await page.route("**/api/analyze", (route) =>
-    route.fulfill({ status: 502, json: { detail: "兩個資料源都抓不到" } }),
-  );
-  await page.goto("/");
-  await page.getByRole("button", { name: "跑一次分析" }).click();
-  await expect(page.getByRole("alert")).toContainText("兩個資料源都抓不到");
-});
-
-test("候選池狀態隨分析結果一併顯示（FB4-01／#60）", async ({ page }) => {
-  await page.route("**/api/analyze", (route) => route.fulfill({ json: view }));
-  await page.goto("/");
-  await page.getByRole("button", { name: "跑一次分析" }).click();
-
+  // 候選池診斷跟著搬進詳細頁（FB4-01／#60）
   await expect(page.getByText("候選池")).toBeVisible();
-  await expect(page.getByText("通過品質過濾", { exact: true })).toBeVisible();
-  // 契約樣本實際是 9 筆抓到、8 筆通過、3 對配對。用 n_qualified（＝配對
-  // 數 3）當合約數的話這兩個數字會變成 4／3——所以這是防呆的真斷言。
-  await expect(page.getByText("9 筆", { exact: true })).toBeVisible();
-  await expect(page.getByText("8 筆", { exact: true })).toBeVisible();
-  // 每一道品質過濾關卡都要看得到，才知道是誰砍掉的
-  for (const stage of ["報價異常", "IV 異常", "OI/成交量不足", "Spread 過寬"]) {
-    await expect(page.getByText(stage, { exact: true })).toBeVisible();
-  }
-  // 契約樣本的 baseline 期只有 1 組有效候選——警示必須出現，
-  // 這正是「第 1 名其實是整池僅存者」的情境。
   await expect(page.getByRole("status")).toContainText("參考價值有限");
+
+  // 返回劇本庫
+  await page.getByRole("link", { name: /劇本庫/ }).click();
+  await expect(page.getByRole("heading", { name: "劇本庫" })).toBeVisible();
+});
+
+test("詳細頁的 Heatmap 可橫向滑動（手機塞不下七欄）", async ({ page }) => {
+  const row = {
+    ...sampleRow, id: "s1", symbol: "XYZ",
+    target_price: sample.params.target_price,
+    target_month: sample.params.target_month,
+    latest_analyzed_at: "2026-08-04T09:30:00+00:00", best_return: 5.67,
+    target_anchor: "2026-09-18", days_to_anchor: 45,
+  };
+  await page.route("**/api/scenarios", (route) => route.fulfill({ json: [row] }));
+  await page.route("**/api/scenarios/s1", (route) =>
+    route.fulfill({ json: { ...row, latest_result: sample } }));
+  await page.route("**/api/scenarios/*/refresh", (route) =>
+    route.fulfill({ json: row }));
+
+  await page.goto("/#/s/s1");
+  await expect(page.locator("table.heatmap-table")).toBeVisible();
+
+  // 內容真的比容器寬（否則「可捲動」是空話），而且頁面本身沒有橫向捲動
+  const box = await page.locator(".heatmap-scroll").evaluate((el) => ({
+    scrollWidth: el.scrollWidth, clientWidth: el.clientWidth,
+  }));
+  expect(box.scrollWidth).toBeGreaterThan(box.clientWidth);
+  expect(await page.evaluate(
+    () => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 });
 
 test("劇本庫：建立 → 出現在清單 → 封存後消失（V3／#51）", async ({ page }) => {
@@ -129,11 +147,21 @@ test("劇本庫：建立 → 出現在清單 → 封存後消失（V3／#51）",
 test("功能列捲動時仍釘在頂部、而且按得到（V3／#51 驗收第 1 項）", async ({ page }) => {
   // 「可點」在 V3 驗不了——當時功能列上唯一的控制項是 disabled 佔位鈕。
   // V4（#52）把刷新接上之後才補得起來，所以這條測試在這一票才完整。
+  // 頁面要夠長才捲得動——V5 移除頁面下方的 V1 遺留區塊後，空清單的
+  // 劇本庫只有一屏高，捲不動就測不到「釘住」。
+  const rows = Array.from({ length: 8 }, (_, i) => ({
+    ...sampleRow, id: `s${i}`, symbol: `SYM${i}`,
+    target_price: 120, target_month: "2028-05",
+    latest_analyzed_at: null, best_return: null,
+    target_anchor: "2028-05-19", days_to_anchor: 653,
+  }));
   let listCalls = 0;
   await page.route("**/api/scenarios", (route) => {
     listCalls += 1;
-    return route.fulfill({ json: [] });
+    return route.fulfill({ json: rows });
   });
+  await page.route("**/api/scenarios/*/refresh", (route, req) =>
+    route.fulfill({ json: rows.find((r) => req.url().includes(`/${r.id}/`)) }));
 
   await page.goto("/");
   const toolbar = page.getByText("劇本庫");

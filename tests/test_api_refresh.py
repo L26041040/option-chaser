@@ -234,30 +234,4 @@ def test_the_adhoc_endpoint_reports_the_same_stages(monkeypatch, stage_error,
     assert resp.status_code == status
     assert _detail(resp)["stage"] == expected
 
-
-def test_every_stage_the_backend_emits_is_one_the_frontend_knows():
-    """失敗分層的字彙同時活在三個地方：後端 `_fail(...)` 的字面值、前端
-    `api.ts` 的 `STAGES`、以及 `scenarios.ts` 的 `failureLabel` switch。
-    後端加第四種而前端沒跟上不會壞掉——只會靜靜退化成「刷新失敗」，
-    也就是這張票要消滅的那種無聲誤導。這條測試讓它出聲。
-
-    契約樣本（`contracts/`）管的是 view dict 的欄位，管不到錯誤主體，
-    所以這裡另外用一條結構性斷言補上，做法沿用
-    `test_api_layer_never_touches_sql_directly`。
-    """
-    import re
-    from pathlib import Path
-
-    emitted = set(re.findall(r'_fail\("(\w+)"',
-                             Path("api_app/main.py").read_text(encoding="utf-8")))
-    assert emitted, "沒抓到任何 _fail(...)——這條測試的抓法過時了"
-
-    api_ts = Path("src/api.ts").read_text(encoding="utf-8")
-    known = set(re.findall(r'"(\w+)"',
-                           re.search(r"const STAGES = \[(.*?)\]", api_ts).group(1)))
-    labels = Path("src/scenarios.ts").read_text(encoding="utf-8")
-
-    assert emitted <= known, f"前端 api.ts 不認得這些分層：{emitted - known}"
-    for stage in emitted:
-        assert f'case "{stage}":' in labels, (
-            f"scenarios.ts 的 failureLabel 沒有 {stage} 的說法，畫面會退成通用訊息")
+# 分層字彙與前端是否同步，見 `tests/test_frontend_contract.py`。

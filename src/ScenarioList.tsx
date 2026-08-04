@@ -11,6 +11,7 @@
  * 排序與格式化都在 `./scenarios` 的純函式裡，這裡只負責畫。
  */
 import type { RefreshFailure, ScenarioSummary } from "./api";
+import { detailHash } from "./route";
 import {
   failureLabel,
   formatAnalyzedAt,
@@ -39,47 +40,57 @@ function ScenarioCard({
   const who = `${row.symbol} ${row.target_month}`;
   return (
     <li className="card">
-      <div className="row">
-        <span className="row-value big">{row.symbol}</span>
-        <span
-          className={
-            ran ? `metric ${row.best_return! >= 0 ? "positive" : "negative"}`
-                : "metric muted"
-          }
-        >
-          {formatReturn(row.best_return)}
-        </span>
-      </div>
+      {/* 整張卡就是進詳細頁的入口。用真的 `<a>` 而不是掛 onClick 的
+          div：長按可以複製連結、返回手勢可用、鍵盤與螢幕閱讀器也認得。
+          封存鈕留在連結外面——按鈕不能包在連結裡。 */}
+      <a className="card-tap" href={detailHash(row.id)} aria-label={`${who} 詳細`}>
+        <div className="row">
+          <span className="row-value big">{row.symbol}</span>
+          <span className="metric-group">
+            <span
+              className={
+                ran ? `metric ${row.best_return! >= 0 ? "positive" : "negative"}`
+                    : "metric muted"
+              }
+            >
+              {formatReturn(row.best_return)}
+            </span>
+            <span className="chevron" aria-hidden="true">
+              ›
+            </span>
+          </span>
+        </div>
 
-      <div className="row">
-        <span className="row-label">目標</span>
-        <span className="row-value">
-          {money(row.target_price)}　{row.target_month}
-        </span>
-      </div>
+        <div className="row">
+          <span className="row-label">目標</span>
+          <span className="row-value">
+            {money(row.target_price)}　{row.target_month}
+          </span>
+        </div>
 
-      <div className="row">
-        <span className="row-label">距到期</span>
-        <span className="row-value">{formatDaysLeft(row.days_to_anchor)}</span>
-      </div>
+        <div className="row">
+          <span className="row-label">距到期</span>
+          <span className="row-value">{formatDaysLeft(row.days_to_anchor)}</span>
+        </div>
 
-      <div className="row">
-        <span className="row-label">資料時間</span>
-        {/* 還沒跑過就說還沒跑過——顯示一個空白或舊時間都會讓人以為
-            這張卡上的數字是新的。久未刷新則明講「舊資料」：數字還是
-            上一次算出來的真數字，只是不能當成現在的。 */}
-        <span className="row-value">
-          {formatAnalyzedAt(row.latest_analyzed_at)}
-          {stale && <span className="tag warn">舊資料</span>}
-        </span>
-      </div>
+        <div className="row">
+          <span className="row-label">資料時間</span>
+          {/* 還沒跑過就說還沒跑過——顯示一個空白或舊時間都會讓人以為
+              這張卡上的數字是新的。久未刷新則明講「舊資料」：數字還是
+              上一次算出來的真數字，只是不能當成現在的。 */}
+          <span className="row-value">
+            {formatAnalyzedAt(row.latest_analyzed_at)}
+            {stale && <span className="tag warn">舊資料</span>}
+          </span>
+        </div>
+      </a>
 
       {failure && (
         <div className="notice error" role="alert">
           <div className="row-value">{failureLabel(failure.stage)}</div>
           <p className="caption">{failure.message}</p>
           <button
-            className="button subtle"
+            className="text-button"
             onClick={() => onRetry(row.id)}
             aria-label={`重試 ${who}`}
           >
@@ -88,13 +99,15 @@ function ScenarioCard({
         </div>
       )}
 
-      <button
-        className="button subtle"
-        onClick={() => onArchive(row.id)}
-        aria-label={`封存 ${who}`}
-      >
-        封存
-      </button>
+      <div className="card-actions">
+        <button
+          className="text-button"
+          onClick={() => onArchive(row.id)}
+          aria-label={`封存 ${who}`}
+        >
+          封存
+        </button>
+      </div>
     </li>
   );
 }

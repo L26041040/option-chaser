@@ -1,0 +1,142 @@
+import { render, screen } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+import ScenarioDetail from "./ScenarioDetail";
+import sample from "../contracts/analysis_sample.json";
+import sampleRow from "../contracts/scenario_row_sample.json";
+import { baselineTopCandidate, type AnalysisView } from "./api";
+
+const view = sample as unknown as AnalysisView;
+const row = sampleRow as unknown as Record<string, unknown>;
+
+/** 契約樣本本身：目標價 130、追平價 125.33（＝低於目標價的醒目態）。 */
+function detail(overrides: Record<string, unknown> = {}) {
+  return {
+    ...row, id: "s1", symbol: "XYZ", target_price: view.params.target_price,
+    target_month: view.params.target_month,
+    latest_analyzed_at: "2026-08-04T09:30:00+00:00", best_return: 5.67,
+    latest_result: view, ...overrides,
+  };
+}
+
+/** 改寫 baseline 期第 1 名候選的某些欄位，其餘契約原樣。 */
+function withTopCandidate(patch: Record<string, unknown>): AnalysisView {
+  const result = view.results[0];
+  const groups = result.expiry_top10!.map((g) =>
+    g.expiry === view.baseline_expiry
+      ? { ...g, candidates: [{ ...g.candidates[0], ...patch }, ...g.candidates.slice(1)] }
+      : g);
+  return { ...view, results: [{ ...result, expiry_top10: groups }] };
+}
+
+function mockDetail(body: unknown, ok = true, status = 200) {
+  const spy = vi.fn(async () => ({ ok, status, json: async () => body }));
+  vi.stubGlobal("fetch", spy);
+  return spy;
+}
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+  vi.restoreAllMocks();
+});
+
+describe("詳細頁摘要", () => {
+  it("顯示現價、目標價與所需漲幅、目標年月、策略", async () => {
+    mockDetail(detail());
+    render(<ScenarioDetail id="s1" />);
+
+    expect(await screen.findByText(`$${view.meta.spot.toFixed(2)}`)).toBeInTheDocument();
+    expect(screen.getByText(`$${view.params.target_price.toFixed(2)}`)).toBeInTheDocument();
+    // 所需漲幅寫在目標價旁的括號裡，所以用子字串比對
+    expect(screen.getByText(`+${(view.meta.target_move * 100).toFixed(1)}%`,
+                            { exact: false })).toBeInTheDocument();
+    expect(screen.getByText(view.params.target_month)).toBeInTheDocument();
+    expect(screen.getByText("Bull Call Spread")).toBeInTheDocument();
+  });
+
+  it("有回劇本庫的入口", async () => {
+    mockDetail(detail());
+    render(<ScenarioDetail id="s1" />);
+
+    expect(await screen.findByRole("link", { name: /劇本庫/ }))
+      .toHaveAttribute("href", "#/");
+  });
+});
+
+describe("詳細頁主圖", () => {
+  it("畫出 baseline 期第 1 名候選的 Heatmap，並標明是哪一組", async () => {
+    mockDetail(detail());
+    render(<ScenarioDetail id="s1" />);
+
+    const top = baselineTopCandidate(view)!;
+    const [buy, sell] = top.legs;
+    expect(await screen.findByText(`買 ${buy.strike} / 賣 ${sell.strike}`))
+      .toBeInTheDocument();
+    expect(screen.getByRole("table")).toBeInTheDocument();
+    expect(screen.getByText(view.baseline_expiry!)).toBeInTheDocument();
+    // 主圖旁就是這組候選的劇本報酬——引擎算好的那個數字
+    expect(screen.getByText(`${(top.baseline_return * 100).toFixed(1)}%`))
+      .toBeInTheDocument();
+  });
+});
+
+describe("追平價格三態", () => {
+  it("正常：比較對象、追平價格、離目標多遠", async () => {
+    // 追平價 200 遠高於目標價 130 ＝ 一般情況（Spread 仍有優勢）
+    mockDetail(detail({ latest_result: withTopCandidate({ catchup_price: 200 }) }));
+    render(<ScenarioDetail id="s1" />);
+
+    const top = baselineTopCandidate(view)!;
+    const [buy] = top.legs;
+    expect(await screen.findByText(new RegExp(`${buy.strike} Long Call`)))
+      .toBeInTheDocument();
+    expect(screen.getByText(/\$200\.00/)).toBeInTheDocument();
+    expect(screen.getByText(/超出目標價/)).toBeInTheDocument();
+    expect(screen.queryByText(/即勝過此 Spread/)).not.toBeInTheDocument();
+  });
+
+  it("醒目：S* ≤ 目標價時明說 Long Call 在本劇本內就贏了", async () => {
+    mockDetail(detail());   // 契約樣本本身就是這一態
+    render(<ScenarioDetail id="s1" />);
+
+    expect(await screen.findByText(/即勝過此 Spread/)).toBeInTheDocument();
+    expect(screen.getByText(/低於目標價/)).toBeInTheDocument();
+  });
+
+  it("無法計算：同履約價 Call 報價缺失時如實說，不報錯也不留白", async () => {
+    mockDetail(detail({ latest_result: withTopCandidate({ catchup_price: null }) }));
+    render(<ScenarioDetail id="s1" />);
+
+    expect(await screen.findByText(/無法計算/)).toBeInTheDocument();
+    // 頁面其他部分照常可讀
+    expect(screen.getByRole("table")).toBeInTheDocument();
+  });
+});
+
+describe("詳細頁的空狀態", () => {
+  it("還沒分析過就說還沒分析，不畫一張空圖", async () => {
+    mockDetail(detail({ latest_result: null, latest_analyzed_at: null,
+                        best_return: null }));
+    render(<ScenarioDetail id="s1" />);
+
+    expect(await screen.findByText(/尚未分析/)).toBeInTheDocument();
+    expect(screen.queryByRole("table")).not.toBeInTheDocument();
+  });
+
+  it("baseline 期沒有合格候選時明說，不拿別期的冒充", async () => {
+    mockDetail(detail({
+      latest_result: { ...view, baseline_expiry: "2099-01-01" },
+    }));
+    render(<ScenarioDetail id="s1" />);
+
+    expect(await screen.findByText("無合格候選")).toBeInTheDocument();
+    expect(screen.queryByRole("table")).not.toBeInTheDocument();
+  });
+
+  it("載不動時說明原因，不是白畫面", async () => {
+    mockDetail({ detail: "劇本不存在：s1" }, false, 404);
+    render(<ScenarioDetail id="s1" />);
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("劇本不存在");
+  });
+});
