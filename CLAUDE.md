@@ -800,12 +800,10 @@ V9（#57）亦已完結——功能票 V7–V9 全數做完。** 依 2026-08-04 
   （正常全套是 582 條；掉到 5xx 出頭就是 Postgres 那組沒跑）
 - 跑測試：`OC_TEST_DATABASE_URL="postgresql://postgres@127.0.0.1:55432/octest"
   PYTHONPATH=. .venv/bin/python -m pytest`
-  （`pyproject.toml` 的 `packages.find` 只收 `option_chaser*`，`webapp`／
-  `api_app` 不在裡面，靠 PYTHONPATH 匯入。沒有 `OC_TEST_DATABASE_URL`
+  （`pyproject.toml` 的 `packages.find` 只收 `option_chaser*`，`api_app`
+  不在裡面，靠 PYTHONPATH 匯入。沒有 `OC_TEST_DATABASE_URL`
   就只跑記憶體假體那一半）
-- 已知偶發：`test_render_spread_history.py::test_chart_does_not_crash...`
-  是 Streamlit AppTest 的逾時 flake，單獨重跑會過
-- 建 venv：`uv venv --python 3.11 .venv && uv pip install --python .venv/bin/python -e ".[gui,api,yf]" pytest`
+- 建 venv：`uv venv --python 3.11 .venv && uv pip install --python .venv/bin/python -e ".[api,yf]" pytest`
   （**`api` extra 必裝**：HTTP API 是後端唯一測試接縫，缺 httpx 會讓
   契約測試整組紅燈——這是刻意的，不要改成靜默跳過。**`yf` extra**＝
   備援資料源 yfinance，已移出核心依賴以免 pandas/numpy 進 serverless

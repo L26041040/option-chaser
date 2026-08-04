@@ -1,6 +1,6 @@
 """D1（#14）：CandidateView.catchup_price 的服務層接線——S*=K+C×(1+R) 的
 K／C／R 三個輸入，都要在服務層（有完整快照）算好，不留給零金融計算的
-render 層（見 `webapp/render.py` 模組說明）。純算術本身（S* 的數學正確性）
+呈現層（CLI 的 `report.py`、前端的 `src/`）。純算術本身（S* 的數學正確性）
 已由 tests/test_valuation.py 對 `catchup_price()` 覆蓋，這裡只驗證接線：
 bull-call-spread 直接用買腿自己的 Ask；bear-put-spread 從同一快照找同履約價
 的 call；找不到就是 None，不拋錯。"""

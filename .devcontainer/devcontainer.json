@@ -22,7 +22,7 @@
       ]
     }
   },
-  "updateContentCommand": "pip3 install --user -e '.[api,yf]' pytest; npm install; echo '✅ Packages installed and Requirements met'",
+  "updateContentCommand": "python3 -m venv .venv; .venv/bin/pip install -e '.[api,yf]' pytest; npm install; echo '✅ Packages installed and Requirements met'",
   "postAttachCommand": {
     "web": "npm run dev -- --host"
   },
