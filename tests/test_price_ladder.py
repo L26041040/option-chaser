@@ -46,6 +46,23 @@ def test_spread_at_target_price_equals_spread_baseline_return():
         spread_baseline_return(sv))
 
 
+@pytest.mark.parametrize("expiry", ["2026-08-21", "2026-10-16", "2026-12-18"])
+def test_spread_equality_holds_when_expiry_is_not_the_anchor(expiry):
+    """回歸測試：`return_at_price` 一度用日曆錨點當價差的估值日，但 T3（#17）
+    的既有裁示是**各 Spread 用自身到期日**（`valuation.evaluate_spread`）。
+
+    只在 `expiry == anchor` 的候選上驗證等值是**空斷言**——兩者剛好重合，
+    錯的實作也會過。這裡刻意涵蓋錨點之前、之上、之後三種到期日；
+    `P.target_month="2026-10"` 的錨點是 2026-10-16，所以中間那個是重合案例，
+    另兩個才是真正的把關。
+    """
+    sv = evaluate_spread(_leg("lng", 110.0, 3.0, 3.2, expiry=expiry),
+                         _leg("sht", 120.0, 1.0, 1.2, expiry=expiry),
+                         spot=100.0, today=TODAY, p=P)
+    assert return_at_price(sv, P.target_price, P) == pytest.approx(
+        spread_baseline_return(sv))
+
+
 # --- 任意價位的行為 -----------------------------------------------------
 
 def test_higher_price_gives_higher_return_for_bullish_leg():

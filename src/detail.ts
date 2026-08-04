@@ -5,7 +5,7 @@
  * （`option_chaser.valuation.catchup_price`），目標漲幅在 `meta.target_move`。
  * 這裡只負責「怎麼寫成一句人看得懂的話」。
  */
-import type { Candidate, Leg } from "./api";
+import type { Candidate, Leg, PricePoint } from "./api";
 import { money } from "./scenarios";
 
 /**
@@ -100,7 +100,7 @@ export function catchupView(
   };
 }
 
-const LADDER_LABELS: Record<string, string> = {
+const LADDER_LABELS: Record<PricePoint["label"], string> = {
   worst: "最差", target: "目標", best: "最好",
 };
 
@@ -115,12 +115,11 @@ const LADDER_LABELS: Record<string, string> = {
  */
 export function priceLadderView(
   candidate: Candidate,
-): { label: string; price: string; ret: number }[] | null {
+): { label: string; ret: number }[] | null {
   const ladder = candidate.price_ladder ?? [];
   if (ladder.length < 2) return null;
   return ladder.map((p) => ({
-    label: `${LADDER_LABELS[p.label] ?? p.label} ${money(p.price)}`,
-    price: money(p.price),
+    label: `${LADDER_LABELS[p.label]} ${money(p.price)}`,
     ret: p.return,
   }));
 }

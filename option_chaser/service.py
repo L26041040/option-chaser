@@ -61,7 +61,8 @@ class PricePoint:
     """V7（#55）：一個劇本價位與該候選在那個價位上的報酬。
 
     `ret` 的口徑與主排名數字完全相同（`ranking.return_at_price`），三價位
-    才能與頭條那個數字並排讀。
+    才能與頭條那個數字並排讀——包含估值日：價差用自身到期日、單腿用
+    日曆錨點，兩條路徑各自沿用既有裁示。
     """
     label: str        # "worst" | "target" | "best"
     price: float

@@ -106,14 +106,24 @@ def test_ladder_returns_never_decrease_as_price_rises():
     assert rets[0] < rets[-1]
 
 
-def test_target_entry_matches_the_headline_return():
-    """三價位裡的「目標」必須等於該候選的主數字——同口徑才能並排讀。"""
+def test_target_entry_matches_the_headline_return_for_every_candidate():
+    """三價位裡的「目標」必須等於該候選的主數字——同口徑才能並排讀。
+
+    **掃全部到期日的全部候選**，不只 baseline 那一組：baseline 期的到期日
+    恰好就是日曆錨點，只驗證它等於什麼都沒驗證（價差的估值日是自身到期日，
+    T3／#17，只有在錨點那一期兩者才重合）。這條是回歸測試。
+    """
     view = _analyzed(_client(), best_price=150.0)["latest_result"]
-    result = view["results"][0]
-    top = next(g["candidates"][0] for g in result["expiry_top10"]
-               if g["expiry"] == view["baseline_expiry"])
-    target = next(p for p in top["price_ladder"] if p["label"] == "target")
-    assert target["return"] == top["baseline_return"]
+    checked = 0
+    for group in view["results"][0]["expiry_top10"]:
+        for cand in group["candidates"]:
+            target = next(p for p in cand["price_ladder"] if p["label"] == "target")
+            assert target["return"] == cand["baseline_return"], (
+                f"{group['expiry']} / {cand['candidate_key']}")
+            checked += 1
+    # 涵蓋面本身要有保障：只跑到 baseline 一組的話這個測試又變空的
+    assert len({g["expiry"] for g in view["results"][0]["expiry_top10"]}) > 1
+    assert checked > 1
 
 
 # ---------- 排名口徑不變 ----------

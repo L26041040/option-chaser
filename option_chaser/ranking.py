@@ -1,6 +1,8 @@
 """Delta banding and in-band ranking (spec §6). No custom weights."""
 from __future__ import annotations
 
+from datetime import date
+
 from .models import AnalysisParams
 from .valuation import (
     ContractValuation,
@@ -43,15 +45,22 @@ def return_at_price(
 ) -> float:
     """任意標的價位下的劇本報酬（V7／#55，三價位對照用）。
 
-    口徑與主排名數字**完全相同**——錨點日估值、基準 IV、最差成交成本
-    （單腿＝Ask；價差＝買腿 Ask − 賣腿 Bid，附錄 A14.2），只有標的價換成
-    `S`。這是刻意的：三價位要能與頭條那個數字並排讀，就不能是另一套算法。
-    `return_at_price(v, p.target_price, p) == baseline_return(v)` 由測試釘住。
+    口徑與主排名數字**完全相同**——基準 IV、最差成交成本（單腿＝Ask；
+    價差＝買腿 Ask − 賣腿 Bid，附錄 A14.2），只有標的價換成 `S`。這是
+    刻意的：三價位要能與頭條那個數字並排讀，就不能是另一套算法。
+    `return_at_price(v, p.target_price, p) == baseline_return(v)` 由測試釘住，
+    且**必須在 expiry != anchor 的候選上驗證**——兩者相等時這條斷言是空的。
+
+    估值日**兩條路徑不同，各自沿用既有裁示**，不可統一：
+    - 價差＝該組**自身的到期日**（T3／#17：排名估值改為各 Spread 自身到期日
+      的內在價值，見 `valuation.evaluate_spread`）
+    - 單腿＝日曆錨點（附錄 A9，見 `valuation.evaluate_contract`）
 
     不改排名（spec #47 明文：仍以目標價排名）——本函式只供呈現。
     """
     if isinstance(val, SpreadValuation):
-        value = spread_scenario_value(val.long_leg, val.short_leg, S, p.anchor, p)
+        at = date.fromisoformat(val.long_leg.expiry)
+        value = spread_scenario_value(val.long_leg, val.short_leg, S, at, p)
         cost = val.net_worst
     else:
         value = scenario_leg_value(val.contract, S, p.anchor, p)

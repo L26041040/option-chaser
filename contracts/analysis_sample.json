@@ -923,7 +923,7 @@
               {
                 "label": "target",
                 "price": 130.0,
-                "return": 0.8740988910819879
+                "return": 1.8571428571428583
               }
             ],
             "quote_warning": false,
@@ -1894,7 +1894,7 @@
             {
               "label": "target",
               "price": 130.0,
-              "return": 0.8740988910819879
+              "return": 1.8571428571428583
             }
           ],
           "quote_warning": false,
@@ -2799,7 +2799,7 @@
             {
               "label": "target",
               "price": 130.0,
-              "return": 0.8740988910819879
+              "return": 1.8571428571428583
             }
           ],
           "quote_warning": false,
@@ -3730,7 +3730,7 @@
                 {
                   "label": "target",
                   "price": 130.0,
-                  "return": 0.8740988910819879
+                  "return": 1.8571428571428583
                 }
               ],
               "quote_warning": false,
