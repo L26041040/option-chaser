@@ -386,8 +386,8 @@ describe("刷新與進度（V4／#52）", () => {
     );
     render(<App />);
 
-    // 第一個還在跑：0 個做完、總共 2 個
-    expect(await screen.findByRole("status")).toHaveTextContent("0/2");
+    // 正在跑第一個、總共 2 個
+    expect(await screen.findByRole("status")).toHaveTextContent("1/2");
     // 逐一刷新，不是同時打兩個請求——第一個沒回來前不該有第二個
     expect(refreshCalls(spy)).toEqual(["s1"]);
 
@@ -493,5 +493,64 @@ describe("刷新與進度（V4／#52）", () => {
 
     expect(refreshCalls(spy)).toEqual([]);
     expect(screen.queryByRole("status")).not.toBeInTheDocument();
+  });
+});
+
+describe("建立與刷新同時發生（V4／#52 檢視回饋）", () => {
+  const base = sampleRow as unknown as Record<string, unknown>;
+  const card = (id: string, symbol: string, extra: Record<string, unknown> = {}) => ({
+    ...base, id, symbol, target_price: 120, target_month: "2028-05",
+    target_anchor: "2028-05-19", days_to_anchor: 653,
+    latest_analyzed_at: null, best_return: null, ...extra,
+  });
+
+  it("建立劇本不會把建立期間刷新好的卡片打回未分析", async () => {
+    // 建立的請求飛在半空中時，開站那一輪剛好把 s1 刷新完。若建立完成後
+    // 用「送出前那份 rows」蓋回去，s1 就會退回未分析的樣子——使用者看到
+    // 的是一個剛剛才有過的數字憑空消失。
+    let releaseRefresh: (() => void) | null = null;
+    let releaseCreate: (() => void) | null = null;
+    let s1Calls = 0;
+
+    const spy = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url === "/api/scenarios" && init?.method === "POST") {
+        await new Promise<void>((resolve) => { releaseCreate = resolve; });
+        return { ok: true, status: 201, json: async () => card("s2", "SPY") };
+      }
+      if (url === "/api/scenarios") {
+        return { ok: true, status: 200, json: async () => [card("s1", "TLT")] };
+      }
+      if (url.endsWith("/s1/refresh")) {
+        s1Calls += 1;
+        if (s1Calls === 1) {
+          await new Promise<void>((resolve) => { releaseRefresh = resolve; });
+          return { ok: true, status: 200, json: async () => card("s1", "TLT", {
+            best_return: 2.0, latest_analyzed_at: "2026-08-04T09:30:00+00:00" }) };
+        }
+        // 第二趟失敗：否則「重刷一次就恢復」會把回歸蓋掉，測不出東西
+        return { ok: false, status: 502, json: async () => ({
+          detail: { stage: "fetch", message: "抓不到報價" } }) };
+      }
+      if (url.endsWith("/s2/refresh")) {
+        return { ok: true, status: 200, json: async () => card("s2", "SPY", {
+          best_return: 0.3, latest_analyzed_at: "2026-08-04T09:30:00+00:00" }) };
+      }
+      throw new Error(`測試沒有為 ${url} 準備回應`);
+    });
+    vi.stubGlobal("fetch", spy);
+    render(<App />);
+
+    await userEvent.type(await screen.findByLabelText("標的代號"), "spy");
+    await userEvent.type(screen.getByLabelText("目標價位"), "700");
+    await userEvent.type(screen.getByLabelText("目標年月"), "2028-05");
+    await userEvent.click(screen.getByRole("button", { name: "建立" }));
+
+    releaseRefresh!();                       // 建立還沒回來，s1 先刷新完
+    expect(await screen.findByText("200.0%")).toBeInTheDocument();
+
+    releaseCreate!();
+
+    expect(await screen.findByText("30.0%")).toBeInTheDocument();
+    expect(screen.getByText("200.0%")).toBeInTheDocument();
   });
 });

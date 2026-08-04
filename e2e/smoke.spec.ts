@@ -183,7 +183,7 @@ test("開站自動刷新：進度 → 卡片換成新數字（V4／#52）", asyn
 
   await page.goto("/");
 
-  await expect(page.getByRole("status")).toHaveText("0/1");
+  await expect(page.getByRole("status")).toHaveText("1/1");
   await expect(page.getByRole("button", { name: "刷新中……" })).toBeDisabled();
 
   await expect(page.getByText("250.0%")).toBeVisible();

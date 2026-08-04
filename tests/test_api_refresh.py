@@ -96,22 +96,70 @@ def test_refresh_on_unknown_scenario_is_404():
 
 # ---------- 降級（主源失敗、備援接手） ----------
 
-def test_refresh_records_whichever_source_actually_answered():
-    """降級態：Cboe 掛掉時 `service.fetch_chain` 會退回 yfinance，快照的
-    `source` 欄位如實記錄是誰回答的。API 不能把它覆寫成固定值——那樣
-    畫面上「資料來源」就永遠是對的，也就永遠沒有資訊。"""
+def test_refresh_falls_back_to_yfinance_and_records_that_it_did(monkeypatch):
+    """降級態：Cboe 掛掉 → 退回 yfinance → 快照的 `source` 如實記錄是誰
+    回答的。
+
+    這裡**不注入** `fetch`，走的是正式路徑 `service.fetch_chain`——注入一個
+    「直接回傳 source=yfinance 的快照」只會驗到假體自己，降級鏈有沒有接上
+    完全測不到。改成讓真正的兩個 adapter 一個爆一個回答。
+    """
     import dataclasses
 
-    storage = MemoryStorage()
+    from option_chaser.data import cboe, yf
+
     fallback = dataclasses.replace(load_snapshot(FIX), source="yfinance")
-    c = _client(fetch=lambda symbol: fallback, storage=storage)
+    monkeypatch.setattr(cboe, "fetch_chain", lambda symbol: (_ for _ in ()).throw(
+        FetchError("Cboe 沒回應")))
+    monkeypatch.setattr(yf, "fetch_chain", lambda symbol: fallback)
+
+    storage = MemoryStorage()
+    c = TestClient(create_app(storage=storage))     # fetch 用預設的降級鏈
     sc = _create(c)
 
     row = c.post(f"/api/scenarios/{sc['id']}/refresh").json()
 
     assert storage.get_snapshot(sc["id"], row["latest_analyzed_at"])["source"] == "yfinance"
+    # API 不能把 source 覆寫成固定值——那樣畫面上「資料來源」永遠是對的，
+    # 也就永遠沒有資訊。
     view = c.get(f"/api/scenarios/{sc['id']}").json()["latest_result"]
     assert view["meta"]["source"] == "yfinance"
+
+
+def test_both_sources_down_is_a_fetch_failure_through_the_real_chain(monkeypatch):
+    """兩個源都掛才算失敗（同樣走正式降級鏈，不注入 fetch）。"""
+    from option_chaser.data import cboe, yf
+
+    def down(symbol):
+        raise FetchError("沒回應")
+
+    monkeypatch.setattr(cboe, "fetch_chain", down)
+    monkeypatch.setattr(yf, "fetch_chain", down)
+
+    c = TestClient(create_app(storage=MemoryStorage()))
+    sc = _create(c)
+
+    resp = c.post(f"/api/scenarios/{sc['id']}/refresh")
+    assert resp.status_code == 502
+    assert _detail(resp)["stage"] == "fetch"
+
+
+def test_an_internal_bug_is_not_dressed_up_as_a_data_source_outage(monkeypatch):
+    """抓鏈那一段若是我們自己的程式爆了（不是 FetchError），不可以貼上
+    「抓不到報價、可稍後重試」——那句話會叫使用者去重試一個重試不會好的
+    東西。不知道是哪一段就不要說。"""
+    def bug(symbol):
+        raise TypeError("我們自己的 bug")
+
+    # `raise_server_exceptions=False`：讓 TestClient 表現得跟正式部署一樣
+    # （回 500），而不是把例外原地丟給測試。
+    c = TestClient(create_app(fetch=bug, storage=MemoryStorage()),
+                   raise_server_exceptions=False)
+    sc = _create(c)
+
+    resp = c.post(f"/api/scenarios/{sc['id']}/refresh")
+    assert resp.status_code == 500
+    assert "stage" not in resp.text   # 沒把握是哪一段就不要編一個出來
 
 
 # ---------- 失敗分層 ----------
@@ -164,13 +212,15 @@ def test_a_bad_scenario_parameter_is_neither_of_the_above(monkeypatch):
     assert "目標月不在可分析範圍" in _detail(resp)["message"]
 
 
-@pytest.mark.parametrize("stage_error, expected", [
-    (FetchError("x"), "fetch"),
-    (ParamError("x"), "params"),
+@pytest.mark.parametrize("stage_error, expected, status", [
+    (FetchError("x"), "fetch", 502),
+    (ParamError("x"), "params", 400),
 ])
-def test_the_adhoc_endpoint_reports_the_same_stages(monkeypatch, stage_error, expected):
+def test_the_adhoc_endpoint_reports_the_same_stages(monkeypatch, stage_error,
+                                                    expected, status):
     """一次性分析端點（V1 遺留）與劇本刷新走同一條錯誤映射——兩處各自
-    發明一套錯誤格式的話，前端就得認兩種。"""
+    發明一套錯誤格式的話，前端就得認兩種。狀態碼一起驗：只看 stage 的話，
+    把 fetch 映射成 500 這條測試照樣綠。"""
     if isinstance(stage_error, FetchError):
         c = _client(fetch=lambda symbol: (_ for _ in ()).throw(stage_error))
     else:
@@ -181,4 +231,33 @@ def test_the_adhoc_endpoint_reports_the_same_stages(monkeypatch, stage_error, ex
 
     resp = c.post("/api/analyze", json={**NEW, "strategies": ["bull-call-spread"]})
 
+    assert resp.status_code == status
     assert _detail(resp)["stage"] == expected
+
+
+def test_every_stage_the_backend_emits_is_one_the_frontend_knows():
+    """失敗分層的字彙同時活在三個地方：後端 `_fail(...)` 的字面值、前端
+    `api.ts` 的 `STAGES`、以及 `scenarios.ts` 的 `failureLabel` switch。
+    後端加第四種而前端沒跟上不會壞掉——只會靜靜退化成「刷新失敗」，
+    也就是這張票要消滅的那種無聲誤導。這條測試讓它出聲。
+
+    契約樣本（`contracts/`）管的是 view dict 的欄位，管不到錯誤主體，
+    所以這裡另外用一條結構性斷言補上，做法沿用
+    `test_api_layer_never_touches_sql_directly`。
+    """
+    import re
+    from pathlib import Path
+
+    emitted = set(re.findall(r'_fail\("(\w+)"',
+                             Path("api_app/main.py").read_text(encoding="utf-8")))
+    assert emitted, "沒抓到任何 _fail(...)——這條測試的抓法過時了"
+
+    api_ts = Path("src/api.ts").read_text(encoding="utf-8")
+    known = set(re.findall(r'"(\w+)"',
+                           re.search(r"const STAGES = \[(.*?)\]", api_ts).group(1)))
+    labels = Path("src/scenarios.ts").read_text(encoding="utf-8")
+
+    assert emitted <= known, f"前端 api.ts 不認得這些分層：{emitted - known}"
+    for stage in emitted:
+        assert f'case "{stage}":' in labels, (
+            f"scenarios.ts 的 failureLabel 沒有 {stage} 的說法，畫面會退成通用訊息")

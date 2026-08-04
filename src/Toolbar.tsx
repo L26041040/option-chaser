@@ -6,7 +6,8 @@
  * 轉圈的話使用者無從判斷是快好了還是卡住了。
  */
 export interface RefreshProgress {
-  done: number;
+  /** 正在刷新第幾個（1-based）。 */
+  current: number;
   total: number;
 }
 
@@ -34,7 +35,7 @@ export default function Toolbar({
             自己不斷回頭看畫面。 */}
         {progress && (
           <span className="caption" role="status">
-            {progress.done}/{progress.total}
+            {progress.current}/{progress.total}
           </span>
         )}
       </div>

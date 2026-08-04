@@ -19,8 +19,8 @@ from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel, Field, field_validator
 
 from option_chaser import __version__, service, store
-from option_chaser.models import (AnalysisParams, ChainSnapshot, ParamError,
-                                  STRATEGIES)
+from option_chaser.models import (AnalysisParams, ChainSnapshot, FetchError,
+                                  ParamError, STRATEGIES)
 from option_chaser.timeframe import (TargetMonth, calendar_anchor,
                                      ensure_month_open)
 from option_chaser.workspace import now_utc_iso, ny_today
@@ -157,10 +157,12 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         # 包在同一個 try 裡就只能事後靠例外型別猜是哪一段出的事。
         try:
             snap = fetch(symbol)
-        except Exception as e:  # noqa: BLE001
-            # 常態是 FetchError（Cboe 與 yfinance 皆失敗）＝下游依賴問題。
-            # 其他例外同樣落在這一段：對使用者而言結果一樣是「這次沒拿到
-            # 報價」，而原因如實接在訊息後面，不會變成一個沒說明的 500。
+        except FetchError as e:
+            # 上游報價來源不可用（Cboe 與 yfinance 皆失敗）＝下游依賴問題。
+            # 只認 FetchError：把這裡寫成 `except Exception` 的話，我們自己
+            # 程式裡的 bug 會被貼上「抓不到報價、可稍後重試」的標籤，正好是
+            # 這張票要消滅的那種誤導。其他例外照樣往上走成 500——「不知道
+            # 是哪一段」時說不知道，好過說一個錯的分層。
             raise _fail("fetch", 502, f"抓不到 {symbol} 的報價：{e}") from e
         try:
             result = service.run_with_snapshot(req, snap)

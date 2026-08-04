@@ -40,6 +40,10 @@ export default function App() {
   // 永遠停在「尚未分析」。
   const queue = useRef<string[]>([]);
   const running = useRef(false);
+  // 事件處理器裡拿得到「此刻」的 rows：狀態閉包停在該次渲染，而刷新
+  // 佇列隨時在更新 rows。
+  const rowsRef = useRef<ScenarioSummary[]>(rows);
+  rowsRef.current = rows;
 
   const reload = useCallback(async (): Promise<ScenarioSummary[] | null> => {
     try {
@@ -86,13 +90,16 @@ export default function App() {
       let done = 0;
       try {
         while (queue.current.length > 0) {
-          setProgress({ done, total: done + queue.current.length });
+          // 1-based：顯示的是「正在跑第幾個」，不是「跑完幾個」——
+          // 功能列寫的是「第幾個／共幾個」。
+          setProgress({ current: done + 1, total: done + queue.current.length });
           await refreshOne(queue.current.shift()!);
           done += 1;
         }
       } finally {
+        // 刻意不清空佇列：真有東西沒跑完（例如迴圈裡爆了），留著讓下一次
+        // enqueue 接手，而不是照著「不靜靜丟掉」的註解反其道而行。
         running.current = false;
-        queue.current = [];
         setProgress(null);
       }
     },
@@ -116,6 +123,15 @@ export default function App() {
     void reloadAndRefresh();
   }, [reloadAndRefresh]);
 
+  // 新鮮度會隨時間變舊，所以「現在」要自己走。只在渲染時取一次的話，
+  // 頁面開著放到隔天，那份 12 小時前的資料永遠不會長出「舊資料」標記
+  // ——而那正是最需要它的情況。門檻是 12 小時，5 分鐘一跳綽綽有餘。
+  const [now, setNow] = useState(() => new Date());
+  useEffect(() => {
+    const tick = setInterval(() => setNow(new Date()), 5 * 60_000);
+    return () => clearInterval(tick);
+  }, []);
+
   async function create(draft: DraftScenario) {
     setBusy(true);
     let created: ScenarioSummary;
@@ -126,12 +142,15 @@ export default function App() {
     } finally {
       setBusy(false);
     }
-    const next = [...rows, created];
-    setRows(next);
+    // 函式式更新，不是 `[...rows, created]`：`rows` 是 await 之前那次
+    // 渲染的閉包，而建立的這段期間刷新佇列很可能正在跑並且已經
+    // `setRows` 過——用舊陣列蓋回去會把剛刷新好的卡片打回未分析的樣子。
+    // 與 `archive()` 的回滾同一個道理，做法要一致。
+    setRows((prev) => [...prev, created]);
     setError(null);
     // 時機二：建立劇本後。刻意不 await——表單要立刻清空並可再輸入，
     // 不該被後面 N 趟刷新綁住。
-    void enqueue(next.map((r) => r.id));
+    void enqueue([...rowsRef.current.map((r) => r.id), created.id]);
   }
 
   async function archive(id: string) {
@@ -172,9 +191,7 @@ export default function App() {
       <ScenarioList
         rows={rows}
         failures={failures}
-        // 新鮮度以「這次渲染的當下」為基準；刷新完成會重新渲染，提示
-        // 因此跟著消失。
-        now={new Date()}
+        now={now}
         onArchive={archive}
         // 重試不是第四種刷新時機——它重跑的就是那一次失敗的刷新，而且
         // 走同一條佇列，不會與進行中的那一輪搶資料源。

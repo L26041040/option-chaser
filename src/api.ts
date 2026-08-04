@@ -145,8 +145,32 @@ function stageOf(value: unknown): FailureStage {
     : null;
 }
 
+/**
+ * 一趟請求最多等多久。刷新是逐一排隊跑的：沒有上限的話，一個永遠不回來
+ * 的請求（行動網路切換、連線被中途丟掉）會讓整條佇列卡死——按鈕一直
+ * disabled、後面的劇本永遠輪不到，而且畫面上什麼都不會說。
+ *
+ * 90 秒的理由：serverless 函式自己的上限是 60 秒（`vercel.json`），
+ * 留一點餘裕給網路來回；比它短的話會把還在正常跑的分析誤判成逾時。
+ */
+const REQUEST_TIMEOUT_MS = 90_000;
+
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
-  const resp = await fetch(url, init);
+  let resp: Response;
+  try {
+    resp = await fetch(url, {
+      ...init,
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    });
+  } catch (e) {
+    // 逾時／連線斷掉：說「等不到回應」，而不是把 DOMException 的英文
+    // 原文丟到手機畫面上。分層是 null——我們並不知道伺服器跑到哪一段。
+    if (e instanceof DOMException && e.name === "TimeoutError") {
+      throw new ApiError("等太久沒有回應（逾時），請重試");
+    }
+    throw new ApiError(
+      `連不到伺服器：${e instanceof Error ? e.message : String(e)}`);
+  }
   if (!resp.ok) {
     const detail = await resp
       .json()
