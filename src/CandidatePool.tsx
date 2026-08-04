@@ -61,7 +61,7 @@ export default function CandidatePool({ view }: { view: AnalysisView }) {
             {/* FB5-04（#65，spec #61）：這關屬於哪一類（A＝資料健全性、
                 B＝數學前提），跟著被排除的筆數一起顯示——`row-note` 用
                 次要色，不搶「−N」那個真正要看的數字。 */}
-            <span className="row-note">{stage.cls} 類 </span>
+            <span className="row-note">{stage.filter_class} 類 </span>
             <span className={stage.removed > 0 ? "negative" : undefined}>
               {stage.removed > 0 ? `−${stage.removed}` : "0"}
             </span>

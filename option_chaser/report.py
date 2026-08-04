@@ -7,7 +7,8 @@ from datetime import date as _date
 
 from .filters import FILTER_CLASS_LABELS, is_spread_wide
 from .matrix import date_axis, matrix_lines, price_axis
-from .models import AnalysisParams, ChainSnapshot, FilterReport, is_bullish, leg_option_type
+from .models import (AnalysisParams, ChainSnapshot, FilterReport, QualityFlagCount,
+                     is_bullish, leg_option_type)
 from .ranking import BAND_LABELS, BAND_ORDER, build_reasons
 from .valuation import ContractValuation, guidance_judgments, scenario_leg_value, spread_scenario_value
 
@@ -99,7 +100,7 @@ def _header_lines(snap: ChainSnapshot, p: AnalysisParams, today: date) -> list[s
 
 def _filter_lines(
     freport: FilterReport, p: AnalysisParams,
-    quality_flags: tuple[tuple[str, int], ...] = (),
+    quality_flags: tuple[QualityFlagCount, ...] = (),
 ) -> list[str]:
     """FB5-04（#65，spec #61）：每一關都標出屬於哪一類——「排除」（A／B類，
     算不出來）跟「標示」（C類，算得出來但不夠好看）在畫面上分得開，讓這一
@@ -107,12 +108,12 @@ def _filter_lines(
     side = "Call 側" if leg_option_type(p.strategy) == "call" else "Put 側"
     lines = ["", "[過濾統計]", f"- 掃描合約（{side}）: {freport.total} 張"]
     for s in freport.stages:
-        lines.append(f"- [{s.cls}類排除] {s.label}刷掉: {s.removed}")
+        lines.append(f"- [{s.filter_class}類排除] {s.label}刷掉: {s.removed}")
     lines.append(f"- 合格: {freport.passed} 張")
     if quality_flags:
         lines.append(f"- [C類標示，不影響入選，計於上方{freport.passed}張合格內]:")
-        for label, count in quality_flags:
-            lines.append(f"  - {label}: {count}")
+        for qf in quality_flags:
+            lines.append(f"  - {qf.label}: {qf.count}")
     return lines
 
 
@@ -250,9 +251,12 @@ def _footer_lines(p: AnalysisParams) -> list[str]:
         f"- 過濾 [A類 {FILTER_CLASS_LABELS['A']}，硬門檻]: 報價存在且不交叉"
         "（不含任何到期日條件，到期日取捨見下）",
         f"- 過濾 [B類 {FILTER_CLASS_LABELS['B']}，硬門檻]: IV 落在可解區間 (0.01-5.0)",
-        f"- 過濾 [C類 {FILTER_CLASS_LABELS['C']}，只標不刪，spec #61]: 未平倉量、"
-        "成交量、買賣價差寬度、無套利一致性——不影響候選是否入選，[過濾統計]"
-        "區逐項計數；買賣價差"
+        # 檢視回饋修正：未平倉量沒有門檻可標示（見 `quality_flag_counts`
+        # docstring），原樣顯示於各候選腿，不在 [過濾統計] 逐項計數——
+        # 不能跟真的有計數的另外三項寫在同一句，讓讀者以為四項都有數字。
+        f"- 過濾 [C類 {FILTER_CLASS_LABELS['C']}，只標不刪，spec #61]: 未平倉量"
+        "原樣顯示於各候選腿，不設門檻；成交量、買賣價差寬度、無套利一致性"
+        "——不影響候選是否入選，[過濾統計]區逐項計數；買賣價差"
         f"超過 max({p.spread_floor:g}, {p.max_spread_pct:g}*Mid) 時逐候選附警示，"
         "見各候選「買賣價差偏大」",
         "- 無套利一致性: 同到期日、同類型的相鄰履約價 Ask 應單調（call 非"
@@ -288,7 +292,7 @@ def render(
     snap: ChainSnapshot, p: AnalysisParams, freport: FilterReport,
     ranked: dict[str, list[ContractValuation]], n_qualified: int, today: date,
     violations: frozenset[str] = frozenset(),
-    quality_flags: tuple[tuple[str, int], ...] = (),
+    quality_flags: tuple[QualityFlagCount, ...] = (),
 ) -> str:
     lines = _header_lines(snap, p, today) + _filter_lines(freport, p, quality_flags)
     idx = 0
@@ -371,7 +375,7 @@ def _spread_candidate_lines(sv, idx, n_pairs, p, spot: float, today: date,
 
 def render_spreads(snap, p, freport, pair_report, ranked, n_pairs, today,
                    violations: frozenset[str] = frozenset(),
-                   quality_flags: tuple[tuple[str, int], ...] = ()) -> str:
+                   quality_flags: tuple[QualityFlagCount, ...] = ()) -> str:
     lines = (_header_lines(snap, p, today) + _filter_lines(freport, p, quality_flags)
             + _pair_lines(pair_report))
     if not ranked:

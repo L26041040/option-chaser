@@ -12,8 +12,8 @@ from .filters import (apply_filters, generate_spread_pairs, is_spread_wide,
                       monotonicity_violations, quality_flag_counts)
 from .matrix import date_axis, matrix_grid, price_axis
 from .models import (AnalysisParams, ChainSnapshot, FetchError, FilterReport,
-                     PairReport, ParamError, SPREAD_STRATEGIES, STRATEGIES,
-                     is_bullish)
+                     PairReport, ParamError, QualityFlagCount, SPREAD_STRATEGIES,
+                     STRATEGIES, is_bullish)
 from .ranking import (BAND_ORDER, _spread_tie_key, _tie_break_key,
                       baseline_return, build_reasons, build_spread_reasons,
                       classify, rank, rank_spreads, return_at_price,
@@ -133,7 +133,7 @@ class StrategyResult:
     # quality_flag_counts()`）裡各出現幾次——單腿／價差都用同一份 `qualified`
     # 計算，不受 `expiry_top10` 只填價差策略那個既有 MVP 範圍限制影響
     # （附錄A13）。空池（`status == "empty"`）維持預設空 tuple。
-    quality_flags: tuple[tuple[str, int], ...] = ()
+    quality_flags: tuple[QualityFlagCount, ...] = ()
 
 
 @dataclass(frozen=True)

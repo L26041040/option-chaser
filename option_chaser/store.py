@@ -429,14 +429,15 @@ def serialize_result(result: AnalysisResult, scenario_id: str,
             "filter_report": ({"total": r.filter_report.total,
                                "passed": r.filter_report.passed}
                               if r.filter_report else None),
-            "filter_stages": ([{"label": s.label, "removed": s.removed, "cls": s.cls}
+            "filter_stages": ([{"label": s.label, "removed": s.removed,
+                               "filter_class": s.filter_class}
                                for s in r.filter_report.stages]
                               if r.filter_report else []),
             # FB5-04（#65，spec #61）：C 類品質標示在整個合格池裡的計數
             # （`filters.quality_flag_counts()`）——跟 `filter_stages`
             # （A／B 兩類「排除」）並排但語意不同，前端據此分開呈現。
-            "quality_flags": [{"label": label, "count": count}
-                              for label, count in r.quality_flags],
+            "quality_flags": [{"label": qf.label, "count": qf.count}
+                              for qf in r.quality_flags],
             "pair_report": ({"total_pairs": r.pair_report.total_pairs,
                              "removed_sanity": r.pair_report.removed_sanity,
                              "passed": r.pair_report.passed}

@@ -97,10 +97,12 @@ class AnalysisParams:
 class FilterStageResult:
     label: str
     removed: int
-    # FB5-04（#65，spec #61）：這一關屬於三分類的哪一類——"A"＝資料健全性、
-    # "B"＝數學前提。C 類（品質標示）從不出現在這裡：它從不淘汰候選，所以
-    # 不是「一關」，是 `service.quality_flag_counts()` 另外算的計數。
-    cls: str
+    # FB5-04（#65，spec #61，檢視回饋更名 `cls`→`filter_class`：`cls` 在
+    # Python 是 classmethod 慣用參數名，這裡指的是完全不同的東西，容易
+    # 誤讀）：這一關屬於三分類的哪一類——"A"＝資料健全性、"B"＝數學前提。
+    # C 類（品質標示）從不出現在這裡：它從不淘汰候選，所以不是「一關」，
+    # 是 `filters.quality_flag_counts()` 另外算的計數。
+    filter_class: str
 
 
 @dataclass(frozen=True)
@@ -108,6 +110,17 @@ class FilterReport:
     total: int
     stages: tuple[FilterStageResult, ...]
     passed: int
+
+
+@dataclass(frozen=True)
+class QualityFlagCount:
+    """FB5-04（#65，spec #61，檢視回饋新增）：C 類品質標示的一項計數。
+
+    獨立成型別而不是裸 `tuple[str, int]`，跟 `FilterStageResult`（A／B類）
+    同一個模式——兩者都是「一個標籤配一個數字」，值得用同一種方式表示，
+    不必讓呼叫端猜 tuple 的兩個位置各是什麼。"""
+    label: str
+    count: int
 
 
 STRATEGIES = ("long-call", "long-put", "bull-call-spread", "bear-put-spread")

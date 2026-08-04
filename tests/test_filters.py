@@ -40,7 +40,7 @@ def test_each_stage_is_tagged_with_its_class():
     """FB5-04（#65）：分類要「在程式碼中明確可讀」——`apply_filters` 的
     兩關各自標好 A／B，不必靠標籤字串猜測。"""
     _, rep = apply_filters([make("ok")], P)
-    assert [(s.cls, s.label) for s in rep.stages] == [
+    assert [(s.filter_class, s.label) for s in rep.stages] == [
         ("A", "報價異常"), ("B", "IV 異常"),
     ]
 
@@ -206,7 +206,7 @@ def test_quality_flag_counts_tallies_each_class_c_check_over_the_pool():
     clean = make("clean", expiry="2027-01-15")
     contracts = [quiet, wide, low, mid, clean]
     violations = monotonicity_violations(contracts)
-    counts = dict(quality_flag_counts(contracts, violations, P))
+    counts = {qf.label: qf.count for qf in quality_flag_counts(contracts, violations, P)}
     assert counts["報價非最新（今日無成交）"] == 1
     assert counts["買賣價差偏大"] == 1
     assert counts["報價與鄰近履約價不一致，疑似陳舊報價"] == 2
@@ -226,12 +226,13 @@ def test_quality_flag_counts_reuses_is_spread_wide_not_a_new_threshold():
     `is_spread_wide` 對同一組報價的判斷必須完全一致。"""
     c = make("edge", bid=4.0, ask=6.0)   # is_spread_wide(4.0, 6.0, P) is True
     assert is_spread_wide(c.bid, c.ask, P) is True
-    counts = dict(quality_flag_counts([c], frozenset(), P))
+    counts = {qf.label: qf.count for qf in quality_flag_counts([c], frozenset(), P)}
     assert counts["買賣價差偏大"] == 1
 
 
 def test_quality_flag_counts_open_interest_not_included():
     """FB5-01 只把 OI 從硬門檻移除、原樣顯示，沒定義「多低算有疑慮」的
     門檻——這裡不發明一個，回傳的三個 key 裡沒有未平倉量。"""
-    counts = dict(quality_flag_counts([make("zerooi", oi=0)], frozenset(), P))
+    counts = {qf.label: qf.count
+              for qf in quality_flag_counts([make("zerooi", oi=0)], frozenset(), P)}
     assert not any("未平倉" in k or "OI" in k for k in counts)

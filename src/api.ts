@@ -83,7 +83,7 @@ export interface FilterStage {
    * "B"＝數學前提，兩者都是硬門檻（會排除候選）。C 類（品質標示）從不
    * 出現在這裡，見 `QualityFlag`。
    */
-  cls: string;
+  filter_class: string;
 }
 
 /**

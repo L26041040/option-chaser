@@ -166,7 +166,7 @@ def test_filter_stages_carry_their_class_over_http():
     `filters.py` 內部。"""
     r = _client().post("/api/analyze", json=REQUEST)
     result = r.json()["results"][0]
-    assert [(s["label"], s["cls"]) for s in result["filter_stages"]] == [
+    assert [(s["label"], s["filter_class"]) for s in result["filter_stages"]] == [
         ("報價異常", "A"), ("IV 異常", "B"),
     ]
 

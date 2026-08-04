@@ -52,10 +52,10 @@ function view(overrides: Partial<Overrides> = {}): AnalysisView {
         : overrides.report,
       // FB5-01／FB5-02（#62／#63）：關卡組成只剩兩關（OI／成交量／價差
       // 寬度皆已從硬門檻移除，spec #61 三分類），這裡的假資料照實際
-      // 形狀給。FB5-04（#65）：每關現在帶著三分類的 `cls`。
+      // 形狀給。FB5-04（#65）：每關現在帶著三分類的 `filter_class`。
       filter_stages: overrides.stages ?? [
-        { label: "報價異常", removed: 12, cls: "A" },
-        { label: "IV 異常", removed: 8, cls: "B" },
+        { label: "報價異常", removed: 12, filter_class: "A" },
+        { label: "IV 異常", removed: 8, filter_class: "B" },
       ],
       // FB5-04（#65，spec #61）：C 類品質標示——整個合格池裡的計數，
       // 跟 `filter_stages` 分開放，不影響入選。
