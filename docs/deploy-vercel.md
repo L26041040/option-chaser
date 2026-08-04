@@ -1,7 +1,9 @@
-# Vercel 部署（新前端輪，V1／#48）
+# Vercel 部署（新前端輪，V1／#48；V10／#58 Cutover 後為唯一前端）
 
 新前端是 **Vercel 整包**：靜態前端（Vite＋React＋TypeScript）＋Python
-serverless API（FastAPI，直接 import 既有 `option_chaser/` 引擎）。
+serverless API（FastAPI，直接 import 既有 `option_chaser/` 引擎）。舊
+Streamlit 前端（`webapp/`）已於 V10（#58）移除，本文件描述的架構是
+唯一的正式前端。
 
 ## 一次性設定（需求方操作）
 
@@ -90,7 +92,8 @@ Marketplace 的 Neon 免費層，全程在 Vercel 後台點：
 `requirements.txt` 刻意只裝 `fastapi`：yfinance 帶 pandas/numpy，塞進
 函式體積不划算，而主資料源 Cboe adapter 是 stdlib-only。Cboe 不可用時
 `service.fetch_chain` 會如實回報「兩層都不可用」（HTTP 502），不會崩成
-500。本機開發與舊 Streamlit 版仍由 `pyproject.toml` 安裝完整降級鏈。
+500。本機開發（CLI／pytest）仍由 `pyproject.toml` 的 `yf` extra 安裝
+完整降級鏈。
 
 ## 本機開發
 

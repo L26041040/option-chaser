@@ -19,7 +19,7 @@ PGDATA=/var/lib/postgresql/ocdata
 PGPORT=55432
 
 echo "== Python 套件 =="
-uv pip install --python .venv/bin/python -e ".[gui,api,yf]" pytest >/dev/null
+uv pip install --python .venv/bin/python -e ".[api,yf]" pytest >/dev/null
 .venv/bin/python -c "import fastapi, psycopg, yfinance" && echo "ok"
 
 echo "== Postgres =="

@@ -18,13 +18,15 @@ dependencies = [
 option-chaser = "option_chaser.cli:main"
 
 [project.optional-dependencies]
-gui = ["streamlit>=1.30"]
 # HTTP API 是後端唯一測試接縫，其契約測試必須跑得起來——不裝 httpx
 # （FastAPI TestClient 的依賴）就會整組紅燈，這是刻意的。
 api = ["httpx"]
 # 備援資料源：Cboe（stdlib-only）是主源，yfinance 只在它失敗時才用到，
 # 且 `data/yf.py` 是在函式內部才 import。移出核心依賴是為了不把
-# pandas/numpy 拖進 serverless 函式；本機／CLI／Streamlit 仍應安裝。
+# pandas/numpy 拖進 serverless 函式；本機／CLI 仍應安裝。
+# V10（#58，Cutover）：`gui`（Streamlit）extra 已隨 `webapp/` 移除——
+# 前端現在是 `src/` 的 React／TypeScript（Vite），不再需要 Python GUI
+# 依賴。
 yf = ["yfinance>=0.2"]
 
 [build-system]
