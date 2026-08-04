@@ -204,8 +204,9 @@ def _footer_lines(p: AnalysisParams) -> list[str]:
         "- 到期日選取: 目標月第三個星期五為日曆錨點，取距錨點最近的實際到期日為"
         "baseline（同距取較晚），再取其前 2 後 2（一側不足由另一側補足），至多五檔；"
         "窮舉僅及於這些到期日",
-        f"- 過濾: 報價 / IV(0.01-5.0) / OI>={p.min_oi} 且 Vol>={p.min_volume} / "
-        f"Spread <= max({p.spread_floor:g}, {p.max_spread_pct:g}*Mid)（不含任何到期日條件）",
+        f"- 過濾: 報價 / IV(0.01-5.0) / "
+        f"Spread <= max({p.spread_floor:g}, {p.max_spread_pct:g}*Mid)（不含任何到期日條件；"
+        "未平倉量與成交量僅供參考顯示，不影響候選是否入選，spec #61）",
         "- 排名: Delta 分級（實務慣例），級內以基準情境報酬率（最差進場）排序",
         "- 模型限制: 無股利調整（q=0）、歐式近似、IV 乘法情境",
         "- 免責: 模型估計非保證價格，不構成投資建議",

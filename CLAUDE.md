@@ -563,8 +563,22 @@ merge 回 master，部署版待需求方驗證（`source` 是否 `cboe`＋TLT 20
 `docs/research/cboe-field-semantics.md`（逐到期日淘汰實測）。
 
 **票（依序）**：
-- **FB5-01** [#62] — 移除 OI 硬門檻與恆真的成交量條件（無阻擋）←
-- **FB5-02** [#63] — 買賣價差寬度降級為品質標示（被 #62 擋）
+- **FB5-01** [#62] — 移除 OI 硬門檻與恆真的成交量條件 ✅：`filters.py`
+  的 `oi_volume_ok` 整關移除，只剩報價／IV／Spread 三關；`AnalysisParams`
+  移除 `min_oi`／`min_volume` 兩欄，CLI 對應的 `--min-oi`／`--min-volume`
+  一併移除（不留「看起來在做事、其實沒有」的死旗標）；未平倉量仍隨
+  候選序列化（`OptionContract.open_interest`／`store._leg`），只是不再
+  有生殺大權。分析報告尾註同步改寫。README 兩處 CLI 說明同步更新。
+  Golden fixtures（4 份）與契約樣本重產——`xyz_v2_snapshot.json` 原本
+  被 OI=5／OI=3 卡住的兩筆合約（call strike 100.5、put strike 90）現在
+  進榜，可在 `golden_long_call.txt`／`golden_long_put.txt` 的 diff 直接
+  看到候選數 6→7。測試：引擎層（`test_filters.py`，含 spec #61 明列的
+  回歸防護——9 組「報價正常但 OI 個位數」的合約全數留在池子裡，不再
+  塌縮成唯一倖存者）＋HTTP API 層（新增 `test_api_filters.py`，同一份
+  fixture 走 `/api/analyze` 端到端驗證，pin 住 `filter_report`
+  `{total:10, passed:7}`）。`test_service.py` 原本靠 `min_oi=10**9`
+  製造「全數落空」的測試改用依然是硬門檻的 `spread_floor=0` 達成同效果
+- **FB5-02** [#63] — 買賣價差寬度降級為品質標示（被 #62 擋）←
 - **FB5-03** [#64] — 單調性違反偵測，只標不刪（被 #63 擋）
 - **FB5-04** [#65] — 三分類定位＋品質標示的畫面揭露（被 #62–#64 擋）
 

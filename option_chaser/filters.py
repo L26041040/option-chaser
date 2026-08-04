@@ -1,9 +1,23 @@
 """Sequential hard filters with per-stage rejection counts (spec §4).
 
 到期日的取捨**完全**由 `timeframe.select_expiries` 的六點規則負責，在窮舉之前就
-已發生；本模組因此不設任何到期日條件——只做合約品質過濾（報價／IV／流動性／
-買賣價差），參數沿用現行值（附錄 A8.4）。錨點前方、早於目標月的到期日進到這裡
-時，與其他到期日受完全相同的品質標準檢驗。
+已發生；本模組因此不設任何到期日條件——只做合約品質過濾（報價／IV／買賣價差），
+參數沿用現行值（附錄 A8.4）。錨點前方、早於目標月的到期日進到這裡時，與其他
+到期日受完全相同的品質標準檢驗。
+
+FB5-01（#62，spec #61）：過濾器的每一關都歸入三類之一，只有前兩類仍是硬門檻——
+- A 類「資料健全性」：算不出來就必須排除（報價存在且不交叉）
+- B 類「數學前提」：模型算不出有意義的值（IV 落在可解區間）
+- C 類「品質標示」：跟能不能算無關，只影響「這筆好不好」（未平倉量、成交量、
+  買賣價差寬度）——**本輪起不再是硬門檻**，未平倉量與價差改為隨候選一併呈現
+  的資訊（`OptionContract.open_interest`／`.bid`／`.ask` 序列化原樣保留），
+  成交量條件（`min_volume` 恆真的半條件）直接移除。
+
+三分類的理由（spec #61）：本 repo 主數字一律採最差成交口徑（買腿 Ask、賣腿
+Bid，T12／附錄 A14.2），流動性差的候選成本已經被誠實算高、報酬率已經被誠實
+壓低；再用硬門檻刪掉它們是同一件事罰兩次，而且是更糟的罰法——刪掉資訊，
+而不是把資訊定價進去。實測未平倉量是 OCC 收盤後才發布的 T+1 落後數字，
+硬門檻換來的是把候選池砍到只剩唯一倖存者，而不是篩掉真正有問題的報價。
 """
 from __future__ import annotations
 
@@ -26,9 +40,6 @@ def apply_filters(
     def iv_ok(c: OptionContract) -> bool:
         return c.implied_volatility is not None and 0.01 <= c.implied_volatility <= 5.0
 
-    def oi_volume_ok(c: OptionContract) -> bool:
-        return c.open_interest >= p.min_oi and c.volume >= p.min_volume
-
     def spread_ok(c: OptionContract) -> bool:
         mid = (c.bid + c.ask) / 2.0
         return (c.ask - c.bid) <= max(p.spread_floor, p.max_spread_pct * mid)
@@ -36,7 +47,6 @@ def apply_filters(
     stages = (
         ("報價異常", quote_ok),
         ("IV 異常", iv_ok),
-        ("OI/成交量不足", oi_volume_ok),
         ("Spread 過寬", spread_ok),
     )
     results: list[FilterStageResult] = []

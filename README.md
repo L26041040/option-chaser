@@ -47,7 +47,9 @@ Direction guard: bullish strategies need target > spot, bearish need target < sp
                           the chain around that month's third Friday (see below).
     --iv-shifts CSV       IV scenarios, default -0.2,0,0.2 (0 always included)
     --min-return X        L3 price ceiling = baseline value / (1+X)
-    --max-spread-pct / --spread-floor / --min-oi / --min-volume   tradeability gates
+    --max-spread-pct / --spread-floor   tradeability gates (open interest and
+                          volume are shown for reference but no longer gate
+                          candidates — spec #61)
     --delta-bands A,B     |Delta| banding thresholds, default 0.35,0.65
     --matrix-all          matrix on every candidate
     --md PATH             also write the report to a file
@@ -195,7 +197,8 @@ docs/superpowers/specs/2026-07-20-option-chaser-v4-design.md (v4)
     --target-month 年月    目標年月，2028/1、2028/01、28/1、28/01 皆可
     --iv-shifts CSV        IV 情境，預設 -0.2,0,0.2（0 必含）
     --min-return X         要求報酬上限 L3 = 基準估值/(1+X)
-    --min-oi / --min-volume / --max-spread-pct / --spread-floor   可交易性門檻
+    --max-spread-pct / --spread-floor   可交易性門檻（未平倉量與成交量僅
+                          供參考顯示，不影響候選是否入選，spec #61）
     --delta-bands A,B      |Delta| 分級門檻，預設 0.35,0.65
     --top N                每級距/清單候選數，預設 3
     --matrix-all           每個候選都附矩陣（預設只有各級首選）

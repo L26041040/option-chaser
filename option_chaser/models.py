@@ -71,8 +71,9 @@ class AnalysisParams:
     rate_explicit: bool = False
     rate_by_expiry: tuple[tuple[str, float], ...] = ()
     rate_note: str = ""
-    min_oi: int = 10
-    min_volume: int = 0
+    # FB5-01（#62，spec #61）：未平倉量與成交量不再是門檻參數——移除，不留
+    # 「看起來在做事、其實沒有」的欄位。未平倉量本身仍在 `OptionContract`
+    # 上、隨候選一併序列化，只是不再左右誰進得了候選池。
     max_spread_pct: float = 0.15
     spread_floor: float = 0.10
     delta_bands: tuple[float, float] = (0.35, 0.65)

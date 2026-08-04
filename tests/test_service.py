@@ -87,8 +87,11 @@ def test_force_runs_mismatched_direction():
 
 
 def test_empty_carries_filter_only_report():
+    # FB5-01（#62）：OI 不再是硬門檻，無法再用它讓全部候選落空——改用
+    # 依然是硬門檻的 spread_ok（歸零容差），fixture 裡沒有任何合約
+    # bid==ask，全數落在這一關。
     base = AnalysisParams(target_price=120.0, target_month="2026-08",
-                          min_oi=10 ** 9)
+                          spread_floor=0.0, max_spread_pct=0.0)
     r = service.run_offline(service.AnalysisRequest(
         symbol="XYZ", base_params=base, strategies=("long-call",)), FIX)
     res = r.results[0]
