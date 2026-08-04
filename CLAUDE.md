@@ -439,8 +439,38 @@ merge 回 master，部署版待需求方驗證（`source` 是否 `cboe`＋TLT 20
   `p: AnalysisParams` 參數同名，改名 `pt`；`cons`／`guidance_warnings`
   原本攤成同一堆看不出差別的警示列表，改用 CLI 既有的「代價:」／
   「警示:」文字區分並拆成兩個獨立區塊
-- **V9** [#57] — Spread 歷史走勢圖：日粒度＋固定 y 軸（被 #53 擋）←
-- **V10** [#58] — Cutover：移除 Streamlit、文件、全站驗收（被 #54–#57 擋）
+- **V9** [#57] — Spread 淨成本走勢：日粒度＋日/週/月切換＋固定 y 軸 ✅
+  （commit `dbfa8be`）：把 T11（#25，Streamlit 版）既有的
+  `workspace.spread_history()` 聚合邏輯（依 Spread 身份鍵跨快照聚合、
+  缺席快照如實呈現為斷點、不插值）抽成 `store.spread_cost_history
+  (views, candidate_key)`——新架構 `Storage.result_history()` 回傳
+  `ResultRecord`（`.view` 已是完整 view dict），沒有檔案路徑可讀，
+  `workspace.spread_history()` 改為委派本函式，兩邊共用同一份邏輯。
+  新增 `GET /api/scenarios/{id}/history?candidate_key=...`，唯讀。
+  前端新增第三個進階區元件 `SpreadHistory.tsx`（詳細頁預設收合），
+  跟隨主圖那組候選（`baselineTopCandidate`，QA1-06 既有裁示），單腳
+  候選沒有 Spread 身份鍵，整塊不顯示（T9 附錄A13 既有 MVP 範圍）。
+  純函式（`spreadHistory.ts`）：`downsampleHistory`（日／週／月降
+  採樣，同組取最後一筆——票上明列的簡化口徑）、`yAxisDomain`（固定
+  [最低×0.85, 最高×1.15]）、`chartPoints`／`contiguousRuns`（斷點切段，
+  段間不連線）。手刻 SVG 折線圖——本專案沒有裝圖表函式庫，沒有縮放／
+  平移手勢。新增 `.segmented`／`.segmented-option` CSS（iOS 風格分段
+  控制項，跟到期日 chip 形狀不同，不重用 `.chip`）。
+
+  **兩份檢視均已處理，皆無真 bug**（Standards：extraction 確實消滅重複、
+  非搬移；手刻 SVG 與新 CSS 皆為合理判斷，非過度工程；Spec：AC 全數
+  達成，聚合邏輯的「同一天取最後一筆」確認是依時間而非陣列位置，斷點
+  切段在 render 層與 E2E 都驗證過真的不連線）。**兩份檢視各標記一項
+  「非缺陷、供確認」的既有判斷，本輪判斷維持不改**：
+  (1) 完全沒有縮放／平移手勢——票上原文「y 軸固定...不隨互動滑動」
+  是對「若有互動」的約束，不是「必須要有互動」的要求；本專案沒有圖表
+  函式庫，從零手刻手勢操作是遠超出票面範圍的工程量，日／週／月切換
+  才是票上明列的互動需求，已達成；
+  (2) y 軸範圍依「目前顯示的降採樣序列」算，不是「原始日粒度序列」——
+  切換粒度時範圍可能跟著變。這是多數行情圖表（含 TradingView 等）換
+  時間尺度時的常態行為，非本票造成的缺陷
+- **V10** [#58] — Cutover：移除 Streamlit、文件、全站驗收（被 #54–#57
+  擋，全數已完成）←
 
 > 全部票做完＋需求方實機驗收通過才開 PR（V10 驗收清單）。
 
@@ -703,10 +733,10 @@ merge 回 master，部署版待需求方驗證（`source` 是否 `cboe`＋TLT 20
   未抽共用 helper——單一比較式的重複不足以立一個新符號，Standards
   review 本身也只列為 judgement call，非違規。
 
-**過濾器修正輪（spec #61，FB5-01～04／#62–#65）全數完結。V8（#56）
-亦已完結。** 依 2026-08-04 需求方裁示的優先序（過濾器插隊最優先 →
-功能票 V7–V9 → 年月選擇器 → 外觀已延後），下一張是 **V9**（#57，見
-「下一階段」小節，已標 ←）。
+**過濾器修正輪（spec #61，FB5-01～04／#62–#65）全數完結。V8（#56）／
+V9（#57）亦已完結——功能票 V7–V9 全數做完。** 依 2026-08-04 需求方
+裁示的優先序，下一張是 **V10**（#58，Cutover，見「下一階段」小節，
+已標 ←），完成後才輪到年月選擇器（第 1 項）與外觀（第 3 項，已延後）。
 
 ### 下一版 MVP（本輪明確不施工，已立案）
 
