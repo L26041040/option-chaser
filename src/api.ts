@@ -58,6 +58,9 @@ export interface Candidate {
   baseline_return: number;
   natural_cost: number;
   breakeven: number;
+  /** 距這組候選自己的到期日還有幾天（V8／#56，spec R1 §4.2 B「剩餘
+   *  天數」——早就序列化了，純文字報告沒印）。 */
+  days_to_expiry: number;
   /** Long Call 無上限＝null；其餘策略是每股金額。 */
   max_profit: number | null;
   max_loss_per_contract: number;
@@ -176,6 +179,17 @@ export interface AnalysisParams {
   target_price: number;
   target_month: string;
   strategy: string;
+  /**
+   * V8（#56，spec R1 §4.2 A）：新版型「⑥ 方法與假設」要的模型參數——
+   * 利率、IV 情境、Delta 分級門檻、要求報酬上限。原本只活在
+   * `report_text` 的 `[模型假設]` 區塊，早就在契約裡（`AnalysisParams`
+   * 全欄位序列化），只是舊 TS 型別沒宣告。
+   */
+  rate: number;
+  rate_note: string;
+  iv_shifts: number[];
+  delta_bands: [number, number];
+  min_return: number;
 }
 
 export interface AnalysisView {

@@ -10,8 +10,9 @@
  *   ③ 情境分析      韌性 7 情境表 ＋ 劇本完成度曲線
  *   ④ 風險與代價    情境最壞＋劇本報酬並排、保本門檻、不漲保留率、
  *                   Bid-Ask Spread、代價與警示 ＋「部位敏感度」小區
- *   ⑤ 進場執行      逐腿報價、買價指引 L2/L3
- *   ⑥ 方法與假設    折疊，`methodology_text` 原樣顯示
+ *   ⑤ 進場執行      逐腿雙邊報價（Bid/Ask/IV）、剩餘天數、買價指引 L2/L3
+ *   ⑥ 方法與假設    折疊，模型參數（利率／IV情境／Delta門檻／要求報酬）
+ *                   ＋ 過濾配對統計一行 ＋ `methodology_text` 原樣顯示
  *   ⑦ 免責聲明      不折疊，`disclaimer_text`
  *
  * 與 R1 §4.1 骨架的刻意差異——凡是頁面上方已經無條件顯示過的數字，這裡
@@ -28,7 +29,7 @@
  * `StrategyResult` 既有或本票新增的欄位），這裡只做重排＋除法／百分比
  * 等呈現層算術（R1 §4.2 B）。
  */
-import type { AnalysisView, Candidate, StrategyResult } from "./api";
+import type { AnalysisView, Candidate, Leg, StrategyResult } from "./api";
 import { breakevenDistancePct, completionThresholdText, costPctOfSpot,
         formatMove, maxPayoutRatioText, reportConclusion, SCENARIO_NAMES,
         } from "./detail";
@@ -139,11 +140,21 @@ function Risk({ candidate }: { candidate: Candidate }) {
         {formatReturn(candidate.friction)}
         <span className="row-note">（{money(candidate.friction_amount)}/股）</span>
       </Row>
-      {(candidate.cons.length > 0 || candidate.guidance_warnings.length > 0) && (
+      {/* 代價（cons）跟買價指引警示（guidance_warnings）是兩種不同的
+          關注點——CLI 純文字報告本來就分別標成「- 代價:」與「- 警示:」
+          兩種前綴（`report.py` 的 `評語`／`買價指引` 兩段），這裡沿用
+          同一個區分，不要攤成一堆看不出差別的警示列表。 */}
+      {candidate.cons.length > 0 && (
         <div className="report-warnings">
-          {candidate.cons.map((c) => <p className="notice warn" key={c}>{c}</p>)}
+          {candidate.cons.map((c) => (
+            <p className="notice warn" key={c}>代價: {c}</p>
+          ))}
+        </div>
+      )}
+      {candidate.guidance_warnings.length > 0 && (
+        <div className="report-warnings">
           {candidate.guidance_warnings.map((w) => (
-            <p className="notice warn" key={w}>{w}</p>
+            <p className="notice warn" key={w}>警示: {w}</p>
           ))}
         </div>
       )}
@@ -160,40 +171,61 @@ function Risk({ candidate }: { candidate: Candidate }) {
   );
 }
 
-/** ⑤ 進場執行：逐腿報價 ＋ 買價指引 L2/L3。 */
+/** 一隻腿的 Bid／Ask／IV——R1 §4.2 A：逐腿報價要兩邊都給，不是只給
+ *  「這隻腿最差成交會用到的那一邊」。單腿候選只有買腿，沒有最差成交
+ *  以外的報價可比較，但價差兩腿都該看得到完整雙邊報價，才看得出買賣
+ *  價差寬不寬——只印一邊等於把價差資訊藏起來。 */
+function LegRow({ label, leg }: { label: string; leg: Leg }) {
+  return (
+    <Row label={label}>
+      Strike {leg.strike} Bid {money(leg.bid)} / Ask {money(leg.ask)}
+      <span className="row-note">
+        {" "}IV {leg.iv === null ? "—" : `${(leg.iv * 100).toFixed(0)}%`}
+      </span>
+    </Row>
+  );
+}
+
+/** ⑤ 進場執行：逐腿報價（雙邊）＋ 剩餘天數 ＋ 買價指引 L2/L3。 */
 function Execution({ candidate }: { candidate: Candidate }) {
   const [buy, sell] = candidate.legs;
   return (
     <>
-      {buy && (
-        <Row label="買腿">
-          Strike {buy.strike} Ask {money(buy.ask)}
-          <span className="row-note">
-            {" "}IV {buy.iv === null ? "—" : `${(buy.iv * 100).toFixed(0)}%`}
-          </span>
-        </Row>
-      )}
-      {sell && (
-        <Row label="賣腿">
-          Strike {sell.strike} Bid {money(sell.bid)}
-          <span className="row-note">
-            {" "}IV {sell.iv === null ? "—" : `${(sell.iv * 100).toFixed(0)}%`}
-          </span>
-        </Row>
-      )}
+      {buy && <LegRow label="買腿" leg={buy} />}
+      {sell && <LegRow label="賣腿" leg={sell} />}
+      {/* R1 §4.2 B「剩餘天數」：早就序列化了，純文字報告沒印。 */}
+      <Row label="剩餘天數（距到期）">{candidate.days_to_expiry} 天</Row>
       <Row label="L2 保守上限（最保守 IV 情境）">{money(candidate.l2)}</Row>
       <Row label={`L3 要求報酬上限`}>{money(candidate.l3)}</Row>
     </>
   );
 }
 
-/** ⑥ 方法與假設：折疊，過濾／配對統計壓成一行 ＋ `methodology_text` 原樣。 */
-function Methodology({ result }: { result: StrategyResult }) {
+/**
+ * ⑥ 方法與假設：折疊，模型參數（R1 §4.2 A 的「[模型假設]」重排項——
+ * 利率、IV 情境、Delta 門檻、要求報酬上限）＋ 過濾／配對統計壓成一行
+ * ＋ `methodology_text` 原樣（估值公式等方法論散文，`report.py` 的
+ * `[尾註]`）。
+ */
+function Methodology({ result, params }: {
+  result: StrategyResult; params: AnalysisView["params"];
+}) {
   const fr = result.filter_report;
   const pr = result.pair_report;
   return (
     <details className="report-methodology">
       <summary>方法與假設</summary>
+      <Row label="無風險利率">
+        {formatReturn(params.rate)}
+        {params.rate_note && <span className="row-note">（{params.rate_note}）</span>}
+      </Row>
+      <Row label="IV 情境">
+        {params.iv_shifts.map((s) => (s === 0 ? "不變" : `${s > 0 ? "+" : ""}${(s * 100).toFixed(0)}%`)).join(" / ")}
+      </Row>
+      <Row label="Delta 分級門檻">
+        {params.delta_bands[0]} / {params.delta_bands[1]}
+      </Row>
+      <Row label="最低要求報酬率">{formatReturn(params.min_return)}</Row>
       {fr && (
         <p className="caption">
           掃描 {fr.total} 張 → 合格 {fr.passed} 張
@@ -226,7 +258,7 @@ export default function AnalysisReport({ view, result, candidate }: {
       <Risk candidate={candidate} />
       <h3 className="section-title report-subsection">進場執行</h3>
       <Execution candidate={candidate} />
-      <Methodology result={result} />
+      <Methodology result={result} params={view.params} />
       {/* ⑦ 免責聲明：獨立、不折疊（R1 §4.4.4）——不折疊指的是相對於
           ⑥ 方法論的獨立小節，不是整個進階區塊。 */}
       <p className="caption report-disclaimer">{result.disclaimer_text}</p>

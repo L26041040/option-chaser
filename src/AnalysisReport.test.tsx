@@ -92,15 +92,17 @@ describe("④ 風險與代價", () => {
     expect(row).toHaveTextContent("情境最壞");
   });
 
-  it("代價（cons）與買價指引警示都顯示", async () => {
+  it("代價（cons）與買價指引警示（guidance_warnings）分開標示，不是同一堆" +
+     "看不出差別的清單——CLI 報告本來就分別叫「代價」跟「警示」", async () => {
     const withWarnings = candidate({
       cons: ["獲利上限 = 寬度 − 淨成本"],
       guidance_warnings: ["以 Ask 進場達不到你設定的最低報酬"],
     });
     render(<AnalysisReport view={view} result={result} candidate={withWarnings} />);
     await expand();
-    expect(screen.getByText("獲利上限 = 寬度 − 淨成本")).toBeInTheDocument();
-    expect(screen.getByText("以 Ask 進場達不到你設定的最低報酬")).toBeInTheDocument();
+    expect(screen.getByText("代價: 獲利上限 = 寬度 − 淨成本")).toBeInTheDocument();
+    expect(screen.getByText("警示: 以 Ask 進場達不到你設定的最低報酬"))
+      .toBeInTheDocument();
   });
 
   it("沒有代價或警示時不留一個空區塊", async () => {
@@ -118,13 +120,34 @@ describe("④ 風險與代價", () => {
   });
 });
 
-describe("⑤ 進場執行：逐腿報價 ＋ 買價指引 L2/L3", () => {
+describe("⑤ 進場執行：逐腿雙邊報價 ＋ 剩餘天數 ＋ 買價指引 L2/L3", () => {
   it("買腿與 L2/L3 都顯示", async () => {
     render(<AnalysisReport view={view} result={result} candidate={real} />);
     await expand();
     expect(screen.getByText("買腿")).toBeInTheDocument();
     expect(screen.getByText(/L2 保守上限/)).toBeInTheDocument();
     expect(screen.getByText(/L3 要求報酬上限/)).toBeInTheDocument();
+  });
+
+  it("每一腿雙邊報價都在——只印最差成交那一邊會把買賣價差資訊藏起來"
+     + "（R1 §4.2 A：逐腿 Bid/Ask/IV）", async () => {
+    render(<AnalysisReport view={view} result={result} candidate={real} />);
+    await expand();
+    const [buy, sell] = real.legs;
+    const buyRow = screen.getByText("買腿").closest(".row")!;
+    expect(buyRow).toHaveTextContent(`Bid $${buy.bid.toFixed(2)}`);
+    expect(buyRow).toHaveTextContent(`Ask $${buy.ask.toFixed(2)}`);
+    if (sell) {
+      const sellRow = screen.getByText("賣腿").closest(".row")!;
+      expect(sellRow).toHaveTextContent(`Bid $${sell.bid.toFixed(2)}`);
+      expect(sellRow).toHaveTextContent(`Ask $${sell.ask.toFixed(2)}`);
+    }
+  });
+
+  it("剩餘天數顯示（R1 §4.2 B：早就序列化，純文字報告沒印）", async () => {
+    render(<AnalysisReport view={view} result={result} candidate={real} />);
+    await expand();
+    expect(screen.getByText(`${real.days_to_expiry} 天`)).toBeInTheDocument();
   });
 });
 
@@ -136,6 +159,19 @@ describe("⑥⑦ 方法與假設／免責聲明", () => {
     expect(screen.getByText(/OPTION CHASER|估值: Black-Scholes/))
       .toBeInTheDocument();
     expect(screen.getByText(result.disclaimer_text)).toBeInTheDocument();
+  });
+
+  it("模型參數（利率／IV情境／Delta門檻／要求報酬）都在——R1 §4.2 A "
+     + "把「[模型假設]」重排到⑥，不是整段消失", async () => {
+    render(<AnalysisReport view={view} result={result} candidate={real} />);
+    await expand();
+    expect(screen.getByText("無風險利率")).toBeInTheDocument();
+    const minReturnRow = screen.getByText("最低要求報酬率").closest(".row")!;
+    expect(minReturnRow).toHaveTextContent(
+      `${(view.params.min_return * 100).toFixed(1)}%`);
+    expect(screen.getByText(
+      `${view.params.delta_bands[0]} / ${view.params.delta_bands[1]}`,
+    )).toBeInTheDocument();
   });
 
   it("免責聲明獨立於方法論折疊區之外——不需要再展開一層就看得到", async () => {

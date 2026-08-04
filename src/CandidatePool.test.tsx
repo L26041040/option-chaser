@@ -36,7 +36,9 @@ function view(overrides: Partial<Overrides> = {}): AnalysisView {
     meta: { symbol: "TLT", spot: 82.25, fetched_at: "", source: "cboe",
             target_move: 0 },
     params: { target_price: 120, target_month: "2028-05",
-              strategy: "bull-call-spread" },
+              strategy: "bull-call-spread", rate: 0.04, rate_note: "",
+              iv_shifts: [-0.2, 0, 0.2], delta_bands: [0.35, 0.65],
+              min_return: 0 },
     baseline_expiry: overrides.baseline === undefined
       ? "2028-06-16"
       : overrides.baseline,

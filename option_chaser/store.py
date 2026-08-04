@@ -424,7 +424,11 @@ def _candidate(cv: CandidateView, strategy: str, capital: float | None,
         # D1（#14）：Long Call 追平價格——None＝不適用（單腳）或無法計算
         # （同履約價 Call 報價缺失），render 層負責區分並顯示。
         "catchup_price": cv.catchup_price,
-        "matrix": {"prices": [list(p) for p in cv.matrix.prices],
+        # 檢視回饋：這個生成式的迴圈變數原本借用 `p`，跟本函式自己的
+        # `p: AnalysisParams` 參數同名，在同一個函式體裡容易讓人誤讀成
+        # 同一個東西（雖然 Python 3 生成式有獨立作用域，實際不會互相
+        # 污染）。改用 `pt`（price point）避免這個混淆。
+        "matrix": {"prices": [list(pt) for pt in cv.matrix.prices],
                    "dates": [list(d) for d in cv.matrix.dates],
                    "cells": [list(r) for r in cv.matrix.cells]},
         # spec §3 新增四組（乘除法與日期差，非估值邏輯）
