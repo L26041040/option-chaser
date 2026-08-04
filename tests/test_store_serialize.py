@@ -72,6 +72,62 @@ def test_candidate_fields_hand_checked():
     assert cand["matrix"]["cells"] == [list(r) for r in cv.matrix.cells]
 
 
+def test_candidate_carries_l2_l3_cons_and_guidance_warnings():
+    """V8（#56，spec R1 §4.2 A2）：買價指引 L2/L3、評語 cons、`guidance_
+    judgments` 的警示文字——原本只活在 `report_text` 散文裡，本票補上
+    序列化。值直接對照純函式的回傳，不是另外重算一次公式。"""
+    from option_chaser.valuation import guidance_judgments
+
+    result = _result(("long-call",))
+    view = store.serialize_result(result, "S", None)
+    cand = view["results"][0]["candidates"][0]
+    cv = result.results[0].candidates[0]
+    v = cv.valuation
+
+    assert cand["l2"] == v.l2
+    assert cand["l3"] == v.l3
+    assert cand["cons"] == list(cv.cons)
+    assert "pros" not in cand   # R1 §4.2 C 裁示：pros 不補序列化
+    assert cand["guidance_warnings"] == guidance_judgments(
+        v, result.request.base_params)
+
+
+def test_spread_candidate_carries_l2_l3_cons_and_guidance_warnings():
+    from option_chaser.valuation import spread_guidance_judgments
+
+    result = _result(("bull-call-spread",))
+    view = store.serialize_result(result, "S", None)
+    cand = view["results"][0]["candidates"][0]
+    cv = result.results[0].candidates[0]
+    sv = cv.valuation
+
+    assert cand["l2"] == sv.l2
+    assert cand["l3"] == sv.l3
+    assert cand["cons"] == list(cv.cons)
+    assert cand["guidance_warnings"] == spread_guidance_judgments(
+        sv, result.request.base_params)
+
+
+def test_methodology_and_disclaimer_text_are_serialized_once_per_strategy():
+    """V8（#56，spec R1 §4.1）：新版型「⑥ 方法與假設」／「⑦ 免責聲明」
+    要獨立於 `report_text` 之外，各自是完整字串，內容出自同一個
+    `report.py`（單一事實來源），不是前端另外拼出來的。"""
+    from option_chaser.report import disclaimer_text, methodology_lines
+
+    result = _result(("long-call", "bull-call-spread"))
+    view = store.serialize_result(result, "S", None)
+    p = result.request.base_params
+    expected_methodology = "\n".join(methodology_lines(p)).strip("\n")
+
+    for r in view["results"]:
+        assert r["methodology_text"] == expected_methodology
+        assert r["disclaimer_text"] == disclaimer_text()
+        # 免責段落要能自己說清楚，不能只是 CLI 那句精簡版的重複貼上——
+        # 這是它存在的理由（R1 §4.4.4 明列的擴充內容）。
+        assert "OCC" in r["disclaimer_text"]
+        assert "FINRA" not in r["disclaimer_text"]   # 不得聲稱受其管轄
+
+
 def test_spread_legs_order_and_max_profit():
     result = _result(("bull-call-spread",))
     view = store.serialize_result(result, "S", None)
@@ -195,3 +251,20 @@ def test_best_return_is_none_when_baseline_expiry_has_no_candidates():
     view = store.serialize_result(_result(), "S", None)
     empty = dict(view, baseline_expiry="2099-12-31")
     assert store.best_return(empty) is None
+
+
+def test_raw_snapshot_json_carries_meta_and_every_contract():
+    """V8（#56）：原始資料查看區——`_leg()` 是候選腿專用的精簡子集，
+    這裡要的是逐筆合約完整原樣，`raw_snapshot_json` 不能重用 `_leg()`。"""
+    from option_chaser.data.snapshot import load_snapshot
+
+    snap = load_snapshot(FIX)
+    raw = store.raw_snapshot_json(snap)
+
+    assert raw["meta"] == {"symbol": snap.symbol, "spot": snap.spot,
+                           "fetched_at": snap.fetched_at, "source": snap.source,
+                           "contract_count": len(snap.contracts)}
+    assert len(raw["contracts"]) == len(snap.contracts)
+    assert raw["contracts"][0]["contract_symbol"] == snap.contracts[0].contract_symbol
+    assert raw["contracts"][0]["last"] == snap.contracts[0].last
+    json.dumps(raw)

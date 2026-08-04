@@ -44,13 +44,26 @@ function libraryRow(overrides: Record<string, unknown> = {}) {
   };
 }
 
-/** 詳細頁測試共用的路由：清單、單一劇本、刷新。 */
+/** V8（#56）：原始資料查看區的假回應——不必跟 `sample` 的候選欄位對齊，
+ *  只要形狀正確（`store.raw_snapshot_json` 的既有結構）即可渲染。 */
+const RAW_DATA = {
+  meta: { symbol: "XYZ", spot: view.meta.spot, fetched_at: "2026-08-04T09:30:00-04:00",
+         source: "cboe", contract_count: 1 },
+  contracts: [{ contract_symbol: "XYZ261016C00110000", option_type: "call",
+               strike: 110.0, expiry: "2026-10-16", bid: 3.0, ask: 3.25,
+               last: 3.1, volume: 152, open_interest: 830,
+               implied_volatility: 0.38 }],
+};
+
+/** 詳細頁測試共用的路由：清單、單一劇本、刷新、原始資料。 */
 async function routeLibrary(page: import("@playwright/test").Page, row: unknown) {
   await page.route("**/api/scenarios", (route) => route.fulfill({ json: [row] }));
   await page.route("**/api/scenarios/s1", (route) =>
     route.fulfill({ json: { ...(row as object), latest_result: sample } }));
   await page.route("**/api/scenarios/*/refresh", (route) =>
     route.fulfill({ json: row }));
+  await page.route("**/api/scenarios/*/raw-data", (route) =>
+    route.fulfill({ json: RAW_DATA }));
 }
 
 test("清單 → 詳細頁：摘要、主圖、追平價格、候選池（V5／#53）", async ({ page }) => {
@@ -87,12 +100,44 @@ test("清單 → 詳細頁：摘要、主圖、追平價格、候選池（V5／#
 
   // FB5-04（#65，spec #61）：C 類品質標示——契約樣本本身帶著一筆「買賣
   // 價差偏大」，整條流程（後端契約 → API → 詳細頁）走一次就看得到。
-  await expect(page.getByText("品質標示（不影響入選）")).toBeVisible();
-  await expect(page.getByText("買賣價差偏大")).toBeVisible();
+  // 鎖定候選池那張卡：V8（#56）的分析報告區塊（評語／方法論全文）也
+  // 提到同一個詞，全頁搜尋會撞到不只一個元素。
+  const candidatePool = page.locator(".card").filter({ hasText: "候選池" }).first();
+  await expect(candidatePool.getByText("品質標示（不影響入選）")).toBeVisible();
+  await expect(candidatePool.getByText("買賣價差偏大")).toBeVisible();
 
   // 返回劇本庫
   await page.getByRole("link", { name: /劇本庫/ }).click();
   await expect(page.getByRole("heading", { name: "劇本庫" })).toBeVisible();
+});
+
+test("進階區：分析報告與原始資料展開才載入（V8／#56）", async ({ page }) => {
+  await routeLibrary(page, libraryRow());
+  await page.goto("/#/s/s1");
+
+  // 分析報告：預設收合，展開才看得到內容（不需要額外打 API，資料已在
+  // 詳細頁的 view 裡）。
+  const report = page.locator(".card").filter({ hasText: "📄 分析報告" }).first();
+  await expect(report.getByText("情境分析")).not.toBeVisible();
+  await report.getByText("📄 分析報告").click();
+  await expect(report.getByText("情境分析")).toBeVisible();
+  await expect(report.getByText("風險與代價")).toBeVisible();
+  await expect(report.getByText("進場執行")).toBeVisible();
+  // ⑦ 免責聲明獨立、不折疊——展開整個進階區就看得到，不必再點一層。
+  await expect(report.getByText(/選擇權交易涉及重大風險/)).toBeVisible();
+
+  // 原始資料：展開才打 `/raw-data`，回應內容如實顯示，CSV 連結接得上
+  // 後端下載端點。
+  const rawData = page.locator(".card")
+    .filter({ hasText: "原始資料（當次快照）" }).first();
+  await rawData.getByText("原始資料（當次快照）").click();
+  await expect(rawData.getByText("cboe")).toBeVisible();
+  await expect(rawData.getByText("1 筆")).toBeVisible();
+  await expect(rawData.getByText("XYZ261016C00110000")).toBeVisible();
+  const downloadLink = rawData.getByRole("link", { name: "下載 CSV" });
+  await expect(downloadLink).toHaveAttribute(
+    "href", "/api/scenarios/s1/raw-data.csv");
+  await expect(downloadLink).toHaveAttribute("download", "");
 });
 
 test("到期日結構：切換到期日 → 就地展開候選（V6／#54）", async ({ page }) => {

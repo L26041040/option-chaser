@@ -13,11 +13,13 @@ from datetime import date
 from pathlib import Path
 
 from . import __version__
+from .models import AnalysisParams, ChainSnapshot
 from .ranking import spread_baseline_return
+from .report import disclaimer_text, methodology_lines
 from .scenarios import natural_cost
 from .service import AnalysisResult, CandidateView, candidate_key, valuation_key
 from .timeframe import TargetMonth
-from .valuation import SpreadValuation
+from .valuation import SpreadValuation, guidance_judgments, spread_guidance_judgments
 from .vocabulary import EVENT_TYPES_V5
 
 
@@ -344,13 +346,28 @@ def _leg(c) -> dict:
             "open_interest": c.open_interest}
 
 
+def raw_snapshot_json(snap: ChainSnapshot) -> dict:
+    """V8（#56）：原始資料（當次快照）——「免得你亂掰我卻查不到證據」
+    （QA1-10／#37 原話，延續同一設計目標）。刻意不重用 `_leg()`：那個
+    子集是候選腿專用的顯示欄位（省略 `last`），這裡要的是**逐筆合約的
+    完整原樣**，跟 CSV 下載（`data.snapshot.snapshot_to_csv`）給的是同一
+    份資料、同一組欄位，兩者不該對不上。"""
+    return {
+        "meta": {"symbol": snap.symbol, "spot": snap.spot,
+                 "fetched_at": snap.fetched_at, "source": snap.source,
+                 "contract_count": len(snap.contracts)},
+        "contracts": [dataclasses.asdict(c) for c in snap.contracts],
+    }
+
+
 def _candidate(cv: CandidateView, strategy: str, capital: float | None,
-               today: date, anchor: date) -> dict:
+               today: date, anchor: date, p: AnalysisParams) -> dict:
     v = cv.valuation
     if isinstance(v, SpreadValuation):
         legs = [_leg(v.long_leg), _leg(v.short_leg)]   # [0]=long, [1]=short
         mid_cost, expiry = v.net_mid, v.long_leg.expiry
         max_profit, net_delta = v.max_profit, v.net_delta
+        guidance_warnings = spread_guidance_judgments(v, p)
     else:
         legs = [_leg(v.contract)]
         mid_cost, expiry = v.mid, v.contract.expiry
@@ -358,6 +375,7 @@ def _candidate(cv: CandidateView, strategy: str, capital: float | None,
         max_profit = (None if strategy == "long-call"
                       else v.contract.strike - v.contract.ask)
         net_delta = v.delta
+        guidance_warnings = guidance_judgments(v, p)
     # T12（附錄 A14.2）：資本／最大虧損以最差成交成本計（natural_cost 即
     # 買 Ask／賣 Bid 口徑）；mid_cost 保留為次要顯示欄位。
     cap_per = natural_cost(v) * 100
@@ -391,6 +409,18 @@ def _candidate(cv: CandidateView, strategy: str, capital: float | None,
         "breakeven": v.breakeven,
         "max_profit": max_profit,
         "effective_leverage": v.effective_leverage,
+        # V8（#56，spec R1 §4.2 A2）：買價指引天花板 L2/L3——純文字報告
+        # 早就在印，只是沒進契約。單腿另有 L1（＝ `floor_value`，保守
+        # 底線），本票依票上 A2 表只列的兩項不補 L1（v.l1 對單腿等於
+        # `floor_value`，價差沒有 L1）。
+        "l2": v.l2, "l3": v.l3,
+        # V8：買 Ask 超過哪些天花板的警示文字（`valuation.guidance_
+        # judgments`／`spread_guidance_judgments`，同一組門檻早就用來
+        # 決定純文字報告的「- 警示: ...」行，這裡只是把回傳值序列化）。
+        "guidance_warnings": guidance_warnings,
+        # V8：評語「代價」（cons）——「優點」pros 依 R1 §4.2 C 裁示不補
+        # 序列化（與關鍵指標表重複，見 CLAUDE.md V8 記錄）。
+        "cons": list(cv.cons),
         # D1（#14）：Long Call 追平價格——None＝不適用（單腳）或無法計算
         # （同履約價 Call 報價缺失），render 層負責區分並顯示。
         "catchup_price": cv.catchup_price,
@@ -417,7 +447,11 @@ def serialize_result(result: AnalysisResult, scenario_id: str,
     today = result.today
 
     def cand(cv, strategy):
-        return _candidate(cv, strategy, capital, today, base.anchor)
+        # V8（#56，spec R1 §4.2 A2）：`_candidate()` 現在還要算買價指引
+        # 警示（`guidance_judgments`／`spread_guidance_judgments`），兩者
+        # 只讀 `p.iv_shifts`，不讀 `p.strategy`——`base` 不必為每個 `r`
+        # 各自替換 strategy 也正確，跟既有 `base.anchor` 的用法一致。
+        return _candidate(cv, strategy, capital, today, base.anchor, base)
 
     def strat(r):
         return {
@@ -455,6 +489,15 @@ def serialize_result(result: AnalysisResult, scenario_id: str,
                               for exp, ranked_group in r.expiry_ranked
                               for rank, sv in enumerate(ranked_group, start=1)],
             "report_text": r.report_text,
+            # V8（#56，spec R1 §4.1）：新版型「⑥ 方法與假設」／「⑦ 免責
+            # 聲明」要獨立顯示、不再是 `report_text` 尾端的散文——內容
+            # 出自同一個 `report.py`（單一事實來源），只是拆成欄位。
+            # 每個策略各印一份而非全域一份：`p.spread_floor`／
+            # `max_spread_pct` 理論上策略間相同，但方法論文字本就是
+            # 逐 `render()`／`render_spreads()` 呼叫產生的，跟著 `r` 走
+            # 才不會在契約裡無中生有一個「全域方法論」概念。
+            "methodology_text": "\n".join(methodology_lines(base)).strip("\n"),
+            "disclaimer_text": disclaimer_text(),
         }
 
     def group(g):

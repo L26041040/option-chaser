@@ -761,3 +761,82 @@ body {
   border-radius: 10px;
   text-align: center;
 }
+
+/* 分析報告新版型（V8／#56，R1 §4.1）。①「一句話結論」比照家族 C 實際
+   發行的 trade idea 標準句型，字級略大於一般 caption，但不到 metric
+   等級——它是一句話，不是頭條數字。 */
+.report-conclusion {
+  font-size: 15px;
+  line-height: 1.5;
+}
+
+/* 章節子標題（②～⑤），比 `.section-title` 小一號——分析報告卡片本身已經
+   有一個 `.section-title`（「📄 分析報告」），子章節不該跟它搶視覺份量。 */
+.report-subsection {
+  font-size: 15px;
+  margin-top: 4px;
+}
+
+/* R1 §3.3：①③④⑤ 的數字走表格。只有③情境分析用真表格（多欄的 7 情境
+   grid），其餘章節沿用全站既有的 `.row` 兩欄列表——那本身就是一種表格，
+   不必為了單欄 key-value 硬套 `<table>`。 */
+.report-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+}
+
+.report-table th,
+.report-table td {
+  padding: 6px 4px;
+  text-align: left;
+  border-bottom: 0.5px solid var(--separator);
+}
+
+.report-table tr.worst th {
+  font-weight: 700;
+}
+
+.report-warnings {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+/* ⑥ 方法與假設：折疊，預設收起——R1 §4.2 C「全文常駐」降級為預設折疊，
+   需要時仍看得到（§2.5「合理基礎」可追溯），但不佔動線。 */
+.report-methodology summary {
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.report-methodology-text {
+  white-space: pre-wrap;
+  font-family: inherit;
+  font-size: 13px;
+  color: var(--label-secondary);
+  margin-top: 8px;
+}
+
+/* ⑦ 免責聲明：獨立、不折疊——不能讓它看起來像方法論的延伸段落。 */
+.report-disclaimer {
+  border-top: 0.5px solid var(--separator);
+  padding-top: 12px;
+}
+
+/* 原始資料（V8／#56）。CSV 下載是 `<a>` 不是 `<button>`——`.button` 的
+   `min-height`／置中對 inline 的 `<a>` 不生效，補 `inline-flex`。 */
+.raw-data-download {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  text-decoration: none;
+  align-self: flex-start;
+}
+
+.raw-data-scroll {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  margin: 0 calc(var(--gap) * -1);
+  padding: 0 var(--gap);
+}

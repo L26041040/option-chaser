@@ -225,7 +225,19 @@ def _matrix_block(value_fn, cost, spot, p, today, expiry) -> list[str]:
             + matrix_lines(value_fn, cost, prices, dates))
 
 
-def _footer_lines(p: AnalysisParams) -> list[str]:
+# V8（#56，spec R1 §4.2 A2）：CLI 純文字報告用的精簡免責句——維持原文，
+# 不因為新增網頁版擴充免責（見 `disclaimer_text()`）而改動既有 CLI 輸出。
+_DISCLAIMER_LINE = "- 免責: 模型估計非保證價格，不構成投資建議"
+
+
+def methodology_lines(p: AnalysisParams) -> list[str]:
+    """V8（#56，spec R1 §4.2 A2）：方法論尾註——`_footer_lines()` 扣掉免責
+    那一行的其餘全部，供 API 序列化成獨立的「方法與假設」欄位（新版型
+    ⑥，`docs/research/option-strategy-report-conventions.md` §4.1）。
+    CLI 的 `render()`／`render_spreads()` 仍呼叫 `_footer_lines()`（本函式
+    ＋免責合併），文字內容完全不變，只是免責從中段移到尾端——R1 §2.1
+    「免責與方法在最後」，兩者本來就該相鄰墊底，不該讓免責卡在方法論
+    中間打斷整段。"""
     return [
         "",
         "[尾註]",
@@ -264,7 +276,6 @@ def _footer_lines(p: AnalysisParams) -> list[str]:
         "見各候選「報價與鄰近履約價不一致，疑似陳舊報價」",
         "- 排名: Delta 分級（實務慣例），級內以基準情境報酬率（最差進場）排序",
         "- 模型限制: 無股利調整（q=0）、歐式近似、IV 乘法情境",
-        "- 免責: 模型估計非保證價格，不構成投資建議",
         "- 韌性向量 7 情境: S1 不漲(S=現價) / S2 半程(完成度50%價位) / S3 大半程"
         "(完成度75%價位) / S4 晚30天到達 / S5 晚90天到達 / S6 IV最保守"
         "(全部 IV 情境估值之最小值) / S7 Natural成交(成本改採 Ask，價差為長Ask−短Bid)"
@@ -278,6 +289,27 @@ def _footer_lines(p: AnalysisParams) -> list[str]:
         "- 情境最壞＝7 個固定情境的最低值，屬透明情境集合的最壞值，非統計推論、"
         "亦非所有可能情況的最壞",
     ]
+
+
+def _footer_lines(p: AnalysisParams) -> list[str]:
+    return methodology_lines(p) + [_DISCLAIMER_LINE]
+
+
+def disclaimer_text() -> str:
+    """V8（#56，spec R1 §4.4.4）：網頁新版型獨立、不折疊的免責段落，
+    涵蓋 R1 明列的四點（模型估計非保證價格／不構成投資建議／本工具非
+    經紀商亦非投資顧問／選擇權風險請參閱 OCC ODD），且措辭不聲稱本產品
+    受 FINRA 或任何監理規範管轄（R1 §2.5 前言、§4.4 第 4 點）。不依賴
+    任何參數——固定文案，不是引擎計算值，但集中放在 report.py 維持
+    「報告文案單一來源」，CLI 的精簡版（`_DISCLAIMER_LINE`）維持不變、
+    不被本函式取代。"""
+    return (
+        "模型估計非保證價格，不構成投資建議。本工具並非經紀商，亦非"
+        "投資顧問，不提供個人化投資建議，本工具與任何監理機構之揭露"
+        "規範皆無關。選擇權交易涉及重大風險，可能損失全部投入本金，"
+        "交易前請參閱 OCC《Characteristics and Risks of Standardized "
+        "Options》（選擇權風險揭露文件）。"
+    )
 
 
 def render_filter_only(

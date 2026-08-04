@@ -16,9 +16,11 @@ from datetime import date
 from typing import Callable, Literal
 
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import Response
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from option_chaser import __version__, service, store
+from option_chaser.data.snapshot import snapshot_from_dict, snapshot_to_csv
 from option_chaser.models import (AnalysisParams, ChainSnapshot, FetchError,
                                   ParamError, STRATEGIES)
 from option_chaser.timeframe import (TargetMonth, calendar_anchor,
@@ -320,6 +322,43 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         _require(scenario_id)
         return [{"analyzed_at": r.analyzed_at}
                 for r in _db().result_history(scenario_id)]
+
+    def _load_raw_snapshot(scenario_id: str) -> ChainSnapshot:
+        """V8（#56）：原始資料（當次快照）——`refresh_scenario` 早就在
+        `save_snapshot` 把它跟結果一起存進去了（`main.py` 既有邏輯，
+        `analyzed_at` 是兩者共用的鍵），這裡只是第一次把它讀出來。
+        取「最新一次結果」的 `analyzed_at`，不接受呼叫端指定：詳細頁
+        只看得到最新一份分析，原始資料照理跟著它走，不需要另開一個
+        「選歷史哪一版」的介面。"""
+        latest = _db().latest_result(scenario_id)
+        if latest is None:
+            raise HTTPException(status_code=404,
+                                detail=f"劇本尚未分析，無原始資料：{scenario_id}")
+        data = _db().get_snapshot(scenario_id, latest.analyzed_at)
+        if data is None:
+            raise HTTPException(status_code=404,
+                                detail=f"找不到原始快照：{scenario_id}")
+        return snapshot_from_dict(data)
+
+    @app.get("/api/scenarios/{scenario_id}/raw-data")
+    def get_raw_data(scenario_id: str) -> dict:
+        """V8（#56）：原始資料表（畫面查看用）——逐筆合約報價，
+        「免得你亂掰我卻查不到證據」（QA1-10／#37 原話）。"""
+        _require(scenario_id)
+        return store.raw_snapshot_json(_load_raw_snapshot(scenario_id))
+
+    @app.get("/api/scenarios/{scenario_id}/raw-data.csv")
+    def get_raw_data_csv(scenario_id: str) -> Response:
+        """V8（#56）：同一份原始資料的 CSV 下載——內容產生走既有純函式
+        `data.snapshot.snapshot_to_csv`（QA1-10／#37 已測試覆蓋內容
+        正確性），本端點只負責接線與下載標頭。"""
+        _require(scenario_id)
+        snap = _load_raw_snapshot(scenario_id)
+        csv_text = snapshot_to_csv(snap)
+        filename = f"{snap.symbol}_{snap.fetched_at[:10]}_raw.csv"
+        return Response(content=csv_text, media_type="text/csv",
+                        headers={"Content-Disposition":
+                                f'attachment; filename="{filename}"'})
 
     @app.get("/api/scenarios/{scenario_id}/events")
     def list_events(scenario_id: str) -> list[dict]:

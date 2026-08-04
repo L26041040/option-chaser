@@ -7,7 +7,8 @@ from option_chaser.models import (
     leg_option_type, is_bullish, PairReport,
 )
 from option_chaser.data.snapshot import (
-    save_snapshot, load_snapshot, snapshot_today, snapshot_to_csv, find_contract,
+    save_snapshot, load_snapshot, snapshot_from_dict, snapshot_today,
+    snapshot_to_csv, find_contract,
 )
 import pytest
 
@@ -30,6 +31,18 @@ def test_roundtrip(tmp_path):
     p = tmp_path / "s.json"
     save_snapshot(snap, p)
     assert load_snapshot(p) == snap
+
+
+def test_snapshot_from_dict_roundtrips_through_asdict():
+    """V8（#56）：`Storage.get_snapshot` 回傳的是 `dataclasses.asdict()`
+    的 dict 形式（serverless 沒有檔案系統，走儲存層而非 `load_snapshot`
+    那條讀檔路徑）——`snapshot_from_dict` 是這條路徑的還原函式，跟
+    `load_snapshot` 共用同一段還原邏輯，這裡直接驗證還原後與原物件
+    相等。"""
+    import dataclasses
+
+    snap = make_snap()
+    assert snapshot_from_dict(dataclasses.asdict(snap)) == snap
 
 
 def test_strategy_helpers():

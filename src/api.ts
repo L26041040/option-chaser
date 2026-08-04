@@ -17,7 +17,7 @@ export interface AnalysisMeta {
   target_move: number;
 }
 
-/** 一隻腿。契約裡還有 iv／open_interest 等欄位，畫面用到再加。 */
+/** 一隻腿。契約裡還有 open_interest 等欄位，畫面用到再加。 */
 export interface Leg {
   strike: number;
   option_type: string;
@@ -26,6 +26,7 @@ export interface Leg {
   ask: number;
   /** 賣這隻腿收得到的價（最差成交假設用 Bid）。 */
   bid: number;
+  iv: number | null;
 }
 
 /**
@@ -45,10 +46,42 @@ export interface PricePoint {
   return: number;
 }
 
+/** 引擎的 `ScenarioVector`（7 個固定壓力情境，Mid 口徑）。 */
+export interface ScenarioVectorView {
+  entries: [string, number][];
+  worst_code: string;
+  worst_return: number;
+}
+
 export interface Candidate {
   candidate_key: string;
   baseline_return: number;
   natural_cost: number;
+  breakeven: number;
+  /** Long Call 無上限＝null；其餘策略是每股金額。 */
+  max_profit: number | null;
+  max_loss_per_contract: number;
+  net_delta: number;
+  effective_leverage: number;
+  /** 佔成本比率（Mid 口徑）——不是原始美元 Greeks，見 R1 §4.2 注意事項。 */
+  theta_day_rate: number;
+  vega_per_pt: number;
+  scenario_vector: ScenarioVectorView;
+  completion_curve: [number, number][];
+  completion_threshold: number | null;
+  retention: number;
+  friction: number;
+  friction_amount: number;
+  /**
+   * V8（#56，spec R1 §4.2 A2）：買價指引天花板——純文字報告早就在印，
+   * 這裡補上序列化。單腿的 L1（＝保守底線）依票上 A2 表範圍不補。
+   */
+  l2: number;
+  l3: number;
+  /** 評語「代價」——「優點」pros 依 R1 §4.2 C 裁示不補序列化。 */
+  cons: string[];
+  /** 買 Ask 超過哪些天花板的警示句（`valuation.guidance_judgments`）。 */
+  guidance_warnings: string[];
   /** Long Call 追平價格 S*。同履約價 Call 報價缺失時為 null＝無法計算。 */
   catchup_price: number | null;
   /**
@@ -128,6 +161,14 @@ export interface StrategyResult {
   /** [到期日, 該期通過配對的有效候選組數]，引擎的 `expiry_counts`。 */
   expiry_counts: [string, number][];
   expiry_top10?: ExpiryTop10[];
+  /**
+   * V8（#56，spec R1 §4.1）：新版型「⑥ 方法與假設」——`report.py` 的
+   * `methodology_lines()`，與純文字報告同一個事實來源，只是拆出獨立
+   * 欄位。多行文字，前端逐行呈現或原樣顯示皆可。
+   */
+  methodology_text: string;
+  /** 新版型「⑦ 免責聲明」——獨立、不折疊的擴充版本（R1 §4.4.4）。 */
+  disclaimer_text: string;
 }
 
 /** 這次分析用的劇本參數（引擎回填的那一份，非前端送出的原樣）。 */
@@ -306,6 +347,46 @@ export function archiveScenario(id: string): Promise<{ archived: boolean }> {
     `/api/scenarios/${encodeURIComponent(id)}/archive`,
     { method: "POST" },
   );
+}
+
+/** V8（#56）：原始資料表（當次快照）的合約列——逐筆合約完整原樣，
+ *  不是候選腿的精簡子集，欄位跟 CSV 下載一致。 */
+export interface RawContract {
+  contract_symbol: string;
+  option_type: string;
+  strike: number;
+  expiry: string;
+  bid: number | null;
+  ask: number | null;
+  last: number | null;
+  volume: number;
+  open_interest: number;
+  implied_volatility: number | null;
+}
+
+export interface RawSnapshotMeta {
+  symbol: string;
+  spot: number;
+  fetched_at: string;
+  source: string;
+  contract_count: number;
+}
+
+export interface RawSnapshot {
+  meta: RawSnapshotMeta;
+  contracts: RawContract[];
+}
+
+/** 原始資料表用（V8／#56）：跟著劇本最新一次分析走，沒分析過時 404。 */
+export function getRawData(id: string): Promise<RawSnapshot> {
+  return request<RawSnapshot>(
+    `/api/scenarios/${encodeURIComponent(id)}/raw-data`);
+}
+
+/** CSV 下載連結——純 GET＋`Content-Disposition: attachment`，直接當
+ *  `<a href>` 用，不需要額外的 JS 下載邏輯。 */
+export function rawDataCsvUrl(id: string): string {
+  return `/api/scenarios/${encodeURIComponent(id)}/raw-data.csv`;
 }
 
 /**

@@ -21,6 +21,21 @@ def save_snapshot(snap: ChainSnapshot, path: str | Path) -> None:
     )
 
 
+def snapshot_from_dict(data: dict) -> ChainSnapshot:
+    """V8（#56）：把 `dataclasses.asdict(ChainSnapshot)` 的 dict 形式還原成
+    物件——`load_snapshot`（讀檔）與 API 層的 `Storage.get_snapshot`（讀
+    儲存層，serverless 沒有檔案系統）現在共用同一段還原邏輯，不各自重
+    寫一次 `OptionContract(**c) for c in data["contracts"]`。不做 schema
+    版本檢查（呼叫端＝自己剛存過的資料，不是使用者上傳的檔案，版本
+    不合的情境不存在）。"""
+    contracts = tuple(OptionContract(**c) for c in data["contracts"])
+    return ChainSnapshot(
+        schema_version=data["schema_version"], symbol=data["symbol"],
+        fetched_at=data["fetched_at"], spot=data["spot"],
+        source=data["source"], contracts=contracts,
+    )
+
+
 def load_snapshot(path: str | Path) -> ChainSnapshot:
     data = json.loads(Path(path).read_text(encoding="utf-8"))
     version = data.get("schema_version")
@@ -32,12 +47,7 @@ def load_snapshot(path: str | Path) -> ChainSnapshot:
         raise SnapshotSchemaError(
             f"snapshot schema_version={version} incompatible with {SCHEMA_VERSION}; re-fetch the chain"
         )
-    contracts = tuple(OptionContract(**c) for c in data["contracts"])
-    return ChainSnapshot(
-        schema_version=data["schema_version"], symbol=data["symbol"],
-        fetched_at=data["fetched_at"], spot=data["spot"],
-        source=data["source"], contracts=contracts,
-    )
+    return snapshot_from_dict(data)
 
 
 def snapshot_to_csv(snap: ChainSnapshot) -> str:
