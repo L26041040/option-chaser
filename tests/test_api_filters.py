@@ -1,11 +1,14 @@
-"""FB5-01／FB5-02（#62／#63）：過濾器不再刪除候選，經 HTTP API 驗證
-（後端唯一接縫，spec #47 裁示；spec #61 Testing Decisions 明列此接縫）。
+"""FB5-01／FB5-02／FB5-03（#62／#63／#64）：過濾器不再刪除候選，經
+HTTP API 驗證（後端唯一接縫，spec #47 裁示；spec #61 Testing Decisions
+明列此接縫）。
 
 引擎層行為（關卡組成、逐關淘汰數）由 `tests/test_filters.py` 直測；這裡
 驗證使用者實際看得到的東西——同一份快照下，過濾器不再把候選池砍到只剩
 唯一倖存者。「帶標示」的證明（quote_warning 確實被觸發）用最小合成快照、
 不靠這份大 fixture——見 `tests/test_spread_quality_flag.py` 開頭的說明：
-排名只留每級距第一名，被卡住的那筆不保證擠得進榜。
+排名只留每級距第一名，被卡住的那筆不保證擠得進榜。FB5-03 的單調性違反
+是例外：XYZC100D 剛好就是平衡型級距的第一名，直接在這份既有 fixture 上
+就驗得到，見 `test_monotonicity_warning_reaches_the_serialized_candidate`。
 """
 from fastapi.testclient import TestClient
 
@@ -125,3 +128,33 @@ def test_ranking_formula_still_picks_highest_return_within_band():
     balanced = next(c for c in result["candidates"]
                     if 0.35 <= abs(c["net_delta"]) <= 0.65)
     assert balanced["legs"][0]["strike"] == 100.5
+
+
+def test_monotonicity_warning_reaches_the_serialized_candidate():
+    """FB5-03（#64）票上驗收標準：「標示出現在候選的序列化結構中」。
+
+    這份既有 fixture 剛好自然帶著一組真實的單調性違反：XYZC100D（strike
+    100.5, ask 5.4）比 XYZC102O（strike 102, ask 6.0）便宜，call 履約價
+    越高應該越便宜（或持平），這裡反過來了——跟需求方原話「100/105/110，
+    105 卻比 100 便宜」同一個形狀。XYZC100D 正好是平衡型級距的第一名
+    （上一條測試已確認），不必繞去查全候選列表就能在真實回應上斷言。
+
+    也順便釘住這是**獨立欄位**：`quote_warning` 不該被單調性違反污染
+    （XYZC100D 本身報價／價差都正常，`quote_warning` 應為 False）。
+    """
+    r = _client().post("/api/analyze", json=REQUEST)
+    result = r.json()["results"][0]
+    balanced = next(c for c in result["candidates"]
+                    if 0.35 <= abs(c["net_delta"]) <= 0.65)
+    assert balanced["legs"][0]["strike"] == 100.5
+    assert balanced["monotonicity_warning"] is True
+    assert balanced["quote_warning"] is False
+
+
+def test_monotonicity_violation_does_not_shrink_the_pool():
+    """FB5-03（#64）核心裁示：只標不刪。同一份 fixture 裡確實存在違反
+    （見上一條測試），`filter_report.passed` 不因此減少——與 FB5-01／
+    FB5-02 疊加的數字（8）完全一致。"""
+    r = _client().post("/api/analyze", json=REQUEST)
+    result = r.json()["results"][0]
+    assert result["filter_report"]["passed"] == 8

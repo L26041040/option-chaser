@@ -1,13 +1,14 @@
-"""FB5-02（#63）：買賣價差寬度不再是硬門檻，改成隨候選一併回傳的品質
-標示——沿用既有機制（`CandidateView.quote_warning`／`.friction`），不新
-造一套。
+"""FB5-02／FB5-03（#63／#64）：候選品質標示——只標不刪，不影響誰進得了
+候選池。買賣價差寬度沿用既有機制（`CandidateView.quote_warning`／
+`.friction`）；單調性違反走獨立欄位（`.monotonicity_warning`），見各自
+測試前的說明。
 
 用最小、完全掌控的合成快照測試，不用大 fixture：這裡要驗證的是「特定
-一組寬價差的合約，會不會被標示、標示的量級對不對」，用真實 JSON 快照
-的話，排名（每級距只留第一名）可能把它擋在候選名單外，於是斷言不到。
-`tests/test_api_filters.py` 另外用既有 `xyz_v2_snapshot.json` 驗證池子
-層級的「進得了榜」（filter_report 通過數增加、關卡消失）——兩層合起來
-才是 spec #61 指定的兩個接縫。
+一組合約會不會被標示、標示對不對」，用真實 JSON 快照的話，排名（每級距
+只留第一名）可能把它擋在候選名單外，於是斷言不到。`tests/test_api_
+filters.py` 另外用既有 `xyz_v2_snapshot.json` 驗證池子層級的「進得了榜」
+（filter_report 通過數增加、關卡消失）——兩層合起來才是 spec #61 指定
+的兩個接縫。
 """
 from option_chaser import service
 from option_chaser.data.snapshot import save_snapshot
@@ -16,9 +17,9 @@ from option_chaser.models import AnalysisParams, ChainSnapshot, OptionContract, 
 EXPIRY = "2026-10-16"
 
 
-def _contract(sym, strike, bid, ask, volume=50):
+def _contract(sym, strike, bid, ask, volume=50, option_type="call"):
     return OptionContract(
-        contract_symbol=sym, option_type="call", strike=strike, expiry=EXPIRY,
+        contract_symbol=sym, option_type=option_type, strike=strike, expiry=EXPIRY,
         bid=bid, ask=ask, last=(bid + ask) / 2, volume=volume,
         open_interest=100, implied_volatility=0.30)
 
@@ -71,3 +72,34 @@ def test_narrow_spread_candidate_is_not_flagged_for_width(tmp_path):
     r = _run(tmp_path, [tight])
     cv = r.results[0].candidates[0]
     assert cv.quote_warning is False
+
+
+# --- FB5-03（#64）：無套利一致性違反，走獨立的 `monotonicity_warning`
+# 欄位——嚴重性與生成方式都與寬價差／零成交不同（配對關係違反，不是
+# 單一數值超標），不混進 `quote_warning`。 ---
+
+def test_monotonicity_violation_reaches_candidate_view(tmp_path):
+    """需求方原話的最小重現，換一組數字：深價內（履約價 80）比深價外
+    （履約價 130）還便宜（call 應該反過來）。兩張合約 delta 落在不同
+    級距（保守型 vs 積極型），兩者都留在 `res.candidates` 裡，斷言才
+    對得準——不是排名截斷後只剩一個。"""
+    k80 = _contract("K80", strike=80.0, bid=9.8, ask=10.0)
+    k130 = _contract("K130", strike=130.0, bid=11.8, ask=12.0)  # 違反：比 K80 貴
+    r = _run(tmp_path, [k80, k130])
+    res = r.results[0]
+    assert res.status == "ok"   # 只標不刪，兩張都進得了榜
+    by_strike = {cv.valuation.contract.strike: cv for cv in res.candidates}
+    assert set(by_strike) == {80.0, 130.0}
+    assert by_strike[80.0].monotonicity_warning is True
+    assert by_strike[130.0].monotonicity_warning is True
+    # 不該汙染既有的 quote_warning——兩個獨立欄位，各自的觸發條件不同。
+    assert by_strike[80.0].quote_warning is False
+
+
+def test_monotone_quotes_are_not_flagged(tmp_path):
+    """該不誤報的不誤報：正常遞減的 call 報價不該被標。"""
+    k80 = _contract("K80", strike=80.0, bid=19.8, ask=20.0)
+    k130 = _contract("K130", strike=130.0, bid=0.8, ask=1.0)
+    r = _run(tmp_path, [k80, k130])
+    for cv in r.results[0].candidates:
+        assert cv.monotonicity_warning is False

@@ -8,7 +8,8 @@ from pathlib import Path
 from typing import Callable
 
 from .data.snapshot import find_contract, load_snapshot, save_snapshot, snapshot_today
-from .filters import apply_filters, generate_spread_pairs, is_spread_wide
+from .filters import (apply_filters, generate_spread_pairs, is_spread_wide,
+                      monotonicity_violations)
 from .matrix import date_axis, matrix_grid, price_axis
 from .models import (AnalysisParams, ChainSnapshot, FetchError, FilterReport,
                      PairReport, ParamError, SPREAD_STRATEGIES, STRATEGIES,
@@ -89,6 +90,11 @@ class CandidateView:
     friction_amount: float    # natural_cost(val) − mid 成本（spec §2.3, $/股）
     buffer_days: int
     quote_warning: bool
+    # FB5-03（#64）：無套利一致性違反（相鄰履約價 ask 不單調）。獨立於
+    # `quote_warning`，不合併——嚴重性與成因都不同（配對關係違反，不是
+    # 單一數值超標），合併會讓使用者分不出「報價可疑，可能是陳舊資料」
+    # 跟「這組候選價差比較寬」是同一等級的事。
+    monotonicity_warning: bool
     theta_day_rate: float      # |淨Θ| / Mid 成本
     vega_per_pt: float         # 淨Vega(每1 IV百分點) / Mid 成本
     decay_30d_return: float    # S=spot、IV不變、today+30(或到期)估值報酬
@@ -259,7 +265,13 @@ def _price_ladder(val: ContractValuation | SpreadValuation,
 
 
 def _v4_fields(val: ContractValuation | SpreadValuation, spot: float,
-              today: date, p: AnalysisParams) -> dict:
+              today: date, p: AnalysisParams,
+              violations: frozenset[str] = frozenset()) -> dict:
+    """`violations`＝`filters.monotonicity_violations()` 的輸出，由呼叫端
+    對整批 qualified 合約算一次、傳進來（FB5-03／#64）——單一候選這裡
+    只做查表，不重算，避免每個候選各自重新掃一次全部合約。預設空集合：
+    沒有呼叫端傳（理論上不會發生，所有 `_v4_fields` 呼叫都經過
+    `_single_leg_view`／`_spread_view`）就是「沒有已知違反」，不是壞掉。"""
     sv = scenario_vector(val, spot, today, p)
     k, be = completion_scan(val, spot, today, p)
     fr = friction(val)
@@ -270,10 +282,13 @@ def _v4_fields(val: ContractValuation | SpreadValuation, spot: float,
         # 的報價品質，不是合成後的淨值，合成淨值那個訊號已經有 fr>0.25。
         wide_spread = (is_spread_wide(val.long_leg.bid, val.long_leg.ask, p)
                       or is_spread_wide(val.short_leg.bid, val.short_leg.ask, p))
+        monotonicity_warning = (val.long_leg.contract_symbol in violations
+                                or val.short_leg.contract_symbol in violations)
     else:
         expiry = val.contract.expiry
         zero_vol = val.contract.volume == 0
         wide_spread = is_spread_wide(val.contract.bid, val.contract.ask, p)
+        monotonicity_warning = val.contract.contract_symbol in violations
     mid_cost = _mid_cost(val)
     curve = completion_curve(val, spot, today, p)
     return dict(
@@ -286,8 +301,10 @@ def _v4_fields(val: ContractValuation | SpreadValuation, spot: float,
         friction_amount=natural_cost(val) - mid_cost,
         buffer_days=(date.fromisoformat(expiry) - p.anchor).days,
         # FB5-02（#63）：沿用既有的 `quote_warning` 機制，不新造一套——
-        # 買賣價差過寬只是這個既有布林旗標的第三個觸發條件。
+        # 買賣價差過寬只是這個既有布林旗標的第三個觸發條件。單調性違反
+        # 不加進來（見 `monotonicity_warning` 欄位註解）。
         quote_warning=zero_vol or wide_spread or fr > 0.25,
+        monotonicity_warning=monotonicity_warning,
         theta_day_rate=abs(_net_theta(val, spot, today, p)) / mid_cost,
         vega_per_pt=_net_vega(val, spot, today, p) / mid_cost,
         decay_30d_return=_decay_30d(val, spot, today, p),
@@ -296,8 +313,8 @@ def _v4_fields(val: ContractValuation | SpreadValuation, spot: float,
 
 def _single_leg_view(v: ContractValuation, band: str,
                      ranked: dict[str, list[ContractValuation]], spot: float,
-                     n_qualified: int, today: date,
-                     p: AnalysisParams) -> CandidateView:
+                     n_qualified: int, today: date, p: AnalysisParams,
+                     violations: frozenset[str] = frozenset()) -> CandidateView:
     pros, cons = build_reasons(v, band, ranked, spot, n_qualified, p)
     mv = _matrix_view(
         lambda S, d, c=v.contract: scenario_leg_value(c, S, d, p),
@@ -306,7 +323,7 @@ def _single_leg_view(v: ContractValuation, band: str,
         valuation=v, pros=tuple(pros), cons=tuple(cons), matrix=mv,
         baseline_pnl=v.baseline_value - v.contract.ask,
         baseline_return=baseline_return(v),
-        **_v4_fields(v, spot, today, p))
+        **_v4_fields(v, spot, today, p, violations))
 
 
 def _spread_catchup_price(sv: SpreadValuation, snap: ChainSnapshot) -> float | None:
@@ -326,7 +343,8 @@ def _spread_catchup_price(sv: SpreadValuation, snap: ChainSnapshot) -> float | N
 
 
 def _spread_view(sv: SpreadValuation, idx: int, n_pairs: int, spot: float,
-                 today: date, p: AnalysisParams, snap: ChainSnapshot) -> CandidateView:
+                 today: date, p: AnalysisParams, snap: ChainSnapshot,
+                 violations: frozenset[str] = frozenset()) -> CandidateView:
     pros, cons = build_spread_reasons(sv, idx, n_pairs, p)
     mv = _matrix_view(
         lambda S, d, lng=sv.long_leg, sht=sv.short_leg:
@@ -337,7 +355,7 @@ def _spread_view(sv: SpreadValuation, idx: int, n_pairs: int, spot: float,
         baseline_pnl=sv.baseline_value - sv.net_worst,
         baseline_return=spread_baseline_return(sv),
         catchup_price=_spread_catchup_price(sv, snap),
-        **_v4_fields(sv, spot, today, p))
+        **_v4_fields(sv, spot, today, p, violations))
 
 
 def valuation_key(v: ContractValuation | SpreadValuation) -> str:
@@ -465,6 +483,9 @@ def _single_leg_result(p: AnalysisParams, snap: ChainSnapshot,
             filter_report=freport, pair_report=None,
             report_text=render_filter_only(snap, p, freport, today),
             message="目前沒有符合流動性與報價條件的合約。")
+    # FB5-03（#64）：無套利一致性只在**通過 A/B 類硬門檻的合約**之間比較
+    # ——跟不合格的報價比較沒有意義，也算一次就好，不必每個候選各自重算。
+    violations = monotonicity_violations(qualified)
     vals = [evaluate_contract(c, snap.spot, today, p) for c in qualified]
     ranked = rank(vals, p)
     text = render(snap, p, freport, ranked, n_qualified=len(qualified),
@@ -475,7 +496,8 @@ def _single_leg_result(p: AnalysisParams, snap: ChainSnapshot,
             continue
         v = ranked[band][0]
         candidates.append(_single_leg_view(v, band, ranked, snap.spot,
-                                           len(qualified), today, p))
+                                           len(qualified), today, p,
+                                           violations))
 
     # v4 spec §3.2: per-expiry best over ALL qualified (not just top-3 bands),
     # for expiry grouping. Cost control: CandidateView only built for winners.
@@ -490,7 +512,8 @@ def _single_leg_result(p: AnalysisParams, snap: ChainSnapshot,
     expiry_best = tuple(
         _single_leg_view(best_by_expiry[exp],
                          classify(best_by_expiry[exp].delta, p.delta_bands),
-                         ranked, snap.spot, len(qualified), today, p)
+                         ranked, snap.spot, len(qualified), today, p,
+                         violations)
         for exp in sorted(best_by_expiry))
     expiry_counts = tuple(sorted(counts.items()))
 
@@ -513,6 +536,9 @@ def _spread_result(p: AnalysisParams, snap: ChainSnapshot,
             report_text=render_spreads(snap, p, freport, pair_report, [], 0,
                                        today),
             message="目前沒有符合流動性與報價條件的合約。")
+    # FB5-03（#64）：同一批 qualified 腿的無套利一致性只算一次，兩隻腿
+    # 各自查表——跟單腿路徑同一個函式、同一個口徑。
+    violations = monotonicity_violations(qualified)
     spreads = [evaluate_spread(l, s, snap.spot, today, p) for l, s in pairs]
     ranked = rank_spreads(spreads, p)
     text = render_spreads(snap, p, freport, pair_report, ranked,
@@ -520,7 +546,7 @@ def _spread_result(p: AnalysisParams, snap: ChainSnapshot,
     candidates = []
     for i, sv in enumerate(ranked[:3]):
         candidates.append(_spread_view(sv, i, pair_report.passed, snap.spot,
-                                       today, p, snap))
+                                       today, p, snap, violations))
 
     # v4 spec §3.2: per-expiry best over ALL qualified spreads (not just the
     # top-3 in `candidates`), for expiry grouping. T9（#23）：同一輪順便把
@@ -540,7 +566,7 @@ def _spread_result(p: AnalysisParams, snap: ChainSnapshot,
         by_expiry.setdefault(exp, []).append(sv)
     expiry_best = tuple(
         _spread_view(best_by_expiry[exp][1], best_by_expiry[exp][0],
-                     pair_report.passed, snap.spot, today, p, snap)
+                     pair_report.passed, snap.spot, today, p, snap, violations)
         for exp in sorted(best_by_expiry))
     expiry_counts = tuple(sorted(counts.items()))
     # 各到期日自己的前十名（Heatmap 矩陣只隨這至多 5×10 檔入快照，附錄A10.3）；
@@ -548,7 +574,7 @@ def _spread_result(p: AnalysisParams, snap: ChainSnapshot,
     # 前十名的節錄。
     expiry_top10 = tuple(
         (exp, tuple(_spread_view(sv, i, len(by_expiry[exp]), snap.spot,
-                                 today, p, snap)
+                                 today, p, snap, violations)
                     for i, sv in enumerate(by_expiry[exp][:10])))
         for exp in sorted(by_expiry))
     expiry_ranked = tuple((exp, tuple(by_expiry[exp]))

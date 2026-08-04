@@ -32,6 +32,15 @@ function CandidateRow({ candidate, rank }: { candidate: Candidate; rank: number 
                 ⚠
               </span>
             )}
+            {/* FB5-03（#64）：獨立徽章，不跟 quote_warning 共用 ⚠——
+                這一個是配對關係違反（跟鄰近履約價比較），不是單一數值
+                超標，嚴重性不同，不能讓使用者以為是同一種提醒。 */}
+            {candidate.monotonicity_warning && (
+              <span className="tag suspect"
+                    title="報價與鄰近履約價不一致，疑似陳舊報價">
+                🚩
+              </span>
+            )}
             <span className="candidate-title">{candidateTitle(candidate)}</span>
             <span
               className={

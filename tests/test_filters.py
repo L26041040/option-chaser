@@ -1,5 +1,5 @@
 from option_chaser.models import AnalysisParams, OptionContract
-from option_chaser.filters import apply_filters, is_spread_wide
+from option_chaser.filters import apply_filters, is_spread_wide, monotonicity_violations
 
 P = AnalysisParams(target_price=120.0, target_month="2026-08")
 
@@ -105,6 +105,66 @@ def test_open_interest_never_excludes_a_candidate():
     價差三關過得了，OI 多低都留在候選池裡（含 0）。"""
     passed, _ = apply_filters([make("zerooi", oi=0)], P)
     assert len(passed) == 1
+
+
+# --- monotonicity_violations：FB5-03（#64）新增的純函式，無套利一致性
+# 檢查（同到期日、同類型，call 非遞增／put 非遞減）。只標不刪，`filters.py`
+# 完全不呼叫它——它只服務 `service.py` 的品質標示，不影響誰進得了候選池。
+
+def test_monotonicity_catches_a_call_priced_below_a_higher_strike():
+    """需求方原話：「明明 100/105/110，但 105 卻比 100 便宜，這肯定有鬼」
+    ——call 履約價越高，ask 應該越低（或持平），這裡反過來了。"""
+    low = make("K100", strike=100.0, ask=10.0)
+    mid = make("K105", strike=105.0, ask=12.0)   # 違反：比 K100 貴
+    high = make("K110", strike=110.0, ask=8.0)
+    violations = monotonicity_violations([low, mid, high])
+    assert violations == {"K100", "K105"}   # 違反是配對關係，兩邊都標
+    assert "K110" not in violations         # K105→K110 這段沒問題（12>=8）
+
+
+def test_monotonicity_catches_a_put_priced_above_a_higher_strike():
+    """put 反過來：履約價越高，ask 應該越高（或持平）。"""
+    low = make("K100", strike=100.0, ask=8.0, option_type="put")
+    mid = make("K105", strike=105.0, ask=6.0, option_type="put")  # 違反：比 K100 便宜
+    violations = monotonicity_violations([low, mid])
+    assert violations == {"K100", "K105"}
+
+
+def test_monotonicity_does_not_flag_non_convex_but_monotone_quotes():
+    """驗收標準第二面：不該誤報的不誤報。10/8/3 不是凸的（差分
+    -2、-5，二階差分為負），但整條路徑本身仍然單調非遞增——期權市場
+    本質非凸（需求方原話），這種形狀合法，不能被當成有鬼。"""
+    a = make("a", strike=100.0, ask=10.0)
+    b = make("b", strike=105.0, ask=8.0)
+    c = make("c", strike=110.0, ask=3.0)
+    assert monotonicity_violations([a, b, c]) == frozenset()
+
+
+def test_monotonicity_ties_are_not_violations():
+    """非遞增／非遞減本身就含「持平」——相鄰履約價 ask 相同不算有鬼。"""
+    a = make("a", strike=100.0, ask=5.0)
+    b = make("b", strike=105.0, ask=5.0)
+    assert monotonicity_violations([a, b]) == frozenset()
+
+
+def test_monotonicity_only_compares_within_the_same_expiry_and_type():
+    """不同到期日或不同類型之間沒有單調性關係，不該被拿來互相比較。"""
+    call_100 = make("call100", strike=100.0, ask=1.0, option_type="call")
+    put_100 = make("put100", strike=100.0, ask=50.0, option_type="put")
+    other_expiry = make("later", strike=105.0, ask=200.0,
+                        expiry="2027-01-15", option_type="call")
+    violations = monotonicity_violations([call_100, put_100, other_expiry])
+    assert violations == frozenset()
+
+
+def test_monotonicity_never_used_as_a_hard_gate():
+    """驗收標準：只標不刪——`apply_filters` 完全不呼叫這個函式，候選
+    數量不會因為單調性違反而減少。"""
+    low = make("K100", strike=100.0, ask=10.0)
+    mid = make("K105", strike=105.0, ask=12.0)
+    passed, rep = apply_filters([low, mid], P)
+    assert len(passed) == 2
+    assert not any("單調" in s.label for s in rep.stages)
 
 
 def test_pool_does_not_collapse_to_a_single_survivor_from_liquidity_alone():

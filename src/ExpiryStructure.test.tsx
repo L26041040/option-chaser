@@ -104,6 +104,26 @@ describe("候選窄列", () => {
     expect(within(rows[1]).queryByText("⚠")).not.toBeInTheDocument();
   });
 
+  it("單調性違反的候選帶獨立徽章，不跟報價疑慮的 ⚠ 混在一起", () => {
+    // FB5-03（#64）：`monotonicity_warning` 是獨立欄位，成因與嚴重性都
+    // 跟 `quote_warning` 不同（配對關係違反 vs 單一數值超標），徽章要
+    // 分得開，不能共用同一個符號，否則使用者無法分辨兩種警示。
+    const expiry = view.baseline_expiry!;
+    const patched = withCandidates(expiry, 2);
+    patched.expiry_top10 = patched.expiry_top10!.map((g) =>
+      g.expiry === expiry
+        ? { ...g, candidates: g.candidates.map((c, i) => ({
+            ...c, quote_warning: false, monotonicity_warning: i === 0,
+          })) }
+        : g);
+    show(patched);
+
+    const rows = screen.getAllByRole("listitem");
+    expect(within(rows[0]).getByText("🚩")).toBeInTheDocument();
+    expect(within(rows[0]).queryByText("⚠")).not.toBeInTheDocument();
+    expect(within(rows[1]).queryByText("🚩")).not.toBeInTheDocument();
+  });
+
   it("引擎給幾筆就畫幾筆、名次照它排好的順序，前端不自己截斷", () => {
     show(withCandidates(view.baseline_expiry!, 12));
 

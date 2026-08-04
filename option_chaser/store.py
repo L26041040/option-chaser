@@ -381,6 +381,9 @@ def _candidate(cv: CandidateView, strategy: str, capital: float | None,
         "friction_amount": cv.friction_amount,
         "buffer_days": cv.buffer_days,
         "quote_warning": cv.quote_warning,
+        # FB5-03（#64）：獨立欄位，不併進 quote_warning——見 service.py
+        # 的 CandidateView.monotonicity_warning 欄位註解。
+        "monotonicity_warning": cv.monotonicity_warning,
         "theta_day_rate": cv.theta_day_rate,
         "vega_per_pt": cv.vega_per_pt,
         "decay_30d_return": cv.decay_30d_return,

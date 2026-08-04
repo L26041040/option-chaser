@@ -464,6 +464,13 @@ body {
   color: var(--orange);
 }
 
+/* FB5-03（#64）：單調性違反用紅色，跟 .tag.warn 的橙色分開——配對關係
+   違反（疑似陳舊報價）比一般品質提醒更值得注意。 */
+.tag.suspect {
+  background: color-mix(in srgb, var(--red) 16%, transparent);
+  color: var(--red);
+}
+
 /* 卡片裡的提示不能用 `.notice` 的預設底色——那正好等於卡片底色，等於
    沒有框；改用色調淡底，一眼看得出是這張卡的事。底色寫在
    `.card .notice.error`／`.card .notice.warn`（0,3,0），特異性高過

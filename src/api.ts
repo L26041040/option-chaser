@@ -59,6 +59,12 @@ export interface Candidate {
   price_ladder?: PricePoint[];
   /** 引擎標記的報價品質疑慮（⚠ 徽章）。 */
   quote_warning: boolean;
+  /**
+   * FB5-03（#64）：無套利一致性違反——同到期日、同類型的相鄰履約價
+   * 報價不單調，疑似陳舊報價。獨立於 `quote_warning`：成因與嚴重性都
+   * 不同（配對關係違反，不是單一數值超標），不合併成同一個布林值。
+   */
+  monotonicity_warning: boolean;
   legs: Leg[];
   matrix: Matrix;
 }
