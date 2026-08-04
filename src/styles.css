@@ -559,3 +559,154 @@ body {
   padding: 0 5px;
   font-size: 11px;
 }
+
+/* ---------- 到期日結構（V6／#54） ---------- */
+
+/* 真正橫向並排、可橫向滑動——不是換行成好幾列的按鈕堆。負邊距讓它
+   捲到卡片邊緣，捲動時才看得出「右邊還有」。 */
+.chip-strip {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  margin: 0 calc(var(--gap) * -1);
+  padding: 2px var(--gap);
+  scroll-snap-type: x proximity;
+}
+
+.chip {
+  appearance: none;
+  border: 0;
+  flex: 0 0 auto;
+  scroll-snap-align: start;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  border-radius: 12px;
+  background: var(--fill);
+  color: var(--label);
+  font-family: inherit;
+  padding: 8px 12px;
+  min-height: 52px;
+  cursor: pointer;
+}
+
+.chip:active {
+  opacity: 0.6;
+}
+
+.chip.selected {
+  background: var(--tint);
+  color: #fff;
+}
+
+.chip-date {
+  font-size: 13px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.chip-return {
+  font-size: 15px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.chip .chip-return {
+  color: var(--label-secondary);
+}
+
+.chip.selected .chip-return {
+  color: #fff;
+}
+
+.candidate-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.candidate-list > li + li {
+  border-top: 0.5px solid var(--separator);
+}
+
+/* 原生 `<details>`：展開是純瀏覽器行為，不重繪、不跳動頁面位置，
+   鍵盤與螢幕閱讀器也不必另外處理（QA1-06 換掉「選看」按鈕的理由）。 */
+.candidate > summary {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 12px 2px;
+  cursor: pointer;
+  list-style: none;
+}
+
+/* Safari 用 -webkit-details-marker，其他瀏覽器用 ::marker。兩個都關掉，
+   自訂的三角形交給 ::after。 */
+.candidate > summary::-webkit-details-marker {
+  display: none;
+}
+
+.candidate > summary::marker {
+  content: "";
+}
+
+.candidate > summary:active {
+  opacity: 0.6;
+}
+
+.candidate-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.rank {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--label-tertiary);
+  font-variant-numeric: tabular-nums;
+  min-width: 26px;
+}
+
+.candidate-title {
+  font-size: 16px;
+  font-weight: 600;
+  flex: 1;
+}
+
+.candidate-return {
+  font-size: 17px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.candidate-return.positive {
+  color: var(--green);
+}
+
+.candidate-return.negative {
+  color: var(--red);
+}
+
+/* 三個價格：收合狀態就看得到，比較幾組候選時不必逐一展開。 */
+.candidate-prices {
+  display: flex;
+  gap: 12px;
+  padding-left: 34px;
+  font-size: 13px;
+  color: var(--label-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+.candidate[open] > summary .candidate-prices {
+  padding-bottom: 4px;
+}
+
+.candidate > .heatmap {
+  padding: 4px 0 12px;
+}

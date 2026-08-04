@@ -112,35 +112,16 @@ describe("候選池診斷", () => {
     expect(screen.getByText(/25 組/)).toBeInTheDocument();
   });
 
-  it("有效組數充足時不出現警示", () => {
-    render(<CandidatePool view={view()} />);
-    expect(screen.queryByRole("status")).not.toBeInTheDocument();
-  });
-
-  it("有效組數過少時明確警示，說明排名參考價值有限", () => {
-    render(<CandidatePool view={view({ counts: [["2028-06-16", 2]] })} />);
-
-    const warning = screen.getByRole("status");
-    expect(warning).toHaveTextContent("僅 2 組");
-    expect(warning).toHaveTextContent("參考價值有限");
-  });
-
-  it("整池被清空時也警示，而不是靜靜顯示 0", () => {
-    render(<CandidatePool view={view({ counts: [["2028-06-16", 0]] })} />);
-    expect(screen.getByRole("status")).toHaveTextContent("僅 0 組");
-  });
-
+  // 「該期組數過少」的警示自 V6（#54）起在 `ExpiryStructure`，跟著使用者
+  // 切換的到期日走；這裡只剩「這個數字本身如實顯示」的責任。
   it("baseline 期不在計數裡時不謊報，顯示為未知", () => {
     render(<CandidatePool view={view({ counts: [["2099-01-01", 30]] })} />);
     expect(screen.getByText("—")).toBeInTheDocument();
-    // 「不知道」不是「太少」——不能因為查不到就跳出警示
-    expect(screen.queryByRole("status")).not.toBeInTheDocument();
   });
 
-  it("連 baseline 到期日都沒有時，同樣顯示未知而非警示", () => {
+  it("連 baseline 到期日都沒有時，同樣顯示未知", () => {
     render(<CandidatePool view={view({ baseline: null })} />);
     expect(screen.getByText("—")).toBeInTheDocument();
-    expect(screen.queryByRole("status")).not.toBeInTheDocument();
   });
 
   it("沒有任何策略結果時整個區塊不顯示", () => {

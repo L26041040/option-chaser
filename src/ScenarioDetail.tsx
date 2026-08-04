@@ -12,6 +12,7 @@
 import { useEffect, useState } from "react";
 
 import CandidatePool from "./CandidatePool";
+import ExpiryStructure from "./ExpiryStructure";
 import Heatmap from "./Heatmap";
 import {
   baselineTopCandidate,
@@ -125,11 +126,17 @@ function DetailBody({ view, analyzedAt }: {
   analyzedAt: string | null;
 }) {
   const candidate = baselineTopCandidate(view);
+  const result = primaryResult(view);
   return (
     <>
       <Summary view={view} analyzedAt={analyzedAt} />
       <Chart view={view} candidate={candidate} />
       <Catchup view={view} candidate={candidate} />
+      {/* 到期日結構（V6／#54）接在主圖之下。切換到期日只換這一塊的清單，
+          主圖不動——主圖固定是 baseline 期第 1 名（QA1-06 的既有裁示）。 */}
+      {result && (
+        <ExpiryStructure result={result} baselineExpiry={view.baseline_expiry} />
+      )}
       {/* 候選池診斷（FB4-01／#60）：第 1 名如果是整池僅存者，那個名次
           沒有意義。它本來掛在 V1 的一次性分析畫面上，隨那塊一起搬進
           詳細頁——池子本來就是「這個劇本這次分析」的事。 */}

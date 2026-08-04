@@ -8,11 +8,13 @@
  *
  * 數字全部由引擎算好（`filter_stages`／`pair_report`／`expiry_counts`），
  * 這裡只做計數加總與呈現，零金融計算。
+ *
+ * V6（#54）起「該期組數過少」的**警示**不在這裡：它已經貼在到期日結構
+ * 那份清單旁邊（`ExpiryStructure`），而且跟著使用者切換的到期日走。同一
+ * 句話在一頁上出現兩次，第二次就只是噪音。這裡保留「該期有效組數」那
+ * 一列數字，因為它是整份池子診斷的一部分。
  */
 import { primaryResult, validPairsForExpiry, type AnalysisView } from "./api";
-
-/** 低於這個組數就警示——沿用 Streamlit 版 FB3-02（#45）的門檻。 */
-const THIN_POOL = 3;
 
 export default function CandidatePool({ view }: { view: AnalysisView }) {
   const result = primaryResult(view);
@@ -93,13 +95,6 @@ export default function CandidatePool({ view }: { view: AnalysisView }) {
         </span>
       </div>
 
-      {validPairs !== null && validPairs < THIN_POOL && (
-        <div className="notice" role="status">
-          <span aria-hidden="true">⚠ </span>
-          該期僅 {validPairs} 組候選通過品質過濾，排名參考價值有限——
-          名次第一可能只是「整池剩下的那一個」。
-        </div>
-      )}
     </div>
   );
 }

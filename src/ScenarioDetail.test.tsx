@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import ScenarioDetail from "./ScenarioDetail";
@@ -27,6 +27,15 @@ function withTopCandidate(patch: Record<string, unknown>): AnalysisView {
       ? { ...g, candidates: [{ ...g.candidates[0], ...patch }, ...g.candidates.slice(1)] }
       : g);
   return { ...view, results: [{ ...result, expiry_top10: groups }] };
+}
+
+/**
+ * 主圖那一張表。V6（#54）之後頁面上有很多張 Heatmap（到期日結構裡每個
+ * 候選收合著一張），所以這裡的斷言一律鎖定主圖那一區，不用全頁查找。
+ */
+function mainChart() {
+  return within(screen.getByRole("heading", { name: "劇本主圖" })
+    .closest("section")!);
 }
 
 function mockDetail(body: unknown, ok = true, status = 200) {
@@ -70,12 +79,13 @@ describe("詳細頁主圖", () => {
 
     const top = baselineTopCandidate(view)!;
     const [buy, sell] = top.legs;
-    expect(await screen.findByText(`買 ${buy.strike} / 賣 ${sell.strike}`))
+    await screen.findByText(/劇本主圖/);
+    expect(mainChart().getByText(`買 ${buy.strike} / 賣 ${sell.strike}`))
       .toBeInTheDocument();
-    expect(screen.getByRole("table")).toBeInTheDocument();
-    expect(screen.getByText(view.baseline_expiry!)).toBeInTheDocument();
+    expect(mainChart().getByRole("table")).toBeInTheDocument();
+    expect(screen.getAllByText(view.baseline_expiry!).length).toBeGreaterThan(0);
     // 主圖旁就是這組候選的劇本報酬——引擎算好的那個數字
-    expect(screen.getByText(`${(top.baseline_return * 100).toFixed(1)}%`))
+    expect(mainChart().getByText(`${(top.baseline_return * 100).toFixed(1)}%`))
       .toBeInTheDocument();
   });
 });
@@ -109,7 +119,7 @@ describe("追平價格三態", () => {
 
     expect(await screen.findByText(/無法計算/)).toBeInTheDocument();
     // 頁面其他部分照常可讀
-    expect(screen.getByRole("table")).toBeInTheDocument();
+    expect(mainChart().getByRole("table")).toBeInTheDocument();
   });
 });
 
@@ -120,7 +130,7 @@ describe("詳細頁的空狀態", () => {
     render(<ScenarioDetail id="s1" />);
 
     expect(await screen.findByText(/尚未分析/)).toBeInTheDocument();
-    expect(screen.queryByRole("table")).not.toBeInTheDocument();
+    expect(screen.queryByRole("table")).not.toBeInTheDocument();   // 整頁都沒有
   });
 
   it("baseline 期沒有合格候選時明說，不拿別期的冒充", async () => {
@@ -130,7 +140,8 @@ describe("詳細頁的空狀態", () => {
     render(<ScenarioDetail id="s1" />);
 
     expect(await screen.findByText("無合格候選")).toBeInTheDocument();
-    expect(screen.queryByRole("table")).not.toBeInTheDocument();
+    // 主圖那一區沒有表；到期日結構仍照常列出各期候選
+    expect(mainChart().queryByRole("table")).not.toBeInTheDocument();
   });
 
   it("載不動時說明原因，不是白畫面", async () => {
@@ -159,7 +170,8 @@ describe("刷新完成後詳細頁跟著更新（V5／#53 檢視回饋）", () =
     // 劇本庫那一列的資料時間變了＝這個劇本剛剛被刷新過
     rerender(<ScenarioDetail id="s1" refreshedAt="2026-08-04T09:30:00+00:00" />);
 
-    expect(await screen.findByRole("table")).toBeInTheDocument();
+    expect(await screen.findByText(/劇本主圖/)).toBeInTheDocument();
+    expect(mainChart().getByRole("table")).toBeInTheDocument();
     expect(screen.queryByText(/尚未分析/)).not.toBeInTheDocument();
   });
 });

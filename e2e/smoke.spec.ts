@@ -69,10 +69,13 @@ test("清單 → 詳細頁：摘要、主圖、追平價格、候選池（V5／#
   // 主圖：baseline 期第 1 名候選的 Heatmap
   const top = view.results.find((r) => r.status === "ok" && r.expiry_top10)!
     .expiry_top10!.find((g) => g.expiry === view.baseline_expiry)!.candidates[0];
-  await expect(page.getByText(`${(top.baseline_return * 100).toFixed(1)}%`)).toBeVisible();
-  await expect(page.locator("table.heatmap-table")).toBeVisible();
+  // V6 起頁面上有很多張 Heatmap（到期日結構裡每個候選收合著一張），
+  // 所以主圖的斷言鎖定主圖那一區。
+  const mainChart = page.locator("section").filter({ hasText: "劇本主圖" }).first();
+  await expect(mainChart).toContainText(`${(top.baseline_return * 100).toFixed(1)}%`);
+  await expect(mainChart.locator("table.heatmap-table")).toBeVisible();
   // 「現價」在摘要與 Heatmap 錨點列各有一個，這裡要驗的是圖上那個
-  await expect(page.locator("table.heatmap-table").getByText("現價")).toBeVisible();
+  await expect(mainChart.locator("table.heatmap-table").getByText("現價")).toBeVisible();
 
   // 追平價格：契約樣本的 S* 低於目標價＝醒目那一態
   await expect(page.getByText(/Long Call 追平價格/)).toBeVisible();
@@ -87,14 +90,51 @@ test("清單 → 詳細頁：摘要、主圖、追平價格、候選池（V5／#
   await expect(page.getByRole("heading", { name: "劇本庫" })).toBeVisible();
 });
 
+test("到期日結構：切換到期日 → 就地展開候選（V6／#54）", async ({ page }) => {
+  await routeLibrary(page, libraryRow());
+  await page.goto("/#/s/s1");
+
+  const tabs = page.getByRole("tab");
+  await expect(tabs).toHaveCount(view.results[0].expiry_top10!.length);
+
+  // 預設選中 baseline 期，按鈕上帶著該期最高收益
+  await expect(page.getByRole("tab", { selected: true }))
+    .toContainText(view.baseline_expiry);
+
+  // 切到另一期：清單換成那一期的候選
+  const other = view.results[0].expiry_top10!
+    .find((g) => g.expiry !== view.baseline_expiry)!;
+  await page.getByRole("tab", { name: new RegExp(other.expiry) }).click();
+  await expect(page.getByRole("tab", { selected: true })).toContainText(other.expiry);
+
+  const row = page.getByRole("listitem").first();
+  // 三個價格在收合狀態就看得到
+  await expect(row).toContainText("淨成本");
+  await expect(row).toContainText("買 $");
+  await expect(row).toContainText("賣 $");
+
+  // 就地展開該候選的 Heatmap：主圖不受影響、頁面不跳動
+  const mainChart = page.locator("section").filter({ hasText: "劇本主圖" }).first();
+  const before = await mainChart.locator("table").innerText();
+  const scrollBefore = await page.evaluate(() => window.scrollY);
+
+  await expect(row.locator("table")).toBeHidden();
+  await row.locator("summary").click();
+  await expect(row.locator("table")).toBeVisible();
+
+  expect(await mainChart.locator("table").innerText()).toBe(before);
+  expect(await page.evaluate(() => window.scrollY)).toBe(scrollBefore);
+});
+
 test("詳細頁的 Heatmap 可橫向滑動（手機塞不下七欄）", async ({ page }) => {
   await routeLibrary(page, libraryRow());
 
   await page.goto("/#/s/s1");
-  await expect(page.locator("table.heatmap-table")).toBeVisible();
+  const mainChart = page.locator("section").filter({ hasText: "劇本主圖" }).first();
+  await expect(mainChart.locator("table.heatmap-table")).toBeVisible();
 
   // 內容真的比容器寬（否則「可捲動」是空話），而且頁面本身沒有橫向捲動
-  const box = await page.locator(".heatmap-scroll").evaluate((el) => ({
+  const box = await mainChart.locator(".heatmap-scroll").evaluate((el) => ({
     scrollWidth: el.scrollWidth, clientWidth: el.clientWidth,
   }));
   expect(box.scrollWidth).toBeGreaterThan(box.clientWidth);

@@ -17,11 +17,15 @@ export interface AnalysisMeta {
   target_move: number;
 }
 
-/** 一隻腿。契約裡還有 bid／ask／iv 等欄位，畫面用到再加。 */
+/** 一隻腿。契約裡還有 iv／open_interest 等欄位，畫面用到再加。 */
 export interface Leg {
   strike: number;
   option_type: string;
   expiry: string;
+  /** 買這隻腿要付的價（最差成交假設用 Ask）。 */
+  ask: number;
+  /** 賣這隻腿收得到的價（最差成交假設用 Bid）。 */
+  bid: number;
 }
 
 /**
@@ -40,6 +44,8 @@ export interface Candidate {
   natural_cost: number;
   /** Long Call 追平價格 S*。同履約價 Call 報價缺失時為 null＝無法計算。 */
   catchup_price: number | null;
+  /** 引擎標記的報價品質疑慮（⚠ 徽章）。 */
+  quote_warning: boolean;
   legs: Leg[];
   matrix: Matrix;
 }
