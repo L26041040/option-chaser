@@ -99,3 +99,28 @@ export function catchupView(
     beatsTarget: star <= targetPrice,
   };
 }
+
+const LADDER_LABELS: Record<string, string> = {
+  worst: "最差", target: "目標", best: "最好",
+};
+
+/**
+ * 劇本區間三價位對照（V7／#55）。
+ *
+ * 回傳 null ＝ 這一區不該出現：使用者兩端都沒設定時，`price_ladder` 只有
+ * 目標價一項，畫一張「只有一格的對照表」對不上「對照」二字，什麼也沒比較到。
+ * V7 之前落盤的結果沒有這個欄位，一併當作沒設定。
+ *
+ * 報酬不在這裡算——`return` 是引擎給的，口徑與頭條數字相同。
+ */
+export function priceLadderView(
+  candidate: Candidate,
+): { label: string; price: string; ret: number }[] | null {
+  const ladder = candidate.price_ladder ?? [];
+  if (ladder.length < 2) return null;
+  return ladder.map((p) => ({
+    label: `${LADDER_LABELS[p.label] ?? p.label} ${money(p.price)}`,
+    price: money(p.price),
+    ret: p.return,
+  }));
+}

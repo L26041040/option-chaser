@@ -15,7 +15,8 @@ from .models import (AnalysisParams, ChainSnapshot, FetchError, FilterReport,
                      is_bullish)
 from .ranking import (BAND_ORDER, _spread_tie_key, _tie_break_key,
                       baseline_return, build_reasons, build_spread_reasons,
-                      classify, rank, rank_spreads, spread_baseline_return)
+                      classify, rank, rank_spreads, return_at_price,
+                      spread_baseline_return)
 from .report import STRATEGY_LABELS, render, render_filter_only, render_spreads
 from .scenarios import (ScenarioVector, completion_curve, completion_scan,
                         friction, natural_cost, scenario_vector, _grid_price,
@@ -56,6 +57,18 @@ class MatrixView:
 
 
 @dataclass(frozen=True)
+class PricePoint:
+    """V7（#55）：一個劇本價位與該候選在那個價位上的報酬。
+
+    `ret` 的口徑與主排名數字完全相同（`ranking.return_at_price`），三價位
+    才能與頭條那個數字並排讀。
+    """
+    label: str        # "worst" | "target" | "best"
+    price: float
+    ret: float
+
+
+@dataclass(frozen=True)
 class CandidateView:
     valuation: ContractValuation | SpreadValuation
     pros: tuple[str, ...]
@@ -81,6 +94,9 @@ class CandidateView:
     # D1（#14）：Long Call 追平價格 S*=K+C×(1+R)——只對 Spread 有意義
     # （買腿履約價 K 的同履約價 Call 若報價缺失也是 None）；單腳恆為 None。
     catchup_price: float | None = None
+    # V7（#55）。預設空 tuple：沒設兩端、也沒走 `_v4_fields` 的呼叫端
+    # （若有）都不會壞。
+    price_ladder: tuple[PricePoint, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -226,6 +242,21 @@ def _decay_30d(val: ContractValuation | SpreadValuation, spot: float,
     return (fn(spot, d30, p) - mid) / mid
 
 
+def _price_ladder(val: ContractValuation | SpreadValuation,
+                  p: AnalysisParams) -> tuple[PricePoint, ...]:
+    """V7（#55）：劇本區間兩端與目標價各自的報酬，由低到高排列。
+
+    未設定的端不佔位（票上：「未設定的端不顯示、不佔位報錯」），所以只填
+    一端時這裡就只有兩個點。順序固定 worst → target → best，讓呈現層不必
+    自己排序，也讓「越右邊越樂觀」成為版面上的固定語意。
+    """
+    points = [("worst", p.worst_price), ("target", p.target_price),
+              ("best", p.best_price)]
+    return tuple(PricePoint(label=label, price=price,
+                            ret=return_at_price(val, price, p))
+                 for label, price in points if price is not None)
+
+
 def _v4_fields(val: ContractValuation | SpreadValuation, spot: float,
               today: date, p: AnalysisParams) -> dict:
     sv = scenario_vector(val, spot, today, p)
@@ -251,7 +282,8 @@ def _v4_fields(val: ContractValuation | SpreadValuation, spot: float,
         quote_warning=zero_vol or fr > 0.25,
         theta_day_rate=abs(_net_theta(val, spot, today, p)) / mid_cost,
         vega_per_pt=_net_vega(val, spot, today, p) / mid_cost,
-        decay_30d_return=_decay_30d(val, spot, today, p))
+        decay_30d_return=_decay_30d(val, spot, today, p),
+        price_ladder=_price_ladder(val, p))
 
 
 def _single_leg_view(v: ContractValuation, band: str,

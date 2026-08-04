@@ -54,6 +54,12 @@ class AnalysisParams:
 
     target_price: float
     target_month: str  # YYYY-MM
+    # V7（#55）劇本區間的兩端，選填。**只供呈現層做三價位對照，不進排名**
+    # （spec #47 明文：仍以目標價排名），因此預設 None 時全線行為與既有完全
+    # 相同。方向合理性（看漲時 worst <= target <= best）在 API 邊界擋，不在
+    # 這裡——引擎收到什麼價位就算什麼價位。
+    best_price: float | None = None
+    worst_price: float | None = None
     strategy: str = "long-call"
     top: int = 3
     iv_shifts: tuple[float, ...] = (-0.2, 0.0, 0.2)  # normalized: 0 included, sorted

@@ -291,6 +291,13 @@
             "natural_cost": 0.6000000000000001,
             "net_delta": 0.02266077529223237,
             "pct_of_capital": null,
+            "price_ladder": [
+              {
+                "label": "target",
+                "price": 130.0,
+                "return": 5.666666666666666
+              }
+            ],
             "quote_warning": false,
             "retention": 0.0,
             "scenario_vector": {
@@ -598,6 +605,13 @@
             "natural_cost": 1.0,
             "net_delta": 0.03452933916953238,
             "pct_of_capital": null,
+            "price_ladder": [
+              {
+                "label": "target",
+                "price": 130.0,
+                "return": 3.0
+              }
+            ],
             "quote_warning": true,
             "retention": 0.0,
             "scenario_vector": {
@@ -905,6 +919,13 @@
             "natural_cost": 1.3999999999999995,
             "net_delta": 0.04197264932089484,
             "pct_of_capital": null,
+            "price_ladder": [
+              {
+                "label": "target",
+                "price": 130.0,
+                "return": 0.8740988910819879
+              }
+            ],
             "quote_warning": false,
             "retention": 0.2703525785482209,
             "scenario_vector": {
@@ -960,6 +981,7 @@
     "target_move": 0.3
   },
   "params": {
+    "best_price": null,
     "delta_bands": [
       0.35,
       0.65
@@ -983,7 +1005,8 @@
     "strategy": "bull-call-spread",
     "target_month": "2026-09",
     "target_price": 130.0,
-    "top": 3
+    "top": 3,
+    "worst_price": null
   },
   "results": [
     {
@@ -1265,6 +1288,13 @@
           "natural_cost": 0.6000000000000001,
           "net_delta": 0.02266077529223237,
           "pct_of_capital": null,
+          "price_ladder": [
+            {
+              "label": "target",
+              "price": 130.0,
+              "return": 5.666666666666666
+            }
+          ],
           "quote_warning": false,
           "retention": 0.0,
           "scenario_vector": {
@@ -1559,6 +1589,13 @@
           "natural_cost": 1.0,
           "net_delta": 0.03452933916953238,
           "pct_of_capital": null,
+          "price_ladder": [
+            {
+              "label": "target",
+              "price": 130.0,
+              "return": 3.0
+            }
+          ],
           "quote_warning": true,
           "retention": 0.0,
           "scenario_vector": {
@@ -1853,6 +1890,13 @@
           "natural_cost": 1.3999999999999995,
           "net_delta": 0.04197264932089484,
           "pct_of_capital": null,
+          "price_ladder": [
+            {
+              "label": "target",
+              "price": 130.0,
+              "return": 0.8740988910819879
+            }
+          ],
           "quote_warning": false,
           "retention": 0.2703525785482209,
           "scenario_vector": {
@@ -2149,6 +2193,13 @@
           "natural_cost": 0.6000000000000001,
           "net_delta": 0.02266077529223237,
           "pct_of_capital": null,
+          "price_ladder": [
+            {
+              "label": "target",
+              "price": 130.0,
+              "return": 5.666666666666666
+            }
+          ],
           "quote_warning": false,
           "retention": 0.0,
           "scenario_vector": {
@@ -2443,6 +2494,13 @@
           "natural_cost": 1.0,
           "net_delta": 0.03452933916953238,
           "pct_of_capital": null,
+          "price_ladder": [
+            {
+              "label": "target",
+              "price": 130.0,
+              "return": 3.0
+            }
+          ],
           "quote_warning": true,
           "retention": 0.0,
           "scenario_vector": {
@@ -2737,6 +2795,13 @@
           "natural_cost": 1.3999999999999995,
           "net_delta": 0.04197264932089484,
           "pct_of_capital": null,
+          "price_ladder": [
+            {
+              "label": "target",
+              "price": 130.0,
+              "return": 0.8740988910819879
+            }
+          ],
           "quote_warning": false,
           "retention": 0.2703525785482209,
           "scenario_vector": {
@@ -3049,6 +3114,13 @@
               "natural_cost": 0.6000000000000001,
               "net_delta": 0.02266077529223237,
               "pct_of_capital": null,
+              "price_ladder": [
+                {
+                  "label": "target",
+                  "price": 130.0,
+                  "return": 5.666666666666666
+                }
+              ],
               "quote_warning": false,
               "retention": 0.0,
               "scenario_vector": {
@@ -3348,6 +3420,13 @@
               "natural_cost": 1.0,
               "net_delta": 0.03452933916953238,
               "pct_of_capital": null,
+              "price_ladder": [
+                {
+                  "label": "target",
+                  "price": 130.0,
+                  "return": 3.0
+                }
+              ],
               "quote_warning": true,
               "retention": 0.0,
               "scenario_vector": {
@@ -3647,6 +3726,13 @@
               "natural_cost": 1.3999999999999995,
               "net_delta": 0.04197264932089484,
               "pct_of_capital": null,
+              "price_ladder": [
+                {
+                  "label": "target",
+                  "price": 130.0,
+                  "return": 0.8740988910819879
+                }
+              ],
               "quote_warning": false,
               "retention": 0.2703525785482209,
               "scenario_vector": {

@@ -14,6 +14,25 @@ export interface DraftScenario {
   symbol: string;
   target_price: number;
   target_month: string;
+  /** V7（#55）劇本區間兩端，選填。未設定時**不出現在物件裡**（而不是送
+   *  `null`）——後端的 optional 欄位語意是「沒送＝沒設定」。 */
+  best_price?: number;
+  worst_price?: number;
+}
+
+/** 選填價位欄位的解析。留白＝未設定（不是錯誤）。 */
+function parseOptionalPrice(
+  raw: string, label: string,
+): { ok: true; value: number | undefined } | { ok: false; error: string } {
+  if (!raw.trim()) return { ok: true, value: undefined };
+  if (!/^-?\d+(\.\d+)?$/.test(raw.trim())) {
+    return { ok: false, error: `${label}要是數字` };
+  }
+  const value = Number(raw);
+  if (!Number.isFinite(value) || value <= 0) {
+    return { ok: false, error: `${label}要大於 0` };
+  }
+  return { ok: true, value };
 }
 
 /**
@@ -24,6 +43,8 @@ export function validateDraft(
   symbol: string,
   price: string,
   month: string,
+  best = "",
+  worst = "",
 ): { ok: true; draft: DraftScenario } | { ok: false; error: string } {
   const sym = symbol.trim().toUpperCase();
   if (!sym) return { ok: false, error: "請填標的代號（例如 TLT）" };
@@ -48,8 +69,29 @@ export function validateDraft(
   if (!/^\d{4}-\d{2}$/.test(month)) {
     return { ok: false, error: "目標年月格式為 YYYY-MM（例如 2028-05）" };
   }
-  return { ok: true, draft: { symbol: sym, target_price: value,
-                              target_month: month } };
+  // V7（#55）兩端。與後端 `_ends_must_straddle_the_target` 同一套規則——
+  // 前端先擋只是省一趟往返，後端仍是權威（重複的是規則，不是真相來源）。
+  const b = parseOptionalPrice(best, "最好價位");
+  if (!b.ok) return b;
+  const w = parseOptionalPrice(worst, "最差價位");
+  if (!w.ok) return w;
+  if (b.value !== undefined && b.value < value) {
+    return { ok: false, error: "最好價位不可低於目標價" };
+  }
+  if (w.value !== undefined && w.value > value) {
+    return { ok: false, error: "最差價位不可高於目標價" };
+  }
+
+  return {
+    ok: true,
+    draft: {
+      symbol: sym, target_price: value, target_month: month,
+      // 未設定就整個不放進物件——`best_price: undefined` 會被 JSON.stringify
+      // 丟掉，行為雖同，但型別上留一個永遠是 undefined 的欄位只會誤導讀者。
+      ...(b.value !== undefined ? { best_price: b.value } : {}),
+      ...(w.value !== undefined ? { worst_price: w.value } : {}),
+    },
+  };
 }
 
 export default function CreateForm({
@@ -63,11 +105,13 @@ export default function CreateForm({
   const [symbol, setSymbol] = useState("");
   const [price, setPrice] = useState("");
   const [month, setMonth] = useState("");
+  const [best, setBest] = useState("");
+  const [worst, setWorst] = useState("");
   const [error, setError] = useState<string | null>(null);
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
-    const checked = validateDraft(symbol, price, month);
+    const checked = validateDraft(symbol, price, month, best, worst);
     if (!checked.ok) {
       setError(checked.error);
       return;
@@ -78,6 +122,8 @@ export default function CreateForm({
       setSymbol("");
       setPrice("");
       setMonth("");
+      setBest("");
+      setWorst("");
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
@@ -118,6 +164,28 @@ export default function CreateForm({
           type="month"
           value={month}
           onChange={(e) => setMonth(e.target.value)}
+        />
+      </label>
+
+      {/* V7（#55）劇本區間兩端：選填，擺在三個必填欄位之後——它們是
+          「除了比較最高，還能比較最低」的加分項，不該擋在主流程前面。 */}
+      <label className="field">
+        <span className="row-label">最好價位（選填）</span>
+        <input
+          className="input"
+          value={best}
+          onChange={(e) => setBest(e.target.value)}
+          inputMode="decimal"
+        />
+      </label>
+
+      <label className="field">
+        <span className="row-label">最差價位（選填）</span>
+        <input
+          className="input"
+          value={worst}
+          onChange={(e) => setWorst(e.target.value)}
+          inputMode="decimal"
         />
       </label>
 

@@ -29,7 +29,9 @@ CREATE TABLE IF NOT EXISTS scenarios (
     notes         TEXT NOT NULL DEFAULT '',
     strategies    JSONB NOT NULL,
     created_at    TEXT NOT NULL,
-    archived_at   TEXT
+    archived_at   TEXT,
+    best_price    DOUBLE PRECISION,
+    worst_price   DOUBLE PRECISION
 );
 CREATE TABLE IF NOT EXISTS results (
     scenario_id   TEXT NOT NULL,
@@ -65,6 +67,8 @@ CREATE INDEX IF NOT EXISTS events_scenario_idx ON events (scenario_id, seq);
 # 而下面仍會把 dsn 標成 ready，該 process 從此每次寫入都撞 UndefinedColumn。
 _MIGRATIONS = """
 ALTER TABLE results ADD COLUMN IF NOT EXISTS best_return DOUBLE PRECISION;
+ALTER TABLE scenarios ADD COLUMN IF NOT EXISTS best_price DOUBLE PRECISION;
+ALTER TABLE scenarios ADD COLUMN IF NOT EXISTS worst_price DOUBLE PRECISION;
 """
 
 # 冷啟動競爭下的良性錯誤：別人已經建好／加好了。
@@ -74,14 +78,16 @@ _BENIGN = (psycopg.errors.DuplicateTable, psycopg.errors.DuplicateObject,
 _RESULT_COLS = "scenario_id, analyzed_at, view, best_return"
 
 _SCENARIO_COLS = ("id, symbol, direction, target_price, target_month, "
-                  "notes, strategies, created_at, archived_at")
+                  "notes, strategies, created_at, archived_at, "
+                  "best_price, worst_price")
 
 
 def _row_to_scenario(row) -> Scenario:
     return Scenario(id=row[0], symbol=row[1], direction=row[2],
                     target_price=row[3], target_month=row[4], notes=row[5],
                     strategies=tuple(row[6]), created_at=row[7],
-                    archived_at=row[8])
+                    archived_at=row[8],
+                    best_price=row[9], worst_price=row[10])
 
 
 class PostgresStorage:
@@ -124,10 +130,11 @@ class PostgresStorage:
             try:
                 conn.execute(
                     f"INSERT INTO scenarios ({_SCENARIO_COLS}) "
-                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
                     (sc.id, sc.symbol, sc.direction, sc.target_price,
                      sc.target_month, sc.notes, Jsonb(list(sc.strategies)),
-                     sc.created_at, sc.archived_at))
+                     sc.created_at, sc.archived_at,
+                     sc.best_price, sc.worst_price))
             except psycopg.errors.UniqueViolation as e:
                 raise ScenarioExists(sc.id) from e
 

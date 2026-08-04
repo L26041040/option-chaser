@@ -38,12 +38,25 @@ export interface Matrix {
   cells: number[][];
 }
 
+/** 一個劇本價位與該候選在那個價位上的報酬（口徑同 `baseline_return`）。 */
+export interface PricePoint {
+  label: "worst" | "target" | "best";
+  price: number;
+  return: number;
+}
+
 export interface Candidate {
   candidate_key: string;
   baseline_return: number;
   natural_cost: number;
   /** Long Call 追平價格 S*。同履約價 Call 報價缺失時為 null＝無法計算。 */
   catchup_price: number | null;
+  /**
+   * V7（#55）劇本區間三價位對照，由最差到最好排序。目標價恆在其中；
+   * 兩端只在使用者設定時才出現，所以長度是 1～3。
+   * 選填是因為 V7 之前落盤的結果沒有這個欄位。
+   */
+  price_ladder?: PricePoint[];
   /** 引擎標記的報價品質疑慮（⚠ 徽章）。 */
   quote_warning: boolean;
   legs: Leg[];
@@ -173,6 +186,9 @@ export interface CreateScenarioRequest {
   symbol: string;
   target_price: number;
   target_month: string;
+  /** V7（#55）劇本區間兩端，選填——沒設定就不送這兩個鍵。 */
+  best_price?: number;
+  worst_price?: number;
 }
 
 function stageOf(value: unknown): FailureStage {

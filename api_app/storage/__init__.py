@@ -24,6 +24,9 @@ class Scenario:
     strategies: tuple[str, ...]
     created_at: str           # ISO 8601
     archived_at: str | None = None   # 非 None ＝ 已封存（軟刪除）
+    # V7（#55）劇本區間兩端，選填。既有劇本讀回來是 None，行為不變。
+    best_price: float | None = None
+    worst_price: float | None = None
 
     def archived(self, ts: str) -> "Scenario":
         return replace(self, archived_at=ts)

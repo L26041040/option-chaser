@@ -16,7 +16,7 @@ from datetime import date
 from typing import Callable, Literal
 
 from fastapi import FastAPI, HTTPException, Request
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from option_chaser import __version__, service, store
 from option_chaser.models import (AnalysisParams, ChainSnapshot, FetchError,
@@ -63,6 +63,27 @@ class CreateScenarioRequest(BaseModel):
     target_price: float = Field(gt=0)
     target_month: str = _MONTH
     notes: str = ""
+    # V7（#55）劇本區間兩端，選填（留白＝未設定，不報錯）。
+    best_price: float | None = Field(default=None, gt=0)
+    worst_price: float | None = Field(default=None, gt=0)
+
+    @model_validator(mode="after")
+    def _ends_must_straddle_the_target(self) -> "CreateScenarioRequest":
+        """方向合理性（票上「依工程判斷處理並記錄」的裁示）。
+
+        本輪只有看漲策略（`_MVP_DIRECTION`），所以區間必然是
+        最差 <= 目標 <= 最好。填反了幾乎一定是打錯欄位——擋在這裡，
+        而不是靜靜算出一組「最好比目標還糟」的數字讓人自己看出不對。
+        兩端可以等於目標價（等於就是「這一端沒有想像空間」，是有意義的
+        主張，不擋）。
+        """
+        if self.best_price is not None and self.best_price < self.target_price:
+            raise ValueError(
+                f"最好價位（{self.best_price}）不可低於目標價（{self.target_price}）")
+        if self.worst_price is not None and self.worst_price > self.target_price:
+            raise ValueError(
+                f"最差價位（{self.worst_price}）不可高於目標價（{self.target_price}）")
+        return self
 
 
 def _timing_json(sc: Scenario, today: date) -> dict:
@@ -89,7 +110,8 @@ def _scenario_json(sc: Scenario) -> dict:
     return {"id": sc.id, "symbol": sc.symbol, "direction": sc.direction,
             "target_price": sc.target_price, "target_month": sc.target_month,
             "notes": sc.notes, "strategies": list(sc.strategies),
-            "created_at": sc.created_at, "archived_at": sc.archived_at}
+            "created_at": sc.created_at, "archived_at": sc.archived_at,
+            "best_price": sc.best_price, "worst_price": sc.worst_price}
 
 
 def _row_json(sc: Scenario, today: date, *, analyzed_at: str | None,
@@ -137,8 +159,9 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         return sc
 
     def _analyze(*, scenario_id: str, symbol: str, target_price: float,
-                 target_month: str, strategies: tuple[str, ...]
-                 ) -> tuple[dict, dict]:
+                 target_month: str, strategies: tuple[str, ...],
+                 best_price: float | None = None,
+                 worst_price: float | None = None) -> tuple[dict, dict]:
         """跑一次分析，回傳 (view dict, 原始快照 dict)。
 
         只吃分析真正需要的欄位——不要求一個完整的 `Scenario`，一次性
@@ -150,7 +173,8 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         # `workspace._request_for` 同樣的做法。
         params = AnalysisParams(target_price=target_price,
                                 target_month=target_month,
-                                strategy=strategies[0])
+                                strategy=strategies[0],
+                                best_price=best_price, worst_price=worst_price)
         req = service.AnalysisRequest(symbol=symbol, base_params=params,
                                       strategies=tuple(strategies))
         # 兩段各自 try：抓鏈與分析是兩個不同的失敗環節（V4／#52），
@@ -213,7 +237,8 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         sc = Scenario(id=uuid.uuid4().hex[:12], symbol=req.symbol.upper(),
                       direction=_MVP_DIRECTION, target_price=req.target_price,
                       target_month=req.target_month, notes=req.notes,
-                      strategies=_MVP_STRATEGIES, created_at=ts)
+                      strategies=_MVP_STRATEGIES, created_at=ts,
+                      best_price=req.best_price, worst_price=req.worst_price)
         try:
             _db().create_scenario(sc)
         except ScenarioExists as e:   # 48-bit 隨機 id，實務上碰不到；不留 500 的縫
@@ -273,7 +298,8 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         sc = _require(scenario_id)
         view, snapshot = _analyze(
             scenario_id=sc.id, symbol=sc.symbol, target_price=sc.target_price,
-            target_month=sc.target_month, strategies=sc.strategies)
+            target_month=sc.target_month, strategies=sc.strategies,
+            best_price=sc.best_price, worst_price=sc.worst_price)
         analyzed_at = view["analyzed_at"]
         best_return = store.best_return(view)
         _db().save_result(ResultRecord(scenario_id=sc.id,

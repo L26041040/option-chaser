@@ -117,3 +117,56 @@ describe("建立表單驗證的邊界（V3／#51 檢視回饋）", () => {
     });
   });
 });
+
+describe("劇本區間兩端（V7／#55）", () => {
+  it("兩端都是選填，留白照樣送得出去，且不出現在送出的資料裡", () => {
+    expect(validateDraft("TLT", "120", "2028-05", "", "")).toEqual({
+      ok: true,
+      draft: { symbol: "TLT", target_price: 120, target_month: "2028-05" },
+    });
+  });
+
+  it("只填一端也可以", () => {
+    expect(validateDraft("TLT", "120", "2028-05", "150", "")).toEqual({
+      ok: true,
+      draft: {
+        symbol: "TLT", target_price: 120, target_month: "2028-05",
+        best_price: 150,
+      },
+    });
+    expect(validateDraft("TLT", "120", "2028-05", "", "100")).toEqual({
+      ok: true,
+      draft: {
+        symbol: "TLT", target_price: 120, target_month: "2028-05",
+        worst_price: 100,
+      },
+    });
+  });
+
+  it("方向填反了要當場擋下，不要等後端回 422", () => {
+    // 與後端 `_ends_must_straddle_the_target` 同一套規則：看漲劇本必然是
+    // 最差 <= 目標 <= 最好。前端先擋只是為了省一趟往返，後端仍是權威。
+    expect(validateDraft("TLT", "120", "2028-05", "110", "")).toEqual({
+      ok: false, error: "最好價位不可低於目標價",
+    });
+    expect(validateDraft("TLT", "120", "2028-05", "", "130")).toEqual({
+      ok: false, error: "最差價位不可高於目標價",
+    });
+  });
+
+  it("兩端等於目標價是允許的（＝這一端沒有想像空間，是有意義的主張）", () => {
+    expect(validateDraft("TLT", "120", "2028-05", "120", "120").ok).toBe(true);
+  });
+
+  it("兩端也要是數字", () => {
+    expect(validateDraft("TLT", "120", "2028-05", "abc", "")).toEqual({
+      ok: false, error: "最好價位要是數字",
+    });
+  });
+
+  it("畫面上兩端欄位同樣留白、且標示為選填", () => {
+    render(<CreateForm onCreate={vi.fn()} />);
+    expect(screen.getByLabelText("最好價位（選填）")).toHaveValue("");
+    expect(screen.getByLabelText("最差價位（選填）")).toHaveValue("");
+  });
+});

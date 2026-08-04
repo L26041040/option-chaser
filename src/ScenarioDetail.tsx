@@ -22,7 +22,8 @@ import {
   type Candidate,
   type ScenarioDetail as Detail,
 } from "./api";
-import { candidateTitle, catchupView, formatMove, strategyLabel } from "./detail";
+import { candidateTitle, catchupView, formatMove, priceLadderView,
+         strategyLabel } from "./detail";
 import { isThinPool, validPairsForExpiry } from "./expiry";
 import { formatAnalyzedAt, formatReturn, money } from "./scenarios";
 
@@ -69,6 +70,35 @@ function Catchup({ view, candidate }: { view: AnalysisView; candidate: Candidate
       {catchup.beatsTarget && (
         <p className="notice warn">Long Call 在本劇本內即勝過此 Spread</p>
       )}
+    </section>
+  );
+}
+
+/**
+ * 劇本區間三價位對照（V7／#55）。兩端都沒設定就整區不出現——見
+ * `priceLadderView`。排名口徑不變（仍以目標價），這一區純粹是「同一組
+ * 候選在我的劇本區間兩端各會怎樣」。
+ */
+function PriceLadder({ candidate }: { candidate: Candidate | null }) {
+  const ladder = candidate && priceLadderView(candidate);
+  if (!ladder) return null;
+
+  return (
+    <section className="card" aria-label="劇本區間對照">
+      <h2 className="section-title">劇本區間對照</h2>
+      <p className="caption">
+        同一組候選在劇本區間各價位的到期報酬，口徑與上方主數字相同。
+      </p>
+      <div className="ladder">
+        {ladder.map((p) => (
+          <div className="ladder-point" key={p.label}>
+            <span className="row-label">{p.label}</span>
+            <span className={`metric ${p.ret >= 0 ? "positive" : "negative"}`}>
+              {formatReturn(p.ret)}
+            </span>
+          </div>
+        ))}
+      </div>
     </section>
   );
 }
@@ -143,6 +173,8 @@ function DetailBody({ view, analyzedAt }: {
     <>
       <Summary view={view} analyzedAt={analyzedAt} />
       <Chart view={view} candidate={candidate} />
+      {/* 三價位對照緊接主圖：它講的就是主圖那一組候選。 */}
+      <PriceLadder candidate={candidate} />
       <Catchup view={view} candidate={candidate} />
       {/* 到期日結構（V6／#54）接在主圖之下。切換到期日只換這一塊的清單，
           主圖不動——主圖固定是 baseline 期第 1 名（QA1-06 的既有裁示）。 */}

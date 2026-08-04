@@ -195,3 +195,56 @@ describe("主圖的候選池警語（V6／#54 檢視回饋）", () => {
     expect(mainChart().getByText(/只有 1 組候選/)).toBeInTheDocument();
   });
 });
+
+describe("劇本區間三價位對照（V7／#55）", () => {
+  const LADDER = [
+    { label: "worst", price: 110, return: -1 },
+    { label: "target", price: 130, return: 5.667 },
+    { label: "best", price: 150, return: 5.667 },
+  ];
+
+  function renderWithLadder(ladder: unknown) {
+    mockDetail(detail({ latest_result: withTopCandidate({ price_ladder: ladder }) }));
+    render(<ScenarioDetail id="s1" />);
+  }
+
+  function ladderSection() {
+    return within(screen.getByRole("heading", { name: "劇本區間對照" })
+      .closest("section")!);
+  }
+
+  it("三個價位並列，由最差到最好", async () => {
+    renderWithLadder(LADDER);
+    await screen.findByRole("heading", { name: "劇本區間對照" });
+
+    const section = ladderSection();
+    expect(section.getByText("最差 $110.00")).toBeInTheDocument();
+    expect(section.getByText("目標 $130.00")).toBeInTheDocument();
+    expect(section.getByText("最好 $150.00")).toBeInTheDocument();
+  });
+
+  it("只設定一端時，另一端不顯示也不留空格", async () => {
+    renderWithLadder(LADDER.slice(1));
+    await screen.findByRole("heading", { name: "劇本區間對照" });
+
+    const section = ladderSection();
+    expect(section.queryByText(/最差/)).not.toBeInTheDocument();
+    expect(section.getByText("最好 $150.00")).toBeInTheDocument();
+  });
+
+  it("兩端都沒設定時整區不出現——不畫一個只有目標價的對照表", async () => {
+    renderWithLadder([{ label: "target", price: 130, return: 5.667 }]);
+    await screen.findByRole("heading", { name: "劇本主圖" });
+
+    expect(screen.queryByRole("heading", { name: "劇本區間對照" }))
+      .not.toBeInTheDocument();
+  });
+
+  it("舊資料沒有這個欄位時不會壞（欄位是 V7 才加的）", async () => {
+    renderWithLadder(undefined);
+    await screen.findByRole("heading", { name: "劇本主圖" });
+
+    expect(screen.queryByRole("heading", { name: "劇本區間對照" }))
+      .not.toBeInTheDocument();
+  });
+});

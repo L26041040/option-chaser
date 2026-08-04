@@ -9,6 +9,7 @@ from .valuation import (
     intrinsic_value,
     scenario_leg_value,
     spread_guidance_judgments,
+    spread_scenario_value,
 )
 
 BAND_CONSERVATIVE = "conservative"
@@ -35,6 +36,27 @@ def classify(delta: float, bands: tuple[float, float]) -> str:
 def baseline_return(v: ContractValuation) -> float:
     """主排名數字。成本口徑＝最差成交假設（單腿＝Ask，附錄 A14.2）。"""
     return (v.baseline_value - v.contract.ask) / v.contract.ask
+
+
+def return_at_price(
+    val: ContractValuation | SpreadValuation, S: float, p: AnalysisParams
+) -> float:
+    """任意標的價位下的劇本報酬（V7／#55，三價位對照用）。
+
+    口徑與主排名數字**完全相同**——錨點日估值、基準 IV、最差成交成本
+    （單腿＝Ask；價差＝買腿 Ask − 賣腿 Bid，附錄 A14.2），只有標的價換成
+    `S`。這是刻意的：三價位要能與頭條那個數字並排讀，就不能是另一套算法。
+    `return_at_price(v, p.target_price, p) == baseline_return(v)` 由測試釘住。
+
+    不改排名（spec #47 明文：仍以目標價排名）——本函式只供呈現。
+    """
+    if isinstance(val, SpreadValuation):
+        value = spread_scenario_value(val.long_leg, val.short_leg, S, p.anchor, p)
+        cost = val.net_worst
+    else:
+        value = scenario_leg_value(val.contract, S, p.anchor, p)
+        cost = val.contract.ask
+    return (value - cost) / cost
 
 
 def _tie_break_key(v: ContractValuation) -> tuple:

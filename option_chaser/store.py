@@ -396,6 +396,10 @@ def _candidate(cv: CandidateView, strategy: str, capital: float | None,
                    "cells": [list(r) for r in cv.matrix.cells]},
         # spec §3 新增四組（乘除法與日期差，非估值邏輯）
         "capital_per_contract": cap_per,
+        # V7（#55）：劇本區間三價位對照。兩端都沒設時是空陣列，呈現層據此
+        # 不畫這一區（不是畫一個只有一格的表）。
+        "price_ladder": [{"label": pt.label, "price": pt.price, "return": pt.ret}
+                         for pt in cv.price_ladder],
         "max_loss_per_contract": cap_per,   # debit 恆等於成本
         "pct_of_capital": (cap_per / capital) if capital else None,
         # 參考日＝日曆錨點（附錄 A9）；年月本身不映射成任何一天。
