@@ -42,6 +42,17 @@ def _spread_width_warning(prefix: str, bid: float, ask: float, p: AnalysisParams
             f"Bid ${_money(bid)} / Ask ${_money(ask)}）")
 
 
+def _monotonicity_warning_line(prefix: str, contract_symbol: str,
+                               violations: frozenset[str]) -> str | None:
+    """FB5-03（#64）：無套利一致性違反只標示、不刪除候選；比照 FB5-02
+    的 `_spread_width_warning` 同一種寫法——`violations` 是呼叫端算好的
+    集合（`filters.monotonicity_violations()`），這裡只查表。`prefix`
+    同上，區分買腿／賣腿，單腿傳空字串。"""
+    if contract_symbol not in violations:
+        return None
+    return f"- 警示: {prefix}報價與鄰近履約價不一致，疑似陳舊報價"
+
+
 def _val_line(name: str, val: float, cost: float) -> str:
     """spec §7: each scenario line = 估值 + 損益 + 報酬率 (per-share and per-contract)."""
     pnl = val - cost
@@ -137,6 +148,7 @@ def _candidate_lines(
     v: ContractValuation, idx: int, band: str,
     ranked: dict[str, list[ContractValuation]],
     snap: ChainSnapshot, n_qualified: int, p: AnalysisParams, today: date,
+    violations: frozenset[str] = frozenset(),
 ) -> list[str]:
     c = v.contract
     word = "高於" if c.option_type == "call" else "低於"
@@ -156,6 +168,9 @@ def _candidate_lines(
     width_warning = _spread_width_warning("", c.bid, c.ask, p)
     if width_warning:
         lines.append(width_warning)
+    mono_warning = _monotonicity_warning_line("", c.contract_symbol, violations)
+    if mono_warning:
+        lines.append(mono_warning)
     lines.append("")
     # T12（附錄 A14.2）：主數字成本口徑＝Ask（保守成交假設）。原「Natural
     # 成交報酬」與基準情境列因此重合，已合併，不再另列。
@@ -223,6 +238,9 @@ def _footer_lines(p: AnalysisParams) -> list[str]:
         f"買賣價差寬度僅供參考顯示，不影響候選是否入選，spec #61；買賣價差"
         f"超過 max({p.spread_floor:g}, {p.max_spread_pct:g}*Mid) 時逐候選附警示，"
         "見各候選「買賣價差偏大」）",
+        "- 無套利一致性: 同到期日、同類型的相鄰履約價 Ask 應單調（call 非"
+        "遞增、put 非遞減），違反時僅標示、不影響候選是否入選，spec #61；"
+        "見各候選「報價與鄰近履約價不一致，疑似陳舊報價」",
         "- 排名: Delta 分級（實務慣例），級內以基準情境報酬率（最差進場）排序",
         "- 模型限制: 無股利調整（q=0）、歐式近似、IV 乘法情境",
         "- 免責: 模型估計非保證價格，不構成投資建議",
@@ -252,6 +270,7 @@ def render_filter_only(
 def render(
     snap: ChainSnapshot, p: AnalysisParams, freport: FilterReport,
     ranked: dict[str, list[ContractValuation]], n_qualified: int, today: date,
+    violations: frozenset[str] = frozenset(),
 ) -> str:
     lines = _header_lines(snap, p, today) + _filter_lines(freport, p)
     idx = 0
@@ -263,7 +282,8 @@ def render(
             continue
         for j, v in enumerate(ranked[band]):
             idx += 1
-            lines += _candidate_lines(v, idx, band, ranked, snap, n_qualified, p, today)
+            lines += _candidate_lines(v, idx, band, ranked, snap, n_qualified, p,
+                                      today, violations)
             if j == 0 or p.matrix_all:
                 c = v.contract
                 lines += _matrix_block(
@@ -289,7 +309,8 @@ def _pair_lines(pr) -> list[str]:
             f"- 健全性淘汰: {pr.removed_sanity}", f"- 合格組數: {pr.passed}"]
 
 
-def _spread_candidate_lines(sv, idx, n_pairs, p, spot: float, today: date) -> list[str]:
+def _spread_candidate_lines(sv, idx, n_pairs, p, spot: float, today: date,
+                            violations: frozenset[str] = frozenset()) -> list[str]:
     from .ranking import build_spread_reasons
     from .valuation import spread_guidance_judgments
     ll, sl = sv.long_leg, sv.short_leg
@@ -306,6 +327,9 @@ def _spread_candidate_lines(sv, idx, n_pairs, p, spot: float, today: date) -> li
         warning = _spread_width_warning(prefix, leg.bid, leg.ask, p)
         if warning:
             lines.append(warning)
+        mono_warning = _monotonicity_warning_line(prefix, leg.contract_symbol, violations)
+        if mono_warning:
+            lines.append(mono_warning)
     lines += [
         "",
         "劇本成立時（最差進場）:",
@@ -327,13 +351,14 @@ def _spread_candidate_lines(sv, idx, n_pairs, p, spot: float, today: date) -> li
     return lines
 
 
-def render_spreads(snap, p, freport, pair_report, ranked, n_pairs, today) -> str:
+def render_spreads(snap, p, freport, pair_report, ranked, n_pairs, today,
+                   violations: frozenset[str] = frozenset()) -> str:
     lines = _header_lines(snap, p, today) + _filter_lines(freport, p) + _pair_lines(pair_report)
     if not ranked:
         lines += ["", "無合格價差組合，不產生推薦。", ""]
         return "\n".join(lines)
     for i, sv in enumerate(ranked):
-        lines += _spread_candidate_lines(sv, i, n_pairs, p, snap.spot, today)
+        lines += _spread_candidate_lines(sv, i, n_pairs, p, snap.spot, today, violations)
         if i == 0 or p.matrix_all:
             lng, sht = sv.long_leg, sv.short_leg
             lines += _matrix_block(

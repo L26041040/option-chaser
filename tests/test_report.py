@@ -24,3 +24,21 @@ def test_resilience_section_present_and_formatted():
         # 與基準情境列重合，已合併移除。
         assert "Natural 成交報酬" not in text
         assert "成本口徑" in text
+
+
+def test_monotonicity_warning_line_appears_in_the_text_report():
+    """FB5-03（#64）：無套利一致性違反在 CLI 純文字報告裡也要說得出來，
+    不是只有網頁前端看得到——這份既有 fixture（xyz_v2_snapshot.json）
+    剛好自然帶著一組真實違反（XYZC100D vs XYZC102O），端到端跑一次
+    `service.run_offline` 就能在報告文字裡看到警示行與尾註說明。"""
+    from option_chaser import service
+    from option_chaser.models import AnalysisParams
+    result = service.run_offline(service.AnalysisRequest(
+        symbol="XYZ",
+        base_params=AnalysisParams(strategy="long-call", target_price=120.0,
+                                   target_month="2026-08", min_return=0.0),
+        strategies=("long-call",)),
+        "tests/fixtures/xyz_v2_snapshot.json")
+    text = result.results[0].report_text
+    assert "報價與鄰近履約價不一致，疑似陳舊報價" in text
+    assert "無套利一致性" in text

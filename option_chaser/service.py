@@ -489,7 +489,7 @@ def _single_leg_result(p: AnalysisParams, snap: ChainSnapshot,
     vals = [evaluate_contract(c, snap.spot, today, p) for c in qualified]
     ranked = rank(vals, p)
     text = render(snap, p, freport, ranked, n_qualified=len(qualified),
-                  today=today)
+                  today=today, violations=violations)
     candidates = []
     for band in BAND_ORDER:
         if not ranked[band]:
@@ -542,7 +542,8 @@ def _spread_result(p: AnalysisParams, snap: ChainSnapshot,
     spreads = [evaluate_spread(l, s, snap.spot, today, p) for l, s in pairs]
     ranked = rank_spreads(spreads, p)
     text = render_spreads(snap, p, freport, pair_report, ranked,
-                          n_pairs=pair_report.passed, today=today)
+                          n_pairs=pair_report.passed, today=today,
+                          violations=violations)
     candidates = []
     for i, sv in enumerate(ranked[:3]):
         candidates.append(_spread_view(sv, i, pair_report.passed, snap.spot,

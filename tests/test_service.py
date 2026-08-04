@@ -34,6 +34,7 @@ def test_single_leg_result_matches_engine_and_report():
     from option_chaser.valuation import evaluate_contract
     from option_chaser.ranking import rank
     from option_chaser.report import render
+    from option_chaser.filters import monotonicity_violations
     from option_chaser.data.snapshot import load_snapshot, snapshot_today
     r = service.run_offline(req(["long-call"]), FIX)
     res = r.results[0]
@@ -48,8 +49,13 @@ def test_single_leg_result_matches_engine_and_report():
     assert res.n_qualified == len(qualified)
     vals = [evaluate_contract(c, snap.spot, today, p) for c in qualified]
     ranked = rank(vals, p)
+    # FB5-03（#64）：`render()` 現在吃 `violations`，這份 fixture 剛好帶著
+    # 一組真實的單調性違反（XYZC100D／XYZC102O）——沒補這個參數，重算出
+    # 的文字會少一行警示，跟 `res.report_text` 對不上。
+    violations = monotonicity_violations(qualified)
     assert res.report_text == render(snap, p, freport, ranked,
-                                     n_qualified=len(qualified), today=today)
+                                     n_qualified=len(qualified), today=today,
+                                     violations=violations)
     # tab candidates = band #1s
     assert [cv.valuation.contract.contract_symbol for cv in res.candidates] == [
         ranked[b][0].contract.contract_symbol for b in ("conservative", "balanced", "aggressive") if ranked[b]]
