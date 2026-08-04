@@ -323,6 +323,19 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         return [{"analyzed_at": r.analyzed_at}
                 for r in _db().result_history(scenario_id)]
 
+    @app.get("/api/scenarios/{scenario_id}/history")
+    def get_spread_history(scenario_id: str, candidate_key: str) -> dict:
+        """V9（#57，T11／#25 既有語意）：跨這個劇本全部歷史結果，依
+        Spread 身份鍵（`candidate_key`）聚合成時間序列——唯讀，缺席快照
+        如實呈現為斷點（`store.spread_cost_history()`），不插值。
+
+        `result_history()` 回傳的 `ResultRecord.view` 已經是完整 view
+        dict，不必額外重算——這條端點只是把既有引擎聚合邏輯接上 HTTP。
+        """
+        _require(scenario_id)
+        views = [r.view for r in _db().result_history(scenario_id)]
+        return {"entries": store.spread_cost_history(views, candidate_key)}
+
     def _load_raw_snapshot(scenario_id: str) -> ChainSnapshot:
         """V8（#56）：原始資料（當次快照）——`refresh_scenario` 早就在
         `save_snapshot` 把它跟結果一起存進去了（`main.py` 既有邏輯，

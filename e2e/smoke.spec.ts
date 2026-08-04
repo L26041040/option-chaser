@@ -55,7 +55,19 @@ const RAW_DATA = {
                implied_volatility: 0.38 }],
 };
 
-/** 詳細頁測試共用的路由：清單、單一劇本、刷新、原始資料。 */
+/** V9（#57）：Spread 淨成本走勢——三筆假歷史，中間一筆缺席（斷點）。 */
+const SPREAD_HISTORY = {
+  entries: [
+    { analyzed_at: "2026-07-01T21:30:00-04:00", spot: 100.0, cost: 5.0,
+     baseline_return: 0.3, rank_in_expiry: 2 },
+    { analyzed_at: "2026-07-08T21:30:00-04:00", spot: 101.0, cost: null,
+     baseline_return: null, rank_in_expiry: null },
+    { analyzed_at: "2026-07-15T21:30:00-04:00", spot: 99.0, cost: 5.5,
+     baseline_return: 0.5, rank_in_expiry: 1 },
+  ],
+};
+
+/** 詳細頁測試共用的路由：清單、單一劇本、刷新、原始資料、Spread 歷史。 */
 async function routeLibrary(page: import("@playwright/test").Page, row: unknown) {
   await page.route("**/api/scenarios", (route) => route.fulfill({ json: [row] }));
   await page.route("**/api/scenarios/s1", (route) =>
@@ -64,6 +76,8 @@ async function routeLibrary(page: import("@playwright/test").Page, row: unknown)
     route.fulfill({ json: row }));
   await page.route("**/api/scenarios/*/raw-data", (route) =>
     route.fulfill({ json: RAW_DATA }));
+  await page.route("**/api/scenarios/*/history*", (route) =>
+    route.fulfill({ json: SPREAD_HISTORY }));
 }
 
 test("清單 → 詳細頁：摘要、主圖、追平價格、候選池（V5／#53）", async ({ page }) => {
@@ -138,6 +152,32 @@ test("進階區：分析報告與原始資料展開才載入（V8／#56）", asy
   await expect(downloadLink).toHaveAttribute(
     "href", "/api/scenarios/s1/raw-data.csv");
   await expect(downloadLink).toHaveAttribute("download", "");
+});
+
+test("Spread 淨成本走勢：展開才抓，日／週／月可切換（V9／#57）", async ({ page }) => {
+  await routeLibrary(page, libraryRow());
+  await page.goto("/#/s/s1");
+
+  const history = page.locator(".card").filter({ hasText: "Spread 淨成本走勢" }).first();
+  await expect(history.locator("svg")).toHaveCount(0);
+
+  await history.getByText("Spread 淨成本走勢").click();
+
+  // 三筆歷史裡一筆缺席（斷點）——只有兩個資料點畫得出來，折線在缺席
+  // 那裡斷開成兩段，不連過去、不畫成 0。
+  const chart = history.locator("svg");
+  await expect(chart).toBeVisible();
+  await expect(chart.locator("circle")).toHaveCount(2);
+  await expect(chart.locator("polyline")).toHaveCount(2);
+
+  // 日／週／月切換：預設「日」，點「月」後樣式跟著換，且不重新打 API
+  // （sinceRequests 只在展開當下打過一次）。
+  const day = history.getByRole("button", { name: "日" });
+  const month = history.getByRole("button", { name: "月" });
+  await expect(day).toHaveAttribute("aria-pressed", "true");
+  await month.click();
+  await expect(month).toHaveAttribute("aria-pressed", "true");
+  await expect(day).toHaveAttribute("aria-pressed", "false");
 });
 
 test("到期日結構：切換到期日 → 就地展開候選（V6／#54）", async ({ page }) => {

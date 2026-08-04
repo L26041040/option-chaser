@@ -404,6 +404,27 @@ export function rawDataCsvUrl(id: string): string {
 }
 
 /**
+ * V9（#57，T11／#25 既有語意）：一個 Spread 身份鍵（`candidate_key`）
+ * 跨這個劇本全部歷史結果的淨成本時間序列。缺席快照如實回傳斷點
+ * （`cost` 等三欄為 null），不插值、不跳過。
+ */
+export interface HistoryEntry {
+  analyzed_at: string;
+  spot: number;
+  cost: number | null;
+  baseline_return: number | null;
+  rank_in_expiry: number | null;
+}
+
+export function getSpreadHistory(
+  id: string, candidateKey: string,
+): Promise<{ entries: HistoryEntry[] }> {
+  return request<{ entries: HistoryEntry[] }>(
+    `/api/scenarios/${encodeURIComponent(id)}/history` +
+    `?candidate_key=${encodeURIComponent(candidateKey)}`);
+}
+
+/**
  * baseline 到期日那一組的第 1 名候選。引擎已把各期候選依收益率排好序，
  * 這裡只是取出，不做任何排序或計算。
  *

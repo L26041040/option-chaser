@@ -16,6 +16,7 @@ import CandidatePool from "./CandidatePool";
 import ExpiryStructure from "./ExpiryStructure";
 import Heatmap from "./Heatmap";
 import RawData from "./RawData";
+import SpreadHistory from "./SpreadHistory";
 import {
   baselineTopCandidate,
   getScenario,
@@ -188,12 +189,13 @@ function DetailBody({ scenarioId, view, analyzedAt }: {
           沒有意義。它本來掛在 V1 的一次性分析畫面上，隨那塊一起搬進
           詳細頁——池子本來就是「這個劇本這次分析」的事。 */}
       <CandidatePool view={view} />
-      {/* 進階區（V8／#56）：分析報告新版型＋原始資料，接在候選池診斷
-          之後——這兩塊是「想深入研究這個劇本」才會打開的東西，不該
-          搶在主圖與到期日結構之前。 */}
+      {/* 進階區（V8／#56、V9／#57）：分析報告新版型＋Spread 淨成本走勢
+          ＋原始資料，接在候選池診斷之後——這幾塊是「想深入研究這個
+          劇本」才會打開的東西，不該搶在主圖與到期日結構之前。 */}
       {result && (
         <AnalysisReport view={view} result={result} candidate={candidate} />
       )}
+      <SpreadHistory scenarioId={scenarioId} candidate={candidate} />
       <RawData scenarioId={scenarioId} />
     </>
   );

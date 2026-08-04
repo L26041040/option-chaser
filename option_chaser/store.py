@@ -11,6 +11,7 @@ import os
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
+from typing import Iterable
 
 from . import __version__
 from .models import AnalysisParams, ChainSnapshot
@@ -344,6 +345,39 @@ def _leg(c) -> dict:
             "strike": c.strike, "expiry": c.expiry, "bid": c.bid,
             "ask": c.ask, "iv": c.implied_volatility, "volume": c.volume,
             "open_interest": c.open_interest}
+
+
+def spread_cost_history(views: Iterable[dict], candidate_key: str) -> list[dict]:
+    """V9（#57）：跨一個劇本的全部歷史快照（序列化 view dict），依 Spread
+    身份鍵（`candidate_key`，已含策略／買賣履約價／到期日，見
+    `service.valuation_key`）聚合出時間序列。
+
+    與 Streamlit 版 `workspace.spread_history()`（T11／#25）同一套語意，
+    只是輸入從「讀檔案路徑」換成「呼叫端已經備妥的 view dict 序列」——
+    新架構（`api_app`）的 `Storage.result_history()` 回傳的是
+    `ResultRecord`（`.view` 已經是這個形狀），沒有檔案路徑可讀；
+    `workspace.spread_history()` 改為委派本函式，兩邊共用同一份邏輯。
+
+    唯讀聚合：只讀 view dict，不寫入、不改變任何計算或保存範圍。某次
+    快照的 `all_candidates` 找不到這個鍵（該候選當次不是有效候選，例如
+    缺報價被過濾）→ 該筆仍然入列，但 cost／baseline_return／
+    rank_in_expiry 皆為 None：如實呈現斷點，不插值、不跳過、不報錯；
+    `analyzed_at`／`spot` 仍取自那次成功更新本身。範圍限定 Spread 路徑
+    （`all_candidates` 只有 spread 策略填入，T9 附錄A13 既有 MVP 範圍）。
+    """
+    out = []
+    for view in views:
+        entry = next((e for r in view["results"]
+                     for e in r.get("all_candidates", [])
+                     if e["candidate_key"] == candidate_key), None)
+        out.append({
+            "analyzed_at": view["analyzed_at"],
+            "spot": view["meta"]["spot"],
+            "cost": entry["cost"] if entry else None,
+            "baseline_return": entry["baseline_return"] if entry else None,
+            "rank_in_expiry": entry["rank_in_expiry"] if entry else None,
+        })
+    return out
 
 
 def raw_snapshot_json(snap: ChainSnapshot) -> dict:

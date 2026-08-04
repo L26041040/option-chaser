@@ -238,21 +238,14 @@ def spread_history(ws_root, sid: str, candidate_key: str) -> list[dict]:
     例如缺報價被過濾——非關鍵資料失敗，見附錄A12）→ 該筆仍然入列，
     但 cost／baseline_return／rank_in_expiry 皆為 None：如實呈現斷點，
     不插值、不跳過、不報錯；`analyzed_at`／`spot` 仍取自那次成功更新本身。
+
+    V9（#57）：實際聚合邏輯搬進 `store.spread_cost_history()`——新架構
+    （`api_app`）的 `Storage.result_history()` 沒有檔案路徑可讀，只有
+    view dict 序列，兩邊因此共用同一份聚合邏輯，本函式只負責「怎麼把
+    檔案路徑換成 view dict 序列」這一段檔案層專屬的事。
     """
-    out = []
-    for p in store.list_result_paths(ws_root, sid):
-        view = store.load_result(p)
-        entry = next((e for r in view["results"]
-                     for e in r.get("all_candidates", [])
-                     if e["candidate_key"] == candidate_key), None)
-        out.append({
-            "analyzed_at": view["analyzed_at"],
-            "spot": view["meta"]["spot"],
-            "cost": entry["cost"] if entry else None,
-            "baseline_return": entry["baseline_return"] if entry else None,
-            "rank_in_expiry": entry["rank_in_expiry"] if entry else None,
-        })
-    return out
+    views = [store.load_result(p) for p in store.list_result_paths(ws_root, sid)]
+    return store.spread_cost_history(views, candidate_key)
 
 
 # ---------- 劇本級狀態燈號（需求六／T6，純函式） ----------

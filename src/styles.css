@@ -840,3 +840,39 @@ body {
   margin: 0 calc(var(--gap) * -1);
   padding: 0 var(--gap);
 }
+
+/* Spread 淨成本走勢（V9／#57）。日／週／月是固定三選一，不像到期日
+   chip 那樣數量不定要橫向捲動——用 iOS 風格的分段控制項，不是 `.chip`
+   （那是給「多顆、可能捲動、兩行內容」的到期日按鈕設計的，形狀不合）。 */
+.segmented {
+  display: flex;
+  background: var(--fill);
+  border-radius: 10px;
+  padding: 2px;
+  gap: 2px;
+}
+
+.segmented-option {
+  appearance: none;
+  border: 0;
+  flex: 1;
+  background: transparent;
+  color: var(--label);
+  font-family: inherit;
+  font-size: 14px;
+  font-weight: 600;
+  padding: 6px 0;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.segmented-option.selected {
+  background: var(--bg-elevated);
+  box-shadow: var(--card-shadow);
+}
+
+.spread-history-chart {
+  width: 100%;
+  height: auto;
+  margin-top: 8px;
+}
