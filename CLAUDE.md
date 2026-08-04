@@ -213,8 +213,23 @@ merge 回 master，部署版待需求方驗證（`source` 是否 `cboe`＋TLT 20
   `filter_report`（`total`／`passed`）純新增欄位、契約樣本重產；
   引擎、`filters.py`、任何門檻皆未動（檢視已逐一核對）
 - **R1** [#49] — Research：專業報告版型慣例（無阻擋；只擋 V8，可在 V8 之前任意時點插入）
-- **V3** [#51] — 劇本庫＋建立表單＋釘選功能列 ←**下一張**（#50 已完成、已解鎖）
-- **V4** [#52] — 刷新與分析：進度／失敗指引／新鮮度（被 #51 擋）
+- **V3** [#51] — 劇本庫＋建立表單＋釘選功能列（commits `8e3b3be`／
+  `868c86d`）：主畫面從「一顆分析按鈕」變成劇本庫（`Toolbar` sticky ／
+  `ScenarioList` ／ `CreateForm`）。三個關鍵決定：
+  (1) `workspace._best_return` 提升為公開 `store.best_return()`，API 與
+  Streamlit 共用同一條規則——前端照抄一份等於給 QA1-03（#30）修好的
+  「卡片數字對不上主圖」留後路；
+  (2) `ResultRecord.best_return` 落盤＋`Storage.latest_summaries()`
+  （Postgres 走 DISTINCT ON），清單不撈 view——一份 view 十萬字元等級，
+  十個劇本就是 MB 級回應；
+  (3) 「距到期天數」由後端算（錨點＝該月第三個星期五、今天＝紐約日曆），
+  但**不進** `_scenario_json`——那個結構會原樣寫進 SCENARIO_CREATED 事件，
+  事件是不可變的事實，不能塞隨時間改變的值。
+  V1 的一次性分析搬到 `DemoAnalysis` 留在頁面下方（詳細頁是 V5，在它
+  落地前那是唯一看得到候選池診斷的地方），V5 接手後整塊移除。
+  ⚠ 兩份程式碼檢視（標準面／規格面）在提交時尚未回報，若有發現待補
+- **V4** [#52] — 刷新與分析：進度／失敗指引／新鮮度 ←**下一張**
+  （#51 已完成、已解鎖；功能列的刷新鈕目前是 disabled 佔位，由這張接上）
 - **V5** [#53] — 詳細頁核心：Heatmap＋摘要＋追平標示（被 #52 擋）
 - **V6** [#54] — 到期日結構：橫向按鈕＋Top 10 含腿價（被 #53 擋）
 - **V7** [#55] — 最好／最差價位三價位對照（被 #51、#53 擋）
@@ -266,22 +281,21 @@ merge 回 master，部署版待需求方驗證（`source` 是否 `cboe`＋TLT 20
 數字之後**，才開票修過濾器——這會動到 T12 已定案的成本／品質口徑
 （附錄 A14.2），**需要需求方裁示，勿自行施工**。
 
-**⚠ 拿數字的方式已改（2026-08-04 需求方裁示：開網路權限給 agent）**：
-本容器的出口政策擋掉 `cdn.cboe.com` 與 `*.vercel.app`（CONNECT 403，
-`curl "$HTTPS_PROXY/__agentproxy/status"` 可見 `connect_rejected`），
-所以 agent 沒辦法自己抓真實鏈、也打不到部署版 API。需求方已同意在
-**Claude Code on the web 的環境網路政策**加白名單：
+**⚠ agent 自行抓真實鏈這條路走不通（2026-08-04 查證結論）**：
+容器的出口閘道擋掉 `cdn.cboe.com`、`*.vercel.app`、`home.treasury.gov`
+（CONNECT 403；`curl "$HTTPS_PROXY/__agentproxy/status"` 的
+`recentRelayFailures` 可見 `connect_rejected`）。
 
-| 主機 | 用途 |
-|---|---|
-| `cdn.cboe.com` | 主資料源，重現盤後情境、直接數出每關砍掉幾筆 |
-| `query1/2.finance.yahoo.com` | yfinance 備援，驗證降級鏈真的會接手 |
-| `*.vercel.app` | 自行驗收部署版 `/api/health`、`/api/analyze` |
+**不要再嘗試繞或重試**，也不要再叫需求方去「環境設定」找開關：
+- 需求方實測找不到可點的網路政策設定——該政策多半只能在**建立環境時**
+  選定，不能事後改
+- 需求方找到的 permission 設定管的是「agent 可以用哪些工具／網域」，
+  但 403 發生在更上游的閘道，請求根本走不到權限判斷這一層
+- WebFetch 與 curl 兩條路都實測過，同樣 403，且不會跳出任何授權提示
 
-政策變更**對既有容器不生效，要新 session**。因此：**新 session 開場
-第一件事**＝抓 TLT 真實全鏈，把 2028 那條到期日死在哪一關印出來，
-補完上面「還沒確定」的那一半。若屆時仍是 403，代表白名單沒生效，
-退回「需求方按一次按鈕回報候選池數字」的老路。
+**因此拿數字只有一條路：需求方按一次按鈕。** 部署版頁面下方的
+「一次性分析」跑的正好是 TLT／2028-05／120（＝回報的那個案例本身），
+按下去下面就會出現「候選池」區塊的逐關數字。拿到數字才開票修過濾器。
 
 ### 下一版 MVP（本輪明確不施工，已立案）
 
@@ -334,9 +348,22 @@ merge 回 master，部署版待需求方驗證（`source` 是否 `cboe`＋TLT 20
 
 ## 環境
 
-- 跑測試：`PYTHONPATH=. .venv/bin/python -m pytest`
+- **⚠ 容器會不定時倒退回較早的提交**（2026-08-04 已發生兩次，連 `.venv`
+  套件與本地 Postgres 資料目錄一起消失）。發現 `git log` 對不上時：
+  `git stash -u`（若有未提交的工作）→
+  `git fetch origin claude/implement-tfm9oa` →
+  `git merge --ff-only origin/claude/implement-tfm9oa` → `git stash pop`。
+  **所有工作都推到 origin，倒退不會掉東西**。接著跑
+  `sh scripts/dev_env.sh` 重建測試環境——不重建的後果是**靜默**的：
+  儲存契約測試的 Postgres 那一半會被跳過，全套仍是綠的卻少驗一個實作
+  （正常全套是 582 條；掉到 5xx 出頭就是 Postgres 那組沒跑）
+- 跑測試：`OC_TEST_DATABASE_URL="postgresql://postgres@127.0.0.1:55432/octest"
+  PYTHONPATH=. .venv/bin/python -m pytest`
   （`pyproject.toml` 的 `packages.find` 只收 `option_chaser*`，`webapp`／
-  `api_app` 不在裡面，靠 PYTHONPATH 匯入）
+  `api_app` 不在裡面，靠 PYTHONPATH 匯入。沒有 `OC_TEST_DATABASE_URL`
+  就只跑記憶體假體那一半）
+- 已知偶發：`test_render_spread_history.py::test_chart_does_not_crash...`
+  是 Streamlit AppTest 的逾時 flake，單獨重跑會過
 - 建 venv：`uv venv --python 3.11 .venv && uv pip install --python .venv/bin/python -e ".[gui,api,yf]" pytest`
   （**`api` extra 必裝**：HTTP API 是後端唯一測試接縫，缺 httpx 會讓
   契約測試整組紅燈——這是刻意的，不要改成靜默跳過。**`yf` extra**＝
