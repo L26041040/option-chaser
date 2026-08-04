@@ -81,7 +81,37 @@ export interface AnalyzeRequest {
   strategies: string[];
 }
 
-export class ApiError extends Error {}
+/**
+ * 失敗發生在哪一個環節（後端 `_fail` 的 `stage`，V4／#52）。
+ * `null` ＝ 後端沒說（例如 422 之類的驗證錯誤），畫面退回通用說法。
+ */
+export type FailureStage = "fetch" | "analyze" | "params" | null;
+
+const STAGES = ["fetch", "analyze", "params"] as const;
+
+export class ApiError extends Error {
+  readonly stage: FailureStage;
+
+  constructor(message: string, stage: FailureStage = null) {
+    super(message);
+    this.stage = stage;
+  }
+}
+
+/** 一個劇本這次刷新失敗的原因（分層＋給人看的訊息）。 */
+export interface RefreshFailure {
+  stage: FailureStage;
+  message: string;
+}
+
+/**
+ * 任何丟出來的東西都收斂成可顯示的失敗。網路本身斷掉時 `fetch` 丟的是
+ * TypeError，不帶分層——那也要有話講，不能讓卡片空著。
+ */
+export function toFailure(e: unknown): RefreshFailure {
+  if (e instanceof ApiError) return { stage: e.stage, message: e.message };
+  return { stage: null, message: e instanceof Error ? e.message : String(e) };
+}
 
 /**
  * 一個劇本在清單上的樣子。`latest_analyzed_at` 與 `best_return` 由清單
@@ -109,6 +139,12 @@ export interface CreateScenarioRequest {
   target_month: string;
 }
 
+function stageOf(value: unknown): FailureStage {
+  return STAGES.includes(value as (typeof STAGES)[number])
+    ? (value as FailureStage)
+    : null;
+}
+
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
   const resp = await fetch(url, init);
   if (!resp.ok) {
@@ -116,8 +152,17 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
       .json()
       .then((b) => b?.detail)
       .catch(() => null);
-    // FastAPI 的驗證錯誤（422）detail 是物件陣列，直接丟進畫面會變成
-    // [object Object]；只有字串才拿來當人看的訊息。
+    // 三種 detail 形狀都可能出現，各自處理：
+    // 1. `{stage, message}`——分析路徑的分層錯誤（V4／#52）
+    // 2. 純字串——其他端點（404／建立時的月份驗證）
+    // 3. FastAPI 驗證錯誤（422）的物件陣列，直接丟進畫面會變成
+    //    [object Object]，所以退回帶狀態碼的通用訊息
+    if (detail && typeof detail === "object" && !Array.isArray(detail)) {
+      const body = detail as { stage?: unknown; message?: unknown };
+      if (typeof body.message === "string") {
+        throw new ApiError(body.message, stageOf(body.stage));
+      }
+    }
     const message =
       typeof detail === "string" ? detail : `請求失敗（HTTP ${resp.status}）`;
     throw new ApiError(message);
@@ -143,6 +188,17 @@ export function createScenario(
   req: CreateScenarioRequest,
 ): Promise<ScenarioSummary> {
   return request<ScenarioSummary>("/api/scenarios", POST_JSON(req));
+}
+
+/**
+ * 刷新單一劇本（V4／#52）：後端抓鏈→分析→入庫，回傳的是**卡片列**，
+ * 與清單同一形狀，所以拿到就能直接換掉清單裡那一列。
+ */
+export function refreshScenario(id: string): Promise<ScenarioSummary> {
+  return request<ScenarioSummary>(
+    `/api/scenarios/${encodeURIComponent(id)}/refresh`,
+    { method: "POST" },
+  );
 }
 
 export function archiveScenario(id: string): Promise<{ archived: boolean }> {

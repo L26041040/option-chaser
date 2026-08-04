@@ -283,6 +283,36 @@ body {
   border: 0.5px solid var(--separator);
 }
 
+/* ---------- V4（#52）：新鮮度標記與卡片內的失敗指引 ---------- */
+
+.tag {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  vertical-align: middle;
+}
+
+.tag.warn {
+  background: color-mix(in srgb, var(--orange) 18%, transparent);
+  color: var(--orange);
+}
+
+/* 卡片裡的失敗指引不能用 `.notice` 的預設底色——那正好等於卡片底色，
+   等於沒有框。改用紅色淡底，一眼看得出是這張卡出事。 */
+.card .notice {
+  background: color-mix(in srgb, var(--red) 8%, transparent);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.card .notice p {
+  margin: 0;
+}
+
 .screen-section {
   display: flex;
   flex-direction: column;

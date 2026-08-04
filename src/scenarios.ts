@@ -5,7 +5,7 @@
  * 與詳細頁主圖同一口徑），`days_to_anchor` 也是後端依「該月第三個星期五」
  * 與紐約日曆算好的。本檔只決定「怎麼排、怎麼寫」。
  */
-import type { ScenarioSummary } from "./api";
+import type { FailureStage, ScenarioSummary } from "./api";
 
 /**
  * 依最新收益率降序；還沒跑過分析的（`best_return === null`）一律排最後。
@@ -59,4 +59,46 @@ export function formatAnalyzedAt(iso: string | null): string {
 
 export function money(x: number): string {
   return `$${x.toFixed(2)}`;
+}
+
+/**
+ * 超過幾小時沒刷新就視為舊資料（V4／#52）。
+ *
+ * 12 小時的理由：美股一個交易時段是 6.5 小時，12 小時代表「這份報價
+ * 已經是上一個時段的了」——是一條說得出口的線，不是隨手取的整數。
+ */
+export const STALE_AFTER_HOURS = 12;
+
+/**
+ * 這張卡上的數字是不是舊資料。`now` 由呼叫端傳入（同一次渲染共用一個
+ * 「現在」，而且可測），沿用後端 `_timing_json(today=...)` 的做法。
+ *
+ * 兩個邊界都刻意不含糊：
+ * - 從未分析（null）**不算**舊——卡片已經寫著「尚未分析」，再標一次
+ *   「舊資料」只會讓人以為有一份過期的數字在那裡。
+ * - 讀不懂的時間戳算舊。無法判斷新鮮度時說「新鮮」是最糟的預設值。
+ */
+export function isStale(iso: string | null, now: Date): boolean {
+  if (iso === null) return false;
+  const at = Date.parse(iso);
+  if (Number.isNaN(at)) return true;
+  return now.getTime() - at > STALE_AFTER_HOURS * 3_600_000;
+}
+
+/**
+ * 刷新失敗的分層標題（V4／#52）。後端 `detail.stage` 已經說明是哪一個
+ * 環節出的事，這裡把它翻成使用者能據以行動的一句話——只寫「刷新失敗」
+ * 的話，重試有沒有意義使用者無從判斷。
+ */
+export function failureLabel(stage: FailureStage): string {
+  switch (stage) {
+    case "fetch":
+      return "抓不到報價（可稍後重試）";
+    case "analyze":
+      return "分析沒跑完（重試多半無效，請回報）";
+    case "params":
+      return "這個劇本的參數目前無法分析";
+    default:
+      return "刷新失敗";
+  }
 }

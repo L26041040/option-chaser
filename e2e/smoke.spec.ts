@@ -100,6 +100,10 @@ test("劇本庫：建立 → 出現在清單 → 封存後消失（V3／#51）",
   await page.route("**/api/scenarios/*/archive", (route) =>
     route.fulfill({ json: { archived: true } }),
   );
+  // 建立後會自動刷新（V4／#52 的三種時機之二）；這裡回同一列（尚未分析）
+  await page.route("**/api/scenarios/*/refresh", (route) =>
+    route.fulfill({ json: created }),
+  );
 
   await page.goto("/");
   await expect(page.getByText("劇本庫")).toBeVisible();
@@ -122,7 +126,15 @@ test("劇本庫：建立 → 出現在清單 → 封存後消失（V3／#51）",
   await expect(page.getByText(/還沒有劇本/)).toBeVisible();
 });
 
-test("功能列捲動時仍釘在頂部（V3／#51）", async ({ page }) => {
+test("功能列捲動時仍釘在頂部、而且按得到（V3／#51 驗收第 1 項）", async ({ page }) => {
+  // 「可點」在 V3 驗不了——當時功能列上唯一的控制項是 disabled 佔位鈕。
+  // V4（#52）把刷新接上之後才補得起來，所以這條測試在這一票才完整。
+  let listCalls = 0;
+  await page.route("**/api/scenarios", (route) => {
+    listCalls += 1;
+    return route.fulfill({ json: [] });
+  });
+
   await page.goto("/");
   const toolbar = page.getByText("劇本庫");
   await expect(toolbar).toBeVisible();
@@ -137,4 +149,86 @@ test("功能列捲動時仍釘在頂部（V3／#51）", async ({ page }) => {
   const box = (await page.locator("header.toolbar").boundingBox())!;
   expect(box.y).toBeLessThan(2);
   await expect(toolbar).toBeInViewport();
+
+  // 釘住還不夠——捲到底時按下去要真的送出請求，功能列才算能用
+  const before = listCalls;
+  await page.getByRole("button", { name: "重新整理" }).click();
+  await expect.poll(() => listCalls).toBeGreaterThan(before);
+});
+
+/* ---------- V4（#52）：刷新、進度、失敗指引 ---------- */
+
+const pendingRow = {
+  ...sampleRow,
+  id: "s1", symbol: "TLT", target_price: 120, target_month: "2028-05",
+  latest_analyzed_at: null, best_return: null,
+  target_anchor: "2028-05-19", days_to_anchor: 653,
+};
+
+/** 刷新成功後的同一列：有收益率、資料時間是剛剛。 */
+function refreshedRow() {
+  return { ...pendingRow, best_return: 2.5,
+           latest_analyzed_at: new Date().toISOString() };
+}
+
+test("開站自動刷新：進度 → 卡片換成新數字（V4／#52）", async ({ page }) => {
+  await page.route("**/api/scenarios", (route) =>
+    route.fulfill({ json: [pendingRow] }));
+  await page.route("**/api/scenarios/*/refresh", async (route) => {
+    // 刻意延遲，讓「刷新中」的進度真的看得到——秒回的話這條測試會在
+    // 進度根本沒渲染的情況下照樣綠。
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    await route.fulfill({ json: refreshedRow() });
+  });
+
+  await page.goto("/");
+
+  await expect(page.getByRole("status")).toHaveText("0/1");
+  await expect(page.getByRole("button", { name: "刷新中……" })).toBeDisabled();
+
+  await expect(page.getByText("250.0%")).toBeVisible();
+  await expect(page.getByRole("button", { name: "重新整理" })).toBeEnabled();
+  await expect(page.getByRole("status")).toBeHidden();
+  // 收益率口徑就寫在數字旁邊
+  await expect(page.getByText(/最差成交價/)).toBeVisible();
+});
+
+test("刷新失敗說明是哪一段，重試就地重來（V4／#52）", async ({ page }) => {
+  let attempts = 0;
+  await page.route("**/api/scenarios", (route) =>
+    route.fulfill({ json: [pendingRow] }));
+  await page.route("**/api/scenarios/*/refresh", (route) => {
+    attempts += 1;
+    return attempts === 1
+      ? route.fulfill({ status: 502, json: { detail: {
+          stage: "fetch", message: "抓不到 TLT 的報價：來源無回應" } } })
+      : route.fulfill({ json: refreshedRow() });
+  });
+
+  await page.goto("/");
+
+  // 黃燈不再只是一顆燈：哪一段失敗、為什麼、按哪裡重試，都在卡片上
+  await expect(page.getByText("抓不到報價（可稍後重試）")).toBeVisible();
+  await expect(page.getByText("來源無回應")).toBeVisible();
+
+  await page.getByRole("button", { name: "重試 TLT 2028-05" }).click();
+
+  await expect(page.getByText("250.0%")).toBeVisible();
+  await expect(page.getByText("抓不到報價（可稍後重試）")).toBeHidden();
+});
+
+test("久未刷新的資料標成舊資料（V4／#52）", async ({ page }) => {
+  const old = new Date(Date.now() - 3 * 24 * 3600 * 1000).toISOString();
+  await page.route("**/api/scenarios", (route) =>
+    route.fulfill({ json: [{ ...pendingRow, best_return: 1.0,
+                             latest_analyzed_at: old }] }));
+  // 刷新一直失敗，所以卡片上留著的就是那份三天前的數字
+  await page.route("**/api/scenarios/*/refresh", (route) =>
+    route.fulfill({ status: 502, json: { detail: {
+      stage: "fetch", message: "抓不到 TLT 的報價：來源無回應" } } }));
+
+  await page.goto("/");
+
+  await expect(page.getByText("100.0%")).toBeVisible();
+  await expect(page.getByText("舊資料")).toBeVisible();
 });

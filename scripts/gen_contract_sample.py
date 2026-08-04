@@ -55,7 +55,7 @@ def main() -> None:
     row_client = TestClient(create_app(fetch=lambda symbol: snap,
                                        storage=MemoryStorage()))
     created = row_client.post("/api/scenarios", json=SCENARIO).json()
-    row_client.post(f"/api/scenarios/{created['id']}/analyze").raise_for_status()
+    row_client.post(f"/api/scenarios/{created['id']}/refresh").raise_for_status()
     row = row_client.get("/api/scenarios").json()[0]
     ROW_OUT.write_text(json.dumps(freeze_row(row), ensure_ascii=False, indent=2,
                                   sort_keys=True) + "\n", encoding="utf-8")

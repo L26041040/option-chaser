@@ -77,11 +77,16 @@ def test_fetch_failure_maps_to_502():
     assert "detail" in r.json()
 
 
-def test_engine_param_error_maps_to_400():
-    def boom(symbol):
+def test_engine_param_error_maps_to_400(monkeypatch):
+    """ParamError 來自引擎（`run_with_snapshot` 的請求驗證），不是資料源
+    ——V4（#52）把抓鏈與分析拆成兩個失敗環節後，這裡也照真實來源模擬。"""
+    from option_chaser import service
+
+    def boom(*args, **kwargs):
         raise ParamError("bad month")
 
-    r = _client(boom).post("/api/analyze", json=REQUEST)
+    monkeypatch.setattr(service, "run_with_snapshot", boom)
+    r = _client().post("/api/analyze", json=REQUEST)
     assert r.status_code == 400
 
 

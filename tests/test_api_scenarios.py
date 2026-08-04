@@ -91,29 +91,14 @@ def test_archiving_is_idempotent_and_404s_on_unknown():
 
 
 # ---------- 分析與結果歷史 ----------
-
-def test_analyze_stores_a_result_readable_from_the_detail_endpoint():
-    c = _client()
-    sc = _create(c)
-    r = c.post(f"/api/scenarios/{sc['id']}/analyze")
-    assert r.status_code == 200
-    view = r.json()
-    assert view["meta"]["symbol"] == "XYZ"
-
-    detail = c.get(f"/api/scenarios/{sc['id']}").json()
-    assert detail["latest_result"]["meta"]["symbol"] == "XYZ"
-    assert detail["latest_analyzed_at"] == view["analyzed_at"]
-
-
-def test_analyze_on_unknown_scenario_is_404():
-    assert _client().post("/api/scenarios/nope/analyze").status_code == 404
-
+#
+# 刷新端點本身（回傳形狀、入庫、失敗分層）在 `test_api_refresh.py`（V4／#52）。
 
 def test_result_history_lists_each_analysis_once():
     c = _client()
     sc = _create(c)
-    c.post(f"/api/scenarios/{sc['id']}/analyze")
-    c.post(f"/api/scenarios/{sc['id']}/analyze")   # 同一份快照＝同一時間戳
+    c.post(f"/api/scenarios/{sc['id']}/refresh")
+    c.post(f"/api/scenarios/{sc['id']}/refresh")   # 同一份快照＝同一時間戳
 
     hist = c.get(f"/api/scenarios/{sc['id']}/results").json()
     # 冪等：重跑同一次快照不該在歷史裡留兩筆
@@ -129,25 +114,12 @@ def test_detail_without_any_analysis_says_so_rather_than_faking_it():
     assert detail["latest_analyzed_at"] is None
 
 
-def test_analysis_failure_maps_to_502_and_is_not_stored():
-    from option_chaser.models import FetchError
-
-    def boom(symbol):
-        raise FetchError("data source down")
-
-    storage = MemoryStorage()
-    c = TestClient(create_app(fetch=boom, storage=storage))
-    sc = _create(c)
-    assert c.post(f"/api/scenarios/{sc['id']}/analyze").status_code == 502
-    assert c.get(f"/api/scenarios/{sc['id']}/results").json() == []
-
-
 # ---------- 事件紀錄 ----------
 
 def test_creating_and_analysing_leave_an_audit_trail():
     c = _client()
     sc = _create(c)
-    c.post(f"/api/scenarios/{sc['id']}/analyze")
+    c.post(f"/api/scenarios/{sc['id']}/refresh")
     c.post(f"/api/scenarios/{sc['id']}/archive")
 
     events = c.get(f"/api/scenarios/{sc['id']}/events").json()
@@ -170,20 +142,6 @@ def test_api_layer_never_touches_sql_directly():
         assert forbidden not in src, f"main.py 不該出現 {forbidden!r}"
 
 
-def test_analyze_also_persists_the_raw_option_chain_snapshot():
-    """view dict 沒有逐筆合約報價——V8 的「原始資料 CSV」要的是原始快照，
-    所以分析當下就得把它一起存起來，事後補不回來。"""
-    storage = MemoryStorage()
-    c = _client(storage)
-    sc = _create(c)
-    view = c.post(f"/api/scenarios/{sc['id']}/analyze").json()
-
-    snap = storage.get_snapshot(sc["id"], view["analyzed_at"])
-    assert snap is not None
-    assert snap["symbol"] == "XYZ"
-    assert snap["contracts"], "快照要含逐筆合約，不是只有 meta"
-
-
 # ---------- 清單卡片欄位（V3／#51） ----------
 
 def test_list_carries_the_card_numbers_so_the_client_needs_one_request():
@@ -193,7 +151,7 @@ def test_list_carries_the_card_numbers_so_the_client_needs_one_request():
     client = _client()
     ran = _create(client, target_price=130.0)
     never = _create(client, target_price=140.0)
-    client.post(f"/api/scenarios/{ran['id']}/analyze").raise_for_status()
+    client.post(f"/api/scenarios/{ran['id']}/refresh").raise_for_status()
 
     rows = {r["id"]: r for r in client.get("/api/scenarios").json()}
 
@@ -213,7 +171,7 @@ def test_list_does_not_ship_the_whole_view():
     一 MB 級的回應。"""
     client = _client()
     sc = _create(client)
-    client.post(f"/api/scenarios/{sc['id']}/analyze").raise_for_status()
+    client.post(f"/api/scenarios/{sc['id']}/refresh").raise_for_status()
 
     row = client.get("/api/scenarios").json()[0]
     assert "latest_result" not in row
@@ -242,10 +200,10 @@ def test_reanalysis_updates_the_card_to_the_newer_numbers():
     client = TestClient(create_app(fetch=fetch, storage=MemoryStorage()))
     sc = _create(client)
 
-    client.post(f"/api/scenarios/{sc['id']}/analyze").raise_for_status()
+    client.post(f"/api/scenarios/{sc['id']}/refresh").raise_for_status()
     first = client.get("/api/scenarios").json()[0]
 
-    client.post(f"/api/scenarios/{sc['id']}/analyze").raise_for_status()
+    client.post(f"/api/scenarios/{sc['id']}/refresh").raise_for_status()
     again = client.get("/api/scenarios").json()[0]
 
     assert first["latest_analyzed_at"] == "2026-07-15T21:30:00-04:00"
@@ -318,7 +276,7 @@ def test_scenario_row_sample_matches_the_live_list_response():
 
     client = _client()
     sc = _create(client)
-    client.post(f"/api/scenarios/{sc['id']}/analyze").raise_for_status()
+    client.post(f"/api/scenarios/{sc['id']}/refresh").raise_for_status()
     row = client.get("/api/scenarios").json()[0]
 
     assert set(row) == set(sample), (

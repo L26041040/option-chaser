@@ -19,8 +19,8 @@ from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel, Field, field_validator
 
 from option_chaser import __version__, service, store
-from option_chaser.models import (AnalysisParams, ChainSnapshot, FetchError,
-                                  ParamError, STRATEGIES)
+from option_chaser.models import (AnalysisParams, ChainSnapshot, ParamError,
+                                  STRATEGIES)
 from option_chaser.timeframe import (TargetMonth, calendar_anchor,
                                      ensure_month_open)
 from option_chaser.workspace import now_utc_iso, ny_today
@@ -92,6 +92,25 @@ def _scenario_json(sc: Scenario) -> dict:
             "created_at": sc.created_at, "archived_at": sc.archived_at}
 
 
+def _row_json(sc: Scenario, today: date, *, analyzed_at: str | None,
+              best_return: float | None) -> dict:
+    """劇本在清單上的那一列。建立、列出、刷新三處共用同一個組裝函式——
+    形狀只要差一個欄位，客戶端就得為同一個東西維護兩種型別。"""
+    return {**_scenario_json(sc), **_timing_json(sc, today),
+            "latest_analyzed_at": analyzed_at, "best_return": best_return}
+
+
+def _fail(stage: str, status: int, message: str) -> HTTPException:
+    """失敗分層（V4／#52）。
+
+    錯誤主體帶 `stage`，而不是只給一句話：「抓不到報價」與「分析失敗」
+    使用者能做的處置不同（前者重試有意義、後者沒有），畫面要能分開講。
+    `message` 仍是給人看的完整句子——舊的字串型 detail 客戶端照樣可讀。
+    """
+    return HTTPException(status_code=status,
+                         detail={"stage": stage, "message": message})
+
+
 def create_app(*, fetch: FetchChain = service.fetch_chain,
                storage: Storage | None = None) -> FastAPI:
     """`fetch` 與 `storage` 皆可注入：測試傳入固定快照與記憶體假體，
@@ -134,14 +153,21 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
                                 strategy=strategies[0])
         req = service.AnalysisRequest(symbol=symbol, base_params=params,
                                       strategies=tuple(strategies))
+        # 兩段各自 try：抓鏈與分析是兩個不同的失敗環節（V4／#52），
+        # 包在同一個 try 裡就只能事後靠例外型別猜是哪一段出的事。
         try:
             snap = fetch(symbol)
+        except Exception as e:  # noqa: BLE001
+            # 常態是 FetchError（Cboe 與 yfinance 皆失敗）＝下游依賴問題。
+            # 其他例外同樣落在這一段：對使用者而言結果一樣是「這次沒拿到
+            # 報價」，而原因如實接在訊息後面，不會變成一個沒說明的 500。
+            raise _fail("fetch", 502, f"抓不到 {symbol} 的報價：{e}") from e
+        try:
             result = service.run_with_snapshot(req, snap)
-        except FetchError as e:
-            # 上游報價來源不可用（Cboe 與 yfinance 皆失敗）＝下游依賴問題。
-            raise HTTPException(status_code=502, detail=str(e)) from e
         except ParamError as e:
-            raise HTTPException(status_code=400, detail=str(e)) from e
+            raise _fail("params", 400, str(e)) from e
+        except Exception as e:  # noqa: BLE001 — 引擎任何失敗都要說是哪一段，不留白畫面
+            raise _fail("analyze", 500, f"分析失敗：{e}") from e
         return (store.serialize_result(result, scenario_id, capital=None),
                 dataclasses.asdict(snap))
 
@@ -194,8 +220,7 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
                            event="SCENARIO_CREATED", payload=_scenario_json(sc))
         # 回傳與清單同一個形狀（含 timing、尚未分析故兩個摘要欄位為 None），
         # 客戶端才不必為「剛建立的」與「列出來的」維護兩種型別。
-        return {**_scenario_json(sc), **_timing_json(sc, ny_today()),
-                "latest_analyzed_at": None, "best_return": None}
+        return _row_json(sc, ny_today(), analyzed_at=None, best_return=None)
 
     @app.get("/api/scenarios")
     def list_scenarios(include_archived: bool = False) -> list[dict]:
@@ -207,11 +232,10 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         rows = []
         for s in _db().list_scenarios(include_archived=include_archived):
             summary = summaries.get(s.id)
-            rows.append({
-                **_scenario_json(s), **_timing_json(s, today),
-                "latest_analyzed_at": summary.analyzed_at if summary else None,
-                "best_return": summary.best_return if summary else None,
-            })
+            rows.append(_row_json(
+                s, today,
+                analyzed_at=summary.analyzed_at if summary else None,
+                best_return=summary.best_return if summary else None))
         return rows
 
     @app.get("/api/scenarios/{scenario_id}")
@@ -220,9 +244,9 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         latest = _db().latest_result(scenario_id)
         # `best_return` 也要在——detail 少一個欄位的話，客戶端就沒辦法把
         # 同一個型別套用在清單列與詳細回應上（V5 的詳細頁會踩到）。
-        return {**_scenario_json(sc), **_timing_json(sc, ny_today()),
-                "latest_analyzed_at": latest.analyzed_at if latest else None,
-                "best_return": latest.best_return if latest else None,
+        return {**_row_json(sc, ny_today(),
+                            analyzed_at=latest.analyzed_at if latest else None,
+                            best_return=latest.best_return if latest else None),
                 "latest_result": latest.view if latest else None}
 
     @app.post("/api/scenarios/{scenario_id}/archive")
@@ -236,22 +260,30 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
                                event="SCENARIO_ARCHIVED", payload={})
         return {"archived": True}
 
-    @app.post("/api/scenarios/{scenario_id}/analyze")
-    def analyze_scenario(scenario_id: str) -> dict:
+    @app.post("/api/scenarios/{scenario_id}/refresh")
+    def refresh_scenario(scenario_id: str) -> dict:
+        """單劇本刷新（V4／#52）：抓鏈→分析→結果與原始快照入庫。
+
+        回傳的是**卡片列**而非整份 view：客戶端要依序刷新 N 個劇本、
+        每完成一個就更新那張卡，每次拖回十萬字元級的 view 在手機上是
+        實打實的浪費。要看完整 view 走 detail 端點。
+        """
         sc = _require(scenario_id)
         view, snapshot = _analyze(
             scenario_id=sc.id, symbol=sc.symbol, target_price=sc.target_price,
             target_month=sc.target_month, strategies=sc.strategies)
         analyzed_at = view["analyzed_at"]
+        best_return = store.best_return(view)
         _db().save_result(ResultRecord(scenario_id=sc.id,
                                        analyzed_at=analyzed_at, view=view,
-                                       best_return=store.best_return(view)))
+                                       best_return=best_return))
         _db().save_snapshot(sc.id, analyzed_at, snapshot)
         _db().append_event(ts=now_utc_iso(), scenario_id=sc.id,
                            event="ANALYSIS_COMPLETED",
                            payload={"analyzed_at": analyzed_at,
                                     "snapshot_ref": view["snapshot_ref"]})
-        return view
+        return _row_json(sc, ny_today(), analyzed_at=analyzed_at,
+                         best_return=best_return)
 
     @app.get("/api/scenarios/{scenario_id}/results")
     def list_results(scenario_id: str) -> list[dict]:
