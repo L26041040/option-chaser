@@ -173,7 +173,9 @@ body {
   margin: 0;
 }
 
-.row.sub {
+/* 次級列不要分隔線。用 `.row.row.sub` 提高一級特異性，別靠「寫在
+   `.row + .row` 後面」這種順序巧合——有人重排規則就會冒出鬼線。 */
+.row.row.sub {
   padding-left: 12px;
   border-top: 0;
   padding-top: 0;

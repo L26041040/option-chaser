@@ -112,7 +112,7 @@ export async function analyze(req: AnalyzeRequest): Promise<AnalysisView> {
  * 那會在標著 baseline 到期日的欄位旁顯示另一個到期日的候選，是誤導。
  */
 export function baselineTopCandidate(view: AnalysisView): Candidate | null {
-  const ok = view.results.find((r) => r.status === "ok" && r.expiry_top10);
+  const ok = primaryResult(view);
   if (!ok?.expiry_top10) return null;
   const group = ok.expiry_top10.find((g) => g.expiry === view.baseline_expiry);
   return group?.candidates[0] ?? null;
@@ -131,7 +131,11 @@ export function validPairsForExpiry(
   return hit ? hit[1] : null;
 }
 
-/** 該次分析真正有結果的那個策略（MVP 只有一個）。 */
+/**
+ * 該次分析要顯示的那個策略（MVP 只請求一個）。摘要卡與候選池診斷都走
+ * 這個函式——兩處各自挑一個 result 的話，畫面會出現「第 1 名講 A 策略、
+ * 池子講 B 策略」的自相矛盾。
+ */
 export function primaryResult(view: AnalysisView): StrategyResult | null {
   return view.results[0] ?? null;
 }
