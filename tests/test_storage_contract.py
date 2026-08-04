@@ -267,3 +267,41 @@ def test_best_return_survives_the_result_roundtrip(storage):
                                      {"n": 1}, -0.4))
     assert storage.latest_result("s1").best_return == -0.4
     assert storage.result_history("s1")[0].best_return == -0.4
+
+
+# ---------- schema 遷移（V3／#51） ----------
+
+def test_existing_results_table_gains_the_new_column():
+    """既有部署的 `results` 表是**沒有** `best_return` 的舊版；
+    `CREATE TABLE IF NOT EXISTS` 對已存在的表什麼都不做，所以補欄位只能
+    靠 `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`。
+
+    這條路徑在全新資料庫上跑不到（建表時就含該欄位），而它正是已經接上
+    Neon 的正式環境會走的那一條——不測就等於沒驗過。
+    """
+    if not TEST_DB_URL:
+        pytest.skip("需要 OC_TEST_DATABASE_URL（一個跑著的 Postgres）")
+    import psycopg
+
+    from api_app.storage import postgres as pg
+
+    with psycopg.connect(TEST_DB_URL, autocommit=True) as conn:
+        # 這個測試不吃 `storage` fixture（它要自己控制建表順序），所以
+        # 得自己清乾淨——否則殘留的劇本會讓它以 ScenarioExists 失敗，
+        # 看起來像遷移壞了，其實是測試自己髒。
+        conn.execute("TRUNCATE scenarios, results, snapshots, events "
+                     "RESTART IDENTITY")
+        conn.execute("DROP TABLE IF EXISTS results")
+        # V2 時期的舊表：沒有 best_return
+        conn.execute("CREATE TABLE results ("
+                     "scenario_id TEXT NOT NULL, analyzed_at TEXT NOT NULL, "
+                     "view JSONB NOT NULL, PRIMARY KEY (scenario_id, analyzed_at))")
+
+    # 每個程序只建一次 schema 的快取要清掉，否則這裡不會真的跑到 DDL
+    pg._schema_ready.discard(TEST_DB_URL)
+    st = pg.PostgresStorage(TEST_DB_URL)
+
+    # 遷移後寫得進去也讀得回來（沒遷移的話這裡是 UndefinedColumn）
+    st.create_scenario(_scenario("mig"))
+    st.save_result(ResultRecord("mig", "2026-08-01T00:00:00+00:00", {"n": 1}, 0.75))
+    assert st.latest_summaries()["mig"].best_return == 0.75
