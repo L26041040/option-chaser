@@ -29,10 +29,42 @@ export interface ExpiryTop10 {
   candidates: Candidate[];
 }
 
+/** 一道品質過濾關卡砍掉的筆數（引擎的 `FilterReport.stages`）。 */
+export interface FilterStage {
+  label: string;
+  removed: number;
+}
+
+/**
+ * 合約層級的抓到／通過筆數（引擎的 `FilterReport`）。
+ *
+ * 這是唯一能拿來當「合約數」的來源。`n_qualified` 在 spread 路徑是
+ * **配對數**（引擎 `_spread_result` 取 `pair_report.passed`），兩者
+ * 意義不同，不可互推。
+ */
+export interface FilterReportCounts {
+  total: number;
+  passed: number;
+}
+
+export interface PairReport {
+  total_pairs: number;
+  removed_sanity: number;
+  passed: number;
+}
+
 export interface StrategyResult {
   strategy: string;
   status: string;
   message: string;
+  /** spread 路徑是**配對數**、單腳路徑才是合約數——顯示合約數請用
+   *  `filter_report`。 */
+  n_qualified: number;
+  filter_report: FilterReportCounts | null;
+  filter_stages: FilterStage[];
+  pair_report: PairReport | null;
+  /** [到期日, 該期通過配對的有效候選組數]，引擎的 `expiry_counts`。 */
+  expiry_counts: [string, number][];
   expiry_top10?: ExpiryTop10[];
 }
 
@@ -84,4 +116,22 @@ export function baselineTopCandidate(view: AnalysisView): Candidate | null {
   if (!ok?.expiry_top10) return null;
   const group = ok.expiry_top10.find((g) => g.expiry === view.baseline_expiry);
   return group?.candidates[0] ?? null;
+}
+
+/**
+ * FB4-01（#60）：拿引擎已算好的每期有效組數。找不到該期回傳 null——
+ * 「不知道」與「0 組」是不同的事，不能混為一談。
+ */
+export function validPairsForExpiry(
+  result: StrategyResult,
+  expiry: string | null,
+): number | null {
+  if (expiry === null) return null;
+  const hit = result.expiry_counts.find(([e]) => e === expiry);
+  return hit ? hit[1] : null;
+}
+
+/** 該次分析真正有結果的那個策略（MVP 只有一個）。 */
+export function primaryResult(view: AnalysisView): StrategyResult | null {
+  return view.results[0] ?? null;
 }

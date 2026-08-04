@@ -140,3 +140,27 @@ def test_data_quality_all_quotes_filtered(tmp_path):
     view = store.serialize_result(result, "S", None)
     assert all(r["status"] == "empty" for r in view["results"])
     assert view["data_quality"]["all_quotes_filtered"] is True
+
+
+def test_filter_report_carries_contract_level_counts():
+    """FB4-01（#60）：合約層級的「抓到幾筆／通過幾筆」必須如實上線。
+
+    `n_qualified` 在 spread 路徑是**配對數**（`service._spread_result` 取
+    `pair_report.passed`），拿它當合約數會把兩種東西混為一談；候選池診斷
+    要的是合約數，所以 `filter_report.total`／`.passed` 必須自己上線，
+    不能讓前端從 `n_qualified` 反推。
+    """
+    view = store.serialize_result(_result(), "S", None)
+    for r in view["results"]:
+        fr = r["filter_report"]
+        # 各關是**循序**過濾（filters.apply_filters 逐關縮小 remaining），
+        # 所以 total 恆等於 passed 加上各關砍掉的總和。
+        assert fr["total"] == fr["passed"] + sum(s["removed"]
+                                                 for s in r["filter_stages"])
+        assert fr["passed"] >= 0
+
+    spread = next(r for r in view["results"]
+                  if r["strategy"] == "bull-call-spread")
+    # 這正是不能用 n_qualified 當合約數的證據：spread 路徑兩者不同意義。
+    assert spread["n_qualified"] == spread["pair_report"]["passed"]
+    assert spread["filter_report"]["passed"] != spread["n_qualified"]

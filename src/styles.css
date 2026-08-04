@@ -164,3 +164,25 @@ body {
 .notice.error {
   border-left-color: var(--red);
 }
+
+/* FB4-01（#60）：候選池診斷用的次級列與區塊標題 */
+.section-title {
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: -0.2px;
+  margin: 0;
+}
+
+.row.sub {
+  padding-left: 12px;
+  border-top: 0;
+  padding-top: 0;
+}
+
+.row.sub .row-label {
+  font-size: 13px;
+}
+
+.row.sub .row-value {
+  font-size: 15px;
+}

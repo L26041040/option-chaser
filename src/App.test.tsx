@@ -123,3 +123,19 @@ describe("baseline 期零合格候選（附錄A10.2 的邊界）", () => {
     expect(await screen.findByText("無合格候選")).toBeInTheDocument();
   });
 });
+
+describe("候選池診斷（FB4-01／#60）", () => {
+  it("分析後一併顯示候選池狀態，讓「第 1 名」有脈絡可讀", async () => {
+    mockFetch({ json: async () => view });
+    render(<App />);
+    await userEvent.click(screen.getByRole("button", { name: "跑一次分析" }));
+
+    expect(await screen.findByText("候選池")).toBeInTheDocument();
+    expect(screen.getByText("通過品質過濾")).toBeInTheDocument();
+  });
+
+  it("分析前不顯示候選池", () => {
+    render(<App />);
+    expect(screen.queryByText("候選池")).not.toBeInTheDocument();
+  });
+});

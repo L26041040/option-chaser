@@ -393,6 +393,12 @@ def serialize_result(result: AnalysisResult, scenario_id: str,
         return {
             "strategy": r.strategy, "status": r.status, "message": r.message,
             "n_qualified": r.n_qualified,
+            # FB4-01（#60）：合約層級的抓到／通過筆數。不可由 `n_qualified`
+            # 反推——spread 路徑的 `n_qualified` 是**配對數**
+            # （`service._spread_result` 取 `pair_report.passed`）。
+            "filter_report": ({"total": r.filter_report.total,
+                               "passed": r.filter_report.passed}
+                              if r.filter_report else None),
             "filter_stages": ([{"label": s.label, "removed": s.removed}
                                for s in r.filter_report.stages]
                               if r.filter_report else []),

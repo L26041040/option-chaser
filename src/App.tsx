@@ -8,6 +8,7 @@
  * 這一版刻意只有一個畫面：劇本庫、建立表單、詳細頁等是後續票（#51 起）。
  */
 import { useState } from "react";
+import CandidatePool from "./CandidatePool";
 import {
   analyze,
   baselineTopCandidate,
@@ -114,6 +115,10 @@ export default function App() {
           </p>
         </div>
       )}
+
+      {/* FB4-01（#60）：候選池狀態——沒有它，「第 1 名」看起來永遠正常，
+          但可能只是整池剩下的那一個。 */}
+      {view && <CandidatePool view={view} />}
     </div>
   );
 }

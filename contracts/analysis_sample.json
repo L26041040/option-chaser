@@ -3691,6 +3691,10 @@
           "expiry": "2026-11-20"
         }
       ],
+      "filter_report": {
+        "passed": 8,
+        "total": 9
+      },
       "filter_stages": [
         {
           "label": "報價異常",

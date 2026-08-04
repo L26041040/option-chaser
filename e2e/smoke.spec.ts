@@ -47,3 +47,23 @@ test("上游掛掉時顯示錯誤，不是白畫面", async ({ page }) => {
   await page.getByRole("button", { name: "跑一次分析" }).click();
   await expect(page.getByRole("alert")).toContainText("兩個資料源都抓不到");
 });
+
+test("候選池狀態隨分析結果一併顯示（FB4-01／#60）", async ({ page }) => {
+  await page.route("**/api/analyze", (route) => route.fulfill({ json: view }));
+  await page.goto("/");
+  await page.getByRole("button", { name: "跑一次分析" }).click();
+
+  await expect(page.getByText("候選池")).toBeVisible();
+  await expect(page.getByText("通過品質過濾", { exact: true })).toBeVisible();
+  // 契約樣本實際是 9 筆抓到、8 筆通過、3 對配對。用 n_qualified（＝配對
+  // 數 3）當合約數的話這兩個數字會變成 4／3——所以這是防呆的真斷言。
+  await expect(page.getByText("9 筆", { exact: true })).toBeVisible();
+  await expect(page.getByText("8 筆", { exact: true })).toBeVisible();
+  // 每一道品質過濾關卡都要看得到，才知道是誰砍掉的
+  for (const stage of ["報價異常", "IV 異常", "OI/成交量不足", "Spread 過寬"]) {
+    await expect(page.getByText(stage, { exact: true })).toBeVisible();
+  }
+  // 契約樣本的 baseline 期只有 1 組有效候選——警示必須出現，
+  // 這正是「第 1 名其實是整池僅存者」的情境。
+  await expect(page.getByRole("status")).toContainText("參考價值有限");
+});
