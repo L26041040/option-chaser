@@ -811,7 +811,6 @@ V9（#57）／V10（#58）亦已完結——全部票做完。** 下一步不是
 **票與依賴**（← 為可立刻開工）：
 
 - **#67** 利率：接線、fallback 與狀態語意（provider 無關）←
-- **#69** 進階區資料隨新分析失效，不得混用新舊 cache ←
 - **#71** 自製年月選擇器 ←
 - **#72** 桌面版真正的 master/detail ←
 - **#73** Research：公開利率資料源評選（不預設 Treasury）←
@@ -846,6 +845,21 @@ V9（#57）／V10（#58）亦已完結——全部票做完。** 下一步不是
   刷新鈕與失敗重試都補上 `detail?.expired` 判斷，已過期時鈕文案改
   「已過期，不再刷新」並停用、失敗提示整塊不顯示，與清單卡片同一套
   優先序判斷一致
+- **#69** 進階區資料隨新分析失效，不得混用新舊 cache——`SpreadHistory`／
+  `RawData` 是純 `<details onToggle>` 一次性取得、無任何 dependency
+  array，父層 `DetailBody` 用 `key={"spread-history-"+analyzedAt}`／
+  `key={"raw-data-"+analyzedAt}` 綁定分析身分，新分析一到就整個卸載
+  重掛，內部 state（已抓到的資料、`<details open>`）連同歸零，刷新後
+  收合、下次展開重新取得（需求方裁示接受，資料正確性優先）。原始資料
+  CSV 下載連結另外補上快取破壞參數（`rawDataCsvUrl` 新增選填
+  `analyzedAt` 附成 `?t=...`）——那是靜態 `<a href>`，不受 React
+  remount 保護，瀏覽器 HTTP 快取才是它真正的敵人。
+  ⚠ **TDD 抓到一個真的 React bug**：兩個元件一開始给了同一個 key 字串
+  （`analyzedAt` 本身，未加前綴）——手足元素共用同一個 key 是未定義
+  行為，React 會噴「key 重複」警告，且第一次紅燈測試在這個 bug 下呈現
+  出詭異的間歇性失敗（remount 有時發生、有時沒有）。查出來是 key 碰撞
+  後，兩個元件各自加上元件名前綴才穩定。這正是先寫測試、看紅燈長什麼
+  樣的價值——如果只是先寫實作再補測試，這個 bug 很可能被漏掉
 
 > ⚠ **沙箱 403 是 sandbox validation limitation，不是 production 的結論。**
 > 我原本把 #73 設計成「被 #67 擋，要靠部署版探針才能開始研究」，

@@ -81,6 +81,19 @@ describe("CSV 下載連結", () => {
     expect(link.getAttribute("href")).toBe("/api/scenarios/s1/raw-data.csv");
     expect(link).toHaveAttribute("download");
   });
+
+  it("帶著 analyzedAt 時附上快取破壞參數——#69：換一次分析換一個網址，" +
+     "不讓瀏覽器把上一輪的 CSV 當快取命中原樣吐回來", async () => {
+    mockFetch(SAMPLE);
+    render(<RawData scenarioId="s1" analyzedAt="2026-08-04T09:30:00+00:00" />);
+    await userEvent.click(screen.getByText("原始資料（當次快照）"));
+    await screen.findByText("XYZ");
+
+    const link = screen.getByText("下載 CSV") as HTMLAnchorElement;
+    expect(link.getAttribute("href")).toBe(
+      "/api/scenarios/s1/raw-data.csv?t=" +
+      encodeURIComponent("2026-08-04T09:30:00+00:00"));
+  });
 });
 
 describe("缺席報價原樣顯示「—」，不假裝有數字", () => {

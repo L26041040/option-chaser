@@ -18,7 +18,12 @@ import { useState } from "react";
 import { getRawData, rawDataCsvUrl, type RawSnapshot } from "./api";
 import { money } from "./scenarios";
 
-export default function RawData({ scenarioId }: { scenarioId: string }) {
+export default function RawData({ scenarioId, analyzedAt = null }: {
+  scenarioId: string;
+  /** 這次分析的時間戳（#69）——只用來替 CSV 下載連結加快取破壞參數，
+   *  見 `rawDataCsvUrl`。 */
+  analyzedAt?: string | null;
+}) {
   const [data, setData] = useState<RawSnapshot | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -65,7 +70,7 @@ export default function RawData({ scenarioId }: { scenarioId: string }) {
           </div>
 
           <a className="button raw-data-download"
-            href={rawDataCsvUrl(scenarioId)} download>
+            href={rawDataCsvUrl(scenarioId, analyzedAt)} download>
             下載 CSV
           </a>
 

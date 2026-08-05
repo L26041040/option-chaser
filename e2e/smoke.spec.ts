@@ -149,8 +149,11 @@ test("進階區：分析報告與原始資料展開才載入（V8／#56）", asy
   await expect(rawData.getByText("1 筆")).toBeVisible();
   await expect(rawData.getByText("XYZ261016C00110000")).toBeVisible();
   const downloadLink = rawData.getByRole("link", { name: "下載 CSV" });
+  // #69：網址帶著這次分析的時間戳當快取破壞參數，換一輪分析換一個
+  // URL，瀏覽器快取不會拿舊 CSV 原樣吐回來。
   await expect(downloadLink).toHaveAttribute(
-    "href", "/api/scenarios/s1/raw-data.csv");
+    "href", `/api/scenarios/s1/raw-data.csv?t=${
+      encodeURIComponent("2026-08-04T09:30:00+00:00")}`);
   await expect(downloadLink).toHaveAttribute("download", "");
 });
 

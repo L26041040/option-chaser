@@ -1,4 +1,4 @@
-import { render, screen, within } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -251,6 +251,129 @@ describe("詳細頁刷新入口（#70）", () => {
     await screen.findByRole("button", { name: "已過期，不再刷新" });
     expect(screen.queryByText(/抓不到報價/)).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "重試" })).not.toBeInTheDocument();
+  });
+});
+
+describe("進階區隨新分析失效，不混用新舊 cache（#69）", () => {
+  const HISTORY = { entries: [
+    { analyzed_at: "2026-08-01T00:00:00+00:00", spot: 100.0, cost: 5.0,
+     baseline_return: 0.3, rank_in_expiry: 1 },
+  ] };
+  const RAW = {
+    meta: { symbol: "XYZ", spot: 100.0, fetched_at: "2026-08-04T09:00:00+00:00",
+           source: "cboe", contract_count: 1 },
+    contracts: [{ contract_symbol: "XYZ261016C00110000", option_type: "call",
+                 strike: 110.0, expiry: "2026-10-16", bid: 3.0, ask: 3.25,
+                 last: 3.1, volume: 10, open_interest: 20, implied_volatility: 0.3 }],
+  };
+
+  /** 精準控制第二次 `getScenario`何時回來，不靠 race 猜時機。 */
+  function mockDetailSequence(first: unknown, second: unknown) {
+    let scenarioCalls = 0;
+    let resolveSecond: (() => void) | null = null;
+    const historyCalls: string[] = [];
+    const rawDataCalls: string[] = [];
+    const spy = vi.fn(async (url: string) => {
+      if (url.startsWith("/api/scenarios/s1/history")) {
+        historyCalls.push(url);
+        return { ok: true, status: 200, json: async () => HISTORY };
+      }
+      if (url.startsWith("/api/scenarios/s1/raw-data")) {
+        rawDataCalls.push(url);
+        return { ok: true, status: 200, json: async () => RAW };
+      }
+      if (url === "/api/scenarios/s1") {
+        scenarioCalls += 1;
+        if (scenarioCalls === 1) {
+          return { ok: true, status: 200, json: async () => first };
+        }
+        return new Promise((resolve) => {
+          resolveSecond = () =>
+            resolve({ ok: true, status: 200, json: async () => second });
+        });
+      }
+      throw new Error(`測試沒有為 ${url} 準備回應`);
+    });
+    vi.stubGlobal("fetch", spy);
+    return { historyCalls, rawDataCalls, resolveSecond: () => resolveSecond!() };
+  }
+
+  it("刷新後，先前展開過的兩區都收合，不再顯示上一輪的內容", async () => {
+    const first = detail({ latest_analyzed_at: "2026-08-04T09:00:00+00:00" });
+    const second = detail({ latest_analyzed_at: "2026-08-04T10:00:00+00:00" });
+    const { resolveSecond } = mockDetailSequence(first, second);
+
+    const { rerender } = render(<ScenarioDetail id="s1" refreshedAt={null} />);
+    await screen.findByText(/劇本主圖/);
+
+    await userEvent.click(screen.getByText("Spread 淨成本走勢"));
+    await screen.findByRole("img");
+    await userEvent.click(screen.getByText("原始資料（當次快照）"));
+    await screen.findByText("XYZ261016C00110000");
+
+    rerender(<ScenarioDetail id="s1" refreshedAt="2026-08-04T10:00:00+00:00" />);
+
+    // 新一輪還沒回來之前，既有規則「刷新造成的重取不清空」仍成立——
+    // 先前展開的內容不該憑空消失。
+    expect(screen.getByRole("img")).toBeInTheDocument();
+    expect(screen.getByText("XYZ261016C00110000")).toBeInTheDocument();
+
+    resolveSecond();
+
+    // 新一輪真的落地之後，兩區才收合、內部狀態一起重置。
+    await waitFor(() => expect(screen.queryByRole("img")).not.toBeInTheDocument());
+    expect(screen.queryByText("XYZ261016C00110000")).not.toBeInTheDocument();
+  });
+
+  it("收合後再展開，是真的重新取得，不是沿用上一輪的舊資料", async () => {
+    const first = detail({ latest_analyzed_at: "2026-08-04T09:00:00+00:00" });
+    const second = detail({ latest_analyzed_at: "2026-08-04T10:00:00+00:00" });
+    const { historyCalls, rawDataCalls, resolveSecond } =
+      mockDetailSequence(first, second);
+
+    const { rerender } = render(<ScenarioDetail id="s1" refreshedAt={null} />);
+    await screen.findByText(/劇本主圖/);
+    await userEvent.click(screen.getByText("Spread 淨成本走勢"));
+    await screen.findByRole("img");
+    await userEvent.click(screen.getByText("原始資料（當次快照）"));
+    await screen.findByText("XYZ261016C00110000");
+    expect(historyCalls).toHaveLength(1);
+    expect(rawDataCalls).toHaveLength(1);
+
+    rerender(<ScenarioDetail id="s1" refreshedAt="2026-08-04T10:00:00+00:00" />);
+    resolveSecond();
+    await waitFor(() => expect(screen.queryByRole("img")).not.toBeInTheDocument());
+
+    await userEvent.click(screen.getByText("Spread 淨成本走勢"));
+    await screen.findByRole("img");
+    await userEvent.click(screen.getByText("原始資料（當次快照）"));
+    await screen.findByText("XYZ261016C00110000");
+
+    // 各自又多打了一次——不是沿用元件裡「已經抓過」的舊旗標。
+    expect(historyCalls).toHaveLength(2);
+    expect(rawDataCalls).toHaveLength(2);
+  });
+
+  it("原始資料的 CSV 下載連結跟著換一個網址（#69：不讓瀏覽器快取原樣吐回舊檔）", async () => {
+    const first = detail({ latest_analyzed_at: "2026-08-04T09:00:00+00:00" });
+    const second = detail({ latest_analyzed_at: "2026-08-04T10:00:00+00:00" });
+    const { resolveSecond } = mockDetailSequence(first, second);
+
+    const { rerender } = render(<ScenarioDetail id="s1" refreshedAt={null} />);
+    await screen.findByText(/劇本主圖/);
+    await userEvent.click(screen.getByText("原始資料（當次快照）"));
+    const before = (await screen.findByText("下載 CSV") as HTMLAnchorElement)
+      .getAttribute("href");
+
+    rerender(<ScenarioDetail id="s1" refreshedAt="2026-08-04T10:00:00+00:00" />);
+    resolveSecond();
+    await waitFor(() => expect(screen.queryByText("下載 CSV")).not.toBeInTheDocument());
+
+    await userEvent.click(screen.getByText("原始資料（當次快照）"));
+    const after = (await screen.findByText("下載 CSV") as HTMLAnchorElement)
+      .getAttribute("href");
+
+    expect(after).not.toBe(before);
   });
 });
 
