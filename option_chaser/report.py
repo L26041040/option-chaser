@@ -5,8 +5,10 @@ from __future__ import annotations
 from datetime import date, timedelta
 from datetime import date as _date
 
+from .filters import FILTER_CLASS_LABELS, is_spread_wide
 from .matrix import date_axis, matrix_lines, price_axis
-from .models import AnalysisParams, ChainSnapshot, FilterReport, is_bullish, leg_option_type
+from .models import (AnalysisParams, ChainSnapshot, FilterReport, QualityFlagCount,
+                     is_bullish, leg_option_type)
 from .ranking import BAND_LABELS, BAND_ORDER, build_reasons
 from .valuation import ContractValuation, guidance_judgments, scenario_leg_value, spread_scenario_value
 
@@ -28,6 +30,28 @@ def _pct(x: float) -> str:
 
 def _shift_name(shift: float) -> str:
     return "IV 不變" if shift == 0.0 else f"IV {shift * 100:+g}%"
+
+
+def _spread_width_warning(prefix: str, bid: float, ask: float, p: AnalysisParams) -> str | None:
+    """FB5-02（#63）：買賣價差過寬只標示、不刪除候選；訊息本身要說得出
+    「寬到什麼程度」（票上明列的驗收標準），不能只給一個沒有量級的警告。
+    `prefix` 供價差策略區分是買腿還是賣腿，單腿傳空字串。"""
+    if not is_spread_wide(bid, ask, p):
+        return None
+    mid = (bid + ask) / 2.0
+    return (f"- 警示: {prefix}買賣價差偏大（達 Mid 的 {_pct((ask - bid) / mid)}，"
+            f"Bid ${_money(bid)} / Ask ${_money(ask)}）")
+
+
+def _monotonicity_warning_line(prefix: str, contract_symbol: str,
+                               violations: frozenset[str]) -> str | None:
+    """FB5-03（#64）：無套利一致性違反只標示、不刪除候選；比照 FB5-02
+    的 `_spread_width_warning` 同一種寫法——`violations` 是呼叫端算好的
+    集合（`filters.monotonicity_violations()`），這裡只查表。`prefix`
+    同上，區分買腿／賣腿，單腿傳空字串。"""
+    if contract_symbol not in violations:
+        return None
+    return f"- 警示: {prefix}報價與鄰近履約價不一致，疑似陳舊報價"
 
 
 def _val_line(name: str, val: float, cost: float) -> str:
@@ -74,12 +98,22 @@ def _header_lines(snap: ChainSnapshot, p: AnalysisParams, today: date) -> list[s
     ]
 
 
-def _filter_lines(freport: FilterReport, p: AnalysisParams) -> list[str]:
+def _filter_lines(
+    freport: FilterReport, p: AnalysisParams,
+    quality_flags: tuple[QualityFlagCount, ...] = (),
+) -> list[str]:
+    """FB5-04（#65，spec #61）：每一關都標出屬於哪一類——「排除」（A／B類，
+    算不出來）跟「標示」（C類，算得出來但不夠好看）在畫面上分得開，讓這一
+    區自己說得出兩者的差別，不必回頭查程式碼或尾註。"""
     side = "Call 側" if leg_option_type(p.strategy) == "call" else "Put 側"
     lines = ["", "[過濾統計]", f"- 掃描合約（{side}）: {freport.total} 張"]
     for s in freport.stages:
-        lines.append(f"- {s.label}刷掉: {s.removed}")
+        lines.append(f"- [{s.filter_class}類排除] {s.label}刷掉: {s.removed}")
     lines.append(f"- 合格: {freport.passed} 張")
+    if quality_flags:
+        lines.append(f"- [C類標示，不影響入選，計於上方{freport.passed}張合格內]:")
+        for qf in quality_flags:
+            lines.append(f"  - {qf.label}: {qf.count}")
     return lines
 
 
@@ -125,6 +159,7 @@ def _candidate_lines(
     v: ContractValuation, idx: int, band: str,
     ranked: dict[str, list[ContractValuation]],
     snap: ChainSnapshot, n_qualified: int, p: AnalysisParams, today: date,
+    violations: frozenset[str] = frozenset(),
 ) -> list[str]:
     c = v.contract
     word = "高於" if c.option_type == "call" else "低於"
@@ -141,6 +176,12 @@ def _candidate_lines(
     ]
     if c.volume == 0:
         lines.append("- 警示: 今日無成交，報價新鮮度存疑")
+    width_warning = _spread_width_warning("", c.bid, c.ask, p)
+    if width_warning:
+        lines.append(width_warning)
+    mono_warning = _monotonicity_warning_line("", c.contract_symbol, violations)
+    if mono_warning:
+        lines.append(mono_warning)
     lines.append("")
     # T12（附錄 A14.2）：主數字成本口徑＝Ask（保守成交假設）。原「Natural
     # 成交報酬」與基準情境列因此重合，已合併，不再另列。
@@ -184,7 +225,19 @@ def _matrix_block(value_fn, cost, spot, p, today, expiry) -> list[str]:
             + matrix_lines(value_fn, cost, prices, dates))
 
 
-def _footer_lines(p: AnalysisParams) -> list[str]:
+# V8（#56，spec R1 §4.2 A2）：CLI 純文字報告用的精簡免責句——維持原文，
+# 不因為新增網頁版擴充免責（見 `disclaimer_text()`）而改動既有 CLI 輸出。
+_DISCLAIMER_LINE = "- 免責: 模型估計非保證價格，不構成投資建議"
+
+
+def methodology_lines(p: AnalysisParams) -> list[str]:
+    """V8（#56，spec R1 §4.2 A2）：方法論尾註——`_footer_lines()` 扣掉免責
+    那一行的其餘全部，供 API 序列化成獨立的「方法與假設」欄位（新版型
+    ⑥，`docs/research/option-strategy-report-conventions.md` §4.1）。
+    CLI 的 `render()`／`render_spreads()` 仍呼叫 `_footer_lines()`（本函式
+    ＋免責合併），文字內容完全不變，只是免責從中段移到尾端——R1 §2.1
+    「免責與方法在最後」，兩者本來就該相鄰墊底，不該讓免責卡在方法論
+    中間打斷整段。"""
     return [
         "",
         "[尾註]",
@@ -204,11 +257,25 @@ def _footer_lines(p: AnalysisParams) -> list[str]:
         "- 到期日選取: 目標月第三個星期五為日曆錨點，取距錨點最近的實際到期日為"
         "baseline（同距取較晚），再取其前 2 後 2（一側不足由另一側補足），至多五檔；"
         "窮舉僅及於這些到期日",
-        f"- 過濾: 報價 / IV(0.01-5.0) / OI>={p.min_oi} 且 Vol>={p.min_volume} / "
-        f"Spread <= max({p.spread_floor:g}, {p.max_spread_pct:g}*Mid)（不含任何到期日條件）",
+        # FB5-04（#65，spec #61）：三分類人話說明——A／B 兩類是「算不出來」
+        # 硬門檻，C 類是「算得出來但不夠好看」的標示，兩者行為不同、待遇
+        # 不同，尾註得說清楚是哪一種，不能含混成同一句「過濾」。
+        f"- 過濾 [A類 {FILTER_CLASS_LABELS['A']}，硬門檻]: 報價存在且不交叉"
+        "（不含任何到期日條件，到期日取捨見下）",
+        f"- 過濾 [B類 {FILTER_CLASS_LABELS['B']}，硬門檻]: IV 落在可解區間 (0.01-5.0)",
+        # 檢視回饋修正：未平倉量沒有門檻可標示（見 `quality_flag_counts`
+        # docstring），原樣顯示於各候選腿，不在 [過濾統計] 逐項計數——
+        # 不能跟真的有計數的另外三項寫在同一句，讓讀者以為四項都有數字。
+        f"- 過濾 [C類 {FILTER_CLASS_LABELS['C']}，只標不刪，spec #61]: 未平倉量"
+        "原樣顯示於各候選腿，不設門檻；成交量、買賣價差寬度、無套利一致性"
+        "——不影響候選是否入選，[過濾統計]區逐項計數；買賣價差"
+        f"超過 max({p.spread_floor:g}, {p.max_spread_pct:g}*Mid) 時逐候選附警示，"
+        "見各候選「買賣價差偏大」",
+        "- 無套利一致性: 同到期日、同類型的相鄰履約價 Ask 應單調（call 非"
+        "遞增、put 非遞減），違反時僅標示、不影響候選是否入選，spec #61；"
+        "見各候選「報價與鄰近履約價不一致，疑似陳舊報價」",
         "- 排名: Delta 分級（實務慣例），級內以基準情境報酬率（最差進場）排序",
         "- 模型限制: 無股利調整（q=0）、歐式近似、IV 乘法情境",
-        "- 免責: 模型估計非保證價格，不構成投資建議",
         "- 韌性向量 7 情境: S1 不漲(S=現價) / S2 半程(完成度50%價位) / S3 大半程"
         "(完成度75%價位) / S4 晚30天到達 / S5 晚90天到達 / S6 IV最保守"
         "(全部 IV 情境估值之最小值) / S7 Natural成交(成本改採 Ask，價差為長Ask−短Bid)"
@@ -224,6 +291,27 @@ def _footer_lines(p: AnalysisParams) -> list[str]:
     ]
 
 
+def _footer_lines(p: AnalysisParams) -> list[str]:
+    return methodology_lines(p) + [_DISCLAIMER_LINE]
+
+
+def disclaimer_text() -> str:
+    """V8（#56，spec R1 §4.4.4）：網頁新版型獨立、不折疊的免責段落，
+    涵蓋 R1 明列的四點（模型估計非保證價格／不構成投資建議／本工具非
+    經紀商亦非投資顧問／選擇權風險請參閱 OCC ODD），且措辭不聲稱本產品
+    受 FINRA 或任何監理規範管轄（R1 §2.5 前言、§4.4 第 4 點）。不依賴
+    任何參數——固定文案，不是引擎計算值，但集中放在 report.py 維持
+    「報告文案單一來源」，CLI 的精簡版（`_DISCLAIMER_LINE`）維持不變、
+    不被本函式取代。"""
+    return (
+        "模型估計非保證價格，不構成投資建議。本工具並非經紀商，亦非"
+        "投資顧問，不提供個人化投資建議，本工具與任何監理機構之揭露"
+        "規範皆無關。選擇權交易涉及重大風險，可能損失全部投入本金，"
+        "交易前請參閱 OCC《Characteristics and Risks of Standardized "
+        "Options》（選擇權風險揭露文件）。"
+    )
+
+
 def render_filter_only(
     snap: ChainSnapshot, p: AnalysisParams, freport: FilterReport, today: date
 ) -> str:
@@ -235,8 +323,10 @@ def render_filter_only(
 def render(
     snap: ChainSnapshot, p: AnalysisParams, freport: FilterReport,
     ranked: dict[str, list[ContractValuation]], n_qualified: int, today: date,
+    violations: frozenset[str] = frozenset(),
+    quality_flags: tuple[QualityFlagCount, ...] = (),
 ) -> str:
-    lines = _header_lines(snap, p, today) + _filter_lines(freport, p)
+    lines = _header_lines(snap, p, today) + _filter_lines(freport, p, quality_flags)
     idx = 0
     for band in BAND_ORDER:
         lines.append("")
@@ -246,7 +336,8 @@ def render(
             continue
         for j, v in enumerate(ranked[band]):
             idx += 1
-            lines += _candidate_lines(v, idx, band, ranked, snap, n_qualified, p, today)
+            lines += _candidate_lines(v, idx, band, ranked, snap, n_qualified, p,
+                                      today, violations)
             if j == 0 or p.matrix_all:
                 c = v.contract
                 lines += _matrix_block(
@@ -272,7 +363,8 @@ def _pair_lines(pr) -> list[str]:
             f"- 健全性淘汰: {pr.removed_sanity}", f"- 合格組數: {pr.passed}"]
 
 
-def _spread_candidate_lines(sv, idx, n_pairs, p, spot: float, today: date) -> list[str]:
+def _spread_candidate_lines(sv, idx, n_pairs, p, spot: float, today: date,
+                            violations: frozenset[str] = frozenset()) -> list[str]:
     from .ranking import build_spread_reasons
     from .valuation import spread_guidance_judgments
     ll, sl = sv.long_leg, sv.short_leg
@@ -284,6 +376,15 @@ def _spread_candidate_lines(sv, idx, n_pairs, p, spot: float, today: date) -> li
         f"- 淨成本: Mid ${_money(sv.net_mid)}（${sv.net_mid * 100:.0f}/張） / 最差 ${_money(sv.net_worst)}（${sv.net_worst * 100:.0f}/張）",
         f"- 最大獲利: ${_money(sv.max_profit)}（${sv.max_profit * 100:.0f}/張） / 淨Delta {sv.net_delta:.2f} / Lambda {sv.effective_leverage:.1f}x",
         f"- Breakeven: ${_money(sv.breakeven)}（對目標價緩衝 {_pct(sv.breakeven_vs_target)}）",
+    ]
+    for prefix, leg in (("買腿", ll), ("賣腿", sl)):
+        warning = _spread_width_warning(prefix, leg.bid, leg.ask, p)
+        if warning:
+            lines.append(warning)
+        mono_warning = _monotonicity_warning_line(prefix, leg.contract_symbol, violations)
+        if mono_warning:
+            lines.append(mono_warning)
+    lines += [
         "",
         "劇本成立時（最差進場）:",
     ]
@@ -304,13 +405,16 @@ def _spread_candidate_lines(sv, idx, n_pairs, p, spot: float, today: date) -> li
     return lines
 
 
-def render_spreads(snap, p, freport, pair_report, ranked, n_pairs, today) -> str:
-    lines = _header_lines(snap, p, today) + _filter_lines(freport, p) + _pair_lines(pair_report)
+def render_spreads(snap, p, freport, pair_report, ranked, n_pairs, today,
+                   violations: frozenset[str] = frozenset(),
+                   quality_flags: tuple[QualityFlagCount, ...] = ()) -> str:
+    lines = (_header_lines(snap, p, today) + _filter_lines(freport, p, quality_flags)
+            + _pair_lines(pair_report))
     if not ranked:
         lines += ["", "無合格價差組合，不產生推薦。", ""]
         return "\n".join(lines)
     for i, sv in enumerate(ranked):
-        lines += _spread_candidate_lines(sv, i, n_pairs, p, snap.spot, today)
+        lines += _spread_candidate_lines(sv, i, n_pairs, p, snap.spot, today, violations)
         if i == 0 or p.matrix_all:
             lng, sht = sv.long_leg, sv.short_leg
             lines += _matrix_block(

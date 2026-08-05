@@ -11,13 +11,16 @@ import os
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
+from typing import Iterable
 
 from . import __version__
+from .models import AnalysisParams, ChainSnapshot
 from .ranking import spread_baseline_return
+from .report import disclaimer_text, methodology_lines
 from .scenarios import natural_cost
 from .service import AnalysisResult, CandidateView, candidate_key, valuation_key
 from .timeframe import TargetMonth
-from .valuation import SpreadValuation
+from .valuation import SpreadValuation, guidance_judgments, spread_guidance_judgments
 from .vocabulary import EVENT_TYPES_V5
 
 
@@ -297,6 +300,29 @@ def rebuild_groups(ws_root, scenarios: list[Scenario],
 
 # ---------- ScenarioResult 契約（spec §3） ----------
 
+def best_return(view: dict | None) -> float | None:
+    """baseline 期（最接近目標年月的到期日）本身的最高收益率——與 Step 2
+    主圖同一口徑（QA1-03／#30：先前誤取全部到期日的全域最大值，較早到期日
+    剛好報酬更高時卡片數字就會跟主圖對不上）。
+
+    `baseline_return` 是 service 已預算好的欄位（T3 起＝各 Spread 自身到期日
+    的內在價值），這裡只在 baseline 期那組 `rows` 內取最大值，不做任何金融
+    計算。baseline 期不在 `expiry_groups`、或該期零合格候選 → None（附錄
+    A10.2／A12：綠燈＋「—」，不是一個真的收益率）；無快照 → None（附錄 A8.1）。
+
+    住在 view 契約這一層而不是 `workspace`：V3（#51）起 HTTP API 的劇本
+    清單也要這個數字，而規則只能有一份——`workspace._best_return` 因此
+    改為委派。
+    """
+    if view is None:
+        return None
+    group = next((g for g in view["expiry_groups"]
+                 if g["expiry"] == view.get("baseline_expiry")), None)
+    if group is None or not group["rows"]:
+        return None
+    return max(row["candidate"]["baseline_return"] for row in group["rows"])
+
+
 def _history_entry(sv: SpreadValuation, expiry: str, rank_in_expiry: int) -> dict:
     """T9（#23，附錄A7）：全部有效候選的歷史五欄位之三（成本／收益率／期內
     名次）；另外兩欄（更新時間、標的價）不逐候選重複，共用父層 `analyzed_at`／
@@ -321,13 +347,61 @@ def _leg(c) -> dict:
             "open_interest": c.open_interest}
 
 
+def spread_cost_history(views: Iterable[dict], candidate_key: str) -> list[dict]:
+    """V9（#57）：跨一個劇本的全部歷史快照（序列化 view dict），依 Spread
+    身份鍵（`candidate_key`，已含策略／買賣履約價／到期日，見
+    `service.valuation_key`）聚合出時間序列。
+
+    與 Streamlit 版 `workspace.spread_history()`（T11／#25）同一套語意，
+    只是輸入從「讀檔案路徑」換成「呼叫端已經備妥的 view dict 序列」——
+    新架構（`api_app`）的 `Storage.result_history()` 回傳的是
+    `ResultRecord`（`.view` 已經是這個形狀），沒有檔案路徑可讀；
+    `workspace.spread_history()` 改為委派本函式，兩邊共用同一份邏輯。
+
+    唯讀聚合：只讀 view dict，不寫入、不改變任何計算或保存範圍。某次
+    快照的 `all_candidates` 找不到這個鍵（該候選當次不是有效候選，例如
+    缺報價被過濾）→ 該筆仍然入列，但 cost／baseline_return／
+    rank_in_expiry 皆為 None：如實呈現斷點，不插值、不跳過、不報錯；
+    `analyzed_at`／`spot` 仍取自那次成功更新本身。範圍限定 Spread 路徑
+    （`all_candidates` 只有 spread 策略填入，T9 附錄A13 既有 MVP 範圍）。
+    """
+    out = []
+    for view in views:
+        entry = next((e for r in view["results"]
+                     for e in r.get("all_candidates", [])
+                     if e["candidate_key"] == candidate_key), None)
+        out.append({
+            "analyzed_at": view["analyzed_at"],
+            "spot": view["meta"]["spot"],
+            "cost": entry["cost"] if entry else None,
+            "baseline_return": entry["baseline_return"] if entry else None,
+            "rank_in_expiry": entry["rank_in_expiry"] if entry else None,
+        })
+    return out
+
+
+def raw_snapshot_json(snap: ChainSnapshot) -> dict:
+    """V8（#56）：原始資料（當次快照）——「免得你亂掰我卻查不到證據」
+    （QA1-10／#37 原話，延續同一設計目標）。刻意不重用 `_leg()`：那個
+    子集是候選腿專用的顯示欄位（省略 `last`），這裡要的是**逐筆合約的
+    完整原樣**，跟 CSV 下載（`data.snapshot.snapshot_to_csv`）給的是同一
+    份資料、同一組欄位，兩者不該對不上。"""
+    return {
+        "meta": {"symbol": snap.symbol, "spot": snap.spot,
+                 "fetched_at": snap.fetched_at, "source": snap.source,
+                 "contract_count": len(snap.contracts)},
+        "contracts": [dataclasses.asdict(c) for c in snap.contracts],
+    }
+
+
 def _candidate(cv: CandidateView, strategy: str, capital: float | None,
-               today: date, anchor: date) -> dict:
+               today: date, anchor: date, p: AnalysisParams) -> dict:
     v = cv.valuation
     if isinstance(v, SpreadValuation):
         legs = [_leg(v.long_leg), _leg(v.short_leg)]   # [0]=long, [1]=short
         mid_cost, expiry = v.net_mid, v.long_leg.expiry
         max_profit, net_delta = v.max_profit, v.net_delta
+        guidance_warnings = spread_guidance_judgments(v, p)
     else:
         legs = [_leg(v.contract)]
         mid_cost, expiry = v.mid, v.contract.expiry
@@ -335,6 +409,7 @@ def _candidate(cv: CandidateView, strategy: str, capital: float | None,
         max_profit = (None if strategy == "long-call"
                       else v.contract.strike - v.contract.ask)
         net_delta = v.delta
+        guidance_warnings = guidance_judgments(v, p)
     # T12（附錄 A14.2）：資本／最大虧損以最差成交成本計（natural_cost 即
     # 買 Ask／賣 Bid 口徑）；mid_cost 保留為次要顯示欄位。
     cap_per = natural_cost(v) * 100
@@ -358,6 +433,9 @@ def _candidate(cv: CandidateView, strategy: str, capital: float | None,
         "friction_amount": cv.friction_amount,
         "buffer_days": cv.buffer_days,
         "quote_warning": cv.quote_warning,
+        # FB5-03（#64）：獨立欄位，不併進 quote_warning——見 service.py
+        # 的 CandidateView.monotonicity_warning 欄位註解。
+        "monotonicity_warning": cv.monotonicity_warning,
         "theta_day_rate": cv.theta_day_rate,
         "vega_per_pt": cv.vega_per_pt,
         "decay_30d_return": cv.decay_30d_return,
@@ -365,14 +443,34 @@ def _candidate(cv: CandidateView, strategy: str, capital: float | None,
         "breakeven": v.breakeven,
         "max_profit": max_profit,
         "effective_leverage": v.effective_leverage,
+        # V8（#56，spec R1 §4.2 A2）：買價指引天花板 L2/L3——純文字報告
+        # 早就在印，只是沒進契約。單腿另有 L1（＝ `floor_value`，保守
+        # 底線），本票依票上 A2 表只列的兩項不補 L1（v.l1 對單腿等於
+        # `floor_value`，價差沒有 L1）。
+        "l2": v.l2, "l3": v.l3,
+        # V8：買 Ask 超過哪些天花板的警示文字（`valuation.guidance_
+        # judgments`／`spread_guidance_judgments`，同一組門檻早就用來
+        # 決定純文字報告的「- 警示: ...」行，這裡只是把回傳值序列化）。
+        "guidance_warnings": guidance_warnings,
+        # V8：評語「代價」（cons）——「優點」pros 依 R1 §4.2 C 裁示不補
+        # 序列化（與關鍵指標表重複，見 CLAUDE.md V8 記錄）。
+        "cons": list(cv.cons),
         # D1（#14）：Long Call 追平價格——None＝不適用（單腳）或無法計算
         # （同履約價 Call 報價缺失），render 層負責區分並顯示。
         "catchup_price": cv.catchup_price,
-        "matrix": {"prices": [list(p) for p in cv.matrix.prices],
+        # 檢視回饋：這個生成式的迴圈變數原本借用 `p`，跟本函式自己的
+        # `p: AnalysisParams` 參數同名，在同一個函式體裡容易讓人誤讀成
+        # 同一個東西（雖然 Python 3 生成式有獨立作用域，實際不會互相
+        # 污染）。改用 `pt`（price point）避免這個混淆。
+        "matrix": {"prices": [list(pt) for pt in cv.matrix.prices],
                    "dates": [list(d) for d in cv.matrix.dates],
                    "cells": [list(r) for r in cv.matrix.cells]},
         # spec §3 新增四組（乘除法與日期差，非估值邏輯）
         "capital_per_contract": cap_per,
+        # V7（#55）：劇本區間三價位對照。兩端都沒設時是空陣列，呈現層據此
+        # 不畫這一區（不是畫一個只有一格的表）。
+        "price_ladder": [{"label": pt.label, "price": pt.price, "return": pt.ret}
+                         for pt in cv.price_ladder],
         "max_loss_per_contract": cap_per,   # debit 恆等於成本
         "pct_of_capital": (cap_per / capital) if capital else None,
         # 參考日＝日曆錨點（附錄 A9）；年月本身不映射成任何一天。
@@ -387,15 +485,31 @@ def serialize_result(result: AnalysisResult, scenario_id: str,
     today = result.today
 
     def cand(cv, strategy):
-        return _candidate(cv, strategy, capital, today, base.anchor)
+        # V8（#56，spec R1 §4.2 A2）：`_candidate()` 現在還要算買價指引
+        # 警示（`guidance_judgments`／`spread_guidance_judgments`），兩者
+        # 只讀 `p.iv_shifts`，不讀 `p.strategy`——`base` 不必為每個 `r`
+        # 各自替換 strategy 也正確，跟既有 `base.anchor` 的用法一致。
+        return _candidate(cv, strategy, capital, today, base.anchor, base)
 
     def strat(r):
         return {
             "strategy": r.strategy, "status": r.status, "message": r.message,
             "n_qualified": r.n_qualified,
-            "filter_stages": ([{"label": s.label, "removed": s.removed}
+            # FB4-01（#60）：合約層級的抓到／通過筆數。不可由 `n_qualified`
+            # 反推——spread 路徑的 `n_qualified` 是**配對數**
+            # （`service._spread_result` 取 `pair_report.passed`）。
+            "filter_report": ({"total": r.filter_report.total,
+                               "passed": r.filter_report.passed}
+                              if r.filter_report else None),
+            "filter_stages": ([{"label": s.label, "removed": s.removed,
+                               "filter_class": s.filter_class}
                                for s in r.filter_report.stages]
                               if r.filter_report else []),
+            # FB5-04（#65，spec #61）：C 類品質標示在整個合格池裡的計數
+            # （`filters.quality_flag_counts()`）——跟 `filter_stages`
+            # （A／B 兩類「排除」）並排但語意不同，前端據此分開呈現。
+            "quality_flags": [{"label": qf.label, "count": qf.count}
+                              for qf in r.quality_flags],
             "pair_report": ({"total_pairs": r.pair_report.total_pairs,
                              "removed_sanity": r.pair_report.removed_sanity,
                              "passed": r.pair_report.passed}
@@ -413,6 +527,15 @@ def serialize_result(result: AnalysisResult, scenario_id: str,
                               for exp, ranked_group in r.expiry_ranked
                               for rank, sv in enumerate(ranked_group, start=1)],
             "report_text": r.report_text,
+            # V8（#56，spec R1 §4.1）：新版型「⑥ 方法與假設」／「⑦ 免責
+            # 聲明」要獨立顯示、不再是 `report_text` 尾端的散文——內容
+            # 出自同一個 `report.py`（單一事實來源），只是拆成欄位。
+            # 每個策略各印一份而非全域一份：`p.spread_floor`／
+            # `max_spread_pct` 理論上策略間相同，但方法論文字本就是
+            # 逐 `render()`／`render_spreads()` 呼叫產生的，跟著 `r` 走
+            # 才不會在契約裡無中生有一個「全域方法論」概念。
+            "methodology_text": "\n".join(methodology_lines(base)).strip("\n"),
+            "disclaimer_text": disclaimer_text(),
         }
 
     def group(g):

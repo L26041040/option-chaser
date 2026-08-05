@@ -5,3 +5,9 @@ __pycache__/
 snapshots/*.json
 .superpowers/
 workspace/
+node_modules/
+dist/
+.pw-browsers/
+test-results/
+playwright-report/
+.vercel/

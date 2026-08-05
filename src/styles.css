@@ -1,0 +1,878 @@
+/**
+ * iOS 風格基礎（V1／#48）——手機優先。
+ *
+ * 這一版只鋪設語彙：系統字體棧、iOS 系統色、安全區內距、卡片與分組列表
+ * 的圓角/間距節奏、深淺色自動切換。後續票的畫面都從這組 token 長出來，
+ * 不各自發明尺寸與顏色。
+ */
+
+:root {
+  /* iOS system font stack */
+  --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto,
+    "Helvetica Neue", "PingFang TC", "Noto Sans TC", sans-serif;
+
+  /* iOS system colours (light) */
+  --bg: #f2f2f7;
+  --bg-elevated: #ffffff;
+  --separator: rgba(60, 60, 67, 0.18);
+  --label: #000000;
+  --label-secondary: rgba(60, 60, 67, 0.6);
+  --label-tertiary: rgba(60, 60, 67, 0.3);
+  --tint: #007aff;
+  --green: #34c759;
+  --red: #ff3b30;
+  --orange: #ff9500;
+  /* iOS secondary fill：膠囊鈕底、按下卡片時的 highlight。用灰階半透明
+     而不是實色，深淺兩種模式共用同一個值。 */
+  --fill: rgba(120, 120, 128, 0.12);
+  --card-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+
+  --radius: 16px;
+  --gap: 16px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #000000;
+    --bg-elevated: #1c1c1e;
+    --separator: rgba(84, 84, 88, 0.65);
+    --label: #ffffff;
+    --label-secondary: rgba(235, 235, 245, 0.6);
+    --label-tertiary: rgba(235, 235, 245, 0.3);
+    --tint: #0a84ff;
+    --green: #30d158;
+    --red: #ff453a;
+    --orange: #ff9f0a;
+    --fill: rgba(120, 120, 128, 0.24);
+    /* 深色模式靠卡片本身的亮度分層，投影只會變成一圈髒邊 */
+    --card-shadow: none;
+  }
+}
+
+* {
+  box-sizing: border-box;
+  -webkit-tap-highlight-color: transparent;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: var(--font);
+  background: var(--bg);
+  color: var(--label);
+  font-size: 17px; /* iOS body */
+  line-height: 1.45;
+  -webkit-font-smoothing: antialiased;
+}
+
+#root {
+  min-height: 100dvh;
+  /* 頂部安全區**不**在這一層處理——釘選功能列自己吃（`.toolbar`）。
+     兩層都加的話，靜止時頂部空一倍多，而且捲動時 sticky 貼到 top:0
+     的瞬間標題會往上跳一個 inset 的距離。 */
+  padding: 0 env(safe-area-inset-right) env(safe-area-inset-bottom)
+    env(safe-area-inset-left);
+}
+
+.screen {
+  max-width: 640px; /* 手機優先，桌面置中不拉滿 */
+  margin: 0 auto;
+  padding: var(--gap);
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap);
+}
+
+.card {
+  background: var(--bg-elevated);
+  border-radius: var(--radius);
+  box-shadow: var(--card-shadow);
+  padding: var(--gap);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.row + .row {
+  border-top: 0.5px solid var(--separator);
+  padding-top: 12px;
+}
+
+
+.row-label {
+  color: var(--label-secondary);
+  font-size: 15px;
+}
+
+.row-value {
+  font-size: 17px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.metric {
+  font-size: 28px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.3px;
+}
+
+.positive {
+  color: var(--green);
+}
+.negative {
+  color: var(--red);
+}
+
+/* FB5-04（#65，spec #61）：C 類品質標示的計數——橙色，跟排除用的
+   `.negative`（紅色）刻意不同，這些候選一筆都沒被刪掉。 */
+.flagged {
+  color: var(--orange);
+}
+
+.caption {
+  color: var(--label-secondary);
+  font-size: 13px;
+}
+
+.button {
+  appearance: none;
+  border: 0;
+  border-radius: var(--radius);
+  background: var(--tint);
+  color: #fff;
+  font-family: inherit;
+  font-size: 17px;
+  font-weight: 600;
+  padding: 14px 20px;
+  min-height: 48px; /* 觸控目標 */
+  cursor: pointer;
+}
+
+.button:disabled {
+  opacity: 0.4;
+}
+
+.notice {
+  border-radius: var(--radius);
+  padding: 12px var(--gap);
+  font-size: 15px;
+  background: var(--bg-elevated);
+  border-left: 3px solid var(--orange);
+}
+
+.notice.error {
+  border-left-color: var(--red);
+}
+
+/* FB4-01（#60）：候選池診斷用的次級列與區塊標題 */
+.section-title {
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: -0.2px;
+  margin: 0;
+}
+
+/* 次級列不要分隔線。用 `.row.row.sub` 提高一級特異性，別靠「寫在
+   `.row + .row` 後面」這種順序巧合——有人重排規則就會冒出鬼線。 */
+.row.row.sub {
+  padding-left: 12px;
+  border-top: 0;
+  padding-top: 0;
+}
+
+.row.sub .row-label {
+  font-size: 13px;
+}
+
+.row.sub .row-value {
+  font-size: 15px;
+}
+
+/* ---------- 畫面骨架：釘選功能列與導覽（V3／#51、V5／#53） ---------- */
+
+/* `position: sticky` 而非 fixed：sticky 留在文件流裡，不必為它補一塊
+   等高的 padding，鍵盤彈出時也不會蓋住輸入欄。top 要扣掉安全區，
+   否則 iPhone 上會頂到瀏海底下。 */
+.toolbar {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  margin: calc(var(--gap) * -1) calc(var(--gap) * -1) 4px;
+  padding: max(env(safe-area-inset-top), 10px) var(--gap) 10px;
+  background: color-mix(in srgb, var(--bg) 82%, transparent);
+  /* iOS Safari 要到 18 才支援去前綴的 backdrop-filter。少了 -webkit-
+     的話，16／17 上功能列只剩半透明底、沒有模糊，捲動時底下的文字會
+     透出來疊在標題上。 */
+  -webkit-backdrop-filter: saturate(180%) blur(20px);
+  backdrop-filter: saturate(180%) blur(20px);
+  border-bottom: 0.5px solid var(--separator);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+/* 兩種前綴都不支援時退成不透明底——半透明加不模糊，底下的字會透上來。 */
+@supports not (
+  (backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))
+) {
+  .toolbar {
+    background: var(--bg);
+  }
+}
+
+.toolbar-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 28px;
+}
+
+/* iOS Large Title：34pt/bold、負字距。手機上這是「我在哪一頁」的
+   唯一線索，所以它得夠大。 */
+.toolbar-title {
+  font-size: 32px;
+  font-weight: 700;
+  letter-spacing: -0.6px;
+  line-height: 1.15;
+  margin: 0;
+}
+
+/* 返回：iOS 導覽列的 tint 色文字＋左角括號，不是一顆按鈕。 */
+.nav-back {
+  color: var(--tint);
+  text-decoration: none;
+  font-size: 17px;
+  font-weight: 500;
+  padding: 4px 0;
+  margin-left: -2px;
+}
+
+.nav-back:active {
+  opacity: 0.45;
+}
+
+/* `.caption.progress` 而非 `.progress`：兩者都設 color，同特異性時只靠
+   誰寫在後面決勝，重排規則就會翻掉。 */
+.caption.progress {
+  font-variant-numeric: tabular-nums;
+  color: var(--tint);
+}
+
+/* ---------- 動作：膠囊鈕、文字鈕 ---------- */
+
+/* iOS 導覽列右側的動作：淺色填充膠囊，不是整寬大按鈕。功能列是釘住的，
+   每多一列整寬按鈕就少一列看得到卡片。 */
+.pill {
+  appearance: none;
+  border: 0;
+  border-radius: 999px;
+  background: var(--fill);
+  color: var(--tint);
+  font-family: inherit;
+  font-size: 15px;
+  font-weight: 600;
+  padding: 7px 14px;
+  min-height: 34px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.pill:active {
+  opacity: 0.5;
+}
+
+.pill:disabled {
+  opacity: 0.4;
+}
+
+/* 次要動作用 tint 色文字（iOS 慣例），不畫框——一張卡上兩三個帶框
+   按鈕會把視線從數字上拉走。 */
+.text-button {
+  appearance: none;
+  border: 0;
+  background: none;
+  color: var(--tint);
+  font-family: inherit;
+  font-size: 15px;
+  font-weight: 600;
+  padding: 8px 4px;
+  min-height: 36px;
+  cursor: pointer;
+}
+
+.text-button:active {
+  opacity: 0.45;
+}
+
+/* ---------- 卡片內容 ---------- */
+
+.list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+/* 整張卡是進詳細頁的連結：撐滿卡片、不帶底線、繼承顏色，按下去整張
+   卡有回饋（iOS 的 highlight 行為）。 */
+.card-tap {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  color: inherit;
+  text-decoration: none;
+  border-radius: calc(var(--radius) - 2px);
+  margin: -4px;
+  padding: 4px;
+  transition: background-color 0.15s ease;
+}
+
+.card-tap:active {
+  background: var(--fill);
+}
+
+.metric-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.chevron {
+  color: var(--label-tertiary);
+  font-size: 22px;
+  line-height: 1;
+  font-weight: 600;
+}
+
+.row-value.big {
+  font-size: 22px;
+  font-weight: 700;
+  letter-spacing: -0.3px;
+}
+
+/* 沒跑過分析的「—」：不上漲跌色，因為它不是一個收益率。 */
+.metric.muted {
+  color: var(--label-tertiary);
+}
+
+.muted {
+  color: var(--label-tertiary);
+}
+
+/* 主數字旁的附註（漲幅、與目標的差距）：跟著數字走，但不搶它。 */
+.row-note {
+  color: var(--label-secondary);
+  font-size: 14px;
+  font-weight: 400;
+  margin-left: 2px;
+}
+
+/* 卡片底部的動作列：與內容之間一條髮絲線，動作靠右。 */
+.card-actions {
+  display: flex;
+  justify-content: flex-end;
+  border-top: 0.5px solid var(--separator);
+  margin: 0 calc(var(--gap) * -1) calc(var(--gap) * -1);
+  padding: 0 12px;
+}
+
+/* ---------- 表單 ---------- */
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.input {
+  appearance: none;
+  font-family: inherit;
+  /* 16px 是 iOS Safari 不自動放大頁面的下限——小一點就會在聚焦時
+     整頁縮放，使用者得再手動縮回去。 */
+  font-size: 17px;
+  color: var(--label);
+  background: var(--bg);
+  border: 0.5px solid var(--separator);
+  border-radius: 10px;
+  padding: 12px;
+  min-height: 48px;
+  width: 100%;
+}
+
+.input:focus {
+  outline: 2px solid var(--tint);
+  outline-offset: -1px;
+}
+
+.button:active:not(:disabled) {
+  opacity: 0.75;
+}
+
+.button.subtle {
+  background: var(--fill);
+  color: var(--tint);
+}
+
+/* 只給輔助技術讀的字：不能用 display:none／visibility:hidden，那會連
+   螢幕閱讀器一起擋掉。 */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+.screen-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap);
+  padding-top: var(--gap);
+  border-top: 0.5px solid var(--separator);
+}
+
+/* ---------- 新鮮度標記與卡片內的失敗指引（V4／#52） ---------- */
+
+.tag {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0;
+  vertical-align: 2px;
+  background: var(--fill);
+  color: var(--label-secondary);
+}
+
+.tag.warn {
+  background: color-mix(in srgb, var(--orange) 16%, transparent);
+  color: var(--orange);
+}
+
+/* FB5-03（#64）：單調性違反用紅色，跟 .tag.warn 的橙色分開——配對關係
+   違反（疑似陳舊報價）比一般品質提醒更值得注意。 */
+.tag.suspect {
+  background: color-mix(in srgb, var(--red) 16%, transparent);
+  color: var(--red);
+}
+
+/* 卡片裡的提示不能用 `.notice` 的預設底色——那正好等於卡片底色，等於
+   沒有框；改用色調淡底，一眼看得出是這張卡的事。底色寫在
+   `.card .notice.error`／`.card .notice.warn`（0,3,0），特異性高過
+   `.notice.error`（0,2,0），不靠「誰寫在後面」決勝。 */
+.card .notice {
+  border-left: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  padding: 12px;
+  margin: 0;
+}
+
+.card .notice p {
+  margin: 0;
+}
+
+.card .notice.error {
+  background: color-mix(in srgb, var(--red) 9%, transparent);
+}
+
+/* 「Long Call 已經勝過此 Spread」用警示橘而非成功綠：對使用者而言這是
+   「你這組價差被更簡單的東西比下去了」，不是好消息。 */
+.card .notice.warn {
+  background: color-mix(in srgb, var(--orange) 14%, transparent);
+  color: var(--label);
+  font-weight: 600;
+}
+
+/* ---------- 主圖 Heatmap（V5／#53） ---------- */
+
+.heatmap {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* 橫向捲動的是表格本身，不是整頁：七欄擠進 390px 只會讓數字小到讀不
+   出來，所以寧可捲。`-webkit-overflow-scrolling` 給舊 iOS 慣性捲動。 */
+.heatmap-scroll {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  margin: 0 calc(var(--gap) * -1);
+  padding: 0 var(--gap);
+}
+
+.heatmap-table {
+  border-collapse: separate;
+  border-spacing: 2px;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  width: max-content;
+}
+
+.heatmap-table th {
+  font-weight: 600;
+  color: var(--label-secondary);
+  font-size: 12px;
+  white-space: nowrap;
+  padding: 4px 8px;
+  text-align: right;
+}
+
+.heatmap-table td {
+  padding: 6px 8px;
+  text-align: right;
+  border-radius: 6px;
+  white-space: nowrap;
+  color: var(--label);
+}
+
+/* 價格欄釘在左邊：橫向捲到最後一欄時，還要知道自己在看哪一列。 */
+/* 用 `.heatmap-table` 前綴把特異性抬過 `.heatmap-table th`（0,2,1 對
+   0,1,1），不是灑 !important——本檔 `.row.row.sub` 已經立過這個規矩。 */
+.heatmap-table .heatmap-price,
+.heatmap-table .heatmap-price-head {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  text-align: left;
+  background: var(--bg-elevated);
+  padding-right: 12px;
+}
+
+.heatmap-table tr.anchor .heatmap-price {
+  color: var(--label);
+  font-weight: 700;
+}
+
+.heatmap-table .tag {
+  margin-left: 4px;
+  padding: 0 5px;
+  font-size: 11px;
+}
+
+/* ---------- 到期日結構（V6／#54） ---------- */
+
+/* 真正橫向並排、可橫向滑動——不是換行成好幾列的按鈕堆。負邊距讓它
+   捲到卡片邊緣，捲動時才看得出「右邊還有」。 */
+.chip-strip {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  margin: 0 calc(var(--gap) * -1);
+  padding: 2px var(--gap);
+  scroll-snap-type: x proximity;
+}
+
+.chip {
+  appearance: none;
+  border: 0;
+  flex: 0 0 auto;
+  scroll-snap-align: start;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  border-radius: 12px;
+  background: var(--fill);
+  color: var(--label);
+  font-family: inherit;
+  padding: 8px 12px;
+  min-height: 52px;
+  cursor: pointer;
+}
+
+.chip:active {
+  opacity: 0.6;
+}
+
+.chip.selected {
+  background: var(--tint);
+  color: #fff;
+}
+
+.chip-date {
+  font-size: 13px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.chip-return {
+  font-size: 15px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.chip .chip-return {
+  color: var(--label-secondary);
+}
+
+.chip.selected .chip-return {
+  color: #fff;
+}
+
+/* 常駐但目前沒話講的 live region 不該佔掉卡片的一段間距。 */
+.notice:empty {
+  display: none;
+}
+
+.candidate-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.candidate-list > li + li {
+  border-top: 0.5px solid var(--separator);
+}
+
+/* 原生 `<details>`：展開是純瀏覽器行為，不重繪、不跳動頁面位置，
+   鍵盤與螢幕閱讀器也不必另外處理（QA1-06 換掉「選看」按鈕的理由）。 */
+.candidate > summary {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 12px 2px;
+  cursor: pointer;
+  list-style: none;
+}
+
+/* `display: flex` 的 summary 本來就不會生出 marker box（上面的
+   `list-style: none` 同理，是防守用的）；舊版 Safari 另有自己的
+   `-webkit-details-marker`，一併關掉。展開提示改用下面自畫的角括號。 */
+.candidate > summary::-webkit-details-marker {
+  display: none;
+}
+
+/* 沒有這個角括號，列上就完全沒有「可以展開」的線索。展開時轉 90 度，
+   狀態自己說得出來。 */
+.candidate-head::after {
+  content: "›";
+  color: var(--label-tertiary);
+  font-size: 20px;
+  font-weight: 600;
+  line-height: 1;
+  transition: transform 0.15s ease;
+}
+
+.candidate[open] .candidate-head::after {
+  transform: rotate(90deg);
+}
+
+.candidate > summary:active {
+  opacity: 0.6;
+}
+
+.candidate-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.rank {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--label-tertiary);
+  font-variant-numeric: tabular-nums;
+  min-width: 26px;
+}
+
+.candidate-title {
+  font-size: 16px;
+  font-weight: 600;
+  flex: 1;
+}
+
+.candidate-return {
+  font-size: 17px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.candidate-return.positive {
+  color: var(--green);
+}
+
+.candidate-return.negative {
+  color: var(--red);
+}
+
+/* 三個價格：收合狀態就看得到，比較幾組候選時不必逐一展開。 */
+.candidate-prices {
+  display: flex;
+  gap: 12px;
+  padding-left: 34px;
+  font-size: 13px;
+  color: var(--label-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+.candidate[open] > summary .candidate-prices {
+  padding-bottom: 4px;
+}
+
+.candidate > .heatmap {
+  padding: 4px 0 12px;
+}
+
+/* 劇本區間三價位對照（V7／#55）。等寬三欄——三個價位是同一種東西的三個
+   取值，寬度不一致會讓人以為中間那個比較重要。只有兩點時同樣平分。 */
+.ladder {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: 1fr;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.ladder-point {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  align-items: center;
+  padding: 10px 6px;
+  background: var(--fill);
+  border-radius: 10px;
+  text-align: center;
+}
+
+/* 分析報告新版型（V8／#56，R1 §4.1）。①「一句話結論」比照家族 C 實際
+   發行的 trade idea 標準句型，字級略大於一般 caption，但不到 metric
+   等級——它是一句話，不是頭條數字。 */
+.report-conclusion {
+  font-size: 15px;
+  line-height: 1.5;
+}
+
+/* 章節子標題（②～⑤），比 `.section-title` 小一號——分析報告卡片本身已經
+   有一個 `.section-title`（「📄 分析報告」），子章節不該跟它搶視覺份量。 */
+.report-subsection {
+  font-size: 15px;
+  margin-top: 4px;
+}
+
+/* R1 §3.3：①③④⑤ 的數字走表格。只有③情境分析用真表格（多欄的 7 情境
+   grid），其餘章節沿用全站既有的 `.row` 兩欄列表——那本身就是一種表格，
+   不必為了單欄 key-value 硬套 `<table>`。 */
+.report-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+}
+
+.report-table th,
+.report-table td {
+  padding: 6px 4px;
+  text-align: left;
+  border-bottom: 0.5px solid var(--separator);
+}
+
+.report-table tr.worst th {
+  font-weight: 700;
+}
+
+.report-warnings {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+/* ⑥ 方法與假設：折疊，預設收起——R1 §4.2 C「全文常駐」降級為預設折疊，
+   需要時仍看得到（§2.5「合理基礎」可追溯），但不佔動線。 */
+.report-methodology summary {
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.report-methodology-text {
+  white-space: pre-wrap;
+  font-family: inherit;
+  font-size: 13px;
+  color: var(--label-secondary);
+  margin-top: 8px;
+}
+
+/* ⑦ 免責聲明：獨立、不折疊——不能讓它看起來像方法論的延伸段落。 */
+.report-disclaimer {
+  border-top: 0.5px solid var(--separator);
+  padding-top: 12px;
+}
+
+/* 原始資料（V8／#56）。CSV 下載是 `<a>` 不是 `<button>`——`.button` 的
+   `min-height`／置中對 inline 的 `<a>` 不生效，補 `inline-flex`。 */
+.raw-data-download {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  text-decoration: none;
+  align-self: flex-start;
+}
+
+.raw-data-scroll {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  margin: 0 calc(var(--gap) * -1);
+  padding: 0 var(--gap);
+}
+
+/* Spread 淨成本走勢（V9／#57）。日／週／月是固定三選一，不像到期日
+   chip 那樣數量不定要橫向捲動——用 iOS 風格的分段控制項，不是 `.chip`
+   （那是給「多顆、可能捲動、兩行內容」的到期日按鈕設計的，形狀不合）。 */
+.segmented {
+  display: flex;
+  background: var(--fill);
+  border-radius: 10px;
+  padding: 2px;
+  gap: 2px;
+}
+
+.segmented-option {
+  appearance: none;
+  border: 0;
+  flex: 1;
+  background: transparent;
+  color: var(--label);
+  font-family: inherit;
+  font-size: 14px;
+  font-weight: 600;
+  padding: 6px 0;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.segmented-option.selected {
+  background: var(--bg-elevated);
+  box-shadow: var(--card-shadow);
+}
+
+.spread-history-chart {
+  width: 100%;
+  height: auto;
+  margin-top: 8px;
+}

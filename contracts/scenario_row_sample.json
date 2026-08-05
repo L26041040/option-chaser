@@ -1,0 +1,19 @@
+{
+  "archived_at": null,
+  "best_price": null,
+  "best_return": 3.0,
+  "created_at": "2026-08-01T00:00:00+00:00",
+  "days_to_anchor": 653,
+  "direction": "bullish",
+  "id": "sample-id",
+  "latest_analyzed_at": "2026-07-15T21:30:00-04:00",
+  "notes": "",
+  "strategies": [
+    "bull-call-spread"
+  ],
+  "symbol": "XYZ",
+  "target_anchor": "2026-09-18",
+  "target_month": "2026-09",
+  "target_price": 130.0,
+  "worst_price": null
+}

@@ -34,6 +34,7 @@ def test_single_leg_result_matches_engine_and_report():
     from option_chaser.valuation import evaluate_contract
     from option_chaser.ranking import rank
     from option_chaser.report import render
+    from option_chaser.filters import monotonicity_violations, quality_flag_counts
     from option_chaser.data.snapshot import load_snapshot, snapshot_today
     r = service.run_offline(req(["long-call"]), FIX)
     res = r.results[0]
@@ -48,8 +49,17 @@ def test_single_leg_result_matches_engine_and_report():
     assert res.n_qualified == len(qualified)
     vals = [evaluate_contract(c, snap.spot, today, p) for c in qualified]
     ranked = rank(vals, p)
+    # FB5-03（#64）：`render()` 現在吃 `violations`，這份 fixture 剛好帶著
+    # 一組真實的單調性違反（XYZC100D／XYZC102O）——沒補這個參數，重算出
+    # 的文字會少一行警示，跟 `res.report_text` 對不上。
+    violations = monotonicity_violations(qualified)
+    # FB5-04（#65）：`render()` 現在也吃 `quality_flags`，同一個道理——
+    # 少補這個參數，[過濾統計] 區會少掉整段「[C類標示]」小節。
+    quality_flags = quality_flag_counts(qualified, violations, p)
     assert res.report_text == render(snap, p, freport, ranked,
-                                     n_qualified=len(qualified), today=today)
+                                     n_qualified=len(qualified), today=today,
+                                     violations=violations,
+                                     quality_flags=quality_flags)
     # tab candidates = band #1s
     assert [cv.valuation.contract.contract_symbol for cv in res.candidates] == [
         ranked[b][0].contract.contract_symbol for b in ("conservative", "balanced", "aggressive") if ranked[b]]
@@ -86,11 +96,32 @@ def test_force_runs_mismatched_direction():
     assert r.results[0].status == "ok"
 
 
+def _all_quotes_broken_snapshot():
+    """鏈上有合約、但全部沒有可用報價（附錄 A12 第 2 點以外的另一種
+    「零候選」：抓取成功、但通不了 A 類資料健全性）。
+
+    FB5-01／FB5-02（#62／#63）之後，`filters.py` 只剩報價（A 類）與 IV
+    （B 類）兩道硬門檻，`AnalysisParams` 也沒有任何旋鈕能調鬆調緊這兩關
+    ——要讓全部候選落空，唯一誠實的辦法是資料本身就過不了關，不是調
+    參數去湊。"""
+    from option_chaser.models import ChainSnapshot, OptionContract
+    contracts = tuple(
+        OptionContract(contract_symbol=f"c{i}", option_type="call",
+                       strike=100.0 + i, expiry="2026-10-16", bid=0.0,
+                       ask=1.0, last=None, volume=10, open_interest=100,
+                       implied_volatility=0.30)
+        for i in range(3)
+    )
+    return ChainSnapshot(schema_version=2, symbol="XYZ",
+                         fetched_at="2026-07-15T21:30:00-04:00", spot=100.0,
+                         source="yfinance", contracts=contracts)
+
+
 def test_empty_carries_filter_only_report():
-    base = AnalysisParams(target_price=120.0, target_month="2026-08",
-                          min_oi=10 ** 9)
-    r = service.run_offline(service.AnalysisRequest(
-        symbol="XYZ", base_params=base, strategies=("long-call",)), FIX)
+    base = AnalysisParams(target_price=120.0, target_month="2026-08")
+    r = service.run_with_snapshot(service.AnalysisRequest(
+        symbol="XYZ", base_params=base, strategies=("long-call",)),
+        _all_quotes_broken_snapshot())
     res = r.results[0]
     assert res.status == "empty" and "無合格" in res.report_text
     assert r.comparison == () and r.best_strategy is None

@@ -3,8 +3,14 @@ name = "option-chaser"
 version = "0.1.0"
 description = "Long Call scenario optimizer (deterministic, no probability logic)"
 requires-python = ">=3.11"
+# ⚠ 這份清單就是 serverless 函式實際會裝的東西。實測（V1／#48）：
+# pyproject.toml 存在時，Vercel 的 Python builder 認的是它、**不是**
+# requirements.txt——build log 明寫「Installing required dependencies
+# from pyproject.toml」。放進來的每個套件都會進 lambda，因此刻意精簡：
+# 引擎與 Cboe 主資料源都是 stdlib-only，只有 API 層需要第三方套件。
 dependencies = [
-  "yfinance>=0.2",
+  "fastapi>=0.117.1",
+  "psycopg[binary]>=3.2",
   "tzdata; platform_system == 'Windows'",
 ]
 
@@ -12,7 +18,16 @@ dependencies = [
 option-chaser = "option_chaser.cli:main"
 
 [project.optional-dependencies]
-gui = ["streamlit>=1.30"]
+# HTTP API 是後端唯一測試接縫，其契約測試必須跑得起來——不裝 httpx
+# （FastAPI TestClient 的依賴）就會整組紅燈，這是刻意的。
+api = ["httpx"]
+# 備援資料源：Cboe（stdlib-only）是主源，yfinance 只在它失敗時才用到，
+# 且 `data/yf.py` 是在函式內部才 import。移出核心依賴是為了不把
+# pandas/numpy 拖進 serverless 函式；本機／CLI 仍應安裝。
+# V10（#58，Cutover）：`gui`（Streamlit）extra 已隨 `webapp/` 移除——
+# 前端現在是 `src/` 的 React／TypeScript（Vite），不再需要 Python GUI
+# 依賴。
+yf = ["yfinance>=0.2"]
 
 [build-system]
 requires = ["setuptools>=68"]
@@ -23,3 +38,9 @@ include = ["option_chaser*"]
 
 [tool.pytest.ini_options]
 addopts = "-q"
+
+# 注意：這裡刻意**沒有** `[tool.vercel]`。加上它會讓 Vercel 把整個專案
+# 判定為「Python 後端框架」，於是只跑 pyproject 的依賴安裝、完全不跑
+# 前端的 npm/vite build（實測 build log 證實），函式也因為 pyproject
+# 沒有 fastapi 而啟動即崩。本專案是「Vite 前端＋api/ 底下的 Python
+# 函式」，模式由 vercel.json 的 `framework: vite` 指定。

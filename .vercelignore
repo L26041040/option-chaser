@@ -1,0 +1,15 @@
+# Vercel 部署時不需要上傳／不該進 Python 函式包的東西。
+# 注意：不要排除 src/、contracts/、e2e/、tsconfig 相關檔案——
+# 前端 build 的 `tsc --noEmit` 會吃到它們。
+node_modules
+dist
+.venv
+.pytest_cache
+__pycache__
+*.egg-info
+.pw-browsers
+test-results
+playwright-report
+snapshots
+webapp
+docs

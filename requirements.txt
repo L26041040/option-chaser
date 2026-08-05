@@ -1,0 +1,11 @@
+# ⚠ 這份檔案**不是** serverless 函式實際安裝依賴的來源。
+#
+# 實測（V1／#48）：pyproject.toml 存在時，Vercel 的 Python builder 認
+# pyproject 的 `[project] dependencies`（build log 明寫「Installing
+# required dependencies from pyproject.toml」），requirements.txt 只被
+# 另一個不同 Python 版本的前置步驟裝過、與函式執行環境無關。
+#
+# 要改 lambda 的依賴，請改 pyproject.toml。這裡保留同一份內容只是為了
+# 讓「直接 pip install -r」的人也能跑起來，兩邊必須一致。
+fastapi>=0.117.1
+psycopg[binary]>=3.2

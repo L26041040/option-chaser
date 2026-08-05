@@ -54,6 +54,12 @@ class AnalysisParams:
 
     target_price: float
     target_month: str  # YYYY-MM
+    # V7（#55）劇本區間的兩端，選填。**只供呈現層做三價位對照，不進排名**
+    # （spec #47 明文：仍以目標價排名），因此預設 None 時全線行為與既有完全
+    # 相同。方向合理性（看漲時 worst <= target <= best）在 API 邊界擋，不在
+    # 這裡——引擎收到什麼價位就算什麼價位。
+    best_price: float | None = None
+    worst_price: float | None = None
     strategy: str = "long-call"
     top: int = 3
     iv_shifts: tuple[float, ...] = (-0.2, 0.0, 0.2)  # normalized: 0 included, sorted
@@ -65,8 +71,9 @@ class AnalysisParams:
     rate_explicit: bool = False
     rate_by_expiry: tuple[tuple[str, float], ...] = ()
     rate_note: str = ""
-    min_oi: int = 10
-    min_volume: int = 0
+    # FB5-01（#62，spec #61）：未平倉量與成交量不再是門檻參數——移除，不留
+    # 「看起來在做事、其實沒有」的欄位。未平倉量本身仍在 `OptionContract`
+    # 上、隨候選一併序列化，只是不再左右誰進得了候選池。
     max_spread_pct: float = 0.15
     spread_floor: float = 0.10
     delta_bands: tuple[float, float] = (0.35, 0.65)
@@ -90,6 +97,12 @@ class AnalysisParams:
 class FilterStageResult:
     label: str
     removed: int
+    # FB5-04（#65，spec #61，檢視回饋更名 `cls`→`filter_class`：`cls` 在
+    # Python 是 classmethod 慣用參數名，這裡指的是完全不同的東西，容易
+    # 誤讀）：這一關屬於三分類的哪一類——"A"＝資料健全性、"B"＝數學前提。
+    # C 類（品質標示）從不出現在這裡：它從不淘汰候選，所以不是「一關」，
+    # 是 `filters.quality_flag_counts()` 另外算的計數。
+    filter_class: str
 
 
 @dataclass(frozen=True)
@@ -97,6 +110,17 @@ class FilterReport:
     total: int
     stages: tuple[FilterStageResult, ...]
     passed: int
+
+
+@dataclass(frozen=True)
+class QualityFlagCount:
+    """FB5-04（#65，spec #61，檢視回饋新增）：C 類品質標示的一項計數。
+
+    獨立成型別而不是裸 `tuple[str, int]`，跟 `FilterStageResult`（A／B類）
+    同一個模式——兩者都是「一個標籤配一個數字」，值得用同一種方式表示，
+    不必讓呼叫端猜 tuple 的兩個位置各是什麼。"""
+    label: str
+    count: int
 
 
 STRATEGIES = ("long-call", "long-put", "bull-call-spread", "bear-put-spread")

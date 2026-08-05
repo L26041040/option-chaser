@@ -1,0 +1,80 @@
+import { describe, expect, it } from "vitest";
+
+import sample from "../contracts/analysis_sample.json";
+import { primaryResult, type AnalysisView, type StrategyResult } from "./api";
+import { expiryOptions, legPrices, resolveExpiry } from "./expiry";
+
+const view = sample as unknown as AnalysisView;
+const result = primaryResult(view)!;
+
+describe("到期日選項", () => {
+  it("每個到期日一個選項，順序照引擎給的", () => {
+    const options = expiryOptions(result);
+    expect(options.map((o) => o.expiry))
+      .toEqual(result.expiry_top10!.map((g) => g.expiry));
+  });
+
+  it("按鈕上的最高收益＝該期清單的第 1 名，兩者不可能對不上", () => {
+    for (const option of expiryOptions(result)) {
+      expect(option.bestReturn).toBe(option.candidates[0].baseline_return);
+    }
+  });
+
+  it("有效組數取自引擎的 expiry_counts", () => {
+    const counts = new Map(result.expiry_counts);
+    for (const option of expiryOptions(result)) {
+      expect(option.count).toBe(counts.get(option.expiry));
+    }
+  });
+
+  it("引擎沒給該期組數時是 null——「不知道」不等於「0 組」", () => {
+    const patched = { ...result, expiry_counts: [] } as StrategyResult;
+    expect(expiryOptions(patched)[0].count).toBeNull();
+  });
+
+  it("完全沒有分組時回空陣列，不是拋錯", () => {
+    expect(expiryOptions({ ...result, expiry_top10: undefined })).toEqual([]);
+  });
+});
+
+describe("腿價與淨成本", () => {
+  it("買腿取 Ask、賣腿取 Bid、淨成本取引擎的最差成交成本", () => {
+    const candidate = result.expiry_top10![0].candidates[0];
+    const prices = legPrices(candidate);
+    expect(prices.buyAsk).toBe(candidate.legs[0].ask);
+    expect(prices.sellBid).toBe(candidate.legs[1].bid);
+    expect(prices.net).toBe(candidate.natural_cost);
+  });
+
+  it("單腳候選沒有賣腿——說 null，不是 0", () => {
+    const candidate = result.expiry_top10![0].candidates[0];
+    const single = { ...candidate, legs: [candidate.legs[0]] };
+    expect(legPrices(single).sellBid).toBeNull();
+  });
+});
+
+describe("該顯示哪一期", () => {
+  const options = expiryOptions(result);
+
+  it("預設是 baseline 期——與主圖同一口徑", () => {
+    expect(resolveExpiry(options, null, view.baseline_expiry)).toBe(view.baseline_expiry);
+  });
+
+  it("使用者選過就用他選的", () => {
+    const other = options.find((o) => o.expiry !== view.baseline_expiry)!;
+    expect(resolveExpiry(options, other.expiry, view.baseline_expiry)).toBe(other.expiry);
+  });
+
+  it("選過的那期在新一次分析後消失，就退回 baseline，不是空白", () => {
+    expect(resolveExpiry(options, "2099-01-01", view.baseline_expiry))
+      .toBe(view.baseline_expiry);
+  });
+
+  it("連 baseline 都不在候選裡就退回第一期", () => {
+    expect(resolveExpiry(options, null, "2099-01-01")).toBe(options[0].expiry);
+  });
+
+  it("一期都沒有時回 null", () => {
+    expect(resolveExpiry([], null, "2026-08-07")).toBeNull();
+  });
+});

@@ -72,6 +72,62 @@ def test_candidate_fields_hand_checked():
     assert cand["matrix"]["cells"] == [list(r) for r in cv.matrix.cells]
 
 
+def test_candidate_carries_l2_l3_cons_and_guidance_warnings():
+    """V8（#56，spec R1 §4.2 A2）：買價指引 L2/L3、評語 cons、`guidance_
+    judgments` 的警示文字——原本只活在 `report_text` 散文裡，本票補上
+    序列化。值直接對照純函式的回傳，不是另外重算一次公式。"""
+    from option_chaser.valuation import guidance_judgments
+
+    result = _result(("long-call",))
+    view = store.serialize_result(result, "S", None)
+    cand = view["results"][0]["candidates"][0]
+    cv = result.results[0].candidates[0]
+    v = cv.valuation
+
+    assert cand["l2"] == v.l2
+    assert cand["l3"] == v.l3
+    assert cand["cons"] == list(cv.cons)
+    assert "pros" not in cand   # R1 §4.2 C 裁示：pros 不補序列化
+    assert cand["guidance_warnings"] == guidance_judgments(
+        v, result.request.base_params)
+
+
+def test_spread_candidate_carries_l2_l3_cons_and_guidance_warnings():
+    from option_chaser.valuation import spread_guidance_judgments
+
+    result = _result(("bull-call-spread",))
+    view = store.serialize_result(result, "S", None)
+    cand = view["results"][0]["candidates"][0]
+    cv = result.results[0].candidates[0]
+    sv = cv.valuation
+
+    assert cand["l2"] == sv.l2
+    assert cand["l3"] == sv.l3
+    assert cand["cons"] == list(cv.cons)
+    assert cand["guidance_warnings"] == spread_guidance_judgments(
+        sv, result.request.base_params)
+
+
+def test_methodology_and_disclaimer_text_are_serialized_once_per_strategy():
+    """V8（#56，spec R1 §4.1）：新版型「⑥ 方法與假設」／「⑦ 免責聲明」
+    要獨立於 `report_text` 之外，各自是完整字串，內容出自同一個
+    `report.py`（單一事實來源），不是前端另外拼出來的。"""
+    from option_chaser.report import disclaimer_text, methodology_lines
+
+    result = _result(("long-call", "bull-call-spread"))
+    view = store.serialize_result(result, "S", None)
+    p = result.request.base_params
+    expected_methodology = "\n".join(methodology_lines(p)).strip("\n")
+
+    for r in view["results"]:
+        assert r["methodology_text"] == expected_methodology
+        assert r["disclaimer_text"] == disclaimer_text()
+        # 免責段落要能自己說清楚，不能只是 CLI 那句精簡版的重複貼上——
+        # 這是它存在的理由（R1 §4.4.4 明列的擴充內容）。
+        assert "OCC" in r["disclaimer_text"]
+        assert "FINRA" not in r["disclaimer_text"]   # 不得聲稱受其管轄
+
+
 def test_spread_legs_order_and_max_profit():
     result = _result(("bull-call-spread",))
     view = store.serialize_result(result, "S", None)
@@ -140,3 +196,75 @@ def test_data_quality_all_quotes_filtered(tmp_path):
     view = store.serialize_result(result, "S", None)
     assert all(r["status"] == "empty" for r in view["results"])
     assert view["data_quality"]["all_quotes_filtered"] is True
+
+
+def test_filter_report_carries_contract_level_counts():
+    """FB4-01（#60）：合約層級的「抓到幾筆／通過幾筆」必須如實上線。
+
+    `n_qualified` 在 spread 路徑是**配對數**（`service._spread_result` 取
+    `pair_report.passed`），拿它當合約數會把兩種東西混為一談；候選池診斷
+    要的是合約數，所以 `filter_report.total`／`.passed` 必須自己上線，
+    不能讓前端從 `n_qualified` 反推。
+    """
+    view = store.serialize_result(_result(), "S", None)
+    for r in view["results"]:
+        fr = r["filter_report"]
+        # 各關是**循序**過濾（filters.apply_filters 逐關縮小 remaining），
+        # 所以 total 恆等於 passed 加上各關砍掉的總和。
+        assert fr["total"] == fr["passed"] + sum(s["removed"]
+                                                 for s in r["filter_stages"])
+        assert fr["passed"] >= 0
+
+    spread = next(r for r in view["results"]
+                  if r["strategy"] == "bull-call-spread")
+    # 這正是不能用 n_qualified 當合約數的證據：spread 路徑兩者不同意義。
+    assert spread["n_qualified"] == spread["pair_report"]["passed"]
+    assert spread["filter_report"]["passed"] != spread["n_qualified"]
+
+
+def test_best_return_is_public_and_baseline_expiry_only():
+    """V3（#51）：劇本卡片的「最新收益率」與 Step 2 主圖同一口徑。
+
+    這條規則原本只活在 `workspace._best_return`（Streamlit 檔案層的私有
+    函式）。API 也要用同一條規則，複製一份等於讓 QA1-03（#30）修好的
+    「卡片數字對不上主圖」有機會在新前端重演——所以提升為公開純函式，
+    `workspace` 改為委派。
+    """
+    view = store.serialize_result(_result(), "S", None)
+    group = next(g for g in view["expiry_groups"]
+                 if g["expiry"] == view["baseline_expiry"])
+    expected = max(row["candidate"]["baseline_return"] for row in group["rows"])
+
+    assert store.best_return(view) == expected
+    assert store.best_return(None) is None
+
+    # QA1-03 的 bug 版本是「取全部到期日的全域最大值」。要抓得到它，
+    # 必須確認全域最大值真的落在**別的**到期日，然後斷言兩者不同——
+    # 只斷言「子集最大值 ≤ 全集最大值」的話恆真，bug 版本照樣通過。
+    everything = max(row["candidate"]["baseline_return"]
+                     for g in view["expiry_groups"] for row in g["rows"])
+    assert everything > expected, "這份 fixture 的全域最大值不在別期，測不到 QA1-03"
+    assert store.best_return(view) != everything
+
+
+def test_best_return_is_none_when_baseline_expiry_has_no_candidates():
+    view = store.serialize_result(_result(), "S", None)
+    empty = dict(view, baseline_expiry="2099-12-31")
+    assert store.best_return(empty) is None
+
+
+def test_raw_snapshot_json_carries_meta_and_every_contract():
+    """V8（#56）：原始資料查看區——`_leg()` 是候選腿專用的精簡子集，
+    這裡要的是逐筆合約完整原樣，`raw_snapshot_json` 不能重用 `_leg()`。"""
+    from option_chaser.data.snapshot import load_snapshot
+
+    snap = load_snapshot(FIX)
+    raw = store.raw_snapshot_json(snap)
+
+    assert raw["meta"] == {"symbol": snap.symbol, "spot": snap.spot,
+                           "fetched_at": snap.fetched_at, "source": snap.source,
+                           "contract_count": len(snap.contracts)}
+    assert len(raw["contracts"]) == len(snap.contracts)
+    assert raw["contracts"][0]["contract_symbol"] == snap.contracts[0].contract_symbol
+    assert raw["contracts"][0]["last"] == snap.contracts[0].last
+    json.dumps(raw)

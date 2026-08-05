@@ -47,7 +47,10 @@ Direction guard: bullish strategies need target > spot, bearish need target < sp
                           the chain around that month's third Friday (see below).
     --iv-shifts CSV       IV scenarios, default -0.2,0,0.2 (0 always included)
     --min-return X        L3 price ceiling = baseline value / (1+X)
-    --max-spread-pct / --spread-floor / --min-oi / --min-volume   tradeability gates
+    --max-spread-pct / --spread-floor   quality-flag threshold, not a hard
+                          gate — open interest, volume, and spread width no
+                          longer exclude candidates, they set the ⚠ flag
+                          shown on each candidate — spec #61
     --delta-bands A,B     |Delta| banding thresholds, default 0.35,0.65
     --matrix-all          matrix on every candidate
     --md PATH             also write the report to a file
@@ -57,8 +60,10 @@ Snapshots are schema v2 (calls + puts). v1 snapshots must be re-fetched.
 ## Reading the report
 
 - Filter stats: how many contracts got cut from the full chain, and why
-  (quote / IV / liquidity / spread-too-wide). Which expiries get analysed
-  is decided beforehand by the selection rule, not by a filter.
+  (quote validity / IV solvable). Liquidity and spread width no longer cut
+  candidates — they show up as a per-candidate ⚠ warning instead (spec #61).
+  Which expiries get analysed is decided beforehand by the selection rule,
+  not by a filter.
 - Single-leg candidates come in three Delta bands (conservative / balanced /
   aggressive); spreads are a single ranked list.
 - Each candidate: Bid/Mid/Ask (with per-contract dollar amounts), Breakeven,
@@ -95,27 +100,35 @@ Snapshots are schema v2 (calls + puts). v1 snapshots must be re-fetched.
   a modeling assumption, not a market forecast.
 - Estimates are not guaranteed fills; nothing here is investment advice.
 
-## Web GUI
+## Web app
 
-    pip install -e ".[gui]"
-    streamlit run webapp/app.py        # http://localhost:8501
+The interactive web app is a separate Vite + React (TypeScript) frontend
+backed by a Python serverless API (FastAPI, imports this same
+`option_chaser` engine directly) — see `docs/deploy-vercel.md` for the
+full architecture, Vercel deployment steps, and connecting Neon Postgres
+for persistence.
 
-or Docker:
+    npm install
+    npm run dev                # frontend dev server, http://localhost:5173
+    PYTHONPATH=. .venv/bin/python -m pytest    # backend/API tests
 
-    docker compose up -d               # http://localhost:8501 (override with PORT)
+The web app opens on the scenario library (create/list/archive scenarios,
+refresh at the top level) and its detail view: summary -> main Heatmap for
+the baseline expiry's top candidate -> Long Call catch-up price -> expiry
+picker with a per-expiry Top 10 list -> candidate-pool diagnostics -> a
+collapsed "advanced" area (redesigned analysis report, Spread cost history
+chart, raw snapshot data with CSV download). The web app performs no
+financial arithmetic of its own — every number on screen comes from this
+same engine via the HTTP API (`store.serialize_result`), exactly like the
+CLI. Scenario data persists to Postgres (Neon, via Vercel Storage) in
+production; a scenario created without a connected database is kept only
+in the serverless function's memory and does not survive a redeploy — see
+`docs/deploy-vercel.md` to confirm persistence is actually connected
+(`GET /api/health`'s `storage` field).
 
-Opening the app lands directly on the scenario workspace (single main
-screen, no separate quick-analysis entry and no help page) — see "多劇本
-工作區" below for the persistent workspace, and its detail view for the
-per-scenario flow: a single main heatmap (bold rows = the 4 anchor prices)
--> a comparison table grouped by expiry (⚠ = a leg with zero volume today or
-bid-ask spread above 25% / ◀ selected; each row carries buffer days;
-clicking a row swaps the main heatmap) -> a per-expiry Top 10 list -> an
-advanced section with collapsible panels (7-scenario resilience vector,
-return×resilience scatter, Greeks & liquidity, Spread history). Key metric
-columns and strategy abbreviations have hover tooltips. GUI performs no
-financial arithmetic of its own; every number comes from the same engine
-the CLI uses.
+(A Streamlit-based prototype frontend, `webapp/`, existed during the
+rewrite and has been removed — this Vite/React app is now the only
+frontend.)
 
 ## Tests (all offline)
 
@@ -164,7 +177,10 @@ docs/superpowers/specs/2026-07-20-option-chaser-v4-design.md (v4)
 
 ## 怎麼讀報告
 
-- 過濾統計：選中的到期日內刷掉多少、為什麼刷（報價/IV/流動性/價差過寬）；
+- 過濾統計：三分類（spec #61）——A 類「報價異常」、B 類「IV 異常」是
+  硬門檻，刷掉多少候選就列多少；C 類（未平倉量／成交量／價差寬度／
+  無套利一致性）從不刷掉候選，改成合格池裡「標示」了幾筆，逐項列在
+  同一區塊、跟 A/B 的排除數分開；每個候選上另有對應的 ⚠／🚩 標示。
   到期日本身的取捨在過濾之前，由選取規則負責
 - 單腿分三級距（依 |Delta|）：保守型（深價內，容錯大）、平衡型、
   積極型（價外，高槓桿）；價差為單一排名清單
@@ -195,7 +211,9 @@ docs/superpowers/specs/2026-07-20-option-chaser-v4-design.md (v4)
     --target-month 年月    目標年月，2028/1、2028/01、28/1、28/01 皆可
     --iv-shifts CSV        IV 情境，預設 -0.2,0,0.2（0 必含）
     --min-return X         要求報酬上限 L3 = 基準估值/(1+X)
-    --min-oi / --min-volume / --max-spread-pct / --spread-floor   可交易性門檻
+    --max-spread-pct / --spread-floor   品質標示門檻，不是硬過濾——未平
+                          倉量、成交量、買賣價差寬度皆不影響候選是否
+                          入選，只決定每個候選上的 ⚠ 標示，spec #61
     --delta-bands A,B      |Delta| 分級門檻，預設 0.35,0.65
     --top N                每級距/清單候選數，預設 3
     --matrix-all           每個候選都附矩陣（預設只有各級首選）
@@ -214,59 +232,26 @@ docs/superpowers/specs/2026-07-20-option-chaser-v4-design.md (v4)
   「線性內插」到達，屬模型假設，不是市場預測。
 - 模型估計非保證成交價格；本工具不構成投資建議。
 
-## Web GUI
+## Web 前端
 
-    pip install -e ".[gui]"
-    streamlit run webapp/app.py        # http://localhost:8501
+互動網頁版是獨立的 Vite＋React（TypeScript）前端，後端走 Python
+serverless API（FastAPI，直接呼叫本 `option_chaser` 引擎）——完整架構、
+Vercel 部署步驟、接上 Neon Postgres 持久化的方式見 `docs/deploy-vercel.md`。
 
-或 Docker：
+    npm install
+    npm run dev                 # 前端開發伺服器，http://localhost:5173
+    PYTHONPATH=. .venv/bin/python -m pytest    # 後端／API 測試
 
-    docker compose up -d               # http://localhost:8501（PORT 環境變數可改）
+網頁版開啟即是劇本庫（建立／列出／封存劇本，最上層可一鍵全部刷新），
+詳細頁流程：摘要 → baseline 到期日第 1 名候選的主 Heatmap → Long Call
+追平價格 → 到期日選單＋單期 Top 10 → 候選池診斷 → 收合的「進階區」
+（重排版的分析報告、Spread 淨成本走勢圖、原始快照資料＋CSV 下載）。
+網頁版本身不做任何金融公式運算——畫面上每個數字都經 HTTP API
+（`store.serialize_result`）取自與 CLI 相同的引擎。劇本資料正式環境
+存在 Neon（透過 Vercel Storage 掛的 Postgres）；沒接資料庫時，新建的
+劇本只存在 serverless 函式的記憶體裡，重新部署就消失——確認資料庫是
+否真的接上，見 `docs/deploy-vercel.md`（`GET /api/health` 的 `storage`
+欄位）。
 
-開啟網站直接落地劇本工作區（單一主畫面，不存在另一個快速分析入口，也
-沒有「說明」頁）——見下方「多劇本工作區」。詳細頁流程：單一主 heatmap
-（粗體列＝關鍵價位：現價／目標／超標／深跌）→ 按到期日分組的比較表
-（⚠＝任一腿今日無成交或 Bid-Ask Spread >25%／◀選中，每列附縮圖與緩衝
-天數；點列即可切換主圖）→ 單期 Top 10
-→ 進階區可摺疊面板（Option Chaser 分析報告、原始資料、Spread 歷史走勢
-圖）。主要指標欄位與策略縮寫提供滑鼠懸浮解釋（hover tooltip）。
-進階參數一律採用 CLI 預設值；方向不合的策略會被跳過並提示，GUI 不提供
---force。所有計算皆由與 CLI 相同的引擎完成，GUI 本身不做任何金融公式運算。
-
-## 多劇本工作區
-
-開啟網站（`webapp/app.py`）即是劇本工作區，資料落地在專案根目錄的
-`workspace/`（不進版控，已加入 .gitignore）；Docker 部署時 compose.yaml
-已掛載 `./workspace:/app/workspace`。
-
-workspace/ 佈局（五類檔案）：
-
-    workspace/scenarios/<id>.json               每個劇本一份持久化快照（唯讀，改錯請刪除重建）
-    workspace/groups.json                       群組與關係的全量可重建快取（同標的自動歸組）
-    workspace/constraints.json                  資金總額設定
-    workspace/events.jsonl                       只新增、不覆寫既有事件的日誌，唯一真實來源
-    workspace/results/<id>/<snapshot_ts>.json    每次分析的結果快照，機器可讀 JSON 契約（schema_version 1）
-
-**劇本生命週期（四態）**：Active（進行中）→ Reached（已達成）／Invalidated
-（已失效）由你手動標記並必附原因；目標日過後讀取工作區時系統自動轉
-Expired。所有狀態變更皆先寫事件、後更新快取——事件日誌是唯一真實來源，
-scenario 檔的 status 欄位只是投影，可完整重放審計。
-
-**群組與關係確認**：同標的的劇本會自動歸為一組（純顯示分組，不影響任何
-計算）。相鄰兩個劇本（依目標日排序）系統會提出關係提案（里程碑路徑／需
-檢視／互斥候選），但生效與否由你在四個選項中手動確認：里程碑路徑、獨立、
-互斥、暫不定義。只有前一個里程碑標記「已達成」且關係已確認為「里程碑
-路徑」時，下一個劇本才會出現「重新分析」按鈕——全程零自動化。
-
-**群組分析**：對一個群組按下「群組分析」，只會抓取一次市場快照，群組內
-所有成員的分析結果都指向同一份 snapshot（`snapshot_ref.path` 相同），
-確保同組劇本互相可比。
-
-**佔本金%**：每個候選的「佔本金%」＝最佳候選每口成本（Mid×100）除以你
-設定的資金總額，但只有「分析當下」已經在設定區存好資金總額才會記錄這個
-欄位；事後才設定資金不會回填過去已分析過的結果（非回溯）。
-
-**Result 檔案契約**：每次分析都會在 `workspace/results/<scenario_id>/
-<snapshot_ts>.json` 寫入一份新檔（不覆蓋舊檔），`schema_version` 固定為
-1，內容涵蓋候選、比較表、韌性向量、P/L 矩陣等——與 CLI/GUI 顯示用的同一
-份資料結構，可供外部工具直接讀取或重放審計。
+（重寫期間曾有一版 Streamlit 前端雛型 `webapp/`，已於 Cutover 移除；
+現在這個 Vite／React 前端是唯一的正式前端。）

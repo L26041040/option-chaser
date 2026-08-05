@@ -1,6 +1,12 @@
 # tests/test_redlines.py
-"""v4 spec §6.1: banned-vocabulary scan over GUI sources and goldens
-＋ 附錄 A9 守則：除授權的 anchor 例外，任何「把年月補成某一天」的寫法都是缺陷。"""
+"""v4 spec §6.1: banned-vocabulary scan over engine sources and goldens
+＋ 附錄 A9 守則：除授權的 anchor 例外，任何「把年月補成某一天」的寫法都是缺陷。
+
+V10（#58，Cutover）：Streamlit 前端（`webapp/`）已移除，掃描範圍收斂回
+`option_chaser/` 與黃金 fixture——引擎才是這些禁詞規則真正要守住的地方，
+前端（現為 `src/` 的 React／TypeScript）不在本檔案的 Python 掃描範圍內，
+本就不曾被這裡的 glob 掃到過。
+"""
 import dataclasses
 import re
 from pathlib import Path
@@ -12,11 +18,9 @@ from option_chaser.store import Scenario
 
 BANNED = ["獲利機率", "機率加權", "勝率", "POP", "probability",
           "期望報酬", "expected profit", "Sharpe", "CVaR"]
-TARGETS = [Path("webapp/app.py"),
-           Path("option_chaser/glossary.py"),
+TARGETS = [Path("option_chaser/glossary.py"),
            Path("option_chaser/store.py"), Path("option_chaser/workspace.py"),
            Path("option_chaser/vocabulary.py"),
-           Path("webapp/render.py"),
            *sorted(Path("tests/fixtures").glob("golden_*.txt"))]
 
 
@@ -33,15 +37,13 @@ def test_new_copy_avoids_bare_probability_word():
                  Path("option_chaser/scenarios.py"),
                  Path("option_chaser/store.py"),
                  Path("option_chaser/workspace.py"),
-                 Path("option_chaser/vocabulary.py"),
-                 Path("webapp/render.py"),
-                 Path("webapp/app.py")]:
+                 Path("option_chaser/vocabulary.py")]:
         assert "機率" not in path.read_text(encoding="utf-8"), path
 
 
 # ---------- 附錄 A9：年月不得被補成某一天 ----------
 
-_SOURCE_ROOTS = (Path("option_chaser"), Path("webapp"))
+_SOURCE_ROOTS = (Path("option_chaser"),)
 
 
 def _sources():
