@@ -29,6 +29,29 @@ import {
 } from "./api";
 import { scenarioIdFromHash } from "./route";
 
+// 桌面／手機斷點——與 `styles.css` 的 `@media (min-width: 900px)` 同一個
+// 數字，兩邊各自維護一份（CSS 沒辦法直接讀 JS 常數），改動時要一起改。
+const DESKTOP_QUERY = "(min-width: 900px)";
+
+/**
+ * 桌面版真正的 master/detail（#72）：桌面寬度下劇本庫常駐、詳細頁另開
+ * 一欄；手機寬度維持既有的整頁替換。用 `matchMedia` 而不是只用 CSS
+ * 隱藏——手機版「選了劇本後建立表單／劇本庫不在畫面上」是既有行為
+ * 的一部分，CSS `display:none` 只藏視覺，元件仍會掛載並佔用資源。
+ */
+function useIsDesktop(): boolean {
+  const [isDesktop, setIsDesktop] = useState(
+    () => window.matchMedia(DESKTOP_QUERY).matches,
+  );
+  useEffect(() => {
+    const mql = window.matchMedia(DESKTOP_QUERY);
+    const sync = () => setIsDesktop(mql.matches);
+    mql.addEventListener("change", sync);
+    return () => mql.removeEventListener("change", sync);
+  }, []);
+  return isDesktop;
+}
+
 export default function App() {
   const [rows, setRows] = useState<ScenarioSummary[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -138,6 +161,7 @@ export default function App() {
     return () => window.removeEventListener("hashchange", sync);
   }, []);
   const detailId = scenarioIdFromHash(hash);
+  const isDesktop = useIsDesktop();
 
   // 新鮮度會隨時間變舊，所以「現在」要自己走。只在渲染時取一次的話，
   // 頁面開著放到隔天，那份 12 小時前的資料永遠不會長出「舊資料」標記
@@ -194,24 +218,26 @@ export default function App() {
   }
 
   // 詳細頁（V5／#53）。所有 hook 都在這一行之前跑完，順序不受影響。
-  // 把該劇本在清單上的資料時間一起交出去：開站那輪刷新完成後它會變，
-  // 詳細頁據此重新取一次，直接開詳細頁網址的人才不會停在舊快照上。
-  if (detailId !== null) {
-    return (
-      <ScenarioDetail
-        id={detailId}
-        refreshedAt={rows.find((r) => r.id === detailId)?.latest_analyzed_at ?? null}
-        // #70：詳細頁的刷新走 App 既有的那條單一佇列——`busy` 沿用
-        // `Toolbar` 同一個判準（任何刷新進行中都算），`onRefresh` 就是
-        // `enqueue([這個劇本])`，不是另開一條管道。
-        busy={progress !== null}
-        failure={failures[detailId]}
-        onRefresh={() => void enqueue([detailId])}
-      />
-    );
+  // 手機寬度維持既有行為：整頁替換成詳細頁，劇本庫（含建立表單）
+  // 整個不掛載。桌面寬度改走下面 #72 的 master/detail 版面。
+  const detailProps = detailId !== null ? {
+    id: detailId,
+    // 把該劇本在清單上的資料時間一起交出去：開站那輪刷新完成後它會變，
+    // 詳細頁據此重新取一次，直接開詳細頁網址的人才不會停在舊快照上。
+    refreshedAt: rows.find((r) => r.id === detailId)?.latest_analyzed_at ?? null,
+    // #70：詳細頁的刷新走 App 既有的那條單一佇列——`busy` 沿用
+    // `Toolbar` 同一個判準（任何刷新進行中都算），`onRefresh` 就是
+    // `enqueue([這個劇本])`，不是另開一條管道。
+    busy: progress !== null,
+    failure: failures[detailId],
+    onRefresh: () => void enqueue([detailId]),
+  } : null;
+
+  if (!isDesktop && detailProps) {
+    return <ScenarioDetail {...detailProps} />;
   }
 
-  return (
+  const library = (
     <div className="screen">
       <Toolbar
         count={rows.length}
@@ -234,11 +260,33 @@ export default function App() {
         // 重試不是第四種刷新時機——它重跑的就是那一次失敗的刷新，而且
         // 走同一條佇列，不會與進行中的那一輪搶資料源。
         onRetry={(id) => void enqueue([id])}
+        // #72：桌面版清單裡標出目前選中的劇本；手機版此時本來就不會
+        // 渲染這份清單（上面已整頁替換掉），傳了也無害。
+        selectedId={detailId}
       />
       {/* 年月選擇器（#71）的「今年」／「本月」跟全站同一個時鐘——
           不讓它自己另外算一次 `new Date()`，那樣會跟 `ScenarioList`
           的新鮮度判斷用著兩個不同步的「現在」。 */}
       <CreateForm onCreate={create} busy={busy} today={now} />
+    </div>
+  );
+
+  if (!isDesktop) return library;
+
+  // #72：桌面版真正的 master/detail——左側劇本庫常駐，右側是詳細頁；
+  // 沒選劇本時右側顯示空狀態，而不是留白或報錯。
+  return (
+    <div className="workspace">
+      <div className="library-pane">{library}</div>
+      <div className="detail-pane">
+        {detailProps ? (
+          <ScenarioDetail {...detailProps} />
+        ) : (
+          <div className="screen">
+            <p className="caption">選擇左側的劇本查看詳細內容。</p>
+          </div>
+        )}
+      </div>
     </div>
   );
 }

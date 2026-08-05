@@ -646,3 +646,104 @@ describe("清單 → 詳細頁（V5／#53）", () => {
       .toBeInTheDocument();
   });
 });
+
+/** 桌面寬度：`window.matchMedia` 回真，模擬寬螢幕（#72）。 */
+function stubDesktopViewport() {
+  vi.stubGlobal("matchMedia", (query: string) => ({
+    matches: true,
+    media: query,
+    onchange: null,
+    addEventListener: () => {},
+    removeEventListener: () => {},
+    addListener: () => {},
+    removeListener: () => {},
+    dispatchEvent: () => false,
+  }));
+}
+
+describe("桌面版真正的 master/detail（#72）", () => {
+  const rowA = {
+    ...(sampleRow as unknown as Record<string, unknown>),
+    id: "s1", symbol: "TLT", target_price: 120, target_month: "2028-05",
+    latest_analyzed_at: "2026-08-04T09:30:00+00:00", best_return: 1.5,
+    target_anchor: "2028-05-19", days_to_anchor: 653,
+  };
+  const rowB = {
+    ...(sampleRow as unknown as Record<string, unknown>),
+    id: "s2", symbol: "SPY", target_price: 500, target_month: "2027-01",
+    latest_analyzed_at: "2026-08-04T09:30:00+00:00", best_return: 2.5,
+    target_anchor: "2027-01-15", days_to_anchor: 200,
+  };
+
+  afterEach(() => {
+    window.location.hash = "";
+  });
+
+  it("選中劇本時，劇本庫（含建立表單）與詳細頁同時可見", async () => {
+    stubDesktopViewport();
+    window.location.hash = "#/s/s1";
+    mockRoutes({
+      "/api/scenarios": { json: async () => [rowA] },
+      "/api/scenarios/s1": { json: async () => ({ ...rowA, latest_result: null }) },
+    });
+    render(<App />);
+
+    // 詳細頁內容（返回入口＋標的名）與劇本庫（清單卡片＋建立表單）
+    // 同時在畫面上——不是手機版的整頁替換。
+    expect(await screen.findByRole("link", { name: /劇本庫/ })).toBeInTheDocument();
+    expect(await screen.findByText("尚未分析")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /TLT 2028-05/ })).toBeInTheDocument();
+    expect(screen.getByLabelText("標的代號")).toBeInTheDocument();
+  });
+
+  it("目前選中的劇本在清單上有明確的選中狀態", async () => {
+    stubDesktopViewport();
+    window.location.hash = "#/s/s1";
+    mockRoutes({
+      "/api/scenarios": { json: async () => [rowA, rowB] },
+      "/api/scenarios/s1": { json: async () => ({ ...rowA, latest_result: null }) },
+      // 開站的批次刷新（時機一）兩個劇本各打一次 /refresh——沒有明確
+      // 路由的話會被較短的 `/api/scenarios` 前綴接走，回傳整個陣列
+      // 冒充成單一劇本，把清單那一列的資料弄壞。
+      "/api/scenarios/s1/refresh": { json: async () => rowA },
+      "/api/scenarios/s2/refresh": { json: async () => rowB },
+    });
+    render(<App />);
+
+    const selectedLink = await screen.findByRole("link", { name: /TLT 2028-05/ });
+    const otherLink = screen.getByRole("link", { name: /SPY 2027-01/ });
+    expect(selectedLink.closest("li")).toHaveClass("selected");
+    expect(otherLink.closest("li")).not.toHaveClass("selected");
+  });
+
+  it("未選任何劇本時，右側工作區顯示合理的空狀態", async () => {
+    stubDesktopViewport();
+    mockRoutes({
+      "/api/scenarios": { json: async () => [rowA] },
+      "/api/scenarios/": { json: async () => rowA },
+    });
+    render(<App />);
+
+    expect(await screen.findByRole("link", { name: /TLT 2028-05/ })).toBeInTheDocument();
+    expect(screen.getByText(/選擇左側的劇本/)).toBeInTheDocument();
+  });
+
+  it("可以直接切換到另一個劇本，不必先返回劇本庫", async () => {
+    stubDesktopViewport();
+    window.location.hash = "#/s/s1";
+    mockRoutes({
+      "/api/scenarios": { json: async () => [rowA, rowB] },
+      "/api/scenarios/s1": { json: async () => ({ ...rowA, latest_result: null }) },
+      "/api/scenarios/s2": { json: async () => ({ ...rowB, latest_result: null }) },
+    });
+    render(<App />);
+
+    await screen.findByText("尚未分析");
+    await userEvent.click(screen.getByRole("link", { name: /SPY 2027-01/ }));
+
+    expect(window.location.hash).toBe("#/s/s2");
+    // 兩個劇本共用同一份「尚未分析」文案，真正驗證的是清單卡片本身
+    // 沒有被整頁替換掉——它在切換後依然可點、依然在畫面上。
+    expect(await screen.findByRole("link", { name: /TLT 2028-05/ })).toBeInTheDocument();
+  });
+});

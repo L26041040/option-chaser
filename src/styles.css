@@ -87,6 +87,36 @@ body {
   gap: var(--gap);
 }
 
+/* 桌面版真正的 master/detail（#72）：左側劇本庫常駐、右側工作區顯示
+   詳細內容，約 20/80。斷點與 `App.tsx` 的 `DESKTOP_QUERY`
+   （`window.matchMedia`）用同一個數字——那邊決定「掛載哪些元件」，
+   這裡只是視覺排版，兩者必須一致，否則會出現「兩欄同時看得到」但
+   實際上其中一欄根本沒掛載內容的錯位。 */
+@media (min-width: 900px) {
+  .workspace {
+    display: grid;
+    grid-template-columns: minmax(280px, 20%) 1fr;
+    align-items: start;
+    min-height: 100dvh;
+  }
+
+  .library-pane {
+    height: 100dvh;
+    overflow-y: auto;
+    border-right: 1px solid var(--separator);
+  }
+
+  .detail-pane {
+    height: 100dvh;
+    overflow-y: auto;
+  }
+
+  /* 詳細頁內容仍維持可讀寬度，不會因為右欄變寬就被硬拉成整行文字。 */
+  .detail-pane .screen {
+    max-width: 900px;
+  }
+}
+
 .card {
   background: var(--bg-elevated);
   border-radius: var(--radius);
@@ -636,6 +666,14 @@ body {
 
 .chip.selected .chip-return {
   color: #fff;
+}
+
+/* #72：桌面版清單裡「目前選中」的劇本卡片——不能像上面的 chip／月曆格
+   那樣整片實心（卡片內還有好幾行文字要維持可讀），改用左側強調色條
+   ＋淡色底。 */
+.card.selected {
+  background: var(--fill);
+  box-shadow: inset 3px 0 0 var(--tint);
 }
 
 /* 常駐但目前沒話講的 live region 不該佔掉卡片的一段間距。 */

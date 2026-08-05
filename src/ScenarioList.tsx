@@ -26,12 +26,14 @@ function ScenarioCard({
   row,
   failure,
   now,
+  selected,
   onArchive,
   onRetry,
 }: {
   row: ScenarioSummary;
   failure: RefreshFailure | undefined;
   now: Date;
+  selected: boolean;
   onArchive: (id: string) => void;
   onRetry: (id: string) => void;
 }) {
@@ -39,14 +41,17 @@ function ScenarioCard({
   const stale = isStale(row.latest_analyzed_at, now);
   const who = `${row.symbol} ${row.target_month}`;
   return (
-    <li className="card">
+    <li className={selected ? "card selected" : "card"}>
       {/* 整張卡就是進詳細頁的入口。用真的 `<a>` 而不是掛 onClick 的
           div：長按可以複製連結、返回手勢可用、鍵盤與螢幕閱讀器也認得。
           封存鈕留在連結外面——按鈕不能包在連結裡。 */}
       {/* 不掛 `aria-label`：那會**取代**連結內容當成可及名稱，螢幕閱讀器
           就只聽得到「TLT 2028-05 詳細」，收益率／目標／距到期／資料時間
           全部被吃掉。改在結尾補一段只有輔助技術讀得到的字。 */}
-      <a className="card-tap" href={detailHash(row.id)}>
+      {/* #72：桌面版左側清單常駐，`aria-current` 讓螢幕閱讀器也認得
+          「目前選中的是哪一個」，不只是視覺上的高亮。 */}
+      <a className="card-tap" href={detailHash(row.id)}
+         aria-current={selected ? "page" : undefined}>
         <div className="row">
           <span className="row-value big">{row.symbol}</span>
           <span className="metric-group">
@@ -131,12 +136,15 @@ export default function ScenarioList({
   rows,
   failures,
   now,
+  selectedId = null,
   onArchive,
   onRetry,
 }: {
   rows: ScenarioSummary[];
   failures: Record<string, RefreshFailure>;
   now: Date;
+  /** 桌面版 master/detail（#72）目前選中的劇本；手機版不傳，恆不標記。 */
+  selectedId?: string | null;
   onArchive: (id: string) => void;
   onRetry: (id: string) => void;
 }) {
@@ -157,6 +165,7 @@ export default function ScenarioList({
             row={row}
             failure={failures[row.id]}
             now={now}
+            selected={row.id === selectedId}
             onArchive={onArchive}
             onRetry={onRetry}
           />
