@@ -800,13 +800,34 @@ describe("主要操作入口收攏到工作區上方（#75）", () => {
     render(<App />);
 
     await screen.findByText("TLT");
-    // 不必先展開表單就看得到入口；也不該一開站就把表單掛在畫面上
-    // ——原本的臭蟲正是「永遠展開」。
+    // 不必先展開表單就看得到入口；也不該一開站就把表單畫在螢幕上
+    // ——原本的臭蟲正是「永遠展開」。表單本身一律掛著（`hidden` 屬性
+    // 切換可見度，見 `App.tsx` 的 code review 跟進），所以這裡驗的是
+    // 「看不看得到」而不是「在不在 DOM 裡」。
     expect(screen.getByRole("button", { name: "＋ 建立劇本" })).toBeInTheDocument();
-    expect(screen.queryByLabelText("標的代號")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("標的代號")).not.toBeVisible();
 
     await openCreateForm();
-    expect(screen.getByLabelText("標的代號")).toBeInTheDocument();
+    expect(screen.getByLabelText("標的代號")).toBeVisible();
+  });
+
+  it("收合建立表單不會清空使用者已經打的內容", async () => {
+    // code review 跟進：面板原本用條件渲染整個卸載重掛，使用者打到
+    // 一半手滑點到收合鈕，剛打的字就白打了——改用 `hidden` 屬性切換
+    // 可見度後，這裡直接驗證收合再展開，內容還在。
+    mockRoutes({
+      "/api/scenarios": { json: async () => [row] },
+      "/api/scenarios/": { json: async () => row },
+    });
+    render(<App />);
+    await openCreateForm();
+    await userEvent.type(screen.getByLabelText("標的代號"), "spy");
+
+    await userEvent.click(screen.getByRole("button", { name: "收合建立表單" }));
+    expect(screen.getByLabelText("標的代號")).not.toBeVisible();
+
+    await userEvent.click(screen.getByRole("button", { name: "＋ 建立劇本" }));
+    expect(screen.getByLabelText("標的代號")).toHaveValue("spy");
   });
 
   it("建立劇本與刷新是同一個固定操作列裡的兩個入口", async () => {
@@ -817,10 +838,18 @@ describe("主要操作入口收攏到工作區上方（#75）", () => {
     render(<App />);
 
     const toolbar = await screen.findByRole("banner");
-    expect(within(toolbar).getByRole("button", { name: "＋ 建立劇本" }))
-      .toBeInTheDocument();
+    const createButton = within(toolbar).getByRole("button", { name: "＋ 建立劇本" });
+    expect(createButton).toBeInTheDocument();
     expect(within(toolbar).getByRole("button", { name: /重新整理|刷新中/ }))
       .toBeInTheDocument();
+
+    // code review 跟進：展開鈕要有 `aria-controls` 指向它控制的面板，
+    // 不是只有 `aria-expanded`——跟 `CreateForm.tsx` 裡 `MonthPicker`
+    // 展開鈕同一套寫法（該檔案既有慣例），螢幕閱讀器才找得到面板在哪。
+    const panelId = createButton.getAttribute("aria-controls");
+    expect(panelId).toBeTruthy();
+    expect(document.getElementById(panelId!)).toContainElement(
+      screen.getByLabelText("標的代號"));
   });
 
   it("劇本清單下方已無任何主要操作——建立入口在工作區最上方", async () => {
@@ -834,7 +863,13 @@ describe("主要操作入口收攏到工作區上方（#75）", () => {
     const toolbar = container.querySelector("header.toolbar")!;
     const list = container.querySelector("ul.list")!;
     // `DOCUMENT_POSITION_FOLLOWING`：toolbar 出現在 list 之前，不是
-    // 掛在清單卡片全部跑完之後才看得到的東西。
+    // 掛在清單卡片全部跑完之後才看得到的東西。展開表單前後都要成立
+    // ——面板一律掛著（`hidden` 屬性切換可見度），不會因為展開就被
+    // 插到清單後面。
+    expect(toolbar.compareDocumentPosition(list))
+      .toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+
+    await openCreateForm();
     expect(toolbar.compareDocumentPosition(list))
       .toBe(Node.DOCUMENT_POSITION_FOLLOWING);
   });

@@ -15,6 +15,7 @@ export default function Toolbar({
   count,
   progress,
   createOpen,
+  createPanelId,
   onRefresh,
   onToggleCreate,
 }: {
@@ -22,6 +23,9 @@ export default function Toolbar({
   progress: RefreshProgress | null;
   /** 建立劇本表單目前是否展開（#75）。 */
   createOpen: boolean;
+  /** 展開鈕控制的面板 id（#75 code review 跟進），與 `CreateForm.tsx`
+   *  裡 `MonthPicker` 的 `aria-expanded`＋`aria-controls` 同一套寫法。 */
+  createPanelId: string;
   onRefresh: () => void;
   onToggleCreate: () => void;
 }) {
@@ -36,7 +40,8 @@ export default function Toolbar({
             捲過長長的清單才看得到；改成跟刷新同一列的膠囊鈕，兩個主要
             入口位置一致、且跟著這個 `<header>` 一起常駐釘住。 */}
         <div className="toolbar-actions">
-          <button className="pill" onClick={onToggleCreate} aria-expanded={createOpen}>
+          <button className="pill" onClick={onToggleCreate}
+                 aria-expanded={createOpen} aria-controls={createPanelId}>
             {createOpen ? "收合建立表單" : "＋ 建立劇本"}
           </button>
           <button className="pill" onClick={onRefresh} disabled={busy}>

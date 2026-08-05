@@ -12,7 +12,7 @@
  * 這一層只做編排與狀態：排序、格式化在 `./scenarios`，驗證在
  * `./CreateForm`，金融計算全部在後端引擎。
  */
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 
 import CreateForm, { type DraftScenario } from "./CreateForm";
 import ScenarioDetail from "./ScenarioDetail";
@@ -64,6 +64,12 @@ export default function App() {
   // #75：建立劇本表單預設收合，靠工具列的膠囊鈕展開／收合——不再是
   // 掛在全部劇本卡片下面、永遠展開的表單。
   const [showCreateForm, setShowCreateForm] = useState(false);
+  // code review 跟進：面板一律掛著、用 `hidden` 屬性切換可見度，不是
+  // 條件渲染整個卸載重掛——否則使用者打到一半不小心點到收合鈕，剛打的
+  // 字就白打了。`hidden` 原生語意會連帶讓輔助技術忽略內容，不必額外
+  // 補 `aria-hidden`。`aria-controls` 沿用 `MonthPicker`（同檔案）
+  // 既有的「展開鈕指向自己控制的面板」寫法，兩處手法一致。
+  const createPanelId = useId();
   // 刷新是「一條佇列、一個跑者」：同時跑兩輪只會讓同一批劇本各被抓
   // 兩次、進度互相蓋掉。用佇列而不是「進行中就不理」——三種時機會重疊
   // （開站那一輪還沒跑完就建立了劇本），直接丟掉的話新劇本會靜靜地
@@ -249,6 +255,7 @@ export default function App() {
         count={rows.length}
         progress={progress}
         createOpen={showCreateForm}
+        createPanelId={createPanelId}
         onToggleCreate={() => setShowCreateForm((v) => !v)}
         // 時機三：功能列刷新鈕
         onRefresh={() => void reloadAndRefresh()}
@@ -262,12 +269,15 @@ export default function App() {
 
       {/* #75：建立劇本收攏成工作區正上方的入口——跟著工具列一起釘住，
           不再是掛在全部劇本卡片下面、永遠展開、得捲過整份清單才看得到
-          的表單。年月選擇器（#71）的「今年」／「本月」跟全站同一個
-          時鐘——不讓它自己另外算一次 `new Date()`，那樣會跟
-          `ScenarioList` 的新鮮度判斷用著兩個不同步的「現在」。 */}
-      {showCreateForm && (
+          的表單。一律掛著、用 `hidden` 切換可見度（見上方 `createPanelId`
+          註解），因此永遠排在 `ScenarioList` 之前，不會因為開／關而
+          改變它在畫面結構上「在清單上方」這件事。年月選擇器（#71）的
+          「今年」／「本月」跟全站同一個時鐘——不讓它自己另外算一次
+          `new Date()`，那樣會跟 `ScenarioList` 的新鮮度判斷用著兩個
+          不同步的「現在」。 */}
+      <div id={createPanelId} hidden={!showCreateForm}>
         <CreateForm onCreate={create} busy={busy} today={now} />
-      )}
+      </div>
 
       <ScenarioList
         rows={rows}
