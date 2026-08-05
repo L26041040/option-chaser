@@ -18,6 +18,7 @@ from fastapi.testclient import TestClient
 from api_app.main import create_app
 from api_app.storage.memory import MemoryStorage
 from option_chaser.data.snapshot import load_snapshot
+from option_chaser.ratecurve import RateCurve
 
 FIXTURE = Path("tests/fixtures/xyz_v4_six_expiries.json")
 OUT = Path("contracts/analysis_sample.json")
@@ -34,6 +35,19 @@ SCENARIO = {"symbol": "XYZ", "target_price": 130.0, "target_month": "2026-09"}
 FROZEN = {"id": "sample-id", "created_at": "2026-08-01T00:00:00+00:00",
           "days_to_anchor": 653}
 
+# 利率（#67）：`create_app()` 現在預設接真的 Treasury loader，樣本產生
+# script 若沿用預設會在沙箱（無網路）裡打出「曲線不可得」，而且結果隨
+# 執行環境的連線能力變動——樣本要釘住的是形狀，注入一個固定的假曲線，
+# 代表「期限對齊成功」這個較豐富、較有代表性的狀態（而不是失敗態的
+# 空 `rate_by_expiry`）。
+SAMPLE_RATE_CURVE = RateCurve(curve_date="2026-07-31",
+                              nodes=((0.5, 0.041), (1.0, 0.042),
+                                     (2.0, 0.043), (3.0, 0.044)))
+
+
+def _sample_rate_loader(today):
+    return SAMPLE_RATE_CURVE, f"Treasury 曲線 {SAMPLE_RATE_CURVE.curve_date}"
+
 
 def freeze_row(row: dict) -> dict:
     return {**row, **FROZEN}
@@ -41,7 +55,8 @@ def freeze_row(row: dict) -> dict:
 
 def main() -> None:
     snap = load_snapshot(FIXTURE)
-    client = TestClient(create_app(fetch=lambda symbol: snap))
+    client = TestClient(create_app(fetch=lambda symbol: snap,
+                                   rate_loader=_sample_rate_loader))
     resp = client.post("/api/analyze", json=REQUEST)
     resp.raise_for_status()
     OUT.parent.mkdir(exist_ok=True)
@@ -53,7 +68,8 @@ def main() -> None:
     # 時間相關欄位（created_at／latest_analyzed_at／days_to_anchor）會隨
     # 執行時間變動，換成固定值——樣本要釘住的是**形狀**，不是當下的鐘。
     row_client = TestClient(create_app(fetch=lambda symbol: snap,
-                                       storage=MemoryStorage()))
+                                       storage=MemoryStorage(),
+                                       rate_loader=_sample_rate_loader))
     created = row_client.post("/api/scenarios", json=SCENARIO).json()
     row_client.post(f"/api/scenarios/{created['id']}/refresh").raise_for_status()
     row = row_client.get("/api/scenarios").json()[0]

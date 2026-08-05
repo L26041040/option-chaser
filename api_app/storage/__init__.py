@@ -50,6 +50,18 @@ class ResultSummary:
     best_return: float | None
 
 
+@dataclass(frozen=True)
+class RateCacheEntry:
+    """利率曲線快取的一筆狀態（#67）——單一一筆、每次寫入即覆蓋，跨
+    serverless 呼叫共用同一條曲線，也是 `/api/health` 運維診斷的資料
+    來源。`curve` 是 `option_chaser.ratecurve.curve_to_dict()` 的輸出、
+    取得失敗時為 `None`；`note` 兩種情況都要有——成功時說明來源與日期，
+    失敗時說明原因，兩者都是「最近一次嘗試發生了什麼」的紀錄。"""
+    fetched_at: str          # 這筆狀態寫入的時間（ISO），不是曲線本身的日期
+    curve: dict | None
+    note: str
+
+
 class Storage(Protocol):
     """API 層唯一的資料存取介面——不得繞過它直接碰 SQL 或檔案。"""
 
@@ -97,6 +109,12 @@ class Storage(Protocol):
 
     def list_events(self, *, scenario_id: str | None = None) -> list[dict]:
         """依寫入順序（append-only）回傳。"""
+
+    def get_rate_cache(self) -> RateCacheEntry | None:
+        """尚未有任何嘗試（成功或失敗）時回 `None`。"""
+
+    def save_rate_cache(self, entry: RateCacheEntry) -> None:
+        """覆蓋既有那一筆——單一狀態，不是歷史序列。"""
 
     @property
     def kind(self) -> str:

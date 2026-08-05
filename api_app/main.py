@@ -23,12 +23,14 @@ from option_chaser import __version__, service, store
 from option_chaser.data.snapshot import snapshot_from_dict, snapshot_to_csv
 from option_chaser.models import (AnalysisParams, ChainSnapshot, FetchError,
                                   ParamError, STRATEGIES)
+from option_chaser.service import RateCurveLoader
 from option_chaser.timeframe import (TargetMonth, calendar_anchor,
                                      ensure_month_open, month_is_over)
 from option_chaser.workspace import now_utc_iso, ny_today
 
-from .storage import (ResultRecord, ResultSummary, Scenario, ScenarioExists,
-                      Storage)
+from .rate_cache import cached_loader
+from .storage import (RateCacheEntry, ResultRecord, ResultSummary, Scenario,
+                      ScenarioExists, Storage)
 from .storage.factory import storage_from_env
 
 FetchChain = Callable[[str], ChainSnapshot]
@@ -157,9 +159,17 @@ def _fail(stage: str, status: int, message: str) -> HTTPException:
 
 
 def create_app(*, fetch: FetchChain = service.fetch_chain,
-               storage: Storage | None = None) -> FastAPI:
-    """`fetch` 與 `storage` 皆可注入：測試傳入固定快照與記憶體假體，
-    因此不打真網路、不碰真資料庫，決定性。"""
+               storage: Storage | None = None,
+               rate_loader: RateCurveLoader = service.default_rate_curve_loader,
+               ) -> FastAPI:
+    """`fetch`／`storage`／`rate_loader` 皆可注入：測試傳入固定快照、
+    記憶體假體與假利率來源，因此不打真網路、不碰真資料庫，決定性。
+
+    `rate_loader`（#67）是資料源本身的介面——目前預設接的
+    `service.default_rate_curve_loader`（Treasury）只是暫時填在接縫
+    後面的實作，不是這裡的選型結果（選型是 #73／#74）。真正對外生效
+    的是 `_rate_curve_loader()` 包出來、疊了持久快取的版本，見下方。
+    """
     app = FastAPI(title="Option Chaser API", version=__version__)
 
     # 延遲建構：Postgres adapter 在建構時就連線＋建表，若放在 import 期，
@@ -174,6 +184,16 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         if "db" not in cached:
             cached["db"] = storage_from_env()
         return cached["db"]
+
+    # 同一個道理：包快取的動作本身不必每次分析重做一次，惰性建一次、
+    # 快取物件重用即可（`cached_loader()` 回傳的閉包內部沒有狀態，
+    # 重不重建都不影響行為，這裡只是省一次函式呼叫）。
+    cached_rate: dict[str, RateCurveLoader] = {}
+
+    def _rate_curve_loader() -> RateCurveLoader:
+        if "loader" not in cached_rate:
+            cached_rate["loader"] = cached_loader(_db(), rate_loader)
+        return cached_rate["loader"]
 
     def _require(scenario_id: str) -> Scenario:
         sc = _db().get_scenario(scenario_id)
@@ -212,7 +232,8 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
             # 是哪一段」時說不知道，好過說一個錯的分層。
             raise _fail("fetch", 502, f"抓不到 {symbol} 的報價：{e}") from e
         try:
-            result = service.run_with_snapshot(req, snap)
+            result = service.run_with_snapshot(
+                req, snap, rate_curve_loader=_rate_curve_loader())
         except ParamError as e:
             raise _fail("params", 400, str(e)) from e
         except Exception as e:  # noqa: BLE001 — 引擎任何失敗都要說是哪一段，不留白畫面
@@ -232,8 +253,19 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
             kind = _db().kind
         except Exception as e:  # noqa: BLE001 — 連不上也要能回答，這正是本端點的用途
             kind = f"unavailable: {e}"
+        # 利率狀態（#67）：最近一次嘗試的結果——尚無任何分析跑過時為
+        # `None`（不是「失敗」，是「還沒發生過」）；讀不到快取比照
+        # `storage` 的做法，同樣不讓 /api/health 本身炸掉。
+        rate: dict | None = None
+        try:
+            entry = _db().get_rate_cache()
+            if entry is not None:
+                rate = {"fetched_at": entry.fetched_at,
+                       "ok": entry.curve is not None, "note": entry.note}
+        except Exception:  # noqa: BLE001 — 同上，本端點的用途就是連不上也要能回答
+            pass
         return {"status": "ok", "engine_version": __version__,
-                "storage": kind, "path": request.url.path}
+                "storage": kind, "path": request.url.path, "rate": rate}
 
     # ---------- 一次性分析（V1 遺留，前端改走劇本端點後可移除） ----------
 

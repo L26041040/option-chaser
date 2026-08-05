@@ -12,6 +12,7 @@ from fastapi.testclient import TestClient   # 缺 fastapi 要紅燈，不可 imp
 from api_app.main import create_app
 from option_chaser.data.snapshot import load_snapshot
 from option_chaser.models import FetchError, ParamError
+from option_chaser.ratecurve import RateCurve
 
 FIX = "tests/fixtures/xyz_v4_six_expiries.json"
 CONTRACT_SAMPLE = Path("contracts/analysis_sample.json")
@@ -20,10 +21,23 @@ CONTRACT_SAMPLE = Path("contracts/analysis_sample.json")
 REQUEST = {"symbol": "XYZ", "target_price": 130.0, "target_month": "2026-09",
            "strategies": ["bull-call-spread"]}
 
+# 同上：`create_app()` 現在預設接真的 Treasury loader（#67），這裡固定
+# 注入跟 `gen_contract_sample.py` 同一條假曲線——否則這條測試會依賴本機
+# 當下連不連得到 Treasury，在沙箱（無網路）裡永遠紅、在有網路的機器上
+# 又可能因為當天的真實利率跟樣本不同而紅，兩種都不是這條測試該測的事。
+_SAMPLE_RATE_CURVE = RateCurve(curve_date="2026-07-31",
+                               nodes=((0.5, 0.041), (1.0, 0.042),
+                                      (2.0, 0.043), (3.0, 0.044)))
+
+
+def _sample_rate_loader(today):
+    return _SAMPLE_RATE_CURVE, f"Treasury 曲線 {_SAMPLE_RATE_CURVE.curve_date}"
+
 
 def _client(fetch=None):
     snap = load_snapshot(FIX)
-    return TestClient(create_app(fetch=fetch or (lambda symbol: snap)))
+    return TestClient(create_app(fetch=fetch or (lambda symbol: snap),
+                                 rate_loader=_sample_rate_loader))
 
 
 def test_health_reports_ok_and_engine_version():

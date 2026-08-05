@@ -13,7 +13,7 @@ import os
 
 import pytest
 
-from api_app.storage import ResultRecord, Scenario, ScenarioExists
+from api_app.storage import RateCacheEntry, ResultRecord, Scenario, ScenarioExists
 from api_app.storage.memory import MemoryStorage
 
 TEST_DB_URL = os.environ.get("OC_TEST_DATABASE_URL")
@@ -39,7 +39,7 @@ def storage(request):
     st = PostgresStorage(TEST_DB_URL)
     # 清庫是測試自己的事，不放進正式 adapter（正式環境不該有 TRUNCATE）。
     with psycopg.connect(TEST_DB_URL, autocommit=True) as conn:
-        conn.execute("TRUNCATE scenarios, results, snapshots, events "
+        conn.execute("TRUNCATE scenarios, results, snapshots, events, rate_cache "
                      "RESTART IDENTITY")
     yield st
 
@@ -228,6 +228,47 @@ def test_both_implementations_expose_the_whole_port(storage):
     assert isinstance(storage.kind, str)
 
 
+# ---------- 利率曲線快取（#67） ----------
+#
+# 單一一筆、每次寫入即覆蓋——曲線最多日頻更新，不需要歷史，跟結果／
+# 快照那種「每次分析各留一筆」是不同的資料形狀。成功與失敗都要留得住：
+# 失敗也是「上一次嘗試的狀態」，`/api/health` 得說得出最近一次失敗的
+# 原因，不能只有成功才寫。
+
+
+def test_rate_cache_starts_empty(storage):
+    assert storage.get_rate_cache() is None
+
+
+def test_rate_cache_roundtrips_a_successful_fetch(storage):
+    entry = RateCacheEntry(
+        fetched_at="2026-08-05T12:00:00+00:00",
+        curve={"curve_date": "2026-08-04", "nodes": [[1.0, 0.04]]},
+        note="Treasury 曲線 2026-08-04")
+    storage.save_rate_cache(entry)
+    assert storage.get_rate_cache() == entry
+
+
+def test_rate_cache_can_record_a_failed_attempt(storage):
+    entry = RateCacheEntry(fetched_at="2026-08-05T12:00:00+00:00",
+                           curve=None, note="曲線不可得")
+    storage.save_rate_cache(entry)
+    assert storage.get_rate_cache() == entry
+
+
+def test_rate_cache_overwrites_rather_than_accumulates(storage):
+    storage.save_rate_cache(RateCacheEntry(
+        fetched_at="2026-08-05T00:00:00+00:00", curve=None, note="曲線不可得"))
+    storage.save_rate_cache(RateCacheEntry(
+        fetched_at="2026-08-05T06:00:00+00:00",
+        curve={"curve_date": "2026-08-05", "nodes": [[1.0, 0.041]]},
+        note="Treasury 曲線 2026-08-05"))
+
+    entry = storage.get_rate_cache()
+    assert entry.fetched_at == "2026-08-05T06:00:00+00:00"
+    assert entry.note == "Treasury 曲線 2026-08-05"
+
+
 # ---------- 清單摘要（V3／#51） ----------
 
 def test_latest_summaries_returns_the_newest_result_per_scenario(storage):
@@ -289,7 +330,7 @@ def test_existing_results_table_gains_the_new_column():
         # 這個測試不吃 `storage` fixture（它要自己控制建表順序），所以
         # 得自己清乾淨——否則殘留的劇本會讓它以 ScenarioExists 失敗，
         # 看起來像遷移壞了，其實是測試自己髒。
-        conn.execute("TRUNCATE scenarios, results, snapshots, events "
+        conn.execute("TRUNCATE scenarios, results, snapshots, events, rate_cache "
                      "RESTART IDENTITY")
         conn.execute("DROP TABLE IF EXISTS results")
         # V2 時期的舊表：沒有 best_return
@@ -321,7 +362,7 @@ def test_migration_still_applies_when_table_creation_hits_a_race():
     from api_app.storage import postgres as pg
 
     with psycopg.connect(TEST_DB_URL, autocommit=True) as conn:
-        conn.execute("TRUNCATE scenarios, results, snapshots, events "
+        conn.execute("TRUNCATE scenarios, results, snapshots, events, rate_cache "
                      "RESTART IDENTITY")
         conn.execute("DROP TABLE IF EXISTS results")
         conn.execute("CREATE TABLE results ("

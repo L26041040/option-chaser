@@ -810,10 +810,9 @@ V9（#57）／V10（#58）亦已完結——全部票做完。** 下一步不是
 
 **票與依賴**（← 為可立刻開工）：
 
-- **#67** 利率：接線、fallback 與狀態語意（provider 無關）←
 - **#72** 桌面版真正的 master/detail ←
 - **#74** 利率：production probe＋選定 provider 實作與硬化
-  （被 #67 擋，#73 已完成）
+  （#67／#73 已完成，可開工）
 - **#75** 主要操作入口收攏到工作區上方（被 #72 擋）
 
 **已完成**：
@@ -915,6 +914,31 @@ V9（#57）／V10（#58）亦已完結——全部票做完。** 下一步不是
   `option_chaser/service.py` 的 `run_with_snapshot` docstring）——
   事實本身沒錯，只是來源引用貼錯地方，在一份以「逐一引註」為賣點的
   文件裡值得修正
+- **#67** 利率：接線、fallback 與狀態語意（provider 無關）——
+  production 的分析路徑第一次真正接上利率載入器；`create_app()` 新增
+  `rate_loader`（預設仍是既有 `service.default_rate_curve_loader`＝
+  Treasury，**只是接縫後面的暫時填充物，不是選型**，選型是 #73／#74）。
+  新增 `api_app/rate_cache.py::cached_loader()`：包在任何
+  `RateCurveLoader` 外面的持久快取，本身完全不認識 provider 是誰——
+  `test_provider_is_swappable_without_touching_the_caching_layer` 用一個
+  假 provider 走完整條路徑直接證明這點。快取放新的 `Storage.
+  get_rate_cache()`／`save_rate_cache()`（`api_app/storage/`，port/
+  adapter 兩邊都實作，Postgres 用 `CHECK(id=1)` 單列表——單一狀態、
+  不是歷史序列，跟 `results`／`snapshots` 的複合鍵是不同的資料形狀，
+  刻意不同套）。成功快取 12 小時、失敗只快取 5 分鐘——資料源短暫斷線
+  恢復後不該讓使用者卡在舊的失敗訊息裡到 12 小時後才有機會重試，同時
+  仍吸收得住同一輪刷新裡 N 個劇本的重複請求（這正是「N 個劇本共用
+  同一條」的落地機制：每個 `/refresh` 是各自獨立的 serverless 呼叫，
+  只能靠跨呼叫的持久層達成，不是行程內批次）。快取讀寫失敗一律視同
+  沒有快取／不影響本次分析（比照 `option_chaser/data/treasury.py`
+  既有「快取寫不進去不影響本次分析」的哲學，套用在這個新的持久層
+  上）。`/api/health` 新增 `rate` 欄位（`fetched_at`／`ok`／`note`）
+  供運維診斷。契約樣本因為利率從固定 4% 換成真實期限對齊而全面重產
+  （Greeks／情境報酬等下游數字隨之變動，非結構性變更）；
+  `scripts/gen_contract_sample.py` 與 `tests/test_api_analyze.py`
+  的契約比對測試都改注入固定假曲線，不再依賴當下網路能不能連到
+  Treasury。開發環境用沙箱內建的 PostgreSQL 16 對真資料庫（不只
+  記憶體假體）驗證過 Postgres adapter。
 
 > 我原本把 #73 設計成「被 #67 擋，要靠部署版探針才能開始研究」，
 > **需求方 2026-08-05 否決，理由成立**：沙箱閘道擋掉某些網域，不等於
