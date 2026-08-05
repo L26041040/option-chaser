@@ -811,7 +811,6 @@ V9（#57）／V10（#58）亦已完結——全部票做完。** 下一步不是
 **票與依賴**（← 為可立刻開工）：
 
 - **#67** 利率：接線、fallback 與狀態語意（provider 無關）←
-- **#71** 自製年月選擇器 ←
 - **#72** 桌面版真正的 master/detail ←
 - **#73** Research：公開利率資料源評選（不預設 Treasury）←
 - **#74** 利率：production probe＋選定 provider 實作與硬化
@@ -865,8 +864,24 @@ V9（#57）／V10（#58）亦已完結——全部票做完。** 下一步不是
   恆出自同一次 `getScenario` 回應，不可能單獨變），但沒有測試真的換過
   候選身份鍵去驗證，補上一條用 `withTopCandidate({candidate_key:...})`
   的回歸測試
-
-> ⚠ **沙箱 403 是 sandbox validation limitation，不是 production 的結論。**
+- **#71** 自製年月選擇器——推翻 V3「用原生 `<input type="month">`」的
+  裁示（需求方 2026-08-05 明確裁示）。`MonthPicker`／`YearInput` 兩個
+  子元件比照專案既有慣例（`ScenarioDetail.tsx` 的 `Catchup`／
+  `PriceLadder` 等）直接定義在唯一呼叫端 `CreateForm.tsx` 內，不拆
+  獨立檔案。切換鈕是 `<button>`，點下去在文件流裡就地展開面板（不是
+  浮層），Tab 順序天然是切換鈕→上一年→年份→下一年→1 月…12 月→
+  下一個表單欄位，不必用 `useEffect` 搬焦點；選定後把焦點還給切換鈕，
+  鍵盤使用者才不會在月份鈕被卸載後掉到 `<body>`。年份輸入三條路徑
+  殊途同歸：`‹`／`›` 箭頭無上下限步進、聚焦時只框住後兩碼（打兩碼就
+  換另一個 20xx 年，不必先刪「20」）、或全選後直接打四碼跳到任意年份。
+  當月 `aria-current="date"`、已選定月份 `aria-pressed`，兩者可同時
+  成立、CSS 分開處理（外框 vs 填色）。ARIA 只宣稱完整實作的部分——
+  `aria-expanded`＋`aria-controls` 的揭露元件模式（button 控制面板
+  顯／隱，就這麼多）完整成立，沿用到期日 chip 那條「不宣稱 tablist」
+  的既有裁示，不發明一個沒做完整方向鍵導覽的假 widget role。
+  `validateDraft` 的年月格式檢查原封不動保留——UI 現在雖然只會產生
+  合法格式，但那條規則是獨立測試、公開匯出的純函式契約，不是只服務
+  這個 UI。App.tsx／e2e 兩處既有的「打字進年月欄位」測試改成點選互動。
 > 我原本把 #73 設計成「被 #67 擋，要靠部署版探針才能開始研究」，
 > **需求方 2026-08-05 否決，理由成立**：沙箱閘道擋掉某些網域，不等於
 > Vercel 不能對外聯網——production 本來就穩定抓得到 Yahoo／Cboe，

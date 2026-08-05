@@ -1,14 +1,20 @@
 /**
- * 建立劇本表單（V3／#51）。
+ * 建立劇本表單（V3／#51；年月選擇器 #71 改為自製）。
  *
  * 三欄全部留白、無任何預設值——這是 QA1-04（#31）的既有裁示：預設值會被
  * 當成建議，使用者照著按下去就得到一個不是他要的劇本。
  *
  * 目標年月是**單一欄位**（無「日」）：到期日由引擎依目標月選，使用者選日
- * 沒有意義。用原生 `<input type="month">`——手機上它就是系統的年月選擇器，
- * 自己刻一個彈窗只會比系統的更難用、更不無障礙。
+ * 沒有意義。
+ *
+ * #71 推翻了 V3 當時「用原生 `<input type="month">`」的裁示：原生元件在
+ * 桌面 Chrome 一定要按右邊圖示才展開、無法呈現 `20xx` 的年份輸入概念，
+ * 且在桌面 Safari／Firefox 會直接退化成純文字框（見下方 `validateDraft`
+ * 的格式檢查）。改自製 `MonthPicker`：點欄位本身就地展開，不是彈出浮層
+ * ——面板就是文件流裡的下一個手足元素，Tab 鍵順序天然正確，不必額外
+ * 管理焦點。
  */
-import { useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 
 export interface DraftScenario {
   symbol: string;
@@ -94,12 +100,149 @@ export function validateDraft(
   };
 }
 
+const MONTHS = Array.from({ length: 12 }, (_, i) => i + 1);
+
+/**
+ * 年份輸入（#71）：聚焦時只框住後兩碼——多數操作是「換到另一個 20xx
+ * 年份」，選取後兩碼讓打字直接覆蓋掉它們，不必先刪掉前面的「20」。也支援
+ * 全選後直接打四碼跳到任何年份，箭頭鈕（`MonthPicker`）則是完全不必打字
+ * 的路徑——三種操作方式殊途同歸，都只是在改同一個數字。
+ *
+ * `draft` 是打字打到一半的本地緩衝，只在滿四碼時才回報給外層；外層的
+ * `year` 透過箭頭鈕改變時，`useEffect` 把緩衝同步回去。未滿四碼就失焦，
+ * 緩衝重置回原本的年份，不留一個殘缺的顯示。
+ */
+function YearInput({ year, onChange }: {
+  year: number;
+  onChange: (year: number) => void;
+}) {
+  const [draft, setDraft] = useState(String(year));
+  // 箭頭鈕改了外部的 `year`——同步顯示。打字打到一半時 `onChange` 早已
+  // 把同一個值回報給外層、`year` 立刻追上 `draft`，這個 effect 因此是
+  // no-op，不會覆蓋使用者正在打的字。
+  useEffect(() => setDraft(String(year)), [year]);
+
+  return (
+    <input
+      className="year-input"
+      inputMode="numeric"
+      aria-label="年份"
+      value={draft}
+      onFocus={(e) => e.currentTarget.setSelectionRange(2, 4)}
+      onChange={(e) => {
+        const digits = e.target.value.replace(/\D/g, "").slice(0, 4);
+        setDraft(digits);
+        if (digits.length === 4) onChange(Number(digits));
+      }}
+      onBlur={() => setDraft(String(year))}
+    />
+  );
+}
+
+/**
+ * 自製年月選擇器（#71，推翻 V3「用原生 input」的裁示——理由見檔案頂端
+ * 註解）。點欄位本身就地展開（不是浮層），展開預設落在今年，月份以
+ * 按鈕呈現、當月有 `aria-current="date"` 標示，年份可箭頭切換或直接
+ * 打四碼、不設上下限。
+ *
+ * 面板在文件流裡緊接在切換鈕之後——Tab 順序天然是切換鈕→上一年→
+ * 年份→下一年→1 月…12 月→下一個表單欄位，不必用 `useEffect` 搬焦點。
+ * 選定或再次點欄位本身都會收合；選定後把焦點還給切換鈕，鍵盤使用者
+ * 才不會在元素被卸載後掉到 `<body>`，得從頁面最上方重新 Tab 一次。
+ */
+function MonthPicker({ value, onChange, today }: {
+  value: string;
+  onChange: (month: string) => void;
+  today: Date;
+}) {
+  const [open, setOpen] = useState(false);
+  const [displayYear, setDisplayYear] = useState(today.getFullYear());
+  const toggleRef = useRef<HTMLButtonElement>(null);
+  const panelId = useId();
+
+  const [selectedYear, selectedMonth] = value
+    ? value.split("-").map(Number) : [null, null];
+
+  function toggle() {
+    if (!open) {
+      // 每次重新展開都該有可預期的起點：已有選定值就回到那個值的年份
+      // （不然調整月份會意外把年份改回今年），否則回到今年。
+      setDisplayYear(selectedYear ?? today.getFullYear());
+    }
+    setOpen((o) => !o);
+  }
+
+  function pick(month: number) {
+    onChange(`${displayYear}-${String(month).padStart(2, "0")}`);
+    setOpen(false);
+    toggleRef.current?.focus();
+  }
+
+  return (
+    <div className="month-picker">
+      <button
+        ref={toggleRef}
+        type="button"
+        className="input month-picker-toggle"
+        onClick={toggle}
+        aria-expanded={open}
+        aria-controls={panelId}
+      >
+        {value || <span className="muted">20xx-xx</span>}
+      </button>
+
+      {open && (
+        <div id={panelId} className="month-picker-panel" role="group"
+             aria-label="選擇年月">
+          <div className="month-picker-year-row">
+            <button type="button" className="month-picker-step"
+                    aria-label="上一年"
+                    onClick={() => setDisplayYear((y) => y - 1)}>
+              ‹
+            </button>
+            <YearInput year={displayYear} onChange={setDisplayYear} />
+            <button type="button" className="month-picker-step"
+                    aria-label="下一年"
+                    onClick={() => setDisplayYear((y) => y + 1)}>
+              ›
+            </button>
+          </div>
+
+          <div className="month-picker-grid">
+            {MONTHS.map((m) => {
+              const isSelected = selectedYear === displayYear && selectedMonth === m;
+              const isToday = displayYear === today.getFullYear()
+                && m === today.getMonth() + 1;
+              return (
+                <button
+                  key={m}
+                  type="button"
+                  className={isSelected ? "month-cell selected" : "month-cell"}
+                  aria-pressed={isSelected}
+                  aria-current={isToday ? "date" : undefined}
+                  onClick={() => pick(m)}
+                >
+                  {m} 月
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function CreateForm({
   onCreate,
   busy = false,
+  today = new Date(),
 }: {
   onCreate: (draft: DraftScenario) => Promise<void>;
   busy?: boolean;
+  /** 「今天」由呼叫端傳入（沿用全站零 wall-clock 於元件內的既有原則）
+   *  ——年月選擇器用它決定展開時的預設年份與當月標示。 */
+  today?: Date;
 }) {
   // 三欄一律空字串起手——沒有預設值，也沒有「上次填的」。
   const [symbol, setSymbol] = useState("");
@@ -159,12 +302,7 @@ export default function CreateForm({
 
       <label className="field">
         <span className="row-label">目標年月</span>
-        <input
-          className="input"
-          type="month"
-          value={month}
-          onChange={(e) => setMonth(e.target.value)}
-        />
+        <MonthPicker value={month} onChange={setMonth} today={today} />
       </label>
 
       {/* V7（#55）劇本區間兩端：選填，擺在三個必填欄位之後——它們是

@@ -876,3 +876,91 @@ body {
   height: auto;
   margin-top: 8px;
 }
+
+/* 自製年月選擇器（#71）：切換鈕沿用 `.input` 的尺寸與邊框，視覺上跟其他
+   表單欄位一致；面板在文件流裡就地展開（不是浮層），所以不需要
+   `position: absolute`／z-index。 */
+.month-picker-toggle {
+  text-align: left;
+  cursor: pointer;
+}
+
+.month-picker-panel {
+  margin-top: 8px;
+  padding: 12px;
+  background: var(--fill);
+  border-radius: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.month-picker-year-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+}
+
+.month-picker-step {
+  appearance: none;
+  border: 0;
+  background: var(--bg-elevated);
+  color: var(--tint);
+  font-size: 20px;
+  font-weight: 600;
+  width: 36px;
+  height: 36px;
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+.year-input {
+  appearance: none;
+  font-family: inherit;
+  font-size: 20px;
+  font-weight: 700;
+  text-align: center;
+  color: var(--label);
+  background: transparent;
+  border: 0;
+  border-bottom: 1.5px solid var(--separator);
+  width: 4.5ch;
+  padding: 2px 0;
+}
+
+.year-input:focus {
+  outline: none;
+  border-bottom-color: var(--tint);
+}
+
+.month-picker-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 6px;
+}
+
+.month-cell {
+  appearance: none;
+  border: 0.5px solid transparent;
+  background: var(--bg-elevated);
+  color: var(--label);
+  font-family: inherit;
+  font-size: 15px;
+  font-weight: 600;
+  padding: 10px 0;
+  border-radius: 8px;
+  min-height: 44px;
+  cursor: pointer;
+}
+
+.month-cell.selected {
+  background: var(--tint);
+  color: #fff;
+}
+
+/* 當月的 current state：淡色外框，跟「已選定」的實心填色分開，兩者
+   可能同時成立（選到的正好是這個月）。 */
+.month-cell[aria-current="date"] {
+  border-color: var(--tint);
+}

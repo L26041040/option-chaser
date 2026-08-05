@@ -4,6 +4,15 @@ import { describe, expect, it, vi } from "vitest";
 
 import CreateForm, { validateDraft } from "./CreateForm";
 
+/** 走完整個選擇器互動：展開 → 直接輸入四碼年份 → 點月份鈕（收合）。 */
+async function pickMonth(year: number, month: number) {
+  await userEvent.click(screen.getByLabelText("目標年月"));
+  const yearInput = screen.getByLabelText("年份");
+  await userEvent.clear(yearInput);
+  await userEvent.type(yearInput, String(year));
+  await userEvent.click(screen.getByRole("button", { name: `${month} 月` }));
+}
+
 describe("建立表單的驗證", () => {
   it("三欄都必填，訊息明確指出缺哪一欄", () => {
     expect(validateDraft("", "120", "2028-05")).toEqual({
@@ -46,15 +55,11 @@ describe("建立表單的驗證", () => {
 describe("建立表單的畫面", () => {
   it("三欄全部留白，沒有任何預設值", () => {
     render(<CreateForm onCreate={vi.fn()} />);
-    for (const label of ["標的代號", "目標價位", "目標年月"]) {
-      expect(screen.getByLabelText(label)).toHaveValue("");
-    }
-  });
-
-  it("目標年月是年月欄位，沒有「日」", () => {
-    render(<CreateForm onCreate={vi.fn()} />);
-    // type=month 在手機上就是系統的年月選擇器；自刻彈窗只會更難用。
-    expect(screen.getByLabelText("目標年月")).toHaveAttribute("type", "month");
+    expect(screen.getByLabelText("標的代號")).toHaveValue("");
+    expect(screen.getByLabelText("目標價位")).toHaveValue("");
+    // 年月選擇器不是原生 input，沒有 value 可查——用佔位文案表示尚未
+    // 選定，不是預先選好某個年月。
+    expect(screen.getByText("20xx-xx")).toBeInTheDocument();
   });
 
   it("驗證沒過就不送出，並顯示訊息", async () => {
@@ -73,7 +78,7 @@ describe("建立表單的畫面", () => {
 
     await userEvent.type(screen.getByLabelText("標的代號"), "tlt");
     await userEvent.type(screen.getByLabelText("目標價位"), "120");
-    await userEvent.type(screen.getByLabelText("目標年月"), "2028-05");
+    await pickMonth(2028, 5);
     await userEvent.click(screen.getByRole("button", { name: "建立" }));
 
     expect(onCreate).toHaveBeenCalledWith({
@@ -81,6 +86,7 @@ describe("建立表單的畫面", () => {
     });
     expect(screen.getByLabelText("標的代號")).toHaveValue("");
     expect(screen.getByLabelText("目標價位")).toHaveValue("");
+    expect(screen.getByText("20xx-xx")).toBeInTheDocument();
   });
 
   it("建立失敗時顯示後端訊息，且不清空使用者填的東西", async () => {
@@ -89,11 +95,12 @@ describe("建立表單的畫面", () => {
 
     await userEvent.type(screen.getByLabelText("標的代號"), "TLT");
     await userEvent.type(screen.getByLabelText("目標價位"), "120");
-    await userEvent.type(screen.getByLabelText("目標年月"), "2020-01");
+    await pickMonth(2020, 1);
     await userEvent.click(screen.getByRole("button", { name: "建立" }));
 
     expect(screen.getByRole("alert")).toHaveTextContent("目標月已經過完了");
     expect(screen.getByLabelText("標的代號")).toHaveValue("TLT");
+    expect(screen.getByText("2020-01")).toBeInTheDocument();
   });
 });
 
@@ -168,5 +175,163 @@ describe("劇本區間兩端（V7／#55）", () => {
     render(<CreateForm onCreate={vi.fn()} />);
     expect(screen.getByLabelText("最好價位（選填）")).toHaveValue("");
     expect(screen.getByLabelText("最差價位（選填）")).toHaveValue("");
+  });
+});
+
+describe("自製年月選擇器（#71）", () => {
+  // 固定「今天」才能決定性地驗證「展開預設今年」「當月有 current state」
+  // ——沿用全站零 wall-clock 於元件內、由呼叫端傳入的既有原則。
+  const TODAY = new Date("2026-08-05T12:00:00");
+
+  function renderForm(onCreate = vi.fn()) {
+    render(<CreateForm onCreate={onCreate} today={TODAY} />);
+    return onCreate;
+  }
+
+  it("關閉狀態顯示 20xx 年份格式提示，不是空白也不是某個預設年月", () => {
+    renderForm();
+    expect(screen.getByText("20xx-xx")).toBeInTheDocument();
+  });
+
+  it("點欄位本身就在下方就地展開，不需要按任何圖示", async () => {
+    renderForm();
+    const toggle = screen.getByLabelText("目標年月");
+    expect(screen.queryByRole("group", { name: "選擇年月" })).not.toBeInTheDocument();
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+
+    await userEvent.click(toggle);
+
+    expect(screen.getByRole("group", { name: "選擇年月" })).toBeInTheDocument();
+    expect(toggle).toHaveAttribute("aria-expanded", "true");
+  });
+
+  it("再次點欄位可以手動收合", async () => {
+    renderForm();
+    const toggle = screen.getByLabelText("目標年月");
+    await userEvent.click(toggle);
+    await userEvent.click(toggle);
+
+    expect(screen.queryByRole("group", { name: "選擇年月" })).not.toBeInTheDocument();
+  });
+
+  it("展開時預設落在今年", async () => {
+    renderForm();
+    await userEvent.click(screen.getByLabelText("目標年月"));
+    expect(screen.getByLabelText("年份")).toHaveValue("2026");
+  });
+
+  it("直接提供全部 12 個月份的按鈕", async () => {
+    renderForm();
+    await userEvent.click(screen.getByLabelText("目標年月"));
+    for (let m = 1; m <= 12; m++) {
+      expect(screen.getByRole("button", { name: `${m} 月` })).toBeInTheDocument();
+    }
+  });
+
+  it("本月有清楚的 current state，其餘月份沒有", async () => {
+    renderForm();
+    await userEvent.click(screen.getByLabelText("目標年月"));
+    expect(screen.getByRole("button", { name: "8 月" }))
+      .toHaveAttribute("aria-current", "date");
+    expect(screen.getByRole("button", { name: "7 月" }))
+      .not.toHaveAttribute("aria-current");
+  });
+
+  it("點月份即選定並收合，欄位換成 YYYY-MM", async () => {
+    renderForm();
+    await userEvent.click(screen.getByLabelText("目標年月"));
+    await userEvent.click(screen.getByRole("button", { name: "5 月" }));
+
+    expect(screen.queryByRole("group", { name: "選擇年月" })).not.toBeInTheDocument();
+    expect(screen.getByText("2026-05")).toBeInTheDocument();
+  });
+
+  it("年份可用箭頭往前往後切換，沒有硬編的上下限", async () => {
+    renderForm();
+    await userEvent.click(screen.getByLabelText("目標年月"));
+
+    await userEvent.click(screen.getByRole("button", { name: "下一年" }));
+    expect(screen.getByLabelText("年份")).toHaveValue("2027");
+
+    for (let i = 0; i < 10; i++) {
+      await userEvent.click(screen.getByRole("button", { name: "上一年" }));
+    }
+    expect(screen.getByLabelText("年份")).toHaveValue("2017");
+  });
+
+  it("年份可以直接輸入四碼跳到指定年份", async () => {
+    renderForm();
+    await userEvent.click(screen.getByLabelText("目標年月"));
+    const yearInput = screen.getByLabelText("年份");
+
+    await userEvent.clear(yearInput);
+    await userEvent.type(yearInput, "2030");
+    await userEvent.click(screen.getByRole("button", { name: "1 月" }));
+
+    expect(screen.getByText("2030-01")).toBeInTheDocument();
+  });
+
+  it("聚焦年份欄位時只選取後兩碼，打兩碼就換到另一個 20xx 年——" +
+     "不必先刪掉前面的「20」", async () => {
+    renderForm();
+    await userEvent.click(screen.getByLabelText("目標年月"));
+    const yearInput = screen.getByLabelText("年份") as HTMLInputElement;
+
+    yearInput.focus();
+    expect(yearInput.selectionStart).toBe(2);
+    expect(yearInput.selectionEnd).toBe(4);
+
+    await userEvent.keyboard("30");
+    expect(yearInput).toHaveValue("2030");
+  });
+
+  it("已有選定值時再次展開，回到那個值的年份，不是回到今年", async () => {
+    renderForm();
+    await userEvent.click(screen.getByLabelText("目標年月"));
+    await userEvent.click(screen.getByRole("button", { name: "下一年" }));
+    await userEvent.click(screen.getByRole("button", { name: "3 月" })); // 選定 2027-03
+
+    await userEvent.click(screen.getByLabelText("目標年月")); // 再次展開
+
+    expect(screen.getByLabelText("年份")).toHaveValue("2027");
+    expect(screen.getByRole("button", { name: "3 月" }))
+      .toHaveAttribute("aria-pressed", "true");
+  });
+
+  it("鍵盤可以完成整個選取流程——展開、Tab 到月份鈕、Enter 選定", async () => {
+    renderForm();
+    const toggle = screen.getByLabelText("目標年月");
+    toggle.focus();
+    await userEvent.keyboard("{Enter}");
+
+    await userEvent.tab(); // 上一年
+    await userEvent.tab(); // 年份
+    await userEvent.tab(); // 下一年
+    await userEvent.tab(); // 1 月
+    expect(screen.getByRole("button", { name: "1 月" })).toHaveFocus();
+
+    await userEvent.keyboard("{Enter}");
+    expect(screen.getByText("2026-01")).toBeInTheDocument();
+  });
+
+  it("選定後焦點回到欄位本身，不會掉到頁面最上方", async () => {
+    renderForm();
+    const toggle = screen.getByLabelText("目標年月");
+    await userEvent.click(toggle);
+    await userEvent.click(screen.getByRole("button", { name: "5 月" }));
+
+    expect(toggle).toHaveFocus();
+  });
+
+  it("目標年月已過完的既有擋下規則不受影響——選過去的年月照樣送得出去，" +
+     "由後端判斷是否拒絕", async () => {
+    const onCreate = renderForm();
+    await userEvent.type(screen.getByLabelText("標的代號"), "TLT");
+    await userEvent.type(screen.getByLabelText("目標價位"), "120");
+    await pickMonth(2020, 1);
+    await userEvent.click(screen.getByRole("button", { name: "建立" }));
+
+    expect(onCreate).toHaveBeenCalledWith(
+      expect.objectContaining({ target_month: "2020-01" }));
   });
 });

@@ -303,7 +303,11 @@ test("劇本庫：建立 → 出現在清單 → 封存後消失（V3／#51）",
 
   await page.getByLabel("標的代號").fill("tlt");
   await page.getByLabel("目標價位").fill("120");
-  await page.getByLabel("目標年月").fill("2028-05");
+  // 年月選擇器（#71）不是原生 input：點欄位就地展開，輸入四碼年份，
+  // 點月份鈕選定並收合。
+  await page.getByLabel("目標年月").click();
+  await page.getByLabel("年份").fill("2028");
+  await page.getByRole("button", { name: "5 月" }).click();
   await page.getByRole("button", { name: "建立" }).click();
 
   // 頁面下方的 V1 遺留區塊也有 "TLT" 字樣，因此鎖定清單裡那一張卡。

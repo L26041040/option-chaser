@@ -16,6 +16,19 @@ import App from "./App";
 import sampleRow from "../contracts/scenario_row_sample.json";
 
 /**
+ * 建立表單的年月選擇器（#71）不是原生 input，不能再用
+ * `userEvent.type(getByLabelText("目標年月"), "YYYY-MM")` 直接打字——
+ * 走完整個互動：展開 → 直接輸入四碼年份 → 點月份鈕（收合）。
+ */
+async function pickMonth(year: number, month: number) {
+  await userEvent.click(screen.getByLabelText("目標年月"));
+  const yearInput = screen.getByLabelText("年份");
+  await userEvent.clear(yearInput);
+  await userEvent.type(yearInput, String(year));
+  await userEvent.click(screen.getByRole("button", { name: `${month} 月` }));
+}
+
+/**
  * V3 起 App 開站就會打 `/api/scenarios`，所以 mock 必須依 URL 分流——
  * 一個「不管問什麼都回同一份分析結果」的 stub 會讓劇本清單收到一份
  * 不是陣列的東西，測出來的東西也就不代表真實行為。
@@ -95,7 +108,7 @@ describe("劇本庫（V3／#51）", () => {
 
     await userEvent.type(await screen.findByLabelText("標的代號"), "spy");
     await userEvent.type(screen.getByLabelText("目標價位"), "700");
-    await userEvent.type(screen.getByLabelText("目標年月"), "2028-05");
+    await pickMonth(2028, 5);
     await userEvent.click(screen.getByRole("button", { name: "建立" }));
 
     expect(await screen.findByText("SPY")).toBeInTheDocument();
@@ -419,7 +432,7 @@ describe("過期劇本不再進入批次刷新（#68）", () => {
 
     await userEvent.type(await screen.findByLabelText("標的代號"), "spy");
     await userEvent.type(screen.getByLabelText("目標價位"), "700");
-    await userEvent.type(screen.getByLabelText("目標年月"), "2028-05");
+    await pickMonth(2028, 5);
     await userEvent.click(screen.getByRole("button", { name: "建立" }));
 
     expect(await screen.findByText("SPY")).toBeInTheDocument();
@@ -498,7 +511,7 @@ describe("建立與刷新同時發生（V4／#52 檢視回饋）", () => {
 
     await userEvent.type(await screen.findByLabelText("標的代號"), "spy");
     await userEvent.type(screen.getByLabelText("目標價位"), "700");
-    await userEvent.type(screen.getByLabelText("目標年月"), "2028-05");
+    await pickMonth(2028, 5);
     await userEvent.click(screen.getByRole("button", { name: "建立" }));
 
     releaseRefresh!();                       // 建立還沒回來，s1 先刷新完
