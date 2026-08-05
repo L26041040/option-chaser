@@ -277,6 +277,13 @@ body {
   min-height: 28px;
 }
 
+/* #75：建立劇本與刷新這兩個主要入口同一列並排——寬度不夠時膠囊鈕本身
+   會先靠 `white-space: nowrap` 撐開，不會疊字，捲不下才需要再考慮換行。 */
+.toolbar-actions {
+  display: flex;
+  gap: 8px;
+}
+
 /* iOS Large Title：34pt/bold、負字距。手機上這是「我在哪一頁」的
    唯一線索，所以它得夠大。 */
 .toolbar-title {

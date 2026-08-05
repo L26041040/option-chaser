@@ -301,6 +301,8 @@ test("劇本庫：建立 → 出現在清單 → 封存後消失（V3／#51）",
   await expect(page.getByText("劇本庫")).toBeVisible();
   await expect(page.getByText(/還沒有劇本/)).toBeVisible();
 
+  // #75：建立劇本收攏成工具列的頂部入口，預設收合。
+  await page.getByRole("button", { name: "＋ 建立劇本" }).click();
   await page.getByLabel("標的代號").fill("tlt");
   await page.getByLabel("目標價位").fill("120");
   // 年月選擇器（#71）不是原生 input：點欄位就地展開，輸入四碼年份，
@@ -308,7 +310,9 @@ test("劇本庫：建立 → 出現在清單 → 封存後消失（V3／#51）",
   await page.getByLabel("目標年月").click();
   await page.getByLabel("年份").fill("2028");
   await page.getByRole("button", { name: "5 月" }).click();
-  await page.getByRole("button", { name: "建立" }).click();
+  // `exact: true`——Playwright 預設子字串比對，"收合建立表單"（頂部
+  // 入口的收合態文字，#75）也含「建立」兩字，會撞名。
+  await page.getByRole("button", { name: "建立", exact: true }).click();
 
   // 頁面下方的 V1 遺留區塊也有 "TLT" 字樣，因此鎖定清單裡那一張卡。
   const card = page.getByRole("listitem").filter({ hasText: "2028-05" });
@@ -357,6 +361,11 @@ test("功能列捲動時仍釘在頂部、而且按得到（V3／#51 驗收第 1
   const before = listCalls;
   await page.getByRole("button", { name: "重新整理" }).click();
   await expect.poll(() => listCalls).toBeGreaterThan(before);
+
+  // #75：建立劇本跟刷新是同一個固定操作列裡的兩個入口——捲到底時
+  // 也要按得下去，不能只驗其中一個。
+  await page.getByRole("button", { name: "＋ 建立劇本" }).click();
+  await expect(page.getByLabel("標的代號")).toBeVisible();
 });
 
 /* ---------- V4（#52）：刷新、進度、失敗指引 ---------- */

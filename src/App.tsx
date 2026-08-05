@@ -61,6 +61,9 @@ export default function App() {
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState<RefreshProgress | null>(null);
   const [failures, setFailures] = useState<Record<string, RefreshFailure>>({});
+  // #75：建立劇本表單預設收合，靠工具列的膠囊鈕展開／收合——不再是
+  // 掛在全部劇本卡片下面、永遠展開的表單。
+  const [showCreateForm, setShowCreateForm] = useState(false);
   // 刷新是「一條佇列、一個跑者」：同時跑兩輪只會讓同一批劇本各被抓
   // 兩次、進度互相蓋掉。用佇列而不是「進行中就不理」——三種時機會重疊
   // （開站那一輪還沒跑完就建立了劇本），直接丟掉的話新劇本會靜靜地
@@ -245,6 +248,8 @@ export default function App() {
       <Toolbar
         count={rows.length}
         progress={progress}
+        createOpen={showCreateForm}
+        onToggleCreate={() => setShowCreateForm((v) => !v)}
         // 時機三：功能列刷新鈕
         onRefresh={() => void reloadAndRefresh()}
       />
@@ -253,6 +258,15 @@ export default function App() {
         <div className="notice error" role="alert">
           {error}
         </div>
+      )}
+
+      {/* #75：建立劇本收攏成工作區正上方的入口——跟著工具列一起釘住，
+          不再是掛在全部劇本卡片下面、永遠展開、得捲過整份清單才看得到
+          的表單。年月選擇器（#71）的「今年」／「本月」跟全站同一個
+          時鐘——不讓它自己另外算一次 `new Date()`，那樣會跟
+          `ScenarioList` 的新鮮度判斷用著兩個不同步的「現在」。 */}
+      {showCreateForm && (
+        <CreateForm onCreate={create} busy={busy} today={now} />
       )}
 
       <ScenarioList
@@ -267,10 +281,6 @@ export default function App() {
         // 渲染這份清單（上面已整頁替換掉），傳了也無害。
         selectedId={detailId}
       />
-      {/* 年月選擇器（#71）的「今年」／「本月」跟全站同一個時鐘——
-          不讓它自己另外算一次 `new Date()`，那樣會跟 `ScenarioList`
-          的新鮮度判斷用著兩個不同步的「現在」。 */}
-      <CreateForm onCreate={create} busy={busy} today={now} />
     </div>
   );
 

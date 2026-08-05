@@ -51,14 +51,16 @@ async function routeTwoScenarios(page: import("@playwright/test").Page) {
     route.fulfill({ json: rowB }));
 }
 
-test("選中劇本時，左側劇本庫（含建立表單）與右側詳細頁同時可見", async ({ page }) => {
+test("選中劇本時，左側劇本庫（含建立劇本入口）與右側詳細頁同時可見", async ({ page }) => {
   await routeTwoScenarios(page);
   await page.goto("/#/s/s1");
 
   // 右側詳細頁的內容
   await expect(page.getByText(`$${sample.meta.spot.toFixed(2)}`)).toBeVisible();
-  // 左側劇本庫：另一個劇本的卡片、以及建立表單都還在——不是整頁替換
+  // 左側劇本庫：另一個劇本的卡片、以及建立劇本入口都還在——不是整頁
+  // 替換。建立劇本表單本身收合（#75），要按過頂部入口才看得到欄位。
   await expect(page.getByRole("link", { name: /ABC/ })).toBeVisible();
+  await page.getByRole("button", { name: "＋ 建立劇本" }).click();
   await expect(page.getByLabel("標的代號")).toBeVisible();
 });
 
