@@ -93,3 +93,44 @@ test("可以直接點另一個劇本切換，不必先返回劇本庫", async ({
   await expect(page.getByRole("link", { name: /ABC/ }))
     .toHaveAttribute("aria-current", "page");
 });
+
+test("左右比例約 20/80，不是置中的窄直欄", async ({ page }) => {
+  await routeTwoScenarios(page);
+  await page.goto("/");
+
+  const library = await page.locator(".library-pane").boundingBox();
+  const detail = await page.locator(".detail-pane").boundingBox();
+  if (!library || !detail) throw new Error("版面沒有渲染出兩欄");
+
+  // 「約」20/80——不要求精確到小數點，但要跟置中窄直欄（原本兩側大片
+  // 空白、內容欄遠小於 20%）明顯不同，也不該被 CSS 下限卡死成遠超過
+  // 20% 的固定寬度（回歸測試：#72 code review 抓到的原始寫法在 900～
+  // 1400px 這段桌面寬度會被 280px 下限卡到超過 30%）。
+  const ratio = library.width / (library.width + detail.width);
+  expect(ratio).toBeGreaterThan(0.15);
+  expect(ratio).toBeLessThan(0.28);
+});
+
+test("瀏覽器上一頁／下一頁在桌面版仍然正確切換劇本", async ({ page }) => {
+  await routeTwoScenarios(page);
+  await page.goto("/");
+  await expect(page.getByText(/選擇左側的劇本/)).toBeVisible();
+
+  await page.getByRole("link", { name: /XYZ/ }).click();
+  await expect(page).toHaveURL(/#\/s\/s1$/);
+  await page.getByRole("link", { name: /ABC/ }).click();
+  await expect(page).toHaveURL(/#\/s\/s2$/);
+
+  await page.goBack();
+  await expect(page).toHaveURL(/#\/s\/s1$/);
+  await expect(page.getByRole("link", { name: /XYZ/ }))
+    .toHaveAttribute("aria-current", "page");
+
+  await page.goBack();
+  await expect(page).not.toHaveURL(/#\/s\//);
+  await expect(page.getByText(/選擇左側的劇本/)).toBeVisible();
+
+  await page.goForward();
+  await expect(page).toHaveURL(/#\/s\/s1$/);
+  await expect(page.getByText(`$${sample.meta.spot.toFixed(2)}`)).toBeVisible();
+});

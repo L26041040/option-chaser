@@ -14,6 +14,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import App from "./App";
 import sampleRow from "../contracts/scenario_row_sample.json";
+import { fakeMediaQueryList } from "./test-setup";
 
 /**
  * 建立表單的年月選擇器（#71）不是原生 input，不能再用
@@ -649,16 +650,7 @@ describe("清單 → 詳細頁（V5／#53）", () => {
 
 /** 桌面寬度：`window.matchMedia` 回真，模擬寬螢幕（#72）。 */
 function stubDesktopViewport() {
-  vi.stubGlobal("matchMedia", (query: string) => ({
-    matches: true,
-    media: query,
-    onchange: null,
-    addEventListener: () => {},
-    removeEventListener: () => {},
-    addListener: () => {},
-    removeListener: () => {},
-    dispatchEvent: () => false,
-  }));
+  vi.stubGlobal("matchMedia", (query: string) => fakeMediaQueryList(true, query));
 }
 
 describe("桌面版真正的 master/detail（#72）", () => {
@@ -745,5 +737,32 @@ describe("桌面版真正的 master/detail（#72）", () => {
     // 兩個劇本共用同一份「尚未分析」文案，真正驗證的是清單卡片本身
     // 沒有被整頁替換掉——它在切換後依然可點、依然在畫面上。
     expect(await screen.findByRole("link", { name: /TLT 2028-05/ })).toBeInTheDocument();
+  });
+
+  it("桌面版的網址仍對應到選中的劇本——返回鍵切回上一個劇本，劇本庫全程不消失", async () => {
+    stubDesktopViewport();
+    window.location.hash = "#/s/s1";
+    mockRoutes({
+      "/api/scenarios": { json: async () => [rowA, rowB] },
+      "/api/scenarios/s1": { json: async () => ({ ...rowA, latest_result: null }) },
+      "/api/scenarios/s2": { json: async () => ({ ...rowB, latest_result: null }) },
+    });
+    render(<App />);
+    await screen.findByText("尚未分析");
+
+    await userEvent.click(screen.getByRole("link", { name: /SPY 2027-01/ }));
+    expect(await screen.findByRole("link", { name: /TLT 2028-05/ })).toBeInTheDocument();
+
+    // 返回鍵＝hash 變回上一個值。jsdom 沒有真的瀏覽器歷史紀錄，直接
+    // 把 hash 改回去等同「返回鍵按下去之後」瀏覽器會做的事。
+    window.location.hash = "#/s/s1";
+    expect(await screen.findByRole("link", { name: /SPY 2027-01/ })).toBeInTheDocument();
+    // 全程劇本庫（含建立表單）都掛著——這正是桌面版與手機版整頁替換
+    // 的差異所在。
+    expect(screen.getByLabelText("標的代號")).toBeInTheDocument();
+
+    window.location.hash = "#/";
+    expect(await screen.findByText(/選擇左側的劇本/)).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /TLT 2028-05/ })).toBeInTheDocument();
   });
 });

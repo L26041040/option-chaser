@@ -91,11 +91,18 @@ body {
    詳細內容，約 20/80。斷點與 `App.tsx` 的 `DESKTOP_QUERY`
    （`window.matchMedia`）用同一個數字——那邊決定「掛載哪些元件」，
    這裡只是視覺排版，兩者必須一致，否則會出現「兩欄同時看得到」但
-   實際上其中一欄根本沒掛載內容的錯位。 */
-@media (min-width: 900px) {
+   實際上其中一欄根本沒掛載內容的錯位。
+
+   斷點選 1100px、下限選 220px 不是各自獨立取的整數：220 恰好是
+   1100 的 20%——`minmax(220px, 20%)` 在斷點這一端「下限」與「20%」
+   算出來的值相等，下限形同虛設，只在極端情況（例如使用者用瀏覽器
+   縮放把可視寬度誤判在斷點邊界附近）當一個不會生效的保險，不會像
+   選一個明顯更大的下限（例如 280px）那樣，在 1100～1400px 這段
+   常見桌面寬度上都被下限卡死、比例遠超過「約 20%」。 */
+@media (min-width: 1100px) {
   .workspace {
     display: grid;
-    grid-template-columns: minmax(280px, 20%) 1fr;
+    grid-template-columns: minmax(220px, 20%) 1fr;
     align-items: start;
     min-height: 100dvh;
   }

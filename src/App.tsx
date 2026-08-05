@@ -29,9 +29,12 @@ import {
 } from "./api";
 import { scenarioIdFromHash } from "./route";
 
-// 桌面／手機斷點——與 `styles.css` 的 `@media (min-width: 900px)` 同一個
+// 桌面／手機斷點——與 `styles.css` 的 `@media (min-width: 1100px)` 同一個
 // 數字，兩邊各自維護一份（CSS 沒辦法直接讀 JS 常數），改動時要一起改。
-const DESKTOP_QUERY = "(min-width: 900px)";
+// 1100 不是隨手取的：`styles.css` 的 20/80 版面下限（220px）恰好是
+// 1100 的 20%，斷點與下限彼此對齊，比例才會在整個桌面寬度範圍內都
+// 貼近「約 20%」，而不是被下限卡死在一個更寬的固定值上。
+const DESKTOP_QUERY = "(min-width: 1100px)";
 
 /**
  * 桌面版真正的 master/detail（#72）：桌面寬度下劇本庫常駐、詳細頁另開

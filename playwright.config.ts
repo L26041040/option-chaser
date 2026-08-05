@@ -9,6 +9,18 @@ import { defineConfig, devices } from "@playwright/test";
  * 明確覆寫成 chromium（本專案只保證 Chromium 可跑），只沿用它的視窗
  * 尺寸／DPR／touch／UA 等手機特性。
  */
+// 容器內無 user namespace、/dev/shm 偏小；沙箱/CI 預先安裝的 Chromium
+// （`PLAYWRIGHT_CHROMIUM_PATH`）版本編號未必與本專案 pin 的
+// `@playwright/test` 相符，有指定就用它，沒指定就走 Playwright 自帶的
+// 那份。兩個 project 都要這份設定，抽成一個共用值以免各自維護一份
+// 而悄悄長歪。
+const chromiumLaunchOptions = {
+  args: ["--no-sandbox", "--disable-dev-shm-usage"],
+  ...(process.env.PLAYWRIGHT_CHROMIUM_PATH
+    ? { executablePath: process.env.PLAYWRIGHT_CHROMIUM_PATH }
+    : {}),
+};
+
 export default defineConfig({
   testDir: "./e2e",
   fullyParallel: true,
@@ -26,21 +38,12 @@ export default defineConfig({
       use: {
         ...devices["iPhone 13"],
         browserName: "chromium",
-        launchOptions: {
-          // 容器內無 user namespace、/dev/shm 偏小
-          args: ["--no-sandbox", "--disable-dev-shm-usage"],
-          // 沙箱/CI 預先安裝的 Chromium（PLAYWRIGHT_CHROMIUM_PATH）版本編號
-          // 未必與本專案 pin 的 @playwright/test 相符；有指定就用它，
-          // 沒指定就走 Playwright 自帶的那份。
-          ...(process.env.PLAYWRIGHT_CHROMIUM_PATH
-            ? { executablePath: process.env.PLAYWRIGHT_CHROMIUM_PATH }
-            : {}),
-        },
+        launchOptions: chromiumLaunchOptions,
       },
     },
     {
       // 桌面版真正的 master/detail（#72）：寬度需跨過 `styles.css`／
-      // `App.tsx` 共用的 900px 斷點，才驗得到左庫右工作區的版面，
+      // `App.tsx` 共用的 1100px 斷點，才驗得到左庫右工作區的版面，
       // 不是手機那種整頁替換。只跑 `desktop.spec.ts`——其餘既有案例
       // 是手機版行為的假設（例如選劇本後建立表單應該不見），套用在
       // 這個寬螢幕專案上會誤判成迴歸。
@@ -50,12 +53,7 @@ export default defineConfig({
         ...devices["Desktop Chrome"],
         browserName: "chromium",
         viewport: { width: 1280, height: 800 },
-        launchOptions: {
-          args: ["--no-sandbox", "--disable-dev-shm-usage"],
-          ...(process.env.PLAYWRIGHT_CHROMIUM_PATH
-            ? { executablePath: process.env.PLAYWRIGHT_CHROMIUM_PATH }
-            : {}),
-        },
+        launchOptions: chromiumLaunchOptions,
       },
     },
   ],
