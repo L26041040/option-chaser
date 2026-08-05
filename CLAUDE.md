@@ -854,12 +854,17 @@ V9（#57）／V10（#58）亦已完結——全部票做完。** 下一步不是
   CSV 下載連結另外補上快取破壞參數（`rawDataCsvUrl` 新增選填
   `analyzedAt` 附成 `?t=...`）——那是靜態 `<a href>`，不受 React
   remount 保護，瀏覽器 HTTP 快取才是它真正的敵人。
-  ⚠ **TDD 抓到一個真的 React bug**：兩個元件一開始给了同一個 key 字串
+  ⚠ **TDD 抓到一個真的 React bug**：兩個元件一開始給了同一個 key 字串
   （`analyzedAt` 本身，未加前綴）——手足元素共用同一個 key 是未定義
   行為，React 會噴「key 重複」警告，且第一次紅燈測試在這個 bug 下呈現
   出詭異的間歇性失敗（remount 有時發生、有時沒有）。查出來是 key 碰撞
   後，兩個元件各自加上元件名前綴才穩定。這正是先寫測試、看紅燈長什麼
   樣的價值——如果只是先寫實作再補測試，這個 bug 很可能被漏掉
+  code-review 跟進：Spec 面抓到 AC2「主圖候選因新分析換掉時，歷史走勢
+  跟著換成新候選的序列」雖然程式碼上已經正確（`candidate`／`analyzedAt`
+  恆出自同一次 `getScenario` 回應，不可能單獨變），但沒有測試真的換過
+  候選身份鍵去驗證，補上一條用 `withTopCandidate({candidate_key:...})`
+  的回歸測試
 
 > ⚠ **沙箱 403 是 sandbox validation limitation，不是 production 的結論。**
 > 我原本把 #73 設計成「被 #67 擋，要靠部署版探針才能開始研究」，

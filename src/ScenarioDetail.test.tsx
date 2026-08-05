@@ -375,6 +375,35 @@ describe("進階區隨新分析失效，不混用新舊 cache（#69）", () => {
 
     expect(after).not.toBe(before);
   });
+
+  it("主圖候選因新分析換掉時，歷史走勢跟著換成新候選的序列（AC2）", async () => {
+    const originalKey = baselineTopCandidate(view)!.candidate_key;
+    const first = detail({ latest_analyzed_at: "2026-08-04T09:00:00+00:00" });
+    const second = detail({
+      latest_analyzed_at: "2026-08-04T10:00:00+00:00",
+      latest_result: withTopCandidate({ candidate_key: "different-candidate" }),
+    });
+    const { historyCalls, resolveSecond } = mockDetailSequence(first, second);
+
+    const { rerender } = render(<ScenarioDetail id="s1" refreshedAt={null} />);
+    await screen.findByText(/劇本主圖/);
+    await userEvent.click(screen.getByText("Spread 淨成本走勢"));
+    await screen.findByRole("img");
+    expect(historyCalls[0]).toContain(
+      `candidate_key=${encodeURIComponent(originalKey)}`);
+
+    rerender(<ScenarioDetail id="s1" refreshedAt="2026-08-04T10:00:00+00:00" />);
+    resolveSecond();
+    await waitFor(() => expect(screen.queryByRole("img")).not.toBeInTheDocument());
+
+    await userEvent.click(screen.getByText("Spread 淨成本走勢"));
+    await screen.findByRole("img");
+
+    // 換一輪之後再展開，帶的是新候選自己的身份鍵，不是沿用第一輪那個。
+    expect(historyCalls).toHaveLength(2);
+    expect(historyCalls[1]).toContain(
+      `candidate_key=${encodeURIComponent("different-candidate")}`);
+  });
 });
 
 describe("主圖的候選池警語（V6／#54 檢視回饋）", () => {
