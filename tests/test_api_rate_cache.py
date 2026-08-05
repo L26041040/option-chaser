@@ -157,3 +157,129 @@ def test_cache_survives_a_curve_round_trip_through_dict_serialization():
         AssertionError("不該再呼叫底層 loader")))(TODAY)
 
     assert curve == CURVE
+
+
+# ---------- 抓取失敗時沿用還沒過期的舊曲線（緊急備援窗） ----------
+
+def test_a_stale_but_recent_curve_is_preferred_over_falling_back_to_the_fixed_rate():
+    """舊曲線雖然過了 12 小時新鮮度窗，但還在 7 天緊急備援窗內、且這次
+    抓取失敗——優先沿用舊曲線，不平白蓋成 None（讓引擎退回固定 4%）。"""
+    storage = MemoryStorage()
+    storage.save_rate_cache(RateCacheEntry(
+        fetched_at=(datetime.now(timezone.utc) - timedelta(hours=13)).isoformat(
+            timespec="seconds"),
+        curve={"curve_date": "2026-08-01", "nodes": [[1.0, 0.03]]},
+        note="Treasury 曲線 2026-08-01"))
+
+    curve, note = cached_loader(
+        storage, lambda d: (None, "這次抓取失敗"))(TODAY)
+
+    assert curve == RateCurve(curve_date="2026-08-01", nodes=((1.0, 0.03),))
+    assert "Treasury 曲線 2026-08-01" in note
+    assert "這次抓取失敗" in note
+
+
+def test_falling_back_to_the_stale_curve_still_resets_the_freshness_clock():
+    """沿用舊曲線那個分支也要重設 `fetched_at`——否則下一個劇本進來時
+    同樣判定「該重抓了」，一輪刷新的 N 個劇本會把同一個失敗中的來源
+    打好幾次。"""
+    storage = MemoryStorage()
+    storage.save_rate_cache(RateCacheEntry(
+        fetched_at=(datetime.now(timezone.utc) - timedelta(hours=13)).isoformat(
+            timespec="seconds"),
+        curve={"curve_date": "2026-08-01", "nodes": [[1.0, 0.03]]},
+        note="Treasury 曲線 2026-08-01"))
+    calls = []
+
+    cached_loader(storage, _underlying(calls, curve=None,
+                                       note="這次抓取失敗"))(TODAY)
+    cached_loader(storage, _underlying(calls, curve=None,
+                                       note="不該被呼叫"))(TODAY)
+
+    assert len(calls) == 1
+
+
+def test_a_curve_older_than_the_emergency_fallback_window_is_not_reused():
+    """緊急備援窗也有極限——舊曲線超過 7 天，不再假裝它還貼近市場。"""
+    storage = MemoryStorage()
+    storage.save_rate_cache(RateCacheEntry(
+        fetched_at=(datetime.now(timezone.utc) - timedelta(days=8)).isoformat(
+            timespec="seconds"),
+        curve={"curve_date": "2026-07-28", "nodes": [[1.0, 0.03]]},
+        note="Treasury 曲線 2026-07-28"))
+
+    curve, note = cached_loader(
+        storage, lambda d: (None, "這次抓取失敗"))(TODAY)
+
+    assert curve is None
+    assert note == "這次抓取失敗"
+
+
+def test_no_prior_curve_at_all_falls_straight_through_to_the_failure_note():
+    storage = MemoryStorage()
+
+    curve, note = cached_loader(
+        storage, lambda d: (None, "這次抓取失敗"))(TODAY)
+
+    assert curve is None
+    assert note == "這次抓取失敗"
+
+
+# ---------- `/api/health` 的「最後一次成功」獨立於最近一次嘗試 ----------
+
+def test_a_successful_fetch_records_when_it_succeeded():
+    storage = MemoryStorage()
+
+    cached_loader(storage, _underlying([]))(TODAY)
+
+    assert storage.get_rate_cache().last_success_at is not None
+
+
+def test_last_success_at_survives_a_subsequent_failure():
+    storage = MemoryStorage()
+    cached_loader(storage, _underlying([]))(TODAY)
+    first_success_at = storage.get_rate_cache().last_success_at
+    # 把這筆快取推到失敗窗（5 分鐘）之外，逼下一次呼叫真的再打一次底層。
+    storage.save_rate_cache(RateCacheEntry(
+        fetched_at=(datetime.now(timezone.utc) - timedelta(hours=13)).isoformat(
+            timespec="seconds"),
+        curve=storage.get_rate_cache().curve,
+        note=storage.get_rate_cache().note,
+        last_success_at=first_success_at))
+
+    cached_loader(storage, lambda d: (None, "這次失敗了"))(TODAY)
+
+    assert storage.get_rate_cache().last_success_at == first_success_at
+
+
+def test_last_success_at_survives_even_past_the_emergency_fallback_window():
+    """就算舊曲線久到連緊急備援都不再沿用，「最後一次成功的時間」這個
+    事實仍然不能被抹掉。"""
+    storage = MemoryStorage()
+    old_success = (datetime.now(timezone.utc) - timedelta(days=8)).isoformat(
+        timespec="seconds")
+    storage.save_rate_cache(RateCacheEntry(
+        fetched_at=old_success,
+        curve={"curve_date": "2026-07-28", "nodes": [[1.0, 0.03]]},
+        note="Treasury 曲線 2026-07-28", last_success_at=old_success))
+
+    curve, note = cached_loader(storage, lambda d: (None, "曲線不可得"))(TODAY)
+
+    assert curve is None
+    assert storage.get_rate_cache().last_success_at == old_success
+
+
+def test_underlying_provider_raising_instead_of_returning_a_failure_tuple_is_tolerated():
+    """#74 換源後，未來的 provider 若沒規規矩矩回傳 (None, note) 而是直接
+    拋例外，不該讓整條分析路徑跟著炸成 500。"""
+    storage = MemoryStorage()
+
+    def broken(d):
+        raise RuntimeError("provider 自己的 bug")
+
+    curve, note = cached_loader(storage, broken)(TODAY)
+
+    assert curve is None
+    assert "provider 自己的 bug" in note
+    cached = storage.get_rate_cache()
+    assert cached is not None and cached.curve is None

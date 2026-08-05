@@ -55,11 +55,20 @@ class RateCacheEntry:
     """利率曲線快取的一筆狀態（#67）——單一一筆、每次寫入即覆蓋，跨
     serverless 呼叫共用同一條曲線，也是 `/api/health` 運維診斷的資料
     來源。`curve` 是 `option_chaser.ratecurve.curve_to_dict()` 的輸出、
-    取得失敗時為 `None`；`note` 兩種情況都要有——成功時說明來源與日期，
-    失敗時說明原因，兩者都是「最近一次嘗試發生了什麼」的紀錄。"""
+    目前沒有堪用曲線時為 `None`（見 `api_app.rate_cache` 的緊急備援窗
+    邏輯——抓取失敗但舊曲線還沒過期時會沿用它，`curve` 因此不是簡單
+    對應「這次嘗試有沒有成功」）；`note` 說明 `curve` 這個值的來龍去脈
+    （成功來源與日期，或沿用舊曲線的原因，或純粹失敗的原因）。
+
+    `last_success_at` 獨立於以上兩者：只在**真正成功**時前進，之後無論
+    連續失敗多少次、或失敗久到超過緊急備援窗（`curve` 因此變回
+    `None`），這個時間戳都不會被覆蓋掉——`/api/health` 靠它回答「最後
+    一次成功取得利率曲線是什麼時候」，不會因為最近剛好在失敗就答不
+    出來。"""
     fetched_at: str          # 這筆狀態寫入的時間（ISO），不是曲線本身的日期
     curve: dict | None
     note: str
+    last_success_at: str | None = None
 
 
 class Storage(Protocol):

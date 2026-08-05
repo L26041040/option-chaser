@@ -94,6 +94,7 @@ def test_rate_status_is_visible_on_health_for_ops_diagnosis():
     assert body["rate"]["note"] == "Treasury 曲線 2026-07-15"
     assert body["rate"]["ok"] is True
     assert body["rate"]["fetched_at"]
+    assert body["rate"]["last_success_at"]
 
 
 def test_rate_status_reflects_a_failure_too():
@@ -103,6 +104,8 @@ def test_rate_status_reflects_a_failure_too():
     body = client.get("/api/health").json()
     assert body["rate"]["ok"] is False
     assert body["rate"]["note"] == "曲線不可得"
+    # 從沒成功過——不能因為剛好在失敗就編出一個時間
+    assert body["rate"]["last_success_at"] is None
 
 
 def test_rate_status_before_any_analysis_says_so():

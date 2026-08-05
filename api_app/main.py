@@ -261,7 +261,8 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
             entry = _db().get_rate_cache()
             if entry is not None:
                 rate = {"fetched_at": entry.fetched_at,
-                       "ok": entry.curve is not None, "note": entry.note}
+                       "ok": entry.curve is not None, "note": entry.note,
+                       "last_success_at": entry.last_success_at}
         except Exception:  # noqa: BLE001 — 同上，本端點的用途就是連不上也要能回答
             pass
         return {"status": "ok", "engine_version": __version__,

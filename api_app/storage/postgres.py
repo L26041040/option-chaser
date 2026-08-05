@@ -62,10 +62,11 @@ CREATE INDEX IF NOT EXISTS events_scenario_idx ON events (scenario_id, seq);
 -- 利率曲線快取（#67）：單一一筆狀態，不是歷史序列——`id` 固定為 1，
 -- `CHECK` 讓「只有一列」在資料庫層面成立，不只是應用層的約定。
 CREATE TABLE IF NOT EXISTS rate_cache (
-    id            INTEGER PRIMARY KEY DEFAULT 1,
-    fetched_at    TEXT NOT NULL,
-    curve         JSONB,
-    note          TEXT NOT NULL,
+    id                INTEGER PRIMARY KEY DEFAULT 1,
+    fetched_at        TEXT NOT NULL,
+    curve             JSONB,
+    note              TEXT NOT NULL,
+    last_success_at   TEXT,
     CHECK (id = 1)
 );
 """
@@ -78,6 +79,7 @@ _MIGRATIONS = """
 ALTER TABLE results ADD COLUMN IF NOT EXISTS best_return DOUBLE PRECISION;
 ALTER TABLE scenarios ADD COLUMN IF NOT EXISTS best_price DOUBLE PRECISION;
 ALTER TABLE scenarios ADD COLUMN IF NOT EXISTS worst_price DOUBLE PRECISION;
+ALTER TABLE rate_cache ADD COLUMN IF NOT EXISTS last_success_at TEXT;
 """
 
 # 冷啟動競爭下的良性錯誤：別人已經建好／加好了。
@@ -254,17 +256,19 @@ class PostgresStorage:
     def get_rate_cache(self) -> RateCacheEntry | None:
         with self._connect() as conn:
             row = conn.execute(
-                "SELECT fetched_at, curve, note FROM rate_cache "
+                "SELECT fetched_at, curve, note, last_success_at FROM rate_cache "
                 "WHERE id = 1").fetchone()
-        return RateCacheEntry(fetched_at=row[0], curve=row[1], note=row[2]) if row else None
+        return (RateCacheEntry(fetched_at=row[0], curve=row[1], note=row[2],
+                               last_success_at=row[3])
+                if row else None)
 
     def save_rate_cache(self, entry: RateCacheEntry) -> None:
         with self._connect() as conn:
             conn.execute(
-                "INSERT INTO rate_cache (id, fetched_at, curve, note) "
-                "VALUES (1, %s, %s, %s) "
+                "INSERT INTO rate_cache (id, fetched_at, curve, note, last_success_at) "
+                "VALUES (1, %s, %s, %s, %s) "
                 "ON CONFLICT (id) DO UPDATE "
                 "SET fetched_at = EXCLUDED.fetched_at, curve = EXCLUDED.curve, "
-                "note = EXCLUDED.note",
+                "note = EXCLUDED.note, last_success_at = EXCLUDED.last_success_at",
                 (entry.fetched_at, Jsonb(entry.curve) if entry.curve is not None else None,
-                 entry.note))
+                 entry.note, entry.last_success_at))
