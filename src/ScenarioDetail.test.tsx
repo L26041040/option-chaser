@@ -229,6 +229,29 @@ describe("詳細頁刷新入口（#70）", () => {
     await screen.findByText(/劇本主圖/);
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
+
+  it("已過期的劇本：刷新按鈕停用並顯示與劇本庫一致的文案（#68 既有語彙）", async () => {
+    mockDetail(detail({ expired: true }));
+    render(<ScenarioDetail id="s1" />);
+
+    const button = await screen.findByRole("button", { name: "已過期，不再刷新" });
+    expect(button).toBeDisabled();
+  });
+
+  it("已過期的劇本即使帶著舊的失敗紀錄，也不顯示重試——" +
+     "兩種狀態同時出現會讓使用者搞不清楚現在是哪一種（比照 ScenarioList）", async () => {
+    mockDetail(detail({ expired: true }));
+    render(
+      <ScenarioDetail
+        id="s1"
+        failure={{ stage: "fetch", message: "抓不到報價" }}
+      />,
+    );
+
+    await screen.findByRole("button", { name: "已過期，不再刷新" });
+    expect(screen.queryByText(/抓不到報價/)).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "重試" })).not.toBeInTheDocument();
+  });
 });
 
 describe("主圖的候選池警語（V6／#54 檢視回饋）", () => {

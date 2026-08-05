@@ -257,16 +257,21 @@ export default function ScenarioDetail({
         <div className="toolbar-row">
           <h1 className="toolbar-title">{detail?.symbol ?? "劇本"}</h1>
           {/* #70：與劇本庫功能列同一個視覺語言（標題列右側膠囊鈕），
-              走 App 既有的那條刷新佇列——不是第四種獨立管道。 */}
-          <button className="pill" onClick={onRefresh} disabled={busy}>
-            {busy ? "刷新中……" : "重新整理"}
+              走 App 既有的那條刷新佇列——不是第四種獨立管道。已過期
+              （#68）沿用清單卡片同一句文案並停用——後端會把它當無害
+              no-op，按了等於沒按，不該讓它看起來還有用。 */}
+          <button className="pill" onClick={onRefresh}
+                 disabled={busy || detail?.expired}>
+            {detail?.expired ? "已過期，不再刷新" : busy ? "刷新中……" : "重新整理"}
           </button>
         </div>
       </header>
 
       {/* 上次刷新失敗時沿用劇本庫卡片同一套分層指引與就地重試
-          （V4／#52 既有語彙），不是重新發明一套說法。 */}
-      {failure && (
+          （V4／#52 既有語彙），不是重新發明一套說法。已過期優先於刷新
+          失敗（#68 既有判斷）：兩種狀態同時出現會讓使用者搞不清楚現在
+          是哪一種。 */}
+      {failure && !detail?.expired && (
         <div className="notice error" role="alert">
           <div className="row-value">{failureLabel(failure.stage)}</div>
           <p className="caption">{failure.message}</p>
