@@ -609,7 +609,10 @@ body {
   opacity: 0.6;
 }
 
-.chip.selected {
+/* `.month-cell.selected`（#71）共用同一組選定態填色——兩者都是「一顆
+   按鈕，選定時實心填色」，沒有理由各寫一份。 */
+.chip.selected,
+.month-cell.selected {
   background: var(--tint);
   color: #fff;
 }
@@ -954,13 +957,13 @@ body {
   cursor: pointer;
 }
 
-.month-cell.selected {
-  background: var(--tint);
-  color: #fff;
-}
-
-/* 當月的 current state：淡色外框，跟「已選定」的實心填色分開，兩者
-   可能同時成立（選到的正好是這個月）。 */
+/* 當月的 current state：粗外框＋粗體字，跟「已選定」的實心填色分開，
+   兩者可能同時成立（選到的正好是這個月）——刻意不動 `color`，選定時
+   `.selected` 的白字要原封不動生效，兩條規則同時命中 `color` 的話會
+   變成靠寫在後面那條決勝，讀者看不出來是刻意的。單純外框＋粗體在原本
+   的細邊框上不夠醒目，加粗到 1.5px 才看得出跟一般月份不一樣。 */
 .month-cell[aria-current="date"] {
+  border-width: 1.5px;
   border-color: var(--tint);
+  font-weight: 700;
 }

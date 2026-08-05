@@ -235,7 +235,10 @@ export default function App() {
         // 走同一條佇列，不會與進行中的那一輪搶資料源。
         onRetry={(id) => void enqueue([id])}
       />
-      <CreateForm onCreate={create} busy={busy} />
+      {/* 年月選擇器（#71）的「今年」／「本月」跟全站同一個時鐘——
+          不讓它自己另外算一次 `new Date()`，那樣會跟 `ScenarioList`
+          的新鮮度判斷用著兩個不同步的「現在」。 */}
+      <CreateForm onCreate={create} busy={busy} today={now} />
     </div>
   );
 }

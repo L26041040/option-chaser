@@ -882,6 +882,15 @@ V9（#57）／V10（#58）亦已完結——全部票做完。** 下一步不是
   `validateDraft` 的年月格式檢查原封不動保留——UI 現在雖然只會產生
   合法格式，但那條規則是獨立測試、公開匯出的純函式契約，不是只服務
   這個 UI。App.tsx／e2e 兩處既有的「打字進年月欄位」測試改成點選互動。
+  code-review 跟進三項：(1) Standards 面抓到 `today` 沒有接上 App 既有
+  的單一時鐘（`ScenarioList` 的 `now`），一律各自 `new Date()`——`App.tsx`
+  補上 `today={now}`；(2) `.month-cell.selected` 與既有 `.chip.selected`
+  逐字重複，合併成同一組選擇器；(3) Spec 面抓到 `MonthPicker` 包在
+  `<label>` 裡是無效巢狀（`<label>` 內容模型只收 phrasing content，
+  `<div>` 根節點不合格）——改用 `aria-labelledby` 指向獨立的
+  `<span id=...>`，且當月的 `aria-current` 視覺提示原本只有 0.5px
+  外框改色太淡，加粗到 1.5px＋粗體字
+
 > 我原本把 #73 設計成「被 #67 擋，要靠部署版探針才能開始研究」，
 > **需求方 2026-08-05 否決，理由成立**：沙箱閘道擋掉某些網域，不等於
 > Vercel 不能對外聯網——production 本來就穩定抓得到 Yahoo／Cboe，

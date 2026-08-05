@@ -149,11 +149,19 @@ function YearInput({ year, onChange }: {
  * 年份→下一年→1 月…12 月→下一個表單欄位，不必用 `useEffect` 搬焦點。
  * 選定或再次點欄位本身都會收合；選定後把焦點還給切換鈕，鍵盤使用者
  * 才不會在元素被卸載後掉到 `<body>`，得從頁面最上方重新 Tab 一次。
+ *
+ * 標籤走 `aria-labelledby`，不是其他三個欄位那種 `<label>` 隱式包裹：
+ * `<label>` 的內容模型只收 phrasing content（外加最多一個 labelable
+ * 子元素），這個元件的根節點與展開面板都是 `<div>`（flow content），
+ * 包在 `<label>` 裡是無效巢狀——瀏覽器會寬鬆處理、`getByLabelText` 也
+ * 照樣找得到，但驗證器與 axe 這類工具會標記出來，「正確的可及性語意」
+ * 不該只靠寬鬆容錯撐過去。
  */
-function MonthPicker({ value, onChange, today }: {
+function MonthPicker({ value, onChange, today, labelId }: {
   value: string;
   onChange: (month: string) => void;
   today: Date;
+  labelId: string;
 }) {
   const [open, setOpen] = useState(false);
   const [displayYear, setDisplayYear] = useState(today.getFullYear());
@@ -187,6 +195,7 @@ function MonthPicker({ value, onChange, today }: {
         onClick={toggle}
         aria-expanded={open}
         aria-controls={panelId}
+        aria-labelledby={labelId}
       >
         {value || <span className="muted">20xx-xx</span>}
       </button>
@@ -251,6 +260,7 @@ export default function CreateForm({
   const [best, setBest] = useState("");
   const [worst, setWorst] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const monthLabelId = useId();
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -300,10 +310,14 @@ export default function CreateForm({
         />
       </label>
 
-      <label className="field">
-        <span className="row-label">目標年月</span>
-        <MonthPicker value={month} onChange={setMonth} today={today} />
-      </label>
+      {/* 不是 `<label>` 隱式包裹——理由見 `MonthPicker` 上方的說明
+          （`<label>` 只收 phrasing content，這個元件的 `<div>` 根節點
+          不合格）。改用 `aria-labelledby` 指向這個 `<span>` 的 id。 */}
+      <div className="field">
+        <span className="row-label" id={monthLabelId}>目標年月</span>
+        <MonthPicker value={month} onChange={setMonth} today={today}
+                     labelId={monthLabelId} />
+      </div>
 
       {/* V7（#55）劇本區間兩端：選填，擺在三個必填欄位之後——它們是
           「除了比較最高，還能比較最低」的加分項，不該擋在主流程前面。 */}
