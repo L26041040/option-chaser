@@ -932,13 +932,26 @@ V9（#57）／V10（#58）亦已完結——全部票做完。** 下一步不是
   只能靠跨呼叫的持久層達成，不是行程內批次）。快取讀寫失敗一律視同
   沒有快取／不影響本次分析（比照 `option_chaser/data/treasury.py`
   既有「快取寫不進去不影響本次分析」的哲學，套用在這個新的持久層
-  上）。`/api/health` 新增 `rate` 欄位（`fetched_at`／`ok`／`note`）
-  供運維診斷。契約樣本因為利率從固定 4% 換成真實期限對齊而全面重產
-  （Greeks／情境報酬等下游數字隨之變動，非結構性變更）；
-  `scripts/gen_contract_sample.py` 與 `tests/test_api_analyze.py`
+  上）。`/api/health` 新增 `rate` 欄位（`fetched_at`／`ok`／`note`／
+  `last_success_at`）供運維診斷。契約樣本因為利率從固定 4% 換成真實
+  期限對齊而全面重產（Greeks／情境報酬等下游數字隨之變動，非結構性
+  變更）；`scripts/gen_contract_sample.py` 與 `tests/test_api_analyze.py`
   的契約比對測試都改注入固定假曲線，不再依賴當下網路能不能連到
   Treasury。開發環境用沙箱內建的 PostgreSQL 16 對真資料庫（不只
   記憶體假體）驗證過 Postgres adapter。
+  code-review 跟進（commit `428f210`）：(1) 抓取失敗時原本直接蓋成
+  `None`（退回引擎固定 4%），未沿用快取內還沒過期的舊曲線，與
+  `treasury.py` 既定行為不一致——新增 `_STALE_FALLBACK_MAX_AGE`（7 天，
+  同 `treasury.py` 既有窗口），失敗時優先沿用還沒過期的舊曲線並在
+  `note` 誠實標出「沿用快取」；(2) `RateCacheEntry` 單列覆蓋式儲存，
+  一旦抓取失敗就答不出「最後一次成功是什麼時候」——新增
+  `last_success_at`，只在真正成功時前進，失敗（含沿用舊曲線分支）
+  一律沿用前一次的值，Postgres schema／SQL 同步更新（新欄位走
+  `_MIGRATIONS` 而非只加進 `_SCHEMA`——本機真實 Postgres 已建過舊表，
+  重現了「表已存在、需要 ALTER」的正式環境情境）；(3) `underlying(today)`
+  原本沒有 try/except，未來 #74 換源後 provider 若直接拋例外會讓整條
+  分析路徑炸成 500——收斂成跟 provider 自報失敗同一種形狀。新增 8 條
+  TDD 測試涵蓋以上三點。
 
 > 我原本把 #73 設計成「被 #67 擋，要靠部署版探針才能開始研究」，
 > **需求方 2026-08-05 否決，理由成立**：沙箱閘道擋掉某些網域，不等於
