@@ -23,12 +23,13 @@ import {
   primaryResult,
   type AnalysisView,
   type Candidate,
+  type RefreshFailure,
   type ScenarioDetail as Detail,
 } from "./api";
 import { candidateTitle, catchupView, formatMove, priceLadderView,
          strategyLabel } from "./detail";
 import { isThinPool, validPairsForExpiry } from "./expiry";
-import { formatAnalyzedAt, formatReturn, money } from "./scenarios";
+import { failureLabel, formatAnalyzedAt, formatReturn, money } from "./scenarios";
 
 function Row({ label, children }: { label: string; children: React.ReactNode }) {
   return (
@@ -204,6 +205,9 @@ function DetailBody({ scenarioId, view, analyzedAt }: {
 export default function ScenarioDetail({
   id,
   refreshedAt = null,
+  busy = false,
+  failure,
+  onRefresh = () => {},
 }: {
   id: string;
   /**
@@ -212,6 +216,16 @@ export default function ScenarioDetail({
    * 前的那份快照上：詳細頁沒有功能列、也沒有第四種刷新管道可按。
    */
   refreshedAt?: string | null;
+  /**
+   * 詳細頁刷新入口（#70）：三者皆由 `App` 傳入，直接就是它既有的全域
+   * 刷新狀態與那條唯一佇列——不在這裡另開一條刷新管道。`busy` 沿用
+   * `Toolbar` 同一個判準（`progress !== null`，任何刷新進行中都算），
+   * 不是「只有這個劇本在跑」才算忙碌：一條佇列、一個跑者，重複觸發
+   * 只會讓同一個劇本排兩次。
+   */
+  busy?: boolean;
+  failure?: RefreshFailure;
+  onRefresh?: () => void;
 }) {
   const [detail, setDetail] = useState<Detail | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -240,8 +254,27 @@ export default function ScenarioDetail({
             ‹ 劇本庫
           </a>
         </div>
-        <h1 className="toolbar-title">{detail?.symbol ?? "劇本"}</h1>
+        <div className="toolbar-row">
+          <h1 className="toolbar-title">{detail?.symbol ?? "劇本"}</h1>
+          {/* #70：與劇本庫功能列同一個視覺語言（標題列右側膠囊鈕），
+              走 App 既有的那條刷新佇列——不是第四種獨立管道。 */}
+          <button className="pill" onClick={onRefresh} disabled={busy}>
+            {busy ? "刷新中……" : "重新整理"}
+          </button>
+        </div>
       </header>
+
+      {/* 上次刷新失敗時沿用劇本庫卡片同一套分層指引與就地重試
+          （V4／#52 既有語彙），不是重新發明一套說法。 */}
+      {failure && (
+        <div className="notice error" role="alert">
+          <div className="row-value">{failureLabel(failure.stage)}</div>
+          <p className="caption">{failure.message}</p>
+          <button className="text-button" onClick={onRefresh}>
+            重試
+          </button>
+        </div>
+      )}
 
       {error && (
         <div className="notice error" role="alert">

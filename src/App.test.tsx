@@ -8,7 +8,7 @@
  * 只測外部行為（畫面呈現什麼、失敗時說什麼），不測實作細節。
  * 詳細頁本身的測試在 `ScenarioDetail.test.tsx`。
  */
-import { render, screen, within } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -508,6 +508,77 @@ describe("建立與刷新同時發生（V4／#52 檢視回饋）", () => {
 
     expect(await screen.findByText("30.0%")).toBeInTheDocument();
     expect(screen.getByText("200.0%")).toBeInTheDocument();
+  });
+});
+
+describe("詳細頁刷新入口與劇本庫共用同一條佇列（#70）", () => {
+  const row = {
+    ...(sampleRow as unknown as Record<string, unknown>),
+    id: "s1", symbol: "TLT", target_price: 120, target_month: "2028-05",
+    latest_analyzed_at: "2026-08-04T09:30:00+00:00", best_return: 1.5,
+    target_anchor: "2028-05-19", days_to_anchor: 653, expired: false,
+  };
+
+  afterEach(() => { window.location.hash = ""; });
+
+  it("在詳細頁按刷新，打的是同一個劇本的 refresh 端點", async () => {
+    // 開站本身也會自動刷新這唯一的劇本一次——這條測試要驗的是「按鈕
+    // 點擊本身」有沒有另外觸發一次，所以要先等開站那輪跑完，再比對
+    // 點擊前後的呼叫次數，不能只看「有沒有打過 /refresh」（那樣點不
+    // 點都會通過）。
+    window.location.hash = "#/s/s1";
+    const refreshCalls: string[] = [];
+    const spy = vi.fn(async (url: string) => {
+      if (url === "/api/scenarios") {
+        return { ok: true, status: 200, json: async () => [row] };
+      }
+      if (url === "/api/scenarios/s1") {
+        return { ok: true, status: 200, json: async () => ({ ...row, latest_result: null }) };
+      }
+      if (url.endsWith("/s1/refresh")) {
+        refreshCalls.push(url);
+        return { ok: true, status: 200, json: async () => ({
+          ...row, best_return: 9.9, latest_analyzed_at: "2026-08-04T10:00:00+00:00" }) };
+      }
+      throw new Error(`測試沒有為 ${url} 準備回應`);
+    });
+    vi.stubGlobal("fetch", spy);
+    render(<App />);
+
+    // 開站那輪跑完＝按鈕從「刷新中……」變回可按
+    await screen.findByRole("button", { name: "重新整理" });
+    const before = refreshCalls.length;
+
+    await userEvent.click(screen.getByRole("button", { name: "重新整理" }));
+
+    await waitFor(() => expect(refreshCalls.length).toBe(before + 1));
+  });
+
+  it("批次刷新進行中，詳細頁的刷新按鈕也停用——同一條忙碌狀態", async () => {
+    window.location.hash = "#/s/s1";
+    let releaseRefresh: (() => void) | null = null;
+    const spy = vi.fn(async (url: string) => {
+      if (url === "/api/scenarios") {
+        return { ok: true, status: 200, json: async () => [row] };
+      }
+      if (url === "/api/scenarios/s1") {
+        return { ok: true, status: 200, json: async () => ({ ...row, latest_result: null }) };
+      }
+      if (url.endsWith("/s1/refresh")) {
+        await new Promise<void>((resolve) => { releaseRefresh = resolve; });
+        return { ok: true, status: 200, json: async () => row };
+      }
+      throw new Error(`測試沒有為 ${url} 準備回應`);
+    });
+    vi.stubGlobal("fetch", spy);
+    render(<App />);
+
+    // 開站那輪刷新正在跑（s1 是清單裡唯一的劇本，卡在 refresh 半路）
+    expect(await screen.findByRole("button", { name: "刷新中……" })).toBeDisabled();
+
+    releaseRefresh!();
+    // 讓那一趟真的跑完再結束測試，不留一個未 act 包裹的狀態更新在後頭
+    expect(await screen.findByRole("button", { name: "重新整理" })).toBeEnabled();
   });
 });
 

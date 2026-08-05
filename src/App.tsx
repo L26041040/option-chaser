@@ -201,6 +201,12 @@ export default function App() {
       <ScenarioDetail
         id={detailId}
         refreshedAt={rows.find((r) => r.id === detailId)?.latest_analyzed_at ?? null}
+        // #70：詳細頁的刷新走 App 既有的那條單一佇列——`busy` 沿用
+        // `Toolbar` 同一個判準（任何刷新進行中都算），`onRefresh` 就是
+        // `enqueue([這個劇本])`，不是另開一條管道。
+        busy={progress !== null}
+        failure={failures[detailId]}
+        onRefresh={() => void enqueue([detailId])}
       />
     );
   }

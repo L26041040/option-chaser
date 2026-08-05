@@ -177,6 +177,60 @@ describe("刷新完成後詳細頁跟著更新（V5／#53 檢視回饋）", () =
   });
 });
 
+describe("詳細頁刷新入口（#70）", () => {
+  it("有明確的刷新按鈕，位置與劇本庫一致（標題列右側膠囊鈕）", async () => {
+    mockDetail(detail());
+    render(<ScenarioDetail id="s1" />);
+
+    expect(await screen.findByRole("button", { name: "重新整理" }))
+      .toBeInTheDocument();
+  });
+
+  it("點擊呼叫傳入的 onRefresh，且只帶這個劇本的身分（呼叫端決定範圍）", async () => {
+    mockDetail(detail());
+    const onRefresh = vi.fn();
+    render(<ScenarioDetail id="s1" onRefresh={onRefresh} />);
+
+    await userEvent.click(await screen.findByRole("button", { name: "重新整理" }));
+
+    expect(onRefresh).toHaveBeenCalledTimes(1);
+  });
+
+  it("刷新進行中按鈕停用並顯示忙碌文字，不能重複觸發", async () => {
+    mockDetail(detail());
+    render(<ScenarioDetail id="s1" busy />);
+
+    expect(await screen.findByRole("button", { name: "刷新中……" }))
+      .toBeDisabled();
+  });
+
+  it("失敗時顯示分層指引，重試按鈕也走同一個 onRefresh", async () => {
+    mockDetail(detail());
+    const onRefresh = vi.fn();
+    render(
+      <ScenarioDetail
+        id="s1"
+        onRefresh={onRefresh}
+        failure={{ stage: "fetch", message: "抓不到 XYZ 的報價：來源無回應" }}
+      />,
+    );
+
+    expect(await screen.findByText(/抓不到報價/)).toBeInTheDocument();
+    expect(screen.getByText(/來源無回應/)).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "重試" }));
+    expect(onRefresh).toHaveBeenCalledTimes(1);
+  });
+
+  it("沒有失敗紀錄時不顯示失敗提示", async () => {
+    mockDetail(detail());
+    render(<ScenarioDetail id="s1" />);
+
+    await screen.findByText(/劇本主圖/);
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+});
+
 describe("主圖的候選池警語（V6／#54 檢視回饋）", () => {
   it("警語跟著主圖走，不會因為把清單切到別期就消失", async () => {
     // 主圖固定是 baseline 期第 1 名。警語只掛在下面那份會切換的清單上

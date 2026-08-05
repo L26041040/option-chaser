@@ -812,7 +812,6 @@ V9（#57）／V10（#58）亦已完結——全部票做完。** 下一步不是
 
 - **#67** 利率：接線、fallback 與狀態語意（provider 無關）←
 - **#69** 進階區資料隨新分析失效，不得混用新舊 cache ←
-- **#70** 詳細頁補上刷新入口 ←
 - **#71** 自製年月選擇器 ←
 - **#72** 桌面版真正的 master/detail ←
 - **#73** Research：公開利率資料源評選（不預設 Treasury）←
@@ -832,6 +831,17 @@ V9（#57）／V10（#58）亦已完結——全部票做完。** 下一步不是
   `workspace.card_of` 的既有優先序判斷（紅燈優先於黃燈）：已過期時
   蓋掉刷新失敗的提示與重試鈕，避免同一張卡同時出現兩種互相矛盾的
   狀態。契約樣本 `contracts/scenario_row_sample.json` 隨之重產。
+  code-review 跟進：`api_app/main.py` 三處重複的「取最新結果摘要」
+  收斂成 `_summary_of()`
+- **#70** 詳細頁補上刷新入口——查證 §A.2「Long Call 沒跟著刷新」在
+  程式碼上不可能發生（同一次分析、同一份快照、純 props），不開修復票；
+  真缺口是詳細頁一個操作都沒有。`ScenarioDetail` 新增刷新入口，三個
+  props（`busy`／`failure`／`onRefresh`）全部由 `App` 傳入、直接對接
+  既有的那條單一佇列與 `failures` map——`busy` 沿用 `Toolbar` 同一個
+  「任何刷新進行中」判準（不是新開一個「只有這個劇本」的追蹤），
+  `onRefresh` 就是 `enqueue([這個劇本])`，`ScenarioDetail` 自己不發起
+  任何網路請求。視覺語言與既有兩處一致：標題列右側膠囊鈕仿
+  `Toolbar`，失敗提示＋重試鈕仿 `ScenarioList` 的卡片失敗區塊。
 
 > ⚠ **沙箱 403 是 sandbox validation limitation，不是 production 的結論。**
 > 我原本把 #73 設計成「被 #67 擋，要靠部署版探針才能開始研究」，
