@@ -251,6 +251,34 @@ def test_days_left_goes_negative_rather_than_clamping_to_zero():
     assert row["days_to_anchor"] < 0
 
 
+# ---------- 過期劇本標記（#68） ----------
+#
+# 「過期」在這裡指目標月**最後一天已過完**（`timeframe.month_is_over`），
+# 與 `days_to_anchor`（距日曆錨點的天數，可能提早轉負）是兩個不同的
+# 判準——前者才是拿來擋批次刷新的那個（見 test_api_refresh.py）。
+
+
+def test_a_scenario_with_a_month_already_over_is_marked_expired():
+    from api_app.storage import Scenario as StoredScenario
+
+    storage = MemoryStorage()
+    storage.create_scenario(StoredScenario(
+        id="old", symbol="XYZ", direction="bullish", target_price=130.0,
+        target_month="2020-01", notes="", strategies=("bull-call-spread",),
+        created_at="2019-06-01T00:00:00+00:00"))
+    row = _client(storage).get("/api/scenarios").json()[0]
+
+    assert row["expired"] is True
+
+
+def test_a_scenario_with_a_month_still_open_is_not_marked_expired():
+    client = _client()
+    _create(client)
+    row = client.get("/api/scenarios").json()[0]
+
+    assert row["expired"] is False
+
+
 def test_create_returns_the_same_shape_as_a_list_row():
     """建立後前端要能直接把回傳值放進清單。回傳一個少了欄位的變體，
     客戶端就得為「剛建立的」與「列出來的」維護兩種型別。"""

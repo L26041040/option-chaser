@@ -366,6 +366,92 @@ describe("刷新與進度（V4／#52）", () => {
   });
 });
 
+describe("過期劇本不再進入批次刷新（#68）", () => {
+  const base = sampleRow as unknown as Record<string, unknown>;
+  const card = (id: string, symbol: string, extra: Record<string, unknown> = {}) => ({
+    ...base, id, symbol, target_price: 120, target_month: "2020-01",
+    target_anchor: "2020-01-17", days_to_anchor: -2000,
+    latest_analyzed_at: null, best_return: null, ...extra,
+  });
+
+  it("開站批次刷新跳過已過期的劇本，分母也不算它", async () => {
+    const spy = mockLibrary(
+      [card("s1", "OLD", { expired: true }), card("s2", "SPY", {
+        target_month: "2028-05", expired: false })],
+      async (id) => ok(card(id, "SPY", {
+        target_month: "2028-05", expired: false,
+        best_return: 0.5, latest_analyzed_at: new Date().toISOString() })),
+    );
+    render(<App />);
+
+    expect(await screen.findByText("50.0%")).toBeInTheDocument();
+    // 過期的那個從沒被排進去——佇列只跑了 s2
+    expect(refreshCalls(spy)).toEqual(["s2"]);
+  });
+
+  it("已過期的劇本顯示標記，且不落在「尚未分析」的樣子上", async () => {
+    mockLibrary([card("s1", "OLD", { expired: true })], async () => ok({}));
+    render(<App />);
+
+    expect(await screen.findByText("已過期，不再刷新")).toBeInTheDocument();
+    expect(screen.queryByText("尚未分析")).toBeInTheDocument();  // 沒分析過，兩件事並存
+  });
+
+  it("建立劇本後刷新，清單裡既有的過期劇本不會被排進那一輪", async () => {
+    const created = card("s2", "SPY", { target_month: "2028-05", expired: false,
+                                        latest_analyzed_at: null, best_return: null });
+    const spy = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url === "/api/scenarios" && init?.method === "POST") {
+        return { ok: true, status: 201, json: async () => created };
+      }
+      if (url === "/api/scenarios") {
+        return { ok: true, status: 200, json: async () => [card("s1", "OLD", { expired: true })] };
+      }
+      if (url.endsWith("/refresh")) {
+        const id = url.split("/").at(-2);
+        if (id === "s1") throw new Error("過期劇本不該被刷新");
+        return { ok: true, status: 200, json: async () => created };
+      }
+      throw new Error(`測試沒有為 ${url} 準備回應`);
+    });
+    vi.stubGlobal("fetch", spy);
+    render(<App />);
+
+    await userEvent.type(await screen.findByLabelText("標的代號"), "spy");
+    await userEvent.type(screen.getByLabelText("目標價位"), "700");
+    await userEvent.type(screen.getByLabelText("目標年月"), "2028-05");
+    await userEvent.click(screen.getByRole("button", { name: "建立" }));
+
+    expect(await screen.findByText("SPY")).toBeInTheDocument();
+    expect(refreshCalls(spy)).toEqual(["s2"]);
+  });
+
+  function mockLibrary(
+    rows: Record<string, unknown>[],
+    refresh: (id: string) => Promise<Partial<Response> & { json: () => Promise<unknown> }>,
+  ) {
+    const spy = vi.fn(async (url: string, _init?: RequestInit) => {
+      const hit = /\/api\/scenarios\/([^/]+)\/refresh$/.exec(url);
+      if (hit) return refresh(hit[1]);
+      if (url === "/api/scenarios") {
+        return { ok: true, status: 200, json: async () => rows };
+      }
+      throw new Error(`測試沒有為 ${url} 準備回應`);
+    });
+    vi.stubGlobal("fetch", spy);
+    return spy;
+  }
+
+  const ok = (row: Record<string, unknown>) =>
+    ({ ok: true, status: 200, json: async () => row });
+
+  function refreshCalls(spy: ReturnType<typeof vi.fn>) {
+    return spy.mock.calls
+      .map(([url]) => /\/api\/scenarios\/([^/]+)\/refresh$/.exec(String(url))?.[1])
+      .filter((id): id is string => id !== undefined);
+  }
+});
+
 describe("建立與刷新同時發生（V4／#52 檢視回饋）", () => {
   const base = sampleRow as unknown as Record<string, unknown>;
   const card = (id: string, symbol: string, extra: Record<string, unknown> = {}) => ({

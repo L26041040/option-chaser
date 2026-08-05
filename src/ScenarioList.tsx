@@ -73,7 +73,13 @@ function ScenarioCard({
 
         <div className="row">
           <span className="row-label">距到期</span>
-          <span className="row-value">{formatDaysLeft(row.days_to_anchor)}</span>
+          <span className="row-value">
+            {formatDaysLeft(row.days_to_anchor)}
+            {/* #68：目標月已過完的劇本不再花資源刷新，卡片上要看得出
+                「不是刷新失敗、也不是還沒分析過」，是第三種、刻意的
+                狀態——見下面失敗提示的互斥處理。 */}
+            {row.expired && <span className="tag">已過期，不再刷新</span>}
+          </span>
         </div>
 
         <div className="row">
@@ -89,7 +95,12 @@ function ScenarioCard({
         <span className="sr-only">查看 {who} 詳細</span>
       </a>
 
-      {failure && (
+      {/* #68：已過期優先於刷新失敗——月份過完的劇本不會因為留著一筆
+          舊的失敗紀錄，就在「已過期，不再刷新」旁邊又冒出一個「重試」
+          （重試也只會被後端當成無害的 no-op，按了等於沒按，不該讓它
+          看起來像有用）。與舊 Streamlit workspace 的紅燈優先於黃燈是
+          同一個判斷。 */}
+      {failure && !row.expired && (
         <div className="notice error" role="alert">
           <div className="row-value">{failureLabel(failure.stage)}</div>
           <p className="caption">{failure.message}</p>

@@ -108,10 +108,15 @@ export default function App() {
   );
 
   /** 時機一與時機三共用：先取回最新清單（別台裝置可能加過劇本），
-   *  再逐一刷新。 */
+   *  再逐一刷新。
+   *
+   * 目標月已過完的劇本（#68）不排進去——後端 `refresh` 端點本身也會擋
+   * （唯一真正的擋點，任何入口都繞不過），這裡先篩掉純粹是不浪費一趟
+   * 網路往返，讓進度的分母從一開始就是對的。
+   */
   const reloadAndRefresh = useCallback(async () => {
     const fresh = await reload();
-    if (fresh) await enqueue(fresh.map((r) => r.id));
+    if (fresh) await enqueue(fresh.filter((r) => !r.expired).map((r) => r.id));
   }, [reload, enqueue]);
 
   // 時機一：開站。只跑一次——`StrictMode` 在開發模式下會把 effect 跑
@@ -160,8 +165,12 @@ export default function App() {
     setRows((prev) => [...prev, created]);
     setError(null);
     // 時機二：建立劇本後。刻意不 await——表單要立刻清空並可再輸入，
-    // 不該被後面 N 趟刷新綁住。
-    void enqueue([...rowsRef.current.map((r) => r.id), created.id]);
+    // 不該被後面 N 趟刷新綁住。既有清單裡目標月已過完的劇本（#68）
+    // 一併篩掉——剛建立的這個不可能過期（後端建立時就擋了），不必篩。
+    void enqueue([
+      ...rowsRef.current.filter((r) => !r.expired).map((r) => r.id),
+      created.id,
+    ]);
   }
 
   async function archive(id: string) {

@@ -24,7 +24,7 @@ from option_chaser.data.snapshot import snapshot_from_dict, snapshot_to_csv
 from option_chaser.models import (AnalysisParams, ChainSnapshot, FetchError,
                                   ParamError, STRATEGIES)
 from option_chaser.timeframe import (TargetMonth, calendar_anchor,
-                                     ensure_month_open)
+                                     ensure_month_open, month_is_over)
 from option_chaser.workspace import now_utc_iso, ny_today
 
 from .storage import ResultRecord, Scenario, ScenarioExists, Storage
@@ -89,11 +89,18 @@ class CreateScenarioRequest(BaseModel):
 
 
 def _timing_json(sc: Scenario, today: date) -> dict:
-    """卡片的「距到期天數」（V3／#51）。
+    """卡片的「距到期天數」（V3／#51）與「是否已過期」（#68）。
 
-    兩件事都是領域規則、都不該讓瀏覽器自己猜：錨點＝該月第三個星期五
-    （`timeframe.calendar_anchor`），「今天」＝紐約日曆（`ny_today`）。
+    三件事都是領域規則、都不該讓瀏覽器自己猜：錨點＝該月第三個星期五
+    （`timeframe.calendar_anchor`），「今天」＝紐約日曆（`ny_today`），
+    「已過期」＝目標月最後一天已過完（`timeframe.month_is_over`）。
     已過期就是負數，夾成 0 會讓過期劇本看起來還有救。
+
+    `expired` 與 `days_to_anchor < 0` 是**不同**的判準：後者以日曆錨點
+    （第三個星期五）為準，會在月份真正過完之前就先轉負；前者才是
+    `ensure_month_open` 與 `refresh_scenario` 用來擋下的那條規則，
+    三處必須用同一個判準，否則清單上的「已過期，不再刷新」會跟批次
+    刷新實際跳過的對象兜不起來。
 
     `today` 由呼叫端傳入、整個回應只取一次——沿用專案既有原則
     （`workspace.card_of(observed=...)`、`ensure_month_open(month, today)`、
@@ -101,11 +108,14 @@ def _timing_json(sc: Scenario, today: date) -> dict:
     出現兩個「今天」。
 
     刻意不放進 `_scenario_json`：那個結構會原樣寫進 `SCENARIO_CREATED`
-    事件，而事件是不可變的事實，不能塞「距今幾天」這種隨時間改變的值。
+    事件，而事件是不可變的事實，不能塞「距今幾天」「是否已過期」這種
+    隨時間改變的值。
     """
-    anchor = calendar_anchor(TargetMonth.from_key(sc.target_month))
+    month = TargetMonth.from_key(sc.target_month)
+    anchor = calendar_anchor(month)
     return {"target_anchor": anchor.isoformat(),
-            "days_to_anchor": (anchor - today).days}
+            "days_to_anchor": (anchor - today).days,
+            "expired": month_is_over(month, today)}
 
 
 def _scenario_json(sc: Scenario) -> dict:
@@ -296,8 +306,21 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         回傳的是**卡片列**而非整份 view：客戶端要依序刷新 N 個劇本、
         每完成一個就更新那張卡，每次拖回十萬字元級的 view 在手機上是
         實打實的浪費。要看完整 view 走 detail 端點。
+
+        本端點是所有刷新入口共用的**唯一**擋點（#68）：目標月已過完的
+        劇本直接短路成一次無害的讀取（不抓鏈、不跑引擎、不入庫、不留
+        事件），回傳目前既有的卡片列。這裡是唯一必須擋住的地方——批次
+        流程本該在排隊前就先篩掉這類劇本以免浪費一趟網路往返，但擋點
+        設在這裡才能保證「任何入口都擋得住」，含日後新增的、忘記先篩
+        的呼叫端。
         """
         sc = _require(scenario_id)
+        today = ny_today()
+        if month_is_over(TargetMonth.from_key(sc.target_month), today):
+            latest = _db().latest_result(scenario_id)
+            return _row_json(sc, today,
+                             analyzed_at=latest.analyzed_at if latest else None,
+                             best_return=latest.best_return if latest else None)
         view, snapshot = _analyze(
             scenario_id=sc.id, symbol=sc.symbol, target_price=sc.target_price,
             target_month=sc.target_month, strategies=sc.strategies,
@@ -312,7 +335,7 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
                            event="ANALYSIS_COMPLETED",
                            payload={"analyzed_at": analyzed_at,
                                     "snapshot_ref": view["snapshot_ref"]})
-        return _row_json(sc, ny_today(), analyzed_at=analyzed_at,
+        return _row_json(sc, today, analyzed_at=analyzed_at,
                          best_return=best_return)
 
     @app.get("/api/scenarios/{scenario_id}/results")

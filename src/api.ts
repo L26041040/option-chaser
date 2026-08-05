@@ -249,6 +249,13 @@ export interface ScenarioSummary {
    *  負數＝已過期，不夾成 0。 */
   target_anchor: string;
   days_to_anchor: number;
+  /**
+   * 目標年月最後一天是否已過完（#68，後端 `timeframe.month_is_over`）。
+   * 與 `days_to_anchor < 0` 是不同的判準——後者以日曆錨點（第三個星期五）
+   * 為準，會提早轉負。這個欄位才是後端用來擋批次刷新的那個判準，前端
+   * 據此在排入刷新佇列前先篩掉，畫面上也用它顯示「已過期，不再刷新」。
+   */
+  expired: boolean;
 }
 
 /**
