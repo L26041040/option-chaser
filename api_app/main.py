@@ -27,7 +27,8 @@ from option_chaser.timeframe import (TargetMonth, calendar_anchor,
                                      ensure_month_open, month_is_over)
 from option_chaser.workspace import now_utc_iso, ny_today
 
-from .storage import ResultRecord, Scenario, ScenarioExists, Storage
+from .storage import (ResultRecord, ResultSummary, Scenario, ScenarioExists,
+                      Storage)
 from .storage.factory import storage_from_env
 
 FetchChain = Callable[[str], ChainSnapshot]
@@ -132,6 +133,16 @@ def _row_json(sc: Scenario, today: date, *, analyzed_at: str | None,
     形狀只要差一個欄位，客戶端就得為同一個東西維護兩種型別。"""
     return {**_scenario_json(sc), **_timing_json(sc, today),
             "latest_analyzed_at": analyzed_at, "best_return": best_return}
+
+
+def _summary_of(latest: ResultRecord | ResultSummary | None) -> dict:
+    """從一筆「最新結果」（`ResultRecord` 或 `ResultSummary`，兩者皆有
+    `analyzed_at`／`best_return`）取出卡片要的兩個欄位；沒有結果
+    （`None`，劇本從未成功分析過）時兩欄皆 `None`——卡片據此顯示「—」，
+    不是 0。列出、詳細頁、刷新（含過期短路）共用同一個形狀，不必各自
+    重寫一次 `if x else None`。"""
+    return {"analyzed_at": latest.analyzed_at if latest else None,
+            "best_return": latest.best_return if latest else None}
 
 
 def _fail(stage: str, status: int, message: str) -> HTTPException:
@@ -270,11 +281,7 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         today = ny_today()          # 整份清單共用同一個「今天」
         rows = []
         for s in _db().list_scenarios(include_archived=include_archived):
-            summary = summaries.get(s.id)
-            rows.append(_row_json(
-                s, today,
-                analyzed_at=summary.analyzed_at if summary else None,
-                best_return=summary.best_return if summary else None))
+            rows.append(_row_json(s, today, **_summary_of(summaries.get(s.id))))
         return rows
 
     @app.get("/api/scenarios/{scenario_id}")
@@ -283,9 +290,7 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         latest = _db().latest_result(scenario_id)
         # `best_return` 也要在——detail 少一個欄位的話，客戶端就沒辦法把
         # 同一個型別套用在清單列與詳細回應上（V5 的詳細頁會踩到）。
-        return {**_row_json(sc, ny_today(),
-                            analyzed_at=latest.analyzed_at if latest else None,
-                            best_return=latest.best_return if latest else None),
+        return {**_row_json(sc, ny_today(), **_summary_of(latest)),
                 "latest_result": latest.view if latest else None}
 
     @app.post("/api/scenarios/{scenario_id}/archive")
@@ -318,9 +323,7 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         today = ny_today()
         if month_is_over(TargetMonth.from_key(sc.target_month), today):
             latest = _db().latest_result(scenario_id)
-            return _row_json(sc, today,
-                             analyzed_at=latest.analyzed_at if latest else None,
-                             best_return=latest.best_return if latest else None)
+            return _row_json(sc, today, **_summary_of(latest))
         view, snapshot = _analyze(
             scenario_id=sc.id, symbol=sc.symbol, target_price=sc.target_price,
             target_month=sc.target_month, strategies=sc.strategies,
