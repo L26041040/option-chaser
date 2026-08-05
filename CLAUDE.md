@@ -812,9 +812,8 @@ V9（#57）／V10（#58）亦已完結——全部票做完。** 下一步不是
 
 - **#67** 利率：接線、fallback 與狀態語意（provider 無關）←
 - **#72** 桌面版真正的 master/detail ←
-- **#73** Research：公開利率資料源評選（不預設 Treasury）←
 - **#74** 利率：production probe＋選定 provider 實作與硬化
-  （被 #73、#67 擋）
+  （被 #67 擋，#73 已完成）
 - **#75** 主要操作入口收攏到工作區上方（被 #72 擋）
 
 **已完成**：
@@ -890,6 +889,32 @@ V9（#57）／V10（#58）亦已完結——全部票做完。** 下一步不是
   `<div>` 根節點不合格）——改用 `aria-labelledby` 指向獨立的
   `<span id=...>`，且當月的 `aria-current` 視覺提示原本只有 0.5px
   外框改色太淡，加粗到 1.5px＋粗體字
+- **#73** Research：公開利率資料源評選——比較 Treasury／FRED／
+  Fed H.15／NY Fed SOFR／Yahoo／Alpha Vantage／Financial Modeling
+  Prep／Massive-Polygon／CME Term SOFR 九個候選，逐項套用票上明列的
+  八個維度。**結論不是蕭規曹隨**：主源仍是 Treasury（期限覆蓋全場
+  最完整、免鑰、零金融語意風險），但備援順序改成 FRED 官方 API
+  （DGS 系列與 Treasury CMT 同一報價口徑，換源不用動 `ratecurve.py`
+  消費端一行）→ Financial Modeling Prep（單次 GET 全曲線，商業聚合站
+  故排最後一層）→ 現行固定 4%。明確剔除 NY Fed SOFR（回顧性平均、
+  非期限結構）、Yahoo 四指數（3M–5Y 之間整段無節點，恰好蓋住本 app
+  1M–3Y 主戰場）、Alpha Vantage（缺 1M／1Y 節點，且與既有選擇權鏈
+  備援共用同一組 25 次/日全站配額）、CME Term SOFR（授權不可行）、
+  Fed H.15（官方公告正在退役其 Data Download Program，導引改用
+  FRED）。沙箱對全部候選網域一律 403，明確標記為 sandbox validation
+  limitation（`$HTTPS_PROXY/__agentproxy/status` 顯示是本沙箱出口
+  政策擋下，不是目的站或 production 的結論），文件中沒有出現「沙箱
+  連不到＝production 連不到」這類推論。產出給 #74 的 production
+  connectivity probe 程序（逐來源 URL、檢查項目、pass/fail 標準、
+  平日／假日各測一次的執行紀律）。研究文件：
+  `docs/research/interest-rate-source-selection.md`。
+  ⚠ 查核時抓到一處引註錯誤（非本票程式碼——文件本身的一個引用）：
+  「Vercel serverless 唯讀檔案系統」這件事被錯誤歸給
+  `docs/deploy-vercel.md` 一個不存在的「serverless 唯讀」小節，已改
+  正引到真正的出處（`api_app/main.py` 檔頭與
+  `option_chaser/service.py` 的 `run_with_snapshot` docstring）——
+  事實本身沒錯，只是來源引用貼錯地方，在一份以「逐一引註」為賣點的
+  文件裡值得修正
 
 > 我原本把 #73 設計成「被 #67 擋，要靠部署版探針才能開始研究」，
 > **需求方 2026-08-05 否決，理由成立**：沙箱閘道擋掉某些網域，不等於
