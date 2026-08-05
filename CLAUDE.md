@@ -810,13 +810,32 @@ V9（#57）／V10（#58）亦已完結——全部票做完。** 下一步不是
 
 **票與依賴**（← 為可立刻開工）：
 
-- **#72** 桌面版真正的 master/detail ←
 - **#74** 利率：production probe＋選定 provider 實作與硬化
   （#67／#73 已完成，可開工）
-- **#75** 主要操作入口收攏到工作區上方（被 #72 擋）
+- **#75** 主要操作入口收攏到工作區上方（#72 已完成，可開工）←
 
 **已完成**：
 
+- **#72** 桌面版真正的 master/detail（commits `7d5f68b`／`8523f71`）：
+  桌面寬度（`window.matchMedia`／`useIsDesktop`，`App.tsx`）改成左側
+  劇本庫常駐、右側工作區顯示選中劇本，約 20/80；選中劇本不必先返回
+  即可切換到另一個。手機寬度沿用既有整頁替換，程式碼路徑原封不動
+  （`!isDesktop` 才會走進那個既有分支），既有測試不必為此改動就繼續
+  通過。`ScenarioList` 新增 `selectedId`：目前選中的劇本卡片標
+  `selected` class（左側強調色條＋淡色底，非 `.chip.selected` 那種
+  整片實色——卡片內文字要維持可讀）與 `aria-current="page"`。斷點與
+  版面下限刻意對齊（1100px／220px，220 恰好是 1100 的 20%）：code
+  review 抓到原始寫法（900px／280px）在 900～1400px 這段常見桌面寬度
+  會被下限卡死到超過 30%，與「約 20/80」的驗收不符，改成對齊值後
+  下限在斷點邊界形同虛設，往寬處走比例自然貼著 20%。新增 Playwright
+  `Desktop` 專案（1280×800）＋`e2e/desktop.spec.ts`（含左右比例量測、
+  瀏覽器上一頁／下一頁兩項 code review 補的覆蓋率缺口），與既有
+  `iPhone` 專案用 `testMatch`／`testIgnore` 互不重疊，手機案例不會被
+  拿去跑桌面版的行為假設。jsdom 沒有實作 `window.matchMedia`，
+  `test-setup.ts` 新增 `fakeMediaQueryList()` 工廠（預設 `matches:
+  false`＝手機，既有測試不必改動；桌面情境測試用
+  `vi.stubGlobal("matchMedia", ...)` 覆寫），與 `App.test.tsx` 共用
+  同一份假體形狀。
 - **#68** 過期劇本不再進入批次刷新——新增 `_timing_json` 的 `expired`
   欄位（`timeframe.month_is_over`，與既有 `days_to_anchor` 是不同判準，
   前者才是擋刷新的那個）；唯一擋點設在 `refresh_scenario` 端點本身
