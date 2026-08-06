@@ -458,8 +458,7 @@ body {
 
 /* 取代大卡片 `.card` 的手機專用版式——桌面版（`ScenarioList.tsx`）不
    使用這組 class，兩者互不干擾。壓縮的是留白，不是資訊：三層都保留，
-   只是 padding／字級／間距全面收緊。`position: relative` 讓封存鈕能
-   疊在右下角，不佔用行高。 */
+   只是 padding／字級／間距全面收緊。 */
 .compact-list {
   list-style: none;
   margin: 0;
@@ -470,10 +469,17 @@ body {
 }
 
 .compact-card {
-  position: relative;
   background: var(--bg-elevated);
   border-radius: calc(var(--radius) - 4px);
   box-shadow: var(--card-shadow);
+}
+
+/* code review 跟進：封存鈕原本相對整張 `.compact-card` 定位，刷新失敗
+   時 `.compact-notice` 撐高卡片，封存鈕就飄到 notice 的右下角、疊在
+   「重試」鈕上——`position: relative` 收在這層 wrapper，封存鈕的錨點
+   永遠是 tap 區自己的高度，不佔用行高，也不會跟著 notice 的有無移動。 */
+.compact-card-tap-area {
+  position: relative;
 }
 
 .compact-card-tap {

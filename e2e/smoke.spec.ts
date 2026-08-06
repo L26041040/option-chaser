@@ -429,6 +429,36 @@ test("刷新失敗說明是哪一段，重試就地重來（V4／#52）", async 
   await expect(page.getByText("抓不到報價（可稍後重試）")).toBeHidden();
 });
 
+test("Compact row 刷新失敗時，封存鈕不會疊在重試鈕上（code review 跟進，MVP-v2／#77、#82）",
+  async ({ page }) => {
+    // 回歸防護：封存鈕原本相對整張卡片定位，`.compact-notice`（失敗
+    // 說明＋重試）撐高卡片後，封存鈕會飄到 notice 的右下角、疊在
+    // 「重試」上，使用者想點重試卻可能誤觸封存。這裡直接量兩顆按鈕
+    // 的真實 bounding box，斷言不重疊——這是唯一能真正抓到這類幾何
+    // 回歸的測法，jsdom 不會算真實版面。
+    await page.route("**/api/scenarios", (route) =>
+      route.fulfill({ json: [pendingRow] }));
+    await page.route("**/api/scenarios/*/refresh", (route) =>
+      route.fulfill({ status: 502, json: { detail: {
+        stage: "fetch", message: "抓不到 TLT 的報價：來源無回應" } } }));
+
+    await page.goto("/");
+    const retry = page.getByRole("button", { name: "重試 TLT 2028-05" });
+    const archive = page.getByRole("button", { name: "封存 TLT 2028-05" });
+    await expect(retry).toBeVisible();
+    await expect(archive).toBeVisible();
+
+    const retryBox = (await retry.boundingBox())!;
+    const archiveBox = (await archive.boundingBox())!;
+    const overlaps = !(
+      retryBox.x + retryBox.width <= archiveBox.x ||
+      archiveBox.x + archiveBox.width <= retryBox.x ||
+      retryBox.y + retryBox.height <= archiveBox.y ||
+      archiveBox.y + archiveBox.height <= retryBox.y
+    );
+    expect(overlaps).toBe(false);
+  });
+
 test("久未刷新的資料標成舊資料（V4／#52）", async ({ page }) => {
   const old = new Date(Date.now() - 3 * 24 * 3600 * 1000).toISOString();
   await page.route("**/api/scenarios", (route) =>

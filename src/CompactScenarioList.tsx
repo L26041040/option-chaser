@@ -53,57 +53,77 @@ function CompactScenarioCard({
 
   return (
     <li className="compact-card">
-      {/* 不掛 `aria-label`：那會取代連結內容當成可及名稱，螢幕閱讀器
-          就只聽得到症狀簡述，三層資訊全部被吃掉。改在結尾補一段只有
-          輔助技術讀得到的字（沿用 `ScenarioList.tsx` 既有寫法）。 */}
-      <a className="compact-card-tap" href={detailHash(row.id)}>
-        <div className="compact-tier1">
-          <span className="compact-symbol">{row.symbol}</span>
-          <span className="compact-target">
-            {money(row.target_price)}　{row.target_month}
-          </span>
-          <span
-            className={`signal-dot signal-${signal}`}
-            title={signalLabel(signal)}
-            aria-hidden="true"
-          />
-        </div>
+      {/* 封存鈕疊在「這一塊」（tap 區）的右下角，而不是整張 `<li>` 的
+          右下角——code review 抓到的真實回歸：`.compact-notice`（刷新
+          失敗時才出現）是接在 tap 區後面的正常流內容，會把卡片整體
+          撐高；封存鈕若相對整張卡片定位，失敗時就會飄到 notice 的
+          右下角，正好疊在「重試」鈕上，使用者想點重試卻誤觸封存。
+          `position: relative` 收在這層 wrapper，封存鈕的錨點永遠是
+          tap 區本身的高度，跟 notice 在不在完全無關。 */}
+      <div className="compact-card-tap-area">
+        {/* 不掛 `aria-label`：那會取代連結內容當成可及名稱，螢幕閱讀器
+            就只聽得到症狀簡述，三層資訊全部被吃掉。改在結尾補一段只有
+            輔助技術讀得到的字（沿用 `ScenarioList.tsx` 既有寫法）。 */}
+        <a className="compact-card-tap" href={detailHash(row.id)}>
+          <div className="compact-tier1">
+            <span className="compact-symbol">{row.symbol}</span>
+            <span className="compact-target">
+              {money(row.target_price)}　{row.target_month}
+            </span>
+            <span
+              className={`signal-dot signal-${signal}`}
+              title={signalLabel(signal)}
+              aria-hidden="true"
+            />
+          </div>
 
-        <div className="compact-tier2">
-          <span
-            className={
-              ran ? `metric compact-metric ${row.best_return! >= 0 ? "positive" : "negative"}`
-                  : "metric compact-metric muted"
-            }
-          >
-            {formatReturn(row.best_return)}
-          </span>
-          <span className="compact-strategy">
-            {rep
-              ? `${strategyLabel(rep.strategy)}　${formatRepresentativeLegs(rep)}`
-              : "—"}
-          </span>
-        </div>
+          <div className="compact-tier2">
+            <span
+              className={
+                ran ? `metric compact-metric ${row.best_return! >= 0 ? "positive" : "negative"}`
+                    : "metric compact-metric muted"
+              }
+            >
+              {formatReturn(row.best_return)}
+            </span>
+            <span className="compact-strategy">
+              {rep
+                ? `${strategyLabel(rep.strategy)}　${formatRepresentativeLegs(rep)}`
+                : "—"}
+            </span>
+          </div>
 
-        {/* 每個格式化值各自一個 span、分隔號是獨立文字節點：跟桌面版
-            `ScenarioList.tsx` 一樣讓 `formatAnalyzedAt("尚未分析")` 之類
-            的完整字串各自佔一個節點，不會被分隔號黏成「· 尚未分析」而
-            查不到精確文字。 */}
-        <div className="compact-tier3">
-          <span>Exp {formatRepresentativeExpiry(rep)}</span>
-          {" · "}
-          <span>{formatDaysLeft(row.days_to_anchor)}</span>
-          {" · "}
-          <span>{formatAnalyzedAt(row.latest_analyzed_at)}</span>
-          {stale && <span className="tag warn">舊資料</span>}
-          {/* #68：已過期優先於刷新失敗，同一套判斷沿用 `ScenarioList.tsx`。 */}
-          {row.expired && <span className="tag">已過期，不再刷新</span>}
-        </div>
+          {/* 每個格式化值各自一個 span、分隔號是獨立文字節點：跟桌面版
+              `ScenarioList.tsx` 一樣讓 `formatAnalyzedAt("尚未分析")` 之類
+              的完整字串各自佔一個節點，不會被分隔號黏成「· 尚未分析」而
+              查不到精確文字。 */}
+          <div className="compact-tier3">
+            <span>Exp {formatRepresentativeExpiry(rep)}</span>
+            {" · "}
+            <span>{formatDaysLeft(row.days_to_anchor)}</span>
+            {" · "}
+            <span>{formatAnalyzedAt(row.latest_analyzed_at)}</span>
+            {stale && <span className="tag warn">舊資料</span>}
+            {/* #68：已過期優先於刷新失敗，同一套判斷沿用 `ScenarioList.tsx`。 */}
+            {row.expired && <span className="tag">已過期，不再刷新</span>}
+          </div>
 
-        <span className="sr-only">
-          {signalLabel(signal)}；查看 {who} 詳細
-        </span>
-      </a>
+          <span className="sr-only">
+            {signalLabel(signal)}；查看 {who} 詳細
+          </span>
+        </a>
+
+        {/* 封存入口不搶戲——疊在 tap 區右下角的小字按鈕，不佔用行高，
+            掃描時不會被誤讀成金融資訊；要用時仍找得到（判準見 spec
+            #77 六）。 */}
+        <button
+          className="text-button compact-archive"
+          onClick={() => onArchive(row.id)}
+          aria-label={`封存 ${who}`}
+        >
+          封存
+        </button>
+      </div>
 
       {failure && !row.expired && (
         <div className="notice error compact-notice" role="alert">
@@ -117,16 +137,6 @@ function CompactScenarioCard({
           </button>
         </div>
       )}
-
-      {/* 封存入口不搶戲——疊在卡片右下角的小字按鈕，不佔用行高，掃描
-          時不會被誤讀成金融資訊；要用時仍找得到（判準見 spec #77 六）。 */}
-      <button
-        className="text-button compact-archive"
-        onClick={() => onArchive(row.id)}
-        aria-label={`封存 ${who}`}
-      >
-        封存
-      </button>
     </li>
   );
 }
