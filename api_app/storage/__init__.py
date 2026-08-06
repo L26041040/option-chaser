@@ -64,11 +64,33 @@ class RateCacheEntry:
     連續失敗多少次、或失敗久到超過緊急備援窗（`curve` 因此變回
     `None`），這個時間戳都不會被覆蓋掉——`/api/health` 靠它回答「最後
     一次成功取得利率曲線是什麼時候」，不會因為最近剛好在失敗就答不
-    出來。"""
+    出來。
+
+    `market_day`：同一市場日內只成功抓取一次的判準（利率一天內不會
+    劇烈變動，沒必要每次刷新都重打來源）。存的是**呼叫端傳入的
+    `today`**（`option_chaser.data.snapshot.snapshot_today()`，紐約
+    曆日），不是 `fetched_at` 的日期部分——兩者時區不同（`fetched_at`
+    是 UTC wall-clock），午夜前後直接切 `fetched_at` 的日期會跟「今天
+    是哪個市場日」對不起來。只在**真正成功直接抓到**時前進；沿用
+    緊急備援窗舊曲線那個分支不算，維持舊值，好讓當天稍後的呼叫仍會
+    再次嘗試（同一市場日內的失敗重試節奏交給 `attempted_day`＋
+    `_FAILURE_MAX_AGE` 短窗，見下）。
+
+    `attempted_day`：**不論成功或失敗**、每次寫入都蓋成當次的
+    `today`——跟 `market_day` 不同，這個欄位不代表「上次成功是哪天」，
+    只代表「上次真的問過底層來源是哪個市場日」。存在的理由：短窗內
+    避免同一輪刷新的 N 個劇本把同一個失敗中的來源打好幾次，這個
+    dedup 判準只能用 `fetched_at` 的時間差（`market_day` 只在成功時
+    前進，失敗／沿用舊曲線時查不到「今天」）；但單看時間差在市場日
+    剛好跨過午夜的那幾分鐘會誤把「昨天的紀錄」當「今天也還新鮮」而
+    沿用，`attempted_day` 就是用來擋這個邊界情況——時間差夠短
+    **而且**是同一個市場日的嘗試，才算數。"""
     fetched_at: str          # 這筆狀態寫入的時間（ISO），不是曲線本身的日期
     curve: dict | None
     note: str
     last_success_at: str | None = None
+    market_day: str | None = None
+    attempted_day: str | None = None
 
 
 class Storage(Protocol):

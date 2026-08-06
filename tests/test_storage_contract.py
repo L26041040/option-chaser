@@ -249,6 +249,19 @@ def test_rate_cache_roundtrips_a_successful_fetch(storage):
     assert storage.get_rate_cache() == entry
 
 
+def test_rate_cache_roundtrips_market_day_and_attempted_day(storage):
+    """同一市場日只成功抓一次的判準（#74）——`market_day`／
+    `attempted_day` 兩個新欄位要在 Postgres 跟記憶體假體都撐得住
+    roundtrip，不是只有 dataclass 預設值 `None` 撐得住。"""
+    entry = RateCacheEntry(
+        fetched_at="2026-08-05T12:00:00+00:00",
+        curve={"curve_date": "2026-08-04", "nodes": [[1.0, 0.04]]},
+        note="Treasury 曲線 2026-08-04",
+        market_day="2026-08-05", attempted_day="2026-08-05")
+    storage.save_rate_cache(entry)
+    assert storage.get_rate_cache() == entry
+
+
 def test_rate_cache_can_record_a_failed_attempt(storage):
     entry = RateCacheEntry(fetched_at="2026-08-05T12:00:00+00:00",
                            curve=None, note="曲線不可得")

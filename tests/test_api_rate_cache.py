@@ -36,10 +36,11 @@ def test_first_call_reaches_the_underlying_loader_and_caches_the_result():
     assert calls == [TODAY]
     cached = storage.get_rate_cache()
     assert cached is not None and cached.note == note
+    assert cached.market_day == TODAY.isoformat()
 
 
-def test_second_call_within_the_freshness_window_reuses_the_cache():
-    """一輪刷新 N 個劇本共用同一條——第二個劇本進來時快取還新鮮，
+def test_second_call_within_the_same_market_day_reuses_the_cache():
+    """一輪刷新 N 個劇本共用同一條——第二個劇本進來時今天已經成功過，
     不該再打一次資料源。"""
     storage = MemoryStorage()
     calls = []
@@ -52,13 +53,39 @@ def test_second_call_within_the_freshness_window_reuses_the_cache():
     assert curve == CURVE
 
 
-def test_stale_success_cache_is_refetched():
+def test_a_success_from_hours_ago_is_still_reused_within_the_same_market_day():
+    """利率一天內不會劇烈變動——就算是好幾個小時前抓到的，只要還是
+    同一個市場日，就不必重抓。這跟舊版「12 小時新鮮度窗」的差異正是
+    這次修正的重點：時間差不重要，市場日有沒有變才重要。"""
     storage = MemoryStorage()
     storage.save_rate_cache(RateCacheEntry(
-        fetched_at=(datetime.now(timezone.utc) - timedelta(hours=13)).isoformat(
+        fetched_at=(datetime.now(timezone.utc) - timedelta(hours=10)).isoformat(
             timespec="seconds"),
-        curve={"curve_date": "2026-08-01", "nodes": [[1.0, 0.03]]},
-        note="Treasury 曲線 2026-08-01（舊）"))
+        curve={"curve_date": "2026-08-04", "nodes": [[1.0, 0.03]]},
+        note="Treasury 曲線 2026-08-04（今天稍早）",
+        market_day=TODAY.isoformat()))
+    calls = []
+
+    curve, note = cached_loader(storage, _underlying(calls))(TODAY)
+
+    assert calls == []
+    assert curve == RateCurve(curve_date="2026-08-04", nodes=((1.0, 0.03),))
+    assert note == "Treasury 曲線 2026-08-04（今天稍早）"
+
+
+def test_next_market_day_refetches_even_though_it_was_fetched_minutes_ago():
+    """反過來：就算上次成功是幾分鐘前的事，只要市場日已經換了，第一次
+    有人需要時還是要重新 fetch——不能靠「還很新鮮」硬撐過市場日邊界。
+    `attempted_day` 也明確設成昨天：不能只因為時間差夠短就沿用，
+    這正是本測試要盯住的邊界情況。"""
+    storage = MemoryStorage()
+    yesterday = date(2026, 8, 4)
+    storage.save_rate_cache(RateCacheEntry(
+        fetched_at=(datetime.now(timezone.utc) - timedelta(minutes=2)).isoformat(
+            timespec="seconds"),
+        curve={"curve_date": "2026-08-04", "nodes": [[1.0, 0.03]]},
+        note="Treasury 曲線 2026-08-04", market_day=yesterday.isoformat(),
+        attempted_day=yesterday.isoformat()))
     calls = []
 
     curve, note = cached_loader(storage, _underlying(calls))(TODAY)
@@ -68,13 +95,34 @@ def test_stale_success_cache_is_refetched():
     assert note == "Treasury 曲線 2026-08-04"
 
 
+def test_a_stale_fallback_reuse_from_yesterday_does_not_block_todays_first_try():
+    """跟純失敗一樣的邊界情況，換成沿用緊急備援窗舊曲線那個分支：
+    上一筆紀錄時間很近、`curve` 也不是 `None`（沿用了舊曲線），但那是
+    **昨天**的嘗試留下的紀錄——今天的第一次請求還是要真的問一次底層
+    來源，不能被這筆快要過期的舊紀錄擋下來。"""
+    storage = MemoryStorage()
+    yesterday = date(2026, 8, 4)
+    storage.save_rate_cache(RateCacheEntry(
+        fetched_at=(datetime.now(timezone.utc) - timedelta(minutes=2)).isoformat(
+            timespec="seconds"),
+        curve={"curve_date": "2026-07-30", "nodes": [[1.0, 0.03]]},
+        note="Treasury 曲線 2026-07-30（沿用快取，最新一次嘗試失敗：曲線不可得）",
+        market_day=None, attempted_day=yesterday.isoformat()))
+    calls = []
+
+    curve, note = cached_loader(storage, _underlying(calls))(TODAY)
+
+    assert calls == [TODAY]
+    assert curve == CURVE
+
+
 def test_a_recent_cached_failure_is_reused_without_retrying():
     """失敗也快取，同一輪刷新不會讓每個劇本各撞一次同樣會失敗的請求。"""
     storage = MemoryStorage()
     storage.save_rate_cache(RateCacheEntry(
         fetched_at=(datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat(
             timespec="seconds"),
-        curve=None, note="曲線不可得"))
+        curve=None, note="曲線不可得", attempted_day=TODAY.isoformat()))
     calls = []
 
     curve, note = cached_loader(
@@ -86,13 +134,13 @@ def test_a_recent_cached_failure_is_reused_without_retrying():
 
 
 def test_a_cached_failure_does_not_block_retrying_for_long():
-    """失敗的快取窗遠比成功短——資料源恢復後，不該讓使用者卡在舊的
-    失敗訊息裡到 12 小時後才有機會重試。"""
+    """失敗的快取窗遠比成功共用的一整個市場日短——資料源恢復後，不該
+    讓使用者卡在舊的失敗訊息裡到隔天才有機會重試。"""
     storage = MemoryStorage()
     storage.save_rate_cache(RateCacheEntry(
         fetched_at=(datetime.now(timezone.utc) - timedelta(minutes=6)).isoformat(
             timespec="seconds"),
-        curve=None, note="曲線不可得"))
+        curve=None, note="曲線不可得", attempted_day=TODAY.isoformat()))
     calls = []
 
     curve, note = cached_loader(storage, _underlying(calls))(TODAY)
