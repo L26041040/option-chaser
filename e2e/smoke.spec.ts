@@ -548,3 +548,40 @@ test("Compact row 逐項齊全：spec §5 必要欄位一個都沒少（MVP-v2�
     // 封存入口仍在，不因為 compact 而消失。
     await expect(card.getByRole("button", { name: /封存/ })).toBeAttached();
   });
+
+test("返回劇本庫時停在原本捲動的位置，不必重新往下找（MVP-v2／#77、#83）",
+  async ({ page }) => {
+    const rows = Array.from({ length: 10 }, (_, i) =>
+      libraryRow({ id: `s${i}`, symbol: `SYM${i}`,
+                   latest_analyzed_at: null, best_return: null }));
+    await page.route("**/api/scenarios", (route) => route.fulfill({ json: rows }));
+    await page.route("**/api/scenarios/*/refresh", (route, req) =>
+      route.fulfill({ json: rows.find((r) => req.url().includes(`/${r.id}/`)) }));
+    // 詳細頁路由：任一劇本 id 都指回同一份形狀，測試只在乎「回得去、
+    // 回去後畫面上是原本那份清單」，不在乎詳細頁內容本身。
+    await page.route("**/api/scenarios/s*", (route, req) => {
+      const id = req.url().split("/").pop();
+      const found = rows.find((r) => r.id === id);
+      return route.fulfill({ json: { ...found, latest_result: null } });
+    });
+
+    await page.goto("/");
+    await expect(page.getByRole("listitem").first()).toBeVisible();
+
+    // 捲到清單中段，記住這個位置。
+    await page.evaluate(() => window.scrollTo(0, 400));
+    const scrollBefore = await page.evaluate(() => window.scrollY);
+    expect(scrollBefore).toBeGreaterThan(0);
+
+    // 點一張捲動範圍內才看得到的卡片進詳細頁，再用返回入口回劇本庫
+    // ——不是重新整理，是同一個 App 內的 hash 導覽（#72 既有機制）。
+    await page.getByRole("link", { name: /SYM5/ }).click();
+    await expect(page.getByRole("link", { name: "‹ 劇本庫" })).toBeVisible();
+    await page.getByRole("link", { name: "‹ 劇本庫" }).click();
+
+    await expect(page.getByRole("listitem").first()).toBeVisible();
+    // 允許些微誤差（不同時機的 layout 抖動），但必須明顯不是又跳回頂端
+    // ——那正是這張票要修的舊行為。
+    await expect.poll(() => page.evaluate(() => window.scrollY))
+      .toBeGreaterThan(scrollBefore - 20);
+  });

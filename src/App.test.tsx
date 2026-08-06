@@ -666,6 +666,84 @@ describe("清單 → 詳細頁（V5／#53）", () => {
   });
 });
 
+describe("手機返回劇本庫還原捲動位置（MVP-v2／#77、#83）", () => {
+  const row = {
+    ...(sampleRow as unknown as Record<string, unknown>),
+    id: "s1", symbol: "TLT", target_price: 120, target_month: "2028-05",
+    latest_analyzed_at: "2026-08-04T09:30:00+00:00", best_return: 1.5,
+    target_anchor: "2028-05-19", days_to_anchor: 653,
+  };
+
+  afterEach(() => {
+    window.location.hash = "";
+  });
+
+  it("進詳細頁前記住捲動位置，返回後呼叫 scrollTo 還原到同一個位置", async () => {
+    mockRoutes({
+      "/api/scenarios": { json: async () => [row] },
+      "/api/scenarios/s1": { json: async () => ({ ...row, latest_result: null }) },
+    });
+    const scrollToSpy = vi.spyOn(window, "scrollTo");
+    render(<App />);
+    await screen.findByText("TLT");
+
+    // 模擬使用者往下捲動——手機版劇本庫掛著一個 `scroll` 監聽器持續
+    // 記錄最新位置（App.tsx 的既有寫法），這裡直接發事件觸發它。
+    Object.defineProperty(window, "scrollY", { value: 480, configurable: true });
+    window.dispatchEvent(new Event("scroll"));
+
+    window.location.hash = "#/s/s1";
+    await screen.findByRole("link", { name: /劇本庫/ });
+
+    scrollToSpy.mockClear();
+    window.location.hash = "";
+    await screen.findByText("TLT");
+
+    // `useLayoutEffect` 在回到劇本庫的那一刻同步呼叫，把離開前記住的
+    // 480 還原回去——不是隨機值、也不是恆為 0（那樣等於沒還原）。
+    expect(scrollToSpy).toHaveBeenCalledWith(0, 480);
+  });
+
+  it("桌面版不需要這段——左右兩欄本來就常駐，詳細頁切換不會卸載劇本庫",
+    async () => {
+      stubDesktopViewport();
+      mockRoutes({
+        "/api/scenarios": { json: async () => [row] },
+        "/api/scenarios/s1": { json: async () => ({ ...row, latest_result: null }) },
+      });
+      const scrollToSpy = vi.spyOn(window, "scrollTo");
+      render(<App />);
+      await screen.findByText("TLT");
+
+      Object.defineProperty(window, "scrollY", { value: 480, configurable: true });
+      window.dispatchEvent(new Event("scroll"));
+
+      window.location.hash = "#/s/s1";
+      await screen.findByRole("link", { name: "‹ 劇本庫" });
+      window.location.hash = "";
+      await screen.findByText("TLT");
+
+      expect(scrollToSpy).not.toHaveBeenCalled();
+    });
+
+  it("新增表單開合狀態在返回後維持——App 本身不會因為導覽而重新掛載", async () => {
+    mockRoutes({
+      "/api/scenarios": { json: async () => [row] },
+      "/api/scenarios/s1": { json: async () => ({ ...row, latest_result: null }) },
+    });
+    render(<App />);
+    await openCreateForm();
+    expect(screen.getByLabelText("標的代號")).toBeVisible();
+
+    window.location.hash = "#/s/s1";
+    await screen.findByRole("link", { name: /劇本庫/ });
+    window.location.hash = "";
+    await screen.findByText("TLT");
+
+    expect(screen.getByLabelText("標的代號")).toBeVisible();
+  });
+});
+
 /** 桌面寬度：`window.matchMedia` 回真，模擬寬螢幕（#72）。 */
 function stubDesktopViewport() {
   vi.stubGlobal("matchMedia", (query: string) => fakeMediaQueryList(true, query));
