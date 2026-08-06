@@ -10,6 +10,8 @@ import {
   formatRepresentativeLegs,
   formatReturn,
   isStale,
+  scenarioSignal,
+  signalLabel,
   sortScenarios,
 } from "./scenarios";
 
@@ -48,6 +50,63 @@ describe("劇本清單排序", () => {
     const input = [row("1", 0.1), row("2", 0.9)];
     sortScenarios(input);
     expect(input.map((r) => r.id)).toEqual(["1", "2"]);
+  });
+});
+
+describe("紅燈沉底（MVP-v2／#77、#80）", () => {
+  it("已過期的劇本一律排在未過期的之後，即使報酬率更高", () => {
+    const sorted = sortScenarios([
+      { ...row("1", 9.9), expired: true },
+      { ...row("2", 0.1), expired: false },
+    ]);
+    expect(sorted.map((r) => r.id)).toEqual(["2", "1"]);
+  });
+
+  it("多個紅燈劇本之間仍依報酬率降序，不是隨意順序", () => {
+    const sorted = sortScenarios([
+      { ...row("1", 0.5), expired: true },
+      { ...row("2", 2.0), expired: false },
+      { ...row("3", 3.0), expired: true },
+    ]);
+    expect(sorted.map((r) => r.id)).toEqual(["2", "3", "1"]);
+  });
+
+  it("紅燈組內未跑過的一樣沉到紅燈組的最後", () => {
+    const sorted = sortScenarios([
+      { ...row("1", null), expired: true },
+      { ...row("2", 1.0), expired: true },
+      { ...row("3", 5.0), expired: false },
+    ]);
+    expect(sorted.map((r) => r.id)).toEqual(["3", "2", "1"]);
+  });
+});
+
+describe("劇本級燈號（MVP-v2／#77、#80，附錄 A12）", () => {
+  it("目標月已過完 → 紅燈，優先於是否有刷新失敗", () => {
+    const expired = { ...row("1", 1.0), expired: true };
+    expect(scenarioSignal(expired, undefined)).toBe("red");
+    expect(scenarioSignal(
+      expired, { stage: "fetch", message: "抓不到" })).toBe("red");
+  });
+
+  it("本次刷新失敗且未過期 → 黃燈", () => {
+    const active = { ...row("1", 1.0), expired: false };
+    expect(scenarioSignal(
+      active, { stage: "fetch", message: "抓不到" })).toBe("yellow");
+  });
+
+  it("其餘（含尚未分析）→ 綠燈", () => {
+    const active = { ...row("1", 1.0), expired: false };
+    expect(scenarioSignal(active, undefined)).toBe("green");
+    const neverRun = { ...row("1", null), expired: false };
+    expect(scenarioSignal(neverRun, undefined)).toBe("green");
+  });
+
+  it("三種燈號各有一句不同的可及文字，不是空字串", () => {
+    const labels = [signalLabel("red"), signalLabel("yellow"),
+                    signalLabel("green")];
+    expect(new Set(labels).size).toBe(3);
+    labels.forEach((l) => expect(l).toBeTruthy());
   });
 });
 

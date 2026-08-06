@@ -24,6 +24,8 @@ import {
   formatReturn,
   isStale,
   money,
+  scenarioSignal,
+  signalLabel,
   sortScenarios,
 } from "./scenarios";
 
@@ -45,6 +47,8 @@ function ScenarioCard({
   const ran = row.best_return !== null;
   const stale = isStale(row.latest_analyzed_at, now);
   const who = `${row.symbol} ${row.target_month}`;
+  // MVP-v2（#77、#80）：劇本級燈號，紅＞黃＞綠、一張卡只有一個燈。
+  const signal = scenarioSignal(row, failure);
   return (
     <li className={selected ? "card selected" : "card"}>
       {/* 整張卡就是進詳細頁的入口。用真的 `<a>` 而不是掛 onClick 的
@@ -58,7 +62,19 @@ function ScenarioCard({
       <a className="card-tap" href={detailHash(row.id)}
          aria-current={selected ? "page" : undefined}>
         <div className="row">
-          <span className="row-value big">{row.symbol}</span>
+          {/* 燈號跟標的分成同一個 flex item：`.row` 是 space-between，
+              燈號要黏在標的旁邊，不能被撐到卡片最左邊自成一欄。顏色不是
+              唯一的資訊管道：`title` 給滑鼠停留時看得到的文字、`sr-only`
+              給螢幕閱讀器；圓點本身 `aria-hidden`。 */}
+          <span className="symbol-group">
+            <span
+              className={`signal-dot signal-${signal}`}
+              title={signalLabel(signal)}
+              aria-hidden="true"
+            />
+            <span className="sr-only">{signalLabel(signal)}</span>
+            <span className="row-value big">{row.symbol}</span>
+          </span>
           <span className="metric-group">
             <span
               className={

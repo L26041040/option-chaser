@@ -159,6 +159,48 @@ describe("代表候選（MVP-v2／#77、#78）", () => {
   });
 });
 
+describe("劇本級燈號（MVP-v2／#77、#80）", () => {
+  it("正常劇本是綠燈", () => {
+    list([row({ expired: false })]);
+    expect(screen.getByTitle("狀態：正常")).toBeInTheDocument();
+    expect(document.querySelector(".signal-dot.signal-green")).toBeTruthy();
+  });
+
+  it("目標月已過完是紅燈，即使同時帶著刷新失敗紀錄", () => {
+    list([row({ id: "a", expired: true })], {
+      failures: { a: { stage: "fetch", message: "抓不到" } },
+    });
+    expect(screen.getByTitle("狀態：已過期")).toBeInTheDocument();
+    expect(document.querySelector(".signal-dot.signal-red")).toBeTruthy();
+    expect(document.querySelector(".signal-dot.signal-yellow")).toBeFalsy();
+  });
+
+  it("本次刷新失敗且未過期是黃燈", () => {
+    list([row({ id: "a", expired: false })], {
+      failures: { a: { stage: "fetch", message: "抓不到" } },
+    });
+    expect(screen.getByTitle("狀態：刷新失敗")).toBeInTheDocument();
+    expect(document.querySelector(".signal-dot.signal-yellow")).toBeTruthy();
+  });
+
+  it("每張卡片只有一個燈號圓點", () => {
+    list([row({ id: "a", expired: true })], {
+      failures: { a: { stage: "fetch", message: "抓不到" } },
+    });
+    expect(document.querySelectorAll(".signal-dot").length).toBe(1);
+  });
+
+  it("紅燈的劇本沉到清單最後，即使報酬率最高", () => {
+    list([
+      row({ id: "a", symbol: "AAA", best_return: 9.9, expired: true }),
+      row({ id: "b", symbol: "BBB", best_return: 0.1, expired: false }),
+    ]);
+    const symbols = screen.getAllByRole("listitem")
+      .map((li) => li.querySelector(".big")!.textContent);
+    expect(symbols).toEqual(["BBB", "AAA"]);
+  });
+});
+
 describe("收益率口徑（V4／#52）", () => {
   it("畫面上寫明收益率怎麼算的——最差成交價", () => {
     list([row()]);

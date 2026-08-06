@@ -22,6 +22,9 @@
   --green: #34c759;
   --red: #ff3b30;
   --orange: #ff9500;
+  /* 劇本級燈號（MVP-v2／#77、#80）專用——黃燈是獨立於既有 `--orange`
+     警示色的第三種語意（刷新失敗，不是「品質提醒」），因此另立一色。 */
+  --yellow: #ffcc00;
   /* iOS secondary fill：膠囊鈕底、按下卡片時的 highlight。用灰階半透明
      而不是實色，深淺兩種模式共用同一個值。 */
   --fill: rgba(120, 120, 128, 0.12);
@@ -43,6 +46,7 @@
     --green: #30d158;
     --red: #ff453a;
     --orange: #ff9f0a;
+    --yellow: #ffd60a;
     --fill: rgba(120, 120, 128, 0.24);
     /* 深色模式靠卡片本身的亮度分層，投影只會變成一圈髒邊 */
     --card-shadow: none;
@@ -492,6 +496,38 @@ body {
   gap: var(--gap);
   padding-top: var(--gap);
   border-top: 0.5px solid var(--separator);
+}
+
+/* ---------- 劇本級燈號（MVP-v2／#77、#80） ---------- */
+
+/* 紅＞黃＞綠、一張卡只有一個燈；顏色不是唯一的資訊管道，可及文字見
+   `scenarios.signalLabel()`（`title` ＋ `sr-only`，圓點本身
+   `aria-hidden`）。跟標的同一個 flex item，才不會被 `.row` 的
+   `space-between` 撐開成獨立一欄。 */
+.symbol-group {
+  display: flex;
+  align-items: center;
+}
+
+.signal-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  margin-right: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.signal-dot.signal-green {
+  background: var(--green);
+}
+
+.signal-dot.signal-yellow {
+  background: var(--yellow);
+}
+
+.signal-dot.signal-red {
+  background: var(--red);
 }
 
 /* ---------- 新鮮度標記與卡片內的失敗指引（V4／#52） ---------- */
