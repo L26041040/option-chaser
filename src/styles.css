@@ -365,6 +365,51 @@ body {
   opacity: 0.45;
 }
 
+/* ---------- 手機首頁：Dashboard 佔位＋新增劇本入口（MVP-v2／#77、#81） ---------- */
+
+/* 低調但可見——版面位置先保留，內容待跨劇本比較功能確定後才填。跟
+   `.card` 同一套視覺語言（同樣是卡片底色＋圓角），但用次要文字色調
+   （`--label-secondary`），避免在還沒有內容之前搶了劇本清單的視覺重量。 */
+.dashboard-placeholder {
+  background: var(--bg-elevated);
+  border-radius: var(--radius);
+  box-shadow: var(--card-shadow);
+  padding: var(--gap);
+  color: var(--label-secondary);
+}
+
+.dashboard-title {
+  margin: 0 0 2px;
+  font-size: 13px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+
+/* 收合態是一列 compact 的膠囊鈕，跟桌面版工具列的「＋ 建立劇本」
+   （`.pill`）同一套視覺語言，只是換了位置——手機版把它挪到 Dashboard
+   下方、劇本庫上方，不是工具列的重複。展開後的表單（`CreateForm`）
+   維持它原本在 `.card` 裡的樣式，這裡不額外包一層框。 */
+.create-entry-toggle {
+  appearance: none;
+  border: 0;
+  border-radius: var(--radius);
+  background: var(--bg-elevated);
+  box-shadow: var(--card-shadow);
+  color: var(--tint);
+  font-family: inherit;
+  font-size: 17px;
+  font-weight: 600;
+  width: 100%;
+  padding: 14px var(--gap);
+  text-align: left;
+  cursor: pointer;
+}
+
+.create-entry-toggle:active {
+  opacity: 0.6;
+}
+
 /* ---------- 卡片內容 ---------- */
 
 .list {

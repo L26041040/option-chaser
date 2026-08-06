@@ -301,8 +301,9 @@ test("劇本庫：建立 → 出現在清單 → 封存後消失（V3／#51）",
   await expect(page.getByText("劇本庫")).toBeVisible();
   await expect(page.getByText(/還沒有劇本/)).toBeVisible();
 
-  // #75：建立劇本收攏成工具列的頂部入口，預設收合。
-  await page.getByRole("button", { name: "＋ 建立劇本" }).click();
+  // 手機版（MVP-v2／#77、#81）：建立劇本入口在 Dashboard 佔位區下方，
+  // 不在工具列——#75 的工具列頂部入口自此縮限成桌面現狀。預設收合。
+  await page.getByRole("button", { name: "＋ 新增劇本" }).click();
   await page.getByLabel("標的代號").fill("tlt");
   await page.getByLabel("目標價位").fill("120");
   // 年月選擇器（#71）不是原生 input：點欄位就地展開，輸入四碼年份，
@@ -357,15 +358,14 @@ test("功能列捲動時仍釘在頂部、而且按得到（V3／#51 驗收第 1
   expect(box.y).toBeLessThan(2);
   await expect(toolbar).toBeInViewport();
 
-  // 釘住還不夠——捲到底時按下去要真的送出請求，功能列才算能用
+  // 釘住還不夠——捲到底時按下去要真的送出請求，功能列才算能用。
+  // 手機版（MVP-v2／#77、#81）工具列上只剩刷新這一個入口——建立劇本
+  // 移到 Dashboard 下方、不隨工具列釘住，因此不在這條測試斷言範圍內
+  // （#75 的「同一個固定操作列兩個入口」自此是桌面版現狀，見
+  // `desktop.spec.ts`／`App.test.tsx` 對應案例）。
   const before = listCalls;
   await page.getByRole("button", { name: "重新整理" }).click();
   await expect.poll(() => listCalls).toBeGreaterThan(before);
-
-  // #75：建立劇本跟刷新是同一個固定操作列裡的兩個入口——捲到底時
-  // 也要按得下去，不能只驗其中一個。
-  await page.getByRole("button", { name: "＋ 建立劇本" }).click();
-  await expect(page.getByLabel("標的代號")).toBeVisible();
 });
 
 /* ---------- V4（#52）：刷新、進度、失敗指引 ---------- */
@@ -444,3 +444,57 @@ test("久未刷新的資料標成舊資料（V4／#52）", async ({ page }) => {
   await expect(page.getByText("100.0%")).toBeVisible();
   await expect(page.getByText("舊資料")).toBeVisible();
 });
+
+test("手機首頁版面順序：Dashboard 佔位 → 新增劇本入口 → 劇本庫（MVP-v2／#77、#81）",
+  async ({ page }) => {
+    await routeLibrary(page, libraryRow());
+
+    await page.goto("/");
+    await expect(page.getByRole("listitem")).toBeVisible();
+
+    const dashboard = page.getByLabel("Dashboard");
+    const createToggle = page.getByRole("button", { name: "＋ 新增劇本" });
+    const list = page.locator("ul.list");
+
+    await expect(dashboard).toBeVisible();
+    await expect(createToggle).toBeVisible();
+    await expect(list).toBeVisible();
+
+    // 三段由上而下的順序——不是同時存在就好，順序本身是規格的一部分。
+    expect(await dashboard.evaluate((el, other) =>
+      !!(el.compareDocumentPosition(other as Node) &
+         Node.DOCUMENT_POSITION_FOLLOWING),
+      await createToggle.elementHandle())).toBe(true);
+    expect(await createToggle.evaluate((el, other) =>
+      !!(el.compareDocumentPosition(other as Node) &
+         Node.DOCUMENT_POSITION_FOLLOWING),
+      await list.elementHandle())).toBe(true);
+
+    // Dashboard 佔位區不放任何數字（需求方裁示：不要自行發明 KPI）。
+    await expect(dashboard).not.toContainText(/\d/);
+  });
+
+test("新增劇本：點擊就地展開，不換頁、不彈出 modal（MVP-v2／#77、#81）",
+  async ({ page }) => {
+    await page.route("**/api/scenarios", (route) => route.fulfill({ json: [] }));
+
+    await page.goto("/");
+    const urlBefore = page.url();
+
+    await expect(page.getByLabel("標的代號")).not.toBeVisible();
+    await page.getByRole("button", { name: "＋ 新增劇本" }).click();
+    await expect(page.getByLabel("標的代號")).toBeVisible();
+
+    // 就地展開：網址沒變、Dashboard 與工具列仍在同一頁上。
+    expect(page.url()).toBe(urlBefore);
+    await expect(page.getByLabel("Dashboard")).toBeVisible();
+    await expect(page.getByText("劇本庫")).toBeVisible();
+
+    // 收合再展開，內容還在（沿用 #75 的既有教訓：面板一律掛著只切換
+    // 可見度，不是條件渲染整個卸載重掛）。
+    await page.getByLabel("標的代號").fill("tlt");
+    await page.getByRole("button", { name: "收合建立表單" }).click();
+    await expect(page.getByLabel("標的代號")).not.toBeVisible();
+    await page.getByRole("button", { name: "＋ 新增劇本" }).click();
+    await expect(page.getByLabel("標的代號")).toHaveValue("tlt");
+  });

@@ -30,13 +30,18 @@ async function pickMonth(year: number, month: number) {
 }
 
 /**
- * 建立劇本表單預設收合（#75），得先展開工具列上的入口才看得到欄位。
+ * 建立劇本表單預設收合，得先展開入口才看得到欄位。入口位置依裝置寬度
+ * 而不同（MVP-v2／#77、#81）：桌面（#75 現狀）在工具列的「＋ 建立劇本」，
+ * 手機在 Dashboard 下方的「＋ 新增劇本」（`CreateEntry`）——這裡不管
+ * 呼叫端跑在哪個視窗寬度，找得到哪個按鈕就點哪個。真的要測特定入口的
+ * 精確文字與位置時，各自的測試會直接斷言，不靠這個共用小工具。
+ *
  * `findByRole` 而不是 `getByRole`：開站那輪批次刷新完成前，工具列的
  * 「重新整理」／「刷新中……」互斥渲染有可能讓查詢撞上一個瞬間的重繪。
  */
 async function openCreateForm() {
   await userEvent.click(
-    await screen.findByRole("button", { name: "＋ 建立劇本" }));
+    await screen.findByRole("button", { name: /＋ (建立劇本|新增劇本)/ }));
 }
 
 /**
@@ -784,7 +789,11 @@ describe("桌面版真正的 master/detail（#72）", () => {
   });
 });
 
-describe("主要操作入口收攏到工作區上方（#75）", () => {
+describe("桌面版：主要操作入口收攏到工作區上方（#75，MVP-v2／#77 起僅桌面）", () => {
+  // #75 原本涵蓋所有寬度；MVP-v2（#77、#81）裁示手機改走 Dashboard 下方
+  // 的獨立入口（見「手機版：新增劇本入口」），#75 的工具列頂部入口自此
+  // 縮限成桌面現狀——這裡的每個案例都先切到桌面寬度，斷言才對得上現在
+  // 實際覆蓋的範圍。
   const row = {
     ...(sampleRow as unknown as Record<string, unknown>),
     id: "s1", symbol: "TLT", target_price: 120, target_month: "2028-05",
@@ -793,6 +802,7 @@ describe("主要操作入口收攏到工作區上方（#75）", () => {
   };
 
   it("建立劇本表單預設收合，工具列上有明確的頂部入口，按下去才展開", async () => {
+    stubDesktopViewport();
     mockRoutes({
       "/api/scenarios": { json: async () => [row] },
       "/api/scenarios/": { json: async () => row },
@@ -815,6 +825,7 @@ describe("主要操作入口收攏到工作區上方（#75）", () => {
     // code review 跟進：面板原本用條件渲染整個卸載重掛，使用者打到
     // 一半手滑點到收合鈕，剛打的字就白打了——改用 `hidden` 屬性切換
     // 可見度後，這裡直接驗證收合再展開，內容還在。
+    stubDesktopViewport();
     mockRoutes({
       "/api/scenarios": { json: async () => [row] },
       "/api/scenarios/": { json: async () => row },
@@ -831,6 +842,7 @@ describe("主要操作入口收攏到工作區上方（#75）", () => {
   });
 
   it("建立劇本與刷新是同一個固定操作列裡的兩個入口", async () => {
+    stubDesktopViewport();
     mockRoutes({
       "/api/scenarios": { json: async () => [row] },
       "/api/scenarios/": { json: async () => row },
@@ -853,6 +865,7 @@ describe("主要操作入口收攏到工作區上方（#75）", () => {
   });
 
   it("劇本清單下方已無任何主要操作——建立入口在工作區最上方", async () => {
+    stubDesktopViewport();
     mockRoutes({
       "/api/scenarios": { json: async () => [row] },
       "/api/scenarios/": { json: async () => row },
