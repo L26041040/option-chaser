@@ -12,7 +12,7 @@ from __future__ import annotations
 import psycopg
 from psycopg.types.json import Jsonb
 
-from . import ResultRecord, ResultSummary, Scenario, ScenarioExists
+from . import RateCacheEntry, ResultRecord, ResultSummary, Scenario, ScenarioExists
 
 # 每個 lambda 程序只需建表一次。`IF NOT EXISTS` 在 Postgres 並非完全
 # race-free（同時冷啟動可能撞上 duplicate 錯誤），因此除了這個旗標，
@@ -59,6 +59,18 @@ CREATE TABLE IF NOT EXISTS events (
 );
 CREATE INDEX IF NOT EXISTS results_scenario_idx ON results (scenario_id, analyzed_at);
 CREATE INDEX IF NOT EXISTS events_scenario_idx ON events (scenario_id, seq);
+-- 利率曲線快取（#67）：單一一筆狀態，不是歷史序列——`id` 固定為 1，
+-- `CHECK` 讓「只有一列」在資料庫層面成立，不只是應用層的約定。
+CREATE TABLE IF NOT EXISTS rate_cache (
+    id                INTEGER PRIMARY KEY DEFAULT 1,
+    fetched_at        TEXT NOT NULL,
+    curve             JSONB,
+    note              TEXT NOT NULL,
+    last_success_at   TEXT,
+    market_day        TEXT,
+    attempted_day     TEXT,
+    CHECK (id = 1)
+);
 """
 
 # 遷移**必須與建表分開送**。psycopg 對「無參數、多語句」的 execute 走
@@ -69,6 +81,9 @@ _MIGRATIONS = """
 ALTER TABLE results ADD COLUMN IF NOT EXISTS best_return DOUBLE PRECISION;
 ALTER TABLE scenarios ADD COLUMN IF NOT EXISTS best_price DOUBLE PRECISION;
 ALTER TABLE scenarios ADD COLUMN IF NOT EXISTS worst_price DOUBLE PRECISION;
+ALTER TABLE rate_cache ADD COLUMN IF NOT EXISTS last_success_at TEXT;
+ALTER TABLE rate_cache ADD COLUMN IF NOT EXISTS market_day TEXT;
+ALTER TABLE rate_cache ADD COLUMN IF NOT EXISTS attempted_day TEXT;
 """
 
 # 冷啟動競爭下的良性錯誤：別人已經建好／加好了。
@@ -239,3 +254,31 @@ class PostgresStorage:
             rows = conn.execute(sql, params).fetchall()
         return [{"ts": r[0], "scenario_id": r[1], "event": r[2],
                  "payload": r[3]} for r in rows]
+
+    # ---------- 利率曲線快取 ----------
+
+    def get_rate_cache(self) -> RateCacheEntry | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT fetched_at, curve, note, last_success_at, market_day, "
+                "attempted_day FROM rate_cache WHERE id = 1").fetchone()
+        return (RateCacheEntry(fetched_at=row[0], curve=row[1], note=row[2],
+                               last_success_at=row[3], market_day=row[4],
+                               attempted_day=row[5])
+                if row else None)
+
+    def save_rate_cache(self, entry: RateCacheEntry) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO rate_cache "
+                "(id, fetched_at, curve, note, last_success_at, market_day, "
+                "attempted_day) "
+                "VALUES (1, %s, %s, %s, %s, %s, %s) "
+                "ON CONFLICT (id) DO UPDATE "
+                "SET fetched_at = EXCLUDED.fetched_at, curve = EXCLUDED.curve, "
+                "note = EXCLUDED.note, last_success_at = EXCLUDED.last_success_at, "
+                "market_day = EXCLUDED.market_day, "
+                "attempted_day = EXCLUDED.attempted_day",
+                (entry.fetched_at, Jsonb(entry.curve) if entry.curve is not None else None,
+                 entry.note, entry.last_success_at, entry.market_day,
+                 entry.attempted_day))

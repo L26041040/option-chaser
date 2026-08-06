@@ -23,11 +23,14 @@ from option_chaser import __version__, service, store
 from option_chaser.data.snapshot import snapshot_from_dict, snapshot_to_csv
 from option_chaser.models import (AnalysisParams, ChainSnapshot, FetchError,
                                   ParamError, STRATEGIES)
+from option_chaser.service import RateCurveLoader
 from option_chaser.timeframe import (TargetMonth, calendar_anchor,
-                                     ensure_month_open)
+                                     ensure_month_open, month_is_over)
 from option_chaser.workspace import now_utc_iso, ny_today
 
-from .storage import ResultRecord, Scenario, ScenarioExists, Storage
+from .rate_cache import cached_loader
+from .storage import (RateCacheEntry, ResultRecord, ResultSummary, Scenario,
+                      ScenarioExists, Storage)
 from .storage.factory import storage_from_env
 
 FetchChain = Callable[[str], ChainSnapshot]
@@ -89,11 +92,18 @@ class CreateScenarioRequest(BaseModel):
 
 
 def _timing_json(sc: Scenario, today: date) -> dict:
-    """卡片的「距到期天數」（V3／#51）。
+    """卡片的「距到期天數」（V3／#51）與「是否已過期」（#68）。
 
-    兩件事都是領域規則、都不該讓瀏覽器自己猜：錨點＝該月第三個星期五
-    （`timeframe.calendar_anchor`），「今天」＝紐約日曆（`ny_today`）。
+    三件事都是領域規則、都不該讓瀏覽器自己猜：錨點＝該月第三個星期五
+    （`timeframe.calendar_anchor`），「今天」＝紐約日曆（`ny_today`），
+    「已過期」＝目標月最後一天已過完（`timeframe.month_is_over`）。
     已過期就是負數，夾成 0 會讓過期劇本看起來還有救。
+
+    `expired` 與 `days_to_anchor < 0` 是**不同**的判準：後者以日曆錨點
+    （第三個星期五）為準，會在月份真正過完之前就先轉負；前者才是
+    `ensure_month_open` 與 `refresh_scenario` 用來擋下的那條規則，
+    三處必須用同一個判準，否則清單上的「已過期，不再刷新」會跟批次
+    刷新實際跳過的對象兜不起來。
 
     `today` 由呼叫端傳入、整個回應只取一次——沿用專案既有原則
     （`workspace.card_of(observed=...)`、`ensure_month_open(month, today)`、
@@ -101,11 +111,14 @@ def _timing_json(sc: Scenario, today: date) -> dict:
     出現兩個「今天」。
 
     刻意不放進 `_scenario_json`：那個結構會原樣寫進 `SCENARIO_CREATED`
-    事件，而事件是不可變的事實，不能塞「距今幾天」這種隨時間改變的值。
+    事件，而事件是不可變的事實，不能塞「距今幾天」「是否已過期」這種
+    隨時間改變的值。
     """
-    anchor = calendar_anchor(TargetMonth.from_key(sc.target_month))
+    month = TargetMonth.from_key(sc.target_month)
+    anchor = calendar_anchor(month)
     return {"target_anchor": anchor.isoformat(),
-            "days_to_anchor": (anchor - today).days}
+            "days_to_anchor": (anchor - today).days,
+            "expired": month_is_over(month, today)}
 
 
 def _scenario_json(sc: Scenario) -> dict:
@@ -124,6 +137,16 @@ def _row_json(sc: Scenario, today: date, *, analyzed_at: str | None,
             "latest_analyzed_at": analyzed_at, "best_return": best_return}
 
 
+def _summary_of(latest: ResultRecord | ResultSummary | None) -> dict:
+    """從一筆「最新結果」（`ResultRecord` 或 `ResultSummary`，兩者皆有
+    `analyzed_at`／`best_return`）取出卡片要的兩個欄位；沒有結果
+    （`None`，劇本從未成功分析過）時兩欄皆 `None`——卡片據此顯示「—」，
+    不是 0。列出、詳細頁、刷新（含過期短路）共用同一個形狀，不必各自
+    重寫一次 `if x else None`。"""
+    return {"analyzed_at": latest.analyzed_at if latest else None,
+            "best_return": latest.best_return if latest else None}
+
+
 def _fail(stage: str, status: int, message: str) -> HTTPException:
     """失敗分層（V4／#52）。
 
@@ -136,9 +159,20 @@ def _fail(stage: str, status: int, message: str) -> HTTPException:
 
 
 def create_app(*, fetch: FetchChain = service.fetch_chain,
-               storage: Storage | None = None) -> FastAPI:
-    """`fetch` 與 `storage` 皆可注入：測試傳入固定快照與記憶體假體，
-    因此不打真網路、不碰真資料庫，決定性。"""
+               storage: Storage | None = None,
+               rate_loader: RateCurveLoader = service.default_rate_curve_loader,
+               ) -> FastAPI:
+    """`fetch`／`storage`／`rate_loader` 皆可注入：測試傳入固定快照、
+    記憶體假體與假利率來源，因此不打真網路、不碰真資料庫，決定性。
+
+    `rate_loader`（#67）是資料源本身的介面——目前預設接的
+    `service.default_rate_curve_loader`（Treasury）是 #73／#74 選型與
+    production 實測後的落地結果（研究見
+    `docs/research/interest-rate-source-selection.md`，探測結果見該文
+    §6.4）；備援層（FRED／FMP，皆需金鑰）待需求方申請金鑰後再接，
+    介面本身已是可替換的。真正對外生效的是 `_rate_curve_loader()`
+    包出來、疊了持久快取的版本，見下方。
+    """
     app = FastAPI(title="Option Chaser API", version=__version__)
 
     # 延遲建構：Postgres adapter 在建構時就連線＋建表，若放在 import 期，
@@ -153,6 +187,16 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         if "db" not in cached:
             cached["db"] = storage_from_env()
         return cached["db"]
+
+    # 同一個道理：包快取的動作本身不必每次分析重做一次，惰性建一次、
+    # 快取物件重用即可（`cached_loader()` 回傳的閉包內部沒有狀態，
+    # 重不重建都不影響行為，這裡只是省一次函式呼叫）。
+    cached_rate: dict[str, RateCurveLoader] = {}
+
+    def _rate_curve_loader() -> RateCurveLoader:
+        if "loader" not in cached_rate:
+            cached_rate["loader"] = cached_loader(_db(), rate_loader)
+        return cached_rate["loader"]
 
     def _require(scenario_id: str) -> Scenario:
         sc = _db().get_scenario(scenario_id)
@@ -191,7 +235,8 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
             # 是哪一段」時說不知道，好過說一個錯的分層。
             raise _fail("fetch", 502, f"抓不到 {symbol} 的報價：{e}") from e
         try:
-            result = service.run_with_snapshot(req, snap)
+            result = service.run_with_snapshot(
+                req, snap, rate_curve_loader=_rate_curve_loader())
         except ParamError as e:
             raise _fail("params", 400, str(e)) from e
         except Exception as e:  # noqa: BLE001 — 引擎任何失敗都要說是哪一段，不留白畫面
@@ -211,8 +256,20 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
             kind = _db().kind
         except Exception as e:  # noqa: BLE001 — 連不上也要能回答，這正是本端點的用途
             kind = f"unavailable: {e}"
+        # 利率狀態（#67）：最近一次嘗試的結果——尚無任何分析跑過時為
+        # `None`（不是「失敗」，是「還沒發生過」）；讀不到快取比照
+        # `storage` 的做法，同樣不讓 /api/health 本身炸掉。
+        rate: dict | None = None
+        try:
+            entry = _db().get_rate_cache()
+            if entry is not None:
+                rate = {"fetched_at": entry.fetched_at,
+                       "ok": entry.curve is not None, "note": entry.note,
+                       "last_success_at": entry.last_success_at}
+        except Exception:  # noqa: BLE001 — 同上，本端點的用途就是連不上也要能回答
+            pass
         return {"status": "ok", "engine_version": __version__,
-                "storage": kind, "path": request.url.path}
+                "storage": kind, "path": request.url.path, "rate": rate}
 
     # ---------- 一次性分析（V1 遺留，前端改走劇本端點後可移除） ----------
 
@@ -260,11 +317,7 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         today = ny_today()          # 整份清單共用同一個「今天」
         rows = []
         for s in _db().list_scenarios(include_archived=include_archived):
-            summary = summaries.get(s.id)
-            rows.append(_row_json(
-                s, today,
-                analyzed_at=summary.analyzed_at if summary else None,
-                best_return=summary.best_return if summary else None))
+            rows.append(_row_json(s, today, **_summary_of(summaries.get(s.id))))
         return rows
 
     @app.get("/api/scenarios/{scenario_id}")
@@ -273,9 +326,7 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         latest = _db().latest_result(scenario_id)
         # `best_return` 也要在——detail 少一個欄位的話，客戶端就沒辦法把
         # 同一個型別套用在清單列與詳細回應上（V5 的詳細頁會踩到）。
-        return {**_row_json(sc, ny_today(),
-                            analyzed_at=latest.analyzed_at if latest else None,
-                            best_return=latest.best_return if latest else None),
+        return {**_row_json(sc, ny_today(), **_summary_of(latest)),
                 "latest_result": latest.view if latest else None}
 
     @app.post("/api/scenarios/{scenario_id}/archive")
@@ -296,8 +347,19 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         回傳的是**卡片列**而非整份 view：客戶端要依序刷新 N 個劇本、
         每完成一個就更新那張卡，每次拖回十萬字元級的 view 在手機上是
         實打實的浪費。要看完整 view 走 detail 端點。
+
+        本端點是所有刷新入口共用的**唯一**擋點（#68）：目標月已過完的
+        劇本直接短路成一次無害的讀取（不抓鏈、不跑引擎、不入庫、不留
+        事件），回傳目前既有的卡片列。這裡是唯一必須擋住的地方——批次
+        流程本該在排隊前就先篩掉這類劇本以免浪費一趟網路往返，但擋點
+        設在這裡才能保證「任何入口都擋得住」，含日後新增的、忘記先篩
+        的呼叫端。
         """
         sc = _require(scenario_id)
+        today = ny_today()
+        if month_is_over(TargetMonth.from_key(sc.target_month), today):
+            latest = _db().latest_result(scenario_id)
+            return _row_json(sc, today, **_summary_of(latest))
         view, snapshot = _analyze(
             scenario_id=sc.id, symbol=sc.symbol, target_price=sc.target_price,
             target_month=sc.target_month, strategies=sc.strategies,
@@ -312,7 +374,7 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
                            event="ANALYSIS_COMPLETED",
                            payload={"analyzed_at": analyzed_at,
                                     "snapshot_ref": view["snapshot_ref"]})
-        return _row_json(sc, ny_today(), analyzed_at=analyzed_at,
+        return _row_json(sc, today, analyzed_at=analyzed_at,
                          best_return=best_return)
 
     @app.get("/api/scenarios/{scenario_id}/results")

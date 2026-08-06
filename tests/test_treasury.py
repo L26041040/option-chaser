@@ -6,6 +6,7 @@ from datetime import date
 
 import pytest
 
+from option_chaser.data import treasury
 from option_chaser.models import FetchError
 from option_chaser.data.treasury import (CACHE_MAX_AGE_DAYS, CSV_URL, XML_URL,
                                          fetch_curve, load_rate_curve)
@@ -73,6 +74,80 @@ def test_fetch_curve_all_fail_raises_fetch_error():
 
     with pytest.raises(FetchError):
         fetch_curve(TODAY, http_get=http_get)
+
+
+def test_fetch_curve_failure_message_names_the_source_and_stage():
+    """#74：失敗訊息要看得出是哪個來源、哪一段失敗，不是一句籠統的
+    「抓取失敗」。"""
+    def http_get(url):
+        raise OSError("connection refused")
+
+    with pytest.raises(FetchError) as exc_info:
+        fetch_curve(TODAY, http_get=http_get)
+
+    message = str(exc_info.value)
+    assert "Treasury" in message
+    assert "CSV" in message and "XML" in message   # 兩種格式都試過
+    assert "connection refused" in message
+
+
+# ---------- `_http_get`：#74 硬化（真實標頭、明確檢查狀態碼） ----------
+
+class _FakeHttpResponse:
+    def __init__(self, status: int, body: bytes = b""):
+        self.status = status
+        self._body = body
+
+    def read(self):
+        return self._body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+def test_http_get_sends_browser_like_headers(monkeypatch):
+    """只帶一個非常規 User-Agent（舊版是裸字串 "option-chaser"）前置
+    CDN／WAF 常直接擋——#74 硬化成一般瀏覽器等級標頭。"""
+    captured = {}
+
+    def fake_urlopen(req, timeout):
+        captured["headers"] = {k.lower(): v for k, v in req.header_items()}
+        return _FakeHttpResponse(200, b"ok")
+
+    monkeypatch.setattr(treasury, "urlopen", fake_urlopen)
+
+    treasury._http_get("https://example.test/x")
+
+    ua = captured["headers"].get("user-agent", "")
+    assert "Mozilla" in ua and "Chrome" in ua
+    assert "accept" in captured["headers"]
+    assert "accept-language" in captured["headers"]
+
+
+def test_http_get_rejects_a_non_200_status_without_reaching_the_caller(monkeypatch):
+    """明確檢查狀態碼（#74）——`urlopen` 對 4xx/5xx 本來就會拋
+    `HTTPError`，這裡額外擋 2xx 但非 200 的情況（例如 204），讓
+    「這個來源這次失敗了」不必等到後面解析階段才發現。"""
+    monkeypatch.setattr(treasury, "urlopen",
+                        lambda req, timeout: _FakeHttpResponse(204, b""))
+
+    with pytest.raises(FetchError, match="204"):
+        treasury._http_get("https://example.test/x")
+
+
+def test_http_get_wraps_an_http_error_with_the_status_code(monkeypatch):
+    from urllib.error import HTTPError
+
+    def fake_urlopen(req, timeout):
+        raise HTTPError("https://example.test/x", 403, "Forbidden", {}, None)
+
+    monkeypatch.setattr(treasury, "urlopen", fake_urlopen)
+
+    with pytest.raises(FetchError, match="403"):
+        treasury._http_get("https://example.test/x")
 
 
 # ---------- load_rate_curve 三層 fallback ----------

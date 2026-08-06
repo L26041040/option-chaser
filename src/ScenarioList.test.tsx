@@ -124,6 +124,34 @@ describe("資料新鮮度提示（V4／#52）", () => {
   });
 });
 
+describe("過期劇本不再刷新（#68）", () => {
+  it("目標月已過的劇本標出來，且與「舊資料」不是同一句話", () => {
+    list([row({ expired: true })]);
+    expect(screen.getByText("已過期，不再刷新")).toBeInTheDocument();
+  });
+
+  it("目標月還沒過的劇本沒有這個標記", () => {
+    list([row({ expired: false })]);
+    expect(screen.queryByText("已過期，不再刷新")).not.toBeInTheDocument();
+  });
+
+  it("已過期的劇本即使帶著舊的失敗紀錄，也不顯示刷新失敗與重試——" +
+     "兩種狀態同時出現會讓使用者搞不清楚現在是哪一種", () => {
+    list([row({ id: "a", expired: true })], {
+      failures: { a: { stage: "fetch", message: "抓不到報價" } },
+    });
+
+    expect(screen.getByText("已過期，不再刷新")).toBeInTheDocument();
+    expect(screen.queryByText(/抓不到報價/)).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /重試/ })).not.toBeInTheDocument();
+  });
+
+  it("既有分析結果照常顯示，過期只是不再刷新，不是把資料藏起來", () => {
+    list([row({ expired: true, best_return: 1.234 })]);
+    expect(screen.getByText("123.4%")).toBeInTheDocument();
+  });
+});
+
 describe("刷新失敗的分層與重試入口（V4／#52）", () => {
   it("抓不到報價時說是哪一段失敗，並附後端給的原因", () => {
     list([row()], {

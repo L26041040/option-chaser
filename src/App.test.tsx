@@ -8,12 +8,36 @@
  * 只測外部行為（畫面呈現什麼、失敗時說什麼），不測實作細節。
  * 詳細頁本身的測試在 `ScenarioDetail.test.tsx`。
  */
-import { render, screen, within } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import App from "./App";
 import sampleRow from "../contracts/scenario_row_sample.json";
+import { fakeMediaQueryList } from "./test-setup";
+
+/**
+ * 建立表單的年月選擇器（#71）不是原生 input，不能再用
+ * `userEvent.type(getByLabelText("目標年月"), "YYYY-MM")` 直接打字——
+ * 走完整個互動：展開 → 直接輸入四碼年份 → 點月份鈕（收合）。
+ */
+async function pickMonth(year: number, month: number) {
+  await userEvent.click(screen.getByLabelText("目標年月"));
+  const yearInput = screen.getByLabelText("年份");
+  await userEvent.clear(yearInput);
+  await userEvent.type(yearInput, String(year));
+  await userEvent.click(screen.getByRole("button", { name: `${month} 月` }));
+}
+
+/**
+ * 建立劇本表單預設收合（#75），得先展開工具列上的入口才看得到欄位。
+ * `findByRole` 而不是 `getByRole`：開站那輪批次刷新完成前，工具列的
+ * 「重新整理」／「刷新中……」互斥渲染有可能讓查詢撞上一個瞬間的重繪。
+ */
+async function openCreateForm() {
+  await userEvent.click(
+    await screen.findByRole("button", { name: "＋ 建立劇本" }));
+}
 
 /**
  * V3 起 App 開站就會打 `/api/scenarios`，所以 mock 必須依 URL 分流——
@@ -93,9 +117,10 @@ describe("劇本庫（V3／#51）", () => {
     });
     render(<App />);
 
-    await userEvent.type(await screen.findByLabelText("標的代號"), "spy");
+    await openCreateForm();
+    await userEvent.type(screen.getByLabelText("標的代號"), "spy");
     await userEvent.type(screen.getByLabelText("目標價位"), "700");
-    await userEvent.type(screen.getByLabelText("目標年月"), "2028-05");
+    await pickMonth(2028, 5);
     await userEvent.click(screen.getByRole("button", { name: "建立" }));
 
     expect(await screen.findByText("SPY")).toBeInTheDocument();
@@ -366,6 +391,93 @@ describe("刷新與進度（V4／#52）", () => {
   });
 });
 
+describe("過期劇本不再進入批次刷新（#68）", () => {
+  const base = sampleRow as unknown as Record<string, unknown>;
+  const card = (id: string, symbol: string, extra: Record<string, unknown> = {}) => ({
+    ...base, id, symbol, target_price: 120, target_month: "2020-01",
+    target_anchor: "2020-01-17", days_to_anchor: -2000,
+    latest_analyzed_at: null, best_return: null, ...extra,
+  });
+
+  it("開站批次刷新跳過已過期的劇本，分母也不算它", async () => {
+    const spy = mockLibrary(
+      [card("s1", "OLD", { expired: true }), card("s2", "SPY", {
+        target_month: "2028-05", expired: false })],
+      async (id) => ok(card(id, "SPY", {
+        target_month: "2028-05", expired: false,
+        best_return: 0.5, latest_analyzed_at: new Date().toISOString() })),
+    );
+    render(<App />);
+
+    expect(await screen.findByText("50.0%")).toBeInTheDocument();
+    // 過期的那個從沒被排進去——佇列只跑了 s2
+    expect(refreshCalls(spy)).toEqual(["s2"]);
+  });
+
+  it("已過期的劇本顯示標記，且不落在「尚未分析」的樣子上", async () => {
+    mockLibrary([card("s1", "OLD", { expired: true })], async () => ok({}));
+    render(<App />);
+
+    expect(await screen.findByText("已過期，不再刷新")).toBeInTheDocument();
+    expect(screen.queryByText("尚未分析")).toBeInTheDocument();  // 沒分析過，兩件事並存
+  });
+
+  it("建立劇本後刷新，清單裡既有的過期劇本不會被排進那一輪", async () => {
+    const created = card("s2", "SPY", { target_month: "2028-05", expired: false,
+                                        latest_analyzed_at: null, best_return: null });
+    const spy = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url === "/api/scenarios" && init?.method === "POST") {
+        return { ok: true, status: 201, json: async () => created };
+      }
+      if (url === "/api/scenarios") {
+        return { ok: true, status: 200, json: async () => [card("s1", "OLD", { expired: true })] };
+      }
+      if (url.endsWith("/refresh")) {
+        const id = url.split("/").at(-2);
+        if (id === "s1") throw new Error("過期劇本不該被刷新");
+        return { ok: true, status: 200, json: async () => created };
+      }
+      throw new Error(`測試沒有為 ${url} 準備回應`);
+    });
+    vi.stubGlobal("fetch", spy);
+    render(<App />);
+
+    await openCreateForm();
+    await userEvent.type(screen.getByLabelText("標的代號"), "spy");
+    await userEvent.type(screen.getByLabelText("目標價位"), "700");
+    await pickMonth(2028, 5);
+    await userEvent.click(screen.getByRole("button", { name: "建立" }));
+
+    expect(await screen.findByText("SPY")).toBeInTheDocument();
+    expect(refreshCalls(spy)).toEqual(["s2"]);
+  });
+
+  function mockLibrary(
+    rows: Record<string, unknown>[],
+    refresh: (id: string) => Promise<Partial<Response> & { json: () => Promise<unknown> }>,
+  ) {
+    const spy = vi.fn(async (url: string, _init?: RequestInit) => {
+      const hit = /\/api\/scenarios\/([^/]+)\/refresh$/.exec(url);
+      if (hit) return refresh(hit[1]);
+      if (url === "/api/scenarios") {
+        return { ok: true, status: 200, json: async () => rows };
+      }
+      throw new Error(`測試沒有為 ${url} 準備回應`);
+    });
+    vi.stubGlobal("fetch", spy);
+    return spy;
+  }
+
+  const ok = (row: Record<string, unknown>) =>
+    ({ ok: true, status: 200, json: async () => row });
+
+  function refreshCalls(spy: ReturnType<typeof vi.fn>) {
+    return spy.mock.calls
+      .map(([url]) => /\/api\/scenarios\/([^/]+)\/refresh$/.exec(String(url))?.[1])
+      .filter((id): id is string => id !== undefined);
+  }
+});
+
 describe("建立與刷新同時發生（V4／#52 檢視回饋）", () => {
   const base = sampleRow as unknown as Record<string, unknown>;
   const card = (id: string, symbol: string, extra: Record<string, unknown> = {}) => ({
@@ -410,9 +522,10 @@ describe("建立與刷新同時發生（V4／#52 檢視回饋）", () => {
     vi.stubGlobal("fetch", spy);
     render(<App />);
 
-    await userEvent.type(await screen.findByLabelText("標的代號"), "spy");
+    await openCreateForm();
+    await userEvent.type(screen.getByLabelText("標的代號"), "spy");
     await userEvent.type(screen.getByLabelText("目標價位"), "700");
-    await userEvent.type(screen.getByLabelText("目標年月"), "2028-05");
+    await pickMonth(2028, 5);
     await userEvent.click(screen.getByRole("button", { name: "建立" }));
 
     releaseRefresh!();                       // 建立還沒回來，s1 先刷新完
@@ -422,6 +535,77 @@ describe("建立與刷新同時發生（V4／#52 檢視回饋）", () => {
 
     expect(await screen.findByText("30.0%")).toBeInTheDocument();
     expect(screen.getByText("200.0%")).toBeInTheDocument();
+  });
+});
+
+describe("詳細頁刷新入口與劇本庫共用同一條佇列（#70）", () => {
+  const row = {
+    ...(sampleRow as unknown as Record<string, unknown>),
+    id: "s1", symbol: "TLT", target_price: 120, target_month: "2028-05",
+    latest_analyzed_at: "2026-08-04T09:30:00+00:00", best_return: 1.5,
+    target_anchor: "2028-05-19", days_to_anchor: 653, expired: false,
+  };
+
+  afterEach(() => { window.location.hash = ""; });
+
+  it("在詳細頁按刷新，打的是同一個劇本的 refresh 端點", async () => {
+    // 開站本身也會自動刷新這唯一的劇本一次——這條測試要驗的是「按鈕
+    // 點擊本身」有沒有另外觸發一次，所以要先等開站那輪跑完，再比對
+    // 點擊前後的呼叫次數，不能只看「有沒有打過 /refresh」（那樣點不
+    // 點都會通過）。
+    window.location.hash = "#/s/s1";
+    const refreshCalls: string[] = [];
+    const spy = vi.fn(async (url: string) => {
+      if (url === "/api/scenarios") {
+        return { ok: true, status: 200, json: async () => [row] };
+      }
+      if (url === "/api/scenarios/s1") {
+        return { ok: true, status: 200, json: async () => ({ ...row, latest_result: null }) };
+      }
+      if (url.endsWith("/s1/refresh")) {
+        refreshCalls.push(url);
+        return { ok: true, status: 200, json: async () => ({
+          ...row, best_return: 9.9, latest_analyzed_at: "2026-08-04T10:00:00+00:00" }) };
+      }
+      throw new Error(`測試沒有為 ${url} 準備回應`);
+    });
+    vi.stubGlobal("fetch", spy);
+    render(<App />);
+
+    // 開站那輪跑完＝按鈕從「刷新中……」變回可按
+    await screen.findByRole("button", { name: "重新整理" });
+    const before = refreshCalls.length;
+
+    await userEvent.click(screen.getByRole("button", { name: "重新整理" }));
+
+    await waitFor(() => expect(refreshCalls.length).toBe(before + 1));
+  });
+
+  it("批次刷新進行中，詳細頁的刷新按鈕也停用——同一條忙碌狀態", async () => {
+    window.location.hash = "#/s/s1";
+    let releaseRefresh: (() => void) | null = null;
+    const spy = vi.fn(async (url: string) => {
+      if (url === "/api/scenarios") {
+        return { ok: true, status: 200, json: async () => [row] };
+      }
+      if (url === "/api/scenarios/s1") {
+        return { ok: true, status: 200, json: async () => ({ ...row, latest_result: null }) };
+      }
+      if (url.endsWith("/s1/refresh")) {
+        await new Promise<void>((resolve) => { releaseRefresh = resolve; });
+        return { ok: true, status: 200, json: async () => row };
+      }
+      throw new Error(`測試沒有為 ${url} 準備回應`);
+    });
+    vi.stubGlobal("fetch", spy);
+    render(<App />);
+
+    // 開站那輪刷新正在跑（s1 是清單裡唯一的劇本，卡在 refresh 半路）
+    expect(await screen.findByRole("button", { name: "刷新中……" })).toBeDisabled();
+
+    releaseRefresh!();
+    // 讓那一趟真的跑完再結束測試，不留一個未 act 包裹的狀態更新在後頭
+    expect(await screen.findByRole("button", { name: "重新整理" })).toBeEnabled();
   });
 });
 
@@ -474,5 +658,219 @@ describe("清單 → 詳細頁（V5／#53）", () => {
     // jsdom 的 hashchange 是非同步派送的，等畫面自己跟上
     expect(await screen.findByRole("heading", { name: "劇本庫" }))
       .toBeInTheDocument();
+  });
+});
+
+/** 桌面寬度：`window.matchMedia` 回真，模擬寬螢幕（#72）。 */
+function stubDesktopViewport() {
+  vi.stubGlobal("matchMedia", (query: string) => fakeMediaQueryList(true, query));
+}
+
+describe("桌面版真正的 master/detail（#72）", () => {
+  const rowA = {
+    ...(sampleRow as unknown as Record<string, unknown>),
+    id: "s1", symbol: "TLT", target_price: 120, target_month: "2028-05",
+    latest_analyzed_at: "2026-08-04T09:30:00+00:00", best_return: 1.5,
+    target_anchor: "2028-05-19", days_to_anchor: 653,
+  };
+  const rowB = {
+    ...(sampleRow as unknown as Record<string, unknown>),
+    id: "s2", symbol: "SPY", target_price: 500, target_month: "2027-01",
+    latest_analyzed_at: "2026-08-04T09:30:00+00:00", best_return: 2.5,
+    target_anchor: "2027-01-15", days_to_anchor: 200,
+  };
+
+  afterEach(() => {
+    window.location.hash = "";
+  });
+
+  it("選中劇本時，劇本庫（含建立表單）與詳細頁同時可見", async () => {
+    stubDesktopViewport();
+    window.location.hash = "#/s/s1";
+    mockRoutes({
+      "/api/scenarios": { json: async () => [rowA] },
+      "/api/scenarios/s1": { json: async () => ({ ...rowA, latest_result: null }) },
+    });
+    render(<App />);
+
+    // 詳細頁內容（返回入口＋標的名）與劇本庫（清單卡片＋建立劇本入口）
+    // 同時在畫面上——不是手機版的整頁替換。
+    expect(await screen.findByRole("link", { name: /劇本庫/ })).toBeInTheDocument();
+    expect(await screen.findByText("尚未分析")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /TLT 2028-05/ })).toBeInTheDocument();
+    // #75：建立劇本收攏成頂部入口，選中劇本時它也還在、按得下去——
+    // 不是被詳細頁擠掉的東西。
+    await openCreateForm();
+    expect(screen.getByLabelText("標的代號")).toBeInTheDocument();
+  });
+
+  it("目前選中的劇本在清單上有明確的選中狀態", async () => {
+    stubDesktopViewport();
+    window.location.hash = "#/s/s1";
+    mockRoutes({
+      "/api/scenarios": { json: async () => [rowA, rowB] },
+      "/api/scenarios/s1": { json: async () => ({ ...rowA, latest_result: null }) },
+      // 開站的批次刷新（時機一）兩個劇本各打一次 /refresh——沒有明確
+      // 路由的話會被較短的 `/api/scenarios` 前綴接走，回傳整個陣列
+      // 冒充成單一劇本，把清單那一列的資料弄壞。
+      "/api/scenarios/s1/refresh": { json: async () => rowA },
+      "/api/scenarios/s2/refresh": { json: async () => rowB },
+    });
+    render(<App />);
+
+    const selectedLink = await screen.findByRole("link", { name: /TLT 2028-05/ });
+    const otherLink = screen.getByRole("link", { name: /SPY 2027-01/ });
+    expect(selectedLink.closest("li")).toHaveClass("selected");
+    expect(otherLink.closest("li")).not.toHaveClass("selected");
+  });
+
+  it("未選任何劇本時，右側工作區顯示合理的空狀態", async () => {
+    stubDesktopViewport();
+    mockRoutes({
+      "/api/scenarios": { json: async () => [rowA] },
+      "/api/scenarios/": { json: async () => rowA },
+    });
+    render(<App />);
+
+    expect(await screen.findByRole("link", { name: /TLT 2028-05/ })).toBeInTheDocument();
+    expect(screen.getByText(/選擇左側的劇本/)).toBeInTheDocument();
+  });
+
+  it("可以直接切換到另一個劇本，不必先返回劇本庫", async () => {
+    stubDesktopViewport();
+    window.location.hash = "#/s/s1";
+    mockRoutes({
+      "/api/scenarios": { json: async () => [rowA, rowB] },
+      "/api/scenarios/s1": { json: async () => ({ ...rowA, latest_result: null }) },
+      "/api/scenarios/s2": { json: async () => ({ ...rowB, latest_result: null }) },
+    });
+    render(<App />);
+
+    await screen.findByText("尚未分析");
+    await userEvent.click(screen.getByRole("link", { name: /SPY 2027-01/ }));
+
+    expect(window.location.hash).toBe("#/s/s2");
+    // 兩個劇本共用同一份「尚未分析」文案，真正驗證的是清單卡片本身
+    // 沒有被整頁替換掉——它在切換後依然可點、依然在畫面上。
+    expect(await screen.findByRole("link", { name: /TLT 2028-05/ })).toBeInTheDocument();
+  });
+
+  it("桌面版的網址仍對應到選中的劇本——返回鍵切回上一個劇本，劇本庫全程不消失", async () => {
+    stubDesktopViewport();
+    window.location.hash = "#/s/s1";
+    mockRoutes({
+      "/api/scenarios": { json: async () => [rowA, rowB] },
+      "/api/scenarios/s1": { json: async () => ({ ...rowA, latest_result: null }) },
+      "/api/scenarios/s2": { json: async () => ({ ...rowB, latest_result: null }) },
+    });
+    render(<App />);
+    await screen.findByText("尚未分析");
+
+    await userEvent.click(screen.getByRole("link", { name: /SPY 2027-01/ }));
+    expect(await screen.findByRole("link", { name: /TLT 2028-05/ })).toBeInTheDocument();
+
+    // 返回鍵＝hash 變回上一個值。jsdom 沒有真的瀏覽器歷史紀錄，直接
+    // 把 hash 改回去等同「返回鍵按下去之後」瀏覽器會做的事。
+    window.location.hash = "#/s/s1";
+    expect(await screen.findByRole("link", { name: /SPY 2027-01/ })).toBeInTheDocument();
+    // 全程劇本庫（含建立劇本入口）都掛著——這正是桌面版與手機版整頁
+    // 替換的差異所在。
+    await openCreateForm();
+    expect(screen.getByLabelText("標的代號")).toBeInTheDocument();
+
+    window.location.hash = "#/";
+    expect(await screen.findByText(/選擇左側的劇本/)).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /TLT 2028-05/ })).toBeInTheDocument();
+  });
+});
+
+describe("主要操作入口收攏到工作區上方（#75）", () => {
+  const row = {
+    ...(sampleRow as unknown as Record<string, unknown>),
+    id: "s1", symbol: "TLT", target_price: 120, target_month: "2028-05",
+    latest_analyzed_at: "2026-08-04T09:30:00+00:00", best_return: 1.5,
+    target_anchor: "2028-05-19", days_to_anchor: 653,
+  };
+
+  it("建立劇本表單預設收合，工具列上有明確的頂部入口，按下去才展開", async () => {
+    mockRoutes({
+      "/api/scenarios": { json: async () => [row] },
+      "/api/scenarios/": { json: async () => row },
+    });
+    render(<App />);
+
+    await screen.findByText("TLT");
+    // 不必先展開表單就看得到入口；也不該一開站就把表單畫在螢幕上
+    // ——原本的臭蟲正是「永遠展開」。表單本身一律掛著（`hidden` 屬性
+    // 切換可見度，見 `App.tsx` 的 code review 跟進），所以這裡驗的是
+    // 「看不看得到」而不是「在不在 DOM 裡」。
+    expect(screen.getByRole("button", { name: "＋ 建立劇本" })).toBeInTheDocument();
+    expect(screen.getByLabelText("標的代號")).not.toBeVisible();
+
+    await openCreateForm();
+    expect(screen.getByLabelText("標的代號")).toBeVisible();
+  });
+
+  it("收合建立表單不會清空使用者已經打的內容", async () => {
+    // code review 跟進：面板原本用條件渲染整個卸載重掛，使用者打到
+    // 一半手滑點到收合鈕，剛打的字就白打了——改用 `hidden` 屬性切換
+    // 可見度後，這裡直接驗證收合再展開，內容還在。
+    mockRoutes({
+      "/api/scenarios": { json: async () => [row] },
+      "/api/scenarios/": { json: async () => row },
+    });
+    render(<App />);
+    await openCreateForm();
+    await userEvent.type(screen.getByLabelText("標的代號"), "spy");
+
+    await userEvent.click(screen.getByRole("button", { name: "收合建立表單" }));
+    expect(screen.getByLabelText("標的代號")).not.toBeVisible();
+
+    await userEvent.click(screen.getByRole("button", { name: "＋ 建立劇本" }));
+    expect(screen.getByLabelText("標的代號")).toHaveValue("spy");
+  });
+
+  it("建立劇本與刷新是同一個固定操作列裡的兩個入口", async () => {
+    mockRoutes({
+      "/api/scenarios": { json: async () => [row] },
+      "/api/scenarios/": { json: async () => row },
+    });
+    render(<App />);
+
+    const toolbar = await screen.findByRole("banner");
+    const createButton = within(toolbar).getByRole("button", { name: "＋ 建立劇本" });
+    expect(createButton).toBeInTheDocument();
+    expect(within(toolbar).getByRole("button", { name: /重新整理|刷新中/ }))
+      .toBeInTheDocument();
+
+    // code review 跟進：展開鈕要有 `aria-controls` 指向它控制的面板，
+    // 不是只有 `aria-expanded`——跟 `CreateForm.tsx` 裡 `MonthPicker`
+    // 展開鈕同一套寫法（該檔案既有慣例），螢幕閱讀器才找得到面板在哪。
+    const panelId = createButton.getAttribute("aria-controls");
+    expect(panelId).toBeTruthy();
+    expect(document.getElementById(panelId!)).toContainElement(
+      screen.getByLabelText("標的代號"));
+  });
+
+  it("劇本清單下方已無任何主要操作——建立入口在工作區最上方", async () => {
+    mockRoutes({
+      "/api/scenarios": { json: async () => [row] },
+      "/api/scenarios/": { json: async () => row },
+    });
+    const { container } = render(<App />);
+
+    await screen.findByText("TLT");
+    const toolbar = container.querySelector("header.toolbar")!;
+    const list = container.querySelector("ul.list")!;
+    // `DOCUMENT_POSITION_FOLLOWING`：toolbar 出現在 list 之前，不是
+    // 掛在清單卡片全部跑完之後才看得到的東西。展開表單前後都要成立
+    // ——面板一律掛著（`hidden` 屬性切換可見度），不會因為展開就被
+    // 插到清單後面。
+    expect(toolbar.compareDocumentPosition(list))
+      .toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+
+    await openCreateForm();
+    expect(toolbar.compareDocumentPosition(list))
+      .toBe(Node.DOCUMENT_POSITION_FOLLOWING);
   });
 });

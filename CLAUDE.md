@@ -766,6 +766,280 @@ V9（#57）／V10（#58）亦已完結——全部票做完。** 下一步不是
 需求方以 `docs/v10-acceptance-checklist.md` 實機驗收；驗收通過才輪到
 年月選擇器（第 1 項）與外觀（第 3 項，已延後）另開新一輪。
 
+### QA-v2 維修輪（`docs/QA-v2.md`，2026-08-05 拆票完成，票已開）
+
+需求方測試部署版後回報 7 點（`docs/QA-v2.md`），已逐點查證並取得裁示，
+拆成 9 張票 **#67–#75**（全數 `ready-for-agent`）。
+
+**三個查證結論改變了票面範圍，記在這裡免得重蹈**：
+
+1. **§A.1「排除已過期合約」的單位搞錯了。** 已過期合約在 `_analyze`
+   的**第一步** `_scoped_to_selected_expiries`（`expiry > today`，嚴格
+   大於，當日到期也砍）就被切掉，過濾／配對／排名／估值全跑在切完之後
+   ——`valuation` 的 `T > 0` 假設正是靠這關成立，**沒有浪費任何估值計算**。
+   需求方澄清原話：「要壓的不是過期合約，是**過期劇本**。合約不是我們的
+   單位，劇本才是。」故 #68 重新定義為「目標年月已過的**劇本**不再進入
+   批次刷新」。原始 chain 要不要剔除過期合約**明確不擴 scope**
+2. **§A.2「Long Call 沒跟著刷新」在程式碼上不可能發生。** 追平價格只有
+   一個計算點（`service._spread_catchup_price`），與 Spread 同一次分析、
+   同一份快照算完，序列化進同一份 view，前端 `Catchup` 是純 props
+   （無 state／effect／獨立端點），結構上無法單獨變舊。需求方接受，
+   **不為不存在的問題開修復票**。查證中發現的真缺口是「詳細頁一個操作
+   都沒有」→ #70
+3. **§C.7 利率的真因比預期單純：部署的分析路徑從來沒接上利率載入器。**
+   `api_app` 全包 grep 不到 `rate_curve_loader`，`run_with_snapshot` 預設
+   `None` → `_resolve_rates` 短路成固定 4%。畫面那行是「離線重放，未啟用
+   利率曲線」而**不是**「曲線不可得」——這兩個字串是分開的，正好證明
+   **線上從來沒有發出過任何一次利率請求**，不是抓取失敗
+
+**需求方 2026-08-05 的其他裁示**：
+
+- 年月選擇器**確認推翻 V3 的「不自刻」裁示**（原生元件做不到「點欄位就
+  展開」與 `20xx` 遮罩，桌面 Safari／Firefox 還會退化成純文字框）。要照
+  成熟 Month Picker 的互動模式：關閉態有 `20xx` 概念、點日期區域就地
+  展開、展開預設今年、當月有清楚 current state、年份**不限**今年～+N
+- 桌面**做真正的 master/detail**（左庫常駐＋右工作區），主要操作收攏到
+  工作區上方。**手機版面需求方稍後另行定義，本輪不做**
+- 利率**接線與選源解耦**：不綁死 `home.treasury.gov`（需求方指出 Yahoo 的
+  API 連得上，代表不是部署環境在擋，可能是國債網站本身不給 API）。
+  Treasury／FRED／Yahoo 等比較後再定主備援；一輪刷新全部劇本共用同一條
+  曲線；快取放 Neon（serverless 檔案系統唯讀，現有檔案快取那層是死的）。
+  **先前已研究過 Treasury 不構成必須採用 Treasury 的理由**——要解的是
+  「可靠取得期限對齊的市場無風險利率」
+- 進階區舊 cache 以資料正確性優先，**刷新後收合重取可接受**
+
+**票與依賴**：QA-v2 這一輪（#67–#75）全數完成，**全部票做完才開 PR**
+的門檻已達成，等需求方實機驗收。
+
+**已完成**：
+
+- **需求方直接裁示（2026-08-06，不開票，四項合併一次執行）**：
+  1. 確認並清除 Streamlit 遺留——`git ls-files webapp/` 確認零追蹤
+     檔案，只剩未追蹤的 `__pycache__` 殘留（連同全站 stale `.pyc` 一併
+     刪除），pytest collection 乾淨，webapp/ 空目錄一併移除。查明
+     反覆出現的環境詭異狀態是這個 sandbox 容器本身在對話輪次之間會
+     把本地 checkout 重置回舊 commit（`git status` 誤報「已是最新」，
+     實際上落後 origin 幾十個 commit）——不是資料真的遺失，`git fetch`
+     ＋`git reset --hard origin/<branch>` 即可修正，遇到就重做一次。
+  2. 同步最新 master 進工作分支（commit `5a801fe`）：只落後一個
+     `Create Mvp-v2.md`，QA-v2 這一輪既有成果原封不動保留。
+  3. 利率快取改市場日語意（commit `1045880`）：同一市場日成功抓過
+     一次就所有劇本、所有 refresh 共用，不再是 12 小時滾動新鮮度窗；
+     下一個市場日第一次需要時才重新 fetch。`RateCacheEntry` 新增
+     `market_day`（只在真正成功直接抓到時前進，判準是呼叫端傳入的
+     `today`——紐約曆日，不是 `fetched_at` 的 UTC 日期部分，兩者在
+     午夜前後對不起來）與 `attempted_day`（不論成敗、每次寫入都蓋成
+     當次 `today`，供既有短窗 anti-hammering 判斷改用「是否同一市場日
+     的嘗試」而非單看時間差——單看時間差在市場日剛跨過午夜的那幾
+     分鐘會誤沿用「昨天的紀錄」）。失敗窗與 7 天緊急備援窗兩條既有
+     fallback 邏輯不變。Postgres schema／migration／SQL 同步加欄位。
+  4. **#74** 完成：利率 production probe＋Treasury 硬化（commit
+     `d505bc8`）。用需求方的 Vercel 帳號部署一個用完即丟的臨時專案
+     （跟正式 `option-chaser` 分開，`option-chaser-rate-probe`，
+     ⚠ 本輪工具沒有刪除專案的操作，需求方之後可手動清掉），對候選
+     利率來源打真連線探測（探測程序見研究文件 §6，結果見 §6.4）：
+     Treasury CSV／XML 皆可達，維持主源；FRED 免鑰 `fredgraph.csv`
+     兩次測試皆逢時，但官方 keyed API（不同子網域）連線正常、只是
+     缺 key——證明問題在那個便利端點本身，不是整個網域被擋，**探測
+     結果推翻研究 §5 原排序「FRED 免鑰路徑為第一備援」**；Financial
+     Modeling Prep 連線正常、缺 key；需求方另外提議的 Yahoo Finance
+     四檔免鑰指數連得到，但用同一天真實 Treasury 資料回頭算過，
+     1–3 年期插值誤差約 18–25bp（本 repo 既有可接受門檻 7.5bp 的
+     3 倍），維持研究 §3.5 不採用的結論，這次是拿實測資料驗證而非
+     紙上推論。FRED／FMP 皆確認網路可達但沒有金鑰（本輪不申請，
+     需求方裁示先接受 fallback 鏈只有 Treasury 這一層），落地版本＝
+     Treasury（CSV→XML→前一年 CSV）→ 陳舊窗快取 → 固定 4%。
+     `option_chaser/data/treasury.py` 硬化：一般瀏覽器等級標頭（原本
+     裸字串 `User-Agent`）、明確檢查狀態碼（非 200 不進解析）、失敗
+     訊息分來源分階段（Treasury／CSV 或 XML／哪一年／原因）；新增
+     `tests/fixtures/treasury_{csv,xml}_sample.txt` 兩份探測時實際
+     拿到的真實回應當回歸樣本（不是手刻夾具）。只動接縫後面的
+     provider，未改動 #67 的分析路徑／快取層核心邏輯（第 3 項的市場日
+     修正是需求方另外裁示、與 #74 分開一個 commit）。**未驗證項**：
+     正式部署版（不是探針用的臨時專案）拿到真實期限對齊曲線這件事，
+     仍待需求方之後實機部署驗證（`docs/deploy-vercel.md` 記錄的既有
+     部署缺口尚未解決）。
+- **#75** 主要操作入口收攏到工作區上方（commits `589014d`／`9ec0971`）：
+  建立劇本從「掛在全部劇本卡片下面、永遠展開的表單」改成工具列上的
+  頂部入口——跟刷新同一個固定操作列（`Toolbar` 新增 `createOpen`／
+  `onToggleCreate`／`createPanelId`，並排兩顆膠囊鈕），預設收合，
+  按下去才展開。`Toolbar` 既有的 `position: sticky` 天生蓋到新按鈕，
+  不必另外實作「捲動時常駐可見且可點」。code review 跟進：面板原本
+  用條件渲染整個卸載重掛，收合＝使用者打到一半的字被悄悄清掉——
+  改用原生 `hidden` 屬性切換可見度，面板一律掛著、`DOCUMENT_POSITION_
+  FOLLOWING` 的結構保證因此在開／關兩態都成立；順帶補上展開鈕的
+  `aria-controls`（`CreateForm.tsx` 裡 `MonthPicker` 展開鈕既有的
+  `aria-expanded`＋`aria-controls` 寫法，這裡原本只抄了一半）。
+  建立表單本身（`CreateForm.tsx`）未改動，既有的「必填留白、無
+  預設值」規則不受影響；建立成功後表單不自動收合（方便連續建立），
+  票上沒有硬性規定，屬工程判斷。Playwright 對按鈕名稱是子字串比對
+  （不同於 `@testing-library` 預設的精確比對），"收合建立表單" 含
+  「建立」兩字會撞到表單送出鈕，e2e 改用 `exact: true` 消歧。
+- **#72** 桌面版真正的 master/detail（commits `7d5f68b`／`8523f71`）：
+  桌面寬度（`window.matchMedia`／`useIsDesktop`，`App.tsx`）改成左側
+  劇本庫常駐、右側工作區顯示選中劇本，約 20/80；選中劇本不必先返回
+  即可切換到另一個。手機寬度沿用既有整頁替換，程式碼路徑原封不動
+  （`!isDesktop` 才會走進那個既有分支），既有測試不必為此改動就繼續
+  通過。`ScenarioList` 新增 `selectedId`：目前選中的劇本卡片標
+  `selected` class（左側強調色條＋淡色底，非 `.chip.selected` 那種
+  整片實色——卡片內文字要維持可讀）與 `aria-current="page"`。斷點與
+  版面下限刻意對齊（1100px／220px，220 恰好是 1100 的 20%）：code
+  review 抓到原始寫法（900px／280px）在 900～1400px 這段常見桌面寬度
+  會被下限卡死到超過 30%，與「約 20/80」的驗收不符，改成對齊值後
+  下限在斷點邊界形同虛設，往寬處走比例自然貼著 20%。新增 Playwright
+  `Desktop` 專案（1280×800）＋`e2e/desktop.spec.ts`（含左右比例量測、
+  瀏覽器上一頁／下一頁兩項 code review 補的覆蓋率缺口），與既有
+  `iPhone` 專案用 `testMatch`／`testIgnore` 互不重疊，手機案例不會被
+  拿去跑桌面版的行為假設。jsdom 沒有實作 `window.matchMedia`，
+  `test-setup.ts` 新增 `fakeMediaQueryList()` 工廠（預設 `matches:
+  false`＝手機，既有測試不必改動；桌面情境測試用
+  `vi.stubGlobal("matchMedia", ...)` 覆寫），與 `App.test.tsx` 共用
+  同一份假體形狀。
+- **#68** 過期劇本不再進入批次刷新——新增 `_timing_json` 的 `expired`
+  欄位（`timeframe.month_is_over`，與既有 `days_to_anchor` 是不同判準，
+  前者才是擋刷新的那個）；唯一擋點設在 `refresh_scenario` 端點本身
+  （不是前端篩選），過期劇本呼叫這支端點會短路成無害讀取（不抓鏈、不
+  跑引擎、不入庫、不留事件），回傳既有卡片列——批次流程另外在前端
+  `App.tsx` 的 enqueue 前先篩掉，純粹省一趟網路往返，真正的保證來自
+  後端。清單卡片新增「已過期，不再刷新」標記，且比照舊 Streamlit
+  `workspace.card_of` 的既有優先序判斷（紅燈優先於黃燈）：已過期時
+  蓋掉刷新失敗的提示與重試鈕，避免同一張卡同時出現兩種互相矛盾的
+  狀態。契約樣本 `contracts/scenario_row_sample.json` 隨之重產。
+  code-review 跟進：`api_app/main.py` 三處重複的「取最新結果摘要」
+  收斂成 `_summary_of()`
+- **#70** 詳細頁補上刷新入口——查證 §A.2「Long Call 沒跟著刷新」在
+  程式碼上不可能發生（同一次分析、同一份快照、純 props），不開修復票；
+  真缺口是詳細頁一個操作都沒有。`ScenarioDetail` 新增刷新入口，三個
+  props（`busy`／`failure`／`onRefresh`）全部由 `App` 傳入、直接對接
+  既有的那條單一佇列與 `failures` map——`busy` 沿用 `Toolbar` 同一個
+  「任何刷新進行中」判準（不是新開一個「只有這個劇本」的追蹤），
+  `onRefresh` 就是 `enqueue([這個劇本])`，`ScenarioDetail` 自己不發起
+  任何網路請求。視覺語言與既有兩處一致：標題列右側膠囊鈕仿
+  `Toolbar`，失敗提示＋重試鈕仿 `ScenarioList` 的卡片失敗區塊。
+  code-review 跟進：Spec 面抓到詳細頁沒有比照 #68 排除過期劇本——
+  刷新鈕與失敗重試都補上 `detail?.expired` 判斷，已過期時鈕文案改
+  「已過期，不再刷新」並停用、失敗提示整塊不顯示，與清單卡片同一套
+  優先序判斷一致
+- **#69** 進階區資料隨新分析失效，不得混用新舊 cache——`SpreadHistory`／
+  `RawData` 是純 `<details onToggle>` 一次性取得、無任何 dependency
+  array，父層 `DetailBody` 用 `key={"spread-history-"+analyzedAt}`／
+  `key={"raw-data-"+analyzedAt}` 綁定分析身分，新分析一到就整個卸載
+  重掛，內部 state（已抓到的資料、`<details open>`）連同歸零，刷新後
+  收合、下次展開重新取得（需求方裁示接受，資料正確性優先）。原始資料
+  CSV 下載連結另外補上快取破壞參數（`rawDataCsvUrl` 新增選填
+  `analyzedAt` 附成 `?t=...`）——那是靜態 `<a href>`，不受 React
+  remount 保護，瀏覽器 HTTP 快取才是它真正的敵人。
+  ⚠ **TDD 抓到一個真的 React bug**：兩個元件一開始給了同一個 key 字串
+  （`analyzedAt` 本身，未加前綴）——手足元素共用同一個 key 是未定義
+  行為，React 會噴「key 重複」警告，且第一次紅燈測試在這個 bug 下呈現
+  出詭異的間歇性失敗（remount 有時發生、有時沒有）。查出來是 key 碰撞
+  後，兩個元件各自加上元件名前綴才穩定。這正是先寫測試、看紅燈長什麼
+  樣的價值——如果只是先寫實作再補測試，這個 bug 很可能被漏掉
+  code-review 跟進：Spec 面抓到 AC2「主圖候選因新分析換掉時，歷史走勢
+  跟著換成新候選的序列」雖然程式碼上已經正確（`candidate`／`analyzedAt`
+  恆出自同一次 `getScenario` 回應，不可能單獨變），但沒有測試真的換過
+  候選身份鍵去驗證，補上一條用 `withTopCandidate({candidate_key:...})`
+  的回歸測試
+- **#71** 自製年月選擇器——推翻 V3「用原生 `<input type="month">`」的
+  裁示（需求方 2026-08-05 明確裁示）。`MonthPicker`／`YearInput` 兩個
+  子元件比照專案既有慣例（`ScenarioDetail.tsx` 的 `Catchup`／
+  `PriceLadder` 等）直接定義在唯一呼叫端 `CreateForm.tsx` 內，不拆
+  獨立檔案。切換鈕是 `<button>`，點下去在文件流裡就地展開面板（不是
+  浮層），Tab 順序天然是切換鈕→上一年→年份→下一年→1 月…12 月→
+  下一個表單欄位，不必用 `useEffect` 搬焦點；選定後把焦點還給切換鈕，
+  鍵盤使用者才不會在月份鈕被卸載後掉到 `<body>`。年份輸入三條路徑
+  殊途同歸：`‹`／`›` 箭頭無上下限步進、聚焦時只框住後兩碼（打兩碼就
+  換另一個 20xx 年，不必先刪「20」）、或全選後直接打四碼跳到任意年份。
+  當月 `aria-current="date"`、已選定月份 `aria-pressed`，兩者可同時
+  成立、CSS 分開處理（外框 vs 填色）。ARIA 只宣稱完整實作的部分——
+  `aria-expanded`＋`aria-controls` 的揭露元件模式（button 控制面板
+  顯／隱，就這麼多）完整成立，沿用到期日 chip 那條「不宣稱 tablist」
+  的既有裁示，不發明一個沒做完整方向鍵導覽的假 widget role。
+  `validateDraft` 的年月格式檢查原封不動保留——UI 現在雖然只會產生
+  合法格式，但那條規則是獨立測試、公開匯出的純函式契約，不是只服務
+  這個 UI。App.tsx／e2e 兩處既有的「打字進年月欄位」測試改成點選互動。
+  code-review 跟進三項：(1) Standards 面抓到 `today` 沒有接上 App 既有
+  的單一時鐘（`ScenarioList` 的 `now`），一律各自 `new Date()`——`App.tsx`
+  補上 `today={now}`；(2) `.month-cell.selected` 與既有 `.chip.selected`
+  逐字重複，合併成同一組選擇器；(3) Spec 面抓到 `MonthPicker` 包在
+  `<label>` 裡是無效巢狀（`<label>` 內容模型只收 phrasing content，
+  `<div>` 根節點不合格）——改用 `aria-labelledby` 指向獨立的
+  `<span id=...>`，且當月的 `aria-current` 視覺提示原本只有 0.5px
+  外框改色太淡，加粗到 1.5px＋粗體字
+- **#73** Research：公開利率資料源評選——比較 Treasury／FRED／
+  Fed H.15／NY Fed SOFR／Yahoo／Alpha Vantage／Financial Modeling
+  Prep／Massive-Polygon／CME Term SOFR 九個候選，逐項套用票上明列的
+  八個維度。**結論不是蕭規曹隨**：主源仍是 Treasury（期限覆蓋全場
+  最完整、免鑰、零金融語意風險），但備援順序改成 FRED 官方 API
+  （DGS 系列與 Treasury CMT 同一報價口徑，換源不用動 `ratecurve.py`
+  消費端一行）→ Financial Modeling Prep（單次 GET 全曲線，商業聚合站
+  故排最後一層）→ 現行固定 4%。明確剔除 NY Fed SOFR（回顧性平均、
+  非期限結構）、Yahoo 四指數（3M–5Y 之間整段無節點，恰好蓋住本 app
+  1M–3Y 主戰場）、Alpha Vantage（缺 1M／1Y 節點，且與既有選擇權鏈
+  備援共用同一組 25 次/日全站配額）、CME Term SOFR（授權不可行）、
+  Fed H.15（官方公告正在退役其 Data Download Program，導引改用
+  FRED）。沙箱對全部候選網域一律 403，明確標記為 sandbox validation
+  limitation（`$HTTPS_PROXY/__agentproxy/status` 顯示是本沙箱出口
+  政策擋下，不是目的站或 production 的結論），文件中沒有出現「沙箱
+  連不到＝production 連不到」這類推論。產出給 #74 的 production
+  connectivity probe 程序（逐來源 URL、檢查項目、pass/fail 標準、
+  平日／假日各測一次的執行紀律）。研究文件：
+  `docs/research/interest-rate-source-selection.md`。
+  ⚠ 查核時抓到一處引註錯誤（非本票程式碼——文件本身的一個引用）：
+  「Vercel serverless 唯讀檔案系統」這件事被錯誤歸給
+  `docs/deploy-vercel.md` 一個不存在的「serverless 唯讀」小節，已改
+  正引到真正的出處（`api_app/main.py` 檔頭與
+  `option_chaser/service.py` 的 `run_with_snapshot` docstring）——
+  事實本身沒錯，只是來源引用貼錯地方，在一份以「逐一引註」為賣點的
+  文件裡值得修正
+- **#67** 利率：接線、fallback 與狀態語意（provider 無關）——
+  production 的分析路徑第一次真正接上利率載入器；`create_app()` 新增
+  `rate_loader`（預設仍是既有 `service.default_rate_curve_loader`＝
+  Treasury，**只是接縫後面的暫時填充物，不是選型**，選型是 #73／#74）。
+  新增 `api_app/rate_cache.py::cached_loader()`：包在任何
+  `RateCurveLoader` 外面的持久快取，本身完全不認識 provider 是誰——
+  `test_provider_is_swappable_without_touching_the_caching_layer` 用一個
+  假 provider 走完整條路徑直接證明這點。快取放新的 `Storage.
+  get_rate_cache()`／`save_rate_cache()`（`api_app/storage/`，port/
+  adapter 兩邊都實作，Postgres 用 `CHECK(id=1)` 單列表——單一狀態、
+  不是歷史序列，跟 `results`／`snapshots` 的複合鍵是不同的資料形狀，
+  刻意不同套）。成功快取 12 小時、失敗只快取 5 分鐘——資料源短暫斷線
+  恢復後不該讓使用者卡在舊的失敗訊息裡到 12 小時後才有機會重試，同時
+  仍吸收得住同一輪刷新裡 N 個劇本的重複請求（這正是「N 個劇本共用
+  同一條」的落地機制：每個 `/refresh` 是各自獨立的 serverless 呼叫，
+  只能靠跨呼叫的持久層達成，不是行程內批次）。快取讀寫失敗一律視同
+  沒有快取／不影響本次分析（比照 `option_chaser/data/treasury.py`
+  既有「快取寫不進去不影響本次分析」的哲學，套用在這個新的持久層
+  上）。`/api/health` 新增 `rate` 欄位（`fetched_at`／`ok`／`note`／
+  `last_success_at`）供運維診斷。契約樣本因為利率從固定 4% 換成真實
+  期限對齊而全面重產（Greeks／情境報酬等下游數字隨之變動，非結構性
+  變更）；`scripts/gen_contract_sample.py` 與 `tests/test_api_analyze.py`
+  的契約比對測試都改注入固定假曲線，不再依賴當下網路能不能連到
+  Treasury。開發環境用沙箱內建的 PostgreSQL 16 對真資料庫（不只
+  記憶體假體）驗證過 Postgres adapter。
+  code-review 跟進（commit `428f210`）：(1) 抓取失敗時原本直接蓋成
+  `None`（退回引擎固定 4%），未沿用快取內還沒過期的舊曲線，與
+  `treasury.py` 既定行為不一致——新增 `_STALE_FALLBACK_MAX_AGE`（7 天，
+  同 `treasury.py` 既有窗口），失敗時優先沿用還沒過期的舊曲線並在
+  `note` 誠實標出「沿用快取」；(2) `RateCacheEntry` 單列覆蓋式儲存，
+  一旦抓取失敗就答不出「最後一次成功是什麼時候」——新增
+  `last_success_at`，只在真正成功時前進，失敗（含沿用舊曲線分支）
+  一律沿用前一次的值，Postgres schema／SQL 同步更新（新欄位走
+  `_MIGRATIONS` 而非只加進 `_SCHEMA`——本機真實 Postgres 已建過舊表，
+  重現了「表已存在、需要 ALTER」的正式環境情境）；(3) `underlying(today)`
+  原本沒有 try/except，未來 #74 換源後 provider 若直接拋例外會讓整條
+  分析路徑炸成 500——收斂成跟 provider 自報失敗同一種形狀。新增 8 條
+  TDD 測試涵蓋以上三點。
+
+> 我原本把 #73 設計成「被 #67 擋，要靠部署版探針才能開始研究」，
+> **需求方 2026-08-05 否決，理由成立**：沙箱閘道擋掉某些網域，不等於
+> Vercel 不能對外聯網——production 本來就穩定抓得到 Yahoo／Cboe，
+> outbound 能力早已證實。403 更可能是該站限制自動化請求、endpoint
+> 用法不對、User-Agent／API policy，或那個 provider 本身不適合當
+> production source。**紙上比較（#73）不需要探針就能做**；真正的
+> production connectivity probe 排在候選選出之後、由 #74 執行，
+> 且**探針結果可以推翻研究的排序**。
+
 ### 下一版 MVP（本輪明確不施工，已立案）
 
 - **多使用者隔離** [#59]（2026-08-04 需求方裁示）：現在 API 有可寫入的

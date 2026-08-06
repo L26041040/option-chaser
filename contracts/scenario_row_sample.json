@@ -5,6 +5,7 @@
   "created_at": "2026-08-01T00:00:00+00:00",
   "days_to_anchor": 653,
   "direction": "bullish",
+  "expired": false,
   "id": "sample-id",
   "latest_analyzed_at": "2026-07-15T21:30:00-04:00",
   "notes": "",

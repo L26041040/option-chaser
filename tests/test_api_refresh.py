@@ -13,6 +13,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from api_app.main import create_app
+from api_app.storage import ResultRecord
 from api_app.storage.memory import MemoryStorage
 from option_chaser import service
 from option_chaser.data.snapshot import load_snapshot
@@ -235,3 +236,82 @@ def test_the_adhoc_endpoint_reports_the_same_stages(monkeypatch, stage_error,
     assert _detail(resp)["stage"] == expected
 
 # 分層字彙與前端是否同步，見 `tests/test_frontend_contract.py`。
+
+
+# ---------- 過期劇本不再刷新（#68） ----------
+#
+# 「已過期」＝目標月最後一天已過完（`timeframe.month_is_over`），與
+# `days_to_anchor`（距日曆錨點的天數）是不同的判準，見
+# `test_api_scenarios.py` 的說明。這裡的重點是：這個端點是**所有**刷新
+# 入口共用的唯一擋點（批次與逐張皆然），過期劇本進來就直接短路——不抓
+# 鏈、不跑引擎、不入庫、不留事件。
+
+
+def _expired_scenario(storage, **overrides):
+    """繞過 `POST /api/scenarios` 的建立期擋下規則，直接把一個目標月
+    已過完的劇本放進儲存層——這是唯一能測到「本來就過期的劇本」這個
+    狀態的辦法（正常建立路徑本來就不允許生出這種劇本）。"""
+    from api_app.storage import Scenario as StoredScenario
+
+    sc = StoredScenario(
+        id="expired-1", symbol="XYZ", direction="bullish", target_price=130.0,
+        target_month="2020-01", notes="", strategies=("bull-call-spread",),
+        created_at="2019-06-01T00:00:00+00:00", **overrides)
+    storage.create_scenario(sc)
+    return sc
+
+
+def test_refresh_on_an_expired_scenario_does_not_touch_the_data_source():
+    storage = MemoryStorage()
+    _expired_scenario(storage)
+
+    def boom(symbol):
+        raise AssertionError("過期劇本不該抓鏈")
+
+    c = TestClient(create_app(fetch=boom, storage=storage))
+    row = c.post("/api/scenarios/expired-1/refresh").json()
+
+    assert row["expired"] is True
+    assert row["latest_analyzed_at"] is None
+    assert row["best_return"] is None
+
+
+def test_refresh_on_an_expired_scenario_does_not_touch_prior_results():
+    """已過期劇本若本來就有一份既有分析結果，刷新請求不能把它動掉——
+    只是不再花資源刷新，既有結果照樣留著能看。"""
+    storage = MemoryStorage()
+    _expired_scenario(storage)
+    storage.save_result(ResultRecord(
+        scenario_id="expired-1", analyzed_at="2019-12-01T00:00:00+00:00",
+        view={"meta": {"symbol": "XYZ"}}, best_return=0.42))
+
+    def boom(symbol):
+        raise AssertionError("過期劇本不該抓鏈")
+
+    c = TestClient(create_app(fetch=boom, storage=storage))
+    row = c.post("/api/scenarios/expired-1/refresh").json()
+
+    assert row["latest_analyzed_at"] == "2019-12-01T00:00:00+00:00"
+    assert row["best_return"] == 0.42
+    # 沒有寫入新的一筆——歷史只有原本那一筆
+    assert len(storage.result_history("expired-1")) == 1
+
+
+def test_refresh_on_an_expired_scenario_leaves_no_new_event():
+    storage = MemoryStorage()
+    _expired_scenario(storage)
+
+    def boom(symbol):
+        raise AssertionError("過期劇本不該抓鏈")
+
+    c = TestClient(create_app(fetch=boom, storage=storage))
+    c.post("/api/scenarios/expired-1/refresh")
+
+    events = [e["event"] for e in c.get("/api/scenarios/expired-1/events").json()]
+    assert events == []   # 直接用 storage 塞進去的劇本本來就沒有 SCENARIO_CREATED
+
+
+def test_refresh_on_an_expired_scenario_still_404s_when_unknown():
+    """過期劇本的擋點不能蓋掉既有的「劇本不存在」規則。"""
+    c = TestClient(create_app(storage=MemoryStorage()))
+    assert c.post("/api/scenarios/nope/refresh").status_code == 404

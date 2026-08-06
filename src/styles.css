@@ -87,6 +87,43 @@ body {
   gap: var(--gap);
 }
 
+/* 桌面版真正的 master/detail（#72）：左側劇本庫常駐、右側工作區顯示
+   詳細內容，約 20/80。斷點與 `App.tsx` 的 `DESKTOP_QUERY`
+   （`window.matchMedia`）用同一個數字——那邊決定「掛載哪些元件」，
+   這裡只是視覺排版，兩者必須一致，否則會出現「兩欄同時看得到」但
+   實際上其中一欄根本沒掛載內容的錯位。
+
+   斷點選 1100px、下限選 220px 不是各自獨立取的整數：220 恰好是
+   1100 的 20%——`minmax(220px, 20%)` 在斷點這一端「下限」與「20%」
+   算出來的值相等，下限形同虛設，只在極端情況（例如使用者用瀏覽器
+   縮放把可視寬度誤判在斷點邊界附近）當一個不會生效的保險，不會像
+   選一個明顯更大的下限（例如 280px）那樣，在 1100～1400px 這段
+   常見桌面寬度上都被下限卡死、比例遠超過「約 20%」。 */
+@media (min-width: 1100px) {
+  .workspace {
+    display: grid;
+    grid-template-columns: minmax(220px, 20%) 1fr;
+    align-items: start;
+    min-height: 100dvh;
+  }
+
+  .library-pane {
+    height: 100dvh;
+    overflow-y: auto;
+    border-right: 1px solid var(--separator);
+  }
+
+  .detail-pane {
+    height: 100dvh;
+    overflow-y: auto;
+  }
+
+  /* 詳細頁內容仍維持可讀寬度，不會因為右欄變寬就被硬拉成整行文字。 */
+  .detail-pane .screen {
+    max-width: 900px;
+  }
+}
+
 .card {
   background: var(--bg-elevated);
   border-radius: var(--radius);
@@ -238,6 +275,13 @@ body {
   justify-content: space-between;
   gap: 12px;
   min-height: 28px;
+}
+
+/* #75：建立劇本與刷新這兩個主要入口同一列並排——寬度不夠時膠囊鈕本身
+   會先靠 `white-space: nowrap` 撐開，不會疊字，捲不下才需要再考慮換行。 */
+.toolbar-actions {
+  display: flex;
+  gap: 8px;
 }
 
 /* iOS Large Title：34pt/bold、負字距。手機上這是「我在哪一頁」的
@@ -609,7 +653,10 @@ body {
   opacity: 0.6;
 }
 
-.chip.selected {
+/* `.month-cell.selected`（#71）共用同一組選定態填色——兩者都是「一顆
+   按鈕，選定時實心填色」，沒有理由各寫一份。 */
+.chip.selected,
+.month-cell.selected {
   background: var(--tint);
   color: #fff;
 }
@@ -633,6 +680,14 @@ body {
 
 .chip.selected .chip-return {
   color: #fff;
+}
+
+/* #72：桌面版清單裡「目前選中」的劇本卡片——不能像上面的 chip／月曆格
+   那樣整片實心（卡片內還有好幾行文字要維持可讀），改用左側強調色條
+   ＋淡色底。 */
+.card.selected {
+  background: var(--fill);
+  box-shadow: inset 3px 0 0 var(--tint);
 }
 
 /* 常駐但目前沒話講的 live region 不該佔掉卡片的一段間距。 */
@@ -875,4 +930,92 @@ body {
   width: 100%;
   height: auto;
   margin-top: 8px;
+}
+
+/* 自製年月選擇器（#71）：切換鈕沿用 `.input` 的尺寸與邊框，視覺上跟其他
+   表單欄位一致；面板在文件流裡就地展開（不是浮層），所以不需要
+   `position: absolute`／z-index。 */
+.month-picker-toggle {
+  text-align: left;
+  cursor: pointer;
+}
+
+.month-picker-panel {
+  margin-top: 8px;
+  padding: 12px;
+  background: var(--fill);
+  border-radius: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.month-picker-year-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+}
+
+.month-picker-step {
+  appearance: none;
+  border: 0;
+  background: var(--bg-elevated);
+  color: var(--tint);
+  font-size: 20px;
+  font-weight: 600;
+  width: 36px;
+  height: 36px;
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+.year-input {
+  appearance: none;
+  font-family: inherit;
+  font-size: 20px;
+  font-weight: 700;
+  text-align: center;
+  color: var(--label);
+  background: transparent;
+  border: 0;
+  border-bottom: 1.5px solid var(--separator);
+  width: 4.5ch;
+  padding: 2px 0;
+}
+
+.year-input:focus {
+  outline: none;
+  border-bottom-color: var(--tint);
+}
+
+.month-picker-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 6px;
+}
+
+.month-cell {
+  appearance: none;
+  border: 0.5px solid transparent;
+  background: var(--bg-elevated);
+  color: var(--label);
+  font-family: inherit;
+  font-size: 15px;
+  font-weight: 600;
+  padding: 10px 0;
+  border-radius: 8px;
+  min-height: 44px;
+  cursor: pointer;
+}
+
+/* 當月的 current state：粗外框＋粗體字，跟「已選定」的實心填色分開，
+   兩者可能同時成立（選到的正好是這個月）——刻意不動 `color`，選定時
+   `.selected` 的白字要原封不動生效，兩條規則同時命中 `color` 的話會
+   變成靠寫在後面那條決勝，讀者看不出來是刻意的。單純外框＋粗體在原本
+   的細邊框上不夠醒目，加粗到 1.5px 才看得出跟一般月份不一樣。 */
+.month-cell[aria-current="date"] {
+  border-width: 1.5px;
+  border-color: var(--tint);
+  font-weight: 700;
 }

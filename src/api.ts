@@ -249,6 +249,13 @@ export interface ScenarioSummary {
    *  負數＝已過期，不夾成 0。 */
   target_anchor: string;
   days_to_anchor: number;
+  /**
+   * 目標年月最後一天是否已過完（#68，後端 `timeframe.month_is_over`）。
+   * 與 `days_to_anchor < 0` 是不同的判準——後者以日曆錨點（第三個星期五）
+   * 為準，會提早轉負。這個欄位才是後端用來擋批次刷新的那個判準，前端
+   * 據此在排入刷新佇列前先篩掉，畫面上也用它顯示「已過期，不再刷新」。
+   */
+  expired: boolean;
 }
 
 /**
@@ -397,10 +404,19 @@ export function getRawData(id: string): Promise<RawSnapshot> {
     `/api/scenarios/${encodeURIComponent(id)}/raw-data`);
 }
 
-/** CSV 下載連結——純 GET＋`Content-Disposition: attachment`，直接當
- *  `<a href>` 用，不需要額外的 JS 下載邏輯。 */
-export function rawDataCsvUrl(id: string): string {
-  return `/api/scenarios/${encodeURIComponent(id)}/raw-data.csv`;
+/**
+ * CSV 下載連結——純 GET＋`Content-Disposition: attachment`，直接當
+ * `<a href>` 用，不需要額外的 JS 下載邏輯。
+ *
+ * `analyzedAt` 帶了就附成快取破壞參數（#69）：這是一個靜態連結，不像
+ * `getRawData()` 走 React state 控制的 fetch——換一輪新分析之後，同一個
+ * URL 若被瀏覽器的 HTTP 快取命中，點下去會原樣吐回上一輪的舊 CSV，
+ * React 這邊完全不知情、也管不到。網址本身跟著分析換掉，快取自然
+ * 命中不了。後端不認得這個參數、也不必認得——純粹只是換一個 URL。
+ */
+export function rawDataCsvUrl(id: string, analyzedAt?: string | null): string {
+  const base = `/api/scenarios/${encodeURIComponent(id)}/raw-data.csv`;
+  return analyzedAt ? `${base}?t=${encodeURIComponent(analyzedAt)}` : base;
 }
 
 /**

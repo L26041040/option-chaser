@@ -23,12 +23,13 @@ import {
   primaryResult,
   type AnalysisView,
   type Candidate,
+  type RefreshFailure,
   type ScenarioDetail as Detail,
 } from "./api";
 import { candidateTitle, catchupView, formatMove, priceLadderView,
          strategyLabel } from "./detail";
 import { isThinPool, validPairsForExpiry } from "./expiry";
-import { formatAnalyzedAt, formatReturn, money } from "./scenarios";
+import { failureLabel, formatAnalyzedAt, formatReturn, money } from "./scenarios";
 
 function Row({ label, children }: { label: string; children: React.ReactNode }) {
   return (
@@ -195,8 +196,19 @@ function DetailBody({ scenarioId, view, analyzedAt }: {
       {result && (
         <AnalysisReport view={view} result={result} candidate={candidate} />
       )}
-      <SpreadHistory scenarioId={scenarioId} candidate={candidate} />
-      <RawData scenarioId={scenarioId} />
+      {/* #69：`key` 綁定這次分析的身分——新分析一到，React 直接卸載重掛
+          這兩個元件，內部 state（已抓到的資料、`<details open>`）連同
+          歸零，不會在畫面上混用新舊 cache。刷新後收合、下次展開重新
+          取得（需求方裁示接受，資料正確性優先）。`analyzedAt` 為 null
+          的情況實務上不會發生於此（本區塊只在 `latest_result` 非 null
+          時渲染，兩者恆同時有值），仍給個穩定佔位字串應付型別。兩個
+          key 各自加前綴——這兩個元件是同一層的相鄰手足，若共用同一個
+          key 字串，React 會把它們當成同一組鍵而發出「key 重複」警告，
+          重掛的保證也就不可靠了。 */}
+      <SpreadHistory key={`spread-history-${analyzedAt ?? "none"}`}
+                     scenarioId={scenarioId} candidate={candidate} />
+      <RawData key={`raw-data-${analyzedAt ?? "none"}`}
+               scenarioId={scenarioId} analyzedAt={analyzedAt} />
     </>
   );
 }
@@ -204,6 +216,9 @@ function DetailBody({ scenarioId, view, analyzedAt }: {
 export default function ScenarioDetail({
   id,
   refreshedAt = null,
+  busy = false,
+  failure,
+  onRefresh = () => {},
 }: {
   id: string;
   /**
@@ -212,6 +227,16 @@ export default function ScenarioDetail({
    * 前的那份快照上：詳細頁沒有功能列、也沒有第四種刷新管道可按。
    */
   refreshedAt?: string | null;
+  /**
+   * 詳細頁刷新入口（#70）：三者皆由 `App` 傳入，直接就是它既有的全域
+   * 刷新狀態與那條唯一佇列——不在這裡另開一條刷新管道。`busy` 沿用
+   * `Toolbar` 同一個判準（`progress !== null`，任何刷新進行中都算），
+   * 不是「只有這個劇本在跑」才算忙碌：一條佇列、一個跑者，重複觸發
+   * 只會讓同一個劇本排兩次。
+   */
+  busy?: boolean;
+  failure?: RefreshFailure;
+  onRefresh?: () => void;
 }) {
   const [detail, setDetail] = useState<Detail | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -240,8 +265,32 @@ export default function ScenarioDetail({
             ‹ 劇本庫
           </a>
         </div>
-        <h1 className="toolbar-title">{detail?.symbol ?? "劇本"}</h1>
+        <div className="toolbar-row">
+          <h1 className="toolbar-title">{detail?.symbol ?? "劇本"}</h1>
+          {/* #70：與劇本庫功能列同一個視覺語言（標題列右側膠囊鈕），
+              走 App 既有的那條刷新佇列——不是第四種獨立管道。已過期
+              （#68）沿用清單卡片同一句文案並停用——後端會把它當無害
+              no-op，按了等於沒按，不該讓它看起來還有用。 */}
+          <button className="pill" onClick={onRefresh}
+                 disabled={busy || detail?.expired}>
+            {detail?.expired ? "已過期，不再刷新" : busy ? "刷新中……" : "重新整理"}
+          </button>
+        </div>
       </header>
+
+      {/* 上次刷新失敗時沿用劇本庫卡片同一套分層指引與就地重試
+          （V4／#52 既有語彙），不是重新發明一套說法。已過期優先於刷新
+          失敗（#68 既有判斷）：兩種狀態同時出現會讓使用者搞不清楚現在
+          是哪一種。 */}
+      {failure && !detail?.expired && (
+        <div className="notice error" role="alert">
+          <div className="row-value">{failureLabel(failure.stage)}</div>
+          <p className="caption">{failure.message}</p>
+          <button className="text-button" onClick={onRefresh}>
+            重試
+          </button>
+        </div>
+      )}
 
       {error && (
         <div className="notice error" role="alert">

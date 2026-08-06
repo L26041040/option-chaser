@@ -6,7 +6,7 @@
 """
 from __future__ import annotations
 
-from . import ResultRecord, ResultSummary, Scenario, ScenarioExists
+from . import RateCacheEntry, ResultRecord, ResultSummary, Scenario, ScenarioExists
 
 
 class MemoryStorage:
@@ -15,6 +15,7 @@ class MemoryStorage:
         self._results: dict[str, dict[str, ResultRecord]] = {}
         self._snapshots: dict[tuple[str, str], dict] = {}
         self._events: list[dict] = []
+        self._rate_cache: RateCacheEntry | None = None
 
     @property
     def kind(self) -> str:
@@ -82,3 +83,11 @@ class MemoryStorage:
         if scenario_id is None:
             return list(self._events)
         return [e for e in self._events if e["scenario_id"] == scenario_id]
+
+    # ---------- 利率曲線快取 ----------
+
+    def get_rate_cache(self) -> RateCacheEntry | None:
+        return self._rate_cache
+
+    def save_rate_cache(self, entry: RateCacheEntry) -> None:
+        self._rate_cache = entry
