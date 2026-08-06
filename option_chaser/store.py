@@ -300,19 +300,27 @@ def rebuild_groups(ws_root, scenarios: list[Scenario],
 
 # ---------- ScenarioResult 契約（spec §3） ----------
 
-def best_return(view: dict | None) -> float | None:
-    """baseline 期（最接近目標年月的到期日）本身的最高收益率——與 Step 2
-    主圖同一口徑（QA1-03／#30：先前誤取全部到期日的全域最大值，較早到期日
-    剛好報酬更高時卡片數字就會跟主圖對不上）。
+def representative_candidate(view: dict | None) -> dict | None:
+    """劇本清單卡片要的「代表候選」完整身分（MVP-v2／#77、#78）：策略、
+    各腿履約價與權別、實際到期日、報酬率。
 
-    `baseline_return` 是 service 已預算好的欄位（T3 起＝各 Spread 自身到期日
-    的內在價值），這裡只在 baseline 期那組 `rows` 內取最大值，不做任何金融
-    計算。baseline 期不在 `expiry_groups`、或該期零合格候選 → None（附錄
-    A10.2／A12：綠燈＋「—」，不是一個真的收益率）；無快照 → None（附錄 A8.1）。
+    候選來源與 `best_return()` 逐字相同、同一次走訪：baseline 期（最接近
+    目標年月的到期日）在 `expiry_groups` 裡那一組的 `rows`，取
+    `baseline_return` 最高者（QA1-03／#30 修好的那條規則）。
 
-    住在 view 契約這一層而不是 `workspace`：V3（#51）起 HTTP API 的劇本
-    清單也要這個數字，而規則只能有一份——`workspace._best_return` 因此
-    改為委派。
+    刻意**不讀** `comparison`／`results`／`expiry_top10`：`comparison` 每筆
+    是該策略在**全部到期日**裡的全域最佳（`_comparison()`），拿它當來源會
+    讓「baseline 期」這個限定詞失效，等於讓 QA1-03 的舊 bug 在這一層重演。
+    這裡只在 baseline 期那組 `rows` 內取最大值，不做任何金融計算、不牽動
+    哪些策略／候選進得了排名——排名結果早由 `expiry_groups` 決定好了。
+
+    baseline 期不在 `expiry_groups`、該期零合格候選、或 view 本身為
+    `None`（無快照）→ `None`（附錄 A10.2／A12：綠燈＋「—」，不是一組
+    假的候選）。
+
+    腿的順序沿用序列化層既有慣例：`[0]=long`（買腿），`[1]=short`（賣腿，
+    僅價差策略才有）；只回顯示要用的履約價與權別，不重複整份 `_leg()`
+    （報價／IV／量能等欄位留在詳細頁的完整 view，這裡只是清單卡片用）。
     """
     if view is None:
         return None
@@ -320,7 +328,29 @@ def best_return(view: dict | None) -> float | None:
                  if g["expiry"] == view.get("baseline_expiry")), None)
     if group is None or not group["rows"]:
         return None
-    return max(row["candidate"]["baseline_return"] for row in group["rows"])
+    best_row = max(group["rows"],
+                   key=lambda row: row["candidate"]["baseline_return"])
+    candidate = best_row["candidate"]
+    return {
+        "strategy": best_row["strategy"],
+        "legs": [{"strike": leg["strike"], "option_type": leg["option_type"]}
+                 for leg in candidate["legs"]],
+        "expiry": group["expiry"],
+        "baseline_return": candidate["baseline_return"],
+    }
+
+
+def best_return(view: dict | None) -> float | None:
+    """baseline 期（最接近目標年月的到期日）本身的最高收益率——與 Step 2
+    主圖同一口徑（QA1-03／#30：先前誤取全部到期日的全域最大值，較早到期日
+    剛好報酬更高時卡片數字就會跟主圖對不上）。
+
+    由 `representative_candidate()` 導出而非各走各的一次走訪
+    （MVP-v2／#77、#78）：兩者必須在結構上不可能對不上，卡片上的報酬率
+    才會永遠是它旁邊那組履約價真正算出來的數字。
+    """
+    rep = representative_candidate(view)
+    return rep["baseline_return"] if rep is not None else None
 
 
 def _history_entry(sv: SpreadValuation, expiry: str, rank_in_expiry: int) -> dict:

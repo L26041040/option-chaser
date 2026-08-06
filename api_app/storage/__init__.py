@@ -41,13 +41,20 @@ class ResultRecord:
     # 不是每次從 view 現算：劇本清單只要這一個數字，卻得為此把整份 view
     # 撈回來。規則仍只有一份（引擎的純函式），這裡只是它的落盤結果。
     best_return: float | None = None
+    # 代表候選的完整身分（`store.representative_candidate(view)`，
+    # MVP-v2／#77、#78）：策略、各腿履約價與權別、實際到期日。與
+    # `best_return` 同一個模式——規則只有一份，這裡只是落盤結果。形狀
+    # 不假設腿數固定（單腳與價差共用），保留未來策略種類增加時不必
+    # 改 schema 的空間。
+    representative_candidate: dict | None = None
 
 
 @dataclass(frozen=True)
 class ResultSummary:
-    """劇本清單卡片要的兩個數字——不含 view。"""
+    """劇本清單卡片要的欄位——不含 view。"""
     analyzed_at: str
     best_return: float | None
+    representative_candidate: dict | None = None
 
 
 @dataclass(frozen=True)

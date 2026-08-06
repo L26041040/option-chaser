@@ -166,6 +166,33 @@ def test_list_carries_the_card_numbers_so_the_client_needs_one_request():
     assert rows[never["id"]]["best_return"] is None
 
 
+def test_list_carries_the_representative_candidate_matching_best_return(
+        ):
+    """MVP-v2（#77、#78）：清單列除了報酬率，還要有產生它的那組候選——
+    策略、各腿履約價、實際到期日。三個端點（建立／列出／刷新）共用同一個
+    組裝函式，這裡逐一驗證都帶著、且與 `store.representative_candidate`
+    同一份規則算出來的值逐位相同（口徑恆等，需求方裁示的硬紅線）。"""
+    from option_chaser import store
+
+    client = _client()
+    ran = _create(client, target_price=130.0)
+    never = _create(client, target_price=140.0)
+    refreshed = client.post(
+        f"/api/scenarios/{ran['id']}/refresh").raise_for_status().json()
+
+    view = client.get(f"/api/scenarios/{ran['id']}").json()["latest_result"]
+    expected = store.representative_candidate(view)
+
+    rows = {r["id"]: r for r in client.get("/api/scenarios").json()}
+    assert rows[ran["id"]]["representative_candidate"] == expected
+    assert rows[ran["id"]]["representative_candidate"]["baseline_return"] == \
+        rows[ran["id"]]["best_return"]
+    assert refreshed["representative_candidate"] == expected
+
+    # 沒跑過的劇本：誠實地說「尚未分析」，不是一組編出來的候選。
+    assert rows[never["id"]]["representative_candidate"] is None
+
+
 def test_list_does_not_ship_the_whole_view():
     """卡片只要兩個數字。清單順手把 view 塞進去的話，一頁十個劇本就是
     一 MB 級的回應。"""

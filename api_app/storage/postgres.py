@@ -34,16 +34,18 @@ CREATE TABLE IF NOT EXISTS scenarios (
     worst_price   DOUBLE PRECISION
 );
 CREATE TABLE IF NOT EXISTS results (
-    scenario_id   TEXT NOT NULL,
-    analyzed_at   TEXT NOT NULL,
-    view          JSONB NOT NULL,
-    best_return   DOUBLE PRECISION,
+    scenario_id             TEXT NOT NULL,
+    analyzed_at             TEXT NOT NULL,
+    view                    JSONB NOT NULL,
+    best_return             DOUBLE PRECISION,
+    representative_candidate JSONB,
     PRIMARY KEY (scenario_id, analyzed_at)
 );
--- V3（#51）加的欄位。既有部署已經有 results 表，`CREATE TABLE IF NOT
--- EXISTS` 不會補欄位——沒有這一行，正式環境會在 INSERT 時炸
--- UndefinedColumn。
+-- V3（#51）／MVP-v2（#77、#78）加的欄位。既有部署已經有 results 表，
+-- `CREATE TABLE IF NOT EXISTS` 不會補欄位——沒有這兩行，正式環境會在
+-- INSERT 時炸 UndefinedColumn。
 ALTER TABLE results ADD COLUMN IF NOT EXISTS best_return DOUBLE PRECISION;
+ALTER TABLE results ADD COLUMN IF NOT EXISTS representative_candidate JSONB;
 CREATE TABLE IF NOT EXISTS snapshots (
     scenario_id   TEXT NOT NULL,
     analyzed_at   TEXT NOT NULL,
@@ -79,6 +81,7 @@ CREATE TABLE IF NOT EXISTS rate_cache (
 # 而下面仍會把 dsn 標成 ready，該 process 從此每次寫入都撞 UndefinedColumn。
 _MIGRATIONS = """
 ALTER TABLE results ADD COLUMN IF NOT EXISTS best_return DOUBLE PRECISION;
+ALTER TABLE results ADD COLUMN IF NOT EXISTS representative_candidate JSONB;
 ALTER TABLE scenarios ADD COLUMN IF NOT EXISTS best_price DOUBLE PRECISION;
 ALTER TABLE scenarios ADD COLUMN IF NOT EXISTS worst_price DOUBLE PRECISION;
 ALTER TABLE rate_cache ADD COLUMN IF NOT EXISTS last_success_at TEXT;
@@ -90,7 +93,7 @@ ALTER TABLE rate_cache ADD COLUMN IF NOT EXISTS attempted_day TEXT;
 _BENIGN = (psycopg.errors.DuplicateTable, psycopg.errors.DuplicateObject,
            psycopg.errors.DuplicateColumn, psycopg.errors.UniqueViolation)
 
-_RESULT_COLS = "scenario_id, analyzed_at, view, best_return"
+_RESULT_COLS = "scenario_id, analyzed_at, view, best_return, representative_candidate"
 
 _SCENARIO_COLS = ("id, symbol, direction, target_price, target_month, "
                   "notes, strategies, created_at, archived_at, "
@@ -181,12 +184,16 @@ class PostgresStorage:
     def save_result(self, rec: ResultRecord) -> None:
         with self._connect() as conn:
             conn.execute(
-                "INSERT INTO results (scenario_id, analyzed_at, view, best_return) "
-                "VALUES (%s, %s, %s, %s) "
+                "INSERT INTO results (scenario_id, analyzed_at, view, "
+                "best_return, representative_candidate) "
+                "VALUES (%s, %s, %s, %s, %s) "
                 "ON CONFLICT (scenario_id, analyzed_at) DO UPDATE "
-                "SET view = EXCLUDED.view, best_return = EXCLUDED.best_return",
+                "SET view = EXCLUDED.view, best_return = EXCLUDED.best_return, "
+                "representative_candidate = EXCLUDED.representative_candidate",
                 (rec.scenario_id, rec.analyzed_at, Jsonb(rec.view),
-                 rec.best_return))
+                 rec.best_return,
+                 Jsonb(rec.representative_candidate)
+                 if rec.representative_candidate is not None else None))
 
     def latest_result(self, scenario_id: str) -> ResultRecord | None:
         with self._connect() as conn:
@@ -198,13 +205,18 @@ class PostgresStorage:
 
     def latest_summaries(self) -> dict[str, ResultSummary]:
         """`DISTINCT ON` 一趟取回每個劇本的最新一筆——**不選 view 欄位**，
-        清單頁因此不會把每份十萬字元的 view 從資料庫搬過來。"""
+        清單頁因此不會把每份十萬字元的 view 從資料庫搬過來。
+        `representative_candidate` 是小型 JSONB（幾個履約價與策略代號），
+        跟 `best_return` 同樣可以安全地隨這條清單查詢一起選（MVP-v2／
+        #77、#78）——這正是它獨立落盤成一個欄位、而不是每次從 view
+        現算的理由。"""
         with self._connect() as conn:
             rows = conn.execute(
                 "SELECT DISTINCT ON (scenario_id) scenario_id, analyzed_at, "
-                "best_return FROM results "
+                "best_return, representative_candidate FROM results "
                 "ORDER BY scenario_id, analyzed_at DESC").fetchall()
-        return {r[0]: ResultSummary(analyzed_at=r[1], best_return=r[2])
+        return {r[0]: ResultSummary(analyzed_at=r[1], best_return=r[2],
+                                    representative_candidate=r[3])
                 for r in rows}
 
     def result_history(self, scenario_id: str) -> list[ResultRecord]:
