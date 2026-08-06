@@ -454,7 +454,9 @@ test("手機首頁版面順序：Dashboard 佔位 → 新增劇本入口 → 劇
 
     const dashboard = page.getByLabel("Dashboard");
     const createToggle = page.getByRole("button", { name: "＋ 新增劇本" });
-    const list = page.locator("ul.list");
+    // 手機版清單用 compact 版式的容器（`.compact-list`，MVP-v2／#77、
+    // #82），跟桌面版 `ScenarioList.tsx` 的 `ul.list` 是不同的元件。
+    const list = page.locator("ul.compact-list");
 
     await expect(dashboard).toBeVisible();
     await expect(createToggle).toBeVisible();
@@ -497,4 +499,52 @@ test("新增劇本：點擊就地展開，不換頁、不彈出 modal（MVP-v2�
     await expect(page.getByLabel("標的代號")).not.toBeVisible();
     await page.getByRole("button", { name: "＋ 新增劇本" }).click();
     await expect(page.getByLabel("標的代號")).toHaveValue("tlt");
+  });
+
+test("Compact row 的密度：一個手機視窗至少看得到 4 個劇本，不必先捲動（MVP-v2／#77、#82）",
+  async ({ page }) => {
+    // 只驗結構性密度（能不能在一屏塞進足夠多列），不驗任何像素間距數值
+    // ——那種驗法會把設計凍結在這一輪（spec #77〈Testing Decisions〉
+    // 明確不做的測試）。舊的大卡片版式一屏通常只放得下 2～3 張。
+    const rows = Array.from({ length: 8 }, (_, i) =>
+      libraryRow({ id: `s${i}`, symbol: `SYM${i}`,
+                   latest_analyzed_at: null, best_return: null }));
+    await page.route("**/api/scenarios", (route) => route.fulfill({ json: rows }));
+    await page.route("**/api/scenarios/*/refresh", (route, req) =>
+      route.fulfill({ json: rows.find((r) => req.url().includes(`/${r.id}/`)) }));
+
+    await page.goto("/");
+    await expect(page.getByRole("listitem").first()).toBeVisible();
+
+    const viewportHeight = page.viewportSize()!.height;
+    const cards = await page.locator("li.compact-card").all();
+    let visibleWithoutScrolling = 0;
+    for (const card of cards) {
+      const box = await card.boundingBox();
+      if (box && box.y >= 0 && box.y + box.height <= viewportHeight) {
+        visibleWithoutScrolling += 1;
+      }
+    }
+
+    expect(visibleWithoutScrolling).toBeGreaterThanOrEqual(4);
+  });
+
+test("Compact row 逐項齊全：spec §5 必要欄位一個都沒少（MVP-v2／#77、#82）",
+  async ({ page }) => {
+    await routeLibrary(page, libraryRow());
+
+    await page.goto("/");
+    const card = page.getByRole("listitem").first();
+    await expect(card).toBeVisible();
+
+    // 標的／目標價／目標年月／燈號
+    await expect(card).toContainText("XYZ");
+    await expect(card.locator(".signal-dot")).toBeAttached();
+    // 報酬率／策略／買賣履約價
+    await expect(card).toContainText("567.0%");
+    // 實際到期日／距到期天數／最後更新時間
+    await expect(card).toContainText("Exp");
+    await expect(card).toContainText("45 天");
+    // 封存入口仍在，不因為 compact 而消失。
+    await expect(card.getByRole("button", { name: /封存/ })).toBeAttached();
   });

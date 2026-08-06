@@ -4,9 +4,14 @@
  * 桌面與手機是兩套 responsive layout（MVP-v2／#77 §8），共用同一份資料
  * 與狀態、各自的版面結構：
  * - 桌面（#72／#75）：頂部釘選功能列（含建立入口）→ 建立表單 →
- *   劇本卡片清單，左側常駐、右側是詳細頁。
- * - 手機（#81）：Dashboard 佔位 → 就地展開的新增劇本入口 → 劇本卡片
- *   清單（依最新收益率排序，紅燈沉底），點卡片整頁替換成詳細頁。
+ *   劇本卡片清單（`ScenarioList`，大卡片版式），左側常駐、右側是詳細頁。
+ * - 手機（#81／#82）：Dashboard 佔位 → 就地展開的新增劇本入口 → 高密度
+ *   劇本清單（`CompactScenarioList`，三層 compact row，依最新收益率
+ *   排序、紅燈沉底），點卡片整頁替換成詳細頁。
+ *
+ * 兩套清單元件刻意分開、不共用同一個渲染路徑：`ScenarioList.tsx`
+ * 只服務桌面、`CompactScenarioList.tsx` 只服務手機——這樣手機版的密度
+ * 改動在結構上不可能牽動桌面版現狀（spec #77 硬紅線一）。
  *
  * 點卡片進詳細頁（`ScenarioDetail`，V5／#53）；V1 的一次性分析畫面
  * 隨詳細頁落地一併移除，候選池診斷搬進詳細頁。
@@ -20,6 +25,7 @@
  */
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 
+import CompactScenarioList from "./CompactScenarioList";
 import CreateEntry from "./CreateEntry";
 import CreateForm, { type DraftScenario } from "./CreateForm";
 import Dashboard from "./Dashboard";
@@ -258,10 +264,10 @@ export default function App() {
   }
 
   if (!isDesktop) {
-    // 手機首頁（MVP-v2／#77、#81）：Dashboard 佔位 → 就地展開的新增
-    // 劇本入口 → 劇本庫，由上而下三段。與桌面版（下方 `library`）是
-    // 兩個獨立的 JSX 分支，不共用同一段標記——這樣手機版的版面決定
-    // 不會意外牽動桌面版現狀（#72／#75，spec #77 硬紅線一）。
+    // 手機首頁（MVP-v2／#77、#81、#82）：Dashboard 佔位 → 就地展開的
+    // 新增劇本入口 → 高密度劇本庫，由上而下三段。與桌面版（下方
+    // `library`）是兩個獨立的 JSX 分支，不共用同一段標記——這樣手機版
+    // 的版面決定不會意外牽動桌面版現狀（#72／#75，spec #77 硬紅線一）。
     //
     // 工具列不重複顯示建立入口（`showCreateButton={false}`）：入口已經
     // 在下面的 `CreateEntry`，兩個地方各放一次只會讓人不確定該點哪個。
@@ -294,7 +300,10 @@ export default function App() {
           <CreateForm onCreate={create} busy={busy} today={now} />
         </CreateEntry>
 
-        <ScenarioList
+        {/* #82：券商 App 式的高密度三層 compact row，取代大卡片——一個
+            手機螢幕能掃過多個劇本。桌面版沿用下方 `library` 的
+            `ScenarioList`（大卡片版式），不受這裡的密度改動影響。 */}
+        <CompactScenarioList
           rows={rows}
           failures={failures}
           now={now}
