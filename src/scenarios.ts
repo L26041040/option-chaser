@@ -5,7 +5,11 @@
  * 與詳細頁主圖同一口徑），`days_to_anchor` 也是後端依「該月第三個星期五」
  * 與紐約日曆算好的。本檔只決定「怎麼排、怎麼寫」。
  */
-import type { FailureStage, ScenarioSummary } from "./api";
+import type {
+  FailureStage,
+  RepresentativeCandidate,
+  ScenarioSummary,
+} from "./api";
 
 /**
  * 依最新收益率降序；還沒跑過分析的（`best_return === null`）一律排最後。
@@ -83,6 +87,35 @@ export function isStale(iso: string | null, now: Date): boolean {
   const at = Date.parse(iso);
   if (Number.isNaN(at)) return true;
   return now.getTime() - at > STALE_AFTER_HOURS * 3_600_000;
+}
+
+/**
+ * 代表候選的買賣履約價——「買 118 / 賣 122」（MVP-v2／#77、#78），沿用
+ * 詳細頁 `detail.candidateTitle` 既有的「買腿在前、賣腿在後」慣例，同一個
+ * 表達方式在清單卡片與詳細頁不該長得不一樣。單腳候選只有一隻腿，寫成
+ * 「買 118」——硬湊一個賣腿會憑空生出一隻不存在的腿。
+ *
+ * `null`（尚未分析、或該期零合格候選）說「—」，不是編一組假的候選。
+ */
+export function formatRepresentativeLegs(
+  rep: RepresentativeCandidate | null,
+): string {
+  if (rep === null) return "—";
+  const [buy, sell] = rep.legs;
+  if (!buy) return "—";
+  return sell ? `買 ${buy.strike} / 賣 ${sell.strike}` : `買 ${buy.strike}`;
+}
+
+/**
+ * 代表候選的實際到期日（MVP-v2／#77、#78）——與劇本的「目標年月」是
+ * 兩件不同的事：前者是引擎在候選池裡選中的那一天，後者是使用者當初
+ * 設定的假設。兩者格式故意不同（這裡原樣印 `YYYY-MM-DD`、目標年月是
+ * `YYYY-MM`），降低卡片上被讀錯成同一件事的機會。
+ */
+export function formatRepresentativeExpiry(
+  rep: RepresentativeCandidate | null,
+): string {
+  return rep === null ? "—" : rep.expiry;
 }
 
 /**

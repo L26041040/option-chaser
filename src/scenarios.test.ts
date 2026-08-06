@@ -6,6 +6,8 @@ import {
   STALE_AFTER_HOURS,
   failureLabel,
   formatDaysLeft,
+  formatRepresentativeExpiry,
+  formatRepresentativeLegs,
   formatReturn,
   isStale,
   sortScenarios,
@@ -63,6 +65,39 @@ describe("卡片格式", () => {
     expect(formatDaysLeft(12)).toBe("12 天");
     expect(formatDaysLeft(0)).toBe("0 天");
     expect(formatDaysLeft(-5)).toBe("已過期 5 天");
+  });
+});
+
+describe("代表候選格式（MVP-v2／#77、#78）", () => {
+  it("價差寫成「買 X / 賣 Y」，買腿在前、賣腿在後", () => {
+    expect(formatRepresentativeLegs({
+      strategy: "bull-call-spread",
+      legs: [{ strike: 118, option_type: "call" },
+            { strike: 122, option_type: "call" }],
+      expiry: "2026-09-18", baseline_return: 1.5,
+    })).toBe("買 118 / 賣 122");
+  });
+
+  it("單腳只寫「買 X」，不憑空生出賣腿", () => {
+    expect(formatRepresentativeLegs({
+      strategy: "long-call",
+      legs: [{ strike: 118, option_type: "call" }],
+      expiry: "2026-09-18", baseline_return: 0.3,
+    })).toBe("買 118");
+  });
+
+  it("沒有代表候選時說「—」，不是編一組假的候選", () => {
+    expect(formatRepresentativeLegs(null)).toBe("—");
+  });
+
+  it("實際到期日原樣顯示，沒有代表候選時說「—」", () => {
+    expect(formatRepresentativeExpiry({
+      strategy: "bull-call-spread",
+      legs: [{ strike: 118, option_type: "call" },
+            { strike: 122, option_type: "call" }],
+      expiry: "2026-09-18", baseline_return: 1.5,
+    })).toBe("2026-09-18");
+    expect(formatRepresentativeExpiry(null)).toBe("—");
   });
 });
 
