@@ -55,6 +55,10 @@ _HEADERS = {
 }
 
 
+def _status_error(status: int) -> FetchError:
+    return FetchError(f"狀態碼 {status}（非 200，視為此來源失敗）")
+
+
 def _http_get(url: str) -> str:
     """#74 硬化：明確檢查狀態碼，非 2xx 不進解析——`urlopen` 對 4xx/5xx
     本來就會拋 `HTTPError`，這裡額外擋 2xx 但非 200 的情況（例如 204），
@@ -65,9 +69,9 @@ def _http_get(url: str) -> str:
             status = resp.status
             body = resp.read().decode("utf-8", errors="replace")
     except HTTPError as e:
-        raise FetchError(f"狀態碼 {e.code}（非 200，視為此來源失敗）") from e
+        raise _status_error(e.code) from e
     if status != 200:
-        raise FetchError(f"狀態碼 {status}（非 200，視為此來源失敗）")
+        raise _status_error(status)
     return body
 
 

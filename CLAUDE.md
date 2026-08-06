@@ -808,13 +808,57 @@ V9（#57）／V10（#58）亦已完結——全部票做完。** 下一步不是
   「可靠取得期限對齊的市場無風險利率」
 - 進階區舊 cache 以資料正確性優先，**刷新後收合重取可接受**
 
-**票與依賴**（← 為可立刻開工，目前只剩這一張）：
-
-- **#74** 利率：production probe＋選定 provider 實作與硬化
-  （#67／#73 已完成，可開工）←
+**票與依賴**：QA-v2 這一輪（#67–#75）全數完成，**全部票做完才開 PR**
+的門檻已達成，等需求方實機驗收。
 
 **已完成**：
 
+- **需求方直接裁示（2026-08-06，不開票，四項合併一次執行）**：
+  1. 確認並清除 Streamlit 遺留——`git ls-files webapp/` 確認零追蹤
+     檔案，只剩未追蹤的 `__pycache__` 殘留（連同全站 stale `.pyc` 一併
+     刪除），pytest collection 乾淨，webapp/ 空目錄一併移除。查明
+     反覆出現的環境詭異狀態是這個 sandbox 容器本身在對話輪次之間會
+     把本地 checkout 重置回舊 commit（`git status` 誤報「已是最新」，
+     實際上落後 origin 幾十個 commit）——不是資料真的遺失，`git fetch`
+     ＋`git reset --hard origin/<branch>` 即可修正，遇到就重做一次。
+  2. 同步最新 master 進工作分支（commit `5a801fe`）：只落後一個
+     `Create Mvp-v2.md`，QA-v2 這一輪既有成果原封不動保留。
+  3. 利率快取改市場日語意（commit `1045880`）：同一市場日成功抓過
+     一次就所有劇本、所有 refresh 共用，不再是 12 小時滾動新鮮度窗；
+     下一個市場日第一次需要時才重新 fetch。`RateCacheEntry` 新增
+     `market_day`（只在真正成功直接抓到時前進，判準是呼叫端傳入的
+     `today`——紐約曆日，不是 `fetched_at` 的 UTC 日期部分，兩者在
+     午夜前後對不起來）與 `attempted_day`（不論成敗、每次寫入都蓋成
+     當次 `today`，供既有短窗 anti-hammering 判斷改用「是否同一市場日
+     的嘗試」而非單看時間差——單看時間差在市場日剛跨過午夜的那幾
+     分鐘會誤沿用「昨天的紀錄」）。失敗窗與 7 天緊急備援窗兩條既有
+     fallback 邏輯不變。Postgres schema／migration／SQL 同步加欄位。
+  4. **#74** 完成：利率 production probe＋Treasury 硬化（commit
+     `d505bc8`）。用需求方的 Vercel 帳號部署一個用完即丟的臨時專案
+     （跟正式 `option-chaser` 分開，`option-chaser-rate-probe`，
+     ⚠ 本輪工具沒有刪除專案的操作，需求方之後可手動清掉），對候選
+     利率來源打真連線探測（探測程序見研究文件 §6，結果見 §6.4）：
+     Treasury CSV／XML 皆可達，維持主源；FRED 免鑰 `fredgraph.csv`
+     兩次測試皆逢時，但官方 keyed API（不同子網域）連線正常、只是
+     缺 key——證明問題在那個便利端點本身，不是整個網域被擋，**探測
+     結果推翻研究 §5 原排序「FRED 免鑰路徑為第一備援」**；Financial
+     Modeling Prep 連線正常、缺 key；需求方另外提議的 Yahoo Finance
+     四檔免鑰指數連得到，但用同一天真實 Treasury 資料回頭算過，
+     1–3 年期插值誤差約 18–25bp（本 repo 既有可接受門檻 7.5bp 的
+     3 倍），維持研究 §3.5 不採用的結論，這次是拿實測資料驗證而非
+     紙上推論。FRED／FMP 皆確認網路可達但沒有金鑰（本輪不申請，
+     需求方裁示先接受 fallback 鏈只有 Treasury 這一層），落地版本＝
+     Treasury（CSV→XML→前一年 CSV）→ 陳舊窗快取 → 固定 4%。
+     `option_chaser/data/treasury.py` 硬化：一般瀏覽器等級標頭（原本
+     裸字串 `User-Agent`）、明確檢查狀態碼（非 200 不進解析）、失敗
+     訊息分來源分階段（Treasury／CSV 或 XML／哪一年／原因）；新增
+     `tests/fixtures/treasury_{csv,xml}_sample.txt` 兩份探測時實際
+     拿到的真實回應當回歸樣本（不是手刻夾具）。只動接縫後面的
+     provider，未改動 #67 的分析路徑／快取層核心邏輯（第 3 項的市場日
+     修正是需求方另外裁示、與 #74 分開一個 commit）。**未驗證項**：
+     正式部署版（不是探針用的臨時專案）拿到真實期限對齊曲線這件事，
+     仍待需求方之後實機部署驗證（`docs/deploy-vercel.md` 記錄的既有
+     部署缺口尚未解決）。
 - **#75** 主要操作入口收攏到工作區上方（commits `589014d`／`9ec0971`）：
   建立劇本從「掛在全部劇本卡片下面、永遠展開的表單」改成工具列上的
   頂部入口——跟刷新同一個固定操作列（`Toolbar` 新增 `createOpen`／
