@@ -809,7 +809,18 @@ V9（#57）／V10（#58）亦已完結——全部票做完。** 下一步不是
 - 進階區舊 cache 以資料正確性優先，**刷新後收合重取可接受**
 
 **票與依賴**：QA-v2 這一輪（#67–#75）全數完成，**全部票做完才開 PR**
-的門檻已達成，等需求方實機驗收。
+的門檻已達成。
+
+**2026-08-06 已 merge 回 master（PR #76，merge commit `5ff95c5`）**：
+需求方明確要求直接 merge（非等全套 `docs/v10-acceptance-checklist.md`
+實機驗收後才開）。merge 前跑過的把關：後端全套 654 條測試（記憶體
+假體＋本機真實 PostgreSQL 16 雙軌）全綠、前端型別檢查與 254 條
+Vitest 單元測試全綠、`npm run build` 生產建置成功；PR body 附完整
+test plan。merge 後 production 網址（`option-chaser.vercel.app`，
+對應 master 分支）會自動觸發重新部署，套用本輪全部改動（React／
+FastAPI／Neon 新架構取代 Streamlit）。桌面 20/80 版面（#72）
+先前的「驗收失敗」是需求方誤在 production 網址（當時仍是舊版 master）
+測試、非工作分支 preview——已排除，非真缺陷。
 
 **已完成**：
 
