@@ -14,6 +14,19 @@
 
 ## 專案紀錄區
 
+> **現況總覽（2026-08-06，寫給接手的新 session 看）**：T1–T12、QA1
+> 系列、D1、FB3、FB5、V1–V10、QA-v2（#67–#75）**全數完結，已 merge
+> 回 master**（PR #76，merge commit `5ff95c5`，需求方明確要求直接
+> merge，不等 `docs/v10-acceptance-checklist.md` 全套實機驗收）。
+> production 網址 `option-chaser.vercel.app` 現在對應的就是這批新
+> React/FastAPI/Neon 架構，不再是舊 Streamlit 或空殼。中間穿插的
+> 「目前狀態（2026-08-02）」等舊日期標頭是歷史留存，**以此段與下面
+> 「QA-v2 維修輪」小節末尾的 merge 記錄為準，不要被舊標頭誤導**。
+> 下一階段候選：**多使用者隔離** [#59]（未標 `ready-for-agent`，需求方
+> 裁示後才開工）、外觀優化（QA-v2 需求方已明確裁示延後，待主動重啟）。
+> 環境操作細節（venv／本地 Postgres／容器倒退修法／部署網址）見檔案
+> 最底下「## 環境」一節，已同步更新。
+
 ### 已完成
 
 - **Step 0** — Heatmap 價格範圍 1.10 → 1.15/0.85（commit `5e6b1bb`）
@@ -1102,15 +1115,19 @@ FastAPI／Neon 新架構取代 Streamlit）。桌面 20/80 版面（#72）
 
 ## 環境
 
-- **⚠ 容器會不定時倒退回較早的提交**（2026-08-04 已發生兩次，連 `.venv`
-  套件與本地 Postgres 資料目錄一起消失）。發現 `git log` 對不上時：
-  `git stash -u`（若有未提交的工作）→
+- **⚠ 容器會不定時倒退回較早的提交**（多次發生，連 `.venv` 套件與本地
+  Postgres 資料目錄一起消失，且 `git status` 會誤報「已是最新」）。
+  發現 `git log` 對不上 `git log origin/<branch>` 時，**不要用
+  `git merge --ff-only`**（本地 HEAD 是壞掉的舊提交，不是落後的乾淨
+  祖先，`--ff-only` 常常直接失敗）——正確作法：
   `git fetch origin claude/implement-tfm9oa` →
-  `git merge --ff-only origin/claude/implement-tfm9oa` → `git stash pop`。
-  **所有工作都推到 origin，倒退不會掉東西**。接著跑
-  `sh scripts/dev_env.sh` 重建測試環境——不重建的後果是**靜默**的：
-  儲存契約測試的 Postgres 那一半會被跳過，全套仍是綠的卻少驗一個實作
-  （正常全套是 582 條；掉到 5xx 出頭就是 Postgres 那組沒跑）
+  `git reset --hard origin/claude/implement-tfm9oa`（safe：這個 bug
+  模式下本地從來沒有真正未提交的工作，只有 HEAD 指錯）。
+  **所有工作都推到 origin，倒退不會掉東西**。接著重建環境（見下方
+  venv／Postgres 兩條）——不重建的後果是**靜默**的：儲存契約測試的
+  Postgres 那一半會被跳過，全套仍是綠的卻少驗一個實作（正常全套是
+  **654 條**；掉到 6xx 前段或更少，且明顯變快，就是 Postgres 那組
+  沒跑）
 - 跑測試：`OC_TEST_DATABASE_URL="postgresql://postgres@127.0.0.1:55432/octest"
   PYTHONPATH=. .venv/bin/python -m pytest`
   （`pyproject.toml` 的 `packages.find` 只收 `option_chaser*`，`api_app`
@@ -1120,16 +1137,40 @@ FastAPI／Neon 新架構取代 Streamlit）。桌面 20/80 版面（#72）
   （**`api` extra 必裝**：HTTP API 是後端唯一測試接縫，缺 httpx 會讓
   契約測試整組紅燈——這是刻意的，不要改成靜默跳過。**`yf` extra**＝
   備援資料源 yfinance，已移出核心依賴以免 pandas/numpy 進 serverless
-  函式——pyproject 的核心依賴就是 lambda 實際安裝的清單）
+  函式——pyproject 的核心依賴就是 lambda 實際安裝的清單。**`gui` extra
+  已隨 V10 cutover 移除**（Streamlit 已刪除），裝 `.[gui,api]` 只會
+  跳警告、不是錯誤，但代表指令抄到舊版，改用 `.[api,yf]`）
+- **本地 Postgres 起不來時**（`initdb`／`pg_ctl` 直接以 root 執行會報
+  `cannot be run as root`）：容器內建 Postgres 16（`/usr/lib/postgresql/16/bin/`）
+  要用內建的 `postgres` 系統使用者跑，完整流程：
+  ```
+  mkdir -p /tmp/oc_pgdata /tmp/oc_pgrun
+  chown -R postgres:postgres /tmp/oc_pgdata /tmp/oc_pgrun
+  su postgres -c "/usr/lib/postgresql/16/bin/initdb -D /tmp/oc_pgdata --auth=trust"
+  su postgres -c "/usr/lib/postgresql/16/bin/pg_ctl -D /tmp/oc_pgdata -o '-k /tmp/oc_pgrun -p 55432' -l /tmp/pg.log start"
+  /usr/lib/postgresql/16/bin/psql -h 127.0.0.1 -p 55432 -U postgres -c "CREATE DATABASE octest"
+  ```
+  （`scripts/dev_env.sh` 應該已經包了這套邏輯——上面是它失敗時的手動
+  備援步驟）
 - 前端（V1／#48 起）：`npm install`；`npm run typecheck`／`npm test`
   （Vitest 元件測試）／`npm run e2e`（Playwright，手機 viewport）／
   `npm run build`。沙箱有預裝 Chromium 時用
   `PLAYWRIGHT_CHROMIUM_PATH=/opt/pw-browsers/chromium npm run e2e`
 - 部署與契約樣本：見 `docs/deploy-vercel.md`
-- **部署網址只認這一個**（每次 push 都會自動產生一個一次性 preview
-  網址，那些不要收藏）：
-  `https://option-chaser-git-claude-imp-aef368-ofriedoriceo-5352s-projects.vercel.app`
-  ——分支別名，永遠指向工作分支的最新一次部署。
-  master 的 production 網址在 V10 merge 前必定是 ERROR（master 還沒有
-  前端程式碼），屬預期，不必理會
-- 全套測試現為全綠（舊紀錄提到的 5 個 streamlit 版本漂移失敗已隨 T2 改寫消失）。
+- **部署網址（2026-08-06 起，PR #76 merge 後）**：
+  - **production**：`https://option-chaser.vercel.app`（對應 master，
+    push 到 master 會自動重新部署）——V10 merge 前這裡必定是 ERROR
+    的舊限制**已解除**，現在應該是正常運作的新架構
+  - **工作分支 preview**：`https://option-chaser-git-claude-imp-aef368-ofriedoriceo-5352s-projects.vercel.app`
+    ——分支別名，永遠指向 `claude/implement-tfm9oa` 最新一次部署。
+    每次 push 也會另外產生一次性 preview 網址，那些不用收藏
+  - 兩者預設都開了 Vercel Authentication（SSO）保護 preview 部署；
+    2026-08-06 曾在自動化驗證過程中被意外關閉又重新開啟過一次
+    （已確認復原為 `prod_deployment_urls_and_all_previews`），日後若
+    需要調整以 Vercel 後台 Project Settings → Deployment Protection
+    為準
+  - **待清理**：`option-chaser-rate-probe`（#74 探測用的獨立臨時
+    Vercel 專案，跟正式 `option-chaser` 專案分開）已無用途，目前沒有
+    工具可以刪除 Vercel 專案，需求方之後可自行在後台刪除
+- 全套測試現為全綠（後端 654 條、前端 254 條 Vitest；舊紀錄提到的 5 個
+  streamlit 版本漂移失敗已隨 T2 改寫消失）。
