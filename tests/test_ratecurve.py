@@ -4,8 +4,11 @@
 全部離線；夾具曲線固定，可重跑覆核（issue #26 驗收）。
 """
 import math
+from pathlib import Path
 
 import pytest
+
+_FIXTURES = Path(__file__).parent / "fixtures"
 
 from option_chaser.models import ParamError
 from option_chaser.ratecurve import (CurveParseError, RateCurve,
@@ -118,6 +121,23 @@ def test_parse_csv_rejects_garbage():
         parse_treasury_csv('Date,"1 Mo"\n07/31/2026,\n')  # 無可用節點
 
 
+def test_parse_csv_against_a_real_captured_response():
+    """#74 硬化的回歸樣本：`tests/fixtures/treasury_csv_sample.txt` 是
+    2026-08-05 在 Vercel 上對 Treasury CSV 端點實測的真實回應（見
+    `docs/research/interest-rate-source-selection.md` 追記章節），不是
+    手刻的最小夾具——端點真的改版時，這條測試會先紅，而不是等到
+    production 才發現解析器跟不上真實欄位。"""
+    text = (_FIXTURES / "treasury_csv_sample.txt").read_text(encoding="utf-8")
+    curve = parse_treasury_csv(text)
+    assert curve.curve_date == "2026-08-04"
+    nodes = dict(curve.nodes)
+    assert nodes[1 / 12] == pytest.approx(par_to_continuous(0.0378))
+    assert nodes[1.0] == pytest.approx(par_to_continuous(0.0404))
+    assert nodes[2.0] == pytest.approx(par_to_continuous(0.0420))
+    assert nodes[30.0] == pytest.approx(par_to_continuous(0.0518))
+    assert len(curve.nodes) == 14   # 樣本表頭的全部 14 個年期欄位
+
+
 # ---------- XML 解析（備援端點） ----------
 
 XML_TEXT = '''<?xml version="1.0" encoding="utf-8"?>
@@ -159,6 +179,22 @@ def test_parse_xml_rejects_garbage():
         parse_treasury_xml("not xml at all")
     with pytest.raises(CurveParseError):
         parse_treasury_xml("<feed></feed>")
+
+
+def test_parse_xml_against_a_real_captured_response():
+    """#74 硬化的回歸樣本：`tests/fixtures/treasury_xml_sample.txt` 是
+    2026-08-05 在 Vercel 上對 Treasury XML 端點實測的真實回應（兩筆
+    完整 entry，id=140／141），理由同上一條 CSV 版本——鎖住真實欄位
+    命名（`d:BC_1MONTH`／`d:NEW_DATE` 等）與命名空間，不是手刻夾具。"""
+    text = (_FIXTURES / "treasury_xml_sample.txt").read_text(encoding="utf-8")
+    curve = parse_treasury_xml(text)
+    assert curve.curve_date == "2026-01-05"   # 兩筆 entry 裡較新的那筆
+    nodes = dict(curve.nodes)
+    assert nodes[1 / 12] == pytest.approx(par_to_continuous(0.0371))
+    assert nodes[1.0] == pytest.approx(par_to_continuous(0.0347))
+    assert nodes[2.0] == pytest.approx(par_to_continuous(0.0346))
+    assert nodes[30.0] == pytest.approx(par_to_continuous(0.0485))
+    assert len(curve.nodes) == 14   # 不含 BC_30YEARDISPLAY（非 tenor）
 
 
 # ---------- 快取序列化 round-trip ----------

@@ -166,9 +166,12 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
     記憶體假體與假利率來源，因此不打真網路、不碰真資料庫，決定性。
 
     `rate_loader`（#67）是資料源本身的介面——目前預設接的
-    `service.default_rate_curve_loader`（Treasury）只是暫時填在接縫
-    後面的實作，不是這裡的選型結果（選型是 #73／#74）。真正對外生效
-    的是 `_rate_curve_loader()` 包出來、疊了持久快取的版本，見下方。
+    `service.default_rate_curve_loader`（Treasury）是 #73／#74 選型與
+    production 實測後的落地結果（研究見
+    `docs/research/interest-rate-source-selection.md`，探測結果見該文
+    §6.4）；備援層（FRED／FMP，皆需金鑰）待需求方申請金鑰後再接，
+    介面本身已是可替換的。真正對外生效的是 `_rate_curve_loader()`
+    包出來、疊了持久快取的版本，見下方。
     """
     app = FastAPI(title="Option Chaser API", version=__version__)
 

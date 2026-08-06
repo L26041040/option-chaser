@@ -23,6 +23,15 @@ repo 的正式環境已證實能連上 Cboe（`cdn.cboe.com`，見 CLAUDE.md V1�
 逐欄位轉述，未能在本環境逐位元核對；無法以任一方式確認者列入 §7。
 真正的可及性答案由 §6 的正式環境探測程序取得，其結果可推翻本文排序。
 
+> **2026-08-05 追記（issue #74，已在 Vercel 正式環境實測，見 §6.4）**：
+> Primary 維持 Treasury，探測確認可達、已硬化並落地。§5 排序的
+> 「Fallback #1：FRED 免鑰路徑」**被實測推翻**——`fredgraph.csv` 便利
+> 端點本身逢時（官方 keyed API 網域是通的，純粹缺金鑰）。目前落地的
+> fallback 鏈是「Treasury → 陳舊窗快取 → 固定 4%」，FRED／FMP 兩個
+> keyed 備援待需求方之後申請金鑰再接上——技術上可行、只是還沒做。
+> 需求方另外提議的 Yahoo Finance 免鑰指數，用真實資料重新驗證後
+> 結論不變（涵蓋範圍不夠，1–3 年期插值誤差過大），維持不採用。
+
 ## 1. 摘要（結論先行）
 
 - **推薦排序**：**① US Treasury Daily Par Yield Curve（`home.treasury.gov`
@@ -463,6 +472,53 @@ https://www.cmegroup.com/articles/faqs/cme-term-sofr-reference-rates.html ，
 - **若探測結果與 §5 排序矛盾，以探測結果為準**——例如 Treasury 兩條
   路徑（CSV/XML）都在 Vercel 出口被擋，但 FRED 通，那就直接把 FRED
   升為 primary，不需要再開一次研究票論證「為什麼」。
+
+## 6.4 追記：Vercel 正式環境實測結果（2026-08-05，issue #74）
+
+**探測方式**：在需求方的 Vercel 帳號下建立一個用完即丟的臨時專案
+（`option-chaser-rate-probe`，跟正式 `option-chaser` 專案完全分開部署），
+單一 Python serverless function 直接對候選來源打 GET，回傳狀態碼、
+`Content-Type`、前 500–6000 bytes body。探測後這個臨時專案本身應
+從 Vercel 帳號移除（本輪工具沒有刪除專案的操作可用，留待需求方
+手動清掉）。**只測了一輪**（工作階段內），不是 §6.3 建議的「平日
+＋假日各一次」——2026-08-05（週三）美股交易日盤後測的，還沒有跨
+假日驗證「盤後／假日該端點是回舊資料還是回錯誤」，這點列為本追記
+自己的取材限制。
+
+**結果**：
+
+| 來源 | 結果 | 細節 |
+|---|---|---|
+| **Treasury CSV**（`home.treasury.gov`，主源） | ✅ 通 | 200、`Content-Type: text/csv; charset=UTF-8`，拿到真實資料（`08/04/2026,3.78,3.80,...`），已存成 `tests/fixtures/treasury_csv_sample.txt` |
+| **Treasury XML**（備援端點） | ✅ 通 | 200、`Content-Type: text/xml; charset=UTF-8`，拿到完整 entry，已存成 `tests/fixtures/treasury_xml_sample.txt` |
+| **FRED 免鑰 `fredgraph.csv`** | ❌ **逢時** | 兩次獨立測試皆逢時（15 秒與 25 秒逾時皆同），與 §5 原排序「FRED 為第一備援」的**假設路徑**矛盾 |
+| **FRED 官方 keyed API**（`api.stlouisfed.org`，不同子網域） | ✅ 通（缺 key） | 200 級網路連線正常，回 `400 Bad Request: Variable api_key is not set`——證明**網域本身**沒被擋，逢時的只有 `fred.stlouisfed.org` 這個便利端點 |
+| **Financial Modeling Prep**（`financialmodelingprep.com`） | ✅ 通（缺 key） | 回 `401 Invalid API KEY`——網路連通，純粹缺金鑰 |
+| **Yahoo Finance ^IRX/^FVX/^TNX/^TYX**（需求方提議，免鑰） | ✅ 通、但涵蓋不足 | 200、拿到即時報價（13 週 3.725%／5 年 4.324%／10 年 4.617%／30 年 5.174%），確認 §3.5 的缺口判斷：拿同一天 Treasury 真實資料回頭比對，內插 1–3 年期的誤差約 18–25 個基點，約為本 repo 既有可接受插值誤差門檻（7.5bp）的 3 倍，本 app 主戰場（1M–3Y）品質不足 |
+
+**與 §5 排序的關係——結論修正**：
+
+1. **Primary 維持 Treasury（CSV／XML），此點與 §5 一致，探測確認無誤**——
+   已完成硬化（狀態碼檢查、瀏覽器等級標頭、真實回歸樣本、分來源分
+   階段的失敗訊息），見 `option_chaser/data/treasury.py`（issue #74）。
+2. **§5 排序的「Fallback #1：FRED 免鑰路徑」被探測結果推翻**——
+   免鑰 `fredgraph.csv` 端點本身連不上（不是網域被擋，是這個便利
+   端點本身的問題，官方 keyed API 網域是通的）。**探測結果推翻桌面
+   研究此處的排序**，依 §6.3「若探測結果與 §5 排序矛盾，以探測結果
+   為準」處理。
+3. **FRED keyed API／Financial Modeling Prep 皆確認網路可達，但需要
+   金鑰**——本輪範圍內沒有金鑰（需求方裁示：先不申請，可接受
+   fallback 鏈只有 Treasury→固定 4% 這一種深度），**未在這輪實作**，
+   純粹是「還沒去申請」，不是技術上不可行。之後拿到金鑰，直接在
+   `default_rate_curve_loader` 前面接一個新 adapter 即可（介面已是
+   可替換的 `RateCurveLoader`）。
+4. **需求方提議的 Yahoo Finance 免鑰指數，此輪用真實資料重新驗證，
+   結論與 §3.5 桌面研究一致（不採用）**——不是因為「難申請」或
+   「不夠公開」，是涵蓋範圍本身不夠（3 個月與 5 年之間無節點），
+   拿同一天的真實資料實際算過插值誤差，量化後排除。
+5. **最終 fallback 鏈（本輪落地版本）**：Treasury（CSV→XML→前一年
+   CSV）→ 本地／Neon 陳舊窗快取 → 固定 4%。與 §5 原排序的差異只在
+   於「中間那一到兩層目前是空的」，不是 Treasury 這一層本身有問題。
 
 ## 7. 取材限制（未能查證事項清單）
 
