@@ -177,6 +177,8 @@ export function failureLabel(stage: FailureStage): string {
       return "分析沒跑完（重試多半無效，請回報）";
     case "params":
       return "這個劇本的參數目前無法分析";
+    case "archived":
+      return "劇本已在垃圾桶，不再刷新";
     default:
       return "刷新失敗";
   }

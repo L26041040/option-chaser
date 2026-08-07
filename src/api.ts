@@ -234,9 +234,9 @@ export interface AnalysisView {
  * 失敗發生在哪一個環節（後端 `_fail` 的 `stage`，V4／#52）。
  * `null` ＝ 後端沒說（例如 422 之類的驗證錯誤），畫面退回通用說法。
  */
-export type FailureStage = "fetch" | "analyze" | "params" | null;
+export type FailureStage = "fetch" | "analyze" | "params" | "archived" | null;
 
-const STAGES = ["fetch", "analyze", "params"] as const;
+const STAGES = ["fetch", "analyze", "params", "archived"] as const;
 
 export class ApiError extends Error {
   readonly stage: FailureStage;

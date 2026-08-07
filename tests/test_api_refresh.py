@@ -315,3 +315,52 @@ def test_refresh_on_an_expired_scenario_still_404s_when_unknown():
     """過期劇本的擋點不能蓋掉既有的「劇本不存在」規則。"""
     c = TestClient(create_app(storage=MemoryStorage()))
     assert c.post("/api/scenarios/nope/refresh").status_code == 404
+
+
+# ---------- 垃圾桶劇本不再刷新（TR1／#88） ----------
+#
+# 跟過期劇本（#68）的擋法刻意不同：過期是「還是能看，只是不再花資源
+# 更新」的靜默短路（回既有卡片列，200）；垃圾桶是「使用者主動把它丟
+# 掉了」，任何背景動作都不該再發生，錯誤要明確到前端分辨得出「這是
+# 因為在垃圾桶」而不是其他失敗原因——回一個帶得出原因的 4xx，不是
+# 靜靜地回一份「無害的舊資料」。
+
+
+def test_refresh_on_an_archived_scenario_is_rejected_and_touches_nothing():
+    c = _client()
+    sc = _create(c)
+    c.post(f"/api/scenarios/{sc['id']}/archive").raise_for_status()
+
+    resp = c.post(f"/api/scenarios/{sc['id']}/refresh")
+
+    assert resp.status_code == 409
+    assert _detail(resp)["stage"] == "archived"
+    # 沒有新結果，也沒有新事件——不抓鏈、不跑引擎、不入庫
+    assert c.get(f"/api/scenarios/{sc['id']}/results").json() == []
+    events = [e["event"] for e in c.get(f"/api/scenarios/{sc['id']}/events").json()]
+    assert events == ["SCENARIO_CREATED", "SCENARIO_ARCHIVED"]
+
+
+def test_refresh_on_an_archived_scenario_never_reaches_fetch():
+    """跟過期擋點同一種驗法（`test_refresh_on_an_expired_scenario_does_
+    not_touch_the_data_source`）：注入一個一被呼叫就讓測試失敗的假
+    `fetch`，證明擋點在抓鏈之前，不是抓完才發現分析失敗。"""
+    storage = MemoryStorage()
+    c = TestClient(create_app(storage=storage))
+    sc = _create(c)
+    c.post(f"/api/scenarios/{sc['id']}/archive").raise_for_status()
+
+    def boom(symbol):
+        raise AssertionError("垃圾桶劇本不該抓鏈")
+
+    blocked_client = TestClient(create_app(fetch=boom, storage=storage))
+    resp = blocked_client.post(f"/api/scenarios/{sc['id']}/refresh")
+
+    assert resp.status_code == 409
+    assert _detail(resp)["stage"] == "archived"
+
+
+def test_refresh_on_an_archived_scenario_still_404s_when_unknown():
+    """垃圾桶擋點不能蓋掉既有的「劇本不存在」規則。"""
+    c = TestClient(create_app(storage=MemoryStorage()))
+    assert c.post("/api/scenarios/nope/refresh").status_code == 404

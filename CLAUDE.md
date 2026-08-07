@@ -1172,10 +1172,19 @@ RC1／TR1／TR2／TR3／TR6 可平行開工，TR4 被 TR2＋TR3 擋，TR5 被 TR
   文字報告同步套用（同一段文字會出現在網頁「分析報告」展開區），
   golden fixture 四份與契約樣本重產。後端＋5 條新測試、前端＋3 條，
   全套 672 條（後端）／291 條（前端 Vitest）全綠
+- **TR1**（#88）— 後端硬擋垃圾桶劇本的 refresh：`refresh_scenario`
+  在 `_require` 之後、任何抓鏈／分析動作之前新增 `archived_at is not
+  None` 檢查，回 409＋`stage="archived"`（比照既有 `_fail()` 分層
+  格式），不抓鏈、不跑引擎、不入庫、不留事件——跟過期劇本（#68）的
+  靜默短路（200，回既有卡片列）刻意不同，垃圾桶是使用者主動丟掉的，
+  要讓前端分辨得出「這是因為在垃圾桶」。`FailureStage`／`STAGES`／
+  `failureLabel` 三處同步加 `"archived"`（`test_frontend_contract.py`
+  的漂移防線抓到才補的，不是主動想到）。`/api/analyze`（一次性分析、
+  無 scenario 概念）不受影響。後端＋3 條、前端＋1 條，全套 675 條
+  （後端）／291 條（前端）全綠
 
 **待辦（可平行開工，除 TR4／TR5 有依賴）**：
 
-- TR1（#88）— 後端硬擋垃圾桶劇本的 refresh／analyze／market fetch
 - TR2（#89）— 後端還原（單筆＋批量）
 - TR3（#90）— 後端永久刪除（單筆＋批量，含 cascade）
 - TR6（#91）— 前端：主清單批次移入垃圾桶＋單筆刪除圖示化

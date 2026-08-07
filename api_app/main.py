@@ -365,6 +365,14 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         的呼叫端。
         """
         sc = _require(scenario_id)
+        # TR1（#88）：垃圾桶劇本硬擋——跟過期擋點（下面）刻意不同，過期
+        # 是「還是能看，只是不再花資源更新」的靜默短路（回既有卡片列，
+        # 200）；垃圾桶是使用者主動丟掉的，任何背景動作都不該再發生，
+        # 錯誤要明確到前端分辨得出「這是因為在垃圾桶」，不是靜靜地回一
+        # 份「無害的舊資料」。擋在 `_require` 之後、任何抓鏈／分析動作
+        # 之前——不抓鏈、不跑引擎、不入庫、不留事件。
+        if sc.archived_at is not None:
+            raise _fail("archived", 409, f"劇本已在垃圾桶，不再刷新：{scenario_id}")
         today = ny_today()
         if month_is_over(TargetMonth.from_key(sc.target_month), today):
             latest = _db().latest_result(scenario_id)
