@@ -31,6 +31,9 @@ class Scenario:
     def archived(self, ts: str) -> "Scenario":
         return replace(self, archived_at=ts)
 
+    def restored(self) -> "Scenario":
+        return replace(self, archived_at=None)
+
 
 @dataclass(frozen=True)
 class ResultRecord:
@@ -113,6 +116,20 @@ class Storage(Protocol):
 
     def archive_scenario(self, scenario_id: str, *, ts: str) -> bool:
         """回傳是否真的封存了（不存在或已封存回 False）。資料不刪除。"""
+
+    def restore_scenario(self, scenario_id: str, *, ts: str) -> bool:
+        """回傳是否真的還原了（不存在或本來就未封存回 False）。清空
+        `archived_at`，results／snapshots／events 不受影響。`ts` 只為
+        跟 `archive_scenario` 同一種呼叫慣例（呼叫端算一次 timestamp，
+        同時餵給這裡與事件紀錄）保留，`Scenario` 沒有「還原於」欄位
+        需要落盤。"""
+
+    def delete_scenario(self, scenario_id: str) -> bool:
+        """永久刪除（TR3／#90）。回傳是否真的刪了東西——**只允許刪除
+        已封存的劇本**：不存在或尚未封存（`archived_at is None`）皆回
+        `False`、資料原封不動，這是安全閘門，永久刪除必須先進垃圾桶。
+        真的刪除時 cascade 清掉該 `scenario_id` 名下的
+        results／snapshots／events，不留任何痕跡（不是軟刪除）。"""
 
     def save_result(self, rec: ResultRecord) -> None:
         """同一 (scenario_id, analyzed_at) 重複寫入即覆蓋（冪等）。"""

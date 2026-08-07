@@ -181,6 +181,74 @@ describe("⑥⑦ 方法與假設／免責聲明", () => {
   });
 });
 
+describe("無風險利率三態顯示（RC1／#87）", () => {
+  it("真正 fallback（無曲線）只顯示常數與 FALLBACK 標籤，不掛任何日期",
+     async () => {
+    const fallbackView = {
+      ...view,
+      params: { ...view.params, rate_curve_used: false,
+                rate_curve_date: null, rate_curve_stale: false,
+                rate: 0.04, rate_note: "曲線不可得" },
+    };
+    render(<AnalysisReport view={fallbackView} result={result} candidate={real} />);
+    await expand();
+    const row = screen.getByText("無風險利率").closest(".row")!;
+    expect(row).toHaveTextContent("4.0%");
+    expect(row).toHaveTextContent("FALLBACK");
+    expect(row).toHaveTextContent("Treasury curve unavailable");
+    expect(row).not.toHaveTextContent("STALE");
+    // 不得出現任何看起來像日期的字串（曲線資料日只在真的用了曲線時才顯示）。
+    expect(row).not.toHaveTextContent(/\d{4}-\d{2}-\d{2}/);
+  });
+
+  it("真正曲線且新鮮：顯示 curve date，不帶 STALE 標記", async () => {
+    const curveView = {
+      ...view,
+      params: { ...view.params, rate_curve_used: true,
+                rate_curve_date: "2026-07-31", rate_curve_stale: false },
+    };
+    render(<AnalysisReport view={curveView} result={result} candidate={real} />);
+    await expand();
+    const row = screen.getByText("無風險利率").closest(".row")!;
+    expect(row).toHaveTextContent("2026-07-31");
+    expect(row).not.toHaveTextContent("FALLBACK");
+    expect(row).not.toHaveTextContent("STALE");
+  });
+
+  it("真正曲線但陳舊備援：顯示 curve date 且明確標示 STALE", async () => {
+    const staleView = {
+      ...view,
+      params: { ...view.params, rate_curve_used: true,
+                rate_curve_date: "2026-07-20", rate_curve_stale: true },
+    };
+    render(<AnalysisReport view={staleView} result={result} candidate={real} />);
+    await expand();
+    const row = screen.getByText("無風險利率").closest(".row")!;
+    expect(row).toHaveTextContent("2026-07-20");
+    expect(row).toHaveTextContent("STALE");
+    expect(row).not.toHaveTextContent("FALLBACK");
+  });
+
+  it("使用者明示利率（CLI --rate，rate_explicit）：乾淨顯示，不貼 FALLBACK 標籤",
+     async () => {
+    // 目前網頁路徑打不到這一態（`rate_explicit` 只有 CLI 會設起），
+    // 但前端邏輯要跟後端 report.py::_rate_line 同一套三態判斷對得上，
+    // 不能只在後端正確、前端漏了這一態。
+    const explicitView = {
+      ...view,
+      params: { ...view.params, rate_curve_used: false, rate_curve_date: null,
+                rate_curve_stale: false, rate_explicit: true, rate: 0.07,
+                rate_note: "" },
+    };
+    render(<AnalysisReport view={explicitView} result={result} candidate={real} />);
+    await expand();
+    const row = screen.getByText("無風險利率").closest(".row")!;
+    expect(row).toHaveTextContent("7.0%");
+    expect(row).not.toHaveTextContent("FALLBACK");
+    expect(row).not.toHaveTextContent("STALE");
+  });
+});
+
 describe("不重複頁面上方已經無條件顯示過的東西（R1 §3.4／設計取捨）", () => {
   it("不含追平價格區塊的重複內容——那已經是頁面上方的獨立區塊", async () => {
     render(<AnalysisReport view={view} result={result} candidate={real} />);

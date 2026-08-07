@@ -673,6 +673,11 @@ def _resolve_rates(p: AnalysisParams, snap: ChainSnapshot, today: date,
     明示 --rate 被授權沿用現行寫法（issue #26），其餘固定值一律說明原因。
     曲線不可得 → 保持常數 `p.rate`，僅設 `rate_note` 供報告參數行標示。
     解出的表以到期日為鍵：同一腿在 Heatmap 全格共用一個 r。
+
+    RC1（#87）：`rate_curve_used`/`rate_curve_date`/`rate_curve_stale`
+    三欄只描述「這次是否真的取得一條 `RateCurve`」，獨立於 `rate_by_
+    expiry` 是否非空——後者在鏈上零合約時即使曲線成功也會是空表，兩者
+    脫鉤，呈現層才不會把「曲線成功但鏈上零合約」誤判成 fallback。
     """
     if p.rate_explicit:
         return p
@@ -680,12 +685,15 @@ def _resolve_rates(p: AnalysisParams, snap: ChainSnapshot, today: date,
         return dataclasses.replace(p, rate_note="離線重放，未啟用利率曲線")
     curve, note = loader(today)
     if curve is None:
-        return dataclasses.replace(p, rate_note=note)
+        return dataclasses.replace(p, rate_note=note, rate_curve_used=False)
     pairs = tuple(
         (e, rate_for_tenor(
             curve, (date.fromisoformat(e) - today).days / DAYS_PER_YEAR))
         for e in sorted({c.expiry for c in snap.contracts}))
-    return dataclasses.replace(p, rate_by_expiry=pairs, rate_note=note)
+    return dataclasses.replace(p, rate_by_expiry=pairs, rate_note=note,
+                               rate_curve_used=True,
+                               rate_curve_date=curve.curve_date,
+                               rate_curve_stale=curve.stale)
 
 
 def _analyze(request: AnalysisRequest, snap: ChainSnapshot,

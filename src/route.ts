@@ -19,3 +19,14 @@ export function scenarioIdFromHash(hash: string): string | null {
   const hit = /^#\/s\/(.+)$/.exec(hash);
   return hit ? decodeURIComponent(hit[1]) : null;
 }
+
+/** 垃圾桶畫面的 hash（TR6／#91）。跟詳細頁同一套「進了瀏覽歷史」的
+ *  理由：返回手勢／返回鍵可用，網址可以直接貼給自己。 */
+export function trashHash(): string {
+  return "#/trash";
+}
+
+/** 目前是不是在垃圾桶畫面。 */
+export function isTrashHash(hash: string): boolean {
+  return hash === trashHash();
+}

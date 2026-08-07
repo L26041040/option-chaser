@@ -14,23 +14,25 @@
 
 ## 專案紀錄區
 
-> **現況總覽（2026-08-06 稍晚，寫給接手的新 session 看）**：T1–T12、QA1
-> 系列、D1、FB3、FB5、V1–V10、QA-v2（#67–#75）**全數完結，已 merge
-> 回 master**（PR #76，merge commit `5ff95c5`）。緊接著同一天內
-> `/to-spec` 發佈 **MVP V2 手機版劇本庫**（spec #77，源自
-> `docs/Mvp-v2.md`）、`/to-tickets` 拆成 **M1a–M6**（#78–#84，依賴順序
-> M1a→M1b→M2→M4→M3→M5→M6，全數 `ready-for-agent`），**M1a–M6 全數
-> 完成**（見下方「MVP V2 手機版劇本庫」小節），**全部票做完才開 PR**
-> 的門檻已達成，PR 待開。production 網址
-> `option-chaser.vercel.app` 現在對應的仍是 React/FastAPI/Neon 架構，
-> 本輪只加代表候選欄位＋手機版首頁重排，未動引擎與桌面版。中間穿插的
+> **現況總覽（2026-08-07，寫給接手的新 session 看）**：T1–T12、QA1
+> 系列、D1、FB3、FB5、V1–V10、QA-v2（#67–#75）、**MVP V2 手機版劇本庫
+> （M1a–M6，#78–#84）全數完結，已 merge 回 master**（PR #85，squash
+> merge commit `8b52f41`，需求方真機驗收通過後 2026-08-07 merge）。
+> production 網址 `option-chaser.vercel.app` 現在對應代表候選＋燈號＋
+> Compact Row＋捲動還原全部到位的手機版劇本庫。緊接著同一天開始
+> **Trash 語意＋利率顯示修正**這一輪（見下方「Trash 語意＋利率顯示
+> 修正」小節）：需求方三點反饋（Archive 改真正 Trash、利率 fallback
+> 顯示語意）、`/to-tickets` 拆成 RC1＋TR1–TR6（#87–#93）。**RC1、
+> TR1–TR6 全數完成**（tracking #86）——Archive 正式改為 Trash 語意、
+> 利率顯示語意修正、垃圾桶前端全部落地。依專案規則「全部票做完才開
+> PR」，PR 待需求方驗收後才開。中間穿插的
 > 「目前狀態（2026-08-02）」等舊日期標頭是歷史留存，**以此段與下面
-> 「MVP V2 手機版劇本庫」小節末尾的紀錄為準，不要被舊標頭誤導**。
-> 下一階段候選：**多使用者隔離** [#59]（未標 `ready-for-agent`，需求方
-> 裁示後才開工）、外觀優化（QA-v2 需求方已明確裁示延後，待主動重啟）、
-> Dashboard 佔位區實際內容（跨劇本比較功能確定後另開票，spec #77
-> Out of Scope）。環境操作細節（venv／本地 Postgres／容器倒退修法／
-> 部署網址）見檔案最底下「## 環境」一節，已同步更新。
+> 對應小節末尾的紀錄為準，不要被舊標頭誤導**。下一階段候選：
+> **多使用者隔離** [#59]（未標 `ready-for-agent`，需求方裁示後才開工）、
+> 外觀優化（QA-v2 需求方已明確裁示延後，待主動重啟）、Dashboard 佔位區
+> 實際內容（跨劇本比較功能確定後另開票，spec #77 Out of Scope）。
+> 環境操作細節（venv／本地 Postgres／容器倒退修法／部署網址）見檔案
+> 最底下「## 環境」一節，已同步更新。
 
 ### 已完成
 
@@ -1069,7 +1071,7 @@ FastAPI／Neon 新架構取代 Streamlit）。桌面 20/80 版面（#72）
 > production connectivity probe 排在候選選出之後、由 #74 執行，
 > 且**探針結果可以推翻研究的排序**。
 
-### MVP V2 手機版劇本庫（spec #77，2026-08-06 完結，PR 待開）
+### MVP V2 手機版劇本庫（spec #77，2026-08-06 完結，PR #85 已 merge）
 
 **背景**：QA-v2（#72）完成桌面 20/80 master/detail 時，需求方明確裁示
 「手機版面稍後另行定義，本輪不做」。`docs/Mvp-v2.md` 就是那份定義，
@@ -1144,6 +1146,147 @@ FastAPI／Neon 新架構取代 Streamlit）。桌面 20/80 版面（#72）
 
 > 沿用規則：反饋要先逐點跟需求方確認打算怎麼改、為什麼，確認完才
 > 開票施工；`/implement` 進行中沒遇到需人類裁示的事就不停。
+
+### Trash 語意＋利率顯示修正（tracking #86，施工中）
+
+**背景**：需求方 2026-08-07 三點確定事項——Archive 正式改為 Trash 語意
+（硬擋垃圾桶劇本的背景動作、單筆／批量還原、單筆／批量永久刪除皆需
+二次確認）、修正利率顯示語意（fallback 不掛市場資料日期、真曲線標示
+curve date／stale）。垃圾桶版面先出手繪 HTML 預覽給需求方核准（三輪
+修正：桌面版工具列順序、手刻 SVG 圖示取代 emoji、每張卡片單筆刪除
+圖示化），核准後 `/to-tickets` 拆成 RC1＋TR1–TR6（#87–#93），依賴順序：
+RC1／TR1／TR2／TR3／TR6 可平行開工，TR4 被 TR2＋TR3 擋，TR5 被 TR4 擋。
+
+**已完成**：
+
+- **RC1**（#87）— 利率顯示語意修正：`AnalysisParams` 新增
+  `rate_curve_used`／`rate_curve_date`／`rate_curve_stale` 三個結構化
+  欄位，獨立於 `rate_by_expiry` 是否非空（後者在曲線成功但鏈上零合約
+  時仍會是空表，兩者脫鉤才不會誤判成 fallback）。`RateCurve`
+  （`ratecurve.py`）新增 `stale: bool = False` 欄位並隨 `curve_to_dict`／
+  `curve_from_dict` 序列化——staleness 搭著曲線物件本身走，
+  `RateCurveLoader` 呼叫介面簽章不變（仍是 2-tuple），blast radius
+  因此侷限在標記 stale 的兩個分支：`data/treasury.py` 的本地檔案
+  快取備援、`api_app/rate_cache.py` 的 Neon 緊急備援窗。前端
+  `AnalysisReport.tsx` 新增 `RateRow` 三態分流：真 fallback 只顯示
+  「{rate}% · FALLBACK／Treasury curve unavailable」不掛日期；真曲線
+  顯示 curve date，陳舊備援額外標 STALE。`report.py::_rate_line` 純
+  文字報告同步套用（同一段文字會出現在網頁「分析報告」展開區），
+  golden fixture 四份與契約樣本重產。後端＋5 條新測試、前端＋3 條，
+  全套 672 條（後端）／291 條（前端 Vitest）全綠
+- **TR1**（#88）— 後端硬擋垃圾桶劇本的 refresh：`refresh_scenario`
+  在 `_require` 之後、任何抓鏈／分析動作之前新增 `archived_at is not
+  None` 檢查，回 409＋`stage="archived"`（比照既有 `_fail()` 分層
+  格式），不抓鏈、不跑引擎、不入庫、不留事件——跟過期劇本（#68）的
+  靜默短路（200，回既有卡片列）刻意不同，垃圾桶是使用者主動丟掉的，
+  要讓前端分辨得出「這是因為在垃圾桶」。`FailureStage`／`STAGES`／
+  `failureLabel` 三處同步加 `"archived"`（`test_frontend_contract.py`
+  的漂移防線抓到才補的，不是主動想到）。`/api/analyze`（一次性分析、
+  無 scenario 概念）不受影響。後端＋3 條、前端＋1 條，全套 675 條
+  （後端）／291 條（前端）全綠
+
+- **TR2**（#89）— 後端還原：`Storage` port 新增 `restore_scenario`
+  （`Scenario.restored()` 清空 `archived_at`，`memory`／`postgres`
+  皆實作，契約測試 parametrize 兩者），API 新增
+  `POST /api/scenarios/{id}/restore`，成功寫 `SCENARIO_RESTORED`
+  事件；重複呼叫（本來就不在垃圾桶）冪等成功、不留事件，比照既有
+  `archive` 對重複封存的處理。批量不新增後端端點——沿用既有序列
+  佇列模式，前端 TR4／TR5 對選中的每個劇本各打一次這個端點。前端
+  `api.ts` 新增 `restoreScenario()` 供 TR4 消費。後端＋9 條，全套
+  686 條（後端）／292 條（前端）全綠
+
+- **TR3**（#90）— 後端永久刪除：`Storage` port 新增 `delete_scenario`，
+  安全閘門只允許刪除已封存的劇本（未封存或不存在皆回 `False`、資料
+  原封不動）；真的刪除時 cascade 清 results／snapshots／events（不
+  依賴 FK，`postgres.py` 三張表各自一次 `DELETE`，沿用專案既有「不用
+  FK 約束」慣例）。API 新增 `DELETE /api/scenarios/{id}`：未封存回
+  409（純字串 `detail`，不是 `_fail()` 的分層形狀——這不是刷新／分析
+  失敗分層概念）、成功回 204、不留刪除事件（劇本連同它的 events 一起
+  沒了）。前端 `api.ts` 新增 `deleteScenario()`；`request<T>()` 補上
+  204 No Content 分支（不呼叫 `.json()`，回 `undefined`）。批量同
+  TR2，前端序列佇列逐一呼叫。後端＋8 條，全套 698 條（後端）／292 條
+  （前端）全綠
+
+- **TR6**（#91）— 前端：主清單批次移入垃圾桶＋單筆刪除圖示化＋垃圾桶
+  入口。手刻 SVG 圖示（`src/icons.tsx`：`TrashIcon`／`CheckIcon`，
+  outline 風格，核准版面唯一採用款）取代 `ScenarioList.tsx`／
+  `CompactScenarioList.tsx` 既有文字「封存」鈕；桌面工具列新增
+  「🗑 垃圾桶」膠囊鈕，順序＝＋建立劇本→垃圾桶→重新整理（需求方核准
+  版面）。批次選取：清單「收益率口徑」說明旁新增圖示入口，進入選取
+  模式後 checkbox 取代單筆刪除鈕（不同時出現）、整卡／整列點擊改為
+  切換選取（`<a>` 的 `onClick` 攔截＋`preventDefault`，不換成
+  `<button>`）、底部 `batch-action-bar` 顯示已選數量＋「移入垃圾桶」；
+  沿用既有序列佇列模式依序呼叫既有 `/archive` 端點，個別失敗不中斷
+  其餘筆、失敗原因列在錯誤提示裡、成功者立即從清單消失。`route.ts`
+  新增 `trashHash()`／`isTrashHash()`（跟詳細頁同一套 hash 慣例）；
+  新增 `TrashView.tsx`（讀 `GET /api/scenarios?include_archived=true`
+  篩出已封存者，`api.ts` 新增 `listArchivedScenarios()`）作為垃圾桶
+  畫面骨架——手機整頁替換、桌面替換左側 `library-pane`（右側
+  `detail-pane` 沿用既有「有無選中劇本」邏輯，不特別接管；開垃圾桶
+  會清空網址上的劇本 id，右側因此落回既有空狀態，這是核准版面「右側
+  邏輯不動」的自然結果，不是另外接管）；TR6 階段是唯讀清單，TR4／
+  TR5 補上還原／永久刪除操作。前端＋新增 21 條 Vitest（含
+  `route.test.ts`／`ScenarioList.test.tsx`／`CompactScenarioList.test.tsx`／
+  `App.test.tsx` 四處）、＋4 條 Playwright（Desktop＋iPhone 各兩條：
+  批次移入垃圾桶端到端、垃圾桶入口導覽），全套 313 條 Vitest／
+  27 條 Playwright 全綠
+
+- **TR4**（#92）— 前端：垃圾桶畫面單筆還原／永久刪除＋二次確認。
+  `TrashView.tsx` 每列新增「還原」「永久刪除」文字鈕；還原呼叫既有
+  `restoreScenario()`、成功後從垃圾桶清單移除，並透過新增的
+  `onRestore` 回呼把那一列資料交回 `App.tsx`（`restoreFromTrash()`
+  併入 `rows`，去重比照 `create()` 既有函式式更新寫法）——`TrashView`
+  自己的清單狀態獨立於 `App` 的 `rows`，不會自動同步。永久刪除必經
+  二次確認：`ConfirmDeleteOne` 是全站唯一的真正 modal（`.confirm-
+  overlay`／`.confirm-sheet`，`CreateEntry.tsx` 那類低風險操作刻意
+  原地展開不用 modal，但永久刪除是破壞性動作，風險等級不同），標題
+  明確列出該劇本的 ticker＋target month（例如「永久刪除 TLT ·
+  2028-05？」），確認後呼叫既有 `deleteScenario()`；失敗時確認畫面
+  留著並顯示原因，不靜靜關掉讓使用者以為刪除生效了。前端＋新增
+  11 條 Vitest（`TrashView.test.tsx` 9 條、`App.test.tsx` 還原回主
+  清單整合測試 1 條）、＋1 條 Playwright（iPhone：還原一個＋永久刪除
+  另一個，含確認畫面內容驗證），全套 323 條 Vitest／28 條 Playwright
+  全綠
+
+- **TR5**（#93）— 前端：垃圾桶畫面批次操作。這個畫面本身就是「管理
+  垃圾桶」的畫面，不像主清單得先點圖示才進批次選取模式——checkbox
+  與單筆「還原」「永久刪除」鈕本來就同時存在（垃圾桶列本來就沒有
+  「點下去進詳細頁」這件事，不會互相搶戲），標題列加「全選」／
+  「取消全選」文字鈕。批次還原沿用單筆 `restoreScenario()` 序列迴圈，
+  每成功一筆立即從清單移除並交回 `onRestore`；批次永久刪除新增
+  `ConfirmDeleteBatch`（跟單筆 `ConfirmDeleteOne` 刻意不同措辭：
+  「永久刪除 N 個劇本？」＋逐筆 ticker／target month 清單，不是單筆
+  句型的複數化），確認後依序呼叫 `deleteScenario()`。兩種批次操作
+  皆個別失敗不中斷其餘筆，失敗原因彙整顯示、失敗項目留在清單上可
+  重試。`.batch-pill` 拆出 `.danger` 修飾類別（原本預設紅色只服務
+  「移入垃圾桶」「永久刪除」，現在「還原已選」要跟「永久刪除已選」
+  並排卻是可逆動作，顏色不能混淆——`ScenarioList.tsx`／
+  `CompactScenarioList.tsx` 既有的「移入垃圾桶」按鈕補上 `.danger`
+  類別維持原本紅色，行為不變）。前端＋新增 8 條 Vitest
+  （`TrashView.test.tsx`）、＋1 條 Playwright（iPhone：全選＋批次永久
+  刪除，含確認畫面清單與數量驗證），全套 331 條 Vitest／29 條
+  Playwright 全綠
+
+**Trash 語意＋利率顯示修正這一輪全數完成**（RC1、TR1–TR6，
+tracking #86）。收工前跑過一輪 `/code-review`（Standards＋Spec 兩軸
+平行審查，對照 issue #87–93 逐條驗收），修回的項目：
+`report.py::_rate_line` docstring 跟實際三態分流兜不起來（離線重放
+其實會標 FALLBACK，docstring 誤寫成不會）；`api_app/rate_cache.py`
+的 `fetched_fresh` 判準漏看 `curve.stale`（陳舊備援曲線若直接由
+`underlying` 回傳，會被誤判成「今天真的新鮮抓到」，讓 `market_day`
+提早推進、擋住同一天稍後理應要有的真正重試）；前端 `RateRow` 少了
+`rate_explicit` 分支，跟後端三態邏輯對不齊（目前網頁路徑不可達，
+純粹補齊一致性）；`App.restoreFromTrash` 沒清空還原回主清單那一列
+殘留的 `archived_at`；`TrashView.tsx` 兩處內嵌 `style={{}}` 改回
+`styles.css`；補一條 RC1「曲線成功但零合約」的邊界情況直接測試；
+桌面版（`desktop.spec.ts`）原本缺 TR6／TR4／TR5 的端到端覆蓋，
+批次還原（TR5）原本兩個平台都沒有專屬 e2e，一併補齊。全套最終回歸：
+後端 699 條、前端 332 條 Vitest、Playwright 33 條（Desktop＋iPhone）
+全綠。依專案規則「全部票做完才開 PR」，PR 待需求方 cue 才開。
+
+**待辦**：無——這一輪已全數施工完畢，等需求方驗收後開 PR。
+
+> 沿用規則：全部票做完才開 PR、merge 回 master，中途不主動開。
 
 ### 下一版 MVP（本輪明確不施工，已立案）
 

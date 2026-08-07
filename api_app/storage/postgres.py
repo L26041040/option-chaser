@@ -179,6 +179,34 @@ class PostgresStorage:
                 "WHERE id = %s AND archived_at IS NULL", (ts, scenario_id))
             return cur.rowcount == 1   # 連線關閉前讀
 
+    def restore_scenario(self, scenario_id: str, *, ts: str) -> bool:
+        with self._connect() as conn:
+            cur = conn.execute(
+                "UPDATE scenarios SET archived_at = NULL "
+                "WHERE id = %s AND archived_at IS NOT NULL", (scenario_id,))
+            return cur.rowcount == 1   # 連線關閉前讀
+
+    def delete_scenario(self, scenario_id: str) -> bool:
+        # 安全閘門在 DELETE FROM scenarios 那一行的 WHERE 子句本身檢查
+        # （id 存在＋已封存）：rowcount==1 才代表真的刪了，這時才進一步
+        # cascade 清 results／snapshots／events——避免對一個其實沒被
+        # 刪除的劇本（未封存或不存在）誤刪其他表的資料。三張表各自一次
+        # DELETE（不依賴 FK `ON DELETE CASCADE`，沿用專案既有「不用 FK
+        # 約束，應用層自己保證一致性」的設計慣例）。
+        with self._connect() as conn:
+            cur = conn.execute(
+                "DELETE FROM scenarios WHERE id = %s AND archived_at IS NOT NULL",
+                (scenario_id,))
+            if cur.rowcount != 1:
+                return False
+            conn.execute("DELETE FROM results WHERE scenario_id = %s",
+                        (scenario_id,))
+            conn.execute("DELETE FROM snapshots WHERE scenario_id = %s",
+                        (scenario_id,))
+            conn.execute("DELETE FROM events WHERE scenario_id = %s",
+                        (scenario_id,))
+            return True
+
     # ---------- 結果 ----------
 
     def save_result(self, rec: ResultRecord) -> None:

@@ -195,4 +195,9 @@ describe("刷新失敗分層（V4／#52）", () => {
   it("後端沒給分層時仍說得出一句話，不是空白", () => {
     expect(failureLabel(null)).toBeTruthy();
   });
+
+  it("垃圾桶擋點（TR1／#88）有自己的說法，不是通用的刷新失敗", () => {
+    expect(failureLabel("archived")).not.toBe(failureLabel(null));
+    expect(failureLabel("archived")).toContain("垃圾桶");
+  });
 });

@@ -71,6 +71,15 @@ class AnalysisParams:
     rate_explicit: bool = False
     rate_by_expiry: tuple[tuple[str, float], ...] = ()
     rate_note: str = ""
+    # RC1（#87）：顯示語意用的結構化三態訊號，獨立於 `rate_by_expiry`
+    # 是否非空（那個判準會被「曲線成功但鏈上零合約」這種邊界情況混淆）。
+    # `rate_curve_used` 真代表這次真的取得一條 `RateCurve`（新鮮或陳舊
+    # 備援皆算），此時 `rate` 本身其實沒被用在估值上（用的是
+    # `rate_by_expiry` 查表，查不到才落回 `rate`）——三欄只給呈現層讀，
+    # 不影響任何金融計算。
+    rate_curve_used: bool = False
+    rate_curve_date: str | None = None
+    rate_curve_stale: bool = False
     # FB5-01（#62，spec #61）：未平倉量與成交量不再是門檻參數——移除，不留
     # 「看起來在做事、其實沒有」的欄位。未平倉量本身仍在 `OptionContract`
     # 上、隨候選一併序列化，只是不再左右誰進得了候選池。

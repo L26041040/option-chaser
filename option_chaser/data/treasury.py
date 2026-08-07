@@ -19,6 +19,7 @@ Treasury CSV／XML 皆可達、回應與 `tests/fixtures/treasury_*.txt` 現在�
 """
 from __future__ import annotations
 
+import dataclasses
 import json
 from datetime import date
 from pathlib import Path
@@ -132,6 +133,10 @@ def load_rate_curve(today: date, cache_path: Path = DEFAULT_CACHE_PATH,
     if cached is not None:
         fetched_on, cached_curve = cached
         if (today - fetched_on).days <= CACHE_MAX_AGE_DAYS:
-            return cached_curve, (f"Treasury 曲線 {cached_curve.curve_date}"
-                                  f"（快取於 {fetched_on.isoformat()}）")
+            # RC1（#87）：這是今天抓取失敗、沿用陳舊本地快取的分支——
+            # 曲線本身仍然是真的 Treasury 資料，但不是當次抓到的，
+            # 標成 stale 供上層與前端分辨（不得跟新鮮抓取顯示成同一態）。
+            stale_curve = dataclasses.replace(cached_curve, stale=True)
+            return stale_curve, (f"Treasury 曲線 {cached_curve.curve_date}"
+                                 f"（快取於 {fetched_on.isoformat()}）")
     return None, "曲線不可得"

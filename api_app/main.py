@@ -349,6 +349,46 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
                                event="SCENARIO_ARCHIVED", payload={})
         return {"archived": True}
 
+    @app.post("/api/scenarios/{scenario_id}/restore")
+    def restore_scenario(scenario_id: str) -> dict:
+        """TR2（#89）：垃圾桶單筆還原——清空 `archived_at`，
+        results／snapshots／events 不受影響（只是軟刪除的反向操作）。
+        還原後 TR1（#88）的硬擋自然解除，不需要另外處理。批量還原不在
+        這裡：前端沿用既有序列佇列模式，對選中的每個劇本各打一次這個
+        端點（比照批次刷新／批次移入垃圾桶），不新增後端批次端點。
+
+        重複呼叫（本來就不在垃圾桶）視為冪等成功，比照 `archive_
+        scenario` 對重複封存的處理——不留一筆沒意義的事件。
+        """
+        _require(scenario_id)
+        ts = now_utc_iso()
+        if _db().restore_scenario(scenario_id, ts=ts):
+            _db().append_event(ts=ts, scenario_id=scenario_id,
+                               event="SCENARIO_RESTORED", payload={})
+        return {"restored": True}
+
+    @app.delete("/api/scenarios/{scenario_id}", status_code=204)
+    def delete_scenario(scenario_id: str) -> Response:
+        """TR3（#90）：永久刪除，cascade 清掉 results／snapshots／events
+        （`Storage.delete_scenario` 的職責）。安全閘門：只允許刪除已
+        封存的劇本，未封存的回 409——永久刪除必須先進垃圾桶，不能一步
+        到位刪掉還在使用中的劇本。不留刪除事件——劇本本身連同它的
+        events 一起沒了，繼續保留一筆「它被刪除了」的事件沒有意義。
+        批量刪除不在這裡：前端沿用既有序列佇列模式，對選中的每個劇本
+        各打一次這個端點，不新增後端批次端點。
+        """
+        sc = _require(scenario_id)
+        # 純字串 detail（不是 `_fail()` 的 `{stage, message}` 分層形狀）：
+        # 這不是刷新／分析的失敗分層概念（那組字彙專屬 `RefreshFailure`／
+        # `failureLabel`），是這個端點自己的前置條件——沿用
+        # `create_scenario` 對驗證錯誤同樣用純字串 `detail` 的既有寫法。
+        if sc.archived_at is None:
+            raise HTTPException(
+                status_code=409,
+                detail=f"劇本尚未移入垃圾桶，無法永久刪除：{scenario_id}")
+        _db().delete_scenario(scenario_id)
+        return Response(status_code=204)
+
     @app.post("/api/scenarios/{scenario_id}/refresh")
     def refresh_scenario(scenario_id: str) -> dict:
         """單劇本刷新（V4／#52）：抓鏈→分析→結果與原始快照入庫。
@@ -365,6 +405,14 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         的呼叫端。
         """
         sc = _require(scenario_id)
+        # TR1（#88）：垃圾桶劇本硬擋——跟過期擋點（下面）刻意不同，過期
+        # 是「還是能看，只是不再花資源更新」的靜默短路（回既有卡片列，
+        # 200）；垃圾桶是使用者主動丟掉的，任何背景動作都不該再發生，
+        # 錯誤要明確到前端分辨得出「這是因為在垃圾桶」，不是靜靜地回一
+        # 份「無害的舊資料」。擋在 `_require` 之後、任何抓鏈／分析動作
+        # 之前——不抓鏈、不跑引擎、不入庫、不留事件。
+        if sc.archived_at is not None:
+            raise _fail("archived", 409, f"劇本已在垃圾桶，不再刷新：{scenario_id}")
         today = ny_today()
         if month_is_over(TargetMonth.from_key(sc.target_month), today):
             latest = _db().latest_result(scenario_id)

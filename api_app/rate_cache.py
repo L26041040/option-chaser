@@ -33,6 +33,7 @@ MAX_AGE`）的舊曲線時，優先沿用舊曲線、只在說明文字裡誠實
 """
 from __future__ import annotations
 
+import dataclasses
 from datetime import date, datetime, timedelta, timezone
 
 from option_chaser.ratecurve import RateCurve, curve_from_dict, curve_to_dict
@@ -108,11 +109,16 @@ def cached_loader(storage: Storage, underlying: RateCurveLoader) -> RateCurveLoa
             curve, note = None, f"利率來源丟出例外：{e}"
 
         now = datetime.now(timezone.utc).isoformat(timespec="seconds")
-        fetched_fresh = curve is not None
         # 只在這次真的成功「直接抓到」時前進；沿用下面緊急備援窗舊曲線
         # 那個分支不算——那仍是「這次嘗試失敗」，`market_day` 若跟著設成
         # 今天，會讓同一天稍後的呼叫誤判「今天已經成功過」而不再重試，
-        # 即使資料源當時只是短暫斷線。
+        # 即使資料源當時只是短暫斷線。`curve.stale`（RC1／#87）同一個
+        # 判準也適用在 `underlying` 自己內部的陳舊備援分支（例如
+        # `treasury.load_rate_curve()` 的本地檔案快取）——那份曲線雖然
+        # 不是 `None`，但一樣不是「今天直接抓到」，不能讓 `market_day`
+        # 誤判成功推進，否則同一天稍後的呼叫會被這筆假新鮮擋下來，
+        # 不再嘗試真正抓一次新鮮曲線。
+        fetched_fresh = curve is not None and not curve.stale
         last_success_at = now if fetched_fresh else (
             cached.last_success_at if cached is not None else None)
         market_day = today.isoformat() if fetched_fresh else (
@@ -121,7 +127,11 @@ def cached_loader(storage: Storage, underlying: RateCurveLoader) -> RateCurveLoa
         if curve is None and cached is not None and cached.curve is not None:
             age = _age(cached)
             if age is not None and age < _STALE_FALLBACK_MAX_AGE:
-                curve = curve_from_dict(cached.curve)
+                # RC1（#87）：今天的嘗試失敗、沿用 Neon 裡還沒過緊急備援
+                # 窗的舊曲線——不論那筆快取本身當初是不是新鮮抓到的，
+                # 這次沿用的行為本身就是「陳舊」，明確標成 stale=True。
+                curve = dataclasses.replace(curve_from_dict(cached.curve),
+                                            stale=True)
                 note = f"{cached.note}（沿用快取，最新一次嘗試失敗：{note}）"
 
         try:

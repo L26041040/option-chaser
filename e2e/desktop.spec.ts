@@ -136,3 +136,138 @@ test("瀏覽器上一頁／下一頁在桌面版仍然正確切換劇本", async
   await expect(page).toHaveURL(/#\/s\/s1$/);
   await expect(page.getByText(`$${sample.meta.spot.toFixed(2)}`)).toBeVisible();
 });
+
+test("工具列順序：建立劇本 → 垃圾桶 → 重新整理（TR6／#91 需求方核准版面）",
+   async ({ page }) => {
+  await routeTwoScenarios(page);
+  await page.goto("/");
+  // 等開站那輪批次刷新跑完，避免撞上「刷新中……」互斥文字的瞬間。
+  await expect(page.getByRole("link", { name: /XYZ/ })).toBeVisible();
+  await expect(page.getByRole("button", { name: /重新整理|刷新中/ }))
+    .toHaveText("重新整理");
+
+  const buttons = await page.locator("header.toolbar button").allTextContents();
+  expect(buttons.map((t) => t.trim())).toEqual(["＋ 建立劇本", "垃圾桶", "重新整理"]);
+});
+
+test("垃圾桶：左側面板整個換成垃圾桶清單（TR6／#91）", async ({ page }) => {
+  await routeTwoScenarios(page);
+  await page.route("**/api/scenarios?include_archived=true", (route) =>
+    route.fulfill({ json: [] }));
+  await page.goto("/");
+  await expect(page.getByRole("link", { name: /XYZ/ })).toBeVisible();
+
+  await page.getByRole("button", { name: "垃圾桶", exact: true }).click();
+
+  // 左側面板整個換成垃圾桶清單——不是彈出新視窗或新分頁。
+  await expect(page.locator(".library-pane").getByRole("heading", { name: "垃圾桶" }))
+    .toBeVisible();
+  await expect(page.getByRole("link", { name: /XYZ/ })).not.toBeVisible();
+  // 右側工作區沿用既有「有沒有選中劇本」的邏輯——垃圾桶本身不是劇本，
+  // 網址不再指向任何劇本 id，右側自然落回既有空狀態，不是被特別接管。
+  await expect(page.getByText(/選擇左側的劇本/)).toBeVisible();
+
+  await page.getByText("‹ 劇本庫").click();
+  await expect(page.getByRole("link", { name: /XYZ/ })).toBeVisible();
+});
+
+test("桌面版批次選取移入垃圾桶：勾兩個、確認後兩者都消失（TR6／#91）",
+   async ({ page }) => {
+  await routeTwoScenarios(page);
+  await page.route("**/api/scenarios/*/archive", (route) =>
+    route.fulfill({ json: { archived: true } }));
+
+  await page.goto("/");
+  await expect(page.getByRole("link", { name: /XYZ/ })).toBeVisible();
+  await expect(page.getByRole("link", { name: /ABC/ })).toBeVisible();
+
+  await page.getByRole("button", { name: "選取要移入垃圾桶的劇本" }).click();
+  await page.getByRole("link", { name: /XYZ/ }).click();
+  await page.getByRole("link", { name: /ABC/ }).click();
+  await expect(page.getByText("已選 2 個")).toBeVisible();
+  await page.getByRole("button", { name: "移入垃圾桶" }).click();
+
+  await expect(page.getByRole("listitem")).toHaveCount(0);
+});
+
+test("桌面版垃圾桶：還原一個、永久刪除另一個（TR4／#92）", async ({ page }) => {
+  const trashedA = libraryRow({
+    id: "s1", symbol: "XYZ", target_month: "2028-05",
+    archived_at: "2026-08-05T00:00:00+00:00" });
+  const trashedB = libraryRow({
+    id: "s2", symbol: "ABC", target_month: "2028-06",
+    archived_at: "2026-08-04T00:00:00+00:00" });
+  let archived = [trashedA, trashedB];
+
+  await page.route("**/api/scenarios", (route) =>
+    route.fulfill({ json: [] }));
+  await page.route("**/api/scenarios?include_archived=true", (route) =>
+    route.fulfill({ json: archived }));
+  await page.route("**/api/scenarios/s1/restore", (route) => {
+    archived = archived.filter((r) => r.id !== "s1");
+    return route.fulfill({ json: { restored: true } });
+  });
+  await page.route("**/api/scenarios/s2", (route) => {
+    archived = archived.filter((r) => r.id !== "s2");
+    return route.fulfill({ status: 204, body: "" });
+  });
+
+  await page.goto("/");
+  await expect(page.getByText(/還沒有劇本/)).toBeVisible();
+  await page.getByRole("button", { name: "垃圾桶", exact: true }).click();
+  const library = page.locator(".library-pane");
+  await expect(library.getByText("XYZ", { exact: true })).toBeVisible();
+  await expect(library.getByText("ABC", { exact: true })).toBeVisible();
+
+  await page.getByRole("button", { name: "還原 XYZ 2028-05" }).click();
+  await expect(library.getByText("XYZ", { exact: true })).not.toBeVisible();
+  await page.getByText("‹ 劇本庫").click();
+  await expect(page.getByRole("link", { name: /XYZ/ })).toBeVisible();
+
+  await page.getByRole("button", { name: "垃圾桶", exact: true }).click();
+  await page.getByRole("button", { name: "永久刪除 ABC 2028-06" }).click();
+  const sheet = page.getByRole("alertdialog");
+  await expect(sheet).toContainText("ABC");
+  await expect(sheet).toContainText("2028-06");
+  await sheet.getByRole("button", { name: "永久刪除" }).click();
+
+  await expect(library.getByText("垃圾桶是空的。")).toBeVisible();
+});
+
+test("桌面版垃圾桶批次操作：全選後批次還原（TR5／#93）", async ({ page }) => {
+  const trashedA = libraryRow({
+    id: "s1", symbol: "XYZ", target_month: "2028-05",
+    archived_at: "2026-08-05T00:00:00+00:00" });
+  const trashedB = libraryRow({
+    id: "s2", symbol: "ABC", target_month: "2028-06",
+    archived_at: "2026-08-04T00:00:00+00:00" });
+  let archived = [trashedA, trashedB];
+
+  await page.route("**/api/scenarios", (route) =>
+    route.fulfill({ json: [] }));
+  await page.route("**/api/scenarios?include_archived=true", (route) =>
+    route.fulfill({ json: archived }));
+  await page.route("**/api/scenarios/s1/restore", (route) => {
+    archived = archived.filter((r) => r.id !== "s1");
+    return route.fulfill({ json: { restored: true } });
+  });
+  await page.route("**/api/scenarios/s2/restore", (route) => {
+    archived = archived.filter((r) => r.id !== "s2");
+    return route.fulfill({ json: { restored: true } });
+  });
+
+  await page.goto("/");
+  await page.getByRole("button", { name: "垃圾桶", exact: true }).click();
+  const library = page.locator(".library-pane");
+  await expect(library.getByText("XYZ", { exact: true })).toBeVisible();
+  await expect(library.getByText("ABC", { exact: true })).toBeVisible();
+
+  await page.getByRole("button", { name: "全選" }).click();
+  await expect(page.getByText("已選 2 個")).toBeVisible();
+  await page.getByRole("button", { name: "還原已選" }).click();
+
+  await expect(library.getByText("垃圾桶是空的。")).toBeVisible();
+  await page.getByText("‹ 劇本庫").click();
+  await expect(page.getByRole("link", { name: /XYZ/ })).toBeVisible();
+  await expect(page.getByRole("link", { name: /ABC/ })).toBeVisible();
+});

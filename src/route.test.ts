@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { detailHash, scenarioIdFromHash } from "./route";
+import { detailHash, isTrashHash, scenarioIdFromHash, trashHash } from "./route";
 
 describe("路由", () => {
   it("詳細頁的 hash 認得出自己的劇本", () => {
@@ -20,5 +20,21 @@ describe("路由", () => {
     const weird = "a/b c";
     expect(detailHash(weird)).not.toContain(" ");
     expect(scenarioIdFromHash(detailHash(weird))).toBe(weird);
+  });
+});
+
+describe("垃圾桶畫面路由（TR6／#91）", () => {
+  it("垃圾桶的 hash 認得出自己", () => {
+    expect(isTrashHash(trashHash())).toBe(true);
+  });
+
+  it("劇本庫與詳細頁的 hash 都不是垃圾桶", () => {
+    expect(isTrashHash("")).toBe(false);
+    expect(isTrashHash("#/")).toBe(false);
+    expect(isTrashHash(detailHash("abc123"))).toBe(false);
+  });
+
+  it("垃圾桶 hash 底下 scenarioIdFromHash 仍是 null（不會被誤判成詳細頁）", () => {
+    expect(scenarioIdFromHash(trashHash())).toBeNull();
   });
 });

@@ -208,6 +208,21 @@ export interface AnalysisParams {
    */
   rate: number;
   rate_note: string;
+  /**
+   * RC1（#87）：結構化三態訊號，獨立於 `rate_by_expiry` 是否非空——
+   * 後者在曲線成功但鏈上零合約時仍會是空陣列，不能拿來判斷是否為
+   * fallback。`rate_curve_used` 為 `false` 時 `rate` 才是真正被用在
+   * 估值上的常數；為 `true` 時 `rate_curve_date` 是曲線資料日，
+   * `rate_curve_stale` 標示是否為陳舊備援窗沿用的舊曲線。
+   */
+  rate_curve_used: boolean;
+  rate_curve_date: string | null;
+  rate_curve_stale: boolean;
+  /** 使用者透過 CLI `--rate` 明示指定的利率——目前 MVP 網頁路徑不可達
+   *  （只有 CLI 會設起），但欄位本來就在契約裡，型別跟著宣告，
+   *  `RateRow` 才能跟後端 `report.py::_rate_line` 同一套三態判斷，不
+   *  會在明示利率也顯示成 FALLBACK。 */
+  rate_explicit: boolean;
   iv_shifts: number[];
   delta_bands: [number, number];
   min_return: number;
@@ -224,9 +239,9 @@ export interface AnalysisView {
  * 失敗發生在哪一個環節（後端 `_fail` 的 `stage`，V4／#52）。
  * `null` ＝ 後端沒說（例如 422 之類的驗證錯誤），畫面退回通用說法。
  */
-export type FailureStage = "fetch" | "analyze" | "params" | null;
+export type FailureStage = "fetch" | "analyze" | "params" | "archived" | null;
 
-const STAGES = ["fetch", "analyze", "params"] as const;
+const STAGES = ["fetch", "analyze", "params", "archived"] as const;
 
 export class ApiError extends Error {
   readonly stage: FailureStage;
@@ -357,6 +372,10 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
       typeof detail === "string" ? detail : `請求失敗（HTTP ${resp.status}）`;
     throw new ApiError(message);
   }
+  // TR3（#90）：永久刪除回 204 No Content——沒有主體可解析，`.json()`
+  // 對空字串會直接炸掉。204 一律沒有主體（HTTP 語意），呼叫端此時
+  // 期待的型別是 `void`，回 `undefined` 即可。
+  if (resp.status === 204) return undefined as T;
   return resp.json();
 }
 
@@ -368,6 +387,15 @@ const POST_JSON = (body: unknown): RequestInit => ({
 
 export function listScenarios(): Promise<ScenarioSummary[]> {
   return request<ScenarioSummary[]>("/api/scenarios");
+}
+
+/** TR6／TR4（#91／#92）：垃圾桶畫面用——後端 `include_archived=true`
+ *  回傳全部劇本，這裡篩出已封存者。不新增一個「只回封存者」的後端
+ *  端點：清單本身不大，篩選留在前端比多一個查詢參數組合更簡單。 */
+export async function listArchivedScenarios(): Promise<ScenarioSummary[]> {
+  const all = await request<ScenarioSummary[]>(
+    "/api/scenarios?include_archived=true");
+  return all.filter((s) => s.archived_at !== null);
 }
 
 export function createScenario(
@@ -397,6 +425,27 @@ export function archiveScenario(id: string): Promise<{ archived: boolean }> {
     `/api/scenarios/${encodeURIComponent(id)}/archive`,
     { method: "POST" },
   );
+}
+
+/** TR2（#89）：垃圾桶單筆還原。批量走既有序列佇列模式（比照批次
+ *  刷新／TR6 批次移入垃圾桶），對選中的每個劇本各呼叫一次這個函式，
+ *  不是另一個批次端點。 */
+export function restoreScenario(id: string): Promise<{ restored: boolean }> {
+  return request<{ restored: boolean }>(
+    `/api/scenarios/${encodeURIComponent(id)}/restore`,
+    { method: "POST" },
+  );
+}
+
+/**
+ * TR3（#90）：垃圾桶單筆永久刪除——連同 results／snapshots／events 一併
+ * cascade 清除，不是軟刪除。後端安全閘門只允許刪除已封存的劇本（未封存
+ * 回 409），呼叫端（TR4／#92）在此之前一定要先經過二次確認畫面，不能
+ * 讓使用者一鍵誤刪。批量同 `restoreScenario`，前端序列佇列逐一呼叫。
+ */
+export function deleteScenario(id: string): Promise<void> {
+  return request<void>(`/api/scenarios/${encodeURIComponent(id)}`,
+    { method: "DELETE" });
 }
 
 /** V8（#56）：原始資料表（當次快照）的合約列——逐筆合約完整原樣，

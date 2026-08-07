@@ -365,6 +365,263 @@ body {
   opacity: 0.45;
 }
 
+/* ---------- 垃圾桶：圖示鈕、批次選取（TR6／#91） ---------- */
+
+/* 手刻 SVG 圖示的共用基準——尺寸與位置交給用到它的 SVG 自己的
+   width/height 屬性，這裡只保證行內排版正確（不是預設的 inline，
+   會多出幾 px 底線間距）。 */
+.icon-glyph {
+  display: block;
+}
+
+/* 圓形圖示鈕：垃圾桶單筆刪除（取代原本的文字「封存」鈕）、批次選取
+   入口。跟 `.text-button` 一樣不畫框，只是內容從文字換成圖示，尺寸
+   縮成正圓以貼齊圖示本身的視覺重量。 */
+.icon-button {
+  appearance: none;
+  border: 0;
+  background: none;
+  color: var(--label-secondary);
+  padding: 6px;
+  min-height: 32px;
+  min-width: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+.icon-button:active {
+  background: var(--fill);
+  color: var(--red);
+}
+
+/* 桌面版卡片的單筆刪除鈕沿用 `.card-actions` 既有位置（連結外面的
+   底部動作列），只是換成圖示鈕；手機版 compact row 的疊放位置沿用
+   既有 `.compact-archive` 定位規則，見下方。 */
+.compact-archive.icon-button {
+  position: absolute;
+  right: 8px;
+  bottom: 8px;
+  min-height: 0;
+  padding: 4px;
+}
+
+/* 工具列的垃圾桶入口：跟「＋ 建立劇本」同一種膠囊鈕，但用警示色調
+   （紅）跟「這是危險/垃圾桶相關操作」的既有色彩慣例（`--red` 用於
+   負值報酬、警示分隔線）一致，不需要另外發明新顏色。 */
+.pill-trash {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--red);
+}
+
+/* 清單上方「收益率口徑」說明文字那一列，垃圾桶批次選取入口貼在
+   右側——需求方核准版面的位置。 */
+.yield-note-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+/* 批次選取模式的提示列：說明文字＋取消。 */
+.select-mode-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+/* 選取用的 checkbox——桌面版嵌在 `.symbol-group` 裡（跟燈號同一列），
+   手機版嵌在 `.compact-tier1` 裡，兩處都靠 flex `gap` 對齊，這裡只定義
+   外觀本身。 */
+.row-checkbox {
+  appearance: none;
+  width: 20px;
+  height: 20px;
+  border-radius: 6px;
+  border: 1.5px solid var(--label-tertiary);
+  background: none;
+  padding: 0;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  cursor: pointer;
+}
+
+.row-checkbox.checked {
+  background: var(--tint);
+  border-color: var(--tint);
+}
+
+.symbol-group .row-checkbox {
+  margin-right: 8px;
+}
+
+/* 批次操作列：選取數量＋動作鈕，貼在清單底部。手機版加 sticky，
+   讓長清單捲動時仍摸得到動作；桌面版左側面板較窄，一般流內位置即可
+   （視覺上已經在畫面可視範圍內，不需要額外釘住）。 */
+.batch-action-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px var(--gap);
+  background: color-mix(in srgb, var(--bg) 88%, transparent);
+  border-top: 0.5px solid var(--separator);
+}
+
+@media (max-width: 1099px) {
+  .batch-action-bar {
+    position: sticky;
+    bottom: 0;
+    padding-bottom: calc(10px + env(safe-area-inset-bottom, 0px));
+  }
+}
+
+.batch-pill {
+  appearance: none;
+  border: 0;
+  border-radius: 999px;
+  font-size: 15px;
+  font-weight: 700;
+  padding: 8px 16px;
+  background: var(--tint);
+  color: #fff;
+  cursor: pointer;
+}
+
+/* 破壞性動作（移入垃圾桶、永久刪除）用紅——跟卡片上負收益率、危險
+   文字鈕同一個色彩慣例；還原這類可逆動作維持預設 tint 色，兩種批次
+   動作放在同一列時顏色本身就能分辨輕重（TR5／#93：「還原已選」／
+   「永久刪除已選」並排時尤其需要這個區分）。 */
+.batch-pill.danger {
+  background: var(--red);
+}
+
+.batch-pill:active {
+  opacity: 0.6;
+}
+
+.batch-pill:disabled {
+  opacity: 0.4;
+}
+
+/* 危險動作用紅字，跟卡片上負收益率同一個色彩慣例——不需要另外發明
+   一種「警示」色。 */
+.text-button.danger {
+  color: var(--red);
+}
+
+/* 垃圾桶清單每列的還原／永久刪除，貼齊既有 `.card-actions` 底部動作列
+   樣式，只是兩顆鈕並排（`justify-content` 沿用 `.card-actions` 的
+   `flex-end`，這裡不必再設一次）。 */
+.trash-row-actions {
+  gap: 16px;
+}
+
+/* `TrashView.tsx` 的工具列標題下面緊接著一句 caption（封存於此的劇本
+   說明），不需要 `.toolbar` 預設的底部留白，否則跟 caption 之間會多
+   出一段不必要的空隙。 */
+.toolbar-flush {
+  padding-bottom: 0;
+}
+
+/* 批次操作列右側兩顆鈕（還原已選／永久刪除已選）並排，沿用
+   `.batch-action-bar` 既有 `gap` 慣例，只是這裡是內層 wrapper。 */
+.trash-batch-actions {
+  display: flex;
+  gap: 8px;
+}
+
+/* 垃圾桶空狀態——貼齊核准版面的 `.empty-trash` 命名，視覺上比一般
+   `.caption` 多一點留白，讓「垃圾桶是空的」不會貼著工具列擠在一起。 */
+.empty-trash {
+  text-align: center;
+  padding: 28px 12px;
+}
+
+/* ---------- 永久刪除二次確認（TR4／#92） ---------- */
+
+/* 全螢幕遮罩：這是本站唯一的真正 modal——`CreateEntry.tsx` 那類低風險
+   操作刻意原地展開不用 modal，但永久刪除是破壞性動作，需要打斷使用者
+   的注意力、擋掉背景操作，跟建立劇本不是同一個風險等級。 */
+.confirm-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.4);
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  padding: 16px;
+  z-index: 100;
+}
+
+@media (min-width: 1100px) {
+  .confirm-overlay {
+    align-items: center;
+  }
+}
+
+.confirm-sheet {
+  background: var(--bg-elevated);
+  border-radius: var(--radius);
+  box-shadow: 0 20px 40px -12px rgba(0, 0, 0, 0.35);
+  padding: var(--gap);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: 100%;
+  max-width: 420px;
+  /* 頂部一條紅色細線——不需要另外畫一顆警示圖示，跟危險文字鈕同一個
+     色彩語彙就足夠標出「這是破壞性操作」。 */
+  border-top: 3px solid var(--red);
+}
+
+.confirm-sheet h2 {
+  font-size: 17px;
+  font-weight: 700;
+  margin: 0;
+  color: var(--red);
+}
+
+.confirm-sheet p {
+  font-size: 14px;
+  color: var(--label-secondary);
+  margin: 0;
+  line-height: 1.5;
+}
+
+.confirm-list {
+  list-style: none;
+  margin: 0;
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  background: var(--fill);
+  border-radius: 10px;
+  max-height: 160px;
+  overflow-y: auto;
+}
+
+.confirm-list li {
+  font-size: 14px;
+  font-variant-numeric: tabular-nums;
+}
+
+.confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 4px;
+}
+
 /* ---------- 手機首頁：Dashboard 佔位＋新增劇本入口（MVP-v2／#77、#81） ---------- */
 
 /* 低調但可見——版面位置先保留，內容待跨劇本比較功能確定後才填。跟

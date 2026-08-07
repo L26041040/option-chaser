@@ -175,6 +175,158 @@ describe("劇本庫（V3／#51）", () => {
   });
 });
 
+describe("垃圾桶（TR6／#91）", () => {
+  const rowA = {
+    ...(sampleRow as unknown as Record<string, unknown>),
+    id: "s1", symbol: "TLT", target_price: 120, target_month: "2028-05",
+    latest_analyzed_at: "2026-08-04T09:30:00+00:00", best_return: 1.5,
+    target_anchor: "2028-05-19", days_to_anchor: 653,
+  };
+  const rowB = { ...rowA, id: "s2", symbol: "SPY" };
+
+  function mockLibraryAndArchive(
+    rows: Record<string, unknown>[],
+    archiveOutcomes: Record<string, "ok" | "fail"> = {},
+  ) {
+    return mockRoutes({
+      "/api/scenarios": { json: async () => rows },
+      "/api/scenarios?include_archived=true": { json: async () => [] },
+    }).mockImplementation(async (url: string) => {
+      if (url.endsWith("/refresh")) {
+        const id = url.split("/").at(-2);
+        return { ok: true, status: 200,
+                 json: async () => rows.find((r) => r.id === id) };
+      }
+      if (url.includes("/archive")) {
+        const id = url.split("/").at(-2);
+        if (archiveOutcomes[id!] === "fail") {
+          return { ok: false, status: 404,
+                   json: async () => ({ detail: "劇本不存在" }) };
+        }
+        return { ok: true, status: 200, json: async () => ({ archived: true }) };
+      }
+      if (url.startsWith("/api/scenarios?include_archived=true")) {
+        return { ok: true, status: 200, json: async () => [] };
+      }
+      return { ok: true, status: 200, json: async () => rows };
+    });
+  }
+
+  it("點垃圾桶入口進到垃圾桶畫面，返回鍵回到劇本庫", async () => {
+    mockLibraryAndArchive([rowA]);
+    render(<App />);
+    await screen.findByText("TLT");
+
+    await userEvent.click(await screen.findByRole("button", { name: "垃圾桶" }));
+
+    expect(await screen.findByRole("heading", { name: "垃圾桶" }))
+      .toBeInTheDocument();
+
+    await userEvent.click(screen.getByText("‹ 劇本庫"));
+    expect(await screen.findByText("劇本庫")).toBeInTheDocument();
+  });
+
+  it("垃圾桶還原後回到劇本庫，那個劇本重新出現在主清單（TR4／#92）", async () => {
+    const archivedRow = { ...rowB, archived_at: "2026-08-05T00:00:00+00:00" };
+    mockRoutes({}).mockImplementation(async (url: string) => {
+      if (url === "/api/scenarios?include_archived=true") {
+        return { ok: true, status: 200, json: async () => [archivedRow] };
+      }
+      if (url.endsWith("/restore")) {
+        return { ok: true, status: 200, json: async () => ({ restored: true }) };
+      }
+      if (url.endsWith("/refresh")) {
+        return { ok: true, status: 200, json: async () => rowA };
+      }
+      if (url === "/api/scenarios") {
+        return { ok: true, status: 200, json: async () => [rowA] };
+      }
+      return { ok: true, status: 200, json: async () => [rowA] };
+    });
+    render(<App />);
+    await screen.findByText("TLT");
+
+    await userEvent.click(
+      await screen.findByRole("button", { name: "垃圾桶" }));
+    await screen.findByText("SPY");
+
+    await userEvent.click(
+      screen.getByRole("button", { name: "還原 SPY 2028-05" }));
+    await waitFor(() => {
+      expect(screen.queryByText("SPY")).not.toBeInTheDocument();
+    });
+
+    await userEvent.click(screen.getByText("‹ 劇本庫"));
+
+    // 還原成功的劇本重新出現在主清單，不必等下一次整頁重新整理
+    expect(await screen.findByText("SPY")).toBeInTheDocument();
+    expect(screen.getByText("TLT")).toBeInTheDocument();
+  });
+
+  it("批次選取模式：勾選兩個、確認後兩者都移入垃圾桶", async () => {
+    mockLibraryAndArchive([rowA, rowB]);
+    render(<App />);
+    await screen.findByText("TLT");
+    await screen.findByText("SPY");
+
+    await userEvent.click(
+      screen.getByRole("button", { name: "選取要移入垃圾桶的劇本" }));
+    await userEvent.click(screen.getByRole("link", { name: /TLT/ }));
+    await userEvent.click(screen.getByRole("link", { name: /SPY/ }));
+    await userEvent.click(screen.getByRole("button", { name: "移入垃圾桶" }));
+
+    await waitFor(() => {
+      expect(screen.queryByText("TLT")).not.toBeInTheDocument();
+      expect(screen.queryByText("SPY")).not.toBeInTheDocument();
+    });
+  });
+
+  it("批次選取模式下點卡片是選取，不是導去詳細頁", async () => {
+    mockLibraryAndArchive([rowA]);
+    render(<App />);
+    await screen.findByText("TLT");
+
+    await userEvent.click(
+      screen.getByRole("button", { name: "選取要移入垃圾桶的劇本" }));
+    await userEvent.click(screen.getByRole("link", { name: /TLT/ }));
+
+    // 還在劇本庫（選取狀態），不是被導去詳細頁
+    expect(screen.getByText("已選 1 個")).toBeInTheDocument();
+  });
+
+  it("批次移入垃圾桶部分失敗時，失敗的留著並說明原因，成功的照樣消失",
+     async () => {
+    mockLibraryAndArchive([rowA, rowB], { s1: "fail" });
+    render(<App />);
+    await screen.findByText("TLT");
+    await screen.findByText("SPY");
+
+    await userEvent.click(
+      screen.getByRole("button", { name: "選取要移入垃圾桶的劇本" }));
+    await userEvent.click(screen.getByRole("link", { name: /TLT/ }));
+    await userEvent.click(screen.getByRole("link", { name: /SPY/ }));
+    await userEvent.click(screen.getByRole("button", { name: "移入垃圾桶" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("劇本不存在");
+    expect(screen.getByText("TLT")).toBeInTheDocument();   // 失敗的留著
+    expect(screen.queryByText("SPY")).not.toBeInTheDocument(); // 成功的消失
+  });
+
+  it("取消批次選取後恢復正常清單，卡片可以正常點進詳細頁", async () => {
+    mockLibraryAndArchive([rowA]);
+    render(<App />);
+    await screen.findByText("TLT");
+
+    await userEvent.click(
+      screen.getByRole("button", { name: "選取要移入垃圾桶的劇本" }));
+    await userEvent.click(screen.getByRole("button", { name: "取消" }));
+
+    expect(screen.queryByText("已選")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "封存 TLT 2028-05" }))
+      .toBeInTheDocument();
+  });
+});
+
 describe("樂觀封存的併發（V3／#51 檢視回饋）", () => {
   const row = {
     ...(sampleRow as unknown as Record<string, unknown>),
@@ -381,9 +533,12 @@ describe("刷新與進度（V4／#52）", () => {
     render(<App />);
     await screen.findByText("100.0%");
 
+    // TR6（#91）：封存鈕改成圖示，可及名稱（`aria-label`）才是穩定的
+    // 斷言依據——視覺內容從文字換成圖示不該讓這條「沒有第四種管道」的
+    // 迴歸測試跟著誤判。
     const buttons = within(screen.getByRole("listitem"))
-      .getAllByRole("button").map((b) => b.textContent);
-    expect(buttons).toEqual(["封存"]);
+      .getAllByRole("button").map((b) => b.getAttribute("aria-label"));
+    expect(buttons).toEqual(["封存 TLT 2028-05"]);
   });
 
   it("沒有任何劇本時不跑刷新，也不顯示進度", async () => {
@@ -940,6 +1095,21 @@ describe("桌面版：主要操作入口收攏到工作區上方（#75，MVP-v2�
     expect(panelId).toBeTruthy();
     expect(document.getElementById(panelId!)).toContainElement(
       screen.getByLabelText("標的代號"));
+  });
+
+  it("工具列順序（TR6／#91 需求方核准版面）：建立劇本 → 垃圾桶 → 重新整理",
+     async () => {
+    stubDesktopViewport();
+    mockRoutes({
+      "/api/scenarios": { json: async () => [row] },
+      "/api/scenarios/": { json: async () => row },
+    });
+    render(<App />);
+
+    const toolbar = await screen.findByRole("banner");
+    const names = within(toolbar).getAllByRole("button")
+      .map((b) => b.textContent?.trim());
+    expect(names).toEqual(["＋ 建立劇本", "垃圾桶", "重新整理"]);
   });
 
   it("劇本清單下方已無任何主要操作——建立入口在工作區最上方", async () => {
