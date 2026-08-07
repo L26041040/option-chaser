@@ -92,6 +92,11 @@ def test_run_offline_with_loader_resolves_per_expiry_rates():
     expiries = {c.expiry for c in result.snapshot.contracts}
     assert {e for e, _ in p.rate_by_expiry} == expiries
     assert all(r == pytest.approx(0.05) for _, r in p.rate_by_expiry)
+    # RC1（#87）：結構化三態訊號——曲線真的被用了、日期是曲線本身的
+    # curve_date、且不是陳舊備援。
+    assert p.rate_curve_used is True
+    assert p.rate_curve_date == "2026-07-31"
+    assert p.rate_curve_stale is False
     res = result.results[0]
     assert "期限對齊" in res.report_text
     assert "Treasury 曲線 2026-07-31" in res.report_text
@@ -103,8 +108,10 @@ def test_run_offline_without_loader_fixed_rate_is_marked():
     result = service.run_offline(_request(), SNAP)
     p = result.request.base_params
     assert p.rate_by_expiry == ()
+    assert p.rate_curve_used is False
+    assert p.rate_curve_date is None
     text = result.results[0].report_text
-    assert "固定 4.0%" in text and "離線重放" in text
+    assert "FALLBACK" in text and "離線重放" in text
 
 
 def test_loader_failure_falls_back_to_fixed_rate_with_note():
@@ -112,8 +119,27 @@ def test_loader_failure_falls_back_to_fixed_rate_with_note():
                                  rate_curve_loader=lambda t: (None, "曲線不可得"))
     p = result.request.base_params
     assert p.rate_by_expiry == ()
+    assert p.rate_curve_used is False
+    assert p.rate_curve_date is None
     text = result.results[0].report_text
-    assert "固定 4.0%" in text and "曲線不可得" in text
+    assert "FALLBACK" in text and "曲線不可得" in text
+
+
+def test_loader_returning_a_stale_curve_is_marked_stale_end_to_end():
+    """RC1（#87）：`RateCurve.stale=True`（例如陳舊備援窗沿用的舊曲線）
+    要一路傳到 `AnalysisParams.rate_curve_stale`，供呈現層明確標示，
+    不能在管線中途弄丟。"""
+    def stale_loader(today):
+        return (RateCurve(curve_date="2026-07-20",
+                          nodes=((1 / 12, 0.05), (5.0, 0.05)), stale=True),
+                "Treasury 曲線 2026-07-20（沿用快取，最新一次嘗試失敗：曲線不可得）")
+
+    result = service.run_offline(_request(), SNAP, rate_curve_loader=stale_loader)
+    p = result.request.base_params
+    assert p.rate_curve_used is True
+    assert p.rate_curve_date == "2026-07-20"
+    assert p.rate_curve_stale is True
+    assert "STALE" in result.results[0].report_text
 
 
 def test_explicit_rate_skips_pipeline_entirely():
@@ -128,7 +154,9 @@ def test_explicit_rate_skips_pipeline_entirely():
         strategies=("long-call",))
     result = service.run_offline(req, SNAP, rate_curve_loader=exploding_loader)
     assert result.request.base_params.rate_by_expiry == ()
+    assert result.request.base_params.rate_curve_used is False
     assert "無風險利率 7.0%" in result.results[0].report_text
+    assert "FALLBACK" not in result.results[0].report_text
 
 
 # ---------- CLI --rate 語意 ----------

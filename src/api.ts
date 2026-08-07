@@ -208,6 +208,16 @@ export interface AnalysisParams {
    */
   rate: number;
   rate_note: string;
+  /**
+   * RC1（#87）：結構化三態訊號，獨立於 `rate_by_expiry` 是否非空——
+   * 後者在曲線成功但鏈上零合約時仍會是空陣列，不能拿來判斷是否為
+   * fallback。`rate_curve_used` 為 `false` 時 `rate` 才是真正被用在
+   * 估值上的常數；為 `true` 時 `rate_curve_date` 是曲線資料日，
+   * `rate_curve_stale` 標示是否為陳舊備援窗沿用的舊曲線。
+   */
+  rate_curve_used: boolean;
+  rate_curve_date: string | null;
+  rate_curve_stale: boolean;
   iv_shifts: number[];
   delta_bands: [number, number];
   min_return: number;

@@ -1364,6 +1364,9 @@
         0.041
       ]
     ],
+    "rate_curve_date": "2026-07-31",
+    "rate_curve_stale": false,
+    "rate_curve_used": true,
     "rate_explicit": false,
     "rate_note": "Treasury 曲線 2026-07-31",
     "spread_floor": 0.1,

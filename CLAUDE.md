@@ -22,7 +22,8 @@
 > Compact Row＋捲動還原全部到位的手機版劇本庫。緊接著同一天開始
 > **Trash 語意＋利率顯示修正**這一輪（見下方「Trash 語意＋利率顯示
 > 修正」小節）：需求方三點反饋（Archive 改真正 Trash、利率 fallback
-> 顯示語意）、`/to-tickets` 拆成 RC1＋TR1–TR6，施工中。中間穿插的
+> 顯示語意）、`/to-tickets` 拆成 RC1＋TR1–TR6（#87–#93）。**RC1 已
+> 完成**，TR1–TR6 施工中。中間穿插的
 > 「目前狀態（2026-08-02）」等舊日期標頭是歷史留存，**以此段與下面
 > 對應小節末尾的紀錄為準，不要被舊標頭誤導**。下一階段候選：
 > **多使用者隔離** [#59]（未標 `ready-for-agent`，需求方裁示後才開工）、
@@ -1143,6 +1144,45 @@ FastAPI／Neon 新架構取代 Streamlit）。桌面 20/80 版面（#72）
 
 > 沿用規則：反饋要先逐點跟需求方確認打算怎麼改、為什麼，確認完才
 > 開票施工；`/implement` 進行中沒遇到需人類裁示的事就不停。
+
+### Trash 語意＋利率顯示修正（tracking #86，施工中）
+
+**背景**：需求方 2026-08-07 三點確定事項——Archive 正式改為 Trash 語意
+（硬擋垃圾桶劇本的背景動作、單筆／批量還原、單筆／批量永久刪除皆需
+二次確認）、修正利率顯示語意（fallback 不掛市場資料日期、真曲線標示
+curve date／stale）。垃圾桶版面先出手繪 HTML 預覽給需求方核准（三輪
+修正：桌面版工具列順序、手刻 SVG 圖示取代 emoji、每張卡片單筆刪除
+圖示化），核准後 `/to-tickets` 拆成 RC1＋TR1–TR6（#87–#93），依賴順序：
+RC1／TR1／TR2／TR3／TR6 可平行開工，TR4 被 TR2＋TR3 擋，TR5 被 TR4 擋。
+
+**已完成**：
+
+- **RC1**（#87）— 利率顯示語意修正：`AnalysisParams` 新增
+  `rate_curve_used`／`rate_curve_date`／`rate_curve_stale` 三個結構化
+  欄位，獨立於 `rate_by_expiry` 是否非空（後者在曲線成功但鏈上零合約
+  時仍會是空表，兩者脫鉤才不會誤判成 fallback）。`RateCurve`
+  （`ratecurve.py`）新增 `stale: bool = False` 欄位並隨 `curve_to_dict`／
+  `curve_from_dict` 序列化——staleness 搭著曲線物件本身走，
+  `RateCurveLoader` 呼叫介面簽章不變（仍是 2-tuple），blast radius
+  因此侷限在標記 stale 的兩個分支：`data/treasury.py` 的本地檔案
+  快取備援、`api_app/rate_cache.py` 的 Neon 緊急備援窗。前端
+  `AnalysisReport.tsx` 新增 `RateRow` 三態分流：真 fallback 只顯示
+  「{rate}% · FALLBACK／Treasury curve unavailable」不掛日期；真曲線
+  顯示 curve date，陳舊備援額外標 STALE。`report.py::_rate_line` 純
+  文字報告同步套用（同一段文字會出現在網頁「分析報告」展開區），
+  golden fixture 四份與契約樣本重產。後端＋5 條新測試、前端＋3 條，
+  全套 672 條（後端）／291 條（前端 Vitest）全綠
+
+**待辦（可平行開工，除 TR4／TR5 有依賴）**：
+
+- TR1（#88）— 後端硬擋垃圾桶劇本的 refresh／analyze／market fetch
+- TR2（#89）— 後端還原（單筆＋批量）
+- TR3（#90）— 後端永久刪除（單筆＋批量，含 cascade）
+- TR6（#91）— 前端：主清單批次移入垃圾桶＋單筆刪除圖示化
+- TR4（#92）— 前端：垃圾桶畫面單筆操作（被 TR2／TR3 擋）
+- TR5（#93）— 前端：垃圾桶畫面批次操作（被 TR4 擋）
+
+> 沿用規則：全部票做完才開 PR、merge 回 master，中途不主動開。
 
 ### 下一版 MVP（本輪明確不施工，已立案）
 

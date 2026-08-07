@@ -33,6 +33,7 @@ MAX_AGE`）的舊曲線時，優先沿用舊曲線、只在說明文字裡誠實
 """
 from __future__ import annotations
 
+import dataclasses
 from datetime import date, datetime, timedelta, timezone
 
 from option_chaser.ratecurve import RateCurve, curve_from_dict, curve_to_dict
@@ -121,7 +122,11 @@ def cached_loader(storage: Storage, underlying: RateCurveLoader) -> RateCurveLoa
         if curve is None and cached is not None and cached.curve is not None:
             age = _age(cached)
             if age is not None and age < _STALE_FALLBACK_MAX_AGE:
-                curve = curve_from_dict(cached.curve)
+                # RC1（#87）：今天的嘗試失敗、沿用 Neon 裡還沒過緊急備援
+                # 窗的舊曲線——不論那筆快取本身當初是不是新鮮抓到的，
+                # 這次沿用的行為本身就是「陳舊」，明確標成 stale=True。
+                curve = dataclasses.replace(curve_from_dict(cached.curve),
+                                            stale=True)
                 note = f"{cached.note}（沿用快取，最新一次嘗試失敗：{note}）"
 
         try:

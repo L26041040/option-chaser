@@ -116,6 +116,26 @@ def test_a_stale_fallback_reuse_from_yesterday_does_not_block_todays_first_try()
     assert curve == CURVE
 
 
+def test_a_recent_stale_fallback_from_today_is_deduped_and_stays_marked_stale():
+    """RC1（#87）：短窗內重放同一筆「今天稍早沿用陳舊備援」紀錄時，
+    stale 標記要跟著 `curve`／`note` 一起原樣重放，不能在 dedup 路徑上
+    被悄悄洗白成看起來像新鮮抓到的。"""
+    storage = MemoryStorage()
+    storage.save_rate_cache(RateCacheEntry(
+        fetched_at=(datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat(
+            timespec="seconds"),
+        curve={"curve_date": "2026-08-01", "nodes": [[1.0, 0.03]], "stale": True},
+        note="Treasury 曲線 2026-08-01（沿用快取，最新一次嘗試失敗：曲線不可得）",
+        market_day=None, attempted_day=TODAY.isoformat()))
+    calls = []
+
+    curve, note = cached_loader(
+        storage, _underlying(calls, note="不該被呼叫"))(TODAY)
+
+    assert calls == []
+    assert curve.stale is True
+
+
 def test_a_recent_cached_failure_is_reused_without_retrying():
     """失敗也快取，同一輪刷新不會讓每個劇本各撞一次同樣會失敗的請求。"""
     storage = MemoryStorage()
@@ -222,7 +242,11 @@ def test_a_stale_but_recent_curve_is_preferred_over_falling_back_to_the_fixed_ra
     curve, note = cached_loader(
         storage, lambda d: (None, "這次抓取失敗"))(TODAY)
 
-    assert curve == RateCurve(curve_date="2026-08-01", nodes=((1.0, 0.03),))
+    # RC1（#87）：沿用陳舊備援窗的舊曲線要標成 stale=True，不能跟
+    # 「今天真的成功抓到」顯示成同一態。
+    assert curve == RateCurve(curve_date="2026-08-01", nodes=((1.0, 0.03),),
+                              stale=True)
+    assert curve.stale is True
     assert "Treasury 曲線 2026-08-01" in note
     assert "這次抓取失敗" in note
 

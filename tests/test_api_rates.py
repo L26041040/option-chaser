@@ -43,6 +43,10 @@ def test_a_working_rate_source_replaces_the_offline_replay_note():
     assert "Treasury 曲線" in view["params"]["rate_note"]
     # 期限對齊——每個入選到期日各自一個利率，不是全部套同一個常數
     assert view["params"]["rate_by_expiry"]
+    # RC1（#87）：結構化三態訊號，前端據此分流顯示，不靠字串猜。
+    assert view["params"]["rate_curve_used"] is True
+    assert view["params"]["rate_curve_date"] == "2026-07-15"
+    assert view["params"]["rate_curve_stale"] is False
 
 
 def test_a_failing_rate_source_falls_back_to_the_fixed_rate_without_failing_the_analysis():
@@ -52,6 +56,24 @@ def test_a_failing_rate_source_falls_back_to_the_fixed_rate_without_failing_the_
     assert view["params"]["rate"] == 0.04
     assert view["params"]["rate_note"] == "測試來源目前打不通"
     assert view["params"]["rate_by_expiry"] == []
+    # RC1（#87）：真正 fallback——沒有曲線，也就沒有 curve date 可掛。
+    assert view["params"]["rate_curve_used"] is False
+    assert view["params"]["rate_curve_date"] is None
+
+
+def test_a_stale_curve_is_visible_on_the_analysis_params():
+    """RC1（#87）：Neon 緊急備援窗沿用陳舊曲線時，`rate_curve_stale`
+    要能讓前端明確標示 STALE，不是靜靜地跟新鮮曲線顯示成一樣。"""
+    stale_curve = RateCurve(curve_date="2026-07-01", nodes=((1.0, 0.04),),
+                            stale=True)
+    view = _create_and_refresh(
+        _client(rate_loader=lambda today: (
+            stale_curve,
+            "Treasury 曲線 2026-07-01（沿用快取，最新一次嘗試失敗：曲線不可得）")))
+
+    assert view["params"]["rate_curve_used"] is True
+    assert view["params"]["rate_curve_date"] == "2026-07-01"
+    assert view["params"]["rate_curve_stale"] is True
 
 
 # ---------- 一輪刷新共用同一條曲線 ----------

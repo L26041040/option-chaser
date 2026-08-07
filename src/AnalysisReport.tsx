@@ -45,6 +45,40 @@ function Row({ label, children }: { label: string; children: React.ReactNode }) 
 }
 
 /**
+ * 無風險利率列（RC1／#87）：三態分流，不再不分青紅皂白顯示
+ * `formatReturn(params.rate)` 加一句 `rate_note` 附註——那樣會在真的
+ * 用了期限對齊曲線時，把常數 `rate`（此時其實沒被用在估值上）跟曲線
+ * 資料日混在一起，看起來像「這個常數就是那個日期的曲線值」。
+ *
+ * - `rate_curve_used` 為假：真正的 fallback，只顯示常數＋明確的
+ *   FALLBACK 標籤與原因，**不掛任何市場資料日期**。
+ * - `rate_curve_used` 為真：顯示期限對齊曲線與其 `rate_curve_date`；
+ *   `rate_curve_stale` 為真時額外標示 STALE，不得跟新鮮曲線同一種
+ *   呈現方式。
+ */
+function RateRow({ params }: { params: AnalysisView["params"] }) {
+  if (!params.rate_curve_used) {
+    return (
+      <Row label="無風險利率">
+        {formatReturn(params.rate)}
+        <span className="row-note">
+          {" "}· FALLBACK／Treasury curve unavailable
+          {params.rate_note && `（${params.rate_note}）`}
+        </span>
+      </Row>
+    );
+  }
+  return (
+    <Row label="無風險利率">
+      期限對齊 Treasury 曲線 · {params.rate_curve_date}
+      {params.rate_curve_stale && (
+        <span className="row-note"> · STALE（沿用陳舊備援窗）</span>
+      )}
+    </Row>
+  );
+}
+
+/**
  * ①＋② 交易摘要／劇本與論據合併：一句話結論 ＋ 三件套（成本／損益兩平／
  * 最大獲利）＋最大損失 ＋ 策略。R1 §1 第 3 點：最大獲利與最大損失必須
  * 同框，不可拆散。
@@ -215,10 +249,7 @@ function Methodology({ result, params }: {
   return (
     <details className="report-methodology">
       <summary>方法與假設</summary>
-      <Row label="無風險利率">
-        {formatReturn(params.rate)}
-        {params.rate_note && <span className="row-note">（{params.rate_note}）</span>}
-      </Row>
+      <RateRow params={params} />
       <Row label="IV 情境">
         {params.iv_shifts.map((s) => (s === 0 ? "不變" : `${s > 0 ? "+" : ""}${(s * 100).toFixed(0)}%`)).join(" / ")}
       </Row>

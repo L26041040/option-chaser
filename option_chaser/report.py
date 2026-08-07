@@ -64,16 +64,26 @@ def _val_line(name: str, val: float, cost: float) -> str:
 
 
 def _rate_line(p: AnalysisParams) -> str:
-    """T12（附錄 A14.1）三態：期限對齊曲線／fallback 固定值（標示原因）／
-    明示或離線的固定值（維持現行寫法）。"""
-    if p.rate_by_expiry:
+    """RC1（#87，附錄 A14.1 修正）三態：
+
+    - 期限對齊曲線（`rate_curve_used`，新鮮或陳舊備援皆標明 curve date，
+      陳舊額外標 STALE）——與 `rate_by_expiry` 是否非空脫鉤，鏈上零合約
+      時曲線仍算「用了」，只是沒有逐到期日的表可印。
+    - fallback 固定值：明確標「FALLBACK」＋原因，不冒充曲線日期。
+    - 明示（`--rate`）或離線重放：維持現行乾淨寫法，不貼 FALLBACK
+      標籤——那是使用者主動選擇或離線這個模式本身的既有行為，不是
+      「本該有曲線卻失敗」。
+    """
+    if p.rate_curve_used:
         rates = "、".join(f"{e} {r * 100:.2f}%" for e, r in p.rate_by_expiry)
-        return (f"- 無風險利率 期限對齊（{p.rate_note}；各到期日 r: {rates}）、"
-                "無股利調整、Black-Scholes 歐式近似")
-    if p.rate_note:
-        return (f"- 無風險利率 固定 {_pct(p.rate)}（{p.rate_note}，退回預設）、"
-                "無股利調整、Black-Scholes 歐式近似")
-    return f"- 無風險利率 {_pct(p.rate)}、無股利調整、Black-Scholes 歐式近似"
+        detail = f"；各到期日 r: {rates}" if rates else ""
+        stale = "，STALE（沿用陳舊備援窗）" if p.rate_curve_stale else ""
+        return (f"- 無風險利率 期限對齊（Treasury 曲線 {p.rate_curve_date}"
+                f"{stale}{detail}）、無股利調整、Black-Scholes 歐式近似")
+    if p.rate_explicit or not p.rate_note:
+        return f"- 無風險利率 {_pct(p.rate)}、無股利調整、Black-Scholes 歐式近似"
+    return (f"- 無風險利率 {_pct(p.rate)} · FALLBACK（{p.rate_note}）、"
+            "無股利調整、Black-Scholes 歐式近似")
 
 
 def _header_lines(snap: ChainSnapshot, p: AnalysisParams, today: date) -> list[str]:

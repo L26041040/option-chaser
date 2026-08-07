@@ -201,3 +201,20 @@ def test_parse_xml_against_a_real_captured_response():
 
 def test_curve_dict_round_trip():
     assert curve_from_dict(curve_to_dict(CURVE)) == CURVE
+
+
+def test_stale_flag_survives_the_round_trip():
+    """RC1（#87）：陳舊備援標記要跟著曲線一起序列化，不能在存讀之間
+    悄悄弄丟——快取讀回來後上層才能正確分辨新鮮／陳舊。"""
+    import dataclasses
+    stale = dataclasses.replace(CURVE, stale=True)
+    assert curve_from_dict(curve_to_dict(stale)) == stale
+    assert curve_from_dict(curve_to_dict(stale)).stale is True
+
+
+def test_dict_without_a_stale_key_defaults_to_not_stale():
+    """既有已落盤的快取（本地檔案或 Neon）在這個欄位存在前寫入，沒有
+    這把鑰匙——讀回來一律當非陳舊，不因為欄位新增就讓舊快取整批失效。"""
+    data = curve_to_dict(CURVE)
+    del data["stale"]
+    assert curve_from_dict(data).stale is False

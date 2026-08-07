@@ -31,10 +31,18 @@ class CurveParseError(Exception):
 
 @dataclass(frozen=True)
 class RateCurve:
-    """連續複利 zero rate 曲線。`nodes` = (年期, r_cc)，嚴格遞增、至少一節點。"""
+    """連續複利 zero rate 曲線。`nodes` = (年期, r_cc)，嚴格遞增、至少一節點。
+
+    `stale`（RC1／#87）：這條曲線是不是「今天抓取失敗、沿用陳舊備援窗
+    （本地檔案快取或 Neon 持久快取）的舊曲線」，不是它自己抓到那天算
+    起的新鮮度。預設 `False`（一般解析／建構出來的曲線視為新鮮）；
+    只有 `data/treasury.py` 的本地快取備援分支與 `api_app/rate_cache.py`
+    的 Neon 緊急備援窗分支會把讀回來的舊曲線標成 `True`，供前端把
+    「真曲線但陳舊」與「真曲線且新鮮」分開顯示（不得混為一談）。"""
 
     curve_date: str                          # 曲線資料日 YYYY-MM-DD
     nodes: tuple[tuple[float, float], ...]
+    stale: bool = False
 
     def __post_init__(self) -> None:
         if not self.nodes:
@@ -186,10 +194,15 @@ def parse_treasury_xml(text: str) -> RateCurve:
 
 def curve_to_dict(curve: RateCurve) -> dict:
     return {"curve_date": curve.curve_date,
-            "nodes": [list(n) for n in curve.nodes]}
+            "nodes": [list(n) for n in curve.nodes],
+            "stale": curve.stale}
 
 
 def curve_from_dict(data: dict) -> RateCurve:
+    # `.get("stale", False)`：既有已落盤的快取（本地檔案或 Neon）在這個
+    # 欄位存在前寫入，沒有這把鑰匙——讀回來一律當「非陳舊」，不因為
+    # 欄位新增就讓舊快取整批失效。
     return RateCurve(curve_date=data["curve_date"],
                      nodes=tuple((float(t), float(r))
-                                 for t, r in data["nodes"]))
+                                 for t, r in data["nodes"]),
+                     stale=bool(data.get("stale", False)))

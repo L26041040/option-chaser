@@ -1,6 +1,7 @@
 # tests/test_treasury.py
 """T12(A) 取得與快取層：CSV→XML→前一年備援、快取 7 日曆日陳舊窗、
 三層 fallback（新鮮抓取／快取／退 0.04 由上層決定）。全部離線（假抓取器）。"""
+import dataclasses
 import json
 from datetime import date
 
@@ -171,7 +172,10 @@ def test_fetch_failure_uses_cache_within_window(tmp_path):
         raise FetchError("offline")
 
     curve, note = load_rate_curve(TODAY, cache_path=cache, fetch=boom)
-    assert curve == _curve()
+    # RC1（#87）：沿用陳舊本地快取——曲線內容一致，但要標成 stale，
+    # 不能跟新鮮抓取顯示成同一態。
+    assert curve == dataclasses.replace(_curve(), stale=True)
+    assert curve.stale is True
     assert "快取" in note and fetched_on.isoformat() in note
 
 
@@ -182,7 +186,8 @@ def test_cache_at_window_boundary_still_used(tmp_path):
     load_rate_curve(fetched_on, cache_path=cache, fetch=lambda t: _curve())
     curve, _ = load_rate_curve(TODAY, cache_path=cache,
                                fetch=lambda t: (_ for _ in ()).throw(OSError()))
-    assert curve == _curve()
+    assert curve == dataclasses.replace(_curve(), stale=True)
+    assert curve.stale is True
 
 
 def test_stale_cache_returns_none(tmp_path):
