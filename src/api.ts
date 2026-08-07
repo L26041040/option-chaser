@@ -384,6 +384,15 @@ export function listScenarios(): Promise<ScenarioSummary[]> {
   return request<ScenarioSummary[]>("/api/scenarios");
 }
 
+/** TR6／TR4（#91／#92）：垃圾桶畫面用——後端 `include_archived=true`
+ *  回傳全部劇本，這裡篩出已封存者。不新增一個「只回封存者」的後端
+ *  端點：清單本身不大，篩選留在前端比多一個查詢參數組合更簡單。 */
+export async function listArchivedScenarios(): Promise<ScenarioSummary[]> {
+  const all = await request<ScenarioSummary[]>(
+    "/api/scenarios?include_archived=true");
+  return all.filter((s) => s.archived_at !== null);
+}
+
 export function createScenario(
   req: CreateScenarioRequest,
 ): Promise<ScenarioSummary> {

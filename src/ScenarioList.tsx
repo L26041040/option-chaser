@@ -14,6 +14,7 @@
  */
 import type { RefreshFailure, ScenarioSummary } from "./api";
 import { strategyLabel } from "./detail";
+import { CheckIcon, TrashIcon } from "./icons";
 import { detailHash } from "./route";
 import {
   failureLabel,
@@ -36,6 +37,9 @@ function ScenarioCard({
   selected,
   onArchive,
   onRetry,
+  selectMode,
+  isChecked,
+  onToggleSelect,
 }: {
   row: ScenarioSummary;
   failure: RefreshFailure | undefined;
@@ -43,6 +47,11 @@ function ScenarioCard({
   selected: boolean;
   onArchive: (id: string) => void;
   onRetry: (id: string) => void;
+  /** TR6（#91）：批次選取模式——checkbox 取代單筆刪除鈕，整張卡改成
+   *  點下去是選取而不是進詳細頁。 */
+  selectMode: boolean;
+  isChecked: boolean;
+  onToggleSelect: (id: string) => void;
 }) {
   const ran = row.best_return !== null;
   const stale = isStale(row.latest_analyzed_at, now);
@@ -58,15 +67,32 @@ function ScenarioCard({
           就只聽得到「TLT 2028-05 詳細」，收益率／目標／距到期／資料時間
           全部被吃掉。改在結尾補一段只有輔助技術讀得到的字。 */}
       {/* #72：桌面版左側清單常駐，`aria-current` 讓螢幕閱讀器也認得
-          「目前選中的是哪一個」，不只是視覺上的高亮。 */}
+          「目前選中的是哪一個」，不只是視覺上的高亮。
+          TR6（#91）：批次選取模式時整張卡攔截點擊改成切換選取，不導向
+          詳細頁——`preventDefault` 而不是換成 `<button>`，內容結構完全
+          不用重寫一份。 */}
       <a className="card-tap" href={detailHash(row.id)}
-         aria-current={selected ? "page" : undefined}>
+         aria-current={selected ? "page" : undefined}
+         onClick={(e) => {
+           if (selectMode) {
+             e.preventDefault();
+             onToggleSelect(row.id);
+           }
+         }}>
         <div className="row">
           {/* 燈號跟標的分成同一個 flex item：`.row` 是 space-between，
               燈號要黏在標的旁邊，不能被撐到卡片最左邊自成一欄。顏色不是
               唯一的資訊管道：`title` 給滑鼠停留時看得到的文字、`sr-only`
               給螢幕閱讀器；圓點本身 `aria-hidden`。 */}
           <span className="symbol-group">
+            {selectMode && (
+              <span
+                className={isChecked ? "row-checkbox checked" : "row-checkbox"}
+                aria-hidden="true"
+              >
+                {isChecked && <CheckIcon />}
+              </span>
+            )}
             <span
               className={`signal-dot signal-${signal}`}
               title={signalLabel(signal)}
@@ -163,15 +189,19 @@ function ScenarioCard({
         </div>
       )}
 
-      <div className="card-actions">
-        <button
-          className="text-button"
-          onClick={() => onArchive(row.id)}
-          aria-label={`封存 ${who}`}
-        >
-          封存
-        </button>
-      </div>
+      {/* TR6（#91）：單筆刪除改圖示，批次選取模式下 checkbox 已經在上面
+          出現，不同時顯示兩種「選它」的方式。 */}
+      {!selectMode && (
+        <div className="card-actions">
+          <button
+            className="icon-button"
+            onClick={() => onArchive(row.id)}
+            aria-label={`封存 ${who}`}
+          >
+            <TrashIcon />
+          </button>
+        </div>
+      )}
     </li>
   );
 }
@@ -183,6 +213,12 @@ export default function ScenarioList({
   selectedId = null,
   onArchive,
   onRetry,
+  selectMode,
+  selectedIds,
+  onToggleSelect,
+  onEnterSelectMode,
+  onCancelSelectMode,
+  onConfirmBatchArchive,
 }: {
   rows: ScenarioSummary[];
   failures: Record<string, RefreshFailure>;
@@ -191,19 +227,52 @@ export default function ScenarioList({
   selectedId?: string | null;
   onArchive: (id: string) => void;
   onRetry: (id: string) => void;
+  /** TR6（#91）：批次選取移入垃圾桶。`selectMode` 開著時清單項目變成
+   *  可勾選，`onConfirmBatchArchive` 依序（沿用既有序列佇列模式）把
+   *  `selectedIds` 全部移入垃圾桶。 */
+  selectMode: boolean;
+  selectedIds: ReadonlySet<string>;
+  onToggleSelect: (id: string) => void;
+  onEnterSelectMode: () => void;
+  onCancelSelectMode: () => void;
+  onConfirmBatchArchive: () => void;
 }) {
   if (rows.length === 0) {
     return <p className="caption">還沒有劇本。用下面的表單建立第一個。</p>;
   }
+  const sorted = sortScenarios(rows);
   return (
     <>
       {/* 收益率口徑就寫在數字旁邊（V4／#52）。放進說明頁等於沒寫——
-          看數字的人不會為了一個百分比先去翻說明。 */}
-      <p className="caption">
-        收益率以最差成交價計算（買腿 Ask − 賣腿 Bid）
-      </p>
+          看數字的人不會為了一個百分比先去翻說明。TR6（#91）：批次選取
+          入口貼在同一列右側——需求方核准版面的位置。 */}
+      <div className="yield-note-row">
+        <p className="caption">
+          收益率以最差成交價計算（買腿 Ask − 賣腿 Bid）
+        </p>
+        {!selectMode && (
+          <button
+            className="icon-button"
+            onClick={onEnterSelectMode}
+            title="選取要移入垃圾桶的劇本"
+            aria-label="選取要移入垃圾桶的劇本"
+          >
+            <TrashIcon />
+          </button>
+        )}
+      </div>
+
+      {selectMode && (
+        <div className="select-mode-bar">
+          <span className="caption">選取要移入垃圾桶的劇本</span>
+          <button className="text-button" onClick={onCancelSelectMode}>
+            取消
+          </button>
+        </div>
+      )}
+
       <ul className="list">
-        {sortScenarios(rows).map((row) => (
+        {sorted.map((row) => (
           <ScenarioCard
             key={row.id}
             row={row}
@@ -212,9 +281,25 @@ export default function ScenarioList({
             selected={row.id === selectedId}
             onArchive={onArchive}
             onRetry={onRetry}
+            selectMode={selectMode}
+            isChecked={selectedIds.has(row.id)}
+            onToggleSelect={onToggleSelect}
           />
         ))}
       </ul>
+
+      {selectMode && (
+        <div className="batch-action-bar">
+          <span className="caption">已選 {selectedIds.size} 個</span>
+          <button
+            className="batch-pill"
+            disabled={selectedIds.size === 0}
+            onClick={onConfirmBatchArchive}
+          >
+            移入垃圾桶
+          </button>
+        </div>
+      )}
     </>
   );
 }

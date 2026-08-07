@@ -365,6 +365,145 @@ body {
   opacity: 0.45;
 }
 
+/* ---------- 垃圾桶：圖示鈕、批次選取（TR6／#91） ---------- */
+
+/* 手刻 SVG 圖示的共用基準——尺寸與位置交給用到它的 SVG 自己的
+   width/height 屬性，這裡只保證行內排版正確（不是預設的 inline，
+   會多出幾 px 底線間距）。 */
+.icon-glyph {
+  display: block;
+}
+
+/* 圓形圖示鈕：垃圾桶單筆刪除（取代原本的文字「封存」鈕）、批次選取
+   入口。跟 `.text-button` 一樣不畫框，只是內容從文字換成圖示，尺寸
+   縮成正圓以貼齊圖示本身的視覺重量。 */
+.icon-button {
+  appearance: none;
+  border: 0;
+  background: none;
+  color: var(--label-secondary);
+  padding: 6px;
+  min-height: 32px;
+  min-width: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+.icon-button:active {
+  background: var(--fill);
+  color: var(--red);
+}
+
+/* 桌面版卡片的單筆刪除鈕沿用 `.card-actions` 既有位置（連結外面的
+   底部動作列），只是換成圖示鈕；手機版 compact row 的疊放位置沿用
+   既有 `.compact-archive` 定位規則，見下方。 */
+.compact-archive.icon-button {
+  position: absolute;
+  right: 8px;
+  bottom: 8px;
+  min-height: 0;
+  padding: 4px;
+}
+
+/* 工具列的垃圾桶入口：跟「＋ 建立劇本」同一種膠囊鈕，但用警示色調
+   （紅）跟「這是危險/垃圾桶相關操作」的既有色彩慣例（`--red` 用於
+   負值報酬、警示分隔線）一致，不需要另外發明新顏色。 */
+.pill-trash {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--red);
+}
+
+/* 清單上方「收益率口徑」說明文字那一列，垃圾桶批次選取入口貼在
+   右側——需求方核准版面的位置。 */
+.yield-note-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+/* 批次選取模式的提示列：說明文字＋取消。 */
+.select-mode-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+/* 選取用的 checkbox——桌面版嵌在 `.symbol-group` 裡（跟燈號同一列），
+   手機版嵌在 `.compact-tier1` 裡，兩處都靠 flex `gap` 對齊，這裡只定義
+   外觀本身。 */
+.row-checkbox {
+  appearance: none;
+  width: 20px;
+  height: 20px;
+  border-radius: 6px;
+  border: 1.5px solid var(--label-tertiary);
+  background: none;
+  padding: 0;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  cursor: pointer;
+}
+
+.row-checkbox.checked {
+  background: var(--tint);
+  border-color: var(--tint);
+}
+
+.symbol-group .row-checkbox {
+  margin-right: 8px;
+}
+
+/* 批次操作列：選取數量＋動作鈕，貼在清單底部。手機版加 sticky，
+   讓長清單捲動時仍摸得到動作；桌面版左側面板較窄，一般流內位置即可
+   （視覺上已經在畫面可視範圍內，不需要額外釘住）。 */
+.batch-action-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px var(--gap);
+  background: color-mix(in srgb, var(--bg) 88%, transparent);
+  border-top: 0.5px solid var(--separator);
+}
+
+@media (max-width: 1099px) {
+  .batch-action-bar {
+    position: sticky;
+    bottom: 0;
+    padding-bottom: calc(10px + env(safe-area-inset-bottom, 0px));
+  }
+}
+
+.batch-pill {
+  appearance: none;
+  border: 0;
+  border-radius: 999px;
+  font-size: 15px;
+  font-weight: 700;
+  padding: 8px 16px;
+  background: var(--red);
+  color: #fff;
+  cursor: pointer;
+}
+
+.batch-pill:active {
+  opacity: 0.6;
+}
+
+.batch-pill:disabled {
+  opacity: 0.4;
+}
+
 /* ---------- 手機首頁：Dashboard 佔位＋新增劇本入口（MVP-v2／#77、#81） ---------- */
 
 /* 低調但可見——版面位置先保留，內容待跨劇本比較功能確定後才填。跟

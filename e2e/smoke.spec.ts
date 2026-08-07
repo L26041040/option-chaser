@@ -327,6 +327,51 @@ test("劇本庫：建立 → 出現在清單 → 封存後消失（V3／#51）",
   await expect(page.getByText(/還沒有劇本/)).toBeVisible();
 });
 
+test("批次選取移入垃圾桶：勾兩個、確認後兩者都消失（TR6／#91）", async ({ page }) => {
+  const rowA = libraryRow({ id: "s1", symbol: "TLT" });
+  const rowB = libraryRow({ id: "s2", symbol: "SPY" });
+  await page.route("**/api/scenarios", (route) =>
+    route.fulfill({ json: [rowA, rowB] }));
+  await page.route("**/api/scenarios/s1/refresh", (route) =>
+    route.fulfill({ json: rowA }));
+  await page.route("**/api/scenarios/s2/refresh", (route) =>
+    route.fulfill({ json: rowB }));
+  await page.route("**/api/scenarios/*/archive", (route) =>
+    route.fulfill({ json: { archived: true } }));
+
+  await page.goto("/");
+  await expect(page.getByText("TLT", { exact: true })).toBeVisible();
+  await expect(page.getByText("SPY", { exact: true })).toBeVisible();
+
+  await page.getByRole("button", { name: "選取要移入垃圾桶的劇本" }).click();
+  await page.getByRole("link", { name: /TLT/ }).click();
+  await page.getByRole("link", { name: /SPY/ }).click();
+  await expect(page.getByText("已選 2 個")).toBeVisible();
+  await page.getByRole("button", { name: "移入垃圾桶" }).click();
+
+  await expect(page.getByRole("listitem")).toHaveCount(0);
+});
+
+test("垃圾桶入口可以點進去，返回鍵回到劇本庫（TR6／#91）", async ({ page }) => {
+  const rowA = libraryRow({ id: "s1", symbol: "TLT" });
+  await page.route("**/api/scenarios", (route) =>
+    route.fulfill({ json: [rowA] }));
+  await page.route("**/api/scenarios/s1/refresh", (route) =>
+    route.fulfill({ json: rowA }));
+  await page.route("**/api/scenarios?include_archived=true", (route) =>
+    route.fulfill({ json: [] }));
+
+  await page.goto("/");
+  await expect(page.getByText("TLT", { exact: true })).toBeVisible();
+
+  await page.getByRole("button", { name: "垃圾桶", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "垃圾桶" })).toBeVisible();
+  await expect(page.getByText("垃圾桶是空的。")).toBeVisible();
+
+  await page.getByText("‹ 劇本庫").click();
+  await expect(page.getByText("TLT", { exact: true })).toBeVisible();
+});
+
 test("功能列捲動時仍釘在頂部、而且按得到（V3／#51 驗收第 1 項）", async ({ page }) => {
   // 「可點」在 V3 驗不了——當時功能列上唯一的控制項是 disabled 佔位鈕。
   // V4（#52）把刷新接上之後才補得起來，所以這條測試在這一票才完整。

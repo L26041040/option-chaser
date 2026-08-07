@@ -22,8 +22,9 @@
 > Compact Row＋捲動還原全部到位的手機版劇本庫。緊接著同一天開始
 > **Trash 語意＋利率顯示修正**這一輪（見下方「Trash 語意＋利率顯示
 > 修正」小節）：需求方三點反饋（Archive 改真正 Trash、利率 fallback
-> 顯示語意）、`/to-tickets` 拆成 RC1＋TR1–TR6（#87–#93）。**RC1 已
-> 完成**，TR1–TR6 施工中。中間穿插的
+> 顯示語意）、`/to-tickets` 拆成 RC1＋TR1–TR6（#87–#93）。**RC1、
+> TR1、TR2、TR3、TR6 已完成**，剩 TR4／TR5（垃圾桶畫面的還原與永久
+> 刪除操作）施工中。中間穿插的
 > 「目前狀態（2026-08-02）」等舊日期標頭是歷史留存，**以此段與下面
 > 對應小節末尾的紀錄為準，不要被舊標頭誤導**。下一階段候選：
 > **多使用者隔離** [#59]（未標 `ready-for-agent`，需求方裁示後才開工）、
@@ -1205,10 +1206,34 @@ RC1／TR1／TR2／TR3／TR6 可平行開工，TR4 被 TR2＋TR3 擋，TR5 被 TR
   TR2，前端序列佇列逐一呼叫。後端＋8 條，全套 698 條（後端）／292 條
   （前端）全綠
 
-**待辦（可平行開工，除 TR4／TR5 有依賴）**：
+- **TR6**（#91）— 前端：主清單批次移入垃圾桶＋單筆刪除圖示化＋垃圾桶
+  入口。手刻 SVG 圖示（`src/icons.tsx`：`TrashIcon`／`CheckIcon`，
+  outline 風格，核准版面唯一採用款）取代 `ScenarioList.tsx`／
+  `CompactScenarioList.tsx` 既有文字「封存」鈕；桌面工具列新增
+  「🗑 垃圾桶」膠囊鈕，順序＝＋建立劇本→垃圾桶→重新整理（需求方核准
+  版面）。批次選取：清單「收益率口徑」說明旁新增圖示入口，進入選取
+  模式後 checkbox 取代單筆刪除鈕（不同時出現）、整卡／整列點擊改為
+  切換選取（`<a>` 的 `onClick` 攔截＋`preventDefault`，不換成
+  `<button>`）、底部 `batch-action-bar` 顯示已選數量＋「移入垃圾桶」；
+  沿用既有序列佇列模式依序呼叫既有 `/archive` 端點，個別失敗不中斷
+  其餘筆、失敗原因列在錯誤提示裡、成功者立即從清單消失。`route.ts`
+  新增 `trashHash()`／`isTrashHash()`（跟詳細頁同一套 hash 慣例）；
+  新增 `TrashView.tsx`（讀 `GET /api/scenarios?include_archived=true`
+  篩出已封存者，`api.ts` 新增 `listArchivedScenarios()`）作為垃圾桶
+  畫面骨架——手機整頁替換、桌面替換左側 `library-pane`（右側
+  `detail-pane` 沿用既有「有無選中劇本」邏輯，不特別接管；開垃圾桶
+  會清空網址上的劇本 id，右側因此落回既有空狀態，這是核准版面「右側
+  邏輯不動」的自然結果，不是另外接管）；TR6 階段是唯讀清單，TR4／
+  TR5 補上還原／永久刪除操作。前端＋新增 21 條 Vitest（含
+  `route.test.ts`／`ScenarioList.test.tsx`／`CompactScenarioList.test.tsx`／
+  `App.test.tsx` 四處）、＋4 條 Playwright（Desktop＋iPhone 各兩條：
+  批次移入垃圾桶端到端、垃圾桶入口導覽），全套 313 條 Vitest／
+  27 條 Playwright 全綠
 
-- TR6（#91）— 前端：主清單批次移入垃圾桶＋單筆刪除圖示化
-- TR4（#92）— 前端：垃圾桶畫面單筆操作（被 TR2／TR3 擋）
+**待辦**：
+
+- TR4（#92）— 前端：垃圾桶畫面單筆操作（被 TR2／TR3 擋，已解除，
+  可施工）
 - TR5（#93）— 前端：垃圾桶畫面批次操作（被 TR4 擋）
 
 > 沿用規則：全部票做完才開 PR、merge 回 master，中途不主動開。

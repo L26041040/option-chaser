@@ -17,6 +17,7 @@
  */
 import type { RefreshFailure, ScenarioSummary } from "./api";
 import { strategyLabel } from "./detail";
+import { CheckIcon, TrashIcon } from "./icons";
 import { detailHash } from "./route";
 import {
   failureLabel,
@@ -38,12 +39,20 @@ function CompactScenarioCard({
   now,
   onArchive,
   onRetry,
+  selectMode,
+  isChecked,
+  onToggleSelect,
 }: {
   row: ScenarioSummary;
   failure: RefreshFailure | undefined;
   now: Date;
   onArchive: (id: string) => void;
   onRetry: (id: string) => void;
+  /** TR6（#91）：批次選取模式——checkbox 取代單筆刪除鈕，整列改成點下
+   *  去是選取而不是進詳細頁。 */
+  selectMode: boolean;
+  isChecked: boolean;
+  onToggleSelect: (id: string) => void;
 }) {
   const ran = row.best_return !== null;
   const stale = isStale(row.latest_analyzed_at, now);
@@ -52,6 +61,10 @@ function CompactScenarioCard({
   const rep = row.representative_candidate;
 
   return (
+    // 這裡的 `isChecked` 是批次選取狀態，跟桌面版 `.card.selected`
+    // （master/detail 目前選中的劇本）是不同概念——compact row 沒有
+    // 對應的常駐詳細頁高亮，選取狀態完全交給下面的 checkbox 外觀表達，
+    // 不重用會撞名的 class。
     <li className="compact-card">
       {/* 封存鈕疊在「這一塊」（tap 區）的右下角，而不是整張 `<li>` 的
           右下角——code review 抓到的真實回歸：`.compact-notice`（刷新
@@ -64,8 +77,25 @@ function CompactScenarioCard({
         {/* 不掛 `aria-label`：那會取代連結內容當成可及名稱，螢幕閱讀器
             就只聽得到症狀簡述，三層資訊全部被吃掉。改在結尾補一段只有
             輔助技術讀得到的字（沿用 `ScenarioList.tsx` 既有寫法）。 */}
-        <a className="compact-card-tap" href={detailHash(row.id)}>
+        {/* TR6（#91）：批次選取模式時整列攔截點擊改成切換選取，不導向
+            詳細頁——`preventDefault` 而不是換成 `<button>`，內容結構
+            完全不用重寫一份（沿用 `ScenarioList.tsx` 同一種做法）。 */}
+        <a className="compact-card-tap" href={detailHash(row.id)}
+           onClick={(e) => {
+             if (selectMode) {
+               e.preventDefault();
+               onToggleSelect(row.id);
+             }
+           }}>
           <div className="compact-tier1">
+            {selectMode && (
+              <span
+                className={isChecked ? "row-checkbox checked" : "row-checkbox"}
+                aria-hidden="true"
+              >
+                {isChecked && <CheckIcon />}
+              </span>
+            )}
             <span className="compact-symbol">{row.symbol}</span>
             <span className="compact-target">
               {money(row.target_price)}　{row.target_month}
@@ -113,16 +143,19 @@ function CompactScenarioCard({
           </span>
         </a>
 
-        {/* 封存入口不搶戲——疊在 tap 區右下角的小字按鈕，不佔用行高，
+        {/* 封存入口不搶戲——疊在 tap 區右下角的圖示鈕，不佔用行高，
             掃描時不會被誤讀成金融資訊；要用時仍找得到（判準見 spec
-            #77 六）。 */}
-        <button
-          className="text-button compact-archive"
-          onClick={() => onArchive(row.id)}
-          aria-label={`封存 ${who}`}
-        >
-          封存
-        </button>
+            #77 六）。TR6（#91）：批次選取模式下 tier1 已經有 checkbox，
+            不同時顯示兩種「選它」的方式。 */}
+        {!selectMode && (
+          <button
+            className="icon-button compact-archive"
+            onClick={() => onArchive(row.id)}
+            aria-label={`封存 ${who}`}
+          >
+            <TrashIcon />
+          </button>
+        )}
       </div>
 
       {failure && !row.expired && (
@@ -147,12 +180,25 @@ export default function CompactScenarioList({
   now,
   onArchive,
   onRetry,
+  selectMode,
+  selectedIds,
+  onToggleSelect,
+  onEnterSelectMode,
+  onCancelSelectMode,
+  onConfirmBatchArchive,
 }: {
   rows: ScenarioSummary[];
   failures: Record<string, RefreshFailure>;
   now: Date;
   onArchive: (id: string) => void;
   onRetry: (id: string) => void;
+  /** TR6（#91）：批次選取移入垃圾桶，語意同 `ScenarioList.tsx`。 */
+  selectMode: boolean;
+  selectedIds: ReadonlySet<string>;
+  onToggleSelect: (id: string) => void;
+  onEnterSelectMode: () => void;
+  onCancelSelectMode: () => void;
+  onConfirmBatchArchive: () => void;
 }) {
   if (rows.length === 0) {
     return <p className="caption">還沒有劇本。用上面的「＋ 新增劇本」建立第一個。</p>;
@@ -160,10 +206,33 @@ export default function CompactScenarioList({
   return (
     <>
       {/* 收益率口徑就寫在數字旁邊（V4／#52 既有裁示），沿用大卡片版式
-          同一句話，compact 版不因為省空間就把它拿掉。 */}
-      <p className="caption">
-        收益率以最差成交價計算（買腿 Ask − 賣腿 Bid）
-      </p>
+          同一句話，compact 版不因為省空間就把它拿掉。TR6（#91）：批次
+          選取入口貼在同一列右側。 */}
+      <div className="yield-note-row">
+        <p className="caption">
+          收益率以最差成交價計算（買腿 Ask − 賣腿 Bid）
+        </p>
+        {!selectMode && (
+          <button
+            className="icon-button"
+            onClick={onEnterSelectMode}
+            title="選取要移入垃圾桶的劇本"
+            aria-label="選取要移入垃圾桶的劇本"
+          >
+            <TrashIcon />
+          </button>
+        )}
+      </div>
+
+      {selectMode && (
+        <div className="select-mode-bar">
+          <span className="caption">選取要移入垃圾桶的劇本</span>
+          <button className="text-button" onClick={onCancelSelectMode}>
+            取消
+          </button>
+        </div>
+      )}
+
       <ul className="compact-list">
         {sortScenarios(rows).map((row) => (
           <CompactScenarioCard
@@ -173,9 +242,25 @@ export default function CompactScenarioList({
             now={now}
             onArchive={onArchive}
             onRetry={onRetry}
+            selectMode={selectMode}
+            isChecked={selectedIds.has(row.id)}
+            onToggleSelect={onToggleSelect}
           />
         ))}
       </ul>
+
+      {selectMode && (
+        <div className="batch-action-bar">
+          <span className="caption">已選 {selectedIds.size} 個</span>
+          <button
+            className="batch-pill"
+            disabled={selectedIds.size === 0}
+            onClick={onConfirmBatchArchive}
+          >
+            移入垃圾桶
+          </button>
+        </div>
+      )}
     </>
   );
 }

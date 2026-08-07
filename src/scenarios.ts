@@ -90,21 +90,32 @@ export function formatDaysLeft(days: number): string {
 }
 
 /**
- * 資料時間。後端給的是 UTC 的 ISO 字串（25 字元），直接印在手機卡片上
- * 又長又不是使用者關心的時區——全站的領域時鐘是紐約（`ny_today`），
- * 這裡也用紐約時間顯示，口徑才一致。
- *
- * 尚未分析（null）說「尚未分析」，不是留白也不是一個舊時間。
+ * 時間戳的顯示格式。後端給的是 UTC 的 ISO 字串（25 字元），直接印在
+ * 手機卡片上又長又不是使用者關心的時區——全站的領域時鐘是紐約
+ * （`ny_today`），這裡也用紐約時間顯示，口徑才一致。看不懂的字串原樣
+ * 顯示，不假裝。
  */
-export function formatAnalyzedAt(iso: string | null): string {
-  if (iso === null) return "尚未分析";
+function formatTimestamp(iso: string): string {
   const at = new Date(iso);
-  if (Number.isNaN(at.getTime())) return iso;   // 看不懂就原樣顯示，不假裝
+  if (Number.isNaN(at.getTime())) return iso;
   return at.toLocaleString("zh-TW", {
     timeZone: "America/New_York",
     month: "numeric", day: "numeric",
     hour: "2-digit", minute: "2-digit", hour12: false,
   });
+}
+
+/**
+ * 資料時間。尚未分析（null）說「尚未分析」，不是留白也不是一個舊時間。
+ */
+export function formatAnalyzedAt(iso: string | null): string {
+  if (iso === null) return "尚未分析";
+  return formatTimestamp(iso);
+}
+
+/** TR6（#91）：垃圾桶清單的「封存於」時間戳，同一套格式。 */
+export function formatArchivedAt(iso: string): string {
+  return formatTimestamp(iso);
 }
 
 export function money(x: number): string {

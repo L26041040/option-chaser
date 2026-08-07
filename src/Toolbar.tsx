@@ -6,6 +6,8 @@
  * 「第幾個／共幾個」——刷新是逐一跑的，一個劇本一趟網路往返，只給一顆
  * 轉圈的話使用者無從判斷是快好了還是卡住了。
  */
+import { TrashIcon } from "./icons";
+
 export interface RefreshProgress {
   /** 正在刷新第幾個（1-based）。 */
   current: number;
@@ -34,11 +36,17 @@ export default function Toolbar({
   count,
   progress,
   onRefresh,
+  onOpenTrash,
   ...createProps
 }: {
   count: number;
   progress: RefreshProgress | null;
   onRefresh: () => void;
+  /** TR6（#91）：垃圾桶畫面入口，貼齊「劇本庫」標題的工具列——需求方
+   *  核准版面：桌面順序「＋ 建立劇本 → 🗑 垃圾桶 → 重新整理」，手機版
+   *  沒有建立鈕（入口在 Dashboard 下方），順序自然是「🗑 垃圾桶 →
+   *  重新整理」，兩種寬度共用同一段 JSX，不必分支。 */
+  onOpenTrash: () => void;
 } & CreateButtonProps) {
   const busy = progress !== null;
   return (
@@ -59,6 +67,9 @@ export default function Toolbar({
               {createProps.createOpen ? "收合建立表單" : "＋ 建立劇本"}
             </button>
           )}
+          <button className="pill pill-trash" onClick={onOpenTrash}>
+            <TrashIcon /> 垃圾桶
+          </button>
           <button className="pill" onClick={onRefresh} disabled={busy}>
             {busy ? "刷新中……" : "重新整理"}
           </button>

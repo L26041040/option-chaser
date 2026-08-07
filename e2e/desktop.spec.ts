@@ -136,3 +136,37 @@ test("瀏覽器上一頁／下一頁在桌面版仍然正確切換劇本", async
   await expect(page).toHaveURL(/#\/s\/s1$/);
   await expect(page.getByText(`$${sample.meta.spot.toFixed(2)}`)).toBeVisible();
 });
+
+test("工具列順序：建立劇本 → 垃圾桶 → 重新整理（TR6／#91 需求方核准版面）",
+   async ({ page }) => {
+  await routeTwoScenarios(page);
+  await page.goto("/");
+  // 等開站那輪批次刷新跑完，避免撞上「刷新中……」互斥文字的瞬間。
+  await expect(page.getByRole("link", { name: /XYZ/ })).toBeVisible();
+  await expect(page.getByRole("button", { name: /重新整理|刷新中/ }))
+    .toHaveText("重新整理");
+
+  const buttons = await page.locator("header.toolbar button").allTextContents();
+  expect(buttons.map((t) => t.trim())).toEqual(["＋ 建立劇本", "垃圾桶", "重新整理"]);
+});
+
+test("垃圾桶：左側面板整個換成垃圾桶清單（TR6／#91）", async ({ page }) => {
+  await routeTwoScenarios(page);
+  await page.route("**/api/scenarios?include_archived=true", (route) =>
+    route.fulfill({ json: [] }));
+  await page.goto("/");
+  await expect(page.getByRole("link", { name: /XYZ/ })).toBeVisible();
+
+  await page.getByRole("button", { name: "垃圾桶", exact: true }).click();
+
+  // 左側面板整個換成垃圾桶清單——不是彈出新視窗或新分頁。
+  await expect(page.locator(".library-pane").getByRole("heading", { name: "垃圾桶" }))
+    .toBeVisible();
+  await expect(page.getByRole("link", { name: /XYZ/ })).not.toBeVisible();
+  // 右側工作區沿用既有「有沒有選中劇本」的邏輯——垃圾桶本身不是劇本，
+  // 網址不再指向任何劇本 id，右側自然落回既有空狀態，不是被特別接管。
+  await expect(page.getByText(/選擇左側的劇本/)).toBeVisible();
+
+  await page.getByText("‹ 劇本庫").click();
+  await expect(page.getByRole("link", { name: /XYZ/ })).toBeVisible();
+});

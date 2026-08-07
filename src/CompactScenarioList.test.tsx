@@ -32,6 +32,12 @@ function list(
     onArchive?: (id: string) => void;
     onRetry?: (id: string) => void;
     now?: Date;
+    selectMode?: boolean;
+    selectedIds?: ReadonlySet<string>;
+    onToggleSelect?: (id: string) => void;
+    onEnterSelectMode?: () => void;
+    onCancelSelectMode?: () => void;
+    onConfirmBatchArchive?: () => void;
   } = {},
 ) {
   return render(
@@ -41,6 +47,12 @@ function list(
       onArchive={props.onArchive ?? vi.fn()}
       onRetry={props.onRetry ?? vi.fn()}
       now={props.now ?? NOW}
+      selectMode={props.selectMode ?? false}
+      selectedIds={props.selectedIds ?? new Set()}
+      onToggleSelect={props.onToggleSelect ?? vi.fn()}
+      onEnterSelectMode={props.onEnterSelectMode ?? vi.fn()}
+      onCancelSelectMode={props.onCancelSelectMode ?? vi.fn()}
+      onConfirmBatchArchive={props.onConfirmBatchArchive ?? vi.fn()}
     />,
   );
 }
@@ -156,5 +168,59 @@ describe("Compact 劇本列（MVP-v2／#77、#82）", () => {
     const note = screen.getByText(/最差成交價/);
     expect(note).toHaveTextContent(/買腿 Ask/);
     expect(note).toHaveTextContent(/賣腿 Bid/);
+  });
+});
+
+describe("批次選取移入垃圾桶（TR6／#91）", () => {
+  it("一般狀態：垃圾桶批次選取入口在，封存鈕維持圖示可及名稱", () => {
+    list([row()]);
+    expect(screen.getByRole("button", { name: "選取要移入垃圾桶的劇本" }))
+      .toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "封存 TLT 2028-05" }))
+      .toBeInTheDocument();
+  });
+
+  it("選取模式：封存鈕不見了，換成 checkbox；批次操作列顯示已選數量",
+     () => {
+    list([row({ id: "a", symbol: "AAA" }), row({ id: "b", symbol: "BBB" })],
+         { selectMode: true, selectedIds: new Set(["a"]) });
+
+    expect(screen.queryByRole("button", { name: "封存 AAA 2028-05" }))
+      .not.toBeInTheDocument();
+    expect(screen.getByText("已選 1 個")).toBeInTheDocument();
+  });
+
+  it("點整列是切換選取，不是導向詳細頁", async () => {
+    const onToggleSelect = vi.fn();
+    list([row({ id: "a", symbol: "AAA" })],
+         { selectMode: true, onToggleSelect });
+
+    await userEvent.click(screen.getByRole("link", { name: /AAA/ }));
+
+    expect(onToggleSelect).toHaveBeenCalledWith("a");
+  });
+
+  it("已選 0 個時「移入垃圾桶」鈕停用", () => {
+    list([row()], { selectMode: true });
+    expect(screen.getByRole("button", { name: "移入垃圾桶" })).toBeDisabled();
+  });
+
+  it("確認批次移入垃圾桶會呼叫回呼", async () => {
+    const onConfirmBatchArchive = vi.fn();
+    list([row({ id: "a" })],
+         { selectMode: true, selectedIds: new Set(["a"]), onConfirmBatchArchive });
+
+    await userEvent.click(screen.getByRole("button", { name: "移入垃圾桶" }));
+
+    expect(onConfirmBatchArchive).toHaveBeenCalledTimes(1);
+  });
+
+  it("取消選取模式會呼叫回呼", async () => {
+    const onCancelSelectMode = vi.fn();
+    list([row()], { selectMode: true, onCancelSelectMode });
+
+    await userEvent.click(screen.getByRole("button", { name: "取消" }));
+
+    expect(onCancelSelectMode).toHaveBeenCalledTimes(1);
   });
 });

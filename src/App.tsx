@@ -39,6 +39,7 @@ import Dashboard from "./Dashboard";
 import ScenarioDetail from "./ScenarioDetail";
 import ScenarioList from "./ScenarioList";
 import Toolbar, { type RefreshProgress } from "./Toolbar";
+import TrashView from "./TrashView";
 import {
   archiveScenario,
   createScenario,
@@ -48,7 +49,7 @@ import {
   type RefreshFailure,
   type ScenarioSummary,
 } from "./api";
-import { scenarioIdFromHash } from "./route";
+import { isTrashHash, scenarioIdFromHash, trashHash } from "./route";
 
 // 桌面／手機斷點——與 `styles.css` 的 `@media (min-width: 1100px)` 同一個
 // 數字，兩邊各自維護一份（CSS 沒辦法直接讀 JS 常數），改動時要一起改。
@@ -194,6 +195,8 @@ export default function App() {
     return () => window.removeEventListener("hashchange", sync);
   }, []);
   const detailId = scenarioIdFromHash(hash);
+  // TR6（#91）：垃圾桶畫面路由——跟詳細頁同一套 hash 慣例。
+  const showTrash = isTrashHash(hash);
   const isDesktop = useIsDesktop();
 
   // 手機版返回劇本庫要停在原本的捲動位置（MVP-v2／#77、#83）：手機版
@@ -273,6 +276,67 @@ export default function App() {
     }
   }
 
+  // ---------- 批次選取移入垃圾桶（TR6／#91） ----------
+  //
+  // 沒有新增後端批次端點：依序（不併發）呼叫既有單筆 `/archive`，跟
+  // `enqueue` 刷新佇列同一種「一次一趟網路往返」的理由——批次操作本身
+  // 不搶進行中的刷新佇列（archive 與 refresh 是不同端點，天生不衝突，
+  // 這裡的序列只是不讓 N 個請求同時炸出去）。每完成一筆就立刻從畫面
+  // 移除那一列，個別失敗不中斷其餘筆——跟單筆 `archive()` 的樂觀更新
+  // 同一個原則，只是失敗時不回滾（使用者仍在選取模式裡，看得到哪些
+  // 還留著、旁邊的錯誤說明解釋為什麼）。
+  const [selectMode, setSelectMode] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [batchArchiveErrors, setBatchArchiveErrors] =
+    useState<Record<string, string>>({});
+
+  function enterSelectMode() {
+    setSelectMode(true);
+    setSelectedIds(new Set());
+    setBatchArchiveErrors({});
+  }
+
+  function cancelSelectMode() {
+    setSelectMode(false);
+    setSelectedIds(new Set());
+    setBatchArchiveErrors({});
+  }
+
+  function toggleSelected(id: string) {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }
+
+  async function confirmBatchArchive() {
+    const ids = [...selectedIds];
+    const errors: Record<string, string> = {};
+    for (const id of ids) {
+      try {
+        await archiveScenario(id);
+        setRows((prev) => prev.filter((r) => r.id !== id));
+        setSelectedIds((prev) => {
+          const next = new Set(prev);
+          next.delete(id);
+          return next;
+        });
+      } catch (e) {
+        errors[id] = e instanceof Error ? e.message : String(e);
+      }
+    }
+    // 全部成功才自動離開選取模式——有失敗的話留在選取模式裡，讓使用者
+    // 看得到哪些還沒處理成功、為什麼，而不是靜靜地退出、下次得自己
+    // 重新想起哪些沒成功。
+    if (Object.keys(errors).length === 0) {
+      setSelectMode(false);
+      setBatchArchiveErrors({});
+    } else {
+      setBatchArchiveErrors(errors);
+    }
+  }
+
   // 詳細頁（V5／#53）。所有 hook 都在這一行之前跑完，順序不受影響。
   // 手機寬度維持既有行為：整頁替換成詳細頁，劇本庫（含建立表單）
   // 整個不掛載。桌面寬度改走下面 #72 的 master/detail 版面。
@@ -288,6 +352,22 @@ export default function App() {
     failure: failures[detailId],
     onRefresh: () => void enqueue([detailId]),
   } : null;
+
+  // TR6（#91）：批次移入垃圾桶時個別失敗的說明——列在「哪個劇本、
+  // 為什麼」，不是只說「有些失敗了」。手機／桌面共用同一段生成邏輯，
+  // 各自决定放在畫面的哪裡。
+  const batchArchiveErrorNotice = Object.keys(batchArchiveErrors).length > 0 && (
+    <div className="notice error" role="alert">
+      {Object.entries(batchArchiveErrors).map(([id, message]) => {
+        const who = rows.find((r) => r.id === id)?.symbol ?? id;
+        return <p key={id} className="caption">{who}：{message}</p>;
+      })}
+    </div>
+  );
+
+  if (!isDesktop && showTrash) {
+    return <TrashView />;
+  }
 
   if (!isDesktop && detailProps) {
     return <ScenarioDetail {...detailProps} />;
@@ -309,6 +389,7 @@ export default function App() {
           showCreateButton={false}
           // 時機三：功能列刷新鈕
           onRefresh={() => void reloadAndRefresh()}
+          onOpenTrash={() => { window.location.hash = trashHash(); }}
         />
 
         {error && (
@@ -316,6 +397,7 @@ export default function App() {
             {error}
           </div>
         )}
+        {batchArchiveErrorNotice}
 
         <Dashboard />
 
@@ -341,6 +423,12 @@ export default function App() {
           // 重試不是第四種刷新時機——它重跑的就是那一次失敗的刷新，而且
           // 走同一條佇列，不會與進行中的那一輪搶資料源。
           onRetry={(id) => void enqueue([id])}
+          selectMode={selectMode}
+          selectedIds={selectedIds}
+          onToggleSelect={toggleSelected}
+          onEnterSelectMode={enterSelectMode}
+          onCancelSelectMode={cancelSelectMode}
+          onConfirmBatchArchive={() => void confirmBatchArchive()}
         />
       </div>
     );
@@ -348,7 +436,10 @@ export default function App() {
 
   // 桌面版（#72／#75 現狀，MVP-v2／#77 手機施工不動它）：頂部釘選功能列
   // （含建立入口）→ 建立表單 → 劇本卡片清單。
-  const library = (
+  // TR6（#91）：垃圾桶開著時，左側面板內容整個換成 `TrashView`（需求方
+  // 核准版面 D2），右側 `detail-pane` 邏輯完全不動——跟現有「選劇本
+  // 切換右側」的機制平行、不衝突。
+  const library = showTrash ? <TrashView /> : (
     <div className="screen">
       <Toolbar
         count={rows.length}
@@ -359,6 +450,7 @@ export default function App() {
         onToggleCreate={() => setShowCreateForm((v) => !v)}
         // 時機三：功能列刷新鈕
         onRefresh={() => void reloadAndRefresh()}
+        onOpenTrash={() => { window.location.hash = trashHash(); }}
       />
 
       {error && (
@@ -366,6 +458,7 @@ export default function App() {
           {error}
         </div>
       )}
+      {batchArchiveErrorNotice}
 
       {/* #75：建立劇本收攏成工作區正上方的入口——跟著工具列一起釘住，
           不再是掛在全部劇本卡片下面、永遠展開、得捲過整份清單才看得到
@@ -390,6 +483,12 @@ export default function App() {
         // #72：桌面版清單裡標出目前選中的劇本；手機版此時本來就不會
         // 渲染這份清單（上面已整頁替換掉），傳了也無害。
         selectedId={detailId}
+        selectMode={selectMode}
+        selectedIds={selectedIds}
+        onToggleSelect={toggleSelected}
+        onEnterSelectMode={enterSelectMode}
+        onCancelSelectMode={cancelSelectMode}
+        onConfirmBatchArchive={() => void confirmBatchArchive()}
       />
     </div>
   );
