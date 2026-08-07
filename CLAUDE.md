@@ -14,23 +14,22 @@
 
 ## 專案紀錄區
 
-> **現況總覽（2026-08-06 稍晚，寫給接手的新 session 看）**：T1–T12、QA1
-> 系列、D1、FB3、FB5、V1–V10、QA-v2（#67–#75）**全數完結，已 merge
-> 回 master**（PR #76，merge commit `5ff95c5`）。緊接著同一天內
-> `/to-spec` 發佈 **MVP V2 手機版劇本庫**（spec #77，源自
-> `docs/Mvp-v2.md`）、`/to-tickets` 拆成 **M1a–M6**（#78–#84，依賴順序
-> M1a→M1b→M2→M4→M3→M5→M6，全數 `ready-for-agent`），**M1a–M6 全數
-> 完成**（見下方「MVP V2 手機版劇本庫」小節），**全部票做完才開 PR**
-> 的門檻已達成，PR 待開。production 網址
-> `option-chaser.vercel.app` 現在對應的仍是 React/FastAPI/Neon 架構，
-> 本輪只加代表候選欄位＋手機版首頁重排，未動引擎與桌面版。中間穿插的
+> **現況總覽（2026-08-07，寫給接手的新 session 看）**：T1–T12、QA1
+> 系列、D1、FB3、FB5、V1–V10、QA-v2（#67–#75）、**MVP V2 手機版劇本庫
+> （M1a–M6，#78–#84）全數完結，已 merge 回 master**（PR #85，squash
+> merge commit `8b52f41`，需求方真機驗收通過後 2026-08-07 merge）。
+> production 網址 `option-chaser.vercel.app` 現在對應代表候選＋燈號＋
+> Compact Row＋捲動還原全部到位的手機版劇本庫。緊接著同一天開始
+> **Trash 語意＋利率顯示修正**這一輪（見下方「Trash 語意＋利率顯示
+> 修正」小節）：需求方三點反饋（Archive 改真正 Trash、利率 fallback
+> 顯示語意）、`/to-tickets` 拆成 RC1＋TR1–TR6，施工中。中間穿插的
 > 「目前狀態（2026-08-02）」等舊日期標頭是歷史留存，**以此段與下面
-> 「MVP V2 手機版劇本庫」小節末尾的紀錄為準，不要被舊標頭誤導**。
-> 下一階段候選：**多使用者隔離** [#59]（未標 `ready-for-agent`，需求方
-> 裁示後才開工）、外觀優化（QA-v2 需求方已明確裁示延後，待主動重啟）、
-> Dashboard 佔位區實際內容（跨劇本比較功能確定後另開票，spec #77
-> Out of Scope）。環境操作細節（venv／本地 Postgres／容器倒退修法／
-> 部署網址）見檔案最底下「## 環境」一節，已同步更新。
+> 對應小節末尾的紀錄為準，不要被舊標頭誤導**。下一階段候選：
+> **多使用者隔離** [#59]（未標 `ready-for-agent`，需求方裁示後才開工）、
+> 外觀優化（QA-v2 需求方已明確裁示延後，待主動重啟）、Dashboard 佔位區
+> 實際內容（跨劇本比較功能確定後另開票，spec #77 Out of Scope）。
+> 環境操作細節（venv／本地 Postgres／容器倒退修法／部署網址）見檔案
+> 最底下「## 環境」一節，已同步更新。
 
 ### 已完成
 
@@ -1069,7 +1068,7 @@ FastAPI／Neon 新架構取代 Streamlit）。桌面 20/80 版面（#72）
 > production connectivity probe 排在候選選出之後、由 #74 執行，
 > 且**探針結果可以推翻研究的排序**。
 
-### MVP V2 手機版劇本庫（spec #77，2026-08-06 完結，PR 待開）
+### MVP V2 手機版劇本庫（spec #77，2026-08-06 完結，PR #85 已 merge）
 
 **背景**：QA-v2（#72）完成桌面 20/80 master/detail 時，需求方明確裁示
 「手機版面稍後另行定義，本輪不做」。`docs/Mvp-v2.md` 就是那份定義，
