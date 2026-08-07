@@ -253,7 +253,7 @@ export default function CompactScenarioList({
         <div className="batch-action-bar">
           <span className="caption">已選 {selectedIds.size} 個</span>
           <button
-            className="batch-pill"
+            className="batch-pill danger"
             disabled={selectedIds.size === 0}
             onClick={onConfirmBatchArchive}
           >

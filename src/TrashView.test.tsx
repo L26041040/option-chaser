@@ -184,3 +184,168 @@ describe("單筆永久刪除與二次確認（TR4／#92）", () => {
     expect(screen.getByRole("alertdialog")).toBeInTheDocument();
   });
 });
+
+describe("批次選取（TR5／#93）", () => {
+  it("勾選兩筆，「還原已選」變成可按，顯示已選數量", async () => {
+    mockFetch(async () => [row({ id: "a", symbol: "TLT" }),
+                            row({ id: "b", symbol: "SPY" })]);
+    render(<TrashView onRestore={vi.fn()} />);
+    await screen.findByText("TLT");
+    expect(screen.getByRole("button", { name: "還原已選" })).toBeDisabled();
+
+    await userEvent.click(screen.getByRole("button", { name: "選取 TLT 2028-05" }));
+    await userEvent.click(screen.getByRole("button", { name: "選取 SPY 2028-05" }));
+
+    expect(screen.getByText("已選 2 個")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "還原已選" })).not.toBeDisabled();
+  });
+
+  it("全選／取消全選切換所有列", async () => {
+    mockFetch(async () => [row({ id: "a", symbol: "TLT" }),
+                            row({ id: "b", symbol: "SPY" })]);
+    render(<TrashView onRestore={vi.fn()} />);
+    await screen.findByText("TLT");
+
+    await userEvent.click(screen.getByRole("button", { name: "全選" }));
+    expect(screen.getByText("已選 2 個")).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "取消全選" }));
+    expect(screen.getByText("已選 0 個")).toBeInTheDocument();
+  });
+});
+
+describe("批次還原（TR5／#93）", () => {
+  it("批次還原成功：兩筆都從垃圾桶消失，各自交回 onRestore", async () => {
+    const onRestore = vi.fn();
+    mockFetch(async (url) => {
+      if (url.endsWith("/restore")) return { restored: true };
+      return [row({ id: "a", symbol: "TLT" }), row({ id: "b", symbol: "SPY" })];
+    });
+    render(<TrashView onRestore={onRestore} />);
+    await screen.findByText("TLT");
+
+    await userEvent.click(screen.getByRole("button", { name: "全選" }));
+    await userEvent.click(screen.getByRole("button", { name: "還原已選" }));
+
+    await waitFor(() => {
+      expect(screen.queryByText("TLT")).not.toBeInTheDocument();
+      expect(screen.queryByText("SPY")).not.toBeInTheDocument();
+    });
+    expect(onRestore).toHaveBeenCalledTimes(2);
+  });
+
+  it("批次還原部分失敗：失敗的留著並說明原因，成功的照樣消失", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+      if (url.endsWith("/a/restore")) {
+        return { ok: false, status: 404, json: async () => ({ detail: "劇本不存在" }) };
+      }
+      if (url.endsWith("/restore")) {
+        return { ok: true, status: 200, json: async () => ({ restored: true }) };
+      }
+      return { ok: true, status: 200,
+               json: async () => [row({ id: "a", symbol: "TLT" }),
+                                  row({ id: "b", symbol: "SPY" })] };
+    }));
+    render(<TrashView onRestore={vi.fn()} />);
+    await screen.findByText("TLT");
+
+    await userEvent.click(screen.getByRole("button", { name: "全選" }));
+    await userEvent.click(screen.getByRole("button", { name: "還原已選" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("劇本不存在");
+    expect(screen.getByText("TLT")).toBeInTheDocument();          // 失敗的留著
+    expect(screen.queryByText("SPY")).not.toBeInTheDocument();    // 成功的消失
+  });
+});
+
+describe("批次永久刪除（TR5／#93）", () => {
+  it("確認畫面列出全部待刪劇本的 ticker＋target month 與總數", async () => {
+    mockFetch(async () => [row({ id: "a", symbol: "TLT", target_month: "2028-05" }),
+                            row({ id: "b", symbol: "SPY", target_month: "2028-06" })]);
+    render(<TrashView onRestore={vi.fn()} />);
+    await screen.findByText("TLT");
+
+    await userEvent.click(screen.getByRole("button", { name: "全選" }));
+    await userEvent.click(screen.getByRole("button", { name: "永久刪除已選" }));
+
+    const sheet = await screen.findByRole("alertdialog");
+    expect(sheet).toHaveTextContent("2");
+    expect(sheet).toHaveTextContent("TLT");
+    expect(sheet).toHaveTextContent("2028-05");
+    expect(sheet).toHaveTextContent("SPY");
+    expect(sheet).toHaveTextContent("2028-06");
+  });
+
+  it("取消批次刪除確認：不呼叫刪除，兩筆都還在", async () => {
+    const spy = mockFetch(async (_url, init) => {
+      if (init?.method === "DELETE") throw new Error("不該被呼叫");
+      return [row({ id: "a", symbol: "TLT" }), row({ id: "b", symbol: "SPY" })];
+    });
+    render(<TrashView onRestore={vi.fn()} />);
+    await screen.findByText("TLT");
+    await userEvent.click(screen.getByRole("button", { name: "全選" }));
+    await userEvent.click(screen.getByRole("button", { name: "永久刪除已選" }));
+    await screen.findByRole("alertdialog");
+
+    await userEvent.click(
+      within(screen.getByRole("alertdialog")).getByRole("button", { name: "取消" }));
+
+    expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+    expect(screen.getByText("TLT")).toBeInTheDocument();
+    expect(screen.getByText("SPY")).toBeInTheDocument();
+    expect(spy.mock.calls.some(([, init]) =>
+      (init as RequestInit | undefined)?.method === "DELETE")).toBe(false);
+  });
+
+  it("確認後依序刪除，成功者從清單消失", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (_url: string, init?: RequestInit) => {
+      if (init?.method === "DELETE") {
+        return { ok: true, status: 204, json: async () => undefined };
+      }
+      return { ok: true, status: 200,
+               json: async () => [row({ id: "a", symbol: "TLT" }),
+                                  row({ id: "b", symbol: "SPY" })] };
+    }));
+    render(<TrashView onRestore={vi.fn()} />);
+    await screen.findByText("TLT");
+    await userEvent.click(screen.getByRole("button", { name: "全選" }));
+    await userEvent.click(screen.getByRole("button", { name: "永久刪除已選" }));
+    await screen.findByRole("alertdialog");
+
+    await userEvent.click(
+      within(screen.getByRole("alertdialog")).getByRole("button", { name: "永久刪除" }));
+
+    await waitFor(() => {
+      expect(screen.queryByText("TLT")).not.toBeInTheDocument();
+      expect(screen.queryByText("SPY")).not.toBeInTheDocument();
+    });
+    expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+  });
+
+  it("批次刪除部分失敗：失敗的留著並說明原因，成功的照樣消失", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
+      if (init?.method === "DELETE" && url.endsWith("/a")) {
+        return { ok: false, status: 409,
+                 json: async () => ({ detail: "劇本尚未移入垃圾桶" }) };
+      }
+      if (init?.method === "DELETE") {
+        return { ok: true, status: 204, json: async () => undefined };
+      }
+      return { ok: true, status: 200,
+               json: async () => [row({ id: "a", symbol: "TLT" }),
+                                  row({ id: "b", symbol: "SPY" })] };
+    }));
+    render(<TrashView onRestore={vi.fn()} />);
+    await screen.findByText("TLT");
+    await userEvent.click(screen.getByRole("button", { name: "全選" }));
+    await userEvent.click(screen.getByRole("button", { name: "永久刪除已選" }));
+    await screen.findByRole("alertdialog");
+
+    await userEvent.click(
+      within(screen.getByRole("alertdialog")).getByRole("button", { name: "永久刪除" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("劇本尚未移入垃圾桶");
+    expect(screen.getByText("TLT")).toBeInTheDocument();          // 失敗的留著
+    expect(screen.queryByText("SPY")).not.toBeInTheDocument();    // 成功的消失
+  });
+});

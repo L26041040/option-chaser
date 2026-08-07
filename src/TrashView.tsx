@@ -9,6 +9,12 @@
  *
  * 列表本身用既有 `GET /api/scenarios?include_archived=true` 篩出已
  * 封存者（`api.ts` 的 `listArchivedScenarios()`），不新增後端端點。
+ *
+ * TR5（#93）：這個畫面本身就是「管理垃圾桶」的畫面，不像主清單
+ * （`ScenarioList.tsx`／`CompactScenarioList.tsx`）預設是瀏覽模式、
+ * 得先點圖示才進批次選取——這裡每列的 checkbox 與單筆「還原」「永久
+ * 刪除」鈕本來就同時存在，不必切換模式：反正這個畫面裡的列本來就沒有
+ * 「點下去進詳細頁」這件事，checkbox 不會跟其他手勢搶戲。
  */
 import { useEffect, useState } from "react";
 
@@ -18,12 +24,12 @@ import {
   restoreScenario,
   type ScenarioSummary,
 } from "./api";
+import { CheckIcon } from "./icons";
 import { formatArchivedAt, formatReturn, money } from "./scenarios";
 
 /**
- * 永久刪除二次確認畫面（TR4／#92）：單筆時明確列出該劇本的 ticker＋
- * target month（例如「永久刪除 TLT · 2028-05？」），不是複數句型——
- * 批量版本（TR5）另外走複數清單＋總數的措辭，不共用這個元件。
+ * 永久刪除二次確認畫面：單筆時明確列出該劇本的 ticker＋target month
+ * （例如「永久刪除 TLT · 2028-05？」），不是複數句型。
  */
 function ConfirmDeleteOne({
   row,
@@ -57,6 +63,48 @@ function ConfirmDeleteOne({
   );
 }
 
+/**
+ * 批量永久刪除二次確認（TR5／#93）：列出全部待刪劇本＋數量，跟單筆
+ * 版本刻意用不同措辭（票上明文要求：批量時列出所有待刪劇本／數量，
+ * 不是單筆句型的複數化）。
+ */
+function ConfirmDeleteBatch({
+  rows,
+  busy,
+  onCancel,
+  onConfirm,
+}: {
+  rows: ScenarioSummary[];
+  busy: boolean;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  return (
+    <div className="confirm-overlay">
+      <div className="confirm-sheet" role="alertdialog" aria-modal="true"
+           aria-labelledby="confirm-batch-delete-heading">
+        <h2 id="confirm-batch-delete-heading">
+          永久刪除 {rows.length} 個劇本？
+        </h2>
+        <p>此動作無法復原，將一併刪除這些劇本的分析歷史與原始報價快照。</p>
+        <ul className="confirm-list">
+          {rows.map((row) => (
+            <li key={row.id}>{row.symbol} · {row.target_month}</li>
+          ))}
+        </ul>
+        <div className="confirm-actions">
+          <button className="text-button" onClick={onCancel} disabled={busy}>
+            取消
+          </button>
+          <button className="batch-pill" onClick={onConfirm} disabled={busy}>
+            {busy ? "刪除中……" : "永久刪除"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function TrashView({
   onRestore,
 }: {
@@ -70,6 +118,12 @@ export default function TrashView({
   const [error, setError] = useState<string | null>(null);
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
+
+  // ---------- 批次選取（TR5／#93） ----------
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [confirmBatchDelete, setConfirmBatchDelete] = useState(false);
+  const [batchBusy, setBatchBusy] = useState(false);
+  const [batchErrors, setBatchErrors] = useState<Record<string, string>>({});
 
   useEffect(() => {
     let cancelled = false;
@@ -111,13 +165,80 @@ export default function TrashView({
     }
   }
 
+  function toggleSelected(id: string) {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }
+
+  function toggleSelectAll() {
+    const all = rows ?? [];
+    setSelectedIds((prev) =>
+      prev.size === all.length ? new Set() : new Set(all.map((r) => r.id)));
+  }
+
+  /** 批量還原：沿用主清單批次移入垃圾桶（TR6／#91）同一種序列佇列
+   *  模式——依序呼叫既有單筆端點，個別失敗不中斷其餘筆，成功者立刻
+   *  從清單移除並交回 `onRestore`，失敗者留著並在下方列出原因。 */
+  async function batchRestore() {
+    const targets = (rows ?? []).filter((r) => selectedIds.has(r.id));
+    setBatchBusy(true);
+    const errors: Record<string, string> = {};
+    for (const row of targets) {
+      try {
+        await restoreScenario(row.id);
+        setRows((prev) => (prev ?? []).filter((r) => r.id !== row.id));
+        setSelectedIds((prev) => {
+          const next = new Set(prev);
+          next.delete(row.id);
+          return next;
+        });
+        onRestore(row);
+      } catch (e) {
+        errors[row.id] = e instanceof Error ? e.message : String(e);
+      }
+    }
+    setBatchErrors(errors);
+    setBatchBusy(false);
+  }
+
+  async function batchDelete() {
+    const targets = (rows ?? []).filter((r) => selectedIds.has(r.id));
+    setBatchBusy(true);
+    const errors: Record<string, string> = {};
+    for (const row of targets) {
+      try {
+        await deleteScenario(row.id);
+        setRows((prev) => (prev ?? []).filter((r) => r.id !== row.id));
+        setSelectedIds((prev) => {
+          const next = new Set(prev);
+          next.delete(row.id);
+          return next;
+        });
+      } catch (e) {
+        errors[row.id] = e instanceof Error ? e.message : String(e);
+      }
+    }
+    setBatchErrors(errors);
+    setBatchBusy(false);
+    setConfirmBatchDelete(false);
+  }
+
   const toDelete = rows?.find((r) => r.id === confirmDeleteId) ?? null;
+  const batchDeleteTargets = (rows ?? []).filter((r) => selectedIds.has(r.id));
 
   return (
     <div className="screen">
       <div className="toolbar" style={{ paddingBottom: 0 }}>
         <div className="toolbar-row">
           <a className="nav-back" href="#/">‹ 劇本庫</a>
+          {rows !== null && rows.length > 0 && (
+            <button className="text-button" onClick={toggleSelectAll}>
+              {selectedIds.size === rows.length ? "取消全選" : "全選"}
+            </button>
+          )}
         </div>
         <div className="toolbar-row">
           <h1 className="toolbar-title">垃圾桶</h1>
@@ -134,6 +255,15 @@ export default function TrashView({
         </div>
       )}
 
+      {Object.keys(batchErrors).length > 0 && (
+        <div className="notice error" role="alert">
+          {Object.entries(batchErrors).map(([id, message]) => {
+            const who = rows?.find((r) => r.id === id)?.symbol ?? id;
+            return <p key={id} className="caption">{who}：{message}</p>;
+          })}
+        </div>
+      )}
+
       {rows !== null && rows.length === 0 && !error && (
         <p className="caption">垃圾桶是空的。</p>
       )}
@@ -143,10 +273,22 @@ export default function TrashView({
           {rows.map((row) => {
             const who = `${row.symbol} ${row.target_month}`;
             const busy = busyId === row.id;
+            const checked = selectedIds.has(row.id);
             return (
               <li key={row.id} className="card">
                 <div className="row">
-                  <span className="row-value big">{row.symbol}</span>
+                  <span className="symbol-group">
+                    <button
+                      type="button"
+                      className={checked ? "row-checkbox checked" : "row-checkbox"}
+                      onClick={() => toggleSelected(row.id)}
+                      aria-pressed={checked}
+                      aria-label={`選取 ${who}`}
+                    >
+                      {checked && <CheckIcon />}
+                    </button>
+                    <span className="row-value big">{row.symbol}</span>
+                  </span>
                   <span className="tag">垃圾桶</span>
                 </div>
                 <div className="row">
@@ -189,12 +331,43 @@ export default function TrashView({
         </ul>
       )}
 
+      {rows !== null && rows.length > 0 && (
+        <div className="batch-action-bar">
+          <span className="caption">已選 {selectedIds.size} 個</span>
+          <div style={{ display: "flex", gap: "8px" }}>
+            <button
+              className="batch-pill"
+              disabled={selectedIds.size === 0 || batchBusy}
+              onClick={() => void batchRestore()}
+            >
+              還原已選
+            </button>
+            <button
+              className="batch-pill danger"
+              disabled={selectedIds.size === 0 || batchBusy}
+              onClick={() => setConfirmBatchDelete(true)}
+            >
+              永久刪除已選
+            </button>
+          </div>
+        </div>
+      )}
+
       {toDelete && (
         <ConfirmDeleteOne
           row={toDelete}
           busy={busyId === toDelete.id}
           onCancel={() => setConfirmDeleteId(null)}
           onConfirm={() => void confirmDelete(toDelete)}
+        />
+      )}
+
+      {confirmBatchDelete && (
+        <ConfirmDeleteBatch
+          rows={batchDeleteTargets}
+          busy={batchBusy}
+          onCancel={() => setConfirmBatchDelete(false)}
+          onConfirm={() => void batchDelete()}
         />
       )}
     </div>

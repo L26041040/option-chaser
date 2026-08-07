@@ -491,9 +491,17 @@ body {
   font-size: 15px;
   font-weight: 700;
   padding: 8px 16px;
-  background: var(--red);
+  background: var(--tint);
   color: #fff;
   cursor: pointer;
+}
+
+/* 破壞性動作（移入垃圾桶、永久刪除）用紅——跟卡片上負收益率、危險
+   文字鈕同一個色彩慣例；還原這類可逆動作維持預設 tint 色，兩種批次
+   動作放在同一列時顏色本身就能分辨輕重（TR5／#93：「還原已選」／
+   「永久刪除已選」並排時尤其需要這個區分）。 */
+.batch-pill.danger {
+  background: var(--red);
 }
 
 .batch-pill:active {
