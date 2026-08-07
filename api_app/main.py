@@ -367,6 +367,28 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
                                event="SCENARIO_RESTORED", payload={})
         return {"restored": True}
 
+    @app.delete("/api/scenarios/{scenario_id}", status_code=204)
+    def delete_scenario(scenario_id: str) -> Response:
+        """TR3（#90）：永久刪除，cascade 清掉 results／snapshots／events
+        （`Storage.delete_scenario` 的職責）。安全閘門：只允許刪除已
+        封存的劇本，未封存的回 409——永久刪除必須先進垃圾桶，不能一步
+        到位刪掉還在使用中的劇本。不留刪除事件——劇本本身連同它的
+        events 一起沒了，繼續保留一筆「它被刪除了」的事件沒有意義。
+        批量刪除不在這裡：前端沿用既有序列佇列模式，對選中的每個劇本
+        各打一次這個端點，不新增後端批次端點。
+        """
+        sc = _require(scenario_id)
+        # 純字串 detail（不是 `_fail()` 的 `{stage, message}` 分層形狀）：
+        # 這不是刷新／分析的失敗分層概念（那組字彙專屬 `RefreshFailure`／
+        # `failureLabel`），是這個端點自己的前置條件——沿用
+        # `create_scenario` 對驗證錯誤同樣用純字串 `detail` 的既有寫法。
+        if sc.archived_at is None:
+            raise HTTPException(
+                status_code=409,
+                detail=f"劇本尚未移入垃圾桶，無法永久刪除：{scenario_id}")
+        _db().delete_scenario(scenario_id)
+        return Response(status_code=204)
+
     @app.post("/api/scenarios/{scenario_id}/refresh")
     def refresh_scenario(scenario_id: str) -> dict:
         """單劇本刷新（V4／#52）：抓鏈→分析→結果與原始快照入庫。

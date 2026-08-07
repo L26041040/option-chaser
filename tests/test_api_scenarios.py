@@ -139,6 +139,50 @@ def test_restored_scenario_can_be_refreshed_again():
     assert c.post(f"/api/scenarios/{sc['id']}/refresh").status_code == 200
 
 
+# ---------- 永久刪除（TR3／#90） ----------
+
+def test_deleting_an_archived_scenario_removes_it_entirely():
+    c = _client()
+    sc = _create(c)
+    c.post(f"/api/scenarios/{sc['id']}/archive").raise_for_status()
+
+    resp = c.delete(f"/api/scenarios/{sc['id']}")
+
+    assert resp.status_code in (200, 204)
+    assert c.get(f"/api/scenarios/{sc['id']}").status_code == 404
+
+
+def test_deleting_an_unarchived_scenario_is_rejected():
+    """安全閘門：永久刪除必須先進垃圾桶，不能一步到位刪掉還在使用中
+    的劇本。"""
+    c = _client()
+    sc = _create(c)
+
+    resp = c.delete(f"/api/scenarios/{sc['id']}")
+
+    assert resp.status_code == 409
+    # 拒絕不能悄悄地也把資料弄丟
+    assert c.get(f"/api/scenarios/{sc['id']}").status_code == 200
+
+
+def test_deleting_an_unknown_scenario_is_404():
+    assert _client().delete("/api/scenarios/nope").status_code == 404
+
+
+def test_deleting_removes_results_snapshots_and_events():
+    c = _client()
+    sc = _create(c)
+    c.post(f"/api/scenarios/{sc['id']}/refresh").raise_for_status()
+    c.post(f"/api/scenarios/{sc['id']}/archive").raise_for_status()
+
+    c.delete(f"/api/scenarios/{sc['id']}").raise_for_status()
+
+    # 劇本本身已經不存在，這些端點對它而言等同「劇本不存在」（404），
+    # 不是回一份空清單——資料真的沒了，不是還在但查不到內容。
+    assert c.get(f"/api/scenarios/{sc['id']}/results").status_code == 404
+    assert c.get(f"/api/scenarios/{sc['id']}/events").status_code == 404
+
+
 # ---------- 分析與結果歷史 ----------
 #
 # 刷新端點本身（回傳形狀、入庫、失敗分層）在 `test_api_refresh.py`（V4／#52）。

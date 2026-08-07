@@ -367,6 +367,10 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
       typeof detail === "string" ? detail : `請求失敗（HTTP ${resp.status}）`;
     throw new ApiError(message);
   }
+  // TR3（#90）：永久刪除回 204 No Content——沒有主體可解析，`.json()`
+  // 對空字串會直接炸掉。204 一律沒有主體（HTTP 語意），呼叫端此時
+  // 期待的型別是 `void`，回 `undefined` 即可。
+  if (resp.status === 204) return undefined as T;
   return resp.json();
 }
 
@@ -417,6 +421,17 @@ export function restoreScenario(id: string): Promise<{ restored: boolean }> {
     `/api/scenarios/${encodeURIComponent(id)}/restore`,
     { method: "POST" },
   );
+}
+
+/**
+ * TR3（#90）：垃圾桶單筆永久刪除——連同 results／snapshots／events 一併
+ * cascade 清除，不是軟刪除。後端安全閘門只允許刪除已封存的劇本（未封存
+ * 回 409），呼叫端（TR4／#92）在此之前一定要先經過二次確認畫面，不能
+ * 讓使用者一鍵誤刪。批量同 `restoreScenario`，前端序列佇列逐一呼叫。
+ */
+export function deleteScenario(id: string): Promise<void> {
+  return request<void>(`/api/scenarios/${encodeURIComponent(id)}`,
+    { method: "DELETE" });
 }
 
 /** V8（#56）：原始資料表（當次快照）的合約列——逐筆合約完整原樣，

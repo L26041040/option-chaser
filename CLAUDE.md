@@ -1193,9 +1193,20 @@ RC1／TR1／TR2／TR3／TR6 可平行開工，TR4 被 TR2＋TR3 擋，TR5 被 TR
   `api.ts` 新增 `restoreScenario()` 供 TR4 消費。後端＋9 條，全套
   686 條（後端）／292 條（前端）全綠
 
+- **TR3**（#90）— 後端永久刪除：`Storage` port 新增 `delete_scenario`，
+  安全閘門只允許刪除已封存的劇本（未封存或不存在皆回 `False`、資料
+  原封不動）；真的刪除時 cascade 清 results／snapshots／events（不
+  依賴 FK，`postgres.py` 三張表各自一次 `DELETE`，沿用專案既有「不用
+  FK 約束」慣例）。API 新增 `DELETE /api/scenarios/{id}`：未封存回
+  409（純字串 `detail`，不是 `_fail()` 的分層形狀——這不是刷新／分析
+  失敗分層概念）、成功回 204、不留刪除事件（劇本連同它的 events 一起
+  沒了）。前端 `api.ts` 新增 `deleteScenario()`；`request<T>()` 補上
+  204 No Content 分支（不呼叫 `.json()`，回 `undefined`）。批量同
+  TR2，前端序列佇列逐一呼叫。後端＋8 條，全套 698 條（後端）／292 條
+  （前端）全綠
+
 **待辦（可平行開工，除 TR4／TR5 有依賴）**：
 
-- TR3（#90）— 後端永久刪除（單筆＋批量，含 cascade）
 - TR6（#91）— 前端：主清單批次移入垃圾桶＋單筆刪除圖示化
 - TR4（#92）— 前端：垃圾桶畫面單筆操作（被 TR2／TR3 擋）
 - TR5（#93）— 前端：垃圾桶畫面批次操作（被 TR4 擋）

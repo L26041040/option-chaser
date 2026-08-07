@@ -130,6 +130,56 @@ def test_restored_scenario_keeps_its_results(storage):
     assert storage.latest_result("s1").view == {"a": 1}
 
 
+# ---------- 永久刪除（TR3／#90） ----------
+#
+# 語意上只允許刪除已封存的劇本——這是安全閘門，永久刪除必須先進垃圾桶，
+# 不能一步到位刪掉還在使用中的劇本。cascade 清掉 results／snapshots／
+# events，不依賴 FK `ON DELETE CASCADE`（沿用專案既有「不用 FK 約束，
+# 應用層自己保證一致性」的設計慣例）。
+
+def test_deleting_an_archived_scenario_removes_it_and_everything_under_it(storage):
+    storage.create_scenario(_scenario())
+    storage.save_result(ResultRecord("s1", "2026-08-01T12:00:00+00:00", {"a": 1}))
+    storage.save_snapshot("s1", "2026-08-01T12:00:00+00:00", {"contracts": []})
+    storage.append_event(ts="2026-08-01T00:00:00+00:00", scenario_id="s1",
+                         event="SCENARIO_CREATED", payload={})
+    storage.archive_scenario("s1", ts="2026-08-05T00:00:00+00:00")
+
+    assert storage.delete_scenario("s1") is True
+
+    assert storage.get_scenario("s1") is None
+    assert [s.id for s in storage.list_scenarios(include_archived=True)] == []
+    assert storage.result_history("s1") == []
+    assert storage.get_snapshot("s1", "2026-08-01T12:00:00+00:00") is None
+    assert storage.list_events(scenario_id="s1") == []
+
+
+def test_deleting_an_unarchived_scenario_is_rejected_and_keeps_everything(storage):
+    storage.create_scenario(_scenario())
+    storage.save_result(ResultRecord("s1", "2026-08-01T12:00:00+00:00", {"a": 1}))
+
+    assert storage.delete_scenario("s1") is False
+
+    assert storage.get_scenario("s1") is not None
+    assert storage.latest_result("s1").view == {"a": 1}
+
+
+def test_deleting_a_missing_scenario_reports_false(storage):
+    assert storage.delete_scenario("nope") is False
+
+
+def test_deleting_does_not_touch_other_scenarios(storage):
+    storage.create_scenario(_scenario("s1"))
+    storage.create_scenario(_scenario("s2"))
+    storage.save_result(ResultRecord("s2", "2026-08-01T12:00:00+00:00", {"b": 1}))
+    storage.archive_scenario("s1", ts="2026-08-05T00:00:00+00:00")
+
+    storage.delete_scenario("s1")
+
+    assert storage.get_scenario("s2") is not None
+    assert storage.latest_result("s2").view == {"b": 1}
+
+
 # ---------- 結果與歷史 ----------
 
 def test_latest_result_is_the_newest_by_analyzed_at(storage):

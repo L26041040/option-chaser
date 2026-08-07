@@ -50,6 +50,17 @@ class MemoryStorage:
         self._scenarios[scenario_id] = sc.restored()
         return True
 
+    def delete_scenario(self, scenario_id: str) -> bool:
+        sc = self._scenarios.get(scenario_id)
+        if sc is None or sc.archived_at is None:
+            return False
+        del self._scenarios[scenario_id]
+        self._results.pop(scenario_id, None)
+        self._snapshots = {k: v for k, v in self._snapshots.items()
+                           if k[0] != scenario_id}
+        self._events = [e for e in self._events if e["scenario_id"] != scenario_id]
+        return True
+
     # ---------- 結果 ----------
 
     def save_result(self, rec: ResultRecord) -> None:
