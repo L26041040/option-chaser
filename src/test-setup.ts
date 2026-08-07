@@ -27,3 +27,8 @@ if (!window.matchMedia) {
   window.matchMedia = ((query: string) =>
     fakeMediaQueryList(false, query)) as unknown as typeof window.matchMedia;
 }
+
+// jsdom 的 `window.scrollTo` 只是個會在 stderr 噴 "Not implemented" 警告
+// 的樁——手機版返回劇本庫還原捲動位置（MVP-v2／#77、#83）會呼叫它。
+// 換成真的無副作用函式，雜訊才不會蓋掉測試輸出裡真正的錯誤。
+window.scrollTo = (() => {}) as typeof window.scrollTo;

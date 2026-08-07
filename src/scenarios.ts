@@ -5,25 +5,75 @@
  * 與詳細頁主圖同一口徑），`days_to_anchor` 也是後端依「該月第三個星期五」
  * 與紐約日曆算好的。本檔只決定「怎麼排、怎麼寫」。
  */
-import type { FailureStage, ScenarioSummary } from "./api";
+import type {
+  FailureStage,
+  RefreshFailure,
+  RepresentativeCandidate,
+  ScenarioSummary,
+} from "./api";
 
 /**
- * 依最新收益率降序；還沒跑過分析的（`best_return === null`）一律排最後。
+ * 依最新收益率降序；還沒跑過分析的（`best_return === null`）一律排最後；
+ * 紅燈（`expired`，目標月已過完）一律沉底，排在所有綠燈與黃燈之後——
+ * MVP-v2（#77、#80）補上這條鍵，紅燈組內部仍沿用同一套報酬率排序。
+ *
+ * 理由：已經不會再更新的劇本若因報酬率高就佔住高密度清單的頂端，是
+ * 主動誤導（見附錄 A：舊 Streamlit 版 `workspace.sort_cards()` 早就有
+ * 這條規則，React 版直到本輪才補上）。
  *
  * 沒跑過 ≠ 收益率 0：拿 0 代入排序會讓一個未知的劇本插在虧損劇本前面，
  * 憑空得到一個它沒有的名次。同為 null 者維持傳入順序（`sort` 穩定），
  * 也就是後端的 created_at 順序。
- *
- * 與 Streamlit 版 `workspace.sort_cards()` 的差異：那邊還會把紅燈
- * （刷新失敗）沉底，而燈號屬 V4（#52）刷新與失敗分層的範圍，本票沒有。
  */
 export function sortScenarios(rows: ScenarioSummary[]): ScenarioSummary[] {
   return [...rows].sort((a, b) => {
+    if (a.expired !== b.expired) return a.expired ? 1 : -1;
     if (a.best_return === null && b.best_return === null) return 0;
     if (a.best_return === null) return 1;
     if (b.best_return === null) return -1;
     return b.best_return - a.best_return;
   });
+}
+
+/**
+ * 劇本級燈號（MVP-v2／#77、#80，沿用附錄 A12 語意）：紅 > 黃 > 綠，
+ * 一張卡只有一個燈。
+ *
+ * - 紅：目標月已過完（`expired`）——不會再刷新了，優先於其他一切狀態。
+ * - 黃：本次刷新失敗（`failure` 存在）——沿用上一份成功快照的數字與
+ *   時間；「舊資料」標記與燈號並存，各自說各自的事（久沒刷新 ≠ 刷新
+ *   失敗）。
+ * - 綠：其餘，含尚未分析（附錄 A10.2：綠燈＋「—」，不是失敗）。
+ *
+ * 判準與資料全部沿用既有欄位（`row.expired`、呼叫端的 `failures` map），
+ * 不新增任何端點。
+ */
+export type Signal = "red" | "yellow" | "green";
+
+export function scenarioSignal(
+  row: ScenarioSummary,
+  failure: RefreshFailure | undefined,
+): Signal {
+  if (row.expired) return "red";
+  if (failure) return "yellow";
+  return "green";
+}
+
+/**
+ * 燈號的可及文字——只給螢幕閱讀器／`title`，顏色本身不能是唯一的資訊
+ * 管道。刻意加「狀態：」前綴、且不逐字複述卡片上既有的「已過期，不再
+ * 刷新」標籤或失敗提示——那兩處各自的完整說明還在原本的位置，這裡只是
+ * 讓燈號本身也讀得出來，兩者疊在一起念也不會變成同一句話重複兩次。
+ */
+export function signalLabel(signal: Signal): string {
+  switch (signal) {
+    case "red":
+      return "狀態：已過期";
+    case "yellow":
+      return "狀態：刷新失敗";
+    case "green":
+      return "狀態：正常";
+  }
 }
 
 /** 收益率；沒跑過就是「—」，不是 0%。 */
@@ -83,6 +133,35 @@ export function isStale(iso: string | null, now: Date): boolean {
   const at = Date.parse(iso);
   if (Number.isNaN(at)) return true;
   return now.getTime() - at > STALE_AFTER_HOURS * 3_600_000;
+}
+
+/**
+ * 代表候選的買賣履約價——「買 118 / 賣 122」（MVP-v2／#77、#78），沿用
+ * 詳細頁 `detail.candidateTitle` 既有的「買腿在前、賣腿在後」慣例，同一個
+ * 表達方式在清單卡片與詳細頁不該長得不一樣。單腳候選只有一隻腿，寫成
+ * 「買 118」——硬湊一個賣腿會憑空生出一隻不存在的腿。
+ *
+ * `null`（尚未分析、或該期零合格候選）說「—」，不是編一組假的候選。
+ */
+export function formatRepresentativeLegs(
+  rep: RepresentativeCandidate | null,
+): string {
+  if (rep === null) return "—";
+  const [buy, sell] = rep.legs;
+  if (!buy) return "—";
+  return sell ? `買 ${buy.strike} / 賣 ${sell.strike}` : `買 ${buy.strike}`;
+}
+
+/**
+ * 代表候選的實際到期日（MVP-v2／#77、#78）——與劇本的「目標年月」是
+ * 兩件不同的事：前者是引擎在候選池裡選中的那一天，後者是使用者當初
+ * 設定的假設。兩者格式故意不同（這裡原樣印 `YYYY-MM-DD`、目標年月是
+ * `YYYY-MM`），降低卡片上被讀錯成同一件事的機會。
+ */
+export function formatRepresentativeExpiry(
+  rep: RepresentativeCandidate | null,
+): string {
+  return rep === null ? "—" : rep.expiry;
 }
 
 /**

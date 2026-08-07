@@ -6,8 +6,12 @@ import {
   STALE_AFTER_HOURS,
   failureLabel,
   formatDaysLeft,
+  formatRepresentativeExpiry,
+  formatRepresentativeLegs,
   formatReturn,
   isStale,
+  scenarioSignal,
+  signalLabel,
   sortScenarios,
 } from "./scenarios";
 
@@ -49,6 +53,63 @@ describe("劇本清單排序", () => {
   });
 });
 
+describe("紅燈沉底（MVP-v2／#77、#80）", () => {
+  it("已過期的劇本一律排在未過期的之後，即使報酬率更高", () => {
+    const sorted = sortScenarios([
+      { ...row("1", 9.9), expired: true },
+      { ...row("2", 0.1), expired: false },
+    ]);
+    expect(sorted.map((r) => r.id)).toEqual(["2", "1"]);
+  });
+
+  it("多個紅燈劇本之間仍依報酬率降序，不是隨意順序", () => {
+    const sorted = sortScenarios([
+      { ...row("1", 0.5), expired: true },
+      { ...row("2", 2.0), expired: false },
+      { ...row("3", 3.0), expired: true },
+    ]);
+    expect(sorted.map((r) => r.id)).toEqual(["2", "3", "1"]);
+  });
+
+  it("紅燈組內未跑過的一樣沉到紅燈組的最後", () => {
+    const sorted = sortScenarios([
+      { ...row("1", null), expired: true },
+      { ...row("2", 1.0), expired: true },
+      { ...row("3", 5.0), expired: false },
+    ]);
+    expect(sorted.map((r) => r.id)).toEqual(["3", "2", "1"]);
+  });
+});
+
+describe("劇本級燈號（MVP-v2／#77、#80，附錄 A12）", () => {
+  it("目標月已過完 → 紅燈，優先於是否有刷新失敗", () => {
+    const expired = { ...row("1", 1.0), expired: true };
+    expect(scenarioSignal(expired, undefined)).toBe("red");
+    expect(scenarioSignal(
+      expired, { stage: "fetch", message: "抓不到" })).toBe("red");
+  });
+
+  it("本次刷新失敗且未過期 → 黃燈", () => {
+    const active = { ...row("1", 1.0), expired: false };
+    expect(scenarioSignal(
+      active, { stage: "fetch", message: "抓不到" })).toBe("yellow");
+  });
+
+  it("其餘（含尚未分析）→ 綠燈", () => {
+    const active = { ...row("1", 1.0), expired: false };
+    expect(scenarioSignal(active, undefined)).toBe("green");
+    const neverRun = { ...row("1", null), expired: false };
+    expect(scenarioSignal(neverRun, undefined)).toBe("green");
+  });
+
+  it("三種燈號各有一句不同的可及文字，不是空字串", () => {
+    const labels = [signalLabel("red"), signalLabel("yellow"),
+                    signalLabel("green")];
+    expect(new Set(labels).size).toBe(3);
+    labels.forEach((l) => expect(l).toBeTruthy());
+  });
+});
+
 describe("卡片格式", () => {
   it("沒跑過顯示「—」而不是 0%", () => {
     expect(formatReturn(null)).toBe("—");
@@ -63,6 +124,39 @@ describe("卡片格式", () => {
     expect(formatDaysLeft(12)).toBe("12 天");
     expect(formatDaysLeft(0)).toBe("0 天");
     expect(formatDaysLeft(-5)).toBe("已過期 5 天");
+  });
+});
+
+describe("代表候選格式（MVP-v2／#77、#78）", () => {
+  it("價差寫成「買 X / 賣 Y」，買腿在前、賣腿在後", () => {
+    expect(formatRepresentativeLegs({
+      strategy: "bull-call-spread",
+      legs: [{ strike: 118, option_type: "call" },
+            { strike: 122, option_type: "call" }],
+      expiry: "2026-09-18", baseline_return: 1.5,
+    })).toBe("買 118 / 賣 122");
+  });
+
+  it("單腳只寫「買 X」，不憑空生出賣腿", () => {
+    expect(formatRepresentativeLegs({
+      strategy: "long-call",
+      legs: [{ strike: 118, option_type: "call" }],
+      expiry: "2026-09-18", baseline_return: 0.3,
+    })).toBe("買 118");
+  });
+
+  it("沒有代表候選時說「—」，不是編一組假的候選", () => {
+    expect(formatRepresentativeLegs(null)).toBe("—");
+  });
+
+  it("實際到期日原樣顯示，沒有代表候選時說「—」", () => {
+    expect(formatRepresentativeExpiry({
+      strategy: "bull-call-spread",
+      legs: [{ strike: 118, option_type: "call" },
+            { strike: 122, option_type: "call" }],
+      expiry: "2026-09-18", baseline_return: 1.5,
+    })).toBe("2026-09-18");
+    expect(formatRepresentativeExpiry(null)).toBe("—");
   });
 });
 

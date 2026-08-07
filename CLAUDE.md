@@ -14,6 +14,24 @@
 
 ## 專案紀錄區
 
+> **現況總覽（2026-08-06 稍晚，寫給接手的新 session 看）**：T1–T12、QA1
+> 系列、D1、FB3、FB5、V1–V10、QA-v2（#67–#75）**全數完結，已 merge
+> 回 master**（PR #76，merge commit `5ff95c5`）。緊接著同一天內
+> `/to-spec` 發佈 **MVP V2 手機版劇本庫**（spec #77，源自
+> `docs/Mvp-v2.md`）、`/to-tickets` 拆成 **M1a–M6**（#78–#84，依賴順序
+> M1a→M1b→M2→M4→M3→M5→M6，全數 `ready-for-agent`），**M1a–M6 全數
+> 完成**（見下方「MVP V2 手機版劇本庫」小節），**全部票做完才開 PR**
+> 的門檻已達成，PR 待開。production 網址
+> `option-chaser.vercel.app` 現在對應的仍是 React/FastAPI/Neon 架構，
+> 本輪只加代表候選欄位＋手機版首頁重排，未動引擎與桌面版。中間穿插的
+> 「目前狀態（2026-08-02）」等舊日期標頭是歷史留存，**以此段與下面
+> 「MVP V2 手機版劇本庫」小節末尾的紀錄為準，不要被舊標頭誤導**。
+> 下一階段候選：**多使用者隔離** [#59]（未標 `ready-for-agent`，需求方
+> 裁示後才開工）、外觀優化（QA-v2 需求方已明確裁示延後，待主動重啟）、
+> Dashboard 佔位區實際內容（跨劇本比較功能確定後另開票，spec #77
+> Out of Scope）。環境操作細節（venv／本地 Postgres／容器倒退修法／
+> 部署網址）見檔案最底下「## 環境」一節，已同步更新。
+
 ### 已完成
 
 - **Step 0** — Heatmap 價格範圍 1.10 → 1.15/0.85（commit `5e6b1bb`）
@@ -809,7 +827,18 @@ V9（#57）／V10（#58）亦已完結——全部票做完。** 下一步不是
 - 進階區舊 cache 以資料正確性優先，**刷新後收合重取可接受**
 
 **票與依賴**：QA-v2 這一輪（#67–#75）全數完成，**全部票做完才開 PR**
-的門檻已達成，等需求方實機驗收。
+的門檻已達成。
+
+**2026-08-06 已 merge 回 master（PR #76，merge commit `5ff95c5`）**：
+需求方明確要求直接 merge（非等全套 `docs/v10-acceptance-checklist.md`
+實機驗收後才開）。merge 前跑過的把關：後端全套 654 條測試（記憶體
+假體＋本機真實 PostgreSQL 16 雙軌）全綠、前端型別檢查與 254 條
+Vitest 單元測試全綠、`npm run build` 生產建置成功；PR body 附完整
+test plan。merge 後 production 網址（`option-chaser.vercel.app`，
+對應 master 分支）會自動觸發重新部署，套用本輪全部改動（React／
+FastAPI／Neon 新架構取代 Streamlit）。桌面 20/80 版面（#72）
+先前的「驗收失敗」是需求方誤在 production 網址（當時仍是舊版 master）
+測試、非工作分支 preview——已排除，非真缺陷。
 
 **已完成**：
 
@@ -1040,6 +1069,82 @@ V9（#57）／V10（#58）亦已完結——全部票做完。** 下一步不是
 > production connectivity probe 排在候選選出之後、由 #74 執行，
 > 且**探針結果可以推翻研究的排序**。
 
+### MVP V2 手機版劇本庫（spec #77，2026-08-06 完結，PR 待開）
+
+**背景**：QA-v2（#72）完成桌面 20/80 master/detail 時，需求方明確裁示
+「手機版面稍後另行定義，本輪不做」。`docs/Mvp-v2.md` 就是那份定義，
+`/to-spec` 據此發佈 spec #77，`/to-tickets` 拆成 M1a–M6（#78–#84）。
+
+**兩條硬紅線**（需求方 2026-08-06 裁示，全程遵守，每張票都有對應回歸
+測試）：
+1. 桌面版（#72／#75）已經是對的，本輪不准弄壞——每張票都在真的
+   Postgres＋Desktop／iPhone 兩個 Playwright 專案全綠後才收工，Desktop
+   案例一條都沒被放寬。
+2. 代表候選不得藉本輪擴張 ranking universe——`representative_candidate`
+   只讀 baseline 期 `expiry_groups` 的 rows（與 `best_return` 同一次
+   走訪），不讀 `comparison`；`test_representative_candidate_ignores_
+   comparison_and_stays_baseline_scoped` 專門釘住這點，
+   `test_representative_candidate_baseline_return_always_matches_
+   best_return` 釘住兩者數值恆等。
+
+**已完成**：
+
+- **M1a**（#78，commit `1f63d4a`）— 代表候選：引擎純函式＋儲存落盤＋
+  API 序列化。新增 `store.representative_candidate(view)`，
+  `best_return()` 改由它導出而非各走各的一次走訪；`ResultRecord`／
+  `ResultSummary` 與 `results` 表新增同名欄位（建表與遷移分兩批送，
+  沿用 V3 當年 `best_return` 欄位的教訓）；`latest_summaries()` 加選
+  新欄位、仍不撈 view。純前端不動，這張票的可驗證交付在 HTTP 層。
+- **M1b**（#79，commit `8237a6f`）— 前端型別與卡片顯示（沿用現有大
+  卡片版式）。`ScenarioSummary` 新增 `representative_candidate` 欄位，
+  現有卡片補上策略／買賣履約價／實際到期日兩列，不做密度改造。
+- **M2**（#80，commit `21aa346`）— 劇本級燈號＋紅燈沉底。純前端
+  `scenarioSignal()`（紅＝過期、黃＝本次刷新失敗、綠＝其餘，紅＞黃＞
+  綠）與 `sortScenarios()` 新增紅燈沉底鍵，沿用附錄 A12 語意、舊
+  Streamlit 版早有這條排序規則，React 版直到這票才補上。
+- **M4**（#81，commit `7d85592`）— 手機首頁三段版面：Dashboard 佔位
+  （低調可見、不放任何數字）＋就地展開的新增劇本入口（`CreateEntry`，
+  沿用 #75「面板一律掛著只切換可見度」的教訓）。桌面工具列
+  （`Toolbar`）新增 `showCreateButton` 判別聯合型別，手機傳 `false`
+  不重複顯示建立入口，桌面維持 #75 現狀。
+- **M3**（#82，commit `8366a24`）— Compact Scenario Row：三層版式與
+  密度改造。新增 `CompactScenarioList.tsx`，手機版專屬的高密度三層
+  compact row（標的/目標/年月/燈號、報酬率/策略/履約價、到期日/距
+  到期/更新時間），取代大卡片；封存鈕疊在右下角不佔行高。桌面版
+  `ScenarioList.tsx` 完全不動、兩者是獨立元件不共用渲染路徑。
+- **M5**（#83，commit `e13d402`）— 返回還原捲動位置與劇本庫狀態。
+  `App.tsx` 新增 `scroll` 監聽（記錄）＋`useLayoutEffect`（還原）兩個
+  手機專屬 effect；新增表單開合狀態本就因為 App 元件不會因導覽重新
+  掛載而自然維持，本票補上回歸測試釘住這個既有前提。
+- **M6**（#84，本節）— Regression、真機驗收清單、PR gate。全套測試
+  （後端 667 條、前端 288 條 Vitest、Desktop＋iPhone 22 條 Playwright、
+  typecheck、build）全綠；兩條硬紅線的回歸測試逐條確認存在且通過
+  （見上）；真機驗收清單見下；PR 待需求方核准後開。
+
+**真機驗收清單**（比照既有 A10.5 窄 viewport 驗收慣例，本輪 CI 只能
+驗結構與數值，視覺／觸感留給需求方在真機上確認）：
+
+1. 手機首頁由上而下：Dashboard 佔位區（只有標題與一句規劃中說明，
+   沒有任何數字）→「＋ 新增劇本」收合列 → 高密度劇本清單。
+2. 點「＋ 新增劇本」在原位置向下展開表單，不跳頁、不彈出 modal；
+   打一半誤觸收合鈕，內容不會被清空。
+3. 每個劇本列一眼看得出：標的、目標價、目標年月、燈號（紅／黃／
+   綠）、報酬率、策略、買賣履約價、實際到期日、距到期天數、最後
+   更新時間——一個手機螢幕能掃過至少 4 個劇本，不必先往下捲。
+4. 報酬率旁邊的策略與履約價，跟改版前卡片上顯示的數字對得起來
+   （同一個劇本、同一次刷新，兩邊看到的百分比應該一致）。
+5. 目標月已過完的劇本排在清單最後、亮紅燈；本次刷新失敗但仍有舊
+   結果的劇本亮黃燈、標「舊資料」；其餘綠燈。
+6. 點任一劇本進詳細頁，用返回鍵或返回連結回到劇本庫，畫面停在原本
+   捲動的位置，不必重新往下找剛剛那一列；若展開過建立表單，返回後
+   仍是展開的。
+7. 封存入口在 compact row 上找得到（角落的小字），點下去仍能封存。
+8. 桌面寬度（≥1100px）行為與 QA-v2 完全一致：左側劇本庫常駐＋右側
+   詳細頁、建立入口仍在工具列頂部，肉眼看不出這輪改動的痕跡。
+
+> 沿用規則：反饋要先逐點跟需求方確認打算怎麼改、為什麼，確認完才
+> 開票施工；`/implement` 進行中沒遇到需人類裁示的事就不停。
+
 ### 下一版 MVP（本輪明確不施工，已立案）
 
 - **多使用者隔離** [#59]（2026-08-04 需求方裁示）：現在 API 有可寫入的
@@ -1091,15 +1196,19 @@ V9（#57）／V10（#58）亦已完結——全部票做完。** 下一步不是
 
 ## 環境
 
-- **⚠ 容器會不定時倒退回較早的提交**（2026-08-04 已發生兩次，連 `.venv`
-  套件與本地 Postgres 資料目錄一起消失）。發現 `git log` 對不上時：
-  `git stash -u`（若有未提交的工作）→
+- **⚠ 容器會不定時倒退回較早的提交**（多次發生，連 `.venv` 套件與本地
+  Postgres 資料目錄一起消失，且 `git status` 會誤報「已是最新」）。
+  發現 `git log` 對不上 `git log origin/<branch>` 時，**不要用
+  `git merge --ff-only`**（本地 HEAD 是壞掉的舊提交，不是落後的乾淨
+  祖先，`--ff-only` 常常直接失敗）——正確作法：
   `git fetch origin claude/implement-tfm9oa` →
-  `git merge --ff-only origin/claude/implement-tfm9oa` → `git stash pop`。
-  **所有工作都推到 origin，倒退不會掉東西**。接著跑
-  `sh scripts/dev_env.sh` 重建測試環境——不重建的後果是**靜默**的：
-  儲存契約測試的 Postgres 那一半會被跳過，全套仍是綠的卻少驗一個實作
-  （正常全套是 582 條；掉到 5xx 出頭就是 Postgres 那組沒跑）
+  `git reset --hard origin/claude/implement-tfm9oa`（safe：這個 bug
+  模式下本地從來沒有真正未提交的工作，只有 HEAD 指錯）。
+  **所有工作都推到 origin，倒退不會掉東西**。接著重建環境（見下方
+  venv／Postgres 兩條）——不重建的後果是**靜默**的：儲存契約測試的
+  Postgres 那一半會被跳過，全套仍是綠的卻少驗一個實作（正常全套是
+  **667 條**，MVP-v2／M1a 起的數字；掉到 6xx 前段或更少，且明顯變快，
+  就是 Postgres 那組沒跑）
 - 跑測試：`OC_TEST_DATABASE_URL="postgresql://postgres@127.0.0.1:55432/octest"
   PYTHONPATH=. .venv/bin/python -m pytest`
   （`pyproject.toml` 的 `packages.find` 只收 `option_chaser*`，`api_app`
@@ -1109,16 +1218,41 @@ V9（#57）／V10（#58）亦已完結——全部票做完。** 下一步不是
   （**`api` extra 必裝**：HTTP API 是後端唯一測試接縫，缺 httpx 會讓
   契約測試整組紅燈——這是刻意的，不要改成靜默跳過。**`yf` extra**＝
   備援資料源 yfinance，已移出核心依賴以免 pandas/numpy 進 serverless
-  函式——pyproject 的核心依賴就是 lambda 實際安裝的清單）
+  函式——pyproject 的核心依賴就是 lambda 實際安裝的清單。**`gui` extra
+  已隨 V10 cutover 移除**（Streamlit 已刪除），裝 `.[gui,api]` 只會
+  跳警告、不是錯誤，但代表指令抄到舊版，改用 `.[api,yf]`）
+- **本地 Postgres 起不來時**（`initdb`／`pg_ctl` 直接以 root 執行會報
+  `cannot be run as root`）：容器內建 Postgres 16（`/usr/lib/postgresql/16/bin/`）
+  要用內建的 `postgres` 系統使用者跑，完整流程：
+  ```
+  mkdir -p /tmp/oc_pgdata /tmp/oc_pgrun
+  chown -R postgres:postgres /tmp/oc_pgdata /tmp/oc_pgrun
+  su postgres -c "/usr/lib/postgresql/16/bin/initdb -D /tmp/oc_pgdata --auth=trust"
+  su postgres -c "/usr/lib/postgresql/16/bin/pg_ctl -D /tmp/oc_pgdata -o '-k /tmp/oc_pgrun -p 55432' -l /tmp/pg.log start"
+  /usr/lib/postgresql/16/bin/psql -h 127.0.0.1 -p 55432 -U postgres -c "CREATE DATABASE octest"
+  ```
+  （`scripts/dev_env.sh` 應該已經包了這套邏輯——上面是它失敗時的手動
+  備援步驟）
 - 前端（V1／#48 起）：`npm install`；`npm run typecheck`／`npm test`
   （Vitest 元件測試）／`npm run e2e`（Playwright，手機 viewport）／
   `npm run build`。沙箱有預裝 Chromium 時用
   `PLAYWRIGHT_CHROMIUM_PATH=/opt/pw-browsers/chromium npm run e2e`
 - 部署與契約樣本：見 `docs/deploy-vercel.md`
-- **部署網址只認這一個**（每次 push 都會自動產生一個一次性 preview
-  網址，那些不要收藏）：
-  `https://option-chaser-git-claude-imp-aef368-ofriedoriceo-5352s-projects.vercel.app`
-  ——分支別名，永遠指向工作分支的最新一次部署。
-  master 的 production 網址在 V10 merge 前必定是 ERROR（master 還沒有
-  前端程式碼），屬預期，不必理會
-- 全套測試現為全綠（舊紀錄提到的 5 個 streamlit 版本漂移失敗已隨 T2 改寫消失）。
+- **部署網址（2026-08-06 起，PR #76 merge 後）**：
+  - **production**：`https://option-chaser.vercel.app`（對應 master，
+    push 到 master 會自動重新部署）——V10 merge 前這裡必定是 ERROR
+    的舊限制**已解除**，現在應該是正常運作的新架構
+  - **工作分支 preview**：`https://option-chaser-git-claude-imp-aef368-ofriedoriceo-5352s-projects.vercel.app`
+    ——分支別名，永遠指向 `claude/implement-tfm9oa` 最新一次部署。
+    每次 push 也會另外產生一次性 preview 網址，那些不用收藏
+  - 兩者預設都開了 Vercel Authentication（SSO）保護 preview 部署；
+    2026-08-06 曾在自動化驗證過程中被意外關閉又重新開啟過一次
+    （已確認復原為 `prod_deployment_urls_and_all_previews`），日後若
+    需要調整以 Vercel 後台 Project Settings → Deployment Protection
+    為準
+  - **待清理**：`option-chaser-rate-probe`（#74 探測用的獨立臨時
+    Vercel 專案，跟正式 `option-chaser` 專案分開）已無用途，目前沒有
+    工具可以刪除 Vercel 專案，需求方之後可自行在後台刪除
+- 全套測試現為全綠（後端 667 條、前端 288 條 Vitest、Desktop＋iPhone
+  共 22 條 Playwright；舊紀錄提到的 5 個 streamlit 版本漂移失敗已隨
+  T2 改寫消失）。MVP-v2（M1a–M6）起的最新數字。

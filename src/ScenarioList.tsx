@@ -1,8 +1,10 @@
 /**
  * 劇本清單（V3／#51；V4／#52 加上新鮮度與失敗分層）。
  *
- * 每張卡片顯示標的／目標價／目標年月／最新收益率／距到期天數／資料時間，
- * 並有封存入口（軟刪除：清單消失、資料與紀錄保留）。
+ * 每張卡片顯示標的／目標價／目標年月／最新收益率／代表候選的策略與買賣
+ * 履約價／實際到期日／距到期天數／資料時間（MVP-v2／#77、#78 補上策略／
+ * 履約價／實際到期日三項——沒有它們，卡片上的報酬率無法被判讀出自哪一個
+ * option combination），並有封存入口（軟刪除：清單消失、資料與紀錄保留）。
  *
  * V4 的兩個新東西都貼在卡片上，而不是全域一顆燈：資料太舊標「舊資料」，
  * 刷新失敗說明是哪一段失敗、旁邊就是重試入口——失敗是**單一劇本**的事，
@@ -11,14 +13,19 @@
  * 排序與格式化都在 `./scenarios` 的純函式裡，這裡只負責畫。
  */
 import type { RefreshFailure, ScenarioSummary } from "./api";
+import { strategyLabel } from "./detail";
 import { detailHash } from "./route";
 import {
   failureLabel,
   formatAnalyzedAt,
   formatDaysLeft,
+  formatRepresentativeExpiry,
+  formatRepresentativeLegs,
   formatReturn,
   isStale,
   money,
+  scenarioSignal,
+  signalLabel,
   sortScenarios,
 } from "./scenarios";
 
@@ -40,6 +47,8 @@ function ScenarioCard({
   const ran = row.best_return !== null;
   const stale = isStale(row.latest_analyzed_at, now);
   const who = `${row.symbol} ${row.target_month}`;
+  // MVP-v2（#77、#80）：劇本級燈號，紅＞黃＞綠、一張卡只有一個燈。
+  const signal = scenarioSignal(row, failure);
   return (
     <li className={selected ? "card selected" : "card"}>
       {/* 整張卡就是進詳細頁的入口。用真的 `<a>` 而不是掛 onClick 的
@@ -53,7 +62,19 @@ function ScenarioCard({
       <a className="card-tap" href={detailHash(row.id)}
          aria-current={selected ? "page" : undefined}>
         <div className="row">
-          <span className="row-value big">{row.symbol}</span>
+          {/* 燈號跟標的分成同一個 flex item：`.row` 是 space-between，
+              燈號要黏在標的旁邊，不能被撐到卡片最左邊自成一欄。顏色不是
+              唯一的資訊管道：`title` 給滑鼠停留時看得到的文字、`sr-only`
+              給螢幕閱讀器；圓點本身 `aria-hidden`。 */}
+          <span className="symbol-group">
+            <span
+              className={`signal-dot signal-${signal}`}
+              title={signalLabel(signal)}
+              aria-hidden="true"
+            />
+            <span className="sr-only">{signalLabel(signal)}</span>
+            <span className="row-value big">{row.symbol}</span>
+          </span>
           <span className="metric-group">
             <span
               className={
@@ -73,6 +94,29 @@ function ScenarioCard({
           <span className="row-label">目標</span>
           <span className="row-value">
             {money(row.target_price)}　{row.target_month}
+          </span>
+        </div>
+
+        {/* MVP-v2（#77、#78）：報酬率旁邊必須看得出是哪一組 option
+            combination 算出來的——策略＋買賣履約價；`null` 代表尚未
+            分析或該期零合格候選，說「—」而不是編一組假的候選。 */}
+        <div className="row">
+          <span className="row-label">策略</span>
+          <span className="row-value">
+            {row.representative_candidate
+              ? `${strategyLabel(row.representative_candidate.strategy)}　` +
+                formatRepresentativeLegs(row.representative_candidate)
+              : "—"}
+          </span>
+        </div>
+
+        {/* 實際到期日——刻意跟上面「目標」那一列的目標年月分開一列、
+            格式也不同（`YYYY-MM-DD` vs `YYYY-MM`），這是這張卡最容易被
+            讀錯成同一件事的地方。 */}
+        <div className="row">
+          <span className="row-label">到期日</span>
+          <span className="row-value">
+            {formatRepresentativeExpiry(row.representative_candidate)}
           </span>
         </div>
 

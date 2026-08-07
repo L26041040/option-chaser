@@ -1,7 +1,18 @@
 /**
  * 主畫面（V3／#51）：劇本庫。V4（#52）在此接上刷新編排。
  *
- * 頂部釘選功能列 → 劇本卡片清單（依最新收益率排序）→ 建立表單。
+ * 桌面與手機是兩套 responsive layout（MVP-v2／#77 §8），共用同一份資料
+ * 與狀態、各自的版面結構：
+ * - 桌面（#72／#75）：頂部釘選功能列（含建立入口）→ 建立表單 →
+ *   劇本卡片清單（`ScenarioList`，大卡片版式），左側常駐、右側是詳細頁。
+ * - 手機（#81／#82）：Dashboard 佔位 → 就地展開的新增劇本入口 → 高密度
+ *   劇本清單（`CompactScenarioList`，三層 compact row，依最新收益率
+ *   排序、紅燈沉底），點卡片整頁替換成詳細頁。
+ *
+ * 兩套清單元件刻意分開、不共用同一個渲染路徑：`ScenarioList.tsx`
+ * 只服務桌面、`CompactScenarioList.tsx` 只服務手機——這樣手機版的密度
+ * 改動在結構上不可能牽動桌面版現狀（spec #77 硬紅線一）。
+ *
  * 點卡片進詳細頁（`ScenarioDetail`，V5／#53）；V1 的一次性分析畫面
  * 隨詳細頁落地一併移除，候選池診斷搬進詳細頁。
  *
@@ -12,9 +23,19 @@
  * 這一層只做編排與狀態：排序、格式化在 `./scenarios`，驗證在
  * `./CreateForm`，金融計算全部在後端引擎。
  */
-import { useCallback, useEffect, useId, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
 
+import CompactScenarioList from "./CompactScenarioList";
+import CreateEntry from "./CreateEntry";
 import CreateForm, { type DraftScenario } from "./CreateForm";
+import Dashboard from "./Dashboard";
 import ScenarioDetail from "./ScenarioDetail";
 import ScenarioList from "./ScenarioList";
 import Toolbar, { type RefreshProgress } from "./Toolbar";
@@ -175,6 +196,29 @@ export default function App() {
   const detailId = scenarioIdFromHash(hash);
   const isDesktop = useIsDesktop();
 
+  // 手機版返回劇本庫要停在原本的捲動位置（MVP-v2／#77、#83）：手機版
+  // 進詳細頁時劇本庫整個卸載（#72 既有行為，桌面版兩欄常駐、不會卸載、
+  // 不需要這段），瀏覽器不會自己記得「回來後要停在哪」。
+  //
+  // 記錄與還原分成兩個獨立 effect：記錄用一般 `useEffect` 掛
+  // `scroll` 監聽器，只在「手機版、劇本庫本身在畫面上」時才掛著，隨時
+  // 把最新捲動位置寫進 ref；還原用 `useLayoutEffect`（在瀏覽器繪製前
+  // 同步跑），在剛從詳細頁回到劇本庫的那一刻把捲動位置調回去，避免先
+  // 畫出「捲到頂」的一瞬間再跳過去的閃爍。
+  const libraryScrollY = useRef(0);
+  useEffect(() => {
+    if (isDesktop || detailId !== null) return;
+    const onScroll = () => {
+      libraryScrollY.current = window.scrollY;
+    };
+    window.addEventListener("scroll", onScroll, { passive: true });
+    return () => window.removeEventListener("scroll", onScroll);
+  }, [isDesktop, detailId]);
+  useLayoutEffect(() => {
+    if (isDesktop || detailId !== null) return;
+    window.scrollTo(0, libraryScrollY.current);
+  }, [isDesktop, detailId]);
+
   // 新鮮度會隨時間變舊，所以「現在」要自己走。只在渲染時取一次的話，
   // 頁面開著放到隔天，那份 12 小時前的資料永遠不會長出「舊資料」標記
   // ——而那正是最需要它的情況。門檻是 12 小時，5 分鐘一跳綽綽有餘。
@@ -249,11 +293,67 @@ export default function App() {
     return <ScenarioDetail {...detailProps} />;
   }
 
+  if (!isDesktop) {
+    // 手機首頁（MVP-v2／#77、#81、#82）：Dashboard 佔位 → 就地展開的
+    // 新增劇本入口 → 高密度劇本庫，由上而下三段。與桌面版（下方
+    // `library`）是兩個獨立的 JSX 分支，不共用同一段標記——這樣手機版
+    // 的版面決定不會意外牽動桌面版現狀（#72／#75，spec #77 硬紅線一）。
+    //
+    // 工具列不重複顯示建立入口（`showCreateButton={false}`）：入口已經
+    // 在下面的 `CreateEntry`，兩個地方各放一次只會讓人不確定該點哪個。
+    return (
+      <div className="screen">
+        <Toolbar
+          count={rows.length}
+          progress={progress}
+          showCreateButton={false}
+          // 時機三：功能列刷新鈕
+          onRefresh={() => void reloadAndRefresh()}
+        />
+
+        {error && (
+          <div className="notice error" role="alert">
+            {error}
+          </div>
+        )}
+
+        <Dashboard />
+
+        {/* #81：手機版專屬的建立入口，位置固定在 Dashboard 下方、劇本庫
+            上方——不是桌面版工具列膠囊鈕的重複，是同一個 `showCreateForm`
+            狀態的另一個進入點（切換裝置寬度時開合狀態不會跟著重置）。 */}
+        <CreateEntry
+          open={showCreateForm}
+          panelId={createPanelId}
+          onToggle={() => setShowCreateForm((v) => !v)}
+        >
+          <CreateForm onCreate={create} busy={busy} today={now} />
+        </CreateEntry>
+
+        {/* #82：券商 App 式的高密度三層 compact row，取代大卡片——一個
+            手機螢幕能掃過多個劇本。桌面版沿用下方 `library` 的
+            `ScenarioList`（大卡片版式），不受這裡的密度改動影響。 */}
+        <CompactScenarioList
+          rows={rows}
+          failures={failures}
+          now={now}
+          onArchive={archive}
+          // 重試不是第四種刷新時機——它重跑的就是那一次失敗的刷新，而且
+          // 走同一條佇列，不會與進行中的那一輪搶資料源。
+          onRetry={(id) => void enqueue([id])}
+        />
+      </div>
+    );
+  }
+
+  // 桌面版（#72／#75 現狀，MVP-v2／#77 手機施工不動它）：頂部釘選功能列
+  // （含建立入口）→ 建立表單 → 劇本卡片清單。
   const library = (
     <div className="screen">
       <Toolbar
         count={rows.length}
         progress={progress}
+        showCreateButton
         createOpen={showCreateForm}
         createPanelId={createPanelId}
         onToggleCreate={() => setShowCreateForm((v) => !v)}
@@ -293,8 +393,6 @@ export default function App() {
       />
     </div>
   );
-
-  if (!isDesktop) return library;
 
   // #72：桌面版真正的 master/detail——左側劇本庫常駐，右側是詳細頁；
   // 沒選劇本時右側顯示空狀態，而不是留白或報錯。

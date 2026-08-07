@@ -9,6 +9,21 @@
   "id": "sample-id",
   "latest_analyzed_at": "2026-07-15T21:30:00-04:00",
   "notes": "",
+  "representative_candidate": {
+    "baseline_return": 3.0,
+    "expiry": "2026-09-18",
+    "legs": [
+      {
+        "option_type": "call",
+        "strike": 118.0
+      },
+      {
+        "option_type": "call",
+        "strike": 122.0
+      }
+    ],
+    "strategy": "bull-call-spread"
+  },
   "strategies": [
     "bull-call-spread"
   ],

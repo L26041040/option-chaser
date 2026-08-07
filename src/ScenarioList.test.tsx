@@ -98,6 +98,109 @@ describe("劇本清單", () => {
   });
 });
 
+describe("代表候選（MVP-v2／#77、#78）", () => {
+  it("價差候選顯示策略名稱、買賣履約價與實際到期日", () => {
+    list([row({
+      representative_candidate: {
+        strategy: "bull-call-spread",
+        legs: [{ strike: 118, option_type: "call" },
+              { strike: 122, option_type: "call" }],
+        expiry: "2026-09-18", baseline_return: 1.234,
+      },
+    })]);
+
+    expect(screen.getByText(/Bull Call Spread/)).toBeInTheDocument();
+    expect(screen.getByText(/買 118 \/ 賣 122/)).toBeInTheDocument();
+    expect(screen.getByText("2026-09-18")).toBeInTheDocument();
+  });
+
+  it("單腳候選只顯示一隻買腿，不憑空生出賣腿", () => {
+    list([row({
+      representative_candidate: {
+        strategy: "long-call",
+        legs: [{ strike: 118, option_type: "call" }],
+        expiry: "2026-09-18", baseline_return: 0.29,
+      },
+    })]);
+
+    const card = screen.getByRole("listitem");
+    expect(within(card).getByText(/Long Call/)).toBeInTheDocument();
+    expect(within(card).getByText(/買 118/)).toBeInTheDocument();
+    // 卡片下方另有一句全站通用的口徑說明（含「賣腿 Bid」字樣），
+    // 因此只在這張卡片範圍內斷言沒有賣腿，不對整個畫面找「賣」。
+    expect(within(card).queryByText(/賣/)).not.toBeInTheDocument();
+  });
+
+  it("尚未分析（代表候選為 null）時策略與到期日都顯示「—」，不是假的候選", () => {
+    list([row({ best_return: null, latest_analyzed_at: null,
+                representative_candidate: null })]);
+
+    // 「—」在這張卡上會出現不只一次（收益率、策略、到期日皆是），
+    // 用 getAllByText 確認至少出現，不要求恰好一次。
+    expect(screen.getAllByText("—").length).toBeGreaterThanOrEqual(3);
+  });
+
+  it("卡片同時渲染報酬率與代表候選的履約價，兩者出自同一筆 API 回應", () => {
+    // 後端已保證 best_return 與 representative_candidate.baseline_return
+    // 逐位相同（M1a／#78 的口徑恆等測試）；這裡驗證前端元件把兩者一起
+    // 畫出來，不會為了顯示其中一個而遺漏另一個。
+    list([row({
+      best_return: 3.33,
+      representative_candidate: {
+        strategy: "bull-call-spread",
+        legs: [{ strike: 100, option_type: "call" },
+              { strike: 105, option_type: "call" }],
+        expiry: "2026-09-18", baseline_return: 3.33,
+      },
+    })]);
+
+    expect(screen.getByText("333.0%")).toBeInTheDocument();
+    expect(screen.getByText(/買 100 \/ 賣 105/)).toBeInTheDocument();
+  });
+});
+
+describe("劇本級燈號（MVP-v2／#77、#80）", () => {
+  it("正常劇本是綠燈", () => {
+    list([row({ expired: false })]);
+    expect(screen.getByTitle("狀態：正常")).toBeInTheDocument();
+    expect(document.querySelector(".signal-dot.signal-green")).toBeTruthy();
+  });
+
+  it("目標月已過完是紅燈，即使同時帶著刷新失敗紀錄", () => {
+    list([row({ id: "a", expired: true })], {
+      failures: { a: { stage: "fetch", message: "抓不到" } },
+    });
+    expect(screen.getByTitle("狀態：已過期")).toBeInTheDocument();
+    expect(document.querySelector(".signal-dot.signal-red")).toBeTruthy();
+    expect(document.querySelector(".signal-dot.signal-yellow")).toBeFalsy();
+  });
+
+  it("本次刷新失敗且未過期是黃燈", () => {
+    list([row({ id: "a", expired: false })], {
+      failures: { a: { stage: "fetch", message: "抓不到" } },
+    });
+    expect(screen.getByTitle("狀態：刷新失敗")).toBeInTheDocument();
+    expect(document.querySelector(".signal-dot.signal-yellow")).toBeTruthy();
+  });
+
+  it("每張卡片只有一個燈號圓點", () => {
+    list([row({ id: "a", expired: true })], {
+      failures: { a: { stage: "fetch", message: "抓不到" } },
+    });
+    expect(document.querySelectorAll(".signal-dot").length).toBe(1);
+  });
+
+  it("紅燈的劇本沉到清單最後，即使報酬率最高", () => {
+    list([
+      row({ id: "a", symbol: "AAA", best_return: 9.9, expired: true }),
+      row({ id: "b", symbol: "BBB", best_return: 0.1, expired: false }),
+    ]);
+    const symbols = screen.getAllByRole("listitem")
+      .map((li) => li.querySelector(".big")!.textContent);
+    expect(symbols).toEqual(["BBB", "AAA"]);
+  });
+});
+
 describe("收益率口徑（V4／#52）", () => {
   it("畫面上寫明收益率怎麼算的——最差成交價", () => {
     list([row()]);

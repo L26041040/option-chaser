@@ -130,21 +130,29 @@ def _scenario_json(sc: Scenario) -> dict:
 
 
 def _row_json(sc: Scenario, today: date, *, analyzed_at: str | None,
-              best_return: float | None) -> dict:
+              best_return: float | None,
+              representative_candidate: dict | None) -> dict:
     """劇本在清單上的那一列。建立、列出、刷新三處共用同一個組裝函式——
-    形狀只要差一個欄位，客戶端就得為同一個東西維護兩種型別。"""
+    形狀只要差一個欄位，客戶端就得為同一個東西維護兩種型別。
+
+    `representative_candidate`（MVP-v2／#77、#78）：代表候選的完整身分
+    （策略／各腿履約價與權別／實際到期日），與 `best_return` 同一次走訪
+    （`store.representative_candidate`），數值上不可能對不上。"""
     return {**_scenario_json(sc), **_timing_json(sc, today),
-            "latest_analyzed_at": analyzed_at, "best_return": best_return}
+            "latest_analyzed_at": analyzed_at, "best_return": best_return,
+            "representative_candidate": representative_candidate}
 
 
 def _summary_of(latest: ResultRecord | ResultSummary | None) -> dict:
     """從一筆「最新結果」（`ResultRecord` 或 `ResultSummary`，兩者皆有
-    `analyzed_at`／`best_return`）取出卡片要的兩個欄位；沒有結果
-    （`None`，劇本從未成功分析過）時兩欄皆 `None`——卡片據此顯示「—」，
-    不是 0。列出、詳細頁、刷新（含過期短路）共用同一個形狀，不必各自
-    重寫一次 `if x else None`。"""
+    `analyzed_at`／`best_return`／`representative_candidate`）取出卡片要的
+    欄位；沒有結果（`None`，劇本從未成功分析過）時皆為 `None`——卡片據此
+    顯示「—」與「尚未分析」，不是 0 或一組假的候選。列出、詳細頁、刷新
+    （含過期短路）共用同一個形狀，不必各自重寫一次 `if x else None`。"""
     return {"analyzed_at": latest.analyzed_at if latest else None,
-            "best_return": latest.best_return if latest else None}
+            "best_return": latest.best_return if latest else None,
+            "representative_candidate":
+                latest.representative_candidate if latest else None}
 
 
 def _fail(stage: str, status: int, message: str) -> HTTPException:
@@ -304,9 +312,10 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
             raise HTTPException(status_code=409, detail=str(e)) from e
         _db().append_event(ts=ts, scenario_id=sc.id,
                            event="SCENARIO_CREATED", payload=_scenario_json(sc))
-        # 回傳與清單同一個形狀（含 timing、尚未分析故兩個摘要欄位為 None），
+        # 回傳與清單同一個形狀（含 timing、尚未分析故摘要欄位皆為 None），
         # 客戶端才不必為「剛建立的」與「列出來的」維護兩種型別。
-        return _row_json(sc, ny_today(), analyzed_at=None, best_return=None)
+        return _row_json(sc, ny_today(), analyzed_at=None, best_return=None,
+                         representative_candidate=None)
 
     @app.get("/api/scenarios")
     def list_scenarios(include_archived: bool = False) -> list[dict]:
@@ -365,17 +374,23 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
             target_month=sc.target_month, strategies=sc.strategies,
             best_price=sc.best_price, worst_price=sc.worst_price)
         analyzed_at = view["analyzed_at"]
-        best_return = store.best_return(view)
-        _db().save_result(ResultRecord(scenario_id=sc.id,
-                                       analyzed_at=analyzed_at, view=view,
-                                       best_return=best_return))
+        # 兩者同一次走訪（`store.representative_candidate`），`best_return`
+        # 由它導出——結構上不可能對不上（MVP-v2／#77、#78）。
+        representative_candidate = store.representative_candidate(view)
+        best_return = (representative_candidate["baseline_return"]
+                       if representative_candidate is not None else None)
+        _db().save_result(ResultRecord(
+            scenario_id=sc.id, analyzed_at=analyzed_at, view=view,
+            best_return=best_return,
+            representative_candidate=representative_candidate))
         _db().save_snapshot(sc.id, analyzed_at, snapshot)
         _db().append_event(ts=now_utc_iso(), scenario_id=sc.id,
                            event="ANALYSIS_COMPLETED",
                            payload={"analyzed_at": analyzed_at,
                                     "snapshot_ref": view["snapshot_ref"]})
         return _row_json(sc, today, analyzed_at=analyzed_at,
-                         best_return=best_return)
+                         best_return=best_return,
+                         representative_candidate=representative_candidate)
 
     @app.get("/api/scenarios/{scenario_id}/results")
     def list_results(scenario_id: str) -> list[dict]:

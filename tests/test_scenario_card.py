@@ -23,12 +23,19 @@ SC = Scenario(schema_version=2, id="XYZ-120-202801", symbol="XYZ",
 
 def _view(*, groups=(), baseline_expiry=None):
     """groups: [(expiry, [baseline_return, ...]), ...]——每個到期日一組候選，
-    卡片層只讀得到 `candidate.baseline_return`，其餘欄位無關。"""
+    卡片層只讀得到 `candidate.baseline_return`，其餘欄位無關（`strategy`／
+    `legs` 是 `store.representative_candidate()` 的結構要求——MVP-v2／
+    #77、#78 起 `best_return()` 由它導出——這裡填最小可行值湊齊形狀，
+    值本身與這批測試斷言的東西無關）。"""
     return {
         "baseline_expiry": baseline_expiry,
         "expiry_groups": [
             {"expiry": exp,
-             "rows": [{"candidate": {"baseline_return": r}} for r in returns]}
+             "rows": [{"strategy": "bull-call-spread",
+                      "candidate": {"baseline_return": r,
+                                   "legs": [{"strike": 100.0, "option_type": "call"},
+                                            {"strike": 105.0, "option_type": "call"}]}}
+                     for r in returns]}
             for exp, returns in groups],
     }
 

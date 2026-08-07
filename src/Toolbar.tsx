@@ -1,5 +1,6 @@
 /**
- * 釘選功能列（V3／#51；V4／#52 接上刷新與進度）。
+ * 釘選功能列（V3／#51；V4／#52 接上刷新與進度；MVP-v2／#77、#81 起
+ * 建立入口在手機版搬到 Dashboard 下方，工具列本身不再重複一份）。
  *
  * 刷新是全站三種時機之一（另兩種是開站與建立劇本）。進行中顯示
  * 「第幾個／共幾個」——刷新是逐一跑的，一個劇本一趟網路往返，只給一顆
@@ -11,24 +12,34 @@ export interface RefreshProgress {
   total: number;
 }
 
+/**
+ * `showCreateButton` 與其餘建立相關欄位綁在一起（判別聯合）：桌面版
+ * （#75 現狀）傳 `true` 並帶齊三個欄位；手機版（#81）傳 `false`——
+ * 建立入口已經在 `Dashboard` 下方的 `CreateEntry`，工具列不重複顯示，
+ * 型別上直接讓「傳 false 卻還帶著 createOpen」變成編譯錯誤。
+ */
+type CreateButtonProps =
+  | {
+      showCreateButton: true;
+      /** 建立劇本表單目前是否展開（#75）。 */
+      createOpen: boolean;
+      /** 展開鈕控制的面板 id（#75 code review 跟進），與 `CreateForm.tsx`
+       *  裡 `MonthPicker` 的 `aria-expanded`＋`aria-controls` 同一套寫法。 */
+      createPanelId: string;
+      onToggleCreate: () => void;
+    }
+  | { showCreateButton: false };
+
 export default function Toolbar({
   count,
   progress,
-  createOpen,
-  createPanelId,
   onRefresh,
-  onToggleCreate,
+  ...createProps
 }: {
   count: number;
   progress: RefreshProgress | null;
-  /** 建立劇本表單目前是否展開（#75）。 */
-  createOpen: boolean;
-  /** 展開鈕控制的面板 id（#75 code review 跟進），與 `CreateForm.tsx`
-   *  裡 `MonthPicker` 的 `aria-expanded`＋`aria-controls` 同一套寫法。 */
-  createPanelId: string;
   onRefresh: () => void;
-  onToggleCreate: () => void;
-}) {
+} & CreateButtonProps) {
   const busy = progress !== null;
   return (
     <header className="toolbar">
@@ -38,12 +49,16 @@ export default function Toolbar({
             整寬按鈕——功能列是釘住的，每多一列就少一列看得到卡片。
             #75：建立劇本原本是掛在全部劇本卡片下面、永遠展開的表單，
             捲過長長的清單才看得到；改成跟刷新同一列的膠囊鈕，兩個主要
-            入口位置一致、且跟著這個 `<header>` 一起常駐釘住。 */}
+            入口位置一致、且跟著這個 `<header>` 一起常駐釘住。這是桌面版
+            現狀，手機版（#81）建立入口移到 Dashboard 下方，不重複。 */}
         <div className="toolbar-actions">
-          <button className="pill" onClick={onToggleCreate}
-                 aria-expanded={createOpen} aria-controls={createPanelId}>
-            {createOpen ? "收合建立表單" : "＋ 建立劇本"}
-          </button>
+          {createProps.showCreateButton && (
+            <button className="pill" onClick={createProps.onToggleCreate}
+                   aria-expanded={createProps.createOpen}
+                   aria-controls={createProps.createPanelId}>
+              {createProps.createOpen ? "收合建立表單" : "＋ 建立劇本"}
+            </button>
+          )}
           <button className="pill" onClick={onRefresh} disabled={busy}>
             {busy ? "刷新中……" : "重新整理"}
           </button>

@@ -253,6 +253,72 @@ def test_best_return_is_none_when_baseline_expiry_has_no_candidates():
     assert store.best_return(empty) is None
 
 
+def test_representative_candidate_baseline_return_always_matches_best_return():
+    """MVP-v2（#77、#78）：`best_return()` 由 `representative_candidate()`
+    導出，兩者在結構上不可能對不上——這正是導出關係存在的理由，不是
+    巧合。涵蓋單腳、價差、以及兩者並存三種請求形狀。"""
+    for strategies in (("long-call",), ("bull-call-spread",),
+                       ("long-call", "bull-call-spread")):
+        view = store.serialize_result(_result(strategies), "S", None)
+        rep = store.representative_candidate(view)
+        assert rep is not None
+        assert rep["baseline_return"] == store.best_return(view)
+
+    assert store.representative_candidate(None) is None
+    assert store.best_return(None) is None
+
+
+def test_representative_candidate_is_none_when_baseline_expiry_has_no_candidates():
+    view = store.serialize_result(_result(), "S", None)
+    empty = dict(view, baseline_expiry="2099-12-31")
+    assert store.representative_candidate(empty) is None
+
+
+def test_representative_candidate_ignores_comparison_and_stays_baseline_scoped():
+    """回歸防護（MVP-v2／#77、#78 的口徑鎖死裁示）：`comparison` 是各
+    策略在**全部到期日**裡的全域最佳（`service._comparison`），範圍比
+    baseline 期寬。若代表候選改讀它，等同讓 QA1-03（#30）的舊 bug 在這
+    一層重演。這裡塞一個報酬率高上許多、但屬於別的到期日與策略的
+    `comparison` 項目，確保代表候選不會被它帶走——它只認
+    `expiry_groups` 裡 baseline 期那組 `rows`。
+    """
+    view = store.serialize_result(_result(), "S", None)
+    decoy = [{"strategy": "long-call", "baseline_return": 999.0,
+             "expiry": "1999-01-01", "label": "decoy", "cost": 0.0,
+             "breakeven": 0.0, "max_profit": None}]
+    poisoned = dict(view, comparison=decoy)
+
+    rep = store.representative_candidate(poisoned)
+    assert rep is not None
+    assert rep["baseline_return"] != 999.0
+    assert rep["expiry"] == view["baseline_expiry"]
+    # 加了誘餌以外，其他一切不變——代表候選對 comparison 內容完全無感。
+    assert rep == store.representative_candidate(view)
+
+
+def test_representative_candidate_spread_legs_are_buy_then_sell():
+    view = store.serialize_result(_result(("bull-call-spread",)), "S", None)
+    rep = store.representative_candidate(view)
+    assert rep["strategy"] == "bull-call-spread"
+    assert len(rep["legs"]) == 2
+    buy, sell = rep["legs"]
+    assert buy["option_type"] == sell["option_type"] == "call"
+    # Bull Call Spread：買低履約價、賣高履約價（glossary「BCS」定義）。
+    assert buy["strike"] < sell["strike"]
+
+
+def test_representative_candidate_single_leg_has_exactly_one_leg():
+    """單腳策略（Long Call）只有一隻腿——結構上容得下未來若把單腳納入
+    代表候選競爭時的形狀（本輪 ranking universe 不擴張，這裡只驗證
+    schema 不假設腿數固定，見 spec #77〈Implementation Decisions〉一）。
+    """
+    view = store.serialize_result(_result(("long-call",)), "S", None)
+    rep = store.representative_candidate(view)
+    assert rep["strategy"] == "long-call"
+    assert len(rep["legs"]) == 1
+    assert rep["legs"][0]["option_type"] == "call"
+
+
 def test_raw_snapshot_json_carries_meta_and_every_contract():
     """V8（#56）：原始資料查看區——`_leg()` 是候選腿專用的精簡子集，
     這裡要的是逐筆合約完整原樣，`raw_snapshot_json` 不能重用 `_leg()`。"""

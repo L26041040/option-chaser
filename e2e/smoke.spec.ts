@@ -301,8 +301,9 @@ test("劇本庫：建立 → 出現在清單 → 封存後消失（V3／#51）",
   await expect(page.getByText("劇本庫")).toBeVisible();
   await expect(page.getByText(/還沒有劇本/)).toBeVisible();
 
-  // #75：建立劇本收攏成工具列的頂部入口，預設收合。
-  await page.getByRole("button", { name: "＋ 建立劇本" }).click();
+  // 手機版（MVP-v2／#77、#81）：建立劇本入口在 Dashboard 佔位區下方，
+  // 不在工具列——#75 的工具列頂部入口自此縮限成桌面現狀。預設收合。
+  await page.getByRole("button", { name: "＋ 新增劇本" }).click();
   await page.getByLabel("標的代號").fill("tlt");
   await page.getByLabel("目標價位").fill("120");
   // 年月選擇器（#71）不是原生 input：點欄位就地展開，輸入四碼年份，
@@ -357,15 +358,14 @@ test("功能列捲動時仍釘在頂部、而且按得到（V3／#51 驗收第 1
   expect(box.y).toBeLessThan(2);
   await expect(toolbar).toBeInViewport();
 
-  // 釘住還不夠——捲到底時按下去要真的送出請求，功能列才算能用
+  // 釘住還不夠——捲到底時按下去要真的送出請求，功能列才算能用。
+  // 手機版（MVP-v2／#77、#81）工具列上只剩刷新這一個入口——建立劇本
+  // 移到 Dashboard 下方、不隨工具列釘住，因此不在這條測試斷言範圍內
+  // （#75 的「同一個固定操作列兩個入口」自此是桌面版現狀，見
+  // `desktop.spec.ts`／`App.test.tsx` 對應案例）。
   const before = listCalls;
   await page.getByRole("button", { name: "重新整理" }).click();
   await expect.poll(() => listCalls).toBeGreaterThan(before);
-
-  // #75：建立劇本跟刷新是同一個固定操作列裡的兩個入口——捲到底時
-  // 也要按得下去，不能只驗其中一個。
-  await page.getByRole("button", { name: "＋ 建立劇本" }).click();
-  await expect(page.getByLabel("標的代號")).toBeVisible();
 });
 
 /* ---------- V4（#52）：刷新、進度、失敗指引 ---------- */
@@ -429,6 +429,36 @@ test("刷新失敗說明是哪一段，重試就地重來（V4／#52）", async 
   await expect(page.getByText("抓不到報價（可稍後重試）")).toBeHidden();
 });
 
+test("Compact row 刷新失敗時，封存鈕不會疊在重試鈕上（code review 跟進，MVP-v2／#77、#82）",
+  async ({ page }) => {
+    // 回歸防護：封存鈕原本相對整張卡片定位，`.compact-notice`（失敗
+    // 說明＋重試）撐高卡片後，封存鈕會飄到 notice 的右下角、疊在
+    // 「重試」上，使用者想點重試卻可能誤觸封存。這裡直接量兩顆按鈕
+    // 的真實 bounding box，斷言不重疊——這是唯一能真正抓到這類幾何
+    // 回歸的測法，jsdom 不會算真實版面。
+    await page.route("**/api/scenarios", (route) =>
+      route.fulfill({ json: [pendingRow] }));
+    await page.route("**/api/scenarios/*/refresh", (route) =>
+      route.fulfill({ status: 502, json: { detail: {
+        stage: "fetch", message: "抓不到 TLT 的報價：來源無回應" } } }));
+
+    await page.goto("/");
+    const retry = page.getByRole("button", { name: "重試 TLT 2028-05" });
+    const archive = page.getByRole("button", { name: "封存 TLT 2028-05" });
+    await expect(retry).toBeVisible();
+    await expect(archive).toBeVisible();
+
+    const retryBox = (await retry.boundingBox())!;
+    const archiveBox = (await archive.boundingBox())!;
+    const overlaps = !(
+      retryBox.x + retryBox.width <= archiveBox.x ||
+      archiveBox.x + archiveBox.width <= retryBox.x ||
+      retryBox.y + retryBox.height <= archiveBox.y ||
+      archiveBox.y + archiveBox.height <= retryBox.y
+    );
+    expect(overlaps).toBe(false);
+  });
+
 test("久未刷新的資料標成舊資料（V4／#52）", async ({ page }) => {
   const old = new Date(Date.now() - 3 * 24 * 3600 * 1000).toISOString();
   await page.route("**/api/scenarios", (route) =>
@@ -444,3 +474,144 @@ test("久未刷新的資料標成舊資料（V4／#52）", async ({ page }) => {
   await expect(page.getByText("100.0%")).toBeVisible();
   await expect(page.getByText("舊資料")).toBeVisible();
 });
+
+test("手機首頁版面順序：Dashboard 佔位 → 新增劇本入口 → 劇本庫（MVP-v2／#77、#81）",
+  async ({ page }) => {
+    await routeLibrary(page, libraryRow());
+
+    await page.goto("/");
+    await expect(page.getByRole("listitem")).toBeVisible();
+
+    const dashboard = page.getByLabel("Dashboard");
+    const createToggle = page.getByRole("button", { name: "＋ 新增劇本" });
+    // 手機版清單用 compact 版式的容器（`.compact-list`，MVP-v2／#77、
+    // #82），跟桌面版 `ScenarioList.tsx` 的 `ul.list` 是不同的元件。
+    const list = page.locator("ul.compact-list");
+
+    await expect(dashboard).toBeVisible();
+    await expect(createToggle).toBeVisible();
+    await expect(list).toBeVisible();
+
+    // 三段由上而下的順序——不是同時存在就好，順序本身是規格的一部分。
+    expect(await dashboard.evaluate((el, other) =>
+      !!(el.compareDocumentPosition(other as Node) &
+         Node.DOCUMENT_POSITION_FOLLOWING),
+      await createToggle.elementHandle())).toBe(true);
+    expect(await createToggle.evaluate((el, other) =>
+      !!(el.compareDocumentPosition(other as Node) &
+         Node.DOCUMENT_POSITION_FOLLOWING),
+      await list.elementHandle())).toBe(true);
+
+    // Dashboard 佔位區不放任何數字（需求方裁示：不要自行發明 KPI）。
+    await expect(dashboard).not.toContainText(/\d/);
+  });
+
+test("新增劇本：點擊就地展開，不換頁、不彈出 modal（MVP-v2／#77、#81）",
+  async ({ page }) => {
+    await page.route("**/api/scenarios", (route) => route.fulfill({ json: [] }));
+
+    await page.goto("/");
+    const urlBefore = page.url();
+
+    await expect(page.getByLabel("標的代號")).not.toBeVisible();
+    await page.getByRole("button", { name: "＋ 新增劇本" }).click();
+    await expect(page.getByLabel("標的代號")).toBeVisible();
+
+    // 就地展開：網址沒變、Dashboard 與工具列仍在同一頁上。
+    expect(page.url()).toBe(urlBefore);
+    await expect(page.getByLabel("Dashboard")).toBeVisible();
+    await expect(page.getByText("劇本庫")).toBeVisible();
+
+    // 收合再展開，內容還在（沿用 #75 的既有教訓：面板一律掛著只切換
+    // 可見度，不是條件渲染整個卸載重掛）。
+    await page.getByLabel("標的代號").fill("tlt");
+    await page.getByRole("button", { name: "收合建立表單" }).click();
+    await expect(page.getByLabel("標的代號")).not.toBeVisible();
+    await page.getByRole("button", { name: "＋ 新增劇本" }).click();
+    await expect(page.getByLabel("標的代號")).toHaveValue("tlt");
+  });
+
+test("Compact row 的密度：一個手機視窗至少看得到 4 個劇本，不必先捲動（MVP-v2／#77、#82）",
+  async ({ page }) => {
+    // 只驗結構性密度（能不能在一屏塞進足夠多列），不驗任何像素間距數值
+    // ——那種驗法會把設計凍結在這一輪（spec #77〈Testing Decisions〉
+    // 明確不做的測試）。舊的大卡片版式一屏通常只放得下 2～3 張。
+    const rows = Array.from({ length: 8 }, (_, i) =>
+      libraryRow({ id: `s${i}`, symbol: `SYM${i}`,
+                   latest_analyzed_at: null, best_return: null }));
+    await page.route("**/api/scenarios", (route) => route.fulfill({ json: rows }));
+    await page.route("**/api/scenarios/*/refresh", (route, req) =>
+      route.fulfill({ json: rows.find((r) => req.url().includes(`/${r.id}/`)) }));
+
+    await page.goto("/");
+    await expect(page.getByRole("listitem").first()).toBeVisible();
+
+    const viewportHeight = page.viewportSize()!.height;
+    const cards = await page.locator("li.compact-card").all();
+    let visibleWithoutScrolling = 0;
+    for (const card of cards) {
+      const box = await card.boundingBox();
+      if (box && box.y >= 0 && box.y + box.height <= viewportHeight) {
+        visibleWithoutScrolling += 1;
+      }
+    }
+
+    expect(visibleWithoutScrolling).toBeGreaterThanOrEqual(4);
+  });
+
+test("Compact row 逐項齊全：spec §5 必要欄位一個都沒少（MVP-v2／#77、#82）",
+  async ({ page }) => {
+    await routeLibrary(page, libraryRow());
+
+    await page.goto("/");
+    const card = page.getByRole("listitem").first();
+    await expect(card).toBeVisible();
+
+    // 標的／目標價／目標年月／燈號
+    await expect(card).toContainText("XYZ");
+    await expect(card.locator(".signal-dot")).toBeAttached();
+    // 報酬率／策略／買賣履約價
+    await expect(card).toContainText("567.0%");
+    // 實際到期日／距到期天數／最後更新時間
+    await expect(card).toContainText("Exp");
+    await expect(card).toContainText("45 天");
+    // 封存入口仍在，不因為 compact 而消失。
+    await expect(card.getByRole("button", { name: /封存/ })).toBeAttached();
+  });
+
+test("返回劇本庫時停在原本捲動的位置，不必重新往下找（MVP-v2／#77、#83）",
+  async ({ page }) => {
+    const rows = Array.from({ length: 10 }, (_, i) =>
+      libraryRow({ id: `s${i}`, symbol: `SYM${i}`,
+                   latest_analyzed_at: null, best_return: null }));
+    await page.route("**/api/scenarios", (route) => route.fulfill({ json: rows }));
+    await page.route("**/api/scenarios/*/refresh", (route, req) =>
+      route.fulfill({ json: rows.find((r) => req.url().includes(`/${r.id}/`)) }));
+    // 詳細頁路由：任一劇本 id 都指回同一份形狀，測試只在乎「回得去、
+    // 回去後畫面上是原本那份清單」，不在乎詳細頁內容本身。
+    await page.route("**/api/scenarios/s*", (route, req) => {
+      const id = req.url().split("/").pop();
+      const found = rows.find((r) => r.id === id);
+      return route.fulfill({ json: { ...found, latest_result: null } });
+    });
+
+    await page.goto("/");
+    await expect(page.getByRole("listitem").first()).toBeVisible();
+
+    // 捲到清單中段，記住這個位置。
+    await page.evaluate(() => window.scrollTo(0, 400));
+    const scrollBefore = await page.evaluate(() => window.scrollY);
+    expect(scrollBefore).toBeGreaterThan(0);
+
+    // 點一張捲動範圍內才看得到的卡片進詳細頁，再用返回入口回劇本庫
+    // ——不是重新整理，是同一個 App 內的 hash 導覽（#72 既有機制）。
+    await page.getByRole("link", { name: /SYM5/ }).click();
+    await expect(page.getByRole("link", { name: "‹ 劇本庫" })).toBeVisible();
+    await page.getByRole("link", { name: "‹ 劇本庫" }).click();
+
+    await expect(page.getByRole("listitem").first()).toBeVisible();
+    // 允許些微誤差（不同時機的 layout 抖動），但必須明顯不是又跳回頂端
+    // ——那正是這張票要修的舊行為。
+    await expect.poll(() => page.evaluate(() => window.scrollY))
+      .toBeGreaterThan(scrollBefore - 20);
+  });

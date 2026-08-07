@@ -323,6 +323,46 @@ def test_best_return_survives_the_result_roundtrip(storage):
     assert storage.result_history("s1")[0].best_return == -0.4
 
 
+# ---------- 代表候選（MVP-v2／#77、#78） ----------
+
+_REP = {"strategy": "bull-call-spread",
+       "legs": [{"strike": 100.0, "option_type": "call"},
+                {"strike": 105.0, "option_type": "call"}],
+       "expiry": "2028-05-19", "baseline_return": 1.25}
+
+
+def test_representative_candidate_survives_the_result_roundtrip(storage):
+    """與 `best_return` 同一個模式：規則只有一份（引擎純函式），這裡只是
+    落盤結果要能存得進、讀得回，形狀（`strategy`／`legs`／`expiry`）不失真。
+    """
+    storage.create_scenario(_scenario("s1"))
+    storage.save_result(ResultRecord(
+        "s1", "2026-08-01T00:00:00+00:00", {"n": 1},
+        best_return=1.25, representative_candidate=_REP))
+    assert storage.latest_result("s1").representative_candidate == _REP
+    assert storage.result_history("s1")[0].representative_candidate == _REP
+
+
+def test_representative_candidate_defaults_to_none(storage):
+    """沒有代表候選（劇本從未成功分析、或該期零合格候選）時是 `None`，
+    不是一組編出來的假資料——`ResultRecord` 的預設值本身就是 `None`。"""
+    storage.create_scenario(_scenario("s1"))
+    storage.save_result(ResultRecord("s1", "2026-08-01T00:00:00+00:00",
+                                     {"n": 1}, best_return=None))
+    assert storage.latest_result("s1").representative_candidate is None
+
+
+def test_latest_summaries_carries_the_representative_candidate(storage):
+    """清單查詢（`latest_summaries`）跟卡片一樣需要代表候選，不只是
+    `best_return` 那個數字——這正是它獨立落盤成一個欄位、而不是每次從
+    `view` 現算的理由：清單頁不該為了這幾個履約價把整份 view 搬一次。"""
+    storage.create_scenario(_scenario("s1"))
+    storage.save_result(ResultRecord(
+        "s1", "2026-08-01T00:00:00+00:00", {"n": 1},
+        best_return=1.25, representative_candidate=_REP))
+    assert storage.latest_summaries()["s1"].representative_candidate == _REP
+
+
 # ---------- schema 遷移（V3／#51） ----------
 
 def test_existing_results_table_gains_the_new_column():
@@ -359,6 +399,36 @@ def test_existing_results_table_gains_the_new_column():
     st.create_scenario(_scenario("mig"))
     st.save_result(ResultRecord("mig", "2026-08-01T00:00:00+00:00", {"n": 1}, 0.75))
     assert st.latest_summaries()["mig"].best_return == 0.75
+
+
+def test_existing_results_table_gains_the_representative_candidate_column():
+    """既有部署的 `results` 表在 MVP-v2（#77、#78）之前只有到
+    `best_return` 為止——`representative_candidate` 一樣得靠
+    `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` 補上，同一條路徑、同一個
+    理由（見 `test_existing_results_table_gains_the_new_column`）。"""
+    if not TEST_DB_URL:
+        pytest.skip("需要 OC_TEST_DATABASE_URL（一個跑著的 Postgres）")
+    import psycopg
+
+    from api_app.storage import postgres as pg
+
+    with psycopg.connect(TEST_DB_URL, autocommit=True) as conn:
+        conn.execute("TRUNCATE scenarios, results, snapshots, events, rate_cache "
+                     "RESTART IDENTITY")
+        conn.execute("DROP TABLE IF EXISTS results")
+        # V3 時期的舊表：有 best_return，還沒有 representative_candidate。
+        conn.execute("CREATE TABLE results ("
+                     "scenario_id TEXT NOT NULL, analyzed_at TEXT NOT NULL, "
+                     "view JSONB NOT NULL, best_return DOUBLE PRECISION, "
+                     "PRIMARY KEY (scenario_id, analyzed_at))")
+
+    pg._schema_ready.discard(TEST_DB_URL)
+    st = pg.PostgresStorage(TEST_DB_URL)
+
+    st.create_scenario(_scenario("mig2"))
+    st.save_result(ResultRecord("mig2", "2026-08-01T00:00:00+00:00", {"n": 1},
+                               best_return=0.75, representative_candidate=_REP))
+    assert st.latest_summaries()["mig2"].representative_candidate == _REP
 
 
 def test_migration_still_applies_when_table_creation_hits_a_race():

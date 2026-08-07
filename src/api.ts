@@ -29,6 +29,27 @@ export interface Leg {
   iv: number | null;
 }
 
+/** 代表候選（MVP-v2／#77、#78）：劇本清單卡片要的候選完整身分——只到
+ *  「顯示要用」這一層，不是完整的 `Candidate`／`Leg`（報價、IV、量能等
+ *  欄位留在詳細頁）。`legs[0]` 是買腿，`legs[1]`（若有）是賣腿——沿用
+ *  後端序列化層既有的 `[0]=long, [1]=short` 慣例。單腳策略只有一隻腿；
+ *  結構上不假設腿數固定，未來策略種類增加不必改型別。
+ *
+ *  `baseline_return` 與卡片列的 `best_return` 必為同一個數字（後端
+ *  `store.best_return` 由這個結構導出，口徑恆等）——前端不重算、只顯示。
+ */
+export interface RepresentativeCandidateLeg {
+  strike: number;
+  option_type: string;
+}
+
+export interface RepresentativeCandidate {
+  strategy: string;
+  legs: RepresentativeCandidateLeg[];
+  expiry: string;
+  baseline_return: number;
+}
+
 /**
  * 價格×日期報酬矩陣（引擎的 `MatrixView`）。`prices`／`dates` 的第二欄是
  * **引擎給的**錨點標籤，GUI 只讀不算（v4 spec §4.3 的既有原則）。
@@ -256,6 +277,14 @@ export interface ScenarioSummary {
    * 據此在排入刷新佇列前先篩掉，畫面上也用它顯示「已過期，不再刷新」。
    */
   expired: boolean;
+  /**
+   * 產生 `best_return` 的那組候選完整身分（MVP-v2／#77、#78）：策略、
+   * 各腿履約價、實際到期日——沒有它，卡片上的報酬率無法被判讀出自
+   * 哪一個 option combination。`null` ＝ 尚未分析、或該期零合格候選，
+   * 與 `best_return === null` 同步（後端同一次走訪算出來，不會只有
+   * 一邊是 null）。
+   */
+  representative_candidate: RepresentativeCandidate | null;
 }
 
 /**

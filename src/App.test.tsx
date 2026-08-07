@@ -30,13 +30,18 @@ async function pickMonth(year: number, month: number) {
 }
 
 /**
- * 建立劇本表單預設收合（#75），得先展開工具列上的入口才看得到欄位。
+ * 建立劇本表單預設收合，得先展開入口才看得到欄位。入口位置依裝置寬度
+ * 而不同（MVP-v2／#77、#81）：桌面（#75 現狀）在工具列的「＋ 建立劇本」，
+ * 手機在 Dashboard 下方的「＋ 新增劇本」（`CreateEntry`）——這裡不管
+ * 呼叫端跑在哪個視窗寬度，找得到哪個按鈕就點哪個。真的要測特定入口的
+ * 精確文字與位置時，各自的測試會直接斷言，不靠這個共用小工具。
+ *
  * `findByRole` 而不是 `getByRole`：開站那輪批次刷新完成前，工具列的
  * 「重新整理」／「刷新中……」互斥渲染有可能讓查詢撞上一個瞬間的重繪。
  */
 async function openCreateForm() {
   await userEvent.click(
-    await screen.findByRole("button", { name: "＋ 建立劇本" }));
+    await screen.findByRole("button", { name: /＋ (建立劇本|新增劇本)/ }));
 }
 
 /**
@@ -661,6 +666,84 @@ describe("清單 → 詳細頁（V5／#53）", () => {
   });
 });
 
+describe("手機返回劇本庫還原捲動位置（MVP-v2／#77、#83）", () => {
+  const row = {
+    ...(sampleRow as unknown as Record<string, unknown>),
+    id: "s1", symbol: "TLT", target_price: 120, target_month: "2028-05",
+    latest_analyzed_at: "2026-08-04T09:30:00+00:00", best_return: 1.5,
+    target_anchor: "2028-05-19", days_to_anchor: 653,
+  };
+
+  afterEach(() => {
+    window.location.hash = "";
+  });
+
+  it("進詳細頁前記住捲動位置，返回後呼叫 scrollTo 還原到同一個位置", async () => {
+    mockRoutes({
+      "/api/scenarios": { json: async () => [row] },
+      "/api/scenarios/s1": { json: async () => ({ ...row, latest_result: null }) },
+    });
+    const scrollToSpy = vi.spyOn(window, "scrollTo");
+    render(<App />);
+    await screen.findByText("TLT");
+
+    // 模擬使用者往下捲動——手機版劇本庫掛著一個 `scroll` 監聽器持續
+    // 記錄最新位置（App.tsx 的既有寫法），這裡直接發事件觸發它。
+    Object.defineProperty(window, "scrollY", { value: 480, configurable: true });
+    window.dispatchEvent(new Event("scroll"));
+
+    window.location.hash = "#/s/s1";
+    await screen.findByRole("link", { name: /劇本庫/ });
+
+    scrollToSpy.mockClear();
+    window.location.hash = "";
+    await screen.findByText("TLT");
+
+    // `useLayoutEffect` 在回到劇本庫的那一刻同步呼叫，把離開前記住的
+    // 480 還原回去——不是隨機值、也不是恆為 0（那樣等於沒還原）。
+    expect(scrollToSpy).toHaveBeenCalledWith(0, 480);
+  });
+
+  it("桌面版不需要這段——左右兩欄本來就常駐，詳細頁切換不會卸載劇本庫",
+    async () => {
+      stubDesktopViewport();
+      mockRoutes({
+        "/api/scenarios": { json: async () => [row] },
+        "/api/scenarios/s1": { json: async () => ({ ...row, latest_result: null }) },
+      });
+      const scrollToSpy = vi.spyOn(window, "scrollTo");
+      render(<App />);
+      await screen.findByText("TLT");
+
+      Object.defineProperty(window, "scrollY", { value: 480, configurable: true });
+      window.dispatchEvent(new Event("scroll"));
+
+      window.location.hash = "#/s/s1";
+      await screen.findByRole("link", { name: "‹ 劇本庫" });
+      window.location.hash = "";
+      await screen.findByText("TLT");
+
+      expect(scrollToSpy).not.toHaveBeenCalled();
+    });
+
+  it("新增表單開合狀態在返回後維持——App 本身不會因為導覽而重新掛載", async () => {
+    mockRoutes({
+      "/api/scenarios": { json: async () => [row] },
+      "/api/scenarios/s1": { json: async () => ({ ...row, latest_result: null }) },
+    });
+    render(<App />);
+    await openCreateForm();
+    expect(screen.getByLabelText("標的代號")).toBeVisible();
+
+    window.location.hash = "#/s/s1";
+    await screen.findByRole("link", { name: /劇本庫/ });
+    window.location.hash = "";
+    await screen.findByText("TLT");
+
+    expect(screen.getByLabelText("標的代號")).toBeVisible();
+  });
+});
+
 /** 桌面寬度：`window.matchMedia` 回真，模擬寬螢幕（#72）。 */
 function stubDesktopViewport() {
   vi.stubGlobal("matchMedia", (query: string) => fakeMediaQueryList(true, query));
@@ -784,7 +867,11 @@ describe("桌面版真正的 master/detail（#72）", () => {
   });
 });
 
-describe("主要操作入口收攏到工作區上方（#75）", () => {
+describe("桌面版：主要操作入口收攏到工作區上方（#75，MVP-v2／#77 起僅桌面）", () => {
+  // #75 原本涵蓋所有寬度；MVP-v2（#77、#81）裁示手機改走 Dashboard 下方
+  // 的獨立入口（見「手機版：新增劇本入口」），#75 的工具列頂部入口自此
+  // 縮限成桌面現狀——這裡的每個案例都先切到桌面寬度，斷言才對得上現在
+  // 實際覆蓋的範圍。
   const row = {
     ...(sampleRow as unknown as Record<string, unknown>),
     id: "s1", symbol: "TLT", target_price: 120, target_month: "2028-05",
@@ -793,6 +880,7 @@ describe("主要操作入口收攏到工作區上方（#75）", () => {
   };
 
   it("建立劇本表單預設收合，工具列上有明確的頂部入口，按下去才展開", async () => {
+    stubDesktopViewport();
     mockRoutes({
       "/api/scenarios": { json: async () => [row] },
       "/api/scenarios/": { json: async () => row },
@@ -815,6 +903,7 @@ describe("主要操作入口收攏到工作區上方（#75）", () => {
     // code review 跟進：面板原本用條件渲染整個卸載重掛，使用者打到
     // 一半手滑點到收合鈕，剛打的字就白打了——改用 `hidden` 屬性切換
     // 可見度後，這裡直接驗證收合再展開，內容還在。
+    stubDesktopViewport();
     mockRoutes({
       "/api/scenarios": { json: async () => [row] },
       "/api/scenarios/": { json: async () => row },
@@ -831,6 +920,7 @@ describe("主要操作入口收攏到工作區上方（#75）", () => {
   });
 
   it("建立劇本與刷新是同一個固定操作列裡的兩個入口", async () => {
+    stubDesktopViewport();
     mockRoutes({
       "/api/scenarios": { json: async () => [row] },
       "/api/scenarios/": { json: async () => row },
@@ -853,6 +943,7 @@ describe("主要操作入口收攏到工作區上方（#75）", () => {
   });
 
   it("劇本清單下方已無任何主要操作——建立入口在工作區最上方", async () => {
+    stubDesktopViewport();
     mockRoutes({
       "/api/scenarios": { json: async () => [row] },
       "/api/scenarios/": { json: async () => row },
