@@ -28,7 +28,10 @@
 > #67–75／#78–84 一併於收尾時關閉）——Archive 正式改為 Trash 語意、
 > 利率顯示語意修正、垃圾桶前端全部落地。中間穿插的
 > 「目前狀態（2026-08-02）」等舊日期標頭是歷史留存，**以此段與下面
-> 對應小節末尾的紀錄為準，不要被舊標頭誤導**。下一階段候選：
+> 對應小節末尾的紀錄為準，不要被舊標頭誤導**。同日稍晚需求方指示
+> **下一輪先研究、不施工**：歷史 IV 資料源＋IV 相對歷史方法論兩份
+> 研究文件已完成（見「下一輪研究」小節），等需求方審閱、實測資料源、
+> 裁示方案後才進 spec／拆票。其他下一階段候選：
 > **多使用者隔離** [#59]（未標 `ready-for-agent`，需求方裁示後才開工）、
 > 外觀優化（QA-v2 需求方已明確裁示延後，待主動重啟）、Dashboard 佔位區
 > 實際內容（跨劇本比較功能確定後另開票，spec #77 Out of Scope）。
@@ -1291,9 +1294,60 @@ tracking #86 本身，加上此前兩輪（PR #76「前端重練＋QA 維修輪�
 #67–75、PR #85「MVP V2 手機版劇本庫」涵蓋 #78–84）早就出貨卻忘記
 關閉的 16 張舊票，逐一核對 commit 訊息確認涵蓋後全數關閉。
 
-**待辦**：無——這一輪已全數施工完畢並 merge，等需求方 cue 下一階段。
+**待辦**：無——這一輪已全數施工完畢並 merge。下一輪＝IV 歷史判讀
+研究輪（見下一小節），需求方已於 2026-08-07 指示「先研究，不施工」。
 
 > 沿用規則：全部票做完才開 PR、merge 回 master，中途不主動開。
+
+### 下一輪研究：歷史 IV 資料源＋IV 相對歷史方法論（2026-08-07，只研究不施工）
+
+需求方 2026-08-07 指示「下一輪先研究，不施工」，範圍 A＋B 兩題，
+已完成、產出兩份研究文件（皆在工作分支 `claude/implement-tfm9oa`，
+未開票、未施工）：
+
+- **A. Historical Options / IV Data 資料源比較**
+  （`docs/research/historical-options-iv-data-sources.md`）：17 個來源
+  逐源判定能否按需重建歷史 spread debit（Buy Ask − Sell Bid）＋歷史
+  IV。「不自存 chain、資料庫負擔最低」是需求方硬約束，bulk 檔案商
+  全數如實比較但標明衝突。**交集候選四家**：ORATS（2007 起、選擇權
+  專業血統）、Market Data App（單合約一次呼叫回整段日序列，與
+  SpreadHistory 形狀天然對齊；免費層可實測）、Alpha Vantage
+  `HISTORICAL_OPTIONS`（與既有備援同一家金鑰可共用；免費層資格
+  懸而未決）、EODHD（欄位最齊但只回溯 2023 Q4）。**Yahoo/yfinance
+  查證確認沒有歷史選擇權鏈**（僅合約成交 OHLC）；Theta Data 資料面
+  最強但 REST 靠本機常駐 Java Terminal、與 Vercel serverless 衝突。
+  ⚠ 價格數字全為搜尋索引轉述（沙箱 EGRESS_BLOCKED，實測三域確認），
+  文件 §7 列出待原件查證清單與**三步近零成本驗證優先序**（Market
+  Data App 免費層實測 → Alpha Vantage 免費金鑰 → ORATS 原件確認），
+  需在可連網環境（production 或需求方本機）執行。
+- **B. IV relative-history methodology**
+  （`docs/research/iv-relative-history-methodology.md`）：七問七答。
+  要點——同一 OCC 合約 1Y percentile 不成立（DTE 遞減＋moneyness
+  漂移＋LEAPS 上市不滿一年，無主流平台採用）；業界零售端主流是
+  **constant-maturity ATM IV 指數**的 Rank／Percentile（VIX／
+  IVolatility IVX／IBKR V30／tastytrade IVx／ORATS 六家同款；
+  IV Rank 與 IV Percentile 是不同統計量，thinkorswim 欄位名實算
+  Rank 是著名命名陷阱）；**不能簡單平均兩腿 IV**——§5 自行推導＋
+  引擎數值驗算：水位項權重是 net vega（差、會穿零變號）、skew 項
+  權重是平均 vega（不隨對沖縮小），平均會把 skew 曝險整個抹掉，
+  且「spread 單一 IV」數學上 ill-defined（debit 對 σ 非單調、一價
+  兩解）。**候選方案五案 A–E 供裁示**（推薦排序 A→E→B→C，D 不作
+  本題答案）：A＝標的層級 30d constant-maturity IV 指數 1Y
+  Rank+Percentile（資料最輕、解釋性最高）；E＝IV/HV 比值（零歷史
+  IV 需求、A 冷啟動期的保險）；B＝與劇本天期對齊的長 tenor
+  percentile（修 A 的 tenor 錯配，機制與 T12 期限對齊利率同構）；
+  C＝兩腿 surface 點 percentile＋skew 差（天花板、資料最重）；
+  D＝既有 V9 成本歷史加 percentile（不是 IV 判讀，須守標籤紀律）。
+  共同紅線：**任何 IV 環境指標都是標示層，不進排名／過濾／A14.2
+  成本口徑**，要影響入選屬口徑變更、需求方另行裁示。
+
+**下一步**：需求方審閱兩份文件 → 執行三步驗證（資料源實測）→
+裁示方案與 vendor → 才進 `/to-spec`／拆票。**本輪不施工。**
+
+**需求方另保留兩個後續獨立 Grill（本輪明確不涵蓋，勿混入）**：
+- C. Long Call 如何與 Spread 正確比較／整合，不強行壓成單一 ROI
+- D. 跨劇本比較 workspace 應比較哪些維度、如何排序，以及是否採
+  Pareto frontier 而非總分
 
 ### 下一版 MVP（本輪明確不施工，已立案）
 
