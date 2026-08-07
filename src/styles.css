@@ -525,6 +525,27 @@ body {
   gap: 16px;
 }
 
+/* `TrashView.tsx` 的工具列標題下面緊接著一句 caption（封存於此的劇本
+   說明），不需要 `.toolbar` 預設的底部留白，否則跟 caption 之間會多
+   出一段不必要的空隙。 */
+.toolbar-flush {
+  padding-bottom: 0;
+}
+
+/* 批次操作列右側兩顆鈕（還原已選／永久刪除已選）並排，沿用
+   `.batch-action-bar` 既有 `gap` 慣例，只是這裡是內層 wrapper。 */
+.trash-batch-actions {
+  display: flex;
+  gap: 8px;
+}
+
+/* 垃圾桶空狀態——貼齊核准版面的 `.empty-trash` 命名，視覺上比一般
+   `.caption` 多一點留白，讓「垃圾桶是空的」不會貼著工具列擠在一起。 */
+.empty-trash {
+  text-align: center;
+  padding: 28px 12px;
+}
+
 /* ---------- 永久刪除二次確認（TR4／#92） ---------- */
 
 /* 全螢幕遮罩：這是本站唯一的真正 modal——`CreateEntry.tsx` 那類低風險

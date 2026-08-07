@@ -50,30 +50,39 @@ function Row({ label, children }: { label: string; children: React.ReactNode }) 
  * 用了期限對齊曲線時，把常數 `rate`（此時其實沒被用在估值上）跟曲線
  * 資料日混在一起，看起來像「這個常數就是那個日期的曲線值」。
  *
- * - `rate_curve_used` 為假：真正的 fallback，只顯示常數＋明確的
- *   FALLBACK 標籤與原因，**不掛任何市場資料日期**。
  * - `rate_curve_used` 為真：顯示期限對齊曲線與其 `rate_curve_date`；
  *   `rate_curve_stale` 為真時額外標示 STALE，不得跟新鮮曲線同一種
  *   呈現方式。
+ * - `rate_curve_used` 為假、`rate_explicit` 為真：使用者透過 CLI
+ *   `--rate` 主動指定的利率——維持乾淨顯示，不貼 FALLBACK 標籤（那是
+ *   使用者主動選擇，不是「本該有曲線卻失敗」）。跟後端
+ *   `report.py::_rate_line` 同一套三態判斷，目前網頁路徑不可達
+ *   （`rate_explicit` 只有 CLI 會設起），但兩邊邏輯要對得上，不能只在
+ *   後端正確、前端漏了這一態。
+ * - 其餘情況：真正的 fallback，只顯示常數＋明確的 FALLBACK 標籤與
+ *   原因，**不掛任何市場資料日期**。
  */
 function RateRow({ params }: { params: AnalysisView["params"] }) {
-  if (!params.rate_curve_used) {
+  if (params.rate_curve_used) {
     return (
       <Row label="無風險利率">
-        {formatReturn(params.rate)}
-        <span className="row-note">
-          {" "}· FALLBACK／Treasury curve unavailable
-          {params.rate_note && `（${params.rate_note}）`}
-        </span>
+        期限對齊 Treasury 曲線 · {params.rate_curve_date}
+        {params.rate_curve_stale && (
+          <span className="row-note"> · STALE（沿用陳舊備援窗）</span>
+        )}
       </Row>
     );
   }
+  if (params.rate_explicit) {
+    return <Row label="無風險利率">{formatReturn(params.rate)}</Row>;
+  }
   return (
     <Row label="無風險利率">
-      期限對齊 Treasury 曲線 · {params.rate_curve_date}
-      {params.rate_curve_stale && (
-        <span className="row-note"> · STALE（沿用陳舊備援窗）</span>
-      )}
+      {formatReturn(params.rate)}
+      <span className="row-note">
+        {" "}· FALLBACK／Treasury curve unavailable
+        {params.rate_note && `（${params.rate_note}）`}
+      </span>
     </Row>
   );
 }

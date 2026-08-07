@@ -69,10 +69,12 @@ def _rate_line(p: AnalysisParams) -> str:
     - 期限對齊曲線（`rate_curve_used`，新鮮或陳舊備援皆標明 curve date，
       陳舊額外標 STALE）——與 `rate_by_expiry` 是否非空脫鉤，鏈上零合約
       時曲線仍算「用了」，只是沒有逐到期日的表可印。
-    - fallback 固定值：明確標「FALLBACK」＋原因，不冒充曲線日期。
-    - 明示（`--rate`）或離線重放：維持現行乾淨寫法，不貼 FALLBACK
-      標籤——那是使用者主動選擇或離線這個模式本身的既有行為，不是
-      「本該有曲線卻失敗」。
+    - 明示（`--rate`，`rate_explicit`）：維持現行乾淨寫法，不貼 FALLBACK
+      標籤——那是使用者主動選擇，不是「本該有曲線卻失敗」。
+    - 其餘所有常數情況（曲線徹底不可得、或離線重放這個模式本身沒有
+      啟用管線）：明確標「FALLBACK」＋原因（`rate_note`），不冒充曲線
+      日期——離線重放不是「乾淨」的第三態，它跟曲線失敗一樣是「這次
+      用的是常數，不是曲線」，理由不同但呈現方式相同。
     """
     if p.rate_curve_used:
         rates = "、".join(f"{e} {r * 100:.2f}%" for e, r in p.rate_by_expiry)

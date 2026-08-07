@@ -462,6 +462,44 @@ test("垃圾桶批次操作：全選後批次永久刪除，確認畫面列出�
   await expect(page.getByText("垃圾桶是空的。")).toBeVisible();
 });
 
+test("垃圾桶批次操作：全選後批次還原，兩者都回到劇本庫（TR5／#93）",
+   async ({ page }) => {
+  const trashedA = libraryRow({
+    id: "s1", symbol: "TLT", target_month: "2028-05",
+    archived_at: "2026-08-05T00:00:00+00:00" });
+  const trashedB = libraryRow({
+    id: "s2", symbol: "SPY", target_month: "2028-06",
+    archived_at: "2026-08-04T00:00:00+00:00" });
+  let archived = [trashedA, trashedB];
+
+  await page.route("**/api/scenarios", (route) =>
+    route.fulfill({ json: [] }));
+  await page.route("**/api/scenarios?include_archived=true", (route) =>
+    route.fulfill({ json: archived }));
+  await page.route("**/api/scenarios/s1/restore", (route) => {
+    archived = archived.filter((r) => r.id !== "s1");
+    return route.fulfill({ json: { restored: true } });
+  });
+  await page.route("**/api/scenarios/s2/restore", (route) => {
+    archived = archived.filter((r) => r.id !== "s2");
+    return route.fulfill({ json: { restored: true } });
+  });
+
+  await page.goto("/");
+  await page.getByRole("button", { name: "垃圾桶", exact: true }).click();
+  await expect(page.getByText("TLT", { exact: true })).toBeVisible();
+  await expect(page.getByText("SPY", { exact: true })).toBeVisible();
+
+  await page.getByRole("button", { name: "全選" }).click();
+  await expect(page.getByText("已選 2 個")).toBeVisible();
+  await page.getByRole("button", { name: "還原已選" }).click();
+
+  await expect(page.getByText("垃圾桶是空的。")).toBeVisible();
+  await page.getByText("‹ 劇本庫").click();
+  await expect(page.getByText("TLT", { exact: true })).toBeVisible();
+  await expect(page.getByText("SPY", { exact: true })).toBeVisible();
+});
+
 test("功能列捲動時仍釘在頂部、而且按得到（V3／#51 驗收第 1 項）", async ({ page }) => {
   // 「可點」在 V3 驗不了——當時功能列上唯一的控制項是 disabled 佔位鈕。
   // V4（#52）把刷新接上之後才補得起來，所以這條測試在這一票才完整。

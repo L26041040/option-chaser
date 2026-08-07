@@ -359,8 +359,8 @@ def test_refresh_on_an_archived_scenario_never_reaches_fetch():
     assert resp.status_code == 409
     assert _detail(resp)["stage"] == "archived"
 
-
-def test_refresh_on_an_archived_scenario_still_404s_when_unknown():
-    """垃圾桶擋點不能蓋掉既有的「劇本不存在」規則。"""
-    c = TestClient(create_app(storage=MemoryStorage()))
-    assert c.post("/api/scenarios/nope/refresh").status_code == 404
+# 垃圾桶擋點不會蓋掉「劇本不存在」的既有規則——`_require()` 在
+# `archived_at` 檢查之前就先跑，跟過期擋點同一個順序保證，已經由
+# `test_refresh_on_an_expired_scenario_still_404s_when_unknown`／
+# 這個檔案最上面的 `test_refresh_on_unknown_scenario_is_404` 蓋到，
+# 不必為垃圾桶再重複一次同一組斷言。

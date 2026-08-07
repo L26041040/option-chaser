@@ -39,6 +39,36 @@ def test_first_call_reaches_the_underlying_loader_and_caches_the_result():
     assert cached.market_day == TODAY.isoformat()
 
 
+def test_underlying_returning_a_stale_curve_directly_does_not_count_as_a_fresh_success():
+    """RC1（#87）：`underlying` 自己內部也可能有陳舊備援分支（例如
+    `treasury.load_rate_curve()` 的本地檔案快取），回傳的曲線雖然不是
+    `None`，但一樣不是「今天直接抓到」的。`market_day` 不該因此被誤判
+    推進，否則同一天稍後的呼叫會被這筆假新鮮擋下來，不再嘗試真正的
+    來源——這裡直接量 `market_day` 與 `last_success_at`，不是只看
+    `curve.stale` 有沒有正確傳出去（那件事 `_resolve_rates` 那層已經
+    測過）。"""
+    import dataclasses
+
+    storage = MemoryStorage()
+    stale_curve = dataclasses.replace(CURVE, stale=True)
+    calls = []
+
+    def stale_underlying(d):
+        calls.append(d)
+        return stale_curve, "Treasury 曲線 2026-08-04（陳舊備援）"
+
+    curve, note = cached_loader(storage, stale_underlying)(TODAY)
+
+    assert curve == stale_curve
+    assert curve.stale is True
+    cached = storage.get_rate_cache()
+    assert cached is not None
+    # 陳舊曲線不算「今天直接成功」——不能讓下一次呼叫誤以為今天已經
+    # 新鮮成功過而跳過真正的重試。
+    assert cached.market_day is None
+    assert cached.last_success_at is None
+
+
 def test_second_call_within_the_same_market_day_reuses_the_cache():
     """一輪刷新 N 個劇本共用同一條——第二個劇本進來時今天已經成功過，
     不該再打一次資料源。"""

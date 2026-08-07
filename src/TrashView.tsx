@@ -231,7 +231,7 @@ export default function TrashView({
 
   return (
     <div className="screen">
-      <div className="toolbar" style={{ paddingBottom: 0 }}>
+      <div className="toolbar toolbar-flush">
         <div className="toolbar-row">
           <a className="nav-back" href="#/">‹ 劇本庫</a>
           {rows !== null && rows.length > 0 && (
@@ -265,7 +265,7 @@ export default function TrashView({
       )}
 
       {rows !== null && rows.length === 0 && !error && (
-        <p className="caption">垃圾桶是空的。</p>
+        <p className="caption empty-trash">垃圾桶是空的。</p>
       )}
 
       {rows !== null && rows.length > 0 && (
@@ -334,7 +334,7 @@ export default function TrashView({
       {rows !== null && rows.length > 0 && (
         <div className="batch-action-bar">
           <span className="caption">已選 {selectedIds.size} 個</span>
-          <div style={{ display: "flex", gap: "8px" }}>
+          <div className="trash-batch-actions">
             <button
               className="batch-pill"
               disabled={selectedIds.size === 0 || batchBusy}

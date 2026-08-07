@@ -285,7 +285,13 @@ export default function App() {
    * 可能在還原這段期間被進行中的刷新佇列更新過。
    */
   function restoreFromTrash(row: ScenarioSummary) {
-    setRows((prev) => (prev.some((r) => r.id === row.id) ? prev : [...prev, row]));
+    // `archived_at` 清空：`row` 是從 `TrashView` 的封存清單讀來的，
+    // 還帶著封存時間戳；還原成功後後端已經清掉它，主清單這份副本也
+    // 得跟著清掉，否則主清單裡會混進一列「archived_at 非 null 但其實
+    // 沒被封存」的過期資料。
+    const restored: ScenarioSummary = { ...row, archived_at: null };
+    setRows((prev) =>
+      (prev.some((r) => r.id === restored.id) ? prev : [...prev, restored]));
   }
 
   // ---------- 批次選取移入垃圾桶（TR6／#91） ----------

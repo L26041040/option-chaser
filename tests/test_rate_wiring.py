@@ -142,6 +142,25 @@ def test_loader_returning_a_stale_curve_is_marked_stale_end_to_end():
     assert "STALE" in result.results[0].report_text
 
 
+def test_curve_success_with_zero_contracts_is_not_misread_as_fallback():
+    """RC1（#87）驗收點：`rate_by_expiry` 為空但曲線本身其實成功取得
+    （鏈上零合格候選的邊界情況）不得被誤判成 fallback——`rate_curve_
+    used` 只問「這次是否真的取得一條 RateCurve」，跟 `rate_by_expiry`
+    是否非空脫鉤。零合約時後者必然是空表（沒有到期日可查表），但曲線
+    仍算「用了」。"""
+    from option_chaser.models import ChainSnapshot
+
+    empty_snap = ChainSnapshot(schema_version=1, symbol="XYZ",
+                               fetched_at="2026-08-21T00:00:00+00:00",
+                               spot=100.0, source="test", contracts=())
+    result = service.run_with_snapshot(_request(), empty_snap,
+                                       rate_curve_loader=_fake_loader)
+    p = result.request.base_params
+    assert p.rate_by_expiry == ()          # 沒有到期日可查表
+    assert p.rate_curve_used is True       # 但曲線確實成功取得
+    assert p.rate_curve_date == "2026-07-31"
+
+
 def test_explicit_rate_skips_pipeline_entirely():
     def exploding_loader(today):
         raise AssertionError("--rate 明示時不得呼叫利率管線")

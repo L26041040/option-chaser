@@ -1268,8 +1268,21 @@ RC1／TR1／TR2／TR3／TR6 可平行開工，TR4 被 TR2＋TR3 擋，TR5 被 TR
   Playwright 全綠
 
 **Trash 語意＋利率顯示修正這一輪全數完成**（RC1、TR1–TR6，
-tracking #86）。依專案規則「全部票做完才開 PR」，PR 待需求方 cue
-才開。
+tracking #86）。收工前跑過一輪 `/code-review`（Standards＋Spec 兩軸
+平行審查，對照 issue #87–93 逐條驗收），修回的項目：
+`report.py::_rate_line` docstring 跟實際三態分流兜不起來（離線重放
+其實會標 FALLBACK，docstring 誤寫成不會）；`api_app/rate_cache.py`
+的 `fetched_fresh` 判準漏看 `curve.stale`（陳舊備援曲線若直接由
+`underlying` 回傳，會被誤判成「今天真的新鮮抓到」，讓 `market_day`
+提早推進、擋住同一天稍後理應要有的真正重試）；前端 `RateRow` 少了
+`rate_explicit` 分支，跟後端三態邏輯對不齊（目前網頁路徑不可達，
+純粹補齊一致性）；`App.restoreFromTrash` 沒清空還原回主清單那一列
+殘留的 `archived_at`；`TrashView.tsx` 兩處內嵌 `style={{}}` 改回
+`styles.css`；補一條 RC1「曲線成功但零合約」的邊界情況直接測試；
+桌面版（`desktop.spec.ts`）原本缺 TR6／TR4／TR5 的端到端覆蓋，
+批次還原（TR5）原本兩個平台都沒有專屬 e2e，一併補齊。全套最終回歸：
+後端 699 條、前端 332 條 Vitest、Playwright 33 條（Desktop＋iPhone）
+全綠。依專案規則「全部票做完才開 PR」，PR 待需求方 cue 才開。
 
 **待辦**：無——這一輪已全數施工完畢，等需求方驗收後開 PR。
 

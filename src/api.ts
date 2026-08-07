@@ -218,6 +218,11 @@ export interface AnalysisParams {
   rate_curve_used: boolean;
   rate_curve_date: string | null;
   rate_curve_stale: boolean;
+  /** 使用者透過 CLI `--rate` 明示指定的利率——目前 MVP 網頁路徑不可達
+   *  （只有 CLI 會設起），但欄位本來就在契約裡，型別跟著宣告，
+   *  `RateRow` 才能跟後端 `report.py::_rate_line` 同一套三態判斷，不
+   *  會在明示利率也顯示成 FALLBACK。 */
+  rate_explicit: boolean;
   iv_shifts: number[];
   delta_bands: [number, number];
   min_return: number;

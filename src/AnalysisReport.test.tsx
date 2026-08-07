@@ -228,6 +228,25 @@ describe("無風險利率三態顯示（RC1／#87）", () => {
     expect(row).toHaveTextContent("STALE");
     expect(row).not.toHaveTextContent("FALLBACK");
   });
+
+  it("使用者明示利率（CLI --rate，rate_explicit）：乾淨顯示，不貼 FALLBACK 標籤",
+     async () => {
+    // 目前網頁路徑打不到這一態（`rate_explicit` 只有 CLI 會設起），
+    // 但前端邏輯要跟後端 report.py::_rate_line 同一套三態判斷對得上，
+    // 不能只在後端正確、前端漏了這一態。
+    const explicitView = {
+      ...view,
+      params: { ...view.params, rate_curve_used: false, rate_curve_date: null,
+                rate_curve_stale: false, rate_explicit: true, rate: 0.07,
+                rate_note: "" },
+    };
+    render(<AnalysisReport view={explicitView} result={result} candidate={real} />);
+    await expand();
+    const row = screen.getByText("無風險利率").closest(".row")!;
+    expect(row).toHaveTextContent("7.0%");
+    expect(row).not.toHaveTextContent("FALLBACK");
+    expect(row).not.toHaveTextContent("STALE");
+  });
 });
 
 describe("不重複頁面上方已經無條件顯示過的東西（R1 §3.4／設計取捨）", () => {
