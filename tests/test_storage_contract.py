@@ -103,6 +103,33 @@ def test_archived_scenario_keeps_its_results(storage):
     assert storage.latest_result("s1").view == {"a": 1}
 
 
+# ---------- 還原（TR2／#89） ----------
+
+def test_restoring_an_archived_scenario_brings_it_back_to_the_default_list(storage):
+    storage.create_scenario(_scenario())
+    storage.archive_scenario("s1", ts="2026-08-05T00:00:00+00:00")
+
+    assert storage.restore_scenario("s1", ts="2026-08-06T00:00:00+00:00") is True
+
+    assert [s.id for s in storage.list_scenarios()] == ["s1"]     # 預設清單重新看得到
+    restored = storage.get_scenario("s1")
+    assert restored.archived_at is None
+
+
+def test_restoring_a_never_archived_or_missing_scenario_reports_false(storage):
+    storage.create_scenario(_scenario())
+    assert storage.restore_scenario("s1", ts="2026-08-06T00:00:00+00:00") is False
+    assert storage.restore_scenario("nope", ts="2026-08-06T00:00:00+00:00") is False
+
+
+def test_restored_scenario_keeps_its_results(storage):
+    storage.create_scenario(_scenario())
+    storage.save_result(ResultRecord("s1", "2026-08-01T12:00:00+00:00", {"a": 1}))
+    storage.archive_scenario("s1", ts="2026-08-05T00:00:00+00:00")
+    storage.restore_scenario("s1", ts="2026-08-06T00:00:00+00:00")
+    assert storage.latest_result("s1").view == {"a": 1}
+
+
 # ---------- 結果與歷史 ----------
 
 def test_latest_result_is_the_newest_by_analyzed_at(storage):

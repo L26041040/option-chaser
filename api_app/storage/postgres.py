@@ -179,6 +179,13 @@ class PostgresStorage:
                 "WHERE id = %s AND archived_at IS NULL", (ts, scenario_id))
             return cur.rowcount == 1   # 連線關閉前讀
 
+    def restore_scenario(self, scenario_id: str, *, ts: str) -> bool:
+        with self._connect() as conn:
+            cur = conn.execute(
+                "UPDATE scenarios SET archived_at = NULL "
+                "WHERE id = %s AND archived_at IS NOT NULL", (scenario_id,))
+            return cur.rowcount == 1   # 連線關閉前讀
+
     # ---------- 結果 ----------
 
     def save_result(self, rec: ResultRecord) -> None:

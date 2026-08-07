@@ -90,6 +90,55 @@ def test_archiving_is_idempotent_and_404s_on_unknown():
     assert c.post("/api/scenarios/nope/archive").status_code == 404
 
 
+# ---------- 還原（TR2／#89） ----------
+
+def test_restoring_brings_it_back_to_the_default_list():
+    c = _client()
+    sc = _create(c)
+    c.post(f"/api/scenarios/{sc['id']}/archive").raise_for_status()
+
+    resp = c.post(f"/api/scenarios/{sc['id']}/restore")
+
+    assert resp.status_code == 200
+    assert [s["id"] for s in c.get("/api/scenarios").json()] == [sc["id"]]
+    detail = c.get(f"/api/scenarios/{sc['id']}").json()
+    assert detail["archived_at"] is None
+
+
+def test_restoring_leaves_an_audit_trail():
+    c = _client()
+    sc = _create(c)
+    c.post(f"/api/scenarios/{sc['id']}/archive").raise_for_status()
+    c.post(f"/api/scenarios/{sc['id']}/restore").raise_for_status()
+
+    events = [e["event"] for e in c.get(f"/api/scenarios/{sc['id']}/events").json()]
+    assert events == ["SCENARIO_CREATED", "SCENARIO_ARCHIVED", "SCENARIO_RESTORED"]
+
+
+def test_restoring_a_never_archived_scenario_is_a_noop_not_an_error():
+    """跟 `archive` 對重複呼叫的處理同一種寬容：對呼叫端而言結果相同
+    （已經不在垃圾桶了），視為冪等成功，不當成錯誤。"""
+    c = _client()
+    sc = _create(c)
+    assert c.post(f"/api/scenarios/{sc['id']}/restore").status_code == 200
+    events = [e["event"] for e in c.get(f"/api/scenarios/{sc['id']}/events").json()]
+    assert events == ["SCENARIO_CREATED"]   # 沒有多寫一筆 SCENARIO_RESTORED
+
+
+def test_restoring_404s_on_unknown():
+    assert _client().post("/api/scenarios/nope/restore").status_code == 404
+
+
+def test_restored_scenario_can_be_refreshed_again():
+    """TR1（#88）的垃圾桶硬擋要在還原後解除——不是永久黏住。"""
+    c = _client()
+    sc = _create(c)
+    c.post(f"/api/scenarios/{sc['id']}/archive").raise_for_status()
+    c.post(f"/api/scenarios/{sc['id']}/restore").raise_for_status()
+
+    assert c.post(f"/api/scenarios/{sc['id']}/refresh").status_code == 200
+
+
 # ---------- 分析與結果歷史 ----------
 #
 # 刷新端點本身（回傳形狀、入庫、失敗分層）在 `test_api_refresh.py`（V4／#52）。

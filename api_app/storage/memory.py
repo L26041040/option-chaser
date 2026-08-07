@@ -43,6 +43,13 @@ class MemoryStorage:
         self._scenarios[scenario_id] = sc.archived(ts)
         return True
 
+    def restore_scenario(self, scenario_id: str, *, ts: str) -> bool:
+        sc = self._scenarios.get(scenario_id)
+        if sc is None or sc.archived_at is None:
+            return False
+        self._scenarios[scenario_id] = sc.restored()
+        return True
+
     # ---------- 結果 ----------
 
     def save_result(self, rec: ResultRecord) -> None:

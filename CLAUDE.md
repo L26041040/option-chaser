@@ -1183,9 +1183,18 @@ RC1／TR1／TR2／TR3／TR6 可平行開工，TR4 被 TR2＋TR3 擋，TR5 被 TR
   無 scenario 概念）不受影響。後端＋3 條、前端＋1 條，全套 675 條
   （後端）／291 條（前端）全綠
 
+- **TR2**（#89）— 後端還原：`Storage` port 新增 `restore_scenario`
+  （`Scenario.restored()` 清空 `archived_at`，`memory`／`postgres`
+  皆實作，契約測試 parametrize 兩者），API 新增
+  `POST /api/scenarios/{id}/restore`，成功寫 `SCENARIO_RESTORED`
+  事件；重複呼叫（本來就不在垃圾桶）冪等成功、不留事件，比照既有
+  `archive` 對重複封存的處理。批量不新增後端端點——沿用既有序列
+  佇列模式，前端 TR4／TR5 對選中的每個劇本各打一次這個端點。前端
+  `api.ts` 新增 `restoreScenario()` 供 TR4 消費。後端＋9 條，全套
+  686 條（後端）／292 條（前端）全綠
+
 **待辦（可平行開工，除 TR4／TR5 有依賴）**：
 
-- TR2（#89）— 後端還原（單筆＋批量）
 - TR3（#90）— 後端永久刪除（單筆＋批量，含 cascade）
 - TR6（#91）— 前端：主清單批次移入垃圾桶＋單筆刪除圖示化
 - TR4（#92）— 前端：垃圾桶畫面單筆操作（被 TR2／TR3 擋）

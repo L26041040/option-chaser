@@ -349,6 +349,24 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
                                event="SCENARIO_ARCHIVED", payload={})
         return {"archived": True}
 
+    @app.post("/api/scenarios/{scenario_id}/restore")
+    def restore_scenario(scenario_id: str) -> dict:
+        """TR2（#89）：垃圾桶單筆還原——清空 `archived_at`，
+        results／snapshots／events 不受影響（只是軟刪除的反向操作）。
+        還原後 TR1（#88）的硬擋自然解除，不需要另外處理。批量還原不在
+        這裡：前端沿用既有序列佇列模式，對選中的每個劇本各打一次這個
+        端點（比照批次刷新／批次移入垃圾桶），不新增後端批次端點。
+
+        重複呼叫（本來就不在垃圾桶）視為冪等成功，比照 `archive_
+        scenario` 對重複封存的處理——不留一筆沒意義的事件。
+        """
+        _require(scenario_id)
+        ts = now_utc_iso()
+        if _db().restore_scenario(scenario_id, ts=ts):
+            _db().append_event(ts=ts, scenario_id=scenario_id,
+                               event="SCENARIO_RESTORED", payload={})
+        return {"restored": True}
+
     @app.post("/api/scenarios/{scenario_id}/refresh")
     def refresh_scenario(scenario_id: str) -> dict:
         """單劇本刷新（V4／#52）：抓鏈→分析→結果與原始快照入庫。

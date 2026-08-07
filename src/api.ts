@@ -409,6 +409,16 @@ export function archiveScenario(id: string): Promise<{ archived: boolean }> {
   );
 }
 
+/** TR2（#89）：垃圾桶單筆還原。批量走既有序列佇列模式（比照批次
+ *  刷新／TR6 批次移入垃圾桶），對選中的每個劇本各呼叫一次這個函式，
+ *  不是另一個批次端點。 */
+export function restoreScenario(id: string): Promise<{ restored: boolean }> {
+  return request<{ restored: boolean }>(
+    `/api/scenarios/${encodeURIComponent(id)}/restore`,
+    { method: "POST" },
+  );
+}
+
 /** V8（#56）：原始資料表（當次快照）的合約列——逐筆合約完整原樣，
  *  不是候選腿的精簡子集，欄位跟 CSV 下載一致。 */
 export interface RawContract {
