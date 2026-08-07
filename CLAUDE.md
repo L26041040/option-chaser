@@ -1400,9 +1400,8 @@ tracking #86 本身，加上此前兩輪（PR #76「前端重練＋QA 維修輪�
     （已確認復原為 `prod_deployment_urls_and_all_previews`），日後若
     需要調整以 Vercel 後台 Project Settings → Deployment Protection
     為準
-  - **待清理**：`option-chaser-rate-probe`（#74 探測用的獨立臨時
-    Vercel 專案，跟正式 `option-chaser` 專案分開）已無用途，目前沒有
-    工具可以刪除 Vercel 專案，需求方之後可自行在後台刪除
+  - `option-chaser-rate-probe`（#74 探測用的獨立臨時 Vercel 專案，跟
+    正式 `option-chaser` 專案分開）**需求方已於 2026-08-07 手動刪除**
 - 全套測試現為全綠（後端 667 條、前端 288 條 Vitest、Desktop＋iPhone
   共 22 條 Playwright；舊紀錄提到的 5 個 streamlit 版本漂移失敗已隨
   T2 改寫消失）。MVP-v2（M1a–M6）起的最新數字。
