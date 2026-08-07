@@ -276,6 +276,18 @@ export default function App() {
     }
   }
 
+  /**
+   * TR4（#92）：垃圾桶還原後把那個劇本交回主清單。`TrashView` 自己的
+   * 清單狀態獨立於這裡的 `rows`（它是另一個畫面、另一份資料），還原
+   * 成功不會自動同步，得靠這個回呼把資料交回去——`TrashView` 呼叫
+   * 還原端點前本來就已經有那一列完整資料，不必為此再打一次清單查詢。
+   * 函式式更新＋去重（`some` 檢查）：跟 `create()` 同一個理由，`rows`
+   * 可能在還原這段期間被進行中的刷新佇列更新過。
+   */
+  function restoreFromTrash(row: ScenarioSummary) {
+    setRows((prev) => (prev.some((r) => r.id === row.id) ? prev : [...prev, row]));
+  }
+
   // ---------- 批次選取移入垃圾桶（TR6／#91） ----------
   //
   // 沒有新增後端批次端點：依序（不併發）呼叫既有單筆 `/archive`，跟
@@ -366,7 +378,7 @@ export default function App() {
   );
 
   if (!isDesktop && showTrash) {
-    return <TrashView />;
+    return <TrashView onRestore={restoreFromTrash} />;
   }
 
   if (!isDesktop && detailProps) {
@@ -439,7 +451,7 @@ export default function App() {
   // TR6（#91）：垃圾桶開著時，左側面板內容整個換成 `TrashView`（需求方
   // 核准版面 D2），右側 `detail-pane` 邏輯完全不動——跟現有「選劇本
   // 切換右側」的機制平行、不衝突。
-  const library = showTrash ? <TrashView /> : (
+  const library = showTrash ? <TrashView onRestore={restoreFromTrash} /> : (
     <div className="screen">
       <Toolbar
         count={rows.length}

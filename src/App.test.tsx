@@ -226,6 +226,43 @@ describe("垃圾桶（TR6／#91）", () => {
     expect(await screen.findByText("劇本庫")).toBeInTheDocument();
   });
 
+  it("垃圾桶還原後回到劇本庫，那個劇本重新出現在主清單（TR4／#92）", async () => {
+    const archivedRow = { ...rowB, archived_at: "2026-08-05T00:00:00+00:00" };
+    mockRoutes({}).mockImplementation(async (url: string) => {
+      if (url === "/api/scenarios?include_archived=true") {
+        return { ok: true, status: 200, json: async () => [archivedRow] };
+      }
+      if (url.endsWith("/restore")) {
+        return { ok: true, status: 200, json: async () => ({ restored: true }) };
+      }
+      if (url.endsWith("/refresh")) {
+        return { ok: true, status: 200, json: async () => rowA };
+      }
+      if (url === "/api/scenarios") {
+        return { ok: true, status: 200, json: async () => [rowA] };
+      }
+      return { ok: true, status: 200, json: async () => [rowA] };
+    });
+    render(<App />);
+    await screen.findByText("TLT");
+
+    await userEvent.click(
+      await screen.findByRole("button", { name: "垃圾桶" }));
+    await screen.findByText("SPY");
+
+    await userEvent.click(
+      screen.getByRole("button", { name: "還原 SPY 2028-05" }));
+    await waitFor(() => {
+      expect(screen.queryByText("SPY")).not.toBeInTheDocument();
+    });
+
+    await userEvent.click(screen.getByText("‹ 劇本庫"));
+
+    // 還原成功的劇本重新出現在主清單，不必等下一次整頁重新整理
+    expect(await screen.findByText("SPY")).toBeInTheDocument();
+    expect(screen.getByText("TLT")).toBeInTheDocument();
+  });
+
   it("批次選取模式：勾選兩個、確認後兩者都移入垃圾桶", async () => {
     mockLibraryAndArchive([rowA, rowB]);
     render(<App />);

@@ -23,8 +23,8 @@
 > **Trash 語意＋利率顯示修正**這一輪（見下方「Trash 語意＋利率顯示
 > 修正」小節）：需求方三點反饋（Archive 改真正 Trash、利率 fallback
 > 顯示語意）、`/to-tickets` 拆成 RC1＋TR1–TR6（#87–#93）。**RC1、
-> TR1、TR2、TR3、TR6 已完成**，剩 TR4／TR5（垃圾桶畫面的還原與永久
-> 刪除操作）施工中。中間穿插的
+> TR1、TR2、TR3、TR6、TR4 已完成**，剩 TR5（垃圾桶畫面的批次還原與
+> 批次永久刪除）施工中。中間穿插的
 > 「目前狀態（2026-08-02）」等舊日期標頭是歷史留存，**以此段與下面
 > 對應小節末尾的紀錄為準，不要被舊標頭誤導**。下一階段候選：
 > **多使用者隔離** [#59]（未標 `ready-for-agent`，需求方裁示後才開工）、
@@ -1230,11 +1230,26 @@ RC1／TR1／TR2／TR3／TR6 可平行開工，TR4 被 TR2＋TR3 擋，TR5 被 TR
   批次移入垃圾桶端到端、垃圾桶入口導覽），全套 313 條 Vitest／
   27 條 Playwright 全綠
 
+- **TR4**（#92）— 前端：垃圾桶畫面單筆還原／永久刪除＋二次確認。
+  `TrashView.tsx` 每列新增「還原」「永久刪除」文字鈕；還原呼叫既有
+  `restoreScenario()`、成功後從垃圾桶清單移除，並透過新增的
+  `onRestore` 回呼把那一列資料交回 `App.tsx`（`restoreFromTrash()`
+  併入 `rows`，去重比照 `create()` 既有函式式更新寫法）——`TrashView`
+  自己的清單狀態獨立於 `App` 的 `rows`，不會自動同步。永久刪除必經
+  二次確認：`ConfirmDeleteOne` 是全站唯一的真正 modal（`.confirm-
+  overlay`／`.confirm-sheet`，`CreateEntry.tsx` 那類低風險操作刻意
+  原地展開不用 modal，但永久刪除是破壞性動作，風險等級不同），標題
+  明確列出該劇本的 ticker＋target month（例如「永久刪除 TLT ·
+  2028-05？」），確認後呼叫既有 `deleteScenario()`；失敗時確認畫面
+  留著並顯示原因，不靜靜關掉讓使用者以為刪除生效了。前端＋新增
+  11 條 Vitest（`TrashView.test.tsx` 9 條、`App.test.tsx` 還原回主
+  清單整合測試 1 條）、＋1 條 Playwright（iPhone：還原一個＋永久刪除
+  另一個，含確認畫面內容驗證），全套 323 條 Vitest／28 條 Playwright
+  全綠
+
 **待辦**：
 
-- TR4（#92）— 前端：垃圾桶畫面單筆操作（被 TR2／TR3 擋，已解除，
-  可施工）
-- TR5（#93）— 前端：垃圾桶畫面批次操作（被 TR4 擋）
+- TR5（#93）— 前端：垃圾桶畫面批次操作（被 TR4 擋，已解除，可施工）
 
 > 沿用規則：全部票做完才開 PR、merge 回 master，中途不主動開。
 
