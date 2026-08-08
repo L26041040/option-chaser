@@ -38,6 +38,12 @@
 > **多使用者隔離** [#59]（未標 `ready-for-agent`，需求方裁示後才開工）、
 > 外觀優化（QA-v2 需求方已明確裁示延後，待主動重啟）、Dashboard 佔位區
 > 實際內容（跨劇本比較功能確定後另開票，spec #77 Out of Scope）。
+> **2026-08-08 需求方 `/wayfinder` 開了「貴不貴」研究地圖**（issue
+> #95）：問題升級為「這組 Spread 現在貴不貴」的完整判讀路徑地圖
+> （不預設 IV gap 是答案），R1–R4 四張研究票已完成並關閉（四份新
+> 文件見「下一輪研究」小節末尾），**下一步＝G1 [#100] 需求方
+> Grilling 裁示語意**（frontier，等需求方 cue）→ G2 [#101] →
+> `/to-spec`。
 > 環境操作細節（venv／本地 Postgres／容器倒退修法／部署網址）見檔案
 > 最底下「## 環境」一節，已同步更新。
 
@@ -1374,9 +1380,45 @@ tracking #86 本身，加上此前兩輪（PR #76「前端重練＋QA 維修輪�
   7.68 vs 市場 3.95）——不影響方案一~三，但**堵死用現有引擎自建
   方案四殘差的捷徑**，文中已標警告。
 
-**下一步**：需求方審閱三份文件（建議順序：方法論 → candidate
-深化 → 資料源）→ 執行三步驗證（資料源實測）→ 裁示方案與 vendor
-→ 才進 `/to-spec`／拆票。**本輪不施工。**
+- **Wayfinder 地圖：「這組 Spread 現在貴不貴」**（2026-08-08，
+  需求方 `/wayfinder` 指示，地圖＝issue #95、子票 #96–#101）：
+  把問題從「IV 相對位置」升級為「貴不貴」的完整判讀路徑地圖——
+  九條路徑按參照系拆解（相對自身歷史／vol 環境／skew 歷史／鄰近
+  履約價橫斷面／同 payoff 等價品／候選池／隱含機率／自建預測／
+  price 空間結構價），逐條標「真正回答什麼、先例等級、去向」，
+  拆解表在 #95 本文。收斂出四張研究票**全數完成並關閉**，四份
+  新文件（皆已 commit 上工作分支）：
+  - **R1 [#96] 隱含機率讀數**（`spread-implied-probability-readout.md`）
+    ——可行且值得：`D/W = DF × 帶狀平均生存機率`（模型無關恆等式，
+    引擎驗證吻合）；零額外資料十行算術；先例成熟（desk digital
+    掛帳／BL／BoE·Fed implied PDF／FedWatch·Kalshi ¢ 慣例）；
+    陷阱＝必除 DF、寬帶不可標點機率、N(d2) 在 q=0 下不可用、
+    嚴禁標「勝率」
+  - **R2 [#97] Surface residual**（`spread-surface-residual-rv.md`）
+    ——可行且值得，定位「安靜的保險絲＋挑選品質客觀化」：最低可行
+    fit＝per-expiry 加權 OLS 二次式（DFW 1998 先例）、OTM-only、
+    ≥6 點；直接 fit Cboe `iv` 繞開 q=0；`theo` 殘差＝零成本 v0
+    （與自建二次式相關 +0.94~+0.98）；健康鏈殘差普遍低於 bid-ask
+    半寬底噪→輸出永遠並列底噪
+  - **R3 [#98] price 空間結構價 percentile**
+    （`spread-price-percentile-vs-vol-space.md`）——**負結論**：被
+    方案二（vol 空間 Ĝ）dominated；先例只在指數／基金層級（buffer
+    ETF cap 史等），per-candidate 無；利率主導長天期結構價（TLT
+    LEAPS 利率 2pp→價 +26%）是汙染；資料需求不少於方案二還要含 q
+    引擎
+  - **R4 [#99] Synthetic parity 檢查**
+    （`spread-synthetic-parity-check.md`）——**比價＝雜訊**（YETI
+    758 筆實算：88% 配對 gap 埋在自身交易成本內；「call 側貴」是
+    美式 box 未貼現定價假象）；唯一值得產品化＝`D_worst > width`
+    穩賠健全性紅旗（零成本，引擎 net_worst 已算好）；put credit
+    spread 當候選策略不建議本輪做
+
+**下一步**：需求方審閱七份文件（前輪三份＋本輪四份；建議順序：
+方法論 → candidate 深化 → R1 → R2 → R4 → R3 → 資料源）→
+**G1 [#100] Grilling 裁示「貴」的語意**（產品採哪幾個參照系；
+7b edge-vs-預測要不要進產品哲學）→ G2 [#101] 呈現與資料裁示
+（若選需歷史序列的路徑才需要三步驗證實測）→ 才進 `/to-spec`／
+拆票。**本輪不施工。**
 
 **需求方另保留兩個後續獨立 Grill（本輪明確不涵蓋，勿混入）**：
 - C. Long Call 如何與 Spread 正確比較／整合，不強行壓成單一 ROI
