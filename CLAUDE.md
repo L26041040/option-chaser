@@ -28,10 +28,11 @@
 > #67–75／#78–84 一併於收尾時關閉）——Archive 正式改為 Trash 語意、
 > 利率顯示語意修正、垃圾桶前端全部落地。中間穿插的
 > 「目前狀態（2026-08-02）」等舊日期標頭是歷史留存，**以此段與下面
-> 對應小節末尾的紀錄為準，不要被舊標頭誤導**。同日稍晚需求方指示
-> **下一輪先研究、不施工**：歷史 IV 資料源＋IV 相對歷史方法論兩份
-> 研究文件已完成（見「下一輪研究」小節），等需求方審閱、實測資料源、
-> 裁示方案後才進 spec／拆票。其他下一階段候選：
+> 對應小節末尾的紀錄為準，不要被舊標頭誤導**。需求方已指示
+> **下一輪先研究、不施工**：三份研究文件已完成（歷史 IV 資料源、
+> IV 相對歷史方法論、candidate 層級深化——見「下一輪研究」小節），
+> 等需求方審閱、實測資料源、裁示方案後才進 spec／拆票。
+> 其他下一階段候選：
 > **多使用者隔離** [#59]（未標 `ready-for-agent`，需求方裁示後才開工）、
 > 外觀優化（QA-v2 需求方已明確裁示延後，待主動重啟）、Dashboard 佔位區
 > 實際內容（跨劇本比較功能確定後另開票，spec #77 Out of Scope）。
@@ -1341,8 +1342,39 @@ tracking #86 本身，加上此前兩輪（PR #76「前端重練＋QA 維修輪�
   共同紅線：**任何 IV 環境指標都是標示層，不進排名／過濾／A14.2
   成本口徑**，要影響入選屬口徑變更、需求方另行裁示。
 
-**下一步**：需求方審閱兩份文件 → 執行三步驗證（資料源實測）→
-裁示方案與 vendor → 才進 `/to-spec`／拆票。**本輪不施工。**
+- **B-深化：candidate 層級 IV 相對位置**（2026-08-08，
+  `docs/research/candidate-iv-relative-value.md`）：需求方看完 B 後
+  追問「不要標的整體 IV，要指定 Buy/Sell legs 的 volatility 結構
+  相對歷史位置」，十問十答深挖專業市場做法。取材突破：經
+  raw.githubusercontent.com 鏡像取得**三份一手 PDF 逐字檢視**
+  （Zou & Derman《Strike-Adjusted Spread》GS 1999 全文、Natenberg
+  1994 第 10/18 章、Gatheral 2006 SVI 節），其餘外部域仍
+  EGRESS_BLOCKED。要點——desk 語言是三層拆解（level／skew slope／
+  surface residual），沒有人給 spread 單一 IV；**固定合約 Sell−Buy
+  raw IV gap 的 1Y percentile 不成立**（skew 斜率 ~1/√T 的
+  roll-down 等四混淆；引擎外推：DTE 882→252 天 gap 6.0→11.2 pts
+  零環境變化）；normalize 成熟工具箱＝÷ATM vol（Mixon 2011）＋
+  delta 座標（FX RR 可搬處）＋√t 加權（Natenberg 一手）；漂移解法
+  ＝每天在 surface 固定 (tenor, delta) 座標重錨定取值，vendor 現成
+  序列＝零自訂 bucket，**誠實缺口：LEAPS 882 DTE 超出 ORATS 365d／
+  OptionMetrics 730d 網格**（三條處理路線並列）。**四方案供裁示**：
+  一＝兩腿 (tenor,delta) 座標各自 1Y percentile【A 成熟】；二＝
+  candidate 錨定 normalized skew `Ĝ=(σ(Δs)−σ(Δb))/σ_ATM` 序列
+  percentile【B 延伸，對原始問題最直接的單一數字回答】；三＝固定
+  合約 raw gap 走勢圖（自家快照零成本；percentile 不做核心）【圖
+  B／percentile 化 C】；四＝橫斷面 surface 殘差（Cboe `theo` 零成本
+  起點）【A，但與歷史位置正交、card 上須分區】。C 類不建議：
+  vega-weighted spread IV、任何單一「Spread IV」、debit percentile
+  當 IV、RNHD/SAS 全套自建、CBOE SKEW 式全 smile 指標。Long Call
+  （level 語言、單點 percentile）與 Spread（skew 語言、gap）分屬
+  兩種 definition、同一 card 兩模式——有 FX 市場三維分報的專業對應。
+  ⚠ 側發現：引擎 q=0（無配息）在 TLT LEAPS 上 BS 明顯高估（實算
+  7.68 vs 市場 3.95）——不影響方案一~三，但**堵死用現有引擎自建
+  方案四殘差的捷徑**，文中已標警告。
+
+**下一步**：需求方審閱三份文件（建議順序：方法論 → candidate
+深化 → 資料源）→ 執行三步驗證（資料源實測）→ 裁示方案與 vendor
+→ 才進 `/to-spec`／拆票。**本輪不施工。**
 
 **需求方另保留兩個後續獨立 Grill（本輪明確不涵蓋，勿混入）**：
 - C. Long Call 如何與 Spread 正確比較／整合，不強行壓成單一 ROI
