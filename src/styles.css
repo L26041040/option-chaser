@@ -16,8 +16,17 @@
   --bg-elevated: #ffffff;
   --separator: rgba(60, 60, 67, 0.18);
   --label: #000000;
-  --label-secondary: rgba(60, 60, 67, 0.6);
-  --label-tertiary: rgba(60, 60, 67, 0.3);
+  /* QA-FIX-2（QA-01）：淺色模式的次級／三級文字色。iOS 原生值
+     （0.6／0.3）在白底上只有 3.44:1 與 1.73:1，遠低於 WCAG AA
+     normal text 的 4.5:1——實測後照 AA 反解最小 alpha（最差底色是
+     頁面底 `--bg` #f2f2f7，不是卡片白底），再留一點餘裕：
+       secondary 0.90 → 卡片 8.07:1／頁面 7.37:1／chip 底 7.19:1
+       tertiary  0.75 → 卡片 5.16:1／頁面 4.85:1／chip 底 4.76:1
+     三階層次仍在（L: 0 < 0.080 < 0.153），只是不再淡到讀不出來。
+     深色模式的同名 token 不在本次修正範圍（見下方 media query），
+     維持原值、不退化。 */
+  --label-secondary: rgba(60, 60, 67, 0.9);
+  --label-tertiary: rgba(60, 60, 67, 0.75);
   --tint: #007aff;
   --green: #34c759;
   --red: #ff3b30;
@@ -746,7 +755,11 @@ body {
   gap: 1px;
   color: inherit;
   text-decoration: none;
-  padding: 6px 12px;
+  /* QA-FIX-2：第三層字級 11px→12px 讓每張卡長高 ~1.5px，一個手機視窗
+     就從 4 張掉到 3 張（#82 既有驗收要求 ≥4）。把上下內距 6px→4px
+     換回來——壓縮的是留白不是資訊，與 compact row 一貫的取捨相同；
+     整張卡仍有 ~78px 高，遠超過觸控目標下限。 */
+  padding: 4px 12px;
   /* 右側留給疊在右下角的封存鈕，文字不會被蓋住。 */
   padding-right: 52px;
 }
@@ -808,7 +821,9 @@ body {
    層是低權重資訊」的定位：讀不完整就滑進詳細頁看，不需要卡片上完整
    保留。 */
 .compact-tier3 {
-  font-size: 11px;
+  /* QA-FIX-2（QA-01）：11px → 12px。第三層是全卡最小的字，配上最低
+     對比的 tertiary 色本來就最難讀；字級與色兩邊各讓一步。 */
+  font-size: 12px;
   color: var(--label-tertiary);
   white-space: nowrap;
   overflow: hidden;

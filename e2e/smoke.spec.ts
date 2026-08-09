@@ -132,8 +132,11 @@ test("清單 → 詳細頁：摘要、基準候選、進場成本、主圖、候
   // 所以主圖的斷言鎖定主圖那一區。
   const mainChart = page.locator("section").filter({ hasText: "劇本主圖" }).first();
   await expect(mainChart.locator("table.heatmap-table")).toBeVisible();
-  // 「現價」在摘要與 Heatmap 錨點列各有一個，這裡要驗的是圖上那個
-  await expect(mainChart.locator("table.heatmap-table").getByText("現價")).toBeVisible();
+  // 「現價」在摘要與 Heatmap 錨點列各有一個，這裡要驗的是圖上那個。
+  // `exact` 是必要的：QA-FIX-1 之後表頭多了一欄「vs 現價」，非精確
+  // 比對會同時命中欄標題與錨點標籤。
+  await expect(mainChart.locator("table.heatmap-table")
+    .getByText("現價", { exact: true })).toBeVisible();
 
   // 舊「Long Call 追平價格」獨立卡片已依 spec 決策 E 移除（#103）。
   await expect(page.getByText(/Long Call 追平價格/)).toHaveCount(0);
