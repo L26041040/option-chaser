@@ -1492,7 +1492,7 @@ tracking #86 本身，加上此前兩輪（PR #76「前端重練＋QA 維修輪�
 > 沿用規則：反饋要先逐點跟需求方確認打算怎麼改、為什麼，確認完才
 > 開票施工；`/implement` 進行中沒遇到需人類裁示的事就不停。
 
-### MVP V3（spec #102，2026-08-09 拆票，施工中）
+### MVP V3（spec #102，2026-08-09 拆票，第一施工批次已完結）
 
 需求基準：`docs/Mvp-v3.md`＋`docs/Mvp-v3-appendix.txt`；spec 全文與三輪
 Review 修訂見 issue #102。14 張子票 #103–#116，需求方 `/implement`
@@ -1501,6 +1501,10 @@ Review 修訂見 issue #102。14 張子票 #103–#116，需求方 `/implement`
 不施工**：#111（`needs-human-validation`，vendor 驗證需可連網環境，
 本沙箱多數外部網域 403）、#113（被 #110＋需求方核准擋，人工裁示點）、
 #114（被 #103＋#111 擋）、#115（被 #113 擋）、#116（被 #115＋#109 擋）。
+
+**九張全數完成（2026-08-09）**，#110 是研究票、本批次終點——完整結果
+見批次總回報（本次對話回覆）。等需求方 review＋#110 correctness 裁示
+（是否進 #113），本批次不主動開 PR。
 
 - **#103** [#103] — 劇本詳細頁資訊階層重整＋移除追平價格 UI
   （commit `669d653`）：`ScenarioDetail.tsx` 依決策 A 重排為 摘要 →
@@ -1657,6 +1661,28 @@ Review 修訂見 issue #102。14 張子票 #103–#116，需求方 `/implement`
   不再唯一（每張 Heatmap 的目標列都是同一個數字）——改用 `.row-note`
   scope 回摘要那一句，不影響其口徑或既有斷言意圖，純粹是本票新增
   文字後既有選擇器不夠精確的必然後果。
+- **#110** [#110] — Valuation correctness：LEAPS carry 方法比較與驗收
+  測試（決策 D1，研究票，commit `866c708`）：本批次終點，只做研究、
+  不修改引擎／golden fixtures／契約樣本、不鎖定方法。核心量化（真實
+  資料，`tests/test_research_valuation_carry.py` 全部可重跑）：現行
+  q=0 基準對真實 2026-07-17 TLT 2028-12-15 LEAPS call（取自本 repo
+  既有 `tlt_report.md`）5 檔中 3 檔在數學上不可行（市場中價低於 q=0
+  模型 sigma→0 下限），且排除「利率抓錯」對立假說後結論穩健（臨界
+  利率 1.6–3.2% vs 同期真實利率 ~4%）；引用既有研究
+  （`spread-synthetic-parity-check.md` 真實 758 筆 Cboe 全鏈實算）證明
+  vanilla put-call parity 萃取股利會被美式提前履約溢價汙染、LEAPS
+  尤重，AC 明文警告的風險已用真實資料坐實、不建議採用；新提出並量化
+  一個零新增資料依賴、只用同側 call（天然避開上述汙染源）的跨履約價
+  IV 一致性校準法，經驗最佳擬合 q≈4.5% 時 5 檔全部可解且離散度明顯
+  收斂；獨立覆核（自製半年配息 bootstrap＋真實 2026-08-04 Treasury
+  曲線）確認 `risk-free-rate-for-bs.md` 既有的 par→continuous 近似
+  結論（1M–3Y 差距 <1bp）仍然成立，2Y 節點兩份分析幾乎完全吻合。
+  書面建議（需需求方核准，非已執行變更）：方向上採股利殖利率調整 BS
+  ＋同快照跨履約價校準，見 `docs/research/
+  valuation-carry-method-comparison.md` §7 完整論述與已知殘留侷限。
+  範圍確認：`option_chaser/`／golden fixtures／`contracts/` 全部
+  git status 乾淨，四個新增檔案（研究文件、純函式模組、真實資料
+  fixture、驗收測試）皆為純加法，研究模組不被引擎 import。
 
 ### 施工依據
 
