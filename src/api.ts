@@ -97,6 +97,13 @@ export interface Candidate {
   effective_leverage: number;
   /** 佔成本比率（Mid 口徑）——不是原始美元 Greeks，見 R1 §4.2 注意事項。 */
   theta_day_rate: number;
+  /**
+   * MVP V3（#112，spec #102 決策 H）：這組候選估值實際用到的利率與
+   * 年期——後端 `leg_rate(p, expiry)` 查表結果，與 `rate_by_expiry`
+   * 建表同一條年期公式，前端只格式化、不查表、不換算。
+   */
+  rate_used: number;
+  rate_tenor_years: number;
   vega_per_pt: number;
   scenario_vector: ScenarioVectorView;
   completion_curve: [number, number][];

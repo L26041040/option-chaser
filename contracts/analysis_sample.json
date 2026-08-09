@@ -306,6 +306,8 @@
                 "return": 5.666666666666666
               }
             ],
+            "rate_tenor_years": 0.06301369863013699,
+            "rate_used": 0.041,
             "retention": 0.0,
             "scenario_vector": {
               "entries": [
@@ -628,6 +630,8 @@
                 "return": 4.333333333333333
               }
             ],
+            "rate_tenor_years": 0.10136986301369863,
+            "rate_used": 0.041,
             "retention": 0.0,
             "scenario_vector": {
               "entries": [
@@ -950,6 +954,8 @@
                 "return": 3.0
               }
             ],
+            "rate_tenor_years": 0.1780821917808219,
+            "rate_used": 0.041,
             "retention": 0.0,
             "scenario_vector": {
               "entries": [
@@ -1272,6 +1278,8 @@
                 "return": 1.8571428571428583
               }
             ],
+            "rate_tenor_years": 0.3506849315068493,
+            "rate_used": 0.041,
             "retention": 0.2709232412300542,
             "scenario_vector": {
               "entries": [
@@ -1678,6 +1686,8 @@
               "return": 5.666666666666666
             }
           ],
+          "rate_tenor_years": 0.06301369863013699,
+          "rate_used": 0.041,
           "retention": 0.0,
           "scenario_vector": {
             "entries": [
@@ -1987,6 +1997,8 @@
               "return": 4.333333333333333
             }
           ],
+          "rate_tenor_years": 0.10136986301369863,
+          "rate_used": 0.041,
           "retention": 0.0,
           "scenario_vector": {
             "entries": [
@@ -2296,6 +2308,8 @@
               "return": 3.0
             }
           ],
+          "rate_tenor_years": 0.1780821917808219,
+          "rate_used": 0.041,
           "retention": 0.0,
           "scenario_vector": {
             "entries": [
@@ -2608,6 +2622,8 @@
               "return": 5.666666666666666
             }
           ],
+          "rate_tenor_years": 0.06301369863013699,
+          "rate_used": 0.041,
           "retention": 0.0,
           "scenario_vector": {
             "entries": [
@@ -2917,6 +2933,8 @@
               "return": 4.333333333333333
             }
           ],
+          "rate_tenor_years": 0.10136986301369863,
+          "rate_used": 0.041,
           "retention": 0.0,
           "scenario_vector": {
             "entries": [
@@ -3226,6 +3244,8 @@
               "return": 3.0
             }
           ],
+          "rate_tenor_years": 0.1780821917808219,
+          "rate_used": 0.041,
           "retention": 0.0,
           "scenario_vector": {
             "entries": [
@@ -3535,6 +3555,8 @@
               "return": 1.8571428571428583
             }
           ],
+          "rate_tenor_years": 0.3506849315068493,
+          "rate_used": 0.041,
           "retention": 0.2709232412300542,
           "scenario_vector": {
             "entries": [
@@ -3866,6 +3888,8 @@
                   "return": 5.666666666666666
                 }
               ],
+              "rate_tenor_years": 0.06301369863013699,
+              "rate_used": 0.041,
               "retention": 0.0,
               "scenario_vector": {
                 "entries": [
@@ -4180,6 +4204,8 @@
                   "return": 4.333333333333333
                 }
               ],
+              "rate_tenor_years": 0.10136986301369863,
+              "rate_used": 0.041,
               "retention": 0.0,
               "scenario_vector": {
                 "entries": [
@@ -4494,6 +4520,8 @@
                   "return": 3.0
                 }
               ],
+              "rate_tenor_years": 0.1780821917808219,
+              "rate_used": 0.041,
               "retention": 0.0,
               "scenario_vector": {
                 "entries": [
@@ -4808,6 +4836,8 @@
                   "return": 1.8571428571428583
                 }
               ],
+              "rate_tenor_years": 0.3506849315068493,
+              "rate_used": 0.041,
               "retention": 0.2709232412300542,
               "scenario_vector": {
                 "entries": [

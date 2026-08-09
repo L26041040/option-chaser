@@ -472,6 +472,11 @@ def _candidate(cv: CandidateView, strategy: str, capital: float | None,
         "theta_day_rate": cv.theta_day_rate,
         "vega_per_pt": cv.vega_per_pt,
         "decay_30d_return": cv.decay_30d_return,
+        # MVP V3（#112，spec #102 決策 H）：這組候選實際用於估值的利率與
+        # 年期——Analysis Report → Model & Assumptions 的 Rate used／
+        # Tenor 兩項，取代原本只顯示「用了某條曲線」的模糊呈現。
+        "rate_used": cv.rate_used,
+        "rate_tenor_years": cv.rate_tenor_years,
         "net_delta": net_delta,
         "breakeven": v.breakeven,
         "max_profit": max_profit,

@@ -138,18 +138,21 @@ describe("Model & Assumptions", () => {
   it("預設收合，需另外展開才看得到參數細節（決策 G）", async () => {
     render(<AnalysisReport view={view} result={result} candidate={real} />);
     await expand();
-    expect(screen.queryByText("無風險利率")).not.toBeVisible();
+    expect(screen.queryByText("Rate used")).not.toBeVisible();
 
     await userEvent.click(screen.getByText("Model & Assumptions"));
 
-    expect(screen.getByText("無風險利率")).toBeVisible();
+    expect(screen.getByText("Rate used")).toBeVisible();
   });
 
-  it("模型參數（利率／IV情境／Delta門檻／要求報酬）都在", async () => {
+  it("模型參數（利率四項／IV情境／Delta門檻／要求報酬）都在", async () => {
     render(<AnalysisReport view={view} result={result} candidate={real} />);
     await expand();
     await userEvent.click(screen.getByText("Model & Assumptions"));
-    expect(screen.getByText("無風險利率")).toBeInTheDocument();
+    expect(screen.getByText("Rate used")).toBeInTheDocument();
+    expect(screen.getByText("Tenor")).toBeInTheDocument();
+    expect(screen.getByText("Source")).toBeInTheDocument();
+    expect(screen.getByText("Curve date")).toBeInTheDocument();
     const minReturnRow = screen.getByText("最低要求報酬率").closest(".row")!;
     expect(minReturnRow).toHaveTextContent(
       `${(view.params.min_return * 100).toFixed(1)}%`);
@@ -167,46 +170,73 @@ describe("免責聲明：獨立、不折疊（不是四區塊之一）", () => {
   });
 });
 
-describe("無風險利率三態顯示（RC1／#87，MVP V3／#105 起搬進 Model & Assumptions）", () => {
+describe("無風險利率四項顯示（RC1／#87 三態語意，MVP V3／#112 決策 H：Rate used／" +
+   "Tenor／Source／Curve date）", () => {
   async function expandModelAssumptions() {
     await expand();
     await userEvent.click(screen.getByText("Model & Assumptions"));
   }
 
-  it("真正 fallback（無曲線）只顯示常數與 FALLBACK 標籤，不掛任何日期",
-     async () => {
+  it("Tenor 一律讀 candidate.rate_tenor_years，前端不查表不換算", async () => {
+    render(<AnalysisReport view={view} result={result} candidate={real} />);
+    await expandModelAssumptions();
+    const row = screen.getByText("Tenor").closest(".row")!;
+    expect(row).toHaveTextContent(`${real.rate_tenor_years.toFixed(2)} 年`);
+  });
+
+  it("真正 fallback（無曲線）：Rate used 顯示 candidate.rate_used 與 FALLBACK 標籤，" +
+     "Source 標示常數來源，Curve date 是「—」不掛任何日期", async () => {
     const fallbackView = {
       ...view,
       params: { ...view.params, rate_curve_used: false,
                 rate_curve_date: null, rate_curve_stale: false,
                 rate: 0.04, rate_note: "曲線不可得" },
     };
-    render(<AnalysisReport view={fallbackView} result={result} candidate={real} />);
+    const fallbackCandidate = candidate({ rate_used: 0.04 });
+    render(<AnalysisReport view={fallbackView} result={result}
+                          candidate={fallbackCandidate} />);
     await expandModelAssumptions();
-    const row = screen.getByText("無風險利率").closest(".row")!;
-    expect(row).toHaveTextContent("4.0%");
-    expect(row).toHaveTextContent("FALLBACK");
-    expect(row).toHaveTextContent("Treasury curve unavailable");
-    expect(row).not.toHaveTextContent("STALE");
+
+    const rateRow = screen.getByText("Rate used").closest(".row")!;
+    expect(rateRow).toHaveTextContent("4.0%");
+    expect(rateRow).toHaveTextContent("FALLBACK");
+    expect(rateRow).toHaveTextContent("Treasury curve unavailable");
+    expect(rateRow).not.toHaveTextContent("STALE");
+
+    const sourceRow = screen.getByText("Source").closest(".row")!;
+    expect(sourceRow).toHaveTextContent("Fallback 常數");
+
+    const curveDateRow = screen.getByText("Curve date").closest(".row")!;
+    expect(curveDateRow).toHaveTextContent("—");
     // 不得出現任何看起來像日期的字串（曲線資料日只在真的用了曲線時才顯示）。
-    expect(row).not.toHaveTextContent(/\d{4}-\d{2}-\d{2}/);
+    expect(curveDateRow).not.toHaveTextContent(/\d{4}-\d{2}-\d{2}/);
   });
 
-  it("真正曲線且新鮮：顯示 curve date，不帶 STALE 標記", async () => {
+  it("真正曲線且新鮮：Rate used 顯示該候選自己查表算出的數值（可能跟其他候選不同），" +
+     "Source 是 US Treasury，Curve date 顯示曲線資料日、不帶 STALE 標記", async () => {
     const curveView = {
       ...view,
       params: { ...view.params, rate_curve_used: true,
                 rate_curve_date: "2026-07-31", rate_curve_stale: false },
     };
-    render(<AnalysisReport view={curveView} result={result} candidate={real} />);
+    const curveCandidate = candidate({ rate_used: 0.041 });
+    render(<AnalysisReport view={curveView} result={result}
+                          candidate={curveCandidate} />);
     await expandModelAssumptions();
-    const row = screen.getByText("無風險利率").closest(".row")!;
-    expect(row).toHaveTextContent("2026-07-31");
-    expect(row).not.toHaveTextContent("FALLBACK");
-    expect(row).not.toHaveTextContent("STALE");
+
+    const rateRow = screen.getByText("Rate used").closest(".row")!;
+    expect(rateRow).toHaveTextContent("4.1%");
+    expect(rateRow).not.toHaveTextContent("FALLBACK");
+
+    const sourceRow = screen.getByText("Source").closest(".row")!;
+    expect(sourceRow).toHaveTextContent("US Treasury");
+
+    const curveDateRow = screen.getByText("Curve date").closest(".row")!;
+    expect(curveDateRow).toHaveTextContent("2026-07-31");
+    expect(curveDateRow).not.toHaveTextContent("STALE");
   });
 
-  it("真正曲線但陳舊備援：顯示 curve date 且明確標示 STALE", async () => {
+  it("真正曲線但陳舊備援：Curve date 明確標示 STALE，Rate used 不帶 FALLBACK", async () => {
     const staleView = {
       ...view,
       params: { ...view.params, rate_curve_used: true,
@@ -214,14 +244,17 @@ describe("無風險利率三態顯示（RC1／#87，MVP V3／#105 起搬進 Mode
     };
     render(<AnalysisReport view={staleView} result={result} candidate={real} />);
     await expandModelAssumptions();
-    const row = screen.getByText("無風險利率").closest(".row")!;
-    expect(row).toHaveTextContent("2026-07-20");
-    expect(row).toHaveTextContent("STALE");
-    expect(row).not.toHaveTextContent("FALLBACK");
+
+    const curveDateRow = screen.getByText("Curve date").closest(".row")!;
+    expect(curveDateRow).toHaveTextContent("2026-07-20");
+    expect(curveDateRow).toHaveTextContent("STALE");
+
+    const rateRow = screen.getByText("Rate used").closest(".row")!;
+    expect(rateRow).not.toHaveTextContent("FALLBACK");
   });
 
-  it("使用者明示利率（CLI --rate，rate_explicit）：乾淨顯示，不貼 FALLBACK 標籤",
-     async () => {
+  it("使用者明示利率（CLI --rate，rate_explicit）：Rate used 乾淨顯示、不貼 FALLBACK，" +
+     "Source 標示「CLI 明示」，Curve date 是「—」", async () => {
     // 目前網頁路徑打不到這一態（`rate_explicit` 只有 CLI 會設起），
     // 但前端邏輯要跟後端 report.py::_rate_line 同一套三態判斷對得上，
     // 不能只在後端正確、前端漏了這一態。
@@ -231,12 +264,21 @@ describe("無風險利率三態顯示（RC1／#87，MVP V3／#105 起搬進 Mode
                 rate_curve_stale: false, rate_explicit: true, rate: 0.07,
                 rate_note: "" },
     };
-    render(<AnalysisReport view={explicitView} result={result} candidate={real} />);
+    const explicitCandidate = candidate({ rate_used: 0.07 });
+    render(<AnalysisReport view={explicitView} result={result}
+                          candidate={explicitCandidate} />);
     await expandModelAssumptions();
-    const row = screen.getByText("無風險利率").closest(".row")!;
-    expect(row).toHaveTextContent("7.0%");
-    expect(row).not.toHaveTextContent("FALLBACK");
-    expect(row).not.toHaveTextContent("STALE");
+
+    const rateRow = screen.getByText("Rate used").closest(".row")!;
+    expect(rateRow).toHaveTextContent("7.0%");
+    expect(rateRow).not.toHaveTextContent("FALLBACK");
+    expect(rateRow).not.toHaveTextContent("STALE");
+
+    const sourceRow = screen.getByText("Source").closest(".row")!;
+    expect(sourceRow).toHaveTextContent("CLI 明示");
+
+    const curveDateRow = screen.getByText("Curve date").closest(".row")!;
+    expect(curveDateRow).toHaveTextContent("—");
   });
 });
 

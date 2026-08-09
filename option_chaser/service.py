@@ -107,6 +107,14 @@ class CandidateView:
     theta_day_rate: float      # |淨Θ| / Mid 成本
     vega_per_pt: float         # 淨Vega(每1 IV百分點) / Mid 成本
     decay_30d_return: float    # S=spot、IV不變、today+30(或到期)估值報酬
+    # MVP V3（#112，spec #102 決策 H）：這組候選估值實際用到的利率與
+    # 年期——`leg_rate(p, expiry)` 查表結果（T12 附錄A14.1 既有查表
+    # 函式，估值管線本來就在用，這裡只是把同一個結果也吐進契約）；
+    # 年期＝分析日到候選自身到期日的年分數，與 `rate_by_expiry` 建表
+    # 時（`_resolve_rates`）用的公式逐字相同。前端只格式化，不查表、
+    # 不換算。
+    rate_used: float
+    rate_tenor_years: float
     # D1（#14）：Long Call 追平價格 S*=K+C×(1+R)——只對 Spread 有意義
     # （買腿履約價 K 的同履約價 Call 若報價缺失也是 None）；單腳恆為 None。
     catchup_price: float | None = None
@@ -325,6 +333,10 @@ def _v4_fields(val: ContractValuation | SpreadValuation, spot: float,
         theta_day_rate=abs(_net_theta(val, spot, today, p)) / mid_cost,
         vega_per_pt=_net_vega(val, spot, today, p) / mid_cost,
         decay_30d_return=_decay_30d(val, spot, today, p),
+        # MVP V3（#112）：與估值管線同一個查表結果／同一條年期公式
+        # （`_resolve_rates` 建 `rate_by_expiry` 時所用），不是另外重算。
+        rate_used=leg_rate(p, expiry),
+        rate_tenor_years=(date.fromisoformat(expiry) - today).days / DAYS_PER_YEAR,
         price_ladder=_price_ladder(val, p))
 
 

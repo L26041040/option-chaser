@@ -167,9 +167,13 @@ test("進階區：分析報告與原始資料展開才載入（V8／#56，MVP V3
   await expect(report.getByText("Execution", { exact: true })).toBeVisible();
   await expect(report.getByText("Model & Assumptions")).toBeVisible();
   // Model & Assumptions 是巢狀收合區，外層展開不代表它也展開。
-  await expect(report.getByText("無風險利率")).not.toBeVisible();
+  await expect(report.getByText("Rate used")).not.toBeVisible();
   await report.getByText("Model & Assumptions").click();
-  await expect(report.getByText("無風險利率")).toBeVisible();
+  // MVP V3（#112，決策 H）：利率四項——實際數值，不是只說「用了曲線」。
+  await expect(report.getByText("Rate used")).toBeVisible();
+  await expect(report.getByText("Tenor")).toBeVisible();
+  await expect(report.getByText("Source")).toBeVisible();
+  await expect(report.getByText("Curve date")).toBeVisible();
   // 免責聲明獨立、不折疊——展開整個進階區就看得到，不必再點一層。
   await expect(report.getByText(/選擇權交易涉及重大風險/)).toBeVisible();
 

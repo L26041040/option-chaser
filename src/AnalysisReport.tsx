@@ -11,7 +11,8 @@
  *                         Effective Leverage
  *   Execution             Buy Leg／Sell Leg 雙邊報價／Net Mid／
  *                         Net Worst（保守進場成本）／Volume・OI（低權重）
- *   Model & Assumptions   折疊：無風險利率（既有三態）／IV 情境／
+ *   Model & Assumptions   折疊：無風險利率四項（Rate used／Tenor／
+ *                         Source／Curve date，MVP V3／#112）／IV 情境／
  *                         Delta 分級門檻／最低要求報酬率
  *
  * 依決策 G 明文從 Report UI 移除、不再渲染：baseline return、7 情境
@@ -41,48 +42,55 @@ function Row({ label, children }: { label: string; children: React.ReactNode }) 
 }
 
 /**
- * 無風險利率列（RC1／#87）：三態分流，不再不分青紅皂白顯示
- * `formatReturn(params.rate)` 加一句 `rate_note` 附註——那樣會在真的
- * 用了期限對齊曲線時，把常數 `rate`（此時其實沒被用在估值上）跟曲線
- * 資料日混在一起，看起來像「這個常數就是那個日期的曲線值」。
+ * 無風險利率四項（MVP V3／#112，spec #102 決策 H）：Rate used／Tenor／
+ * Source／Curve date——取代舊版只顯示「用了某條曲線」卻不給實際數值
+ * 的模糊呈現。三態沿用既有語意（`rate_curve_used`／`rate_explicit`／
+ * `rate_curve_stale`），不新造狀態機：
  *
- * - `rate_curve_used` 為真：顯示期限對齊曲線與其 `rate_curve_date`；
- *   `rate_curve_stale` 為真時額外標示 STALE，不得跟新鮮曲線同一種
- *   呈現方式。
- * - `rate_curve_used` 為假、`rate_explicit` 為真：使用者透過 CLI
- *   `--rate` 主動指定的利率——維持乾淨顯示，不貼 FALLBACK 標籤（那是
- *   使用者主動選擇，不是「本該有曲線卻失敗」）。跟後端
- *   `report.py::_rate_line` 同一套三態判斷，目前網頁路徑不可達
- *   （`rate_explicit` 只有 CLI 會設起），但兩邊邏輯要對得上，不能只在
- *   後端正確、前端漏了這一態。
- * - 其餘情況：真正的 fallback，只顯示常數＋明確的 FALLBACK 標籤與
- *   原因，**不掛任何市場資料日期**。
- *
- * MVP V3（#112，被本票解鎖後施工）將在這一列擴充成明確的 Rate used／
- * Tenor／Source／Curve date 四項——本票只搬家，不擴充內容。
+ * - Rate used：一律讀 `candidate.rate_used`（後端 `leg_rate(p, expiry)`
+ *   查表結果），不是 `params.rate` 這個可能沒被用在估值上的常數——曲線
+ *   命中時，不同到期日的候選本來就該顯示不同數值。fallback 狀態下
+ *   `leg_rate` 本身會落回 `params.rate`，因此三態下這裡讀到的數字
+ *   自然一致，不必分支判斷。
+ * - Tenor：`candidate.rate_tenor_years`，與 Rate used 同一次查表算出來
+ *   的年期，前端只格式化成「X.XX 年」。
+ * - Source／Curve date：純粹依既有三態旗標判斷是哪一種來源，不是
+ *   新的財務計算——曲線命中显示 US Treasury＋曲線資料日（陳舊時附
+ *   STALE）；明示利率显示「CLI 明示」、Curve date 留白；其餘 fallback
+ *   显示常數來源與原因，同樣不掛任何市場資料日期。
  */
-function RateRow({ params }: { params: AnalysisView["params"] }) {
-  if (params.rate_curve_used) {
-    return (
-      <Row label="無風險利率">
-        期限對齊 Treasury 曲線 · {params.rate_curve_date}
-        {params.rate_curve_stale && (
-          <span className="row-note"> · STALE（沿用陳舊備援窗）</span>
+function RateRow({ candidate, params }: {
+  candidate: Candidate; params: AnalysisView["params"];
+}) {
+  const source = params.rate_curve_used
+    ? "US Treasury"
+    : params.rate_explicit
+    ? "CLI 明示"
+    : "Fallback 常數";
+  return (
+    <>
+      <Row label="Rate used">
+        {formatReturn(candidate.rate_used)}
+        {!params.rate_curve_used && !params.rate_explicit && (
+          <span className="row-note">
+            {" "}· FALLBACK／Treasury curve unavailable
+            {params.rate_note && `（${params.rate_note}）`}
+          </span>
         )}
       </Row>
-    );
-  }
-  if (params.rate_explicit) {
-    return <Row label="無風險利率">{formatReturn(params.rate)}</Row>;
-  }
-  return (
-    <Row label="無風險利率">
-      {formatReturn(params.rate)}
-      <span className="row-note">
-        {" "}· FALLBACK／Treasury curve unavailable
-        {params.rate_note && `（${params.rate_note}）`}
-      </span>
-    </Row>
+      <Row label="Tenor">{candidate.rate_tenor_years.toFixed(2)} 年</Row>
+      <Row label="Source">{source}</Row>
+      <Row label="Curve date">
+        {params.rate_curve_used ? (
+          <>
+            {params.rate_curve_date}
+            {params.rate_curve_stale && (
+              <span className="row-note"> · STALE（沿用陳舊備援窗）</span>
+            )}
+          </>
+        ) : "—"}
+      </Row>
+    </>
   );
 }
 
@@ -150,15 +158,17 @@ function ExecutionSection({ candidate }: { candidate: Candidate }) {
 
 /**
  * Model & Assumptions：折疊，只留真正影響估值且可驗證的參數與資料
- * 來源——利率（既有三態）、IV 情境、Delta 分級門檻、最低要求報酬率。
+ * 來源——利率四項（決策 H）、IV 情境、Delta 分級門檻、最低要求報酬率。
  * 過濾／配對統計一行（CandidatePool 已負責）與 `methodology_text`
  * 大段散文依決策 G 不再渲染。
  */
-function ModelAssumptions({ params }: { params: AnalysisView["params"] }) {
+function ModelAssumptions({ candidate, params }: {
+  candidate: Candidate; params: AnalysisView["params"];
+}) {
   return (
     <details className="report-methodology">
       <summary>Model &amp; Assumptions</summary>
-      <RateRow params={params} />
+      <RateRow candidate={candidate} params={params} />
       <Row label="IV 情境">
         {params.iv_shifts.map((s) => (s === 0 ? "不變" : `${s > 0 ? "+" : ""}${(s * 100).toFixed(0)}%`)).join(" / ")}
       </Row>
@@ -189,7 +199,7 @@ export default function AnalysisReport({ view, result, candidate }: {
       <PositionSensitivity candidate={candidate} />
       <h3 className="section-title report-subsection">Execution</h3>
       <ExecutionSection candidate={candidate} />
-      <ModelAssumptions params={view.params} />
+      <ModelAssumptions candidate={candidate} params={view.params} />
       {/* 免責聲明：獨立、不折疊——不是四區塊之一，不能讓它看起來像
           Model & Assumptions 的延伸段落。 */}
       <p className="caption report-disclaimer">{result.disclaimer_text}</p>
