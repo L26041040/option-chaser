@@ -338,6 +338,18 @@ test("詳細頁的 Heatmap 可橫向滑動（手機塞不下七欄）", async ({
   expect(box.scrollWidth).toBeGreaterThan(box.clientWidth);
   expect(await page.evaluate(
     () => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+
+  // QA-FIX-1 sticky 兩端：手機視窗一定捲得動（上面剛驗過），捲到最右
+  // 之後左側價格與最右 ±% 都必須還在可視範圍內。
+  await mainChart.locator(".heatmap-scroll")
+    .evaluate((el) => { el.scrollLeft = el.scrollWidth; });
+  const viewport = (await mainChart.locator(".heatmap-scroll").boundingBox())!;
+  const firstRow = mainChart.locator("table.heatmap-table tbody tr").first();
+  const priceBox = (await firstRow.locator("th.heatmap-price").boundingBox())!;
+  const moveBox = (await firstRow.locator("td.heatmap-move-pct").boundingBox())!;
+  expect(priceBox.x).toBeGreaterThanOrEqual(viewport.x - 1);
+  expect(moveBox.x + moveBox.width)
+    .toBeLessThanOrEqual(viewport.x + viewport.width + 1);
 });
 
 test("Heatmap 價格列右側 ±% 標註：手機 viewport 不需額外互動就看得到" +

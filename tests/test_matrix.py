@@ -1,6 +1,7 @@
 from datetime import date
 import pytest
-from option_chaser.matrix import price_axis, date_axis, matrix_lines, thumbnail_cells
+from option_chaser.matrix import (price_axis, date_axis, matrix_grid,
+                                   matrix_lines, thumbnail_cells)
 
 
 def test_price_axis_len_anchors_and_positivity():
@@ -159,3 +160,88 @@ def test_matrix_lines_shape_and_determinism():
     assert a == b
     assert len(a) == 1 + 11  # header + one line per price row
     assert not any(0x2500 <= ord(ch) <= 0x257F for line in a for ch in line)
+
+
+# ---------- QA-FIX-5（QA-01）：GUI 日期軸密度參數化 ----------
+
+def test_date_axis_default_stays_seven_points_for_cli():
+    """不傳 `max_gap_days` ＝ 既有行為（固定七欄）。CLI 文字報告靠這個
+    維持既有寬度，golden fixture 才不會產生與本次修正無關的漂移。"""
+    for expiry in ("2026-11-20", "2027-08-09", "2028-12-15"):
+        cols = date_axis(date(2026, 8, 9), date.fromisoformat(expiry))
+        assert len(cols) == 7
+
+
+def test_gui_axis_caps_the_gap_at_about_one_month():
+    """GUI 軸：欄距上限約一個月。長天期不再被拉成 4～5 個月一格。"""
+    from option_chaser.matrix import GUI_MAX_GAP_DAYS
+    today = date(2026, 8, 9)
+    for expiry in ("2026-11-20", "2027-08-09", "2028-12-15", "2029-06-15"):
+        cols = date_axis(today, date.fromisoformat(expiry),
+                         max_gap_days=GUI_MAX_GAP_DAYS)
+        days = [d for d, _ in cols]
+        gaps = [(b - a).days for a, b in zip(days, days[1:])]
+        assert max(gaps) <= GUI_MAX_GAP_DAYS
+
+
+def test_gui_axis_hits_the_agreed_column_counts():
+    """需求方裁示的三個驗收情境（QA-01 第 5 項）——短天期不因新規則
+    變粗（維持七點），長天期加密到約每月一格。"""
+    from option_chaser.matrix import GUI_MAX_GAP_DAYS
+    today = date(2026, 8, 9)
+    expected = {"2026-11-20": 7,     # ~3 個月：沿用下限，不退化
+                "2027-08-09": 13,    # ~1 年
+                "2028-12-15": 29}    # ~2.4 年
+    for expiry, want in expected.items():
+        cols = date_axis(today, date.fromisoformat(expiry),
+                         max_gap_days=GUI_MAX_GAP_DAYS)
+        assert len(cols) == want, f"{expiry}: {len(cols)} != {want}"
+
+
+def test_gui_axis_always_keeps_today_and_expiry_and_min_seven_points():
+    """加密只在中間插點——兩個端點是硬需求，且至少七個時間點。
+
+    「至少七點」的上限是天期本身：剩五天的合約只有六個日曆日可畫，
+    要求七個相異日期在物理上不可能（`sorted(set(...))` 會去重）。這是
+    既有行為、非本次改動引入，這裡把真正的不變量寫清楚而不是假裝
+    它永遠是 7。
+    """
+    from option_chaser.matrix import GUI_MAX_GAP_DAYS
+    today = date(2026, 8, 9)
+    for expiry in ("2026-08-14", "2026-11-20", "2028-12-15"):
+        e = date.fromisoformat(expiry)
+        cols = date_axis(today, e, max_gap_days=GUI_MAX_GAP_DAYS)
+        days = [d for d, _ in cols]
+        assert days[0] == today and days[-1] == e
+        assert len(cols) >= min(7, (e - today).days + 1)
+        assert days == sorted(set(days))       # 嚴格遞增、無重複
+
+
+def test_gui_axis_density_reaches_the_matrix_cells():
+    """密度真的走到 GUI 的格子上（不是只有軸變長、cells 沒跟上），
+    而且 CLI 的 `matrix_lines` 仍是七欄——同一份輸入、兩種密度。"""
+    from option_chaser.matrix import GUI_MAX_GAP_DAYS
+    today, expiry = date(2026, 8, 9), date(2028, 12, 15)
+    prices = price_axis(100.0, 120.0, bullish=True)
+
+    def fn(S, d):
+        return max(S - 110.0, 0.0)
+
+    gui_dates = date_axis(today, expiry, max_gap_days=GUI_MAX_GAP_DAYS)
+    gui_grid = matrix_grid(fn, 3.0, prices, gui_dates)
+    assert len(gui_grid) == len(prices)
+    assert len(gui_grid[0]) == len(gui_dates) == 29
+
+    cli_lines = matrix_lines(fn, 3.0, prices, date_axis(today, expiry))
+    assert len(cli_lines) == 1 + len(prices)
+    # CLI 每行寬度沒有因為 GUI 加密而爆開
+    assert max(len(line) for line in cli_lines) < 100
+
+
+def test_thumbnail_keeps_proportional_sampling_on_a_dense_axis():
+    """thumbnail 的比例取樣語意不變：不論來源幾欄，一律 4 列 × <=5 欄。"""
+    dense = tuple(tuple(float(r * 100 + c) for c in range(29)) for r in range(11))
+    th = thumbnail_cells(dense)
+    assert len(th) == 4 and len(th[0]) == 5
+    # 取的是比例位置（頭、1/4、1/2、3/4、尾），不是前五欄
+    assert th[0][0] == dense[10][0] and th[0][-1] == dense[10][28]

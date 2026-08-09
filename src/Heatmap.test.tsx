@@ -160,3 +160,43 @@ describe("最右欄 ±% 標註（決策 M／#109，位置修正 QA-FIX-1／QA-01
     expect(overshootText.textContent).toMatch(/^\+/);
   });
 });
+
+describe("高密度日期軸（QA-FIX-5／QA-01）", () => {
+  /** 2.4 年 LEAPS 在 GUI 軸下是 29 欄——契約樣本本身是短天期（7 欄），
+   *  所以這裡自己造一份密的，確保渲染路徑撐得住欄數變多。 */
+  function denseMatrix(cols: number): Matrix {
+    const dates: [string, string][] = Array.from({ length: cols }, (_, i) => {
+      const d = new Date(Date.UTC(2026, 7, 9) + i * 31 * 86400000);
+      return [d.toISOString().slice(0, 10), ""];
+    });
+    const prices: [number, string, number][] = [
+      [90, "<深跌>", -0.1], [100, "<現價>", 0], [130, "<目標>", 0.3],
+    ];
+    return {
+      prices,
+      dates,
+      cells: prices.map((_, r) => dates.map((_, c) => (r + c) / 100)),
+    };
+  }
+
+  it("29 欄日期照樣逐欄畫出來，前端不自己抽樣或截斷", () => {
+    const m = denseMatrix(29);
+    const { container } = render(<Heatmap matrix={m} />);
+
+    // 欄標題：價格 + 29 個日期 + ±%
+    expect(screen.getAllByRole("columnheader")).toHaveLength(31);
+    // 每一列的報酬率格數＝日期數，一格不少
+    expect(valueCells(container)).toHaveLength(3 * 29);
+  });
+
+  it("欄數變多不影響 ±% 仍是每列最後一個子元素（sticky 右欄的前提）", () => {
+    const { container } = render(<Heatmap matrix={denseMatrix(29)} />);
+
+    for (const row of Array.from(
+      container.querySelectorAll<HTMLElement>("tbody tr"))) {
+      expect(row.children[0]).toHaveClass("heatmap-price");
+      expect(row.children[row.children.length - 1])
+        .toHaveClass("heatmap-move-pct");
+    }
+  });
+});

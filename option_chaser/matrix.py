@@ -1,8 +1,26 @@
 """Price×date P/L matrix engine (spec §5). Pure functions, deterministic."""
 from __future__ import annotations
 
+import math
 from datetime import date, timedelta
 from typing import Callable
+
+# QA-FIX-5（QA-01）：GUI Heatmap 的日期欄距上限（日曆日）。
+#
+# 舊行為是固定七欄、與天期無關，長天期因此被拉得極稀疏——實測 2.4 年
+# LEAPS 平均 143 天／欄（4.7 個月），使用者看不出中間發生什麼事。
+# 需求方裁示：GUI 欄距上限約一個月、至少維持七個時間點、today 與
+# expiry 必須保留。31 是「一個日曆月的上限」，代入三個驗收情境剛好
+# 命中裁示的目標欄數：
+#   ~3 個月（103 天）→ 7 點（沿用下限，不因新規則變粗）
+#   ~1 年（365 天）  → 13 點
+#   ~2.4 年（859 天）→ 29 點
+#
+# **只有 GUI 用它**：CLI 文字報告維持既有低密度（`date_axis` 不傳這個
+# 參數就是原本的七欄），否則每行會爆到 230+ 字元，且四份 golden
+# fixture 會產生與這次修正無關的漂移。密度是呼叫端的顯示決策，因此
+# 參數化在這裡，不是讓前端拿到資料後自己重新抽樣（前端零金融計算）。
+GUI_MAX_GAP_DAYS = 31
 
 
 def _insert_anchors(pts: list[float], anchors: list[float]) -> list[float]:
@@ -50,14 +68,27 @@ def price_axis(
     return [(v, label(v), (v - spot) / spot) for v in vals]
 
 
-def date_axis(today: date, expiry: date) -> list[tuple[date, str]]:
-    """日期軸＝今天 → 該合約自身的到期日，等分至多七欄。
+def date_axis(today: date, expiry: date,
+              max_gap_days: float | None = None) -> list[tuple[date, str]]:
+    """日期軸＝今天 → 該合約自身的到期日，等分成欄。
 
     附錄 A2.3：年月語意下不存在「目標日」那一欄，原本的「*」標記連同它所需的
     日期映射一併移除。標籤欄保留（恆為空字串）以維持與價格軸相同的欄位形狀。
+
+    `max_gap_days`（QA-FIX-5／QA-01）：欄距上限。`None`＝維持既有行為
+    （固定七欄，CLI 文字報告用）；給值則在「至少七個時間點」的下限之上
+    加密到欄距不超過這個天數（GUI 用 `GUI_MAX_GAP_DAYS`）。無論哪種
+    密度，首欄恆為 `today`、末欄恆為 `expiry`——加密只是在中間多插點，
+    不動兩個端點。
     """
     total = (expiry - today).days
-    pts = [today + timedelta(days=round(total * i / 6.0)) for i in range(7)]
+    # 六個區間＝七個時間點，是既有行為也是裁示的下限；短天期因此不會
+    # 因為「欄距上限」這條新規則反而變得比原本粗。
+    intervals = 6
+    if max_gap_days is not None and total > 0:
+        intervals = max(intervals, math.ceil(total / max_gap_days))
+    pts = [today + timedelta(days=round(total * i / intervals))
+           for i in range(intervals + 1)]
     pts[-1] = expiry
     return [(d, "") for d in sorted(set(pts))]
 
