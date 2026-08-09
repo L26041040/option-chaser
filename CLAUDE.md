@@ -1492,6 +1492,38 @@ tracking #86 本身，加上此前兩輪（PR #76「前端重練＋QA 維修輪�
 > 沿用規則：反饋要先逐點跟需求方確認打算怎麼改、為什麼，確認完才
 > 開票施工；`/implement` 進行中沒遇到需人類裁示的事就不停。
 
+### MVP V3（spec #102，2026-08-09 拆票，施工中）
+
+需求基準：`docs/Mvp-v3.md`＋`docs/Mvp-v3-appendix.txt`；spec 全文與三輪
+Review 修訂見 issue #102。14 張子票 #103–#116，需求方 `/implement`
+指示本批次固定順序施工 9 張——#103 → #104 → #105 → #112 → #106 →
+#107 → #108 → #109 → #110，依序、每票測完即 commit＋push。**本批次
+不施工**：#111（`needs-human-validation`，vendor 驗證需可連網環境，
+本沙箱多數外部網域 403）、#113（被 #110＋需求方核准擋，人工裁示點）、
+#114（被 #103＋#111 擋）、#115（被 #113 擋）、#116（被 #115＋#109 擋）。
+
+- **#103** [#103] — 劇本詳細頁資訊階層重整＋移除追平價格 UI
+  （commit `669d653`）：`ScenarioDetail.tsx` 依決策 A 重排為 摘要 →
+  基準候選（新增：名次／B-S履約／策略／到期日／目標報酬，取自舊版
+  「劇本主圖」卡片拆出）→ 進場成本（新增：Buy Ask／Sell Bid／Net
+  Cost，沿用既有 `expiry.ts::legPrices()`）→〔Historical IV Position
+  插槽，`IVPositionSlot` 元件回傳 null，不輸出任何 DOM 節點〕→
+  Payoff Heatmap（瘦身後只剩圖本身）→ Price Ladder → Expiry Structure
+  → Advanced（候選池／分析報告／Spread 歷史／原始資料，四者相對順序
+  不變，沿用既有各自收合狀態）。獨立的「Long Call 追平價格」卡片
+  （`Catchup` 元件）整個刪除；前端純函式 `catchupContractLabel`／
+  `catchupView` 因此不再被任何 UI 呼叫，屬死碼一併刪除——後端序列化
+  欄位與計算函式（`catchup_price`／`_spread_catchup_price`／
+  `valuation.catchup_price`）依票上要求原封不動保留，僅供未來
+  migration／regression 測試使用。新增區塊順序回歸測試（鎖定 9 張
+  卡片依序的 `.section-title` 文字，同時證明 IV 插槽零 DOM 輸出）。
+  ⚠ **一項解讀記錄**：決策 A「基準候選」文字列了「策略」，與摘要卡
+  既有「策略」列重複——核對 wireframe 骨架後判斷為刻意重複，非疏漏，
+  兩處皆保留顯示。AC 檢查清單原文「Candidate Pool...僅調整順序」，
+  故候選池維持既有非折疊行為，未如票面 prose 摘要暗示的「Advanced
+  全部收合」擴大成把候選池也改成 `<details>`——AC checklist 優先於
+  prose 摘要，避免無謂 scope 擴張。
+
 ### 施工依據
 
 - 需求與決策紀錄：`docs/modifyRequestV1.md`（附錄 A1–A12）
