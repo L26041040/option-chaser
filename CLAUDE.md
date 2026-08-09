@@ -58,7 +58,12 @@
 > 顯示／選取兩旗標）、Analysis Report 瘦身成四塊、利率顯示實際數值
 > （Rate used／Tenor／Source／Curve date，候選契約新增利率與年期欄位）、
 > 走勢圖補軸刻度與 hover/tap tooltip、Raw Data 二層收合、Desktop 劇本庫
-> 卡片瘦身。**尚存 Open Question 僅一項：IV 歷史 vendor 選型與月費上限
+> 卡片瘦身。**R3（同日，to-tickets 前最後補充）**：Heatmap 右側價格變動
+> 百分比軸（左軸絕對價格不動、右側為同列 annotation 非第二組 scale，
+> `move_pct` 由 price-axis 契約提供、前端只格式化；主圖與展開候選圖共用
+> 語意；Mobile 可短格式但不得拿掉）＋新 guardrail：**Bid/Ask 過寬門檻
+> 本輪只能量測回報，未經需求方裁示不得自行修改**。
+> **尚存 Open Question 僅一項：IV 歷史 vendor 選型與月費上限
 > （只擋 IV History 那條線）**；q=0＋par-yield 近似歸 correctness ticket
 > 驗證後裁示。
 > **下一步＝`/to-tickets`**（IV History 票帶 vendor blocker）。
