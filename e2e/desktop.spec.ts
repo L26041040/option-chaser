@@ -439,3 +439,60 @@ test("詳細頁密度：桌面一屏能看到的比例明顯提高（QA-FIX-3／
   await expect(page.locator(".detail-pane .heatmap-table td").first())
     .toHaveCSS("font-size", "13px");
 });
+
+/**
+ * QA-FIX-4（QA-01）：批次操作列在桌面必須吸底。
+ *
+ * 刻意用 boundingBox 對照 viewport 幾何，**不用** `isVisible()`——
+ * 後者只代表「有版面框、非 display:none」，元素捲到畫面外一千像素
+ * 它照樣回報 true，這正是原本 e2e 沒抓到這個問題的原因。
+ */
+async function expectBatchBarInViewport(page: import("@playwright/test").Page) {
+  const bar = page.locator(".batch-action-bar");
+  await expect(bar).toBeVisible();
+  const vh = page.viewportSize()!.height;
+  const box = (await bar.boundingBox())!;
+  expect(box.y).toBeGreaterThanOrEqual(0);
+  expect(box.y + box.height).toBeLessThanOrEqual(vh + 1);
+}
+
+test("桌面垃圾桶：全選後批次動作立刻在視窗內可操作（QA-FIX-4／QA-01）",
+   async ({ page }) => {
+  // 夠多筆才會把批次列推到一屏之外——這正是回報的情境。
+  const trashed = Array.from({ length: 8 }, (_, i) => libraryRow({
+    id: `s${i}`, symbol: `SYM${i}`, target_month: "2028-05",
+    archived_at: "2026-08-05T00:00:00+00:00" }));
+  await page.route("**/api/scenarios", (route) => route.fulfill({ json: [] }));
+  await page.route("**/api/scenarios?include_archived=true", (route) =>
+    route.fulfill({ json: trashed }));
+
+  await page.goto("/#/trash");
+  await page.getByRole("button", { name: "全選" }).click();
+  await expect(page.getByText("已選 8 個")).toBeVisible();
+
+  await expectBatchBarInViewport(page);
+  // 兩顆動作鈕本身也要在視窗內，不是只有那條列勉強露出來
+  const vh = page.viewportSize()!.height;
+  for (const name of ["還原已選", "永久刪除已選"]) {
+    const btn = (await page.getByRole("button", { name }).boundingBox())!;
+    expect(btn.y + btn.height).toBeLessThanOrEqual(vh + 1);
+  }
+});
+
+test("桌面主劇本庫：批次選取後動作列同樣吸底（QA-FIX-4／QA-01）",
+   async ({ page }) => {
+  const rows = Array.from({ length: 10 }, (_, i) =>
+    libraryRow({ id: `s${i}`, symbol: `SYM${i}`,
+                 latest_analyzed_at: null, best_return: null }));
+  await page.route("**/api/scenarios", (route) => route.fulfill({ json: rows }));
+  await page.route("**/api/scenarios/*/refresh", (route, req) =>
+    route.fulfill({ json: rows.find((r) => req.url().includes(`/${r.id}/`)) }));
+
+  await page.goto("/");
+  await expect(page.getByRole("listitem").first()).toBeVisible();
+  await page.getByRole("button", { name: "選取要移入垃圾桶的劇本" }).click();
+  await page.getByRole("link", { name: /SYM0/ }).click();
+  await expect(page.getByText("已選 1 個")).toBeVisible();
+
+  await expectBatchBarInViewport(page);
+});

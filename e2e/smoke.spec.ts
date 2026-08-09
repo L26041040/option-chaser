@@ -911,3 +911,25 @@ test("手機詳細頁不受桌面密度壓縮影響（QA-FIX-3／QA-01 的 Mobil
   const b = (await summaryRows.nth(1).boundingBox())!;
   expect(b.y).toBeGreaterThan(a.y + 1);
 });
+
+test("手機垃圾桶：全選後批次動作立刻在視窗內可操作（QA-FIX-4／QA-01）",
+   async ({ page }) => {
+  const trashed = Array.from({ length: 8 }, (_, i) => libraryRow({
+    id: `s${i}`, symbol: `SYM${i}`, target_month: "2028-05",
+    archived_at: "2026-08-05T00:00:00+00:00" }));
+  await page.route("**/api/scenarios", (route) => route.fulfill({ json: [] }));
+  await page.route("**/api/scenarios?include_archived=true", (route) =>
+    route.fulfill({ json: trashed }));
+
+  await page.goto("/#/trash");
+  await page.getByRole("button", { name: "全選" }).click();
+  await expect(page.getByText("已選 8 個")).toBeVisible();
+
+  // 用 boundingBox 對照 viewport，不用 isVisible()——後者對捲到畫面外
+  // 的元素照樣回報 true（QA-01 第 5 項就是被這一點掩蓋住的）。
+  const bar = page.locator(".batch-action-bar");
+  const vh = page.viewportSize()!.height;
+  const box = (await bar.boundingBox())!;
+  expect(box.y).toBeGreaterThanOrEqual(0);
+  expect(box.y + box.height).toBeLessThanOrEqual(vh + 1);
+});

@@ -543,7 +543,22 @@ body {
 /* 批次操作列：選取數量＋動作鈕，貼在清單底部。手機版加 sticky，
    讓長清單捲動時仍摸得到動作；桌面版左側面板較窄，一般流內位置即可
    （視覺上已經在畫面可視範圍內，不需要額外釘住）。 */
+/* QA-FIX-4（QA-01）：吸底，桌面與手機共用。
+
+   原本 `position: sticky` 只寫在 max-width:1099px 裡，桌面留在清單
+   之後的正常流——實測（垃圾桶 6 個劇本、1280×800）按下「全選」後
+   批次列在 y=1696px，得再往下捲 971px 才點得到「還原已選／永久
+   刪除已選」，等於全選完看不到能對它做什麼。
+
+   桌面吸底不會跟左欄捲動或功能列打架：`.library-pane` 是
+   `height:100dvh; overflow-y:auto` 的獨立捲動容器，sticky 會相對
+   **它**吸底；`.toolbar` 是 sticky top（z-index 10），一個吸頂一個
+   吸底，同一容器裡不互斥。z-index 5 夾在內容與功能列之間，確保捲過
+   去的卡片陰影不會蓋住它，也不會反過來蓋住功能列或確認視窗（100）。 */
 .batch-action-bar {
+  position: sticky;
+  bottom: 0;
+  z-index: 5;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -555,8 +570,7 @@ body {
 
 @media (max-width: 1099px) {
   .batch-action-bar {
-    position: sticky;
-    bottom: 0;
+    /* 手機才需要吃底部安全區（瀏海機的 home indicator）。 */
     padding-bottom: calc(10px + env(safe-area-inset-bottom, 0px));
   }
 }
