@@ -1602,6 +1602,18 @@ Review 修訂見 issue #102。14 張子票 #103–#116，需求方 `/implement`
   Day/Week/Month 切換與缺口不連線兩項既有行為皆有回歸測試覆蓋，未
   加入 zoom／pan（AC 明文排除）。e2e：桌面 hover（`desktop.spec.ts`
   新測試）＋手機 viewport 點按（`smoke.spec.ts` 既有測試擴充）皆綠。
+- **#107** [#107] — 原始資料二層收合（決策 J，commit `9eba7e4`）：
+  `RawData.tsx` 第一層 `<details>` 展開只留摘要＋下載 CSV 連結；逐筆
+  合約表格移進巢狀第二層 `<details>`（「查看逐筆合約資料」），需再
+  展開一次才渲染。抓資料時機不變（第一層展開就打 API），CSV 下載與
+  逐筆表格內容完全不變。
+  ⚠ **測試寫法注意**：巢狀 `<details>` 收合時內容仍在 DOM 裡，只是
+  不可見——`toBeInTheDocument()`（存在性）測不出「收合了沒」，第一輪
+  用它寫的兩條負向斷言直接紅燈（`getByRole("table")`／contract symbol
+  文字都被判定「存在」），改用 `toBeVisible()` 才對。既有
+  `ScenarioDetail.test.tsx` 的刷新快取失效案例原本就是用存在性斷言
+  （`findByText`／`toBeInTheDocument`），不受收合狀態影響，維持不動
+  ——不是漏改，是那組測試本來就問對了問題。
 
 ### 施工依據
 
