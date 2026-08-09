@@ -1,0 +1,348 @@
+OPTION CHASER - MVP V3
+SCENARIO DETAIL / SPREAD ANALYSIS WIREFRAME
+
+PURPOSE
+
+- This wireframe defines information hierarchy and relative placement.
+- It is NOT a pixel-perfect specification.
+- Existing functionality not shown here is not automatically removed.
+- Mobile may stack sections vertically while preserving the same hierarchy.
+- ASCII only.
+- Do not replace ASCII characters with Unicode punctuation.
+
+
+==========================================================================
+SCENARIO HEADER
+==========================================================================
+
+< Back
+
+TLT
+Target 105 - 2028/12
+Updated 2026/08/09 10:32
+
+SPREAD ANALYSIS
+
+
+==========================================================================
+SCENARIO SUMMARY
+==========================================================================
+
+Spot             $92.40
+Target           $105.00 (+13.6%)
+Target Month     2028/12
+Data Source      Cboe
+
+
+==========================================================================
+BASELINE CANDIDATE
+==========================================================================
+
+#1   B105 / S110 Call Spread                              +238%
+
+Expiry           2028/12/15
+
+Buy Ask          $6.20
+Sell Bid         $3.70
+Net Cost         $2.50
+
+
+==========================================================================
+IV HISTORY
+==========================================================================
+
+NORMALIZED SKEW                                      1Y PCTL 78
+Current 0.50
+
+0.80 |                 /\
+0.70 |                /  \
+0.60 |        /\_____/    \___
+0.50 |_______/                \__________*   CURRENT
+0.40 |
+     +-----------------------------------------------------> Time
+      1Y ago                                           Now
+
+
+BUY IV                                      SELL IV
+
+12.0% - P24                                 18.0% - P61
+
+20% | \__                                   22% |       /\
+18% |    \                                  20% |      /  \
+16% |     \___                              18% |_____/    \_______*
+14% |         \____                         16% |
+12% |              \___________*            14% |
+    +--------------------------->               +--------------------------->
+     1Y ago                 Now                  1Y ago                  Now
+
+
+IV INFORMATION PRIORITY
+
+1. Normalized Skew
+2. Buy Leg IV
+3. Sell Leg IV
+
+Normalized Skew is the primary IV information.
+
+Buy / Sell IV are supporting information used to understand
+why the current skew is located where it is.
+
+Values are factual only.
+
+DO NOT add labels such as:
+
+- cheap
+- expensive
+- good entry
+- bad entry
+- buy
+- sell
+- favorable
+- unfavorable
+
+
+==========================================================================
+PAYOFF HEATMAP
+==========================================================================
+
+Baseline:
+B105 / S110 Call Spread
+
+Comparator:
+105 Call
+
+
+                          FUTURE DATE
+
+Spot       2027/06       2027/12       2028/06       2028/12
+
+120          +62%           +91%          +155%          +238%
+                    \
+115          +48%      \    +72%          +130%          +238%
+                         \
+110          +31%           \ +54%        +106%          +238%
+                              \
+105          +12%           +27% \         +73%          +181%
+                                 \
+100           -8%            +4%    \      +39%          +106%
+                                     \
+ 95          -24%           -16%           \ +9%           +31%
+
+
+          Comparator higher-return region
+
+                       \
+                        \
+                         \    Crossover Boundary
+                          \
+                           \
+
+                               Spread higher-return region
+
+
+LEGEND
+
+Heatmap cell value:
+Spread Return(t, S)
+
+Boundary:
+Spread Return(t, S) = Comparator Return(t, S)
+
+
+==========================================================================
+CROSSOVER SEMANTICS
+==========================================================================
+
+For every future state defined by:
+
+t = future date
+S = future underlying price
+
+calculate:
+
+Spread Return(t, S)
+
+and:
+
+Comparator Return(t, S)
+
+
+If:
+
+Comparator Return(t, S) > Spread Return(t, S)
+
+the point belongs to the Comparator higher-return region.
+
+
+If:
+
+Spread Return(t, S) > Comparator Return(t, S)
+
+the point belongs to the Spread higher-return region.
+
+
+If:
+
+Spread Return(t, S) = Comparator Return(t, S)
+
+the point belongs to the Crossover Boundary.
+
+
+IMPORTANT
+
+- The crossover is NOT one scalar crossover point.
+- It is a Time x Price boundary.
+- Do not assume the boundary is straight.
+- Do not assume the boundary is monotonic.
+- The calculated boundary may curve.
+- The calculated boundary may break into multiple visible segments.
+- The calculated boundary may enter or leave the visible Heatmap.
+- Render the actual calculated result.
+- Do not force the result to match this example drawing.
+- Do not label every Heatmap cell WIN / LOSE.
+- Do not create a second duplicated Heatmap.
+- Existing Spread return values remain the primary Heatmap values.
+- The crossover line is an overlay.
+
+
+==========================================================================
+PRICE LADDER
+==========================================================================
+
+Low Case                Target                 High Case
+
+$95                     $105                   $115
+
+-24%                    +181%                  +238%
+
+
+==========================================================================
+EXPIRY STRUCTURE
+==========================================================================
+
+[2028/06 +164%]
+[2028/09 +201%]
+[2028/12 +238%]
+[2029/01 +226%]
+
+
+#1   B105 / S110       +238%       Net $2.50
+#2   B100 / S110       +214%       Net $3.10
+#3   B105 / S115       +197%       Net $2.20
+...
+
+
+==========================================================================
+ADVANCED
+==========================================================================
+
+> Candidate Pool
+> Analysis Report
+> Spread History
+> Raw Data
+
+
+==========================================================================
+FULL INFORMATION PRIORITY
+==========================================================================
+
+1. Scenario identity
+
+2. Baseline candidate
+   - Rank
+   - Buy Strike
+   - Sell Strike
+   - Strategy
+   - Target Return
+
+3. Entry cost
+   - Buy Ask
+   - Sell Bid
+   - Net Cost
+
+4. Historical IV Position
+   4.1 Normalized Skew
+   4.2 Buy Leg IV
+   4.3 Sell Leg IV
+
+5. Payoff Heatmap
+   - Existing Spread return values
+   - Crossover Boundary overlay
+
+6. Price Ladder
+
+7. Expiry Structure
+
+8. Advanced diagnostics
+
+
+==========================================================================
+UI PRINCIPLE
+==========================================================================
+
+Do not solve MVP V3 by adding many new large cards.
+
+The goal is to improve the information hierarchy of the existing
+Spread Analysis Workspace.
+
+Historical IV should be integrated into the candidate analysis flow.
+
+Crossover should be integrated into the existing Heatmap.
+
+Compress:
+
+- whitespace
+- repeated labels
+- decoration
+- unnecessary section height
+
+Do NOT compress away decision-critical financial information.
+
+
+==========================================================================
+MOBILE PRINCIPLE
+==========================================================================
+
+- Stack the same information vertically where necessary.
+- Preserve the same information priority.
+- Keep Normalized Skew visually above Buy / Sell IV.
+- Buy / Sell IV may be placed side by side when screen width allows.
+- Historical IV charts should remain compact.
+- Do not create three large full-size charts if compact sparklines work.
+- Do not create a second Heatmap for crossover comparison.
+- Preserve existing navigation behavior.
+- Preserve return-to-list state and scroll behavior.
+- Do not break the high-density Mobile UX established in MVP V2.
+
+
+==========================================================================
+DESIGN INTENT
+==========================================================================
+
+After opening one Spread candidate, the user should be able to answer:
+
+1. Which Spread am I looking at?
+
+2. What is the target return?
+
+3. How much does it cost to enter?
+
+4. Where is the current Normalized Skew relative to its history?
+
+5. Where is the Buy Leg IV relative to its history?
+
+6. Where is the Sell Leg IV relative to its history?
+
+7. How have those three IV measures moved over time?
+
+8. What is the Spread return at different future dates and prices?
+
+9. If the price thesis happens earlier, where does the Comparator
+   have the higher return?
+
+10. As time approaches expiry, where does the Spread begin to overtake?
+
+The final result should still feel like one coherent
+SPREAD ANALYSIS WORKSPACE.
+
+It should not feel like several unrelated tools stacked together.
