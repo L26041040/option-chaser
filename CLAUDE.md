@@ -1684,7 +1684,7 @@ Review 修訂見 issue #102。14 張子票 #103–#116，需求方 `/implement`
   git status 乾淨，四個新增檔案（研究文件、純函式模組、真實資料
   fixture、驗收測試）皆為純加法，研究模組不被引擎 import。
 
-### QA-01 人工 QA 修正輪（2026-08-09，已完成，等人工驗收）
+### QA-01 人工 QA 修正輪（2026-08-09，CLOSED / ACCEPTED，HEAD `8e57a7b`）
 
 需求方對第一施工批次（#103–#110）做人工 QA，回報 6 項；偵查後 5 項
 成立、1 項結案。修正 5 張、每張各自 commit＋push：
@@ -1737,6 +1737,19 @@ Review 修訂見 issue #102。14 張子票 #103–#116，需求方 `/implement`
 像正常 Treasury」的路徑。
 
 > 本輪未施工 #111／#113／#114／#115／#116，亦未更動 #110 研究結論。
+
+**正式收尾（2026-08-09）**：第一施工批次（#103–#110、#112 共 9 張）＋
+QA-01 修正輪（QA-FIX-1–5）標記 **CLOSED / ACCEPTED**，對應 9 張 GitHub
+issue 已關閉（`state_reason=completed`），驗收基準 HEAD `8e57a7b`
+（branch `claude/implement-tfm9oa`，已 push、working tree clean）。
+
+**唯一殘留**：Dark Mode 下 `--label-tertiary` 對比仍低於 WCAG AA
+（QA-FIX-2 施工中發現，`src/contrast.test.ts` 已留存機器可驗證的
+已知狀態斷言）。列為**低優先 UX debt，不阻擋本輪驗收**，留待下一階段
+前端工作視情況處理。
+
+> 下一階段（#111／#113／#114／#115／#116、Crossover、IV History、
+> Valuation D2 model 鎖定）尚未開工，等待需求方後續指示。
 
 ### 施工依據
 
