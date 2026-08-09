@@ -1684,6 +1684,60 @@ Review 修訂見 issue #102。14 張子票 #103–#116，需求方 `/implement`
   git status 乾淨，四個新增檔案（研究文件、純函式模組、真實資料
   fixture、驗收測試）皆為純加法，研究模組不被引擎 import。
 
+### QA-01 人工 QA 修正輪（2026-08-09，已完成，等人工驗收）
+
+需求方對第一施工批次（#103–#110）做人工 QA，回報 6 項；偵查後 5 項
+成立、1 項結案。修正 5 張、每張各自 commit＋push：
+
+- **QA-FIX-1**（commit `b87080f`）— Heatmap ±% 從左側價格欄移到表格
+  最右欄。#109 施工時把 ±% 塞進左側 sticky 價格欄的同一個儲存格，
+  與 ticket 名稱「右側…軸」及 AC 不符（AC 那句「不是獨立座標軸／
+  獨立 scale」限制的是 scale 語意，不是位置——當時解讀錯誤）。改為
+  價格（sticky left）→ 日期格 → ±%（sticky right），`<thead>` 補
+  對應欄標題「vs 現價」。測試改用幾何位置（boundingBox）驗欄序，
+  加負向斷言「價格欄內不得再出現 ±%」——原本的文字存在性斷言正是
+  讓誤置也能通過的那一種
+- **QA-FIX-2**（commit `07e297d`）— 淺色模式文字對比。實測
+  secondary 3.44:1、tertiary 1.73:1，皆低於 WCAG AA normal text
+  的 4.5:1。照 AA 反解最小 alpha（最差底色是頁面底 `--bg` #f2f2f7
+  而非卡片白底）：secondary 0.6→0.90、tertiary 0.3→0.75，三階層次
+  仍在。`.compact-tier3` 11px→12px。深色模式未動（要求是不退化）。
+  新增 `src/contrast.test.ts` 直接讀 styles.css 算對比，把 AA 變成
+  可執行守門；其中一條把「深色 tertiary 仍未達 AA」釘成現狀，
+  待需求方裁示。⚠ 字級變大讓 compact card 長高、手機一屏從 4 張掉
+  到 3 張（踩到 #82 既有驗收），以 `.compact-card-tap` 內距 6→4px
+  換回來
+- **QA-FIX-3**（commit `8a70d1f`）— 桌面詳細頁密度。實測 2668px ÷
+  800px ＝ 3.33 螢幕，純文字列卡片 37–50% 高度是 padding/gap。全部
+  規則掛在 `.detail-pane`（桌面專屬 DOM，手機**結構上**拿不到），
+  card padding 16→12、gap 12→8、section-title 20→17px、row 間距
+  12→8；摘要卡加 `metadata-grid` 改兩欄（只有這一張，不一律兩欄化）。
+  結果 2208px ＝ 2.76 螢幕（−17.2%），摘要卡 305→132px。Heatmap
+  本體未壓（格子字級仍 13px，有測試釘住）。新增 Mobile 護欄 e2e：
+  手機 `.detail-pane` 數量為 0、卡片內距仍 16px
+- **QA-FIX-4**（commit `97a8454`）— 批次操作列改桌面與手機共用吸底。
+  原本 sticky 只寫在手機斷點裡，桌面全選後批次列在 y=1696px，得再
+  捲 971px 才點得到動作鈕。三條 e2e 全部用 boundingBox 對照 viewport
+  ——`isVisible()` 對捲到畫面外的元素照樣回 true，正是原本沒抓到的原因
+- **QA-FIX-5**（commit `874f4e1`）— GUI Heatmap 日期軸密度參數化。
+  舊行為固定七欄與天期無關，2.4 年 LEAPS 平均 143 天／欄。
+  `date_axis(..., max_gap_days=None)`：`None` ＝ 既有七欄（CLI 走
+  這條，golden 零漂移）；GUI 傳 `GUI_MAX_GAP_DAYS = 31`，實測命中
+  裁示目標 7／13／29 欄。密度參數化在引擎，不讓前端自己重新抽樣。
+  payload 實測 128KB → 268.6KB、latency 26→38ms（偵查時擔心的
+  ~600KB 是高估：只有 matrix cells 隨欄數成長），依裁示不預先建架構。
+  決策已補記於 issue #109 留言。⚠ 測試發現既有邊界：天期 < 6 天時
+  無法有 7 個相異日曆日，不變量寫成 `>= min(7, span+1)`
+
+**QA-01 第 6 項（Rate 4.1%）已結案、未施工**：4.1% 是 Treasury 曲線
+在 ~1.4–1.9 年期的正常插值輸出；固定 fallback 是 0.04＝畫面顯示
+「4.0%」，數學上不可能顯示 4.1%；三態（US Treasury／STALE／Fallback）
+在 UI 與 API 都可辨識；兩條陳舊分支都會標 `stale=True` 且經
+`curve_to_dict`／`curve_from_dict` 往返無損，查無「抓取失敗但看起來
+像正常 Treasury」的路徑。
+
+> 本輪未施工 #111／#113／#114／#115／#116，亦未更動 #110 研究結論。
+
 ### 施工依據
 
 - 需求與決策紀錄：`docs/modifyRequestV1.md`（附錄 A1–A12）
