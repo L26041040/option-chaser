@@ -890,3 +890,24 @@ test("返回劇本庫時停在原本捲動的位置，不必重新往下找（MV
     await expect.poll(() => page.evaluate(() => window.scrollY))
       .toBeGreaterThan(scrollBefore - 20);
   });
+
+test("手機詳細頁不受桌面密度壓縮影響（QA-FIX-3／QA-01 的 Mobile 護欄）",
+   async ({ page }) => {
+  await routeLibrary(page, libraryRow());
+  await page.goto("/#/s/s1");
+  await expect(page.locator(".card").first()).toBeVisible();
+
+  // QA-FIX-3 的規則全部掛在 `.detail-pane` 底下，而那是桌面專屬 DOM
+  // （`App.tsx` 手機分支在 `<div className="workspace">` 之前就 return）。
+  // 這條測試把「手機拿不到那個作用域」釘死：手機版根本沒有 detail-pane，
+  // 卡片內距維持原本的 16px，不是桌面壓縮後的 12px。
+  await expect(page.locator(".detail-pane")).toHaveCount(0);
+  await expect(page.locator(".card").first()).toHaveCSS("padding", "16px");
+
+  // 摘要卡在手機仍是單欄逐列（`metadata-grid` 的兩欄只在桌面生效）：
+  // 前兩列的 y 不同 ＝ 上下排列，不是並排。
+  const summaryRows = page.locator(".metadata-grid .row");
+  const a = (await summaryRows.nth(0).boundingBox())!;
+  const b = (await summaryRows.nth(1).boundingBox())!;
+  expect(b.y).toBeGreaterThan(a.y + 1);
+});

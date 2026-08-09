@@ -135,6 +135,74 @@ body {
   .detail-pane .screen {
     max-width: 900px;
   }
+
+  /* ---------- QA-FIX-3（QA-01）：桌面詳細頁密度 ----------
+
+     QA-01 第 4 項實測：詳細頁 scrollHeight 2668px ÷ 800px 視窗 ＝ 3.33
+     螢幕，而且當時分析報告／Spread 走勢／原始資料三張還是收合的。
+     逐卡拆解顯示純文字列卡片有 37–50% 的高度是 padding/gap/列間距
+     （摘要 50%、進場成本 47%、候選池 42%、基準候選 37%），而劇本主圖
+     只有 8%——那張是真內容（Heatmap 本體），不動。
+
+     全部規則都掛在 `.detail-pane` 底下：那是桌面專屬的 DOM（見
+     `App.tsx`，手機分支在 `<div className="workspace">` 之前就 return
+     了），手機版**結構上不可能**吃到這裡的任何一條。外面再包一層
+     桌面 media query 是雙保險，不是必要條件。
+
+     壓的是留白與字級，不刪任何一項資訊。 */
+  .detail-pane .screen {
+    padding: 12px;
+    gap: 12px;
+  }
+
+  .detail-pane .card {
+    padding: 12px;
+    gap: 8px;
+  }
+
+  .detail-pane .section-title {
+    font-size: 17px;
+  }
+
+  .detail-pane .row + .row {
+    padding-top: 8px;
+  }
+
+  /* 這兩個靠負邊距捲到卡片邊緣的區塊，邊距是綁 `--gap`（16px）算的；
+     卡片內距改成 12px 後要跟著改，否則會突出卡片 4px。 */
+  .detail-pane .heatmap-scroll {
+    margin: 0 -12px;
+    padding: 0 12px;
+  }
+
+  .detail-pane .chip-strip {
+    margin: 0 -12px;
+    padding: 2px 12px;
+  }
+
+  /* metadata 類卡片（目前只有摘要，見 `ScenarioDetail.tsx`）排兩欄：
+     桌面 detail-pane 有 ~870px 寬，label／value 單行 space-between
+     中間是大片空白，兩欄剛好把六列壓成三行。刻意**不**套用在其他
+     卡片上——金融數字與圖表不一律兩欄化（票上明文）。 */
+  .detail-pane .metadata-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    column-gap: 28px;
+    row-gap: 8px;
+  }
+
+  /* 兩欄之後 `.row + .row` 那條線會落在每一格上（含同一視覺列的右格），
+     看起來像把兩欄切開。改成只有「不在第一視覺列」的格子才畫線
+     ——兩欄佈局下就是第 3 個以後，欄數改了也仍然成立。 */
+  .detail-pane .metadata-grid > .row + .row {
+    border-top: 0;
+    padding-top: 0;
+  }
+
+  .detail-pane .metadata-grid > .row:nth-child(n + 3) {
+    border-top: 0.5px solid var(--separator);
+    padding-top: 8px;
+  }
 }
 
 .card {

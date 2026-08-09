@@ -166,7 +166,13 @@ function Chart({ candidate }: { candidate: Candidate | null }) {
 function Summary({ view, analyzedAt }: { view: AnalysisView; analyzedAt: string | null }) {
   const strategy = primaryResult(view)?.strategy ?? view.params.strategy;
   return (
-    <section className="card">
+    // `metadata-grid`（QA-FIX-3／QA-01）：這張卡六列全是 label／value
+    // 的 metadata（現價、目標、年月、策略、資料時間、來源），在桌面
+    // 寬版面上每列中間都是大片空白——標成 metadata 讓 CSS 在
+    // `.detail-pane` 下把它排成兩欄，列數砍半、資訊一項不少。
+    // 只有這一張卡掛：其餘卡片是金融數字或圖表，不一律兩欄化。
+    // 手機版不吃這條規則（`.detail-pane` 是桌面專屬 DOM）。
+    <section className="card metadata-grid">
       <Row label="現價">{money(view.meta.spot)}</Row>
       <Row label="目標價">
         {money(view.params.target_price)}

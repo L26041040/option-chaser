@@ -407,3 +407,35 @@ test("劇本庫卡片瘦身：固定左側欄視窗一次看到的劇本數比�
 
   expect(visibleWithoutScrolling).toBeGreaterThanOrEqual(5);
 });
+
+test("詳細頁密度：桌面一屏能看到的比例明顯提高（QA-FIX-3／QA-01）",
+     async ({ page }) => {
+  await routeTwoScenarios(page);
+  await page.goto("/#/s/s1");
+  await expect(page.locator(".detail-pane .card").first()).toBeVisible();
+
+  // 只驗結構性密度，不驗任何像素間距數值——跟 #108 劇本庫瘦身、
+  // #82 手機 compact row 同一套測試哲學。
+  // QA-01 量測基準：同一份契約樣本下 scrollHeight 2668px ÷ 800px
+  // 視窗 ＝ 3.33 螢幕。壓縮後應明顯低於此，門檻取 2.95 留餘裕。
+  const vh = page.viewportSize()!.height;
+  const total = await page.locator(".detail-pane .screen")
+    .evaluate((el) => el.scrollHeight);
+  expect(total / vh).toBeLessThan(2.95);
+
+  // 資訊一項不減少：摘要六項在兩欄化之後仍然全在。
+  const summary = page.locator(".detail-pane .metadata-grid").first();
+  for (const label of ["現價", "目標價", "目標年月", "策略", "資料時間", "資料來源"]) {
+    await expect(summary.getByText(label, { exact: true })).toBeVisible();
+  }
+  // 真的排成兩欄（同一視覺列的兩格 y 相同、x 不同），不是只是變窄。
+  const rows = summary.locator(".row");
+  const a = (await rows.nth(0).boundingBox())!;
+  const b = (await rows.nth(1).boundingBox())!;
+  expect(Math.abs(a.y - b.y)).toBeLessThan(2);
+  expect(b.x).toBeGreaterThan(a.x);
+
+  // Heatmap 本體不因為壓縮而變小到影響可讀性——格子字級維持 13px。
+  await expect(page.locator(".detail-pane .heatmap-table td").first())
+    .toHaveCSS("font-size", "13px");
+});
