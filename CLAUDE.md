@@ -1587,6 +1587,21 @@ Review 修訂見 issue #102。14 張子票 #103–#116，需求方 `/implement`
   stale`／`rate_explicit`，未新造狀態機。引擎測試涵蓋六到期日鏈多組
   不同到期日，逐一驗證與查表結果一致。至此 #103–#105、#112 四張
   「無依賴／被 #105 擋」的資訊階層票全數完成，回到主線依序 #106。
+- **#106** [#106] — Spread 淨成本走勢圖補刻度與 tooltip（決策 I，commit
+  `fcc6005`）：`SpreadHistory.tsx` 手刻 SVG 補 Y 軸（`Net Cost
+  ($/share)` 單位＋低/中/高三個刻度，讀既有 `yAxisDomain` 固定範圍
+  不變）與 X 軸（日期刻度，新增純函式 `xAxisTicks` 均勻取樣至多 4
+  個、恆含首尾）。資料點新增桌面 hover／手機 tap 共用同一套 state 的
+  tooltip（日期＋淨成本）。
+  ⚠ **開發過程中抓到並修掉一個真 regression**：`onClick` 原本寫成
+  切換（`idx === activeIndex ? null : idx`），但 `userEvent.click`／
+  真實觸控裝置會先合成一輪 hover 事件再送出 click——切換邏輯在那個
+  當下讀到「已經是這個 idx」，立刻切回 null，點了等於沒點。改成
+  `onClick` 直接設定（不切換）解決；已用 Vitest 的 `userEvent.click`
+  逐一驗證過（不是只看 hover 分開測、掩蓋這個交互作用）。
+  Day/Week/Month 切換與缺口不連線兩項既有行為皆有回歸測試覆蓋，未
+  加入 zoom／pan（AC 明文排除）。e2e：桌面 hover（`desktop.spec.ts`
+  新測試）＋手機 viewport 點按（`smoke.spec.ts` 既有測試擴充）皆綠。
 
 ### 施工依據
 
