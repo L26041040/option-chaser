@@ -1523,6 +1523,34 @@ Review 修訂見 issue #102。14 張子票 #103–#116，需求方 `/implement`
   故候選池維持既有非折疊行為，未如票面 prose 摘要暗示的「Advanced
   全部收合」擴大成把候選池也改成 `<details>`——AC checklist 優先於
   prose 摘要，避免無謂 scope 擴張。
+- **#104** [#104] — 報價品質警示重整（決策 F，commit `9c47e8c`）：
+  `CandidateView` 新增 `wide_spread_warning`（僅 `is_spread_wide`）；
+  既有 `quote_warning`（zero_vol or wide_spread or fr>0.25）計算式與
+  `_build_groups` 的 `default_pair` 選取邏輯**逐字未動**，只是
+  `store._candidate()` 不再把它寫進 JSON——契約裡只剩顯示旗標。前端
+  `ExpiryStructure` 的 ⚠ 徽章改接 `wide_spread_warning`，文案改「Bid/Ask
+  過寬」；`filters.quality_flag_counts()` 的「報價非最新（今日無成交）」
+  改「今日無成交量」（同一函式同時餵 CandidatePool 與 CLI，golden
+  fixture 一併更新）。兩個舊字串加進 `test_redlines.py` BANNED 清單。
+  新增引擎測試覆蓋 AC 三案例（volume==0／friction>25% 各自單獨不觸發，
+  is_spread_wide 為真才觸發）；`test_grouping.py` 新增以真實 fixture
+  （`xyz_v4_six_expiries.json`／`xyz_v4_all_warning.json`）鎖死
+  `default_selection` 逐位元不變的回歸測試。
+  ⚠ **一項解讀記錄**：`_build_groups`內部的 `_row_badges`／
+  `ExpiryGroup.rows[].badges`（v4 舊「到期日分組比較」遺留結構，
+  `src/` 全站無任何消費者，已 grep 確認）仍以 `quote_warning` 餵
+  `"warning"` 徽章字串、維持原樣未動——AC 逐條列的「Candidate 契約」
+  「ExpiryStructure/CandidateRow 徽章」「CandidatePool 文案」皆明確
+  指向**現行 React UI**這一份契約，不含這個死碼結構；且動它會直接
+  碰觸 `_build_groups`（guardrail 明文「不得改變既有 default candidate
+  / ranking semantics」的核心函式），改動風險（`test_grouping.py`
+  既有斷言）遠高於效益（沒有任何畫面會顯示它），判斷維持不動。
+  **量測結果（不改動門檻參數，AC 要求）**：`xyz_v4_six_expiries.json`
+  （11 筆合格池）顯示旗標觸發率 9.1%（1/11，與原複合旗標持平，本樣本
+  唯一觸發者恰好就是 wide_spread）；`xyz_v2_snapshot.json`（8 筆合格池）
+  觸發率從原複合旗標 37.5%（3/8：wide+zero_vol+高friction 各 1 筆）
+  降至 12.5%（1/8）——兩份樣本皆未見「全頁候選全亮」，符合決策 F 的
+  sparse 設計目標，無需要求需求方裁示調參的情況。
 
 ### 施工依據
 
