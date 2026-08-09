@@ -39,11 +39,16 @@
 > 外觀優化（QA-v2 需求方已明確裁示延後，待主動重啟）、Dashboard 佔位區
 > 實際內容（跨劇本比較功能確定後另開票，spec #77 Out of Scope）。
 > **2026-08-08 需求方 `/wayfinder` 開了「貴不貴」研究地圖**（issue
-> #95）：問題升級為「這組 Spread 現在貴不貴」的完整判讀路徑地圖
-> （不預設 IV gap 是答案），R1–R4 四張研究票已完成並關閉（四份新
-> 文件見「下一輪研究」小節末尾），**下一步＝G1 [#100] 需求方
-> Grilling 裁示語意**（frontier，等需求方 cue）→ G2 [#101] →
-> `/to-spec`。
+> #95）：R1–R4 四張研究票完成（四份新文件見「下一輪研究」小節末尾）。
+> **2026-08-09 需求方直接發佈 MVP V3 需求文件**（`docs/Mvp-v3.md`＋
+> `docs/Mvp-v3-appendix.txt`，master 直 commit）＝G1/G2 裁示（入選：
+> 歷史位置 vol 空間、Normalized Skew 主資訊；呈現只給事實；追平價格
+> 升級為 Crossover Boundary），地圖 #95 與 G1 #100／G2 #101 據此
+> resolution 關閉。同日 `/to-spec` 完成：**MVP V3 spec＝issue #102**
+> （`ready-for-agent`；三個 Open Questions：IV vendor 選型與月費上限、
+> LEAPS 超網格 percentile 路線、追平價格移除確認）。
+> **下一步＝需求方人工 Review #102 → 有未裁示問題才局部 Grill →
+> `/to-tickets` → 施工**。
 > 環境操作細節（venv／本地 Postgres／容器倒退修法／部署網址）見檔案
 > 最底下「## 環境」一節，已同步更新。
 
