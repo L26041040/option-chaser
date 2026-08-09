@@ -40,6 +40,28 @@ export function columnLabel(iso: string, isLast: boolean): string {
   return `${iso.slice(5, 7)}/${iso.slice(8, 10)}${isLast ? " 到期" : ""}`;
 }
 
+/**
+ * 右側 ±% 標註（決策 M／#109）：跟左側絕對價格同一個 price row 的
+ * annotation，不是獨立座標軸。`movePct` 是引擎給的變動分數，這裡只
+ * 格式化——一律帶正負號，跟 `formatCell` 同一套「正負號永遠印出來」
+ * 的慣例（含 0 本身，`<現價>` 那一列會顯示「+0.0%」，與 `formatCell(0)`
+ * 顯示「+0%」是同一個既有決定，非本票新發明）。
+ */
+export function formatMovePct(movePct: number): string {
+  const pct = movePct * 100;
+  return `${pct >= 0 ? "+" : ""}${pct.toFixed(1)}%`;
+}
+
+/**
+ * 短格式（Mobile，AC 明文允許）：四捨五入到整數百分比，省下的寬度
+ * 讓給 sticky 價格欄旁邊還要橫向捲動的日期欄。跟完整格式一樣一律
+ * 帶正負號，只是不縮到「完全省略」或「要長按才看得到」。
+ */
+export function formatMovePctShort(movePct: number): string {
+  const pct = movePct * 100;
+  return `${pct >= 0 ? "+" : ""}${pct.toFixed(0)}%`;
+}
+
 const TAGS: Record<string, string> = {
   "<現價>": "現價", "<目標>": "目標", "<超標>": "超標", "<深跌>": "深跌",
 };

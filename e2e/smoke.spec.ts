@@ -101,7 +101,12 @@ test("清單 → 詳細頁：摘要、基準候選、進場成本、主圖、候
   // 摘要：現價與目標（含所需漲幅）、資料來源——最後這行就是雲端
   // 對 Cboe 可達性的驗證方式
   await expect(page.getByText(`$${view.meta.spot.toFixed(2)}`)).toBeVisible();
-  await expect(page.getByText(/\+30\.0%/)).toBeVisible();
+  // 決策 M（#109）之後，「+30.0%」這個字串在頁面上不再唯一——每一張
+  // Heatmap（劇本主圖＋到期日結構裡各候選收合著的那些）的「目標」列
+  // 右側標註都會是同一個數字（同一組 spot／target）。摘要那一句用
+  // `.row-note` scope 回去，不是隨便挑一個「+30.0%」。
+  await expect(page.locator(".row-note").filter({ hasText: "+30.0%" }))
+    .toBeVisible();
   await expect(page.getByText(view.meta.source, { exact: true })).toBeVisible();
 
   // 基準候選（spec #102 決策 A）：baseline 期第 1 名的身分——名次、
@@ -330,6 +335,28 @@ test("詳細頁的 Heatmap 可橫向滑動（手機塞不下七欄）", async ({
   expect(box.scrollWidth).toBeGreaterThan(box.clientWidth);
   expect(await page.evaluate(
     () => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+});
+
+test("Heatmap 價格列右側 ±% 標註：手機 viewport 不需額外互動就看得到" +
+     "（短格式，決策 M／#109）", async ({ page }) => {
+  await routeLibrary(page, libraryRow());
+
+  await page.goto("/#/s/s1");
+  const mainChart = page.locator("section").filter({ hasText: "劇本主圖" }).first();
+  const table = mainChart.locator("table.heatmap-table");
+  await expect(table).toBeVisible();
+
+  // 不點、不長按——AC 明文手機 viewport 下這個資訊「不需額外互動」
+  // 就看得到；手機優先預設顯示短格式（CSS 媒體查詢切換，見
+  // `styles.css` 的 `.heatmap-move-pct-short`），數字取自契約樣本
+  // baseline 候選的 `matrix.prices`（spot=100、target=130 → +30%）。
+  const targetRow = table.locator("tr").filter({ hasText: "目標" });
+  await expect(targetRow.getByText("+30%", { exact: true })).toBeVisible();
+  const spotRow = table.locator("tr").filter({ hasText: "現價" });
+  await expect(spotRow.getByText("+0%", { exact: true })).toBeVisible();
+  // 完整格式（桌面版才顯示）此時不可見，證明真的是短格式在生效，
+  // 不是兩種格式一起攤開來看。
+  await expect(targetRow.getByText("+30.0%", { exact: true })).not.toBeVisible();
 });
 
 test("劇本庫：建立 → 出現在清單 → 封存後消失（V3／#51）", async ({ page }) => {

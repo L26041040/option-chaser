@@ -56,9 +56,12 @@ export interface RepresentativeCandidate {
 /**
  * 價格×日期報酬矩陣（引擎的 `MatrixView`）。`prices`／`dates` 的第二欄是
  * **引擎給的**錨點標籤，GUI 只讀不算（v4 spec §4.3 的既有原則）。
+ *
+ * 決策 M（#109）：`prices` 第三欄是 `move_pct`——該價位相對現價（spot）
+ * 的變動分數，跟 cell 值同源同時點算出來，GUI 只格式化顯示，不重算。
  */
 export interface Matrix {
-  prices: [number, string][];
+  prices: [number, string, number][];
   dates: [string, string][];
   cells: number[][];
 }

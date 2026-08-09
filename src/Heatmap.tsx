@@ -9,9 +9,17 @@
  * - 價格欄 `position: sticky` 釘在左側，橫向捲動時才知道自己在看哪一列
  * - 整張表包在可橫向捲動的容器裡，不縮字級硬塞——七欄擠進 390px 只會
  *   讓數字小到讀不出來
+ *
+ * 決策 M（#109）：價格欄右側加一個 ±%（`matrix.prices` 第三欄
+ * `move_pct`，同樣是引擎給的，不在這裡重算），跟左側絕對價格同一列、
+ * 同一個 sticky 儲存格，橫向捲動時一起釘住。候選展開後的 Heatmap 用的
+ * 是同一個元件，不需要另外接線。
  */
 import type { Matrix } from "./api";
-import { cellColor, columnLabel, formatCell, priceTags } from "./heatmap";
+import {
+  cellColor, columnLabel, formatCell, formatMovePct, formatMovePctShort,
+  priceTags,
+} from "./heatmap";
 
 export default function Heatmap({ matrix }: { matrix: Matrix }) {
   const { prices, dates, cells } = matrix;
@@ -39,12 +47,25 @@ export default function Heatmap({ matrix }: { matrix: Matrix }) {
           </thead>
           <tbody>
             {order.map((i) => {
-              const [price, label] = prices[i];
+              const [price, label, movePct] = prices[i];
               const tags = priceTags(label);
               return (
                 <tr key={price} className={tags.length ? "anchor" : undefined}>
                   <th scope="row" className="heatmap-price">
                     {price.toFixed(2)}
+                    {/* 決策 M（#109）：右側 ±%，跟左側絕對價格同一列的
+                        annotation，不是另一條座標軸——放在同一個 sticky
+                        儲存格裡，橫向捲動時跟價格一起釘住，手機視窗不用
+                        額外互動就看得到。完整／短格式兩者都畫進 DOM，用
+                        CSS 依版面寬度切換，不是 JS 判斷視窗寬度。 */}
+                    <span className="heatmap-move-pct">
+                      <span className="heatmap-move-pct-full">
+                        {formatMovePct(movePct)}
+                      </span>
+                      <span className="heatmap-move-pct-short">
+                        {formatMovePctShort(movePct)}
+                      </span>
+                    </span>
                     {tags.map((t) => (
                       <span className="tag" key={t}>
                         {t}

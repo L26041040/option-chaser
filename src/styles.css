@@ -1087,6 +1087,31 @@ body {
   font-size: 11px;
 }
 
+/* 決策 M（#109）：價格右側 ±% 標註——次要資訊，不跟報酬率的漲跌配色
+   混在一起（那是 cell 底色的語意，這裡只是「這個價位離現價多遠」）。
+   完整／短格式兩個 span 都畫進 DOM（AC 明文不得整段省略、不得靠
+   tooltip／長按才看得到），手機優先預設顯示短格式，跨過桌面斷點
+   （與 `App.tsx` 的 `DESKTOP_QUERY`／版面切換同一個 1100px）才換成
+   完整格式——這裡有的是桌面 detail-pane 的寬版面，不用省字。 */
+.heatmap-move-pct {
+  margin-left: 6px;
+  color: var(--label-tertiary);
+  font-weight: 400;
+}
+
+.heatmap-move-pct-full {
+  display: none;
+}
+
+@media (min-width: 1100px) {
+  .heatmap-move-pct-full {
+    display: inline;
+  }
+  .heatmap-move-pct-short {
+    display: none;
+  }
+}
+
 /* ---------- 到期日結構（V6／#54） ---------- */
 
 /* 真正橫向並排、可橫向滑動——不是換行成好幾列的按鈕堆。負邊距讓它

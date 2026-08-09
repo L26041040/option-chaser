@@ -5,25 +5,25 @@ from option_chaser.matrix import price_axis, date_axis, matrix_lines, thumbnail_
 
 def test_price_axis_len_anchors_and_positivity():
     rows = price_axis(100.0, 120.0, bullish=True)
-    prices = [v for v, _ in rows]
+    prices = [v for v, _, _ in rows]
     assert len(rows) == 11 and prices == sorted(prices)
     assert 100.0 in prices and 120.0 in prices
-    labels = dict(rows)
+    labels = {v: lbl for v, lbl, _ in rows}
     assert labels[100.0] == "<現價>" and labels[120.0] == "<目標>"
     # low-target put scenario: floor at 0.01*spot
     rows2 = price_axis(10.0, 0.5, bullish=False)
-    assert min(v for v, _ in rows2) >= 0.01 * 10.0 - 1e-12
+    assert min(v for v, _, _ in rows2) >= 0.01 * 10.0 - 1e-12
 
 
 def test_price_axis_collision_spot_near_target():
     rows = price_axis(100.0, 100.5, bullish=True)
-    prices = [v for v, _ in rows]
+    prices = [v for v, _, _ in rows]
     assert len(rows) == 11 and 100.0 in prices and 100.5 in prices
 
 
 def test_price_axis_spot_equals_target_dual_label():
     rows = price_axis(100.0, 100.0, bullish=True)
-    labels = dict(rows)
+    labels = {v: lbl for v, lbl, _ in rows}
     assert "<現價>" in labels[100.0] and "<目標>" in labels[100.0]
     assert len(rows) == 11
 
@@ -31,7 +31,7 @@ def test_price_axis_spot_equals_target_dual_label():
 def test_price_axis_v4_anchors_bullish():
     spot, target = 84.52, 105.0
     pts = price_axis(spot, target, bullish=True)
-    vals = [v for v, _ in pts]
+    vals = [v for v, _, _ in pts]
     assert len(vals) == 11
     overshoot, adverse = target * 1.15, spot * 0.90
     for anchor in (spot, target, overshoot, adverse):
@@ -43,7 +43,7 @@ def test_price_axis_v4_anchors_bullish():
 def test_price_axis_v4_anchors_bearish():
     spot, target = 84.52, 70.0
     pts = price_axis(spot, target, bullish=False)
-    vals = [v for v, _ in pts]
+    vals = [v for v, _, _ in pts]
     overshoot, adverse = target * 0.85, spot * 1.10
     for anchor in (spot, target, overshoot, adverse):
         assert anchor in vals
@@ -53,20 +53,20 @@ def test_price_axis_v4_anchors_bearish():
 
 def test_price_axis_v4_positive_clamp():
     pts = price_axis(2.0, 15.0, bullish=True)   # adverse=1.8 > 0.02 so no clamp
-    assert all(v > 0 for v, _ in pts)
+    assert all(v > 0 for v, _, _ in pts)
 
 
 def test_price_axis_anchor_collision_dedup():
     """spot*0.9 colliding with a grid point must not duplicate rows."""
     pts = price_axis(100.0, 110.0, bullish=True)
-    vals = [v for v, _ in pts]
+    vals = [v for v, _, _ in pts]
     assert len(vals) == len(set(vals)) == 11
 
 
 def test_price_axis_v4_anchor_labels():
     spot, target = 84.52, 105.0
     overshoot, adverse = target * 1.15, spot * 0.90
-    labels = dict(price_axis(spot, target, bullish=True))
+    labels = {v: lbl for v, lbl, _ in price_axis(spot, target, bullish=True)}
     assert labels[spot] == "<現價>"
     assert labels[target] == "<目標>"
     assert labels[overshoot] == "<超標>"
@@ -74,11 +74,48 @@ def test_price_axis_v4_anchor_labels():
 
     spot2, target2 = 84.52, 70.0
     overshoot2, adverse2 = target2 * 0.85, spot2 * 1.10
-    labels2 = dict(price_axis(spot2, target2, bullish=False))
+    labels2 = {v: lbl for v, lbl, _ in price_axis(spot2, target2, bullish=False)}
     assert labels2[spot2] == "<現價>"
     assert labels2[target2] == "<目標>"
     assert labels2[overshoot2] == "<超標>"
     assert labels2[adverse2] == "<深跌>"
+
+
+# ---------- 決策 M（#109）：右側 ±% 標註（move_pct） ----------
+
+def test_move_pct_formula_matches_price_relative_to_spot():
+    spot, target = 84.52, 105.0
+    rows = price_axis(spot, target, bullish=True)
+    for price, _, move_pct in rows:
+        assert move_pct == pytest.approx((price - spot) / spot)
+
+
+def test_move_pct_zero_at_spot_row():
+    spot, target = 100.0, 120.0
+    rows = price_axis(spot, target, bullish=True)
+    move_pct_by_price = {price: move_pct for price, _, move_pct in rows}
+    assert move_pct_by_price[spot] == 0.0
+
+
+def test_move_pct_sign_matches_overshoot_and_adverse_direction():
+    # bullish：超標在現價之上（正）、深跌在現價之下（負）
+    spot, target = 84.52, 105.0
+    overshoot, adverse = target * 1.15, spot * 0.90
+    rows = price_axis(spot, target, bullish=True)
+    move_pct_by_price = {price: move_pct for price, _, move_pct in rows}
+    assert move_pct_by_price[overshoot] > 0
+    assert move_pct_by_price[adverse] < 0
+
+    # bearish：超標在現價之下（負）、深跌在現價之上（正）——標記語意
+    # 是「相對現價的距離方向」，不是漲跌的好壞，bullish/bearish 只影響
+    # 超標／深跌落在哪一側，move_pct 的正負號永遠只看價格相對 spot 的
+    # 位置。
+    spot2, target2 = 84.52, 70.0
+    overshoot2, adverse2 = target2 * 0.85, spot2 * 1.10
+    rows2 = price_axis(spot2, target2, bullish=False)
+    move_pct_by_price2 = {price: move_pct for price, _, move_pct in rows2}
+    assert move_pct_by_price2[overshoot2] < 0
+    assert move_pct_by_price2[adverse2] > 0
 
 
 def test_thumbnail_cells_indices():

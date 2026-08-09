@@ -93,6 +93,34 @@ test("Spread 淨成本走勢：桌面 hover 資料點顯示 tooltip（MVP V3／#
   await expect(chart.getByText(/日期 2026-07-01/)).not.toBeVisible();
 });
 
+test("Heatmap 價格列右側 ±%：桌面 viewport 每一列都看得到完整格式" +
+     "（決策 M／#109）", async ({ page }) => {
+  await routeTwoScenarios(page);
+  await page.goto("/#/s/s1");
+
+  const mainChart = page.locator("section").filter({ hasText: "劇本主圖" }).first();
+  const table = mainChart.locator("table.heatmap-table");
+  await expect(table).toBeVisible();
+
+  // 數字取自契約樣本 baseline 候選的 `matrix.prices`（spot=100、
+  // target=130、adverse=90 → +30.0%／+0.0%／-10.0%）。
+  const targetRow = table.locator("tr").filter({ hasText: "目標" });
+  await expect(targetRow.getByText("+30.0%", { exact: true })).toBeVisible();
+  const spotRow = table.locator("tr").filter({ hasText: "現價" });
+  await expect(spotRow.getByText("+0.0%", { exact: true })).toBeVisible();
+  const adverseRow = table.locator("tr").filter({ hasText: "深跌" });
+  await expect(adverseRow.getByText("-10.0%", { exact: true })).toBeVisible();
+  // 短格式（Mobile 才用）此時不可見，證明桌面版真的換成完整格式。
+  await expect(targetRow.getByText("+30%", { exact: true })).not.toBeVisible();
+
+  // 不只錨點列——每一列（含沒有特殊標記的內插列）都要看得到 ±%。
+  const rows = await table.locator("tbody tr").all();
+  expect(rows.length).toBeGreaterThan(4);
+  for (const row of rows) {
+    await expect(row.getByText(/^[+-]\d+\.\d%$/)).toBeVisible();
+  }
+});
+
 test("目前選中的劇本在左側清單有明確的選中狀態", async ({ page }) => {
   await routeTwoScenarios(page);
   await page.goto("/#/s/s1");

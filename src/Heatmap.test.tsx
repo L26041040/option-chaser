@@ -47,7 +47,7 @@ describe("主圖 Heatmap", () => {
 
   it("賺賠上不同的底色，中性帶不上色", () => {
     const tiny: Matrix = {
-      prices: [[100, "<現價>"]],
+      prices: [[100, "<現價>", 0]],
       dates: [["2026-08-07", ""]],
       cells: [[0.0]],
     };
@@ -66,4 +66,53 @@ describe("主圖 Heatmap", () => {
   // 「可橫向滑動」在 jsdom 測不到（沒有版面，也沒載入 CSS）：拿
   // `querySelector(".heatmap-scroll")` 當斷言的話，把 `overflow-x` 刪掉
   // 測試照樣綠。真正的守門在 E2E（實測 scrollWidth > clientWidth）。
+});
+
+describe("價格右側 ±% 標註（決策 M／#109）", () => {
+  it("每一個 price row 都有對應且正確的 ±% 標註，值取自 matrix.prices 第三欄"+
+     "（引擎給的，不是前端重算）", () => {
+    render(<Heatmap matrix={matrix} />);
+
+    const rowHeaders = screen.getAllByRole("rowheader");
+    expect(rowHeaders).toHaveLength(matrix.prices.length);
+    // 由高價到低價渲染（既有規則），逐列核對完整格式的 ±% 文字。
+    const sorted = [...matrix.prices].sort((a, b) => b[0] - a[0]);
+    rowHeaders.forEach((th, i) => {
+      const [, , movePct] = sorted[i];
+      const pct = movePct * 100;
+      const expected = `${pct >= 0 ? "+" : ""}${pct.toFixed(1)}%`;
+      expect(within(th).getByText(expected)).toBeInTheDocument();
+    });
+  });
+
+  it("現價那一列標註恆為 +0.0%——跟自己比不可能有變動", () => {
+    render(<Heatmap matrix={matrix} />);
+    const row = screen.getByText("現價").closest("tr")!;
+    expect(within(row).getByText("+0.0%")).toBeInTheDocument();
+  });
+
+  it("完整格式與短格式（Mobile）兩種文字同時畫進 DOM——不靠 JS 判斷" +
+     "視窗寬度，用 CSS 切換顯示，手機視窗不需要額外互動也看得到", () => {
+    const tiny: Matrix = {
+      prices: [[105, "", 0.136]],
+      dates: [["2026-08-07", ""]],
+      cells: [[0.0]],
+    };
+    render(<Heatmap matrix={tiny} />);
+
+    const th = screen.getByRole("rowheader");
+    expect(within(th).getByText("+13.6%")).toBeInTheDocument();
+    expect(within(th).getByText("+14%")).toBeInTheDocument();
+  });
+
+  it("深跌／超標兩端的正負號方向跟價格相對現價的位置一致", () => {
+    // 契約樣本是 bullish：深跌在現價之下（負）、超標在現價之上（正）。
+    const row = (tag: string) => screen.getByText(tag).closest("tr")!;
+    render(<Heatmap matrix={matrix} />);
+
+    const adverseText = within(row("深跌")).getByText(/^[+-]\d+\.\d%$/);
+    const overshootText = within(row("超標")).getByText(/^[+-]\d+\.\d%$/);
+    expect(adverseText.textContent).toMatch(/^-/);
+    expect(overshootText.textContent).toMatch(/^\+/);
+  });
 });

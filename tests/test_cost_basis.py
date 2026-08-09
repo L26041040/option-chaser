@@ -111,7 +111,7 @@ def test_heatmap_cost_same_basis_as_ranking():
     p = result.request.base_params
     import dataclasses
     p = dataclasses.replace(p, strategy="bull-call-spread")
-    for i, (price, _) in enumerate(cv.matrix.prices):
+    for i, (price, _, _) in enumerate(cv.matrix.prices):
         for j, (iso, _) in enumerate(cv.matrix.dates):
             val = spread_scenario_value(sv.long_leg, sv.short_leg, price,
                                         date.fromisoformat(iso), p)
@@ -120,7 +120,7 @@ def test_heatmap_cost_same_basis_as_ranking():
     # 末欄＝到期日 → 格值基礎為內在價值 payoff（T3 不回歸）
     last_iso = cv.matrix.dates[-1][0]
     assert last_iso == sv.long_leg.expiry
-    for i, (price, _) in enumerate(cv.matrix.prices):
+    for i, (price, _, _) in enumerate(cv.matrix.prices):
         payoff = min(max(max(price - sv.long_leg.strike, 0.0)
                          - max(price - sv.short_leg.strike, 0.0), 0.0), sv.width)
         assert cv.matrix.cells[i][-1] == pytest.approx(
@@ -133,7 +133,7 @@ def test_single_leg_heatmap_cost_is_ask():
     cv = res.candidates[0]
     v = cv.valuation
     p = result.request.base_params
-    price, _ = cv.matrix.prices[3]
+    price, _, _ = cv.matrix.prices[3]
     iso, _ = cv.matrix.dates[1]
     val = scenario_leg_value(v.contract, price, date.fromisoformat(iso), p)
     assert cv.matrix.cells[3][1] == pytest.approx(

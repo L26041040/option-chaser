@@ -6,6 +6,8 @@ import {
   cellColor,
   columnLabel,
   formatCell,
+  formatMovePct,
+  formatMovePctShort,
   priceTags,
 } from "./heatmap";
 
@@ -40,6 +42,21 @@ describe("格子文字", () => {
     expect(formatCell(0.5666)).toBe("+57%");
     expect(formatCell(-1)).toBe("-100%");
     expect(formatCell(0)).toBe("+0%");
+  });
+});
+
+describe("價格右側 ±% 標註（決策 M／#109）", () => {
+  it("完整格式：一律帶正負號、一位小數", () => {
+    expect(formatMovePct(0.136)).toBe("+13.6%");
+    expect(formatMovePct(-0.1)).toBe("-10.0%");
+    expect(formatMovePct(0)).toBe("+0.0%");
+  });
+
+  it("短格式（Mobile 允許縮短）：一律帶正負號、四捨五入到整數，" +
+     "不是完全省略", () => {
+    expect(formatMovePctShort(0.136)).toBe("+14%");
+    expect(formatMovePctShort(-0.1)).toBe("-10%");
+    expect(formatMovePctShort(0)).toBe("+0%");
   });
 });
 

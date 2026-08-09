@@ -52,7 +52,9 @@ class AnalysisRequest:
 
 @dataclass(frozen=True)
 class MatrixView:
-    prices: tuple[tuple[float, str], ...]
+    # 決策 M（#109）：第三個元素是 `move_pct`（相對 `spot` 的變動分數），
+    # 直接沿用 `price_axis()` 回傳的同一組 3-tuple，不在這裡另外算。
+    prices: tuple[tuple[float, str, float], ...]
     dates: tuple[tuple[str, str], ...]
     cells: tuple[tuple[float, ...], ...]
 

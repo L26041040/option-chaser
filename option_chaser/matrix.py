@@ -18,8 +18,15 @@ def _insert_anchors(pts: list[float], anchors: list[float]) -> list[float]:
     return vals
 
 
-def price_axis(spot: float, target: float, bullish: bool) -> list[tuple[float, str]]:
-    """v4 spec §4.3: anchors {spot, target, overshoot, adverse}; range = anchor hull."""
+def price_axis(
+    spot: float, target: float, bullish: bool,
+) -> list[tuple[float, str, float]]:
+    """v4 spec §4.3: anchors {spot, target, overshoot, adverse}; range = anchor hull.
+
+    決策 M（#109）：第三個元素 `move_pct` 是該價位相對 `spot` 的變動分數
+    （`<現價>` 那一列恆為 0）——跟 cell 的估值同一個 `spot`、同一次呼叫算出來，
+    不是另外重算的第二份數字。GUI 只格式化顯示。
+    """
     overshoot = target * (1.15 if bullish else 0.85)
     adverse = spot * (0.90 if bullish else 1.10)
     anchors = sorted({spot, target, overshoot, adverse})
@@ -40,7 +47,7 @@ def price_axis(spot: float, target: float, bullish: bool) -> list[tuple[float, s
             s += "<深跌>"
         return s
 
-    return [(v, label(v)) for v in vals]
+    return [(v, label(v), (v - spot) / spot) for v in vals]
 
 
 def date_axis(today: date, expiry: date) -> list[tuple[date, str]]:
@@ -57,26 +64,28 @@ def date_axis(today: date, expiry: date) -> list[tuple[date, str]]:
 
 def matrix_grid(
     value_fn: Callable[[float, date], float], cost: float,
-    prices: list[tuple[float, str]], dates: list[tuple[date, str]],
+    prices: list[tuple[float, str, float]], dates: list[tuple[date, str]],
 ) -> tuple[tuple[float, ...], ...]:
     """Structured cell returns (v3 spec §2.3): single data source for CLI and GUI."""
     return tuple(
         tuple((value_fn(price, d) - cost) / cost for d, _ in dates)
-        for price, _ in prices
+        for price, _, _ in prices
     )
 
 
 def matrix_lines(
     value_fn: Callable[[float, date], float], cost: float,
-    prices: list[tuple[float, str]], dates: list[tuple[date, str]],
+    prices: list[tuple[float, str, float]], dates: list[tuple[date, str]],
 ) -> list[str]:
+    """CLI 文字報告——不印 `move_pct`（#109 只加 GUI 右側標註，文字報告
+    的價格列格式維持既有樣子，golden fixtures 不因此漂移）。"""
     grid = matrix_grid(value_fn, cost, prices, dates)
     header = "價格".ljust(10) + " ".join(
         (d.strftime("%m/%d") + lbl).rjust(7) for d, lbl in dates
     )
     lines = [header]
     for i in range(len(prices) - 1, -1, -1):
-        price, plabel = prices[i]
+        price, plabel, _ = prices[i]
         cells = [f"{grid[i][j] * 100:+.0f}%".rjust(7) for j in range(len(dates))]
         lines.append(f"{price:8.2f}{plabel}".ljust(10) + " ".join(cells))
     return lines

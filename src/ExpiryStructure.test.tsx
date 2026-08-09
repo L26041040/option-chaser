@@ -173,7 +173,7 @@ describe("就地展開", () => {
       g.expiry === expiry
         ? { ...g, candidates: g.candidates.map((c, i) => ({
             ...c,
-            matrix: { prices: [[100 + i, ""]] as [number, string][],
+            matrix: { prices: [[100 + i, "", 0.01 * i]] as [number, string, number][],
                       dates: [["2026-08-07", ""]] as [string, string][],
                       cells: [[0.5]] },
           })) }
@@ -184,6 +184,10 @@ describe("就地展開", () => {
     await userEvent.click(rows[1].querySelector("summary")!);
 
     expect(within(rows[1]).getByRole("rowheader")).toHaveTextContent("101.00");
+    // 決策 M（#109）：候選展開後的 Heatmap 跟主圖是同一個元件，右側
+    // ±% 標註不需要另外接線——這裡直接核對展開的是這一列自己的
+    // move_pct（0.01），不是別列的。
+    expect(within(rows[1]).getByRole("rowheader")).toHaveTextContent("+1.0%");
   });
 });
 
