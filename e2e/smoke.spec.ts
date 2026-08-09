@@ -22,7 +22,17 @@ const view = sample as unknown as {
   meta: { spot: number; source: string; target_move: number };
   params: { target_price: number; target_month: string };
   baseline_expiry: string;
-  results: { status: string; expiry_top10?: { expiry: string; candidates: { baseline_return: number }[] }[] }[];
+  results: {
+    status: string;
+    expiry_top10?: {
+      expiry: string;
+      candidates: {
+        baseline_return: number;
+        natural_cost: number;
+        legs: { strike: number; ask: number; bid: number }[];
+      }[];
+    }[];
+  }[];
 };
 
 test.beforeEach(async ({ page }) => {
@@ -80,7 +90,8 @@ async function routeLibrary(page: import("@playwright/test").Page, row: unknown)
     route.fulfill({ json: SPREAD_HISTORY }));
 }
 
-test("清單 → 詳細頁：摘要、主圖、追平價格、候選池（V5／#53）", async ({ page }) => {
+test("清單 → 詳細頁：摘要、基準候選、進場成本、主圖、候選池（MVP V3／#103 資訊階層重整）",
+   async ({ page }) => {
   const row = libraryRow();
   await routeLibrary(page, row);
 
@@ -93,20 +104,35 @@ test("清單 → 詳細頁：摘要、主圖、追平價格、候選池（V5／#
   await expect(page.getByText(/\+30\.0%/)).toBeVisible();
   await expect(page.getByText(view.meta.source, { exact: true })).toBeVisible();
 
-  // 主圖：baseline 期第 1 名候選的 Heatmap
+  // 基準候選（spec #102 決策 A）：baseline 期第 1 名的身分——名次、
+  // B/S 履約、到期日、目標報酬。這一組數字從舊版「劇本主圖」卡片搬到
+  // 獨立區塊，不再跟 Heatmap 擠在同一張卡裡。
   const top = view.results.find((r) => r.status === "ok" && r.expiry_top10)!
     .expiry_top10!.find((g) => g.expiry === view.baseline_expiry)!.candidates[0];
+  const [buy, sell] = top.legs;
+  const baselineCandidate = page.locator("section").filter({ hasText: "基準候選" }).first();
+  await expect(baselineCandidate).toContainText(`買 ${buy.strike} / 賣 ${sell.strike}`);
+  await expect(baselineCandidate).toContainText("第 1 名");
+  await expect(baselineCandidate).toContainText(`${(top.baseline_return * 100).toFixed(1)}%`);
+
+  // 進場成本（spec #102 決策 A）：新區塊，緊接基準候選之後。
+  const entryCost = page.locator("section").filter({ hasText: "進場成本" }).first();
+  await expect(entryCost).toContainText("買腿 Ask");
+  await expect(entryCost).toContainText("賣腿 Bid");
+  await expect(entryCost).toContainText("淨成本");
+  await expect(entryCost).toContainText(`$${top.natural_cost.toFixed(2)}`);
+
+  // 主圖：只剩 Heatmap 本身——候選身分與報酬已搬到「基準候選」。
   // V6 起頁面上有很多張 Heatmap（到期日結構裡每個候選收合著一張），
   // 所以主圖的斷言鎖定主圖那一區。
   const mainChart = page.locator("section").filter({ hasText: "劇本主圖" }).first();
-  await expect(mainChart).toContainText(`${(top.baseline_return * 100).toFixed(1)}%`);
   await expect(mainChart.locator("table.heatmap-table")).toBeVisible();
   // 「現價」在摘要與 Heatmap 錨點列各有一個，這裡要驗的是圖上那個
   await expect(mainChart.locator("table.heatmap-table").getByText("現價")).toBeVisible();
 
-  // 追平價格：契約樣本的 S* 低於目標價＝醒目那一態
-  await expect(page.getByText(/Long Call 追平價格/)).toBeVisible();
-  await expect(page.getByText(/即勝過此 Spread/)).toBeVisible();
+  // 舊「Long Call 追平價格」獨立卡片已依 spec 決策 E 移除（#103）。
+  await expect(page.getByText(/Long Call 追平價格/)).toHaveCount(0);
+  await expect(page.getByText(/即勝過此 Spread/)).toHaveCount(0);
 
   // 候選池診斷跟著搬進詳細頁（FB4-01／#60）
   await expect(page.getByText("候選池")).toBeVisible();

@@ -1,11 +1,10 @@
 /**
- * 詳細頁的純函式（V5／#53）：追平價格的三態、策略名稱、漲幅格式。
+ * 詳細頁的純函式（V5／#53）：策略名稱、漲幅格式、候選標題。
  *
- * 零金融計算——追平價格 S* 由引擎算好放在 `candidate.catchup_price`
- * （`option_chaser.valuation.catchup_price`），目標漲幅在 `meta.target_move`。
- * 這裡只負責「怎麼寫成一句人看得懂的話」。
+ * 零金融計算——每個數字都是引擎算好放在契約裡的，這裡只負責「怎麼寫成
+ * 一句人看得懂的話」。
  */
-import type { Candidate, Leg, PricePoint } from "./api";
+import type { Candidate, PricePoint } from "./api";
 import { money } from "./scenarios";
 
 /**
@@ -46,21 +45,6 @@ export function formatMove(ratio: number): string {
 }
 
 /**
- * 追平價格的比較對象怎麼寫：`28/1 110 Long Call`（v3 #9 指定格式）。
- *
- * 名字裡有 `catchup` 是刻意的——它**恆為 Long Call**，不看 `leg.option_type`：
- * 追平比較的對象就是「同履約價、同到期的 Long Call」（D1／#14 的定義），
- * 買腿本身是 put 時後端也是去快照裡找同履約價的 call。叫
- * `contractLabel` 會讓人以為它會照著腿的權別走。
- */
-export function catchupContractLabel(leg: Leg): string {
-  const [year, month] = leg.expiry.split("-");
-  // `String(110)` ＝ "110"、`String(122.5)` ＝ "122.5"：整數不拖 `.0`，
-  // 半檔履約價原樣保留，不必自己判斷。
-  return `${year.slice(2)}/${Number(month)} ${leg.strike} Long Call`;
-}
-
-/**
  * 候選的一句話身分：`買 118 / 賣 122`。單腳候選只有一隻腿，寫成
  * `買 118`——硬要寫成價差的樣子會憑空生出一隻不存在的腿。
  */
@@ -68,45 +52,6 @@ export function candidateTitle(candidate: Candidate): string {
   const [buy, sell] = candidate.legs;
   if (!buy) return "—";
   return sell ? `買 ${buy.strike} / 賣 ${sell.strike}` : `買 ${buy.strike}`;
-}
-
-/**
- * 追平價格的三態。
- *
- * - `null`：這個候選沒有「與 Long Call 比較」的意義（單腳策略），整塊不顯示
- * - `price === null`：同履約價 Call 報價缺失＝無法計算，如實說，不拋錯
- * - 其餘：S* 與它離目標價多遠；`beatsTarget` ＝ S* ≤ 目標價，
- *   代表「Long Call 在本劇本內就已經勝過這組 Spread」
- */
-export interface CatchupView {
-  contract: string;
-  price: string | null;
-  gap: string | null;
-  beatsTarget: boolean;
-}
-
-export function catchupView(
-  candidate: Candidate,
-  targetPrice: number,
-): CatchupView | null {
-  const buy = candidate.legs[0];
-  // 兩腿才有賣腿封頂可言；單腳候選跟 Long Call 比較是跟自己比。
-  if (!buy || candidate.legs.length < 2) return null;
-
-  const contract = catchupContractLabel(buy);
-  const star = candidate.catchup_price;
-  if (star === null) return { contract, price: null, gap: null, beatsTarget: false };
-
-  const ratio = (star - targetPrice) / targetPrice;
-  // 小數一位而非票上示例的整數：整數會把「超出 0.4%」寫成「超出 0%」，
-  // 而且全站其他百分比都是一位小數。
-  const gap = `${ratio >= 0 ? "超出" : "低於"}目標價 ${magnitude(ratio)}`;
-  return {
-    contract,
-    price: money(star),
-    gap,
-    beatsTarget: star <= targetPrice,
-  };
 }
 
 const LADDER_LABELS: Record<PricePoint["label"], string> = {

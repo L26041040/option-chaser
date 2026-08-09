@@ -1,13 +1,21 @@
 /**
- * 劇本詳細頁（V5／#53）：摘要 → 主圖 Heatmap → Long Call 追平價格。
+ * 劇本詳細頁（MVP V3／#103，資訊階層依 spec #102 決策 A 重整）：
+ * 摘要 → 基準候選 → 進場成本 →〔Historical IV Position 插槽〕→
+ * Payoff Heatmap → Price Ladder → Expiry Structure → Advanced
+ * （候選池／分析報告／Spread 歷史／原始資料）。
  *
  * 資料只從 `GET /api/scenarios/{id}` 來，畫面上每個數字都是引擎算好的：
- * 現價與所需漲幅在 `meta`、目標在 `params`、報酬矩陣在候選的 `matrix`、
- * 追平價格在 `catchup_price`。格式化在 `./detail` 與 `./heatmap` 的純
- * 函式裡，這一層只做編排。
+ * 現價與所需漲幅在 `meta`、目標在 `params`、報酬矩陣在候選的 `matrix`。
+ * 格式化在 `./detail` 與 `./heatmap` 的純函式裡，這一層只做編排。
  *
- * 主圖固定顯示 baseline 期的第 1 名候選（沿用既有「預設選中」語意，
- * QA1-06：主圖就是主圖，不跟著別處的互動改變）。
+ * 基準候選固定是 baseline 期的第 1 名（沿用既有「預設選中」語意，
+ * QA1-06：主圖就是主圖，不跟著別處的互動改變）——「第 1 名」是
+ * `baselineTopCandidate` 的定義本身（該期 `candidates[0]`），不是另外
+ * 算出來的名次欄位。
+ *
+ * 舊「Long Call 追平價格」獨立區塊已依 spec 決策 E 移除（Crossover
+ * Boundary 後續票將取代它）：後端序列化欄位與計算函式維持不動，僅供
+ * migration／regression 測試使用，不在本頁任何位置渲染。
  */
 import { useEffect, useState } from "react";
 
@@ -26,9 +34,8 @@ import {
   type RefreshFailure,
   type ScenarioDetail as Detail,
 } from "./api";
-import { candidateTitle, catchupView, formatMove, priceLadderView,
-         strategyLabel } from "./detail";
-import { isThinPool, validPairsForExpiry } from "./expiry";
+import { candidateTitle, formatMove, priceLadderView, strategyLabel } from "./detail";
+import { isThinPool, legPrices, validPairsForExpiry } from "./expiry";
 import { failureLabel, formatAnalyzedAt, formatReturn, money } from "./scenarios";
 
 function Row({ label, children }: { label: string; children: React.ReactNode }) {
@@ -40,42 +47,68 @@ function Row({ label, children }: { label: string; children: React.ReactNode }) 
   );
 }
 
-/** 追平價格區塊。三態各自有話說，沒有一態是留白或拋錯。 */
-function Catchup({ view, candidate }: { view: AnalysisView; candidate: Candidate | null }) {
-  const catchup = candidate && catchupView(candidate, view.params.target_price);
-  if (!catchup) return null;
-
+/**
+ * 基準候選（spec #102 決策 A）：baseline 期第 1 名的身分——名次、B/S
+ * 履約、策略、到期日、目標報酬。候選池過少的警語跟著這裡走，不掛在
+ * 下面會切換到期日的清單上——使用者切到別期，這一區仍是 baseline 那
+ * 組，警語得跟著它，不能跟著清單跑掉。
+ */
+function BaselineCandidate({ view, candidate }: {
+  view: AnalysisView; candidate: Candidate | null;
+}) {
+  if (!candidate) return null;
+  const strategy = primaryResult(view)?.strategy ?? view.params.strategy;
+  const pool = validPairsForExpiry(primaryResult(view)!, view.baseline_expiry);
   return (
     <section className="card">
-      <h2 className="section-title">Long Call 追平價格</h2>
-      <p className="caption">
-        標的要漲到這個價格，同履約價的 Long Call 到期報酬率才追得上這組
-        Spread。
-      </p>
-
-      <Row label={catchup.contract}>
-        {catchup.price === null ? (
-          <span className="muted">無法計算</span>
-        ) : (
-          <>
-            {catchup.price}
-            <span className="row-note">（{catchup.gap}）</span>
-          </>
-        )}
-      </Row>
-
-      {catchup.price === null && (
-        <p className="caption">同履約價 Call 報價缺失，這一組算不出追平價格。</p>
-      )}
-
-      {/* 這是分析結論，不是狀態更新——不掛 role="status"：詳細頁只渲染
-          一次，把靜態內容宣告成 live region 只會讓螢幕閱讀器把它跟真正
-          會變的東西（候選池警示）混為一談。 */}
-      {catchup.beatsTarget && (
-        <p className="notice warn">Long Call 在本劇本內即勝過此 Spread</p>
+      <h2 className="section-title">基準候選</h2>
+      <div className="row">
+        <span className="row-value big">{candidateTitle(candidate)}</span>
+        <span
+          className={`metric ${candidate.baseline_return >= 0 ? "positive" : "negative"}`}
+        >
+          {formatReturn(candidate.baseline_return)}
+        </span>
+      </div>
+      <Row label="名次">第 1 名</Row>
+      <Row label="策略">{strategyLabel(strategy)}</Row>
+      <Row label="到期日">{view.baseline_expiry}</Row>
+      {isThinPool(pool) && (
+        <p className="notice warn">
+          <span aria-hidden="true">⚠ </span>
+          這一期只有 {pool} 組候選通過品質過濾，這組可能只是「整池剩下
+          的那一個」。
+        </p>
       )}
     </section>
   );
+}
+
+/**
+ * 進場成本（spec #102 決策 A）：Buy Ask／Sell Bid／Net Cost，與到期日
+ * 結構清單裡每一列候選看到的三個數字同一口徑（`legPrices`）。
+ */
+function EntryCost({ candidate }: { candidate: Candidate | null }) {
+  if (!candidate) return null;
+  const prices = legPrices(candidate);
+  return (
+    <section className="card">
+      <h2 className="section-title">進場成本</h2>
+      <Row label="買腿 Ask">{prices.buyAsk === null ? "—" : money(prices.buyAsk)}</Row>
+      <Row label="賣腿 Bid">{prices.sellBid === null ? "—" : money(prices.sellBid)}</Row>
+      <Row label="淨成本">{money(prices.net)}</Row>
+    </section>
+  );
+}
+
+/**
+ * Historical IV Position 的結構化插槽（spec #102 決策 A／B，#111 待
+ * 施工）：只占這個位置，內容由後續 IV History 票填入。功能上線前不得
+ * 渲染任何可見 UI——不是空卡片、不是「Coming Soon」、不是灰階
+ * placeholder，就是不輸出任何 DOM 節點。
+ */
+function IVPositionSlot() {
+  return null;
 }
 
 /**
@@ -107,7 +140,11 @@ function PriceLadder({ candidate }: { candidate: Candidate | null }) {
   );
 }
 
-function Chart({ view, candidate }: { view: AnalysisView; candidate: Candidate | null }) {
+/**
+ * Payoff Heatmap（spec #102 決策 A）：候選身分、名次、目標報酬與候選池
+ * 過少警語已搬到上方的「基準候選」區塊——這裡只剩圖本身。
+ */
+function Chart({ candidate }: { candidate: Candidate | null }) {
   if (!candidate) {
     return (
       <section className="card">
@@ -118,29 +155,9 @@ function Chart({ view, candidate }: { view: AnalysisView; candidate: Candidate |
       </section>
     );
   }
-  // 主圖這組的名次是在 **baseline 期**的池子裡排出來的，所以這句提醒得
-  // 跟著主圖走。只掛在下面那份會切換的清單上的話，使用者一切到別期，
-  // 主圖仍是這一組、警語卻跟著跑掉，頭條數字就沒人幫它說話。
-  const pool = validPairsForExpiry(primaryResult(view)!, view.baseline_expiry);
   return (
     <section className="card">
       <h2 className="section-title">劇本主圖</h2>
-      <div className="row">
-        <span className="row-value big">{candidateTitle(candidate)}</span>
-        <span
-          className={`metric ${candidate.baseline_return >= 0 ? "positive" : "negative"}`}
-        >
-          {formatReturn(candidate.baseline_return)}
-        </span>
-      </div>
-      <Row label="到期日">{view.baseline_expiry}</Row>
-      {isThinPool(pool) && (
-        <p className="notice warn">
-          <span aria-hidden="true">⚠ </span>
-          這一期只有 {pool} 組候選通過品質過濾，主圖這組可能只是「整池剩下
-          的那一個」。
-        </p>
-      )}
       <Heatmap matrix={candidate.matrix} />
     </section>
   );
@@ -177,12 +194,16 @@ function DetailBody({ scenarioId, view, analyzedAt }: {
   return (
     <>
       <Summary view={view} analyzedAt={analyzedAt} />
-      <Chart view={view} candidate={candidate} />
-      {/* 三價位對照緊接主圖：它講的就是主圖那一組候選。 */}
+      {/* spec #102 決策 A：基準候選 → 進場成本 →〔IV History 插槽〕→
+          Payoff Heatmap → Price Ladder，全部圍繞同一組 baseline 候選。 */}
+      <BaselineCandidate view={view} candidate={candidate} />
+      <EntryCost candidate={candidate} />
+      <IVPositionSlot />
+      <Chart candidate={candidate} />
       <PriceLadder candidate={candidate} />
-      <Catchup view={view} candidate={candidate} />
-      {/* 到期日結構（V6／#54）接在主圖之下。切換到期日只換這一塊的清單，
-          主圖不動——主圖固定是 baseline 期第 1 名（QA1-06 的既有裁示）。 */}
+      {/* 到期日結構（V6／#54）接在 Price Ladder 之下。切換到期日只換這
+          一塊的清單，基準候選不動——固定是 baseline 期第 1 名（QA1-06
+          的既有裁示）。 */}
       {result && (
         <ExpiryStructure result={result} baselineExpiry={view.baseline_expiry} />
       )}

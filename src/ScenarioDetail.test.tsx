@@ -10,7 +10,7 @@ import { baselineTopCandidate, type AnalysisView } from "./api";
 const view = sample as unknown as AnalysisView;
 const row = sampleRow as unknown as Record<string, unknown>;
 
-/** 契約樣本本身：目標價 130、追平價 125.33（＝低於目標價的醒目態）。 */
+/** 契約樣本本身：目標價 130、baseline 候選買 118／賣 122。 */
 function detail(overrides: Record<string, unknown> = {}) {
   return {
     ...row, id: "s1", symbol: "XYZ", target_price: view.params.target_price,
@@ -33,9 +33,19 @@ function withTopCandidate(patch: Record<string, unknown>): AnalysisView {
 /**
  * 主圖那一張表。V6（#54）之後頁面上有很多張 Heatmap（到期日結構裡每個
  * 候選收合著一張），所以這裡的斷言一律鎖定主圖那一區，不用全頁查找。
+ *
+ * MVP V3（#103）起，主圖只剩 Heatmap 本身——候選身分／名次／目標報酬
+ * 已搬到「基準候選」區塊，見 `baselineCandidateSection()`。
  */
 function mainChart() {
   return within(screen.getByRole("heading", { name: "劇本主圖" })
+    .closest("section")!);
+}
+
+/** 基準候選那張卡（spec #102 決策 A／#103）：名次、B/S 履約、策略、
+ *  到期日、目標報酬，與候選池過少的警語。 */
+function baselineCandidateSection() {
+  return within(screen.getByRole("heading", { name: "基準候選" })
     .closest("section")!);
 }
 
@@ -53,15 +63,19 @@ afterEach(() => {
 describe("詳細頁摘要", () => {
   it("顯示現價、目標價與所需漲幅、目標年月、策略", async () => {
     mockDetail(detail());
-    render(<ScenarioDetail id="s1" />);
+    const { container } = render(<ScenarioDetail id="s1" />);
 
     expect(await screen.findByText(`$${view.meta.spot.toFixed(2)}`)).toBeInTheDocument();
-    expect(screen.getByText(`$${view.params.target_price.toFixed(2)}`)).toBeInTheDocument();
+    // 摘要卡本身沒有標題可鎖定（唯一沒有 `.section-title` 的卡片），
+    // 用「第一張卡」取代——這裡開始，「策略」這個字眼在「基準候選」
+    // 區塊（#103）也會出現一次，不能再用不限範圍的 `screen` 查找。
+    const summary = within(container.querySelector<HTMLElement>(".card")!);
+    expect(summary.getByText(`$${view.params.target_price.toFixed(2)}`)).toBeInTheDocument();
     // 所需漲幅寫在目標價旁的括號裡，所以用子字串比對
-    expect(screen.getByText(`+${(view.meta.target_move * 100).toFixed(1)}%`,
+    expect(summary.getByText(`+${(view.meta.target_move * 100).toFixed(1)}%`,
                             { exact: false })).toBeInTheDocument();
-    expect(screen.getByText(view.params.target_month)).toBeInTheDocument();
-    expect(screen.getByText("Bull Call Spread")).toBeInTheDocument();
+    expect(summary.getByText(view.params.target_month)).toBeInTheDocument();
+    expect(summary.getByText("Bull Call Spread")).toBeInTheDocument();
   });
 
   it("有回劇本庫的入口", async () => {
@@ -73,54 +87,93 @@ describe("詳細頁摘要", () => {
   });
 });
 
-describe("詳細頁主圖", () => {
-  it("畫出 baseline 期第 1 名候選的 Heatmap，並標明是哪一組", async () => {
+describe("基準候選（spec #102 決策 A／#103）", () => {
+  it("標明名次、B/S 履約、策略、到期日與目標報酬", async () => {
     mockDetail(detail());
     render(<ScenarioDetail id="s1" />);
 
     const top = baselineTopCandidate(view)!;
     const [buy, sell] = top.legs;
     await screen.findByText(/劇本主圖/);
-    expect(mainChart().getByText(`買 ${buy.strike} / 賣 ${sell.strike}`))
+    const section = baselineCandidateSection();
+    expect(section.getByText(`買 ${buy.strike} / 賣 ${sell.strike}`))
       .toBeInTheDocument();
-    expect(mainChart().getByRole("table")).toBeInTheDocument();
-    expect(screen.getAllByText(view.baseline_expiry!).length).toBeGreaterThan(0);
-    // 主圖旁就是這組候選的劇本報酬——引擎算好的那個數字
-    expect(mainChart().getByText(`${(top.baseline_return * 100).toFixed(1)}%`))
+    expect(section.getByText("第 1 名")).toBeInTheDocument();
+    expect(section.getByText("Bull Call Spread")).toBeInTheDocument();
+    expect(section.getByText(view.baseline_expiry!)).toBeInTheDocument();
+    // 這組候選的劇本報酬——引擎算好的那個數字，口徑與主圖旁舊版相同
+    expect(section.getByText(`${(top.baseline_return * 100).toFixed(1)}%`))
       .toBeInTheDocument();
   });
 });
 
-describe("追平價格三態", () => {
-  it("正常：比較對象、追平價格、離目標多遠", async () => {
-    // 追平價 200 遠高於目標價 130 ＝ 一般情況（Spread 仍有優勢）
-    mockDetail(detail({ latest_result: withTopCandidate({ catchup_price: 200 }) }));
+describe("進場成本（spec #102 決策 A／#103）", () => {
+  it("顯示買腿 Ask／賣腿 Bid／淨成本，口徑與到期日結構清單相同", async () => {
+    mockDetail(detail());
     render(<ScenarioDetail id="s1" />);
 
     const top = baselineTopCandidate(view)!;
-    const [buy] = top.legs;
-    expect(await screen.findByText(new RegExp(`${buy.strike} Long Call`)))
-      .toBeInTheDocument();
-    expect(screen.getByText(/\$200\.00/)).toBeInTheDocument();
-    expect(screen.getByText(/超出目標價/)).toBeInTheDocument();
-    expect(screen.queryByText(/即勝過此 Spread/)).not.toBeInTheDocument();
+    const [buy, sell] = top.legs;
+    await screen.findByText(/劇本主圖/);
+    const section = within(screen.getByRole("heading", { name: "進場成本" })
+      .closest("section")!);
+    expect(section.getByText(`$${buy.ask.toFixed(2)}`)).toBeInTheDocument();
+    expect(section.getByText(`$${sell.bid.toFixed(2)}`)).toBeInTheDocument();
+    expect(section.getByText(`$${top.natural_cost.toFixed(2)}`)).toBeInTheDocument();
   });
+});
 
-  it("醒目：S* ≤ 目標價時明說 Long Call 在本劇本內就贏了", async () => {
-    mockDetail(detail());   // 契約樣本本身就是這一態
+describe("詳細頁主圖（Payoff Heatmap）", () => {
+  it("畫出 baseline 期第 1 名候選的 Heatmap", async () => {
+    mockDetail(detail());
     render(<ScenarioDetail id="s1" />);
 
-    expect(await screen.findByText(/即勝過此 Spread/)).toBeInTheDocument();
-    expect(screen.getByText(/低於目標價/)).toBeInTheDocument();
-  });
-
-  it("無法計算：同履約價 Call 報價缺失時如實說，不報錯也不留白", async () => {
-    mockDetail(detail({ latest_result: withTopCandidate({ catchup_price: null }) }));
-    render(<ScenarioDetail id="s1" />);
-
-    expect(await screen.findByText(/無法計算/)).toBeInTheDocument();
-    // 頁面其他部分照常可讀
+    await screen.findByText(/劇本主圖/);
     expect(mainChart().getByRole("table")).toBeInTheDocument();
+  });
+});
+
+describe("追平價格區塊已移除（spec 決策 E／#103）", () => {
+  it("不再渲染追平價格卡片，任何相關文案都不出現", async () => {
+    mockDetail(detail());
+    render(<ScenarioDetail id="s1" />);
+    await screen.findByText(/劇本主圖/);
+
+    expect(screen.queryByText(/Long Call 追平價格/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/即勝過此 Spread/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/超出目標價|低於目標價/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/無法計算/)).not.toBeInTheDocument();
+  });
+});
+
+describe("區塊順序（spec #102 決策 A／#103）", () => {
+  it("依決策 A 定義的順序渲染；IV History 插槽尚未上線，不輸出任何內容", async () => {
+    const ladder = [
+      { label: "worst", price: 110, return: -1 },
+      { label: "target", price: 130, return: 5.667 },
+    ];
+    mockDetail(detail({ latest_result: withTopCandidate({ price_ladder: ladder }) }));
+    const { container } = render(<ScenarioDetail id="s1" />);
+    await screen.findByText(/劇本主圖/);
+
+    // 每張卡片自己的區塊標題（該卡裡第一個 `.section-title`），依 DOM
+    // 順序——用「每張卡取第一個」而不是「全部 .section-title」，這樣
+    // 才不會被分析報告內部的子標題（情境分析／風險與代價……）污染，
+    // 那些是 #105 的責任範圍，不是這裡要鎖的東西。
+    const titles = Array.from(container.querySelectorAll(".card"))
+      .map((card) => card.querySelector(".section-title")?.textContent ?? null)
+      .filter((t): t is string => t !== null);
+
+    expect(titles).toEqual([
+      "基準候選", "進場成本", "劇本主圖", "劇本區間對照", "到期日",
+      "候選池", "📄 分析報告", "Spread 淨成本走勢", "原始資料（當次快照）",
+    ]);
+
+    // IV History 插槽本身不輸出任何 DOM 節點——不是一張空卡片，直接就
+    // 不存在於 DOM 裡。卡片總數固定為上面 9 張加上摘要卡（無標題），
+    // 插槽若渲染出任何東西（哪怕只是空卡），這裡就會多一張。
+    expect(container.querySelectorAll(".card")).toHaveLength(10);
+    expect(screen.queryByText(/Historical IV|IV Position/)).not.toBeInTheDocument();
   });
 });
 
@@ -406,22 +459,23 @@ describe("進階區隨新分析失效，不混用新舊 cache（#69）", () => {
   });
 });
 
-describe("主圖的候選池警語（V6／#54 檢視回饋）", () => {
-  it("警語跟著主圖走，不會因為把清單切到別期就消失", async () => {
-    // 主圖固定是 baseline 期第 1 名。警語只掛在下面那份會切換的清單上
-    // 的話，使用者一切到別期，頭條數字就沒人幫它說「這只是整池僅存者」。
+describe("基準候選的候選池警語（V6／#54 檢視回饋，隨 #103 搬到基準候選區塊）", () => {
+  it("警語跟著基準候選走，不會因為把清單切到別期就消失", async () => {
+    // 基準候選固定是 baseline 期第 1 名。警語只掛在下面那份會切換的
+    // 清單上的話，使用者一切到別期，頭條數字就沒人幫它說「這只是整池
+    // 僅存者」。
     mockDetail(detail());
     render(<ScenarioDetail id="s1" />);
     await screen.findByText(/劇本主圖/);
 
-    expect(mainChart().getByText(/只有 1 組候選/)).toBeInTheDocument();
+    expect(baselineCandidateSection().getByText(/只有 1 組候選/)).toBeInTheDocument();
 
     const other = view.results[0].expiry_top10!
       .find((g) => g.expiry !== view.baseline_expiry)!;
     await userEvent.click(
       screen.getByRole("button", { name: new RegExp(other.expiry) }));
 
-    expect(mainChart().getByText(/只有 1 組候選/)).toBeInTheDocument();
+    expect(baselineCandidateSection().getByText(/只有 1 組候選/)).toBeInTheDocument();
   });
 });
 
