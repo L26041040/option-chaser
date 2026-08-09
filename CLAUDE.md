@@ -45,10 +45,15 @@
 > 歷史位置 vol 空間、Normalized Skew 主資訊；呈現只給事實；追平價格
 > 升級為 Crossover Boundary），地圖 #95 與 G1 #100／G2 #101 據此
 > resolution 關閉。同日 `/to-spec` 完成：**MVP V3 spec＝issue #102**
-> （`ready-for-agent`；三個 Open Questions：IV vendor 選型與月費上限、
-> LEAPS 超網格 percentile 路線、追平價格移除確認）。
-> **下一步＝需求方人工 Review #102 → 有未裁示問題才局部 Grill →
-> `/to-tickets` → 施工**。
+> （`ready-for-agent`），並依需求方 Review 修訂三點：comparator 不得
+> 寫死 Long Call（須與買腿同 option type，Bear Put Spread→Long Put；
+> 既有 `_spread_catchup_price` 的 put→call 轉換為缺陷，一併取消）、
+> q=0 修法不在 spec 鎖死（改獨立 correctness ticket 先驗證後鎖定，
+> 仍是 Crossover 的 gate，spec 不自行發明模型）、LEAPS 超網格裁示
+> 採方案 (b)（不外插、不以較短 tenor 代理，percentile 留白）。
+> **尚存 Open Questions 兩項**：IV 歷史 vendor 選型與月費上限、
+> 追平價格區塊移除確認。
+> **下一步＝需求方確認這兩項 → `/to-tickets` → 施工**。
 > 環境操作細節（venv／本地 Postgres／容器倒退修法／部署網址）見檔案
 > 最底下「## 環境」一節，已同步更新。
 
