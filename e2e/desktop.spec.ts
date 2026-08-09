@@ -93,8 +93,8 @@ test("Spread 淨成本走勢：桌面 hover 資料點顯示 tooltip（MVP V3／#
   await expect(chart.getByText(/日期 2026-07-01/)).not.toBeVisible();
 });
 
-test("Heatmap 價格列右側 ±%：桌面 viewport 每一列都看得到完整格式" +
-     "（決策 M／#109）", async ({ page }) => {
+test("Heatmap ±% 在最右欄：桌面 viewport 每一列都看得到完整格式" +
+     "（決策 M／#109，位置修正 QA-FIX-1／QA-01）", async ({ page }) => {
   await routeTwoScenarios(page);
   await page.goto("/#/s/s1");
 
@@ -102,22 +102,68 @@ test("Heatmap 價格列右側 ±%：桌面 viewport 每一列都看得到完整�
   const table = mainChart.locator("table.heatmap-table");
   await expect(table).toBeVisible();
 
+  // QA-FIX-1：欄順序＝價格 → 日期格 → ±%。用實際的幾何位置驗證，
+  // 不是只看文字存在——這正是原本漏掉、讓 ±% 誤掛在左側價格欄裡
+  // 也能通過的那一種斷言。
+  const firstRow = table.locator("tbody tr").first();
+  const priceBox = (await firstRow.locator("th.heatmap-price").boundingBox())!;
+  const moveBox = (await firstRow.locator("td.heatmap-move-pct").boundingBox())!;
+  const lastCellBox = (await firstRow.locator("td:not(.heatmap-move-pct)")
+    .last().boundingBox())!;
+  expect(moveBox.x).toBeGreaterThan(priceBox.x);
+  expect(moveBox.x).toBeGreaterThan(lastCellBox.x);
+  // 欄標題也要在，否則語意表格的欄數對不上
+  await expect(table.locator("th.heatmap-move-head")).toHaveText("vs 現價");
+
   // 數字取自契約樣本 baseline 候選的 `matrix.prices`（spot=100、
   // target=130、adverse=90 → +30.0%／+0.0%／-10.0%）。
-  const targetRow = table.locator("tr").filter({ hasText: "目標" });
-  await expect(targetRow.getByText("+30.0%", { exact: true })).toBeVisible();
-  const spotRow = table.locator("tr").filter({ hasText: "現價" });
-  await expect(spotRow.getByText("+0.0%", { exact: true })).toBeVisible();
-  const adverseRow = table.locator("tr").filter({ hasText: "深跌" });
-  await expect(adverseRow.getByText("-10.0%", { exact: true })).toBeVisible();
+  // 完整／短格式兩個 span 都在 DOM 裡（CSS 切換顯示），所以斷言要指名
+  // 看得見的那一個——對整個 `<td>` 下 toHaveText 會拿到兩者相連的
+  // textContent（"+30.0%+30%"）。
+  const moveCellOf = (tag: string) =>
+    table.locator("tr").filter({ hasText: tag }).locator("td.heatmap-move-pct");
+  const fullOf = (tag: string) =>
+    moveCellOf(tag).locator(".heatmap-move-pct-full");
+  await expect(fullOf("目標")).toHaveText("+30.0%");
+  await expect(fullOf("目標")).toBeVisible();
+  await expect(fullOf("現價")).toHaveText("+0.0%");
+  await expect(fullOf("深跌")).toHaveText("-10.0%");
   // 短格式（Mobile 才用）此時不可見，證明桌面版真的換成完整格式。
-  await expect(targetRow.getByText("+30%", { exact: true })).not.toBeVisible();
+  await expect(moveCellOf("目標").locator(".heatmap-move-pct-short"))
+    .not.toBeVisible();
 
-  // 不只錨點列——每一列（含沒有特殊標記的內插列）都要看得到 ±%。
+  // 不只錨點列——每一列（含沒有特殊標記的內插列）都有自己的 ±% 欄。
   const rows = await table.locator("tbody tr").all();
   expect(rows.length).toBeGreaterThan(4);
   for (const row of rows) {
-    await expect(row.getByText(/^[+-]\d+\.\d%$/)).toBeVisible();
+    await expect(row.locator("td.heatmap-move-pct")).toBeVisible();
+  }
+});
+
+test("Heatmap 橫向捲到底時，左側價格與最右 ±% 都還釘在畫面上" +
+     "（QA-FIX-1 sticky 兩端）", async ({ page }) => {
+  await routeTwoScenarios(page);
+  await page.goto("/#/s/s1");
+
+  const mainChart = page.locator("section").filter({ hasText: "劇本主圖" }).first();
+  const scroll = mainChart.locator(".heatmap-scroll");
+  const table = mainChart.locator("table.heatmap-table");
+  await expect(table).toBeVisible();
+
+  const box = await scroll.evaluate((el) => ({
+    scrollWidth: el.scrollWidth, clientWidth: el.clientWidth }));
+  // 內容比容器寬才談得上「捲動後還看不看得到」——不夠寬就跳過，
+  // 不假裝驗過（桌面 detail-pane 較寬，欄少時可能塞得下）。
+  if (box.scrollWidth > box.clientWidth) {
+    await scroll.evaluate((el) => { el.scrollLeft = el.scrollWidth; });
+    const firstRow = table.locator("tbody tr").first();
+    const viewport = (await scroll.boundingBox())!;
+    const priceBox = (await firstRow.locator("th.heatmap-price").boundingBox())!;
+    const moveBox = (await firstRow.locator("td.heatmap-move-pct").boundingBox())!;
+    // 兩端都仍落在可視容器範圍內
+    expect(priceBox.x).toBeGreaterThanOrEqual(viewport.x - 1);
+    expect(moveBox.x + moveBox.width).toBeLessThanOrEqual(
+      viewport.x + viewport.width + 1);
   }
 });
 

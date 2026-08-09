@@ -184,10 +184,12 @@ describe("就地展開", () => {
     await userEvent.click(rows[1].querySelector("summary")!);
 
     expect(within(rows[1]).getByRole("rowheader")).toHaveTextContent("101.00");
-    // 決策 M（#109）：候選展開後的 Heatmap 跟主圖是同一個元件，右側
-    // ±% 標註不需要另外接線——這裡直接核對展開的是這一列自己的
-    // move_pct（0.01），不是別列的。
-    expect(within(rows[1]).getByRole("rowheader")).toHaveTextContent("+1.0%");
+    // 決策 M（#109）：候選展開後的 Heatmap 跟主圖是同一個元件，±% 標註
+    // 不需要另外接線——這裡直接核對展開的是這一列自己的 move_pct
+    // （0.01），不是別列的。QA-FIX-1 後 ±% 在最右欄（`td.heatmap-move-pct`），
+    // 不再在價格 rowheader 裡。
+    expect(rows[1].querySelector("td.heatmap-move-pct"))
+      .toHaveTextContent("+1.0%");
   });
 });
 

@@ -1087,16 +1087,38 @@ body {
   font-size: 11px;
 }
 
-/* 決策 M（#109）：價格右側 ±% 標註——次要資訊，不跟報酬率的漲跌配色
-   混在一起（那是 cell 底色的語意，這裡只是「這個價位離現價多遠」）。
+/* 決策 M（#109）＋ QA-FIX-1（QA-01）：±% 是表格**最右一欄**——次要
+   資訊，不跟報酬率的漲跌配色混在一起（那是 cell 底色的語意，這裡只是
+   「這個價位離現價多遠」）。
+
+   兩端都 sticky：左邊價格欄 `left: 0`（既有），右邊這一欄 `right: 0`
+   ——中間的日期格橫向捲動時，「哪一個價位」與「離現價多遠」始終留在
+   畫面上。`.heatmap-table` 前綴把特異性抬過 `.heatmap-table td`／`th`
+   （同 `.heatmap-price` 既有做法），不灑 !important。
+
    完整／短格式兩個 span 都畫進 DOM（AC 明文不得整段省略、不得靠
    tooltip／長按才看得到），手機優先預設顯示短格式，跨過桌面斷點
    （與 `App.tsx` 的 `DESKTOP_QUERY`／版面切換同一個 1100px）才換成
    完整格式——這裡有的是桌面 detail-pane 的寬版面，不用省字。 */
-.heatmap-move-pct {
-  margin-left: 6px;
+.heatmap-table .heatmap-move-pct,
+.heatmap-table .heatmap-move-head {
+  position: sticky;
+  right: 0;
+  z-index: 1;
+  text-align: right;
+  /* 不透明底：`border-spacing: 2px` 的縫隙會讓底下捲過去的格子透出來。 */
+  background: var(--bg-elevated);
   color: var(--label-tertiary);
   font-weight: 400;
+  white-space: nowrap;
+  padding-left: 12px;
+}
+
+/* 錨點列的 ±% 跟著價格一起升為主色，兩端讀起來才是同一列
+   （沿用 `.heatmap-table tr.anchor .heatmap-price` 既有語意）。 */
+.heatmap-table tr.anchor .heatmap-move-pct {
+  color: var(--label);
+  font-weight: 600;
 }
 
 .heatmap-move-pct-full {

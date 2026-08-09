@@ -8,14 +8,24 @@ import { baselineTopCandidate, type AnalysisView, type Matrix } from "./api";
 const view = sample as unknown as AnalysisView;
 const matrix = baselineTopCandidate(view)!.matrix;
 
+/** 報酬率格子＝日期欄那些 `<td>`，不含最右邊的 ±% annotation 欄
+ *  （QA-FIX-1）。兩者都是 `<td>`，用 class 分開才不會把 annotation
+ *  誤算成一格報酬率。 */
+function valueCells(container: HTMLElement): HTMLElement[] {
+  return Array.from(
+    container.querySelectorAll<HTMLElement>("td:not(.heatmap-move-pct)"));
+}
+
 describe("主圖 Heatmap", () => {
-  it("欄是日期、最後一欄講明是到期日", () => {
+  it("欄是日期，日期欄之後才是 ±% 欄——價格在最左、±% 在最右", () => {
     render(<Heatmap matrix={matrix} />);
 
     const headers = screen.getAllByRole("columnheader").map((h) => h.textContent);
+    // 價格 + N 個日期 + ±%（QA-FIX-1：±% 有自己的欄標題，欄數才對得上）
+    expect(headers).toHaveLength(matrix.dates.length + 2);
     expect(headers[0]).toBe("價格");
-    expect(headers).toHaveLength(matrix.dates.length + 1);
-    expect(headers.at(-1)).toMatch(/到期$/);
+    expect(headers.at(-2)).toMatch(/到期$/);
+    expect(headers.at(-1)).toBe("vs 現價");
   });
 
   it("列由高價到低價——漲在上、跌在下，與看盤軟體一致", () => {
@@ -38,9 +48,9 @@ describe("主圖 Heatmap", () => {
   });
 
   it("每一格都是帶正負號的報酬率，且格數＝價格數×日期數", () => {
-    render(<Heatmap matrix={matrix} />);
+    const { container } = render(<Heatmap matrix={matrix} />);
 
-    const cells = screen.getAllByRole("cell");
+    const cells = valueCells(container);
     expect(cells).toHaveLength(matrix.prices.length * matrix.dates.length);
     for (const cell of cells) expect(cell.textContent).toMatch(/^[+-]\d+%$/);
   });
@@ -51,11 +61,12 @@ describe("主圖 Heatmap", () => {
       dates: [["2026-08-07", ""]],
       cells: [[0.0]],
     };
-    const { rerender } = render(<Heatmap matrix={tiny} />);
-    expect(screen.getByRole("cell")).toHaveStyle({ background: "transparent" });
+    const { container, rerender } = render(<Heatmap matrix={tiny} />);
+    expect(valueCells(container)[0]).toHaveStyle({ background: "transparent" });
 
     rerender(<Heatmap matrix={{ ...tiny, cells: [[0.8]] }} />);
-    expect(screen.getByRole("cell")).not.toHaveStyle({ background: "transparent" });
+    expect(valueCells(container)[0])
+      .not.toHaveStyle({ background: "transparent" });
   });
 
   it("表格有可及名稱——底下那段說明是兄弟節點，輔助技術不會當成標題", () => {
@@ -68,20 +79,53 @@ describe("主圖 Heatmap", () => {
   // 測試照樣綠。真正的守門在 E2E（實測 scrollWidth > clientWidth）。
 });
 
-describe("價格右側 ±% 標註（決策 M／#109）", () => {
-  it("每一個 price row 都有對應且正確的 ±% 標註，值取自 matrix.prices 第三欄"+
-     "（引擎給的，不是前端重算）", () => {
-    render(<Heatmap matrix={matrix} />);
+describe("最右欄 ±% 標註（決策 M／#109，位置修正 QA-FIX-1／QA-01）", () => {
+  it("DOM 順序：每一列是 價格 → 全部日期格 → ±%，±% 是最後一個子元素", () => {
+    const { container } = render(<Heatmap matrix={matrix} />);
 
-    const rowHeaders = screen.getAllByRole("rowheader");
-    expect(rowHeaders).toHaveLength(matrix.prices.length);
+    const bodyRows = Array.from(
+      container.querySelectorAll<HTMLElement>("tbody tr"));
+    expect(bodyRows).toHaveLength(matrix.prices.length);
+
+    for (const row of bodyRows) {
+      const kids = Array.from(row.children);
+      // 第一個是價格（sticky left），最後一個是 ±%（sticky right）
+      expect(kids[0]).toHaveClass("heatmap-price");
+      expect(kids.at(-1)).toHaveClass("heatmap-move-pct");
+      // 中間全部是日期格，數量剛好等於日期欄數——±% 不佔用其中任何一格
+      expect(kids).toHaveLength(matrix.dates.length + 2);
+      for (const cell of kids.slice(1, -1)) {
+        expect(cell).not.toHaveClass("heatmap-move-pct");
+        expect(cell.textContent).toMatch(/^[+-]\d+%$/);
+      }
+    }
+  });
+
+  it("±% 不再被塞進左側價格欄裡——價格欄只有價格與錨點標籤", () => {
+    const { container } = render(<Heatmap matrix={matrix} />);
+
+    for (const th of Array.from(
+      container.querySelectorAll<HTMLElement>("th.heatmap-price"))) {
+      // 價格欄不得出現帶一位小數的 ±%（那是 annotation 欄的格式）
+      expect(th.textContent).not.toMatch(/[+-]\d+\.\d%/);
+      expect(th.querySelector(".heatmap-move-pct")).toBeNull();
+    }
+  });
+
+  it("每一個 price row 都有對應且正確的 ±%，值取自 matrix.prices 第三欄"+
+     "（引擎給的，不是前端重算）", () => {
+    const { container } = render(<Heatmap matrix={matrix} />);
+
+    const annotations = Array.from(
+      container.querySelectorAll<HTMLElement>("td.heatmap-move-pct"));
+    expect(annotations).toHaveLength(matrix.prices.length);
     // 由高價到低價渲染（既有規則），逐列核對完整格式的 ±% 文字。
     const sorted = [...matrix.prices].sort((a, b) => b[0] - a[0]);
-    rowHeaders.forEach((th, i) => {
+    annotations.forEach((td, i) => {
       const [, , movePct] = sorted[i];
       const pct = movePct * 100;
       const expected = `${pct >= 0 ? "+" : ""}${pct.toFixed(1)}%`;
-      expect(within(th).getByText(expected)).toBeInTheDocument();
+      expect(within(td).getByText(expected)).toBeInTheDocument();
     });
   });
 
@@ -98,11 +142,11 @@ describe("價格右側 ±% 標註（決策 M／#109）", () => {
       dates: [["2026-08-07", ""]],
       cells: [[0.0]],
     };
-    render(<Heatmap matrix={tiny} />);
+    const { container } = render(<Heatmap matrix={tiny} />);
 
-    const th = screen.getByRole("rowheader");
-    expect(within(th).getByText("+13.6%")).toBeInTheDocument();
-    expect(within(th).getByText("+14%")).toBeInTheDocument();
+    const td = container.querySelector<HTMLElement>("td.heatmap-move-pct")!;
+    expect(within(td).getByText("+13.6%")).toBeInTheDocument();
+    expect(within(td).getByText("+14%")).toBeInTheDocument();
   });
 
   it("深跌／超標兩端的正負號方向跟價格相對現價的位置一致", () => {

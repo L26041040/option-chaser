@@ -350,13 +350,27 @@ test("Heatmap 價格列右側 ±% 標註：手機 viewport 不需額外互動就
   // 就看得到；手機優先預設顯示短格式（CSS 媒體查詢切換，見
   // `styles.css` 的 `.heatmap-move-pct-short`），數字取自契約樣本
   // baseline 候選的 `matrix.prices`（spot=100、target=130 → +30%）。
-  const targetRow = table.locator("tr").filter({ hasText: "目標" });
-  await expect(targetRow.getByText("+30%", { exact: true })).toBeVisible();
-  const spotRow = table.locator("tr").filter({ hasText: "現價" });
-  await expect(spotRow.getByText("+0%", { exact: true })).toBeVisible();
+  // 完整／短格式兩個 span 都在 DOM 裡（CSS 切換顯示），所以斷言要指名
+  // 看得見的那一個——對整個 `<td>` 下 toHaveText 會拿到兩者相連的
+  // textContent。
+  const moveCellOf = (tag: string) =>
+    table.locator("tr").filter({ hasText: tag }).locator("td.heatmap-move-pct");
+  const shortOf = (tag: string) =>
+    moveCellOf(tag).locator(".heatmap-move-pct-short");
+  await expect(shortOf("目標")).toHaveText("+30%");
+  await expect(shortOf("目標")).toBeVisible();
+  await expect(shortOf("現價")).toHaveText("+0%");
   // 完整格式（桌面版才顯示）此時不可見，證明真的是短格式在生效，
   // 不是兩種格式一起攤開來看。
-  await expect(targetRow.getByText("+30.0%", { exact: true })).not.toBeVisible();
+  await expect(moveCellOf("目標").locator(".heatmap-move-pct-full"))
+    .not.toBeVisible();
+
+  // QA-FIX-1：手機版同樣是「價格 → 日期格 → ±%」，±% 在最右邊，
+  // 不是塞在左側價格欄裡。
+  const firstRow = table.locator("tbody tr").first();
+  const priceBox = (await firstRow.locator("th.heatmap-price").boundingBox())!;
+  const moveBox = (await firstRow.locator("td.heatmap-move-pct").boundingBox())!;
+  expect(moveBox.x).toBeGreaterThan(priceBox.x);
 });
 
 test("劇本庫：建立 → 出現在清單 → 封存後消失（V3／#51）", async ({ page }) => {

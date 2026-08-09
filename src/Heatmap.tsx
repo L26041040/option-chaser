@@ -10,9 +10,12 @@
  * - 整張表包在可橫向捲動的容器裡，不縮字級硬塞——七欄擠進 390px 只會
  *   讓數字小到讀不出來
  *
- * 決策 M（#109）：價格欄右側加一個 ±%（`matrix.prices` 第三欄
- * `move_pct`，同樣是引擎給的，不在這裡重算），跟左側絕對價格同一列、
- * 同一個 sticky 儲存格，橫向捲動時一起釘住。候選展開後的 Heatmap 用的
+ * 決策 M（#109）＋ QA-FIX-1（QA-01）：±% 是表格**最右邊一欄**——每一
+ * price row 在全部日期格之後的 annotation 欄，不是塞在左側價格欄裡。
+ * 值取自 `matrix.prices` 第三欄 `move_pct`（引擎給的，不在這裡重算），
+ * 它不是獨立 scale：同一列的絕對價格與 ±% 講的是同一件事的兩種寫法。
+ * 左側價格欄 `sticky left`、右側 ±% 欄 `sticky right`，橫向捲動時兩端
+ * 都留在畫面上，中間的日期格才是捲動的部分。候選展開後的 Heatmap 用的
  * 是同一個元件，不需要另外接線。
  */
 import type { Matrix } from "./api";
@@ -43,6 +46,11 @@ export default function Heatmap({ matrix }: { matrix: Matrix }) {
                   {columnLabel(iso, j === dates.length - 1)}
                 </th>
               ))}
+              {/* QA-FIX-1：最右欄要有自己的欄標題，否則欄數與 <tbody>
+                  對不上，語意表格對輔助技術會壞掉。 */}
+              <th scope="col" className="heatmap-move-head">
+                vs 現價
+              </th>
             </tr>
           </thead>
           <tbody>
@@ -53,19 +61,6 @@ export default function Heatmap({ matrix }: { matrix: Matrix }) {
                 <tr key={price} className={tags.length ? "anchor" : undefined}>
                   <th scope="row" className="heatmap-price">
                     {price.toFixed(2)}
-                    {/* 決策 M（#109）：右側 ±%，跟左側絕對價格同一列的
-                        annotation，不是另一條座標軸——放在同一個 sticky
-                        儲存格裡，橫向捲動時跟價格一起釘住，手機視窗不用
-                        額外互動就看得到。完整／短格式兩者都畫進 DOM，用
-                        CSS 依版面寬度切換，不是 JS 判斷視窗寬度。 */}
-                    <span className="heatmap-move-pct">
-                      <span className="heatmap-move-pct-full">
-                        {formatMovePct(movePct)}
-                      </span>
-                      <span className="heatmap-move-pct-short">
-                        {formatMovePctShort(movePct)}
-                      </span>
-                    </span>
                     {tags.map((t) => (
                       <span className="tag" key={t}>
                         {t}
@@ -77,6 +72,17 @@ export default function Heatmap({ matrix }: { matrix: Matrix }) {
                       {formatCell(value)}
                     </td>
                   ))}
+                  {/* QA-FIX-1：±% 在全部日期格之後。完整／短格式兩者都畫
+                      進 DOM，用 CSS 依版面寬度切換，不是 JS 判斷視窗寬度
+                      （沿用 #109 既有做法，只換掛載位置）。 */}
+                  <td className="heatmap-move-pct">
+                    <span className="heatmap-move-pct-full">
+                      {formatMovePct(movePct)}
+                    </span>
+                    <span className="heatmap-move-pct-short">
+                      {formatMovePctShort(movePct)}
+                    </span>
+                  </td>
                 </tr>
               );
             })}
