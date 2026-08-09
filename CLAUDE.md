@@ -1551,6 +1551,29 @@ Review 修訂見 issue #102。14 張子票 #103–#116，需求方 `/implement`
   觸發率從原複合旗標 37.5%（3/8：wide+zero_vol+高friction 各 1 筆）
   降至 12.5%（1/8）——兩份樣本皆未見「全頁候選全亮」，符合決策 F 的
   sparse 設計目標，無需要求需求方裁示調參的情況。
+- **#105** [#105] — Analysis Report 瘦身為四區塊（決策 G，commit
+  `6643675`）：`AnalysisReport.tsx` 從七段落（一句話結論、7情境韌性表、
+  完成度曲線、風險與代價＋部位敏感度小節、進場執行、方法與假設＋過濾
+  統計、免責聲明）改為四個 AC 逐欄列明的固定區塊——Risk / Payoff、
+  Position Sensitivity、Execution、Model & Assumptions（折疊）。免責
+  聲明維持獨立不折疊，判斷為「不是四區塊之一，不在裁減範圍」，非疏漏
+  （AC 移除清單未列它）。底層欄位／CLI／契約樣本完全不動，純 UI
+  cleanup；新增 `mid_cost`（Candidate）與 `volume`/`open_interest`
+  （Leg）的 TS 型別宣告（後端早就序列化，只是先前沒型別）。
+  死碼清理：`reportConclusion`／`maxPayoutRatioText`／`costPctOfSpot`／
+  `breakevenDistancePct`／`completionThresholdText`／`SCENARIO_NAMES`
+  隨唯一呼叫端一併移除；`test_frontend_contract.py` 守護
+  `SCENARIO_NAMES` 前後端同步的測試（守護一個已不存在的 UI）一併移除；
+  孤兒 CSS（`.report-conclusion`／`.report-warnings`／
+  `.report-methodology-text`／`.report-table tr.worst`）一併清理。
+  ⚠ **兩項解讀記錄**：(1) AC 逐區塊的內容清單視為窮舉而非舉例——
+  `retention`／`completion_threshold`／`cons`／`guidance_warnings`／
+  `days_to_expiry`／`l2`／`l3` 皆不在任何一區塊的明列欄位中，判斷一併
+  移除（不是漏看，底層欄位仍在契約裡）；(2) Row 標籤採 AC 原文英文
+  （Breakeven／Net Delta／Execution Friction 等）而非另譯中文——與
+  Bull Call Spread／Bid-Ask Spread 等既有「標準英文術語」慣例一致，
+  Model & Assumptions 內部參數（利率／IV情境／Delta門檻／最低要求
+  報酬率）維持既有中文標籤，因 AC 未對這幾項重新指定名稱。
 
 ### 施工依據
 
