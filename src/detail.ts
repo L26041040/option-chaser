@@ -24,15 +24,6 @@ export function strategyLabel(strategy: string): string {
   return STRATEGY_LABELS[strategy] ?? strategy;
 }
 
-/**
- * V8（#56）：韌性 7 情境的顯示名，與 `option_chaser/scenarios.py` 的
- * `SCENARIO_NAMES` 同一份字彙（`tests/test_frontend_contract.py` 把關）。
- */
-export const SCENARIO_NAMES: Record<string, string> = {
-  S1: "不漲", S2: "半程", S3: "大半程", S4: "晚30天",
-  S5: "晚90天", S6: "IV最保守", S7: "Natural成交",
-};
-
 /** 百分比的大小（不含方向）。方向由呼叫端自己說：有的地方用正負號，
  *  有的地方用「超出／低於」。 */
 function magnitude(ratio: number): string {
@@ -76,52 +67,4 @@ export function priceLadderView(
     label: `${LADDER_LABELS[p.label]} ${money(p.price)}`,
     ret: p.return,
   }));
-}
-
-/**
- * V8（#56，spec R1 §2.3／§4.2）：分析報告新版型①「交易摘要」的一句話
- * 結論，格式固定——`動作 + 到期 + 履約組合 + 結構名稱 + 成本 → 損益兩平
- * → 最大獲利`（家族 C 實際發行 trade idea 的標準句型）。全部由既有欄位
- * 拼接，零金融計算；Long Call 的 `max_profit` 依定義為 `null`（無上限），
- * 必須顯示「無上限」，不可留白或顯示 0（R1 §1 第 3 點例外）。
- */
-export function reportConclusion(candidate: Candidate, strategy: string): string {
-  const expiry = candidate.legs[0]?.expiry ?? "—";
-  const maxProfit = candidate.max_profit === null
-    ? "無上限"
-    : money(candidate.max_profit);
-  return `${candidateTitle(candidate)} ${expiry} 到期 ${strategyLabel(strategy)}，` +
-    `成本 ${money(candidate.natural_cost)} → 損益兩平 ${money(candidate.breakeven)} → ` +
-    `最大獲利 ${maxProfit}`;
-}
-
-/**
- * max payout ratio（R1 §2.3 GS 慣例，機構愛用的壓縮指標：最大獲利／成本，
- * 如「大於 8 倍」）——`max_profit / natural_cost`，純除法。Long Call
- * 無上限時回傳「無上限」，不是硬湊一個假倍數。
- */
-export function maxPayoutRatioText(candidate: Candidate): string {
-  if (candidate.max_profit === null) return "無上限";
-  return `${(candidate.max_profit / candidate.natural_cost).toFixed(1)}x`;
-}
-
-/** 成本佔現價的比例（R1 §3.2，純除法）。 */
-export function costPctOfSpot(candidate: Candidate, spot: number): number {
-  return candidate.natural_cost / spot;
-}
-
-/** 損益兩平距現價的比例，帶正負號（R1 §3.2，純除法）。 */
-export function breakevenDistancePct(candidate: Candidate, spot: number): number {
-  return (candidate.breakeven - spot) / spot;
-}
-
-/**
- * 保本門檻的三態文字——對照 `option_chaser/report.py::_resilience_lines`
- * 的既有三態邏輯（`k is None`／`k <= 0`／其餘），純格式化、不重算門檻
- * 本身（`completion_threshold` 是引擎 `scenarios.completion_scan` 算好的）。
- */
-export function completionThresholdText(k: number | null): string {
-  if (k === null) return "劇本全成仍不保本";
-  if (k <= 0) return "0%（已保本）";
-  return `完成 ${(k * 100).toFixed(1)}%`;
 }

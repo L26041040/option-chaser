@@ -1,7 +1,7 @@
 /**
- * 分析報告新版型（V8／#56）元件測試。用真實契約樣本當底——`Candidate`／
- * `StrategyResult` 欄位很多，手刻假資料容易漏欄位或漏值，真樣本才保證
- * 每個欄位都存在且形狀正確。
+ * 分析報告四區塊（MVP V3／#105，spec #102 決策 G）元件測試。用真實
+ * 契約樣本當底——`Candidate`／`StrategyResult` 欄位很多，手刻假資料
+ * 容易漏欄位或漏值，真樣本才保證每個欄位都存在且形狀正確。
  */
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -35,136 +35,120 @@ describe("分析報告：無候選時整塊不顯示", () => {
 describe("分析報告：預設收合，展開才看得到內容", () => {
   it("展開前內容不可見，展開後才看得到", async () => {
     render(<AnalysisReport view={view} result={result} candidate={real} />);
-    expect(screen.queryByText(/情境分析/)).not.toBeVisible();
+    expect(screen.queryByText("Risk / Payoff")).not.toBeVisible();
 
     await expand();
 
-    expect(screen.getByText("情境分析")).toBeVisible();
+    expect(screen.getByText("Risk / Payoff")).toBeVisible();
   });
 });
 
-describe("① 交易摘要", () => {
-  it("一句話結論含成本、損益兩平、最大獲利", async () => {
+describe("四區塊固定存在（決策 G：只保留四塊）", () => {
+  it("Risk / Payoff、Position Sensitivity、Execution、Model & Assumptions 都在",
+     async () => {
     render(<AnalysisReport view={view} result={result} candidate={real} />);
     await expand();
-    const conclusion = document.querySelector(".report-conclusion")!;
-    expect(conclusion.textContent).toContain(`成本 $${real.natural_cost.toFixed(2)}`);
-    expect(conclusion.textContent).toContain("損益兩平");
-    expect(conclusion.textContent).toContain("最大獲利");
+    expect(screen.getByText("Risk / Payoff")).toBeInTheDocument();
+    expect(screen.getByText("Position Sensitivity")).toBeInTheDocument();
+    expect(screen.getByText("Execution")).toBeInTheDocument();
+    expect(screen.getByText("Model & Assumptions")).toBeInTheDocument();
   });
+});
 
-  it("最大獲利與最大損失同框（R1 §1 第 3 點）", async () => {
+describe("Risk / Payoff", () => {
+  it("Breakeven／Max Profit／Max Loss／Execution Friction 都顯示實際數字", async () => {
     render(<AnalysisReport view={view} result={result} candidate={real} />);
     await expand();
-    expect(screen.getByText("最大獲利")).toBeInTheDocument();
-    expect(screen.getByText("最大損失")).toBeInTheDocument();
+    const breakevenRow = screen.getByText("Breakeven").closest(".row")!;
+    expect(breakevenRow).toHaveTextContent(`$${real.breakeven.toFixed(2)}`);
+    const maxLossRow = screen.getByText("Max Loss").closest(".row")!;
+    expect(maxLossRow).toHaveTextContent(`$${real.natural_cost.toFixed(2)}`);
+    const frictionRow = screen.getByText("Execution Friction").closest(".row")!;
+    expect(frictionRow).toHaveTextContent(`${(real.friction * 100).toFixed(1)}%`);
   });
 
-  it("Long Call 無上限時顯示「無上限」，不是留白或 0", async () => {
+  it("Long Call 無上限時 Max Profit 顯示「無上限」，不是留白或 0", async () => {
     render(<AnalysisReport view={view} result={result}
                           candidate={candidate({ max_profit: null })} />);
     await expand();
-    expect(screen.getAllByText(/無上限/).length).toBeGreaterThan(0);
+    const row = screen.getByText("Max Profit").closest(".row")!;
+    expect(row).toHaveTextContent("無上限");
+  });
+
+  it("Max Profit 有上限時顯示金額", async () => {
+    render(<AnalysisReport view={view} result={result}
+                          candidate={candidate({ max_profit: 14.8 })} />);
+    await expand();
+    const row = screen.getByText("Max Profit").closest(".row")!;
+    expect(row).toHaveTextContent("$14.80");
   });
 });
 
-describe("③ 情境分析：韌性 7 情境表", () => {
-  it("列出 7 個情境，情境最壞標記在對應那一列", async () => {
+describe("Position Sensitivity", () => {
+  it("Net Delta／Theta/day／Vega/1 vol point／Effective Leverage 都在", async () => {
     render(<AnalysisReport view={view} result={result} candidate={real} />);
     await expand();
-    const worstRow = screen.getByText(
-      new RegExp(`^${real.scenario_vector.worst_code} `)).closest("tr")!;
-    expect(worstRow).toHaveTextContent("◀ 情境最壞");
-  });
-
-  it("劇本完成度曲線逐點列出", async () => {
-    render(<AnalysisReport view={view} result={result} candidate={real} />);
-    await expand();
-    expect(screen.getByText(/劇本完成度:/)).toBeInTheDocument();
+    expect(screen.getByText("Net Delta")).toBeInTheDocument();
+    expect(screen.getByText("Theta/day")).toBeInTheDocument();
+    expect(screen.getByText("Vega/1 vol point")).toBeInTheDocument();
+    const leverageRow = screen.getByText("Effective Leverage").closest(".row")!;
+    expect(leverageRow).toHaveTextContent(`${real.effective_leverage.toFixed(1)}x`);
   });
 });
 
-describe("④ 風險與代價", () => {
-  it("劇本報酬與情境最壞並排（R1 §2.5 平衡原則）", async () => {
-    render(<AnalysisReport view={view} result={result} candidate={real} />);
-    await expand();
-    const row = screen.getByText("劇本報酬（情境最壞並排）").closest(".row")!;
-    expect(row).toHaveTextContent("情境最壞");
-  });
-
-  it("代價（cons）與買價指引警示（guidance_warnings）分開標示，不是同一堆" +
-     "看不出差別的清單——CLI 報告本來就分別叫「代價」跟「警示」", async () => {
-    const withWarnings = candidate({
-      cons: ["獲利上限 = 寬度 − 淨成本"],
-      guidance_warnings: ["以 Ask 進場達不到你設定的最低報酬"],
-    });
-    render(<AnalysisReport view={view} result={result} candidate={withWarnings} />);
-    await expand();
-    expect(screen.getByText("代價: 獲利上限 = 寬度 − 淨成本")).toBeInTheDocument();
-    expect(screen.getByText("警示: 以 Ask 進場達不到你設定的最低報酬"))
-      .toBeInTheDocument();
-  });
-
-  it("沒有代價或警示時不留一個空區塊", async () => {
-    const clean = candidate({ cons: [], guidance_warnings: [] });
-    render(<AnalysisReport view={view} result={result} candidate={clean} />);
-    await expand();
-    expect(document.querySelector(".report-warnings")).not.toBeInTheDocument();
-  });
-
-  it("Theta／Vega 標明是佔成本比率（Mid 口徑），不能寫成裸 Greeks", async () => {
-    render(<AnalysisReport view={view} result={result} candidate={real} />);
-    await expand();
-    expect(screen.getByText(/Theta（佔成本比率，Mid 口徑）/)).toBeInTheDocument();
-    expect(screen.getByText(/Vega（佔成本比率，Mid 口徑）/)).toBeInTheDocument();
-  });
-});
-
-describe("⑤ 進場執行：逐腿雙邊報價 ＋ 剩餘天數 ＋ 買價指引 L2/L3", () => {
-  it("買腿與 L2/L3 都顯示", async () => {
-    render(<AnalysisReport view={view} result={result} candidate={real} />);
-    await expand();
-    expect(screen.getByText("買腿")).toBeInTheDocument();
-    expect(screen.getByText(/L2 保守上限/)).toBeInTheDocument();
-    expect(screen.getByText(/L3 要求報酬上限/)).toBeInTheDocument();
-  });
-
-  it("每一腿雙邊報價都在——只印最差成交那一邊會把買賣價差資訊藏起來"
-     + "（R1 §4.2 A：逐腿 Bid/Ask/IV）", async () => {
+describe("Execution", () => {
+  it("逐腿雙邊報價都在——只印最差成交那一邊會把買賣價差資訊藏起來", async () => {
     render(<AnalysisReport view={view} result={result} candidate={real} />);
     await expand();
     const [buy, sell] = real.legs;
-    const buyRow = screen.getByText("買腿").closest(".row")!;
+    const buyRow = screen.getByText("Buy Leg").closest(".row")!;
     expect(buyRow).toHaveTextContent(`Bid $${buy.bid.toFixed(2)}`);
     expect(buyRow).toHaveTextContent(`Ask $${buy.ask.toFixed(2)}`);
     if (sell) {
-      const sellRow = screen.getByText("賣腿").closest(".row")!;
+      const sellRow = screen.getByText("Sell Leg").closest(".row")!;
       expect(sellRow).toHaveTextContent(`Bid $${sell.bid.toFixed(2)}`);
       expect(sellRow).toHaveTextContent(`Ask $${sell.ask.toFixed(2)}`);
     }
   });
 
-  it("剩餘天數顯示（R1 §4.2 B：早就序列化，純文字報告沒印）", async () => {
+  it("Net Mid 與 Net Worst 並列，兩個成本口徑都看得到", async () => {
     render(<AnalysisReport view={view} result={result} candidate={real} />);
     await expand();
-    expect(screen.getByText(`${real.days_to_expiry} 天`)).toBeInTheDocument();
+    const midRow = screen.getByText("Net Mid").closest(".row")!;
+    expect(midRow).toHaveTextContent(`$${real.mid_cost.toFixed(2)}`);
+    const worstRow = screen.getByText(/Net Worst/).closest(".row")!;
+    expect(worstRow).toHaveTextContent(`$${real.natural_cost.toFixed(2)}`);
   });
-});
 
-describe("⑥⑦ 方法與假設／免責聲明", () => {
-  it("方法論全文與免責段落都在頁面上（即使收合區未展開也在 DOM 裡）",
+  it("Volume／OI 低權重顯示，不帶警示樣式（MVP V3／#104 裁示：中性 metadata）",
      async () => {
     render(<AnalysisReport view={view} result={result} candidate={real} />);
     await expand();
-    expect(screen.getByText(/OPTION CHASER|估值: Black-Scholes/))
-      .toBeInTheDocument();
-    expect(screen.getByText(result.disclaimer_text)).toBeInTheDocument();
+    const [buy] = real.legs;
+    const buyRow = screen.getByText("Buy Leg").closest(".row")!;
+    expect(buyRow).toHaveTextContent(`Volume ${buy.volume}`);
+    expect(buyRow).toHaveTextContent(`OI ${buy.open_interest}`);
+    // 低權重＝跟著 IV 走同一個 `row-note`，不是獨立一列、不帶 notice/warn 樣式。
+    expect(buyRow.querySelector(".notice")).toBeNull();
+    expect(buyRow.querySelector(".row-note")).not.toBeNull();
   });
+});
 
-  it("模型參數（利率／IV情境／Delta門檻／要求報酬）都在——R1 §4.2 A "
-     + "把「[模型假設]」重排到⑥，不是整段消失", async () => {
+describe("Model & Assumptions", () => {
+  it("預設收合，需另外展開才看得到參數細節（決策 G）", async () => {
     render(<AnalysisReport view={view} result={result} candidate={real} />);
     await expand();
+    expect(screen.queryByText("無風險利率")).not.toBeVisible();
+
+    await userEvent.click(screen.getByText("Model & Assumptions"));
+
+    expect(screen.getByText("無風險利率")).toBeVisible();
+  });
+
+  it("模型參數（利率／IV情境／Delta門檻／要求報酬）都在", async () => {
+    render(<AnalysisReport view={view} result={result} candidate={real} />);
+    await expand();
+    await userEvent.click(screen.getByText("Model & Assumptions"));
     expect(screen.getByText("無風險利率")).toBeInTheDocument();
     const minReturnRow = screen.getByText("最低要求報酬率").closest(".row")!;
     expect(minReturnRow).toHaveTextContent(
@@ -173,15 +157,22 @@ describe("⑥⑦ 方法與假設／免責聲明", () => {
       `${view.params.delta_bands[0]} / ${view.params.delta_bands[1]}`,
     )).toBeInTheDocument();
   });
+});
 
-  it("免責聲明獨立於方法論折疊區之外——不需要再展開一層就看得到", async () => {
+describe("免責聲明：獨立、不折疊（不是四區塊之一）", () => {
+  it("即使外層收合區未展開，也不需要再展開就看得到（在 DOM 裡）", async () => {
     render(<AnalysisReport view={view} result={result} candidate={real} />);
     await expand();
     expect(screen.getByText(result.disclaimer_text)).toBeVisible();
   });
 });
 
-describe("無風險利率三態顯示（RC1／#87）", () => {
+describe("無風險利率三態顯示（RC1／#87，MVP V3／#105 起搬進 Model & Assumptions）", () => {
+  async function expandModelAssumptions() {
+    await expand();
+    await userEvent.click(screen.getByText("Model & Assumptions"));
+  }
+
   it("真正 fallback（無曲線）只顯示常數與 FALLBACK 標籤，不掛任何日期",
      async () => {
     const fallbackView = {
@@ -191,7 +182,7 @@ describe("無風險利率三態顯示（RC1／#87）", () => {
                 rate: 0.04, rate_note: "曲線不可得" },
     };
     render(<AnalysisReport view={fallbackView} result={result} candidate={real} />);
-    await expand();
+    await expandModelAssumptions();
     const row = screen.getByText("無風險利率").closest(".row")!;
     expect(row).toHaveTextContent("4.0%");
     expect(row).toHaveTextContent("FALLBACK");
@@ -208,7 +199,7 @@ describe("無風險利率三態顯示（RC1／#87）", () => {
                 rate_curve_date: "2026-07-31", rate_curve_stale: false },
     };
     render(<AnalysisReport view={curveView} result={result} candidate={real} />);
-    await expand();
+    await expandModelAssumptions();
     const row = screen.getByText("無風險利率").closest(".row")!;
     expect(row).toHaveTextContent("2026-07-31");
     expect(row).not.toHaveTextContent("FALLBACK");
@@ -222,7 +213,7 @@ describe("無風險利率三態顯示（RC1／#87）", () => {
                 rate_curve_date: "2026-07-20", rate_curve_stale: true },
     };
     render(<AnalysisReport view={staleView} result={result} candidate={real} />);
-    await expand();
+    await expandModelAssumptions();
     const row = screen.getByText("無風險利率").closest(".row")!;
     expect(row).toHaveTextContent("2026-07-20");
     expect(row).toHaveTextContent("STALE");
@@ -241,7 +232,7 @@ describe("無風險利率三態顯示（RC1／#87）", () => {
                 rate_note: "" },
     };
     render(<AnalysisReport view={explicitView} result={result} candidate={real} />);
-    await expand();
+    await expandModelAssumptions();
     const row = screen.getByText("無風險利率").closest(".row")!;
     expect(row).toHaveTextContent("7.0%");
     expect(row).not.toHaveTextContent("FALLBACK");
@@ -249,10 +240,78 @@ describe("無風險利率三態顯示（RC1／#87）", () => {
   });
 });
 
-describe("不重複頁面上方已經無條件顯示過的東西（R1 §3.4／設計取捨）", () => {
+describe("依決策 G 移除、不再渲染的項目（負向斷言）", () => {
+  it("不含一句話結論或重複的策略／候選身分——「基準候選」區塊已經顯示（#103）",
+     async () => {
+    render(<AnalysisReport view={view} result={result} candidate={real} />);
+    await expand();
+    expect(document.querySelector(".report-conclusion")).not.toBeInTheDocument();
+    expect(screen.queryByText(/到期.*成本.*損益兩平/)).not.toBeInTheDocument();
+  });
+
   it("不含追平價格區塊的重複內容——那已經是頁面上方的獨立區塊", async () => {
     render(<AnalysisReport view={view} result={result} candidate={real} />);
     await expand();
     expect(screen.queryByText(/追平價格/)).not.toBeInTheDocument();
+  });
+
+  it("不含 baseline return 與情境最壞並排（劇本主圖與基準候選已顯示過報酬）",
+     async () => {
+    render(<AnalysisReport view={view} result={result} candidate={real} />);
+    await expand();
+    expect(screen.queryByText(/劇本報酬（情境最壞並排）/)).not.toBeInTheDocument();
+  });
+
+  it("不含 7 情境韌性表與劇本完成度曲線", async () => {
+    render(<AnalysisReport view={view} result={result} candidate={real} />);
+    await expand();
+    expect(screen.queryByText("情境分析")).not.toBeInTheDocument();
+    expect(screen.queryByRole("table")).not.toBeInTheDocument();
+    expect(screen.queryByText(/劇本完成度:/)).not.toBeInTheDocument();
+    for (const [code] of real.scenario_vector.entries) {
+      expect(screen.queryByText(new RegExp(`^${code} `))).not.toBeInTheDocument();
+    }
+  });
+
+  it("不含 filter／pair 統計一行——CandidatePool 已負責", async () => {
+    render(<AnalysisReport view={view} result={result} candidate={real} />);
+    await expand();
+    expect(screen.queryByText(/掃描.*張.*合格.*張/)).not.toBeInTheDocument();
+  });
+
+  it("不含大段 methodology 散文原文", async () => {
+    render(<AnalysisReport view={view} result={result} candidate={real} />);
+    await expand();
+    await userEvent.click(screen.getByText("Model & Assumptions"));
+    expect(document.querySelector(".report-methodology-text")).not.toBeInTheDocument();
+    expect(screen.queryByText(result.methodology_text)).not.toBeInTheDocument();
+  });
+
+  it("不含保本門檻、不漲保留率——未在四區塊清單內", async () => {
+    render(<AnalysisReport view={view} result={result} candidate={real} />);
+    await expand();
+    expect(screen.queryByText("保本門檻")).not.toBeInTheDocument();
+    expect(screen.queryByText("不漲保留率")).not.toBeInTheDocument();
+  });
+
+  it("不含代價（cons）與買價指引警示（guidance_warnings）——未在四區塊清單內",
+     async () => {
+    const withWarnings = candidate({
+      cons: ["獲利上限 = 寬度 − 淨成本"],
+      guidance_warnings: ["以 Ask 進場達不到你設定的最低報酬"],
+    });
+    render(<AnalysisReport view={view} result={result} candidate={withWarnings} />);
+    await expand();
+    expect(screen.queryByText(/代價: /)).not.toBeInTheDocument();
+    expect(screen.queryByText(/警示: /)).not.toBeInTheDocument();
+    expect(document.querySelector(".report-warnings")).not.toBeInTheDocument();
+  });
+
+  it("不含剩餘天數與買價指引 L2/L3——未在四區塊清單內", async () => {
+    render(<AnalysisReport view={view} result={result} candidate={real} />);
+    await expand();
+    expect(screen.queryByText(/剩餘天數/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/L2 保守上限/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/L3 要求報酬上限/)).not.toBeInTheDocument();
   });
 });

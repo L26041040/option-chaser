@@ -17,7 +17,6 @@ export interface AnalysisMeta {
   target_move: number;
 }
 
-/** 一隻腿。契約裡還有 open_interest 等欄位，畫面用到再加。 */
 export interface Leg {
   strike: number;
   option_type: string;
@@ -27,6 +26,10 @@ export interface Leg {
   /** 賣這隻腿收得到的價（最差成交假設用 Bid）。 */
   bid: number;
   iv: number | null;
+  /** MVP V3（#105，spec #102 決策 G）：Analysis Report → Execution 區
+   *  中性 metadata（低權重、無警示樣式），與 #104 的顯示旗標無關。 */
+  volume: number;
+  open_interest: number;
 }
 
 /** 代表候選（MVP-v2／#77、#78）：劇本清單卡片要的候選完整身分——只到
@@ -78,6 +81,11 @@ export interface Candidate {
   candidate_key: string;
   baseline_return: number;
   natural_cost: number;
+  /** MVP V3（#105）：Mid 口徑進場成本——Analysis Report → Execution
+   *  的「Net Mid」，與 `natural_cost`（Net Worst，最差成交口徑）並列
+   *  對照。序列化早就存在（`store._candidate` 的 `mid_cost`），本票起
+   *  前端才開始讀它。 */
+  mid_cost: number;
   breakeven: number;
   /** 距這組候選自己的到期日還有幾天（V8／#56，spec R1 §4.2 B「剩餘
    *  天數」——早就序列化了，純文字報告沒印）。 */

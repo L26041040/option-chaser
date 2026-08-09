@@ -140,8 +140,7 @@ test("清單 → 詳細頁：摘要、基準候選、進場成本、主圖、候
 
   // FB5-04（#65，spec #61）：C 類品質標示——契約樣本本身帶著一筆「買賣
   // 價差偏大」，整條流程（後端契約 → API → 詳細頁）走一次就看得到。
-  // 鎖定候選池那張卡：V8（#56）的分析報告區塊（評語／方法論全文）也
-  // 提到同一個詞，全頁搜尋會撞到不只一個元素。
+  // 鎖定候選池那張卡以求穩定，不依賴全頁只有一個元素帶這段文字。
   const candidatePool = page.locator(".card").filter({ hasText: "候選池" }).first();
   await expect(candidatePool.getByText("品質標示（不影響入選）")).toBeVisible();
   await expect(candidatePool.getByText("買賣價差偏大")).toBeVisible();
@@ -151,19 +150,27 @@ test("清單 → 詳細頁：摘要、基準候選、進場成本、主圖、候
   await expect(page.getByRole("heading", { name: "劇本庫" })).toBeVisible();
 });
 
-test("進階區：分析報告與原始資料展開才載入（V8／#56）", async ({ page }) => {
+test("進階區：分析報告與原始資料展開才載入（V8／#56，MVP V3／#105 四區塊）",
+   async ({ page }) => {
   await routeLibrary(page, libraryRow());
   await page.goto("/#/s/s1");
 
   // 分析報告：預設收合，展開才看得到內容（不需要額外打 API，資料已在
-  // 詳細頁的 view 裡）。
+  // 詳細頁的 view 裡）。四區塊固定：Risk / Payoff → Position
+  // Sensitivity → Execution → Model & Assumptions（本身也預設收合）。
   const report = page.locator(".card").filter({ hasText: "📄 分析報告" }).first();
-  await expect(report.getByText("情境分析")).not.toBeVisible();
+  await expect(report.getByText("Risk / Payoff")).not.toBeVisible();
   await report.getByText("📄 分析報告").click();
-  await expect(report.getByText("情境分析")).toBeVisible();
-  await expect(report.getByText("風險與代價")).toBeVisible();
-  await expect(report.getByText("進場執行")).toBeVisible();
-  // ⑦ 免責聲明獨立、不折疊——展開整個進階區就看得到，不必再點一層。
+  await expect(report.getByText("Risk / Payoff")).toBeVisible();
+  await expect(report.getByText("Position Sensitivity")).toBeVisible();
+  // 精確比對——「Execution」是「Execution Friction」列標籤的子字串。
+  await expect(report.getByText("Execution", { exact: true })).toBeVisible();
+  await expect(report.getByText("Model & Assumptions")).toBeVisible();
+  // Model & Assumptions 是巢狀收合區，外層展開不代表它也展開。
+  await expect(report.getByText("無風險利率")).not.toBeVisible();
+  await report.getByText("Model & Assumptions").click();
+  await expect(report.getByText("無風險利率")).toBeVisible();
+  // 免責聲明獨立、不折疊——展開整個進階區就看得到，不必再點一層。
   await expect(report.getByText(/選擇權交易涉及重大風險/)).toBeVisible();
 
   // 原始資料：展開才打 `/raw-data`，回應內容如實顯示，CSV 連結接得上

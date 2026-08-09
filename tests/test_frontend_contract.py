@@ -14,7 +14,6 @@ from pathlib import Path
 
 from option_chaser.models import STRATEGIES
 from option_chaser.report import STRATEGY_LABELS
-from option_chaser.scenarios import SCENARIO_NAMES
 
 
 def _read(path: str) -> str:
@@ -54,12 +53,8 @@ def test_every_strategy_has_a_display_name_on_both_sides():
             f" report.STRATEGY_LABELS 不一致（後端是 {STRATEGY_LABELS[strategy]!r}）")
 
 
-def test_every_resilience_scenario_has_a_display_name_on_both_sides():
-    """V8（#56）：分析報告新版型③把韌性 7 情境攤成表格，情境代號（S1..S7）
-    的顯示名跟策略代號同一種漂移風險——後端加了第八個情境而前端沒跟上，
-    畫面會直接印出裸代號 `S8`。"""
-    front = _read("src/detail.ts")
-    for code, label in SCENARIO_NAMES.items():
-        assert f'{code}: "{label}"' in front, (
-            f"src/detail.ts 的 SCENARIO_NAMES 缺 {code}，或與後端"
-            f" scenarios.SCENARIO_NAMES 不一致（後端是 {label!r}）")
+# MVP V3（#105，spec #102 決策 G）起，韌性 7 情境表已從 Analysis Report
+# UI 移除（scenario_vector 欄位與後端計算維持不動，只是不再渲染）——
+# 原本鎖住 `src/detail.ts` SCENARIO_NAMES 與後端字彙同步的
+# `test_every_resilience_scenario_has_a_display_name_on_both_sides`
+# 因此隨著被守護的 UI 一併移除，不留一個守著不存在畫面的測試。
