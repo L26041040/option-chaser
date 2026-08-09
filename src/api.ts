@@ -114,12 +114,19 @@ export interface Candidate {
    * 選填是因為 V7 之前落盤的結果沒有這個欄位。
    */
   price_ladder?: PricePoint[];
-  /** 引擎標記的報價品質疑慮（⚠ 徽章）。 */
-  quote_warning: boolean;
+  /**
+   * MVP V3（#104，spec #102 決策 F）：⚠ 徽章與候選池文案唯一該接的
+   * 顯示旗標——僅 Bid/Ask 過寬（`is_spread_wide`）。零成交量、
+   * Execution friction 超過 25% 都不再觸發顯示。舊的複合旗標
+   * `quote_warning`（選取閘門用，含 zero_vol／friction 兩項）不對外
+   * 序列化，此契約裡不會出現這個鍵。
+   */
+  wide_spread_warning: boolean;
   /**
    * FB5-03（#64）：無套利一致性違反——同到期日、同類型的相鄰履約價
-   * 報價不單調，疑似陳舊報價。獨立於 `quote_warning`：成因與嚴重性都
-   * 不同（配對關係違反，不是單一數值超標），不合併成同一個布林值。
+   * 報價不單調，疑似陳舊報價。獨立於 `wide_spread_warning`：成因與
+   * 嚴重性都不同（配對關係違反，不是單一數值超標），不合併成同一個
+   * 布林值。
    */
   monotonicity_warning: boolean;
   legs: Leg[];

@@ -207,7 +207,7 @@ def test_quality_flag_counts_tallies_each_class_c_check_over_the_pool():
     contracts = [quiet, wide, low, mid, clean]
     violations = monotonicity_violations(contracts)
     counts = {qf.label: qf.count for qf in quality_flag_counts(contracts, violations, P)}
-    assert counts["報價非最新（今日無成交）"] == 1
+    assert counts["今日無成交量"] == 1
     assert counts["買賣價差偏大"] == 1
     assert counts["報價與鄰近履約價不一致，疑似陳舊報價"] == 2
 

@@ -64,7 +64,7 @@ function view(overrides: Partial<Overrides> = {}): AnalysisView {
       // FB5-04（#65，spec #61）：C 類品質標示——整個合格池裡的計數，
       // 跟 `filter_stages` 分開放，不影響入選。
       quality_flags: overrides.flags ?? [
-        { label: "報價非最新（今日無成交）", count: 3 },
+        { label: "今日無成交量", count: 3 },
         { label: "買賣價差偏大", count: 5 },
         { label: "報價與鄰近履約價不一致，疑似陳舊報價", count: 0 },
       ],
@@ -190,11 +190,20 @@ describe("品質標示（FB5-04／#65，spec #61）", () => {
   it("三項全是 0 時，整個小節不出現——沒有東西好標示就不佔畫面", () => {
     render(<CandidatePool view={view({
       flags: [
-        { label: "報價非最新（今日無成交）", count: 0 },
+        { label: "今日無成交量", count: 0 },
         { label: "買賣價差偏大", count: 0 },
         { label: "報價與鄰近履約價不一致，疑似陳舊報價", count: 0 },
       ],
     })} />);
     expect(screen.queryByText("品質標示（不影響入選）")).not.toBeInTheDocument();
+  });
+
+  it("零成交量只中性描述事實，不用「非最新」「有疑慮」這類推論措辭"
+     + "（MVP V3／#104，spec #102 決策 F）", () => {
+    render(<CandidatePool view={view()} />);
+    expect(screen.getByText("今日無成交量")).toBeInTheDocument();
+    // 舊字串（新舊字串皆需明文檢查封鎖，AC 原文）不得復發。
+    expect(screen.queryByText(/報價非最新/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/報價品質有疑慮/)).not.toBeInTheDocument();
   });
 });

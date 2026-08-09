@@ -139,7 +139,11 @@ def quality_flag_counts(
     """
     quals = list(qualified)
     return (
-        QualityFlagCount("報價非最新（今日無成交）",
+        # MVP V3（#104，spec #102 決策 F）：零成交量在 LEAPS／冷門履約價
+        # 是常態，不是報價可疑的推論依據——字面只講事實（今日沒有成交），
+        # 不再由零成交量推論出報價品質的問題。舊有的推論式措辭已依裁示
+        # 禁用（`tests/test_redlines.py` 封鎖，見該檔 BANNED 清單）。
+        QualityFlagCount("今日無成交量",
                         sum(1 for c in quals if c.volume == 0)),
         QualityFlagCount("買賣價差偏大",
                         sum(1 for c in quals if is_spread_wide(c.bid, c.ask, p))),

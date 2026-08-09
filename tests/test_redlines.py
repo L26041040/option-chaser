@@ -17,10 +17,13 @@ from option_chaser.models import AnalysisParams
 from option_chaser.store import Scenario
 
 BANNED = ["獲利機率", "機率加權", "勝率", "POP", "probability",
-          "期望報酬", "expected profit", "Sharpe", "CVaR"]
+          "期望報酬", "expected profit", "Sharpe", "CVaR",
+          # MVP V3（#104，spec #102 決策 F）：舊的報價品質警示泛稱／由
+          # 零成交量推論而來的措辭，一律禁用——⚠ 只認「Bid/Ask 過寬」。
+          "報價非最新", "報價品質有疑慮"]
 TARGETS = [Path("option_chaser/glossary.py"),
            Path("option_chaser/store.py"), Path("option_chaser/workspace.py"),
-           Path("option_chaser/vocabulary.py"),
+           Path("option_chaser/vocabulary.py"), Path("option_chaser/filters.py"),
            *sorted(Path("tests/fixtures").glob("golden_*.txt"))]
 
 

@@ -89,7 +89,16 @@ class CandidateView:
     friction: float
     friction_amount: float    # natural_cost(val) − mid 成本（spec §2.3, $/股）
     buffer_days: int
+    # MVP V3（#104，spec #102 決策 F）：`quote_warning` 是選取閘門用的
+    # 複合旗標（zero_vol or wide_spread or fr>0.25），**不對外顯示**——
+    # 只供 `_build_groups` 內部挑選 default_pair。顯示旗標另外分家成
+    # `wide_spread_warning`（見下），語意收斂成單一、可行動的判準。
     quote_warning: bool
+    # 顯示旗標（決策 F）：⚠ 徽章與候選池文案只認這個——僅 `is_spread_wide`
+    # 一項，不含零成交量、不含 friction>25%。與 `quote_warning` 分開是
+    # 刻意的：後者要維持既有複合語意才能守住「不改 ranking semantics」
+    # 的 guardrail，兩者計算式不可合併。
+    wide_spread_warning: bool
     # FB5-03（#64）：無套利一致性違反（相鄰履約價 ask 不單調）。獨立於
     # `quote_warning`，不合併——嚴重性與成因都不同（配對關係違反，不是
     # 單一數值超標），合併會讓使用者分不出「報價可疑，可能是陳舊資料」
@@ -308,7 +317,10 @@ def _v4_fields(val: ContractValuation | SpreadValuation, spot: float,
         # FB5-02（#63）：沿用既有的 `quote_warning` 機制，不新造一套——
         # 買賣價差過寬只是這個既有布林旗標的第三個觸發條件。單調性違反
         # 不加進來（見 `monotonicity_warning` 欄位註解）。
+        # ⚠ MVP V3（#104）guardrail：這一行的計算式本身凍結不動——改的
+        # 只有它「要不要對外顯示」，不是它「怎麼算」。
         quote_warning=zero_vol or wide_spread or fr > 0.25,
+        wide_spread_warning=wide_spread,
         monotonicity_warning=monotonicity_warning,
         theta_day_rate=abs(_net_theta(val, spot, today, p)) / mid_cost,
         vega_per_pt=_net_vega(val, spot, today, p) / mid_cost,

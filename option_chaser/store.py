@@ -462,8 +462,11 @@ def _candidate(cv: CandidateView, strategy: str, capital: float | None,
         "friction": cv.friction,
         "friction_amount": cv.friction_amount,
         "buffer_days": cv.buffer_days,
-        "quote_warning": cv.quote_warning,
-        # FB5-03（#64）：獨立欄位，不併進 quote_warning——見 service.py
+        # MVP V3（#104，spec #102 決策 F）：`quote_warning`（選取閘門用的
+        # 複合旗標）不對外序列化——只有 `wide_spread_warning`（僅
+        # is_spread_wide）進契約，前端 UI 一律改接這個顯示旗標。
+        "wide_spread_warning": cv.wide_spread_warning,
+        # FB5-03（#64）：獨立欄位，不併進 wide_spread_warning——見 service.py
         # 的 CandidateView.monotonicity_warning 欄位註解。
         "monotonicity_warning": cv.monotonicity_warning,
         "theta_day_rate": cv.theta_day_rate,

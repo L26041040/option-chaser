@@ -27,14 +27,18 @@ function CandidateRow({ candidate, rank }: { candidate: Candidate; rank: number 
         <summary>
           <span className="candidate-head">
             <span className="rank">#{rank}</span>
-            {candidate.quote_warning && (
-              <span className="tag warn" title="報價品質有疑慮">
+            {/* MVP V3（#104，spec #102 決策 F）：⚠ 只在 Bid/Ask 過寬時
+                出現，文案明確寫「Bid/Ask 過寬」——零成交量與 Execution
+                friction 超過 25% 不再觸發這個徽章（LEAPS／冷門履約價
+                零成交是常態，不是報價可疑的證據）。 */}
+            {candidate.wide_spread_warning && (
+              <span className="tag warn" title="Bid/Ask 過寬">
                 ⚠
               </span>
             )}
-            {/* FB5-03（#64）：獨立徽章，不跟 quote_warning 共用 ⚠——
-                這一個是配對關係違反（跟鄰近履約價比較），不是單一數值
-                超標，嚴重性不同，不能讓使用者以為是同一種提醒。 */}
+            {/* FB5-03（#64）：獨立徽章，不跟 wide_spread_warning 共用 ⚠
+                ——這一個是配對關係違反（跟鄰近履約價比較），不是單一
+                數值超標，嚴重性不同，不能讓使用者以為是同一種提醒。 */}
             {candidate.monotonicity_warning && (
               <span className="tag suspect"
                     title="報價與鄰近履約價不一致，疑似陳舊報價">
