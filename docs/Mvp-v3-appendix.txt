@@ -1,0 +1,144 @@
+OPTION CHASER — MVP V3
+SCENARIO DETAIL / SPREAD ANALYSIS WIREFRAME
+
+Purpose:
+
+* This wireframe defines information hierarchy and relative placement.
+* It is NOT a pixel-perfect specification.
+* Existing functionality not shown here is not automatically removed.
+* Mobile may stack sections vertically while preserving the same hierarchy.
+
++–––––––––––––––––––––––––––––––––––––+
+| < Back                          TLT                                      |
+| Target 105 · 2028/12                           Updated 2026/08/09 10:32  |
++–––––––––––––––––––––––––––––––––––––+
+
+SPREAD ANALYSIS
+
++–––––––––––––––––––––––––––––––––––––+
+| SCENARIO SUMMARY                                                         |
+|                                                                          |
+| Spot             $92.40                                                  |
+| Target           $105.00   (+13.6%)                                      |
+| Target Month     2028/12                                                 |
+| Data Source      Cboe                                                    |
++–––––––––––––––––––––––––––––––––––––+
+
++–––––––––––––––––––––––––––––––––––––+
+| BASELINE CANDIDATE                                                       |
+|                                                                          |
+| #1   B105 / S110 Call Spread                              +238%          |
+| Exp 2028/12/15                                                           |
+|                                                                          |
+| Buy Ask          $6.20                                                   |
+| Sell Bid         $3.70                                                   |
+| Net Cost         $2.50                                                   |
++–––––––––––––––––––––––––––––––––––––+
+
++–––––––––––––––––––––––––––––––––––––+
+| IV HISTORY                                                               |
+|                                                                          |
+| NORMALIZED SKEW                                      1Y PCTL 78          |
+| Current 0.50                                                             |
+|                                                                          |
+|  0.80 |                 /\                                               |
+|  0.60 |        /_/  _                         *                 |
+|  0.40 |_______/              _/                  |
+|       +–––––––––––––––––––––––––> Time           |
+|        1Y ago                                           Now              |
+|                                                                          |
+| BUY IV                                  SELL IV                           |
+| 12.0% · P24                             18.0% · P61                       |
+|                                                                          |
+| 20% | __                               22% |      /\                     |
+| 16% |    _                           18% |/  _*          |
+| 12% |        ________*            14% |                             |
+|     +———————–>               +———————–>     |
+|      1Y ago              Now                 1Y ago              Now     |
+|                                                                          |
+| Note:                                                                    |
+| - Normalized Skew is the primary IV signal.                              |
+| - Buy / Sell IV are supporting detail explaining the skew.               |
+| - Values are factual only; no “cheap / expensive / buy” labels.          |
++–––––––––––––––––––––––––––––––––––––+
+
++–––––––––––––––––––––––––––––––––––––+
+| PAYOFF HEATMAP                                                           |
+|                                                                          |
+| Baseline: B105 / S110 Call Spread                                        |
+| Comparator: 105 Call                                                     |
+|                                                                          |
+|                         FUTURE DATE                                      |
+| Spot      2027/06      2027/12      2028/06      2028/12                |
+|                                                                          |
+| 120         +62%          +91%         +155%         +238%                |
+|                  \                                                       |
+| 115         +48%    \     +72%         +130%         +238%                |
+|                       \                                                  |
+| 110         +31%          \ +54%       +106%         +238%                |
+|                            \                                             |
+| 105         +12%          +27% \        +73%         +181%                |
+|                               \                                          |
+| 100          -8%           +4%    \     +39%         +106%                |
+|                                   \                                      |
+|  95         -24%          -16%          \ +9%          +31%               |
+|                                      \                                   |
+|                                                                          |
+|        Comparator higher-return region                                   |
+|                    \                                                     |
+|                     \  Crossover Boundary                                |
+|                      \                                                   |
+|                       Spread higher-return region                         |
+|                                                                          |
+| Legend                                                                   |
+| ––  Heatmap value = Spread return                                      |
+|  \    Boundary where Spread return = Comparator return                   |
++–––––––––––––––––––––––––––––––––––––+
+
++–––––––––––––––––––––––––––––––––––––+
+| PRICE LADDER                                                             |
+|                                                                          |
+| Low Case             Target              High Case                       |
+| $95                  $105                $115                            |
+| -24%                 +181%               +238%                           |
++–––––––––––––––––––––––––––––––––––––+
+
++–––––––––––––––––––––––––––––––––––––+
+| EXPIRY STRUCTURE                                                         |
+|                                                                          |
+| [2028/06 +164%] [2028/09 +201%] [2028/12 +238%] [2029/01 +226%]         |
+|                                                                          |
+| #1  B105 / S110       +238%       Net $2.50                              |
+| #2  B100 / S110       +214%       Net $3.10                              |
+| #3  B105 / S115       +197%       Net $2.20                              |
+| …                                                                      |
++–––––––––––––––––––––––––––––––––––––+
+
++–––––––––––––––––––––––––––––––––––––+
+| ADVANCED                                                                 |
+|                                                                          |
+| > Candidate Pool                                                        |
+| > Analysis Report                                                       |
+| > Spread History                                                        |
+| > Raw Data                                                              |
++–––––––––––––––––––––––––––––––––––––+
+
+INFORMATION PRIORITY
+
+1. Scenario identity
+2. Baseline candidate + target return
+3. Entry cost
+4. Historical IV Position
+4. 1 Normalized Skew
+4. 2 Buy IV / Sell IV
+5. Payoff Heatmap + Crossover Boundary
+6. Price Ladder / Expiry Structure
+7. Advanced diagnostics
+
+MOBILE PRINCIPLE
+
+* Stack the same sections vertically.
+* Do not remove decision-critical financial information.
+* Compress whitespace, titles and repeated labels.
+* IV charts should remain compact sparklines.
+* Do not create a second Heatmap for crossover comparison.
