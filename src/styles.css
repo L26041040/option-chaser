@@ -1360,6 +1360,42 @@ body {
   margin-top: 8px;
 }
 
+/* Y 軸單位標籤（MVP V3／#106）：viewBox 座標系內的固定文字，字級刻意
+   小於刻度數字——它是一次性的軸說明，不是需要反覆讀的數字。 */
+.chart-axis-unit {
+  font-size: 7px;
+  fill: var(--label-tertiary);
+}
+
+.chart-tick-mark {
+  stroke: var(--separator);
+  stroke-width: 1;
+}
+
+.chart-tick-label {
+  font-size: 8px;
+  fill: var(--label-secondary);
+}
+
+/* 資料點：桌面 hover／手機 tap 共用同一個互動目標，`r` 故意比視覺
+   上需要的稍大一點，行動裝置點按才點得準。 */
+.chart-point {
+  fill: var(--tint);
+  cursor: pointer;
+}
+
+.chart-tooltip rect {
+  fill: var(--bg-elevated);
+  stroke: var(--separator);
+  stroke-width: 1;
+  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.15));
+}
+
+.chart-tooltip text {
+  font-size: 9px;
+  fill: var(--label);
+}
+
 /* 自製年月選擇器（#71）：切換鈕沿用 `.input` 的尺寸與邊框，視覺上跟其他
    表單欄位一致；面板在文件流裡就地展開（不是浮層），所以不需要
    `position: absolute`／z-index。 */

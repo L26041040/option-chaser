@@ -64,6 +64,35 @@ test("選中劇本時，左側劇本庫（含建立劇本入口）與右側詳�
   await expect(page.getByLabel("標的代號")).toBeVisible();
 });
 
+test("Spread 淨成本走勢：桌面 hover 資料點顯示 tooltip（MVP V3／#106）", async ({ page }) => {
+  await routeTwoScenarios(page);
+  const history = {
+    entries: [
+      { analyzed_at: "2026-07-01T21:30:00-04:00", spot: 100.0, cost: 5.0,
+       baseline_return: 0.3, rank_in_expiry: 2 },
+      { analyzed_at: "2026-07-15T21:30:00-04:00", spot: 99.0, cost: 5.5,
+       baseline_return: 0.5, rank_in_expiry: 1 },
+    ],
+  };
+  await page.route("**/api/scenarios/*/history*", (route) =>
+    route.fulfill({ json: history }));
+
+  await page.goto("/#/s/s1");
+  const chart = page.locator(".card").filter({ hasText: "Spread 淨成本走勢" }).first();
+  await chart.getByText("Spread 淨成本走勢").click();
+  const point = chart.getByRole("button", { name: /2026-07-01/ });
+  await expect(point).toBeVisible();
+
+  // 桌面滑鼠移到資料點上（hover，非點擊）就該看到 tooltip；移開後消失。
+  await expect(chart.getByText(/日期 2026-07-01/)).not.toBeVisible();
+  await point.hover();
+  await expect(chart.getByText(/日期 2026-07-01/)).toBeVisible();
+  await expect(chart.getByText(/淨成本 \$5\.00/)).toBeVisible();
+
+  await page.mouse.move(0, 0);
+  await expect(chart.getByText(/日期 2026-07-01/)).not.toBeVisible();
+});
+
 test("目前選中的劇本在左側清單有明確的選中狀態", async ({ page }) => {
   await routeTwoScenarios(page);
   await page.goto("/#/s/s1");

@@ -194,7 +194,8 @@ test("進階區：分析報告與原始資料展開才載入（V8／#56，MVP V3
   await expect(downloadLink).toHaveAttribute("download", "");
 });
 
-test("Spread 淨成本走勢：展開才抓，日／週／月可切換（V9／#57）", async ({ page }) => {
+test("Spread 淨成本走勢：展開才抓，日／週／月可切換（V9／#57，MVP V3／#106 補刻度）",
+   async ({ page }) => {
   await routeLibrary(page, libraryRow());
   await page.goto("/#/s/s1");
 
@@ -209,6 +210,21 @@ test("Spread 淨成本走勢：展開才抓，日／週／月可切換（V9／#5
   await expect(chart).toBeVisible();
   await expect(chart.locator("circle")).toHaveCount(2);
   await expect(chart.locator("polyline")).toHaveCount(2);
+
+  // Y 軸單位與刻度、X 軸日期刻度都在（#106 AC）。
+  await expect(chart.getByText("Net Cost ($/share)")).toBeVisible();
+  await expect(chart.getByText("2026-07-01")).toBeVisible();
+  await expect(chart.getByText("2026-07-15")).toBeVisible();
+
+  // 手機 tap 資料點：顯示含日期與淨成本的 tooltip（#106 AC，手機
+  // viewport）。這個專案（`iPhone`）本身就是觸控裝置模擬，點擊觸發的
+  // 是與真機點按同一條 `onClick` 路徑——不用 `.tap()`（需要額外的
+  // `hasTouch` 事件鏈，本專案觸控裝置上點擊本來就走 click，不特別
+  // 區分手勢來源）。
+  await expect(chart.getByText(/日期 2026-07-01/)).not.toBeVisible();
+  await chart.getByRole("button", { name: /2026-07-01/ }).click();
+  await expect(chart.getByText(/日期 2026-07-01/)).toBeVisible();
+  await expect(chart.getByText(/淨成本 \$5\.00/)).toBeVisible();
 
   // 日／週／月切換：預設「日」，點「月」後樣式跟著換，且不重新打 API
   // （sinceRequests 只在展開當下打過一次）。
