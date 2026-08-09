@@ -1,6 +1,8 @@
 /**
  * 手機首頁的高密度劇本庫（MVP-v2／#77、#82）：三層 compact row，
- * 取代舊的大型 `.card`（`ScenarioList.tsx`，桌面版仍在用、本檔不動它）。
+ * 取代舊的大型 `.card`。#108 起桌面版 `ScenarioList.tsx` 的卡片也改用
+ * 同一組 CSS class（視覺密度趨同），但那是獨立的元件與檔案，本檔的
+ * `CompactScenarioCard` 本身不動、不被桌面版共用。
  *
  * 三層資訊分工（spec #77〈Implementation Decisions〉六）：
  * - 第一層：標的 · 目標價 · 目標年月 · 燈號

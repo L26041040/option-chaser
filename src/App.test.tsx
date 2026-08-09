@@ -1122,7 +1122,9 @@ describe("桌面版：主要操作入口收攏到工作區上方（#75，MVP-v2�
 
     await screen.findByText("TLT");
     const toolbar = container.querySelector("header.toolbar")!;
-    const list = container.querySelector("ul.list")!;
+    // #108：桌面版劇本庫卡片瘦身後改沿用 `.compact-list`（原本只有
+    // 手機版在用），不再是 `ul.list`。
+    const list = container.querySelector("ul.compact-list")!;
     // `DOCUMENT_POSITION_FOLLOWING`：toolbar 出現在 list 之前，不是
     // 掛在清單卡片全部跑完之後才看得到的東西。展開表單前後都要成立
     // ——面板一律掛著（`hidden` 屬性切換可見度），不會因為展開就被

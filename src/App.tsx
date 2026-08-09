@@ -4,7 +4,8 @@
  * 桌面與手機是兩套 responsive layout（MVP-v2／#77 §8），共用同一份資料
  * 與狀態、各自的版面結構：
  * - 桌面（#72／#75）：頂部釘選功能列（含建立入口）→ 建立表單 →
- *   劇本卡片清單（`ScenarioList`，大卡片版式），左側常駐、右側是詳細頁。
+ *   劇本卡片清單（`ScenarioList`，#108 起改用與手機版同一套 compact
+ *   row 密度），左側常駐、右側是詳細頁。
  * - 手機（#81／#82）：Dashboard 佔位 → 就地展開的新增劇本入口 → 高密度
  *   劇本清單（`CompactScenarioList`，三層 compact row，依最新收益率
  *   排序、紅燈沉底），點卡片整頁替換成詳細頁。
@@ -431,8 +432,10 @@ export default function App() {
         </CreateEntry>
 
         {/* #82：券商 App 式的高密度三層 compact row，取代大卡片——一個
-            手機螢幕能掃過多個劇本。桌面版沿用下方 `library` 的
-            `ScenarioList`（大卡片版式），不受這裡的密度改動影響。 */}
+            手機螢幕能掃過多個劇本。下方 `library` 的 `ScenarioList` 是
+            完全獨立的元件與渲染路徑，這裡的手機密度改動不會結構性牽動
+            它（#108 起兩者視覺密度趨同純屬各自沿用同一組 CSS class，
+            不是共用了元件）。 */}
         <CompactScenarioList
           rows={rows}
           failures={failures}

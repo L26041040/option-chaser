@@ -300,3 +300,36 @@ test("桌面版垃圾桶批次操作：全選後批次還原（TR5／#93）", as
   await expect(page.getByRole("link", { name: /XYZ/ })).toBeVisible();
   await expect(page.getByRole("link", { name: /ABC/ })).toBeVisible();
 });
+
+test("劇本庫卡片瘦身：固定左側欄視窗一次看到的劇本數比舊版大卡片多" +
+     "（決策 K／#108）", async ({ page }) => {
+  // 只驗結構性密度（能不能在左側欄一屏塞進更多列），不驗任何像素間距
+  // 數值——跟手機版 smoke.spec.ts「Compact row 的密度」那條案例同一套
+  // 測試哲學（spec #77〈Testing Decisions〉）。舊版 `.card`（padding
+  // 16px、六列各自 12px 分隔線）在這個 20% 左側欄寬度、800px 高的桌面
+  // 視窗下，一屏通常只放得下 2～3 張；決策 K 改用跟手機版一樣的三層
+  // compact row 後應該明顯更多，門檻取一個舊版無論如何都到不了、但
+  // 留有安全餘裕的數字。
+  const rows = Array.from({ length: 12 }, (_, i) =>
+    libraryRow({ id: `s${i}`, symbol: `SYM${i}`,
+                 latest_analyzed_at: null, best_return: null }));
+  await page.route("**/api/scenarios", (route) => route.fulfill({ json: rows }));
+  await page.route("**/api/scenarios/*/refresh", (route, req) =>
+    route.fulfill({ json: rows.find((r) => req.url().includes(`/${r.id}/`)) }));
+
+  await page.goto("/");
+  await expect(page.getByRole("listitem").first()).toBeVisible();
+
+  const library = (await page.locator(".library-pane").boundingBox())!;
+  const cards = await page.locator("li.compact-card").all();
+  let visibleWithoutScrolling = 0;
+  for (const card of cards) {
+    const box = await card.boundingBox();
+    if (box && box.y >= library.y
+        && box.y + box.height <= library.y + library.height) {
+      visibleWithoutScrolling += 1;
+    }
+  }
+
+  expect(visibleWithoutScrolling).toBeGreaterThanOrEqual(5);
+});

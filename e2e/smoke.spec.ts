@@ -714,7 +714,9 @@ test("手機首頁版面順序：Dashboard 佔位 → 新增劇本入口 → 劇
     const dashboard = page.getByLabel("Dashboard");
     const createToggle = page.getByRole("button", { name: "＋ 新增劇本" });
     // 手機版清單用 compact 版式的容器（`.compact-list`，MVP-v2／#77、
-    // #82），跟桌面版 `ScenarioList.tsx` 的 `ul.list` 是不同的元件。
+    // #82）。#108 起桌面版 `ScenarioList.tsx` 也沿用同一組 class，但
+    // 這個測試檔固定跑在手機 viewport 專案（見 `playwright.config.ts`
+    // 的 `testIgnore: /desktop\.spec\.ts$/`），不會抓到桌面版那份。
     const list = page.locator("ul.compact-list");
 
     await expect(dashboard).toBeVisible();

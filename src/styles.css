@@ -711,11 +711,12 @@ body {
   font-weight: 600;
 }
 
-/* ---------- 手機版：高密度 Compact Row（MVP-v2／#77、#82） ---------- */
+/* ---------- 高密度 Compact Row（MVP-v2／#77、#82；桌面沿用見 #108） ---------- */
 
-/* 取代大卡片 `.card` 的手機專用版式——桌面版（`ScenarioList.tsx`）不
-   使用這組 class，兩者互不干擾。壓縮的是留白，不是資訊：三層都保留，
-   只是 padding／字級／間距全面收緊。 */
+/* 原本是取代大卡片 `.card` 的手機專用版式；#108 起桌面版劇本庫卡片
+   瘦身也直接沿用這組 class（見 `ScenarioList.tsx`），不重新命名一份
+   視覺相同的規則。壓縮的是留白，不是資訊：三層都保留，只是 padding／
+   字級／間距全面收緊。 */
 .compact-list {
   list-style: none;
   margin: 0;
@@ -770,6 +771,14 @@ body {
   color: var(--label-secondary);
   /* 目標價／目標年月頂到燈號前面，中間吃掉多餘空間——燈號永遠貼右。 */
   margin-right: auto;
+  /* #108：桌面版左側欄（約 220px）比手機版窄很多，這個 flex item 被
+     擠壓時若沒有 `overflow: hidden`，文字會在原地換成兩行、把整張卡
+     撐高，而不是裁成一行——三層 compact row 的密度前提就是「每層只有
+     一行」。`overflow` 設非 `visible` 同時讓 flex item 的自動最小寬度
+     變成 0（flexbox 規範既有行為），該縮的時候才縮得下去。 */
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .compact-tier2 {
@@ -793,9 +802,17 @@ body {
   text-overflow: ellipsis;
 }
 
+/* #108：跟 `.compact-target` 同一個理由——桌面版窄欄位下，「Exp 到期日
+   ／距到期／資料時間」三段合併一行的原始字串常常裝不下，沒有這三條
+   就會整段換行、把卡片撐高。裁成一行＋刪節號，比默默換行更符合「第三
+   層是低權重資訊」的定位：讀不完整就滑進詳細頁看，不需要卡片上完整
+   保留。 */
 .compact-tier3 {
   font-size: 11px;
   color: var(--label-tertiary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .compact-tier3 .tag {
@@ -1139,6 +1156,15 @@ body {
    那樣整片實心（卡片內還有好幾行文字要維持可讀），改用左側強調色條
    ＋淡色底。 */
 .card.selected {
+  background: var(--fill);
+  box-shadow: inset 3px 0 0 var(--tint);
+}
+
+/* #108：桌面版劇本庫卡片瘦身後改用下面的 `.compact-card`（原本只有
+   手機版 `CompactScenarioList.tsx` 在用）。選中態沿用上面同一組宣告，
+   不是重新設計一套視覺。手機版 compact row 不傳 `selected`，用不到
+   這條規則。 */
+.compact-card.selected {
   background: var(--fill);
   box-shadow: inset 3px 0 0 var(--tint);
 }
