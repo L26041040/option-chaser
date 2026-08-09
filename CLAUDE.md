@@ -51,9 +51,17 @@
 > q=0 修法不在 spec 鎖死（改獨立 correctness ticket 先驗證後鎖定，
 > 仍是 Crossover 的 gate，spec 不自行發明模型）、LEAPS 超網格裁示
 > 採方案 (b)（不外插、不以較短 tenor 代理，percentile 留白）。
-> **尚存 Open Questions 兩項**：IV 歷史 vendor 選型與月費上限、
-> 追平價格區塊移除確認。
-> **下一步＝需求方確認這兩項 → `/to-tickets` → 施工**。
+> **R2（同日，to-tickets 前最後一輪 UX cleanup，共 7 點）**：追平價格
+> 區塊正式確認移除（底層欄位只留 migration／regression 用）、報價品質
+> 警示重整（顯示旗標只剩 Bid/Ask 過寬，volume==0 與 friction>25% 退出
+> 警示；⚠ **選取閘門凍結不動以守「不改 ranking semantics」**，契約拆
+> 顯示／選取兩旗標）、Analysis Report 瘦身成四塊、利率顯示實際數值
+> （Rate used／Tenor／Source／Curve date，候選契約新增利率與年期欄位）、
+> 走勢圖補軸刻度與 hover/tap tooltip、Raw Data 二層收合、Desktop 劇本庫
+> 卡片瘦身。**尚存 Open Question 僅一項：IV 歷史 vendor 選型與月費上限
+> （只擋 IV History 那條線）**；q=0＋par-yield 近似歸 correctness ticket
+> 驗證後裁示。
+> **下一步＝`/to-tickets`**（IV History 票帶 vendor blocker）。
 > 環境操作細節（venv／本地 Postgres／容器倒退修法／部署網址）見檔案
 > 最底下「## 環境」一節，已同步更新。
 
