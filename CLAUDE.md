@@ -1614,6 +1614,30 @@ Review 修訂見 issue #102。14 張子票 #103–#116，需求方 `/implement`
   `ScenarioDetail.test.tsx` 的刷新快取失效案例原本就是用存在性斷言
   （`findByText`／`toBeInTheDocument`），不受收合狀態影響，維持不動
   ——不是漏改，是那組測試本來就問對了問題。
+- **#108** [#108] — Desktop 劇本庫卡片瘦身（決策 K，commit `b616750`）：
+  `ScenarioList.tsx` 的 `ScenarioCard` 從舊版 `.card`（六列各自一整行、
+  16px padding、12px 分隔線）改直接沿用 `CompactScenarioList.tsx` 那組
+  `.compact-card`／`.compact-tier1/2/3` CSS class（兩個檔案仍是各自
+  獨立元件、互不共用渲染路徑，只共用 class 命名與視覺密度）：tier1
+  （Ticker＋目標價／年月＋燈號）、tier2（代表報酬＋策略／履約價，
+  全卡最醒目一行）、tier3（到期日／距到期／資料時間合併一行，舊資料／
+  已過期標記附後）。七項決策資訊一項不少，只是不再各自佔一整列；
+  桌面獨有的 `selected`／`aria-current`（#72 master-detail 高亮）保留，
+  新增 `.compact-card.selected` 複製既有 `.card.selected` 視覺（左側
+  強調色條＋淡色底），手機版不傳 `selected`，用不到這條規則。
+  ⚠ **施工中抓到並順手修掉一個真密度 bug**：桌面左側欄（約 220px）
+  比手機版視窗窄很多，`.compact-target`／`.compact-tier3` 原本沒有
+  nowrap/ellipsis，文字裝不下時會直接在原地換成兩行、把卡片撐高，
+  違背「三層各一行」的密度前提——這是既有 CSS 的缺口，手機版視窗較寬
+  一直沒踩到，#108 把同一組 class 搬到桌面窄欄位才第一次顯現，判斷
+  屬於落實本票「壓縮過大字級／空白」範圍內的修正，非另開的重構。補上
+  後 e2e 實測：固定 800px 高左側欄一次看得到的卡片數從換行時的 4 張
+  提升到 6 張（e2e 門檻抓 5，留一張安全餘裕）。`ul` 容器 class 一併從
+  `.list` 改 `.compact-list`（gap 12px→4px），`App.tsx`／
+  `CompactScenarioList.tsx`／`styles.css`／`smoke.spec.ts`／
+  `App.test.tsx` 裡幾處因此變得不準確的既有註解一併修正（原本都寫
+  「桌面版不用這組 class」）。Scenario Library 的資料流、排序、選取
+  語意、整列可點連結行為、勾選、封存操作皆未變動，只動卡片版式。
 
 ### 施工依據
 
