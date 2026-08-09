@@ -1574,6 +1574,19 @@ Review 修訂見 issue #102。14 張子票 #103–#116，需求方 `/implement`
   Bull Call Spread／Bid-Ask Spread 等既有「標準英文術語」慣例一致，
   Model & Assumptions 內部參數（利率／IV情境／Delta門檻／最低要求
   報酬率）維持既有中文標籤，因 AC 未對這幾項重新指定名稱。
+- **#112** [#112] — 無風險利率透明化（決策 H，commit `7846eab`）：
+  `CandidateView` 新增 `rate_used`／`rate_tenor_years`，值直接取
+  `leg_rate(p, expiry)`（估值管線本來就在用的同一個查表函式）與
+  `_resolve_rates` 建 `rate_by_expiry` 同一條年期公式——不是另外重算。
+  Model & Assumptions 的利率列從「只講用了某條曲線」拆成四項：Rate
+  used（一律讀 `candidate.rate_used`，不是可能沒被用在估值上的
+  `params.rate` 常數）、Tenor（前端只格式化不換算）、Source（US
+  Treasury／CLI 明示／Fallback 常數，依既有三態旗標判斷字串，非新
+  財務計算）、Curve date（陳舊附 STALE、非曲線來源顯示「—」）。三態
+  語意沿用既有 `rate_curve_used`／`rate_curve_date`／`rate_curve_
+  stale`／`rate_explicit`，未新造狀態機。引擎測試涵蓋六到期日鏈多組
+  不同到期日，逐一驗證與查表結果一致。至此 #103–#105、#112 四張
+  「無依賴／被 #105 擋」的資訊階層票全數完成，回到主線依序 #106。
 
 ### 施工依據
 
