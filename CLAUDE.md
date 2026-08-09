@@ -1638,6 +1638,25 @@ Review 修訂見 issue #102。14 張子票 #103–#116，需求方 `/implement`
   `App.test.tsx` 裡幾處因此變得不準確的既有註解一併修正（原本都寫
   「桌面版不用這組 class」）。Scenario Library 的資料流、排序、選取
   語意、整列可點連結行為、勾選、封存操作皆未變動，只動卡片版式。
+- **#109** [#109] — Heatmap 右側價格變動百分比軸（決策 M，commit
+  `d6fb58c`）：`matrix.py::price_axis()` 回傳型別加第三個元素
+  `move_pct = (price - spot) / spot`，跟 cell 值同一次呼叫、同一個
+  spot 算出來（`<現價>` 恆為 0），不是前端另外重算的第二份數字。
+  `matrix_grid`／`MatrixView.prices` 型別跟進；`matrix_lines`（CLI 文字
+  報告）刻意不印這個新欄位，golden fixtures 不因此漂移；`store.py` 的
+  序列化本來就通用處理任意長度 tuple，未動。前端 `heatmap.ts` 新增
+  `formatMovePct`（完整格式，如 "+13.6%"）／`formatMovePctShort`（AC
+  明文允許的手機短格式，如 "+14%"），`Heatmap.tsx` 在既有 sticky
+  價格欄同一個儲存格裡加這兩個 span（不是獨立欄／獨立座標軸），兩種
+  格式都畫進 DOM、用 CSS 依既有 1100px 桌面斷點切換顯示（不得整段
+  省略、不得靠 tooltip／長按才看得到——AC 明文）。主 Heatmap 與到期日
+  結構展開候選的 Heatmap 是同一個元件，不需另外接線。
+  ⚠ **施工中發現並修正一個既有 e2e 斷言的脆弱點**：契約樣本 target
+  剛好在 spot 之上 30%，Heatmap「目標」列的 +30.0% 跟摘要卡「所需
+  漲幅」的 +30.0% 撞了同一段文字，`page.getByText(/\+30\.0%/)` 從此
+  不再唯一（每張 Heatmap 的目標列都是同一個數字）——改用 `.row-note`
+  scope 回摘要那一句，不影響其口徑或既有斷言意圖，純粹是本票新增
+  文字後既有選擇器不夠精確的必然後果。
 
 ### 施工依據
 
