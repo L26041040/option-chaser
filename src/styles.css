@@ -1324,6 +1324,18 @@ body {
   padding: 0 var(--gap);
 }
 
+/* 原始資料二層收合（MVP V3／#107，決策 J）：逐筆合約表格收在這個
+   巢狀 `<details>` 裡，樣式沿用 `.report-methodology summary` 同一種
+   「折疊區標題」視覺語言——預設收合、需要時才展開的東西長得一樣。 */
+.raw-data-detail {
+  margin-top: 8px;
+}
+
+.raw-data-detail summary {
+  font-weight: 600;
+  cursor: pointer;
+}
+
 /* Spread 淨成本走勢（V9／#57）。日／週／月是固定三選一，不像到期日
    chip 那樣數量不定要橫向捲動——用 iOS 風格的分段控制項，不是 `.chip`
    （那是給「多顆、可能捲動、兩行內容」的到期日按鈕設計的，形狀不合）。 */

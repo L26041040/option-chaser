@@ -41,7 +41,8 @@ describe("原始資料：展開才抓，不主動打", () => {
     expect(spy).not.toHaveBeenCalled();
   });
 
-  it("展開後才打 /raw-data，並顯示 meta 與逐筆合約", async () => {
+  it("展開後才打 /raw-data，第一層顯示摘要（MVP V3／#107 決策 J：不含逐筆表格）",
+     async () => {
     const spy = mockFetch(SAMPLE);
     render(<RawData scenarioId="s1" />);
 
@@ -52,8 +53,38 @@ describe("原始資料：展開才抓，不主動打", () => {
     expect(await screen.findByText("XYZ")).toBeInTheDocument();
     expect(screen.getByText("cboe")).toBeInTheDocument();
     expect(screen.getByText("2 筆")).toBeInTheDocument();
-    expect(screen.getByText("XYZ261016C00110000")).toBeInTheDocument();
-    expect(screen.getByText("XYZ261016C00120000")).toBeInTheDocument();
+    // 第一層展開只有摘要——逐筆合約表格收在第二層（巢狀 `<details>`，
+    // 內容仍在 DOM 裡但原生收合不顯示），用 `toBeVisible()` 而非
+    // `toBeInTheDocument()` 才量得到「有沒有真的印在畫面上」。
+    expect(screen.getByRole("table")).not.toBeVisible();
+    expect(screen.getByText("XYZ261016C00110000")).not.toBeVisible();
+  });
+
+  it("第二層「查看逐筆合約資料」展開後才出現完整表格（決策 J）", async () => {
+    mockFetch(SAMPLE);
+    render(<RawData scenarioId="s1" />);
+    await userEvent.click(screen.getByText("原始資料（當次快照）"));
+    await screen.findByText("XYZ");
+
+    expect(screen.getByRole("table")).not.toBeVisible();
+
+    await userEvent.click(screen.getByText("查看逐筆合約資料"));
+
+    expect(screen.getByRole("table")).toBeVisible();
+    expect(screen.getByText("XYZ261016C00110000")).toBeVisible();
+    expect(screen.getByText("XYZ261016C00120000")).toBeVisible();
+  });
+
+  it("第二層再次展開不重複打請求——資料是第一層展開時已經抓好的", async () => {
+    const spy = mockFetch(SAMPLE);
+    render(<RawData scenarioId="s1" />);
+    await userEvent.click(screen.getByText("原始資料（當次快照）"));
+    await screen.findByText("XYZ");
+
+    await userEvent.click(screen.getByText("查看逐筆合約資料"));
+    await screen.findByRole("table");
+
+    expect(spy).toHaveBeenCalledTimes(1);
   });
 
   it("再次展開／收合不重複打請求——資料已經在手上了", async () => {
@@ -101,6 +132,8 @@ describe("缺席報價原樣顯示「—」，不假裝有數字", () => {
     mockFetch(SAMPLE);
     render(<RawData scenarioId="s1" />);
     await userEvent.click(screen.getByText("原始資料（當次快照）"));
+    await screen.findByText("XYZ");
+    await userEvent.click(screen.getByText("查看逐筆合約資料"));
     await screen.findByText("XYZ261016C00120000");
 
     const row = screen.getByText("XYZ261016C00120000").closest("tr")!;

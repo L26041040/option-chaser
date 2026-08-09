@@ -177,14 +177,14 @@ test("進階區：分析報告與原始資料展開才載入（V8／#56，MVP V3
   // 免責聲明獨立、不折疊——展開整個進階區就看得到，不必再點一層。
   await expect(report.getByText(/選擇權交易涉及重大風險/)).toBeVisible();
 
-  // 原始資料：展開才打 `/raw-data`，回應內容如實顯示，CSV 連結接得上
-  // 後端下載端點。
+  // 原始資料：展開才打 `/raw-data`，二層收合（MVP V3／#107 決策 J）——
+  // 第一層只有摘要＋CSV 連結，逐筆合約表格要再展開第二層才看得到。
   const rawData = page.locator(".card")
     .filter({ hasText: "原始資料（當次快照）" }).first();
   await rawData.getByText("原始資料（當次快照）").click();
   await expect(rawData.getByText("cboe")).toBeVisible();
   await expect(rawData.getByText("1 筆")).toBeVisible();
-  await expect(rawData.getByText("XYZ261016C00110000")).toBeVisible();
+  await expect(rawData.getByText("XYZ261016C00110000")).not.toBeVisible();
   const downloadLink = rawData.getByRole("link", { name: "下載 CSV" });
   // #69：網址帶著這次分析的時間戳當快取破壞參數，換一輪分析換一個
   // URL，瀏覽器快取不會拿舊 CSV 原樣吐回來。
@@ -192,6 +192,9 @@ test("進階區：分析報告與原始資料展開才載入（V8／#56，MVP V3
     "href", `/api/scenarios/s1/raw-data.csv?t=${
       encodeURIComponent("2026-08-04T09:30:00+00:00")}`);
   await expect(downloadLink).toHaveAttribute("download", "");
+
+  await rawData.getByText("查看逐筆合約資料").click();
+  await expect(rawData.getByText("XYZ261016C00110000")).toBeVisible();
 });
 
 test("Spread 淨成本走勢：展開才抓，日／週／月可切換（V9／#57，MVP V3／#106 補刻度）",
