@@ -1,0 +1,25 @@
+name: vendor-probe-temp
+
+# 一次性診斷用工作流程（#120／#111）：Vercel MCP 這個 session 的
+# 讀回路徑失敗（deploy 成功但 get_deployment/list_projects/
+# web_fetch_vercel_url 全數 404/403），改用 GitHub Actions runner
+# 的真實網路出口跑既有探測腳本（scripts/probe_dividend_sources.py／
+# scripts/probe_iv_history_vendors.py）。跑完即刪，不是常駐 CI。
+
+on:
+  workflow_dispatch: {}
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Probe dividend sources (#120)
+        run: python3 scripts/probe_dividend_sources.py
+      - name: Probe IV history vendors (#111, demo/no key)
+        run: python3 scripts/probe_iv_history_vendors.py
+        env:
+          ALPHA_VANTAGE_API_KEY: demo
