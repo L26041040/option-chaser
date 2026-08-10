@@ -6,7 +6,8 @@
 """
 from __future__ import annotations
 
-from . import RateCacheEntry, ResultRecord, ResultSummary, Scenario, ScenarioExists
+from . import (DividendCacheEntry, RateCacheEntry, ResultRecord, ResultSummary,
+              Scenario, ScenarioExists)
 
 
 class MemoryStorage:
@@ -16,6 +17,7 @@ class MemoryStorage:
         self._snapshots: dict[tuple[str, str], dict] = {}
         self._events: list[dict] = []
         self._rate_cache: RateCacheEntry | None = None
+        self._dividend_cache: dict[str, DividendCacheEntry] = {}
 
     @property
     def kind(self) -> str:
@@ -110,3 +112,11 @@ class MemoryStorage:
 
     def save_rate_cache(self, entry: RateCacheEntry) -> None:
         self._rate_cache = entry
+
+    # ---------- 配息資料快取（#123，per-symbol） ----------
+
+    def get_dividend_cache(self, symbol: str) -> DividendCacheEntry | None:
+        return self._dividend_cache.get(symbol)
+
+    def save_dividend_cache(self, entry: DividendCacheEntry) -> None:
+        self._dividend_cache[entry.symbol] = entry

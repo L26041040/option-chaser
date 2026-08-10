@@ -18,6 +18,7 @@ from fastapi.testclient import TestClient
 from api_app.main import create_app
 from api_app.storage.memory import MemoryStorage
 from option_chaser.data.snapshot import load_snapshot
+from option_chaser.dividends import DividendHistory, DividendRecord
 from option_chaser.ratecurve import RateCurve
 
 FIXTURE = Path("tests/fixtures/xyz_v4_six_expiries.json")
@@ -49,6 +50,23 @@ def _sample_rate_loader(today):
     return SAMPLE_RATE_CURVE, f"Treasury 曲線 {SAMPLE_RATE_CURVE.curve_date}"
 
 
+# 配息（#123）：同一個理由——`create_app()` 預設接真的 Yahoo→FMP→Nasdaq
+# loader，沙箱裡會打出「配息資料不可得」，且結果隨執行環境的連線能力
+# 變動。注入固定假歷史，代表「取得配息、q 校準成功」這個較豐富、較有
+# 代表性的狀態。
+SAMPLE_DIVIDEND_HISTORY = DividendHistory(
+    symbol="XYZ", as_of="2026-07-14", source="yahoo",
+    distributions=(DividendRecord("2026-06-01", 1.2),
+                  DividendRecord("2026-03-01", 1.2)))
+
+
+def _sample_dividend_loader(symbol, today):
+    n = len(SAMPLE_DIVIDEND_HISTORY.distributions)
+    return (SAMPLE_DIVIDEND_HISTORY,
+           f"配息資料 {SAMPLE_DIVIDEND_HISTORY.source}"
+           f"（{SAMPLE_DIVIDEND_HISTORY.as_of}，{n} 筆）")
+
+
 def freeze_row(row: dict) -> dict:
     return {**row, **FROZEN}
 
@@ -56,7 +74,8 @@ def freeze_row(row: dict) -> dict:
 def main() -> None:
     snap = load_snapshot(FIXTURE)
     client = TestClient(create_app(fetch=lambda symbol: snap,
-                                   rate_loader=_sample_rate_loader))
+                                   rate_loader=_sample_rate_loader,
+                                   dividend_loader=_sample_dividend_loader))
     resp = client.post("/api/analyze", json=REQUEST)
     resp.raise_for_status()
     OUT.parent.mkdir(exist_ok=True)
@@ -69,7 +88,8 @@ def main() -> None:
     # 執行時間變動，換成固定值——樣本要釘住的是**形狀**，不是當下的鐘。
     row_client = TestClient(create_app(fetch=lambda symbol: snap,
                                        storage=MemoryStorage(),
-                                       rate_loader=_sample_rate_loader))
+                                       rate_loader=_sample_rate_loader,
+                                       dividend_loader=_sample_dividend_loader))
     created = row_client.post("/api/scenarios", json=SCENARIO).json()
     row_client.post(f"/api/scenarios/{created['id']}/refresh").raise_for_status()
     row = row_client.get("/api/scenarios").json()[0]

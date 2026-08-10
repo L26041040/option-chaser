@@ -12,7 +12,8 @@ from __future__ import annotations
 import psycopg
 from psycopg.types.json import Jsonb
 
-from . import RateCacheEntry, ResultRecord, ResultSummary, Scenario, ScenarioExists
+from . import (DividendCacheEntry, RateCacheEntry, ResultRecord, ResultSummary,
+              Scenario, ScenarioExists)
 
 # 每個 lambda 程序只需建表一次。`IF NOT EXISTS` 在 Postgres 並非完全
 # race-free（同時冷啟動可能撞上 duplicate 錯誤），因此除了這個旗標，
@@ -72,6 +73,17 @@ CREATE TABLE IF NOT EXISTS rate_cache (
     market_day        TEXT,
     attempted_day     TEXT,
     CHECK (id = 1)
+);
+-- 配息資料快取（#123）：**per-symbol**（q 是標的的性質，不是全站單一
+-- 值，跟 rate_cache 的單筆設計不同），否則欄位語意逐一對應 rate_cache。
+CREATE TABLE IF NOT EXISTS dividend_cache (
+    symbol            TEXT PRIMARY KEY,
+    fetched_at        TEXT NOT NULL,
+    history           JSONB,
+    note              TEXT NOT NULL,
+    last_success_at   TEXT,
+    market_day        TEXT,
+    attempted_day     TEXT
 );
 """
 
@@ -320,5 +332,35 @@ class PostgresStorage:
                 "market_day = EXCLUDED.market_day, "
                 "attempted_day = EXCLUDED.attempted_day",
                 (entry.fetched_at, Jsonb(entry.curve) if entry.curve is not None else None,
+                 entry.note, entry.last_success_at, entry.market_day,
+                 entry.attempted_day))
+
+    # ---------- 配息資料快取（#123，per-symbol） ----------
+
+    def get_dividend_cache(self, symbol: str) -> DividendCacheEntry | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT symbol, fetched_at, history, note, last_success_at, "
+                "market_day, attempted_day FROM dividend_cache "
+                "WHERE symbol = %s", (symbol,)).fetchone()
+        return (DividendCacheEntry(symbol=row[0], fetched_at=row[1], history=row[2],
+                                   note=row[3], last_success_at=row[4],
+                                   market_day=row[5], attempted_day=row[6])
+                if row else None)
+
+    def save_dividend_cache(self, entry: DividendCacheEntry) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO dividend_cache "
+                "(symbol, fetched_at, history, note, last_success_at, market_day, "
+                "attempted_day) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s) "
+                "ON CONFLICT (symbol) DO UPDATE "
+                "SET fetched_at = EXCLUDED.fetched_at, history = EXCLUDED.history, "
+                "note = EXCLUDED.note, last_success_at = EXCLUDED.last_success_at, "
+                "market_day = EXCLUDED.market_day, "
+                "attempted_day = EXCLUDED.attempted_day",
+                (entry.symbol, entry.fetched_at,
+                 Jsonb(entry.history) if entry.history is not None else None,
                  entry.note, entry.last_success_at, entry.market_day,
                  entry.attempted_day))

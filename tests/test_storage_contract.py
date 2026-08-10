@@ -13,7 +13,8 @@ import os
 
 import pytest
 
-from api_app.storage import RateCacheEntry, ResultRecord, Scenario, ScenarioExists
+from api_app.storage import (DividendCacheEntry, RateCacheEntry, ResultRecord,
+                             Scenario, ScenarioExists)
 from api_app.storage.memory import MemoryStorage
 
 TEST_DB_URL = os.environ.get("OC_TEST_DATABASE_URL")
@@ -39,8 +40,8 @@ def storage(request):
     st = PostgresStorage(TEST_DB_URL)
     # 清庫是測試自己的事，不放進正式 adapter（正式環境不該有 TRUNCATE）。
     with psycopg.connect(TEST_DB_URL, autocommit=True) as conn:
-        conn.execute("TRUNCATE scenarios, results, snapshots, events, rate_cache "
-                     "RESTART IDENTITY")
+        conn.execute("TRUNCATE scenarios, results, snapshots, events, rate_cache, "
+                     "dividend_cache RESTART IDENTITY")
     yield st
 
 
@@ -359,6 +360,77 @@ def test_rate_cache_overwrites_rather_than_accumulates(storage):
     assert entry.note == "Treasury 曲線 2026-08-05"
 
 
+# ---------- 配息資料快取（#123，per-symbol） ----------
+#
+# 與利率曲線快取同一套三態設計（成功／失敗皆留得住狀態），差異只在
+# **鍵是 symbol**——q 是標的的性質，不是全站單一值，一個劇本抓 TLT
+# 不該覆蓋另一個劇本抓 SPY 的快取。
+
+
+def test_dividend_cache_starts_empty(storage):
+    assert storage.get_dividend_cache("TLT") is None
+
+
+def test_dividend_cache_roundtrips_a_successful_fetch(storage):
+    entry = DividendCacheEntry(
+        symbol="TLT", fetched_at="2026-08-10T12:00:00+00:00",
+        history={"symbol": "TLT", "as_of": "2026-08-10", "source": "yahoo",
+                "distributions": [["2026-08-03", 0.33]], "stale": False},
+        note="配息資料 yahoo（2026-08-10，1 筆）")
+    storage.save_dividend_cache(entry)
+    assert storage.get_dividend_cache("TLT") == entry
+
+
+def test_dividend_cache_roundtrips_market_day_and_attempted_day(storage):
+    entry = DividendCacheEntry(
+        symbol="TLT", fetched_at="2026-08-10T12:00:00+00:00",
+        history={"symbol": "TLT", "as_of": "2026-08-10", "source": "yahoo",
+                "distributions": [], "stale": False},
+        note="配息資料 yahoo（2026-08-10，0 筆）",
+        market_day="2026-08-10", attempted_day="2026-08-10")
+    storage.save_dividend_cache(entry)
+    assert storage.get_dividend_cache("TLT") == entry
+
+
+def test_dividend_cache_can_record_a_failed_attempt(storage):
+    entry = DividendCacheEntry(symbol="TLT", fetched_at="2026-08-10T12:00:00+00:00",
+                               history=None, note="配息資料不可得")
+    storage.save_dividend_cache(entry)
+    assert storage.get_dividend_cache("TLT") == entry
+
+
+def test_dividend_cache_overwrites_rather_than_accumulates(storage):
+    storage.save_dividend_cache(DividendCacheEntry(
+        symbol="TLT", fetched_at="2026-08-10T00:00:00+00:00",
+        history=None, note="配息資料不可得"))
+    storage.save_dividend_cache(DividendCacheEntry(
+        symbol="TLT", fetched_at="2026-08-10T06:00:00+00:00",
+        history={"symbol": "TLT", "as_of": "2026-08-10", "source": "yahoo",
+                "distributions": [["2026-08-03", 0.33]], "stale": False},
+        note="配息資料 yahoo（2026-08-10，1 筆）"))
+
+    entry = storage.get_dividend_cache("TLT")
+    assert entry.fetched_at == "2026-08-10T06:00:00+00:00"
+    assert entry.history["source"] == "yahoo"
+
+
+def test_dividend_cache_does_not_leak_across_symbols(storage):
+    """核心不變量：per-symbol 鍵，不是單一全站狀態（跟 rate_cache 的
+    差異就在這裡）。"""
+    storage.save_dividend_cache(DividendCacheEntry(
+        symbol="TLT", fetched_at="2026-08-10T00:00:00+00:00",
+        history={"symbol": "TLT", "as_of": "2026-08-10", "source": "yahoo",
+                "distributions": [["2026-08-03", 0.33]], "stale": False},
+        note="TLT"))
+    storage.save_dividend_cache(DividendCacheEntry(
+        symbol="SPY", fetched_at="2026-08-10T00:00:00+00:00",
+        history=None, note="SPY 配息資料不可得"))
+
+    assert storage.get_dividend_cache("TLT").history["symbol"] == "TLT"
+    assert storage.get_dividend_cache("SPY").history is None
+    assert storage.get_dividend_cache("SPY").note == "SPY 配息資料不可得"
+
+
 # ---------- 清單摘要（V3／#51） ----------
 
 def test_latest_summaries_returns_the_newest_result_per_scenario(storage):
@@ -460,8 +532,8 @@ def test_existing_results_table_gains_the_new_column():
         # 這個測試不吃 `storage` fixture（它要自己控制建表順序），所以
         # 得自己清乾淨——否則殘留的劇本會讓它以 ScenarioExists 失敗，
         # 看起來像遷移壞了，其實是測試自己髒。
-        conn.execute("TRUNCATE scenarios, results, snapshots, events, rate_cache "
-                     "RESTART IDENTITY")
+        conn.execute("TRUNCATE scenarios, results, snapshots, events, rate_cache, "
+                     "dividend_cache RESTART IDENTITY")
         conn.execute("DROP TABLE IF EXISTS results")
         # V2 時期的舊表：沒有 best_return
         conn.execute("CREATE TABLE results ("
@@ -490,8 +562,8 @@ def test_existing_results_table_gains_the_representative_candidate_column():
     from api_app.storage import postgres as pg
 
     with psycopg.connect(TEST_DB_URL, autocommit=True) as conn:
-        conn.execute("TRUNCATE scenarios, results, snapshots, events, rate_cache "
-                     "RESTART IDENTITY")
+        conn.execute("TRUNCATE scenarios, results, snapshots, events, rate_cache, "
+                     "dividend_cache RESTART IDENTITY")
         conn.execute("DROP TABLE IF EXISTS results")
         # V3 時期的舊表：有 best_return，還沒有 representative_candidate。
         conn.execute("CREATE TABLE results ("
@@ -522,8 +594,8 @@ def test_migration_still_applies_when_table_creation_hits_a_race():
     from api_app.storage import postgres as pg
 
     with psycopg.connect(TEST_DB_URL, autocommit=True) as conn:
-        conn.execute("TRUNCATE scenarios, results, snapshots, events, rate_cache "
-                     "RESTART IDENTITY")
+        conn.execute("TRUNCATE scenarios, results, snapshots, events, rate_cache, "
+                     "dividend_cache RESTART IDENTITY")
         conn.execute("DROP TABLE IF EXISTS results")
         conn.execute("CREATE TABLE results ("
                      "scenario_id TEXT NOT NULL, analyzed_at TEXT NOT NULL, "

@@ -103,6 +103,31 @@ class RateCacheEntry:
     attempted_day: str | None = None
 
 
+@dataclass(frozen=True)
+class DividendCacheEntry:
+    """股利／配息資料快取的一筆狀態，**per-symbol**（#123）——與
+    `RateCacheEntry` 的差異：q 是標的的性質，不是全站單一值，因此鍵是
+    symbol 而非固定單一筆。欄位語意逐一對應 `RateCacheEntry`（同一套
+    三態快取設計），差異只在：
+
+    - `history` 存的是 `option_chaser.dividends.history_to_dict()` 的
+      輸出（金額清單＋as_of），**不是算好的 q**——q 是比例，分母會隨
+      每次分析的快照 spot 變動，快取比例會把一個過期的價格基準凍結
+      進去（研究文件 `dividend-yield-source-selection.md` §7.5／§9
+      第 5 點）。
+    - 陳舊備援窗是 90 天而非利率的 7 天（同文件 §9：分配是月頻事件，
+      7 天窗會讓一次短暫斷線就把使用者踢回 q=0 這個已知會印 +81% 的
+      狀態）。
+    """
+    symbol: str
+    fetched_at: str          # 這筆狀態寫入的時間（ISO），不是資料本身的日期
+    history: dict | None
+    note: str
+    last_success_at: str | None = None
+    market_day: str | None = None
+    attempted_day: str | None = None
+
+
 class Storage(Protocol):
     """API 層唯一的資料存取介面——不得繞過它直接碰 SQL 或檔案。"""
 
@@ -170,6 +195,12 @@ class Storage(Protocol):
 
     def save_rate_cache(self, entry: RateCacheEntry) -> None:
         """覆蓋既有那一筆——單一狀態，不是歷史序列。"""
+
+    def get_dividend_cache(self, symbol: str) -> DividendCacheEntry | None:
+        """該 symbol 尚未有任何嘗試（成功或失敗）時回 `None`。"""
+
+    def save_dividend_cache(self, entry: DividendCacheEntry) -> None:
+        """覆蓋該 symbol 既有那一筆——per-symbol 單一狀態，不是歷史序列。"""
 
     @property
     def kind(self) -> str:

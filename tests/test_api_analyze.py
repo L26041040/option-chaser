@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient   # 缺 fastapi 要紅燈，不可 imp
 
 from api_app.main import create_app
 from option_chaser.data.snapshot import load_snapshot
+from option_chaser.dividends import DividendHistory, DividendRecord
 from option_chaser.models import FetchError, ParamError
 from option_chaser.ratecurve import RateCurve
 
@@ -34,10 +35,26 @@ def _sample_rate_loader(today):
     return _SAMPLE_RATE_CURVE, f"Treasury 曲線 {_SAMPLE_RATE_CURVE.curve_date}"
 
 
+# 同一個理由（#123）：`create_app()` 預設接真的 Yahoo→FMP→Nasdaq
+# dividend_loader，固定注入跟 `gen_contract_sample.py` 同一份假歷史。
+_SAMPLE_DIVIDEND_HISTORY = DividendHistory(
+    symbol="XYZ", as_of="2026-07-14", source="yahoo",
+    distributions=(DividendRecord("2026-06-01", 1.2),
+                  DividendRecord("2026-03-01", 1.2)))
+
+
+def _sample_dividend_loader(symbol, today):
+    n = len(_SAMPLE_DIVIDEND_HISTORY.distributions)
+    return (_SAMPLE_DIVIDEND_HISTORY,
+           f"配息資料 {_SAMPLE_DIVIDEND_HISTORY.source}"
+           f"（{_SAMPLE_DIVIDEND_HISTORY.as_of}，{n} 筆）")
+
+
 def _client(fetch=None):
     snap = load_snapshot(FIX)
     return TestClient(create_app(fetch=fetch or (lambda symbol: snap),
-                                 rate_loader=_sample_rate_loader))
+                                 rate_loader=_sample_rate_loader,
+                                 dividend_loader=_sample_dividend_loader))
 
 
 def test_health_reports_ok_and_engine_version():

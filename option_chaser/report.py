@@ -64,18 +64,26 @@ def _val_line(name: str, val: float, cost: float) -> str:
 
 
 def _carry_suffix(p: AnalysisParams) -> str:
-    """#113（spec #117 §1）：估值模型描述，接在 `_rate_line()` 每個分支
-    後面。**只描述這次分析的 `AnalysisParams.q_by_symbol` 是否有值**
-    ——不代表每一條腿實際都校準成功（逐候選可能不同，見
-    `CandidateView.carry_calibrated`）；今天（#123 q 管線接上之前）
-    `q_by_symbol` 恆為 `None`，這裡恆印舊文字，行為不變。
+    """#113／#123（spec #117 §1／§2）：估值模型描述，接在 `_rate_line()`
+    每個分支後面。**只描述這次分析的 `AnalysisParams.q_by_symbol` 是否
+    有值**——不代表每一條腿實際都校準成功（逐候選可能不同，見
+    `CandidateView.carry_calibrated`）。
+
+    #123：q 管線未接（`q_by_symbol is None`）恆印今天的舊文字，行為不變
+    ——涵蓋離線重放與 fallback 第 4 層（抓取失敗且無可用快取）兩種情況，
+    兩者對使用者是同一句話（「未取得配息資料」不需要跟「離線模式」分開
+    講）。有值時三態揭露（`q_source`／`q_as_of`／`q_stale`）比照
+    `_rate_line()` 的曲線三態同一種寫法。
     """
     if p.q_by_symbol is None:
         return "無股利調整、Black-Scholes 歐式近似"
-    return (f"股利殖利率調整 q={_pct(p.q_by_symbol)}（同快照、同模型逐腿"
-           "反解 IV）、Bjerksund-Stensland (1993) 美式近似——個別候選若"
-           "該腿反解失敗，會退回無股利調整的 Black-Scholes 歐式近似"
-           "（見各候選是否標記「未經 carry 校準」）")
+    source = f"，來源 {p.q_source}" if p.q_source else ""
+    as_of = f"，資料截至 {p.q_as_of}" if p.q_as_of else ""
+    stale = "，STALE（沿用陳舊備援窗）" if p.q_stale else ""
+    return (f"股利殖利率調整 q={_pct(p.q_by_symbol)}{source}{as_of}{stale}"
+           "（同快照、同模型逐腿反解 IV）、Bjerksund-Stensland (1993) 美式"
+           "近似——個別候選若該腿反解失敗，會退回無股利調整的 "
+           "Black-Scholes 歐式近似（見各候選是否標記「未經 carry 校準」）")
 
 
 def _rate_line(p: AnalysisParams) -> str:
@@ -260,8 +268,9 @@ _DISCLAIMER_LINE = "- 免責: 模型估計非保證價格，不構成投資建�
 def _model_limitation_line(p: AnalysisParams) -> str:
     """#113（spec #117 §10-6／honest disclosure）：模型限制尾註。
 
-    `q_by_symbol is None`（今天，#123 之前恆如此）維持既有措辭逐字
-    不變。有 q 時**只能宣稱**「carry 從完全沒有變成量級正確」——
+    `q_by_symbol is None`（q 管線未接、離線重放、或 fallback 第 4 層：
+    抓取失敗且無可用快取，#123）維持既有措辭逐字不變。有 q 時**只能
+    宣稱**「carry 從完全沒有變成量級正確」——
     **不得**宣稱 Heatmap 已經準了：用一個連續 q 描述固定美元配息，本身
     在網格邊緣就帶有模型誤差（研究文件 §7.7），且逐候選是否真的校準
     成功還要看 `carry_calibrated`。

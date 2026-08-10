@@ -90,6 +90,20 @@ class AnalysisParams:
     # #123 會把這欄從 q 管線接上真實數值；本欄位只是接縫，不含任何
     # 抓取／快取邏輯。
     q_by_symbol: float | None = None
+    # #123：q 的三態揭露，比照 RC1（#87）的 `rate_curve_used`／
+    # `rate_curve_date`／`rate_curve_stale` 同一套設計——只描述「這次
+    # q 從哪裡來、多新鮮」，不影響任何金融計算，`report.py`／API 契約
+    # 純格式化這幾個欄位。`q_source` 是實際取得資料的 vendor
+    # （"yahoo"／"fmp"／"nasdaq"）；`q_as_of` 是配息資料截至日；
+    # `q_stale` 與 `q_by_symbol is None` 脫鉤——`q_by_symbol` 仍可能
+    # 在陳舊備援窗內算出一個值（第 3 層 fallback），此時 `q_stale=True`
+    # 但 `q_by_symbol` 不是 `None`。`q_note` 是完整的來源／陳舊註記
+    # 文字（比照 `rate_note`），供離線重放或管線完全不可得時仍能說明
+    # 原因。
+    q_source: str | None = None
+    q_as_of: str | None = None
+    q_stale: bool = False
+    q_note: str = ""
     # FB5-01（#62，spec #61）：未平倉量與成交量不再是門檻參數——移除，不留
     # 「看起來在做事、其實沒有」的欄位。未平倉量本身仍在 `OptionContract`
     # 上、隨候選一併序列化，只是不再左右誰進得了候選池。

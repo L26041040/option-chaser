@@ -23,11 +23,12 @@ from option_chaser import __version__, service, store
 from option_chaser.data.snapshot import snapshot_from_dict, snapshot_to_csv
 from option_chaser.models import (AnalysisParams, ChainSnapshot, FetchError,
                                   ParamError, STRATEGIES)
-from option_chaser.service import RateCurveLoader
+from option_chaser.service import DividendLoader, RateCurveLoader
 from option_chaser.timeframe import (TargetMonth, calendar_anchor,
                                      ensure_month_open, month_is_over)
 from option_chaser.workspace import now_utc_iso, ny_today
 
+from .dividend_cache import cached_loader as cached_dividend_loader
 from .rate_cache import cached_loader
 from .storage import (RateCacheEntry, ResultRecord, ResultSummary, Scenario,
                       ScenarioExists, Storage)
@@ -169,9 +170,11 @@ def _fail(stage: str, status: int, message: str) -> HTTPException:
 def create_app(*, fetch: FetchChain = service.fetch_chain,
                storage: Storage | None = None,
                rate_loader: RateCurveLoader = service.default_rate_curve_loader,
+               dividend_loader: DividendLoader = service.default_dividend_loader,
                ) -> FastAPI:
-    """`fetch`／`storage`／`rate_loader` 皆可注入：測試傳入固定快照、
-    記憶體假體與假利率來源，因此不打真網路、不碰真資料庫，決定性。
+    """`fetch`／`storage`／`rate_loader`／`dividend_loader` 皆可注入：
+    測試傳入固定快照、記憶體假體與假來源，因此不打真網路、不碰真資料庫，
+    決定性。
 
     `rate_loader`（#67）是資料源本身的介面——目前預設接的
     `service.default_rate_curve_loader`（Treasury）是 #73／#74 選型與
@@ -180,6 +183,12 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
     §6.4）；備援層（FRED／FMP，皆需金鑰）待需求方申請金鑰後再接，
     介面本身已是可替換的。真正對外生效的是 `_rate_curve_loader()`
     包出來、疊了持久快取的版本，見下方。
+
+    `dividend_loader`（#123）同一套設計：預設接
+    `service.default_dividend_loader`（Yahoo→FMP→Nasdaq），是 #120
+    production 實測後的落地結果（`docs/research/dividend-yield-source-
+    selection.md` §12.4）；真正對外生效的是 `_dividend_loader()` 包出來、
+    疊了持久快取（per-symbol，90 天陳舊窗）的版本，見下方。
     """
     app = FastAPI(title="Option Chaser API", version=__version__)
 
@@ -205,6 +214,13 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         if "loader" not in cached_rate:
             cached_rate["loader"] = cached_loader(_db(), rate_loader)
         return cached_rate["loader"]
+
+    cached_dividend: dict[str, DividendLoader] = {}
+
+    def _dividend_loader() -> DividendLoader:
+        if "loader" not in cached_dividend:
+            cached_dividend["loader"] = cached_dividend_loader(_db(), dividend_loader)
+        return cached_dividend["loader"]
 
     def _require(scenario_id: str) -> Scenario:
         sc = _db().get_scenario(scenario_id)
@@ -244,7 +260,8 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
             raise _fail("fetch", 502, f"抓不到 {symbol} 的報價：{e}") from e
         try:
             result = service.run_with_snapshot(
-                req, snap, rate_curve_loader=_rate_curve_loader())
+                req, snap, rate_curve_loader=_rate_curve_loader(),
+                dividend_loader=_dividend_loader())
         except ParamError as e:
             raise _fail("params", 400, str(e)) from e
         except Exception as e:  # noqa: BLE001 — 引擎任何失敗都要說是哪一段，不留白畫面

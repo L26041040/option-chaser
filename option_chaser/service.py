@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Callable
 
 from .data.snapshot import find_contract, load_snapshot, save_snapshot, snapshot_today
+from .dividends import DividendHistory, compute_q
 from .filters import (apply_filters, generate_spread_pairs, is_spread_wide,
                       monotonicity_violations, quality_flag_counts)
 from .matrix import GUI_MAX_GAP_DAYS, date_axis, matrix_grid, price_axis
@@ -37,10 +38,24 @@ Progress = Callable[[str], None]
 # 快照重放與測試因此決定性且零網路。
 RateCurveLoader = Callable[[date], tuple[RateCurve | None, str]]
 
+# #123（spec #117 §2）：股利／配息資料 loader = (symbol, today) ->
+# (歷史或 None, 報告參數行註記)。與 `RateCurveLoader` 同一種介面形狀——
+# 只有網路路徑預設接真管線；`run_offline`／`run_with_snapshot` 預設
+# `None`，快照重放與測試因此決定性且零網路。回傳的是**金額清單**
+# （`DividendHistory`），不是算好的 q——q 要用**當次快照的 spot**現算
+# （研究文件 §7.5：快取比例會凍結一個過期的價格基準），這裡只負責
+# 「這個標的過去有哪些配息」這件事。
+DividendLoader = Callable[[str, date], tuple[DividendHistory | None, str]]
+
 
 def default_rate_curve_loader(today: date):
     from .data.treasury import load_rate_curve  # lazy: offline paths never觸網
     return load_rate_curve(today)
+
+
+def default_dividend_loader(symbol: str, today: date):
+    from .data.dividends import load_dividend_history  # lazy: 同上
+    return load_dividend_history(symbol, today)
 
 
 @dataclass(frozen=True)
@@ -750,9 +765,40 @@ def _resolve_rates(p: AnalysisParams, snap: ChainSnapshot, today: date,
                                rate_curve_stale=curve.stale)
 
 
+def _resolve_q(p: AnalysisParams, snap: ChainSnapshot, today: date,
+               loader: DividendLoader | None) -> AnalysisParams:
+    """#123（spec #117 §2）：股利殖利率 q，鏡射 `_resolve_rates` 的三層
+    fallback 結構，差異只在 q 是**單一數值、per-symbol**（不是逐到期日
+    查表）。
+
+    無 loader（離線重放）→ `q_by_symbol` 維持 `None`，走既有行為
+    （`valuation.calibrate_leg` 的第 4 層：q=0＋vendor IV，不是「q=0＋
+    價格錨定」——後者對很多真實 LEAPS 在數學上無解）。
+
+    loader 回 `None`（fetch 失敗且無可用快取）→ 同樣維持 `None`，只設
+    `q_note` 供報告說明原因——這正是 AC 的 fallback 第 4 層。
+
+    loader 回一份 `DividendHistory`（不論 fresh 或 stale）→ 用**這次
+    快照的 spot**現算 q（`compute_q`，研究 §7.5：不快取算好的比例）。
+    `distributions` 為空（確定無配息）→ `compute_q` 自然回 0.0，狀態
+    仍是 `q_stale=history.stale`（通常是 fresh）——這是正確答案，不是
+    降級（研究 §8 第 2 層）。
+    """
+    if loader is None:
+        return p
+    history, note = loader(snap.symbol, today)
+    if history is None:
+        return dataclasses.replace(p, q_note=note)
+    q = compute_q(history, snap.spot, today)
+    return dataclasses.replace(p, q_by_symbol=q, q_source=history.source,
+                               q_as_of=history.as_of, q_stale=history.stale,
+                               q_note=note)
+
+
 def _analyze(request: AnalysisRequest, snap: ChainSnapshot,
              snapshot_path: str, progress: Progress | None,
-             rate_curve_loader: RateCurveLoader | None = None) -> AnalysisResult:
+             rate_curve_loader: RateCurveLoader | None = None,
+             dividend_loader: DividendLoader | None = None) -> AnalysisResult:
     today = snapshot_today(snap.fetched_at)
     base = request.base_params
     month = ensure_month_open(TargetMonth.from_key(base.target_month), today)
@@ -761,7 +807,10 @@ def _analyze(request: AnalysisRequest, snap: ChainSnapshot,
     snap, baseline_expiry = _scoped_to_selected_expiries(snap, anchor, today)
     _emit(progress, "正在解析無風險利率……")
     base = _resolve_rates(base, snap, today, rate_curve_loader)
-    # 解出的利率是估值輸入的一部分：回寫 request，讓結果持久化與呼叫端可見。
+    _emit(progress, "正在解析股利殖利率……")
+    base = _resolve_q(base, snap, today, dividend_loader)
+    # 解出的利率／q 是估值輸入的一部分：回寫 request，讓結果持久化與
+    # 呼叫端可見。
     request = dataclasses.replace(request, base_params=base)
     results = []
     _emit(progress, "正在過濾合約……")
@@ -845,13 +894,15 @@ def run(request: AnalysisRequest, progress: Progress | None = None) -> AnalysisR
     _emit(progress, f"正在抓取 {request.symbol} 市場資料……")
     snap, out = fetch_and_save(request.symbol)
     return _analyze(request, snap, out, progress,
-                    rate_curve_loader=default_rate_curve_loader)
+                    rate_curve_loader=default_rate_curve_loader,
+                    dividend_loader=default_dividend_loader)
 
 
 def run_with_snapshot(request: AnalysisRequest, snap: ChainSnapshot,
                       snapshot_ref: str = "(in-memory)",
                       progress: Progress | None = None, *,
-                      rate_curve_loader: RateCurveLoader | None = None
+                      rate_curve_loader: RateCurveLoader | None = None,
+                      dividend_loader: DividendLoader | None = None
                       ) -> AnalysisResult:
     """V1（#48）：分析一份**已在記憶體中**的快照，不讀寫檔案系統。
 
@@ -862,19 +913,23 @@ def run_with_snapshot(request: AnalysisRequest, snap: ChainSnapshot,
     既有警告（安全降級，不會拋錯）。新前端的原始資料區（V8／#56）
     改由 API 提供，不再從路徑重讀。
 
-    與 `run_offline` 同樣預設不接利率管線（決定性）。"""
+    與 `run_offline` 同樣預設不接利率／股利管線（決定性）。"""
     _validate_request(request)
     return _analyze(request, snap, snapshot_ref, progress,
-                    rate_curve_loader=rate_curve_loader)
+                    rate_curve_loader=rate_curve_loader,
+                    dividend_loader=dividend_loader)
 
 
 def run_offline(request: AnalysisRequest, snapshot_path: str,
                 progress: Progress | None = None, *,
-                rate_curve_loader: RateCurveLoader | None = None
+                rate_curve_loader: RateCurveLoader | None = None,
+                dividend_loader: DividendLoader | None = None
                 ) -> AnalysisResult:
-    """離線重放預設不接利率管線（決定性、零網路）；networked 呼叫端（如
-    workspace 群組刷新，自己剛抓完 chain）可明示傳 loader 啟用曲線。"""
+    """離線重放預設不接利率／股利管線（決定性、零網路）；networked
+    呼叫端（如 workspace 群組刷新，自己剛抓完 chain）可明示傳 loader
+    啟用。"""
     _validate_request(request)
     snap = load_snapshot(snapshot_path)
     return _analyze(request, snap, str(snapshot_path), progress,
-                    rate_curve_loader=rate_curve_loader)
+                    rate_curve_loader=rate_curve_loader,
+                    dividend_loader=dividend_loader)
