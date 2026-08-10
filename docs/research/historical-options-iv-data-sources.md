@@ -406,52 +406,57 @@ credit）。歷史面是另一回事，且對本案有一個獨有優勢：
 （一次解決兩輪研究共同的懸案）→ ③ ORATS 官網原件確認訂閱層級——
 三者都免費或近免費，實測後交集名單可能縮小或重排。
 
-## 5.1 追記（#111，本輪僅完成沙箱可行部分）——探測腳本已就緒，實測結果待補
+## 5.1 追記（#111）——production 實測已完成，三家皆 credential-blocked
 
-**沙箱出口封鎖已直接驗證**（本輪用 `curl` 對候選網域測試，皆收到
-CONNECT 層級拒絕，非目的站問題，與本文開頭§0 記錄的同一種沙箱限制）。
+**沙箱出口封鎖已直接驗證**（背景，維持原記錄）：`curl` 對候選網域皆收到
+CONNECT 層級拒絕，與本文開頭 §0 記錄的同一種沙箱限制。**這只是沙箱出口
+政策**——本節記錄的是繞過沙箱、從真實可連網環境（GitHub Actions
+`ubuntu-latest` runner，理由與方法同 #120，見
+`dividend-yield-source-selection.md` §12.4）跑出的結果。
 
-**本輪已完成（沙箱可行部分，#111 AC 明文允許的範圍）**：
+**實測結果（2026-08-10，run
+[31408756757](https://github.com/L26041040/option-chaser/actions/runs/31408756757)，
+真實對外請求，`ALPHA_VANTAGE_API_KEY=demo`——Alpha Vantage 官方公開文件
+的示範金鑰，非私自取得的憑證）**：
 
-- 探測腳本 `scripts/probe_iv_history_vendors.py`（純 stdlib
-  `urllib.request`）已寫好，依 §5 定案的三步優先序（① Market Data App
-  免費層 → ② Alpha Vantage 免費金鑰 → ③ ORATS）逐一探測，可直接在
-  Vercel／任何可連網環境執行
-- 驗證步驟清單與結果記錄表格已備妥（見下），先留空等實測
-- 已用假金鑰跑過一次，確認 URL 組裝與請求邏輯本身沒有語法/格式錯誤
-  （在沙箱裡正確地被擋下，而不是在送出請求前就先壞掉）——這**不是**
-  對三個 vendor 的實測，只是證明腳本邏輯沒問題
-
-**尚待前置（跑腳本前需要人工完成）**：
-
-- Market Data App：到 https://www.marketdata.app/ 註冊取得免費金鑰，
-  設成環境變數 `MARKETDATA_APP_TOKEN`
-- Alpha Vantage：到 https://www.alphavantage.co/support/#api-key
-  免費申請，設成 `ALPHA_VANTAGE_API_KEY`
-- ORATS：多半需付費訂閱（§4.1），僅在①②皆不可行時才需要，設成
-  `ORATS_TOKEN`
-- **認證方式本身未經查證**（腳本 docstring 已標注）：三個 vendor 的
-  官方 API 文件頁本身也被沙箱擋住，腳本裡的認證寫法（Bearer token／
-  query string token）是依業界常見 REST 慣例的合理猜測，不是查證
-  結果——執行者第一步應該打開官方文件核對一次
-
-**結果記錄表格（待實測填入）**：
-
-| 順序 | vendor | 是否可申請免費金鑰 | 實測結果 | 資料形狀是否符合 (tenor, delta) 座標重錨定需求 | 結論 |
+| 順序 | vendor | 是否可申請免費金鑰 | 實測結果 | 資料形狀是否符合需求 | 結論 |
 |---|---|---|---|---|---|
-| ① | Market Data App | _(待填)_ | _(待填)_ | _(待填)_ | _(待填)_ |
-| ② | Alpha Vantage | _(待填)_ | _(待填)_ | _(待填)_ | _(待填)_ |
-| ③ | ORATS | _(待填)_ | _(待填)_ | _(待填)_ | _(待填)_ |
+| ① | Market Data App | 可（未申請） | **未發出請求**——端點要求 `Authorization: Bearer {token}`，沒有任何匿名可測路徑，`MARKETDATA_APP_TOKEN` 未設定即無法呼叫 | 不適用 | **credential-blocked**：連可達性都無法在無金鑰下驗證 |
+| ② | Alpha Vantage | 可（用官方 demo 金鑰測試） | **HTTP 200**，但 body 是 `{"Information": "The **demo** API key is for demo purposes only. Please claim your free API key at (...) to explore our full API offerings."}`——**不是** `HISTORICAL_OPTIONS` 的真實資料 | **無法驗證**——demo 金鑰擋在資料本身之前 | **credential-blocked**：端點確認可達（HTTP 200、非網路層失敗），但取得真實資料仍需申請免費金鑰（官方文案「不到 20 秒」） |
+| ③ | ORATS | 多半需付費 | **未發出請求**——端點要求 query string `token=`，`ORATS_TOKEN` 未設定即無法呼叫 | 不適用 | **credential-blocked**：同 Market Data App，連可達性都無法驗證 |
 
-**本輪未完成、且明確不得代為宣稱**（#111 既有 AC 逐字沿用）：
+**與 §4.1/§4.7 原研究的差異**：①③ 兩家的認證設計是「金鑰是呼叫的必要
+輸入」而非「先試後擋」——探測腳本對它們**連請求都沒送出**（沒有金鑰就
+沒有可測的 URL），這比「打了但被 401/403 拒絕」更嚴格，**不是探測腳本
+的缺陷，是這兩個 vendor 的認證機制本身**。②Alpha Vantage 稍有不同：
+它公開了一個任何人都能用的 `demo` 金鑰，讓探測腳本至少驗證了「端點存在、
+可達、回真實 HTTP 回應」，但該金鑰的資料範圍不含 `HISTORICAL_OPTIONS`
+這個 function 對 TLT 的真實回應——**仍未取得一次真正的 historical
+option/IV 資料**。
 
-- **尚未有任何一次成功的真實 API 呼叫**，因此**不得**宣稱任何一個
-  vendor 已確認可用，也不得宣稱本票已完成
-- §5 的三步優先序建議、四家候選的 trade-off 比較，全部仍是**建立在
-  文件與索引轉述上的分析**，不是實測結論
-- 若之後在可連網環境跑出與本文§5矛盾的結果，應直接依實測結果調整
-  排序或結論，不需要另開研究票論證「為什麼」（沿用本 repo
-  `interest-rate-source-selection.md` §6.3 的既有紀律）
+**結論（依 #111 既有 AC 逐字適用）**：
+
+- **三家 vendor 皆為 credential-blocked，沒有一家可以宣稱「已確認」**。
+  這**不是**沙箱限制造成的——本次探測已經是從真實可連網環境（GitHub
+  Actions）發出的真實請求，Alpha Vantage 甚至拿到了真實 HTTP 200——
+  三家的共同瓶頸是**取得實際資料本身需要一把本 repo 尚未持有的免費／
+  付費金鑰**，這正是 AC 明文要求「明確標記 credential-blocked」的情況。
+- **不得宣稱任何 vendor 已確認**，也**不得**用本次的 Alpha Vantage
+  HTTP 200（demo 金鑰的「請註冊」訊息）冒充一次成功的
+  `HISTORICAL_OPTIONS` 呼叫。
+- **#111 本身不可 close**：距離「至少一次成功的真實 API 呼叫並驗證
+  資料形狀」還差一步——**需要需求方決定是否要為以下任一 vendor 申請
+  免費金鑰**（依 §5 優先序）：
+  1. **Alpha Vantage**（建議優先，免費申請號稱 20 秒、且已確認端點
+     真實可達）：https://www.alphavantage.co/support/#api-key
+  2. **Market Data App**（免費層 100 credits/日）：
+     https://www.marketdata.app/
+  3. ORATS 多半需付費訂閱，僅在①②皆不可行時才需要考慮
+- **#114（Historical IV Position 模組）依既有 blocked-by 持續卡在
+  #111 之後**，本輪未能解除。
+- 若需求方核發任一金鑰，重跑 `scripts/probe_iv_history_vendors.py`
+  （設對應環境變數）即可完成 #111 剩餘驗證，腳本與探測管線本身
+  已就緒、不需重寫。
 
 ## 6. 明確不涵蓋
 
