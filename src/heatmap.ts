@@ -29,10 +29,20 @@ export function cellColor(ret: number): string {
   return `rgba(${r}, ${g}, ${b}, ${(t * 0.8).toFixed(3)})`;
 }
 
-/** 格子文字：一律帶正負號，四捨五入到整數百分比（同舊版 `+.0f`）。 */
+/**
+ * 格子文字：QA-01 後續（#121）改成純數字，不帶正負號、不帶 `%`——
+ * `+128%` 這種寫法在每一格都重複印一次單位，擠掉日期欄能用的橫向
+ * 寬度；顏色與位置已經講清楚漲跌方向，正負號只留在數字本身（負值的
+ * `-` 是數字的一部分，不是額外裝飾）。單位改成只在下方 caption 講一次
+ * （`render.ts` 的 caption 文字，見 `Heatmap.tsx`）。
+ *
+ * `Math.round` 而非 `toFixed`：避免 `(-0.4).toFixed(0)` 印出容易讓人
+ * 誤讀的 `"-0"`——四捨五入到 0 的負值一律顯示成 `"0"`（`-0 === 0`
+ * 對 `===` 比較成立，但轉成字串前必須先攔下來）。
+ */
 export function formatCell(ret: number): string {
-  const pct = ret * 100;
-  return `${pct >= 0 ? "+" : ""}${pct.toFixed(0)}%`;
+  const pct = Math.round(ret * 100);
+  return pct === 0 ? "0" : String(pct);
 }
 
 /** 日期欄標題：MM/DD，最後一欄補「到期」——那一欄的語意跟其他欄不同。 */

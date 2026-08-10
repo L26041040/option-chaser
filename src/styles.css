@@ -1148,12 +1148,16 @@ body {
   color: var(--label-secondary);
   font-size: 12px;
   white-space: nowrap;
-  padding: 4px 8px;
+  /* #121：日期欄水平留白縮小——格子文字同一票改成純數字（`128`／
+     `-34`，不帶 `+`／`%`），欄本身不需要再留原本給符號的寬度。垂直
+     留白與字級都不動（不是 QA-FIX-3 那種整體密度壓縮，這裡只還橫向
+     空間給日期軸，讓同樣容器寬度能多擠幾欄）。 */
+  padding: 4px 5px;
   text-align: right;
 }
 
 .heatmap-table td {
-  padding: 6px 8px;
+  padding: 6px 5px;
   text-align: right;
   border-radius: 6px;
   white-space: nowrap;

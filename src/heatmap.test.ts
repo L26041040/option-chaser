@@ -37,11 +37,15 @@ describe("格子配色", () => {
   });
 });
 
-describe("格子文字", () => {
-  it("一律帶正負號，看得出方向", () => {
-    expect(formatCell(0.5666)).toBe("+57%");
-    expect(formatCell(-1)).toBe("-100%");
-    expect(formatCell(0)).toBe("+0%");
+describe("格子文字（#121：去掉 +／% 換取橫向密度）", () => {
+  it("純數字，不帶正負號、不帶百分號——顏色與位置已經講清楚方向", () => {
+    expect(formatCell(0.5666)).toBe("57");
+    expect(formatCell(-1)).toBe("-100");
+    expect(formatCell(0)).toBe("0");
+  });
+
+  it("負值四捨五入到 0 時顯示 \"0\"，不是容易誤讀的 \"-0\"", () => {
+    expect(formatCell(-0.004)).toBe("0");
   });
 });
 

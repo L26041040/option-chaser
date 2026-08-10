@@ -91,7 +91,7 @@ export default function Heatmap({ matrix }: { matrix: Matrix }) {
       </div>
       <p className="caption">
         以最差進場成本（買付 Ask、賣收 Bid）進場，在各標的價與日期下的模型
-        報酬率。標記列為錨點價格，其餘為等距內插。
+        報酬率（單位：%）。標記列為錨點價格，其餘為等距內插。
       </p>
     </div>
   );

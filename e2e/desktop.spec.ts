@@ -140,6 +140,37 @@ test("Heatmap ±% 在最右欄：桌面 viewport 每一列都看得到完整格�
   }
 });
 
+test("Heatmap 密度（#121）：去掉 +／% 縮小 padding 後，固定容器寬度下" +
+     "看得到的日期欄數真的變多", async ({ page }) => {
+  // 實測基準（本票施工時量到，git stash 對照修正前後）：容器
+  // clientWidth 876px 不變，平均欄寬 60.92px→45.65px，可見欄數
+  // 14→19。門檻抓 17（介於兩者之間留餘裕，避免慢速機器像素微差
+  // 誤判），能通過就代表密度確實提升，不是感覺上變窄。
+  await routeTwoScenarios(page);
+  await page.goto("/#/s/s1");
+
+  const mainChart = page.locator("section").filter({ hasText: "劇本主圖" }).first();
+  const table = mainChart.locator("table.heatmap-table");
+  await expect(table).toBeVisible();
+
+  const firstRow = table.locator("tbody tr").first();
+  const dateCells = firstRow.locator("td:not(.heatmap-move-pct)");
+  const n = await dateCells.count();
+  const firstBox = (await dateCells.first().boundingBox())!;
+  const lastBox = (await dateCells.nth(n - 1).boundingBox())!;
+  const avgCellWidth = (lastBox.x + lastBox.width - firstBox.x) / n;
+  const containerWidth = await mainChart.locator(".heatmap-scroll")
+    .evaluate((el) => (el as HTMLElement).clientWidth);
+
+  const columnsVisible = Math.floor(containerWidth / avgCellWidth);
+  expect(columnsVisible).toBeGreaterThanOrEqual(17);
+
+  // 每一格文字本身確實不再帶 +／%（否認式：格式沒改回去，密度提升
+  // 不是靠別的手法湊出來的）。
+  const cellText = (await dateCells.first().textContent())!;
+  expect(cellText).not.toMatch(/[+%]/);
+});
+
 test("Heatmap 橫向捲到底時，左側價格與最右 ±% 都還釘在畫面上" +
      "（QA-FIX-1 sticky 兩端）", async ({ page }) => {
   await routeTwoScenarios(page);

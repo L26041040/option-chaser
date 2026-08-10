@@ -47,12 +47,12 @@ describe("主圖 Heatmap", () => {
     expect(within(row).getByRole("rowheader")).toHaveTextContent("100.00");
   });
 
-  it("每一格都是帶正負號的報酬率，且格數＝價格數×日期數", () => {
+  it("每一格都是純數字報酬率（#121：不帶 +／%），且格數＝價格數×日期數", () => {
     const { container } = render(<Heatmap matrix={matrix} />);
 
     const cells = valueCells(container);
     expect(cells).toHaveLength(matrix.prices.length * matrix.dates.length);
-    for (const cell of cells) expect(cell.textContent).toMatch(/^[+-]\d+%$/);
+    for (const cell of cells) expect(cell.textContent).toMatch(/^-?\d+$/);
   });
 
   it("賺賠上不同的底色，中性帶不上色", () => {
@@ -96,7 +96,7 @@ describe("最右欄 ±% 標註（決策 M／#109，位置修正 QA-FIX-1／QA-01
       expect(kids).toHaveLength(matrix.dates.length + 2);
       for (const cell of kids.slice(1, -1)) {
         expect(cell).not.toHaveClass("heatmap-move-pct");
-        expect(cell.textContent).toMatch(/^[+-]\d+%$/);
+        expect(cell.textContent).toMatch(/^-?\d+$/);
       }
     }
   });
