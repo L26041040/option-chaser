@@ -808,6 +808,58 @@ q 是比例，分母是價格。vendor 算好的殖利率百分比用的是**他
 
 ---
 
+## 12.4 追記（#120，本輪僅完成沙箱可行部分）——探測腳本已就緒，實測結果待補
+
+**沙箱出口封鎖已直接驗證**：`curl` 對三個候選網域皆收到 CONNECT 層級
+拒絕（非目的站問題）：
+
+```
+$ curl -sS -m 10 -o /dev/null -w "yahoo: %{http_code}\n" \
+    "https://query2.finance.yahoo.com/v8/finance/chart/TLT?..."
+curl: (56) CONNECT tunnel failed, response 403
+$ curl ... api.nasdaq.com ...         → 同樣 CONNECT 403
+$ curl ... financialmodelingprep.com ...  → 同樣 CONNECT 403
+```
+
+代理層 `/__agentproxy/status` 的 `recentRelayFailures` 同步確認三筆
+`connect_rejected`（`gateway answered 403 to CONNECT`），與
+`interest-rate-source-selection.md` §0 記錄的同一種沙箱限制、同一種
+誠實揭露（**沙箱連不到 ≠ Vercel／需求方本機連不到**，兩件事不可
+混為一談）。
+
+**本輪已完成（沙箱可行部分）**：
+
+- 探測腳本 `scripts/probe_dividend_sources.py`（純 stdlib
+  `urllib.request`，比照 `cboe.py`／`treasury.py` 既有慣例）已寫好、
+  可直接在 Vercel／任何可連網環境執行：`python3
+  scripts/probe_dividend_sources.py`
+- 涵蓋 §12.3 第 1、2、6 項（Yahoo chart events 對配息／非配息標的各
+  一次、Nasdaq 免鑰端點）；第 3／4／7 項需要人工比對發行商官網或
+  非本腳本目的，第 5 項（FMP）需要金鑰，第 8 項（假日行為）需要
+  跨週末重跑，皆不在本腳本範圍
+- 已用**沙箱可達的網域**（`raw.githubusercontent.com`）與**刻意指向
+  被擋網域**兩種情況分別跑過一次，確認腳本本身的成功／錯誤處理路徑
+  正確（見下）——這**不是**對三個候選 vendor 的實測，只是證明腳本
+  邏輯没問題，交給下一個能連網的環境跑就會拿到真實結果：
+
+  | 情境 | 結果 |
+  |---|---|
+  | 指向可達網域（`raw.githubusercontent.com`） | `status=200`，正確讀到 `content_type`／`body_preview` |
+  | 指向 Yahoo（沙箱內，預期被擋） | 正確捕捉為 `URLError: Tunnel connection failed: 403 Forbidden`，不拋例外、不誤判成功 |
+
+**本輪未完成、且明確不得代為宣稱**：
+
+- **第 12.3 項第 1 項（Yahoo chart events 匿名可用性，本推薦的關鍵
+  未知）尚未有任何一次成功的真實呼叫**——依 #120／#111 兩張票共同的
+  既有紀律，**不得**在此狀態下宣稱「Yahoo 已確認可用」或「primary
+  source 已確定」。目前的 primary 選擇（§13-1）仍是**建立在文件與
+  索引轉述上的建議**，不是實測結論。
+- 若之後在可連網環境跑出與本文矛盾的結果（例如 Yahoo 端點需要
+  crumb、實際回 401/403），依本文 §13-1 已載明的紀律：**FMP 直接
+  升為 primary，不需另開研究票**。
+
+---
+
 ## 13. 六問六答（決策用）
 
 ### 13-1. 推薦 q source（primary）
