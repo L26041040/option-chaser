@@ -123,6 +123,11 @@ class CandidateView:
     # V7（#55）。預設空 tuple：沒設兩端、也沒走 `_v4_fields` 的呼叫端
     # （若有）都不會壞。
     price_ladder: tuple[PricePoint, ...] = ()
+    # #113（spec #117 contracts 表）：這組候選的估值是否經過 carry 校準。
+    # 單腿讀 `valuation.carry.carry_calibrated`；價差要求兩條腿都校準
+    # 成功才算——任一腿退回今天的行為，整組候選就不是「carry 校準過」。
+    # False 時 UI 必須說得出「這組估值未經 carry 校準」（spec §10-4）。
+    carry_calibrated: bool = False
 
 
 @dataclass(frozen=True)
@@ -248,10 +253,14 @@ def _net_theta(val: ContractValuation | SpreadValuation, spot: float,
     if isinstance(val, SpreadValuation):
         lng, sht = val.long_leg, val.short_leg
         t_now = (date.fromisoformat(lng.expiry) - today).days / 365.0
+        # #113：讀 carry 校準後的 (q, sigma)，未校準時精確等於 vendor IV／
+        # q=0（見 LegCarry fallback 設計），既有行為不變。
         g_l = leg_greeks(lng.option_type, spot, lng.strike, t_now,
-                         leg_rate(p, lng.expiry), lng.implied_volatility)
+                         leg_rate(p, lng.expiry), val.long_carry.sigma,
+                         val.long_carry.q)
         g_s = leg_greeks(sht.option_type, spot, sht.strike, t_now,
-                         leg_rate(p, sht.expiry), sht.implied_volatility)
+                         leg_rate(p, sht.expiry), val.short_carry.sigma,
+                         val.short_carry.q)
         return g_l.theta_per_day - g_s.theta_per_day
     return val.theta_per_day
 
@@ -262,9 +271,11 @@ def _net_vega(val: ContractValuation | SpreadValuation, spot: float,
         lng, sht = val.long_leg, val.short_leg
         t_now = (date.fromisoformat(lng.expiry) - today).days / 365.0
         g_l = leg_greeks(lng.option_type, spot, lng.strike, t_now,
-                         leg_rate(p, lng.expiry), lng.implied_volatility)
+                         leg_rate(p, lng.expiry), val.long_carry.sigma,
+                         val.long_carry.q)
         g_s = leg_greeks(sht.option_type, spot, sht.strike, t_now,
-                         leg_rate(p, sht.expiry), sht.implied_volatility)
+                         leg_rate(p, sht.expiry), val.short_carry.sigma,
+                         val.short_carry.q)
         return g_l.vega_per_pct - g_s.vega_per_pct
     return val.vega_per_pct
 
@@ -351,13 +362,16 @@ def _single_leg_view(v: ContractValuation, band: str,
                      n_qualified: int, today: date, p: AnalysisParams,
                      violations: frozenset[str] = frozenset()) -> CandidateView:
     pros, cons = build_reasons(v, band, ranked, spot, n_qualified, p)
+    # #113：矩陣迴圈維持 (S,t) 純函式——carry 已在 evaluate_contract() 算
+    # 過一次、掛在 v.carry 上，這裡直接傳，不重新反解。
     mv = _matrix_view(
-        lambda S, d, c=v.contract: scenario_leg_value(c, S, d, p),
+        lambda S, d, c=v.contract, carry=v.carry: scenario_leg_value(c, S, d, p, carry=carry),
         v.contract.ask, spot, p, today, v.contract.expiry)
     return CandidateView(
         valuation=v, pros=tuple(pros), cons=tuple(cons), matrix=mv,
         baseline_pnl=v.baseline_value - v.contract.ask,
         baseline_return=baseline_return(v),
+        carry_calibrated=v.carry.carry_calibrated,
         **_v4_fields(v, spot, today, p, violations))
 
 
@@ -382,14 +396,19 @@ def _spread_view(sv: SpreadValuation, idx: int, n_pairs: int, spot: float,
                  violations: frozenset[str] = frozenset()) -> CandidateView:
     pros, cons = build_spread_reasons(sv, idx, n_pairs, p)
     mv = _matrix_view(
-        lambda S, d, lng=sv.long_leg, sht=sv.short_leg:
-            spread_scenario_value(lng, sht, S, d, p),
+        lambda S, d, lng=sv.long_leg, sht=sv.short_leg, lc=sv.long_carry, \
+              sc=sv.short_carry:
+            spread_scenario_value(lng, sht, S, d, p, long_carry=lc, short_carry=sc),
         sv.net_worst, spot, p, today, sv.long_leg.expiry)
     return CandidateView(
         valuation=sv, pros=tuple(pros), cons=tuple(cons), matrix=mv,
         baseline_pnl=sv.baseline_value - sv.net_worst,
         baseline_return=spread_baseline_return(sv),
         catchup_price=_spread_catchup_price(sv, snap),
+        # #113：兩腿都校準成功才算「這組候選 carry 校準過」——任一腿
+        # 退回今天的行為，整組候選的估值就不是全然校準過的。
+        carry_calibrated=(sv.long_carry.carry_calibrated
+                          and sv.short_carry.carry_calibrated),
         **_v4_fields(sv, spot, today, p, violations))
 
 

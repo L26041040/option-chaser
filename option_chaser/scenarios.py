@@ -26,15 +26,22 @@ class ScenarioVector:
 
 
 def _value_fn(val):
-    """Uniform (S, at, shift) -> value callable for single legs and spreads."""
+    """Uniform (S, at, shift) -> value callable for single legs and spreads.
+
+    #113：帶上 `val.carry`／`val.long_carry`+`val.short_carry`（每腿只算
+    一次，見 `valuation.LegCarry` docstring）——七情境、保本掃描等全部
+    共用同一個 closure，不重新反解 IV。
+    """
     if isinstance(val, SpreadValuation):
         lng, sht = val.long_leg, val.short_leg
+        lc, sc = val.long_carry, val.short_carry
         return (lambda S, at, p, shift=0.0:
-                spread_scenario_value(lng, sht, S, at, p, shift)), val.net_mid, \
-               (lng.ask - sht.bid), lng.expiry
+                spread_scenario_value(lng, sht, S, at, p, shift, lc, sc)), \
+               val.net_mid, (lng.ask - sht.bid), lng.expiry
     c = val.contract
+    carry = val.carry
     return (lambda S, at, p, shift=0.0:
-            scenario_leg_value(c, S, at, p, shift)), val.mid, c.ask, c.expiry
+            scenario_leg_value(c, S, at, p, shift, carry)), val.mid, c.ask, c.expiry
 
 
 def _delay_value(fn, spot: float, today: date, p: AnalysisParams,

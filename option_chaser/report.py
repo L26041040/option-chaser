@@ -63,6 +63,21 @@ def _val_line(name: str, val: float, cost: float) -> str:
     )
 
 
+def _carry_suffix(p: AnalysisParams) -> str:
+    """#113（spec #117 §1）：估值模型描述，接在 `_rate_line()` 每個分支
+    後面。**只描述這次分析的 `AnalysisParams.q_by_symbol` 是否有值**
+    ——不代表每一條腿實際都校準成功（逐候選可能不同，見
+    `CandidateView.carry_calibrated`）；今天（#123 q 管線接上之前）
+    `q_by_symbol` 恆為 `None`，這裡恆印舊文字，行為不變。
+    """
+    if p.q_by_symbol is None:
+        return "無股利調整、Black-Scholes 歐式近似"
+    return (f"股利殖利率調整 q={_pct(p.q_by_symbol)}（同快照、同模型逐腿"
+           "反解 IV）、Bjerksund-Stensland (1993) 美式近似——個別候選若"
+           "該腿反解失敗，會退回無股利調整的 Black-Scholes 歐式近似"
+           "（見各候選是否標記「未經 carry 校準」）")
+
+
 def _rate_line(p: AnalysisParams) -> str:
     """RC1（#87，附錄 A14.1 修正）三態：
 
@@ -76,16 +91,16 @@ def _rate_line(p: AnalysisParams) -> str:
       日期——離線重放不是「乾淨」的第三態，它跟曲線失敗一樣是「這次
       用的是常數，不是曲線」，理由不同但呈現方式相同。
     """
+    carry = _carry_suffix(p)
     if p.rate_curve_used:
         rates = "、".join(f"{e} {r * 100:.2f}%" for e, r in p.rate_by_expiry)
         detail = f"；各到期日 r: {rates}" if rates else ""
         stale = "，STALE（沿用陳舊備援窗）" if p.rate_curve_stale else ""
         return (f"- 無風險利率 期限對齊（Treasury 曲線 {p.rate_curve_date}"
-                f"{stale}{detail}）、無股利調整、Black-Scholes 歐式近似")
+                f"{stale}{detail}）、{carry}")
     if p.rate_explicit or not p.rate_note:
-        return f"- 無風險利率 {_pct(p.rate)}、無股利調整、Black-Scholes 歐式近似"
-    return (f"- 無風險利率 {_pct(p.rate)} · FALLBACK（{p.rate_note}）、"
-            "無股利調整、Black-Scholes 歐式近似")
+        return f"- 無風險利率 {_pct(p.rate)}、{carry}"
+    return f"- 無風險利率 {_pct(p.rate)} · FALLBACK（{p.rate_note}）、{carry}"
 
 
 def _header_lines(snap: ChainSnapshot, p: AnalysisParams, today: date) -> list[str]:
@@ -242,6 +257,23 @@ def _matrix_block(value_fn, cost, spot, p, today, expiry) -> list[str]:
 _DISCLAIMER_LINE = "- 免責: 模型估計非保證價格，不構成投資建議"
 
 
+def _model_limitation_line(p: AnalysisParams) -> str:
+    """#113（spec #117 §10-6／honest disclosure）：模型限制尾註。
+
+    `q_by_symbol is None`（今天，#123 之前恆如此）維持既有措辭逐字
+    不變。有 q 時**只能宣稱**「carry 從完全沒有變成量級正確」——
+    **不得**宣稱 Heatmap 已經準了：用一個連續 q 描述固定美元配息，本身
+    在網格邊緣就帶有模型誤差（研究文件 §7.7），且逐候選是否真的校準
+    成功還要看 `carry_calibrated`。
+    """
+    if p.q_by_symbol is None:
+        return "- 模型限制: 無股利調整（q=0）、歐式近似、IV 乘法情境"
+    return ("- 模型限制: 股利殖利率 carry 從完全沒有變成量級正確（同快照"
+           "校準），但不代表 Heatmap 數字已經準確——連續 q 描述固定美元"
+           "配息本身在網格邊緣仍有模型誤差；反解失敗的腿退回無股利調整"
+           "的歐式近似；IV 乘法情境")
+
+
 def methodology_lines(p: AnalysisParams) -> list[str]:
     """V8（#56，spec R1 §4.2 A2）：方法論尾註——`_footer_lines()` 扣掉免責
     那一行的其餘全部，供 API 序列化成獨立的「方法與假設」欄位（新版型
@@ -287,7 +319,7 @@ def methodology_lines(p: AnalysisParams) -> list[str]:
         "遞增、put 非遞減），違反時僅標示、不影響候選是否入選，spec #61；"
         "見各候選「報價與鄰近履約價不一致，疑似陳舊報價」",
         "- 排名: Delta 分級（實務慣例），級內以基準情境報酬率（最差進場）排序",
-        "- 模型限制: 無股利調整（q=0）、歐式近似、IV 乘法情境",
+        _model_limitation_line(p),
         "- 韌性向量 7 情境: S1 不漲(S=現價) / S2 半程(完成度50%價位) / S3 大半程"
         "(完成度75%價位) / S4 晚30天到達 / S5 晚90天到達 / S6 IV最保守"
         "(全部 IV 情境估值之最小值) / S7 Natural成交(成本改採 Ask，價差為長Ask−短Bid)"
@@ -353,7 +385,8 @@ def render(
             if j == 0 or p.matrix_all:
                 c = v.contract
                 lines += _matrix_block(
-                    lambda S, d, c=c: scenario_leg_value(c, S, d, p),
+                    lambda S, d, c=c, carry=v.carry:
+                        scenario_leg_value(c, S, d, p, carry=carry),
                     c.ask, snap.spot, p, today, _date.fromisoformat(c.expiry),
                 )
     lines += _footer_lines(p)
@@ -429,8 +462,10 @@ def render_spreads(snap, p, freport, pair_report, ranked, n_pairs, today,
         lines += _spread_candidate_lines(sv, i, n_pairs, p, snap.spot, today, violations)
         if i == 0 or p.matrix_all:
             lng, sht = sv.long_leg, sv.short_leg
+            lc, sc = sv.long_carry, sv.short_carry
             lines += _matrix_block(
-                lambda S, d, lng=lng, sht=sht: spread_scenario_value(lng, sht, S, d, p),
+                lambda S, d, lng=lng, sht=sht, lc=lc, sc=sc:
+                    spread_scenario_value(lng, sht, S, d, p, long_carry=lc, short_carry=sc),
                 sv.net_worst, snap.spot, p, today, _date.fromisoformat(lng.expiry),
             )
     lines += _footer_lines(p)

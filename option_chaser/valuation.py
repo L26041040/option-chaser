@@ -36,20 +36,30 @@ class Greeks:
     vega_per_pct: float
 
 
-def call_greeks(S: float, K: float, T: float, r: float, sigma: float) -> Greeks:
-    """Spec §5.5. Caller guarantees T > 0 (filters ensure expiry > today)."""
+def call_greeks(S: float, K: float, T: float, r: float, sigma: float,
+                q: float = 0.0) -> Greeks:
+    """Spec §5.5，#113（spec #117 §1.4）擴充 q（連續股利殖利率）。
+
+    Caller guarantees T > 0 (filters ensure expiry > today)。
+
+    `q=0.0`（預設）時逐位元退化成擴充前的既有公式——`math.exp(-0.0*T)`
+    恆為 `1.0`（IEEE754 精確值，非近似），乘 1.0／減 0.0 不引入任何
+    捨入誤差，`tests/test_greeks_q.py` 直接斷言差為 0.0。
+    """
     st = sigma * math.sqrt(T)
-    d1 = (math.log(S / K) + (r + 0.5 * sigma * sigma) * T) / st
+    d1 = (math.log(S / K) + (r - q + 0.5 * sigma * sigma) * T) / st
     d2 = d1 - st
+    disc_q = math.exp(-q * T)
     theta_year = (
-        -(S * norm_pdf(d1) * sigma) / (2.0 * math.sqrt(T))
+        -(S * disc_q * norm_pdf(d1) * sigma) / (2.0 * math.sqrt(T))
         - r * K * math.exp(-r * T) * norm_cdf(d2)
+        + q * S * disc_q * norm_cdf(d1)
     )
     return Greeks(
-        delta=norm_cdf(d1),
-        gamma=norm_pdf(d1) / (S * st),
+        delta=disc_q * norm_cdf(d1),
+        gamma=disc_q * norm_pdf(d1) / (S * st),
         theta_per_day=theta_year / DAYS_PER_YEAR,
-        vega_per_pct=S * norm_pdf(d1) * math.sqrt(T) / 100.0,
+        vega_per_pct=S * disc_q * norm_pdf(d1) * math.sqrt(T) / 100.0,
     )
 
 
@@ -68,6 +78,56 @@ def leg_rate(p: AnalysisParams, expiry: str) -> float:
         if exp == expiry:
             return r
     return p.rate
+
+
+@dataclass(frozen=True)
+class LegCarry:
+    """#113（spec #117 §1）：一條腿的 carry 校準結果，每腿只算一次
+
+    （架構要求：矩陣迴圈維持 `(S, t)` 純函式，不隨格數重算 IV 反解）。
+    由 `calibrate_leg()` 產生，掛在 `ContractValuation.carry`／
+    `SpreadValuation.long_carry`／`short_carry` 上，之後所有 `scenario_
+    leg_value()` 呼叫（Heatmap 矩陣、七情境、保本掃描、CLI 報告……全部
+    共用同一個原語）都直接傳這個現成的 `(q, sigma)`，不重新反解。
+    """
+    q: float
+    sigma: float
+    # False＝退回今天的完整行為（q=0、直接採用 vendor IV）——不管是因為
+    # q 管線尚未接上（`p.q_by_symbol is None`，#123 之前恆為此狀態），
+    # 還是這條腿的 IV 反解本身失敗（目標價落在模型可行區間外，例如
+    # 報價陳舊或錯價）。兩種原因收斂成同一個 fallback 形狀，呼叫端不必
+    # 分辨「為什麼沒校準」，只需要知道「有沒有校準」。
+    carry_calibrated: bool
+
+
+def calibrate_leg(c: OptionContract, spot: float, today: date,
+                  p: AnalysisParams) -> LegCarry:
+    """對一條腿做一次 carry 校準（每腿一次，見 `LegCarry` docstring）。
+
+    `p.q_by_symbol is None`（q 管線未接、或該次快照校準不出來，#123
+    的範圍）→ 直接退回今天的行為，**不呼叫** IV 反解——q=0 時很多真實
+    LEAPS call 的目標價落在模型 sigma→0 下限之下，反解在數學上無解
+    （研究文件 `heatmap-valuation-method-selection.md` §4.2 已證實），
+    這條路必須是直接失敗而不是嘗試後失敗。
+
+    有 `q_by_symbol` → 用同一份快照的**中價**、在同一個 BS93+q 模型下
+    反解 σ（價格錨定：t=0 時模型值依定義回到市價）。反解失敗（同樣的
+    「目標價落在可行區間外」情況，但這次是嘗試過的）→ 該腿一樣退回
+    今天的行為並標記，**不外插、不亂猜**（沿用「缺席就如實缺席」的
+    既有原則）。
+    """
+    if p.q_by_symbol is None:
+        return LegCarry(q=0.0, sigma=c.implied_volatility, carry_calibrated=False)
+    expiry = date.fromisoformat(c.expiry)
+    T = days_between(today, expiry) / DAYS_PER_YEAR
+    if T <= 0.0:
+        return LegCarry(q=0.0, sigma=c.implied_volatility, carry_calibrated=False)
+    mid = (c.bid + c.ask) / 2.0
+    sigma_hat = implied_vol(c.option_type, mid, spot, c.strike, T,
+                            leg_rate(p, c.expiry), p.q_by_symbol)
+    if sigma_hat is None:
+        return LegCarry(q=0.0, sigma=c.implied_volatility, carry_calibrated=False)
+    return LegCarry(q=p.q_by_symbol, sigma=sigma_hat, carry_calibrated=True)
 
 
 @dataclass(frozen=True)
@@ -96,16 +156,32 @@ class ContractValuation:
     l1: float
     l2: float
     l3: float
+    # #113：這條腿的 carry 校準結果，算一次、掛在這裡供所有下游呼叫
+    # （Heatmap 矩陣、七情境、CLI 報告……）共用，不重新反解。
+    carry: LegCarry
 
 
 def scenario_leg_value(
-    c: OptionContract, S: float, at: date, p: AnalysisParams, shift: float = 0.0
+    c: OptionContract, S: float, at: date, p: AnalysisParams, shift: float = 0.0,
+    carry: LegCarry | None = None,
 ) -> float:
-    """Spec §3 valuation primitive: value of one leg at date `at` with spot S."""
+    """Spec §3 valuation primitive: value of one leg at date `at` with spot S.
+
+    #113：`carry=None`（預設）與 `carry.carry_calibrated=False` 都走
+    **今天逐位元不變**的路徑——`clamped_price` ＋ vendor IV，q=0。只有
+    `carry.carry_calibrated=True` 才走 BS93＋校準後的 `(q, sigma)`。
+    `at >= expiry` 的到期內在價值分支在 carry 檢查**之前**，不受影響
+    ——這正是 T3／#17「Spread 排名用自身到期日的內在價值，與定價模型
+    無關」這條既有不變量在程式碼層級成立的原因，不需要另外特case。
+    """
     expiry = date.fromisoformat(c.expiry)
     if at >= expiry:
         return intrinsic_value(c.option_type, S, c.strike)
     T = days_between(at, expiry) / DAYS_PER_YEAR
+    if carry is not None and carry.carry_calibrated:
+        return american_price(c.option_type, S, c.strike, T,
+                              leg_rate(p, c.expiry), carry.q,
+                              carry.sigma * (1.0 + shift))
     return clamped_price(c.option_type, S, c.strike, T, leg_rate(p, c.expiry),
                          c.implied_volatility * (1.0 + shift))
 
@@ -118,17 +194,27 @@ def evaluate_contract(
     spread = c.ask - c.bid
     expiry = date.fromisoformat(c.expiry)
     target = p.anchor          # 附錄 A9 錨點：估值參考日
-    g = leg_greeks(c.option_type, spot, c.strike,
-                   days_between(today, expiry) / DAYS_PER_YEAR,
-                   leg_rate(p, c.expiry), c.implied_volatility)
+    carry = calibrate_leg(c, spot, today, p)          # #113：每腿一次
+    t_now = days_between(today, expiry) / DAYS_PER_YEAR
+    # #122 核心紅線：分級用的 delta **恆** q=0／vendor IV，不讀 carry——
+    # 即使這條腿已校準，legacy 分級路徑也看不到新模型。
+    g_classification = leg_greeks(c.option_type, spot, c.strike, t_now,
+                                  leg_rate(p, c.expiry), c.implied_volatility)
+    # 顯示／估值用的 Greeks：未校準時 carry.sigma=vendor IV、carry.q=0.0，
+    # 與 g_classification 精確同值（不是巧合，是 calibrate_leg 的 fallback
+    # 設計）；校準成功時才真的用上新的 (q, sigma)。
+    g = leg_greeks(c.option_type, spot, c.strike, t_now,
+                   leg_rate(p, c.expiry), carry.sigma, carry.q)
     scenario_values = tuple(
-        (shift, scenario_leg_value(c, p.target_price, target, p, shift))
+        (shift, scenario_leg_value(c, p.target_price, target, p, shift, carry))
         for shift in p.iv_shifts
     )
     baseline_value = dict(scenario_values)[0.0]
     floor_value = intrinsic_value(c.option_type, p.target_price, c.strike)
     # T12（附錄 A14.2）：主數字成本口徑＝最差成交假設（單腿＝Ask）。
-    # breakeven／槓桿等成本衍生數字同口徑；mid 保留為次要顯示。
+    # breakeven／槓桿等成本衍生數字同口徑；mid 保留為次要顯示。breakeven
+    # 純粹是市場報價（strike ± ask）的算術，不經任何估值模型，因此不受
+    # carry 影響——這與研究文件 §8 對 Spread 排名的觀察是同一件事。
     if c.option_type == "call":
         breakeven = c.strike + c.ask
         be_vs_spot = (breakeven - spot) / spot
@@ -137,13 +223,10 @@ def evaluate_contract(
         breakeven = c.strike - c.ask
         be_vs_spot = (spot - breakeven) / spot
         be_vs_target = (breakeven - p.target_price) / p.target_price
-    l2 = scenario_leg_value(c, p.target_price, target, p, min(p.iv_shifts))
+    l2 = scenario_leg_value(c, p.target_price, target, p, min(p.iv_shifts), carry)
     return ContractValuation(
         contract=c, mid=mid, spread=spread,
-        # #122：目前兩欄同值——q=0 歐式解析式尚未被 #113 換掉，這是刻意
-        # 的零行為變化。`classification_delta` 固定沿用這個既有 q=0 口徑，
-        # 之後 #113 換模型時只動 `delta`，這一行不動。
-        delta=g.delta, classification_delta=g.delta,
+        delta=g.delta, classification_delta=g_classification.delta,
         gamma=g.gamma, theta_per_day=g.theta_per_day,
         vega_per_pct=g.vega_per_pct,
         breakeven=breakeven, breakeven_vs_spot=be_vs_spot,
@@ -152,6 +235,7 @@ def evaluate_contract(
         floor_value=floor_value, scenario_values=scenario_values,
         baseline_value=baseline_value,
         l1=floor_value, l2=l2, l3=baseline_value / (1.0 + p.min_return),
+        carry=carry,
     )
 
 
@@ -195,24 +279,44 @@ def intrinsic_value(option_type: str, S: float, K: float) -> float:
 
 
 def clamped_price(option_type: str, S: float, K: float, T: float, r: float, sigma: float) -> float:
-    """Spec §3.2: American no-arbitrage floor applied to every valuation output."""
+    """把歐式 BS 值鉗到內在價值之上（未校準／今天行為路徑專用，見
+    `scenario_leg_value`）。
+
+    #113（spec #117 §1.6）更正 docstring：這**不是**「American
+    no-arbitrage floor」——它防的是「模型值低於內在價值」這種荒謬
+    結果，不是提前履約權利的價值。實測（真實 758 筆 Cboe 全鏈）它對
+    美式溢價的回收率中位數是 0.0%（229 筆有溢價的 put，箝制真正生效
+    只有 46 筆），見 `docs/research/heatmap-valuation-method-selection.md`
+    §4.4。真正的美式提前履約價值由 `american_price`（BS93 近似）處理，
+    只在該腿 carry 校準成功時才會被用到；本函式維持給未校準（今天）
+    路徑用，行為不變。
+    """
     return max(bs_price(option_type, S, K, T, r, sigma), intrinsic_value(option_type, S, K), 0.0)
 
 
-def leg_greeks(option_type: str, S: float, K: float, T: float, r: float, sigma: float) -> Greeks:
-    """Spec §3.1. Caller guarantees T > 0."""
-    g = call_greeks(S, K, T, r, sigma)
+def leg_greeks(option_type: str, S: float, K: float, T: float, r: float,
+               sigma: float, q: float = 0.0) -> Greeks:
+    """Spec §3.1，#113（spec #117 §1.4）擴充 q。Caller guarantees T > 0.
+
+    put 的 delta 用一般化的 put-call parity 微分關係
+    `put_delta = call_delta − e^{-qT}`（q=0 時精確退化成既有的
+    `call_delta − 1.0`，`math.exp(-0.0*T)` 恆為 1.0）；theta 的
+    `q*S*e^{-qT}*N(-d1)` 修正項同理在 q=0 時精確歸零，不是近似。
+    """
+    g = call_greeks(S, K, T, r, sigma, q)
     if option_type == "call":
         return g
     st = sigma * math.sqrt(T)
-    d1 = (math.log(S / K) + (r + 0.5 * sigma * sigma) * T) / st
+    d1 = (math.log(S / K) + (r - q + 0.5 * sigma * sigma) * T) / st
     d2 = d1 - st
+    disc_q = math.exp(-q * T)
     theta_year_put = (
-        -(S * norm_pdf(d1) * sigma) / (2.0 * math.sqrt(T))
+        -(S * disc_q * norm_pdf(d1) * sigma) / (2.0 * math.sqrt(T))
         + r * K * math.exp(-r * T) * norm_cdf(-d2)
+        - q * S * disc_q * norm_cdf(-d1)
     )
     return Greeks(
-        delta=g.delta - 1.0,
+        delta=g.delta - disc_q,
         gamma=g.gamma,
         theta_per_day=theta_year_put / DAYS_PER_YEAR,
         vega_per_pct=g.vega_per_pct,
@@ -222,10 +326,11 @@ def leg_greeks(option_type: str, S: float, K: float, T: float, r: float, sigma: 
 def spread_scenario_value(
     long_leg: OptionContract, short_leg: OptionContract,
     S: float, at: date, p: AnalysisParams, shift: float = 0.0,
+    long_carry: LegCarry | None = None, short_carry: LegCarry | None = None,
 ) -> float:
     width = abs(short_leg.strike - long_leg.strike)
-    raw = (scenario_leg_value(long_leg, S, at, p, shift)
-           - scenario_leg_value(short_leg, S, at, p, shift))
+    raw = (scenario_leg_value(long_leg, S, at, p, shift, long_carry)
+           - scenario_leg_value(short_leg, S, at, p, shift, short_carry))
     return min(max(raw, 0.0), width)
 
 
@@ -245,6 +350,10 @@ class SpreadValuation:
     l2: float
     l3: float
     max_profit: float
+    # #113：兩條腿各自的 carry 校準結果，算一次、供所有下游共用
+    # （見 `LegCarry` docstring）。
+    long_carry: LegCarry
+    short_carry: LegCarry
 
 
 def evaluate_spread(
@@ -256,21 +365,28 @@ def evaluate_spread(
     net_worst = long_leg.ask - short_leg.bid
     expiry = date.fromisoformat(long_leg.expiry)
     t_now = days_between(today, expiry) / DAYS_PER_YEAR
+    long_carry = calibrate_leg(long_leg, spot, today, p)      # #113：每腿一次
+    short_carry = calibrate_leg(short_leg, spot, today, p)
     g_l = leg_greeks(long_leg.option_type, spot, long_leg.strike, t_now,
-                     leg_rate(p, long_leg.expiry), long_leg.implied_volatility)
+                     leg_rate(p, long_leg.expiry), long_carry.sigma, long_carry.q)
     g_s = leg_greeks(short_leg.option_type, spot, short_leg.strike, t_now,
-                     leg_rate(p, short_leg.expiry), short_leg.implied_volatility)
+                     leg_rate(p, short_leg.expiry), short_carry.sigma, short_carry.q)
     net_delta = g_l.delta - g_s.delta
     # 需求 §三：排名情境＝標的在該 Spread **自身到期日**等於目標價、持有至到期。
     # 估值日即 expiry → 內在價值；IV shift 到期時無作用，情境向量同值屬必然。
+    # 這也是 Spread 排名與定價模型無關（研究文件 §8／T3／#17 既有裁示）
+    # 在程式碼層級成立的原因：`scenario_leg_value` 的 `at >= expiry` 分支
+    # 在讀 carry 之前就回傳了，這裡即使傳了 carry 也不影響數值——傳入是
+    # 為了與其他呼叫點一致，不是因為這裡真的用得到。
     scenario_values = tuple(
-        (shift, spread_scenario_value(long_leg, short_leg, p.target_price, expiry, p, shift))
+        (shift, spread_scenario_value(long_leg, short_leg, p.target_price, expiry,
+                                      p, shift, long_carry, short_carry))
         for shift in p.iv_shifts
     )
     baseline = dict(scenario_values)[0.0]
     # T12（附錄 A14.2）：主數字成本口徑＝net_worst（買腿 Ask − 賣腿 Bid），
     # 定位「保守成交假設收益」。breakeven／最大獲利／槓桿同口徑；net_mid
-    # 保留為次要顯示。
+    # 保留為次要顯示。breakeven 是市場報價算術，不經模型，不受 carry 影響。
     if long_leg.option_type == "call":
         breakeven = long_leg.strike + net_worst
         be_vs_target = (p.target_price - breakeven) / p.target_price
@@ -286,6 +402,7 @@ def evaluate_spread(
         l2=min(v for _, v in scenario_values),
         l3=baseline / (1.0 + p.min_return),
         max_profit=width - net_worst,
+        long_carry=long_carry, short_carry=short_carry,
     )
 
 

@@ -45,6 +45,7 @@
             "buffer_days": -42,
             "candidate_key": "bull-call-spread|118|122|2026-08-07",
             "capital_per_contract": 60.00000000000001,
+            "carry_calibrated": false,
             "catchup_price": 125.33333333333333,
             "completion_curve": [
               [
@@ -380,6 +381,7 @@
             "buffer_days": -28,
             "candidate_key": "bull-call-spread|118|122|2026-08-21",
             "capital_per_contract": 75.0,
+            "carry_calibrated": false,
             "catchup_price": 126.26666666666667,
             "completion_curve": [
               [
@@ -715,6 +717,7 @@
             "buffer_days": 0,
             "candidate_key": "bull-call-spread|118|122|2026-09-18",
             "capital_per_contract": 100.0,
+            "carry_calibrated": false,
             "catchup_price": 127.6,
             "completion_curve": [
               [
@@ -1050,6 +1053,7 @@
             "buffer_days": 63,
             "candidate_key": "bull-call-spread|118|122|2026-11-20",
             "capital_per_contract": 139.99999999999994,
+            "carry_calibrated": false,
             "catchup_price": 131.14285714285714,
             "completion_curve": [
               [
@@ -1393,6 +1397,7 @@
     "matrix_all": false,
     "max_spread_pct": 0.15,
     "min_return": 0.0,
+    "q_by_symbol": null,
     "rate": 0.04,
     "rate_by_expiry": [
       [
@@ -1469,6 +1474,7 @@
           "buffer_days": -42,
           "candidate_key": "bull-call-spread|118|122|2026-08-07",
           "capital_per_contract": 60.00000000000001,
+          "carry_calibrated": false,
           "catchup_price": 125.33333333333333,
           "completion_curve": [
             [
@@ -1791,6 +1797,7 @@
           "buffer_days": -28,
           "candidate_key": "bull-call-spread|118|122|2026-08-21",
           "capital_per_contract": 75.0,
+          "carry_calibrated": false,
           "catchup_price": 126.26666666666667,
           "completion_curve": [
             [
@@ -2113,6 +2120,7 @@
           "buffer_days": 0,
           "candidate_key": "bull-call-spread|118|122|2026-09-18",
           "capital_per_contract": 100.0,
+          "carry_calibrated": false,
           "catchup_price": 127.6,
           "completion_curve": [
             [
@@ -2438,6 +2446,7 @@
           "buffer_days": -42,
           "candidate_key": "bull-call-spread|118|122|2026-08-07",
           "capital_per_contract": 60.00000000000001,
+          "carry_calibrated": false,
           "catchup_price": 125.33333333333333,
           "completion_curve": [
             [
@@ -2760,6 +2769,7 @@
           "buffer_days": -28,
           "candidate_key": "bull-call-spread|118|122|2026-08-21",
           "capital_per_contract": 75.0,
+          "carry_calibrated": false,
           "catchup_price": 126.26666666666667,
           "completion_curve": [
             [
@@ -3082,6 +3092,7 @@
           "buffer_days": 0,
           "candidate_key": "bull-call-spread|118|122|2026-09-18",
           "capital_per_contract": 100.0,
+          "carry_calibrated": false,
           "catchup_price": 127.6,
           "completion_curve": [
             [
@@ -3404,6 +3415,7 @@
           "buffer_days": 63,
           "candidate_key": "bull-call-spread|118|122|2026-11-20",
           "capital_per_contract": 139.99999999999994,
+          "carry_calibrated": false,
           "catchup_price": 131.14285714285714,
           "completion_curve": [
             [
@@ -3748,6 +3760,7 @@
               "buffer_days": -42,
               "candidate_key": "bull-call-spread|118|122|2026-08-07",
               "capital_per_contract": 60.00000000000001,
+              "carry_calibrated": false,
               "catchup_price": 125.33333333333333,
               "completion_curve": [
                 [
@@ -4075,6 +4088,7 @@
               "buffer_days": -28,
               "candidate_key": "bull-call-spread|118|122|2026-08-21",
               "capital_per_contract": 75.0,
+              "carry_calibrated": false,
               "catchup_price": 126.26666666666667,
               "completion_curve": [
                 [
@@ -4402,6 +4416,7 @@
               "buffer_days": 0,
               "candidate_key": "bull-call-spread|118|122|2026-09-18",
               "capital_per_contract": 100.0,
+              "carry_calibrated": false,
               "catchup_price": 127.6,
               "completion_curve": [
                 [
@@ -4729,6 +4744,7 @@
               "buffer_days": 63,
               "candidate_key": "bull-call-spread|118|122|2026-11-20",
               "capital_per_contract": 139.99999999999994,
+              "carry_calibrated": false,
               "catchup_price": 131.14285714285714,
               "completion_curve": [
                 [
