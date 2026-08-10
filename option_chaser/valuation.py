@@ -278,6 +278,186 @@ def evaluate_spread(
     )
 
 
+# ---------- #119（spec #117 §1）：BS93 美式近似＋同模型 IV 反解 ----------
+#
+# 這一段是 spec #117 鎖定的估值原語，純函式、純 stdlib，逐字依
+# QuantLib `BjerksundStenslandApproximationEngine`（一手原始碼，
+# https://github.com/lballabio/QuantLib/blob/master/ql/pricingengines/
+# vanilla/bjerksundstenslandengine.cpp）移植，未改動任何既有函式、
+# 未被任何既有呼叫路徑引用——接進引擎是 #113 的範圍，本檔只交付
+# 「原語本身正確」。變數命名沿用原始碼的 rT/bT/variance（皆已乘上 T
+# 的「T-scaled」量，不是年化值），方便對照原始碼逐行核對。
+
+
+def merton_price(option_type: str, S: float, K: float, T: float, r: float,
+                 q: float, sigma: float) -> float:
+    """Black-Scholes-Merton 歐式解，含連續股利殖利率 q（Merton 1973）。
+
+    q=0 時就是既有 `bs_price`；這裡獨立一份是因為 BS93 需要它當
+    q<=0 的精確退化目標與數值防護的 fallback，兩邊呼叫的參數形狀
+    （含 q）不同，不透過既有 `bs_price` 包一層。T<=0／sigma<=0 回內在
+    價值（時間價值歸零的極限，不是特例分支）。
+    """
+    if T <= 0.0 or sigma <= 0.0:
+        return intrinsic_value(option_type, S, K)
+    st = sigma * math.sqrt(T)
+    d1 = (math.log(S / K) + (r - q + 0.5 * sigma * sigma) * T) / st
+    d2 = d1 - st
+    if option_type == "call":
+        return S * math.exp(-q * T) * norm_cdf(d1) - K * math.exp(-r * T) * norm_cdf(d2)
+    return K * math.exp(-r * T) * norm_cdf(-d2) - S * math.exp(-q * T) * norm_cdf(-d1)
+
+
+def _bs93_phi(S: float, gamma: float, H: float, I: float,
+             rT: float, bT: float, variance: float) -> float:
+    """QuantLib `phi()` 逐行移植。`variance`＝sigma²T（已含 T），
+    `rT`＝rT、`bT`＝bT（皆已含 T）——呼叫端負責換算，這裡不重複。"""
+    lam = -rT + gamma * bT + 0.5 * gamma * (gamma - 1.0) * variance
+    sv = math.sqrt(variance)
+    d = -(math.log(S / H) + (bT + (gamma - 0.5) * variance)) / sv
+    kappa = 2.0 * bT / variance + (2.0 * gamma - 1.0)
+    d2 = d - 2.0 * math.log(I / S) / sv
+    return math.exp(lam) * (norm_cdf(d) - (I / S) ** kappa * norm_cdf(d2))
+
+
+def _bs93_call_core(S: float, K: float, T: float, r: float, q: float,
+                    sigma: float) -> float:
+    """美式 call 封閉解本體（cost of carry b=r-q）。呼叫端負責 put 的
+    put-call symmetry 轉換（`S↔K`、`r↔q`）——BS93 對美式 put 的標準
+    處理方式，逐字對照 QuantLib `calculate()` 的 swap 邏輯。"""
+    variance = sigma * sigma * T
+    rfD = math.exp(-r * T)
+    dD = math.exp(-q * T)
+    bT = math.log(dD / rfD)      # = (r-q)*T
+    rT = math.log(1.0 / rfD)     # = r*T
+
+    # q<=0（b>=r）時提前履約永不最優，退化為歐式——這一支同時是「唯一
+    # 兩個數值防護」的第一層 fallback 目標，寫在最前面。QuantLib 原始碼
+    # 在 calculate() 用 dividendDiscount>=1 && dividendDiscount>=
+    # riskFreeDiscount 判斷；代入 rT/bT 後對 r>=0（本專案唯一會出現的
+    # 情況：Treasury 期限利率恆為正）與這個 bT>=rT 判準完全等價，
+    # 唯一分歧點（r<q<0 的雙邊界病態情形）QuantLib 選擇直接拋錯，
+    # 本函式選擇同樣退回歐式——純函式不拋錯是本專案既有慣例。
+    if bT >= rT:
+        return merton_price("call", S, K, T, r, q, sigma)
+
+    european = merton_price("call", S, K, T, r, q, sigma)
+
+    beta = (0.5 - bT / variance) + math.sqrt(
+        (bT / variance - 0.5) ** 2 + 2.0 * rT / variance)
+    b_inf = beta / (beta - 1.0) * K
+    b_zero = K if bT == rT else max(K, rT / (rT - bT) * K)
+
+    # 數值防護 1／2：b_inf − b_zero → 0（trigger price 的邊界收斂到單點，
+    # h(T) 除以幾乎是 0 的分母）。實測會直接 OverflowError／發散，
+    # 退回歐式（有定義、且是 beta→∞ 時的極限值）。
+    denom = b_inf - b_zero
+    if abs(denom) < 1e-10:
+        return european
+
+    ht = -(bT + 2.0 * math.sqrt(variance)) * b_zero / denom
+    trigger = b_zero + (b_inf - b_zero) * (1.0 - math.exp(ht))
+
+    if S >= trigger:
+        value = S - K  # 立即履約價值
+    else:
+        fwd = S * dD / rfD
+        # 數值防護 2／2：beta 過大／trigger price 邊界失控（QuantLib
+        # 原始碼註解原文："We have a run away exercise boundary. It is
+        # numerically more accurate to use the Greeks of the European
+        # engine."）——同一判準、同一處理方式，退回歐式而不是讓後面的
+        # (I/S)**kappa 溢位。
+        q_check = math.log(trigger / fwd) / math.sqrt(variance)
+        if q_check > 12.5:
+            value = european
+        else:
+            value = (
+                (trigger - K) * (S / trigger) ** beta
+                * (1.0 - _bs93_phi(S, beta, trigger, trigger, rT, bT, variance))
+                + S * _bs93_phi(S, 1.0, trigger, trigger, rT, bT, variance)
+                - S * _bs93_phi(S, 1.0, K, trigger, rT, bT, variance)
+                - K * _bs93_phi(S, 0.0, trigger, trigger, rT, bT, variance)
+                + K * _bs93_phi(S, 0.0, K, trigger, rT, bT, variance)
+            )
+    # QuantLib 原始碼收尾一致：這個「取歐式與較大值」的收尾對**三個分支
+    # 全部**適用，不只 phi 公式那一支——深度價內＋高波動的短天期組合下，
+    # 立即履約分支算出的 trigger price 有時會落在真正最適履約邊界之內，
+    # 讓 S-K 反而低於歐式連續持有的價值；沒有這一步時 American < European
+    # 會直接違反「美式恆 ≥ 歐式」這個不需要任何模型就知道的不變量
+    # （原始移植時漏放在 if/else 外層，已用隨機參數掃描抓出並修正）。
+    return max(value, european)
+
+
+def american_price(option_type: str, S: float, K: float, T: float, r: float,
+                   q: float, sigma: float) -> float:
+    """美式選擇權封閉解近似（Bjerksund–Stensland 1993），含連續股利殖利率
+    q。純函式、純 stdlib，無新依賴。
+
+    q<=0 時對 call **逐位元**退化成 `merton_price("call", ...)`——見
+    `_bs93_call_core` 最前面那個分支，這是研究文件（`docs/research/
+    heatmap-valuation-method-selection.md` §10-1）明文要求的不變量，
+    由 `test_american_pricing.py` 直接斷言差為 0.0。
+
+    Put 走 put-call symmetry（`S↔K`、`r↔q`，同一個 call 核心函式），
+    這是 BS93 對美式 put 的標準處理方式，不是另外一套公式——因此 put
+    的「何時退化成歐式」判準是 r<=0（不是 q<=0，兩者互為對偶：call
+    的提前履約誘因來自股利，put 的提前履約誘因來自把履約價現金提早
+    拿去生息，見 valuation-method-selection.md §10-2 第 4 點的討論）。
+
+    任何數值溢位（beta 溢位、trigger price 邊界失控等，兩個防護已在
+    `_bs93_call_core` 內攔截，這裡的 try/except 是最後一道保險）一律
+    收斂成歐式解——純函式不拋錯，是本專案既有慣例（`data/cboe.py`
+    的 FetchError 收斂同一精神）。最終結果永遠 clamp 到內在價值之上
+    （不會低於立即履約可拿到的價值，也不會是負值）。
+    """
+    if T <= 0.0 or sigma <= 0.0:
+        return intrinsic_value(option_type, S, K)
+    try:
+        if option_type == "put":
+            raw = _bs93_call_core(K, S, T, q, r, sigma)
+        else:
+            raw = _bs93_call_core(S, K, T, r, q, sigma)
+    except (OverflowError, ValueError, ZeroDivisionError):
+        raw = merton_price(option_type, S, K, T, r, q, sigma)
+    return max(raw, intrinsic_value(option_type, S, K), 0.0)
+
+
+def implied_vol(option_type: str, target_price: float, S: float, K: float,
+                T: float, r: float, q: float,
+                lo: float = 1e-6, hi: float = 5.0) -> float | None:
+    """從市場中價反解 σ，使 `american_price(...)` 重現 `target_price`
+    （同模型逐腿反解＋價格錨定，見研究文件 §10-1／§10-3）。
+
+    二分法：`american_price` 對 sigma 單調遞增（標準性質，call／put
+    皆成立），不需要導數、不需要初始猜值。找不到解時回傳 `None`——
+    「目標價落在模型可行區間外」是真實會發生的情況（研究文件 §4.2：
+    q=0 時多數近價位 LEAPS call 的 IV 反解在數學上無解），呼叫端必須
+    把 `None` 當成「這條腿反解失敗」處理、不得外插或亂猜一個數字
+    （沿用本專案「缺席就如實缺席、不偽造數值」的既有原則）。
+    """
+    if T <= 0.0 or target_price <= 0.0:
+        return None
+    price_lo = american_price(option_type, S, K, T, r, q, lo)
+    price_hi = american_price(option_type, S, K, T, r, q, hi)
+    if not (price_lo <= target_price <= price_hi):
+        return None
+    # 只在 sigma 區間本身收斂到極小才提早退出，不靠價格容忍度提早退出：
+    # 深價內／深價外附近價格對 sigma 的敏感度（vega）可能很小，只看
+    # 「價格夠近了」會在區間還很寬時就停手，讓反解出的 sigma 不準確
+    # （曾實測近價位候選最大誤差達 0.0625 vol pt，遠高於預期）。改成
+    # 純粹依區間寬度收斂，48 次已把寬度壓到 ~2e-11（(5-1e-6)/2^48）。
+    for _ in range(60):
+        if hi - lo < 1e-12:
+            break
+        mid = (lo + hi) / 2.0
+        price_mid = american_price(option_type, S, K, T, r, q, mid)
+        if price_mid < target_price:
+            lo = mid
+        else:
+            hi = mid
+    return (lo + hi) / 2.0
+
+
 def catchup_price(strike: float, call_cost: float, baseline_return: float) -> float:
     """D1（#14）：所選 Spread 的 Long Call 追平價格 S*＝K＋C×(1+R)——標的要
     漲到哪個價格，同履約價 K 的 Long Call 持有至到期的報酬率才追得上這組
