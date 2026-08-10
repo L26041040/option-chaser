@@ -1751,6 +1751,139 @@ issue 已關閉（`state_reason=completed`），驗收基準 HEAD `8e57a7b`
 > 下一階段（#111／#113／#114／#115／#116、Crossover、IV History、
 > Valuation D2 model 鎖定）尚未開工，等待需求方後續指示。
 
+### MVP V3 Continuation（spec #117，2026-08-09 起，第二波施工）
+
+QA-01 收尾後緊接開始的下一波，承接 #102 尚未完成的部分（#111／#113／
+#114／#115／#116）加兩項新增工作（q 資料管線、Heatmap compact 小修）。
+**#103–#110、#112、QA-01 已 ACCEPTED 的第一施工批次不重開**。
+
+**研究（不施工，只留文件）**：
+
+- `docs/research/heatmap-valuation-method-selection.md`（commit
+  `91e8fb9`）——Heatmap／Crossover 該用哪個估值方法。真實資料證實
+  現行 q=0 歐式＋vendor IV 在「今天×現價」那格印出 +81.9%／+81.4%，
+  誠實答案是 −11.5%／−4.2%；根因是模型不一致（vendor IV 是美式含
+  股利模型反解的，卻代進歐式無股利公式）。四方法比較（對 CRR 美式樹
+  基準）：現行格差中位 4.79–14.28pp；Bjerksund–Stensland 1993＋q
+  僅 0.18–0.33pp、Crossover 判錯 0.0%，且每格 6.0µs（CRR300 要
+  15.4ms，60 秒 serverless 上限下不可行）。**建議＝BS93 美式近似＋
+  同快照同模型逐腿反解 IV 價格錨定**，需需求方核准。另標出副作用：
+  單腿 delta 分級會位移（TLT 五檔三檔 conservative→balanced），
+  Spread 排名／best_return／V9 成本走勢圖不受影響。
+- `docs/research/dividend-yield-source-selection.md`（commit
+  `e7df64a`）——q 從哪裡拿、怎麼算。用 TLT 真實 fixture 量化：外部
+  配息資料算的 q 與市場自身隱含 carry 只差 0.024–0.078pp（Heatmap
+  格差 0.15–0.48pp），對照門檻（1.5pp⇒9.26pp）達標一到兩個數量級。
+  真正要付代價的只有三個決定：現金分配 vs 30 天 SEC 殖利率
+  （3.59pp）、除以自己的 spot vs 抄 vendor 百分比（0.87pp）、複利
+  慣例（1.01pp）。**推薦 primary＝Yahoo chart `events.dividends`**
+  （見下方 #120 已實測確認）；不建配息時間表（次數數錯比相位貴
+  20 倍）。快取沿用 ratecurve／rate_cache 既有 pattern，三處刻意
+  偏離：per-symbol 鍵、90 天陳舊窗（非利率的 7 天）、快取金額而非
+  算好的 q。
+- `docs/spec/`（未落檔案，commits `399d677`／`12bb5b8`）——MVP V3
+  Remaining Work / Continuation Spec：鎖定 BS93＋同模型 IV 反解、
+  q 取外部配息資料（Method E 僅 diagnostic）、Crossover 2D overlay、
+  不恢復舊 1D 追平價格 UI。**核心紅線（需求方更正版）**：本輪任何
+  工作都不得改變既有 Spread 的 ranking／filtering／candidate
+  selection／expiry_best／expiry_top10／representative candidate／
+  best_return；新模型 delta 僅供估值與顯示，不得進入 legacy 分級
+  路徑；Crossover 的 comparator 就是買腿本身，禁止候選搜尋；
+  Historical IV 只 enrich、不得參與 ranking 或 selection。
+
+**已完成（依序）**：
+
+- **#118**（commit `2425ea6`）— Spread 選取身份回歸守門：施工前先把
+  現行 ranking identity／各到期日順序／expiry_best／expiry_top10／
+  representative candidate／best_return semantics 凍結成固定
+  fixture 的離線測試，供後續每張票完成後直接呼叫比對。刻意只釘身份
+  與順序、不釘數值（Heatmap cells／Greeks／baseline_return 允許在
+  估值修正後改變）。不改動任何 production 行為。
+- **#119**（commit `ccba9c7`）— BS93 定價原語＋同模型 IV 反解（純
+  函式，未接引擎）：`american_price()`／`merton_price()`／
+  `implied_vol()`，逐字依 QuantLib 一手原始碼移植。q<=0 時對 call
+  逐位元退化成 Merton 歐式。實作中抓到並修正一個真正確性 bug
+  （QuantLib「取歐式與較大值」的收尾漏放在條件外層，深度價內＋高波動
+  組合下美式價格一度低於歐式，違反美式恆≥歐式的基本不變量；修正後
+  4 萬組隨機參數掃描零違反）。未接進任何呼叫路徑，production 行為
+  零變化。
+- **#121**（commit `6a6060e`）— Heatmap compact：cell 去 `+`／`%`
+  純數字化、水平 padding 8px→5px。右側「vs 現價」欄與日期軸密度不動
+  （QA-FIX-1／#109 既有驗收範圍）。Playwright 實測固定容器寬度下
+  平均欄寬 60.92px→45.65px、可見欄數 14→19，新增 e2e 永久回歸斷言。
+  零金融計算、零契約變更。
+- **#122**（commit `028d249`）— 分級 delta 接縫：`ContractValuation`
+  新增 `classification_delta`，legacy 單腿分級改讀這一欄而非 `delta`
+  ——#113 換估值模型時只會改 `delta`，`classification_delta` 保持
+  原口徑，legacy 分級因此不會被新模型污染（spec #117 核心紅線的落地
+  機制）。目前兩欄同值（q=0 歐式解析式，未換模型），純結構性 prefactor。
+- **#113**（commit `17dc6ca`）— 引擎接線：Spread／單腿估值改走 BS93＋
+  同模型 IV 反解（#119 原語），q 由 `AnalysisParams.q_by_symbol` 注入
+  （`None`＝今天，#123 之前恆為此狀態）。每腿一次 `calibrate_leg()`，
+  掛在 `carry`／`long_carry`+`short_carry` 上供 Heatmap／七情境／保本
+  掃描／CLI 報告全部共用。Fallback：`q_by_symbol=None` 或反解失敗，
+  一律收斂成 `(q=0.0, sigma=vendor_iv, carry_calibrated=False)`——
+  今天的完整行為，不是「q=0＋價格錨定」（那條路對多數真實 LEAPS call
+  數學上無解）。端到端用真實 TLT LEAPS fixture 驗證：q=0→0.045 讓
+  K=85 顯示 delta 從 0.73 真的移到 0.46，但 `classification_delta`
+  逐位元不變、候選身份與順序不變（#118 守門通過）；Spread 排名端到端
+  維持模型無關（T3／#17，`scenario_leg_value` 的到期內在價值分支在
+  讀 carry 前就回傳）。契約樣本純加法重產（`q_by_symbol`／
+  `carry_calibrated`），CLI golden fixture 零漂移。
+- **#120**（issue 已於本輪 close）— Yahoo 配息端點 production 探測：
+  沙箱探測腳本先備妥（commit `af27f52`），本輪改用 GitHub Actions
+  `ubuntu-latest` runner（真實網路出口，理由見下方「探測環境選擇」）
+  取得**真實**結果：TLT 匿名 `GET .../v8/finance/chart/TLT?...` →
+  HTTP 200，`events.dividends` 24 筆歷史配息、過去 365 天 12 筆，
+  與 Nasdaq 獨立來源交叉印證誤差僅 1.6%；`events.splits` 窗內不存在
+  （TLT 近 2 年無分割，預期結果）。**Yahoo chart events 正式從
+  「建議」升級為「實測確認」的 primary source**（研究文件
+  `dividend-yield-source-selection.md` §12.4／§13-1 同步更新，
+  commits `f392014`／`6211085`／`55d80a3`）。issue 已附真實結果留言
+  並 close。
+- **#111**（credential-blocked，issue 維持 OPEN）— IV History vendor
+  三步驗證：同一真實環境實測。① Market Data App／③ ORATS 的認證機制
+  要求金鑰才能組出可呼叫的 URL，無金鑰下連請求都送不出去；② Alpha
+  Vantage 用官方公開 demo 金鑰測得 HTTP 200，但回應是「請註冊真實
+  金鑰」而非 `HISTORICAL_OPTIONS` 真實資料。**三家皆 credential-
+  blocked，無一達成 AC「至少一次成功的真實資料呼叫」**，不得宣稱
+  vendor 已確認（研究文件 `historical-options-iv-data-sources.md`
+  §5.1 同步更新）。issue 已附真實結果留言，**維持 OPEN**、待需求方
+  決定是否申請免費金鑰（建議優先 Alpha Vantage，號稱 20 秒申請、
+  已確認端點真實可達）。**#114（Historical IV Position 模組）依既有
+  blocked-by 持續卡在本票之後，本輪未動工**。
+- **#123**（commits `4043106`／`a022628`）— q 管線：抓取（Yahoo→FMP
+  →Nasdaq 備援鏈，純 stdlib，單一 `FetchError`）／per-symbol 快取
+  （`Storage` protocol 新增 `DividendCacheEntry`，memory／postgres
+  兩後端皆補齊，90 天陳舊窗）／三態揭露（`AnalysisParams` 新增
+  `q_source`／`q_as_of`／`q_stale`／`q_note`，比照既有
+  `rate_curve_used` 三態）／接進引擎（`service._resolve_q` 鏡射
+  `_resolve_rates` 四層 fallback，接上 #113 早已就緒的消費端）。
+  前端補上 `QRow`（`src/AnalysisReport.tsx`，鏡射既有 `RateRow`）與
+  `src/api.ts` 型別。純函式解析（`parse_yahoo_dividends` 等）歸位到
+  `option_chaser/dividends.py`，比照 `ratecurve.parse_treasury_csv`
+  既有分工（純模組自己的例外型別 `DividendParseError`，不依賴 I/O
+  層的 `FetchError`）。`/api/health` 刻意不比照加 `dividend` 區塊
+  （per-symbol 資料沒有「那一筆」可讀，程式碼註記說明）。全套測試
+  綠燈：後端 867 passed（memory＋真實 Postgres 兩後端）、前端 360
+  passed、typecheck／build 皆過。**#118 選取身份回歸守門全程綠燈**。
+
+**探測環境選擇（#120／#111 共同記錄）**：使用者原始指示要求建臨時
+Vercel probe，但本輪 Vercel MCP 的 `deploy_to_vercel` 可成功部署，
+該 session 內所有讀回工具（`get_deployment`／`list_projects`／
+`web_fetch_vercel_url`／`get_runtime_logs` 等，7+ 次不同嘗試、兩個
+獨立專案）全數 404/403——與沙箱網路政策無關，是另一個獨立的 MCP
+工具整合缺陷。改用本 repo 既有的 `tmp-*.yml` 一次性工作流慣例（6 個
+既有前例）：推臨時 workflow 到 `master`（`tmp-vendor-probe.yml`，
+`ubuntu-latest` runner 真實網路出口），跑完即刪。**兩個孤兒 Vercel
+專案**（`option-chaser-vendor-probe`／`option-chaser-vendor-probe-2`）
+**MCP 工具無刪除操作，需求方需自行從 Vercel 後台手動清除**。
+
+**尚存 blocker**：#111（IV History vendor，credential-blocked，
+需需求方申請免費金鑰）、#114（依既有 blocked-by 卡在 #111 之後）、
+#115／#116（依鏈續卡）。#113／#118–#123 依既有規則**中途不主動開
+PR**，累積到這幾張也解決或需求方指示時再開。
+
 ### 施工依據
 
 - 需求與決策紀錄：`docs/modifyRequestV1.md`（附錄 A1–A12）
