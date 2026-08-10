@@ -39,6 +39,8 @@ function view(overrides: Partial<Overrides> = {}): AnalysisView {
               strategy: "bull-call-spread", rate: 0.04, rate_note: "",
               rate_curve_used: false, rate_curve_date: null,
               rate_curve_stale: false, rate_explicit: false,
+              q_by_symbol: null, q_source: null, q_as_of: null,
+              q_stale: false, q_note: "",
               iv_shifts: [-0.2, 0, 0.2], delta_bands: [0.35, 0.65],
               min_return: 0 },
     baseline_expiry: overrides.baseline === undefined

@@ -21,12 +21,14 @@ from __future__ import annotations
 import dataclasses
 import json
 import os
-from datetime import date, datetime, timezone
+from datetime import date
 from pathlib import Path
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
-from ..dividends import DividendHistory, DividendRecord, history_from_dict, history_to_dict
+from ..dividends import (DividendHistory, history_from_dict, history_to_dict,
+                         parse_fmp_dividends, parse_nasdaq_dividends,
+                         parse_yahoo_dividends)
 from ..models import FetchError
 
 _TIMEOUT_SECONDS = 15.0
@@ -62,70 +64,13 @@ def _http_get(url: str, headers: dict | None = None) -> str:
     return body
 
 
-# ---------- 逐 vendor 解析（#120 §12.4 實測確認的形狀） ----------
-
-def _parse_yahoo(symbol: str, text: str, today: date) -> DividendHistory:
-    try:
-        data = json.loads(text)
-    except ValueError as e:
-        raise FetchError(f"Yahoo 回應非 JSON：{e}") from e
-    results = (data.get("chart") or {}).get("result") or []
-    if not results:
-        raise FetchError("Yahoo 回應無 chart.result")
-    events = results[0].get("events") or {}
-    divs = events.get("dividends") or {}
-    try:
-        records = tuple(
-            DividendRecord(
-                ex_date=datetime.fromtimestamp(int(ts), tz=timezone.utc).date().isoformat(),
-                amount=float(d["amount"]))
-            for ts, d in divs.items())
-    except (KeyError, TypeError, ValueError) as e:
-        raise FetchError(f"Yahoo events.dividends 形狀異常：{e}") from e
-    return DividendHistory(symbol=symbol, as_of=today.isoformat(), source="yahoo",
-                           distributions=records)
-
-
-def _parse_fmp(symbol: str, text: str, today: date) -> DividendHistory:
-    try:
-        data = json.loads(text)
-    except ValueError as e:
-        raise FetchError(f"FMP 回應非 JSON：{e}") from e
-    if not isinstance(data, list):
-        raise FetchError(f"FMP 回應非預期的陣列形狀：{type(data).__name__}")
-    records = []
-    for row in data:
-        try:
-            records.append(DividendRecord(ex_date=row["date"], amount=float(row["dividend"])))
-        except (KeyError, TypeError, ValueError):
-            continue   # 單筆形狀不對不炸整份——盡量取得能取得的
-    return DividendHistory(symbol=symbol, as_of=today.isoformat(), source="fmp",
-                           distributions=tuple(records))
-
-
-def _parse_nasdaq(symbol: str, text: str, today: date) -> DividendHistory:
-    try:
-        data = json.loads(text)
-    except ValueError as e:
-        raise FetchError(f"Nasdaq 回應非 JSON：{e}") from e
-    rows = (((data.get("data") or {}).get("dividends") or {}).get("rows")) or []
-    records = []
-    for row in rows:
-        raw_date, raw_amount = row.get("exOrEffDate"), row.get("amount")
-        if not raw_date or not raw_amount:
-            continue
-        try:
-            ex_date = datetime.strptime(raw_date, "%m/%d/%Y").date().isoformat()
-            amount = float(str(raw_amount).replace("$", "").strip())
-        except (ValueError, TypeError):
-            continue
-        records.append(DividendRecord(ex_date=ex_date, amount=amount))
-    return DividendHistory(symbol=symbol, as_of=today.isoformat(), source="nasdaq",
-                           distributions=tuple(records))
-
-
 def fetch_dividends(symbol: str, today: date, http_get=_http_get) -> DividendHistory:
     """Yahoo → FMP（需金鑰，未設定即跳過）→ Nasdaq。全敗拋 `FetchError`。
+
+    純文字→資料結構的解析（`parse_yahoo_dividends` 等）留在純模組
+    `option_chaser.dividends`，比照 `ratecurve.parse_treasury_csv` 與
+    `data/treasury.py::fetch_curve` 的既有分工——這裡只負責「打哪個
+    URL、什麼時候該試下一棒」，不認得解析細節。
 
     研究 §13-2 既有紀律：Yahoo 已於 #120 production 實測確認，成功即
     不追測其餘來源；這裡的鏈是「Yahoo 這次失敗才輪到下一棒」，不是
@@ -133,7 +78,7 @@ def fetch_dividends(symbol: str, today: date, http_get=_http_get) -> DividendHis
     """
     errors: list[str] = []
     try:
-        return _parse_yahoo(symbol, http_get(YAHOO_URL.format(symbol=symbol)), today)
+        return parse_yahoo_dividends(symbol, http_get(YAHOO_URL.format(symbol=symbol)), today)
     except Exception as e:  # noqa: BLE001 — 連線與解析失敗一律走下一備援
         errors.append(f"Yahoo：{e}")
 
@@ -141,7 +86,7 @@ def fetch_dividends(symbol: str, today: date, http_get=_http_get) -> DividendHis
     if fmp_key:
         try:
             url = FMP_URL.format(symbol=symbol, key=fmp_key)
-            return _parse_fmp(symbol, http_get(url), today)
+            return parse_fmp_dividends(symbol, http_get(url), today)
         except Exception as e:  # noqa: BLE001
             errors.append(f"FMP：{e}")
     else:
@@ -150,7 +95,8 @@ def fetch_dividends(symbol: str, today: date, http_get=_http_get) -> DividendHis
     for asset_class in ("stocks", "etf"):   # 研究 §5.3：先試 stocks，400 才試 etf
         try:
             url = NASDAQ_URL.format(symbol=symbol, cls=asset_class)
-            return _parse_nasdaq(symbol, http_get(url, {"Accept": "application/json"}), today)
+            return parse_nasdaq_dividends(symbol, http_get(url, {"Accept": "application/json"}),
+                                          today)
         except Exception as e:  # noqa: BLE001
             errors.append(f"Nasdaq（{asset_class}）：{e}")
 

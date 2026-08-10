@@ -284,6 +284,14 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         # 利率狀態（#67）：最近一次嘗試的結果——尚無任何分析跑過時為
         # `None`（不是「失敗」，是「還沒發生過」）；讀不到快取比照
         # `storage` 的做法，同樣不讓 /api/health 本身炸掉。
+        #
+        # #123 刻意不比照加一個 `dividend` 區塊：`rate_cache` 是單一
+        # 全站狀態，這裡直接讀「那一筆」就是完整答案；`dividend_cache`
+        # 是 per-symbol（研究文件 §11 裁示），沒有「那一筆」可讀——秀
+        # 任一 symbol 的狀態既武斷又誤導（像是在講全站健康度，其實只是
+        # 剛好被誰分析過的某個標的）。運維若要查特定標的的配息快取狀態，
+        # 該症狀（q_by_symbol 一直是 None）已經會反映在該劇本自己的
+        # 分析結果 `q_note` 欄位裡，不需要另開一條全站端點。
         rate: dict | None = None
         try:
             entry = _db().get_rate_cache()

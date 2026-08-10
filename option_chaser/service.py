@@ -783,6 +783,15 @@ def _resolve_q(p: AnalysisParams, snap: ChainSnapshot, today: date,
     `distributions` 為空（確定無配息）→ `compute_q` 自然回 0.0，狀態
     仍是 `q_stale=history.stale`（通常是 fresh）——這是正確答案，不是
     降級（研究 §8 第 2 層）。
+
+    `compute_q` 對 `spot <= 0` 會拋 `ParamError`（未特別接住，讓它往上
+    傳）——與 `_resolve_rates` 不同，那裡的輸入來源（Treasury 曲線）
+    不可能產生會拋例外的壞資料。這裡故意不接住：`api_app/main.py` 既有
+    的 `except ParamError` 分支會把它映射成 400 "params"，雖然語意上
+    更接近「快照壞了」而非「使用者輸入錯」，但**真實市場報價的 spot
+    不可能是零或負值**，這是防禦性case、不是預期會發生的路徑，沿用
+    既有的 `ParamError` → 400 收斂已經是「不會讓分析炸成 500」的正確
+    行為，值得一個新的失敗分層前應先觀察是否真的發生過。
     """
     if loader is None:
         return p

@@ -14,13 +14,21 @@ q = 過去 365 天經常性現金分配總額 / 本次快照 spot——連續複
 """
 from __future__ import annotations
 
+import json
 import statistics
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 
 from .models import ParamError
 
 TTM_WINDOW_DAYS = 365
+
+
+class DividendParseError(Exception):
+    """配息回應文字（JSON）解析失敗——端點改版或回傳非預期形狀時的明確
+    訊號，比照 `ratecurve.CurveParseError` 同一種角色：純模組自己的例外
+    型別，不依賴 I/O 層的 `FetchError`。抓取層（`data/dividends.py`）
+    捕捉任意例外收斂成單一 `FetchError`，不需要認得這個型別本身。"""
 
 # 異常單期分配的判斷門檻——研究文件 §8 明文「門檻屬實作票範圍，未經
 # 驗證」，這是本票的實作判斷：單期金額超過同標的近 12 期中位數的 3 倍時
@@ -57,6 +65,75 @@ class DividendHistory:
     source: str
     distributions: tuple[DividendRecord, ...]     # 只含經常性現金分配
     stale: bool = False
+
+
+# ---------- 逐 vendor 回應文字解析（#120 §12.4 實測確認的形狀） ----------
+#
+# 純文字→資料結構，零 I/O——跟 `ratecurve.parse_treasury_csv`／
+# `parse_treasury_xml` 同一種角色，比照放在純模組而非抓取層
+# （`data/dividends.py` 只認「打哪個 URL、什麼時候該試下一棒」）。
+# `today` 是必要參數：跟利率曲線不同，配息回應本身不帶「資料截至日」
+# 這個概念（Yahoo/FMP/Nasdaq 的配息明細只有逐筆 ex-date，沒有一個
+# 代表整份回應時效的欄位），`as_of` 只能是「我們現在抓的這一刻」。
+
+def parse_yahoo_dividends(symbol: str, text: str, today: date) -> DividendHistory:
+    try:
+        data = json.loads(text)
+    except ValueError as e:
+        raise DividendParseError(f"Yahoo 回應非 JSON：{e}") from e
+    results = (data.get("chart") or {}).get("result") or []
+    if not results:
+        raise DividendParseError("Yahoo 回應無 chart.result")
+    events = results[0].get("events") or {}
+    divs = events.get("dividends") or {}
+    try:
+        records = tuple(
+            DividendRecord(
+                ex_date=datetime.fromtimestamp(int(ts), tz=timezone.utc).date().isoformat(),
+                amount=float(d["amount"]))
+            for ts, d in divs.items())
+    except (KeyError, TypeError, ValueError) as e:
+        raise DividendParseError(f"Yahoo events.dividends 形狀異常：{e}") from e
+    return DividendHistory(symbol=symbol, as_of=today.isoformat(), source="yahoo",
+                           distributions=records)
+
+
+def parse_fmp_dividends(symbol: str, text: str, today: date) -> DividendHistory:
+    try:
+        data = json.loads(text)
+    except ValueError as e:
+        raise DividendParseError(f"FMP 回應非 JSON：{e}") from e
+    if not isinstance(data, list):
+        raise DividendParseError(f"FMP 回應非預期的陣列形狀：{type(data).__name__}")
+    records = []
+    for row in data:
+        try:
+            records.append(DividendRecord(ex_date=row["date"], amount=float(row["dividend"])))
+        except (KeyError, TypeError, ValueError):
+            continue   # 單筆形狀不對不炸整份——盡量取得能取得的
+    return DividendHistory(symbol=symbol, as_of=today.isoformat(), source="fmp",
+                           distributions=tuple(records))
+
+
+def parse_nasdaq_dividends(symbol: str, text: str, today: date) -> DividendHistory:
+    try:
+        data = json.loads(text)
+    except ValueError as e:
+        raise DividendParseError(f"Nasdaq 回應非 JSON：{e}") from e
+    rows = (((data.get("data") or {}).get("dividends") or {}).get("rows")) or []
+    records = []
+    for row in rows:
+        raw_date, raw_amount = row.get("exOrEffDate"), row.get("amount")
+        if not raw_date or not raw_amount:
+            continue
+        try:
+            ex_date = datetime.strptime(raw_date, "%m/%d/%Y").date().isoformat()
+            amount = float(str(raw_amount).replace("$", "").strip())
+        except (ValueError, TypeError):
+            continue
+        records.append(DividendRecord(ex_date=ex_date, amount=amount))
+    return DividendHistory(symbol=symbol, as_of=today.isoformat(), source="nasdaq",
+                           distributions=tuple(records))
 
 
 def _dampen_outliers(amounts: tuple[float, ...]) -> tuple[float, ...]:

@@ -282,6 +282,95 @@ describe("無風險利率四項顯示（RC1／#87 三態語意，MVP V3／#112 �
   });
 });
 
+describe("股利殖利率 q 三項顯示（#123：q used／Dividend source／Data as of）", () => {
+  async function expandModelAssumptions() {
+    await expand();
+    await userEvent.click(screen.getByText("Model & Assumptions"));
+  }
+
+  it("q 管線未接（q_by_symbol 為 null）：q used 顯示 0.0% 與 NO DIVIDEND " +
+     "ADJUSTMENT 標籤，Dividend source／Data as of 皆為「—」", async () => {
+    const noQView = {
+      ...view,
+      params: { ...view.params, q_by_symbol: null, q_source: null,
+                q_as_of: null, q_stale: false, q_note: "配息資料不可得" },
+    };
+    render(<AnalysisReport view={noQView} result={result} candidate={real} />);
+    await expandModelAssumptions();
+
+    const qRow = screen.getByText("q used").closest(".row")!;
+    expect(qRow).toHaveTextContent("0.0%");
+    expect(qRow).toHaveTextContent("NO DIVIDEND ADJUSTMENT");
+    expect(qRow).toHaveTextContent("配息資料不可得");
+
+    const sourceRow = screen.getByText("Dividend source").closest(".row")!;
+    expect(sourceRow).toHaveTextContent("—");
+    const asOfRow = screen.getByText("Data as of").closest(".row")!;
+    expect(asOfRow).toHaveTextContent("—");
+    expect(asOfRow).not.toHaveTextContent(/\d{4}-\d{2}-\d{2}/);
+  });
+
+  it("q 成功取得且新鮮：q used 顯示實際百分比，Dividend source 顯示 vendor，" +
+     "Data as of 顯示資料截至日、不帶 STALE", async () => {
+    const qView = {
+      ...view,
+      params: { ...view.params, q_by_symbol: 0.046, q_source: "yahoo",
+                q_as_of: "2026-08-10", q_stale: false, q_note: "" },
+    };
+    render(<AnalysisReport view={qView} result={result} candidate={real} />);
+    await expandModelAssumptions();
+
+    const qRow = screen.getByText("q used").closest(".row")!;
+    expect(qRow).toHaveTextContent("4.6%");
+    expect(qRow).not.toHaveTextContent("NO DIVIDEND ADJUSTMENT");
+
+    const sourceRow = screen.getByText("Dividend source").closest(".row")!;
+    expect(sourceRow).toHaveTextContent("yahoo");
+
+    const asOfRow = screen.getByText("Data as of").closest(".row")!;
+    expect(asOfRow).toHaveTextContent("2026-08-10");
+    expect(asOfRow).not.toHaveTextContent("STALE");
+  });
+
+  it("q 陳舊備援：Data as of 明確標示 STALE，q used 仍是實際數值（不是 0）",
+     async () => {
+    const staleQView = {
+      ...view,
+      params: { ...view.params, q_by_symbol: 0.045, q_source: "yahoo",
+                q_as_of: "2026-06-01", q_stale: true, q_note: "" },
+    };
+    render(<AnalysisReport view={staleQView} result={result} candidate={real} />);
+    await expandModelAssumptions();
+
+    const asOfRow = screen.getByText("Data as of").closest(".row")!;
+    expect(asOfRow).toHaveTextContent("2026-06-01");
+    expect(asOfRow).toHaveTextContent("STALE");
+
+    const qRow = screen.getByText("q used").closest(".row")!;
+    expect(qRow).toHaveTextContent("4.5%");
+    expect(qRow).not.toHaveTextContent("NO DIVIDEND ADJUSTMENT");
+  });
+
+  it("q 與利率兩個區塊的標籤不互相碰撞——Source／Curve date 各自唯一可定位",
+     async () => {
+    const bothView = {
+      ...view,
+      params: { ...view.params, rate_curve_used: true,
+                rate_curve_date: "2026-07-31", rate_curve_stale: false,
+                q_by_symbol: 0.046, q_source: "yahoo", q_as_of: "2026-08-10",
+                q_stale: false, q_note: "" },
+    };
+    render(<AnalysisReport view={bothView} result={result} candidate={real} />);
+    await expandModelAssumptions();
+
+    // 兩者都能被唯一定位，不會因為文字重名而拿到超過一個元素。
+    expect(screen.getByText("Source")).toBeInTheDocument();
+    expect(screen.getByText("Dividend source")).toBeInTheDocument();
+    expect(screen.getByText("Curve date")).toBeInTheDocument();
+    expect(screen.getByText("Data as of")).toBeInTheDocument();
+  });
+});
+
 describe("依決策 G 移除、不再渲染的項目（負向斷言）", () => {
   it("不含一句話結論或重複的策略／候選身分——「基準候選」區塊已經顯示（#103）",
      async () => {

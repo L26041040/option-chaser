@@ -1,16 +1,22 @@
-"""#123（spec #117 §2）q 純函式：TTM 金額 / spot、離群值抑制、序列化。
+"""#123（spec #117 §2）q 純函式：逐 vendor 回應解析、TTM 金額 / spot、
+離群值抑制、序列化。
 
-無 I/O、無 wall-clock——所有輸入為固定 fixture。抓取層見
-`tests/test_data_dividends.py`。
+無 I/O、無 wall-clock——所有輸入為固定 fixture，比照
+`tests/test_ratecurve.py` 對 `parse_treasury_csv`／`parse_treasury_xml`
+的既有慣例（純文字→資料結構直接測，不經過 HTTP 抓取層）。抓取鏈與
+本地檔案快取的 I/O 層測試見 `tests/test_data_dividends.py`。
 """
 from __future__ import annotations
 
+import json
 from datetime import date
 
 import pytest
 
-from option_chaser.dividends import (DividendHistory, DividendRecord, compute_q,
-                                     history_from_dict, history_to_dict)
+from option_chaser.dividends import (DividendHistory, DividendParseError,
+                                     DividendRecord, compute_q, history_from_dict,
+                                     history_to_dict, parse_fmp_dividends,
+                                     parse_nasdaq_dividends, parse_yahoo_dividends)
 from option_chaser.models import ParamError
 
 TODAY = date(2026, 8, 10)
@@ -21,6 +27,96 @@ def _history(records: tuple[tuple[str, float], ...], source="yahoo",
     return DividendHistory(
         symbol="TLT", as_of="2026-08-10", source=source, stale=stale,
         distributions=tuple(DividendRecord(ex_date=d, amount=a) for d, a in records))
+
+
+# ---------- parse_yahoo_dividends：#120 §12.4 實測確認的形狀 ----------
+
+def test_parse_yahoo_dividends_extracts_amount_and_ex_date():
+    body = json.dumps({"chart": {"result": [{"events": {"dividends": {
+        "1785816600": {"amount": 0.330, "date": 1785816600},
+        "1783224600": {"amount": 0.318, "date": 1783224600},
+    }}}]}})
+    history = parse_yahoo_dividends("TLT", body, TODAY)
+    assert history.symbol == "TLT" and history.source == "yahoo"
+    assert history.as_of == TODAY.isoformat()
+    assert len(history.distributions) == 2
+    assert {r.amount for r in history.distributions} == {0.330, 0.318}
+
+
+def test_parse_yahoo_dividends_with_no_dividends_key_is_empty_not_an_error():
+    """研究 §8 第 2 層：確定無配息的標的（如 YETI）回應形狀。"""
+    body = json.dumps({"chart": {"result": [{"events": {}}]}})
+    history = parse_yahoo_dividends("YETI", body, TODAY)
+    assert history.distributions == ()
+
+
+def test_parse_yahoo_dividends_ignores_capital_gains():
+    """研究 §8：只計經常性現金分配，`events.capitalGains` 不讀取。"""
+    body = json.dumps({"chart": {"result": [{"events": {
+        "dividends": {"1785816600": {"amount": 0.33, "date": 1785816600}},
+        "capitalGains": {"1785816600": {"amount": 5.0, "date": 1785816600}},
+    }}]}})
+    history = parse_yahoo_dividends("TLT", body, TODAY)
+    assert len(history.distributions) == 1
+    assert history.distributions[0].amount == 0.33
+
+
+def test_parse_yahoo_dividends_rejects_garbage():
+    with pytest.raises(DividendParseError):
+        parse_yahoo_dividends("TLT", "<html>maintenance</html>", TODAY)
+    with pytest.raises(DividendParseError):
+        parse_yahoo_dividends("TLT", json.dumps({"chart": {"result": []}}), TODAY)
+
+
+# ---------- parse_fmp_dividends ----------
+
+def test_parse_fmp_dividends_extracts_date_and_dividend_fields():
+    body = json.dumps([{"date": "2026-08-03", "dividend": 0.330, "adjDividend": 0.330},
+                       {"date": "2026-07-01", "dividend": 0.318, "adjDividend": 0.318}])
+    history = parse_fmp_dividends("TLT", body, TODAY)
+    assert history.source == "fmp"
+    assert len(history.distributions) == 2
+    assert history.distributions[0] == DividendRecord("2026-08-03", 0.330)
+
+
+def test_parse_fmp_dividends_skips_malformed_rows_without_failing_the_batch():
+    body = json.dumps([{"date": "2026-08-03", "dividend": 0.330},
+                       {"date": "2026-07-01"},          # 缺 dividend 欄
+                       {"dividend": 0.30}])              # 缺 date 欄
+    history = parse_fmp_dividends("TLT", body, TODAY)
+    assert len(history.distributions) == 1
+
+
+def test_parse_fmp_dividends_rejects_a_non_array_shape():
+    with pytest.raises(DividendParseError):
+        parse_fmp_dividends("TLT", json.dumps({"error": "not an array"}), TODAY)
+
+
+# ---------- parse_nasdaq_dividends ----------
+
+def test_parse_nasdaq_dividends_extracts_and_normalizes_amount_and_date():
+    body = json.dumps({"data": {"dividends": {"rows": [
+        {"exOrEffDate": "08/03/2026", "amount": "$0.330000", "type": "CASH"},
+        {"exOrEffDate": "07/01/2026", "amount": "$0.318000", "type": "CASH"},
+    ]}}})
+    history = parse_nasdaq_dividends("TLT", body, TODAY)
+    assert history.source == "nasdaq"
+    assert history.distributions[0] == DividendRecord("2026-08-03", 0.330)
+
+
+def test_parse_nasdaq_dividends_skips_rows_missing_date_or_amount():
+    body = json.dumps({"data": {"dividends": {"rows": [
+        {"exOrEffDate": "08/03/2026", "amount": "$0.330000"},
+        {"exOrEffDate": "07/01/2026"},        # 缺 amount
+        {"amount": "$0.30"},                  # 缺 exOrEffDate
+    ]}}})
+    history = parse_nasdaq_dividends("TLT", body, TODAY)
+    assert len(history.distributions) == 1
+
+
+def test_parse_nasdaq_dividends_rejects_garbage():
+    with pytest.raises(DividendParseError):
+        parse_nasdaq_dividends("TLT", "<html>err</html>", TODAY)
 
 
 # ---------- compute_q：TTM 加總 / spot ----------

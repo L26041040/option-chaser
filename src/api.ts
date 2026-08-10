@@ -248,6 +248,20 @@ export interface AnalysisParams {
    *  `RateRow` 才能跟後端 `report.py::_rate_line` 同一套三態判斷，不
    *  會在明示利率也顯示成 FALLBACK。 */
   rate_explicit: boolean;
+  /**
+   * #123（spec #117 §2）：股利殖利率 q 的三態揭露——形狀逐一對應
+   * `rate_curve_used`／`rate_curve_date`／`rate_curve_stale`／
+   * `rate_note`，`QRow` 與 `RateRow` 同一套判斷方式。`q_by_symbol`
+   * 為 `null` 時（q 管線未接、或 fetch 失敗且無可用快取）走今天的
+   * 完整行為，`q_source`／`q_as_of` 同為 `null`；有值時 `q_source`
+   * 是實際取得資料的 vendor（"yahoo"／"fmp"／"nasdaq"），`q_stale`
+   * 獨立於 `q_by_symbol is null`——陳舊備援窗內仍可能算出一個值。
+   */
+  q_by_symbol: number | null;
+  q_source: string | null;
+  q_as_of: string | null;
+  q_stale: boolean;
+  q_note: string;
   iv_shifts: number[];
   delta_bands: [number, number];
   min_return: number;

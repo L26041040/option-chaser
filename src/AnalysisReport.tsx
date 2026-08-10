@@ -12,8 +12,9 @@
  *   Execution             Buy Leg／Sell Leg 雙邊報價／Net Mid／
  *                         Net Worst（保守進場成本）／Volume・OI（低權重）
  *   Model & Assumptions   折疊：無風險利率四項（Rate used／Tenor／
- *                         Source／Curve date，MVP V3／#112）／IV 情境／
- *                         Delta 分級門檻／最低要求報酬率
+ *                         Source／Curve date，MVP V3／#112）／股利殖利率
+ *                         q 三項（q used／Dividend source／Data as of，
+ *                         #123）／IV 情境／Delta 分級門檻／最低要求報酬率
  *
  * 依決策 G 明文從 Report UI 移除、不再渲染：baseline return、7 情境
  * 韌性表、劇本完成度曲線、filter／pair 統計（CandidatePool 已負責）、
@@ -94,6 +95,46 @@ function RateRow({ candidate, params }: {
   );
 }
 
+/**
+ * 股利殖利率 q 三項（#123，spec #117 §2）：q used／Dividend source／
+ * Data as of——取代前一版「有沒有做股利調整」完全不顯示在畫面上的
+ * 空白。三態沿用既有語意（`q_by_symbol`／`q_source`／`q_as_of`／
+ * `q_stale`），跟 `RateRow` 同一套判斷方式，但欄位標籤刻意不重用
+ * 「Source」／「Curve date」——兩個區塊在同一個 Model & Assumptions
+ * 展開區裡先後渲染，重名會讓 `getByText` 之類的查詢無法唯一定位。
+ *
+ * q 是**單一數值**（標的的性質），不像利率逐到期日查表，所以只讀
+ * `params`，不需要 `candidate`——這裡沒有 `RateRow` 那種「不同候選
+ * 可能查到不同利率」的問題。
+ */
+function QRow({ params }: { params: AnalysisView["params"] }) {
+  const noQ = params.q_by_symbol === null;
+  return (
+    <>
+      <Row label="q used">
+        {formatReturn(params.q_by_symbol ?? 0)}
+        {noQ && (
+          <span className="row-note">
+            {" "}· NO DIVIDEND ADJUSTMENT
+            {params.q_note && `（${params.q_note}）`}
+          </span>
+        )}
+      </Row>
+      <Row label="Dividend source">{noQ ? "—" : params.q_source}</Row>
+      <Row label="Data as of">
+        {noQ ? "—" : (
+          <>
+            {params.q_as_of}
+            {params.q_stale && (
+              <span className="row-note"> · STALE（沿用陳舊備援窗）</span>
+            )}
+          </>
+        )}
+      </Row>
+    </>
+  );
+}
+
 /** Risk / Payoff：Breakeven／Max Profit／Max Loss／Execution Friction。 */
 function RiskPayoff({ candidate }: { candidate: Candidate }) {
   return (
@@ -169,6 +210,7 @@ function ModelAssumptions({ candidate, params }: {
     <details className="report-methodology">
       <summary>Model &amp; Assumptions</summary>
       <RateRow candidate={candidate} params={params} />
+      <QRow params={params} />
       <Row label="IV 情境">
         {params.iv_shifts.map((s) => (s === 0 ? "不變" : `${s > 0 ? "+" : ""}${(s * 100).toFixed(0)}%`)).join(" / ")}
       </Row>
