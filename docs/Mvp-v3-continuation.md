@@ -38,11 +38,58 @@
   市場中價，Heatmap 的每一格才有意義。q 從外部配息資料取得（Yahoo 為
   primary），有完整的降級鏈與三態誠實揭露。
 - **再把 Crossover 疊上去**——在同一張 Heatmap 上畫出「Spread 報酬 ＝
-  同到期、同買腿履約價、同 option type 的裸買部位報酬」的邊界。
+  單買該 Spread 買腿的報酬」的邊界。comparator **就是買腿本身**
+  （因此同到期、同履約價、同 option type 是定義使然），不涉及任何選取。
 - **IV History 獨立進行**——延續既定的 compact 模組設計；但它卡在
   #111 的 vendor 實測，該實測必須在可連網環境完成，**本 spec 不假裝
   它已經解決**。
 - **Heatmap compact 小修**——與上面三條完全獨立，可隨時施工。
+
+---
+
+## 核心紅線：本輪不得改變任何 Spread 選取結果
+
+**本輪所有工作都是對「已存在／已選中的 Spread」補充分析資訊，
+不得改變哪一個 Spread 被選中。**
+
+在相同 snapshot／quotes／scenario inputs 下，本輪改造前後，以下**全部
+必須逐位元不變**：
+
+| 不變量 | 說明 |
+|---|---|
+| **ranking** | Spread 排序。核心排序設計維持：**以劇本成立時的收益率排序** |
+| **filtering** | 品質過濾、候選池組成 |
+| **candidate selection** | 誰進得了候選池、誰被選中 |
+| **`expiry_best`** | 各到期日最佳候選的 identity |
+| **`expiry_top10`** | 各到期日前十名的 identities **與順序** |
+| **representative candidate** | 代表候選的 identity |
+| **`best_return`** | 其 ranking semantics |
+
+**允許改變的，只有這些：**
+
+- Heatmap cells
+- Crossover results
+- Greeks／Delta 的**顯示值**
+- IV History
+- 其他 valuation-derived 的衍生指標
+
+**三條具體禁令（對應本輪三項改造）：**
+
+1. **估值改造**：新模型的 Delta／Greeks **不得**成為 legacy single-leg
+   分級（`classify` / `delta_bands`）的輸入，不得觸發 re-ranking 或
+   reclassification（§1.4）。
+2. **Crossover**：comparator **就是該 Spread 的 buy leg 本身**——
+   **不得**為了 Crossover 重新搜尋 Long Call／Long Put 候選、
+   **不得**呼叫 legacy single-leg ranking、**不得**重做 Delta band
+   selection（§4.1）。
+3. **Historical IV**：只 enrich 當前 Spread 與其雙腿，
+   **不得**參與 ranking 或 selection（§5.1）。
+
+**若 legacy Long Call／Long Put 模組本身存在 Delta band ranking，
+那是既有的獨立邏輯——本輪不重構、不改動、不順手整理。**
+
+> 施工時若發現某項改動無法在不動選取結果的前提下完成，**停下來回報**，
+> 不要自行放寬這條紅線。
 
 ---
 
@@ -53,7 +100,7 @@
 | **A. 估值修正** | BS93 ＋ q ＋ 同模型 IV 反解、Greeks 同步、golden／契約重產 | #113（擴充） |
 | **B. q 資料管線** | Yahoo → FMP → Nasdaq 取得 TTM 現金配息、per-symbol 快取、三態揭露 | **新增**（#113 的前置） |
 | **B0. Yahoo 端點 production 探測** | 確認 `chart?events=div` 免 crumb 可用 | **新增**（B 的前置，必跑） |
-| **C. Crossover comparator 資料層** | 依買腿 option type 選 comparator、算報酬矩陣 | #115 |
+| **C. Crossover comparator 資料層** | comparator 直接取自買腿本身、算報酬矩陣（無選取行為） | #115 |
 | **D. Crossover overlay 渲染** | 2D 邊界疊在既有 Heatmap 上 | #116 |
 | **E. IV History vendor 實測** | 三步驗證、選定 vendor | #111 |
 | **F. IV History 功能** | Normalized Skew ＋ 雙腿 IV compact 模組 | #114 |
@@ -77,6 +124,13 @@
 - **不降低目前的 Heatmap 日期解析度**（QA-FIX-5 的 `GUI_MAX_GAP_DAYS = 31`
   維持不動）。G 項是縮寬度，不是縮欄數。
 - **不做「每到期日連同前十名並排的大表格」**（QA1-05 既有裁示）。
+- **不改變任何 Spread 的 ranking／filtering／candidate selection／
+  `expiry_best`／`expiry_top10`／representative candidate／`best_return`**
+  ——見上方核心紅線。本輪只補充分析資訊，不動誰被選中。
+- **不重構、不改動 legacy Long Call／Long Put 模組的 Delta band ranking**
+  ——那是既有的獨立邏輯，本輪不順手整理。
+- **不為了 Crossover 做任何候選搜尋或單腿選取**——comparator 就是買腿本身。
+- **不讓 Historical IV 參與 ranking 或 selection**——它只 enrich。
 - 多使用者隔離（#59）、外觀優化（QA-v2 延後項）、Dashboard 佔位區。
 
 ---
@@ -99,8 +153,16 @@
    Heatmap 的深跌欄正好把 put 買腿推進那一區。
 8. 作為使用者，我希望顯示的 Delta 跟估值用的是同一個模型，不要出現
    「看到的 Greeks 跟算出來的價格來自不同世界」。
-9. 作為使用者，我希望估值變準之後，劇本庫卡片上的最高收益率不要莫名
-   其妙全部跳動——那些數字的口徑本來就跟模型無關。
+9. 作為使用者，我希望估值變準之後，**我原本選中的那些 Spread 還是同一批、
+   順序也一樣**——這一輪是補充分析資訊，不是換一組標的給我。
+9a. 作為使用者，我希望劇本庫卡片上的最高收益率不要莫名其妙全部跳動
+    ——那些數字的口徑本來就跟模型無關。
+9b. 作為使用者，我希望各到期日的最佳候選與前十名維持原樣，
+    不要因為換了估值模型就換一批合約給我看。
+9c. 作為使用者，我希望 Crossover 只是幫我比較「這組 Spread vs 直接買買腿」，
+    不要因此跑去重新挑一張別的 Long Call／Long Put 給我。
+9d. 作為使用者，我希望 IV 歷史只是附加資訊——把它關掉，我看到的候選
+    應該一模一樣。
 10. 作為使用者，我希望 Spread 成本走勢圖不要因為換模型而出現斷層。
 11. 作為使用者，我希望在 Heatmap 上直接看到一條邊界，左右兩邊分別是
     「Spread 比較好」和「直接買一張比較好」。
@@ -172,29 +234,45 @@ vendor 差 0.0029 vol pt，歐式反解差 0.0491；CRR N=400 精算差 0.0004�
 `(q, σ)` 掛在腿上，矩陣迴圈維持成 `(S, t)` 的純函式。違反這一條，
 §成本估算（3.83 ms／矩陣）不成立。
 
-**1.4 Greeks 與 Delta 同步換口徑。** `leg_greeks` 目前是 q=0 歐式解析式；
-改為與新模型一致（delta 為 `e^{-qT}·N(d1)` 口徑），連帶 `net_delta`／
-`vega_per_pt`／`decay_30d_return`／`effective_leverage`。
+**1.4 Greeks 與 Delta 的口徑與其邊界。** `leg_greeks` 目前是 q=0 歐式
+解析式；新模型下另有一套與估值一致的 Greeks（delta 為 `e^{-qT}·N(d1)`
+口徑），連帶 `net_delta`／`vega_per_pt`／`decay_30d_return`／
+`effective_leverage`。
 
-> **⚠ 這條有一個必須明講的下游後果（selection semantics）**：
-> `ranking.rank()` 用 `classify(v.delta, p.delta_bands)` 把單腿候選分成
-> conservative／balanced／aggressive 三組各取 top-N。實測真實 TLT 五檔
-> 在 `delta_bands=(0.35, 0.65)` 下，**三檔從 conservative 移到 balanced**
-> （delta 位移 −0.25 至 −0.27）。也就是說**選出來的單腿候選名單會變**，
-> 不只是數字變。
+新模型的 Greeks／Delta：
+
+- **可以**用於 Heatmap／Crossover 的估值。
+- **可以**用於畫面顯示。
+- **不得**因此觸發 legacy single-leg 的 re-ranking／reclassification，
+  進而改變本輪的選取結果。
+
+> **⚠ 這是本 spec 最重要的一條紅線，實作上不是免費的。**
+> `ranking.rank()` 目前用 `classify(v.delta, p.delta_bands)` 把單腿候選
+> 分成 conservative／balanced／aggressive 三組各取 top-N。實測真實 TLT
+> 五檔在 `delta_bands=(0.35, 0.65)` 下，新口徑的 delta 位移 −0.25 至
+> −0.27，**若讓新 delta 流進這條分級路徑，三檔會從 conservative 移到
+> balanced、選出來的候選名單就會變**。
 >
-> 本 spec 依「Greeks／Delta 與新模型保持一致」的鎖定決策，**接受這個
-> 名單變動**（凍結分級口徑會製造「顯示的 delta 與分級用的 delta 不同」
-> 的內部不一致）。但這超出 #113 現行 AC 的「數值變、語意不變」，
-> 施工票必須明列此後果並在驗收時逐項對帳。
+> **本輪明確不接受這個變動。** 選取路徑必須與模型變更**絕緣**——新
+> 口徑的 delta 是估值與顯示用的量，**不得成為 legacy 分級的輸入**。
+> 絕緣的具體機制（保留一份 legacy delta 供分級使用、或把單腿選取路徑
+> 釘死）屬施工票的工程判斷，但**「選取結果不變」是硬性不變量**，
+> 由下方的 selection regression AC 守門。
+>
+> **若 legacy Long Call／Long Put 模組本身存在 Delta band ranking，
+> 那是既有的獨立邏輯——本輪不重構、不改動、不順手整理。**
 
-**1.5 血徑範圍（好消息，可縮小驗收範圍）。** 逐條追過引擎後確認**不受影響**：
+**1.5 血徑範圍。** 逐條追過引擎後確認**不受影響**（這與 1.4 的紅線互相
+支撐：Spread 側本來就與模型無關，因此紅線在 Spread 側是免費的，成本
+只出現在單腿分級那條路徑上）：
 
 - **Spread 排名完全不變**——`rank_spreads` 依 `spread_baseline_return`
   排序，而 `evaluate_spread` 的 `scenario_values` 是在**該 Spread 自身
   到期日**估的（T3／#17 既有裁示），`scenario_leg_value` 在
   `at >= expiry` 走內在價值分支，**與定價模型無關**。
-- 因此 `best_return`／`representative_candidate`／劇本庫卡片數字不變。
+  **Spread 的核心排序設計維持不變：以劇本成立時的收益率排序。**
+- 因此 `best_return`／`representative_candidate`／`expiry_best`／
+  `expiry_top10`／劇本庫卡片數字不變。
 - **V9 的 Spread 成本走勢圖不會斷層**——它取的 `cost` 是
   `long_leg.ask − short_leg.bid`，純市場報價、不經模型。
 - `price_axis`／`date_axis`／`move_pct`／右側 ±% 軸完全不受影響
@@ -293,15 +371,24 @@ extra，就是為了讓 pandas/numpy 不進 lambda，所以 SDK 不在部署環�
 
 ### 4. Crossover（C／D）——鎖定決策
 
-**4.1 Comparator 選取規則。** 與 Spread **買腿同 option type、同到期、
-同履約價**的單腿裸買部位。買腿合約本身即該單腿部位，**直接取自買腿報價**，
-不做 option type 轉換、不另尋合約。
+**4.1 Comparator 就是該 Spread 的 buy leg 本身。** 不是「另一個符合條件的
+候選」，而是同一張合約——買腿裸買、不賣出賣腿。因此它同到期、同履約價、
+同 option type 是**定義使然**，不是搜尋條件。
 
 - bull-call-spread（買腿是 call）→ **Long Call**
 - bear-put-spread（買腿是 put）→ **Long Put**
 
+**⚠ 明確禁令（核心紅線第 2 條）：不得為了 Crossover——**
+
+- **重新搜尋** Long Call／Long Put 候選
+- **呼叫** legacy single-leg ranking
+- **重做** Delta band selection
+
+comparator 直接取自該 Spread 買腿已有的報價，**沒有任何選取行為發生**。
+
 修正既有 `_spread_catchup_price` 在買腿為 put 時錯誤尋找「同履約價 call」
-的行為——該轉換為缺陷，不再沿用於新邏輯。
+的行為——該轉換為缺陷，不再沿用於新邏輯。（注意：修正方式是「直接用買腿
+本身」，**不是**改成去找一張更對的 put；後者仍屬搜尋行為。）
 
 **4.2 成本口徑。** 比較對象用該單腿 **Ask**（最差成交），與 Spread 淨成本
 口徑一致（A14.2）。
@@ -335,6 +422,12 @@ D 負責 overlay。
 座標**上每日重錨定取值，不是固定合約的原始 IV 序列；1Y 視窗、日粒度；
 超出可比網格時 percentile 留白並標示，不外插、不以最長可用 tenor 代理；
 只呈現事實，評語字樣由測試明文封鎖。
+
+**⚠ 明確禁令（核心紅線第 3 條）：Historical IV 只 enrich 當前 Spread
+與其雙腿**——normalized skew、buy leg IV history、sell leg IV history。
+**不得參與 ranking 或 selection**：不得進入排序鍵、不得當過濾條件、
+不得影響誰是 `expiry_best`／進得了 `expiry_top10`／是代表候選。
+它是純粹的補充分析資訊，加上去或拿掉都不改變任何一個候選的去留與名次。
 
 **5.2 ⚠ #111 是未解決的實作依賴，本 spec 不假裝它已解決。**
 
@@ -497,6 +590,29 @@ G（Heatmap compact 小修）  ← 無依賴，可隨時施工
 
 ## Acceptance Criteria
 
+### 0 — Selection Regression（跨全輪的硬性紅線，A／C／F 各自完成時都要通過）
+
+在**相同 snapshot／quotes／scenario inputs** 下，比對本輪 valuation／
+IV／Crossover 改造**前後**的分析結果：
+
+- [ ] **Spread ranking identity 不變**——排序後的 Spread 身份序列逐項相同
+- [ ] **各 expiry 的候選順序不變**
+- [ ] **`expiry_best` identity 不變**
+- [ ] **`expiry_top10` 的 identities 與 ordering 皆不變**
+- [ ] **representative candidate identity 不變**
+- [ ] **`best_return` 的 ranking semantics 不變**
+- [ ] **filtering 結果不變**——候選池組成與各過濾階段的移除筆數相同
+- [ ] 上述比對以**固定 fixture** 執行、可離線重跑，並在 A／C／F 三個
+      施工階段各跑一次（不是只在最後跑一次）
+
+**允許改變的（這組 AC 不涵蓋、也不應鎖死）**：Heatmap cells、
+Crossover results、Greeks／Delta 顯示值、IV History、其他
+valuation-derived 衍生指標。
+
+> 實作提示：這組不變量最自然的守門方式，是先在改造**前**把上述身份
+> 序列凍結成 golden，改造過程中持續比對。若某次改動讓它變紅，**先停下
+> 回報**，不要調整 golden 讓測試變綠。
+
 ### A — 估值修正
 
 - [ ] `american_price(option_type, S, K, T, r, q, sigma)` 為純函式、純
@@ -507,15 +623,16 @@ G（Heatmap compact 小修）  ← 無依賴，可隨時施工
 - [ ] **t=0 錨定**：以真實 TLT fixture，`analyzed_at × spot` 那一格等於
       「以 mid 平倉」的報酬，即 `(mid − net_worst)/net_worst`，
       **不再出現 +81.9%／+81.4%**
-- [ ] Greeks／Delta 改用與估值一致的口徑；`net_delta`／`vega_per_pt`／
-      `decay_30d_return`／`effective_leverage` 同步
-- [ ] **單腿 delta 分級位移逐項對帳**：以真實 TLT 五檔驗證重分級結果符合
-      預期（三檔 conservative → balanced），並確認這是**已知且接受**的
-      selection semantics 變動
-- [ ] **回歸斷言（不得變）**：`rank_spreads` 排序、`best_return`、
-      `representative_candidate`、劇本庫卡片數字、V9 成本走勢圖
+- [ ] Greeks／Delta 有一套與估值一致的口徑，供 Heatmap／Crossover 估值
+      與畫面顯示使用；`net_delta`／`vega_per_pt`／`decay_30d_return`／
+      `effective_leverage` 同步
+- [ ] **新口徑的 delta 不進入 legacy single-leg 分級路徑**
+      （`classify` / `delta_bands`）——以測試證明分級輸入未被新模型污染
+- [ ] **legacy Long Call／Long Put 的 Delta band ranking 邏輯本身未被
+      重構或改動**（diff 層級可檢核）
 - [ ] **回歸斷言（不得變）**：`price_axis`／`date_axis`／`move_pct`／
       右側 ±% 欄
+- [ ] **通過下方「Selection Regression」整組 AC**（本輪硬性紅線）
 - [ ] `clamped_price` docstring 改寫（不再宣稱是 American no-arbitrage floor）
 - [ ] 4 份 golden fixtures ＋ 契約樣本重產並經人工審閱，drift 測試通過
 - [ ] `report.py` 的「模型限制」尾註更新：可宣稱「carry 從完全沒有變成
@@ -558,6 +675,10 @@ G（Heatmap compact 小修）  ← 無依賴，可隨時施工
 ### C — Comparator 資料層（#115 現行 AC 全數維持，此處只列增補）
 
 - [ ] comparator 估值走**已修正**的引擎（A 完成後）
+- [ ] **comparator 直接取自該 Spread 的 buy leg**——測試證明整條路徑
+      **沒有**候選搜尋、**沒有**呼叫 legacy single-leg ranking、
+      **沒有** Delta band selection
+- [ ] 通過「Selection Regression」整組 AC（§0）
 - [ ] bull-call-spread → comparator option type 必為 call；
       bear-put-spread → 必為 put；履約價與到期等於買腿（兩策略各至少
       一組明確斷言）
@@ -587,6 +708,9 @@ G（Heatmap compact 小修）  ← 無依賴，可隨時施工
 
 - [ ] **開工前置**：E 已完成且已選定 vendor
 - [ ] 評語字樣（便宜／貴／好買點／建議進場）由測試明文封鎖
+- [ ] **IV History 不參與 ranking 或 selection**——測試證明把整個 IV
+      History 區塊移除後，候選的去留與名次完全相同
+- [ ] 通過「Selection Regression」整組 AC（§0）
 
 ### G — Heatmap compact
 
@@ -613,6 +737,12 @@ G（Heatmap compact 小修）  ← 無依賴，可隨時施工
   在 UI 上並列新舊快照的模型數字，需另行處理，不在本 spec 範圍。
 - **契約樣本與 golden fixtures 會漂移**，這是預期內的、由 A 一次性重產。
   前端 mock 與後端 fixture 共用同一份，漂移必須同步。
+  > **⚠ 重產 golden 不得用來吸收 selection 變動。** 允許漂移的只有
+  > valuation-derived 的數值（Heatmap cells、Greeks 顯示值、
+  > Crossover 結果等）。**候選的身份與順序**（哪些合約出現、以什麼次序、
+  > 誰是 `expiry_best`／representative）**在重產前後必須逐項相同**——
+  > 重產前先跑 §0 的 Selection Regression 比對，確認身份序列不變，
+  > 才可以重產數值。若身份序列變了，**停下回報**，不要靠重產讓測試變綠。
 - **CLI 行為**：`matrix_lines` 的日期欄數維持 7（QA-FIX-5 的 `max_gap_days=None`
   路徑），G 項只影響 GUI。CLI 報告的數值會隨模型改變，golden 一併重產。
 - **API 相容性**：新增欄位為純加法；`carry_calibrated=false` 時舊前端仍能
@@ -650,13 +780,20 @@ G（Heatmap compact 小修）  ← 無依賴，可隨時施工
 2. **q ≤ 0 退化**：BS93 對 call == Merton 歐式，差為 0.0。
 3. **反解次數**：不隨矩陣格數成長（架構要求 1.3 的守門）。
 4. **fallback 第 4 層**：斷言走的是 q=0 ＋ vendor IV，**不是**價格錨定。
-5. **delta 分級位移**：真實 TLT 五檔的重分級逐項對帳。
-6. **不變量回歸**：`rank_spreads`／`best_return`／劇本庫卡片／V9 成本
+5. **Selection Regression（§0 整組）**：固定 fixture 下凍結 Spread
+   ranking identity／各 expiry 候選順序／`expiry_best`／`expiry_top10`
+   identities 與 ordering／representative candidate／filtering 結果，
+   改造前後逐項比對。**A／C／F 三階段各跑一次。**
+6. **分級輸入未被污染**：新口徑 delta 不進入 `classify` / `delta_bands`。
+7. **不變量回歸**：`rank_spreads`／`best_return`／劇本庫卡片／V9 成本
    走勢圖／`move_pct`／±% 欄。
-7. **comparator option type**：兩策略路徑各一組明確斷言。
-8. **G 項密度**：桌面固定寬度下可見欄數的**量測**斷言；
-   `formatCell` 純函式測試；QA-FIX-1 的 ±% 欄格式回歸斷言。
-9. **對比度**：`src/contrast.test.ts` 既有守門持續通過。
+8. **comparator 無選取行為**：斷言 comparator 直接來自買腿，路徑上
+   沒有候選搜尋／legacy single-leg ranking／Delta band selection。
+9. **IV History 可拆卸**：移除整個 IV History 區塊後，候選去留與名次不變。
+10. **comparator option type**：兩策略路徑各一組明確斷言。
+11. **G 項密度**：桌面固定寬度下可見欄數的**量測**斷言；
+    `formatCell` 純函式測試；QA-FIX-1 的 ±% 欄格式回歸斷言。
+12. **對比度**：`src/contrast.test.ts` 既有守門持續通過。
 
 ---
 
@@ -725,10 +862,25 @@ G（Heatmap compact 小修）  ← 無依賴，可隨時施工
 
 - **#113 的「需求方核准 #110 建議方法」人工閘門**：已由本 spec 的鎖定
   決策回答——採 BS93 ＋ 外部 q；**Method E 不作為正式 q source**。
-  #113 施工票應更新 AC 以反映此決定與 delta 分級位移的後果。
+  #113 施工票應更新 AC 以反映此決定，**並納入 §0 的 Selection
+  Regression 紅線**（新模型的 delta 不得流進 legacy 分級路徑）。
 - **#115 被 #113 擋的依賴**：維持，實測數據支持（5.1–6.7% 貼邊格子
   會畫錯側）。
 - **#116 被 #109 擋的依賴**：#109 已完成，此依賴已解除。
+
+### 既有 issue 措辭的覆寫（避免被誤讀成允許選取）
+
+本 spec 說「#114／#115／#116 現行 AC 全數維持」時，**下列措辭以本 spec
+為準**：
+
+- **#115 的 What to build 開頭寫「引擎依 Spread 買腿的 option type
+  *選取*對應的裸買部位」。** 這裡的「選取」**不是搜尋行為**——同一張
+  issue 的第一條 AC 已經寫明「買腿合約本身即該單腿部位，直接取自買腿
+  報價，不做 option type 轉換、不另尋合約」。本 spec §4.1 採後者的
+  讀法：**comparator 就是買腿本身，路徑上沒有任何候選選取。**
+- 任何在 #114／#115／#116 既有文字中可能被讀成「重新挑候選」「重跑
+  單腿排名」「重做 delta 分級」的敘述，**一律以本 spec 的核心紅線
+  覆寫**。施工票如需更新措辭，只改敘述、不改既有 AC 的實質要求。
 
 ### 施工依據
 
