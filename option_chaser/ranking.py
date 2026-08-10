@@ -78,7 +78,11 @@ def rank(
 ) -> dict[str, list[ContractValuation]]:
     bands: dict[str, list[ContractValuation]] = {name: [] for name in BAND_ORDER}
     for v in valuations:
-        bands[classify(v.delta, p.delta_bands)].append(v)
+        # #122（spec #117 §1.4 核心紅線）：分級只讀 `classification_delta`，
+        # 不讀 `delta`——見 `ContractValuation.classification_delta` 欄位
+        # 註解。這是本專案唯一的單腿分級選取路徑，未來換估值模型不得
+        # 讓這一行改讀 `v.delta`。
+        bands[classify(v.classification_delta, p.delta_bands)].append(v)
     for name in BAND_ORDER:
         bands[name].sort(key=lambda v: (-baseline_return(v), *_tie_break_key(v)))
         bands[name] = bands[name][: p.top]

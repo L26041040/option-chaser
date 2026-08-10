@@ -546,8 +546,13 @@ def _single_leg_result(p: AnalysisParams, snap: ChainSnapshot,
         counts[exp] = counts.get(exp, 0) + 1
         best_by_expiry.setdefault(exp, v)
     expiry_best = tuple(
+        # #122：分級標籤同樣只讀 classification_delta（同一條紅線），
+        # 不影響 best_by_expiry 本身的選取——那是 vals_sorted 依
+        # baseline_return 決定的，跟 delta 分級無關，這裡只是幫選出來
+        # 的候選標一個風險級距文字。
         _single_leg_view(best_by_expiry[exp],
-                         classify(best_by_expiry[exp].delta, p.delta_bands),
+                         classify(best_by_expiry[exp].classification_delta,
+                                 p.delta_bands),
                          ranked, snap.spot, len(qualified), today, p,
                          violations)
         for exp in sorted(best_by_expiry))

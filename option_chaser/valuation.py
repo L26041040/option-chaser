@@ -76,6 +76,13 @@ class ContractValuation:
     mid: float
     spread: float
     delta: float
+    # #122（spec #117 §1.4 核心紅線）：legacy 單腿分級（`ranking.classify`／
+    # `p.delta_bands`）只讀這一份，不讀上面的 `delta`。目前兩者算法完全
+    # 相同（本票是零行為變化的 prefactor），差異只在「誰讀誰」——
+    # `delta` 供估值與畫面顯示，未來換估值模型（#113）只會改 `delta`，
+    # `classification_delta` 保持原口徑不動，legacy 分級因此不會被新模型
+    # 污染。這欄位存在的唯一理由就是切斷這條路徑，不是為了任何其他目的。
+    classification_delta: float
     gamma: float
     theta_per_day: float
     vega_per_pct: float
@@ -133,7 +140,11 @@ def evaluate_contract(
     l2 = scenario_leg_value(c, p.target_price, target, p, min(p.iv_shifts))
     return ContractValuation(
         contract=c, mid=mid, spread=spread,
-        delta=g.delta, gamma=g.gamma, theta_per_day=g.theta_per_day,
+        # #122：目前兩欄同值——q=0 歐式解析式尚未被 #113 換掉，這是刻意
+        # 的零行為變化。`classification_delta` 固定沿用這個既有 q=0 口徑，
+        # 之後 #113 換模型時只動 `delta`，這一行不動。
+        delta=g.delta, classification_delta=g.delta,
+        gamma=g.gamma, theta_per_day=g.theta_per_day,
         vega_per_pct=g.vega_per_pct,
         breakeven=breakeven, breakeven_vs_spot=be_vs_spot,
         breakeven_vs_target=be_vs_target,
