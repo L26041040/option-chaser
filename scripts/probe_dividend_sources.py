@@ -49,6 +49,7 @@ PROBES = [
                "?range=2y&interval=1d&events=div,splits,capitalGains"),
         "pass_criteria": ("200 + JSON + chart.result[0].events.dividends "
                           "非空，每筆含 amount/date"),
+        "yahoo_dividend_check": True,
     },
     {
         "id": 2,
@@ -70,19 +71,56 @@ PROBES = [
 ]
 
 
+def _yahoo_dividend_diagnostics(body: bytes) -> dict | None:
+    """#120 AC 直接判讀：events.dividends 是否存在／近 365 天筆數／
+    每筆 amount+ex-date 形狀——不能只看 500 bytes 前綴（2y 日線的
+    indicators 陣列很大，events 通常排在後面，preview 常常看不到）。"""
+    try:
+        parsed = json.loads(body)
+    except (ValueError, TypeError):
+        return None
+    result = (parsed.get("chart", {}).get("result") or [None])[0]
+    if not result:
+        return {"has_events_key": False}
+    events = result.get("events")
+    if not events or "dividends" not in events:
+        return {"has_events_key": bool(events), "has_dividends_key": False}
+    divs = events["dividends"]
+    import datetime
+    now = datetime.datetime.now(datetime.timezone.utc)
+    cutoff = now - datetime.timedelta(days=365)
+    entries = []
+    within_365d = 0
+    for ts_key, d in divs.items():
+        ex_date = datetime.datetime.fromtimestamp(int(ts_key), tz=datetime.timezone.utc)
+        if ex_date >= cutoff:
+            within_365d += 1
+        entries.append({"amount": d.get("amount"), "ex_date": ex_date.date().isoformat()})
+    entries.sort(key=lambda e: e["ex_date"], reverse=True)
+    return {
+        "has_dividends_key": True,
+        "total_dividend_entries": len(entries),
+        "within_365d_count": within_365d,
+        "sample_recent_entries": entries[:6],
+    }
+
+
 def _probe(spec: dict) -> dict:
     headers = {"User-Agent": _USER_AGENT, **spec.get("extra_headers", {})}
     req = Request(spec["url"], headers=headers)
     try:
         with urlopen(req, timeout=_TIMEOUT_SECONDS) as resp:
-            body = resp.read(6000)
-            return {
+            body = resp.read()
+            out = {
                 "id": spec["id"], "name": spec["name"], "url": spec["url"],
                 "status": resp.status,
                 "content_type": resp.headers.get("Content-Type"),
                 "body_preview": body[:500].decode("utf-8", errors="replace"),
                 "error": None,
             }
+            if spec.get("yahoo_dividend_check"):
+                out["dividend_diagnostics"] = _yahoo_dividend_diagnostics(body)
+            return out
     except HTTPError as e:
         body = e.read(500) if e.fp else b""
         return {
