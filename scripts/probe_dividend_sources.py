@@ -91,17 +91,23 @@ def _yahoo_dividend_diagnostics(body: bytes) -> dict | None:
     cutoff = now - datetime.timedelta(days=365)
     entries = []
     within_365d = 0
+    sum_365d = 0.0
     for ts_key, d in divs.items():
         ex_date = datetime.datetime.fromtimestamp(int(ts_key), tz=datetime.timezone.utc)
         if ex_date >= cutoff:
             within_365d += 1
+            sum_365d += d.get("amount") or 0.0
         entries.append({"amount": d.get("amount"), "ex_date": ex_date.date().isoformat()})
     entries.sort(key=lambda e: e["ex_date"], reverse=True)
+    splits = events.get("splits")
     return {
         "has_dividends_key": True,
         "total_dividend_entries": len(entries),
         "within_365d_count": within_365d,
+        "sum_amount_within_365d": round(sum_365d, 6),
         "sample_recent_entries": entries[:6],
+        "has_splits_key": bool(splits),
+        "splits_in_window": splits if splits else None,
     }
 
 
