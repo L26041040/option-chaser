@@ -1912,6 +1912,17 @@ Vercel probe，但本輪 Vercel MCP 的 `deploy_to_vercel` 可成功部署，
 blocker 就是 #111 的 credential。#113／#115／#116／#118–#123 依既有
 規則**中途不主動開 PR**，累積到 IV 線也解決或需求方指示時再開。
 
+**#111 免 credential 候選第二輪窮舉（2026-08-11）**：需求方指示先窮盡
+不需申請金鑰的路線再考慮付費三家。Yahoo／Nasdaq／Cboe 三家皆用
+GitHub Actions runner 真實請求測過（
+`docs/research/historical-options-iv-data-sources.md` §5.2，探測腳本
+`scripts/probe_iv_history_free_vendors.py`），結論**三家皆不能**：
+Nasdaq 當下鏈免鑰可達但歷史日期參數被明確拒絕、Cboe 現行端點對
+`date`／`asof`／`historical` 全部忽略只回當下快照、Yahoo 當下鏈端點
+新增 crumb+cookie 驗證且既有研究已確認其 chart 端點結構上無 bid/ask/
+IV。免 key 路線已窮盡，**blocker 未解除**，仍需需求方申請
+Alpha Vantage／Market Data App／ORATS 任一家金鑰。
+
 ### 施工依據
 
 - 需求與決策紀錄：`docs/modifyRequestV1.md`（附錄 A1–A12）
