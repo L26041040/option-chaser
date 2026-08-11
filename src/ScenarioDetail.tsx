@@ -158,7 +158,12 @@ function Chart({ candidate }: { candidate: Candidate | null }) {
   return (
     <section className="card">
       <h2 className="section-title">劇本主圖</h2>
-      <Heatmap matrix={candidate.matrix} />
+      {/* Crossover Boundary（#116）：只有 Spread 候選（兩條腿）有這個
+          概念——單腿候選（買腿本身就是持倉，沒有「跟自己比較」的
+          Crossover 概念）刻意不傳這個 prop，讓 `Heatmap` 完全不渲染
+          相關區塊，不是渲染成「缺席」。 */}
+      <Heatmap matrix={candidate.matrix}
+               comparator={candidate.legs.length === 2 ? candidate.comparator : undefined} />
     </section>
   );
 }

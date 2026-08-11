@@ -17,17 +17,80 @@
  * 左側價格欄 `sticky left`、右側 ±% 欄 `sticky right`，橫向捲動時兩端
  * 都留在畫面上，中間的日期格才是捲動的部分。候選展開後的 Heatmap 用的
  * 是同一個元件，不需要另外接線。
+ *
+ * Crossover Boundary（#116，spec #117 §4）：`comparator` 選填——傳入時
+ * 疊一層「這組 Spread 報酬 vs 直接買買腿本身」的邊界標示在同一張表上，
+ * 不畫第二張表、不遮蓋既有格值。邊界計算（`crossoverEdges`／
+ * `crossoverFavoredSide`，見 `./heatmap`）是純幾何：逐格比較兩個矩陣
+ * 哪裡符號翻轉，不解任何金融方程式。`comparator` 為 `null`（單腿候選、
+ * 或買腿報價缺失）時顯示一行誠實的缺席原因，不假造一條線。
  */
-import type { Matrix } from "./api";
+import type { Comparator, Matrix } from "./api";
 import {
-  cellColor, columnLabel, formatCell, formatMovePct, formatMovePctShort,
-  priceTags,
+  cellColor, columnLabel, crossoverEdges, crossoverFavoredSide, formatCell,
+  formatMovePct, formatMovePctShort, priceTags,
 } from "./heatmap";
+import { money } from "./scenarios";
 
-export default function Heatmap({ matrix }: { matrix: Matrix }) {
+/** Comparator 標籤：「2028/12 105 Long Call」——直接讀 `option_type`，
+ *  不從 strategy 反推（後端已經把型別放進契約，前端只格式化）。 */
+function comparatorLabel(c: Comparator): string {
+  const [, month, day] = c.expiry.split("-");
+  const kind = c.option_type === "call" ? "Long Call" : "Long Put";
+  return `${month}/${day} ${c.strike} ${kind}`;
+}
+
+/** 邊界格 key（`"row-col"`）集合——vertical／horizontal 兩種邊各自的
+ *  兩端都算「邊界附近」，不只標其中一格，這樣一個 edge 至少在畫面上
+ *  留下兩個相鄰、彼此靠著的高亮格，才看得出「線」的走向。 */
+function boundaryCellKeys(edges: ReturnType<typeof crossoverEdges>): Set<string> {
+  const keys = new Set<string>();
+  for (const e of edges) {
+    keys.add(`${e.row}-${e.col}`);
+    if (e.orientation === "vertical") keys.add(`${e.row + 1}-${e.col}`);
+    else keys.add(`${e.row}-${e.col + 1}`);
+  }
+  return keys;
+}
+
+function CrossoverLegend({ comparator, edges, favoredSide }: {
+  comparator: Comparator;
+  edges: ReturnType<typeof crossoverEdges>;
+  favoredSide: ReturnType<typeof crossoverFavoredSide>;
+}) {
+  const label = comparatorLabel(comparator);
+  return (
+    <p className="caption crossover-legend">
+      格子仍是 Spread 報酬率；<span className="crossover-swatch" /> 標示的格子
+      是邊界所在——在那裡 Spread 與直接買{" "}
+      <strong>{label}</strong>（成本 {money(comparator.cost)}）報酬相等。
+      {edges.length === 0 && (
+        <>
+          {" "}此圖顯示範圍內邊界不在網格上：
+          {favoredSide === "spread"
+            ? "全部落在 Spread 較優的一側。"
+            : favoredSide === "comparator"
+            ? `全部落在直接買 ${label} 較優的一側。`
+            : "資料不足以判定哪一側較優。"}
+        </>
+      )}
+    </p>
+  );
+}
+
+export default function Heatmap({ matrix, comparator }: {
+  matrix: Matrix;
+  comparator?: Comparator | null;
+}) {
   const { prices, dates, cells } = matrix;
   // 由高價到低價，與看盤軟體一致（漲在上、跌在下）
   const order = prices.map((_, i) => i).reverse();
+
+  const edges = comparator ? crossoverEdges(cells, comparator.matrix.cells) : [];
+  const favoredSide = comparator
+    ? crossoverFavoredSide(cells, comparator.matrix.cells)
+    : "mixed";
+  const boundaryCells = boundaryCellKeys(edges);
 
   return (
     <div className="heatmap">
@@ -68,7 +131,12 @@ export default function Heatmap({ matrix }: { matrix: Matrix }) {
                     ))}
                   </th>
                   {cells[i].map((value, j) => (
-                    <td key={dates[j][0]} style={{ background: cellColor(value) }}>
+                    <td
+                      key={dates[j][0]}
+                      style={{ background: cellColor(value) }}
+                      className={boundaryCells.has(`${i}-${j}`)
+                        ? "heatmap-crossover-cell" : undefined}
+                    >
                       {formatCell(value)}
                     </td>
                   ))}
@@ -93,6 +161,18 @@ export default function Heatmap({ matrix }: { matrix: Matrix }) {
         以最差進場成本（買付 Ask、賣收 Bid）進場，在各標的價與日期下的模型
         報酬率（單位：%）。標記列為錨點價格，其餘為等距內插。
       </p>
+      {/* `comparator === undefined`（呼叫端根本沒傳，見 `ScenarioDetail.tsx`／
+          `ExpiryStructure.tsx`——單腿候選不傳這個 prop）＝這個候選沒有
+          Crossover 概念，不顯示任何區塊，不是「缺席」；`null`（呼叫端
+          傳了，但值是 null）才是 AC 講的「comparator 的報價缺失」那個
+          需要誠實揭露原因的狀態，兩者不能用同一句話混著講。 */}
+      {comparator === undefined ? null : comparator === null ? (
+        <p className="caption crossover-legend crossover-absent">
+          Crossover 對照缺席：無法取得買腿報價，本頁不顯示邊界。
+        </p>
+      ) : (
+        <CrossoverLegend comparator={comparator} edges={edges} favoredSide={favoredSide} />
+      )}
     </div>
   );
 }

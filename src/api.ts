@@ -73,6 +73,22 @@ export interface PricePoint {
   return: number;
 }
 
+/**
+ * #115（spec #117 §4）：Crossover 對照——就是這組 Spread 買腿本身。
+ * `option_type` 讓前端直接顯示「Long Call」／「Long Put」，不必自己從
+ * strategy 反推（後端 `ComparatorView` docstring：三欄直接複製自買腿，
+ * 沒有分支邏輯可以讓它們偏離買腿本身）。`matrix` 與該候選自己的
+ * `matrix` 同一組 price×date grid、同形狀，#116 的 Crossover Boundary
+ * overlay 靠這個保證才能直接逐格比較兩個矩陣。
+ */
+export interface Comparator {
+  option_type: "call" | "put";
+  strike: number;
+  expiry: string;
+  cost: number;
+  matrix: Matrix;
+}
+
 /** 引擎的 `ScenarioVector`（7 個固定壓力情境，Mid 口徑）。 */
 export interface ScenarioVectorView {
   entries: [string, number][];
@@ -149,6 +165,13 @@ export interface Candidate {
   monotonicity_warning: boolean;
   legs: Leg[];
   matrix: Matrix;
+  /**
+   * #115（spec #117 §4）：Crossover 對照——只有 Spread 候選有值；單腿
+   * 恆為 `null`（沒有「跟自己比較」的概念）。Spread 候選理論上也可能
+   * 是 `null`（買腿報價缺失，結構上不該發生的防禦性 case）——#116 的
+   * overlay 必須誠實處理這個缺席狀態，不能假造一條線。
+   */
+  comparator: Comparator | null;
 }
 
 export interface ExpiryTop10 {

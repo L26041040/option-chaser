@@ -1235,6 +1235,40 @@ body {
   }
 }
 
+/* ---------- Crossover Boundary overlay（#116，spec #117 §4） ---------- */
+/*
+ * 用 inset box-shadow 而非 border：不吃掉格子本身的 border-radius（既有
+ * 圓角格子外觀不變），不參與 `.heatmap-table` 的 `border-collapse:
+ * separate` 邊界規則，純粹疊一層視覺標示、不影響版面尺寸與間距——
+ * 「不遮蓋既有格值、不畫第二張表」（AC 明文）在這裡是字面意義：格子
+ * 底色、文字都原封不動，只是外圈多一圈色。用 --tint（iOS 藍）而非
+ * --green／--red，避免跟賺賠配色混淆成第三種「輸贏」語意——這不是
+ * WIN/LOSE 標記，是「邊界從這裡附近經過」。
+ */
+.heatmap-crossover-cell {
+  box-shadow: inset 0 0 0 2px var(--tint);
+}
+
+.crossover-legend {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.crossover-swatch {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 3px;
+  box-shadow: inset 0 0 0 2px var(--tint);
+  vertical-align: middle;
+}
+
+.crossover-absent {
+  color: var(--label-tertiary);
+}
+
 /* ---------- 到期日結構（V6／#54） ---------- */
 
 /* 真正橫向並排、可橫向滑動——不是換行成好幾列的按鈕堆。負邊距讓它

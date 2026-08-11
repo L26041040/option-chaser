@@ -68,7 +68,10 @@ function CandidateRow({ candidate, rank }: { candidate: Candidate; rank: number 
             <span>淨成本 {money(prices.net)}</span>
           </span>
         </summary>
-        <Heatmap matrix={candidate.matrix} />
+        {/* Crossover Boundary（#116）：同 `ScenarioDetail.tsx` 的判準
+            ——單腿候選不傳 `comparator`，不是渲染成「缺席」。 */}
+        <Heatmap matrix={candidate.matrix}
+                 comparator={candidate.legs.length === 2 ? candidate.comparator : undefined} />
       </details>
     </li>
   );

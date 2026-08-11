@@ -140,6 +140,38 @@ test("Heatmap ±% 在最右欄：桌面 viewport 每一列都看得到完整格�
   }
 });
 
+test("Crossover Boundary（#116）：桌面 viewport 圖例與邊界標示可見，" +
+     "既有 ±% 欄與橫向捲動不受影響", async ({ page }) => {
+  await routeTwoScenarios(page);
+  await page.goto("/#/s/s1");
+
+  const mainChart = page.locator("section").filter({ hasText: "劇本主圖" }).first();
+  const table = mainChart.locator("table.heatmap-table");
+  await expect(table).toBeVisible();
+
+  // 圖例：格子仍是 Spread 報酬、邊界是兩者相等處、comparator 標籤與成本。
+  await expect(mainChart.getByText(/格子仍是 Spread 報酬率/)).toBeVisible();
+  await expect(mainChart.getByText(/報酬相等/)).toBeVisible();
+  await expect(mainChart.getByText(/Long Call|Long Put/)).toBeVisible();
+
+  // 邊界確實畫在網格上（契約樣本的 baseline 候選有真實交叉）——不是
+  // 每次都落在「網格外」那個分支。
+  const marked = table.locator("td.heatmap-crossover-cell");
+  await expect(marked.first()).toBeVisible();
+
+  // #109／QA-FIX-1 的 ±% 欄仍在、仍是每列最右邊——overlay 沒有蓋掉它。
+  await expect(table.locator("th.heatmap-move-head")).toHaveText("vs 現價");
+  const firstRow = table.locator("tbody tr").first();
+  const moveBox = (await firstRow.locator("td.heatmap-move-pct").boundingBox())!;
+  const lastCellBox = (await firstRow.locator("td:not(.heatmap-move-pct)")
+    .last().boundingBox())!;
+  expect(moveBox.x).toBeGreaterThan(lastCellBox.x);
+
+  // 格子文字（報酬率數字）沒有被 overlay 蓋掉或改寫。
+  await expect(firstRow.locator("td:not(.heatmap-move-pct)").first())
+    .toHaveText(/^-?\d+$/);
+});
+
 test("Heatmap 密度（#121）：去掉 +／% 縮小 padding 後，固定容器寬度下" +
      "看得到的日期欄數真的變多", async ({ page }) => {
   // 實測基準（本票施工時量到，git stash 對照修正前後）：容器

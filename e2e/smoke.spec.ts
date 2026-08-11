@@ -388,6 +388,32 @@ test("Heatmap 價格列右側 ±% 標註：手機 viewport 不需額外互動就
   expect(moveBox.x).toBeGreaterThan(priceBox.x);
 });
 
+test("Crossover Boundary（#116）：手機 viewport 不需額外互動就看得到圖例與邊界標示，" +
+     "既有橫向捲動不受影響", async ({ page }) => {
+  await routeLibrary(page, libraryRow());
+
+  await page.goto("/#/s/s1");
+  const mainChart = page.locator("section").filter({ hasText: "劇本主圖" }).first();
+  const table = mainChart.locator("table.heatmap-table");
+  await expect(table).toBeVisible();
+
+  // 不點、不長按——契約樣本 baseline 候選是 Spread，`comparator` 非 null，
+  // 圖例與邊界標示直接渲染，不需要任何互動觸發。
+  await expect(mainChart.getByText(/格子仍是 Spread 報酬率/)).toBeVisible();
+  await expect(mainChart.getByText(/報酬相等/)).toBeVisible();
+  await expect(mainChart.getByText(/Long Call|Long Put/)).toBeVisible();
+  await expect(table.locator("td.heatmap-crossover-cell").first()).toBeVisible();
+
+  // 疊加邊界標示不能破壞既有的橫向捲動與兩端 sticky 欄位行為
+  // （同上一個測試「詳細頁的 Heatmap 可橫向滑動」）。
+  const box = await mainChart.locator(".heatmap-scroll").evaluate((el) => ({
+    scrollWidth: el.scrollWidth, clientWidth: el.clientWidth,
+  }));
+  expect(box.scrollWidth).toBeGreaterThan(box.clientWidth);
+  expect(await page.evaluate(
+    () => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+});
+
 test("劇本庫：建立 → 出現在清單 → 封存後消失（V3／#51）", async ({ page }) => {
   const created = {
     ...sampleRow,

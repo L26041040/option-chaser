@@ -72,6 +72,88 @@ export function formatMovePctShort(movePct: number): string {
   return `${pct >= 0 ? "+" : ""}${pct.toFixed(0)}%`;
 }
 
+// ---------- Crossover Boundary（#116，spec #117 §4） ----------
+//
+// 「derived on the frontend from the two matrices... using only equality
+// comparison and interpolation. No financial computation in the frontend」
+// ——這裡做的是純幾何：逐格比較兩個矩陣（Spread 自己的 vs comparator
+// 的）哪裡符號翻轉，翻轉處＝兩者報酬率相等的邊界。不解任何金融方程式，
+// 不重算任何報酬率，只讀已經算好的 cell 值。
+//
+// 邊界用「哪兩個相鄰格子之間符號不同」表示，不是連續曲線座標——表格
+// 本質是離散格點，用格子邊界畫線（CSS border）比另外量測像素位置畫
+// SVG 更穩（不受橫向捲動／sticky 欄影響），也天然滿足「可能是分段線」
+// 的要求。掃描兩個方向（vertical＝同一欄、相鄰價格列之間；horizontal＝
+// 同一價格列、相鄰日期欄之間），才能抓到邊界沿任一軸移動的情況，不是
+// 只假設它只沿價格軸或只沿日期軸走。
+
+export interface CrossoverEdge {
+  row: number;   // matrix.cells 的列索引（價格軸，未反轉的原始順序）
+  col: number;   // matrix.cells 的欄索引（日期軸）
+  /** vertical：邊界在 (row,col) 與 (row+1,col) 之間（同一天、相鄰價位）。
+   *  horizontal：邊界在 (row,col) 與 (row,col+1) 之間（同一價位、相鄰日期）。 */
+  orientation: "vertical" | "horizontal";
+}
+
+function sign(x: number): number {
+  return x > 0 ? 1 : x < 0 ? -1 : 0;
+}
+
+/**
+ * 兩個矩陣逐格相減（Spread − comparator），在符號翻轉的相鄰格邊界上
+ * 各記一筆。矩陣形狀不一致（理論上不該發生，後端 `_matrix_view` 保證
+ * 同一組 grid——這裡仍防禦性核對，形狀不符直接回空陣列，不猜、不半算）
+ * 時回傳空陣列，讓呼叫端走「無法判定」而非拋錯，畫面才能誠實顯示原因。
+ */
+export function crossoverEdges(
+  spreadCells: number[][], comparatorCells: number[][]
+): CrossoverEdge[] {
+  const nRows = spreadCells.length;
+  if (nRows === 0 || comparatorCells.length !== nRows) return [];
+  const nCols = spreadCells[0].length;
+  if (comparatorCells.some((row) => row.length !== nCols)
+      || spreadCells.some((row) => row.length !== nCols)) return [];
+
+  const diff = spreadCells.map((row, i) => row.map((v, j) => v - comparatorCells[i][j]));
+  const edges: CrossoverEdge[] = [];
+  for (let i = 0; i < nRows; i++) {
+    for (let j = 0; j < nCols; j++) {
+      if (i + 1 < nRows && sign(diff[i][j]) !== sign(diff[i + 1][j])) {
+        edges.push({ row: i, col: j, orientation: "vertical" });
+      }
+      if (j + 1 < nCols && sign(diff[i][j]) !== sign(diff[i][j + 1])) {
+        edges.push({ row: i, col: j, orientation: "horizontal" });
+      }
+    }
+  }
+  return edges;
+}
+
+export type CrossoverFavoredSide = "spread" | "comparator" | "mixed";
+
+/**
+ * 整個 grid 有沒有一致的贏家——只在 `crossoverEdges` 回空陣列（整張表
+ * 沒有任何符號翻轉）時才有意義：這代表邊界整條落在網格之外，圖例要
+ * 說清楚「這張表全部落在哪一側」，不能讓使用者把「沒畫線」誤讀成
+ * 「沒有 Crossover」。
+ */
+export function crossoverFavoredSide(
+  spreadCells: number[][], comparatorCells: number[][]
+): CrossoverFavoredSide {
+  let sawPositive = false;
+  let sawNegative = false;
+  for (let i = 0; i < spreadCells.length; i++) {
+    for (let j = 0; j < spreadCells[i].length; j++) {
+      const d = spreadCells[i][j] - (comparatorCells[i]?.[j] ?? NaN);
+      if (d > 0) sawPositive = true;
+      if (d < 0) sawNegative = true;
+    }
+  }
+  if (sawPositive && !sawNegative) return "spread";
+  if (sawNegative && !sawPositive) return "comparator";
+  return "mixed";
+}
+
 const TAGS: Record<string, string> = {
   "<現價>": "現價", "<目標>": "目標", "<超標>": "超標", "<深跌>": "深跌",
 };

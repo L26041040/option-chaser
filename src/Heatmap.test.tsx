@@ -200,3 +200,113 @@ describe("高密度日期軸（QA-FIX-5／QA-01）", () => {
     }
   });
 });
+
+describe("Crossover Boundary overlay（#116，spec #117 §4）", () => {
+  const baseMatrix: Matrix = {
+    prices: [[90, "", -0.1], [110, "", 0.1]],
+    dates: [["2026-08-07", ""], ["2026-09-07", ""]],
+    cells: [[0.5, 0.6], [-0.3, -0.4]],
+  };
+
+  function callComparator(matrix: Matrix) {
+    return {
+      option_type: "call" as const, strike: 118, expiry: "2026-08-07",
+      cost: 1.1, matrix,
+    };
+  }
+
+  function putComparator(matrix: Matrix) {
+    return {
+      option_type: "put" as const, strike: 82, expiry: "2026-08-07",
+      cost: 1.1, matrix,
+    };
+  }
+
+  it("沒有傳 comparator（單腿候選）：不渲染任何 Crossover 區塊，" +
+     "不是渲染成「缺席」", () => {
+    render(<Heatmap matrix={baseMatrix} />);
+    expect(screen.queryByText(/Crossover/)).not.toBeInTheDocument();
+    expect(document.querySelector(".heatmap-crossover-cell")).toBeNull();
+  });
+
+  it("comparator 為 null（買腿報價缺失）：顯示一行誠實缺席原因，" +
+     "不畫任何邊界、不崩潰", () => {
+    render(<Heatmap matrix={baseMatrix} comparator={null} />);
+    expect(screen.getByText(/Crossover 對照缺席/)).toBeInTheDocument();
+    expect(screen.getByText(/無法取得買腿報價/)).toBeInTheDocument();
+    expect(document.querySelector(".heatmap-crossover-cell")).toBeNull();
+  });
+
+  it("邊界存在：跨越邊界的格子被標示，圖例講清楚格子仍是 Spread 報酬、" +
+     "邊界是兩者相等處，並附 comparator 標籤與成本", () => {
+    const comparatorMatrix: Matrix = {
+      ...baseMatrix,
+      cells: [[0.1, 0.1], [0.1, 0.1]],
+    };
+    const { container } = render(
+      <Heatmap matrix={baseMatrix} comparator={callComparator(comparatorMatrix)} />);
+
+    // diff = [[0.4,0.5],[-0.4,-0.5]] → 兩欄都在 row0/row1 之間翻轉，
+    // 四格全部緊鄰邊界。
+    const marked = container.querySelectorAll(".heatmap-crossover-cell");
+    expect(marked.length).toBeGreaterThan(0);
+
+    expect(screen.getByText(/格子仍是 Spread 報酬率/)).toBeInTheDocument();
+    expect(screen.getByText(/報酬相等/)).toBeInTheDocument();
+    expect(screen.getByText(/08\/07 118 Long Call/)).toBeInTheDocument();
+    expect(screen.getByText(/\$1\.10/)).toBeInTheDocument();
+  });
+
+  it("comparator 是 put 時標籤顯示 Long Put，不是 Long Call——直接讀" +
+     "option_type，不是從策略反推", () => {
+    const comparatorMatrix: Matrix = { ...baseMatrix, cells: [[0.1, 0.1], [0.1, 0.1]] };
+    render(<Heatmap matrix={baseMatrix} comparator={putComparator(comparatorMatrix)} />);
+    expect(screen.getByText(/08\/07 82 Long Put/)).toBeInTheDocument();
+    expect(screen.queryByText(/Long Call/)).not.toBeInTheDocument();
+  });
+
+  it("邊界整條落在網格外（Spread 全贏）：不標任何格子，圖例明講" +
+     "「全部落在 Spread 較優的一側」，不能讓使用者把「沒畫線」誤讀成" +
+     "「沒有 Crossover」", () => {
+    const comparatorMatrix: Matrix = {
+      ...baseMatrix,
+      cells: [[0.1, 0.1], [0.1, 0.1]],
+    };
+    const spreadAlwaysWins: Matrix = { ...baseMatrix, cells: [[0.5, 0.6], [0.3, 0.4]] };
+    const { container } = render(
+      <Heatmap matrix={spreadAlwaysWins}
+               comparator={callComparator(comparatorMatrix)} />);
+
+    expect(container.querySelectorAll(".heatmap-crossover-cell")).toHaveLength(0);
+    expect(screen.getByText(/邊界不在網格上/)).toBeInTheDocument();
+    expect(screen.getByText(/全部落在 Spread 較優的一側/)).toBeInTheDocument();
+  });
+
+  it("邊界整條落在網格外（comparator 全贏）：圖例明講另一側", () => {
+    const comparatorAlwaysWins: Matrix = {
+      ...baseMatrix,
+      cells: [[0.9, 0.9], [0.9, 0.9]],
+    };
+    render(<Heatmap matrix={baseMatrix}
+                    comparator={callComparator(comparatorAlwaysWins)} />);
+    expect(screen.getByText(/全部落在直接買.*較優的一側/)).toBeInTheDocument();
+  });
+
+  it("regression：加了 comparator 之後，既有格值／欄數／±% 欄仍然不變" +
+     "（overlay 是疊加，不是取代）", () => {
+    const comparatorMatrix: Matrix = { ...baseMatrix, cells: [[0.1, 0.1], [0.1, 0.1]] };
+    const { container } = render(
+      <Heatmap matrix={baseMatrix} comparator={callComparator(comparatorMatrix)} />);
+
+    const valueCells = Array.from(
+      container.querySelectorAll<HTMLElement>("td:not(.heatmap-move-pct)"));
+    expect(valueCells).toHaveLength(4);   // 2 價格 × 2 日期，不因 overlay 變多變少
+    // 格子文字仍是原本的報酬率數字，overlay 沒有蓋掉或改寫它們。
+    const texts = valueCells.map((c) => c.textContent).sort();
+    expect(texts).toEqual(["-30", "-40", "50", "60"]);
+
+    const headers = screen.getAllByRole("columnheader").map((h) => h.textContent);
+    expect(headers).toHaveLength(baseMatrix.dates.length + 2);   // 不變
+    expect(container.querySelectorAll("td.heatmap-move-pct")).toHaveLength(2);
+  });
+});
