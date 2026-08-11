@@ -1868,6 +1868,28 @@ QA-01 收尾後緊接開始的下一波，承接 #102 尚未完成的部分（#1
   綠燈：後端 867 passed（memory＋真實 Postgres 兩後端）、前端 360
   passed、typecheck／build 皆過。**#118 選取身份回歸守門全程綠燈**。
 
+- **#115**（commit `19b7d5d`）— Crossover comparator 矩陣計算：
+  `service._spread_comparator()` 直接取 `sv.long_leg`（Spread 買腿本身
+  既有報價）——無型別轉換、無查找，`test_comparator_construction_
+  never_calls_find_contract`／`..._never_calls_legacy_ranking_or_
+  classification` 兩條測試明確證明這條路徑不做任何選擇。Comparator
+  matrix 重用既有 `_matrix_view()`（同一組 price×date grid，`sv.
+  long_carry` 沿用 #123 校正過的 q pipeline）。買腿報價缺失時誠實回傳
+  `None`，不假造。契約樣本新增獨立第二例
+  `contracts/analysis_sample_bear_put.json`（bear put spread，配新
+  fixture `xyz_v5_put_ladder.json`）與 bull call 既有例並存，call／put
+  comparator 兩種都有 drift 測試覆蓋。純資料層，未觸碰任何前端渲染。
+- **#116**（commit `f47eff4`）— Crossover Boundary Heatmap overlay：
+  `heatmap.ts` 新增 `crossoverEdges()`／`crossoverFavoredSide()`——
+  逐格掃兩軸找 Spread 與 comparator 報酬符號翻轉，純幾何比較、零財務
+  計算。`Heatmap.tsx` 三態區分 comparator 是否傳入／`null`／有值
+  （對應「概念不存在」／「報價缺失」／「正常顯示」），CSS `box-shadow:
+  inset` 疊色不新增第二張表、不蓋掉既有格值。`ScenarioDetail.tsx`／
+  `ExpiryStructure.tsx` 兩處呼叫點（主圖＋展開候選）皆接上。桌面＋
+  手機 e2e 各一條新測試驗證圖例／邊界格可見且不破壞既有橫向捲動／
+  ±% 欄行為。兩票皆通過 #118 選取身份回歸守門，皆已在 GitHub 關閉
+  （commit 引用留言）。
+
 **探測環境選擇（#120／#111 共同記錄）**：使用者原始指示要求建臨時
 Vercel probe，但本輪 Vercel MCP 的 `deploy_to_vercel` 可成功部署，
 該 session 內所有讀回工具（`get_deployment`／`list_projects`／
@@ -1880,9 +1902,11 @@ Vercel probe，但本輪 Vercel MCP 的 `deploy_to_vercel` 可成功部署，
 **MCP 工具無刪除操作，需求方需自行從 Vercel 後台手動清除**。
 
 **尚存 blocker**：#111（IV History vendor，credential-blocked，
-需需求方申請免費金鑰）、#114（依既有 blocked-by 卡在 #111 之後）、
-#115／#116（依鏈續卡）。#113／#118–#123 依既有規則**中途不主動開
-PR**，累積到這幾張也解決或需求方指示時再開。
+需需求方申請免費金鑰，issue 維持 OPEN）、#114（Historical IV Position
+模組，依既有 blocked-by 卡在 #111 之後，未動工）。**Crossover 主線
+（#115→#116）已於 #123 解鎖後完結並關閉**——本輪剩下的唯一實質
+blocker 就是 #111 的 credential。#113／#115／#116／#118–#123 依既有
+規則**中途不主動開 PR**，累積到 IV 線也解決或需求方指示時再開。
 
 ### 施工依據
 
