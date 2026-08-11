@@ -458,6 +458,40 @@ option/IV 資料**。
   （設對應環境變數）即可完成 #111 剩餘驗證，腳本與探測管線本身
   已就緒、不需重寫。
 
+## 5.2 追記（#111 第二輪）——免 credential 候選 production 實測，三家皆不能
+
+**背景**：§5.1 已確認 Market Data App／Alpha Vantage／ORATS 三家「能」
+的候選皆 credential-blocked。需求方要求優先窮盡**完全不需要申請任何
+金鑰／帳號**的路線——Yahoo、Nasdaq、Cboe（本專案既有主源／備援源）
+——再決定是否要為付費三家申請金鑰。本節記錄這輪的真實測試。
+
+**環境**：GitHub Actions `ubuntu-latest` runner（run
+[31498601174](https://github.com/L26041040/option-chaser/actions/runs/31498601174)，
+2026-08-11 真實對外請求，探測腳本
+`scripts/probe_iv_history_free_vendors.py`）。
+
+| Vendor | 測試內容 | 實測結果 | 資料形狀是否符合 #114 需求 |
+|---|---|---|---|
+| **Yahoo** | 當下鏈（取真實 OCC 合約代號）／`date=` 參數 workaround（90天前、1年前）／單一合約 chart 端點 | **HTTP 401 `{"code":"Unauthorized","description":"Invalid Crumb"}`**——`query1.finance.yahoo.com` 現在連**當下**鏈都要求 crumb+cookie 兩段式驗證（近期加上的反爬蟲機制，本輪之前的研究未記錄過）；沒有真實合約代號可用，chart 端點測試因此落空（回 404 "symbol may be delisted"，因為測試代號是猜的） | **不適用（無法驗證）**——但即使補上 crumb 流程，既有研究 §4.3 已透過文件面確認 chart 端點對單一合約只回**成交 OHLC**，結構上沒有 bid/ask／IV 欄位，這個結論與是否能認證無關 |
+| **Nasdaq** | 當下鏈／鏈端點硬塞 `fromdate`／`todate` 參數／兩個猜測性歷史端點路徑 | 當下鏈 **HTTP 200**，免鑰可達、真實資料（366 筆記錄，含 bid/ask/last/OI）；硬塞日期參數回 **HTTP 200 但 body 是驗證錯誤**：`"Month should be greater than or equal to current month"`——**證實**該參數是「選未來到期月份」的篩選器，不是回放歷史；兩個猜測的歷史端點皆 **404** | **不能**——當下鏈的參數設計明確拒絕過去日期，沒有任何歷史選擇權／IV 端點存在的證據 |
+| **Cboe** | 現行 production 端點原樣／硬塞 `date`／`asof`／`historical` 三種常見參數名／兩個猜測性免鑰歷史 JSON 路徑 | 四次呼叫（不加參數＋三種參數）**全部 HTTP 200，回應逐字元相同**（同一個 `timestamp` 欄位、同一組報價）——**證實**這些參數被完全忽略，端點只會回當下快照；兩個猜測路徑皆 **HTTP 403 AccessDenied**（S3 bucket 層級拒絕，不存在） | **不能**——現行主源端點沒有任何歷史查詢能力，與既有研究（付費 DataShop／All Access API 才有歷史）一致 |
+
+**結論**：
+
+- **三家免 credential 候選皆不滿足 #114 的資料形狀需求**——Nasdaq／
+  Cboe 是用真實請求直接證實（不是文件推測）；Yahoo 因新出現的
+  crumb 驗證機制沒能跑到最後一步，但既有研究的結構性結論（chart
+  端點無 bid/ask/IV 欄位）不受影響，多測也不會改變答案。
+- 額外發現：**Yahoo 的免鑰選擇權鏈端點已加上 crumb+cookie 驗證**，
+  這是本輪新觀察，之前的研究（含 §4.3、`option-chain-data-sources.md`）
+  未記錄過——若本專案未來需要重新評估 Yahoo 當下鏈備援路徑，這一點
+  要納入。**Nasdaq 免鑰當下鏈可達且資料完整**是另一個附帶發現，與
+  #111（歷史 IV）無關，但可能對其他票（例如即時鏈備援源選型）有
+  參考價值，留給需要時再評估。
+- **依需求方指示**：免 key 路線已窮盡且全數不能，回到 §5.1 的既有
+  結論——**需要需求方決定是否為 Alpha Vantage／Market Data App／
+  ORATS 任一家申請免費或付費金鑰**，#111 才可能繼續往前。
+
 ## 6. 明確不涵蓋
 
 - **IV 方法論**（surface 建構、內插、無模型 IV 等）——另一份研究在做。
