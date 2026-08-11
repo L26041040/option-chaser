@@ -419,3 +419,20 @@ describe("刷新失敗的分層與重試入口（V4／#52）", () => {
     expect(screen.getByText("舊資料")).toBeInTheDocument();
   });
 });
+
+describe("劇本庫的概覽欄位（QA 修正，桌面版與手機版同一套語意）", () => {
+  it("現價跟目標價並排，最高／最低有填就顯示", () => {
+    list([row({ spot: 82.11, best_price: 120, worst_price: 100 })]);
+    const card = screen.getByRole("listitem");
+    expect(card.querySelector(".compact-spot")!.textContent).toBe("$82.11");
+    const range = card.querySelector(".compact-range")!;
+    expect(range.textContent).toContain("最低 $100.00");
+    expect(range.textContent).toContain("最高 $120.00");
+  });
+
+  it("兩端都沒填就整行不畫", () => {
+    list([row({ best_price: null, worst_price: null })]);
+    expect(screen.getByRole("listitem").querySelector(".compact-range"))
+      .toBeNull();
+  });
+});

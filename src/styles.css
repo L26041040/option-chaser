@@ -914,6 +914,23 @@ body {
   vertical-align: 1px;
 }
 
+/* 現價擠在目標價前面（QA 修正）：比目標價低一階，讓「現在 → 目標」
+   一眼讀得出方向與距離，但不搶目標價的視覺重量。 */
+.compact-spot {
+  color: var(--label-secondary);
+  font-weight: 500;
+}
+
+/* 劇本區間那一行（QA 修正）：只有使用者真的填了最高／最低才會出現，
+   權重比第三層再輕一點——它是背景資訊，不是要先讀的數字。 */
+.compact-range {
+  font-size: 12px;
+  color: var(--label-tertiary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .compact-notice {
   margin: 0 12px 8px;
   padding: 8px 10px;

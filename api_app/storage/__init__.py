@@ -50,6 +50,10 @@ class ResultRecord:
     # 不假設腿數固定（單腳與價差共用），保留未來策略種類增加時不必
     # 改 schema 的空間。
     representative_candidate: dict | None = None
+    # 這次分析當下的標的現價（`store.spot(view)`）。與 `best_return`／
+    # `representative_candidate` 同一個模式：清單卡片只要這一個數字，
+    # 不該為它把整份 view 撈回來。
+    spot: float | None = None
 
 
 @dataclass(frozen=True)
@@ -58,6 +62,7 @@ class ResultSummary:
     analyzed_at: str
     best_return: float | None
     representative_candidate: dict | None = None
+    spot: float | None = None
 
 
 @dataclass(frozen=True)

@@ -56,7 +56,10 @@ test("選中劇本時，左側劇本庫（含建立劇本入口）與右側詳�
   await page.goto("/#/s/s1");
 
   // 右側詳細頁的內容
-  await expect(page.getByText(`$${sample.meta.spot.toFixed(2)}`)).toBeVisible();
+  // QA 修正後劇本庫卡片也印現價，同一個數字在左欄每張卡上都有一份
+  // ——要驗的是右側詳細頁那個，locator 必須 scope 回 detail-pane。
+  await expect(page.locator(".detail-pane")
+    .getByText(`$${sample.meta.spot.toFixed(2)}`).first()).toBeVisible();
   // 左側劇本庫：另一個劇本的卡片、以及建立劇本入口都還在——不是整頁
   // 替換。建立劇本表單本身收合（#75），要按過頂部入口才看得到欄位。
   await expect(page.getByRole("link", { name: /ABC/ })).toBeVisible();
@@ -262,7 +265,10 @@ test("未選任何劇本時，右側工作區顯示空狀態；左側清單仍�
 test("可以直接點另一個劇本切換，不必先返回劇本庫", async ({ page }) => {
   await routeTwoScenarios(page);
   await page.goto("/#/s/s1");
-  await expect(page.getByText(`$${sample.meta.spot.toFixed(2)}`)).toBeVisible();
+  // QA 修正後劇本庫卡片也印現價，同一個數字在左欄每張卡上都有一份
+  // ——要驗的是右側詳細頁那個，locator 必須 scope 回 detail-pane。
+  await expect(page.locator(".detail-pane")
+    .getByText(`$${sample.meta.spot.toFixed(2)}`).first()).toBeVisible();
 
   await page.getByRole("link", { name: /ABC/ }).click();
 
@@ -311,7 +317,10 @@ test("瀏覽器上一頁／下一頁在桌面版仍然正確切換劇本", async
 
   await page.goForward();
   await expect(page).toHaveURL(/#\/s\/s1$/);
-  await expect(page.getByText(`$${sample.meta.spot.toFixed(2)}`)).toBeVisible();
+  // QA 修正後劇本庫卡片也印現價，同一個數字在左欄每張卡上都有一份
+  // ——要驗的是右側詳細頁那個，locator 必須 scope 回 detail-pane。
+  await expect(page.locator(".detail-pane")
+    .getByText(`$${sample.meta.spot.toFixed(2)}`).first()).toBeVisible();
 });
 
 test("工具列順序：建立劇本 → 垃圾桶 → 重新整理（TR6／#91 需求方核准版面）",

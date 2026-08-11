@@ -277,7 +277,7 @@ def _skip_message(strategy: str) -> str:
 
 def _matrix_view(value_fn, cost: float, spot: float, p: AnalysisParams,
                  today: date, expiry_iso: str) -> MatrixView:
-    # QA 修正：價格軸上下限吃劇本區間（最好／最差價位）——兩端都沒填時
+    # QA 修正：價格軸上下限吃劇本區間（最高／最低價位）——兩端都沒填時
     # `price_axis` 自己退回既有算式，這裡不做判斷。
     prices = price_axis(spot, p.target_price, is_bullish(p.strategy),
                         best_price=p.best_price, worst_price=p.worst_price)

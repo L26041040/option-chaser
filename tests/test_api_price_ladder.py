@@ -1,4 +1,4 @@
-"""V7（#55）：最好／最差價位的三價位對照，經 HTTP API 驗證。
+"""V7（#55）：最高／最低價位的三價位對照，經 HTTP API 驗證。
 
 後端唯一接縫＝HTTP API（spec #47），所以「兩個新欄位有沒有存活、有沒有
 算出三價位報酬」全部從外部打端點驗證，不戳儲存假體的內部狀態。
@@ -96,13 +96,13 @@ def test_ladder_returns_never_decrease_as_price_rises():
     斷言是「不遞減」而不是「嚴格遞增」，因為價差的報酬**有天花板**——
     估值最多到寬度，所以標的價一旦漲過賣腿履約價，再高也不會更賺
     （`test_spread_return_is_capped_by_width` 釘住這條性質）。本測試的
-    fixture 在目標價 130 時就已觸頂，最好價位 150 因此與目標同值；那是
+    fixture 在目標價 130 時就已觸頂，最高價位 150 因此與目標同值；那是
     正確行為，不是漏算。
     """
     view = _analyzed(_client(), best_price=150.0, worst_price=110.0)["latest_result"]
     rets = [p["return"] for p in _ladder(view)]
     assert rets[0] <= rets[1] <= rets[2]
-    # 最差端必須真的比較差——否則這個對照沒有告訴使用者任何事
+    # 最低端必須真的比較差——否則這個對照沒有告訴使用者任何事
     assert rets[0] < rets[-1]
 
 
@@ -140,17 +140,17 @@ def test_setting_the_two_ends_does_not_change_ranking_or_best_return():
 # ---------- 方向合理性 ----------
 
 def test_best_below_target_is_rejected_with_a_readable_message():
-    """看漲劇本的「最好」低於目標價是填反了；擋在 API 而不是靜靜算出
+    """看漲劇本的「最高價位」低於目標價是填反了；擋在 API 而不是靜靜算出
     一組看不懂的數字（票上「依工程判斷處理並記錄」的裁示）。"""
     r = _client().post("/api/scenarios", json={**NEW, "best_price": 120.0})
     assert r.status_code == 422
-    assert "最好價位" in r.text
+    assert "最高價位" in r.text
 
 
 def test_worst_above_target_is_rejected_with_a_readable_message():
     r = _client().post("/api/scenarios", json={**NEW, "worst_price": 140.0})
     assert r.status_code == 422
-    assert "最差價位" in r.text
+    assert "最低價位" in r.text
 
 
 def test_zero_or_negative_prices_are_rejected():

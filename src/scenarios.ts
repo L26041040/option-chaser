@@ -122,6 +122,21 @@ export function money(x: number): string {
   return `$${x.toFixed(2)}`;
 }
 
+/** 尚未分析（`spot` 為 null）或使用者沒填該端時顯示「—」，不是 0。 */
+export function moneyOrDash(x: number | null | undefined): string {
+  return x === null || x === undefined ? "—" : money(x);
+}
+
+/**
+ * 劇本庫卡片要不要多畫一行區間（QA 修正）：兩端都沒填就不畫——那一行
+ * 會憑空多佔一列高度，而 compact row 的整個設計目的就是密度。
+ */
+export function hasPriceRange(
+  row: { best_price: number | null; worst_price: number | null },
+): boolean {
+  return row.best_price !== null || row.worst_price !== null;
+}
+
 /**
  * 超過幾小時沒刷新就視為舊資料（V4／#52）。
  *

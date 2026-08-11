@@ -30,8 +30,10 @@ import {
   formatRepresentativeExpiry,
   formatRepresentativeLegs,
   formatReturn,
+  hasPriceRange,
   isStale,
   money,
+  moneyOrDash,
   scenarioSignal,
   signalLabel,
   sortScenarios,
@@ -107,7 +109,12 @@ function ScenarioCard({
               </span>
             )}
             <span className="compact-symbol">{row.symbol}</span>
+            {/* QA 修正：現價擠進同一行的目標價前面（`現價 → 目標`），
+                不多佔一列高度。與 `CompactScenarioList.tsx` 同一種寫法
+                ——兩份清單是同一個東西的兩種版面。 */}
             <span className="compact-target">
+              <span className="compact-spot">{moneyOrDash(row.spot)}</span>
+              {" → "}
               {money(row.target_price)}　{row.target_month}
             </span>
             {/* 顏色不是唯一的資訊管道：`title` 給滑鼠停留時看得到的文字、
@@ -157,6 +164,15 @@ function ScenarioCard({
                 狀態——見下面失敗提示的互斥處理。 */}
             {row.expired && <span className="tag">已過期，不再刷新</span>}
           </div>
+
+          {/* 最高／最低只在使用者真的填了才畫，兩端都空就不多佔一列。 */}
+          {hasPriceRange(row) && (
+            <div className="compact-range">
+              <span>最低 {moneyOrDash(row.worst_price)}</span>
+              {" · "}
+              <span>最高 {moneyOrDash(row.best_price)}</span>
+            </div>
+          )}
 
           <span className="sr-only">
             {signalLabel(signal)}；查看 {who} 詳細

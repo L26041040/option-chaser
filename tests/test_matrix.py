@@ -51,7 +51,7 @@ def test_price_axis_default_range_bearish():
     assert max(vals) == pytest.approx(spot * 1.10)
 
 
-# ---------- QA 修正：劇本區間（最好／最差價位）決定上下限 ----------
+# ---------- QA 修正：劇本區間（最高／最低價位）決定上下限 ----------
 
 def test_price_axis_bounds_from_scenario_range():
     """上限＝劇本區間高端×1.10、下限＝低端×0.90（需求方指定的算式）。"""
@@ -71,8 +71,8 @@ def test_price_axis_best_worst_are_anchors_and_labelled():
                         best_price=best, worst_price=worst)}
     assert labels[spot] == "<現價>"
     assert labels[target] == "<目標>"
-    assert labels[best] == "<最好>"
-    assert labels[worst] == "<最差>"
+    assert labels[best] == "<最高>"
+    assert labels[worst] == "<最低>"
 
 
 def test_price_axis_never_labels_overshoot_or_adverse():
@@ -99,8 +99,8 @@ def test_price_axis_spot_dominates_when_scenario_range_is_narrow():
 
 
 def test_price_axis_bearish_scenario_range_keeps_both_ends_in_view():
-    """看跌劇本的『最好』是低價、『最差』是高價——上下限用聯集極值算，
-    兩端才都進得了圖（直接照字面取 max(best, spot) 會把最差價位擠出去）。"""
+    """看跌劇本的『最高價位』其實是行情往上跑、『最低價位』是往下跑——上下限用聯集極值算，
+    兩端才都進得了圖（直接照字面取 max(best, spot) 會把最低價位擠出去）。"""
     spot, target, best, worst = 100.0, 70.0, 60.0, 115.0
     pts = price_axis(spot, target, bullish=False,
                      best_price=best, worst_price=worst)

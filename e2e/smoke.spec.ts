@@ -878,6 +878,30 @@ test("Compact row 的密度：一個手機視窗至少看得到 4 個劇本，�
     expect(visibleWithoutScrolling).toBeGreaterThanOrEqual(4);
   });
 
+test("劇本庫卡片有概覽用的價格欄位：現價／最高／最低（QA 修正）",
+   async ({ page }) => {
+  // 有填區間的劇本：現價與最高／最低都要在卡片上讀得到，不必點進去
+  await page.route("**/api/scenarios", (route) => route.fulfill({
+    json: [libraryRow({ spot: 82.11, best_price: 120, worst_price: 100 })] }));
+  await page.goto("/");
+
+  const card = page.getByRole("listitem").first();
+  await expect(card.locator(".compact-spot")).toHaveText("$82.11");
+  await expect(card.locator(".compact-range")).toContainText("最低 $100.00");
+  await expect(card.locator(".compact-range")).toContainText("最高 $120.00");
+});
+
+test("沒填區間的劇本不會多出一列空的區間行（密度不被空資料吃掉）",
+   async ({ page }) => {
+  await page.route("**/api/scenarios", (route) => route.fulfill({
+    json: [libraryRow({ spot: 82.11, best_price: null, worst_price: null })] }));
+  await page.goto("/");
+
+  const card = page.getByRole("listitem").first();
+  await expect(card.locator(".compact-spot")).toHaveText("$82.11");
+  await expect(card.locator(".compact-range")).toHaveCount(0);
+});
+
 test("Compact row 逐項齊全：spec §5 必要欄位一個都沒少（MVP-v2／#77、#82）",
   async ({ page }) => {
     await routeLibrary(page, libraryRow());

@@ -152,12 +152,12 @@ describe("劇本區間兩端（V7／#55）", () => {
 
   it("方向填反了要當場擋下，不要等後端回 422", () => {
     // 與後端 `_ends_must_straddle_the_target` 同一套規則：看漲劇本必然是
-    // 最差 <= 目標 <= 最好。前端先擋只是為了省一趟往返，後端仍是權威。
+    // 最低 <= 目標 <= 最高。前端先擋只是為了省一趟往返，後端仍是權威。
     expect(validateDraft("TLT", "120", "2028-05", "110", "")).toEqual({
-      ok: false, error: "最好價位不可低於目標價",
+      ok: false, error: "最高價位不可低於目標價",
     });
     expect(validateDraft("TLT", "120", "2028-05", "", "130")).toEqual({
-      ok: false, error: "最差價位不可高於目標價",
+      ok: false, error: "最低價位不可高於目標價",
     });
   });
 
@@ -167,14 +167,14 @@ describe("劇本區間兩端（V7／#55）", () => {
 
   it("兩端也要是數字", () => {
     expect(validateDraft("TLT", "120", "2028-05", "abc", "")).toEqual({
-      ok: false, error: "最好價位要是數字",
+      ok: false, error: "最高價位要是數字",
     });
   });
 
   it("畫面上兩端欄位同樣留白、且標示為選填", () => {
     render(<CreateForm onCreate={vi.fn()} />);
-    expect(screen.getByLabelText("最好價位（選填）")).toHaveValue("");
-    expect(screen.getByLabelText("最差價位（選填）")).toHaveValue("");
+    expect(screen.getByLabelText("最高價位（選填）")).toHaveValue("");
+    expect(screen.getByLabelText("最低價位（選填）")).toHaveValue("");
   });
 });
 

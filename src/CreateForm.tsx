@@ -77,15 +77,15 @@ export function validateDraft(
   }
   // V7（#55）兩端。與後端 `_ends_must_straddle_the_target` 同一套規則——
   // 前端先擋只是省一趟往返，後端仍是權威（重複的是規則，不是真相來源）。
-  const b = parseOptionalPrice(best, "最好價位");
+  const b = parseOptionalPrice(best, "最高價位");
   if (!b.ok) return b;
-  const w = parseOptionalPrice(worst, "最差價位");
+  const w = parseOptionalPrice(worst, "最低價位");
   if (!w.ok) return w;
   if (b.value !== undefined && b.value < value) {
-    return { ok: false, error: "最好價位不可低於目標價" };
+    return { ok: false, error: "最高價位不可低於目標價" };
   }
   if (w.value !== undefined && w.value > value) {
-    return { ok: false, error: "最差價位不可高於目標價" };
+    return { ok: false, error: "最低價位不可高於目標價" };
   }
 
   return {
@@ -322,7 +322,7 @@ export default function CreateForm({
       {/* V7（#55）劇本區間兩端：選填，擺在三個必填欄位之後——它們是
           「除了比較最高，還能比較最低」的加分項，不該擋在主流程前面。 */}
       <label className="field">
-        <span className="row-label">最好價位（選填）</span>
+        <span className="row-label">最高價位（選填）</span>
         <input
           className="input"
           value={best}
@@ -332,7 +332,7 @@ export default function CreateForm({
       </label>
 
       <label className="field">
-        <span className="row-label">最差價位（選填）</span>
+        <span className="row-label">最低價位（選填）</span>
         <input
           className="input"
           value={worst}

@@ -78,17 +78,17 @@ class CreateScenarioRequest(BaseModel):
         """方向合理性（票上「依工程判斷處理並記錄」的裁示）。
 
         本輪只有看漲策略（`_MVP_DIRECTION`），所以區間必然是
-        最差 <= 目標 <= 最好。填反了幾乎一定是打錯欄位——擋在這裡，
-        而不是靜靜算出一組「最好比目標還糟」的數字讓人自己看出不對。
+        最低 <= 目標 <= 最高。填反了幾乎一定是打錯欄位——擋在這裡，
+        而不是靜靜算出一組「最高價位比目標價還低」的數字讓人自己看出不對。
         兩端可以等於目標價（等於就是「這一端沒有想像空間」，是有意義的
         主張，不擋）。
         """
         if self.best_price is not None and self.best_price < self.target_price:
             raise ValueError(
-                f"最好價位（{self.best_price}）不可低於目標價（{self.target_price}）")
+                f"最高價位（{self.best_price}）不可低於目標價（{self.target_price}）")
         if self.worst_price is not None and self.worst_price > self.target_price:
             raise ValueError(
-                f"最差價位（{self.worst_price}）不可高於目標價（{self.target_price}）")
+                f"最低價位（{self.worst_price}）不可高於目標價（{self.target_price}）")
         return self
 
 
@@ -132,16 +132,22 @@ def _scenario_json(sc: Scenario) -> dict:
 
 def _row_json(sc: Scenario, today: date, *, analyzed_at: str | None,
               best_return: float | None,
-              representative_candidate: dict | None) -> dict:
+              representative_candidate: dict | None,
+              spot: float | None = None) -> dict:
     """劇本在清單上的那一列。建立、列出、刷新三處共用同一個組裝函式——
     形狀只要差一個欄位，客戶端就得為同一個東西維護兩種型別。
 
     `representative_candidate`（MVP-v2／#77、#78）：代表候選的完整身分
     （策略／各腿履約價與權別／實際到期日），與 `best_return` 同一次走訪
-    （`store.representative_candidate`），數值上不可能對不上。"""
+    （`store.representative_candidate`），數值上不可能對不上。
+
+    `spot`（QA 修正）：那次分析當下的標的現價，讓清單卡片有比較基準
+    ——目標價／最高／最低（後兩者來自 `_scenario_json`）少了現價就只是
+    三個孤立數字。尚未分析過時為 `None`。"""
     return {**_scenario_json(sc), **_timing_json(sc, today),
             "latest_analyzed_at": analyzed_at, "best_return": best_return,
-            "representative_candidate": representative_candidate}
+            "representative_candidate": representative_candidate,
+            "spot": spot}
 
 
 def _summary_of(latest: ResultRecord | ResultSummary | None) -> dict:
@@ -153,7 +159,8 @@ def _summary_of(latest: ResultRecord | ResultSummary | None) -> dict:
     return {"analyzed_at": latest.analyzed_at if latest else None,
             "best_return": latest.best_return if latest else None,
             "representative_candidate":
-                latest.representative_candidate if latest else None}
+                latest.representative_candidate if latest else None,
+            "spot": latest.spot if latest else None}
 
 
 def _fail(stage: str, status: int, message: str) -> HTTPException:
@@ -340,7 +347,7 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         # 回傳與清單同一個形狀（含 timing、尚未分析故摘要欄位皆為 None），
         # 客戶端才不必為「剛建立的」與「列出來的」維護兩種型別。
         return _row_json(sc, ny_today(), analyzed_at=None, best_return=None,
-                         representative_candidate=None)
+                         representative_candidate=None, spot=None)
 
     @app.get("/api/scenarios")
     def list_scenarios(include_archived: bool = False) -> list[dict]:
@@ -455,7 +462,8 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         _db().save_result(ResultRecord(
             scenario_id=sc.id, analyzed_at=analyzed_at, view=view,
             best_return=best_return,
-            representative_candidate=representative_candidate))
+            representative_candidate=representative_candidate,
+            spot=store.spot(view)))
         _db().save_snapshot(sc.id, analyzed_at, snapshot)
         _db().append_event(ts=now_utc_iso(), scenario_id=sc.id,
                            event="ANALYSIS_COMPLETED",
@@ -463,7 +471,8 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
                                     "snapshot_ref": view["snapshot_ref"]})
         return _row_json(sc, today, analyzed_at=analyzed_at,
                          best_return=best_return,
-                         representative_candidate=representative_candidate)
+                         representative_candidate=representative_candidate,
+                         spot=store.spot(view))
 
     @app.get("/api/scenarios/{scenario_id}/results")
     def list_results(scenario_id: str) -> list[dict]:

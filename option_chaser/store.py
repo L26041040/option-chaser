@@ -353,6 +353,23 @@ def best_return(view: dict | None) -> float | None:
     return rep["baseline_return"] if rep is not None else None
 
 
+def spot(view: dict | None) -> float | None:
+    """這次分析當下的標的現價（`view["meta"]["spot"]`）。
+
+    QA 修正：劇本庫卡片要顯示現價，才看得出「目標價／最高／最低離現在
+    多遠」——沒有它，清單上一排目標價等於沒有比較基準。與 `best_return()`
+    同一種角色：清單只要這一個數字，卻不該為它把整份 view 撈回來，所以
+    落盤成獨立欄位；規則仍只有這一份純函式。
+
+    view 為 `None`（從未成功分析過）或形狀不含 meta.spot（理論上不會，
+    防禦性）時回 `None`——卡片據此顯示「—」，不是 0。
+    """
+    if not view:
+        return None
+    value = (view.get("meta") or {}).get("spot")
+    return value if isinstance(value, (int, float)) else None
+
+
 def _history_entry(sv: SpreadValuation, expiry: str, rank_in_expiry: int) -> dict:
     """T9（#23，附錄A7）：全部有效候選的歷史五欄位之三（成本／收益率／期內
     名次）；另外兩欄（更新時間、標的價）不逐候選重複，共用父層 `analyzed_at`／

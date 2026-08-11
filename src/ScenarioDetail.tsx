@@ -36,7 +36,9 @@ import {
 } from "./api";
 import { candidateTitle, formatMove, strategyLabel } from "./detail";
 import { isThinPool, legPrices, validPairsForExpiry } from "./expiry";
-import { failureLabel, formatAnalyzedAt, formatReturn, money } from "./scenarios";
+import {
+  failureLabel, formatAnalyzedAt, formatReturn, money, moneyOrDash,
+} from "./scenarios";
 
 /**
  * 摘要格線裡的一格：標籤在上、數字在下。跟站上其他地方的 `.row`
@@ -141,6 +143,12 @@ function Summary({ view, candidate, analyzedAt }: {
           <span className="row-note">（{formatMove(view.meta.target_move)}）</span>
         </Stat>
         <Stat label="目標年月">{view.params.target_month}</Stat>
+        {/* QA 修正：最高／最低就是 Heatmap 價格軸上下限的來源，也是
+            圖上那兩個錨點標記的數字——不放在這裡，使用者對不上。
+            沒填就顯示「—」，不是把整格藏起來（藏起來會讓人以為這個
+            劇本沒有這個概念）。 */}
+        <Stat label="最高">{moneyOrDash(view.params.best_price)}</Stat>
+        <Stat label="最低">{moneyOrDash(view.params.worst_price)}</Stat>
         {/* 進場成本三項與到期日結構清單裡每一列候選同一口徑（`legPrices`） */}
         {prices && (
           <Stat label="買腿 Ask">

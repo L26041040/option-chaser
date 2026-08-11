@@ -81,10 +81,10 @@ describe("軸標籤", () => {
     expect(priceTags("<現價><目標>")).toEqual(["現價", "目標"]);
   });
 
-  it("最好／最差價位是錨點標記（QA 修正：取代原本的超標／深跌）", () => {
-    expect(priceTags("<最好>")).toEqual(["最好"]);
-    expect(priceTags("<最差>")).toEqual(["最差"]);
-    expect(priceTags("<目標><最好>")).toEqual(["目標", "最好"]);
+  it("最高／最低價位是錨點標記（QA 修正：取代原本的超標／深跌）", () => {
+    expect(priceTags("<最高>")).toEqual(["最高"]);
+    expect(priceTags("<最低>")).toEqual(["最低"]);
+    expect(priceTags("<目標><最高>")).toEqual(["目標", "最高"]);
   });
 
   it("已移除的超標／深跌標記即使出現在舊快照裡也不再翻譯出文字", () => {

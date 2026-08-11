@@ -162,17 +162,17 @@ describe("最右欄 ±% 標註（決策 M／#109，位置修正 QA-FIX-1／QA-01
     expect(moveOf(rows[rows.length - 1])).toMatch(/^-/);
   });
 
-  it("最好／最差價位有錨點標記——使用者填的區間兩端在圖上找得到", () => {
+  it("最高／最低價位有錨點標記——使用者填的區間兩端在圖上找得到", () => {
     // 引擎在使用者設了劇本區間時才會給這兩個標籤，所以這裡自己造一份。
     const withRange: Matrix = {
-      prices: [[90, "<最差>", -0.1], [100, "<現價>", 0],
-              [130, "<目標>", 0.3], [150, "<最好>", 0.5]],
+      prices: [[90, "<最低>", -0.1], [100, "<現價>", 0],
+              [130, "<目標>", 0.3], [150, "<最高>", 0.5]],
       dates: [["2026-08-07", ""]],
       cells: [[-0.5], [0.1], [0.8], [1.2]],
     };
     render(<Heatmap matrix={withRange} />);
-    expect(screen.getByText("最好")).toBeInTheDocument();
-    expect(screen.getByText("最差")).toBeInTheDocument();
+    expect(screen.getByText("最高")).toBeInTheDocument();
+    expect(screen.getByText("最低")).toBeInTheDocument();
   });
 });
 
@@ -185,7 +185,7 @@ describe("高密度日期軸（QA-FIX-5／QA-01）", () => {
       return [d.toISOString().slice(0, 10), ""];
     });
     const prices: [number, string, number][] = [
-      [90, "<最差>", -0.1], [100, "<現價>", 0], [130, "<目標>", 0.3],
+      [90, "<最低>", -0.1], [100, "<現價>", 0], [130, "<目標>", 0.3],
     ];
     return {
       prices,

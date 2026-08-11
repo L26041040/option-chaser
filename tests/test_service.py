@@ -200,7 +200,7 @@ def test_matrix_view_matches_grid():
 
 
 def test_matrix_price_axis_follows_scenario_range():
-    """QA 修正：劇本區間（最好／最差價位）真的傳到 Heatmap 的價格軸。
+    """QA 修正：劇本區間（最高／最低價位）真的傳到 Heatmap 的價格軸。
 
     上下限＝區間兩端 ±10%，而且兩個價位在圖上各自有錨點標記——這條
     走的是完整的 `run_offline` 路徑，不是直接呼叫 `price_axis`，才擋得住
@@ -216,7 +216,7 @@ def test_matrix_price_axis_follows_scenario_range():
     labels = {v: lbl for v, lbl, _ in prices}
     assert max(vals) == pytest.approx(140.0 * 1.10)
     assert min(vals) == pytest.approx(95.0 * 0.90)
-    assert labels[140.0] == "<最好>" and labels[95.0] == "<最差>"
+    assert labels[140.0] == "<最高>" and labels[95.0] == "<最低>"
 
 
 def test_matrix_price_axis_without_scenario_range_keeps_default_bounds():

@@ -249,6 +249,14 @@ export interface AnalysisParams {
   target_month: string;
   strategy: string;
   /**
+   * 劇本區間兩端，建立劇本時選填（顯示文字為「最高／最低」，欄位名沿用
+   * 既有契約）。`null` ＝ 使用者沒填。它們決定 Heatmap 的價格軸上下限，
+   * 詳細頁摘要卡也直接顯示——沒有它們，圖上的 `<最高>`／`<最低>` 錨點
+   * 使用者對不上是哪來的數字。
+   */
+  best_price: number | null;
+  worst_price: number | null;
+  /**
    * V8（#56，spec R1 §4.2 A）：新版型「⑥ 方法與假設」要的模型參數——
    * 利率、IV 情境、Delta 分級門檻、要求報酬上限。原本只活在
    * `report_text` 的 `[模型假設]` 區塊，早就在契約裡（`AnalysisParams`
@@ -339,6 +347,17 @@ export interface ScenarioSummary {
   symbol: string;
   target_price: number;
   target_month: string;
+  /**
+   * 劇本區間兩端，建立劇本時選填（QA 修正後顯示文字為「最高／最低」，
+   * 欄位名沿用既有契約）。`null` ＝ 使用者沒填。
+   */
+  best_price: number | null;
+  worst_price: number | null;
+  /**
+   * 最近一次分析當下的標的現價（QA 修正）。劇本庫卡片要有它，目標價與
+   * 最高／最低才有比較基準。`null` ＝ 這個劇本還沒成功分析過。
+   */
+  spot: number | null;
   created_at: string;
   archived_at: string | null;
   latest_analyzed_at: string | null;

@@ -123,6 +123,34 @@ describe("詳細頁摘要（QA 修正：劇本摘要／基準候選／進場成�
     expect(summary.getByText(`$${top.natural_cost.toFixed(2)}`)).toBeInTheDocument();
   });
 
+  it("最高／最低同卡呈現——它們是 Heatmap 價格軸上下限的來源（QA 修正）",
+     async () => {
+    mockDetail(detail({ latest_result: {
+      ...view,
+      params: { ...view.params, best_price: 150.0, worst_price: 90.0 },
+    } }));
+    render(<ScenarioDetail id="s1" />);
+    await screen.findByText(/劇本主圖/);
+
+    const summary = summarySection();
+    expect(summary.getByText("最高")).toBeInTheDocument();
+    expect(summary.getByText("最低")).toBeInTheDocument();
+    expect(summary.getByText("$150.00")).toBeInTheDocument();
+    expect(summary.getByText("$90.00")).toBeInTheDocument();
+  });
+
+  it("沒填最高／最低時那兩格顯示破折號，不是整格消失", async () => {
+    mockDetail(detail());
+    render(<ScenarioDetail id="s1" />);
+    await screen.findByText(/劇本主圖/);
+
+    const summary = summarySection();
+    const stat = (label: string) =>
+      summary.getByText(label).closest(".stat")!;
+    expect(stat("最高").textContent).toContain("—");
+    expect(stat("最低").textContent).toContain("—");
+  });
+
   it("原本的三張獨立卡片不再存在——真的合併了，不是把舊卡藏起來", async () => {
     mockDetail(detail());
     render(<ScenarioDetail id="s1" />);

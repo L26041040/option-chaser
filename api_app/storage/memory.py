@@ -79,7 +79,8 @@ class MemoryStorage:
             if rec is not None:
                 out[sid] = ResultSummary(
                     analyzed_at=rec.analyzed_at, best_return=rec.best_return,
-                    representative_candidate=rec.representative_candidate)
+                    representative_candidate=rec.representative_candidate,
+                    spot=rec.spot)
         return out
 
     def result_history(self, scenario_id: str) -> list[ResultRecord]:
