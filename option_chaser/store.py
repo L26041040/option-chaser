@@ -424,6 +424,15 @@ def raw_snapshot_json(snap: ChainSnapshot) -> dict:
     }
 
 
+def _matrix_to_dict(mv) -> dict:
+    """`MatrixView`／`ComparatorView.matrix` 共用的序列化形狀——#115 前
+    只有 `CandidateView.matrix` 用得到，抽成小函式避免 comparator 的
+    matrix 另外複製一份同樣的三行。"""
+    return {"prices": [list(pt) for pt in mv.prices],
+           "dates": [list(d) for d in mv.dates],
+           "cells": [list(r) for r in mv.cells]}
+
+
 def _candidate(cv: CandidateView, strategy: str, capital: float | None,
                today: date, anchor: date, p: AnalysisParams) -> dict:
     v = cv.valuation
@@ -503,9 +512,16 @@ def _candidate(cv: CandidateView, strategy: str, capital: float | None,
         # `p: AnalysisParams` 參數同名，在同一個函式體裡容易讓人誤讀成
         # 同一個東西（雖然 Python 3 生成式有獨立作用域，實際不會互相
         # 污染）。改用 `pt`（price point）避免這個混淆。
-        "matrix": {"prices": [list(pt) for pt in cv.matrix.prices],
-                   "dates": [list(d) for d in cv.matrix.dates],
-                   "cells": [list(r) for r in cv.matrix.cells]},
+        "matrix": _matrix_to_dict(cv.matrix),
+        # #115（spec #117 §4）：Crossover 對照——None＝單腿候選（無意義）
+        # 或買腿報價缺失（結構上不該發生的防禦性 case）。matrix 用同一個
+        # `_matrix_to_dict` 序列化，跟主 matrix 同形狀。
+        "comparator": ({"option_type": cv.comparator.option_type,
+                       "strike": cv.comparator.strike,
+                       "expiry": cv.comparator.expiry,
+                       "cost": cv.comparator.cost,
+                       "matrix": _matrix_to_dict(cv.comparator.matrix)}
+                      if cv.comparator is not None else None),
         # spec §3 新增四組（乘除法與日期差，非估值邏輯）
         "capital_per_contract": cap_per,
         # V7（#55）：劇本區間三價位對照。兩端都沒設時是空陣列，呈現層據此

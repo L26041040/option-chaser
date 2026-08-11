@@ -153,6 +153,31 @@ def test_contract_sample_matches_the_live_api_response():
         "scripts/gen_contract_sample.py 重產樣本，並確認前端跟著更新")
 
 
+def test_bear_put_contract_sample_matches_the_live_api_response():
+    """#115（spec #117 §4）：主樣本（`analysis_sample.json`）用的固定
+    fixture 只有 call，無法示範 put comparator——單一 `/api/analyze`
+    呼叫的 target_price 方向互斥（bull 要高於 spot、bear 要低於 spot），
+    `force` 也沒有暴露在公開 schema 上，因此 put 覆蓋走獨立的第二份
+    樣本＋獨立 fixture（`xyz_v5_put_ladder.json`，見
+    `scripts/gen_contract_sample.py` 的 PUT_FIXTURE 註解），一樣是
+    真實 `/api/analyze` 回應、一樣有 drift 測試守著。"""
+    put_sample = Path("contracts/analysis_sample_bear_put.json")
+    assert put_sample.exists(), "契約樣本不存在，請跑 scripts/gen_contract_sample.py"
+    expected = json.loads(put_sample.read_text(encoding="utf-8"))
+    put_fixture = load_snapshot("tests/fixtures/xyz_v5_put_ladder.json")
+    put_request = {"symbol": "XYZ", "target_price": 70.0, "target_month": "2026-09",
+                   "strategies": ["bear-put-spread"]}
+    actual = _client(lambda symbol: put_fixture).post(
+        "/api/analyze", json=put_request).json()
+    assert actual == expected, (
+        "put comparator 契約樣本與 API 回應不一致——請跑 "
+        "scripts/gen_contract_sample.py 重產樣本")
+    # 這份樣本存在的唯一理由就是要示範 put comparator——空手覆蓋沒有意義。
+    cand = actual["results"][0]["candidates"][0]
+    assert cand["comparator"] is not None
+    assert cand["comparator"]["option_type"] == "put"
+
+
 def test_symbol_is_restricted_to_ticker_shaped_input():
     """symbol 會被代入資料源 URL，不讓路徑片段之類的東西進去。"""
     for bad in ("../evil", "A/B", "", "TOOLONGSYMBOL"):

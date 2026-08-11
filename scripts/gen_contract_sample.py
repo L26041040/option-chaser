@@ -32,6 +32,20 @@ REQUEST = {"symbol": "XYZ", "target_price": 130.0, "target_month": "2026-09",
            "strategies": ["bull-call-spread"]}
 SCENARIO = {"symbol": "XYZ", "target_price": 130.0, "target_month": "2026-09"}
 
+# #115（spec #117 §4）：Crossover comparator 需要「每個策略各一個範例，
+# call／put comparator 都有覆蓋」。單一 `/api/analyze` 呼叫只能吃一個
+# target_price，方向（bull/bear）互斥（`_analyze` 的 mismatch 判斷：
+# 同一個 target_price 不可能同時大於與小於 spot），且 `force` 沒有
+# 暴露在 `/api/analyze` 的公開 schema 上（刻意——不為了產樣本而擴大
+# production API 面）。因此 put 覆蓋走**獨立**的第二份樣本，不是硬湊
+# 進主樣本：獨立 fixture（`xyz_v5_put_ladder.json`，鏡射既有
+# `xyz_v4_six_expiries.json` 的 call 梯，履約價鏡射到 spot 另一側）＋
+# 獨立 target_price（低於 spot，方向天然成立、不需要 force）。
+PUT_FIXTURE = Path("tests/fixtures/xyz_v5_put_ladder.json")
+PUT_OUT = Path("contracts/analysis_sample_bear_put.json")
+PUT_REQUEST = {"symbol": "XYZ", "target_price": 70.0, "target_month": "2026-09",
+               "strategies": ["bear-put-spread"]}
+
 # 隨執行時間變動的欄位換成固定值：樣本要釘住形狀，不是當下的鐘。
 FROZEN = {"id": "sample-id", "created_at": "2026-08-01T00:00:00+00:00",
           "days_to_anchor": 653}
@@ -96,6 +110,17 @@ def main() -> None:
     ROW_OUT.write_text(json.dumps(freeze_row(row), ensure_ascii=False, indent=2,
                                   sort_keys=True) + "\n", encoding="utf-8")
     print(f"寫入 {ROW_OUT}")
+
+    # #115：獨立的 put-comparator 樣本，見上方 PUT_FIXTURE 註解。
+    put_snap = load_snapshot(PUT_FIXTURE)
+    put_client = TestClient(create_app(fetch=lambda symbol: put_snap,
+                                       rate_loader=_sample_rate_loader,
+                                       dividend_loader=_sample_dividend_loader))
+    put_resp = put_client.post("/api/analyze", json=PUT_REQUEST)
+    put_resp.raise_for_status()
+    PUT_OUT.write_text(json.dumps(put_resp.json(), ensure_ascii=False, indent=2,
+                                  sort_keys=True) + "\n", encoding="utf-8")
+    print(f"寫入 {PUT_OUT}（{PUT_OUT.stat().st_size:,} bytes）")
 
 
 if __name__ == "__main__":

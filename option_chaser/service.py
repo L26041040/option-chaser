@@ -88,6 +88,29 @@ class PricePoint:
 
 
 @dataclass(frozen=True)
+class ComparatorView:
+    """#115（spec #117 §4）：Crossover 對照——就是這組 Spread 買腿本身，
+    不是搜尋或轉換出來的另一份合約。同 option type／履約價／到期日是
+    **定義**使然：Call Spread 的對照恆是 Long Call、Put Spread 恆是
+    Long Put，直接讀買腿既有報價，不做任何 option-type 轉換、不查找
+    另一張合約。
+
+    這正是 D1（#14）舊 `catchup_price` 曾經犯過的錯誤（put 買腿去找
+    「同履約價的 call」）的修正——新的作法從根本上不允許那種查找存在：
+    `option_type`／`strike`／`expiry` 三欄直接複製自 `SpreadValuation.
+    long_leg`，沒有任何分支邏輯可以讓它們與買腿本身不同。
+
+    `option_type` 讓前端能直接顯示「Long Call」／「Long Put」，不必
+    自己從 strategy 反推。
+    """
+    option_type: str
+    strike: float
+    expiry: str
+    cost: float          # 買腿 Ask（worst 成交口徑，與 Spread net_worst 一致）
+    matrix: MatrixView    # 與該 Spread 自己的 matrix 同一組 price×date grid
+
+
+@dataclass(frozen=True)
 class CandidateView:
     valuation: ContractValuation | SpreadValuation
     pros: tuple[str, ...]
@@ -134,6 +157,8 @@ class CandidateView:
     rate_tenor_years: float
     # D1（#14）：Long Call 追平價格 S*=K+C×(1+R)——只對 Spread 有意義
     # （買腿履約價 K 的同履約價 Call 若報價缺失也是 None）；單腳恆為 None。
+    # R2 裁示已移除對應 UI，本欄位只留 migration／regression 用，#115
+    # 的新 `comparator` 才是 Crossover 實際使用的欄位（見下）。
     catchup_price: float | None = None
     # V7（#55）。預設空 tuple：沒設兩端、也沒走 `_v4_fields` 的呼叫端
     # （若有）都不會壞。
@@ -143,6 +168,11 @@ class CandidateView:
     # 成功才算——任一腿退回今天的行為，整組候選就不是「carry 校準過」。
     # False 時 UI 必須說得出「這組估值未經 carry 校準」（spec §10-4）。
     carry_calibrated: bool = False
+    # #115（spec #117 §4）：Crossover 對照——只有 Spread 候選才有意義，
+    # 單腿恆為 None（沒有「跟自己比較」的概念）；Spread 候選只在買腿
+    # 報價缺失（結構上不該發生——上游過濾早已保證雙腿報價齊全，這裡是
+    # 防禦性核對，不假造）時才是 None。
+    comparator: ComparatorView | None = None
 
 
 @dataclass(frozen=True)
@@ -406,6 +436,32 @@ def _spread_catchup_price(sv: SpreadValuation, snap: ChainSnapshot) -> float | N
     return catchup_price(strike, call_cost, spread_baseline_return(sv))
 
 
+def _spread_comparator(sv: SpreadValuation, spot: float, today: date,
+                       p: AnalysisParams) -> ComparatorView | None:
+    """#115（spec #117 §4）：Crossover 對照＝買腿本身，逐字讀既有欄位。
+
+    刻意不呼叫 `find_contract`、`ranking.classify`、`ranking.rank` 或
+    任何候選搜尋——`option_type`／`strike`／`expiry` 三欄直接取自
+    `sv.long_leg`，沒有分支可以讓它們偏離買腿本身（見 `ComparatorView`
+    docstring）。matrix 用同一個 `_matrix_view`（同一組 spot／today／
+    p／expiry 輸入 ⇒ 同一組 price×date 軸，逐位元與 Spread 自己的
+    matrix 同形狀），value_fn 用買腿已經算過一次的 `sv.long_carry`
+    （不重新反解 IV，架構要求與 `_single_leg_view` 一致）。
+
+    買腿報價缺失（`ask is None`）→ None，不假造——結構上不該發生
+    （`evaluate_spread` 上游已保證雙腿報價齊全才會走到這裡），這裡是
+    誠實揭露的防禦性核對，不是預期路徑。
+    """
+    leg = sv.long_leg
+    if leg.ask is None:
+        return None
+    mv = _matrix_view(
+        lambda S, d, c=leg, carry=sv.long_carry: scenario_leg_value(c, S, d, p, carry=carry),
+        leg.ask, spot, p, today, leg.expiry)
+    return ComparatorView(option_type=leg.option_type, strike=leg.strike,
+                          expiry=leg.expiry, cost=leg.ask, matrix=mv)
+
+
 def _spread_view(sv: SpreadValuation, idx: int, n_pairs: int, spot: float,
                  today: date, p: AnalysisParams, snap: ChainSnapshot,
                  violations: frozenset[str] = frozenset()) -> CandidateView:
@@ -424,6 +480,7 @@ def _spread_view(sv: SpreadValuation, idx: int, n_pairs: int, spot: float,
         # 退回今天的行為，整組候選的估值就不是全然校準過的。
         carry_calibrated=(sv.long_carry.carry_calibrated
                           and sv.short_carry.carry_calibrated),
+        comparator=_spread_comparator(sv, spot, today, p),
         **_v4_fields(sv, spot, today, p, violations))
 
 
