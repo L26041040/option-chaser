@@ -229,7 +229,7 @@ export default function ScenarioList({
   onConfirmBatchArchive: () => void;
 }) {
   if (rows.length === 0) {
-    return <p className="caption">還沒有劇本。用下面的表單建立第一個。</p>;
+    return <p className="caption">還沒有劇本，用下面的表單建立。</p>;
   }
   const sorted = sortScenarios(rows);
   return (

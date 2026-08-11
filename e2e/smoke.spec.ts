@@ -109,23 +109,22 @@ test("清單 → 詳細頁：摘要、基準候選、進場成本、主圖、候
     .toBeVisible();
   await expect(page.getByText(view.meta.source, { exact: true })).toBeVisible();
 
-  // 基準候選（spec #102 決策 A）：baseline 期第 1 名的身分——名次、
-  // B/S 履約、到期日、目標報酬。這一組數字從舊版「劇本主圖」卡片搬到
-  // 獨立區塊，不再跟 Heatmap 擠在同一張卡裡。
+  // QA 修正：基準候選與進場成本不再是兩張獨立卡片，跟劇本摘要合成
+  // 同一張高密度卡。數字一項沒少，只是換了位置。
   const top = view.results.find((r) => r.status === "ok" && r.expiry_top10)!
     .expiry_top10!.find((g) => g.expiry === view.baseline_expiry)!.candidates[0];
   const [buy, sell] = top.legs;
-  const baselineCandidate = page.locator("section").filter({ hasText: "基準候選" }).first();
-  await expect(baselineCandidate).toContainText(`買 ${buy.strike} / 賣 ${sell.strike}`);
-  await expect(baselineCandidate).toContainText("第 1 名");
-  await expect(baselineCandidate).toContainText(`${(top.baseline_return * 100).toFixed(1)}%`);
-
-  // 進場成本（spec #102 決策 A）：新區塊，緊接基準候選之後。
-  const entryCost = page.locator("section").filter({ hasText: "進場成本" }).first();
-  await expect(entryCost).toContainText("買腿 Ask");
-  await expect(entryCost).toContainText("賣腿 Bid");
-  await expect(entryCost).toContainText("淨成本");
-  await expect(entryCost).toContainText(`$${top.natural_cost.toFixed(2)}`);
+  const summary = page.getByRole("region", { name: "劇本摘要" });
+  await expect(summary).toContainText(`買 ${buy.strike} / 賣 ${sell.strike}`);
+  await expect(summary).toContainText("第 1 名");
+  await expect(summary).toContainText(`${(top.baseline_return * 100).toFixed(1)}%`);
+  await expect(summary).toContainText("買腿 Ask");
+  await expect(summary).toContainText("賣腿 Bid");
+  await expect(summary).toContainText("淨成本");
+  await expect(summary).toContainText(`$${top.natural_cost.toFixed(2)}`);
+  // 真的只剩一張卡——舊的兩張獨立卡片不存在了
+  await expect(page.getByRole("heading", { name: "基準候選" })).toHaveCount(0);
+  await expect(page.getByRole("heading", { name: "進場成本" })).toHaveCount(0);
 
   // 主圖：只剩 Heatmap 本身——候選身分與報酬已搬到「基準候選」。
   // V6 起頁面上有很多張 Heatmap（到期日結構裡每個候選收合著一張），
@@ -180,7 +179,9 @@ test("進階區：分析報告與原始資料展開才載入（V8／#56，MVP V3
   // MVP V3（#112，決策 H）：利率四項——實際數值，不是只說「用了曲線」。
   await expect(report.getByText("Rate used")).toBeVisible();
   await expect(report.getByText("Tenor")).toBeVisible();
-  await expect(report.getByText("Source")).toBeVisible();
+  // `exact` 是必要的：同一區塊裡還有「Dividend source」，非精確比對會
+  // 同時命中兩個元素而觸發 strict mode violation。
+  await expect(report.getByText("Source", { exact: true })).toBeVisible();
   await expect(report.getByText("Curve date")).toBeVisible();
   // 免責聲明獨立、不折疊——展開整個進階區就看得到，不必再點一層。
   await expect(report.getByText(/選擇權交易涉及重大風險/)).toBeVisible();
@@ -399,9 +400,14 @@ test("Crossover Boundary（#116）：手機 viewport 不需額外互動就看得
 
   // 不點、不長按——契約樣本 baseline 候選是 Spread，`comparator` 非 null，
   // 圖例與邊界標示直接渲染，不需要任何互動觸發。
-  await expect(mainChart.getByText(/格子仍是 Spread 報酬率/)).toBeVisible();
-  await expect(mainChart.getByText(/報酬相等/)).toBeVisible();
-  await expect(mainChart.getByText(/Long Call|Long Put/)).toBeVisible();
+  await expect(mainChart.getByText(/格子是 Spread 報酬率/)).toBeVisible();
+  await expect(mainChart.getByText(/報酬相等的分界/)).toBeVisible();
+  await expect(mainChart.getByText(/Long Call|Long Put/).first()).toBeVisible();
+  // QA 修正：兩側各是誰較高必須明講，而且方向由實際矩陣算出來
+  // ——所以只鎖「X 較高，Y 較高」這個句型，不寫死是哪一端。
+  await expect(mainChart.locator(".crossover-sides")).toBeVisible();
+  await expect(mainChart.locator(".crossover-sides"))
+    .toHaveText(/Spread 較高，.*(Long Call|Long Put) 較高/);
   await expect(table.locator("td.heatmap-crossover-cell").first()).toBeVisible();
 
   // 疊加邊界標示不能破壞既有的橫向捲動與兩端 sticky 欄位行為
@@ -938,16 +944,23 @@ test("手機詳細頁不受桌面密度壓縮影響（QA-FIX-3／QA-01 的 Mobil
   // QA-FIX-3 的規則全部掛在 `.detail-pane` 底下，而那是桌面專屬 DOM
   // （`App.tsx` 手機分支在 `<div className="workspace">` 之前就 return）。
   // 這條測試把「手機拿不到那個作用域」釘死：手機版根本沒有 detail-pane，
-  // 卡片內距維持原本的 16px，不是桌面壓縮後的 12px。
+  // 一般卡片內距維持原本的 16px，不是桌面壓縮後的 12px。
   await expect(page.locator(".detail-pane")).toHaveCount(0);
-  await expect(page.locator(".card").first()).toHaveCSS("padding", "16px");
+  await expect(page.locator(".card:not(.summary-card)").first())
+    .toHaveCSS("padding", "16px");
 
-  // 摘要卡在手機仍是單欄逐列（`metadata-grid` 的兩欄只在桌面生效）：
-  // 前兩列的 y 不同 ＝ 上下排列，不是並排。
-  const summaryRows = page.locator(".metadata-grid .row");
-  const a = (await summaryRows.nth(0).boundingBox())!;
-  const b = (await summaryRows.nth(1).boundingBox())!;
-  expect(b.y).toBeGreaterThan(a.y + 1);
+  // 摘要卡是 QA 修正明文要壓的那一張，手機也要壓——它自己的內距比
+  // 一般卡片小，而且統計格線在手機就已經是兩欄（不是桌面才生效）。
+  const summary = page.locator(".summary-card");
+  await expect(summary).toHaveCSS("padding", "12px");
+  const stats = summary.locator(".stat");
+  const a = (await stats.nth(0).boundingBox())!;
+  const b = (await stats.nth(1).boundingBox())!;
+  expect(Math.abs(a.y - b.y)).toBeLessThan(2);
+  expect(b.x).toBeGreaterThan(a.x);
+  // 但手機只有兩欄，不是桌面的四欄——第三格要換行到下一列去。
+  const c = (await stats.nth(2).boundingBox())!;
+  expect(c.y).toBeGreaterThan(a.y + 1);
 });
 
 test("手機垃圾桶：全選後批次動作立刻在視窗內可操作（QA-FIX-4／QA-01）",

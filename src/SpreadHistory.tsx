@@ -52,7 +52,7 @@ function Chart({ entries }: { entries: HistoryEntry[] }) {
   const [activeIndex, setActiveIndex] = useState<number | null>(null);
   const domain = yAxisDomain(entries);
   if (domain === null) {
-    return <p className="caption">這段期間沒有可畫的資料（全數缺席）。</p>;
+    return <p className="caption">這段期間沒有資料。</p>;
   }
   const points = chartPoints(entries, domain);
   const runs = contiguousRuns(points);

@@ -5,8 +5,10 @@ import {
   NEUTRAL_BAND,
   cellColor,
   columnLabel,
+  crossoverCellSides,
   crossoverEdges,
   crossoverFavoredSide,
+  crossoverSides,
   formatCell,
   formatMovePct,
   formatMovePctShort,
@@ -101,14 +103,16 @@ describe("Crossover Boundary 邊界偵測（#116：純幾何，不重算任何�
     const comparator = [[0.1], [-0.2]];
     // diff = [0.1, -0.1] → 符號翻轉
     const edges = crossoverEdges(spread, comparator);
-    expect(edges).toContainEqual({ row: 0, col: 0, orientation: "vertical" });
+    expect(edges).toContainEqual({ row: 0, col: 0, orientation: "vertical",
+                                 spreadHigher: "near" });
   });
 
   it("同一列裡符號翻轉——抓到 horizontal 邊界", () => {
     const spread = [[0.2, -0.3]];
     const comparator = [[0.1, -0.2]];
     const edges = crossoverEdges(spread, comparator);
-    expect(edges).toContainEqual({ row: 0, col: 0, orientation: "horizontal" });
+    expect(edges).toContainEqual({ row: 0, col: 0, orientation: "horizontal",
+                                 spreadHigher: "near" });
   });
 
   it("兩軸都有翻轉時兩種邊界都要抓到，不是只認一個方向", () => {
@@ -124,10 +128,16 @@ describe("Crossover Boundary 邊界偵測（#116：純幾何，不重算任何�
     // vertical: col0 row0→row1 符號翻轉 (0.4→-0.6)；col1 沒有翻轉 (-0.6→-0.7)
     // horizontal: row0 col0→col1 翻轉 (0.4→-0.6)；row1 沒有翻轉 (-0.6→-0.7)
     const edges = crossoverEdges(spread, comparator);
-    expect(edges).toContainEqual({ row: 0, col: 0, orientation: "vertical" });
-    expect(edges).toContainEqual({ row: 0, col: 0, orientation: "horizontal" });
-    expect(edges).not.toContainEqual({ row: 0, col: 1, orientation: "vertical" });
-    expect(edges).not.toContainEqual({ row: 1, col: 0, orientation: "horizontal" });
+    // 不比對整個物件——`spreadHigher` 是另一組測試的責任，這裡問的是
+    // 「有沒有抓到這條邊」。否認式斷言尤其不能比整個物件：多一個欄位
+    // 就會讓 `not.toContainEqual` 無論如何都通過，等於沒驗。
+    const has = (row: number, col: number, orientation: string) =>
+      edges.some((e) => e.row === row && e.col === col
+                        && e.orientation === orientation);
+    expect(has(0, 0, "vertical")).toBe(true);
+    expect(has(0, 0, "horizontal")).toBe(true);
+    expect(has(0, 1, "vertical")).toBe(false);
+    expect(has(1, 0, "horizontal")).toBe(false);
   });
 
   it("恰好相等（diff=0）算作邊界——0 本身就是那個等值點", () => {
@@ -135,7 +145,20 @@ describe("Crossover Boundary 邊界偵測（#116：純幾何，不重算任何�
     const comparator = [[0.3], [0.5]];
     // diff = [0.0, -0.4] → sign 0 與 sign -1 不同，算翻轉
     const edges = crossoverEdges(spread, comparator);
-    expect(edges).toContainEqual({ row: 0, col: 0, orientation: "vertical" });
+    expect(edges).toContainEqual({ row: 0, col: 0, orientation: "vertical",
+                                 spreadHigher: "near" });
+  });
+
+  it("邊界線畫在 Spread 較高的那一側——依實際差值判定，不是固定某一端",
+     () => {
+    // diff = [-0.4, +0.4]：較高的是 row1（far 端）
+    const edgesFar = crossoverEdges([[0.1], [0.9]], [[0.5], [0.5]]);
+    expect(edgesFar[0].spreadHigher).toBe("far");
+
+    // 同一組資料上下對調 → 較高的變成 row0（near 端）。同一支函式在
+    // 兩種排列下給出相反答案，就是「不預設方位」的證據。
+    const edgesNear = crossoverEdges([[0.9], [0.1]], [[0.5], [0.5]]);
+    expect(edgesNear[0].spreadHigher).toBe("near");
   });
 
   it("矩陣形狀不一致時誠實回空陣列，不猜、不半算", () => {
@@ -152,5 +175,98 @@ describe("Crossover Boundary 邊界偵測（#116：純幾何，不重算任何�
     const comparator = [[0.1, 0.1]];   // 多一欄，缺對應的第二欄 spread 值
     // spreadCells[0][1] undefined → d = undefined - 0.1 = NaN，NaN 比較恆 false
     expect(crossoverFavoredSide(spread, comparator)).toBe("spread");
+  });
+});
+
+describe("Crossover 邊界線落在哪一格的哪一條邊（QA 修正：線不是整格粗框）", () => {
+  it("垂直邊界、Spread 在下方那格：線畫在該格的上緣", () => {
+    // 表格由高價到低價渲染，row+1 在 row 的「上方」，所以 row 這一格
+    // 與上鄰之間的那條邊，對 row 而言是 top。
+    const sides = crossoverCellSides(
+      [{ row: 0, col: 2, orientation: "vertical", spreadHigher: "near" }]);
+    expect(sides.get("0-2")).toEqual(["top"]);
+    expect(sides.has("1-2")).toBe(false);
+  });
+
+  it("垂直邊界、Spread 在上方那格：線改畫在上面那格的下緣", () => {
+    const sides = crossoverCellSides(
+      [{ row: 0, col: 2, orientation: "vertical", spreadHigher: "far" }]);
+    expect(sides.get("1-2")).toEqual(["bottom"]);
+    expect(sides.has("0-2")).toBe(false);
+  });
+
+  it("水平邊界：near 畫右緣、far 畫右鄰那格的左緣", () => {
+    expect(crossoverCellSides(
+      [{ row: 1, col: 0, orientation: "horizontal", spreadHigher: "near" }])
+      .get("1-0")).toEqual(["right"]);
+    expect(crossoverCellSides(
+      [{ row: 1, col: 0, orientation: "horizontal", spreadHigher: "far" }])
+      .get("1-1")).toEqual(["left"]);
+  });
+
+  it("邊界在同一格轉角時兩條邊都畫，不是後面那條蓋掉前面那條", () => {
+    const sides = crossoverCellSides([
+      { row: 1, col: 1, orientation: "vertical", spreadHigher: "near" },
+      { row: 1, col: 1, orientation: "horizontal", spreadHigher: "near" },
+    ]);
+    expect(sides.get("1-1")).toEqual(["top", "right"]);
+  });
+
+  it("完全沒有邊界時不標任何格子", () => {
+    expect(crossoverCellSides([]).size).toBe(0);
+  });
+});
+
+describe("Crossover 兩側歸屬（QA 修正：依實際矩陣判定，不預設左上／右下）", () => {
+  const flat = (rows: number, cols: number, v: number) =>
+    Array.from({ length: rows }, () => Array.from({ length: cols }, () => v));
+
+  it("分界沿價格軸、Spread 在低價端", () => {
+    // row 0（低價）Spread 贏、row 1（高價）comparator 贏
+    const spread = [[0.9, 0.9], [0.1, 0.1]];
+    expect(crossoverSides(spread, flat(2, 2, 0.5)))
+      .toEqual({ axis: "price", spreadSide: "low" });
+  });
+
+  it("同一組資料上下翻轉，答案跟著翻——不是寫死某一端", () => {
+    const spread = [[0.1, 0.1], [0.9, 0.9]];
+    expect(crossoverSides(spread, flat(2, 2, 0.5)))
+      .toEqual({ axis: "price", spreadSide: "high" });
+  });
+
+  it("分界沿日期軸時主軸判成 date，不會誤報成 price", () => {
+    // 每一列都是「左邊 Spread 贏、右邊 comparator 贏」：價格軸上兩群
+    // 重心相同（分離度 0），日期軸才是真正把兩群分開的那一軸。
+    const spread = [[0.9, 0.1], [0.9, 0.1]];
+    expect(crossoverSides(spread, flat(2, 2, 0.5)))
+      .toEqual({ axis: "date", spreadSide: "low" });
+  });
+
+  it("左右翻轉時日期軸的答案也跟著翻", () => {
+    const spread = [[0.1, 0.9], [0.1, 0.9]];
+    expect(crossoverSides(spread, flat(2, 2, 0.5)))
+      .toEqual({ axis: "date", spreadSide: "high" });
+  });
+
+  it("日期欄數遠多於價格列數時不會單純因為索引大就判成 date——" +
+     "兩軸都正規化過", () => {
+    // 20 欄日期、2 列價格，分界純粹沿價格軸。未正規化的話日期軸的
+    // 索引尺度會壓過價格軸，主軸就會判錯。
+    const spread = [
+      Array.from({ length: 20 }, () => 0.9),
+      Array.from({ length: 20 }, () => 0.1),
+    ];
+    expect(crossoverSides(spread, flat(2, 20, 0.5)))
+      .toEqual({ axis: "price", spreadSide: "low" });
+  });
+
+  it("整張圖只有一側時回 null——那沒有「兩側」可講，呼叫端該改口徑", () => {
+    expect(crossoverSides(flat(2, 2, 0.9), flat(2, 2, 0.1))).toBeNull();
+    expect(crossoverSides(flat(2, 2, 0.1), flat(2, 2, 0.9))).toBeNull();
+  });
+
+  it("矩陣形狀不一致時回 null，不猜、不半算", () => {
+    expect(crossoverSides([[0.1, 0.2], [0.3, 0.4]], [[0.1, 0.2]])).toBeNull();
+    expect(crossoverSides([[0.1, 0.2]], [[0.1]])).toBeNull();
   });
 });

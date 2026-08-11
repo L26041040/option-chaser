@@ -34,6 +34,11 @@
   /* 劇本級燈號（MVP-v2／#77、#80）專用——黃燈是獨立於既有 `--orange`
      警示色的第三種語意（刷新失敗，不是「品質提醒」），因此另立一色。 */
   --yellow: #ffcc00;
+  /* Crossover Boundary 專用琥珀（QA 修正）：刻意不用 `--tint`（藍＝
+     可點擊／互動）也不用 `--red`／`--orange`（＝警告、出事了）——這條
+     線只是「兩邊在這裡打平」，不是任何一種警示。淺色模式取較深的
+     amber-700（白底 5.9:1），深色模式取較亮的 amber-400，兩邊都讀得到。 */
+  --crossover: #b45309;
   /* iOS secondary fill：膠囊鈕底、按下卡片時的 highlight。用灰階半透明
      而不是實色，深淺兩種模式共用同一個值。 */
   --fill: rgba(120, 120, 128, 0.12);
@@ -56,6 +61,7 @@
     --red: #ff453a;
     --orange: #ff9f0a;
     --yellow: #ffd60a;
+    --crossover: #fbbf24;
     --fill: rgba(120, 120, 128, 0.24);
     /* 深色模式靠卡片本身的亮度分層，投影只會變成一圈髒邊 */
     --card-shadow: none;
@@ -180,28 +186,17 @@ body {
     padding: 2px 12px;
   }
 
-  /* metadata 類卡片（目前只有摘要，見 `ScenarioDetail.tsx`）排兩欄：
-     桌面 detail-pane 有 ~870px 寬，label／value 單行 space-between
-     中間是大片空白，兩欄剛好把六列壓成三行。刻意**不**套用在其他
-     卡片上——金融數字與圖表不一律兩欄化（票上明文）。 */
-  .detail-pane .metadata-grid {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    column-gap: 28px;
-    row-gap: 8px;
+  /* 頂部摘要卡：桌面 detail-pane 有 ~870px 寬，兩欄還是留了大片空白
+     ——排四欄剛好把九項壓成三行。卡片內距也比一般卡片再緊一級：這張
+     卡整張都是短標籤＋短數字，不需要一般卡片那圈呼吸空間。 */
+  .detail-pane .summary-card {
+    padding: 10px 12px;
+    gap: 8px;
   }
 
-  /* 兩欄之後 `.row + .row` 那條線會落在每一格上（含同一視覺列的右格），
-     看起來像把兩欄切開。改成只有「不在第一視覺列」的格子才畫線
-     ——兩欄佈局下就是第 3 個以後，欄數改了也仍然成立。 */
-  .detail-pane .metadata-grid > .row + .row {
-    border-top: 0;
-    padding-top: 0;
-  }
-
-  .detail-pane .metadata-grid > .row:nth-child(n + 3) {
-    border-top: 0.5px solid var(--separator);
-    padding-top: 8px;
+  .detail-pane .summary-grid {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    column-gap: 20px;
   }
 }
 
@@ -1118,6 +1113,105 @@ body {
   font-weight: 600;
 }
 
+/* ---------- 頂部摘要：三卡合一的高密度版（QA 修正） ---------- */
+/*
+ * 原本「劇本摘要／基準候選／進場成本」三張卡，等於三圈 16px 卡片內距
+ * ＋兩道 16px 卡片間距＋每張卡內部的整行 `.row` 分隔線。合併之後只剩
+ * 一圈內距，而且所有 label／value 從「左右對開佔滿一行」改成「上下疊
+ * 放進格線」，手機一行放兩項、桌面一行放四項。資訊一項沒少。
+ */
+.summary-card {
+  padding: 12px;
+  gap: 10px;
+}
+
+.summary-hero {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.summary-id {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.summary-title {
+  font-size: 17px;
+  font-weight: 700;
+  line-height: 1.25;
+}
+
+/* 到期日與名次跟在候選身分底下當附註——它們是「這組是誰」的一部分，
+   不值得各佔一整格。 */
+.summary-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 12px;
+  font-size: 12px;
+  color: var(--label-secondary);
+}
+
+/* 標頭數字比一般 `.metric`（28px）小一級：這張卡現在還要裝下九格
+   統計，28px 會把整張卡撐回合併前的高度。 */
+.summary-hero .metric {
+  font-size: 24px;
+  line-height: 1.15;
+  white-space: nowrap;
+}
+
+.summary-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  column-gap: 12px;
+  row-gap: 8px;
+  border-top: 0.5px solid var(--separator);
+  padding-top: 10px;
+}
+
+/* 標頭不存在時（無合格候選）不要留一條孤立的上緣線 */
+.summary-card > .summary-grid:first-child {
+  border-top: 0;
+  padding-top: 0;
+}
+
+.stat {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.stat-label {
+  font-size: 12px;
+  line-height: 1.2;
+  color: var(--label-tertiary);
+}
+
+.stat-value {
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.25;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+/* 目標價旁的所需漲幅：同一格裡的附註，不跟主數字搶視覺重量。 */
+.stat-value .row-note {
+  font-size: 12px;
+  font-weight: 400;
+}
+
+/* 摘要卡裡的警語比獨立卡片上的窄一號——它現在是卡片內的一列，
+   不是自己一張卡。 */
+.summary-card .notice {
+  padding: 8px 10px;
+  font-size: 13px;
+}
+
 /* ---------- 主圖 Heatmap（V5／#53） ---------- */
 
 .heatmap {
@@ -1137,8 +1231,10 @@ body {
 
 .heatmap-table {
   border-collapse: separate;
-  border-spacing: 2px;
-  font-size: 13px;
+  /* QA 修正：格距 2px→1px。格與格之間的縫每欄都出現一次，欄數一多
+     就是可觀的寬度，而縫本身不帶任何資訊。 */
+  border-spacing: 1px;
+  font-size: 12px;
   font-variant-numeric: tabular-nums;
   width: max-content;
 }
@@ -1146,20 +1242,20 @@ body {
 .heatmap-table th {
   font-weight: 600;
   color: var(--label-secondary);
-  font-size: 12px;
+  font-size: 11px;
   white-space: nowrap;
   /* #121：日期欄水平留白縮小——格子文字同一票改成純數字（`128`／
-     `-34`，不帶 `+`／`%`），欄本身不需要再留原本給符號的寬度。垂直
-     留白與字級都不動（不是 QA-FIX-3 那種整體密度壓縮，這裡只還橫向
-     空間給日期軸，讓同樣容器寬度能多擠幾欄）。 */
-  padding: 4px 5px;
+     `-34`，不帶 `+`／`%`），欄本身不需要再留原本給符號的寬度。
+     QA 修正再收一級（5px→4px、垂直 4px→3px）：這張表是整頁資訊
+     密度最低的地方，多擠幾欄日期比留白值錢。 */
+  padding: 3px 4px;
   text-align: right;
 }
 
 .heatmap-table td {
-  padding: 6px 5px;
+  padding: 4px 4px;
   text-align: right;
-  border-radius: 6px;
+  border-radius: 4px;
   white-space: nowrap;
   color: var(--label);
 }
@@ -1235,34 +1331,36 @@ body {
   }
 }
 
-/* ---------- Crossover Boundary overlay（#116，spec #117 §4） ---------- */
+/* ---------- Crossover Boundary overlay（#116，QA 修正改成細線） ---------- */
 /*
- * 用 inset box-shadow 而非 border：不吃掉格子本身的 border-radius（既有
- * 圓角格子外觀不變），不參與 `.heatmap-table` 的 `border-collapse:
- * separate` 邊界規則，純粹疊一層視覺標示、不影響版面尺寸與間距——
- * 「不遮蓋既有格值、不畫第二張表」（AC 明文）在這裡是字面意義：格子
- * 底色、文字都原封不動，只是外圈多一圈色。用 --tint（iOS 藍）而非
- * --green／--red，避免跟賺賠配色混淆成第三種「輸贏」語意——這不是
- * WIN/LOSE 標記，是「邊界從這裡附近經過」。
+ * 線本身是 inline style 的 inset box-shadow（哪一格的哪一條邊要畫，由
+ * `crossoverCellSides` 依實際矩陣算出來，見 `Heatmap.tsx`）。用 inset
+ * box-shadow 而非 border：border 會撐開格子尺寸、動到整張表的欄寬，
+ * inset 陰影純粹疊在格子上，格子底色與文字都原封不動。
+ *
+ * QA 修正把原本的「整格四邊粗框」改成單邊細線：粗框在密集的表格上
+ * 讀起來像一堆被選中的格子，而不是一條分界；細線才看得出走向。顏色
+ * 走 `--crossover`（琥珀），深淺模式各自取對比足夠的一端。
  */
-.heatmap-crossover-cell {
-  box-shadow: inset 0 0 0 2px var(--tint);
-}
-
 .crossover-legend {
   display: flex;
   align-items: baseline;
   flex-wrap: wrap;
-  gap: 4px;
+  gap: 4px 8px;
 }
 
+/* 圖例上的樣本就畫成一條線——跟圖上真正看到的東西一致，不是一個色塊。 */
 .crossover-swatch {
   display: inline-block;
-  width: 10px;
-  height: 10px;
-  border-radius: 3px;
-  box-shadow: inset 0 0 0 2px var(--tint);
-  vertical-align: middle;
+  width: 16px;
+  border-top: 2px solid var(--crossover);
+  align-self: center;
+}
+
+/* 兩側各是誰較高的那一句：這是圖例裡最該被讀到的一行，給它主色。 */
+.crossover-sides {
+  color: var(--label);
+  font-weight: 600;
 }
 
 .crossover-absent {

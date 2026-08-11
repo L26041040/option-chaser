@@ -1,8 +1,8 @@
 /**
  * 劇本詳細頁（MVP V3／#103，資訊階層依 spec #102 決策 A 重整）：
- * 摘要 → 基準候選 → 進場成本 →〔Historical IV Position 插槽〕→
- * Payoff Heatmap → Price Ladder → Expiry Structure → Advanced
- * （候選池／分析報告／Spread 歷史／原始資料）。
+ * 摘要（含基準候選與進場成本，QA 修正後三卡合一）→〔Historical IV
+ * Position 插槽〕→ Payoff Heatmap → Price Ladder → Expiry Structure
+ * → Advanced（候選池／分析報告／Spread 歷史／原始資料）。
  *
  * 資料只從 `GET /api/scenarios/{id}` 來，畫面上每個數字都是引擎算好的：
  * 現價與所需漲幅在 `meta`、目標在 `params`、報酬矩陣在候選的 `matrix`。
@@ -38,66 +38,17 @@ import { candidateTitle, formatMove, priceLadderView, strategyLabel } from "./de
 import { isThinPool, legPrices, validPairsForExpiry } from "./expiry";
 import { failureLabel, formatAnalyzedAt, formatReturn, money } from "./scenarios";
 
-function Row({ label, children }: { label: string; children: React.ReactNode }) {
+/**
+ * 摘要格線裡的一格：標籤在上、數字在下。跟站上其他地方的 `.row`
+ * （label／value 左右對開、佔滿整行）刻意不同——上下疊放才排得進
+ * 兩欄／四欄格線，一行塞得下兩到四項，這正是把頂部高度壓下來的關鍵。
+ */
+function Stat({ label, children }: { label: string; children: React.ReactNode }) {
   return (
-    <div className="row">
-      <span className="row-label">{label}</span>
-      <span className="row-value">{children}</span>
+    <div className="stat">
+      <span className="stat-label">{label}</span>
+      <span className="stat-value">{children}</span>
     </div>
-  );
-}
-
-/**
- * 基準候選（spec #102 決策 A）：baseline 期第 1 名的身分——名次、B/S
- * 履約、策略、到期日、目標報酬。候選池過少的警語跟著這裡走，不掛在
- * 下面會切換到期日的清單上——使用者切到別期，這一區仍是 baseline 那
- * 組，警語得跟著它，不能跟著清單跑掉。
- */
-function BaselineCandidate({ view, candidate }: {
-  view: AnalysisView; candidate: Candidate | null;
-}) {
-  if (!candidate) return null;
-  const strategy = primaryResult(view)?.strategy ?? view.params.strategy;
-  const pool = validPairsForExpiry(primaryResult(view)!, view.baseline_expiry);
-  return (
-    <section className="card">
-      <h2 className="section-title">基準候選</h2>
-      <div className="row">
-        <span className="row-value big">{candidateTitle(candidate)}</span>
-        <span
-          className={`metric ${candidate.baseline_return >= 0 ? "positive" : "negative"}`}
-        >
-          {formatReturn(candidate.baseline_return)}
-        </span>
-      </div>
-      <Row label="名次">第 1 名</Row>
-      <Row label="策略">{strategyLabel(strategy)}</Row>
-      <Row label="到期日">{view.baseline_expiry}</Row>
-      {isThinPool(pool) && (
-        <p className="notice warn">
-          <span aria-hidden="true">⚠ </span>
-          這一期只有 {pool} 組候選通過品質過濾，這組可能只是「整池剩下
-          的那一個」。
-        </p>
-      )}
-    </section>
-  );
-}
-
-/**
- * 進場成本（spec #102 決策 A）：Buy Ask／Sell Bid／Net Cost，與到期日
- * 結構清單裡每一列候選看到的三個數字同一口徑（`legPrices`）。
- */
-function EntryCost({ candidate }: { candidate: Candidate | null }) {
-  if (!candidate) return null;
-  const prices = legPrices(candidate);
-  return (
-    <section className="card">
-      <h2 className="section-title">進場成本</h2>
-      <Row label="買腿 Ask">{prices.buyAsk === null ? "—" : money(prices.buyAsk)}</Row>
-      <Row label="賣腿 Bid">{prices.sellBid === null ? "—" : money(prices.sellBid)}</Row>
-      <Row label="淨成本">{money(prices.net)}</Row>
-    </section>
   );
 }
 
@@ -123,9 +74,7 @@ function PriceLadder({ candidate }: { candidate: Candidate | null }) {
   return (
     <section className="card" aria-label="劇本區間對照">
       <h2 className="section-title">劇本區間對照</h2>
-      <p className="caption">
-        同一組候選在劇本區間各價位的到期報酬，口徑與上方主數字相同。
-      </p>
+      <p className="caption">同一組候選在區間各價位的到期報酬。</p>
       <div className="ladder">
         {ladder.map((p) => (
           <div className="ladder-point" key={p.label}>
@@ -168,28 +117,80 @@ function Chart({ candidate }: { candidate: Candidate | null }) {
   );
 }
 
-function Summary({ view, analyzedAt }: { view: AnalysisView; analyzedAt: string | null }) {
+/**
+ * 頂部摘要（QA 修正：三卡合一）。
+ *
+ * 原本是「劇本摘要／基準候選／進場成本」三張各自獨立的卡片，光是三圈
+ * 卡片內距、兩道卡片間距與每張卡內部的 `.row` 分隔線就吃掉頂部大半
+ * 高度，真正的數字反而被推到第一屏之外。這裡合成一張：候選身分與劇本
+ * 報酬當標頭，其餘全部進統計格線（手機兩欄、桌面四欄）。
+ *
+ * **數字一項沒少**——現價、目標價（含所需漲幅）、目標年月、策略、
+ * 到期日、名次、買腿 Ask、賣腿 Bid、淨成本、資料時間、資料來源，連
+ * 候選池過少的警語都跟著搬過來。壓掉的是留白，不是資訊。
+ */
+function Summary({ view, candidate, analyzedAt }: {
+  view: AnalysisView;
+  candidate: Candidate | null;
+  analyzedAt: string | null;
+}) {
   const strategy = primaryResult(view)?.strategy ?? view.params.strategy;
+  const pool = validPairsForExpiry(primaryResult(view)!, view.baseline_expiry);
+  const prices = candidate ? legPrices(candidate) : null;
   return (
-    // `metadata-grid`（QA-FIX-3／QA-01）：這張卡六列全是 label／value
-    // 的 metadata（現價、目標、年月、策略、資料時間、來源），在桌面
-    // 寬版面上每列中間都是大片空白——標成 metadata 讓 CSS 在
-    // `.detail-pane` 下把它排成兩欄，列數砍半、資訊一項不少。
-    // 只有這一張卡掛：其餘卡片是金融數字或圖表，不一律兩欄化。
-    // 手機版不吃這條規則（`.detail-pane` 是桌面專屬 DOM）。
-    <section className="card metadata-grid">
-      <Row label="現價">{money(view.meta.spot)}</Row>
-      <Row label="目標價">
-        {money(view.params.target_price)}
-        {/* 所需漲幅是引擎給的 `target_move`，不是這裡拿兩個價格相減 */}
-        <span className="row-note">（{formatMove(view.meta.target_move)}）</span>
-      </Row>
-      <Row label="目標年月">{view.params.target_month}</Row>
-      <Row label="策略">{strategyLabel(strategy)}</Row>
-      <Row label="資料時間">{formatAnalyzedAt(analyzedAt)}</Row>
-      {/* 資料來源不是裝飾：`cboe` ＝ 打得到主源、`yfinance` ＝ 走了備援。
-          部署後要確認雲端出口對 Cboe 的可達性，看的就是這一行。 */}
-      <Row label="資料來源">{view.meta.source}</Row>
+    <section className="card summary-card" aria-label="劇本摘要">
+      {/* 標頭：這一頁在講哪一組候選、它的劇本報酬是多少。候選池過少的
+          警語跟著這裡走，不掛在下面會切換到期日的清單上——使用者切到
+          別期，這一區仍是 baseline 那組，警語得跟著它。 */}
+      {candidate && (
+        <div className="summary-hero">
+          <span className="summary-id">
+            <span className="summary-title">{candidateTitle(candidate)}</span>
+            <span className="summary-meta">
+              <span>{view.baseline_expiry}</span>
+              <span>第 1 名</span>
+            </span>
+          </span>
+          <span
+            className={`metric ${candidate.baseline_return >= 0 ? "positive" : "negative"}`}
+          >
+            {formatReturn(candidate.baseline_return)}
+          </span>
+        </div>
+      )}
+
+      <div className="summary-grid">
+        <Stat label="策略">{strategyLabel(strategy)}</Stat>
+        <Stat label="現價">{money(view.meta.spot)}</Stat>
+        <Stat label="目標價">
+          {money(view.params.target_price)}
+          {/* 所需漲幅是引擎給的 `target_move`，不是這裡拿兩個價格相減 */}
+          <span className="row-note">（{formatMove(view.meta.target_move)}）</span>
+        </Stat>
+        <Stat label="目標年月">{view.params.target_month}</Stat>
+        {/* 進場成本三項與到期日結構清單裡每一列候選同一口徑（`legPrices`） */}
+        {prices && (
+          <Stat label="買腿 Ask">
+            {prices.buyAsk === null ? "—" : money(prices.buyAsk)}
+          </Stat>
+        )}
+        {prices && (
+          <Stat label="賣腿 Bid">
+            {prices.sellBid === null ? "—" : money(prices.sellBid)}
+          </Stat>
+        )}
+        {prices && <Stat label="淨成本">{money(prices.net)}</Stat>}
+        <Stat label="資料時間">{formatAnalyzedAt(analyzedAt)}</Stat>
+        {/* 資料來源不是裝飾：`cboe` ＝ 打得到主源、`yfinance` ＝ 走了備援。 */}
+        <Stat label="資料來源">{view.meta.source}</Stat>
+      </div>
+
+      {candidate && isThinPool(pool) && (
+        <p className="notice warn">
+          <span aria-hidden="true">⚠ </span>
+          這一期只有 {pool} 組候選通過品質過濾，第 1 名參考價值有限。
+        </p>
+      )}
     </section>
   );
 }
@@ -204,11 +205,11 @@ function DetailBody({ scenarioId, view, analyzedAt }: {
   const result = primaryResult(view);
   return (
     <>
-      <Summary view={view} analyzedAt={analyzedAt} />
-      {/* spec #102 決策 A：基準候選 → 進場成本 →〔IV History 插槽〕→
-          Payoff Heatmap → Price Ladder，全部圍繞同一組 baseline 候選。 */}
-      <BaselineCandidate view={view} candidate={candidate} />
-      <EntryCost candidate={candidate} />
+      {/* spec #102 決策 A 的資訊階層不變，只是前三格（劇本摘要／基準
+          候選／進場成本）合併成同一張高密度卡：摘要 →〔IV History
+          插槽〕→ Payoff Heatmap → Price Ladder，全部圍繞同一組
+          baseline 候選。 */}
+      <Summary view={view} candidate={candidate} analyzedAt={analyzedAt} />
       <IVPositionSlot />
       <Chart candidate={candidate} />
       <PriceLadder candidate={candidate} />
@@ -335,9 +336,7 @@ export default function ScenarioDetail({
       {detail && detail.latest_result === null && (
         <section className="card">
           <p className="row-value">尚未分析</p>
-          <p className="caption">
-            這個劇本還沒跑過分析。回劇本庫按「重新整理」即可取得最新報價。
-          </p>
+          <p className="caption">回劇本庫按「重新整理」取得報價。</p>
         </section>
       )}
 

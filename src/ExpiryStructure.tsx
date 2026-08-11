@@ -122,8 +122,7 @@ export default function ExpiryStructure({
         {shown && isThinPool(shown.count) && (
           <>
             <span aria-hidden="true">⚠ </span>
-            該期僅 {shown.count} 組候選通過品質過濾，排名參考價值有限——
-            名次第一可能只是「整池剩下的那一個」。
+            該期僅 {shown.count} 組候選通過品質過濾，排名參考價值有限。
           </>
         )}
       </div>

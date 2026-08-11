@@ -409,7 +409,7 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
     // 逾時／連線斷掉：說「等不到回應」，而不是把 DOMException 的英文
     // 原文丟到手機畫面上。分層是 null——我們並不知道伺服器跑到哪一段。
     if (e instanceof DOMException && e.name === "TimeoutError") {
-      throw new ApiError("等太久沒有回應（逾時），請重試");
+      throw new ApiError("伺服器逾時沒有回應，請重試");
     }
     throw new ApiError(
       `連不到伺服器：${e instanceof Error ? e.message : String(e)}`);

@@ -150,9 +150,14 @@ test("Crossover Boundary（#116）：桌面 viewport 圖例與邊界標示可見
   await expect(table).toBeVisible();
 
   // 圖例：格子仍是 Spread 報酬、邊界是兩者相等處、comparator 標籤與成本。
-  await expect(mainChart.getByText(/格子仍是 Spread 報酬率/)).toBeVisible();
-  await expect(mainChart.getByText(/報酬相等/)).toBeVisible();
-  await expect(mainChart.getByText(/Long Call|Long Put/)).toBeVisible();
+  await expect(mainChart.getByText(/格子是 Spread 報酬率/)).toBeVisible();
+  await expect(mainChart.getByText(/報酬相等的分界/)).toBeVisible();
+  await expect(mainChart.getByText(/Long Call|Long Put/).first()).toBeVisible();
+  // QA 修正：兩側各是誰較高必須明講，而且方向由實際矩陣算出來
+  // ——所以只鎖「X 較高，Y 較高」這個句型，不寫死是哪一端。
+  await expect(mainChart.locator(".crossover-sides")).toBeVisible();
+  await expect(mainChart.locator(".crossover-sides"))
+    .toHaveText(/Spread 較高，.*(Long Call|Long Put) 較高/);
 
   // 邊界確實畫在網格上（契約樣本的 baseline 候選有真實交叉）——不是
   // 每次都落在「網格外」那個分支。
@@ -480,27 +485,39 @@ test("詳細頁密度：桌面一屏能看到的比例明顯提高（QA-FIX-3／
   // 只驗結構性密度，不驗任何像素間距數值——跟 #108 劇本庫瘦身、
   // #82 手機 compact row 同一套測試哲學。
   // QA-01 量測基準：同一份契約樣本下 scrollHeight 2668px ÷ 800px
-  // 視窗 ＝ 3.33 螢幕。壓縮後應明顯低於此，門檻取 2.95 留餘裕。
+  // 視窗 ＝ 3.33 螢幕，該輪壓到 3.00。QA 修正把頂部三卡合一之後實測
+  // 2402px→1989px ＝ 2.49 螢幕，門檻跟著收到 2.70（介於兩者之間留
+  // 餘裕），把這一輪的改善釘住、不讓它日後被無聲吃回去。
   const vh = page.viewportSize()!.height;
   const total = await page.locator(".detail-pane .screen")
     .evaluate((el) => el.scrollHeight);
-  expect(total / vh).toBeLessThan(2.95);
+  expect(total / vh).toBeLessThan(2.70);
 
-  // 資訊一項不減少：摘要六項在兩欄化之後仍然全在。
-  const summary = page.locator(".detail-pane .metadata-grid").first();
-  for (const label of ["現價", "目標價", "目標年月", "策略", "資料時間", "資料來源"]) {
+  // 資訊一項不減少：QA 修正把「劇本摘要／基準候選／進場成本」三張卡
+  // 合成一張，十一項全部都要還在——合併是為了壓高度，不是砍資訊。
+  const summary = page.locator(".detail-pane .summary-card").first();
+  for (const label of ["策略", "現價", "目標價", "目標年月",
+                      "買腿 Ask", "賣腿 Bid", "淨成本",
+                      "資料時間", "資料來源"]) {
     await expect(summary.getByText(label, { exact: true })).toBeVisible();
   }
-  // 真的排成兩欄（同一視覺列的兩格 y 相同、x 不同），不是只是變窄。
-  const rows = summary.locator(".row");
-  const a = (await rows.nth(0).boundingBox())!;
-  const b = (await rows.nth(1).boundingBox())!;
+  // 候選身分與名次在標頭那一行，跟著一起搬過來了。`exact` 是必要的：
+  // 候選池過少的警語同一張卡裡也提到「第 1 名」。
+  await expect(summary.getByText("第 1 名", { exact: true })).toBeVisible();
+  await expect(summary.locator(".summary-title")).toBeVisible();
+
+  // 真的排成多欄（同一視覺列的兩格 y 相同、x 不同），不是只是變窄。
+  const stats = summary.locator(".stat");
+  const a = (await stats.nth(0).boundingBox())!;
+  const b = (await stats.nth(1).boundingBox())!;
   expect(Math.abs(a.y - b.y)).toBeLessThan(2);
   expect(b.x).toBeGreaterThan(a.x);
 
-  // Heatmap 本體不因為壓縮而變小到影響可讀性——格子字級維持 13px。
+  // Heatmap 格子字級：QA 修正明文要求「格子再縮小、降低 padding」，
+  // 13px→12px 是那一輪刻意調的值，不是被密度壓縮波及的副作用。12px
+  // 同時是這張表的可讀性下限——再小就不該無聲往下調。
   await expect(page.locator(".detail-pane .heatmap-table td").first())
-    .toHaveCSS("font-size", "13px");
+    .toHaveCSS("font-size", "12px");
 });
 
 /**

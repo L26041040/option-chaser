@@ -124,7 +124,7 @@ describe("圖表：斷點如實顯示", () => {
     render(<SpreadHistory scenarioId="s1" candidate={spreadCandidate} />);
     await userEvent.click(screen.getByText("Spread 淨成本走勢"));
 
-    expect(await screen.findByText(/沒有可畫的資料/)).toBeInTheDocument();
+    expect(await screen.findByText(/這段期間沒有資料/)).toBeInTheDocument();
   });
 
   it("從未分析過（空歷史）時如實說明", async () => {

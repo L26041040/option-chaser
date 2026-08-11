@@ -86,7 +86,7 @@ function RateRow({ candidate, params }: {
           <>
             {params.rate_curve_date}
             {params.rate_curve_stale && (
-              <span className="row-note"> · STALE（沿用陳舊備援窗）</span>
+              <span className="row-note"> · STALE（陳舊備援）</span>
             )}
           </>
         ) : "—"}
@@ -126,7 +126,7 @@ function QRow({ params }: { params: AnalysisView["params"] }) {
           <>
             {params.q_as_of}
             {params.q_stale && (
-              <span className="row-note"> · STALE（沿用陳舊備援窗）</span>
+              <span className="row-note"> · STALE（陳舊備援）</span>
             )}
           </>
         )}

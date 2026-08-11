@@ -203,7 +203,7 @@ export default function CompactScenarioList({
   onConfirmBatchArchive: () => void;
 }) {
   if (rows.length === 0) {
-    return <p className="caption">還沒有劇本。用上面的「＋ 新增劇本」建立第一個。</p>;
+    return <p className="caption">還沒有劇本，用上面的「＋ 新增劇本」建立。</p>;
   }
   return (
     <>

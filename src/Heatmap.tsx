@@ -21,58 +21,88 @@
  * Crossover Boundary（#116，spec #117 §4）：`comparator` 選填——傳入時
  * 疊一層「這組 Spread 報酬 vs 直接買買腿本身」的邊界標示在同一張表上，
  * 不畫第二張表、不遮蓋既有格值。邊界計算（`crossoverEdges`／
- * `crossoverFavoredSide`，見 `./heatmap`）是純幾何：逐格比較兩個矩陣
- * 哪裡符號翻轉，不解任何金融方程式。`comparator` 為 `null`（單腿候選、
- * 或買腿報價缺失）時顯示一行誠實的缺席原因，不假造一條線。
+ * `crossoverCellSides`／`crossoverSides`／`crossoverFavoredSide`，見
+ * `./heatmap`）是純幾何：逐格比較兩個矩陣哪裡符號翻轉，不解任何金融
+ * 方程式。`comparator` 為 `null`（單腿候選、或買腿報價缺失）時顯示一行
+ * 誠實的缺席原因，不假造一條線。
+ *
+ * QA 修正三點：標示改成畫在格子**單一邊**上的細線（不是整格粗框）、
+ * 顏色改用琥珀（`--crossover`；藍會跟 `--tint` 的互動語意混淆、紅會被
+ * 讀成警告），而且線一律畫在 **Spread 較高的那一側**——方向是從矩陣
+ * 算出來的，不預設「左上是 Spread、右下是 Long Call」。
  */
 import type { Comparator, Matrix } from "./api";
 import {
-  cellColor, columnLabel, crossoverEdges, crossoverFavoredSide, formatCell,
-  formatMovePct, formatMovePctShort, priceTags,
+  cellColor, columnLabel, crossoverCellSides, crossoverEdges,
+  crossoverFavoredSide, crossoverSides, formatCell, formatMovePct,
+  formatMovePctShort, priceTags,
+  type CrossoverSide, type CrossoverSides,
 } from "./heatmap";
 import { money } from "./scenarios";
 
-/** Comparator 標籤：「2028/12 105 Long Call」——直接讀 `option_type`，
- *  不從 strategy 反推（後端已經把型別放進契約，前端只格式化）。 */
+/** 「Long Call」／「Long Put」——直接讀 `option_type`，不從 strategy
+ *  反推（後端已經把型別放進契約，前端只格式化）。 */
+function comparatorKind(c: Comparator): string {
+  return c.option_type === "call" ? "Long Call" : "Long Put";
+}
+
+/** Comparator 完整標籤：「12/05 105 Long Call」。 */
 function comparatorLabel(c: Comparator): string {
   const [, month, day] = c.expiry.split("-");
-  const kind = c.option_type === "call" ? "Long Call" : "Long Put";
-  return `${month}/${day} ${c.strike} ${kind}`;
+  return `${month}/${day} ${c.strike} ${comparatorKind(c)}`;
 }
 
-/** 邊界格 key（`"row-col"`）集合——vertical／horizontal 兩種邊各自的
- *  兩端都算「邊界附近」，不只標其中一格，這樣一個 edge 至少在畫面上
- *  留下兩個相鄰、彼此靠著的高亮格，才看得出「線」的走向。 */
-function boundaryCellKeys(edges: ReturnType<typeof crossoverEdges>): Set<string> {
-  const keys = new Set<string>();
-  for (const e of edges) {
-    keys.add(`${e.row}-${e.col}`);
-    if (e.orientation === "vertical") keys.add(`${e.row + 1}-${e.col}`);
-    else keys.add(`${e.row}-${e.col + 1}`);
+/** 一格要畫的邊 → inset box-shadow。用 box-shadow 而非 border：border
+ *  會撐開格子尺寸、動到整張表的欄寬，inset 陰影純粹疊在格子上。 */
+function edgeShadow(sides: CrossoverSide[] | undefined): string | undefined {
+  if (!sides || sides.length === 0) return undefined;
+  const offset: Record<CrossoverSide, string> = {
+    top: "inset 0 2px 0 0", bottom: "inset 0 -2px 0 0",
+    left: "inset 2px 0 0 0", right: "inset -2px 0 0 0",
+  };
+  return sides.map((s) => `${offset[s]} var(--crossover)`).join(", ");
+}
+
+/**
+ * 兩側各是誰較高的那一句——`sides` 由實際矩陣算出來（見
+ * `crossoverSides`），不是「左上是 Spread、右下是 Long Call」這種對真實
+ * 資料沒有保證的方位假設。
+ */
+function sidesSentence(sides: CrossoverSides, kind: string): string {
+  if (sides.axis === "price") {
+    return sides.spreadSide === "low"
+      ? `標的價較低的一側 Spread 較高，較高的一側 ${kind} 較高。`
+      : `標的價較高的一側 Spread 較高，較低的一側 ${kind} 較高。`;
   }
-  return keys;
+  return sides.spreadSide === "low"
+    ? `較早的日期 Spread 較高，越接近到期 ${kind} 較高。`
+    : `越接近到期 Spread 較高，較早的日期 ${kind} 較高。`;
 }
 
-function CrossoverLegend({ comparator, edges, favoredSide }: {
+function CrossoverLegend({ comparator, edges, favoredSide, sides }: {
   comparator: Comparator;
   edges: ReturnType<typeof crossoverEdges>;
   favoredSide: ReturnType<typeof crossoverFavoredSide>;
+  sides: CrossoverSides | null;
 }) {
-  const label = comparatorLabel(comparator);
+  const kind = comparatorKind(comparator);
   return (
     <p className="caption crossover-legend">
-      格子仍是 Spread 報酬率；<span className="crossover-swatch" /> 標示的格子
-      是邊界所在——在那裡 Spread 與直接買{" "}
-      <strong>{label}</strong>（成本 {money(comparator.cost)}）報酬相等。
+      <span className="crossover-swatch" aria-hidden="true" />
+      <span>
+        格子是 Spread 報酬率。琥珀線＝與直接買{" "}
+        <strong>{comparatorLabel(comparator)}</strong>（成本{" "}
+        {money(comparator.cost)}）報酬相等的分界。
+      </span>
+      {sides && <span className="crossover-sides">{sidesSentence(sides, kind)}</span>}
       {edges.length === 0 && (
-        <>
-          {" "}此圖顯示範圍內邊界不在網格上：
+        <span>
           {favoredSide === "spread"
-            ? "全部落在 Spread 較優的一側。"
+            ? "此圖範圍內沒有分界：整張都是 Spread 較高。"
             : favoredSide === "comparator"
-            ? `全部落在直接買 ${label} 較優的一側。`
-            : "資料不足以判定哪一側較優。"}
-        </>
+            ? `此圖範圍內沒有分界：整張都是 ${kind} 較高。`
+            : "資料不足以判定哪一側較高。"}
+        </span>
       )}
     </p>
   );
@@ -90,7 +120,8 @@ export default function Heatmap({ matrix, comparator }: {
   const favoredSide = comparator
     ? crossoverFavoredSide(cells, comparator.matrix.cells)
     : "mixed";
-  const boundaryCells = boundaryCellKeys(edges);
+  const sides = comparator ? crossoverSides(cells, comparator.matrix.cells) : null;
+  const boundaryCells = crossoverCellSides(edges);
 
   return (
     <div className="heatmap">
@@ -130,16 +161,20 @@ export default function Heatmap({ matrix, comparator }: {
                       </span>
                     ))}
                   </th>
-                  {cells[i].map((value, j) => (
-                    <td
-                      key={dates[j][0]}
-                      style={{ background: cellColor(value) }}
-                      className={boundaryCells.has(`${i}-${j}`)
-                        ? "heatmap-crossover-cell" : undefined}
-                    >
-                      {formatCell(value)}
-                    </td>
-                  ))}
+                  {cells[i].map((value, j) => {
+                    const edgeSides = boundaryCells.get(`${i}-${j}`);
+                    return (
+                      <td
+                        key={dates[j][0]}
+                        style={{ background: cellColor(value),
+                                boxShadow: edgeShadow(edgeSides) }}
+                        className={edgeSides ? "heatmap-crossover-cell" : undefined}
+                        data-crossover-sides={edgeSides?.join(" ")}
+                      >
+                        {formatCell(value)}
+                      </td>
+                    );
+                  })}
                   {/* QA-FIX-1：±% 在全部日期格之後。完整／短格式兩者都畫
                       進 DOM，用 CSS 依版面寬度切換，不是 JS 判斷視窗寬度
                       （沿用 #109 既有做法，只換掛載位置）。 */}
@@ -158,8 +193,8 @@ export default function Heatmap({ matrix, comparator }: {
         </table>
       </div>
       <p className="caption">
-        以最差進場成本（買付 Ask、賣收 Bid）進場，在各標的價與日期下的模型
-        報酬率（單位：%）。標記列為錨點價格，其餘為等距內插。
+        以最差成交價（買付 Ask、賣收 Bid）進場的報酬率（%）；標記列是錨點
+        價格，其餘為內插。
       </p>
       {/* `comparator === undefined`（呼叫端根本沒傳，見 `ScenarioDetail.tsx`／
           `ExpiryStructure.tsx`——單腿候選不傳這個 prop）＝這個候選沒有
@@ -168,10 +203,11 @@ export default function Heatmap({ matrix, comparator }: {
           需要誠實揭露原因的狀態，兩者不能用同一句話混著講。 */}
       {comparator === undefined ? null : comparator === null ? (
         <p className="caption crossover-legend crossover-absent">
-          Crossover 對照缺席：無法取得買腿報價，本頁不顯示邊界。
+          買腿沒有報價，無法標出分界。
         </p>
       ) : (
-        <CrossoverLegend comparator={comparator} edges={edges} favoredSide={favoredSide} />
+        <CrossoverLegend comparator={comparator} edges={edges}
+                         favoredSide={favoredSide} sides={sides} />
       )}
     </div>
   );

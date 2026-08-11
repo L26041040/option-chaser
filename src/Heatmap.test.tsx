@@ -232,8 +232,7 @@ describe("Crossover Boundary overlay（#116，spec #117 §4）", () => {
   it("comparator 為 null（買腿報價缺失）：顯示一行誠實缺席原因，" +
      "不畫任何邊界、不崩潰", () => {
     render(<Heatmap matrix={baseMatrix} comparator={null} />);
-    expect(screen.getByText(/Crossover 對照缺席/)).toBeInTheDocument();
-    expect(screen.getByText(/無法取得買腿報價/)).toBeInTheDocument();
+    expect(screen.getByText(/買腿沒有報價，無法標出分界/)).toBeInTheDocument();
     expect(document.querySelector(".heatmap-crossover-cell")).toBeNull();
   });
 
@@ -246,15 +245,69 @@ describe("Crossover Boundary overlay（#116，spec #117 §4）", () => {
     const { container } = render(
       <Heatmap matrix={baseMatrix} comparator={callComparator(comparatorMatrix)} />);
 
-    // diff = [[0.4,0.5],[-0.4,-0.5]] → 兩欄都在 row0/row1 之間翻轉，
-    // 四格全部緊鄰邊界。
+    // diff = [[0.4,0.5],[-0.4,-0.5]] → 兩欄都在 row0/row1 之間翻轉。
     const marked = container.querySelectorAll(".heatmap-crossover-cell");
     expect(marked.length).toBeGreaterThan(0);
 
-    expect(screen.getByText(/格子仍是 Spread 報酬率/)).toBeInTheDocument();
-    expect(screen.getByText(/報酬相等/)).toBeInTheDocument();
+    expect(screen.getByText(/格子是 Spread 報酬率/)).toBeInTheDocument();
+    expect(screen.getByText(/報酬相等的分界/)).toBeInTheDocument();
     expect(screen.getByText(/08\/07 118 Long Call/)).toBeInTheDocument();
     expect(screen.getByText(/\$1\.10/)).toBeInTheDocument();
+  });
+
+  it("標示是畫在格子單一邊上的細線，不是整格四邊粗框（QA 修正）", () => {
+    const comparatorMatrix: Matrix = { ...baseMatrix, cells: [[0.1, 0.1], [0.1, 0.1]] };
+    const { container } = render(
+      <Heatmap matrix={baseMatrix} comparator={callComparator(comparatorMatrix)} />);
+
+    const marked = Array.from(
+      container.querySelectorAll<HTMLElement>(".heatmap-crossover-cell"));
+    expect(marked.length).toBeGreaterThan(0);
+    for (const cell of marked) {
+      const sides = cell.dataset.crossoverSides!.split(" ");
+      // 每一格最多吃到兩條邊（邊界在這裡轉角），絕不會是四邊全包。
+      expect(sides.length).toBeGreaterThanOrEqual(1);
+      expect(sides.length).toBeLessThanOrEqual(2);
+      // 用的是琥珀色 token，不是 --tint（藍）或 --red。
+      expect(cell.style.boxShadow).toContain("var(--crossover)");
+      expect(cell.style.boxShadow).not.toContain("var(--tint)");
+    }
+  });
+
+  it("邊界線畫在 Spread 較高的那一側——同一組資料上下翻轉，線也跟著換邊",
+     () => {
+    const comparatorMatrix: Matrix = { ...baseMatrix, cells: [[0.1, 0.1], [0.1, 0.1]] };
+    // baseMatrix.cells = [[0.5,0.6],[-0.3,-0.4]]：row0（低價）Spread 較高
+    // → 線畫在 row0 那一格的上緣。
+    const { container } = render(
+      <Heatmap matrix={baseMatrix} comparator={callComparator(comparatorMatrix)} />);
+    const lowRowFirst = container.querySelector<HTMLElement>(
+      "[data-crossover-sides]")!;
+    expect(lowRowFirst.dataset.crossoverSides).toBe("top");
+
+    // 上下翻轉 → 較高的變成 row1，線改畫在 row1 那格的下緣。
+    const flipped: Matrix = { ...baseMatrix, cells: [[-0.3, -0.4], [0.5, 0.6]] };
+    const second = render(
+      <Heatmap matrix={flipped} comparator={callComparator(comparatorMatrix)} />);
+    const flippedCell = second.container.querySelector<HTMLElement>(
+      "[data-crossover-sides]")!;
+    expect(flippedCell.dataset.crossoverSides).toBe("bottom");
+  });
+
+  it("圖例明說兩側各是誰較高，而且方向來自實際矩陣（QA 修正）", () => {
+    const comparatorMatrix: Matrix = { ...baseMatrix, cells: [[0.1, 0.1], [0.1, 0.1]] };
+    // row0＝價格 90（低）Spread 較高、row1＝價格 110（高）comparator 較高
+    const { unmount } = render(
+      <Heatmap matrix={baseMatrix} comparator={callComparator(comparatorMatrix)} />);
+    expect(screen.getByText(
+      "標的價較低的一側 Spread 較高，較高的一側 Long Call 較高。")).toBeInTheDocument();
+    unmount();
+
+    // 翻轉之後同一句話要跟著翻——不是寫死的固定文案。
+    const flipped: Matrix = { ...baseMatrix, cells: [[-0.3, -0.4], [0.5, 0.6]] };
+    render(<Heatmap matrix={flipped} comparator={callComparator(comparatorMatrix)} />);
+    expect(screen.getByText(
+      "標的價較高的一側 Spread 較高，較低的一側 Long Call 較高。")).toBeInTheDocument();
   });
 
   it("comparator 是 put 時標籤顯示 Long Put，不是 Long Call——直接讀" +
@@ -278,8 +331,8 @@ describe("Crossover Boundary overlay（#116，spec #117 §4）", () => {
                comparator={callComparator(comparatorMatrix)} />);
 
     expect(container.querySelectorAll(".heatmap-crossover-cell")).toHaveLength(0);
-    expect(screen.getByText(/邊界不在網格上/)).toBeInTheDocument();
-    expect(screen.getByText(/全部落在 Spread 較優的一側/)).toBeInTheDocument();
+    expect(screen.getByText(/此圖範圍內沒有分界/)).toBeInTheDocument();
+    expect(screen.getByText(/整張都是 Spread 較高/)).toBeInTheDocument();
   });
 
   it("邊界整條落在網格外（comparator 全贏）：圖例明講另一側", () => {
@@ -289,7 +342,7 @@ describe("Crossover Boundary overlay（#116，spec #117 §4）", () => {
     };
     render(<Heatmap matrix={baseMatrix}
                     comparator={callComparator(comparatorAlwaysWins)} />);
-    expect(screen.getByText(/全部落在直接買.*較優的一側/)).toBeInTheDocument();
+    expect(screen.getByText(/整張都是 Long Call 較高/)).toBeInTheDocument();
   });
 
   it("regression：加了 comparator 之後，既有格值／欄數／±% 欄仍然不變" +

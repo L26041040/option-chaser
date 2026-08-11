@@ -49,7 +49,7 @@ function ConfirmDeleteOne({
         <h2 id="confirm-delete-heading">
           永久刪除 {row.symbol} · {row.target_month}？
         </h2>
-        <p>此動作無法復原，將一併刪除這個劇本的分析歷史與原始報價快照。</p>
+        <p>無法復原，這個劇本的分析歷史與報價快照會一併刪除。</p>
         <div className="confirm-actions">
           <button className="text-button" onClick={onCancel} disabled={busy}>
             取消
@@ -86,7 +86,7 @@ function ConfirmDeleteBatch({
         <h2 id="confirm-batch-delete-heading">
           永久刪除 {rows.length} 個劇本？
         </h2>
-        <p>此動作無法復原，將一併刪除這些劇本的分析歷史與原始報價快照。</p>
+        <p>無法復原，這些劇本的分析歷史與報價快照會一併刪除。</p>
         <ul className="confirm-list">
           {rows.map((row) => (
             <li key={row.id}>{row.symbol} · {row.target_month}</li>
@@ -244,7 +244,7 @@ export default function TrashView({
           <h1 className="toolbar-title">垃圾桶</h1>
         </div>
         <span className="caption">
-          封存於此的劇本不會再刷新報價，可還原或永久刪除。
+          這裡的劇本不再刷新報價，可還原或永久刪除。
           {rows !== null && `${rows.length} 個劇本`}
         </span>
       </div>
