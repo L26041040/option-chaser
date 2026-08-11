@@ -277,7 +277,10 @@ def _skip_message(strategy: str) -> str:
 
 def _matrix_view(value_fn, cost: float, spot: float, p: AnalysisParams,
                  today: date, expiry_iso: str) -> MatrixView:
-    prices = price_axis(spot, p.target_price, is_bullish(p.strategy))
+    # QA 修正：價格軸上下限吃劇本區間（最好／最差價位）——兩端都沒填時
+    # `price_axis` 自己退回既有算式，這裡不做判斷。
+    prices = price_axis(spot, p.target_price, is_bullish(p.strategy),
+                        best_price=p.best_price, worst_price=p.worst_price)
     # QA-FIX-5（QA-01）：GUI 走高密度日期軸（欄距上限約一個月）。
     # CLI 文字報告（`report.py`）刻意不傳這個參數，維持既有七欄——
     # 密度是呈現層決策，兩條路徑各自選自己合適的。

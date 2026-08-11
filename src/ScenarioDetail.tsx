@@ -1,7 +1,7 @@
 /**
  * 劇本詳細頁（MVP V3／#103，資訊階層依 spec #102 決策 A 重整）：
  * 摘要（含基準候選與進場成本，QA 修正後三卡合一）→〔Historical IV
- * Position 插槽〕→ Payoff Heatmap → Price Ladder → Expiry Structure
+ * Position 插槽〕→ Payoff Heatmap → Expiry Structure
  * → Advanced（候選池／分析報告／Spread 歷史／原始資料）。
  *
  * 資料只從 `GET /api/scenarios/{id}` 來，畫面上每個數字都是引擎算好的：
@@ -34,7 +34,7 @@ import {
   type RefreshFailure,
   type ScenarioDetail as Detail,
 } from "./api";
-import { candidateTitle, formatMove, priceLadderView, strategyLabel } from "./detail";
+import { candidateTitle, formatMove, strategyLabel } from "./detail";
 import { isThinPool, legPrices, validPairsForExpiry } from "./expiry";
 import { failureLabel, formatAnalyzedAt, formatReturn, money } from "./scenarios";
 
@@ -60,33 +60,6 @@ function Stat({ label, children }: { label: string; children: React.ReactNode })
  */
 function IVPositionSlot() {
   return null;
-}
-
-/**
- * 劇本區間三價位對照（V7／#55）。兩端都沒設定就整區不出現——見
- * `priceLadderView`。排名口徑不變（仍以目標價），這一區純粹是「同一組
- * 候選在我的劇本區間兩端各會怎樣」。
- */
-function PriceLadder({ candidate }: { candidate: Candidate | null }) {
-  const ladder = candidate && priceLadderView(candidate);
-  if (!ladder) return null;
-
-  return (
-    <section className="card" aria-label="劇本區間對照">
-      <h2 className="section-title">劇本區間對照</h2>
-      <p className="caption">同一組候選在區間各價位的到期報酬。</p>
-      <div className="ladder">
-        {ladder.map((p) => (
-          <div className="ladder-point" key={p.label}>
-            <span className="row-label">{p.label}</span>
-            <span className={`metric ${p.ret >= 0 ? "positive" : "negative"}`}>
-              {formatReturn(p.ret)}
-            </span>
-          </div>
-        ))}
-      </div>
-    </section>
-  );
 }
 
 /**
@@ -207,13 +180,12 @@ function DetailBody({ scenarioId, view, analyzedAt }: {
     <>
       {/* spec #102 決策 A 的資訊階層不變，只是前三格（劇本摘要／基準
           候選／進場成本）合併成同一張高密度卡：摘要 →〔IV History
-          插槽〕→ Payoff Heatmap → Price Ladder，全部圍繞同一組
+          插槽〕→ Payoff Heatmap，全部圍繞同一組
           baseline 候選。 */}
       <Summary view={view} candidate={candidate} analyzedAt={analyzedAt} />
       <IVPositionSlot />
       <Chart candidate={candidate} />
-      <PriceLadder candidate={candidate} />
-      {/* 到期日結構（V6／#54）接在 Price Ladder 之下。切換到期日只換這
+      {/* 到期日結構（V6／#54）接在主圖之下。切換到期日只換這
           一塊的清單，基準候選不動——固定是 baseline 期第 1 名（QA1-06
           的既有裁示）。 */}
       {result && (

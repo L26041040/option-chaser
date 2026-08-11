@@ -254,7 +254,8 @@ def _pct_iv(iv: float) -> str:
 
 
 def _matrix_block(value_fn, cost, spot, p, today, expiry) -> list[str]:
-    prices = price_axis(spot, p.target_price, is_bullish(p.strategy))
+    prices = price_axis(spot, p.target_price, is_bullish(p.strategy),
+                        best_price=p.best_price, worst_price=p.worst_price)
     dates = date_axis(today, expiry)
     return (["", "P/L 矩陣（報酬率，最差進場）:"]
             + matrix_lines(value_fn, cost, prices, dates))

@@ -116,7 +116,8 @@ test("Heatmap ±% 在最右欄：桌面 viewport 每一列都看得到完整格�
   await expect(table.locator("th.heatmap-move-head")).toHaveText("vs 現價");
 
   // 數字取自契約樣本 baseline 候選的 `matrix.prices`（spot=100、
-  // target=130、adverse=90 → +30.0%／+0.0%／-10.0%）。
+  // target=130 → +30.0%／+0.0%）。QA 修正拿掉了「深跌」那個標記，
+  // 最低那一列改用「最後一列」定位，不再靠標記字串找列。
   // 完整／短格式兩個 span 都在 DOM 裡（CSS 切換顯示），所以斷言要指名
   // 看得見的那一個——對整個 `<td>` 下 toHaveText 會拿到兩者相連的
   // textContent（"+30.0%+30%"）。
@@ -127,7 +128,12 @@ test("Heatmap ±% 在最右欄：桌面 viewport 每一列都看得到完整格�
   await expect(fullOf("目標")).toHaveText("+30.0%");
   await expect(fullOf("目標")).toBeVisible();
   await expect(fullOf("現價")).toHaveText("+0.0%");
-  await expect(fullOf("深跌")).toHaveText("-10.0%");
+  await expect(table.locator("tbody tr").last()
+    .locator("td.heatmap-move-pct .heatmap-move-pct-full"))
+    .toHaveText("-10.0%");
+  // 「超標」「深跌」兩個標記已從引擎移除，整張表不該再出現
+  await expect(table.getByText("超標")).toHaveCount(0);
+  await expect(table.getByText("深跌")).toHaveCount(0);
   // 短格式（Mobile 才用）此時不可見，證明桌面版真的換成完整格式。
   await expect(moveCellOf("目標").locator(".heatmap-move-pct-short"))
     .not.toBeVisible();

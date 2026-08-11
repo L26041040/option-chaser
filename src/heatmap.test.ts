@@ -80,6 +80,17 @@ describe("軸標籤", () => {
     // 同一個價格同時是現價與目標時兩個都要在
     expect(priceTags("<現價><目標>")).toEqual(["現價", "目標"]);
   });
+
+  it("最好／最差價位是錨點標記（QA 修正：取代原本的超標／深跌）", () => {
+    expect(priceTags("<最好>")).toEqual(["最好"]);
+    expect(priceTags("<最差>")).toEqual(["最差"]);
+    expect(priceTags("<目標><最好>")).toEqual(["目標", "最好"]);
+  });
+
+  it("已移除的超標／深跌標記即使出現在舊快照裡也不再翻譯出文字", () => {
+    expect(priceTags("<超標>")).toEqual([]);
+    expect(priceTags("<深跌>")).toEqual([]);
+  });
 });
 
 describe("Crossover Boundary 邊界偵測（#116：純幾何，不重算任何報酬率）", () => {

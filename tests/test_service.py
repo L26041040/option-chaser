@@ -199,6 +199,37 @@ def test_matrix_view_matches_grid():
     assert cv.matrix.dates[-1][0] == v.contract.expiry
 
 
+def test_matrix_price_axis_follows_scenario_range():
+    """QA 修正：劇本區間（最好／最差價位）真的傳到 Heatmap 的價格軸。
+
+    上下限＝區間兩端 ±10%，而且兩個價位在圖上各自有錨點標記——這條
+    走的是完整的 `run_offline` 路徑，不是直接呼叫 `price_axis`，才擋得住
+    「純函式改了但服務層沒接上」這種漏接。
+    """
+    base = AnalysisParams(target_price=120.0, target_month="2026-08",
+                          best_price=140.0, worst_price=95.0)
+    r = service.run_offline(
+        service.AnalysisRequest(symbol="XYZ", base_params=base,
+                                strategies=("long-call",)), FIX)
+    prices = r.results[0].candidates[0].matrix.prices
+    vals = [v for v, _, _ in prices]
+    labels = {v: lbl for v, lbl, _ in prices}
+    assert max(vals) == pytest.approx(140.0 * 1.10)
+    assert min(vals) == pytest.approx(95.0 * 0.90)
+    assert labels[140.0] == "<最好>" and labels[95.0] == "<最差>"
+
+
+def test_matrix_price_axis_without_scenario_range_keeps_default_bounds():
+    """沒填區間就沿用既有上下限，而且無論如何都不再出現超標／深跌。"""
+    r = service.run_offline(req(["long-call"]), FIX)
+    prices = r.results[0].candidates[0].matrix.prices
+    vals = [v for v, _, _ in prices]
+    assert min(vals) == pytest.approx(100.0 * 0.90)
+    assert max(vals) == pytest.approx(120.0 * 1.15)
+    joined = "".join(lbl for _, lbl, _ in prices)
+    assert "<超標>" not in joined and "<深跌>" not in joined
+
+
 def test_invalid_request_rejected():
     base = AnalysisParams(target_price=120.0, target_month="2026-08")
     with pytest.raises(ParamError):

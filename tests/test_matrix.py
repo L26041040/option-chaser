@@ -29,27 +29,106 @@ def test_price_axis_spot_equals_target_dual_label():
     assert len(rows) == 11
 
 
-def test_price_axis_v4_anchors_bullish():
+def test_price_axis_default_range_bullish():
+    """沒有劇本區間時上下限維持既有算式（QA 修正只拿掉標記，不動範圍）。"""
     spot, target = 84.52, 105.0
     pts = price_axis(spot, target, bullish=True)
     vals = [v for v, _, _ in pts]
     assert len(vals) == 11
-    overshoot, adverse = target * 1.15, spot * 0.90
-    for anchor in (spot, target, overshoot, adverse):
+    for anchor in (spot, target):
         assert anchor in vals
-    assert min(vals) == pytest.approx(adverse)
-    assert max(vals) == pytest.approx(overshoot)
+    assert min(vals) == pytest.approx(spot * 0.90)
+    assert max(vals) == pytest.approx(target * 1.15)
 
 
-def test_price_axis_v4_anchors_bearish():
+def test_price_axis_default_range_bearish():
     spot, target = 84.52, 70.0
     pts = price_axis(spot, target, bullish=False)
     vals = [v for v, _, _ in pts]
-    overshoot, adverse = target * 0.85, spot * 1.10
-    for anchor in (spot, target, overshoot, adverse):
+    for anchor in (spot, target):
         assert anchor in vals
-    assert min(vals) == pytest.approx(overshoot)
-    assert max(vals) == pytest.approx(adverse)
+    assert min(vals) == pytest.approx(target * 0.85)
+    assert max(vals) == pytest.approx(spot * 1.10)
+
+
+# ---------- QA 修正：劇本區間（最好／最差價位）決定上下限 ----------
+
+def test_price_axis_bounds_from_scenario_range():
+    """上限＝劇本區間高端×1.10、下限＝低端×0.90（需求方指定的算式）。"""
+    spot, target, best, worst = 100.0, 130.0, 150.0, 90.0
+    pts = price_axis(spot, target, bullish=True,
+                     best_price=best, worst_price=worst)
+    vals = [v for v, _, _ in pts]
+    assert len(vals) == 11
+    assert max(vals) == pytest.approx(best * 1.10)
+    assert min(vals) == pytest.approx(worst * 0.90)
+
+
+def test_price_axis_best_worst_are_anchors_and_labelled():
+    spot, target, best, worst = 100.0, 130.0, 150.0, 90.0
+    labels = {v: lbl for v, lbl, _ in
+              price_axis(spot, target, bullish=True,
+                        best_price=best, worst_price=worst)}
+    assert labels[spot] == "<現價>"
+    assert labels[target] == "<目標>"
+    assert labels[best] == "<最好>"
+    assert labels[worst] == "<最差>"
+
+
+def test_price_axis_never_labels_overshoot_or_adverse():
+    """〈超標〉〈深跌〉整個消失——有沒有設劇本區間都一樣。"""
+    for kwargs in ({}, {"best_price": 150.0, "worst_price": 90.0}):
+        labels = "".join(lbl for _, lbl, _ in
+                         price_axis(100.0, 130.0, bullish=True, **kwargs))
+        assert "<超標>" not in labels and "<深跌>" not in labels
+    labels_bear = "".join(lbl for _, lbl, _ in
+                          price_axis(100.0, 70.0, bullish=False))
+    assert "<超標>" not in labels_bear and "<深跌>" not in labels_bear
+
+
+def test_price_axis_spot_dominates_when_scenario_range_is_narrow():
+    """劇本區間比現價還窄時，現價本身仍要落在圖內——取的是聯集的極值，
+    不是只看使用者填的兩個數字。"""
+    spot, target, best, worst = 100.0, 104.0, 105.0, 99.0
+    pts = price_axis(spot, target, bullish=True,
+                     best_price=best, worst_price=worst)
+    vals = [v for v, _, _ in pts]
+    assert max(vals) == pytest.approx(best * 1.10)
+    assert min(vals) == pytest.approx(worst * 0.90)
+    assert spot in vals
+
+
+def test_price_axis_bearish_scenario_range_keeps_both_ends_in_view():
+    """看跌劇本的『最好』是低價、『最差』是高價——上下限用聯集極值算，
+    兩端才都進得了圖（直接照字面取 max(best, spot) 會把最差價位擠出去）。"""
+    spot, target, best, worst = 100.0, 70.0, 60.0, 115.0
+    pts = price_axis(spot, target, bullish=False,
+                     best_price=best, worst_price=worst)
+    vals = [v for v, _, _ in pts]
+    assert max(vals) == pytest.approx(worst * 1.10)
+    assert min(vals) == pytest.approx(best * 0.90)
+    for anchor in (spot, target, best, worst):
+        assert anchor in vals
+
+
+def test_price_axis_only_one_end_set_still_uses_scenario_bounds():
+    spot, target, worst = 100.0, 130.0, 85.0
+    vals = [v for v, _, _ in price_axis(spot, target, bullish=True,
+                                       worst_price=worst)]
+    assert len(vals) == 11
+    assert min(vals) == pytest.approx(worst * 0.90)
+    # 高端沒有使用者輸入可用 → 取劇本已知的最高點（目標價）加一成
+    assert max(vals) == pytest.approx(target * 1.10)
+
+
+def test_price_axis_scenario_bounds_stay_positive():
+    """使用者自己填的極低價位照畫（那是他要求看的價位，不該被夾掉），
+    但推導出來的格點不會掉到 0 或負數。"""
+    rows = price_axis(10.0, 0.5, bullish=False, best_price=0.05)
+    vals = [v for v, _, _ in rows]
+    assert all(v > 0 for v in vals)
+    assert 0.05 in vals
+    assert len(vals) == 11
 
 
 def test_price_axis_v4_positive_clamp():
@@ -64,22 +143,19 @@ def test_price_axis_anchor_collision_dedup():
     assert len(vals) == len(set(vals)) == 11
 
 
-def test_price_axis_v4_anchor_labels():
+def test_price_axis_default_anchor_labels():
+    """沒有劇本區間時只剩現價與目標兩個標記。"""
     spot, target = 84.52, 105.0
-    overshoot, adverse = target * 1.15, spot * 0.90
     labels = {v: lbl for v, lbl, _ in price_axis(spot, target, bullish=True)}
     assert labels[spot] == "<現價>"
     assert labels[target] == "<目標>"
-    assert labels[overshoot] == "<超標>"
-    assert labels[adverse] == "<深跌>"
+    assert sum(1 for lbl in labels.values() if lbl) == 2
 
     spot2, target2 = 84.52, 70.0
-    overshoot2, adverse2 = target2 * 0.85, spot2 * 1.10
     labels2 = {v: lbl for v, lbl, _ in price_axis(spot2, target2, bullish=False)}
     assert labels2[spot2] == "<現價>"
     assert labels2[target2] == "<目標>"
-    assert labels2[overshoot2] == "<超標>"
-    assert labels2[adverse2] == "<深跌>"
+    assert sum(1 for lbl in labels2.values() if lbl) == 2
 
 
 # ---------- 決策 M（#109）：右側 ±% 標註（move_pct） ----------

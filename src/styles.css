@@ -1555,27 +1555,6 @@ body {
   padding: 4px 0 12px;
 }
 
-/* 劇本區間三價位對照（V7／#55）。等寬三欄——三個價位是同一種東西的三個
-   取值，寬度不一致會讓人以為中間那個比較重要。只有兩點時同樣平分。 */
-.ladder {
-  display: grid;
-  grid-auto-flow: column;
-  grid-auto-columns: 1fr;
-  gap: 8px;
-  margin-top: 12px;
-}
-
-.ladder-point {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  align-items: center;
-  padding: 10px 6px;
-  background: var(--fill);
-  border-radius: 10px;
-  text-align: center;
-}
-
 /* 分析報告章節子標題（MVP V3／#105：Risk / Payoff、Position
    Sensitivity、Execution），比 `.section-title` 小一號——分析報告卡片
    本身已經有一個 `.section-title`（「📄 分析報告」），子章節不該跟它

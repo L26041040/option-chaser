@@ -38,18 +38,41 @@ def _insert_anchors(pts: list[float], anchors: list[float]) -> list[float]:
 
 def price_axis(
     spot: float, target: float, bullish: bool,
+    best_price: float | None = None, worst_price: float | None = None,
 ) -> list[tuple[float, str, float]]:
-    """v4 spec §4.3: anchors {spot, target, overshoot, adverse}; range = anchor hull.
+    """價格軸：錨點 {現價, 目標, 最好, 最差}，範圍由劇本區間 ±10% 決定。
+
+    **QA 修正（需求方裁示）**：上限＝劇本區間高端×1.10、下限＝低端×0.90，
+    而且原本的 `<超標>`（目標×1.15）與 `<深跌>`（現價×0.90）兩個標記整個
+    移除——它們是憑空生出來的價位，對使用者沒有意義。改放使用者自己填的
+    最好／最差價位。
+
+    「劇本區間高端／低端」取的是 {現價, 目標, 最好, 最差} 已知值的**極值**，
+    不是字面上的 `max(最好, 現價)`：看跌劇本的「最好」是低價、「最差」是
+    高價，照字面取會把最差價位擠出圖外。取聯集極值在看漲情形下與需求方
+    給的算式完全一致（看漲時最好恆為最高、最差恆為最低），看跌也成立。
+
+    兩端都沒填時（劇本沒有區間可用）沿用既有上下限算式：看漲 ＝
+    [現價×0.90, 目標×1.15]、看跌 ＝ [目標×0.85, 現價×1.10]。這條路徑
+    同樣不標 `<超標>`／`<深跌>`——標記是無條件移除的。
 
     決策 M（#109）：第三個元素 `move_pct` 是該價位相對 `spot` 的變動分數
     （`<現價>` 那一列恆為 0）——跟 cell 的估值同一個 `spot`、同一次呼叫算出來，
     不是另外重算的第二份數字。GUI 只格式化顯示。
     """
-    overshoot = target * (1.15 if bullish else 0.85)
-    adverse = spot * (0.90 if bullish else 1.10)
-    anchors = sorted({spot, target, overshoot, adverse})
-    lo = max(min(anchors), 0.01 * spot)
-    hi = max(anchors)
+    anchors = sorted({spot, target}
+                     | {v for v in (best_price, worst_price) if v is not None})
+    lo_raw, hi_raw = min(anchors), max(anchors)
+    if best_price is None and worst_price is None:
+        # 既有預設：把兩個推導價位納入範圍（但不再當成有名字的錨點）
+        lo_raw = min(lo_raw, spot * (0.90 if bullish else 1.0),
+                     target * (1.0 if bullish else 0.85))
+        hi_raw = max(hi_raw, spot * (1.0 if bullish else 1.10),
+                     target * (1.15 if bullish else 1.0))
+    else:
+        lo_raw, hi_raw = lo_raw * 0.90, hi_raw * 1.10
+    lo = max(lo_raw, 0.01 * spot)
+    hi = hi_raw
     pts = [lo + (hi - lo) * i / 10.0 for i in range(11)]
     vals = _insert_anchors(pts, anchors)
 
@@ -59,10 +82,10 @@ def price_axis(
             s += "<現價>"
         if v == target:
             s += "<目標>"
-        if v == overshoot:
-            s += "<超標>"
-        if v == adverse:
-            s += "<深跌>"
+        if best_price is not None and v == best_price:
+            s += "<最好>"
+        if worst_price is not None and v == worst_price:
+            s += "<最差>"
         return s
 
     return [(v, label(v), (v - spot) / spot) for v in vals]

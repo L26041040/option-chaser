@@ -149,15 +149,30 @@ describe("最右欄 ±% 標註（決策 M／#109，位置修正 QA-FIX-1／QA-01
     expect(within(td).getByText("+14%")).toBeInTheDocument();
   });
 
-  it("深跌／超標兩端的正負號方向跟價格相對現價的位置一致", () => {
-    // 契約樣本是 bullish：深跌在現價之下（負）、超標在現價之上（正）。
-    const row = (tag: string) => screen.getByText(tag).closest("tr")!;
-    render(<Heatmap matrix={matrix} />);
+  it("上下兩端的正負號方向跟價格相對現價的位置一致", () => {
+    // 表格由高價到低價渲染：第一列在現價之上（＋）、最後一列在其下（−）。
+    // QA 修正拿掉了「超標／深跌」兩個標記，所以改用兩端的列本身定位，
+    // 不再靠標記字串找列。
+    const { container } = render(<Heatmap matrix={matrix} />);
 
-    const adverseText = within(row("深跌")).getByText(/^[+-]\d+\.\d%$/);
-    const overshootText = within(row("超標")).getByText(/^[+-]\d+\.\d%$/);
-    expect(adverseText.textContent).toMatch(/^-/);
-    expect(overshootText.textContent).toMatch(/^\+/);
+    const rows = Array.from(container.querySelectorAll("tbody tr"));
+    const moveOf = (tr: Element) =>
+      within(tr as HTMLElement).getByText(/^[+-]\d+\.\d%$/).textContent!;
+    expect(moveOf(rows[0])).toMatch(/^\+/);
+    expect(moveOf(rows[rows.length - 1])).toMatch(/^-/);
+  });
+
+  it("最好／最差價位有錨點標記——使用者填的區間兩端在圖上找得到", () => {
+    // 引擎在使用者設了劇本區間時才會給這兩個標籤，所以這裡自己造一份。
+    const withRange: Matrix = {
+      prices: [[90, "<最差>", -0.1], [100, "<現價>", 0],
+              [130, "<目標>", 0.3], [150, "<最好>", 0.5]],
+      dates: [["2026-08-07", ""]],
+      cells: [[-0.5], [0.1], [0.8], [1.2]],
+    };
+    render(<Heatmap matrix={withRange} />);
+    expect(screen.getByText("最好")).toBeInTheDocument();
+    expect(screen.getByText("最差")).toBeInTheDocument();
   });
 });
 
@@ -170,7 +185,7 @@ describe("高密度日期軸（QA-FIX-5／QA-01）", () => {
       return [d.toISOString().slice(0, 10), ""];
     });
     const prices: [number, string, number][] = [
-      [90, "<深跌>", -0.1], [100, "<現價>", 0], [130, "<目標>", 0.3],
+      [90, "<最差>", -0.1], [100, "<現價>", 0], [130, "<目標>", 0.3],
     ];
     return {
       prices,

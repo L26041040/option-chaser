@@ -4,8 +4,7 @@
  * 零金融計算——每個數字都是引擎算好放在契約裡的，這裡只負責「怎麼寫成
  * 一句人看得懂的話」。
  */
-import type { Candidate, PricePoint } from "./api";
-import { money } from "./scenarios";
+import type { Candidate } from "./api";
 
 /**
  * 策略顯示名。與後端 `option_chaser/report.py` 的 `STRATEGY_LABELS`
@@ -43,28 +42,4 @@ export function candidateTitle(candidate: Candidate): string {
   const [buy, sell] = candidate.legs;
   if (!buy) return "—";
   return sell ? `買 ${buy.strike} / 賣 ${sell.strike}` : `買 ${buy.strike}`;
-}
-
-const LADDER_LABELS: Record<PricePoint["label"], string> = {
-  worst: "最差", target: "目標", best: "最好",
-};
-
-/**
- * 劇本區間三價位對照（V7／#55）。
- *
- * 回傳 null ＝ 這一區不該出現：使用者兩端都沒設定時，`price_ladder` 只有
- * 目標價一項，畫一張「只有一格的對照表」對不上「對照」二字，什麼也沒比較到。
- * V7 之前落盤的結果沒有這個欄位，一併當作沒設定。
- *
- * 報酬不在這裡算——`return` 是引擎給的，口徑與頭條數字相同。
- */
-export function priceLadderView(
-  candidate: Candidate,
-): { label: string; ret: number }[] | null {
-  const ladder = candidate.price_ladder ?? [];
-  if (ladder.length < 2) return null;
-  return ladder.map((p) => ({
-    label: `${LADDER_LABELS[p.label]} ${money(p.price)}`,
-    ret: p.return,
-  }));
 }
