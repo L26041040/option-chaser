@@ -183,9 +183,11 @@ def test_replacing_a_token_overwrites_rather_than_accumulates(client, db):
 
 def test_clearing_a_credential_returns_to_unconfigured(client):
     client.put(f"/api/settings/credentials/{PROVIDER}", json={"token": TOKEN})
-    body = client.delete(f"/api/settings/credentials/{PROVIDER}").json()
-    assert body["credentials"][PROVIDER] == {"configured": False, "masked": None,
-                                             "updated_at": None}
+    cred = client.delete(f"/api/settings/credentials/{PROVIDER}") \
+                 .json()["credentials"][PROVIDER]
+    assert cred["configured"] is False
+    assert cred["masked"] is None
+    assert cred["updated_at"] is None
 
 
 def test_clearing_a_credential_leaves_the_mode_choice_alone(client):

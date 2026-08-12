@@ -170,6 +170,20 @@ class ProviderCredential:
     updated_at: str
 
 
+@dataclass(frozen=True)
+class ProviderVerification:
+    """「測試連線」的結果（Settings／#125）。
+
+    成功與失敗都存——設定頁重新載入時要看得到上次測的結果與時間，不必
+    為了知道現況再打一次 vendor。`reason` 只在失敗時有值，而且是給人看
+    的整句話（認證被拒／額度用盡／連不上），**不含 token**。
+    """
+    provider: str
+    ok: bool
+    reason: str | None
+    checked_at: str
+
+
 class Storage(Protocol):
     """API 層唯一的資料存取介面——不得繞過它直接碰 SQL 或檔案。"""
 
@@ -258,7 +272,17 @@ class Storage(Protocol):
         """同一 provider 重複寫入即覆蓋（換 token 就是這條路徑）。"""
 
     def delete_credential(self, provider: str) -> bool:
-        """回傳是否真的刪了東西（本來就沒存過回 `False`）。"""
+        """回傳是否真的刪了東西（本來就沒存過回 `False`）。
+
+        一併清掉該 provider 的驗證結果——那筆結果講的是「**那把** token
+        能不能用」，token 沒了它就失去意義，留著會讓設定頁在沒有
+        credential 的情況下顯示「已連線」。"""
+
+    def get_verification(self, provider: str) -> ProviderVerification | None:
+        """從未測過時回 `None`（＝「未設定」或「尚未驗證」）。"""
+
+    def save_verification(self, v: ProviderVerification) -> None:
+        """覆蓋該 provider 既有那一筆——單一狀態，不是歷史序列。"""
 
     @property
     def kind(self) -> str:

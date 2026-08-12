@@ -7,8 +7,8 @@
 from __future__ import annotations
 
 from . import (DataSourceSettings, DividendCacheEntry, ProviderCredential,
-               RateCacheEntry, ResultRecord, ResultSummary, Scenario,
-               ScenarioExists)
+               ProviderVerification, RateCacheEntry, ResultRecord,
+               ResultSummary, Scenario, ScenarioExists)
 
 
 class MemoryStorage:
@@ -21,6 +21,7 @@ class MemoryStorage:
         self._dividend_cache: dict[str, DividendCacheEntry] = {}
         self._settings: DataSourceSettings | None = None
         self._credentials: dict[str, ProviderCredential] = {}
+        self._verifications: dict[str, ProviderVerification] = {}
 
     @property
     def kind(self) -> str:
@@ -140,4 +141,12 @@ class MemoryStorage:
         self._credentials[cred.provider] = cred
 
     def delete_credential(self, provider: str) -> bool:
+        # 驗證結果跟著走：它講的是「那把 token 能不能用」。
+        self._verifications.pop(provider, None)
         return self._credentials.pop(provider, None) is not None
+
+    def get_verification(self, provider: str) -> ProviderVerification | None:
+        return self._verifications.get(provider)
+
+    def save_verification(self, v: ProviderVerification) -> None:
+        self._verifications[v.provider] = v

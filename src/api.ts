@@ -642,10 +642,26 @@ export interface UsageView {
 
 /** 某個 Provider 的 credential 狀態。**沒有完整 token 這個欄位**——後端
  *  只給遮罩形式，這是 #124 的硬性紅線。 */
+/** 測試連線的三態（#125）——外加「有 token 但還沒測過」。
+ *  刻意不把沒測過當成已連線：那是在替使用者宣稱一件沒驗證過的事。 */
+export type CredentialState = "unset" | "unverified" | "ok" | "failed";
+
 export interface CredentialStatus {
   configured: boolean;
   masked: string | null;
   updated_at: string | null;
+  status: CredentialState;
+  /** 失敗原因，給人看的整句話。成功或未測時為 null。 */
+  reason: string | null;
+  checked_at: string | null;
+}
+
+/** Market Data 這一列實際生效的來源（#125）。`fallback` 為真時
+ *  `reason` 說明為什麼用的不是使用者選的那家——不靜默退回。 */
+export interface EffectiveSource {
+  source: string;
+  fallback: boolean;
+  reason: string | null;
 }
 
 export interface SettingsView {
@@ -655,6 +671,7 @@ export interface SettingsView {
   /** key ＝ provider id，不是資料用途——兩列選同一個 Provider 時看到的
    *  是同一筆，使用者因此不必輸入同一把 token 兩次。 */
   credentials: Record<string, CredentialStatus>;
+  market_data_effective: EffectiveSource;
   updated_at: string | null;
 }
 
@@ -690,6 +707,15 @@ export function saveCredential(
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ token }),
     },
+  );
+}
+
+/** 測試連線（#125）：驗證失敗仍是 200——「這把 token 不能用」是預期內的
+ *  答案，狀態在回傳的 view 裡，不必為了讀它去 catch。 */
+export function testCredential(provider: string): Promise<SettingsView> {
+  return request<SettingsView>(
+    `/api/settings/credentials/${encodeURIComponent(provider)}/test`,
+    { method: "POST" },
   );
 }
 

@@ -20,8 +20,12 @@ function view(overrides: Partial<SettingsView> = {}): SettingsView {
     market_data: { mode: "default", provider: null, default_label: "Cboe" },
     historical_iv: { mode: "default", provider: null, default_label: "無" },
     credentials: {
-      [PROVIDER]: { configured: false, masked: null, updated_at: null },
+      [PROVIDER]: {
+        configured: false, masked: null, updated_at: null,
+        status: "unset", reason: null, checked_at: null,
+      },
     },
+    market_data_effective: { source: "Cboe", fallback: false, reason: null },
     updated_at: null,
     ...overrides,
   };
@@ -32,6 +36,9 @@ const CONFIGURED = {
     configured: true,
     masked: "••••••••abcd",
     updated_at: "2026-08-12T00:00:00+00:00",
+    status: "ok" as const,
+    reason: null,
+    checked_at: "2026-08-12T00:00:00+00:00",
   },
 };
 
@@ -239,7 +246,7 @@ describe("已儲存的狀態", () => {
     ]);
     const { container } = render(<Settings />);
     await ready();
-    expect(screen.getByText("已儲存 ••••••••abcd")).toBeInTheDocument();
+    expect(screen.getByText(/已儲存 ••••••••abcd/)).toBeInTheDocument();
     expect(container.textContent).not.toMatch(/SECRET|tok-/);
   });
 
@@ -251,7 +258,7 @@ describe("已儲存的狀態", () => {
     ]);
     render(<Settings />);
     await ready();
-    expect(within(section("Market Data")).getByText("未設定")).toBeInTheDocument();
+    expect(within(section("Market Data")).getByText(/未設定/)).toBeInTheDocument();
   });
 
   it("已設定時可以清除，回到未設定", async () => {
@@ -328,5 +335,137 @@ describe("錯誤", () => {
     render(<Settings />);
     await waitFor(() =>
       expect(screen.getByRole("alert")).toHaveTextContent("資料庫連不上"));
+  });
+});
+
+/* ---------- 測試連線與 fallback（#125） ---------- */
+
+function cred(over: Partial<SettingsView["credentials"][string]> = {}) {
+  return {
+    [PROVIDER]: {
+      configured: true,
+      masked: "••••••••abcd",
+      updated_at: "2026-08-12T00:00:00+00:00",
+      status: "unverified" as const,
+      reason: null,
+      checked_at: null,
+      ...over,
+    },
+  };
+}
+
+const CUSTOM_MD = {
+  market_data: {
+    mode: "custom" as const, provider: PROVIDER, default_label: "Cboe",
+  },
+};
+
+describe("測試連線的三態", () => {
+  it("還沒存 token：未設定", async () => {
+    mockApi([view(CUSTOM_MD)]);
+    render(<Settings />);
+    await ready();
+    expect(within(section("Market Data")).getByText(/未設定/)).toBeInTheDocument();
+  });
+
+  it("存了但沒測過：尚未驗證，不是「已連線」", async () => {
+    mockApi([view({ ...CUSTOM_MD, credentials: cred() })]);
+    render(<Settings />);
+    await ready();
+    const md = within(section("Market Data"));
+    expect(md.getByText(/尚未驗證/)).toBeInTheDocument();
+    expect(md.queryByText(/已連線/)).not.toBeInTheDocument();
+  });
+
+  it("測試成功：已連線", async () => {
+    mockApi([view({ ...CUSTOM_MD, credentials: cred({ status: "ok" }) })]);
+    render(<Settings />);
+    await ready();
+    expect(within(section("Market Data")).getByText(/已連線/)).toBeInTheDocument();
+  });
+
+  it("測試失敗：顯示驗證失敗與可讀原因", async () => {
+    mockApi([view({
+      ...CUSTOM_MD,
+      credentials: cred({ status: "failed", reason: "認證被拒——請確認 token" }),
+    })]);
+    render(<Settings />);
+    await ready();
+    const md = within(section("Market Data"));
+    expect(md.getByText(/驗證失敗/)).toBeInTheDocument();
+    expect(md.getByText(/認證被拒——請確認 token/)).toBeInTheDocument();
+  });
+
+  it("按測試連線會打驗證端點", async () => {
+    const spy = mockApi([view({ ...CUSTOM_MD, credentials: cred() })]);
+    render(<Settings />);
+    await ready();
+    await userEvent.click(
+      within(section("Market Data")).getByRole("button", { name: "測試連線" }));
+    await waitFor(() =>
+      expect(spy.mock.calls.some(([url, init]) =>
+        url === `/api/settings/credentials/${PROVIDER}/test`
+        && init?.method === "POST")).toBe(true));
+  });
+
+  it("沒有 token 時測試連線不可按——沒有東西可測", async () => {
+    mockApi([view(CUSTOM_MD)]);
+    render(<Settings />);
+    await ready();
+    expect(
+      within(section("Market Data")).getByRole("button", { name: "測試連線" }),
+    ).toBeDisabled();
+  });
+});
+
+describe("fallback 誠實顯示", () => {
+  it("自訂不可用時說出現在用的是哪家、為什麼", async () => {
+    mockApi([view({
+      ...CUSTOM_MD,
+      credentials: cred({ status: "failed", reason: "額度用盡" }),
+      market_data_effective: {
+        source: "Cboe", fallback: true,
+        reason: "Market Data App 額度用盡，改用預設來源",
+      },
+    })]);
+    render(<Settings />);
+    await ready();
+    expect(
+      within(section("Market Data"))
+        .getByText(/目前使用 Cboe：Market Data App 額度用盡，改用預設來源/),
+    ).toBeInTheDocument();
+  });
+
+  it("自訂正常運作時不顯示 fallback 提示", async () => {
+    mockApi([view({
+      ...CUSTOM_MD,
+      credentials: cred({ status: "ok" }),
+      market_data_effective: {
+        source: "Market Data App", fallback: false, reason: null,
+      },
+    })]);
+    render(<Settings />);
+    await ready();
+    expect(
+      within(section("Market Data")).queryByText(/目前使用/),
+    ).not.toBeInTheDocument();
+  });
+
+  it("Historical IV 那一列不顯示 Market Data 的 fallback 提示", async () => {
+    mockApi([view({
+      ...CUSTOM_MD,
+      historical_iv: {
+        mode: "custom", provider: PROVIDER, default_label: "無",
+      },
+      credentials: cred({ status: "failed", reason: "額度用盡" }),
+      market_data_effective: {
+        source: "Cboe", fallback: true, reason: "Market Data App 額度用盡",
+      },
+    })]);
+    render(<Settings />);
+    await ready();
+    expect(
+      within(section("Historical IV")).queryByText(/目前使用/),
+    ).not.toBeInTheDocument();
   });
 });

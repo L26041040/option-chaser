@@ -13,9 +13,8 @@ import os
 
 import pytest
 
-from api_app.storage import (DividendCacheEntry, RateCacheEntry, ResultRecord,
-                             Scenario, ScenarioExists)
-from api_app.storage import (DataSourceSettings, ProviderCredential,
+from api_app.storage import (DataSourceSettings, DividendCacheEntry,
+                             ProviderCredential, ProviderVerification,
                              RateCacheEntry, ResultRecord, Scenario,
                              ScenarioExists, UsageSetting)
 from api_app.storage.memory import MemoryStorage
@@ -45,7 +44,8 @@ def storage(request):
     with psycopg.connect(TEST_DB_URL, autocommit=True) as conn:
         conn.execute("TRUNCATE scenarios, results, snapshots, events, rate_cache, "
                      "dividend_cache, data_source_settings, "
-                     "provider_credentials RESTART IDENTITY")
+                     "provider_credentials, provider_verifications "
+                     "RESTART IDENTITY")
     yield st
 
 
@@ -603,6 +603,49 @@ def test_deleting_a_credential_leaves_the_settings_alone(storage):
     assert storage.get_settings() == _settings()
 
 
+# ---------- 測試連線的結果（Settings／#125） ----------
+
+def _verification(ok=True, reason=None):
+    return ProviderVerification(provider="marketdata-app", ok=ok, reason=reason,
+                                checked_at="2026-08-12T01:00:00+00:00")
+
+
+def test_verification_starts_out_absent(storage):
+    assert storage.get_verification("marketdata-app") is None
+
+
+def test_saved_verification_reads_back_identically(storage):
+    v = _verification(ok=False, reason="認證被拒")
+    storage.save_verification(v)
+    assert storage.get_verification("marketdata-app") == v
+
+
+def test_retesting_overwrites_the_previous_result(storage):
+    storage.save_verification(_verification(ok=False, reason="連不上"))
+    storage.save_verification(_verification(ok=True))
+    got = storage.get_verification("marketdata-app")
+    assert got.ok is True and got.reason is None
+
+
+def test_deleting_the_credential_also_drops_its_verification(storage):
+    """驗證結果講的是「那把 token 能不能用」——token 沒了它就失去意義，
+    留著會讓設定頁在沒有 credential 的情況下顯示「已連線」。"""
+    storage.save_credential(ProviderCredential(
+        provider="marketdata-app", token="tok",
+        updated_at="2026-08-12T00:00:00+00:00"))
+    storage.save_verification(_verification())
+    storage.delete_credential("marketdata-app")
+    assert storage.get_verification("marketdata-app") is None
+
+
+def test_saving_a_credential_does_not_invent_a_verification(storage):
+    """存 token 不等於測過——設定頁據此顯示「尚未驗證」而不是「已連線」。"""
+    storage.save_credential(ProviderCredential(
+        provider="marketdata-app", token="tok",
+        updated_at="2026-08-12T00:00:00+00:00"))
+    assert storage.get_verification("marketdata-app") is None
+
+
 # ---------- schema 遷移（V3／#51） ----------
 
 def test_existing_results_table_gains_the_new_column():
@@ -625,7 +668,8 @@ def test_existing_results_table_gains_the_new_column():
         # 看起來像遷移壞了，其實是測試自己髒。
         conn.execute("TRUNCATE scenarios, results, snapshots, events, rate_cache, "
                      "dividend_cache, data_source_settings, "
-                     "provider_credentials RESTART IDENTITY")
+                     "provider_credentials, provider_verifications "
+                     "RESTART IDENTITY")
         conn.execute("DROP TABLE IF EXISTS results")
         # V2 時期的舊表：沒有 best_return
         conn.execute("CREATE TABLE results ("
@@ -656,7 +700,8 @@ def test_existing_results_table_gains_the_representative_candidate_column():
     with psycopg.connect(TEST_DB_URL, autocommit=True) as conn:
         conn.execute("TRUNCATE scenarios, results, snapshots, events, rate_cache, "
                      "dividend_cache, data_source_settings, "
-                     "provider_credentials RESTART IDENTITY")
+                     "provider_credentials, provider_verifications "
+                     "RESTART IDENTITY")
         conn.execute("DROP TABLE IF EXISTS results")
         # V3 時期的舊表：有 best_return，還沒有 representative_candidate。
         conn.execute("CREATE TABLE results ("
@@ -689,7 +734,8 @@ def test_migration_still_applies_when_table_creation_hits_a_race():
     with psycopg.connect(TEST_DB_URL, autocommit=True) as conn:
         conn.execute("TRUNCATE scenarios, results, snapshots, events, rate_cache, "
                      "dividend_cache, data_source_settings, "
-                     "provider_credentials RESTART IDENTITY")
+                     "provider_credentials, provider_verifications "
+                     "RESTART IDENTITY")
         conn.execute("DROP TABLE IF EXISTS results")
         conn.execute("CREATE TABLE results ("
                      "scenario_id TEXT NOT NULL, analyzed_at TEXT NOT NULL, "

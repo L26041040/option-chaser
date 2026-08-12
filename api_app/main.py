@@ -31,12 +31,16 @@ from option_chaser.workspace import now_utc_iso, ny_today
 from . import providers
 from .dividend_cache import cached_loader as cached_dividend_loader
 from .rate_cache import cached_loader
-from .storage import (DataSourceSettings, ProviderCredential, RateCacheEntry,
-                      ResultRecord, ResultSummary, Scenario, ScenarioExists,
-                      Storage, UsageSetting)
+from .storage import (DataSourceSettings, ProviderCredential,
+                      ProviderVerification, RateCacheEntry, ResultRecord,
+                      ResultSummary, Scenario, ScenarioExists, Storage,
+                      UsageSetting)
 from .storage.factory import storage_from_env
 
 FetchChain = Callable[[str], ChainSnapshot]
+# 自訂 Provider 的兩條路徑（Settings／#125），皆可注入 → 測試離線。
+VerifyProvider = Callable[[str, str], "providers.VerifyOutcome"]
+CustomFetch = Callable[[str, str, str], ChainSnapshot]
 
 # MVP 範圍（沿用既有 Streamlit 版與 spec #47 的三欄表單）：方向與策略
 # 是固定值，不由前端送。需要看空或多策略時再由對應的票加上。
@@ -221,6 +225,8 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
                storage: Storage | None = None,
                rate_loader: RateCurveLoader = service.default_rate_curve_loader,
                dividend_loader: DividendLoader = service.default_dividend_loader,
+               verify_provider: VerifyProvider = providers.default_verify,
+               custom_fetch: CustomFetch = providers.default_fetch_chain,
                ) -> FastAPI:
     """`fetch`／`storage`／`rate_loader`／`dividend_loader` 皆可注入：
     測試傳入固定快照、記憶體假體與假來源，因此不打真網路、不碰真資料庫，
@@ -272,6 +278,41 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
             cached_dividend["loader"] = cached_dividend_loader(_db(), dividend_loader)
         return cached_dividend["loader"]
 
+    def _fetch_chain(symbol: str) -> ChainSnapshot:
+        """依設定挑抓鏈路徑（Settings／#125）。
+
+        Market Data 選「自訂」且該 Provider 有 credential 時先走自訂；
+        **失敗就退回預設來源**（`fetch`，即既有的 Cboe → yfinance 降級
+        鏈，本身不動），而且把失敗如實記成一次驗證失敗——設定頁的三態
+        因此會自己變成「驗證失敗」並說出原因，不需要另一套「上次
+        fallback 過」的機制，也不會出現靜默退回。
+
+        自訂成功時同樣記一次成功：那是比任何測試連線都真實的證據。
+        """
+        db = _db()
+        stored = db.get_settings()
+        md = stored.market_data if stored else None
+        if md is None or md.mode != providers.MODE_CUSTOM or not md.provider:
+            return fetch(symbol)
+
+        cred = db.get_credential(md.provider)
+        if cred is None:
+            # 選了自訂卻沒有 token：不是錯誤，是還沒設定完——照常分析，
+            # 設定頁那邊會顯示「尚未設定 token，改用預設來源」。
+            return fetch(symbol)
+
+        try:
+            snap = custom_fetch(md.provider, symbol, cred.token)
+        except FetchError as e:
+            db.save_verification(ProviderVerification(
+                provider=md.provider, ok=False, reason=str(e),
+                checked_at=now_utc_iso()))
+            return fetch(symbol)
+        db.save_verification(ProviderVerification(
+            provider=md.provider, ok=True, reason=None,
+            checked_at=now_utc_iso()))
+        return snap
+
     def _require(scenario_id: str) -> Scenario:
         sc = _db().get_scenario(scenario_id)
         if sc is None:
@@ -300,7 +341,7 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         # 兩段各自 try：抓鏈與分析是兩個不同的失敗環節（V4／#52），
         # 包在同一個 try 裡就只能事後靠例外型別猜是哪一段出的事。
         try:
-            snap = fetch(symbol)
+            snap = _fetch_chain(symbol)
         except FetchError as e:
             # 上游報價來源不可用（Cboe 與 yfinance 皆失敗）＝下游依賴問題。
             # 只認 FetchError：把這裡寫成 `except Exception` 的話，我們自己
@@ -602,11 +643,26 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         creds: dict[str, dict] = {}
         for p in providers.SUPPORTED_PROVIDERS:
             got = db.get_credential(p.id)
-            creds[p.id] = ({"configured": False, "masked": None, "updated_at": None}
-                           if got is None else
-                           {"configured": True,
-                            "masked": providers.mask_token(got.token),
-                            "updated_at": got.updated_at})
+            checked = db.get_verification(p.id)
+            creds[p.id] = {
+                "configured": got is not None,
+                "masked": providers.mask_token(got.token) if got else None,
+                "updated_at": got.updated_at if got else None,
+                # 三態（#125）：沒 credential ＝未設定；有 credential 但
+                # 沒測過＝尚未驗證；測過就是它的結果。刻意不把「沒測過」
+                # 當成「已連線」——那是在替使用者宣稱一件沒驗證過的事。
+                "status": ("unset" if got is None
+                           else "unverified" if checked is None
+                           else "ok" if checked.ok else "failed"),
+                "reason": checked.reason if checked else None,
+                "checked_at": checked.checked_at if checked else None,
+            }
+
+        # Market Data 實際生效的來源（#125）：選了自訂但那家不可用時，
+        # 分析走的是預設 Cboe——這件事必須說出來，不能靜默退回。
+        md = usages[providers.MARKET_DATA]
+        fallback = _market_data_fallback(md, creds)
+
         return {
             "supported_providers": [{"id": p.id, "label": p.label}
                                     for p in providers.SUPPORTED_PROVIDERS],
@@ -614,8 +670,29 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
                        "default_label": providers.DEFAULT_LABELS[usage]}
                for usage, u in usages.items()},
             "credentials": creds,
+            "market_data_effective": fallback,
             "updated_at": stored.updated_at if stored else None,
         }
+
+    def _market_data_fallback(md: UsageSetting, creds: dict[str, dict]) -> dict:
+        """Market Data 這一列現在實際會用哪個來源，以及（若有）退回的原因。
+
+        判準與 `_chain_fetcher()` 真正執行時走的分支同一套，兩者若分家，
+        設定頁就會顯示一個跟實際抓取行為不符的來源。
+        """
+        default = {"source": providers.DEFAULT_LABELS[providers.MARKET_DATA],
+                   "fallback": False, "reason": None}
+        if md.mode != providers.MODE_CUSTOM or not md.provider:
+            return default
+        cred = creds.get(md.provider, {})
+        label = providers.label_for(md.provider) or md.provider
+        if cred.get("status") == "ok":
+            return {"source": label, "fallback": False, "reason": None}
+        reason = ({"unset": "尚未設定 token",
+                   "unverified": "尚未測試連線"}.get(cred.get("status"))
+                  or cred.get("reason") or "驗證失敗")
+        return {"source": providers.DEFAULT_LABELS[providers.MARKET_DATA],
+                "fallback": True, "reason": f"{label}{reason}，改用預設來源"}
 
     @app.get("/api/settings")
     def get_settings() -> dict:
@@ -644,6 +721,27 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
                                 detail=f"不支援的資料源：{provider}")
         _db().save_credential(ProviderCredential(
             provider=provider, token=req.token, updated_at=now_utc_iso()))
+        return _settings_view()
+
+    @app.post("/api/settings/credentials/{provider}/test")
+    def test_credential(provider: str) -> dict:
+        """測試連線：用已儲存的 token 對該 Provider 做一次真實驗證。
+
+        結果存起來（設定頁重載不必重測）。驗證失敗**不是** HTTP 錯誤——
+        「這把 token 不能用」是這個端點的正常答案之一，回 200 帶狀態，
+        呼叫端才不必為了讀一個預期內的結果去 catch。
+        """
+        if not providers.is_supported(provider):
+            raise HTTPException(status_code=400,
+                                detail=f"不支援的資料源：{provider}")
+        cred = _db().get_credential(provider)
+        if cred is None:
+            raise HTTPException(status_code=400,
+                                detail="尚未設定 token，無法測試連線")
+        outcome = verify_provider(provider, cred.token)
+        _db().save_verification(ProviderVerification(
+            provider=provider, ok=outcome.ok, reason=outcome.reason,
+            checked_at=now_utc_iso()))
         return _settings_view()
 
     @app.delete("/api/settings/credentials/{provider}")

@@ -1891,3 +1891,36 @@ body {
   gap: 12px;
   margin-top: 12px;
 }
+
+/* 三態的狀態點（Settings／#125）。顏色不是唯一線索——旁邊永遠有文字
+   （「已連線」／「驗證失敗」／「尚未驗證」），色盲使用者不會漏掉資訊。 */
+.settings-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  margin-right: 8px;
+  border-radius: 50%;
+  background: var(--label-tertiary);
+  vertical-align: middle;
+}
+
+.settings-dot.state-ok {
+  background: var(--green);
+}
+
+.settings-dot.state-failed {
+  background: var(--red);
+}
+
+.settings-dot.state-unverified {
+  background: var(--orange);
+}
+
+.settings-reason {
+  margin-top: 4px;
+  color: var(--red);
+}
+
+.settings-fallback {
+  margin-top: 10px;
+}

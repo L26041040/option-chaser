@@ -599,8 +599,12 @@ const settingsView = {
   market_data: { mode: "default", provider: null, default_label: "Cboe" },
   historical_iv: { mode: "default", provider: null, default_label: "無" },
   credentials: {
-    "marketdata-app": { configured: false, masked: null, updated_at: null },
+    "marketdata-app": {
+      configured: false, masked: null, updated_at: null,
+      status: "unset", reason: null, checked_at: null,
+    },
   },
+  market_data_effective: { source: "Cboe", fallback: false, reason: null },
   updated_at: null,
 };
 
@@ -611,6 +615,7 @@ const settingsSaved = {
     "marketdata-app": {
       configured: true, masked: "••••••••abcd",
       updated_at: "2026-08-12T00:00:00+00:00",
+      status: "unverified", reason: null, checked_at: null,
     },
   },
 };
@@ -664,4 +669,95 @@ test("桌面版：切到自訂、存 token，畫面只顯示遮罩", async ({ pa
   await expect(md.getByText("已儲存 ••••••••abcd")).toBeVisible();
   // 完整 token 不得留在畫面上
   await expect(page.locator("body")).not.toContainText("tok-secret-abcd");
+});
+
+test("桌面版：測試連線走完未設定 → 尚未驗證 → 已連線（Settings／#125）",
+   async ({ page }) => {
+  await routeTwoScenarios(page);
+  const base = {
+    supported_providers: [{ id: "marketdata-app", label: "Market Data App" }],
+    market_data: {
+      mode: "custom", provider: "marketdata-app", default_label: "Cboe",
+    },
+    historical_iv: { mode: "default", provider: null, default_label: "無" },
+    updated_at: null,
+  };
+  const unset = {
+    ...base,
+    credentials: {
+      "marketdata-app": {
+        configured: false, masked: null, updated_at: null,
+        status: "unset", reason: null, checked_at: null,
+      },
+    },
+    market_data_effective: {
+      source: "Cboe", fallback: true,
+      reason: "Market Data App 尚未設定 token，改用預設來源",
+    },
+  };
+  const unverified = {
+    ...base,
+    credentials: {
+      "marketdata-app": {
+        configured: true, masked: "••••••••abcd",
+        updated_at: "2026-08-12T00:00:00+00:00",
+        status: "unverified", reason: null, checked_at: null,
+      },
+    },
+    market_data_effective: {
+      source: "Cboe", fallback: true,
+      reason: "Market Data App 尚未測試連線，改用預設來源",
+    },
+  };
+  const connected = {
+    ...base,
+    credentials: {
+      "marketdata-app": {
+        configured: true, masked: "••••••••abcd",
+        updated_at: "2026-08-12T00:00:00+00:00",
+        status: "ok", reason: null,
+        checked_at: "2026-08-12T01:00:00+00:00",
+      },
+    },
+    market_data_effective: {
+      source: "Market Data App", fallback: false, reason: null,
+    },
+  };
+
+  // 三個階段的形狀相同、欄位值不同；`any` 沿用本檔案既有慣例
+  // （見檔頭的 `const sample: any`），不讓 TS 從第一個字面值
+  // 推出過窄的型別。
+  let stage: any = unset;
+  await page.route("**/api/settings", (route) =>
+    route.fulfill({ json: stage }));
+  await page.route("**/api/settings/credentials/*/test", (route) => {
+    stage = connected;
+    return route.fulfill({ json: connected });
+  });
+  await page.route("**/api/settings/credentials/marketdata-app", (route) => {
+    stage = unverified;
+    return route.fulfill({ json: unverified });
+  });
+
+  await page.goto("/#/settings");
+  const md = page.getByRole("region", { name: "Market Data" });
+
+  // 狀態列鎖定 `.settings-status`：fallback 提示裡也有「尚未設定 token」
+  // 字樣，用純文字比對會同時命中兩處。
+  const status = md.locator(".settings-status");
+
+  // 未設定：測試連線按不下去，而且已經誠實說明現在其實用的是 Cboe
+  await expect(status).toContainText("未設定");
+  await expect(md.getByRole("button", { name: "測試連線" })).toBeDisabled();
+  await expect(md.getByText(/目前使用 Cboe/)).toBeVisible();
+
+  // 存了 token → 尚未驗證（不是「已連線」）
+  await md.getByLabel("API Token").fill("tok-secret-abcd");
+  await md.getByRole("button", { name: "儲存" }).click();
+  await expect(status).toContainText("尚未驗證");
+
+  // 測試連線 → 已連線，fallback 提示消失
+  await md.getByRole("button", { name: "測試連線" }).click();
+  await expect(status).toContainText("已連線");
+  await expect(md.getByText(/目前使用 Cboe/)).toHaveCount(0);
 });

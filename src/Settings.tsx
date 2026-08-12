@@ -23,6 +23,8 @@ import {
   getSettings,
   saveCredential,
   saveSettings,
+  testCredential,
+  type CredentialState,
   type SettingsView,
   type UsageChoice,
 } from "./api";
@@ -36,6 +38,15 @@ const USAGE_TITLES: Record<UsageKey, string> = {
 };
 
 const USAGE_ORDER: UsageKey[] = ["market_data", "historical_iv"];
+
+/** 三態的顯示文字（#125）。「尚未驗證」不是第四種狀態，是「已設定但
+ *  還沒測」——把它講清楚，好過讓使用者以為存了就等於通了。 */
+const STATE_LABELS: Record<CredentialState, string> = {
+  unset: "未設定",
+  unverified: "尚未驗證",
+  ok: "已連線",
+  failed: "驗證失敗",
+};
 
 type Draft = Record<UsageKey, UsageChoice>;
 
@@ -59,6 +70,7 @@ export default function Settings() {
   // Provider，兩個輸入框仍是各自的欄位；送出時走的才是同一把 credential。
   const [tokens, setTokens] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState<UsageKey | null>(null);
+  const [testing, setTesting] = useState<UsageKey | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState<UsageKey | null>(null);
 
@@ -109,6 +121,21 @@ export default function Settings() {
     }
   }
 
+  /** 測試連線（#125）：驗證失敗不是例外，狀態就在回傳的 view 裡。 */
+  async function test(usage: UsageKey) {
+    const provider = draft?.[usage].provider;
+    if (!provider) return;
+    setTesting(usage);
+    setError(null);
+    try {
+      setView(await testCredential(provider));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setTesting(null);
+    }
+  }
+
   async function clear(provider: string) {
     setError(null);
     try {
@@ -148,10 +175,12 @@ export default function Settings() {
             draft={draft}
             token={tokens[usage] ?? ""}
             busy={busy === usage}
+            testing={testing === usage}
             justSaved={saved === usage}
             onChoose={(choice) => choose(usage, choice)}
             onToken={(v) => setTokens((prev) => ({ ...prev, [usage]: v }))}
             onSave={() => void save(usage)}
+            onTest={() => void test(usage)}
             onClear={clear}
           />
         ))
@@ -166,10 +195,12 @@ function UsageSection({
   draft,
   token,
   busy,
+  testing,
   justSaved,
   onChoose,
   onToken,
   onSave,
+  onTest,
   onClear,
 }: {
   usage: UsageKey;
@@ -177,10 +208,12 @@ function UsageSection({
   draft: Draft;
   token: string;
   busy: boolean;
+  testing: boolean;
   justSaved: boolean;
   onChoose: (choice: UsageChoice) => void;
   onToken: (value: string) => void;
   onSave: () => void;
+  onTest: () => void;
   onClear: (provider: string) => void;
 }) {
   const choice = draft[usage];
@@ -191,6 +224,7 @@ function UsageSection({
   const provider = choice.provider ?? options[0]?.id ?? null;
   const cred = provider ? view.credentials[provider] : undefined;
   const configured = cred?.configured ?? false;
+  const state: CredentialState = cred?.status ?? "unset";
 
   // 另一列是不是也用同一個 Provider——是的話這一把 token 是共用的，
   // 講明白，不要讓人以為得再申請／再貼一次。
@@ -224,6 +258,15 @@ function UsageSection({
         />
         <span>自訂</span>
       </label>
+
+      {/* #125：選了自訂卻沒真的用上自訂時，說出來。靜默退回會讓使用者
+          以為分析用的是他挑的那家資料源，而其實不是。 */}
+      {usage === "market_data" && view.market_data_effective.fallback && (
+        <p className="notice settings-fallback" role="status">
+          目前使用 {view.market_data_effective.source}：
+          {view.market_data_effective.reason}
+        </p>
+      )}
 
       {custom && (
         <div className="settings-custom">
@@ -271,10 +314,20 @@ function UsageSection({
           )}
 
           <p className="caption settings-status">
-            {configured ? `已儲存 ${cred?.masked}` : "未設定"}
+            <span className={`settings-dot state-${state}`} aria-hidden="true" />
+            {STATE_LABELS[state]}
+            {configured && `　·　已儲存 ${cred?.masked}`}
           </p>
 
+          {cred?.reason && (
+            <p className="caption settings-reason">{cred.reason}</p>
+          )}
+
           <div className="settings-actions">
+            <button className="pill" onClick={onTest}
+                   disabled={testing || !configured}>
+              {testing ? "測試中……" : "測試連線"}
+            </button>
             <button className="pill" onClick={onSave} disabled={busy}>
               {busy ? "儲存中……" : "儲存"}
             </button>

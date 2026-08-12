@@ -66,3 +66,39 @@ def mask_token(token: str) -> str:
     if len(token) <= _TAIL:
         return _BULLETS
     return _BULLETS + token[-_TAIL:]
+
+
+# ---------- Provider 存取的可注入接縫（Settings／#125） ----------
+
+@dataclass(frozen=True)
+class VerifyOutcome:
+    """「這把 token 現在能不能用」。失敗時 `reason` 是給人看的整句話，
+    **絕不含 token**。"""
+    ok: bool
+    reason: str | None = None
+
+
+def default_verify(provider_id: str, token: str) -> VerifyOutcome:
+    """真實驗證：依 provider 分派到對應 adapter。
+
+    可被 `create_app(verify_provider=...)` 覆寫——測試因此全程離線，不打
+    真 vendor（#125 硬性 AC）。
+    """
+    if provider_id == MARKETDATA_APP.id:
+        from option_chaser.data import marketdata
+
+        got = marketdata.verify(token)
+        return VerifyOutcome(got.ok, got.reason)
+    return VerifyOutcome(False, f"不支援的資料源：{provider_id}")
+
+
+def default_fetch_chain(provider_id: str, symbol: str, token: str):
+    """自訂資料源的抓鏈路徑。失敗一律是 `FetchError`（adapter 已收斂），
+    由呼叫端決定要不要退回預設來源。"""
+    if provider_id == MARKETDATA_APP.id:
+        from option_chaser.data import marketdata
+
+        return marketdata.fetch_chain(symbol, token)
+    from option_chaser.models import FetchError
+
+    raise FetchError(f"不支援的資料源：{provider_id}")

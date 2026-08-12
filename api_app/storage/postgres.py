@@ -12,11 +12,9 @@ from __future__ import annotations
 import psycopg
 from psycopg.types.json import Jsonb
 
-from . import (DividendCacheEntry, RateCacheEntry, ResultRecord, ResultSummary,
-              Scenario, ScenarioExists)
-from . import (DataSourceSettings, ProviderCredential, RateCacheEntry,
-               ResultRecord, ResultSummary, Scenario, ScenarioExists,
-               UsageSetting)
+from . import (DataSourceSettings, DividendCacheEntry, ProviderCredential,
+               ProviderVerification, RateCacheEntry, ResultRecord,
+               ResultSummary, Scenario, ScenarioExists, UsageSetting)
 
 # 每個 lambda 程序只需建表一次。`IF NOT EXISTS` 在 Postgres 並非完全
 # race-free（同時冷啟動可能撞上 duplicate 錯誤），因此除了這個旗標，
@@ -107,6 +105,15 @@ CREATE TABLE IF NOT EXISTS provider_credentials (
     provider      TEXT PRIMARY KEY,
     token         TEXT NOT NULL,
     updated_at    TEXT NOT NULL
+);
+-- 測試連線的結果（Settings／#125）：per-provider 單一狀態。與
+-- credential 分兩張表——刪 token 時連帶刪這一筆（見 delete_credential），
+-- 但存 token 不必動它（還沒測過就是還沒測過）。
+CREATE TABLE IF NOT EXISTS provider_verifications (
+    provider      TEXT PRIMARY KEY,
+    ok            BOOLEAN NOT NULL,
+    reason        TEXT,
+    checked_at    TEXT NOT NULL
 );
 """
 
@@ -450,4 +457,28 @@ class PostgresStorage:
             cur = conn.execute(
                 "DELETE FROM provider_credentials WHERE provider = %s",
                 (provider,))
-            return cur.rowcount == 1   # 連線關閉前讀
+            removed = cur.rowcount == 1   # 連線關閉前讀
+            # 驗證結果跟著走：它講的是「那把 token 能不能用」。無論剛才
+            # 有沒有刪到 credential 都清——沒有 credential 卻留著一筆
+            # 「已連線」是更糟的狀態。
+            conn.execute(
+                "DELETE FROM provider_verifications WHERE provider = %s",
+                (provider,))
+            return removed
+
+    def get_verification(self, provider: str) -> ProviderVerification | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT provider, ok, reason, checked_at FROM "
+                "provider_verifications WHERE provider = %s",
+                (provider,)).fetchone()
+        return ProviderVerification(*row) if row else None
+
+    def save_verification(self, v: ProviderVerification) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO provider_verifications "
+                "(provider, ok, reason, checked_at) VALUES (%s, %s, %s, %s) "
+                "ON CONFLICT (provider) DO UPDATE SET ok = EXCLUDED.ok, "
+                "reason = EXCLUDED.reason, checked_at = EXCLUDED.checked_at",
+                (v.provider, v.ok, v.reason, v.checked_at))

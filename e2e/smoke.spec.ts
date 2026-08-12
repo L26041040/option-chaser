@@ -1016,8 +1016,12 @@ const SETTINGS_VIEW = {
   market_data: { mode: "default", provider: null, default_label: "Cboe" },
   historical_iv: { mode: "default", provider: null, default_label: "無" },
   credentials: {
-    "marketdata-app": { configured: false, masked: null, updated_at: null },
+    "marketdata-app": {
+      configured: false, masked: null, updated_at: null,
+      status: "unset", reason: null, checked_at: null,
+    },
   },
+  market_data_effective: { source: "Cboe", fallback: false, reason: null },
   updated_at: null,
 };
 
@@ -1030,6 +1034,7 @@ const SETTINGS_SAVED = {
     "marketdata-app": {
       configured: true, masked: "••••••••abcd",
       updated_at: "2026-08-12T00:00:00+00:00",
+      status: "unverified", reason: null, checked_at: null,
     },
   },
 };
