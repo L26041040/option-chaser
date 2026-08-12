@@ -200,6 +200,64 @@ code block**，不要零散貼成一般文字——需求方要能一次性複�
   `render_summary` 的 `move_pct` 同類手法一致，非新模式），未額外
   搬進服務層——標準面審查列為非阻塞建議，判斷維持現狀
 
+### 最新狀態（2026-08-12）——Settings／Historical IV 這一輪
+
+**依需求方 2026-08-12 的 Provider 裁示改票後施工，四張已完成並推上
+`claude/implement-tfm9oa`；#111 卡在 credential，見下。**
+
+- **#124** ✅ 設定頁＋預設／自訂＋Provider Token 安全儲存（`a555fde`
+  → 重做為 `7841a2c`）。`Data / API` 兩列各自「預設／自訂」，預設值
+  Cboe 與「無」。自訂只能挑 `api_app/providers.py` 白名單（目前只有
+  Market Data App），後端 pydantic 驗證是防線、前端下拉只是方便。
+  UI 文案只寫「目前支援」「需自行申請 API Token」，測試擋「推薦」／
+  vendor 比較／未來規劃。**credential 以 provider 為 key**，兩列選
+  同一家天然共用同一把，第二列顯示「與 X 共用」而不是再要一次。
+  完整 token 永不回前端／log／事件紀錄／fixture，三處各有明文斷言
+- **#125** ✅ 測試連線三態＋Market Data 自訂與 fallback（`7baf52c`）。
+  狀態其實是四個值：**未設定／尚未驗證／已連線／驗證失敗**——存了
+  token 不等於測過。驗證失敗回 200（那是預期內的答案，不是請求失敗）。
+  自訂來源接在既有 Cboe→yfinance 降級鏈**前面**，失敗即退回並把該次
+  失敗記成一次驗證失敗，設定頁因此自動顯示原因，**不可能靜默退回**
+- **#126** ✅ Historical IV 端點與閘門（`ceabea4`）。新增
+  `option_chaser/ivhistory.py` 純函式：(tenor, delta) 逐日重錨定、
+  不外插（含「tenor 在範圍內但一端 delta 蓋不到」也算出界）、
+  percentile 用「小於等於」含等於。閘門判準只寫一次，鎖著時 403 且
+  **零 vendor 請求**（注入會 assert 失敗的假體守門）
+- **#114** ✅ Historical IV 呈現層（`3c7a01d`）。填進 `ScenarioDetail`
+  既有的 `IVPositionSlot` 佔位。Normalized Skew 頭條、兩腿次層
+  （階層是結構性的，E2E 比對 computed font-size）；sparkline 缺值
+  **斷線不插值**；評價字眼由測試守門
+
+**enrich-only 紅線用結構保證而非巡邏**：`ranking.py`／`filters.py`
+根本不 import `ivhistory`（有測試斷言原始碼裡沒有那個字），IV 序列走
+自己的端點、不摻進 view dict；另有測試證明解鎖前後候選身份與順序逐一
+相同、IV 端點掛掉不影響刷新。
+
+**⚠ #111 仍未完成（唯一未結項）**：需要 (1) 一把 Market Data App
+token（需求方免費註冊），(2) 一個打得到 `api.marketdata.app` 的環境
+——agent 沙箱對該網域回 CONNECT 403（本輪 curl 複驗）。已備妥
+`scripts/probe_marketdata_app.py`（四關：認證／即時全鏈＝#125 adapter
+的實際路徑／**歷史整鏈含 delta**／單合約序列對照組），在可連網環境跑
+完把 JSON 貼回 issue 即可結案。**Market Data App 的 wire format 因此
+尚未經真實回應驗證**——`marketdata.py` 的欄位對應依官方文件撰寫，
+解析失敗一律收斂成 `FetchError`，所以寫錯的後果是走備援、不是分析
+炸掉。需求方裁示「照文件形狀先全做完」，之後用真實回應校正。
+
+**一次施工事故，記著別再犯**：`claude/implement-tfm9oa` 遠端有 69 個
+commit（整段 MVP V3 continuation），本機那份 ref 是舊的，我照 master
+重開分支就把它們蓋掉了，#124 因此是在錯的基底上做完的。push 被
+non-fast-forward 擋下才發現，改成「還原遠端分支 → merge master →
+cherry-pick」重做。**動分支前先 `git fetch` 該分支本身，不要只 fetch
+master 就相信本機的 remote-tracking ref。**
+
+**環境補充**：本輪為了真的驗證 Postgres adapter（而不是讓它 skip），
+在沙箱起了本機 Postgres 16（`/usr/lib/postgresql/16/bin`）跑契約測試
+——`OC_TEST_DATABASE_URL` 一設，memory 與 postgres 兩組都實跑。過程中
+它抓到一個 memory-only 測不到的真 bug（merge 後 `postgres.py` 少匯入
+`ProviderVerification`）。venv 另補裝了 `psycopg[binary]`。
+
+**測試現況**：Python 1015、前端 451、E2E 55，全綠。
+
 ### 目前狀態（2026-08-02，PR #43、#46 已 merge）
 
 **第二輪 MVP 已完結**：T1–T12、QA1-01–QA1-12、D1 全數完成（PR #43）；
