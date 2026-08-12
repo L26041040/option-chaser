@@ -231,6 +231,21 @@ class Storage(Protocol):
     def list_scenarios(self, *, include_archived: bool = False) -> list[Scenario]:
         """依 created_at 遞增排序；預設不含已封存者。"""
 
+    def update_scenario(self, sc: Scenario) -> bool:
+        """就地更新一個既有劇本（#132）。回傳是否真的更新了（不存在回
+        `False`）。
+
+        **同一個 id，不是刪除＋重建**：重建會換掉身分，讓所有以
+        scenario_id 為鍵的東西（結果、快照、事件）變成孤兒，而使用者只是
+        改了個目標價。`id` 與 `created_at` 由呼叫端負責原樣帶回。"""
+
+    def clear_results(self, scenario_id: str) -> None:
+        """清掉該劇本的全部結果與原始快照，保留劇本本身與事件紀錄（#132）。
+
+        用於 thesis 改變之後：目標價餵進 baseline_return、目標月決定選哪
+        些到期日，兩者一改，舊結果的每個數字都是對著另一個問題算出來的。
+        留著它們就是拿舊結果冒充新的。事件不刪——那是不可變的事實。"""
+
     def archive_scenario(self, scenario_id: str, *, ts: str) -> bool:
         """回傳是否真的封存了（不存在或已封存回 False）。資料不刪除。"""
 

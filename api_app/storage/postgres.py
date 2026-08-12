@@ -247,6 +247,25 @@ class PostgresStorage:
             rows = conn.execute(sql).fetchall()
         return [_row_to_scenario(r) for r in rows]
 
+    def update_scenario(self, sc: Scenario) -> bool:
+        with self._connect() as conn:
+            cur = conn.execute(
+                "UPDATE scenarios SET symbol = %s, direction = %s, "
+                "target_price = %s, target_month = %s, notes = %s, "
+                "strategies = %s, best_price = %s, worst_price = %s "
+                "WHERE id = %s",
+                (sc.symbol, sc.direction, sc.target_price, sc.target_month,
+                 sc.notes, Jsonb(list(sc.strategies)), sc.best_price,
+                 sc.worst_price, sc.id))
+            return cur.rowcount == 1   # 連線關閉前讀
+
+    def clear_results(self, scenario_id: str) -> None:
+        with self._connect() as conn:
+            conn.execute("DELETE FROM results WHERE scenario_id = %s",
+                        (scenario_id,))
+            conn.execute("DELETE FROM snapshots WHERE scenario_id = %s",
+                        (scenario_id,))
+
     def archive_scenario(self, scenario_id: str, *, ts: str) -> bool:
         with self._connect() as conn:
             cur = conn.execute(

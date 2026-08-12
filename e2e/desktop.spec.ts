@@ -762,3 +762,41 @@ test("桌面版：測試連線走完未設定 → 尚未驗證 → 已連線（S
   await expect(status).toContainText("已連線");
   await expect(md.getByText(/目前使用 Cboe/)).toHaveCount(0);
 });
+
+test("桌面版：編輯劇本沿用工作區上方的既有表單，取消隨時可按（#132）",
+   async ({ page }) => {
+  let current: any = libraryRow({ id: "s1", symbol: "TLT", target_price: 105,
+                                  target_month: "2028-06" });
+  const patched: any[] = [];
+  await page.route("**/api/scenarios", (route) =>
+    route.fulfill({ json: [current] }));
+  await page.route("**/api/scenarios/s1", (route) => {
+    if (route.request().method() === "PATCH") {
+      const body = route.request().postDataJSON();
+      patched.push(body);
+      current = { ...current, ...body };
+      return route.fulfill({ json: current });
+    }
+    return route.fulfill({ json: current });
+  });
+  await page.route("**/api/scenarios/s1/refresh", (route) =>
+    route.fulfill({ json: current }));
+
+  await page.goto("/");
+  await page.getByRole("button", { name: /編輯 TLT/ }).click();
+  await expect(page.getByText("編輯劇本")).toBeVisible();
+  await expect(page.getByLabel("標的代號")).toBeDisabled();
+
+  // 打到一半、內容不合法時仍然可以取消
+  await page.getByLabel("目標價位").fill("abc");
+  await page.getByRole("button", { name: "取消" }).click();
+  await expect(page.getByText("編輯劇本")).toHaveCount(0);
+  expect(patched).toEqual([]);
+
+  // 再進去改一次並存檔
+  await page.getByRole("button", { name: /編輯 TLT/ }).click();
+  await page.getByLabel("目標價位").fill("120");
+  await page.getByRole("button", { name: "儲存變更" }).click();
+  await expect(page.getByText("編輯劇本")).toHaveCount(0);
+  expect(patched).toHaveLength(1);
+});

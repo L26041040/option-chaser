@@ -536,9 +536,12 @@ describe("刷新與進度（V4／#52）", () => {
     // TR6（#91）：封存鈕改成圖示，可及名稱（`aria-label`）才是穩定的
     // 斷言依據——視覺內容從文字換成圖示不該讓這條「沒有第四種管道」的
     // 迴歸測試跟著誤判。
+    // #132：卡片多了編輯入口。這條測試要守的是「卡片上沒有刷新／分析
+    // 管道」，不是「卡片上只能有一顆鈕」——所以逐一列出允許的入口，
+    // 任何新增的動作都會在這裡現形、由人決定它該不該在。
     const buttons = within(screen.getByRole("listitem"))
       .getAllByRole("button").map((b) => b.getAttribute("aria-label"));
-    expect(buttons).toEqual(["封存 TLT 2028-05"]);
+    expect(buttons).toEqual(["編輯 TLT 2028-05", "封存 TLT 2028-05"]);
   });
 
   it("沒有任何劇本時不跑刷新，也不顯示進度", async () => {

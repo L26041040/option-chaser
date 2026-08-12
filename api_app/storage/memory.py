@@ -46,6 +46,17 @@ class MemoryStorage:
                 if include_archived or s.archived_at is None]
         return sorted(rows, key=lambda s: (s.created_at, s.id))
 
+    def update_scenario(self, sc: Scenario) -> bool:
+        if sc.id not in self._scenarios:
+            return False
+        self._scenarios[sc.id] = sc
+        return True
+
+    def clear_results(self, scenario_id: str) -> None:
+        self._results.pop(scenario_id, None)
+        self._snapshots = {k: v for k, v in self._snapshots.items()
+                           if k[0] != scenario_id}
+
     def archive_scenario(self, scenario_id: str, *, ts: str) -> bool:
         sc = self._scenarios.get(scenario_id)
         if sc is None or sc.archived_at is not None:

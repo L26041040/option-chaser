@@ -30,6 +30,7 @@ function list(
   props: {
     failures?: Record<string, RefreshFailure>;
     onArchive?: (id: string) => void;
+    onEdit?: (id: string) => void;
     onRetry?: (id: string) => void;
     now?: Date;
     selectMode?: boolean;
@@ -45,6 +46,7 @@ function list(
       rows={rows}
       failures={props.failures ?? {}}
       onArchive={props.onArchive ?? vi.fn()}
+      onEdit={props.onEdit ?? vi.fn()}
       onRetry={props.onRetry ?? vi.fn()}
       now={props.now ?? NOW}
       selectMode={props.selectMode ?? false}

@@ -1989,3 +1989,38 @@ body {
 .iv-legs .iv-spark {
   width: 64px;
 }
+
+/* 卡片右下角的動作組（#132：編輯 ＋ 封存）。沿用 `.compact-archive` 原本
+   的定位方式，只是從單一按鈕變成一列——視覺層級不變，仍然不搶戲。 */
+.compact-actions {
+  position: absolute;
+  right: 8px;
+  bottom: 8px;
+  display: flex;
+  gap: 2px;
+}
+
+/* 沿用原本單一封存鈕的緊湊尺寸（見 `.compact-archive.icon-button`）
+   ——多一顆鈕不該把這組動作撐大到搶戲。 */
+.compact-actions .icon-button {
+  min-height: 0;
+  padding: 4px;
+}
+
+/* 編輯模式的動作列：取消（文字鈕）與儲存變更（主要鈕）同一列。 */
+.form-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.form-actions .button {
+  flex: 1;
+}
+
+/* 反灰的標的欄位：看得出來是「原值，不可改」而不是壞掉。 */
+.input:disabled {
+  color: var(--label-secondary);
+  background: var(--fill);
+}

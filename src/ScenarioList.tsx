@@ -21,7 +21,7 @@
  */
 import type { RefreshFailure, ScenarioSummary } from "./api";
 import { strategyLabel } from "./detail";
-import { CheckIcon, TrashIcon } from "./icons";
+import { CheckIcon, EditIcon, TrashIcon } from "./icons";
 import { detailHash } from "./route";
 import {
   failureLabel,
@@ -45,6 +45,7 @@ function ScenarioCard({
   now,
   selected,
   onArchive,
+  onEdit,
   onRetry,
   selectMode,
   isChecked,
@@ -55,6 +56,7 @@ function ScenarioCard({
   now: Date;
   selected: boolean;
   onArchive: (id: string) => void;
+  onEdit: (id: string) => void;
   onRetry: (id: string) => void;
   /** TR6（#91）：批次選取模式——checkbox 取代單筆刪除鈕，整張卡改成
    *  點下去是選取而不是進詳細頁。 */
@@ -181,14 +183,27 @@ function ScenarioCard({
 
         {/* TR6（#91）：單筆刪除改圖示，批次選取模式下 checkbox 已經在上面
             出現，不同時顯示兩種「選它」的方式。 */}
+        {/* #132：編輯入口排在垃圾桶旁。桌面帶 `title` 當 tooltip，
+            視覺層級與封存同級——都不該高於劇本本身。 */}
         {!selectMode && (
-          <button
-            className="icon-button compact-archive"
-            onClick={() => onArchive(row.id)}
-            aria-label={`封存 ${who}`}
-          >
-            <TrashIcon />
-          </button>
+          <div className="compact-actions">
+            <button
+              className="icon-button"
+              onClick={() => onEdit(row.id)}
+              aria-label={`編輯 ${who}`}
+              title="編輯劇本"
+            >
+              <EditIcon />
+            </button>
+            <button
+              className="icon-button"
+              onClick={() => onArchive(row.id)}
+              aria-label={`封存 ${who}`}
+              title="移入垃圾桶"
+            >
+              <TrashIcon />
+            </button>
+          </div>
         )}
       </div>
 
@@ -219,6 +234,7 @@ export default function ScenarioList({
   now,
   selectedId = null,
   onArchive,
+  onEdit,
   onRetry,
   selectMode,
   selectedIds,
@@ -233,6 +249,7 @@ export default function ScenarioList({
   /** 桌面版 master/detail（#72）目前選中的劇本；手機版不傳，恆不標記。 */
   selectedId?: string | null;
   onArchive: (id: string) => void;
+  onEdit: (id: string) => void;
   onRetry: (id: string) => void;
   /** TR6（#91）：批次選取移入垃圾桶。`selectMode` 開著時清單項目變成
    *  可勾選，`onConfirmBatchArchive` 依序（沿用既有序列佇列模式）把
@@ -287,6 +304,7 @@ export default function ScenarioList({
             now={now}
             selected={row.id === selectedId}
             onArchive={onArchive}
+            onEdit={onEdit}
             onRetry={onRetry}
             selectMode={selectMode}
             isChecked={selectedIds.has(row.id)}

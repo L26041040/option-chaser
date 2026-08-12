@@ -13,6 +13,8 @@ import os
 
 import pytest
 
+from dataclasses import replace
+
 from api_app.storage import (DataSourceSettings, DividendCacheEntry,
                              IvBackfillRun, IvObservation, ProviderCredential,
                              ProviderVerification, RateCacheEntry,
@@ -80,6 +82,49 @@ def test_strategies_survive_the_roundtrip_as_a_tuple(storage):
     got = storage.get_scenario("s1")
     assert got.strategies == ("bull-call-spread",)
     assert isinstance(got.strategies, tuple)
+
+
+# ---------- 就地更新（#132） ----------
+
+def test_update_replaces_fields_but_keeps_identity(storage):
+    storage.create_scenario(_scenario())
+    storage.update_scenario(replace(_scenario(), target_price=999.0))
+    got = storage.get_scenario("s1")
+    assert got.id == "s1" and got.target_price == 999.0
+    assert got.created_at == _scenario().created_at
+
+
+def test_updating_a_missing_scenario_reports_false(storage):
+    assert storage.update_scenario(_scenario("nope")) is False
+
+
+def test_update_does_not_create_a_second_row(storage):
+    storage.create_scenario(_scenario())
+    storage.update_scenario(replace(_scenario(), target_price=999.0))
+    assert len(storage.list_scenarios()) == 1
+
+
+def test_clear_results_drops_results_and_snapshots_only(storage):
+    """thesis 改了之後舊結果不能留；但事件是不可變的事實，不刪。"""
+    storage.create_scenario(_scenario())
+    storage.save_result(ResultRecord("s1", "2026-08-01T00:00:00+00:00", {"n": 1}))
+    storage.save_snapshot("s1", "2026-08-01T00:00:00+00:00", {"x": 1})
+    storage.append_event(ts="2026-08-01T00:00:00+00:00", scenario_id="s1",
+                         event="SCENARIO_CREATED", payload={})
+
+    storage.clear_results("s1")
+    assert storage.latest_result("s1") is None
+    assert storage.get_snapshot("s1", "2026-08-01T00:00:00+00:00") is None
+    assert storage.get_scenario("s1") is not None
+    assert len(storage.list_events(scenario_id="s1")) == 1
+
+
+def test_clear_results_leaves_other_scenarios_alone(storage):
+    for sid in ("s1", "s2"):
+        storage.create_scenario(_scenario(sid))
+        storage.save_result(ResultRecord(sid, "2026-08-01T00:00:00+00:00", {}))
+    storage.clear_results("s1")
+    assert storage.latest_result("s2") is not None
 
 
 # ---------- 封存＝軟刪除 ----------

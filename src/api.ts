@@ -466,6 +466,19 @@ const POST_JSON = (body: unknown): RequestInit => ({
   body: JSON.stringify(body),
 });
 
+/** 編輯劇本（#132）。**不送 symbol**——標的不可改，後端也沒有那個欄位。 */
+export function editScenario(
+  id: string,
+  draft: CreateScenarioRequest,
+): Promise<ScenarioSummary> {
+  const { symbol: _ignored, ...thesis } = draft;
+  return request<ScenarioSummary>(`/api/scenarios/${encodeURIComponent(id)}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(thesis),
+  });
+}
+
 export function listScenarios(): Promise<ScenarioSummary[]> {
   return request<ScenarioSummary[]>("/api/scenarios");
 }

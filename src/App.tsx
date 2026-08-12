@@ -35,7 +35,10 @@ import {
 
 import CompactScenarioList from "./CompactScenarioList";
 import CreateEntry from "./CreateEntry";
-import CreateForm, { type DraftScenario } from "./CreateForm";
+import CreateForm, {
+  type DraftScenario,
+  type EditTarget,
+} from "./CreateForm";
 import Dashboard from "./Dashboard";
 import ScenarioDetail from "./ScenarioDetail";
 import ScenarioList from "./ScenarioList";
@@ -46,6 +49,7 @@ import { GearIcon } from "./icons";
 import {
   archiveScenario,
   createScenario,
+  editScenario,
   listScenarios,
   refreshScenario,
   toFailure,
@@ -95,6 +99,8 @@ export default function App() {
   // #75：建立劇本表單預設收合，靠工具列的膠囊鈕展開／收合——不再是
   // 掛在全部劇本卡片下面、永遠展開的表單。
   const [showCreateForm, setShowCreateForm] = useState(false);
+  // #132：非 null ＝表單現在是編輯模式。編輯沿用同一張表單，不另開一套。
+  const [editing, setEditing] = useState<EditTarget | null>(null);
   // code review 跟進：面板一律掛著、用 `hidden` 屬性切換可見度，不是
   // 條件渲染整個卸載重掛——否則使用者打到一半不小心點到收合鈕，剛打的
   // 字就白打了。`hidden` 原生語意會連帶讓輔助技術忽略內容，不必額外
@@ -265,6 +271,45 @@ export default function App() {
       ...rowsRef.current.filter((r) => !r.expired).map((r) => r.id),
       created.id,
     ]);
+  }
+
+  /** 點卡片上的編輯：把原資料交給既有表單並展開它。 */
+  function startEdit(id: string) {
+    const row = rows.find((r) => r.id === id);
+    if (!row) return;
+    setEditing({
+      id: row.id, symbol: row.symbol, target_price: row.target_price,
+      target_month: row.target_month, best_price: row.best_price,
+      worst_price: row.worst_price,
+    });
+    setShowCreateForm(true);
+    setError(null);
+  }
+
+  /** 取消：**隨時**可按。只丟掉表單狀態，不寫入任何東西、不動原劇本。
+   *  表單的預填 effect 會在 `editing` 變回 null 時把欄位清空並回到建立
+   *  模式，所以這裡不需要（也不該）自己去碰那些欄位。 */
+  function cancelEdit() {
+    setEditing(null);
+    setShowCreateForm(false);
+  }
+
+  async function saveEdit(id: string, draft: DraftScenario) {
+    setBusy(true);
+    let updated: ScenarioSummary;
+    try {
+      updated = await editScenario(id, draft);
+    } finally {
+      setBusy(false);
+    }
+    // 函式式更新：編輯這段期間刷新佇列很可能正在跑並且已經 setRows 過。
+    setRows((prev) => prev.map((r) => (r.id === id ? updated : r)));
+    setEditing(null);
+    setShowCreateForm(false);
+    setError(null);
+    // thesis 改了的話後端已經清掉舊結果（#132），這裡把它重新分析一次
+    // ——沿用既有的單一佇列，不是第四種刷新管道。
+    void enqueue([id]);
   }
 
   async function archive(id: string) {
@@ -447,7 +492,9 @@ export default function App() {
           panelId={createPanelId}
           onToggle={() => setShowCreateForm((v) => !v)}
         >
-          <CreateForm onCreate={create} busy={busy} today={now} />
+          <CreateForm onCreate={create} onSaveEdit={saveEdit}
+                    onCancelEdit={cancelEdit} editing={editing}
+                    busy={busy} today={now} />
         </CreateEntry>
 
         {/* #82：券商 App 式的高密度三層 compact row，取代大卡片——一個
@@ -460,6 +507,7 @@ export default function App() {
           failures={failures}
           now={now}
           onArchive={archive}
+          onEdit={startEdit}
           // 重試不是第四種刷新時機——它重跑的就是那一次失敗的刷新，而且
           // 走同一條佇列，不會與進行中的那一輪搶資料源。
           onRetry={(id) => void enqueue([id])}
@@ -509,7 +557,9 @@ export default function App() {
           `new Date()`，那樣會跟 `ScenarioList` 的新鮮度判斷用著兩個
           不同步的「現在」。 */}
       <div id={createPanelId} hidden={!showCreateForm}>
-        <CreateForm onCreate={create} busy={busy} today={now} />
+        <CreateForm onCreate={create} onSaveEdit={saveEdit}
+                    onCancelEdit={cancelEdit} editing={editing}
+                    busy={busy} today={now} />
       </div>
 
       <ScenarioList
@@ -517,6 +567,7 @@ export default function App() {
         failures={failures}
         now={now}
         onArchive={archive}
+        onEdit={startEdit}
         // 重試不是第四種刷新時機——它重跑的就是那一次失敗的刷新，而且
         // 走同一條佇列，不會與進行中的那一輪搶資料源。
         onRetry={(id) => void enqueue([id])}

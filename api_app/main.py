@@ -107,6 +107,31 @@ class CreateScenarioRequest(BaseModel):
         return self
 
 
+class EditScenarioRequest(BaseModel):
+    """編輯劇本（#132）。
+
+    **沒有 `symbol` 欄位**——標的不可改不是靠前端把輸入框反灰，而是這個
+    請求模型根本沒有那個欄位可以送。要換 underlying 就是另一個劇本。
+    """
+    target_price: float = Field(gt=0)
+    target_month: str = _MONTH
+    notes: str = ""
+    best_price: float | None = Field(default=None, gt=0)
+    worst_price: float | None = Field(default=None, gt=0)
+
+    @model_validator(mode="after")
+    def _ends_must_straddle_the_target(self) -> "EditScenarioRequest":
+        """與建立同一條規則（`CreateScenarioRequest`）：本輪只有看漲策略，
+        區間必然是最低 <= 目標 <= 最高。編輯不該是繞過驗證的後門。"""
+        if self.best_price is not None and self.best_price < self.target_price:
+            raise ValueError(
+                f"最高價位（{self.best_price}）不可低於目標價（{self.target_price}）")
+        if self.worst_price is not None and self.worst_price > self.target_price:
+            raise ValueError(
+                f"最低價位（{self.worst_price}）不可高於目標價（{self.target_price}）")
+        return self
+
+
 class UsageRequest(BaseModel):
     """`Data / API` 其中一列的送出值（Settings／#124）。"""
     mode: Literal[providers.MODES]  # type: ignore[valid-type]
@@ -479,6 +504,44 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         # 客戶端才不必為「剛建立的」與「列出來的」維護兩種型別。
         return _row_json(sc, ny_today(), analyzed_at=None, best_return=None,
                          representative_candidate=None, spot=None)
+
+    @app.patch("/api/scenarios/{scenario_id}")
+    def edit_scenario(scenario_id: str, req: EditScenarioRequest) -> dict:
+        """編輯劇本的 thesis 欄位（#132）。
+
+        **同一個 id**——不是刪除＋重建。重建會讓所有以 scenario_id 為鍵的
+        東西變成孤兒，而使用者只是改了個目標價。標的與建立時間原樣帶回。
+
+        thesis 真的變了就清掉舊結果：目標價餵進 baseline_return、目標月
+        決定選哪些到期日，兩者一改，舊結果的每個數字都是對著另一個問題
+        算出來的。留著它們就是拿舊結果冒充新的。沒變就什麼都不清——使用者
+        可能只是打開表單又存了一次。
+        """
+        sc = _require(scenario_id)
+        try:
+            ensure_month_open(TargetMonth.from_key(req.target_month), ny_today())
+        except ParamError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+
+        updated = dataclasses.replace(
+            sc, target_price=req.target_price, target_month=req.target_month,
+            notes=req.notes, best_price=req.best_price,
+            worst_price=req.worst_price)
+        thesis_changed = (
+            (sc.target_price, sc.target_month, sc.best_price, sc.worst_price)
+            != (updated.target_price, updated.target_month,
+                updated.best_price, updated.worst_price))
+
+        _db().update_scenario(updated)
+        if thesis_changed:
+            _db().clear_results(scenario_id)
+        ts = now_utc_iso()
+        _db().append_event(ts=ts, scenario_id=scenario_id,
+                           event="SCENARIO_EDITED",
+                           payload=_scenario_json(updated))
+
+        latest = None if thesis_changed else _db().latest_result(scenario_id)
+        return _row_json(updated, ny_today(), **_summary_of(latest))
 
     @app.get("/api/scenarios")
     def list_scenarios(include_archived: bool = False) -> list[dict]:

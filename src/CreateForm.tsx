@@ -242,12 +242,34 @@ function MonthPicker({ value, onChange, today, labelId }: {
   );
 }
 
+/** 編輯模式要預填的原資料（#132）。`null` ＝建立模式。 */
+export interface EditTarget {
+  id: string;
+  symbol: string;
+  target_price: number;
+  target_month: string;
+  best_price: number | null;
+  worst_price: number | null;
+}
+
+function str(value: number | null | undefined): string {
+  return value === null || value === undefined ? "" : String(value);
+}
+
 export default function CreateForm({
   onCreate,
+  onSaveEdit,
+  onCancelEdit,
+  editing = null,
   busy = false,
   today = new Date(),
 }: {
   onCreate: (draft: DraftScenario) => Promise<void>;
+  /** 編輯模式的送出（#132）。標的不在 draft 裡送——後端也沒有那個欄位。 */
+  onSaveEdit?: (id: string, draft: DraftScenario) => Promise<void>;
+  onCancelEdit?: () => void;
+  /** 非 null ＝這張表單現在是編輯模式，預填這個劇本的原資料。 */
+  editing?: EditTarget | null;
   busy?: boolean;
   /** 「今天」由呼叫端傳入（沿用全站零 wall-clock 於元件內的既有原則）
    *  ——年月選擇器用它決定展開時的預設年份與當月標示。 */
@@ -262,6 +284,27 @@ export default function CreateForm({
   const [error, setError] = useState<string | null>(null);
   const monthLabelId = useId();
 
+  // 進入／切換編輯目標時預填。用 `editing?.id` 當相依：同一個劇本重新
+  // 渲染不該把使用者打到一半的內容蓋回原值。
+  const editingId = editing?.id ?? null;
+  useEffect(() => {
+    setError(null);
+    if (!editing) {
+      setSymbol("");
+      setPrice("");
+      setMonth("");
+      setBest("");
+      setWorst("");
+      return;
+    }
+    setSymbol(editing.symbol);
+    setPrice(str(editing.target_price));
+    setMonth(editing.target_month);
+    setBest(str(editing.best_price));
+    setWorst(str(editing.worst_price));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editingId]);
+
   async function submit(e: React.FormEvent) {
     e.preventDefault();
     const checked = validateDraft(symbol, price, month, best, worst);
@@ -270,6 +313,14 @@ export default function CreateForm({
       return;
     }
     setError(null);
+    if (editing && onSaveEdit) {
+      try {
+        await onSaveEdit(editing.id, checked.draft);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err));
+      }
+      return;
+    }
     try {
       await onCreate(checked.draft);
       setSymbol("");
@@ -284,14 +335,18 @@ export default function CreateForm({
 
   return (
     <form className="card" onSubmit={submit} noValidate>
-      <h2 className="section-title">建立劇本</h2>
+      <h2 className="section-title">{editing ? "編輯劇本" : "建立劇本"}</h2>
 
+      {/* 標的在編輯模式下不可改（#132）：換 underlying 是另一個劇本，
+          不是「編輯」。前端反灰只是說明，真正的防線是後端的請求模型
+          根本沒有 symbol 欄位。 */}
       <label className="field">
         <span className="row-label">標的代號</span>
         <input
           className="input"
           value={symbol}
           onChange={(e) => setSymbol(e.target.value)}
+          disabled={Boolean(editing)}
           autoCapitalize="characters"
           autoCorrect="off"
           spellCheck={false}
@@ -347,9 +402,23 @@ export default function CreateForm({
         </div>
       )}
 
-      <button className="button" type="submit" disabled={busy}>
-        {busy ? "建立中……" : "建立"}
-      </button>
+      {editing ? (
+        <div className="form-actions">
+          {/* 取消**隨時**可按（#132）：不要求未修改、不要求 validation
+              通過、不要求先復原內容。`type="button"` 而不是 submit，
+              否則瀏覽器會先跑表單驗證。 */}
+          <button className="text-button" type="button" onClick={onCancelEdit}>
+            取消
+          </button>
+          <button className="button" type="submit" disabled={busy}>
+            {busy ? "儲存中……" : "儲存變更"}
+          </button>
+        </div>
+      ) : (
+        <button className="button" type="submit" disabled={busy}>
+          {busy ? "建立中……" : "建立"}
+        </button>
+      )}
     </form>
   );
 }

@@ -1197,3 +1197,65 @@ test("Historical IV 資料尚未完整：只出短訊息，不畫百分位與走
   expect(box.height).toBeLessThan(page.viewportSize()!.height / 2);
   await expect(page.getByText("劇本主圖")).toBeVisible();
 });
+
+/* ---------- 編輯劇本（#132） ---------- */
+
+async function routeEditable(page: import("@playwright/test").Page) {
+  let current: any = libraryRow({ id: "s1", symbol: "TLT", target_price: 105,
+                                  target_month: "2028-06" });
+  const patched: any[] = [];
+  await page.route("**/api/scenarios", (route) =>
+    route.fulfill({ json: [current] }));
+  await page.route("**/api/scenarios/s1", (route) => {
+    if (route.request().method() === "PATCH") {
+      const body = route.request().postDataJSON();
+      patched.push(body);
+      current = { ...current, ...body };
+      return route.fulfill({ json: current });
+    }
+    return route.fulfill({ json: current });
+  });
+  await page.route("**/api/scenarios/s1/refresh", (route) =>
+    route.fulfill({ json: current }));
+  return patched;
+}
+
+test("手機版：編輯劇本沿用同一張表單，標的反灰不可改（#132）", async ({ page }) => {
+  await routeEditable(page);
+  await page.goto("/");
+
+  await page.getByRole("button", { name: /編輯 TLT/ }).click();
+  await expect(page.getByText("編輯劇本")).toBeVisible();
+  await expect(page.getByLabel("標的代號")).toHaveValue("TLT");
+  await expect(page.getByLabel("標的代號")).toBeDisabled();
+  await expect(page.getByLabel("目標價位")).toHaveValue("105");
+});
+
+test("手機版：編輯 → 儲存變更，卡片換成新目標價（#132）", async ({ page }) => {
+  const patched = await routeEditable(page);
+  await page.goto("/");
+
+  await page.getByRole("button", { name: /編輯 TLT/ }).click();
+  await page.getByLabel("目標價位").fill("120");
+  await page.getByRole("button", { name: "儲存變更" }).click();
+
+  await expect(page.getByText("編輯劇本")).toHaveCount(0);
+  await expect(page.getByRole("listitem").first()).toContainText("120");
+  // 走 PATCH，而且不帶 symbol
+  expect(patched).toHaveLength(1);
+  expect(patched[0]).not.toHaveProperty("symbol");
+});
+
+test("手機版：編輯 → 取消，原劇本完全不變、不寫入任何東西（#132）",
+   async ({ page }) => {
+  const patched = await routeEditable(page);
+  await page.goto("/");
+
+  await page.getByRole("button", { name: /編輯 TLT/ }).click();
+  await page.getByLabel("目標價位").fill("999");
+  await page.getByRole("button", { name: "取消" }).click();
+
+  await expect(page.getByText("編輯劇本")).toHaveCount(0);
+  await expect(page.getByRole("listitem").first()).toContainText("105");
+  expect(patched).toEqual([]);
+});
