@@ -1925,33 +1925,50 @@ body {
   margin-top: 10px;
 }
 
-/* ---------- Historical IV Position（#114） ---------- */
+/* ---------- Historical IV Position（#114／#135 壓平） ---------- */
 
-/* 整塊 compact：手機上不長成第二張大卡片，所以間距比一般卡片再緊一級。 */
+/* 整塊壓到最低：這是掛在候選分析流程裡的 enrichment，不是第二張大卡片
+   ——內距比一般卡片再緊一級（比照 `.summary-card` 既有的密度覆寫）。 */
 .iv-history {
-  gap: 10px;
+  padding: 12px;
+  gap: 8px;
 }
 
+/* 每個指標兩行：標籤＋百分位同一行，數值自己一行——比原本 label／
+   value／pct 各佔一行少一行，sparkline 仍佔右側整欄不額外加高。 */
 .iv-metric {
   display: grid;
   grid-template-columns: 1fr auto;
   grid-template-areas:
-    "label spark"
-    "value spark"
-    "pct   spark";
+    "head  spark"
+    "value spark";
   align-items: center;
-  column-gap: 12px;
+  column-gap: 10px;
+  row-gap: 1px;
 }
 
-.iv-metric .row-label {
-  grid-area: label;
+.iv-metric-head {
+  grid-area: head;
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
 }
+
+.iv-metric-head .row-label {
+  white-space: nowrap;
+}
+
+.iv-metric-head .caption {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .iv-metric .iv-value,
 .iv-metric .iv-value-primary {
   grid-area: value;
-}
-.iv-metric .caption {
-  grid-area: pct;
 }
 .iv-spark {
   grid-area: spark;
@@ -1961,14 +1978,14 @@ body {
 /* 頭條與次層的階層差在字級與粗細，不是靠顏色——顏色在這裡沒有語意
    （既有 `.positive`／`.negative` 才有），拿它做階層會誤導。 */
 .iv-value-primary {
-  font-size: 22px;
+  font-size: 20px;
   font-weight: 700;
   font-variant-numeric: tabular-nums;
   letter-spacing: -0.2px;
 }
 
 .iv-value {
-  font-size: 15px;
+  font-size: 14px;
   font-weight: 600;
   font-variant-numeric: tabular-nums;
 }
@@ -1981,13 +1998,13 @@ body {
 .iv-legs {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 12px;
-  padding-top: 10px;
+  gap: 10px;
+  padding-top: 8px;
   border-top: 0.5px solid var(--separator);
 }
 
 .iv-legs .iv-spark {
-  width: 64px;
+  width: 56px;
 }
 
 /* 卡片右下角的動作組（#132：編輯 ＋ 封存）。沿用 `.compact-archive` 原本

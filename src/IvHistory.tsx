@@ -64,6 +64,9 @@ function num(value: number | null | undefined, digits = 1): string {
  * Compact sparkline。缺值（超出網格或 vendor 沒資料）**斷線**，不插值
  * ——把斷點連起來會讓一段其實沒有可比基準的區間看起來跟其他日子一樣
  * 可信（沿用 #57 Spread 走勢圖的既有處置）。
+ *
+ * 高度刻意壓到 18px（#135）：這是掛在數值旁邊的形狀提示，不是獨立一張
+ * 走勢圖——扁平化是需求方對整區「壓到合理最低」的明文要求之一。
  */
 function Sparkline({ series }: { series: (number | null)[] }) {
   const known = series.filter((v): v is number => v !== null);
@@ -73,7 +76,7 @@ function Sparkline({ series }: { series: (number | null)[] }) {
   const hi = Math.max(...known);
   const span = hi - lo || 1;
   const w = 96;
-  const h = 24;
+  const h = 18;
 
   // 連續的非空區段各自成一條 polyline —— 中間的缺口就是斷線。
   const runs: string[] = [];
@@ -101,6 +104,11 @@ function Sparkline({ series }: { series: (number | null)[] }) {
   );
 }
 
+/**
+ * 兩行版型（#135 壓平）：標籤＋百分位同一行，數值自己一行——比原本
+ * label／value／百分位各佔一行的三行堆疊少一行，sparkline 佔右側整欄
+ * 不額外加高整塊高度。
+ */
 function Metric({ label, metric, series, primary = false }: {
   label: string;
   metric: IvFieldMetric;
@@ -109,11 +117,13 @@ function Metric({ label, metric, series, primary = false }: {
 }) {
   return (
     <div className={primary ? "iv-metric iv-primary" : "iv-metric"}>
-      <span className="row-label">{label}</span>
+      <div className="iv-metric-head">
+        <span className="row-label">{label}</span>
+        <span className="caption">{metricCaption(metric)}</span>
+      </div>
       <span className={primary ? "iv-value-primary" : "iv-value"}>
         {num(metric.value)}
       </span>
-      <span className="caption">{metricCaption(metric)}</span>
       <Sparkline series={series} />
     </div>
   );
