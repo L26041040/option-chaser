@@ -6,9 +6,9 @@
 """
 from __future__ import annotations
 
-from . import (DataSourceSettings, DividendCacheEntry, ProviderCredential,
-               ProviderVerification, RateCacheEntry, ResultRecord,
-               ResultSummary, Scenario, ScenarioExists)
+from . import (DataSourceSettings, DividendCacheEntry, IvObservation,
+               ProviderCredential, ProviderVerification, RateCacheEntry,
+               ResultRecord, ResultSummary, Scenario, ScenarioExists)
 
 
 class MemoryStorage:
@@ -22,6 +22,8 @@ class MemoryStorage:
         self._settings: DataSourceSettings | None = None
         self._credentials: dict[str, ProviderCredential] = {}
         self._verifications: dict[str, ProviderVerification] = {}
+        # 鍵是 (symbol, 日期)——**沒有 scenario 維度**，見 IvObservation。
+        self._iv: dict[tuple[str, str], IvObservation] = {}
 
     @property
     def kind(self) -> str:
@@ -150,3 +152,14 @@ class MemoryStorage:
 
     def save_verification(self, v: ProviderVerification) -> None:
         self._verifications[v.provider] = v
+
+    # ---------- 歷史 IV 觀測快取（#129，per-symbol） ----------
+
+    def save_iv_observation(self, obs: IvObservation) -> None:
+        self._iv[(obs.symbol, obs.observed_on)] = obs
+
+    def iv_observation_dates(self, symbol: str) -> list[str]:
+        return sorted(d for (sym, d) in self._iv if sym == symbol)
+
+    def iv_observations(self, symbol: str) -> list[IvObservation]:
+        return [self._iv[(symbol, d)] for d in self.iv_observation_dates(symbol)]

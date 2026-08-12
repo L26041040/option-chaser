@@ -184,6 +184,25 @@ class ProviderVerification:
     checked_at: str
 
 
+@dataclass(frozen=True)
+class IvObservation:
+    """某個 **underlying symbol** 在某一天的歷史選擇權曲面（#129）。
+
+    鍵是 **(symbol, 日期)**，**刻意不帶 scenario 身分**——同一 ticker 的
+    所有 Scenario 共用同一份歷史資料，各自再投影到需要的 (tenor, delta)
+    座標。target price 不同、target month 不同、scenario id 不同，都不
+    構成向 vendor 重抓的理由（vendor 額度有限，重抓是純浪費）。
+
+    `surface` 是 `{"call": [[dte, delta, iv], ...], "put": [...]}`——存成
+    三元組陣列而不是具名物件，一天的鏈有數千筆，欄位名重複數千次只是
+    在燒儲存空間。
+    """
+    symbol: str
+    observed_on: str          # YYYY-MM-DD（市場日，不是抓取時間）
+    surface: dict
+    fetched_at: str           # ISO 8601，這筆是什麼時候抓回來的
+
+
 class Storage(Protocol):
     """API 層唯一的資料存取介面——不得繞過它直接碰 SQL 或檔案。"""
 
@@ -277,6 +296,20 @@ class Storage(Protocol):
         一併清掉該 provider 的驗證結果——那筆結果講的是「**那把** token
         能不能用」，token 沒了它就失去意義，留著會讓設定頁在沒有
         credential 的情況下顯示「已連線」。"""
+
+    # ---------- 歷史 IV 觀測快取（#129，per-symbol） ----------
+
+    def save_iv_observation(self, obs: IvObservation) -> None:
+        """同一 (symbol, 日期) 重複寫入即覆蓋（冪等）。"""
+
+    def iv_observation_dates(self, symbol: str) -> list[str]:
+        """這個 symbol 已經有哪些日期（遞增）。
+
+        **不回傳曲面本身**：backfill 只需要知道「還缺哪幾天」，為此把
+        數十天、每天數千筆的資料整包撈出來是離譜的浪費。"""
+
+    def iv_observations(self, symbol: str) -> list[IvObservation]:
+        """依日期遞增回傳該 symbol 的全部觀測。"""
 
     def get_verification(self, provider: str) -> ProviderVerification | None:
         """從未測過時回 `None`（＝「未設定」或「尚未驗證」）。"""

@@ -12,9 +12,10 @@ from __future__ import annotations
 import psycopg
 from psycopg.types.json import Jsonb
 
-from . import (DataSourceSettings, DividendCacheEntry, ProviderCredential,
-               ProviderVerification, RateCacheEntry, ResultRecord,
-               ResultSummary, Scenario, ScenarioExists, UsageSetting)
+from . import (DataSourceSettings, DividendCacheEntry, IvObservation,
+               ProviderCredential, ProviderVerification, RateCacheEntry,
+               ResultRecord, ResultSummary, Scenario, ScenarioExists,
+               UsageSetting)
 
 # 每個 lambda 程序只需建表一次。`IF NOT EXISTS` 在 Postgres 並非完全
 # race-free（同時冷啟動可能撞上 duplicate 錯誤），因此除了這個旗標，
@@ -114,6 +115,16 @@ CREATE TABLE IF NOT EXISTS provider_verifications (
     ok            BOOLEAN NOT NULL,
     reason        TEXT,
     checked_at    TEXT NOT NULL
+);
+-- 歷史 IV 觀測（#129）：鍵是 **(symbol, 日期)**，沒有 scenario 欄位——
+-- 同一 ticker 的所有 Scenario 共用同一份，資料模型上就不可能因 scenario
+-- 不同而分家、重複燒 vendor 額度。
+CREATE TABLE IF NOT EXISTS iv_observations (
+    symbol        TEXT NOT NULL,
+    observed_on   TEXT NOT NULL,
+    surface       JSONB NOT NULL,
+    fetched_at    TEXT NOT NULL,
+    PRIMARY KEY (symbol, observed_on)
 );
 """
 
@@ -482,3 +493,32 @@ class PostgresStorage:
                 "ON CONFLICT (provider) DO UPDATE SET ok = EXCLUDED.ok, "
                 "reason = EXCLUDED.reason, checked_at = EXCLUDED.checked_at",
                 (v.provider, v.ok, v.reason, v.checked_at))
+
+    # ---------- 歷史 IV 觀測快取（#129，per-symbol） ----------
+
+    def save_iv_observation(self, obs: IvObservation) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO iv_observations "
+                "(symbol, observed_on, surface, fetched_at) "
+                "VALUES (%s, %s, %s, %s) "
+                "ON CONFLICT (symbol, observed_on) DO UPDATE "
+                "SET surface = EXCLUDED.surface, "
+                "fetched_at = EXCLUDED.fetched_at",
+                (obs.symbol, obs.observed_on, Jsonb(obs.surface), obs.fetched_at))
+
+    def iv_observation_dates(self, symbol: str) -> list[str]:
+        """只選日期欄——backfill 要的是缺口，不是幾十天份的曲面。"""
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT observed_on FROM iv_observations WHERE symbol = %s "
+                "ORDER BY observed_on", (symbol,)).fetchall()
+        return [r[0] for r in rows]
+
+    def iv_observations(self, symbol: str) -> list[IvObservation]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT symbol, observed_on, surface, fetched_at "
+                "FROM iv_observations WHERE symbol = %s ORDER BY observed_on",
+                (symbol,)).fetchall()
+        return [IvObservation(*r) for r in rows]

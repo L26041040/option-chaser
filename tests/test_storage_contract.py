@@ -14,9 +14,10 @@ import os
 import pytest
 
 from api_app.storage import (DataSourceSettings, DividendCacheEntry,
-                             ProviderCredential, ProviderVerification,
-                             RateCacheEntry, ResultRecord, Scenario,
-                             ScenarioExists, UsageSetting)
+                             IvObservation, ProviderCredential,
+                             ProviderVerification, RateCacheEntry,
+                             ResultRecord, Scenario, ScenarioExists,
+                             UsageSetting)
 from api_app.storage.memory import MemoryStorage
 
 TEST_DB_URL = os.environ.get("OC_TEST_DATABASE_URL")
@@ -44,8 +45,8 @@ def storage(request):
     with psycopg.connect(TEST_DB_URL, autocommit=True) as conn:
         conn.execute("TRUNCATE scenarios, results, snapshots, events, rate_cache, "
                      "dividend_cache, data_source_settings, "
-                     "provider_credentials, provider_verifications "
-                     "RESTART IDENTITY")
+                     "provider_credentials, provider_verifications, "
+                     "iv_observations RESTART IDENTITY")
     yield st
 
 
@@ -646,6 +647,75 @@ def test_saving_a_credential_does_not_invent_a_verification(storage):
     assert storage.get_verification("marketdata-app") is None
 
 
+# ---------- 歷史 IV 觀測快取（#129，per-symbol） ----------
+
+def _obs(symbol="TLT", on="2026-05-04", iv=0.2):
+    return IvObservation(symbol=symbol, observed_on=on,
+                         surface={"call": [[30, 0.5, iv]], "put": []},
+                         fetched_at="2026-08-12T00:00:00+00:00")
+
+
+def test_a_symbol_starts_with_no_observations(storage):
+    assert storage.iv_observation_dates("TLT") == []
+    assert storage.iv_observations("TLT") == []
+
+
+def test_saved_observation_reads_back_identically(storage):
+    storage.save_iv_observation(_obs())
+    assert storage.iv_observations("TLT") == [_obs()]
+
+
+def test_observations_come_back_in_date_order(storage):
+    for on in ("2026-06-01", "2026-04-01", "2026-05-01"):
+        storage.save_iv_observation(_obs(on=on))
+    assert [o.observed_on for o in storage.iv_observations("TLT")] == [
+        "2026-04-01", "2026-05-01", "2026-06-01"]
+
+
+def test_rewriting_the_same_day_overwrites_rather_than_duplicates(storage):
+    storage.save_iv_observation(_obs(iv=0.2))
+    storage.save_iv_observation(_obs(iv=0.9))
+    got = storage.iv_observations("TLT")
+    assert len(got) == 1
+    assert got[0].surface["call"][0][2] == 0.9
+
+
+def test_dates_query_does_not_need_the_surfaces(storage):
+    """backfill 只需要知道還缺哪幾天——為此把數十天的曲面整包撈出來是
+    離譜的浪費，所以這是一支獨立查詢。"""
+    for on in ("2026-05-04", "2026-05-11"):
+        storage.save_iv_observation(_obs(on=on))
+    assert storage.iv_observation_dates("TLT") == ["2026-05-04", "2026-05-11"]
+
+
+def test_symbols_do_not_bleed_into_each_other(storage):
+    storage.save_iv_observation(_obs(symbol="TLT"))
+    storage.save_iv_observation(_obs(symbol="SPY"))
+    assert storage.iv_observation_dates("TLT") == ["2026-05-04"]
+    assert storage.iv_observation_dates("SPY") == ["2026-05-04"]
+    assert storage.iv_observations("TLT")[0].symbol == "TLT"
+
+
+def test_the_cache_carries_no_scenario_identity(storage):
+    """同一 ticker 的所有 Scenario 共用同一份——資料模型上就不可能因
+    scenario 不同而分家、重複燒 vendor 額度。"""
+    storage.save_iv_observation(_obs())
+    assert not hasattr(_obs(), "scenario_id")
+    # 兩個不同劇本讀到的是同一筆
+    for sid in ("s1", "s2"):
+        storage.create_scenario(_scenario(sid))
+    assert storage.iv_observations("TLT") == storage.iv_observations("TLT")
+
+
+def test_deleting_a_scenario_keeps_the_symbol_cache(storage):
+    """別的劇本還在用，而且重抓要再燒一次 quota。"""
+    storage.create_scenario(_scenario("s1"))
+    storage.save_iv_observation(_obs())
+    storage.archive_scenario("s1", ts="2026-08-12T00:00:00+00:00")
+    assert storage.delete_scenario("s1") is True
+    assert storage.iv_observation_dates("TLT") == ["2026-05-04"]
+
+
 # ---------- schema 遷移（V3／#51） ----------
 
 def test_existing_results_table_gains_the_new_column():
@@ -668,8 +738,8 @@ def test_existing_results_table_gains_the_new_column():
         # 看起來像遷移壞了，其實是測試自己髒。
         conn.execute("TRUNCATE scenarios, results, snapshots, events, rate_cache, "
                      "dividend_cache, data_source_settings, "
-                     "provider_credentials, provider_verifications "
-                     "RESTART IDENTITY")
+                     "provider_credentials, provider_verifications, "
+                     "iv_observations RESTART IDENTITY")
         conn.execute("DROP TABLE IF EXISTS results")
         # V2 時期的舊表：沒有 best_return
         conn.execute("CREATE TABLE results ("
@@ -700,8 +770,8 @@ def test_existing_results_table_gains_the_representative_candidate_column():
     with psycopg.connect(TEST_DB_URL, autocommit=True) as conn:
         conn.execute("TRUNCATE scenarios, results, snapshots, events, rate_cache, "
                      "dividend_cache, data_source_settings, "
-                     "provider_credentials, provider_verifications "
-                     "RESTART IDENTITY")
+                     "provider_credentials, provider_verifications, "
+                     "iv_observations RESTART IDENTITY")
         conn.execute("DROP TABLE IF EXISTS results")
         # V3 時期的舊表：有 best_return，還沒有 representative_candidate。
         conn.execute("CREATE TABLE results ("
@@ -734,8 +804,8 @@ def test_migration_still_applies_when_table_creation_hits_a_race():
     with psycopg.connect(TEST_DB_URL, autocommit=True) as conn:
         conn.execute("TRUNCATE scenarios, results, snapshots, events, rate_cache, "
                      "dividend_cache, data_source_settings, "
-                     "provider_credentials, provider_verifications "
-                     "RESTART IDENTITY")
+                     "provider_credentials, provider_verifications, "
+                     "iv_observations RESTART IDENTITY")
         conn.execute("DROP TABLE IF EXISTS results")
         conn.execute("CREATE TABLE results ("
                      "scenario_id TEXT NOT NULL, analyzed_at TEXT NOT NULL, "
