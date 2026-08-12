@@ -283,8 +283,8 @@ describe("已儲存的狀態", () => {
   });
 });
 
-describe("同一 Provider 的 token 只輸入一次", () => {
-  it("兩列都選同一家且已設定時，第二列說共用、不再要求輸入", async () => {
+describe("同一 Provider 的 credential 只由一列持有（#127）", () => {
+  it("兩列都自訂時，Historical IV 說共用、完全不要求輸入", async () => {
     mockApi([
       view({
         market_data: { mode: "custom", provider: PROVIDER, default_label: "Cboe" },
@@ -295,11 +295,12 @@ describe("同一 Provider 的 token 只輸入一次", () => {
     render(<Settings />);
     await ready();
     const iv = within(section("Historical IV"));
-    expect(iv.getByText("與 Market Data 共用同一把 token")).toBeInTheDocument();
+    expect(iv.getByText("與上方共用 credential")).toBeInTheDocument();
     expect(iv.queryByLabelText("API Token")).not.toBeInTheDocument();
   });
 
-  it("尚未設定過時兩列都給輸入框——還沒有可共用的東西", async () => {
+  it("**尚未設定過**時 Historical IV 一樣不給輸入框——這正是 #127 收掉的路徑",
+     async () => {
     mockApi([
       view({
         market_data: { mode: "custom", provider: PROVIDER, default_label: "Cboe" },
@@ -308,8 +309,48 @@ describe("同一 Provider 的 token 只輸入一次", () => {
     ]);
     render(<Settings />);
     await ready();
+    const iv = within(section("Historical IV"));
+    expect(iv.queryByLabelText("API Token")).not.toBeInTheDocument();
+    expect(iv.getByText("與上方共用 credential")).toBeInTheDocument();
+    // 輸入框在持有者那一列
     expect(
-      within(section("Historical IV")).getByLabelText("API Token"),
+      within(section("Market Data")).getByLabelText("API Token"),
+    ).toBeInTheDocument();
+  });
+
+  it("只有 Historical IV 自訂時，輸入框落在它自己那列——不會無處可設",
+     async () => {
+    mockApi([
+      view({
+        historical_iv: { mode: "custom", provider: PROVIDER, default_label: "無" },
+      }),
+    ]);
+    render(<Settings />);
+    await ready();
+    const iv = within(section("Historical IV"));
+    expect(iv.getByLabelText("API Token")).toBeInTheDocument();
+    expect(iv.queryByText("與上方共用 credential")).not.toBeInTheDocument();
+  });
+
+  it("共用列沒有自己的「測試連線」與「清除 token」——那是同一把 credential 的操作",
+     async () => {
+    mockApi([
+      view({
+        market_data: { mode: "custom", provider: PROVIDER, default_label: "Cboe" },
+        historical_iv: { mode: "custom", provider: PROVIDER, default_label: "無" },
+        credentials: CONFIGURED,
+      }),
+    ]);
+    render(<Settings />);
+    await ready();
+    const iv = within(section("Historical IV"));
+    expect(iv.queryByRole("button", { name: "測試連線" })).not.toBeInTheDocument();
+    expect(iv.queryByRole("button", { name: "清除 token" })).not.toBeInTheDocument();
+    // 但模式選擇仍要存得起來
+    expect(iv.getByRole("button", { name: "儲存" })).toBeInTheDocument();
+    // 持有者那列照樣有
+    expect(
+      within(section("Market Data")).getByRole("button", { name: "測試連線" }),
     ).toBeInTheDocument();
   });
 

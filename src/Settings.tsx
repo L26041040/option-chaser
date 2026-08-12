@@ -226,12 +226,18 @@ function UsageSection({
   const configured = cred?.configured ?? false;
   const state: CredentialState = cred?.status ?? "unset";
 
-  // 另一列是不是也用同一個 Provider——是的話這一把 token 是共用的，
-  // 講明白，不要讓人以為得再申請／再貼一次。
-  const other: UsageKey = usage === "market_data" ? "historical_iv" : "market_data";
-  const shared =
-    draft[other].mode === "custom" &&
-    (draft[other].provider ?? options[0]?.id ?? null) === provider;
+  // credential 是 per-Provider 的一把，所以「誰負責輸入它」必須有唯一
+  // 答案：**由上而下第一個使用該 Provider 的自訂列**負責，其餘列只說
+  // 自己共用。這條規則同時解掉兩種情況——兩列都自訂時輸入框在 Market
+  // Data（＝需求方草圖），只有 Historical IV 自訂時輸入框就出現在它那
+  // 列，不會變成「要設 token 卻無處可設」。
+  const ownerUsage = USAGE_ORDER.find(
+    (u) =>
+      draft[u].mode === "custom" &&
+      (draft[u].provider ?? options[0]?.id ?? null) === provider,
+  );
+  const ownsCredential = ownerUsage === usage;
+  const sharesFrom = ownsCredential ? null : ownerUsage;
 
   const radioName = `mode-${usage}`;
 
@@ -292,11 +298,11 @@ function UsageSection({
             </select>
           </label>
 
-          {shared && configured ? (
-            // 共用的那一列不再要求輸入——同一把 token 打兩次沒有意義。
-            <p className="caption settings-shared">
-              與 {USAGE_TITLES[other]} 共用同一把 token
-            </p>
+          {sharesFrom ? (
+            // 共用的那一列**完全不要求輸入**——不論設定過沒有。同一把
+            // token 打兩次沒有意義，而「還沒設定所以再給你一個輸入框」
+            // 正是需求方要收掉的那條路徑（#127）。
+            <p className="caption settings-shared">與上方共用 credential</p>
           ) : (
             <label className="settings-field">
               <span className="caption">API Token</span>
@@ -323,15 +329,20 @@ function UsageSection({
             <p className="caption settings-reason">{cred.reason}</p>
           )}
 
+          {/* credential 的操作（測試連線、清除）只屬於持有它的那一列——
+              共用列重複一份，按下去做的是同一件事，只會讓人以為有兩把。
+              「儲存」兩列都要有：模式選擇是各列自己的狀態，得存得起來。 */}
           <div className="settings-actions">
-            <button className="pill" onClick={onTest}
-                   disabled={testing || !configured}>
-              {testing ? "測試中……" : "測試連線"}
-            </button>
+            {ownsCredential && (
+              <button className="pill" onClick={onTest}
+                     disabled={testing || !configured}>
+                {testing ? "測試中……" : "測試連線"}
+              </button>
+            )}
             <button className="pill" onClick={onSave} disabled={busy}>
               {busy ? "儲存中……" : "儲存"}
             </button>
-            {configured && provider && (
+            {ownsCredential && configured && provider && (
               <button
                 className="text-button danger"
                 onClick={() => onClear(provider)}
