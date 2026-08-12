@@ -200,7 +200,42 @@ code block**，不要零散貼成一般文字——需求方要能一次性複�
   `render_summary` 的 `move_pct` 同類手法一致，非新模式），未額外
   搬進服務層——標準面審查列為非阻塞建議，判斷維持現狀
 
-### 最新狀態（2026-08-12）——Settings／Historical IV 這一輪
+### 最新狀態（2026-08-12 第二輪）——quota 架構＋編輯劇本
+
+需求方最終產品模型（A–E 段）拆成 6 張票並全數完成，推上
+`claude/implement-tfm9oa`：
+
+- **#127** ✅ Historical IV 共用 credential（`9772733`）。規則：token
+  輸入框只出現在**由上而下第一個使用該 Provider 的自訂列**，其餘列顯示
+  「與上方共用 credential」。這同時解掉「兩列都自訂時輸入框該在哪」與
+  「只有 Historical IV 自訂時無處可設」兩種情況
+- **#128** ✅ 抽樣排程＋時間加權 percentile（`1c4f8f8`）。近 90 天每週
+  約 2 點、90 天到 1 年每週約 1 點，全年約 66 點而非 250+；窗仍是完整
+  1 年。挑哪天由 `crc32(symbol:week)` 決定——**不能用內建 `hash()`**，
+  str 雜湊每個 process 都不同，排程會每次重啟就變、backfill 永遠追一份
+  移動的目標。Voronoi 時間權重，單點代表上限 14 天（沒有上限的話一段
+  長空窗會讓緊鄰的那一點吃下整段權重，那就是插值）
+- **#129** ✅ per-symbol 觀測快取（`04a277d`）。鍵是 (symbol, 日期)，
+  **沒有 scenario 欄位**——資料模型上就不可能因 target/scenario 不同而
+  分家。刪 scenario 不清快取
+- **#130** ✅ progressive backfill ＋ quota 感知端點（`7153c06`）。已有
+  日期不重抓、每 symbol 每天只跑一批、每批上限 25 天（約三天補齊）。
+  `QuotaExhausted` 繼承 `FetchError`（既有降級鏈行為不變，但在乎的
+  呼叫端分得出「今天別再試」與「這次剛好失敗」）。status 不是 ok 就
+  **不給 percentile**
+- **#131** ✅ 五種狀態的簡短呈現（`dd5754b`）。資料不完整時只出三行以內
+  短訊息，不畫 percentile／sparkline
+- **#132** ✅ 編輯劇本（`aa106bf`）。沿用建立表單切編輯模式；標的不可改
+  的防線在後端請求模型（根本沒有 symbol 欄位）；取消隨時可按；儲存走
+  PATCH 同一個 id，不是刪除＋重建；thesis 變了才清舊結果
+
+**測試現況**：Python 1098、前端 469、E2E 60，#118 選取身份回歸 8/8，
+全綠（Postgres adapter 以本機 PG16 實跑，非 skip）。
+
+**容器又倒退過一次**：HEAD 掉回 4d3cea3、origin 領先 188 個 commit，
+依指示以 origin 為唯一真相 `git reset --hard` 復原後才施工。
+
+### 最新狀態（2026-08-12 第一輪）——Settings／Historical IV
 
 **依需求方 2026-08-12 的 Provider 裁示改票後施工，四張已完成並推上
 `claude/implement-tfm9oa`；#111 卡在 credential，見下。**
