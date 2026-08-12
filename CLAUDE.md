@@ -200,6 +200,33 @@ code block**，不要零散貼成一般文字——需求方要能一次性複�
   `render_summary` 的 `move_pct` 同類手法一致，非新模式），未額外
   搬進服務層——標準面審查列為非阻塞建議，判斷維持現狀
 
+### 最新狀態（2026-08-12 第三輪）——移除 Historical IV 的 coverage 門檻
+
+需求方裁示：Historical IV 的問題定義是「目前 IV 在實際取得的有效歷史
+observations 中位於什麼位置」，只要有至少一筆可比較觀測就該顯示
+percentile，不得因 coverage 低、樣本稀疏、或觀測數低於任何固定門檻而
+隱藏——這推翻了第二輪 #130／#131 裡「coverage < 0.5 就不給 percentile」
+「status 不是 ok 就整段換成短訊息」的設計。
+
+- **#133** ✅ 移除門檻，percentile 一律呈現並揭露觀測筆數（`8bae985`）。
+  `_IV_MIN_COVERAGE`／`coverage_ratio()` 整組刪除（那個函式的唯一用途
+  就是這個門檻，門檻拆了它就是死碼）。純函式層（`weighted_percentile`）
+  本來就沒有 coverage 判斷，這次修正跟 #128 的抽樣／加權演算法沒有衝突
+  ，不需回頭改動。`weighted_percentiles_of()` 換成 `field_metrics()`：
+  每個欄位各自回 `{value, percentile, count}`，`count` 是這個百分位
+  背後有幾筆有效觀測，讓使用者自己判斷資訊強度——不是產品替他判斷
+  「樣本不足不值得看」。`status`（ok／quota／vendor）語意改變：只描述
+  這次 backfill 嘗試的結果，不再影響 percentile 顯示；已快取的觀測不
+  因今天撞額度就被藏起來，變成疊加在指標之上的一行附加說明。前端
+  `metricCaption()` 把百分位與觀測筆數合成複合標籤（「第 62 百分位・
+  45 筆觀測」），是需求方「P90 · 9/10」語意示例的落地呈現。**#130／
+  #131 補了留言標明哪些敘述被取代**（門檻機制本身，其餘 progressive
+  backfill／enrich-only／閘門紅線不受影響，下方 bullet 內容以此為準
+  ，不再逐一更正）
+
+**測試現況**：Python 1103、前端 471、E2E 61，#118 選取身份回歸 8/8，
+全綠。
+
 ### 最新狀態（2026-08-12 第二輪）——quota 架構＋編輯劇本
 
 需求方最終產品模型（A–E 段）拆成 6 張票並全數完成，推上
