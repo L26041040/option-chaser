@@ -14,6 +14,9 @@ from psycopg.types.json import Jsonb
 
 from . import (DividendCacheEntry, RateCacheEntry, ResultRecord, ResultSummary,
               Scenario, ScenarioExists)
+from . import (DataSourceSettings, ProviderCredential, RateCacheEntry,
+               ResultRecord, ResultSummary, Scenario, ScenarioExists,
+               UsageSetting)
 
 # 每個 lambda 程序只需建表一次。`IF NOT EXISTS` 在 Postgres 並非完全
 # race-free（同時冷啟動可能撞上 duplicate 錯誤），因此除了這個旗標，
@@ -87,6 +90,24 @@ CREATE TABLE IF NOT EXISTS dividend_cache (
     market_day        TEXT,
     attempted_day     TEXT
 );
+-- 資料源設定（Settings／#124）：兩列的模式選擇，單一一筆狀態——跟
+-- `rate_cache` 同一個 `id = 1` ＋ `CHECK` 的寫法。存 JSONB 而不是攤平成
+-- 欄位：這份結構會隨資料用途增減而變（目前兩列），JSONB 讓它變動時
+-- 不必每次都補一條 ALTER。
+CREATE TABLE IF NOT EXISTS data_source_settings (
+    id            INTEGER PRIMARY KEY DEFAULT 1,
+    settings      JSONB NOT NULL,
+    updated_at    TEXT NOT NULL,
+    CHECK (id = 1)
+);
+-- Provider credential（Settings／#124）：key 是 **provider**，不是資料
+-- 用途——兩個用途選同一個 Provider 時共用這一列，使用者因此不必輸入
+-- 同一把 token 兩次。
+CREATE TABLE IF NOT EXISTS provider_credentials (
+    provider      TEXT PRIMARY KEY,
+    token         TEXT NOT NULL,
+    updated_at    TEXT NOT NULL
+);
 """
 
 # 遷移**必須與建表分開送**。psycopg 對「無參數、多語句」的 execute 走
@@ -114,6 +135,18 @@ _RESULT_COLS = ("scenario_id, analyzed_at, view, best_return, "
 _SCENARIO_COLS = ("id, symbol, direction, target_price, target_month, "
                   "notes, strategies, created_at, archived_at, "
                   "best_price, worst_price")
+
+
+def _usage_to_dict(u: UsageSetting) -> dict:
+    return {"mode": u.mode, "provider": u.provider}
+
+
+def _usage_from_dict(d: dict | None) -> UsageSetting:
+    """讀回時對缺漏寬容：舊的那一筆設定可能還沒有新加的資料用途，
+    當成「預設」而不是炸掉——預設是安全的那一邊（不啟用自訂資料源）。"""
+    if not d:
+        return UsageSetting(mode="default", provider=None)
+    return UsageSetting(mode=d.get("mode", "default"), provider=d.get("provider"))
 
 
 def _row_to_scenario(row) -> Scenario:
@@ -370,3 +403,51 @@ class PostgresStorage:
                  Jsonb(entry.history) if entry.history is not None else None,
                  entry.note, entry.last_success_at, entry.market_day,
                  entry.attempted_day))
+    # ---------- 資料源設定與 credential（Settings／#124） ----------
+
+    def get_settings(self) -> DataSourceSettings | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT settings, updated_at FROM data_source_settings "
+                "WHERE id = 1").fetchone()
+        if not row:
+            return None
+        blob = row[0]
+        return DataSourceSettings(
+            market_data=_usage_from_dict(blob.get("market_data")),
+            historical_iv=_usage_from_dict(blob.get("historical_iv")),
+            updated_at=row[1])
+
+    def save_settings(self, settings: DataSourceSettings) -> None:
+        blob = {"market_data": _usage_to_dict(settings.market_data),
+                "historical_iv": _usage_to_dict(settings.historical_iv)}
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO data_source_settings (id, settings, updated_at) "
+                "VALUES (1, %s, %s) "
+                "ON CONFLICT (id) DO UPDATE SET settings = EXCLUDED.settings, "
+                "updated_at = EXCLUDED.updated_at",
+                (Jsonb(blob), settings.updated_at))
+
+    def get_credential(self, provider: str) -> ProviderCredential | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT provider, token, updated_at FROM provider_credentials "
+                "WHERE provider = %s", (provider,)).fetchone()
+        return ProviderCredential(*row) if row else None
+
+    def save_credential(self, cred: ProviderCredential) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO provider_credentials (provider, token, updated_at) "
+                "VALUES (%s, %s, %s) "
+                "ON CONFLICT (provider) DO UPDATE SET token = EXCLUDED.token, "
+                "updated_at = EXCLUDED.updated_at",
+                (cred.provider, cred.token, cred.updated_at))
+
+    def delete_credential(self, provider: str) -> bool:
+        with self._connect() as conn:
+            cur = conn.execute(
+                "DELETE FROM provider_credentials WHERE provider = %s",
+                (provider,))
+            return cur.rowcount == 1   # 連線關閉前讀

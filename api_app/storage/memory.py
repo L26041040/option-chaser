@@ -6,8 +6,9 @@
 """
 from __future__ import annotations
 
-from . import (DividendCacheEntry, RateCacheEntry, ResultRecord, ResultSummary,
-              Scenario, ScenarioExists)
+from . import (DataSourceSettings, DividendCacheEntry, ProviderCredential,
+               RateCacheEntry, ResultRecord, ResultSummary, Scenario,
+               ScenarioExists)
 
 
 class MemoryStorage:
@@ -18,6 +19,8 @@ class MemoryStorage:
         self._events: list[dict] = []
         self._rate_cache: RateCacheEntry | None = None
         self._dividend_cache: dict[str, DividendCacheEntry] = {}
+        self._settings: DataSourceSettings | None = None
+        self._credentials: dict[str, ProviderCredential] = {}
 
     @property
     def kind(self) -> str:
@@ -121,3 +124,20 @@ class MemoryStorage:
 
     def save_dividend_cache(self, entry: DividendCacheEntry) -> None:
         self._dividend_cache[entry.symbol] = entry
+
+    # ---------- 資料源設定與 credential（Settings／#124） ----------
+
+    def get_settings(self) -> DataSourceSettings | None:
+        return self._settings
+
+    def save_settings(self, settings: DataSourceSettings) -> None:
+        self._settings = settings
+
+    def get_credential(self, provider: str) -> ProviderCredential | None:
+        return self._credentials.get(provider)
+
+    def save_credential(self, cred: ProviderCredential) -> None:
+        self._credentials[cred.provider] = cred
+
+    def delete_credential(self, provider: str) -> bool:
+        return self._credentials.pop(provider, None) is not None

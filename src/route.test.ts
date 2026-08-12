@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
 
-import { detailHash, isTrashHash, scenarioIdFromHash, trashHash } from "./route";
+import {
+  detailHash,
+  isSettingsHash,
+  isTrashHash,
+  scenarioIdFromHash,
+  settingsHash,
+  trashHash,
+} from "./route";
 
 describe("路由", () => {
   it("詳細頁的 hash 認得出自己的劇本", () => {
@@ -36,5 +43,23 @@ describe("垃圾桶畫面路由（TR6／#91）", () => {
 
   it("垃圾桶 hash 底下 scenarioIdFromHash 仍是 null（不會被誤判成詳細頁）", () => {
     expect(scenarioIdFromHash(trashHash())).toBeNull();
+  });
+});
+
+describe("設定畫面路由（Settings／#124）", () => {
+  it("設定的 hash 認得出自己", () => {
+    expect(isSettingsHash(settingsHash())).toBe(true);
+  });
+
+  it("劇本庫、詳細頁、垃圾桶的 hash 都不是設定", () => {
+    expect(isSettingsHash("")).toBe(false);
+    expect(isSettingsHash("#/")).toBe(false);
+    expect(isSettingsHash(detailHash("abc123"))).toBe(false);
+    expect(isSettingsHash(trashHash())).toBe(false);
+  });
+
+  it("設定 hash 不會被誤判成垃圾桶或詳細頁", () => {
+    expect(isTrashHash(settingsHash())).toBe(false);
+    expect(scenarioIdFromHash(settingsHash())).toBeNull();
   });
 });

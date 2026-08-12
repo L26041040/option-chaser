@@ -15,6 +15,9 @@ import pytest
 
 from api_app.storage import (DividendCacheEntry, RateCacheEntry, ResultRecord,
                              Scenario, ScenarioExists)
+from api_app.storage import (DataSourceSettings, ProviderCredential,
+                             RateCacheEntry, ResultRecord, Scenario,
+                             ScenarioExists, UsageSetting)
 from api_app.storage.memory import MemoryStorage
 
 TEST_DB_URL = os.environ.get("OC_TEST_DATABASE_URL")
@@ -41,7 +44,8 @@ def storage(request):
     # 清庫是測試自己的事，不放進正式 adapter（正式環境不該有 TRUNCATE）。
     with psycopg.connect(TEST_DB_URL, autocommit=True) as conn:
         conn.execute("TRUNCATE scenarios, results, snapshots, events, rate_cache, "
-                     "dividend_cache RESTART IDENTITY")
+                     "dividend_cache, data_source_settings, "
+                     "provider_credentials RESTART IDENTITY")
     yield st
 
 
@@ -512,6 +516,93 @@ def test_latest_summaries_carries_the_representative_candidate(storage):
     assert storage.latest_summaries()["s1"].representative_candidate == _REP
 
 
+# ---------- 資料源設定與 credential（Settings／#124） ----------
+
+_CUSTOM = UsageSetting(mode="custom", provider="marketdata-app")
+_DEFAULT_USAGE = UsageSetting(mode="default", provider=None)
+
+
+def _settings(market=_CUSTOM, iv=_DEFAULT_USAGE):
+    return DataSourceSettings(market_data=market, historical_iv=iv,
+                              updated_at="2026-08-12T00:00:00+00:00")
+
+
+def test_settings_start_out_unset(storage):
+    """從未存過＝`None`，不是一個假的空設定——呼叫端據此用預設值。"""
+    assert storage.get_settings() is None
+
+
+def test_saved_settings_read_back_identically(storage):
+    storage.save_settings(_settings())
+    assert storage.get_settings() == _settings()
+
+
+def test_saving_settings_again_overwrites_the_single_row(storage):
+    storage.save_settings(_settings())
+    storage.save_settings(_settings(market=_DEFAULT_USAGE, iv=_CUSTOM))
+    got = storage.get_settings()
+    assert got.market_data == _DEFAULT_USAGE
+    assert got.historical_iv == _CUSTOM
+
+
+def test_credentials_start_out_absent(storage):
+    assert storage.get_credential("marketdata-app") is None
+
+
+def test_saved_credential_reads_back_in_full(storage):
+    """遮罩是 API 回應層的事；儲存層必須保住完整 token，否則 #125 的
+    測試連線就沒有東西可用。"""
+    cred = ProviderCredential(provider="marketdata-app", token="tok-abcd1234",
+                              updated_at="2026-08-12T00:00:00+00:00")
+    storage.save_credential(cred)
+    assert storage.get_credential("marketdata-app") == cred
+
+
+def test_saving_a_credential_again_replaces_the_token(storage):
+    for token in ("first-0000", "second-1111"):
+        storage.save_credential(ProviderCredential(
+            provider="marketdata-app", token=token,
+            updated_at="2026-08-12T00:00:00+00:00"))
+    assert storage.get_credential("marketdata-app").token == "second-1111"
+
+
+def test_credentials_are_keyed_by_provider_and_do_not_collide(storage):
+    """一個 Provider 一把——這正是兩個資料用途能共用同一把的原因。"""
+    for pid in ("marketdata-app", "another-vendor"):
+        storage.save_credential(ProviderCredential(
+            provider=pid, token=f"tok-{pid}",
+            updated_at="2026-08-12T00:00:00+00:00"))
+    assert storage.get_credential("marketdata-app").token == "tok-marketdata-app"
+    assert storage.get_credential("another-vendor").token == "tok-another-vendor"
+
+
+def test_deleting_a_credential_reports_whether_it_removed_anything(storage):
+    storage.save_credential(ProviderCredential(
+        provider="marketdata-app", token="tok",
+        updated_at="2026-08-12T00:00:00+00:00"))
+    assert storage.delete_credential("marketdata-app") is True
+    assert storage.delete_credential("marketdata-app") is False
+    assert storage.get_credential("marketdata-app") is None
+
+
+def test_deleting_one_credential_leaves_the_others_alone(storage):
+    for pid in ("marketdata-app", "another-vendor"):
+        storage.save_credential(ProviderCredential(
+            provider=pid, token="tok", updated_at="2026-08-12T00:00:00+00:00"))
+    storage.delete_credential("marketdata-app")
+    assert storage.get_credential("another-vendor") is not None
+
+
+def test_deleting_a_credential_leaves_the_settings_alone(storage):
+    """清 token 不等於改設定——使用者可能只是要換一把。"""
+    storage.save_settings(_settings())
+    storage.save_credential(ProviderCredential(
+        provider="marketdata-app", token="tok",
+        updated_at="2026-08-12T00:00:00+00:00"))
+    storage.delete_credential("marketdata-app")
+    assert storage.get_settings() == _settings()
+
+
 # ---------- schema 遷移（V3／#51） ----------
 
 def test_existing_results_table_gains_the_new_column():
@@ -533,7 +624,8 @@ def test_existing_results_table_gains_the_new_column():
         # 得自己清乾淨——否則殘留的劇本會讓它以 ScenarioExists 失敗，
         # 看起來像遷移壞了，其實是測試自己髒。
         conn.execute("TRUNCATE scenarios, results, snapshots, events, rate_cache, "
-                     "dividend_cache RESTART IDENTITY")
+                     "dividend_cache, data_source_settings, "
+                     "provider_credentials RESTART IDENTITY")
         conn.execute("DROP TABLE IF EXISTS results")
         # V2 時期的舊表：沒有 best_return
         conn.execute("CREATE TABLE results ("
@@ -563,7 +655,8 @@ def test_existing_results_table_gains_the_representative_candidate_column():
 
     with psycopg.connect(TEST_DB_URL, autocommit=True) as conn:
         conn.execute("TRUNCATE scenarios, results, snapshots, events, rate_cache, "
-                     "dividend_cache RESTART IDENTITY")
+                     "dividend_cache, data_source_settings, "
+                     "provider_credentials RESTART IDENTITY")
         conn.execute("DROP TABLE IF EXISTS results")
         # V3 時期的舊表：有 best_return，還沒有 representative_candidate。
         conn.execute("CREATE TABLE results ("
@@ -595,7 +688,8 @@ def test_migration_still_applies_when_table_creation_hits_a_race():
 
     with psycopg.connect(TEST_DB_URL, autocommit=True) as conn:
         conn.execute("TRUNCATE scenarios, results, snapshots, events, rate_cache, "
-                     "dividend_cache RESTART IDENTITY")
+                     "dividend_cache, data_source_settings, "
+                     "provider_credentials RESTART IDENTITY")
         conn.execute("DROP TABLE IF EXISTS results")
         conn.execute("CREATE TABLE results ("
                      "scenario_id TEXT NOT NULL, analyzed_at TEXT NOT NULL, "

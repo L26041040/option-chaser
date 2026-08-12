@@ -28,10 +28,12 @@ from option_chaser.timeframe import (TargetMonth, calendar_anchor,
                                      ensure_month_open, month_is_over)
 from option_chaser.workspace import now_utc_iso, ny_today
 
+from . import providers
 from .dividend_cache import cached_loader as cached_dividend_loader
 from .rate_cache import cached_loader
-from .storage import (RateCacheEntry, ResultRecord, ResultSummary, Scenario,
-                      ScenarioExists, Storage)
+from .storage import (DataSourceSettings, ProviderCredential, RateCacheEntry,
+                      ResultRecord, ResultSummary, Scenario, ScenarioExists,
+                      Storage, UsageSetting)
 from .storage.factory import storage_from_env
 
 FetchChain = Callable[[str], ChainSnapshot]
@@ -90,6 +92,47 @@ class CreateScenarioRequest(BaseModel):
             raise ValueError(
                 f"最低價位（{self.worst_price}）不可高於目標價（{self.target_price}）")
         return self
+
+
+class UsageRequest(BaseModel):
+    """`Data / API` 其中一列的送出值（Settings／#124）。"""
+    mode: Literal[providers.MODES]  # type: ignore[valid-type]
+    provider: str | None = None
+
+    @model_validator(mode="after")
+    def _provider_matches_mode(self) -> "UsageRequest":
+        """自訂**只能**挑已內建 adapter 的資料源——白名單擋在這裡，前端
+        送什麼都繞不過去（前端的下拉只是方便，不是防線）。
+
+        預設模式一律把 provider 歸零，不留一個「模式是預設、卻還記著上次
+        選的 provider」的狀態——那種資料讀回來時無從判斷該信哪一邊。
+        """
+        if self.mode == providers.MODE_DEFAULT:
+            return self.model_copy(update={"provider": None})
+        if self.provider is None:
+            raise ValueError("自訂模式必須指定資料源")
+        if not providers.is_supported(self.provider):
+            raise ValueError(f"不支援的資料源：{self.provider}")
+        return self
+
+
+class SettingsRequest(BaseModel):
+    market_data: UsageRequest
+    historical_iv: UsageRequest
+
+
+class CredentialRequest(BaseModel):
+    # 前後空白幾乎一定是貼上時多帶的，不是 token 的一部分；留著會讓
+    # 驗證莫名其妙失敗。`min_length` 在去空白之後才檢查。
+    token: str
+
+    @field_validator("token")
+    @classmethod
+    def _strip_and_require(cls, v: str) -> str:
+        out = v.strip()
+        if not out:
+            raise ValueError("token 不可為空")
+        return out
 
 
 def _timing_json(sc: Scenario, today: date) -> dict:
@@ -536,6 +579,82 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
     def list_events(scenario_id: str) -> list[dict]:
         _require(scenario_id)
         return _db().list_events(scenario_id=scenario_id)
+
+    # ---------- 設定：資料源與 Provider credential（Settings／#124） ----------
+
+    def _settings_view() -> dict:
+        """設定頁的完整 view dict。
+
+        **這裡是 token 的邊界**：回應只帶 `providers.mask_token()` 的遮罩
+        形式，完整 token 不曾出現在任何欄位裡（#124 硬性 AC，有測試明文
+        斷言）。`credentials` 以 **provider** 為 key，不是以資料用途為
+        key——兩列選同一個 Provider 時看到的是同一筆，前端因此不會要求
+        使用者輸入同一把 token 兩次。
+        """
+        db = _db()
+        stored = db.get_settings()
+        usages = {
+            providers.MARKET_DATA:
+                stored.market_data if stored else UsageSetting(mode=providers.MODE_DEFAULT),
+            providers.HISTORICAL_IV:
+                stored.historical_iv if stored else UsageSetting(mode=providers.MODE_DEFAULT),
+        }
+        creds: dict[str, dict] = {}
+        for p in providers.SUPPORTED_PROVIDERS:
+            got = db.get_credential(p.id)
+            creds[p.id] = ({"configured": False, "masked": None, "updated_at": None}
+                           if got is None else
+                           {"configured": True,
+                            "masked": providers.mask_token(got.token),
+                            "updated_at": got.updated_at})
+        return {
+            "supported_providers": [{"id": p.id, "label": p.label}
+                                    for p in providers.SUPPORTED_PROVIDERS],
+            **{usage: {"mode": u.mode, "provider": u.provider,
+                       "default_label": providers.DEFAULT_LABELS[usage]}
+               for usage, u in usages.items()},
+            "credentials": creds,
+            "updated_at": stored.updated_at if stored else None,
+        }
+
+    @app.get("/api/settings")
+    def get_settings() -> dict:
+        return _settings_view()
+
+    @app.put("/api/settings")
+    def put_settings(req: SettingsRequest) -> dict:
+        _db().save_settings(DataSourceSettings(
+            market_data=UsageSetting(mode=req.market_data.mode,
+                                     provider=req.market_data.provider),
+            historical_iv=UsageSetting(mode=req.historical_iv.mode,
+                                       provider=req.historical_iv.provider),
+            updated_at=now_utc_iso()))
+        # 刻意不寫事件紀錄：這條路徑上有 provider id 沒問題，但把設定變更
+        # 寫進 append-only 紀錄會讓「token 絕不進事件紀錄」這條 AC 從
+        # 「結構上不可能」退成「靠這裡沒寫錯」。設定是單一狀態、不是需要
+        # 稽核序列的東西，不值得為此擴大 token 的暴露面。
+        return _settings_view()
+
+    @app.put("/api/settings/credentials/{provider}")
+    def put_credential(provider: str, req: CredentialRequest) -> dict:
+        if not providers.is_supported(provider):
+            # 自訂不等於任意資料源：不在白名單就是不支援，不接受任何
+            # 「先存起來再說」的 provider id。
+            raise HTTPException(status_code=400,
+                                detail=f"不支援的資料源：{provider}")
+        _db().save_credential(ProviderCredential(
+            provider=provider, token=req.token, updated_at=now_utc_iso()))
+        return _settings_view()
+
+    @app.delete("/api/settings/credentials/{provider}")
+    def delete_credential(provider: str) -> dict:
+        if not providers.is_supported(provider):
+            raise HTTPException(status_code=400,
+                                detail=f"不支援的資料源：{provider}")
+        _db().delete_credential(provider)
+        # 不存在也回 200＋現況：呼叫端要的是「現在沒有這把 credential」，
+        # 而那在兩種情況下都已經成立。
+        return _settings_view()
 
     return app
 

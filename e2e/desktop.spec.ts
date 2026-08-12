@@ -591,3 +591,77 @@ test("桌面主劇本庫：批次選取後動作列同樣吸底（QA-FIX-4／QA-
 
   await expectBatchBarInViewport(page);
 });
+
+/* ---------- 設定頁（Settings／#124） ---------- */
+
+const settingsView = {
+  supported_providers: [{ id: "marketdata-app", label: "Market Data App" }],
+  market_data: { mode: "default", provider: null, default_label: "Cboe" },
+  historical_iv: { mode: "default", provider: null, default_label: "無" },
+  credentials: {
+    "marketdata-app": { configured: false, masked: null, updated_at: null },
+  },
+  updated_at: null,
+};
+
+const settingsSaved = {
+  ...settingsView,
+  market_data: { mode: "custom", provider: "marketdata-app", default_label: "Cboe" },
+  credentials: {
+    "marketdata-app": {
+      configured: true, masked: "••••••••abcd",
+      updated_at: "2026-08-12T00:00:00+00:00",
+    },
+  },
+};
+
+async function routeSettings(page: import("@playwright/test").Page) {
+  await routeTwoScenarios(page);
+  let saved = false;
+  await page.route("**/api/settings", (route) => {
+    if (route.request().method() === "PUT") saved = true;
+    return route.fulfill({ json: saved ? settingsSaved : settingsView });
+  });
+  await page.route("**/api/settings/credentials/**", (route) => {
+    saved = true;
+    return route.fulfill({ json: settingsSaved });
+  });
+}
+
+test("桌面版的設定入口固定在 sidebar 最下方，內容開在右側工作區", async ({ page }) => {
+  await routeSettings(page);
+  await page.goto("/");
+
+  const entry = page.getByRole("link", { name: "設定" });
+  await expect(entry).toBeVisible();
+
+  // 「最下方」：入口的位置在左欄劇本清單之下。
+  const list = page.locator(".library-scroll");
+  const entryBox = (await entry.boundingBox())!;
+  const listBox = (await list.boundingBox())!;
+  expect(entryBox.y).toBeGreaterThanOrEqual(listBox.y + listBox.height - 1);
+
+  await entry.click();
+  await expect(page.getByText("Data / API")).toBeVisible();
+  // 左欄劇本庫仍在（右側工作區才是被替換的那一邊）
+  await expect(page.getByRole("link", { name: /ABC/ })).toBeVisible();
+});
+
+test("桌面版：切到自訂、存 token，畫面只顯示遮罩", async ({ page }) => {
+  await routeSettings(page);
+  await page.goto("/#/settings");
+
+  const md = page.getByRole("region", { name: "Market Data" });
+  await expect(md.getByText("預設：Cboe")).toBeVisible();
+  await md.getByRole("radio", { name: "自訂" }).click();
+
+  await expect(md.getByText("目前支援：Market Data App")).toBeVisible();
+  await expect(md.getByText("需自行申請 API Token")).toBeVisible();
+
+  await md.getByLabel("API Token").fill("tok-secret-abcd");
+  await md.getByRole("button", { name: "儲存" }).click();
+
+  await expect(md.getByText("已儲存 ••••••••abcd")).toBeVisible();
+  // 完整 token 不得留在畫面上
+  await expect(page.locator("body")).not.toContainText("tok-secret-abcd");
+});

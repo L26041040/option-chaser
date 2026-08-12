@@ -6,7 +6,7 @@
  * 「第幾個／共幾個」——刷新是逐一跑的，一個劇本一趟網路往返，只給一顆
  * 轉圈的話使用者無從判斷是快好了還是卡住了。
  */
-import { TrashIcon } from "./icons";
+import { GearIcon, TrashIcon } from "./icons";
 
 export interface RefreshProgress {
   /** 正在刷新第幾個（1-based）。 */
@@ -37,11 +37,17 @@ export default function Toolbar({
   progress,
   onRefresh,
   onOpenTrash,
+  onOpenSettings,
   ...createProps
 }: {
   count: number;
   progress: RefreshProgress | null;
   onRefresh: () => void;
+  /** 設定入口（Settings／#124）。**只有手機版傳**——需求方指定的位置是
+   *  「主要工作區右上角」，而這個工具列正在那裡。桌面版不傳：那邊的
+   *  指定位置是 sidebar 最下方（見 `App.tsx`），兩邊各放一個會變成同一
+   *  個入口出現兩次。 */
+  onOpenSettings?: () => void;
   /** TR6（#91）：垃圾桶畫面入口，貼齊「劇本庫」標題的工具列——需求方
    *  核准版面：桌面順序「＋ 建立劇本 → 🗑 垃圾桶 → 重新整理」，手機版
    *  沒有建立鈕（入口在 Dashboard 下方），順序自然是「🗑 垃圾桶 →
@@ -73,6 +79,14 @@ export default function Toolbar({
           <button className="pill" onClick={onRefresh} disabled={busy}>
             {busy ? "刷新中……" : "重新整理"}
           </button>
+          {/* 齒輪排在最右——需求方指定的「工作區右上角」。圖示本身
+              `aria-hidden`，可及名稱交給 `aria-label`（沿用既有慣例）。 */}
+          {onOpenSettings && (
+            <button className="icon-button" onClick={onOpenSettings}
+                   aria-label="設定">
+              <GearIcon />
+            </button>
+          )}
         </div>
       </div>
       <div className="toolbar-row">

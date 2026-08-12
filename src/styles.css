@@ -126,10 +126,20 @@ body {
     min-height: 100dvh;
   }
 
+  /* #124：左欄變成「可捲動的清單」＋「釘在最下方的設定入口」兩段。
+     捲動因此下移到 `.library-scroll`——留在 `.library-pane` 上的話，
+     設定入口會跟著清單一起捲走，而需求方指定的位置是 sidebar 最下方。 */
   .library-pane {
     height: 100dvh;
-    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
     border-right: 1px solid var(--separator);
+  }
+
+  .library-scroll {
+    flex: 1;
+    min-height: 0;   /* flex 子項預設 min-height:auto，不加這行不會內縮捲動 */
+    overflow-y: auto;
   }
 
   .detail-pane {
@@ -1796,4 +1806,88 @@ body {
   border-width: 1.5px;
   border-color: var(--tint);
   font-weight: 700;
+}
+
+/* ---------- 設定頁（Settings／#124） ---------- */
+
+/* 桌面版 sidebar 最下方的設定入口。`margin-top:auto` 不需要——它已經是
+   flex 容器裡 `flex:1` 的捲動區之後的最後一項，自然被推到底。 */
+.sidebar-settings {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 14px var(--gap);
+  border-top: 0.5px solid var(--separator);
+  color: var(--label);
+  text-decoration: none;
+  font-size: 15px;
+  background: var(--bg-elevated);
+}
+
+.sidebar-settings:active,
+.sidebar-settings.active {
+  background: var(--fill);
+}
+
+.settings-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: var(--gap);
+}
+
+.settings-section + .settings-section {
+  margin-top: var(--gap);
+}
+
+.settings-usage-title {
+  margin: 0 0 10px;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+/* 整列可點：手指落點是整行，不是那顆直徑十來 px 的圓鈕。 */
+.settings-choice {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 0;
+  cursor: pointer;
+}
+
+.settings-custom {
+  margin-top: 10px;
+  padding-top: 12px;
+  border-top: 1px solid var(--separator);
+}
+
+.settings-field {
+  display: block;
+  margin-top: 12px;
+}
+
+.settings-input,
+.settings-select {
+  display: block;
+  width: 100%;
+  margin-top: 4px;
+  padding: 10px 12px;
+  font-size: 16px;   /* iOS Safari 在 <16px 的輸入框上會自動放大整頁 */
+  font-family: inherit;
+  color: var(--label);
+  background: var(--bg-elevated);
+  border: 0.5px solid var(--separator);
+  border-radius: 10px;
+}
+
+.settings-shared,
+.settings-status {
+  margin-top: 12px;
+}
+
+.settings-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 12px;
 }

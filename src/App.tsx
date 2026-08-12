@@ -39,8 +39,10 @@ import CreateForm, { type DraftScenario } from "./CreateForm";
 import Dashboard from "./Dashboard";
 import ScenarioDetail from "./ScenarioDetail";
 import ScenarioList from "./ScenarioList";
+import Settings from "./Settings";
 import Toolbar, { type RefreshProgress } from "./Toolbar";
 import TrashView from "./TrashView";
+import { GearIcon } from "./icons";
 import {
   archiveScenario,
   createScenario,
@@ -50,7 +52,13 @@ import {
   type RefreshFailure,
   type ScenarioSummary,
 } from "./api";
-import { isTrashHash, scenarioIdFromHash, trashHash } from "./route";
+import {
+  isSettingsHash,
+  isTrashHash,
+  scenarioIdFromHash,
+  settingsHash,
+  trashHash,
+} from "./route";
 
 // 桌面／手機斷點——與 `styles.css` 的 `@media (min-width: 1100px)` 同一個
 // 數字，兩邊各自維護一份（CSS 沒辦法直接讀 JS 常數），改動時要一起改。
@@ -198,6 +206,8 @@ export default function App() {
   const detailId = scenarioIdFromHash(hash);
   // TR6（#91）：垃圾桶畫面路由——跟詳細頁同一套 hash 慣例。
   const showTrash = isTrashHash(hash);
+  // Settings（#124）：同一套 hash 慣例。
+  const showSettings = isSettingsHash(hash);
   const isDesktop = useIsDesktop();
 
   // 手機版返回劇本庫要停在原本的捲動位置（MVP-v2／#77、#83）：手機版
@@ -384,6 +394,12 @@ export default function App() {
     </div>
   );
 
+  // 手機版：設定是整頁替換（跟垃圾桶、詳細頁同樣的既有模式）。排在
+  // 垃圾桶之前只是順序，兩個 hash 互斥。
+  if (!isDesktop && showSettings) {
+    return <Settings />;
+  }
+
   if (!isDesktop && showTrash) {
     return <TrashView onRestore={restoreFromTrash} />;
   }
@@ -409,6 +425,9 @@ export default function App() {
           // 時機三：功能列刷新鈕
           onRefresh={() => void reloadAndRefresh()}
           onOpenTrash={() => { window.location.hash = trashHash(); }}
+          // #124：手機版的設定入口＝工作區右上角的齒輪。桌面版不傳這個
+          // 回呼，它的入口在 sidebar 最下方。
+          onOpenSettings={() => { window.location.hash = settingsHash(); }}
         />
 
         {error && (
@@ -516,11 +535,25 @@ export default function App() {
 
   // #72：桌面版真正的 master/detail——左側劇本庫常駐，右側是詳細頁；
   // 沒選劇本時右側顯示空狀態，而不是留白或報錯。
+  // #124：桌面版的設定入口固定在 sidebar **最下方**——清單本身在
+  // `.library-scroll` 裡自己捲動，這個連結因此永遠看得到，不必先捲到
+  // 劇本清單的底部。設定內容顯示在右側工作區（`.detail-pane`），與
+  // 「選劇本切換右側」是同一個機制。
   return (
     <div className="workspace">
-      <div className="library-pane">{library}</div>
+      <div className="library-pane">
+        <div className="library-scroll">{library}</div>
+        <a
+          className={`sidebar-settings${showSettings ? " active" : ""}`}
+          href={settingsHash()}
+        >
+          <GearIcon /> 設定
+        </a>
+      </div>
       <div className="detail-pane">
-        {detailProps ? (
+        {showSettings ? (
+          <Settings />
+        ) : detailProps ? (
           <ScenarioDetail {...detailProps} />
         ) : (
           <div className="screen">

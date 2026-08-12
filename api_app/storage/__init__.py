@@ -133,6 +133,43 @@ class DividendCacheEntry:
     attempted_day: str | None = None
 
 
+@dataclass(frozen=True)
+class UsageSetting:
+    """`Data / API` 其中一列的選擇（Settings／#124）。
+
+    `mode` ＝ "default" | "custom"。`provider` 只在 custom 時有意義，且
+    必須是 `api_app.providers.SUPPORTED_PROVIDERS` 裡的 id——自訂只能挑
+    已內建 adapter 的資料源，不接受任意 endpoint／schema。
+    """
+    mode: str
+    provider: str | None = None
+
+
+@dataclass(frozen=True)
+class DataSourceSettings:
+    """兩列的模式選擇，單一一筆狀態（比照 `RateCacheEntry`，不是歷史序列）。
+
+    **不含 token**：credential 是 per-Provider 的一把，存在
+    `ProviderCredential`。兩列都選同一個 Provider 時因此天然共用同一把，
+    不必也不該要求使用者輸入兩次（#124）。
+    """
+    market_data: UsageSetting
+    historical_iv: UsageSetting
+    updated_at: str
+
+
+@dataclass(frozen=True)
+class ProviderCredential:
+    """某個 Provider 的一把 token。key ＝ provider id，不是資料用途。
+
+    `token` 是完整明文，**只活在後端**：API 回應一律只給
+    `providers.mask_token()` 的遮罩形式（#124 硬性 AC）。
+    """
+    provider: str
+    token: str
+    updated_at: str
+
+
 class Storage(Protocol):
     """API 層唯一的資料存取介面——不得繞過它直接碰 SQL 或檔案。"""
 
@@ -206,6 +243,22 @@ class Storage(Protocol):
 
     def save_dividend_cache(self, entry: DividendCacheEntry) -> None:
         """覆蓋該 symbol 既有那一筆——per-symbol 單一狀態，不是歷史序列。"""
+
+    # ---------- 資料源設定與 credential（Settings／#124） ----------
+
+    def get_settings(self) -> DataSourceSettings | None:
+        """從未存過任何設定時回 `None`（呼叫端據此用兩列的預設值）。"""
+
+    def save_settings(self, settings: DataSourceSettings) -> None:
+        """覆蓋既有那一筆——單一狀態，不是歷史序列。"""
+
+    def get_credential(self, provider: str) -> ProviderCredential | None: ...
+
+    def save_credential(self, cred: ProviderCredential) -> None:
+        """同一 provider 重複寫入即覆蓋（換 token 就是這條路徑）。"""
+
+    def delete_credential(self, provider: str) -> bool:
+        """回傳是否真的刪了東西（本來就沒存過回 `False`）。"""
 
     @property
     def kind(self) -> str:

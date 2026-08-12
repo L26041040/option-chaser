@@ -1008,3 +1008,84 @@ test("手機垃圾桶：全選後批次動作立刻在視窗內可操作（QA-FI
   expect(box.y).toBeGreaterThanOrEqual(0);
   expect(box.y + box.height).toBeLessThanOrEqual(vh + 1);
 });
+
+/* ---------- 設定頁（Settings／#124） ---------- */
+
+const SETTINGS_VIEW = {
+  supported_providers: [{ id: "marketdata-app", label: "Market Data App" }],
+  market_data: { mode: "default", provider: null, default_label: "Cboe" },
+  historical_iv: { mode: "default", provider: null, default_label: "無" },
+  credentials: {
+    "marketdata-app": { configured: false, masked: null, updated_at: null },
+  },
+  updated_at: null,
+};
+
+const SETTINGS_SAVED = {
+  ...SETTINGS_VIEW,
+  historical_iv: {
+    mode: "custom", provider: "marketdata-app", default_label: "無",
+  },
+  credentials: {
+    "marketdata-app": {
+      configured: true, masked: "••••••••abcd",
+      updated_at: "2026-08-12T00:00:00+00:00",
+    },
+  },
+};
+
+async function routeSettingsMobile(page: import("@playwright/test").Page) {
+  await page.route("**/api/scenarios", (route) => route.fulfill({ json: [] }));
+  let saved = false;
+  await page.route("**/api/settings", (route) => {
+    if (route.request().method() === "PUT") saved = true;
+    return route.fulfill({ json: saved ? SETTINGS_SAVED : SETTINGS_VIEW });
+  });
+  await page.route("**/api/settings/credentials/**", (route) => {
+    saved = true;
+    return route.fulfill({ json: SETTINGS_SAVED });
+  });
+}
+
+test("手機版：工作區右上角的齒輪進得去設定，返回回得來（Settings／#124）", async ({ page }) => {
+  await routeSettingsMobile(page);
+  await page.goto("/");
+
+  const gear = page.getByRole("button", { name: "設定" });
+  await expect(gear).toBeVisible();
+
+  // 「右上角」：齒輪落在視窗右半邊、且在頂部功能列內。
+  const box = (await gear.boundingBox())!;
+  const viewport = page.viewportSize()!;
+  expect(box.x).toBeGreaterThan(viewport.width / 2);
+  expect(box.y).toBeLessThan(120);
+
+  await gear.click();
+  await expect(page.getByText("Data / API")).toBeVisible();
+  // 設定是整頁替換：劇本庫的功能列此時不在畫面上
+  await expect(page.getByRole("button", { name: "重新整理" })).toHaveCount(0);
+
+  await page.getByRole("link", { name: "‹ 劇本庫" }).click();
+  await expect(page.getByRole("button", { name: "重新整理" })).toBeVisible();
+});
+
+test("手機版：Historical IV 切自訂、存 token，只看得到遮罩（Settings／#124）", async ({ page }) => {
+  await routeSettingsMobile(page);
+  await page.goto("/#/settings");
+
+  const iv = page.getByRole("region", { name: "Historical IV" });
+  // 預設是「無」——這正是 #126 讓整個 IV 模組不出現的那個狀態
+  await expect(iv.getByText("預設：無")).toBeVisible();
+
+  await iv.getByRole("radio", { name: "自訂" }).click();
+  await expect(iv.getByText("目前支援：Market Data App")).toBeVisible();
+  await expect(iv.getByText("需自行申請 API Token")).toBeVisible();
+  // 文案裁示：不出現「推薦」
+  await expect(page.locator("body")).not.toContainText("推薦");
+
+  await iv.getByLabel("API Token").fill("tok-secret-abcd");
+  await iv.getByRole("button", { name: "儲存" }).click();
+
+  await expect(iv.getByText("已儲存 ••••••••abcd")).toBeVisible();
+  await expect(page.locator("body")).not.toContainText("tok-secret-abcd");
+});

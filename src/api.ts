@@ -622,3 +622,80 @@ export function baselineTopCandidate(view: AnalysisView): Candidate | null {
 export function primaryResult(view: AnalysisView): StrategyResult | null {
   return view.results[0] ?? null;
 }
+
+// ---------- 設定：資料源與 Provider credential（Settings／#124） ----------
+
+/** 使用者可選的自訂資料源。清單由後端白名單給（`api_app/providers.py`），
+ *  前端不自己維護一份——兩邊各記一份遲早會對不上。 */
+export interface ProviderOption {
+  id: string;
+  label: string;
+}
+
+/** `Data / API` 其中一列的現況。`default_label` 是「預設」那顆選項要顯示
+ *  什麼（Market Data 是 Cboe、Historical IV 是「無」），由後端給。 */
+export interface UsageView {
+  mode: "default" | "custom";
+  provider: string | null;
+  default_label: string;
+}
+
+/** 某個 Provider 的 credential 狀態。**沒有完整 token 這個欄位**——後端
+ *  只給遮罩形式，這是 #124 的硬性紅線。 */
+export interface CredentialStatus {
+  configured: boolean;
+  masked: string | null;
+  updated_at: string | null;
+}
+
+export interface SettingsView {
+  supported_providers: ProviderOption[];
+  market_data: UsageView;
+  historical_iv: UsageView;
+  /** key ＝ provider id，不是資料用途——兩列選同一個 Provider 時看到的
+   *  是同一筆，使用者因此不必輸入同一把 token 兩次。 */
+  credentials: Record<string, CredentialStatus>;
+  updated_at: string | null;
+}
+
+/** 送出時只需要模式與 provider，`default_label` 是後端給的顯示用資訊。 */
+export interface UsageChoice {
+  mode: "default" | "custom";
+  provider: string | null;
+}
+
+export function getSettings(): Promise<SettingsView> {
+  return request<SettingsView>("/api/settings");
+}
+
+export function saveSettings(body: {
+  market_data: UsageChoice;
+  historical_iv: UsageChoice;
+}): Promise<SettingsView> {
+  return request<SettingsView>("/api/settings", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+export function saveCredential(
+  provider: string,
+  token: string,
+): Promise<SettingsView> {
+  return request<SettingsView>(
+    `/api/settings/credentials/${encodeURIComponent(provider)}`,
+    {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token }),
+    },
+  );
+}
+
+export function clearCredential(provider: string): Promise<SettingsView> {
+  return request<SettingsView>(
+    `/api/settings/credentials/${encodeURIComponent(provider)}`,
+    { method: "DELETE" },
+  );
+}
