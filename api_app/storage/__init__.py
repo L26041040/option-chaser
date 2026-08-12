@@ -203,6 +203,23 @@ class IvObservation:
     fetched_at: str           # ISO 8601，這筆是什麼時候抓回來的
 
 
+@dataclass(frozen=True)
+class IvBackfillRun:
+    """某 symbol 最近一次 backfill 批次的結果（#130）。
+
+    存在的理由是「**同一 symbol 每天只跑一個 backfill job**」：沒有這筆
+    紀錄的話，同一天每開一個同 ticker 的 Scenario 就會再燒一批額度，正是
+    需求方要避免的浪費。也讓「今日額度已用完」不必每次都再打一次
+    vendor 才知道。
+
+    `outcome` ＝ "ok" | "quota" | "vendor"，`ran_on` 是市場日（紐約曆日）。
+    """
+    symbol: str
+    ran_on: str
+    outcome: str
+    note: str | None = None
+
+
 class Storage(Protocol):
     """API 層唯一的資料存取介面——不得繞過它直接碰 SQL 或檔案。"""
 
@@ -310,6 +327,12 @@ class Storage(Protocol):
 
     def iv_observations(self, symbol: str) -> list[IvObservation]:
         """依日期遞增回傳該 symbol 的全部觀測。"""
+
+    def get_iv_backfill_run(self, symbol: str) -> IvBackfillRun | None:
+        """該 symbol 最近一次 backfill 批次；從未跑過回 `None`。"""
+
+    def save_iv_backfill_run(self, run: IvBackfillRun) -> None:
+        """覆蓋該 symbol 既有那一筆——單一狀態，不是歷史序列。"""
 
     def get_verification(self, provider: str) -> ProviderVerification | None:
         """從未測過時回 `None`（＝「未設定」或「尚未驗證」）。"""

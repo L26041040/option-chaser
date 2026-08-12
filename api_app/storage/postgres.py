@@ -12,10 +12,10 @@ from __future__ import annotations
 import psycopg
 from psycopg.types.json import Jsonb
 
-from . import (DataSourceSettings, DividendCacheEntry, IvObservation,
-               ProviderCredential, ProviderVerification, RateCacheEntry,
-               ResultRecord, ResultSummary, Scenario, ScenarioExists,
-               UsageSetting)
+from . import (DataSourceSettings, DividendCacheEntry, IvBackfillRun,
+               IvObservation, ProviderCredential, ProviderVerification,
+               RateCacheEntry, ResultRecord, ResultSummary, Scenario,
+               ScenarioExists, UsageSetting)
 
 # 每個 lambda 程序只需建表一次。`IF NOT EXISTS` 在 Postgres 並非完全
 # race-free（同時冷啟動可能撞上 duplicate 錯誤），因此除了這個旗標，
@@ -125,6 +125,14 @@ CREATE TABLE IF NOT EXISTS iv_observations (
     surface       JSONB NOT NULL,
     fetched_at    TEXT NOT NULL,
     PRIMARY KEY (symbol, observed_on)
+);
+-- 每 symbol 每天只跑一個 backfill 批次（#130）：沒有這張表的話，同一天
+-- 每開一個同 ticker 的 Scenario 就會再燒一批額度。
+CREATE TABLE IF NOT EXISTS iv_backfill_runs (
+    symbol        TEXT PRIMARY KEY,
+    ran_on        TEXT NOT NULL,
+    outcome       TEXT NOT NULL,
+    note          TEXT
 );
 """
 
@@ -522,3 +530,19 @@ class PostgresStorage:
                 "FROM iv_observations WHERE symbol = %s ORDER BY observed_on",
                 (symbol,)).fetchall()
         return [IvObservation(*r) for r in rows]
+
+    def get_iv_backfill_run(self, symbol: str) -> IvBackfillRun | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT symbol, ran_on, outcome, note FROM iv_backfill_runs "
+                "WHERE symbol = %s", (symbol,)).fetchone()
+        return IvBackfillRun(*row) if row else None
+
+    def save_iv_backfill_run(self, run: IvBackfillRun) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO iv_backfill_runs (symbol, ran_on, outcome, note) "
+                "VALUES (%s, %s, %s, %s) "
+                "ON CONFLICT (symbol) DO UPDATE SET ran_on = EXCLUDED.ran_on, "
+                "outcome = EXCLUDED.outcome, note = EXCLUDED.note",
+                (run.symbol, run.ran_on, run.outcome, run.note))

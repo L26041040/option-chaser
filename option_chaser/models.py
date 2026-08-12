@@ -15,6 +15,17 @@ class FetchError(Exception):
     pass
 
 
+class QuotaExhausted(FetchError):
+    """vendor 今日額度用完（#130）。
+
+    刻意繼承 `FetchError`：既有的降級鏈（`service.fetch_chain` 的
+    Cboe→yfinance、自訂來源的 fallback）一律 `except FetchError`，額度
+    用完時那些路徑的行為不該改變。子類只是讓**在乎**的呼叫端分得出
+    「今天不用再試了」與「這次剛好失敗、待會可以重試」——兩者對使用者
+    的意義完全不同。
+    """
+
+
 class ParamError(Exception):
     pass
 

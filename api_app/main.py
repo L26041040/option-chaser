@@ -22,7 +22,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 from option_chaser import __version__, ivhistory, service, store
 from option_chaser.data.snapshot import snapshot_from_dict, snapshot_to_csv
 from option_chaser.models import (AnalysisParams, ChainSnapshot, FetchError,
-                                  ParamError, STRATEGIES)
+                                  ParamError, QuotaExhausted, STRATEGIES)
 from option_chaser.service import DividendLoader, RateCurveLoader
 from option_chaser.timeframe import (TargetMonth, calendar_anchor,
                                      ensure_month_open, month_is_over)
@@ -31,10 +31,10 @@ from option_chaser.workspace import now_utc_iso, ny_today
 from . import providers
 from .dividend_cache import cached_loader as cached_dividend_loader
 from .rate_cache import cached_loader
-from .storage import (DataSourceSettings, ProviderCredential,
-                      ProviderVerification, RateCacheEntry, ResultRecord,
-                      ResultSummary, Scenario, ScenarioExists, Storage,
-                      UsageSetting)
+from .storage import (DataSourceSettings, IvBackfillRun, IvObservation,
+                      ProviderCredential, ProviderVerification, RateCacheEntry,
+                      ResultRecord, ResultSummary, Scenario, ScenarioExists,
+                      Storage, UsageSetting)
 from .storage.factory import storage_from_env
 
 FetchChain = Callable[[str], ChainSnapshot]
@@ -48,6 +48,13 @@ HistoricalSurface = Callable[[str, str, str, str], dict]
 # 是固定值，不由前端送。需要看空或多策略時再由對應的票加上。
 _MVP_DIRECTION = "bullish"
 _MVP_STRATEGIES = ("bull-call-spread",)
+
+# 每個 symbol 每批最多補幾天（#130）。66 個目標觀測 ÷ 25 ≈ 三天補齊，
+# 就是需求方 progressive backfill 草圖裡那三格進度條。
+_IV_BACKFILL_PER_RUN = 25
+# 觀測涵蓋不到這個比例就不給 percentile——稀疏到這種程度時算出來的百分位
+# 只是看起來很確定，實際沒有支撐。
+_IV_MIN_COVERAGE = 0.5
 
 # V1（#48）的一次性分析端點沿用：無劇本身分時的 view dict 欄位值，
 # 不影響任何計算。V3 之後前端改走劇本端點，屆時此路徑可移除。
@@ -139,6 +146,42 @@ class CredentialRequest(BaseModel):
         if not out:
             raise ValueError("token 不可為空")
         return out
+
+
+def _surface_to_rows(surface: dict) -> dict:
+    """`SurfacePoint` → 三元組陣列（落盤用）。一天的鏈有數千筆，欄位名
+    重複數千次只是在燒儲存空間。"""
+    return {side: [[p.dte, p.delta, p.iv] for p in points]
+            for side, points in surface.items()}
+
+
+def _rows_to_surface(rows: dict) -> dict:
+    """落盤形式 → `SurfacePoint`。"""
+    return {side: [ivhistory.SurfacePoint(dte=int(r[0]), delta=float(r[1]),
+                                          iv=float(r[2]))
+                   for r in (points or [])]
+            for side, points in (rows or {}).items()}
+
+
+def _iv_payload(candidate_key: str, points: list[dict], status: str,
+                note: str | None, *, coverage: float = 0.0) -> dict:
+    """Historical IV 的回應形狀。
+
+    `status` 不是 `ok` 時**不給 percentile**：需求方紅線——資料不足、額度
+    用完、vendor 掛掉都不得為了湊圖而端出一個看起來很確定的百分位。序列
+    本身照給（有幾點就是幾點），畫面自己決定要不要畫。
+    """
+    return {
+        "candidate_key": candidate_key,
+        "status": status,
+        "points": points,
+        "current": points[-1] if points else None,
+        "percentiles": (ivhistory.weighted_percentiles_of(points)
+                        if status == "ok" else {}),
+        "observations": len(points),
+        "coverage": round(coverage, 3),
+        "note": note,
+    }
 
 
 def _timing_json(sc: Scenario, today: date) -> dict:
@@ -625,21 +668,66 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         _require(scenario_id)
         return _db().list_events(scenario_id=scenario_id)
 
-    # ---------- Historical IV 歷史序列（#126） ----------
+    # ---------- Historical IV：快取、漸進補齊、額度（#126／#130） ----------
+
+    def _backfill_iv(symbol: str, provider: str, token: str) -> tuple[str, str | None]:
+        """把這個 symbol 的歷史觀測往前補一批，回傳 (狀態, 說明)。
+
+        三條規則直接寫在這裡，因為它們決定了會不會白白燒掉使用者的額度：
+
+        1. **已有的日期一次都不重抓**——只補「排程要、快取沒有」的那幾天。
+        2. **每個 symbol 每天只跑一批**。同一天多開幾個同 ticker 的
+           Scenario 不該各自再燒一批；額度用完時也不必每次都再去撞一次
+           才知道。
+        3. **每批有上限**。第一次使用一個新 ticker 時不是一口氣抓滿，而是
+           分幾天補齊（需求方的 progressive backfill）。
+
+        補的順序由新到舊：近期的觀測對「現在的 IV 站在哪」最有用，額度
+        中途用完時留下的也是比較有價值的那一段。
+        """
+        db = _db()
+        today = ny_today()
+        run = db.get_iv_backfill_run(symbol)
+        if run is not None and run.ran_on == today.isoformat():
+            # 今天已經跑過——直接沿用當時的結論，不再碰 vendor。
+            return run.outcome, run.note
+
+        wanted = ivhistory.sampling_schedule(symbol, today)
+        have = set(db.iv_observation_dates(symbol))
+        missing = [d for d in wanted if d not in have]
+
+        outcome, note = "ok", None
+        for day in sorted(missing, reverse=True)[:_IV_BACKFILL_PER_RUN]:
+            try:
+                surface = historical_surface(provider, symbol, day, token)
+            except QuotaExhausted as e:
+                outcome, note = "quota", str(e)
+                break
+            except FetchError as e:
+                outcome, note = "vendor", str(e)
+                break
+            db.save_iv_observation(IvObservation(
+                symbol=symbol, observed_on=day,
+                surface=_surface_to_rows(surface), fetched_at=now_utc_iso()))
+
+        db.save_iv_backfill_run(IvBackfillRun(symbol=symbol,
+                                             ran_on=today.isoformat(),
+                                             outcome=outcome, note=note))
+        return outcome, note
 
     @app.get("/api/scenarios/{scenario_id}/iv-history")
-    def iv_history(scenario_id: str, candidate_key: str,
-                   window_days: int = 365) -> dict:
+    def iv_history(scenario_id: str, candidate_key: str) -> dict:
         """候選的 (tenor, delta) 座標**逐日重錨定**的 IV 序列。
 
-        不是某一張固定合約的原始 IV 序列——那個東西的意義會隨合約變老而
-        漂移（見 `option_chaser/ivhistory.py` 檔頭）。
+        資料來自 **per-symbol 快取**（#129）：同一 ticker 的所有 Scenario
+        共用同一份歷史，各自只是投影到自己的座標。target price／target
+        month／scenario id 不同都不會觸發重抓。
 
         **閘門**：Historical IV 未解鎖時直接 403，一個 vendor 請求都不發。
-        前端本來就不該在鎖著時發這個請求（畫面連節點都不渲染），這裡是
-        第二道——繞過畫面直接打端點同樣要被擋下。
 
-        失敗只影響這個端點：分析頁其餘部分、以及劇本刷新，都不經過這裡。
+        回應的 `status` 是需求方點名要能分辨的那幾種之一——`ok`／
+        `quota`／`vendor`／`insufficient`（`unset`／`invalid` 兩種在閘門
+        那關就 403 了，畫面連模組都不渲染）。
         """
         sc = _require(scenario_id)
         settings_view = _settings_view()
@@ -658,40 +746,28 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
 
         provider = settings_view["historical_iv"]["provider"]
         token = _db().get_credential(provider).token
-        spot = rec.view["meta"]["spot"]
+        outcome, note = _backfill_iv(sc.symbol, provider, token)
 
-        coords = ivhistory.spread_coordinates(cand, spot=spot)
+        coords = ivhistory.spread_coordinates(cand, spot=rec.view["meta"]["spot"])
         if coords is None:
-            return {"candidate_key": candidate_key, "window_days": window_days,
-                    "points": [], "current": None, "percentiles": {},
-                    "out_of_grid": True,
-                    "note": "這個候選算不出 (tenor, delta) 座標（缺 IV 或天期），"
-                            "沒有可比的歷史序列"}
+            return _iv_payload(candidate_key, [], "insufficient",
+                               "這個候選算不出 (tenor, delta) 座標")
 
-        # 逐日重錨定：每一天各取那天的鏈，在同一個座標上插值。
-        points, failures = [], []
-        for day in ivhistory.trading_days_back(ny_today(), window_days):
-            try:
-                surface = historical_surface(provider, sc.symbol, day, token)
-            except FetchError as e:
-                failures.append(str(e))
-                continue
-            points.append({"date": day,
+        points = []
+        for obs in _db().iv_observations(sc.symbol):
+            surface = _rows_to_surface(obs.surface)
+            points.append({"date": obs.observed_on,
                            **ivhistory.reanchor_spread(surface, coords)})
 
-        current = points[-1] if points else None
-        return {
-            "candidate_key": candidate_key,
-            "window_days": window_days,
-            "points": points,
-            "current": current,
-            "percentiles": ivhistory.percentiles_of(points),
-            "out_of_grid": bool(points) and all(
-                p["normalized_skew"] is None for p in points),
-            # 如實回報，不靜默：整段抓不到跟「抓到但座標出界」是兩件事。
-            "note": (f"有 {len(failures)} 天取不到資料：{failures[0]}"
-                     if failures else None),
-        }
+        # 觀測太稀疏時不畫 percentile——拿幾個點硬算一個看起來很確定的
+        # 百分位，正是「為了湊圖而假造資料」。
+        dates = [p["date"] for p in points if p["normalized_skew"] is not None]
+        coverage = ivhistory.coverage_ratio(dates)
+        status = outcome if outcome != "ok" else "ok"
+        if coverage < _IV_MIN_COVERAGE:
+            status = "insufficient" if outcome == "ok" else outcome
+        return _iv_payload(candidate_key, points, status, note,
+                           coverage=coverage)
 
     # ---------- 設定：資料源與 Provider credential（Settings／#124） ----------
 

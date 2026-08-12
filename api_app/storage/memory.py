@@ -6,9 +6,10 @@
 """
 from __future__ import annotations
 
-from . import (DataSourceSettings, DividendCacheEntry, IvObservation,
-               ProviderCredential, ProviderVerification, RateCacheEntry,
-               ResultRecord, ResultSummary, Scenario, ScenarioExists)
+from . import (DataSourceSettings, DividendCacheEntry, IvBackfillRun,
+               IvObservation, ProviderCredential, ProviderVerification,
+               RateCacheEntry, ResultRecord, ResultSummary, Scenario,
+               ScenarioExists)
 
 
 class MemoryStorage:
@@ -24,6 +25,7 @@ class MemoryStorage:
         self._verifications: dict[str, ProviderVerification] = {}
         # 鍵是 (symbol, 日期)——**沒有 scenario 維度**，見 IvObservation。
         self._iv: dict[tuple[str, str], IvObservation] = {}
+        self._iv_runs: dict[str, IvBackfillRun] = {}
 
     @property
     def kind(self) -> str:
@@ -163,3 +165,9 @@ class MemoryStorage:
 
     def iv_observations(self, symbol: str) -> list[IvObservation]:
         return [self._iv[(symbol, d)] for d in self.iv_observation_dates(symbol)]
+
+    def get_iv_backfill_run(self, symbol: str) -> IvBackfillRun | None:
+        return self._iv_runs.get(symbol)
+
+    def save_iv_backfill_run(self, run: IvBackfillRun) -> None:
+        self._iv_runs[run.symbol] = run

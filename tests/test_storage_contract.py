@@ -14,7 +14,7 @@ import os
 import pytest
 
 from api_app.storage import (DataSourceSettings, DividendCacheEntry,
-                             IvObservation, ProviderCredential,
+                             IvBackfillRun, IvObservation, ProviderCredential,
                              ProviderVerification, RateCacheEntry,
                              ResultRecord, Scenario, ScenarioExists,
                              UsageSetting)
@@ -46,7 +46,7 @@ def storage(request):
         conn.execute("TRUNCATE scenarios, results, snapshots, events, rate_cache, "
                      "dividend_cache, data_source_settings, "
                      "provider_credentials, provider_verifications, "
-                     "iv_observations RESTART IDENTITY")
+                     "iv_observations, iv_backfill_runs RESTART IDENTITY")
     yield st
 
 
@@ -716,6 +716,22 @@ def test_deleting_a_scenario_keeps_the_symbol_cache(storage):
     assert storage.iv_observation_dates("TLT") == ["2026-05-04"]
 
 
+def test_backfill_run_starts_absent(storage):
+    assert storage.get_iv_backfill_run("TLT") is None
+
+
+def test_backfill_run_reads_back_and_overwrites(storage):
+    storage.save_iv_backfill_run(IvBackfillRun("TLT", "2026-08-11", "quota", "額度"))
+    storage.save_iv_backfill_run(IvBackfillRun("TLT", "2026-08-12", "ok", None))
+    got = storage.get_iv_backfill_run("TLT")
+    assert (got.ran_on, got.outcome, got.note) == ("2026-08-12", "ok", None)
+
+
+def test_backfill_runs_are_per_symbol(storage):
+    storage.save_iv_backfill_run(IvBackfillRun("TLT", "2026-08-12", "ok"))
+    assert storage.get_iv_backfill_run("SPY") is None
+
+
 # ---------- schema 遷移（V3／#51） ----------
 
 def test_existing_results_table_gains_the_new_column():
@@ -739,7 +755,7 @@ def test_existing_results_table_gains_the_new_column():
         conn.execute("TRUNCATE scenarios, results, snapshots, events, rate_cache, "
                      "dividend_cache, data_source_settings, "
                      "provider_credentials, provider_verifications, "
-                     "iv_observations RESTART IDENTITY")
+                     "iv_observations, iv_backfill_runs RESTART IDENTITY")
         conn.execute("DROP TABLE IF EXISTS results")
         # V2 時期的舊表：沒有 best_return
         conn.execute("CREATE TABLE results ("
@@ -771,7 +787,7 @@ def test_existing_results_table_gains_the_representative_candidate_column():
         conn.execute("TRUNCATE scenarios, results, snapshots, events, rate_cache, "
                      "dividend_cache, data_source_settings, "
                      "provider_credentials, provider_verifications, "
-                     "iv_observations RESTART IDENTITY")
+                     "iv_observations, iv_backfill_runs RESTART IDENTITY")
         conn.execute("DROP TABLE IF EXISTS results")
         # V3 時期的舊表：有 best_return，還沒有 representative_candidate。
         conn.execute("CREATE TABLE results ("
@@ -805,7 +821,7 @@ def test_migration_still_applies_when_table_creation_hits_a_race():
         conn.execute("TRUNCATE scenarios, results, snapshots, events, rate_cache, "
                      "dividend_cache, data_source_settings, "
                      "provider_credentials, provider_verifications, "
-                     "iv_observations RESTART IDENTITY")
+                     "iv_observations, iv_backfill_runs RESTART IDENTITY")
         conn.execute("DROP TABLE IF EXISTS results")
         conn.execute("CREATE TABLE results ("
                      "scenario_id TEXT NOT NULL, analyzed_at TEXT NOT NULL, "

@@ -23,7 +23,8 @@ from datetime import datetime, timezone
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
-from ..models import SCHEMA_VERSION, ChainSnapshot, FetchError, OptionContract
+from ..models import (SCHEMA_VERSION, ChainSnapshot, FetchError,
+                      OptionContract, QuotaExhausted)
 
 SOURCE = "marketdata-app"
 
@@ -231,6 +232,16 @@ def map_surface_payload(payload: dict) -> dict[str, list]:
     return out
 
 
+def _raise_for_quota(e: Exception) -> None:
+    """HTTP 429 ＝額度用完，抬成 `QuotaExhausted`。
+
+    其餘失敗維持一般 `FetchError`——「今天別再試了」跟「這次剛好失敗」
+    對使用者是兩件事，混成一句話等於要他自己猜。
+    """
+    if isinstance(e, HTTPError) and e.code == 429:
+        raise QuotaExhausted("Market Data App 今日額度已用完") from e
+
+
 def fetch_surface(symbol: str, on_date: str, token: str,
                   http_get=_http_get) -> dict[str, list]:
     """某一個歷史日期的整鏈，轉成 (dte, delta, iv) 座標點。
@@ -246,5 +257,6 @@ def fetch_surface(symbol: str, on_date: str, token: str,
     except FetchError:
         raise
     except Exception as e:  # noqa: BLE001
+        _raise_for_quota(e)
         raise FetchError(
             f"Market Data App 歷史鏈抓取失敗（{symbol} {on_date}）: {e}") from e

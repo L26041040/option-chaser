@@ -380,3 +380,18 @@ def weighted_percentile(observations: list[tuple[str, float | None]],
         return None
     hit = sum(by_date[d] for d, v in known if v <= value)
     return hit / total
+
+
+def weighted_percentiles_of(points: list[dict]) -> dict:
+    """各欄位最新值的**時間加權**百分位（#128／#130）。
+
+    取代 `percentiles_of()` 的等權版本：觀測是「近期密、遠期疏」抽出來
+    的，等權會讓最近數月被過度加權。出界或缺漏（`None`）的日子整筆剔除
+    ——不進母體，也不用鄰居補（那就是插值）。
+    """
+    out: dict[str, float | None] = {}
+    for field in ("normalized_skew", "buy_iv", "sell_iv", "atm_iv"):
+        obs = [(p["date"], p.get(field)) for p in points]
+        latest = next((v for _, v in reversed(obs) if v is not None), None)
+        out[field] = weighted_percentile(obs, latest)
+    return out
