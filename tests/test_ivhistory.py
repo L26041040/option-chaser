@@ -3,10 +3,14 @@
 重點在**邊界**：不外插、不拿最長天期頂替、湊不出來就回 None。這幾條
 是 #114 AC 明文要求的，不是實作細節。
 """
+from datetime import date
+
 import pytest
 
-from option_chaser.ivhistory import (ATM_DELTA, SurfacePoint, iv_at,
-                                     normalized_skew, percentile)
+from option_chaser.ivhistory import (ATM_DELTA, SurfacePoint,
+                                     leg_coordinate, iv_at,
+                                     nearby_expirations, normalized_skew,
+                                     percentile, spread_coordinates)
 
 
 def _grid():
@@ -137,6 +141,91 @@ def test_empty_history_has_no_percentile():
 
 
 # ---------- 紅線：不得參與排序／過濾／選取 ----------
+
+# ---------- 座標的利率語意（#134）----------
+
+def test_leg_coordinate_defaults_to_zero_rate_when_unspecified():
+    """不傳 `rate` 時維持舊行為（r=0）——呼叫端沒給就是沒給，不是這個
+    函式自己該去哪裡查表。"""
+    zero = leg_coordinate(option_type="call", strike=100.0, iv=0.24,
+                          spot=100.0, days_to_expiry=365)
+    explicit = leg_coordinate(option_type="call", strike=100.0, iv=0.24,
+                              spot=100.0, days_to_expiry=365, rate=0.0)
+    assert zero == explicit
+
+
+def test_leg_coordinate_rate_changes_the_delta():
+    """r 進 Black-Scholes 的 d1／d2，改了 r 應該改到 delta——這是後面
+    `spread_coordinates` 該不該把 `rate_used` 傳進來的先決條件：如果
+    這裡不吃 r，傳不傳都沒差，那條修正就是假的。"""
+    at_zero = leg_coordinate(option_type="call", strike=100.0, iv=0.24,
+                             spot=100.0, days_to_expiry=365, rate=0.0)
+    at_real = leg_coordinate(option_type="call", strike=100.0, iv=0.24,
+                             spot=100.0, days_to_expiry=365, rate=0.04)
+    assert at_zero.delta != at_real.delta
+
+
+def _candidate(*, rate_used=0.04, dte=400):
+    return {
+        "days_to_expiry": dte,
+        "rate_used": rate_used,
+        "legs": [
+            {"option_type": "call", "strike": 95.0, "iv": 0.22},
+            {"option_type": "call", "strike": 105.0, "iv": 0.20},
+        ],
+    }
+
+
+def test_spread_coordinates_uses_the_candidate_own_rate_used():
+    """紅線（#134）：Historical IV 的座標要跟正式估值管線用同一個利率
+    ——不是另外取 0。`rate_used` 就是 `leg_rate(p, expiry)` 的查表結果
+    （`CandidateView.rate_used`），已經序列化在候選 view dict 裡。"""
+    with_real_rate = spread_coordinates(_candidate(rate_used=0.04), spot=100.0)
+    with_zero_rate = spread_coordinates(_candidate(rate_used=0.0), spot=100.0)
+    assert with_real_rate is not None and with_zero_rate is not None
+    assert with_real_rate["buy"].delta != with_zero_rate["buy"].delta
+
+
+def test_spread_coordinates_tolerates_a_missing_rate_used():
+    """舊資料或算不出 `rate_used` 的候選（理論上不該發生，但別因此整組
+    炸掉）：退回 r=0，跟修正前的行為一致，不是拋例外。"""
+    cand = _candidate()
+    del cand["rate_used"]
+    assert spread_coordinates(cand, spot=100.0) is not None
+
+
+# ---------- 歷史回補要鎖定哪些到期日（#134）----------
+
+def test_short_tenor_candidates_get_no_targeted_expirations():
+    """vendor 預設（不帶 `expiration`）本就回下一個月選，短天期候選
+    原本就抓得到——回空讓呼叫端照舊用那個免費的預設請求。"""
+    known = ["2026-09-18", "2026-10-16", "2028-06-16"]
+    assert nearby_expirations(known, today=date(2026, 8, 12),
+                              tenor_days=20) == []
+
+
+def test_long_tenor_candidates_get_the_nearest_known_expiries():
+    """長天期候選（vendor 預設覆蓋不到）要鎖定離目標 tenor 最近的到期
+    日——這正是修正「連線成功但無資料」的機制。"""
+    known = ["2026-09-18", "2028-05-19", "2028-06-16", "2028-07-21",
+            "2030-01-18"]
+    # 今天 + 700 天 ≈ 2028-07-13，離它最近的是 07-21（8 天）與 06-16（27 天）。
+    got = nearby_expirations(known, today=date(2026, 8, 12), tenor_days=700,
+                             limit=2)
+    assert got == ["2028-07-21", "2028-06-16"]
+
+
+def test_nearby_expirations_never_invents_a_date_not_already_known():
+    """只從『這個 Scenario 已經分析過』的到期日裡挑——不額外查
+    expirations 清單，這是 credit-conscious 的關鍵：zero 額外 vendor 成本。"""
+    known = ["2028-06-16", "2028-07-21"]
+    got = nearby_expirations(known, today=date(2026, 8, 12), tenor_days=9999)
+    assert set(got) <= set(known)
+
+
+def test_no_known_expiries_yields_no_targets():
+    assert nearby_expirations([], today=date(2026, 8, 12), tenor_days=700) == []
+
 
 def test_ranking_and_filters_do_not_depend_on_this_module():
     """spec #117 §5 的硬紅線在結構上成立：排序與過濾根本不 import 它，

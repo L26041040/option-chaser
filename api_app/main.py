@@ -41,8 +41,9 @@ FetchChain = Callable[[str], ChainSnapshot]
 # 自訂 Provider 的兩條路徑（Settings／#125），皆可注入 → 測試離線。
 VerifyProvider = Callable[[str, str], "providers.VerifyOutcome"]
 CustomFetch = Callable[[str, str, str], ChainSnapshot]
-# (provider, symbol, date, token) -> {"call": [SurfacePoint], "put": [...]}
-HistoricalSurface = Callable[[str, str, str, str], dict]
+# (provider, symbol, date, token, expiration=None) ->
+#   {"call": [SurfacePoint], "put": [...]}
+HistoricalSurface = Callable[..., dict]
 
 # MVP 範圍（沿用既有 Streamlit 版與 spec #47 的三欄表單）：方向與策略
 # 是固定值，不由前端送。需要看空或多策略時再由對應的票加上。
@@ -733,10 +734,11 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
 
     # ---------- Historical IV：快取、漸進補齊、額度（#126／#130） ----------
 
-    def _backfill_iv(symbol: str, provider: str, token: str) -> tuple[str, str | None]:
+    def _backfill_iv(symbol: str, provider: str, token: str,
+                     target_expirations: list[str]) -> tuple[str, str | None]:
         """把這個 symbol 的歷史觀測往前補一批，回傳 (狀態, 說明)。
 
-        三條規則直接寫在這裡，因為它們決定了會不會白白燒掉使用者的額度：
+        四條規則直接寫在這裡，因為它們決定了會不會白白燒掉使用者的額度：
 
         1. **已有的日期一次都不重抓**——只補「排程要、快取沒有」的那幾天。
         2. **每個 symbol 每天只跑一批**。同一天多開幾個同 ticker 的
@@ -744,6 +746,13 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
            才知道。
         3. **每批有上限**。第一次使用一個新 ticker 時不是一口氣抓滿，而是
            分幾天補齊（需求方的 progressive backfill）。
+        4. **每天只鎖定 `target_expirations` 這幾個到期日**（#134）——
+           不帶 `expiration` 篩選會撲空長天期候選（vendor 預設只回下一
+           個月選），帶 `expiration=all` 又會扣光整條鏈的額度；呼叫端
+           （`ivhistory.nearby_expirations()`）已經把範圍收斂成離目標
+           tenor 最近的少數幾個真實到期日，這裡逐一打、合併成同一天的
+           曲面再存一次——**曲面是聯集，不是覆蓋**：同一天原本沒有的
+           到期日才會真的觸發 vendor 請求。
 
         補的順序由新到舊：近期的觀測對「現在的 IV 站在哪」最有用，額度
         中途用完時留下的也是比較有價值的那一段。
@@ -758,11 +767,19 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         wanted = ivhistory.sampling_schedule(symbol, today)
         have = set(db.iv_observation_dates(symbol))
         missing = [d for d in wanted if d not in have]
+        # 沒算出目標到期日時退回舊行為（vendor 預設的下一個月選），
+        # 好過完全不抓——這種情況只有候選算不出 tenor 才會發生。
+        expirations = target_expirations or [None]
 
         outcome, note = "ok", None
         for day in sorted(missing, reverse=True)[:_IV_BACKFILL_PER_RUN]:
+            merged: dict[str, list] = {"call": [], "put": []}
             try:
-                surface = historical_surface(provider, symbol, day, token)
+                for exp in expirations:
+                    got = historical_surface(provider, symbol, day, token,
+                                            expiration=exp)
+                    merged["call"].extend(got.get("call") or [])
+                    merged["put"].extend(got.get("put") or [])
             except QuotaExhausted as e:
                 outcome, note = "quota", str(e)
                 break
@@ -771,7 +788,7 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
                 break
             db.save_iv_observation(IvObservation(
                 symbol=symbol, observed_on=day,
-                surface=_surface_to_rows(surface), fetched_at=now_utc_iso()))
+                surface=_surface_to_rows(merged), fetched_at=now_utc_iso()))
 
         db.save_iv_backfill_run(IvBackfillRun(symbol=symbol,
                                              ran_on=today.isoformat(),
@@ -811,7 +828,17 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
 
         provider = settings_view["historical_iv"]["provider"]
         token = _db().get_credential(provider).token
-        outcome, note = _backfill_iv(sc.symbol, provider, token)
+        # `expiry_counts` 掛在每個策略結果（`results[i]`）底下，不是
+        # view 頂層——這裡只要「有哪些到期日」，跨策略去重即可。
+        known_expiries = sorted({
+            e for r in rec.view.get("results") or []
+            for e, _ in r.get("expiry_counts") or []
+        })
+        target_expirations = ivhistory.nearby_expirations(
+            known_expiries, today=ny_today(),
+            tenor_days=cand.get("days_to_expiry") or 0)
+        outcome, note = _backfill_iv(sc.symbol, provider, token,
+                                     target_expirations)
 
         coords = ivhistory.spread_coordinates(cand, spot=rec.view["meta"]["spot"])
         if coords is None:

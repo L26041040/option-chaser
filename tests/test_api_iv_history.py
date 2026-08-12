@@ -69,7 +69,7 @@ class Recorder:
         self.calls: list[tuple[str, str]] = []
         self._fail = fail
 
-    def __call__(self, provider, symbol, on_date, token):
+    def __call__(self, provider, symbol, on_date, token, expiration=None):
         self.calls.append((symbol, on_date))
         if self._fail is not None:
             raise self._fail
@@ -489,6 +489,67 @@ def test_a_healthy_run_reports_ok_with_metrics_for_every_field(db):
         assert m["percentile"] is not None
         assert m["count"] > 0
         assert m["value"] is not None
+
+
+# ---------- 長天期候選的到期日鎖定（#134）----------
+
+def _candidate_key_from_farthest_expiry(client, sid):
+    """挑分析結果裡到期日最遠的那個候選——這是「vendor 預設下一個月選
+    覆蓋不到」的那一類，正是需求方回報的 bug 重現條件。"""
+    view = client.get(f"/api/scenarios/{sid}").json()["latest_result"]
+    best = None
+    for r in view["results"]:
+        for g in r.get("expiry_top10") or []:
+            for c in g["candidates"]:
+                if best is None or c["days_to_expiry"] > best["days_to_expiry"]:
+                    best = c
+    if best is None:
+        raise AssertionError("樣本裡沒有候選可用")
+    return best["candidate_key"]
+
+
+def test_a_long_dated_candidate_actually_receives_non_default_expirations(db):
+    """#134 修正核心：長天期候選要帶 `expiration` 篩選去打 vendor，不能
+    只靠預設的下一個月選——那個預設永遠罩不到 LEAPS，這正是需求方回報
+    『連線成功但無資料』的 root cause。"""
+    class ExpirationRecorder:
+        def __init__(self):
+            self.expirations: list[str | None] = []
+
+        def __call__(self, provider, symbol, on_date, token, expiration=None):
+            self.expirations.append(expiration)
+            return _grid()
+
+    rec = ExpirationRecorder()
+    client = _client(db, surface=rec)
+    _unlock(client)
+    sid = _scenario(client)
+    key = _candidate_key_from_farthest_expiry(client, sid)
+
+    _get(client, sid, key)
+    assert any(e is not None for e in rec.expirations), \
+        "長天期候選一次 expiration 篩選都沒帶，會撲空 vendor 的預設下一個月選"
+
+
+def test_a_short_dated_candidate_keeps_using_the_cheap_vendor_default(db):
+    """短天期候選不必多花 vendor 請求——這是 credit-conscious 那一半的
+    紅線：預設本來就夠，不該為了修長天期的 bug 讓短天期也變貴。"""
+    class ExpirationRecorder:
+        def __init__(self):
+            self.expirations: list[str | None] = []
+
+        def __call__(self, provider, symbol, on_date, token, expiration=None):
+            self.expirations.append(expiration)
+            return _grid()
+
+    rec = ExpirationRecorder()
+    client = _client(db, surface=rec)
+    _unlock(client)
+    sid = _scenario(client)
+    key = _candidate_key(client, sid)   # 樣本裡第一個候選＝最近到期日那組
+
+    _get(client, sid, key)
+    assert all(e is None for e in rec.expirations)
 
 
 def test_a_quota_failure_today_does_not_hide_yesterdays_cached_percentiles(db):

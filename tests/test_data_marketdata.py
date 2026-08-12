@@ -178,3 +178,71 @@ def test_verify_uses_the_cheap_endpoint_not_the_whole_chain():
     marketdata.verify("tok", http_get=spy)
     assert all("/options/chain/" not in u for u in seen)
     assert any("/options/expirations/" in u for u in seen)
+
+
+# ---------- 歷史曲面（#126／#134）----------
+
+def _surface_payload(**over):
+    base = {
+        "s": "ok",
+        "optionSymbol": ["AAPL260918C00200000", "AAPL260918P00200000"],
+        "side": ["call", "put"],
+        "dte": [37, 37],
+        "delta": [0.32, -0.29],
+        "iv": [0.24, 0.26],
+    }
+    base.update(over)
+    return base
+
+
+def test_surface_payload_becomes_points_grouped_by_side():
+    got = marketdata.map_surface_payload(_surface_payload())
+    assert [(p.dte, p.delta, p.iv) for p in got["call"]] == [(37, 0.32, 0.24)]
+    # put 的 delta 取絕對值——跟 call 的網格混在一起插值才有意義。
+    assert [(p.dte, p.delta, p.iv) for p in got["put"]] == [(37, 0.29, 0.26)]
+
+
+def test_rows_missing_delta_or_iv_or_dte_are_skipped():
+    got = marketdata.map_surface_payload(
+        _surface_payload(delta=[None, -0.29], iv=[0.24, 0.0]))
+    assert got["call"] == []
+    assert got["put"] == []   # iv=0.0 經 `_num` 視為缺值
+
+
+def test_no_data_status_is_an_empty_surface_not_an_error():
+    """`no_data` 是帶了 `expiration` 篩選後的正常撲空（#134）——那個到期
+    日在那個歷史日期還沒掛牌，不是 vendor 故障，不該讓整批 backfill 中止。"""
+    got = marketdata.map_surface_payload({"s": "no_data"})
+    assert got == {"call": [], "put": []}
+
+
+def test_error_status_is_still_a_fetch_error():
+    with pytest.raises(FetchError):
+        marketdata.map_surface_payload({"s": "error", "errmsg": "boom"})
+
+
+def test_fetch_surface_targets_a_specific_expiration_when_given():
+    """#134 修正：不帶 `expiration` 時 vendor 只回下一個月選，長天期候選
+    永遠抓不到自己的座標——呼叫端算出目標到期日後，這裡要把它放進 URL。"""
+    seen = []
+
+    def spy(url, token):
+        seen.append(url)
+        return json.dumps(_surface_payload())
+
+    marketdata.fetch_surface("AAPL", "2026-08-01", "tok", http_get=spy,
+                             expiration="2028-06-16")
+    assert "date=2026-08-01" in seen[0]
+    assert "expiration=2028-06-16" in seen[0]
+
+
+def test_fetch_surface_omits_the_expiration_filter_when_not_given():
+    """短天期候選不必多花這個篩選——vendor 預設的下一個月選本來就夠。"""
+    seen = []
+
+    def spy(url, token):
+        seen.append(url)
+        return json.dumps(_surface_payload())
+
+    marketdata.fetch_surface("AAPL", "2026-08-01", "tok", http_get=spy)
+    assert "expiration=" not in seen[0]

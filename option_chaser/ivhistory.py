@@ -174,6 +174,14 @@ def spread_coordinates(candidate: dict, *, spot: float) -> dict | None:
 
     買腿＝先出現的那條（引擎既有慣例，`legs[0]` 是買腿）。任一腿算不出
     座標就整組回 `None`：skew 是兩腿之差，缺一邊就沒有那個數字。
+
+    **利率**：讀候選自己的 `rate_used`（`CandidateView.rate_used`，
+    `leg_rate(p, expiry)` 查表結果，與正式估值管線完全同一個數字），
+    不是另外取 0——delta 算出來要跟畫面上其他數字（催化價、Greeks）
+    站在同一個假設上，兩套利率會讓同一個候選在不同區塊看到不一致的
+    delta。**股利殖利率沿用 q=0**：這是 #122 既有紅線——分級用途的
+    delta 本就恆用 q=0／vendor IV、不讀校準後的 carry，Historical IV
+    座標屬於同一種「分級用途」，維持一致不是遺漏。
     """
     legs = candidate.get("legs") or []
     if len(legs) < 2:
@@ -181,17 +189,65 @@ def spread_coordinates(candidate: dict, *, spot: float) -> dict | None:
     dte = candidate.get("days_to_expiry")
     if not dte:
         return None
+    rate = candidate.get("rate_used") or 0.0
 
     buy, sell = legs[0], legs[1]
     coords = {}
     for name, leg in (("buy", buy), ("sell", sell)):
         got = leg_coordinate(option_type=leg.get("option_type", "call"),
                              strike=leg.get("strike", 0.0), iv=leg.get("iv"),
-                             spot=spot, days_to_expiry=int(dte))
+                             spot=spot, days_to_expiry=int(dte), rate=rate)
         if got is None:
             return None
         coords[name] = got
     return coords
+
+
+def nearby_expirations(known_expiries: list, *, today, tenor_days: int,
+                       limit: int = 4) -> list:
+    """從這個 Scenario 已經分析過的到期日裡，挑出離目標 tenor 最近的幾個。
+
+    **這就是修正「長天期候選歷史 IV 全部無資料」的核心**：vendor 的
+    historical chain 端點不帶 `expiration` 篩選時，只回「下一個月選」
+    （官方文件明載），對到期日遠在天邊的 LEAPS 候選完全覆蓋不到；反過來
+    帶 `expiration=all` 回整條鏈，一天可能上千張合約，免費額度一天就
+    燒光。折衷＝**只鎖定離目標 tenor 最近的少數幾個到期日**，這些日期
+    全部是**已經分析過的真實合約**（來自 `view["expiry_counts"]`，
+    zero 額外 vendor 成本得知，不必另外查 expirations 清單）。
+
+    回傳一個到期日的「梯子」而不是恰好兩個：回溯窗口內每一天要比的
+    目標 tenor 都不一樣（`today + tenor_days` 隨 `today` 往回退而跟著
+    往前移），恰好兩個到期日只能罩住窗口裡很小一段；`iv_at()` 既有的
+    bisect 邏輯本來就會在當天實際抓到的到期日集合裡找相鄰的一對，
+    梯子式的候選集讓不同歷史日各自配對到不同的一對，不需要在這裡另外
+    寫配對邏輯。窗口較久遠的那一段仍可能沒有涵蓋到——`iv_at()` 誠實回
+    `None`，觀測筆數如實反映在畫面上，不是靜默錯誤（沿用既有「缺席即
+    斷點」原則，不是本函式該解決的問題）。
+
+    **短天期候選刻意回空**（`_SHORT_TENOR_DAYS`）：vendor 預設（不帶
+    `expiration`）本就回下一個月選，對這種候選原本就抓得到——回空讓
+    呼叫端照舊用那個免費的預設請求，不必為了已經沒事的候選多打 3 倍
+    vendor 請求。只在預設覆蓋不到的長天期才需要這份梯子，這正是需求方
+    回報「連線成功但無資料」的那一類候選。
+    """
+    if tenor_days <= _SHORT_TENOR_DAYS or not known_expiries:
+        return []
+    from datetime import date as _date
+    from datetime import timedelta
+
+    target = today + timedelta(days=tenor_days)
+    scored = sorted(
+        set(known_expiries),
+        key=lambda e: abs((_date.fromisoformat(e) - target).days),
+    )
+    return scored[:limit]
+
+
+# 「下一個月選」正常狀況下離今天多遠——粗抓一個月的曆日再加點緩衝，
+# 抓太緊會誤判成「預設抓不到」而多打不必要的 vendor 請求，抓太鬆會漏掉
+# 真正需要梯子的長天期候選。抓不準沒有安全疑慮，只是多打幾次請求
+# ，不影響正確性。
+_SHORT_TENOR_DAYS = 45
 
 
 def reanchor_spread(surface: dict, coords: dict) -> dict:

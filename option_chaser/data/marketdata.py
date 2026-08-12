@@ -213,8 +213,15 @@ def map_surface_payload(payload: dict) -> dict[str, list]:
     """
     from ..ivhistory import SurfacePoint
 
-    if payload.get("s") != "ok":
-        raise FetchError(f"Market Data App 回報 s={payload.get('s')!r}")
+    status = payload.get("s")
+    if status == "no_data":
+        # 這個 (symbol, date, expiration) 組合當天沒有資料——例如目標
+        # 到期日在那個歷史日期還沒掛牌。這是**帶了 `expiration` 篩選後
+        # 的正常結果**，不是 vendor 故障：整鏈查詢很少見這個狀態，
+        # 但單一到期日篩選常態性地會撲空，撲空不該讓整批 backfill 中止。
+        return {"call": [], "put": []}
+    if status != "ok":
+        raise FetchError(f"Market Data App 回報 s={status!r}")
 
     out: dict[str, list] = {"call": [], "put": []}
     for row in _rows(payload):
@@ -243,16 +250,27 @@ def _raise_for_quota(e: Exception) -> None:
 
 
 def fetch_surface(symbol: str, on_date: str, token: str,
-                  http_get=_http_get) -> dict[str, list]:
+                  http_get=_http_get, expiration: str | None = None
+                  ) -> dict[str, list]:
     """某一個歷史日期的整鏈，轉成 (dte, delta, iv) 座標點。
 
     這是 (tenor, delta) 逐日重錨定的原料——**不是**單一合約的歷史序列
     （那張合約的 tenor 每天縮短、delta 每天漂移，意義會漂掉，見
     `option_chaser/ivhistory.py` 檔頭）。
+
+    **`expiration`（#134 修正）**：不帶這個參數時，vendor 對
+    `chain?date=` 的預設行為是**只回下一個月選**（官方文件明載）——
+    對到期日遠在天邊的候選（LEAPS）完全覆蓋不到，`iv_at()` 因此在
+    禁止外插的規則下全部回 `None`，呈現成「連線成功但沒資料」。呼叫端
+    （`ivhistory.nearby_expirations()`）會算出離目標 tenor 最近的幾個
+    真實到期日，逐一帶這個參數分別打——每次只回一個到期日的合約，
+    成本遠低於 `expiration=all` 回整條鏈。
     """
+    url = _HISTORICAL_CHAIN_URL.format(symbol=symbol.upper(), date=on_date)
+    if expiration:
+        url += f"&expiration={expiration}"
     try:
-        raw = http_get(_HISTORICAL_CHAIN_URL.format(symbol=symbol.upper(),
-                                                    date=on_date), token)
+        raw = http_get(url, token)
         return map_surface_payload(json.loads(raw))
     except FetchError:
         raise
