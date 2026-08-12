@@ -686,3 +686,18 @@ def list_result_paths(ws_root, scenario_id: str) -> list[Path]:
 def latest_result_path(ws_root, scenario_id: str) -> Path | None:
     files = list_result_paths(ws_root, scenario_id)
     return files[-1] if files else None
+
+
+def find_candidate(view: dict, key: str) -> dict | None:
+    """依身份鍵在 view dict 裡找出那個候選的**完整**形狀（含各腿）。
+
+    走 `expiry_top10`（完整候選）而不是 `all_candidates`（精簡序列，只有
+    成本與名次，沒有腿）——呼叫端要的是腿上的 IV／履約價／權別。找不到
+    回 `None`，不拋錯：候選可能在這次刷新被過濾掉，那是正常狀態。
+    """
+    for r in view.get("results", []):
+        for group in r.get("expiry_top10", []) or []:
+            for cand in group.get("candidates", []):
+                if cand.get("candidate_key") == key:
+                    return cand
+    return None

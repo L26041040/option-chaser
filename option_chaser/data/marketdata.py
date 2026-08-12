@@ -193,3 +193,58 @@ def verify(token: str, http_get=_http_get) -> VerifyResult:
     # vendor 也會用 200＋`s: "error"` 表達錯誤，不是只靠 HTTP 狀態碼。
     message = payload.get("errmsg") or f"s={status!r}"
     return VerifyResult(False, f"資料源回報失敗：{message}")
+
+
+# ---------- 歷史曲面（#126） ----------
+
+_HISTORICAL_CHAIN_URL = _BASE + "/options/chain/{symbol}/?date={date}"
+
+
+def map_surface_payload(payload: dict) -> dict[str, list]:
+    """欄狀回應 → 依權別分組的 `(dte, delta, iv)` 座標點。
+
+    回傳 `{"call": [...], "put": [...]}`，值是
+    `option_chaser.ivhistory.SurfacePoint`。delta 取絕對值——put 的 delta
+    是負的，混進同一個網格插值會得到毫無意義的結果。
+
+    缺 delta 或 iv 的那一筆直接跳過（不是補零）：那一格沒有座標就是
+    沒有座標，補上去會在網格裡放一個假點，讓插值以為自己有依據。
+    """
+    from ..ivhistory import SurfacePoint
+
+    if payload.get("s") != "ok":
+        raise FetchError(f"Market Data App 回報 s={payload.get('s')!r}")
+
+    out: dict[str, list] = {"call": [], "put": []}
+    for row in _rows(payload):
+        side = str(row.get("side") or "").lower()
+        if side not in out:
+            continue
+        delta, iv, dte = row.get("delta"), _num(row.get("iv")), row.get("dte")
+        if delta is None or iv is None or dte is None:
+            continue
+        try:
+            out[side].append(SurfacePoint(dte=int(dte), delta=abs(float(delta)),
+                                          iv=iv))
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+def fetch_surface(symbol: str, on_date: str, token: str,
+                  http_get=_http_get) -> dict[str, list]:
+    """某一個歷史日期的整鏈，轉成 (dte, delta, iv) 座標點。
+
+    這是 (tenor, delta) 逐日重錨定的原料——**不是**單一合約的歷史序列
+    （那張合約的 tenor 每天縮短、delta 每天漂移，意義會漂掉，見
+    `option_chaser/ivhistory.py` 檔頭）。
+    """
+    try:
+        raw = http_get(_HISTORICAL_CHAIN_URL.format(symbol=symbol.upper(),
+                                                    date=on_date), token)
+        return map_surface_payload(json.loads(raw))
+    except FetchError:
+        raise
+    except Exception as e:  # noqa: BLE001
+        raise FetchError(
+            f"Market Data App 歷史鏈抓取失敗（{symbol} {on_date}）: {e}") from e

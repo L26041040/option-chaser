@@ -16,14 +16,22 @@
 AC 明文要避免的錯：序列的意義隨合約變老而漂移。
 
 真正的逐日重錨定需要「每一天那一天的鏈」，也就是
-`/v1/options/chain/{symbol}/?date=YYYY-MM-DD`。而 chain 端點的計價是
-**回幾筆合約就扣幾個 credit**（`option-chain-data-sources.md` §3.6，
-官方自舉 SPX 全鏈 22,718 筆＝22,718 credits）。一年 252 個交易日 ×
-每天一次全鏈，免費層 100 credits/日顯然不夠——但可以用 `strike`／
-`expiration`／`delta` 之類的篩選參數把每天的回傳筆數壓下來。
+`/v1/options/chain/{symbol}/?date=YYYY-MM-DD`。而 chain 端點有**兩種計價模式**
+（`option-chain-data-sources.md` §3.6）：
 
-**這支腳本就是去量這件事**：逐日重錨定一年要花多少 credit，以及回傳
-欄位裡到底有沒有 delta（沒有 delta 就根本錨不了）。
+- **cached mode：整鏈 1 credit**——但該節記載「免費與試用層不能用」
+- **live mode：回幾筆合約就扣幾個 credit**（官方自舉 SPX 全鏈
+  22,718 筆＝22,718 credits）
+
+也就是說「逐日整鏈」的成本取決於**落在哪個模式**，不是端點本身就貴：
+付費層（Starter US$12/月、10,000 credits/日）下 252 個交易日各一次
+＝約 252 credits，綽綽有餘。真正沒查證的是
+`historical-options-iv-data-sources.md` §4.7 明記的那一項：**歷史查詢
+（帶 `date`／`from`／`to`）到底怎麼扣 credit——一次呼叫一點，還是逐日
+扣？** 該節原文寫「未能查證」。
+
+**這支腳本就是去量這件事**：逐日重錨定一年實際要花多少 credit，以及
+回傳欄位裡到底有沒有 delta（沒有 delta 就根本錨不了）。
 
 ## 用法
 

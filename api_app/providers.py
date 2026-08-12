@@ -102,3 +102,15 @@ def default_fetch_chain(provider_id: str, symbol: str, token: str):
     from option_chaser.models import FetchError
 
     raise FetchError(f"不支援的資料源：{provider_id}")
+
+
+def default_historical_surface(provider_id: str, symbol: str, on_date: str,
+                               token: str) -> dict[str, list]:
+    """某一歷史日期的 (dte, delta, iv) 座標點，依權別分組（#126）。"""
+    if provider_id == MARKETDATA_APP.id:
+        from option_chaser.data import marketdata
+
+        return marketdata.fetch_surface(symbol, on_date, token)
+    from option_chaser.models import FetchError
+
+    raise FetchError(f"不支援的資料源：{provider_id}")

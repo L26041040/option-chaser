@@ -19,7 +19,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import Response
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from option_chaser import __version__, service, store
+from option_chaser import __version__, ivhistory, service, store
 from option_chaser.data.snapshot import snapshot_from_dict, snapshot_to_csv
 from option_chaser.models import (AnalysisParams, ChainSnapshot, FetchError,
                                   ParamError, STRATEGIES)
@@ -41,6 +41,8 @@ FetchChain = Callable[[str], ChainSnapshot]
 # 自訂 Provider 的兩條路徑（Settings／#125），皆可注入 → 測試離線。
 VerifyProvider = Callable[[str, str], "providers.VerifyOutcome"]
 CustomFetch = Callable[[str, str, str], ChainSnapshot]
+# (provider, symbol, date, token) -> {"call": [SurfacePoint], "put": [...]}
+HistoricalSurface = Callable[[str, str, str, str], dict]
 
 # MVP 範圍（沿用既有 Streamlit 版與 spec #47 的三欄表單）：方向與策略
 # 是固定值，不由前端送。需要看空或多策略時再由對應的票加上。
@@ -227,6 +229,8 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
                dividend_loader: DividendLoader = service.default_dividend_loader,
                verify_provider: VerifyProvider = providers.default_verify,
                custom_fetch: CustomFetch = providers.default_fetch_chain,
+               historical_surface: HistoricalSurface =
+                   providers.default_historical_surface,
                ) -> FastAPI:
     """`fetch`／`storage`／`rate_loader`／`dividend_loader` 皆可注入：
     測試傳入固定快照、記憶體假體與假來源，因此不打真網路、不碰真資料庫，
@@ -621,6 +625,74 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         _require(scenario_id)
         return _db().list_events(scenario_id=scenario_id)
 
+    # ---------- Historical IV 歷史序列（#126） ----------
+
+    @app.get("/api/scenarios/{scenario_id}/iv-history")
+    def iv_history(scenario_id: str, candidate_key: str,
+                   window_days: int = 365) -> dict:
+        """候選的 (tenor, delta) 座標**逐日重錨定**的 IV 序列。
+
+        不是某一張固定合約的原始 IV 序列——那個東西的意義會隨合約變老而
+        漂移（見 `option_chaser/ivhistory.py` 檔頭）。
+
+        **閘門**：Historical IV 未解鎖時直接 403，一個 vendor 請求都不發。
+        前端本來就不該在鎖著時發這個請求（畫面連節點都不渲染），這裡是
+        第二道——繞過畫面直接打端點同樣要被擋下。
+
+        失敗只影響這個端點：分析頁其餘部分、以及劇本刷新，都不經過這裡。
+        """
+        sc = _require(scenario_id)
+        settings_view = _settings_view()
+        if not settings_view["historical_iv_enabled"]:
+            raise HTTPException(
+                status_code=403,
+                detail="Historical IV 未啟用——請在設定頁選擇自訂資料源並通過測試連線")
+
+        rec = _db().latest_result(scenario_id)
+        if rec is None:
+            raise HTTPException(status_code=404, detail="這個劇本還沒有分析結果")
+        cand = store.find_candidate(rec.view, candidate_key)
+        if cand is None:
+            raise HTTPException(status_code=404,
+                                detail=f"找不到候選：{candidate_key}")
+
+        provider = settings_view["historical_iv"]["provider"]
+        token = _db().get_credential(provider).token
+        spot = rec.view["meta"]["spot"]
+
+        coords = ivhistory.spread_coordinates(cand, spot=spot)
+        if coords is None:
+            return {"candidate_key": candidate_key, "window_days": window_days,
+                    "points": [], "current": None, "percentiles": {},
+                    "out_of_grid": True,
+                    "note": "這個候選算不出 (tenor, delta) 座標（缺 IV 或天期），"
+                            "沒有可比的歷史序列"}
+
+        # 逐日重錨定：每一天各取那天的鏈，在同一個座標上插值。
+        points, failures = [], []
+        for day in ivhistory.trading_days_back(ny_today(), window_days):
+            try:
+                surface = historical_surface(provider, sc.symbol, day, token)
+            except FetchError as e:
+                failures.append(str(e))
+                continue
+            points.append({"date": day,
+                           **ivhistory.reanchor_spread(surface, coords)})
+
+        current = points[-1] if points else None
+        return {
+            "candidate_key": candidate_key,
+            "window_days": window_days,
+            "points": points,
+            "current": current,
+            "percentiles": ivhistory.percentiles_of(points),
+            "out_of_grid": bool(points) and all(
+                p["normalized_skew"] is None for p in points),
+            # 如實回報，不靜默：整段抓不到跟「抓到但座標出界」是兩件事。
+            "note": (f"有 {len(failures)} 天取不到資料：{failures[0]}"
+                     if failures else None),
+        }
+
     # ---------- 設定：資料源與 Provider credential（Settings／#124） ----------
 
     def _settings_view() -> dict:
@@ -671,8 +743,24 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
                for usage, u in usages.items()},
             "credentials": creds,
             "market_data_effective": fallback,
+            # #126：Historical IV 模組解不解鎖，由後端算好給一個旗標。
+            # 前端不自己重推這條規則——推兩份遲早會漂移，而漂移的後果是
+            # 「畫面以為鎖著、其實已經發了請求」這種正好違反 AC 的狀態。
+            "historical_iv_enabled": _historical_iv_enabled(
+                usages[providers.HISTORICAL_IV], creds),
             "updated_at": stored.updated_at if stored else None,
         }
+
+    def _historical_iv_enabled(iv: UsageSetting, creds: dict[str, dict]) -> bool:
+        """Historical IV 模組解鎖的唯一判準（#126）。
+
+        預設（無）＝鎖著；選了自訂但 credential 未設定或驗證沒過，也是
+        鎖著——**不進半殘狀態**。這條規則只寫一次，端點的守門與畫面的
+        顯示都讀它。
+        """
+        if iv.mode != providers.MODE_CUSTOM or not iv.provider:
+            return False
+        return creds.get(iv.provider, {}).get("status") == "ok"
 
     def _market_data_fallback(md: UsageSetting, creds: dict[str, dict]) -> dict:
         """Market Data 這一列現在實際會用哪個來源，以及（若有）退回的原因。
