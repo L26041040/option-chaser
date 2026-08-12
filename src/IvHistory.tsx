@@ -23,12 +23,27 @@ import {
   ivHistory,
   type Candidate,
   type IvHistoryPoint,
+  type IvHistoryStatus,
   type IvHistoryView,
 } from "./api";
 
+/**
+ * 資料不完整時的說明。刻意**極短**——需求方明示不要大卡片、不要長篇。
+ *
+ * 五種情況裡的 `unset`（provider 未設定）與 `invalid`（驗證失敗）不在
+ * 這張表：那兩種在閘門就擋掉了，整個模組不渲染，連訊息都不該出現。
+ */
+const STATUS_NOTES: Record<Exclude<IvHistoryStatus, "ok">, string[]> = {
+  insufficient: ["歷史資料尚未完整", "將在後續使用時繼續補齊"],
+  quota: ["歷史資料尚未完整", "今日 API 額度已用完", "將在後續使用時繼續補齊"],
+  vendor: ["歷史資料尚未完整", "資料源暫時無法連線", "將在後續使用時繼續補齊"],
+};
+
 /** 百分位顯示成整數百分比；沒有百分位就明說超出可比網格，不留白讓人猜。 */
+/** 單一項目算不出百分位時留空並說明——**留空不是留白**：什麼都不寫會
+ *  讓人以為那個數字還沒載入完。文案維持極短。 */
 function pctLabel(value: number | null | undefined): string {
-  if (value === null || value === undefined) return "超出可比網格";
+  if (value === null || value === undefined) return "無可比基準";
   return `第 ${Math.round(value * 100)} 百分位`;
 }
 
@@ -147,6 +162,19 @@ export default function IvHistory({ scenarioId, candidate }: {
 
   if (!data) return null;
 
+  // 資料不完整：只出短訊息，**不畫 percentile、不畫 sparkline**。硬畫
+  // 一條線等於為了湊圖而假造資料（需求方紅線）。
+  if (data.status !== "ok") {
+    return (
+      <section className="card iv-history" aria-label="IV 相對位置">
+        <h2 className="section-title">IV 相對位置</h2>
+        {STATUS_NOTES[data.status].map((line) => (
+          <p className="caption" key={line}>{line}</p>
+        ))}
+      </section>
+    );
+  }
+
   const points: IvHistoryPoint[] = data.points;
   const cur = data.current;
 
@@ -173,17 +201,9 @@ export default function IvHistory({ scenarioId, candidate }: {
       </div>
 
       <p className="caption">
-        近 {Math.round(data.window_days / 30)} 個月，依候選的到期天數與
-        delta 座標逐日重錨定
+        近 1 年 {data.observations} 個觀測，依候選的到期天數與 delta 座標
+        逐日重錨定
       </p>
-
-      {/* 出界與 vendor 缺漏都如實說出來，不靜默留白。 */}
-      {data.out_of_grid && (
-        <p className="caption">
-          這個候選的到期天數超出資料源的可比網格，沒有可比的歷史百分位
-        </p>
-      )}
-      {data.note && <p className="caption">{data.note}</p>}
     </section>
   );
 }

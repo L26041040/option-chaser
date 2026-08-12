@@ -742,15 +742,24 @@ export interface IvHistoryPoint {
   normalized_skew: number | null;
 }
 
+/** 需求方點名要分得出來的幾種情況（#131）。
+ *
+ *  `unset`（provider 未設定）與 `invalid`（credential 驗證失敗）不會走到
+ *  這裡——那兩種在閘門就 403，畫面連模組都不渲染（#126 既有行為）。 */
+export type IvHistoryStatus = "ok" | "quota" | "vendor" | "insufficient";
+
 export interface IvHistoryView {
   candidate_key: string;
-  window_days: number;
+  status: IvHistoryStatus;
   points: IvHistoryPoint[];
   current: IvHistoryPoint | null;
+  /** **`status` 不是 `ok` 時是空物件**——不足／額度／失敗都不給百分位，
+   *  不為了湊圖端出一個看起來很確定的數字。 */
   percentiles: Record<string, number | null>;
-  /** 整段都插不出值＝這個候選的座標超出 vendor 的可比網格。 */
-  out_of_grid: boolean;
-  /** vendor 部分失敗時的如實說明；沒事就是 null。 */
+  /** 已經累積了幾天觀測（progressive backfill 的進度）。 */
+  observations: number;
+  /** 這些觀測涵蓋了 1 年窗的多少比例（0–1）。 */
+  coverage: number;
   note: string | null;
 }
 

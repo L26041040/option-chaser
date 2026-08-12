@@ -1118,10 +1118,10 @@ async function routeDetailWithIv(page: import("@playwright/test").Page,
     ivCalls.push(route.request().url());
     const points = ivPoints();
     return route.fulfill({ json: {
-      candidate_key: "k", window_days: 365, points,
+      candidate_key: "k", status: "ok", points,
       current: points[points.length - 1],
       percentiles: { normalized_skew: 0.62, buy_iv: 0.41, sell_iv: 0.55 },
-      out_of_grid: false, note: null,
+      observations: points.length, coverage: 0.95, note: null,
     } });
   });
   return ivCalls;
@@ -1162,4 +1162,38 @@ test("Historical IV 解鎖：Normalized Skew 當頭條、兩腿為次層（#114�
   // 手機上仍是 compact：這一塊不超過視窗高度的一半
   const box = (await block.boundingBox())!;
   expect(box.height).toBeLessThan(page.viewportSize()!.height / 2);
+});
+
+test("Historical IV 資料尚未完整：只出短訊息，不畫百分位與走勢（#131）",
+   async ({ page }) => {
+  await routeLibrary(page, libraryRow());
+  await page.route("**/api/settings", (route) =>
+    route.fulfill({ json: { historical_iv_enabled: true } }));
+  await page.route("**/api/scenarios/*/iv-history*", (route) =>
+    route.fulfill({ json: {
+      candidate_key: "k", status: "quota", points: [], current: null,
+      percentiles: {}, observations: 12, coverage: 0.18,
+      note: "Market Data App 今日額度已用完",
+    } }));
+
+  await page.goto("/#/s/s1");
+
+  const block = page.locator(".iv-history");
+  await expect(block).toBeVisible();
+  await expect(block.getByText("歷史資料尚未完整")).toBeVisible();
+  await expect(block.getByText("今日 API 額度已用完")).toBeVisible();
+  await expect(block.getByText("將在後續使用時繼續補齊")).toBeVisible();
+
+  // 紅線：不畫百分位、不畫 sparkline
+  await expect(block.locator(".iv-spark")).toHaveCount(0);
+  await expect(block).not.toContainText("百分位");
+
+  // 仍是 compact，而且主分析頁其餘部分照常
+  // 「不要大卡片」＝這一塊只是一張訊息卡：一個標題＋三行說明，沒有圖。
+  // 用結構斷言而不是像素門檻——像素會隨字體與安全區浮動，結構不會。
+  await expect(block.locator("p")).toHaveCount(3);
+  await expect(block.locator("svg")).toHaveCount(0);
+  const box = (await block.boundingBox())!;
+  expect(box.height).toBeLessThan(page.viewportSize()!.height / 2);
+  await expect(page.getByText("劇本主圖")).toBeVisible();
 });
