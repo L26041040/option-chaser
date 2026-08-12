@@ -319,8 +319,7 @@ def interval_weights(dates: list[str]) -> list[float]:
     過度加權。
 
     每個點的代表區間有上限（`_MAX_REPRESENTED_DAYS`）：長空窗不該由旁邊
-    那一個點代言。被截掉的部分就是「沒有資料的時間」，不補、不插值，
-    由 `coverage_ratio()` 如實回報。
+    那一個點代言。被截掉的部分就是「沒有資料的時間」，不補、不插值。
 
     回傳順序 ＝ **日期由舊到新**（與輸入順序無關）。呼叫端若要把權重配
     回自己的資料，必須先照日期排序再 zip——否則整組權重會錯位。
@@ -340,17 +339,6 @@ def interval_weights(dates: list[str]) -> list[float]:
             else (day - days[-2]) / 2
         out.append(min(left + right, _MAX_REPRESENTED_DAYS))
     return out
-
-
-def coverage_ratio(dates: list[str], *, window_days: int = _WINDOW_DAYS) -> float:
-    """這些觀測實際涵蓋了整段窗的多少比例（0–1）。
-
-    #130 用它判斷「歷史資料是否足以建立可靠 percentile」——不足就不畫，
-    而不是拿稀疏的幾點硬算一個看起來很確定的百分位。
-    """
-    if not dates or window_days <= 0:
-        return 0.0
-    return min(sum(interval_weights(dates)) / window_days, 1.0)
 
 
 def weighted_percentile(observations: list[tuple[str, float | None]],
@@ -382,16 +370,27 @@ def weighted_percentile(observations: list[tuple[str, float | None]],
     return hit / total
 
 
-def weighted_percentiles_of(points: list[dict]) -> dict:
-    """各欄位最新值的**時間加權**百分位（#128／#130）。
+def field_metrics(points: list[dict]) -> dict:
+    """每個欄位的（現值、百分位、有效觀測筆數）——呈現的最小單位（#133）。
 
-    取代 `percentiles_of()` 的等權版本：觀測是「近期密、遠期疏」抽出來
-    的，等權會讓最近數月被過度加權。出界或缺漏（`None`）的日子整筆剔除
-    ——不進母體，也不用鄰居補（那就是插值）。
+    **不設任何 coverage／樣本數門檻**：只要這個欄位至少有一筆有效觀測，
+    就算出百分位並給。`count` 是這個百分位背後有幾筆觀測撐著，讓使用者
+    自己判斷這個數字站不站得住腳——這是刻意的取捨：產品只呈現事實與
+    資料量，不替使用者下「樣本不足所以不值得看」之類的可信度判斷。
+
+    唯一容許 `percentile` 為 `None` 的情況是 `count == 0`——這個欄位
+    完全沒有可比較的歷史觀測（不是「不夠可信」，是真的沒有可比的東西）。
+    這個情況下 `value` 也是 `None`：沒有觀測就沒有「最近一次的值」可言。
     """
-    out: dict[str, float | None] = {}
+    out: dict[str, dict] = {}
     for field in ("normalized_skew", "buy_iv", "sell_iv", "atm_iv"):
         obs = [(p["date"], p.get(field)) for p in points]
-        latest = next((v for _, v in reversed(obs) if v is not None), None)
-        out[field] = weighted_percentile(obs, latest)
+        valid = [v for _, v in obs if v is not None]
+        latest = valid[-1] if valid else None
+        out[field] = {
+            "value": latest,
+            "percentile": weighted_percentile(obs, latest)
+                         if latest is not None else None,
+            "count": len(valid),
+        }
     return out

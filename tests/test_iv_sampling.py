@@ -8,7 +8,7 @@ from datetime import date, timedelta
 
 import pytest
 
-from option_chaser.ivhistory import (coverage_ratio, interval_weights,
+from option_chaser.ivhistory import (field_metrics, interval_weights,
                                      sampling_schedule, weighted_percentile)
 
 TODAY = date(2026, 8, 12)
@@ -94,16 +94,6 @@ def test_one_observation_cannot_speak_for_an_unbounded_gap():
     assert max(w) <= 14.0
 
 
-def test_coverage_reports_how_much_of_the_window_is_actually_backed():
-    """稀疏到不足以支撐 percentile 時，#130 靠這個數字說「資料不足」。"""
-    assert coverage_ratio(_dates(300, 200, 100)) < 0.2
-    assert coverage_ratio(sampling_schedule("TLT", TODAY)) > 0.8
-
-
-def test_no_observations_means_no_coverage():
-    assert coverage_ratio([]) == 0.0
-
-
 # ---------- 加權 percentile ----------
 
 def _regime_series():
@@ -174,3 +164,66 @@ def test_no_percentile_without_a_current_value():
 
 def test_empty_history_has_no_percentile():
     assert weighted_percentile([], 0.2) is None
+
+
+# ---------- field_metrics：不設 coverage／樣本數門檻（#133） ----------
+#
+# 需求方 2026-08-12 二次修正：percentile 的顯示不得因 coverage 低、樣本
+# 稀疏、或觀測數低於任何固定門檻而隱藏——只要至少一筆有效觀測就給，並
+# 揭露這個 percentile 背後有幾筆觀測撐著，讓使用者自己判斷資訊強度。
+# 唯一容許不給 percentile 的情況是完全沒有可比較的觀測（count == 0）。
+
+def _points(*, skew):
+    """`skew` 是一串 (日期, 值) 對，組成 `field_metrics` 要的 points 形狀
+    （只填 normalized_skew 這個欄位，其餘留 None）。"""
+    return [{"date": d, "normalized_skew": v, "buy_iv": None,
+            "sell_iv": None, "atm_iv": None} for d, v in skew]
+
+
+def test_a_percentile_is_given_with_only_two_observations():
+    """遠低於舊門檻（coverage 0.5，或任何固定樣本數）——這正是這張票要
+    推翻的行為：以前這種情況會被判定 insufficient 而整段隱藏。"""
+    points = _points(skew=[("2026-08-01", 0.10), ("2026-08-02", 0.20)])
+    got = field_metrics(points)["normalized_skew"]
+    assert got["count"] == 2
+    assert got["percentile"] is not None
+    assert got["value"] == 0.20
+
+
+def test_a_single_observation_still_yields_a_percentile():
+    points = _points(skew=[("2026-08-01", 0.10)])
+    got = field_metrics(points)["normalized_skew"]
+    assert got["count"] == 1
+    assert got["percentile"] is not None
+
+
+def test_zero_observations_is_the_only_case_with_no_percentile():
+    points = _points(skew=[("2026-08-01", None), ("2026-08-02", None)])
+    got = field_metrics(points)["normalized_skew"]
+    assert got == {"value": None, "percentile": None, "count": 0}
+
+
+def test_each_field_is_judged_independently():
+    """一個候選可能買腿有歷史、skew 沒有（ATM 或賣腿缺一角）——不該因為
+    其中一項沒資料就連帶把其他項也判定沒有。"""
+    points = [
+        {"date": "2026-08-01", "normalized_skew": None, "buy_iv": 0.22,
+         "sell_iv": None, "atm_iv": None},
+    ]
+    got = field_metrics(points)
+    assert got["normalized_skew"]["count"] == 0
+    assert got["buy_iv"]["count"] == 1
+    assert got["buy_iv"]["percentile"] is not None
+
+
+def test_field_metrics_of_empty_points_has_no_percentile_anywhere():
+    got = field_metrics([])
+    assert all(m == {"value": None, "percentile": None, "count": 0}
+               for m in got.values())
+
+
+def test_count_matches_the_number_of_non_null_observations_not_total_days():
+    """`count` 是「有效」觀測，不是快取裡的總天數——中間缺值的日子不算數。"""
+    points = _points(skew=[("2026-08-01", 0.1), ("2026-08-02", None),
+                           ("2026-08-03", 0.2), ("2026-08-04", 0.3)])
+    assert field_metrics(points)["normalized_skew"]["count"] == 3

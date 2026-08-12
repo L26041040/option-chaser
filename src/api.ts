@@ -755,24 +755,35 @@ export interface IvHistoryPoint {
   normalized_skew: number | null;
 }
 
-/** 需求方點名要分得出來的幾種情況（#131）。
+/** 只描述**這次 backfill 嘗試**的結果，不代表資料能不能看——那是兩件
+ *  事（需求方 2026-08-12 二次修正裁示）。`unset`（provider 未設定）與
+ *  `invalid`（credential 驗證失敗）不會走到這裡——那兩種在閘門就 403，
+ *  畫面連模組都不渲染（#126 既有行為）。 */
+export type IvHistoryStatus = "ok" | "quota" | "vendor";
+
+/** 一個欄位（Normalized Skew／買腿 IV／賣腿 IV／ATM IV）的呈現單位。
  *
- *  `unset`（provider 未設定）與 `invalid`（credential 驗證失敗）不會走到
- *  這裡——那兩種在閘門就 403，畫面連模組都不渲染（#126 既有行為）。 */
-export type IvHistoryStatus = "ok" | "quota" | "vendor" | "insufficient";
+ *  百分位**不設任何 coverage 或樣本數門檻**——只要 `count >= 1` 就給。
+ *  `count` 是這個百分位背後有幾筆有效觀測撐著，讓使用者自己判斷這個
+ *  數字站不站得住腳，產品不替他下「樣本不足所以不值得看」的判斷。
+ *
+ *  `percentile` 為 `null` 的**唯一**情況是 `count === 0`——這個欄位完全
+ *  沒有可比較的歷史觀測，`value` 此時也是 `null`。 */
+export interface IvFieldMetric {
+  value: number | null;
+  percentile: number | null;
+  count: number;
+}
 
 export interface IvHistoryView {
   candidate_key: string;
   status: IvHistoryStatus;
   points: IvHistoryPoint[];
-  current: IvHistoryPoint | null;
-  /** **`status` 不是 `ok` 時是空物件**——不足／額度／失敗都不給百分位，
-   *  不為了湊圖端出一個看起來很確定的數字。 */
-  percentiles: Record<string, number | null>;
-  /** 已經累積了幾天觀測（progressive backfill 的進度）。 */
+  metrics: Record<string, IvFieldMetric>;
+  /** 這個 symbol 已經累積了幾天觀測（progressive backfill 的進度）。 */
   observations: number;
-  /** 這些觀測涵蓋了 1 年窗的多少比例（0–1）。 */
-  coverage: number;
+  /** 只在 `status` 不是 `ok` 時有值，說明今天的 backfill 遇到什麼——
+   *  與要不要顯示 percentile 無關，那從來就只看各欄位自己的 `count`。 */
   note: string | null;
 }
 

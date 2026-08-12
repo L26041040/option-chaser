@@ -52,9 +52,6 @@ _MVP_STRATEGIES = ("bull-call-spread",)
 # 每個 symbol 每批最多補幾天（#130）。66 個目標觀測 ÷ 25 ≈ 三天補齊，
 # 就是需求方 progressive backfill 草圖裡那三格進度條。
 _IV_BACKFILL_PER_RUN = 25
-# 觀測涵蓋不到這個比例就不給 percentile——稀疏到這種程度時算出來的百分位
-# 只是看起來很確定，實際沒有支撐。
-_IV_MIN_COVERAGE = 0.5
 
 # V1（#48）的一次性分析端點沿用：無劇本身分時的 view dict 欄位值，
 # 不影響任何計算。V3 之後前端改走劇本端點，屆時此路徑可移除。
@@ -189,22 +186,25 @@ def _rows_to_surface(rows: dict) -> dict:
 
 
 def _iv_payload(candidate_key: str, points: list[dict], status: str,
-                note: str | None, *, coverage: float = 0.0) -> dict:
-    """Historical IV 的回應形狀。
+                note: str | None) -> dict:
+    """Historical IV 的回應形狀（#133）。
 
-    `status` 不是 `ok` 時**不給 percentile**：需求方紅線——資料不足、額度
-    用完、vendor 掛掉都不得為了湊圖而端出一個看起來很確定的百分位。序列
-    本身照給（有幾點就是幾點），畫面自己決定要不要畫。
+    `status`（ok／quota／vendor）只描述**這次 backfill 嘗試**的結果，
+    不用來決定要不要給 percentile——需求方 2026-08-12 二次修正裁示：
+    coverage／樣本數不得當作隱藏 percentile 的門檻，「今天補不補得動」
+    跟「資料能不能看」是兩件事。
+
+    `metrics` 裡每個欄位各自依「這個欄位有沒有至少一筆有效觀測」獨立
+    判斷——只要有一筆就給 percentile；`count` 讓使用者自己判斷這個數字
+    站不站得住腳，不是由後端替他判斷「不夠可信」。唯一容許某欄位沒有
+    percentile 的情況是那個欄位一筆有效觀測都沒有。
     """
     return {
         "candidate_key": candidate_key,
         "status": status,
         "points": points,
-        "current": points[-1] if points else None,
-        "percentiles": (ivhistory.weighted_percentiles_of(points)
-                        if status == "ok" else {}),
+        "metrics": ivhistory.field_metrics(points),
         "observations": len(points),
-        "coverage": round(coverage, 3),
         "note": note,
     }
 
@@ -788,9 +788,11 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
 
         **閘門**：Historical IV 未解鎖時直接 403，一個 vendor 請求都不發。
 
-        回應的 `status` 是需求方點名要能分辨的那幾種之一——`ok`／
-        `quota`／`vendor`／`insufficient`（`unset`／`invalid` 兩種在閘門
-        那關就 403 了，畫面連模組都不渲染）。
+        回應的 `status`（`ok`／`quota`／`vendor`）只描述**這次 backfill
+        嘗試**的結果，不代表資料能不能看——那是兩件事（`unset`／
+        `invalid` 兩種在閘門那關就 403 了，畫面連模組都不渲染）。已快取
+        的觀測算出的 percentile 不因為今天補不下去就被藏起來，見
+        `_iv_payload`。
         """
         sc = _require(scenario_id)
         settings_view = _settings_view()
@@ -813,7 +815,7 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
 
         coords = ivhistory.spread_coordinates(cand, spot=rec.view["meta"]["spot"])
         if coords is None:
-            return _iv_payload(candidate_key, [], "insufficient",
+            return _iv_payload(candidate_key, [], outcome,
                                "這個候選算不出 (tenor, delta) 座標")
 
         points = []
@@ -822,15 +824,7 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
             points.append({"date": obs.observed_on,
                            **ivhistory.reanchor_spread(surface, coords)})
 
-        # 觀測太稀疏時不畫 percentile——拿幾個點硬算一個看起來很確定的
-        # 百分位，正是「為了湊圖而假造資料」。
-        dates = [p["date"] for p in points if p["normalized_skew"] is not None]
-        coverage = ivhistory.coverage_ratio(dates)
-        status = outcome if outcome != "ok" else "ok"
-        if coverage < _IV_MIN_COVERAGE:
-            status = "insufficient" if outcome == "ok" else outcome
-        return _iv_payload(candidate_key, points, status, note,
-                           coverage=coverage)
+        return _iv_payload(candidate_key, points, outcome, note)
 
     # ---------- 設定：資料源與 Provider credential（Settings／#124） ----------
 

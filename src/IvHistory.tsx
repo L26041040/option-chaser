@@ -1,17 +1,25 @@
 /**
- * Historical IV Position（#114，資料層見 #126）。
+ * Historical IV Position（#114，資料層見 #126／#130，呈現規則見 #133）。
  *
  * 頭條是 **Normalized Skew**（賣腿 IV 減買腿 IV，除以當日 ATM 水準），
- * 兩腿各自的 IV 是明顯次一層。每一項都是「現值＋1 年百分位＋compact
- * sparkline」三件套，整塊維持 compact，手機上不長出一張大卡片。
+ * 兩腿各自的 IV 是明顯次一層。每一項都是「現值＋百分位＋觀測筆數＋
+ * compact sparkline」——只要那一項有至少一筆有效觀測就顯示，**不因
+ * coverage 低或樣本數少而隱藏**（需求方 2026-08-12 二次修正裁示）；
+ * 觀測筆數同時揭露，讓使用者自己判斷這個百分位站不站得住腳，產品不替
+ * 他下「樣本不足所以不值得看」的判斷。唯一顯示「沒有歷史資料」的情況
+ * 是那一項完全沒有可比較的觀測。
  *
  * **閘門（#126 AC）**：Historical IV 沒解鎖時，這支元件不輸出任何 DOM
  * 節點，也**不發任何 IV 請求**——不是空卡片、不是「尚未啟用」提示。
  * 解不解鎖讀後端算好的 `historical_iv_enabled`，前端不自己重推規則。
  *
- * **只陳述事實**：現值、百分位、歷史形狀。不寫「便宜」「貴」「好進場
- * 點」「推薦」——那是替使用者做判斷，而這個模組只提供他判斷所需的
- * 相對位置。有測試守門，不是靠自律。
+ * **backfill 狀態只是附加說明，不取代資料**：今天補不補得動（quota／
+ * vendor）跟資料能不能看是兩件事——已經算出來的 percentile 不因為今天
+ * 撞額度就被藏起來，只是額外多一行「今日額度已用完」之類的說明。
+ *
+ * **只陳述事實**：現值、百分位、觀測筆數、歷史形狀。不寫「便宜」「貴」
+ * 「好進場點」「推薦」「樣本不足」——那些都是替使用者做判斷，而這個
+ * 模組只提供他判斷所需的相對位置與資料量。有測試守門，不是靠自律。
  *
  * **enrich-only**：這塊拿掉，每個候選的命運與順序一模一樣（#118 守門）。
  * 它不參與排序、不參與過濾、不影響 baseline 或 Top 10。
@@ -22,29 +30,29 @@ import {
   getSettings,
   ivHistory,
   type Candidate,
-  type IvHistoryPoint,
+  type IvFieldMetric,
   type IvHistoryStatus,
   type IvHistoryView,
 } from "./api";
 
 /**
- * 資料不完整時的說明。刻意**極短**——需求方明示不要大卡片、不要長篇。
- *
- * 五種情況裡的 `unset`（provider 未設定）與 `invalid`（驗證失敗）不在
- * 這張表：那兩種在閘門就擋掉了，整個模組不渲染，連訊息都不該出現。
+ * 今天的 backfill 遇到什麼——一行附加說明，**不取代**下面的 percentile。
+ * `unset`／`invalid` 不在這張表：那兩種在閘門就擋掉了，整個模組不渲染。
  */
-const STATUS_NOTES: Record<Exclude<IvHistoryStatus, "ok">, string[]> = {
-  insufficient: ["歷史資料尚未完整", "將在後續使用時繼續補齊"],
-  quota: ["歷史資料尚未完整", "今日 API 額度已用完", "將在後續使用時繼續補齊"],
-  vendor: ["歷史資料尚未完整", "資料源暫時無法連線", "將在後續使用時繼續補齊"],
+const BACKFILL_NOTES: Record<Exclude<IvHistoryStatus, "ok">, string> = {
+  quota: "今日 API 額度已用完，將於後續使用時繼續補齊",
+  vendor: "資料源暫時無法連線，將於後續使用時繼續補齊",
 };
 
-/** 百分位顯示成整數百分比；沒有百分位就明說超出可比網格，不留白讓人猜。 */
-/** 單一項目算不出百分位時留空並說明——**留空不是留白**：什麼都不寫會
- *  讓人以為那個數字還沒載入完。文案維持極短。 */
-function pctLabel(value: number | null | undefined): string {
-  if (value === null || value === undefined) return "無可比基準";
-  return `第 ${Math.round(value * 100)} 百分位`;
+/**
+ * 百分位＋觀測筆數的複合標籤——這是需求方要求的「揭露 percentile 建立
+ * 在多少筆觀測上」的具體呈現，跟著現值一起讀，不必另外點開什麼。
+ * `count === 0`（唯一容許沒有百分位的情況）時誠實說沒有歷史資料，
+ * **不是**判斷「資料不夠可信」——那個判斷留給使用者自己做。
+ */
+function metricCaption(m: IvFieldMetric): string {
+  if (m.count === 0 || m.percentile === null) return "沒有歷史資料";
+  return `第 ${Math.round(m.percentile * 100)} 百分位・${m.count} 筆觀測`;
 }
 
 function num(value: number | null | undefined, digits = 1): string {
@@ -93,10 +101,9 @@ function Sparkline({ series }: { series: (number | null)[] }) {
   );
 }
 
-function Metric({ label, value, percentile, series, primary = false }: {
+function Metric({ label, metric, series, primary = false }: {
   label: string;
-  value: number | null;
-  percentile: number | null | undefined;
+  metric: IvFieldMetric;
   series: (number | null)[];
   primary?: boolean;
 }) {
@@ -104,9 +111,9 @@ function Metric({ label, value, percentile, series, primary = false }: {
     <div className={primary ? "iv-metric iv-primary" : "iv-metric"}>
       <span className="row-label">{label}</span>
       <span className={primary ? "iv-value-primary" : "iv-value"}>
-        {num(value)}
+        {num(metric.value)}
       </span>
-      <span className="caption">{pctLabel(percentile)}</span>
+      <span className="caption">{metricCaption(metric)}</span>
       <Sparkline series={series} />
     </div>
   );
@@ -162,41 +169,33 @@ export default function IvHistory({ scenarioId, candidate }: {
 
   if (!data) return null;
 
-  // 資料不完整：只出短訊息，**不畫 percentile、不畫 sparkline**。硬畫
-  // 一條線等於為了湊圖而假造資料（需求方紅線）。
-  if (data.status !== "ok") {
-    return (
-      <section className="card iv-history" aria-label="IV 相對位置">
-        <h2 className="section-title">IV 相對位置</h2>
-        {STATUS_NOTES[data.status].map((line) => (
-          <p className="caption" key={line}>{line}</p>
-        ))}
-      </section>
-    );
-  }
-
-  const points: IvHistoryPoint[] = data.points;
-  const cur = data.current;
+  const points = data.points;
 
   return (
     <section className="card iv-history" aria-label="IV 相對位置">
       <h2 className="section-title">IV 相對位置</h2>
 
-      {/* 頭條：Normalized Skew。兩腿 IV 在下面一層，字級與權重都低一階。 */}
+      {/* backfill 今天遇到的狀況——只是額外一行說明，**不取代**下面的
+          percentile：狀態與資料能不能看是兩件事（需求方 2026-08-12
+          二次修正）。status 為 ok 時完全不出現這一行。 */}
+      {data.status !== "ok" && (
+        <p className="caption">{BACKFILL_NOTES[data.status]}</p>
+      )}
+
+      {/* 頭條：Normalized Skew。兩腿 IV 在下面一層，字級與權重都低一階。
+          每一項各自依自己的 count 決定顯示數字還是「沒有歷史資料」，
+          不受 status 或彼此影響——這正是拿掉整段門檻之後的樣子。 */}
       <Metric
         primary
         label="Normalized Skew"
-        value={cur?.normalized_skew ?? null}
-        percentile={data.percentiles.normalized_skew}
+        metric={data.metrics.normalized_skew}
         series={points.map((p) => p.normalized_skew)}
       />
 
       <div className="iv-legs">
-        <Metric label="買腿 IV" value={cur?.buy_iv ?? null}
-               percentile={data.percentiles.buy_iv}
+        <Metric label="買腿 IV" metric={data.metrics.buy_iv}
                series={points.map((p) => p.buy_iv)} />
-        <Metric label="賣腿 IV" value={cur?.sell_iv ?? null}
-               percentile={data.percentiles.sell_iv}
+        <Metric label="賣腿 IV" metric={data.metrics.sell_iv}
                series={points.map((p) => p.sell_iv)} />
       </div>
 

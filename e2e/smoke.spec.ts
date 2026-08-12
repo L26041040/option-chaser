@@ -1108,6 +1108,16 @@ function ivPoints() {
   }));
 }
 
+function ivMetrics(points: ReturnType<typeof ivPoints>) {
+  const last = points[points.length - 1];
+  return {
+    normalized_skew: { value: last.normalized_skew, percentile: 0.62, count: 45 },
+    buy_iv: { value: last.buy_iv, percentile: 0.41, count: 45 },
+    sell_iv: { value: last.sell_iv, percentile: 0.55, count: 45 },
+    atm_iv: { value: last.atm_iv, percentile: 0.5, count: 45 },
+  };
+}
+
 async function routeDetailWithIv(page: import("@playwright/test").Page,
                                  enabled: boolean) {
   await routeLibrary(page, libraryRow());
@@ -1119,9 +1129,8 @@ async function routeDetailWithIv(page: import("@playwright/test").Page,
     const points = ivPoints();
     return route.fulfill({ json: {
       candidate_key: "k", status: "ok", points,
-      current: points[points.length - 1],
-      percentiles: { normalized_skew: 0.62, buy_iv: 0.41, sell_iv: 0.55 },
-      observations: points.length, coverage: 0.95, note: null,
+      metrics: ivMetrics(points),
+      observations: points.length, note: null,
     } });
   });
   return ivCalls;
@@ -1159,42 +1168,67 @@ test("Historical IV 解鎖：Normalized Skew 當頭條、兩腿為次層（#114�
     .evaluate((el) => parseFloat(getComputedStyle(el).fontSize));
   expect(primary).toBeGreaterThan(secondary);
 
-  // 手機上仍是 compact：這一塊不超過視窗高度的一半
+  // 手機上仍是 compact：遠不到整頁高度（#133 加了「・N 筆觀測」文字後
+  // 卡片略高了幾個 px，門檻放寬到 60% 而不是死守剛好一半）。
   const box = (await block.boundingBox())!;
-  expect(box.height).toBeLessThan(page.viewportSize()!.height / 2);
+  expect(box.height).toBeLessThan(page.viewportSize()!.height * 0.6);
 });
 
-test("Historical IV 資料尚未完整：只出短訊息，不畫百分位與走勢（#131）",
+test("Historical IV 今日額度用完：percentile 照樣顯示，只多一行附加說明（#133）",
    async ({ page }) => {
+  // 需求方 2026-08-12 二次修正：backfill 狀態（今天補不補得動）跟資料
+  // 能不能看是兩件事——quota 不再讓整塊變成「不畫百分位」的短訊息卡，
+  // 已快取的觀測算出的 percentile 照常顯示。
   await routeLibrary(page, libraryRow());
   await page.route("**/api/settings", (route) =>
     route.fulfill({ json: { historical_iv_enabled: true } }));
-  await page.route("**/api/scenarios/*/iv-history*", (route) =>
-    route.fulfill({ json: {
-      candidate_key: "k", status: "quota", points: [], current: null,
-      percentiles: {}, observations: 12, coverage: 0.18,
+  await page.route("**/api/scenarios/*/iv-history*", (route) => {
+    const points = ivPoints().slice(0, 12);   // 只補了一部分
+    return route.fulfill({ json: {
+      candidate_key: "k", status: "quota", points,
+      metrics: ivMetrics(points),
+      observations: points.length,
       note: "Market Data App 今日額度已用完",
-    } }));
+    } });
+  });
 
   await page.goto("/#/s/s1");
 
   const block = page.locator(".iv-history");
   await expect(block).toBeVisible();
-  await expect(block.getByText("歷史資料尚未完整")).toBeVisible();
-  await expect(block.getByText("今日 API 額度已用完")).toBeVisible();
-  await expect(block.getByText("將在後續使用時繼續補齊")).toBeVisible();
+  await expect(block.getByText(/今日 API 額度已用完/)).toBeVisible();
 
-  // 紅線：不畫百分位、不畫 sparkline
+  // percentile 沒有被藏起來——三個欄位都有各自的筆數同時可見（不同欄位
+  // 各自 count 相同是這份 mock 資料的巧合，不是斷言重點；斷言鎖定
+  // Normalized Skew 那一項精確的組合文字，不會跟其他欄位撞在一起）。
+  await expect(block.getByText("第 62 百分位・45 筆觀測")).toBeVisible();
+
+  // 主分析頁其餘部分照常
+  await expect(page.getByText("劇本主圖")).toBeVisible();
+});
+
+test("Historical IV 完全沒有可比較觀測：誠實顯示沒有歷史資料，不硬湊（#133）",
+   async ({ page }) => {
+  await routeLibrary(page, libraryRow());
+  await page.route("**/api/settings", (route) =>
+    route.fulfill({ json: { historical_iv_enabled: true } }));
+  await page.route("**/api/scenarios/*/iv-history*", (route) => {
+    const empty = { value: null, percentile: null, count: 0 };
+    return route.fulfill({ json: {
+      candidate_key: "k", status: "ok", points: [],
+      metrics: { normalized_skew: empty, buy_iv: empty, sell_iv: empty,
+                atm_iv: empty },
+      observations: 0, note: null,
+    } });
+  });
+
+  await page.goto("/#/s/s1");
+
+  const block = page.locator(".iv-history");
+  await expect(block).toBeVisible();
+  await expect(block.getByText("沒有歷史資料").first()).toBeVisible();
   await expect(block.locator(".iv-spark")).toHaveCount(0);
   await expect(block).not.toContainText("百分位");
-
-  // 仍是 compact，而且主分析頁其餘部分照常
-  // 「不要大卡片」＝這一塊只是一張訊息卡：一個標題＋三行說明，沒有圖。
-  // 用結構斷言而不是像素門檻——像素會隨字體與安全區浮動，結構不會。
-  await expect(block.locator("p")).toHaveCount(3);
-  await expect(block.locator("svg")).toHaveCount(0);
-  const box = (await block.boundingBox())!;
-  expect(box.height).toBeLessThan(page.viewportSize()!.height / 2);
   await expect(page.getByText("劇本主圖")).toBeVisible();
 });
 

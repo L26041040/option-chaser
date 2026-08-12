@@ -10,7 +10,7 @@ from fastapi.testclient import TestClient
 
 from api_app import providers
 from api_app.main import create_app
-from api_app.storage import IvBackfillRun
+from api_app.storage import IvBackfillRun, IvObservation
 from api_app.storage.memory import MemoryStorage
 from option_chaser.data.snapshot import load_snapshot
 from option_chaser.dividends import DividendHistory, DividendRecord
@@ -201,7 +201,7 @@ def test_series_comes_from_the_cache_and_is_re_anchored(db):
     body = _get(client, sid, _candidate_key(client, sid)).json()
     cached = db.iv_observation_dates("XYZ")
     assert [p["date"] for p in body["points"]] == cached
-    assert body["current"] is not None
+    assert body["metrics"]["normalized_skew"]["value"] is not None
 
 
 def test_series_carries_both_legs_and_the_atm_level(db):
@@ -225,18 +225,21 @@ def _prefill(db, symbol="XYZ"):
             fetched_at="2026-08-12T00:00:00+00:00"))
 
 
-def test_percentiles_are_reported_once_the_cache_is_filled(db):
+def test_percentiles_are_reported_once_the_cache_has_any_valid_observation(db):
     client = _client(db, surface=_rich_surface)
     _unlock(client)
     sid = _scenario(client)
     _prefill(db)
-    pct = _get(client, sid, _candidate_key(client, sid)).json()["percentiles"]
-    assert set(pct) >= {"normalized_skew", "buy_iv", "sell_iv"}
+    metrics = _get(client, sid, _candidate_key(client, sid)).json()["metrics"]
+    for field in ("normalized_skew", "buy_iv", "sell_iv"):
+        assert metrics[field]["percentile"] is not None
+        assert metrics[field]["count"] > 0
 
 
 def test_a_coordinate_outside_the_grid_is_left_blank_not_faked(db):
-    """網格只蓋短天期時，長天期候選的每一天都插不出值——留空，不是拿最長
-    那格頂替（#114 AC 明文）。整段都插不出來時也不給百分位。"""
+    """網格只蓋短天期時，這個候選在歷史每一天都插不出值——留空，不是拿
+    最長那格頂替（#114 AC 明文）。count 因此是 0，這是唯一容許「不給
+    percentile」的情況：真的一筆可比觀測都沒有（#133），不是門檻判定。"""
     narrow = [SurfacePoint(dte=d, delta=x, iv=0.2)
               for d in (1, 5) for x in (0.4, 0.5, 0.6)]
     client = _client(db, surface=lambda *a, **k: {"call": narrow, "put": narrow})
@@ -245,8 +248,10 @@ def test_a_coordinate_outside_the_grid_is_left_blank_not_faked(db):
     body = _get(client, sid, _candidate_key(client, sid)).json()
     assert body["points"], "應該有觀測，只是每一點都插不出值"
     assert all(p["normalized_skew"] is None for p in body["points"])
-    assert body["percentiles"] == {}
-    assert body["status"] == "insufficient"
+    assert body["metrics"]["normalized_skew"] == \
+        {"value": None, "percentile": None, "count": 0}
+    assert body["status"] == "ok"   # backfill 本身沒失敗，只是這個候選的
+                                    # 座標在這個網格裡真的找不到可比的點
 
 
 def test_a_vendor_failure_is_reported_rather_than_swallowed(db):
@@ -442,30 +447,36 @@ def test_quota_exhaustion_stops_further_vendor_calls_that_day(db):
     assert len(rec.calls) == after_first == 1
 
 
-def test_sparse_coverage_is_reported_as_insufficient(db):
-    """觀測太少時不給百分位——硬算一個看起來很確定的數字就是造假。"""
+def test_zero_cached_observations_yields_no_percentile(db):
+    """唯一容許「不給 percentile」的情況：literally 一筆觀測都沒有
+    （backfill 從第一次嘗試就失敗，快取是空的）——這跟舊的 coverage
+    門檻不同，這裡是真的沒有資料可比，不是資料「不夠多」。"""
     rec = Recorder(fail=FetchError("vendor 掛了"))
     client = _client(db, surface=rec)
     _unlock(client)
     sid = _scenario(client)
     body = _get(client, sid, _candidate_key(client, sid)).json()
-    assert body["percentiles"] == {}
     assert body["observations"] == 0
+    assert body["metrics"]["normalized_skew"] == \
+        {"value": None, "percentile": None, "count": 0}
 
 
-def test_a_first_day_run_is_honestly_incomplete_not_ok(db):
-    """progressive backfill 的第一天本來就補不滿——這時候說「資料尚未
-    完整」是實話，硬給一個 1Y percentile 才是造假。"""
+def test_a_first_day_run_with_partial_data_still_shows_a_percentile(db):
+    """需求方 2026-08-12 二次修正：progressive backfill 第一天只補了一部
+    分，但只要有觀測就給 percentile——不因為還沒補齊就隱藏。舊行為
+    （status 判定 insufficient、percentile 清空）已被推翻。"""
     client = _client(db, surface=_rich_surface)
     _unlock(client)
     sid = _scenario(client)
     body = _get(client, sid, _candidate_key(client, sid)).json()
-    assert body["status"] == "insufficient"
-    assert body["percentiles"] == {}
-    assert body["observations"] > 0        # 有進度，只是還不夠
+    assert body["status"] == "ok"
+    assert 0 < body["observations"] < 66     # 真的只補了一部分
+    metrics = body["metrics"]["normalized_skew"]
+    assert metrics["percentile"] is not None
+    assert 0 < metrics["count"] < 66
 
 
-def test_a_healthy_run_reports_ok_with_weighted_percentiles(db):
+def test_a_healthy_run_reports_ok_with_metrics_for_every_field(db):
     client = _client(db, surface=_rich_surface)
     _unlock(client)
     sid = _scenario(client)
@@ -473,16 +484,60 @@ def test_a_healthy_run_reports_ok_with_weighted_percentiles(db):
     body = _get(client, sid, _candidate_key(client, sid)).json()
     assert body["status"] == "ok"
     assert body["observations"] >= 20
-    assert body["coverage"] >= 0.5
-    assert set(body["percentiles"]) >= {"normalized_skew", "buy_iv", "sell_iv"}
+    for field in ("normalized_skew", "buy_iv", "sell_iv", "atm_iv"):
+        m = body["metrics"][field]
+        assert m["percentile"] is not None
+        assert m["count"] > 0
+        assert m["value"] is not None
 
 
-def test_no_percentile_is_offered_when_the_status_is_not_ok(db):
-    """需求方紅線：不得為了湊圖而端出百分位。"""
-    for failure in (QuotaExhausted("額度"), FetchError("掛了")):
-        fresh = MemoryStorage()
-        client = _client(fresh, surface=Recorder(fail=failure))
-        _unlock(client)
-        sid = _scenario(client)
-        body = _get(client, sid, _candidate_key(client, sid)).json()
-        assert body["percentiles"] == {}, body["status"]
+def test_a_quota_failure_today_does_not_hide_yesterdays_cached_percentiles(db):
+    """核心紅線：backfill 狀態（今天補不補得動）與資料能不能看是兩件事
+    ——已經快取的觀測算出的 percentile 不因為今天撞額度就被藏起來。"""
+    working = _client(db, surface=_rich_surface)
+    _unlock(working)
+    sid = _scenario(working)
+    key = _candidate_key(working, sid)
+
+    schedule = sampling_schedule("XYZ", ny_today())
+    # 手動只灌一部分——模擬「先前幾天已經補到這裡」，留下缺口讓「今天」
+    # 的 backfill 真的有事要做（尚未跑過，`get_iv_backfill_run` 是 None）。
+    from api_app.main import _surface_to_rows
+
+    for day in schedule[:10]:
+        db.save_iv_observation(IvObservation(
+            symbol="XYZ", observed_on=day, surface=_surface_to_rows(_grid()),
+            fetched_at="2026-08-11T00:00:00+00:00"))
+
+    failing = _client(db, surface=Recorder(fail=QuotaExhausted("額度用完")))
+    _unlock(failing)
+    body = _get(failing, sid, key).json()
+
+    assert body["status"] == "quota"
+    assert "額度" in body["note"]
+    metrics = body["metrics"]["normalized_skew"]
+    assert metrics["count"] == 10       # 先前補好的那 10 筆還在
+    assert metrics["percentile"] is not None
+
+
+def test_a_vendor_failure_today_does_not_hide_cached_percentiles_either(db):
+    working = _client(db, surface=_rich_surface)
+    _unlock(working)
+    sid = _scenario(working)
+    key = _candidate_key(working, sid)
+
+    schedule = sampling_schedule("XYZ", ny_today())
+    from api_app.main import _surface_to_rows
+
+    for day in schedule[:5]:
+        db.save_iv_observation(IvObservation(
+            symbol="XYZ", observed_on=day, surface=_surface_to_rows(_grid()),
+            fetched_at="2026-08-11T00:00:00+00:00"))
+
+    failing = _client(db, surface=Recorder(fail=FetchError("連線逾時")))
+    _unlock(failing)
+    body = _get(failing, sid, key).json()
+
+    assert body["status"] == "vendor"
+    assert body["metrics"]["normalized_skew"]["count"] == 5
+    assert body["metrics"]["normalized_skew"]["percentile"] is not None
