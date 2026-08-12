@@ -224,3 +224,159 @@ def percentiles_of(points: list[dict]) -> dict:
                        if p.get(field) is not None), None)
         out[field] = percentile(series, latest) if latest is not None else None
     return out
+
+
+# ---------- 抽樣排程與時間加權（#128） ----------
+#
+# 為什麼不逐日抓：vendor 額度有限。一年 250+ 個 daily snapshot 抓不起，
+# 但把窗縮成 30D／90D 又會失去 1Y percentile 的長期脈絡。折衷是
+# **近期較密、遠期較疏**——近 90 天每週約 2 點（保住 IV spike／regime
+# change 的辨識力），90 天到 1 年每週約 1 點（保住長期脈絡），全年約
+# 60–70 點。
+
+_DENSE_DAYS = 90          # 這之內算「近期」
+_DENSE_PER_WEEK = 2
+_SPARSE_PER_WEEK = 1
+_WINDOW_DAYS = 365
+
+
+def _week_seed(symbol: str, week_index: int) -> int:
+    """決定性的偽亂數種子。
+
+    **不能用內建 `hash()`**：str 的雜湊每個 process 都不同
+    （PYTHONHASHSEED），排程會每次重啟就變，backfill 於是永遠在追一份
+    移動的目標、已抓的日期全部作廢。
+    """
+    from zlib import crc32
+
+    return crc32(f"{symbol}:{week_index}".encode())
+
+
+def _pick(weekdays: list, count: int, seed: int) -> list:
+    """從一週的交易日裡挑 `count` 天。
+
+    挑哪天由種子決定而非固定星期幾——固定的話整份序列都落在同一個
+    星期幾，任何具星期效應的市場結構都會被系統性地放大或抹平。
+    兩點時刻意隔開，不讓它們黏在相鄰兩天（那等於只取到一個時點）。
+    """
+    n = len(weekdays)
+    if n == 0:
+        return []
+    if count <= 1:
+        return [weekdays[seed % n]]
+    first = seed % n
+    if n <= 2:
+        return sorted(set(weekdays))
+    # 至少隔 2 天，且間距本身也隨種子變化
+    gap = 2 + (seed >> 8) % max(n - 2, 1)
+    second = (first + gap) % n
+    if second == first:
+        second = (first + 2) % n
+    return [weekdays[i] for i in sorted({first, second})]
+
+
+def sampling_schedule(symbol: str, today, *, window_days: int = _WINDOW_DAYS,
+                      dense_days: int = _DENSE_DAYS) -> list[str]:
+    """這個 symbol 的歷史觀測**應該**落在哪些日期（由舊到新的 ISO 字串）。
+
+    決定性：同一個 (symbol, today) 算兩次結果相同——backfill 靠這點才能
+    「只補缺的」，否則每次都想抓不同日期、永遠補不完。
+
+    今天不含（當日 EOD 通常還沒結算），週末不含。
+    """
+    from datetime import timedelta
+
+    out: list[str] = []
+    week = 0
+    while True:
+        # 這一週最新的那天（week 0 ＝昨天往回算七天）
+        week_end = today - timedelta(days=1 + week * 7)
+        age = (today - week_end).days
+        if age > window_days:
+            break
+        days = [week_end - timedelta(days=i) for i in range(7)]
+        weekdays = sorted(d for d in days
+                          if d.weekday() < 5 and (today - d).days <= window_days)
+        per_week = _DENSE_PER_WEEK if age <= dense_days else _SPARSE_PER_WEEK
+        out.extend(d.isoformat() for d in _pick(weekdays, per_week,
+                                                _week_seed(symbol, week)))
+        week += 1
+    return sorted(set(out))
+
+
+# 單一觀測最多能代表多長的時間。沒有上限的話，一段長空窗會讓緊鄰它的
+# 那一個點吃下整段權重——等於默認「這中間都跟它一樣」，那就是插值。
+# 取稀疏段標稱間隔（7 天）的兩倍。
+_MAX_REPRESENTED_DAYS = 14.0
+
+
+def interval_weights(dates: list[str]) -> list[float]:
+    """每個觀測代表多長的時間（天）。
+
+    用 Voronoi 切法：每個點擁有「與前後鄰居的中點」之間那段。抽樣密度
+    不均勻時，這讓近期高密度的點各自只代表很短的時間、遠期稀疏的點各自
+    代表較長的時間，總和才與真實時間軸成比例——天真等權會讓最近數月被
+    過度加權。
+
+    每個點的代表區間有上限（`_MAX_REPRESENTED_DAYS`）：長空窗不該由旁邊
+    那一個點代言。被截掉的部分就是「沒有資料的時間」，不補、不插值，
+    由 `coverage_ratio()` 如實回報。
+
+    回傳順序 ＝ **日期由舊到新**（與輸入順序無關）。呼叫端若要把權重配
+    回自己的資料，必須先照日期排序再 zip——否則整組權重會錯位。
+    """
+    from datetime import date as _date
+
+    if not dates:
+        return []
+    days = [_date.fromisoformat(d).toordinal() for d in sorted(dates)]
+    if len(days) == 1:
+        return [min(_MAX_REPRESENTED_DAYS, 1.0)]
+
+    out = []
+    for i, day in enumerate(days):
+        left = (day - days[i - 1]) / 2 if i > 0 else (days[1] - day) / 2
+        right = (days[i + 1] - day) / 2 if i < len(days) - 1 \
+            else (day - days[-2]) / 2
+        out.append(min(left + right, _MAX_REPRESENTED_DAYS))
+    return out
+
+
+def coverage_ratio(dates: list[str], *, window_days: int = _WINDOW_DAYS) -> float:
+    """這些觀測實際涵蓋了整段窗的多少比例（0–1）。
+
+    #130 用它判斷「歷史資料是否足以建立可靠 percentile」——不足就不畫，
+    而不是拿稀疏的幾點硬算一個看起來很確定的百分位。
+    """
+    if not dates or window_days <= 0:
+        return 0.0
+    return min(sum(interval_weights(dates)) / window_days, 1.0)
+
+
+def weighted_percentile(observations: list[tuple[str, float | None]],
+                        value: float | None) -> float | None:
+    """`value` 在這串觀測裡的時間加權百分位（0–1）。
+
+    `observations` 是 (日期, 值) 對；**值為 `None` 的整筆剔除**——那一天
+    沒有可比的資料，既不入母體、也不用鄰居的值補上去。剔除後才重算權重，
+    所以缺漏表現為「那段時間沒人代表」（受上限保護），不是被偽造成有值。
+
+    與 `percentile()` 一樣採「小於等於的比例」含等於：全同值序列因此回
+    1.0 而不是 0.0，後者會把「跟過去一樣」說成「處於歷史最低」。
+    """
+    if value is None:
+        return None
+    # 先照日期排序：`interval_weights` 一律回「由舊到新」的順序，拿呼叫端
+    # 的原始順序去 zip 會整組錯位（新舊顛倒時權重剛好前後對調）。
+    known = sorted(((d, v) for d, v in observations if v is not None),
+                   key=lambda pair: pair[0])
+    if not known:
+        return None
+    dates = [d for d, _ in known]
+    by_date = dict(zip(dates, interval_weights(dates)))
+    weights = list(by_date.values())
+    total = sum(weights)
+    if total <= 0:
+        return None
+    hit = sum(by_date[d] for d, v in known if v <= value)
+    return hit / total
