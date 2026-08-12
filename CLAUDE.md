@@ -200,6 +200,72 @@ code block**，不要零散貼成一般文字——需求方要能一次性複�
   `render_summary` 的 `move_pct` 同類手法一致，非新模式），未額外
   搬進服務層——標準面審查列為非阻塞建議，判斷維持現狀
 
+### 最新狀態（2026-08-12 第四輪）——Historical IV 綁定修正＋壓平＋Refresh 漸進解鎖
+
+需求方三段 `/to-tickets` 指示，三張票全數完成並推上
+`claude/implement-tfm9oa`（未 merge master、未開 PR）：
+
+- **#134** ✅ 長天期候選 Historical IV「連線成功但無資料」root cause
+  修正（commit `81c91b5`）。**真因**：Market Data App 的
+  historical chain 端點（`GET /options/chain/{symbol}/?date=...`）
+  不帶 `expiration` 篩選時，官方文件明載只回「下一個月選」——對
+  LEAPS 等長天期候選的曲面永遠覆蓋不到其座標，`ivhistory.iv_at()`
+  依既有不外插紅線全部回 `None`，呈現成「連線成功但無資料」。修法：
+  新增 `ivhistory.nearby_expirations()`，從這個 Scenario **已經分析
+  過**的到期日（`view["results"][i]["expiry_counts"]`，zero 額外
+  vendor 成本）裡挑出離目標 tenor 最近的幾個（預設上限 4 個，短天期
+  ≤45 天刻意回空、沿用免費的 vendor 預設），`_backfill_iv()` 逐一
+  帶 `expiration=` 打、合併成同一天的曲面再存一次——不用
+  `expiration=all`（會扣光整條鏈額度）。`map_surface_payload` 同時
+  補上 `s == "no_data"` 視為合法空結果（不是 vendor 故障），這是帶了
+  單一到期日篩選後的常態撲空，原本會誤判成錯誤中止整批 backfill。
+  次要修正：`leg_coordinate()` 計算 delta 原本硬編 `rate=0.0`，改讀
+  候選自己的 `rate_used`（`CandidateView.rate_used`，與正式估值管線
+  `leg_rate()` 同一個數字）；`q=0` 沿用既有 #122 紅線（分級用途 delta
+  恆用 q=0／vendor IV）不變。Test Connection 職責完全未動
+- **#135** ✅ Historical IV UI 依 `docs/Mvp-v3-appendix.txt` 壓平
+  （commit `225573a`）。核對結果：資料綁定語意（每次都是當前候選的
+  `candidate_key`）與資訊優先序（Normalized Skew → Buy Leg IV →
+  Sell Leg IV）本來就正確，真正的落差在視覺密度。`.iv-history` 內距
+  比照 `.summary-card` 密度覆寫（16px→12px）；每個指標從 label／
+  value／百分位三行堆疊壓成兩行（標籤＋百分位同一行、數值自己一行，
+  新增 `.iv-metric-head`）；sparkline 高度 24px→18px、兩腿寬度再收窄
+  56px。只陳述事實、不加評價字眼的既有測試守門不變
+- **#136** ✅ 整輪刷新逐劇本漸進解鎖與即時排序（commit `098b3b9`）。
+  排進刷新佇列的當下（整輪、單一劇本重試、建立後那一批，三者共用
+  同一條佇列）立刻反灰＋拿掉 `href` 禁止點入；每個劇本一完成（成功
+  或失敗）立刻從 `lockedIds` 移除，不必等整條佇列跑完，並用最新
+  `best_return` 立刻參與已完成區排序。新增純函式
+  `scenarios.partitionByLock()` 把清單拆成「已完成」（照舊排序）與
+  「還鎖著」（維持佇列順序、不參與排序）兩段，`ScenarioList`／
+  `CompactScenarioList`／桌面 `ScenarioDetail`（`refreshLocked` 提示，
+  搶在其他內容之前）共用同一套 `lockedIds` 狀態。失敗也會解鎖、沿用
+  既有 yellow／stale 語意，不會永久反灰。未新增第二套 refresh
+  pipeline、不刪除任何舊快照資料。順帶修掉 `App.test.tsx` 三個既有
+  測試的隱性競態（多了一次 `setLockedIds` 的 setState 讓沒等開站那輪
+  批次刷新落定就操作的舊測試現形），補上與檔案內既有測試一致的
+  settle wait，不是放寬斷言
+
+**回歸紅線全數確認未變**：Spread ranking／filtering／candidate
+generation／`expiry_best`／`expiry_top10`／代表候選身份／
+`best_return` 排序語意（`sortScenarios` 本身未改，只是新增
+`partitionByLock` 包一層）、#118 選取身份回歸 12/12。
+
+**測試現況**：Python 1119、前端 482、E2E 61（桌面＋手機兩個
+project），#118 選取身份回歸 12/12，全綠（Postgres adapter 以本機
+PG16 實跑，非 skip）。
+
+**遺留待需求方處理**：#134 的修法依賴「這個 Scenario 已經分析過的
+到期日」作為目標 tenor 的候選池——若使用者在同一 symbol 上只分析過
+單一窄範圍的到期日（例如只看過近月），第一次查詢遠期 LEAPS 候選的
+Historical IV 時，`nearby_expirations()` 仍會用手上有的最接近選項
+嘗試（不會完全空手），但涵蓋精確度不如已分析過多個到期日的情況；
+理論上限——Market Data App 官方文件是否真的支援 `?date=` 搭配
+`&expiration=` 兩參數同時使用**沒有在沙箱驗證過**（沙箱對
+`api.marketdata.app` 出口網域仍是 CONNECT 403，本輪修法完全依賴
+WebSearch 轉述的官方文件內容），需要需求方在有真實 token 的 production
+環境實測確認。
+
 ### 最新狀態（2026-08-12 第三輪）——移除 Historical IV 的 coverage 門檻
 
 需求方裁示：Historical IV 的問題定義是「目前 IV 在實際取得的有效歷史
