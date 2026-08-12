@@ -12,6 +12,7 @@ import {
   hasPriceRange,
   isStale,
   moneyOrDash,
+  partitionByLock,
   scenarioSignal,
   signalLabel,
   sortScenarios,
@@ -216,5 +217,53 @@ describe("劇本庫卡片的價格欄位（QA 修正）", () => {
     expect(hasPriceRange({ best_price: 120, worst_price: null })).toBe(true);
     expect(hasPriceRange({ best_price: null, worst_price: 100 })).toBe(true);
     expect(hasPriceRange({ best_price: 120, worst_price: 100 })).toBe(true);
+  });
+});
+
+describe("整輪刷新的漸進解鎖（#136）", () => {
+  it("鎖著的劇本不進已完成區，即使收益率更高", () => {
+    // B 鎖著、舊收益率 9.0 遠高於已完成的 A（0.5）——不該因此排到前面。
+    const { unlocked, locked } = partitionByLock(
+      [row("1", 0.5), row("2", 9.0)],
+      new Set(["2"]),
+    );
+    expect(unlocked.map((r) => r.id)).toEqual(["1"]);
+    expect(locked.map((r) => r.id)).toEqual(["2"]);
+  });
+
+  it("已完成區維持既有的收益率排序規則", () => {
+    const { unlocked } = partitionByLock(
+      [row("1", 0.5), row("2", 2.5), row("3", 1.0)],
+      new Set(),
+    );
+    expect(unlocked.map((r) => r.id)).toEqual(["2", "3", "1"]);
+  });
+
+  it("鎖著的那段維持傳入順序（佇列先後），不重新排序", () => {
+    const { locked } = partitionByLock(
+      [row("1", 9.0), row("2", 0.1), row("3", 5.0)],
+      new Set(["1", "2", "3"]),
+    );
+    expect(locked.map((r) => r.id)).toEqual(["1", "2", "3"]);
+  });
+
+  it("完成的那一刻立即離開鎖著的那段，回到已完成區依收益率排序", () => {
+    const rows = [row("1", 0.5), row("2", 2.5), row("3", 1.0)];
+    // C 還鎖著時：A、B 已完成區排序，C 獨自在鎖著的那段。
+    const midway = partitionByLock(rows, new Set(["3"]));
+    expect(midway.unlocked.map((r) => r.id)).toEqual(["2", "1"]);
+    expect(midway.locked.map((r) => r.id)).toEqual(["3"]);
+
+    // C 完成、解鎖後：三個都在已完成區，依收益率重新排序。
+    const done = partitionByLock(rows, new Set());
+    expect(done.unlocked.map((r) => r.id)).toEqual(["2", "3", "1"]);
+    expect(done.locked).toEqual([]);
+  });
+
+  it("沒有任何劇本鎖著時等同於一般排序", () => {
+    const rows = [row("1", 0.5), row("2", 2.5), row("3", 1.0)];
+    const { unlocked, locked } = partitionByLock(rows, new Set());
+    expect(unlocked).toEqual(sortScenarios(rows));
+    expect(locked).toEqual([]);
   });
 });

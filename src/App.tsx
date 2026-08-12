@@ -96,6 +96,12 @@ export default function App() {
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState<RefreshProgress | null>(null);
   const [failures, setFailures] = useState<Record<string, RefreshFailure>>({});
+  // 整輪刷新的漸進解鎖（V4 跟進票／#136）：排進佇列（不管是整輪、單一
+  // 劇本重試、還是建立後那一批）就立刻反灰＋禁止點入——避免使用者以為
+  // 看到的是這次刷新的結果；那次嘗試一結束（成功或失敗）立刻解鎖，不用
+  // 等整條佇列跑完。跟 `progress`／`failures` 是同一批狀態、同一顆佇列
+  // 跑者更新，不是另一套機制。
+  const [lockedIds, setLockedIds] = useState<Set<string>>(new Set());
   // #75：建立劇本表單預設收合，靠工具列的膠囊鈕展開／收合——不再是
   // 掛在全部劇本卡片下面、永遠展開的表單。
   const [showCreateForm, setShowCreateForm] = useState(false);
@@ -130,6 +136,17 @@ export default function App() {
     }
   }, []);
 
+  /** 解除單一劇本的刷新鎖——成功、失敗都要走到這裡，不能只在成功分支
+   *  解鎖，否則失敗的劇本會永遠反灰、卡在「刷新中」（票上明文紅線）。 */
+  const unlock = useCallback((id: string) => {
+    setLockedIds((prev) => {
+      if (!prev.has(id)) return prev;
+      const next = new Set(prev);
+      next.delete(id);
+      return next;
+    });
+  }, []);
+
   /** 刷新單一劇本。失敗只記在那張卡上，不中斷整輪。 */
   const refreshOne = useCallback(async (id: string) => {
     try {
@@ -142,8 +159,13 @@ export default function App() {
       });
     } catch (e) {
       setFailures((prev) => ({ ...prev, [id]: toFailure(e) }));
+    } finally {
+      // 這次嘗試到此結束——不論成敗都立刻解鎖，讓這張卡回到可點、
+      // 可能還帶著剛更新的收益率參與已完成區排序（票上明文：失敗也要
+      // 解鎖，沿用既有 yellow／stale 語意，不得永久反灰）。
+      unlock(id);
     }
-  }, []);
+  }, [unlock]);
 
   /**
    * 排入刷新佇列並確保有人在跑。依序（不併發）：一次一趟網路往返，
@@ -151,11 +173,22 @@ export default function App() {
    *
    * 跑到一半被追加的劇本會一起跑完，總數隨之變大——那是實話，好過
    * 讓進度停在一個早就不對的分母上。
+   *
+   * 進佇列的當下就整批反灰＋鎖住（V4 跟進票／#136）：不是只鎖「正在
+   * 抓」的那一個——排隊中的其他劇本一樣顯示的是上一輪的舊結果，同樣
+   * 該反灰，不能讓使用者以為那些也是這一輪的最新結果。
    */
   const enqueue = useCallback(
     async (ids: string[]) => {
+      const fresh: string[] = [];
       for (const id of ids) {
-        if (!queue.current.includes(id)) queue.current.push(id);
+        if (!queue.current.includes(id)) {
+          queue.current.push(id);
+          fresh.push(id);
+        }
+      }
+      if (fresh.length > 0) {
+        setLockedIds((prev) => new Set([...prev, ...fresh]));
       }
       if (running.current || queue.current.length === 0) return;
 
@@ -425,6 +458,10 @@ export default function App() {
     busy: progress !== null,
     failure: failures[detailId],
     onRefresh: () => void enqueue([detailId]),
+    // 桌面 master/detail 常駐：右側開著的劇本若本輪還沒刷新完，內容
+    // 不能看起來像已經是最新結果（V4 跟進票／#136）。手機版此時本來就
+    // 整頁替換成詳細頁、不會跟清單同時看到，傳了也無害。
+    refreshLocked: lockedIds.has(detailId),
   } : null;
 
   // TR6（#91）：批次移入垃圾桶時個別失敗的說明——列在「哪個劇本、
@@ -505,6 +542,7 @@ export default function App() {
         <CompactScenarioList
           rows={rows}
           failures={failures}
+          lockedIds={lockedIds}
           now={now}
           onArchive={archive}
           onEdit={startEdit}
@@ -565,6 +603,7 @@ export default function App() {
       <ScenarioList
         rows={rows}
         failures={failures}
+        lockedIds={lockedIds}
         now={now}
         onArchive={archive}
         onEdit={startEdit}

@@ -24,6 +24,7 @@ function list(
   rows: ScenarioSummary[],
   props: {
     failures?: Record<string, RefreshFailure>;
+    lockedIds?: ReadonlySet<string>;
     onArchive?: (id: string) => void;
     onEdit?: (id: string) => void;
     onRetry?: (id: string) => void;
@@ -40,6 +41,7 @@ function list(
     <ScenarioList
       rows={rows}
       failures={props.failures ?? {}}
+      lockedIds={props.lockedIds ?? new Set()}
       onArchive={props.onArchive ?? vi.fn()}
       onEdit={props.onEdit ?? vi.fn()}
       onRetry={props.onRetry ?? vi.fn()}

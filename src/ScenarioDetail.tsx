@@ -230,6 +230,7 @@ export default function ScenarioDetail({
   busy = false,
   failure,
   onRefresh = () => {},
+  refreshLocked = false,
 }: {
   id: string;
   /**
@@ -248,6 +249,14 @@ export default function ScenarioDetail({
   busy?: boolean;
   failure?: RefreshFailure;
   onRefresh?: () => void;
+  /**
+   * 這個劇本本輪還沒刷新完（V4 跟進票／#136）：桌面 master/detail
+   * 常駐，右側開著的劇本若還在排隊或正在抓，畫面上的數字是上一輪的
+   * 舊快照，不能讓它看起來像已經是這一輪的結果——比 `busy`（任何劇本
+   * 在跑都算）更精確，`busy` 只影響按鈕文案／停用，這個才是「這一個
+   * 劇本」的鎖定狀態。
+   */
+  refreshLocked?: boolean;
 }) {
   const [detail, setDetail] = useState<Detail | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -289,11 +298,22 @@ export default function ScenarioDetail({
         </div>
       </header>
 
+      {/* V4 跟進票／#136：本輪還沒輪到、或正在抓這個劇本——桌面右側
+          常駐面板最容易讓使用者誤以為畫面已經更新完，所以放在最上面、
+          搶在其他任何內容之前。刻意跟下面的失敗提示互斥判斷分開：
+          鎖著時失敗提示還沒有意義（這次嘗試根本還沒有結論），等解鎖後
+          若真的失敗，下面那段才會出現。 */}
+      {refreshLocked && (
+        <div className="notice warn" role="status">
+          本輪刷新排隊中或進行中，以下暫時是上一輪的舊資料。
+        </div>
+      )}
+
       {/* 上次刷新失敗時沿用劇本庫卡片同一套分層指引與就地重試
           （V4／#52 既有語彙），不是重新發明一套說法。已過期優先於刷新
           失敗（#68 既有判斷）：兩種狀態同時出現會讓使用者搞不清楚現在
           是哪一種。 */}
-      {failure && !detail?.expired && (
+      {!refreshLocked && failure && !detail?.expired && (
         <div className="notice error" role="alert">
           <div className="row-value">{failureLabel(failure.stage)}</div>
           <p className="caption">{failure.message}</p>

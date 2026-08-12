@@ -32,15 +32,16 @@ import {
   isStale,
   money,
   moneyOrDash,
+  partitionByLock,
   scenarioSignal,
   signalLabel,
-  sortScenarios,
 } from "./scenarios";
 
 function CompactScenarioCard({
   row,
   failure,
   now,
+  locked,
   onArchive,
   onEdit,
   onRetry,
@@ -51,6 +52,9 @@ function CompactScenarioCard({
   row: ScenarioSummary;
   failure: RefreshFailure | undefined;
   now: Date;
+  /** 這一輪刷新還沒輪到、或正在抓的劇本（V4 跟進票／#136）：反灰＋
+   *  禁止點入，避免使用者誤以為看到的是這一輪的最新結果。 */
+  locked: boolean;
   onArchive: (id: string) => void;
   onEdit: (id: string) => void;
   onRetry: (id: string) => void;
@@ -71,7 +75,7 @@ function CompactScenarioCard({
     // （master/detail 目前選中的劇本）是不同概念——compact row 沒有
     // 對應的常駐詳細頁高亮，選取狀態完全交給下面的 checkbox 外觀表達，
     // 不重用會撞名的 class。
-    <li className="compact-card">
+    <li className={locked ? "compact-card locked" : "compact-card"}>
       {/* 封存鈕疊在「這一塊」（tap 區）的右下角，而不是整張 `<li>` 的
           右下角——code review 抓到的真實回歸：`.compact-notice`（刷新
           失敗時才出現）是接在 tap 區後面的正常流內容，會把卡片整體
@@ -85,8 +89,10 @@ function CompactScenarioCard({
             輔助技術讀得到的字（沿用 `ScenarioList.tsx` 既有寫法）。 */}
         {/* TR6（#91）：批次選取模式時整列攔截點擊改成切換選取，不導向
             詳細頁——`preventDefault` 而不是換成 `<button>`，內容結構
-            完全不用重寫一份（沿用 `ScenarioList.tsx` 同一種做法）。 */}
-        <a className="compact-card-tap" href={detailHash(row.id)}
+            完全不用重寫一份（沿用 `ScenarioList.tsx` 同一種做法）。
+            V4 跟進票／#136：鎖著時不給 `href`，理由同 `ScenarioList.tsx`。 */}
+        <a className="compact-card-tap" href={locked ? undefined : detailHash(row.id)}
+           aria-disabled={locked ? "true" : undefined}
            onClick={(e) => {
              if (selectMode) {
                e.preventDefault();
@@ -111,11 +117,17 @@ function CompactScenarioCard({
               {" → "}
               {money(row.target_price)}　{row.target_month}
             </span>
-            <span
-              className={`signal-dot signal-${signal}`}
-              title={signalLabel(signal)}
-              aria-hidden="true"
-            />
+            {/* V4 跟進票／#136：燈號講的是上一輪的結果，鎖著時換成
+                「更新中」，不讓舊燈號看起來像這一輪的狀態。 */}
+            {locked ? (
+              <span className="tag locked-tag">更新中</span>
+            ) : (
+              <span
+                className={`signal-dot signal-${signal}`}
+                title={signalLabel(signal)}
+                aria-hidden="true"
+              />
+            )}
           </div>
 
           <div className="compact-tier2">
@@ -160,7 +172,8 @@ function CompactScenarioCard({
           )}
 
           <span className="sr-only">
-            {signalLabel(signal)}；查看 {who} 詳細
+            {locked ? "這一輪刷新還沒完成，暫時無法查看詳細"
+                    : `${signalLabel(signal)}；查看 ${who} 詳細`}
           </span>
         </a>
 
@@ -209,6 +222,7 @@ function CompactScenarioCard({
 export default function CompactScenarioList({
   rows,
   failures,
+  lockedIds,
   now,
   onArchive,
   onEdit,
@@ -222,6 +236,9 @@ export default function CompactScenarioList({
 }: {
   rows: ScenarioSummary[];
   failures: Record<string, RefreshFailure>;
+  /** 整輪刷新期間還沒完成的劇本（V4 跟進票／#136）——反灰＋禁止點入，
+   *  一完成（成功或失敗）立刻從這裡移除。 */
+  lockedIds: ReadonlySet<string>;
   now: Date;
   onArchive: (id: string) => void;
   onEdit: (id: string) => void;
@@ -237,6 +254,9 @@ export default function CompactScenarioList({
   if (rows.length === 0) {
     return <p className="caption">還沒有劇本，用上面的「＋ 新增劇本」建立。</p>;
   }
+  // V4 跟進票／#136：已完成區照舊排序；鎖著的那段維持佇列順序、獨立
+  // 排在後面（分隔線），不跟已完成的混排——見 `partitionByLock` 說明。
+  const { unlocked, locked } = partitionByLock(rows, lockedIds);
   return (
     <>
       {/* 收益率口徑就寫在數字旁邊（V4／#52 既有裁示），沿用大卡片版式
@@ -268,12 +288,35 @@ export default function CompactScenarioList({
       )}
 
       <ul className="compact-list">
-        {sortScenarios(rows).map((row) => (
+        {unlocked.map((row) => (
           <CompactScenarioCard
             key={row.id}
             row={row}
             failure={failures[row.id]}
             now={now}
+            locked={false}
+            onArchive={onArchive}
+            onEdit={onEdit}
+            onRetry={onRetry}
+            selectMode={selectMode}
+            isChecked={selectedIds.has(row.id)}
+            onToggleSelect={onToggleSelect}
+          />
+        ))}
+
+        {/* 分隔線只在兩段都非空時才有意義（V4 跟進票／#136 的 ASCII
+            概念圖）。 */}
+        {unlocked.length > 0 && locked.length > 0 && (
+          <li className="compact-list-separator" aria-hidden="true" />
+        )}
+
+        {locked.map((row) => (
+          <CompactScenarioCard
+            key={row.id}
+            row={row}
+            failure={failures[row.id]}
+            now={now}
+            locked
             onArchive={onArchive}
             onEdit={onEdit}
             onRetry={onRetry}

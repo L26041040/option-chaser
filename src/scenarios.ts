@@ -36,6 +36,27 @@ export function sortScenarios(rows: ScenarioSummary[]): ScenarioSummary[] {
 }
 
 /**
+ * 整輪刷新期間的漸進解鎖（V4 跟進票／#136）：把清單拆成「已完成」（照
+ * 舊規則排序）與「還在排隊／刷新中」兩段。
+ *
+ * 鎖著的那段刻意**不**參與排序：它們的 `best_return` 可能是上一輪的
+ * 舊數字，跟著已完成的候選混排會讓一張還沒刷新完的卡片，單純因為舊
+ * 收益率夠高就跑到清單很前面——使用者以為那是「這一輪」的名次，其實
+ * 只是巧合。鎖著的維持傳入順序（佇列先後），已完成的才套用既有排序。
+ */
+export function partitionByLock(
+  rows: ScenarioSummary[],
+  lockedIds: ReadonlySet<string>,
+): { unlocked: ScenarioSummary[]; locked: ScenarioSummary[] } {
+  const unlocked: ScenarioSummary[] = [];
+  const locked: ScenarioSummary[] = [];
+  for (const row of rows) {
+    (lockedIds.has(row.id) ? locked : unlocked).push(row);
+  }
+  return { unlocked: sortScenarios(unlocked), locked };
+}
+
+/**
  * 劇本級燈號（MVP-v2／#77、#80，沿用附錄 A12 語意）：紅 > 黃 > 綠，
  * 一張卡只有一個燈。
  *

@@ -34,9 +34,9 @@ import {
   isStale,
   money,
   moneyOrDash,
+  partitionByLock,
   scenarioSignal,
   signalLabel,
-  sortScenarios,
 } from "./scenarios";
 
 function ScenarioCard({
@@ -44,6 +44,7 @@ function ScenarioCard({
   failure,
   now,
   selected,
+  locked,
   onArchive,
   onEdit,
   onRetry,
@@ -55,6 +56,9 @@ function ScenarioCard({
   failure: RefreshFailure | undefined;
   now: Date;
   selected: boolean;
+  /** 這一輪刷新還沒輪到、或正在抓的劇本（V4 跟進票／#136）：反灰＋
+   *  禁止點入，避免使用者誤以為看到的是這一輪的最新結果。 */
+  locked: boolean;
   onArchive: (id: string) => void;
   onEdit: (id: string) => void;
   onRetry: (id: string) => void;
@@ -71,8 +75,11 @@ function ScenarioCard({
   const signal = scenarioSignal(row, failure);
   const rep = row.representative_candidate;
 
+  const cardClass = ["compact-card", selected && "selected", locked && "locked"]
+    .filter(Boolean).join(" ");
+
   return (
-    <li className={selected ? "compact-card selected" : "compact-card"}>
+    <li className={cardClass}>
       {/* 封存鈕疊在「這一塊」（tap 區）的右下角，而不是整張 `<li>` 的
           右下角——沿用 `CompactScenarioList.tsx` 既有教訓：`.compact-notice`
           （刷新失敗時才出現）是接在 tap 區後面的正常流內容，會把卡片
@@ -82,7 +89,10 @@ function ScenarioCard({
       <div className="compact-card-tap-area">
         {/* 整張卡就是進詳細頁的入口。用真的 `<a>` 而不是掛 onClick 的
             div：長按可以複製連結、返回手勢可用、鍵盤與螢幕閱讀器也認得。
-            封存鈕留在連結外面——按鈕不能包在連結裡。 */}
+            封存鈕留在連結外面——按鈕不能包在連結裡。
+            V4 跟進票／#136：鎖著時不給 `href`——沒有 href 的 `<a>` 本來
+            就不可點、不進 tab 順序，不必額外攔截 click／keydown，也不會
+            讓「禁止點入」跟「連結可及性」互相打架。 */}
         {/* 不掛 `aria-label`：那會**取代**連結內容當成可及名稱，螢幕閱讀器
             就只聽得到「TLT 2028-05 詳細」，收益率／目標／到期日／資料
             時間全部被吃掉。改在結尾補一段只有輔助技術讀得到的字。 */}
@@ -93,8 +103,9 @@ function ScenarioCard({
             TR6（#91）：批次選取模式時整張卡攔截點擊改成切換選取，不導向
             詳細頁——`preventDefault` 而不是換成 `<button>`，內容結構完全
             不用重寫一份。 */}
-        <a className="compact-card-tap" href={detailHash(row.id)}
+        <a className="compact-card-tap" href={locked ? undefined : detailHash(row.id)}
            aria-current={selected ? "page" : undefined}
+           aria-disabled={locked ? "true" : undefined}
            onClick={(e) => {
              if (selectMode) {
                e.preventDefault();
@@ -119,13 +130,21 @@ function ScenarioCard({
               {" → "}
               {money(row.target_price)}　{row.target_month}
             </span>
-            {/* 顏色不是唯一的資訊管道：`title` 給滑鼠停留時看得到的文字、
-                圓點本身 `aria-hidden`，可及名稱另外交給 sr-only 那段字。 */}
-            <span
-              className={`signal-dot signal-${signal}`}
-              title={signalLabel(signal)}
-              aria-hidden="true"
-            />
+            {/* V4 跟進票／#136：鎖著時燈號位置換成「更新中」——這一刻的
+                燈號（紅／黃／綠）講的是上一輪的結果，這一輪還沒有結論，
+                繼續顯示舊燈號會誤導成「這是這次的狀態」。 */}
+            {locked ? (
+              <span className="tag locked-tag">更新中</span>
+            ) : (
+              // 顏色不是唯一的資訊管道：`title` 給滑鼠停留時看得到的
+              // 文字、圓點本身 `aria-hidden`，可及名稱另外交給 sr-only
+              // 那段字。
+              <span
+                className={`signal-dot signal-${signal}`}
+                title={signalLabel(signal)}
+                aria-hidden="true"
+              />
+            )}
           </div>
 
           {/* 第二層是全卡最醒目的資訊：報酬率＋策略＋買賣履約價
@@ -177,7 +196,8 @@ function ScenarioCard({
           )}
 
           <span className="sr-only">
-            {signalLabel(signal)}；查看 {who} 詳細
+            {locked ? "這一輪刷新還沒完成，暫時無法查看詳細"
+                    : `${signalLabel(signal)}；查看 ${who} 詳細`}
           </span>
         </a>
 
@@ -231,6 +251,7 @@ function ScenarioCard({
 export default function ScenarioList({
   rows,
   failures,
+  lockedIds,
   now,
   selectedId = null,
   onArchive,
@@ -245,6 +266,9 @@ export default function ScenarioList({
 }: {
   rows: ScenarioSummary[];
   failures: Record<string, RefreshFailure>;
+  /** 整輪刷新期間還沒完成的劇本（V4 跟進票／#136）——反灰＋禁止點入，
+   *  一完成（成功或失敗）立刻從這裡移除。 */
+  lockedIds: ReadonlySet<string>;
   now: Date;
   /** 桌面版 master/detail（#72）目前選中的劇本；手機版不傳，恆不標記。 */
   selectedId?: string | null;
@@ -264,7 +288,9 @@ export default function ScenarioList({
   if (rows.length === 0) {
     return <p className="caption">還沒有劇本，用下面的表單建立。</p>;
   }
-  const sorted = sortScenarios(rows);
+  // V4 跟進票／#136：已完成區照舊排序；鎖著的那段維持佇列順序、獨立
+  // 排在後面（分隔線），不跟已完成的混排——見 `partitionByLock` 說明。
+  const { unlocked, locked } = partitionByLock(rows, lockedIds);
   return (
     <>
       {/* 收益率口徑就寫在數字旁邊（V4／#52）。放進說明頁等於沒寫——
@@ -296,13 +322,38 @@ export default function ScenarioList({
       )}
 
       <ul className="compact-list">
-        {sorted.map((row) => (
+        {unlocked.map((row) => (
           <ScenarioCard
             key={row.id}
             row={row}
             failure={failures[row.id]}
             now={now}
             selected={row.id === selectedId}
+            locked={false}
+            onArchive={onArchive}
+            onEdit={onEdit}
+            onRetry={onRetry}
+            selectMode={selectMode}
+            isChecked={selectedIds.has(row.id)}
+            onToggleSelect={onToggleSelect}
+          />
+        ))}
+
+        {/* 分隔線只在兩段都非空時才有意義——沒有已完成的（例如整輪剛
+            開始）或沒有鎖著的（整輪已跑完）都不必畫一條沒有分隔作用的
+            線（V4 跟進票／#136 的 ASCII 概念圖）。 */}
+        {unlocked.length > 0 && locked.length > 0 && (
+          <li className="compact-list-separator" aria-hidden="true" />
+        )}
+
+        {locked.map((row) => (
+          <ScenarioCard
+            key={row.id}
+            row={row}
+            failure={failures[row.id]}
+            now={now}
+            selected={row.id === selectedId}
+            locked
             onArchive={onArchive}
             onEdit={onEdit}
             onRetry={onRetry}

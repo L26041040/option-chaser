@@ -304,6 +304,39 @@ describe("詳細頁刷新入口（#70）", () => {
       .toBeDisabled();
   });
 
+  it("這個劇本本輪還沒刷新完（V4 跟進票／#136）：明確提示，搶在其他內容之前，" +
+     "不能讓桌面右側常駐面板的舊內容看起來像已經更新完成", async () => {
+    mockDetail(detail());
+    render(<ScenarioDetail id="s1" refreshLocked />);
+
+    const notice = await screen.findByRole("status");
+    expect(notice).toHaveTextContent(/排隊中或進行中/);
+    expect(notice).toHaveTextContent(/上一輪的舊資料/);
+  });
+
+  it("沒有鎖著時不顯示這個提示", async () => {
+    mockDetail(detail());
+    render(<ScenarioDetail id="s1" />);
+
+    await screen.findByText(/劇本主圖/);
+    expect(screen.queryByText(/排隊中或進行中/)).not.toBeInTheDocument();
+  });
+
+  it("鎖著又剛好帶著上一次的失敗紀錄時，先顯示鎖定提示——這次嘗試還沒有" +
+     "結論，失敗提示要等解鎖後才有意義", async () => {
+    mockDetail(detail());
+    render(
+      <ScenarioDetail
+        id="s1"
+        refreshLocked
+        failure={{ stage: "fetch", message: "抓不到報價" }}
+      />,
+    );
+
+    await screen.findByRole("status");
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
   it("失敗時顯示分層指引，重試按鈕也走同一個 onRefresh", async () => {
     mockDetail(detail());
     const onRefresh = vi.fn();
