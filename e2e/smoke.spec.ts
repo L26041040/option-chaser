@@ -1022,6 +1022,7 @@ const SETTINGS_VIEW = {
     },
   },
   market_data_effective: { source: "Cboe", fallback: false, reason: null },
+  historical_iv_enabled: false,
   updated_at: null,
 };
 
@@ -1093,4 +1094,72 @@ test("手機版：Historical IV 切自訂、存 token，只看得到遮罩（Set
 
   await expect(iv.getByText("已儲存 ••••••••abcd")).toBeVisible();
   await expect(page.locator("body")).not.toContainText("tok-secret-abcd");
+});
+
+/* ---------- Historical IV Position 與閘門（#114／#126） ---------- */
+
+function ivPoints() {
+  return Array.from({ length: 250 }, (_, i) => ({
+    date: `2026-01-${String((i % 28) + 1).padStart(2, "0")}`,
+    buy_iv: 0.2 + (i % 20) * 0.001,
+    sell_iv: 0.22 + (i % 20) * 0.001,
+    atm_iv: 0.25,
+    normalized_skew: 0.08 + i * 0.0001,
+  }));
+}
+
+async function routeDetailWithIv(page: import("@playwright/test").Page,
+                                 enabled: boolean) {
+  await routeLibrary(page, libraryRow());
+  const ivCalls: string[] = [];
+  await page.route("**/api/settings", (route) =>
+    route.fulfill({ json: { historical_iv_enabled: enabled } }));
+  await page.route("**/api/scenarios/*/iv-history*", (route) => {
+    ivCalls.push(route.request().url());
+    const points = ivPoints();
+    return route.fulfill({ json: {
+      candidate_key: "k", window_days: 365, points,
+      current: points[points.length - 1],
+      percentiles: { normalized_skew: 0.62, buy_iv: 0.41, sell_iv: 0.55 },
+      out_of_grid: false, note: null,
+    } });
+  });
+  return ivCalls;
+}
+
+test("Historical IV 未解鎖：分析頁完全沒有這個模組，也不發任何 IV 請求（#126）",
+   async ({ page }) => {
+  const ivCalls = await routeDetailWithIv(page, false);
+  await page.goto("/#/s/s1");
+
+  // 頁面其餘部分照常渲染——閘門只擋這一塊
+  await expect(page.getByText("劇本主圖")).toBeVisible();
+  // 這一塊連節點都沒有：不是空卡片、不是「尚未啟用」提示
+  await expect(page.getByText("IV 相對位置")).toHaveCount(0);
+  await expect(page.getByText("Normalized Skew")).toHaveCount(0);
+  expect(ivCalls).toEqual([]);
+});
+
+test("Historical IV 解鎖：Normalized Skew 當頭條、兩腿為次層（#114）",
+   async ({ page }) => {
+  await routeDetailWithIv(page, true);
+  await page.goto("/#/s/s1");
+
+  const block = page.locator(".iv-history");
+  await expect(block).toBeVisible();
+  await expect(block.getByText("Normalized Skew")).toBeVisible();
+  await expect(block.getByText("買腿 IV")).toBeVisible();
+  await expect(block.getByText("賣腿 IV")).toBeVisible();
+  await expect(block.getByText(/第 62 百分位/)).toBeVisible();
+
+  // 頭條的字級確實大於次層——階層不是只寫在註解裡
+  const primary = await block.locator(".iv-value-primary").first()
+    .evaluate((el) => parseFloat(getComputedStyle(el).fontSize));
+  const secondary = await block.locator(".iv-value").first()
+    .evaluate((el) => parseFloat(getComputedStyle(el).fontSize));
+  expect(primary).toBeGreaterThan(secondary);
+
+  // 手機上仍是 compact：這一塊不超過視窗高度的一半
+  const box = (await block.boundingBox())!;
+  expect(box.height).toBeLessThan(page.viewportSize()!.height / 2);
 });

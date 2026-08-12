@@ -26,6 +26,7 @@ function view(overrides: Partial<SettingsView> = {}): SettingsView {
       },
     },
     market_data_effective: { source: "Cboe", fallback: false, reason: null },
+    historical_iv_enabled: false,
     updated_at: null,
     ...overrides,
   };

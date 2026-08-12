@@ -21,6 +21,7 @@ import { useEffect, useState } from "react";
 
 import AnalysisReport from "./AnalysisReport";
 import CandidatePool from "./CandidatePool";
+import IvHistory from "./IvHistory";
 import ExpiryStructure from "./ExpiryStructure";
 import Heatmap from "./Heatmap";
 import RawData from "./RawData";
@@ -60,9 +61,6 @@ function Stat({ label, children }: { label: string; children: React.ReactNode })
  * 渲染任何可見 UI——不是空卡片、不是「Coming Soon」、不是灰階
  * placeholder，就是不輸出任何 DOM 節點。
  */
-function IVPositionSlot() {
-  return null;
-}
 
 /**
  * Payoff Heatmap（spec #102 決策 A）：候選身分、名次、目標報酬與候選池
@@ -191,7 +189,7 @@ function DetailBody({ scenarioId, view, analyzedAt }: {
           插槽〕→ Payoff Heatmap，全部圍繞同一組
           baseline 候選。 */}
       <Summary view={view} candidate={candidate} analyzedAt={analyzedAt} />
-      <IVPositionSlot />
+      <IvHistory scenarioId={scenarioId} candidate={candidate} />
       <Chart candidate={candidate} />
       {/* 到期日結構（V6／#54）接在主圖之下。切換到期日只換這
           一塊的清單，基準候選不動——固定是 baseline 期第 1 名（QA1-06

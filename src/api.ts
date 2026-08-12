@@ -672,6 +672,10 @@ export interface SettingsView {
    *  是同一筆，使用者因此不必輸入同一把 token 兩次。 */
   credentials: Record<string, CredentialStatus>;
   market_data_effective: EffectiveSource;
+  /** Historical IV 模組解不解鎖（#126）。**由後端算好**——前端不自己
+   *  重推這條規則，推兩份遲早漂移，而漂移的後果正好是 AC 禁止的
+   *  「畫面以為鎖著、其實已經發了請求」。 */
+  historical_iv_enabled: boolean;
   updated_at: string | null;
 }
 
@@ -723,5 +727,39 @@ export function clearCredential(provider: string): Promise<SettingsView> {
   return request<SettingsView>(
     `/api/settings/credentials/${encodeURIComponent(provider)}`,
     { method: "DELETE" },
+  );
+}
+
+// ---------- Historical IV 歷史序列（#126／#114） ----------
+
+/** 序列上的一天。任一欄位為 null ＝那天在可比網格之外（或 vendor 沒
+ *  資料）——是斷點，不是零。 */
+export interface IvHistoryPoint {
+  date: string;
+  buy_iv: number | null;
+  sell_iv: number | null;
+  atm_iv: number | null;
+  normalized_skew: number | null;
+}
+
+export interface IvHistoryView {
+  candidate_key: string;
+  window_days: number;
+  points: IvHistoryPoint[];
+  current: IvHistoryPoint | null;
+  percentiles: Record<string, number | null>;
+  /** 整段都插不出值＝這個候選的座標超出 vendor 的可比網格。 */
+  out_of_grid: boolean;
+  /** vendor 部分失敗時的如實說明；沒事就是 null。 */
+  note: string | null;
+}
+
+export function ivHistory(
+  scenarioId: string,
+  candidateKey: string,
+): Promise<IvHistoryView> {
+  return request<IvHistoryView>(
+    `/api/scenarios/${encodeURIComponent(scenarioId)}/iv-history`
+    + `?candidate_key=${encodeURIComponent(candidateKey)}`,
   );
 }
