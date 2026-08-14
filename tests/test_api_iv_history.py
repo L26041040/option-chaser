@@ -249,7 +249,8 @@ def test_a_coordinate_outside_the_grid_is_left_blank_not_faked(db):
     assert body["points"], "應該有觀測，只是每一點都插不出值"
     assert all(p["normalized_skew"] is None for p in body["points"])
     assert body["metrics"]["normalized_skew"] == \
-        {"value": None, "percentile": None, "count": 0}
+        {"value": None, "percentile": None, "count": 0,
+         "trend_4w": None, "trend_base_count": 0}
     assert body["status"] == "ok"   # backfill 本身沒失敗，只是這個候選的
                                     # 座標在這個網格裡真的找不到可比的點
 
@@ -458,7 +459,41 @@ def test_zero_cached_observations_yields_no_percentile(db):
     body = _get(client, sid, _candidate_key(client, sid)).json()
     assert body["observations"] == 0
     assert body["metrics"]["normalized_skew"] == \
-        {"value": None, "percentile": None, "count": 0}
+        {"value": None, "percentile": None, "count": 0,
+         "trend_4w": None, "trend_base_count": 0}
+
+
+def test_trend_4w_reflects_a_real_change_across_the_cached_series(db):
+    """端到端：不是全年同一張網格（那種情況下 Δ4w 剛好是 0），而是隨
+    日期真的變化的序列，證明 Δ4w 真的從快取的每日觀測算出來、不是常數
+    佔位。網格整體往上平移──IV 越晚的日子越高，最新一筆理應比四週前
+    的水準高，Δ4w 應為正。"""
+    schedule = sampling_schedule("XYZ", ny_today())
+
+    def _shifted_grid(offset: float) -> dict:
+        pts = [SurfacePoint(dte=dte, delta=d, iv=0.20 + 0.1 * d + offset)
+              for dte in (1, 30, 90, 365, 1200)
+              for d in (0.01, 0.05, 0.25, 0.5, 0.75, 0.95)]
+        return {"call": pts, "put": pts}
+
+    from api_app.main import _surface_to_rows
+
+    for i, day in enumerate(schedule):
+        # 越晚的日子 offset 越大——一條單調上升的序列。
+        db.save_iv_observation(IvObservation(
+            symbol="XYZ", observed_on=day,
+            surface=_surface_to_rows(_shifted_grid(i * 0.001)),
+            fetched_at="2026-08-12T00:00:00+00:00"))
+
+    client = _client(db, surface=_rich_surface)
+    _unlock(client)
+    sid = _scenario(client)
+    body = _get(client, sid, _candidate_key(client, sid)).json()
+
+    m = body["metrics"]["buy_iv"]
+    assert m["trend_4w"] is not None
+    assert m["trend_4w"] > 0, "序列單調上升，最新一筆該高於四週前的水準"
+    assert m["trend_base_count"] > 0
 
 
 def test_a_first_day_run_with_partial_data_still_shows_a_percentile(db):
@@ -489,6 +524,11 @@ def test_a_healthy_run_reports_ok_with_metrics_for_every_field(db):
         assert m["percentile"] is not None
         assert m["count"] > 0
         assert m["value"] is not None
+        # #138：純加法欄位——整份排程都用同一張網格灌值，每天的重錨定
+        # 結果都相同，Δ4w 因此該是 0（有基準可減，減出來剛好沒變化），
+        # 不是 None（那會是「沒有基準」，跟這裡的情境不同）。
+        assert m["trend_4w"] == pytest.approx(0.0)
+        assert m["trend_base_count"] > 0
 
 
 # ---------- 長天期候選的到期日鎖定（#134）----------

@@ -426,27 +426,78 @@ def weighted_percentile(observations: list[tuple[str, float | None]],
     return hit / total
 
 
-def field_metrics(points: list[dict]) -> dict:
-    """每個欄位的（現值、百分位、有效觀測筆數）——呈現的最小單位（#133）。
+# ---------- 趨勢統計量（#138／spec #137）----------
+#
+# Δ4w 回答「往哪走」，percentile 只回答「在哪裡」——兩者互補，不是誰
+# 取代誰。基準取窗內**中位數**而不是單一最近點：percentile 站在全年
+# 六十幾個點上，一筆爛報價幾乎推不動它，但趨勢若取單點基準，那天一筆
+# 爛報價就能憑空捏造整個趨勢數字（spec #137 Gate 2 決策）。4 週這個
+# 窗口落在 IV level 因子 half-life 的證據帶（3–7 週，見
+# docs/research/rich-cheap-trend-entry-timing.md §4.1）內約一個
+# half-life，窗寬 21 天讓密集抽樣段（近 90 天每週約 2 點）內典型有
+# 約 6 筆觀測撐著中位數。
+
+_TREND_WINDOW_START_DAYS = 42   # 回溯窗遠端
+_TREND_WINDOW_END_DAYS = 21     # 回溯窗近端——窗寬涵蓋約 28 天前一帶
+
+
+def trend_4w(observations: list[tuple[str, float | None]], *,
+             latest: float | None, today) -> tuple[float | None, int]:
+    """Δ4w＝`latest`（與 `field_metrics` 的 `value` 同一筆，不另做平滑）
+    減去 `[today−42d, today−21d]` 窗內所有非 `None` 觀測的**中位數**。
+
+    `latest` 由呼叫端傳入而不是這裡自己從 `observations` 推——這樣兩者
+    保證是同一個數字，不會因為兩處各自判斷「最新」而漂移。
+
+    窗內一筆有效觀測都沒有，或根本沒有 `latest` 可減 → `(None, 0)`：
+    不外推、不拿窗外較近的點頂替（沿用 `iv_at()` 的不外插哲學）。
+
+    回傳 `(Δ4w, 基準中位數背後的觀測筆數)`——後者是透明度欄位，讓使用者
+    或除錯者知道這個趨勢數字站在多少筆觀測上（與 `count` 同精神）。
+    """
+    from datetime import timedelta
+    from statistics import median
+
+    if latest is None:
+        return None, 0
+
+    window_start = (today - timedelta(days=_TREND_WINDOW_START_DAYS)).isoformat()
+    window_end = (today - timedelta(days=_TREND_WINDOW_END_DAYS)).isoformat()
+    base_values = [v for d, v in observations
+                   if v is not None and window_start <= d <= window_end]
+    if not base_values:
+        return None, 0
+    return latest - median(base_values), len(base_values)
+
+
+def field_metrics(points: list[dict], *, today) -> dict:
+    """每個欄位的（現值、百分位、有效觀測筆數、Δ4w、Δ4w 基準筆數）
+    ——呈現的最小單位（#133／#138）。
 
     **不設任何 coverage／樣本數門檻**：只要這個欄位至少有一筆有效觀測，
     就算出百分位並給。`count` 是這個百分位背後有幾筆觀測撐著，讓使用者
     自己判斷這個數字站不站得住腳——這是刻意的取捨：產品只呈現事實與
-    資料量，不替使用者下「樣本不足所以不值得看」之類的可信度判斷。
+    資料量，不替使用者下「樣本不足所以不值得看」之類的可信度判斷。同一
+    精神延伸到 `trend_4w`：只要基準窗內有至少一筆觀測就給，`count` 換成
+    `trend_base_count` 揭露那個數字背後有幾筆撐著。
 
     唯一容許 `percentile` 為 `None` 的情況是 `count == 0`——這個欄位
     完全沒有可比較的歷史觀測（不是「不夠可信」，是真的沒有可比的東西）。
-    這個情況下 `value` 也是 `None`：沒有觀測就沒有「最近一次的值」可言。
+    這個情況下 `value` 也是 `None`：沒有觀測就沒有「最近一次的值」可言，
+    `trend_4w` 同理跟著是 `None`。
     """
     out: dict[str, dict] = {}
     for field in ("normalized_skew", "buy_iv", "sell_iv", "atm_iv"):
         obs = [(p["date"], p.get(field)) for p in points]
         valid = [v for _, v in obs if v is not None]
         latest = valid[-1] if valid else None
+        delta_4w, trend_base_count = trend_4w(obs, latest=latest, today=today)
         out[field] = {
             "value": latest,
             "percentile": weighted_percentile(obs, latest)
                          if latest is not None else None,
             "count": len(valid),
+            "trend_4w": delta_4w,
+            "trend_base_count": trend_base_count,
         }
     return out

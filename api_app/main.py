@@ -198,13 +198,15 @@ def _iv_payload(candidate_key: str, points: list[dict], status: str,
     `metrics` 裡每個欄位各自依「這個欄位有沒有至少一筆有效觀測」獨立
     判斷——只要有一筆就給 percentile；`count` 讓使用者自己判斷這個數字
     站不站得住腳，不是由後端替他判斷「不夠可信」。唯一容許某欄位沒有
-    percentile 的情況是那個欄位一筆有效觀測都沒有。
+    percentile 的情況是那個欄位一筆有效觀測都沒有。同一批欄位另外各帶
+    `trend_4w`／`trend_base_count`（#138）——純加法，`value`／
+    `percentile`／`count` 的語意不受影響。
     """
     return {
         "candidate_key": candidate_key,
         "status": status,
         "points": points,
-        "metrics": ivhistory.field_metrics(points),
+        "metrics": ivhistory.field_metrics(points, today=ny_today()),
         "observations": len(points),
         "note": note,
     }

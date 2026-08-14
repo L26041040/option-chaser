@@ -1,16 +1,16 @@
-"""(tenor, delta) 重錨定與相對位置的純函式（#126／#114）。
+"""(tenor, delta) 重錨定與相對位置的純函式（#126／#114／#138）。
 
 重點在**邊界**：不外插、不拿最長天期頂替、湊不出來就回 None。這幾條
 是 #114 AC 明文要求的，不是實作細節。
 """
-from datetime import date
+from datetime import date, timedelta
 
 import pytest
 
 from option_chaser.ivhistory import (ATM_DELTA, SurfacePoint,
                                      leg_coordinate, iv_at,
                                      nearby_expirations, normalized_skew,
-                                     percentile, spread_coordinates)
+                                     percentile, spread_coordinates, trend_4w)
 
 
 def _grid():
@@ -225,6 +225,86 @@ def test_nearby_expirations_never_invents_a_date_not_already_known():
 
 def test_no_known_expiries_yields_no_targets():
     assert nearby_expirations([], today=date(2026, 8, 12), tenor_days=700) == []
+
+
+# ---------- Δ4w 趨勢統計量（#138／spec #137 Gate 2）----------
+
+_TODAY = date(2026, 8, 12)
+
+
+def _iso(days_ago):
+    return (_TODAY - timedelta(days=days_ago)).isoformat()
+
+
+def test_delta_4w_is_latest_minus_the_window_median():
+    """基準＝[today-42, today-21] 窗內觀測的中位數，不是單一最近點。"""
+    obs = [(_iso(35), 0.20), (_iso(28), 0.22), (_iso(21), 0.24),
+          (_iso(3), 0.30)]
+    delta, base_count = trend_4w(obs, latest=0.30, today=_TODAY)
+    # 窗內三筆：0.20, 0.22, 0.24 → 中位數 0.22
+    assert delta == pytest.approx(0.30 - 0.22)
+    assert base_count == 3
+
+
+def test_delta_4w_median_absorbs_a_single_outlier_in_the_window():
+    """Gate 2 決策的守門測試：基準若取單一最近點，一筆離群報價就能憑空
+    捏造整個趨勢數字；中位數對窗內 1–2 筆離群觀測穩健。"""
+    # 窗內四筆乾淨觀測（都在 0.20 附近）＋一筆離群報價（0.90，且是窗內
+    # 離 28 天前最近的一點——若基準取單點會直接選中它）。
+    clean = [(_iso(40), 0.19), (_iso(35), 0.20), (_iso(30), 0.21),
+            (_iso(25), 0.20)]
+    outlier_day = _iso(28)   # 離 today-28 最近
+    with_outlier = clean + [(outlier_day, 0.90)]
+
+    delta_clean, _ = trend_4w(clean, latest=0.30, today=_TODAY)
+    delta_with_outlier, base_count = trend_4w(with_outlier, latest=0.30,
+                                              today=_TODAY)
+
+    # 中位數幾乎不被那一筆離群值移動——遠遠不到「單點基準取中離群值」
+    # 會產生的差距（0.30-0.90 = -0.60 vs 乾淨基準的正常量級）。
+    assert delta_with_outlier == pytest.approx(delta_clean, abs=0.02)
+    assert base_count == 5
+    # 反證：如果基準是單點（挑窗內離 28 天前最近的那筆），離群值會被
+    # 選中，Δ4w 會變成一個離譜的負值——確認乾淨版本本身不是那個量級。
+    single_point_would_be = 0.30 - 0.90
+    assert abs(delta_with_outlier - single_point_would_be) > 0.3
+
+
+def test_delta_4w_is_none_when_the_window_has_no_observation():
+    """窗內一筆有效觀測都沒有 → None，不外推、不拿窗外較近的點頂替。"""
+    obs = [(_iso(50), 0.20), (_iso(10), 0.30)]   # 都在 [21,42] 窗外
+    delta, base_count = trend_4w(obs, latest=0.30, today=_TODAY)
+    assert delta is None
+    assert base_count == 0
+
+
+def test_delta_4w_ignores_none_values_inside_the_window():
+    obs = [(_iso(30), None), (_iso(25), 0.22)]
+    delta, base_count = trend_4w(obs, latest=0.30, today=_TODAY)
+    assert delta == pytest.approx(0.30 - 0.22)
+    assert base_count == 1
+
+
+def test_delta_4w_is_none_when_there_is_no_latest_value():
+    """欄位完全沒有觀測（`value` 為 None）時，趨勢也是 None——沒有『最新
+    觀測』就沒有『減去基準』這件事。"""
+    obs = [(_iso(30), 0.20)]
+    delta, base_count = trend_4w(obs, latest=None, today=_TODAY)
+    assert delta is None
+    assert base_count == 0
+
+
+def test_delta_4w_window_boundaries_are_inclusive():
+    """窗口是 [today-42, today-21]（兩端含），不是開區間。"""
+    at_far_edge = trend_4w([(_iso(42), 0.20)], latest=0.30, today=_TODAY)
+    at_near_edge = trend_4w([(_iso(21), 0.20)], latest=0.30, today=_TODAY)
+    just_outside_far = trend_4w([(_iso(43), 0.20)], latest=0.30, today=_TODAY)
+    just_outside_near = trend_4w([(_iso(20), 0.20)], latest=0.30, today=_TODAY)
+
+    assert at_far_edge[1] == 1
+    assert at_near_edge[1] == 1
+    assert just_outside_far[1] == 0
+    assert just_outside_near[1] == 0
 
 
 def test_ranking_and_filters_do_not_depend_on_this_module():

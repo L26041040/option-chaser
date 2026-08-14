@@ -184,7 +184,7 @@ def test_a_percentile_is_given_with_only_two_observations():
     """遠低於舊門檻（coverage 0.5，或任何固定樣本數）——這正是這張票要
     推翻的行為：以前這種情況會被判定 insufficient 而整段隱藏。"""
     points = _points(skew=[("2026-08-01", 0.10), ("2026-08-02", 0.20)])
-    got = field_metrics(points)["normalized_skew"]
+    got = field_metrics(points, today=TODAY)["normalized_skew"]
     assert got["count"] == 2
     assert got["percentile"] is not None
     assert got["value"] == 0.20
@@ -192,15 +192,16 @@ def test_a_percentile_is_given_with_only_two_observations():
 
 def test_a_single_observation_still_yields_a_percentile():
     points = _points(skew=[("2026-08-01", 0.10)])
-    got = field_metrics(points)["normalized_skew"]
+    got = field_metrics(points, today=TODAY)["normalized_skew"]
     assert got["count"] == 1
     assert got["percentile"] is not None
 
 
 def test_zero_observations_is_the_only_case_with_no_percentile():
     points = _points(skew=[("2026-08-01", None), ("2026-08-02", None)])
-    got = field_metrics(points)["normalized_skew"]
-    assert got == {"value": None, "percentile": None, "count": 0}
+    got = field_metrics(points, today=TODAY)["normalized_skew"]
+    assert got == {"value": None, "percentile": None, "count": 0,
+                   "trend_4w": None, "trend_base_count": 0}
 
 
 def test_each_field_is_judged_independently():
@@ -210,15 +211,16 @@ def test_each_field_is_judged_independently():
         {"date": "2026-08-01", "normalized_skew": None, "buy_iv": 0.22,
          "sell_iv": None, "atm_iv": None},
     ]
-    got = field_metrics(points)
+    got = field_metrics(points, today=TODAY)
     assert got["normalized_skew"]["count"] == 0
     assert got["buy_iv"]["count"] == 1
     assert got["buy_iv"]["percentile"] is not None
 
 
 def test_field_metrics_of_empty_points_has_no_percentile_anywhere():
-    got = field_metrics([])
-    assert all(m == {"value": None, "percentile": None, "count": 0}
+    got = field_metrics([], today=TODAY)
+    assert all(m == {"value": None, "percentile": None, "count": 0,
+                     "trend_4w": None, "trend_base_count": 0}
                for m in got.values())
 
 
@@ -226,4 +228,30 @@ def test_count_matches_the_number_of_non_null_observations_not_total_days():
     """`count` 是「有效」觀測，不是快取裡的總天數——中間缺值的日子不算數。"""
     points = _points(skew=[("2026-08-01", 0.1), ("2026-08-02", None),
                            ("2026-08-03", 0.2), ("2026-08-04", 0.3)])
-    assert field_metrics(points)["normalized_skew"]["count"] == 3
+    assert field_metrics(points, today=TODAY)["normalized_skew"]["count"] == 3
+
+
+# ---------- field_metrics 的 Δ4w 整合（#138）----------
+
+def test_field_metrics_carries_trend_4w_end_to_end():
+    """引擎層整合：`field_metrics` 算出的 `trend_4w` 跟直接呼叫
+    `trend_4w()` 純函式應該是同一個數字——這裡只驗證『有接上』，數學
+    細節由 `test_ivhistory.py` 的 Δ4w 專屬測試涵蓋。"""
+    points = _points(skew=[
+        (_offset(35), 0.20), (_offset(28), 0.22), (_offset(21), 0.24),
+        (_offset(3), 0.30),
+    ])
+    got = field_metrics(points, today=TODAY)["normalized_skew"]
+    assert got["trend_4w"] == pytest.approx(0.30 - 0.22)   # 窗內中位數 0.22
+    assert got["trend_base_count"] == 3
+
+
+def test_field_metrics_trend_4w_is_none_without_a_window_observation():
+    points = _points(skew=[(_offset(60), 0.20), (_offset(5), 0.30)])
+    got = field_metrics(points, today=TODAY)["normalized_skew"]
+    assert got["trend_4w"] is None
+    assert got["trend_base_count"] == 0
+
+
+def _offset(days_ago):
+    return (TODAY - timedelta(days=days_ago)).isoformat()
