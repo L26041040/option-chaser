@@ -297,23 +297,49 @@ regime model 這類「模型一換答案就變」的東西。Long Call 一併納
 繼承，並新增「禁止任何預測語句」。
 
 **拆票完成（2026-08-14 `/to-tickets`，五張全掛 `ready-for-agent`）**，
-依 #137 一比一切五張、照舊 `/implement` 依 frontier 一張張做：
+依 #137 一比一切五張。
 
-- **RCT-01** [#138] — Δ4w 引擎純函式＋API 契約純加法（中位數基準
-  守門測試必備）。無阻擋 ←
-- **RCT-02** [#139] — Long Call 單腳 Historical IV 資料路徑（新增
-  能力非改顯示）。無阻擋，與 #138 平行 ←
-- **RCT-03** [#140] — 一年走勢圖為主體＋Percentile＋Δ4w＋雙模式
-  版型（被 #138、#139 擋）
-- **RCT-04** [#141] — 桌面／手機整合＋缺資料狀態全景 E2E
-  （被 #140 擋）
-- **RCT-05** [#142] — 最終 regression gate：#118 selection identity
-  ＋禁詞全景＋全套綠燈（被 #141 擋；紅燈即停不准調 golden）
+**施工完成（2026-08-14 `/implement`，依序單線施工、不平行）**：
 
-> ⚠ 本 session 內容器 checkout 已**四度**自行倒退到 `4d3cea3`（V1
-> 期）。每張票開工前必先 `git rev-parse HEAD` 核對並在寫檔前複驗；
-> 倒退時 `git fetch origin claude/implement-tfm9oa && git merge
-> --ff-only origin/claude/implement-tfm9oa` 復原。
+- **RCT-01** [#138] — Δ4w 引擎純函式＋API 契約純加法（commit
+  `0158dc7`）：`ivhistory.trend_4w()`＋`field_metrics()` 擴充
+  `trend_4w`／`trend_base_count`；中位數守門測試（離群觀測不改變基準）
+  已涵蓋
+- **RCT-02** [#139] — Long Call 單腳 Historical IV 資料路徑（commit
+  `1864ba1`）：`spread_coordinates()`／`reanchor_spread()` 開通單腳，
+  option_type 隨座標回傳供曲面查找（避免 Long Put 誤用 call 網格）。
+  **施工中發現並一併修正的上層阻擋**：`store.find_candidate()` 原本
+  只搜 `expiry_top10`（T9 附錄A7：single-leg 恆為空），單腳候選過去
+  在這一步就找不到——修正為沒有 `expiry_top10` 分組的策略才退去搜
+  扁平 `candidates` 清單，兩腿路徑零回歸
+- **RCT-03** [#140] — 一年走勢圖為主體＋Percentile＋Δ4w＋雙模式版型
+  （commit `0ffc84e`）：新增 `src/ivHistoryChart.ts`；`IvHistory.tsx`
+  全面重寫，Spread 模式 Ĝ 主位＋買賣腿次層、Long Call 模式買腿 IV
+  主位＋ATM IV 次層；Normalized Skew 現值格式一併修正為無因次小數
+  （與新增 Δ4w 同語言，避免同一欄位兩套單位並列）；#135 壓平裁示在
+  本區塊被覆蓋
+- **RCT-04** [#141] — 桌面／手機整合＋缺資料狀態全景 E2E（commit
+  `6c3537e`）：67 個 E2E 案例（41 手機＋26 桌面）全綠。**施工中發現
+  並修正**：(1) 真實 App 導覽路徑（`baselineTopCandidate`＋
+  `_MVP_STRATEGIES` 皆 Spread-only）結構上走不到 Long Call 模式，比
+  #139 更上層，不在本輪範圍——Long Call 版型改依賴 RCT-03 的 Vitest
+  元件測試驗證；(2) 既有 E2E fixture 用 250 點模擬全年歷史，遠超引擎
+  `sampling_schedule` 實際約 55–75 點的密度，250 個 8px 圓圈擠在手機
+  走勢圖裡嚴重重疊、連自動化都點不準——改為 66 點貼近真實密度
+- **RCT-05** [#142] — 最終 regression gate（commit `a87a9c6`）：
+  `test_selection_regression.py` 新增行為＋結構雙重證明——用力呼叫
+  本輪全部新函式夾在兩次 identity snapshot 之間身份不變；
+  `ranking.py`／`filters.py` 原始碼不含 `ivhistory` 字樣。
+  pytest／typecheck／build／vitest（508）／e2e（67）全綠，未紅燈
+  調整任何斷言
+
+**spec #137 五張票全數完成，等需求方實機驗收；PR 未開，等 cue。**
+
+> 本 session 內容器 checkout 曾五度自行倒退到 `4d3cea3`（V1 期）——每次
+> 都在寫檔前 `git rev-parse HEAD` 核對抓到，用 `git fetch origin
+> claude/implement-tfm9oa && git merge --ff-only origin/claude/
+> implement-tfm9oa` 復原，未造成任何內容遺失。後續 session 若遇到同一
+> 個 HEAD（`4d3cea3`），這是已知的容器陷阱，不是需要調查的新狀況。
 
 ### 最新狀態（2026-08-12 第四輪）——Historical IV 綁定修正＋壓平＋Refresh 漸進解鎖
 
