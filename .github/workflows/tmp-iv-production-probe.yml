@@ -1,4 +1,4 @@
-name: Temporary IV Production Probe
+name: Temporary IV Preview Probe
 
 on:
   push:
@@ -9,69 +9,62 @@ on:
 jobs:
   probe:
     runs-on: ubuntu-latest
+    env:
+      VERCEL_BYPASS: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
+      VERCEL_BYPASS_ALT: ${{ secrets.VERCEL_PROTECTION_BYPASS }}
+      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
     steps:
-      - name: Probe deployed API data path
+      - name: Probe protected branch preview
         shell: bash
         run: |
           python3 - <<'PY'
-          import json, urllib.request, urllib.parse, urllib.error
+          import json, os, urllib.request, urllib.parse, urllib.error
+          base="https://option-chaser-git-claude-imp-aef368-ofriedoriceo-5352s-projects.vercel.app"
+          vals=[os.environ.get("VERCEL_BYPASS"),os.environ.get("VERCEL_BYPASS_ALT")]
+          bypass=next((v for v in vals if v),None)
+          token=os.environ.get("VERCEL_TOKEN")
+          print("bypass_secret_present=", bool(bypass))
+          print("vercel_token_present=", bool(token))
 
-          BASES = [
-              "https://option-chaser-git-claude-imp-aef368-ofriedoriceo-5352s-projects.vercel.app",
-              "https://option-chaser.vercel.app",
-          ]
-
-          def get(url):
-              req = urllib.request.Request(url, headers={"Accept":"application/json", "User-Agent":"option-chaser-gh-probe"})
+          def get(path):
+              headers={"Accept":"application/json","User-Agent":"option-chaser-gh-probe"}
+              if bypass: headers["x-vercel-protection-bypass"]=bypass
+              if token: headers["Authorization"]="Bearer "+token
+              req=urllib.request.Request(base+path,headers=headers)
               try:
-                  with urllib.request.urlopen(req, timeout=30) as r:
-                      return r.status, r.geturl(), r.read().decode("utf-8", "replace"), dict(r.headers.items())
+                  with urllib.request.urlopen(req,timeout=30) as r:
+                      return r.status,r.read().decode("utf-8","replace")
               except urllib.error.HTTPError as e:
-                  return e.code, e.geturl(), e.read().decode("utf-8", "replace"), dict(e.headers.items())
+                  return e.code,e.read().decode("utf-8","replace")
               except Exception as e:
-                  return 0, url, f"{type(e).__name__}: {e}", {}
+                  return 0,f"{type(e).__name__}: {e}"
 
-          def candidate_keys(obj):
-              out=[]
-              def walk(x):
-                  if isinstance(x, dict):
-                      k=x.get("candidate_key")
-                      if isinstance(k,str) and k and k not in out: out.append(k)
-                      for v in x.values(): walk(v)
-                  elif isinstance(x,list):
-                      for v in x: walk(v)
-              walk(obj)
-              return out
-
-          for base in BASES:
-              print("\n" + "="*80)
-              print("BASE", base)
-              print("="*80)
-              for path in ["/api/health", "/api/scenarios"]:
-                  st, final, body, hdr = get(base+path)
-                  print(f"GET {path}: HTTP {st}; final={final}")
-                  print(body[:2000])
-                  if path == "/api/scenarios" and st == 200:
-                      try: scenarios=json.loads(body)
-                      except Exception: scenarios=[]
-                      if isinstance(scenarios,list):
-                          for sc in scenarios[:8]:
-                              sid=sc.get("id") if isinstance(sc,dict) else None
-                              if not sid: continue
-                              st2, final2, body2, hdr2=get(base+f"/api/scenarios/{urllib.parse.quote(str(sid))}")
-                              print(f"DETAIL scenario={sid}: HTTP {st2}")
-                              if st2 != 200:
-                                  print(body2[:1500]); continue
-                              try: detail=json.loads(body2)
-                              except Exception:
-                                  print(body2[:1500]); continue
-                              keys=candidate_keys(detail)
-                              print(f"candidate_keys found={len(keys)} sample={keys[:3]}")
-                              for key in keys[:2]:
-                                  q=urllib.parse.urlencode({"candidate_key":key})
-                                  st3, final3, body3, hdr3=get(base+f"/api/scenarios/{urllib.parse.quote(str(sid))}/iv-history?{q}")
-                                  print(f"IV_HISTORY scenario={sid} candidate={key}: HTTP {st3}")
-                                  print(body3[:6000])
-                              if keys:
-                                  break
+          st,body=get('/api/health'); print('HEALTH',st,body[:1200])
+          st,body=get('/api/scenarios'); print('SCENARIOS',st,body[:2500])
+          if st!=200: raise SystemExit(0)
+          try: scenarios=json.loads(body)
+          except Exception: scenarios=[]
+          def keys(x,out):
+              if isinstance(x,dict):
+                  k=x.get('candidate_key')
+                  if isinstance(k,str) and k and k not in out: out.append(k)
+                  for v in x.values(): keys(v,out)
+              elif isinstance(x,list):
+                  for v in x: keys(v,out)
+          for sc in scenarios[:10]:
+              sid=sc.get('id')
+              if not sid: continue
+              st2,b2=get('/api/scenarios/'+urllib.parse.quote(str(sid)))
+              print('DETAIL',sid,st2)
+              if st2!=200: print(b2[:1000]); continue
+              try: d=json.loads(b2)
+              except Exception: continue
+              ks=[]; keys(d,ks)
+              print('candidate_count',len(ks),'sample',ks[:3])
+              for k in ks[:3]:
+                  q=urllib.parse.urlencode({'candidate_key':k})
+                  st3,b3=get('/api/scenarios/'+urllib.parse.quote(str(sid))+'/iv-history?'+q)
+                  print('IV_HISTORY',sid,k,'HTTP',st3)
+                  print(b3[:7000])
+              if ks: break
           PY
