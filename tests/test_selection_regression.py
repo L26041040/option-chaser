@@ -187,3 +187,54 @@ def test_assert_identity_unchanged_rejects_reordered_ranking():
         assert False, "應該要因為順序被動過而失敗"
     except AssertionError:
         pass
+
+
+# ---------- RCT 回合（#137／#138–#142）：Historical IV 趨勢層守門 ----------
+#
+# 這一輪新增的東西——`ivhistory.trend_4w()`／`field_metrics()` 的
+# `trend_4w`／`trend_base_count` 擴充、`spread_coordinates()`／
+# `reanchor_spread()` 的單腳路徑、`store.find_candidate()` 的單腳
+# fallback——全部活在 enrich-only 這一側：`ranking.py`／`filters.py`
+# 不 import `ivhistory`（`tests/test_ivhistory.py` 既有斷言原始碼字面，
+# 本檔案不重複）；`find_candidate()` 是純讀取的 lookup，只被 iv-history
+# 端點呼叫，不參與 `service.run_offline`／`store.serialize_result` 產生
+# 候選的任何一步。以下用行為證明這個結構保證真的成立：即使在算出
+# identity 之後、再次算 identity 之前，中間插入對這一輪新函式的呼叫，
+# 兩次 identity 仍然逐位元相同——沒有任何隱藏的共用可變狀態。
+
+def test_exercising_ivhistory_between_two_identity_snapshots_changes_nothing():
+    """#142：整個 Historical IV 趨勢層拿掉，候選命運與順序必須一模一樣
+    ——這裡反過來驗證：*用力呼叫*這一輪新增的每一個函式，也不會讓身份
+    跟著變，證明它們真的活在候選產生流程之外，不是『剛好』沒被踩到。"""
+    from datetime import date
+
+    from option_chaser import ivhistory
+
+    before = snapshot_identity("bull-call-spread")
+
+    # 用力呼叫本輪新增的每一個函式——包含單腳／兩腿座標、重錨定、
+    # Δ4w、單腳候選查找——確認候選產生流程對這些呼叫零感知。
+    view = _view("bull-call-spread")
+    for r in view["results"]:
+        for group in r.get("expiry_top10") or []:
+            for cand in group["candidates"]:
+                coords = ivhistory.spread_coordinates(cand, spot=view["meta"]["spot"])
+                if coords is not None:
+                    ivhistory.reanchor_spread({"call": [], "put": []}, coords)
+                store.find_candidate(view, cand["candidate_key"])
+    points = [{"date": "2026-01-01", "normalized_skew": 0.1, "buy_iv": 0.2,
+              "sell_iv": 0.22, "atm_iv": 0.21}]
+    ivhistory.field_metrics(points, today=date(2026, 8, 12))
+
+    after = snapshot_identity("bull-call-spread")
+    assert_identity_unchanged(before, after)
+
+
+def test_removing_the_entire_ivhistory_module_leaves_selection_untouched():
+    """結構性版本的同一條紅線：`ranking.py`／`filters.py`——真正決定
+    候選命運與順序的兩個模組——原始碼裡完全沒有 `ivhistory` 字樣。這比
+    『跑過一次結果一樣』更強：代表這條邊在程式碼層級就不存在，不是
+    測試碰巧沒觸發到。"""
+    for mod in ("option_chaser/ranking.py", "option_chaser/filters.py"):
+        src = open(mod, encoding="utf-8").read()
+        assert "ivhistory" not in src, f"{mod} 不該依賴 ivhistory"
