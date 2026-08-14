@@ -768,11 +768,20 @@ export type IvHistoryStatus = "ok" | "quota" | "vendor";
  *  數字站不站得住腳，產品不替他下「樣本不足所以不值得看」的判斷。
  *
  *  `percentile` 為 `null` 的**唯一**情況是 `count === 0`——這個欄位完全
- *  沒有可比較的歷史觀測，`value` 此時也是 `null`。 */
+ *  沒有可比較的歷史觀測，`value` 此時也是 `null`。
+ *
+ *  `trend_4w`／`trend_base_count`（#140／spec #137）：Δ4w＝最新觀測減去
+ *  約四週前水準（[今天-42天, 今天-21天] 窗內觀測的中位數），純加法欄位。
+ *  基準窗內一筆觀測都沒有時 `trend_4w` 為 `null`（`trend_base_count` 隨
+ *  之為 0）——跟 `percentile`／`value` 一樣，湊不出來就誠實說沒有，不
+ *  外推、不拿別的數字頂替。`trend_base_count` 揭露這個趨勢數字背後有
+ *  幾筆觀測撐著，跟 `count` 同精神。 */
 export interface IvFieldMetric {
   value: number | null;
   percentile: number | null;
   count: number;
+  trend_4w: number | null;
+  trend_base_count: number;
 }
 
 export interface IvHistoryView {

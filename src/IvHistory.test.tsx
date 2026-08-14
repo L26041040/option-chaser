@@ -1,25 +1,40 @@
 /**
  * Historical IV Position 模組（#114）與它的閘門（#126）。呈現規則見 #133
  * （需求方 2026-08-12 二次修正：不因 coverage／樣本數隱藏 percentile）。
+ * 一年走勢圖為主體＋Δ4w、Long Call 單腳模式：#140（spec #137）。
  *
  * 紅線都在這裡守：鎖著時**零 DOM、零 IV 請求**；backfill 狀態
- * （quota／vendor）只是附加說明、**不隱藏**已經算出來的 percentile；
- * 只有 count＝0（完全沒有可比較觀測）才不給 percentile；文案**只陳述
- * 事實**，出現任何評價或可信度判斷字眼就紅燈。
+ * （quota／vendor）只是附加說明、**不隱藏**已經算出來的 percentile／
+ * Δ4w；只有 count＝0（完全沒有可比較觀測）才不給 percentile；文案**只
+ * 陳述事實**，出現任何評價或預測字眼就紅燈。
  */
 import { render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import IvHistory from "./IvHistory";
-import type { Candidate, IvFieldMetric, IvHistoryView } from "./api";
+import type { Candidate, IvFieldMetric, IvHistoryPoint,
+             IvHistoryView, Leg } from "./api";
 
 const KEY = "bull-call-spread|118C|125C|2026-09-18";
 
-function candidate(): Candidate {
-  return { candidate_key: KEY, legs: [] } as unknown as Candidate;
+function leg(overrides: Partial<Leg> = {}): Leg {
+  return { strike: 118, option_type: "call", expiry: "2026-09-18",
+          ask: 5, bid: 4.8, iv: 0.24, volume: 100, open_interest: 500,
+          ...overrides };
 }
 
-function series(n: number, f: (i: number) => number | null) {
+function spreadCandidate(): Candidate {
+  return { candidate_key: KEY, legs: [leg(), leg({ strike: 125 })] } as
+    unknown as Candidate;
+}
+
+function longCallCandidate(): Candidate {
+  return { candidate_key: "long-call|118|2026-09-18", legs: [leg()] } as
+    unknown as Candidate;
+}
+
+function series(n: number, f: (i: number) => number | null): IvHistoryPoint[] {
   return Array.from({ length: n }, (_, i) => ({
     date: `2026-01-${String((i % 28) + 1).padStart(2, "0")}`,
     buy_iv: f(i),
@@ -31,10 +46,16 @@ function series(n: number, f: (i: number) => number | null) {
 
 /** count＝0、完全沒有可比較觀測時的樣子——四個欄位都一樣。 */
 function emptyMetrics(): Record<string, IvFieldMetric> {
-  const empty = { value: null, percentile: null, count: 0 };
+  const empty = { value: null, percentile: null, count: 0,
+                 trend_4w: null, trend_base_count: 0 };
   return {
     normalized_skew: empty, buy_iv: empty, sell_iv: empty, atm_iv: empty,
   };
+}
+
+function metric(over: Partial<IvFieldMetric> = {}): IvFieldMetric {
+  return { value: 0.20, percentile: 0.5, count: 45,
+          trend_4w: null, trend_base_count: 0, ...over };
 }
 
 function ivView(over: Partial<IvHistoryView> = {}): IvHistoryView {
@@ -45,10 +66,13 @@ function ivView(over: Partial<IvHistoryView> = {}): IvHistoryView {
     status: "ok" as const,
     points,
     metrics: {
-      normalized_skew: { value: last.normalized_skew, percentile: 0.62, count: 45 },
-      buy_iv: { value: last.buy_iv, percentile: 0.41, count: 45 },
-      sell_iv: { value: last.sell_iv, percentile: 0.55, count: 45 },
-      atm_iv: { value: last.atm_iv, percentile: 0.5, count: 45 },
+      normalized_skew: metric({ value: last.normalized_skew, percentile: 0.62,
+                               trend_4w: 0.06 }),
+      buy_iv: metric({ value: last.buy_iv, percentile: 0.41,
+                      trend_4w: -0.012 }),
+      sell_iv: metric({ value: last.sell_iv, percentile: 0.55,
+                       trend_4w: -0.004 }),
+      atm_iv: metric({ value: last.atm_iv, percentile: 0.5, trend_4w: 0 }),
     },
     observations: points.length,
     note: null,
@@ -83,13 +107,13 @@ describe("閘門（#126）", () => {
   it("未解鎖時不輸出任何 DOM 節點", async () => {
     mockApi({ enabled: false });
     const { container } = render(
-      <IvHistory scenarioId="s1" candidate={candidate()} />);
+      <IvHistory scenarioId="s1" candidate={spreadCandidate()} />);
     await waitFor(() => expect(container).toBeEmptyDOMElement());
   });
 
   it("未解鎖時一個 IV 請求都不發", async () => {
     const urls = mockApi({ enabled: false });
-    render(<IvHistory scenarioId="s1" candidate={candidate()} />);
+    render(<IvHistory scenarioId="s1" candidate={spreadCandidate()} />);
     await waitFor(() => expect(urls.some((u) => u.includes("/api/settings")))
       .toBe(true));
     expect(ivCalls(urls)).toEqual([]);
@@ -103,14 +127,14 @@ describe("閘門（#126）", () => {
                json: async () => ({ detail: "掛了" }) } as Response;
     }));
     const { container } = render(
-      <IvHistory scenarioId="s1" candidate={candidate()} />);
+      <IvHistory scenarioId="s1" candidate={spreadCandidate()} />);
     await waitFor(() => expect(container).toBeEmptyDOMElement());
     expect(ivCalls(urls)).toEqual([]);
   });
 
   it("解鎖後才發 IV 請求，且帶著候選的身份鍵", async () => {
     const urls = mockApi({ enabled: true });
-    render(<IvHistory scenarioId="s1" candidate={candidate()} />);
+    render(<IvHistory scenarioId="s1" candidate={spreadCandidate()} />);
     await waitFor(() => expect(ivCalls(urls)).toHaveLength(1));
     expect(ivCalls(urls)[0]).toContain(encodeURIComponent(KEY));
   });
@@ -123,10 +147,10 @@ describe("閘門（#126）", () => {
   });
 });
 
-describe("資訊階層", () => {
+describe("Spread 模式：資訊階層", () => {
   it("Normalized Skew 是頭條", async () => {
     mockApi({ enabled: true });
-    render(<IvHistory scenarioId="s1" candidate={candidate()} />);
+    render(<IvHistory scenarioId="s1" candidate={spreadCandidate()} />);
     await waitFor(() =>
       expect(screen.getByText("Normalized Skew")).toBeInTheDocument());
   });
@@ -134,7 +158,7 @@ describe("資訊階層", () => {
   it("兩腿 IV 是明顯次一層（不與頭條同級）", async () => {
     mockApi({ enabled: true });
     const { container } = render(
-      <IvHistory scenarioId="s1" candidate={candidate()} />);
+      <IvHistory scenarioId="s1" candidate={spreadCandidate()} />);
     await waitFor(() => expect(screen.getByText("買腿 IV")).toBeInTheDocument());
     expect(screen.getByText("賣腿 IV")).toBeInTheDocument();
     // 頭條掛 `iv-primary`，兩腿沒有——階層是結構上的，不是只靠字級
@@ -143,54 +167,156 @@ describe("資訊階層", () => {
     expect(primary[0].textContent).toContain("Normalized Skew");
   });
 
-  it("每一項都有現值、百分位、觀測筆數與 sparkline", async () => {
+  it("Long Call 模式沒有 Normalized Skew 也沒有賣腿——單腳的意思就是沒有這兩項",
+     async () => {
+    mockApi({ enabled: true, iv: ivView({
+      candidate_key: "long-call|118|2026-09-18",
+      metrics: { ...ivView().metrics,
+                sell_iv: { value: null, percentile: null, count: 0,
+                          trend_4w: null, trend_base_count: 0 },
+                normalized_skew: { value: null, percentile: null, count: 0,
+                                  trend_4w: null, trend_base_count: 0 } },
+    }) });
+    render(<IvHistory scenarioId="s1" candidate={longCallCandidate()} />);
+    await waitFor(() => expect(screen.getByText("買腿 IV")).toBeInTheDocument());
+    expect(screen.queryByText("Normalized Skew")).not.toBeInTheDocument();
+    expect(screen.queryByText("賣腿 IV")).not.toBeInTheDocument();
+    expect(screen.getByText("ATM IV")).toBeInTheDocument();
+  });
+
+  it("Long Call 模式買腿 IV 是頭條", async () => {
+    mockApi({ enabled: true, iv: ivView() });
+    const { container } = render(
+      <IvHistory scenarioId="s1" candidate={longCallCandidate()} />);
+    await waitFor(() => expect(screen.getByText("買腿 IV")).toBeInTheDocument());
+    const primary = container.querySelectorAll(".iv-primary");
+    expect(primary).toHaveLength(1);
+    expect(primary[0].textContent).toContain("買腿 IV");
+  });
+
+  it("每一項都有現值、百分位、觀測筆數、Δ4w 與一年走勢圖", async () => {
     mockApi({ enabled: true });
     const { container } = render(
-      <IvHistory scenarioId="s1" candidate={candidate()} />);
+      <IvHistory scenarioId="s1" candidate={spreadCandidate()} />);
     await waitFor(() =>
       expect(screen.getByText(/第 62 百分位・45 筆觀測/)).toBeInTheDocument());
     expect(screen.getByText(/第 41 百分位・45 筆觀測/)).toBeInTheDocument();
-    expect(container.querySelectorAll(".iv-spark").length).toBeGreaterThanOrEqual(3);
+    expect(container.querySelectorAll(".iv-trend-chart").length)
+      .toBeGreaterThanOrEqual(3);
   });
 
-  it("整塊維持 compact：只有一張卡，手機不長出第二張", async () => {
+  it("整塊維持一張卡，手機不長出第二張", async () => {
     mockApi({ enabled: true });
     const { container } = render(
-      <IvHistory scenarioId="s1" candidate={candidate()} />);
+      <IvHistory scenarioId="s1" candidate={spreadCandidate()} />);
     await waitFor(() =>
       expect(screen.getByText("Normalized Skew")).toBeInTheDocument());
     expect(container.querySelectorAll(".card")).toHaveLength(1);
   });
 });
 
+describe("Δ4w（#140／spec #137）", () => {
+  it("腿 IV 用帶正負號的 vol 點顯示", async () => {
+    mockApi({ enabled: true, iv: ivView({
+      metrics: { ...ivView().metrics,
+                buy_iv: metric({ trend_4w: -0.012 }) },
+    }) });
+    render(<IvHistory scenarioId="s1" candidate={spreadCandidate()} />);
+    await waitFor(() =>
+      expect(screen.getByText(/4週 -1\.2 pts/)).toBeInTheDocument());
+  });
+
+  it("正值帶正號", async () => {
+    mockApi({ enabled: true, iv: ivView({
+      metrics: { ...ivView().metrics,
+                buy_iv: metric({ trend_4w: 0.018 }) },
+    }) });
+    render(<IvHistory scenarioId="s1" candidate={spreadCandidate()} />);
+    await waitFor(() =>
+      expect(screen.getByText(/4週 \+1\.8 pts/)).toBeInTheDocument());
+  });
+
+  it("Normalized Skew 用無因次小數，不是 vol 點", async () => {
+    mockApi({ enabled: true, iv: ivView({
+      metrics: { ...ivView().metrics,
+                normalized_skew: metric({ trend_4w: 0.06 }) },
+    }) });
+    render(<IvHistory scenarioId="s1" candidate={spreadCandidate()} />);
+    await waitFor(() =>
+      expect(screen.getByText(/4週 \+0\.06/)).toBeInTheDocument());
+    expect(screen.queryByText(/4週 \+6\.0 pts/)).not.toBeInTheDocument();
+  });
+
+  it("trend_4w 為 null 時顯示「4週 —」——不是外推，也不是假裝沒有變化",
+     async () => {
+    mockApi({ enabled: true, iv: ivView({
+      metrics: { ...ivView().metrics,
+                buy_iv: metric({ trend_4w: null }) },
+    }) });
+    render(<IvHistory scenarioId="s1" candidate={spreadCandidate()} />);
+    await waitFor(() => expect(screen.getByText(/4週 —/)).toBeInTheDocument());
+  });
+
+  it("方法論註記說明 Δ4w 的定義與基準窗", async () => {
+    mockApi({ enabled: true });
+    render(<IvHistory scenarioId="s1" candidate={spreadCandidate()} />);
+    await waitFor(() =>
+      expect(screen.getByText(/4週變化＝與約四週前/)).toBeInTheDocument());
+    expect(screen.getByText(/21–42 天窗內觀測中位數/)).toBeInTheDocument();
+  });
+
+  it("方法論註記誠實說明等待另有 theta 成本與標的價格風險", async () => {
+    mockApi({ enabled: true });
+    render(<IvHistory scenarioId="s1" candidate={spreadCandidate()} />);
+    await waitFor(() =>
+      expect(screen.getByText(/theta 成本與標的價格風險/)).toBeInTheDocument());
+    expect(screen.getByText(/本區塊僅描述 volatility 結構/)).toBeInTheDocument();
+  });
+});
+
 describe("完全沒有可比較觀測時：誠實留白，不外插、不硬湊（#133）", () => {
   it("count＝0 時顯示「沒有歷史資料」，不是留白讓人以為還在載入", async () => {
     mockApi({ enabled: true, iv: ivView({ metrics: emptyMetrics() }) });
-    render(<IvHistory scenarioId="s1" candidate={candidate()} />);
+    render(<IvHistory scenarioId="s1" candidate={spreadCandidate()} />);
     await waitFor(() =>
       expect(screen.getAllByText("沒有歷史資料").length).toBeGreaterThan(0));
   });
 
-  it("sparkline 對缺值斷線，不把斷點連起來", async () => {
+  it("沒有觀測的欄位不畫走勢圖（沒有東西可畫）", async () => {
+    // 真正的「沒有可比較觀測」：`points` 每一筆都是 null，跟
+    // `metrics.count === 0` 一致——後端 `field_metrics()` 的 `count`
+    // 本來就是從同一份 `points` 直接算出來的，兩者不會對不上。
+    const noPoints = series(10, () => null);
+    mockApi({ enabled: true,
+             iv: ivView({ points: noPoints, metrics: emptyMetrics() }) });
+    const { container } = render(
+      <IvHistory scenarioId="s1" candidate={spreadCandidate()} />);
+    await waitFor(() =>
+      expect(screen.getAllByText("沒有歷史資料").length).toBeGreaterThan(0));
+    expect(container.querySelectorAll(".iv-trend-chart")).toHaveLength(0);
+  });
+
+  it("走勢圖對缺值斷線，不把斷點連起來", async () => {
     // 中間 100 天缺值 → 應該切成兩段 polyline
     const pts = series(200, (i) => (i >= 50 && i < 150 ? null : 0.2));
     mockApi({ enabled: true, iv: ivView({ points: pts }) });
     const { container } = render(
-      <IvHistory scenarioId="s1" candidate={candidate()} />);
+      <IvHistory scenarioId="s1" candidate={spreadCandidate()} />);
     await waitFor(() =>
-      expect(container.querySelector(".iv-spark")).toBeInTheDocument());
-    const first = container.querySelector(".iv-spark")!;
+      expect(container.querySelector(".iv-trend-chart")).toBeInTheDocument());
+    const first = container.querySelector(".iv-trend-chart")!;
     expect(first.querySelectorAll("polyline").length).toBe(2);
   });
 });
 
-describe("不因樣本數或 coverage 隱藏 percentile（需求方 2026-08-12 二次修正）", () => {
+describe("不因樣本數或 coverage 隱藏 percentile／Δ4w（需求方 2026-08-12 二次修正）", () => {
   it("只要有觀測，即使只有一兩筆，也顯示 percentile 並揭露筆數", async () => {
     mockApi({ enabled: true, iv: ivView({
       metrics: { ...emptyMetrics(),
-                normalized_skew: { value: 0.08, percentile: 0.9, count: 2 } },
+                normalized_skew: metric({ value: 0.08, percentile: 0.9,
+                                         count: 2 }) },
     }) });
-    render(<IvHistory scenarioId="s1" candidate={candidate()} />);
+    render(<IvHistory scenarioId="s1" candidate={spreadCandidate()} />);
     await waitFor(() =>
       expect(screen.getByText(/第 90 百分位・2 筆觀測/)).toBeInTheDocument());
   });
@@ -198,10 +324,11 @@ describe("不因樣本數或 coverage 隱藏 percentile（需求方 2026-08-12 �
   it("不出現「樣本不足」「僅供參考」之類的可信度判斷字眼", async () => {
     mockApi({ enabled: true, iv: ivView({
       metrics: { ...emptyMetrics(),
-                normalized_skew: { value: 0.08, percentile: 0.9, count: 1 } },
+                normalized_skew: metric({ value: 0.08, percentile: 0.9,
+                                         count: 1 }) },
     }) });
     const { container } = render(
-      <IvHistory scenarioId="s1" candidate={candidate()} />);
+      <IvHistory scenarioId="s1" candidate={spreadCandidate()} />);
     await waitFor(() =>
       expect(screen.getByText(/第 90 百分位/)).toBeInTheDocument());
     expect(container.textContent).not.toMatch(
@@ -219,14 +346,14 @@ describe("vendor 失敗", () => {
       return { ok: false, status: 502,
                json: async () => ({ detail: "額度用盡" }) } as Response;
     }));
-    render(<IvHistory scenarioId="s1" candidate={candidate()} />);
+    render(<IvHistory scenarioId="s1" candidate={spreadCandidate()} />);
     await waitFor(() =>
       expect(screen.getByText(/額度用盡/)).toBeInTheDocument());
   });
 
   it("一切正常時顯示累積了幾個觀測，讓人看得到 backfill 的進度", async () => {
     mockApi({ enabled: true, iv: ivView({ observations: 66 }) });
-    render(<IvHistory scenarioId="s1" candidate={candidate()} />);
+    render(<IvHistory scenarioId="s1" candidate={spreadCandidate()} />);
     await waitFor(() =>
       expect(screen.getByText(/近 1 年 66 個觀測/)).toBeInTheDocument());
   });
@@ -236,29 +363,39 @@ describe("只陳述事實（紅線，由測試守門而非自律）", () => {
   it("不出現任何評價字眼", async () => {
     mockApi({ enabled: true });
     const { container } = render(
-      <IvHistory scenarioId="s1" candidate={candidate()} />);
+      <IvHistory scenarioId="s1" candidate={spreadCandidate()} />);
     await waitFor(() =>
       expect(screen.getByText("Normalized Skew")).toBeInTheDocument());
     expect(container.textContent).not.toMatch(
       /便宜|貴|划算|超值|好進場|進場點|推薦|建議|值得|機會|偏低|偏高|過高|過低/);
   });
 
+  it("不出現任何預測語句——Δ4w 是事實不是預言", async () => {
+    mockApi({ enabled: true });
+    const { container } = render(
+      <IvHistory scenarioId="s1" candidate={spreadCandidate()} />);
+    await waitFor(() =>
+      expect(screen.getByText("Normalized Skew")).toBeInTheDocument());
+    expect(container.textContent).not.toMatch(
+      /預期|預測|將會|可能觸底|即將|會再|會繼續|會回升|會下跌|趨勢將/);
+  });
+
   it("backfill 說明同樣不帶評價", async () => {
     mockApi({ enabled: true, iv: ivView({ status: "quota" }) });
     const { container } = render(
-      <IvHistory scenarioId="s1" candidate={candidate()} />);
+      <IvHistory scenarioId="s1" candidate={spreadCandidate()} />);
     await waitFor(() =>
       expect(screen.getByText(/今日 API 額度已用完/)).toBeInTheDocument());
     expect(container.textContent).not.toMatch(/便宜|貴|推薦|建議|值得/);
   });
 });
 
-/* ---------- backfill 狀態只是附加說明，不隱藏 percentile（#133） ---------- */
+/* ---------- backfill 狀態只是附加說明，不隱藏 percentile／Δ4w（#133） ---------- */
 
-describe("backfill 狀態不隱藏已經算出來的 percentile（需求方 2026-08-12 二次修正）", () => {
-  it("額度用完：percentile 照樣顯示，另外多一行附加說明", async () => {
+describe("backfill 狀態不隱藏已經算出來的 percentile／Δ4w（需求方 2026-08-12 二次修正）", () => {
+  it("額度用完：percentile／Δ4w 照樣顯示，另外多一行附加說明", async () => {
     mockApi({ enabled: true, iv: ivView({ status: "quota" }) });
-    render(<IvHistory scenarioId="s1" candidate={candidate()} />);
+    render(<IvHistory scenarioId="s1" candidate={spreadCandidate()} />);
     await waitFor(() =>
       expect(screen.getByText("Normalized Skew")).toBeInTheDocument());
     expect(screen.getByText(/今日 API 額度已用完/)).toBeInTheDocument();
@@ -268,7 +405,7 @@ describe("backfill 狀態不隱藏已經算出來的 percentile（需求方 2026
   it("vendor 暫時失敗：與額度用完是不同的說法，percentile 一樣不受影響",
      async () => {
     mockApi({ enabled: true, iv: ivView({ status: "vendor" }) });
-    render(<IvHistory scenarioId="s1" candidate={candidate()} />);
+    render(<IvHistory scenarioId="s1" candidate={spreadCandidate()} />);
     await waitFor(() =>
       expect(screen.getByText(/資料源暫時無法連線/)).toBeInTheDocument());
     expect(screen.queryByText(/今日 API 額度已用完/)).not.toBeInTheDocument();
@@ -277,7 +414,7 @@ describe("backfill 狀態不隱藏已經算出來的 percentile（需求方 2026
 
   it("status 為 ok 時不顯示任何 backfill 附加說明", async () => {
     mockApi({ enabled: true, iv: ivView({ status: "ok" }) });
-    render(<IvHistory scenarioId="s1" candidate={candidate()} />);
+    render(<IvHistory scenarioId="s1" candidate={spreadCandidate()} />);
     await waitFor(() =>
       expect(screen.getByText("Normalized Skew")).toBeInTheDocument());
     expect(screen.queryByText(/今日 API 額度已用完/)).not.toBeInTheDocument();
@@ -287,7 +424,7 @@ describe("backfill 狀態不隱藏已經算出來的 percentile（需求方 2026
   it("即使該欄位完全沒有觀測（count＝0），quota／vendor 狀態下仍誠實說沒有歷史資料，不假裝有",
      async () => {
     mockApi({ enabled: true, iv: ivView({ status: "quota", metrics: emptyMetrics() }) });
-    render(<IvHistory scenarioId="s1" candidate={candidate()} />);
+    render(<IvHistory scenarioId="s1" candidate={spreadCandidate()} />);
     await waitFor(() =>
       expect(screen.getByText(/今日 API 額度已用完/)).toBeInTheDocument());
     expect(screen.getAllByText("沒有歷史資料").length).toBeGreaterThan(0);
@@ -296,11 +433,56 @@ describe("backfill 狀態不隱藏已經算出來的 percentile（需求方 2026
   it("backfill 說明同樣不帶評價字眼", async () => {
     for (const status of ["quota", "vendor"] as const) {
       const { container, unmount } = render(
-        <IvHistory scenarioId="s1" candidate={candidate()} />);
+        <IvHistory scenarioId="s1" candidate={spreadCandidate()} />);
       mockApi({ enabled: true, iv: ivView({ status }) });
       await waitFor(() => expect(container).toBeDefined());
       expect(container.textContent).not.toMatch(/便宜|貴|推薦|建議|值得|偏低|偏高/);
       unmount();
     }
+  });
+});
+
+describe("走勢圖：Y 軸與 X 軸刻度", () => {
+  it("走勢圖有 Y 軸刻度與 X 軸日期刻度", async () => {
+    mockApi({ enabled: true });
+    const { container } = render(
+      <IvHistory scenarioId="s1" candidate={spreadCandidate()} />);
+    await waitFor(() =>
+      expect(container.querySelector(".iv-trend-chart")).toBeInTheDocument());
+    const chart = container.querySelector(".iv-trend-chart")!;
+    expect(chart.querySelectorAll(".chart-tick-label").length).toBeGreaterThan(0);
+  });
+});
+
+describe("走勢圖：tooltip（桌面 hover／手機 tap 共用同一套狀態）", () => {
+  it("桌面 hover 資料點顯示 tooltip，移開後消失", async () => {
+    const smallSeries = series(3, (i) => 0.20 + i * 0.01);
+    mockApi({ enabled: true, iv: ivView({ points: smallSeries }) });
+    const { container } = render(
+      <IvHistory scenarioId="s1" candidate={spreadCandidate()} />);
+    await waitFor(() =>
+      expect(container.querySelector(".iv-trend-chart")).toBeInTheDocument());
+    const chart = container.querySelectorAll(".iv-trend-chart")[0];
+    const point = chart.querySelectorAll<HTMLElement>("[role='button']")[0];
+
+    await userEvent.hover(point);
+    expect(chart.querySelectorAll(".chart-tooltip").length).toBeGreaterThan(0);
+
+    await userEvent.unhover(point);
+    expect(chart.querySelectorAll(".chart-tooltip")).toHaveLength(0);
+  });
+
+  it("手機 tap（點按）資料點顯示同樣的 tooltip", async () => {
+    const smallSeries = series(3, (i) => 0.20 + i * 0.01);
+    mockApi({ enabled: true, iv: ivView({ points: smallSeries }) });
+    const { container } = render(
+      <IvHistory scenarioId="s1" candidate={spreadCandidate()} />);
+    await waitFor(() =>
+      expect(container.querySelector(".iv-trend-chart")).toBeInTheDocument());
+    const chart = container.querySelectorAll(".iv-trend-chart")[0];
+    const point = chart.querySelectorAll<HTMLElement>("[role='button']")[0];
+
+    await userEvent.click(point);
+    expect(chart.querySelectorAll(".chart-tooltip").length).toBeGreaterThan(0);
   });
 });

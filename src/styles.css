@@ -1960,17 +1960,13 @@ body {
   gap: 8px;
 }
 
-/* 每個指標兩行：標籤＋百分位同一行，數值自己一行——比原本 label／
-   value／pct 各佔一行少一行，sparkline 仍佔右側整欄不額外加高。 */
+/* 一年走勢圖為主體（#140／spec #137）：標籤＋百分位同一行，數值自己
+   一行，走勢圖佔滿整個寬度接在下面——不再是掛在數值右側的 18px
+   sparkline（#135 那版的壓平版型），圖需要寬度才讀得出路徑。 */
 .iv-metric {
-  display: grid;
-  grid-template-columns: 1fr auto;
-  grid-template-areas:
-    "head  spark"
-    "value spark";
-  align-items: center;
-  column-gap: 10px;
-  row-gap: 1px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
 }
 
 .iv-metric-head {
@@ -1992,15 +1988,6 @@ body {
   text-overflow: ellipsis;
 }
 
-.iv-metric .iv-value,
-.iv-metric .iv-value-primary {
-  grid-area: value;
-}
-.iv-spark {
-  grid-area: spark;
-  color: var(--label-tertiary);
-}
-
 /* 頭條與次層的階層差在字級與粗細，不是靠顏色——顏色在這裡沒有語意
    （既有 `.positive`／`.negative` 才有），拿它做階層會誤導。 */
 .iv-value-primary {
@@ -2016,21 +2003,28 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
-.iv-primary .iv-spark {
-  color: var(--label-secondary);
+/* 一年走勢圖本體（#140）：跟 `.spread-history-chart` 同一種尺寸規則
+   （viewBox 決定長寬比，實際寬度隨容器縮放），數值旁不再是裝飾性的
+   sparkline，是真的要讀出路徑的圖，因此需要滿版寬度。 */
+.iv-trend-chart {
+  width: 100%;
+  height: auto;
+  margin-top: 4px;
 }
 
-/* 兩腿並排：手機一行放得下兩個 compact 指標，不必各佔一列。 */
+/* 兩腿並排：手機一行放得下兩個 compact 指標，不必各佔一列。單一次層
+   （Long Call 模式只有 ATM IV 一項）用 `.single` 收成一欄，不留半版
+   空白。 */
 .iv-legs {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 10px;
+  gap: 12px;
   padding-top: 8px;
   border-top: 0.5px solid var(--separator);
 }
 
-.iv-legs .iv-spark {
-  width: 56px;
+.iv-legs.single {
+  grid-template-columns: 1fr;
 }
 
 /* 卡片右下角的動作組（#132：編輯 ＋ 封存）。沿用 `.compact-archive` 原本
