@@ -200,6 +200,58 @@ code block**，不要零散貼成一般文字——需求方要能一次性複�
   `render_summary` 的 `move_pct` 同類手法一致，非新模式），未額外
   搬進服務層——標準面審查列為非阻塞建議，判斷維持現狀
 
+### 最新狀態（2026-08-14）——「貴不貴」第六輪研究：Rich/Cheap Trend／entry timing（只研究不施工）
+
+需求方 `/research` 指示本輪只研究、不修改程式碼：在既有「現在相對
+歷史站在哪」（percentile／座標正規化／橫斷面殘差）之上補**時間軸
+動態層**——這組 Call／Vertical Spread 現在便宜/正常/貴**且正在往哪
+走**，回答「再等有沒有合理機會拿到更好進場價」，且必須拍板單一
+方案、不開菜單。產出 `docs/research/rich-cheap-trend-entry-timing.md`。
+⚠ 派工前發現本紀錄區漏了三份 2026-08-13/14 的研究文件（
+`option-richness-assessment-methods.md` 第四輪——其【repo 實證】段
+因 checkout 倒退已自我標注不可信、
+`directional-option-fair-value-workflow.md`、
+`modern-surface-methods-rich-cheap-architecture.md` 第五輪四層
+Rich/Cheap Engine 架構），先前 session 未記入，以檔案本身為準；
+本輪文件 §10 已與第五輪架構逐點對位（承接 Layer 0–2 不動、拍板
+第五輪刻意留白的時間層、無衝突）。
+
+**最終拍板：既有 Historical IV Position 序列上的「Percentile＋Δ4w」
+趨勢層**——零新增資料源、零新增 vendor 呼叫，`field_metrics()` 對
+既有四欄位各純加法新增 `{trend_4w, trend_base_date}`：Δ4w＝最新
+觀測 −「[today−42, today−21] 容忍窗內距 today−28 最近的一筆」，
+窗內無點誠實留白「4週 —」（沿用 `iv_at()` 不外插哲學）。Long Call
+主讀數＝買腿 IV percentile＋Δ4w（level 語言）；Spread 主讀數＝
+Normalized Skew Ĝ percentile＋Δ4w（skew 語言，兩腿 IV 次層）——與
+MVP V3 資訊權重一致，且引擎實算背書：spread net vega 僅裸買腿
+40%、gap 敏感度為 level 兩倍（1 gap pt ≈ 11.6% of debit vs 裸腿
+12.3%/pt）。呈現只延伸既有 caption 一格「第 P 百分位・N 筆觀測・
+4週 ±X」，帶正負號原始變化量、量自身單位，無顏色/箭頭/象限標籤/
+預測句；方法論尾註補 Δ4w 定義＋「等待另有 spot 風險與 theta 成本」
+誠實條款（引擎實算：等一週 spot 不確定性 ±19% of debit、一個月
+±39%、LEAPS theta ~0.8%/週——指標只 scope vol 分量，不假裝能 time
+spot）。4 週 lookback 落在三個獨立來源家族收斂的 IV level 因子
+half-life 證據帶（GARCH α+β 0.97–0.99→23–34 交易日；Cont–da
+Fonseca τ≈28/51 天；Kamal–Derman 低維結構）＋FX RR 1M lookback
+成文慣例＋既有抽樣密集段（≤90 天每週 2 點）可靠支撐 Δ4w 而撐不起
+Δ1w／Δ3m。
+
+**明確否決（各附證據）**：IV Rank（第一輪原判）、z-score（離群值
+敏感＋常態假設不成立）、volatility cone（Burghardt–Lane 1990——
+另一題：IV vs RV 分布；其 tenor-matching 紀律已被固定 (tenor,
+delta) 座標繼承）、per-symbol half-life／AR(1)／OU（66 點/年不等距
+抽樣估不出，文獻 half-life 只用來校準 lookback、不做成 per-symbol
+顯示）、model-based expected drift／任何 forecast（facts-only 紅線
+＋Harvey–Whaley 1992：IV 變化統計可預測但扣成本無 edge）、
+term-structure slope 進場訊號（Simon–Campasano 一手全文：基差不
+預測 spot vol 變化、只反映可收割溢酬）、Markov regime-switching
+（desk 級部署證據缺席）。本輪新增三份一手全文（GitHub 鏡像
+`emintham/Papers`：Simon–Campasano 2012、Cooper 2013——momentum
+活在 ETP carry 層非 spot vol 層、Carr–Wu 2005）。enrich-only 紅線
+（spec #117）結構性繼承——趨勢欄位只進 iv-history 端點，
+ranking/filters 不 import ivhistory 的既有測試保證原樣有效。
+**等需求方審閱裁示後才進 spec／拆票，本輪不施工。**
+
 ### 最新狀態（2026-08-12 第四輪）——Historical IV 綁定修正＋壓平＋Refresh 漸進解鎖
 
 需求方三段 `/to-tickets` 指示，三張票全數完成並推上
