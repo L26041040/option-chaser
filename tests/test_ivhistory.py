@@ -10,7 +10,8 @@ import pytest
 from option_chaser.ivhistory import (ATM_DELTA, SurfacePoint,
                                      leg_coordinate, iv_at,
                                      nearby_expirations, normalized_skew,
-                                     percentile, spread_coordinates, trend_4w)
+                                     percentile, reanchor_spread,
+                                     spread_coordinates, trend_4w)
 
 
 def _grid():
@@ -192,6 +193,101 @@ def test_spread_coordinates_tolerates_a_missing_rate_used():
     cand = _candidate()
     del cand["rate_used"]
     assert spread_coordinates(cand, spot=100.0) is not None
+
+
+# ---------- Long Call 單腳座標路徑（#139／spec #137）----------
+
+def _single_leg_candidate(*, option_type="call", rate_used=0.04, dte=400):
+    return {
+        "days_to_expiry": dte,
+        "rate_used": rate_used,
+        "legs": [{"option_type": option_type, "strike": 95.0, "iv": 0.22}],
+    }
+
+
+def test_single_leg_candidate_gets_a_buy_coordinate():
+    """新增能力：現況 `len(legs) < 2` 直接回 None（MVP V3 明文只做
+    Spread）——這是那個限制的解除。"""
+    coords = spread_coordinates(_single_leg_candidate(), spot=100.0)
+    assert coords is not None
+    assert "buy" in coords
+
+
+def test_single_leg_candidate_has_no_sell_coordinate():
+    """沒有賣腿就沒有這個座標——誠實的『沒有這個量』，不是缺陷。"""
+    coords = spread_coordinates(_single_leg_candidate(), spot=100.0)
+    assert "sell" not in coords
+
+
+def test_single_leg_coordinates_carry_the_leg_option_type():
+    call_coords = spread_coordinates(_single_leg_candidate(option_type="call"),
+                                     spot=100.0)
+    put_coords = spread_coordinates(_single_leg_candidate(option_type="put"),
+                                    spot=100.0)
+    assert call_coords["option_type"] == "call"
+    assert put_coords["option_type"] == "put"
+
+
+def test_single_leg_candidate_inherits_the_rate_used_redline():
+    """#134 的紅線不因單腳而不同：座標要跟正式估值管線用同一個利率。"""
+    with_real_rate = spread_coordinates(
+        _single_leg_candidate(rate_used=0.04), spot=100.0)
+    with_zero_rate = spread_coordinates(
+        _single_leg_candidate(rate_used=0.0), spot=100.0)
+    assert with_real_rate["buy"].delta != with_zero_rate["buy"].delta
+
+
+def test_no_parallel_implementation_same_buy_leg_yields_the_same_coordinate():
+    """#139 AC：單腳與兩腿候選的買腿座標必須一模一樣——同一組買腿參數，
+    不因為候選是單腳還是兩腿而走出兩套不同的計算路徑。"""
+    buy_leg = {"option_type": "call", "strike": 95.0, "iv": 0.22}
+    two_leg = {"days_to_expiry": 400, "rate_used": 0.04,
+              "legs": [buy_leg, {"option_type": "call", "strike": 105.0,
+                                 "iv": 0.20}]}
+    one_leg = {"days_to_expiry": 400, "rate_used": 0.04, "legs": [buy_leg]}
+
+    two_leg_coords = spread_coordinates(two_leg, spot=100.0)
+    one_leg_coords = spread_coordinates(one_leg, spot=100.0)
+    assert two_leg_coords["buy"] == one_leg_coords["buy"]
+
+
+def _grid_by_type():
+    """call 與 put 用不同的 IV 水準，讓測試能分辨「用哪一張網格查」。
+    delta 蓋到 0.1–0.9：測試候選（strike 95／spot 100／dte 30）算出來的
+    call delta ≈0.82、put delta ≈0.18，網格太窄會插不出值。"""
+    call_pts = [SurfacePoint(dte=30, delta=d, iv=0.20)
+               for d in (0.1, 0.25, 0.5, 0.75, 0.9)]
+    put_pts = [SurfacePoint(dte=30, delta=d, iv=0.50)
+              for d in (0.1, 0.25, 0.5, 0.75, 0.9)]
+    return {"call": call_pts, "put": put_pts}
+
+
+def test_reanchor_single_leg_reads_the_leg_own_option_type_grid():
+    """Long Put 的買腿要用 put 網格查，不能沿用寫死的 call（會查到錯的
+    網格、算出一個看起來正常但其實錯誤的數字——比誠實回 None 更糟）。"""
+    put_coords = spread_coordinates(_single_leg_candidate(option_type="put",
+                                                          dte=30), spot=100.0)
+    got = reanchor_spread(_grid_by_type(), put_coords)
+    assert got["buy_iv"] == pytest.approx(0.50)   # 來自 put 網格，不是 call 的 0.20
+
+
+def test_reanchor_single_leg_has_no_sell_iv_or_skew():
+    call_coords = spread_coordinates(_single_leg_candidate(dte=30), spot=100.0)
+    got = reanchor_spread(_grid_by_type(), call_coords)
+    assert got["buy_iv"] is not None
+    assert got["sell_iv"] is None
+    assert got["normalized_skew"] is None
+
+
+def test_reanchor_two_leg_call_spread_is_unchanged_by_the_option_type_lookup():
+    """兩腿路徑（既有 bull call spread）的數值不因這次修改而變——買腿是
+    call，`coords["option_type"]` 算出來也是 call，跟修正前寫死 call
+    完全同一個結果。"""
+    two_leg = _candidate(dte=30)
+    coords = spread_coordinates(two_leg, spot=100.0)
+    got = reanchor_spread(_grid_by_type(), coords)
+    assert got["buy_iv"] == pytest.approx(0.20)
+    assert got["sell_iv"] == pytest.approx(0.20)
 
 
 # ---------- 歷史回補要鎖定哪些到期日（#134）----------

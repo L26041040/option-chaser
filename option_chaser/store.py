@@ -694,10 +694,23 @@ def find_candidate(view: dict, key: str) -> dict | None:
     走 `expiry_top10`（完整候選）而不是 `all_candidates`（精簡序列，只有
     成本與名次，沒有腿）——呼叫端要的是腿上的 IV／履約價／權別。找不到
     回 `None`，不拋錯：候選可能在這次刷新被過濾掉，那是正常狀態。
+
+    單腳策略（Long Call／Long Put）沒有 `expiry_top10` 分組（T9 附錄A7：
+    範圍限定 Spread 路徑，single-leg 依 MVP 範圍不動）——候選活在扁平
+    的 `r["candidates"]` 清單裡。只在該策略**完全沒有** `expiry_top10`
+    分組時才退去掃這份清單（#139）：兩腿策略（Spread）一律只認
+    `expiry_top10`，「候選有沒有入榜」是既有規則的一部分，不因此擴大
+    查找範圍——這保證兩腿路徑的既有行為與數值一字不動。
     """
     for r in view.get("results", []):
-        for group in r.get("expiry_top10", []) or []:
+        groups = r.get("expiry_top10") or []
+        for group in groups:
             for cand in group.get("candidates", []):
                 if cand.get("candidate_key") == key:
                     return cand
+        if groups:
+            continue
+        for cand in r.get("candidates", []) or []:
+            if cand.get("candidate_key") == key:
+                return cand
     return None

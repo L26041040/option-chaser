@@ -48,12 +48,14 @@ def _surface_never_called(*args, **kwargs):
 
 def _grid():
     """一個蓋得夠寬的網格，任何合理座標都插得出來。"""
-    # delta 一路蓋到 0.01：真實的鏈有深價外履約價，而這份 fixture 的候選
-    # 兩腿就落在 0.03–0.06。網格不夠寬時引擎會（正確地）拒絕外插，那時
-    # 測到的是「拒絕外插」而不是本來要測的東西。
+    # delta 一路蓋到 0.001／0.999：真實的鏈有深價外與深價內履約價，而
+    # 這份 fixture 的兩腿 Spread 候選落在 0.03–0.06，長天期 Long Call
+    # 深價內候選（#139）算出來的 delta 可以逼近 1（例如 strike 遠低於
+    # spot 的長天期 call ≈0.9998）。網格不夠寬時引擎會（正確地）拒絕
+    # 外插，那時測到的是「拒絕外插」而不是本來要測的東西。
     pts = [SurfacePoint(dte=dte, delta=d, iv=0.20 + 0.1 * d)
            for dte in (1, 30, 90, 365, 1200)
-           for d in (0.01, 0.05, 0.25, 0.5, 0.75, 0.95)]
+           for d in (0.0001, 0.01, 0.05, 0.25, 0.5, 0.75, 0.95, 0.9999)]
     return {"call": pts, "put": pts}
 
 
@@ -234,6 +236,119 @@ def test_percentiles_are_reported_once_the_cache_has_any_valid_observation(db):
     for field in ("normalized_skew", "buy_iv", "sell_iv"):
         assert metrics[field]["percentile"] is not None
         assert metrics[field]["count"] > 0
+
+
+# ---------- Long Call 單腳候選（#139／spec #137）----------
+#
+# **範圍查證（施工前發現，記錄在此供後續票參照）**：Scenario 端點
+# （`/api/scenarios` → `/refresh`）目前只跑 `_MVP_STRATEGIES =
+# ("bull-call-spread",)`——Long Call 完全不是 Scenario 流程會產生的
+# 候選，這是比「ivhistory 對單腳回 None」更上層的既有 MVP 範圍限制，
+# 不是這張票的範圍（那是另一個層級的產品決策，改它會牽動候選產生／
+# 排序／劇本清單，遠超過 Historical IV 這張票）。legacy 的
+# `/api/analyze`（adhoc，V1 遺留）仍接受任意 `strategies`、能產生真正
+# 由引擎算出的 long-call 候選，但那個端點本身不落盤，查不到
+# iv-history。以下測試借用它產生**真實引擎輸出**的 long-call 候選
+# （不是手造假資料），再手動存一筆 `ResultRecord` 掛到一個真的
+# Scenario 底下，藉此在端點層驗證「單腳候選資料路徑」本身，不需要、
+# 也不擅自變更 Scenario 產生候選的策略範圍。
+
+def _long_call_candidate_key_and_view(client):
+    """借 legacy adhoc 端點跑一次真正的 long-call 分析，回傳
+    (candidate_key, view)——candidate 是引擎真實輸出，不是手造的。
+
+    單腳策略沒有 `expiry_top10` 分組（T9 附錄A7：範圍限定 Spread 路徑）
+    ——候選在扁平的 `r["candidates"]` 清單裡（#139 施工中查證）。"""
+    resp = client.post("/api/analyze", json={
+        "symbol": "XYZ", "target_price": 130.0, "target_month": "2026-09",
+        "strategies": ["long-call"]})
+    assert resp.status_code == 200, resp.text
+    view = resp.json()
+    for r in view["results"]:
+        for c in r.get("candidates") or []:
+            return c["candidate_key"], view
+    raise AssertionError("adhoc long-call 分析沒有產生任何候選")
+
+
+def _attach_result(db, sid, view, *, analyzed_at="2026-08-12T00:00:00+00:00"):
+    """把一份 view 直接存成該 Scenario 的最新結果——繞過 `/refresh`
+    （那條路徑目前只跑 bull-call-spread），純粹是為了在端點層測試單腳
+    資料路徑，不代表產品裁示 Scenario 該支援 long-call。"""
+    from api_app.storage import ResultRecord
+
+    db.save_result(ResultRecord(scenario_id=sid, analyzed_at=analyzed_at,
+                                view=view))
+
+
+def test_a_long_call_candidate_returns_200_not_the_old_blanket_none(db):
+    """現況：`spread_coordinates` 對單腳直接回 None，端點回『這個候選算
+    不出座標』的空白訊息。這是那個限制的解除——單腳候選現在也能拿到
+    正常的 200 回應。"""
+    client = _client(db, surface=_rich_surface)
+    _unlock(client)
+    sid = _scenario(client)
+    key, view = _long_call_candidate_key_and_view(client)
+    _attach_result(db, sid, view)
+
+    resp = _get(client, sid, key)
+    assert resp.status_code == 200
+    assert resp.json()["candidate_key"] == key
+
+
+def test_a_long_call_candidate_has_buy_and_atm_but_no_sell_or_skew(db):
+    """買腿 IV／ATM IV 有值；賣腿 IV／Normalized Skew 誠實回沒有這個量
+    （`count == 0`），不是新的錯誤狀態。"""
+    client = _client(db, surface=_rich_surface)
+    _unlock(client)
+    sid = _scenario(client)
+    key, view = _long_call_candidate_key_and_view(client)
+    _attach_result(db, sid, view)
+    _prefill(db)
+
+    body = _get(client, sid, key).json()
+    assert body["metrics"]["buy_iv"]["count"] > 0
+    assert body["metrics"]["buy_iv"]["value"] is not None
+    assert body["metrics"]["atm_iv"]["count"] > 0
+
+    assert body["metrics"]["sell_iv"] == \
+        {"value": None, "percentile": None, "count": 0,
+         "trend_4w": None, "trend_base_count": 0}
+    assert body["metrics"]["normalized_skew"] == \
+        {"value": None, "percentile": None, "count": 0,
+         "trend_4w": None, "trend_base_count": 0}
+    assert all(p["sell_iv"] is None and p["normalized_skew"] is None
+              for p in body["points"])
+
+
+def test_a_long_call_candidate_still_honours_the_gate(db):
+    """單腳候選一樣受閘門管——未解鎖照樣 403，不繞過既有規則。單一
+    client 全程不解鎖：`/api/analyze`（產生 long-call 候選用）不受這個
+    閘門管，不需要先解鎖才能借它拿到候選（settings 是 db 層共享狀態，
+    兩個各自解鎖／不解鎖的 client 會互相汙染，見既有
+    `test_switching_back_to_default_relocks_and_stops_requests` 的
+    單一 client 慣例）。"""
+    client = _client(db)   # 全程不呼叫 _unlock
+    sid = _scenario(client)
+    key, view = _long_call_candidate_key_and_view(client)
+    _attach_result(db, sid, view)
+
+    assert _get(client, sid, key).status_code == 403
+
+
+def test_two_leg_spread_candidates_are_unaffected_by_the_single_leg_path(db):
+    """回歸：既有兩腿路徑（Scenario 正常 `/refresh` 產生的
+    bull-call-spread 候選）行為與數值完全不因這次修改而變。"""
+    client = _client(db, surface=_rich_surface)
+    _unlock(client)
+    sid = _scenario(client)
+    key = _candidate_key(client, sid)   # Scenario 流程目前只有 spread 候選
+    _prefill(db)
+    body = _get(client, sid, key).json()
+    for field in ("normalized_skew", "buy_iv", "sell_iv", "atm_iv"):
+        m = body["metrics"][field]
+        assert m["percentile"] is not None
+        assert m["count"] > 0
+        assert m["value"] is not None
 
 
 def test_a_coordinate_outside_the_grid_is_left_blank_not_faked(db):

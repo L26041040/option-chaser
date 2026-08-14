@@ -166,14 +166,21 @@ def trading_days_back(today, window_days: int) -> list[str]:
 
 
 def spread_coordinates(candidate: dict, *, spot: float) -> dict | None:
-    """候選的兩條腿各自的 (tenor, delta) 座標。
+    """候選腿的 (tenor, delta) 座標——一腿（Long Call／Long Put）或兩腿
+    （Spread）都走這一條路徑，不長第二套平行實作（#139）。
 
     以 view dict 裡那一份腿資料為準（`iv`／`strike`／`option_type`／
     `expiry`），不重新去快照裡找——同一個候選在同一份 view 裡只能有一組
     座標，兩處各算一次遲早會漂。
 
-    買腿＝先出現的那條（引擎既有慣例，`legs[0]` 是買腿）。任一腿算不出
-    座標就整組回 `None`：skew 是兩腿之差，缺一邊就沒有那個數字。
+    買腿＝先出現的那條（引擎既有慣例，`legs[0]` 是買腿）。兩腿的候選
+    任一腿算不出座標就整組回 `None`：skew 是兩腿之差，缺一邊就沒有那個
+    數字。**單腳候選只算買腿座標**，回傳的 dict 不含 `"sell"` 鍵——這是
+    誠實的「沒有這個量」（沒有賣腿就沒有 skew 可言），不是算不出來。
+
+    `option_type`：買腿的權別隨結果一併回傳，供 `reanchor_spread` 決定
+    要在當日曲面的哪一種權別（call／put）網格上查——不能假設恆是 call
+    （Long Put 的買腿是 put）。
 
     **利率**：讀候選自己的 `rate_used`（`CandidateView.rate_used`，
     `leg_rate(p, expiry)` 查表結果，與正式估值管線完全同一個數字），
@@ -184,22 +191,31 @@ def spread_coordinates(candidate: dict, *, spot: float) -> dict | None:
     座標屬於同一種「分級用途」，維持一致不是遺漏。
     """
     legs = candidate.get("legs") or []
-    if len(legs) < 2:
-        return None   # 單腳沒有 skew 可言（MVP 範圍限 Spread）
+    if not legs:
+        return None
     dte = candidate.get("days_to_expiry")
     if not dte:
         return None
     rate = candidate.get("rate_used") or 0.0
 
-    buy, sell = legs[0], legs[1]
-    coords = {}
-    for name, leg in (("buy", buy), ("sell", sell)):
-        got = leg_coordinate(option_type=leg.get("option_type", "call"),
-                             strike=leg.get("strike", 0.0), iv=leg.get("iv"),
-                             spot=spot, days_to_expiry=int(dte), rate=rate)
-        if got is None:
-            return None
-        coords[name] = got
+    buy = legs[0]
+    buy_coord = leg_coordinate(option_type=buy.get("option_type", "call"),
+                               strike=buy.get("strike", 0.0), iv=buy.get("iv"),
+                               spot=spot, days_to_expiry=int(dte), rate=rate)
+    if buy_coord is None:
+        return None
+    coords = {"buy": buy_coord, "option_type": buy.get("option_type", "call")}
+
+    if len(legs) < 2:
+        return coords   # 單腳（Long Call／Long Put）：沒有賣腿座標可言
+
+    sell = legs[1]
+    sell_coord = leg_coordinate(option_type=sell.get("option_type", "call"),
+                                strike=sell.get("strike", 0.0), iv=sell.get("iv"),
+                                spot=spot, days_to_expiry=int(dte), rate=rate)
+    if sell_coord is None:
+        return None
+    coords["sell"] = sell_coord
     return coords
 
 
@@ -251,16 +267,26 @@ _SHORT_TENOR_DAYS = 45
 
 
 def reanchor_spread(surface: dict, coords: dict) -> dict:
-    """某一天的鏈上，兩腿座標與 ATM 各自的 IV，以及當日的 normalized skew。
+    """某一天的鏈上，各腿座標與 ATM 各自的 IV，以及（兩腿時）當日的
+    normalized skew（#139：單腳／兩腿共用同一個函式）。
 
-    `surface` 是 `{"call": [SurfacePoint], "put": [...]}`。權別取買腿那一
-    種——同一組 spread 的兩腿權別相同（MVP 只有 bull call spread），
-    call 與 put 的 delta 網格不可混插。
+    `surface` 是 `{"call": [SurfacePoint], "put": [...]}`。權別取
+    `coords["option_type"]`（買腿的權別，`spread_coordinates` 隨座標
+    一併回傳）——同一組 spread 的兩腿權別相同（MVP 範圍：bull call
+    spread／bear put spread），call 與 put 的 delta 網格不可混插；單腳
+    候選（Long Call／Long Put）用同一個欄位決定要查哪一張網格，不能
+    寫死 call（Long Put 的買腿是 put）。
+
+    單腳候選（`coords` 沒有 `"sell"` 鍵）：`sell_iv`／`normalized_skew`
+    誠實回 `None`——沒有賣腿就沒有這兩個量，不是算不出來，是根本沒有
+    這個東西。
     """
-    points = surface.get("call") or []
+    points = surface.get(coords.get("option_type", "call")) or []
     tenor = coords["buy"].tenor_days
     buy_iv = iv_at(points, tenor_days=tenor, delta=coords["buy"].delta)
-    sell_iv = iv_at(points, tenor_days=tenor, delta=coords["sell"].delta)
+    sell_coord = coords.get("sell")
+    sell_iv = (iv_at(points, tenor_days=tenor, delta=sell_coord.delta)
+              if sell_coord is not None else None)
     atm = iv_at(points, tenor_days=tenor, delta=ATM_DELTA)
     return {"buy_iv": buy_iv, "sell_iv": sell_iv, "atm_iv": atm,
             "normalized_skew": normalized_skew(sell_iv=sell_iv, buy_iv=buy_iv,
