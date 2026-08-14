@@ -250,7 +250,49 @@ term-structure slope 進場訊號（Simon–Campasano 一手全文：基差不
 活在 ETP carry 層非 spot vol 層、Carr–Wu 2005）。enrich-only 紅線
 （spec #117）結構性繼承——趨勢欄位只進 iv-history 端點，
 ranking/filters 不 import ivhistory 的既有測試保證原樣有效。
-**等需求方審閱裁示後才進 spec／拆票，本輪不施工。**
+**已進 spec：issue #137**（2026-08-14 `/to-spec`，`ready-for-agent`）。
+
+### Spec #137——Rich/Cheap Trend：Δ4w＋一年走勢圖＋Long Call 納入
+
+需求方與顧問討論後裁示（對話 0014／0015）：框架採第六輪研究的
+「Percentile＋Δ4w」，但 **UI 改為走勢圖為主**——不是只顯示 P22，而是
+直接看一年走勢圖（percentile 給位置、圖給路徑、Δ4w 給最近速度，
+三者互補）；且明示「我要的是尺，不是預言機」，不接受 ARIMA／ML／
+regime model 這類「模型一換答案就變」的東西。Long Call 一併納入。
+
+**兩道 Grill Gate 已於 spec 內查證答覆，施工時不必重查**：
+
+- **Gate 1（Spread 主追蹤量：Ĝ vs package cost）→ 維持 Ĝ**。依據
+  第三輪 `spread-price-percentile-vs-vol-space.md`：price 空間被
+  dominated（引擎實算 r 3%→5% 使 TLT LEAPS spread 理論價 +26% ≈
+  gap 動 4 個 vol 點，而該實例 raw gap 總共才 6 pts；另需歷史股息率、
+  q=0 引擎高估近一倍；per-candidate 無業界先例）。**但顧問點出的
+  「skew 漂亮但 vol level 高、debit 仍比歷史貴」是真的**——解法不是
+  換掉 Ĝ，而是**買賣腿 IV 各自擁有完整走勢圖＋percentile＋Δ4w**，
+  水位與結構形狀兩個軸並陳，不融合成一個數字（融合就必須進被利率／
+  股息汙染的 price 空間）
+- **Gate 2（四元件成熟度與假訊號）→ 全部是成熟穩定的「尺」**：重錨定
+  ＝雙軸線性插值嚴格不外插（無擬合／無最佳化器）、Ĝ＝純算術對 r/q
+  零敏感、percentile＝rank statistic 本質抗離群、Δ4w＝減法。
+  **唯一真正新增的風險是 Δ4w 的兩點脆弱性**（percentile 在 ~66 點上
+  抗得住一筆爛報價，兩點差抗不住）→ **決策：基準改取 [21,42] 天窗內
+  觀測的中位數**（密集段每週 2 點、該窗典型約 6 筆），不是單一最近點；
+  除既定窗口外不引入任何可調參數，仍是尺。其餘假訊號源（稀疏 LEAPS
+  chain、delta 軸邊緣、插值平滑、vendor 報價、#111 blocker）逐項盤點
+  於 spec
+
+**契約為純加法**：`field_metrics()` 每欄位新增 `trend_4w`＋
+`trend_base_count`；`value`／`percentile`／`count` 語意完全不動。
+**Long Call 是新增能力不是改顯示**——現況 `spread_coordinates()` 對
+單腳直接回 None（MVP V3 明文只做 Spread），需新增單腳座標路徑，
+Ĝ 與賣腿 IV 誠實回 None。走勢圖沿用 `SpreadHistory.tsx` 既有形態
+（手刻 SVG、幾何抽純函式、y 軸固定、缺值斷線、tooltip），不引入
+圖表函式庫。**#135「壓到合理最低」在本區塊被「走勢圖為主」覆蓋**
+（需求方新裁示，非遺漏舊裁示）。enrich-only 與 facts-only 紅線原樣
+繼承，並新增「禁止任何預測語句」。
+
+**下一步：等需求方 cue `/to-tickets` 拆票**（預估依 Δ4w 引擎層／
+走勢圖前端／Long Call 單腳路徑三條線切）。
 
 ### 最新狀態（2026-08-12 第四輪）——Historical IV 綁定修正＋壓平＋Refresh 漸進解鎖
 
