@@ -96,6 +96,110 @@ test("Spread 淨成本走勢：桌面 hover 資料點顯示 tooltip（MVP V3／#
   await expect(chart.getByText(/日期 2026-07-01/)).not.toBeVisible();
 });
 
+/* ---------- Historical IV 一年走勢圖：桌面版（#140／#141） ---------- */
+
+/** 貼近真實密度（引擎 `sampling_schedule` 全年約 55–75 點）——見
+ *  `smoke.spec.ts` 同名函式的說明：250 點塞進走勢圖會讓相鄰資料點的
+ *  可點擊圓圈嚴重疊在一起，連自動化都點不準。 */
+function ivPoints() {
+  const start = new Date("2025-08-15T00:00:00Z");
+  return Array.from({ length: 66 }, (_, i) => {
+    const d = new Date(start);
+    d.setUTCDate(d.getUTCDate() + Math.round(i * 365 / 65));
+    return {
+      date: d.toISOString().slice(0, 10),
+      buy_iv: 0.2 + (i % 20) * 0.001,
+      sell_iv: 0.22 + (i % 20) * 0.001,
+      atm_iv: 0.25,
+      normalized_skew: 0.08 + i * 0.0001,
+    };
+  });
+}
+
+function ivMetrics(points: ReturnType<typeof ivPoints>) {
+  const last = points[points.length - 1];
+  return {
+    normalized_skew: { value: last.normalized_skew, percentile: 0.62,
+                       count: 45, trend_4w: 0.006, trend_base_count: 6 },
+    buy_iv: { value: last.buy_iv, percentile: 0.41, count: 45,
+             trend_4w: -0.012, trend_base_count: 6 },
+    sell_iv: { value: last.sell_iv, percentile: 0.55, count: 45,
+              trend_4w: -0.004, trend_base_count: 6 },
+    atm_iv: { value: last.atm_iv, percentile: 0.5, count: 45,
+             trend_4w: 0, trend_base_count: 6 },
+  };
+}
+
+test("Historical IV 一年走勢圖：桌面 hover 資料點顯示 tooltip（#140）", async ({ page }) => {
+  await routeTwoScenarios(page);
+  await page.route("**/api/settings", (route) =>
+    route.fulfill({ json: { historical_iv_enabled: true } }));
+  await page.route("**/api/scenarios/*/iv-history*", (route) => {
+    const points = ivPoints();
+    return route.fulfill({ json: {
+      candidate_key: "k", status: "ok", points,
+      metrics: ivMetrics(points),
+      observations: points.length, note: null,
+    } });
+  });
+
+  await page.goto("/#/s/s1");
+  const block = page.locator(".iv-history");
+  await expect(block).toBeVisible();
+  const chart = block.locator(".iv-trend-chart").first();
+  await expect(chart).toBeVisible();
+  const point = chart.getByRole("button").first();
+
+  await expect(chart.locator(".chart-tooltip")).toHaveCount(0);
+  await point.hover();
+  await expect(chart.locator(".chart-tooltip")).toBeVisible();
+
+  await page.mouse.move(0, 0);
+  await expect(chart.locator(".chart-tooltip")).toHaveCount(0);
+});
+
+test("Historical IV 一年走勢圖：桌面寬螢幕下三張圖（Ĝ＋買腿＋賣腿）都完整可讀（#140／#141）",
+   async ({ page }) => {
+  await routeTwoScenarios(page);
+  await page.route("**/api/settings", (route) =>
+    route.fulfill({ json: { historical_iv_enabled: true } }));
+  await page.route("**/api/scenarios/*/iv-history*", (route) => {
+    const points = ivPoints();
+    return route.fulfill({ json: {
+      candidate_key: "k", status: "ok", points,
+      metrics: ivMetrics(points),
+      observations: points.length, note: null,
+    } });
+  });
+
+  await page.goto("/#/s/s1");
+  const block = page.locator(".iv-history");
+  await expect(block).toBeVisible();
+
+  const charts = block.locator(".iv-trend-chart");
+  await expect(charts).toHaveCount(3);
+
+  // 幾何驗證：頭條（Ĝ）的圖比次層（買／賣腿）寬——主位大圖、次層較小
+  // 但資訊完整，是 spec #137 §5 的資訊層級規格，不是只靠字級表現。
+  const primaryBox = (await block.locator(".iv-primary .iv-trend-chart")
+    .boundingBox())!;
+  const secondaryBoxes = await charts.evaluateAll((els) =>
+    els.filter((el) => !el.closest(".iv-primary"))
+      .map((el) => el.getBoundingClientRect().width));
+  expect(secondaryBoxes).toHaveLength(2);
+  for (const w of secondaryBoxes) {
+    expect(primaryBox.width).toBeGreaterThan(w);
+  }
+
+  // 每張圖都落在卡片邊界內——桌面寬版面下不會被裁切或溢出。
+  const cardBox = (await block.boundingBox())!;
+  for (const chart of await charts.all()) {
+    const box = (await chart.boundingBox())!;
+    expect(box.x).toBeGreaterThanOrEqual(cardBox.x - 1);
+    expect(box.x + box.width).toBeLessThanOrEqual(cardBox.x + cardBox.width + 1);
+  }
+});
+
 test("Heatmap ±% 在最右欄：桌面 viewport 每一列都看得到完整格式" +
      "（決策 M／#109，位置修正 QA-FIX-1／QA-01）", async ({ page }) => {
   await routeTwoScenarios(page);

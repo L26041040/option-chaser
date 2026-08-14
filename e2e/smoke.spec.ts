@@ -1096,25 +1096,54 @@ test("手機版：Historical IV 切自訂、存 token，只看得到遮罩（Set
   await expect(page.locator("body")).not.toContainText("tok-secret-abcd");
 });
 
-/* ---------- Historical IV Position 與閘門（#114／#126） ---------- */
+/* ---------- Historical IV Position 與閘門（#114／#126／一年走勢圖＋
+   Δ4w：#140，缺資料狀態全景 E2E：#141） ----------
+ *
+ * **Long Call 模式的範圍說明**：這份 E2E 走的是真實前端＋route 攔截，
+ * 頁面用哪個候選是 `baselineTopCandidate(view)` 決定的（`src/api.ts`），
+ * 而它只認 `expiry_top10`——單腳策略（Long Call）恆為空（T9 附錄A7）。
+ * 這正是 #139 施工中發現的同一個上層限制的另一面：不只後端
+ * `find_candidate` 曾經找不到單腳候選，連前端「這頁該顯示哪個候選」
+ * 的邏輯也是同一套 Spread-only 假設。往上一層看，Scenario 流程本身
+ * （`_MVP_STRATEGIES = ("bull-call-spread",)`）從來不會為 Scenario 跑
+ * long-call 分析，所以無論怎麼調整候選判別，真實 App 導覽路徑今天都
+ * 走不到 Long Call 模式——不是本輪任何一張票能單獨解開的範圍。Long
+ * Call 版型的渲染邏輯已在 #140 的 Vitest 元件測試（`IvHistory.test.tsx`
+ * 直接餵單腳 `Candidate` prop）驗證過，那是目前唯一構造得出這個狀態的
+ * 層級；E2E 這裡只驗證真實 App 導覽路徑實際會走到的 Spread 模式。
+ */
 
+/** 貼近真實密度（引擎 `sampling_schedule` 全年約 55–75 點），不是隨便
+ *  湊一個「夠多」的數字——250 點塞進一張手機寬度的走勢圖，相鄰資料點
+ *  的可點擊圓圈會嚴重疊在一起，連自動化都點不準特定的那一個，這不是
+ *  測試技巧問題，是真實使用者在窄螢幕上也會遇到的密度問題。日期用
+ *  單調遞增、彼此不重複的序列（真實觀測本來就是逐日累積，不會重複）。 */
 function ivPoints() {
-  return Array.from({ length: 250 }, (_, i) => ({
-    date: `2026-01-${String((i % 28) + 1).padStart(2, "0")}`,
-    buy_iv: 0.2 + (i % 20) * 0.001,
-    sell_iv: 0.22 + (i % 20) * 0.001,
-    atm_iv: 0.25,
-    normalized_skew: 0.08 + i * 0.0001,
-  }));
+  const start = new Date("2025-08-15T00:00:00Z");
+  return Array.from({ length: 66 }, (_, i) => {
+    const d = new Date(start);
+    d.setUTCDate(d.getUTCDate() + Math.round(i * 365 / 65));
+    return {
+      date: d.toISOString().slice(0, 10),
+      buy_iv: 0.2 + (i % 20) * 0.001,
+      sell_iv: 0.22 + (i % 20) * 0.001,
+      atm_iv: 0.25,
+      normalized_skew: 0.08 + i * 0.0001,
+    };
+  });
 }
 
 function ivMetrics(points: ReturnType<typeof ivPoints>) {
   const last = points[points.length - 1];
   return {
-    normalized_skew: { value: last.normalized_skew, percentile: 0.62, count: 45 },
-    buy_iv: { value: last.buy_iv, percentile: 0.41, count: 45 },
-    sell_iv: { value: last.sell_iv, percentile: 0.55, count: 45 },
-    atm_iv: { value: last.atm_iv, percentile: 0.5, count: 45 },
+    normalized_skew: { value: last.normalized_skew, percentile: 0.62,
+                       count: 45, trend_4w: 0.006, trend_base_count: 6 },
+    buy_iv: { value: last.buy_iv, percentile: 0.41, count: 45,
+             trend_4w: -0.012, trend_base_count: 6 },
+    sell_iv: { value: last.sell_iv, percentile: 0.55, count: 45,
+              trend_4w: -0.004, trend_base_count: 6 },
+    atm_iv: { value: last.atm_iv, percentile: 0.5, count: 45,
+             trend_4w: 0, trend_base_count: 6 },
   };
 }
 
@@ -1168,17 +1197,82 @@ test("Historical IV 解鎖：Normalized Skew 當頭條、兩腿為次層（#114�
     .evaluate((el) => parseFloat(getComputedStyle(el).fontSize));
   expect(primary).toBeGreaterThan(secondary);
 
-  // 手機上仍是 compact：遠不到整頁高度（#133 加了「・N 筆觀測」文字後
-  // 卡片略高了幾個 px，門檻放寬到 60% 而不是死守剛好一半）。
+  // #135 曾要求這一區「壓到合理最低」（門檻曾是 60% 視窗高）；本輪
+  // （spec #137／#140）需求方明確改裁示「走勢圖為主體」，三張真正的
+  // 走勢圖取代 18px sparkline，這個區塊因此**理應**比 #135 那版更高
+  // ——這不是需要修的迴歸，是新裁示要的樣子（#140 施工中確認：門檻
+  // 放寬到接近整頁高度）。這裡只守一個很寬鬆的上限，抓的是「SVG 沒有
+  // 隨容器縮放、整張圖用原始 viewBox 像素數硬畫」這種真正的破版，不是
+  // 卡住這次刻意做大的正常尺寸。
   const box = (await block.boundingBox())!;
-  expect(box.height).toBeLessThan(page.viewportSize()!.height * 0.6);
+  expect(box.height).toBeLessThan(page.viewportSize()!.height * 1.5);
 });
 
-test("Historical IV 今日額度用完：percentile 照樣顯示，只多一行附加說明（#133）",
+test("Historical IV：一年走勢圖在手機 viewport 完整可讀、寬度貼齊卡片（#140／#141）",
+   async ({ page }) => {
+  await routeDetailWithIv(page, true);
+  await page.goto("/#/s/s1");
+
+  const block = page.locator(".iv-history");
+  await expect(block).toBeVisible();
+
+  // 幾何驗證，不是文字存在性或 isVisible()（QA-FIX-1／QA-FIX-4 教訓）：
+  // 走勢圖要真的畫在卡片內、寬度貼近卡片寬度——不是被裁切、也不是縮成
+  // 一個看不出路徑的小點。
+  const chart = block.locator(".iv-trend-chart").first();
+  await expect(chart).toBeVisible();
+  const chartBox = (await chart.boundingBox())!;
+  const cardBox = (await block.boundingBox())!;
+  expect(chartBox.width).toBeGreaterThan(cardBox.width * 0.8);
+  expect(chartBox.x).toBeGreaterThanOrEqual(cardBox.x - 1);
+  expect(chartBox.x + chartBox.width).toBeLessThanOrEqual(cardBox.x + cardBox.width + 1);
+  // 有實際高度可畫路徑——不是塌成一條線（走勢圖為主體的核心驗收）。
+  expect(chartBox.height).toBeGreaterThan(30);
+
+  // 三個欄位（Ĝ、買腿、賣腿）都各自有一張走勢圖，不是只有頭條有。
+  await expect(block.locator(".iv-trend-chart")).toHaveCount(3);
+});
+
+test("Historical IV：Δ4w 帶正負號與單位，跟 percentile／筆數同一行事實敘述（#140）",
+   async ({ page }) => {
+  await routeDetailWithIv(page, true);
+  await page.goto("/#/s/s1");
+
+  const block = page.locator(".iv-history");
+  // 買腿 IV：trend_4w = -0.012 → 「-1.2 pts」
+  await expect(block.getByText(/4週 -1\.2 pts/)).toBeVisible();
+  // Normalized Skew：trend_4w = 0.006 → 「+0.01」（無因次小數，不是 pts）
+  await expect(block.getByText(/4週 \+0\.01/)).toBeVisible();
+  await expect(block.getByText(/4週 \+0\.6 pts/)).toHaveCount(0);
+});
+
+test("Historical IV：手機點按資料點顯示 tooltip，位置落在走勢圖範圍內（#140／#141）",
+   async ({ page }) => {
+  await routeDetailWithIv(page, true);
+  await page.goto("/#/s/s1");
+
+  const chart = page.locator(".iv-history .iv-trend-chart").first();
+  await expect(chart).toBeVisible();
+  const point = chart.getByRole("button").first();
+  await expect(point).toBeVisible();
+
+  await point.click();
+  const tooltip = chart.locator(".chart-tooltip");
+  await expect(tooltip).toBeVisible();
+
+  // 幾何驗證：tooltip 落在走勢圖的座標範圍內，不是飄到卡片外面。
+  const tooltipBox = (await tooltip.boundingBox())!;
+  const chartBox = (await chart.boundingBox())!;
+  expect(tooltipBox.x).toBeGreaterThanOrEqual(chartBox.x - 1);
+  expect(tooltipBox.x + tooltipBox.width)
+    .toBeLessThanOrEqual(chartBox.x + chartBox.width + 1);
+});
+
+test("Historical IV 今日額度用完：percentile／Δ4w 照樣顯示，只多一行附加說明（#133／#140）",
    async ({ page }) => {
   // 需求方 2026-08-12 二次修正：backfill 狀態（今天補不補得動）跟資料
   // 能不能看是兩件事——quota 不再讓整塊變成「不畫百分位」的短訊息卡，
-  // 已快取的觀測算出的 percentile 照常顯示。
+  // 已快取的觀測算出的 percentile／Δ4w 照常顯示。
   await routeLibrary(page, libraryRow());
   await page.route("**/api/settings", (route) =>
     route.fulfill({ json: { historical_iv_enabled: true } }));
@@ -1202,18 +1296,24 @@ test("Historical IV 今日額度用完：percentile 照樣顯示，只多一行�
   // 各自 count 相同是這份 mock 資料的巧合，不是斷言重點；斷言鎖定
   // Normalized Skew 那一項精確的組合文字，不會跟其他欄位撞在一起）。
   await expect(block.getByText("第 62 百分位・45 筆觀測")).toBeVisible();
+  // Δ4w 同樣不受 backfill 狀態影響——跟 percentile 同一份資料同一個
+  // 可見性規則。
+  await expect(block.getByText(/4週 -1\.2 pts/)).toBeVisible();
+  // 走勢圖也照樣畫得出來（12 筆部分資料，不是空白）。
+  await expect(block.locator(".iv-trend-chart")).toHaveCount(3);
 
   // 主分析頁其餘部分照常
   await expect(page.getByText("劇本主圖")).toBeVisible();
 });
 
-test("Historical IV 完全沒有可比較觀測：誠實顯示沒有歷史資料，不硬湊（#133）",
+test("Historical IV 完全沒有可比較觀測：誠實顯示沒有歷史資料，不硬湊（#133／#140）",
    async ({ page }) => {
   await routeLibrary(page, libraryRow());
   await page.route("**/api/settings", (route) =>
     route.fulfill({ json: { historical_iv_enabled: true } }));
   await page.route("**/api/scenarios/*/iv-history*", (route) => {
-    const empty = { value: null, percentile: null, count: 0 };
+    const empty = { value: null, percentile: null, count: 0,
+                    trend_4w: null, trend_base_count: 0 };
     return route.fulfill({ json: {
       candidate_key: "k", status: "ok", points: [],
       metrics: { normalized_skew: empty, buy_iv: empty, sell_iv: empty,
@@ -1227,9 +1327,48 @@ test("Historical IV 完全沒有可比較觀測：誠實顯示沒有歷史資料
   const block = page.locator(".iv-history");
   await expect(block).toBeVisible();
   await expect(block.getByText("沒有歷史資料").first()).toBeVisible();
-  await expect(block.locator(".iv-spark")).toHaveCount(0);
+  // 沒有觀測就沒有東西可畫——一張走勢圖都不畫，不是空白外框。
+  await expect(block.locator(".iv-trend-chart")).toHaveCount(0);
   await expect(block).not.toContainText("百分位");
+  // 逐項的 Δ4w 讀數（帶正負號或 em dash）不該出現——每一項都被
+  // 「沒有歷史資料」取代掉了。方法論註記本身固定講解 Δ4w 的定義
+  // （字面上含「4週」兩字），那句話跟哪個欄位有沒有資料無關，本來就
+  // 該一直顯示，不在這條斷言排除的範圍內。
+  await expect(block).not.toContainText(/4週 [+\-—]/);
   await expect(page.getByText("劇本主圖")).toBeVisible();
+});
+
+test("Historical IV：欄位各自獨立——部分沒有觀測、部分有完整資料，各自誠實呈現（#133／#140）",
+   async ({ page }) => {
+  // 混合狀態：買腿有完整歷史（含 Δ4w），賣腿完全沒有觀測——這比全有或
+  // 全無更貼近真實情境（例如深價外賣腿某些日子落在鏈的 delta 範圍外）。
+  await routeLibrary(page, libraryRow());
+  await page.route("**/api/settings", (route) =>
+    route.fulfill({ json: { historical_iv_enabled: true } }));
+  await page.route("**/api/scenarios/*/iv-history*", (route) => {
+    const points = ivPoints();
+    const empty = { value: null, percentile: null, count: 0,
+                    trend_4w: null, trend_base_count: 0 };
+    return route.fulfill({ json: {
+      candidate_key: "k", status: "ok",
+      points: points.map((p) => ({ ...p, sell_iv: null })),
+      metrics: { ...ivMetrics(points), sell_iv: empty },
+      observations: points.length, note: null,
+    } });
+  });
+
+  await page.goto("/#/s/s1");
+
+  const block = page.locator(".iv-history");
+  await expect(block).toBeVisible();
+  // 賣腿：誠實說沒有資料，不畫圖
+  const sellRow = block.locator(".iv-metric").filter({ hasText: "賣腿 IV" });
+  await expect(sellRow.getByText("沒有歷史資料")).toBeVisible();
+  await expect(sellRow.locator(".iv-trend-chart")).toHaveCount(0);
+  // 買腿：完整資料照常顯示，不受賣腿沒資料影響
+  const buyRow = block.locator(".iv-metric").filter({ hasText: "買腿 IV" });
+  await expect(buyRow.getByText(/第 41 百分位/)).toBeVisible();
+  await expect(buyRow.locator(".iv-trend-chart")).toHaveCount(1);
 });
 
 /* ---------- 編輯劇本（#132） ---------- */
