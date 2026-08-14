@@ -1,0 +1,77 @@
+name: Temporary IV Production Probe
+
+on:
+  push:
+    paths:
+      - '.github/workflows/tmp-iv-production-probe.yml'
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Probe deployed API data path
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json, urllib.request, urllib.parse, urllib.error
+
+          BASES = [
+              "https://option-chaser-git-claude-imp-aef368-ofriedoriceo-5352s-projects.vercel.app",
+              "https://option-chaser.vercel.app",
+          ]
+
+          def get(url):
+              req = urllib.request.Request(url, headers={"Accept":"application/json", "User-Agent":"option-chaser-gh-probe"})
+              try:
+                  with urllib.request.urlopen(req, timeout=30) as r:
+                      return r.status, r.geturl(), r.read().decode("utf-8", "replace"), dict(r.headers.items())
+              except urllib.error.HTTPError as e:
+                  return e.code, e.geturl(), e.read().decode("utf-8", "replace"), dict(e.headers.items())
+              except Exception as e:
+                  return 0, url, f"{type(e).__name__}: {e}", {}
+
+          def candidate_keys(obj):
+              out=[]
+              def walk(x):
+                  if isinstance(x, dict):
+                      k=x.get("candidate_key")
+                      if isinstance(k,str) and k and k not in out: out.append(k)
+                      for v in x.values(): walk(v)
+                  elif isinstance(x,list):
+                      for v in x: walk(v)
+              walk(obj)
+              return out
+
+          for base in BASES:
+              print("\n" + "="*80)
+              print("BASE", base)
+              print("="*80)
+              for path in ["/api/health", "/api/scenarios"]:
+                  st, final, body, hdr = get(base+path)
+                  print(f"GET {path}: HTTP {st}; final={final}")
+                  print(body[:2000])
+                  if path == "/api/scenarios" and st == 200:
+                      try: scenarios=json.loads(body)
+                      except Exception: scenarios=[]
+                      if isinstance(scenarios,list):
+                          for sc in scenarios[:8]:
+                              sid=sc.get("id") if isinstance(sc,dict) else None
+                              if not sid: continue
+                              st2, final2, body2, hdr2=get(base+f"/api/scenarios/{urllib.parse.quote(str(sid))}")
+                              print(f"DETAIL scenario={sid}: HTTP {st2}")
+                              if st2 != 200:
+                                  print(body2[:1500]); continue
+                              try: detail=json.loads(body2)
+                              except Exception:
+                                  print(body2[:1500]); continue
+                              keys=candidate_keys(detail)
+                              print(f"candidate_keys found={len(keys)} sample={keys[:3]}")
+                              for key in keys[:2]:
+                                  q=urllib.parse.urlencode({"candidate_key":key})
+                                  st3, final3, body3, hdr3=get(base+f"/api/scenarios/{urllib.parse.quote(str(sid))}/iv-history?{q}")
+                                  print(f"IV_HISTORY scenario={sid} candidate={key}: HTTP {st3}")
+                                  print(body3[:6000])
+                              if keys:
+                                  break
+          PY
