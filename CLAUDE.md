@@ -296,8 +296,24 @@ regime model 這類「模型一換答案就變」的東西。Long Call 一併納
 （需求方新裁示，非遺漏舊裁示）。enrich-only 與 facts-only 紅線原樣
 繼承，並新增「禁止任何預測語句」。
 
-**下一步：等需求方 cue `/to-tickets` 拆票**（預估依 Δ4w 引擎層／
-走勢圖前端／Long Call 單腳路徑三條線切）。
+**拆票完成（2026-08-14 `/to-tickets`，五張全掛 `ready-for-agent`）**，
+依 #137 一比一切五張、照舊 `/implement` 依 frontier 一張張做：
+
+- **RCT-01** [#138] — Δ4w 引擎純函式＋API 契約純加法（中位數基準
+  守門測試必備）。無阻擋 ←
+- **RCT-02** [#139] — Long Call 單腳 Historical IV 資料路徑（新增
+  能力非改顯示）。無阻擋，與 #138 平行 ←
+- **RCT-03** [#140] — 一年走勢圖為主體＋Percentile＋Δ4w＋雙模式
+  版型（被 #138、#139 擋）
+- **RCT-04** [#141] — 桌面／手機整合＋缺資料狀態全景 E2E
+  （被 #140 擋）
+- **RCT-05** [#142] — 最終 regression gate：#118 selection identity
+  ＋禁詞全景＋全套綠燈（被 #141 擋；紅燈即停不准調 golden）
+
+> ⚠ 本 session 內容器 checkout 已**四度**自行倒退到 `4d3cea3`（V1
+> 期）。每張票開工前必先 `git rev-parse HEAD` 核對並在寫檔前複驗；
+> 倒退時 `git fetch origin claude/implement-tfm9oa && git merge
+> --ff-only origin/claude/implement-tfm9oa` 復原。
 
 ### 最新狀態（2026-08-12 第四輪）——Historical IV 綁定修正＋壓平＋Refresh 漸進解鎖
 
