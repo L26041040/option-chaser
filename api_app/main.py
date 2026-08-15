@@ -28,7 +28,7 @@ from option_chaser.timeframe import (TargetMonth, calendar_anchor,
                                      ensure_month_open, month_is_over)
 from option_chaser.workspace import now_utc_iso, ny_today
 
-from . import providers
+from . import diagnostics, providers
 from .dividend_cache import cached_loader as cached_dividend_loader
 from .rate_cache import cached_loader
 from .storage import (DataSourceSettings, IvBackfillRun, IvObservation,
@@ -323,6 +323,18 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
     """
     app = FastAPI(title="Option Chaser API", version=__version__)
 
+    # correlation ID（DG-02／#145）：每個 request 一個，整段處理過程中
+    # `diagnostics.emit()` 都讀得到同一個，不必逐層往下傳參數。回應一律
+    # 帶 `X-Correlation-Id`，錯誤回應也有——FastAPI 把 `HTTPException`
+    # 轉成回應的動作發生在 `call_next()` 之內，這裡看到的已經是那個
+    # 回應物件，不是例外本身。
+    @app.middleware("http")
+    async def _correlation_id_middleware(request: Request, call_next):
+        with diagnostics.correlation_scope() as cid:
+            response = await call_next(request)
+            response.headers["X-Correlation-Id"] = cid
+        return response
+
     # 延遲建構：Postgres adapter 在建構時就連線＋建表，若放在 import 期，
     # 資料庫暫時連不上會讓整個 lambda 起不來——連本來要負責「讓儲存後端
     # 看得見」的 /api/health 都會 500，正好毀掉它的用途。改成第一次真正
@@ -469,6 +481,22 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
             pass
         return {"status": "ok", "engine_version": __version__,
                 "storage": kind, "path": request.url.path, "rate": rate}
+
+    # ---------- Application diagnostics（DG-02／#145） ----------
+
+    @app.get("/api/diagnostics")
+    def list_diagnostics(limit: int = 50) -> list[dict]:
+        """近期 diagnostic events，最新在最上。`limit` 夾在
+        `[1, diagnostics.RETENTION_LIMIT]`——查得到的最多就是留著的
+        那些，沒有 pagination、沒有搜尋。"""
+        clamped = max(1, min(limit, diagnostics.RETENTION_LIMIT))
+        return [dataclasses.asdict(e)
+               for e in _db().list_diagnostics(limit=clamped)]
+
+    @app.delete("/api/diagnostics")
+    def clear_diagnostics() -> dict:
+        """清空，回傳清掉的筆數。"""
+        return {"cleared": _db().clear_diagnostics()}
 
     # ---------- 一次性分析（V1 遺留，前端改走劇本端點後可移除） ----------
 

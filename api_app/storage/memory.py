@@ -6,10 +6,13 @@
 """
 from __future__ import annotations
 
+from collections import deque
+
 from . import (DataSourceSettings, DividendCacheEntry, IvBackfillRun,
                IvObservation, ProviderCredential, ProviderVerification,
                RateCacheEntry, ResultRecord, ResultSummary, Scenario,
                ScenarioExists)
+from ..diagnostics import RETENTION_LIMIT, DiagnosticEvent
 
 
 class MemoryStorage:
@@ -26,6 +29,10 @@ class MemoryStorage:
         # 鍵是 (symbol, 日期)——**沒有 scenario 維度**，見 IvObservation。
         self._iv: dict[tuple[str, str], IvObservation] = {}
         self._iv_runs: dict[str, IvBackfillRun] = {}
+        # `deque(maxlen=)` 就是 trim-on-write：滿了之後新的一筆自動把
+        # 最舊的擠掉，跟 Postgres 那邊的 `DELETE ... OFFSET` 是同一條上限
+        # 的兩種實作，契約測試才有意義。
+        self._diagnostics: deque[DiagnosticEvent] = deque(maxlen=RETENTION_LIMIT)
 
     @property
     def kind(self) -> str:
@@ -182,3 +189,17 @@ class MemoryStorage:
 
     def save_iv_backfill_run(self, run: IvBackfillRun) -> None:
         self._iv_runs[run.symbol] = run
+
+    # ---------- Application diagnostics（DG-02／#145） ----------
+
+    def append_diagnostic(self, event: DiagnosticEvent) -> None:
+        self._diagnostics.append(event)
+
+    def list_diagnostics(self, *, limit: int = 50) -> list[DiagnosticEvent]:
+        # deque 存的是寫入順序（舊→新）；最新在最上要反過來。
+        return list(reversed(self._diagnostics))[:limit]
+
+    def clear_diagnostics(self) -> int:
+        n = len(self._diagnostics)
+        self._diagnostics.clear()
+        return n

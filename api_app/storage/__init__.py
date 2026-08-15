@@ -12,6 +12,8 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from typing import Protocol
 
+from ..diagnostics import DiagnosticEvent
+
 
 @dataclass(frozen=True)
 class Scenario:
@@ -354,6 +356,19 @@ class Storage(Protocol):
 
     def save_verification(self, v: ProviderVerification) -> None:
         """覆蓋該 provider 既有那一筆——單一狀態，不是歷史序列。"""
+
+    # ---------- Application diagnostics（DG-02／#145） ----------
+
+    def append_diagnostic(self, event: DiagnosticEvent) -> None:
+        """寫入一筆診斷事件。**trim-on-write**：寫入後只保留全域最新
+        `diagnostics.RETENTION_LIMIT` 筆，較舊的直接淘汰——不是靠背景
+        清理 job（serverless 沒有地方掛），上限因此是結構性的。"""
+
+    def list_diagnostics(self, *, limit: int = 50) -> list[DiagnosticEvent]:
+        """最新在最上（依寫入順序反排）。"""
+
+    def clear_diagnostics(self) -> int:
+        """清空，回傳清掉的筆數。"""
 
     @property
     def kind(self) -> str:

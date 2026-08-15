@@ -323,6 +323,29 @@ logs 由需求方端（ChatGPT）另行驗證**，不需要要求需求方處理
   7＋既有 fetch_surface 測試改注入 `http_request=`），
   `test_data_marketdata.py` 既有斷言一條未動、全綠；全套 pytest
   無回歸（全綠）
+- **DG-02** [#145] — 診斷骨幹（commit 待補）：新增 `api_app/
+  diagnostics.py`——`DiagnosticEvent`＋唯一入口 `emit()`（組 event→
+  sanitize→印 structured JSON log→寫 storage，任一步失敗皆吞掉、
+  絕不拋出）；`SUBSYSTEMS`／`STAGES`／`SEVERITIES` 詞彙單一來源（本票
+  不接任何 subsystem，`STAGES` 先把 #143 列的八個都定義好供 DG-03／
+  DG-04 用）。**Redaction 白名單**：`_CONTEXT_KEY_WHITELIST` 過濾＋
+  `sanitize_string()` 三層（已知現行祕密值逐字比對→樣式遮蔽
+  `Bearer …`／`token=`／`postgres://`→長度截斷）；`sanitize_context()`
+  同時丟棄 `None` 值（只顯示存在欄位）。**correlation ID**：
+  `contextvars` 存一份，`correlation_scope()` context manager 綁定／
+  還原，`emit()` 自己讀，不從函式簽章往下傳。`Storage` protocol 新增
+  `append_diagnostic`／`list_diagnostics`／`clear_diagnostics`，
+  `RETENTION_LIMIT=200` 定義在 `diagnostics.py` 單一處；`MemoryStorage`
+  用 `deque(maxlen=RETENTION_LIMIT)` 天然 trim-on-write，`PostgresStorage`
+  新增 `diagnostics` 表＋每次寫入後 `DELETE ... OFFSET RETENTION_LIMIT`
+  trim（不併進既有 `events` 表——後者是 scenario-scoped 永不修剪的
+  領域事實）。`main.py` 新增 correlation ID middleware（每個回應皆帶
+  `X-Correlation-Id`，含錯誤回應）與 `GET`／`DELETE /api/diagnostics`
+  兩端點。新增 `test_diagnostics.py`（22 條，redaction／correlation／
+  emit 容錯）、`test_api_diagnostics.py`（10 條，端點＋middleware）、
+  `test_storage_contract.py` 新增 diagnostics 契約區塊（含
+  retention-cap 測試，memory／postgres 共用同一份行為）；全套 pytest
+  無回歸（全綠）
 
 ### 最新狀態（2026-08-14）——「貴不貴」第六輪研究：Rich/Cheap Trend／entry timing（只研究不施工）
 

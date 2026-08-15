@@ -15,6 +15,7 @@ import pytest
 
 from dataclasses import replace
 
+from api_app.diagnostics import RETENTION_LIMIT, DiagnosticEvent
 from api_app.storage import (DataSourceSettings, DividendCacheEntry,
                              IvBackfillRun, IvObservation, ProviderCredential,
                              ProviderVerification, RateCacheEntry,
@@ -48,7 +49,8 @@ def storage(request):
         conn.execute("TRUNCATE scenarios, results, snapshots, events, rate_cache, "
                      "dividend_cache, data_source_settings, "
                      "provider_credentials, provider_verifications, "
-                     "iv_observations, iv_backfill_runs RESTART IDENTITY")
+                     "iv_observations, iv_backfill_runs, diagnostics "
+                     "RESTART IDENTITY")
     yield st
 
 
@@ -775,6 +777,78 @@ def test_backfill_run_reads_back_and_overwrites(storage):
 def test_backfill_runs_are_per_symbol(storage):
     storage.save_iv_backfill_run(IvBackfillRun("TLT", "2026-08-12", "ok"))
     assert storage.get_iv_backfill_run("SPY") is None
+
+
+# ---------- Application diagnostics（DG-02／#145） ----------
+
+def _diag(*, event_id="e1", correlation_id="c1", ts="2026-08-15T00:00:00+00:00",
+         subsystem="historical_iv", stage="vendor_fetch", severity="error",
+         message="boom", context=None):
+    return DiagnosticEvent(event_id=event_id, correlation_id=correlation_id,
+                           ts=ts, subsystem=subsystem, stage=stage,
+                           severity=severity, message=message,
+                           context=context or {})
+
+
+def test_diagnostics_start_out_empty(storage):
+    assert storage.list_diagnostics() == []
+
+
+def test_appended_diagnostic_reads_back_identically(storage):
+    storage.append_diagnostic(_diag(context={"symbol": "TLT"}))
+    got = storage.list_diagnostics()
+    assert len(got) == 1
+    assert got[0].event_id == "e1"
+    assert got[0].correlation_id == "c1"
+    assert got[0].subsystem == "historical_iv"
+    assert got[0].stage == "vendor_fetch"
+    assert got[0].severity == "error"
+    assert got[0].message == "boom"
+    assert got[0].context == {"symbol": "TLT"}
+
+
+def test_diagnostics_come_back_newest_first(storage):
+    for i in range(3):
+        storage.append_diagnostic(_diag(event_id=f"e{i}",
+                                        ts=f"2026-08-15T00:0{i}:00+00:00"))
+    assert [e.event_id for e in storage.list_diagnostics()] == ["e2", "e1", "e0"]
+
+
+def test_diagnostics_list_respects_the_limit(storage):
+    for i in range(5):
+        storage.append_diagnostic(_diag(event_id=f"e{i}"))
+    got = storage.list_diagnostics(limit=2)
+    assert len(got) == 2
+    assert got[0].event_id == "e4"
+
+
+def test_clear_diagnostics_empties_the_list_and_reports_the_count(storage):
+    for i in range(3):
+        storage.append_diagnostic(_diag(event_id=f"e{i}"))
+    n = storage.clear_diagnostics()
+    assert n == 3
+    assert storage.list_diagnostics() == []
+
+
+def test_clear_diagnostics_on_an_empty_store_reports_zero(storage):
+    assert storage.clear_diagnostics() == 0
+
+
+def test_diagnostics_retention_is_capped_globally(storage):
+    """trim-on-write：寫超過上限後，最舊的被淘汰、最新的都在、總數不
+    超過上限——兩個實作在這裡必須是同一個行為。"""
+    total = RETENTION_LIMIT + 20
+    for i in range(total):
+        storage.append_diagnostic(_diag(event_id=f"e{i}"))
+    got = storage.list_diagnostics(limit=RETENTION_LIMIT + 50)
+    assert len(got) == RETENTION_LIMIT
+    # 最新的一筆（最後寫入）在最上，最舊的那 20 筆被擠掉。
+    assert got[0].event_id == f"e{total - 1}"
+    kept_ids = {e.event_id for e in got}
+    assert f"e{total - 1}" in kept_ids
+    assert "e0" not in kept_ids
+    assert "e19" not in kept_ids
+    assert "e20" in kept_ids
 
 
 # ---------- schema 遷移（V3／#51） ----------

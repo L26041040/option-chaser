@@ -16,6 +16,7 @@ from . import (DataSourceSettings, DividendCacheEntry, IvBackfillRun,
                IvObservation, ProviderCredential, ProviderVerification,
                RateCacheEntry, ResultRecord, ResultSummary, Scenario,
                ScenarioExists, UsageSetting)
+from ..diagnostics import RETENTION_LIMIT, DiagnosticEvent
 
 # 每個 lambda 程序只需建表一次。`IF NOT EXISTS` 在 Postgres 並非完全
 # race-free（同時冷啟動可能撞上 duplicate 錯誤），因此除了這個旗標，
@@ -133,6 +134,21 @@ CREATE TABLE IF NOT EXISTS iv_backfill_runs (
     ran_on        TEXT NOT NULL,
     outcome       TEXT NOT NULL,
     note          TEXT
+);
+-- Application diagnostics（DG-02／#145）：**不併進 `events` 表**——後者
+-- 是 scenario-scoped、永不修剪的領域事實，這張是運維紀錄、會被修剪、
+-- 且不必然掛在某個 scenario 底下。`seq` 沿用 `events` 同一個排序慣例
+-- （時間戳字串同秒時仍有確定順序）。
+CREATE TABLE IF NOT EXISTS diagnostics (
+    seq             BIGSERIAL PRIMARY KEY,
+    event_id        TEXT NOT NULL,
+    correlation_id  TEXT NOT NULL,
+    ts              TEXT NOT NULL,
+    subsystem       TEXT NOT NULL,
+    stage           TEXT NOT NULL,
+    severity        TEXT NOT NULL,
+    message         TEXT NOT NULL,
+    context         JSONB NOT NULL
 );
 """
 
@@ -565,3 +581,37 @@ class PostgresStorage:
                 "ON CONFLICT (symbol) DO UPDATE SET ran_on = EXCLUDED.ran_on, "
                 "outcome = EXCLUDED.outcome, note = EXCLUDED.note",
                 (run.symbol, run.ran_on, run.outcome, run.note))
+
+    # ---------- Application diagnostics（DG-02／#145） ----------
+
+    def append_diagnostic(self, event: DiagnosticEvent) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO diagnostics (event_id, correlation_id, ts, "
+                "subsystem, stage, severity, message, context) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+                (event.event_id, event.correlation_id, event.ts,
+                 event.subsystem, event.stage, event.severity, event.message,
+                 Jsonb(event.context)))
+            # trim-on-write：只留全域最新 RETENTION_LIMIT 筆。子查詢在
+            # 不到上限時回空，`seq <= NULL` 恆假，DELETE 是安全的 no-op。
+            conn.execute(
+                "DELETE FROM diagnostics WHERE seq <= ("
+                "SELECT seq FROM diagnostics ORDER BY seq DESC "
+                "OFFSET %s LIMIT 1)", (RETENTION_LIMIT,))
+
+    def list_diagnostics(self, *, limit: int = 50) -> list[DiagnosticEvent]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT event_id, correlation_id, ts, subsystem, stage, "
+                "severity, message, context FROM diagnostics "
+                "ORDER BY seq DESC LIMIT %s", (limit,)).fetchall()
+        return [DiagnosticEvent(event_id=r[0], correlation_id=r[1], ts=r[2],
+                                subsystem=r[3], stage=r[4], severity=r[5],
+                                message=r[6], context=r[7]) for r in rows]
+
+    def clear_diagnostics(self) -> int:
+        with self._connect() as conn:
+            n = conn.execute("SELECT COUNT(*) FROM diagnostics").fetchone()[0]
+            conn.execute("DELETE FROM diagnostics")
+        return n
