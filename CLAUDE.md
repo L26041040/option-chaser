@@ -323,7 +323,7 @@ logs 由需求方端（ChatGPT）另行驗證**，不需要要求需求方處理
   7＋既有 fetch_surface 測試改注入 `http_request=`），
   `test_data_marketdata.py` 既有斷言一條未動、全綠；全套 pytest
   無回歸（全綠）
-- **DG-02** [#145] — 診斷骨幹（commit 待補）：新增 `api_app/
+- **DG-02** [#145] — 診斷骨幹（commit `367b8d6`）：新增 `api_app/
   diagnostics.py`——`DiagnosticEvent`＋唯一入口 `emit()`（組 event→
   sanitize→印 structured JSON log→寫 storage，任一步失敗皆吞掉、
   絕不拋出）；`SUBSYSTEMS`／`STAGES`／`SEVERITIES` 詞彙單一來源（本票
