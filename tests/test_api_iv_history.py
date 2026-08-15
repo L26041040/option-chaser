@@ -71,7 +71,8 @@ class Recorder:
         self.calls: list[tuple[str, str]] = []
         self._fail = fail
 
-    def __call__(self, provider, symbol, on_date, token, expiration=None):
+    def __call__(self, provider, symbol, on_date, token, expiration=None,
+                observer=None):
         self.calls.append((symbol, on_date))
         if self._fail is not None:
             raise self._fail
@@ -671,7 +672,8 @@ def test_a_long_dated_candidate_actually_receives_non_default_expirations(db):
         def __init__(self):
             self.expirations: list[str | None] = []
 
-        def __call__(self, provider, symbol, on_date, token, expiration=None):
+        def __call__(self, provider, symbol, on_date, token, expiration=None,
+                     observer=None):
             self.expirations.append(expiration)
             return _grid()
 
@@ -693,7 +695,8 @@ def test_a_short_dated_candidate_keeps_using_the_cheap_vendor_default(db):
         def __init__(self):
             self.expirations: list[str | None] = []
 
-        def __call__(self, provider, symbol, on_date, token, expiration=None):
+        def __call__(self, provider, symbol, on_date, token, expiration=None,
+                     observer=None):
             self.expirations.append(expiration)
             return _grid()
 
@@ -757,3 +760,252 @@ def test_a_vendor_failure_today_does_not_hide_cached_percentiles_either(db):
     assert body["status"] == "vendor"
     assert body["metrics"]["normalized_skew"]["count"] == 5
     assert body["metrics"]["normalized_skew"]["percentile"] is not None
+
+
+# ---------- Historical IV 診斷接線（DG-03／#146） ----------
+#
+# 這裡的 surface 直接餵 observer 指定的 telemetry，不依賴
+# `marketdata.py` 內部怎麼算出這份 telemetry（那是 DG-01／
+# `test_data_marketdata.py` 的範圍）——本節只測 main.py 怎麼把
+# telemetry 轉成診斷事件。
+
+def _telemetry_surface(telemetry, *, points=None, call_counter=None):
+    """observer 每次被呼叫都拿到同一份 `telemetry`（可自訂），可選
+    `call_counter`（list）記錄實際被呼叫幾次——用來確認 no_data 不會
+    中止整個 backfill 批次。"""
+    def call(provider, symbol, on_date, token, expiration=None, observer=None):
+        if call_counter is not None:
+            call_counter.append(on_date)
+        if observer is not None:
+            observer(telemetry)
+        return points or {"call": [], "put": []}
+    return call
+
+
+def _events_for(body, stage):
+    return [e for e in body["diagnostics"]["events"] if e["stage"] == stage]
+
+
+def _prefill_all_but_one(db, symbol="XYZ"):
+    """把排程灌到只剩一天缺口——讓 backfill 迴圈只真的跑一次，事件數遠
+    低於 per-request 上限（#146），不必連帶測到排放量控制那條路徑
+    （那個有自己專屬的測試）。"""
+    from api_app.main import _surface_to_rows
+    from api_app.storage import IvObservation
+
+    schedule = sorted(sampling_schedule(symbol, ny_today()))
+    for day in schedule[:-1]:
+        db.save_iv_observation(IvObservation(
+            symbol=symbol, observed_on=day, surface=_surface_to_rows(_grid()),
+            fetched_at="2026-08-12T00:00:00+00:00"))
+
+
+def test_candidate_lookup_event_marks_found_true(db):
+    client = _client(db, surface=_rich_surface)
+    _unlock(client)
+    sid = _scenario(client)
+    body = _get(client, sid, _candidate_key(client, sid)).json()
+    got = _events_for(body, "candidate_lookup")
+    assert len(got) == 1
+    assert got[0]["severity"] == "info"
+    assert got[0]["context"]["found"] is True
+    assert got[0]["context"]["candidate_key"]
+
+
+def test_candidate_lookup_event_marks_an_unknown_key_as_error_and_still_persists(db):
+    client = _client(db, surface=_surface_never_called)
+    _unlock(client)
+    sid = _scenario(client)
+    resp = _get(client, sid, "no-such-candidate")
+    assert resp.status_code == 404
+    # 404 沒有 diagnostics 欄位可讀（純字串 detail），但事件仍要落盤——
+    # 使用者事後翻 Settings／Diagnostics 找得到這次失敗。
+    stored = client.get("/api/diagnostics").json()
+    lookups = [e for e in stored if e["stage"] == "candidate_lookup"]
+    assert lookups[0]["severity"] == "error"
+    assert lookups[0]["context"]["found"] is False
+
+
+def test_raw_rows_positive_but_parsed_zero_is_a_warning_on_payload_parse(db):
+    """「vendor 回 N 筆，卻在哪一站變成 0 筆」——這裡就是可以直接指認
+    出來的地方：payload_parse 事件自己講清楚 raw 對 parsed 的落差。"""
+    telemetry = {"http_status": 200, "vendor_status": "ok",
+                "vendor_errmsg": None, "raw_rows": 5,
+                "parsed_call_rows": 0, "parsed_put_rows": 0}
+    client = _client(db, surface=_telemetry_surface(telemetry))
+    _unlock(client)
+    sid = _scenario(client)
+    key = _candidate_key(client, sid)
+    _prefill_all_but_one(db)
+    body = _get(client, sid, key).json()
+
+    parse_events = _events_for(body, "payload_parse")
+    assert parse_events, "至少要有一筆 payload_parse 事件"
+    assert parse_events[0]["severity"] == "warning"
+    assert parse_events[0]["context"]["raw_rows"] == 5
+    assert parse_events[0]["context"]["parsed_call_rows"] == 0
+    assert parse_events[0]["context"]["parsed_put_rows"] == 0
+
+    fetch_events = _events_for(body, "vendor_fetch")
+    assert fetch_events[0]["context"]["raw_rows"] == 5
+    assert fetch_events[0]["severity"] == "info"   # vendor 本身回 s=ok，沒有失敗
+
+
+def test_no_data_is_a_warning_and_does_not_abort_the_batch(db):
+    """s="no_data" 是帶 expiration 篩選後的正常撲空（#134 既有語意）——
+    不該讓批次中止在第一天。"""
+    telemetry = {"http_status": 200, "vendor_status": "no_data",
+                "vendor_errmsg": None, "raw_rows": 0,
+                "parsed_call_rows": 0, "parsed_put_rows": 0}
+    calls: list[str] = []
+    client = _client(db, surface=_telemetry_surface(telemetry, call_counter=calls))
+    _unlock(client)
+    sid = _scenario(client)
+    body = _get(client, sid, _candidate_key(client, sid)).json()
+
+    fetch_events = _events_for(body, "vendor_fetch")
+    assert fetch_events and all(e["severity"] == "warning" for e in fetch_events)
+    assert len(calls) > 1, "no_data 不該讓 backfill 在第一天就中止"
+
+    backfill_summary = _events_for(body, "backfill")
+    assert backfill_summary[0]["context"]["outcome"] == "ok"
+    assert "aborted_on" not in backfill_summary[0]["context"]
+
+
+def test_backfill_abort_is_visible_in_the_summary_event(db):
+    """既有行為（第一次失敗就中止整批）本輪不修，只要求它現在看得見。"""
+    rec = Recorder(fail=QuotaExhausted("額度用完"))
+    client = _client(db, surface=rec)
+    _unlock(client)
+    sid = _scenario(client)
+    body = _get(client, sid, _candidate_key(client, sid)).json()
+
+    summary = _events_for(body, "backfill")
+    assert len(summary) == 1
+    assert summary[0]["severity"] == "warning"
+    assert summary[0]["context"]["outcome"] == "quota"
+    assert summary[0]["context"]["aborted_on"]
+    assert summary[0]["context"]["abort_reason"] == "quota"
+    assert summary[0]["context"]["attempted_days"] == 1
+    assert summary[0]["context"]["saved_days"] == 0
+
+
+def test_vendor_fetch_event_carries_http_status_and_rate_limit_fields(db):
+    telemetry = {"http_status": 429, "vendor_status": None,
+                "vendor_errmsg": None, "raw_rows": 0,
+                "parsed_call_rows": 0, "parsed_put_rows": 0,
+                "X-Api-Ratelimit-Remaining": "0",
+                "X-Api-Ratelimit-Limit": "100"}
+    client = _client(db, surface=_telemetry_surface(telemetry))
+    _unlock(client)
+    sid = _scenario(client)
+    body = _get(client, sid, _candidate_key(client, sid)).json()
+
+    fetch_events = _events_for(body, "vendor_fetch")
+    assert fetch_events[0]["severity"] == "error"
+    assert fetch_events[0]["context"]["http_status"] == 429
+    assert fetch_events[0]["context"]["X-Api-Ratelimit-Remaining"] == "0"
+    assert fetch_events[0]["context"]["X-Api-Ratelimit-Limit"] == "100"
+    # vendor_status 是 None（連 payload 都沒有）——依 sanitize_context
+    # 的規則，None 值不進 context，這裡確認畫面上不會出現一個空欄位。
+    assert "vendor_status" not in fetch_events[0]["context"]
+
+
+def test_response_correlation_id_matches_the_header(db):
+    client = _client(db, surface=_rich_surface)
+    _unlock(client)
+    sid = _scenario(client)
+    resp = _get(client, sid, _candidate_key(client, sid))
+    body = resp.json()
+    assert body["diagnostics"]["correlation_id"] == resp.headers["X-Correlation-Id"]
+
+
+def test_events_shown_in_the_response_also_land_in_the_diagnostics_store(db):
+    client = _client(db, surface=_rich_surface)
+    _unlock(client)
+    sid = _scenario(client)
+    body = _get(client, sid, _candidate_key(client, sid)).json()
+    shown_ids = {e["event_id"] for e in body["diagnostics"]["events"]}
+    stored_ids = {e["event_id"] for e in client.get("/api/diagnostics").json()}
+    assert shown_ids <= stored_ids
+
+
+def test_a_known_token_never_appears_in_diagnostics(db):
+    """紅線：vendor 把 token 夾在 errmsg 裡回來，一樣不得逐字出現在
+    任何 diagnostic event 或 API 回應裡。"""
+    telemetry = {"http_status": 200, "vendor_status": "error",
+                "vendor_errmsg": f"invalid key {TOKEN}",
+                "raw_rows": 0, "parsed_call_rows": 0, "parsed_put_rows": 0}
+    client = _client(db, surface=_telemetry_surface(telemetry))
+    _unlock(client)
+    sid = _scenario(client)
+    resp = _get(client, sid, _candidate_key(client, sid))
+    assert TOKEN not in resp.text
+    stored = client.get("/api/diagnostics").json()
+    assert all(TOKEN not in str(e) for e in stored)
+
+
+def test_diagnostics_storage_failure_does_not_break_the_response():
+    """診斷絕不能成為新的故障源——storage 的 `append_diagnostic` 掛了，
+    iv-history 端點照樣回它原本該回的東西。"""
+    from api_app.storage.memory import MemoryStorage
+
+    class _Wrapped(MemoryStorage):
+        def append_diagnostic(self, event):
+            raise RuntimeError("db 掛了")
+
+    wrapped = _Wrapped()
+    client = _client(wrapped, surface=_rich_surface)
+    _unlock(client)
+    sid = _scenario(client)
+    resp = _get(client, sid, _candidate_key(client, sid))
+    assert resp.status_code == 200
+    assert resp.json()["points"]
+
+
+# ---------- per-request 排放量控制（#146） ----------
+
+def test_error_and_warning_events_survive_the_per_request_cap():
+    from api_app.diagnostics import DiagnosticEvent
+    from api_app.main import _select_for_persistence
+
+    def ev(event_id, severity="info", stage="vendor_fetch"):
+        return DiagnosticEvent(event_id=event_id, correlation_id="c",
+                               ts=event_id, subsystem="historical_iv",
+                               stage=stage, severity=severity, message="m")
+
+    events = [ev(f"info{i}") for i in range(30)]
+    events += [ev(f"err{i}", severity="error") for i in range(5)]
+    kept = _select_for_persistence(events)
+    assert len(kept) <= 20
+    kept_ids = {e.event_id for e in kept}
+    assert all(f"err{i}" in kept_ids for i in range(5))
+
+
+def test_the_batch_summary_event_survives_the_cap_even_when_priority_events_alone_overflow_it():
+    """摘要不是跟其他 priority 事件搶名額——即使 error/warning 本身就
+    塞滿整個 cap，摘要仍然保留（見 `_select_for_persistence` 三層優先序
+    的第一層）。"""
+    from api_app.diagnostics import DiagnosticEvent
+    from api_app.main import _select_for_persistence
+
+    def ev(event_id, severity="info", stage="vendor_fetch"):
+        return DiagnosticEvent(event_id=event_id, correlation_id="c",
+                               ts=event_id, subsystem="historical_iv",
+                               stage=stage, severity=severity, message="m")
+
+    events = [ev(f"err{i}", severity="error") for i in range(30)]
+    events += [ev("summary", stage="backfill")]
+    kept = _select_for_persistence(events)
+    assert "summary" in {e.event_id for e in kept}
+    assert len(kept) <= 20
+
+
+def test_under_the_cap_nothing_is_dropped():
+    from api_app.diagnostics import DiagnosticEvent
+    from api_app.main import _select_for_persistence
+
+    events = [DiagnosticEvent(event_id=f"e{i}", correlation_id="c", ts=f"t{i}",
+                              subsystem="historical_iv", stage="cache",
+                              severity="info", message="m") for i in range(5)]
+    assert _select_for_persistence(events) == events

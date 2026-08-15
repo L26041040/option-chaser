@@ -346,6 +346,49 @@ logs 由需求方端（ChatGPT）另行驗證**，不需要要求需求方處理
   `test_storage_contract.py` 新增 diagnostics 契約區塊（含
   retention-cap 測試，memory／postgres 共用同一份行為）；全套 pytest
   無回歸（全綠）
+- **DG-03** [#146] — Historical IV 取數路徑觀測＋排放量控制＋
+  iv-history 回應夾帶診斷（commit 待補）：`api_app/providers.py` 的
+  `default_historical_surface` 加一個 `observer` 參數原樣轉給
+  `marketdata.fetch_surface`（#144 打的底），這一層仍不解讀 telemetry
+  內容。`main.py` 新增六個觀測點：`candidate_lookup`（找不找得到候選、
+  掃過幾組 `expiry_top10`）、`cache`（缺口天數、今天是否已跑過）、
+  `vendor_fetch`＋`payload_parse`（`_emit_surface_telemetry()` 把
+  observer 給的合併 telemetry 拆成兩個事件——同一份 raw_rows 同時放
+  進兩邊，即使其中一個因排放量控制被裁掉，另一邊仍完整帶著「N 筆進、
+  幾筆出」）、`database_write`（每天寫入的 call／put 點數）、
+  `backfill`（批次摘要：嘗試幾天／存幾天／在哪天中止／原因／
+  outcome）。**這四條既有 backfill 決策規則本身逐字不動**——`emit`
+  呼叫不參與任何 if／break 判斷，只是把已經在發生的事情說出來。
+
+  **排放量控制**（`_select_for_persistence`，per-request 上限 20 筆）：
+  三層優先序——① `backfill` 摘要**先保留、不跟其他事件搶名額**（施工
+  中發現：若把摘要跟其他 error／warning 事件混在同一個優先池裡用
+  `list[:cap]` 前截斷，事件量一大時摘要反而會被排在後面而擠出去，
+  跟「使用者最想看批次結果」的初衷相反，因此改成獨立保留一個名額）；
+  ② 其餘事件的 error／warning 依原順序，額滿為止；③ 剩餘名額才輪到
+  info。structured log 不受此限，`emit()` 當下就全發了。
+
+  `iv_history()` 端點新增 `_CollectingDiagnostics`（per-request 緩衝，
+  `emit()` 寫這個而不是直接寫真正的 storage，log 照樣全發）與
+  `_flush_diagnostics()`（request 結束時套用排放量控制、把留下的那批
+  真的寫進 `_db()`，同一批也組進回應——畫面看到的跟真的存進 Settings／
+  Diagnostics 的是同一批，不會兜不起來）。回應新增 `diagnostics:
+  {correlation_id, events}`（純加法，既有欄位語意不變）；候選找不到
+  的 404 路徑一樣先落盤再拋錯誤，只是回應本身沒有 `diagnostics` 欄位
+  可讀（純字串 detail）。`_known_secrets()` 收集目前設定的 provider
+  token 與 `database_url_candidates()`（`storage/factory.py` 新增，
+  蒐集 DATABASE_URL 家族**全部**有值的環境變數，不只 `database_url()`
+  選中的那一個）供逐字比對 redaction。
+
+  測試：`test_api_iv_history.py` 新增 13 條端點層測試（`_telemetry_
+  surface()` 直接餵 observer 指定 telemetry，不依賴 `marketdata.py`
+  內部行為——那是 DG-01 的範圍；raw>0/parsed=0 可指認、no_data 不中止
+  批次、backfill 中止可見、rate-limit 欄位、correlation id 對得上
+  回應標頭、事件同時落盤、token redaction、診斷寫入失敗不影響回應、
+  3 條排放量控制單元測試）；`test_api_iv_history.py` 三個既有
+  `historical_surface` 假體（`Recorder`／兩個 `ExpirationRecorder`）
+  加 `observer=None` 參數以相容新簽章，既有斷言一條未動。全套 pytest
+  無回歸（全綠）
 
 ### 最新狀態（2026-08-14）——「貴不貴」第六輪研究：Rich/Cheap Trend／entry timing（只研究不施工）
 

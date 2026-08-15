@@ -35,7 +35,7 @@ from .storage import (DataSourceSettings, IvBackfillRun, IvObservation,
                       ProviderCredential, ProviderVerification, RateCacheEntry,
                       ResultRecord, ResultSummary, Scenario, ScenarioExists,
                       Storage, UsageSetting)
-from .storage.factory import storage_from_env
+from .storage.factory import database_url_candidates, storage_from_env
 
 FetchChain = Callable[[str], ChainSnapshot]
 # 自訂 Provider 的兩條路徑（Settings／#125），皆可注入 → 測試離線。
@@ -210,6 +210,117 @@ def _iv_payload(candidate_key: str, points: list[dict], status: str,
         "observations": len(points),
         "note": note,
     }
+
+
+# ---------- Historical IV 診斷接線（DG-03／#146） ----------
+#
+# 這一段只認識「怎麼把 Historical IV 這條路徑的事件送進 emit()」，不
+# 認識 HTTP 或 storage 細節——`iv_history()` 端點負責組出真正寫庫的
+# `emit`，這裡的函式都只吃一個 `emit` callable。
+
+class _CollectingDiagnostics:
+    """DG-03 的 per-request 緩衝：`emit()` 呼叫這個而不是直接呼叫真正
+    的 storage，讓 structured log 照樣每筆都發，但 storage 寫入延後到
+    這次 request 結束時才依 severity 取捨、限量落盤（見
+    `_select_for_persistence`）。"""
+
+    def __init__(self) -> None:
+        self.events: list[diagnostics.DiagnosticEvent] = []
+
+    def append_diagnostic(self, event: diagnostics.DiagnosticEvent) -> None:
+        self.events.append(event)
+
+
+# 一次 backfill 最多 25 天 × 數個到期日，每次 vendor 呼叫又拆成
+# vendor_fetch／payload_parse 兩筆——不設限的話，一次 request 就能把
+# 全域 200 筆的 retention 上限吃光，把先前的證據全部擠掉。
+_DIAGNOSTICS_STORAGE_CAP_PER_REQUEST = 20
+
+
+def _select_for_persistence(
+        events: list[diagnostics.DiagnosticEvent],
+        *, cap: int = _DIAGNOSTICS_STORAGE_CAP_PER_REQUEST,
+) -> list[diagnostics.DiagnosticEvent]:
+    """哪些 events 真的寫進 storage（#146）。log 不受這條限制——`emit()`
+    呼叫當下就已經全部印出去了，這裡只決定「留誰在 capped 的 storage
+    裡」，回傳順序與輸入順序一致。
+
+    三層優先序，**`backfill` 摘要先保留、不跟其他事件搶名額**——它是
+    每次 request 至多一筆的批次結尾結論，使用者要看的正是「這一批最後
+    結果如何」，不能因為前面的 vendor_fetch／database_write 剛好也是
+    error／warning、數量一多就把它擠到 cap 外面：
+
+    1. `backfill` 摘要（至多一筆）——保留名額最優先，跟它自己的
+       severity 無關。
+    2. 其餘事件裡的 error／warning——依原始順序，額滿為止。
+    3. 其餘事件裡的 info——依原始順序，用剩下的名額補滿。
+    """
+    if len(events) <= cap:
+        return events
+    summary = [e for e in events if e.stage == "backfill"][:cap]
+    others = [e for e in events if e.stage != "backfill"]
+    budget = cap - len(summary)
+
+    important = [e for e in others if e.severity in ("error", "warning")]
+    info = [e for e in others if e.severity not in ("error", "warning")]
+    kept_others_ids = {id(e) for e in important[:budget]}
+    remaining = budget - len(kept_others_ids)
+    if remaining > 0:
+        kept_others_ids |= {id(e) for e in info[:remaining]}
+
+    keep_ids = {id(e) for e in summary} | kept_others_ids
+    return [e for e in events if id(e) in keep_ids]
+
+
+def _rate_limit_context(telemetry: dict) -> dict:
+    return {k: v for k, v in telemetry.items()
+           if k.startswith("X-Api-Ratelimit-")}
+
+
+def _vendor_fetch_severity(telemetry: dict) -> str:
+    vendor_status = telemetry.get("vendor_status")
+    if vendor_status is None:
+        return "error"          # HTTP／連線層失敗，連 payload 都沒拿到
+    if vendor_status == "no_data":
+        return "warning"
+    if vendor_status == "ok":
+        return "info"
+    return "error"              # vendor 明確回報失敗（例如 s="error"）
+
+
+def _payload_parse_severity(telemetry: dict) -> str:
+    raw = telemetry.get("raw_rows") or 0
+    parsed = (telemetry.get("parsed_call_rows") or 0) + \
+        (telemetry.get("parsed_put_rows") or 0)
+    return "warning" if raw > 0 and parsed == 0 else "info"
+
+
+def _emit_surface_telemetry(emit, telemetry: dict, *, provider: str,
+                            symbol: str, date: str,
+                            expiration: str | None) -> None:
+    """`marketdata.fetch_surface` 的 observer callback 落地處。它給的是
+    一個合併的 telemetry dict（#144）；這裡拆成 `vendor_fetch` 與
+    `payload_parse` 兩個診斷事件——兩者是不同站，「vendor 到底回了幾筆
+    原始資料」跟「解析後剩幾筆」分開才看得出來是哪一站把數字砍到 0。
+    """
+    emit(stage="vendor_fetch", severity=_vendor_fetch_severity(telemetry),
+        message=f"vendor 回應 s={telemetry.get('vendor_status')!r}",
+        provider=provider, symbol=symbol, date=date, expiration=expiration,
+        http_status=telemetry.get("http_status"),
+        vendor_status=telemetry.get("vendor_status"),
+        vendor_errmsg=telemetry.get("vendor_errmsg"),
+        raw_rows=telemetry.get("raw_rows"),
+        **_rate_limit_context(telemetry))
+    emit(stage="payload_parse", severity=_payload_parse_severity(telemetry),
+        message="解析歷史曲面欄狀回應",
+        provider=provider, symbol=symbol, date=date, expiration=expiration,
+        raw_rows=telemetry.get("raw_rows"),
+        parsed_call_rows=telemetry.get("parsed_call_rows"),
+        parsed_put_rows=telemetry.get("parsed_put_rows"),
+        dropped_missing_delta=telemetry.get("dropped_missing_delta"),
+        dropped_missing_iv=telemetry.get("dropped_missing_iv"),
+        dropped_missing_dte=telemetry.get("dropped_missing_dte"),
+        dropped_unknown_side=telemetry.get("dropped_unknown_side"))
 
 
 def _timing_json(sc: Scenario, today: date) -> dict:
@@ -764,8 +875,19 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
 
     # ---------- Historical IV：快取、漸進補齊、額度（#126／#130） ----------
 
+    def _known_secrets() -> tuple[str, ...]:
+        """目前現行的祕密值——provider token 與 `DATABASE_URL` 家族環境
+        變數的值（DG-03／#146）。這是 redaction 白名單以外的最後一道
+        防線：即使某個字串意外落在白名單欄位裡，只要逐字等於這裡的
+        任何一個值，一樣會被換成 `[redacted]`。"""
+        db = _db()
+        tokens = tuple(cred.token for p in providers.SUPPORTED_PROVIDERS
+                       if (cred := db.get_credential(p.id)) is not None)
+        return tokens + database_url_candidates()
+
     def _backfill_iv(symbol: str, provider: str, token: str,
-                     target_expirations: list[str]) -> tuple[str, str | None]:
+                     target_expirations: list[str], *, emit
+                     ) -> tuple[str, str | None]:
         """把這個 symbol 的歷史觀測往前補一批，回傳 (狀態, 說明)。
 
         四條規則直接寫在這裡，因為它們決定了會不會白白燒掉使用者的額度：
@@ -786,44 +908,91 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
 
         補的順序由新到舊：近期的觀測對「現在的 IV 站在哪」最有用，額度
         中途用完時留下的也是比較有價值的那一段。
+
+        `emit`（DG-03／#146）：**這四條決策規則本身逐字不動**——`emit`
+        呼叫只是把已經在發生的事情說出來，不參與任何 if／break 的判斷。
         """
         db = _db()
         today = ny_today()
         run = db.get_iv_backfill_run(symbol)
         if run is not None and run.ran_on == today.isoformat():
             # 今天已經跑過——直接沿用當時的結論，不再碰 vendor。
+            emit(stage="cache", severity="info", message="今天已跑過 backfill，沿用既有結論",
+                symbol=symbol, already_ran_today=True, outcome=run.outcome)
             return run.outcome, run.note
 
         wanted = ivhistory.sampling_schedule(symbol, today)
         have = set(db.iv_observation_dates(symbol))
         missing = [d for d in wanted if d not in have]
+        emit(stage="cache", severity="info", message="計算 backfill 缺口",
+            symbol=symbol, wanted_days=len(wanted), have_days=len(have),
+            missing_days=len(missing), already_ran_today=False)
         # 沒算出目標到期日時退回舊行為（vendor 預設的下一個月選），
         # 好過完全不抓——這種情況只有候選算不出 tenor 才會發生。
         expirations = target_expirations or [None]
 
         outcome, note = "ok", None
+        attempted_days = 0
+        saved_days = 0
+        aborted_on: str | None = None
+        abort_reason: str | None = None
         for day in sorted(missing, reverse=True)[:_IV_BACKFILL_PER_RUN]:
+            attempted_days += 1
             merged: dict[str, list] = {"call": [], "put": []}
             try:
                 for exp in expirations:
+                    def _observer(telemetry, _day=day, _exp=exp):
+                        _emit_surface_telemetry(
+                            emit, telemetry, provider=provider, symbol=symbol,
+                            date=_day, expiration=_exp)
                     got = historical_surface(provider, symbol, day, token,
-                                            expiration=exp)
+                                            expiration=exp, observer=_observer)
                     merged["call"].extend(got.get("call") or [])
                     merged["put"].extend(got.get("put") or [])
             except QuotaExhausted as e:
                 outcome, note = "quota", str(e)
+                aborted_on, abort_reason = day, "quota"
                 break
             except FetchError as e:
                 outcome, note = "vendor", str(e)
+                aborted_on, abort_reason = day, "vendor"
                 break
             db.save_iv_observation(IvObservation(
                 symbol=symbol, observed_on=day,
                 surface=_surface_to_rows(merged), fetched_at=now_utc_iso()))
+            saved_days += 1
+            emit(stage="database_write",
+                severity="warning" if not merged["call"] and not merged["put"]
+                        else "info",
+                message="寫入一天的觀測", symbol=symbol, observed_on=day,
+                call_points=len(merged["call"]), put_points=len(merged["put"]))
+
+        emit(stage="backfill", severity="warning" if aborted_on else "info",
+            message=(f"backfill 在 {aborted_on} 中止：{abort_reason}"
+                    if aborted_on else "backfill 批次完成"),
+            symbol=symbol, attempted_days=attempted_days, saved_days=saved_days,
+            aborted_on=aborted_on, abort_reason=abort_reason,
+            remaining_gap=len(missing) - saved_days, outcome=outcome)
 
         db.save_iv_backfill_run(IvBackfillRun(symbol=symbol,
                                              ran_on=today.isoformat(),
                                              outcome=outcome, note=note))
         return outcome, note
+
+    def _flush_diagnostics(diag: _CollectingDiagnostics) -> dict:
+        """這次 request 收集到的 events 依優先序落盤（per-request 上限，
+        #146），並組出要塞進回應的 `diagnostics` 欄位——兩者用同一份
+        capped 清單，畫面上看到的跟真的存進 Settings／Diagnostics 的
+        是同一批，不會兜不起來。"""
+        kept = _select_for_persistence(diag.events)
+        db = _db()
+        for event in kept:
+            try:
+                db.append_diagnostic(event)
+            except Exception:  # noqa: BLE001 — 落盤失敗不影響這次回應
+                pass
+        return {"correlation_id": diagnostics.current_correlation_id(),
+               "events": [dataclasses.asdict(e) for e in kept]}
 
     @app.get("/api/scenarios/{scenario_id}/iv-history")
     def iv_history(scenario_id: str, candidate_key: str) -> dict:
@@ -840,6 +1009,11 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         `invalid` 兩種在閘門那關就 403 了，畫面連模組都不渲染）。已快取
         的觀測算出的 percentile 不因為今天補不下去就被藏起來，見
         `_iv_payload`。
+
+        **`diagnostics`（DG-03／#146）**：這次 request 產生的 sanitized
+        events，跟資料一起回——目前最常見的症狀是 HTTP 200 但資料是空
+        的，詳情不夾在回應裡的話，前端得先猜這次的 correlation id 是
+        什麼才查得到。
         """
         sc = _require(scenario_id)
         settings_view = _settings_view()
@@ -848,11 +1022,28 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
                 status_code=403,
                 detail="Historical IV 未啟用——請在設定頁選擇自訂資料源並通過測試連線")
 
+        diag = _CollectingDiagnostics()
+        secrets = _known_secrets()
+
+        def _emit(*, stage: str, severity: str, message: str, **context):
+            return diagnostics.emit(diag, subsystem="historical_iv",
+                                    stage=stage, severity=severity,
+                                    message=message, ts=now_utc_iso(),
+                                    secrets=secrets, **context)
+
         rec = _db().latest_result(scenario_id)
         if rec is None:
             raise HTTPException(status_code=404, detail="這個劇本還沒有分析結果")
         cand = store.find_candidate(rec.view, candidate_key)
+        groups_scanned = sum(len(r.get("expiry_top10") or [])
+                             for r in rec.view.get("results") or [])
+        _emit(stage="candidate_lookup",
+             severity="info" if cand is not None else "error",
+             message="找到候選" if cand is not None else "找不到候選",
+             scenario_id=scenario_id, candidate_key=candidate_key,
+             found=cand is not None, groups_scanned=groups_scanned)
         if cand is None:
+            _flush_diagnostics(diag)
             raise HTTPException(status_code=404,
                                 detail=f"找不到候選：{candidate_key}")
 
@@ -868,12 +1059,15 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
             known_expiries, today=ny_today(),
             tenor_days=cand.get("days_to_expiry") or 0)
         outcome, note = _backfill_iv(sc.symbol, provider, token,
-                                     target_expirations)
+                                     target_expirations, emit=_emit)
+
+        diag_payload = _flush_diagnostics(diag)
 
         coords = ivhistory.spread_coordinates(cand, spot=rec.view["meta"]["spot"])
         if coords is None:
-            return _iv_payload(candidate_key, [], outcome,
-                               "這個候選算不出 (tenor, delta) 座標")
+            return {**_iv_payload(candidate_key, [], outcome,
+                                  "這個候選算不出 (tenor, delta) 座標"),
+                   "diagnostics": diag_payload}
 
         points = []
         for obs in _db().iv_observations(sc.symbol):
@@ -881,7 +1075,8 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
             points.append({"date": obs.observed_on,
                            **ivhistory.reanchor_spread(surface, coords)})
 
-        return _iv_payload(candidate_key, points, outcome, note)
+        return {**_iv_payload(candidate_key, points, outcome, note),
+               "diagnostics": diag_payload}
 
     # ---------- 設定：資料源與 Provider credential（Settings／#124） ----------
 

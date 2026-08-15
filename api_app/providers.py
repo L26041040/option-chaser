@@ -105,19 +105,24 @@ def default_fetch_chain(provider_id: str, symbol: str, token: str):
 
 
 def default_historical_surface(provider_id: str, symbol: str, on_date: str,
-                               token: str, expiration: str | None = None
+                               token: str, expiration: str | None = None,
+                               observer=None,
                                ) -> dict[str, list]:
     """某一歷史日期的 (dte, delta, iv) 座標點，依權別分組（#126／#134）。
 
     `expiration` 是可選的到期日篩選（#134）：不帶時交給 vendor 用預設
     行為（下一個月選），帶了就只回那一個到期日的合約——由呼叫端
     （`api_app.main._backfill_iv`）決定要不要篩、篩哪些。
+
+    `observer`（#144／#146）：原樣轉給 `marketdata.fetch_surface`——這一層
+    只是接線，不解讀 telemetry 內容，也不 import 任何診斷模組。
     """
     if provider_id == MARKETDATA_APP.id:
         from option_chaser.data import marketdata
 
         return marketdata.fetch_surface(symbol, on_date, token,
-                                        expiration=expiration)
+                                        expiration=expiration,
+                                        observer=observer)
     from option_chaser.models import FetchError
 
     raise FetchError(f"不支援的資料源：{provider_id}")

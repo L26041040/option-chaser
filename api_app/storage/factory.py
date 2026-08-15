@@ -34,6 +34,14 @@ def database_url(env: dict[str, str] | None = None) -> str | None:
     return None
 
 
+def database_url_candidates(env: dict[str, str] | None = None) -> tuple[str, ...]:
+    """目前有值的 DATABASE_URL 家族環境變數之值——**全部**，不只
+    `database_url()` 挑中的那一個（DG-02／#145 診斷 redaction 用：不管
+    哪個變數被設，值本身都不該有機會外洩進 diagnostic event）。"""
+    src = os.environ if env is None else env
+    return tuple(v for name in _ENV_CANDIDATES if (v := src.get(name)))
+
+
 def storage_from_env(env: dict[str, str] | None = None) -> Storage:
     url = database_url(env)
     if not url:
