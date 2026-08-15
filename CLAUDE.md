@@ -266,6 +266,42 @@ rate-limit 標頭／raw row 數全部丟掉，`map_surface_payload()` 靜默跳�
 **成功判準只有一條**：上線後不必再開一輪診斷、不必讀程式碼，就能直接
 回答「vendor 回 N 筆，究竟在哪一站變成 0 筆」。
 
+**需求方修訂（2026-08-15，spec #143 留言存證）**：spec 整體方向核准、
+設計全部保留；**唯一修正是部署那一條**——不再把「Claude 端 Vercel MCP
+看不到 project」當成施工或驗收 blocker。Claude 只負責完成程式、測試、
+push `claude/implement-tfm9oa`；**Preview deployment 與 Vercel runtime
+logs 由需求方端（ChatGPT）另行驗證**，不需要要求需求方處理 Vercel
+授權，也不得因此把任何項目標成「待需求方執行」而暫停。spec 原文
+「⚠ 已知風險……需要需求方在 Vercel 後台確認部署」該段作廢。
+
+**拆票完成（2026-08-15 `/to-tickets`，七張全掛 `ready-for-agent`，
+票已開、尚未施工）**：
+
+- **DG-01** [#144] — Prefactor：vendor adapter 暴露 HTTP metadata
+  （零行為變更；observer 是純 callback，adapter 不 import 診斷模組）
+  ／無 blocker
+- **DG-02** [#145] — 診斷骨幹：event／emit／whitelist redaction／
+  structured JSON log／`diagnostics` 表＋trim-on-write 200／
+  `GET`＋`DELETE /api/diagnostics`／correlation ID middleware＋
+  `X-Correlation-Id`／emit 失敗絕不影響主流程／無 blocker
+- **DG-03** [#146] — Historical IV 取數路徑觀測（candidate_lookup／
+  cache／vendor_fetch／payload_parse／database_write／backfill 摘要）
+  ＋per-request 排放量控制（20 筆、severity 優先）＋iv-history 回應
+  新增 `diagnostics` 欄位／被 #144、#145 擋
+- **DG-04** [#147] — Historical IV 投影路徑觀測（reanchor／metrics）
+  ＋完整 N→0 帳本測試／被 #146 擋
+- **DG-05** [#148] — Inline diagnostics：Historical IV 卡片就地展開
+  （預設收合、只顯示存在欄位、200 但有 warning 也觸發）／被 #146 擋
+- **DG-06** [#149] — Settings `Diagnostics / 報錯紀錄` 區塊（清單／
+  詳情／Copy 含 fallback／Clear 二次確認）／被 #145 擋，可與
+  #146–#148 並行
+- **DG-07** [#150] — 最終 regression／security gate（紅線全表面、
+  retention、observation-only 回歸、E2E、全套綠燈、push 不開 PR）／
+  被 #144–#149 擋
+
+> 建議施工順序（單線、不平行）：**#144 → #145 → #146 → #147 →
+> #148 → #149 → #150**。
+
 ### 最新狀態（2026-08-14）——「貴不貴」第六輪研究：Rich/Cheap Trend／entry timing（只研究不施工）
 
 需求方 `/research` 指示本輪只研究、不修改程式碼：在既有「現在相對
