@@ -47,9 +47,11 @@
 import { useEffect, useState } from "react";
 
 import {
+  ApiError,
   getSettings,
   ivHistory,
   type Candidate,
+  type DiagnosticEvent,
   type IvFieldMetric,
   type IvHistoryPoint,
   type IvHistoryStatus,
@@ -322,13 +324,69 @@ function Metric({ label, metric, points, unit, primary = false }: {
   );
 }
 
+/**
+ * 就地展開的診斷詳情（DG-05／#148，資料層見 #145／#146／#147）：卡片
+ * 本身照常存在，這只是多出來的一條精簡狀態，預設收合，點開才看得到
+ * 完整內容，再點一次收回去——用 `<details>`／`<summary>`，沿用
+ * `AnalysisReport.tsx` 已在用的收合慣例，不必自己寫展開狀態機。
+ *
+ * **前端零解讀邏輯**：severity／stage／message／context 全是後端已經
+ * sanitize 過的字串，這裡只做格式化與呈現，不判斷「這個欄位該不該
+ * 顯示」——`context` 裡沒有的 key 本來就不會出現在這裡（DG-02 的
+ * redaction 在產生時就把 `None` 拿掉了），天然滿足「只顯示實際存在的
+ * 欄位」，不需要前端另外過濾。
+ */
+function InlineDiagnostics({ correlationId, events }: {
+  correlationId: string | null;
+  events: DiagnosticEvent[];
+}) {
+  return (
+    <details className="iv-diagnostics">
+      <summary className="iv-diagnostics-summary">
+        Historical IV 資料取得失敗 · 查看詳情
+      </summary>
+      {correlationId && (
+        <p className="caption iv-diagnostics-correlation">
+          Correlation ID：{correlationId}
+        </p>
+      )}
+      {events.map((event) => (
+        <DiagnosticEventFields key={event.event_id} event={event} />
+      ))}
+    </details>
+  );
+}
+
+function DiagnosticEventFields({ event }: { event: DiagnosticEvent }) {
+  const fields: [string, string][] = [
+    ["時間", event.ts],
+    ["事件 ID", event.event_id],
+    ["子系統", event.subsystem],
+    ["階段", event.stage],
+    ["嚴重程度", event.severity],
+    ["訊息", event.message],
+    ...Object.entries(event.context).map(
+      ([k, v]): [string, string] => [k, String(v)]),
+  ];
+  return (
+    <dl className="iv-diagnostic-event">
+      {fields.map(([label, value]) => (
+        <div key={label} className="iv-diagnostic-row">
+          <dt className="caption">{label}</dt>
+          <dd>{value}</dd>
+        </div>
+      ))}
+    </dl>
+  );
+}
+
 export default function IvHistory({ scenarioId, candidate }: {
   scenarioId: string;
   candidate: Candidate | null;
 }) {
   const [enabled, setEnabled] = useState<boolean | null>(null);
   const [data, setData] = useState<IvHistoryView | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<Error | null>(null);
 
   const key = candidate?.candidate_key ?? null;
 
@@ -351,7 +409,7 @@ export default function IvHistory({ scenarioId, candidate }: {
     ivHistory(scenarioId, key)
       .then((v) => alive && setData(v))
       .catch((e) => alive
-        && setError(e instanceof Error ? e.message : String(e)));
+        && setError(e instanceof Error ? e : new Error(String(e))));
     return () => {
       alive = false;
     };
@@ -362,12 +420,18 @@ export default function IvHistory({ scenarioId, candidate }: {
   // 存在），寫出來純粹是讓 TS 把下面的 `candidate.legs` 收窄成非 null。
   if (enabled !== true || !key || !candidate) return null;
 
-  // vendor 失敗只影響這一塊，頁面其餘部分照常（#126 AC）。
+  // vendor 失敗只影響這一塊，頁面其餘部分照常（#126 AC）——卡片本身
+  // 仍在，只是多一條就地展開的診斷詳情（DG-05／#148），不是整段文字
+  // 替換掉。
   if (error) {
     return (
       <section className="card iv-history" aria-label="IV 相對位置">
         <h2 className="section-title">IV 相對位置</h2>
-        <p className="caption">取不到歷史 IV：{error}</p>
+        <p className="caption">取不到歷史 IV：{error.message}</p>
+        <InlineDiagnostics
+          correlationId={error instanceof ApiError ? error.correlationId : null}
+          events={[]}
+        />
       </section>
     );
   }
@@ -380,6 +444,11 @@ export default function IvHistory({ scenarioId, candidate }: {
   // `candidate.legs.length` 判斷跟 `SpreadHistory` 判斷單腳的既有慣例
   // 同一種手法，不另創一套規則。
   const isSingleLeg = candidate.legs.length < 2;
+  // 200 但資料是空的——目前最常見的症狀，只看 HTTP 狀態碼看不出來。
+  // severity >= warning 的 events 是唯一能指出這件事的地方（DG-05／
+  // #148）。
+  const notableEvents = data.diagnostics.events.filter(
+    (e) => e.severity === "warning" || e.severity === "error");
 
   return (
     <section className="card iv-history" aria-label="IV 相對位置">
@@ -390,6 +459,13 @@ export default function IvHistory({ scenarioId, candidate }: {
           二次修正）。status 為 ok 時完全不出現這一行。 */}
       {data.status !== "ok" && (
         <p className="caption">{BACKFILL_NOTES[data.status]}</p>
+      )}
+
+      {notableEvents.length > 0 && (
+        <InlineDiagnostics
+          correlationId={data.diagnostics.correlation_id}
+          events={notableEvents}
+        />
       )}
 
       {isSingleLeg ? (

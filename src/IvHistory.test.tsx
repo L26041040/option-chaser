@@ -13,7 +13,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import IvHistory from "./IvHistory";
-import type { Candidate, IvFieldMetric, IvHistoryPoint,
+import type { Candidate, DiagnosticEvent, IvFieldMetric, IvHistoryPoint,
              IvHistoryView, Leg } from "./api";
 
 const KEY = "bull-call-spread|118C|125C|2026-09-18";
@@ -76,6 +76,17 @@ function ivView(over: Partial<IvHistoryView> = {}): IvHistoryView {
     },
     observations: points.length,
     note: null,
+    diagnostics: { correlation_id: "cid-test", events: [] },
+    ...over,
+  };
+}
+
+function diagEvent(over: Partial<DiagnosticEvent> = {}): DiagnosticEvent {
+  return {
+    event_id: "evt-1", correlation_id: "cid-test", ts: "2026-08-15T00:00:00+00:00",
+    subsystem: "historical_iv", stage: "payload_parse", severity: "warning",
+    message: "raw_rows > 0 but parsed rows are 0",
+    context: { raw_rows: 5, parsed_call_rows: 0 },
     ...over,
   };
 }
@@ -484,5 +495,139 @@ describe("走勢圖：tooltip（桌面 hover／手機 tap 共用同一套狀態�
 
     await userEvent.click(point);
     expect(chart.querySelectorAll(".chart-tooltip").length).toBeGreaterThan(0);
+  });
+});
+
+describe("就地展開的診斷詳情（DG-05／#148）", () => {
+  it("請求失敗時卡片本身仍在，多一條精簡狀態列，預設收合", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+      if (url.startsWith("/api/settings")) {
+        return { ok: true, status: 200,
+                 json: async () => ({ historical_iv_enabled: true }) } as Response;
+      }
+      return { ok: false, status: 502,
+               headers: new Headers({ "X-Correlation-Id": "cid-fail" }),
+               json: async () => ({ detail: "額度用盡" }) } as Response;
+    }));
+    const { container } = render(
+      <IvHistory scenarioId="s1" candidate={spreadCandidate()} />);
+    await waitFor(() =>
+      expect(screen.getByText("IV 相對位置")).toBeInTheDocument());
+    // 卡片本身仍在（不是整段被錯誤訊息取代掉）。
+    expect(container.querySelectorAll(".card")).toHaveLength(1);
+
+    const summary = screen.getByText("Historical IV 資料取得失敗 · 查看詳情");
+    expect(summary).toBeInTheDocument();
+    const details = container.querySelector(".iv-diagnostics") as HTMLDetailsElement;
+    expect(details.open).toBe(false);
+  });
+
+  it("點「查看詳情」展開，看得到 correlation ID；再點一次收起", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+      if (url.startsWith("/api/settings")) {
+        return { ok: true, status: 200,
+                 json: async () => ({ historical_iv_enabled: true }) } as Response;
+      }
+      return { ok: false, status: 502,
+               headers: new Headers({ "X-Correlation-Id": "cid-fail-2" }),
+               json: async () => ({ detail: "額度用盡" }) } as Response;
+    }));
+    const { container } = render(
+      <IvHistory scenarioId="s1" candidate={spreadCandidate()} />);
+    const summary = await screen.findByText(
+      "Historical IV 資料取得失敗 · 查看詳情");
+
+    await userEvent.click(summary);
+    expect((container.querySelector(".iv-diagnostics") as HTMLDetailsElement).open)
+      .toBe(true);
+    expect(screen.getByText(/cid-fail-2/)).toBeInTheDocument();
+
+    await userEvent.click(summary);
+    expect((container.querySelector(".iv-diagnostics") as HTMLDetailsElement).open)
+      .toBe(false);
+  });
+
+  it("200 但帶有 warning／error events 時也觸發診斷區塊——這是「資料是空的」" +
+     "最常見的症狀，光看 HTTP 狀態碼看不出來", async () => {
+    mockApi({ enabled: true, iv: ivView({
+      diagnostics: { correlation_id: "cid-warn",
+                    events: [diagEvent()] },
+    }) });
+    render(<IvHistory scenarioId="s1" candidate={spreadCandidate()} />);
+    await waitFor(() => expect(
+      screen.getByText("Historical IV 資料取得失敗 · 查看詳情"),
+    ).toBeInTheDocument());
+    // 這是 additive 的一塊，資料本身（走勢圖／百分位）照常渲染。
+    expect(screen.getByText("Normalized Skew")).toBeInTheDocument();
+  });
+
+  it("只有 info severity 的 events 時不觸發診斷區塊", async () => {
+    mockApi({ enabled: true, iv: ivView({
+      diagnostics: { correlation_id: "cid-info",
+                    events: [diagEvent({ severity: "info" })] },
+    }) });
+    render(<IvHistory scenarioId="s1" candidate={spreadCandidate()} />);
+    await waitFor(() =>
+      expect(screen.getByText("Normalized Skew")).toBeInTheDocument());
+    expect(screen.queryByText("Historical IV 資料取得失敗 · 查看詳情"))
+      .not.toBeInTheDocument();
+  });
+
+  it("展開後看得到事件欄位：timestamp／stage／severity／context", async () => {
+    mockApi({ enabled: true, iv: ivView({
+      diagnostics: { correlation_id: "cid-fields",
+                    events: [diagEvent({
+                      context: { raw_rows: 5, parsed_call_rows: 0,
+                                vendor_status: "ok" },
+                    })] },
+    }) });
+    const { container } = render(
+      <IvHistory scenarioId="s1" candidate={spreadCandidate()} />);
+    const summary = await screen.findByText(
+      "Historical IV 資料取得失敗 · 查看詳情");
+    await userEvent.click(summary);
+
+    expect(screen.getByText("payload_parse")).toBeInTheDocument();
+    expect(screen.getByText("warning")).toBeInTheDocument();
+    expect(screen.getByText("2026-08-15T00:00:00+00:00")).toBeInTheDocument();
+    expect(screen.getByText("raw_rows")).toBeInTheDocument();
+    expect(screen.getByText("5")).toBeInTheDocument();
+    expect(screen.getByText("vendor_status")).toBeInTheDocument();
+    void container;
+  });
+
+  it("只顯示實際存在的欄位——context 沒帶的 key 不會憑空冒出一列", async () => {
+    mockApi({ enabled: true, iv: ivView({
+      diagnostics: { correlation_id: "cid-sparse",
+                    events: [diagEvent({ context: { raw_rows: 5 } })] },
+    }) });
+    render(<IvHistory scenarioId="s1" candidate={spreadCandidate()} />);
+    const summary = await screen.findByText(
+      "Historical IV 資料取得失敗 · 查看詳情");
+    await userEvent.click(summary);
+
+    expect(screen.getByText("raw_rows")).toBeInTheDocument();
+    expect(screen.queryByText("http_status")).not.toBeInTheDocument();
+    expect(screen.queryByText("vendor_errmsg")).not.toBeInTheDocument();
+  });
+
+  it("多筆 events 各自完整呈現，不是只顯示第一筆", async () => {
+    mockApi({ enabled: true, iv: ivView({
+      diagnostics: { correlation_id: "cid-multi",
+                    events: [
+                      diagEvent({ event_id: "evt-a", stage: "vendor_fetch",
+                                context: { http_status: 429 } }),
+                      diagEvent({ event_id: "evt-b", stage: "payload_parse",
+                                context: { raw_rows: 5 } }),
+                    ] },
+    }) });
+    render(<IvHistory scenarioId="s1" candidate={spreadCandidate()} />);
+    const summary = await screen.findByText(
+      "Historical IV 資料取得失敗 · 查看詳情");
+    await userEvent.click(summary);
+
+    expect(screen.getByText("vendor_fetch")).toBeInTheDocument();
+    expect(screen.getByText("payload_parse")).toBeInTheDocument();
+    expect(screen.getByText("429")).toBeInTheDocument();
   });
 });

@@ -419,6 +419,29 @@ logs 由需求方端（ChatGPT）另行驗證**，不需要要求需求方處理
   payload_parse 單筆事件自己就答得出「N→0」）、`_select_for_persistence`
   新增一條驗證 `metrics` 與高流量 `reanchor` 共存時不被擠掉。全套
   pytest 無回歸（全綠）
+- **DG-05** [#148] — Inline diagnostics：Historical IV 卡片就地展開
+  錯誤詳情（commit 待補）：`src/api.ts` 新增 `DiagnosticEvent`／
+  `IvHistoryDiagnostics` 型別＋ `IvHistoryView.diagnostics` 欄位；
+  `ApiError` 新增 `correlationId`（`request()` 從 `X-Correlation-Id`
+  回應標頭讀，`resp.headers?.get(...)`——既有測試大量用簡化物件字面量
+  假冒 `Response` 省略 `headers`，用可選鏈避免連帶炸掉那些無關測試）。
+
+  `IvHistory.tsx` 新增 `InlineDiagnostics`／`DiagnosticEventFields`：
+  沿用 `AnalysisReport.tsx` 既有的 `<details>`／`<summary>` 收合慣例，
+  不自己寫展開狀態機。觸發條件兩種——請求整個失敗（`error` 狀態，
+  只帶 message／correlationId，沒有結構化 events 可顯示）；或回應帶有
+  severity ≥ warning 的 events（200 但資料是空的那個最常見症狀，只看
+  HTTP 狀態碼看不出來）。**只顯示實際存在的欄位**天然成立——不需要
+  前端另外過濾，因為後端 `sanitize_context()` 產生時就把 `None` 拿掉了，
+  `context` 裡沒有的 key 本來就不會出現。前端零解讀邏輯：`severity`／
+  `stage`／`message`／`context` 全是後端字串，只做格式化與呈現。
+
+  測試：`IvHistory.test.tsx` 新增 8 條（卡片本身仍在＋預設收合、展開／
+  收合、200 但有 warning events 觸發、只有 info 不觸發、展開後看得到
+  完整欄位、只顯示存在欄位、多筆 events 各自完整呈現）；`ivView()`
+  fixture 補上 `diagnostics` 欄位，既有斷言一條未動。前端全套
+  `typecheck`／`vitest`（515）／`build` 無回歸；後端全套 pytest 無回歸
+  （全綠）
 
 ### 最新狀態（2026-08-14）——「貴不貴」第六輪研究：Rich/Cheap Trend／entry timing（只研究不施工）
 

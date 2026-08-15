@@ -2027,6 +2027,51 @@ body {
   grid-template-columns: 1fr;
 }
 
+/* 就地展開的診斷詳情（DG-05／#148）：預設收合的精簡狀態列，摘要文字
+   沿用 `.report-methodology summary` 同一種「折疊區標題」視覺語言。
+   不是新的錯誤樣式，卡片其餘部分照常——這一塊只是多長出來的一段。 */
+.iv-diagnostics {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 0.5px solid var(--separator);
+}
+
+.iv-diagnostics-summary {
+  font-weight: 600;
+  cursor: pointer;
+  color: var(--red);
+}
+
+.iv-diagnostics-correlation {
+  margin-top: 6px;
+}
+
+/* 一筆事件的欄位清單——`dt`／`dd` 並排而不是堆疊，手機寬度仍讀得完
+   一列，不必為了對齊犧牲密度。 */
+.iv-diagnostic-event {
+  margin: 8px 0 0;
+  padding: 8px;
+  border-radius: 8px;
+  background: var(--fill);
+}
+
+.iv-diagnostic-row {
+  display: flex;
+  gap: 8px;
+  padding: 2px 0;
+  font-size: 13px;
+}
+
+.iv-diagnostic-row dt {
+  flex: 0 0 auto;
+  min-width: 88px;
+}
+
+.iv-diagnostic-row dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
 /* 卡片右下角的動作組（#132：編輯 ＋ 封存）。沿用 `.compact-archive` 原本
    的定位方式，只是從單一按鈕變成一列——視覺層級不變，仍然不搶戲。 */
 .compact-actions {

@@ -315,10 +315,16 @@ const STAGES = ["fetch", "analyze", "params", "archived"] as const;
 
 export class ApiError extends Error {
   readonly stage: FailureStage;
+  /** 這次失敗的 request 對得回 Vercel runtime logs 的哪一次
+   *  （DG-02／#145）。請求整個失敗、連回應都沒有時仍是 `null`——那種
+   *  情況下伺服器端從未產生過 correlation id 可言。 */
+  readonly correlationId: string | null;
 
-  constructor(message: string, stage: FailureStage = null) {
+  constructor(message: string, stage: FailureStage = null,
+             correlationId: string | null = null) {
     super(message);
     this.stage = stage;
+    this.correlationId = correlationId;
   }
 }
 
@@ -434,6 +440,11 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
       `連不到伺服器：${e instanceof Error ? e.message : String(e)}`);
   }
   if (!resp.ok) {
+    // 每個回應都帶（DG-02／#145，含錯誤回應）——連結不到某次特定失敗
+    // 的細節時，這仍是使用者手上唯一能拿去對 Vercel runtime logs 的
+    // 東西。`?.`：既有測試大量用簡化的物件字面量假冒 `Response`（省略
+    // `headers`），這裡不因此連帶炸掉那些跟 correlation id 無關的測試。
+    const correlationId = resp.headers?.get("X-Correlation-Id") ?? null;
     const detail = await resp
       .json()
       .then((b) => b?.detail)
@@ -446,12 +457,12 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
     if (detail && typeof detail === "object" && !Array.isArray(detail)) {
       const body = detail as { stage?: unknown; message?: unknown };
       if (typeof body.message === "string") {
-        throw new ApiError(body.message, stageOf(body.stage));
+        throw new ApiError(body.message, stageOf(body.stage), correlationId);
       }
     }
     const message =
       typeof detail === "string" ? detail : `請求失敗（HTTP ${resp.status}）`;
-    throw new ApiError(message);
+    throw new ApiError(message, null, correlationId);
   }
   // TR3（#90）：永久刪除回 204 No Content——沒有主體可解析，`.json()`
   // 對空字串會直接炸掉。204 一律沒有主體（HTTP 語意），呼叫端此時
@@ -784,6 +795,29 @@ export interface IvFieldMetric {
   trend_base_count: number;
 }
 
+/**
+ * 一筆診斷事件（DG-02／#145）。`context` 是後端已經套過 whitelist
+ * redaction 與「丟掉 `None`」的 sanitized dict——前端逐 key 渲染即可，
+ * 不必也不該自己再判斷哪些欄位該顯示。
+ */
+export interface DiagnosticEvent {
+  event_id: string;
+  correlation_id: string;
+  ts: string;
+  subsystem: string;
+  stage: string;
+  severity: "info" | "warning" | "error";
+  message: string;
+  context: Record<string, string | number | boolean>;
+}
+
+/** 這次 request 產生的診斷事件（DG-03／#146）——跟資料一起回，前端
+ *  不必為了查詳情另猜一次 correlation id。 */
+export interface IvHistoryDiagnostics {
+  correlation_id: string;
+  events: DiagnosticEvent[];
+}
+
 export interface IvHistoryView {
   candidate_key: string;
   status: IvHistoryStatus;
@@ -794,6 +828,7 @@ export interface IvHistoryView {
   /** 只在 `status` 不是 `ok` 時有值，說明今天的 backfill 遇到什麼——
    *  與要不要顯示 percentile 無關，那從來就只看各欄位自己的 `count`。 */
   note: string | null;
+  diagnostics: IvHistoryDiagnostics;
 }
 
 export function ivHistory(
