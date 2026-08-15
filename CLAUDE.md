@@ -442,6 +442,33 @@ logs 由需求方端（ChatGPT）另行驗證**，不需要要求需求方處理
   fixture 補上 `diagnostics` 欄位，既有斷言一條未動。前端全套
   `typecheck`／`vitest`（515）／`build` 無回歸；後端全套 pytest 無回歸
   （全綠）
+- **DG-06** [#149] — Settings：Diagnostics / 報錯紀錄 區塊（commit
+  待補）：`src/api.ts` 新增 `getDiagnostics()`／`clearDiagnostics()`。
+  新元件 `src/Diagnostics.tsx` 掛在 `Settings.tsx` 既有兩列（Market
+  Data／Historical IV）下方，同一個 `<section className="card
+  settings-section">` 慣例——不需要另外的可見性判斷，就是 Settings
+  頁多一塊。清單最新在最上（**信任後端順序，前端不重新排序**）；每列
+  timestamp／subsystem／stage／severity／message；點一筆用原生
+  `<button>` 展開完整 details（含 `context` 逐 key 呈現，同一套「只顯示
+  存在欄位」原則）。**Copy**：`navigator.clipboard.writeText` 成功時
+  按鈕文字短暫變「已複製」；clipboard 不可用或被拒時退回顯示一個唯讀、
+  可全選的 `<textarea>`（`onFocus` 自動全選）——不是靜默失敗。
+  **Clear**：兩段式就地確認（按鈕變「確定清除」＋「取消」），不用
+  modal，確認後才真的打 `DELETE /api/diagnostics`。空清單顯示「目前
+  沒有紀錄」。沒有 pagination、搜尋、圖表（票上明文範圍）。
+
+  **既有測試連帶修正**（`Settings.tsx` 現在多掛一個會自己打
+  `/api/diagnostics` 的子元件，影響既有 `Settings.test.tsx` 的假體）：
+  `mockApi()` 依 URL 分流，`/api/diagnostics` 固定回空陣列，不吃掉
+  原本那組 `SettingsView` 序列的計數器；「載入失敗」測試原本斷言
+  `getByRole("alert")` 只有一個，現在 `<Diagnostics />` 自己的請求也會
+  用同一個失敗假體產生第二個 alert，改用 `getAllByRole` 找特定內容——
+  兩處都是配合新子元件調整既有測試的注入方式，斷言涵蓋的行為本身未變。
+
+  測試：新增 `src/Diagnostics.test.tsx`（11 條：空清單文案、五欄位
+  清單、依後端順序渲染不重排、展開／收合、Copy 含 fallback、Clear
+  含二次確認與取消、讀取失敗說明原因、結構）。前端全套 `typecheck`／
+  `vitest`（526）／`build` 無回歸；後端全套 pytest 無回歸（全綠）
 
 ### 最新狀態（2026-08-14）——「貴不貴」第六輪研究：Rich/Cheap Trend／entry timing（只研究不施工）
 

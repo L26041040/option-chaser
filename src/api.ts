@@ -840,3 +840,16 @@ export function ivHistory(
     + `?candidate_key=${encodeURIComponent(candidateKey)}`,
   );
 }
+
+// ---------- Application diagnostics（DG-02／#145，畫面見 DG-06／#149） ----------
+
+/** 近期診斷事件，最新在最上——沒有 pagination，`limit` 就是能看到的上限。 */
+export function getDiagnostics(limit = 50): Promise<DiagnosticEvent[]> {
+  return request<DiagnosticEvent[]>(
+    `/api/diagnostics?limit=${encodeURIComponent(String(limit))}`);
+}
+
+/** 清空，回傳清掉的筆數——呼叫端據此更新畫面，不必再打一次 GET。 */
+export function clearDiagnostics(): Promise<{ cleared: number }> {
+  return request<{ cleared: number }>("/api/diagnostics", { method: "DELETE" });
+}

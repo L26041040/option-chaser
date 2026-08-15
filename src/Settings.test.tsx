@@ -43,10 +43,19 @@ const CONFIGURED = {
   },
 };
 
-/** 依序回應：每次 fetch 取下一個 view（不足時重複最後一個）。 */
+/**
+ * 依序回應：每次 fetch 取下一個 view（不足時重複最後一個）。
+ *
+ * `Settings` 現在也掛著 `<Diagnostics />`（DG-06／#149），它自己會打
+ * `/api/diagnostics`——那條路徑分流成固定回空清單，不吃掉這裡的 view
+ * 序列（否則每個既有測試的 view 對應關係都會被這個額外的請求打亂）。
+ */
 function mockApi(views: SettingsView[]) {
   let i = 0;
-  const spy = vi.fn(async (_url: string, _init?: RequestInit) => {
+  const spy = vi.fn(async (url: string, _init?: RequestInit) => {
+    if (String(url).startsWith("/api/diagnostics")) {
+      return { ok: true, status: 200, json: async () => [] } as Response;
+    }
     const body = views[Math.min(i, views.length - 1)];
     i += 1;
     return { ok: true, status: 200, json: async () => body } as Response;
@@ -371,12 +380,16 @@ describe("同一 Provider 的 credential 只由一列持有（#127）", () => {
 
 describe("錯誤", () => {
   it("載入失敗時說明原因，不是空白畫面", async () => {
+    // 這個假體對所有路徑都回同一個失敗——`<Diagnostics />`（DG-06／
+    // #149）自己也會打 `/api/diagnostics` 並顯示自己的 alert，因此畫面
+    // 上會有不只一個 `role="alert"`，用 `getAllByRole` 找出這一個。
     vi.stubGlobal("fetch", vi.fn(async () => ({
       ok: false, status: 500, json: async () => ({ detail: "資料庫連不上" }),
     } as Response)));
     render(<Settings />);
     await waitFor(() =>
-      expect(screen.getByRole("alert")).toHaveTextContent("資料庫連不上"));
+      expect(screen.getAllByRole("alert").some(
+        (a) => a.textContent === "資料庫連不上")).toBe(true));
   });
 });
 

@@ -28,6 +28,7 @@ import {
   type SettingsView,
   type UsageChoice,
 } from "./api";
+import Diagnostics from "./Diagnostics";
 
 /** 兩列的識別鍵——與後端 `api_app/providers.py` 的 `USAGES` 同名。 */
 type UsageKey = "market_data" | "historical_iv";
@@ -185,6 +186,8 @@ export default function Settings() {
           />
         ))
       )}
+
+      <Diagnostics />
     </div>
   );
 }
