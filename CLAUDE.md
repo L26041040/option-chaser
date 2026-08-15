@@ -390,7 +390,7 @@ logs 由需求方端（ChatGPT）另行驗證**，不需要要求需求方處理
   加 `observer=None` 參數以相容新簽章，既有斷言一條未動。全套 pytest
   無回歸（全綠）
 - **DG-04** [#147] — Historical IV 投影路徑觀測（reanchor／metrics）＋
-  完整 N→0 帳本（commit 待補）：新增兩個觀測點。`_emit_reanchor()`
+  完整 N→0 帳本（commit `62e5dd4`）：新增兩個觀測點。`_emit_reanchor()`
   逐日發一筆——當天曲面（`option_type` 對應那張網格）的 dte／delta
   範圍、要查的 tenor／買賣腿 delta、四個欄位（buy_iv／sell_iv／
   atm_iv／normalized_skew）各自是否為 null；這是「資料明明有、畫面卻
