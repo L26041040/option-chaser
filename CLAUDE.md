@@ -443,7 +443,7 @@ logs 由需求方端（ChatGPT）另行驗證**，不需要要求需求方處理
   `typecheck`／`vitest`（515）／`build` 無回歸；後端全套 pytest 無回歸
   （全綠）
 - **DG-06** [#149] — Settings：Diagnostics / 報錯紀錄 區塊（commit
-  待補）：`src/api.ts` 新增 `getDiagnostics()`／`clearDiagnostics()`。
+  `c234f0c`）：`src/api.ts` 新增 `getDiagnostics()`／`clearDiagnostics()`。
   新元件 `src/Diagnostics.tsx` 掛在 `Settings.tsx` 既有兩列（Market
   Data／Historical IV）下方，同一個 `<section className="card
   settings-section">` 慣例——不需要另外的可見性判斷，就是 Settings
