@@ -469,6 +469,67 @@ logs 由需求方端（ChatGPT）另行驗證**，不需要要求需求方處理
   清單、依後端順序渲染不重排、展開／收合、Copy 含 fallback、Clear
   含二次確認與取消、讀取失敗說明原因、結構）。前端全套 `typecheck`／
   `vitest`（526）／`build` 無回歸；後端全套 pytest 無回歸（全綠）
+- **DG-07** [#150] — 最終 regression／security gate（commit 待補）：
+
+  **兩個真實回歸**（施工中發現、修在這張票）：
+  1. `IvHistory.tsx` 存取 `data.diagnostics.events` 未做防禦——大量既有
+     E2E 手造的 iv-history JSON fixture（`smoke.spec.ts`／
+     `desktop.spec.ts`，DG-05 之前就存在）沒有 `diagnostics` 欄位，
+     跑下去整頁炸掉。改成 `data.diagnostics?.events ?? []`，不必連帶
+     改寫每一處既有 fixture。
+  2. `Diagnostics.tsx` 清單列在 iPhone 13 寬度（375px）把
+     timestamp／subsystem／stage／severity／message 硬擠成一行，
+     message 的可用寬度被擠到 0（技術上存在、視覺上不可見，
+     Playwright `toBeVisible()` 判 hidden）——這正是 QA-FIX-1／
+     QA-FIX-4 那種「幾何驗證勝過文字存在性檢查」教訓的又一個真實案例，
+     被 DG-06 新增的 E2E 測試當場抓到。改成 metadata／message 兩行
+     （`.diagnostics-row-meta` 包住前四項，message 獨立一行）。
+
+  **Security gate**：`test_api_diagnostics.py` 新增端點層 redaction
+  全表面驗證（跟 `test_diagnostics.py` 純函式層級的既有斷言換一個
+  角度、從 HTTP 回應往回驗）——已知 provider token／已知
+  `DATABASE_URL`（含帳密子字串）不逐字出現在 `GET /api/diagnostics`
+  回應裡；white-list 外的 key（`authorization`／`cookie`）整包被丟棄；
+  超長 `errmsg` 截斷且看得出截斷過；`headers` 整個 dict 值本身不在
+  白名單、原封不動被丟棄，只有 rate-limit 白名單三欄留下。
+  `test_api_iv_history.py` 新增「即使 observer telemetry 意外多帶一個
+  完整回應內容的欄位（模擬 `raw_body`），`_emit_surface_telemetry()`
+  用具名關鍵字組 event、不是 `**telemetry` 全展開，那個欄位天生進不了
+  任何診斷事件」。
+
+  **Observation-only 回歸**：`test_selection_regression.py` 新增
+  `test_ranking_and_filters_do_not_depend_on_diagnostics()`——與既有
+  `ivhistory` 同名結構斷言同一種手法，`ranking.py`／`filters.py`
+  原始碼不含 `diagnostics` 字樣。`_backfill_iv` 的 break 時機、
+  `iv_at()` 不外插、`IvBackfillRun.outcome` 語意本輪一律未動，由
+  DG-01–DG-06 全程保持既有測試綠燈佐證（未新增額外斷言，這些既有
+  行為的專屬測試本來就覆蓋著）。
+
+  **E2E**：`smoke.spec.ts` 新增 2 條（手機：Historical IV 請求失敗
+  預設收合／可展開可收起／帶 correlation id；200 但帶 warning events
+  同樣觸發，資料照常渲染）＋ 1 條（手機：Settings Diagnostics 區塊
+  可讀可操作，含展開與 Clear 二次確認）；`desktop.spec.ts` 新增 1 條
+  （桌面：同上）。新增測試踩到的 route pattern 陷阱：`**/api/diagnostics`
+  沒帶尾端 `*` 匹配不到真實請求的 `?limit=50` 查詢字串（既有
+  `iv-history*` 早就示範過這個慣例，這次補教訓——5 處遺漏統一補上
+  尾端 `*`）。
+
+  **全套綠燈**（一條斷言都沒放寬）：後端 pytest 全綠；前端
+  `typecheck`／`vitest`（526）／`build` 全綠；E2E `playwright test`
+  （iPhone＋Desktop 共 71 條）全綠。
+
+  **交付**：push 到 `claude/implement-tfm9oa`。Preview deployment 與
+  Vercel runtime logs 由需求方端（ChatGPT）另行驗證，不列為本票驗收
+  項目（spec #143 2026-08-15 修訂）。**不開 PR**。
+
+**spec #143（DG-01–DG-07，issues #144–#150）七張票全數完成。**
+Application Diagnostics 基礎設施＋Historical IV 完整八站
+observation chain（candidate_lookup／cache／vendor_fetch／
+payload_parse／database_write／backfill／reanchor／metrics）已上線，
+成功判準（「不必讀程式碼就能直接回答 vendor 回 N 筆究竟在哪一站變成
+0 筆」）已由完整帳本測試（DG-04）與端點層驗證（DG-07）證實成立。
+等 ChatGPT 驗證 Preview deployment；需求方尚未 cue 是否要合併回
+`master`（依專案規則，PR 開不開由需求方主動要求，不主動開）。
 
 ### 最新狀態（2026-08-14）——「貴不貴」第六輪研究：Rich/Cheap Trend／entry timing（只研究不施工）
 

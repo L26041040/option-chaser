@@ -1966,10 +1966,16 @@ body {
 /* 整列可點（跟 `.settings-choice` 同一種手感）：手指落點是整行，不是
    摳一顆小箭頭。原生 `<button>` 天生有鍵盤與 a11y 支援，不必自己補
    `role="button"`。 */
+/* metadata（timestamp／subsystem／stage／severity）與 message 分兩行
+   ——手機窄螢幕（iPhone 13 ≈375px）塞不下一整行五個欄位，硬擠會把
+   message 的可用寬度擠到 0，變成技術上存在、實際上看不見（QA-FIX-1／
+   QA-FIX-4 同一類教訓：幾何驗證勝過文字存在性檢查，這裡就是被那類
+   問題抓到的真實案例）。 */
 .diagnostics-row-summary {
   display: flex;
-  align-items: baseline;
-  gap: 8px;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
   width: 100%;
   padding: 10px 0;
   background: none;
@@ -1980,8 +1986,14 @@ body {
   cursor: pointer;
 }
 
+.diagnostics-row-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px;
+}
+
 .diagnostics-row-ts {
-  flex: 0 0 auto;
   font-variant-numeric: tabular-nums;
   color: var(--label-secondary);
   font-size: 13px;
@@ -1989,13 +2001,11 @@ body {
 
 .diagnostics-row-subsystem,
 .diagnostics-row-stage {
-  flex: 0 0 auto;
   font-size: 13px;
   color: var(--label-secondary);
 }
 
 .diagnostics-row-severity {
-  flex: 0 0 auto;
   font-size: 13px;
   font-weight: 600;
 }
@@ -2013,8 +2023,7 @@ body {
 }
 
 .diagnostics-row-message {
-  flex: 1 1 auto;
-  min-width: 0;
+  width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

@@ -736,6 +736,9 @@ async function routeSettings(page: import("@playwright/test").Page) {
     saved = true;
     return route.fulfill({ json: settingsSaved });
   });
+  // Settings 現在也掛著 Diagnostics 區塊（DG-06／#149）——預設回空
+  // 清單，需要非空清單的測試自己再覆蓋這個 route。
+  await page.route("**/api/diagnostics*", (route) => route.fulfill({ json: [] }));
 }
 
 test("桌面版的設定入口固定在 sidebar 最下方，內容開在右側工作區", async ({ page }) => {
@@ -843,6 +846,7 @@ test("桌面版：測試連線走完未設定 → 尚未驗證 → 已連線（S
     stage = unverified;
     return route.fulfill({ json: unverified });
   });
+  await page.route("**/api/diagnostics*", (route) => route.fulfill({ json: [] }));
 
   await page.goto("/#/settings");
   const md = page.getByRole("region", { name: "Market Data" });
@@ -865,6 +869,40 @@ test("桌面版：測試連線走完未設定 → 尚未驗證 → 已連線（S
   await md.getByRole("button", { name: "測試連線" }).click();
   await expect(status).toContainText("已連線");
   await expect(md.getByText(/目前使用 Cboe/)).toHaveCount(0);
+});
+
+test("桌面版：Settings 的 Diagnostics 區塊可讀可操作（DG-06／#149）",
+   async ({ page }) => {
+  await routeSettings(page);
+  let events: unknown[] = [{
+    event_id: "evt-e2e-desktop", correlation_id: "cid-e2e-desktop",
+    ts: "2026-08-15T00:00:00+00:00", subsystem: "historical_iv",
+    stage: "vendor_fetch", severity: "error",
+    message: "vendor 連線失敗", context: { http_status: 429 },
+  }];
+  await page.route("**/api/diagnostics*", (route) => {
+    if (route.request().method() === "DELETE") {
+      events = [];
+      return route.fulfill({ json: { cleared: 1 } });
+    }
+    return route.fulfill({ json: events });
+  });
+
+  await page.goto("/#/settings");
+
+  const section = page.getByRole("region", { name: "Diagnostics" });
+  await expect(section).toBeVisible();
+  await expect(section.getByText("vendor_fetch")).toBeVisible();
+  await expect(section.getByText("錯誤")).toBeVisible();
+  await expect(section.getByText("vendor 連線失敗")).toBeVisible();
+
+  await section.getByText("vendor 連線失敗").click();
+  await expect(section.getByText("evt-e2e-desktop")).toBeVisible();
+  await expect(section.getByText("http_status")).toBeVisible();
+
+  await section.getByRole("button", { name: "Clear diagnostics" }).click();
+  await section.getByRole("button", { name: "確定清除" }).click();
+  await expect(section.getByText("目前沒有紀錄")).toBeVisible();
 });
 
 test("桌面版：編輯劇本沿用工作區上方的既有表單，取消隨時可按（#132）",

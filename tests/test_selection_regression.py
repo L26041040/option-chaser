@@ -238,3 +238,19 @@ def test_removing_the_entire_ivhistory_module_leaves_selection_untouched():
     for mod in ("option_chaser/ranking.py", "option_chaser/filters.py"):
         src = open(mod, encoding="utf-8").read()
         assert "ivhistory" not in src, f"{mod} 不該依賴 ivhistory"
+
+
+# ---------- DG 回合（spec #143）：Application Diagnostics 同一條紅線 ----------
+#
+# 診斷基礎設施（`api_app/diagnostics.py`）是本輪新增的另一個 enrich-only
+# 側支——跟 `ivhistory` 同一種身份：只觀測，不參與候選產生的任何一步。
+# `ranking.py`／`filters.py` 在 `option_chaser/` 底下，`diagnostics.py`
+# 在 `api_app/`，兩者的既有分層本來就是單向依賴（`api_app` 依賴
+# `option_chaser`，不會反過來）；這裡仍在程式碼層級明確斷言一次，
+# 跟 `ivhistory` 的結構性紅線同一種防禦——不靠「架構上本來就不會」，
+# 靠原始碼字面。
+
+def test_ranking_and_filters_do_not_depend_on_diagnostics():
+    for mod in ("option_chaser/ranking.py", "option_chaser/filters.py"):
+        src = open(mod, encoding="utf-8").read()
+        assert "diagnostics" not in src, f"{mod} 不該依賴 diagnostics"

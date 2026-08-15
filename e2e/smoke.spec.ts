@@ -1051,6 +1051,10 @@ async function routeSettingsMobile(page: import("@playwright/test").Page) {
     saved = true;
     return route.fulfill({ json: SETTINGS_SAVED });
   });
+  // Settings 現在也掛著 Diagnostics 區塊（DG-06／#149），它自己會打
+  // `/api/diagnostics`——這裡預設回空清單，個別測試需要非空清單時
+  // 自己再覆蓋這個 route。
+  await page.route("**/api/diagnostics*", (route) => route.fulfill({ json: [] }));
 }
 
 test("手機版：工作區右上角的齒輪進得去設定，返回回得來（Settings／#124）", async ({ page }) => {
@@ -1094,6 +1098,50 @@ test("手機版：Historical IV 切自訂、存 token，只看得到遮罩（Set
 
   await expect(iv.getByText("已儲存 ••••••••abcd")).toBeVisible();
   await expect(page.locator("body")).not.toContainText("tok-secret-abcd");
+});
+
+/* ---------- Diagnostics / 報錯紀錄（DG-06／#149） ---------- */
+
+const DIAG_EVENT_E2E = {
+  event_id: "evt-e2e-1", correlation_id: "cid-e2e-1",
+  ts: "2026-08-15T00:00:00+00:00", subsystem: "historical_iv",
+  stage: "payload_parse", severity: "warning",
+  message: "raw_rows > 0 but parsed rows are 0",
+  context: { raw_rows: 5, parsed_call_rows: 0 },
+};
+
+test("手機版：Settings 的 Diagnostics 區塊可讀可操作（DG-06／#149）",
+   async ({ page }) => {
+  await routeSettingsMobile(page);
+  let events: unknown[] = [DIAG_EVENT_E2E];
+  await page.route("**/api/diagnostics*", (route) => {
+    if (route.request().method() === "DELETE") {
+      events = [];
+      return route.fulfill({ json: { cleared: 1 } });
+    }
+    return route.fulfill({ json: events });
+  });
+
+  await page.goto("/#/settings");
+
+  const section = page.getByRole("region", { name: "Diagnostics" });
+  await expect(section).toBeVisible();
+  // 可讀：清單欄位看得到
+  await expect(section.getByText("payload_parse")).toBeVisible();
+  await expect(section.getByText("警告")).toBeVisible();
+  await expect(section.getByText("raw_rows > 0 but parsed rows are 0"))
+    .toBeVisible();
+
+  // 可操作：點一筆展開完整 details
+  await section.getByText("raw_rows > 0 but parsed rows are 0").click();
+  await expect(section.getByText("事件 ID")).toBeVisible();
+  await expect(section.getByText("evt-e2e-1")).toBeVisible();
+  await expect(section.getByText("cid-e2e-1")).toBeVisible();
+
+  // 可操作：Clear diagnostics 兩段式確認
+  await section.getByRole("button", { name: "Clear diagnostics" }).click();
+  await section.getByRole("button", { name: "確定清除" }).click();
+  await expect(section.getByText("目前沒有紀錄")).toBeVisible();
 });
 
 /* ---------- Historical IV Position 與閘門（#114／#126／一年走勢圖＋
@@ -1369,6 +1417,68 @@ test("Historical IV：欄位各自獨立——部分沒有觀測、部分有完�
   const buyRow = block.locator(".iv-metric").filter({ hasText: "買腿 IV" });
   await expect(buyRow.getByText(/第 41 百分位/)).toBeVisible();
   await expect(buyRow.locator(".iv-trend-chart")).toHaveCount(1);
+});
+
+/* ---------- Inline diagnostics（DG-05／#148） ---------- */
+
+test("Historical IV 請求失敗：頁面不 crash，精簡狀態列可見，可展開可收起（DG-05／#148）",
+   async ({ page }) => {
+  await routeLibrary(page, libraryRow());
+  await page.route("**/api/settings", (route) =>
+    route.fulfill({ json: { historical_iv_enabled: true } }));
+  await page.route("**/api/scenarios/*/iv-history*", (route) =>
+    route.fulfill({
+      status: 502,
+      headers: { "X-Correlation-Id": "cid-e2e-fail" },
+      json: { detail: "額度用盡" },
+    }));
+
+  await page.goto("/#/s/s1");
+
+  // 卡片本身仍在，頁面其餘部分照常——一個 enrichment 區塊的故障不
+  // 拖垮整頁。
+  await expect(page.getByText("劇本主圖")).toBeVisible();
+  const block = page.locator(".iv-history");
+  await expect(block).toBeVisible();
+
+  const summary = block.getByText("Historical IV 資料取得失敗 · 查看詳情");
+  await expect(summary).toBeVisible();
+
+  const details = block.locator(".iv-diagnostics");
+  const isOpen = () => details.evaluate(
+    (el) => (el as HTMLDetailsElement).open);
+  expect(await isOpen()).toBe(false);
+
+  await summary.click();
+  expect(await isOpen()).toBe(true);
+  await expect(block.getByText(/cid-e2e-fail/)).toBeVisible();
+
+  await summary.click();
+  expect(await isOpen()).toBe(false);
+});
+
+test("Historical IV 200 但帶 warning events：一樣觸發診斷區塊，資料照常渲染（DG-05／#148）",
+   async ({ page }) => {
+  await routeLibrary(page, libraryRow());
+  await page.route("**/api/settings", (route) =>
+    route.fulfill({ json: { historical_iv_enabled: true } }));
+  await page.route("**/api/scenarios/*/iv-history*", (route) => {
+    const points = ivPoints();
+    return route.fulfill({ json: {
+      candidate_key: "k", status: "ok", points,
+      metrics: ivMetrics(points), observations: points.length, note: null,
+      diagnostics: { correlation_id: "cid-e2e-warn", events: [DIAG_EVENT_E2E] },
+    } });
+  });
+
+  await page.goto("/#/s/s1");
+
+  const block = page.locator(".iv-history");
+  await expect(block).toBeVisible();
+  await expect(block.getByText("Historical IV 資料取得失敗 · 查看詳情"))
+    .toBeVisible();
+  // additive：資料本身照常渲染，不是被診斷區塊取代掉。
+  await expect(block.getByText("Normalized Skew")).toBeVisible();
 });
 
 /* ---------- 編輯劇本（#132） ---------- */

@@ -446,8 +446,9 @@ export default function IvHistory({ scenarioId, candidate }: {
   const isSingleLeg = candidate.legs.length < 2;
   // 200 但資料是空的——目前最常見的症狀，只看 HTTP 狀態碼看不出來。
   // severity >= warning 的 events 是唯一能指出這件事的地方（DG-05／
-  // #148）。
-  const notableEvents = data.diagnostics.events.filter(
+  // #148）。`?.`／`?? []`：`diagnostics` 是後端純加法新增的欄位，
+  // 這裡不因為回應剛好沒帶它（例如手造的測試假體）就整塊炸掉。
+  const notableEvents = (data.diagnostics?.events ?? []).filter(
     (e) => e.severity === "warning" || e.severity === "error");
 
   return (

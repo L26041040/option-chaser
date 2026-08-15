@@ -98,11 +98,16 @@ function EventRow({ event }: { event: DiagnosticEvent }) {
         aria-expanded={open}
         onClick={() => setOpen((o) => !o)}
       >
-        <span className="diagnostics-row-ts">{event.ts}</span>
-        <span className="diagnostics-row-subsystem">{event.subsystem}</span>
-        <span className="diagnostics-row-stage">{event.stage}</span>
-        <span className={`diagnostics-row-severity severity-${event.severity}`}>
-          {SEVERITY_LABELS[event.severity]}
+        {/* metadata 與 message 分兩行——手機窄螢幕塞不下一整行的
+            timestamp＋subsystem＋stage＋severity＋message，硬擠會把
+            message 擠到寬度歸零（QA-FIX-1／QA-FIX-4 同一類教訓）。 */}
+        <span className="diagnostics-row-meta">
+          <span className="diagnostics-row-ts">{event.ts}</span>
+          <span className="diagnostics-row-subsystem">{event.subsystem}</span>
+          <span className="diagnostics-row-stage">{event.stage}</span>
+          <span className={`diagnostics-row-severity severity-${event.severity}`}>
+            {SEVERITY_LABELS[event.severity]}
+          </span>
         </span>
         <span className="diagnostics-row-message">{event.message}</span>
       </button>

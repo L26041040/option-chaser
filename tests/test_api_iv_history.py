@@ -945,6 +945,28 @@ def test_a_known_token_never_appears_in_diagnostics(db):
     assert all(TOKEN not in str(e) for e in stored)
 
 
+def test_full_vendor_response_body_never_reaches_any_diagnostic_event(db):
+    """`_emit_surface_telemetry()` 用具名關鍵字組 event context——即使
+    observer 給的 telemetry dict 意外多帶一個完整回應內容的欄位（例如
+    未來 `marketdata.py` 不小心多回傳一個 `raw_body`），main.py 這一層
+    因為不是 `**telemetry` 全展開，那個欄位天生就進不了任何診斷事件。"""
+    huge_marker = "RAW_VENDOR_BODY_" + ("z" * 2000)
+    telemetry = {"http_status": 200, "vendor_status": "ok",
+                "vendor_errmsg": None, "raw_rows": 1,
+                "parsed_call_rows": 1, "parsed_put_rows": 0,
+                # 模擬「不小心多帶了完整回應內容」——main.py 不該把它
+                # 轉發進任何 emit() 呼叫。
+                "raw_body": huge_marker}
+    client = _client(db, surface=_telemetry_surface(
+        telemetry, points={"call": [SurfacePoint(dte=30, delta=0.4, iv=0.2)],
+                           "put": []}))
+    _unlock(client)
+    sid = _scenario(client)
+    resp = _get(client, sid, _candidate_key(client, sid))
+    assert huge_marker not in resp.text
+    assert huge_marker not in client.get("/api/diagnostics").text
+
+
 def test_diagnostics_storage_failure_does_not_break_the_response():
     """診斷絕不能成為新的故障源——storage 的 `append_diagnostic` 掛了，
     iv-history 端點照樣回它原本該回的東西。"""
