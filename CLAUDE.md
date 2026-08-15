@@ -347,7 +347,7 @@ logs 由需求方端（ChatGPT）另行驗證**，不需要要求需求方處理
   retention-cap 測試，memory／postgres 共用同一份行為）；全套 pytest
   無回歸（全綠）
 - **DG-03** [#146] — Historical IV 取數路徑觀測＋排放量控制＋
-  iv-history 回應夾帶診斷（commit 待補）：`api_app/providers.py` 的
+  iv-history 回應夾帶診斷（commit `5a4da9b`）：`api_app/providers.py` 的
   `default_historical_surface` 加一個 `observer` 參數原樣轉給
   `marketdata.fetch_surface`（#144 打的底），這一層仍不解讀 telemetry
   內容。`main.py` 新增六個觀測點：`candidate_lookup`（找不找得到候選、
