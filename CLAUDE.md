@@ -420,7 +420,7 @@ logs 由需求方端（ChatGPT）另行驗證**，不需要要求需求方處理
   新增一條驗證 `metrics` 與高流量 `reanchor` 共存時不被擠掉。全套
   pytest 無回歸（全綠）
 - **DG-05** [#148] — Inline diagnostics：Historical IV 卡片就地展開
-  錯誤詳情（commit 待補）：`src/api.ts` 新增 `DiagnosticEvent`／
+  錯誤詳情（commit `ad5924e`）：`src/api.ts` 新增 `DiagnosticEvent`／
   `IvHistoryDiagnostics` 型別＋ `IvHistoryView.diagnostics` 欄位；
   `ApiError` 新增 `correlationId`（`request()` 從 `X-Correlation-Id`
   回應標頭讀，`resp.headers?.get(...)`——既有測試大量用簡化物件字面量
