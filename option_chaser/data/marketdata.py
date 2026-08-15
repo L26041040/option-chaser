@@ -19,7 +19,9 @@ yfinance 的差別是它**要 token**：`Authorization: Bearer {token}`，因此
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from datetime import datetime, timezone
+from typing import Callable
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
@@ -41,12 +43,51 @@ _TIMEOUT_SECONDS = 15.0
 _PROBE_SYMBOL = "AAPL"
 
 
-def _http_get(url: str, token: str) -> str:
+@dataclass(frozen=True)
+class HttpResponse:
+    """成功回應的完整形狀（#144）——status／白名單標頭／body 三者皆存在
+    才拿得出 diagnostics 要的 HTTP metadata。`headers` 只留
+    `_RATE_LIMIT_HEADERS` 白名單裡的幾個，其餘一概不留：這是 redaction
+    在最源頭就成立，不是靠後面某一層記得過濾。"""
+    status: int
+    headers: dict[str, str]
+    body: str
+
+
+# vendor 額度標頭（#144，欄名取自需求方實測的真實回應）。白名單本身就是
+# 唯一允許離開這個模組的標頭子集——不整包保留 `resp.headers`。
+_RATE_LIMIT_HEADERS = ("X-Api-Ratelimit-Limit", "X-Api-Ratelimit-Remaining",
+                      "X-Api-Ratelimit-Consumed")
+
+
+def _rate_limit_fields(headers) -> dict[str, str]:
+    out: dict[str, str] = {}
+    for name in _RATE_LIMIT_HEADERS:
+        value = headers.get(name)
+        if value is not None:
+            out[name] = value
+    return out
+
+
+def _http_request(url: str, token: str) -> HttpResponse:
+    """低層 primitive（#144）：status／白名單標頭／body 一起回，供需要
+    HTTP metadata 的呼叫端（目前只有 `fetch_surface`）使用。非 2xx 時
+    urllib 照舊拋 `HTTPError`——`HTTPError` 本身就帶 `.code`／`.headers`，
+    呼叫端從例外物件取，不需要這個函式把失敗路徑轉成正常回傳值。"""
     req = Request(url, headers={"Authorization": f"Bearer {token}",
                                 "User-Agent": "option-chaser",
                                 "Accept": "application/json"})
     with urlopen(req, timeout=_TIMEOUT_SECONDS) as resp:
-        return resp.read().decode("utf-8", errors="replace")
+        body = resp.read().decode("utf-8", errors="replace")
+        return HttpResponse(status=resp.status,
+                            headers=_rate_limit_fields(resp.headers), body=body)
+
+
+def _http_get(url: str, token: str) -> str:
+    """向後相容的 body-only 介面。`fetch_chain`／`verify` 不需要 HTTP
+    metadata，維持這個既有型別當它們的注入點——兩者的既有測試因此不必
+    改動任何一行。"""
+    return _http_request(url, token).body
 
 
 def _num(value) -> float | None:
@@ -201,6 +242,77 @@ def verify(token: str, http_get=_http_get) -> VerifyResult:
 _HISTORICAL_CHAIN_URL = _BASE + "/options/chain/{symbol}/?date={date}"
 
 
+def _empty_row_counts() -> dict:
+    return {"raw_rows": 0, "parsed_call_rows": 0, "parsed_put_rows": 0,
+           "dropped_missing_delta": 0, "dropped_missing_iv": 0,
+           "dropped_missing_dte": 0, "dropped_unknown_side": 0}
+
+
+def _parse_surface_rows(rows: list[dict]) -> tuple[dict[str, list], dict]:
+    """一天的逐列資料 → (座標點, 筆數帳本)。
+
+    帳本存在的理由是 #144：診斷要能回答「vendor 回 N 筆，究竟在哪一步
+    變成 0 筆」，因此每一種被跳過的原因各自計數，而不是像原本那樣一句
+    `continue` 就不留痕跡。**篩選條件本身逐字不變**——delta／iv／dte
+    任一缺席就跳過，只是現在額外記下是哪一個缺席（多個同時缺席時記第
+    一個判到的那個，跳過與否不受影響，因為原本就是同一個 `or` 短路）。
+    """
+    from ..ivhistory import SurfacePoint
+
+    out: dict[str, list] = {"call": [], "put": []}
+    counts = _empty_row_counts()
+    counts["raw_rows"] = len(rows)
+    for row in rows:
+        side = str(row.get("side") or "").lower()
+        if side not in out:
+            counts["dropped_unknown_side"] += 1
+            continue
+        delta, iv, dte = row.get("delta"), _num(row.get("iv")), row.get("dte")
+        if delta is None:
+            counts["dropped_missing_delta"] += 1
+            continue
+        if iv is None:
+            counts["dropped_missing_iv"] += 1
+            continue
+        if dte is None:
+            counts["dropped_missing_dte"] += 1
+            continue
+        try:
+            out[side].append(SurfacePoint(dte=int(dte), delta=abs(float(delta)),
+                                          iv=iv))
+        except (TypeError, ValueError):
+            counts["dropped_missing_dte"] += 1
+            continue
+    counts["parsed_call_rows"] = len(out["call"])
+    counts["parsed_put_rows"] = len(out["put"])
+    return out, counts
+
+
+def _parse_surface(payload: dict) -> tuple[dict[str, list], dict]:
+    """`map_surface_payload` 與 `fetch_surface` 共用的唯一分支邏輯
+    （#144）：回傳 (points, telemetry)，**不拋例外**——vendor 狀態要不要
+    變成 `FetchError` 由呼叫端各自決定，但兩者都需要同一份 telemetry
+    （一個給 observer、一個沿用既有行為直接拋出）。`telemetry` 一律帶
+    齊 `vendor_status`／`vendor_errmsg`／筆數帳本這幾個 key，no_data／
+    失敗兩條路徑上筆數帳本全為零，不是缺席。
+    """
+    status = payload.get("s")
+    if status == "no_data":
+        # 這個 (symbol, date, expiration) 組合當天沒有資料——例如目標
+        # 到期日在那個歷史日期還沒掛牌。這是**帶了 `expiration` 篩選後
+        # 的正常結果**，不是 vendor 故障：整鏈查詢很少見這個狀態，
+        # 但單一到期日篩選常態性地會撲空，撲空不該讓整批 backfill 中止。
+        return {"call": [], "put": []}, {"vendor_status": status,
+                                         "vendor_errmsg": None,
+                                         **_empty_row_counts()}
+    if status != "ok":
+        return {"call": [], "put": []}, {"vendor_status": status,
+                                         "vendor_errmsg": payload.get("errmsg"),
+                                         **_empty_row_counts()}
+    points, counts = _parse_surface_rows(_rows(payload))
+    return points, {"vendor_status": status, "vendor_errmsg": None, **counts}
+
+
 def map_surface_payload(payload: dict) -> dict[str, list]:
     """欄狀回應 → 依權別分組的 `(dte, delta, iv)` 座標點。
 
@@ -211,32 +323,11 @@ def map_surface_payload(payload: dict) -> dict[str, list]:
     缺 delta 或 iv 的那一筆直接跳過（不是補零）：那一格沒有座標就是
     沒有座標，補上去會在網格裡放一個假點，讓插值以為自己有依據。
     """
-    from ..ivhistory import SurfacePoint
-
-    status = payload.get("s")
-    if status == "no_data":
-        # 這個 (symbol, date, expiration) 組合當天沒有資料——例如目標
-        # 到期日在那個歷史日期還沒掛牌。這是**帶了 `expiration` 篩選後
-        # 的正常結果**，不是 vendor 故障：整鏈查詢很少見這個狀態，
-        # 但單一到期日篩選常態性地會撲空，撲空不該讓整批 backfill 中止。
-        return {"call": [], "put": []}
-    if status != "ok":
+    points, telemetry = _parse_surface(payload)
+    status = telemetry["vendor_status"]
+    if status not in ("no_data", "ok"):
         raise FetchError(f"Market Data App 回報 s={status!r}")
-
-    out: dict[str, list] = {"call": [], "put": []}
-    for row in _rows(payload):
-        side = str(row.get("side") or "").lower()
-        if side not in out:
-            continue
-        delta, iv, dte = row.get("delta"), _num(row.get("iv")), row.get("dte")
-        if delta is None or iv is None or dte is None:
-            continue
-        try:
-            out[side].append(SurfacePoint(dte=int(dte), delta=abs(float(delta)),
-                                          iv=iv))
-        except (TypeError, ValueError):
-            continue
-    return out
+    return points
 
 
 def _raise_for_quota(e: Exception) -> None:
@@ -249,8 +340,23 @@ def _raise_for_quota(e: Exception) -> None:
         raise QuotaExhausted("Market Data App 今日額度已用完") from e
 
 
+# observer 是純 callback（一個 dict → None），這個模組本身不 import
+# 任何診斷相關的東西——#144 的結構性要求：資料源層不該認識「診斷」這個
+# 概念，接線交給呼叫端（`api_app`）。`None` ＝完全不做事，零額外成本。
+SurfaceObserver = Callable[[dict], None]
+
+
+def _notify(observer: SurfaceObserver | None, *, http_status: int | None,
+           headers: dict | None, telemetry: dict) -> None:
+    if observer is None:
+        return
+    observer({"http_status": http_status,
+             **_rate_limit_fields(headers or {}), **telemetry})
+
+
 def fetch_surface(symbol: str, on_date: str, token: str,
-                  http_get=_http_get, expiration: str | None = None
+                  http_request=_http_request, expiration: str | None = None,
+                  observer: SurfaceObserver | None = None,
                   ) -> dict[str, list]:
     """某一個歷史日期的整鏈，轉成 (dte, delta, iv) 座標點。
 
@@ -265,16 +371,43 @@ def fetch_surface(symbol: str, on_date: str, token: str,
     （`ivhistory.nearby_expirations()`）會算出離目標 tenor 最近的幾個
     真實到期日，逐一帶這個參數分別打——每次只回一個到期日的合約，
     成本遠低於 `expiration=all` 回整條鏈。
+
+    **`observer`（#144）**：每一次呼叫結束前（成功或失敗）都會被通知
+    一次，帶 HTTP status／白名單 rate-limit 標頭／vendor `s`／
+    `errmsg`／筆數帳本。預設 `None`——不影響既有呼叫端、不影響任何
+    回傳值或例外型別，純粹是旁路的觀測用途（#144／#146 的接線點）。
     """
     url = _HISTORICAL_CHAIN_URL.format(symbol=symbol.upper(), date=on_date)
     if expiration:
         url += f"&expiration={expiration}"
     try:
-        raw = http_get(url, token)
-        return map_surface_payload(json.loads(raw))
-    except FetchError:
-        raise
-    except Exception as e:  # noqa: BLE001
+        resp = http_request(url, token)
+    except HTTPError as e:
+        _notify(observer, http_status=e.code, headers=e.headers,
+               telemetry={"vendor_status": None, "vendor_errmsg": None,
+                          **_empty_row_counts()})
         _raise_for_quota(e)
         raise FetchError(
             f"Market Data App 歷史鏈抓取失敗（{symbol} {on_date}）: {e}") from e
+    except Exception as e:  # noqa: BLE001
+        _notify(observer, http_status=None, headers=None,
+               telemetry={"vendor_status": None, "vendor_errmsg": None,
+                          **_empty_row_counts()})
+        raise FetchError(
+            f"Market Data App 歷史鏈抓取失敗（{symbol} {on_date}）: {e}") from e
+
+    try:
+        payload = json.loads(resp.body)
+    except Exception as e:  # noqa: BLE001
+        _notify(observer, http_status=resp.status, headers=resp.headers,
+               telemetry={"vendor_status": None, "vendor_errmsg": None,
+                          **_empty_row_counts()})
+        raise FetchError(
+            f"Market Data App 歷史鏈抓取失敗（{symbol} {on_date}）: {e}") from e
+
+    points, telemetry = _parse_surface(payload)
+    _notify(observer, http_status=resp.status, headers=resp.headers,
+           telemetry=telemetry)
+    if telemetry["vendor_status"] not in ("no_data", "ok"):
+        raise FetchError(f"Market Data App 回報 s={telemetry['vendor_status']!r}")
+    return points

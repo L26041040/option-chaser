@@ -302,6 +302,28 @@ logs 由需求方端（ChatGPT）另行驗證**，不需要要求需求方處理
 > 建議施工順序（單線、不平行）：**#144 → #145 → #146 → #147 →
 > #148 → #149 → #150**。
 
+**施工開始（2026-08-15 `/implement`，依序單線、每張跑該票測試才進
+下一張）**：
+
+- **DG-01** [#144] — Prefactor：vendor adapter 暴露 HTTP metadata
+  （零行為變更）：`option_chaser/data/marketdata.py` 新增
+  `HttpResponse`（status／白名單 rate-limit 標頭／body）與低層
+  `_http_request()`；`_http_get()` 降級為它的 body-only 薄殼，
+  `fetch_chain`／`verify` 的既有 `http_get=` 注入點與測試因此完全
+  不動。歷史曲面路徑新增 `_parse_surface()`（`map_surface_payload`
+  與 `fetch_surface` 共用的唯一分支邏輯，不拋例外，回傳
+  `(points, telemetry)`）與 `_parse_surface_rows()`（逐列筆數帳本：
+  raw_rows／parsed_call_rows／parsed_put_rows／四種 dropped_* 原因，
+  篩選條件逐字不變，只是現在計數而非默默 `continue`）；`fetch_surface`
+  新增 `observer: Callable[[dict], None] | None` 參數，成功／
+  no_data／vendor 錯誤／HTTP 429／連線失敗五條路徑都會在拋出前先
+  通知一次，帶 http_status／rate-limit 三欄／vendor_status／
+  vendor_errmsg／筆數帳本。**adapter 不 import 任何診斷模組**——
+  observer 是純 callback。新增 16 條測試（HTTP primitive 2＋observer
+  7＋既有 fetch_surface 測試改注入 `http_request=`），
+  `test_data_marketdata.py` 既有斷言一條未動、全綠；全套 pytest
+  無回歸（全綠）
+
 ### 最新狀態（2026-08-14）——「貴不貴」第六輪研究：Rich/Cheap Trend／entry timing（只研究不施工）
 
 需求方 `/research` 指示本輪只研究、不修改程式碼：在既有「現在相對

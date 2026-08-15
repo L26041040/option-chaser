@@ -221,6 +221,15 @@ def test_error_status_is_still_a_fetch_error():
         marketdata.map_surface_payload({"s": "error", "errmsg": "boom"})
 
 
+def _fake_request(body, *, status=200, headers=None):
+    """`http_request` 注入用：成功回應（#144，取代舊的 `_fake_get`
+    body-only 版本——`fetch_surface` 現在的注入點是 `HttpResponse`）。"""
+    def request(url, token):
+        return marketdata.HttpResponse(status=status, headers=headers or {},
+                                       body=json.dumps(body))
+    return request
+
+
 def test_fetch_surface_targets_a_specific_expiration_when_given():
     """#134 修正：不帶 `expiration` 時 vendor 只回下一個月選，長天期候選
     永遠抓不到自己的座標——呼叫端算出目標到期日後，這裡要把它放進 URL。"""
@@ -228,9 +237,10 @@ def test_fetch_surface_targets_a_specific_expiration_when_given():
 
     def spy(url, token):
         seen.append(url)
-        return json.dumps(_surface_payload())
+        return marketdata.HttpResponse(status=200, headers={},
+                                       body=json.dumps(_surface_payload()))
 
-    marketdata.fetch_surface("AAPL", "2026-08-01", "tok", http_get=spy,
+    marketdata.fetch_surface("AAPL", "2026-08-01", "tok", http_request=spy,
                              expiration="2028-06-16")
     assert "date=2026-08-01" in seen[0]
     assert "expiration=2028-06-16" in seen[0]
@@ -242,7 +252,144 @@ def test_fetch_surface_omits_the_expiration_filter_when_not_given():
 
     def spy(url, token):
         seen.append(url)
-        return json.dumps(_surface_payload())
+        return marketdata.HttpResponse(status=200, headers={},
+                                       body=json.dumps(_surface_payload()))
 
-    marketdata.fetch_surface("AAPL", "2026-08-01", "tok", http_get=spy)
+    marketdata.fetch_surface("AAPL", "2026-08-01", "tok", http_request=spy)
     assert "expiration=" not in seen[0]
+
+
+# ---------- HTTP metadata primitive（#144）----------
+
+def test_http_request_returns_status_headers_and_body(monkeypatch):
+    """`_http_request` 是唯一真正打網路的低層 primitive——用一個假的
+    `urlopen` context manager驗證它把 status／白名單標頭／body 都接出來。"""
+    class _FakeHeaders:
+        def get(self, name, default=None):
+            return {"X-Api-Ratelimit-Limit": "100",
+                    "X-Api-Ratelimit-Remaining": "42",
+                    "X-Api-Ratelimit-Consumed": "1",
+                    "Some-Other-Header": "should-not-leak"}.get(name, default)
+
+    class _FakeResp:
+        status = 200
+        headers = _FakeHeaders()
+
+        def read(self):
+            return b'{"s": "ok"}'
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    monkeypatch.setattr(marketdata, "urlopen", lambda req, timeout: _FakeResp())
+    got = marketdata._http_request("https://example.test/x", "tok")
+    assert got.status == 200
+    assert got.body == '{"s": "ok"}'
+    assert got.headers == {"X-Api-Ratelimit-Limit": "100",
+                           "X-Api-Ratelimit-Remaining": "42",
+                           "X-Api-Ratelimit-Consumed": "1"}
+
+
+def test_http_get_still_returns_only_the_body(monkeypatch):
+    """`fetch_chain`／`verify` 的既有注入型別（body-only 字串）不受
+    #144 影響——`_http_get` 是 `_http_request` 的薄殼。"""
+    monkeypatch.setattr(marketdata, "_http_request",
+                        lambda url, token: marketdata.HttpResponse(
+                            status=200, headers={}, body="raw-body"))
+    assert marketdata._http_get("https://example.test/x", "tok") == "raw-body"
+
+
+# ---------- observer telemetry（#144）----------
+
+def test_observer_sees_a_successful_fetch():
+    events = []
+    marketdata.fetch_surface("AAPL", "2026-08-01", "tok",
+                             http_request=_fake_request(
+                                 _surface_payload(),
+                                 headers={"X-Api-Ratelimit-Remaining": "41"}),
+                             observer=events.append)
+    assert len(events) == 1
+    got = events[0]
+    assert got["http_status"] == 200
+    assert got["X-Api-Ratelimit-Remaining"] == "41"
+    assert got["vendor_status"] == "ok"
+    assert got["vendor_errmsg"] is None
+    # `_surface_payload()` 有 2 筆原始列，各是合格的 call／put 一筆。
+    assert got["raw_rows"] == 2
+    assert got["parsed_call_rows"] == 1
+    assert got["parsed_put_rows"] == 1
+
+
+def test_observer_sees_no_data_as_zero_rows_not_a_failure():
+    events = []
+    result = marketdata.fetch_surface(
+        "AAPL", "2026-08-01", "tok",
+        http_request=_fake_request({"s": "no_data"}), observer=events.append)
+    assert result == {"call": [], "put": []}
+    assert events[0]["vendor_status"] == "no_data"
+    assert events[0]["raw_rows"] == 0
+
+
+def test_observer_sees_a_vendor_reported_error():
+    events = []
+    with pytest.raises(FetchError):
+        marketdata.fetch_surface(
+            "AAPL", "2026-08-01", "tok",
+            http_request=_fake_request({"s": "error", "errmsg": "bad request"}),
+            observer=events.append)
+    assert events[0]["vendor_status"] == "error"
+    assert events[0]["vendor_errmsg"] == "bad request"
+
+
+def test_observer_sees_http_429_before_quota_exhausted_is_raised():
+    from option_chaser.models import QuotaExhausted
+
+    events = []
+
+    def request(url, token):
+        raise HTTPError(url, 429, "boom",
+                        {"X-Api-Ratelimit-Remaining": "0"}, None)
+
+    with pytest.raises(QuotaExhausted):
+        marketdata.fetch_surface("AAPL", "2026-08-01", "tok",
+                                 http_request=request, observer=events.append)
+    assert events[0]["http_status"] == 429
+    assert events[0]["X-Api-Ratelimit-Remaining"] == "0"
+
+
+def test_observer_sees_a_connection_failure():
+    events = []
+
+    def request(url, token):
+        raise OSError("dns 查不到")
+
+    with pytest.raises(FetchError):
+        marketdata.fetch_surface("AAPL", "2026-08-01", "tok",
+                                 http_request=request, observer=events.append)
+    assert events[0]["http_status"] is None
+    assert events[0]["vendor_status"] is None
+
+
+def test_observer_sees_the_drop_reason_breakdown_when_raw_beats_parsed():
+    """raw>0、parsed=0 是需求方點名要能診斷的那個情境（#146 的前置）——
+    這裡先確認帳本本身在 #144 層級就是正確的。"""
+    events = []
+    marketdata.fetch_surface(
+        "AAPL", "2026-08-01", "tok",
+        http_request=_fake_request(_surface_payload(delta=[None, None])),
+        observer=events.append)
+    got = events[0]
+    assert got["raw_rows"] == 2
+    assert got["parsed_call_rows"] == 0
+    assert got["parsed_put_rows"] == 0
+    assert got["dropped_missing_delta"] == 2
+
+
+def test_fetch_surface_default_observer_is_a_no_op():
+    """`observer` 不傳時完全不影響既有行為（#144 的零行為變更保證）。"""
+    got = marketdata.fetch_surface(
+        "AAPL", "2026-08-01", "tok", http_request=_fake_request(_surface_payload()))
+    assert got["call"] and got["put"]
