@@ -469,7 +469,7 @@ logs 由需求方端（ChatGPT）另行驗證**，不需要要求需求方處理
   清單、依後端順序渲染不重排、展開／收合、Copy 含 fallback、Clear
   含二次確認與取消、讀取失敗說明原因、結構）。前端全套 `typecheck`／
   `vitest`（526）／`build` 無回歸；後端全套 pytest 無回歸（全綠）
-- **DG-07** [#150] — 最終 regression／security gate（commit 待補）：
+- **DG-07** [#150] — 最終 regression／security gate（commit `714e9cc`）：
 
   **兩個真實回歸**（施工中發現、修在這張票）：
   1. `IvHistory.tsx` 存取 `data.diagnostics.events` 未做防禦——大量既有
