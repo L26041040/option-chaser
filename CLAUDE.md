@@ -389,6 +389,36 @@ logs 由需求方端（ChatGPT）另行驗證**，不需要要求需求方處理
   `historical_surface` 假體（`Recorder`／兩個 `ExpirationRecorder`）
   加 `observer=None` 參數以相容新簽章，既有斷言一條未動。全套 pytest
   無回歸（全綠）
+- **DG-04** [#147] — Historical IV 投影路徑觀測（reanchor／metrics）＋
+  完整 N→0 帳本（commit 待補）：新增兩個觀測點。`_emit_reanchor()`
+  逐日發一筆——當天曲面（`option_type` 對應那張網格）的 dte／delta
+  範圍、要查的 tenor／買賣腿 delta、四個欄位（buy_iv／sell_iv／
+  atm_iv／normalized_skew）各自是否為 null；這是「資料明明有、畫面卻
+  空白」唯一看得見的地方（`iv_at()` 出界回 None、不外插的既有行為
+  本身不動）。`_emit_metrics()` 在 `field_metrics()` 之後每個欄位各發
+  一筆（不是一筆合併事件）——比合併事件更看得出是哪一項指標沒有觀測。
+
+  **單腳候選豁免**（兩處都有）：Long Call 結構上沒有賣腿，
+  `sell_iv`／`normalized_skew` 恆為 `None`／`count=0` 不是資料品質
+  問題；`_emit_reanchor` 的「全部 null 才算 warning」與 `_emit_metrics`
+  的欄位清單都排除這兩項（依 `coords.get("sell") is None` 判斷），
+  否則每個 Long Call 候選會永遠亮 warning，是新增訊號而非既有裁示——
+  「只顯示存在欄位」原則的延伸應用。
+
+  **`_select_for_persistence` 追加保留規則**（施工中發現，追加在
+  DG-03 既有機制上）：`metrics` 跟 `backfill` 一樣獨立保留名額，不跟
+  高流量的逐日事件（尤其 `reanchor`，快取滿一年時一次 request 可能
+  ~65 筆）搶——常數改名 `_ALWAYS_KEPT_STAGES = ("backfill", "metrics")`，
+  三層優先序的第一層從「只保留 backfill」擴大成「保留這兩個 stage」。
+  若不追加這條，`reanchor` 一多就會把 `metrics` 擠出 20 筆的 cap，
+  完整帳本測試因此抓到這個問題並在動工當下修正，不是留到 DG-07 才發現。
+
+  測試：`test_api_iv_history.py` 新增 10 條——reanchor 出界／覆蓋兩種
+  severity、單腳 reanchor 豁免、metrics 全零／有資料兩種 severity、
+  單腳 metrics 豁免、完整帳本測試（八站都在同一個 correlation_id 下、
+  payload_parse 單筆事件自己就答得出「N→0」）、`_select_for_persistence`
+  新增一條驗證 `metrics` 與高流量 `reanchor` 共存時不被擠掉。全套
+  pytest 無回歸（全綠）
 
 ### 最新狀態（2026-08-14）——「貴不貴」第六輪研究：Rich/Cheap Trend／entry timing（只研究不施工）
 

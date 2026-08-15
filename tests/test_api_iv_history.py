@@ -1009,3 +1009,176 @@ def test_under_the_cap_nothing_is_dropped():
                               subsystem="historical_iv", stage="cache",
                               severity="info", message="m") for i in range(5)]
     assert _select_for_persistence(events) == events
+
+
+def test_metrics_events_also_survive_the_cap_alongside_backfill():
+    """兩個彙總 stage（`backfill`／`metrics`）都不跟高流量的逐日事件
+    搶名額——這是 DG-04 在既有 DG-03 排放量控制上追加的保留規則。"""
+    from api_app.diagnostics import DiagnosticEvent
+    from api_app.main import _select_for_persistence
+
+    def ev(event_id, stage="reanchor"):
+        return DiagnosticEvent(event_id=event_id, correlation_id="c",
+                               ts=event_id, subsystem="historical_iv",
+                               stage=stage, severity="info", message="m")
+
+    events = [ev(f"r{i}") for i in range(70)]
+    events += [ev("m1", stage="metrics"), ev("m2", stage="metrics"),
+              ev("bf", stage="backfill")]
+    kept_ids = {e.event_id for e in _select_for_persistence(events)}
+    assert {"m1", "m2", "bf"} <= kept_ids
+
+
+# ---------- Historical IV 投影路徑觀測（DG-04／#147） ----------
+#
+# `reanchor`／`metrics` 兩站——「資料明明有、畫面卻空白」唯一看得見的
+# 地方。用 `_mark_backfill_done_today` 讓 backfill 短路（不碰 vendor），
+# 直接手灌少量觀測到快取，讓每個測試只驗一件事，不被高流量的 backfill
+# 迴圈本身淹沒。
+
+def _mark_backfill_done_today(db, symbol="XYZ"):
+    from api_app.storage import IvBackfillRun
+    db.save_iv_backfill_run(
+        IvBackfillRun(symbol=symbol, ran_on=ny_today().isoformat(), outcome="ok"))
+
+
+def _seed_days(db, days_and_points, symbol="XYZ"):
+    from api_app.main import _surface_to_rows
+    from api_app.storage import IvObservation
+
+    for day, pts in days_and_points:
+        db.save_iv_observation(IvObservation(
+            symbol=symbol, observed_on=day,
+            surface=_surface_to_rows({"call": pts, "put": pts}),
+            fetched_at="2026-08-12T00:00:00+00:00"))
+
+
+_NARROW_GRID = [SurfacePoint(dte=d, delta=x, iv=0.2)
+               for d in (1, 5) for x in (0.4, 0.5, 0.6)]
+
+
+def test_reanchor_event_marks_an_out_of_grid_day_as_warning(db):
+    """曲面有資料，但候選要查的座標不在網格範圍內——這正是「連線成功
+    但沒資料」那一類失敗，本函式讓它變成看得見的事實。"""
+    client = _client(db, surface=_surface_never_called)
+    _unlock(client)
+    sid = _scenario(client)
+    key = _candidate_key(client, sid)
+    _mark_backfill_done_today(db)
+    _seed_days(db, [("2026-05-01", _NARROW_GRID)])
+
+    body = _get(client, sid, key).json()
+    got = _events_for(body, "reanchor")
+    assert len(got) == 1
+    assert got[0]["severity"] == "warning"
+    assert got[0]["context"]["observed_on"] == "2026-05-01"
+    assert got[0]["context"]["surface_dte_min"] == 1
+    assert got[0]["context"]["surface_dte_max"] == 5
+    assert got[0]["context"]["buy_iv_null"] is True
+
+
+def test_reanchor_event_is_info_when_the_grid_covers_the_candidate(db):
+    client = _client(db, surface=_surface_never_called)
+    _unlock(client)
+    sid = _scenario(client)
+    key = _candidate_key(client, sid)
+    _mark_backfill_done_today(db)
+    _seed_days(db, [("2026-05-01", _grid()["call"])])
+
+    body = _get(client, sid, key).json()
+    got = _events_for(body, "reanchor")
+    assert len(got) == 1
+    assert got[0]["severity"] == "info"
+    assert got[0]["context"]["buy_iv_null"] is False
+
+
+def test_single_leg_reanchor_is_not_penalized_for_the_missing_sell_leg(db):
+    """Long Call 結構上沒有賣腿——`sell_iv`／`normalized_skew` 恆為 None
+    不是資料品質問題，不該讓每一個單腳候選永遠亮 warning。"""
+    client = _client(db, surface=_surface_never_called)
+    _unlock(client)
+    sid = _scenario(client)
+    key, view = _long_call_candidate_key_and_view(client)
+    _attach_result(db, sid, view)
+    _mark_backfill_done_today(db)
+    _seed_days(db, [("2026-05-01", _grid()["call"])])
+
+    body = _get(client, sid, key).json()
+    got = _events_for(body, "reanchor")
+    assert len(got) == 1
+    assert got[0]["severity"] == "info"
+    assert got[0]["context"]["sell_iv_null"] is True
+    assert got[0]["context"]["normalized_skew_null"] is True
+    assert "sell_delta" not in got[0]["context"]
+
+
+def test_metrics_events_are_info_when_data_is_available(db):
+    client = _client(db, surface=_surface_never_called)
+    _unlock(client)
+    sid = _scenario(client)
+    key = _candidate_key(client, sid)
+    _mark_backfill_done_today(db)
+    _seed_days(db, [("2026-05-01", _grid()["call"])])
+
+    body = _get(client, sid, key).json()
+    by_field = {e["context"]["field"]: e for e in _events_for(body, "metrics")}
+    assert set(by_field) == {"normalized_skew", "buy_iv", "sell_iv", "atm_iv"}
+    assert all(e["severity"] == "info" for e in by_field.values())
+    assert all(e["context"]["count"] > 0 for e in by_field.values())
+
+
+def test_metrics_events_flag_zero_count_fields_as_warning(db):
+    client = _client(db, surface=_surface_never_called)
+    _unlock(client)
+    sid = _scenario(client)
+    key = _candidate_key(client, sid)
+    _mark_backfill_done_today(db)
+    _seed_days(db, [("2026-05-01", _NARROW_GRID)])
+
+    body = _get(client, sid, key).json()
+    by_field = {e["context"]["field"]: e for e in _events_for(body, "metrics")}
+    assert all(e["severity"] == "warning" for e in by_field.values())
+    assert all(e["context"]["count"] == 0 for e in by_field.values())
+
+
+def test_single_leg_metrics_do_not_flag_the_structurally_absent_fields(db):
+    client = _client(db, surface=_surface_never_called)
+    _unlock(client)
+    sid = _scenario(client)
+    key, view = _long_call_candidate_key_and_view(client)
+    _attach_result(db, sid, view)
+    _mark_backfill_done_today(db)
+    _seed_days(db, [("2026-05-01", _grid()["call"])])
+
+    body = _get(client, sid, key).json()
+    fields = {e["context"]["field"] for e in _events_for(body, "metrics")}
+    assert fields == {"buy_iv", "atm_iv"}
+
+
+def test_the_full_ledger_covers_every_stage_and_shares_one_correlation_id(db):
+    """DG-04 的核心交付：同一個 correlation_id 的 events 依序讀完，八站
+    的進與出都在——這就是「vendor 回 N 筆，究竟在哪一站變成 0 筆」的
+    完整帳本，不需要讀程式碼。"""
+    telemetry = {"http_status": 200, "vendor_status": "ok",
+                "vendor_errmsg": None, "raw_rows": 5,
+                "parsed_call_rows": 0, "parsed_put_rows": 0}
+    client = _client(db, surface=_telemetry_surface(telemetry))
+    _unlock(client)
+    sid = _scenario(client)
+    key = _candidate_key(client, sid)
+    _prefill_all_but_one(db)
+    body = _get(client, sid, key).json()
+
+    stages_seen = {e["stage"] for e in body["diagnostics"]["events"]}
+    assert stages_seen == {"candidate_lookup", "cache", "vendor_fetch",
+                           "payload_parse", "database_write", "backfill",
+                           "reanchor", "metrics"}
+    cids = {e["correlation_id"] for e in body["diagnostics"]["events"]}
+    assert cids == {body["diagnostics"]["correlation_id"]}
+
+    # 帳本本身：vendor 回 5 筆原始資料，payload_parse 站砍成 0 筆——
+    # 光看這一筆事件就回答得出「哪一站」，不需要讀程式碼。
+    parse = _events_for(body, "payload_parse")[0]
+    assert parse["context"]["raw_rows"] == 5
+    assert parse["context"]["parsed_call_rows"] == 0
+    assert parse["context"]["parsed_put_rows"] == 0

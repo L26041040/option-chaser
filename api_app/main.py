@@ -237,29 +237,36 @@ class _CollectingDiagnostics:
 _DIAGNOSTICS_STORAGE_CAP_PER_REQUEST = 20
 
 
+# 這兩個 stage 各自是「這次 request 的彙總結論」——`backfill` 每次至多
+# 一筆，`metrics` 每個欄位一筆（單腳 2 筆／兩腿 4 筆）。兩者都不跟
+# 高流量的逐日／逐次事件（`vendor_fetch`／`payload_parse`／
+# `database_write`／`reanchor`，一次 request 可能各自數十筆）搶名額——
+# 施工中發現：若混在同一個優先池裡用 `list[:cap]` 前截斷，事件量一大
+# 時彙總結論反而會被排在後面而擠出去，跟「使用者最想先看結論」的初衷
+# 相反。
+_ALWAYS_KEPT_STAGES = ("backfill", "metrics")
+
+
 def _select_for_persistence(
         events: list[diagnostics.DiagnosticEvent],
         *, cap: int = _DIAGNOSTICS_STORAGE_CAP_PER_REQUEST,
 ) -> list[diagnostics.DiagnosticEvent]:
-    """哪些 events 真的寫進 storage（#146）。log 不受這條限制——`emit()`
-    呼叫當下就已經全部印出去了，這裡只決定「留誰在 capped 的 storage
-    裡」，回傳順序與輸入順序一致。
+    """哪些 events 真的寫進 storage（#146／#147）。log 不受這條限制——
+    `emit()` 呼叫當下就已經全部印出去了，這裡只決定「留誰在 capped 的
+    storage 裡」，回傳順序與輸入順序一致。
 
-    三層優先序，**`backfill` 摘要先保留、不跟其他事件搶名額**——它是
-    每次 request 至多一筆的批次結尾結論，使用者要看的正是「這一批最後
-    結果如何」，不能因為前面的 vendor_fetch／database_write 剛好也是
-    error／warning、數量一多就把它擠到 cap 外面：
+    三層優先序：
 
-    1. `backfill` 摘要（至多一筆）——保留名額最優先，跟它自己的
-       severity 無關。
+    1. `_ALWAYS_KEPT_STAGES`——保留名額最優先，跟它們自己的 severity
+       無關（見上方常數的理由）。
     2. 其餘事件裡的 error／warning——依原始順序，額滿為止。
     3. 其餘事件裡的 info——依原始順序，用剩下的名額補滿。
     """
     if len(events) <= cap:
         return events
-    summary = [e for e in events if e.stage == "backfill"][:cap]
-    others = [e for e in events if e.stage != "backfill"]
-    budget = cap - len(summary)
+    reserved = [e for e in events if e.stage in _ALWAYS_KEPT_STAGES][:cap]
+    others = [e for e in events if e.stage not in _ALWAYS_KEPT_STAGES]
+    budget = cap - len(reserved)
 
     important = [e for e in others if e.severity in ("error", "warning")]
     info = [e for e in others if e.severity not in ("error", "warning")]
@@ -268,7 +275,7 @@ def _select_for_persistence(
     if remaining > 0:
         kept_others_ids |= {id(e) for e in info[:remaining]}
 
-    keep_ids = {id(e) for e in summary} | kept_others_ids
+    keep_ids = {id(e) for e in reserved} | kept_others_ids
     return [e for e in events if id(e) in keep_ids]
 
 
@@ -321,6 +328,68 @@ def _emit_surface_telemetry(emit, telemetry: dict, *, provider: str,
         dropped_missing_iv=telemetry.get("dropped_missing_iv"),
         dropped_missing_dte=telemetry.get("dropped_missing_dte"),
         dropped_unknown_side=telemetry.get("dropped_unknown_side"))
+
+
+def _min_max(values) -> tuple | None:
+    values = list(values)
+    return (min(values), max(values)) if values else None
+
+
+def _emit_reanchor(emit, surface: dict, coords: dict, reanchored: dict, *,
+                   observed_on: str) -> None:
+    """逐日重錨定（DG-04／#147）：這是「資料明明有、畫面卻空白」唯一
+    看得見的地方——當天曲面涵蓋的 (dte, delta) 範圍跟候選要查的座標對不
+    上時，`iv_at()` 誠實回 `None` 且不外插（既有行為，這裡不動），本函式
+    只是把「當天曲面長什麼樣、查的座標是什麼、查到的結果是不是 None」
+    說出來。四個欄位全部 null 才算 warning——單腳候選（沒有 `sell`）
+    的 `sell_iv`／`normalized_skew` 結構上必為 None，不該被算進「全部
+    null」的判準，否則每個 Long Call 候選都會永遠是 warning。
+    """
+    grid = surface.get(coords.get("option_type", "call")) or []
+    dte_range = _min_max(p.dte for p in grid)
+    delta_range = _min_max(p.delta for p in grid)
+    buy = coords.get("buy")
+    sell = coords.get("sell")
+    core_fields = ("buy_iv", "atm_iv") if sell is None else (
+        "buy_iv", "sell_iv", "atm_iv", "normalized_skew")
+    all_null = all(reanchored.get(f) is None for f in core_fields)
+    emit(stage="reanchor",
+        severity="warning" if all_null else "info",
+        message="這一天的座標全部落在網格外" if all_null else "重錨定完成",
+        observed_on=observed_on,
+        tenor_days=buy.tenor_days if buy is not None else None,
+        buy_delta=buy.delta if buy is not None else None,
+        sell_delta=sell.delta if sell is not None else None,
+        surface_dte_min=dte_range[0] if dte_range else None,
+        surface_dte_max=dte_range[1] if dte_range else None,
+        surface_delta_min=delta_range[0] if delta_range else None,
+        surface_delta_max=delta_range[1] if delta_range else None,
+        buy_iv_null=reanchored.get("buy_iv") is None,
+        sell_iv_null=reanchored.get("sell_iv") is None,
+        atm_iv_null=reanchored.get("atm_iv") is None,
+        normalized_skew_null=reanchored.get("normalized_skew") is None)
+
+
+def _emit_metrics(emit, points: list[dict], coords: dict) -> None:
+    """`field_metrics()` 之後（DG-04／#147）：每個欄位各自一筆事件——
+    比起一筆合併事件，逐欄位才看得出來是哪一項指標沒有觀測可用。單腳
+    候選結構上沒有 `sell_iv`／`normalized_skew`（見 `_emit_reanchor` 同一
+    條理由），這兩項本來就必然 count=0，不進來湊「這個候選是不是沒資料」
+    的判斷，否則每個 Long Call 永遠亮 warning。
+    """
+    metrics = ivhistory.field_metrics(points, today=ny_today())
+    applicable = (("buy_iv", "atm_iv") if coords.get("sell") is None
+                 else tuple(metrics.keys()))
+    for field_name in applicable:
+        m = metrics[field_name]
+        count = m["count"]
+        emit(stage="metrics",
+            severity="warning" if count == 0 else "info",
+            message=f"{field_name} 沒有有效觀測" if count == 0
+                    else f"{field_name} 指標計算完成",
+            field=field_name, count=count,
+            percentile_available=m["percentile"] is not None,
+            trend_base_count=m["trend_base_count"])
 
 
 def _timing_json(sc: Scenario, today: date) -> dict:
@@ -1061,10 +1130,9 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         outcome, note = _backfill_iv(sc.symbol, provider, token,
                                      target_expirations, emit=_emit)
 
-        diag_payload = _flush_diagnostics(diag)
-
         coords = ivhistory.spread_coordinates(cand, spot=rec.view["meta"]["spot"])
         if coords is None:
+            diag_payload = _flush_diagnostics(diag)
             return {**_iv_payload(candidate_key, [], outcome,
                                   "這個候選算不出 (tenor, delta) 座標"),
                    "diagnostics": diag_payload}
@@ -1072,8 +1140,13 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         points = []
         for obs in _db().iv_observations(sc.symbol):
             surface = _rows_to_surface(obs.surface)
-            points.append({"date": obs.observed_on,
-                           **ivhistory.reanchor_spread(surface, coords)})
+            reanchored = ivhistory.reanchor_spread(surface, coords)
+            _emit_reanchor(_emit, surface, coords, reanchored,
+                          observed_on=obs.observed_on)
+            points.append({"date": obs.observed_on, **reanchored})
+
+        _emit_metrics(_emit, points, coords)
+        diag_payload = _flush_diagnostics(diag)
 
         return {**_iv_payload(candidate_key, points, outcome, note),
                "diagnostics": diag_payload}
