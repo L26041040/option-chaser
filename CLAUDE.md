@@ -27,7 +27,7 @@ block 裡，不能切成好幾個 code block、也不能中間插普通文字把
 `［回報#001］spec #137 拆票完成`）。編號是**累計總數**，不因換
 session、換分支、換主題而歸零——目前最新編號記在這裡：
 
-> 目前次序：002（下一份回報用 003）
+> 目前次序：003（下一份回報用 004）
 
 每發一份回報就把上面這個數字改成剛剛用掉的那個，跟著那次改動一起
 commit（沒有其他改動要 commit 時，單獨為這一行開一個小 commit 也
@@ -216,6 +216,55 @@ commit（沒有其他改動要 commit 時，單獨為這一行開一個小 commi
   之後。唯一取捨：目標價差距（gap）計算留在 render 層（與既有
   `render_summary` 的 `move_pct` 同類手法一致，非新模式），未額外
   搬進服務層——標準面審查列為非阻塞建議，判斷維持現狀
+
+### Spec #143（2026-08-15 發佈）——Application Diagnostics / Error Log 系統
+
+需求方在兩輪 Historical IV 診斷都卡在「拿不到真實 production 證據」
+之後裁示：**先做一套小型但正式的 Application Diagnostics**，不是為
+Historical IV 臨時插 console.log，而是後續其他資料源與功能共用的錯誤
+診斷基礎。`/to-spec` 已發佈 **issue #143**（`ready-for-agent`），**票
+尚未拆**。
+
+**要解的問題**：`api_app/`／`option_chaser/` 目前**一行 logging 都沒有**
+（唯一的 `print` 在 `cli.py`，是 CLI 正常輸出）；唯一持久線索是
+`IvBackfillRun.outcome` 三選一，而最常見的失敗恰好是 `outcome="ok"`
+但資料是空的。`fetch_surface()` 把 HTTP status／vendor `s`／errmsg／
+rate-limit 標頭／raw row 數全部丟掉，`map_surface_payload()` 靜默跳過
+缺欄位的列，`iv_at()` 出界回 `None`——每一站都可能把 N 筆變 0 筆，
+**沒有任何一站留下自己的進出筆數**。
+
+**spec 的核心決策**（施工時不必重新推導）：
+
+- **新模組 `api_app/diagnostics.py`**：`DiagnosticEvent`＋單一
+  `emit()` 入口，同時寫 storage 與印 structured JSON log，共用
+  `event_id`／`correlation_id`；correlation id 由 middleware 產生放
+  `contextvars`，**不從函式簽章往下傳**（否則引擎層模組被迫認識 HTTP）
+- **Redaction 用白名單不是黑名單**：`context` 走 key 白名單（不在名單
+  直接丟棄），字串值再過長度截斷＋樣式遮蔽＋已知祕密值比對；URL 只記
+  sanitized 形式、headers 一概不記、完整 vendor body 永不落盤
+- **Storage 新表 `diagnostics`**（不併進 `events`——後者是永不修剪的
+  領域事實），retention＝**trim-on-write 全域最新 200 筆**（serverless
+  無背景排程可掛、日期 TTL 擋不住單日爆量；memory 用 `deque(maxlen=)`
+  取得同一條上限，契約測試才有意義）
+- **排放量雙層控制**：log 全發不設限，storage 有 per-request 上限
+  （20 筆）且**依 severity 取捨**（error／warning 一律優先保留）
+- **契約純加法**：iv-history 回應新增 `diagnostics: {correlation_id,
+  events}`（因為最常見症狀是 **200 但沒資料**，另打端點就得猜 id）；
+  新增 `GET /api/diagnostics`、`DELETE /api/diagnostics`
+- **vendor adapter 需暴露 HTTP metadata**（低層 primitive 改回
+  status／白名單標頭／body，`fetch_surface` 加 optional observer）。
+  spec 內明文界定：這**不算**需求禁止的「改 vendor」——禁的是換資料源
+  ／改抓取行為，把本來就存在、只是被丟掉的 metadata 傳出來是觀測必需，
+  且需求第 5 點直接點名要這些欄位。回傳值／例外型別／欄位映射不動
+- **八個 observation point**（`candidate_lookup`／`cache`／
+  `vendor_fetch`／`payload_parse`／`database_write`／`backfill` 摘要／
+  `reanchor`／`metrics`）構成「N → 0 帳本」：同一 correlation id 的
+  events 依序讀完，每站進出筆數都在
+- **只觀測不修**：`_backfill_iv` 一天失敗就 break 整批、`iv_at()` 出界
+  回 None——本輪一律不動，只讓它們看得見
+
+**成功判準只有一條**：上線後不必再開一輪診斷、不必讀程式碼，就能直接
+回答「vendor 回 N 筆，究竟在哪一站變成 0 筆」。
 
 ### 最新狀態（2026-08-14）——「貴不貴」第六輪研究：Rich/Cheap Trend／entry timing（只研究不施工）
 
