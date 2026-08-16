@@ -57,6 +57,7 @@ import {
   type IvHistoryStatus,
   type IvHistoryView,
 } from "./api";
+import { CopyDiagnosticButton, DiagnosticEventFieldList } from "./DiagnosticDetail";
 import { contiguousRuns, ivChartPoints, ivYAxisDomain, xAxisTicks,
         type ChartPoint } from "./ivHistoryChart";
 
@@ -336,47 +337,57 @@ function Metric({ label, metric, points, unit, primary = false }: {
  * redaction 在產生時就把 `None` 拿掉了），天然滿足「只顯示實際存在的
  * 欄位」，不需要前端另外過濾。
  */
-function InlineDiagnostics({ correlationId, events }: {
+function InlineDiagnostics({ correlationId, events, message }: {
   correlationId: string | null;
   events: DiagnosticEvent[];
+  /** 請求層級的錯誤訊息（catch 到的 `Error.message`）——單腳事件清單
+   *  可能是空的（純網路／HTTP 失敗沒有後端 diagnostics 事件可看），但
+   *  「一鍵複製這次 inline error 的完整 diagnostics」不該因此就沒東西
+   *  可複製，所以連同這句一起放進複製內容（QA 反饋，2026-08-16）。 */
+  message?: string;
 }) {
+  const copyText = JSON.stringify(
+    { correlation_id: correlationId, message: message ?? null, events },
+    null, 2,
+  );
   return (
     <details className="iv-diagnostics">
       <summary className="iv-diagnostics-summary">
         Historical IV 資料取得失敗 · 查看詳情
       </summary>
+      {/* 版面依需求方裁示：錯誤摘要（上面卡片本體那句／summary 本身）
+          → Copy 按鈕 → 下方完整 diagnostic details。複製邏輯整套重用
+          Settings Diagnostics 已完成的 `CopyDiagnosticButton`，不另外
+          做第二套格式（QA 反饋，2026-08-16）。 */}
+      <CopyDiagnosticButton text={copyText} label="Copy diagnostics" />
       {correlationId && (
         <p className="caption iv-diagnostics-correlation">
           Correlation ID：{correlationId}
         </p>
       )}
       {events.map((event) => (
-        <DiagnosticEventFields key={event.event_id} event={event} />
+        <DiagnosticEventFieldList key={event.event_id} event={event} />
       ))}
     </details>
   );
 }
 
-function DiagnosticEventFields({ event }: { event: DiagnosticEvent }) {
-  const fields: [string, string][] = [
-    ["時間", event.ts],
-    ["事件 ID", event.event_id],
-    ["子系統", event.subsystem],
-    ["階段", event.stage],
-    ["嚴重程度", event.severity],
-    ["訊息", event.message],
-    ...Object.entries(event.context).map(
-      ([k, v]): [string, string] => [k, String(v)]),
-  ];
+/**
+ * Loading 佔位骨架（QA 反饋，2026-08-16）：版位形狀跟真正內容同構——
+ * 一個頭條區塊＋依 `isSingleLeg` 決定 1 或 2 個次層區塊——資料回來前後
+ * 卡片高度不會整個跳動。純視覺佔位，不讀秒數、不做進度預測，也不宣稱
+ * 任何尚未確定的事。
+ */
+function IvHistorySkeleton({ isSingleLeg }: { isSingleLeg: boolean }) {
   return (
-    <dl className="iv-diagnostic-event">
-      {fields.map(([label, value]) => (
-        <div key={label} className="iv-diagnostic-row">
-          <dt className="caption">{label}</dt>
-          <dd>{value}</dd>
-        </div>
-      ))}
-    </dl>
+    <div className="iv-skeleton" role="status" aria-live="polite">
+      <span className="sr-only">Historical IV 載入中……</span>
+      <div className="iv-skeleton-block iv-skeleton-primary" aria-hidden="true" />
+      <div className={isSingleLeg ? "iv-legs single" : "iv-legs"} aria-hidden="true">
+        <div className="iv-skeleton-block iv-skeleton-secondary" />
+        {!isSingleLeg && <div className="iv-skeleton-block iv-skeleton-secondary" />}
+      </div>
+    </div>
   );
 }
 
@@ -415,35 +426,52 @@ export default function IvHistory({ scenarioId, candidate }: {
     };
   }, [enabled, key, scenarioId]);
 
-  // 鎖著、還沒問完、或這個候選根本沒有身份鍵 → 不輸出任何節點。
-  // `!candidate` 這條分支實務上不會單獨發生（`key` 已經蘊含 `candidate`
-  // 存在），寫出來純粹是讓 TS 把下面的 `candidate.legs` 收窄成非 null。
+  // 鎖著、還沒問完、或這個候選根本沒有身份鍵 → 不輸出任何節點（#126
+  // AC——這條紅線原封不動，跟下面「卡片固定版位」是兩件事：鎖著時連
+  // 卡片外框都不該出現）。`!candidate` 這條分支實務上不會單獨發生
+  // （`key` 已經蘊含 `candidate` 存在），寫出來純粹是讓 TS 把下面的
+  // `candidate.legs` 收窄成非 null。
   if (enabled !== true || !key || !candidate) return null;
 
-  // vendor 失敗只影響這一塊，頁面其餘部分照常（#126 AC）——卡片本身
-  // 仍在，只是多一條就地展開的診斷詳情（DG-05／#148），不是整段文字
-  // 替換掉。
-  if (error) {
-    return (
-      <section className="card iv-history" aria-label="IV 相對位置">
-        <h2 className="section-title">IV 相對位置</h2>
-        <p className="caption">取不到歷史 IV：{error.message}</p>
-        <InlineDiagnostics
-          correlationId={error instanceof ApiError ? error.correlationId : null}
-          events={[]}
-        />
-      </section>
-    );
-  }
-
-  if (!data) return null;
-
-  const points = data.points;
-  // Long Call（單腳候選）沒有賣腿——頭條改買腿 IV，次層是 ATM IV
-  // （#139 資料層對單腳誠實回 sell_iv／normalized_skew 為 None）。用
-  // `candidate.legs.length` 判斷跟 `SpreadHistory` 判斷單腳的既有慣例
-  // 同一種手法，不另創一套規則。
+  // 從這裡開始卡片本身固定存在——loading／error／有資料（含「資料是空
+  // 的」）三種狀態都在同一個版位裡切換，不再因為請求還沒回來就整塊
+  // 消失（QA 反饋，2026-08-16：避免 late layout shift）。「無資料」不是
+  // 獨立分支：`count === 0` 由既有 `metricCaption()` 逐項顯示「沒有歷史
+  // 資料」，資料物件本身照常存在、卡片照常渲染。
   const isSingleLeg = candidate.legs.length < 2;
+
+  return (
+    <section className="card iv-history" aria-label="IV 相對位置">
+      <h2 className="section-title">IV 相對位置</h2>
+
+      {error ? (
+        // vendor 失敗只影響這一塊，頁面其餘部分照常（#126 AC）——卡片
+        // 本身仍在，只是多一條就地展開的診斷詳情（DG-05／#148），不是
+        // 整段文字替換掉。
+        <>
+          <p className="caption">取不到歷史 IV：{error.message}</p>
+          <InlineDiagnostics
+            correlationId={error instanceof ApiError ? error.correlationId : null}
+            events={[]}
+            message={error.message}
+          />
+        </>
+      ) : !data ? (
+        <IvHistorySkeleton isSingleLeg={isSingleLeg} />
+      ) : (
+        <IvHistoryContent data={data} isSingleLeg={isSingleLeg} />
+      )}
+    </section>
+  );
+}
+
+/** 有資料時的卡片內容——從 `IvHistory` 拆出來純粹是讓上面那段「四種
+ *  狀態同一個版位切換」的分支讀起來一眼看懂，不是新的分層原則。 */
+function IvHistoryContent({ data, isSingleLeg }: {
+  data: IvHistoryView;
+  isSingleLeg: boolean;
+}) {
+  const points = data.points;
   // 200 但資料是空的——目前最常見的症狀，只看 HTTP 狀態碼看不出來。
   // severity >= warning 的 events 是唯一能指出這件事的地方（DG-05／
   // #148）。`?.`／`?? []`：`diagnostics` 是後端純加法新增的欄位，
@@ -452,9 +480,7 @@ export default function IvHistory({ scenarioId, candidate }: {
     (e) => e.severity === "warning" || e.severity === "error");
 
   return (
-    <section className="card iv-history" aria-label="IV 相對位置">
-      <h2 className="section-title">IV 相對位置</h2>
-
+    <>
       {/* backfill 今天遇到的狀況——只是額外一行說明，**不取代**下面的
           percentile／Δ4w：狀態與資料能不能看是兩件事（需求方 2026-08-12
           二次修正）。status 為 ok 時完全不出現這一行。 */}
@@ -511,6 +537,6 @@ export default function IvHistory({ scenarioId, candidate }: {
         4週變化＝與約四週前（21–42 天窗內觀測中位數）之差；等待進場另有
         已知的 theta 成本與標的價格風險，本區塊僅描述 volatility 結構。
       </p>
-    </section>
+    </>
   );
 }

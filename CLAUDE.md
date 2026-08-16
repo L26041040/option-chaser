@@ -531,6 +531,70 @@ payload_parse／database_write／backfill／reanchor／metrics）已上線，
 等 ChatGPT 驗證 Preview deployment；需求方尚未 cue 是否要合併回
 `master`（依專案規則，PR 開不開由需求方主動要求，不主動開）。
 
+### QA 反饋直接施工（2026-08-16）——Historical IV 固定版位＋Inline Diagnostics Copy 按鈕
+
+需求方以 `/qa` 呼叫但直接給了施工等級的完整規格（含明確排除範圍與
+「完成後 commit + push」指示），視同直接下工單處理，不走 `/qa` 平時
+「只訪談、開 issue、不動手」的預設流程。範圍明文排除：Historical IV
+演算法、vendor request、HTTP 402 handling、backfill、ranking/filter/
+selection——本輪只動 `src/` 前端呈現層，`option_chaser/`／`api_app/`
+一行未碰（已用 `git diff --stat` 核對）。
+
+**問題 1：Historical IV 版位不固定**——原本 `IvHistory.tsx` 在
+`ivHistory()` 請求 pending 期間直接 `return null`（`error` 分支與
+`enabled !== true` 這條 #126 閘門是分開的兩件事，後者原封不動保留），
+資料回來前卡片整塊不存在，造成頁面載入後版面「突然長出來」。改成
+`enabled === true` 之後卡片外框（`<section className="card
+iv-history">`）永遠掛著，內部依 `error` / `!data` / 有資料三態切換：
+新增 `IvHistorySkeleton`（依候選 `isSingleLeg` 決定 1 或 2 個次層佔位
+方塊，形狀跟真正的 `.iv-metric` 頭條／次層同構，資料回來前後高度
+不整個跳動）在 `!data && !error` 時顯示；有資料內容抽成
+`IvHistoryContent` 子元件（純粹是把「四態同一版位切換」那段 JSX
+拆乾淨，不是新分層原則）。「無資料」本來就不是獨立分支——`count===0`
+已由既有 `metricCaption()` 逐項顯示「沒有歷史資料」，資料物件本身
+照常存在、卡片照常渲染，這次修正前就已成立，不需要額外處理。骨架
+CSS（`.iv-skeleton*`）用 `aspect-ratio` 貼近真實 `Metric` 頭條/次層
+比例＋線性漸層 shimmer 動畫，`prefers-reduced-motion: reduce` 時關閉
+動畫。
+
+**問題 2：Inline Diagnostics 加 Copy 按鈕**——新增共用模組
+`src/DiagnosticDetail.tsx`（`SEVERITY_LABELS`／`diagnosticEventFields`／
+`DiagnosticEventFieldList`／`CopyDiagnosticButton`），整套從
+`Diagnostics.tsx`（DG-06／#149）既有的私有 `SEVERITY_LABELS`／
+`eventFields`／`CopyButton` 抽出來，`Diagnostics.tsx` 與
+`IvHistory.tsx` 兩處改成呼叫同一份，不重做第二套格式化／複製邏輯
+（需求方明文要求）。抽出時**順便修掉一個既有漂移**：`IvHistory.tsx`
+舊私有 `DiagnosticEventFields` 直接印 `event.severity` 原始英文字串
+（`"warning"`），跟 `Diagnostics.tsx` 用中文標籤（`"警告"`）不一致——
+消掉這份重複的直接結果就是兩處現在都印中文標籤，`IvHistory.test.tsx`
+既有一條斷言原文字比對 `"warning"` 因此改成比對 `"警告"`（唯一因這次
+重構而變的既有斷言）。`InlineDiagnostics` 版面依需求方裁示調整為
+「錯誤摘要 → Copy diagnostics 按鈕 → 下方完整 diagnostic details」
+（跟 Settings 那邊 `EventDetail` 「fields 在前、Copy 在後」的順序刻意
+不同，兩處各自組裝、共用的只是欄位清單元件與 Copy 按鈕本身）；新增
+`message` prop 讓純請求層失敗（無結構化 events 可看）的情境也能把
+錯誤訊息一起放進複製內容。收合／展開行為（`<details>`／`<summary>`）
+原樣保留，clipboard 不可用時沿用既有的唯讀 `<textarea>` fallback。
+
+**測試**：`IvHistory.test.tsx` 新增 9 條（loading 中卡片已在原位顯示
+骨架＋資料到位後骨架消失卡片數不變、Spread 兩個次層方塊／Long Call
+一個、error 狀態沿用同一版位、無資料狀態卡片照常在、Copy 按鈕版面
+順序、Copy 內容含 correlation ID 與事件清單、請求失敗時 Copy 內容
+帶錯誤訊息、clipboard 不可用時 fallback、收合展開行為保留）；既有
+1 條斷言改比對中文標籤（見上）。`Diagnostics.test.tsx` 11 條原樣
+全綠（抽出共用模組沒有改變任何可觀察行為）。E2E 手機＋桌面各新增
+2 條（固定版位骨架、Copy 按鈕版面順序＋clipboard 內容＋收合展開），
+共 4 條，用 `page.context().grantPermissions(["clipboard-read",
+"clipboard-write"])` 讓 headless Chromium 真的能讀寫 clipboard 驗證
+複製內容，而不是只斷言按鈕存在。
+
+**全套綠燈**：後端 pytest 全綠（本輪未觸碰後端，純確認無回歸）；
+前端 `typecheck`／`vitest`（535）／`build` 全綠；E2E `playwright test`
+（iPhone＋Desktop 共 75 條）全綠。
+
+**交付**：commit＋push 到 `claude/implement-tfm9oa`，依需求方指示
+不開 PR。
+
 ### 最新狀態（2026-08-14）——「貴不貴」第六輪研究：Rich/Cheap Trend／entry timing（只研究不施工）
 
 需求方 `/research` 指示本輪只研究、不修改程式碼：在既有「現在相對

@@ -588,7 +588,10 @@ describe("就地展開的診斷詳情（DG-05／#148）", () => {
     await userEvent.click(summary);
 
     expect(screen.getByText("payload_parse")).toBeInTheDocument();
-    expect(screen.getByText("warning")).toBeInTheDocument();
+    // 改用共用的 `DiagnosticEventFieldList`（跟 Settings Diagnostics
+    // 同一套格式化邏輯，QA 反饋 2026-08-16）後嚴重程度印中文標籤，不再
+    // 是原始英文字串——這是消除跟 Settings 那邊既有漂移的直接結果。
+    expect(screen.getByText("警告")).toBeInTheDocument();
     expect(screen.getByText("2026-08-15T00:00:00+00:00")).toBeInTheDocument();
     expect(screen.getByText("raw_rows")).toBeInTheDocument();
     expect(screen.getByText("5")).toBeInTheDocument();
@@ -629,5 +632,195 @@ describe("就地展開的診斷詳情（DG-05／#148）", () => {
     expect(screen.getByText("vendor_fetch")).toBeInTheDocument();
     expect(screen.getByText("payload_parse")).toBeInTheDocument();
     expect(screen.getByText("429")).toBeInTheDocument();
+  });
+});
+
+describe("固定版位，不因 request 完成才決定要不要出現（QA 反饋，2026-08-16）", () => {
+  /** 建一個永遠不會自己 resolve 的 IV 請求，讓測試自己控制什麼時候
+   *  「回應到了」——這是唯一能穩定觀察到 loading 這個瞬間狀態的方法。 */
+  function pendingIvFetch() {
+    let resolveIv!: (r: Response) => void;
+    const ivPromise = new Promise<Response>((resolve) => { resolveIv = resolve; });
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+      if (url.startsWith("/api/settings")) {
+        return { ok: true, status: 200,
+                 json: async () => ({ historical_iv_enabled: true }) } as Response;
+      }
+      return ivPromise;
+    }));
+    return (result: IvHistoryView) =>
+      resolveIv({ ok: true, status: 200, json: async () => result } as Response);
+  }
+
+  it("解鎖後、資料回來前，卡片已經在原位顯示骨架，不是空白", async () => {
+    const resolve = pendingIvFetch();
+    const { container } = render(
+      <IvHistory scenarioId="s1" candidate={spreadCandidate()} />);
+
+    await waitFor(() =>
+      expect(container.querySelector(".iv-skeleton")).toBeInTheDocument());
+    expect(screen.getByText("IV 相對位置")).toBeInTheDocument();
+    expect(container.querySelectorAll(".card")).toHaveLength(1);
+
+    resolve(ivView());
+    await waitFor(() =>
+      expect(screen.getByText("Normalized Skew")).toBeInTheDocument());
+    // 換成有資料的內容後骨架消失，但卡片本身自始至終只有這一個版位。
+    expect(container.querySelector(".iv-skeleton")).not.toBeInTheDocument();
+    expect(container.querySelectorAll(".card")).toHaveLength(1);
+  });
+
+  it("Spread 模式骨架有兩個次層方塊，Long Call 單腳只有一個", async () => {
+    const resolveSpread = pendingIvFetch();
+    const { container: spreadContainer } = render(
+      <IvHistory scenarioId="s1" candidate={spreadCandidate()} />);
+    await waitFor(() =>
+      expect(spreadContainer.querySelector(".iv-skeleton")).toBeInTheDocument());
+    expect(spreadContainer.querySelectorAll(".iv-skeleton-secondary"))
+      .toHaveLength(2);
+    resolveSpread(ivView());
+    await waitFor(() =>
+      expect(spreadContainer.querySelector(".iv-skeleton")).not.toBeInTheDocument());
+
+    const resolveSingle = pendingIvFetch();
+    const { container: singleContainer } = render(
+      <IvHistory scenarioId="s1" candidate={longCallCandidate()} />);
+    await waitFor(() =>
+      expect(singleContainer.querySelector(".iv-skeleton")).toBeInTheDocument());
+    expect(singleContainer.querySelectorAll(".iv-skeleton-secondary"))
+      .toHaveLength(1);
+    resolveSingle(ivView());
+    await waitFor(() =>
+      expect(singleContainer.querySelector(".iv-skeleton")).not.toBeInTheDocument());
+  });
+
+  it("error 狀態沿用同一個版位——卡片沒有先消失再重新出現", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+      if (url.startsWith("/api/settings")) {
+        return { ok: true, status: 200,
+                 json: async () => ({ historical_iv_enabled: true }) } as Response;
+      }
+      return { ok: false, status: 502,
+               headers: new Headers({ "X-Correlation-Id": "cid-fail" }),
+               json: async () => ({ detail: "額度用盡" }) } as Response;
+    }));
+    const { container } = render(
+      <IvHistory scenarioId="s1" candidate={spreadCandidate()} />);
+    await waitFor(() =>
+      expect(container.querySelectorAll(".card")).toHaveLength(1));
+    await waitFor(() =>
+      expect(screen.getByText(/取不到歷史 IV/)).toBeInTheDocument());
+    expect(container.querySelectorAll(".card")).toHaveLength(1);
+  });
+
+  it("無資料（count＝0）時卡片照常在，逐項顯示「沒有歷史資料」而不是整塊消失",
+     async () => {
+    mockApi({ enabled: true, iv: ivView({
+      metrics: emptyMetrics(),
+      observations: 0,
+    }) });
+    const { container } = render(
+      <IvHistory scenarioId="s1" candidate={spreadCandidate()} />);
+    await waitFor(() =>
+      expect(screen.getByText("Normalized Skew")).toBeInTheDocument());
+    expect(screen.getAllByText("沒有歷史資料").length).toBeGreaterThan(0);
+    expect(container.querySelectorAll(".card")).toHaveLength(1);
+  });
+});
+
+describe("Inline Diagnostics 的 Copy 按鈕（QA 反饋，2026-08-16）", () => {
+  it("版面順序：Copy 按鈕在完整 diagnostic details 之前", async () => {
+    mockApi({ enabled: true, iv: ivView({
+      diagnostics: { correlation_id: "cid-copy", events: [diagEvent()] },
+    }) });
+    render(<IvHistory scenarioId="s1" candidate={spreadCandidate()} />);
+    const summary = await screen.findByText(
+      "Historical IV 資料取得失敗 · 查看詳情");
+    await userEvent.click(summary);
+
+    const copyButton = screen.getByRole("button", { name: "Copy diagnostics" });
+    const eventIdLabel = screen.getByText("事件 ID");
+    const position = copyButton.compareDocumentPosition(eventIdLabel);
+    expect(position & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("點 Copy 呼叫 clipboard，內容含 correlation ID 與完整事件清單", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.assign(navigator, { clipboard: { writeText } });
+    mockApi({ enabled: true, iv: ivView({
+      diagnostics: { correlation_id: "cid-copy", events: [diagEvent()] },
+    }) });
+    render(<IvHistory scenarioId="s1" candidate={spreadCandidate()} />);
+    const summary = await screen.findByText(
+      "Historical IV 資料取得失敗 · 查看詳情");
+    await userEvent.click(summary);
+    await userEvent.click(screen.getByRole("button", { name: "Copy diagnostics" }));
+
+    await waitFor(() => expect(writeText).toHaveBeenCalledTimes(1));
+    const copied = JSON.parse(writeText.mock.calls[0][0] as string);
+    expect(copied.correlation_id).toBe("cid-copy");
+    expect(copied.events).toHaveLength(1);
+    expect(copied.events[0].event_id).toBe("evt-1");
+  });
+
+  it("請求本身失敗時 Copy 內容也帶著這次的錯誤訊息", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.assign(navigator, { clipboard: { writeText } });
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+      if (url.startsWith("/api/settings")) {
+        return { ok: true, status: 200,
+                 json: async () => ({ historical_iv_enabled: true }) } as Response;
+      }
+      return { ok: false, status: 502,
+               headers: new Headers({ "X-Correlation-Id": "cid-fail-copy" }),
+               json: async () => ({ detail: "額度用盡" }) } as Response;
+    }));
+    render(<IvHistory scenarioId="s1" candidate={spreadCandidate()} />);
+    const summary = await screen.findByText(
+      "Historical IV 資料取得失敗 · 查看詳情");
+    await userEvent.click(summary);
+    await userEvent.click(screen.getByRole("button", { name: "Copy diagnostics" }));
+
+    await waitFor(() => expect(writeText).toHaveBeenCalledTimes(1));
+    const copied = JSON.parse(writeText.mock.calls[0][0] as string);
+    expect(copied.correlation_id).toBe("cid-fail-copy");
+    expect(copied.message).toContain("額度用盡");
+  });
+
+  it("clipboard 不可用時退回顯示可全選的文字區塊，不是靜默失敗", async () => {
+    Object.assign(navigator, { clipboard: undefined });
+    mockApi({ enabled: true, iv: ivView({
+      diagnostics: { correlation_id: "cid-fallback", events: [diagEvent()] },
+    }) });
+    render(<IvHistory scenarioId="s1" candidate={spreadCandidate()} />);
+    const summary = await screen.findByText(
+      "Historical IV 資料取得失敗 · 查看詳情");
+    await userEvent.click(summary);
+    await userEvent.click(screen.getByRole("button", { name: "Copy diagnostics" }));
+
+    const fallback = await screen.findByLabelText("複製失敗，請手動全選複製");
+    expect(fallback.tagName).toBe("TEXTAREA");
+    const copied = JSON.parse((fallback as HTMLTextAreaElement).value);
+    expect(copied.correlation_id).toBe("cid-fallback");
+  });
+
+  it("收合/展開行為保留——details 預設收合，點擊 summary 展開／收起", async () => {
+    mockApi({ enabled: true, iv: ivView({
+      diagnostics: { correlation_id: "cid-collapsed", events: [diagEvent()] },
+    }) });
+    const { container } = render(
+      <IvHistory scenarioId="s1" candidate={spreadCandidate()} />);
+    const summary = await screen.findByText(
+      "Historical IV 資料取得失敗 · 查看詳情");
+    const details = container.querySelector(".iv-diagnostics") as HTMLDetailsElement;
+    expect(details.open).toBe(false);
+
+    await userEvent.click(summary);
+    expect(details.open).toBe(true);
+    expect(screen.getByRole("button", { name: "Copy diagnostics" }))
+      .toBeInTheDocument();
+
+    await userEvent.click(summary);
+    expect(details.open).toBe(false);
   });
 });

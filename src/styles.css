@@ -2167,30 +2167,40 @@ body {
   margin-top: 6px;
 }
 
-/* 一筆事件的欄位清單——`dt`／`dd` 並排而不是堆疊，手機寬度仍讀得完
-   一列，不必為了對齊犧牲密度。 */
-.iv-diagnostic-event {
-  margin: 8px 0 0;
-  padding: 8px;
-  border-radius: 8px;
-  background: var(--fill);
-}
-
-.iv-diagnostic-row {
+/* Loading 佔位骨架（QA 反饋，2026-08-16）：形狀跟 `.iv-metric` 頭條／
+   次層同構，資料回來前後卡片高度不整個跳動。`.iv-legs`／`.iv-legs.single`
+   直接沿用既有次層排版類別，這裡只補頭條與每個次層方塊本身的佔位樣式。 */
+.iv-skeleton {
   display: flex;
+  flex-direction: column;
   gap: 8px;
-  padding: 2px 0;
-  font-size: 13px;
 }
 
-.iv-diagnostic-row dt {
-  flex: 0 0 auto;
-  min-width: 88px;
+.iv-skeleton-block {
+  border-radius: 8px;
+  background: linear-gradient(
+    90deg, var(--fill) 25%, var(--bg-elevated) 37%, var(--fill) 63%);
+  background-size: 400% 100%;
+  animation: iv-skeleton-shimmer 1.4s ease infinite;
 }
 
-.iv-diagnostic-row dd {
-  margin: 0;
-  overflow-wrap: anywhere;
+.iv-skeleton-primary {
+  aspect-ratio: 300 / 130;
+}
+
+.iv-skeleton-secondary {
+  aspect-ratio: 200 / 90;
+}
+
+@keyframes iv-skeleton-shimmer {
+  0% { background-position: 100% 0; }
+  100% { background-position: 0 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .iv-skeleton-block {
+    animation: none;
+  }
 }
 
 /* 卡片右下角的動作組（#132：編輯 ＋ 封存）。沿用 `.compact-archive` 原本

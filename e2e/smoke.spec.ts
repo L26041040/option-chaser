@@ -1481,6 +1481,91 @@ test("Historical IV 200 但帶 warning events：一樣觸發診斷區塊，資�
   await expect(block.getByText("Normalized Skew")).toBeVisible();
 });
 
+/* ---------- 固定版位＋Inline Diagnostics Copy 按鈕（QA 反饋，2026-08-16） ---------- */
+
+test("手機版：Historical IV 卡片一開始就在，loading 時原位顯示骨架，資料回來後原位換成走勢圖" +
+     "（不因 request 完成才決定要不要出現）", async ({ page }) => {
+  await routeLibrary(page, libraryRow());
+  await page.route("**/api/settings", (route) =>
+    route.fulfill({ json: { historical_iv_enabled: true } }));
+
+  // 卡在 pending，直到測試自己放行——這是唯一能穩定觀察到 loading
+  // 這個瞬間狀態的辦法（沿用 Vitest 元件測試同一種手法）。
+  let releaseIv!: () => void;
+  const ivGate = new Promise<void>((resolve) => { releaseIv = resolve; });
+  await page.route("**/api/scenarios/*/iv-history*", async (route) => {
+    await ivGate;
+    const points = ivPoints();
+    return route.fulfill({ json: {
+      candidate_key: "k", status: "ok", points,
+      metrics: ivMetrics(points), observations: points.length, note: null,
+    } });
+  });
+
+  await page.goto("/#/s/s1");
+
+  // 卡片版位一開始就在，裡面是骨架，不是空白、也不是整塊還沒出現。
+  const block = page.locator(".iv-history");
+  await expect(block).toBeVisible();
+  await expect(block.getByText("IV 相對位置")).toBeVisible();
+  await expect(block.locator(".iv-skeleton")).toBeVisible();
+  const cardCountDuringLoading = await page.locator(".card").count();
+
+  releaseIv();
+  await expect(block.getByText("Normalized Skew")).toBeVisible();
+  await expect(block.locator(".iv-skeleton")).toHaveCount(0);
+  // 換成有資料的內容後，卡片總數沒有變化——不是骨架消失後又多長出一張。
+  await expect(page.locator(".card")).toHaveCount(cardCountDuringLoading);
+});
+
+test("手機版：Inline Diagnostics 的 Copy 按鈕——版面順序、複製內容、收合展開行為" +
+     "（DG-05／#148 延伸，QA 反饋 2026-08-16）", async ({ page }) => {
+  await page.context().grantPermissions(["clipboard-read", "clipboard-write"]);
+  await routeLibrary(page, libraryRow());
+  await page.route("**/api/settings", (route) =>
+    route.fulfill({ json: { historical_iv_enabled: true } }));
+  await page.route("**/api/scenarios/*/iv-history*", (route) => {
+    const points = ivPoints();
+    return route.fulfill({ json: {
+      candidate_key: "k", status: "ok", points,
+      metrics: ivMetrics(points), observations: points.length, note: null,
+      diagnostics: { correlation_id: "cid-e2e-copy", events: [DIAG_EVENT_E2E] },
+    } });
+  });
+
+  await page.goto("/#/s/s1");
+
+  const block = page.locator(".iv-history");
+  const summary = block.getByText("Historical IV 資料取得失敗 · 查看詳情");
+  await expect(summary).toBeVisible();
+  await summary.click();
+
+  const copyButton = block.getByRole("button", { name: "Copy diagnostics" });
+  await expect(copyButton).toBeVisible();
+  const fieldLabel = block.getByText("事件 ID");
+  await expect(fieldLabel).toBeVisible();
+
+  // 版面順序：Copy 按鈕在完整 diagnostic details 之前（需求方裁示
+  // 「錯誤摘要 → Copy diagnostics 按鈕 → 下方完整 diagnostic details」）。
+  const copyBox = (await copyButton.boundingBox())!;
+  const fieldBox = (await fieldLabel.boundingBox())!;
+  expect(copyBox.y).toBeLessThan(fieldBox.y);
+
+  await copyButton.click();
+  await expect(block.getByRole("button", { name: "已複製" })).toBeVisible();
+  const copied = await page.evaluate(() => navigator.clipboard.readText());
+  const parsed = JSON.parse(copied);
+  expect(parsed.correlation_id).toBe("cid-e2e-copy");
+  expect(parsed.events[0].event_id).toBe("evt-e2e-1");
+
+  // 收合／展開行為保留。
+  const details = block.locator(".iv-diagnostics");
+  const isOpen = () => details.evaluate((el) => (el as HTMLDetailsElement).open);
+  expect(await isOpen()).toBe(true);
+  await summary.click();
+  expect(await isOpen()).toBe(false);
+});
+
 /* ---------- 編輯劇本（#132） ---------- */
 
 async function routeEditable(page: import("@playwright/test").Page) {

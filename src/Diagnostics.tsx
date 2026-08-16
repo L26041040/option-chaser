@@ -13,77 +13,14 @@
 import { useEffect, useState } from "react";
 
 import { clearDiagnostics, getDiagnostics, type DiagnosticEvent } from "./api";
-
-const SEVERITY_LABELS: Record<DiagnosticEvent["severity"], string> = {
-  info: "資訊", warning: "警告", error: "錯誤",
-};
-
-function eventFields(event: DiagnosticEvent): [string, string][] {
-  return [
-    ["時間", event.ts],
-    ["事件 ID", event.event_id],
-    ["Correlation ID", event.correlation_id],
-    ["子系統", event.subsystem],
-    ["階段", event.stage],
-    ["嚴重程度", SEVERITY_LABELS[event.severity]],
-    ["訊息", event.message],
-    ...Object.entries(event.context).map(
-      ([k, v]): [string, string] => [k, String(v)]),
-  ];
-}
-
-/**
- * 複製失敗（clipboard API 不可用或被拒）時**退回顯示一個唯讀、可全選
- * 的文字區塊**——不是靜默失敗，也不是只丟一句「複製失敗」，使用者仍
- * 拿得到完整內容，只是得自己選取。
- */
-function CopyButton({ text, label = "Copy" }: {
-  text: string;
-  label?: string;
-}) {
-  const [state, setState] = useState<"idle" | "copied" | "fallback">("idle");
-
-  async function handleClick() {
-    try {
-      if (!navigator.clipboard?.writeText) throw new Error("clipboard 不可用");
-      await navigator.clipboard.writeText(text);
-      setState("copied");
-      setTimeout(() => setState("idle"), 1500);
-    } catch {
-      setState("fallback");
-    }
-  }
-
-  return (
-    <div className="diagnostics-copy">
-      <button className="pill" onClick={() => void handleClick()}>
-        {state === "copied" ? "已複製" : label}
-      </button>
-      {state === "fallback" && (
-        <textarea
-          className="diagnostics-copy-fallback"
-          readOnly
-          value={text}
-          aria-label="複製失敗，請手動全選複製"
-          onFocus={(e) => e.currentTarget.select()}
-        />
-      )}
-    </div>
-  );
-}
+import { CopyDiagnosticButton, DiagnosticEventFieldList, SEVERITY_LABELS }
+  from "./DiagnosticDetail";
 
 function EventDetail({ event }: { event: DiagnosticEvent }) {
   return (
     <div className="diagnostics-detail">
-      <dl className="diagnostics-detail-fields">
-        {eventFields(event).map(([label, value]) => (
-          <div key={label} className="diagnostics-detail-row">
-            <dt className="caption">{label}</dt>
-            <dd>{value}</dd>
-          </div>
-        ))}
-      </dl>
-      <CopyButton text={JSON.stringify(event, null, 2)} />
+      <DiagnosticEventFieldList event={event} />
+      <CopyDiagnosticButton text={JSON.stringify(event, null, 2)} />
     </div>
   );
 }
