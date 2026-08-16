@@ -27,7 +27,7 @@ block 裡，不能切成好幾個 code block、也不能中間插普通文字把
 `［回報#001］spec #137 拆票完成`）。編號是**累計總數**，不因換
 session、換分支、換主題而歸零——目前最新編號記在這裡：
 
-> 目前次序：006（下一份回報用 007）
+> 目前次序：007（下一份回報用 008）
 
 每發一份回報就把上面這個數字改成剛剛用掉的那個，跟著那次改動一起
 commit（沒有其他改動要 commit 時，單獨為這一行開一個小 commit 也
@@ -594,6 +594,60 @@ CSS（`.iv-skeleton*`）用 `aspect-ratio` 貼近真實 `Metric` 頭條/次層
 
 **交付**：commit＋push 到 `claude/implement-tfm9oa`，依需求方指示
 不開 PR。
+
+### 第七輪研究（2026-08-16）——Historical Rich/Cheap canonical methodology 重新確認（只研究不施工）
+
+需求方 `/research` 指示：**重新確認** canonical methodology，明令
+**不得因既有實作已經做了 fixed-(tenor, delta) 就給 sunk-cost 優勢**，
+也不得預設 `IV − realized vol` 就是 fair-value residual。產出
+`docs/research/historical-rich-cheap-canonical-methodology.md`
+（16 節、70KB）。未改動任何 code、未開 issue。
+
+**裁決＝C（hybrid），但是非對稱、界線寫死的 hybrid**：
+- 最直接回答「這張現在貴不貴」的是 **A 家族的 fair-value residual
+  本身**，不是它的歷史。SAS 定義 `SAS(K,T)=Σ_market−Σ_H`，`Σ_H` 由
+  **標的報酬史**推出，**不需要這張合約的任何報價歷史**【一手原文】。
+- 能掛 1Y 走勢圖／percentile／Δ4w 的 canonical 量**只能是 B 的
+  fixed-(tenor, delta) 重錨定序列**——理由是與 vendor 無關的可得性
+  算術：A 需 `L ≥ D+T`、B 只需 `L ≳ D`。真實 fixture 的 TLT LEAPS
+  D=882 天時 A 需 L≥41 個月 > 39 個月掛牌上限，**A 在數學上不可能，
+  換誰家、付多少錢都一樣**。
+- **`IV − realized vol` 明確否決**：SAS 第 1 頁把它列為與 SAS 並列的
+  **另一把尺**、「options replicators 的指標」、「有 skew 時就不精確」
+  【一手原文】。它量的是 variance risk premium，不是這張合約的錯價。
+- **結構性死路**（殺掉 full-SAS 路線）：SAS 裡唯一大得過摩擦的成分
+  （level ≈ IV−RV）是 **GS 自己主動歸零**的那一半（SAS_ATM）；剩下
+  可信的 skew richness 實測只有 **0.15–0.5 vol 點 vs 買賣價差半寬
+  0.80–2.65 vol 點**。
+- **引擎實算（新增、決定性）**：環境凍結下把 DTE 882→252，raw gap
+  與 Ĝ 同步漂移 **+87%**（÷ATM 不能消除 roll-down），同座標殘差漂移
+  **0.000**——這是 A 唯一真實的結構優勢，但在本產品 tenor 上用不到。
+- **Spread 合成**：逐腿 residual → 各自 vega → price 空間、依部位符號
+  相加；**單一「Spread IV」否決**（net-volatility 在真實 TLT 部位上
+  解出 −0.74 vol 點，1% vega 擾動跳 0.41 點）。
+- **必要 normalization（保留）**：固定 tenor、固定 delta、不外插、
+  skew ÷ ATM、rank 統計量。**不該當訊號**：買腿 IV percentile 當
+  「貴不貴」的答案、Ĝ 絕對值跨候選比較、Δ4w 當方向、觀測 <10 筆的
+  percentile、貼網格邊界的 ATM 內插。
+
+**⚠ 順帶標出一個可驗證的風險（非已確認 bug）**：`ivhistory` 的
+delta 座標用引擎 `q=0`（#122 紅線），vendor 曲面網格的 delta 若帶
+股利，同一張真實 TLT LEAPS 是 0.7194（q=0）vs 0.4478（q=4.5%），
+查表會落在 **K=74.03 而非 K=85**、系統性偏 **−1.95 vol 點**。
+vendor greeks 的 q 慣例在沙箱無法驗證（#111）。
+
+**唯一殘留 blocker**：TLT 這類 ETF 的**實際**最長掛牌前置期 L（目前
+只能界定在 [29, 39] 個月）。它只影響 18–29 個月 tenor 那一段的 A vs B
+邊界，**不影響 882 天核心情境的裁決**。
+
+⚠ **本輪沒有任何【官方文件】等級證據**：交易所／OCC／vendor 官方網域
+（`docs.marketdata.app`／`cboe.com`／`theocc.com`／`sec.gov` 等）在沙箱
+全數 CONNECT 403 或 DNS 解析不到，掛牌規則整節是【二手轉述】。
+`raw.githubusercontent.com` 仍是唯一一手通道——本輪由此取得 **SAS 全文
+PDF** 與**一份真實 Cboe 全鏈 JSON**。證據分級統計：【一手原文】35、
+【官方文件】3、【二手轉述】36、【自行推論】37。
+
+**下一步**：等需求方審閱裁決。**本輪不施工、不開票。**
 
 ### 最新狀態（2026-08-14）——「貴不貴」第六輪研究：Rich/Cheap Trend／entry timing（只研究不施工）
 
