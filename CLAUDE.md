@@ -27,7 +27,7 @@ block 裡，不能切成好幾個 code block、也不能中間插普通文字把
 `［回報#001］spec #137 拆票完成`）。編號是**累計總數**，不因換
 session、換分支、換主題而歸零——目前最新編號記在這裡：
 
-> 目前次序：008（下一份回報用 009）
+> 目前次序：009（下一份回報用 010）
 
 每發一份回報就把上面這個數字改成剛剛用掉的那個，跟著那次改動一起
 commit（沒有其他改動要 commit 時，單獨為這一行開一個小 commit 也
@@ -328,9 +328,39 @@ issue #157 留言：`valuation.py::implied_vol()` 與
 （不是新家族被餓死，是新家族的量體把舊家族擠出去，HIVT-03 已修正）。
 全套 1341 條測試通過。issue 已關閉。
 
-**尚存 blocker**：無。**下一步＝HIVT-07**（#158，全面回歸／E2E 最終
-驗收，spec #151 系列最後一張票），尚未開工。依專案規則全部子票做完
-才開 PR，中途不主動開；#158 完成後即符合開 PR 條件，等需求方 cue。
+**HIVT-07**（#158，commits `8ffb457`／`74f3398`）— 全面回歸／E2E 最終
+驗收，spec #151 系列最後一張票：補齊既有 75 條 E2E 尚未逐一肉眼驗證到
+的 34 項 User Stories 缺口，新增 6 條手機端測試涵蓋 exact-contract
+身份真實性（買／賣腿現值與百分位讀出兩個確實不同數字，不是同一份
+序列複製兩份）、涵蓋時間三個邊界（近 3 週／5 個月／11 個月）、
+z-score／MA／Bollinger 帶幾何可見性、逐腿 vendor／quota 獨立狀態。
+過程中在 `IvTrend.tsx::spanLabel()` 抓到兩個既有生產環境 bug（15–29
+天被 `Math.round(days/30)` 誤湊成「近 1 個月」；330 天被固定 300 天
+門檻誤報成「近 1 年」），修正並各補一條回歸測試鎖死；本人以邊界值
+（1／21／29／30／300／330／345／364／365／0）手算獨立覆核過修正結果，
+`/code-review` Standards 軸自己手算同一批邊界值也得到相同結論。
+
+`/code-review` Spec 軸抓到真缺口：`playwright.config.ts` 顯示
+`smoke.spec.ts` 只跑在 mobile（iPhone）project 下，本票新增的 6 條
+檢查因此只有手機覆蓋，desktop.spec.ts 完全沒補，與 #158 明文要求的
+「桌面與手機 viewport 對等」有落差——已修正，補上其中 3 條到
+`desktop.spec.ts`（exact-contract 身份真實性、統計量幾何可見性、
+逐腿 vendor／quota 獨立狀態；沿用該檔既有 `legHistoricalIv`／
+`SELL_CONTRACT`／`fullIvResponse`／`routeTwoScenarios` 慣例）。涵蓋
+時間三個邊界維持只在 mobile 跑——`spanLabel()` 是純 viewport-agnostic
+邏輯，已被 `IvTrend.test.tsx` 單元測試與 mobile E2E 鎖死，desktop
+重複驗證邊際價值低，已在 commit 訊息記錄這個取捨。
+
+最終驗證：backend pytest 全綠（memory＋真實 Postgres 雙後端）、
+frontend vitest 557 條全綠、typecheck／build 通過、Playwright
+mobile＋desktop 共 84 條全綠（連續兩輪穩定、無 flake；HIVT-07 自己
+新增的一條測試施工中曾因固定值移動平均線在圖上塌成零高度導致
+geometry 斷言不穩，已改用有斜率的假資料修正並重跑兩輪確認穩定）。
+issue 已關閉。
+
+**Spec #151（HIVT-01–07）全七張子票（#152–158）全數完成。** 依專案
+規則全部子票做完才開 PR，中途不主動開；**尚存 blocker：無**——
+已符合開 PR 條件，等需求方 cue 才實際開 PR、merge 回 master。
 
 ### Spec #143（2026-08-15 發佈）——Application Diagnostics / Error Log 系統
 
