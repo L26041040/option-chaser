@@ -263,10 +263,28 @@ spec #151 §4 精確定義整個省略 `sell` key，不是設成 `null`），既
 1279 條測試通過（memory＋真實 Postgres 雙後端），既有 (tenor,delta)
 家族測試逐條未動。issue 已關閉。
 
-**尚存 blocker**：無——HIVT-01 credential 已解除，HIVT-02 已完結。
-**下一步＝HIVT-03**（#154，統計量：moving average／Bollinger／
-z-score／percentile／Δ4w 純函式，接上 HIVT-02 的 `legs` 原始序列），
-尚未開工。依專案規則全部子票做完才開 PR，中途不主動開。
+**HIVT-03**（#154，commits `18a2337`／`4d60e14`）— Historical IV 統計量
+套組：`ivtrend.py` 新增 `moving_average`／`bollinger_bands`／
+`current_zscore`／`historical_percentile`／`delta_4w` 五個純函式＋
+`IV_TREND_LOOKBACK_DAYS=30`／`IV_TREND_MIN_OBSERVATIONS_FOR_BANDS=5`
+兩個常數；三個「視窗型」統計量共用同一份 rolling mean／std（z-score
+與 Bollinger band 保證同一個數字，不分頭算）；`percentile`／`delta_4w`
+沿用 `ivhistory.percentile()`／`trend_4w()` 演算法定義但重新實作、不
+import，維持雙向零耦合。`LegHistoricalIv` 回應新增六個統計欄位＋
+`lookback_days_config`；低於最低觀測門檻時 SMA／bands／zscore 各自回
+`null`，percentile／Δ4w／原始走勢圖不受影響。per-request 診斷保留上限
+`_DIAGNOSTICS_STORAGE_CAP_PER_REQUEST` 從 20 調高到 40——兩腿候選新增
+10 筆恆保留的 metrics 事件後，舊上限會把 `vendor_fetch`／`reanchor`
+擠出去，這是舊 (tenor,delta) 家族的真回歸，當票一併修正。`/code-review`
+兩軸各抓到一項真問題：`bollinger_bands()` 補回 spec 明文簽章的
+`mean`／`std` 兩條序列；`_emit_leg_stat_metrics()` 從五段複製貼上改成
+資料驅動迴圈、六參數收斂成三個。新增結構性隔離測試（AST 逐函式檢查
+exact-contract 端點函式不呼叫任何重錨定函式）。全套 1329 條測試通過。
+issue 已關閉。
+
+**尚存 blocker**：無。**下一步＝HIVT-04**（#155，依需求方指示與
+HIVT-05／#156 因 API／前端相依必須連續完成），尚未開工。依專案規則
+全部子票做完才開 PR，中途不主動開。
 
 ### Spec #143（2026-08-15 發佈）——Application Diagnostics / Error Log 系統
 
