@@ -317,6 +317,127 @@ test("桌面版：Inline Diagnostics 的 Copy 按鈕——版面順序、複製�
   expect(await isOpen()).toBe(false);
 });
 
+/* ---------- HIVT-07（#158）桌面 viewport 對等補齊：smoke.spec.ts 已有
+   對應的手機版斷言，這裡補桌面版，兩邊各自獨立驗證同一批事實。 ---------- */
+
+test("桌面版 Historical IV：買／賣腿讀到的是各自 exact contract 的真實觀測——現值與百分位" +
+     "在 DOM 上讀出兩個確實不同的數字，不是共用同一份序列複製兩份（HIVT-07／" +
+     "#158，story #1–#4：不跨 strike／不跨 expiration 替代，要看得見）",
+   async ({ page }) => {
+  await routeTwoScenarios(page);
+  await page.route("**/api/settings", (route) =>
+    route.fulfill({ json: { historical_iv_enabled: true } }));
+  await page.route("**/api/scenarios/*/iv-history*", (route) =>
+    route.fulfill({ json: fullIvResponse({
+      legs: {
+        buy: legHistoricalIv({ points: ivDates().map((date, i) =>
+          ({ date, iv: 0.20 + (i % 20) * 0.001 })) }),
+        sell: legHistoricalIv({ contract: SELL_CONTRACT,
+          points: ivDates().map((date, i) => ({ date, iv: 0.32 + (i % 20) * 0.001 })),
+          current_percentile: 0.55, delta_4w: -0.004 }),
+      },
+    }) }));
+
+  await page.goto("/#/s/s1");
+
+  const block = page.locator(".iv-history");
+  await expect(block).toBeVisible();
+  const cards = block.locator(".iv-trend-card");
+  const buyCard = cards.filter({ hasText: "買腿" });
+  const sellCard = cards.filter({ hasText: "賣腿" });
+
+  const buyValue = await buyCard.locator(".iv-value-primary").textContent();
+  const sellValue = await sellCard.locator(".iv-value-primary").textContent();
+  expect(buyValue).toBe("20.5%");
+  expect(sellValue).toBe("32.5%");
+  expect(buyValue).not.toBe(sellValue);
+
+  await expect(buyCard.getByText(/第 41 百分位/)).toBeVisible();
+  await expect(sellCard.getByText(/第 55 百分位/)).toBeVisible();
+});
+
+test("桌面版 Historical IV：z-score／moving average／Bollinger 帶三項統計量在頁面上" +
+     "真的可見（geometry／caption 斷言），寬版面下線段一樣量得出實際寬高" +
+     "（HIVT-07／#158，story #8／#9／#10／#11／#12）",
+   async ({ page }) => {
+  await routeTwoScenarios(page);
+  await page.route("**/api/settings", (route) =>
+    route.fulfill({ json: { historical_iv_enabled: true } }));
+  const dates = ivDates();
+  // 跟 smoke.spec.ts 同理：用有斜率的序列，避免固定值移動平均線在圖上
+  // 塌成零高度的水平線，讓幾何斷言不穩定。
+  const slopedMa = dates.map((date, i) => ({ date, value: 0.19 + (i % 10) * 0.003 }));
+  const slopedUpper = dates.map((date, i) => ({ date, value: 0.23 + (i % 10) * 0.003 }));
+  const slopedLower = dates.map((date, i) => ({ date, value: 0.15 + (i % 10) * 0.003 }));
+  await page.route("**/api/scenarios/*/iv-history*", (route) =>
+    route.fulfill({ json: fullIvResponse({
+      legs: {
+        buy: legHistoricalIv({ moving_average: slopedMa,
+          bollinger_upper: slopedUpper, bollinger_lower: slopedLower }),
+        sell: legHistoricalIv({ contract: SELL_CONTRACT,
+          moving_average: slopedMa, bollinger_upper: slopedUpper,
+          bollinger_lower: slopedLower,
+          current_percentile: 0.55, delta_4w: -0.004 }),
+      },
+    }) }));
+
+  await page.goto("/#/s/s1");
+
+  const block = page.locator(".iv-history");
+  await expect(block).toBeVisible();
+  await expect(block.getByText(/Z-score \+0\.30/).first()).toBeVisible();
+
+  const maLine = block.locator(".iv-trend-ma-line").first();
+  await expect(maLine).toBeVisible();
+  const maBox = (await maLine.boundingBox())!;
+  expect(maBox.width).toBeGreaterThan(0);
+  expect(maBox.height).toBeGreaterThan(0);
+
+  const band = block.locator(".iv-trend-band").first();
+  await expect(band).toBeVisible();
+  const bandBox = (await band.boundingBox())!;
+  expect(bandBox.width).toBeGreaterThan(0);
+  expect(bandBox.height).toBeGreaterThan(0);
+
+  expect(await block.locator(".iv-trend-ma-line").count()).toBeGreaterThan(0);
+  expect(await block.locator(".iv-trend-band").count()).toBeGreaterThan(0);
+});
+
+test("桌面版 Historical IV：買／賣腿各自的 vendor／quota 狀態獨立顯示，不受 Normalized " +
+     "Skew 家族自己的 status 影響，也不擋住頁面其他部分（HIVT-07／#158，" +
+     "story #32；spec #151 §4「兩個家族的 backfill 狀態各自獨立」）",
+   async ({ page }) => {
+  await routeTwoScenarios(page);
+  await page.route("**/api/settings", (route) =>
+    route.fulfill({ json: { historical_iv_enabled: true } }));
+  await page.route("**/api/scenarios/*/iv-history*", (route) =>
+    route.fulfill({ json: fullIvResponse({
+      status: "ok",
+      legs: {
+        buy: legHistoricalIv({ status: "quota" }),
+        sell: legHistoricalIv({ contract: SELL_CONTRACT, status: "vendor",
+          current_percentile: 0.55, delta_4w: -0.004 }),
+      },
+    }) }));
+
+  await page.goto("/#/s/s1");
+
+  const block = page.locator(".iv-history");
+  await expect(block).toBeVisible();
+  const cards = block.locator(".iv-trend-card");
+  const buyCard = cards.filter({ hasText: "買腿" });
+  const sellCard = cards.filter({ hasText: "賣腿" });
+
+  await expect(buyCard.getByText("今日 API 額度已用完，將於後續使用時繼續補齊"))
+    .toBeVisible();
+  await expect(sellCard.getByText("資料源暫時無法連線，將於後續使用時繼續補齊"))
+    .toBeVisible();
+  await expect(block.getByText(/今日 API 額度已用完/)).toHaveCount(1);
+
+  await expect(block.locator(".iv-trend-chart")).toHaveCount(3);
+  await expect(page.getByText("劇本主圖")).toBeVisible();
+});
+
 test("Heatmap ±% 在最右欄：桌面 viewport 每一列都看得到完整格式" +
      "（決策 M／#109，位置修正 QA-FIX-1／QA-01）", async ({ page }) => {
   await routeTwoScenarios(page);
