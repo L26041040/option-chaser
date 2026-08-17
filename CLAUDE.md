@@ -313,8 +313,24 @@ backend 1339 條、frontend vitest 554 條、typecheck／build、Playwright
 e2e 75 條（含 `smoke.spec.ts`／`desktop.spec.ts` 既有 Historical IV
 區塊改用新回應形狀重寫）全部通過。issue 已關閉。
 
-**尚存 blocker**：無。**下一步＝HIVT-06**（#157），尚未開工。依專案
-規則全部子票做完才開 PR，中途不主動開。
+**HIVT-06**（#157，commit `a59b4e4`）— 既有重錨定引擎隔離稽核＋回歸
+測試強化：純驗證票，稽核結果全數通過、無交叉依賴，只補一個結構測試
+缺口——`option_chaser/data/marketdata.py` 的 `fetch_contract_history`／
+`_parse_contract_history`（HIVT-02 新增）先前沒被 AST 隔離測試涵蓋到，
+本票補上（同檔案 `_parse_surface_rows` 合法引用 `SurfacePoint` 服務舊
+whole-chain 家族，確認新函式沒有沾邊）。`tests/test_ivhistory.py` 經
+`git log` 核對全系列 HIVT commits 從未被改過。Migration map（spec
+#151 §7）逐項對照實際出貨程式碼，三處與 spec 事前預測有出入已記錄在
+issue #157 留言：`valuation.py::implied_vol()` 與
+`snapshot.py::find_contract()` 兩個「條件式重用」最終都沒被本 feature
+呼叫過（vendor 直接給 IV／contract_symbol 一律可取得，條件分支從未
+觸發）；`_ALWAYS_KEPT_STAGES`／診斷保留上限問題方向與 spec 猜測相反
+（不是新家族被餓死，是新家族的量體把舊家族擠出去，HIVT-03 已修正）。
+全套 1341 條測試通過。issue 已關閉。
+
+**尚存 blocker**：無。**下一步＝HIVT-07**（#158，全面回歸／E2E 最終
+驗收，spec #151 系列最後一張票），尚未開工。依專案規則全部子票做完
+才開 PR，中途不主動開；#158 完成後即符合開 PR 條件，等需求方 cue。
 
 ### Spec #143（2026-08-15 發佈）——Application Diagnostics / Error Log 系統
 
