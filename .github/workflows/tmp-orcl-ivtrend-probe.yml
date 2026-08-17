@@ -1,0 +1,47 @@
+name: Temporary ORCL Exact Contract IV Probe
+on:
+  push:
+    paths:
+      - '.github/workflows/tmp-orcl-ivtrend-probe.yml'
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Probe ORCL exact contracts
+        env:
+          MARKETDATA_APP_TOKEN: ${{ secrets.MARKETDATA_APP_TOKEN }}
+        run: |
+          python3 - <<'PY'
+          import json, os
+          from urllib.request import Request, urlopen
+          from urllib.error import HTTPError
+          from datetime import date, timedelta
+
+          token=os.environ['MARKETDATA_APP_TOKEN']
+          base='https://api.marketdata.app/v1/options/quotes'
+          frm=(date.today()-timedelta(days=365)).isoformat(); to=date.today().isoformat()
+          for sym in ['ORCL270115C00220000','ORCL270115C00250000']:
+              url=f'{base}/{sym}/?from={frm}&to={to}'
+              req=Request(url,headers={'Authorization':f'Bearer {token}','Accept':'application/json','User-Agent':'option-chaser-orcl-probe'})
+              try:
+                  with urlopen(req,timeout=30) as r:
+                      status=r.status; headers=dict(r.headers); body=json.loads(r.read().decode())
+              except HTTPError as e:
+                  status=e.code; headers=dict(e.headers); raw=e.read().decode();
+                  try: body=json.loads(raw)
+                  except: body=raw
+              iv=body.get('iv',[]) if isinstance(body,dict) else []
+              updated=body.get('updated',[]) if isinstance(body,dict) else []
+              first=body.get('firstTraded',[]) if isinstance(body,dict) else []
+              print(json.dumps({
+                  'contract':sym,'status':status,'s':body.get('s') if isinstance(body,dict) else None,
+                  'rows':len(updated),'iv_non_null':sum(v is not None for v in iv),'iv_null':sum(v is None for v in iv),
+                  'firstTraded_sample':first[:1] if isinstance(first,list) else first,
+                  'updated_first':updated[:1],'updated_last':updated[-1:] if updated else [],
+                  'rate_limit':{k:v for k,v in headers.items() if 'ratelimit' in k.lower()},
+                  'errmsg':body.get('errmsg') if isinstance(body,dict) else str(body)[:200]
+              },ensure_ascii=False))
+          PY
