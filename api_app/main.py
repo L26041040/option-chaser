@@ -1203,59 +1203,39 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
             observations_returned=len(existing_points))
         return existing_points, status, note
 
-    def _emit_leg_stat_metrics(emit, *, identity: dict, moving_average: list,
-                               bollinger: dict, zscore: float | None,
-                               percentile: float | None,
-                               delta_4w_value: float | None,
+    # 這三個統計量共用同一份 rolling window（`ivtrend._rolling_windows`），
+    # available／unavailable 都看**最新那一點**（使用者畫面上看到的
+    # 「目前」統計量），是不是有值——不是整條序列有沒有任何一點可用，
+    # 序列起始端天然會有空窗，那不代表這個統計量現在不可用。
+    _WINDOWED_STAT_FIELDS = frozenset(
+        {"moving_average", "bollinger_bands", "current_zscore"})
+
+    def _leg_stat_is_available(field_name: str, value) -> bool:
+        if field_name == "moving_average":
+            return bool(value) and value[-1][1] is not None
+        if field_name == "bollinger_bands":
+            upper = (value or {}).get("upper") or []
+            return bool(upper) and upper[-1][1] is not None
+        return value is not None   # current_zscore／percentile／delta_4w：純量
+
+    def _emit_leg_stat_metrics(emit, *, identity: dict, stats: dict,
                                observation_count: int) -> None:
         """每個統計量各自一筆 `metrics` 事件（HIVT-03／#154）——沿用
         `_emit_metrics()` 在舊 (tenor,delta) 家族建立的既有模式（DG-04：
-        一個欄位一筆事件，不合併），這裡是同一個模式在 exact-contract
-        家族的版本。moving_average／bollinger_bands／current_zscore 的
-        available／unavailable 看**最新那一點**（使用者畫面上看到的
-        「目前」統計量），不是整條序列裡有沒有任何一點可用——序列起始端
-        天然會有空窗，那不代表這個統計量現在不可用。
+        一個欄位一筆事件，不合併、資料驅動迴圈而非逐欄位手抄），這裡是
+        同一個模式在 exact-contract 家族的版本。`stats` 的 key 就是
+        `field` context 的值——呼叫端傳什麼名字，畫面上就看到什麼名字。
         """
-        ma_available = bool(moving_average) and moving_average[-1][1] is not None
-        emit(stage="metrics",
-            severity="info" if ma_available else "warning",
-            message="moving_average 計算完成" if ma_available
-                    else "觀測數不足 IV_TREND_MIN_OBSERVATIONS_FOR_BANDS，"
-                         "moving_average 回報 unavailable",
-            **_identity_context(identity), field="moving_average",
-            count=observation_count, lookback_days=ivtrend.IV_TREND_LOOKBACK_DAYS)
-
-        upper = bollinger.get("upper") or []
-        bands_available = bool(upper) and upper[-1][1] is not None
-        emit(stage="metrics",
-            severity="info" if bands_available else "warning",
-            message="bollinger_bands 計算完成" if bands_available
-                    else "觀測數不足 IV_TREND_MIN_OBSERVATIONS_FOR_BANDS，"
-                         "bollinger_bands 回報 unavailable",
-            **_identity_context(identity), field="bollinger_bands",
-            count=observation_count, lookback_days=ivtrend.IV_TREND_LOOKBACK_DAYS)
-
-        emit(stage="metrics",
-            severity="info" if zscore is not None else "warning",
-            message="current_zscore 計算完成" if zscore is not None
-                    else "觀測數不足 IV_TREND_MIN_OBSERVATIONS_FOR_BANDS，"
-                         "current_zscore 回報 unavailable",
-            **_identity_context(identity), field="current_zscore",
-            count=observation_count, lookback_days=ivtrend.IV_TREND_LOOKBACK_DAYS)
-
-        emit(stage="metrics",
-            severity="info" if percentile is not None else "warning",
-            message="historical_percentile 計算完成" if percentile is not None
-                    else "沒有可比觀測，historical_percentile 回報 unavailable",
-            **_identity_context(identity), field="historical_percentile",
-            count=observation_count)
-
-        emit(stage="metrics",
-            severity="info" if delta_4w_value is not None else "warning",
-            message="delta_4w 計算完成" if delta_4w_value is not None
-                    else "回溯窗內沒有觀測，delta_4w 回報 unavailable",
-            **_identity_context(identity), field="delta_4w",
-            count=observation_count)
+        for field_name, value in stats.items():
+            available = _leg_stat_is_available(field_name, value)
+            windowed = ({"lookback_days": ivtrend.IV_TREND_LOOKBACK_DAYS}
+                       if field_name in _WINDOWED_STAT_FIELDS else {})
+            emit(stage="metrics",
+                severity="info" if available else "warning",
+                message=f"{field_name} 計算完成" if available
+                        else f"{field_name} 回報 unavailable",
+                **_identity_context(identity), field=field_name,
+                count=observation_count, **windowed)
 
     def _leg_historical_iv_payload(identity: dict, points: list[tuple],
                                    status: str, note: str | None, *,
@@ -1281,10 +1261,11 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         percentile = ivtrend.historical_percentile(trimmed, latest_iv)
         d4w = ivtrend.delta_4w(trimmed, latest=latest_iv, today=today)
 
-        _emit_leg_stat_metrics(emit, identity=identity, moving_average=ma,
-                               bollinger=bands, zscore=zscore,
-                               percentile=percentile, delta_4w_value=d4w,
-                               observation_count=len(valid))
+        _emit_leg_stat_metrics(
+            emit, identity=identity, observation_count=len(valid),
+            stats={"moving_average": ma, "bollinger_bands": bands,
+                  "current_zscore": zscore,
+                  "historical_percentile": percentile, "delta_4w": d4w})
 
         return {
             "contract": identity,

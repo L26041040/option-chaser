@@ -166,6 +166,24 @@ def test_bollinger_bands_match_hand_calculated_mean_plus_minus_two_std():
     assert got["lower"][-1][1] == m - 2 * s
 
 
+def test_bollinger_bands_also_returns_the_mean_and_std_series():
+    """spec #151 §3 明文簽章：`{upper, lower, mean, std}` 四條序列，不是
+    只有上下界。"""
+    ivs = [0.10, 0.12, 0.14, 0.16, 0.18]
+    points = _daily(date(2026, 8, 1), ivs)
+    got = bollinger_bands(points)
+    m, s = mean(ivs), stdev(ivs)
+    assert got["mean"][-1] == (points[-1][0], m)
+    assert got["std"][-1] == (points[-1][0], s)
+
+
+def test_bollinger_bands_mean_and_std_are_none_below_the_minimum_observation_count():
+    points = _daily(date(2026, 8, 1), [0.10, 0.12, 0.14])
+    got = bollinger_bands(points)
+    assert got["mean"][-1] == (points[-1][0], None)
+    assert got["std"][-1] == (points[-1][0], None)
+
+
 def test_bollinger_bands_are_centered_on_the_same_mean_as_moving_average():
     ivs = [0.10, 0.15, 0.11, 0.20, 0.09, 0.17]
     points = _daily(date(2026, 8, 1), ivs)

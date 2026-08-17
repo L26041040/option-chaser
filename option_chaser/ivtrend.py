@@ -104,18 +104,29 @@ def bollinger_bands(points: list[tuple[str, float | None]], *,
     同一份視窗（`_rolling_windows`）算出——上下界因此永遠以 MA 為中心，
     不會因為兩處分別計算而漂移。視窗觀測數不足時該點回 `None`，跟
     `moving_average()` 同一個門檻、同一種「起始端天然空窗」語意。
+
+    回傳 `{upper, lower, mean, std}` 四條序列（spec #151 §3 明文簽章）
+    ——`mean` 等同 `moving_average()` 的輸出、`std` 是算出 upper／lower
+    當下的標準差，一併回傳讓呼叫端（例如 `current_zscore` 之外，未來
+    若有需要重算 z-score 的呼叫端）不必自己從 upper／lower 反推。
     """
     upper: list[tuple[str, float | None]] = []
     lower: list[tuple[str, float | None]] = []
+    means: list[tuple[str, float | None]] = []
+    stds: list[tuple[str, float | None]] = []
     for d, vals in _rolling_windows(points, window_days=window_days):
         if len(vals) < IV_TREND_MIN_OBSERVATIONS_FOR_BANDS:
             upper.append((d, None))
             lower.append((d, None))
+            means.append((d, None))
+            stds.append((d, None))
             continue
         m, s = mean(vals), stdev(vals)
         upper.append((d, m + num_std * s))
         lower.append((d, m - num_std * s))
-    return {"upper": upper, "lower": lower}
+        means.append((d, m))
+        stds.append((d, s))
+    return {"upper": upper, "lower": lower, "mean": means, "std": stds}
 
 
 def current_zscore(points: list[tuple[str, float | None]], *,
