@@ -12,14 +12,14 @@ from __future__ import annotations
 
 import dataclasses
 import uuid
-from datetime import date
+from datetime import date, timedelta
 from typing import Callable, Literal
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import Response
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from option_chaser import __version__, ivhistory, service, store
+from option_chaser import __version__, ivhistory, ivtrend, service, store
 from option_chaser.data.snapshot import snapshot_from_dict, snapshot_to_csv
 from option_chaser.models import (AnalysisParams, ChainSnapshot, FetchError,
                                   ParamError, QuotaExhausted, STRATEGIES)
@@ -31,10 +31,10 @@ from option_chaser.workspace import now_utc_iso, ny_today
 from . import diagnostics, providers
 from .dividend_cache import cached_loader as cached_dividend_loader
 from .rate_cache import cached_loader
-from .storage import (DataSourceSettings, IvBackfillRun, IvObservation,
-                      ProviderCredential, ProviderVerification, RateCacheEntry,
-                      ResultRecord, ResultSummary, Scenario, ScenarioExists,
-                      Storage, UsageSetting)
+from .storage import (ContractHistory, DataSourceSettings, IvBackfillRun,
+                      IvObservation, ProviderCredential, ProviderVerification,
+                      RateCacheEntry, ResultRecord, ResultSummary, Scenario,
+                      ScenarioExists, Storage, UsageSetting)
 from .storage.factory import database_url_candidates, storage_from_env
 
 FetchChain = Callable[[str], ChainSnapshot]
@@ -44,6 +44,10 @@ CustomFetch = Callable[[str, str, str], ChainSnapshot]
 # (provider, symbol, date, token, expiration=None) ->
 #   {"call": [SurfacePoint], "put": [...]}
 HistoricalSurface = Callable[..., dict]
+# (provider, occ_symbol, from_date, to_date, token) -> [(date, iv|None), ...]
+# HIVT-02（#153）：exact-contract 家族，跟上面的 HistoricalSurface（整鏈、
+# (tenor, delta) 重錨定家族）是不同的資料語意，不共用型別也不共用注入點。
+ContractHistoryFetch = Callable[..., list]
 
 # MVP 範圍（沿用既有 Streamlit 版與 spec #47 的三欄表單）：方向與策略
 # 是固定值，不由前端送。需要看空或多策略時再由對應的票加上。
@@ -184,6 +188,21 @@ def _rows_to_surface(rows: dict) -> dict:
                                           iv=float(r[2]))
                    for r in (points or [])]
             for side, points in (rows or {}).items()}
+
+
+def _leg_contract_identity(leg: dict, underlying: str) -> dict:
+    """一條腿的 exact contract identity（HIVT-02／#153，spec #151 §1）。
+
+    **重用既有欄位，不另組 formatter**：每條腿早就帶著 vendor 發的真實
+    OCC symbol（`store._leg()` 的 `contract_symbol`），這就是這張合約的
+    身分本身——不同 strike／expiry／call-put 天然是不同 symbol，不需要
+    另外拼一個複合鍵或反過來從 symbol 解析回四個欄位。`underlying` 不在
+    leg dict 上（那是整個候選的標的，不是腿的屬性），由呼叫端傳入
+    （`Scenario.symbol`）。
+    """
+    return {"underlying": underlying, "expiration": leg["expiry"],
+           "strike": leg["strike"], "option_type": leg["option_type"],
+           "contract_symbol": leg["contract_symbol"]}
 
 
 def _iv_payload(candidate_key: str, points: list[dict], status: str,
@@ -328,6 +347,37 @@ def _emit_surface_telemetry(emit, telemetry: dict, *, provider: str,
         dropped_missing_iv=telemetry.get("dropped_missing_iv"),
         dropped_missing_dte=telemetry.get("dropped_missing_dte"),
         dropped_unknown_side=telemetry.get("dropped_unknown_side"))
+
+
+def _emit_contract_history_telemetry(emit, telemetry: dict, *, provider: str,
+                                     contract_symbol: str, requested_from: str,
+                                     requested_to: str) -> None:
+    """`marketdata.fetch_contract_history` 的 observer callback 落地處
+    （HIVT-02／#153）——比照 `_emit_surface_telemetry` 拆成 `vendor_fetch`
+    與 `payload_parse` 兩站，但這裡沒有「no_data 是正常結果」那個分支
+    （#152 真實驗證：超界／週末窗口皆回 `s=ok`，這個端點不像整鏈查詢
+    那樣有 no_data 狀態），`vendor_status != "ok"` 一律是 error。
+    """
+    vendor_status = telemetry.get("vendor_status")
+    emit(stage="vendor_fetch",
+        severity="info" if vendor_status == "ok" else "error",
+        message=f"vendor 回應 s={vendor_status!r}",
+        provider=provider, contract_symbol=contract_symbol,
+        requested_from=requested_from, requested_to=requested_to,
+        http_status=telemetry.get("http_status"),
+        vendor_status=vendor_status,
+        vendor_errmsg=telemetry.get("vendor_errmsg"),
+        raw_rows=telemetry.get("raw_rows"),
+        **_rate_limit_context(telemetry))
+    emit(stage="payload_parse",
+        severity="warning" if (telemetry.get("raw_rows") or 0) > 0
+                 and (telemetry.get("parsed_rows") or 0) == 0 else "info",
+        message="解析單合約歷史欄狀回應",
+        provider=provider, contract_symbol=contract_symbol,
+        raw_rows=telemetry.get("raw_rows"),
+        parsed_rows=telemetry.get("parsed_rows"),
+        null_iv_count=telemetry.get("null_iv_count"),
+        dropped_missing_date=telemetry.get("dropped_missing_date"))
 
 
 def _min_max(values) -> tuple | None:
@@ -482,6 +532,8 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
                custom_fetch: CustomFetch = providers.default_fetch_chain,
                historical_surface: HistoricalSurface =
                    providers.default_historical_surface,
+               contract_history: ContractHistoryFetch =
+                   providers.default_contract_history,
                ) -> FastAPI:
     """`fetch`／`storage`／`rate_loader`／`dividend_loader` 皆可注入：
     測試傳入固定快照、記憶體假體與假來源，因此不打真網路、不碰真資料庫，
@@ -1048,6 +1100,107 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
                                              outcome=outcome, note=note))
         return outcome, note
 
+    def _ensure_contract_history(identity: dict, provider: str, token: str, *,
+                                 emit) -> tuple[list[tuple], str, str | None]:
+        """一條腿的 exact contract 歷史：快取命中且今天已嘗試過就不打
+        vendor，否則只補 `fetched_through` 之後到今天的缺口（HIVT-02／
+        #153）。回傳 `(points, status, note)`——`status` 比照既有
+        `_backfill_iv` 的 "ok"／"quota"／"vendor" 詞彙，只描述**這次
+        嘗試**，已快取的 points 不因今天補不下去就被藏起來（#133 既有
+        原則，同一套邏輯搬到 exact-contract 家族）。
+
+        跟 `_backfill_iv` 的關鍵差異：那邊一次呼叫只回**一天**的整條鏈，
+        這裡一次呼叫回**整段區間**（已由 #152 真實驗證），因此不需要
+        `_IV_BACKFILL_PER_RUN` 那種逐日分批機制——缺口不論多長，一次
+        請求就補齊。
+        """
+        db = _db()
+        today = ny_today()
+        occ_symbol = identity["contract_symbol"]
+        cached = db.get_contract_history(occ_symbol)
+        today_iso = today.isoformat()
+
+        if cached is not None and cached.last_attempt_on == today_iso:
+            emit(stage="cache", severity="info",
+                message="今天已嘗試過這張合約，沿用既有結論",
+                contract_symbol=occ_symbol, already_fetched_today=True,
+                fetched_through=cached.fetched_through,
+                observations_returned=len(cached.points))
+            return list(cached.points), cached.last_status, cached.last_note
+
+        existing_points = list(cached.points) if cached is not None else []
+        fetched_through = cached.fetched_through if cached is not None else None
+        from_date = ((date.fromisoformat(fetched_through) + timedelta(days=1))
+                    .isoformat() if fetched_through
+                    else (today - timedelta(days=ivtrend.IV_TREND_MAX_HISTORY_DAYS))
+                    .isoformat())
+        to_date = today_iso
+
+        emit(stage="cache", severity="info", message="計算歷史缺口",
+            contract_symbol=occ_symbol, requested_from=from_date,
+            requested_to=to_date, already_fetched_today=False,
+            fetched_through=fetched_through)
+
+        def _observer(telemetry):
+            _emit_contract_history_telemetry(
+                emit, telemetry, provider=provider, contract_symbol=occ_symbol,
+                requested_from=from_date, requested_to=to_date)
+
+        try:
+            new_points = contract_history(provider, occ_symbol, from_date,
+                                          to_date, token, observer=_observer)
+        except QuotaExhausted as e:
+            status, note = "quota", str(e)
+        except FetchError as e:
+            status, note = "vendor", str(e)
+        else:
+            merged = dict(existing_points)
+            merged.update(new_points)
+            merged_points = sorted(merged.items())
+            db.save_contract_history(ContractHistory(
+                contract_symbol=occ_symbol, points=tuple(merged_points),
+                fetched_through=to_date, last_attempt_on=today_iso,
+                last_status="ok", last_note=None))
+            emit(stage="database_write", severity="info",
+                message="寫入合約歷史觀測", contract_symbol=occ_symbol,
+                observations_returned=len(new_points),
+                null_iv_count=sum(1 for _, iv in new_points if iv is None))
+            return merged_points, "ok", None
+
+        # 失敗路徑：既有觀測原樣保留，只更新「今天嘗試過」的狀態，不
+        # 讓下一次同一天的請求再打一次 vendor。
+        db.save_contract_history(ContractHistory(
+            contract_symbol=occ_symbol, points=tuple(existing_points),
+            fetched_through=fetched_through, last_attempt_on=today_iso,
+            last_status=status, last_note=note))
+        emit(stage="database_write", severity="warning",
+            message="vendor 這次嘗試失敗，沿用既有觀測",
+            contract_symbol=occ_symbol,
+            observations_returned=len(existing_points))
+        return existing_points, status, note
+
+    def _leg_historical_iv_payload(identity: dict, points: list[tuple],
+                                   status: str, note: str | None, *,
+                                   today) -> dict:
+        """`LegHistoricalIv` 的原始資料形狀（HIVT-02／#153，spec #151
+        §4）——統計量（moving average／Bollinger／z-score／percentile／
+        Δ4w）是 HIVT-03（#154）的範圍，這裡只有原始序列與描述性欄位。
+
+        `history_span_days` 用**裁窗後**的序列算——「這張圖實際涵蓋多長
+        時間」講的是使用者看到的那段，不是裁窗前 storage 裡累積的全部。
+        `observation_count` 只算 `iv` 非 `None` 的那些：null IV 是缺席
+        觀測（spec §2／§3 紅線），不進這個計數。
+        """
+        trimmed = ivtrend.trim_to_window(points, today=today)
+        return {
+            "contract": identity,
+            "points": [{"date": d, "iv": iv} for d, iv in trimmed],
+            "observation_count": sum(1 for _, iv in trimmed if iv is not None),
+            "history_span_days": ivtrend.history_span_days(trimmed),
+            "status": status,
+            "note": note,
+        }
+
     def _flush_diagnostics(diag: _CollectingDiagnostics) -> dict:
         """這次 request 收集到的 events 依優先序落盤（per-request 上限，
         #146），並組出要塞進回應的 `diagnostics` 欄位——兩者用同一份
@@ -1118,6 +1271,19 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
 
         provider = settings_view["historical_iv"]["provider"]
         token = _db().get_credential(provider).token
+
+        # Exact-contract 家族（HIVT-02／#153）：跟下面 (tenor, delta)
+        # 重錨定家族完全獨立，不吃 `coords`，兩邊都算完才一起回應。
+        legs_payload: dict[str, dict] = {}
+        candidate_legs = cand.get("legs") or []
+        leg_names = ("buy", "sell") if len(candidate_legs) >= 2 else ("buy",)
+        for name, leg in zip(leg_names, candidate_legs):
+            identity = _leg_contract_identity(leg, sc.symbol)
+            leg_points, leg_status, leg_note = _ensure_contract_history(
+                identity, provider, token, emit=_emit)
+            legs_payload[name] = _leg_historical_iv_payload(
+                identity, leg_points, leg_status, leg_note, today=ny_today())
+
         # `expiry_counts` 掛在每個策略結果（`results[i]`）底下，不是
         # view 頂層——這裡只要「有哪些到期日」，跨策略去重即可。
         known_expiries = sorted({
@@ -1135,7 +1301,7 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
             diag_payload = _flush_diagnostics(diag)
             return {**_iv_payload(candidate_key, [], outcome,
                                   "這個候選算不出 (tenor, delta) 座標"),
-                   "diagnostics": diag_payload}
+                   "legs": legs_payload, "diagnostics": diag_payload}
 
         points = []
         for obs in _db().iv_observations(sc.symbol):
@@ -1149,7 +1315,7 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         diag_payload = _flush_diagnostics(diag)
 
         return {**_iv_payload(candidate_key, points, outcome, note),
-               "diagnostics": diag_payload}
+               "legs": legs_payload, "diagnostics": diag_payload}
 
     # ---------- 設定：資料源與 Provider credential（Settings／#124） ----------
 

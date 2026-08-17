@@ -393,3 +393,213 @@ def test_fetch_surface_default_observer_is_a_no_op():
     got = marketdata.fetch_surface(
         "AAPL", "2026-08-01", "tok", http_request=_fake_request(_surface_payload()))
     assert got["call"] and got["put"]
+
+
+# ---------- 單合約歷史序列（HIVT-01／#152，HIVT-02／#153） ----------
+#
+# 欄位形狀取自 #152 issue 留言存證的真實回應（2026-08-17，
+# GET /v1/options/quotes/TLT281215C00094000/?from=2025-08-17&to=2026-08-17，
+# HTTP 203，34 筆觀測），不是依文件猜的。
+
+def _contract_history_payload(*, dates=None, ivs=None, status="ok"):
+    if status != "ok":
+        return {"s": status, "errmsg": "boom" if status == "error" else None}
+    dates = dates if dates is not None else [1782763200, 1782849600, 1782936000]
+    ivs = ivs if ivs is not None else [None, None, 0.185]
+    n = len(dates)
+    return {
+        "s": "ok",
+        "optionSymbol": ["TLT281215C00094000"] * n,
+        "underlying": ["TLT"] * n,
+        "expiration": [1860864000] * n,
+        "side": ["call"] * n,
+        "strike": [94] * n,
+        "firstTraded": [1700000000] * n,
+        "dte": [800] * n,
+        "updated": dates,
+        "bid": [1.5, 1.0, 2.56][:n],
+        "bidSize": [1, 1, 1][:n],
+        "mid": [4.0, 3.5, 3.13][:n],
+        "ask": [6.5, 6.0, 3.7][:n],
+        "askSize": [1, 1, 1][:n],
+        "last": [0, 0, 0][:n],
+        "openInterest": [10, 10, 10][:n],
+        "volume": [0, 0, 0][:n],
+        "inTheMoney": [False, False, False][:n],
+        "intrinsicValue": [0, 0, 0][:n],
+        "extrinsicValue": [4.0, 3.5, 3.13][:n],
+        "underlyingPrice": [84.5, 84.6, 84.7][:n],
+        "iv": ivs,
+        "delta": [0.5, 0.5, 0.5][:n],
+        "gamma": [0.01, 0.01, 0.01][:n],
+        "theta": [-0.01, -0.01, -0.01][:n],
+        "vega": [0.1, 0.1, 0.1][:n],
+    }
+
+
+def _fake_contract_request(payload, *, status=200, headers=None):
+    def request(url, token):
+        return marketdata.HttpResponse(status=status, headers=headers or {},
+                                       body=json.dumps(payload))
+    return request
+
+
+def test_columnar_history_payload_becomes_date_iv_pairs():
+    got = marketdata.fetch_contract_history(
+        "TLT281215C00094000", "2025-08-17", "2026-08-17", "tok",
+        http_request=_fake_contract_request(_contract_history_payload()))
+    assert got == [("2026-06-29", None), ("2026-06-30", None),
+                   ("2026-07-01", 0.185)]
+
+
+def test_http_203_is_a_success_not_a_failure():
+    """真實 vendor 驗證發現的 bug class（#152）：Market Data App 對延遲
+    報價回 HTTP 203，不是只有 200。不得因為 `status != 200` 就當失敗。"""
+    got = marketdata.fetch_contract_history(
+        "TLT281215C00094000", "2025-08-17", "2026-08-17", "tok",
+        http_request=_fake_contract_request(_contract_history_payload(),
+                                            status=203))
+    assert len(got) == 3
+
+
+def test_null_iv_is_preserved_as_missing_not_dropped_not_defaulted():
+    got = marketdata.fetch_contract_history(
+        "TLT281215C00094000", "2025-08-17", "2026-08-17", "tok",
+        http_request=_fake_contract_request(
+            _contract_history_payload(ivs=[None, None, None])))
+    assert len(got) == 3
+    assert all(iv is None for _, iv in got)
+
+
+def test_zero_iv_is_also_treated_as_missing():
+    """既有 `_num()` 缺值口徑（0.0 一律缺值）延伸到這裡，跟這個檔案其他
+    地方一致——報價為零不是「便宜」，是這一格沒有資料。"""
+    got = marketdata.fetch_contract_history(
+        "TLT281215C00094000", "2025-08-17", "2026-08-17", "tok",
+        http_request=_fake_contract_request(
+            _contract_history_payload(ivs=[0.0, 0.1, 0.2])))
+    assert got[0][1] is None
+
+
+def test_points_are_sorted_by_date_ascending_regardless_of_payload_order():
+    got = marketdata.fetch_contract_history(
+        "TLT281215C00094000", "2025-08-17", "2026-08-17", "tok",
+        http_request=_fake_contract_request(_contract_history_payload(
+            dates=[1782936000, 1782763200, 1782849600],
+            ivs=[0.3, 0.1, 0.2])))
+    assert [d for d, _ in got] == ["2026-06-29", "2026-06-30", "2026-07-01"]
+
+
+def test_row_missing_updated_date_is_dropped_others_still_parsed():
+    payload = _contract_history_payload()
+    payload["updated"] = [1782763200, None, 1782936000]
+    got = marketdata.fetch_contract_history(
+        "TLT281215C00094000", "2025-08-17", "2026-08-17", "tok",
+        http_request=_fake_contract_request(payload))
+    assert len(got) == 2
+
+
+def test_non_ok_status_is_a_fetch_error_not_a_silent_empty_result():
+    with pytest.raises(FetchError):
+        marketdata.fetch_contract_history(
+            "TLT281215C00094000", "2025-08-17", "2026-08-17", "tok",
+            http_request=_fake_contract_request(
+                _contract_history_payload(status="error")))
+
+
+def test_url_carries_the_exact_contract_symbol_and_date_range():
+    seen = []
+
+    def spy(url, token):
+        seen.append(url)
+        return marketdata.HttpResponse(status=200, headers={},
+                                       body=json.dumps(_contract_history_payload()))
+
+    marketdata.fetch_contract_history("TLT281215C00094000", "2025-08-17",
+                                      "2026-08-17", "tok", http_request=spy)
+    assert "TLT281215C00094000" in seen[0]
+    assert "from=2025-08-17" in seen[0]
+    assert "to=2026-08-17" in seen[0]
+
+
+def test_out_of_range_from_date_is_not_a_precondition_to_request():
+    """#152 真實驗證：`from` 早於掛牌日期不報錯，vendor 自動截斷到真正
+    存在的歷史——這裡只驗證 adapter 不會因為傳了一個很早的 `from` 就
+    自己先擋下請求（`http_request` 收到的 URL 原樣帶著呼叫端傳入的
+    `from`，adapter 不做任何 listing-date 相關的 preflight）。"""
+    seen = []
+
+    def spy(url, token):
+        seen.append(url)
+        return marketdata.HttpResponse(status=200, headers={},
+                                       body=json.dumps(_contract_history_payload()))
+
+    marketdata.fetch_contract_history("TLT281215C00094000", "2021-08-18",
+                                      "2026-08-17", "tok", http_request=spy)
+    assert "from=2021-08-18" in seen[0]
+
+
+def test_contract_history_observer_sees_telemetry():
+    events = []
+    marketdata.fetch_contract_history(
+        "TLT281215C00094000", "2025-08-17", "2026-08-17", "tok",
+        http_request=_fake_contract_request(
+            _contract_history_payload(),
+            headers={"X-Api-Ratelimit-Consumed": "1"}),
+        observer=events.append)
+    assert len(events) == 1
+    got = events[0]
+    assert got["http_status"] == 200
+    assert got["X-Api-Ratelimit-Consumed"] == "1"
+    assert got["vendor_status"] == "ok"
+    assert got["raw_rows"] == 3
+    assert got["parsed_rows"] == 3
+    assert got["null_iv_count"] == 2
+
+
+def test_contract_history_observer_sees_vendor_error():
+    events = []
+    with pytest.raises(FetchError):
+        marketdata.fetch_contract_history(
+            "TLT281215C00094000", "2025-08-17", "2026-08-17", "tok",
+            http_request=_fake_contract_request(
+                _contract_history_payload(status="error")),
+            observer=events.append)
+    assert events[0]["vendor_status"] == "error"
+    assert events[0]["vendor_errmsg"] == "boom"
+
+
+def test_contract_history_observer_sees_http_429_before_quota_exhausted():
+    from option_chaser.models import QuotaExhausted
+
+    events = []
+
+    def request(url, token):
+        raise HTTPError(url, 429, "boom", {"X-Api-Ratelimit-Remaining": "0"}, None)
+
+    with pytest.raises(QuotaExhausted):
+        marketdata.fetch_contract_history(
+            "TLT281215C00094000", "2025-08-17", "2026-08-17", "tok",
+            http_request=request, observer=events.append)
+    assert events[0]["http_status"] == 429
+
+
+def test_contract_history_observer_sees_a_connection_failure():
+    events = []
+
+    def request(url, token):
+        raise OSError("dns 查不到")
+
+    with pytest.raises(FetchError):
+        marketdata.fetch_contract_history(
+            "TLT281215C00094000", "2025-08-17", "2026-08-17", "tok",
+            http_request=request, observer=events.append)
+    assert events[0]["http_status"] is None
+    assert events[0]["vendor_status"] is None
+
+
+def test_contract_history_default_observer_is_a_no_op():
+    got = marketdata.fetch_contract_history(
+        "TLT281215C00094000", "2025-08-17", "2026-08-17", "tok",
+        http_request=_fake_contract_request(_contract_history_payload()))
+    assert len(got) == 3

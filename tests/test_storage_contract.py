@@ -16,11 +16,11 @@ import pytest
 from dataclasses import replace
 
 from api_app.diagnostics import RETENTION_LIMIT, DiagnosticEvent
-from api_app.storage import (DataSourceSettings, DividendCacheEntry,
-                             IvBackfillRun, IvObservation, ProviderCredential,
-                             ProviderVerification, RateCacheEntry,
-                             ResultRecord, Scenario, ScenarioExists,
-                             UsageSetting)
+from api_app.storage import (ContractHistory, DataSourceSettings,
+                             DividendCacheEntry, IvBackfillRun, IvObservation,
+                             ProviderCredential, ProviderVerification,
+                             RateCacheEntry, ResultRecord, Scenario,
+                             ScenarioExists, UsageSetting)
 from api_app.storage.memory import MemoryStorage
 
 TEST_DB_URL = os.environ.get("OC_TEST_DATABASE_URL")
@@ -49,8 +49,8 @@ def storage(request):
         conn.execute("TRUNCATE scenarios, results, snapshots, events, rate_cache, "
                      "dividend_cache, data_source_settings, "
                      "provider_credentials, provider_verifications, "
-                     "iv_observations, iv_backfill_runs, diagnostics "
-                     "RESTART IDENTITY")
+                     "iv_observations, iv_backfill_runs, contract_iv_history, "
+                     "diagnostics RESTART IDENTITY")
     yield st
 
 
@@ -779,6 +779,69 @@ def test_backfill_runs_are_per_symbol(storage):
     assert storage.get_iv_backfill_run("SPY") is None
 
 
+# ---------- Exact-contract 歷史 IV 快取（HIVT-02／#153） ----------
+
+def _contract_history(symbol="TLT281215C00094000",
+                      points=(("2026-06-29", None), ("2026-07-01", 0.185)),
+                      fetched_through="2026-08-17",
+                      last_attempt_on="2026-08-17", last_status="ok",
+                      last_note=None):
+    return ContractHistory(contract_symbol=symbol, points=tuple(points),
+                           fetched_through=fetched_through,
+                           last_attempt_on=last_attempt_on,
+                           last_status=last_status, last_note=last_note)
+
+
+def test_a_contract_starts_with_no_cached_history(storage):
+    assert storage.get_contract_history("TLT281215C00094000") is None
+
+
+def test_saved_contract_history_reads_back_identically(storage):
+    storage.save_contract_history(_contract_history())
+    assert storage.get_contract_history("TLT281215C00094000") == _contract_history()
+
+
+def test_rewriting_the_same_contract_overwrites_rather_than_duplicates(storage):
+    storage.save_contract_history(_contract_history(
+        points=(("2026-07-01", 0.1),)))
+    storage.save_contract_history(_contract_history(
+        points=(("2026-07-01", 0.1), ("2026-07-02", 0.2)),
+        fetched_through="2026-08-18", last_attempt_on="2026-08-18"))
+    got = storage.get_contract_history("TLT281215C00094000")
+    assert got.points == (("2026-07-01", 0.1), ("2026-07-02", 0.2))
+    assert got.fetched_through == "2026-08-18"
+
+
+def test_null_iv_points_round_trip_as_none(storage):
+    storage.save_contract_history(_contract_history(
+        points=(("2026-06-29", None), ("2026-07-01", 0.185))))
+    got = storage.get_contract_history("TLT281215C00094000")
+    assert got.points[0] == ("2026-06-29", None)
+    assert got.points[1] == ("2026-07-01", 0.185)
+
+
+def test_contracts_do_not_bleed_into_each_other(storage):
+    """不同 strike／expiry／call-put 是不同的 OCC symbol，天然是不同的
+    快取項目——這正是 exact contract identity 的紅線本身。"""
+    storage.save_contract_history(_contract_history(symbol="TLT281215C00094000"))
+    storage.save_contract_history(_contract_history(symbol="TLT281215C00100000",
+                                                    points=(("2026-07-01", 0.3),)))
+    a = storage.get_contract_history("TLT281215C00094000")
+    b = storage.get_contract_history("TLT281215C00100000")
+    assert a.points != b.points
+    assert b.points == (("2026-07-01", 0.3),)
+
+
+def test_never_successfully_fetched_history_has_no_fetched_through(storage):
+    storage.save_contract_history(_contract_history(
+        points=(), fetched_through=None, last_status="vendor",
+        last_note="連線失敗"))
+    got = storage.get_contract_history("TLT281215C00094000")
+    assert got.fetched_through is None
+    assert got.points == ()
+    assert got.last_status == "vendor"
+
+
 # ---------- Application diagnostics（DG-02／#145） ----------
 
 def _diag(*, event_id="e1", correlation_id="c1", ts="2026-08-15T00:00:00+00:00",
@@ -874,7 +937,8 @@ def test_existing_results_table_gains_the_new_column():
         conn.execute("TRUNCATE scenarios, results, snapshots, events, rate_cache, "
                      "dividend_cache, data_source_settings, "
                      "provider_credentials, provider_verifications, "
-                     "iv_observations, iv_backfill_runs RESTART IDENTITY")
+                     "iv_observations, iv_backfill_runs, contract_iv_history "
+                     "RESTART IDENTITY")
         conn.execute("DROP TABLE IF EXISTS results")
         # V2 時期的舊表：沒有 best_return
         conn.execute("CREATE TABLE results ("
@@ -906,7 +970,8 @@ def test_existing_results_table_gains_the_representative_candidate_column():
         conn.execute("TRUNCATE scenarios, results, snapshots, events, rate_cache, "
                      "dividend_cache, data_source_settings, "
                      "provider_credentials, provider_verifications, "
-                     "iv_observations, iv_backfill_runs RESTART IDENTITY")
+                     "iv_observations, iv_backfill_runs, contract_iv_history "
+                     "RESTART IDENTITY")
         conn.execute("DROP TABLE IF EXISTS results")
         # V3 時期的舊表：有 best_return，還沒有 representative_candidate。
         conn.execute("CREATE TABLE results ("
@@ -940,7 +1005,8 @@ def test_migration_still_applies_when_table_creation_hits_a_race():
         conn.execute("TRUNCATE scenarios, results, snapshots, events, rate_cache, "
                      "dividend_cache, data_source_settings, "
                      "provider_credentials, provider_verifications, "
-                     "iv_observations, iv_backfill_runs RESTART IDENTITY")
+                     "iv_observations, iv_backfill_runs, contract_iv_history "
+                     "RESTART IDENTITY")
         conn.execute("DROP TABLE IF EXISTS results")
         conn.execute("CREATE TABLE results ("
                      "scenario_id TEXT NOT NULL, analyzed_at TEXT NOT NULL, "

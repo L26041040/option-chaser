@@ -12,10 +12,10 @@ from __future__ import annotations
 import psycopg
 from psycopg.types.json import Jsonb
 
-from . import (DataSourceSettings, DividendCacheEntry, IvBackfillRun,
-               IvObservation, ProviderCredential, ProviderVerification,
-               RateCacheEntry, ResultRecord, ResultSummary, Scenario,
-               ScenarioExists, UsageSetting)
+from . import (ContractHistory, DataSourceSettings, DividendCacheEntry,
+               IvBackfillRun, IvObservation, ProviderCredential,
+               ProviderVerification, RateCacheEntry, ResultRecord,
+               ResultSummary, Scenario, ScenarioExists, UsageSetting)
 from ..diagnostics import RETENTION_LIMIT, DiagnosticEvent
 
 # 每個 lambda 程序只需建表一次。`IF NOT EXISTS` 在 Postgres 並非完全
@@ -134,6 +134,19 @@ CREATE TABLE IF NOT EXISTS iv_backfill_runs (
     ran_on        TEXT NOT NULL,
     outcome       TEXT NOT NULL,
     note          TEXT
+);
+-- Exact-contract 歷史 IV 快取（HIVT-02／#153）：鍵是 OCC contract
+-- symbol——exact contract identity 本身（spec #151 §2 絕對紅線）。跟
+-- `iv_observations`（per-symbol、per-day、整條鏈）刻意不同的資料模型：
+-- 單合約端點一次呼叫回整段區間，這裡整個合約的觀測史存成一筆 JSONB
+-- 陣列，不是逐日一列。
+CREATE TABLE IF NOT EXISTS contract_iv_history (
+    contract_symbol   TEXT PRIMARY KEY,
+    points            JSONB NOT NULL,
+    fetched_through   TEXT,
+    last_attempt_on   TEXT,
+    last_status       TEXT NOT NULL,
+    last_note         TEXT
 );
 -- Application diagnostics（DG-02／#145）：**不併進 `events` 表**——後者
 -- 是 scenario-scoped、永不修剪的領域事實，這張是運維紀錄、會被修剪、
@@ -581,6 +594,38 @@ class PostgresStorage:
                 "ON CONFLICT (symbol) DO UPDATE SET ran_on = EXCLUDED.ran_on, "
                 "outcome = EXCLUDED.outcome, note = EXCLUDED.note",
                 (run.symbol, run.ran_on, run.outcome, run.note))
+
+    # ---------- Exact-contract 歷史 IV 快取（HIVT-02／#153） ----------
+
+    def get_contract_history(self, contract_symbol: str) -> ContractHistory | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT contract_symbol, points, fetched_through, "
+                "last_attempt_on, last_status, last_note "
+                "FROM contract_iv_history WHERE contract_symbol = %s",
+                (contract_symbol,)).fetchone()
+        if row is None:
+            return None
+        points = tuple((p[0], p[1]) for p in row[1])
+        return ContractHistory(contract_symbol=row[0], points=points,
+                               fetched_through=row[2], last_attempt_on=row[3],
+                               last_status=row[4], last_note=row[5])
+
+    def save_contract_history(self, history: ContractHistory) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO contract_iv_history (contract_symbol, points, "
+                "fetched_through, last_attempt_on, last_status, last_note) "
+                "VALUES (%s, %s, %s, %s, %s, %s) "
+                "ON CONFLICT (contract_symbol) DO UPDATE "
+                "SET points = EXCLUDED.points, "
+                "fetched_through = EXCLUDED.fetched_through, "
+                "last_attempt_on = EXCLUDED.last_attempt_on, "
+                "last_status = EXCLUDED.last_status, "
+                "last_note = EXCLUDED.last_note",
+                (history.contract_symbol, Jsonb([list(p) for p in history.points]),
+                 history.fetched_through, history.last_attempt_on,
+                 history.last_status, history.last_note))
 
     # ---------- Application diagnostics（DG-02／#145） ----------
 

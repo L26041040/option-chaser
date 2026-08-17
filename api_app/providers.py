@@ -126,3 +126,25 @@ def default_historical_surface(provider_id: str, symbol: str, on_date: str,
     from option_chaser.models import FetchError
 
     raise FetchError(f"不支援的資料源：{provider_id}")
+
+
+def default_contract_history(provider_id: str, occ_symbol: str, from_date: str,
+                             to_date: str, token: str, observer=None,
+                             ) -> list[tuple[str, float | None]]:
+    """一張 exact contract 在 `[from_date, to_date]` 的歷史 `(date, iv)`
+    序列（HIVT-02／#153）——跟 `default_historical_surface`（整鏈、逐日
+    重錨定用）是不同的資料語意，這裡對應的是 spec #151 §2 絕對紅線的
+    exact-contract 家族，兩者不共用呼叫路徑。
+
+    `observer`：原樣轉給 `marketdata.fetch_contract_history`——這一層
+    只是接線，不解讀 telemetry 內容，也不 import 任何診斷模組（比照
+    `default_historical_surface` 既有慣例）。
+    """
+    if provider_id == MARKETDATA_APP.id:
+        from option_chaser.data import marketdata
+
+        return marketdata.fetch_contract_history(occ_symbol, from_date, to_date,
+                                                  token, observer=observer)
+    from option_chaser.models import FetchError
+
+    raise FetchError(f"不支援的資料源：{provider_id}")

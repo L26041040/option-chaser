@@ -411,3 +411,139 @@ def fetch_surface(symbol: str, on_date: str, token: str,
     if telemetry["vendor_status"] not in ("no_data", "ok"):
         raise FetchError(f"Market Data App 回報 s={telemetry['vendor_status']!r}")
     return points
+
+
+# ---------- 單合約歷史序列（HIVT-01／#152，HIVT-02／#153） ----------
+#
+# 跟上面的 `fetch_surface`（整鏈、逐日重錨定用）是**不同的端點、不同的
+# 資料語意**：這裡一次呼叫回**同一張 exact contract**（同一 optionSymbol）
+# 整段日期區間的歷史序列，spec #151 §2 絕對紅線要求的正是這個——不得
+# 拿別的 strike／expiry 頂替。
+#
+# **回應形狀已由 #152 用真實請求驗證**（issue #152 留言存證，2026-08-17，
+# `GET /v1/options/quotes/TLT281215C00094000/?from=&to=`），不是依文件
+# 猜的：HTTP 狀態碼可能是 **203**（不是只有 200——vendor 對延遲報價用
+# 這個狀態碼，見下方 `_http_request` 沿用既有的「urlopen 對任何 2xx 都
+# 不拋例外」慣例，本檔案任何地方都沒有寫死 `status == 200`，203 因此
+# 天然可用不需要特殊處理）；欄位是一般的欄狀 JSON（`s`／`optionSymbol`／
+# `updated`／`iv`／`bid`／`ask`／... 皆為與 `optionSymbol` 等長的陣列，
+# `updated` 是 Unix 秒，逐日一筆）；`iv` 存在但可能是 `null`（真實樣本：
+# 近期資料常見前幾筆 `null`，bid/ask 仍有值）——這是「這天沒有可信的
+# IV 報價」，不是「這天沒有資料」，**不得補值、不得插值、不得換合約**
+# （spec #151 §2／§3 紅線，HIVT-02 §7 施工限制逐字重申）。
+
+_QUOTES_URL = _BASE + "/options/quotes/{occ_symbol}/?from={from_date}&to={to_date}"
+
+
+def _observation_date(value) -> str | None:
+    """`updated` 欄位（Unix 秒）→ YYYY-MM-DD。形狀不對就回 `None`，呼叫端
+    當「這筆缺日期，跳過」處理——不是整批失敗（比照 `_parse_surface_rows`
+    對缺 delta／iv／dte 的處理方式，一筆問題不牽連其他筆）。"""
+    try:
+        return datetime.fromtimestamp(int(value), tz=timezone.utc).date().isoformat()
+    except (TypeError, ValueError, OSError):
+        return None
+
+
+def _empty_history_counts() -> dict:
+    return {"raw_rows": 0, "parsed_rows": 0, "null_iv_count": 0,
+           "dropped_missing_date": 0}
+
+
+def _parse_contract_history(payload: dict) -> tuple[list[tuple[str, float | None]],
+                                                     dict]:
+    """單合約欄狀回應 → ([(date, iv), ...], telemetry)。不拋例外——比照
+    `_parse_surface`，vendor 狀態要不要變成 `FetchError` 交給呼叫端決定。
+
+    `iv` 走既有 `_num()`（`None`／非數字／0.0 一律缺值，與這個檔案其他
+    地方的 IV 缺值口徑一致）。**`iv` 為 `None` 的那一筆仍然進 `points`**
+    ——那天有觀測、只是沒有可信 IV，這跟「那天根本沒有這一筆」（vendor
+    沒回、或缺 `updated` 因此連日期都定不出來）是不同的兩件事，只有
+    後者才會被跳過（見 `dropped_missing_date`）。
+    """
+    status = payload.get("s")
+    if status != "ok":
+        return [], {"vendor_status": status,
+                    "vendor_errmsg": payload.get("errmsg")
+                    if isinstance(payload, dict) else None,
+                    **_empty_history_counts()}
+
+    rows = _rows(payload)
+    points: list[tuple[str, float | None]] = []
+    null_iv_count = 0
+    dropped_missing_date = 0
+    for row in rows:
+        d = _observation_date(row.get("updated"))
+        if d is None:
+            dropped_missing_date += 1
+            continue
+        iv = _num(row.get("iv"))
+        if iv is None:
+            null_iv_count += 1
+        points.append((d, iv))
+
+    return points, {"vendor_status": status, "vendor_errmsg": None,
+                    "raw_rows": len(rows), "parsed_rows": len(points),
+                    "null_iv_count": null_iv_count,
+                    "dropped_missing_date": dropped_missing_date}
+
+
+ContractHistoryObserver = Callable[[dict], None]
+
+
+def fetch_contract_history(occ_symbol: str, from_date: str, to_date: str,
+                           token: str, http_request=_http_request,
+                           observer: ContractHistoryObserver | None = None,
+                           ) -> list[tuple[str, float | None]]:
+    """一張 **exact contract**（`occ_symbol`）在 `[from_date, to_date]`
+    區間的歷史 `(date, iv)` 序列，依日期遞增排序。
+
+    一次呼叫回整段區間（已由 #152 真實驗證確認，真實 TLT LEAPS 案例
+    34 筆觀測只花 1 credit）——呼叫端因此不需要像 `fetch_surface` 那樣
+    逐日打，`from_date`／`to_date` 由呼叫端依快取缺口算好再傳進來
+    （HIVT-02／#153 的漸進式刷新邏輯）。
+
+    `from_date` 早於這張合約實際掛牌日期時**不報錯**（已由 #152 真實
+    驗證：對真實合約打 5 年前的 `from` 一樣 200 系列＋`s=ok`，vendor 自動
+    只回真正存在的那段），呼叫端不需要另外查 listing date 才能決定
+    `from_date`。
+
+    `observer`（比照 `fetch_surface`）：每次呼叫結束前（成功或失敗）都
+    會被通知一次，帶 HTTP status／白名單 rate-limit 標頭／vendor
+    `s`／`errmsg`／筆數帳本（`raw_rows`／`parsed_rows`／`null_iv_count`／
+    `dropped_missing_date`）。
+    """
+    url = _QUOTES_URL.format(occ_symbol=occ_symbol, from_date=from_date,
+                             to_date=to_date)
+    try:
+        resp = http_request(url, token)
+    except HTTPError as e:
+        _notify(observer, http_status=e.code, headers=e.headers,
+               telemetry={"vendor_status": None, "vendor_errmsg": None,
+                          **_empty_history_counts()})
+        _raise_for_quota(e)
+        raise FetchError(
+            f"Market Data App 單合約歷史抓取失敗（{occ_symbol}）: {e}") from e
+    except Exception as e:  # noqa: BLE001
+        _notify(observer, http_status=None, headers=None,
+               telemetry={"vendor_status": None, "vendor_errmsg": None,
+                          **_empty_history_counts()})
+        raise FetchError(
+            f"Market Data App 單合約歷史抓取失敗（{occ_symbol}）: {e}") from e
+
+    try:
+        payload = json.loads(resp.body)
+    except Exception as e:  # noqa: BLE001
+        _notify(observer, http_status=resp.status, headers=resp.headers,
+               telemetry={"vendor_status": None, "vendor_errmsg": None,
+                          **_empty_history_counts()})
+        raise FetchError(
+            f"Market Data App 單合約歷史抓取失敗（{occ_symbol}）: {e}") from e
+
+    points, telemetry = _parse_contract_history(payload)
+    _notify(observer, http_status=resp.status, headers=resp.headers,
+           telemetry=telemetry)
+    if telemetry["vendor_status"] != "ok":
+        raise FetchError(
+            f"Market Data App 回報 s={telemetry['vendor_status']!r}（{occ_symbol}）")
+    return sorted(points)

@@ -222,6 +222,45 @@ class IvBackfillRun:
     note: str | None = None
 
 
+@dataclass(frozen=True)
+class ContractHistory:
+    """某個 **exact option contract**（同一 underlying／expiration／strike／
+    option_type 的組合，spec #151 §2 絕對紅線）的歷史 IV 觀測快取
+    （HIVT-02／#153）。
+
+    鍵是 **OCC contract symbol**——這就是 exact contract identity 本身
+    （不同 strike／expiry／call-put 天然是不同 symbol），不需要另外組
+    複合鍵。跟 `IvObservation`（per-symbol、per-day、整條鏈，(tenor,
+    delta) 重錨定家族專用）刻意不同的資料模型：vendor 的單合約端點一次
+    呼叫回整段日期區間（已由 #152 真實驗證：真實 TLT LEAPS 案例 34 筆
+    觀測只花 1 credit），這裡整個合約的觀測史因此存成**一筆**，不是
+    逐日一筆。
+
+    `points` 是 `(date, iv)` 對，依日期遞增排序；`iv` 為 `None` 就是
+    vendor 那天真的沒給可信報價（missing observation），不補、不插值、
+    不換合約（spec #151 §2／§3 紅線）。
+
+    `fetched_through`：上一次成功呼叫時用的 `to=` 日期——下一次刷新只
+    抓這個日期之後到今天的缺口，不是每次整年重抓。從未成功過時是
+    `None`。
+
+    `last_attempt_on`：上一次嘗試呼叫 vendor 的日期（不論成功失敗）——
+    比照 `IvBackfillRun.ran_on`，用來擋「同一天內對已快取合約的重複
+    vendor 請求」（HIVT-02 acceptance criteria 明文要求同一天內重複請求
+    的 vendor 呼叫次數為 0）。
+
+    `last_status`／`last_note`：比照 `IvBackfillRun.outcome`／`note`
+    （"ok"｜"quota"｜"vendor"）——只描述**這次嘗試**，已快取的 `points`
+    不因今天補不下去就被藏起來（沿用既有 #133 原則）。
+    """
+    contract_symbol: str
+    points: tuple[tuple[str, float | None], ...]
+    fetched_through: str | None
+    last_attempt_on: str | None
+    last_status: str
+    last_note: str | None = None
+
+
 class Storage(Protocol):
     """API 層唯一的資料存取介面——不得繞過它直接碰 SQL 或檔案。"""
 
@@ -356,6 +395,15 @@ class Storage(Protocol):
 
     def save_verification(self, v: ProviderVerification) -> None:
         """覆蓋該 provider 既有那一筆——單一狀態，不是歷史序列。"""
+
+    # ---------- Exact-contract 歷史 IV 快取（HIVT-02／#153） ----------
+
+    def get_contract_history(self, contract_symbol: str) -> ContractHistory | None:
+        """該 exact contract 尚未有任何觀測快取時回 `None`。"""
+
+    def save_contract_history(self, history: ContractHistory) -> None:
+        """同一 `contract_symbol` 重複寫入即覆蓋（冪等）——整份觀測史是
+        單一狀態，不是逐日一筆。"""
 
     # ---------- Application diagnostics（DG-02／#145） ----------
 

@@ -8,10 +8,10 @@ from __future__ import annotations
 
 from collections import deque
 
-from . import (DataSourceSettings, DividendCacheEntry, IvBackfillRun,
-               IvObservation, ProviderCredential, ProviderVerification,
-               RateCacheEntry, ResultRecord, ResultSummary, Scenario,
-               ScenarioExists)
+from . import (ContractHistory, DataSourceSettings, DividendCacheEntry,
+               IvBackfillRun, IvObservation, ProviderCredential,
+               ProviderVerification, RateCacheEntry, ResultRecord,
+               ResultSummary, Scenario, ScenarioExists)
 from ..diagnostics import RETENTION_LIMIT, DiagnosticEvent
 
 
@@ -29,6 +29,9 @@ class MemoryStorage:
         # 鍵是 (symbol, 日期)——**沒有 scenario 維度**，見 IvObservation。
         self._iv: dict[tuple[str, str], IvObservation] = {}
         self._iv_runs: dict[str, IvBackfillRun] = {}
+        # 鍵是 OCC contract symbol——exact contract identity 本身
+        # （HIVT-02／#153），見 ContractHistory。
+        self._contract_history: dict[str, ContractHistory] = {}
         # `deque(maxlen=)` 就是 trim-on-write：滿了之後新的一筆自動把
         # 最舊的擠掉，跟 Postgres 那邊的 `DELETE ... OFFSET` 是同一條上限
         # 的兩種實作，契約測試才有意義。
@@ -189,6 +192,14 @@ class MemoryStorage:
 
     def save_iv_backfill_run(self, run: IvBackfillRun) -> None:
         self._iv_runs[run.symbol] = run
+
+    # ---------- Exact-contract 歷史 IV 快取（HIVT-02／#153） ----------
+
+    def get_contract_history(self, contract_symbol: str) -> ContractHistory | None:
+        return self._contract_history.get(contract_symbol)
+
+    def save_contract_history(self, history: ContractHistory) -> None:
+        self._contract_history[history.contract_symbol] = history
 
     # ---------- Application diagnostics（DG-02／#145） ----------
 

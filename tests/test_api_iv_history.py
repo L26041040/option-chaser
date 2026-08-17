@@ -4,14 +4,16 @@
 `historical_surface` 注入一個會 assert 失敗的假體，任何偷跑都會紅燈。
 """
 import dataclasses
+from datetime import date, timedelta
 
 import pytest
 from fastapi.testclient import TestClient
 
 from api_app import providers
 from api_app.main import create_app
-from api_app.storage import IvBackfillRun, IvObservation
+from api_app.storage import ContractHistory, IvBackfillRun, IvObservation
 from api_app.storage.memory import MemoryStorage
+from option_chaser import ivtrend
 from option_chaser.data.snapshot import load_snapshot
 from option_chaser.dividends import DividendHistory, DividendRecord
 from option_chaser.ivhistory import SurfacePoint
@@ -83,12 +85,21 @@ class Recorder:
         return [d for _, d in self.calls]
 
 
-def _client(db, *, surface=_surface_never_called):
+def _contract_history_empty(provider, occ_symbol, from_date, to_date, token,
+                            observer=None):
+    """HIVT-02（#153）路徑的預設假體——existing 測試不關心 legs
+    欄位，只需要「不打真的 vendor、安靜回空序列」，跟 `_rich_surface`
+    對舊 (tenor, delta) 家族的角色對應。"""
+    return []
+
+
+def _client(db, *, surface=_surface_never_called,
+           contract_history=_contract_history_empty):
     return TestClient(create_app(
         storage=db, fetch=lambda s: _snap(), rate_loader=_rate_loader,
         dividend_loader=_dividend_loader,
         verify_provider=lambda p, t: providers.VerifyOutcome(True),
-        historical_surface=surface))
+        historical_surface=surface, contract_history=contract_history))
 
 
 @pytest.fixture
@@ -1204,3 +1215,272 @@ def test_the_full_ledger_covers_every_stage_and_shares_one_correlation_id(db):
     assert parse["context"]["raw_rows"] == 5
     assert parse["context"]["parsed_call_rows"] == 0
     assert parse["context"]["parsed_put_rows"] == 0
+
+
+# ---------- Exact-contract 逐腿歷史 IV（HIVT-02／#153） ----------
+#
+# 跟上面整份檔案的 (tenor, delta) 重錨定家族完全獨立：這裡只測
+# `legs` 這個新增欄位，既有 `points`／`metrics`／`status` 家族的行為
+# 由上面既有測試覆蓋、本節不重複。
+
+class ContractHistoryRecorder:
+    """記錄每一次呼叫的 (occ_symbol, from_date, to_date)——跟舊 `Recorder`
+    對 `_backfill_iv` 的角色對應，只是這裡一次呼叫代表一段區間，不是
+    一天。"""
+
+    def __init__(self, points_by_symbol=None, fail=None):
+        self.calls: list[tuple[str, str, str]] = []
+        self._points_by_symbol = points_by_symbol or {}
+        self._fail = fail
+
+    def __call__(self, provider, occ_symbol, from_date, to_date, token,
+                observer=None):
+        self.calls.append((occ_symbol, from_date, to_date))
+        if observer is not None:
+            observer({"vendor_status": "ok", "vendor_errmsg": None,
+                      "http_status": 203, "raw_rows": 0, "parsed_rows": 0,
+                      "null_iv_count": 0, "dropped_missing_date": 0})
+        if self._fail is not None:
+            raise self._fail
+        return self._points_by_symbol.get(occ_symbol, [])
+
+
+def _leg_symbols(client, sid, key):
+    """借用 `_candidate_key` 同樣的走訪路徑，換成回傳這個候選兩條腿
+    （或單腳只有一條）的 OCC contract symbol。"""
+    view = client.get(f"/api/scenarios/{sid}").json()["latest_result"]
+    for r in view["results"]:
+        for g in r.get("expiry_top10") or []:
+            for c in g["candidates"]:
+                if c["candidate_key"] == key:
+                    return [leg["contract_symbol"] for leg in c["legs"]]
+    raise AssertionError("找不到這個候選")
+
+
+def test_legs_field_carries_buy_and_sell_for_a_two_leg_spread(db):
+    rec = ContractHistoryRecorder()
+    client = _client(db, surface=_rich_surface, contract_history=rec)
+    _unlock(client)
+    sid = _scenario(client)
+    key = _candidate_key(client, sid)
+    body = _get(client, sid, key).json()
+
+    assert set(body["legs"]) == {"buy", "sell"}
+    for leg_key in ("buy", "sell"):
+        leg = body["legs"][leg_key]
+        assert leg["contract"]["contract_symbol"]
+        assert leg["contract"]["underlying"] == "XYZ"
+        assert leg["status"] == "ok"
+        assert leg["points"] == []
+
+
+def test_legs_field_omits_the_sell_key_entirely_for_a_single_leg_candidate(db):
+    """單腳候選只有買腿——`sell` 這個 key 整個不存在，不是設成 None
+    （跟舊家族 `sell_iv`／`normalized_skew` 恆 None 的呈現方式刻意不同：
+    這裡沒有賣腿是結構性的事實，不該讓前端多寫一個「存在但是 None」的
+    分支）。"""
+    rec = ContractHistoryRecorder()
+    client = _client(db, surface=_rich_surface, contract_history=rec)
+    _unlock(client)
+    sid = _scenario(client)
+    key, view = _long_call_candidate_key_and_view(client)
+    _attach_result(db, sid, view)
+
+    body = _get(client, sid, key).json()
+    assert set(body["legs"]) == {"buy"}
+
+
+def test_exact_contract_isolation_different_strikes_never_cross_contaminate(db):
+    """紅線：不同履約價是不同的歷史序列，即使 vendor 假體對哪個 symbol
+    給哪組資料完全不重疊，兩條腿也各自拿到自己的那組、不會互相污染。"""
+    client = _client(db, surface=_rich_surface)
+    _unlock(client)
+    sid = _scenario(client)
+    key = _candidate_key(client, sid)
+    buy_symbol, sell_symbol = _leg_symbols(client, sid, key)
+    assert buy_symbol != sell_symbol
+
+    rec = ContractHistoryRecorder(points_by_symbol={
+        buy_symbol: [("2026-07-01", 0.30)],
+        sell_symbol: [("2026-07-01", 0.55)],
+    })
+    client2 = _client(db, surface=_rich_surface, contract_history=rec)
+    _unlock(client2)
+    body = _get(client2, sid, key).json()
+
+    assert body["legs"]["buy"]["points"] == [{"date": "2026-07-01", "iv": 0.30}]
+    assert body["legs"]["sell"]["points"] == [{"date": "2026-07-01", "iv": 0.55}]
+
+
+def test_variable_length_history_under_a_year_is_reported_as_is_not_padded(db):
+    """合約只上市三天，回應就是三天——不補到一年份的空白點。"""
+    rec = ContractHistoryRecorder()
+    client = _client(db, surface=_rich_surface, contract_history=rec)
+    _unlock(client)
+    sid = _scenario(client)
+    key = _candidate_key(client, sid)
+    buy_symbol, _sell = _leg_symbols(client, sid, key)
+    rec._points_by_symbol[buy_symbol] = [
+        ("2026-08-10", 0.20), ("2026-08-11", 0.21), ("2026-08-12", 0.22)]
+
+    body = _get(client, sid, key).json()
+    assert len(body["legs"]["buy"]["points"]) == 3
+    assert body["legs"]["buy"]["observation_count"] == 3
+    assert body["legs"]["buy"]["history_span_days"] == 2
+
+
+def test_history_older_than_365_days_is_trimmed_out_of_the_response(db):
+    today = ny_today()
+    old_date = (today - timedelta(days=400)).isoformat()
+    recent_date = (today - timedelta(days=1)).isoformat()
+
+    rec = ContractHistoryRecorder()
+    client = _client(db, surface=_rich_surface, contract_history=rec)
+    _unlock(client)
+    sid = _scenario(client)
+    key = _candidate_key(client, sid)
+    buy_symbol, _sell = _leg_symbols(client, sid, key)
+    rec._points_by_symbol[buy_symbol] = [(old_date, 0.5), (recent_date, 0.25)]
+
+    body = _get(client, sid, key).json()
+    dates = [p["date"] for p in body["legs"]["buy"]["points"]]
+    assert old_date not in dates
+    assert recent_date in dates
+
+
+def test_null_iv_points_are_preserved_in_the_response_never_dropped_or_zeroed(db):
+    rec = ContractHistoryRecorder()
+    client = _client(db, surface=_rich_surface, contract_history=rec)
+    _unlock(client)
+    sid = _scenario(client)
+    key = _candidate_key(client, sid)
+    buy_symbol, _sell = _leg_symbols(client, sid, key)
+    rec._points_by_symbol[buy_symbol] = [
+        ("2026-08-10", None), ("2026-08-11", None), ("2026-08-12", 0.22)]
+
+    body = _get(client, sid, key).json()
+    points = {p["date"]: p["iv"] for p in body["legs"]["buy"]["points"]}
+    assert points["2026-08-10"] is None
+    assert points["2026-08-11"] is None
+    assert points["2026-08-12"] == 0.22
+    # observation_count 只算非 None——null 是缺席觀測，不是「值是 0」。
+    assert body["legs"]["buy"]["observation_count"] == 1
+
+
+def test_missing_calendar_days_are_not_interpolated(db):
+    """vendor 只回真實交易日——中間跳過的日子不補值，序列本身就是
+    那幾個離散的日期，不是逐日連續。"""
+    rec = ContractHistoryRecorder()
+    client = _client(db, surface=_rich_surface, contract_history=rec)
+    _unlock(client)
+    sid = _scenario(client)
+    key = _candidate_key(client, sid)
+    buy_symbol, _sell = _leg_symbols(client, sid, key)
+    rec._points_by_symbol[buy_symbol] = [("2026-08-03", 0.20), ("2026-08-07", 0.24)]
+
+    body = _get(client, sid, key).json()
+    dates = [p["date"] for p in body["legs"]["buy"]["points"]]
+    assert dates == ["2026-08-03", "2026-08-07"]
+
+
+def test_a_vendor_error_on_the_exact_contract_path_still_returns_cached_points(db):
+    """今天這次嘗試失敗，不代表先前快取的觀測就消失——跟舊家族
+    `_backfill_iv` 的既有紅線（#133）是同一條原則，搬到 exact-contract
+    家族。"""
+    seed = ContractHistoryRecorder()
+    client = _client(db, surface=_rich_surface, contract_history=seed)
+    _unlock(client)
+    sid = _scenario(client)
+    key = _candidate_key(client, sid)
+    buy_symbol, _sell = _leg_symbols(client, sid, key)
+    seed._points_by_symbol[buy_symbol] = [("2026-08-01", 0.20)]
+    first = _get(client, sid, key).json()
+    assert first["legs"]["buy"]["points"] == [{"date": "2026-08-01", "iv": 0.20}]
+
+    # 清掉「今天已嘗試過」，讓下一次真的再打一次 vendor、這次失敗。
+    cached = db.get_contract_history(buy_symbol)
+    db.save_contract_history(ContractHistory(
+        contract_symbol=cached.contract_symbol, points=cached.points,
+        fetched_through=cached.fetched_through, last_attempt_on="1900-01-01",
+        last_status=cached.last_status, last_note=cached.last_note))
+
+    failing = ContractHistoryRecorder(fail=FetchError("連線逾時"))
+    client2 = _client(db, surface=_rich_surface, contract_history=failing)
+    _unlock(client2)
+    second = _get(client2, sid, key).json()
+
+    assert second["legs"]["buy"]["status"] == "vendor"
+    assert second["legs"]["buy"]["points"] == [{"date": "2026-08-01", "iv": 0.20}]
+
+
+def test_repeating_the_same_day_request_costs_zero_vendor_calls(db):
+    rec = ContractHistoryRecorder()
+    client = _client(db, surface=_rich_surface, contract_history=rec)
+    _unlock(client)
+    sid = _scenario(client)
+    key = _candidate_key(client, sid)
+
+    _get(client, sid, key)
+    after_first = len(rec.calls)
+    assert after_first > 0
+    _get(client, sid, key)
+    _get(client, sid, key)
+    assert len(rec.calls) == after_first
+
+
+def test_incremental_refresh_only_requests_the_gap_since_fetched_through(db):
+    """第二天再打，`from` 該是上次 `fetched_through` 的隔天，不是又從
+    365 天前整年重抓。"""
+    rec = ContractHistoryRecorder()
+    client = _client(db, surface=_rich_surface, contract_history=rec)
+    _unlock(client)
+    sid = _scenario(client)
+    key = _candidate_key(client, sid)
+    buy_symbol, _sell = _leg_symbols(client, sid, key)
+
+    _get(client, sid, key)
+    first_call = next(c for c in rec.calls if c[0] == buy_symbol)
+    today = ny_today()
+    assert first_call[1] == \
+        (today - timedelta(days=ivtrend.IV_TREND_MAX_HISTORY_DAYS)).isoformat()
+
+    # 讓「今天已嘗試過」的閘打開，模擬隔天再打一次。
+    cached = db.get_contract_history(buy_symbol)
+    db.save_contract_history(ContractHistory(
+        contract_symbol=cached.contract_symbol, points=cached.points,
+        fetched_through=cached.fetched_through, last_attempt_on="1900-01-01",
+        last_status=cached.last_status, last_note=cached.last_note))
+    rec.calls.clear()
+
+    _get(client, sid, key)
+    second_call = next(c for c in rec.calls if c[0] == buy_symbol)
+    expected_from = (date.fromisoformat(cached.fetched_through) +
+                     timedelta(days=1)).isoformat()
+    assert second_call[1] == expected_from
+
+
+def test_exact_contract_diagnostics_never_leak_the_token(db):
+    rec = ContractHistoryRecorder()
+    client = _client(db, surface=_rich_surface, contract_history=rec)
+    _unlock(client)
+    sid = _scenario(client)
+    key = _candidate_key(client, sid)
+    resp = _get(client, sid, key)
+    assert TOKEN not in resp.text
+    stored = client.get("/api/diagnostics").json()
+    assert all(TOKEN not in str(e) for e in stored)
+
+
+def test_exact_contract_cache_events_carry_the_new_whitelisted_context_fields(db):
+    rec = ContractHistoryRecorder()
+    client = _client(db, surface=_rich_surface, contract_history=rec)
+    _unlock(client)
+    sid = _scenario(client)
+    key = _candidate_key(client, sid)
+    body = _get(client, sid, key).json()
+
+    cache_events = _events_for(body, "cache")
+    assert cache_events
+    assert any("contract_symbol" in e["context"] for e in cache_events)
+    assert any("requested_from" in e["context"] and "requested_to" in e["context"]
+              for e in cache_events)
