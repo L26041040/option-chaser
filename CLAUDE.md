@@ -282,9 +282,39 @@ import，維持雙向零耦合。`LegHistoricalIv` 回應新增六個統計欄�
 exact-contract 端點函式不呼叫任何重錨定函式）。全套 1329 條測試通過。
 issue 已關閉。
 
-**尚存 blocker**：無。**下一步＝HIVT-04**（#155，依需求方指示與
-HIVT-05／#156 因 API／前端相依必須連續完成），尚未開工。依專案規則
-全部子票做完才開 PR，中途不主動開。
+**HIVT-04**（#155，commit `0b4865b`）— Vertical Spread 兩腿分離＋舊
+reanchored 次要欄位退場：`api_app/main.py::_iv_payload()` 從回應信封
+移除 `points`／`metrics.buy_iv`／`metrics.sell_iv`／`metrics.atm_iv`
+（已被 `legs.buy`／`legs.sell` 取代）。**裁決記錄**：issue 字面列出
+`points` 應移除，但同票也要求 Normalized Skew 不受影響——而
+Normalized Skew 卡片本來就靠 `points` 畫自己的走勢圖，兩條要求對同一
+信封鍵有矛盾。解法：`points`（帶四個子欄位）確實整個消失，新增
+`normalized_skew_points`（只有 `date`／`normalized_skew`）取代它，
+Normalized Skew 走勢圖因此不受影響——已在 `_iv_payload()` docstring
+與 issue 留言記錄這個裁決，需求方若有異議可回饋調整。新增
+`test_normalized_skew_is_bit_identical_to_an_independent_reanchored_computation`
+直接呼叫未觸碰的 `ivhistory.reanchor_spread()`／`field_metrics()`
+重算比對，不是靠既有測試套件全綠間接推論。
+
+**HIVT-05**（#156，commits `74fee21`／`bb4ed98`）— 前端 Historical IV
+Trend 卡片：新增 `src/IvTrend.tsx`，逐腿卡片資訊順序比照 spec #151
+§6（現值→走勢圖→percentile→z-score→Δ4w→涵蓋時間＋觀測筆數）；
+`src/ivHistoryChart.ts` 新增 `projectOntoDomain()` 讓 raw／MA／
+Bollinger 上下界四條疊加序列共用同一個 x 軸；`src/IvHistory.tsx`
+只剩 Normalized Skew 頭條，`ChartTooltip`／`toPixel`／版面常數 export
+供 `IvTrend.tsx` 複用幾何。`/code-review` 抓到 `CardSkeleton`／
+`InlineDiagnostics` 檔頭註解誤寫成逐腿卡片直接複用（實際 import 清單
+沒有這兩個名字——固定版位／診斷區塊是掛在整張卡片層級一次涵蓋兩個
+家族，不是逐卡各自一份），已修正註解＋順手把只有一處呼叫點卻泛化出
+不必要彈性的 `CardSkeleton` 參數簡化回單一 `isSingleLeg`。
+
+兩票依需求方指示連續完成（避免前端讀到已消失欄位的空窗期），全套：
+backend 1339 條、frontend vitest 554 條、typecheck／build、Playwright
+e2e 75 條（含 `smoke.spec.ts`／`desktop.spec.ts` 既有 Historical IV
+區塊改用新回應形狀重寫）全部通過。issue 已關閉。
+
+**尚存 blocker**：無。**下一步＝HIVT-06**（#157），尚未開工。依專案
+規則全部子票做完才開 PR，中途不主動開。
 
 ### Spec #143（2026-08-15 發佈）——Application Diagnostics / Error Log 系統
 
