@@ -13,7 +13,7 @@ from api_app import providers
 from api_app.main import create_app
 from api_app.storage import ContractHistory, IvBackfillRun, IvObservation
 from api_app.storage.memory import MemoryStorage
-from option_chaser import ivtrend
+from option_chaser import ivhistory, ivtrend
 from option_chaser.data.snapshot import load_snapshot
 from option_chaser.dividends import DividendHistory, DividendRecord
 from option_chaser.ivhistory import SurfacePoint
@@ -208,23 +208,29 @@ def test_switching_back_to_default_relocks_and_stops_requests(db):
 # ---------- 序列本身 ----------
 
 def test_series_comes_from_the_cache_and_is_re_anchored(db):
-    """序列的每一點對應快取裡的一天觀測，在候選自己的座標上重新插值。"""
+    """序列的每一點對應快取裡的一天觀測，在候選自己的座標上重新插值。
+
+    HIVT-04（#155）：舊的 `points`（帶 buy_iv／sell_iv／atm_iv 子欄位）
+    已從回應信封移除，Normalized Skew 自己的走勢圖改讀
+    `normalized_skew_points`——內部計算完全沒變，只是信封窄了。"""
     client = _client(db, surface=_rich_surface)
     _unlock(client)
     sid = _scenario(client)
     body = _get(client, sid, _candidate_key(client, sid)).json()
     cached = db.iv_observation_dates("XYZ")
-    assert [p["date"] for p in body["points"]] == cached
+    assert [p["date"] for p in body["normalized_skew_points"]] == cached
     assert body["metrics"]["normalized_skew"]["value"] is not None
 
 
-def test_series_carries_both_legs_and_the_atm_level(db):
+def test_normalized_skew_points_only_carry_date_and_normalized_skew(db):
+    """HIVT-04：舊 `points` 的 buy_iv／sell_iv／atm_iv 子欄位真的消失了
+    ——不是換個信封鍵名字繼續夾帶被取代的資料。"""
     client = _client(db, surface=_rich_surface)
     _unlock(client)
     sid = _scenario(client)
-    point = _get(client, sid, _candidate_key(client, sid)).json()["points"][0]
-    assert set(point) >= {"date", "buy_iv", "sell_iv", "atm_iv",
-                          "normalized_skew"}
+    point = _get(client, sid, _candidate_key(client, sid)).json()[
+        "normalized_skew_points"][0]
+    assert set(point) == {"date", "normalized_skew"}
 
 
 def _prefill(db, symbol="XYZ"):
@@ -245,9 +251,8 @@ def test_percentiles_are_reported_once_the_cache_has_any_valid_observation(db):
     sid = _scenario(client)
     _prefill(db)
     metrics = _get(client, sid, _candidate_key(client, sid)).json()["metrics"]
-    for field in ("normalized_skew", "buy_iv", "sell_iv"):
-        assert metrics[field]["percentile"] is not None
-        assert metrics[field]["count"] > 0
+    assert metrics["normalized_skew"]["percentile"] is not None
+    assert metrics["normalized_skew"]["count"] > 0
 
 
 # ---------- Long Call 單腳候選（#139／spec #137）----------
@@ -307,9 +312,11 @@ def test_a_long_call_candidate_returns_200_not_the_old_blanket_none(db):
     assert resp.json()["candidate_key"] == key
 
 
-def test_a_long_call_candidate_has_buy_and_atm_but_no_sell_or_skew(db):
-    """買腿 IV／ATM IV 有值；賣腿 IV／Normalized Skew 誠實回沒有這個量
-    （`count == 0`），不是新的錯誤狀態。"""
+def test_a_long_call_candidate_has_no_normalized_skew(db):
+    """單腳候選結構上沒有 Normalized Skew——`count == 0`，不是新的錯誤
+    狀態（HIVT-04：舊 buy_iv／atm_iv reanchored 次要顯示已移除，改由
+    `legs.buy` 供應，見 test_legs_field_omits_the_sell_key_entirely_
+    for_a_single_leg_candidate）。"""
     client = _client(db, surface=_rich_surface)
     _unlock(client)
     sid = _scenario(client)
@@ -318,18 +325,11 @@ def test_a_long_call_candidate_has_buy_and_atm_but_no_sell_or_skew(db):
     _prefill(db)
 
     body = _get(client, sid, key).json()
-    assert body["metrics"]["buy_iv"]["count"] > 0
-    assert body["metrics"]["buy_iv"]["value"] is not None
-    assert body["metrics"]["atm_iv"]["count"] > 0
-
-    assert body["metrics"]["sell_iv"] == \
-        {"value": None, "percentile": None, "count": 0,
-         "trend_4w": None, "trend_base_count": 0}
     assert body["metrics"]["normalized_skew"] == \
         {"value": None, "percentile": None, "count": 0,
          "trend_4w": None, "trend_base_count": 0}
-    assert all(p["sell_iv"] is None and p["normalized_skew"] is None
-              for p in body["points"])
+    assert all(p["normalized_skew"] is None
+              for p in body["normalized_skew_points"])
 
 
 def test_a_long_call_candidate_still_honours_the_gate(db):
@@ -349,18 +349,18 @@ def test_a_long_call_candidate_still_honours_the_gate(db):
 
 def test_two_leg_spread_candidates_are_unaffected_by_the_single_leg_path(db):
     """回歸：既有兩腿路徑（Scenario 正常 `/refresh` 產生的
-    bull-call-spread 候選）行為與數值完全不因這次修改而變。"""
+    bull-call-spread 候選）Normalized Skew 行為與數值完全不因這次修改
+    而變（HIVT-04：買／賣腿次要顯示已移除，改由 `legs` 供應）。"""
     client = _client(db, surface=_rich_surface)
     _unlock(client)
     sid = _scenario(client)
     key = _candidate_key(client, sid)   # Scenario 流程目前只有 spread 候選
     _prefill(db)
     body = _get(client, sid, key).json()
-    for field in ("normalized_skew", "buy_iv", "sell_iv", "atm_iv"):
-        m = body["metrics"][field]
-        assert m["percentile"] is not None
-        assert m["count"] > 0
-        assert m["value"] is not None
+    m = body["metrics"]["normalized_skew"]
+    assert m["percentile"] is not None
+    assert m["count"] > 0
+    assert m["value"] is not None
 
 
 def test_a_coordinate_outside_the_grid_is_left_blank_not_faked(db):
@@ -373,8 +373,9 @@ def test_a_coordinate_outside_the_grid_is_left_blank_not_faked(db):
     _unlock(client)
     sid = _scenario(client)
     body = _get(client, sid, _candidate_key(client, sid)).json()
-    assert body["points"], "應該有觀測，只是每一點都插不出值"
-    assert all(p["normalized_skew"] is None for p in body["points"])
+    assert body["normalized_skew_points"], "應該有觀測，只是每一點都插不出值"
+    assert all(p["normalized_skew"] is None
+              for p in body["normalized_skew_points"])
     assert body["metrics"]["normalized_skew"] == \
         {"value": None, "percentile": None, "count": 0,
          "trend_4w": None, "trend_base_count": 0}
@@ -390,7 +391,7 @@ def test_a_vendor_failure_is_reported_rather_than_swallowed(db):
     _unlock(client)
     sid = _scenario(client)
     body = _get(client, sid, _candidate_key(client, sid)).json()
-    assert body["points"] == []
+    assert body["normalized_skew_points"] == []
     assert "額度用盡" in body["note"]
 
 
@@ -629,12 +630,14 @@ def test_zero_cached_observations_yields_no_percentile(db):
 def test_trend_4w_reflects_a_real_change_across_the_cached_series(db):
     """端到端：不是全年同一張網格（那種情況下 Δ4w 剛好是 0），而是隨
     日期真的變化的序列，證明 Δ4w 真的從快取的每日觀測算出來、不是常數
-    佔位。網格整體往上平移──IV 越晚的日子越高，最新一筆理應比四週前
-    的水準高，Δ4w 應為正。"""
+    佔位。網格 delta 軸的斜率隨日期加大——買賣兩腿的 delta 通常不同，
+    Normalized Skew（兩腿之差）因此隨斜率變化而跟著變，不是常數
+    （HIVT-04：`metrics` 只剩 `normalized_skew` 一項，不再驗 buy_iv；
+    不預設變化方向——只證明「真的有變化」，不是常數佔位）。"""
     schedule = sampling_schedule("XYZ", ny_today())
 
     def _shifted_grid(offset: float) -> dict:
-        pts = [SurfacePoint(dte=dte, delta=d, iv=0.20 + 0.1 * d + offset)
+        pts = [SurfacePoint(dte=dte, delta=d, iv=0.20 + (0.1 + offset) * d)
               for dte in (1, 30, 90, 365, 1200)
               for d in (0.01, 0.05, 0.25, 0.5, 0.75, 0.95)]
         return {"call": pts, "put": pts}
@@ -642,10 +645,10 @@ def test_trend_4w_reflects_a_real_change_across_the_cached_series(db):
     from api_app.main import _surface_to_rows
 
     for i, day in enumerate(schedule):
-        # 越晚的日子 offset 越大——一條單調上升的序列。
+        # 越晚的日子斜率越陡——delta 軸上不同位置的兩腿因此隨時間分歧。
         db.save_iv_observation(IvObservation(
             symbol="XYZ", observed_on=day,
-            surface=_surface_to_rows(_shifted_grid(i * 0.001)),
+            surface=_surface_to_rows(_shifted_grid(i * 0.01)),
             fetched_at="2026-08-12T00:00:00+00:00"))
 
     client = _client(db, surface=_rich_surface)
@@ -653,9 +656,9 @@ def test_trend_4w_reflects_a_real_change_across_the_cached_series(db):
     sid = _scenario(client)
     body = _get(client, sid, _candidate_key(client, sid)).json()
 
-    m = body["metrics"]["buy_iv"]
+    m = body["metrics"]["normalized_skew"]
     assert m["trend_4w"] is not None
-    assert m["trend_4w"] > 0, "序列單調上升，最新一筆該高於四週前的水準"
+    assert m["trend_4w"] != 0, "序列真的隨日期變化，Δ4w 不該剛好是常數 0"
     assert m["trend_base_count"] > 0
 
 
@@ -675,6 +678,8 @@ def test_a_first_day_run_with_partial_data_still_shows_a_percentile(db):
 
 
 def test_a_healthy_run_reports_ok_with_metrics_for_every_field(db):
+    """HIVT-04：`metrics` 只剩 `normalized_skew`（buy_iv／sell_iv／
+    atm_iv 已隨舊次要顯示欄位一起移除）。"""
     client = _client(db, surface=_rich_surface)
     _unlock(client)
     sid = _scenario(client)
@@ -682,16 +687,57 @@ def test_a_healthy_run_reports_ok_with_metrics_for_every_field(db):
     body = _get(client, sid, _candidate_key(client, sid)).json()
     assert body["status"] == "ok"
     assert body["observations"] >= 20
-    for field in ("normalized_skew", "buy_iv", "sell_iv", "atm_iv"):
-        m = body["metrics"][field]
-        assert m["percentile"] is not None
-        assert m["count"] > 0
-        assert m["value"] is not None
-        # #138：純加法欄位——整份排程都用同一張網格灌值，每天的重錨定
-        # 結果都相同，Δ4w 因此該是 0（有基準可減，減出來剛好沒變化），
-        # 不是 None（那會是「沒有基準」，跟這裡的情境不同）。
-        assert m["trend_4w"] == pytest.approx(0.0)
-        assert m["trend_base_count"] > 0
+    assert set(body["metrics"]) == {"normalized_skew"}
+    m = body["metrics"]["normalized_skew"]
+    assert m["percentile"] is not None
+    assert m["count"] > 0
+    assert m["value"] is not None
+    # #138：純加法欄位——整份排程都用同一張網格灌值，每天的重錨定
+    # 結果都相同，Δ4w 因此該是 0（有基準可減，減出來剛好沒變化），
+    # 不是 None（那會是「沒有基準」，跟這裡的情境不同）。
+    assert m["trend_4w"] == pytest.approx(0.0)
+    assert m["trend_base_count"] > 0
+
+
+def test_the_old_top_level_points_key_and_leg_metrics_are_gone(db):
+    """HIVT-04（#155）AC 明文：舊的 `points`／`metrics.buy_iv`／
+    `metrics.sell_iv`／`metrics.atm_iv` 從回應移除。"""
+    client = _client(db, surface=_rich_surface)
+    _unlock(client)
+    sid = _scenario(client)
+    body = _get(client, sid, _candidate_key(client, sid)).json()
+    assert "points" not in body
+    for removed in ("buy_iv", "sell_iv", "atm_iv"):
+        assert removed not in body["metrics"]
+
+
+def test_normalized_skew_is_bit_identical_to_an_independent_reanchored_computation(db):
+    """HIVT-04（#155）AC 明文要求的前後比對：`metrics.normalized_skew`
+    不是這次裁切信封時順手改出來的新計算——它逐位元等於直接呼叫
+    `ivhistory.reanchor_spread()`／`field_metrics()`（本票完全沒碰的
+    既有函式）在同一份快取觀測與同一組候選座標上算出的結果。這證明
+    HIVT-04 只動了回應信封，沒有動內部計算本身。"""
+    client = _client(db, surface=_rich_surface)
+    _unlock(client)
+    sid = _scenario(client)
+    key = _candidate_key(client, sid)
+    _prefill(db)
+    body = _get(client, sid, key).json()
+
+    from api_app.main import _rows_to_surface
+    from option_chaser import store
+
+    rec = client.get(f"/api/scenarios/{sid}").json()["latest_result"]
+    cand = store.find_candidate(rec, key)
+    coords = ivhistory.spread_coordinates(cand, spot=rec["meta"]["spot"])
+    independent_points = []
+    for obs in db.iv_observations("XYZ"):
+        surface = _rows_to_surface(obs.surface)
+        reanchored = ivhistory.reanchor_spread(surface, coords)
+        independent_points.append({"date": obs.observed_on, **reanchored})
+    independent_metrics = ivhistory.field_metrics(independent_points, today=ny_today())
+
+    assert body["metrics"]["normalized_skew"] == independent_metrics["normalized_skew"]
 
 
 # ---------- 長天期候選的到期日鎖定（#134）----------
@@ -1029,7 +1075,7 @@ def test_diagnostics_storage_failure_does_not_break_the_response():
     sid = _scenario(client)
     resp = _get(client, sid, _candidate_key(client, sid))
     assert resp.status_code == 200
-    assert resp.json()["points"]
+    assert resp.json()["normalized_skew_points"]
 
 
 # ---------- per-request 排放量控制（#146） ----------

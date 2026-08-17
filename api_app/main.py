@@ -207,25 +207,36 @@ def _leg_contract_identity(leg: dict, underlying: str) -> dict:
 
 def _iv_payload(candidate_key: str, points: list[dict], status: str,
                 note: str | None) -> dict:
-    """Historical IV 的回應形狀（#133）。
+    """Historical IV 的回應形狀（#133，HIVT-04／#155 裁切後）。
 
     `status`（ok／quota／vendor）只描述**這次 backfill 嘗試**的結果，
     不用來決定要不要給 percentile——需求方 2026-08-12 二次修正裁示：
     coverage／樣本數不得當作隱藏 percentile 的門檻，「今天補不補得動」
     跟「資料能不能看」是兩件事。
 
-    `metrics` 裡每個欄位各自依「這個欄位有沒有至少一筆有效觀測」獨立
-    判斷——只要有一筆就給 percentile；`count` 讓使用者自己判斷這個數字
-    站不站得住腳，不是由後端替他判斷「不夠可信」。唯一容許某欄位沒有
-    percentile 的情況是那個欄位一筆有效觀測都沒有。同一批欄位另外各帶
-    `trend_4w`／`trend_base_count`（#138）——純加法，`value`／
-    `percentile`／`count` 的語意不受影響。
+    **HIVT-04（#155）欄位裁切**：舊回應信封裡的 `buy_iv`／`sell_iv`／
+    `atm_iv`（`points` 逐日子欄位與 `metrics` 對應項）已被新的逐腿
+    exact-contract 卡片（`legs`，HIVT-02／03）取代，這裡不再往外送。
+    `normalized_skew` 本身——連同它自己的走勢圖——是 spec #151 §0／§7
+    明文保留、繼續獨立運作的既有功能，**不受這次裁切影響**：內部計算
+    （`ivhistory.field_metrics()`／`reanchor_spread()`）完全沒動，只是
+    信封裡的 `points` 改叫 `normalized_skew_points` 並且只留
+    `date`／`normalized_skew` 兩個子欄位——舊的 `points` 這個名字連同它
+    夾帶的 buy_iv／sell_iv／atm_iv 子欄位，跟著上面三個 `metrics` 欄位
+    一起真正消失，不是換個名字繼續夾帶被取代的資料。這是本票對「移除
+    points／metrics.buy_iv／metrics.sell_iv／metrics.atm_iv」與「
+    Normalized Skew 卡片不受影響」兩條要求的解讀：字面上點名的
+    `points` 這個信封鍵確實消失了，但 Normalized Skew 需要的走勢圖
+    資料沒有跟著陪葬。
     """
+    metrics = ivhistory.field_metrics(points, today=ny_today())
     return {
         "candidate_key": candidate_key,
         "status": status,
-        "points": points,
-        "metrics": ivhistory.field_metrics(points, today=ny_today()),
+        "normalized_skew_points": [
+            {"date": p["date"], "normalized_skew": p["normalized_skew"]}
+            for p in points],
+        "metrics": {"normalized_skew": metrics["normalized_skew"]},
         "observations": len(points),
         "note": note,
     }
