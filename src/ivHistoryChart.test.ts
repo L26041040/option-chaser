@@ -6,7 +6,7 @@
  */
 import { describe, expect, it } from "vitest";
 
-import { ivChartPoints, ivYAxisDomain } from "./ivHistoryChart";
+import { ivChartPoints, ivYAxisDomain, projectOntoDomain } from "./ivHistoryChart";
 
 describe("ivYAxisDomain", () => {
   it("非空值各留 10% 邊界", () => {
@@ -92,5 +92,39 @@ describe("ivChartPoints", () => {
   it("domain 塌成一個點時（span=0）y 一律為 null，不除以零", () => {
     const points = ivChartPoints(["2026-01-01"], [0.2], [0.2, 0.2]);
     expect(points[0].y).toBeNull();
+  });
+});
+
+describe("projectOntoDomain（HIVT-05／#156：四條疊加序列共用同一個 x 軸）", () => {
+  const domainDates = ["2026-01-01", "2026-01-02", "2026-01-03"];
+
+  it("依日期把值投影到共用的日期軸上，不是照自己的長度排位置", () => {
+    const series = [
+      { date: "2026-01-01", value: 0.10 },
+      { date: "2026-01-02", value: 0.20 },
+      { date: "2026-01-03", value: 0.30 },
+    ];
+    expect(projectOntoDomain(domainDates, series)).toEqual([0.10, 0.20, 0.30]);
+  });
+
+  it("比主軸稀疏的序列（例如 moving average 起始端還沒有值）缺的日期回 null，"
+     + "不是把陣列往前擠", () => {
+    // 只有最後一天有值——起始兩天視窗觀測數不足。
+    const series = [{ date: "2026-01-03", value: 0.25 }];
+    expect(projectOntoDomain(domainDates, series)).toEqual([null, null, 0.25]);
+  });
+
+  it("序列裡某天的值本身就是 null（統計量 unavailable）——投影後仍是 null，"
+     + "不會被誤判成「這天沒有這筆觀測」", () => {
+    const series = [
+      { date: "2026-01-01", value: null },
+      { date: "2026-01-02", value: 0.20 },
+      { date: "2026-01-03", value: null },
+    ];
+    expect(projectOntoDomain(domainDates, series)).toEqual([null, 0.20, null]);
+  });
+
+  it("空序列投影到任何日期軸上全部是 null", () => {
+    expect(projectOntoDomain(domainDates, [])).toEqual([null, null, null]);
   });
 });

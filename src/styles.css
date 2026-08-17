@@ -2203,6 +2203,48 @@ body {
   }
 }
 
+/* Historical IV Trend 逐腿卡片（HIVT-05／#156）：單腳一張、Spread 兩張
+   垂直堆疊——內容比舊的次層 Metric 豐富（走勢圖＋四行 caption），改用
+   跟主卡同寬的直向排列而不是 `.iv-legs` 的雙欄 grid，手機窄螢幕不會把
+   圖擠得看不出路徑。 */
+.iv-trend-legs {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding-top: 8px;
+  border-top: 0.5px solid var(--separator);
+}
+
+.iv-trend-card {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.iv-trend-card-label {
+  margin-bottom: 2px;
+}
+
+.iv-trend-caption {
+  margin-top: 4px;
+}
+
+/* Bollinger 帶——半透明填色區域，襯在 moving average／raw 線下面，
+   不需要額外圖例：上下界本身的形狀就是「範圍」。 */
+.iv-trend-band {
+  fill: var(--tint);
+  opacity: 0.12;
+  stroke: none;
+}
+
+/* Moving average——比 raw 線細、用既有分隔線色系而非 `--tint`，跟主線
+   有明顯的視覺階層但不搶戲。 */
+.iv-trend-ma-line {
+  stroke: var(--label-secondary);
+  stroke-width: 1;
+  stroke-dasharray: 3 2;
+}
+
 /* 卡片右下角的動作組（#132：編輯 ＋ 封存）。沿用 `.compact-archive` 原本
    的定位方式，只是從單一按鈕變成一列——視覺層級不變，仍然不搶戲。 */
 .compact-actions {

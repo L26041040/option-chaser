@@ -754,15 +754,14 @@ export function clearCredential(provider: string): Promise<SettingsView> {
   );
 }
 
-// ---------- Historical IV 歷史序列（#126／#114） ----------
+// ---------- Historical IV 歷史序列（#126／#114，HIVT-02–04／#153–155） ----------
 
-/** 序列上的一天。任一欄位為 null ＝那天在可比網格之外（或 vendor 沒
- *  資料）——是斷點，不是零。 */
-export interface IvHistoryPoint {
+/** Normalized Skew 自己一年走勢圖的一天（HIVT-04／#155：舊 `points` 的
+ *  `buy_iv`／`sell_iv`／`atm_iv` 子欄位已隨那三個次要顯示欄位一起移除，
+ *  這裡只留 Normalized Skew 自己需要的那一項）。`null`＝那天在可比網格
+ *  之外——是斷點，不是零。 */
+export interface NormalizedSkewPoint {
   date: string;
-  buy_iv: number | null;
-  sell_iv: number | null;
-  atm_iv: number | null;
   normalized_skew: number | null;
 }
 
@@ -772,7 +771,7 @@ export interface IvHistoryPoint {
  *  畫面連模組都不渲染（#126 既有行為）。 */
 export type IvHistoryStatus = "ok" | "quota" | "vendor";
 
-/** 一個欄位（Normalized Skew／買腿 IV／賣腿 IV／ATM IV）的呈現單位。
+/** Normalized Skew 這一項的現值／百分位／筆數／Δ4w。
  *
  *  百分位**不設任何 coverage 或樣本數門檻**——只要 `count >= 1` 就給。
  *  `count` 是這個百分位背後有幾筆有效觀測撐著，讓使用者自己判斷這個
@@ -818,17 +817,86 @@ export interface IvHistoryDiagnostics {
   events: DiagnosticEvent[];
 }
 
+/** Exact contract 的身份（HIVT-02／#153，spec #151 §1）——underlying／
+ *  expiration／strike／option_type 四項，不同其中任何一項就是不同的
+ *  合約，不同的歷史序列。 */
+export interface ContractIdentity {
+  underlying: string;
+  expiration: string;
+  strike: number;
+  option_type: string;
+  contract_symbol: string;
+}
+
+/** 這張合約單日的市場 IV。`iv` 為 `null`＝vendor 對這天沒有值（缺席
+ *  觀測，不是 0）。 */
+export interface IvTrendPoint {
+  date: string;
+  iv: number | null;
+}
+
+/** 統計量序列上的一天（moving average／Bollinger 上下界，HIVT-03／
+ *  #154）。`value` 為 `null`＝那天視窗內觀測數不足
+ *  `IV_TREND_MIN_OBSERVATIONS_FOR_BANDS`，回報 unavailable——不是沒有
+ *  資料，是這個統計量在那天不成立。 */
+export interface IvTrendStatPoint {
+  date: string;
+  value: number | null;
+}
+
+/**
+ * 一隻腳（買腿或賣腿）的完整 exact-contract 歷史 IV（HIVT-02／03／
+ * #153／#154，spec #151 §4）——原始序列＋統計量套組。
+ *
+ * `current_percentile`／`current_zscore`／`delta_4w` 個別可能是
+ * `null`：percentile 只在完全沒有歷史觀測時才會是 `null`（無最低門檻）；
+ * `current_zscore` 在視窗觀測數不足 `IV_TREND_MIN_OBSERVATIONS_FOR_
+ * BANDS` 時是 `null`；`delta_4w` 在 `[today-42d, today-21d]` 基準窗內
+ * 沒有觀測時是 `null`。三者互不影響彼此，也不影響 `points` 本身。
+ */
+export interface LegHistoricalIv {
+  contract: ContractIdentity;
+  points: IvTrendPoint[];
+  moving_average: IvTrendStatPoint[];
+  bollinger_upper: IvTrendStatPoint[];
+  bollinger_lower: IvTrendStatPoint[];
+  current_percentile: number | null;
+  current_zscore: number | null;
+  delta_4w: number | null;
+  observation_count: number;
+  history_span_days: number;
+  lookback_days_config: number;
+  status: IvHistoryStatus;
+  note: string | null;
+}
+
+/** 單腳候選（Long Call／Put）只有 `buy`；Vertical Spread 兩腿都有
+ *  （HIVT-02／#153，spec #151 §4：單腳的 `sell` 整個省略這個 key，
+ *  不是設成 `null`）。 */
+export interface IvHistoryLegs {
+  buy: LegHistoricalIv;
+  sell?: LegHistoricalIv;
+}
+
 export interface IvHistoryView {
   candidate_key: string;
   status: IvHistoryStatus;
-  points: IvHistoryPoint[];
-  metrics: Record<string, IvFieldMetric>;
-  /** 這個 symbol 已經累積了幾天觀測（progressive backfill 的進度）。 */
+  /** Normalized Skew 自己的一年走勢圖資料（HIVT-04／#155：欄位改名，
+   *  子欄位窄化，計算本身完全未變）。 */
+  normalized_skew_points: NormalizedSkewPoint[];
+  /** HIVT-04（#155）後只剩 `normalized_skew` 一項——買／賣腿的 reanchored
+   *  次要顯示已被 `legs` 取代。 */
+  metrics: { normalized_skew: IvFieldMetric };
+  /** 這個 symbol 已經累積了幾天觀測（progressive backfill 的進度，
+   *  Normalized Skew 這條 (tenor,delta) 家族路徑專用）。 */
   observations: number;
   /** 只在 `status` 不是 `ok` 時有值，說明今天的 backfill 遇到什麼——
    *  與要不要顯示 percentile 無關，那從來就只看各欄位自己的 `count`。 */
   note: string | null;
   diagnostics: IvHistoryDiagnostics;
+  /** exact-contract 家族（HIVT-02／03／#153／#154）——跟上面的
+   *  Normalized Skew 家族資料語意完全獨立。 */
+  legs: IvHistoryLegs;
 }
 
 export function ivHistory(

@@ -59,3 +59,19 @@ export function ivChartPoints(
     };
   });
 }
+
+/**
+ * 把一條可能比主日期軸稀疏的序列（例如 moving average 起始端沒有值、
+ * 或缺 IV 的日子不會出現在序列裡），投影到共用的 `domainDates`——四條
+ * 疊加序列（raw／MA／上界／下界，HIVT-05／#156）用**同一份**日期軸，
+ * 才不會各自依自己的長度算 x 位置而在畫面上錯位。`domainDates` 找不到
+ * 的日期回 `null`（理論上不會發生：統計序列的日期本該是原始序列的
+ * 子集）。
+ */
+export function projectOntoDomain(
+  domainDates: string[],
+  series: { date: string; value: number | null }[],
+): (number | null)[] {
+  const byDate = new Map(series.map((p) => [p.date, p.value]));
+  return domainDates.map((d) => byDate.get(d) ?? null);
+}
