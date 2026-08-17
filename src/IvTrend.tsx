@@ -11,9 +11,13 @@
  * BANDS`）只有那一項顯示 unavailable，不隱藏整張卡（HIVT-03／#154 AC，
  * 這裡是它在前端的呈現）。
  *
- * 與 `./IvHistory` 的 Normalized Skew 頭條共用同一套 fixed-layout-slot／
- * skeleton／`InlineDiagnostics`／診斷 Copy 行為（原樣 import，見
- * `./IvHistory` 檔頭說明），不另造第二套 UX。
+ * 這裡的卡片沒有自己的 loading／error 狀態，也不各自渲染診斷區塊——
+ * `legs` 是 `./IvHistory` 那次 fetch 已經拿到手的資料，固定版位骨架
+ * （`CardSkeleton`）與診斷 Copy／展開（`InlineDiagnostics`）掛在
+ * `./IvHistory` 卡片層級，一次涵蓋 Normalized Skew 與這裡兩個家族全部
+ * 事件，不是每張逐腿卡片各自重複一份 UX（見 `./IvHistory` 檔頭說明）。
+ * 這裡只 import 這個元件真正需要的幾何／格式化建置塊
+ * （`ChartTooltip`／`toPixel`／版面常數等），原樣複用、不重寫第二份。
  */
 import { useState } from "react";
 

@@ -43,9 +43,16 @@
  * 沿用 Spread 淨成本走勢圖已驗證的手刻 SVG 作法，不引入圖表函式庫）。
  *
  * **共用建置塊**（HIVT-05／#156，spec #151 §6／§7 明文要求 export）：
- * `CardSkeleton`／`InlineDiagnostics`／`ChartTooltip`／`toPixel`／版面
- * 常數／格式化函式從這裡 export，讓 `./IvTrend` 真的原樣複用同一套
- * fixed-layout-slot／skeleton／診斷 UX，不是另外造一份平行實作。
+ * `ChartTooltip`／`toPixel`／版面常數／格式化函式從這裡 export，
+ * `./IvTrend` 的多序列走勢圖直接原樣複用同一套幾何與 tooltip，不是
+ * 另外造一份平行實作。`CardSkeleton`／`InlineDiagnostics` 也一併
+ * export，但 `./IvTrend` 本身**不需要**再各自 import 一份——這兩者服務
+ * 的是「整張卡片」這個版位（loading 骨架、診斷區塊），兩個家族共用
+ * 同一次 fetch、同一個 loading／error 狀態，所以固定版位與診斷展開
+ * 只在這裡（`IvHistory`／`IvHistoryContent`）出現一次，涵蓋兩個家族
+ * 全部的事件，不是每張逐腿卡片各自重複一份。診斷 Copy／展開的 UX
+ * 因此仍然是同一套、同一份程式碼（#156 AC），只是掛在卡片層級，不是
+ * 逐卡層級。
  */
 import { useEffect, useState } from "react";
 
@@ -380,31 +387,25 @@ export function InlineDiagnostics({ correlationId, events, message }: {
 }
 
 /**
- * Loading 佔位骨架（QA 反饋，2026-08-16；HIVT-05／#156 一併 export 並
- * 泛化參數，取代原本寫死 `isSingleLeg` 的 `IvHistorySkeleton`）：版位
- * 形狀跟真正內容同構——`primary` 是否有 Normalized Skew 頭條區塊、
- * `secondaryCount` 是幾張次層卡片（Long Call／Put 一張；Vertical
- * Spread 兩張）——資料回來前後卡片高度不整個跳動。純視覺佔位，不讀
- * 秒數、不做進度預測，也不宣稱任何尚未確定的事。
+ * Loading 佔位骨架（QA 反饋，2026-08-16；HIVT-05／#156 一併 export，
+ * 取代原本模組內私有的 `IvHistorySkeleton`）：版位形狀跟真正內容
+ * 同構——Vertical Spread 有 Normalized Skew 頭條區塊＋兩張次層卡片
+ * （買／賣腿）；Long Call／Put 單腳沒有頭條、只有一張——資料回來前後
+ * 卡片高度不整個跳動。純視覺佔位，不讀秒數、不做進度預測，也不宣稱
+ * 任何尚未確定的事。整張卡片（含逐腿卡片的版位）共用同一次 fetch、
+ * 同一個 loading 狀態，`./IvTrend` 因此不需要、也沒有自己另一份骨架。
  */
-export function CardSkeleton({ primary, secondaryCount = 0 }: {
-  primary: boolean;
-  secondaryCount?: number;
-}) {
+export function CardSkeleton({ isSingleLeg }: { isSingleLeg: boolean }) {
   return (
     <div className="iv-skeleton" role="status" aria-live="polite">
       <span className="sr-only">Historical IV 載入中……</span>
-      {primary && (
+      {!isSingleLeg && (
         <div className="iv-skeleton-block iv-skeleton-primary" aria-hidden="true" />
       )}
-      {secondaryCount > 0 && (
-        <div className={secondaryCount === 1 ? "iv-legs single" : "iv-legs"}
-            aria-hidden="true">
-          {Array.from({ length: secondaryCount }).map((_, i) => (
-            <div key={i} className="iv-skeleton-block iv-skeleton-secondary" />
-          ))}
-        </div>
-      )}
+      <div className={isSingleLeg ? "iv-legs single" : "iv-legs"} aria-hidden="true">
+        <div className="iv-skeleton-block iv-skeleton-secondary" />
+        {!isSingleLeg && <div className="iv-skeleton-block iv-skeleton-secondary" />}
+      </div>
     </div>
   );
 }
@@ -475,7 +476,7 @@ export default function IvHistory({ scenarioId, candidate }: {
           />
         </>
       ) : !data ? (
-        <CardSkeleton primary={!isSingleLeg} secondaryCount={isSingleLeg ? 1 : 2} />
+        <CardSkeleton isSingleLeg={isSingleLeg} />
       ) : (
         <IvHistoryContent data={data} isSingleLeg={isSingleLeg} />
       )}
