@@ -1,0 +1,21 @@
+name: Temporary HIVT-01 Vendor Probe
+
+on:
+  push:
+    paths:
+      - '.github/workflows/tmp-hivt01-vendor-probe.yml'
+      - 'scripts/probe_hivt01_single_contract.py'
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Probe Market Data App single-contract history endpoint (HIVT-01 / #152)
+        run: python3 scripts/probe_hivt01_single_contract.py
+        env:
+          MARKETDATA_APP_TOKEN: ${{ secrets.MARKETDATA_APP_TOKEN }}
