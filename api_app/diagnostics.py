@@ -86,15 +86,19 @@ _CONTEXT_KEY_WHITELIST = frozenset({
     "field", "count", "percentile_available", "trend_base_count",
     "correlation_id",
     # Exact-contract 歷史 IV（HIVT-02／#153，spec #151 §5）——additive，
-    # 不動以上任何既有欄位。contract identity 四項＋vendor 給的真實
+    # 不動以上任何既有欄位。contract identity 四項（issue #153 明列的
+    # underlying／expiration／strike／option_type）＋vendor 給的真實
     # OCC symbol；requested_from／requested_to 是這次向 vendor 要的區間
     # （跟舊路徑逐日一個 `date` 不同，這裡是一段區間）；parsed_rows／
     # null_iv_count／dropped_missing_date 是單合約回應的筆數帳本；
-    # fetched_through／already_fetched_today 是漸進式刷新的快取狀態。
-    "underlying", "strike", "option_type", "contract_symbol",
+    # fetched_through／already_fetched_today 是漸進式刷新的快取狀態；
+    # `lookback_days` 本票不 emit（moving average／Bollinger 是
+    # HIVT-03／#154 的範圍），依 issue #153 原文列表先加進白名單，
+    # 免得 #154 一接上就得回頭改這份 additive-only 的清單。
+    "underlying", "expiration", "strike", "option_type", "contract_symbol",
     "requested_from", "requested_to", "parsed_rows", "null_iv_count",
     "dropped_missing_date", "observations_returned", "fetched_through",
-    "already_fetched_today",
+    "already_fetched_today", "lookback_days",
 })
 
 _SECRET_PATTERNS = (

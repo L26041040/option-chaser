@@ -1472,6 +1472,10 @@ def test_exact_contract_diagnostics_never_leak_the_token(db):
 
 
 def test_exact_contract_cache_events_carry_the_new_whitelisted_context_fields(db):
+    """issue #153 明文要求每一站都 emit「帶有 exact contract identity」
+    的事件——不能只有可以反解的 `contract_symbol`（OCC symbol），
+    underlying／expiration／strike／option_type 四項本身也要在場，
+    不必反解字串就看得懂這是哪張合約。"""
     rec = ContractHistoryRecorder()
     client = _client(db, surface=_rich_surface, contract_history=rec)
     _unlock(client)
@@ -1479,8 +1483,30 @@ def test_exact_contract_cache_events_carry_the_new_whitelisted_context_fields(db
     key = _candidate_key(client, sid)
     body = _get(client, sid, key).json()
 
-    cache_events = _events_for(body, "cache")
+    # `cache`／`vendor_fetch`／`database_write` 三站都被舊 (tenor,delta)
+    # 家族與新 exact-contract 家族共用同一個 stage 名稱（spec #151 §5
+    # 刻意如此設計）——只挑帶 `contract_symbol` 的那些，這是新家族的
+    # 事件才有的欄位。
+    cache_events = [e for e in _events_for(body, "cache")
+                    if "contract_symbol" in e["context"]]
     assert cache_events
-    assert any("contract_symbol" in e["context"] for e in cache_events)
+    for e in cache_events:
+        assert set(e["context"]) >= {"contract_symbol", "underlying",
+                                     "expiration", "strike", "option_type"}
     assert any("requested_from" in e["context"] and "requested_to" in e["context"]
               for e in cache_events)
+
+    vendor_fetch_events = [e for e in _events_for(body, "vendor_fetch")
+                           if "contract_symbol" in e["context"]]
+    assert vendor_fetch_events
+    for e in vendor_fetch_events:
+        assert set(e["context"]) >= {"contract_symbol", "underlying",
+                                     "expiration", "strike", "option_type"}
+
+    database_write_events = [e for e in body["diagnostics"]["events"]
+                             if e["stage"] == "database_write"
+                             and "contract_symbol" in e["context"]]
+    assert database_write_events
+    for e in database_write_events:
+        assert set(e["context"]) >= {"contract_symbol", "underlying",
+                                     "expiration", "strike", "option_type"}

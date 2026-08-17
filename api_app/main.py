@@ -349,8 +349,21 @@ def _emit_surface_telemetry(emit, telemetry: dict, *, provider: str,
         dropped_unknown_side=telemetry.get("dropped_unknown_side"))
 
 
+def _identity_context(identity: dict) -> dict:
+    """`ContractIdentity` 的四個公開欄位（underlying／expiration／
+    strike／option_type）——spec #151 §5／issue #153 明文列出這四項要
+    additive 進白名單，且每一站 diagnostic event 都要帶得出**可讀的**
+    exact contract identity，不能只留 `contract_symbol`（OCC symbol
+    本身雖然編碼了這四項，但要求使用者反解 OCC 格式才看得懂身分，違背
+    診斷「不必讀程式碼就能看懂」的既有原則，DG-04 帳本的既有精神）。"""
+    return {"underlying": identity["underlying"],
+            "expiration": identity["expiration"],
+            "strike": identity["strike"],
+            "option_type": identity["option_type"]}
+
+
 def _emit_contract_history_telemetry(emit, telemetry: dict, *, provider: str,
-                                     contract_symbol: str, requested_from: str,
+                                     identity: dict, requested_from: str,
                                      requested_to: str) -> None:
     """`marketdata.fetch_contract_history` 的 observer callback 落地處
     （HIVT-02／#153）——比照 `_emit_surface_telemetry` 拆成 `vendor_fetch`
@@ -362,7 +375,8 @@ def _emit_contract_history_telemetry(emit, telemetry: dict, *, provider: str,
     emit(stage="vendor_fetch",
         severity="info" if vendor_status == "ok" else "error",
         message=f"vendor 回應 s={vendor_status!r}",
-        provider=provider, contract_symbol=contract_symbol,
+        provider=provider, contract_symbol=identity["contract_symbol"],
+        **_identity_context(identity),
         requested_from=requested_from, requested_to=requested_to,
         http_status=telemetry.get("http_status"),
         vendor_status=vendor_status,
@@ -373,7 +387,8 @@ def _emit_contract_history_telemetry(emit, telemetry: dict, *, provider: str,
         severity="warning" if (telemetry.get("raw_rows") or 0) > 0
                  and (telemetry.get("parsed_rows") or 0) == 0 else "info",
         message="解析單合約歷史欄狀回應",
-        provider=provider, contract_symbol=contract_symbol,
+        provider=provider, contract_symbol=identity["contract_symbol"],
+        **_identity_context(identity),
         raw_rows=telemetry.get("raw_rows"),
         parsed_rows=telemetry.get("parsed_rows"),
         null_iv_count=telemetry.get("null_iv_count"),
@@ -1123,7 +1138,8 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         if cached is not None and cached.last_attempt_on == today_iso:
             emit(stage="cache", severity="info",
                 message="今天已嘗試過這張合約，沿用既有結論",
-                contract_symbol=occ_symbol, already_fetched_today=True,
+                contract_symbol=occ_symbol, **_identity_context(identity),
+                already_fetched_today=True,
                 fetched_through=cached.fetched_through,
                 observations_returned=len(cached.points))
             return list(cached.points), cached.last_status, cached.last_note
@@ -1137,13 +1153,13 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         to_date = today_iso
 
         emit(stage="cache", severity="info", message="計算歷史缺口",
-            contract_symbol=occ_symbol, requested_from=from_date,
-            requested_to=to_date, already_fetched_today=False,
-            fetched_through=fetched_through)
+            contract_symbol=occ_symbol, **_identity_context(identity),
+            requested_from=from_date, requested_to=to_date,
+            already_fetched_today=False, fetched_through=fetched_through)
 
         def _observer(telemetry):
             _emit_contract_history_telemetry(
-                emit, telemetry, provider=provider, contract_symbol=occ_symbol,
+                emit, telemetry, provider=provider, identity=identity,
                 requested_from=from_date, requested_to=to_date)
 
         try:
@@ -1163,6 +1179,7 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
                 last_status="ok", last_note=None))
             emit(stage="database_write", severity="info",
                 message="寫入合約歷史觀測", contract_symbol=occ_symbol,
+                **_identity_context(identity),
                 observations_returned=len(new_points),
                 null_iv_count=sum(1 for _, iv in new_points if iv is None))
             return merged_points, "ok", None
@@ -1175,7 +1192,7 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
             last_status=status, last_note=note))
         emit(stage="database_write", severity="warning",
             message="vendor 這次嘗試失敗，沿用既有觀測",
-            contract_symbol=occ_symbol,
+            contract_symbol=occ_symbol, **_identity_context(identity),
             observations_returned=len(existing_points))
         return existing_points, status, note
 
