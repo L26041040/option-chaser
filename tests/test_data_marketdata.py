@@ -603,3 +603,23 @@ def test_contract_history_default_observer_is_a_no_op():
         "TLT281215C00094000", "2025-08-17", "2026-08-17", "tok",
         http_request=_fake_contract_request(_contract_history_payload()))
     assert len(got) == 3
+
+
+# ---------- 隔離紅線（HIVT-06／#157，spec #151 §7／Testing Decisions） ----------
+#
+# `_parse_surface_rows()`（舊 whole-chain 家族）合法 import
+# `ivhistory.SurfacePoint`——那是它本來就該用的資料型別。這裡確認的是
+# exact-contract 家族（HIVT-02／#153 新增的兩個函式）沒有跟著沾上這條
+# 邊，不是整份檔案零引用。
+
+def test_exact_contract_functions_never_reference_ivhistory():
+    import ast
+
+    src = open(marketdata.__file__, encoding="utf-8").read()
+    tree = ast.parse(src)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name in (
+                "fetch_contract_history", "_parse_contract_history"):
+            body = ast.get_source_segment(src, node)
+            assert "ivhistory" not in body
+            assert "SurfacePoint" not in body
