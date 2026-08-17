@@ -253,16 +253,23 @@ class _CollectingDiagnostics:
 # 一次 backfill 最多 25 天 × 數個到期日，每次 vendor 呼叫又拆成
 # vendor_fetch／payload_parse 兩筆——不設限的話，一次 request 就能把
 # 全域 200 筆的 retention 上限吃光，把先前的證據全部擠掉。
-_DIAGNOSTICS_STORAGE_CAP_PER_REQUEST = 20
+#
+# HIVT-03（#154）之後 `metrics` stage 一次 request 最多可以有：舊
+# (tenor,delta) 家族 4 筆（單腳 2 筆）＋新 exact-contract 家族每腿 5 筆
+# 統計量（單腳 5 筆／兩腿 10 筆）＝最多 14 筆，全部落在 `_ALWAYS_KEPT_
+# STAGES` 的無條件保留名額裡。原本 20 的上限在這個量級下會把
+# `vendor_fetch`／`reanchor` 這類高診斷價值的逐次事件整批擠出去——調高
+# 到 40，讓兩個家族的彙總結論都保留的同時，仍有餘裕留給其他 stage。
+_DIAGNOSTICS_STORAGE_CAP_PER_REQUEST = 40
 
 
 # 這兩個 stage 各自是「這次 request 的彙總結論」——`backfill` 每次至多
-# 一筆，`metrics` 每個欄位一筆（單腳 2 筆／兩腿 4 筆）。兩者都不跟
-# 高流量的逐日／逐次事件（`vendor_fetch`／`payload_parse`／
-# `database_write`／`reanchor`，一次 request 可能各自數十筆）搶名額——
-# 施工中發現：若混在同一個優先池裡用 `list[:cap]` 前截斷，事件量一大
-# 時彙總結論反而會被排在後面而擠出去，跟「使用者最想先看結論」的初衷
-# 相反。
+# 一筆，`metrics` 每個欄位一筆（舊家族單腳 2 筆／兩腿 4 筆；HIVT-03 起
+# 新家族每腿再加 5 筆統計量事件）。兩者都不跟高流量的逐日／逐次事件
+# （`vendor_fetch`／`payload_parse`／`database_write`／`reanchor`，一次
+# request 可能各自數十筆）搶名額——施工中發現：若混在同一個優先池裡用
+# `list[:cap]` 前截斷，事件量一大時彙總結論反而會被排在後面而擠出去，
+# 跟「使用者最想先看結論」的初衷相反。
 _ALWAYS_KEPT_STAGES = ("backfill", "metrics")
 
 
@@ -1196,24 +1203,103 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
             observations_returned=len(existing_points))
         return existing_points, status, note
 
+    def _emit_leg_stat_metrics(emit, *, identity: dict, moving_average: list,
+                               bollinger: dict, zscore: float | None,
+                               percentile: float | None,
+                               delta_4w_value: float | None,
+                               observation_count: int) -> None:
+        """每個統計量各自一筆 `metrics` 事件（HIVT-03／#154）——沿用
+        `_emit_metrics()` 在舊 (tenor,delta) 家族建立的既有模式（DG-04：
+        一個欄位一筆事件，不合併），這裡是同一個模式在 exact-contract
+        家族的版本。moving_average／bollinger_bands／current_zscore 的
+        available／unavailable 看**最新那一點**（使用者畫面上看到的
+        「目前」統計量），不是整條序列裡有沒有任何一點可用——序列起始端
+        天然會有空窗，那不代表這個統計量現在不可用。
+        """
+        ma_available = bool(moving_average) and moving_average[-1][1] is not None
+        emit(stage="metrics",
+            severity="info" if ma_available else "warning",
+            message="moving_average 計算完成" if ma_available
+                    else "觀測數不足 IV_TREND_MIN_OBSERVATIONS_FOR_BANDS，"
+                         "moving_average 回報 unavailable",
+            **_identity_context(identity), field="moving_average",
+            count=observation_count, lookback_days=ivtrend.IV_TREND_LOOKBACK_DAYS)
+
+        upper = bollinger.get("upper") or []
+        bands_available = bool(upper) and upper[-1][1] is not None
+        emit(stage="metrics",
+            severity="info" if bands_available else "warning",
+            message="bollinger_bands 計算完成" if bands_available
+                    else "觀測數不足 IV_TREND_MIN_OBSERVATIONS_FOR_BANDS，"
+                         "bollinger_bands 回報 unavailable",
+            **_identity_context(identity), field="bollinger_bands",
+            count=observation_count, lookback_days=ivtrend.IV_TREND_LOOKBACK_DAYS)
+
+        emit(stage="metrics",
+            severity="info" if zscore is not None else "warning",
+            message="current_zscore 計算完成" if zscore is not None
+                    else "觀測數不足 IV_TREND_MIN_OBSERVATIONS_FOR_BANDS，"
+                         "current_zscore 回報 unavailable",
+            **_identity_context(identity), field="current_zscore",
+            count=observation_count, lookback_days=ivtrend.IV_TREND_LOOKBACK_DAYS)
+
+        emit(stage="metrics",
+            severity="info" if percentile is not None else "warning",
+            message="historical_percentile 計算完成" if percentile is not None
+                    else "沒有可比觀測，historical_percentile 回報 unavailable",
+            **_identity_context(identity), field="historical_percentile",
+            count=observation_count)
+
+        emit(stage="metrics",
+            severity="info" if delta_4w_value is not None else "warning",
+            message="delta_4w 計算完成" if delta_4w_value is not None
+                    else "回溯窗內沒有觀測，delta_4w 回報 unavailable",
+            **_identity_context(identity), field="delta_4w",
+            count=observation_count)
+
     def _leg_historical_iv_payload(identity: dict, points: list[tuple],
                                    status: str, note: str | None, *,
-                                   today) -> dict:
-        """`LegHistoricalIv` 的原始資料形狀（HIVT-02／#153，spec #151
-        §4）——統計量（moving average／Bollinger／z-score／percentile／
-        Δ4w）是 HIVT-03（#154）的範圍，這裡只有原始序列與描述性欄位。
+                                   today, emit) -> dict:
+        """`LegHistoricalIv` 的完整形狀（HIVT-02／#153＋HIVT-03／#154，
+        spec #151 §4）：原始序列＋描述性欄位（HIVT-02）＋統計量套組
+        （HIVT-03）。
 
         `history_span_days` 用**裁窗後**的序列算——「這張圖實際涵蓋多長
         時間」講的是使用者看到的那段，不是裁窗前 storage 裡累積的全部。
         `observation_count` 只算 `iv` 非 `None` 的那些：null IV 是缺席
-        觀測（spec §2／§3 紅線），不進這個計數。
+        觀測（spec §2／§3 紅線），不進這個計數；`current_percentile`／
+        `delta_4w` 的「current」都是這個非 null 集合裡最新一筆，兩者用
+        同一個 `latest_iv`，不各自各推一次可能漂移的「最新值」。
         """
         trimmed = ivtrend.trim_to_window(points, today=today)
+        valid = sorted((d, iv) for d, iv in trimmed if iv is not None)
+        latest_iv = valid[-1][1] if valid else None
+
+        ma = ivtrend.moving_average(trimmed)
+        bands = ivtrend.bollinger_bands(trimmed)
+        zscore = ivtrend.current_zscore(trimmed)
+        percentile = ivtrend.historical_percentile(trimmed, latest_iv)
+        d4w = ivtrend.delta_4w(trimmed, latest=latest_iv, today=today)
+
+        _emit_leg_stat_metrics(emit, identity=identity, moving_average=ma,
+                               bollinger=bands, zscore=zscore,
+                               percentile=percentile, delta_4w_value=d4w,
+                               observation_count=len(valid))
+
         return {
             "contract": identity,
             "points": [{"date": d, "iv": iv} for d, iv in trimmed],
-            "observation_count": sum(1 for _, iv in trimmed if iv is not None),
+            "moving_average": [{"date": d, "value": v} for d, v in ma],
+            "bollinger_upper": [{"date": d, "value": v}
+                                for d, v in bands["upper"]],
+            "bollinger_lower": [{"date": d, "value": v}
+                                for d, v in bands["lower"]],
+            "current_percentile": percentile,
+            "current_zscore": zscore,
+            "delta_4w": d4w,
+            "observation_count": len(valid),
             "history_span_days": ivtrend.history_span_days(trimmed),
+            "lookback_days_config": ivtrend.IV_TREND_LOOKBACK_DAYS,
             "status": status,
             "note": note,
         }
@@ -1299,7 +1385,8 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
             leg_points, leg_status, leg_note = _ensure_contract_history(
                 identity, provider, token, emit=_emit)
             legs_payload[name] = _leg_historical_iv_payload(
-                identity, leg_points, leg_status, leg_note, today=ny_today())
+                identity, leg_points, leg_status, leg_note, today=ny_today(),
+                emit=_emit)
 
         # `expiry_counts` 掛在每個策略結果（`results[i]`）底下，不是
         # view 頂層——這裡只要「有哪些到期日」，跨策略去重即可。

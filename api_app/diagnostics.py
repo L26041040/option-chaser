@@ -92,9 +92,9 @@ _CONTEXT_KEY_WHITELIST = frozenset({
     # （跟舊路徑逐日一個 `date` 不同，這裡是一段區間）；parsed_rows／
     # null_iv_count／dropped_missing_date 是單合約回應的筆數帳本；
     # fetched_through／already_fetched_today 是漸進式刷新的快取狀態；
-    # `lookback_days` 本票不 emit（moving average／Bollinger 是
-    # HIVT-03／#154 的範圍），依 issue #153 原文列表先加進白名單，
-    # 免得 #154 一接上就得回頭改這份 additive-only 的清單。
+    # `lookback_days` 由 HIVT-03（#154）的 `metrics` stage 事件 emit
+    # （moving_average／bollinger_bands／current_zscore 三項統計量各自
+    # 的回溯窗天數）。
     "underlying", "expiration", "strike", "option_type", "contract_symbol",
     "requested_from", "requested_to", "parsed_rows", "null_iv_count",
     "dropped_missing_date", "observations_returned", "fetched_through",

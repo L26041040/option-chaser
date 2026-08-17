@@ -454,6 +454,42 @@ def test_the_analysis_view_gains_no_iv_history_field(db):
                 assert not any("iv_history" in k for k in c)
 
 
+def _function_source(module_src: str, name: str) -> str:
+    """用 AST 找出一個函式的原始碼片段——不管它是模組層級還是巢狀在
+    `create_app()` 裡的 closure，`ast.walk` 都找得到，不必靠「下一個
+    def」這種對縮排敏感、遇到巢狀函式會誤判邊界的字串式切法。"""
+    import ast
+
+    tree = ast.parse(module_src)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name == name:
+            return ast.get_source_segment(module_src, node)
+    raise AssertionError(f"找不到函式 {name}")
+
+
+def test_exact_contract_pipeline_never_calls_the_reanchoring_functions():
+    """spec #151 §7／Testing Decisions 的對稱隔離測試——上面
+    `test_the_analysis_view_gains_no_iv_history_field` 證的是「新家族
+    不外洩進舊家族的資料形狀」，這裡證反方向：新家族（`legs` 回應）的
+    產生路徑完全不呼叫舊 (tenor,delta) 重錨定家族的任何函式。逐函式
+    （而不是整個 main.py）檢查，因為 main.py 本身合法地為舊家族呼叫
+    這些函式——隔離紅線畫在新家族自己的函式邊界，不是整個檔案。"""
+    import api_app.main as main
+
+    src = open(main.__file__, encoding="utf-8").read()
+    forbidden = ("reanchor_spread", "iv_at(", "spread_coordinates(",
+                "leg_coordinate(", "nearby_expirations(")
+    exact_contract_functions = (
+        "_leg_contract_identity", "_identity_context",
+        "_emit_contract_history_telemetry", "_ensure_contract_history",
+        "_emit_leg_stat_metrics", "_leg_historical_iv_payload",
+    )
+    for fn_name in exact_contract_functions:
+        body = _function_source(src, fn_name)
+        for name in forbidden:
+            assert name not in body, f"{fn_name} 引用了 {name}"
+
+
 # ---------- 快取、漸進補齊、額度（#130） ----------
 
 def test_backfill_only_touches_dates_the_cache_is_missing(db):
@@ -1000,17 +1036,22 @@ def test_diagnostics_storage_failure_does_not_break_the_response():
 
 def test_error_and_warning_events_survive_the_per_request_cap():
     from api_app.diagnostics import DiagnosticEvent
-    from api_app.main import _select_for_persistence
+    from api_app.main import (_DIAGNOSTICS_STORAGE_CAP_PER_REQUEST,
+                              _select_for_persistence)
 
     def ev(event_id, severity="info", stage="vendor_fetch"):
         return DiagnosticEvent(event_id=event_id, correlation_id="c",
                                ts=event_id, subsystem="historical_iv",
                                stage=stage, severity=severity, message="m")
 
-    events = [ev(f"info{i}") for i in range(30)]
+    # 事件數要真的超過 cap 才測到取捨——HIVT-03 起 cap 已提高
+    # （容納新家族每腿 5 筆統計量事件），數量要跟著這個常數走，不能寫死
+    # 舊的 20，否則 cap 一旦再調整這條測試就會安靜地失去意義。
+    total = _DIAGNOSTICS_STORAGE_CAP_PER_REQUEST + 5
+    events = [ev(f"info{i}") for i in range(total - 5)]
     events += [ev(f"err{i}", severity="error") for i in range(5)]
     kept = _select_for_persistence(events)
-    assert len(kept) <= 20
+    assert len(kept) <= _DIAGNOSTICS_STORAGE_CAP_PER_REQUEST
     kept_ids = {e.event_id for e in kept}
     assert all(f"err{i}" in kept_ids for i in range(5))
 
@@ -1020,18 +1061,20 @@ def test_the_batch_summary_event_survives_the_cap_even_when_priority_events_alon
     塞滿整個 cap，摘要仍然保留（見 `_select_for_persistence` 三層優先序
     的第一層）。"""
     from api_app.diagnostics import DiagnosticEvent
-    from api_app.main import _select_for_persistence
+    from api_app.main import (_DIAGNOSTICS_STORAGE_CAP_PER_REQUEST,
+                              _select_for_persistence)
 
     def ev(event_id, severity="info", stage="vendor_fetch"):
         return DiagnosticEvent(event_id=event_id, correlation_id="c",
                                ts=event_id, subsystem="historical_iv",
                                stage=stage, severity=severity, message="m")
 
-    events = [ev(f"err{i}", severity="error") for i in range(30)]
+    events = [ev(f"err{i}", severity="error")
+             for i in range(_DIAGNOSTICS_STORAGE_CAP_PER_REQUEST + 10)]
     events += [ev("summary", stage="backfill")]
     kept = _select_for_persistence(events)
     assert "summary" in {e.event_id for e in kept}
-    assert len(kept) <= 20
+    assert len(kept) <= _DIAGNOSTICS_STORAGE_CAP_PER_REQUEST
 
 
 def test_under_the_cap_nothing_is_dropped():
@@ -1145,6 +1188,17 @@ def test_single_leg_reanchor_is_not_penalized_for_the_missing_sell_leg(db):
     assert "sell_delta" not in got[0]["context"]
 
 
+_REANCHORED_METRIC_FIELDS = {"normalized_skew", "buy_iv", "sell_iv", "atm_iv"}
+
+
+def _reanchored_metrics_by_field(body):
+    """`metrics` stage 現在被舊 (tenor,delta) 家族與新 exact-contract
+    家族（HIVT-03／#154，每腿再加 5 筆統計量事件）共用——只挑舊家族
+    自己的欄位名稱，兩個家族的事件才不會混在一起斷言。"""
+    return {e["context"]["field"]: e for e in _events_for(body, "metrics")
+            if e["context"]["field"] in _REANCHORED_METRIC_FIELDS}
+
+
 def test_metrics_events_are_info_when_data_is_available(db):
     client = _client(db, surface=_surface_never_called)
     _unlock(client)
@@ -1154,7 +1208,7 @@ def test_metrics_events_are_info_when_data_is_available(db):
     _seed_days(db, [("2026-05-01", _grid()["call"])])
 
     body = _get(client, sid, key).json()
-    by_field = {e["context"]["field"]: e for e in _events_for(body, "metrics")}
+    by_field = _reanchored_metrics_by_field(body)
     assert set(by_field) == {"normalized_skew", "buy_iv", "sell_iv", "atm_iv"}
     assert all(e["severity"] == "info" for e in by_field.values())
     assert all(e["context"]["count"] > 0 for e in by_field.values())
@@ -1184,7 +1238,7 @@ def test_single_leg_metrics_do_not_flag_the_structurally_absent_fields(db):
     _seed_days(db, [("2026-05-01", _grid()["call"])])
 
     body = _get(client, sid, key).json()
-    fields = {e["context"]["field"] for e in _events_for(body, "metrics")}
+    fields = set(_reanchored_metrics_by_field(body))
     assert fields == {"buy_iv", "atm_iv"}
 
 
@@ -1510,3 +1564,145 @@ def test_exact_contract_cache_events_carry_the_new_whitelisted_context_fields(db
     for e in database_write_events:
         assert set(e["context"]) >= {"contract_symbol", "underlying",
                                      "expiration", "strike", "option_type"}
+
+
+# ---------- 統計量套組（HIVT-03／#154） ----------
+#
+# `points_by_symbol` 用連續日曆天灌值，方便手算對照——跟
+# `test_ivtrend.py` 的策略相同，這裡額外驗證的是「main.py 有沒有正確把
+# ivtrend.py 的輸出接進 `legs` 回應」，不重覆測純函式本身的邊界案例
+# （那是 test_ivtrend.py 的範圍）。
+
+def _consecutive_days(end, n, ivs):
+    from datetime import timedelta as _td
+    start = end - _td(days=n - 1)
+    return [((start + _td(days=i)).isoformat(), iv) for i, iv in enumerate(ivs)]
+
+
+def test_leg_response_carries_the_full_hivt03_stat_shape(db):
+    rec = ContractHistoryRecorder()
+    client = _client(db, surface=_rich_surface, contract_history=rec)
+    _unlock(client)
+    sid = _scenario(client)
+    key = _candidate_key(client, sid)
+    buy_symbol, _sell = _leg_symbols(client, sid, key)
+    today = ny_today()
+    rec._points_by_symbol[buy_symbol] = _consecutive_days(
+        today, 6, [0.10, 0.11, 0.12, 0.13, 0.14, 0.15])
+
+    body = _get(client, sid, key).json()
+    buy = body["legs"]["buy"]
+    assert set(buy) >= {"contract", "points", "moving_average",
+                        "bollinger_upper", "bollinger_lower",
+                        "current_percentile", "current_zscore", "delta_4w",
+                        "observation_count", "history_span_days",
+                        "lookback_days_config", "status", "note"}
+    assert buy["lookback_days_config"] == ivtrend.IV_TREND_LOOKBACK_DAYS
+
+
+def test_stats_are_unavailable_below_the_minimum_observation_count(db):
+    """低於 `IV_TREND_MIN_OBSERVATIONS_FOR_BANDS`（5）：moving_average／
+    bollinger／current_zscore 各自回報 unavailable，percentile／
+    Δ4w／原始走勢圖照常渲染——不是整張卡片一起消失。"""
+    rec = ContractHistoryRecorder()
+    client = _client(db, surface=_rich_surface, contract_history=rec)
+    _unlock(client)
+    sid = _scenario(client)
+    key = _candidate_key(client, sid)
+    buy_symbol, _sell = _leg_symbols(client, sid, key)
+    today = ny_today()
+    rec._points_by_symbol[buy_symbol] = _consecutive_days(
+        today, 3, [0.10, 0.11, 0.12])
+
+    body = _get(client, sid, key).json()
+    buy = body["legs"]["buy"]
+    assert buy["moving_average"][-1]["value"] is None
+    assert buy["bollinger_upper"][-1]["value"] is None
+    assert buy["bollinger_lower"][-1]["value"] is None
+    assert buy["current_zscore"] is None
+    # 原始走勢圖與百分位不受最低觀測門檻影響
+    assert len(buy["points"]) == 3
+    assert buy["current_percentile"] is not None
+
+
+def test_stats_become_available_once_enough_observations_exist(db):
+    from statistics import mean, stdev
+
+    rec = ContractHistoryRecorder()
+    client = _client(db, surface=_rich_surface, contract_history=rec)
+    _unlock(client)
+    sid = _scenario(client)
+    key = _candidate_key(client, sid)
+    buy_symbol, _sell = _leg_symbols(client, sid, key)
+    today = ny_today()
+    ivs = [0.10, 0.12, 0.14, 0.16, 0.18]
+    rec._points_by_symbol[buy_symbol] = _consecutive_days(today, 5, ivs)
+
+    body = _get(client, sid, key).json()
+    buy = body["legs"]["buy"]
+    m, s = mean(ivs), stdev(ivs)
+    assert buy["moving_average"][-1]["value"] == pytest.approx(m)
+    assert buy["bollinger_upper"][-1]["value"] == pytest.approx(m + 2 * s)
+    assert buy["bollinger_lower"][-1]["value"] == pytest.approx(m - 2 * s)
+    assert buy["current_zscore"] == pytest.approx((ivs[-1] - m) / s)
+
+
+def test_percentile_has_no_minimum_gate_at_the_endpoint_level(db):
+    rec = ContractHistoryRecorder()
+    client = _client(db, surface=_rich_surface, contract_history=rec)
+    _unlock(client)
+    sid = _scenario(client)
+    key = _candidate_key(client, sid)
+    buy_symbol, _sell = _leg_symbols(client, sid, key)
+    today = ny_today()
+    rec._points_by_symbol[buy_symbol] = [(today.isoformat(), 0.20)]
+
+    body = _get(client, sid, key).json()
+    assert body["legs"]["buy"]["current_percentile"] == 1.0
+
+
+def test_delta_4w_is_none_without_a_baseline_window_observation(db):
+    rec = ContractHistoryRecorder()
+    client = _client(db, surface=_rich_surface, contract_history=rec)
+    _unlock(client)
+    sid = _scenario(client)
+    key = _candidate_key(client, sid)
+    buy_symbol, _sell = _leg_symbols(client, sid, key)
+    today = ny_today()
+    # 全部落在 [today-42, today-21] 窗口之外（只有最近幾天）
+    rec._points_by_symbol[buy_symbol] = _consecutive_days(
+        today, 5, [0.10, 0.12, 0.14, 0.16, 0.18])
+
+    body = _get(client, sid, key).json()
+    assert body["legs"]["buy"]["delta_4w"] is None
+
+
+def test_metrics_stage_emits_one_event_per_statistic_for_each_leg(db):
+    rec = ContractHistoryRecorder()
+    client = _client(db, surface=_rich_surface, contract_history=rec)
+    _unlock(client)
+    sid = _scenario(client)
+    key = _candidate_key(client, sid)
+    body = _get(client, sid, key).json()
+
+    stat_fields = {"moving_average", "bollinger_bands", "current_zscore",
+                   "historical_percentile", "delta_4w"}
+    seen = {e["context"]["field"] for e in _events_for(body, "metrics")
+            if e["context"]["field"] in stat_fields}
+    assert seen == stat_fields
+
+
+def test_moving_average_and_bollinger_are_the_only_new_events_carrying_lookback_days(db):
+    rec = ContractHistoryRecorder()
+    client = _client(db, surface=_rich_surface, contract_history=rec)
+    _unlock(client)
+    sid = _scenario(client)
+    key = _candidate_key(client, sid)
+    body = _get(client, sid, key).json()
+
+    for e in _events_for(body, "metrics"):
+        if e["context"]["field"] in ("moving_average", "bollinger_bands",
+                                     "current_zscore"):
+            assert e["context"]["lookback_days"] == ivtrend.IV_TREND_LOOKBACK_DAYS
+        elif e["context"]["field"] in ("historical_percentile", "delta_4w"):
+            assert "lookback_days" not in e["context"]
