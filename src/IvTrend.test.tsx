@@ -187,6 +187,39 @@ describe("涵蓋時間與觀測筆數（story #5／#6：掛牌不滿一年就顯
     render(<IvTrend legs={legs} />);
     expect(screen.getByText(/近 2 週・8 個觀測/)).toBeInTheDocument();
   });
+
+  // HIVT-07（#158）E2E 撈出的既有 bug 回歸鎖：15–29 天這段原本會被
+  // `Math.round(days / 30)` 誤湊成「近 1 個月」（21/30=0.7 四捨五入成
+  // 1），不是掛牌 3 週的合約使用者看到的真實長度。
+  it("掛牌約 3 週（21 天）時顯示週數，不會被誤湊成「近 1 個月」", () => {
+    const legs: IvHistoryLegs = { buy: legHistoricalIv({
+      history_span_days: 21, observation_count: 12,
+    }) };
+    render(<IvTrend legs={legs} />);
+    expect(screen.getByText(/近 3 週・12 個觀測/)).toBeInTheDocument();
+    expect(screen.queryByText(/近 1 個月/)).not.toBeInTheDocument();
+  });
+
+  // 同一個 bug 的另一面：固定 300 天門檻會把「11 個月」（約 330 天，
+  // 仍在 `IV_TREND_MAX_HISTORY_DAYS=365` 之內）錯報成「近 1 年」。
+  it("掛牌約 11 個月（330 天）時顯示月數，不會被誤湊成「近 1 年」", () => {
+    const legs: IvHistoryLegs = { buy: legHistoricalIv({
+      history_span_days: 330, observation_count: 48,
+    }) };
+    render(<IvTrend legs={legs} />);
+    expect(screen.getByText(/近 11 個月・48 個觀測/)).toBeInTheDocument();
+    expect(screen.queryByText(/近 1 年/)).not.toBeInTheDocument();
+  });
+
+  it("走勢圖的 aria-label 跟著實際涵蓋時間走，不是永遠寫死「近 1 年」", () => {
+    const legs: IvHistoryLegs = { buy: legHistoricalIv({
+      history_span_days: 330, observation_count: 48,
+    }) };
+    const { container } = render(<IvTrend legs={legs} />);
+    const chart = container.querySelector(".iv-trend-chart")!;
+    expect(chart.getAttribute("aria-label")).toContain("近 11 個月");
+    expect(chart.getAttribute("aria-label")).not.toContain("近 1 年");
+  });
 });
 
 describe("固定文案（spec #151 §6 逐字原文）", () => {

@@ -72,11 +72,23 @@ function delta4wCaption(leg: LegHistoricalIv): string {
  *  呈現，不是補齊或隱藏）。 */
 function spanLabel(days: number): string {
   if (days <= 0) return "";
-  if (days >= 300) return "近 1 年";
+  // 週／月的分界用天數本身（< 30 天），不是先湊出月數再看月數是否
+  // >= 1——後者在 15–29 天這段會被四捨五入成 1 個月（例如 21 天／3 週
+  // 的合約，round(21/30)=1，會被誤報成「近 1 個月」），不是掛牌 3 週
+  // 合約使用者看到的真實時間長度（HIVT-07／#158 E2E 撈出的既有 bug，
+  // spec #151 story #5／#6 明文要求如實呈現）。
+  if (days < 30) {
+    const weeks = Math.max(1, Math.round(days / 7));
+    return `近 ${weeks} 週`;
+  }
   const months = Math.round(days / 30);
-  if (months >= 1) return `近 ${months} 個月`;
-  const weeks = Math.max(1, Math.round(days / 7));
-  return `近 ${weeks} 週`;
+  // 同一個道理用在月／年的分界：固定 300 天的門檻會把「11 個月」
+  // （約 330 天，未達 `IV_TREND_MAX_HISTORY_DAYS=365`）錯報成「近 1
+  // 年」。改成看四捨五入後的月數是否滿 12 個月，跟週／月分界用同一套
+  // 「先算出使用者看得懂的單位、再看那個單位是否進位」的邏輯，11 個月
+  // 的合約才會真的顯示「近 11 個月」。
+  if (months >= 12) return "近 1 年";
+  return `近 ${months} 個月`;
 }
 
 function spanCaption(leg: LegHistoricalIv): string {
@@ -165,13 +177,17 @@ function IvTrendChart({ leg, width, height }: {
   const xTicks = xAxisTicks(rawPts);
   const active = activeIndex === null ? null : rawPts[activeIndex];
   const activeValue = activeIndex === null ? null : raw[activeIndex];
+  // 跟卡片下方的 `spanCaption` 講同一件事實——掛牌不滿一年的合約，
+  // 螢幕報讀者不該聽到跟畫面上文字矛盾的「近 1 年」（HIVT-07／#158 E2E
+  // 撈出的既有 bug：這裡原本無論實際涵蓋多長都固定寫死同一句）。
+  const spanText = spanLabel(leg.history_span_days) || "涵蓋期間過短";
 
   return (
     <svg
       className="iv-trend-chart"
       viewBox={`0 0 ${width} ${height}`}
       role="img"
-      aria-label="市場 IV 走勢，含移動平均與 Bollinger 帶，近 1 年"
+      aria-label={`市場 IV 走勢，含移動平均與 Bollinger 帶，${spanText}`}
     >
       {yTicks.map(([frac, value]) => {
         const py = PAD_TOP + frac * (height - PAD_TOP - PAD_BOTTOM);

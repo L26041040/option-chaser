@@ -1280,6 +1280,55 @@ async function routeDetailWithIv(page: import("@playwright/test").Page,
   return ivCalls;
 }
 
+/** 一隻掛牌不滿一年的腿——`spanDays` 天前才有第一筆觀測，日期陣列本身
+ *  真的只跨那麼長（不是掛著一個大陣列只改 `history_span_days` 這個
+ *  數字充數）。`history_span_days` 直接從產生出來的日期陣列頭尾反推，
+ *  跟 `observation_count` 一樣是「這批假資料自己量出來的」，不是另外
+ *  手動湊的常數——HIVT-07／#158 明文要求這裡不能只換 caption 文字（見
+ *  票上 Scope 第 2 點）。觀測數固定在 5～20 筆之間：太少會落進
+ *  `IV_TREND_MIN_OBSERVATIONS_FOR_BANDS` 門檻讓 MA／帶整段 unavailable
+ *  （這不是本測試要驗的東西），太多則跟真實密度脫節。 */
+function partialHistoryLeg(spanDays: number,
+                           overrides: Record<string, unknown> = {}) {
+  const end = new Date("2026-08-16T00:00:00Z");
+  const count = Math.max(5, Math.min(20, Math.round(spanDays / 7) + 1));
+  const dates = Array.from({ length: count }, (_, i) => {
+    const d = new Date(end);
+    d.setUTCDate(d.getUTCDate() - spanDays + Math.round(i * spanDays / (count - 1)));
+    return d.toISOString().slice(0, 10);
+  });
+  const actualSpanDays = Math.round(
+    (new Date(dates[dates.length - 1]).getTime() - new Date(dates[0]).getTime())
+    / 86_400_000);
+  const points = dates.map((date, i) => ({ date, iv: 0.20 + (i % 5) * 0.005 }));
+  return legHistoricalIv({
+    points,
+    moving_average: statSeries(dates, 0.205),
+    bollinger_upper: statSeries(dates, 0.23),
+    bollinger_lower: statSeries(dates, 0.18),
+    observation_count: points.length,
+    history_span_days: actualSpanDays,
+    ...overrides,
+  });
+}
+
+/** 只給單腳（買腿）掛部分歷史的分析頁 route——涵蓋時間／觀測筆數這幾張
+ *  測試只在乎買腿卡片本身的呈現，賣腿沿用一般完整歷史即可，不需要每個
+ *  案例都重新建構整份 spread 回應。 */
+async function routePartialHistory(
+  page: import("@playwright/test").Page,
+  buyLeg: ReturnType<typeof legHistoricalIv>,
+) {
+  await routeLibrary(page, libraryRow());
+  await page.route("**/api/settings", (route) =>
+    route.fulfill({ json: { historical_iv_enabled: true } }));
+  await page.route("**/api/scenarios/*/iv-history*", (route) =>
+    route.fulfill({ json: fullIvResponse({
+      legs: { buy: buyLeg,
+             sell: legHistoricalIv({ contract: SELL_CONTRACT }) },
+    }) }));
+}
+
 test("Historical IV 未解鎖：分析頁完全沒有這個模組，也不發任何 IV 請求（#126）",
    async ({ page }) => {
   const ivCalls = await routeDetailWithIv(page, false);
@@ -1525,6 +1574,193 @@ test("Historical IV：兩腿各自獨立——買腿有完整歷史，賣腿完�
   const buyCard = cards.filter({ hasText: "買腿" });
   await expect(buyCard.getByText(/第 41 百分位/)).toBeVisible();
   await expect(buyCard.locator(".iv-trend-chart")).toHaveCount(1);
+});
+
+/* ---------- HIVT-07（#158）全面回歸／E2E 最終驗收：補齊 spec #151
+   34 項 User Stories／Implementation Decisions 裡，既有 75 條 E2E 尚未
+   逐一肉眼可見驗證到的幾個缺口。 ---------- */
+
+test("Historical IV：買／賣腿讀到的是各自 exact contract 的真實觀測——現值與百分位" +
+     "在 DOM 上讀出兩個確實不同的數字，不是共用同一份序列複製兩份（HIVT-07／" +
+     "#158，story #1–#4：不跨 strike／不跨 expiration 替代，要看得見）",
+   async ({ page }) => {
+  await routeLibrary(page, libraryRow());
+  await page.route("**/api/settings", (route) =>
+    route.fulfill({ json: { historical_iv_enabled: true } }));
+  await page.route("**/api/scenarios/*/iv-history*", (route) =>
+    route.fulfill({ json: fullIvResponse({
+      legs: {
+        // 買／賣腿的原始 IV 序列本身就不同（不只覆寫 percentile／Δ4w
+        // 這些衍生統計量）——履約價 118 的買腿 vs 履約價 125 的賣腿，
+        // 兩張真正不同的合約本來就該有不同的市場報價。
+        buy: legHistoricalIv({ points: ivDates().map((date, i) =>
+          ({ date, iv: 0.20 + (i % 20) * 0.001 })) }),
+        sell: legHistoricalIv({ contract: SELL_CONTRACT,
+          points: ivDates().map((date, i) => ({ date, iv: 0.32 + (i % 20) * 0.001 })),
+          current_percentile: 0.55, delta_4w: -0.004 }),
+      },
+    }) }));
+
+  await page.goto("/#/s/s1");
+
+  const block = page.locator(".iv-history");
+  await expect(block).toBeVisible();
+  const cards = block.locator(".iv-trend-card");
+  const buyCard = cards.filter({ hasText: "買腿" });
+  const sellCard = cards.filter({ hasText: "賣腿" });
+
+  // 現值（`.iv-value-primary`）：買腿最後一筆 0.20+(65%20)*0.001=20.5%，
+  // 賣腿最後一筆 0.32+(65%20)*0.001=32.5%——實際從兩張卡各自讀出來的
+  // 兩個數字，不是只驗證兩張卡「存在」。
+  const buyValue = await buyCard.locator(".iv-value-primary").textContent();
+  const sellValue = await sellCard.locator(".iv-value-primary").textContent();
+  expect(buyValue).toBe("20.5%");
+  expect(sellValue).toBe("32.5%");
+  expect(buyValue).not.toBe(sellValue);
+
+  // 百分位同樣讀出兩個不同數字（41 vs 55），跟現值是各自獨立的兩條
+  // 驗證線，不是同一個斷言重複兩次。
+  await expect(buyCard.getByText(/第 41 百分位/)).toBeVisible();
+  await expect(sellCard.getByText(/第 55 百分位/)).toBeVisible();
+});
+
+test("Historical IV：掛牌僅約 3 週的合約，涵蓋時間如實顯示「近 3 週」，不是" +
+     "「近 1 個月」也不是「近 1 年」（HIVT-07／#158，story #5／#6）",
+   async ({ page }) => {
+  const leg = partialHistoryLeg(21);
+  await routePartialHistory(page, leg);
+  await page.goto("/#/s/s1");
+
+  const block = page.locator(".iv-history");
+  const buyCard = block.locator(".iv-trend-card").filter({ hasText: "買腿" });
+  await expect(buyCard.getByText(
+    new RegExp(`近 3 週・${leg.observation_count} 個觀測`))).toBeVisible();
+  await expect(buyCard.getByText(/近 1 個月/)).toHaveCount(0);
+  await expect(buyCard.getByText(/近 1 年/)).toHaveCount(0);
+});
+
+test("Historical IV：掛牌約 5 個月的合約，涵蓋時間如實顯示「近 5 個月」" +
+     "（HIVT-07／#158，story #5／#6）",
+   async ({ page }) => {
+  const leg = partialHistoryLeg(150);
+  await routePartialHistory(page, leg);
+  await page.goto("/#/s/s1");
+
+  const block = page.locator(".iv-history");
+  const buyCard = block.locator(".iv-trend-card").filter({ hasText: "買腿" });
+  await expect(buyCard.getByText(
+    new RegExp(`近 5 個月・${leg.observation_count} 個觀測`))).toBeVisible();
+  await expect(buyCard.getByText(/近 1 年/)).toHaveCount(0);
+});
+
+test("Historical IV：掛牌約 11 個月的合約，涵蓋時間如實顯示「近 11 個月」，" +
+     "不會被籠統講成「近 1 年」——這正是需求方在票上點名的驗收陷阱" +
+     "（HIVT-07／#158，story #5／#6）",
+   async ({ page }) => {
+  const leg = partialHistoryLeg(330);
+  await routePartialHistory(page, leg);
+  await page.goto("/#/s/s1");
+
+  const block = page.locator(".iv-history");
+  const buyCard = block.locator(".iv-trend-card").filter({ hasText: "買腿" });
+  await expect(buyCard.getByText(
+    new RegExp(`近 11 個月・${leg.observation_count} 個觀測`))).toBeVisible();
+  // 修正前的 bug：`spanLabel()` 對 >=300 天一律回「近 1 年」，330 天
+  // （11 個月，仍在 `IV_TREND_MAX_HISTORY_DAYS=365` 之內）會被錯誤地
+  // 併入這個分支——這裡鎖死絕不能再回來。
+  await expect(buyCard.getByText(/近 1 年/)).toHaveCount(0);
+});
+
+test("Historical IV：z-score／moving average／Bollinger 帶三項統計量在頁面上" +
+     "真的可見（geometry／caption 斷言），不只 Vitest 元件測試覆蓋過" +
+     "（HIVT-07／#158，story #8／#9／#10／#11／#12）",
+   async ({ page }) => {
+  await routeLibrary(page, libraryRow());
+  await page.route("**/api/settings", (route) =>
+    route.fulfill({ json: { historical_iv_enabled: true } }));
+  const dates = ivDates();
+  // 刻意用有斜率的序列，不是固定常數——固定值的移動平均線在圖上是一條
+  // 完全水平的折線，bounding box 高度天生是 0，Playwright 的
+  // `toBeVisible()` 對零面積元素判定不穩定，跟這條線「有沒有真的畫出來」
+  // 是兩件事。有斜率才是這裡真正要驗的：線段確實佔有實際的寬與高。
+  const slopedMa = dates.map((date, i) => ({ date, value: 0.19 + (i % 10) * 0.003 }));
+  const slopedUpper = dates.map((date, i) => ({ date, value: 0.23 + (i % 10) * 0.003 }));
+  const slopedLower = dates.map((date, i) => ({ date, value: 0.15 + (i % 10) * 0.003 }));
+  await page.route("**/api/scenarios/*/iv-history*", (route) =>
+    route.fulfill({ json: fullIvResponse({
+      legs: {
+        buy: legHistoricalIv({ moving_average: slopedMa,
+          bollinger_upper: slopedUpper, bollinger_lower: slopedLower }),
+        sell: legHistoricalIv({ contract: SELL_CONTRACT,
+          moving_average: slopedMa, bollinger_upper: slopedUpper,
+          bollinger_lower: slopedLower,
+          current_percentile: 0.55, delta_4w: -0.004 }),
+      },
+    }) }));
+
+  await page.goto("/#/s/s1");
+
+  const block = page.locator(".iv-history");
+  await expect(block).toBeVisible();
+  // z-score caption：買／賣腿預設 current_zscore 都是 0.3 → "+0.30"。
+  await expect(block.getByText(/Z-score \+0\.30/).first()).toBeVisible();
+
+  // moving average／Bollinger band 是各自獨立的 SVG 元素，不是只靠
+  // `.iv-trend-chart` 存在就能證明這兩條疊加序列真的畫出來了——各自量
+  // 出實際佔用的寬／高都大於 0。
+  const maLine = block.locator(".iv-trend-ma-line").first();
+  await expect(maLine).toBeVisible();
+  const maBox = (await maLine.boundingBox())!;
+  expect(maBox.width).toBeGreaterThan(0);
+  expect(maBox.height).toBeGreaterThan(0);
+
+  const band = block.locator(".iv-trend-band").first();
+  await expect(band).toBeVisible();
+  const bandBox = (await band.boundingBox())!;
+  expect(bandBox.width).toBeGreaterThan(0);
+  expect(bandBox.height).toBeGreaterThan(0);
+
+  expect(await block.locator(".iv-trend-ma-line").count()).toBeGreaterThan(0);
+  expect(await block.locator(".iv-trend-band").count()).toBeGreaterThan(0);
+});
+
+test("Historical IV：買／賣腿各自的 vendor／quota 狀態獨立顯示，不受 Normalized " +
+     "Skew 家族自己的 status 影響，也不擋住頁面其他部分（HIVT-07／#158，" +
+     "story #32；spec #151 §4「兩個家族的 backfill 狀態各自獨立」）",
+   async ({ page }) => {
+  await routeLibrary(page, libraryRow());
+  await page.route("**/api/settings", (route) =>
+    route.fulfill({ json: { historical_iv_enabled: true } }));
+  await page.route("**/api/scenarios/*/iv-history*", (route) =>
+    route.fulfill({ json: fullIvResponse({
+      status: "ok",   // 頂層（Normalized Skew 家族）維持 ok
+      legs: {
+        buy: legHistoricalIv({ status: "quota" }),
+        sell: legHistoricalIv({ contract: SELL_CONTRACT, status: "vendor",
+          current_percentile: 0.55, delta_4w: -0.004 }),
+      },
+    }) }));
+
+  await page.goto("/#/s/s1");
+
+  const block = page.locator(".iv-history");
+  await expect(block).toBeVisible();
+  const cards = block.locator(".iv-trend-card");
+  const buyCard = cards.filter({ hasText: "買腿" });
+  const sellCard = cards.filter({ hasText: "賣腿" });
+
+  await expect(buyCard.getByText("今日 API 額度已用完，將於後續使用時繼續補齊"))
+    .toBeVisible();
+  await expect(sellCard.getByText("資料源暫時無法連線，將於後續使用時繼續補齊"))
+    .toBeVisible();
+  // Normalized Skew 家族自己沒有落在非 ok 狀態，不該多印一行說明——這行
+  // 文字只會來自兩腿卡片各自的 status，不是被頂層 status 帶出來的。
+  await expect(block.getByText(/今日 API 額度已用完/)).toHaveCount(1);
+
+  // 已快取的統計量不因為今天 backfill 沒補到而被藏起來（既有 quota
+  // 慣例延伸到腿層級），走勢圖照常渲染，頁面其餘部分也不受影響。
+  await expect(block.locator(".iv-trend-chart")).toHaveCount(3);
+  await expect(page.getByText("劇本主圖")).toBeVisible();
 });
 
 /* ---------- Inline diagnostics（DG-05／#148） ---------- */
