@@ -27,7 +27,7 @@ block 裡，不能切成好幾個 code block、也不能中間插普通文字把
 `［回報#001］spec #137 拆票完成`）。編號是**累計總數**，不因換
 session、換分支、換主題而歸零——目前最新編號記在這裡：
 
-> 目前次序：007（下一份回報用 008）
+> 目前次序：008（下一份回報用 009）
 
 每發一份回報就把上面這個數字改成剛剛用掉的那個，跟著那次改動一起
 commit（沒有其他改動要 commit 時，單獨為這一行開一個小 commit 也
@@ -216,6 +216,57 @@ commit（沒有其他改動要 commit 時，單獨為這一行開一個小 commi
   之後。唯一取捨：目標價差距（gap）計算留在 render 層（與既有
   `render_summary` 的 `move_pct` 同類手法一致，非新模式），未額外
   搬進服務層——標準面審查列為非阻塞建議，判斷維持現狀
+
+### Spec #151（2026-08-17 發佈）——Historical IV Trend v1（Exact Contract Canonical Series）
+
+需求方 `/to-spec` 發佈：既有 Normalized Skew 卡片的歷史數列（`ivhistory.py`
+的 (tenor, delta) 逐日重錨定）從未真正追蹤「同一張合約」——每天都可能
+對到不同履約價甚至不同到期日。新 spec 定義一個**新增、獨立**的
+「Historical IV Trend」卡片：對候選的每一隻腳，追蹤**這張、且只有這張
+exact listed option contract**（同一 underlying／到期日／履約價／
+call-put）過去最長一年的市場 IV，畫走勢圖＋moving average／Bollinger／
+z-score／percentile／Δ4w。與既有 Normalized Skew 功能**並存、不取代**
+——後者維持原樣，繼續由 `ivhistory.py` 供應。`/to-tickets` 拆成七張
+（HIVT-01–07，issues #152–158，皆為 #151 子票），依相依序單線施工，
+HIVT-01 是硬性 blocker（`needs-human-validation`，非 `ready-for-agent`）。
+
+**HIVT-01**（#152）— Vendor Capability Gate：需求方另一個 session
+（ChatGPT）完成真實驗證（commits `3724fca`／`6b085f7`／`9175d7d`／
+`220699d`，GitHub Actions 一次性 probe，真實 HTTP 203＋`s="ok"`）。
+真實合約 `TLT281215C00094000`：單合約歷史端點一次呼叫回整段區間（34
+筆觀測，1 credit），`iv` 欄位直接由 vendor 給（部分觀測為 `null`，
+如實視為缺席，不補值）；超界 `from`／週末窗口皆自然截斷，不需另建
+listing-date 探測。`single_contract_history_endpoint_verified=true`，
+issue 已關閉。
+
+**HIVT-02**（#153，commits `ba3211d`／`56b4c9b`）— Exact-Contract 後端
+資料取得路徑：新增 `option_chaser/ivtrend.py`（純函式，本票只有
+`trim_to_window`／`history_span_days`——moving average／Bollinger／
+z-score／percentile／Δ4w 留給 HIVT-03，與 `ivhistory.py` 零耦合、雙向
+零 import）；`option_chaser/data/marketdata.py` 新增
+`fetch_contract_history()`（成功判準 2xx含203＋`s=="ok"`，不寫死
+`status==200`——新增 `test_http_203_is_a_success_not_a_failure` 迴歸
+測試鎖死這個 #152 抓到的 bug class；`null` IV 誠實保留為缺席）；
+`api_app/storage` 新增 `ContractHistory`（memory／postgres 兩後端，
+鍵是 exact OCC contract symbol，取代整條 chain／整個 symbol 的舊快取
+模型）；`api_app/main.py::_ensure_contract_history()` 漸進式刷新（只補
+`fetched_through` 之後到今天的缺口，同一天重複請求零 vendor 呼叫）；
+`GET /api/scenarios/{id}/iv-history` 新增純加法 `legs` 欄位（單腳依
+spec #151 §4 精確定義整個省略 `sell` key，不是設成 `null`），既有
+`points`／`metrics`／`status`／`note` 家族逐位元未動。IV 反算路徑
+（`implied_vol()`）確認不需要——vendor 直接給 `iv`，條件分支不成立。
+`/code-review` 兩軸皆抓到同一個真缺口：diagnostics 白名單補了
+`underlying`／`strike`／`option_type`，但沒有任何 `emit()` 呼叫真的帶
+這些欄位（只有可反解的 `contract_symbol`），且遺漏 issue 原文列出的
+`expiration`／`lookback_days`——已修正，新增 `_identity_context()`
+輔助函式，四站 emit 全部補上四個可讀欄位，白名單補齊遺漏兩項。全套
+1279 條測試通過（memory＋真實 Postgres 雙後端），既有 (tenor,delta)
+家族測試逐條未動。issue 已關閉。
+
+**尚存 blocker**：無——HIVT-01 credential 已解除，HIVT-02 已完結。
+**下一步＝HIVT-03**（#154，統計量：moving average／Bollinger／
+z-score／percentile／Δ4w 純函式，接上 HIVT-02 的 `legs` 原始序列），
+尚未開工。依專案規則全部子票做完才開 PR，中途不主動開。
 
 ### Spec #143（2026-08-15 發佈）——Application Diagnostics / Error Log 系統
 
