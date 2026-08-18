@@ -27,7 +27,7 @@ block 裡，不能切成好幾個 code block、也不能中間插普通文字把
 `［回報#001］spec #137 拆票完成`）。編號是**累計總數**，不因換
 session、換分支、換主題而歸零——目前最新編號記在這裡：
 
-> 目前次序：011（下一份回報用 012）
+> 目前次序：012（下一份回報用 013）
 
 每發一份回報就把上面這個數字改成剛剛用掉的那個，跟著那次改動一起
 commit（沒有其他改動要 commit 時，單獨為這一行開一個小 commit 也
@@ -438,11 +438,37 @@ assumption"——`option_chaser/data/marketdata.py:425-427` 的註解需更正
 取數層三個缺口：`updated`/`dte` 要帶出解析層、T 一律用觀測日、r/q 對齊
 同一天）。
 
-**下一步**：等需求方審閱診斷文件，裁示 §11 的六個決策點（是否把取數
-缺口開成正式票、是否要求先重跑修正後的完整 calibration、
-`marketdata.py` 註解更正、TLT 型高 q 標的的 LEAPS q 口徑是否另開研究、
-「靜默降級成舊資料」是否要在 diagnostics 顯性化），再決定要不要把
-v1 recipe 拆成正式 spec/tickets。
+**修正後 calibration 重跑完成（2026-08-18，`/prototype`，commits
+`bb3d80f`～`66c1183`）**：診斷文件 §9-C 點名的三個取數缺口（observation_
+date 用 vendor `updated`、T/r/q 皆對齊該日、q 額外補上界避免看到
+observation_date 當時還沒發生的配息）在 prototype 層修正後，用真實
+TLT／ORCL medium／LEAPS 資料（N=578，前兩輪完全沒有的天期）重新跑一輪
+calibration，結果見
+`docs/research/historical-iv-reconstruction-corrected-calibration-results.md`。
+
+**bias 幾乎完全消失**：MAE 0.3816→0.0060（63 倍）、bias +0.3816→-0.0021、
+失敗率 44.2%→7.1%。**LEAPS ranking 穩定**：新到期日（~852 天）整體
+Spearman 0.9894，四組 symbol×tenor 組合全數 ≥0.9626。**TLT q ablation
+直接證實 q 是主因**（同一批 284 筆觀測只換 q：q=0 讓 MAE 從 0.0089
+惡化到 0.0493，+4.05 vol pts；且 production point-in-time q 本身是
+四個測試版本裡表現最好的，沒有系統性偏誤，不是「調 q 數值就能再壓低」
+的情況）。**Verdict：`STRONG_PASS`**（本輪驗證的三個具體問題——日期
+修正是否解決 bias、LEAPS ranking 是否穩定、TLT 殘差是否為 q——全數
+得到明確肯定答案）。
+
+STRONG_PASS 不等於「毫無準備即可上線」，本輪列出 5 項施工前必要
+guardrails：(1) 修正邏輯要真正搬進 production（本輪修正只做在
+prototype 層，`marketdata.py`／`ratecurve.py`／`dividends.py` 尚未真正
+補上 point-in-time 介面）(2) vendor IV 合理性關卡（本輪又發現多筆
+vendor_iv≈0.0001 的退化值）(3) 目前只驗證過橫截面準確度，縱向（同一
+合約跨多天）準確度仍待驗證 (4) medium 天期失敗率偏高（TLT 11.1%／
+ORCL 18.3%）成因未深究 (5) prototype 的 point-in-time 揀選邏輯建議
+直接寫成 `ratecurve.py`／`dividends.py` 正式函式＋補單元測試，不要
+複製腳本寫法。
+
+**下一步**：等需求方審閱兩份 calibration 結果文件＋診斷文件，裁示
+§11 的六個決策點與本輪新增的 5 項 guardrails，再決定要不要把 v1
+recipe 拆成正式 spec/tickets。
 
 ### Spec #143（2026-08-15 發佈）——Application Diagnostics / Error Log 系統
 
