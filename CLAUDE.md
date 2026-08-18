@@ -27,7 +27,7 @@ block 裡，不能切成好幾個 code block、也不能中間插普通文字把
 `［回報#001］spec #137 拆票完成`）。編號是**累計總數**，不因換
 session、換分支、換主題而歸零——目前最新編號記在這裡：
 
-> 目前次序：010（下一份回報用 011）
+> 目前次序：011（下一份回報用 012）
 
 每發一份回報就把上面這個數字改成剛剛用掉的那個，跟著那次改動一起
 commit（沒有其他改動要 commit 時，單獨為這一行開一個小 commit 也
@@ -403,8 +403,45 @@ rate limit），依規則未再重試，**LEAPS／medium DTE 至今沒有真實�
 沒驗證到 LEAPS 天期，需求方核准前建議先在 rate limit 解除後補一輪
 LEAPS 樣本）。
 
-**下一步**：等需求方審閱研究文件＋本輪 calibration 結果，決定是否
-先補 LEAPS 樣本、§12 列出的五個裁決點如何裁示，再回頭決定要不要把
+**偏差診斷已完成（2026-08-18，`/research`，commits `6ad4fd7`～`b6adaf4`）**：
+上面那個 +38 vol points 的系統性偏差**成因已完全鎖定**，結果見
+`docs/research/historical-iv-reconstruction-bias-diagnosis.md`。
+
+**真因不是 vega 塌縮（上一輪的推測是錯的，已在 calibration 結果文件
+加註更正）**，而是**參照日錯配**：Market Data App 回的是過期快照，
+vendor 用**快照自己那一天**算 IV，prototype 卻用 `date.today()` 算 T。
+那輪快照早 4 個日曆天，於是 vendor 眼中 DTE=7、我們眼中 DTE=3；在 3 DTE
+這種天期，`σ ∝ 1/√T` 把它放大成 √(7/3)=1.53 倍。**只把 T 換成快照日，
+同樣 183 筆的 MAE 從 0.3813 掉到 0.0020（190 倍），ratio 從 1.5249
+收斂到 1.0001±0.0068。** 起手線索是「偏差是乘法的」——比值在 39 倍的
+IV 範圍上 stdev 只有 3%，噪音做不到這件事。
+
+其餘假設全部用數字排除：**pricing model（BS93 vs Merton European）差
+0.0001**、r（0→8%）≤0.005、q（0→10%）≤0.009、單位 trace 乾淨。近到期
+病態真實存在但只解釋**殘留離散度與失敗率**（時間價值 <$0.10 組殘差
+0.28 vol pts vs ≥$0.10 組 0.02），不解釋偏差。
+
+**vendor 官方文件獨立佐證**（自官方文件原始碼庫取得，沙箱擋住本站）：
+options 要到**次一交易日 9:30:01 ET** 才從 Delayed 轉 Historical，
+該規則精確預測了本輪兩支 probe 在同一天不同時間拿到的**兩個不同快照日**
+（02:00 ET → 週五收盤 DTE=7；11:23 ET → 週一收盤 DTE=4）。同時**更正**
+一個本 repo 既有的錯誤認知：**HTTP 203 不是「延遲報價」，是「從快取層
+回應」**，官方文件還特地把這個誤解點名為 "a common (incorrect)
+assumption"——`option_chaser/data/marketdata.py:425-427` 的註解需更正
+（本輪禁止動 production code，僅記錄為裁決點）。
+
+**LEAPS 問題也一併解決**：本輪 probe 補上真實 303 DTE 資料，同樣的日期
+錯誤在那裡只值 **0.03–0.13 vol pts**（封閉形式預測 0.082，吻合）。修正
+日期後 ORCL LEAPS MAE **0.43 vol pts**、TLT **3.2 vol pts**——TLT 的殘差
+與 moneyness 及該標的的高 q 相關，推測是 q 口徑差異（MEDIUM 信心，未做
+直接 ablation）。**Verdict：`YES_WITH_GUARDRAILS`**（guardrails ＝ 先補
+取數層三個缺口：`updated`/`dte` 要帶出解析層、T 一律用觀測日、r/q 對齊
+同一天）。
+
+**下一步**：等需求方審閱診斷文件，裁示 §11 的六個決策點（是否把取數
+缺口開成正式票、是否要求先重跑修正後的完整 calibration、
+`marketdata.py` 註解更正、TLT 型高 q 標的的 LEAPS q 口徑是否另開研究、
+「靜默降級成舊資料」是否要在 diagnostics 顯性化），再決定要不要把
 v1 recipe 拆成正式 spec/tickets。
 
 ### Spec #143（2026-08-15 發佈）——Application Diagnostics / Error Log 系統
