@@ -11,7 +11,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - name: Run prototype calibration script (fix missing json import)
+      - name: Run prototype calibration script (retry after vendor 403/rate-limit cooldown)
         env:
           MARKETDATA_APP_TOKEN: ${{ secrets.MARKETDATA_APP_TOKEN }}
         run: |
