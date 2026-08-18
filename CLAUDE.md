@@ -27,7 +27,7 @@ block 裡，不能切成好幾個 code block、也不能中間插普通文字把
 `［回報#001］spec #137 拆票完成`）。編號是**累計總數**，不因換
 session、換分支、換主題而歸零——目前最新編號記在這裡：
 
-> 目前次序：012（下一份回報用 013）
+> 目前次序：013（下一份回報用 014）
 
 每發一份回報就把上面這個數字改成剛剛用掉的那個，跟著那次改動一起
 commit（沒有其他改動要 commit 時，單獨為這一行開一個小 commit 也
@@ -466,9 +466,26 @@ ORCL 18.3%）成因未深究 (5) prototype 的 point-in-time 揀選邏輯建議
 直接寫成 `ratecurve.py`／`dividends.py` 正式函式＋補單元測試，不要
 複製腳本寫法。
 
-**下一步**：等需求方審閱兩份 calibration 結果文件＋診斷文件，裁示
-§11 的六個決策點與本輪新增的 5 項 guardrails，再決定要不要把 v1
-recipe 拆成正式 spec/tickets。
+**Supplemental spec 已發佈（2026-08-18，`/to-spec`）——issue #159**：
+`Historical IV Reconstruction + Point-in-Time Correctness + Diagnostics
+降噪`，`ready-for-agent`。**#151 的 methodology 不變**（canonical identity
+與統計方法逐字不動），#159 只修三件事：(1) canonical IV 從「抄 vendor
+`iv`」改成「一律自己 reconstruction」，vendor `iv` 降為 benchmark；
+(2) point-in-time 正確性（r／q 對齊每筆觀測自己的日期，補上既有
+`compute_q()` 缺的 `ex_date` 上界）；(3) diagnostics subsystem 分離
+＋事件聚合（取代「持續調高 cap」）。已在 #151 留言連結，未修改 #151
+內容。
+
+核心架構決策：**快取存 raw quote、reconstruction 在讀取時重算**——
+recipe 已經錯過一次，存算好的 IV 會讓任何修正都要重花 vendor 額度重抓；
+存 raw 則修正立即對全部歷史生效、零 vendor 成本（代價 ~0.1 秒／候選）。
+`contract_iv_history` 舊格式列視為 cache miss 重抓（純快取、可再生）。
+新 reconstruction 模組的輸出形狀刻意等同 `ivtrend.py` 既有輸入形狀，
+統計層一行不用改。Seam 沿用既有兩層（純函式單元測試＋HTTP API），
+不新增 seam。
+
+**下一步**：等需求方審閱 #159，核准後才 `/to-tickets`。本輪未拆票、
+未施工、未開 PR。
 
 ### Spec #143（2026-08-15 發佈）——Application Diagnostics / Error Log 系統
 
