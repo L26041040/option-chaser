@@ -362,6 +362,28 @@ issue 已關閉。
 規則全部子票做完才開 PR，中途不主動開；**尚存 blocker：無**——
 已符合開 PR 條件，等需求方 cue 才實際開 PR、merge 回 master。
 
+**HIVT-07 完成後的追加發現＋研究（2026-08-18，`/research`，
+commit `a513353`）**：需求方 / ChatGPT 真實 GitHub Actions probe
+（commits `4ec23f1`／`410f927`）確認 Market Data App 的 exact-contract
+歷史報價端點對 `TLT`／`ORCL` 真實合約回傳 `iv` 大量／全部為 `null`
+（`bid`／`ask`／`mid`／`last`／`underlyingPrice`／`dte` 皆正常）——
+exact-contract acquisition 本身沒壞，缺的是 vendor 沒給 IV 時的
+reconstruction。研究文件
+`docs/research/historical-iv-reconstruction.md` 已完成：pricing model
+不需重選（既有 `option_chaser/valuation.py::implied_vol()` 的
+Bjerksund-Stensland (1993) 可直接重用，`ThinkorSwim` 官方文件本次
+新查獨立佐證同一模型選擇），三項輸入（S／r／q）原始資料本 repo
+既有研究＋既有程式碼都已具備，缺的是把既有「今日快照」邏輯
+point-in-time 化（`ratecurve.py`／`dividends.py` 各自的小擴充）＋
+停止丟棄 exact-contract 歷史列本來就有的 `underlyingPrice`。附帶
+一節純分析（不施工）的 `/iv-history` 診斷降噪建議：現行端點在
+exact-contract 路徑跑完後無條件繼續跑整段舊 (tenor,delta) 重錨定
+流程，`_backfill_iv` 逐日缺口補齊＋`reanchor` 對整段歷史逐次重放
+是噪音根因。純研究，未 `/to-spec`、未 `/to-tickets`、未動
+production code。**下一步**：等需求方審閱這份研究文件，決定是否
+核准 §8 的 calibration experiment 實際執行、§12 列出的五個裁決點，
+再回頭決定要不要把 v1 recipe 拆成正式 spec/tickets。
+
 ### Spec #143（2026-08-15 發佈）——Application Diagnostics / Error Log 系統
 
 需求方在兩輪 Historical IV 診斷都卡在「拿不到真實 production 證據」
