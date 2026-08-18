@@ -86,9 +86,101 @@ def _dte_bucket(dte_days: int) -> str:
     return "LEAPS"
 
 
+# Market Data App 的 `/options/chain/{symbol}/` **不帶** `expiration=`
+# 參數時，vendor 官方文件記載的預設行為是「只回下一個月選」（本 repo
+# 既有 `fetch_surface()` docstring，`marketdata.py:367-368`，#134 已經
+# 踩過這個坑）——這裡把同一個已知行為當成需要自己額外處理的事，不是
+# 假設它會自動給我們 short/medium/LEAPS 的分佈。呼叫端額外指定
+# `expiration=` 抓幾個更遠的到期日，直接沿用同一個 query 參數慣例
+# （`marketdata.py:381-382` 已經在別的呼叫路徑這樣用），解析仍然
+# 100% 重用 production 的 `map_chain_payload()`，不重造。
+_EXPIRATIONS_URL = marketdata._BASE + "/options/expirations/{symbol}/"
+
+
+def fetch_expirations(symbol: str, token: str) -> list[str]:
+    raw = marketdata._http_get(_EXPIRATIONS_URL.format(symbol=symbol.upper()), token)
+    payload = json.loads(raw)
+    if payload.get("s") != "ok":
+        return []
+    return list(payload.get("expirations") or [])
+
+
+def fetch_chain_for_expiration(symbol: str, token: str, expiration: str):
+    fetched_at = marketdata.datetime.now(marketdata.timezone.utc).isoformat(timespec="seconds")
+    url = marketdata._CHAIN_URL.format(symbol=symbol.upper()) + f"?expiration={expiration}"
+    payload = json.loads(marketdata._http_get(url, token))
+    return marketdata.map_chain_payload(symbol, payload, fetched_at)
+
+
+def pick_diverse_expirations(expirations: list[str], today: date) -> list[str]:
+    """從全部可得到期日裡各挑一個落在「medium」（90–180 天）與
+    「LEAPS」（>300 天）區間的，湊出 §2 要求的 DTE 多樣性——預設
+    （不帶 `expiration=`）只會拿到最近月選，見上方常數註解。挑不到
+    就略過，不硬湊。"""
+    picked = []
+    for lo, hi in ((90, 180), (300, 3650)):
+        candidates = [e for e in expirations
+                     if lo <= days_between(today, date.fromisoformat(e)) <= hi]
+        if candidates:
+            # 落在區間內取最接近區間中點的一個，避免每次都選到邊界值。
+            mid_target = (lo + hi) / 2
+            best = min(candidates,
+                      key=lambda e: abs(days_between(today, date.fromisoformat(e)) - mid_target))
+            picked.append(best)
+    return picked
+
+
+def _process_contract(c, symbol: str, spot: float, today: date, curve, q: float | None) -> dict:
+    """單一合約 → 一筆觀測 row（反解成功或 failure_reason）。純函式，
+    給 `collect_observations()` 跟額外到期日的補抓路徑共用。"""
+    mid = _mid(c.bid, c.ask)
+    row = {
+        "symbol": symbol, "occ": c.contract_symbol, "option_type": c.option_type,
+        "strike": c.strike, "expiry": c.expiry, "bid": c.bid, "ask": c.ask,
+        "mid": mid, "vendor_iv": c.implied_volatility,
+        "relative_spread": ((c.ask - c.bid) / mid)
+                           if (mid and c.bid is not None and c.ask is not None) else None,
+    }
+    if mid is None:
+        row.update(our_iv=None, error=None, abs_error=None, failure=True,
+                   failure_reason="no_valid_mid", dte_days=None, moneyness="?")
+        return row
+
+    expiry_date = date.fromisoformat(c.expiry)
+    dte_days = days_between(today, expiry_date)
+    row["dte_days"] = dte_days
+    row["moneyness"] = _moneyness_bucket(c.option_type, spot, c.strike)
+
+    if dte_days <= 0:
+        row.update(our_iv=None, error=None, abs_error=None, failure=True,
+                   failure_reason="expired_or_today")
+        return row
+    if curve is None or q is None:
+        row.update(our_iv=None, error=None, abs_error=None, failure=True,
+                   failure_reason="missing_rate_or_dividend_input")
+        return row
+
+    T = dte_days / DAYS_PER_YEAR
+    r = ratecurve.rate_for_tenor(curve, T)
+    our_iv = implied_vol(c.option_type, mid, spot, c.strike, T, r, q)
+    row["T"] = T
+    row["r"] = r
+    row["q"] = q
+    if our_iv is None:
+        row.update(our_iv=None, error=None, abs_error=None, failure=True,
+                   failure_reason="implied_vol_no_solution")
+    else:
+        err = our_iv - c.implied_volatility
+        row.update(our_iv=our_iv, error=err, abs_error=abs(err), failure=False,
+                   failure_reason=None)
+    return row
+
+
 def collect_observations(symbol: str, token: str, today: date) -> list[dict]:
     """一個標的的完整觀測清單——每筆是一個 vendor iv 非 null 的合約，
-    帶 our_iv（反解成功）或 failure_reason（反解失敗／輸入缺席）。"""
+    帶 our_iv（反解成功）或 failure_reason（反解失敗／輸入缺席）。
+    抓最近月選（預設行為）＋額外 1–2 個較遠到期日（DTE 多樣性，見
+    `pick_diverse_expirations()`）。"""
     snapshot = marketdata.fetch_chain(symbol, token)
     curve, curve_note = treasury.load_rate_curve(today)
     hist, div_note = data_dividends.load_dividend_history(symbol, today)
@@ -96,54 +188,24 @@ def collect_observations(symbol: str, token: str, today: date) -> list[dict]:
     print(f"[{symbol}] spot={snapshot.spot} contracts={len(snapshot.contracts)} "
           f"rate_curve=({curve_note}) dividend=({div_note}) q={q}", file=sys.stderr)
 
+    all_contracts = list(snapshot.contracts)
+    try:
+        expirations = fetch_expirations(symbol, token)
+        extra = pick_diverse_expirations(expirations, today)
+        for exp in extra:
+            extra_snap = fetch_chain_for_expiration(symbol, token, exp)
+            all_contracts.extend(extra_snap.contracts)
+            print(f"[{symbol}] 額外抓到期日 {exp}：+{len(extra_snap.contracts)} 筆合約",
+                  file=sys.stderr)
+    except Exception as e:  # noqa: BLE001 — prototype：額外多樣性抓取失敗
+        # 不影響主樣本（近月選）已經拿到的結果，記錄下來就好。
+        print(f"[{symbol}] 額外到期日抓取失敗（不影響主樣本）：{e!r}", file=sys.stderr)
+
     rows: list[dict] = []
-    for c in snapshot.contracts:
+    for c in all_contracts:
         if c.implied_volatility is None:
             continue  # 不在 benchmark 池裡——沒有已知答案可以比對
-        mid = _mid(c.bid, c.ask)
-        row = {
-            "symbol": symbol, "occ": c.contract_symbol, "option_type": c.option_type,
-            "strike": c.strike, "expiry": c.expiry, "bid": c.bid, "ask": c.ask,
-            "mid": mid, "vendor_iv": c.implied_volatility,
-            "relative_spread": ((c.ask - c.bid) / mid)
-                               if (mid and c.bid is not None and c.ask is not None) else None,
-        }
-        if mid is None:
-            row.update(our_iv=None, error=None, abs_error=None, failure=True,
-                       failure_reason="no_valid_mid", dte_days=None, moneyness="?")
-            rows.append(row)
-            continue
-
-        expiry_date = date.fromisoformat(c.expiry)
-        dte_days = days_between(today, expiry_date)
-        row["dte_days"] = dte_days
-        row["moneyness"] = _moneyness_bucket(c.option_type, snapshot.spot, c.strike)
-
-        if dte_days <= 0:
-            row.update(our_iv=None, error=None, abs_error=None, failure=True,
-                       failure_reason="expired_or_today")
-            rows.append(row)
-            continue
-        if curve is None or q is None:
-            row.update(our_iv=None, error=None, abs_error=None, failure=True,
-                       failure_reason="missing_rate_or_dividend_input")
-            rows.append(row)
-            continue
-
-        T = dte_days / DAYS_PER_YEAR
-        r = ratecurve.rate_for_tenor(curve, T)
-        our_iv = implied_vol(c.option_type, mid, snapshot.spot, c.strike, T, r, q)
-        row["T"] = T
-        row["r"] = r
-        row["q"] = q
-        if our_iv is None:
-            row.update(our_iv=None, error=None, abs_error=None, failure=True,
-                       failure_reason="implied_vol_no_solution")
-        else:
-            err = our_iv - c.implied_volatility
-            row.update(our_iv=our_iv, error=err, abs_error=abs(err), failure=False,
-                       failure_reason=None)
-        rows.append(row)
+        rows.append(_process_contract(c, symbol, snapshot.spot, today, curve, q))
     return rows
 
 
