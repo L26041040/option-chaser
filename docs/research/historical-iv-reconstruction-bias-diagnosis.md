@@ -14,9 +14,15 @@ Base commit：`9f839ec`（診斷開始時的 `origin/claude/implement-tfm9oa`）
 ## 0. 結論先行（一句話）
 
 **偏差不是模型問題、不是 r／q 問題、不是報價品質問題，是一個「日期用錯」
-的問題**：Market Data App 回的是**延遲快照**（HTTP 203），vendor 用**快照
-自己那一天**算 IV，而 prototype 用 `date.today()` 算 T。那一輪快照比執行
-當天早 4 個日曆天，於是 vendor 眼中 DTE=7、我們眼中 DTE=3。
+的問題**：Market Data App 回的是**過期快照**（`updated` 指向前一個交易日
+收盤），vendor 用**快照自己那一天**算 IV，而 prototype 用 `date.today()`
+算 T。那一輪快照比執行當天早 4 個日曆天，於是 vendor 眼中 DTE=7、
+我們眼中 DTE=3。
+
+**vendor 官方文件獨立佐證**：options 資料要到**次一交易日 9:30:01 ET**
+才從 Delayed 轉成 Historical，該文件自己舉的例子與本案幾乎一字不差；
+把這條規則套用到本案兩次不同時間的呼叫，**精確預測了兩個不同的快照日**
+（見 §3.2）。
 
 在 3 DTE 這種天期，這個日期差被放大成 +38 vol points；**同一份程式碼、
 同一天、只把 T 換成快照自己的日期，183 筆真實觀測的 MAE 從 0.3813 掉到
@@ -134,12 +140,117 @@ our days_between(today): 3     ← prototype 用的
 
 三件事一次確認：
 
-1. **HTTP 203 ＝ 延遲報價**——本 repo `option_chaser/data/marketdata.py:425-427`
-   的既有註解早就記錄過 vendor 用這個狀態碼表示延遲報價，本次直接觀測到。
-2. **`updated` 是單一均勻時戳**，不是逐筆不同——整個 chain 是**同一個
+1. **`updated` 是單一均勻時戳**，不是逐筆不同——整個 chain 是**同一個
    收盤快照**，不是即時流。
-3. **vendor 的 `dte` 與它自己的 `updated` 自洽**，且與我們用 `date.today()`
-   算的差 1 天。
+2. **vendor 的 `dte` 與它自己的 `updated` 自洽**（2026-08-21 − 2026-08-17
+   = 4），且與我們用 `date.today()` 算的差 1 天。
+3. HTTP 203——**但這一項的解讀本文原本寫錯了，見 §3.1。**
+
+### 3.1 ⚠ 更正：HTTP 203 不是「延遲報價」的訊號
+
+本文初稿與本 repo `option_chaser/data/marketdata.py:425-427` 的既有註解
+都寫「vendor 對延遲報價用 203 這個狀態碼」。**查證 vendor 官方文件後
+確認這是錯的**，而且 vendor 文件還特地把這個誤解點名出來。
+
+【一手來源】`api/universal-parameters/mode.md`（官方文件原始碼庫
+`github.com/MarketDataApp/documentation`，HEAD `da6bfe9`，2026-08-09；
+`docusaurus.config.js` 確認其 build 目標即 `www.marketdata.app/docs/`；
+沙箱 proxy 擋住 `marketdata.app` 本站，故自官方 repo 取得同一份文字）：
+
+| Status | Meaning |
+|---|---|
+| `200 OK` | Response was **freshly fetched from the upstream provider**. |
+| `203 Non-Authoritative Information` | Response was **served from a cache layer** (Redis, database quote cache, response log, option-chain cache, etc.). Any mode. Common during market hours regardless of `mode=live`, `mode=delayed`, or no `mode`. |
+
+> ":::caution Mode does not deterministically map to status code
+> A common (**incorrect**) assumption is that `mode=live` always returns
+> `200` and `mode=delayed` always returns `203`. Both can return either
+> `200` or `203` depending on whether a cache layer can satisfy the
+> request at the moment."
+
+**所以 203 完全不帶新鮮度資訊，只表示「這次是從快取層回的」。**
+判斷資料有多舊的唯一正確欄位是 **`updated`**——vendor 自己的文件就是
+這樣教使用者的（見 §3.2）。
+
+**這不影響本文的診斷結論**（結論本來就建立在 `updated`／`dte`／數值
+證據上，不是建立在 203 上），但**它讓「必須讀 `updated`」這件事更強**：
+連狀態碼都不能拿來當新鮮度的代理。
+
+⚠ **`marketdata.py:425-427` 的既有註解需要更正**——本輪禁止改
+production code，故僅記錄，列為需求方裁決點（§11-5）。
+
+### 3.2 vendor 官方文件如何佐證這個診斷
+
+【一手來源】`account/data-freshness.md`——vendor 對 options 的
+「何時從 Delayed 轉成 Historical」有明文規則，**而且它自己舉的例子
+幾乎就是本案**：
+
+> - **Options:** Historical at the *next* session's open — **9:30:01 AM
+>   ET** the next trading day, not at the prior session's close.
+>
+> Friday's options quotes therefore do **not** become Historical until
+> **9:30:01 AM ET Monday** — they remain Delayed all weekend.
+>
+> If you query an options endpoint at **6:33 AM ET Wednesday** on a plan
+> that provides Historical-only options data, you will receive
+> **Monday's** close, not Tuesday's. … This is the most common cause of
+> "the data doesn't match my broker" support requests — the behavior is
+> correct, the customer is just querying before the next session has
+> opened.
+
+把這條規則套到本案的**兩支 probe**（同一天、不同時間、拿到不同快照日）：
+
+| probe | UTC | **ET** | 文件規則預測 | **實際觀測** | 相符 |
+|---|---|---|---|---|---|
+| calibration | 08-18 06:00 | **02:00 週二** | 週一(8/17) 的資料要到週二 9:30:01 ET 才轉 Historical → 拿到 **週五 8/14 收盤** → DTE=**7** | 數值反推 DTE=**7**（MAE 0.0020） | ✅ |
+| staleness | 08-18 15:23 | **11:23 週二** | 已過週二 9:30:01 ET → 週一(8/17) 已轉 Historical → 拿到 **週一 8/17 收盤** → DTE=**4** | `updated`=**2026-08-17**、vendor `dte`=**4** | ✅ |
+
+**同一天的兩次呼叫拿到兩個不同的快照日，兩者都被官方文件的規則精確
+預測。** 這把「快照會過期、而且過期程度會變」從推論變成有文件依據的
+確定行為。
+
+【一手來源】`account/free-accounts.md`／`account/plan-limits.md`：
+Free Forever 與 trial 方案的 `/v1/options/chain/` 一律是 Historical
+（24 小時以上），且無法用 `mode` 參數改變。
+【一手來源】`api/troubleshooting/real-time-data.mdx`：即使付費方案，
+若 dashboard 的 professional status 是 "Unknown"，API 會**靜默降級**
+成 Historical（"The API doesn't throw errors … it silently provides you
+with the freshest data you're entitled to receive"）——**不會報錯**。
+
+【一手來源】`api/options/chain.mdx`／`api/dates-and-times.mdx`：
+`updated` 定義為 "The date and time of **this quote snapshot**"、
+"the actual moment the data was **captured or last refreshed**"，
+時區為 US/Eastern；且 `account/free-accounts.md` 直接指示使用者
+"Check … the `updated` key in the API's JSON response to get the exact
+date and time of the quote data you've received"。**用 `updated` 當
+時間基準是 vendor 明文教的做法，不是我們自創的 workaround。**
+
+【一手來源】`dte` 欄位：官方文件四個 worked example 全部滿足
+`dte = (expiration − updated) 的 ET 日曆天差`，沒有任何一個是對
+「現在」算的：
+
+| 文件位置 | expiration | updated | 文件 `dte` | ET 日期差 |
+|---|---|---|---|---|
+| `sdk/go/options/chain.mdx` L188 | 2022-01-21 | 2022-01-03 | 18 | 18 ✓ |
+| `sdk/go/options/quotes.mdx` L126 | 2025-01-17 | 2024-02-05 | 347 | 347 ✓ |
+| `api/options/chain.mdx` L149 | 2023-06-16 | 2023-05-21 | 26 | 26 ✓（原始秒差 25.96，取日期差） |
+| `sdk/go/options/chain.mdx` L164 | 2022-03-18 | 2022-01-03 | 74 | 74 ✓ |
+
+**vendor 自己的日數就是以快照日為基準算的**，這正是我們該對齊的口徑。
+
+### 3.3 vendor 的 IV 計算方法論：官方完全沒有文件
+
+【一手來源】官方文件對 `iv` 的**完整**定義只有一句：
+"The implied volatility of the option."（連到 Investopedia）。
+對 229 個 `.md`/`.mdx` 檔全文檢索 `Black-Scholes`／`Bjerksund`／
+`binomial`／`dividend yield`／`risk-free`／`ORATS` 等關鍵字：
+**零命中**（`risk-free` 僅 4 次，全部是行銷文案 "risk-free way to
+explore our services"）。
+
+**意義**：vendor 的 IV 用什麼模型、什麼價格、什麼 r／q、以哪個時點計算，
+**官方一個字都沒寫**。因此**經驗證據是唯一取得得到的證據**——本文
+§2 的 190 倍 MAE 崩塌就是這件事能拿到最強的證據形式，不需要為
+「沒有官方背書」道歉。
 
 用同一批真實報價、兩種 T 各反解一次：
 
@@ -360,9 +471,14 @@ table 裡，mid 無法回推）。
 
 ### A. 目前巨大 bias 最主要原因是什麼？
 
-**Prototype 用 `date.today()` 當 T 的參照日，但 vendor 給的是延遲快照
-（HTTP 203、`updated` 指向前一個交易日收盤），vendor 的 IV 是用快照自己
-那一天算的。** 那一輪快照比執行日早 4 天，於是 DTE 7 vs 3。
+**Prototype 用 `date.today()` 當 T 的參照日，但 vendor 給的是過期快照
+（`updated` 指向前一個交易日收盤），vendor 的 IV 是用快照自己那一天算的。**
+那一輪快照比執行日早 4 天，於是 DTE 7 vs 3。
+
+而且這不只是我們反推出來的——**vendor 官方文件的 options
+Delayed→Historical 轉換規則（次一交易日 9:30:01 ET）精確預測了本案的
+兩次觀測**（02:00 ET 那次拿到週五收盤、11:23 ET 那次拿到週一收盤），
+見 §3.2。
 
 在 3 DTE 這種天期，`σ ∝ 1/√T` 把這個日期差放大成 √(7/3) = 1.53 倍
 ＝ **+38 vol points**。
@@ -400,7 +516,9 @@ MUST HAVE 是對的。
    這是本次 bug 的根本成因，不是誰忘了寫。
 2. **T 的參照日一律用「該筆觀測自己的日期」，永遠不用 `date.today()`。**
    而且**不能假設「快照就是昨天」**——本次兩支 probe 拿到的快照日分別是
-   Aug 14 與 Aug 17，vendor 的延遲程度會變。
+   Aug 14 與 Aug 17，vendor 的延遲程度會隨呼叫時間變動（§3.2 已用官方
+   文件的 9:30:01 ET 轉換規則解釋為什麼）。**也不能拿 HTTP 狀態碼當
+   新鮮度代理**——203 只代表「從快取層回的」，與新鮮度無關（§3.1）。
 3. **同一個原則適用於 r 與 q**：既然 T 要用快照日，r 曲線與 q 也該對齊
    同一天（§10 已經這樣寫，本次只是再次證實它為什麼重要——尤其在 LEAPS
    上 r／q 的影響力反而更大）。
@@ -471,3 +589,14 @@ benchmark，但只有 15 筆、單一到期日、且 TLT 那組還有未歸因�
    一併更正**（該文把偏差歸因為 vega 塌縮噪音，已被本文推翻）。
 4. **TLT 型高配息標的的 LEAPS q 口徑**是否要另開研究——目前只有
    MEDIUM 信心的推論，未做直接 ablation。
+5. **`option_chaser/data/marketdata.py:425-427` 的既有註解寫錯了**
+   （宣稱 vendor 用 HTTP 203 表示延遲報價；官方文件明文說 203 表示
+   「從快取層回應」，且把這個誤解點名為 "a common (incorrect)
+   assumption"，見 §3.1）。本輪禁止改 production code，僅記錄；
+   是否併入上述取數票一起更正，請裁示。
+6. **是否要處理「靜默降級」風險**：官方文件載明即使付費方案，
+   若帳號 professional status 為 "Unknown"，API 會**不報錯地**降級成
+   1 天以上的 Historical 資料（§3.2）。這意味著 production 若只看
+   HTTP 狀態與 `s=="ok"`，**無法察覺自己拿到的是舊資料**——正確做法
+   仍是讀 `updated` 並據以計算，本文的修法天然涵蓋這個風險，但值得
+   在 diagnostics 上另外顯性化。
