@@ -27,7 +27,7 @@ block 裡，不能切成好幾個 code block、也不能中間插普通文字把
 `［回報#001］spec #137 拆票完成`）。編號是**累計總數**，不因換
 session、換分支、換主題而歸零——目前最新編號記在這裡：
 
-> 目前次序：009（下一份回報用 010）
+> 目前次序：010（下一份回報用 011）
 
 每發一份回報就把上面這個數字改成剛剛用掉的那個，跟著那次改動一起
 commit（沒有其他改動要 commit 時，單獨為這一行開一個小 commit 也
@@ -380,9 +380,32 @@ point-in-time 化（`ratecurve.py`／`dividends.py` 各自的小擴充）＋
 exact-contract 路徑跑完後無條件繼續跑整段舊 (tenor,delta) 重錨定
 流程，`_backfill_iv` 逐日缺口補齊＋`reanchor` 對整段歷史逐次重放
 是噪音根因。純研究，未 `/to-spec`、未 `/to-tickets`、未動
-production code。**下一步**：等需求方審閱這份研究文件，決定是否
-核准 §8 的 calibration experiment 實際執行、§12 列出的五個裁決點，
-再回頭決定要不要把 v1 recipe 拆成正式 spec/tickets。
+production code。
+
+**Calibration prototype 已執行（2026-08-18，`/prototype`，commits
+`2c48b67`～`22ad0fc`）**：`scripts/prototype_historical_iv_calibration.py`
+（丟棄式，直接 import production 的 `implied_vol()`／`fetch_chain()`／
+`load_rate_curve()`／`load_dividend_history()`，不複製定價公式），透過
+一次性 CI probe（真實 `MARKETDATA_APP_TOKEN`，跑完即刪）拿到 TLT／ORCL
+真實資料（N=328，vendor iv 非 null 的今日快照）驗證 §10 recipe。結果見
+`docs/research/historical-iv-reconstruction-calibration-results.md`：
+**ranking stability 極強**（Pearson 0.9991、Spearman 0.9970、percentile
+rank diff median 0.005）；絕對誤差大且系統性偏高（MAE 38 vol points），
+最可能成因是樣本恰好清一色落在 3 天到期（vendor `fetch_chain()` 不帶
+`expiration=` 參數時只回最近月選，這是既有 `fetch_surface()` docstring
+已經記錄過的 vendor 行為，#134）——3-DTE 是 vega 塌縮、IV 反解天生最
+不穩定的極端情境，不是 Historical IV Trend 實際運作的 LEAPS 尺度。補抓
+medium／LEAPS 到期日兩次都遇到 Market Data App HTTP 403（前兩次近月選
+主樣本用同一把 token 皆成功，數分鐘內連續補抓才開始 403，讀起來像
+rate limit），依規則未再重試，**LEAPS／medium DTE 至今沒有真實資料
+驗證過**，是本輪最大的未解缺口。**Verdict：PASS_WITH_GUARDRAILS**
+（ranking 這個票上明訂的優先判準通過，但絕對誤差成因未完全鎖定＋
+沒驗證到 LEAPS 天期，需求方核准前建議先在 rate limit 解除後補一輪
+LEAPS 樣本）。
+
+**下一步**：等需求方審閱研究文件＋本輪 calibration 結果，決定是否
+先補 LEAPS 樣本、§12 列出的五個裁決點如何裁示，再回頭決定要不要把
+v1 recipe 拆成正式 spec/tickets。
 
 ### Spec #143（2026-08-15 發佈）——Application Diagnostics / Error Log 系統
 
