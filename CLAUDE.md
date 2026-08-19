@@ -520,7 +520,22 @@ recipe 已經錯過一次，存算好的 IV 會讓任何修正都要重花 vendo
   exact-contract 事件。新增直接證明「洪水不擠掉對方」的測試＋端到端
   版本（真跑滿 25 天 backfill）。redaction／correlation-ID 未動，
   Settings 診斷頁泛型渲染 `event.subsystem`，前端零變更
-- **#163** HIVR-04 historical quote record：parser＋storage＋舊格式重抓（被 #162 擋）
+- **HIVR-04**（#163）historical quote record ✅ commit `2e7695d`：
+  `marketdata.py` 的 `_parse_contract_history`／`fetch_contract_history`
+  改回傳寬版 quote dict（`date`／`updated`／`dte`／`bid`／`ask`／
+  `mid`／`underlying_price`／`vendor_iv`，取代舊版 `(date, iv)` 二元組），
+  `date` 推導方式不變（仍是這一列自己的 `updated`）；既有 `_num()`
+  缺值口徑（None／非數字／0.0 一律缺值）延伸到新欄位。`api_app/
+  storage` 的 `ContractHistory.points` 型別隨之變寬（`tuple[dict,
+  ...]`），postgres.py 讀寫直接原樣傳遞 JSONB object、不重組成
+  2-tuple；storage 本身不解讀形狀。`main.py::_ensure_contract_history`
+  改用 `q["date"]` 合併快取與新抓資料，並在讀出快取後偵測「舊格式列
+  （元素是 list 不是 dict）」——偵測到就當 cache miss 整批重抓（一次性
+  代價：每張合約 1 credit），不會被「今天已嘗試過」短路掉、也不會被
+  誤讀成新格式。新增 `_project_vendor_iv()` 轉接器讓
+  `_leg_historical_iv_payload`／`ivtrend` 繼續吃舊版 `(date, iv)`
+  形狀——本票沒有任何東西消費新欄位（reconstruction 要等 #164／#165），
+  Historical IV Trend 卡片畫面行為維持不變
 - **#164** HIVR-05 reconstruction 純模組（被 #163 擋）
 - **#165** HIVR-06 接線：**空卡片變成有圖**（被 #160／#161／#164 擋）
 - **#166** HIVR-07 reconstruction 帳本＋staleness＋203 註解更正（被 #162／#165 擋）
