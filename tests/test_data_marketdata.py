@@ -444,12 +444,44 @@ def _fake_contract_request(payload, *, status=200, headers=None):
     return request
 
 
-def test_columnar_history_payload_becomes_date_iv_pairs():
+def test_columnar_history_payload_becomes_quote_dicts():
     got = marketdata.fetch_contract_history(
         "TLT281215C00094000", "2025-08-17", "2026-08-17", "tok",
         http_request=_fake_contract_request(_contract_history_payload()))
-    assert got == [("2026-06-29", None), ("2026-06-30", None),
-                   ("2026-07-01", 0.185)]
+    assert [(q["date"], q["vendor_iv"]) for q in got] == [
+        ("2026-06-29", None), ("2026-06-30", None), ("2026-07-01", 0.185)]
+
+
+def test_quote_dicts_retain_the_wider_reconstruction_fields():
+    """HIVR-04（#163）AC：不再只留下 `(date, iv)`——`updated`（原始
+    timestamp）／`dte`／`bid`／`ask`／`mid`／`underlying_price`／
+    `vendor_iv` 全部要保留下來，reconstruction（#164）才有東西可用。"""
+    got = marketdata.fetch_contract_history(
+        "TLT281215C00094000", "2025-08-17", "2026-08-17", "tok",
+        http_request=_fake_contract_request(_contract_history_payload()))
+    last = got[-1]   # 2026-07-01，payload 第三筆（updated=1782936000）
+    assert last["date"] == "2026-07-01"
+    assert last["updated"] == 1782936000
+    assert last["dte"] == 800
+    assert last["bid"] == 2.56
+    assert last["ask"] == 3.7
+    assert last["mid"] == 3.13
+    assert last["underlying_price"] == 84.7
+    assert last["vendor_iv"] == 0.185
+    assert set(last.keys()) == {"date", "updated", "dte", "bid", "ask",
+                                "mid", "underlying_price", "vendor_iv"}
+
+
+def test_observation_date_derivation_is_unchanged_still_each_rows_own_updated():
+    """HIVR-04 明文要求不得改變這段既有邏輯——`date` 仍然是這一列自己的
+    `updated`，不是 `date.today()`／request 的日期。"""
+    payload = _contract_history_payload(dates=[1782763200], ivs=[0.2])
+    got = marketdata.fetch_contract_history(
+        "TLT281215C00094000", "2025-08-17", "2026-08-17", "tok",
+        http_request=_fake_contract_request(payload))
+    assert len(got) == 1
+    assert got[0]["date"] == "2026-06-29"   # 直接由 updated=1782763200 換算
+    assert got[0]["updated"] == 1782763200
 
 
 def test_http_203_is_a_success_not_a_failure():
@@ -468,7 +500,7 @@ def test_null_iv_is_preserved_as_missing_not_dropped_not_defaulted():
         http_request=_fake_contract_request(
             _contract_history_payload(ivs=[None, None, None])))
     assert len(got) == 3
-    assert all(iv is None for _, iv in got)
+    assert all(q["vendor_iv"] is None for q in got)
 
 
 def test_zero_iv_is_also_treated_as_missing():
@@ -478,7 +510,28 @@ def test_zero_iv_is_also_treated_as_missing():
         "TLT281215C00094000", "2025-08-17", "2026-08-17", "tok",
         http_request=_fake_contract_request(
             _contract_history_payload(ivs=[0.0, 0.1, 0.2])))
-    assert got[0][1] is None
+    assert got[0]["vendor_iv"] is None
+
+
+def test_zero_bid_ask_mid_underlying_price_are_also_treated_as_missing():
+    """同一個 `_num()` 缺值口徑（0.0 一律缺值）套用到寬版新欄位——
+    這幾個欄位是 reconstruction（#164）的直接輸入，缺值語意錯了會讓
+    反解拿到假的 0 當真報價。"""
+    payload = _contract_history_payload(dates=[1782763200], ivs=[0.2])
+    payload["bid"] = [0.0]
+    payload["ask"] = [0.0]
+    payload["mid"] = [0.0]
+    payload["underlyingPrice"] = [0.0]
+    payload["dte"] = [0]
+    got = marketdata.fetch_contract_history(
+        "TLT281215C00094000", "2025-08-17", "2026-08-17", "tok",
+        http_request=_fake_contract_request(payload))
+    q = got[0]
+    assert q["bid"] is None
+    assert q["ask"] is None
+    assert q["mid"] is None
+    assert q["underlying_price"] is None
+    assert q["dte"] is None
 
 
 def test_points_are_sorted_by_date_ascending_regardless_of_payload_order():
@@ -487,7 +540,7 @@ def test_points_are_sorted_by_date_ascending_regardless_of_payload_order():
         http_request=_fake_contract_request(_contract_history_payload(
             dates=[1782936000, 1782763200, 1782849600],
             ivs=[0.3, 0.1, 0.2])))
-    assert [d for d, _ in got] == ["2026-06-29", "2026-06-30", "2026-07-01"]
+    assert [q["date"] for q in got] == ["2026-06-29", "2026-06-30", "2026-07-01"]
 
 
 def test_row_missing_updated_date_is_dropped_others_still_parsed():

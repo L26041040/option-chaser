@@ -606,7 +606,12 @@ class PostgresStorage:
                 (contract_symbol,)).fetchone()
         if row is None:
             return None
-        points = tuple((p[0], p[1]) for p in row[1])
+        # HIVR-04（#163）：`points` 現在是逐日 quote dict 的 JSONB 陣列
+        # （不是舊版 `[date, iv]` 二元組陣列）——psycopg 把 JSON object
+        # 讀回 Python dict，這裡原樣傳遞，不重新拆解成固定欄位。舊格式
+        # 列（元素是 list 而非 dict）的辨識與「當 cache miss 重抓」由
+        # 呼叫端（`api_app/main.py`）負責，storage 層不解讀形狀。
+        points = tuple(row[1])
         return ContractHistory(contract_symbol=row[0], points=points,
                                fetched_through=row[2], last_attempt_on=row[3],
                                last_status=row[4], last_note=row[5])
@@ -623,7 +628,7 @@ class PostgresStorage:
                 "last_attempt_on = EXCLUDED.last_attempt_on, "
                 "last_status = EXCLUDED.last_status, "
                 "last_note = EXCLUDED.last_note",
-                (history.contract_symbol, Jsonb([list(p) for p in history.points]),
+                (history.contract_symbol, Jsonb(list(history.points)),
                  history.fetched_through, history.last_attempt_on,
                  history.last_status, history.last_note))
 

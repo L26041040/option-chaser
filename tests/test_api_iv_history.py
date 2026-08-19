@@ -1437,6 +1437,18 @@ def test_the_full_ledger_covers_every_stage_and_shares_one_correlation_id(db):
 # `legs` 這個新增欄位，既有 `points`／`metrics`／`status` 家族的行為
 # 由上面既有測試覆蓋、本節不重複。
 
+def _quote_stub(date, vendor_iv):
+    """HIVR-04（#163）之後 `_ensure_contract_history` 期待寬版 quote
+    dict（`date`／`updated`／`dte`／`bid`／`ask`／`mid`／
+    `underlying_price`／`vendor_iv`）——這份檔案大量既有測試用精簡的
+    `(date, iv)` 二元組灌 `points_by_symbol`，這裡統一轉換成完整形狀
+    （其餘欄位留 `None`，這些測試本來就不關心它們），不必動每一處既有
+    的 seed 資料。"""
+    return {"date": date, "updated": None, "dte": None, "bid": None,
+           "ask": None, "mid": None, "underlying_price": None,
+           "vendor_iv": vendor_iv}
+
+
 class ContractHistoryRecorder:
     """記錄每一次呼叫的 (occ_symbol, from_date, to_date)——跟舊 `Recorder`
     對 `_backfill_iv` 的角色對應，只是這裡一次呼叫代表一段區間，不是
@@ -1456,7 +1468,8 @@ class ContractHistoryRecorder:
                       "null_iv_count": 0, "dropped_missing_date": 0})
         if self._fail is not None:
             raise self._fail
-        return self._points_by_symbol.get(occ_symbol, [])
+        return [_quote_stub(d, iv)
+               for d, iv in self._points_by_symbol.get(occ_symbol, [])]
 
 
 def _leg_symbols(client, sid, key):
@@ -1595,6 +1608,39 @@ def test_missing_calendar_days_are_not_interpolated(db):
     body = _get(client, sid, key).json()
     dates = [p["date"] for p in body["legs"]["buy"]["points"]]
     assert dates == ["2026-08-03", "2026-08-07"]
+
+
+def test_an_old_shape_cached_row_is_re_fetched_not_misread(db):
+    """HIVR-04（#163）AC：HIVT-02 時代寫入的舊格式列是 `(date, iv)`
+    二元組——結構上缺 reconstruction 必要欄位，繼續當新格式讀會直接
+    讀錯欄位。就算舊格式列的 `last_attempt_on` 是今天（模擬「舊代碼
+    今天才剛寫過」），這次請求仍然要真的再打一次 vendor，不能被
+    「今天已嘗試過」短路掉，也不能把舊格式資料原樣回顯給使用者。"""
+    seed = ContractHistoryRecorder()
+    client = _client(db, surface=_rich_surface, contract_history=seed)
+    _unlock(client)
+    sid = _scenario(client)
+    key = _candidate_key(client, sid)
+    buy_symbol, _sell = _leg_symbols(client, sid, key)
+
+    today_iso = ny_today().isoformat()
+    db.save_contract_history(ContractHistory(
+        contract_symbol=buy_symbol,
+        points=(("2026-01-01", 0.19), ("2026-01-02", 0.21)),   # 舊格式
+        fetched_through="2026-01-02", last_attempt_on=today_iso,
+        last_status="ok", last_note=None))
+
+    fresh = ContractHistoryRecorder()
+    fresh._points_by_symbol[buy_symbol] = [("2026-08-10", 0.25)]
+    client2 = _client(db, surface=_rich_surface, contract_history=fresh)
+    _unlock(client2)
+    body = _get(client2, sid, key).json()
+
+    assert fresh.calls, "舊格式列沒有真的觸發重抓——被誤判成今天已嘗試過"
+    assert body["legs"]["buy"]["points"] == [{"date": "2026-08-10", "iv": 0.25}]
+
+    got = db.get_contract_history(buy_symbol)
+    assert all(isinstance(q, dict) for q in got.points)
 
 
 def test_a_vendor_error_on_the_exact_contract_path_still_returns_cached_points(db):

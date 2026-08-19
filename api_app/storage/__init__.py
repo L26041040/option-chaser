@@ -236,9 +236,16 @@ class ContractHistory:
     觀測只花 1 credit），這裡整個合約的觀測史因此存成**一筆**，不是
     逐日一筆。
 
-    `points` 是 `(date, iv)` 對，依日期遞增排序；`iv` 為 `None` 就是
-    vendor 那天真的沒給可信報價（missing observation），不補、不插值、
-    不換合約（spec #151 §2／§3 紅線）。
+    `points` 是逐日 quote dict 的 tuple，依日期遞增排序（HIVR-04／#163
+    起的寬版形狀：`date`／`updated`／`dte`／`bid`／`ask`／`mid`／
+    `underlying_price`／`vendor_iv` 八個 key——比 HIVT-02／#153 當初的
+    `(date, iv)` 二元組寬，保留 reconstruction（#164）需要的原始欄位，
+    `vendor_iv` 為 `None` 就是 vendor 那天真的沒給可信報價（missing
+    observation），不補、不插值、不換合約（spec #151 §2／§3 紅線）。
+    **這個型別本身不驗證形狀**——storage 是啞的 port，`points` 裡混進
+    HIVR-04 之前的舊版 `(date, iv)` 二元組在型別系統上不會被擋下；舊
+    格式的辨識與「當 cache miss 重抓」由呼叫端（`api_app/main.py`）
+    負責，見那裡的 docstring。
 
     `fetched_through`：上一次成功呼叫時用的 `to=` 日期——下一次刷新只
     抓這個日期之後到今天的缺口，不是每次整年重抓。從未成功過時是
@@ -254,7 +261,7 @@ class ContractHistory:
     不因今天補不下去就被藏起來（沿用既有 #133 原則）。
     """
     contract_symbol: str
-    points: tuple[tuple[str, float | None], ...]
+    points: tuple[dict, ...]
     fetched_through: str | None
     last_attempt_on: str | None
     last_status: str

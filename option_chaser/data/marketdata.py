@@ -450,16 +450,30 @@ def _empty_history_counts() -> dict:
            "dropped_missing_date": 0}
 
 
-def _parse_contract_history(payload: dict) -> tuple[list[tuple[str, float | None]],
-                                                     dict]:
-    """單合約欄狀回應 → ([(date, iv), ...], telemetry)。不拋例外——比照
+def _parse_contract_history(payload: dict) -> tuple[list[dict], dict]:
+    """單合約欄狀回應 → ([quote, ...], telemetry)。不拋例外——比照
     `_parse_surface`，vendor 狀態要不要變成 `FetchError` 交給呼叫端決定。
 
-    `iv` 走既有 `_num()`（`None`／非數字／0.0 一律缺值，與這個檔案其他
-    地方的 IV 缺值口徑一致）。**`iv` 為 `None` 的那一筆仍然進 `points`**
-    ——那天有觀測、只是沒有可信 IV，這跟「那天根本沒有這一筆」（vendor
-    沒回、或缺 `updated` 因此連日期都定不出來）是不同的兩件事，只有
-    後者才會被跳過（見 `dropped_missing_date`）。
+    每筆 quote 是一個 dict（HIVR-04／#163：比舊版 `(date, iv)` 更寬，
+    保留 reconstruction（#164）需要的原始欄位，不再只留下剛好是 vendor
+    給 null 的那一個）：
+
+    - `date`：觀測日。**推導方式不變**——仍取自這一列自己的 `updated`
+      （不是 `date.today()`／request date）；這段既有邏輯本來就是對的
+      （見 `_observation_date`），本票不改
+    - `updated`：原始 Unix 秒（整數），供未來稽核／staleness 判讀
+      （HIVR-07／#166）用，不經過 `_num()`——時間戳不是「可能合理為零」
+      的量，直接原樣保留或解析失敗回 `None`
+    - `dte`／`bid`／`ask`／`mid`／`underlying_price`：走既有 `_num()`
+      （`None`／非數字／0.0 一律缺值，與這個檔案其他地方的缺值口徑
+      一致）
+    - `vendor_iv`：走既有 `_num()`；**只作 benchmark／診斷參考，
+      canonical series 不得直接採用它**（#164 起的 reconstruction 自己
+      反解；#168 用結構性測試鎖死這條規則，本票只負責把這個欄位留住
+      不丟）。**`vendor_iv` 為 `None` 的那一筆仍然進 `points`**——那天
+      有觀測、只是沒有可信 IV，這跟「那天根本沒有這一筆」（vendor
+      沒回、或缺 `updated` 因此連日期都定不出來）是不同的兩件事，只有
+      後者才會被跳過（見 `dropped_missing_date`）
     """
     status = payload.get("s")
     if status != "ok":
@@ -469,7 +483,7 @@ def _parse_contract_history(payload: dict) -> tuple[list[tuple[str, float | None
                     **_empty_history_counts()}
 
     rows = _rows(payload)
-    points: list[tuple[str, float | None]] = []
+    points: list[dict] = []
     null_iv_count = 0
     dropped_missing_date = 0
     for row in rows:
@@ -480,7 +494,17 @@ def _parse_contract_history(payload: dict) -> tuple[list[tuple[str, float | None
         iv = _num(row.get("iv"))
         if iv is None:
             null_iv_count += 1
-        points.append((d, iv))
+        try:
+            updated = int(row.get("updated"))
+        except (TypeError, ValueError):
+            updated = None
+        points.append({
+            "date": d, "updated": updated, "dte": _num(row.get("dte")),
+            "bid": _num(row.get("bid")), "ask": _num(row.get("ask")),
+            "mid": _num(row.get("mid")),
+            "underlying_price": _num(row.get("underlyingPrice")),
+            "vendor_iv": iv,
+        })
 
     return points, {"vendor_status": status, "vendor_errmsg": None,
                     "raw_rows": len(rows), "parsed_rows": len(points),
@@ -494,9 +518,11 @@ ContractHistoryObserver = Callable[[dict], None]
 def fetch_contract_history(occ_symbol: str, from_date: str, to_date: str,
                            token: str, http_request=_http_request,
                            observer: ContractHistoryObserver | None = None,
-                           ) -> list[tuple[str, float | None]]:
+                           ) -> list[dict]:
     """一張 **exact contract**（`occ_symbol`）在 `[from_date, to_date]`
-    區間的歷史 `(date, iv)` 序列，依日期遞增排序。
+    區間的歷史 quote 序列，依日期遞增排序。每筆是一個 dict——形狀見
+    `_parse_contract_history`（HIVR-04／#163：`date`／`updated`／
+    `dte`／`bid`／`ask`／`mid`／`underlying_price`／`vendor_iv`）。
 
     一次呼叫回整段區間（已由 #152 真實驗證確認，真實 TLT LEAPS 案例
     34 筆觀測只花 1 credit）——呼叫端因此不需要像 `fetch_surface` 那樣
@@ -546,4 +572,4 @@ def fetch_contract_history(occ_symbol: str, from_date: str, to_date: str,
     if telemetry["vendor_status"] != "ok":
         raise FetchError(
             f"Market Data App 回報 s={telemetry['vendor_status']!r}（{occ_symbol}）")
-    return sorted(points)
+    return sorted(points, key=lambda q: q["date"])

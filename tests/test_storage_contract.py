@@ -779,13 +779,26 @@ def test_backfill_runs_are_per_symbol(storage):
     assert storage.get_iv_backfill_run("SPY") is None
 
 
-# ---------- Exact-contract 歷史 IV 快取（HIVT-02／#153） ----------
+# ---------- Exact-contract 歷史 IV 快取（HIVT-02／#153，寬版欄位
+# HIVR-04／#163） ----------
+
+def _quote(date, vendor_iv, *, updated=1782763200, dte=800.0, bid=1.5,
+          ask=6.5, mid=4.0, underlying_price=84.5):
+    """一筆寬版 quote dict（HIVR-04／#163 起的 `ContractHistory.points`
+    形狀）——欄位齊全才能同時驗證「儲存層原樣往返」與「舊格式列可辨識」
+    兩件事。"""
+    return {"date": date, "updated": updated, "dte": dte, "bid": bid,
+           "ask": ask, "mid": mid, "underlying_price": underlying_price,
+           "vendor_iv": vendor_iv}
+
 
 def _contract_history(symbol="TLT281215C00094000",
-                      points=(("2026-06-29", None), ("2026-07-01", 0.185)),
+                      points=None,
                       fetched_through="2026-08-17",
                       last_attempt_on="2026-08-17", last_status="ok",
                       last_note=None):
+    if points is None:
+        points = (_quote("2026-06-29", None), _quote("2026-07-01", 0.185))
     return ContractHistory(contract_symbol=symbol, points=tuple(points),
                            fetched_through=fetched_through,
                            last_attempt_on=last_attempt_on,
@@ -801,35 +814,55 @@ def test_saved_contract_history_reads_back_identically(storage):
     assert storage.get_contract_history("TLT281215C00094000") == _contract_history()
 
 
+def test_saved_quote_retains_every_reconstruction_field(storage):
+    """HIVR-04（#163）AC：storage 要能存回並讀出寬版欄位（不只
+    date／vendor_iv），reconstruction（#164）才有東西可用。"""
+    storage.save_contract_history(_contract_history(
+        points=(_quote("2026-07-01", 0.185, updated=1782936000, dte=799.0,
+                       bid=2.56, ask=3.7, mid=3.13, underlying_price=84.7),)))
+    got = storage.get_contract_history("TLT281215C00094000")
+    q = got.points[0]
+    assert q["date"] == "2026-07-01"
+    assert q["updated"] == 1782936000
+    assert q["dte"] == 799.0
+    assert q["bid"] == 2.56
+    assert q["ask"] == 3.7
+    assert q["mid"] == 3.13
+    assert q["underlying_price"] == 84.7
+    assert q["vendor_iv"] == 0.185
+
+
 def test_rewriting_the_same_contract_overwrites_rather_than_duplicates(storage):
     storage.save_contract_history(_contract_history(
-        points=(("2026-07-01", 0.1),)))
+        points=(_quote("2026-07-01", 0.1),)))
     storage.save_contract_history(_contract_history(
-        points=(("2026-07-01", 0.1), ("2026-07-02", 0.2)),
+        points=(_quote("2026-07-01", 0.1), _quote("2026-07-02", 0.2)),
         fetched_through="2026-08-18", last_attempt_on="2026-08-18"))
     got = storage.get_contract_history("TLT281215C00094000")
-    assert got.points == (("2026-07-01", 0.1), ("2026-07-02", 0.2))
+    assert got.points == (_quote("2026-07-01", 0.1), _quote("2026-07-02", 0.2))
     assert got.fetched_through == "2026-08-18"
 
 
 def test_null_iv_points_round_trip_as_none(storage):
     storage.save_contract_history(_contract_history(
-        points=(("2026-06-29", None), ("2026-07-01", 0.185))))
+        points=(_quote("2026-06-29", None), _quote("2026-07-01", 0.185))))
     got = storage.get_contract_history("TLT281215C00094000")
-    assert got.points[0] == ("2026-06-29", None)
-    assert got.points[1] == ("2026-07-01", 0.185)
+    assert got.points[0]["date"] == "2026-06-29"
+    assert got.points[0]["vendor_iv"] is None
+    assert got.points[1]["date"] == "2026-07-01"
+    assert got.points[1]["vendor_iv"] == 0.185
 
 
 def test_contracts_do_not_bleed_into_each_other(storage):
     """不同 strike／expiry／call-put 是不同的 OCC symbol，天然是不同的
     快取項目——這正是 exact contract identity 的紅線本身。"""
     storage.save_contract_history(_contract_history(symbol="TLT281215C00094000"))
-    storage.save_contract_history(_contract_history(symbol="TLT281215C00100000",
-                                                    points=(("2026-07-01", 0.3),)))
+    storage.save_contract_history(_contract_history(
+        symbol="TLT281215C00100000", points=(_quote("2026-07-01", 0.3),)))
     a = storage.get_contract_history("TLT281215C00094000")
     b = storage.get_contract_history("TLT281215C00100000")
     assert a.points != b.points
-    assert b.points == (("2026-07-01", 0.3),)
+    assert b.points == (_quote("2026-07-01", 0.3),)
 
 
 def test_never_successfully_fetched_history_has_no_fetched_through(storage):
@@ -840,6 +873,21 @@ def test_never_successfully_fetched_history_has_no_fetched_through(storage):
     assert got.fetched_through is None
     assert got.points == ()
     assert got.last_status == "vendor"
+
+
+def test_an_old_shape_date_iv_tuple_row_is_structurally_distinguishable(storage):
+    """HIVR-04（#163）AC：HIVT-02 時代的舊格式列是 `(date, iv)` 二元組
+    （沒有欄位名），新格式是 dict——storage 本身是啞的 port、不解讀
+    形狀，只需要如實往返，讓呼叫端（`api_app/main.py`）能用
+    `isinstance(points[0], dict)` 分辨。這裡驗證的是「storage 忠實
+    保存了舊格式的原始樣貌，沒有把它悄悄轉型成看起來像新格式」。"""
+    storage.save_contract_history(ContractHistory(
+        contract_symbol="TLT281215C00094000",
+        points=(("2026-06-29", None), ("2026-07-01", 0.185)),
+        fetched_through="2026-08-17", last_attempt_on="2026-08-17",
+        last_status="ok", last_note=None))
+    got = storage.get_contract_history("TLT281215C00094000")
+    assert not isinstance(got.points[0], dict)
 
 
 # ---------- Application diagnostics（DG-02／#145） ----------

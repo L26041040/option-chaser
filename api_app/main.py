@@ -1163,13 +1163,15 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         return outcome, note
 
     def _ensure_contract_history(identity: dict, provider: str, token: str, *,
-                                 emit) -> tuple[list[tuple], str, str | None]:
+                                 emit) -> tuple[list[dict], str, str | None]:
         """一條腿的 exact contract 歷史：快取命中且今天已嘗試過就不打
         vendor，否則只補 `fetched_through` 之後到今天的缺口（HIVT-02／
         #153）。回傳 `(points, status, note)`——`status` 比照既有
         `_backfill_iv` 的 "ok"／"quota"／"vendor" 詞彙，只描述**這次
         嘗試**，已快取的 points 不因今天補不下去就被藏起來（#133 既有
-        原則，同一套邏輯搬到 exact-contract 家族）。
+        原則，同一套邏輯搬到 exact-contract 家族）。`points` 每筆是一個
+        quote dict（HIVR-04／#163：`date`／`updated`／`dte`／`bid`／
+        `ask`／`mid`／`underlying_price`／`vendor_iv`）。
 
         跟 `_backfill_iv` 的關鍵差異：那邊一次呼叫只回**一天**的整條鏈，
         這裡一次呼叫回**整段區間**（已由 #152 真實驗證），因此不需要
@@ -1181,6 +1183,15 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         occ_symbol = identity["contract_symbol"]
         cached = db.get_contract_history(occ_symbol)
         today_iso = today.isoformat()
+
+        # HIVR-04（#163）：HIVT-02 時代寫入的舊格式列是 `[date, iv]`
+        # 二元組（`list`），不是新版 quote `dict`——結構上缺 reconstruction
+        # 必要欄位，繼續當新格式讀會直接讀錯欄位。純快取、可再生，視為
+        # cache miss 整批重抓（一次性代價：每張合約 1 credit），而不是
+        # 事後遷移一份讀不出原始報價的殘缺資料。
+        if cached is not None and cached.points and not isinstance(
+                cached.points[0], dict):
+            cached = None
 
         if cached is not None and cached.last_attempt_on == today_iso:
             emit(stage="cache", severity="info",
@@ -1217,9 +1228,9 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         except FetchError as e:
             status, note = "vendor", str(e)
         else:
-            merged = dict(existing_points)
-            merged.update(new_points)
-            merged_points = sorted(merged.items())
+            merged = {q["date"]: q for q in existing_points}
+            merged.update({q["date"]: q for q in new_points})
+            merged_points = [merged[d] for d in sorted(merged)]
             db.save_contract_history(ContractHistory(
                 contract_symbol=occ_symbol, points=tuple(merged_points),
                 fetched_through=to_date, last_attempt_on=today_iso,
@@ -1228,7 +1239,8 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
                 message="寫入合約歷史觀測", contract_symbol=occ_symbol,
                 **_identity_context(identity),
                 observations_returned=len(new_points),
-                null_iv_count=sum(1 for _, iv in new_points if iv is None))
+                null_iv_count=sum(1 for q in new_points
+                                  if q["vendor_iv"] is None))
             return merged_points, "ok", None
 
         # 失敗路徑：既有觀測原樣保留，只更新「今天嘗試過」的狀態，不
@@ -1276,6 +1288,16 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
                         else f"{field_name} 回報 unavailable",
                 **_identity_context(identity), field=field_name,
                 count=observation_count, **windowed)
+
+    def _project_vendor_iv(points: list[dict]) -> list[tuple[str, float | None]]:
+        """HIVR-04（#163）之後 `_ensure_contract_history` 回傳的是寬版
+        quote dict——這張票本身「還沒有任何東西消費新欄位」（reconstruction
+        要等 #164／#165 才接上），所以先投影回舊版 `(date, vendor_iv)`
+        形狀餵給既有 `_leg_historical_iv_payload`／`ivtrend` 統計量，
+        維持目前的畫面行為（多半是空的，因為 vendor `iv` 大多是 null）
+        不變，不在這張票裡動 reconstruction。
+        """
+        return [(q["date"], q["vendor_iv"]) for q in points]
 
     def _leg_historical_iv_payload(identity: dict, points: list[tuple],
                                    status: str, note: str | None, *,
@@ -1414,8 +1436,8 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
             leg_points, leg_status, leg_note = _ensure_contract_history(
                 identity, provider, token, emit=_emit_exact)
             legs_payload[name] = _leg_historical_iv_payload(
-                identity, leg_points, leg_status, leg_note, today=ny_today(),
-                emit=_emit_exact)
+                identity, _project_vendor_iv(leg_points), leg_status,
+                leg_note, today=ny_today(), emit=_emit_exact)
 
         # `expiry_counts` 掛在每個策略結果（`results[i]`）底下，不是
         # view 頂層——這裡只要「有哪些到期日」，跨策略去重即可。
