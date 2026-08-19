@@ -509,7 +509,17 @@ recipe 已經錯過一次，存算好的 IV 會讓任何修正都要重花 vendo
   呼叫端傳入「那天」的 spot、離群值抑制沿用既有 `_dampen_outliers`
   不重寫。既有 `compute_q()`（即時分析路徑）原封不動。純前置件，
   尚無呼叫端
-- **#162** HIVR-03 diagnostics subsystem 拆分 ← 無擋（prefactor）
+- **HIVR-03**（#162）diagnostics subsystem 拆分 ✅ commit `c43e062`：
+  `diagnostics.py` 新增 `SUBSYSTEM_EXACT_CONTRACT`（"historical_iv"，
+  沿用既有名字）／`SUBSYSTEM_LEGACY_REANCHOR`（"normalized_skew"，
+  新增，借用 legacy 路徑自己輸出欄位的既有詞彙）；`main.py` 的
+  `iv-history` 端點改用兩個獨立 `emit` closure，`_select_for_
+  persistence` 改成先依 `event.subsystem` 分組、每個 subsystem 各自
+  套用既有三層優先序（抽成 `_select_family_for_persistence`）、各自
+  享有一份完整的 cap（40，未調高）——大量 legacy 事件不再擠掉
+  exact-contract 事件。新增直接證明「洪水不擠掉對方」的測試＋端到端
+  版本（真跑滿 25 天 backfill）。redaction／correlation-ID 未動，
+  Settings 診斷頁泛型渲染 `event.subsystem`，前端零變更
 - **#163** HIVR-04 historical quote record：parser＋storage＋舊格式重抓（被 #162 擋）
 - **#164** HIVR-05 reconstruction 純模組（被 #163 擋）
 - **#165** HIVR-06 接線：**空卡片變成有圖**（被 #160／#161／#164 擋）
