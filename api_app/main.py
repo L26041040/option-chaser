@@ -1456,6 +1456,11 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         觀測（spec §2／§3 紅線），不進這個計數；`current_percentile`／
         `delta_4w` 的「current」都是這個非 null 集合裡最新一筆，兩者用
         同一個 `latest_iv`，不各自各推一次可能漂移的「最新值」。
+
+        HIVR-08（#167）：每個點額外帶 `low_confidence`（`ivreconstruct.
+        is_low_confidence()`，純粹的天數比較）——單純的資訊品質標記，
+        點本身依然在 `points` 裡、依然被 `trimmed` 餵給上面這整組統計量，
+        不從這裡的計算路徑拿掉任何一筆。
         """
         trimmed = ivtrend.trim_to_window(points, today=today)
         valid = sorted((d, iv) for d, iv in trimmed if iv is not None)
@@ -1475,7 +1480,12 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
 
         return {
             "contract": identity,
-            "points": [{"date": d, "iv": iv} for d, iv in trimmed],
+            "points": [
+                {"date": d, "iv": iv,
+                 "low_confidence": ivreconstruct.is_low_confidence(
+                     d, identity["expiration"])}
+                for d, iv in trimmed
+            ],
             "moving_average": [{"date": d, "value": v} for d, v in ma],
             "bollinger_upper": [{"date": d, "value": v}
                                 for d, v in bands["upper"]],

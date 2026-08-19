@@ -15,6 +15,7 @@ from api_app.storage import ContractHistory, IvBackfillRun, IvObservation
 from api_app.storage.memory import MemoryStorage
 from option_chaser import dividends as dividends_module
 from option_chaser import ivhistory, ivtrend
+from option_chaser.ivreconstruct import is_low_confidence
 from option_chaser import ratecurve as ratecurve_module
 from option_chaser.data.snapshot import load_snapshot
 from option_chaser.dividends import DividendHistory, DividendRecord
@@ -1739,7 +1740,8 @@ def test_an_old_shape_cached_row_is_re_fetched_not_misread(db):
 
     assert fresh.calls, "舊格式列沒有真的觸發重抓——被誤判成今天已嘗試過"
     points = body["legs"]["buy"]["points"]
-    assert points == [{"date": fresh_date, "iv": pytest.approx(0.25, abs=1e-6)}]
+    assert points == [{"date": fresh_date, "iv": pytest.approx(0.25, abs=1e-6),
+                       "low_confidence": is_low_confidence(fresh_date, buy["expiry"])}]
 
     got = db.get_contract_history(buy_symbol)
     assert all(isinstance(q, dict) for q in got.points)
@@ -1761,7 +1763,9 @@ def test_a_vendor_error_on_the_exact_contract_path_still_returns_cached_points(d
         expiration=buy["expiry"], sigma=0.20)]
     first = _get(client, sid, key).json()
     expected_points = [{"date": "2026-08-01",
-                        "iv": pytest.approx(0.20, abs=1e-6)}]
+                        "iv": pytest.approx(0.20, abs=1e-6),
+                        "low_confidence": is_low_confidence(
+                            "2026-08-01", buy["expiry"])}]
     assert first["legs"]["buy"]["points"] == expected_points
 
     # 清掉「今天已嘗試過」，讓下一次真的再打一次 vendor、這次失敗。
@@ -2299,3 +2303,69 @@ def test_reconstruction_ledger_survives_a_heavy_legacy_event_flood(db):
     ledger = _reconstruction_events_for_symbol(body, buy["contract_symbol"])
     assert len(ledger) == 1
     assert ledger[0]["context"]["usable"] == 1
+
+
+# ---------- 近到期 low-confidence 標記（HIVR-08／#167） ----------
+
+def test_a_near_expiry_point_is_flagged_low_confidence_a_distant_one_is_not(db):
+    """AC：低於門檻的點帶標記、達到或高於門檻的不帶。用 spot＝strike（ATM）
+    確保近到期報價仍有足夠時間價值可解，不落入既有 `_before_expiry`
+    docstring 提到的「時間價值趨近 0，反解結構上無解」那個陷阱——這裡要
+    驗證的是標記本身，不是反解病態，兩者不該互相干擾。"""
+    rec = ContractHistoryRecorder()
+    client = _client(db, surface=_rich_surface, contract_history=rec)
+    _unlock(client)
+    sid = _scenario(client)
+    key = _candidate_key(client, sid)
+    buy = _leg_identities(client, sid, key)[0]
+    near_date = _before_expiry(buy["expiry"], 10)   # < 14 天門檻
+    far_date = _before_expiry(buy["expiry"], 50)    # 遠高於門檻
+    rec._points_by_symbol[buy["contract_symbol"]] = [
+        _synthetic_quote(near_date, option_type=buy["option_type"],
+                         strike=buy["strike"], expiration=buy["expiry"],
+                         spot=buy["strike"], sigma=0.20),
+        _synthetic_quote(far_date, option_type=buy["option_type"],
+                         strike=buy["strike"], expiration=buy["expiry"],
+                         spot=buy["strike"], sigma=0.20),
+    ]
+
+    body = _get(client, sid, key).json()
+    points = {p["date"]: p for p in body["legs"]["buy"]["points"]}
+    assert points[near_date]["iv"] is not None
+    assert points[near_date]["low_confidence"] is True
+    assert points[far_date]["low_confidence"] is False
+    # AC：標記不刪點、不影響統計——兩筆都還在、都算進 observation_count。
+    assert len(body["legs"]["buy"]["points"]) == 2
+    assert body["legs"]["buy"]["observation_count"] == 2
+
+
+def test_a_low_confidence_point_still_feeds_the_percentile_and_moving_average(db):
+    """標記只是資訊品質提示，不是「這筆不算數」——percentile／moving
+    average 這兩個依賴逐筆觀測的統計量，用一個只含 low-confidence 觀測
+    的極端情況直接證明它們沒有被排除在外。"""
+    rec = ContractHistoryRecorder()
+    client = _client(db, surface=_rich_surface, contract_history=rec)
+    _unlock(client)
+    sid = _scenario(client)
+    key = _candidate_key(client, sid)
+    buy = _leg_identities(client, sid, key)[0]
+    near_date = _before_expiry(buy["expiry"], 5)
+    rec._points_by_symbol[buy["contract_symbol"]] = [_synthetic_quote(
+        near_date, option_type=buy["option_type"], strike=buy["strike"],
+        expiration=buy["expiry"], spot=buy["strike"], sigma=0.20)]
+
+    body = _get(client, sid, key).json()
+    leg = body["legs"]["buy"]
+    assert leg["points"][0]["low_confidence"] is True
+    assert leg["current_percentile"] == 1.0
+    assert leg["observation_count"] == 1
+
+
+def test_low_confidence_flag_never_shows_up_in_a_diagnostic_whitelist_bypass(db):
+    """結構性佐證：`low_confidence` 是 response 層的顯示欄位，不是診斷
+    context 的白名單鍵——確認它沒有被順手塞進任何 diagnostic event 的
+    `context`，維持「診斷帳本管進出筆數，response 欄位管呈現」的既有
+    分工。"""
+    from api_app.diagnostics import _CONTEXT_KEY_WHITELIST
+
+    assert "low_confidence" not in _CONTEXT_KEY_WHITELIST

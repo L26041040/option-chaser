@@ -25,6 +25,7 @@ function ivPoints(n: number, f: (i: number) => number | null) {
   return Array.from({ length: n }, (_, i) => ({
     date: `2026-01-${String((i % 28) + 1).padStart(2, "0")}`,
     iv: f(i),
+    low_confidence: false,
   }));
 }
 

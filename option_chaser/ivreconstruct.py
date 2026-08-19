@@ -58,6 +58,25 @@ FAILURE_INVERSION_FAILED = "inversion_failed"
 FAILURE_REASONS = (FAILURE_UNUSABLE_QUOTE, FAILURE_NO_RATE,
                    FAILURE_NO_DIVIDEND_YIELD, FAILURE_INVERSION_FAILED)
 
+# HIVR-08（#167）：近到期反解病態的門檻——單一具名常數，不是散落各處
+# 的字面值。依 calibration 文件實測：3-DTE 深度價內合約，1 分錢報價
+# 誤差可讓反解 IV 移動 3.5–9 個 vol 點，時間價值 <$0.10 組的殘差是
+# ≥$0.10 組的 14 倍。這只是資訊品質標記——不刪點、不改統計、不影響
+# ranking／filtering／candidate selection（那些路徑本來就不 import
+# 這個模組，見下方 `test_ranking_and_filters_do_not_depend_on_this_
+# module`）。
+LOW_CONFIDENCE_DTE_THRESHOLD = 14
+
+
+def is_low_confidence(observation_date: str, expiration: str) -> bool:
+    """`observation_date` 距 `expiration` 少於
+    `LOW_CONFIDENCE_DTE_THRESHOLD` 天＝True。純粹的天數比較，不讀取
+    price／IV，因此對任一觀測日皆可呼叫（含反解失敗、`iv` 為 `None`
+    的缺席觀測）。"""
+    dte = days_between(date.fromisoformat(observation_date),
+                       date.fromisoformat(expiration))
+    return dte < LOW_CONFIDENCE_DTE_THRESHOLD
+
 
 def _quote_price(quote: dict) -> float | None:
     """price 優先序：vendor `mid` → `(bid+ask)/2` 退回。兩者皆不可得回

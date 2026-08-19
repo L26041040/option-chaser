@@ -7,7 +7,7 @@ Round-trip style：大部分「reconstruct 出正確 IV」的測試不硬編一�
 方式（跟 `test_valuation.py`／`test_american_pricing.py` 既有慣例
 一致）。
 """
-from datetime import date
+from datetime import date, timedelta
 
 import pytest
 
@@ -15,6 +15,8 @@ from option_chaser.ivreconstruct import (FAILURE_INVERSION_FAILED,
                                          FAILURE_NO_DIVIDEND_YIELD,
                                          FAILURE_NO_RATE,
                                          FAILURE_UNUSABLE_QUOTE,
+                                         LOW_CONFIDENCE_DTE_THRESHOLD,
+                                         is_low_confidence,
                                          reconstruct_iv_series)
 from option_chaser.valuation import (DAYS_PER_YEAR, american_price,
                                      days_between)
@@ -349,6 +351,40 @@ def test_failure_counts_are_tallied_by_distinct_reason():
     assert series[2] == ("2026-06-03", None)
     assert series[3] == ("2026-06-04", None)
     assert series[4][1] == pytest.approx(TRUE_SIGMA, abs=1e-6)
+
+
+# ---------- 近到期 low-confidence 標記（HIVR-08／#167） ----------
+
+def test_points_at_or_beyond_the_threshold_are_not_flagged():
+    exp = "2027-06-18"
+    # 恰好等於門檻的那一天不算 low confidence（AC：「等於門檻」不算）。
+    threshold_date = date.fromisoformat(exp)
+    at_threshold = threshold_date - timedelta(days=LOW_CONFIDENCE_DTE_THRESHOLD)
+    well_before = threshold_date - timedelta(days=LOW_CONFIDENCE_DTE_THRESHOLD + 30)
+    assert is_low_confidence(at_threshold.isoformat(), exp) is False
+    assert is_low_confidence(well_before.isoformat(), exp) is False
+
+
+def test_points_inside_the_threshold_are_flagged():
+    exp = "2027-06-18"
+    threshold_date = date.fromisoformat(exp)
+    one_day_inside = threshold_date - timedelta(
+        days=LOW_CONFIDENCE_DTE_THRESHOLD - 1)
+    on_expiry_day = threshold_date
+    assert is_low_confidence(one_day_inside.isoformat(), exp) is True
+    assert is_low_confidence(on_expiry_day.isoformat(), exp) is True
+
+
+def test_the_threshold_is_a_single_named_constant():
+    assert LOW_CONFIDENCE_DTE_THRESHOLD == 14
+
+
+def test_low_confidence_can_be_evaluated_for_a_missing_observation_too():
+    """反解失敗、`iv` 是 `None` 的觀測，天數比較照樣成立——這個函式不讀
+    price／IV，純粹是天數比較，呼叫端可以對序列裡每一筆（不論成敗）
+    一視同仁地套用。"""
+    assert is_low_confidence("2027-06-17", "2027-06-18") is True
+    assert is_low_confidence("2026-01-01", "2027-06-18") is False
 
 
 # ---------- 隔離紅線（spec #151 §7／Testing Decisions 延伸） ----------

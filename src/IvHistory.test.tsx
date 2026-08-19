@@ -56,6 +56,7 @@ function legHistoricalIv(overrides: Partial<LegHistoricalIv> = {}): LegHistorica
   const points = Array.from({ length: 250 }, (_, i) => ({
     date: `2026-01-${String((i % 28) + 1).padStart(2, "0")}`,
     iv: 0.20 + (i % 20) * 0.001,
+    low_confidence: false,
   }));
   return {
     contract: contract(),

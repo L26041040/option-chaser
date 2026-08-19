@@ -829,10 +829,14 @@ export interface ContractIdentity {
 }
 
 /** 這張合約單日的市場 IV。`iv` 為 `null`＝vendor 對這天沒有值（缺席
- *  觀測，不是 0）。 */
+ *  觀測，不是 0）。`low_confidence`＝這天距到期日少於後端具名門檻
+ *  （近到期反解病態，HIVR-08／#167）——純資訊品質標記，這個點依然
+ *  在序列裡、依然餵進統計量，不影響 ranking／filtering／candidate
+ *  selection。 */
 export interface IvTrendPoint {
   date: string;
   iv: number | null;
+  low_confidence: boolean;
 }
 
 /** 統計量序列上的一天（moving average／Bollinger 上下界，HIVT-03／
