@@ -502,7 +502,13 @@ recipe 已經錯過一次，存算好的 IV 會讓任何修正都要重花 vendo
   `data/treasury.py` 新增 `fetch_curve_rows_for_year`／
   `fetch_curve_range`（單年 CSV→XML 備援／跨年度串接、單年失敗不擋
   其他年份）——本票範圍內純前置件，尚無呼叫端，接線留給 HIVR-06
-- **#161** HIVR-02 point-in-time 股利 q（ex-date 上界擋 look-ahead）← 無擋
+- **HIVR-02**（#161）point-in-time 股利 q ✅ commit `5db92ca`：
+  `dividends.py` 新增 `compute_q_asof(history, spot, observation_date)`——
+  沿用既有 TTM 365 天下界，加上界 `ex_date <= observation_date` 擋
+  look-ahead（那天還沒除息的分配不可能影響那天的選擇權價格）；分母用
+  呼叫端傳入「那天」的 spot、離群值抑制沿用既有 `_dampen_outliers`
+  不重寫。既有 `compute_q()`（即時分析路徑）原封不動。純前置件，
+  尚無呼叫端
 - **#162** HIVR-03 diagnostics subsystem 拆分 ← 無擋（prefactor）
 - **#163** HIVR-04 historical quote record：parser＋storage＋舊格式重抓（被 #162 擋）
 - **#164** HIVR-05 reconstruction 純模組（被 #163 擋）
