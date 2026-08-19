@@ -1019,7 +1019,13 @@ def test_events_shown_in_the_response_also_land_in_the_diagnostics_store(db):
     sid = _scenario(client)
     body = _get(client, sid, _candidate_key(client, sid)).json()
     shown_ids = {e["event_id"] for e in body["diagnostics"]["events"]}
-    stored_ids = {e["event_id"] for e in client.get("/api/diagnostics").json()}
+    # HIVR-03（#162）：exact-contract 與 legacy 兩個 subsystem 各自享有
+    # 一份完整的 per-request 保留名額，一次 request 因此可能寫進去超過
+    # `/api/diagnostics` 預設的 `limit=50`——這裡明確拉高查詢上限到
+    # `RETENTION_LIMIT`，只是為了讓比較涵蓋到這次 request 實際寫進去的
+    # 全部事件，斷言本身（`shown_ids <= stored_ids`）不變、不放鬆。
+    stored_ids = {e["event_id"]
+                 for e in client.get("/api/diagnostics?limit=200").json()}
     assert shown_ids <= stored_ids
 
 
@@ -1149,6 +1155,114 @@ def test_metrics_events_also_survive_the_cap_alongside_backfill():
               ev("bf", stage="backfill")]
     kept_ids = {e.event_id for e in _select_for_persistence(events)}
     assert {"m1", "m2", "bf"} <= kept_ids
+
+
+# ---------- Diagnostics subsystem 拆分（HIVR-03／#162） ----------
+
+def test_a_flood_of_legacy_events_does_not_starve_exact_contract_events():
+    """load-bearing 保證：exact-contract 與 legacy 重錨定各自有獨立的
+    保留預算——單一 request 裡塞進大量 legacy 事件，不得把為數不多的
+    exact-contract 事件擠出保留名額（本票存在的理由，spec #159 AC）。"""
+    from api_app.diagnostics import (SUBSYSTEM_EXACT_CONTRACT,
+                                     SUBSYSTEM_LEGACY_REANCHOR, DiagnosticEvent)
+    from api_app.main import (_DIAGNOSTICS_STORAGE_CAP_PER_REQUEST,
+                              _select_for_persistence)
+
+    def ev(event_id, subsystem, severity="info"):
+        return DiagnosticEvent(event_id=event_id, correlation_id="c",
+                               ts=event_id, subsystem=subsystem,
+                               stage="vendor_fetch", severity=severity,
+                               message="m")
+
+    exact_events = [ev(f"exact{i}", SUBSYSTEM_EXACT_CONTRACT) for i in range(6)]
+    # legacy 家族的事件量遠超過共用上限本身——這正是 legacy 會結構性
+    # 隨快照數持續成長、單一共用上限遲早再度被淹沒的那個問題。
+    legacy_events = [ev(f"legacy{i}", SUBSYSTEM_LEGACY_REANCHOR)
+                     for i in range(_DIAGNOSTICS_STORAGE_CAP_PER_REQUEST * 3)]
+
+    kept_ids = {e.event_id for e in _select_for_persistence(
+        exact_events + legacy_events)}
+
+    assert {e.event_id for e in exact_events} <= kept_ids, (
+        "大量 legacy 事件擠掉了 exact-contract 事件——保留預算沒有真的獨立")
+
+
+def test_each_subsystem_independently_respects_the_same_cap():
+    """兩個 subsystem 各自的保留名額都是完整一份 `cap`（不是均分），
+    但**各自**仍然受同一個 cap 限制——不是「拆開後上限形同虛設」。"""
+    from api_app.diagnostics import (SUBSYSTEM_EXACT_CONTRACT,
+                                     SUBSYSTEM_LEGACY_REANCHOR, DiagnosticEvent)
+    from api_app.main import (_DIAGNOSTICS_STORAGE_CAP_PER_REQUEST,
+                              _select_for_persistence)
+
+    def ev(event_id, subsystem):
+        return DiagnosticEvent(event_id=event_id, correlation_id="c",
+                               ts=event_id, subsystem=subsystem,
+                               stage="vendor_fetch", severity="info",
+                               message="m")
+
+    over = _DIAGNOSTICS_STORAGE_CAP_PER_REQUEST + 10
+    exact_events = [ev(f"exact{i}", SUBSYSTEM_EXACT_CONTRACT) for i in range(over)]
+    legacy_events = [ev(f"legacy{i}", SUBSYSTEM_LEGACY_REANCHOR) for i in range(over)]
+
+    kept = _select_for_persistence(exact_events + legacy_events)
+    kept_exact = [e for e in kept if e.subsystem == SUBSYSTEM_EXACT_CONTRACT]
+    kept_legacy = [e for e in kept if e.subsystem == SUBSYSTEM_LEGACY_REANCHOR]
+
+    assert len(kept_exact) <= _DIAGNOSTICS_STORAGE_CAP_PER_REQUEST
+    assert len(kept_legacy) <= _DIAGNOSTICS_STORAGE_CAP_PER_REQUEST
+    # 兩個家族各自都真的被單獨的洪水塞滿了自己的名額——不是意外地兩邊
+    # 都留了個位數，掩蓋了本該測到的「各自獨立」這件事。
+    assert len(kept_exact) == _DIAGNOSTICS_STORAGE_CAP_PER_REQUEST
+    assert len(kept_legacy) == _DIAGNOSTICS_STORAGE_CAP_PER_REQUEST
+
+
+def test_the_shared_cap_constant_itself_is_not_raised_by_the_split():
+    """AC 明文：這次改動不得把共用上限本身調高——結構性解法是拆
+    subsystem，不是繼續調高同一個數字（20→40 已經做過一次）。"""
+    from api_app.main import _DIAGNOSTICS_STORAGE_CAP_PER_REQUEST
+    assert _DIAGNOSTICS_STORAGE_CAP_PER_REQUEST == 40
+
+
+def test_exact_contract_and_legacy_reanchor_are_distinct_named_subsystems():
+    from api_app.diagnostics import (SUBSYSTEM_EXACT_CONTRACT,
+                                     SUBSYSTEM_LEGACY_REANCHOR, SUBSYSTEMS)
+    assert SUBSYSTEM_EXACT_CONTRACT != SUBSYSTEM_LEGACY_REANCHOR
+    assert SUBSYSTEM_EXACT_CONTRACT in SUBSYSTEMS
+    assert SUBSYSTEM_LEGACY_REANCHOR in SUBSYSTEMS
+
+
+def test_a_heavy_backfill_still_leaves_exact_contract_events_in_the_live_response(db):
+    """端到端版本（走真的 endpoint，不是直接呼叫 `_select_for_persistence`）：
+    一次請求觸發滿載的 legacy backfill（`_IV_BACKFILL_PER_RUN` 天，每天
+    vendor_fetch／payload_parse／database_write／reanchor 多筆，遠超過
+    共用上限），exact-contract 家族的 `candidate_lookup`／`metrics` 事件
+    仍然要完整出現在這次 response 的 diagnostics 裡——不是只有純函式層
+    測得到，使用者實際看到的回應也要保得住。`_telemetry_surface`（不是
+    `_rich_surface`）才會真的呼叫 observer、把 telemetry 轉成事件，藉此
+    讓 backfill 迴圈跑滿整批，重現過去會把 exact-contract 事件擠出保留
+    名額的那個量級。"""
+    from api_app.diagnostics import (SUBSYSTEM_EXACT_CONTRACT,
+                                     SUBSYSTEM_LEGACY_REANCHOR)
+
+    telemetry = {"http_status": 200, "vendor_status": "ok",
+                "vendor_errmsg": None, "raw_rows": 3,
+                "parsed_call_rows": 1, "parsed_put_rows": 1}
+    client = _client(db, surface=_telemetry_surface(telemetry))
+    _unlock(client)
+    sid = _scenario(client)
+    body = _get(client, sid, _candidate_key(client, sid)).json()
+
+    events = body["diagnostics"]["events"]
+    exact = [e for e in events if e["subsystem"] == SUBSYSTEM_EXACT_CONTRACT]
+    legacy = [e for e in events if e["subsystem"] == SUBSYSTEM_LEGACY_REANCHOR]
+
+    # legacy backfill 這次確實跑滿（沒有預先灌好資料），觸發大量事件——
+    # 驗證測試場景本身真的踩到過去會擠掉 exact-contract 事件的那個量級。
+    assert len(legacy) >= 20
+    # exact-contract 家族的關鍵事件完整保留，不受 legacy 洪水影響。
+    assert any(e["stage"] == "candidate_lookup" for e in exact)
+    assert any(e["stage"] == "metrics" for e in exact)
 
 
 # ---------- Historical IV 投影路徑觀測（DG-04／#147） ----------

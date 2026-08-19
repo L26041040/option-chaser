@@ -35,7 +35,18 @@ from typing import Iterator
 
 # ---------- 詞彙（單一來源，後端／前端／測試都引用同一份） ----------
 
-SUBSYSTEMS = ("historical_iv",)
+# HIVR-03（#162）：exact-contract Historical IV Trend 與 legacy
+# (tenor,delta) 重錨定是兩個獨立的 subsystem——每個 subsystem 各自有
+# 獨立的 per-request 保留預算（見 `api_app/main.py` 的
+# `_select_for_persistence`），大量 legacy 事件不會擠掉 exact-contract
+# 事件，反之亦然。命名沿用既有欄位語意：`historical_iv` 是既有名字，
+# 未改；`normalized_skew` 借用這條 legacy 路徑本身輸出欄位
+# （`normalized_skew_points`／`normalized_skew`）的既有名字，不是新創
+# 詞彙。
+SUBSYSTEM_EXACT_CONTRACT = "historical_iv"
+SUBSYSTEM_LEGACY_REANCHOR = "normalized_skew"
+
+SUBSYSTEMS = (SUBSYSTEM_EXACT_CONTRACT, SUBSYSTEM_LEGACY_REANCHOR)
 
 STAGES = ("candidate_lookup", "cache", "vendor_fetch", "payload_parse",
          "database_write", "backfill", "reanchor", "metrics")

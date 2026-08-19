@@ -271,6 +271,13 @@ class _CollectingDiagnostics:
 # STAGES` 的無條件保留名額裡。原本 20 的上限在這個量級下會把
 # `vendor_fetch`／`reanchor` 這類高診斷價值的逐次事件整批擠出去——調高
 # 到 40，讓兩個家族的彙總結論都保留的同時，仍有餘裕留給其他 stage。
+#
+# HIVR-03（#162）：這個常數本身**不再調高**——legacy 家族的事件量結構上
+# 會隨快照數持續成長，調高上限只是把同一個問題往後延。改成 exact-
+# contract／legacy 重錨定各自的 subsystem 各自獨立享有一份完整的
+# `cap` 名額（見 `_select_for_persistence`），大量 legacy 事件擠掉的
+# 只會是同一個 subsystem 裡優先序較低的其他 legacy 事件，不會波及
+# exact-contract 的名額。
 _DIAGNOSTICS_STORAGE_CAP_PER_REQUEST = 40
 
 
@@ -288,11 +295,33 @@ def _select_for_persistence(
         events: list[diagnostics.DiagnosticEvent],
         *, cap: int = _DIAGNOSTICS_STORAGE_CAP_PER_REQUEST,
 ) -> list[diagnostics.DiagnosticEvent]:
-    """哪些 events 真的寫進 storage（#146／#147）。log 不受這條限制——
-    `emit()` 呼叫當下就已經全部印出去了，這裡只決定「留誰在 capped 的
-    storage 裡」，回傳順序與輸入順序一致。
+    """哪些 events 真的寫進 storage（#146／#147／#162）。log 不受這條
+    限制——`emit()` 呼叫當下就已經全部印出去了，這裡只決定「留誰在
+    capped 的 storage 裡」，回傳順序與輸入順序一致。
 
-    三層優先序：
+    HIVR-03（#162）：先依 `event.subsystem` 分組，**每個 subsystem 各自**
+    套用 `_select_family_for_persistence()` 的三層優先序、各自享有一份
+    完整的 `cap` 名額——exact-contract 與 legacy 重錨定互不相搶，大量
+    legacy 事件不會把 exact-contract 的名額擠掉，反之亦然。單一
+    subsystem 的情境（目前這裡只有這兩個 subsystem，見
+    `diagnostics.SUBSYSTEMS`）分組前後行為完全一致。
+    """
+    by_subsystem: dict[str, list[diagnostics.DiagnosticEvent]] = {}
+    for e in events:
+        by_subsystem.setdefault(e.subsystem, []).append(e)
+    kept_ids = {
+        id(e)
+        for family_events in by_subsystem.values()
+        for e in _select_family_for_persistence(family_events, cap=cap)
+    }
+    return [e for e in events if id(e) in kept_ids]
+
+
+def _select_family_for_persistence(
+        events: list[diagnostics.DiagnosticEvent], *, cap: int,
+) -> list[diagnostics.DiagnosticEvent]:
+    """單一 subsystem 內部的三層優先序（`_select_for_persistence` 對
+    每個 subsystem 各自呼叫一次）：
 
     1. `_ALWAYS_KEPT_STAGES`——保留名額最優先，跟它們自己的 severity
        無關（見上方常數的理由）。
@@ -1342,11 +1371,19 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         diag = _CollectingDiagnostics()
         secrets = _known_secrets()
 
-        def _emit(*, stage: str, severity: str, message: str, **context):
-            return diagnostics.emit(diag, subsystem="historical_iv",
-                                    stage=stage, severity=severity,
-                                    message=message, ts=now_utc_iso(),
-                                    secrets=secrets, **context)
+        def _make_emit(subsystem: str):
+            def _emit(*, stage: str, severity: str, message: str, **context):
+                return diagnostics.emit(diag, subsystem=subsystem,
+                                        stage=stage, severity=severity,
+                                        message=message, ts=now_utc_iso(),
+                                        secrets=secrets, **context)
+            return _emit
+
+        # HIVR-03（#162）：exact-contract 與 legacy (tenor,delta) 重錨定
+        # 兩個獨立 subsystem 各自的 emit，見 `_select_for_persistence`
+        # 的逐 subsystem 保留預算。
+        _emit_exact = _make_emit(diagnostics.SUBSYSTEM_EXACT_CONTRACT)
+        _emit_legacy = _make_emit(diagnostics.SUBSYSTEM_LEGACY_REANCHOR)
 
         rec = _db().latest_result(scenario_id)
         if rec is None:
@@ -1354,11 +1391,11 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         cand = store.find_candidate(rec.view, candidate_key)
         groups_scanned = sum(len(r.get("expiry_top10") or [])
                              for r in rec.view.get("results") or [])
-        _emit(stage="candidate_lookup",
-             severity="info" if cand is not None else "error",
-             message="找到候選" if cand is not None else "找不到候選",
-             scenario_id=scenario_id, candidate_key=candidate_key,
-             found=cand is not None, groups_scanned=groups_scanned)
+        _emit_exact(stage="candidate_lookup",
+                   severity="info" if cand is not None else "error",
+                   message="找到候選" if cand is not None else "找不到候選",
+                   scenario_id=scenario_id, candidate_key=candidate_key,
+                   found=cand is not None, groups_scanned=groups_scanned)
         if cand is None:
             _flush_diagnostics(diag)
             raise HTTPException(status_code=404,
@@ -1375,10 +1412,10 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         for name, leg in zip(leg_names, candidate_legs):
             identity = _leg_contract_identity(leg, sc.symbol)
             leg_points, leg_status, leg_note = _ensure_contract_history(
-                identity, provider, token, emit=_emit)
+                identity, provider, token, emit=_emit_exact)
             legs_payload[name] = _leg_historical_iv_payload(
                 identity, leg_points, leg_status, leg_note, today=ny_today(),
-                emit=_emit)
+                emit=_emit_exact)
 
         # `expiry_counts` 掛在每個策略結果（`results[i]`）底下，不是
         # view 頂層——這裡只要「有哪些到期日」，跨策略去重即可。
@@ -1390,7 +1427,7 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
             known_expiries, today=ny_today(),
             tenor_days=cand.get("days_to_expiry") or 0)
         outcome, note = _backfill_iv(sc.symbol, provider, token,
-                                     target_expirations, emit=_emit)
+                                     target_expirations, emit=_emit_legacy)
 
         coords = ivhistory.spread_coordinates(cand, spot=rec.view["meta"]["spot"])
         if coords is None:
@@ -1403,11 +1440,11 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         for obs in _db().iv_observations(sc.symbol):
             surface = _rows_to_surface(obs.surface)
             reanchored = ivhistory.reanchor_spread(surface, coords)
-            _emit_reanchor(_emit, surface, coords, reanchored,
+            _emit_reanchor(_emit_legacy, surface, coords, reanchored,
                           observed_on=obs.observed_on)
             points.append({"date": obs.observed_on, **reanchored})
 
-        _emit_metrics(_emit, points, coords)
+        _emit_metrics(_emit_legacy, points, coords)
         diag_payload = _flush_diagnostics(diag)
 
         return {**_iv_payload(candidate_key, points, outcome, note),
