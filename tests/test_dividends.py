@@ -14,9 +14,10 @@ from datetime import date
 import pytest
 
 from option_chaser.dividends import (DividendHistory, DividendParseError,
-                                     DividendRecord, compute_q, history_from_dict,
-                                     history_to_dict, parse_fmp_dividends,
-                                     parse_nasdaq_dividends, parse_yahoo_dividends)
+                                     DividendRecord, compute_q, compute_q_asof,
+                                     history_from_dict, history_to_dict,
+                                     parse_fmp_dividends, parse_nasdaq_dividends,
+                                     parse_yahoo_dividends)
 from option_chaser.models import ParamError
 
 TODAY = date(2026, 8, 10)
@@ -194,6 +195,72 @@ def test_single_distribution_is_never_dampened():
     """只有一筆時沒有「中位數」可比較，不該被自己判成離群值。"""
     q = compute_q(_history((("2026-08-03", 5.0),)), spot=100.0, today=TODAY)
     assert q == pytest.approx(0.05)
+
+
+# ---------- compute_q_asof：point-in-time（issue #161，擋 look-ahead） ----------
+
+def test_a_distribution_ex_dated_after_the_observation_date_is_excluded():
+    """load-bearing 保證：那天市場還不知道的分配不能算進那天的 q，
+    否則就是 look-ahead bias（本票存在的理由）。"""
+    observation_date = date(2026, 7, 1)
+    future_ex_date = date(2026, 7, 2)   # 觀察日之後才除息
+    history = _history(((future_ex_date.isoformat(), 0.33),))
+    q = compute_q_asof(history, spot=82.0, observation_date=observation_date)
+    assert q == 0.0
+
+
+def test_a_distribution_exactly_on_the_observation_date_is_included():
+    observation_date = date(2026, 7, 1)
+    history = _history(((observation_date.isoformat(), 0.33),))
+    q = compute_q_asof(history, spot=82.0, observation_date=observation_date)
+    assert q == pytest.approx(0.33 / 82.0)
+
+
+def test_a_distribution_older_than_the_trailing_window_is_excluded():
+    observation_date = date(2026, 8, 10)
+    cutoff = observation_date.toordinal() - 365
+    from datetime import date as _d
+    too_old = _d.fromordinal(cutoff).isoformat()          # 剛好 365 天前（exclusive）
+    history = _history(((too_old, 10.0),))
+    assert compute_q_asof(history, spot=100.0,
+                          observation_date=observation_date) == 0.0
+
+
+def test_asof_divides_by_the_spot_supplied_for_that_date_not_a_default():
+    history = _history((("2026-07-01", 0.33),))
+    q = compute_q_asof(history, spot=41.0, observation_date=date(2026, 7, 1))
+    assert q == pytest.approx(0.33 / 41.0)
+
+
+def test_asof_reuses_the_same_outlier_dampening_as_compute_q():
+    observation_date = date(2026, 8, 3)
+    normal = [("2026-0%d-01" % m, 0.30 + 0.01 * m) for m in range(1, 8)]
+    special = ("2026-08-03", 5.00)
+    history = _history(tuple(normal) + (special,))
+    q_asof = compute_q_asof(history, spot=82.0, observation_date=observation_date)
+    naive_sum = sum(a for _, a in normal) + 5.00
+    assert q_asof * 82.0 < naive_sum
+
+
+def test_asof_with_no_qualifying_distributions_yields_zero():
+    """研究 §8 第 2 層一致的口徑：窗內無合格分配 → q=0，是正確答案，
+    不是失敗。"""
+    q = compute_q_asof(_history(()), spot=52.0, observation_date=date(2026, 8, 10))
+    assert q == 0.0
+
+
+def test_asof_non_positive_spot_is_rejected():
+    with pytest.raises(ParamError):
+        compute_q_asof(_history((("2026-07-01", 0.33),)), spot=0.0,
+                       observation_date=date(2026, 7, 1))
+
+
+def test_existing_compute_q_for_live_analysis_is_unaffected_by_asof_addition():
+    """既有 `compute_q()`（無上界，today 語意）維持不動——本票只加點對點
+    版本，不改既有即時分析路徑。"""
+    records = (("2026-08-03", 0.330), ("2026-07-01", 0.318))
+    q = compute_q(_history(records), spot=82.245, today=TODAY)
+    assert q == pytest.approx((0.330 + 0.318) / 82.245)
 
 
 # ---------- 序列化 roundtrip（快取落盤用） ----------

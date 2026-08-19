@@ -164,6 +164,30 @@ def compute_q(history: DividendHistory, spot: float, today: date) -> float:
     return sum(_dampen_outliers(amounts)) / spot
 
 
+def compute_q_asof(history: DividendHistory, spot: float,
+                   observation_date: date) -> float:
+    """point-in-time 版本（issue #161）：只計「以 `observation_date` 這天
+    來看，市場已經知道」的分配——ex-date 落在
+    `(observation_date − 365 天, observation_date]` 才計入。
+
+    跟 `compute_q()`（即時分析用，只有下界）的唯一差異是多一個上界：
+    `ex_date <= observation_date`。一筆分配的 ex-date 若晚於觀察日，
+    代表那天它還沒除息，不可能影響那天的選擇權價格——算進去就是
+    look-ahead bias（歷史 IV 重建需要點對點正確，這是本函式存在的
+    理由）。分母用呼叫端傳入「那天」的標的價，不是今天的 spot。離群值
+    抑制沿用既有 `_dampen_outliers`，不重新實作。
+    """
+    if spot <= 0:
+        raise ParamError(f"spot 必須為正數：{spot}")
+    cutoff = observation_date - timedelta(days=TTM_WINDOW_DAYS)
+    amounts = tuple(
+        r.amount for r in history.distributions
+        if cutoff < date.fromisoformat(r.ex_date) <= observation_date)
+    if not amounts:
+        return 0.0
+    return sum(_dampen_outliers(amounts)) / spot
+
+
 # ---------- 快取序列化（data.dividends／api_app.dividend_cache 落盤用） ----------
 
 def history_to_dict(history: DividendHistory) -> dict:
