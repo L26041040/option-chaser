@@ -13,14 +13,18 @@ from api_app import providers
 from api_app.main import create_app
 from api_app.storage import ContractHistory, IvBackfillRun, IvObservation
 from api_app.storage.memory import MemoryStorage
+from option_chaser import dividends as dividends_module
 from option_chaser import ivhistory, ivtrend
+from option_chaser import ratecurve as ratecurve_module
 from option_chaser.data.snapshot import load_snapshot
 from option_chaser.dividends import DividendHistory, DividendRecord
 from option_chaser.ivhistory import SurfacePoint
 from option_chaser.ivhistory import sampling_schedule
 from option_chaser.models import FetchError, QuotaExhausted
-from option_chaser.workspace import ny_today
 from option_chaser.ratecurve import RateCurve
+from option_chaser.valuation import (DAYS_PER_YEAR, american_price,
+                                     days_between)
+from option_chaser.workspace import ny_today
 
 FIX = "tests/fixtures/xyz_v4_six_expiries.json"
 PROVIDER = providers.MARKETDATA_APP.id
@@ -31,6 +35,14 @@ _RATE = RateCurve(curve_date="2026-07-31",
 _DIV = DividendHistory(symbol="XYZ", as_of="2026-07-14", source="yahoo",
                        distributions=(DividendRecord("2026-06-01", 1.2),))
 
+# HIVR-06（#165）：point-in-time r／q 專用假體，跟上面 `_RATE`／`_DIV`
+# （即時分析路徑用，只有「今天」單一值）是不同的資料語意。單一曲線列
+# 蓋住任意早的日期（`curve_asof` 只要求 `curve_date <= observation_date`
+# 即命中），並用扁平利率（兩節點同值）讓 `rate_for_tenor` 不受年期插值
+# 影響——這樣測試只需要關心 reconstruction 接線本身，不必逐一核對
+# Treasury 插值細節（那是 `test_ratecurve.py` 的範圍）。
+_RATE_CURVE_ROWS = (("2020-01-01", ((0.1, 0.04), (30.0, 0.04))),)
+
 
 def _rate_loader(today):
     return _RATE, "假曲線"
@@ -38,6 +50,39 @@ def _rate_loader(today):
 
 def _dividend_loader(symbol, today):
     return _DIV, "假配息"
+
+
+def _rate_curve_rows(from_date, to_date):
+    return _RATE_CURVE_ROWS
+
+
+def _synthetic_quote(date_str, *, option_type, strike, expiration,
+                     spot=100.0, sigma, vendor_iv=None, extra=None):
+    """建一筆會在正式 reconstruction 路徑精確反解回 `sigma` 的 quote
+    dict（HIVR-06／#165 起端到端測試共用）——用跟 production
+    `_rate_by_date_for_leg`／`_dividend_yield_by_date_for_leg` 完全相同
+    的方式查表（`_RATE_CURVE_ROWS`／`_DIV` 這兩份假體，透過真正的
+    `ratecurve.curve_asof`／`dividends.compute_q_asof`），保證 round-trip
+    ——不是手猜一個「看起來合理」的價格。"""
+    T = days_between(date.fromisoformat(date_str),
+                     date.fromisoformat(expiration)) / DAYS_PER_YEAR
+    curve = ratecurve_module.curve_asof(_RATE_CURVE_ROWS, date_str)
+    r = ratecurve_module.rate_for_tenor(curve, T)
+    q = dividends_module.compute_q_asof(
+        _DIV, spot=spot, observation_date=date.fromisoformat(date_str))
+    price = american_price(option_type, spot, strike, T, r, q, sigma)
+    # bid/ask 只需要「合法」（正、未倒掛）——round-trip 的精確度全靠
+    # `mid` 精確等於 `price`（reconstruction 優先採用 `mid`），bid/ask
+    # 的絕對寬度無所謂。用比例而非固定 ±0.01：深度價外、極短天期的
+    # `price` 可能小到 1e-11 等級，固定寬度會直接把 bid 推成負值。
+    bid = max(price / 2.0, 1e-8)
+    ask = max(price * 1.5, 1e-6)
+    quote = {"date": date_str, "updated": 1, "dte": None,
+            "bid": bid, "ask": ask, "mid": price,
+            "underlying_price": spot, "vendor_iv": vendor_iv}
+    if extra:
+        quote.update(extra)
+    return quote
 
 
 def _snap():
@@ -99,7 +144,8 @@ def _client(db, *, surface=_surface_never_called,
         storage=db, fetch=lambda s: _snap(), rate_loader=_rate_loader,
         dividend_loader=_dividend_loader,
         verify_provider=lambda p, t: providers.VerifyOutcome(True),
-        historical_surface=surface, contract_history=contract_history))
+        historical_surface=surface, contract_history=contract_history,
+        rate_curve_rows=_rate_curve_rows))
 
 
 @pytest.fixture
@@ -484,6 +530,10 @@ def test_exact_contract_pipeline_never_calls_the_reanchoring_functions():
         "_leg_contract_identity", "_identity_context",
         "_emit_contract_history_telemetry", "_ensure_contract_history",
         "_emit_leg_stat_metrics", "_leg_historical_iv_payload",
+        # HIVR-06（#165）：reconstruction 接線也是 exact-contract 家族
+        # 的一部分，同一條隔離紅線延伸過來。
+        "_fetch_rate_curve_rows", "_rate_by_date_for_leg",
+        "_dividend_yield_by_date_for_leg", "_reconstruct_leg_series",
     )
     for fn_name in exact_contract_functions:
         body = _function_source(src, fn_name)
@@ -1468,19 +1518,33 @@ class ContractHistoryRecorder:
                       "null_iv_count": 0, "dropped_missing_date": 0})
         if self._fail is not None:
             raise self._fail
-        return [_quote_stub(d, iv)
-               for d, iv in self._points_by_symbol.get(occ_symbol, [])]
+        # HIVR-06（#165）：既有測試大量用精簡的 `(date, iv)` 二元組灌
+        # `points_by_symbol`（這裡繼續轉成 bid/ask 全 None 的 stub——
+        # reconstruction 會把這種點記成 unusable_quote，iv 一律是 None，
+        # 適合不在乎具體數值、只測路由／結構的既有測試）；需要真正能
+        # round-trip 出指定 sigma 的測試改放完整 quote dict（見
+        # `_synthetic_quote`），這裡原樣透傳，不做任何轉換。
+        return [item if isinstance(item, dict) else _quote_stub(*item)
+               for item in self._points_by_symbol.get(occ_symbol, [])]
 
 
 def _leg_symbols(client, sid, key):
     """借用 `_candidate_key` 同樣的走訪路徑，換成回傳這個候選兩條腿
     （或單腳只有一條）的 OCC contract symbol。"""
+    return [leg["contract_symbol"] for leg in _leg_identities(client, sid, key)]
+
+
+def _leg_identities(client, sid, key):
+    """比照 `_leg_symbols`，但回傳每條腿完整身分（`strike`／`expiry`／
+    `option_type`／`contract_symbol`）——HIVR-06（#165）起，需要真正
+    round-trip 出指定 sigma 的測試（`_synthetic_quote`）得知道履約價與
+    到期日才能建出精確反解得回來的報價。"""
     view = client.get(f"/api/scenarios/{sid}").json()["latest_result"]
     for r in view["results"]:
         for g in r.get("expiry_top10") or []:
             for c in g["candidates"]:
                 if c["candidate_key"] == key:
-                    return [leg["contract_symbol"] for leg in c["legs"]]
+                    return c["legs"]
     raise AssertionError("找不到這個候選")
 
 
@@ -1524,19 +1588,29 @@ def test_exact_contract_isolation_different_strikes_never_cross_contaminate(db):
     _unlock(client)
     sid = _scenario(client)
     key = _candidate_key(client, sid)
-    buy_symbol, sell_symbol = _leg_symbols(client, sid, key)
-    assert buy_symbol != sell_symbol
+    legs = _leg_identities(client, sid, key)
+    buy_leg, sell_leg = legs[0], legs[1]
+    assert buy_leg["contract_symbol"] != sell_leg["contract_symbol"]
 
     rec = ContractHistoryRecorder(points_by_symbol={
-        buy_symbol: [("2026-07-01", 0.30)],
-        sell_symbol: [("2026-07-01", 0.55)],
+        buy_leg["contract_symbol"]: [_synthetic_quote(
+            "2026-07-01", option_type=buy_leg["option_type"],
+            strike=buy_leg["strike"], expiration=buy_leg["expiry"], sigma=0.30)],
+        sell_leg["contract_symbol"]: [_synthetic_quote(
+            "2026-07-01", option_type=sell_leg["option_type"],
+            strike=sell_leg["strike"], expiration=sell_leg["expiry"], sigma=0.55)],
     })
     client2 = _client(db, surface=_rich_surface, contract_history=rec)
     _unlock(client2)
     body = _get(client2, sid, key).json()
 
-    assert body["legs"]["buy"]["points"] == [{"date": "2026-07-01", "iv": 0.30}]
-    assert body["legs"]["sell"]["points"] == [{"date": "2026-07-01", "iv": 0.55}]
+    buy_points = body["legs"]["buy"]["points"]
+    sell_points = body["legs"]["sell"]["points"]
+    assert len(buy_points) == 1 and len(sell_points) == 1
+    assert buy_points[0]["date"] == "2026-07-01"
+    assert sell_points[0]["date"] == "2026-07-01"
+    assert buy_points[0]["iv"] == pytest.approx(0.30, abs=1e-6)
+    assert sell_points[0]["iv"] == pytest.approx(0.55, abs=1e-6)
 
 
 def test_variable_length_history_under_a_year_is_reported_as_is_not_padded(db):
@@ -1546,9 +1620,15 @@ def test_variable_length_history_under_a_year_is_reported_as_is_not_padded(db):
     _unlock(client)
     sid = _scenario(client)
     key = _candidate_key(client, sid)
-    buy_symbol, _sell = _leg_symbols(client, sid, key)
-    rec._points_by_symbol[buy_symbol] = [
-        ("2026-08-10", 0.20), ("2026-08-11", 0.21), ("2026-08-12", 0.22)]
+    buy = _leg_identities(client, sid, key)[0]
+    # 50/49/48 天（不是緊貼到期日）：見 `_before_expiry` 與
+    # `reconstructable` 那處的既有說明——太靠近到期日時間價值趨近 0，
+    # `implied_vol` 對這種觀測結構上無解。
+    dates = [_before_expiry(buy["expiry"], n) for n in (50, 49, 48)]
+    rec._points_by_symbol[buy["contract_symbol"]] = [
+        _synthetic_quote(d, option_type=buy["option_type"], strike=buy["strike"],
+                         expiration=buy["expiry"], sigma=0.20)
+        for d in dates]
 
     body = _get(client, sid, key).json()
     assert len(body["legs"]["buy"]["points"]) == 3
@@ -1576,20 +1656,35 @@ def test_history_older_than_365_days_is_trimmed_out_of_the_response(db):
 
 
 def test_null_iv_points_are_preserved_in_the_response_never_dropped_or_zeroed(db):
+    """兩筆缺報價（unusable quote，reconstruction 記成 `unusable_quote`）
+    ＋一筆可正常反解——三筆都要出現在 `points`，缺席的是 `None`，不是
+    被整筆拿掉、也不是悄悄補成 0。"""
     rec = ContractHistoryRecorder()
     client = _client(db, surface=_rich_surface, contract_history=rec)
     _unlock(client)
     sid = _scenario(client)
     key = _candidate_key(client, sid)
-    buy_symbol, _sell = _leg_symbols(client, sid, key)
-    rec._points_by_symbol[buy_symbol] = [
-        ("2026-08-10", None), ("2026-08-11", None), ("2026-08-12", 0.22)]
+    buy = _leg_identities(client, sid, key)[0]
+    unusable_1 = _before_expiry(buy["expiry"], 3)
+    unusable_2 = _before_expiry(buy["expiry"], 2)
+    # 50 天（不是緊貼到期日的 1／2／3 天）：這張候選履約價偏離現價
+    # 較遠，太靠近到期日時間價值會趨近 0，`implied_vol` 對「目標價
+    # 也趨近 0」的觀測結構上無解（HIVR-06／#165 施工中發現，見
+    # `_before_expiry` docstring）——只有這一筆需要真的反解出數值，
+    # 兩筆 unusable 觀測本來就不會走到這一步，留在原本的小天數即可。
+    reconstructable = _before_expiry(buy["expiry"], 50)
+    rec._points_by_symbol[buy["contract_symbol"]] = [
+        (unusable_1, None), (unusable_2, None),
+        _synthetic_quote(reconstructable, option_type=buy["option_type"],
+                         strike=buy["strike"], expiration=buy["expiry"],
+                         sigma=0.22),
+    ]
 
     body = _get(client, sid, key).json()
     points = {p["date"]: p["iv"] for p in body["legs"]["buy"]["points"]}
-    assert points["2026-08-10"] is None
-    assert points["2026-08-11"] is None
-    assert points["2026-08-12"] == 0.22
+    assert points[unusable_1] is None
+    assert points[unusable_2] is None
+    assert points[reconstructable] == pytest.approx(0.22, abs=1e-6)
     # observation_count 只算非 None——null 是缺席觀測，不是「值是 0」。
     assert body["legs"]["buy"]["observation_count"] == 1
 
@@ -1621,7 +1716,8 @@ def test_an_old_shape_cached_row_is_re_fetched_not_misread(db):
     _unlock(client)
     sid = _scenario(client)
     key = _candidate_key(client, sid)
-    buy_symbol, _sell = _leg_symbols(client, sid, key)
+    buy = _leg_identities(client, sid, key)[0]
+    buy_symbol = buy["contract_symbol"]
 
     today_iso = ny_today().isoformat()
     db.save_contract_history(ContractHistory(
@@ -1630,14 +1726,18 @@ def test_an_old_shape_cached_row_is_re_fetched_not_misread(db):
         fetched_through="2026-01-02", last_attempt_on=today_iso,
         last_status="ok", last_note=None))
 
+    fresh_date = _before_expiry(buy["expiry"], 50)
     fresh = ContractHistoryRecorder()
-    fresh._points_by_symbol[buy_symbol] = [("2026-08-10", 0.25)]
+    fresh._points_by_symbol[buy_symbol] = [_synthetic_quote(
+        fresh_date, option_type=buy["option_type"], strike=buy["strike"],
+        expiration=buy["expiry"], sigma=0.25)]
     client2 = _client(db, surface=_rich_surface, contract_history=fresh)
     _unlock(client2)
     body = _get(client2, sid, key).json()
 
     assert fresh.calls, "舊格式列沒有真的觸發重抓——被誤判成今天已嘗試過"
-    assert body["legs"]["buy"]["points"] == [{"date": "2026-08-10", "iv": 0.25}]
+    points = body["legs"]["buy"]["points"]
+    assert points == [{"date": fresh_date, "iv": pytest.approx(0.25, abs=1e-6)}]
 
     got = db.get_contract_history(buy_symbol)
     assert all(isinstance(q, dict) for q in got.points)
@@ -1652,10 +1752,15 @@ def test_a_vendor_error_on_the_exact_contract_path_still_returns_cached_points(d
     _unlock(client)
     sid = _scenario(client)
     key = _candidate_key(client, sid)
-    buy_symbol, _sell = _leg_symbols(client, sid, key)
-    seed._points_by_symbol[buy_symbol] = [("2026-08-01", 0.20)]
+    buy = _leg_identities(client, sid, key)[0]
+    buy_symbol = buy["contract_symbol"]
+    seed._points_by_symbol[buy_symbol] = [_synthetic_quote(
+        "2026-08-01", option_type=buy["option_type"], strike=buy["strike"],
+        expiration=buy["expiry"], sigma=0.20)]
     first = _get(client, sid, key).json()
-    assert first["legs"]["buy"]["points"] == [{"date": "2026-08-01", "iv": 0.20}]
+    expected_points = [{"date": "2026-08-01",
+                        "iv": pytest.approx(0.20, abs=1e-6)}]
+    assert first["legs"]["buy"]["points"] == expected_points
 
     # 清掉「今天已嘗試過」，讓下一次真的再打一次 vendor、這次失敗。
     cached = db.get_contract_history(buy_symbol)
@@ -1670,7 +1775,7 @@ def test_a_vendor_error_on_the_exact_contract_path_still_returns_cached_points(d
     second = _get(client2, sid, key).json()
 
     assert second["legs"]["buy"]["status"] == "vendor"
-    assert second["legs"]["buy"]["points"] == [{"date": "2026-08-01", "iv": 0.20}]
+    assert second["legs"]["buy"]["points"] == expected_points
 
 
 def test_repeating_the_same_day_request_costs_zero_vendor_calls(db):
@@ -1785,6 +1890,30 @@ def _consecutive_days(end, n, ivs):
     return [((start + _td(days=i)).isoformat(), iv) for i, iv in enumerate(ivs)]
 
 
+def _before_expiry(expiration, days):
+    """到期日前 `days` 天的日期字串——round-trip 測試的觀測日一律要
+    早於這張合約**自己**的到期日（否則 `T<=0`，反解結構上不可能）。
+    不能借用 `ny_today()` 或隨手挑的絕對日期：這份 fixture 選中的候選
+    到期日可能已經落在「今天」之前（測試環境的系統時鐘往前走，fixture
+    本身不會跟著動），像 "2026-08-10" 這種寫死的日期因此可能剛好落在
+    某張合約的到期日**之後**，是這裡沿用的多個既有測試曾經踩過的
+    真實 bug（HIVR-06／#165 施工中發現：`T<0` 讓 `implied_vol` 正確地
+    回 `None`，不是重建邏輯錯，是測試 fixture 的日期沒對齊）。"""
+    return (date.fromisoformat(expiration) - timedelta(days=days)).isoformat()
+
+
+def _synthetic_consecutive_days(end, n, sigmas, *, option_type, strike, expiration):
+    """`_consecutive_days` 的 round-trippable 版本（HIVR-06／#165 起，
+    統計量套組需要真正能重建出數值的觀測，不能只是缺報價的 stub）——
+    每一天各自建一筆會精確反解回對應 `sigmas[i]` 的 quote dict。"""
+    from datetime import timedelta as _td
+    start = end - _td(days=n - 1)
+    return [_synthetic_quote((start + _td(days=i)).isoformat(),
+                             option_type=option_type, strike=strike,
+                             expiration=expiration, sigma=sigma)
+           for i, sigma in enumerate(sigmas)]
+
+
 def test_leg_response_carries_the_full_hivt03_stat_shape(db):
     rec = ContractHistoryRecorder()
     client = _client(db, surface=_rich_surface, contract_history=rec)
@@ -1815,20 +1944,21 @@ def test_stats_are_unavailable_below_the_minimum_observation_count(db):
     _unlock(client)
     sid = _scenario(client)
     key = _candidate_key(client, sid)
-    buy_symbol, _sell = _leg_symbols(client, sid, key)
-    today = ny_today()
-    rec._points_by_symbol[buy_symbol] = _consecutive_days(
-        today, 3, [0.10, 0.11, 0.12])
+    buy = _leg_identities(client, sid, key)[0]
+    end = date.fromisoformat(_before_expiry(buy["expiry"], 50))
+    rec._points_by_symbol[buy["contract_symbol"]] = _synthetic_consecutive_days(
+        end, 3, [0.10, 0.11, 0.12], option_type=buy["option_type"],
+        strike=buy["strike"], expiration=buy["expiry"])
 
     body = _get(client, sid, key).json()
-    buy = body["legs"]["buy"]
-    assert buy["moving_average"][-1]["value"] is None
-    assert buy["bollinger_upper"][-1]["value"] is None
-    assert buy["bollinger_lower"][-1]["value"] is None
-    assert buy["current_zscore"] is None
+    buy_resp = body["legs"]["buy"]
+    assert buy_resp["moving_average"][-1]["value"] is None
+    assert buy_resp["bollinger_upper"][-1]["value"] is None
+    assert buy_resp["bollinger_lower"][-1]["value"] is None
+    assert buy_resp["current_zscore"] is None
     # 原始走勢圖與百分位不受最低觀測門檻影響
-    assert len(buy["points"]) == 3
-    assert buy["current_percentile"] is not None
+    assert len(buy_resp["points"]) == 3
+    assert buy_resp["current_percentile"] is not None
 
 
 def test_stats_become_available_once_enough_observations_exist(db):
@@ -1839,18 +1969,27 @@ def test_stats_become_available_once_enough_observations_exist(db):
     _unlock(client)
     sid = _scenario(client)
     key = _candidate_key(client, sid)
-    buy_symbol, _sell = _leg_symbols(client, sid, key)
-    today = ny_today()
+    buy = _leg_identities(client, sid, key)[0]
+    end = date.fromisoformat(_before_expiry(buy["expiry"], 50))
     ivs = [0.10, 0.12, 0.14, 0.16, 0.18]
-    rec._points_by_symbol[buy_symbol] = _consecutive_days(today, 5, ivs)
+    rec._points_by_symbol[buy["contract_symbol"]] = _synthetic_consecutive_days(
+        end, 5, ivs, option_type=buy["option_type"], strike=buy["strike"],
+        expiration=buy["expiry"])
 
     body = _get(client, sid, key).json()
-    buy = body["legs"]["buy"]
-    m, s = mean(ivs), stdev(ivs)
-    assert buy["moving_average"][-1]["value"] == pytest.approx(m)
-    assert buy["bollinger_upper"][-1]["value"] == pytest.approx(m + 2 * s)
-    assert buy["bollinger_lower"][-1]["value"] == pytest.approx(m - 2 * s)
-    assert buy["current_zscore"] == pytest.approx((ivs[-1] - m) / s)
+    buy_resp = body["legs"]["buy"]
+    # 反解經過 bisection，容忍極小數值誤差（跟 ivreconstruct 本身的
+    # round-trip 測試同一個道理），不是精確浮點相等。
+    reconstructed = [p["iv"] for p in buy_resp["points"]]
+    assert reconstructed == pytest.approx(ivs, abs=1e-6)
+    m, s = mean(reconstructed), stdev(reconstructed)
+    assert buy_resp["moving_average"][-1]["value"] == pytest.approx(m, abs=1e-6)
+    assert buy_resp["bollinger_upper"][-1]["value"] == pytest.approx(
+        m + 2 * s, abs=1e-6)
+    assert buy_resp["bollinger_lower"][-1]["value"] == pytest.approx(
+        m - 2 * s, abs=1e-6)
+    assert buy_resp["current_zscore"] == pytest.approx(
+        (reconstructed[-1] - m) / s, abs=1e-6)
 
 
 def test_percentile_has_no_minimum_gate_at_the_endpoint_level(db):
@@ -1859,9 +1998,10 @@ def test_percentile_has_no_minimum_gate_at_the_endpoint_level(db):
     _unlock(client)
     sid = _scenario(client)
     key = _candidate_key(client, sid)
-    buy_symbol, _sell = _leg_symbols(client, sid, key)
-    today = ny_today()
-    rec._points_by_symbol[buy_symbol] = [(today.isoformat(), 0.20)]
+    buy = _leg_identities(client, sid, key)[0]
+    rec._points_by_symbol[buy["contract_symbol"]] = [_synthetic_quote(
+        _before_expiry(buy["expiry"], 50), option_type=buy["option_type"],
+        strike=buy["strike"], expiration=buy["expiry"], sigma=0.20)]
 
     body = _get(client, sid, key).json()
     assert body["legs"]["buy"]["current_percentile"] == 1.0
@@ -1873,13 +2013,19 @@ def test_delta_4w_is_none_without_a_baseline_window_observation(db):
     _unlock(client)
     sid = _scenario(client)
     key = _candidate_key(client, sid)
-    buy_symbol, _sell = _leg_symbols(client, sid, key)
-    today = ny_today()
-    # 全部落在 [today-42, today-21] 窗口之外（只有最近幾天）
-    rec._points_by_symbol[buy_symbol] = _consecutive_days(
-        today, 5, [0.10, 0.12, 0.14, 0.16, 0.18])
+    buy = _leg_identities(client, sid, key)[0]
+    end = date.fromisoformat(_before_expiry(buy["expiry"], 50))
+    # 這五天全部落在 [today-42, today-21] 窗口之外（比窗口起點還早，
+    # 選這個位置是遷就這張合約自己的到期日——太靠近到期日時間價值
+    # 趨近 0、無法反解，見 `_before_expiry` 既有說明）——用真正可反解
+    # 的觀測，才是在測「窗口本身擋住了」而不是「反正沒有任何有效觀測，
+    # Δ4w 當然是 None」這種語意被架空的假陽性。
+    rec._points_by_symbol[buy["contract_symbol"]] = _synthetic_consecutive_days(
+        end, 5, [0.10, 0.12, 0.14, 0.16, 0.18], option_type=buy["option_type"],
+        strike=buy["strike"], expiration=buy["expiry"])
 
     body = _get(client, sid, key).json()
+    assert body["legs"]["buy"]["current_percentile"] is not None
     assert body["legs"]["buy"]["delta_4w"] is None
 
 
@@ -1912,3 +2058,101 @@ def test_moving_average_and_bollinger_are_the_only_new_events_carrying_lookback_
             assert e["context"]["lookback_days"] == ivtrend.IV_TREND_LOOKBACK_DAYS
         elif e["context"]["field"] in ("historical_percentile", "delta_4w"):
             assert "lookback_days" not in e["context"]
+
+
+# ---------- Reconstruction 接線（HIVR-06／#165） ----------
+#
+# 這裡是「空卡片變成有圖」本身：驗證的不是重建演算法（那是
+# `test_ivreconstruct.py` 的範圍），是端到端接線——vendor `iv` 全 null
+# 的真實症狀（issue #159 描述的 ORCL／TLT LEAPS 案例）現在真的能畫出
+# 完整走勢圖，且 canonical series 結構上不可能採用 vendor 給的值。
+
+def test_a_leg_with_vendor_iv_null_on_every_observation_renders_a_complete_series(db):
+    """spec #159 開宗明義的症狀：vendor `iv` 250/250 全部是 null，但
+    `bid`／`ask`／`mid`／`underlyingPrice` 都正常——這正是本票要修的
+    案例。六筆觀測（跨過 `IV_TREND_MIN_OBSERVATIONS_FOR_BANDS`）全部
+    `vendor_iv=None`，重建後整張卡片（走勢圖＋全部統計量）都要有值，
+    不是空的。"""
+    rec = ContractHistoryRecorder()
+    client = _client(db, surface=_rich_surface, contract_history=rec)
+    _unlock(client)
+    sid = _scenario(client)
+    key = _candidate_key(client, sid)
+    buy = _leg_identities(client, sid, key)[0]
+    end = date.fromisoformat(_before_expiry(buy["expiry"], 50))
+    sigmas = [0.18, 0.19, 0.20, 0.21, 0.22, 0.23]
+    quotes = _synthetic_consecutive_days(
+        end, len(sigmas), sigmas, option_type=buy["option_type"],
+        strike=buy["strike"], expiration=buy["expiry"])
+    assert all(q["vendor_iv"] is None for q in quotes), "夾具本身要真的模擬 vendor iv 全 null"
+    rec._points_by_symbol[buy["contract_symbol"]] = quotes
+
+    body = _get(client, sid, key).json()
+    buy_resp = body["legs"]["buy"]
+    assert buy_resp["observation_count"] == len(sigmas)
+    assert all(p["iv"] is not None for p in buy_resp["points"])
+    assert buy_resp["moving_average"][-1]["value"] is not None
+    assert buy_resp["bollinger_upper"][-1]["value"] is not None
+    assert buy_resp["bollinger_lower"][-1]["value"] is not None
+    assert buy_resp["current_zscore"] is not None
+    assert buy_resp["current_percentile"] is not None
+
+
+def test_canonical_series_never_falls_back_to_vendor_iv_even_when_present(db):
+    """硬性 AC：即使 vendor 這次剛好給了非 null `iv`，canonical series
+    仍然是自己反解出來的值——不是 vendor 給的那個。`vendor_iv` 故意設
+    成一個離譜的數字，藉此讓「兩者被混用」的話一定紅燈。"""
+    rec = ContractHistoryRecorder()
+    client = _client(db, surface=_rich_surface, contract_history=rec)
+    _unlock(client)
+    sid = _scenario(client)
+    key = _candidate_key(client, sid)
+    buy = _leg_identities(client, sid, key)[0]
+    d = _before_expiry(buy["expiry"], 50)
+    quote = _synthetic_quote(d, option_type=buy["option_type"],
+                             strike=buy["strike"], expiration=buy["expiry"],
+                             sigma=0.20, vendor_iv=4.999)   # 離譜的假 vendor 值
+    rec._points_by_symbol[buy["contract_symbol"]] = [quote]
+
+    body = _get(client, sid, key).json()
+    reconstructed_iv = body["legs"]["buy"]["points"][0]["iv"]
+    assert reconstructed_iv == pytest.approx(0.20, abs=1e-6)
+    assert reconstructed_iv != pytest.approx(4.999, abs=0.1)
+
+
+def test_rate_and_dividend_yield_are_resolved_per_observation_date_not_from_today(db):
+    """兩筆觀測分別落在配息 ex-date（`_DIV` 的 "2026-06-01"）前後——
+    q 因此結構上不同（look-ahead 上界擋掉還沒發生的那筆分配）。兩筆各自
+    用**自己那天**的 q 建構報價，若正式接線把 q 錯誤地固定成「今天」
+    算出的單一值，其中一筆會反解偏離目標 sigma。兩筆都精確命中才代表
+    真的逐筆觀測日查表，不是套用同一個「今天」的數字。"""
+    rec = ContractHistoryRecorder()
+    client = _client(db, surface=_rich_surface, contract_history=rec)
+    _unlock(client)
+    sid = _scenario(client)
+    key = _candidate_key(client, sid)
+    buy = _leg_identities(client, sid, key)[0]
+    before_ex_date = "2026-05-15"    # 早於 "2026-06-01"：q 結構上為 0
+    after_ex_date = "2026-06-15"     # 晚於 "2026-06-01"：q 非零
+    assert date.fromisoformat(before_ex_date) < date.fromisoformat(buy["expiry"])
+    assert date.fromisoformat(after_ex_date) < date.fromisoformat(buy["expiry"])
+
+    q_before = dividends_module.compute_q_asof(
+        _DIV, spot=100.0, observation_date=date.fromisoformat(before_ex_date))
+    q_after = dividends_module.compute_q_asof(
+        _DIV, spot=100.0, observation_date=date.fromisoformat(after_ex_date))
+    assert q_before == 0.0
+    assert q_after > 0.0, "夾具本身要真的踩到 look-ahead 邊界兩側"
+
+    quotes = [
+        _synthetic_quote(before_ex_date, option_type=buy["option_type"],
+                         strike=buy["strike"], expiration=buy["expiry"], sigma=0.20),
+        _synthetic_quote(after_ex_date, option_type=buy["option_type"],
+                         strike=buy["strike"], expiration=buy["expiry"], sigma=0.20),
+    ]
+    rec._points_by_symbol[buy["contract_symbol"]] = quotes
+
+    body = _get(client, sid, key).json()
+    points = {p["date"]: p["iv"] for p in body["legs"]["buy"]["points"]}
+    assert points[before_ex_date] == pytest.approx(0.20, abs=1e-6)
+    assert points[after_ex_date] == pytest.approx(0.20, abs=1e-6)

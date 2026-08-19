@@ -19,13 +19,16 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import Response
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from option_chaser import __version__, ivhistory, ivtrend, service, store
+from option_chaser import (__version__, dividends, ivhistory, ivreconstruct,
+                           ivtrend, ratecurve, service, store)
+from option_chaser.data import treasury as treasury_data
 from option_chaser.data.snapshot import snapshot_from_dict, snapshot_to_csv
 from option_chaser.models import (AnalysisParams, ChainSnapshot, FetchError,
                                   ParamError, QuotaExhausted, STRATEGIES)
 from option_chaser.service import DividendLoader, RateCurveLoader
 from option_chaser.timeframe import (TargetMonth, calendar_anchor,
                                      ensure_month_open, month_is_over)
+from option_chaser.valuation import DAYS_PER_YEAR, days_between
 from option_chaser.workspace import now_utc_iso, ny_today
 
 from . import diagnostics, providers
@@ -48,6 +51,11 @@ HistoricalSurface = Callable[..., dict]
 # HIVT-02（#153）：exact-contract 家族，跟上面的 HistoricalSurface（整鏈、
 # (tenor, delta) 重錨定家族）是不同的資料語意，不共用型別也不共用注入點。
 ContractHistoryFetch = Callable[..., list]
+# (from_date, to_date) -> ((curve_date, ((tenor, rate), ...)), ...)
+# HIVR-06（#165）：point-in-time 利率查詢用的全部曲線列（HIVR-01／#160
+# 的 `ratecurve.curve_asof` 吃這個形狀），跟上面 `RateCurveLoader`（只回
+# 「今天」單一曲線，live 分析路徑專用）是不同的資料語意，不共用注入點。
+RateCurveRowsFetch = Callable[[date, date], tuple]
 
 # MVP 範圍（沿用既有 Streamlit 版與 spec #47 的三欄表單）：方向與策略
 # 是固定值，不由前端送。需要看空或多策略時再由對應的票加上。
@@ -596,10 +604,22 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
                    providers.default_historical_surface,
                contract_history: ContractHistoryFetch =
                    providers.default_contract_history,
+               rate_curve_rows: RateCurveRowsFetch =
+                   treasury_data.fetch_curve_range,
                ) -> FastAPI:
     """`fetch`／`storage`／`rate_loader`／`dividend_loader` 皆可注入：
     測試傳入固定快照、記憶體假體與假來源，因此不打真網路、不碰真資料庫，
     決定性。
+
+    `rate_curve_rows`（HIVR-06／#165）：Historical IV Trend reconstruction
+    專用，回傳一段區間**全部**的曲線列（不是只回最新一列的
+    `rate_loader`）——`ratecurve.curve_asof()` 用它逐一觀測日查表，
+    每筆觀測的利率因此對齊自己的日期，不是套用「今天」的曲線。預設接
+    HIVR-01（#160）新增的 `treasury.fetch_curve_range`；Treasury 不像
+    付費 vendor 有配額顧慮，本票範圍內選擇每次請求即時抓取、不另外
+    疊一層持久快取（跟 `rate_loader`／`dividend_loader` 為了扛
+    serverless 唯讀檔案系統與 vendor 配額而疊的 Neon 持久快取不同一個
+    考量），失敗只讓那幾天的觀測記成 `no_rate`、不擋其餘計算。
 
     `rate_loader`（#67）是資料源本身的介面——目前預設接的
     `service.default_rate_curve_loader`（Treasury）是 #73／#74 選型與
@@ -1289,15 +1309,78 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
                 **_identity_context(identity), field=field_name,
                 count=observation_count, **windowed)
 
-    def _project_vendor_iv(points: list[dict]) -> list[tuple[str, float | None]]:
-        """HIVR-04（#163）之後 `_ensure_contract_history` 回傳的是寬版
-        quote dict——這張票本身「還沒有任何東西消費新欄位」（reconstruction
-        要等 #164／#165 才接上），所以先投影回舊版 `(date, vendor_iv)`
-        形狀餵給既有 `_leg_historical_iv_payload`／`ivtrend` 統計量，
-        維持目前的畫面行為（多半是空的，因為 vendor `iv` 大多是 null）
-        不變，不在這張票裡動 reconstruction。
+    def _fetch_rate_curve_rows(dates: list[str]) -> tuple:
+        """HIVR-06（#165）：涵蓋 `dates` 全部日期所需年份的曲線列，供
+        `_rate_by_date_for_leg()` 逐一觀測日查表。空輸入或抓取失敗都回
+        空 tuple——呼叫端據此讓每一筆觀測記成 `no_rate`，不擋其餘計算
+        （這裡刻意不拋出，抓取失敗不是使用者能做什麼的錯誤）。"""
+        if not dates:
+            return ()
+        from_date = date.fromisoformat(min(dates))
+        to_date = date.fromisoformat(max(dates))
+        try:
+            return rate_curve_rows(from_date, to_date)
+        except Exception:  # noqa: BLE001 — 抓不到就讓下游逐筆記 no_rate
+            return ()
+
+    def _rate_by_date_for_leg(rows: tuple, quotes: list[dict],
+                              expiration: str) -> dict[str, float]:
+        """逐一觀測日：那天的曲線（`curve_asof`，找不到就跳過）→ 那天到
+        `expiration` 的年期 → 期限對齊利率（`rate_for_tenor`）。跟
+        `ivreconstruct.reconstruct_iv_series()` 算 `T` 的方式完全一致
+        （同一個 `DAYS_PER_YEAR`／`days_between`），這裡只是預先算好
+        逐日的純量利率供它查表，不重算 T 的定義。
         """
-        return [(q["date"], q["vendor_iv"]) for q in points]
+        exp_date = date.fromisoformat(expiration)
+        out: dict[str, float] = {}
+        for q in quotes:
+            d = q["date"]
+            if d in out:
+                continue
+            curve = ratecurve.curve_asof(rows, d)
+            if curve is None:
+                continue
+            T = days_between(date.fromisoformat(d), exp_date) / DAYS_PER_YEAR
+            out[d] = ratecurve.rate_for_tenor(curve, T)
+        return out
+
+    def _dividend_yield_by_date_for_leg(history, quotes: list[dict],
+                                        ) -> dict[str, float]:
+        """逐一觀測日：那天的 q＝那筆觀測**自己的** `underlying_price`
+        （跟 reconstruction 用同一筆報價的原則一致——分母是那個時刻的
+        現價，不是另一個時刻的）。`history` 為 `None`（配息資料完全
+        抓不到）或 `underlying_price` 缺席時該筆跳過，讓
+        `reconstruct_iv_series()` 記成 `no_dividend_yield`。
+        """
+        if history is None:
+            return {}
+        out: dict[str, float] = {}
+        for q in quotes:
+            spot = q.get("underlying_price")
+            if spot is None or spot <= 0:
+                continue
+            d = q["date"]
+            out[d] = dividends.compute_q_asof(
+                history, spot=spot, observation_date=date.fromisoformat(d))
+        return out
+
+    def _reconstruct_leg_series(identity: dict, quotes: list[dict],
+                                rate_rows: tuple, dividend_history,
+                                ) -> list[tuple[str, float | None]]:
+        """HIVR-06（#165）：寬版 quote 序列 → reconstruction（#164）→
+        `(date, iv)` 序列，餵給既有 `_leg_historical_iv_payload`／
+        `ivtrend` 統計量——**每一筆都重新反解，包含 vendor 剛好給了非
+        null `iv` 的那些**（spec #159：全期間同一把尺，不得混用 vendor
+        算的與自己算的）。存 raw quote、讀取時重算是既有架構決策
+        （spec #159 §3）——這裡就是那個「讀取時」。
+        """
+        rate_by_date = _rate_by_date_for_leg(
+            rate_rows, quotes, identity["expiration"])
+        q_by_date = _dividend_yield_by_date_for_leg(dividend_history, quotes)
+        series, _failure_counts = ivreconstruct.reconstruct_iv_series(
+            identity["option_type"], identity["strike"], identity["expiration"],
+            quotes, rate_by_date, q_by_date)
+        return series
 
     def _leg_historical_iv_payload(identity: dict, points: list[tuple],
                                    status: str, note: str | None, *,
@@ -1431,13 +1514,26 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         legs_payload: dict[str, dict] = {}
         candidate_legs = cand.get("legs") or []
         leg_names = ("buy", "sell") if len(candidate_legs) >= 2 else ("buy",)
+        leg_fetches = []
         for name, leg in zip(leg_names, candidate_legs):
             identity = _leg_contract_identity(leg, sc.symbol)
             leg_points, leg_status, leg_note = _ensure_contract_history(
                 identity, provider, token, emit=_emit_exact)
+            leg_fetches.append((name, identity, leg_points, leg_status, leg_note))
+
+        # HIVR-06（#165）：point-in-time r／q 輸入是兩腿共用的——Treasury
+        # 曲線與配息紀錄跟哪一條腿無關，一次抓好即可，不必逐腿各抓一次。
+        all_dates = [q["date"] for _, _, points, _, _ in leg_fetches
+                    for q in points]
+        rate_rows = _fetch_rate_curve_rows(all_dates)
+        dividend_history, _div_note = _dividend_loader()(sc.symbol, ny_today())
+
+        for name, identity, leg_points, leg_status, leg_note in leg_fetches:
+            reconstructed = _reconstruct_leg_series(
+                identity, leg_points, rate_rows, dividend_history)
             legs_payload[name] = _leg_historical_iv_payload(
-                identity, _project_vendor_iv(leg_points), leg_status,
-                leg_note, today=ny_today(), emit=_emit_exact)
+                identity, reconstructed, leg_status, leg_note,
+                today=ny_today(), emit=_emit_exact)
 
         # `expiry_counts` 掛在每個策略結果（`results[i]`）底下，不是
         # view 頂層——這裡只要「有哪些到期日」，跨策略去重即可。
