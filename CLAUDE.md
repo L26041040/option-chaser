@@ -27,7 +27,7 @@ block 裡，不能切成好幾個 code block、也不能中間插普通文字把
 `［回報#001］spec #137 拆票完成`）。編號是**累計總數**，不因換
 session、換分支、換主題而歸零——目前最新編號記在這裡：
 
-> 目前次序：013（下一份回報用 014）
+> 目前次序：014（下一份回報用 015）
 
 每發一份回報就把上面這個數字改成剛剛用掉的那個，跟著那次改動一起
 commit（沒有其他改動要 commit 時，單獨為這一行開一個小 commit 也
@@ -484,8 +484,29 @@ recipe 已經錯過一次，存算好的 IV 會讓任何修正都要重花 vendo
 統計層一行不用改。Seam 沿用既有兩層（純函式單元測試＋HTTP API），
 不新增 seam。
 
-**下一步**：等需求方審閱 #159，核准後才 `/to-tickets`。本輪未拆票、
-未施工、未開 PR。
+**拆票完成（2026-08-18，`/to-tickets`，需求方核准後發佈）**——11 張
+子票 **#160–#170**（HIVR-01–11），全部 `ready-for-agent`、皆為 #159
+的 GitHub sub-issue。需求方裁示「拆成好作業的方式比較適合，我不會
+中間停下來看」，因此**以單張票好施工為準、不為了中途 demo 而合併**
+——原本設計成一張「能 demo」的大 tracer bullet（空卡片變成有圖）已
+依此拆成三張（#163 資料層／#164 純模組／#165 接線）。
+
+依賴順序（照舊 `/implement` 一張張做）：
+
+- **#160** HIVR-01 point-in-time Treasury 曲線 ← 無擋，可立即開工
+- **#161** HIVR-02 point-in-time 股利 q（ex-date 上界擋 look-ahead）← 無擋
+- **#162** HIVR-03 diagnostics subsystem 拆分 ← 無擋（prefactor）
+- **#163** HIVR-04 historical quote record：parser＋storage＋舊格式重抓（被 #162 擋）
+- **#164** HIVR-05 reconstruction 純模組（被 #163 擋）
+- **#165** HIVR-06 接線：**空卡片變成有圖**（被 #160／#161／#164 擋）
+- **#166** HIVR-07 reconstruction 帳本＋staleness＋203 註解更正（被 #162／#165 擋）
+- **#167** HIVR-08 近到期 low-confidence 標記（被 #165 擋）
+- **#168** HIVR-09 vendor-IV benchmark gate（被 #165 擋）
+- **#169** HIVR-10 legacy 事件聚合＋週末 no_data 降 info（被 #162 擋）
+- **#170** HIVR-11 全面回歸與 E2E 最終驗收（被 #165–#169 擋）
+
+**下一步**：等需求方 cue `/implement` 開工。依專案規則全部子票做完
+才開 PR，中途不主動開。本輪未施工、未開 PR。
 
 ### Spec #143（2026-08-15 發佈）——Application Diagnostics / Error Log 系統
 
