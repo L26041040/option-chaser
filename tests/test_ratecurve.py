@@ -11,11 +11,13 @@ import pytest
 _FIXTURES = Path(__file__).parent / "fixtures"
 
 from option_chaser.models import ParamError
-from option_chaser.ratecurve import (CurveParseError, RateCurve,
+from option_chaser.ratecurve import (CurveParseError, RateCurve, curve_asof,
                                      curve_from_dict, curve_from_par_yields,
                                      curve_to_dict, par_to_continuous,
-                                     parse_treasury_csv, parse_treasury_xml,
-                                     rate_for_tenor)
+                                     parse_treasury_csv,
+                                     parse_treasury_csv_rows,
+                                     parse_treasury_xml,
+                                     parse_treasury_xml_rows, rate_for_tenor)
 
 ONE_MONTH = 1.0 / 12.0
 
@@ -138,6 +140,28 @@ def test_parse_csv_against_a_real_captured_response():
     assert len(curve.nodes) == 14   # 樣本表頭的全部 14 個年期欄位
 
 
+# ---------- CSV 全部資料列（issue #160：point-in-time 查詢用） ----------
+
+def test_parse_csv_rows_returns_every_dated_row_not_just_latest():
+    rows = parse_treasury_csv_rows(CSV_TEXT)
+    assert [d for d, _ in rows] == ["2026-07-30", "2026-07-31"]
+
+
+def test_parse_csv_rows_and_parse_csv_agree_on_the_latest_row():
+    rows = parse_treasury_csv_rows(CSV_TEXT)
+    latest = max(rows, key=lambda r: r[0])
+    assert curve_from_par_yields(*latest) == parse_treasury_csv(CSV_TEXT)
+
+
+def test_parse_csv_rows_rejects_the_same_garbage_as_parse_csv():
+    with pytest.raises(CurveParseError):
+        parse_treasury_csv_rows("<html>maintenance</html>")
+    with pytest.raises(CurveParseError):
+        parse_treasury_csv_rows('Date,"1 Mo"\n')
+    with pytest.raises(CurveParseError):
+        parse_treasury_csv_rows('Date,"1 Mo"\n07/31/2026,\n')
+
+
 # ---------- XML 解析（備援端點） ----------
 
 XML_TEXT = '''<?xml version="1.0" encoding="utf-8"?>
@@ -195,6 +219,53 @@ def test_parse_xml_against_a_real_captured_response():
     assert nodes[2.0] == pytest.approx(par_to_continuous(0.0346))
     assert nodes[30.0] == pytest.approx(par_to_continuous(0.0485))
     assert len(curve.nodes) == 14   # 不含 BC_30YEARDISPLAY（非 tenor）
+
+
+# ---------- XML 全部資料列（issue #160：point-in-time 查詢用） ----------
+
+def test_parse_xml_rows_returns_every_entry_not_just_latest():
+    rows = parse_treasury_xml_rows(XML_TEXT)
+    assert [d for d, _ in rows] == ["2026-07-30", "2026-07-31"]
+
+
+def test_parse_xml_rows_and_parse_xml_agree_on_the_latest_entry():
+    rows = parse_treasury_xml_rows(XML_TEXT)
+    latest = max(rows, key=lambda r: r[0])
+    assert curve_from_par_yields(*latest) == parse_treasury_xml(XML_TEXT)
+
+
+def test_parse_xml_rows_rejects_the_same_garbage_as_parse_xml():
+    with pytest.raises(CurveParseError):
+        parse_treasury_xml_rows("not xml at all")
+    with pytest.raises(CurveParseError):
+        parse_treasury_xml_rows("<feed></feed>")
+
+
+# ---------- curve_asof：point-in-time 查詢（issue #160） ----------
+
+_ASOF_ROWS = parse_treasury_csv_rows(CSV_TEXT)   # 2026-07-30、2026-07-31 兩列
+
+
+def test_curve_asof_exact_date_match():
+    curve = curve_asof(_ASOF_ROWS, "2026-07-30")
+    assert curve.curve_date == "2026-07-30"
+
+
+def test_curve_asof_falls_back_to_nearest_prior_row_on_a_gap_date():
+    """觀察日落在資料缺席的日子（如週末／假日）——取前一個有資料的
+    交易日，不外插到之後才有的那一列。"""
+    curve = curve_asof(_ASOF_ROWS, "2026-08-02")   # 兩列之後的週末
+    assert curve.curve_date == "2026-07-31"
+
+
+def test_curve_asof_before_data_start_returns_none():
+    """觀察日早於全部資料——不外插，回傳 None 讓呼叫端自行判斷。"""
+    assert curve_asof(_ASOF_ROWS, "2026-01-01") is None
+
+
+def test_curve_asof_picks_latest_not_first_when_several_rows_qualify():
+    curve = curve_asof(_ASOF_ROWS, "2026-12-31")
+    assert curve.curve_date == "2026-07-31"
 
 
 # ---------- 快取序列化 round-trip ----------

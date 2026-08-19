@@ -27,8 +27,9 @@ from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 from ..models import FetchError
-from ..ratecurve import (RateCurve, curve_from_dict, curve_to_dict,
-                         parse_treasury_csv, parse_treasury_xml)
+from ..ratecurve import (CurveRows, RateCurve, curve_from_dict, curve_to_dict,
+                         parse_treasury_csv, parse_treasury_csv_rows,
+                         parse_treasury_xml, parse_treasury_xml_rows)
 
 CSV_URL = ("https://home.treasury.gov/resource-center/data-chart-center/"
            "interest-rates/daily-treasury-rates.csv/{year}/all"
@@ -90,6 +91,43 @@ def fetch_curve(today: date, http_get=_http_get) -> RateCurve:
             # （不是「利率」這個籠統概念）、哪一年的哪種格式、失敗原因。
             errors.append(f"Treasury {label}（{year}）：{e}")
     raise FetchError(f"Treasury 曲線抓取失敗：{'; '.join(errors)}")
+
+
+def fetch_curve_rows_for_year(year: int, http_get=_http_get) -> CurveRows:
+    """單一年度 CSV→XML 備援，回傳該年全部資料列（曲線日, 節點）。
+
+    issue #160 前置件：供歷史 IV 重建逐日點對點查詢用，本身尚無呼叫端
+    （尚未接進任何既有路徑）。跟 `fetch_curve` 用同一顆 CSV→XML 備援序，
+    差別只在回傳全部列、不挑最新，讓上層（`fetch_curve_range` 或未來的
+    逐日查詢）自行決定要哪一列。全敗拋 `FetchError`，訊息一樣點名來源
+    與年份。
+    """
+    attempts = ((CSV_URL, parse_treasury_csv_rows, "CSV"),
+                (XML_URL, parse_treasury_xml_rows, "XML"))
+    errors: list[str] = []
+    for url_tpl, parse, label in attempts:
+        try:
+            return parse(http_get(url_tpl.format(year=year)))
+        except Exception as e:  # noqa: BLE001 — 連線與解析失敗一律走下一備援
+            errors.append(f"Treasury {label}（{year}）：{e}")
+    raise FetchError(f"Treasury 曲線抓取失敗：{'; '.join(errors)}")
+
+
+def fetch_curve_range(from_date: date, to_date: date,
+                      http_get=_http_get) -> CurveRows:
+    """涵蓋 `[from_date, to_date]` 年份的全部資料列，逐年抓取後串接。
+
+    issue #160 前置件，同樣尚無呼叫端。單一年份抓取失敗不讓整段範圍報廢——
+    直接跳過那一年，缺口交給 `curve_asof` 對落在缺口裡的觀察日自然回傳
+    `None`，而不是讓一個年份的暫時性故障擋掉其他年份都已抓到的資料。
+    """
+    rows: list[tuple[str, tuple[tuple[float, float], ...]]] = []
+    for year in range(from_date.year, to_date.year + 1):
+        try:
+            rows.extend(fetch_curve_rows_for_year(year, http_get=http_get))
+        except FetchError:
+            continue
+    return tuple(rows)
 
 
 def _write_cache(cache_path: Path, today: date, curve: RateCurve) -> None:

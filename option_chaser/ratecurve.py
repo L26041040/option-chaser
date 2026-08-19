@@ -115,11 +115,15 @@ def _parse_percent(cell: str) -> float | None:
         return None                       # 空格／N/A → 該節點缺值，跳過
 
 
-def parse_treasury_csv(text: str) -> RateCurve:
-    """Daily Treasury Par Yield Curve 年度 CSV → 最新一列 → RateCurve。
+CurveRows = tuple[tuple[str, tuple[tuple[float, float], ...]], ...]
 
-    只認得的 tenor 欄位進節點；日期取全檔最大值（不假設列序）。任何一步
-    落空都拋 `CurveParseError`——寧可讓上層走 fallback，不默默給錯曲線。
+
+def parse_treasury_csv_rows(text: str) -> CurveRows:
+    """Daily Treasury Par Yield Curve 年度 CSV → 全部有效資料列（曲線日, 節點）。
+
+    只認得的 tenor 欄位進節點；不挑最新——由呼叫端決定要哪一列（`parse_treasury_csv`
+    取全檔最大值；`curve_asof` 取不晚於某日期的最新一列）。任何一步落空都拋
+    `CurveParseError`——寧可讓上層走 fallback，不默默給錯曲線。
     """
     try:
         rows = list(csv.reader(io.StringIO(text)))
@@ -138,7 +142,7 @@ def parse_treasury_csv(text: str) -> RateCurve:
     if not tenor_cols:
         raise CurveParseError(f"CSV 表頭無可辨識的年期欄：{header}")
 
-    best: tuple[str, tuple[tuple[float, float], ...]] | None = None
+    result: list[tuple[str, tuple[tuple[float, float], ...]]] = []
     for row in rows[1:]:
         if not row or not row[0].strip():
             continue
@@ -149,10 +153,19 @@ def parse_treasury_csv(text: str) -> RateCurve:
             if i < len(row) and (y := _parse_percent(row[i])) is not None)
         if not pairs:
             continue
-        if best is None or curve_date > best[0]:
-            best = (curve_date, pairs)
-    if best is None:
+        result.append((curve_date, pairs))
+    if not result:
         raise CurveParseError("CSV 無任何含利率節點的資料列")
+    return tuple(result)
+
+
+def parse_treasury_csv(text: str) -> RateCurve:
+    """Daily Treasury Par Yield Curve 年度 CSV → 最新一列 → RateCurve。
+
+    日期取全檔最大值（不假設列序）——實際挑選邏輯見 `parse_treasury_csv_rows`。
+    """
+    rows = parse_treasury_csv_rows(text)
+    best = max(rows, key=lambda r: r[0])
     return curve_from_par_yields(*best)
 
 
@@ -160,14 +173,17 @@ def _localname(tag: str) -> str:
     return tag.rsplit("}", 1)[-1]
 
 
-def parse_treasury_xml(text: str) -> RateCurve:
-    """Treasury XML feed（Atom/OData）→ 最新 entry → RateCurve（CSV 之備援）。"""
+def parse_treasury_xml_rows(text: str) -> CurveRows:
+    """Treasury XML feed（Atom/OData）→ 全部有效 entry（曲線日, 節點）。
+
+    不挑最新——理由與 `parse_treasury_csv_rows` 相同。
+    """
     try:
         root = ElementTree.fromstring(text)
     except ElementTree.ParseError as e:
         raise CurveParseError(f"XML 解析失敗：{e}") from e
 
-    best: tuple[str, tuple[tuple[float, float], ...]] | None = None
+    result: list[tuple[str, tuple[tuple[float, float], ...]]] = []
     for entry in root.iter():
         if _localname(entry.tag) != "entry":
             continue
@@ -183,10 +199,32 @@ def parse_treasury_xml(text: str) -> RateCurve:
                 pairs.append((_tenor_years(m.group(1), m.group(2)), y))
         if curve_date is None or not pairs:
             continue
-        if best is None or curve_date > best[0]:
-            best = (curve_date, tuple(pairs))
-    if best is None:
+        result.append((curve_date, tuple(pairs)))
+    if not result:
         raise CurveParseError("XML 中沒有任何含日期與利率節點的 entry")
+    return tuple(result)
+
+
+def parse_treasury_xml(text: str) -> RateCurve:
+    """Treasury XML feed（Atom/OData）→ 最新 entry → RateCurve（CSV 之備援）。"""
+    rows = parse_treasury_xml_rows(text)
+    best = max(rows, key=lambda r: r[0])
+    return curve_from_par_yields(*best)
+
+
+def curve_asof(rows: CurveRows, observation_date: str) -> RateCurve | None:
+    """從一批（曲線日, 節點）資料列挑「不晚於 observation_date 的最新一列」建曲線。
+
+    用於歷史 IV 重建的逐日點對點利率查詢（issue #160）：`observation_date`
+    落在週末／假日等曲線資料缺席的日子時，取前一個有資料的交易日
+    （ISO 日期字串可直接字典序比較，不需另外剖析成 `date`）。找不到任何
+    不晚於 `observation_date` 的資料列（例如目標日早於資料起點）回傳
+    `None`——不外插，讓呼叫端自行決定如何處理缺口。
+    """
+    eligible = [r for r in rows if r[0] <= observation_date]
+    if not eligible:
+        return None
+    best = max(eligible, key=lambda r: r[0])
     return curve_from_par_yields(*best)
 
 

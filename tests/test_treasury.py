@@ -10,7 +10,9 @@ import pytest
 from option_chaser.data import treasury
 from option_chaser.models import FetchError
 from option_chaser.data.treasury import (CACHE_MAX_AGE_DAYS, CSV_URL, XML_URL,
-                                         fetch_curve, load_rate_curve)
+                                         fetch_curve, fetch_curve_range,
+                                         fetch_curve_rows_for_year,
+                                         load_rate_curve)
 from option_chaser.ratecurve import RateCurve, par_to_continuous
 
 TODAY = date(2026, 7, 31)
@@ -90,6 +92,78 @@ def test_fetch_curve_failure_message_names_the_source_and_stage():
     assert "Treasury" in message
     assert "CSV" in message and "XML" in message   # 兩種格式都試過
     assert "connection refused" in message
+
+
+# ---------- fetch_curve_rows_for_year／fetch_curve_range（issue #160 前置件） ----------
+
+def test_fetch_curve_rows_for_year_returns_every_row_via_csv():
+    calls = []
+
+    def http_get(url):
+        calls.append(url)
+        return CSV_TEXT
+
+    rows = fetch_curve_rows_for_year(2026, http_get=http_get)
+    assert [d for d, _ in rows] == ["2026-07-31"]
+    assert calls == [CSV_URL.format(year=2026)]
+
+
+def test_fetch_curve_rows_for_year_falls_back_to_xml_when_csv_fails():
+    def http_get(url):
+        if url == CSV_URL.format(year=2026):
+            raise OSError("boom")
+        return XML_TEXT
+
+    rows = fetch_curve_rows_for_year(2026, http_get=http_get)
+    assert [d for d, _ in rows] == ["2026-07-30"]
+
+
+def test_fetch_curve_rows_for_year_raises_when_both_sources_fail():
+    def http_get(url):
+        raise OSError("offline")
+
+    with pytest.raises(FetchError):
+        fetch_curve_rows_for_year(2026, http_get=http_get)
+
+
+def test_fetch_curve_range_concatenates_rows_across_years():
+    csv_2025 = ('Date,"1 Mo","1 Yr"\n' "12/31/2025,4.10,3.90\n")
+    csv_2026 = ('Date,"1 Mo","1 Yr"\n' "01/02/2026,4.11,3.91\n")
+
+    def http_get(url):
+        if url == CSV_URL.format(year=2025):
+            return csv_2025
+        if url == CSV_URL.format(year=2026):
+            return csv_2026
+        raise OSError("unexpected url")
+
+    rows = fetch_curve_range(date(2025, 12, 31), date(2026, 1, 2),
+                             http_get=http_get)
+    assert [d for d, _ in rows] == ["2025-12-31", "2026-01-02"]
+
+
+def test_fetch_curve_range_skips_a_year_that_fails_entirely_instead_of_raising():
+    """單一年份 CSV／XML 兩者皆失敗，不讓整段跨年查詢報廢——其他年份
+    抓到的資料照樣回傳，缺口留給 `curve_asof` 對落在缺口裡的觀察日
+    自然回傳 None。"""
+    def http_get(url):
+        if url == CSV_URL.format(year=2026) or url == XML_URL.format(year=2026):
+            raise OSError("offline for 2026")
+        return CSV_TEXT
+
+    rows = fetch_curve_range(date(2025, 1, 1), date(2026, 12, 31),
+                             http_get=http_get)
+    assert [d for d, _ in rows] == ["2026-07-31"]   # 只剩 2025 那年成功
+
+
+def test_fetch_curve_range_within_a_single_year():
+    def http_get(url):
+        assert url == CSV_URL.format(year=2026)
+        return CSV_TEXT
+
+    rows = fetch_curve_range(date(2026, 1, 1), date(2026, 12, 31),
+                             http_get=http_get)
+    assert [d for d, _ in rows] == ["2026-07-31"]
 
 
 # ---------- `_http_get`：#74 硬化（真實標頭、明確檢查狀態碼） ----------
