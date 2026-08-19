@@ -624,7 +624,33 @@ recipe 已經錯過一次，存算好的 IV 會讓任何修正都要重花 vendo
   不外洩進 diagnostic context 白名單）＋修正兩條既有測試因新增欄位
   而需要更新的精確字典比對。全套後端雙後端全綠，前端 typecheck／
   557 條 vitest 全綠。
-- **#168** HIVR-09 vendor-IV benchmark gate（被 #165 擋）
+- **HIVR-09**（#168，commit `67d7e55`）— Vendor-IV benchmark 合理性
+  gate：`option_chaser/ivreconstruct.py` 新增兩個具名常數
+  `VENDOR_IV_BENCHMARK_MIN = 0.01`（下界依 calibration 實測抓到的
+  退化值，真實 vendor 回應出現過 `vendor_iv≈0.0001`）／
+  `VENDOR_IV_BENCHMARK_MAX = 5.0`（對齊 `implied_vol()` 自己的搜尋
+  上限，不是另外挑的門檻）與純函式 `vendor_iv_is_benchmarkable()`。
+  這個 gate 只管 benchmark／QA／診斷比較要不要採信某筆 vendor
+  `iv`，跟 canonical series 完全無關——canonical series 本來就不讀
+  `vendor_iv`（既有紅線，本票新增測試直接證明：同一份報價序列只換
+  vendor_iv 為退化值／正常值／缺席三種情況，反解出來的 canonical
+  series 逐位元相同）。新增 diagnostics stage `vendor_benchmark`
+  （`api_app/diagnostics.py` STAGES／whitelist）與
+  `_emit_vendor_benchmark()`（`api_app/main.py`，接在
+  `_reconstruct_leg_series()` 裡緊接 reconstruction 帳本之後發送）：
+  每一腿一筆事件，報告這張合約有幾筆觀測帶了 vendor IV
+  （`vendor_iv_present`）、其中被 gate 排除幾筆
+  （`vendor_iv_excluded_degenerate`——排除是可見的，不是靜默丟棄）、
+  實際拿去跟 canonical series 比較幾筆（`vendor_iv_compared`）、
+  平均絕對差（`mean_abs_diff`，無可比較筆數時缺席）。加進
+  `_ALWAYS_KEPT_STAGES` 避免被同一腿高流量事件擠出 per-request
+  cap。測試：`test_ivreconstruct.py` 新增 8 條純函式測試（門檻邊界、
+  真實退化值、上界與 solver 搜尋上限的關聯、canonical series 不受
+  影響的直接證明）；`test_api_iv_history.py` 新增 4 條端到端測試
+  （退化值排除且可見、門檻內值正常比較、缺席值不算進任何一個計數、
+  帳本在高流量 legacy 事件洪流下存活）＋修正一條既有測試因新增
+  stage 而需要更新的 stage 集合斷言。全套後端雙後端全綠；本票未
+  觸碰任何前端檔案，typecheck／557 條 vitest 確認無回歸。
 - **#169** HIVR-10 legacy 事件聚合＋週末 no_data 降 info（被 #162 擋）
 - **#170** HIVR-11 全面回歸與 E2E 最終驗收（被 #165–#169 擋）
 
