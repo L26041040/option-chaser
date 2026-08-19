@@ -493,7 +493,15 @@ recipe 已經錯過一次，存算好的 IV 會讓任何修正都要重花 vendo
 
 依賴順序（照舊 `/implement` 一張張做）：
 
-- **#160** HIVR-01 point-in-time Treasury 曲線 ← 無擋，可立即開工
+- **HIVR-01**（#160）point-in-time Treasury 曲線 ✅ commit `36ffd29`：
+  `ratecurve.py` 新增 `parse_treasury_csv_rows`／`parse_treasury_xml_rows`
+  （回傳全部有效資料列，不挑最新）＋純函式 `curve_asof(rows,
+  observation_date)`（取不晚於觀察日的最新一列、找不到回傳 `None`
+  不外插）；既有 `parse_treasury_csv`／`parse_treasury_xml` 改為對新
+  row-level 解析器取 `max()` 的薄包裝，既有行為與既有測試原封不動。
+  `data/treasury.py` 新增 `fetch_curve_rows_for_year`／
+  `fetch_curve_range`（單年 CSV→XML 備援／跨年度串接、單年失敗不擋
+  其他年份）——本票範圍內純前置件，尚無呼叫端，接線留給 HIVR-06
 - **#161** HIVR-02 point-in-time 股利 q（ex-date 上界擋 look-ahead）← 無擋
 - **#162** HIVR-03 diagnostics subsystem 拆分 ← 無擋（prefactor）
 - **#163** HIVR-04 historical quote record：parser＋storage＋舊格式重抓（被 #162 擋）
@@ -505,8 +513,8 @@ recipe 已經錯過一次，存算好的 IV 會讓任何修正都要重花 vendo
 - **#169** HIVR-10 legacy 事件聚合＋週末 no_data 降 info（被 #162 擋）
 - **#170** HIVR-11 全面回歸與 E2E 最終驗收（被 #165–#169 擋）
 
-**下一步**：等需求方 cue `/implement` 開工。依專案規則全部子票做完
-才開 PR，中途不主動開。本輪未施工、未開 PR。
+**下一步**：`/implement` 施工中，依序做票、無阻擋不停下等待確認
+（需求方裁示）。依專案規則全部子票做完才開 PR，中途不主動開。
 
 ### Spec #143（2026-08-15 發佈）——Application Diagnostics / Error Log 系統
 
