@@ -27,7 +27,7 @@ block 裡，不能切成好幾個 code block、也不能中間插普通文字把
 `［回報#001］spec #137 拆票完成`）。編號是**累計總數**，不因換
 session、換分支、換主題而歸零——目前最新編號記在這裡：
 
-> 目前次序：014（下一份回報用 015）
+> 目前次序：015（下一份回報用 016）
 
 每發一份回報就把上面這個數字改成剛剛用掉的那個，跟著那次改動一起
 commit（沒有其他改動要 commit 時，單獨為這一行開一個小 commit 也
@@ -685,7 +685,28 @@ recipe 已經錯過一次，存算好的 IV 會讓任何修正都要重花 vendo
   端到端版本改驗證「兩個 subsystem 正常並存」，cap 溢位保證改用合成
   事件的單元測試覆蓋。全套後端雙後端全綠；本票未觸碰任何前端檔案，
   typecheck／557 條 vitest 確認無回歸。
-- **#170** HIVR-11 全面回歸與 E2E 最終驗收（被 #165–#169 擋）
+- **HIVR-11**（#170，commit `62d9f17`）— 全面回歸與 E2E 最終驗收：
+  逐條稽核 issue #170 明列的九條紅線，全數已由既有測試覆蓋（多數在
+  HIVR-01–10 施工當下已各自涵蓋），補齊兩處缺口——「exact-contract
+  路徑絕不呼叫 legacy 重錨定函式」的既有 AST 隔離測試擴充涵蓋
+  HIVR-07／HIVR-09 新增的三個函式（`_emit_reconstruction_ledger`／
+  `_emit_staleness`／`_emit_vendor_benchmark`，先前只涵蓋到 HIVR-06
+  為止）；新增端到端測試逐欄位驗證回應裡的 `contract` identity 精確
+  等於候選自己的 leg（strike／expiration／option_type／
+  contract_symbol），先前這條紅線只被別的測試間接蘊含、沒有專屬
+  斷言。全套把關：後端 pytest 雙後端（memory＋真實 Postgres）全綠
+  （1427 條）；前端 typecheck／557 條 vitest／production build 全綠；
+  Playwright E2E 手機＋桌面共 84 條全綠（quota／vendor 失敗優雅降級、
+  掛牌不滿一年如實顯示、完全無可比較觀測誠實顯示「沒有歷史資料」等
+  場景皆由既有 E2E 覆蓋，本輪未新增專屬案例——新增的 `low_confidence`
+  欄位與新增診斷 stage 皆為前端零渲染的純加法，不影響任何既有
+  fixture）。沒有任何既有斷言被放寬或移除以達成全綠——HIVR-10 刪除
+  的三條測試針對的是該票本身刻意移除的機制，不是弱化仍然存在的行為
+  保證。本輪未發現新的實質缺陷，只補了上述兩項測試覆蓋缺口。
+
+**Spec #159（HIVR-01–11，issues #160–170）全十一張子票全數完成。**
+依專案規則全部子票做完才開 PR、merge 回 master，中途不主動開——目前
+等需求方 cue 才實際開 PR。
 
 **下一步**：`/implement` 施工中，依序做票、無阻擋不停下等待確認
 （需求方裁示）。依專案規則全部子票做完才開 PR，中途不主動開。
