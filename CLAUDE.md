@@ -651,7 +651,40 @@ recipe 已經錯過一次，存算好的 IV 會讓任何修正都要重花 vendo
   帳本在高流量 legacy 事件洪流下存活）＋修正一條既有測試因新增
   stage 而需要更新的 stage 集合斷言。全套後端雙後端全綠；本票未
   觸碰任何前端檔案，typecheck／557 條 vitest 確認無回歸。
-- **#169** HIVR-10 legacy 事件聚合＋週末 no_data 降 info（被 #162 擋）
+- **HIVR-10**（#169，commit `fd03b56`）— Legacy backfill／reanchor 事件
+  聚合＋週末 no_data 降為 info：Legacy（normalized skew）家族兩個高
+  流量事件源收斂成各自一筆摘要。**Backfill**：一次批次最多 25 天、
+  每天可能查好幾個到期日，舊版每次 vendor 呼叫各發一筆
+  `vendor_fetch`＋`payload_parse`（外加每天一筆 `database_write`），
+  輕鬆破百筆。新增 `_emit_backfill_summary()`，批次結束後只發一筆
+  事件，攜帶三分類計數：`days_with_data`／`days_no_data_expected`
+  （週末，正常現象）＋`days_no_data_unexpected`（交易日卻沒資料，
+  值得留意）／`days_failed`。`_vendor_fetch_severity`／
+  `_payload_parse_severity`／`_emit_surface_telemetry` 三個只服務舊
+  機制的函式隨之整個刪除。**Reanchor**：舊版對這個 symbol 已存的每一
+  筆歷史快照各發一筆 `reanchor` 事件——累積一年快照的 Scenario 光開頁
+  就能炸出幾十筆。新增 `_reanchor_in_grid()`（純判準，DG-04 既有
+  「核心欄位全 null」邏輯原樣沿用）與 `_emit_reanchor_summary()`，
+  一次 request 只發一筆摘要：`total_dates`／`in_grid_dates`／
+  `out_of_grid_dates`。**週末 severity**：新增 `_is_weekend()`（只濾
+  週末，比照 `ivhistory.trading_days_back()` 既有「不維護美股假日表」
+  的取捨與理由——`sampling_schedule()` 本來就只排交易日，市場假日
+  結構上無法在沒有假日表的情況下與「交易日撲空」區分，因此仍落在會
+  示警的那個桶子，這是明確記錄的已知殘留噪音，不是遺漏，issue 留言
+  已記錄這個裁決）。Normalized Skew 的計算與呈現本身完全未動
+  （`option_chaser/ivhistory.py` 與 `tests/test_ivhistory.py` 零改動，
+  `git diff` 確認）；`_DIAGNOSTICS_STORAGE_CAP_PER_REQUEST` 維持 40，
+  噪音是靠少發事件而非調高上限降下來的（新增測試正面驗證：完整
+  backfill 現在遠低於 20 筆 legacy 事件，過去輕易破百）。測試：刪除
+  三條只服務已移除機制的既有測試，新增一條用函式簽章直接證明新摘要
+  函式結構上不吃任何 vendor 自由格式文字；重寫三條 reanchor 測試改驗
+  聚合後的計數，新增一條混合情境測試對照票上範例句型；重寫兩條
+  no_data 測試涵蓋 AC5／AC6（交易日撲空仍示警、週末撲空降為 info，
+  後者用 `monkeypatch` 注入真實週六日期）；重寫三條過去依賴「legacy
+  backfill 天然構成洪水」的既有測試（HIVR-03／HIVR-07／HIVR-09）——
+  端到端版本改驗證「兩個 subsystem 正常並存」，cap 溢位保證改用合成
+  事件的單元測試覆蓋。全套後端雙後端全綠；本票未觸碰任何前端檔案，
+  typecheck／557 條 vitest 確認無回歸。
 - **#170** HIVR-11 全面回歸與 E2E 最終驗收（被 #165–#169 擋）
 
 **下一步**：`/implement` 施工中，依序做票、無阻擋不停下等待確認
