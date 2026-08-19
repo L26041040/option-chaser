@@ -363,52 +363,6 @@ def _rate_limit_context(telemetry: dict) -> dict:
            if k.startswith("X-Api-Ratelimit-")}
 
 
-def _vendor_fetch_severity(telemetry: dict) -> str:
-    vendor_status = telemetry.get("vendor_status")
-    if vendor_status is None:
-        return "error"          # HTTP／連線層失敗，連 payload 都沒拿到
-    if vendor_status == "no_data":
-        return "warning"
-    if vendor_status == "ok":
-        return "info"
-    return "error"              # vendor 明確回報失敗（例如 s="error"）
-
-
-def _payload_parse_severity(telemetry: dict) -> str:
-    raw = telemetry.get("raw_rows") or 0
-    parsed = (telemetry.get("parsed_call_rows") or 0) + \
-        (telemetry.get("parsed_put_rows") or 0)
-    return "warning" if raw > 0 and parsed == 0 else "info"
-
-
-def _emit_surface_telemetry(emit, telemetry: dict, *, provider: str,
-                            symbol: str, date: str,
-                            expiration: str | None) -> None:
-    """`marketdata.fetch_surface` 的 observer callback 落地處。它給的是
-    一個合併的 telemetry dict（#144）；這裡拆成 `vendor_fetch` 與
-    `payload_parse` 兩個診斷事件——兩者是不同站，「vendor 到底回了幾筆
-    原始資料」跟「解析後剩幾筆」分開才看得出來是哪一站把數字砍到 0。
-    """
-    emit(stage="vendor_fetch", severity=_vendor_fetch_severity(telemetry),
-        message=f"vendor 回應 s={telemetry.get('vendor_status')!r}",
-        provider=provider, symbol=symbol, date=date, expiration=expiration,
-        http_status=telemetry.get("http_status"),
-        vendor_status=telemetry.get("vendor_status"),
-        vendor_errmsg=telemetry.get("vendor_errmsg"),
-        raw_rows=telemetry.get("raw_rows"),
-        **_rate_limit_context(telemetry))
-    emit(stage="payload_parse", severity=_payload_parse_severity(telemetry),
-        message="解析歷史曲面欄狀回應",
-        provider=provider, symbol=symbol, date=date, expiration=expiration,
-        raw_rows=telemetry.get("raw_rows"),
-        parsed_call_rows=telemetry.get("parsed_call_rows"),
-        parsed_put_rows=telemetry.get("parsed_put_rows"),
-        dropped_missing_delta=telemetry.get("dropped_missing_delta"),
-        dropped_missing_iv=telemetry.get("dropped_missing_iv"),
-        dropped_missing_dte=telemetry.get("dropped_missing_dte"),
-        dropped_unknown_side=telemetry.get("dropped_unknown_side"))
-
-
 def _identity_context(identity: dict) -> dict:
     """`ContractIdentity` 的四個公開欄位（underlying／expiration／
     strike／option_type）——spec #151 §5／issue #153 明文列出這四項要
@@ -460,47 +414,92 @@ def _min_max(values) -> tuple | None:
     return (min(values), max(values)) if values else None
 
 
-def _emit_reanchor(emit, surface: dict, coords: dict, reanchored: dict, *,
-                   observed_on: str) -> None:
-    """逐日重錨定（DG-04／#147）：這是「資料明明有、畫面卻空白」唯一
-    看得見的地方——當天曲面涵蓋的 (dte, delta) 範圍跟候選要查的座標對不
-    上時，`iv_at()` 誠實回 `None` 且不外插（既有行為，這裡不動），本函式
-    只是把「當天曲面長什麼樣、查的座標是什麼、查到的結果是不是 None」
-    說出來。四個欄位全部 null 才算 warning——單腳候選（沒有 `sell`）
-    的 `sell_iv`／`normalized_skew` 結構上必為 None，不該被算進「全部
-    null」的判準，否則每個 Long Call 候選都會永遠是 warning。
+def _is_weekend(day: str) -> bool:
+    """只濾週末、不維護一份美股假日表——跟 `ivhistory.trading_days_back()`
+    既有的同一個判斷（`weekday() < 5`）與其記錄的取捨一致：假日表會過期，
+    多打幾天假日的代價（一年裡少數幾筆本可省下的判斷）比維護一份可能
+    過期的假日表可靠。少數市場假日因此仍會落進「交易日撲空」那個桶子、
+    照常警示——這是本函式刻意接受的已知殘留噪音，不是遺漏。"""
+    return date.fromisoformat(day).weekday() >= 5
+
+
+def _emit_backfill_summary(emit, *, symbol: str, attempted_days: int,
+                           saved_days: int, days_with_data: int,
+                           days_no_data_expected: int,
+                           days_no_data_unexpected: int,
+                           aborted_on: str | None, abort_reason: str | None,
+                           remaining_gap: int, outcome: str) -> None:
+    """Backfill 摘要（HIVR-10／#169）：一次批次最多 25 天、每天可能查
+    好幾個到期日，舊版逐日／逐到期日各發一筆 `vendor_fetch`／
+    `payload_parse`（外加每天一筆 `database_write`），輕鬆破百筆。改成
+    批次結束後只發**一筆**摘要，攜帶「有幾天有資料、有幾天沒資料、
+    有幾天失敗」（AC 明文的三分類）。
+
+    沒資料的天再分兩種：`days_no_data_expected`（週末／假日，正常現象，
+    不該讓使用者對著一個關閉的市場皺眉）與 `days_no_data_unexpected`
+    （交易日卻沒資料，值得留意）——`severity` 依這個區分：只有真正
+    中止（`aborted_on`）或「交易日卻沒資料」時才是 warning，單純撞到
+    週末不是。
     """
-    grid = surface.get(coords.get("option_type", "call")) or []
-    dte_range = _min_max(p.dte for p in grid)
-    delta_range = _min_max(p.delta for p in grid)
-    buy = coords.get("buy")
+    emit(stage="backfill",
+        severity="warning" if aborted_on or days_no_data_unexpected > 0
+                 else "info",
+        message=(f"backfill 在 {aborted_on} 中止：{abort_reason}"
+                if aborted_on else "backfill 批次完成"),
+        symbol=symbol, attempted_days=attempted_days, saved_days=saved_days,
+        days_with_data=days_with_data,
+        days_no_data_expected=days_no_data_expected,
+        days_no_data_unexpected=days_no_data_unexpected,
+        days_failed=1 if aborted_on else 0,
+        aborted_on=aborted_on, abort_reason=abort_reason,
+        remaining_gap=remaining_gap, outcome=outcome)
+
+
+def _reanchor_in_grid(reanchored: dict, coords: dict) -> bool:
+    """這一天的座標是否至少有一個核心欄位真的查到值（DG-04／#147 既有
+    判準原樣保留）：`iv_at()` 誠實回 `None` 且不外插（既有行為，這裡
+    不動），這裡只是判斷「今天曲面涵蓋得到候選要查的座標」與否。單腳
+    候選（沒有 `sell`）的 `sell_iv`／`normalized_skew` 結構上必為
+    `None`，不該被算進「全部落在網格外」的判準，否則每個 Long Call
+    候選都會永遠判定為 out-of-grid。
+    """
     sell = coords.get("sell")
     core_fields = ("buy_iv", "atm_iv") if sell is None else (
         "buy_iv", "sell_iv", "atm_iv", "normalized_skew")
-    all_null = all(reanchored.get(f) is None for f in core_fields)
+    return not all(reanchored.get(f) is None for f in core_fields)
+
+
+def _emit_reanchor_summary(emit, *, coords: dict, in_grid: int,
+                           out_of_grid: int) -> None:
+    """重錨定摘要（HIVR-10／#169）：舊版逐日重錨定每個歷史快照各發一筆
+    `reanchor` 事件——一個累積了一年快照的 Scenario，光是打開頁面就會
+    因此炸出幾十筆事件，且沒有一筆描述的是**這次 request** 本身發生了
+    什麼。改成一次 request 只發一筆摘要：`total` 個歷史日期裡有幾個落在
+    網格內（`in_grid`，`_reanchor_in_grid()` 判準原樣沿用）、幾個落在
+    網格外（`out_of_grid`）。查詢座標（`buy_delta`／`sell_delta`／
+    `tenor_days`）取自 `coords`——這是這次 request 要查的目標，同一個
+    candidate 的每個歷史日期共用同一組，不隨日期改變，因此只在摘要裡
+    出現一次。
+    """
+    buy = coords.get("buy")
+    sell = coords.get("sell")
+    total = in_grid + out_of_grid
     emit(stage="reanchor",
-        severity="warning" if all_null else "info",
-        message="這一天的座標全部落在網格外" if all_null else "重錨定完成",
-        observed_on=observed_on,
+        severity="warning" if out_of_grid > 0 else "info",
+        message=f"{total} 個歷史日期：{in_grid} 個落在網格內／"
+                f"{out_of_grid} 個落在網格外",
+        total_dates=total, in_grid_dates=in_grid, out_of_grid_dates=out_of_grid,
         tenor_days=buy.tenor_days if buy is not None else None,
         buy_delta=buy.delta if buy is not None else None,
-        sell_delta=sell.delta if sell is not None else None,
-        surface_dte_min=dte_range[0] if dte_range else None,
-        surface_dte_max=dte_range[1] if dte_range else None,
-        surface_delta_min=delta_range[0] if delta_range else None,
-        surface_delta_max=delta_range[1] if delta_range else None,
-        buy_iv_null=reanchored.get("buy_iv") is None,
-        sell_iv_null=reanchored.get("sell_iv") is None,
-        atm_iv_null=reanchored.get("atm_iv") is None,
-        normalized_skew_null=reanchored.get("normalized_skew") is None)
+        sell_delta=sell.delta if sell is not None else None)
 
 
 def _emit_metrics(emit, points: list[dict], coords: dict) -> None:
     """`field_metrics()` 之後（DG-04／#147）：每個欄位各自一筆事件——
     比起一筆合併事件，逐欄位才看得出來是哪一項指標沒有觀測可用。單腳
-    候選結構上沒有 `sell_iv`／`normalized_skew`（見 `_emit_reanchor` 同一
-    條理由），這兩項本來就必然 count=0，不進來湊「這個候選是不是沒資料」
-    的判斷，否則每個 Long Call 永遠亮 warning。
+    候選結構上沒有 `sell_iv`／`normalized_skew`（見 `_reanchor_in_grid`
+    同一條理由），這兩項本來就必然 count=0，不進來湊「這個候選是不是
+    沒資料」的判斷，否則每個 Long Call 永遠亮 warning。
     """
     metrics = ivhistory.field_metrics(points, today=ny_today())
     applicable = (("buy_iv", "atm_iv") if coords.get("sell") is None
@@ -1205,6 +1204,12 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
 
         `emit`（DG-03／#146）：**這四條決策規則本身逐字不動**——`emit`
         呼叫只是把已經在發生的事情說出來，不參與任何 if／break 的判斷。
+
+        HIVR-10（#169）：每天每個到期日原本各發一筆 `vendor_fetch`／
+        `payload_parse`（外加每天一筆 `database_write`），一次 25 天的
+        批次輕鬆破百筆。這裡改成逐日累計、批次結束後只發**一筆**
+        `backfill` 摘要——`_emit_surface_telemetry` 那組逐日事件整個
+        不再呼叫，取而代之的是本函式自己的計數器。
         """
         db = _db()
         today = ny_today()
@@ -1228,6 +1233,9 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         outcome, note = "ok", None
         attempted_days = 0
         saved_days = 0
+        days_with_data = 0
+        days_no_data_expected = 0     # 週末／假日撲空——正常現象
+        days_no_data_unexpected = 0   # 交易日撲空——值得留意
         aborted_on: str | None = None
         abort_reason: str | None = None
         for day in sorted(missing, reverse=True)[:_IV_BACKFILL_PER_RUN]:
@@ -1235,12 +1243,10 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
             merged: dict[str, list] = {"call": [], "put": []}
             try:
                 for exp in expirations:
-                    def _observer(telemetry, _day=day, _exp=exp):
-                        _emit_surface_telemetry(
-                            emit, telemetry, provider=provider, symbol=symbol,
-                            date=_day, expiration=_exp)
+                    # HIVR-10（#169）：逐日／逐到期日的 telemetry 不再各自
+                    # 轉成事件（見上方 docstring），不必再傳 observer。
                     got = historical_surface(provider, symbol, day, token,
-                                            expiration=exp, observer=_observer)
+                                            expiration=exp)
                     merged["call"].extend(got.get("call") or [])
                     merged["put"].extend(got.get("put") or [])
             except QuotaExhausted as e:
@@ -1255,16 +1261,18 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
                 symbol=symbol, observed_on=day,
                 surface=_surface_to_rows(merged), fetched_at=now_utc_iso()))
             saved_days += 1
-            emit(stage="database_write",
-                severity="warning" if not merged["call"] and not merged["put"]
-                        else "info",
-                message="寫入一天的觀測", symbol=symbol, observed_on=day,
-                call_points=len(merged["call"]), put_points=len(merged["put"]))
+            if merged["call"] or merged["put"]:
+                days_with_data += 1
+            elif _is_weekend(day):
+                days_no_data_expected += 1
+            else:
+                days_no_data_unexpected += 1
 
-        emit(stage="backfill", severity="warning" if aborted_on else "info",
-            message=(f"backfill 在 {aborted_on} 中止：{abort_reason}"
-                    if aborted_on else "backfill 批次完成"),
-            symbol=symbol, attempted_days=attempted_days, saved_days=saved_days,
+        _emit_backfill_summary(
+            emit, symbol=symbol, attempted_days=attempted_days,
+            saved_days=saved_days, days_with_data=days_with_data,
+            days_no_data_expected=days_no_data_expected,
+            days_no_data_unexpected=days_no_data_unexpected,
             aborted_on=aborted_on, abort_reason=abort_reason,
             remaining_gap=len(missing) - saved_days, outcome=outcome)
 
@@ -1673,13 +1681,19 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
                    "legs": legs_payload, "diagnostics": diag_payload}
 
         points = []
+        in_grid = 0
+        out_of_grid = 0
         for obs in _db().iv_observations(sc.symbol):
             surface = _rows_to_surface(obs.surface)
             reanchored = ivhistory.reanchor_spread(surface, coords)
-            _emit_reanchor(_emit_legacy, surface, coords, reanchored,
-                          observed_on=obs.observed_on)
+            if _reanchor_in_grid(reanchored, coords):
+                in_grid += 1
+            else:
+                out_of_grid += 1
             points.append({"date": obs.observed_on, **reanchored})
 
+        _emit_reanchor_summary(_emit_legacy, coords=coords,
+                               in_grid=in_grid, out_of_grid=out_of_grid)
         _emit_metrics(_emit_legacy, points, coords)
         diag_payload = _flush_diagnostics(diag)
 

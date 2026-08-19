@@ -84,26 +84,34 @@ _CONTEXT_KEY_WHITELIST = frozenset({
     # 身分／位置
     "scenario_id", "candidate_key", "provider", "symbol", "date",
     "expiration", "tenor_days", "url",
-    # vendor_fetch
-    "http_status", "vendor_status", "vendor_errmsg",
+    # vendor_fetch（HIVR-04／#163 exact-contract 家族專用——legacy 家族
+    # 自己的逐日 vendor_fetch／payload_parse 已於 HIVR-10／#169 移除，
+    # 見下方「cache／backfill 摘要」）
+    "http_status", "vendor_status", "vendor_errmsg", "raw_rows",
     "X-Api-Ratelimit-Limit", "X-Api-Ratelimit-Remaining",
     "X-Api-Ratelimit-Consumed",
-    # payload_parse
-    "raw_rows", "parsed_call_rows", "parsed_put_rows",
-    "dropped_missing_delta", "dropped_missing_iv", "dropped_missing_dte",
-    "dropped_unknown_side",
     # candidate_lookup
     "found", "groups_scanned",
-    # cache／backfill
+    # cache／backfill 摘要（HIVR-10／#169：`days_with_data`／
+    # `days_no_data_expected`／`days_no_data_unexpected`／`days_failed`
+    # 取代舊版逐日 `vendor_fetch`／`payload_parse`／`database_write` 三種
+    # 事件——一次批次最多 25 天，過去每天各發好幾筆，現在批次結束後只
+    # 發一筆摘要。`days_no_data_expected`＝週末／假日撲空，正常現象；
+    # `days_no_data_unexpected`＝交易日卻沒資料，值得留意，兩者驅動
+    # `backfill` 摘要事件的 severity）
     "wanted_days", "have_days", "missing_days", "already_ran_today",
-    "attempted_days", "saved_days", "aborted_on", "abort_reason",
-    "remaining_gap", "outcome",
+    "attempted_days", "saved_days", "days_with_data",
+    "days_no_data_expected", "days_no_data_unexpected", "days_failed",
+    "aborted_on", "abort_reason", "remaining_gap", "outcome",
     # database_write
     "observed_on", "call_points", "put_points",
-    # reanchor
-    "buy_delta", "sell_delta", "surface_dte_min", "surface_dte_max",
-    "surface_delta_min", "surface_delta_max", "buy_iv_null", "sell_iv_null",
-    "atm_iv_null", "normalized_skew_null",
+    # reanchor 摘要（HIVR-10／#169：`total_dates`／`in_grid_dates`／
+    # `out_of_grid_dates` 取代舊版逐一歷史日期各發一筆 `reanchor` 事件
+    # ——一個累積一年快照的 Scenario，過去光開頁就能炸出幾十筆，現在
+    # 一次 request 只發一筆摘要。`buy_delta`／`sell_delta` 是這次
+    # request 要查的目標座標，跟哪個歷史日期無關，只出現一次）
+    "buy_delta", "sell_delta", "total_dates", "in_grid_dates",
+    "out_of_grid_dates",
     # metrics
     "field", "count", "percentile_available", "trend_base_count",
     "correlation_id",

@@ -970,49 +970,54 @@ def test_candidate_lookup_event_marks_an_unknown_key_as_error_and_still_persists
     assert lookups[0]["context"]["found"] is False
 
 
-def test_raw_rows_positive_but_parsed_zero_is_a_warning_on_payload_parse(db):
-    """「vendor 回 N 筆，卻在哪一站變成 0 筆」——這裡就是可以直接指認
-    出來的地方：payload_parse 事件自己講清楚 raw 對 parsed 的落差。"""
-    telemetry = {"http_status": 200, "vendor_status": "ok",
-                "vendor_errmsg": None, "raw_rows": 5,
-                "parsed_call_rows": 0, "parsed_put_rows": 0}
-    client = _client(db, surface=_telemetry_surface(telemetry))
-    _unlock(client)
-    sid = _scenario(client)
-    key = _candidate_key(client, sid)
-    _prefill_all_but_one(db)
-    body = _get(client, sid, key).json()
-
-    parse_events = _events_for(body, "payload_parse")
-    assert parse_events, "至少要有一筆 payload_parse 事件"
-    assert parse_events[0]["severity"] == "warning"
-    assert parse_events[0]["context"]["raw_rows"] == 5
-    assert parse_events[0]["context"]["parsed_call_rows"] == 0
-    assert parse_events[0]["context"]["parsed_put_rows"] == 0
-
-    fetch_events = _events_for(body, "vendor_fetch")
-    assert fetch_events[0]["context"]["raw_rows"] == 5
-    assert fetch_events[0]["severity"] == "info"   # vendor 本身回 s=ok，沒有失敗
-
-
-def test_no_data_is_a_warning_and_does_not_abort_the_batch(db):
-    """s="no_data" 是帶 expiration 篩選後的正常撲空（#134 既有語意）——
-    不該讓批次中止在第一天。"""
-    telemetry = {"http_status": 200, "vendor_status": "no_data",
-                "vendor_errmsg": None, "raw_rows": 0,
-                "parsed_call_rows": 0, "parsed_put_rows": 0}
+def test_weekday_no_data_still_warns_but_does_not_abort_the_batch(db):
+    """HIVR-10（#169）AC6：交易日（非週末）撲空仍要示警——不是靜默降級
+    成 info。AC1／AC2：批次結束只留**一筆**摘要，不再逐日各自現形；
+    批次本身照常跑完全部缺口天數，不因某天沒資料就中止（既有行為，
+    本輪不動）。`sampling_schedule()` 只挑交易日（`weekday() < 5`），
+    這裡完全不指定 `points`（預設回空），所以每一天都落在「交易日卻
+    沒資料」那個桶子。"""
     calls: list[str] = []
-    client = _client(db, surface=_telemetry_surface(telemetry, call_counter=calls))
+    client = _client(db, surface=_telemetry_surface({}, call_counter=calls))
     _unlock(client)
     sid = _scenario(client)
     body = _get(client, sid, _candidate_key(client, sid)).json()
 
-    fetch_events = _events_for(body, "vendor_fetch")
-    assert fetch_events and all(e["severity"] == "warning" for e in fetch_events)
-    assert len(calls) > 1, "no_data 不該讓 backfill 在第一天就中止"
+    assert len(calls) > 1, "撲空不該讓 backfill 在第一天就中止"
 
     backfill_summary = _events_for(body, "backfill")
+    assert len(backfill_summary) == 1, "AC：一次 request 只發一筆摘要"
+    assert backfill_summary[0]["severity"] == "warning"
+    assert backfill_summary[0]["context"]["days_no_data_unexpected"] > 0
+    assert backfill_summary[0]["context"]["days_no_data_expected"] == 0
+    assert backfill_summary[0]["context"]["days_with_data"] == 0
+    assert backfill_summary[0]["context"]["days_failed"] == 0
+    assert "aborted_on" not in backfill_summary[0]["context"]
     assert backfill_summary[0]["context"]["outcome"] == "ok"
+
+
+def test_weekend_no_data_is_informational_not_a_warning(db, monkeypatch):
+    """HIVR-10（#169）AC5：週末撲空是市場休市的正常現象，不該示警。
+    `ivhistory.sampling_schedule()` 現行邏輯本來就只挑交易日
+    （`weekday() < 5`），backfill 實際排到的缺口因此永遠不含真正的
+    週六／週日——這裡直接注入一個真實週六日期，證明**萬一**排程未來
+    真的納入非交易日，嚴重性判斷本身是對的，不是巧合地從沒被觸發過。"""
+    saturday = "2026-05-02"
+    assert date.fromisoformat(saturday).weekday() == 5
+
+    monkeypatch.setattr(ivhistory, "sampling_schedule",
+                        lambda symbol, today: [saturday])
+
+    client = _client(db, surface=_telemetry_surface({}))
+    _unlock(client)
+    sid = _scenario(client)
+    body = _get(client, sid, _candidate_key(client, sid)).json()
+
+    backfill_summary = _events_for(body, "backfill")
+    assert len(backfill_summary) == 1
+    assert backfill_summary[0]["severity"] == "info"
+    assert backfill_summary[0]["context"]["days_no_data_expected"] == 1
+    assert backfill_summary[0]["context"]["days_no_data_unexpected"] == 0
     assert "aborted_on" not in backfill_summary[0]["context"]
 
 
@@ -1032,27 +1037,6 @@ def test_backfill_abort_is_visible_in_the_summary_event(db):
     assert summary[0]["context"]["abort_reason"] == "quota"
     assert summary[0]["context"]["attempted_days"] == 1
     assert summary[0]["context"]["saved_days"] == 0
-
-
-def test_vendor_fetch_event_carries_http_status_and_rate_limit_fields(db):
-    telemetry = {"http_status": 429, "vendor_status": None,
-                "vendor_errmsg": None, "raw_rows": 0,
-                "parsed_call_rows": 0, "parsed_put_rows": 0,
-                "X-Api-Ratelimit-Remaining": "0",
-                "X-Api-Ratelimit-Limit": "100"}
-    client = _client(db, surface=_telemetry_surface(telemetry))
-    _unlock(client)
-    sid = _scenario(client)
-    body = _get(client, sid, _candidate_key(client, sid)).json()
-
-    fetch_events = _events_for(body, "vendor_fetch")
-    assert fetch_events[0]["severity"] == "error"
-    assert fetch_events[0]["context"]["http_status"] == 429
-    assert fetch_events[0]["context"]["X-Api-Ratelimit-Remaining"] == "0"
-    assert fetch_events[0]["context"]["X-Api-Ratelimit-Limit"] == "100"
-    # vendor_status 是 None（連 payload 都沒有）——依 sanitize_context
-    # 的規則，None 值不進 context，這裡確認畫面上不會出現一個空欄位。
-    assert "vendor_status" not in fetch_events[0]["context"]
 
 
 def test_response_correlation_id_matches_the_header(db):
@@ -1080,41 +1064,30 @@ def test_events_shown_in_the_response_also_land_in_the_diagnostics_store(db):
     assert shown_ids <= stored_ids
 
 
-def test_a_known_token_never_appears_in_diagnostics(db):
-    """紅線：vendor 把 token 夾在 errmsg 裡回來，一樣不得逐字出現在
-    任何 diagnostic event 或 API 回應裡。"""
-    telemetry = {"http_status": 200, "vendor_status": "error",
-                "vendor_errmsg": f"invalid key {TOKEN}",
-                "raw_rows": 0, "parsed_call_rows": 0, "parsed_put_rows": 0}
-    client = _client(db, surface=_telemetry_surface(telemetry))
-    _unlock(client)
-    sid = _scenario(client)
-    resp = _get(client, sid, _candidate_key(client, sid))
-    assert TOKEN not in resp.text
-    stored = client.get("/api/diagnostics").json()
-    assert all(TOKEN not in str(e) for e in stored)
+def test_the_backfill_and_reanchor_summaries_take_no_free_text_vendor_params(db):
+    """HIVR-10（#169）前：legacy 家族的逐日 `vendor_fetch` 事件會轉發
+    vendor 給的 `vendor_errmsg`（字串），因此需要靠 `sanitize_string()`
+    在 runtime 逐一比對已知 secret／樣式遮蔽才安全（見 `test_diagnostics.py`
+    的 `test_sanitize_string_masks_known_current_secrets` 等純函式層
+    測試，這條紅線本身未變、繼續由那邊守著）。HIVR-10 後，legacy 家族
+    只剩兩筆摘要事件（`backfill`／`reanchor`），兩者的 context 值全部
+    是整數／布林／`None`／固定詞彙字串（`"quota"`／`"vendor"`）——結構上
+    沒有任何參數是 vendor 給的自由格式文字，因此連「vendor 錯誤訊息裡
+    夾帶已知密鑰」這個攻擊面本身都不存在了，比 runtime 逐字比對更強的
+    保證。這裡直接讀 `_emit_backfill_summary`／`_emit_reanchor_summary`
+    的簽章鎖住這件事，即使簽章未來被改動走樣也會在這裡先紅燈。"""
+    import inspect
 
+    from api_app.main import _emit_backfill_summary, _emit_reanchor_summary
 
-def test_full_vendor_response_body_never_reaches_any_diagnostic_event(db):
-    """`_emit_surface_telemetry()` 用具名關鍵字組 event context——即使
-    observer 給的 telemetry dict 意外多帶一個完整回應內容的欄位（例如
-    未來 `marketdata.py` 不小心多回傳一個 `raw_body`），main.py 這一層
-    因為不是 `**telemetry` 全展開，那個欄位天生就進不了任何診斷事件。"""
-    huge_marker = "RAW_VENDOR_BODY_" + ("z" * 2000)
-    telemetry = {"http_status": 200, "vendor_status": "ok",
-                "vendor_errmsg": None, "raw_rows": 1,
-                "parsed_call_rows": 1, "parsed_put_rows": 0,
-                # 模擬「不小心多帶了完整回應內容」——main.py 不該把它
-                # 轉發進任何 emit() 呼叫。
-                "raw_body": huge_marker}
-    client = _client(db, surface=_telemetry_surface(
-        telemetry, points={"call": [SurfacePoint(dte=30, delta=0.4, iv=0.2)],
-                           "put": []}))
-    _unlock(client)
-    sid = _scenario(client)
-    resp = _get(client, sid, _candidate_key(client, sid))
-    assert huge_marker not in resp.text
-    assert huge_marker not in client.get("/api/diagnostics").text
+    backfill_params = set(inspect.signature(_emit_backfill_summary).parameters)
+    assert backfill_params == {
+        "emit", "symbol", "attempted_days", "saved_days", "days_with_data",
+        "days_no_data_expected", "days_no_data_unexpected", "aborted_on",
+        "abort_reason", "remaining_gap", "outcome"}
+
+    reanchor_params = set(inspect.signature(_emit_reanchor_summary).parameters)
+    assert reanchor_params == {"emit", "coords", "in_grid", "out_of_grid"}
 
 
 def test_diagnostics_storage_failure_does_not_break_the_response():
@@ -1208,6 +1181,30 @@ def test_metrics_events_also_survive_the_cap_alongside_backfill():
     assert {"m1", "m2", "bf"} <= kept_ids
 
 
+def test_reconstruction_and_vendor_benchmark_survive_a_synthetic_cap_overflow():
+    """HIVR-10（#169）後，legacy backfill／reanchor 收斂成兩筆摘要，
+    一次真實 request 已經很難再靠 legacy 家族本身撞到 per-request cap
+    ——過去專門用來證明這件事的端到端「洪水」測試因此改用這種合成
+    事件的單元測試取代（跟上面 `test_metrics_events_also_survive_the_
+    cap_alongside_backfill` 同一種手法），確認 `reconstruction`／
+    `vendor_benchmark`（HIVR-07／HIVR-09 各自加進 `_ALWAYS_KEPT_STAGES`
+    的兩個 stage）在 cap 溢位情境下仍然存活，不依賴任何特定事件來源
+    是否還產得出真正的洪水量級。"""
+    from api_app.diagnostics import DiagnosticEvent
+    from api_app.main import _select_for_persistence
+
+    def ev(event_id, stage="vendor_fetch"):
+        return DiagnosticEvent(event_id=event_id, correlation_id="c",
+                               ts=event_id, subsystem="historical_iv",
+                               stage=stage, severity="info", message="m")
+
+    events = [ev(f"v{i}") for i in range(70)]
+    events += [ev("recon", stage="reconstruction"),
+              ev("bench", stage="vendor_benchmark")]
+    kept_ids = {e.event_id for e in _select_for_persistence(events)}
+    assert {"recon", "bench"} <= kept_ids
+
+
 # ---------- Diagnostics subsystem 拆分（HIVR-03／#162） ----------
 
 def test_a_flood_of_legacy_events_does_not_starve_exact_contract_events():
@@ -1283,23 +1280,26 @@ def test_exact_contract_and_legacy_reanchor_are_distinct_named_subsystems():
     assert SUBSYSTEM_LEGACY_REANCHOR in SUBSYSTEMS
 
 
-def test_a_heavy_backfill_still_leaves_exact_contract_events_in_the_live_response(db):
+def test_a_full_backfill_still_leaves_exact_contract_events_in_the_live_response(db):
     """端到端版本（走真的 endpoint，不是直接呼叫 `_select_for_persistence`）：
-    一次請求觸發滿載的 legacy backfill（`_IV_BACKFILL_PER_RUN` 天，每天
-    vendor_fetch／payload_parse／database_write／reanchor 多筆，遠超過
-    共用上限），exact-contract 家族的 `candidate_lookup`／`metrics` 事件
-    仍然要完整出現在這次 response 的 diagnostics 裡——不是只有純函式層
-    測得到，使用者實際看到的回應也要保得住。`_telemetry_surface`（不是
-    `_rich_surface`）才會真的呼叫 observer、把 telemetry 轉成事件，藉此
-    讓 backfill 迴圈跑滿整批，重現過去會把 exact-contract 事件擠出保留
-    名額的那個量級。"""
+    一次請求觸發完整的 legacy backfill（`_IV_BACKFILL_PER_RUN` 天，
+    沒有預先灌好資料），exact-contract 家族的 `candidate_lookup`／
+    `metrics` 事件仍然要完整出現在這次 response 的 diagnostics 裡——
+    不是只有純函式層測得到，使用者實際看到的回應也要保得住。
+
+    HIVR-10（#169）之前，這種場景會讓 legacy 事件輕鬆衝破 20 筆（每天
+    各自的 `vendor_fetch`／`payload_parse`／`database_write`，外加逐一
+    歷史日期各一筆 `reanchor`），是本測試當初存在的理由。HIVR-10 之後，
+    同一個場景現在只留一筆 `backfill` 摘要＋一筆 `reanchor` 摘要——
+    **這正是本票要達成的結果**，這裡的斷言從「小心不被洪水擠掉」
+    改成直接驗證「legacy 事件量真的被壓低了」，co-existence 的保證則
+    改交給下面兩個模擬洪水仍存在時的單元測試
+    （`test_reconstruction_and_vendor_benchmark_survive_a_synthetic_
+    legacy_flood_at_the_cap`）。"""
     from api_app.diagnostics import (SUBSYSTEM_EXACT_CONTRACT,
                                      SUBSYSTEM_LEGACY_REANCHOR)
 
-    telemetry = {"http_status": 200, "vendor_status": "ok",
-                "vendor_errmsg": None, "raw_rows": 3,
-                "parsed_call_rows": 1, "parsed_put_rows": 1}
-    client = _client(db, surface=_telemetry_surface(telemetry))
+    client = _client(db, surface=_rich_surface)
     _unlock(client)
     sid = _scenario(client)
     body = _get(client, sid, _candidate_key(client, sid)).json()
@@ -1308,10 +1308,10 @@ def test_a_heavy_backfill_still_leaves_exact_contract_events_in_the_live_respons
     exact = [e for e in events if e["subsystem"] == SUBSYSTEM_EXACT_CONTRACT]
     legacy = [e for e in events if e["subsystem"] == SUBSYSTEM_LEGACY_REANCHOR]
 
-    # legacy backfill 這次確實跑滿（沒有預先灌好資料），觸發大量事件——
-    # 驗證測試場景本身真的踩到過去會擠掉 exact-contract 事件的那個量級。
-    assert len(legacy) >= 20
-    # exact-contract 家族的關鍵事件完整保留，不受 legacy 洪水影響。
+    # AC8：噪音是靠少發事件降下來的，不是把 retention cap 調高——這裡
+    # 直接驗證這件事本身：即使整批 backfill 真的跑滿，legacy 事件量
+    # 遠低於過去輕易破百的量級。
+    assert 0 < len(legacy) < 20
     assert any(e["stage"] == "candidate_lookup" for e in exact)
     assert any(e["stage"] == "metrics" for e in exact)
 
@@ -1344,9 +1344,11 @@ _NARROW_GRID = [SurfacePoint(dte=d, delta=x, iv=0.2)
                for d in (1, 5) for x in (0.4, 0.5, 0.6)]
 
 
-def test_reanchor_event_marks_an_out_of_grid_day_as_warning(db):
+def test_reanchor_summary_marks_out_of_grid_dates_as_a_warning(db):
     """曲面有資料，但候選要查的座標不在網格範圍內——這正是「連線成功
-    但沒資料」那一類失敗，本函式讓它變成看得見的事實。"""
+    但沒資料」那一類失敗，本函式讓它變成看得見的事實。HIVR-10（#169）
+    後改成一筆摘要：這裡只灌一天觀測，摘要就是「1 個歷史日期：0 個
+    落在網格內／1 個落在網格外」。"""
     client = _client(db, surface=_surface_never_called)
     _unlock(client)
     sid = _scenario(client)
@@ -1358,13 +1360,12 @@ def test_reanchor_event_marks_an_out_of_grid_day_as_warning(db):
     got = _events_for(body, "reanchor")
     assert len(got) == 1
     assert got[0]["severity"] == "warning"
-    assert got[0]["context"]["observed_on"] == "2026-05-01"
-    assert got[0]["context"]["surface_dte_min"] == 1
-    assert got[0]["context"]["surface_dte_max"] == 5
-    assert got[0]["context"]["buy_iv_null"] is True
+    assert got[0]["context"]["total_dates"] == 1
+    assert got[0]["context"]["in_grid_dates"] == 0
+    assert got[0]["context"]["out_of_grid_dates"] == 1
 
 
-def test_reanchor_event_is_info_when_the_grid_covers_the_candidate(db):
+def test_reanchor_summary_is_info_when_the_grid_covers_the_candidate(db):
     client = _client(db, surface=_surface_never_called)
     _unlock(client)
     sid = _scenario(client)
@@ -1376,12 +1377,39 @@ def test_reanchor_event_is_info_when_the_grid_covers_the_candidate(db):
     got = _events_for(body, "reanchor")
     assert len(got) == 1
     assert got[0]["severity"] == "info"
-    assert got[0]["context"]["buy_iv_null"] is False
+    assert got[0]["context"]["total_dates"] == 1
+    assert got[0]["context"]["in_grid_dates"] == 1
+    assert got[0]["context"]["out_of_grid_dates"] == 0
 
 
-def test_single_leg_reanchor_is_not_penalized_for_the_missing_sell_leg(db):
+def test_reanchor_summary_counts_mixed_in_and_out_of_grid_dates(db):
+    """AC：摘要要能同時反映混合情況——多個歷史日期一部分落在網格內、
+    一部分落在網格外，不是只驗到『全部同一種結果』的邊界案例。這裡是
+    唯一直接對照票上範例句型（「20 個歷史日期：4 個落在網格內／16 個
+    落在網格外」）的測試。"""
+    client = _client(db, surface=_surface_never_called)
+    _unlock(client)
+    sid = _scenario(client)
+    key = _candidate_key(client, sid)
+    _mark_backfill_done_today(db)
+    _seed_days(db, [
+        ("2026-05-01", _grid()["call"]), ("2026-05-02", _grid()["call"]),
+        ("2026-05-03", _grid()["call"]),
+        ("2026-05-04", _NARROW_GRID), ("2026-05-05", _NARROW_GRID),
+    ])
+
+    body = _get(client, sid, key).json()
+    got = _events_for(body, "reanchor")
+    assert len(got) == 1, "AC：一次 request 只發一筆摘要，不是逐日各一筆"
+    assert got[0]["context"]["total_dates"] == 5
+    assert got[0]["context"]["in_grid_dates"] == 3
+    assert got[0]["context"]["out_of_grid_dates"] == 2
+    assert got[0]["severity"] == "warning"
+
+
+def test_single_leg_reanchor_summary_is_not_penalized_for_the_missing_sell_leg(db):
     """Long Call 結構上沒有賣腿——`sell_iv`／`normalized_skew` 恆為 None
-    不是資料品質問題，不該讓每一個單腳候選永遠亮 warning。"""
+    不是資料品質問題，不該讓每一個單腳候選永遠判定成 out-of-grid。"""
     client = _client(db, surface=_surface_never_called)
     _unlock(client)
     sid = _scenario(client)
@@ -1394,8 +1422,8 @@ def test_single_leg_reanchor_is_not_penalized_for_the_missing_sell_leg(db):
     got = _events_for(body, "reanchor")
     assert len(got) == 1
     assert got[0]["severity"] == "info"
-    assert got[0]["context"]["sell_iv_null"] is True
-    assert got[0]["context"]["normalized_skew_null"] is True
+    assert got[0]["context"]["in_grid_dates"] == 1
+    assert got[0]["context"]["out_of_grid_dates"] == 0
     assert "sell_delta" not in got[0]["context"]
 
 
@@ -1454,12 +1482,19 @@ def test_single_leg_metrics_do_not_flag_the_structurally_absent_fields(db):
 
 
 def test_the_full_ledger_covers_every_stage_and_shares_one_correlation_id(db):
-    """DG-04 的核心交付：同一個 correlation_id 的 events 依序讀完，八站
+    """DG-04 的核心交付：同一個 correlation_id 的 events 依序讀完，各站
     的進與出都在——這就是「vendor 回 N 筆，究竟在哪一站變成 0 筆」的
     完整帳本，不需要讀程式碼。`reconstruction`（HIVR-07／#166）與
     `vendor_benchmark`（HIVR-09／#168）現在每一腿都會發一筆——即使這份
     fixture 的 exact-contract 假體回傳空序列（`fetched=0`），兩筆帳本
-    事件仍然是這次 request 的一部分。"""
+    事件仍然是這次 request 的一部分。HIVR-10（#169）後，legacy 家族的
+    `vendor_fetch`／`payload_parse`（逐日／逐到期日）不再出現——已收斂
+    成 `backfill` 一筆摘要；本測試場景（`_prefill_all_but_one` 只留一天
+    缺口）沒有指定 `contract_history=`，用的是不呼叫 observer 的預設
+    假體，因此 exact-contract 家族這次也不會有 `vendor_fetch`／
+    `payload_parse`——這兩個 stage 名稱在其他情境下仍會出現（HIVR-04
+    exact-contract 家族自己的 `_emit_contract_history_telemetry`），
+    只是不在這個特定場景裡。"""
     telemetry = {"http_status": 200, "vendor_status": "ok",
                 "vendor_errmsg": None, "raw_rows": 5,
                 "parsed_call_rows": 0, "parsed_put_rows": 0}
@@ -1471,19 +1506,18 @@ def test_the_full_ledger_covers_every_stage_and_shares_one_correlation_id(db):
     body = _get(client, sid, key).json()
 
     stages_seen = {e["stage"] for e in body["diagnostics"]["events"]}
-    assert stages_seen == {"candidate_lookup", "cache", "vendor_fetch",
-                           "payload_parse", "database_write", "backfill",
-                           "reanchor", "metrics", "reconstruction",
-                           "vendor_benchmark"}
+    assert stages_seen == {"candidate_lookup", "cache", "database_write",
+                           "backfill", "reanchor", "metrics",
+                           "reconstruction", "vendor_benchmark"}
     cids = {e["correlation_id"] for e in body["diagnostics"]["events"]}
     assert cids == {body["diagnostics"]["correlation_id"]}
 
-    # 帳本本身：vendor 回 5 筆原始資料，payload_parse 站砍成 0 筆——
-    # 光看這一筆事件就回答得出「哪一站」，不需要讀程式碼。
-    parse = _events_for(body, "payload_parse")[0]
-    assert parse["context"]["raw_rows"] == 5
-    assert parse["context"]["parsed_call_rows"] == 0
-    assert parse["context"]["parsed_put_rows"] == 0
+    # 帳本本身：這份 fixture 的 surface 假體沒有真的傳回任何點
+    # （`points=None` 預設回空），因此摘要要能看出「這一天沒資料」，
+    # 不需要讀程式碼就找得到答案。
+    backfill_summary = _events_for(body, "backfill")[0]
+    assert backfill_summary["context"]["days_with_data"] == 0
+    assert backfill_summary["context"]["attempted_days"] == 1
 
 
 # ---------- Exact-contract 逐腿歷史 IV（HIVT-02／#153） ----------
@@ -2280,16 +2314,19 @@ def test_a_stale_but_successful_fetch_is_identifiable_from_diagnostics_alone(db)
     assert events[0]["context"]["staleness_days"] > 1
 
 
-def test_reconstruction_ledger_survives_a_heavy_legacy_event_flood(db):
+def test_reconstruction_ledger_coexists_with_a_full_legacy_backfill(db):
     """HIVR-07（#166）AC：跟 HIVR-03（#162）的 subsystem 拆分疊加驗證——
-    一次請求觸發滿載的 legacy backfill（遠超過共用上限），exact-contract
-    家族的 `reconstruction` 帳本仍然要完整出現在回應裡。"""
-    telemetry = {"http_status": 200, "vendor_status": "ok",
-                "vendor_errmsg": None, "raw_rows": 3,
-                "parsed_call_rows": 1, "parsed_put_rows": 1}
-    surface = _telemetry_surface(telemetry)
+    一次請求觸發完整的 legacy backfill，exact-contract 家族的
+    `reconstruction` 帳本仍然要完整出現在回應裡，兩個家族不互相污染。
+
+    HIVR-10（#169）之前這裡靠 legacy backfill 天然衝破共用 cap（≥20 筆）
+    來證明「即使被洪水淹沒也不受影響」；HIVR-10 之後 legacy 家族本身
+    已經收斂成兩筆摘要，量級不足以撞到 cap——cap 溢位那個情境改由
+    `test_reconstruction_and_vendor_benchmark_survive_a_synthetic_cap_
+    overflow`（合成事件的單元測試）覆蓋，這裡改回驗證「兩個家族在
+    同一次 response 裡正常並存」這個更基本、依然成立的保證。"""
     rec = ContractHistoryRecorder()
-    client = _client(db, surface=surface, contract_history=rec)
+    client = _client(db, surface=_rich_surface, contract_history=rec)
     _unlock(client)
     sid = _scenario(client)
     key = _candidate_key(client, sid)
@@ -2301,7 +2338,7 @@ def test_reconstruction_ledger_survives_a_heavy_legacy_event_flood(db):
     body = _get(client, sid, key).json()
     legacy_events = [e for e in body["diagnostics"]["events"]
                      if e["subsystem"] == "normalized_skew"]
-    assert len(legacy_events) >= 20, "驗證這次請求真的踩到洪水量級"
+    assert legacy_events, "legacy backfill 這次確實跑了，不是空手而回"
     ledger = _reconstruction_events_for_symbol(body, buy["contract_symbol"])
     assert len(ledger) == 1
     assert ledger[0]["context"]["usable"] == 1
@@ -2460,16 +2497,18 @@ def test_a_missing_vendor_iv_is_neither_compared_nor_counted_as_excluded(db):
     assert "mean_abs_diff" not in ctx   # sanitize_context() 丟棄 None 值
 
 
-def test_the_benchmark_event_survives_a_heavy_legacy_event_flood(db):
+def test_the_benchmark_event_coexists_with_a_full_legacy_backfill(db):
     """跟 `reconstruction` 帳本（HIVR-07）同一種疊加驗證——`vendor_
-    benchmark` 也加進 `_ALWAYS_KEPT_STAGES`，同一次洪水量級的 legacy
-    事件不該把它擠出去。"""
-    telemetry = {"http_status": 200, "vendor_status": "ok",
-                "vendor_errmsg": None, "raw_rows": 3,
-                "parsed_call_rows": 1, "parsed_put_rows": 1}
-    surface = _telemetry_surface(telemetry)
+    benchmark` 也加進 `_ALWAYS_KEPT_STAGES`，一次觸發完整 legacy
+    backfill 的 request 裡兩個家族仍要正常並存。
+
+    HIVR-10（#169）之後 legacy 家族本身已收斂成兩筆摘要，不再天然構成
+    cap 溢位的洪水量級——見上面 `test_reconstruction_ledger_coexists_
+    with_a_full_legacy_backfill` 同一則說明；cap 溢位情境改由
+    `test_reconstruction_and_vendor_benchmark_survive_a_synthetic_cap_
+    overflow` 覆蓋。"""
     rec = ContractHistoryRecorder()
-    client = _client(db, surface=surface, contract_history=rec)
+    client = _client(db, surface=_rich_surface, contract_history=rec)
     _unlock(client)
     sid = _scenario(client)
     key = _candidate_key(client, sid)
@@ -2482,7 +2521,7 @@ def test_the_benchmark_event_survives_a_heavy_legacy_event_flood(db):
     body = _get(client, sid, key).json()
     legacy_events = [e for e in body["diagnostics"]["events"]
                      if e["subsystem"] == "normalized_skew"]
-    assert len(legacy_events) >= 20, "驗證這次請求真的踩到洪水量級"
+    assert legacy_events, "legacy backfill 這次確實跑了，不是空手而回"
     events = _vendor_benchmark_events_for_symbol(body, buy["contract_symbol"])
     assert len(events) == 1
     assert events[0]["context"]["vendor_iv_compared"] == 1
