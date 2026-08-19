@@ -605,7 +605,25 @@ recipe 已經錯過一次，存算好的 IV 會讓任何修正都要重花 vendo
   staleness 欄位含 DTE 不一致案例、陳舊但成功可辨識、帳本在高流量
   legacy 事件洪流下存活）＋`tests/test_data_marketdata.py` 新增 203
   註解回歸鎖。全套後端雙後端（memory＋真實 Postgres）全綠。
-- **#167** HIVR-08 近到期 low-confidence 標記（被 #165 擋）
+- **HIVR-08**（#167，commit `4ea40d6`）— 近到期 low-confidence 標記：
+  `option_chaser/ivreconstruct.py` 新增具名常數
+  `LOW_CONFIDENCE_DTE_THRESHOLD = 14` 與純函式 `is_low_confidence()`
+  ——純粹的天數比較（觀測日距到期日），不讀取 price／IV，因此對任一
+  觀測日皆可呼叫，包含反解失敗的缺席觀測。`_leg_historical_iv_
+  payload()` 的 `points` 序列化新增 `low_confidence` 欄位，套用在
+  裁窗後的每一點上；標記本身不影響 `trimmed`／統計量計算路徑，被
+  標記的點依然完整餵給 moving average／Bollinger／z-score／
+  percentile／Δ4w，也依然計入 `observation_count`——純資訊品質標記，
+  不刪點、不改統計、不影響 ranking／filtering／candidate selection
+  （那些路徑本來就不 import `ivreconstruct`，既有隔離測試涵蓋）。
+  前端 `IvTrendPoint` 型別新增 `low_confidence: boolean`；依票上
+  「前端呈現可以最小化，只要帶著欄位」的裁示，本票不新增視覺呈現。
+  測試：`test_ivreconstruct.py` 新增 5 條純函式測試（門檻邊界、
+  常數值、對缺席觀測仍可呼叫）；`test_api_iv_history.py` 新增 4 條
+  端到端測試（近到期標記為 true／遠到期為 false、標記不影響統計量、
+  不外洩進 diagnostic context 白名單）＋修正兩條既有測試因新增欄位
+  而需要更新的精確字典比對。全套後端雙後端全綠，前端 typecheck／
+  557 條 vitest 全綠。
 - **#168** HIVR-09 vendor-IV benchmark gate（被 #165 擋）
 - **#169** HIVR-10 legacy 事件聚合＋週末 no_data 降 info（被 #162 擋）
 - **#170** HIVR-11 全面回歸與 E2E 最終驗收（被 #165–#169 擋）
