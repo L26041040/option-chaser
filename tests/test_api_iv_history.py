@@ -535,6 +535,10 @@ def test_exact_contract_pipeline_never_calls_the_reanchoring_functions():
         # 的一部分，同一條隔離紅線延伸過來。
         "_fetch_rate_curve_rows", "_rate_by_date_for_leg",
         "_dividend_yield_by_date_for_leg", "_reconstruct_leg_series",
+        # HIVR-07（#166）：帳本＋staleness 可見性一樣是 exact-contract
+        # 家族的一部分。HIVR-09（#168）：vendor IV benchmark 比較同理。
+        "_emit_reconstruction_ledger", "_emit_staleness",
+        "_emit_vendor_benchmark",
     )
     for fn_name in exact_contract_functions:
         body = _function_source(src, fn_name)
@@ -1618,6 +1622,33 @@ def test_legs_field_omits_the_sell_key_entirely_for_a_single_leg_candidate(db):
 
     body = _get(client, sid, key).json()
     assert set(body["legs"]) == {"buy"}
+
+
+def test_the_response_contract_identity_exactly_matches_the_candidates_own_leg(db):
+    """HIVR-11（#170）紅線：contract identity 全程不變——路徑上任何一站
+    都不得替換履約價或到期日。`_leg_contract_identity()` 直接重用候選
+    自己的 `leg` dict（見它的 docstring），這裡端到端驗證回應裡的
+    `contract` 逐欄位精確等於候選自己的 `legs[0]`／`legs[1]`，不是「大致
+    像」或「同一個 OCC symbol 就好」。"""
+    client = _client(db, surface=_rich_surface)
+    _unlock(client)
+    sid = _scenario(client)
+    key = _candidate_key(client, sid)
+    buy_leg, sell_leg = _leg_identities(client, sid, key)
+
+    body = _get(client, sid, key).json()
+    buy_contract = body["legs"]["buy"]["contract"]
+    sell_contract = body["legs"]["sell"]["contract"]
+
+    assert buy_contract["strike"] == buy_leg["strike"]
+    assert buy_contract["expiration"] == buy_leg["expiry"]
+    assert buy_contract["option_type"] == buy_leg["option_type"]
+    assert buy_contract["contract_symbol"] == buy_leg["contract_symbol"]
+
+    assert sell_contract["strike"] == sell_leg["strike"]
+    assert sell_contract["expiration"] == sell_leg["expiry"]
+    assert sell_contract["option_type"] == sell_leg["option_type"]
+    assert sell_contract["contract_symbol"] == sell_leg["contract_symbol"]
 
 
 def test_exact_contract_isolation_different_strikes_never_cross_contaminate(db):
