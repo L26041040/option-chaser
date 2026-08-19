@@ -49,7 +49,12 @@ SUBSYSTEM_LEGACY_REANCHOR = "normalized_skew"
 SUBSYSTEMS = (SUBSYSTEM_EXACT_CONTRACT, SUBSYSTEM_LEGACY_REANCHOR)
 
 STAGES = ("candidate_lookup", "cache", "vendor_fetch", "payload_parse",
-         "database_write", "backfill", "reanchor", "metrics")
+         "database_write", "backfill", "reanchor", "metrics",
+         # HIVR-07（#166）：exact-contract reconstruction 家族專用——
+         # 「vendor 回 N 筆，究竟在哪一站變成 0 筆」的帳本（`reconstruction`）
+         # 與「這批資料有多舊」的可見性（`staleness`），皆屬
+         # `SUBSYSTEM_EXACT_CONTRACT`。
+         "reconstruction", "staleness")
 
 SEVERITIES = ("info", "warning", "error")
 
@@ -110,6 +115,17 @@ _CONTEXT_KEY_WHITELIST = frozenset({
     "requested_from", "requested_to", "parsed_rows", "null_iv_count",
     "dropped_missing_date", "observations_returned", "fetched_through",
     "already_fetched_today", "lookback_days",
+    # HIVR-07（#166）：reconstruction 帳本（`reconstruction` stage）——
+    # `fetched`／`reconstructed`／`usable` 三個總數，`unusable_quote`／
+    # `no_rate`／`no_dividend_yield`／`inversion_failed` 四個逐原因計數
+    # （對齊 `option_chaser.ivreconstruct.FAILURE_REASONS`，全部都給、
+    # 包含 0，才是完整的「N → 0 在哪一站」帳本）。staleness 可見性
+    # （`staleness` stage）——`request_time`／`observation_timestamp`／
+    # `staleness_days`／`vendor_dte`／`computed_dte`，讓「連線成功但資料
+    # 陳舊」不必再猜。
+    "fetched", "reconstructed", "usable", "unusable_quote", "no_rate",
+    "no_dividend_yield", "inversion_failed", "request_time",
+    "observation_timestamp", "staleness_days", "vendor_dte", "computed_dte",
 })
 
 _SECRET_PATTERNS = (

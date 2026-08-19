@@ -289,14 +289,17 @@ class _CollectingDiagnostics:
 _DIAGNOSTICS_STORAGE_CAP_PER_REQUEST = 40
 
 
-# 這兩個 stage 各自是「這次 request 的彙總結論」——`backfill` 每次至多
+# 這幾個 stage 各自是「這次 request 的彙總結論」——`backfill` 每次至多
 # 一筆，`metrics` 每個欄位一筆（舊家族單腳 2 筆／兩腿 4 筆；HIVT-03 起
-# 新家族每腿再加 5 筆統計量事件）。兩者都不跟高流量的逐日／逐次事件
-# （`vendor_fetch`／`payload_parse`／`database_write`／`reanchor`，一次
-# request 可能各自數十筆）搶名額——施工中發現：若混在同一個優先池裡用
-# `list[:cap]` 前截斷，事件量一大時彙總結論反而會被排在後面而擠出去，
-# 跟「使用者最想先看結論」的初衷相反。
-_ALWAYS_KEPT_STAGES = ("backfill", "metrics")
+# 新家族每腿再加 5 筆統計量事件），`reconstruction` 每腿一筆（HIVR-07／
+# #166：「這張圖為什麼這麼稀疏」的帳本）。這些都不跟高流量的逐日／逐次
+# 事件（`vendor_fetch`／`payload_parse`／`database_write`／`reanchor`，
+# 一次 request 可能各自數十筆）搶名額——施工中發現：若混在同一個優先池
+# 裡用 `list[:cap]` 前截斷，事件量一大時彙總結論反而會被排在後面而擠
+# 出去，跟「使用者最想先看結論」的初衷相反。`staleness` 刻意不在這裡：
+# 它本身量體就很低（每腿至多一筆，只在真的抓到新資料時才發），不需要
+# 額外保留名額也不太可能被擠掉。
+_ALWAYS_KEPT_STAGES = ("backfill", "metrics", "reconstruction")
 
 
 def _select_for_persistence(
@@ -510,6 +513,54 @@ def _emit_metrics(emit, points: list[dict], coords: dict) -> None:
             field=field_name, count=count,
             percentile_available=m["percentile"] is not None,
             trend_base_count=m["trend_base_count"])
+
+
+def _emit_staleness(emit, *, identity: dict, observation: dict,
+                    request_time: str, today: date) -> None:
+    """一次歷史抓取回應有多陳舊（HIVR-07／#166）：vendor 文件明載
+    professional status 未定的帳號會被靜默降級成至少一天前的資料且
+    不報錯，且選擇權要到**次一交易日 9:30:01 ET** 才從 Delayed 轉
+    Historical——`s="ok"` 因此不代表新鮮，只有 `updated` 這個時戳才算數
+    （見 `option_chaser/data/marketdata.py` 頂端 HTTP 203 註解更正的
+    同一條原則）。取這次新抓回來的觀測裡**最新**的一筆代表這次回應的
+    新鮮度；`vendor_dte`／`computed_dte` 並列讓兩者的落差不必用猜的。
+
+    `staleness_days <= 1`（次一交易日 rollover 屬既有已知、非異常行為）
+    定 info，超過才升級 warning——不是任何陳舊都要驚動使用者，只有
+    「比正常 rollover 還舊」才是。
+    """
+    obs_date = date.fromisoformat(observation["date"])
+    exp_date = date.fromisoformat(identity["expiration"])
+    staleness_days = (today - obs_date).days
+    computed_dte = days_between(obs_date, exp_date)
+    emit(stage="staleness",
+        severity="info" if staleness_days <= 1 else "warning",
+        message=(f"最新觀測 {staleness_days} 天前" if staleness_days > 1
+                else "最新觀測新鮮"),
+        contract_symbol=identity["contract_symbol"], **_identity_context(identity),
+        date=obs_date.isoformat(), request_time=request_time,
+        observation_timestamp=observation.get("updated"),
+        staleness_days=staleness_days, vendor_dte=observation.get("dte"),
+        computed_dte=computed_dte)
+
+
+def _emit_reconstruction_ledger(emit, *, identity: dict, fetched: int,
+                                series: list[tuple[str, float | None]],
+                                failure_counts: dict[str, int]) -> None:
+    """Reconstruction 帳本（HIVR-07／#166）：抓到幾筆觀測 → 成功重建
+    幾筆 → 逐原因失敗計數 → 最終可用筆數，一筆事件回答「這張圖為什麼
+    這麼稀疏」。四個失敗原因全部給（含 0），跟 `ivreconstruct.
+    FAILURE_REASONS` 對齊——不是只列有發生的那幾個，讀者才看得出「不是
+    敗在這一站」也是有意義的資訊。
+    """
+    reconstructed = sum(1 for _, iv in series if iv is not None)
+    emit(stage="reconstruction",
+        severity="info" if reconstructed > 0 else "warning",
+        message="重建完成" if reconstructed > 0 else "整段序列沒有任何一筆重建成功",
+        contract_symbol=identity["contract_symbol"], **_identity_context(identity),
+        fetched=fetched, reconstructed=reconstructed, usable=reconstructed,
+        **{reason: failure_counts.get(reason, 0)
+           for reason in ivreconstruct.FAILURE_REASONS})
 
 
 def _timing_json(sc: Scenario, today: date) -> dict:
@@ -1261,6 +1312,10 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
                 observations_returned=len(new_points),
                 null_iv_count=sum(1 for q in new_points
                                   if q["vendor_iv"] is None))
+            if new_points:
+                _emit_staleness(emit, identity=identity,
+                                observation=max(new_points, key=lambda q: q["date"]),
+                                request_time=now_utc_iso(), today=today)
             return merged_points, "ok", None
 
         # 失敗路徑：既有觀測原樣保留，只更新「今天嘗試過」的狀態，不
@@ -1365,21 +1420,27 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         return out
 
     def _reconstruct_leg_series(identity: dict, quotes: list[dict],
-                                rate_rows: tuple, dividend_history,
-                                ) -> list[tuple[str, float | None]]:
+                                rate_rows: tuple, dividend_history, *,
+                                emit) -> list[tuple[str, float | None]]:
         """HIVR-06（#165）：寬版 quote 序列 → reconstruction（#164）→
         `(date, iv)` 序列，餵給既有 `_leg_historical_iv_payload`／
         `ivtrend` 統計量——**每一筆都重新反解，包含 vendor 剛好給了非
         null `iv` 的那些**（spec #159：全期間同一把尺，不得混用 vendor
         算的與自己算的）。存 raw quote、讀取時重算是既有架構決策
         （spec #159 §3）——這裡就是那個「讀取時」。
+
+        HIVR-07（#166）：重建完後緊接著發一筆帳本事件（`_emit_
+        reconstruction_ledger`）——「這張圖為什麼這麼稀疏」的答案就在
+        這裡，不必另外讀程式碼推敲。
         """
         rate_by_date = _rate_by_date_for_leg(
             rate_rows, quotes, identity["expiration"])
         q_by_date = _dividend_yield_by_date_for_leg(dividend_history, quotes)
-        series, _failure_counts = ivreconstruct.reconstruct_iv_series(
+        series, failure_counts = ivreconstruct.reconstruct_iv_series(
             identity["option_type"], identity["strike"], identity["expiration"],
             quotes, rate_by_date, q_by_date)
+        _emit_reconstruction_ledger(emit, identity=identity, fetched=len(quotes),
+                                    series=series, failure_counts=failure_counts)
         return series
 
     def _leg_historical_iv_payload(identity: dict, points: list[tuple],
@@ -1530,7 +1591,8 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
 
         for name, identity, leg_points, leg_status, leg_note in leg_fetches:
             reconstructed = _reconstruct_leg_series(
-                identity, leg_points, rate_rows, dividend_history)
+                identity, leg_points, rate_rows, dividend_history,
+                emit=_emit_exact)
             legs_payload[name] = _leg_historical_iv_payload(
                 identity, reconstructed, leg_status, leg_note,
                 today=ny_today(), emit=_emit_exact)

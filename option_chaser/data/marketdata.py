@@ -422,10 +422,20 @@ def fetch_surface(symbol: str, on_date: str, token: str,
 #
 # **回應形狀已由 #152 用真實請求驗證**（issue #152 留言存證，2026-08-17，
 # `GET /v1/options/quotes/TLT281215C00094000/?from=&to=`），不是依文件
-# 猜的：HTTP 狀態碼可能是 **203**（不是只有 200——vendor 對延遲報價用
-# 這個狀態碼，見下方 `_http_request` 沿用既有的「urlopen 對任何 2xx 都
-# 不拋例外」慣例，本檔案任何地方都沒有寫死 `status == 200`，203 因此
-# 天然可用不需要特殊處理）；欄位是一般的欄狀 JSON（`s`／`optionSymbol`／
+# 猜的：HTTP 狀態碼可能是 **203**（不是只有 200）。
+#
+# **HTTP 203 註解更正（HIVR-07／#166）**：先前這裡誤寫「vendor 對延遲
+# 報價用 203」——vendor 官方文件（`api/universal-parameters/mode.md`）
+# 明文：203＝**這次回應是從快取層回的**，且特地把「mode 對應 status
+# code」點名為 "a common (incorrect) assumption"。既有*行為*本來就是對
+# 的（見下方 `_http_request` 沿用既有的「urlopen 對任何 2xx 都不拋
+# 例外」慣例，本檔案任何地方都沒有寫死 `status == 200`，203 因此天然
+# 可用不需要特殊處理）——錯的只有這段對「為什麼」的解釋，不是行為本身。
+# **資料新鮮度一律只看 `updated`（觀測本身的時戳），不看 HTTP 狀態碼**
+# ——203 不代表舊、200 也不保證新，見 HIVR-07 新增的 `staleness` 診斷
+# 事件（`api_app/main.py`）。
+#
+# 欄位是一般的欄狀 JSON（`s`／`optionSymbol`／
 # `updated`／`iv`／`bid`／`ask`／... 皆為與 `optionSymbol` 等長的陣列，
 # `updated` 是 Unix 秒，逐日一筆）；`iv` 存在但可能是 `null`（真實樣本：
 # 近期資料常見前幾筆 `null`，bid/ask 仍有值）——這是「這天沒有可信的

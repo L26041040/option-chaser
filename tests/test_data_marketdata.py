@@ -485,13 +485,26 @@ def test_observation_date_derivation_is_unchanged_still_each_rows_own_updated():
 
 
 def test_http_203_is_a_success_not_a_failure():
-    """真實 vendor 驗證發現的 bug class（#152）：Market Data App 對延遲
-    報價回 HTTP 203，不是只有 200。不得因為 `status != 200` 就當失敗。"""
+    """真實 vendor 驗證發現的 bug class（#152）：Market Data App 可能回
+    HTTP 203，不是只有 200。不得因為 `status != 200` 就當失敗。**203 的
+    正確意義是「這次回應是從快取層回的」**（HIVR-07／#166 更正：先前
+    這裡誤寫成「vendor 對延遲報價用 203」——vendor 官方文件明文把
+    「mode 對應 status code」點名為常見的錯誤假設；資料新鮮度只看
+    `updated` 時戳，不看 HTTP 狀態碼）。"""
     got = marketdata.fetch_contract_history(
         "TLT281215C00094000", "2025-08-17", "2026-08-17", "tok",
         http_request=_fake_contract_request(_contract_history_payload(),
                                             status=203))
     assert len(got) == 3
+
+
+def test_the_203_comment_states_cache_layer_not_delayed_quote():
+    """HIVR-07（#166）AC：文件更正本身要能被鎖住，不能之後又悄悄改回
+    錯的說法。逐段落 AST 之外的純文字檢查——這裡是註解，不是可執行
+    程式碼，沒有函式邊界可用 AST 掃描，直接掃整份原始碼文字。"""
+    src = open(marketdata.__file__, encoding="utf-8").read()
+    assert "從快取層回" in src
+    assert "vendor 對延遲報價用" not in src
 
 
 def test_null_iv_is_preserved_as_missing_not_dropped_not_defaulted():

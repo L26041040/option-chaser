@@ -1455,7 +1455,9 @@ def test_single_leg_metrics_do_not_flag_the_structurally_absent_fields(db):
 def test_the_full_ledger_covers_every_stage_and_shares_one_correlation_id(db):
     """DG-04 的核心交付：同一個 correlation_id 的 events 依序讀完，八站
     的進與出都在——這就是「vendor 回 N 筆，究竟在哪一站變成 0 筆」的
-    完整帳本，不需要讀程式碼。"""
+    完整帳本，不需要讀程式碼。`reconstruction`（HIVR-07／#166）現在
+    每一腿都會發一筆——即使這份 fixture 的 exact-contract 假體回傳空
+    序列（`fetched=0`），帳本本身仍然是這次 request 的一部分。"""
     telemetry = {"http_status": 200, "vendor_status": "ok",
                 "vendor_errmsg": None, "raw_rows": 5,
                 "parsed_call_rows": 0, "parsed_put_rows": 0}
@@ -1469,7 +1471,7 @@ def test_the_full_ledger_covers_every_stage_and_shares_one_correlation_id(db):
     stages_seen = {e["stage"] for e in body["diagnostics"]["events"]}
     assert stages_seen == {"candidate_lookup", "cache", "vendor_fetch",
                            "payload_parse", "database_write", "backfill",
-                           "reanchor", "metrics"}
+                           "reanchor", "metrics", "reconstruction"}
     cids = {e["correlation_id"] for e in body["diagnostics"]["events"]}
     assert cids == {body["diagnostics"]["correlation_id"]}
 
@@ -2156,3 +2158,144 @@ def test_rate_and_dividend_yield_are_resolved_per_observation_date_not_from_toda
     points = {p["date"]: p["iv"] for p in body["legs"]["buy"]["points"]}
     assert points[before_ex_date] == pytest.approx(0.20, abs=1e-6)
     assert points[after_ex_date] == pytest.approx(0.20, abs=1e-6)
+
+
+# ---------- Reconstruction 帳本＋staleness 可見性（HIVR-07／#166） ----------
+
+def _reconstruction_events_for_symbol(body, contract_symbol):
+    return [e for e in body["diagnostics"]["events"]
+           if e["stage"] == "reconstruction"
+           and e["context"].get("contract_symbol") == contract_symbol]
+
+
+def _staleness_events_for_symbol(body, contract_symbol):
+    return [e for e in body["diagnostics"]["events"]
+           if e["stage"] == "staleness"
+           and e["context"].get("contract_symbol") == contract_symbol]
+
+
+def test_reconstruction_ledger_reports_fetched_reconstructed_usable_and_every_reason(db):
+    """帳本要同時回答「抓了幾筆」「成功幾筆」「敗在哪」——四個失敗原因
+    全部要出現在 context 裡（含 0），不是只列有發生的那幾個，讀者才
+    看得出「不是敗在這一站」也是有意義的資訊。"""
+    rec = ContractHistoryRecorder()
+    client = _client(db, surface=_rich_surface, contract_history=rec)
+    _unlock(client)
+    sid = _scenario(client)
+    key = _candidate_key(client, sid)
+    buy = _leg_identities(client, sid, key)[0]
+    good_date = _before_expiry(buy["expiry"], 50)
+    unusable_date = _before_expiry(buy["expiry"], 49)
+    rec._points_by_symbol[buy["contract_symbol"]] = [
+        _synthetic_quote(good_date, option_type=buy["option_type"],
+                         strike=buy["strike"], expiration=buy["expiry"],
+                         sigma=0.20),
+        (unusable_date, None),   # bid/ask 全 None → unusable_quote
+    ]
+
+    body = _get(client, sid, key).json()
+    events = _reconstruction_events_for_symbol(body, buy["contract_symbol"])
+    assert len(events) == 1
+    ctx = events[0]["context"]
+    assert ctx["fetched"] == 2
+    assert ctx["reconstructed"] == 1
+    assert ctx["usable"] == 1
+    assert ctx["unusable_quote"] == 1
+    assert ctx["no_rate"] == 0
+    assert ctx["no_dividend_yield"] == 0
+    assert ctx["inversion_failed"] == 0
+
+
+def test_reconstruction_ledger_is_a_warning_when_nothing_is_usable(db):
+    rec = ContractHistoryRecorder()
+    client = _client(db, surface=_rich_surface, contract_history=rec)
+    _unlock(client)
+    sid = _scenario(client)
+    key = _candidate_key(client, sid)
+    buy = _leg_identities(client, sid, key)[0]
+    rec._points_by_symbol[buy["contract_symbol"]] = [
+        (_before_expiry(buy["expiry"], 50), None)]
+
+    body = _get(client, sid, key).json()
+    events = _reconstruction_events_for_symbol(body, buy["contract_symbol"])
+    assert len(events) == 1
+    assert events[0]["severity"] == "warning"
+    assert events[0]["context"]["usable"] == 0
+
+
+def test_staleness_event_records_request_time_observation_and_dte_mismatch(db):
+    """`dte` 故意設成一個跟我們自己算出來的天數不同的值——vendor 報的
+    與我們算的並列，落差才看得出來，不是靠猜的。"""
+    rec = ContractHistoryRecorder()
+    client = _client(db, surface=_rich_surface, contract_history=rec)
+    _unlock(client)
+    sid = _scenario(client)
+    key = _candidate_key(client, sid)
+    buy = _leg_identities(client, sid, key)[0]
+    d = _before_expiry(buy["expiry"], 50)
+    quote = _synthetic_quote(d, option_type=buy["option_type"],
+                             strike=buy["strike"], expiration=buy["expiry"],
+                             sigma=0.20, extra={"dte": 999, "updated": 1234567890})
+    rec._points_by_symbol[buy["contract_symbol"]] = [quote]
+
+    body = _get(client, sid, key).json()
+    events = _staleness_events_for_symbol(body, buy["contract_symbol"])
+    assert len(events) == 1
+    ctx = events[0]["context"]
+    assert ctx["date"] == d
+    assert ctx["observation_timestamp"] == 1234567890
+    assert ctx["vendor_dte"] == 999
+    assert ctx["computed_dte"] == 50
+    assert ctx["vendor_dte"] != ctx["computed_dte"]
+    assert "request_time" in ctx
+    assert isinstance(ctx["staleness_days"], int)
+
+
+def test_a_stale_but_successful_fetch_is_identifiable_from_diagnostics_alone(db):
+    """連線成功（`s="ok"`）不代表資料新鮮——vendor 文件載明未定
+    professional status 的帳號會被靜默降級成陳舊資料。這裡的觀測日
+    刻意設在很久以前，staleness 要能從 diagnostics 直接看出來（升級成
+    warning），不必另外猜。"""
+    rec = ContractHistoryRecorder()
+    client = _client(db, surface=_rich_surface, contract_history=rec)
+    _unlock(client)
+    sid = _scenario(client)
+    key = _candidate_key(client, sid)
+    buy = _leg_identities(client, sid, key)[0]
+    old_date = _before_expiry(buy["expiry"], 100)   # 距「今天」很久以前
+    rec._points_by_symbol[buy["contract_symbol"]] = [_synthetic_quote(
+        old_date, option_type=buy["option_type"], strike=buy["strike"],
+        expiration=buy["expiry"], sigma=0.20)]
+
+    body = _get(client, sid, key).json()
+    events = _staleness_events_for_symbol(body, buy["contract_symbol"])
+    assert len(events) == 1
+    assert events[0]["severity"] == "warning"
+    assert events[0]["context"]["staleness_days"] > 1
+
+
+def test_reconstruction_ledger_survives_a_heavy_legacy_event_flood(db):
+    """HIVR-07（#166）AC：跟 HIVR-03（#162）的 subsystem 拆分疊加驗證——
+    一次請求觸發滿載的 legacy backfill（遠超過共用上限），exact-contract
+    家族的 `reconstruction` 帳本仍然要完整出現在回應裡。"""
+    telemetry = {"http_status": 200, "vendor_status": "ok",
+                "vendor_errmsg": None, "raw_rows": 3,
+                "parsed_call_rows": 1, "parsed_put_rows": 1}
+    surface = _telemetry_surface(telemetry)
+    rec = ContractHistoryRecorder()
+    client = _client(db, surface=surface, contract_history=rec)
+    _unlock(client)
+    sid = _scenario(client)
+    key = _candidate_key(client, sid)
+    buy = _leg_identities(client, sid, key)[0]
+    rec._points_by_symbol[buy["contract_symbol"]] = [_synthetic_quote(
+        _before_expiry(buy["expiry"], 50), option_type=buy["option_type"],
+        strike=buy["strike"], expiration=buy["expiry"], sigma=0.20)]
+
+    body = _get(client, sid, key).json()
+    legacy_events = [e for e in body["diagnostics"]["events"]
+                     if e["subsystem"] == "normalized_skew"]
+    assert len(legacy_events) >= 20, "驗證這次請求真的踩到洪水量級"
+    ledger = _reconstruction_events_for_symbol(body, buy["contract_symbol"])
+    assert len(ledger) == 1
+    assert ledger[0]["context"]["usable"] == 1
