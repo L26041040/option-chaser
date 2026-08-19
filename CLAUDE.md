@@ -580,7 +580,31 @@ recipe 已經錯過一次，存算好的 IV 會讓任何修正都要重花 vendo
   ex-date 前後兩筆觀測驗證，若誤用「今天」的值會露餡）。全套：後端
   雙後端全綠、前端 vitest 557 條**零修改**全綠、typecheck 通過——
   證實回應形狀真的沒變
-- **#166** HIVR-07 reconstruction 帳本＋staleness＋203 註解更正（被 #162／#165 擋）
+- **HIVR-07**（#166，commit `323a529`）— Reconstruction 帳本＋staleness
+  可見性＋HTTP 203 註解更正：新增兩個 exact-contract 家族專屬
+  diagnostic stage。`reconstruction`——`_reconstruct_leg_series()` 重建
+  完後每腿發一筆帳本事件，`fetched`／`reconstructed`／`usable` 三個
+  計數＋`ivreconstruct` 四種失敗原因逐一計數（含 0），回答「vendor 回
+  N 筆究竟在哪一站變成 0 筆」不必讀程式碼；加進 `_ALWAYS_KEPT_STAGES`
+  （原 `("backfill", "metrics")` 擴為 `("backfill", "metrics",
+  "reconstruction")`）避免同一腿高流量的 `reanchor`／`vendor_fetch`
+  事件把它擠出 per-request cap（40，未動）。`staleness`——只在
+  `_ensure_contract_history()` 真的抓到新資料時發一筆（沿用既有
+  「今天已跑過不重抓」短路，不對快取命中發這個事件），帶
+  `request_time`／observation 自己的 `date`／原始 `updated`／
+  `staleness_days`／vendor 自己回報的 `vendor_dte` 與本站獨立算的
+  `computed_dte`——兩者不一致時現在看得出來；`staleness_days<=1` 為
+  info（下一個 session 的正常 rollover），否則 warning。順帶更正
+  `marketdata.py` 對 HTTP 203 的錯誤註解：vendor 官方文件明確指出 203
+  代表「這筆回應來自快取層」而非「延遲報價」，且文件本身把
+  mode→status 這種對應點名為常見誤解；既有行為（接受任何 2xx，未寫死
+  `status==200`）本來就正確，只有解釋錯了，已修正並補一條原始碼文字
+  掃描回歸鎖（`test_the_203_comment_states_cache_layer_not_delayed_
+  quote`）。測試：`tests/test_api_iv_history.py` 新增 5 條端到端
+  （fetched/reconstructed/usable/四種原因逐一計數、無可用時 warning、
+  staleness 欄位含 DTE 不一致案例、陳舊但成功可辨識、帳本在高流量
+  legacy 事件洪流下存活）＋`tests/test_data_marketdata.py` 新增 203
+  註解回歸鎖。全套後端雙後端（memory＋真實 Postgres）全綠。
 - **#167** HIVR-08 近到期 low-confidence 標記（被 #165 擋）
 - **#168** HIVR-09 vendor-IV benchmark gate（被 #165 擋）
 - **#169** HIVR-10 legacy 事件聚合＋週末 no_data 降 info（被 #162 擋）
