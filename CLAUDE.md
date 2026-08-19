@@ -554,7 +554,32 @@ recipe 已經錯過一次，存算好的 IV 會讓任何修正都要重花 vendo
   `american_price()` 算出價格，反解回來核對，不手猜期望值）；隔離紅線
   （不 import `ivhistory`、`ranking.py`／`filters.py` 不依賴這個模組）
   比照 `ivtrend.py` 既有寫法。本票沒有任何呼叫端，不影響其他檔案
-- **#165** HIVR-06 接線：**空卡片變成有圖**（被 #160／#161／#164 擋）
+- **HIVR-06**（#165）接線：**空卡片變成有圖** ✅ commit `8323cf0`：
+  `iv-history` 端點改用 `ivreconstruct.reconstruct_iv_series()` 逐點
+  重建，取代原本的 `_project_vendor_iv()` 透傳——vendor IV 全 null 的
+  真實合約（ORCL／TLT LEAPS）現在能畫出完整走勢圖。`create_app()`
+  新增可注入的 `rate_curve_rows`（預設 HIVR-01 的
+  `treasury.fetch_curve_range`），兩腿共用一次抓取（Treasury 曲線與
+  標的無關）；`_rate_by_date_for_leg()` 用 `ratecurve.curve_asof()`＋
+  `rate_for_tenor()` 逐日查表；`_dividend_yield_by_date_for_leg()` 用
+  `dividends.compute_q_asof()`，分母用該筆觀測自己的
+  `underlying_price`——沿用既有 `dividend_loader`（HIVR-02 的
+  ex-date 上界讓「今天抓一次完整配息清單」本身就是逐筆觀測日正確的，
+  不需要新的快取層）。**每一筆都重建，包含 vendor 剛好給非 null iv
+  的那些**——`ivreconstruct` 模組本身零讀取 `vendor_iv`，canonical
+  series 結構上不可能退回它。既有隔離測試的函式清單擴充涵蓋新增的
+  四個接線函式。測試 fixture 需要真正的財務 round-trip 才有意義：
+  新增 `_synthetic_quote()`（用跟 production 完全相同的 point-in-time
+  r/q 查表方式建構報價，保證精確反解回指定 sigma）；施工中發現並
+  記錄兩個 fixture 真 bug（固定 ±0.01 價差在深度價外、近到期日的
+  近零價格會讓 bid 變負值，改比例價差；多個既有測試寫死的日期恰好
+  落在這份 fixture 候選自己的到期日**之後**，`T<0` 讓 `implied_vol`
+  正確回 `None`——不是重建邏輯錯，是 fixture 日期沒對齊）。新增端到端
+  測試涵蓋三項核心主張：vendor iv 全 null 仍完整重建、canonical
+  series 不採用刻意設錯的 vendor_iv、r／q 逐觀測日查表（用橫跨配息
+  ex-date 前後兩筆觀測驗證，若誤用「今天」的值會露餡）。全套：後端
+  雙後端全綠、前端 vitest 557 條**零修改**全綠、typecheck 通過——
+  證實回應形狀真的沒變
 - **#166** HIVR-07 reconstruction 帳本＋staleness＋203 註解更正（被 #162／#165 擋）
 - **#167** HIVR-08 近到期 low-confidence 標記（被 #165 擋）
 - **#168** HIVR-09 vendor-IV benchmark gate（被 #165 擋）
