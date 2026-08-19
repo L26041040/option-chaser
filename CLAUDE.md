@@ -536,7 +536,24 @@ recipe 已經錯過一次，存算好的 IV 會讓任何修正都要重花 vendo
   `_leg_historical_iv_payload`／`ivtrend` 繼續吃舊版 `(date, iv)`
   形狀——本票沒有任何東西消費新欄位（reconstruction 要等 #164／#165），
   Historical IV Trend 卡片畫面行為維持不變
-- **#164** HIVR-05 reconstruction 純模組（被 #163 擋）
+- **HIVR-05**（#164）reconstruction 純模組 ✅ commit `3166dbc`：新增
+  `option_chaser/ivreconstruct.py`（`ivtrend.py` 同層純模組）——
+  `reconstruct_iv_series(option_type, strike, expiration, quotes,
+  rate_by_date, dividend_yield_by_date)`。price 用 vendor `mid`、缺席退
+  `(bid+ask)/2`（HIVR-04 的寬版 quote 結構上沒有 `last` 欄位，「絕不用
+  last」因此是結構性保證）；quote 合法性（bid／ask 皆正、未倒掛）獨立
+  於 `mid` 是否存在；`T` 用該筆觀測自己的日期算（既有
+  `DAYS_PER_YEAR`／`days_between`，不引入新慣例）；r／q 由呼叫端逐筆
+  觀測日以 `{date: value}` 傳入，模組本身零 I/O；model 沿用既有
+  `implied_vol()`（BS93）。任一輸入缺席或反解無解只讓那一筆變
+  `(date, None)`，以四個具名原因（`unusable_quote`／`no_rate`／
+  `no_dividend_yield`／`inversion_failed`）分別計數，不影響其他筆。
+  `vendor_iv` 整個模組零讀取，canonical series 結構上不可能引用它。
+  輸出形狀與 `ivtrend.py` 既有統計函式輸入形狀逐位元相同，測試直接
+  餵過去驗證零轉接層。28 條測試皆為 round-trip 風格（已知 sigma 經
+  `american_price()` 算出價格，反解回來核對，不手猜期望值）；隔離紅線
+  （不 import `ivhistory`、`ranking.py`／`filters.py` 不依賴這個模組）
+  比照 `ivtrend.py` 既有寫法。本票沒有任何呼叫端，不影響其他檔案
 - **#165** HIVR-06 接線：**空卡片變成有圖**（被 #160／#161／#164 擋）
 - **#166** HIVR-07 reconstruction 帳本＋staleness＋203 註解更正（被 #162／#165 擋）
 - **#167** HIVR-08 近到期 low-confidence 標記（被 #165 擋）
