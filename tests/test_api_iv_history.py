@@ -1456,9 +1456,10 @@ def test_single_leg_metrics_do_not_flag_the_structurally_absent_fields(db):
 def test_the_full_ledger_covers_every_stage_and_shares_one_correlation_id(db):
     """DG-04 的核心交付：同一個 correlation_id 的 events 依序讀完，八站
     的進與出都在——這就是「vendor 回 N 筆，究竟在哪一站變成 0 筆」的
-    完整帳本，不需要讀程式碼。`reconstruction`（HIVR-07／#166）現在
-    每一腿都會發一筆——即使這份 fixture 的 exact-contract 假體回傳空
-    序列（`fetched=0`），帳本本身仍然是這次 request 的一部分。"""
+    完整帳本，不需要讀程式碼。`reconstruction`（HIVR-07／#166）與
+    `vendor_benchmark`（HIVR-09／#168）現在每一腿都會發一筆——即使這份
+    fixture 的 exact-contract 假體回傳空序列（`fetched=0`），兩筆帳本
+    事件仍然是這次 request 的一部分。"""
     telemetry = {"http_status": 200, "vendor_status": "ok",
                 "vendor_errmsg": None, "raw_rows": 5,
                 "parsed_call_rows": 0, "parsed_put_rows": 0}
@@ -1472,7 +1473,8 @@ def test_the_full_ledger_covers_every_stage_and_shares_one_correlation_id(db):
     stages_seen = {e["stage"] for e in body["diagnostics"]["events"]}
     assert stages_seen == {"candidate_lookup", "cache", "vendor_fetch",
                            "payload_parse", "database_write", "backfill",
-                           "reanchor", "metrics", "reconstruction"}
+                           "reanchor", "metrics", "reconstruction",
+                           "vendor_benchmark"}
     cids = {e["correlation_id"] for e in body["diagnostics"]["events"]}
     assert cids == {body["diagnostics"]["correlation_id"]}
 
@@ -2369,3 +2371,118 @@ def test_low_confidence_flag_never_shows_up_in_a_diagnostic_whitelist_bypass(db)
     from api_app.diagnostics import _CONTEXT_KEY_WHITELIST
 
     assert "low_confidence" not in _CONTEXT_KEY_WHITELIST
+
+
+# ---------- Vendor IV benchmark 合理性 gate（HIVR-09／#168） ----------
+
+def _vendor_benchmark_events_for_symbol(body, contract_symbol):
+    return [e for e in body["diagnostics"]["events"]
+           if e["stage"] == "vendor_benchmark"
+           and e["context"].get("contract_symbol") == contract_symbol]
+
+
+def test_a_degenerate_vendor_iv_is_excluded_from_the_comparison_but_visible_as_excluded(db):
+    """AC：合理性 gate 外的 vendor IV 不進 benchmark 比較，但要「可見地
+    被排除」——不是靜默從回應裡消失。用真實 calibration 資料裡出現過的
+    退化值 `0.0001`（`docs/research/historical-iv-reconstruction-
+    corrected-calibration-results.md`）。"""
+    rec = ContractHistoryRecorder()
+    client = _client(db, surface=_rich_surface, contract_history=rec)
+    _unlock(client)
+    sid = _scenario(client)
+    key = _candidate_key(client, sid)
+    buy = _leg_identities(client, sid, key)[0]
+    d = _before_expiry(buy["expiry"], 50)
+    rec._points_by_symbol[buy["contract_symbol"]] = [_synthetic_quote(
+        d, option_type=buy["option_type"], strike=buy["strike"],
+        expiration=buy["expiry"], sigma=0.20, vendor_iv=0.0001)]
+
+    body = _get(client, sid, key).json()
+    events = _vendor_benchmark_events_for_symbol(body, buy["contract_symbol"])
+    assert len(events) == 1
+    ctx = events[0]["context"]
+    assert ctx["vendor_iv_present"] == 1
+    assert ctx["vendor_iv_excluded_degenerate"] == 1
+    assert ctx["vendor_iv_compared"] == 0
+    assert "mean_abs_diff" not in ctx   # sanitize_context() 丟棄 None 值
+    # canonical series 本身完全不受影響——這一筆照樣是我們自己反解出來
+    # 的 0.20，不是被 gate 動過手腳的哪個數字。
+    assert body["legs"]["buy"]["points"][0]["iv"] == pytest.approx(0.20, abs=1e-6)
+
+
+def test_a_value_inside_the_bounds_is_compared_and_unaffected_by_the_gate(db):
+    """AC：門檻內的值不受影響——正常進入比較，`vendor_iv_excluded_
+    degenerate` 為 0。"""
+    rec = ContractHistoryRecorder()
+    client = _client(db, surface=_rich_surface, contract_history=rec)
+    _unlock(client)
+    sid = _scenario(client)
+    key = _candidate_key(client, sid)
+    buy = _leg_identities(client, sid, key)[0]
+    d = _before_expiry(buy["expiry"], 50)
+    rec._points_by_symbol[buy["contract_symbol"]] = [_synthetic_quote(
+        d, option_type=buy["option_type"], strike=buy["strike"],
+        expiration=buy["expiry"], sigma=0.20, vendor_iv=0.24)]
+
+    body = _get(client, sid, key).json()
+    events = _vendor_benchmark_events_for_symbol(body, buy["contract_symbol"])
+    assert len(events) == 1
+    ctx = events[0]["context"]
+    assert ctx["vendor_iv_present"] == 1
+    assert ctx["vendor_iv_excluded_degenerate"] == 0
+    assert ctx["vendor_iv_compared"] == 1
+    # 我們自己反解出 0.20，vendor 給 0.24——差 0.04，可比較的那筆平均
+    # 絕對差就是這個數字。
+    assert ctx["mean_abs_diff"] == pytest.approx(0.04, abs=1e-6)
+
+
+def test_a_missing_vendor_iv_is_neither_compared_nor_counted_as_excluded(db):
+    """`vendor_iv=None` 不是「被排除的退化值」，是「vendor 這天沒給」——
+    兩種狀態要分得清楚，不能都灌進同一個計數裡。"""
+    rec = ContractHistoryRecorder()
+    client = _client(db, surface=_rich_surface, contract_history=rec)
+    _unlock(client)
+    sid = _scenario(client)
+    key = _candidate_key(client, sid)
+    buy = _leg_identities(client, sid, key)[0]
+    d = _before_expiry(buy["expiry"], 50)
+    rec._points_by_symbol[buy["contract_symbol"]] = [_synthetic_quote(
+        d, option_type=buy["option_type"], strike=buy["strike"],
+        expiration=buy["expiry"], sigma=0.20, vendor_iv=None)]
+
+    body = _get(client, sid, key).json()
+    events = _vendor_benchmark_events_for_symbol(body, buy["contract_symbol"])
+    assert len(events) == 1
+    ctx = events[0]["context"]
+    assert ctx["vendor_iv_present"] == 0
+    assert ctx["vendor_iv_excluded_degenerate"] == 0
+    assert ctx["vendor_iv_compared"] == 0
+    assert "mean_abs_diff" not in ctx   # sanitize_context() 丟棄 None 值
+
+
+def test_the_benchmark_event_survives_a_heavy_legacy_event_flood(db):
+    """跟 `reconstruction` 帳本（HIVR-07）同一種疊加驗證——`vendor_
+    benchmark` 也加進 `_ALWAYS_KEPT_STAGES`，同一次洪水量級的 legacy
+    事件不該把它擠出去。"""
+    telemetry = {"http_status": 200, "vendor_status": "ok",
+                "vendor_errmsg": None, "raw_rows": 3,
+                "parsed_call_rows": 1, "parsed_put_rows": 1}
+    surface = _telemetry_surface(telemetry)
+    rec = ContractHistoryRecorder()
+    client = _client(db, surface=surface, contract_history=rec)
+    _unlock(client)
+    sid = _scenario(client)
+    key = _candidate_key(client, sid)
+    buy = _leg_identities(client, sid, key)[0]
+    rec._points_by_symbol[buy["contract_symbol"]] = [_synthetic_quote(
+        _before_expiry(buy["expiry"], 50), option_type=buy["option_type"],
+        strike=buy["strike"], expiration=buy["expiry"], sigma=0.20,
+        vendor_iv=0.22)]
+
+    body = _get(client, sid, key).json()
+    legacy_events = [e for e in body["diagnostics"]["events"]
+                     if e["subsystem"] == "normalized_skew"]
+    assert len(legacy_events) >= 20, "驗證這次請求真的踩到洪水量級"
+    events = _vendor_benchmark_events_for_symbol(body, buy["contract_symbol"])
+    assert len(events) == 1
+    assert events[0]["context"]["vendor_iv_compared"] == 1

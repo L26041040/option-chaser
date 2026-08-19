@@ -78,6 +78,29 @@ def is_low_confidence(observation_date: str, expiration: str) -> bool:
     return dte < LOW_CONFIDENCE_DTE_THRESHOLD
 
 
+# HIVR-09（#168）：vendor IV benchmark 合理性 gate——這兩個常數只管
+# **benchmark／QA／診斷比較**要不要採信某筆 `vendor_iv`，跟 canonical
+# series 完全無關（canonical series 本來就不讀 `vendor_iv`，見本檔案
+# 開頭的模組說明）。下界依 calibration 實測抓到的退化值訂定——真實
+# vendor 回應裡出現過 `vendor_iv≈0.0001` 這種近乎數值零的值（見
+# `docs/research/historical-iv-reconstruction-corrected-calibration-
+# results.md`），是佔位符而非真實反解結果，比一個 vol point（0.01）
+# 還低了兩個數量級。上界對齊 `valuation.implied_vol()` 自己的搜尋上限
+# （`hi=5.0`）——我們自己的反解結構上不可能回超過這個值，vendor 若回報
+# 超界數字就已經不在可比較範圍內，不是我們另外挑的門檻。
+VENDOR_IV_BENCHMARK_MIN = 0.01
+VENDOR_IV_BENCHMARK_MAX = 5.0
+
+
+def vendor_iv_is_benchmarkable(vendor_iv: float | None) -> bool:
+    """這筆 `vendor_iv` 是否落在合理範圍內、可以拿來跟 canonical series
+    比較。`None`（vendor 對這天沒有值）不是退化值，但同樣不可比較——
+    明確定義成 `False`，避免呼叫端各自猜測 `None` 該怎麼跟門檻比較。"""
+    if vendor_iv is None:
+        return False
+    return VENDOR_IV_BENCHMARK_MIN <= vendor_iv <= VENDOR_IV_BENCHMARK_MAX
+
+
 def _quote_price(quote: dict) -> float | None:
     """price 優先序：vendor `mid` → `(bid+ask)/2` 退回。兩者皆不可得回
     `None`。HIVR-04 的 `_num()` 缺值口徑已經在解析層把非正值收斂成

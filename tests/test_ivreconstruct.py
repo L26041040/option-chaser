@@ -16,8 +16,11 @@ from option_chaser.ivreconstruct import (FAILURE_INVERSION_FAILED,
                                          FAILURE_NO_RATE,
                                          FAILURE_UNUSABLE_QUOTE,
                                          LOW_CONFIDENCE_DTE_THRESHOLD,
+                                         VENDOR_IV_BENCHMARK_MAX,
+                                         VENDOR_IV_BENCHMARK_MIN,
                                          is_low_confidence,
-                                         reconstruct_iv_series)
+                                         reconstruct_iv_series,
+                                         vendor_iv_is_benchmarkable)
 from option_chaser.valuation import (DAYS_PER_YEAR, american_price,
                                      days_between)
 
@@ -385,6 +388,78 @@ def test_low_confidence_can_be_evaluated_for_a_missing_observation_too():
     一視同仁地套用。"""
     assert is_low_confidence("2027-06-17", "2027-06-18") is True
     assert is_low_confidence("2026-01-01", "2027-06-18") is False
+
+
+# ---------- vendor IV benchmark 合理性 gate（HIVR-09／#168） ----------
+
+def test_the_bounds_are_the_documented_constants():
+    assert VENDOR_IV_BENCHMARK_MIN == 0.01
+    assert VENDOR_IV_BENCHMARK_MAX == 5.0
+
+
+def test_a_real_observed_degenerate_value_is_excluded():
+    """真實 calibration 資料裡出現過的退化值（`ORCL260821C00136000`
+    的 `vendor_iv=0.0001`）——比下界還低了兩個數量級，必須被排除。"""
+    assert vendor_iv_is_benchmarkable(0.0001) is False
+
+
+def test_values_at_the_bounds_are_benchmarkable():
+    """AC「等於門檻」不算超界——上下界本身都在合理範圍內。"""
+    assert vendor_iv_is_benchmarkable(VENDOR_IV_BENCHMARK_MIN) is True
+    assert vendor_iv_is_benchmarkable(VENDOR_IV_BENCHMARK_MAX) is True
+
+
+def test_values_just_outside_the_bounds_are_excluded():
+    assert vendor_iv_is_benchmarkable(VENDOR_IV_BENCHMARK_MIN - 0.001) is False
+    assert vendor_iv_is_benchmarkable(VENDOR_IV_BENCHMARK_MAX + 0.001) is False
+
+
+def test_a_typical_value_well_inside_the_bounds_is_benchmarkable():
+    assert vendor_iv_is_benchmarkable(0.22) is True
+
+
+def test_a_missing_vendor_iv_is_not_benchmarkable_either():
+    """`None`＝vendor 對這天沒有值，不是退化值，但同樣不可比較——不是
+    `True`（沒東西可比較），也不該讓呼叫端自己去猜怎麼比較 `None`。"""
+    assert vendor_iv_is_benchmarkable(None) is False
+
+
+def test_the_upper_bound_matches_the_solvers_own_search_ceiling():
+    """上界不是憑空挑的：跟 `implied_vol()` 自己的搜尋上限（`hi=5.0`）
+    對齊——這個模組本身的反解結構上不可能回超過這個值，這裡直接讀
+    `implied_vol` 的預設參數值來鎖住這個關聯，而不是抄一份可能漂移的
+    數字。"""
+    import inspect
+
+    from option_chaser.valuation import implied_vol
+
+    hi_default = inspect.signature(implied_vol).parameters["hi"].default
+    assert VENDOR_IV_BENCHMARK_MAX == hi_default
+
+
+def test_the_gate_never_alters_the_canonical_series():
+    """AC：同樣的報價序列，唯一差別是其中一筆的 `vendor_iv` 換成一個
+    退化值（gate 會排除的那種）——canonical series 必須逐位元相同。這個
+    模組物理上不讀 `vendor_iv`（見 `reconstruct_iv_series` 本身與模組
+    開頭說明），這裡直接跑一次證明給定輸入確實如此，不是憑空宣稱。"""
+    price = _true_price()
+    quote_kwargs = dict(bid=price - 0.01, ask=price + 0.01, mid=price)
+
+    with_degenerate_vendor_iv = [_quote(**quote_kwargs, vendor_iv=0.0001)]
+    with_normal_vendor_iv = [_quote(**quote_kwargs, vendor_iv=0.25)]
+    with_no_vendor_iv = [_quote(**quote_kwargs, vendor_iv=None)]
+
+    series_degenerate, _ = reconstruct_iv_series(
+        "call", K, EXPIRATION, with_degenerate_vendor_iv,
+        rate_by_date={OBS_DATE: R}, dividend_yield_by_date={OBS_DATE: Q})
+    series_normal, _ = reconstruct_iv_series(
+        "call", K, EXPIRATION, with_normal_vendor_iv,
+        rate_by_date={OBS_DATE: R}, dividend_yield_by_date={OBS_DATE: Q})
+    series_absent, _ = reconstruct_iv_series(
+        "call", K, EXPIRATION, with_no_vendor_iv,
+        rate_by_date={OBS_DATE: R}, dividend_yield_by_date={OBS_DATE: Q})
+
+    assert series_degenerate == series_normal == series_absent
 
 
 # ---------- 隔離紅線（spec #151 §7／Testing Decisions 延伸） ----------

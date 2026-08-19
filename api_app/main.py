@@ -291,15 +291,17 @@ _DIAGNOSTICS_STORAGE_CAP_PER_REQUEST = 40
 
 # 這幾個 stage 各自是「這次 request 的彙總結論」——`backfill` 每次至多
 # 一筆，`metrics` 每個欄位一筆（舊家族單腳 2 筆／兩腿 4 筆；HIVT-03 起
-# 新家族每腿再加 5 筆統計量事件），`reconstruction` 每腿一筆（HIVR-07／
-# #166：「這張圖為什麼這麼稀疏」的帳本）。這些都不跟高流量的逐日／逐次
+# 新家族每腿再加 5 筆統計量事件），`reconstruction`／`vendor_benchmark`
+# 各自每腿一筆（HIVR-07／#166：「這張圖為什麼這麼稀疏」的帳本；
+# HIVR-09／#168：vendor IV 合理性比較）。這些都不跟高流量的逐日／逐次
 # 事件（`vendor_fetch`／`payload_parse`／`database_write`／`reanchor`，
 # 一次 request 可能各自數十筆）搶名額——施工中發現：若混在同一個優先池
 # 裡用 `list[:cap]` 前截斷，事件量一大時彙總結論反而會被排在後面而擠
 # 出去，跟「使用者最想先看結論」的初衷相反。`staleness` 刻意不在這裡：
 # 它本身量體就很低（每腿至多一筆，只在真的抓到新資料時才發），不需要
 # 額外保留名額也不太可能被擠掉。
-_ALWAYS_KEPT_STAGES = ("backfill", "metrics", "reconstruction")
+_ALWAYS_KEPT_STAGES = ("backfill", "metrics", "reconstruction",
+                      "vendor_benchmark")
 
 
 def _select_for_persistence(
@@ -561,6 +563,44 @@ def _emit_reconstruction_ledger(emit, *, identity: dict, fetched: int,
         fetched=fetched, reconstructed=reconstructed, usable=reconstructed,
         **{reason: failure_counts.get(reason, 0)
            for reason in ivreconstruct.FAILURE_REASONS})
+
+
+def _emit_vendor_benchmark(emit, *, identity: dict, quotes: list[dict],
+                           series: list[tuple[str, float | None]]) -> None:
+    """Vendor IV benchmark 合理性比較（HIVR-09／#168）：canonical series
+    （`series`，只由我們自己反解出來，從不讀 `vendor_iv`）跟 vendor 自己
+    回報的 `iv` 差多少——只在通過 `ivreconstruct.vendor_iv_is_
+    benchmarkable()` 的觀測上比較，門檻外的一律計入 `vendor_iv_excluded_
+    degenerate`（可見、不是靜默丟棄），也不進 `mean_abs_diff`。門檻內
+    值不受影響：canonical series 本身完全不因這個 gate 而改變，這個 gate
+    只決定「這一筆算不算進比較」。
+    """
+    reconstructed_by_date = dict(series)
+    present = 0
+    excluded_degenerate = 0
+    compared = 0
+    total_abs_diff = 0.0
+    for q in quotes:
+        vendor_iv = q.get("vendor_iv")
+        if vendor_iv is None:
+            continue
+        present += 1
+        if not ivreconstruct.vendor_iv_is_benchmarkable(vendor_iv):
+            excluded_degenerate += 1
+            continue
+        reconstructed = reconstructed_by_date.get(q["date"])
+        if reconstructed is None:
+            continue
+        compared += 1
+        total_abs_diff += abs(reconstructed - vendor_iv)
+    mean_abs_diff = (total_abs_diff / compared) if compared else None
+    emit(stage="vendor_benchmark", severity="info",
+        message=(f"vendor IV 合理性比較：{present} 筆有值，"
+                f"{excluded_degenerate} 筆被 gate 排除，{compared} 筆可比較"),
+        contract_symbol=identity["contract_symbol"], **_identity_context(identity),
+        vendor_iv_present=present,
+        vendor_iv_excluded_degenerate=excluded_degenerate,
+        vendor_iv_compared=compared, mean_abs_diff=mean_abs_diff)
 
 
 def _timing_json(sc: Scenario, today: date) -> dict:
@@ -1432,6 +1472,10 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         HIVR-07（#166）：重建完後緊接著發一筆帳本事件（`_emit_
         reconstruction_ledger`）——「這張圖為什麼這麼稀疏」的答案就在
         這裡，不必另外讀程式碼推敲。
+
+        HIVR-09（#168）：緊接著再發一筆 vendor IV 合理性比較（`_emit_
+        vendor_benchmark`）——單純的診斷比較，`series` 本身（canonical
+        series）在這一步之前就已經確定，這個 gate 不回頭改動它。
         """
         rate_by_date = _rate_by_date_for_leg(
             rate_rows, quotes, identity["expiration"])
@@ -1441,6 +1485,8 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
             quotes, rate_by_date, q_by_date)
         _emit_reconstruction_ledger(emit, identity=identity, fetched=len(quotes),
                                     series=series, failure_counts=failure_counts)
+        _emit_vendor_benchmark(emit, identity=identity, quotes=quotes,
+                               series=series)
         return series
 
     def _leg_historical_iv_payload(identity: dict, points: list[tuple],

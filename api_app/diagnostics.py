@@ -54,7 +54,13 @@ STAGES = ("candidate_lookup", "cache", "vendor_fetch", "payload_parse",
          # 「vendor 回 N 筆，究竟在哪一站變成 0 筆」的帳本（`reconstruction`）
          # 與「這批資料有多舊」的可見性（`staleness`），皆屬
          # `SUBSYSTEM_EXACT_CONTRACT`。
-         "reconstruction", "staleness")
+         "reconstruction", "staleness",
+         # HIVR-09（#168）：vendor IV benchmark 合理性比較——只描述
+         # canonical series（永遠不讀 vendor_iv）跟 vendor 自己回報的
+         # `iv` 差多少，且只在通過 `ivreconstruct.vendor_iv_is_
+         # benchmarkable()` 的觀測上比較，一個獨立 stage 讓這件事跟
+         # `reconstruction` 帳本本身分開看。
+         "vendor_benchmark")
 
 SEVERITIES = ("info", "warning", "error")
 
@@ -126,6 +132,15 @@ _CONTEXT_KEY_WHITELIST = frozenset({
     "fetched", "reconstructed", "usable", "unusable_quote", "no_rate",
     "no_dividend_yield", "inversion_failed", "request_time",
     "observation_timestamp", "staleness_days", "vendor_dte", "computed_dte",
+    # HIVR-09（#168）：vendor IV benchmark（`vendor_benchmark` stage）——
+    # `vendor_iv_present`＝這張合約有幾筆觀測帶了非 null 的 vendor `iv`；
+    # `vendor_iv_excluded_degenerate`＝其中被合理性 gate 排除的筆數
+    # （讓「排除」可見，不是靜默丟棄）；`vendor_iv_compared`＝通過 gate、
+    # 且 canonical series 該天也有值、實際拿去比較的筆數；
+    # `mean_abs_diff`＝這些筆數上 |canonical − vendor| 的平均值，沒有
+    # 可比較的筆數時為 `null`。
+    "vendor_iv_present", "vendor_iv_excluded_degenerate",
+    "vendor_iv_compared", "mean_abs_diff",
 })
 
 _SECRET_PATTERNS = (
