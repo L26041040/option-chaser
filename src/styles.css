@@ -2223,6 +2223,15 @@ body {
    垂直堆疊——內容比舊的次層 Metric 豐富（走勢圖＋四行 caption），改用
    跟主卡同寬的直向排列而不是 `.iv-legs` 的雙欄 grid，手機窄螢幕不會把
    圖擠得看不出路徑。 */
+/* Spread Summary（SIG-03／#174）：卡片頭條，在 Buy／Sell 層之上——
+   跟 `.iv-trend-card` 同一種直向排列，不加 `.card` 的背景／陰影／padding
+   （那會在既有 `.iv-history` 卡片裡再套一層卡片，變成「卡中卡」）。 */
+.iv-spread-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
 .iv-trend-legs {
   display: flex;
   flex-direction: column;

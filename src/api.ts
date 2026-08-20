@@ -882,6 +882,54 @@ export interface IvHistoryLegs {
   sell?: LegHistoricalIv;
 }
 
+/** Spread IV Gap 序列上的一天（SIG-01／#172，spec #171）。命名鎖死
+ *  ——`{date, gap}`，不是 `{date, iv}` 也不是 `{date, value}`。`gap`
+ *  永遠是 `number`，絕不是 `null`：只有兩腿同一天都有值才會產生這一筆
+ *  observation，任一腿缺席那天整筆不存在，不是留一筆 `gap: null`。 */
+export interface SpreadGapPoint {
+  date: string;
+  gap: number;
+}
+
+/** `spread_gap.delta_4w_ratio` 的四態 guardrail 狀態（SIG-01／#172）：
+ *  `"ok"` 才有非 null 的 `delta_4w_ratio`；其餘三態 `delta_4w_ratio`
+ *  恆為 `null`，`delta_4w`（絕對值 vol-point）不受影響、四態都正常
+ *  顯示。 */
+export type SpreadGapDeltaStatus =
+  "ok" | "no_baseline" | "near_zero_base" | "sign_flip";
+
+/**
+ * Vertical Spread 候選的 Spread IV Gap 完整資料（SIG-01／#172，spec
+ * #171）——Sell 腿 reconstructed IV − Buy 腿 reconstructed IV，只保留
+ * 兩腿同一天都有值的觀測。只要候選有賣腿這個 key 就一定存在，即使
+ * `observation_count` 是 0（兩腿目前沒有任何重疊有效觀測）——那種情況
+ * 下 `points`／`moving_average`／`bollinger_upper`／`bollinger_lower`
+ * 是空陣列，`current_percentile`／`delta_4w`／`delta_4w_ratio` 是
+ * `null`，`delta_4w_status` 是 `"no_baseline"`，`shared_history_span_
+ * days` 是 0——形狀永遠完整，前端據此渲染 unavailable 狀態而不是整段
+ * 隱藏（SIG-03／#174）。
+ *
+ * `points[-1]`（依 date 嚴格遞增排序後的最後一筆）是「目前 IV Gap
+ * 現值」的正式資料來源，不是碰巧依賴目前的排序。
+ *
+ * 跟既有 `LegHistoricalIv` 的刻意契約差異：不含 `current_zscore`；不含
+ * `status`／`note`；不含 `rolling_window_days`（施工前最終裁示：前端
+ * 不需要讀這個值）；涵蓋時間欄位叫 `shared_history_span_days`，不是
+ * `history_span_days`——那個名稱專屬既有 leg 欄位，語意不同，不得混用。
+ */
+export interface SpreadGap {
+  points: SpreadGapPoint[];
+  moving_average: IvTrendStatPoint[];
+  bollinger_upper: IvTrendStatPoint[];
+  bollinger_lower: IvTrendStatPoint[];
+  current_percentile: number | null;
+  delta_4w: number | null;
+  delta_4w_ratio: number | null;
+  delta_4w_status: SpreadGapDeltaStatus;
+  observation_count: number;
+  shared_history_span_days: number;
+}
+
 export interface IvHistoryView {
   candidate_key: string;
   status: IvHistoryStatus;
@@ -901,6 +949,10 @@ export interface IvHistoryView {
   /** exact-contract 家族（HIVT-02／03／#153／#154）——跟上面的
    *  Normalized Skew 家族資料語意完全獨立。 */
   legs: IvHistoryLegs;
+  /** Spread IV Gap（SIG-01／#172）：只要候選有賣腿就一定存在這個 key，
+   *  單腳候選整個省略（不是設成 `undefined` 以外的假值）——跟 `legs.
+   *  sell` 同一種「key 存在與否即結構性事實」的慣例。 */
+  spread_gap?: SpreadGap;
 }
 
 export function ivHistory(

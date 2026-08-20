@@ -71,6 +71,7 @@ import { CopyDiagnosticButton, DiagnosticEventFieldList } from "./DiagnosticDeta
 import IvTrend, { zscoreCaption } from "./IvTrend";
 import { contiguousRuns, ivChartPoints, ivYAxisDomain, xAxisTicks,
         type ChartPoint } from "./ivHistoryChart";
+import SpreadSummary from "./SpreadSummary";
 
 /**
  * 今天的 backfill 遇到什麼——一行附加說明，**不取代**下面的 percentile。
@@ -549,9 +550,10 @@ function IvAdvanced({ data, isSingleLeg, notableEvents }: {
 /** 有資料時的卡片內容——從 `IvHistory` 拆出來純粹是讓上面那段「四種
  *  狀態同一個版位切換」的分支讀起來一眼看懂，不是新的分層原則。
  *
- *  三層順序（SIG-02／#173，spec #171）：Spread Summary 版位預留
- *  （SIG-03／#174 填入，這張票不渲染任何東西）→ Buy／Sell 逐腿卡片
- *  （`./IvTrend`）→ Advanced／Diagnostics 預設收合區（`IvAdvanced`）。 */
+ *  三層順序（SIG-02／#173＋SIG-03／#174，spec #171）：Spread Summary
+ *  （`./SpreadSummary`，只在 `spread_gap` 這個 key 存在時掛載）→
+ *  Buy／Sell 逐腿卡片（`./IvTrend`）→ Advanced／Diagnostics 預設收合區
+ *  （`IvAdvanced`）。 */
 function IvHistoryContent({ data, isSingleLeg }: {
   data: IvHistoryView;
   isSingleLeg: boolean;
@@ -567,8 +569,14 @@ function IvHistoryContent({ data, isSingleLeg }: {
 
   return (
     <>
-      {/* SIG-03（#174）版位預留：Spread Summary 填在這裡、Buy／Sell 層
-          之上。這張票不需要在這個版位渲染任何有意義的東西。 */}
+      {/* 渲染條件是「回應裡有 spread_gap 這個 key」，不是「points 非
+          空」——單腳候選這個 key 整個不存在，`data.spread_gap &&`
+          天然只在有賣腿的候選才掛載；`points` 為空時 `SpreadSummary`
+          自己渲染 unavailable 狀態，不是在這裡就被擋掉（SIG-03／
+          #174）。 */}
+      {data.spread_gap && (
+        <SpreadSummary spreadGap={data.spread_gap} legs={data.legs} />
+      )}
       <IvTrend legs={data.legs} />
       <IvAdvanced data={data} isSingleLeg={isSingleLeg} notableEvents={notableEvents} />
     </>

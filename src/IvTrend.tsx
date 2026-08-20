@@ -72,8 +72,9 @@ function delta4wCaption(leg: LegHistoricalIv): string {
 
 /** 這張合約實際涵蓋多長時間——掛牌不滿一年就照實際天數換算，不是永遠
  *  講「近 1 年」（story #5／#6：掛牌 3 週／5 個月／11 個月都要如實
- *  呈現，不是補齊或隱藏）。 */
-function spanLabel(days: number): string {
+ *  呈現，不是補齊或隱藏）。export 給 `./SpreadSummary`（SIG-03／#174）
+ *  的涵蓋揭露小字複用同一套天數→文字換算，不重寫第二份。 */
+export function spanLabel(days: number): string {
   if (days <= 0) return "";
   // 週／月的分界用天數本身（< 30 天），不是先湊出月數再看月數是否
   // >= 1——後者在 15–29 天這段會被四捨五入成 1 個月（例如 21 天／3 週
@@ -136,6 +137,18 @@ function bandPathD(
   return `M ${forward} L ${backward} Z`;
 }
 
+/** `IvTrendChart` 真正需要讀的欄位——`LegHistoricalIv` 結構上滿足這個
+ *  介面（欄位是它的子集），SIG-03（#174）的 Spread IV Gap 也另外組一個
+ *  滿足這個形狀的物件餵進來（`points` 把 `gap` 映成 `iv`），兩者共用
+ *  同一份繪圖幾何，不重寫第二份。 */
+export interface IvTrendChartSeries {
+  points: { date: string; iv: number | null }[];
+  moving_average: IvTrendStatPoint[];
+  bollinger_upper: IvTrendStatPoint[];
+  bollinger_lower: IvTrendStatPoint[];
+  history_span_days: number;
+}
+
 /**
  * 四條序列疊在同一個 y-domain 上（raw、moving average、Bollinger
  * 上／下界，spec #151 §6：擴充既有 `ivHistoryChart.ts` 的點映射／
@@ -146,11 +159,16 @@ function bandPathD(
  *
  * `raw` 全 `null`（`ivYAxisDomain` 回 `null`）時不畫任何東西——跟既有
  * `TrendChart` 同一種「沒有資料就不畫空框」的處置。
+ *
+ * `seriesLabel`：aria-label 裡「這是什麼量」的字眼——逐腿卡片講「市場
+ * IV」，Spread Summary（SIG-03／#174）講「Spread IV Gap」，圖本身完全
+ * 是同一份繪圖邏輯，只有這一個字串不同。
  */
-function IvTrendChart({ leg, width, height }: {
-  leg: LegHistoricalIv;
+export function IvTrendChart({ leg, width, height, seriesLabel = "市場 IV" }: {
+  leg: IvTrendChartSeries;
   width: number;
   height: number;
+  seriesLabel?: string;
 }) {
   const [activeIndex, setActiveIndex] = useState<number | null>(null);
 
@@ -190,7 +208,7 @@ function IvTrendChart({ leg, width, height }: {
       className="iv-trend-chart"
       viewBox={`0 0 ${width} ${height}`}
       role="img"
-      aria-label={`市場 IV 走勢，含移動平均與 Bollinger 帶，${spanText}`}
+      aria-label={`${seriesLabel} 走勢，含移動平均與 Bollinger 帶，${spanText}`}
     >
       {yTicks.map(([frac, value]) => {
         const py = PAD_TOP + frac * (height - PAD_TOP - PAD_BOTTOM);
@@ -263,7 +281,7 @@ function IvTrendChart({ leg, width, height }: {
                 className="chart-point"
                 tabIndex={0}
                 role="button"
-                aria-label={`${p.label}，市場 IV ${
+                aria-label={`${p.label}，${seriesLabel} ${
                   valueLabel(raw[idx], "vol-pts")}`}
                 onMouseEnter={() => setActiveIndex(idx)}
                 onMouseLeave={() => setActiveIndex(null)}

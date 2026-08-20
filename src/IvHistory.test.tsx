@@ -126,6 +126,30 @@ function singleLegIvView(over: Partial<IvHistoryView> = {}): IvHistoryView {
   });
 }
 
+/** SIG-01（#172）`spread_gap` 區塊——只要候選有賣腿就一定存在，這裡
+ *  預設給有資料的形狀；`emptySpreadGap()` 是 `points` 為空的 unavailable
+ *  情境（SIG-03／#174 兩種情境各自測試用）。 */
+function spreadGapFixture(over: Partial<NonNullable<IvHistoryView["spread_gap"]>> = {}) {
+  const points = Array.from({ length: 20 }, (_, i) => ({
+    date: `2026-01-${String(i + 1).padStart(2, "0")}`, gap: 0.05 + i * 0.001,
+  }));
+  return {
+    points, moving_average: [], bollinger_upper: [], bollinger_lower: [],
+    current_percentile: 0.6, delta_4w: 0.02, delta_4w_ratio: 0.4,
+    delta_4w_status: "ok" as const, observation_count: 20,
+    shared_history_span_days: 19,
+    ...over,
+  };
+}
+
+function emptySpreadGap() {
+  return spreadGapFixture({
+    points: [], current_percentile: null, delta_4w: null,
+    delta_4w_ratio: null, delta_4w_status: "no_baseline", observation_count: 0,
+    shared_history_span_days: 0,
+  });
+}
+
 function diagEvent(over: Partial<DiagnosticEvent> = {}): DiagnosticEvent {
   return {
     event_id: "evt-1", correlation_id: "cid-test", ts: "2026-08-15T00:00:00+00:00",
@@ -853,5 +877,43 @@ describe("Advanced／Diagnostics 收合區（SIG-02／#173）", () => {
     const outsideAdvanced = (container.textContent ?? "")
       .replace(advanced.textContent ?? "", "");
     expect(outsideAdvanced).not.toMatch(/Z-score/);
+  });
+});
+
+describe("Spread Summary（SIG-03／#174）：接進 IvHistory 的三種情境", () => {
+  it("spread_gap key 不存在（單腳候選）→ 完全不渲染 Spread Summary", async () => {
+    mockApi({ enabled: true, iv: singleLegIvView() });
+    const { container } = render(
+      <IvHistory scenarioId="s1" candidate={longCallCandidate()} />);
+    await waitFor(() =>
+      expect(container.querySelector(".iv-trend-card")).toBeInTheDocument());
+    expect(container.querySelector(".iv-spread-summary")).not.toBeInTheDocument();
+  });
+
+  it("spread_gap key 存在但 points 為空 → 仍然渲染，以 unavailable 狀態呈現",
+     async () => {
+    mockApi({ enabled: true, iv: ivView({ spread_gap: emptySpreadGap() }) });
+    const { container } = render(
+      <IvHistory scenarioId="s1" candidate={spreadCandidate()} />);
+    await waitFor(() =>
+      expect(container.querySelector(".iv-spread-summary")).toBeInTheDocument());
+    const summary = container.querySelector(".iv-spread-summary")!;
+    expect(summary.querySelector(".iv-value-primary")?.textContent).toBe("—");
+    expect(summary.querySelector(".iv-trend-chart")).not.toBeInTheDocument();
+  });
+
+  it("spread_gap key 存在且有資料 → 卡片最上方出現有內容的頭條", async () => {
+    mockApi({ enabled: true, iv: ivView({ spread_gap: spreadGapFixture() }) });
+    const { container } = render(
+      <IvHistory scenarioId="s1" candidate={spreadCandidate()} />);
+    await waitFor(() =>
+      expect(container.querySelector(".iv-spread-summary")).toBeInTheDocument());
+    expect(screen.getByText("Spread IV Gap")).toBeInTheDocument();
+    const summary = container.querySelector(".iv-spread-summary")!;
+    expect(summary.querySelector(".iv-trend-chart")).toBeInTheDocument();
+    // Spread Summary 在 Buy／Sell 逐腿卡片之前（卡片最上方）。
+    const legCard = container.querySelector(".iv-trend-card")!;
+    expect(summary.compareDocumentPosition(legCard)
+      & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 });
