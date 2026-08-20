@@ -1280,6 +1280,14 @@ async function routeDetailWithIv(page: import("@playwright/test").Page,
   return ivCalls;
 }
 
+/** 點開 Advanced／Diagnostics 收合區（SIG-02／#173）——z-score 文字、
+ *  Normalized Skew 整組、inline diagnostics 都收在裡面，預設收合時對
+ *  Playwright 是真正的 `display: none`（不像 jsdom 那樣忽略），既有
+ *  測試裡驗這些內容可見，都得先點開才看得到。 */
+async function openAdvanced(block: import("@playwright/test").Locator) {
+  await block.getByText("Advanced／Diagnostics").click();
+}
+
 /** 一隻掛牌不滿一年的腿——`spanDays` 天前才有第一筆觀測，日期陣列本身
  *  真的只跨那麼長（不是掛著一個大陣列只改 `history_span_days` 這個
  *  數字充數）。`history_span_days` 直接從產生出來的日期陣列頭尾反推，
@@ -1342,18 +1350,25 @@ test("Historical IV 未解鎖：分析頁完全沒有這個模組，也不發任
   expect(ivCalls).toEqual([]);
 });
 
-test("Historical IV 解鎖：Normalized Skew 當頭條、買／賣腿各自一張卡（#114／HIVT-05）",
+test("Historical IV 解鎖：買／賣腿各自一張卡為主要內容，Normalized Skew 收進" +
+     "預設收合的 Advanced（#114／HIVT-05／SIG-02／#173）",
    async ({ page }) => {
   await routeDetailWithIv(page, true);
   await page.goto("/#/s/s1");
 
   const block = page.locator(".iv-history");
   await expect(block).toBeVisible();
-  await expect(block.getByText("Normalized Skew")).toBeVisible();
   // HIVT-04（#155）之後舊的「買腿 IV」／「賣腿 IV」次要顯示已移除，
-  // 改由 `IvTrend.tsx` 逐腿卡片供應，標籤簡化成「買腿」／「賣腿」。
+  // 改由 `IvTrend.tsx` 逐腿卡片供應，標籤簡化成「買腿」／「賣腿」——
+  // 這兩張卡是主要內容，不必展開任何東西就看得到。
   await expect(block.getByText("買腿", { exact: true })).toBeVisible();
   await expect(block.getByText("賣腿", { exact: true })).toBeVisible();
+
+  // Normalized Skew 整組（SIG-02／#173）搬進預設收合的 Advanced／
+  // Diagnostics 區塊——展開前不可見，展開後才看得到。
+  await expect(block.getByText("Normalized Skew")).not.toBeVisible();
+  await openAdvanced(block);
+  await expect(block.getByText("Normalized Skew")).toBeVisible();
   await expect(block.getByText(/第 62 百分位/)).toBeVisible();
 
   // HIVT-05（#156）之後，買／賣腿卡片（`.iv-trend-card`）不再是「次於
@@ -1421,9 +1436,11 @@ test("Historical IV：Δ4w 帶正負號與單位，跟 percentile／涵蓋時間
   await page.goto("/#/s/s1");
 
   const block = page.locator(".iv-history");
-  // 買腿：delta_4w = -0.012 → 「-1.2 pts」
+  // 買腿：delta_4w = -0.012 → 「-1.2 pts」（主要區塊，不必展開 Advanced）
   await expect(block.getByText(/4週 -1\.2 pts/)).toBeVisible();
-  // Normalized Skew：trend_4w = 0.006 → 「+0.01」（無因次小數，不是 pts）
+  // Normalized Skew：trend_4w = 0.006 → 「+0.01」（無因次小數，不是
+  // pts）——SIG-02（#173）後這一項在 Advanced 裡，先展開才看得到。
+  await openAdvanced(block);
   await expect(block.getByText(/4週 \+0\.01/)).toBeVisible();
   await expect(block.getByText(/4週 \+0\.6 pts/)).toHaveCount(0);
 });
@@ -1480,6 +1497,9 @@ test("Historical IV 今日額度用完：percentile／Δ4w 照樣顯示，只多
 
   const block = page.locator(".iv-history");
   await expect(block).toBeVisible();
+  // 頂層 status（Normalized Skew 家族）的附加說明跟著它一起搬進
+  // Advanced（SIG-02／#173）——先展開才看得到。
+  await openAdvanced(block);
   await expect(block.getByText(/今日 API 額度已用完/)).toBeVisible();
 
   // percentile 沒有被藏起來——鎖定 Normalized Skew 那一項精確的組合
@@ -1702,7 +1722,9 @@ test("Historical IV：z-score／moving average／Bollinger 帶三項統計量在
 
   const block = page.locator(".iv-history");
   await expect(block).toBeVisible();
-  // z-score caption：買／賣腿預設 current_zscore 都是 0.3 → "+0.30"。
+  // z-score caption：買／賣腿預設 current_zscore 都是 0.3 → "+0.30"——
+  // SIG-02（#173）後這一項搬進 Advanced，先展開才看得到。
+  await openAdvanced(block);
   await expect(block.getByText(/Z-score \+0\.30/).first()).toBeVisible();
 
   // moving average／Bollinger band 是各自獨立的 SVG 元素，不是只靠
@@ -1815,9 +1837,14 @@ test("Historical IV 200 但帶 warning events：一樣觸發診斷區塊，資�
 
   const block = page.locator(".iv-history");
   await expect(block).toBeVisible();
+  // 主要區塊（買／賣腿卡片）不必展開任何東西就照常渲染——診斷區塊是
+  // additive，不是取代掉資料本身。
+  await expect(block.getByText("買腿", { exact: true })).toBeVisible();
+  // inline diagnostics 展開內容搬進 Advanced（SIG-02／#173），先展開
+  // 才看得到。
+  await openAdvanced(block);
   await expect(block.getByText("Historical IV 資料取得失敗 · 查看詳情"))
     .toBeVisible();
-  // additive：資料本身照常渲染，不是被診斷區塊取代掉。
   await expect(block.getByText("Normalized Skew")).toBeVisible();
 });
 
@@ -1848,7 +1875,9 @@ test("手機版：Historical IV 卡片一開始就在，loading 時原位顯示�
   const cardCountDuringLoading = await page.locator(".card").count();
 
   releaseIv();
-  await expect(block.getByText("Normalized Skew")).toBeVisible();
+  // 骨架換成真正的主要內容（買腿卡片，SIG-02／#173 後不必展開 Advanced
+  // 就看得到）——不是靠 Normalized Skew（現在收在 Advanced 裡）判斷。
+  await expect(block.getByText("買腿", { exact: true })).toBeVisible();
   await expect(block.locator(".iv-skeleton")).toHaveCount(0);
   // 換成有資料的內容後，卡片總數沒有變化——不是骨架消失後又多長出一張。
   await expect(page.locator(".card")).toHaveCount(cardCountDuringLoading);
@@ -1868,6 +1897,9 @@ test("手機版：Inline Diagnostics 的 Copy 按鈕——版面順序、複製�
   await page.goto("/#/s/s1");
 
   const block = page.locator(".iv-history");
+  // inline diagnostics 展開內容搬進 Advanced（SIG-02／#173），先展開
+  // 才看得到 summary。
+  await openAdvanced(block);
   const summary = block.getByText("Historical IV 資料取得失敗 · 查看詳情");
   await expect(summary).toBeVisible();
   await summary.click();
@@ -1958,4 +1990,90 @@ test("手機版：編輯 → 取消，原劇本完全不變、不寫入任何東
   await expect(page.getByText("編輯劇本")).toHaveCount(0);
   await expect(page.getByRole("listitem").first()).toContainText("105");
   expect(patched).toEqual([]);
+});
+
+/* ---------- SIG-04（#175）：Mobile 紅線鎖定 ---------- */
+
+/** Spread IV Gap（SIG-01／#172）的完整回應區塊——跟 `legHistoricalIv()`
+ *  同一套「貼近真實密度」的假資料哲學，各測試需要 unavailable 狀態時
+ *  直接覆寫 `points`／統計量欄位。 */
+function spreadGapFixture(overrides: Record<string, unknown> = {}) {
+  const dates = ivDates();
+  const points = dates.map((date, i) => ({ date, gap: 0.05 + (i % 20) * 0.001 }));
+  return {
+    points,
+    moving_average: statSeries(dates, 0.06),
+    bollinger_upper: statSeries(dates, 0.09),
+    bollinger_lower: statSeries(dates, 0.03),
+    current_percentile: 0.6,
+    delta_4w: 0.02,
+    delta_4w_ratio: 0.4,
+    delta_4w_status: "ok",
+    observation_count: points.length,
+    shared_history_span_days: 365,
+    ...overrides,
+  };
+}
+
+test("SIG-04（#175）Mobile 紅線：IV Gap／買腿／賣腿三個走勢圖全部存在、可見、" +
+     "非空，沒有一個在收合的 Advanced 裡，也不是 sparkline",
+   async ({ page }) => {
+  await routeLibrary(page, libraryRow());
+  await page.route("**/api/settings", (route) =>
+    route.fulfill({ json: { historical_iv_enabled: true } }));
+  await page.route("**/api/scenarios/*/iv-history*", (route) =>
+    route.fulfill({ json: fullIvResponse({ spread_gap: spreadGapFixture() }) }));
+
+  await page.goto("/#/s/s1");
+
+  const block = page.locator(".iv-history");
+  await expect(block).toBeVisible();
+
+  // 三個圖表元素：Spread Summary（IV Gap）＋ 買／賣腿逐腿卡片，全部不必
+  // 展開任何東西就可見——`.iv-trend-legs` 底下正是買／賣兩張，跟
+  // Advanced 裡收合的 Normalized Skew 圖分屬不同容器。
+  const spreadChart = block.locator(".iv-spread-summary .iv-trend-chart");
+  const legCharts = block.locator(".iv-trend-legs .iv-trend-chart");
+  await expect(spreadChart).toBeVisible();
+  await expect(legCharts).toHaveCount(2);
+  await expect(legCharts.nth(0)).toBeVisible();
+  await expect(legCharts.nth(1)).toBeVisible();
+
+  // 三者都是完整走勢圖，不是縮成看不出路徑的 sparkline、也不是只剩
+  // 數字——各自有實際佔用的寬與高，以及至少一條真的畫出來的折線。
+  for (const chart of [spreadChart, legCharts.nth(0), legCharts.nth(1)]) {
+    const box = (await chart.boundingBox())!;
+    expect(box.width).toBeGreaterThan(100);
+    expect(box.height).toBeGreaterThan(30);
+    expect(await chart.locator("polyline").count()).toBeGreaterThan(0);
+  }
+
+  // 三者沒有一個在收合的 Advanced／Diagnostics 裡：全部走勢圖一共 4 張
+  // （IV Gap＋買＋賣＋Advanced 裡收合的 Normalized Skew），Advanced 容器
+  // 底下只有那 1 張——代表紅線點名的三張都在外面。
+  await expect(block.locator(".iv-trend-chart")).toHaveCount(4);
+  await expect(block.locator(".iv-advanced .iv-trend-chart")).toHaveCount(1);
+});
+
+/* ---------- SIG-04（#175）：既有隔離測試涵蓋確認 ---------- */
+
+test("SIG-04（#175）：Spread IV Gap 對齊只讀兩腿各自 reconstructed 的市場 IV，" +
+     "vendor_iv 完全不影響——迴歸鎖住 SIG-01（#172）新模組同一條紅線",
+   async ({ page }) => {
+  // 端到端層級不重新驗證後端反解本身（那是 tests/test_ivspread.py 的
+  // 範圍），這裡只確認前端把 spread_gap.points 原樣呈現，不夾帶任何
+  // 本地重算——現值直接是 points 最後一筆的 gap，不因為別的欄位而變。
+  await routeLibrary(page, libraryRow());
+  await page.route("**/api/settings", (route) =>
+    route.fulfill({ json: { historical_iv_enabled: true } }));
+  await page.route("**/api/scenarios/*/iv-history*", (route) =>
+    route.fulfill({ json: fullIvResponse({ spread_gap: spreadGapFixture({
+      points: [{ date: "2026-08-01", gap: 0.1234 }],
+      observation_count: 1, shared_history_span_days: 0,
+    }) }) }));
+
+  await page.goto("/#/s/s1");
+
+  const summary = page.locator(".iv-spread-summary");
+  await expect(summary.locator(".iv-value-primary")).toHaveText("12.3%");
 });

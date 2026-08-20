@@ -178,6 +178,14 @@ function fullIvResponse(overrides: Record<string, unknown> = {}) {
   };
 }
 
+/** 點開 Advanced／Diagnostics 收合區（SIG-02／#173）——z-score 文字、
+ *  Normalized Skew 整組、inline diagnostics 都收在裡面，預設收合時
+ *  Playwright 判定為真正的 `display: none`，既有測試裡驗這些內容可見，
+ *  都得先點開才看得到。 */
+async function openAdvanced(block: import("@playwright/test").Locator) {
+  await block.getByText("Advanced／Diagnostics").click();
+}
+
 test("Historical IV 一年走勢圖：桌面 hover 資料點顯示 tooltip（#140）", async ({ page }) => {
   await routeTwoScenarios(page);
   await page.route("**/api/settings", (route) =>
@@ -200,8 +208,10 @@ test("Historical IV 一年走勢圖：桌面 hover 資料點顯示 tooltip（#14
   await expect(chart.locator(".chart-tooltip")).toHaveCount(0);
 });
 
-test("Historical IV 一年走勢圖：桌面寬螢幕下三張圖（Normalized Skew＋買腿＋賣腿）" +
-     "都完整可讀，且落在卡片邊界內（#140／#141）",
+test("Historical IV：桌面買／賣腿卡片並排、兩張走勢圖等寬且落在卡片邊界內" +
+     "（#140／#141；SIG-02／#173 起 Normalized Skew 移出主要區塊、改用" +
+     "買／賣腿驗證桌面並排幾何——Advanced 裡的 Normalized Skew 圖收合時" +
+     "不佔版面，不計入這裡）",
    async ({ page }) => {
   await routeTwoScenarios(page);
   await page.route("**/api/settings", (route) =>
@@ -213,27 +223,26 @@ test("Historical IV 一年走勢圖：桌面寬螢幕下三張圖（Normalized S
   const block = page.locator(".iv-history");
   await expect(block).toBeVisible();
 
-  const charts = block.locator(".iv-trend-chart");
-  await expect(charts).toHaveCount(3);
+  // 買／賣腿卡片是主要區塊，不必展開 Advanced 就看得到——只算
+  // `.iv-trend-legs` 底下的兩張圖，Advanced 裡收合的 Normalized Skew
+  // 圖不計入（那張圖本身仍在 DOM 裡，只是收合、不佔版面）。
+  const charts = block.locator(".iv-trend-legs .iv-trend-chart");
+  await expect(charts).toHaveCount(2);
 
-  // 舊版「頭條（Ĝ）的圖比次層（買／賣腿）寬」這個階層已經不在了：
-  // HIVT-05（#156）之後，買／賣腿卡片（`.iv-trend-card`）不再放進雙欄
-  // `.iv-legs` grid 裡當縮小的次層——`IvTrend.tsx` 把每隻腳的走勢圖
-  // （`IvTrendChart`）跟 Normalized Skew 頭條一樣用 `width={300}`，
-  // 外層 `.iv-trend-legs` 是直向堆疊（見 `styles.css`），不是雙欄
-  // grid。三張圖因此渲染成同一個寬度——這是新設計刻意的結果（每隻腳
-  // 都是獨立正確的完整卡片，不是頭條的附屬縮圖），不是需要修的迴歸，
-  // 所以這裡改成驗證「三張圖等寬」而不是「頭條比較寬」。
   const widths = await charts.evaluateAll((els) =>
     els.map((el) => el.getBoundingClientRect().width));
-  expect(widths).toHaveLength(3);
-  const [firstWidth, ...restWidths] = widths;
-  for (const w of restWidths) {
-    expect(Math.abs(w - firstWidth)).toBeLessThan(1);
-  }
+  expect(widths).toHaveLength(2);
+  expect(Math.abs(widths[0] - widths[1])).toBeLessThan(1);
 
-  // 每張圖都落在卡片邊界內——桌面寬版面下不會被裁切或溢出（這個幾何
-  // 檢查跟寬度階層無關，原本就成立，拆開後獨立保留）。
+  // 桌面既有斷點（SIG-02／#173）：買／賣卡片並排——同一列（y 相近）、
+  // 不同欄（賣腿在買腿右邊）。
+  const legCards = block.locator(".iv-trend-card");
+  const buyBox = (await legCards.nth(0).boundingBox())!;
+  const sellBox = (await legCards.nth(1).boundingBox())!;
+  expect(Math.abs(buyBox.y - sellBox.y)).toBeLessThan(2);
+  expect(sellBox.x).toBeGreaterThan(buyBox.x);
+
+  // 每張圖都落在卡片邊界內——桌面寬版面下不會被裁切或溢出。
   const cardBox = (await block.boundingBox())!;
   for (const chart of await charts.all()) {
     const box = (await chart.boundingBox())!;
@@ -265,7 +274,9 @@ test("桌面版：Historical IV 卡片一開始就在，loading 時原位顯示�
   await expect(block.locator(".iv-skeleton")).toBeVisible();
 
   releaseIv();
-  await expect(block.getByText("Normalized Skew")).toBeVisible();
+  // 骨架換成真正的主要內容（買腿卡片，SIG-02／#173 後不必展開 Advanced
+  // 就看得到）——不是靠 Normalized Skew（現在收在 Advanced 裡）判斷。
+  await expect(block.getByText("買腿", { exact: true })).toBeVisible();
   await expect(block.locator(".iv-skeleton")).toHaveCount(0);
 });
 
@@ -290,6 +301,9 @@ test("桌面版：Inline Diagnostics 的 Copy 按鈕——版面順序、複製�
   await page.goto("/#/s/s1");
 
   const block = page.locator(".iv-history");
+  // inline diagnostics 展開內容搬進 Advanced（SIG-02／#173），先展開
+  // 才看得到 summary。
+  await openAdvanced(block);
   const summary = block.getByText("Historical IV 資料取得失敗 · 查看詳情");
   await expect(summary).toBeVisible();
   await summary.click();
@@ -385,6 +399,8 @@ test("桌面版 Historical IV：z-score／moving average／Bollinger 帶三項�
 
   const block = page.locator(".iv-history");
   await expect(block).toBeVisible();
+  // z-score 文字搬進 Advanced（SIG-02／#173），先展開才看得到。
+  await openAdvanced(block);
   await expect(block.getByText(/Z-score \+0\.30/).first()).toBeVisible();
 
   const maLine = block.locator(".iv-trend-ma-line").first();
@@ -1179,4 +1195,66 @@ test("桌面版：編輯劇本沿用工作區上方的既有表單，取消隨�
   await page.getByRole("button", { name: "儲存變更" }).click();
   await expect(page.getByText("編輯劇本")).toHaveCount(0);
   expect(patched).toHaveLength(1);
+});
+
+/* ---------- SIG-04（#175）：Desktop 紅線鎖定 ---------- */
+
+/** Spread IV Gap（SIG-01／#172）的完整回應區塊——跟這個檔案既有
+ *  `legHistoricalIv()` 同一套「貼近真實密度」的假資料哲學。 */
+function spreadGapFixture(overrides: Record<string, unknown> = {}) {
+  const dates = ivDates();
+  const points = dates.map((date, i) => ({ date, gap: 0.05 + (i % 20) * 0.001 }));
+  return {
+    points,
+    moving_average: statSeries(dates, 0.06),
+    bollinger_upper: statSeries(dates, 0.09),
+    bollinger_lower: statSeries(dates, 0.03),
+    current_percentile: 0.6,
+    delta_4w: 0.02,
+    delta_4w_ratio: 0.4,
+    delta_4w_status: "ok",
+    observation_count: points.length,
+    shared_history_span_days: 365,
+    ...overrides,
+  };
+}
+
+test("SIG-04（#175）Desktop 紅線：買／賣腿卡片並排、Spread Summary 是第一層、" +
+     "Advanced 預設收合，主要資訊不必展開就完整可見",
+   async ({ page }) => {
+  await routeTwoScenarios(page);
+  await page.route("**/api/settings", (route) =>
+    route.fulfill({ json: { historical_iv_enabled: true } }));
+  await page.route("**/api/scenarios/*/iv-history*", (route) =>
+    route.fulfill({ json: fullIvResponse({ spread_gap: spreadGapFixture() }) }));
+
+  await page.goto("/#/s/s1");
+  const block = page.locator(".iv-history");
+  await expect(block).toBeVisible();
+
+  // Spread Summary 是卡片第一層——在 Buy／Sell 逐腿卡片之上。
+  const summary = block.locator(".iv-spread-summary");
+  const legCards = block.locator(".iv-trend-card");
+  await expect(summary).toBeVisible();
+  const summaryBox = (await summary.boundingBox())!;
+  const legBox = (await legCards.first().boundingBox())!;
+  expect(summaryBox.y).toBeLessThan(legBox.y);
+
+  // 買／賣腿卡片並排：同一列（y 相近）、不同欄（賣腿在買腿右邊）。
+  const buyBox = (await legCards.nth(0).boundingBox())!;
+  const sellBox = (await legCards.nth(1).boundingBox())!;
+  expect(Math.abs(buyBox.y - sellBox.y)).toBeLessThan(2);
+  expect(sellBox.x).toBeGreaterThan(buyBox.x);
+
+  // Advanced／Diagnostics 預設收合。
+  const advanced = block.locator(".iv-advanced");
+  const isOpen = () => advanced.evaluate((el) => (el as HTMLDetailsElement).open);
+  expect(await isOpen()).toBe(false);
+
+  // 主要資訊（Spread Summary＋Buy／Sell 層）不需要展開 Advanced 就完整
+  // 可見——現值／走勢圖全部在外面，不必先點開任何東西。
+  await expect(summary.locator(".iv-value-primary")).toBeVisible();
+  await expect(summary.locator(".iv-trend-chart")).toBeVisible();
+  await expect(legCards.nth(0).locator(".iv-value-primary")).toBeVisible();
+  await expect(legCards.nth(1).locator(".iv-value-primary")).toBeVisible();
 });
