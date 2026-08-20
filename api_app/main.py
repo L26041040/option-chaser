@@ -20,7 +20,7 @@ from fastapi.responses import Response
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from option_chaser import (__version__, dividends, ivhistory, ivreconstruct,
-                           ivtrend, ratecurve, service, store)
+                           ivspread, ivtrend, ratecurve, service, store)
 from option_chaser.data import treasury as treasury_data
 from option_chaser.data.snapshot import snapshot_from_dict, snapshot_to_csv
 from option_chaser.models import (AnalysisParams, ChainSnapshot, FetchError,
@@ -1555,6 +1555,57 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
             "note": note,
         }
 
+    def _spread_gap_payload(buy_series: list[tuple[str, float | None]],
+                            sell_series: list[tuple[str, float | None]], *,
+                            today) -> dict:
+        """`spread_gap` 區塊的完整形狀（SIG-01／#172，spec #171）：買賣
+        兩腿裁窗前的原始 reconstructed 序列先對齊（`ivspread.
+        align_spread_gap`）、再裁窗（既有 `ivtrend.trim_to_window`）——
+        順序是先對齊、再裁窗。裁窗後的 Gap 序列直接餵給既有
+        `moving_average`／`bollinger_bands`／`historical_percentile`／
+        `delta_4w`，這幾個既有函式零修改。
+
+        只要候選有賣腿就一定回傳這個區塊（呼叫端保證），即使
+        `observation_count` 是 0——`points`／`moving_average`／
+        `bollinger_upper`／`bollinger_lower` 回空陣列，`current_
+        percentile`／`delta_4w`／`delta_4w_ratio` 回 `None`、
+        `delta_4w_status` 回 `"no_baseline"`、`shared_history_span_days`
+        回 0，形狀永遠完整。
+
+        `points[-1]`（對齊後 Gap 序列裡日期最新的一筆）是「目前 IV Gap
+        現值」的正式資料來源——`ivspread.align_spread_gap` 已保證輸出
+        依 date 嚴格遞增排序，這裡直接取最後一筆，不必另外排序。
+
+        不含 `rolling_window_days`（施工前最終裁示：前端不需要讀這個
+        值，直接不序列化）；不含 `current_zscore`；不含 `status`／
+        `note`——這幾項是跟既有 `LegHistoricalIv` 的刻意契約差異
+        （spec #171 契約清理）。
+        """
+        aligned = ivspread.align_spread_gap(buy_series, sell_series)
+        trimmed = ivtrend.trim_to_window(aligned, today=today)
+        current_gap = trimmed[-1][1] if trimmed else None
+
+        ma = ivtrend.moving_average(trimmed)
+        bands = ivtrend.bollinger_bands(trimmed)
+        percentile = ivtrend.historical_percentile(trimmed, current_gap)
+        d4w = ivtrend.delta_4w(trimmed, latest=current_gap, today=today)
+        ratio, status = ivspread.spread_delta_4w_ratio_status(current_gap, d4w)
+
+        return {
+            "points": [{"date": d, "gap": g} for d, g in trimmed],
+            "moving_average": [{"date": d, "value": v} for d, v in ma],
+            "bollinger_upper": [{"date": d, "value": v}
+                                for d, v in bands["upper"]],
+            "bollinger_lower": [{"date": d, "value": v}
+                                for d, v in bands["lower"]],
+            "current_percentile": percentile,
+            "delta_4w": d4w,
+            "delta_4w_ratio": ratio,
+            "delta_4w_status": status,
+            "observation_count": len(trimmed),
+            "shared_history_span_days": ivtrend.history_span_days(trimmed),
+        }
+
     def _flush_diagnostics(diag: _CollectingDiagnostics) -> dict:
         """這次 request 收集到的 events 依優先序落盤（per-request 上限，
         #146），並組出要塞進回應的 `diagnostics` 欄位——兩者用同一份
@@ -1653,13 +1704,24 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         rate_rows = _fetch_rate_curve_rows(all_dates)
         dividend_history, _div_note = _dividend_loader()(sc.symbol, ny_today())
 
+        reconstructed_by_name: dict[str, list[tuple[str, float | None]]] = {}
         for name, identity, leg_points, leg_status, leg_note in leg_fetches:
             reconstructed = _reconstruct_leg_series(
                 identity, leg_points, rate_rows, dividend_history,
                 emit=_emit_exact)
+            reconstructed_by_name[name] = reconstructed
             legs_payload[name] = _leg_historical_iv_payload(
                 identity, reconstructed, leg_status, leg_note,
                 today=ny_today(), emit=_emit_exact)
+
+        # SIG-01（#172）：Spread IV Gap——只要候選有賣腿就一定存在這個
+        # 區塊；單腳候選（`reconstructed_by_name` 沒有 "sell"）完全沒有
+        # 這個欄位，不是空區塊。
+        spread_gap_payload = None
+        if "sell" in reconstructed_by_name:
+            spread_gap_payload = _spread_gap_payload(
+                reconstructed_by_name["buy"], reconstructed_by_name["sell"],
+                today=ny_today())
 
         # `expiry_counts` 掛在每個策略結果（`results[i]`）底下，不是
         # view 頂層——這裡只要「有哪些到期日」，跨策略去重即可。
@@ -1678,7 +1740,10 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
             diag_payload = _flush_diagnostics(diag)
             return {**_iv_payload(candidate_key, [], outcome,
                                   "這個候選算不出 (tenor, delta) 座標"),
-                   "legs": legs_payload, "diagnostics": diag_payload}
+                   "legs": legs_payload,
+                   **({"spread_gap": spread_gap_payload}
+                      if spread_gap_payload is not None else {}),
+                   "diagnostics": diag_payload}
 
         points = []
         in_grid = 0
@@ -1698,7 +1763,10 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         diag_payload = _flush_diagnostics(diag)
 
         return {**_iv_payload(candidate_key, points, outcome, note),
-               "legs": legs_payload, "diagnostics": diag_payload}
+               "legs": legs_payload,
+               **({"spread_gap": spread_gap_payload}
+                  if spread_gap_payload is not None else {}),
+               "diagnostics": diag_payload}
 
     # ---------- 設定：資料源與 Provider credential（Settings／#124） ----------
 

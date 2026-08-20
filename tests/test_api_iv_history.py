@@ -539,6 +539,8 @@ def test_exact_contract_pipeline_never_calls_the_reanchoring_functions():
         # 家族的一部分。HIVR-09（#168）：vendor IV benchmark 比較同理。
         "_emit_reconstruction_ledger", "_emit_staleness",
         "_emit_vendor_benchmark",
+        # SIG-01（#172）：Spread IV Gap 接線同理屬於 exact-contract 家族。
+        "_spread_gap_payload",
     )
     for fn_name in exact_contract_functions:
         body = _function_source(src, fn_name)
@@ -2100,6 +2102,188 @@ def test_delta_4w_is_none_without_a_baseline_window_observation(db):
     body = _get(client, sid, key).json()
     assert body["legs"]["buy"]["current_percentile"] is not None
     assert body["legs"]["buy"]["delta_4w"] is None
+
+
+# ---------- Spread IV Gap（SIG-01／#172，spec #171）----------
+
+def test_spread_gap_key_is_absent_for_a_single_leg_candidate(db):
+    """單腳候選沒有 Spread 概念——`spread_gap` 這個 key 完全不存在，不是
+    存在但空。"""
+    client = _client(db, surface=_rich_surface)
+    _unlock(client)
+    sid = _scenario(client)
+    key, view = _long_call_candidate_key_and_view(client)
+    _attach_result(db, sid, view)
+
+    body = _get(client, sid, key).json()
+    assert "spread_gap" not in body
+
+
+def test_spread_gap_key_exists_with_the_full_empty_shape_when_no_overlap(db):
+    """兩腿候選一定有 `spread_gap`，即使完全沒有重疊觀測（預設
+    `_contract_history_empty`：兩腿都沒有任何 quote）——`points`／
+    `moving_average`／`bollinger_upper`／`bollinger_lower` 回空陣列，
+    `current_percentile`／`delta_4w`／`delta_4w_ratio` 回 `None`、
+    `delta_4w_status` 回 `"no_baseline"`、`shared_history_span_days`
+    回 0，形狀永遠完整。"""
+    client = _client(db, surface=_rich_surface)
+    _unlock(client)
+    sid = _scenario(client)
+    key = _candidate_key(client, sid)
+
+    body = _get(client, sid, key).json()
+    assert body["spread_gap"] == {
+        "points": [], "moving_average": [], "bollinger_upper": [],
+        "bollinger_lower": [], "current_percentile": None,
+        "delta_4w": None, "delta_4w_ratio": None,
+        "delta_4w_status": "no_baseline", "observation_count": 0,
+        "shared_history_span_days": 0,
+    }
+
+
+def test_spread_gap_field_names_are_locked_and_rolling_window_days_is_omitted(db):
+    """契約清理鎖定的欄位名稱（spec #171）：不叫 `delta_4w_percent`；
+    不含 `lookback_days_config`／`history_span_days`（改用
+    `shared_history_span_days`）；不含 `current_zscore`；不含
+    `status`／`note`。`rolling_window_days` 依施工前最終裁示不序列化
+    ——即使 #172 AC 原文列出這個欄位。"""
+    client = _client(db, surface=_rich_surface)
+    _unlock(client)
+    sid = _scenario(client)
+    key = _candidate_key(client, sid)
+
+    body = _get(client, sid, key).json()
+    assert set(body["spread_gap"]) == {
+        "points", "moving_average", "bollinger_upper", "bollinger_lower",
+        "current_percentile", "delta_4w", "delta_4w_ratio",
+        "delta_4w_status", "observation_count", "shared_history_span_days",
+    }
+
+
+def test_spread_gap_point_shape_is_locked_to_date_and_gap(db):
+    """`SpreadGapPoint = {date, gap}`——不是 `{date, iv}` 也不是
+    `{date, value}`，命名鎖死。"""
+    rec = ContractHistoryRecorder()
+    client = _client(db, surface=_rich_surface, contract_history=rec)
+    _unlock(client)
+    sid = _scenario(client)
+    key = _candidate_key(client, sid)
+    buy, sell = _leg_identities(client, sid, key)
+    end = date.fromisoformat(_before_expiry(buy["expiry"], 50))
+    rec._points_by_symbol[buy["contract_symbol"]] = _synthetic_consecutive_days(
+        end, 2, [0.20, 0.20], option_type=buy["option_type"],
+        strike=buy["strike"], expiration=buy["expiry"])
+    rec._points_by_symbol[sell["contract_symbol"]] = _synthetic_consecutive_days(
+        end, 2, [0.30, 0.32], option_type=sell["option_type"],
+        strike=sell["strike"], expiration=sell["expiry"])
+
+    body = _get(client, sid, key).json()
+    points = body["spread_gap"]["points"]
+    assert len(points) == 2
+    for p in points:
+        assert set(p) == {"date", "gap"}
+
+
+def test_spread_gap_current_value_is_the_last_aligned_point_sell_minus_buy(db):
+    rec = ContractHistoryRecorder()
+    client = _client(db, surface=_rich_surface, contract_history=rec)
+    _unlock(client)
+    sid = _scenario(client)
+    key = _candidate_key(client, sid)
+    buy, sell = _leg_identities(client, sid, key)
+    end = date.fromisoformat(_before_expiry(buy["expiry"], 50))
+    rec._points_by_symbol[buy["contract_symbol"]] = _synthetic_consecutive_days(
+        end, 3, [0.20, 0.21, 0.22], option_type=buy["option_type"],
+        strike=buy["strike"], expiration=buy["expiry"])
+    rec._points_by_symbol[sell["contract_symbol"]] = _synthetic_consecutive_days(
+        end, 3, [0.30, 0.33, 0.36], option_type=sell["option_type"],
+        strike=sell["strike"], expiration=sell["expiry"])
+
+    body = _get(client, sid, key).json()
+    points = body["spread_gap"]["points"]
+    assert [p["date"] for p in points] == [
+        (end - timedelta(days=2)).isoformat(),
+        (end - timedelta(days=1)).isoformat(), end.isoformat()]
+    assert [p["gap"] for p in points] == pytest.approx(
+        [0.10, 0.12, 0.14], abs=1e-6)
+    assert body["spread_gap"]["observation_count"] == 3
+    assert body["spread_gap"]["shared_history_span_days"] == 2
+    assert body["spread_gap"]["current_percentile"] == 1.0
+
+
+def test_spread_gap_reflects_only_reconstructed_iv_never_vendor_iv(db):
+    """迴歸：vendor 給的 `vendor_iv` 跟 reconstructed IV 明顯不同時，Gap
+    序列仍只反映 reconstructed 值（跟每一腿自己的 canonical series 同一
+    條紅線，spec #159 §2 延伸）。"""
+    rec = ContractHistoryRecorder()
+    client = _client(db, surface=_rich_surface, contract_history=rec)
+    _unlock(client)
+    sid = _scenario(client)
+    key = _candidate_key(client, sid)
+    buy, sell = _leg_identities(client, sid, key)
+    d = _before_expiry(buy["expiry"], 50)
+    rec._points_by_symbol[buy["contract_symbol"]] = [_synthetic_quote(
+        d, option_type=buy["option_type"], strike=buy["strike"],
+        expiration=buy["expiry"], sigma=0.20, vendor_iv=0.9999)]
+    rec._points_by_symbol[sell["contract_symbol"]] = [_synthetic_quote(
+        d, option_type=sell["option_type"], strike=sell["strike"],
+        expiration=sell["expiry"], sigma=0.30, vendor_iv=0.0001)]
+
+    body = _get(client, sid, key).json()
+    points = body["spread_gap"]["points"]
+    assert len(points) == 1
+    assert points[0]["gap"] == pytest.approx(0.10, abs=1e-6)
+
+
+def test_spread_gap_excludes_a_day_where_only_one_leg_has_a_valid_quote(db):
+    """迴歸：一天只有一腿有值時該天不出現在 Gap 序列。"""
+    rec = ContractHistoryRecorder()
+    client = _client(db, surface=_rich_surface, contract_history=rec)
+    _unlock(client)
+    sid = _scenario(client)
+    key = _candidate_key(client, sid)
+    buy, sell = _leg_identities(client, sid, key)
+    end = date.fromisoformat(_before_expiry(buy["expiry"], 50))
+    both_valid_day = end.isoformat()
+    buy_only_day = (end - timedelta(days=1)).isoformat()
+    rec._points_by_symbol[buy["contract_symbol"]] = [
+        _synthetic_quote(both_valid_day, option_type=buy["option_type"],
+                         strike=buy["strike"], expiration=buy["expiry"],
+                         sigma=0.20),
+        _synthetic_quote(buy_only_day, option_type=buy["option_type"],
+                         strike=buy["strike"], expiration=buy["expiry"],
+                         sigma=0.21),
+    ]
+    rec._points_by_symbol[sell["contract_symbol"]] = [
+        _synthetic_quote(both_valid_day, option_type=sell["option_type"],
+                         strike=sell["strike"], expiration=sell["expiry"],
+                         sigma=0.30),
+        _quote_stub(buy_only_day, vendor_iv=None),   # unusable：bid/ask 皆 None
+    ]
+
+    body = _get(client, sid, key).json()
+    points = body["spread_gap"]["points"]
+    assert [p["date"] for p in points] == [both_valid_day]
+    assert body["spread_gap"]["observation_count"] == 1
+
+
+def test_spread_gap_present_but_empty_is_independent_from_single_leg_absent(db):
+    """迴歸：`spread_gap` 存在但 `observation_count==0`（兩腿候選，兩腿
+    各自完全沒有可用觀測）與 key 完全不存在（單腳候選）是兩種獨立情境，
+    互不影響——這裡同一個 db 內兩種候選各自驗證。"""
+    rec = ContractHistoryRecorder()
+    client = _client(db, surface=_rich_surface, contract_history=rec)
+    _unlock(client)
+    sid = _scenario(client)
+    spread_key = _candidate_key(client, sid)
+    spread_body = _get(client, sid, spread_key).json()
+    assert "spread_gap" in spread_body
+    assert spread_body["spread_gap"]["observation_count"] == 0
+
+    single_key, view = _long_call_candidate_key_and_view(client)
+    _attach_result(db, sid, view)
+    single_body = _get(client, sid, single_key).json()
+    assert "spread_gap" not in single_body
 
 
 def test_metrics_stage_emits_one_event_per_statistic_for_each_leg(db):
