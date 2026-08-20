@@ -1,0 +1,16 @@
+{
+  "_provenance": "#110（決策 D1）研究用真實資料，逐位元抄自本 repo 已提交的 tlt_report.md（該檔案由較早版本的 CLI 對真實 yfinance 快照跑出，git 歷史可查、非本票新造）。5 檔皆為 2026-07-17 分析當下 TLT 的真實 2028-12-15 到期 LEAPS call 報價（Bid/Ask/IV 為 yfinance 原始欄位，非引擎推算）。用途：docs/research/valuation-carry-method-comparison.md 與 tests/test_research_valuation_carry.py 共用同一份輸入，避免文件敘述數字與測試斷言各自為政。",
+  "symbol": "TLT",
+  "analyzed_at": "2026-07-17",
+  "expiry": "2028-12-15",
+  "spot": 84.52,
+  "flat_rate_used_in_source_report": 0.04,
+  "note_on_rate": "tlt_report.md 尾註「無風險利率 4.0%」是舊版 CLI 的固定值假設，不是本票主張的正確利率——本票另外用 tests/fixtures/treasury_csv_sample.txt 的真實 2026-08-04 Treasury 曲線覆核第 4 點（par→continuous 近似），兩者是獨立的兩件事。",
+  "calls": [
+    {"strike": 85.00, "bid": 5.65, "ask": 5.90, "reported_iv": 0.12, "delta_bucket": "conservative (Delta 0.72)"},
+    {"strike": 80.00, "bid": 7.45, "ask": 8.20, "reported_iv": 0.11, "delta_bucket": "conservative (Delta 0.83)"},
+    {"strike": 79.00, "bid": 8.00, "ask": 9.05, "reported_iv": 0.12, "delta_bucket": "conservative (Delta 0.84)"},
+    {"strike": 90.00, "bid": 3.80, "ask": 4.10, "reported_iv": 0.12, "delta_bucket": "balanced (Delta 0.61)"},
+    {"strike": 130.00, "bid": 0.63, "ask": 0.73, "reported_iv": 0.18, "delta_bucket": "aggressive (Delta 0.14)"}
+  ]
+}

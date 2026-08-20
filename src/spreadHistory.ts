@@ -107,3 +107,26 @@ export function contiguousRuns(points: ChartPoint[]): ChartPoint[][] {
   if (current.length) runs.push(current);
   return runs;
 }
+
+export interface AxisTick {
+  /** 對應 `points` 陣列本身的位置——呼叫端據此讀取該點的畫布座標。 */
+  index: number;
+  label: string;
+}
+
+/**
+ * X 軸日期刻度（V9補刻度／#106）：均勻取樣至多 4 個點、含首尾，不是
+ * 每個資料點都印一個日期——資料點一多（例如切到「日」粒度、序列長達
+ * 數十筆）擠成一團會什麼都讀不出來。
+ */
+export function xAxisTicks(points: ChartPoint[]): AxisTick[] {
+  if (points.length === 0) return [];
+  const tickCount = Math.min(4, points.length);
+  const indices = tickCount === 1
+    ? [0]
+    : Array.from({ length: tickCount }, (_, i) =>
+        Math.round((i * (points.length - 1)) / (tickCount - 1)));
+  // 點數卡在邊界時四捨五入可能撞出重複 index，去重但保持原本的先後順序。
+  const unique = [...new Set(indices)];
+  return unique.map((i) => ({ index: i, label: points[i].label }));
+}

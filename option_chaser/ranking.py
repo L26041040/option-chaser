@@ -60,10 +60,12 @@ def return_at_price(
     """
     if isinstance(val, SpreadValuation):
         at = date.fromisoformat(val.long_leg.expiry)
-        value = spread_scenario_value(val.long_leg, val.short_leg, S, at, p)
+        value = spread_scenario_value(val.long_leg, val.short_leg, S, at, p,
+                                      long_carry=val.long_carry,
+                                      short_carry=val.short_carry)
         cost = val.net_worst
     else:
-        value = scenario_leg_value(val.contract, S, p.anchor, p)
+        value = scenario_leg_value(val.contract, S, p.anchor, p, carry=val.carry)
         cost = val.contract.ask
     return (value - cost) / cost
 
@@ -78,7 +80,11 @@ def rank(
 ) -> dict[str, list[ContractValuation]]:
     bands: dict[str, list[ContractValuation]] = {name: [] for name in BAND_ORDER}
     for v in valuations:
-        bands[classify(v.delta, p.delta_bands)].append(v)
+        # #122（spec #117 §1.4 核心紅線）：分級只讀 `classification_delta`，
+        # 不讀 `delta`——見 `ContractValuation.classification_delta` 欄位
+        # 註解。這是本專案唯一的單腿分級選取路徑，未來換估值模型不得
+        # 讓這一行改讀 `v.delta`。
+        bands[classify(v.classification_delta, p.delta_bands)].append(v)
     for name in BAND_ORDER:
         bands[name].sort(key=lambda v: (-baseline_return(v), *_tie_break_key(v)))
         bands[name] = bands[name][: p.top]
@@ -107,7 +113,8 @@ def build_reasons(
         word = "高於" if v.contract.option_type == "call" else "低於"
         s = f"breakeven 僅{word}現價 {_pct(v.breakeven_vs_spot)}"
         half_price = spot + 0.5 * (p.target_price - spot)
-        if scenario_leg_value(v.contract, half_price, p.anchor, p) > v.contract.ask:
+        if scenario_leg_value(v.contract, half_price, p.anchor, p,
+                              carry=v.carry) > v.contract.ask:
             s += "，劇本半對仍獲利"
         pros.append(s)
     elif band == BAND_BALANCED:

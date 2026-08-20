@@ -8,9 +8,10 @@ from pathlib import Path
 from typing import Callable
 
 from .data.snapshot import find_contract, load_snapshot, save_snapshot, snapshot_today
+from .dividends import DividendHistory, compute_q
 from .filters import (apply_filters, generate_spread_pairs, is_spread_wide,
                       monotonicity_violations, quality_flag_counts)
-from .matrix import date_axis, matrix_grid, price_axis
+from .matrix import GUI_MAX_GAP_DAYS, date_axis, matrix_grid, price_axis
 from .models import (AnalysisParams, ChainSnapshot, FetchError, FilterReport,
                      PairReport, ParamError, QualityFlagCount, SPREAD_STRATEGIES,
                      STRATEGIES, is_bullish)
@@ -37,10 +38,24 @@ Progress = Callable[[str], None]
 # 快照重放與測試因此決定性且零網路。
 RateCurveLoader = Callable[[date], tuple[RateCurve | None, str]]
 
+# #123（spec #117 §2）：股利／配息資料 loader = (symbol, today) ->
+# (歷史或 None, 報告參數行註記)。與 `RateCurveLoader` 同一種介面形狀——
+# 只有網路路徑預設接真管線；`run_offline`／`run_with_snapshot` 預設
+# `None`，快照重放與測試因此決定性且零網路。回傳的是**金額清單**
+# （`DividendHistory`），不是算好的 q——q 要用**當次快照的 spot**現算
+# （研究文件 §7.5：快取比例會凍結一個過期的價格基準），這裡只負責
+# 「這個標的過去有哪些配息」這件事。
+DividendLoader = Callable[[str, date], tuple[DividendHistory | None, str]]
+
 
 def default_rate_curve_loader(today: date):
     from .data.treasury import load_rate_curve  # lazy: offline paths never觸網
     return load_rate_curve(today)
+
+
+def default_dividend_loader(symbol: str, today: date):
+    from .data.dividends import load_dividend_history  # lazy: 同上
+    return load_dividend_history(symbol, today)
 
 
 @dataclass(frozen=True)
@@ -52,7 +67,9 @@ class AnalysisRequest:
 
 @dataclass(frozen=True)
 class MatrixView:
-    prices: tuple[tuple[float, str], ...]
+    # 決策 M（#109）：第三個元素是 `move_pct`（相對 `spot` 的變動分數），
+    # 直接沿用 `price_axis()` 回傳的同一組 3-tuple，不在這裡另外算。
+    prices: tuple[tuple[float, str, float], ...]
     dates: tuple[tuple[str, str], ...]
     cells: tuple[tuple[float, ...], ...]
 
@@ -68,6 +85,29 @@ class PricePoint:
     label: str        # "worst" | "target" | "best"
     price: float
     ret: float
+
+
+@dataclass(frozen=True)
+class ComparatorView:
+    """#115（spec #117 §4）：Crossover 對照——就是這組 Spread 買腿本身，
+    不是搜尋或轉換出來的另一份合約。同 option type／履約價／到期日是
+    **定義**使然：Call Spread 的對照恆是 Long Call、Put Spread 恆是
+    Long Put，直接讀買腿既有報價，不做任何 option-type 轉換、不查找
+    另一張合約。
+
+    這正是 D1（#14）舊 `catchup_price` 曾經犯過的錯誤（put 買腿去找
+    「同履約價的 call」）的修正——新的作法從根本上不允許那種查找存在：
+    `option_type`／`strike`／`expiry` 三欄直接複製自 `SpreadValuation.
+    long_leg`，沒有任何分支邏輯可以讓它們與買腿本身不同。
+
+    `option_type` 讓前端能直接顯示「Long Call」／「Long Put」，不必
+    自己從 strategy 反推。
+    """
+    option_type: str
+    strike: float
+    expiry: str
+    cost: float          # 買腿 Ask（worst 成交口徑，與 Spread net_worst 一致）
+    matrix: MatrixView    # 與該 Spread 自己的 matrix 同一組 price×date grid
 
 
 @dataclass(frozen=True)
@@ -89,7 +129,16 @@ class CandidateView:
     friction: float
     friction_amount: float    # natural_cost(val) − mid 成本（spec §2.3, $/股）
     buffer_days: int
+    # MVP V3（#104，spec #102 決策 F）：`quote_warning` 是選取閘門用的
+    # 複合旗標（zero_vol or wide_spread or fr>0.25），**不對外顯示**——
+    # 只供 `_build_groups` 內部挑選 default_pair。顯示旗標另外分家成
+    # `wide_spread_warning`（見下），語意收斂成單一、可行動的判準。
     quote_warning: bool
+    # 顯示旗標（決策 F）：⚠ 徽章與候選池文案只認這個——僅 `is_spread_wide`
+    # 一項，不含零成交量、不含 friction>25%。與 `quote_warning` 分開是
+    # 刻意的：後者要維持既有複合語意才能守住「不改 ranking semantics」
+    # 的 guardrail，兩者計算式不可合併。
+    wide_spread_warning: bool
     # FB5-03（#64）：無套利一致性違反（相鄰履約價 ask 不單調）。獨立於
     # `quote_warning`，不合併——嚴重性與成因都不同（配對關係違反，不是
     # 單一數值超標），合併會讓使用者分不出「報價可疑，可能是陳舊資料」
@@ -98,12 +147,32 @@ class CandidateView:
     theta_day_rate: float      # |淨Θ| / Mid 成本
     vega_per_pt: float         # 淨Vega(每1 IV百分點) / Mid 成本
     decay_30d_return: float    # S=spot、IV不變、today+30(或到期)估值報酬
+    # MVP V3（#112，spec #102 決策 H）：這組候選估值實際用到的利率與
+    # 年期——`leg_rate(p, expiry)` 查表結果（T12 附錄A14.1 既有查表
+    # 函式，估值管線本來就在用，這裡只是把同一個結果也吐進契約）；
+    # 年期＝分析日到候選自身到期日的年分數，與 `rate_by_expiry` 建表
+    # 時（`_resolve_rates`）用的公式逐字相同。前端只格式化，不查表、
+    # 不換算。
+    rate_used: float
+    rate_tenor_years: float
     # D1（#14）：Long Call 追平價格 S*=K+C×(1+R)——只對 Spread 有意義
     # （買腿履約價 K 的同履約價 Call 若報價缺失也是 None）；單腳恆為 None。
+    # R2 裁示已移除對應 UI，本欄位只留 migration／regression 用，#115
+    # 的新 `comparator` 才是 Crossover 實際使用的欄位（見下）。
     catchup_price: float | None = None
     # V7（#55）。預設空 tuple：沒設兩端、也沒走 `_v4_fields` 的呼叫端
     # （若有）都不會壞。
     price_ladder: tuple[PricePoint, ...] = ()
+    # #113（spec #117 contracts 表）：這組候選的估值是否經過 carry 校準。
+    # 單腿讀 `valuation.carry.carry_calibrated`；價差要求兩條腿都校準
+    # 成功才算——任一腿退回今天的行為，整組候選就不是「carry 校準過」。
+    # False 時 UI 必須說得出「這組估值未經 carry 校準」（spec §10-4）。
+    carry_calibrated: bool = False
+    # #115（spec #117 §4）：Crossover 對照——只有 Spread 候選才有意義，
+    # 單腿恆為 None（沒有「跟自己比較」的概念）；Spread 候選只在買腿
+    # 報價缺失（結構上不該發生——上游過濾早已保證雙腿報價齊全，這裡是
+    # 防禦性核對，不假造）時才是 None。
+    comparator: ComparatorView | None = None
 
 
 @dataclass(frozen=True)
@@ -208,8 +277,15 @@ def _skip_message(strategy: str) -> str:
 
 def _matrix_view(value_fn, cost: float, spot: float, p: AnalysisParams,
                  today: date, expiry_iso: str) -> MatrixView:
-    prices = price_axis(spot, p.target_price, is_bullish(p.strategy))
-    dates = date_axis(today, date.fromisoformat(expiry_iso))
+    # QA 修正：價格軸上下限吃劇本區間（最高／最低價位）——兩端都沒填時
+    # `price_axis` 自己退回既有算式，這裡不做判斷。
+    prices = price_axis(spot, p.target_price, is_bullish(p.strategy),
+                        best_price=p.best_price, worst_price=p.worst_price)
+    # QA-FIX-5（QA-01）：GUI 走高密度日期軸（欄距上限約一個月）。
+    # CLI 文字報告（`report.py`）刻意不傳這個參數，維持既有七欄——
+    # 密度是呈現層決策，兩條路徑各自選自己合適的。
+    dates = date_axis(today, date.fromisoformat(expiry_iso),
+                      max_gap_days=GUI_MAX_GAP_DAYS)
     cells = matrix_grid(value_fn, cost, prices, dates)
     return MatrixView(prices=tuple(prices),
                       dates=tuple((d.isoformat(), lbl) for d, lbl in dates),
@@ -225,10 +301,14 @@ def _net_theta(val: ContractValuation | SpreadValuation, spot: float,
     if isinstance(val, SpreadValuation):
         lng, sht = val.long_leg, val.short_leg
         t_now = (date.fromisoformat(lng.expiry) - today).days / 365.0
+        # #113：讀 carry 校準後的 (q, sigma)，未校準時精確等於 vendor IV／
+        # q=0（見 LegCarry fallback 設計），既有行為不變。
         g_l = leg_greeks(lng.option_type, spot, lng.strike, t_now,
-                         leg_rate(p, lng.expiry), lng.implied_volatility)
+                         leg_rate(p, lng.expiry), val.long_carry.sigma,
+                         val.long_carry.q)
         g_s = leg_greeks(sht.option_type, spot, sht.strike, t_now,
-                         leg_rate(p, sht.expiry), sht.implied_volatility)
+                         leg_rate(p, sht.expiry), val.short_carry.sigma,
+                         val.short_carry.q)
         return g_l.theta_per_day - g_s.theta_per_day
     return val.theta_per_day
 
@@ -239,9 +319,11 @@ def _net_vega(val: ContractValuation | SpreadValuation, spot: float,
         lng, sht = val.long_leg, val.short_leg
         t_now = (date.fromisoformat(lng.expiry) - today).days / 365.0
         g_l = leg_greeks(lng.option_type, spot, lng.strike, t_now,
-                         leg_rate(p, lng.expiry), lng.implied_volatility)
+                         leg_rate(p, lng.expiry), val.long_carry.sigma,
+                         val.long_carry.q)
         g_s = leg_greeks(sht.option_type, spot, sht.strike, t_now,
-                         leg_rate(p, sht.expiry), sht.implied_volatility)
+                         leg_rate(p, sht.expiry), val.short_carry.sigma,
+                         val.short_carry.q)
         return g_l.vega_per_pct - g_s.vega_per_pct
     return val.vega_per_pct
 
@@ -308,11 +390,18 @@ def _v4_fields(val: ContractValuation | SpreadValuation, spot: float,
         # FB5-02（#63）：沿用既有的 `quote_warning` 機制，不新造一套——
         # 買賣價差過寬只是這個既有布林旗標的第三個觸發條件。單調性違反
         # 不加進來（見 `monotonicity_warning` 欄位註解）。
+        # ⚠ MVP V3（#104）guardrail：這一行的計算式本身凍結不動——改的
+        # 只有它「要不要對外顯示」，不是它「怎麼算」。
         quote_warning=zero_vol or wide_spread or fr > 0.25,
+        wide_spread_warning=wide_spread,
         monotonicity_warning=monotonicity_warning,
         theta_day_rate=abs(_net_theta(val, spot, today, p)) / mid_cost,
         vega_per_pt=_net_vega(val, spot, today, p) / mid_cost,
         decay_30d_return=_decay_30d(val, spot, today, p),
+        # MVP V3（#112）：與估值管線同一個查表結果／同一條年期公式
+        # （`_resolve_rates` 建 `rate_by_expiry` 時所用），不是另外重算。
+        rate_used=leg_rate(p, expiry),
+        rate_tenor_years=(date.fromisoformat(expiry) - today).days / DAYS_PER_YEAR,
         price_ladder=_price_ladder(val, p))
 
 
@@ -321,13 +410,16 @@ def _single_leg_view(v: ContractValuation, band: str,
                      n_qualified: int, today: date, p: AnalysisParams,
                      violations: frozenset[str] = frozenset()) -> CandidateView:
     pros, cons = build_reasons(v, band, ranked, spot, n_qualified, p)
+    # #113：矩陣迴圈維持 (S,t) 純函式——carry 已在 evaluate_contract() 算
+    # 過一次、掛在 v.carry 上，這裡直接傳，不重新反解。
     mv = _matrix_view(
-        lambda S, d, c=v.contract: scenario_leg_value(c, S, d, p),
+        lambda S, d, c=v.contract, carry=v.carry: scenario_leg_value(c, S, d, p, carry=carry),
         v.contract.ask, spot, p, today, v.contract.expiry)
     return CandidateView(
         valuation=v, pros=tuple(pros), cons=tuple(cons), matrix=mv,
         baseline_pnl=v.baseline_value - v.contract.ask,
         baseline_return=baseline_return(v),
+        carry_calibrated=v.carry.carry_calibrated,
         **_v4_fields(v, spot, today, p, violations))
 
 
@@ -347,19 +439,51 @@ def _spread_catchup_price(sv: SpreadValuation, snap: ChainSnapshot) -> float | N
     return catchup_price(strike, call_cost, spread_baseline_return(sv))
 
 
+def _spread_comparator(sv: SpreadValuation, spot: float, today: date,
+                       p: AnalysisParams) -> ComparatorView | None:
+    """#115（spec #117 §4）：Crossover 對照＝買腿本身，逐字讀既有欄位。
+
+    刻意不呼叫 `find_contract`、`ranking.classify`、`ranking.rank` 或
+    任何候選搜尋——`option_type`／`strike`／`expiry` 三欄直接取自
+    `sv.long_leg`，沒有分支可以讓它們偏離買腿本身（見 `ComparatorView`
+    docstring）。matrix 用同一個 `_matrix_view`（同一組 spot／today／
+    p／expiry 輸入 ⇒ 同一組 price×date 軸，逐位元與 Spread 自己的
+    matrix 同形狀），value_fn 用買腿已經算過一次的 `sv.long_carry`
+    （不重新反解 IV，架構要求與 `_single_leg_view` 一致）。
+
+    買腿報價缺失（`ask is None`）→ None，不假造——結構上不該發生
+    （`evaluate_spread` 上游已保證雙腿報價齊全才會走到這裡），這裡是
+    誠實揭露的防禦性核對，不是預期路徑。
+    """
+    leg = sv.long_leg
+    if leg.ask is None:
+        return None
+    mv = _matrix_view(
+        lambda S, d, c=leg, carry=sv.long_carry: scenario_leg_value(c, S, d, p, carry=carry),
+        leg.ask, spot, p, today, leg.expiry)
+    return ComparatorView(option_type=leg.option_type, strike=leg.strike,
+                          expiry=leg.expiry, cost=leg.ask, matrix=mv)
+
+
 def _spread_view(sv: SpreadValuation, idx: int, n_pairs: int, spot: float,
                  today: date, p: AnalysisParams, snap: ChainSnapshot,
                  violations: frozenset[str] = frozenset()) -> CandidateView:
     pros, cons = build_spread_reasons(sv, idx, n_pairs, p)
     mv = _matrix_view(
-        lambda S, d, lng=sv.long_leg, sht=sv.short_leg:
-            spread_scenario_value(lng, sht, S, d, p),
+        lambda S, d, lng=sv.long_leg, sht=sv.short_leg, lc=sv.long_carry, \
+              sc=sv.short_carry:
+            spread_scenario_value(lng, sht, S, d, p, long_carry=lc, short_carry=sc),
         sv.net_worst, spot, p, today, sv.long_leg.expiry)
     return CandidateView(
         valuation=sv, pros=tuple(pros), cons=tuple(cons), matrix=mv,
         baseline_pnl=sv.baseline_value - sv.net_worst,
         baseline_return=spread_baseline_return(sv),
         catchup_price=_spread_catchup_price(sv, snap),
+        # #113：兩腿都校準成功才算「這組候選 carry 校準過」——任一腿
+        # 退回今天的行為，整組候選的估值就不是全然校準過的。
+        carry_calibrated=(sv.long_carry.carry_calibrated
+                          and sv.short_carry.carry_calibrated),
+        comparator=_spread_comparator(sv, spot, today, p),
         **_v4_fields(sv, spot, today, p, violations))
 
 
@@ -516,8 +640,13 @@ def _single_leg_result(p: AnalysisParams, snap: ChainSnapshot,
         counts[exp] = counts.get(exp, 0) + 1
         best_by_expiry.setdefault(exp, v)
     expiry_best = tuple(
+        # #122：分級標籤同樣只讀 classification_delta（同一條紅線），
+        # 不影響 best_by_expiry 本身的選取——那是 vals_sorted 依
+        # baseline_return 決定的，跟 delta 分級無關，這裡只是幫選出來
+        # 的候選標一個風險級距文字。
         _single_leg_view(best_by_expiry[exp],
-                         classify(best_by_expiry[exp].delta, p.delta_bands),
+                         classify(best_by_expiry[exp].classification_delta,
+                                 p.delta_bands),
                          ranked, snap.spot, len(qualified), today, p,
                          violations)
         for exp in sorted(best_by_expiry))
@@ -696,9 +825,49 @@ def _resolve_rates(p: AnalysisParams, snap: ChainSnapshot, today: date,
                                rate_curve_stale=curve.stale)
 
 
+def _resolve_q(p: AnalysisParams, snap: ChainSnapshot, today: date,
+               loader: DividendLoader | None) -> AnalysisParams:
+    """#123（spec #117 §2）：股利殖利率 q，鏡射 `_resolve_rates` 的三層
+    fallback 結構，差異只在 q 是**單一數值、per-symbol**（不是逐到期日
+    查表）。
+
+    無 loader（離線重放）→ `q_by_symbol` 維持 `None`，走既有行為
+    （`valuation.calibrate_leg` 的第 4 層：q=0＋vendor IV，不是「q=0＋
+    價格錨定」——後者對很多真實 LEAPS 在數學上無解）。
+
+    loader 回 `None`（fetch 失敗且無可用快取）→ 同樣維持 `None`，只設
+    `q_note` 供報告說明原因——這正是 AC 的 fallback 第 4 層。
+
+    loader 回一份 `DividendHistory`（不論 fresh 或 stale）→ 用**這次
+    快照的 spot**現算 q（`compute_q`，研究 §7.5：不快取算好的比例）。
+    `distributions` 為空（確定無配息）→ `compute_q` 自然回 0.0，狀態
+    仍是 `q_stale=history.stale`（通常是 fresh）——這是正確答案，不是
+    降級（研究 §8 第 2 層）。
+
+    `compute_q` 對 `spot <= 0` 會拋 `ParamError`（未特別接住，讓它往上
+    傳）——與 `_resolve_rates` 不同，那裡的輸入來源（Treasury 曲線）
+    不可能產生會拋例外的壞資料。這裡故意不接住：`api_app/main.py` 既有
+    的 `except ParamError` 分支會把它映射成 400 "params"，雖然語意上
+    更接近「快照壞了」而非「使用者輸入錯」，但**真實市場報價的 spot
+    不可能是零或負值**，這是防禦性case、不是預期會發生的路徑，沿用
+    既有的 `ParamError` → 400 收斂已經是「不會讓分析炸成 500」的正確
+    行為，值得一個新的失敗分層前應先觀察是否真的發生過。
+    """
+    if loader is None:
+        return p
+    history, note = loader(snap.symbol, today)
+    if history is None:
+        return dataclasses.replace(p, q_note=note)
+    q = compute_q(history, snap.spot, today)
+    return dataclasses.replace(p, q_by_symbol=q, q_source=history.source,
+                               q_as_of=history.as_of, q_stale=history.stale,
+                               q_note=note)
+
+
 def _analyze(request: AnalysisRequest, snap: ChainSnapshot,
              snapshot_path: str, progress: Progress | None,
-             rate_curve_loader: RateCurveLoader | None = None) -> AnalysisResult:
+             rate_curve_loader: RateCurveLoader | None = None,
+             dividend_loader: DividendLoader | None = None) -> AnalysisResult:
     today = snapshot_today(snap.fetched_at)
     base = request.base_params
     month = ensure_month_open(TargetMonth.from_key(base.target_month), today)
@@ -707,7 +876,10 @@ def _analyze(request: AnalysisRequest, snap: ChainSnapshot,
     snap, baseline_expiry = _scoped_to_selected_expiries(snap, anchor, today)
     _emit(progress, "正在解析無風險利率……")
     base = _resolve_rates(base, snap, today, rate_curve_loader)
-    # 解出的利率是估值輸入的一部分：回寫 request，讓結果持久化與呼叫端可見。
+    _emit(progress, "正在解析股利殖利率……")
+    base = _resolve_q(base, snap, today, dividend_loader)
+    # 解出的利率／q 是估值輸入的一部分：回寫 request，讓結果持久化與
+    # 呼叫端可見。
     request = dataclasses.replace(request, base_params=base)
     results = []
     _emit(progress, "正在過濾合約……")
@@ -791,13 +963,15 @@ def run(request: AnalysisRequest, progress: Progress | None = None) -> AnalysisR
     _emit(progress, f"正在抓取 {request.symbol} 市場資料……")
     snap, out = fetch_and_save(request.symbol)
     return _analyze(request, snap, out, progress,
-                    rate_curve_loader=default_rate_curve_loader)
+                    rate_curve_loader=default_rate_curve_loader,
+                    dividend_loader=default_dividend_loader)
 
 
 def run_with_snapshot(request: AnalysisRequest, snap: ChainSnapshot,
                       snapshot_ref: str = "(in-memory)",
                       progress: Progress | None = None, *,
-                      rate_curve_loader: RateCurveLoader | None = None
+                      rate_curve_loader: RateCurveLoader | None = None,
+                      dividend_loader: DividendLoader | None = None
                       ) -> AnalysisResult:
     """V1（#48）：分析一份**已在記憶體中**的快照，不讀寫檔案系統。
 
@@ -808,19 +982,23 @@ def run_with_snapshot(request: AnalysisRequest, snap: ChainSnapshot,
     既有警告（安全降級，不會拋錯）。新前端的原始資料區（V8／#56）
     改由 API 提供，不再從路徑重讀。
 
-    與 `run_offline` 同樣預設不接利率管線（決定性）。"""
+    與 `run_offline` 同樣預設不接利率／股利管線（決定性）。"""
     _validate_request(request)
     return _analyze(request, snap, snapshot_ref, progress,
-                    rate_curve_loader=rate_curve_loader)
+                    rate_curve_loader=rate_curve_loader,
+                    dividend_loader=dividend_loader)
 
 
 def run_offline(request: AnalysisRequest, snapshot_path: str,
                 progress: Progress | None = None, *,
-                rate_curve_loader: RateCurveLoader | None = None
+                rate_curve_loader: RateCurveLoader | None = None,
+                dividend_loader: DividendLoader | None = None
                 ) -> AnalysisResult:
-    """離線重放預設不接利率管線（決定性、零網路）；networked 呼叫端（如
-    workspace 群組刷新，自己剛抓完 chain）可明示傳 loader 啟用曲線。"""
+    """離線重放預設不接利率／股利管線（決定性、零網路）；networked
+    呼叫端（如 workspace 群組刷新，自己剛抓完 chain）可明示傳 loader
+    啟用。"""
     _validate_request(request)
     snap = load_snapshot(snapshot_path)
     return _analyze(request, snap, str(snapshot_path), progress,
-                    rate_curve_loader=rate_curve_loader)
+                    rate_curve_loader=rate_curve_loader,
+                    dividend_loader=dividend_loader)

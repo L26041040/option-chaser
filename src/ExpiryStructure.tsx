@@ -27,14 +27,18 @@ function CandidateRow({ candidate, rank }: { candidate: Candidate; rank: number 
         <summary>
           <span className="candidate-head">
             <span className="rank">#{rank}</span>
-            {candidate.quote_warning && (
-              <span className="tag warn" title="報價品質有疑慮">
+            {/* MVP V3（#104，spec #102 決策 F）：⚠ 只在 Bid/Ask 過寬時
+                出現，文案明確寫「Bid/Ask 過寬」——零成交量與 Execution
+                friction 超過 25% 不再觸發這個徽章（LEAPS／冷門履約價
+                零成交是常態，不是報價可疑的證據）。 */}
+            {candidate.wide_spread_warning && (
+              <span className="tag warn" title="Bid/Ask 過寬">
                 ⚠
               </span>
             )}
-            {/* FB5-03（#64）：獨立徽章，不跟 quote_warning 共用 ⚠——
-                這一個是配對關係違反（跟鄰近履約價比較），不是單一數值
-                超標，嚴重性不同，不能讓使用者以為是同一種提醒。 */}
+            {/* FB5-03（#64）：獨立徽章，不跟 wide_spread_warning 共用 ⚠
+                ——這一個是配對關係違反（跟鄰近履約價比較），不是單一
+                數值超標，嚴重性不同，不能讓使用者以為是同一種提醒。 */}
             {candidate.monotonicity_warning && (
               <span className="tag suspect"
                     title="報價與鄰近履約價不一致，疑似陳舊報價">
@@ -64,7 +68,10 @@ function CandidateRow({ candidate, rank }: { candidate: Candidate; rank: number 
             <span>淨成本 {money(prices.net)}</span>
           </span>
         </summary>
-        <Heatmap matrix={candidate.matrix} />
+        {/* Crossover Boundary（#116）：同 `ScenarioDetail.tsx` 的判準
+            ——單腿候選不傳 `comparator`，不是渲染成「缺席」。 */}
+        <Heatmap matrix={candidate.matrix}
+                 comparator={candidate.legs.length === 2 ? candidate.comparator : undefined} />
       </details>
     </li>
   );
@@ -115,8 +122,7 @@ export default function ExpiryStructure({
         {shown && isThinPool(shown.count) && (
           <>
             <span aria-hidden="true">⚠ </span>
-            該期僅 {shown.count} 組候選通過品質過濾，排名參考價值有限——
-            名次第一可能只是「整池剩下的那一個」。
+            該期僅 {shown.count} 組候選通過品質過濾，排名參考價值有限。
           </>
         )}
       </div>

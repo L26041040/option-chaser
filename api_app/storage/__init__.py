@@ -12,6 +12,8 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from typing import Protocol
 
+from ..diagnostics import DiagnosticEvent
+
 
 @dataclass(frozen=True)
 class Scenario:
@@ -50,6 +52,10 @@ class ResultRecord:
     # 不假設腿數固定（單腳與價差共用），保留未來策略種類增加時不必
     # 改 schema 的空間。
     representative_candidate: dict | None = None
+    # 這次分析當下的標的現價（`store.spot(view)`）。與 `best_return`／
+    # `representative_candidate` 同一個模式：清單卡片只要這一個數字，
+    # 不該為它把整份 view 撈回來。
+    spot: float | None = None
 
 
 @dataclass(frozen=True)
@@ -58,6 +64,7 @@ class ResultSummary:
     analyzed_at: str
     best_return: float | None
     representative_candidate: dict | None = None
+    spot: float | None = None
 
 
 @dataclass(frozen=True)
@@ -103,6 +110,164 @@ class RateCacheEntry:
     attempted_day: str | None = None
 
 
+@dataclass(frozen=True)
+class DividendCacheEntry:
+    """股利／配息資料快取的一筆狀態，**per-symbol**（#123）——與
+    `RateCacheEntry` 的差異：q 是標的的性質，不是全站單一值，因此鍵是
+    symbol 而非固定單一筆。欄位語意逐一對應 `RateCacheEntry`（同一套
+    三態快取設計），差異只在：
+
+    - `history` 存的是 `option_chaser.dividends.history_to_dict()` 的
+      輸出（金額清單＋as_of），**不是算好的 q**——q 是比例，分母會隨
+      每次分析的快照 spot 變動，快取比例會把一個過期的價格基準凍結
+      進去（研究文件 `dividend-yield-source-selection.md` §7.5／§9
+      第 5 點）。
+    - 陳舊備援窗是 90 天而非利率的 7 天（同文件 §9：分配是月頻事件，
+      7 天窗會讓一次短暫斷線就把使用者踢回 q=0 這個已知會印 +81% 的
+      狀態）。
+    """
+    symbol: str
+    fetched_at: str          # 這筆狀態寫入的時間（ISO），不是資料本身的日期
+    history: dict | None
+    note: str
+    last_success_at: str | None = None
+    market_day: str | None = None
+    attempted_day: str | None = None
+
+
+@dataclass(frozen=True)
+class UsageSetting:
+    """`Data / API` 其中一列的選擇（Settings／#124）。
+
+    `mode` ＝ "default" | "custom"。`provider` 只在 custom 時有意義，且
+    必須是 `api_app.providers.SUPPORTED_PROVIDERS` 裡的 id——自訂只能挑
+    已內建 adapter 的資料源，不接受任意 endpoint／schema。
+    """
+    mode: str
+    provider: str | None = None
+
+
+@dataclass(frozen=True)
+class DataSourceSettings:
+    """兩列的模式選擇，單一一筆狀態（比照 `RateCacheEntry`，不是歷史序列）。
+
+    **不含 token**：credential 是 per-Provider 的一把，存在
+    `ProviderCredential`。兩列都選同一個 Provider 時因此天然共用同一把，
+    不必也不該要求使用者輸入兩次（#124）。
+    """
+    market_data: UsageSetting
+    historical_iv: UsageSetting
+    updated_at: str
+
+
+@dataclass(frozen=True)
+class ProviderCredential:
+    """某個 Provider 的一把 token。key ＝ provider id，不是資料用途。
+
+    `token` 是完整明文，**只活在後端**：API 回應一律只給
+    `providers.mask_token()` 的遮罩形式（#124 硬性 AC）。
+    """
+    provider: str
+    token: str
+    updated_at: str
+
+
+@dataclass(frozen=True)
+class ProviderVerification:
+    """「測試連線」的結果（Settings／#125）。
+
+    成功與失敗都存——設定頁重新載入時要看得到上次測的結果與時間，不必
+    為了知道現況再打一次 vendor。`reason` 只在失敗時有值，而且是給人看
+    的整句話（認證被拒／額度用盡／連不上），**不含 token**。
+    """
+    provider: str
+    ok: bool
+    reason: str | None
+    checked_at: str
+
+
+@dataclass(frozen=True)
+class IvObservation:
+    """某個 **underlying symbol** 在某一天的歷史選擇權曲面（#129）。
+
+    鍵是 **(symbol, 日期)**，**刻意不帶 scenario 身分**——同一 ticker 的
+    所有 Scenario 共用同一份歷史資料，各自再投影到需要的 (tenor, delta)
+    座標。target price 不同、target month 不同、scenario id 不同，都不
+    構成向 vendor 重抓的理由（vendor 額度有限，重抓是純浪費）。
+
+    `surface` 是 `{"call": [[dte, delta, iv], ...], "put": [...]}`——存成
+    三元組陣列而不是具名物件，一天的鏈有數千筆，欄位名重複數千次只是
+    在燒儲存空間。
+    """
+    symbol: str
+    observed_on: str          # YYYY-MM-DD（市場日，不是抓取時間）
+    surface: dict
+    fetched_at: str           # ISO 8601，這筆是什麼時候抓回來的
+
+
+@dataclass(frozen=True)
+class IvBackfillRun:
+    """某 symbol 最近一次 backfill 批次的結果（#130）。
+
+    存在的理由是「**同一 symbol 每天只跑一個 backfill job**」：沒有這筆
+    紀錄的話，同一天每開一個同 ticker 的 Scenario 就會再燒一批額度，正是
+    需求方要避免的浪費。也讓「今日額度已用完」不必每次都再打一次
+    vendor 才知道。
+
+    `outcome` ＝ "ok" | "quota" | "vendor"，`ran_on` 是市場日（紐約曆日）。
+    """
+    symbol: str
+    ran_on: str
+    outcome: str
+    note: str | None = None
+
+
+@dataclass(frozen=True)
+class ContractHistory:
+    """某個 **exact option contract**（同一 underlying／expiration／strike／
+    option_type 的組合，spec #151 §2 絕對紅線）的歷史 IV 觀測快取
+    （HIVT-02／#153）。
+
+    鍵是 **OCC contract symbol**——這就是 exact contract identity 本身
+    （不同 strike／expiry／call-put 天然是不同 symbol），不需要另外組
+    複合鍵。跟 `IvObservation`（per-symbol、per-day、整條鏈，(tenor,
+    delta) 重錨定家族專用）刻意不同的資料模型：vendor 的單合約端點一次
+    呼叫回整段日期區間（已由 #152 真實驗證：真實 TLT LEAPS 案例 34 筆
+    觀測只花 1 credit），這裡整個合約的觀測史因此存成**一筆**，不是
+    逐日一筆。
+
+    `points` 是逐日 quote dict 的 tuple，依日期遞增排序（HIVR-04／#163
+    起的寬版形狀：`date`／`updated`／`dte`／`bid`／`ask`／`mid`／
+    `underlying_price`／`vendor_iv` 八個 key——比 HIVT-02／#153 當初的
+    `(date, iv)` 二元組寬，保留 reconstruction（#164）需要的原始欄位，
+    `vendor_iv` 為 `None` 就是 vendor 那天真的沒給可信報價（missing
+    observation），不補、不插值、不換合約（spec #151 §2／§3 紅線）。
+    **這個型別本身不驗證形狀**——storage 是啞的 port，`points` 裡混進
+    HIVR-04 之前的舊版 `(date, iv)` 二元組在型別系統上不會被擋下；舊
+    格式的辨識與「當 cache miss 重抓」由呼叫端（`api_app/main.py`）
+    負責，見那裡的 docstring。
+
+    `fetched_through`：上一次成功呼叫時用的 `to=` 日期——下一次刷新只
+    抓這個日期之後到今天的缺口，不是每次整年重抓。從未成功過時是
+    `None`。
+
+    `last_attempt_on`：上一次嘗試呼叫 vendor 的日期（不論成功失敗）——
+    比照 `IvBackfillRun.ran_on`，用來擋「同一天內對已快取合約的重複
+    vendor 請求」（HIVT-02 acceptance criteria 明文要求同一天內重複請求
+    的 vendor 呼叫次數為 0）。
+
+    `last_status`／`last_note`：比照 `IvBackfillRun.outcome`／`note`
+    （"ok"｜"quota"｜"vendor"）——只描述**這次嘗試**，已快取的 `points`
+    不因今天補不下去就被藏起來（沿用既有 #133 原則）。
+    """
+    contract_symbol: str
+    points: tuple[dict, ...]
+    fetched_through: str | None
+    last_attempt_on: str | None
+    last_status: str
+    last_note: str | None = None
+
+
 class Storage(Protocol):
     """API 層唯一的資料存取介面——不得繞過它直接碰 SQL 或檔案。"""
 
@@ -113,6 +278,21 @@ class Storage(Protocol):
 
     def list_scenarios(self, *, include_archived: bool = False) -> list[Scenario]:
         """依 created_at 遞增排序；預設不含已封存者。"""
+
+    def update_scenario(self, sc: Scenario) -> bool:
+        """就地更新一個既有劇本（#132）。回傳是否真的更新了（不存在回
+        `False`）。
+
+        **同一個 id，不是刪除＋重建**：重建會換掉身分，讓所有以
+        scenario_id 為鍵的東西（結果、快照、事件）變成孤兒，而使用者只是
+        改了個目標價。`id` 與 `created_at` 由呼叫端負責原樣帶回。"""
+
+    def clear_results(self, scenario_id: str) -> None:
+        """清掉該劇本的全部結果與原始快照，保留劇本本身與事件紀錄（#132）。
+
+        用於 thesis 改變之後：目標價餵進 baseline_return、目標月決定選哪
+        些到期日，兩者一改，舊結果的每個數字都是對著另一個問題算出來的。
+        留著它們就是拿舊結果冒充新的。事件不刪——那是不可變的事實。"""
 
     def archive_scenario(self, scenario_id: str, *, ts: str) -> bool:
         """回傳是否真的封存了（不存在或已封存回 False）。資料不刪除。"""
@@ -170,6 +350,80 @@ class Storage(Protocol):
 
     def save_rate_cache(self, entry: RateCacheEntry) -> None:
         """覆蓋既有那一筆——單一狀態，不是歷史序列。"""
+
+    def get_dividend_cache(self, symbol: str) -> DividendCacheEntry | None:
+        """該 symbol 尚未有任何嘗試（成功或失敗）時回 `None`。"""
+
+    def save_dividend_cache(self, entry: DividendCacheEntry) -> None:
+        """覆蓋該 symbol 既有那一筆——per-symbol 單一狀態，不是歷史序列。"""
+
+    # ---------- 資料源設定與 credential（Settings／#124） ----------
+
+    def get_settings(self) -> DataSourceSettings | None:
+        """從未存過任何設定時回 `None`（呼叫端據此用兩列的預設值）。"""
+
+    def save_settings(self, settings: DataSourceSettings) -> None:
+        """覆蓋既有那一筆——單一狀態，不是歷史序列。"""
+
+    def get_credential(self, provider: str) -> ProviderCredential | None: ...
+
+    def save_credential(self, cred: ProviderCredential) -> None:
+        """同一 provider 重複寫入即覆蓋（換 token 就是這條路徑）。"""
+
+    def delete_credential(self, provider: str) -> bool:
+        """回傳是否真的刪了東西（本來就沒存過回 `False`）。
+
+        一併清掉該 provider 的驗證結果——那筆結果講的是「**那把** token
+        能不能用」，token 沒了它就失去意義，留著會讓設定頁在沒有
+        credential 的情況下顯示「已連線」。"""
+
+    # ---------- 歷史 IV 觀測快取（#129，per-symbol） ----------
+
+    def save_iv_observation(self, obs: IvObservation) -> None:
+        """同一 (symbol, 日期) 重複寫入即覆蓋（冪等）。"""
+
+    def iv_observation_dates(self, symbol: str) -> list[str]:
+        """這個 symbol 已經有哪些日期（遞增）。
+
+        **不回傳曲面本身**：backfill 只需要知道「還缺哪幾天」，為此把
+        數十天、每天數千筆的資料整包撈出來是離譜的浪費。"""
+
+    def iv_observations(self, symbol: str) -> list[IvObservation]:
+        """依日期遞增回傳該 symbol 的全部觀測。"""
+
+    def get_iv_backfill_run(self, symbol: str) -> IvBackfillRun | None:
+        """該 symbol 最近一次 backfill 批次；從未跑過回 `None`。"""
+
+    def save_iv_backfill_run(self, run: IvBackfillRun) -> None:
+        """覆蓋該 symbol 既有那一筆——單一狀態，不是歷史序列。"""
+
+    def get_verification(self, provider: str) -> ProviderVerification | None:
+        """從未測過時回 `None`（＝「未設定」或「尚未驗證」）。"""
+
+    def save_verification(self, v: ProviderVerification) -> None:
+        """覆蓋該 provider 既有那一筆——單一狀態，不是歷史序列。"""
+
+    # ---------- Exact-contract 歷史 IV 快取（HIVT-02／#153） ----------
+
+    def get_contract_history(self, contract_symbol: str) -> ContractHistory | None:
+        """該 exact contract 尚未有任何觀測快取時回 `None`。"""
+
+    def save_contract_history(self, history: ContractHistory) -> None:
+        """同一 `contract_symbol` 重複寫入即覆蓋（冪等）——整份觀測史是
+        單一狀態，不是逐日一筆。"""
+
+    # ---------- Application diagnostics（DG-02／#145） ----------
+
+    def append_diagnostic(self, event: DiagnosticEvent) -> None:
+        """寫入一筆診斷事件。**trim-on-write**：寫入後只保留全域最新
+        `diagnostics.RETENTION_LIMIT` 筆，較舊的直接淘汰——不是靠背景
+        清理 job（serverless 沒有地方掛），上限因此是結構性的。"""
+
+    def list_diagnostics(self, *, limit: int = 50) -> list[DiagnosticEvent]:
+        """最新在最上（依寫入順序反排）。"""
+
+    def clear_diagnostics(self) -> int:
+        """清空，回傳清掉的筆數。"""
 
     @property
     def kind(self) -> str:

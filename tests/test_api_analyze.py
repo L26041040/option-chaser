@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient   # 缺 fastapi 要紅燈，不可 imp
 
 from api_app.main import create_app
 from option_chaser.data.snapshot import load_snapshot
+from option_chaser.dividends import DividendHistory, DividendRecord
 from option_chaser.models import FetchError, ParamError
 from option_chaser.ratecurve import RateCurve
 
@@ -34,10 +35,26 @@ def _sample_rate_loader(today):
     return _SAMPLE_RATE_CURVE, f"Treasury 曲線 {_SAMPLE_RATE_CURVE.curve_date}"
 
 
+# 同一個理由（#123）：`create_app()` 預設接真的 Yahoo→FMP→Nasdaq
+# dividend_loader，固定注入跟 `gen_contract_sample.py` 同一份假歷史。
+_SAMPLE_DIVIDEND_HISTORY = DividendHistory(
+    symbol="XYZ", as_of="2026-07-14", source="yahoo",
+    distributions=(DividendRecord("2026-06-01", 1.2),
+                  DividendRecord("2026-03-01", 1.2)))
+
+
+def _sample_dividend_loader(symbol, today):
+    n = len(_SAMPLE_DIVIDEND_HISTORY.distributions)
+    return (_SAMPLE_DIVIDEND_HISTORY,
+           f"配息資料 {_SAMPLE_DIVIDEND_HISTORY.source}"
+           f"（{_SAMPLE_DIVIDEND_HISTORY.as_of}，{n} 筆）")
+
+
 def _client(fetch=None):
     snap = load_snapshot(FIX)
     return TestClient(create_app(fetch=fetch or (lambda symbol: snap),
-                                 rate_loader=_sample_rate_loader))
+                                 rate_loader=_sample_rate_loader,
+                                 dividend_loader=_sample_dividend_loader))
 
 
 def test_health_reports_ok_and_engine_version():
@@ -134,6 +151,31 @@ def test_contract_sample_matches_the_live_api_response():
     assert actual == expected, (
         "API 回應與契約樣本不一致——契約已變動，請跑 "
         "scripts/gen_contract_sample.py 重產樣本，並確認前端跟著更新")
+
+
+def test_bear_put_contract_sample_matches_the_live_api_response():
+    """#115（spec #117 §4）：主樣本（`analysis_sample.json`）用的固定
+    fixture 只有 call，無法示範 put comparator——單一 `/api/analyze`
+    呼叫的 target_price 方向互斥（bull 要高於 spot、bear 要低於 spot），
+    `force` 也沒有暴露在公開 schema 上，因此 put 覆蓋走獨立的第二份
+    樣本＋獨立 fixture（`xyz_v5_put_ladder.json`，見
+    `scripts/gen_contract_sample.py` 的 PUT_FIXTURE 註解），一樣是
+    真實 `/api/analyze` 回應、一樣有 drift 測試守著。"""
+    put_sample = Path("contracts/analysis_sample_bear_put.json")
+    assert put_sample.exists(), "契約樣本不存在，請跑 scripts/gen_contract_sample.py"
+    expected = json.loads(put_sample.read_text(encoding="utf-8"))
+    put_fixture = load_snapshot("tests/fixtures/xyz_v5_put_ladder.json")
+    put_request = {"symbol": "XYZ", "target_price": 70.0, "target_month": "2026-09",
+                   "strategies": ["bear-put-spread"]}
+    actual = _client(lambda symbol: put_fixture).post(
+        "/api/analyze", json=put_request).json()
+    assert actual == expected, (
+        "put comparator 契約樣本與 API 回應不一致——請跑 "
+        "scripts/gen_contract_sample.py 重產樣本")
+    # 這份樣本存在的唯一理由就是要示範 put comparator——空手覆蓋沒有意義。
+    cand = actual["results"][0]["candidates"][0]
+    assert cand["comparator"] is not None
+    assert cand["comparator"]["option_type"] == "put"
 
 
 def test_symbol_is_restricted_to_ticker_shaped_input():

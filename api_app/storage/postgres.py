@@ -12,7 +12,11 @@ from __future__ import annotations
 import psycopg
 from psycopg.types.json import Jsonb
 
-from . import RateCacheEntry, ResultRecord, ResultSummary, Scenario, ScenarioExists
+from . import (ContractHistory, DataSourceSettings, DividendCacheEntry,
+               IvBackfillRun, IvObservation, ProviderCredential,
+               ProviderVerification, RateCacheEntry, ResultRecord,
+               ResultSummary, Scenario, ScenarioExists, UsageSetting)
+from ..diagnostics import RETENTION_LIMIT, DiagnosticEvent
 
 # 每個 lambda 程序只需建表一次。`IF NOT EXISTS` 在 Postgres 並非完全
 # race-free（同時冷啟動可能撞上 duplicate 錯誤），因此除了這個旗標，
@@ -39,6 +43,7 @@ CREATE TABLE IF NOT EXISTS results (
     view                    JSONB NOT NULL,
     best_return             DOUBLE PRECISION,
     representative_candidate JSONB,
+    spot                    DOUBLE PRECISION,
     PRIMARY KEY (scenario_id, analyzed_at)
 );
 -- V3（#51）／MVP-v2（#77、#78）加的欄位。既有部署已經有 results 表，
@@ -46,6 +51,7 @@ CREATE TABLE IF NOT EXISTS results (
 -- INSERT 時炸 UndefinedColumn。
 ALTER TABLE results ADD COLUMN IF NOT EXISTS best_return DOUBLE PRECISION;
 ALTER TABLE results ADD COLUMN IF NOT EXISTS representative_candidate JSONB;
+ALTER TABLE results ADD COLUMN IF NOT EXISTS spot DOUBLE PRECISION;
 CREATE TABLE IF NOT EXISTS snapshots (
     scenario_id   TEXT NOT NULL,
     analyzed_at   TEXT NOT NULL,
@@ -73,6 +79,90 @@ CREATE TABLE IF NOT EXISTS rate_cache (
     attempted_day     TEXT,
     CHECK (id = 1)
 );
+-- 配息資料快取（#123）：**per-symbol**（q 是標的的性質，不是全站單一
+-- 值，跟 rate_cache 的單筆設計不同），否則欄位語意逐一對應 rate_cache。
+CREATE TABLE IF NOT EXISTS dividend_cache (
+    symbol            TEXT PRIMARY KEY,
+    fetched_at        TEXT NOT NULL,
+    history           JSONB,
+    note              TEXT NOT NULL,
+    last_success_at   TEXT,
+    market_day        TEXT,
+    attempted_day     TEXT
+);
+-- 資料源設定（Settings／#124）：兩列的模式選擇，單一一筆狀態——跟
+-- `rate_cache` 同一個 `id = 1` ＋ `CHECK` 的寫法。存 JSONB 而不是攤平成
+-- 欄位：這份結構會隨資料用途增減而變（目前兩列），JSONB 讓它變動時
+-- 不必每次都補一條 ALTER。
+CREATE TABLE IF NOT EXISTS data_source_settings (
+    id            INTEGER PRIMARY KEY DEFAULT 1,
+    settings      JSONB NOT NULL,
+    updated_at    TEXT NOT NULL,
+    CHECK (id = 1)
+);
+-- Provider credential（Settings／#124）：key 是 **provider**，不是資料
+-- 用途——兩個用途選同一個 Provider 時共用這一列，使用者因此不必輸入
+-- 同一把 token 兩次。
+CREATE TABLE IF NOT EXISTS provider_credentials (
+    provider      TEXT PRIMARY KEY,
+    token         TEXT NOT NULL,
+    updated_at    TEXT NOT NULL
+);
+-- 測試連線的結果（Settings／#125）：per-provider 單一狀態。與
+-- credential 分兩張表——刪 token 時連帶刪這一筆（見 delete_credential），
+-- 但存 token 不必動它（還沒測過就是還沒測過）。
+CREATE TABLE IF NOT EXISTS provider_verifications (
+    provider      TEXT PRIMARY KEY,
+    ok            BOOLEAN NOT NULL,
+    reason        TEXT,
+    checked_at    TEXT NOT NULL
+);
+-- 歷史 IV 觀測（#129）：鍵是 **(symbol, 日期)**，沒有 scenario 欄位——
+-- 同一 ticker 的所有 Scenario 共用同一份，資料模型上就不可能因 scenario
+-- 不同而分家、重複燒 vendor 額度。
+CREATE TABLE IF NOT EXISTS iv_observations (
+    symbol        TEXT NOT NULL,
+    observed_on   TEXT NOT NULL,
+    surface       JSONB NOT NULL,
+    fetched_at    TEXT NOT NULL,
+    PRIMARY KEY (symbol, observed_on)
+);
+-- 每 symbol 每天只跑一個 backfill 批次（#130）：沒有這張表的話，同一天
+-- 每開一個同 ticker 的 Scenario 就會再燒一批額度。
+CREATE TABLE IF NOT EXISTS iv_backfill_runs (
+    symbol        TEXT PRIMARY KEY,
+    ran_on        TEXT NOT NULL,
+    outcome       TEXT NOT NULL,
+    note          TEXT
+);
+-- Exact-contract 歷史 IV 快取（HIVT-02／#153）：鍵是 OCC contract
+-- symbol——exact contract identity 本身（spec #151 §2 絕對紅線）。跟
+-- `iv_observations`（per-symbol、per-day、整條鏈）刻意不同的資料模型：
+-- 單合約端點一次呼叫回整段區間，這裡整個合約的觀測史存成一筆 JSONB
+-- 陣列，不是逐日一列。
+CREATE TABLE IF NOT EXISTS contract_iv_history (
+    contract_symbol   TEXT PRIMARY KEY,
+    points            JSONB NOT NULL,
+    fetched_through   TEXT,
+    last_attempt_on   TEXT,
+    last_status       TEXT NOT NULL,
+    last_note         TEXT
+);
+-- Application diagnostics（DG-02／#145）：**不併進 `events` 表**——後者
+-- 是 scenario-scoped、永不修剪的領域事實，這張是運維紀錄、會被修剪、
+-- 且不必然掛在某個 scenario 底下。`seq` 沿用 `events` 同一個排序慣例
+-- （時間戳字串同秒時仍有確定順序）。
+CREATE TABLE IF NOT EXISTS diagnostics (
+    seq             BIGSERIAL PRIMARY KEY,
+    event_id        TEXT NOT NULL,
+    correlation_id  TEXT NOT NULL,
+    ts              TEXT NOT NULL,
+    subsystem       TEXT NOT NULL,
+    stage           TEXT NOT NULL,
+    severity        TEXT NOT NULL,
+    message         TEXT NOT NULL,
+    context         JSONB NOT NULL
+);
 """
 
 # 遷移**必須與建表分開送**。psycopg 對「無參數、多語句」的 execute 走
@@ -82,6 +172,7 @@ CREATE TABLE IF NOT EXISTS rate_cache (
 _MIGRATIONS = """
 ALTER TABLE results ADD COLUMN IF NOT EXISTS best_return DOUBLE PRECISION;
 ALTER TABLE results ADD COLUMN IF NOT EXISTS representative_candidate JSONB;
+ALTER TABLE results ADD COLUMN IF NOT EXISTS spot DOUBLE PRECISION;
 ALTER TABLE scenarios ADD COLUMN IF NOT EXISTS best_price DOUBLE PRECISION;
 ALTER TABLE scenarios ADD COLUMN IF NOT EXISTS worst_price DOUBLE PRECISION;
 ALTER TABLE rate_cache ADD COLUMN IF NOT EXISTS last_success_at TEXT;
@@ -93,11 +184,24 @@ ALTER TABLE rate_cache ADD COLUMN IF NOT EXISTS attempted_day TEXT;
 _BENIGN = (psycopg.errors.DuplicateTable, psycopg.errors.DuplicateObject,
            psycopg.errors.DuplicateColumn, psycopg.errors.UniqueViolation)
 
-_RESULT_COLS = "scenario_id, analyzed_at, view, best_return, representative_candidate"
+_RESULT_COLS = ("scenario_id, analyzed_at, view, best_return, "
+                "representative_candidate, spot")
 
 _SCENARIO_COLS = ("id, symbol, direction, target_price, target_month, "
                   "notes, strategies, created_at, archived_at, "
                   "best_price, worst_price")
+
+
+def _usage_to_dict(u: UsageSetting) -> dict:
+    return {"mode": u.mode, "provider": u.provider}
+
+
+def _usage_from_dict(d: dict | None) -> UsageSetting:
+    """讀回時對缺漏寬容：舊的那一筆設定可能還沒有新加的資料用途，
+    當成「預設」而不是炸掉——預設是安全的那一邊（不啟用自訂資料源）。"""
+    if not d:
+        return UsageSetting(mode="default", provider=None)
+    return UsageSetting(mode=d.get("mode", "default"), provider=d.get("provider"))
 
 
 def _row_to_scenario(row) -> Scenario:
@@ -172,6 +276,25 @@ class PostgresStorage:
             rows = conn.execute(sql).fetchall()
         return [_row_to_scenario(r) for r in rows]
 
+    def update_scenario(self, sc: Scenario) -> bool:
+        with self._connect() as conn:
+            cur = conn.execute(
+                "UPDATE scenarios SET symbol = %s, direction = %s, "
+                "target_price = %s, target_month = %s, notes = %s, "
+                "strategies = %s, best_price = %s, worst_price = %s "
+                "WHERE id = %s",
+                (sc.symbol, sc.direction, sc.target_price, sc.target_month,
+                 sc.notes, Jsonb(list(sc.strategies)), sc.best_price,
+                 sc.worst_price, sc.id))
+            return cur.rowcount == 1   # 連線關閉前讀
+
+    def clear_results(self, scenario_id: str) -> None:
+        with self._connect() as conn:
+            conn.execute("DELETE FROM results WHERE scenario_id = %s",
+                        (scenario_id,))
+            conn.execute("DELETE FROM snapshots WHERE scenario_id = %s",
+                        (scenario_id,))
+
     def archive_scenario(self, scenario_id: str, *, ts: str) -> bool:
         with self._connect() as conn:
             cur = conn.execute(
@@ -213,15 +336,17 @@ class PostgresStorage:
         with self._connect() as conn:
             conn.execute(
                 "INSERT INTO results (scenario_id, analyzed_at, view, "
-                "best_return, representative_candidate) "
-                "VALUES (%s, %s, %s, %s, %s) "
+                "best_return, representative_candidate, spot) "
+                "VALUES (%s, %s, %s, %s, %s, %s) "
                 "ON CONFLICT (scenario_id, analyzed_at) DO UPDATE "
                 "SET view = EXCLUDED.view, best_return = EXCLUDED.best_return, "
-                "representative_candidate = EXCLUDED.representative_candidate",
+                "representative_candidate = EXCLUDED.representative_candidate, "
+                "spot = EXCLUDED.spot",
                 (rec.scenario_id, rec.analyzed_at, Jsonb(rec.view),
                  rec.best_return,
                  Jsonb(rec.representative_candidate)
-                 if rec.representative_candidate is not None else None))
+                 if rec.representative_candidate is not None else None,
+                 rec.spot))
 
     def latest_result(self, scenario_id: str) -> ResultRecord | None:
         with self._connect() as conn:
@@ -241,10 +366,10 @@ class PostgresStorage:
         with self._connect() as conn:
             rows = conn.execute(
                 "SELECT DISTINCT ON (scenario_id) scenario_id, analyzed_at, "
-                "best_return, representative_candidate FROM results "
+                "best_return, representative_candidate, spot FROM results "
                 "ORDER BY scenario_id, analyzed_at DESC").fetchall()
         return {r[0]: ResultSummary(analyzed_at=r[1], best_return=r[2],
-                                    representative_candidate=r[3])
+                                    representative_candidate=r[3], spot=r[4])
                 for r in rows}
 
     def result_history(self, scenario_id: str) -> list[ResultRecord]:
@@ -322,3 +447,221 @@ class PostgresStorage:
                 (entry.fetched_at, Jsonb(entry.curve) if entry.curve is not None else None,
                  entry.note, entry.last_success_at, entry.market_day,
                  entry.attempted_day))
+
+    # ---------- 配息資料快取（#123，per-symbol） ----------
+
+    def get_dividend_cache(self, symbol: str) -> DividendCacheEntry | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT symbol, fetched_at, history, note, last_success_at, "
+                "market_day, attempted_day FROM dividend_cache "
+                "WHERE symbol = %s", (symbol,)).fetchone()
+        return (DividendCacheEntry(symbol=row[0], fetched_at=row[1], history=row[2],
+                                   note=row[3], last_success_at=row[4],
+                                   market_day=row[5], attempted_day=row[6])
+                if row else None)
+
+    def save_dividend_cache(self, entry: DividendCacheEntry) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO dividend_cache "
+                "(symbol, fetched_at, history, note, last_success_at, market_day, "
+                "attempted_day) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s) "
+                "ON CONFLICT (symbol) DO UPDATE "
+                "SET fetched_at = EXCLUDED.fetched_at, history = EXCLUDED.history, "
+                "note = EXCLUDED.note, last_success_at = EXCLUDED.last_success_at, "
+                "market_day = EXCLUDED.market_day, "
+                "attempted_day = EXCLUDED.attempted_day",
+                (entry.symbol, entry.fetched_at,
+                 Jsonb(entry.history) if entry.history is not None else None,
+                 entry.note, entry.last_success_at, entry.market_day,
+                 entry.attempted_day))
+    # ---------- 資料源設定與 credential（Settings／#124） ----------
+
+    def get_settings(self) -> DataSourceSettings | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT settings, updated_at FROM data_source_settings "
+                "WHERE id = 1").fetchone()
+        if not row:
+            return None
+        blob = row[0]
+        return DataSourceSettings(
+            market_data=_usage_from_dict(blob.get("market_data")),
+            historical_iv=_usage_from_dict(blob.get("historical_iv")),
+            updated_at=row[1])
+
+    def save_settings(self, settings: DataSourceSettings) -> None:
+        blob = {"market_data": _usage_to_dict(settings.market_data),
+                "historical_iv": _usage_to_dict(settings.historical_iv)}
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO data_source_settings (id, settings, updated_at) "
+                "VALUES (1, %s, %s) "
+                "ON CONFLICT (id) DO UPDATE SET settings = EXCLUDED.settings, "
+                "updated_at = EXCLUDED.updated_at",
+                (Jsonb(blob), settings.updated_at))
+
+    def get_credential(self, provider: str) -> ProviderCredential | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT provider, token, updated_at FROM provider_credentials "
+                "WHERE provider = %s", (provider,)).fetchone()
+        return ProviderCredential(*row) if row else None
+
+    def save_credential(self, cred: ProviderCredential) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO provider_credentials (provider, token, updated_at) "
+                "VALUES (%s, %s, %s) "
+                "ON CONFLICT (provider) DO UPDATE SET token = EXCLUDED.token, "
+                "updated_at = EXCLUDED.updated_at",
+                (cred.provider, cred.token, cred.updated_at))
+
+    def delete_credential(self, provider: str) -> bool:
+        with self._connect() as conn:
+            cur = conn.execute(
+                "DELETE FROM provider_credentials WHERE provider = %s",
+                (provider,))
+            removed = cur.rowcount == 1   # 連線關閉前讀
+            # 驗證結果跟著走：它講的是「那把 token 能不能用」。無論剛才
+            # 有沒有刪到 credential 都清——沒有 credential 卻留著一筆
+            # 「已連線」是更糟的狀態。
+            conn.execute(
+                "DELETE FROM provider_verifications WHERE provider = %s",
+                (provider,))
+            return removed
+
+    def get_verification(self, provider: str) -> ProviderVerification | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT provider, ok, reason, checked_at FROM "
+                "provider_verifications WHERE provider = %s",
+                (provider,)).fetchone()
+        return ProviderVerification(*row) if row else None
+
+    def save_verification(self, v: ProviderVerification) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO provider_verifications "
+                "(provider, ok, reason, checked_at) VALUES (%s, %s, %s, %s) "
+                "ON CONFLICT (provider) DO UPDATE SET ok = EXCLUDED.ok, "
+                "reason = EXCLUDED.reason, checked_at = EXCLUDED.checked_at",
+                (v.provider, v.ok, v.reason, v.checked_at))
+
+    # ---------- 歷史 IV 觀測快取（#129，per-symbol） ----------
+
+    def save_iv_observation(self, obs: IvObservation) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO iv_observations "
+                "(symbol, observed_on, surface, fetched_at) "
+                "VALUES (%s, %s, %s, %s) "
+                "ON CONFLICT (symbol, observed_on) DO UPDATE "
+                "SET surface = EXCLUDED.surface, "
+                "fetched_at = EXCLUDED.fetched_at",
+                (obs.symbol, obs.observed_on, Jsonb(obs.surface), obs.fetched_at))
+
+    def iv_observation_dates(self, symbol: str) -> list[str]:
+        """只選日期欄——backfill 要的是缺口，不是幾十天份的曲面。"""
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT observed_on FROM iv_observations WHERE symbol = %s "
+                "ORDER BY observed_on", (symbol,)).fetchall()
+        return [r[0] for r in rows]
+
+    def iv_observations(self, symbol: str) -> list[IvObservation]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT symbol, observed_on, surface, fetched_at "
+                "FROM iv_observations WHERE symbol = %s ORDER BY observed_on",
+                (symbol,)).fetchall()
+        return [IvObservation(*r) for r in rows]
+
+    def get_iv_backfill_run(self, symbol: str) -> IvBackfillRun | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT symbol, ran_on, outcome, note FROM iv_backfill_runs "
+                "WHERE symbol = %s", (symbol,)).fetchone()
+        return IvBackfillRun(*row) if row else None
+
+    def save_iv_backfill_run(self, run: IvBackfillRun) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO iv_backfill_runs (symbol, ran_on, outcome, note) "
+                "VALUES (%s, %s, %s, %s) "
+                "ON CONFLICT (symbol) DO UPDATE SET ran_on = EXCLUDED.ran_on, "
+                "outcome = EXCLUDED.outcome, note = EXCLUDED.note",
+                (run.symbol, run.ran_on, run.outcome, run.note))
+
+    # ---------- Exact-contract 歷史 IV 快取（HIVT-02／#153） ----------
+
+    def get_contract_history(self, contract_symbol: str) -> ContractHistory | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT contract_symbol, points, fetched_through, "
+                "last_attempt_on, last_status, last_note "
+                "FROM contract_iv_history WHERE contract_symbol = %s",
+                (contract_symbol,)).fetchone()
+        if row is None:
+            return None
+        # HIVR-04（#163）：`points` 現在是逐日 quote dict 的 JSONB 陣列
+        # （不是舊版 `[date, iv]` 二元組陣列）——psycopg 把 JSON object
+        # 讀回 Python dict，這裡原樣傳遞，不重新拆解成固定欄位。舊格式
+        # 列（元素是 list 而非 dict）的辨識與「當 cache miss 重抓」由
+        # 呼叫端（`api_app/main.py`）負責，storage 層不解讀形狀。
+        points = tuple(row[1])
+        return ContractHistory(contract_symbol=row[0], points=points,
+                               fetched_through=row[2], last_attempt_on=row[3],
+                               last_status=row[4], last_note=row[5])
+
+    def save_contract_history(self, history: ContractHistory) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO contract_iv_history (contract_symbol, points, "
+                "fetched_through, last_attempt_on, last_status, last_note) "
+                "VALUES (%s, %s, %s, %s, %s, %s) "
+                "ON CONFLICT (contract_symbol) DO UPDATE "
+                "SET points = EXCLUDED.points, "
+                "fetched_through = EXCLUDED.fetched_through, "
+                "last_attempt_on = EXCLUDED.last_attempt_on, "
+                "last_status = EXCLUDED.last_status, "
+                "last_note = EXCLUDED.last_note",
+                (history.contract_symbol, Jsonb(list(history.points)),
+                 history.fetched_through, history.last_attempt_on,
+                 history.last_status, history.last_note))
+
+    # ---------- Application diagnostics（DG-02／#145） ----------
+
+    def append_diagnostic(self, event: DiagnosticEvent) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO diagnostics (event_id, correlation_id, ts, "
+                "subsystem, stage, severity, message, context) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+                (event.event_id, event.correlation_id, event.ts,
+                 event.subsystem, event.stage, event.severity, event.message,
+                 Jsonb(event.context)))
+            # trim-on-write：只留全域最新 RETENTION_LIMIT 筆。子查詢在
+            # 不到上限時回空，`seq <= NULL` 恆假，DELETE 是安全的 no-op。
+            conn.execute(
+                "DELETE FROM diagnostics WHERE seq <= ("
+                "SELECT seq FROM diagnostics ORDER BY seq DESC "
+                "OFFSET %s LIMIT 1)", (RETENTION_LIMIT,))
+
+    def list_diagnostics(self, *, limit: int = 50) -> list[DiagnosticEvent]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT event_id, correlation_id, ts, subsystem, stage, "
+                "severity, message, context FROM diagnostics "
+                "ORDER BY seq DESC LIMIT %s", (limit,)).fetchall()
+        return [DiagnosticEvent(event_id=r[0], correlation_id=r[1], ts=r[2],
+                                subsystem=r[3], stage=r[4], severity=r[5],
+                                message=r[6], context=r[7]) for r in rows]
+
+    def clear_diagnostics(self) -> int:
+        with self._connect() as conn:
+            n = conn.execute("SELECT COUNT(*) FROM diagnostics").fetchone()[0]
+            conn.execute("DELETE FROM diagnostics")
+        return n

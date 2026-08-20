@@ -12,7 +12,7 @@ def test_grid_shape_and_values():
     dates = date_axis(date(2026, 7, 15), date(2026, 10, 16))
     grid = matrix_grid(_fn, 3.0, prices, dates)
     assert len(grid) == len(prices) and len(grid[0]) == len(dates)
-    for i, (price, _) in enumerate(prices):
+    for i, (price, _, _) in enumerate(prices):
         for j, (d, _) in enumerate(dates):
             assert grid[i][j] == (_fn(price, d) - 3.0) / 3.0
 

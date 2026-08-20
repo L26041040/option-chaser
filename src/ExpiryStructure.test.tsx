@@ -89,31 +89,51 @@ describe("候選窄列", () => {
     expect(row).toHaveTextContent(`淨成本 $${prices.net.toFixed(2)}`);
   });
 
-  it("報價有疑慮的候選帶 ⚠ 徽章", () => {
+  it("Bid/Ask 過寬的候選帶 ⚠ 徽章，文案明確寫「Bid/Ask 過寬」（MVP V3／#104）", () => {
     const expiry = view.baseline_expiry!;
     const patched = withCandidates(expiry, 2);
     patched.expiry_top10 = patched.expiry_top10!.map((g) =>
       g.expiry === expiry
         ? { ...g, candidates: g.candidates.map((c, i) =>
-            ({ ...c, quote_warning: i === 0 })) }
+            ({ ...c, wide_spread_warning: i === 0 })) }
         : g);
     show(patched);
 
     const rows = screen.getAllByRole("listitem");
     expect(within(rows[0]).getByText("⚠")).toBeInTheDocument();
+    expect(within(rows[0]).getByTitle("Bid/Ask 過寬")).toBeInTheDocument();
     expect(within(rows[1]).queryByText("⚠")).not.toBeInTheDocument();
+    // 舊泛稱字串不得復發（MVP V3／#104 AC：新舊字串皆需明文檢查封鎖）。
+    expect(screen.queryByText(/報價品質有疑慮/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/報價非最新/)).not.toBeInTheDocument();
   });
 
-  it("單調性違反的候選帶獨立徽章，不跟報價疑慮的 ⚠ 混在一起", () => {
+  it("零成交量的候選不再帶 ⚠ 徽章（MVP V3／#104：LEAPS／冷門履約價零成交是常態）", () => {
+    const expiry = view.baseline_expiry!;
+    const patched = withCandidates(expiry, 2);
+    patched.expiry_top10 = patched.expiry_top10!.map((g) =>
+      g.expiry === expiry
+        ? { ...g, candidates: g.candidates.map((c) =>
+            ({ ...c, wide_spread_warning: false })) }
+        : g);
+    show(patched);
+
+    const rows = screen.getAllByRole("listitem");
+    for (const row of rows) {
+      expect(within(row).queryByText("⚠")).not.toBeInTheDocument();
+    }
+  });
+
+  it("單調性違反的候選帶獨立徽章，不跟 Bid/Ask 過寬的 ⚠ 混在一起", () => {
     // FB5-03（#64）：`monotonicity_warning` 是獨立欄位，成因與嚴重性都
-    // 跟 `quote_warning` 不同（配對關係違反 vs 單一數值超標），徽章要
-    // 分得開，不能共用同一個符號，否則使用者無法分辨兩種警示。
+    // 跟 `wide_spread_warning` 不同（配對關係違反 vs 單一數值超標），
+    // 徽章要分得開，不能共用同一個符號，否則使用者無法分辨兩種警示。
     const expiry = view.baseline_expiry!;
     const patched = withCandidates(expiry, 2);
     patched.expiry_top10 = patched.expiry_top10!.map((g) =>
       g.expiry === expiry
         ? { ...g, candidates: g.candidates.map((c, i) => ({
-            ...c, quote_warning: false, monotonicity_warning: i === 0,
+            ...c, wide_spread_warning: false, monotonicity_warning: i === 0,
           })) }
         : g);
     show(patched);
@@ -153,7 +173,7 @@ describe("就地展開", () => {
       g.expiry === expiry
         ? { ...g, candidates: g.candidates.map((c, i) => ({
             ...c,
-            matrix: { prices: [[100 + i, ""]] as [number, string][],
+            matrix: { prices: [[100 + i, "", 0.01 * i]] as [number, string, number][],
                       dates: [["2026-08-07", ""]] as [string, string][],
                       cells: [[0.5]] },
           })) }
@@ -164,6 +184,12 @@ describe("就地展開", () => {
     await userEvent.click(rows[1].querySelector("summary")!);
 
     expect(within(rows[1]).getByRole("rowheader")).toHaveTextContent("101.00");
+    // 決策 M（#109）：候選展開後的 Heatmap 跟主圖是同一個元件，±% 標註
+    // 不需要另外接線——這裡直接核對展開的是這一列自己的 move_pct
+    // （0.01），不是別列的。QA-FIX-1 後 ±% 在最右欄（`td.heatmap-move-pct`），
+    // 不再在價格 rowheader 裡。
+    expect(rows[1].querySelector("td.heatmap-move-pct"))
+      .toHaveTextContent("+1.0%");
   });
 });
 

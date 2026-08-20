@@ -124,3 +124,38 @@ def test_all_warning_fallback():
     match = [row for g in r.expiry_groups if g.expiry == expected[0]
              for row in g.rows if service.candidate_key(row.candidate) == expected[1]]
     assert len(match) == 1  # visible
+
+
+# --- MVP V3（#104，spec #102 決策 F）：顯示旗標與選取閘門分家後的回歸鎖
+# ---
+#
+# AC 原文：「以既有真實 fixture 斷言 default_pair／預設候選選取結果與
+# 本票改動前逐位元相同」。`quote_warning` 的計算式（見 service.py
+# `_v4_fields`）與 `_build_groups` 的選取邏輯本票完全沒有觸碰——這裡把
+# 改動前用同一份 fixture 實際跑出來的 `default_selection` 精確值釘死，
+# 任何未來不小心動到選取邏輯（包含 quote_warning 公式本身）都會在這裡
+# 紅燈，而不必等到發現使用者看到的預設候選變了才知道。
+
+def test_default_selection_unchanged_by_wide_spread_warning_split():
+    """六到期日鏈、雙策略：改動前後 default_selection 必須逐位元相同。"""
+    r = _run_six_expiry_two_strategies()
+    assert r.default_selection == (
+        "2026-08-07", "bull-call-spread|118|122|2026-08-07")
+
+
+def test_all_warning_fallback_default_selection_unchanged():
+    """all-warning fixture：連 fallback 分支選出來的候選也必須逐位元相同。"""
+    r = service.run_offline(service.AnalysisRequest(
+        symbol="XYZ",
+        base_params=AnalysisParams(strategy="long-call", target_price=120.0,
+                                   target_month="2026-08", min_return=0.0),
+        strategies=("long-call",)), ALL_WARNING_SNAP)
+    assert r.default_selection == ("2026-09-18", "long-call|122|2026-09-18")
+
+
+def _run_six_expiry_two_strategies():
+    return service.run_offline(service.AnalysisRequest(
+        symbol="XYZ",
+        base_params=AnalysisParams(strategy="long-call", target_price=120.0,
+                                   target_month="2026-08", min_return=0.0),
+        strategies=("long-call", "bull-call-spread")), SIX_EXPIRY_SNAP)

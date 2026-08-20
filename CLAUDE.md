@@ -10,7 +10,31 @@
 截圖驗證 UI 極度耗費 token）。窄 viewport／版面等視覺驗收，一律留給需求方自己用
 瀏覽器確認，或等使用者明確要求才做。
 
-只有這三條。
+**任何回報給需求方的實質內容（總整理、提案、拆票清單等），一律整份放進單一
+code block**，不要零散貼成一般文字——需求方要能一次性複製貼上。
+
+**Session 做完一整段工作後的回報，一律用中文＋英文專有名詞（英文專有名詞
+不要翻譯，例如 ticket、commit、PR、issue、API 等維持英文），且整份回報
+放進單一 code block**——跟上一條是同一份規則的延伸，不要忘記。
+
+**這個 code block 是一整段、不能拆開**：回報內容全部放在同一個 code
+block 裡，不能切成好幾個 code block、也不能中間插普通文字把它打斷成
+兩截。code block 前後可以有一句話帶過，但實質內容本身必須是單一、
+完整、不中斷的一塊，讓需求方一次選取、一次複製貼上。
+
+**每份回報 code block 最上面一行加編號**，格式固定
+`［回報#NNN］標題`（NNN 三位數、從 001 起算，例如
+`［回報#001］spec #137 拆票完成`）。編號是**累計總數**，不因換
+session、換分支、換主題而歸零——目前最新編號記在這裡：
+
+> 目前次序：015（下一份回報用 016）
+
+每發一份回報就把上面這個數字改成剛剛用掉的那個，跟著那次改動一起
+commit（沒有其他改動要 commit 時，單獨為這一行開一個小 commit 也
+可以）。新開的 session 找不到對話記憶時，编號一律以這裡記的數字為準，
+不要自己另起爐灶。
+
+只有這七條。
 
 ## 專案紀錄區
 
@@ -28,10 +52,48 @@
 > #67–75／#78–84 一併於收尾時關閉）——Archive 正式改為 Trash 語意、
 > 利率顯示語意修正、垃圾桶前端全部落地。中間穿插的
 > 「目前狀態（2026-08-02）」等舊日期標頭是歷史留存，**以此段與下面
-> 對應小節末尾的紀錄為準，不要被舊標頭誤導**。下一階段候選：
+> 對應小節末尾的紀錄為準，不要被舊標頭誤導**。需求方已指示
+> **下一輪先研究、不施工**：三份研究文件已完成（歷史 IV 資料源、
+> IV 相對歷史方法論、candidate 層級深化——見「下一輪研究」小節），
+> 等需求方審閱、實測資料源、裁示方案後才進 spec／拆票。
+> 其他下一階段候選：
 > **多使用者隔離** [#59]（未標 `ready-for-agent`，需求方裁示後才開工）、
 > 外觀優化（QA-v2 需求方已明確裁示延後，待主動重啟）、Dashboard 佔位區
 > 實際內容（跨劇本比較功能確定後另開票，spec #77 Out of Scope）。
+> **2026-08-08 需求方 `/wayfinder` 開了「貴不貴」研究地圖**（issue
+> #95）：R1–R4 四張研究票完成（四份新文件見「下一輪研究」小節末尾）。
+> **2026-08-09 需求方直接發佈 MVP V3 需求文件**（`docs/Mvp-v3.md`＋
+> `docs/Mvp-v3-appendix.txt`，master 直 commit）＝G1/G2 裁示（入選：
+> 歷史位置 vol 空間、Normalized Skew 主資訊；呈現只給事實；追平價格
+> 升級為 Crossover Boundary），地圖 #95 與 G1 #100／G2 #101 據此
+> resolution 關閉。同日 `/to-spec` 完成：**MVP V3 spec＝issue #102**
+> （`ready-for-agent`），並依需求方 Review 修訂三點：comparator 不得
+> 寫死 Long Call（須與買腿同 option type，Bear Put Spread→Long Put；
+> 既有 `_spread_catchup_price` 的 put→call 轉換為缺陷，一併取消）、
+> q=0 修法不在 spec 鎖死（改獨立 correctness ticket 先驗證後鎖定，
+> 仍是 Crossover 的 gate，spec 不自行發明模型）、LEAPS 超網格裁示
+> 採方案 (b)（不外插、不以較短 tenor 代理，percentile 留白）。
+> **R2（同日，to-tickets 前最後一輪 UX cleanup，共 7 點）**：追平價格
+> 區塊正式確認移除（底層欄位只留 migration／regression 用）、報價品質
+> 警示重整（顯示旗標只剩 Bid/Ask 過寬，volume==0 與 friction>25% 退出
+> 警示；⚠ **選取閘門凍結不動以守「不改 ranking semantics」**，契約拆
+> 顯示／選取兩旗標）、Analysis Report 瘦身成四塊、利率顯示實際數值
+> （Rate used／Tenor／Source／Curve date，候選契約新增利率與年期欄位）、
+> 走勢圖補軸刻度與 hover/tap tooltip、Raw Data 二層收合、Desktop 劇本庫
+> 卡片瘦身。**R3（同日，to-tickets 前最後補充）**：Heatmap 右側價格變動
+> 百分比軸（左軸絕對價格不動、右側為同列 annotation 非第二組 scale，
+> `move_pct` 由 price-axis 契約提供、前端只格式化；主圖與展開候選圖共用
+> 語意；Mobile 可短格式但不得拿掉）＋新 guardrail：**Bid/Ask 過寬門檻
+> 本輪只能量測回報，未經需求方裁示不得自行修改**。
+> **尚存 Open Question 僅一項：IV 歷史 vendor 選型與月費上限
+> （只擋 IV History 那條線）**；q=0＋par-yield 近似歸 correctness ticket
+> 驗證後裁示。**同日 `/to-tickets` 完成，拆成 14 張票（#103–#116，
+> 皆為 #102 子票）**：8 張無依賴可立即開工（#103 A/E、#104 F、
+> #105 G、#106 I、#107 J、#108 K、#109 M、#110 D1）；#111（B1 vendor
+> 驗證）標 `needs-human-validation`（非 `ready-for-agent`，需可連網
+> 環境執行，此沙箱大部分外部網域 403）；#112 H 被 #105 擋；#113 D2
+> 被 #110＋需求方核准擋（人工裁示點，非純技術依賴）；#114 B2 被
+> #103＋#111 擋；#115 C1 被 #113 擋；#116 C2 被 #115＋#109 擋。
 > 環境操作細節（venv／本地 Postgres／容器倒退修法／部署網址）見檔案
 > 最底下「## 環境」一節，已同步更新。
 
@@ -154,6 +216,1254 @@
   之後。唯一取捨：目標價差距（gap）計算留在 render 層（與既有
   `render_summary` 的 `move_pct` 同類手法一致，非新模式），未額外
   搬進服務層——標準面審查列為非阻塞建議，判斷維持現狀
+
+### Spec #151（2026-08-17 發佈）——Historical IV Trend v1（Exact Contract Canonical Series）
+
+需求方 `/to-spec` 發佈：既有 Normalized Skew 卡片的歷史數列（`ivhistory.py`
+的 (tenor, delta) 逐日重錨定）從未真正追蹤「同一張合約」——每天都可能
+對到不同履約價甚至不同到期日。新 spec 定義一個**新增、獨立**的
+「Historical IV Trend」卡片：對候選的每一隻腳，追蹤**這張、且只有這張
+exact listed option contract**（同一 underlying／到期日／履約價／
+call-put）過去最長一年的市場 IV，畫走勢圖＋moving average／Bollinger／
+z-score／percentile／Δ4w。與既有 Normalized Skew 功能**並存、不取代**
+——後者維持原樣，繼續由 `ivhistory.py` 供應。`/to-tickets` 拆成七張
+（HIVT-01–07，issues #152–158，皆為 #151 子票），依相依序單線施工，
+HIVT-01 是硬性 blocker（`needs-human-validation`，非 `ready-for-agent`）。
+
+**HIVT-01**（#152）— Vendor Capability Gate：需求方另一個 session
+（ChatGPT）完成真實驗證（commits `3724fca`／`6b085f7`／`9175d7d`／
+`220699d`，GitHub Actions 一次性 probe，真實 HTTP 203＋`s="ok"`）。
+真實合約 `TLT281215C00094000`：單合約歷史端點一次呼叫回整段區間（34
+筆觀測，1 credit），`iv` 欄位直接由 vendor 給（部分觀測為 `null`，
+如實視為缺席，不補值）；超界 `from`／週末窗口皆自然截斷，不需另建
+listing-date 探測。`single_contract_history_endpoint_verified=true`，
+issue 已關閉。
+
+**HIVT-02**（#153，commits `ba3211d`／`56b4c9b`）— Exact-Contract 後端
+資料取得路徑：新增 `option_chaser/ivtrend.py`（純函式，本票只有
+`trim_to_window`／`history_span_days`——moving average／Bollinger／
+z-score／percentile／Δ4w 留給 HIVT-03，與 `ivhistory.py` 零耦合、雙向
+零 import）；`option_chaser/data/marketdata.py` 新增
+`fetch_contract_history()`（成功判準 2xx含203＋`s=="ok"`，不寫死
+`status==200`——新增 `test_http_203_is_a_success_not_a_failure` 迴歸
+測試鎖死這個 #152 抓到的 bug class；`null` IV 誠實保留為缺席）；
+`api_app/storage` 新增 `ContractHistory`（memory／postgres 兩後端，
+鍵是 exact OCC contract symbol，取代整條 chain／整個 symbol 的舊快取
+模型）；`api_app/main.py::_ensure_contract_history()` 漸進式刷新（只補
+`fetched_through` 之後到今天的缺口，同一天重複請求零 vendor 呼叫）；
+`GET /api/scenarios/{id}/iv-history` 新增純加法 `legs` 欄位（單腳依
+spec #151 §4 精確定義整個省略 `sell` key，不是設成 `null`），既有
+`points`／`metrics`／`status`／`note` 家族逐位元未動。IV 反算路徑
+（`implied_vol()`）確認不需要——vendor 直接給 `iv`，條件分支不成立。
+`/code-review` 兩軸皆抓到同一個真缺口：diagnostics 白名單補了
+`underlying`／`strike`／`option_type`，但沒有任何 `emit()` 呼叫真的帶
+這些欄位（只有可反解的 `contract_symbol`），且遺漏 issue 原文列出的
+`expiration`／`lookback_days`——已修正，新增 `_identity_context()`
+輔助函式，四站 emit 全部補上四個可讀欄位，白名單補齊遺漏兩項。全套
+1279 條測試通過（memory＋真實 Postgres 雙後端），既有 (tenor,delta)
+家族測試逐條未動。issue 已關閉。
+
+**HIVT-03**（#154，commits `18a2337`／`4d60e14`）— Historical IV 統計量
+套組：`ivtrend.py` 新增 `moving_average`／`bollinger_bands`／
+`current_zscore`／`historical_percentile`／`delta_4w` 五個純函式＋
+`IV_TREND_LOOKBACK_DAYS=30`／`IV_TREND_MIN_OBSERVATIONS_FOR_BANDS=5`
+兩個常數；三個「視窗型」統計量共用同一份 rolling mean／std（z-score
+與 Bollinger band 保證同一個數字，不分頭算）；`percentile`／`delta_4w`
+沿用 `ivhistory.percentile()`／`trend_4w()` 演算法定義但重新實作、不
+import，維持雙向零耦合。`LegHistoricalIv` 回應新增六個統計欄位＋
+`lookback_days_config`；低於最低觀測門檻時 SMA／bands／zscore 各自回
+`null`，percentile／Δ4w／原始走勢圖不受影響。per-request 診斷保留上限
+`_DIAGNOSTICS_STORAGE_CAP_PER_REQUEST` 從 20 調高到 40——兩腿候選新增
+10 筆恆保留的 metrics 事件後，舊上限會把 `vendor_fetch`／`reanchor`
+擠出去，這是舊 (tenor,delta) 家族的真回歸，當票一併修正。`/code-review`
+兩軸各抓到一項真問題：`bollinger_bands()` 補回 spec 明文簽章的
+`mean`／`std` 兩條序列；`_emit_leg_stat_metrics()` 從五段複製貼上改成
+資料驅動迴圈、六參數收斂成三個。新增結構性隔離測試（AST 逐函式檢查
+exact-contract 端點函式不呼叫任何重錨定函式）。全套 1329 條測試通過。
+issue 已關閉。
+
+**HIVT-04**（#155，commit `0b4865b`）— Vertical Spread 兩腿分離＋舊
+reanchored 次要欄位退場：`api_app/main.py::_iv_payload()` 從回應信封
+移除 `points`／`metrics.buy_iv`／`metrics.sell_iv`／`metrics.atm_iv`
+（已被 `legs.buy`／`legs.sell` 取代）。**裁決記錄**：issue 字面列出
+`points` 應移除，但同票也要求 Normalized Skew 不受影響——而
+Normalized Skew 卡片本來就靠 `points` 畫自己的走勢圖，兩條要求對同一
+信封鍵有矛盾。解法：`points`（帶四個子欄位）確實整個消失，新增
+`normalized_skew_points`（只有 `date`／`normalized_skew`）取代它，
+Normalized Skew 走勢圖因此不受影響——已在 `_iv_payload()` docstring
+與 issue 留言記錄這個裁決，需求方若有異議可回饋調整。新增
+`test_normalized_skew_is_bit_identical_to_an_independent_reanchored_computation`
+直接呼叫未觸碰的 `ivhistory.reanchor_spread()`／`field_metrics()`
+重算比對，不是靠既有測試套件全綠間接推論。
+
+**HIVT-05**（#156，commits `74fee21`／`bb4ed98`）— 前端 Historical IV
+Trend 卡片：新增 `src/IvTrend.tsx`，逐腿卡片資訊順序比照 spec #151
+§6（現值→走勢圖→percentile→z-score→Δ4w→涵蓋時間＋觀測筆數）；
+`src/ivHistoryChart.ts` 新增 `projectOntoDomain()` 讓 raw／MA／
+Bollinger 上下界四條疊加序列共用同一個 x 軸；`src/IvHistory.tsx`
+只剩 Normalized Skew 頭條，`ChartTooltip`／`toPixel`／版面常數 export
+供 `IvTrend.tsx` 複用幾何。`/code-review` 抓到 `CardSkeleton`／
+`InlineDiagnostics` 檔頭註解誤寫成逐腿卡片直接複用（實際 import 清單
+沒有這兩個名字——固定版位／診斷區塊是掛在整張卡片層級一次涵蓋兩個
+家族，不是逐卡各自一份），已修正註解＋順手把只有一處呼叫點卻泛化出
+不必要彈性的 `CardSkeleton` 參數簡化回單一 `isSingleLeg`。
+
+兩票依需求方指示連續完成（避免前端讀到已消失欄位的空窗期），全套：
+backend 1339 條、frontend vitest 554 條、typecheck／build、Playwright
+e2e 75 條（含 `smoke.spec.ts`／`desktop.spec.ts` 既有 Historical IV
+區塊改用新回應形狀重寫）全部通過。issue 已關閉。
+
+**HIVT-06**（#157，commit `a59b4e4`）— 既有重錨定引擎隔離稽核＋回歸
+測試強化：純驗證票，稽核結果全數通過、無交叉依賴，只補一個結構測試
+缺口——`option_chaser/data/marketdata.py` 的 `fetch_contract_history`／
+`_parse_contract_history`（HIVT-02 新增）先前沒被 AST 隔離測試涵蓋到，
+本票補上（同檔案 `_parse_surface_rows` 合法引用 `SurfacePoint` 服務舊
+whole-chain 家族，確認新函式沒有沾邊）。`tests/test_ivhistory.py` 經
+`git log` 核對全系列 HIVT commits 從未被改過。Migration map（spec
+#151 §7）逐項對照實際出貨程式碼，三處與 spec 事前預測有出入已記錄在
+issue #157 留言：`valuation.py::implied_vol()` 與
+`snapshot.py::find_contract()` 兩個「條件式重用」最終都沒被本 feature
+呼叫過（vendor 直接給 IV／contract_symbol 一律可取得，條件分支從未
+觸發）；`_ALWAYS_KEPT_STAGES`／診斷保留上限問題方向與 spec 猜測相反
+（不是新家族被餓死，是新家族的量體把舊家族擠出去，HIVT-03 已修正）。
+全套 1341 條測試通過。issue 已關閉。
+
+**HIVT-07**（#158，commits `8ffb457`／`74f3398`）— 全面回歸／E2E 最終
+驗收，spec #151 系列最後一張票：補齊既有 75 條 E2E 尚未逐一肉眼驗證到
+的 34 項 User Stories 缺口，新增 6 條手機端測試涵蓋 exact-contract
+身份真實性（買／賣腿現值與百分位讀出兩個確實不同數字，不是同一份
+序列複製兩份）、涵蓋時間三個邊界（近 3 週／5 個月／11 個月）、
+z-score／MA／Bollinger 帶幾何可見性、逐腿 vendor／quota 獨立狀態。
+過程中在 `IvTrend.tsx::spanLabel()` 抓到兩個既有生產環境 bug（15–29
+天被 `Math.round(days/30)` 誤湊成「近 1 個月」；330 天被固定 300 天
+門檻誤報成「近 1 年」），修正並各補一條回歸測試鎖死；本人以邊界值
+（1／21／29／30／300／330／345／364／365／0）手算獨立覆核過修正結果，
+`/code-review` Standards 軸自己手算同一批邊界值也得到相同結論。
+
+`/code-review` Spec 軸抓到真缺口：`playwright.config.ts` 顯示
+`smoke.spec.ts` 只跑在 mobile（iPhone）project 下，本票新增的 6 條
+檢查因此只有手機覆蓋，desktop.spec.ts 完全沒補，與 #158 明文要求的
+「桌面與手機 viewport 對等」有落差——已修正，補上其中 3 條到
+`desktop.spec.ts`（exact-contract 身份真實性、統計量幾何可見性、
+逐腿 vendor／quota 獨立狀態；沿用該檔既有 `legHistoricalIv`／
+`SELL_CONTRACT`／`fullIvResponse`／`routeTwoScenarios` 慣例）。涵蓋
+時間三個邊界維持只在 mobile 跑——`spanLabel()` 是純 viewport-agnostic
+邏輯，已被 `IvTrend.test.tsx` 單元測試與 mobile E2E 鎖死，desktop
+重複驗證邊際價值低，已在 commit 訊息記錄這個取捨。
+
+最終驗證：backend pytest 全綠（memory＋真實 Postgres 雙後端）、
+frontend vitest 557 條全綠、typecheck／build 通過、Playwright
+mobile＋desktop 共 84 條全綠（連續兩輪穩定、無 flake；HIVT-07 自己
+新增的一條測試施工中曾因固定值移動平均線在圖上塌成零高度導致
+geometry 斷言不穩，已改用有斜率的假資料修正並重跑兩輪確認穩定）。
+issue 已關閉。
+
+**Spec #151（HIVT-01–07）全七張子票（#152–158）全數完成。** 依專案
+規則全部子票做完才開 PR，中途不主動開；**尚存 blocker：無**——
+已符合開 PR 條件，等需求方 cue 才實際開 PR、merge 回 master。
+
+**HIVT-07 完成後的追加發現＋研究（2026-08-18，`/research`，
+commit `a513353`）**：需求方 / ChatGPT 真實 GitHub Actions probe
+（commits `4ec23f1`／`410f927`）確認 Market Data App 的 exact-contract
+歷史報價端點對 `TLT`／`ORCL` 真實合約回傳 `iv` 大量／全部為 `null`
+（`bid`／`ask`／`mid`／`last`／`underlyingPrice`／`dte` 皆正常）——
+exact-contract acquisition 本身沒壞，缺的是 vendor 沒給 IV 時的
+reconstruction。研究文件
+`docs/research/historical-iv-reconstruction.md` 已完成：pricing model
+不需重選（既有 `option_chaser/valuation.py::implied_vol()` 的
+Bjerksund-Stensland (1993) 可直接重用，`ThinkorSwim` 官方文件本次
+新查獨立佐證同一模型選擇），三項輸入（S／r／q）原始資料本 repo
+既有研究＋既有程式碼都已具備，缺的是把既有「今日快照」邏輯
+point-in-time 化（`ratecurve.py`／`dividends.py` 各自的小擴充）＋
+停止丟棄 exact-contract 歷史列本來就有的 `underlyingPrice`。附帶
+一節純分析（不施工）的 `/iv-history` 診斷降噪建議：現行端點在
+exact-contract 路徑跑完後無條件繼續跑整段舊 (tenor,delta) 重錨定
+流程，`_backfill_iv` 逐日缺口補齊＋`reanchor` 對整段歷史逐次重放
+是噪音根因。純研究，未 `/to-spec`、未 `/to-tickets`、未動
+production code。
+
+**Calibration prototype 已執行（2026-08-18，`/prototype`，commits
+`2c48b67`～`22ad0fc`）**：`scripts/prototype_historical_iv_calibration.py`
+（丟棄式，直接 import production 的 `implied_vol()`／`fetch_chain()`／
+`load_rate_curve()`／`load_dividend_history()`，不複製定價公式），透過
+一次性 CI probe（真實 `MARKETDATA_APP_TOKEN`，跑完即刪）拿到 TLT／ORCL
+真實資料（N=328，vendor iv 非 null 的今日快照）驗證 §10 recipe。結果見
+`docs/research/historical-iv-reconstruction-calibration-results.md`：
+**ranking stability 極強**（Pearson 0.9991、Spearman 0.9970、percentile
+rank diff median 0.005）；絕對誤差大且系統性偏高（MAE 38 vol points），
+最可能成因是樣本恰好清一色落在 3 天到期（vendor `fetch_chain()` 不帶
+`expiration=` 參數時只回最近月選，這是既有 `fetch_surface()` docstring
+已經記錄過的 vendor 行為，#134）——3-DTE 是 vega 塌縮、IV 反解天生最
+不穩定的極端情境，不是 Historical IV Trend 實際運作的 LEAPS 尺度。補抓
+medium／LEAPS 到期日兩次都遇到 Market Data App HTTP 403（前兩次近月選
+主樣本用同一把 token 皆成功，數分鐘內連續補抓才開始 403，讀起來像
+rate limit），依規則未再重試，**LEAPS／medium DTE 至今沒有真實資料
+驗證過**，是本輪最大的未解缺口。**Verdict：PASS_WITH_GUARDRAILS**
+（ranking 這個票上明訂的優先判準通過，但絕對誤差成因未完全鎖定＋
+沒驗證到 LEAPS 天期，需求方核准前建議先在 rate limit 解除後補一輪
+LEAPS 樣本）。
+
+**偏差診斷已完成（2026-08-18，`/research`，commits `6ad4fd7`～`b6adaf4`）**：
+上面那個 +38 vol points 的系統性偏差**成因已完全鎖定**，結果見
+`docs/research/historical-iv-reconstruction-bias-diagnosis.md`。
+
+**真因不是 vega 塌縮（上一輪的推測是錯的，已在 calibration 結果文件
+加註更正）**，而是**參照日錯配**：Market Data App 回的是過期快照，
+vendor 用**快照自己那一天**算 IV，prototype 卻用 `date.today()` 算 T。
+那輪快照早 4 個日曆天，於是 vendor 眼中 DTE=7、我們眼中 DTE=3；在 3 DTE
+這種天期，`σ ∝ 1/√T` 把它放大成 √(7/3)=1.53 倍。**只把 T 換成快照日，
+同樣 183 筆的 MAE 從 0.3813 掉到 0.0020（190 倍），ratio 從 1.5249
+收斂到 1.0001±0.0068。** 起手線索是「偏差是乘法的」——比值在 39 倍的
+IV 範圍上 stdev 只有 3%，噪音做不到這件事。
+
+其餘假設全部用數字排除：**pricing model（BS93 vs Merton European）差
+0.0001**、r（0→8%）≤0.005、q（0→10%）≤0.009、單位 trace 乾淨。近到期
+病態真實存在但只解釋**殘留離散度與失敗率**（時間價值 <$0.10 組殘差
+0.28 vol pts vs ≥$0.10 組 0.02），不解釋偏差。
+
+**vendor 官方文件獨立佐證**（自官方文件原始碼庫取得，沙箱擋住本站）：
+options 要到**次一交易日 9:30:01 ET** 才從 Delayed 轉 Historical，
+該規則精確預測了本輪兩支 probe 在同一天不同時間拿到的**兩個不同快照日**
+（02:00 ET → 週五收盤 DTE=7；11:23 ET → 週一收盤 DTE=4）。同時**更正**
+一個本 repo 既有的錯誤認知：**HTTP 203 不是「延遲報價」，是「從快取層
+回應」**，官方文件還特地把這個誤解點名為 "a common (incorrect)
+assumption"——`option_chaser/data/marketdata.py:425-427` 的註解需更正
+（本輪禁止動 production code，僅記錄為裁決點）。
+
+**LEAPS 問題也一併解決**：本輪 probe 補上真實 303 DTE 資料，同樣的日期
+錯誤在那裡只值 **0.03–0.13 vol pts**（封閉形式預測 0.082，吻合）。修正
+日期後 ORCL LEAPS MAE **0.43 vol pts**、TLT **3.2 vol pts**——TLT 的殘差
+與 moneyness 及該標的的高 q 相關，推測是 q 口徑差異（MEDIUM 信心，未做
+直接 ablation）。**Verdict：`YES_WITH_GUARDRAILS`**（guardrails ＝ 先補
+取數層三個缺口：`updated`/`dte` 要帶出解析層、T 一律用觀測日、r/q 對齊
+同一天）。
+
+**修正後 calibration 重跑完成（2026-08-18，`/prototype`，commits
+`bb3d80f`～`66c1183`）**：診斷文件 §9-C 點名的三個取數缺口（observation_
+date 用 vendor `updated`、T/r/q 皆對齊該日、q 額外補上界避免看到
+observation_date 當時還沒發生的配息）在 prototype 層修正後，用真實
+TLT／ORCL medium／LEAPS 資料（N=578，前兩輪完全沒有的天期）重新跑一輪
+calibration，結果見
+`docs/research/historical-iv-reconstruction-corrected-calibration-results.md`。
+
+**bias 幾乎完全消失**：MAE 0.3816→0.0060（63 倍）、bias +0.3816→-0.0021、
+失敗率 44.2%→7.1%。**LEAPS ranking 穩定**：新到期日（~852 天）整體
+Spearman 0.9894，四組 symbol×tenor 組合全數 ≥0.9626。**TLT q ablation
+直接證實 q 是主因**（同一批 284 筆觀測只換 q：q=0 讓 MAE 從 0.0089
+惡化到 0.0493，+4.05 vol pts；且 production point-in-time q 本身是
+四個測試版本裡表現最好的，沒有系統性偏誤，不是「調 q 數值就能再壓低」
+的情況）。**Verdict：`STRONG_PASS`**（本輪驗證的三個具體問題——日期
+修正是否解決 bias、LEAPS ranking 是否穩定、TLT 殘差是否為 q——全數
+得到明確肯定答案）。
+
+STRONG_PASS 不等於「毫無準備即可上線」，本輪列出 5 項施工前必要
+guardrails：(1) 修正邏輯要真正搬進 production（本輪修正只做在
+prototype 層，`marketdata.py`／`ratecurve.py`／`dividends.py` 尚未真正
+補上 point-in-time 介面）(2) vendor IV 合理性關卡（本輪又發現多筆
+vendor_iv≈0.0001 的退化值）(3) 目前只驗證過橫截面準確度，縱向（同一
+合約跨多天）準確度仍待驗證 (4) medium 天期失敗率偏高（TLT 11.1%／
+ORCL 18.3%）成因未深究 (5) prototype 的 point-in-time 揀選邏輯建議
+直接寫成 `ratecurve.py`／`dividends.py` 正式函式＋補單元測試，不要
+複製腳本寫法。
+
+**Supplemental spec 已發佈（2026-08-18，`/to-spec`）——issue #159**：
+`Historical IV Reconstruction + Point-in-Time Correctness + Diagnostics
+降噪`，`ready-for-agent`。**#151 的 methodology 不變**（canonical identity
+與統計方法逐字不動），#159 只修三件事：(1) canonical IV 從「抄 vendor
+`iv`」改成「一律自己 reconstruction」，vendor `iv` 降為 benchmark；
+(2) point-in-time 正確性（r／q 對齊每筆觀測自己的日期，補上既有
+`compute_q()` 缺的 `ex_date` 上界）；(3) diagnostics subsystem 分離
+＋事件聚合（取代「持續調高 cap」）。已在 #151 留言連結，未修改 #151
+內容。
+
+核心架構決策：**快取存 raw quote、reconstruction 在讀取時重算**——
+recipe 已經錯過一次，存算好的 IV 會讓任何修正都要重花 vendor 額度重抓；
+存 raw 則修正立即對全部歷史生效、零 vendor 成本（代價 ~0.1 秒／候選）。
+`contract_iv_history` 舊格式列視為 cache miss 重抓（純快取、可再生）。
+新 reconstruction 模組的輸出形狀刻意等同 `ivtrend.py` 既有輸入形狀，
+統計層一行不用改。Seam 沿用既有兩層（純函式單元測試＋HTTP API），
+不新增 seam。
+
+**拆票完成（2026-08-18，`/to-tickets`，需求方核准後發佈）**——11 張
+子票 **#160–#170**（HIVR-01–11），全部 `ready-for-agent`、皆為 #159
+的 GitHub sub-issue。需求方裁示「拆成好作業的方式比較適合，我不會
+中間停下來看」，因此**以單張票好施工為準、不為了中途 demo 而合併**
+——原本設計成一張「能 demo」的大 tracer bullet（空卡片變成有圖）已
+依此拆成三張（#163 資料層／#164 純模組／#165 接線）。
+
+依賴順序（照舊 `/implement` 一張張做）：
+
+- **HIVR-01**（#160）point-in-time Treasury 曲線 ✅ commit `36ffd29`：
+  `ratecurve.py` 新增 `parse_treasury_csv_rows`／`parse_treasury_xml_rows`
+  （回傳全部有效資料列，不挑最新）＋純函式 `curve_asof(rows,
+  observation_date)`（取不晚於觀察日的最新一列、找不到回傳 `None`
+  不外插）；既有 `parse_treasury_csv`／`parse_treasury_xml` 改為對新
+  row-level 解析器取 `max()` 的薄包裝，既有行為與既有測試原封不動。
+  `data/treasury.py` 新增 `fetch_curve_rows_for_year`／
+  `fetch_curve_range`（單年 CSV→XML 備援／跨年度串接、單年失敗不擋
+  其他年份）——本票範圍內純前置件，尚無呼叫端，接線留給 HIVR-06
+- **HIVR-02**（#161）point-in-time 股利 q ✅ commit `5db92ca`：
+  `dividends.py` 新增 `compute_q_asof(history, spot, observation_date)`——
+  沿用既有 TTM 365 天下界，加上界 `ex_date <= observation_date` 擋
+  look-ahead（那天還沒除息的分配不可能影響那天的選擇權價格）；分母用
+  呼叫端傳入「那天」的 spot、離群值抑制沿用既有 `_dampen_outliers`
+  不重寫。既有 `compute_q()`（即時分析路徑）原封不動。純前置件，
+  尚無呼叫端
+- **HIVR-03**（#162）diagnostics subsystem 拆分 ✅ commit `c43e062`：
+  `diagnostics.py` 新增 `SUBSYSTEM_EXACT_CONTRACT`（"historical_iv"，
+  沿用既有名字）／`SUBSYSTEM_LEGACY_REANCHOR`（"normalized_skew"，
+  新增，借用 legacy 路徑自己輸出欄位的既有詞彙）；`main.py` 的
+  `iv-history` 端點改用兩個獨立 `emit` closure，`_select_for_
+  persistence` 改成先依 `event.subsystem` 分組、每個 subsystem 各自
+  套用既有三層優先序（抽成 `_select_family_for_persistence`）、各自
+  享有一份完整的 cap（40，未調高）——大量 legacy 事件不再擠掉
+  exact-contract 事件。新增直接證明「洪水不擠掉對方」的測試＋端到端
+  版本（真跑滿 25 天 backfill）。redaction／correlation-ID 未動，
+  Settings 診斷頁泛型渲染 `event.subsystem`，前端零變更
+- **HIVR-04**（#163）historical quote record ✅ commit `2e7695d`：
+  `marketdata.py` 的 `_parse_contract_history`／`fetch_contract_history`
+  改回傳寬版 quote dict（`date`／`updated`／`dte`／`bid`／`ask`／
+  `mid`／`underlying_price`／`vendor_iv`，取代舊版 `(date, iv)` 二元組），
+  `date` 推導方式不變（仍是這一列自己的 `updated`）；既有 `_num()`
+  缺值口徑（None／非數字／0.0 一律缺值）延伸到新欄位。`api_app/
+  storage` 的 `ContractHistory.points` 型別隨之變寬（`tuple[dict,
+  ...]`），postgres.py 讀寫直接原樣傳遞 JSONB object、不重組成
+  2-tuple；storage 本身不解讀形狀。`main.py::_ensure_contract_history`
+  改用 `q["date"]` 合併快取與新抓資料，並在讀出快取後偵測「舊格式列
+  （元素是 list 不是 dict）」——偵測到就當 cache miss 整批重抓（一次性
+  代價：每張合約 1 credit），不會被「今天已嘗試過」短路掉、也不會被
+  誤讀成新格式。新增 `_project_vendor_iv()` 轉接器讓
+  `_leg_historical_iv_payload`／`ivtrend` 繼續吃舊版 `(date, iv)`
+  形狀——本票沒有任何東西消費新欄位（reconstruction 要等 #164／#165），
+  Historical IV Trend 卡片畫面行為維持不變
+- **HIVR-05**（#164）reconstruction 純模組 ✅ commit `3166dbc`：新增
+  `option_chaser/ivreconstruct.py`（`ivtrend.py` 同層純模組）——
+  `reconstruct_iv_series(option_type, strike, expiration, quotes,
+  rate_by_date, dividend_yield_by_date)`。price 用 vendor `mid`、缺席退
+  `(bid+ask)/2`（HIVR-04 的寬版 quote 結構上沒有 `last` 欄位，「絕不用
+  last」因此是結構性保證）；quote 合法性（bid／ask 皆正、未倒掛）獨立
+  於 `mid` 是否存在；`T` 用該筆觀測自己的日期算（既有
+  `DAYS_PER_YEAR`／`days_between`，不引入新慣例）；r／q 由呼叫端逐筆
+  觀測日以 `{date: value}` 傳入，模組本身零 I/O；model 沿用既有
+  `implied_vol()`（BS93）。任一輸入缺席或反解無解只讓那一筆變
+  `(date, None)`，以四個具名原因（`unusable_quote`／`no_rate`／
+  `no_dividend_yield`／`inversion_failed`）分別計數，不影響其他筆。
+  `vendor_iv` 整個模組零讀取，canonical series 結構上不可能引用它。
+  輸出形狀與 `ivtrend.py` 既有統計函式輸入形狀逐位元相同，測試直接
+  餵過去驗證零轉接層。28 條測試皆為 round-trip 風格（已知 sigma 經
+  `american_price()` 算出價格，反解回來核對，不手猜期望值）；隔離紅線
+  （不 import `ivhistory`、`ranking.py`／`filters.py` 不依賴這個模組）
+  比照 `ivtrend.py` 既有寫法。本票沒有任何呼叫端，不影響其他檔案
+- **HIVR-06**（#165）接線：**空卡片變成有圖** ✅ commit `8323cf0`：
+  `iv-history` 端點改用 `ivreconstruct.reconstruct_iv_series()` 逐點
+  重建，取代原本的 `_project_vendor_iv()` 透傳——vendor IV 全 null 的
+  真實合約（ORCL／TLT LEAPS）現在能畫出完整走勢圖。`create_app()`
+  新增可注入的 `rate_curve_rows`（預設 HIVR-01 的
+  `treasury.fetch_curve_range`），兩腿共用一次抓取（Treasury 曲線與
+  標的無關）；`_rate_by_date_for_leg()` 用 `ratecurve.curve_asof()`＋
+  `rate_for_tenor()` 逐日查表；`_dividend_yield_by_date_for_leg()` 用
+  `dividends.compute_q_asof()`，分母用該筆觀測自己的
+  `underlying_price`——沿用既有 `dividend_loader`（HIVR-02 的
+  ex-date 上界讓「今天抓一次完整配息清單」本身就是逐筆觀測日正確的，
+  不需要新的快取層）。**每一筆都重建，包含 vendor 剛好給非 null iv
+  的那些**——`ivreconstruct` 模組本身零讀取 `vendor_iv`，canonical
+  series 結構上不可能退回它。既有隔離測試的函式清單擴充涵蓋新增的
+  四個接線函式。測試 fixture 需要真正的財務 round-trip 才有意義：
+  新增 `_synthetic_quote()`（用跟 production 完全相同的 point-in-time
+  r/q 查表方式建構報價，保證精確反解回指定 sigma）；施工中發現並
+  記錄兩個 fixture 真 bug（固定 ±0.01 價差在深度價外、近到期日的
+  近零價格會讓 bid 變負值，改比例價差；多個既有測試寫死的日期恰好
+  落在這份 fixture 候選自己的到期日**之後**，`T<0` 讓 `implied_vol`
+  正確回 `None`——不是重建邏輯錯，是 fixture 日期沒對齊）。新增端到端
+  測試涵蓋三項核心主張：vendor iv 全 null 仍完整重建、canonical
+  series 不採用刻意設錯的 vendor_iv、r／q 逐觀測日查表（用橫跨配息
+  ex-date 前後兩筆觀測驗證，若誤用「今天」的值會露餡）。全套：後端
+  雙後端全綠、前端 vitest 557 條**零修改**全綠、typecheck 通過——
+  證實回應形狀真的沒變
+- **HIVR-07**（#166，commit `323a529`）— Reconstruction 帳本＋staleness
+  可見性＋HTTP 203 註解更正：新增兩個 exact-contract 家族專屬
+  diagnostic stage。`reconstruction`——`_reconstruct_leg_series()` 重建
+  完後每腿發一筆帳本事件，`fetched`／`reconstructed`／`usable` 三個
+  計數＋`ivreconstruct` 四種失敗原因逐一計數（含 0），回答「vendor 回
+  N 筆究竟在哪一站變成 0 筆」不必讀程式碼；加進 `_ALWAYS_KEPT_STAGES`
+  （原 `("backfill", "metrics")` 擴為 `("backfill", "metrics",
+  "reconstruction")`）避免同一腿高流量的 `reanchor`／`vendor_fetch`
+  事件把它擠出 per-request cap（40，未動）。`staleness`——只在
+  `_ensure_contract_history()` 真的抓到新資料時發一筆（沿用既有
+  「今天已跑過不重抓」短路，不對快取命中發這個事件），帶
+  `request_time`／observation 自己的 `date`／原始 `updated`／
+  `staleness_days`／vendor 自己回報的 `vendor_dte` 與本站獨立算的
+  `computed_dte`——兩者不一致時現在看得出來；`staleness_days<=1` 為
+  info（下一個 session 的正常 rollover），否則 warning。順帶更正
+  `marketdata.py` 對 HTTP 203 的錯誤註解：vendor 官方文件明確指出 203
+  代表「這筆回應來自快取層」而非「延遲報價」，且文件本身把
+  mode→status 這種對應點名為常見誤解；既有行為（接受任何 2xx，未寫死
+  `status==200`）本來就正確，只有解釋錯了，已修正並補一條原始碼文字
+  掃描回歸鎖（`test_the_203_comment_states_cache_layer_not_delayed_
+  quote`）。測試：`tests/test_api_iv_history.py` 新增 5 條端到端
+  （fetched/reconstructed/usable/四種原因逐一計數、無可用時 warning、
+  staleness 欄位含 DTE 不一致案例、陳舊但成功可辨識、帳本在高流量
+  legacy 事件洪流下存活）＋`tests/test_data_marketdata.py` 新增 203
+  註解回歸鎖。全套後端雙後端（memory＋真實 Postgres）全綠。
+- **HIVR-08**（#167，commit `4ea40d6`）— 近到期 low-confidence 標記：
+  `option_chaser/ivreconstruct.py` 新增具名常數
+  `LOW_CONFIDENCE_DTE_THRESHOLD = 14` 與純函式 `is_low_confidence()`
+  ——純粹的天數比較（觀測日距到期日），不讀取 price／IV，因此對任一
+  觀測日皆可呼叫，包含反解失敗的缺席觀測。`_leg_historical_iv_
+  payload()` 的 `points` 序列化新增 `low_confidence` 欄位，套用在
+  裁窗後的每一點上；標記本身不影響 `trimmed`／統計量計算路徑，被
+  標記的點依然完整餵給 moving average／Bollinger／z-score／
+  percentile／Δ4w，也依然計入 `observation_count`——純資訊品質標記，
+  不刪點、不改統計、不影響 ranking／filtering／candidate selection
+  （那些路徑本來就不 import `ivreconstruct`，既有隔離測試涵蓋）。
+  前端 `IvTrendPoint` 型別新增 `low_confidence: boolean`；依票上
+  「前端呈現可以最小化，只要帶著欄位」的裁示，本票不新增視覺呈現。
+  測試：`test_ivreconstruct.py` 新增 5 條純函式測試（門檻邊界、
+  常數值、對缺席觀測仍可呼叫）；`test_api_iv_history.py` 新增 4 條
+  端到端測試（近到期標記為 true／遠到期為 false、標記不影響統計量、
+  不外洩進 diagnostic context 白名單）＋修正兩條既有測試因新增欄位
+  而需要更新的精確字典比對。全套後端雙後端全綠，前端 typecheck／
+  557 條 vitest 全綠。
+- **HIVR-09**（#168，commit `67d7e55`）— Vendor-IV benchmark 合理性
+  gate：`option_chaser/ivreconstruct.py` 新增兩個具名常數
+  `VENDOR_IV_BENCHMARK_MIN = 0.01`（下界依 calibration 實測抓到的
+  退化值，真實 vendor 回應出現過 `vendor_iv≈0.0001`）／
+  `VENDOR_IV_BENCHMARK_MAX = 5.0`（對齊 `implied_vol()` 自己的搜尋
+  上限，不是另外挑的門檻）與純函式 `vendor_iv_is_benchmarkable()`。
+  這個 gate 只管 benchmark／QA／診斷比較要不要採信某筆 vendor
+  `iv`，跟 canonical series 完全無關——canonical series 本來就不讀
+  `vendor_iv`（既有紅線，本票新增測試直接證明：同一份報價序列只換
+  vendor_iv 為退化值／正常值／缺席三種情況，反解出來的 canonical
+  series 逐位元相同）。新增 diagnostics stage `vendor_benchmark`
+  （`api_app/diagnostics.py` STAGES／whitelist）與
+  `_emit_vendor_benchmark()`（`api_app/main.py`，接在
+  `_reconstruct_leg_series()` 裡緊接 reconstruction 帳本之後發送）：
+  每一腿一筆事件，報告這張合約有幾筆觀測帶了 vendor IV
+  （`vendor_iv_present`）、其中被 gate 排除幾筆
+  （`vendor_iv_excluded_degenerate`——排除是可見的，不是靜默丟棄）、
+  實際拿去跟 canonical series 比較幾筆（`vendor_iv_compared`）、
+  平均絕對差（`mean_abs_diff`，無可比較筆數時缺席）。加進
+  `_ALWAYS_KEPT_STAGES` 避免被同一腿高流量事件擠出 per-request
+  cap。測試：`test_ivreconstruct.py` 新增 8 條純函式測試（門檻邊界、
+  真實退化值、上界與 solver 搜尋上限的關聯、canonical series 不受
+  影響的直接證明）；`test_api_iv_history.py` 新增 4 條端到端測試
+  （退化值排除且可見、門檻內值正常比較、缺席值不算進任何一個計數、
+  帳本在高流量 legacy 事件洪流下存活）＋修正一條既有測試因新增
+  stage 而需要更新的 stage 集合斷言。全套後端雙後端全綠；本票未
+  觸碰任何前端檔案，typecheck／557 條 vitest 確認無回歸。
+- **HIVR-10**（#169，commit `fd03b56`）— Legacy backfill／reanchor 事件
+  聚合＋週末 no_data 降為 info：Legacy（normalized skew）家族兩個高
+  流量事件源收斂成各自一筆摘要。**Backfill**：一次批次最多 25 天、
+  每天可能查好幾個到期日，舊版每次 vendor 呼叫各發一筆
+  `vendor_fetch`＋`payload_parse`（外加每天一筆 `database_write`），
+  輕鬆破百筆。新增 `_emit_backfill_summary()`，批次結束後只發一筆
+  事件，攜帶三分類計數：`days_with_data`／`days_no_data_expected`
+  （週末，正常現象）＋`days_no_data_unexpected`（交易日卻沒資料，
+  值得留意）／`days_failed`。`_vendor_fetch_severity`／
+  `_payload_parse_severity`／`_emit_surface_telemetry` 三個只服務舊
+  機制的函式隨之整個刪除。**Reanchor**：舊版對這個 symbol 已存的每一
+  筆歷史快照各發一筆 `reanchor` 事件——累積一年快照的 Scenario 光開頁
+  就能炸出幾十筆。新增 `_reanchor_in_grid()`（純判準，DG-04 既有
+  「核心欄位全 null」邏輯原樣沿用）與 `_emit_reanchor_summary()`，
+  一次 request 只發一筆摘要：`total_dates`／`in_grid_dates`／
+  `out_of_grid_dates`。**週末 severity**：新增 `_is_weekend()`（只濾
+  週末，比照 `ivhistory.trading_days_back()` 既有「不維護美股假日表」
+  的取捨與理由——`sampling_schedule()` 本來就只排交易日，市場假日
+  結構上無法在沒有假日表的情況下與「交易日撲空」區分，因此仍落在會
+  示警的那個桶子，這是明確記錄的已知殘留噪音，不是遺漏，issue 留言
+  已記錄這個裁決）。Normalized Skew 的計算與呈現本身完全未動
+  （`option_chaser/ivhistory.py` 與 `tests/test_ivhistory.py` 零改動，
+  `git diff` 確認）；`_DIAGNOSTICS_STORAGE_CAP_PER_REQUEST` 維持 40，
+  噪音是靠少發事件而非調高上限降下來的（新增測試正面驗證：完整
+  backfill 現在遠低於 20 筆 legacy 事件，過去輕易破百）。測試：刪除
+  三條只服務已移除機制的既有測試，新增一條用函式簽章直接證明新摘要
+  函式結構上不吃任何 vendor 自由格式文字；重寫三條 reanchor 測試改驗
+  聚合後的計數，新增一條混合情境測試對照票上範例句型；重寫兩條
+  no_data 測試涵蓋 AC5／AC6（交易日撲空仍示警、週末撲空降為 info，
+  後者用 `monkeypatch` 注入真實週六日期）；重寫三條過去依賴「legacy
+  backfill 天然構成洪水」的既有測試（HIVR-03／HIVR-07／HIVR-09）——
+  端到端版本改驗證「兩個 subsystem 正常並存」，cap 溢位保證改用合成
+  事件的單元測試覆蓋。全套後端雙後端全綠；本票未觸碰任何前端檔案，
+  typecheck／557 條 vitest 確認無回歸。
+- **HIVR-11**（#170，commit `62d9f17`）— 全面回歸與 E2E 最終驗收：
+  逐條稽核 issue #170 明列的九條紅線，全數已由既有測試覆蓋（多數在
+  HIVR-01–10 施工當下已各自涵蓋），補齊兩處缺口——「exact-contract
+  路徑絕不呼叫 legacy 重錨定函式」的既有 AST 隔離測試擴充涵蓋
+  HIVR-07／HIVR-09 新增的三個函式（`_emit_reconstruction_ledger`／
+  `_emit_staleness`／`_emit_vendor_benchmark`，先前只涵蓋到 HIVR-06
+  為止）；新增端到端測試逐欄位驗證回應裡的 `contract` identity 精確
+  等於候選自己的 leg（strike／expiration／option_type／
+  contract_symbol），先前這條紅線只被別的測試間接蘊含、沒有專屬
+  斷言。全套把關：後端 pytest 雙後端（memory＋真實 Postgres）全綠
+  （1427 條）；前端 typecheck／557 條 vitest／production build 全綠；
+  Playwright E2E 手機＋桌面共 84 條全綠（quota／vendor 失敗優雅降級、
+  掛牌不滿一年如實顯示、完全無可比較觀測誠實顯示「沒有歷史資料」等
+  場景皆由既有 E2E 覆蓋，本輪未新增專屬案例——新增的 `low_confidence`
+  欄位與新增診斷 stage 皆為前端零渲染的純加法，不影響任何既有
+  fixture）。沒有任何既有斷言被放寬或移除以達成全綠——HIVR-10 刪除
+  的三條測試針對的是該票本身刻意移除的機制，不是弱化仍然存在的行為
+  保證。本輪未發現新的實質缺陷，只補了上述兩項測試覆蓋缺口。
+
+**Spec #159（HIVR-01–11，issues #160–170）全十一張子票全數完成。**
+依專案規則全部子票做完才開 PR、merge 回 master，中途不主動開——目前
+等需求方 cue 才實際開 PR。
+
+**下一步**：`/implement` 施工中，依序做票、無阻擋不停下等待確認
+（需求方裁示）。依專案規則全部子票做完才開 PR，中途不主動開。
+
+### Spec #143（2026-08-15 發佈）——Application Diagnostics / Error Log 系統
+
+需求方在兩輪 Historical IV 診斷都卡在「拿不到真實 production 證據」
+之後裁示：**先做一套小型但正式的 Application Diagnostics**，不是為
+Historical IV 臨時插 console.log，而是後續其他資料源與功能共用的錯誤
+診斷基礎。`/to-spec` 已發佈 **issue #143**（`ready-for-agent`），**票
+尚未拆**。
+
+**要解的問題**：`api_app/`／`option_chaser/` 目前**一行 logging 都沒有**
+（唯一的 `print` 在 `cli.py`，是 CLI 正常輸出）；唯一持久線索是
+`IvBackfillRun.outcome` 三選一，而最常見的失敗恰好是 `outcome="ok"`
+但資料是空的。`fetch_surface()` 把 HTTP status／vendor `s`／errmsg／
+rate-limit 標頭／raw row 數全部丟掉，`map_surface_payload()` 靜默跳過
+缺欄位的列，`iv_at()` 出界回 `None`——每一站都可能把 N 筆變 0 筆，
+**沒有任何一站留下自己的進出筆數**。
+
+**spec 的核心決策**（施工時不必重新推導）：
+
+- **新模組 `api_app/diagnostics.py`**：`DiagnosticEvent`＋單一
+  `emit()` 入口，同時寫 storage 與印 structured JSON log，共用
+  `event_id`／`correlation_id`；correlation id 由 middleware 產生放
+  `contextvars`，**不從函式簽章往下傳**（否則引擎層模組被迫認識 HTTP）
+- **Redaction 用白名單不是黑名單**：`context` 走 key 白名單（不在名單
+  直接丟棄），字串值再過長度截斷＋樣式遮蔽＋已知祕密值比對；URL 只記
+  sanitized 形式、headers 一概不記、完整 vendor body 永不落盤
+- **Storage 新表 `diagnostics`**（不併進 `events`——後者是永不修剪的
+  領域事實），retention＝**trim-on-write 全域最新 200 筆**（serverless
+  無背景排程可掛、日期 TTL 擋不住單日爆量；memory 用 `deque(maxlen=)`
+  取得同一條上限，契約測試才有意義）
+- **排放量雙層控制**：log 全發不設限，storage 有 per-request 上限
+  （20 筆）且**依 severity 取捨**（error／warning 一律優先保留）
+- **契約純加法**：iv-history 回應新增 `diagnostics: {correlation_id,
+  events}`（因為最常見症狀是 **200 但沒資料**，另打端點就得猜 id）；
+  新增 `GET /api/diagnostics`、`DELETE /api/diagnostics`
+- **vendor adapter 需暴露 HTTP metadata**（低層 primitive 改回
+  status／白名單標頭／body，`fetch_surface` 加 optional observer）。
+  spec 內明文界定：這**不算**需求禁止的「改 vendor」——禁的是換資料源
+  ／改抓取行為，把本來就存在、只是被丟掉的 metadata 傳出來是觀測必需，
+  且需求第 5 點直接點名要這些欄位。回傳值／例外型別／欄位映射不動
+- **八個 observation point**（`candidate_lookup`／`cache`／
+  `vendor_fetch`／`payload_parse`／`database_write`／`backfill` 摘要／
+  `reanchor`／`metrics`）構成「N → 0 帳本」：同一 correlation id 的
+  events 依序讀完，每站進出筆數都在
+- **只觀測不修**：`_backfill_iv` 一天失敗就 break 整批、`iv_at()` 出界
+  回 None——本輪一律不動，只讓它們看得見
+
+**成功判準只有一條**：上線後不必再開一輪診斷、不必讀程式碼，就能直接
+回答「vendor 回 N 筆，究竟在哪一站變成 0 筆」。
+
+**需求方修訂（2026-08-15，spec #143 留言存證）**：spec 整體方向核准、
+設計全部保留；**唯一修正是部署那一條**——不再把「Claude 端 Vercel MCP
+看不到 project」當成施工或驗收 blocker。Claude 只負責完成程式、測試、
+push `claude/implement-tfm9oa`；**Preview deployment 與 Vercel runtime
+logs 由需求方端（ChatGPT）另行驗證**，不需要要求需求方處理 Vercel
+授權，也不得因此把任何項目標成「待需求方執行」而暫停。spec 原文
+「⚠ 已知風險……需要需求方在 Vercel 後台確認部署」該段作廢。
+
+**拆票完成（2026-08-15 `/to-tickets`，七張全掛 `ready-for-agent`，
+票已開、尚未施工）**：
+
+- **DG-01** [#144] — Prefactor：vendor adapter 暴露 HTTP metadata
+  （零行為變更；observer 是純 callback，adapter 不 import 診斷模組）
+  ／無 blocker
+- **DG-02** [#145] — 診斷骨幹：event／emit／whitelist redaction／
+  structured JSON log／`diagnostics` 表＋trim-on-write 200／
+  `GET`＋`DELETE /api/diagnostics`／correlation ID middleware＋
+  `X-Correlation-Id`／emit 失敗絕不影響主流程／無 blocker
+- **DG-03** [#146] — Historical IV 取數路徑觀測（candidate_lookup／
+  cache／vendor_fetch／payload_parse／database_write／backfill 摘要）
+  ＋per-request 排放量控制（20 筆、severity 優先）＋iv-history 回應
+  新增 `diagnostics` 欄位／被 #144、#145 擋
+- **DG-04** [#147] — Historical IV 投影路徑觀測（reanchor／metrics）
+  ＋完整 N→0 帳本測試／被 #146 擋
+- **DG-05** [#148] — Inline diagnostics：Historical IV 卡片就地展開
+  （預設收合、只顯示存在欄位、200 但有 warning 也觸發）／被 #146 擋
+- **DG-06** [#149] — Settings `Diagnostics / 報錯紀錄` 區塊（清單／
+  詳情／Copy 含 fallback／Clear 二次確認）／被 #145 擋，可與
+  #146–#148 並行
+- **DG-07** [#150] — 最終 regression／security gate（紅線全表面、
+  retention、observation-only 回歸、E2E、全套綠燈、push 不開 PR）／
+  被 #144–#149 擋
+
+> 建議施工順序（單線、不平行）：**#144 → #145 → #146 → #147 →
+> #148 → #149 → #150**。
+
+**施工開始（2026-08-15 `/implement`，依序單線、每張跑該票測試才進
+下一張）**：
+
+- **DG-01** [#144] — Prefactor：vendor adapter 暴露 HTTP metadata
+  （零行為變更）：`option_chaser/data/marketdata.py` 新增
+  `HttpResponse`（status／白名單 rate-limit 標頭／body）與低層
+  `_http_request()`；`_http_get()` 降級為它的 body-only 薄殼，
+  `fetch_chain`／`verify` 的既有 `http_get=` 注入點與測試因此完全
+  不動。歷史曲面路徑新增 `_parse_surface()`（`map_surface_payload`
+  與 `fetch_surface` 共用的唯一分支邏輯，不拋例外，回傳
+  `(points, telemetry)`）與 `_parse_surface_rows()`（逐列筆數帳本：
+  raw_rows／parsed_call_rows／parsed_put_rows／四種 dropped_* 原因，
+  篩選條件逐字不變，只是現在計數而非默默 `continue`）；`fetch_surface`
+  新增 `observer: Callable[[dict], None] | None` 參數，成功／
+  no_data／vendor 錯誤／HTTP 429／連線失敗五條路徑都會在拋出前先
+  通知一次，帶 http_status／rate-limit 三欄／vendor_status／
+  vendor_errmsg／筆數帳本。**adapter 不 import 任何診斷模組**——
+  observer 是純 callback。新增 16 條測試（HTTP primitive 2＋observer
+  7＋既有 fetch_surface 測試改注入 `http_request=`），
+  `test_data_marketdata.py` 既有斷言一條未動、全綠；全套 pytest
+  無回歸（全綠）
+- **DG-02** [#145] — 診斷骨幹（commit `367b8d6`）：新增 `api_app/
+  diagnostics.py`——`DiagnosticEvent`＋唯一入口 `emit()`（組 event→
+  sanitize→印 structured JSON log→寫 storage，任一步失敗皆吞掉、
+  絕不拋出）；`SUBSYSTEMS`／`STAGES`／`SEVERITIES` 詞彙單一來源（本票
+  不接任何 subsystem，`STAGES` 先把 #143 列的八個都定義好供 DG-03／
+  DG-04 用）。**Redaction 白名單**：`_CONTEXT_KEY_WHITELIST` 過濾＋
+  `sanitize_string()` 三層（已知現行祕密值逐字比對→樣式遮蔽
+  `Bearer …`／`token=`／`postgres://`→長度截斷）；`sanitize_context()`
+  同時丟棄 `None` 值（只顯示存在欄位）。**correlation ID**：
+  `contextvars` 存一份，`correlation_scope()` context manager 綁定／
+  還原，`emit()` 自己讀，不從函式簽章往下傳。`Storage` protocol 新增
+  `append_diagnostic`／`list_diagnostics`／`clear_diagnostics`，
+  `RETENTION_LIMIT=200` 定義在 `diagnostics.py` 單一處；`MemoryStorage`
+  用 `deque(maxlen=RETENTION_LIMIT)` 天然 trim-on-write，`PostgresStorage`
+  新增 `diagnostics` 表＋每次寫入後 `DELETE ... OFFSET RETENTION_LIMIT`
+  trim（不併進既有 `events` 表——後者是 scenario-scoped 永不修剪的
+  領域事實）。`main.py` 新增 correlation ID middleware（每個回應皆帶
+  `X-Correlation-Id`，含錯誤回應）與 `GET`／`DELETE /api/diagnostics`
+  兩端點。新增 `test_diagnostics.py`（22 條，redaction／correlation／
+  emit 容錯）、`test_api_diagnostics.py`（10 條，端點＋middleware）、
+  `test_storage_contract.py` 新增 diagnostics 契約區塊（含
+  retention-cap 測試，memory／postgres 共用同一份行為）；全套 pytest
+  無回歸（全綠）
+- **DG-03** [#146] — Historical IV 取數路徑觀測＋排放量控制＋
+  iv-history 回應夾帶診斷（commit `5a4da9b`）：`api_app/providers.py` 的
+  `default_historical_surface` 加一個 `observer` 參數原樣轉給
+  `marketdata.fetch_surface`（#144 打的底），這一層仍不解讀 telemetry
+  內容。`main.py` 新增六個觀測點：`candidate_lookup`（找不找得到候選、
+  掃過幾組 `expiry_top10`）、`cache`（缺口天數、今天是否已跑過）、
+  `vendor_fetch`＋`payload_parse`（`_emit_surface_telemetry()` 把
+  observer 給的合併 telemetry 拆成兩個事件——同一份 raw_rows 同時放
+  進兩邊，即使其中一個因排放量控制被裁掉，另一邊仍完整帶著「N 筆進、
+  幾筆出」）、`database_write`（每天寫入的 call／put 點數）、
+  `backfill`（批次摘要：嘗試幾天／存幾天／在哪天中止／原因／
+  outcome）。**這四條既有 backfill 決策規則本身逐字不動**——`emit`
+  呼叫不參與任何 if／break 判斷，只是把已經在發生的事情說出來。
+
+  **排放量控制**（`_select_for_persistence`，per-request 上限 20 筆）：
+  三層優先序——① `backfill` 摘要**先保留、不跟其他事件搶名額**（施工
+  中發現：若把摘要跟其他 error／warning 事件混在同一個優先池裡用
+  `list[:cap]` 前截斷，事件量一大時摘要反而會被排在後面而擠出去，
+  跟「使用者最想看批次結果」的初衷相反，因此改成獨立保留一個名額）；
+  ② 其餘事件的 error／warning 依原順序，額滿為止；③ 剩餘名額才輪到
+  info。structured log 不受此限，`emit()` 當下就全發了。
+
+  `iv_history()` 端點新增 `_CollectingDiagnostics`（per-request 緩衝，
+  `emit()` 寫這個而不是直接寫真正的 storage，log 照樣全發）與
+  `_flush_diagnostics()`（request 結束時套用排放量控制、把留下的那批
+  真的寫進 `_db()`，同一批也組進回應——畫面看到的跟真的存進 Settings／
+  Diagnostics 的是同一批，不會兜不起來）。回應新增 `diagnostics:
+  {correlation_id, events}`（純加法，既有欄位語意不變）；候選找不到
+  的 404 路徑一樣先落盤再拋錯誤，只是回應本身沒有 `diagnostics` 欄位
+  可讀（純字串 detail）。`_known_secrets()` 收集目前設定的 provider
+  token 與 `database_url_candidates()`（`storage/factory.py` 新增，
+  蒐集 DATABASE_URL 家族**全部**有值的環境變數，不只 `database_url()`
+  選中的那一個）供逐字比對 redaction。
+
+  測試：`test_api_iv_history.py` 新增 13 條端點層測試（`_telemetry_
+  surface()` 直接餵 observer 指定 telemetry，不依賴 `marketdata.py`
+  內部行為——那是 DG-01 的範圍；raw>0/parsed=0 可指認、no_data 不中止
+  批次、backfill 中止可見、rate-limit 欄位、correlation id 對得上
+  回應標頭、事件同時落盤、token redaction、診斷寫入失敗不影響回應、
+  3 條排放量控制單元測試）；`test_api_iv_history.py` 三個既有
+  `historical_surface` 假體（`Recorder`／兩個 `ExpirationRecorder`）
+  加 `observer=None` 參數以相容新簽章，既有斷言一條未動。全套 pytest
+  無回歸（全綠）
+- **DG-04** [#147] — Historical IV 投影路徑觀測（reanchor／metrics）＋
+  完整 N→0 帳本（commit `62e5dd4`）：新增兩個觀測點。`_emit_reanchor()`
+  逐日發一筆——當天曲面（`option_type` 對應那張網格）的 dte／delta
+  範圍、要查的 tenor／買賣腿 delta、四個欄位（buy_iv／sell_iv／
+  atm_iv／normalized_skew）各自是否為 null；這是「資料明明有、畫面卻
+  空白」唯一看得見的地方（`iv_at()` 出界回 None、不外插的既有行為
+  本身不動）。`_emit_metrics()` 在 `field_metrics()` 之後每個欄位各發
+  一筆（不是一筆合併事件）——比合併事件更看得出是哪一項指標沒有觀測。
+
+  **單腳候選豁免**（兩處都有）：Long Call 結構上沒有賣腿，
+  `sell_iv`／`normalized_skew` 恆為 `None`／`count=0` 不是資料品質
+  問題；`_emit_reanchor` 的「全部 null 才算 warning」與 `_emit_metrics`
+  的欄位清單都排除這兩項（依 `coords.get("sell") is None` 判斷），
+  否則每個 Long Call 候選會永遠亮 warning，是新增訊號而非既有裁示——
+  「只顯示存在欄位」原則的延伸應用。
+
+  **`_select_for_persistence` 追加保留規則**（施工中發現，追加在
+  DG-03 既有機制上）：`metrics` 跟 `backfill` 一樣獨立保留名額，不跟
+  高流量的逐日事件（尤其 `reanchor`，快取滿一年時一次 request 可能
+  ~65 筆）搶——常數改名 `_ALWAYS_KEPT_STAGES = ("backfill", "metrics")`，
+  三層優先序的第一層從「只保留 backfill」擴大成「保留這兩個 stage」。
+  若不追加這條，`reanchor` 一多就會把 `metrics` 擠出 20 筆的 cap，
+  完整帳本測試因此抓到這個問題並在動工當下修正，不是留到 DG-07 才發現。
+
+  測試：`test_api_iv_history.py` 新增 10 條——reanchor 出界／覆蓋兩種
+  severity、單腳 reanchor 豁免、metrics 全零／有資料兩種 severity、
+  單腳 metrics 豁免、完整帳本測試（八站都在同一個 correlation_id 下、
+  payload_parse 單筆事件自己就答得出「N→0」）、`_select_for_persistence`
+  新增一條驗證 `metrics` 與高流量 `reanchor` 共存時不被擠掉。全套
+  pytest 無回歸（全綠）
+- **DG-05** [#148] — Inline diagnostics：Historical IV 卡片就地展開
+  錯誤詳情（commit `ad5924e`）：`src/api.ts` 新增 `DiagnosticEvent`／
+  `IvHistoryDiagnostics` 型別＋ `IvHistoryView.diagnostics` 欄位；
+  `ApiError` 新增 `correlationId`（`request()` 從 `X-Correlation-Id`
+  回應標頭讀，`resp.headers?.get(...)`——既有測試大量用簡化物件字面量
+  假冒 `Response` 省略 `headers`，用可選鏈避免連帶炸掉那些無關測試）。
+
+  `IvHistory.tsx` 新增 `InlineDiagnostics`／`DiagnosticEventFields`：
+  沿用 `AnalysisReport.tsx` 既有的 `<details>`／`<summary>` 收合慣例，
+  不自己寫展開狀態機。觸發條件兩種——請求整個失敗（`error` 狀態，
+  只帶 message／correlationId，沒有結構化 events 可顯示）；或回應帶有
+  severity ≥ warning 的 events（200 但資料是空的那個最常見症狀，只看
+  HTTP 狀態碼看不出來）。**只顯示實際存在的欄位**天然成立——不需要
+  前端另外過濾，因為後端 `sanitize_context()` 產生時就把 `None` 拿掉了，
+  `context` 裡沒有的 key 本來就不會出現。前端零解讀邏輯：`severity`／
+  `stage`／`message`／`context` 全是後端字串，只做格式化與呈現。
+
+  測試：`IvHistory.test.tsx` 新增 8 條（卡片本身仍在＋預設收合、展開／
+  收合、200 但有 warning events 觸發、只有 info 不觸發、展開後看得到
+  完整欄位、只顯示存在欄位、多筆 events 各自完整呈現）；`ivView()`
+  fixture 補上 `diagnostics` 欄位，既有斷言一條未動。前端全套
+  `typecheck`／`vitest`（515）／`build` 無回歸；後端全套 pytest 無回歸
+  （全綠）
+- **DG-06** [#149] — Settings：Diagnostics / 報錯紀錄 區塊（commit
+  `c234f0c`）：`src/api.ts` 新增 `getDiagnostics()`／`clearDiagnostics()`。
+  新元件 `src/Diagnostics.tsx` 掛在 `Settings.tsx` 既有兩列（Market
+  Data／Historical IV）下方，同一個 `<section className="card
+  settings-section">` 慣例——不需要另外的可見性判斷，就是 Settings
+  頁多一塊。清單最新在最上（**信任後端順序，前端不重新排序**）；每列
+  timestamp／subsystem／stage／severity／message；點一筆用原生
+  `<button>` 展開完整 details（含 `context` 逐 key 呈現，同一套「只顯示
+  存在欄位」原則）。**Copy**：`navigator.clipboard.writeText` 成功時
+  按鈕文字短暫變「已複製」；clipboard 不可用或被拒時退回顯示一個唯讀、
+  可全選的 `<textarea>`（`onFocus` 自動全選）——不是靜默失敗。
+  **Clear**：兩段式就地確認（按鈕變「確定清除」＋「取消」），不用
+  modal，確認後才真的打 `DELETE /api/diagnostics`。空清單顯示「目前
+  沒有紀錄」。沒有 pagination、搜尋、圖表（票上明文範圍）。
+
+  **既有測試連帶修正**（`Settings.tsx` 現在多掛一個會自己打
+  `/api/diagnostics` 的子元件，影響既有 `Settings.test.tsx` 的假體）：
+  `mockApi()` 依 URL 分流，`/api/diagnostics` 固定回空陣列，不吃掉
+  原本那組 `SettingsView` 序列的計數器；「載入失敗」測試原本斷言
+  `getByRole("alert")` 只有一個，現在 `<Diagnostics />` 自己的請求也會
+  用同一個失敗假體產生第二個 alert，改用 `getAllByRole` 找特定內容——
+  兩處都是配合新子元件調整既有測試的注入方式，斷言涵蓋的行為本身未變。
+
+  測試：新增 `src/Diagnostics.test.tsx`（11 條：空清單文案、五欄位
+  清單、依後端順序渲染不重排、展開／收合、Copy 含 fallback、Clear
+  含二次確認與取消、讀取失敗說明原因、結構）。前端全套 `typecheck`／
+  `vitest`（526）／`build` 無回歸；後端全套 pytest 無回歸（全綠）
+- **DG-07** [#150] — 最終 regression／security gate（commit `714e9cc`）：
+
+  **兩個真實回歸**（施工中發現、修在這張票）：
+  1. `IvHistory.tsx` 存取 `data.diagnostics.events` 未做防禦——大量既有
+     E2E 手造的 iv-history JSON fixture（`smoke.spec.ts`／
+     `desktop.spec.ts`，DG-05 之前就存在）沒有 `diagnostics` 欄位，
+     跑下去整頁炸掉。改成 `data.diagnostics?.events ?? []`，不必連帶
+     改寫每一處既有 fixture。
+  2. `Diagnostics.tsx` 清單列在 iPhone 13 寬度（375px）把
+     timestamp／subsystem／stage／severity／message 硬擠成一行，
+     message 的可用寬度被擠到 0（技術上存在、視覺上不可見，
+     Playwright `toBeVisible()` 判 hidden）——這正是 QA-FIX-1／
+     QA-FIX-4 那種「幾何驗證勝過文字存在性檢查」教訓的又一個真實案例，
+     被 DG-06 新增的 E2E 測試當場抓到。改成 metadata／message 兩行
+     （`.diagnostics-row-meta` 包住前四項，message 獨立一行）。
+
+  **Security gate**：`test_api_diagnostics.py` 新增端點層 redaction
+  全表面驗證（跟 `test_diagnostics.py` 純函式層級的既有斷言換一個
+  角度、從 HTTP 回應往回驗）——已知 provider token／已知
+  `DATABASE_URL`（含帳密子字串）不逐字出現在 `GET /api/diagnostics`
+  回應裡；white-list 外的 key（`authorization`／`cookie`）整包被丟棄；
+  超長 `errmsg` 截斷且看得出截斷過；`headers` 整個 dict 值本身不在
+  白名單、原封不動被丟棄，只有 rate-limit 白名單三欄留下。
+  `test_api_iv_history.py` 新增「即使 observer telemetry 意外多帶一個
+  完整回應內容的欄位（模擬 `raw_body`），`_emit_surface_telemetry()`
+  用具名關鍵字組 event、不是 `**telemetry` 全展開，那個欄位天生進不了
+  任何診斷事件」。
+
+  **Observation-only 回歸**：`test_selection_regression.py` 新增
+  `test_ranking_and_filters_do_not_depend_on_diagnostics()`——與既有
+  `ivhistory` 同名結構斷言同一種手法，`ranking.py`／`filters.py`
+  原始碼不含 `diagnostics` 字樣。`_backfill_iv` 的 break 時機、
+  `iv_at()` 不外插、`IvBackfillRun.outcome` 語意本輪一律未動，由
+  DG-01–DG-06 全程保持既有測試綠燈佐證（未新增額外斷言，這些既有
+  行為的專屬測試本來就覆蓋著）。
+
+  **E2E**：`smoke.spec.ts` 新增 2 條（手機：Historical IV 請求失敗
+  預設收合／可展開可收起／帶 correlation id；200 但帶 warning events
+  同樣觸發，資料照常渲染）＋ 1 條（手機：Settings Diagnostics 區塊
+  可讀可操作，含展開與 Clear 二次確認）；`desktop.spec.ts` 新增 1 條
+  （桌面：同上）。新增測試踩到的 route pattern 陷阱：`**/api/diagnostics`
+  沒帶尾端 `*` 匹配不到真實請求的 `?limit=50` 查詢字串（既有
+  `iv-history*` 早就示範過這個慣例，這次補教訓——5 處遺漏統一補上
+  尾端 `*`）。
+
+  **全套綠燈**（一條斷言都沒放寬）：後端 pytest 全綠；前端
+  `typecheck`／`vitest`（526）／`build` 全綠；E2E `playwright test`
+  （iPhone＋Desktop 共 71 條）全綠。
+
+  **交付**：push 到 `claude/implement-tfm9oa`。Preview deployment 與
+  Vercel runtime logs 由需求方端（ChatGPT）另行驗證，不列為本票驗收
+  項目（spec #143 2026-08-15 修訂）。**不開 PR**。
+
+**spec #143（DG-01–DG-07，issues #144–#150）七張票全數完成。**
+Application Diagnostics 基礎設施＋Historical IV 完整八站
+observation chain（candidate_lookup／cache／vendor_fetch／
+payload_parse／database_write／backfill／reanchor／metrics）已上線，
+成功判準（「不必讀程式碼就能直接回答 vendor 回 N 筆究竟在哪一站變成
+0 筆」）已由完整帳本測試（DG-04）與端點層驗證（DG-07）證實成立。
+等 ChatGPT 驗證 Preview deployment；需求方尚未 cue 是否要合併回
+`master`（依專案規則，PR 開不開由需求方主動要求，不主動開）。
+
+### QA 反饋直接施工（2026-08-16）——Historical IV 固定版位＋Inline Diagnostics Copy 按鈕
+
+需求方以 `/qa` 呼叫但直接給了施工等級的完整規格（含明確排除範圍與
+「完成後 commit + push」指示），視同直接下工單處理，不走 `/qa` 平時
+「只訪談、開 issue、不動手」的預設流程。範圍明文排除：Historical IV
+演算法、vendor request、HTTP 402 handling、backfill、ranking/filter/
+selection——本輪只動 `src/` 前端呈現層，`option_chaser/`／`api_app/`
+一行未碰（已用 `git diff --stat` 核對）。
+
+**問題 1：Historical IV 版位不固定**——原本 `IvHistory.tsx` 在
+`ivHistory()` 請求 pending 期間直接 `return null`（`error` 分支與
+`enabled !== true` 這條 #126 閘門是分開的兩件事，後者原封不動保留），
+資料回來前卡片整塊不存在，造成頁面載入後版面「突然長出來」。改成
+`enabled === true` 之後卡片外框（`<section className="card
+iv-history">`）永遠掛著，內部依 `error` / `!data` / 有資料三態切換：
+新增 `IvHistorySkeleton`（依候選 `isSingleLeg` 決定 1 或 2 個次層佔位
+方塊，形狀跟真正的 `.iv-metric` 頭條／次層同構，資料回來前後高度
+不整個跳動）在 `!data && !error` 時顯示；有資料內容抽成
+`IvHistoryContent` 子元件（純粹是把「四態同一版位切換」那段 JSX
+拆乾淨，不是新分層原則）。「無資料」本來就不是獨立分支——`count===0`
+已由既有 `metricCaption()` 逐項顯示「沒有歷史資料」，資料物件本身
+照常存在、卡片照常渲染，這次修正前就已成立，不需要額外處理。骨架
+CSS（`.iv-skeleton*`）用 `aspect-ratio` 貼近真實 `Metric` 頭條/次層
+比例＋線性漸層 shimmer 動畫，`prefers-reduced-motion: reduce` 時關閉
+動畫。
+
+**問題 2：Inline Diagnostics 加 Copy 按鈕**——新增共用模組
+`src/DiagnosticDetail.tsx`（`SEVERITY_LABELS`／`diagnosticEventFields`／
+`DiagnosticEventFieldList`／`CopyDiagnosticButton`），整套從
+`Diagnostics.tsx`（DG-06／#149）既有的私有 `SEVERITY_LABELS`／
+`eventFields`／`CopyButton` 抽出來，`Diagnostics.tsx` 與
+`IvHistory.tsx` 兩處改成呼叫同一份，不重做第二套格式化／複製邏輯
+（需求方明文要求）。抽出時**順便修掉一個既有漂移**：`IvHistory.tsx`
+舊私有 `DiagnosticEventFields` 直接印 `event.severity` 原始英文字串
+（`"warning"`），跟 `Diagnostics.tsx` 用中文標籤（`"警告"`）不一致——
+消掉這份重複的直接結果就是兩處現在都印中文標籤，`IvHistory.test.tsx`
+既有一條斷言原文字比對 `"warning"` 因此改成比對 `"警告"`（唯一因這次
+重構而變的既有斷言）。`InlineDiagnostics` 版面依需求方裁示調整為
+「錯誤摘要 → Copy diagnostics 按鈕 → 下方完整 diagnostic details」
+（跟 Settings 那邊 `EventDetail` 「fields 在前、Copy 在後」的順序刻意
+不同，兩處各自組裝、共用的只是欄位清單元件與 Copy 按鈕本身）；新增
+`message` prop 讓純請求層失敗（無結構化 events 可看）的情境也能把
+錯誤訊息一起放進複製內容。收合／展開行為（`<details>`／`<summary>`）
+原樣保留，clipboard 不可用時沿用既有的唯讀 `<textarea>` fallback。
+
+**測試**：`IvHistory.test.tsx` 新增 9 條（loading 中卡片已在原位顯示
+骨架＋資料到位後骨架消失卡片數不變、Spread 兩個次層方塊／Long Call
+一個、error 狀態沿用同一版位、無資料狀態卡片照常在、Copy 按鈕版面
+順序、Copy 內容含 correlation ID 與事件清單、請求失敗時 Copy 內容
+帶錯誤訊息、clipboard 不可用時 fallback、收合展開行為保留）；既有
+1 條斷言改比對中文標籤（見上）。`Diagnostics.test.tsx` 11 條原樣
+全綠（抽出共用模組沒有改變任何可觀察行為）。E2E 手機＋桌面各新增
+2 條（固定版位骨架、Copy 按鈕版面順序＋clipboard 內容＋收合展開），
+共 4 條，用 `page.context().grantPermissions(["clipboard-read",
+"clipboard-write"])` 讓 headless Chromium 真的能讀寫 clipboard 驗證
+複製內容，而不是只斷言按鈕存在。
+
+**全套綠燈**：後端 pytest 全綠（本輪未觸碰後端，純確認無回歸）；
+前端 `typecheck`／`vitest`（535）／`build` 全綠；E2E `playwright test`
+（iPhone＋Desktop 共 75 條）全綠。
+
+**交付**：commit＋push 到 `claude/implement-tfm9oa`，依需求方指示
+不開 PR。
+
+### 第七輪研究（2026-08-16）——Historical Rich/Cheap canonical methodology 重新確認（只研究不施工）
+
+需求方 `/research` 指示：**重新確認** canonical methodology，明令
+**不得因既有實作已經做了 fixed-(tenor, delta) 就給 sunk-cost 優勢**，
+也不得預設 `IV − realized vol` 就是 fair-value residual。產出
+`docs/research/historical-rich-cheap-canonical-methodology.md`
+（16 節、70KB）。未改動任何 code、未開 issue。
+
+**裁決＝C（hybrid），但是非對稱、界線寫死的 hybrid**：
+- 最直接回答「這張現在貴不貴」的是 **A 家族的 fair-value residual
+  本身**，不是它的歷史。SAS 定義 `SAS(K,T)=Σ_market−Σ_H`，`Σ_H` 由
+  **標的報酬史**推出，**不需要這張合約的任何報價歷史**【一手原文】。
+- 能掛 1Y 走勢圖／percentile／Δ4w 的 canonical 量**只能是 B 的
+  fixed-(tenor, delta) 重錨定序列**——理由是與 vendor 無關的可得性
+  算術：A 需 `L ≥ D+T`、B 只需 `L ≳ D`。真實 fixture 的 TLT LEAPS
+  D=882 天時 A 需 L≥41 個月 > 39 個月掛牌上限，**A 在數學上不可能，
+  換誰家、付多少錢都一樣**。
+- **`IV − realized vol` 明確否決**：SAS 第 1 頁把它列為與 SAS 並列的
+  **另一把尺**、「options replicators 的指標」、「有 skew 時就不精確」
+  【一手原文】。它量的是 variance risk premium，不是這張合約的錯價。
+- **結構性死路**（殺掉 full-SAS 路線）：SAS 裡唯一大得過摩擦的成分
+  （level ≈ IV−RV）是 **GS 自己主動歸零**的那一半（SAS_ATM）；剩下
+  可信的 skew richness 實測只有 **0.15–0.5 vol 點 vs 買賣價差半寬
+  0.80–2.65 vol 點**。
+- **引擎實算（新增、決定性）**：環境凍結下把 DTE 882→252，raw gap
+  與 Ĝ 同步漂移 **+87%**（÷ATM 不能消除 roll-down），同座標殘差漂移
+  **0.000**——這是 A 唯一真實的結構優勢，但在本產品 tenor 上用不到。
+- **Spread 合成**：逐腿 residual → 各自 vega → price 空間、依部位符號
+  相加；**單一「Spread IV」否決**（net-volatility 在真實 TLT 部位上
+  解出 −0.74 vol 點，1% vega 擾動跳 0.41 點）。
+- **必要 normalization（保留）**：固定 tenor、固定 delta、不外插、
+  skew ÷ ATM、rank 統計量。**不該當訊號**：買腿 IV percentile 當
+  「貴不貴」的答案、Ĝ 絕對值跨候選比較、Δ4w 當方向、觀測 <10 筆的
+  percentile、貼網格邊界的 ATM 內插。
+
+**⚠ 順帶標出一個可驗證的風險（非已確認 bug）**：`ivhistory` 的
+delta 座標用引擎 `q=0`（#122 紅線），vendor 曲面網格的 delta 若帶
+股利，同一張真實 TLT LEAPS 是 0.7194（q=0）vs 0.4478（q=4.5%），
+查表會落在 **K=74.03 而非 K=85**、系統性偏 **−1.95 vol 點**。
+vendor greeks 的 q 慣例在沙箱無法驗證（#111）。
+
+**唯一殘留 blocker**：TLT 這類 ETF 的**實際**最長掛牌前置期 L（目前
+只能界定在 [29, 39] 個月）。它只影響 18–29 個月 tenor 那一段的 A vs B
+邊界，**不影響 882 天核心情境的裁決**。
+
+⚠ **本輪沒有任何【官方文件】等級證據**：交易所／OCC／vendor 官方網域
+（`docs.marketdata.app`／`cboe.com`／`theocc.com`／`sec.gov` 等）在沙箱
+全數 CONNECT 403 或 DNS 解析不到，掛牌規則整節是【二手轉述】。
+`raw.githubusercontent.com` 仍是唯一一手通道——本輪由此取得 **SAS 全文
+PDF** 與**一份真實 Cboe 全鏈 JSON**。證據分級統計：【一手原文】35、
+【官方文件】3、【二手轉述】36、【自行推論】37。
+
+**下一步**：等需求方審閱裁決。**本輪不施工、不開票。**
+
+### 最新狀態（2026-08-14）——「貴不貴」第六輪研究：Rich/Cheap Trend／entry timing（只研究不施工）
+
+需求方 `/research` 指示本輪只研究、不修改程式碼：在既有「現在相對
+歷史站在哪」（percentile／座標正規化／橫斷面殘差）之上補**時間軸
+動態層**——這組 Call／Vertical Spread 現在便宜/正常/貴**且正在往哪
+走**，回答「再等有沒有合理機會拿到更好進場價」，且必須拍板單一
+方案、不開菜單。產出 `docs/research/rich-cheap-trend-entry-timing.md`。
+⚠ 派工前發現本紀錄區漏了三份 2026-08-13/14 的研究文件（
+`option-richness-assessment-methods.md` 第四輪——其【repo 實證】段
+因 checkout 倒退已自我標注不可信、
+`directional-option-fair-value-workflow.md`、
+`modern-surface-methods-rich-cheap-architecture.md` 第五輪四層
+Rich/Cheap Engine 架構），先前 session 未記入，以檔案本身為準；
+本輪文件 §10 已與第五輪架構逐點對位（承接 Layer 0–2 不動、拍板
+第五輪刻意留白的時間層、無衝突）。
+
+**最終拍板：既有 Historical IV Position 序列上的「Percentile＋Δ4w」
+趨勢層**——零新增資料源、零新增 vendor 呼叫，`field_metrics()` 對
+既有四欄位各純加法新增 `{trend_4w, trend_base_date}`：Δ4w＝最新
+觀測 −「[today−42, today−21] 容忍窗內距 today−28 最近的一筆」，
+窗內無點誠實留白「4週 —」（沿用 `iv_at()` 不外插哲學）。Long Call
+主讀數＝買腿 IV percentile＋Δ4w（level 語言）；Spread 主讀數＝
+Normalized Skew Ĝ percentile＋Δ4w（skew 語言，兩腿 IV 次層）——與
+MVP V3 資訊權重一致，且引擎實算背書：spread net vega 僅裸買腿
+40%、gap 敏感度為 level 兩倍（1 gap pt ≈ 11.6% of debit vs 裸腿
+12.3%/pt）。呈現只延伸既有 caption 一格「第 P 百分位・N 筆觀測・
+4週 ±X」，帶正負號原始變化量、量自身單位，無顏色/箭頭/象限標籤/
+預測句；方法論尾註補 Δ4w 定義＋「等待另有 spot 風險與 theta 成本」
+誠實條款（引擎實算：等一週 spot 不確定性 ±19% of debit、一個月
+±39%、LEAPS theta ~0.8%/週——指標只 scope vol 分量，不假裝能 time
+spot）。4 週 lookback 落在三個獨立來源家族收斂的 IV level 因子
+half-life 證據帶（GARCH α+β 0.97–0.99→23–34 交易日；Cont–da
+Fonseca τ≈28/51 天；Kamal–Derman 低維結構）＋FX RR 1M lookback
+成文慣例＋既有抽樣密集段（≤90 天每週 2 點）可靠支撐 Δ4w 而撐不起
+Δ1w／Δ3m。
+
+**明確否決（各附證據）**：IV Rank（第一輪原判）、z-score（離群值
+敏感＋常態假設不成立）、volatility cone（Burghardt–Lane 1990——
+另一題：IV vs RV 分布；其 tenor-matching 紀律已被固定 (tenor,
+delta) 座標繼承）、per-symbol half-life／AR(1)／OU（66 點/年不等距
+抽樣估不出，文獻 half-life 只用來校準 lookback、不做成 per-symbol
+顯示）、model-based expected drift／任何 forecast（facts-only 紅線
+＋Harvey–Whaley 1992：IV 變化統計可預測但扣成本無 edge）、
+term-structure slope 進場訊號（Simon–Campasano 一手全文：基差不
+預測 spot vol 變化、只反映可收割溢酬）、Markov regime-switching
+（desk 級部署證據缺席）。本輪新增三份一手全文（GitHub 鏡像
+`emintham/Papers`：Simon–Campasano 2012、Cooper 2013——momentum
+活在 ETP carry 層非 spot vol 層、Carr–Wu 2005）。enrich-only 紅線
+（spec #117）結構性繼承——趨勢欄位只進 iv-history 端點，
+ranking/filters 不 import ivhistory 的既有測試保證原樣有效。
+**已進 spec：issue #137**（2026-08-14 `/to-spec`，`ready-for-agent`）。
+
+### Spec #137——Rich/Cheap Trend：Δ4w＋一年走勢圖＋Long Call 納入
+
+需求方與顧問討論後裁示（對話 0014／0015）：框架採第六輪研究的
+「Percentile＋Δ4w」，但 **UI 改為走勢圖為主**——不是只顯示 P22，而是
+直接看一年走勢圖（percentile 給位置、圖給路徑、Δ4w 給最近速度，
+三者互補）；且明示「我要的是尺，不是預言機」，不接受 ARIMA／ML／
+regime model 這類「模型一換答案就變」的東西。Long Call 一併納入。
+
+**兩道 Grill Gate 已於 spec 內查證答覆，施工時不必重查**：
+
+- **Gate 1（Spread 主追蹤量：Ĝ vs package cost）→ 維持 Ĝ**。依據
+  第三輪 `spread-price-percentile-vs-vol-space.md`：price 空間被
+  dominated（引擎實算 r 3%→5% 使 TLT LEAPS spread 理論價 +26% ≈
+  gap 動 4 個 vol 點，而該實例 raw gap 總共才 6 pts；另需歷史股息率、
+  q=0 引擎高估近一倍；per-candidate 無業界先例）。**但顧問點出的
+  「skew 漂亮但 vol level 高、debit 仍比歷史貴」是真的**——解法不是
+  換掉 Ĝ，而是**買賣腿 IV 各自擁有完整走勢圖＋percentile＋Δ4w**，
+  水位與結構形狀兩個軸並陳，不融合成一個數字（融合就必須進被利率／
+  股息汙染的 price 空間）
+- **Gate 2（四元件成熟度與假訊號）→ 全部是成熟穩定的「尺」**：重錨定
+  ＝雙軸線性插值嚴格不外插（無擬合／無最佳化器）、Ĝ＝純算術對 r/q
+  零敏感、percentile＝rank statistic 本質抗離群、Δ4w＝減法。
+  **唯一真正新增的風險是 Δ4w 的兩點脆弱性**（percentile 在 ~66 點上
+  抗得住一筆爛報價，兩點差抗不住）→ **決策：基準改取 [21,42] 天窗內
+  觀測的中位數**（密集段每週 2 點、該窗典型約 6 筆），不是單一最近點；
+  除既定窗口外不引入任何可調參數，仍是尺。其餘假訊號源（稀疏 LEAPS
+  chain、delta 軸邊緣、插值平滑、vendor 報價、#111 blocker）逐項盤點
+  於 spec
+
+**契約為純加法**：`field_metrics()` 每欄位新增 `trend_4w`＋
+`trend_base_count`；`value`／`percentile`／`count` 語意完全不動。
+**Long Call 是新增能力不是改顯示**——現況 `spread_coordinates()` 對
+單腳直接回 None（MVP V3 明文只做 Spread），需新增單腳座標路徑，
+Ĝ 與賣腿 IV 誠實回 None。走勢圖沿用 `SpreadHistory.tsx` 既有形態
+（手刻 SVG、幾何抽純函式、y 軸固定、缺值斷線、tooltip），不引入
+圖表函式庫。**#135「壓到合理最低」在本區塊被「走勢圖為主」覆蓋**
+（需求方新裁示，非遺漏舊裁示）。enrich-only 與 facts-only 紅線原樣
+繼承，並新增「禁止任何預測語句」。
+
+**拆票完成（2026-08-14 `/to-tickets`，五張全掛 `ready-for-agent`）**，
+依 #137 一比一切五張。
+
+**施工完成（2026-08-14 `/implement`，依序單線施工、不平行）**：
+
+- **RCT-01** [#138] — Δ4w 引擎純函式＋API 契約純加法（commit
+  `0158dc7`）：`ivhistory.trend_4w()`＋`field_metrics()` 擴充
+  `trend_4w`／`trend_base_count`；中位數守門測試（離群觀測不改變基準）
+  已涵蓋
+- **RCT-02** [#139] — Long Call 單腳 Historical IV 資料路徑（commit
+  `1864ba1`）：`spread_coordinates()`／`reanchor_spread()` 開通單腳，
+  option_type 隨座標回傳供曲面查找（避免 Long Put 誤用 call 網格）。
+  **施工中發現並一併修正的上層阻擋**：`store.find_candidate()` 原本
+  只搜 `expiry_top10`（T9 附錄A7：single-leg 恆為空），單腳候選過去
+  在這一步就找不到——修正為沒有 `expiry_top10` 分組的策略才退去搜
+  扁平 `candidates` 清單，兩腿路徑零回歸
+- **RCT-03** [#140] — 一年走勢圖為主體＋Percentile＋Δ4w＋雙模式版型
+  （commit `0ffc84e`）：新增 `src/ivHistoryChart.ts`；`IvHistory.tsx`
+  全面重寫，Spread 模式 Ĝ 主位＋買賣腿次層、Long Call 模式買腿 IV
+  主位＋ATM IV 次層；Normalized Skew 現值格式一併修正為無因次小數
+  （與新增 Δ4w 同語言，避免同一欄位兩套單位並列）；#135 壓平裁示在
+  本區塊被覆蓋
+- **RCT-04** [#141] — 桌面／手機整合＋缺資料狀態全景 E2E（commit
+  `6c3537e`）：67 個 E2E 案例（41 手機＋26 桌面）全綠。**施工中發現
+  並修正**：(1) 真實 App 導覽路徑（`baselineTopCandidate`＋
+  `_MVP_STRATEGIES` 皆 Spread-only）結構上走不到 Long Call 模式，比
+  #139 更上層，不在本輪範圍——Long Call 版型改依賴 RCT-03 的 Vitest
+  元件測試驗證；(2) 既有 E2E fixture 用 250 點模擬全年歷史，遠超引擎
+  `sampling_schedule` 實際約 55–75 點的密度，250 個 8px 圓圈擠在手機
+  走勢圖裡嚴重重疊、連自動化都點不準——改為 66 點貼近真實密度
+- **RCT-05** [#142] — 最終 regression gate（commit `a87a9c6`）：
+  `test_selection_regression.py` 新增行為＋結構雙重證明——用力呼叫
+  本輪全部新函式夾在兩次 identity snapshot 之間身份不變；
+  `ranking.py`／`filters.py` 原始碼不含 `ivhistory` 字樣。
+  pytest／typecheck／build／vitest（508）／e2e（67）全綠，未紅燈
+  調整任何斷言
+
+**spec #137 五張票全數完成，等需求方實機驗收；PR 未開，等 cue。**
+
+> 本 session 內容器 checkout 曾五度自行倒退到 `4d3cea3`（V1 期）——每次
+> 都在寫檔前 `git rev-parse HEAD` 核對抓到，用 `git fetch origin
+> claude/implement-tfm9oa && git merge --ff-only origin/claude/
+> implement-tfm9oa` 復原，未造成任何內容遺失。後續 session 若遇到同一
+> 個 HEAD（`4d3cea3`），這是已知的容器陷阱，不是需要調查的新狀況。
+
+### 最新狀態（2026-08-12 第四輪）——Historical IV 綁定修正＋壓平＋Refresh 漸進解鎖
+
+需求方三段 `/to-tickets` 指示，三張票全數完成並推上
+`claude/implement-tfm9oa`（未 merge master、未開 PR）：
+
+- **#134** ✅ 長天期候選 Historical IV「連線成功但無資料」root cause
+  修正（commit `81c91b5`）。**真因**：Market Data App 的
+  historical chain 端點（`GET /options/chain/{symbol}/?date=...`）
+  不帶 `expiration` 篩選時，官方文件明載只回「下一個月選」——對
+  LEAPS 等長天期候選的曲面永遠覆蓋不到其座標，`ivhistory.iv_at()`
+  依既有不外插紅線全部回 `None`，呈現成「連線成功但無資料」。修法：
+  新增 `ivhistory.nearby_expirations()`，從這個 Scenario **已經分析
+  過**的到期日（`view["results"][i]["expiry_counts"]`，zero 額外
+  vendor 成本）裡挑出離目標 tenor 最近的幾個（預設上限 4 個，短天期
+  ≤45 天刻意回空、沿用免費的 vendor 預設），`_backfill_iv()` 逐一
+  帶 `expiration=` 打、合併成同一天的曲面再存一次——不用
+  `expiration=all`（會扣光整條鏈額度）。`map_surface_payload` 同時
+  補上 `s == "no_data"` 視為合法空結果（不是 vendor 故障），這是帶了
+  單一到期日篩選後的常態撲空，原本會誤判成錯誤中止整批 backfill。
+  次要修正：`leg_coordinate()` 計算 delta 原本硬編 `rate=0.0`，改讀
+  候選自己的 `rate_used`（`CandidateView.rate_used`，與正式估值管線
+  `leg_rate()` 同一個數字）；`q=0` 沿用既有 #122 紅線（分級用途 delta
+  恆用 q=0／vendor IV）不變。Test Connection 職責完全未動
+- **#135** ✅ Historical IV UI 依 `docs/Mvp-v3-appendix.txt` 壓平
+  （commit `225573a`）。核對結果：資料綁定語意（每次都是當前候選的
+  `candidate_key`）與資訊優先序（Normalized Skew → Buy Leg IV →
+  Sell Leg IV）本來就正確，真正的落差在視覺密度。`.iv-history` 內距
+  比照 `.summary-card` 密度覆寫（16px→12px）；每個指標從 label／
+  value／百分位三行堆疊壓成兩行（標籤＋百分位同一行、數值自己一行，
+  新增 `.iv-metric-head`）；sparkline 高度 24px→18px、兩腿寬度再收窄
+  56px。只陳述事實、不加評價字眼的既有測試守門不變
+- **#136** ✅ 整輪刷新逐劇本漸進解鎖與即時排序（commit `098b3b9`）。
+  排進刷新佇列的當下（整輪、單一劇本重試、建立後那一批，三者共用
+  同一條佇列）立刻反灰＋拿掉 `href` 禁止點入；每個劇本一完成（成功
+  或失敗）立刻從 `lockedIds` 移除，不必等整條佇列跑完，並用最新
+  `best_return` 立刻參與已完成區排序。新增純函式
+  `scenarios.partitionByLock()` 把清單拆成「已完成」（照舊排序）與
+  「還鎖著」（維持佇列順序、不參與排序）兩段，`ScenarioList`／
+  `CompactScenarioList`／桌面 `ScenarioDetail`（`refreshLocked` 提示，
+  搶在其他內容之前）共用同一套 `lockedIds` 狀態。失敗也會解鎖、沿用
+  既有 yellow／stale 語意，不會永久反灰。未新增第二套 refresh
+  pipeline、不刪除任何舊快照資料。順帶修掉 `App.test.tsx` 三個既有
+  測試的隱性競態（多了一次 `setLockedIds` 的 setState 讓沒等開站那輪
+  批次刷新落定就操作的舊測試現形），補上與檔案內既有測試一致的
+  settle wait，不是放寬斷言
+
+**回歸紅線全數確認未變**：Spread ranking／filtering／candidate
+generation／`expiry_best`／`expiry_top10`／代表候選身份／
+`best_return` 排序語意（`sortScenarios` 本身未改，只是新增
+`partitionByLock` 包一層）、#118 選取身份回歸 12/12。
+
+**測試現況**：Python 1119、前端 482、E2E 61（桌面＋手機兩個
+project），#118 選取身份回歸 12/12，全綠（Postgres adapter 以本機
+PG16 實跑，非 skip）。
+
+**遺留待需求方處理**：#134 的修法依賴「這個 Scenario 已經分析過的
+到期日」作為目標 tenor 的候選池——若使用者在同一 symbol 上只分析過
+單一窄範圍的到期日（例如只看過近月），第一次查詢遠期 LEAPS 候選的
+Historical IV 時，`nearby_expirations()` 仍會用手上有的最接近選項
+嘗試（不會完全空手），但涵蓋精確度不如已分析過多個到期日的情況；
+理論上限——Market Data App 官方文件是否真的支援 `?date=` 搭配
+`&expiration=` 兩參數同時使用**沒有在沙箱驗證過**（沙箱對
+`api.marketdata.app` 出口網域仍是 CONNECT 403，本輪修法完全依賴
+WebSearch 轉述的官方文件內容），需要需求方在有真實 token 的 production
+環境實測確認。
+
+### 最新狀態（2026-08-12 第三輪）——移除 Historical IV 的 coverage 門檻
+
+需求方裁示：Historical IV 的問題定義是「目前 IV 在實際取得的有效歷史
+observations 中位於什麼位置」，只要有至少一筆可比較觀測就該顯示
+percentile，不得因 coverage 低、樣本稀疏、或觀測數低於任何固定門檻而
+隱藏——這推翻了第二輪 #130／#131 裡「coverage < 0.5 就不給 percentile」
+「status 不是 ok 就整段換成短訊息」的設計。
+
+- **#133** ✅ 移除門檻，percentile 一律呈現並揭露觀測筆數（`8bae985`）。
+  `_IV_MIN_COVERAGE`／`coverage_ratio()` 整組刪除（那個函式的唯一用途
+  就是這個門檻，門檻拆了它就是死碼）。純函式層（`weighted_percentile`）
+  本來就沒有 coverage 判斷，這次修正跟 #128 的抽樣／加權演算法沒有衝突
+  ，不需回頭改動。`weighted_percentiles_of()` 換成 `field_metrics()`：
+  每個欄位各自回 `{value, percentile, count}`，`count` 是這個百分位
+  背後有幾筆有效觀測，讓使用者自己判斷資訊強度——不是產品替他判斷
+  「樣本不足不值得看」。`status`（ok／quota／vendor）語意改變：只描述
+  這次 backfill 嘗試的結果，不再影響 percentile 顯示；已快取的觀測不
+  因今天撞額度就被藏起來，變成疊加在指標之上的一行附加說明。前端
+  `metricCaption()` 把百分位與觀測筆數合成複合標籤（「第 62 百分位・
+  45 筆觀測」），是需求方「P90 · 9/10」語意示例的落地呈現。**#130／
+  #131 補了留言標明哪些敘述被取代**（門檻機制本身，其餘 progressive
+  backfill／enrich-only／閘門紅線不受影響，下方 bullet 內容以此為準
+  ，不再逐一更正）
+
+**測試現況**：Python 1103、前端 471、E2E 61，#118 選取身份回歸 8/8，
+全綠。
+
+### 最新狀態（2026-08-12 第二輪）——quota 架構＋編輯劇本
+
+需求方最終產品模型（A–E 段）拆成 6 張票並全數完成，推上
+`claude/implement-tfm9oa`：
+
+- **#127** ✅ Historical IV 共用 credential（`9772733`）。規則：token
+  輸入框只出現在**由上而下第一個使用該 Provider 的自訂列**，其餘列顯示
+  「與上方共用 credential」。這同時解掉「兩列都自訂時輸入框該在哪」與
+  「只有 Historical IV 自訂時無處可設」兩種情況
+- **#128** ✅ 抽樣排程＋時間加權 percentile（`1c4f8f8`）。近 90 天每週
+  約 2 點、90 天到 1 年每週約 1 點，全年約 66 點而非 250+；窗仍是完整
+  1 年。挑哪天由 `crc32(symbol:week)` 決定——**不能用內建 `hash()`**，
+  str 雜湊每個 process 都不同，排程會每次重啟就變、backfill 永遠追一份
+  移動的目標。Voronoi 時間權重，單點代表上限 14 天（沒有上限的話一段
+  長空窗會讓緊鄰的那一點吃下整段權重，那就是插值）
+- **#129** ✅ per-symbol 觀測快取（`04a277d`）。鍵是 (symbol, 日期)，
+  **沒有 scenario 欄位**——資料模型上就不可能因 target/scenario 不同而
+  分家。刪 scenario 不清快取
+- **#130** ✅ progressive backfill ＋ quota 感知端點（`7153c06`）。已有
+  日期不重抓、每 symbol 每天只跑一批、每批上限 25 天（約三天補齊）。
+  `QuotaExhausted` 繼承 `FetchError`（既有降級鏈行為不變，但在乎的
+  呼叫端分得出「今天別再試」與「這次剛好失敗」）。status 不是 ok 就
+  **不給 percentile**
+- **#131** ✅ 五種狀態的簡短呈現（`dd5754b`）。資料不完整時只出三行以內
+  短訊息，不畫 percentile／sparkline
+- **#132** ✅ 編輯劇本（`aa106bf`）。沿用建立表單切編輯模式；標的不可改
+  的防線在後端請求模型（根本沒有 symbol 欄位）；取消隨時可按；儲存走
+  PATCH 同一個 id，不是刪除＋重建；thesis 變了才清舊結果
+
+**測試現況**：Python 1098、前端 469、E2E 60，#118 選取身份回歸 8/8，
+全綠（Postgres adapter 以本機 PG16 實跑，非 skip）。
+
+**容器又倒退過一次**：HEAD 掉回 4d3cea3、origin 領先 188 個 commit，
+依指示以 origin 為唯一真相 `git reset --hard` 復原後才施工。
+
+### 最新狀態（2026-08-12 第一輪）——Settings／Historical IV
+
+**依需求方 2026-08-12 的 Provider 裁示改票後施工，四張已完成並推上
+`claude/implement-tfm9oa`；#111 卡在 credential，見下。**
+
+- **#124** ✅ 設定頁＋預設／自訂＋Provider Token 安全儲存（`a555fde`
+  → 重做為 `7841a2c`）。`Data / API` 兩列各自「預設／自訂」，預設值
+  Cboe 與「無」。自訂只能挑 `api_app/providers.py` 白名單（目前只有
+  Market Data App），後端 pydantic 驗證是防線、前端下拉只是方便。
+  UI 文案只寫「目前支援」「需自行申請 API Token」，測試擋「推薦」／
+  vendor 比較／未來規劃。**credential 以 provider 為 key**，兩列選
+  同一家天然共用同一把，第二列顯示「與 X 共用」而不是再要一次。
+  完整 token 永不回前端／log／事件紀錄／fixture，三處各有明文斷言
+- **#125** ✅ 測試連線三態＋Market Data 自訂與 fallback（`7baf52c`）。
+  狀態其實是四個值：**未設定／尚未驗證／已連線／驗證失敗**——存了
+  token 不等於測過。驗證失敗回 200（那是預期內的答案，不是請求失敗）。
+  自訂來源接在既有 Cboe→yfinance 降級鏈**前面**，失敗即退回並把該次
+  失敗記成一次驗證失敗，設定頁因此自動顯示原因，**不可能靜默退回**
+- **#126** ✅ Historical IV 端點與閘門（`ceabea4`）。新增
+  `option_chaser/ivhistory.py` 純函式：(tenor, delta) 逐日重錨定、
+  不外插（含「tenor 在範圍內但一端 delta 蓋不到」也算出界）、
+  percentile 用「小於等於」含等於。閘門判準只寫一次，鎖著時 403 且
+  **零 vendor 請求**（注入會 assert 失敗的假體守門）
+- **#114** ✅ Historical IV 呈現層（`3c7a01d`）。填進 `ScenarioDetail`
+  既有的 `IVPositionSlot` 佔位。Normalized Skew 頭條、兩腿次層
+  （階層是結構性的，E2E 比對 computed font-size）；sparkline 缺值
+  **斷線不插值**；評價字眼由測試守門
+
+**enrich-only 紅線用結構保證而非巡邏**：`ranking.py`／`filters.py`
+根本不 import `ivhistory`（有測試斷言原始碼裡沒有那個字），IV 序列走
+自己的端點、不摻進 view dict；另有測試證明解鎖前後候選身份與順序逐一
+相同、IV 端點掛掉不影響刷新。
+
+**⚠ #111 仍未完成（唯一未結項）**：需要 (1) 一把 Market Data App
+token（需求方免費註冊），(2) 一個打得到 `api.marketdata.app` 的環境
+——agent 沙箱對該網域回 CONNECT 403（本輪 curl 複驗）。已備妥
+`scripts/probe_marketdata_app.py`（四關：認證／即時全鏈＝#125 adapter
+的實際路徑／**歷史整鏈含 delta**／單合約序列對照組），在可連網環境跑
+完把 JSON 貼回 issue 即可結案。**Market Data App 的 wire format 因此
+尚未經真實回應驗證**——`marketdata.py` 的欄位對應依官方文件撰寫，
+解析失敗一律收斂成 `FetchError`，所以寫錯的後果是走備援、不是分析
+炸掉。需求方裁示「照文件形狀先全做完」，之後用真實回應校正。
+
+**一次施工事故，記著別再犯**：`claude/implement-tfm9oa` 遠端有 69 個
+commit（整段 MVP V3 continuation），本機那份 ref 是舊的，我照 master
+重開分支就把它們蓋掉了，#124 因此是在錯的基底上做完的。push 被
+non-fast-forward 擋下才發現，改成「還原遠端分支 → merge master →
+cherry-pick」重做。**動分支前先 `git fetch` 該分支本身，不要只 fetch
+master 就相信本機的 remote-tracking ref。**
+
+**環境補充**：本輪為了真的驗證 Postgres adapter（而不是讓它 skip），
+在沙箱起了本機 Postgres 16（`/usr/lib/postgresql/16/bin`）跑契約測試
+——`OC_TEST_DATABASE_URL` 一設，memory 與 postgres 兩組都實跑。過程中
+它抓到一個 memory-only 測不到的真 bug（merge 後 `postgres.py` 少匯入
+`ProviderVerification`）。venv 另補裝了 `psycopg[binary]`。
+
+**測試現況**：Python 1015、前端 451、E2E 55，全綠。
 
 ### 目前狀態（2026-08-02，PR #43、#46 已 merge）
 
@@ -1291,9 +2601,127 @@ tracking #86 本身，加上此前兩輪（PR #76「前端重練＋QA 維修輪�
 #67–75、PR #85「MVP V2 手機版劇本庫」涵蓋 #78–84）早就出貨卻忘記
 關閉的 16 張舊票，逐一核對 commit 訊息確認涵蓋後全數關閉。
 
-**待辦**：無——這一輪已全數施工完畢並 merge，等需求方 cue 下一階段。
+**待辦**：無——這一輪已全數施工完畢並 merge。下一輪＝IV 歷史判讀
+研究輪（見下一小節），需求方已於 2026-08-07 指示「先研究，不施工」。
 
 > 沿用規則：全部票做完才開 PR、merge 回 master，中途不主動開。
+
+### 下一輪研究：歷史 IV 資料源＋IV 相對歷史方法論（2026-08-07，只研究不施工）
+
+需求方 2026-08-07 指示「下一輪先研究，不施工」，範圍 A＋B 兩題，
+已完成、產出兩份研究文件（皆在工作分支 `claude/implement-tfm9oa`，
+未開票、未施工）：
+
+- **A. Historical Options / IV Data 資料源比較**
+  （`docs/research/historical-options-iv-data-sources.md`）：17 個來源
+  逐源判定能否按需重建歷史 spread debit（Buy Ask − Sell Bid）＋歷史
+  IV。「不自存 chain、資料庫負擔最低」是需求方硬約束，bulk 檔案商
+  全數如實比較但標明衝突。**交集候選四家**：ORATS（2007 起、選擇權
+  專業血統）、Market Data App（單合約一次呼叫回整段日序列，與
+  SpreadHistory 形狀天然對齊；免費層可實測）、Alpha Vantage
+  `HISTORICAL_OPTIONS`（與既有備援同一家金鑰可共用；免費層資格
+  懸而未決）、EODHD（欄位最齊但只回溯 2023 Q4）。**Yahoo/yfinance
+  查證確認沒有歷史選擇權鏈**（僅合約成交 OHLC）；Theta Data 資料面
+  最強但 REST 靠本機常駐 Java Terminal、與 Vercel serverless 衝突。
+  ⚠ 價格數字全為搜尋索引轉述（沙箱 EGRESS_BLOCKED，實測三域確認），
+  文件 §7 列出待原件查證清單與**三步近零成本驗證優先序**（Market
+  Data App 免費層實測 → Alpha Vantage 免費金鑰 → ORATS 原件確認），
+  需在可連網環境（production 或需求方本機）執行。
+- **B. IV relative-history methodology**
+  （`docs/research/iv-relative-history-methodology.md`）：七問七答。
+  要點——同一 OCC 合約 1Y percentile 不成立（DTE 遞減＋moneyness
+  漂移＋LEAPS 上市不滿一年，無主流平台採用）；業界零售端主流是
+  **constant-maturity ATM IV 指數**的 Rank／Percentile（VIX／
+  IVolatility IVX／IBKR V30／tastytrade IVx／ORATS 六家同款；
+  IV Rank 與 IV Percentile 是不同統計量，thinkorswim 欄位名實算
+  Rank 是著名命名陷阱）；**不能簡單平均兩腿 IV**——§5 自行推導＋
+  引擎數值驗算：水位項權重是 net vega（差、會穿零變號）、skew 項
+  權重是平均 vega（不隨對沖縮小），平均會把 skew 曝險整個抹掉，
+  且「spread 單一 IV」數學上 ill-defined（debit 對 σ 非單調、一價
+  兩解）。**候選方案五案 A–E 供裁示**（推薦排序 A→E→B→C，D 不作
+  本題答案）：A＝標的層級 30d constant-maturity IV 指數 1Y
+  Rank+Percentile（資料最輕、解釋性最高）；E＝IV/HV 比值（零歷史
+  IV 需求、A 冷啟動期的保險）；B＝與劇本天期對齊的長 tenor
+  percentile（修 A 的 tenor 錯配，機制與 T12 期限對齊利率同構）；
+  C＝兩腿 surface 點 percentile＋skew 差（天花板、資料最重）；
+  D＝既有 V9 成本歷史加 percentile（不是 IV 判讀，須守標籤紀律）。
+  共同紅線：**任何 IV 環境指標都是標示層，不進排名／過濾／A14.2
+  成本口徑**，要影響入選屬口徑變更、需求方另行裁示。
+
+- **B-深化：candidate 層級 IV 相對位置**（2026-08-08，
+  `docs/research/candidate-iv-relative-value.md`）：需求方看完 B 後
+  追問「不要標的整體 IV，要指定 Buy/Sell legs 的 volatility 結構
+  相對歷史位置」，十問十答深挖專業市場做法。取材突破：經
+  raw.githubusercontent.com 鏡像取得**三份一手 PDF 逐字檢視**
+  （Zou & Derman《Strike-Adjusted Spread》GS 1999 全文、Natenberg
+  1994 第 10/18 章、Gatheral 2006 SVI 節），其餘外部域仍
+  EGRESS_BLOCKED。要點——desk 語言是三層拆解（level／skew slope／
+  surface residual），沒有人給 spread 單一 IV；**固定合約 Sell−Buy
+  raw IV gap 的 1Y percentile 不成立**（skew 斜率 ~1/√T 的
+  roll-down 等四混淆；引擎外推：DTE 882→252 天 gap 6.0→11.2 pts
+  零環境變化）；normalize 成熟工具箱＝÷ATM vol（Mixon 2011）＋
+  delta 座標（FX RR 可搬處）＋√t 加權（Natenberg 一手）；漂移解法
+  ＝每天在 surface 固定 (tenor, delta) 座標重錨定取值，vendor 現成
+  序列＝零自訂 bucket，**誠實缺口：LEAPS 882 DTE 超出 ORATS 365d／
+  OptionMetrics 730d 網格**（三條處理路線並列）。**四方案供裁示**：
+  一＝兩腿 (tenor,delta) 座標各自 1Y percentile【A 成熟】；二＝
+  candidate 錨定 normalized skew `Ĝ=(σ(Δs)−σ(Δb))/σ_ATM` 序列
+  percentile【B 延伸，對原始問題最直接的單一數字回答】；三＝固定
+  合約 raw gap 走勢圖（自家快照零成本；percentile 不做核心）【圖
+  B／percentile 化 C】；四＝橫斷面 surface 殘差（Cboe `theo` 零成本
+  起點）【A，但與歷史位置正交、card 上須分區】。C 類不建議：
+  vega-weighted spread IV、任何單一「Spread IV」、debit percentile
+  當 IV、RNHD/SAS 全套自建、CBOE SKEW 式全 smile 指標。Long Call
+  （level 語言、單點 percentile）與 Spread（skew 語言、gap）分屬
+  兩種 definition、同一 card 兩模式——有 FX 市場三維分報的專業對應。
+  ⚠ 側發現：引擎 q=0（無配息）在 TLT LEAPS 上 BS 明顯高估（實算
+  7.68 vs 市場 3.95）——不影響方案一~三，但**堵死用現有引擎自建
+  方案四殘差的捷徑**，文中已標警告。
+
+- **Wayfinder 地圖：「這組 Spread 現在貴不貴」**（2026-08-08，
+  需求方 `/wayfinder` 指示，地圖＝issue #95、子票 #96–#101）：
+  把問題從「IV 相對位置」升級為「貴不貴」的完整判讀路徑地圖——
+  九條路徑按參照系拆解（相對自身歷史／vol 環境／skew 歷史／鄰近
+  履約價橫斷面／同 payoff 等價品／候選池／隱含機率／自建預測／
+  price 空間結構價），逐條標「真正回答什麼、先例等級、去向」，
+  拆解表在 #95 本文。收斂出四張研究票**全數完成並關閉**，四份
+  新文件（皆已 commit 上工作分支）：
+  - **R1 [#96] 隱含機率讀數**（`spread-implied-probability-readout.md`）
+    ——可行且值得：`D/W = DF × 帶狀平均生存機率`（模型無關恆等式，
+    引擎驗證吻合）；零額外資料十行算術；先例成熟（desk digital
+    掛帳／BL／BoE·Fed implied PDF／FedWatch·Kalshi ¢ 慣例）；
+    陷阱＝必除 DF、寬帶不可標點機率、N(d2) 在 q=0 下不可用、
+    嚴禁標「勝率」
+  - **R2 [#97] Surface residual**（`spread-surface-residual-rv.md`）
+    ——可行且值得，定位「安靜的保險絲＋挑選品質客觀化」：最低可行
+    fit＝per-expiry 加權 OLS 二次式（DFW 1998 先例）、OTM-only、
+    ≥6 點；直接 fit Cboe `iv` 繞開 q=0；`theo` 殘差＝零成本 v0
+    （與自建二次式相關 +0.94~+0.98）；健康鏈殘差普遍低於 bid-ask
+    半寬底噪→輸出永遠並列底噪
+  - **R3 [#98] price 空間結構價 percentile**
+    （`spread-price-percentile-vs-vol-space.md`）——**負結論**：被
+    方案二（vol 空間 Ĝ）dominated；先例只在指數／基金層級（buffer
+    ETF cap 史等），per-candidate 無；利率主導長天期結構價（TLT
+    LEAPS 利率 2pp→價 +26%）是汙染；資料需求不少於方案二還要含 q
+    引擎
+  - **R4 [#99] Synthetic parity 檢查**
+    （`spread-synthetic-parity-check.md`）——**比價＝雜訊**（YETI
+    758 筆實算：88% 配對 gap 埋在自身交易成本內；「call 側貴」是
+    美式 box 未貼現定價假象）；唯一值得產品化＝`D_worst > width`
+    穩賠健全性紅旗（零成本，引擎 net_worst 已算好）；put credit
+    spread 當候選策略不建議本輪做
+
+**下一步**：需求方審閱七份文件（前輪三份＋本輪四份；建議順序：
+方法論 → candidate 深化 → R1 → R2 → R4 → R3 → 資料源）→
+**G1 [#100] Grilling 裁示「貴」的語意**（產品採哪幾個參照系；
+7b edge-vs-預測要不要進產品哲學）→ G2 [#101] 呈現與資料裁示
+（若選需歷史序列的路徑才需要三步驗證實測）→ 才進 `/to-spec`／
+拆票。**本輪不施工。**
+
+**需求方另保留兩個後續獨立 Grill（本輪明確不涵蓋，勿混入）**：
+- C. Long Call 如何與 Spread 正確比較／整合，不強行壓成單一 ROI
+- D. 跨劇本比較 workspace 應比較哪些維度、如何排序，以及是否採
+  Pareto frontier 而非總分
 
 ### 下一版 MVP（本輪明確不施工，已立案）
 
@@ -1332,6 +2760,433 @@ tracking #86 本身，加上此前兩輪（PR #76「前端重練＋QA 維修輪�
 
 > 沿用規則：反饋要先逐點跟需求方確認打算怎麼改、為什麼，確認完才
 > 開票施工；`/implement` 進行中沒遇到需人類裁示的事就不停。
+
+### MVP V3（spec #102，2026-08-09 拆票，第一施工批次已完結）
+
+需求基準：`docs/Mvp-v3.md`＋`docs/Mvp-v3-appendix.txt`；spec 全文與三輪
+Review 修訂見 issue #102。14 張子票 #103–#116，需求方 `/implement`
+指示本批次固定順序施工 9 張——#103 → #104 → #105 → #112 → #106 →
+#107 → #108 → #109 → #110，依序、每票測完即 commit＋push。**本批次
+不施工**：#111（`needs-human-validation`，vendor 驗證需可連網環境，
+本沙箱多數外部網域 403）、#113（被 #110＋需求方核准擋，人工裁示點）、
+#114（被 #103＋#111 擋）、#115（被 #113 擋）、#116（被 #115＋#109 擋）。
+
+**九張全數完成（2026-08-09）**，#110 是研究票、本批次終點——完整結果
+見批次總回報（本次對話回覆）。等需求方 review＋#110 correctness 裁示
+（是否進 #113），本批次不主動開 PR。
+
+- **#103** [#103] — 劇本詳細頁資訊階層重整＋移除追平價格 UI
+  （commit `669d653`）：`ScenarioDetail.tsx` 依決策 A 重排為 摘要 →
+  基準候選（新增：名次／B-S履約／策略／到期日／目標報酬，取自舊版
+  「劇本主圖」卡片拆出）→ 進場成本（新增：Buy Ask／Sell Bid／Net
+  Cost，沿用既有 `expiry.ts::legPrices()`）→〔Historical IV Position
+  插槽，`IVPositionSlot` 元件回傳 null，不輸出任何 DOM 節點〕→
+  Payoff Heatmap（瘦身後只剩圖本身）→ Price Ladder → Expiry Structure
+  → Advanced（候選池／分析報告／Spread 歷史／原始資料，四者相對順序
+  不變，沿用既有各自收合狀態）。獨立的「Long Call 追平價格」卡片
+  （`Catchup` 元件）整個刪除；前端純函式 `catchupContractLabel`／
+  `catchupView` 因此不再被任何 UI 呼叫，屬死碼一併刪除——後端序列化
+  欄位與計算函式（`catchup_price`／`_spread_catchup_price`／
+  `valuation.catchup_price`）依票上要求原封不動保留，僅供未來
+  migration／regression 測試使用。新增區塊順序回歸測試（鎖定 9 張
+  卡片依序的 `.section-title` 文字，同時證明 IV 插槽零 DOM 輸出）。
+  ⚠ **一項解讀記錄**：決策 A「基準候選」文字列了「策略」，與摘要卡
+  既有「策略」列重複——核對 wireframe 骨架後判斷為刻意重複，非疏漏，
+  兩處皆保留顯示。AC 檢查清單原文「Candidate Pool...僅調整順序」，
+  故候選池維持既有非折疊行為，未如票面 prose 摘要暗示的「Advanced
+  全部收合」擴大成把候選池也改成 `<details>`——AC checklist 優先於
+  prose 摘要，避免無謂 scope 擴張。
+- **#104** [#104] — 報價品質警示重整（決策 F，commit `9c47e8c`）：
+  `CandidateView` 新增 `wide_spread_warning`（僅 `is_spread_wide`）；
+  既有 `quote_warning`（zero_vol or wide_spread or fr>0.25）計算式與
+  `_build_groups` 的 `default_pair` 選取邏輯**逐字未動**，只是
+  `store._candidate()` 不再把它寫進 JSON——契約裡只剩顯示旗標。前端
+  `ExpiryStructure` 的 ⚠ 徽章改接 `wide_spread_warning`，文案改「Bid/Ask
+  過寬」；`filters.quality_flag_counts()` 的「報價非最新（今日無成交）」
+  改「今日無成交量」（同一函式同時餵 CandidatePool 與 CLI，golden
+  fixture 一併更新）。兩個舊字串加進 `test_redlines.py` BANNED 清單。
+  新增引擎測試覆蓋 AC 三案例（volume==0／friction>25% 各自單獨不觸發，
+  is_spread_wide 為真才觸發）；`test_grouping.py` 新增以真實 fixture
+  （`xyz_v4_six_expiries.json`／`xyz_v4_all_warning.json`）鎖死
+  `default_selection` 逐位元不變的回歸測試。
+  ⚠ **一項解讀記錄**：`_build_groups`內部的 `_row_badges`／
+  `ExpiryGroup.rows[].badges`（v4 舊「到期日分組比較」遺留結構，
+  `src/` 全站無任何消費者，已 grep 確認）仍以 `quote_warning` 餵
+  `"warning"` 徽章字串、維持原樣未動——AC 逐條列的「Candidate 契約」
+  「ExpiryStructure/CandidateRow 徽章」「CandidatePool 文案」皆明確
+  指向**現行 React UI**這一份契約，不含這個死碼結構；且動它會直接
+  碰觸 `_build_groups`（guardrail 明文「不得改變既有 default candidate
+  / ranking semantics」的核心函式），改動風險（`test_grouping.py`
+  既有斷言）遠高於效益（沒有任何畫面會顯示它），判斷維持不動。
+  **量測結果（不改動門檻參數，AC 要求）**：`xyz_v4_six_expiries.json`
+  （11 筆合格池）顯示旗標觸發率 9.1%（1/11，與原複合旗標持平，本樣本
+  唯一觸發者恰好就是 wide_spread）；`xyz_v2_snapshot.json`（8 筆合格池）
+  觸發率從原複合旗標 37.5%（3/8：wide+zero_vol+高friction 各 1 筆）
+  降至 12.5%（1/8）——兩份樣本皆未見「全頁候選全亮」，符合決策 F 的
+  sparse 設計目標，無需要求需求方裁示調參的情況。
+- **#105** [#105] — Analysis Report 瘦身為四區塊（決策 G，commit
+  `6643675`）：`AnalysisReport.tsx` 從七段落（一句話結論、7情境韌性表、
+  完成度曲線、風險與代價＋部位敏感度小節、進場執行、方法與假設＋過濾
+  統計、免責聲明）改為四個 AC 逐欄列明的固定區塊——Risk / Payoff、
+  Position Sensitivity、Execution、Model & Assumptions（折疊）。免責
+  聲明維持獨立不折疊，判斷為「不是四區塊之一，不在裁減範圍」，非疏漏
+  （AC 移除清單未列它）。底層欄位／CLI／契約樣本完全不動，純 UI
+  cleanup；新增 `mid_cost`（Candidate）與 `volume`/`open_interest`
+  （Leg）的 TS 型別宣告（後端早就序列化，只是先前沒型別）。
+  死碼清理：`reportConclusion`／`maxPayoutRatioText`／`costPctOfSpot`／
+  `breakevenDistancePct`／`completionThresholdText`／`SCENARIO_NAMES`
+  隨唯一呼叫端一併移除；`test_frontend_contract.py` 守護
+  `SCENARIO_NAMES` 前後端同步的測試（守護一個已不存在的 UI）一併移除；
+  孤兒 CSS（`.report-conclusion`／`.report-warnings`／
+  `.report-methodology-text`／`.report-table tr.worst`）一併清理。
+  ⚠ **兩項解讀記錄**：(1) AC 逐區塊的內容清單視為窮舉而非舉例——
+  `retention`／`completion_threshold`／`cons`／`guidance_warnings`／
+  `days_to_expiry`／`l2`／`l3` 皆不在任何一區塊的明列欄位中，判斷一併
+  移除（不是漏看，底層欄位仍在契約裡）；(2) Row 標籤採 AC 原文英文
+  （Breakeven／Net Delta／Execution Friction 等）而非另譯中文——與
+  Bull Call Spread／Bid-Ask Spread 等既有「標準英文術語」慣例一致，
+  Model & Assumptions 內部參數（利率／IV情境／Delta門檻／最低要求
+  報酬率）維持既有中文標籤，因 AC 未對這幾項重新指定名稱。
+- **#112** [#112] — 無風險利率透明化（決策 H，commit `7846eab`）：
+  `CandidateView` 新增 `rate_used`／`rate_tenor_years`，值直接取
+  `leg_rate(p, expiry)`（估值管線本來就在用的同一個查表函式）與
+  `_resolve_rates` 建 `rate_by_expiry` 同一條年期公式——不是另外重算。
+  Model & Assumptions 的利率列從「只講用了某條曲線」拆成四項：Rate
+  used（一律讀 `candidate.rate_used`，不是可能沒被用在估值上的
+  `params.rate` 常數）、Tenor（前端只格式化不換算）、Source（US
+  Treasury／CLI 明示／Fallback 常數，依既有三態旗標判斷字串，非新
+  財務計算）、Curve date（陳舊附 STALE、非曲線來源顯示「—」）。三態
+  語意沿用既有 `rate_curve_used`／`rate_curve_date`／`rate_curve_
+  stale`／`rate_explicit`，未新造狀態機。引擎測試涵蓋六到期日鏈多組
+  不同到期日，逐一驗證與查表結果一致。至此 #103–#105、#112 四張
+  「無依賴／被 #105 擋」的資訊階層票全數完成，回到主線依序 #106。
+- **#106** [#106] — Spread 淨成本走勢圖補刻度與 tooltip（決策 I，commit
+  `fcc6005`）：`SpreadHistory.tsx` 手刻 SVG 補 Y 軸（`Net Cost
+  ($/share)` 單位＋低/中/高三個刻度，讀既有 `yAxisDomain` 固定範圍
+  不變）與 X 軸（日期刻度，新增純函式 `xAxisTicks` 均勻取樣至多 4
+  個、恆含首尾）。資料點新增桌面 hover／手機 tap 共用同一套 state 的
+  tooltip（日期＋淨成本）。
+  ⚠ **開發過程中抓到並修掉一個真 regression**：`onClick` 原本寫成
+  切換（`idx === activeIndex ? null : idx`），但 `userEvent.click`／
+  真實觸控裝置會先合成一輪 hover 事件再送出 click——切換邏輯在那個
+  當下讀到「已經是這個 idx」，立刻切回 null，點了等於沒點。改成
+  `onClick` 直接設定（不切換）解決；已用 Vitest 的 `userEvent.click`
+  逐一驗證過（不是只看 hover 分開測、掩蓋這個交互作用）。
+  Day/Week/Month 切換與缺口不連線兩項既有行為皆有回歸測試覆蓋，未
+  加入 zoom／pan（AC 明文排除）。e2e：桌面 hover（`desktop.spec.ts`
+  新測試）＋手機 viewport 點按（`smoke.spec.ts` 既有測試擴充）皆綠。
+- **#107** [#107] — 原始資料二層收合（決策 J，commit `9eba7e4`）：
+  `RawData.tsx` 第一層 `<details>` 展開只留摘要＋下載 CSV 連結；逐筆
+  合約表格移進巢狀第二層 `<details>`（「查看逐筆合約資料」），需再
+  展開一次才渲染。抓資料時機不變（第一層展開就打 API），CSV 下載與
+  逐筆表格內容完全不變。
+  ⚠ **測試寫法注意**：巢狀 `<details>` 收合時內容仍在 DOM 裡，只是
+  不可見——`toBeInTheDocument()`（存在性）測不出「收合了沒」，第一輪
+  用它寫的兩條負向斷言直接紅燈（`getByRole("table")`／contract symbol
+  文字都被判定「存在」），改用 `toBeVisible()` 才對。既有
+  `ScenarioDetail.test.tsx` 的刷新快取失效案例原本就是用存在性斷言
+  （`findByText`／`toBeInTheDocument`），不受收合狀態影響，維持不動
+  ——不是漏改，是那組測試本來就問對了問題。
+- **#108** [#108] — Desktop 劇本庫卡片瘦身（決策 K，commit `b616750`）：
+  `ScenarioList.tsx` 的 `ScenarioCard` 從舊版 `.card`（六列各自一整行、
+  16px padding、12px 分隔線）改直接沿用 `CompactScenarioList.tsx` 那組
+  `.compact-card`／`.compact-tier1/2/3` CSS class（兩個檔案仍是各自
+  獨立元件、互不共用渲染路徑，只共用 class 命名與視覺密度）：tier1
+  （Ticker＋目標價／年月＋燈號）、tier2（代表報酬＋策略／履約價，
+  全卡最醒目一行）、tier3（到期日／距到期／資料時間合併一行，舊資料／
+  已過期標記附後）。七項決策資訊一項不少，只是不再各自佔一整列；
+  桌面獨有的 `selected`／`aria-current`（#72 master-detail 高亮）保留，
+  新增 `.compact-card.selected` 複製既有 `.card.selected` 視覺（左側
+  強調色條＋淡色底），手機版不傳 `selected`，用不到這條規則。
+  ⚠ **施工中抓到並順手修掉一個真密度 bug**：桌面左側欄（約 220px）
+  比手機版視窗窄很多，`.compact-target`／`.compact-tier3` 原本沒有
+  nowrap/ellipsis，文字裝不下時會直接在原地換成兩行、把卡片撐高，
+  違背「三層各一行」的密度前提——這是既有 CSS 的缺口，手機版視窗較寬
+  一直沒踩到，#108 把同一組 class 搬到桌面窄欄位才第一次顯現，判斷
+  屬於落實本票「壓縮過大字級／空白」範圍內的修正，非另開的重構。補上
+  後 e2e 實測：固定 800px 高左側欄一次看得到的卡片數從換行時的 4 張
+  提升到 6 張（e2e 門檻抓 5，留一張安全餘裕）。`ul` 容器 class 一併從
+  `.list` 改 `.compact-list`（gap 12px→4px），`App.tsx`／
+  `CompactScenarioList.tsx`／`styles.css`／`smoke.spec.ts`／
+  `App.test.tsx` 裡幾處因此變得不準確的既有註解一併修正（原本都寫
+  「桌面版不用這組 class」）。Scenario Library 的資料流、排序、選取
+  語意、整列可點連結行為、勾選、封存操作皆未變動，只動卡片版式。
+- **#109** [#109] — Heatmap 右側價格變動百分比軸（決策 M，commit
+  `d6fb58c`）：`matrix.py::price_axis()` 回傳型別加第三個元素
+  `move_pct = (price - spot) / spot`，跟 cell 值同一次呼叫、同一個
+  spot 算出來（`<現價>` 恆為 0），不是前端另外重算的第二份數字。
+  `matrix_grid`／`MatrixView.prices` 型別跟進；`matrix_lines`（CLI 文字
+  報告）刻意不印這個新欄位，golden fixtures 不因此漂移；`store.py` 的
+  序列化本來就通用處理任意長度 tuple，未動。前端 `heatmap.ts` 新增
+  `formatMovePct`（完整格式，如 "+13.6%"）／`formatMovePctShort`（AC
+  明文允許的手機短格式，如 "+14%"），`Heatmap.tsx` 在既有 sticky
+  價格欄同一個儲存格裡加這兩個 span（不是獨立欄／獨立座標軸），兩種
+  格式都畫進 DOM、用 CSS 依既有 1100px 桌面斷點切換顯示（不得整段
+  省略、不得靠 tooltip／長按才看得到——AC 明文）。主 Heatmap 與到期日
+  結構展開候選的 Heatmap 是同一個元件，不需另外接線。
+  ⚠ **施工中發現並修正一個既有 e2e 斷言的脆弱點**：契約樣本 target
+  剛好在 spot 之上 30%，Heatmap「目標」列的 +30.0% 跟摘要卡「所需
+  漲幅」的 +30.0% 撞了同一段文字，`page.getByText(/\+30\.0%/)` 從此
+  不再唯一（每張 Heatmap 的目標列都是同一個數字）——改用 `.row-note`
+  scope 回摘要那一句，不影響其口徑或既有斷言意圖，純粹是本票新增
+  文字後既有選擇器不夠精確的必然後果。
+- **#110** [#110] — Valuation correctness：LEAPS carry 方法比較與驗收
+  測試（決策 D1，研究票，commit `866c708`）：本批次終點，只做研究、
+  不修改引擎／golden fixtures／契約樣本、不鎖定方法。核心量化（真實
+  資料，`tests/test_research_valuation_carry.py` 全部可重跑）：現行
+  q=0 基準對真實 2026-07-17 TLT 2028-12-15 LEAPS call（取自本 repo
+  既有 `tlt_report.md`）5 檔中 3 檔在數學上不可行（市場中價低於 q=0
+  模型 sigma→0 下限），且排除「利率抓錯」對立假說後結論穩健（臨界
+  利率 1.6–3.2% vs 同期真實利率 ~4%）；引用既有研究
+  （`spread-synthetic-parity-check.md` 真實 758 筆 Cboe 全鏈實算）證明
+  vanilla put-call parity 萃取股利會被美式提前履約溢價汙染、LEAPS
+  尤重，AC 明文警告的風險已用真實資料坐實、不建議採用；新提出並量化
+  一個零新增資料依賴、只用同側 call（天然避開上述汙染源）的跨履約價
+  IV 一致性校準法，經驗最佳擬合 q≈4.5% 時 5 檔全部可解且離散度明顯
+  收斂；獨立覆核（自製半年配息 bootstrap＋真實 2026-08-04 Treasury
+  曲線）確認 `risk-free-rate-for-bs.md` 既有的 par→continuous 近似
+  結論（1M–3Y 差距 <1bp）仍然成立，2Y 節點兩份分析幾乎完全吻合。
+  書面建議（需需求方核准，非已執行變更）：方向上採股利殖利率調整 BS
+  ＋同快照跨履約價校準，見 `docs/research/
+  valuation-carry-method-comparison.md` §7 完整論述與已知殘留侷限。
+  範圍確認：`option_chaser/`／golden fixtures／`contracts/` 全部
+  git status 乾淨，四個新增檔案（研究文件、純函式模組、真實資料
+  fixture、驗收測試）皆為純加法，研究模組不被引擎 import。
+
+### QA-01 人工 QA 修正輪（2026-08-09，CLOSED / ACCEPTED，HEAD `8e57a7b`）
+
+需求方對第一施工批次（#103–#110）做人工 QA，回報 6 項；偵查後 5 項
+成立、1 項結案。修正 5 張、每張各自 commit＋push：
+
+- **QA-FIX-1**（commit `b87080f`）— Heatmap ±% 從左側價格欄移到表格
+  最右欄。#109 施工時把 ±% 塞進左側 sticky 價格欄的同一個儲存格，
+  與 ticket 名稱「右側…軸」及 AC 不符（AC 那句「不是獨立座標軸／
+  獨立 scale」限制的是 scale 語意，不是位置——當時解讀錯誤）。改為
+  價格（sticky left）→ 日期格 → ±%（sticky right），`<thead>` 補
+  對應欄標題「vs 現價」。測試改用幾何位置（boundingBox）驗欄序，
+  加負向斷言「價格欄內不得再出現 ±%」——原本的文字存在性斷言正是
+  讓誤置也能通過的那一種
+- **QA-FIX-2**（commit `07e297d`）— 淺色模式文字對比。實測
+  secondary 3.44:1、tertiary 1.73:1，皆低於 WCAG AA normal text
+  的 4.5:1。照 AA 反解最小 alpha（最差底色是頁面底 `--bg` #f2f2f7
+  而非卡片白底）：secondary 0.6→0.90、tertiary 0.3→0.75，三階層次
+  仍在。`.compact-tier3` 11px→12px。深色模式未動（要求是不退化）。
+  新增 `src/contrast.test.ts` 直接讀 styles.css 算對比，把 AA 變成
+  可執行守門；其中一條把「深色 tertiary 仍未達 AA」釘成現狀，
+  待需求方裁示。⚠ 字級變大讓 compact card 長高、手機一屏從 4 張掉
+  到 3 張（踩到 #82 既有驗收），以 `.compact-card-tap` 內距 6→4px
+  換回來
+- **QA-FIX-3**（commit `8a70d1f`）— 桌面詳細頁密度。實測 2668px ÷
+  800px ＝ 3.33 螢幕，純文字列卡片 37–50% 高度是 padding/gap。全部
+  規則掛在 `.detail-pane`（桌面專屬 DOM，手機**結構上**拿不到），
+  card padding 16→12、gap 12→8、section-title 20→17px、row 間距
+  12→8；摘要卡加 `metadata-grid` 改兩欄（只有這一張，不一律兩欄化）。
+  結果 2208px ＝ 2.76 螢幕（−17.2%），摘要卡 305→132px。Heatmap
+  本體未壓（格子字級仍 13px，有測試釘住）。新增 Mobile 護欄 e2e：
+  手機 `.detail-pane` 數量為 0、卡片內距仍 16px
+- **QA-FIX-4**（commit `97a8454`）— 批次操作列改桌面與手機共用吸底。
+  原本 sticky 只寫在手機斷點裡，桌面全選後批次列在 y=1696px，得再
+  捲 971px 才點得到動作鈕。三條 e2e 全部用 boundingBox 對照 viewport
+  ——`isVisible()` 對捲到畫面外的元素照樣回 true，正是原本沒抓到的原因
+- **QA-FIX-5**（commit `874f4e1`）— GUI Heatmap 日期軸密度參數化。
+  舊行為固定七欄與天期無關，2.4 年 LEAPS 平均 143 天／欄。
+  `date_axis(..., max_gap_days=None)`：`None` ＝ 既有七欄（CLI 走
+  這條，golden 零漂移）；GUI 傳 `GUI_MAX_GAP_DAYS = 31`，實測命中
+  裁示目標 7／13／29 欄。密度參數化在引擎，不讓前端自己重新抽樣。
+  payload 實測 128KB → 268.6KB、latency 26→38ms（偵查時擔心的
+  ~600KB 是高估：只有 matrix cells 隨欄數成長），依裁示不預先建架構。
+  決策已補記於 issue #109 留言。⚠ 測試發現既有邊界：天期 < 6 天時
+  無法有 7 個相異日曆日，不變量寫成 `>= min(7, span+1)`
+
+**QA-01 第 6 項（Rate 4.1%）已結案、未施工**：4.1% 是 Treasury 曲線
+在 ~1.4–1.9 年期的正常插值輸出；固定 fallback 是 0.04＝畫面顯示
+「4.0%」，數學上不可能顯示 4.1%；三態（US Treasury／STALE／Fallback）
+在 UI 與 API 都可辨識；兩條陳舊分支都會標 `stale=True` 且經
+`curve_to_dict`／`curve_from_dict` 往返無損，查無「抓取失敗但看起來
+像正常 Treasury」的路徑。
+
+> 本輪未施工 #111／#113／#114／#115／#116，亦未更動 #110 研究結論。
+
+**正式收尾（2026-08-09）**：第一施工批次（#103–#110、#112 共 9 張）＋
+QA-01 修正輪（QA-FIX-1–5）標記 **CLOSED / ACCEPTED**，對應 9 張 GitHub
+issue 已關閉（`state_reason=completed`），驗收基準 HEAD `8e57a7b`
+（branch `claude/implement-tfm9oa`，已 push、working tree clean）。
+
+**唯一殘留**：Dark Mode 下 `--label-tertiary` 對比仍低於 WCAG AA
+（QA-FIX-2 施工中發現，`src/contrast.test.ts` 已留存機器可驗證的
+已知狀態斷言）。列為**低優先 UX debt，不阻擋本輪驗收**，留待下一階段
+前端工作視情況處理。
+
+> 下一階段（#111／#113／#114／#115／#116、Crossover、IV History、
+> Valuation D2 model 鎖定）尚未開工，等待需求方後續指示。
+
+### MVP V3 Continuation（spec #117，2026-08-09 起，第二波施工）
+
+QA-01 收尾後緊接開始的下一波，承接 #102 尚未完成的部分（#111／#113／
+#114／#115／#116）加兩項新增工作（q 資料管線、Heatmap compact 小修）。
+**#103–#110、#112、QA-01 已 ACCEPTED 的第一施工批次不重開**。
+
+**研究（不施工，只留文件）**：
+
+- `docs/research/heatmap-valuation-method-selection.md`（commit
+  `91e8fb9`）——Heatmap／Crossover 該用哪個估值方法。真實資料證實
+  現行 q=0 歐式＋vendor IV 在「今天×現價」那格印出 +81.9%／+81.4%，
+  誠實答案是 −11.5%／−4.2%；根因是模型不一致（vendor IV 是美式含
+  股利模型反解的，卻代進歐式無股利公式）。四方法比較（對 CRR 美式樹
+  基準）：現行格差中位 4.79–14.28pp；Bjerksund–Stensland 1993＋q
+  僅 0.18–0.33pp、Crossover 判錯 0.0%，且每格 6.0µs（CRR300 要
+  15.4ms，60 秒 serverless 上限下不可行）。**建議＝BS93 美式近似＋
+  同快照同模型逐腿反解 IV 價格錨定**，需需求方核准。另標出副作用：
+  單腿 delta 分級會位移（TLT 五檔三檔 conservative→balanced），
+  Spread 排名／best_return／V9 成本走勢圖不受影響。
+- `docs/research/dividend-yield-source-selection.md`（commit
+  `e7df64a`）——q 從哪裡拿、怎麼算。用 TLT 真實 fixture 量化：外部
+  配息資料算的 q 與市場自身隱含 carry 只差 0.024–0.078pp（Heatmap
+  格差 0.15–0.48pp），對照門檻（1.5pp⇒9.26pp）達標一到兩個數量級。
+  真正要付代價的只有三個決定：現金分配 vs 30 天 SEC 殖利率
+  （3.59pp）、除以自己的 spot vs 抄 vendor 百分比（0.87pp）、複利
+  慣例（1.01pp）。**推薦 primary＝Yahoo chart `events.dividends`**
+  （見下方 #120 已實測確認）；不建配息時間表（次數數錯比相位貴
+  20 倍）。快取沿用 ratecurve／rate_cache 既有 pattern，三處刻意
+  偏離：per-symbol 鍵、90 天陳舊窗（非利率的 7 天）、快取金額而非
+  算好的 q。
+- `docs/spec/`（未落檔案，commits `399d677`／`12bb5b8`）——MVP V3
+  Remaining Work / Continuation Spec：鎖定 BS93＋同模型 IV 反解、
+  q 取外部配息資料（Method E 僅 diagnostic）、Crossover 2D overlay、
+  不恢復舊 1D 追平價格 UI。**核心紅線（需求方更正版）**：本輪任何
+  工作都不得改變既有 Spread 的 ranking／filtering／candidate
+  selection／expiry_best／expiry_top10／representative candidate／
+  best_return；新模型 delta 僅供估值與顯示，不得進入 legacy 分級
+  路徑；Crossover 的 comparator 就是買腿本身，禁止候選搜尋；
+  Historical IV 只 enrich、不得參與 ranking 或 selection。
+
+**已完成（依序）**：
+
+- **#118**（commit `2425ea6`）— Spread 選取身份回歸守門：施工前先把
+  現行 ranking identity／各到期日順序／expiry_best／expiry_top10／
+  representative candidate／best_return semantics 凍結成固定
+  fixture 的離線測試，供後續每張票完成後直接呼叫比對。刻意只釘身份
+  與順序、不釘數值（Heatmap cells／Greeks／baseline_return 允許在
+  估值修正後改變）。不改動任何 production 行為。
+- **#119**（commit `ccba9c7`）— BS93 定價原語＋同模型 IV 反解（純
+  函式，未接引擎）：`american_price()`／`merton_price()`／
+  `implied_vol()`，逐字依 QuantLib 一手原始碼移植。q<=0 時對 call
+  逐位元退化成 Merton 歐式。實作中抓到並修正一個真正確性 bug
+  （QuantLib「取歐式與較大值」的收尾漏放在條件外層，深度價內＋高波動
+  組合下美式價格一度低於歐式，違反美式恆≥歐式的基本不變量；修正後
+  4 萬組隨機參數掃描零違反）。未接進任何呼叫路徑，production 行為
+  零變化。
+- **#121**（commit `6a6060e`）— Heatmap compact：cell 去 `+`／`%`
+  純數字化、水平 padding 8px→5px。右側「vs 現價」欄與日期軸密度不動
+  （QA-FIX-1／#109 既有驗收範圍）。Playwright 實測固定容器寬度下
+  平均欄寬 60.92px→45.65px、可見欄數 14→19，新增 e2e 永久回歸斷言。
+  零金融計算、零契約變更。
+- **#122**（commit `028d249`）— 分級 delta 接縫：`ContractValuation`
+  新增 `classification_delta`，legacy 單腿分級改讀這一欄而非 `delta`
+  ——#113 換估值模型時只會改 `delta`，`classification_delta` 保持
+  原口徑，legacy 分級因此不會被新模型污染（spec #117 核心紅線的落地
+  機制）。目前兩欄同值（q=0 歐式解析式，未換模型），純結構性 prefactor。
+- **#113**（commit `17dc6ca`）— 引擎接線：Spread／單腿估值改走 BS93＋
+  同模型 IV 反解（#119 原語），q 由 `AnalysisParams.q_by_symbol` 注入
+  （`None`＝今天，#123 之前恆為此狀態）。每腿一次 `calibrate_leg()`，
+  掛在 `carry`／`long_carry`+`short_carry` 上供 Heatmap／七情境／保本
+  掃描／CLI 報告全部共用。Fallback：`q_by_symbol=None` 或反解失敗，
+  一律收斂成 `(q=0.0, sigma=vendor_iv, carry_calibrated=False)`——
+  今天的完整行為，不是「q=0＋價格錨定」（那條路對多數真實 LEAPS call
+  數學上無解）。端到端用真實 TLT LEAPS fixture 驗證：q=0→0.045 讓
+  K=85 顯示 delta 從 0.73 真的移到 0.46，但 `classification_delta`
+  逐位元不變、候選身份與順序不變（#118 守門通過）；Spread 排名端到端
+  維持模型無關（T3／#17，`scenario_leg_value` 的到期內在價值分支在
+  讀 carry 前就回傳）。契約樣本純加法重產（`q_by_symbol`／
+  `carry_calibrated`），CLI golden fixture 零漂移。
+- **#120**（issue 已於本輪 close）— Yahoo 配息端點 production 探測：
+  沙箱探測腳本先備妥（commit `af27f52`），本輪改用 GitHub Actions
+  `ubuntu-latest` runner（真實網路出口，理由見下方「探測環境選擇」）
+  取得**真實**結果：TLT 匿名 `GET .../v8/finance/chart/TLT?...` →
+  HTTP 200，`events.dividends` 24 筆歷史配息、過去 365 天 12 筆，
+  與 Nasdaq 獨立來源交叉印證誤差僅 1.6%；`events.splits` 窗內不存在
+  （TLT 近 2 年無分割，預期結果）。**Yahoo chart events 正式從
+  「建議」升級為「實測確認」的 primary source**（研究文件
+  `dividend-yield-source-selection.md` §12.4／§13-1 同步更新，
+  commits `f392014`／`6211085`／`55d80a3`）。issue 已附真實結果留言
+  並 close。
+- **#111**（credential-blocked，issue 維持 OPEN）— IV History vendor
+  三步驗證：同一真實環境實測。① Market Data App／③ ORATS 的認證機制
+  要求金鑰才能組出可呼叫的 URL，無金鑰下連請求都送不出去；② Alpha
+  Vantage 用官方公開 demo 金鑰測得 HTTP 200，但回應是「請註冊真實
+  金鑰」而非 `HISTORICAL_OPTIONS` 真實資料。**三家皆 credential-
+  blocked，無一達成 AC「至少一次成功的真實資料呼叫」**，不得宣稱
+  vendor 已確認（研究文件 `historical-options-iv-data-sources.md`
+  §5.1 同步更新）。issue 已附真實結果留言，**維持 OPEN**、待需求方
+  決定是否申請免費金鑰（建議優先 Alpha Vantage，號稱 20 秒申請、
+  已確認端點真實可達）。**#114（Historical IV Position 模組）依既有
+  blocked-by 持續卡在本票之後，本輪未動工**。
+- **#123**（commits `4043106`／`a022628`）— q 管線：抓取（Yahoo→FMP
+  →Nasdaq 備援鏈，純 stdlib，單一 `FetchError`）／per-symbol 快取
+  （`Storage` protocol 新增 `DividendCacheEntry`，memory／postgres
+  兩後端皆補齊，90 天陳舊窗）／三態揭露（`AnalysisParams` 新增
+  `q_source`／`q_as_of`／`q_stale`／`q_note`，比照既有
+  `rate_curve_used` 三態）／接進引擎（`service._resolve_q` 鏡射
+  `_resolve_rates` 四層 fallback，接上 #113 早已就緒的消費端）。
+  前端補上 `QRow`（`src/AnalysisReport.tsx`，鏡射既有 `RateRow`）與
+  `src/api.ts` 型別。純函式解析（`parse_yahoo_dividends` 等）歸位到
+  `option_chaser/dividends.py`，比照 `ratecurve.parse_treasury_csv`
+  既有分工（純模組自己的例外型別 `DividendParseError`，不依賴 I/O
+  層的 `FetchError`）。`/api/health` 刻意不比照加 `dividend` 區塊
+  （per-symbol 資料沒有「那一筆」可讀，程式碼註記說明）。全套測試
+  綠燈：後端 867 passed（memory＋真實 Postgres 兩後端）、前端 360
+  passed、typecheck／build 皆過。**#118 選取身份回歸守門全程綠燈**。
+
+- **#115**（commit `19b7d5d`）— Crossover comparator 矩陣計算：
+  `service._spread_comparator()` 直接取 `sv.long_leg`（Spread 買腿本身
+  既有報價）——無型別轉換、無查找，`test_comparator_construction_
+  never_calls_find_contract`／`..._never_calls_legacy_ranking_or_
+  classification` 兩條測試明確證明這條路徑不做任何選擇。Comparator
+  matrix 重用既有 `_matrix_view()`（同一組 price×date grid，`sv.
+  long_carry` 沿用 #123 校正過的 q pipeline）。買腿報價缺失時誠實回傳
+  `None`，不假造。契約樣本新增獨立第二例
+  `contracts/analysis_sample_bear_put.json`（bear put spread，配新
+  fixture `xyz_v5_put_ladder.json`）與 bull call 既有例並存，call／put
+  comparator 兩種都有 drift 測試覆蓋。純資料層，未觸碰任何前端渲染。
+- **#116**（commit `f47eff4`）— Crossover Boundary Heatmap overlay：
+  `heatmap.ts` 新增 `crossoverEdges()`／`crossoverFavoredSide()`——
+  逐格掃兩軸找 Spread 與 comparator 報酬符號翻轉，純幾何比較、零財務
+  計算。`Heatmap.tsx` 三態區分 comparator 是否傳入／`null`／有值
+  （對應「概念不存在」／「報價缺失」／「正常顯示」），CSS `box-shadow:
+  inset` 疊色不新增第二張表、不蓋掉既有格值。`ScenarioDetail.tsx`／
+  `ExpiryStructure.tsx` 兩處呼叫點（主圖＋展開候選）皆接上。桌面＋
+  手機 e2e 各一條新測試驗證圖例／邊界格可見且不破壞既有橫向捲動／
+  ±% 欄行為。兩票皆通過 #118 選取身份回歸守門，皆已在 GitHub 關閉
+  （commit 引用留言）。
+
+**探測環境選擇（#120／#111 共同記錄）**：使用者原始指示要求建臨時
+Vercel probe，但本輪 Vercel MCP 的 `deploy_to_vercel` 可成功部署，
+該 session 內所有讀回工具（`get_deployment`／`list_projects`／
+`web_fetch_vercel_url`／`get_runtime_logs` 等，7+ 次不同嘗試、兩個
+獨立專案）全數 404/403——與沙箱網路政策無關，是另一個獨立的 MCP
+工具整合缺陷。改用本 repo 既有的 `tmp-*.yml` 一次性工作流慣例（6 個
+既有前例）：推臨時 workflow 到 `master`（`tmp-vendor-probe.yml`，
+`ubuntu-latest` runner 真實網路出口），跑完即刪。**兩個孤兒 Vercel
+專案**（`option-chaser-vendor-probe`／`option-chaser-vendor-probe-2`）
+**MCP 工具無刪除操作，需求方需自行從 Vercel 後台手動清除**。
+
+**尚存 blocker**：#111（IV History vendor，credential-blocked，
+需需求方申請免費金鑰，issue 維持 OPEN）、#114（Historical IV Position
+模組，依既有 blocked-by 卡在 #111 之後，未動工）。**Crossover 主線
+（#115→#116）已於 #123 解鎖後完結並關閉**——本輪剩下的唯一實質
+blocker 就是 #111 的 credential。#113／#115／#116／#118–#123 依既有
+規則**中途不主動開 PR**，累積到 IV 線也解決或需求方指示時再開。
+
+**#111 免 credential 候選第二輪窮舉（2026-08-11）**：需求方指示先窮盡
+不需申請金鑰的路線再考慮付費三家。Yahoo／Nasdaq／Cboe 三家皆用
+GitHub Actions runner 真實請求測過（
+`docs/research/historical-options-iv-data-sources.md` §5.2，探測腳本
+`scripts/probe_iv_history_free_vendors.py`），結論**三家皆不能**：
+Nasdaq 當下鏈免鑰可達但歷史日期參數被明確拒絕、Cboe 現行端點對
+`date`／`asof`／`historical` 全部忽略只回當下快照、Yahoo 當下鏈端點
+新增 crumb+cookie 驗證且既有研究已確認其 chart 端點結構上無 bid/ask/
+IV。免 key 路線已窮盡，**blocker 未解除**，仍需需求方申請
+Alpha Vantage／Market Data App／ORATS 任一家金鑰。
 
 ### 施工依據
 

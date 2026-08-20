@@ -319,6 +319,50 @@ def test_representative_candidate_single_leg_has_exactly_one_leg():
     assert rep["legs"][0]["option_type"] == "call"
 
 
+# ---------- find_candidate：單腳候選查找（#139／spec #137）----------
+#
+# 施工中發現：`find_candidate` 原本只掃 `expiry_top10`（T9 附錄A7 明文
+# 「範圍限定 Spread 路徑，single-leg 依 MVP 範圍不動」——單腳策略的
+# `expiry_top10` 恆為空）。這比 ivhistory 的座標層更上層，若不修，
+# Historical IV 端點對任何單腳候選都會 404（`find_candidate` 找不到，
+# 不會走到 ivhistory 那一步）——屬 #139 修改邊界明文涵蓋的「端點的
+# 候選判別」，同票範圍。
+
+def test_find_candidate_locates_a_single_leg_candidate_via_the_flat_list():
+    view = store.serialize_result(_result(("long-call",)), "S", None)
+    key = view["results"][0]["candidates"][0]["candidate_key"]
+    got = store.find_candidate(view, key)
+    assert got is not None
+    assert got["candidate_key"] == key
+    assert len(got["legs"]) == 1
+
+
+def test_find_candidate_still_locates_a_spread_candidate_via_expiry_top10():
+    """回歸：兩腿路徑的既有行為不變——一樣走 `expiry_top10`。"""
+    view = store.serialize_result(_result(("bull-call-spread",)), "S", None)
+    r0 = view["results"][0]
+    key = r0["expiry_top10"][0]["candidates"][0]["candidate_key"]
+    got = store.find_candidate(view, key)
+    assert got is not None
+    assert got["candidate_key"] == key
+    assert len(got["legs"]) == 2
+
+
+def test_find_candidate_does_not_widen_lookup_for_spread_strategies():
+    """兩腿策略只認 `expiry_top10`——候選有沒有入榜是既有規則的一部分，
+    不因為新增的單腳 fallback 而擴大查找範圍。用一個確實存在於扁平
+    `candidates` 清單、但刻意假設它已不在 `expiry_top10`（例如打錯的
+    key）來確認 fallback 不會誤判成功；這裡直接驗證「不存在的 key 對
+    有 expiry_top10 的策略仍是 None」，避免依賴內部排名細節。"""
+    view = store.serialize_result(_result(("bull-call-spread",)), "S", None)
+    assert store.find_candidate(view, "not-a-real-key") is None
+
+
+def test_find_candidate_unknown_key_is_none_not_an_error():
+    view = store.serialize_result(_result(("long-call",)), "S", None)
+    assert store.find_candidate(view, "no-such-candidate") is None
+
+
 def test_raw_snapshot_json_carries_meta_and_every_contract():
     """V8（#56）：原始資料查看區——`_leg()` 是候選腿專用的精簡子集，
     這裡要的是逐筆合約完整原樣，`raw_snapshot_json` 不能重用 `_leg()`。"""

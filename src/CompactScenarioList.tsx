@@ -1,6 +1,8 @@
 /**
  * 手機首頁的高密度劇本庫（MVP-v2／#77、#82）：三層 compact row，
- * 取代舊的大型 `.card`（`ScenarioList.tsx`，桌面版仍在用、本檔不動它）。
+ * 取代舊的大型 `.card`。#108 起桌面版 `ScenarioList.tsx` 的卡片也改用
+ * 同一組 CSS class（視覺密度趨同），但那是獨立的元件與檔案，本檔的
+ * `CompactScenarioCard` 本身不動、不被桌面版共用。
  *
  * 三層資訊分工（spec #77〈Implementation Decisions〉六）：
  * - 第一層：標的 · 目標價 · 目標年月 · 燈號
@@ -17,7 +19,7 @@
  */
 import type { RefreshFailure, ScenarioSummary } from "./api";
 import { strategyLabel } from "./detail";
-import { CheckIcon, TrashIcon } from "./icons";
+import { CheckIcon, EditIcon, TrashIcon } from "./icons";
 import { detailHash } from "./route";
 import {
   failureLabel,
@@ -26,18 +28,22 @@ import {
   formatRepresentativeExpiry,
   formatRepresentativeLegs,
   formatReturn,
+  hasPriceRange,
   isStale,
   money,
+  moneyOrDash,
+  partitionByLock,
   scenarioSignal,
   signalLabel,
-  sortScenarios,
 } from "./scenarios";
 
 function CompactScenarioCard({
   row,
   failure,
   now,
+  locked,
   onArchive,
+  onEdit,
   onRetry,
   selectMode,
   isChecked,
@@ -46,7 +52,11 @@ function CompactScenarioCard({
   row: ScenarioSummary;
   failure: RefreshFailure | undefined;
   now: Date;
+  /** 這一輪刷新還沒輪到、或正在抓的劇本（V4 跟進票／#136）：反灰＋
+   *  禁止點入，避免使用者誤以為看到的是這一輪的最新結果。 */
+  locked: boolean;
   onArchive: (id: string) => void;
+  onEdit: (id: string) => void;
   onRetry: (id: string) => void;
   /** TR6（#91）：批次選取模式——checkbox 取代單筆刪除鈕，整列改成點下
    *  去是選取而不是進詳細頁。 */
@@ -65,7 +75,7 @@ function CompactScenarioCard({
     // （master/detail 目前選中的劇本）是不同概念——compact row 沒有
     // 對應的常駐詳細頁高亮，選取狀態完全交給下面的 checkbox 外觀表達，
     // 不重用會撞名的 class。
-    <li className="compact-card">
+    <li className={locked ? "compact-card locked" : "compact-card"}>
       {/* 封存鈕疊在「這一塊」（tap 區）的右下角，而不是整張 `<li>` 的
           右下角——code review 抓到的真實回歸：`.compact-notice`（刷新
           失敗時才出現）是接在 tap 區後面的正常流內容，會把卡片整體
@@ -79,8 +89,10 @@ function CompactScenarioCard({
             輔助技術讀得到的字（沿用 `ScenarioList.tsx` 既有寫法）。 */}
         {/* TR6（#91）：批次選取模式時整列攔截點擊改成切換選取，不導向
             詳細頁——`preventDefault` 而不是換成 `<button>`，內容結構
-            完全不用重寫一份（沿用 `ScenarioList.tsx` 同一種做法）。 */}
-        <a className="compact-card-tap" href={detailHash(row.id)}
+            完全不用重寫一份（沿用 `ScenarioList.tsx` 同一種做法）。
+            V4 跟進票／#136：鎖著時不給 `href`，理由同 `ScenarioList.tsx`。 */}
+        <a className="compact-card-tap" href={locked ? undefined : detailHash(row.id)}
+           aria-disabled={locked ? "true" : undefined}
            onClick={(e) => {
              if (selectMode) {
                e.preventDefault();
@@ -97,14 +109,25 @@ function CompactScenarioCard({
               </span>
             )}
             <span className="compact-symbol">{row.symbol}</span>
+            {/* QA 修正：現價擠進同一行的目標價前面（`現價 → 目標`），
+                不多佔一列高度——沒有現價當基準，一排目標價只是孤立
+                數字，劇本庫就失去概覽的作用。 */}
             <span className="compact-target">
+              <span className="compact-spot">{moneyOrDash(row.spot)}</span>
+              {" → "}
               {money(row.target_price)}　{row.target_month}
             </span>
-            <span
-              className={`signal-dot signal-${signal}`}
-              title={signalLabel(signal)}
-              aria-hidden="true"
-            />
+            {/* V4 跟進票／#136：燈號講的是上一輪的結果，鎖著時換成
+                「更新中」，不讓舊燈號看起來像這一輪的狀態。 */}
+            {locked ? (
+              <span className="tag locked-tag">更新中</span>
+            ) : (
+              <span
+                className={`signal-dot signal-${signal}`}
+                title={signalLabel(signal)}
+                aria-hidden="true"
+              />
+            )}
           </div>
 
           <div className="compact-tier2">
@@ -138,8 +161,19 @@ function CompactScenarioCard({
             {row.expired && <span className="tag">已過期，不再刷新</span>}
           </div>
 
+          {/* 最高／最低只在使用者真的填了才畫——兩端都空就不該憑空多
+              佔一列（compact row 的整個設計目的就是密度）。 */}
+          {hasPriceRange(row) && (
+            <div className="compact-range">
+              <span>最低 {moneyOrDash(row.worst_price)}</span>
+              {" · "}
+              <span>最高 {moneyOrDash(row.best_price)}</span>
+            </div>
+          )}
+
           <span className="sr-only">
-            {signalLabel(signal)}；查看 {who} 詳細
+            {locked ? "這一輪刷新還沒完成，暫時無法查看詳細"
+                    : `${signalLabel(signal)}；查看 ${who} 詳細`}
           </span>
         </a>
 
@@ -147,14 +181,25 @@ function CompactScenarioCard({
             掃描時不會被誤讀成金融資訊；要用時仍找得到（判準見 spec
             #77 六）。TR6（#91）：批次選取模式下 tier1 已經有 checkbox，
             不同時顯示兩種「選它」的方式。 */}
+        {/* #132：編輯入口排在垃圾桶旁，同樣是不搶戲的圖示鈕——視覺層級
+            不該高於劇本本身。手機只給圖示，可及名稱交給 aria-label。 */}
         {!selectMode && (
-          <button
-            className="icon-button compact-archive"
-            onClick={() => onArchive(row.id)}
-            aria-label={`封存 ${who}`}
-          >
-            <TrashIcon />
-          </button>
+          <div className="compact-actions">
+            <button
+              className="icon-button"
+              onClick={() => onEdit(row.id)}
+              aria-label={`編輯 ${who}`}
+            >
+              <EditIcon />
+            </button>
+            <button
+              className="icon-button"
+              onClick={() => onArchive(row.id)}
+              aria-label={`封存 ${who}`}
+            >
+              <TrashIcon />
+            </button>
+          </div>
         )}
       </div>
 
@@ -177,8 +222,10 @@ function CompactScenarioCard({
 export default function CompactScenarioList({
   rows,
   failures,
+  lockedIds,
   now,
   onArchive,
+  onEdit,
   onRetry,
   selectMode,
   selectedIds,
@@ -189,8 +236,12 @@ export default function CompactScenarioList({
 }: {
   rows: ScenarioSummary[];
   failures: Record<string, RefreshFailure>;
+  /** 整輪刷新期間還沒完成的劇本（V4 跟進票／#136）——反灰＋禁止點入，
+   *  一完成（成功或失敗）立刻從這裡移除。 */
+  lockedIds: ReadonlySet<string>;
   now: Date;
   onArchive: (id: string) => void;
+  onEdit: (id: string) => void;
   onRetry: (id: string) => void;
   /** TR6（#91）：批次選取移入垃圾桶，語意同 `ScenarioList.tsx`。 */
   selectMode: boolean;
@@ -201,8 +252,11 @@ export default function CompactScenarioList({
   onConfirmBatchArchive: () => void;
 }) {
   if (rows.length === 0) {
-    return <p className="caption">還沒有劇本。用上面的「＋ 新增劇本」建立第一個。</p>;
+    return <p className="caption">還沒有劇本，用上面的「＋ 新增劇本」建立。</p>;
   }
+  // V4 跟進票／#136：已完成區照舊排序；鎖著的那段維持佇列順序、獨立
+  // 排在後面（分隔線），不跟已完成的混排——見 `partitionByLock` 說明。
+  const { unlocked, locked } = partitionByLock(rows, lockedIds);
   return (
     <>
       {/* 收益率口徑就寫在數字旁邊（V4／#52 既有裁示），沿用大卡片版式
@@ -234,13 +288,37 @@ export default function CompactScenarioList({
       )}
 
       <ul className="compact-list">
-        {sortScenarios(rows).map((row) => (
+        {unlocked.map((row) => (
           <CompactScenarioCard
             key={row.id}
             row={row}
             failure={failures[row.id]}
             now={now}
+            locked={false}
             onArchive={onArchive}
+            onEdit={onEdit}
+            onRetry={onRetry}
+            selectMode={selectMode}
+            isChecked={selectedIds.has(row.id)}
+            onToggleSelect={onToggleSelect}
+          />
+        ))}
+
+        {/* 分隔線只在兩段都非空時才有意義（V4 跟進票／#136 的 ASCII
+            概念圖）。 */}
+        {unlocked.length > 0 && locked.length > 0 && (
+          <li className="compact-list-separator" aria-hidden="true" />
+        )}
+
+        {locked.map((row) => (
+          <CompactScenarioCard
+            key={row.id}
+            row={row}
+            failure={failures[row.id]}
+            now={now}
+            locked
+            onArchive={onArchive}
+            onEdit={onEdit}
             onRetry={onRetry}
             selectMode={selectMode}
             isChecked={selectedIds.has(row.id)}

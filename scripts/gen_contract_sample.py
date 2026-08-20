@@ -18,6 +18,7 @@ from fastapi.testclient import TestClient
 from api_app.main import create_app
 from api_app.storage.memory import MemoryStorage
 from option_chaser.data.snapshot import load_snapshot
+from option_chaser.dividends import DividendHistory, DividendRecord
 from option_chaser.ratecurve import RateCurve
 
 FIXTURE = Path("tests/fixtures/xyz_v4_six_expiries.json")
@@ -30,6 +31,20 @@ ROW_OUT = Path("contracts/scenario_row_sample.json")
 REQUEST = {"symbol": "XYZ", "target_price": 130.0, "target_month": "2026-09",
            "strategies": ["bull-call-spread"]}
 SCENARIO = {"symbol": "XYZ", "target_price": 130.0, "target_month": "2026-09"}
+
+# #115（spec #117 §4）：Crossover comparator 需要「每個策略各一個範例，
+# call／put comparator 都有覆蓋」。單一 `/api/analyze` 呼叫只能吃一個
+# target_price，方向（bull/bear）互斥（`_analyze` 的 mismatch 判斷：
+# 同一個 target_price 不可能同時大於與小於 spot），且 `force` 沒有
+# 暴露在 `/api/analyze` 的公開 schema 上（刻意——不為了產樣本而擴大
+# production API 面）。因此 put 覆蓋走**獨立**的第二份樣本，不是硬湊
+# 進主樣本：獨立 fixture（`xyz_v5_put_ladder.json`，鏡射既有
+# `xyz_v4_six_expiries.json` 的 call 梯，履約價鏡射到 spot 另一側）＋
+# 獨立 target_price（低於 spot，方向天然成立、不需要 force）。
+PUT_FIXTURE = Path("tests/fixtures/xyz_v5_put_ladder.json")
+PUT_OUT = Path("contracts/analysis_sample_bear_put.json")
+PUT_REQUEST = {"symbol": "XYZ", "target_price": 70.0, "target_month": "2026-09",
+               "strategies": ["bear-put-spread"]}
 
 # 隨執行時間變動的欄位換成固定值：樣本要釘住形狀，不是當下的鐘。
 FROZEN = {"id": "sample-id", "created_at": "2026-08-01T00:00:00+00:00",
@@ -49,6 +64,23 @@ def _sample_rate_loader(today):
     return SAMPLE_RATE_CURVE, f"Treasury 曲線 {SAMPLE_RATE_CURVE.curve_date}"
 
 
+# 配息（#123）：同一個理由——`create_app()` 預設接真的 Yahoo→FMP→Nasdaq
+# loader，沙箱裡會打出「配息資料不可得」，且結果隨執行環境的連線能力
+# 變動。注入固定假歷史，代表「取得配息、q 校準成功」這個較豐富、較有
+# 代表性的狀態。
+SAMPLE_DIVIDEND_HISTORY = DividendHistory(
+    symbol="XYZ", as_of="2026-07-14", source="yahoo",
+    distributions=(DividendRecord("2026-06-01", 1.2),
+                  DividendRecord("2026-03-01", 1.2)))
+
+
+def _sample_dividend_loader(symbol, today):
+    n = len(SAMPLE_DIVIDEND_HISTORY.distributions)
+    return (SAMPLE_DIVIDEND_HISTORY,
+           f"配息資料 {SAMPLE_DIVIDEND_HISTORY.source}"
+           f"（{SAMPLE_DIVIDEND_HISTORY.as_of}，{n} 筆）")
+
+
 def freeze_row(row: dict) -> dict:
     return {**row, **FROZEN}
 
@@ -56,7 +88,8 @@ def freeze_row(row: dict) -> dict:
 def main() -> None:
     snap = load_snapshot(FIXTURE)
     client = TestClient(create_app(fetch=lambda symbol: snap,
-                                   rate_loader=_sample_rate_loader))
+                                   rate_loader=_sample_rate_loader,
+                                   dividend_loader=_sample_dividend_loader))
     resp = client.post("/api/analyze", json=REQUEST)
     resp.raise_for_status()
     OUT.parent.mkdir(exist_ok=True)
@@ -69,13 +102,25 @@ def main() -> None:
     # 執行時間變動，換成固定值——樣本要釘住的是**形狀**，不是當下的鐘。
     row_client = TestClient(create_app(fetch=lambda symbol: snap,
                                        storage=MemoryStorage(),
-                                       rate_loader=_sample_rate_loader))
+                                       rate_loader=_sample_rate_loader,
+                                       dividend_loader=_sample_dividend_loader))
     created = row_client.post("/api/scenarios", json=SCENARIO).json()
     row_client.post(f"/api/scenarios/{created['id']}/refresh").raise_for_status()
     row = row_client.get("/api/scenarios").json()[0]
     ROW_OUT.write_text(json.dumps(freeze_row(row), ensure_ascii=False, indent=2,
                                   sort_keys=True) + "\n", encoding="utf-8")
     print(f"寫入 {ROW_OUT}")
+
+    # #115：獨立的 put-comparator 樣本，見上方 PUT_FIXTURE 註解。
+    put_snap = load_snapshot(PUT_FIXTURE)
+    put_client = TestClient(create_app(fetch=lambda symbol: put_snap,
+                                       rate_loader=_sample_rate_loader,
+                                       dividend_loader=_sample_dividend_loader))
+    put_resp = put_client.post("/api/analyze", json=PUT_REQUEST)
+    put_resp.raise_for_status()
+    PUT_OUT.write_text(json.dumps(put_resp.json(), ensure_ascii=False, indent=2,
+                                  sort_keys=True) + "\n", encoding="utf-8")
+    print(f"寫入 {PUT_OUT}（{PUT_OUT.stat().st_size:,} bytes）")
 
 
 if __name__ == "__main__":

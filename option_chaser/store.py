@@ -353,6 +353,23 @@ def best_return(view: dict | None) -> float | None:
     return rep["baseline_return"] if rep is not None else None
 
 
+def spot(view: dict | None) -> float | None:
+    """這次分析當下的標的現價（`view["meta"]["spot"]`）。
+
+    QA 修正：劇本庫卡片要顯示現價，才看得出「目標價／最高／最低離現在
+    多遠」——沒有它，清單上一排目標價等於沒有比較基準。與 `best_return()`
+    同一種角色：清單只要這一個數字，卻不該為它把整份 view 撈回來，所以
+    落盤成獨立欄位；規則仍只有這一份純函式。
+
+    view 為 `None`（從未成功分析過）或形狀不含 meta.spot（理論上不會，
+    防禦性）時回 `None`——卡片據此顯示「—」，不是 0。
+    """
+    if not view:
+        return None
+    value = (view.get("meta") or {}).get("spot")
+    return value if isinstance(value, (int, float)) else None
+
+
 def _history_entry(sv: SpreadValuation, expiry: str, rank_in_expiry: int) -> dict:
     """T9（#23，附錄A7）：全部有效候選的歷史五欄位之三（成本／收益率／期內
     名次）；另外兩欄（更新時間、標的價）不逐候選重複，共用父層 `analyzed_at`／
@@ -424,6 +441,15 @@ def raw_snapshot_json(snap: ChainSnapshot) -> dict:
     }
 
 
+def _matrix_to_dict(mv) -> dict:
+    """`MatrixView`／`ComparatorView.matrix` 共用的序列化形狀——#115 前
+    只有 `CandidateView.matrix` 用得到，抽成小函式避免 comparator 的
+    matrix 另外複製一份同樣的三行。"""
+    return {"prices": [list(pt) for pt in mv.prices],
+           "dates": [list(d) for d in mv.dates],
+           "cells": [list(r) for r in mv.cells]}
+
+
 def _candidate(cv: CandidateView, strategy: str, capital: float | None,
                today: date, anchor: date, p: AnalysisParams) -> dict:
     v = cv.valuation
@@ -462,13 +488,24 @@ def _candidate(cv: CandidateView, strategy: str, capital: float | None,
         "friction": cv.friction,
         "friction_amount": cv.friction_amount,
         "buffer_days": cv.buffer_days,
-        "quote_warning": cv.quote_warning,
-        # FB5-03（#64）：獨立欄位，不併進 quote_warning——見 service.py
+        # MVP V3（#104，spec #102 決策 F）：`quote_warning`（選取閘門用的
+        # 複合旗標）不對外序列化——只有 `wide_spread_warning`（僅
+        # is_spread_wide）進契約，前端 UI 一律改接這個顯示旗標。
+        "wide_spread_warning": cv.wide_spread_warning,
+        # FB5-03（#64）：獨立欄位，不併進 wide_spread_warning——見 service.py
         # 的 CandidateView.monotonicity_warning 欄位註解。
         "monotonicity_warning": cv.monotonicity_warning,
+        # #113（spec #117 contracts 表）：這組候選的估值是否經過 carry
+        # 校準。False 時前端必須說得出「這組估值未經 carry 校準」。
+        "carry_calibrated": cv.carry_calibrated,
         "theta_day_rate": cv.theta_day_rate,
         "vega_per_pt": cv.vega_per_pt,
         "decay_30d_return": cv.decay_30d_return,
+        # MVP V3（#112，spec #102 決策 H）：這組候選實際用於估值的利率與
+        # 年期——Analysis Report → Model & Assumptions 的 Rate used／
+        # Tenor 兩項，取代原本只顯示「用了某條曲線」的模糊呈現。
+        "rate_used": cv.rate_used,
+        "rate_tenor_years": cv.rate_tenor_years,
         "net_delta": net_delta,
         "breakeven": v.breakeven,
         "max_profit": max_profit,
@@ -492,9 +529,16 @@ def _candidate(cv: CandidateView, strategy: str, capital: float | None,
         # `p: AnalysisParams` 參數同名，在同一個函式體裡容易讓人誤讀成
         # 同一個東西（雖然 Python 3 生成式有獨立作用域，實際不會互相
         # 污染）。改用 `pt`（price point）避免這個混淆。
-        "matrix": {"prices": [list(pt) for pt in cv.matrix.prices],
-                   "dates": [list(d) for d in cv.matrix.dates],
-                   "cells": [list(r) for r in cv.matrix.cells]},
+        "matrix": _matrix_to_dict(cv.matrix),
+        # #115（spec #117 §4）：Crossover 對照——None＝單腿候選（無意義）
+        # 或買腿報價缺失（結構上不該發生的防禦性 case）。matrix 用同一個
+        # `_matrix_to_dict` 序列化，跟主 matrix 同形狀。
+        "comparator": ({"option_type": cv.comparator.option_type,
+                       "strike": cv.comparator.strike,
+                       "expiry": cv.comparator.expiry,
+                       "cost": cv.comparator.cost,
+                       "matrix": _matrix_to_dict(cv.comparator.matrix)}
+                      if cv.comparator is not None else None),
         # spec §3 新增四組（乘除法與日期差，非估值邏輯）
         "capital_per_contract": cap_per,
         # V7（#55）：劇本區間三價位對照。兩端都沒設時是空陣列，呈現層據此
@@ -642,3 +686,31 @@ def list_result_paths(ws_root, scenario_id: str) -> list[Path]:
 def latest_result_path(ws_root, scenario_id: str) -> Path | None:
     files = list_result_paths(ws_root, scenario_id)
     return files[-1] if files else None
+
+
+def find_candidate(view: dict, key: str) -> dict | None:
+    """依身份鍵在 view dict 裡找出那個候選的**完整**形狀（含各腿）。
+
+    走 `expiry_top10`（完整候選）而不是 `all_candidates`（精簡序列，只有
+    成本與名次，沒有腿）——呼叫端要的是腿上的 IV／履約價／權別。找不到
+    回 `None`，不拋錯：候選可能在這次刷新被過濾掉，那是正常狀態。
+
+    單腳策略（Long Call／Long Put）沒有 `expiry_top10` 分組（T9 附錄A7：
+    範圍限定 Spread 路徑，single-leg 依 MVP 範圍不動）——候選活在扁平
+    的 `r["candidates"]` 清單裡。只在該策略**完全沒有** `expiry_top10`
+    分組時才退去掃這份清單（#139）：兩腿策略（Spread）一律只認
+    `expiry_top10`，「候選有沒有入榜」是既有規則的一部分，不因此擴大
+    查找範圍——這保證兩腿路徑的既有行為與數值一字不動。
+    """
+    for r in view.get("results", []):
+        groups = r.get("expiry_top10") or []
+        for group in groups:
+            for cand in group.get("candidates", []):
+                if cand.get("candidate_key") == key:
+                    return cand
+        if groups:
+            continue
+        for cand in r.get("candidates", []) or []:
+            if cand.get("candidate_key") == key:
+                return cand
+    return None

@@ -17,7 +17,6 @@ export interface AnalysisMeta {
   target_move: number;
 }
 
-/** 一隻腿。契約裡還有 open_interest 等欄位，畫面用到再加。 */
 export interface Leg {
   strike: number;
   option_type: string;
@@ -27,6 +26,10 @@ export interface Leg {
   /** 賣這隻腿收得到的價（最差成交假設用 Bid）。 */
   bid: number;
   iv: number | null;
+  /** MVP V3（#105，spec #102 決策 G）：Analysis Report → Execution 區
+   *  中性 metadata（低權重、無警示樣式），與 #104 的顯示旗標無關。 */
+  volume: number;
+  open_interest: number;
 }
 
 /** 代表候選（MVP-v2／#77、#78）：劇本清單卡片要的候選完整身分——只到
@@ -53,9 +56,12 @@ export interface RepresentativeCandidate {
 /**
  * 價格×日期報酬矩陣（引擎的 `MatrixView`）。`prices`／`dates` 的第二欄是
  * **引擎給的**錨點標籤，GUI 只讀不算（v4 spec §4.3 的既有原則）。
+ *
+ * 決策 M（#109）：`prices` 第三欄是 `move_pct`——該價位相對現價（spot）
+ * 的變動分數，跟 cell 值同源同時點算出來，GUI 只格式化顯示，不重算。
  */
 export interface Matrix {
-  prices: [number, string][];
+  prices: [number, string, number][];
   dates: [string, string][];
   cells: number[][];
 }
@@ -65,6 +71,22 @@ export interface PricePoint {
   label: "worst" | "target" | "best";
   price: number;
   return: number;
+}
+
+/**
+ * #115（spec #117 §4）：Crossover 對照——就是這組 Spread 買腿本身。
+ * `option_type` 讓前端直接顯示「Long Call」／「Long Put」，不必自己從
+ * strategy 反推（後端 `ComparatorView` docstring：三欄直接複製自買腿，
+ * 沒有分支邏輯可以讓它們偏離買腿本身）。`matrix` 與該候選自己的
+ * `matrix` 同一組 price×date grid、同形狀，#116 的 Crossover Boundary
+ * overlay 靠這個保證才能直接逐格比較兩個矩陣。
+ */
+export interface Comparator {
+  option_type: "call" | "put";
+  strike: number;
+  expiry: string;
+  cost: number;
+  matrix: Matrix;
 }
 
 /** 引擎的 `ScenarioVector`（7 個固定壓力情境，Mid 口徑）。 */
@@ -78,6 +100,11 @@ export interface Candidate {
   candidate_key: string;
   baseline_return: number;
   natural_cost: number;
+  /** MVP V3（#105）：Mid 口徑進場成本——Analysis Report → Execution
+   *  的「Net Mid」，與 `natural_cost`（Net Worst，最差成交口徑）並列
+   *  對照。序列化早就存在（`store._candidate` 的 `mid_cost`），本票起
+   *  前端才開始讀它。 */
+  mid_cost: number;
   breakeven: number;
   /** 距這組候選自己的到期日還有幾天（V8／#56，spec R1 §4.2 B「剩餘
    *  天數」——早就序列化了，純文字報告沒印）。 */
@@ -89,6 +116,13 @@ export interface Candidate {
   effective_leverage: number;
   /** 佔成本比率（Mid 口徑）——不是原始美元 Greeks，見 R1 §4.2 注意事項。 */
   theta_day_rate: number;
+  /**
+   * MVP V3（#112，spec #102 決策 H）：這組候選估值實際用到的利率與
+   * 年期——後端 `leg_rate(p, expiry)` 查表結果，與 `rate_by_expiry`
+   * 建表同一條年期公式，前端只格式化、不查表、不換算。
+   */
+  rate_used: number;
+  rate_tenor_years: number;
   vega_per_pt: number;
   scenario_vector: ScenarioVectorView;
   completion_curve: [number, number][];
@@ -114,16 +148,30 @@ export interface Candidate {
    * 選填是因為 V7 之前落盤的結果沒有這個欄位。
    */
   price_ladder?: PricePoint[];
-  /** 引擎標記的報價品質疑慮（⚠ 徽章）。 */
-  quote_warning: boolean;
+  /**
+   * MVP V3（#104，spec #102 決策 F）：⚠ 徽章與候選池文案唯一該接的
+   * 顯示旗標——僅 Bid/Ask 過寬（`is_spread_wide`）。零成交量、
+   * Execution friction 超過 25% 都不再觸發顯示。舊的複合旗標
+   * `quote_warning`（選取閘門用，含 zero_vol／friction 兩項）不對外
+   * 序列化，此契約裡不會出現這個鍵。
+   */
+  wide_spread_warning: boolean;
   /**
    * FB5-03（#64）：無套利一致性違反——同到期日、同類型的相鄰履約價
-   * 報價不單調，疑似陳舊報價。獨立於 `quote_warning`：成因與嚴重性都
-   * 不同（配對關係違反，不是單一數值超標），不合併成同一個布林值。
+   * 報價不單調，疑似陳舊報價。獨立於 `wide_spread_warning`：成因與
+   * 嚴重性都不同（配對關係違反，不是單一數值超標），不合併成同一個
+   * 布林值。
    */
   monotonicity_warning: boolean;
   legs: Leg[];
   matrix: Matrix;
+  /**
+   * #115（spec #117 §4）：Crossover 對照——只有 Spread 候選有值；單腿
+   * 恆為 `null`（沒有「跟自己比較」的概念）。Spread 候選理論上也可能
+   * 是 `null`（買腿報價缺失，結構上不該發生的防禦性 case）——#116 的
+   * overlay 必須誠實處理這個缺席狀態，不能假造一條線。
+   */
+  comparator: Comparator | null;
 }
 
 export interface ExpiryTop10 {
@@ -201,6 +249,14 @@ export interface AnalysisParams {
   target_month: string;
   strategy: string;
   /**
+   * 劇本區間兩端，建立劇本時選填（顯示文字為「最高／最低」，欄位名沿用
+   * 既有契約）。`null` ＝ 使用者沒填。它們決定 Heatmap 的價格軸上下限，
+   * 詳細頁摘要卡也直接顯示——沒有它們，圖上的 `<最高>`／`<最低>` 錨點
+   * 使用者對不上是哪來的數字。
+   */
+  best_price: number | null;
+  worst_price: number | null;
+  /**
    * V8（#56，spec R1 §4.2 A）：新版型「⑥ 方法與假設」要的模型參數——
    * 利率、IV 情境、Delta 分級門檻、要求報酬上限。原本只活在
    * `report_text` 的 `[模型假設]` 區塊，早就在契約裡（`AnalysisParams`
@@ -223,6 +279,20 @@ export interface AnalysisParams {
    *  `RateRow` 才能跟後端 `report.py::_rate_line` 同一套三態判斷，不
    *  會在明示利率也顯示成 FALLBACK。 */
   rate_explicit: boolean;
+  /**
+   * #123（spec #117 §2）：股利殖利率 q 的三態揭露——形狀逐一對應
+   * `rate_curve_used`／`rate_curve_date`／`rate_curve_stale`／
+   * `rate_note`，`QRow` 與 `RateRow` 同一套判斷方式。`q_by_symbol`
+   * 為 `null` 時（q 管線未接、或 fetch 失敗且無可用快取）走今天的
+   * 完整行為，`q_source`／`q_as_of` 同為 `null`；有值時 `q_source`
+   * 是實際取得資料的 vendor（"yahoo"／"fmp"／"nasdaq"），`q_stale`
+   * 獨立於 `q_by_symbol is null`——陳舊備援窗內仍可能算出一個值。
+   */
+  q_by_symbol: number | null;
+  q_source: string | null;
+  q_as_of: string | null;
+  q_stale: boolean;
+  q_note: string;
   iv_shifts: number[];
   delta_bands: [number, number];
   min_return: number;
@@ -245,10 +315,16 @@ const STAGES = ["fetch", "analyze", "params", "archived"] as const;
 
 export class ApiError extends Error {
   readonly stage: FailureStage;
+  /** 這次失敗的 request 對得回 Vercel runtime logs 的哪一次
+   *  （DG-02／#145）。請求整個失敗、連回應都沒有時仍是 `null`——那種
+   *  情況下伺服器端從未產生過 correlation id 可言。 */
+  readonly correlationId: string | null;
 
-  constructor(message: string, stage: FailureStage = null) {
+  constructor(message: string, stage: FailureStage = null,
+             correlationId: string | null = null) {
     super(message);
     this.stage = stage;
+    this.correlationId = correlationId;
   }
 }
 
@@ -277,6 +353,17 @@ export interface ScenarioSummary {
   symbol: string;
   target_price: number;
   target_month: string;
+  /**
+   * 劇本區間兩端，建立劇本時選填（QA 修正後顯示文字為「最高／最低」，
+   * 欄位名沿用既有契約）。`null` ＝ 使用者沒填。
+   */
+  best_price: number | null;
+  worst_price: number | null;
+  /**
+   * 最近一次分析當下的標的現價（QA 修正）。劇本庫卡片要有它，目標價與
+   * 最高／最低才有比較基準。`null` ＝ 這個劇本還沒成功分析過。
+   */
+  spot: number | null;
   created_at: string;
   archived_at: string | null;
   latest_analyzed_at: string | null;
@@ -347,12 +434,17 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
     // 逾時／連線斷掉：說「等不到回應」，而不是把 DOMException 的英文
     // 原文丟到手機畫面上。分層是 null——我們並不知道伺服器跑到哪一段。
     if (e instanceof DOMException && e.name === "TimeoutError") {
-      throw new ApiError("等太久沒有回應（逾時），請重試");
+      throw new ApiError("伺服器逾時沒有回應，請重試");
     }
     throw new ApiError(
       `連不到伺服器：${e instanceof Error ? e.message : String(e)}`);
   }
   if (!resp.ok) {
+    // 每個回應都帶（DG-02／#145，含錯誤回應）——連結不到某次特定失敗
+    // 的細節時，這仍是使用者手上唯一能拿去對 Vercel runtime logs 的
+    // 東西。`?.`：既有測試大量用簡化的物件字面量假冒 `Response`（省略
+    // `headers`），這裡不因此連帶炸掉那些跟 correlation id 無關的測試。
+    const correlationId = resp.headers?.get("X-Correlation-Id") ?? null;
     const detail = await resp
       .json()
       .then((b) => b?.detail)
@@ -365,12 +457,12 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
     if (detail && typeof detail === "object" && !Array.isArray(detail)) {
       const body = detail as { stage?: unknown; message?: unknown };
       if (typeof body.message === "string") {
-        throw new ApiError(body.message, stageOf(body.stage));
+        throw new ApiError(body.message, stageOf(body.stage), correlationId);
       }
     }
     const message =
       typeof detail === "string" ? detail : `請求失敗（HTTP ${resp.status}）`;
-    throw new ApiError(message);
+    throw new ApiError(message, null, correlationId);
   }
   // TR3（#90）：永久刪除回 204 No Content——沒有主體可解析，`.json()`
   // 對空字串會直接炸掉。204 一律沒有主體（HTTP 語意），呼叫端此時
@@ -384,6 +476,19 @@ const POST_JSON = (body: unknown): RequestInit => ({
   headers: { "Content-Type": "application/json" },
   body: JSON.stringify(body),
 });
+
+/** 編輯劇本（#132）。**不送 symbol**——標的不可改，後端也沒有那個欄位。 */
+export function editScenario(
+  id: string,
+  draft: CreateScenarioRequest,
+): Promise<ScenarioSummary> {
+  const { symbol: _ignored, ...thesis } = draft;
+  return request<ScenarioSummary>(`/api/scenarios/${encodeURIComponent(id)}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(thesis),
+  });
+}
 
 export function listScenarios(): Promise<ScenarioSummary[]> {
   return request<ScenarioSummary[]>("/api/scenarios");
@@ -540,4 +645,335 @@ export function baselineTopCandidate(view: AnalysisView): Candidate | null {
  */
 export function primaryResult(view: AnalysisView): StrategyResult | null {
   return view.results[0] ?? null;
+}
+
+// ---------- 設定：資料源與 Provider credential（Settings／#124） ----------
+
+/** 使用者可選的自訂資料源。清單由後端白名單給（`api_app/providers.py`），
+ *  前端不自己維護一份——兩邊各記一份遲早會對不上。 */
+export interface ProviderOption {
+  id: string;
+  label: string;
+}
+
+/** `Data / API` 其中一列的現況。`default_label` 是「預設」那顆選項要顯示
+ *  什麼（Market Data 是 Cboe、Historical IV 是「無」），由後端給。 */
+export interface UsageView {
+  mode: "default" | "custom";
+  provider: string | null;
+  default_label: string;
+}
+
+/** 某個 Provider 的 credential 狀態。**沒有完整 token 這個欄位**——後端
+ *  只給遮罩形式，這是 #124 的硬性紅線。 */
+/** 測試連線的三態（#125）——外加「有 token 但還沒測過」。
+ *  刻意不把沒測過當成已連線：那是在替使用者宣稱一件沒驗證過的事。 */
+export type CredentialState = "unset" | "unverified" | "ok" | "failed";
+
+export interface CredentialStatus {
+  configured: boolean;
+  masked: string | null;
+  updated_at: string | null;
+  status: CredentialState;
+  /** 失敗原因，給人看的整句話。成功或未測時為 null。 */
+  reason: string | null;
+  checked_at: string | null;
+}
+
+/** Market Data 這一列實際生效的來源（#125）。`fallback` 為真時
+ *  `reason` 說明為什麼用的不是使用者選的那家——不靜默退回。 */
+export interface EffectiveSource {
+  source: string;
+  fallback: boolean;
+  reason: string | null;
+}
+
+export interface SettingsView {
+  supported_providers: ProviderOption[];
+  market_data: UsageView;
+  historical_iv: UsageView;
+  /** key ＝ provider id，不是資料用途——兩列選同一個 Provider 時看到的
+   *  是同一筆，使用者因此不必輸入同一把 token 兩次。 */
+  credentials: Record<string, CredentialStatus>;
+  market_data_effective: EffectiveSource;
+  /** Historical IV 模組解不解鎖（#126）。**由後端算好**——前端不自己
+   *  重推這條規則，推兩份遲早漂移，而漂移的後果正好是 AC 禁止的
+   *  「畫面以為鎖著、其實已經發了請求」。 */
+  historical_iv_enabled: boolean;
+  updated_at: string | null;
+}
+
+/** 送出時只需要模式與 provider，`default_label` 是後端給的顯示用資訊。 */
+export interface UsageChoice {
+  mode: "default" | "custom";
+  provider: string | null;
+}
+
+export function getSettings(): Promise<SettingsView> {
+  return request<SettingsView>("/api/settings");
+}
+
+export function saveSettings(body: {
+  market_data: UsageChoice;
+  historical_iv: UsageChoice;
+}): Promise<SettingsView> {
+  return request<SettingsView>("/api/settings", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+export function saveCredential(
+  provider: string,
+  token: string,
+): Promise<SettingsView> {
+  return request<SettingsView>(
+    `/api/settings/credentials/${encodeURIComponent(provider)}`,
+    {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token }),
+    },
+  );
+}
+
+/** 測試連線（#125）：驗證失敗仍是 200——「這把 token 不能用」是預期內的
+ *  答案，狀態在回傳的 view 裡，不必為了讀它去 catch。 */
+export function testCredential(provider: string): Promise<SettingsView> {
+  return request<SettingsView>(
+    `/api/settings/credentials/${encodeURIComponent(provider)}/test`,
+    { method: "POST" },
+  );
+}
+
+export function clearCredential(provider: string): Promise<SettingsView> {
+  return request<SettingsView>(
+    `/api/settings/credentials/${encodeURIComponent(provider)}`,
+    { method: "DELETE" },
+  );
+}
+
+// ---------- Historical IV 歷史序列（#126／#114，HIVT-02–04／#153–155） ----------
+
+/** Normalized Skew 自己一年走勢圖的一天（HIVT-04／#155：舊 `points` 的
+ *  `buy_iv`／`sell_iv`／`atm_iv` 子欄位已隨那三個次要顯示欄位一起移除，
+ *  這裡只留 Normalized Skew 自己需要的那一項）。`null`＝那天在可比網格
+ *  之外——是斷點，不是零。 */
+export interface NormalizedSkewPoint {
+  date: string;
+  normalized_skew: number | null;
+}
+
+/** 只描述**這次 backfill 嘗試**的結果，不代表資料能不能看——那是兩件
+ *  事（需求方 2026-08-12 二次修正裁示）。`unset`（provider 未設定）與
+ *  `invalid`（credential 驗證失敗）不會走到這裡——那兩種在閘門就 403，
+ *  畫面連模組都不渲染（#126 既有行為）。 */
+export type IvHistoryStatus = "ok" | "quota" | "vendor";
+
+/** Normalized Skew 這一項的現值／百分位／筆數／Δ4w。
+ *
+ *  百分位**不設任何 coverage 或樣本數門檻**——只要 `count >= 1` 就給。
+ *  `count` 是這個百分位背後有幾筆有效觀測撐著，讓使用者自己判斷這個
+ *  數字站不站得住腳，產品不替他下「樣本不足所以不值得看」的判斷。
+ *
+ *  `percentile` 為 `null` 的**唯一**情況是 `count === 0`——這個欄位完全
+ *  沒有可比較的歷史觀測，`value` 此時也是 `null`。
+ *
+ *  `trend_4w`／`trend_base_count`（#140／spec #137）：Δ4w＝最新觀測減去
+ *  約四週前水準（[今天-42天, 今天-21天] 窗內觀測的中位數），純加法欄位。
+ *  基準窗內一筆觀測都沒有時 `trend_4w` 為 `null`（`trend_base_count` 隨
+ *  之為 0）——跟 `percentile`／`value` 一樣，湊不出來就誠實說沒有，不
+ *  外推、不拿別的數字頂替。`trend_base_count` 揭露這個趨勢數字背後有
+ *  幾筆觀測撐著，跟 `count` 同精神。 */
+export interface IvFieldMetric {
+  value: number | null;
+  percentile: number | null;
+  count: number;
+  trend_4w: number | null;
+  trend_base_count: number;
+}
+
+/**
+ * 一筆診斷事件（DG-02／#145）。`context` 是後端已經套過 whitelist
+ * redaction 與「丟掉 `None`」的 sanitized dict——前端逐 key 渲染即可，
+ * 不必也不該自己再判斷哪些欄位該顯示。
+ */
+export interface DiagnosticEvent {
+  event_id: string;
+  correlation_id: string;
+  ts: string;
+  subsystem: string;
+  stage: string;
+  severity: "info" | "warning" | "error";
+  message: string;
+  context: Record<string, string | number | boolean>;
+}
+
+/** 這次 request 產生的診斷事件（DG-03／#146）——跟資料一起回，前端
+ *  不必為了查詳情另猜一次 correlation id。 */
+export interface IvHistoryDiagnostics {
+  correlation_id: string;
+  events: DiagnosticEvent[];
+}
+
+/** Exact contract 的身份（HIVT-02／#153，spec #151 §1）——underlying／
+ *  expiration／strike／option_type 四項，不同其中任何一項就是不同的
+ *  合約，不同的歷史序列。 */
+export interface ContractIdentity {
+  underlying: string;
+  expiration: string;
+  strike: number;
+  option_type: string;
+  contract_symbol: string;
+}
+
+/** 這張合約單日的市場 IV。`iv` 為 `null`＝vendor 對這天沒有值（缺席
+ *  觀測，不是 0）。`low_confidence`＝這天距到期日少於後端具名門檻
+ *  （近到期反解病態，HIVR-08／#167）——純資訊品質標記，這個點依然
+ *  在序列裡、依然餵進統計量，不影響 ranking／filtering／candidate
+ *  selection。 */
+export interface IvTrendPoint {
+  date: string;
+  iv: number | null;
+  low_confidence: boolean;
+}
+
+/** 統計量序列上的一天（moving average／Bollinger 上下界，HIVT-03／
+ *  #154）。`value` 為 `null`＝那天視窗內觀測數不足
+ *  `IV_TREND_MIN_OBSERVATIONS_FOR_BANDS`，回報 unavailable——不是沒有
+ *  資料，是這個統計量在那天不成立。 */
+export interface IvTrendStatPoint {
+  date: string;
+  value: number | null;
+}
+
+/**
+ * 一隻腳（買腿或賣腿）的完整 exact-contract 歷史 IV（HIVT-02／03／
+ * #153／#154，spec #151 §4）——原始序列＋統計量套組。
+ *
+ * `current_percentile`／`current_zscore`／`delta_4w` 個別可能是
+ * `null`：percentile 只在完全沒有歷史觀測時才會是 `null`（無最低門檻）；
+ * `current_zscore` 在視窗觀測數不足 `IV_TREND_MIN_OBSERVATIONS_FOR_
+ * BANDS` 時是 `null`；`delta_4w` 在 `[today-42d, today-21d]` 基準窗內
+ * 沒有觀測時是 `null`。三者互不影響彼此，也不影響 `points` 本身。
+ */
+export interface LegHistoricalIv {
+  contract: ContractIdentity;
+  points: IvTrendPoint[];
+  moving_average: IvTrendStatPoint[];
+  bollinger_upper: IvTrendStatPoint[];
+  bollinger_lower: IvTrendStatPoint[];
+  current_percentile: number | null;
+  current_zscore: number | null;
+  delta_4w: number | null;
+  observation_count: number;
+  history_span_days: number;
+  lookback_days_config: number;
+  status: IvHistoryStatus;
+  note: string | null;
+}
+
+/** 單腳候選（Long Call／Put）只有 `buy`；Vertical Spread 兩腿都有
+ *  （HIVT-02／#153，spec #151 §4：單腳的 `sell` 整個省略這個 key，
+ *  不是設成 `null`）。 */
+export interface IvHistoryLegs {
+  buy: LegHistoricalIv;
+  sell?: LegHistoricalIv;
+}
+
+/** Spread IV Gap 序列上的一天（SIG-01／#172，spec #171）。命名鎖死
+ *  ——`{date, gap}`，不是 `{date, iv}` 也不是 `{date, value}`。`gap`
+ *  永遠是 `number`，絕不是 `null`：只有兩腿同一天都有值才會產生這一筆
+ *  observation，任一腿缺席那天整筆不存在，不是留一筆 `gap: null`。 */
+export interface SpreadGapPoint {
+  date: string;
+  gap: number;
+}
+
+/** `spread_gap.delta_4w_ratio` 的四態 guardrail 狀態（SIG-01／#172）：
+ *  `"ok"` 才有非 null 的 `delta_4w_ratio`；其餘三態 `delta_4w_ratio`
+ *  恆為 `null`，`delta_4w`（絕對值 vol-point）不受影響、四態都正常
+ *  顯示。 */
+export type SpreadGapDeltaStatus =
+  "ok" | "no_baseline" | "near_zero_base" | "sign_flip";
+
+/**
+ * Vertical Spread 候選的 Spread IV Gap 完整資料（SIG-01／#172，spec
+ * #171）——Sell 腿 reconstructed IV − Buy 腿 reconstructed IV，只保留
+ * 兩腿同一天都有值的觀測。只要候選有賣腿這個 key 就一定存在，即使
+ * `observation_count` 是 0（兩腿目前沒有任何重疊有效觀測）——那種情況
+ * 下 `points`／`moving_average`／`bollinger_upper`／`bollinger_lower`
+ * 是空陣列，`current_percentile`／`delta_4w`／`delta_4w_ratio` 是
+ * `null`，`delta_4w_status` 是 `"no_baseline"`，`shared_history_span_
+ * days` 是 0——形狀永遠完整，前端據此渲染 unavailable 狀態而不是整段
+ * 隱藏（SIG-03／#174）。
+ *
+ * `points[-1]`（依 date 嚴格遞增排序後的最後一筆）是「目前 IV Gap
+ * 現值」的正式資料來源，不是碰巧依賴目前的排序。
+ *
+ * 跟既有 `LegHistoricalIv` 的刻意契約差異：不含 `current_zscore`；不含
+ * `status`／`note`；不含 `rolling_window_days`（施工前最終裁示：前端
+ * 不需要讀這個值）；涵蓋時間欄位叫 `shared_history_span_days`，不是
+ * `history_span_days`——那個名稱專屬既有 leg 欄位，語意不同，不得混用。
+ */
+export interface SpreadGap {
+  points: SpreadGapPoint[];
+  moving_average: IvTrendStatPoint[];
+  bollinger_upper: IvTrendStatPoint[];
+  bollinger_lower: IvTrendStatPoint[];
+  current_percentile: number | null;
+  delta_4w: number | null;
+  delta_4w_ratio: number | null;
+  delta_4w_status: SpreadGapDeltaStatus;
+  observation_count: number;
+  shared_history_span_days: number;
+}
+
+export interface IvHistoryView {
+  candidate_key: string;
+  status: IvHistoryStatus;
+  /** Normalized Skew 自己的一年走勢圖資料（HIVT-04／#155：欄位改名，
+   *  子欄位窄化，計算本身完全未變）。 */
+  normalized_skew_points: NormalizedSkewPoint[];
+  /** HIVT-04（#155）後只剩 `normalized_skew` 一項——買／賣腿的 reanchored
+   *  次要顯示已被 `legs` 取代。 */
+  metrics: { normalized_skew: IvFieldMetric };
+  /** 這個 symbol 已經累積了幾天觀測（progressive backfill 的進度，
+   *  Normalized Skew 這條 (tenor,delta) 家族路徑專用）。 */
+  observations: number;
+  /** 只在 `status` 不是 `ok` 時有值，說明今天的 backfill 遇到什麼——
+   *  與要不要顯示 percentile 無關，那從來就只看各欄位自己的 `count`。 */
+  note: string | null;
+  diagnostics: IvHistoryDiagnostics;
+  /** exact-contract 家族（HIVT-02／03／#153／#154）——跟上面的
+   *  Normalized Skew 家族資料語意完全獨立。 */
+  legs: IvHistoryLegs;
+  /** Spread IV Gap（SIG-01／#172）：只要候選有賣腿就一定存在這個 key，
+   *  單腳候選整個省略（不是設成 `undefined` 以外的假值）——跟 `legs.
+   *  sell` 同一種「key 存在與否即結構性事實」的慣例。 */
+  spread_gap?: SpreadGap;
+}
+
+export function ivHistory(
+  scenarioId: string,
+  candidateKey: string,
+): Promise<IvHistoryView> {
+  return request<IvHistoryView>(
+    `/api/scenarios/${encodeURIComponent(scenarioId)}/iv-history`
+    + `?candidate_key=${encodeURIComponent(candidateKey)}`,
+  );
+}
+
+// ---------- Application diagnostics（DG-02／#145，畫面見 DG-06／#149） ----------
+
+/** 近期診斷事件，最新在最上——沒有 pagination，`limit` 就是能看到的上限。 */
+export function getDiagnostics(limit = 50): Promise<DiagnosticEvent[]> {
+  return request<DiagnosticEvent[]>(
+    `/api/diagnostics?limit=${encodeURIComponent(String(limit))}`);
+}
+
+/** 清空，回傳清掉的筆數——呼叫端據此更新畫面，不必再打一次 GET。 */
+export function clearDiagnostics(): Promise<{ cleared: number }> {
+  return request<{ cleared: number }>("/api/diagnostics", { method: "DELETE" });
 }

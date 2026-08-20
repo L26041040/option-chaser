@@ -142,6 +142,32 @@ def test_loader_returning_a_stale_curve_is_marked_stale_end_to_end():
     assert "STALE" in result.results[0].report_text
 
 
+def test_candidate_rate_used_and_tenor_match_rate_by_expiry_lookup():
+    """MVP V3（#112，spec #102 決策 H）：每組候選序列化的 `rate_used` 必須
+    等於該候選自己到期日在 `rate_by_expiry` 的查表值（跟估值管線
+    `leg_rate(p, expiry)` 用的是同一個結果，不是另外算一份可能對不上的
+    數字）；`rate_tenor_years` 必須與候選自身到期日一致（分析日→到期日
+    的年分數，逐字比照 `_resolve_rates` 建表時的公式）。
+
+    六到期日鏈＋假曲線，逼出多組不同到期日、因而不同 tenor／不同利率
+    的候選，不是只驗到單一到期日就交差。
+    """
+    result = service.run_offline(_request(), SNAP, rate_curve_loader=_fake_loader)
+    p = result.request.base_params
+    today = result.today
+    seen_expiries = set()
+    for res in result.results:
+        for cv in res.candidates:
+            expiry = (cv.valuation.long_leg.expiry
+                      if hasattr(cv.valuation, "long_leg")
+                      else cv.valuation.contract.expiry)
+            seen_expiries.add(expiry)
+            assert cv.rate_used == leg_rate(p, expiry)
+            expected_tenor = (date.fromisoformat(expiry) - today).days / 365.0
+            assert cv.rate_tenor_years == pytest.approx(expected_tenor)
+    assert len(seen_expiries) > 1, "測試資料只覆蓋單一到期日，驗不到年期真的隨候選而異"
+
+
 def test_curve_success_with_zero_contracts_is_not_misread_as_fallback():
     """RC1（#87）驗收點：`rate_by_expiry` 為空但曲線本身其實成功取得
     （鏈上零合格候選的邊界情況）不得被誤判成 fallback——`rate_curve_

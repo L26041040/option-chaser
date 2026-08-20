@@ -4,8 +4,9 @@ HTTP API 驗證（後端唯一接縫，spec #47 裁示；spec #61 Testing Decisi
 
 引擎層行為（關卡組成、逐關淘汰數）由 `tests/test_filters.py` 直測；這裡
 驗證使用者實際看得到的東西——同一份快照下，過濾器不再把候選池砍到只剩
-唯一倖存者。「帶標示」的證明（quote_warning 確實被觸發）用最小合成快照、
-不靠這份大 fixture——見 `tests/test_spread_quality_flag.py` 開頭的說明：
+唯一倖存者。「帶標示」的證明（`wide_spread_warning`／`quote_warning`
+確實被觸發）用最小合成快照、不靠這份大 fixture——見
+`tests/test_spread_quality_flag.py` 開頭的說明：
 排名只留每級距第一名，被卡住的那筆不保證擠得進榜。FB5-03 的單調性違反
 是例外：XYZC100D 剛好就是平衡型級距的第一名，直接在這份既有 fixture 上
 就驗得到，見 `test_monotonicity_warning_reaches_the_serialized_candidate`。
@@ -53,10 +54,11 @@ def test_wide_spread_candidate_survives_and_would_be_flagged():
     測試同一份 fixture 的 OI 案例，這裡疊加 Spread 案例）。
     「帶標示」：`candidates` 只序列化每級距第一名，XYZC102O 選不上任何
     一級（見 `test_ranking_formula_still_picks_highest_return_within_band`
-    的同一批候選數字），無法從 HTTP 回應直接讀到它的 `quote_warning`；
+    的同一批候選數字），無法從 HTTP 回應直接讀到它的顯示旗標；
     改為直接從**同一份**既有 fixture 撈出這張合約的原始 bid/ask，用
-    `service._v4_fields` 實際呼叫的同一個純函式驗證——這就是
-    `quote_warning` 會不會被觸發的唯一判準，不是另外猜一個公式。
+    `is_spread_wide` 實際呼叫的同一個純函式驗證——這就是
+    `wide_spread_warning`（MVP V3／#104）會不會被觸發的唯一判準，不是
+    另外猜一個公式。
     """
     r = _client().post("/api/analyze", json=REQUEST)
     result = r.json()["results"][0]
@@ -139,8 +141,9 @@ def test_monotonicity_warning_reaches_the_serialized_candidate():
     105 卻比 100 便宜」同一個形狀。XYZC100D 正好是平衡型級距的第一名
     （上一條測試已確認），不必繞去查全候選列表就能在真實回應上斷言。
 
-    也順便釘住這是**獨立欄位**：`quote_warning` 不該被單調性違反污染
-    （XYZC100D 本身報價／價差都正常，`quote_warning` 應為 False）。
+    也順便釘住這是**獨立欄位**：`wide_spread_warning`（MVP V3／#104 顯示
+    旗標，取代已不對外序列化的 `quote_warning`）不該被單調性違反污染
+    （XYZC100D 本身報價／價差都正常，`wide_spread_warning` 應為 False）。
     """
     r = _client().post("/api/analyze", json=REQUEST)
     result = r.json()["results"][0]
@@ -148,7 +151,8 @@ def test_monotonicity_warning_reaches_the_serialized_candidate():
                     if 0.35 <= abs(c["net_delta"]) <= 0.65)
     assert balanced["legs"][0]["strike"] == 100.5
     assert balanced["monotonicity_warning"] is True
-    assert balanced["quote_warning"] is False
+    assert balanced["wide_spread_warning"] is False
+    assert "quote_warning" not in balanced
 
 
 def test_monotonicity_violation_does_not_shrink_the_pool():
@@ -184,5 +188,5 @@ def test_quality_flags_reach_http_response_and_never_shrink_the_pool():
     flags = dict((f["label"], f["count"]) for f in result["quality_flags"])
     assert flags["買賣價差偏大"] == 1
     assert flags["報價與鄰近履約價不一致，疑似陳舊報價"] == 2
-    assert flags["報價非最新（今日無成交）"] == 1
+    assert flags["今日無成交量"] == 1
     assert result["filter_report"]["passed"] == 8

@@ -178,11 +178,13 @@ def _request_for(sc: Scenario) -> service.AnalysisRequest:
 def analyze_scenario(ws_root, sid: str, progress=None, *,
                      snapshot_path: str | None = None,
                      ts: str | None = None,
-                     rate_curve_loader=None) -> Path:
+                     rate_curve_loader=None,
+                     dividend_loader=None) -> Path:
     """§2.5 例外次序：result 檔先落盤，ANALYSIS_COMPLETED 後補。
     分析前必先對帳：邏輯已刪（殘檔）→ 拋錯；崩潰窗 → 修復後續行。
-    `rate_curve_loader` 僅供 networked 呼叫端（analyze_group 剛抓完 chain）
-    傳入以啟用 T12 利率曲線；直接給 snapshot_path 的離線重放維持零網路。"""
+    `rate_curve_loader`／`dividend_loader`（#123）僅供 networked 呼叫端
+    （analyze_group 剛抓完 chain）傳入以啟用 T12 利率曲線／q 管線；直接
+    給 snapshot_path 的離線重放維持零網路。"""
     events = store.read_events(ws_root)
     if store.project_status(events, sid) is None:
         raise store.WorkspaceIntegrityError(f"劇本 {sid} 不存在、已刪除或已移除")
@@ -193,7 +195,8 @@ def analyze_scenario(ws_root, sid: str, progress=None, *,
         result = service.run(req, progress)
     else:
         result = service.run_offline(req, snapshot_path, progress,
-                                     rate_curve_loader=rate_curve_loader)
+                                     rate_curve_loader=rate_curve_loader,
+                                     dividend_loader=dividend_loader)
     capital = store.load_constraints(ws_root)["total_capital"]
     view = store.serialize_result(result, sc.id, capital)
     path = store.save_result(ws_root, sc.id, view)
@@ -211,12 +214,15 @@ def analyze_group(ws_root, group_id: str, progress=None, *,
     groups = load_groups(ws_root)
     group = next(g for g in groups["groups"] if g["id"] == group_id)
     loader = None
+    div_loader = None
     if snapshot_path is None:
         _, snapshot_path = service.fetch_and_save(group["symbol"])
         loader = service.default_rate_curve_loader   # 剛抓完 chain＝網路情境
+        div_loader = service.default_dividend_loader  # 同上（#123）
     return [analyze_scenario(ws_root, sid, progress,
                              snapshot_path=snapshot_path, ts=ts,
-                             rate_curve_loader=loader)
+                             rate_curve_loader=loader,
+                             dividend_loader=div_loader)
             for sid in group["members"]]
 
 

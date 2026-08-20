@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import type { HistoryEntry } from "./api";
 import { bucketKey, chartPoints, contiguousRuns, downsampleHistory,
-        yAxisDomain } from "./spreadHistory";
+        xAxisTicks, yAxisDomain, type ChartPoint } from "./spreadHistory";
 
 function entry(overrides: Partial<HistoryEntry> = {}): HistoryEntry {
   return { analyzed_at: "2026-07-15T21:30:00-04:00", spot: 100.0,
@@ -108,6 +108,43 @@ describe("chartPoints：座標換算＋斷點保留", () => {
   it("單點序列 x 置中，不除以零", () => {
     const points = chartPoints([entry({ cost: 5.0 })], [4.0, 6.0]);
     expect(points[0].x).toBe(0.5);
+  });
+});
+
+describe("xAxisTicks：X 軸日期刻度均勻取樣（MVP V3／#106）", () => {
+  function point(label: string): ChartPoint {
+    return { x: 0, y: 0.5, label };
+  }
+
+  it("空序列回傳空陣列", () => {
+    expect(xAxisTicks([])).toEqual([]);
+  });
+
+  it("單點：只有一個刻度，就是它自己", () => {
+    expect(xAxisTicks([point("a")])).toEqual([{ index: 0, label: "a" }]);
+  });
+
+  it("點數不超過 4 個：每個點都是刻度，不省略任何一個", () => {
+    const points = [point("a"), point("b"), point("c")];
+    expect(xAxisTicks(points)).toEqual([
+      { index: 0, label: "a" }, { index: 1, label: "b" }, { index: 2, label: "c" },
+    ]);
+  });
+
+  it("點數超過 4 個：最多 4 個刻度，且一定含頭尾", () => {
+    const points = Array.from({ length: 12 }, (_, i) => point(`p${i}`));
+    const ticks = xAxisTicks(points);
+    expect(ticks.length).toBeLessThanOrEqual(4);
+    expect(ticks[0]).toEqual({ index: 0, label: "p0" });
+    expect(ticks[ticks.length - 1]).toEqual({ index: 11, label: "p11" });
+  });
+
+  it("刻度的 index 嚴格遞增——不會前後顛倒或重複", () => {
+    const points = Array.from({ length: 20 }, (_, i) => point(`p${i}`));
+    const indices = xAxisTicks(points).map((t) => t.index);
+    for (let i = 1; i < indices.length; i++) {
+      expect(indices[i]).toBeGreaterThan(indices[i - 1]);
+    }
   });
 });
 

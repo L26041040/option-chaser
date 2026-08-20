@@ -15,6 +15,17 @@ class FetchError(Exception):
     pass
 
 
+class QuotaExhausted(FetchError):
+    """vendor 今日額度用完（#130）。
+
+    刻意繼承 `FetchError`：既有的降級鏈（`service.fetch_chain` 的
+    Cboe→yfinance、自訂來源的 fallback）一律 `except FetchError`，額度
+    用完時那些路徑的行為不該改變。子類只是讓**在乎**的呼叫端分得出
+    「今天不用再試了」與「這次剛好失敗、待會可以重試」——兩者對使用者
+    的意義完全不同。
+    """
+
+
 class ParamError(Exception):
     pass
 
@@ -80,6 +91,30 @@ class AnalysisParams:
     rate_curve_used: bool = False
     rate_curve_date: str | None = None
     rate_curve_stale: bool = False
+    # #113（spec #117 §1）：股利殖利率 q，供 BS93 美式近似＋同模型 IV
+    # 反解使用。`None`＝尚未取得（今天：q 管線 #123 還沒接上，一律
+    # `None`）——引擎在這個狀態下走**今天的完整行為**：q=0、直接採用
+    # vendor IV（見 `valuation.calibrate_leg`），不是「q=0 加價格錨定」
+    # ——後者對很多真實 LEAPS call 在數學上無解（研究文件已證實）。
+    # 這是**單一數值，不分到期日**（q 是標的的性質，不像利率逐到期日
+    # 查表）——`ratecurve.py` 的 per-expiry 查表模式在這裡不適用。
+    # #123 會把這欄從 q 管線接上真實數值；本欄位只是接縫，不含任何
+    # 抓取／快取邏輯。
+    q_by_symbol: float | None = None
+    # #123：q 的三態揭露，比照 RC1（#87）的 `rate_curve_used`／
+    # `rate_curve_date`／`rate_curve_stale` 同一套設計——只描述「這次
+    # q 從哪裡來、多新鮮」，不影響任何金融計算，`report.py`／API 契約
+    # 純格式化這幾個欄位。`q_source` 是實際取得資料的 vendor
+    # （"yahoo"／"fmp"／"nasdaq"）；`q_as_of` 是配息資料截至日；
+    # `q_stale` 與 `q_by_symbol is None` 脫鉤——`q_by_symbol` 仍可能
+    # 在陳舊備援窗內算出一個值（第 3 層 fallback），此時 `q_stale=True`
+    # 但 `q_by_symbol` 不是 `None`。`q_note` 是完整的來源／陳舊註記
+    # 文字（比照 `rate_note`），供離線重放或管線完全不可得時仍能說明
+    # 原因。
+    q_source: str | None = None
+    q_as_of: str | None = None
+    q_stale: bool = False
+    q_note: str = ""
     # FB5-01（#62，spec #61）：未平倉量與成交量不再是門檻參數——移除，不留
     # 「看起來在做事、其實沒有」的欄位。未平倉量本身仍在 `OptionContract`
     # 上、隨候選一併序列化，只是不再左右誰進得了候選池。

@@ -29,7 +29,9 @@ function list(
   rows: ScenarioSummary[],
   props: {
     failures?: Record<string, RefreshFailure>;
+    lockedIds?: ReadonlySet<string>;
     onArchive?: (id: string) => void;
+    onEdit?: (id: string) => void;
     onRetry?: (id: string) => void;
     now?: Date;
     selectMode?: boolean;
@@ -44,7 +46,9 @@ function list(
     <CompactScenarioList
       rows={rows}
       failures={props.failures ?? {}}
+      lockedIds={props.lockedIds ?? new Set()}
       onArchive={props.onArchive ?? vi.fn()}
+      onEdit={props.onEdit ?? vi.fn()}
       onRetry={props.onRetry ?? vi.fn()}
       now={props.now ?? NOW}
       selectMode={props.selectMode ?? false}
@@ -66,8 +70,9 @@ describe("Compact 劇本列（MVP-v2／#77、#82）", () => {
       // 第一層。目標價／年月跟 sr-only 摘要都含「2028-05」字樣，用
       // class 鎖定畫面上那個節點，不靠文字比對消歧義。
       expect(within(card).getByText("TLT")).toBeInTheDocument();
+      // QA 修正：現價擠進同一行的目標價前面（`現價 → 目標`）。
       expect(card.querySelector(".compact-target")!.textContent)
-        .toBe("$120.00　2028-05");
+        .toBe("$100.00 → $120.00　2028-05");
       expect(within(card).getByTitle("狀態：正常")).toBeInTheDocument();
 
       // 第二層
@@ -222,5 +227,41 @@ describe("批次選取移入垃圾桶（TR6／#91）", () => {
     await userEvent.click(screen.getByRole("button", { name: "取消" }));
 
     expect(onCancelSelectMode).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("劇本庫的概覽欄位（QA 修正）", () => {
+  it("現價跟目標價並排——卡片上要有比較基準，不然一排目標價沒有意義", () => {
+    list([row({ spot: 82.11 })]);
+    const card = screen.getByRole("listitem");
+    expect(card.querySelector(".compact-spot")!.textContent).toBe("$82.11");
+  });
+
+  it("還沒分析過（沒有現價）顯示破折號，不是 0", () => {
+    list([row({ spot: null, latest_analyzed_at: null, best_return: null,
+                representative_candidate: null })]);
+    const card = screen.getByRole("listitem");
+    expect(card.querySelector(".compact-spot")!.textContent).toBe("—");
+  });
+
+  it("有填最高／最低就顯示出來", () => {
+    list([row({ spot: 82.11, best_price: 120, worst_price: 100 })]);
+    const card = screen.getByRole("listitem");
+    const range = card.querySelector(".compact-range")!;
+    expect(range.textContent).toContain("最低 $100.00");
+    expect(range.textContent).toContain("最高 $120.00");
+  });
+
+  it("只填一端時另一端顯示破折號，那一行仍然出現", () => {
+    list([row({ best_price: 120, worst_price: null })]);
+    const range = screen.getByRole("listitem").querySelector(".compact-range")!;
+    expect(range.textContent).toContain("最高 $120.00");
+    expect(range.textContent).toContain("最低 —");
+  });
+
+  it("兩端都沒填就整行不畫——compact row 的密度不該被空資料吃掉", () => {
+    list([row({ best_price: null, worst_price: null })]);
+    expect(screen.getByRole("listitem").querySelector(".compact-range"))
+      .toBeNull();
   });
 });

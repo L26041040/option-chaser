@@ -12,6 +12,13 @@
  *
  * 零金融計算：表格逐欄直接印報價，CSV 內容正確性由既有純函式
  * `data.snapshot.snapshot_to_csv` 的測試覆蓋（QA1-10／#37），前端只驗接線。
+ *
+ * 二層收合（MVP V3／#107，spec #102 決策 J）：第一層展開只有摘要
+ * （Symbol／Spot／資料時間／Source／合約數）＋下載 CSV 連結——逐筆
+ * 合約表格本身收進巢狀的第二層 `<details>`，要再展開一次才渲染。
+ * 抓資料的時機不變（第一層展開就打 API，不是等到第二層才拉），改的
+ * 只是「表格何時出現在畫面上」，audit ability（逐筆稽核能力）完全
+ * 保留，只是預設不常駐佔版面。
  */
 import { useState } from "react";
 
@@ -74,44 +81,50 @@ export default function RawData({ scenarioId, analyzedAt = null }: {
             下載 CSV
           </a>
 
-          <div className="raw-data-scroll">
-            <table className="report-table">
-              <caption className="sr-only">
-                {data.meta.symbol} 原始選擇權鏈快照，逐筆合約報價
-              </caption>
-              <thead>
-                <tr>
-                  <th scope="col">合約</th>
-                  <th scope="col">類型</th>
-                  <th scope="col">履約價</th>
-                  <th scope="col">到期日</th>
-                  <th scope="col">Bid</th>
-                  <th scope="col">Ask</th>
-                  <th scope="col">Last</th>
-                  <th scope="col">成交量</th>
-                  <th scope="col">未平倉量</th>
-                  <th scope="col">IV</th>
-                </tr>
-              </thead>
-              <tbody>
-                {data.contracts.map((c) => (
-                  <tr key={c.contract_symbol}>
-                    <th scope="row">{c.contract_symbol}</th>
-                    <td>{c.option_type}</td>
-                    <td>{c.strike}</td>
-                    <td>{c.expiry}</td>
-                    <td>{c.bid === null ? "—" : c.bid}</td>
-                    <td>{c.ask === null ? "—" : c.ask}</td>
-                    <td>{c.last === null ? "—" : c.last}</td>
-                    <td>{c.volume}</td>
-                    <td>{c.open_interest}</td>
-                    <td>{c.implied_volatility === null
-                      ? "—" : `${(c.implied_volatility * 100).toFixed(0)}%`}</td>
+          {/* 第二層（決策 J）：逐筆合約表格收在這裡，第一層展開時不
+              渲染——資料已經在手上（第一層展開就抓過了），這裡純粹是
+              「要不要把長表格印到畫面上」，不是另一次 API 請求。 */}
+          <details className="raw-data-detail">
+            <summary>查看逐筆合約資料</summary>
+            <div className="raw-data-scroll">
+              <table className="report-table">
+                <caption className="sr-only">
+                  {data.meta.symbol} 原始選擇權鏈快照，逐筆合約報價
+                </caption>
+                <thead>
+                  <tr>
+                    <th scope="col">合約</th>
+                    <th scope="col">類型</th>
+                    <th scope="col">履約價</th>
+                    <th scope="col">到期日</th>
+                    <th scope="col">Bid</th>
+                    <th scope="col">Ask</th>
+                    <th scope="col">Last</th>
+                    <th scope="col">成交量</th>
+                    <th scope="col">未平倉量</th>
+                    <th scope="col">IV</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+                </thead>
+                <tbody>
+                  {data.contracts.map((c) => (
+                    <tr key={c.contract_symbol}>
+                      <th scope="row">{c.contract_symbol}</th>
+                      <td>{c.option_type}</td>
+                      <td>{c.strike}</td>
+                      <td>{c.expiry}</td>
+                      <td>{c.bid === null ? "—" : c.bid}</td>
+                      <td>{c.ask === null ? "—" : c.ask}</td>
+                      <td>{c.last === null ? "—" : c.last}</td>
+                      <td>{c.volume}</td>
+                      <td>{c.open_interest}</td>
+                      <td>{c.implied_volatility === null
+                        ? "—" : `${(c.implied_volatility * 100).toFixed(0)}%`}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </details>
         </>
       )}
     </details>

@@ -4,7 +4,7 @@
  * 元件不關心候選細節，只關心它傳給 `getSpreadHistory` 的 key 對不對、
  * 拿到資料後日／週／月切換與斷點呈現對不對。
  */
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -124,7 +124,7 @@ describe("圖表：斷點如實顯示", () => {
     render(<SpreadHistory scenarioId="s1" candidate={spreadCandidate} />);
     await userEvent.click(screen.getByText("Spread 淨成本走勢"));
 
-    expect(await screen.findByText(/沒有可畫的資料/)).toBeInTheDocument();
+    expect(await screen.findByText(/這段期間沒有資料/)).toBeInTheDocument();
   });
 
   it("從未分析過（空歷史）時如實說明", async () => {
@@ -133,6 +133,89 @@ describe("圖表：斷點如實顯示", () => {
     await userEvent.click(screen.getByText("Spread 淨成本走勢"));
 
     expect(await screen.findByText(/還沒有歷史紀錄/)).toBeInTheDocument();
+  });
+});
+
+describe("圖表：Y 軸刻度與單位（MVP V3／#106）", () => {
+  it("顯示 Net Cost ($/share) 單位標籤與三個刻度（低／中／高，固定範圍）", async () => {
+    mockFetch(HISTORY);
+    render(<SpreadHistory scenarioId="s1" candidate={spreadCandidate} />);
+    await userEvent.click(screen.getByText("Spread 淨成本走勢"));
+    const svg = await screen.findByRole("img");
+
+    expect(within(svg).getByText("Net Cost ($/share)")).toBeInTheDocument();
+    // y 軸範圍固定＝[最低×0.85, 最高×1.15]（既有 yAxisDomain 公式），
+    // 這份 fixture 有效值是 5.0／5.5，低與高兩端的刻度必須讀得到。
+    expect(within(svg).getByText("$4.25")).toBeInTheDocument();
+    expect(within(svg).getByText("$6.32")).toBeInTheDocument();
+  });
+});
+
+describe("圖表：X 軸日期刻度（MVP V3／#106）", () => {
+  it("顯示日期刻度，涵蓋序列頭尾", async () => {
+    mockFetch(HISTORY);
+    render(<SpreadHistory scenarioId="s1" candidate={spreadCandidate} />);
+    await userEvent.click(screen.getByText("Spread 淨成本走勢"));
+    const svg = await screen.findByRole("img");
+
+    expect(within(svg).getByText("2026-07-01")).toBeInTheDocument();
+    expect(within(svg).getByText("2026-07-15")).toBeInTheDocument();
+  });
+});
+
+describe("圖表：tooltip（MVP V3／#106，桌面 hover／手機 tap 共用同一套狀態）", () => {
+  it("桌面 hover 資料點顯示含日期與淨成本的 tooltip，移開後消失", async () => {
+    mockFetch(HISTORY);
+    render(<SpreadHistory scenarioId="s1" candidate={spreadCandidate} />);
+    await userEvent.click(screen.getByText("Spread 淨成本走勢"));
+    const svg = await screen.findByRole("img");
+    const point = within(svg).getByRole("button", { name: /2026-07-01/ });
+
+    expect(within(svg).queryByText(/日期 2026-07-01/)).not.toBeInTheDocument();
+
+    await userEvent.hover(point);
+    expect(within(svg).getByText(/日期 2026-07-01/)).toBeInTheDocument();
+    expect(within(svg).getByText(/淨成本 \$5\.00/)).toBeInTheDocument();
+
+    await userEvent.unhover(point);
+    expect(within(svg).queryByText(/日期 2026-07-01/)).not.toBeInTheDocument();
+  });
+
+  it("手機 tap（點按）資料點顯示同樣內容的 tooltip", async () => {
+    mockFetch(HISTORY);
+    render(<SpreadHistory scenarioId="s1" candidate={spreadCandidate} />);
+    await userEvent.click(screen.getByText("Spread 淨成本走勢"));
+    const svg = await screen.findByRole("img");
+    const point = within(svg).getByRole("button", { name: /2026-07-15/ });
+
+    await userEvent.click(point);
+    expect(within(svg).getByText(/日期 2026-07-15/)).toBeInTheDocument();
+    expect(within(svg).getByText(/淨成本 \$5\.50/)).toBeInTheDocument();
+  });
+
+  it("點按另一個資料點，tooltip 內容跟著換成那一點的日期與淨成本", async () => {
+    mockFetch(HISTORY);
+    render(<SpreadHistory scenarioId="s1" candidate={spreadCandidate} />);
+    await userEvent.click(screen.getByText("Spread 淨成本走勢"));
+    const svg = await screen.findByRole("img");
+
+    await userEvent.click(within(svg).getByRole("button", { name: /2026-07-01/ }));
+    expect(within(svg).getByText(/日期 2026-07-01/)).toBeInTheDocument();
+
+    await userEvent.click(within(svg).getByRole("button", { name: /2026-07-15/ }));
+    expect(within(svg).queryByText(/日期 2026-07-01/)).not.toBeInTheDocument();
+    expect(within(svg).getByText(/日期 2026-07-15/)).toBeInTheDocument();
+  });
+
+  it("斷點那一筆沒有畫出資料點，不會出現一個永遠拿不到內容的 tooltip 觸發點",
+     async () => {
+    mockFetch(HISTORY);
+    render(<SpreadHistory scenarioId="s1" candidate={spreadCandidate} />);
+    await userEvent.click(screen.getByText("Spread 淨成本走勢"));
+    const svg = await screen.findByRole("img");
+
+    expect(within(svg).queryByRole("button", { name: /2026-07-08/ }))
+      .not.toBeInTheDocument();
   });
 });
 

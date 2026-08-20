@@ -11,10 +11,17 @@
  * 訊息離它愈近愈好。
  *
  * 排序與格式化都在 `./scenarios` 的純函式裡，這裡只負責畫。
+ *
+ * 決策 K（#108）：卡片版式改沿用 `CompactScenarioList.tsx` 那組三層
+ * compact row class（`.compact-card`／`.compact-tier1/2/3` 等）壓縮留白、
+ * 重複 label 與過大字級——七項決策資訊一項不少，只是不再各自佔一整列。
+ * 桌面／手機仍是兩個獨立元件、各自的檔案（原因見 `App.tsx` 說明），這裡
+ * 只共用 CSS class 命名與視覺密度，不共用渲染路徑，手機版改動不會結構性
+ * 牽動這個檔案。
  */
 import type { RefreshFailure, ScenarioSummary } from "./api";
 import { strategyLabel } from "./detail";
-import { CheckIcon, TrashIcon } from "./icons";
+import { CheckIcon, EditIcon, TrashIcon } from "./icons";
 import { detailHash } from "./route";
 import {
   failureLabel,
@@ -23,11 +30,13 @@ import {
   formatRepresentativeExpiry,
   formatRepresentativeLegs,
   formatReturn,
+  hasPriceRange,
   isStale,
   money,
+  moneyOrDash,
+  partitionByLock,
   scenarioSignal,
   signalLabel,
-  sortScenarios,
 } from "./scenarios";
 
 function ScenarioCard({
@@ -35,7 +44,9 @@ function ScenarioCard({
   failure,
   now,
   selected,
+  locked,
   onArchive,
+  onEdit,
   onRetry,
   selectMode,
   isChecked,
@@ -45,7 +56,11 @@ function ScenarioCard({
   failure: RefreshFailure | undefined;
   now: Date;
   selected: boolean;
+  /** 這一輪刷新還沒輪到、或正在抓的劇本（V4 跟進票／#136）：反灰＋
+   *  禁止點入，避免使用者誤以為看到的是這一輪的最新結果。 */
+  locked: boolean;
   onArchive: (id: string) => void;
+  onEdit: (id: string) => void;
   onRetry: (id: string) => void;
   /** TR6（#91）：批次選取模式——checkbox 取代單筆刪除鈕，整張卡改成
    *  點下去是選取而不是進詳細頁。 */
@@ -58,33 +73,46 @@ function ScenarioCard({
   const who = `${row.symbol} ${row.target_month}`;
   // MVP-v2（#77、#80）：劇本級燈號，紅＞黃＞綠、一張卡只有一個燈。
   const signal = scenarioSignal(row, failure);
+  const rep = row.representative_candidate;
+
+  const cardClass = ["compact-card", selected && "selected", locked && "locked"]
+    .filter(Boolean).join(" ");
+
   return (
-    <li className={selected ? "card selected" : "card"}>
-      {/* 整張卡就是進詳細頁的入口。用真的 `<a>` 而不是掛 onClick 的
-          div：長按可以複製連結、返回手勢可用、鍵盤與螢幕閱讀器也認得。
-          封存鈕留在連結外面——按鈕不能包在連結裡。 */}
-      {/* 不掛 `aria-label`：那會**取代**連結內容當成可及名稱，螢幕閱讀器
-          就只聽得到「TLT 2028-05 詳細」，收益率／目標／距到期／資料時間
-          全部被吃掉。改在結尾補一段只有輔助技術讀得到的字。 */}
-      {/* #72：桌面版左側清單常駐，`aria-current` 讓螢幕閱讀器也認得
-          「目前選中的是哪一個」，不只是視覺上的高亮。
-          TR6（#91）：批次選取模式時整張卡攔截點擊改成切換選取，不導向
-          詳細頁——`preventDefault` 而不是換成 `<button>`，內容結構完全
-          不用重寫一份。 */}
-      <a className="card-tap" href={detailHash(row.id)}
-         aria-current={selected ? "page" : undefined}
-         onClick={(e) => {
-           if (selectMode) {
-             e.preventDefault();
-             onToggleSelect(row.id);
-           }
-         }}>
-        <div className="row">
-          {/* 燈號跟標的分成同一個 flex item：`.row` 是 space-between，
-              燈號要黏在標的旁邊，不能被撐到卡片最左邊自成一欄。顏色不是
-              唯一的資訊管道：`title` 給滑鼠停留時看得到的文字、`sr-only`
-              給螢幕閱讀器；圓點本身 `aria-hidden`。 */}
-          <span className="symbol-group">
+    <li className={cardClass}>
+      {/* 封存鈕疊在「這一塊」（tap 區）的右下角，而不是整張 `<li>` 的
+          右下角——沿用 `CompactScenarioList.tsx` 既有教訓：`.compact-notice`
+          （刷新失敗時才出現）是接在 tap 區後面的正常流內容，會把卡片
+          整體撐高，封存鈕若相對整張卡片定位就會飄到 notice 右下角、疊在
+          「重試」鈕上。`position: relative` 收在這層 wrapper，封存鈕的
+          錨點永遠是 tap 區本身的高度，跟 notice 在不在無關。 */}
+      <div className="compact-card-tap-area">
+        {/* 整張卡就是進詳細頁的入口。用真的 `<a>` 而不是掛 onClick 的
+            div：長按可以複製連結、返回手勢可用、鍵盤與螢幕閱讀器也認得。
+            封存鈕留在連結外面——按鈕不能包在連結裡。
+            V4 跟進票／#136：鎖著時不給 `href`——沒有 href 的 `<a>` 本來
+            就不可點、不進 tab 順序，不必額外攔截 click／keydown，也不會
+            讓「禁止點入」跟「連結可及性」互相打架。 */}
+        {/* 不掛 `aria-label`：那會**取代**連結內容當成可及名稱，螢幕閱讀器
+            就只聽得到「TLT 2028-05 詳細」，收益率／目標／到期日／資料
+            時間全部被吃掉。改在結尾補一段只有輔助技術讀得到的字。 */}
+        {/* #72：桌面版左側清單常駐，`aria-current` 讓螢幕閱讀器也認得
+            「目前選中的是哪一個」，不只是視覺上的高亮（手機版
+            `CompactScenarioCard` 沒有這個常駐 detail pane，不需要這個
+            屬性）。
+            TR6（#91）：批次選取模式時整張卡攔截點擊改成切換選取，不導向
+            詳細頁——`preventDefault` 而不是換成 `<button>`，內容結構完全
+            不用重寫一份。 */}
+        <a className="compact-card-tap" href={locked ? undefined : detailHash(row.id)}
+           aria-current={selected ? "page" : undefined}
+           aria-disabled={locked ? "true" : undefined}
+           onClick={(e) => {
+             if (selectMode) {
+               e.preventDefault();
+               onToggleSelect(row.id);
+             }
+           }}>
+          <div className="compact-tier1">
             {selectMode && (
               <span
                 className={isChecked ? "row-checkbox checked" : "row-checkbox"}
@@ -93,82 +121,111 @@ function ScenarioCard({
                 {isChecked && <CheckIcon />}
               </span>
             )}
-            <span
-              className={`signal-dot signal-${signal}`}
-              title={signalLabel(signal)}
-              aria-hidden="true"
-            />
-            <span className="sr-only">{signalLabel(signal)}</span>
-            <span className="row-value big">{row.symbol}</span>
-          </span>
-          <span className="metric-group">
+            <span className="compact-symbol">{row.symbol}</span>
+            {/* QA 修正：現價擠進同一行的目標價前面（`現價 → 目標`），
+                不多佔一列高度。與 `CompactScenarioList.tsx` 同一種寫法
+                ——兩份清單是同一個東西的兩種版面。 */}
+            <span className="compact-target">
+              <span className="compact-spot">{moneyOrDash(row.spot)}</span>
+              {" → "}
+              {money(row.target_price)}　{row.target_month}
+            </span>
+            {/* V4 跟進票／#136：鎖著時燈號位置換成「更新中」——這一刻的
+                燈號（紅／黃／綠）講的是上一輪的結果，這一輪還沒有結論，
+                繼續顯示舊燈號會誤導成「這是這次的狀態」。 */}
+            {locked ? (
+              <span className="tag locked-tag">更新中</span>
+            ) : (
+              // 顏色不是唯一的資訊管道：`title` 給滑鼠停留時看得到的
+              // 文字、圓點本身 `aria-hidden`，可及名稱另外交給 sr-only
+              // 那段字。
+              <span
+                className={`signal-dot signal-${signal}`}
+                title={signalLabel(signal)}
+                aria-hidden="true"
+              />
+            )}
+          </div>
+
+          {/* 第二層是全卡最醒目的資訊：報酬率＋策略＋買賣履約價
+              （MVP-v2／#77、#78：沒有策略／履約價，報酬率無法被判讀出自
+              哪一個 option combination）。`null` 代表尚未分析或該期零
+              合格候選，說「—」而不是編一組假的候選。 */}
+          <div className="compact-tier2">
             <span
               className={
-                ran ? `metric ${row.best_return! >= 0 ? "positive" : "negative"}`
-                    : "metric muted"
+                ran ? `metric compact-metric ${row.best_return! >= 0 ? "positive" : "negative"}`
+                    : "metric compact-metric muted"
               }
             >
               {formatReturn(row.best_return)}
             </span>
-            <span className="chevron" aria-hidden="true">
-              ›
+            <span className="compact-strategy">
+              {rep
+                ? `${strategyLabel(rep.strategy)}　${formatRepresentativeLegs(rep)}`
+                : "—"}
             </span>
-          </span>
-        </div>
+          </div>
 
-        <div className="row">
-          <span className="row-label">目標</span>
-          <span className="row-value">
-            {money(row.target_price)}　{row.target_month}
-          </span>
-        </div>
-
-        {/* MVP-v2（#77、#78）：報酬率旁邊必須看得出是哪一組 option
-            combination 算出來的——策略＋買賣履約價；`null` 代表尚未
-            分析或該期零合格候選，說「—」而不是編一組假的候選。 */}
-        <div className="row">
-          <span className="row-label">策略</span>
-          <span className="row-value">
-            {row.representative_candidate
-              ? `${strategyLabel(row.representative_candidate.strategy)}　` +
-                formatRepresentativeLegs(row.representative_candidate)
-              : "—"}
-          </span>
-        </div>
-
-        {/* 實際到期日——刻意跟上面「目標」那一列的目標年月分開一列、
-            格式也不同（`YYYY-MM-DD` vs `YYYY-MM`），這是這張卡最容易被
-            讀錯成同一件事的地方。 */}
-        <div className="row">
-          <span className="row-label">到期日</span>
-          <span className="row-value">
-            {formatRepresentativeExpiry(row.representative_candidate)}
-          </span>
-        </div>
-
-        <div className="row">
-          <span className="row-label">距到期</span>
-          <span className="row-value">
-            {formatDaysLeft(row.days_to_anchor)}
+          {/* 第三層：低權重資訊合併一行——實際到期日／距到期天數／資料
+              時間，不再各自佔一整列。每個格式化值各自一個 span、分隔號
+              是獨立文字節點，`formatAnalyzedAt("尚未分析")` 之類的完整
+              字串不會被分隔號黏成一段查不到精確文字的字串。 */}
+          <div className="compact-tier3">
+            <span>Exp {formatRepresentativeExpiry(rep)}</span>
+            {" · "}
+            <span>{formatDaysLeft(row.days_to_anchor)}</span>
+            {" · "}
+            <span>{formatAnalyzedAt(row.latest_analyzed_at)}</span>
+            {/* 久未刷新明講「舊資料」：數字還是上一次算出來的真數字，
+                只是不能當成現在的。 */}
+            {stale && <span className="tag warn">舊資料</span>}
             {/* #68：目標月已過完的劇本不再花資源刷新，卡片上要看得出
                 「不是刷新失敗、也不是還沒分析過」，是第三種、刻意的
                 狀態——見下面失敗提示的互斥處理。 */}
             {row.expired && <span className="tag">已過期，不再刷新</span>}
-          </span>
-        </div>
+          </div>
 
-        <div className="row">
-          <span className="row-label">資料時間</span>
-          {/* 還沒跑過就說還沒跑過——顯示一個空白或舊時間都會讓人以為
-              這張卡上的數字是新的。久未刷新則明講「舊資料」：數字還是
-              上一次算出來的真數字，只是不能當成現在的。 */}
-          <span className="row-value">
-            {formatAnalyzedAt(row.latest_analyzed_at)}
-            {stale && <span className="tag warn">舊資料</span>}
+          {/* 最高／最低只在使用者真的填了才畫，兩端都空就不多佔一列。 */}
+          {hasPriceRange(row) && (
+            <div className="compact-range">
+              <span>最低 {moneyOrDash(row.worst_price)}</span>
+              {" · "}
+              <span>最高 {moneyOrDash(row.best_price)}</span>
+            </div>
+          )}
+
+          <span className="sr-only">
+            {locked ? "這一輪刷新還沒完成，暫時無法查看詳細"
+                    : `${signalLabel(signal)}；查看 ${who} 詳細`}
           </span>
-        </div>
-        <span className="sr-only">查看 {who} 詳細</span>
-      </a>
+        </a>
+
+        {/* TR6（#91）：單筆刪除改圖示，批次選取模式下 checkbox 已經在上面
+            出現，不同時顯示兩種「選它」的方式。 */}
+        {/* #132：編輯入口排在垃圾桶旁。桌面帶 `title` 當 tooltip，
+            視覺層級與封存同級——都不該高於劇本本身。 */}
+        {!selectMode && (
+          <div className="compact-actions">
+            <button
+              className="icon-button"
+              onClick={() => onEdit(row.id)}
+              aria-label={`編輯 ${who}`}
+              title="編輯劇本"
+            >
+              <EditIcon />
+            </button>
+            <button
+              className="icon-button"
+              onClick={() => onArchive(row.id)}
+              aria-label={`封存 ${who}`}
+              title="移入垃圾桶"
+            >
+              <TrashIcon />
+            </button>
+          </div>
+        )}
+      </div>
 
       {/* #68：已過期優先於刷新失敗——月份過完的劇本不會因為留著一筆
           舊的失敗紀錄，就在「已過期，不再刷新」旁邊又冒出一個「重試」
@@ -176,29 +233,14 @@ function ScenarioCard({
           看起來像有用）。與舊 Streamlit workspace 的紅燈優先於黃燈是
           同一個判斷。 */}
       {failure && !row.expired && (
-        <div className="notice error" role="alert">
-          <div className="row-value">{failureLabel(failure.stage)}</div>
-          <p className="caption">{failure.message}</p>
+        <div className="notice error compact-notice" role="alert">
+          <span>{failureLabel(failure.stage)}：{failure.message}</span>
           <button
             className="text-button"
             onClick={() => onRetry(row.id)}
             aria-label={`重試 ${who}`}
           >
             重試
-          </button>
-        </div>
-      )}
-
-      {/* TR6（#91）：單筆刪除改圖示，批次選取模式下 checkbox 已經在上面
-          出現，不同時顯示兩種「選它」的方式。 */}
-      {!selectMode && (
-        <div className="card-actions">
-          <button
-            className="icon-button"
-            onClick={() => onArchive(row.id)}
-            aria-label={`封存 ${who}`}
-          >
-            <TrashIcon />
           </button>
         </div>
       )}
@@ -209,9 +251,11 @@ function ScenarioCard({
 export default function ScenarioList({
   rows,
   failures,
+  lockedIds,
   now,
   selectedId = null,
   onArchive,
+  onEdit,
   onRetry,
   selectMode,
   selectedIds,
@@ -222,10 +266,14 @@ export default function ScenarioList({
 }: {
   rows: ScenarioSummary[];
   failures: Record<string, RefreshFailure>;
+  /** 整輪刷新期間還沒完成的劇本（V4 跟進票／#136）——反灰＋禁止點入，
+   *  一完成（成功或失敗）立刻從這裡移除。 */
+  lockedIds: ReadonlySet<string>;
   now: Date;
   /** 桌面版 master/detail（#72）目前選中的劇本；手機版不傳，恆不標記。 */
   selectedId?: string | null;
   onArchive: (id: string) => void;
+  onEdit: (id: string) => void;
   onRetry: (id: string) => void;
   /** TR6（#91）：批次選取移入垃圾桶。`selectMode` 開著時清單項目變成
    *  可勾選，`onConfirmBatchArchive` 依序（沿用既有序列佇列模式）把
@@ -238,9 +286,11 @@ export default function ScenarioList({
   onConfirmBatchArchive: () => void;
 }) {
   if (rows.length === 0) {
-    return <p className="caption">還沒有劇本。用下面的表單建立第一個。</p>;
+    return <p className="caption">還沒有劇本，用下面的表單建立。</p>;
   }
-  const sorted = sortScenarios(rows);
+  // V4 跟進票／#136：已完成區照舊排序；鎖著的那段維持佇列順序、獨立
+  // 排在後面（分隔線），不跟已完成的混排——見 `partitionByLock` 說明。
+  const { unlocked, locked } = partitionByLock(rows, lockedIds);
   return (
     <>
       {/* 收益率口徑就寫在數字旁邊（V4／#52）。放進說明頁等於沒寫——
@@ -271,15 +321,41 @@ export default function ScenarioList({
         </div>
       )}
 
-      <ul className="list">
-        {sorted.map((row) => (
+      <ul className="compact-list">
+        {unlocked.map((row) => (
           <ScenarioCard
             key={row.id}
             row={row}
             failure={failures[row.id]}
             now={now}
             selected={row.id === selectedId}
+            locked={false}
             onArchive={onArchive}
+            onEdit={onEdit}
+            onRetry={onRetry}
+            selectMode={selectMode}
+            isChecked={selectedIds.has(row.id)}
+            onToggleSelect={onToggleSelect}
+          />
+        ))}
+
+        {/* 分隔線只在兩段都非空時才有意義——沒有已完成的（例如整輪剛
+            開始）或沒有鎖著的（整輪已跑完）都不必畫一條沒有分隔作用的
+            線（V4 跟進票／#136 的 ASCII 概念圖）。 */}
+        {unlocked.length > 0 && locked.length > 0 && (
+          <li className="compact-list-separator" aria-hidden="true" />
+        )}
+
+        {locked.map((row) => (
+          <ScenarioCard
+            key={row.id}
+            row={row}
+            failure={failures[row.id]}
+            now={now}
+            selected={row.id === selectedId}
+            locked
+            onArchive={onArchive}
+            onEdit={onEdit}
             onRetry={onRetry}
             selectMode={selectMode}
             isChecked={selectedIds.has(row.id)}

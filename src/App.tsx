@@ -4,7 +4,8 @@
  * 桌面與手機是兩套 responsive layout（MVP-v2／#77 §8），共用同一份資料
  * 與狀態、各自的版面結構：
  * - 桌面（#72／#75）：頂部釘選功能列（含建立入口）→ 建立表單 →
- *   劇本卡片清單（`ScenarioList`，大卡片版式），左側常駐、右側是詳細頁。
+ *   劇本卡片清單（`ScenarioList`，#108 起改用與手機版同一套 compact
+ *   row 密度），左側常駐、右側是詳細頁。
  * - 手機（#81／#82）：Dashboard 佔位 → 就地展開的新增劇本入口 → 高密度
  *   劇本清單（`CompactScenarioList`，三層 compact row，依最新收益率
  *   排序、紅燈沉底），點卡片整頁替換成詳細頁。
@@ -34,22 +35,34 @@ import {
 
 import CompactScenarioList from "./CompactScenarioList";
 import CreateEntry from "./CreateEntry";
-import CreateForm, { type DraftScenario } from "./CreateForm";
+import CreateForm, {
+  type DraftScenario,
+  type EditTarget,
+} from "./CreateForm";
 import Dashboard from "./Dashboard";
 import ScenarioDetail from "./ScenarioDetail";
 import ScenarioList from "./ScenarioList";
+import Settings from "./Settings";
 import Toolbar, { type RefreshProgress } from "./Toolbar";
 import TrashView from "./TrashView";
+import { GearIcon } from "./icons";
 import {
   archiveScenario,
   createScenario,
+  editScenario,
   listScenarios,
   refreshScenario,
   toFailure,
   type RefreshFailure,
   type ScenarioSummary,
 } from "./api";
-import { isTrashHash, scenarioIdFromHash, trashHash } from "./route";
+import {
+  isSettingsHash,
+  isTrashHash,
+  scenarioIdFromHash,
+  settingsHash,
+  trashHash,
+} from "./route";
 
 // 桌面／手機斷點——與 `styles.css` 的 `@media (min-width: 1100px)` 同一個
 // 數字，兩邊各自維護一份（CSS 沒辦法直接讀 JS 常數），改動時要一起改。
@@ -83,9 +96,17 @@ export default function App() {
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState<RefreshProgress | null>(null);
   const [failures, setFailures] = useState<Record<string, RefreshFailure>>({});
+  // 整輪刷新的漸進解鎖（V4 跟進票／#136）：排進佇列（不管是整輪、單一
+  // 劇本重試、還是建立後那一批）就立刻反灰＋禁止點入——避免使用者以為
+  // 看到的是這次刷新的結果；那次嘗試一結束（成功或失敗）立刻解鎖，不用
+  // 等整條佇列跑完。跟 `progress`／`failures` 是同一批狀態、同一顆佇列
+  // 跑者更新，不是另一套機制。
+  const [lockedIds, setLockedIds] = useState<Set<string>>(new Set());
   // #75：建立劇本表單預設收合，靠工具列的膠囊鈕展開／收合——不再是
   // 掛在全部劇本卡片下面、永遠展開的表單。
   const [showCreateForm, setShowCreateForm] = useState(false);
+  // #132：非 null ＝表單現在是編輯模式。編輯沿用同一張表單，不另開一套。
+  const [editing, setEditing] = useState<EditTarget | null>(null);
   // code review 跟進：面板一律掛著、用 `hidden` 屬性切換可見度，不是
   // 條件渲染整個卸載重掛——否則使用者打到一半不小心點到收合鈕，剛打的
   // 字就白打了。`hidden` 原生語意會連帶讓輔助技術忽略內容，不必額外
@@ -115,6 +136,17 @@ export default function App() {
     }
   }, []);
 
+  /** 解除單一劇本的刷新鎖——成功、失敗都要走到這裡，不能只在成功分支
+   *  解鎖，否則失敗的劇本會永遠反灰、卡在「刷新中」（票上明文紅線）。 */
+  const unlock = useCallback((id: string) => {
+    setLockedIds((prev) => {
+      if (!prev.has(id)) return prev;
+      const next = new Set(prev);
+      next.delete(id);
+      return next;
+    });
+  }, []);
+
   /** 刷新單一劇本。失敗只記在那張卡上，不中斷整輪。 */
   const refreshOne = useCallback(async (id: string) => {
     try {
@@ -127,8 +159,13 @@ export default function App() {
       });
     } catch (e) {
       setFailures((prev) => ({ ...prev, [id]: toFailure(e) }));
+    } finally {
+      // 這次嘗試到此結束——不論成敗都立刻解鎖，讓這張卡回到可點、
+      // 可能還帶著剛更新的收益率參與已完成區排序（票上明文：失敗也要
+      // 解鎖，沿用既有 yellow／stale 語意，不得永久反灰）。
+      unlock(id);
     }
-  }, []);
+  }, [unlock]);
 
   /**
    * 排入刷新佇列並確保有人在跑。依序（不併發）：一次一趟網路往返，
@@ -136,11 +173,22 @@ export default function App() {
    *
    * 跑到一半被追加的劇本會一起跑完，總數隨之變大——那是實話，好過
    * 讓進度停在一個早就不對的分母上。
+   *
+   * 進佇列的當下就整批反灰＋鎖住（V4 跟進票／#136）：不是只鎖「正在
+   * 抓」的那一個——排隊中的其他劇本一樣顯示的是上一輪的舊結果，同樣
+   * 該反灰，不能讓使用者以為那些也是這一輪的最新結果。
    */
   const enqueue = useCallback(
     async (ids: string[]) => {
+      const fresh: string[] = [];
       for (const id of ids) {
-        if (!queue.current.includes(id)) queue.current.push(id);
+        if (!queue.current.includes(id)) {
+          queue.current.push(id);
+          fresh.push(id);
+        }
+      }
+      if (fresh.length > 0) {
+        setLockedIds((prev) => new Set([...prev, ...fresh]));
       }
       if (running.current || queue.current.length === 0) return;
 
@@ -197,6 +245,8 @@ export default function App() {
   const detailId = scenarioIdFromHash(hash);
   // TR6（#91）：垃圾桶畫面路由——跟詳細頁同一套 hash 慣例。
   const showTrash = isTrashHash(hash);
+  // Settings（#124）：同一套 hash 慣例。
+  const showSettings = isSettingsHash(hash);
   const isDesktop = useIsDesktop();
 
   // 手機版返回劇本庫要停在原本的捲動位置（MVP-v2／#77、#83）：手機版
@@ -254,6 +304,45 @@ export default function App() {
       ...rowsRef.current.filter((r) => !r.expired).map((r) => r.id),
       created.id,
     ]);
+  }
+
+  /** 點卡片上的編輯：把原資料交給既有表單並展開它。 */
+  function startEdit(id: string) {
+    const row = rows.find((r) => r.id === id);
+    if (!row) return;
+    setEditing({
+      id: row.id, symbol: row.symbol, target_price: row.target_price,
+      target_month: row.target_month, best_price: row.best_price,
+      worst_price: row.worst_price,
+    });
+    setShowCreateForm(true);
+    setError(null);
+  }
+
+  /** 取消：**隨時**可按。只丟掉表單狀態，不寫入任何東西、不動原劇本。
+   *  表單的預填 effect 會在 `editing` 變回 null 時把欄位清空並回到建立
+   *  模式，所以這裡不需要（也不該）自己去碰那些欄位。 */
+  function cancelEdit() {
+    setEditing(null);
+    setShowCreateForm(false);
+  }
+
+  async function saveEdit(id: string, draft: DraftScenario) {
+    setBusy(true);
+    let updated: ScenarioSummary;
+    try {
+      updated = await editScenario(id, draft);
+    } finally {
+      setBusy(false);
+    }
+    // 函式式更新：編輯這段期間刷新佇列很可能正在跑並且已經 setRows 過。
+    setRows((prev) => prev.map((r) => (r.id === id ? updated : r)));
+    setEditing(null);
+    setShowCreateForm(false);
+    setError(null);
+    // thesis 改了的話後端已經清掉舊結果（#132），這裡把它重新分析一次
+    // ——沿用既有的單一佇列，不是第四種刷新管道。
+    void enqueue([id]);
   }
 
   async function archive(id: string) {
@@ -369,6 +458,10 @@ export default function App() {
     busy: progress !== null,
     failure: failures[detailId],
     onRefresh: () => void enqueue([detailId]),
+    // 桌面 master/detail 常駐：右側開著的劇本若本輪還沒刷新完，內容
+    // 不能看起來像已經是最新結果（V4 跟進票／#136）。手機版此時本來就
+    // 整頁替換成詳細頁、不會跟清單同時看到，傳了也無害。
+    refreshLocked: lockedIds.has(detailId),
   } : null;
 
   // TR6（#91）：批次移入垃圾桶時個別失敗的說明——列在「哪個劇本、
@@ -382,6 +475,12 @@ export default function App() {
       })}
     </div>
   );
+
+  // 手機版：設定是整頁替換（跟垃圾桶、詳細頁同樣的既有模式）。排在
+  // 垃圾桶之前只是順序，兩個 hash 互斥。
+  if (!isDesktop && showSettings) {
+    return <Settings />;
+  }
 
   if (!isDesktop && showTrash) {
     return <TrashView onRestore={restoreFromTrash} />;
@@ -408,6 +507,9 @@ export default function App() {
           // 時機三：功能列刷新鈕
           onRefresh={() => void reloadAndRefresh()}
           onOpenTrash={() => { window.location.hash = trashHash(); }}
+          // #124：手機版的設定入口＝工作區右上角的齒輪。桌面版不傳這個
+          // 回呼，它的入口在 sidebar 最下方。
+          onOpenSettings={() => { window.location.hash = settingsHash(); }}
         />
 
         {error && (
@@ -427,17 +529,23 @@ export default function App() {
           panelId={createPanelId}
           onToggle={() => setShowCreateForm((v) => !v)}
         >
-          <CreateForm onCreate={create} busy={busy} today={now} />
+          <CreateForm onCreate={create} onSaveEdit={saveEdit}
+                    onCancelEdit={cancelEdit} editing={editing}
+                    busy={busy} today={now} />
         </CreateEntry>
 
         {/* #82：券商 App 式的高密度三層 compact row，取代大卡片——一個
-            手機螢幕能掃過多個劇本。桌面版沿用下方 `library` 的
-            `ScenarioList`（大卡片版式），不受這裡的密度改動影響。 */}
+            手機螢幕能掃過多個劇本。下方 `library` 的 `ScenarioList` 是
+            完全獨立的元件與渲染路徑，這裡的手機密度改動不會結構性牽動
+            它（#108 起兩者視覺密度趨同純屬各自沿用同一組 CSS class，
+            不是共用了元件）。 */}
         <CompactScenarioList
           rows={rows}
           failures={failures}
+          lockedIds={lockedIds}
           now={now}
           onArchive={archive}
+          onEdit={startEdit}
           // 重試不是第四種刷新時機——它重跑的就是那一次失敗的刷新，而且
           // 走同一條佇列，不會與進行中的那一輪搶資料源。
           onRetry={(id) => void enqueue([id])}
@@ -487,14 +595,18 @@ export default function App() {
           `new Date()`，那樣會跟 `ScenarioList` 的新鮮度判斷用著兩個
           不同步的「現在」。 */}
       <div id={createPanelId} hidden={!showCreateForm}>
-        <CreateForm onCreate={create} busy={busy} today={now} />
+        <CreateForm onCreate={create} onSaveEdit={saveEdit}
+                    onCancelEdit={cancelEdit} editing={editing}
+                    busy={busy} today={now} />
       </div>
 
       <ScenarioList
         rows={rows}
         failures={failures}
+        lockedIds={lockedIds}
         now={now}
         onArchive={archive}
+        onEdit={startEdit}
         // 重試不是第四種刷新時機——它重跑的就是那一次失敗的刷新，而且
         // 走同一條佇列，不會與進行中的那一輪搶資料源。
         onRetry={(id) => void enqueue([id])}
@@ -513,11 +625,25 @@ export default function App() {
 
   // #72：桌面版真正的 master/detail——左側劇本庫常駐，右側是詳細頁；
   // 沒選劇本時右側顯示空狀態，而不是留白或報錯。
+  // #124：桌面版的設定入口固定在 sidebar **最下方**——清單本身在
+  // `.library-scroll` 裡自己捲動，這個連結因此永遠看得到，不必先捲到
+  // 劇本清單的底部。設定內容顯示在右側工作區（`.detail-pane`），與
+  // 「選劇本切換右側」是同一個機制。
   return (
     <div className="workspace">
-      <div className="library-pane">{library}</div>
+      <div className="library-pane">
+        <div className="library-scroll">{library}</div>
+        <a
+          className={`sidebar-settings${showSettings ? " active" : ""}`}
+          href={settingsHash()}
+        >
+          <GearIcon /> 設定
+        </a>
+      </div>
       <div className="detail-pane">
-        {detailProps ? (
+        {showSettings ? (
+          <Settings />
+        ) : detailProps ? (
           <ScenarioDetail {...detailProps} />
         ) : (
           <div className="screen">

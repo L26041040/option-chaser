@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 import ScenarioList from "./ScenarioList";
 import sampleRow from "../contracts/scenario_row_sample.json";
 import type { RefreshFailure, ScenarioSummary } from "./api";
+import { formatAnalyzedAt } from "./scenarios";
 
 /** 卡片上的「資料時間」都以這個時刻為基準判斷新鮮度。 */
 const NOW = new Date("2026-08-04T10:00:00+00:00");
@@ -23,7 +24,9 @@ function list(
   rows: ScenarioSummary[],
   props: {
     failures?: Record<string, RefreshFailure>;
+    lockedIds?: ReadonlySet<string>;
     onArchive?: (id: string) => void;
+    onEdit?: (id: string) => void;
     onRetry?: (id: string) => void;
     now?: Date;
     selectMode?: boolean;
@@ -38,7 +41,9 @@ function list(
     <ScenarioList
       rows={rows}
       failures={props.failures ?? {}}
+      lockedIds={props.lockedIds ?? new Set()}
       onArchive={props.onArchive ?? vi.fn()}
+      onEdit={props.onEdit ?? vi.fn()}
       onRetry={props.onRetry ?? vi.fn()}
       now={props.now ?? NOW}
       selectMode={props.selectMode ?? false}
@@ -72,7 +77,7 @@ describe("劇本清單", () => {
     ]);
 
     const symbols = screen.getAllByRole("listitem")
-      .map((li) => li.querySelector(".big")!.textContent);
+      .map((li) => li.querySelector(".compact-symbol")!.textContent);
     expect(symbols).toEqual(["CCC", "AAA", "BBB"]);
     expect(screen.getByText("—")).toBeInTheDocument();
   });
@@ -107,6 +112,50 @@ describe("劇本清單", () => {
   it("一個劇本都沒有時給明確指引，不是空白畫面", () => {
     list([]);
     expect(screen.getByText(/還沒有劇本/)).toBeInTheDocument();
+  });
+});
+
+describe("決策 K（#108）：桌面卡片瘦身後七項決策資訊一項不少", () => {
+  it("卡片 DOM 同時含 Ticker／目標價＋目標年月／代表報酬／策略履約／" +
+     "到期日／燈號／最後更新，只是不再各自佔一整列", () => {
+    const r = row({
+      symbol: "TLT", target_price: 120, target_month: "2028-05",
+      best_return: 1.234,
+      representative_candidate: {
+        strategy: "bull-call-spread",
+        legs: [{ strike: 118, option_type: "call" },
+              { strike: 122, option_type: "call" }],
+        expiry: "2026-09-18", baseline_return: 1.234,
+      },
+      latest_analyzed_at: "2026-08-04T09:30:00+00:00",
+    });
+    list([r]);
+    const card = screen.getByRole("listitem");
+
+    // 1. Ticker
+    expect(within(card).getByText("TLT")).toBeInTheDocument();
+    // 2. 目標價＋目標年月（同一列）
+    expect(within(card).getByText(/\$120\.00.*2028-05/)).toBeInTheDocument();
+    // 3. 代表報酬
+    expect(within(card).getByText("123.4%")).toBeInTheDocument();
+    // 4. 策略／買賣履約價
+    expect(within(card).getByText(/Bull Call Spread/)).toBeInTheDocument();
+    expect(within(card).getByText(/買 118 \/ 賣 122/)).toBeInTheDocument();
+    // 5. 實際到期日
+    expect(within(card).getByText(/2026-09-18/)).toBeInTheDocument();
+    // 6. 燈號（顏色不是唯一管道，但圓點本身要在）
+    expect(card.querySelector(".signal-dot")).toBeTruthy();
+    // 7. 最後更新（資料時間）——直接拿純函式算預期字串，不在測試裡
+    //    另外硬編一個跟時區綁死的字串。`toLocaleString` 在日期與時間
+    //    之間塞的是 U+2009 THIN SPACE 不是普通空白，Testing Library
+    //    只會正規化「畫面上找到的文字」、不會動我這邊算出來的比對字串
+    //    ——兩邊都手動正規化過空白字元再比，才不會被這種看起來一樣、
+    //    位元組不同的空白坑到。
+    const normalizeSpace = (s: string) => s.trim().replace(/\s+/g, " ");
+    const expectedAnalyzedAt = normalizeSpace(
+      formatAnalyzedAt(r.latest_analyzed_at!));
+    expect(within(card).getByText((text) =>
+      normalizeSpace(text) === expectedAnalyzedAt)).toBeInTheDocument();
   });
 });
 
@@ -177,7 +226,9 @@ describe("代表候選（MVP-v2／#77、#78）", () => {
 
     expect(screen.getByText(/Bull Call Spread/)).toBeInTheDocument();
     expect(screen.getByText(/買 118 \/ 賣 122/)).toBeInTheDocument();
-    expect(screen.getByText("2026-09-18")).toBeInTheDocument();
+    // 決策 K（#108）：到期日併進第三層合併行，跟「Exp」字首同一個
+    // text node，不再是獨立的「2026-09-18」，改用 regex 找子字串。
+    expect(screen.getByText(/2026-09-18/)).toBeInTheDocument();
   });
 
   it("單腳候選只顯示一隻買腿，不憑空生出賣腿", () => {
@@ -201,9 +252,12 @@ describe("代表候選（MVP-v2／#77、#78）", () => {
     list([row({ best_return: null, latest_analyzed_at: null,
                 representative_candidate: null })]);
 
-    // 「—」在這張卡上會出現不只一次（收益率、策略、到期日皆是），
-    // 用 getAllByText 確認至少出現，不要求恰好一次。
-    expect(screen.getAllByText("—").length).toBeGreaterThanOrEqual(3);
+    // 「—」在這張卡上會出現不只一次（收益率、策略皆是），用
+    // getAllByText 確認至少出現，不要求恰好一次；到期日的「—」跟
+    // 「Exp」字首黏在同一個 text node 裡（決策 K／#108 第三層合併行），
+    // 另外用 regex 單獨驗證同一句話。
+    expect(screen.getAllByText("—").length).toBeGreaterThanOrEqual(2);
+    expect(screen.getByText(/^Exp —$/)).toBeInTheDocument();
   });
 
   it("卡片同時渲染報酬率與代表候選的履約價，兩者出自同一筆 API 回應", () => {
@@ -262,7 +316,7 @@ describe("劇本級燈號（MVP-v2／#77、#80）", () => {
       row({ id: "b", symbol: "BBB", best_return: 0.1, expired: false }),
     ]);
     const symbols = screen.getAllByRole("listitem")
-      .map((li) => li.querySelector(".big")!.textContent);
+      .map((li) => li.querySelector(".compact-symbol")!.textContent);
     expect(symbols).toEqual(["BBB", "AAA"]);
   });
 });
@@ -367,5 +421,22 @@ describe("刷新失敗的分層與重試入口（V4／#52）", () => {
     // 只要旁邊誠實標明它是舊的。
     expect(screen.getByText("123.4%")).toBeInTheDocument();
     expect(screen.getByText("舊資料")).toBeInTheDocument();
+  });
+});
+
+describe("劇本庫的概覽欄位（QA 修正，桌面版與手機版同一套語意）", () => {
+  it("現價跟目標價並排，最高／最低有填就顯示", () => {
+    list([row({ spot: 82.11, best_price: 120, worst_price: 100 })]);
+    const card = screen.getByRole("listitem");
+    expect(card.querySelector(".compact-spot")!.textContent).toBe("$82.11");
+    const range = card.querySelector(".compact-range")!;
+    expect(range.textContent).toContain("最低 $100.00");
+    expect(range.textContent).toContain("最高 $120.00");
+  });
+
+  it("兩端都沒填就整行不畫", () => {
+    list([row({ best_price: null, worst_price: null })]);
+    expect(screen.getByRole("listitem").querySelector(".compact-range"))
+      .toBeNull();
   });
 });

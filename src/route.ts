@@ -30,3 +30,13 @@ export function trashHash(): string {
 export function isTrashHash(hash: string): boolean {
   return hash === trashHash();
 }
+
+/** 設定畫面的 hash（Settings／#124）。跟詳細頁、垃圾桶同一套慣例。 */
+export function settingsHash(): string {
+  return "#/settings";
+}
+
+/** 目前是不是在設定畫面。 */
+export function isSettingsHash(hash: string): boolean {
+  return hash === settingsHash();
+}

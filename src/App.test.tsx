@@ -146,6 +146,11 @@ describe("劇本庫（V3／#51）", () => {
     });
     render(<App />);
 
+    // 開站那輪批次刷新跑完再操作——否則背景那輪還在跑時測試就結束，
+    // 殘留的非同步鏈會在下一個測試案例執行期間才 resolve（V4 跟進票／
+    // #136 加了鎖定狀態的額外一次 setState，讓這個既有的競態變得可見）。
+    await screen.findByRole("button", { name: "重新整理" });
+
     await userEvent.click(
       await screen.findByRole("button", { name: "封存 TLT 2028-05" }));
 
@@ -165,6 +170,9 @@ describe("劇本庫（V3／#51）", () => {
       return { ok: true, status: 200, json: async () => [row] };
     });
     render(<App />);
+
+    // 開站那輪批次刷新跑完再操作，理由同上一個測試案例。
+    await screen.findByRole("button", { name: "重新整理" });
 
     await userEvent.click(
       await screen.findByRole("button", { name: "封存 TLT 2028-05" }));
@@ -357,6 +365,9 @@ describe("樂觀封存的併發（V3／#51 檢視回饋）", () => {
     vi.stubGlobal("fetch", spy);
     render(<App />);
 
+    // 開站那輪批次刷新跑完再操作，理由同上面幾個測試案例。
+    await screen.findByRole("button", { name: "重新整理" });
+
     await userEvent.click(
       await screen.findByRole("button", { name: "封存 TLT 2028-05" }));
     await userEvent.click(
@@ -536,9 +547,12 @@ describe("刷新與進度（V4／#52）", () => {
     // TR6（#91）：封存鈕改成圖示，可及名稱（`aria-label`）才是穩定的
     // 斷言依據——視覺內容從文字換成圖示不該讓這條「沒有第四種管道」的
     // 迴歸測試跟著誤判。
+    // #132：卡片多了編輯入口。這條測試要守的是「卡片上沒有刷新／分析
+    // 管道」，不是「卡片上只能有一顆鈕」——所以逐一列出允許的入口，
+    // 任何新增的動作都會在這裡現形、由人決定它該不該在。
     const buttons = within(screen.getByRole("listitem"))
       .getAllByRole("button").map((b) => b.getAttribute("aria-label"));
-    expect(buttons).toEqual(["封存 TLT 2028-05"]);
+    expect(buttons).toEqual(["編輯 TLT 2028-05", "封存 TLT 2028-05"]);
   });
 
   it("沒有任何劇本時不跑刷新，也不顯示進度", async () => {
@@ -548,6 +562,93 @@ describe("刷新與進度（V4／#52）", () => {
 
     expect(refreshCalls(spy)).toEqual([]);
     expect(screen.queryByRole("status")).not.toBeInTheDocument();
+  });
+
+  describe("整輪刷新的漸進解鎖與反灰（V4 跟進票／#136）", () => {
+    it("開始時全部反灰＋禁止點入；輪到的那個完成就立刻解鎖，其餘的還鎖著",
+       async () => {
+      // 兩個都各自卡住，才能精確控制「這一刻誰完成了、誰還沒」——沒有
+      // 人工延遲的話，佇列可能在斷言跑到之前就整個處理完，測不出
+      // 「s1 完成的當下 s2 依然鎖著」這個中間狀態。
+      let releaseFirst: (() => void) | null = null;
+      let releaseSecond: (() => void) | null = null;
+      mockLibrary(
+        [card("s1", "TLT"), card("s2", "SPY")],
+        async (id) => {
+          await new Promise<void>((resolve) => {
+            if (id === "s1") releaseFirst = resolve;
+            else releaseSecond = resolve;
+          });
+          return ok(card(id, id === "s1" ? "TLT" : "SPY",
+            { best_return: 1, latest_analyzed_at: "2026-08-04T09:30:00+00:00" }));
+        },
+      );
+      render(<App />);
+
+      // 兩張卡在整輪跑完前都還沒有 `href`——沒有 `href` 的 `<a>` 不是
+      // `role=link`，這正是「禁止點入」的機制本身，不必另外斷言點擊
+      // 沒有反應。
+      await screen.findByText("TLT");
+      expect(screen.queryByRole("link", { name: /TLT/ })).not.toBeInTheDocument();
+      expect(screen.queryByRole("link", { name: /SPY/ })).not.toBeInTheDocument();
+      expect(screen.getAllByText("更新中")).toHaveLength(2);
+
+      releaseFirst!();
+
+      // s1 完成、立刻解鎖可點；s2 還在排隊（`releaseSecond` 還沒放行），
+      // 維持反灰＋禁止點入。
+      expect(await screen.findByRole("link", { name: /TLT/ })).toBeInTheDocument();
+      expect(screen.queryByRole("link", { name: /SPY/ })).not.toBeInTheDocument();
+      expect(screen.getAllByText("更新中")).toHaveLength(1);
+
+      releaseSecond!();
+
+      // 整輪跑完後兩張都解鎖。
+      await screen.findByRole("link", { name: /SPY/ });
+      expect(screen.queryByText("更新中")).not.toBeInTheDocument();
+    });
+
+    it("失敗的那個也會解鎖，不會永久反灰——沿用既有黃燈語意", async () => {
+      mockLibrary(
+        [card("s1", "TLT")],
+        async () => fail(502, "fetch", "抓不到報價"),
+      );
+      render(<App />);
+
+      // 失敗結束後：不是「更新中」，也不是「已過期」——是既有的刷新
+      // 失敗分層指引與重試入口，卡片本身回到可點狀態。
+      await screen.findByText(/抓不到報價/);
+      expect(screen.queryByText("更新中")).not.toBeInTheDocument();
+      expect(screen.getByRole("link", { name: /TLT/ })).toBeInTheDocument();
+    });
+
+    it("完成的劇本立刻用最新收益率參與已完成區排序，不必等整輪跑完",
+       async () => {
+      let releaseB: (() => void) | null = null;
+      mockLibrary(
+        [card("s1", "A", { best_return: 0.5 }),
+         card("s2", "B", { best_return: 0.5 })],
+        async (id) => {
+          if (id === "s1") return ok(card("s1", "A", { best_return: 2.38 }));
+          await new Promise<void>((resolve) => { releaseB = resolve; });
+          return ok(card("s2", "B", { best_return: 1.8 }));
+        },
+      );
+      render(<App />);
+
+      // A 完成、B 還鎖著：已完成區只有 A（見 `partitionByLock` 的純
+      // 函式測試覆蓋精確排序規則，這裡只斷言「B 這一刻還鎖著、進不去
+      // 已完成區」這個整合層面的事）。
+      expect(await screen.findByText("238.0%")).toBeInTheDocument();
+      expect(screen.getAllByText("更新中")).toHaveLength(1);
+
+      releaseB!();
+
+      // C（此處是 B）完成後兩者都在已完成區，依收益率排序——這裡只
+      // 驗證兩個數字都出現且不再反灰，精確順序交給 `scenarios.test.ts`。
+      expect(await screen.findByText("180.0%")).toBeInTheDocument();
+      expect(screen.queryByText("更新中")).not.toBeInTheDocument();
+    });
   });
 });
 
@@ -970,6 +1071,10 @@ describe("桌面版真正的 master/detail（#72）", () => {
     });
     render(<App />);
 
+    // 開站那輪批次刷新跑完後這張卡才會是真的連結（未完成時反灰、沒有
+    // `href`——V4 跟進票／#136），`findByRole("link", ...)` 才等得到它。
+    await screen.findByRole("button", { name: "重新整理" });
+
     expect(await screen.findByRole("link", { name: /TLT 2028-05/ })).toBeInTheDocument();
     expect(screen.getByText(/選擇左側的劇本/)).toBeInTheDocument();
   });
@@ -1122,7 +1227,9 @@ describe("桌面版：主要操作入口收攏到工作區上方（#75，MVP-v2�
 
     await screen.findByText("TLT");
     const toolbar = container.querySelector("header.toolbar")!;
-    const list = container.querySelector("ul.list")!;
+    // #108：桌面版劇本庫卡片瘦身後改沿用 `.compact-list`（原本只有
+    // 手機版在用），不再是 `ul.list`。
+    const list = container.querySelector("ul.compact-list")!;
     // `DOCUMENT_POSITION_FOLLOWING`：toolbar 出現在 list 之前，不是
     // 掛在清單卡片全部跑完之後才看得到的東西。展開表單前後都要成立
     // ——面板一律掛著（`hidden` 屬性切換可見度），不會因為展開就被

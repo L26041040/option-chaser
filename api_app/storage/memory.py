@@ -6,7 +6,13 @@
 """
 from __future__ import annotations
 
-from . import RateCacheEntry, ResultRecord, ResultSummary, Scenario, ScenarioExists
+from collections import deque
+
+from . import (ContractHistory, DataSourceSettings, DividendCacheEntry,
+               IvBackfillRun, IvObservation, ProviderCredential,
+               ProviderVerification, RateCacheEntry, ResultRecord,
+               ResultSummary, Scenario, ScenarioExists)
+from ..diagnostics import RETENTION_LIMIT, DiagnosticEvent
 
 
 class MemoryStorage:
@@ -16,6 +22,20 @@ class MemoryStorage:
         self._snapshots: dict[tuple[str, str], dict] = {}
         self._events: list[dict] = []
         self._rate_cache: RateCacheEntry | None = None
+        self._dividend_cache: dict[str, DividendCacheEntry] = {}
+        self._settings: DataSourceSettings | None = None
+        self._credentials: dict[str, ProviderCredential] = {}
+        self._verifications: dict[str, ProviderVerification] = {}
+        # 鍵是 (symbol, 日期)——**沒有 scenario 維度**，見 IvObservation。
+        self._iv: dict[tuple[str, str], IvObservation] = {}
+        self._iv_runs: dict[str, IvBackfillRun] = {}
+        # 鍵是 OCC contract symbol——exact contract identity 本身
+        # （HIVT-02／#153），見 ContractHistory。
+        self._contract_history: dict[str, ContractHistory] = {}
+        # `deque(maxlen=)` 就是 trim-on-write：滿了之後新的一筆自動把
+        # 最舊的擠掉，跟 Postgres 那邊的 `DELETE ... OFFSET` 是同一條上限
+        # 的兩種實作，契約測試才有意義。
+        self._diagnostics: deque[DiagnosticEvent] = deque(maxlen=RETENTION_LIMIT)
 
     @property
     def kind(self) -> str:
@@ -35,6 +55,17 @@ class MemoryStorage:
         rows = [s for s in self._scenarios.values()
                 if include_archived or s.archived_at is None]
         return sorted(rows, key=lambda s: (s.created_at, s.id))
+
+    def update_scenario(self, sc: Scenario) -> bool:
+        if sc.id not in self._scenarios:
+            return False
+        self._scenarios[sc.id] = sc
+        return True
+
+    def clear_results(self, scenario_id: str) -> None:
+        self._results.pop(scenario_id, None)
+        self._snapshots = {k: v for k, v in self._snapshots.items()
+                           if k[0] != scenario_id}
 
     def archive_scenario(self, scenario_id: str, *, ts: str) -> bool:
         sc = self._scenarios.get(scenario_id)
@@ -77,7 +108,8 @@ class MemoryStorage:
             if rec is not None:
                 out[sid] = ResultSummary(
                     analyzed_at=rec.analyzed_at, best_return=rec.best_return,
-                    representative_candidate=rec.representative_candidate)
+                    representative_candidate=rec.representative_candidate,
+                    spot=rec.spot)
         return out
 
     def result_history(self, scenario_id: str) -> list[ResultRecord]:
@@ -110,3 +142,75 @@ class MemoryStorage:
 
     def save_rate_cache(self, entry: RateCacheEntry) -> None:
         self._rate_cache = entry
+
+    # ---------- 配息資料快取（#123，per-symbol） ----------
+
+    def get_dividend_cache(self, symbol: str) -> DividendCacheEntry | None:
+        return self._dividend_cache.get(symbol)
+
+    def save_dividend_cache(self, entry: DividendCacheEntry) -> None:
+        self._dividend_cache[entry.symbol] = entry
+
+    # ---------- 資料源設定與 credential（Settings／#124） ----------
+
+    def get_settings(self) -> DataSourceSettings | None:
+        return self._settings
+
+    def save_settings(self, settings: DataSourceSettings) -> None:
+        self._settings = settings
+
+    def get_credential(self, provider: str) -> ProviderCredential | None:
+        return self._credentials.get(provider)
+
+    def save_credential(self, cred: ProviderCredential) -> None:
+        self._credentials[cred.provider] = cred
+
+    def delete_credential(self, provider: str) -> bool:
+        # 驗證結果跟著走：它講的是「那把 token 能不能用」。
+        self._verifications.pop(provider, None)
+        return self._credentials.pop(provider, None) is not None
+
+    def get_verification(self, provider: str) -> ProviderVerification | None:
+        return self._verifications.get(provider)
+
+    def save_verification(self, v: ProviderVerification) -> None:
+        self._verifications[v.provider] = v
+
+    # ---------- 歷史 IV 觀測快取（#129，per-symbol） ----------
+
+    def save_iv_observation(self, obs: IvObservation) -> None:
+        self._iv[(obs.symbol, obs.observed_on)] = obs
+
+    def iv_observation_dates(self, symbol: str) -> list[str]:
+        return sorted(d for (sym, d) in self._iv if sym == symbol)
+
+    def iv_observations(self, symbol: str) -> list[IvObservation]:
+        return [self._iv[(symbol, d)] for d in self.iv_observation_dates(symbol)]
+
+    def get_iv_backfill_run(self, symbol: str) -> IvBackfillRun | None:
+        return self._iv_runs.get(symbol)
+
+    def save_iv_backfill_run(self, run: IvBackfillRun) -> None:
+        self._iv_runs[run.symbol] = run
+
+    # ---------- Exact-contract 歷史 IV 快取（HIVT-02／#153） ----------
+
+    def get_contract_history(self, contract_symbol: str) -> ContractHistory | None:
+        return self._contract_history.get(contract_symbol)
+
+    def save_contract_history(self, history: ContractHistory) -> None:
+        self._contract_history[history.contract_symbol] = history
+
+    # ---------- Application diagnostics（DG-02／#145） ----------
+
+    def append_diagnostic(self, event: DiagnosticEvent) -> None:
+        self._diagnostics.append(event)
+
+    def list_diagnostics(self, *, limit: int = 50) -> list[DiagnosticEvent]:
+        # deque 存的是寫入順序（舊→新）；最新在最上要反過來。
+        return list(reversed(self._diagnostics))[:limit]
+
+    def clear_diagnostics(self) -> int:
+        n = len(self._diagnostics)
+        self._diagnostics.clear()
+        return n

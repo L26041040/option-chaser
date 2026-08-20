@@ -24,6 +24,7 @@
     ],
     "strategy": "bull-call-spread"
   },
+  "spot": 100.0,
   "strategies": [
     "bull-call-spread"
   ],
