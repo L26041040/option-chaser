@@ -13,7 +13,7 @@ import { describe, expect, it } from "vitest";
 
 import type { ContractIdentity, IvHistoryLegs, IvTrendStatPoint,
              LegHistoricalIv } from "./api";
-import IvTrend from "./IvTrend";
+import IvTrend, { zscoreCaption } from "./IvTrend";
 
 function contract(overrides: Partial<ContractIdentity> = {}): ContractIdentity {
   return { underlying: "XYZ", expiration: "2026-09-18", strike: 118,
@@ -91,8 +91,8 @@ describe("Vertical Spread：正好兩張卡，買賣腿各自獨立正確", () =
   });
 });
 
-describe("資訊順序：現值 → 走勢圖 → percentile → z-score → Δ4w → 涵蓋時間", () => {
-  it("依 spec #151 §6 指定順序渲染", () => {
+describe("資訊順序：現值 → 走勢圖 → percentile → Δ4w → 涵蓋時間（SIG-02／#173 瘦身後）", () => {
+  it("依瘦身後順序渲染，z-score 不在主要區塊裡", () => {
     const legs: IvHistoryLegs = { buy: legHistoricalIv() };
     const { container } = render(<IvTrend legs={legs} />);
     const card = container.querySelector(".iv-trend-card")!;
@@ -102,7 +102,7 @@ describe("資訊順序：現值 → 走勢圖 → percentile → z-score → Δ4
       .map((el) => el.getAttribute("class"));
     expect(classes).toEqual([
       "iv-value-primary", "iv-trend-chart",
-      "caption", "caption", "caption", "caption",
+      "caption", "caption", "caption",
     ]);
   });
 
@@ -127,12 +127,13 @@ describe("統計量各自 graceful degradation（HIVT-03／#154 的前端呈現�
     expect(container.querySelector(".iv-trend-chart")).toBeInTheDocument();
   });
 
-  it("current_zscore 為 null 時顯示觀測數不足，percentile／Δ4w 不受影響", () => {
+  it("z-score 已搬進 Advanced（見 IvHistory.test.tsx），不影響 percentile／Δ4w",
+     () => {
     const legs: IvHistoryLegs = { buy: legHistoricalIv({
       current_zscore: null, current_percentile: 0.7, delta_4w: 0.02,
     }) };
     render(<IvTrend legs={legs} />);
-    expect(screen.getByText(/觀測數不足/)).toBeInTheDocument();
+    expect(screen.queryByText(/觀測數不足/)).not.toBeInTheDocument();
     expect(screen.getByText(/第 70 百分位/)).toBeInTheDocument();
     expect(screen.getByText(/4週 \+2\.0 pts/)).toBeInTheDocument();
   });
@@ -163,6 +164,42 @@ describe("統計量各自 graceful degradation（HIVT-03／#154 的前端呈現�
     const { container } = render(<IvTrend legs={legs} />);
     expect(container.querySelectorAll(".iv-trend-ma-line").length).toBeGreaterThan(0);
     expect(container.querySelectorAll(".iv-trend-band").length).toBeGreaterThan(0);
+  });
+});
+
+describe("SIG-02（#173）：z-score／Bollinger 數值不以文字形式出現在主要區塊", () => {
+  it("z-score 文字（無論值是否為 null）都不在卡片主要區塊裡", () => {
+    const okLegs: IvHistoryLegs = { buy: legHistoricalIv({ current_zscore: 0.42 }) };
+    const { container: okContainer } = render(<IvTrend legs={okLegs} />);
+    expect(okContainer.textContent).not.toMatch(/Z-score/);
+
+    const nullLegs: IvHistoryLegs = { buy: legHistoricalIv({ current_zscore: null }) };
+    const { container: nullContainer } = render(<IvTrend legs={nullLegs} />);
+    expect(nullContainer.textContent).not.toMatch(/Z-score|觀測數不足/);
+  });
+
+  it("Bollinger 上下界數值不以任何文字形式出現，只有走勢圖上的視覺帶狀區域", () => {
+    const legs: IvHistoryLegs = { buy: legHistoricalIv({
+      bollinger_upper: statPoints(60, () => 0.999),
+      bollinger_lower: statPoints(60, () => 0.111),
+    }) };
+    const { container } = render(<IvTrend legs={legs} />);
+    expect(container.textContent).not.toMatch(/99\.9%|11\.1%/);
+    expect(container.querySelectorAll(".iv-trend-band").length).toBeGreaterThan(0);
+  });
+});
+
+describe("zscoreCaption（純函式，SIG-02／#173 起 export 給 Advanced 使用）", () => {
+  it("有值時格式化成帶正負號的 Z-score", () => {
+    expect(zscoreCaption(legHistoricalIv({ current_zscore: 0.42 })))
+      .toBe("Z-score +0.42");
+    expect(zscoreCaption(legHistoricalIv({ current_zscore: -1.1 })))
+      .toBe("Z-score -1.10");
+  });
+
+  it("為 null 時說明觀測數不足", () => {
+    expect(zscoreCaption(legHistoricalIv({ current_zscore: null })))
+      .toBe("Z-score：觀測數不足");
   });
 });
 

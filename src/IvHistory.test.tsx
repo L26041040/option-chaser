@@ -802,3 +802,56 @@ describe("Inline Diagnostics 的 Copy 按鈕（QA 反饋，2026-08-16）", () =>
     expect(details.open).toBe(false);
   });
 });
+
+describe("Advanced／Diagnostics 收合區（SIG-02／#173）", () => {
+  it("預設收合", async () => {
+    mockApi({ enabled: true });
+    const { container } = render(
+      <IvHistory scenarioId="s1" candidate={spreadCandidate()} />);
+    await waitFor(() =>
+      expect(container.querySelector(".iv-advanced")).toBeInTheDocument());
+    const advanced = container.querySelector(".iv-advanced") as HTMLDetailsElement;
+    expect(advanced.open).toBe(false);
+  });
+
+  it("展開後看得到逐腿 z-score 文字與 Normalized Skew 整組", async () => {
+    mockApi({ enabled: true });
+    const { container } = render(
+      <IvHistory scenarioId="s1" candidate={spreadCandidate()} />);
+    const summary = await screen.findByText("Advanced／Diagnostics");
+    await userEvent.click(summary);
+
+    expect((container.querySelector(".iv-advanced") as HTMLDetailsElement).open)
+      .toBe(true);
+    expect(screen.getByText(/買腿 Z-score/)).toBeInTheDocument();
+    expect(screen.getByText(/賣腿 Z-score/)).toBeInTheDocument();
+    expect(screen.getByText("Normalized Skew")).toBeInTheDocument();
+  });
+
+  it("單腳候選：Advanced 只有一行 z-score（無買／賣標籤），沒有 Normalized Skew",
+     async () => {
+    mockApi({ enabled: true, iv: singleLegIvView() });
+    render(<IvHistory scenarioId="s1" candidate={longCallCandidate()} />);
+    const summary = await screen.findByText("Advanced／Diagnostics");
+    await userEvent.click(summary);
+
+    expect(screen.getByText(/^Z-score/)).toBeInTheDocument();
+    expect(screen.queryByText(/買腿 Z-score|賣腿 Z-score/)).not.toBeInTheDocument();
+    expect(screen.queryByText("Normalized Skew")).not.toBeInTheDocument();
+  });
+
+  it("z-score 文字不在 Advanced 之外——瘦身後的主要區塊沒有 Z-score", async () => {
+    mockApi({ enabled: true });
+    const { container } = render(
+      <IvHistory scenarioId="s1" candidate={spreadCandidate()} />);
+    await waitFor(() =>
+      expect(container.querySelector(".iv-advanced")).toBeInTheDocument());
+    const advanced = container.querySelector(".iv-advanced")!;
+    // 把 Advanced 整段子樹的文字從全文裡挖掉，剩下的就是「Advanced 之外」
+    // 的文字——直接比對子孫節點會被祖先節點的 textContent（本來就會
+    // 包含子孫的文字）誤判成「外面也有」，所以用挖除而非逐節點過濾。
+    const outsideAdvanced = (container.textContent ?? "")
+      .replace(advanced.textContent ?? "", "");
+    expect(outsideAdvanced).not.toMatch(/Z-score/);
+  });
+});

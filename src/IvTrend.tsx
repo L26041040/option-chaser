@@ -5,11 +5,12 @@
  * 每隻腳一張卡：Long Call／Put 一張；Vertical Spread 買／賣各一張，
  * 兩張各自獨立正確，絕不合成一條「Spread IV」（spec #151 §2／AC）。
  *
- * 每張卡的資訊順序完全比照 spec #151 §6：現值 → 走勢圖（raw + MA +
- * Bollinger bands）→ percentile → z-score → Δ4w → 涵蓋時間與觀測筆數。
- * 任何一項統計量不可用（觀測數低於 `IV_TREND_MIN_OBSERVATIONS_FOR_
- * BANDS`）只有那一項顯示 unavailable，不隱藏整張卡（HIVT-03／#154 AC，
- * 這裡是它在前端的呈現）。
+ * 每張卡瘦身後的資訊順序（SIG-02／#173，spec #171）：現值 → 走勢圖
+ * （raw + MA + Bollinger bands，帶狀區域視覺淡化）→ percentile → Δ4w →
+ * 涵蓋時間與觀測筆數。z-score 文字已搬進 `./IvHistory` 的 Advanced／
+ * Diagnostics 收合區，不再是這裡的一項。任何一項統計量不可用（觀測數
+ * 低於 `IV_TREND_MIN_OBSERVATIONS_FOR_BANDS`）只有那一項顯示
+ * unavailable，不隱藏整張卡（HIVT-03／#154 AC，這裡是它在前端的呈現）。
  *
  * 這裡的卡片沒有自己的 loading／error 狀態，也不各自渲染診斷區塊——
  * `legs` 是 `./IvHistory` 那次 fetch 已經拿到手的資料，固定版位骨架
@@ -52,8 +53,10 @@ function percentileCaption(leg: LegHistoricalIv): string {
 /** z-score 在視窗觀測數不足 `IV_TREND_MIN_OBSERVATIONS_FOR_BANDS`
  *  （後端常數，前端不重複判斷門檻本身）時為 `null`——誠實說觀測數
  *  不足，不是「沒有這個量」（跟 percentile 的「沒有歷史資料」是不同的
- *  缺席原因）。 */
-function zscoreCaption(leg: LegHistoricalIv): string {
+ *  缺席原因）。SIG-02（#173）起搬進 Advanced／Diagnostics 收合區，
+ *  不再是逐腿卡片主要區塊的一項——export 給 `./IvHistory` 的 Advanced
+ *  區塊使用，計算本身完全未變。 */
+export function zscoreCaption(leg: LegHistoricalIv): string {
   if (leg.current_zscore === null) return "Z-score：觀測數不足";
   const sign = leg.current_zscore >= 0 ? "+" : "";
   return `Z-score ${sign}${leg.current_zscore.toFixed(2)}`;
@@ -281,10 +284,13 @@ function IvTrendChart({ leg, width, height }: {
   );
 }
 
-/** 一隻腳的完整卡片：現值 → 走勢圖 → percentile → z-score → Δ4w →
- *  涵蓋時間＋觀測筆數（spec #151 §6 指定順序）。`label` 只在 Vertical
- *  Spread 才有（「買腿」／「賣腿」）——單腳候選只有一張卡，不需要標籤
- *  區分。 */
+/** 一隻腳的瘦身卡片：主要文字只剩四項——現值、完整走勢圖、歷史百分位、
+ *  4 週 Δ（SIG-02／#173，spec #171）。z-score 文字已搬進 Advanced／
+ *  Diagnostics 收合區（`./IvHistory` 的 `IvAdvanced`），Bollinger 數值
+ *  不以文字形式出現在任何地方——走勢圖上的視覺帶狀區域原樣保留，只是
+ *  改成視覺淡化（見 `styles.css` 的 `.iv-trend-band`／`.iv-trend-ma-line`）。
+ *  `label` 只在 Vertical Spread 才有（「買腿」／「賣腿」）——單腳候選
+ *  只有一張卡，不需要標籤區分。 */
 function IvTrendCard({ label, leg }: { label?: string; leg: LegHistoricalIv }) {
   return (
     <div className="iv-trend-card">
@@ -294,7 +300,6 @@ function IvTrendCard({ label, leg }: { label?: string; leg: LegHistoricalIv }) {
       </span>
       <IvTrendChart leg={leg} width={300} height={110} />
       <p className="caption">{percentileCaption(leg)}</p>
-      <p className="caption">{zscoreCaption(leg)}</p>
       <p className="caption">{delta4wCaption(leg)}</p>
       <p className="caption">{spanCaption(leg)}</p>
       {leg.status !== "ok" && (

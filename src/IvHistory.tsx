@@ -68,7 +68,7 @@ import {
   type NormalizedSkewPoint,
 } from "./api";
 import { CopyDiagnosticButton, DiagnosticEventFieldList } from "./DiagnosticDetail";
-import IvTrend from "./IvTrend";
+import IvTrend, { zscoreCaption } from "./IvTrend";
 import { contiguousRuns, ivChartPoints, ivYAxisDomain, xAxisTicks,
         type ChartPoint } from "./ivHistoryChart";
 
@@ -484,39 +484,38 @@ export default function IvHistory({ scenarioId, candidate }: {
   );
 }
 
-/** 有資料時的卡片內容——從 `IvHistory` 拆出來純粹是讓上面那段「四種
- *  狀態同一個版位切換」的分支讀起來一眼看懂，不是新的分層原則。 */
-function IvHistoryContent({ data, isSingleLeg }: {
+/**
+ * Advanced／Diagnostics 收合區（SIG-02／#173，spec #171）：預設收合，
+ * 內容含 z-score 文字說明（逐腿）、Normalized Skew 整組（原封不動搬過來，
+ * 計算與呈現細節完全不變）、既有的 inline diagnostics 展開內容——三者
+ * 原本散在 `IvHistoryContent` 各處，這裡只是搬 JSX 位置，不改任何一項
+ * 的資料來源或算法。單腳候選（`isSingleLeg`）沒有 Normalized Skew，這裡
+ * 跟搬移前一樣用同一個判斷式跳過；z-score 文字只讀 `legs`，單腳一樣有。
+ */
+function IvAdvanced({ data, isSingleLeg, notableEvents }: {
   data: IvHistoryView;
   isSingleLeg: boolean;
+  notableEvents: DiagnosticEvent[];
 }) {
-  // 200 但資料是空的——目前最常見的症狀，只看 HTTP 狀態碼看不出來。
-  // severity >= warning 的 events 是唯一能指出這件事的地方（DG-05／
-  // #148）。`?.`／`?? []`：`diagnostics` 是後端純加法新增的欄位，
-  // 這裡不因為回應剛好沒帶它（例如手造的測試假體）就整塊炸掉。這批
-  // 事件涵蓋 Normalized Skew 與逐腿 Historical IV Trend 兩個家族——
-  // 兩者共用同一個 per-request 診斷收集層（HIVT-02／#153）。
-  const notableEvents = (data.diagnostics?.events ?? []).filter(
-    (e) => e.severity === "warning" || e.severity === "error");
-
   return (
-    <>
-      {/* Normalized Skew 這個家族自己的 backfill 狀態——單腳候選結構上
-          沒有 Normalized Skew，這行說明沒有意義，不顯示（逐腿卡片有
-          各自的狀態說明，見 `./IvTrend`）。 */}
-      {!isSingleLeg && data.status !== "ok" && (
-        <p className="caption">{BACKFILL_NOTES[data.status]}</p>
-      )}
+    <details className="iv-advanced">
+      <summary className="section-title">Advanced／Diagnostics</summary>
 
-      {notableEvents.length > 0 && (
-        <InlineDiagnostics
-          correlationId={data.diagnostics.correlation_id}
-          events={notableEvents}
-        />
+      <p className="caption">
+        {(data.legs.sell ? "買腿 " : "") + zscoreCaption(data.legs.buy)}
+      </p>
+      {data.legs.sell && (
+        <p className="caption">{`賣腿 ${zscoreCaption(data.legs.sell)}`}</p>
       )}
 
       {!isSingleLeg && (
         <>
+          {/* Normalized Skew 這個家族自己的 backfill 狀態——單腳候選結構
+              上沒有 Normalized Skew，這行說明沒有意義，不顯示（逐腿卡片
+              有各自的狀態說明，見 `./IvTrend`）。 */}
+          {data.status !== "ok" && (
+            <p className="caption">{BACKFILL_NOTES[data.status]}</p>
+          )}
           <Metric
             primary
             label="Normalized Skew"
@@ -537,7 +536,41 @@ function IvHistoryContent({ data, isSingleLeg }: {
         </>
       )}
 
+      {notableEvents.length > 0 && (
+        <InlineDiagnostics
+          correlationId={data.diagnostics.correlation_id}
+          events={notableEvents}
+        />
+      )}
+    </details>
+  );
+}
+
+/** 有資料時的卡片內容——從 `IvHistory` 拆出來純粹是讓上面那段「四種
+ *  狀態同一個版位切換」的分支讀起來一眼看懂，不是新的分層原則。
+ *
+ *  三層順序（SIG-02／#173，spec #171）：Spread Summary 版位預留
+ *  （SIG-03／#174 填入，這張票不渲染任何東西）→ Buy／Sell 逐腿卡片
+ *  （`./IvTrend`）→ Advanced／Diagnostics 預設收合區（`IvAdvanced`）。 */
+function IvHistoryContent({ data, isSingleLeg }: {
+  data: IvHistoryView;
+  isSingleLeg: boolean;
+}) {
+  // 200 但資料是空的——目前最常見的症狀，只看 HTTP 狀態碼看不出來。
+  // severity >= warning 的 events 是唯一能指出這件事的地方（DG-05／
+  // #148）。`?.`／`?? []`：`diagnostics` 是後端純加法新增的欄位，
+  // 這裡不因為回應剛好沒帶它（例如手造的測試假體）就整塊炸掉。這批
+  // 事件涵蓋 Normalized Skew 與逐腿 Historical IV Trend 兩個家族——
+  // 兩者共用同一個 per-request 診斷收集層（HIVT-02／#153）。
+  const notableEvents = (data.diagnostics?.events ?? []).filter(
+    (e) => e.severity === "warning" || e.severity === "error");
+
+  return (
+    <>
+      {/* SIG-03（#174）版位預留：Spread Summary 填在這裡、Buy／Sell 層
+          之上。這張票不需要在這個版位渲染任何有意義的東西。 */}
       <IvTrend legs={data.legs} />
+      <IvAdvanced data={data} isSingleLeg={isSingleLeg} notableEvents={notableEvents} />
     </>
   );
 }

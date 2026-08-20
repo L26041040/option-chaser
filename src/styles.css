@@ -2167,6 +2167,22 @@ body {
   margin-top: 6px;
 }
 
+/* Advanced／Diagnostics 收合區（SIG-02／#173，spec #171）：預設收合，
+   重用 `.report-methodology summary` 同一種「折疊區標題」視覺語言——
+   跟既有 Model & Assumptions／原始資料二層收合看起來是同一套慣例，不是
+   另外發明一種樣式。z-score 文字說明、Normalized Skew 整組、既有
+   inline diagnostics 展開內容都收在這裡面。 */
+.iv-advanced {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 0.5px solid var(--separator);
+}
+
+.iv-advanced summary {
+  font-weight: 600;
+  cursor: pointer;
+}
+
 /* Loading 佔位骨架（QA 反饋，2026-08-16）：形狀跟 `.iv-metric` 頭條／
    次層同構，資料回來前後卡片高度不整個跳動。`.iv-legs`／`.iv-legs.single`
    直接沿用既有次層排版類別，這裡只補頭條與每個次層方塊本身的佔位樣式。 */
@@ -2219,6 +2235,23 @@ body {
   display: flex;
   flex-direction: column;
   gap: 2px;
+  min-width: 0; /* flex 子項預設 min-width:auto 會撐開容器，桌面並排時
+                   讓走勢圖 SVG（width:100%）真正縮到卡片寬度 */
+}
+
+/* 桌面買／賣兩張卡並排（SIG-02／#173）：跟 `.workspace` 同一個既有
+   斷點（1100px）。窄於斷點時維持既有直向堆疊（上面 `.iv-trend-legs`
+   的預設 `flex-direction: column`）。單腳候選只有一張卡，`flex-direction:
+   row` 對單一子項無影響，不需要另外判斷腳數。 */
+@media (min-width: 1100px) {
+  .iv-trend-legs {
+    flex-direction: row;
+    align-items: flex-start;
+  }
+
+  .iv-trend-card {
+    flex: 1 1 0;
+  }
 }
 
 .iv-trend-card-label {
@@ -2230,19 +2263,24 @@ body {
 }
 
 /* Bollinger 帶——半透明填色區域，襯在 moving average／raw 線下面，
-   不需要額外圖例：上下界本身的形狀就是「範圍」。 */
+   不需要額外圖例：上下界本身的形狀就是「範圍」。SIG-02（#173）：進一步
+   視覺淡化（降低不透明度）——數值本身已從主要區塊的文字移除（改放
+   Advanced／Diagnostics），圖上的帶狀區域因此更該退成背景層次，raw IV
+   主線維持圖上最主要的線。既有走勢圖繪製邏輯不動，這裡純粹是 CSS 調整。 */
 .iv-trend-band {
   fill: var(--tint);
-  opacity: 0.12;
+  opacity: 0.08;
   stroke: none;
 }
 
 /* Moving average——比 raw 線細、用既有分隔線色系而非 `--tint`，跟主線
-   有明顯的視覺階層但不搶戲。 */
+   有明顯的視覺階層但不搶戲。SIG-02（#173）：疊加 opacity 進一步淡化，
+   理由同上面 `.iv-trend-band`。 */
 .iv-trend-ma-line {
   stroke: var(--label-secondary);
   stroke-width: 1;
   stroke-dasharray: 3 2;
+  opacity: 0.7;
 }
 
 /* 卡片右下角的動作組（#132：編輯 ＋ 封存）。沿用 `.compact-archive` 原本
