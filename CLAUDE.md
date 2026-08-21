@@ -27,7 +27,7 @@ block 裡，不能切成好幾個 code block、也不能中間插普通文字把
 `［回報#001］spec #137 拆票完成`）。編號是**累計總數**，不因換
 session、換分支、換主題而歸零——目前最新編號記在這裡：
 
-> 目前次序：015（下一份回報用 016）
+> 目前次序：016（下一份回報用 017）
 
 每發一份回報就把上面這個數字改成剛剛用掉的那個，跟著那次改動一起
 commit（沒有其他改動要 commit 時，單獨為這一行開一個小 commit 也
@@ -3158,6 +3158,27 @@ QA-01 收尾後緊接開始的下一波，承接 #102 尚未完成的部分（#1
   手機 e2e 各一條新測試驗證圖例／邊界格可見且不破壞既有橫向捲動／
   ±% 欄行為。兩票皆通過 #118 選取身份回歸守門，皆已在 GitHub 關閉
   （commit 引用留言）。
+- **Historical IV 手機圖表改版＋錯誤分級修正**（無 issue 編號，需求方
+  2026-08-21 直接反饋，commit `66bd20f`）：手機版三張圖（Spread IV
+  Gap／買腿／賣腿，共用 `IvTrend.tsx` 的 `IvTrendChart`）改成 Firstrade
+  風格——資料點預設不再是常駐大圓點，改成 CSS `opacity: 0` 的互動熱區，
+  只在 hover／focus／tap 中的那一點加上 `chart-point-active` 才顯示
+  （連同 tooltip），scope 在 `.iv-history` 內不影響 Spread 淨成本走勢圖
+  既有的 `.chart-point`；新增 `useIsDesktop.ts`（`useIsDesktop`／
+  `useResponsiveHeight`，從 `App.tsx` 抽出並共用）讓手機走勢圖高度
+  明顯壓低、桌面維持原高度。文字瘦身：`SpreadSummary` 的 Δ4w ratio
+  說明與固定的 Spread Percentile 語意句搬進新的 `SpreadSummaryAdvanced`，
+  掛在既有 Advanced／Diagnostics 收合區，主畫面只留 Current／
+  Percentile／4 週變化／涵蓋小字。錯誤分級：`IvHistory` 新增 `dataKey`
+  追蹤資料屬於哪個候選，重新嘗試（新分析後同一候選，經新增的
+  `analyzedAt` prop 觸發，接線自 `ScenarioDetail.tsx`）失敗時，若已有
+  這個候選的資料就只降級成非阻斷警示（`.iv-history-stale-warning`），
+  不再整塊蓋掉已經畫得出來的圖表；legacy normalized_skew 失敗（頂層
+  `status`）本來就已經只留在 Advanced 裡，這次新增明文回歸測試釘住。
+  經 `/code-review` 兩軸（Standards／Spec）審查，套用其中一項建議
+  （抽出 `useResponsiveHeight` 消除高度判斷的重複）。全套回歸：後端
+  pytest 全綠（記憶體假體）、前端 Vitest 596 passed、Playwright e2e
+  87 passed（iPhone＋Desktop）、typecheck／build 皆過。
 
 **探測環境選擇（#120／#111 共同記錄）**：使用者原始指示要求建臨時
 Vercel probe，但本輪 Vercel MCP 的 `deploy_to_vercel` 可成功部署，
