@@ -27,6 +27,19 @@ import { BACKFILL_NOTES, ChartTooltip, PAD_BOTTOM, PAD_LEFT,
         PAD_TOP, tickLabel, toPixel, valueLabel } from "./IvHistory";
 import { contiguousRuns, ivChartPoints, ivYAxisDomain, projectOntoDomain,
         xAxisTicks, type ChartPoint } from "./ivHistoryChart";
+import { useResponsiveHeight } from "./useIsDesktop";
+
+/** 走勢圖固定寬度（viewBox 座標，跟卡片寬度無關——CSS `width:100%` 負責
+ *  縮放）。手機版高度明顯壓低（Firstrade 風格的瘦長折線圖，不是肥大的
+ *  正方形圖表），桌面維持原本的高度不變——手機優先的瘦身不該連帶改動
+ *  桌面既有外觀。`useIsDesktop`（跟 `App.tsx` 的 20/80 版面判斷同一個
+ *  斷點）由呼叫端（`IvTrendCard`／`./SpreadSummary`）決定要哪一組高度，
+ *  這裡的繪圖幾何本身不關心斷點，純粹照傳入的 `height` 畫圖。 */
+export const CHART_WIDTH = 300;
+export const LEG_CHART_HEIGHT_DESKTOP = 110;
+export const LEG_CHART_HEIGHT_MOBILE = 68;
+export const SPREAD_CHART_HEIGHT_DESKTOP = 130;
+export const SPREAD_CHART_HEIGHT_MOBILE = 80;
 
 /** spec #151 §6 逐字原文——固定文案，不是每張卡各自改寫一次。 */
 const IV_TREND_CAPTION =
@@ -274,11 +287,19 @@ export function IvTrendChart({ leg, width, height, seriesLabel = "市場 IV" }: 
           {run.map((p) => {
             const { px, py } = toPixel(p, width, height);
             const idx = indexOf.get(p)!;
+            // 預設不畫肥大的常駐圓點（Firstrade 風格：raw 折線本身才是
+            // 主視覺）——`chart-point` 的可見度交給 CSS（`.iv-history
+            // .chart-point { opacity: 0 }`），這顆 circle 平常只是一個
+            // 夠大、方便觸控／滑鼠命中的互動熱區。只有使用者正在
+            // hover／focus／tap 的那一個才加上 `chart-point-active`，
+            // CSS 據此把它（連同 tooltip）顯示出來——「觸碰才看得到」
+            // 不是額外邏輯，只是同一組既有互動 handler 多掛一個 class。
+            const isActive = idx === activeIndex;
             return (
               <circle
                 key={idx}
                 cx={px} cy={py} r={4}
-                className="chart-point"
+                className={isActive ? "chart-point chart-point-active" : "chart-point"}
                 tabIndex={0}
                 role="button"
                 aria-label={`${p.label}，${seriesLabel} ${
@@ -310,13 +331,14 @@ export function IvTrendChart({ leg, width, height, seriesLabel = "市場 IV" }: 
  *  `label` 只在 Vertical Spread 才有（「買腿」／「賣腿」）——單腳候選
  *  只有一張卡，不需要標籤區分。 */
 function IvTrendCard({ label, leg }: { label?: string; leg: LegHistoricalIv }) {
+  const height = useResponsiveHeight(LEG_CHART_HEIGHT_MOBILE, LEG_CHART_HEIGHT_DESKTOP);
   return (
     <div className="iv-trend-card">
       {label && <div className="row-label iv-trend-card-label">{label}</div>}
       <span className="iv-value-primary">
         {valueLabel(currentIv(leg), "vol-pts")}
       </span>
-      <IvTrendChart leg={leg} width={300} height={110} />
+      <IvTrendChart leg={leg} width={CHART_WIDTH} height={height} />
       <p className="caption">{percentileCaption(leg)}</p>
       <p className="caption">{delta4wCaption(leg)}</p>
       <p className="caption">{spanCaption(leg)}</p>

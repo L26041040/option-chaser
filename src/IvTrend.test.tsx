@@ -9,11 +9,17 @@
  */
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { ContractIdentity, IvHistoryLegs, IvTrendStatPoint,
              LegHistoricalIv } from "./api";
-import IvTrend, { zscoreCaption } from "./IvTrend";
+import IvTrend, { LEG_CHART_HEIGHT_DESKTOP, LEG_CHART_HEIGHT_MOBILE,
+                 zscoreCaption } from "./IvTrend";
+import { fakeMediaQueryList } from "./test-setup";
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
 
 function contract(overrides: Partial<ContractIdentity> = {}): ContractIdentity {
   return { underlying: "XYZ", expiration: "2026-09-18", strike: 118,
@@ -314,6 +320,68 @@ describe("走勢圖互動（沿用 Normalized Skew 走勢圖已驗證的手刻 S
 
     await userEvent.unhover(point);
     expect(chart.querySelectorAll(".chart-tooltip")).toHaveLength(0);
+  });
+});
+
+describe("手機版 Firstrade 風格折線圖：預設不常駐大圓點，互動中才顯示 marker（Historical IV 圖表改版）", () => {
+  it("預設狀態下沒有任何資料點被標記為 active", () => {
+    const legs: IvHistoryLegs = { buy: legHistoricalIv({
+      points: ivPoints(5, (i) => 0.20 + i * 0.01),
+    }) };
+    const { container } = render(<IvTrend legs={legs} />);
+    expect(container.querySelectorAll(".chart-point-active")).toHaveLength(0);
+    // 互動熱區本身還在（存在即可命中，可見度交給 CSS `opacity`）。
+    expect(container.querySelectorAll(".chart-point").length).toBeGreaterThan(0);
+  });
+
+  it("hover 到某個資料點時，只有那一個點被標記為 active", async () => {
+    const legs: IvHistoryLegs = { buy: legHistoricalIv({
+      points: ivPoints(3, (i) => 0.20 + i * 0.01),
+    }) };
+    const { container } = render(<IvTrend legs={legs} />);
+    const points = container.querySelectorAll<HTMLElement>("[role='button']");
+
+    await userEvent.hover(points[1]);
+    expect(container.querySelectorAll(".chart-point-active")).toHaveLength(1);
+    expect(points[1].getAttribute("class")).toContain("chart-point-active");
+
+    await userEvent.unhover(points[1]);
+    expect(container.querySelectorAll(".chart-point-active")).toHaveLength(0);
+  });
+
+  it("手機 tap（click）某個資料點時同樣標記為 active，直到點別的點", async () => {
+    const legs: IvHistoryLegs = { buy: legHistoricalIv({
+      points: ivPoints(3, (i) => 0.20 + i * 0.01),
+    }) };
+    const { container } = render(<IvTrend legs={legs} />);
+    const points = container.querySelectorAll<HTMLElement>("[role='button']");
+
+    await userEvent.click(points[0]);
+    expect(points[0].getAttribute("class")).toContain("chart-point-active");
+
+    await userEvent.click(points[2]);
+    expect(points[0].getAttribute("class")).not.toContain("chart-point-active");
+    expect(points[2].getAttribute("class")).toContain("chart-point-active");
+  });
+});
+
+describe("手機版圖高度明顯縮小（Historical IV 圖表改版）：桌面維持原高度", () => {
+  it("手機（預設 matchMedia 假體＝手機）走勢圖用較矮的高度", () => {
+    const legs: IvHistoryLegs = { buy: legHistoricalIv() };
+    const { container } = render(<IvTrend legs={legs} />);
+    const chart = container.querySelector(".iv-trend-chart")!;
+    expect(chart.getAttribute("viewBox"))
+      .toBe(`0 0 300 ${LEG_CHART_HEIGHT_MOBILE}`);
+  });
+
+  it("桌面斷點下走勢圖維持既有（較高的）高度，不受手機瘦身影響", () => {
+    vi.stubGlobal("matchMedia",
+      (q: string) => fakeMediaQueryList(true, q));
+    const legs: IvHistoryLegs = { buy: legHistoricalIv() };
+    const { container } = render(<IvTrend legs={legs} />);
+    const chart = container.querySelector(".iv-trend-chart")!;
+    expect(chart.getAttribute("viewBox"))
+      .toBe(`0 0 300 ${LEG_CHART_HEIGHT_DESKTOP}`);
   });
 });
 

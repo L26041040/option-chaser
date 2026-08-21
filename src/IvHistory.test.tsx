@@ -386,6 +386,119 @@ describe("vendor 失敗", () => {
   });
 });
 
+describe("已有可用 cache 時，重新嘗試失敗只降級成非阻斷警示（需求方 2026-08-21 反饋：" +
+        "「明明有圖還顯示錯誤」）", () => {
+  it("同一個候選第一次成功、新分析後 refetch 失敗：圖表照常在，只多一行警示，" +
+     "不是整塊阻斷錯誤", async () => {
+    let call = 0;
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+      if (url.startsWith("/api/settings")) {
+        return { ok: true, status: 200,
+                 json: async () => ({ historical_iv_enabled: true }) } as Response;
+      }
+      call += 1;
+      if (call === 1) {
+        return { ok: true, status: 200, json: async () => ivView() } as Response;
+      }
+      return { ok: false, status: 404,
+               json: async () => ({ detail: "候選暫時找不到" }) } as Response;
+    }));
+    const { container, rerender } = render(
+      <IvHistory scenarioId="s1" candidate={spreadCandidate()} analyzedAt="t1" />);
+    await waitFor(() =>
+      expect(screen.getByText("Normalized Skew")).toBeInTheDocument());
+
+    rerender(
+      <IvHistory scenarioId="s1" candidate={spreadCandidate()} analyzedAt="t2" />);
+    await waitFor(() =>
+      expect(screen.getByText(/候選暫時找不到/)).toBeInTheDocument());
+
+    // 圖表沒有消失——走勢圖與買／賣腿內容照常在。
+    expect(container.querySelectorAll(".iv-trend-chart").length).toBeGreaterThan(0);
+    expect(screen.getByText("Normalized Skew")).toBeInTheDocument();
+    // 不是整塊阻斷錯誤那句話——那句只留給「這個候選完全沒有資料可退回」。
+    expect(screen.queryByText(/取不到歷史 IV/)).not.toBeInTheDocument();
+  });
+
+  it("這個候選從未成功取得任何資料時，失敗仍然是整塊阻斷錯誤（沒有 cache 可退回，" +
+     "維持既有行為）", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+      if (url.startsWith("/api/settings")) {
+        return { ok: true, status: 200,
+                 json: async () => ({ historical_iv_enabled: true }) } as Response;
+      }
+      return { ok: false, status: 404,
+               json: async () => ({ detail: "找不到候選" }) } as Response;
+    }));
+    render(<IvHistory scenarioId="s1" candidate={spreadCandidate()} />);
+    await waitFor(() =>
+      expect(screen.getByText(/取不到歷史 IV：找不到候選/)).toBeInTheDocument());
+    expect(screen.queryByText("Normalized Skew")).not.toBeInTheDocument();
+  });
+});
+
+describe("切換候選時不會誤用上一個候選的資料（dataKey 隔離）", () => {
+  it("候選 A 成功後切到候選 B，B 的 fetch 還沒回來前顯示骨架，不是 A 的舊資料",
+     async () => {
+    let resolveSecond!: (r: Response) => void;
+    const secondPromise = new Promise<Response>((resolve) => {
+      resolveSecond = resolve;
+    });
+    let call = 0;
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+      if (url.startsWith("/api/settings")) {
+        return { ok: true, status: 200,
+                 json: async () => ({ historical_iv_enabled: true }) } as Response;
+      }
+      call += 1;
+      if (call === 1) {
+        return { ok: true, status: 200, json: async () => ivView() } as Response;
+      }
+      return secondPromise;
+    }));
+    const { container, rerender } = render(
+      <IvHistory scenarioId="s1" candidate={spreadCandidate()} />);
+    await waitFor(() =>
+      expect(screen.getByText("Normalized Skew")).toBeInTheDocument());
+
+    rerender(<IvHistory scenarioId="s1" candidate={longCallCandidate()} />);
+    await waitFor(() =>
+      expect(container.querySelector(".iv-skeleton")).toBeInTheDocument());
+    expect(screen.queryByText("Normalized Skew")).not.toBeInTheDocument();
+
+    resolveSecond({ ok: true, status: 200,
+                   json: async () => singleLegIvView() } as Response);
+    await waitFor(() =>
+      expect(container.querySelector(".iv-skeleton")).not.toBeInTheDocument());
+    expect(container.querySelectorAll(".iv-trend-card")).toHaveLength(1);
+  });
+});
+
+describe("legacy normalized_skew 失敗不污染 exact-contract 主圖區的成功狀態（C.3）", () => {
+  it("頂層 status 為 quota／vendor（legacy backfill 沒補上）時，買／賣腿與" +
+     "Spread IV Gap 照常渲染成功——附加說明只出現在 Advanced 裡", async () => {
+    mockApi({ enabled: true, iv: ivView({ status: "vendor",
+                                         note: "legacy backfill 失敗",
+                                         spread_gap: spreadGapFixture() }) });
+    const { container } = render(
+      <IvHistory scenarioId="s1" candidate={spreadCandidate()} />);
+    // 主要區塊（Spread IV Gap／買腿／賣腿）不必展開 Advanced 就在——
+    // exact-contract 家族完全不受 legacy 那邊失敗影響。
+    await waitFor(() =>
+      expect(screen.getByText("Spread IV Gap")).toBeInTheDocument());
+    expect(container.querySelectorAll(".iv-trend-card")).toHaveLength(2);
+    expect(container.querySelectorAll(".iv-trend-chart").length)
+      .toBeGreaterThanOrEqual(3);
+    // 沒有整塊阻斷錯誤那句話。
+    expect(screen.queryByText(/取不到歷史 IV/)).not.toBeInTheDocument();
+
+    // legacy 家族自己的 backfill 說明確實存在，但只在 Advanced 收合區裡。
+    const summary = await screen.findByText("Advanced／Diagnostics");
+    await userEvent.click(summary);
+    expect(screen.getByText(/資料源暫時無法連線/)).toBeInTheDocument();
+  });
+});
+
 describe("只陳述事實（紅線，由測試守門而非自律）", () => {
   it("不出現任何評價字眼——涵蓋 Normalized Skew 與逐腿卡片全部文字", async () => {
     mockApi({ enabled: true });

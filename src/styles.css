@@ -1734,6 +1734,37 @@ body {
   cursor: pointer;
 }
 
+/* Historical IV 走勢圖（Spread IV Gap／買腿／賣腿／Normalized Skew）
+   改成 Firstrade 風格的簡潔折線圖：預設不常駐大圓點，raw 折線本身才是
+   主視覺，只有使用者正在 hover／focus／tap 的那一個點才顯示（連同
+   tooltip）。`.chart-point` 本身仍是互動熱區（`opacity: 0` 不影響
+   pointer-events，命中判定沒有變小），只是視覺上先隱藏；`.chart-point-
+   active` 由 `./IvTrend`／`./IvHistory` 依目前互動中的索引動態掛上。
+   刻意只 scope 在 `.iv-history` 卡片內——`SpreadHistory.tsx`（Spread
+   淨成本走勢圖）共用同一個 `.chart-point` class 但不在這次改版範圍內，
+   不能連帶被改成預設隱藏。 */
+.iv-history .chart-point {
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+
+.iv-history .chart-point-active {
+  opacity: 1;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .iv-history .chart-point {
+    transition: none;
+  }
+}
+
+/* 重新嘗試失敗但已有可用 cache 時的非阻斷警示（C／需求方 2026-08-21
+   反饋）：不是紅色的阻斷式錯誤（`.iv-diagnostics-summary` 那種），只是
+   一行提醒「這是舊資料」，圖表本身照常在上面畫出來。 */
+.iv-history-stale-warning {
+  color: var(--orange);
+}
+
 .chart-tooltip rect {
   fill: var(--bg-elevated);
   stroke: var(--separator);

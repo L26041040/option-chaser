@@ -71,7 +71,7 @@ import { CopyDiagnosticButton, DiagnosticEventFieldList } from "./DiagnosticDeta
 import IvTrend, { zscoreCaption } from "./IvTrend";
 import { contiguousRuns, ivChartPoints, ivYAxisDomain, xAxisTicks,
         type ChartPoint } from "./ivHistoryChart";
-import SpreadSummary from "./SpreadSummary";
+import SpreadSummary, { SpreadSummaryAdvanced } from "./SpreadSummary";
 
 /**
  * 今天的 backfill 遇到什麼——一行附加說明，**不取代**下面的 percentile。
@@ -240,6 +240,9 @@ function TrendChart({ label, unit, points, width, height }: {
           {run.map((p) => {
             const { px, py } = toPixel(p, width, height);
             const idx = indexOf.get(p)!;
+            // 預設不畫肥大的常駐圓點——跟 `./IvTrend` 的 `IvTrendChart`
+            // 同一套處置（那邊的檔頭註解有完整說明），這裡不重寫第二份。
+            const isActive = idx === activeIndex;
             return (
               <circle
                 // 用序列位置而非日期字串當 key：真實資料每個 symbol 每天
@@ -247,7 +250,7 @@ function TrendChart({ label, unit, points, width, height }: {
                 // 個外部假設——位置在同一次渲染裡本來就唯一。
                 key={idx}
                 cx={px} cy={py} r={4}
-                className="chart-point"
+                className={isActive ? "chart-point chart-point-active" : "chart-point"}
                 tabIndex={0}
                 role="button"
                 aria-label={`${p.label}，${label} ${
@@ -411,12 +414,24 @@ export function CardSkeleton({ isSingleLeg }: { isSingleLeg: boolean }) {
   );
 }
 
-export default function IvHistory({ scenarioId, candidate }: {
+export default function IvHistory({ scenarioId, candidate, analyzedAt = null }: {
   scenarioId: string;
   candidate: Candidate | null;
+  /** 這個劇本最新一次分析完成的時間戳（`ScenarioDetail` 既有的
+   *  `analyzedAt`，跟 `./SpreadHistory`／`./RawData` 同一個來源）——只當
+   *  成下面 effect 的觸發訊號，值本身不進畫面。新分析一到、同一個候選
+   *  （`key` 不變）也該重新問一次 vendor 才能跟上最新報價；跟 `#69` 那兩
+   *  個元件用它強制卸載重掛、把舊 state 沖乾淨不同，這裡刻意保留舊
+   *  資料——重新嘗試如果失敗，才有「已有可用 cache」的東西可以退回
+   *  顯示（見下方 `currentData` 與 `error` 的優先序）。 */
+  analyzedAt?: string | null;
 }) {
   const [enabled, setEnabled] = useState<boolean | null>(null);
   const [data, setData] = useState<IvHistoryView | null>(null);
+  // 這份 `data` 是哪一個候選的——切候選時 `key` 立刻變了，但新結果要
+  // 等 fetch 回來才會覆蓋，這段空窗期 `dataKey !== key`，畫面據此知道
+  // 手上這份資料還不能當成「這個候選」的東西來畫（見下方 `currentData`）。
+  const [dataKey, setDataKey] = useState<string | null>(null);
   const [error, setError] = useState<Error | null>(null);
 
   const key = candidate?.candidate_key ?? null;
@@ -437,14 +452,27 @@ export default function IvHistory({ scenarioId, candidate }: {
   useEffect(() => {
     if (enabled !== true || !key) return;
     let alive = true;
+    // 每次重新嘗試（換候選、或新分析完成後同一個候選要跟著問一次）都
+    // 先清掉上一輪的錯誤——這次嘗試還沒有結論，不該讓使用者看到跟這次
+    // 請求無關的舊錯誤訊息。`data`／`dataKey` 刻意不在這裡清空：換候選
+    // 時 `dataKey === key` 這個判斷式（見下方 render）已經足夠避免「別的
+    // 候選的資料被誤認成這個候選的」，同一個候選重新嘗試時則正是要保留
+    // 舊資料，讓失敗降級成非阻斷警示而不是整塊消失。
+    setError(null);
     ivHistory(scenarioId, key)
-      .then((v) => alive && setData(v))
-      .catch((e) => alive
-        && setError(e instanceof Error ? e : new Error(String(e))));
+      .then((v) => {
+        if (!alive) return;
+        setData(v);
+        setDataKey(key);
+      })
+      .catch((e) => {
+        if (!alive) return;
+        setError(e instanceof Error ? e : new Error(String(e)));
+      });
     return () => {
       alive = false;
     };
-  }, [enabled, key, scenarioId]);
+  }, [enabled, key, scenarioId, analyzedAt]);
 
   // 鎖著、還沒問完、或這個候選根本沒有身份鍵 → 不輸出任何節點（#126
   // AC——這條紅線原封不動，跟下面「卡片固定版位」是兩件事：鎖著時連
@@ -459,15 +487,34 @@ export default function IvHistory({ scenarioId, candidate }: {
   // 獨立分支：`count === 0` 由既有 `metricCaption()` 逐項顯示「沒有歷史
   // 資料」，資料物件本身照常存在、卡片照常渲染。
   const isSingleLeg = candidate.legs.length < 2;
+  // 只信任屬於「這個候選」的資料——`dataKey` 跟目前的 `key` 對得上才
+  // 拿來畫，避免切換候選時畫面短暫誤用上一個候選留下來的舊資料。這個
+  // 判斷跟下面「有 cache 就不整塊顯示錯誤」防的是兩件不同的事：這裡防
+  // 的是「畫錯候選」，下面防的是「明明有得畫卻整塊消失」。
+  const currentData = dataKey === key ? data : null;
 
   return (
     <section className="card iv-history" aria-label="IV 相對位置">
       <h2 className="section-title">IV 相對位置</h2>
 
-      {error ? (
-        // vendor 失敗只影響這一塊，頁面其餘部分照常（#126 AC）——卡片
-        // 本身仍在，只是多一條就地展開的診斷詳情（DG-05／#148），不是
-        // 整段文字替換掉。
+      {currentData ? (
+        <>
+          {/* 這個候選已經有能看的資料（哪怕是上一輪嘗試留下來的）——
+              一次新的嘗試失敗（例如 vendor 一時 404／額度用盡）只降級成
+              一條不擋內容的警示，不能讓使用者以為整塊都壞了，三張圖明明
+              還畫得出來。真正「這個候選完全沒有資料可退回」才走下面的
+              整塊錯誤分支。 */}
+          {error && (
+            <p className="caption iv-history-stale-warning" role="status">
+              ⚠ 最新資料更新失敗，目前顯示先前取得的快取資料：{error.message}
+            </p>
+          )}
+          <IvHistoryContent data={currentData} isSingleLeg={isSingleLeg} />
+        </>
+      ) : error ? (
+        // 這個候選目前真的沒有任何資料可退回顯示，才整塊改成錯誤狀態
+        // （#126 AC——卡片本身仍在，只是多一條就地展開的診斷詳情
+        // （DG-05／#148），不是整段文字替換掉）。
         <>
           <p className="caption">取不到歷史 IV：{error.message}</p>
           <InlineDiagnostics
@@ -476,10 +523,8 @@ export default function IvHistory({ scenarioId, candidate }: {
             message={error.message}
           />
         </>
-      ) : !data ? (
-        <CardSkeleton isSingleLeg={isSingleLeg} />
       ) : (
-        <IvHistoryContent data={data} isSingleLeg={isSingleLeg} />
+        <CardSkeleton isSingleLeg={isSingleLeg} />
       )}
     </section>
   );
@@ -508,6 +553,12 @@ function IvAdvanced({ data, isSingleLeg, notableEvents }: {
       {data.legs.sell && (
         <p className="caption">{`賣腿 ${zscoreCaption(data.legs.sell)}`}</p>
       )}
+
+      {/* Spread IV Gap 的次要文字（Δ4w guardrail ratio＋Spread Percentile
+          語意說明句，手機文字瘦身裁示搬出主畫面）——只在候選有賣腿
+          （`data.spread_gap` 存在）才有意義，跟 `IvHistoryContent` 掛載
+          `./SpreadSummary` 主卡片用同一個判斷式。 */}
+      {data.spread_gap && <SpreadSummaryAdvanced spreadGap={data.spread_gap} />}
 
       {!isSingleLeg && (
         <>

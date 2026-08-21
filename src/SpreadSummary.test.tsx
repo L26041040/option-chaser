@@ -4,11 +4,17 @@
  * 直接餵 props（跟 `IvTrend.test.tsx` 同一種邊界慣例）。
  */
 import { render, screen } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { ContractIdentity, IvHistoryLegs, LegHistoricalIv,
              SpreadGap, SpreadGapDeltaStatus } from "./api";
-import SpreadSummary from "./SpreadSummary";
+import SpreadSummary, { SpreadSummaryAdvanced } from "./SpreadSummary";
+import { SPREAD_CHART_HEIGHT_DESKTOP, SPREAD_CHART_HEIGHT_MOBILE } from "./IvTrend";
+import { fakeMediaQueryList } from "./test-setup";
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
 
 function contract(overrides: Partial<ContractIdentity> = {}): ContractIdentity {
   return { underlying: "XYZ", expiration: "2026-09-18", strike: 118,
@@ -100,7 +106,7 @@ describe("完整 IV Gap 走勢圖：重用既有多序列走勢圖幾何", () =>
   });
 });
 
-describe("四種 delta_4w_status 狀態各自的文案", () => {
+describe("四種 delta_4w_status 狀態各自的文案（手機文字瘦身後搬進 SpreadSummaryAdvanced）", () => {
   const cases: [SpreadGapDeltaStatus, number | null, string][] = [
     ["ok", 0.40, "+40%"],
     ["no_baseline", null, "—"],
@@ -111,14 +117,14 @@ describe("四種 delta_4w_status 狀態各自的文案", () => {
   it.each(cases)("status=%s → %s", (status, ratio, expected) => {
     const sg = spreadGap({ delta_4w_status: status, delta_4w_ratio: ratio,
                            delta_4w: status === "no_baseline" ? null : 0.02 });
-    render(<SpreadSummary spreadGap={sg} legs={legs()} />);
+    render(<SpreadSummaryAdvanced spreadGap={sg} />);
     expect(screen.getByText(expected)).toBeInTheDocument();
   });
 
   it("ok 狀態下負的 ratio 換算成帶負號的百分比", () => {
     const sg = spreadGap({ delta_4w_status: "ok", delta_4w_ratio: -0.15,
                            delta_4w: -0.03 });
-    render(<SpreadSummary spreadGap={sg} legs={legs()} />);
+    render(<SpreadSummaryAdvanced spreadGap={sg} />);
     expect(screen.getByText("-15%")).toBeInTheDocument();
   });
 
@@ -129,6 +135,13 @@ describe("四種 delta_4w_status 狀態各自的文案", () => {
       expect(screen.getByText("4週 +2.5 pts")).toBeInTheDocument();
       unmount();
     }
+  });
+
+  it("主卡片（SpreadSummary）不再顯示 ratio 版本的 Δ4w——瘦身後只留一個 4 週數字", () => {
+    const sg = spreadGap({ delta_4w_status: "ok", delta_4w_ratio: 0.40,
+                           delta_4w: 0.02 });
+    render(<SpreadSummary spreadGap={sg} legs={legs()} />);
+    expect(screen.queryByText("+40%")).not.toBeInTheDocument();
   });
 });
 
@@ -165,11 +178,35 @@ describe("涵蓋揭露小字：讀 shared_history_span_days，不是 history_spa
   });
 });
 
-describe("固定 facts-only 說明文字", () => {
-  it("解釋 Spread Percentile 語意，不下判斷、不預測", () => {
-    render(<SpreadSummary spreadGap={spreadGap()} legs={legs()} />);
+describe("手機版圖高度明顯縮小（Historical IV 圖表改版），桌面維持原高度", () => {
+  it("手機（預設 matchMedia 假體＝手機）走勢圖用較矮的高度", () => {
+    const { container } = render(
+      <SpreadSummary spreadGap={spreadGap()} legs={legs()} />);
+    const chart = container.querySelector(".iv-trend-chart")!;
+    expect(chart.getAttribute("viewBox"))
+      .toBe(`0 0 300 ${SPREAD_CHART_HEIGHT_MOBILE}`);
+  });
+
+  it("桌面斷點下維持既有較高的高度", () => {
+    vi.stubGlobal("matchMedia", (q: string) => fakeMediaQueryList(true, q));
+    const { container } = render(
+      <SpreadSummary spreadGap={spreadGap()} legs={legs()} />);
+    const chart = container.querySelector(".iv-trend-chart")!;
+    expect(chart.getAttribute("viewBox"))
+      .toBe(`0 0 300 ${SPREAD_CHART_HEIGHT_DESKTOP}`);
+  });
+});
+
+describe("固定 facts-only 說明文字（手機文字瘦身後搬進 SpreadSummaryAdvanced）", () => {
+  it("SpreadSummaryAdvanced 解釋 Spread Percentile 語意，不下判斷、不預測", () => {
+    render(<SpreadSummaryAdvanced spreadGap={spreadGap()} />);
     expect(screen.getByText(
       /Spread Percentile：目前兩腿 IV 差距，在這兩張 exact contracts 共同存在的歷史期間中位於什麼位置。/,
     )).toBeInTheDocument();
+  });
+
+  it("主卡片（SpreadSummary）不再顯示這句解釋——瘦身後只留主要事實", () => {
+    render(<SpreadSummary spreadGap={spreadGap()} legs={legs()} />);
+    expect(screen.queryByText(/Spread Percentile：/)).not.toBeInTheDocument();
   });
 });

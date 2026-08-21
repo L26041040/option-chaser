@@ -22,7 +22,10 @@
  */
 import type { IvHistoryLegs, SpreadGap, SpreadGapDeltaStatus } from "./api";
 import { valueLabel } from "./IvHistory";
-import { IvTrendChart, spanLabel, type IvTrendChartSeries } from "./IvTrend";
+import { CHART_WIDTH, IvTrendChart, SPREAD_CHART_HEIGHT_DESKTOP,
+        SPREAD_CHART_HEIGHT_MOBILE, spanLabel,
+        type IvTrendChartSeries } from "./IvTrend";
+import { useResponsiveHeight } from "./useIsDesktop";
 
 const SPREAD_PERCENTILE_CAPTION =
   "Spread Percentile：目前兩腿 IV 差距，在這兩張 exact contracts 共同"
@@ -83,10 +86,20 @@ function coverageCaption(spreadGap: SpreadGap, legs: IvHistoryLegs): string {
   return parts.join("・");
 }
 
+/**
+ * 主畫面只留四項最重要的事實（Current／Percentile／4 週變化／涵蓋小字，
+ * 手機文字瘦身裁示）：Δ4w 的 ratio 版本（guardrail 狀態換算的百分比／
+ * 「方向翻轉」）跟固定的 Percentile 語意說明句都是次要／解釋性資訊，
+ * 移到 `SpreadSummaryAdvanced`，掛在 `./IvHistory` 的 Advanced／
+ * Diagnostics 收合區——跟 Normalized Skew／z-score 那些「想深入才需要」
+ * 的內容同一個位置，不是刪掉，只是不再常駐主畫面。
+ */
 export default function SpreadSummary({ spreadGap, legs }: {
   spreadGap: SpreadGap;
   legs: IvHistoryLegs;
 }) {
+  const height = useResponsiveHeight(
+    SPREAD_CHART_HEIGHT_MOBILE, SPREAD_CHART_HEIGHT_DESKTOP);
   const chartSeries: IvTrendChartSeries = {
     points: spreadGap.points.map((p) => ({ date: p.date, iv: p.gap })),
     moving_average: spreadGap.moving_average,
@@ -102,16 +115,27 @@ export default function SpreadSummary({ spreadGap, legs }: {
         {valueLabel(currentGap(spreadGap), "vol-pts")}
       </span>
       {spreadGap.points.length > 0 && (
-        <IvTrendChart leg={chartSeries} width={300} height={130}
+        <IvTrendChart leg={chartSeries} width={CHART_WIDTH} height={height}
                      seriesLabel="Spread IV Gap" />
       )}
       <p className="caption">{percentileCaption(spreadGap.current_percentile)}</p>
       <p className="caption">{delta4wMagnitudeCaption(spreadGap.delta_4w)}</p>
+      <p className="caption">{coverageCaption(spreadGap, legs)}</p>
+    </div>
+  );
+}
+
+/** Advanced／Diagnostics 收合區裡的次要內容（`./IvHistory` 的
+ *  `IvAdvanced` 呼叫，只在 `data.spread_gap` 存在時掛載）：Δ4w 的
+ *  guardrail ratio 版本＋Spread Percentile 語意說明句——跟主卡片同一份
+ *  `spreadGap`，只是位置搬到收合區，計算與文案本身完全不變。 */
+export function SpreadSummaryAdvanced({ spreadGap }: { spreadGap: SpreadGap }) {
+  return (
+    <>
       <p className="caption">
         {delta4wRatioCaption(spreadGap.delta_4w_ratio, spreadGap.delta_4w_status)}
       </p>
-      <p className="caption">{coverageCaption(spreadGap, legs)}</p>
       <p className="caption">{SPREAD_PERCENTILE_CAPTION}</p>
-    </div>
+    </>
   );
 }
