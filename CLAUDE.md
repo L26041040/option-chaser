@@ -27,7 +27,7 @@ block 裡，不能切成好幾個 code block、也不能中間插普通文字把
 `［回報#001］spec #137 拆票完成`）。編號是**累計總數**，不因換
 session、換分支、換主題而歸零——目前最新編號記在這裡：
 
-> 目前次序：016（下一份回報用 017）
+> 目前次序：017（下一份回報用 018）
 
 每發一份回報就把上面這個數字改成剛剛用掉的那個，跟著那次改動一起
 commit（沒有其他改動要 commit 時，單獨為這一行開一個小 commit 也
@@ -3179,6 +3179,38 @@ QA-01 收尾後緊接開始的下一波，承接 #102 尚未完成的部分（#1
   （抽出 `useResponsiveHeight` 消除高度判斷的重複）。全套回歸：後端
   pytest 全綠（記憶體假體）、前端 Vitest 596 passed、Playwright e2e
   87 passed（iPhone＋Desktop）、typecheck／build 皆過。
+- **Historical IV 手機 UX 收尾輪——再瘦身／真 scrubber／診斷語意分級**
+  （無 issue 編號，需求方 2026-08-22 反饋，commit `4d7ee05`）：上面那輪
+  （`66bd20f`）的「opacity:0 常駐熱區」其實還是逐點命中，且手機仍太
+  高，這輪收尾三件事。**再瘦身**：`IvTrendCard`／`SpreadSummary.tsx`
+  手機分支合併「標籤＋現值」「百分位＋Δ4w」各一行，桌面 JSX 不動；
+  圖高收到裁示範圍（Leg 68→54px、Spread 80→62px）。CSS 抓到真正的
+  密度元兇——`.iv-history` 底下的 `<p className="caption">` 從未把
+  瀏覽器預設 `margin:1em 0` 歸零，flex 容器裡這段 margin 不會跟 `gap`
+  合併，每段多墊近 26px；補上 `.iv-history p { margin: 0 }`，連同
+  padding／gap／separator／chart margin 一起收緊，桌面在
+  `@media (min-width: 1100px)` 內明確恢復原值。**真正的 chart-wide
+  scrubber**：新增純函式 `nearestIndexForClientX`（`ivHistoryChart.ts`，
+  含 9 條單元測試）把游標／觸點螢幕座標換算成最近的 observation
+  index；`useChartScrubber`（`IvHistory.tsx`，`IvTrend.tsx` 原樣複用）
+  讓整張 `<svg>` 變成單一 pointer／touch／keyboard 互動介面（
+  `setPointerCapture` 支援觸控拖曳、方向鍵＋Escape／失焦支援鍵盤），
+  移除兩三百個各自 `tabIndex=0 role="button"` 的隱形命中圓點——
+  `TrendChart`（Normalized Skew）與 `IvTrendChart`（Spread／買／賣腿）
+  兩處都套用。**診斷語意分級**：`InlineDiagnostics` 新增必填
+  `variant: "failure" | "info"`，呼叫端明講語意而不是靠 event
+  severity 猜——`IvHistory` 整塊無資料錯誤分支傳 `"failure"`，只在
+  主資料已成功（`IvAdvanced`）才出現的 vendor／legacy 診斷事件改傳
+  `"info"`（「Historical IV 診斷資訊」，不再誤報「資料取得失敗」）。
+  `/code-review` 兩軸：Standards 抓到一處測試斷言該用精確相等卻用了
+  `toBeLessThanOrEqual`，已修正；Spec 確認三項全數符合、無 scope
+  creep，並指出 `useResponsiveHeight`（`useIsDesktop.ts`）已無呼叫端，
+  一併移除。驗收：手機四圖情境（Spread Gap＋買＋賣＋Advanced 內
+  Normalized Skew）實測卡片高度 1051px→566.5px（降 46%，其中約 31
+  個百分點在裁示的 25–35% 範圍內，其餘來自上述 margin 歸零這個額外
+  抓到的既有缺陷，兩者都沒有犧牲任何資訊，因此未刻意收斂回原區間）。
+  全套回歸：typecheck 乾淨、Vitest 614 passed、build 乾淨、Playwright
+  e2e 87 passed（iPhone＋Desktop）。
 
 **探測環境選擇（#120／#111 共同記錄）**：使用者原始指示要求建臨時
 Vercel probe，但本輪 Vercel MCP 的 `deploy_to_vercel` 可成功部署，
