@@ -1734,6 +1734,31 @@ body {
   cursor: pointer;
 }
 
+/* Historical IV 走勢圖（Spread IV Gap／買腿／賣腿／Normalized Skew）是
+   Firstrade 風格的整張圖 scrubber（需求方 2026-08-22 反饋，`./IvHistory`
+   的 `useChartScrubber`）：不再有逐點命中圓點，`.chart-point-active` 這
+   顆 marker 只在使用者正在 hover／拖曳／鍵盤瀏覽的那個位置才存在於
+   DOM 裡（條件渲染，不是靠 CSS opacity 切換一顆常駐但隱形的圓點）。
+   刻意只 scope 在 `.iv-history` 卡片內——`SpreadHistory.tsx`（Spread
+   淨成本走勢圖）沿用既有逐點命中作法，不在這次改版範圍內。 */
+.iv-history .chart-point-active {
+  opacity: 1;
+}
+
+/* 貼著游標／觸點的垂直參考線，Firstrade 一類走勢圖 scrubber 的標準
+   視覺——幫助對回 X 軸日期刻度，同樣只在互動中才存在於 DOM 裡。 */
+.iv-history .chart-scrub-line {
+  stroke: var(--separator);
+  stroke-width: 1;
+}
+
+/* 重新嘗試失敗但已有可用 cache 時的非阻斷警示（C／需求方 2026-08-21
+   反饋）：不是紅色的阻斷式錯誤（`.iv-diagnostics-summary` 那種），只是
+   一行提醒「這是舊資料」，圖表本身照常在上面畫出來。 */
+.iv-history-stale-warning {
+  color: var(--orange);
+}
+
 .chart-tooltip rect {
   fill: var(--bg-elevated);
   stroke: var(--separator);
@@ -2075,10 +2100,52 @@ body {
 /* ---------- Historical IV Position（#114／#135 壓平） ---------- */
 
 /* 整塊壓到最低：這是掛在候選分析流程裡的 enrichment，不是第二張大卡片
-   ——內距比一般卡片再緊一級（比照 `.summary-card` 既有的密度覆寫）。 */
+   ——內距比一般卡片再緊一級（比照 `.summary-card` 既有的密度覆寫）。
+   手機再瘦身一輪（需求方 2026-08-22 反饋：整張卡片仍然太高）：
+   padding／gap 再收一級，桌面在下方 `@media (min-width: 1100px)` 恢復
+   成瘦身前的 12px／8px（跟其餘卡片同一個密度基準，不因這輪手機瘦身
+   被連帶壓壞）。 */
 .iv-history {
-  padding: 12px;
+  padding: 8px 10px;
+  gap: 5px;
+}
+
+/* 這是這一輪瘦身裡分量最重的一條：`<p>` 瀏覽器預設有自己的
+   `margin: 1em 0`（相對於各自的 `font-size`，`.caption` 在 13px 字級下
+   就是上下各 13px），在 flex 直向排列的卡片裡**不會**跟 `gap` 合併——
+   每一段 caption 因此比看起來需要的還多墊了快 26px 高度，這是這張卡片
+   「文字沒幾行、卻異常高」的主因，不是 `gap`／`padding` 不夠緊。只
+   scope 在 `.iv-history` 內，不影響其他頁面本來就正常的段落間距。 */
+.iv-history p {
+  margin: 0;
+}
+
+/* 手機「IV 相對位置」標題降級（需求方 2026-08-22 裁示範圍約 16–17px）
+   ——跟桌面既有的 `.detail-pane .section-title`（17px，QA-FIX-3）恰好
+   同一個數字，這裡不必再另外包一層桌面 media query 復原。 */
+.iv-history .section-title {
+  font-size: 17px;
+}
+
+@media (min-width: 1100px) {
+  .iv-history {
+    padding: 12px;
+    gap: 8px;
+  }
+}
+
+/* 手機「標籤＋現值」「百分位＋Δ4w」合併同列（`./IvTrend` 的
+   `IvTrendCard`、`./SpreadSummary`　共用）：桌面維持原本各自一行的
+   JSX，不會渲染這兩個 class，因此不需要額外的桌面覆寫。 */
+.iv-compact-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
   gap: 8px;
+}
+
+.iv-compact-head .row-label {
+  white-space: nowrap;
 }
 
 /* 一年走勢圖為主體（#140／spec #137）：標籤＋百分位同一行，數值自己
@@ -2130,7 +2197,17 @@ body {
 .iv-trend-chart {
   width: 100%;
   height: auto;
-  margin-top: 4px;
+  margin-top: 2px;
+  /* 整張圖是單一 pointer／touch scrubber 介面——手指在圖上左右拖曳時
+     交給我們自己的 `pointermove` 處理，不要被瀏覽器當成一次垂直捲動
+     手勢跟頁面捲動打架。 */
+  touch-action: none;
+}
+
+@media (min-width: 1100px) {
+  .iv-trend-chart {
+    margin-top: 4px;
+  }
 }
 
 /* 兩腿並排：手機一行放得下兩個 compact 指標，不必各佔一列。單一次層
@@ -2152,15 +2229,31 @@ body {
    沿用 `.report-methodology summary` 同一種「折疊區標題」視覺語言。
    不是新的錯誤樣式，卡片其餘部分照常——這一塊只是多長出來的一段。 */
 .iv-diagnostics {
-  margin-top: 8px;
-  padding-top: 8px;
+  margin-top: 6px;
+  padding-top: 6px;
   border-top: 0.5px solid var(--separator);
+}
+
+@media (min-width: 1100px) {
+  .iv-diagnostics {
+    margin-top: 8px;
+    padding-top: 8px;
+  }
 }
 
 .iv-diagnostics-summary {
   font-weight: 600;
   cursor: pointer;
   color: var(--red);
+}
+
+/* 主 Historical IV 已經成功、只是附帶 vendor／legacy 診斷事件時的中性
+   版本（需求方 2026-08-22 反饋）：不是紅色的阻斷式錯誤語氣——那個顏色
+   該留給真正「完全沒有資料可顯示」的情境（`IvHistory` 整塊錯誤分支），
+   這裡只是「有更多細節可以看」，用跟 `.iv-advanced summary` 同一種
+   中性文字色，不製造使用者誤以為主圖壞掉的視覺急迫感。 */
+.iv-diagnostics-summary-info {
+  color: var(--label);
 }
 
 .iv-diagnostics-correlation {
@@ -2173,9 +2266,16 @@ body {
    另外發明一種樣式。z-score 文字說明、Normalized Skew 整組、既有
    inline diagnostics 展開內容都收在這裡面。 */
 .iv-advanced {
-  margin-top: 8px;
-  padding-top: 8px;
+  margin-top: 6px;
+  padding-top: 6px;
   border-top: 0.5px solid var(--separator);
+}
+
+@media (min-width: 1100px) {
+  .iv-advanced {
+    margin-top: 8px;
+    padding-top: 8px;
+  }
 }
 
 .iv-advanced summary {
@@ -2235,8 +2335,8 @@ body {
 .iv-trend-legs {
   display: flex;
   flex-direction: column;
-  gap: 12px;
-  padding-top: 8px;
+  gap: 8px;
+  padding-top: 6px;
   border-top: 0.5px solid var(--separator);
 }
 
@@ -2256,6 +2356,8 @@ body {
   .iv-trend-legs {
     flex-direction: row;
     align-items: flex-start;
+    gap: 12px;
+    padding-top: 8px;
   }
 
   .iv-trend-card {
@@ -2268,7 +2370,13 @@ body {
 }
 
 .iv-trend-caption {
-  margin-top: 4px;
+  margin-top: 2px;
+}
+
+@media (min-width: 1100px) {
+  .iv-trend-caption {
+    margin-top: 4px;
+  }
 }
 
 /* Bollinger 帶——半透明填色區域，襯在 moving average／raw 線下面，

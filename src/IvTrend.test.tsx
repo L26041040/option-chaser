@@ -7,13 +7,45 @@
  * 閘門／fetch 生命週期）——買賣腿各自獨立、資訊順序、統計量各自
  * graceful degradation、固定文案、facts-only 守門。
  */
-import { render, screen } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
-import { describe, expect, it } from "vitest";
+import { fireEvent, render, screen } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { ContractIdentity, IvHistoryLegs, IvTrendStatPoint,
              LegHistoricalIv } from "./api";
-import IvTrend, { zscoreCaption } from "./IvTrend";
+import { PAD_LEFT, PAD_RIGHT } from "./IvHistory";
+import IvTrend, { LEG_CHART_HEIGHT_DESKTOP, LEG_CHART_HEIGHT_MOBILE,
+                 zscoreCaption } from "./IvTrend";
+import { fakeMediaQueryList } from "./test-setup";
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
+
+/** 見 `IvHistory.test.tsx` 同名工具的說明：jsdom 沒有真正的 layout、
+ *  也沒有原生 `PointerEvent` 建構子，這裡假裝渲染寬度跟 viewBox 寬度
+ *  一樣（1:1），並用 `MouseEvent` 但指定 pointer 事件名稱來夾帶
+ *  `clientX`（`fireEvent.pointerMove(el, {clientX})` 這種便利寫法在
+ *  這個 jsdom 版本會悄悄弄丟 `clientX`）。 */
+function stubChartWidth(svg: Element, width = 300) {
+  vi.spyOn(svg, "getBoundingClientRect").mockReturnValue({
+    left: 0, width, top: 0, height: 0, right: width, bottom: 0, x: 0, y: 0,
+    toJSON() { return {}; },
+  } as DOMRect);
+}
+
+function clientXForPoint(index: number, count: number, width = 300) {
+  const plotWidth = width - PAD_LEFT - PAD_RIGHT;
+  const frac = count <= 1 ? 0.5 : index / (count - 1);
+  return PAD_LEFT + frac * plotWidth;
+}
+
+function firePointerEvent(svg: Element, type: string, clientX: number) {
+  fireEvent(svg, new MouseEvent(type, { clientX, bubbles: true }));
+}
+
+function firePointerMove(svg: Element, clientX: number) {
+  firePointerEvent(svg, "pointermove", clientX);
+}
 
 function contract(overrides: Partial<ContractIdentity> = {}): ContractIdentity {
   return { underlying: "XYZ", expiration: "2026-09-18", strike: 118,
@@ -91,8 +123,10 @@ describe("Vertical Spread：正好兩張卡，買賣腿各自獨立正確", () =
   });
 });
 
-describe("資訊順序：現值 → 走勢圖 → percentile → Δ4w → 涵蓋時間（SIG-02／#173 瘦身後）", () => {
+describe("資訊順序（桌面）：現值 → 走勢圖 → percentile → Δ4w → 涵蓋時間（SIG-02／#173 瘦身後，" +
+        "手機再瘦身一輪不影響桌面這套順序）", () => {
   it("依瘦身後順序渲染，z-score 不在主要區塊裡", () => {
+    vi.stubGlobal("matchMedia", (q: string) => fakeMediaQueryList(true, q));
     const legs: IvHistoryLegs = { buy: legHistoricalIv() };
     const { container } = render(<IvTrend legs={legs} />);
     const card = container.querySelector(".iv-trend-card")!;
@@ -107,6 +141,7 @@ describe("資訊順序：現值 → 走勢圖 → percentile → Δ4w → 涵蓋
   });
 
   it("Spread 模式：買腿卡片標籤在現值之前", () => {
+    vi.stubGlobal("matchMedia", (q: string) => fakeMediaQueryList(true, q));
     const legs: IvHistoryLegs = {
       buy: legHistoricalIv(), sell: legHistoricalIv(),
     };
@@ -116,6 +151,41 @@ describe("資訊順序：現值 → 走勢圖 → percentile → Δ4w → 涵蓋
       .map((el) => el.getAttribute("class"));
     expect(classes[0]).toContain("iv-trend-card-label");
     expect(classes[1]).toBe("iv-value-primary");
+  });
+});
+
+describe("資訊順序（手機再瘦身一輪，需求方 2026-08-22 反饋）：標籤＋現值合併一行 → " +
+        "百分位＋Δ4w 合併一行 → 走勢圖 → 涵蓋時間，desktop 以外的斷點都走這套", () => {
+  it("依手機瘦身後順序渲染（預設 matchMedia 假體＝手機）", () => {
+    const legs: IvHistoryLegs = { buy: legHistoricalIv() };
+    const { container } = render(<IvTrend legs={legs} />);
+    const card = container.querySelector(".iv-trend-card")!;
+    const classes = Array.from(card.children)
+      .map((el) => el.getAttribute("class"));
+    expect(classes).toEqual([
+      "iv-compact-head", "caption iv-compact-stats", "iv-trend-chart", "caption",
+    ]);
+  });
+
+  it("合併行內同時看得到百分位與 Δ4w 兩個事實，是同一個文字節點而不是分開的兩段", () => {
+    const legs: IvHistoryLegs = { buy: legHistoricalIv({
+      current_percentile: 0.7, delta_4w: 0.02,
+    }) };
+    render(<IvTrend legs={legs} />);
+    const stats = screen.getByText(/第 70 百分位/);
+    expect(stats.textContent).toMatch(/4週 \+2\.0 pts/);
+  });
+
+  it("Spread 模式：買腿卡片標籤與現值合併在同一個 .iv-compact-head", () => {
+    const legs: IvHistoryLegs = {
+      buy: legHistoricalIv(), sell: legHistoricalIv(),
+    };
+    const { container } = render(<IvTrend legs={legs} />);
+    const buyCard = container.querySelectorAll(".iv-trend-card")[0];
+    const head = buyCard.querySelector(".iv-compact-head")!;
+    expect(head).toBeInTheDocument();
+    expect(head.textContent).toContain("買腿");
+    expect(head.querySelector(".iv-value-primary")).toBeInTheDocument();
   });
 });
 
@@ -141,7 +211,8 @@ describe("統計量各自 graceful degradation（HIVT-03／#154 的前端呈現�
   it("delta_4w 為 null 時顯示「4週 —」，不是捏造的數字", () => {
     const legs: IvHistoryLegs = { buy: legHistoricalIv({ delta_4w: null }) };
     render(<IvTrend legs={legs} />);
-    expect(screen.getByText("4週 —")).toBeInTheDocument();
+    // 手機瘦身後跟百分位合併同一行，用 regex 比對子字串。
+    expect(screen.getByText(/4週 —/)).toBeInTheDocument();
   });
 
   it("moving average／Bollinger 帶整段都不可用時，圖仍然渲染（raw 線照常）",
@@ -152,11 +223,14 @@ describe("統計量各自 graceful degradation（HIVT-03／#154 的前端呈現�
       bollinger_lower: statPoints(60, () => null),
     }) };
     const { container } = render(<IvTrend legs={legs} />);
-    expect(container.querySelector(".iv-trend-chart")).toBeInTheDocument();
+    const chart = container.querySelector(".iv-trend-chart");
+    expect(chart).toBeInTheDocument();
     expect(container.querySelectorAll(".iv-trend-ma-line")).toHaveLength(0);
     expect(container.querySelectorAll(".iv-trend-band")).toHaveLength(0);
-    // raw 線的互動點照常在。
-    expect(container.querySelectorAll(".chart-point").length).toBeGreaterThan(0);
+    // raw 線本身（折線）照常畫出來——整張圖是單一 scrubber 介面之後
+    // （需求方 2026-08-22 反饋），互動熱區不再是逐點圓點，這裡改成
+    // 確認主線的 polyline 確實存在。
+    expect(chart!.querySelector("polyline")).toBeInTheDocument();
   });
 
   it("moving average／Bollinger 帶有值時，圖上畫出對應的線段與區域", () => {
@@ -297,23 +371,137 @@ describe("backfill 狀態各自獨立（每隻腳自己的 status／note）", ()
   });
 });
 
-describe("走勢圖互動（沿用 Normalized Skew 走勢圖已驗證的手刻 SVG 作法）", () => {
-  it("桌面 hover 資料點顯示 tooltip", async () => {
-    const legs: IvHistoryLegs = { buy: legHistoricalIv({
+/**
+ * Firstrade 風格整張圖 scrubber（需求方 2026-08-22 反饋）：整張 SVG 是
+ * 單一 pointer／touch／keyboard 互動介面，依游標／觸點的 X 座標找最近
+ * 的 observation，不再靠每個 observation 各自一顆透明命中圓點。座標
+ * 換算是 `./ivHistoryChart` 的純函式 `nearestIndexForClientX`（已有
+ * 獨立單元測試），這裡驗證接線：真的把游標位置轉成正確的 active
+ * marker／tooltip，而且拖曳／鍵盤都能用。
+ */
+describe("走勢圖互動：整張圖是單一 scrubber 介面（不再靠逐點命中，" +
+        "需求方 2026-08-22 反饋）", () => {
+  function threePointLegs(): IvHistoryLegs {
+    return { buy: legHistoricalIv({
       points: ivPoints(3, (i) => 0.20 + i * 0.01),
       moving_average: statPoints(3, () => null),
       bollinger_upper: statPoints(3, () => null),
       bollinger_lower: statPoints(3, () => null),
     }) };
-    const { container } = render(<IvTrend legs={legs} />);
-    const chart = container.querySelector(".iv-trend-chart")!;
-    const point = chart.querySelectorAll<HTMLElement>("[role='button']")[0];
+  }
 
-    await userEvent.hover(point);
+  it("預設狀態下沒有任何 active marker，也不需要", () => {
+    const { container } = render(<IvTrend legs={threePointLegs()} />);
+    expect(container.querySelectorAll(".chart-point-active")).toHaveLength(0);
+    expect(container.querySelectorAll(".chart-tooltip")).toHaveLength(0);
+  });
+
+  it("桌面滑鼠在圖上移動時，依 X 座標找到最近的資料點並顯示 tooltip， " +
+     "移出圖表後消失", () => {
+    const { container } = render(<IvTrend legs={threePointLegs()} />);
+    const chart = container.querySelector(".iv-trend-chart")!;
+    stubChartWidth(chart);
+
+    // 中間那個資料點（index 1 of 3）的畫布座標。
+    firePointerMove(chart, clientXForPoint(1, 3));
+    expect(container.querySelectorAll(".chart-point-active")).toHaveLength(1);
     expect(chart.querySelectorAll(".chart-tooltip").length).toBeGreaterThan(0);
 
-    await userEvent.unhover(point);
+    fireEvent.pointerLeave(chart);
+    expect(container.querySelectorAll(".chart-point-active")).toHaveLength(0);
     expect(chart.querySelectorAll(".chart-tooltip")).toHaveLength(0);
+  });
+
+  it("marker 隨游標移動而換到最近的資料點，不是釘住第一次命中的點", () => {
+    const { container } = render(<IvTrend legs={threePointLegs()} />);
+    const chart = container.querySelector(".iv-trend-chart")!;
+    stubChartWidth(chart);
+
+    firePointerMove(chart, clientXForPoint(0, 3));
+    expect(chart.querySelectorAll(".chart-tooltip")[0].textContent)
+      .toContain("2026-01-01");
+
+    firePointerMove(chart, clientXForPoint(2, 3));
+    expect(container.querySelectorAll(".chart-point-active")).toHaveLength(1);
+    expect(chart.querySelectorAll(".chart-tooltip")[0].textContent)
+      .toContain("2026-01-03");
+  });
+
+  it("手機觸控：pointerdown 起手即顯示 marker，貼合手指落點，" +
+     "單純點一下（pointerup）不會立刻把剛顯示的 marker 擦掉", () => {
+    // 這是刻意的：touch 沒有「移出」這個中間狀態，鬆開手指是唯一訊號，
+    // 若鬆開就清掉，單純點一下（down→up 幾乎同時發生）會讓使用者根本
+    // 來不及看到剛顯示的 tooltip，等於 tap-to-view 整個失效——沿用舊版
+    // 「tap 直接設定、維持到下一次互動」的既有行為。
+    const { container } = render(<IvTrend legs={threePointLegs()} />);
+    const chart = container.querySelector(".iv-trend-chart")!;
+    stubChartWidth(chart);
+
+    firePointerEvent(chart, "pointerdown", clientXForPoint(0, 3));
+    expect(container.querySelectorAll(".chart-point-active")).toHaveLength(1);
+
+    firePointerEvent(chart, "pointerup", clientXForPoint(0, 3));
+    expect(container.querySelectorAll(".chart-point-active")).toHaveLength(1);
+  });
+
+  it("互動被系統手勢中斷（pointercancel）時清除 active 狀態", () => {
+    const { container } = render(<IvTrend legs={threePointLegs()} />);
+    const chart = container.querySelector(".iv-trend-chart")!;
+    stubChartWidth(chart);
+
+    firePointerEvent(chart, "pointerdown", clientXForPoint(0, 3));
+    expect(container.querySelectorAll(".chart-point-active")).toHaveLength(1);
+
+    firePointerEvent(chart, "pointercancel", clientXForPoint(0, 3));
+    expect(container.querySelectorAll(".chart-point-active")).toHaveLength(0);
+  });
+
+  it("鍵盤：SVG 本身可 focus，方向鍵左右移動 active 資料點——一個容器" +
+     "一個 tab stop，取代原本每個資料點各自一個 tabIndex", () => {
+    const { container } = render(<IvTrend legs={threePointLegs()} />);
+    const chart = container.querySelector(".iv-trend-chart")!;
+    expect(chart.getAttribute("tabindex")).toBe("0");
+
+    fireEvent.keyDown(chart, { key: "ArrowRight" });
+    expect(container.querySelectorAll(".chart-point-active")).toHaveLength(1);
+    fireEvent.keyDown(chart, { key: "ArrowRight" });
+    fireEvent.keyDown(chart, { key: "ArrowRight" });
+    // 已經在最後一個資料點，再往右不會超出範圍或報錯。
+    expect(container.querySelectorAll(".chart-point-active")).toHaveLength(1);
+
+    fireEvent.keyDown(chart, { key: "Escape" });
+    expect(container.querySelectorAll(".chart-point-active")).toHaveLength(0);
+  });
+
+  it("不再依賴任何 tabIndex=0／role=button 的隱形逐點命中圓點", () => {
+    const manyPointLegs: IvHistoryLegs = { buy: legHistoricalIv({
+      points: ivPoints(250, (i) => 0.20 + (i % 20) * 0.001),
+    }) };
+    const { container } = render(<IvTrend legs={manyPointLegs} />);
+    expect(container.querySelectorAll("[role='button']")).toHaveLength(0);
+    // 唯一的 tab stop 是 SVG 本身，不是逐點命中圓點。
+    expect(container.querySelectorAll("[tabindex='0']"))
+      .toHaveLength(container.querySelectorAll(".iv-trend-chart").length);
+  });
+});
+
+describe("手機版圖高度明顯縮小（Historical IV 圖表改版）：桌面維持原高度", () => {
+  it("手機（預設 matchMedia 假體＝手機）走勢圖用較矮的高度", () => {
+    const legs: IvHistoryLegs = { buy: legHistoricalIv() };
+    const { container } = render(<IvTrend legs={legs} />);
+    const chart = container.querySelector(".iv-trend-chart")!;
+    expect(chart.getAttribute("viewBox"))
+      .toBe(`0 0 300 ${LEG_CHART_HEIGHT_MOBILE}`);
+  });
+
+  it("桌面斷點下走勢圖維持既有（較高的）高度，不受手機瘦身影響", () => {
+    vi.stubGlobal("matchMedia",
+      (q: string) => fakeMediaQueryList(true, q));
+    const legs: IvHistoryLegs = { buy: legHistoricalIv() };
+    const { container } = render(<IvTrend legs={legs} />);
+    const chart = container.querySelector(".iv-trend-chart")!;
+    expect(chart.getAttribute("viewBox"))
+      .toBe(`0 0 300 ${LEG_CHART_HEIGHT_DESKTOP}`);
   });
 });
 

@@ -75,3 +75,35 @@ export function projectOntoDomain(
   const byDate = new Map(series.map((p) => [p.date, p.value]));
   return domainDates.map((d) => byDate.get(d) ?? null);
 }
+
+/**
+ * Firstrade 風格整張圖 scrubber 的座標數學（需求方 2026-08-22 反饋：
+ * 不要用每個 observation 一顆透明命中圓點，改成整張 SVG 是單一
+ * pointer／touch 互動介面，依游標／觸點的畫面 X 座標找最近的
+ * observation）。純函式、不碰 DOM——呼叫端（`./IvHistory` 的
+ * `useChartScrubber`）負責量 `getBoundingClientRect()`、傳進來。
+ *
+ * 資料點沿 x 軸等距分布（`ivChartPoints`／`chartPoints` 既有假設），
+ * 所以「最近的點」等於把游標位置換算成 0～1 的圖表內部座標
+ * （扣掉左右留白），再乘上 `(count-1)` 四捨五入——不需要真的掃描逐點
+ * 比較距離。
+ */
+export function nearestIndexForClientX(
+  clientX: number,
+  rect: { left: number; width: number },
+  viewBoxWidth: number,
+  padLeft: number,
+  padRight: number,
+  count: number,
+): number | null {
+  if (count === 0 || rect.width <= 0) return null;
+  // 螢幕像素 → viewBox 內部座標：SVG 用 `width:100%` 縮放，實際渲染
+  // 寬度（`rect.width`）跟 viewBox 座標系的比例換算。
+  const viewBoxX = ((clientX - rect.left) / rect.width) * viewBoxWidth;
+  const plotWidth = viewBoxWidth - padLeft - padRight;
+  const frac = plotWidth <= 0 ? 0 : (viewBoxX - padLeft) / plotWidth;
+  // 游標移到留白區（軸刻度文字那圈）或圖表外，夾在頭尾——貼著邊緣的
+  // 那個資料點，不是「找不到」。
+  const clamped = Math.min(1, Math.max(0, frac));
+  return Math.round(clamped * (count - 1));
+}

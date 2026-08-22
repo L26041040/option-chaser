@@ -54,7 +54,7 @@
  * 因此仍然是同一套、同一份程式碼（#156 AC），只是掛在卡片層級，不是
  * 逐卡層級。
  */
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import {
   ApiError,
@@ -69,9 +69,9 @@ import {
 } from "./api";
 import { CopyDiagnosticButton, DiagnosticEventFieldList } from "./DiagnosticDetail";
 import IvTrend, { zscoreCaption } from "./IvTrend";
-import { contiguousRuns, ivChartPoints, ivYAxisDomain, xAxisTicks,
-        type ChartPoint } from "./ivHistoryChart";
-import SpreadSummary from "./SpreadSummary";
+import { contiguousRuns, ivChartPoints, ivYAxisDomain, nearestIndexForClientX,
+        xAxisTicks, type ChartPoint } from "./ivHistoryChart";
+import SpreadSummary, { SpreadSummaryAdvanced } from "./SpreadSummary";
 
 /**
  * 今天的 backfill 遇到什麼——一行附加說明，**不取代**下面的 percentile。
@@ -149,6 +149,99 @@ export function tickLabel(value: number, unit: TrendUnit): string {
 }
 
 /**
+ * Firstrade 風格整張圖 scrubber（需求方 2026-08-22 反饋）：原本每個
+ * observation 各自一顆透明命中圓點（外加 `tabIndex=0 role=button`，
+ * 一年走勢圖動輒兩三百個焦點停駐點），改成整張 SVG 是單一
+ * pointer／touch／keyboard 互動介面，依游標／觸點的畫面 X 座標找最近
+ * 的 observation——座標數學是 `./ivHistoryChart` 的純函式
+ * `nearestIndexForClientX`，這裡只是接 DOM 事件、量
+ * `getBoundingClientRect()`、把結果餵進 `activeIndex` 狀態。
+ * `./IvTrend` 的 `IvTrendChart` 原樣複用，不重寫第二份。
+ *
+ * 桌面滑鼠：`pointermove` 對滑鼠本來就在懸停時連續觸發，不需要按住
+ * 就能連續 scrub，移出圖表（`pointerleave`）才清掉。手機觸控：
+ * `pointerdown` 起手（單純點一下就直接顯示那個點，不必先拖曳）＋
+ * `setPointerCapture`（環境不支援——包含測試用的 jsdom——就靜默跳過，
+ * 不影響其餘互動）讓手指拖過去時 `pointermove` 依然持續送達同一個
+ * SVG，貼合手指移動。**放開手指（`pointerup`）刻意不清除**——觸控沒有
+ * 「移出」這個中間狀態，鬆開手指是唯一的訊號，若鬆開就清掉，畫面會
+ * 在單純點一下（down→up 幾乎同時發生）的當下就把剛顯示的 marker／
+ * tooltip 立刻擦掉，使用者根本來不及看到，等於整個 tap-to-view 失效；
+ * 沿用舊版「tap 直接設定、維持到下一次互動」的既有行為。只有
+ * `pointercancel`（互動被系統手勢等中斷）才清除，因為那代表這次
+ * 互動整個作廢，不是使用者選定了一個點。鍵盤：SVG 本身可 focus（一個
+ * 容器一個 tab stop，取代原本「每個資料點各自一個 tabIndex」），方向
+ * 鍵左右移動 `activeIndex`，Escape／失焦清除——鍵盤使用者不會因為這次
+ * 改版失去逐點瀏覽的能力，只是入口從兩三百個變成一個。
+ */
+export function useChartScrubber(pointCount: number, viewBoxWidth: number) {
+  const svgRef = useRef<SVGSVGElement>(null);
+  const [activeIndex, setActiveIndex] = useState<number | null>(null);
+
+  const setFromClientX = (clientX: number) => {
+    const svg = svgRef.current;
+    if (!svg || pointCount === 0) return;
+    const rect = svg.getBoundingClientRect();
+    const idx = nearestIndexForClientX(
+      clientX, rect, viewBoxWidth, PAD_LEFT, PAD_RIGHT, pointCount);
+    if (idx !== null) setActiveIndex(idx);
+  };
+
+  const clear = () => setActiveIndex(null);
+  const releaseCapture = (e: React.PointerEvent<SVGSVGElement>) => {
+    const target = e.currentTarget;
+    if (typeof target.releasePointerCapture === "function") {
+      try { target.releasePointerCapture(e.pointerId); } catch { /* 環境不支援就算了 */ }
+    }
+  };
+
+  const onPointerDown = (e: React.PointerEvent<SVGSVGElement>) => {
+    setFromClientX(e.clientX);
+    const target = e.currentTarget;
+    if (typeof target.setPointerCapture === "function") {
+      try { target.setPointerCapture(e.pointerId); } catch { /* 環境不支援就算了 */ }
+    }
+  };
+  const onPointerMove = (e: React.PointerEvent<SVGSVGElement>) => {
+    setFromClientX(e.clientX);
+  };
+  const onPointerUp = (e: React.PointerEvent<SVGSVGElement>) => {
+    releaseCapture(e);
+  };
+  const onPointerCancel = (e: React.PointerEvent<SVGSVGElement>) => {
+    releaseCapture(e);
+    clear();
+  };
+  const onKeyDown = (e: React.KeyboardEvent<SVGSVGElement>) => {
+    if (pointCount === 0) return;
+    if (e.key === "ArrowRight") {
+      e.preventDefault();
+      setActiveIndex((i) => Math.min(pointCount - 1, (i ?? -1) + 1));
+    } else if (e.key === "ArrowLeft") {
+      e.preventDefault();
+      setActiveIndex((i) => Math.max(0, (i ?? pointCount) - 1));
+    } else if (e.key === "Escape") {
+      clear();
+    }
+  };
+
+  return {
+    svgRef,
+    activeIndex,
+    interactionProps: {
+      tabIndex: 0,
+      onPointerDown,
+      onPointerMove,
+      onPointerUp,
+      onPointerCancel,
+      onPointerLeave: clear,
+      onKeyDown,
+      onBlur: clear,
+    },
+  };
+}
+
+/**
  * 一年走勢圖——取代原本 18px 的 sparkline，成為這一區塊的主要視覺
  * （#140／spec #137：percentile 給位置、圖給路徑、Δ4w 給最近速度，
  * 三者互補）。y 軸固定域不隨互動改變；x 軸日期刻度均勻取樣涵蓋頭尾；
@@ -170,15 +263,15 @@ function TrendChart({ label, unit, points, width, height }: {
   width: number;
   height: number;
 }) {
-  const [activeIndex, setActiveIndex] = useState<number | null>(null);
   const values = points.map((p) => p.value);
   const domain = ivYAxisDomain(values);
+  const chartPts = domain === null ? [] : ivChartPoints(
+    points.map((p) => p.date), values, domain);
+  const { svgRef, activeIndex, interactionProps } =
+    useChartScrubber(chartPts.length, width);
   if (domain === null) return null;
 
-  const dates = points.map((p) => p.date);
-  const chartPts = ivChartPoints(dates, values, domain);
   const runs = contiguousRuns(chartPts);
-  const indexOf = new Map(chartPts.map((p, i) => [p, i]));
   const [lo, hi] = domain;
   const yTicks: [number, number][] = [[0, hi], [0.5, (lo + hi) / 2], [1, lo]];
   const xTicks = xAxisTicks(chartPts);
@@ -187,10 +280,12 @@ function TrendChart({ label, unit, points, width, height }: {
 
   return (
     <svg
+      ref={svgRef}
       className="iv-trend-chart"
       viewBox={`0 0 ${width} ${height}`}
       role="img"
-      aria-label={`${label}走勢，近 1 年`}
+      aria-label={`${label}走勢，近 1 年，可用滑鼠移動、觸控拖曳或方向鍵瀏覽逐日數值`}
+      {...interactionProps}
     >
       {/* Y 軸：三個刻度（低／中／高，固定範圍，不隨互動變動），單位隨
           欄位而定，與現值同一套語言。 */}
@@ -224,48 +319,35 @@ function TrendChart({ label, unit, points, width, height }: {
         );
       })}
 
+      {/* 每段各自一條折線——段與段之間刻意不連線，斷點如實顯示，不畫成
+          連續、也不畫成 0。折線本身不再帶任何逐點互動熱區——整張 SVG
+          就是互動介面（見上方 `useChartScrubber`），命中判定不必靠
+          每個資料點各自的圓點。 */}
       {runs.map((run, i) => (
-        <g key={i}>
-          {/* 每段各自一條折線——段與段之間刻意不連線，斷點如實顯示，
-              不畫成連續、也不畫成 0。 */}
-          <polyline
-            fill="none"
-            stroke="var(--tint)"
-            strokeWidth={1.5}
-            points={run.map((p) => {
-              const { px, py } = toPixel(p, width, height);
-              return `${px},${py}`;
-            }).join(" ")}
-          />
-          {run.map((p) => {
+        <polyline
+          key={i}
+          fill="none"
+          stroke="var(--tint)"
+          strokeWidth={1.5}
+          points={run.map((p) => {
             const { px, py } = toPixel(p, width, height);
-            const idx = indexOf.get(p)!;
-            return (
-              <circle
-                // 用序列位置而非日期字串當 key：真實資料每個 symbol 每天
-                // 只有一筆觀測、日期天然唯一，但 key 的穩定性不該依賴這
-                // 個外部假設——位置在同一次渲染裡本來就唯一。
-                key={idx}
-                cx={px} cy={py} r={4}
-                className="chart-point"
-                tabIndex={0}
-                role="button"
-                aria-label={`${p.label}，${label} ${
-                  valueLabel(values[idx], unit)}`}
-                onMouseEnter={() => setActiveIndex(idx)}
-                onMouseLeave={() => setActiveIndex(null)}
-                onFocus={() => setActiveIndex(idx)}
-                onBlur={() => setActiveIndex(null)}
-                // 手機 tap 沒有 hover 狀態，click 是唯一訊號——直接設定
-                // 而不是切換：真實觸控會先合成一輪 hover 事件再送出
-                // click，切換邏輯在那個當下會誤判成「已經開著、這次點擊
-                // 是要關掉」，點了等於沒點。
-                onClick={() => setActiveIndex(idx)}
-              />
-            );
-          })}
-        </g>
+            return `${px},${py}`;
+          }).join(" ")}
+        />
       ))}
+
+      {active && activeValue !== null && (() => {
+        const { px, py } = toPixel(active, width, height);
+        return (
+          <>
+            {/* 貼著游標／觸點的垂直參考線——沿著它從資料點對回 X 軸日期
+                刻度，Firstrade 一類走勢圖 scrubber 的標準視覺。 */}
+            <line x1={px} y1={PAD_TOP} x2={px} y2={height - PAD_BOTTOM}
+                 className="chart-scrub-line" />
+            <circle cx={px} cy={py} r={4} className="chart-point chart-point-active" />
+          </>
+        );
+      })()}
 
       {active && activeValue !== null && (
         <ChartTooltip point={active} value={activeValue} unit={unit}
@@ -352,7 +434,7 @@ function Metric({ label, metric, points, unit, primary = false }: {
  * 欄位」，不需要前端另外過濾。export 給 `./IvTrend` 原樣複用
  * （HIVT-05／#156，spec #151 §6 明文要求）。
  */
-export function InlineDiagnostics({ correlationId, events, message }: {
+export function InlineDiagnostics({ correlationId, events, message, variant }: {
   correlationId: string | null;
   events: DiagnosticEvent[];
   /** 請求層級的錯誤訊息（catch 到的 `Error.message`）——單腳事件清單
@@ -360,15 +442,29 @@ export function InlineDiagnostics({ correlationId, events, message }: {
    *  「一鍵複製這次 inline error 的完整 diagnostics」不該因此就沒東西
    *  可複製，所以連同這句一起放進複製內容（QA 反饋，2026-08-16）。 */
   message?: string;
+  /** 這塊診斷內容代表什麼語意（需求方 2026-08-22 反饋：API 200、三張
+   *  exact-contract 圖正常時，summary 卻硬寫「資料取得失敗」，使用者
+   *  會誤以為主圖壞了）——由呼叫端明講，這裡不猜：
+   *  `"failure"`＝主 Historical IV 完全沒有資料可顯示（`IvHistory` 整塊
+   *  阻斷錯誤分支），才是真的「取得失敗」；`"info"`＝主資料已經成功
+   *  （`IvAdvanced` 掛載的前提就是 `currentData` 存在），這裡只是額外
+   *  附帶的 vendor／legacy 警示或錯誤事件，不代表主圖有問題，摘要改用
+   *  中性文案，不能讓使用者誤判整塊失敗。 */
+  variant: "failure" | "info";
 }) {
   const copyText = JSON.stringify(
     { correlation_id: correlationId, message: message ?? null, events },
     null, 2,
   );
+  const summaryClass = variant === "failure"
+    ? "iv-diagnostics-summary" : "iv-diagnostics-summary iv-diagnostics-summary-info";
+  const summaryText = variant === "failure"
+    ? "Historical IV 資料取得失敗 · 查看詳情"
+    : "Historical IV 診斷資訊 · 查看詳情";
   return (
     <details className="iv-diagnostics">
-      <summary className="iv-diagnostics-summary">
-        Historical IV 資料取得失敗 · 查看詳情
+      <summary className={summaryClass}>
+        {summaryText}
       </summary>
       {/* 版面依需求方裁示：錯誤摘要（上面卡片本體那句／summary 本身）
           → Copy 按鈕 → 下方完整 diagnostic details。複製邏輯整套重用
@@ -411,12 +507,24 @@ export function CardSkeleton({ isSingleLeg }: { isSingleLeg: boolean }) {
   );
 }
 
-export default function IvHistory({ scenarioId, candidate }: {
+export default function IvHistory({ scenarioId, candidate, analyzedAt = null }: {
   scenarioId: string;
   candidate: Candidate | null;
+  /** 這個劇本最新一次分析完成的時間戳（`ScenarioDetail` 既有的
+   *  `analyzedAt`，跟 `./SpreadHistory`／`./RawData` 同一個來源）——只當
+   *  成下面 effect 的觸發訊號，值本身不進畫面。新分析一到、同一個候選
+   *  （`key` 不變）也該重新問一次 vendor 才能跟上最新報價；跟 `#69` 那兩
+   *  個元件用它強制卸載重掛、把舊 state 沖乾淨不同，這裡刻意保留舊
+   *  資料——重新嘗試如果失敗，才有「已有可用 cache」的東西可以退回
+   *  顯示（見下方 `currentData` 與 `error` 的優先序）。 */
+  analyzedAt?: string | null;
 }) {
   const [enabled, setEnabled] = useState<boolean | null>(null);
   const [data, setData] = useState<IvHistoryView | null>(null);
+  // 這份 `data` 是哪一個候選的——切候選時 `key` 立刻變了，但新結果要
+  // 等 fetch 回來才會覆蓋，這段空窗期 `dataKey !== key`，畫面據此知道
+  // 手上這份資料還不能當成「這個候選」的東西來畫（見下方 `currentData`）。
+  const [dataKey, setDataKey] = useState<string | null>(null);
   const [error, setError] = useState<Error | null>(null);
 
   const key = candidate?.candidate_key ?? null;
@@ -437,14 +545,27 @@ export default function IvHistory({ scenarioId, candidate }: {
   useEffect(() => {
     if (enabled !== true || !key) return;
     let alive = true;
+    // 每次重新嘗試（換候選、或新分析完成後同一個候選要跟著問一次）都
+    // 先清掉上一輪的錯誤——這次嘗試還沒有結論，不該讓使用者看到跟這次
+    // 請求無關的舊錯誤訊息。`data`／`dataKey` 刻意不在這裡清空：換候選
+    // 時 `dataKey === key` 這個判斷式（見下方 render）已經足夠避免「別的
+    // 候選的資料被誤認成這個候選的」，同一個候選重新嘗試時則正是要保留
+    // 舊資料，讓失敗降級成非阻斷警示而不是整塊消失。
+    setError(null);
     ivHistory(scenarioId, key)
-      .then((v) => alive && setData(v))
-      .catch((e) => alive
-        && setError(e instanceof Error ? e : new Error(String(e))));
+      .then((v) => {
+        if (!alive) return;
+        setData(v);
+        setDataKey(key);
+      })
+      .catch((e) => {
+        if (!alive) return;
+        setError(e instanceof Error ? e : new Error(String(e)));
+      });
     return () => {
       alive = false;
     };
-  }, [enabled, key, scenarioId]);
+  }, [enabled, key, scenarioId, analyzedAt]);
 
   // 鎖著、還沒問完、或這個候選根本沒有身份鍵 → 不輸出任何節點（#126
   // AC——這條紅線原封不動，跟下面「卡片固定版位」是兩件事：鎖著時連
@@ -459,27 +580,45 @@ export default function IvHistory({ scenarioId, candidate }: {
   // 獨立分支：`count === 0` 由既有 `metricCaption()` 逐項顯示「沒有歷史
   // 資料」，資料物件本身照常存在、卡片照常渲染。
   const isSingleLeg = candidate.legs.length < 2;
+  // 只信任屬於「這個候選」的資料——`dataKey` 跟目前的 `key` 對得上才
+  // 拿來畫，避免切換候選時畫面短暫誤用上一個候選留下來的舊資料。這個
+  // 判斷跟下面「有 cache 就不整塊顯示錯誤」防的是兩件不同的事：這裡防
+  // 的是「畫錯候選」，下面防的是「明明有得畫卻整塊消失」。
+  const currentData = dataKey === key ? data : null;
 
   return (
     <section className="card iv-history" aria-label="IV 相對位置">
       <h2 className="section-title">IV 相對位置</h2>
 
-      {error ? (
-        // vendor 失敗只影響這一塊，頁面其餘部分照常（#126 AC）——卡片
-        // 本身仍在，只是多一條就地展開的診斷詳情（DG-05／#148），不是
-        // 整段文字替換掉。
+      {currentData ? (
+        <>
+          {/* 這個候選已經有能看的資料（哪怕是上一輪嘗試留下來的）——
+              一次新的嘗試失敗（例如 vendor 一時 404／額度用盡）只降級成
+              一條不擋內容的警示，不能讓使用者以為整塊都壞了，三張圖明明
+              還畫得出來。真正「這個候選完全沒有資料可退回」才走下面的
+              整塊錯誤分支。 */}
+          {error && (
+            <p className="caption iv-history-stale-warning" role="status">
+              ⚠ 最新資料更新失敗，目前顯示先前取得的快取資料：{error.message}
+            </p>
+          )}
+          <IvHistoryContent data={currentData} isSingleLeg={isSingleLeg} />
+        </>
+      ) : error ? (
+        // 這個候選目前真的沒有任何資料可退回顯示，才整塊改成錯誤狀態
+        // （#126 AC——卡片本身仍在，只是多一條就地展開的診斷詳情
+        // （DG-05／#148），不是整段文字替換掉）。
         <>
           <p className="caption">取不到歷史 IV：{error.message}</p>
           <InlineDiagnostics
+            variant="failure"
             correlationId={error instanceof ApiError ? error.correlationId : null}
             events={[]}
             message={error.message}
           />
         </>
-      ) : !data ? (
-        <CardSkeleton isSingleLeg={isSingleLeg} />
       ) : (
-        <IvHistoryContent data={data} isSingleLeg={isSingleLeg} />
+        <CardSkeleton isSingleLeg={isSingleLeg} />
       )}
     </section>
   );
@@ -508,6 +647,12 @@ function IvAdvanced({ data, isSingleLeg, notableEvents }: {
       {data.legs.sell && (
         <p className="caption">{`賣腿 ${zscoreCaption(data.legs.sell)}`}</p>
       )}
+
+      {/* Spread IV Gap 的次要文字（Δ4w guardrail ratio＋Spread Percentile
+          語意說明句，手機文字瘦身裁示搬出主畫面）——只在候選有賣腿
+          （`data.spread_gap` 存在）才有意義，跟 `IvHistoryContent` 掛載
+          `./SpreadSummary` 主卡片用同一個判斷式。 */}
+      {data.spread_gap && <SpreadSummaryAdvanced spreadGap={data.spread_gap} />}
 
       {!isSingleLeg && (
         <>
@@ -539,6 +684,7 @@ function IvAdvanced({ data, isSingleLeg, notableEvents }: {
 
       {notableEvents.length > 0 && (
         <InlineDiagnostics
+          variant="info"
           correlationId={data.diagnostics.correlation_id}
           events={notableEvents}
         />

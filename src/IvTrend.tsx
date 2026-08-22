@@ -20,13 +20,27 @@
  * 這裡只 import 這個元件真正需要的幾何／格式化建置塊
  * （`ChartTooltip`／`toPixel`／版面常數等），原樣複用、不重寫第二份。
  */
-import { useState } from "react";
-
 import type { IvHistoryLegs, IvTrendStatPoint, LegHistoricalIv } from "./api";
 import { BACKFILL_NOTES, ChartTooltip, PAD_BOTTOM, PAD_LEFT,
-        PAD_TOP, tickLabel, toPixel, valueLabel } from "./IvHistory";
+        PAD_TOP, tickLabel, toPixel, useChartScrubber, valueLabel } from "./IvHistory";
 import { contiguousRuns, ivChartPoints, ivYAxisDomain, projectOntoDomain,
         xAxisTicks, type ChartPoint } from "./ivHistoryChart";
+import { useIsDesktop } from "./useIsDesktop";
+
+/** 走勢圖固定寬度（viewBox 座標，跟卡片寬度無關——CSS `width:100%` 負責
+ *  縮放）。手機版高度明顯壓低（Firstrade 風格的瘦長折線圖，不是肥大的
+ *  正方形圖表），桌面維持原本的高度不變——手機優先的瘦身不該連帶改動
+ *  桌面既有外觀。`useIsDesktop`（跟 `App.tsx` 的 20/80 版面判斷同一個
+ *  斷點）由呼叫端（`IvTrendCard`／`./SpreadSummary`）決定要哪一組高度，
+ *  這裡的繪圖幾何本身不關心斷點，純粹照傳入的 `height` 畫圖。 */
+export const CHART_WIDTH = 300;
+export const LEG_CHART_HEIGHT_DESKTOP = 110;
+// 手機再瘦身一輪（需求方 2026-08-22 反饋：整張卡片仍然太高）：68 → 54，
+// 落在裁示範圍（約 50–56px）內。桌面常數不動。
+export const LEG_CHART_HEIGHT_MOBILE = 54;
+export const SPREAD_CHART_HEIGHT_DESKTOP = 130;
+// 同上，Spread Gap 圖落在裁示範圍（約 60–64px）內。
+export const SPREAD_CHART_HEIGHT_MOBILE = 62;
 
 /** spec #151 §6 逐字原文——固定文案，不是每張卡各自改寫一次。 */
 const IV_TREND_CAPTION =
@@ -170,8 +184,6 @@ export function IvTrendChart({ leg, width, height, seriesLabel = "市場 IV" }: 
   height: number;
   seriesLabel?: string;
 }) {
-  const [activeIndex, setActiveIndex] = useState<number | null>(null);
-
   const dates = leg.points.map((p) => p.date);
   const raw = leg.points.map((p) => p.iv);
   const asStatSeries = (s: IvTrendStatPoint[]) =>
@@ -181,9 +193,11 @@ export function IvTrendChart({ leg, width, height, seriesLabel = "市場 IV" }: 
   const lower = projectOntoDomain(dates, asStatSeries(leg.bollinger_lower));
 
   const domain = ivYAxisDomain([...raw, ...ma, ...upper, ...lower]);
+  const rawPts = domain === null ? [] : ivChartPoints(dates, raw, domain);
+  const { svgRef, activeIndex, interactionProps } =
+    useChartScrubber(rawPts.length, width);
   if (domain === null) return null;
 
-  const rawPts = ivChartPoints(dates, raw, domain);
   const maPts = ivChartPoints(dates, ma, domain);
   const upperPts = ivChartPoints(dates, upper, domain);
   const lowerPts = ivChartPoints(dates, lower, domain);
@@ -191,7 +205,6 @@ export function IvTrendChart({ leg, width, height, seriesLabel = "市場 IV" }: 
   const rawRuns = contiguousRuns(rawPts);
   const maRuns = contiguousRuns(maPts);
   const bands = bandRuns(upperPts, lowerPts);
-  const indexOf = new Map(rawPts.map((p, i) => [p, i]));
 
   const [lo, hi] = domain;
   const yTicks: [number, number][] = [[0, hi], [0.5, (lo + hi) / 2], [1, lo]];
@@ -205,10 +218,13 @@ export function IvTrendChart({ leg, width, height, seriesLabel = "市場 IV" }: 
 
   return (
     <svg
+      ref={svgRef}
       className="iv-trend-chart"
       viewBox={`0 0 ${width} ${height}`}
       role="img"
-      aria-label={`${seriesLabel} 走勢，含移動平均與 Bollinger 帶，${spanText}`}
+      aria-label={`${seriesLabel} 走勢，含移動平均與 Bollinger 帶，${spanText}，` +
+        "可用滑鼠移動、觸控拖曳或方向鍵瀏覽逐日數值"}
+      {...interactionProps}
     >
       {yTicks.map(([frac, value]) => {
         const py = PAD_TOP + frac * (height - PAD_TOP - PAD_BOTTOM);
@@ -258,41 +274,32 @@ export function IvTrendChart({ leg, width, height, seriesLabel = "市場 IV" }: 
         />
       ))}
 
-      {/* 原始市場 IV——主線＋互動點＋tooltip，沿用 Normalized Skew
-          走勢圖已驗證的手刻互動作法。 */}
+      {/* 原始市場 IV——主線，不再帶逐點互動熱區：整張 SVG 就是互動介面
+          （`./IvHistory` 的 `useChartScrubber`），命中判定不必靠每個
+          資料點各自的圓點。 */}
       {rawRuns.map((run, i) => (
-        <g key={i}>
-          <polyline
-            fill="none"
-            stroke="var(--tint)"
-            strokeWidth={1.5}
-            points={run.map((p) => {
-              const { px, py } = toPixel(p, width, height);
-              return `${px},${py}`;
-            }).join(" ")}
-          />
-          {run.map((p) => {
+        <polyline
+          key={i}
+          fill="none"
+          stroke="var(--tint)"
+          strokeWidth={1.5}
+          points={run.map((p) => {
             const { px, py } = toPixel(p, width, height);
-            const idx = indexOf.get(p)!;
-            return (
-              <circle
-                key={idx}
-                cx={px} cy={py} r={4}
-                className="chart-point"
-                tabIndex={0}
-                role="button"
-                aria-label={`${p.label}，${seriesLabel} ${
-                  valueLabel(raw[idx], "vol-pts")}`}
-                onMouseEnter={() => setActiveIndex(idx)}
-                onMouseLeave={() => setActiveIndex(null)}
-                onFocus={() => setActiveIndex(idx)}
-                onBlur={() => setActiveIndex(null)}
-                onClick={() => setActiveIndex(idx)}
-              />
-            );
-          })}
-        </g>
+            return `${px},${py}`;
+          }).join(" ")}
+        />
       ))}
+
+      {active && activeValue !== null && (() => {
+        const { px, py } = toPixel(active, width, height);
+        return (
+          <>
+            <line x1={px} y1={PAD_TOP} x2={px} y2={height - PAD_BOTTOM}
+                 className="chart-scrub-line" />
+            <circle cx={px} cy={py} r={4} className="chart-point chart-point-active" />
+          </>
+        );
+      })()}
 
       {active && activeValue !== null && (
         <ChartTooltip point={active} value={activeValue} unit="vol-pts"
@@ -308,21 +315,54 @@ export function IvTrendChart({ leg, width, height, seriesLabel = "市場 IV" }: 
  *  不以文字形式出現在任何地方——走勢圖上的視覺帶狀區域原樣保留，只是
  *  改成視覺淡化（見 `styles.css` 的 `.iv-trend-band`／`.iv-trend-ma-line`）。
  *  `label` 只在 Vertical Spread 才有（「買腿」／「賣腿」）——單腳候選
- *  只有一張卡，不需要標籤區分。 */
+ *  只有一張卡，不需要標籤區分。
+ *
+ *  手機再瘦身一輪（需求方 2026-08-22 反饋）：桌面版面（標籤／現值／
+ *  百分位／Δ4w 各自一行）完全不動；手機版改成「標籤＋現值合併一行、
+ *  百分位＋Δ4w 合併一行」，涵蓋時間小字維持獨立一行不變——文字內容
+ *  （沿用既有 `percentileCaption`／`delta4wCaption`／`spanCaption`
+ *  的既有措辭與計算，只是排版合併，沒有換一套新詞彙）與資訊量都沒有
+ *  減少，只是行數變少。用 `useIsDesktop()` 分流兩套 JSX 而不是純 CSS
+ *  重排，因為「兩個既有元素合併成同一行」需要一個共同的 flex 容器，
+ *  純 CSS 選不到「把兩個不相鄰 sibling 包進同一行」這件事。 */
 function IvTrendCard({ label, leg }: { label?: string; leg: LegHistoricalIv }) {
+  const isDesktop = useIsDesktop();
+  const height = isDesktop ? LEG_CHART_HEIGHT_DESKTOP : LEG_CHART_HEIGHT_MOBILE;
+  const chart = <IvTrendChart leg={leg} width={CHART_WIDTH} height={height} />;
+  const backfillNote = leg.status !== "ok" && (
+    <p className="caption">{BACKFILL_NOTES[leg.status]}</p>
+  );
+
+  if (!isDesktop) {
+    return (
+      <div className="iv-trend-card">
+        <div className="iv-compact-head">
+          {label && <span className="row-label iv-trend-card-label">{label}</span>}
+          <span className="iv-value-primary">
+            {valueLabel(currentIv(leg), "vol-pts")}
+          </span>
+        </div>
+        <p className="caption iv-compact-stats">
+          {percentileCaption(leg)}・{delta4wCaption(leg)}
+        </p>
+        {chart}
+        <p className="caption">{spanCaption(leg)}</p>
+        {backfillNote}
+      </div>
+    );
+  }
+
   return (
     <div className="iv-trend-card">
       {label && <div className="row-label iv-trend-card-label">{label}</div>}
       <span className="iv-value-primary">
         {valueLabel(currentIv(leg), "vol-pts")}
       </span>
-      <IvTrendChart leg={leg} width={300} height={110} />
+      {chart}
       <p className="caption">{percentileCaption(leg)}</p>
       <p className="caption">{delta4wCaption(leg)}</p>
       <p className="caption">{spanCaption(leg)}</p>
-      {leg.status !== "ok" && (
-        <p className="caption">{BACKFILL_NOTES[leg.status]}</p>
-      )}
+      {backfillNote}
     </div>
   );
 }

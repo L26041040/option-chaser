@@ -186,7 +186,8 @@ async function openAdvanced(block: import("@playwright/test").Locator) {
   await block.getByText("Advanced／Diagnostics").click();
 }
 
-test("Historical IV 一年走勢圖：桌面 hover 資料點顯示 tooltip（#140）", async ({ page }) => {
+test("Historical IV 一年走勢圖：桌面滑鼠移動時顯示 tooltip（#140；整張圖是單一" +
+     "scrubber 介面，需求方 2026-08-22 反饋——不再靠逐點命中）", async ({ page }) => {
   await routeTwoScenarios(page);
   await page.route("**/api/settings", (route) =>
     route.fulfill({ json: { historical_iv_enabled: true } }));
@@ -198,10 +199,12 @@ test("Historical IV 一年走勢圖：桌面 hover 資料點顯示 tooltip（#14
   await expect(block).toBeVisible();
   const chart = block.locator(".iv-trend-chart").first();
   await expect(chart).toBeVisible();
-  const point = chart.getByRole("button").first();
+  // 不再有逐點命中圓點——整張 SVG 是互動介面，滑鼠移到圖上任何位置都該
+  // 找到最近的資料點。
+  await expect(chart.getByRole("button")).toHaveCount(0);
 
   await expect(chart.locator(".chart-tooltip")).toHaveCount(0);
-  await point.hover();
+  await chart.hover();
   await expect(chart.locator(".chart-tooltip")).toBeVisible();
 
   await page.mouse.move(0, 0);
@@ -304,7 +307,7 @@ test("桌面版：Inline Diagnostics 的 Copy 按鈕——版面順序、複製�
   // inline diagnostics 展開內容搬進 Advanced（SIG-02／#173），先展開
   // 才看得到 summary。
   await openAdvanced(block);
-  const summary = block.getByText("Historical IV 資料取得失敗 · 查看詳情");
+  const summary = block.getByText("Historical IV 診斷資訊 · 查看詳情");
   await expect(summary).toBeVisible();
   await summary.click();
 

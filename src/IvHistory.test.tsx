@@ -13,11 +13,11 @@
  * Δ4w；只有 count＝0（完全沒有可比較觀測）才不給 percentile；文案**只
  * 陳述事實**，出現任何評價或預測字眼就紅燈。
  */
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import IvHistory from "./IvHistory";
+import IvHistory, { PAD_LEFT, PAD_RIGHT } from "./IvHistory";
 import type { Candidate, ContractIdentity, DiagnosticEvent, IvFieldMetric,
              IvHistoryView, LegHistoricalIv, Leg, NormalizedSkewPoint } from "./api";
 
@@ -182,6 +182,41 @@ afterEach(() => {
 });
 
 const ivCalls = (urls: string[]) => urls.filter((u) => u.includes("iv-history"));
+
+/**
+ * Firstrade 風格整張圖 scrubber 測試工具（需求方 2026-08-22 反饋，
+ * `./ivHistoryChart` 的 `nearestIndexForClientX`）：jsdom 沒有真正的
+ * layout，`getBoundingClientRect()` 預設回全零——這裡假裝渲染寬度跟
+ * viewBox 寬度一樣（1:1），`clientX` 因此可以直接對應 viewBox 內部
+ * 座標，不必另外換算縮放比例。也沒有原生 `PointerEvent` 建構子
+ * （`'PointerEvent' in window` 是 false），改用 `MouseEvent` 但把
+ * `type` 指定成 `pointermove`／`pointerdown`——React 的合成事件系統
+ * 依事件名稱字串分派，不要求真的是 `PointerEvent` 的實例，`clientX`
+ * 照樣讀得到。 */
+function stubChartWidth(svg: Element, width = 300) {
+  vi.spyOn(svg, "getBoundingClientRect").mockReturnValue({
+    left: 0, width, top: 0, height: 0, right: width, bottom: 0, x: 0, y: 0,
+    toJSON() { return {}; },
+  } as DOMRect);
+}
+
+function clientXForPoint(index: number, count: number, width = 300) {
+  const plotWidth = width - PAD_LEFT - PAD_RIGHT;
+  const frac = count <= 1 ? 0.5 : index / (count - 1);
+  return PAD_LEFT + frac * plotWidth;
+}
+
+function firePointerEvent(svg: Element, type: string, clientX: number) {
+  // 用 `MouseEvent` 建構子但指定 `type` 為 pointer 事件名稱——上面說明
+  // 過原生 `PointerEvent` 建構子在這個 jsdom 版本不存在，`fireEvent.
+  // pointerMove(el, {clientX})` 這種便利寫法會悄悄退回成不帶 `clientX`
+  // 的陽春 `Event`，讓 handler 讀不到座標。
+  fireEvent(svg, new MouseEvent(type, { clientX, bubbles: true }));
+}
+
+function firePointerMove(svg: Element, clientX: number) {
+  firePointerEvent(svg, "pointermove", clientX);
+}
 
 describe("閘門（#126）", () => {
   it("未解鎖時不輸出任何 DOM 節點", async () => {
@@ -386,6 +421,119 @@ describe("vendor 失敗", () => {
   });
 });
 
+describe("已有可用 cache 時，重新嘗試失敗只降級成非阻斷警示（需求方 2026-08-21 反饋：" +
+        "「明明有圖還顯示錯誤」）", () => {
+  it("同一個候選第一次成功、新分析後 refetch 失敗：圖表照常在，只多一行警示，" +
+     "不是整塊阻斷錯誤", async () => {
+    let call = 0;
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+      if (url.startsWith("/api/settings")) {
+        return { ok: true, status: 200,
+                 json: async () => ({ historical_iv_enabled: true }) } as Response;
+      }
+      call += 1;
+      if (call === 1) {
+        return { ok: true, status: 200, json: async () => ivView() } as Response;
+      }
+      return { ok: false, status: 404,
+               json: async () => ({ detail: "候選暫時找不到" }) } as Response;
+    }));
+    const { container, rerender } = render(
+      <IvHistory scenarioId="s1" candidate={spreadCandidate()} analyzedAt="t1" />);
+    await waitFor(() =>
+      expect(screen.getByText("Normalized Skew")).toBeInTheDocument());
+
+    rerender(
+      <IvHistory scenarioId="s1" candidate={spreadCandidate()} analyzedAt="t2" />);
+    await waitFor(() =>
+      expect(screen.getByText(/候選暫時找不到/)).toBeInTheDocument());
+
+    // 圖表沒有消失——走勢圖與買／賣腿內容照常在。
+    expect(container.querySelectorAll(".iv-trend-chart").length).toBeGreaterThan(0);
+    expect(screen.getByText("Normalized Skew")).toBeInTheDocument();
+    // 不是整塊阻斷錯誤那句話——那句只留給「這個候選完全沒有資料可退回」。
+    expect(screen.queryByText(/取不到歷史 IV/)).not.toBeInTheDocument();
+  });
+
+  it("這個候選從未成功取得任何資料時，失敗仍然是整塊阻斷錯誤（沒有 cache 可退回，" +
+     "維持既有行為）", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+      if (url.startsWith("/api/settings")) {
+        return { ok: true, status: 200,
+                 json: async () => ({ historical_iv_enabled: true }) } as Response;
+      }
+      return { ok: false, status: 404,
+               json: async () => ({ detail: "找不到候選" }) } as Response;
+    }));
+    render(<IvHistory scenarioId="s1" candidate={spreadCandidate()} />);
+    await waitFor(() =>
+      expect(screen.getByText(/取不到歷史 IV：找不到候選/)).toBeInTheDocument());
+    expect(screen.queryByText("Normalized Skew")).not.toBeInTheDocument();
+  });
+});
+
+describe("切換候選時不會誤用上一個候選的資料（dataKey 隔離）", () => {
+  it("候選 A 成功後切到候選 B，B 的 fetch 還沒回來前顯示骨架，不是 A 的舊資料",
+     async () => {
+    let resolveSecond!: (r: Response) => void;
+    const secondPromise = new Promise<Response>((resolve) => {
+      resolveSecond = resolve;
+    });
+    let call = 0;
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+      if (url.startsWith("/api/settings")) {
+        return { ok: true, status: 200,
+                 json: async () => ({ historical_iv_enabled: true }) } as Response;
+      }
+      call += 1;
+      if (call === 1) {
+        return { ok: true, status: 200, json: async () => ivView() } as Response;
+      }
+      return secondPromise;
+    }));
+    const { container, rerender } = render(
+      <IvHistory scenarioId="s1" candidate={spreadCandidate()} />);
+    await waitFor(() =>
+      expect(screen.getByText("Normalized Skew")).toBeInTheDocument());
+
+    rerender(<IvHistory scenarioId="s1" candidate={longCallCandidate()} />);
+    await waitFor(() =>
+      expect(container.querySelector(".iv-skeleton")).toBeInTheDocument());
+    expect(screen.queryByText("Normalized Skew")).not.toBeInTheDocument();
+
+    resolveSecond({ ok: true, status: 200,
+                   json: async () => singleLegIvView() } as Response);
+    await waitFor(() =>
+      expect(container.querySelector(".iv-skeleton")).not.toBeInTheDocument());
+    expect(container.querySelectorAll(".iv-trend-card")).toHaveLength(1);
+  });
+});
+
+describe("legacy normalized_skew 失敗不污染 exact-contract 主圖區的成功狀態（C.3）", () => {
+  it("頂層 status 為 quota／vendor（legacy backfill 沒補上）時，買／賣腿與" +
+     "Spread IV Gap 照常渲染成功——附加說明只出現在 Advanced 裡", async () => {
+    mockApi({ enabled: true, iv: ivView({ status: "vendor",
+                                         note: "legacy backfill 失敗",
+                                         spread_gap: spreadGapFixture() }) });
+    const { container } = render(
+      <IvHistory scenarioId="s1" candidate={spreadCandidate()} />);
+    // 主要區塊（Spread IV Gap／買腿／賣腿）不必展開 Advanced 就在——
+    // exact-contract 家族完全不受 legacy 那邊失敗影響。
+    await waitFor(() =>
+      expect(screen.getByText("Spread IV Gap")).toBeInTheDocument());
+    expect(container.querySelectorAll(".iv-trend-card")).toHaveLength(2);
+    expect(container.querySelectorAll(".iv-trend-chart").length)
+      .toBeGreaterThanOrEqual(3);
+    // 沒有整塊阻斷錯誤那句話。
+    expect(screen.queryByText(/取不到歷史 IV/)).not.toBeInTheDocument();
+
+    // legacy 家族自己的 backfill 說明確實存在，但只在 Advanced 收合區裡。
+    const summary = await screen.findByText("Advanced／Diagnostics");
+    await userEvent.click(summary);
+    expect(screen.getByText(/資料源暫時無法連線/)).toBeInTheDocument();
+  });
+});
+
 describe("只陳述事實（紅線，由測試守門而非自律）", () => {
   it("不出現任何評價字眼——涵蓋 Normalized Skew 與逐腿卡片全部文字", async () => {
     mockApi({ enabled: true });
@@ -470,8 +618,9 @@ describe("走勢圖：Y 軸與 X 軸刻度", () => {
   });
 });
 
-describe("走勢圖：tooltip（桌面 hover／手機 tap 共用同一套狀態）", () => {
-  it("桌面 hover 資料點顯示 tooltip，移開後消失", async () => {
+describe("走勢圖：scrubber tooltip（整張圖是單一 pointer 互動介面，" +
+        "需求方 2026-08-22 反饋——不再靠逐點命中）", () => {
+  it("桌面滑鼠在圖上移動時顯示 tooltip，移出圖表後消失", async () => {
     const smallSeries = normalizedSkewSeries(3, (i) => 0.20 + i * 0.01);
     mockApi({ enabled: true, iv: ivView({ normalized_skew_points: smallSeries }) });
     const { container } = render(
@@ -479,16 +628,16 @@ describe("走勢圖：tooltip（桌面 hover／手機 tap 共用同一套狀態�
     await waitFor(() =>
       expect(container.querySelector(".iv-trend-chart")).toBeInTheDocument());
     const chart = container.querySelectorAll(".iv-trend-chart")[0];
-    const point = chart.querySelectorAll<HTMLElement>("[role='button']")[0];
+    stubChartWidth(chart);
 
-    await userEvent.hover(point);
+    firePointerMove(chart, clientXForPoint(1, 3));
     expect(chart.querySelectorAll(".chart-tooltip").length).toBeGreaterThan(0);
 
-    await userEvent.unhover(point);
+    fireEvent.pointerLeave(chart);
     expect(chart.querySelectorAll(".chart-tooltip")).toHaveLength(0);
   });
 
-  it("手機 tap（點按）資料點顯示同樣的 tooltip", async () => {
+  it("手機觸控在圖上拖曳時顯示同樣的 tooltip，依 X 座標找最近的資料點", async () => {
     const smallSeries = normalizedSkewSeries(3, (i) => 0.20 + i * 0.01);
     mockApi({ enabled: true, iv: ivView({ normalized_skew_points: smallSeries }) });
     const { container } = render(
@@ -496,10 +645,26 @@ describe("走勢圖：tooltip（桌面 hover／手機 tap 共用同一套狀態�
     await waitFor(() =>
       expect(container.querySelector(".iv-trend-chart")).toBeInTheDocument());
     const chart = container.querySelectorAll(".iv-trend-chart")[0];
-    const point = chart.querySelectorAll<HTMLElement>("[role='button']")[0];
+    stubChartWidth(chart);
 
-    await userEvent.click(point);
+    firePointerEvent(chart, "pointerdown", clientXForPoint(0, 3));
     expect(chart.querySelectorAll(".chart-tooltip").length).toBeGreaterThan(0);
+  });
+
+  it("不再依賴任何 tabIndex=0／role=button 的隱形逐點命中圓點", async () => {
+    // 一年走勢圖動輒兩三百個觀測——舊版每個 observation 各自一顆隱形
+    // 焦點停駐點，這裡直接鎖住「一個都不該有」。
+    const bigSeries = normalizedSkewSeries(250, (i) => 0.20 + (i % 20) * 0.001);
+    mockApi({ enabled: true, iv: ivView({ normalized_skew_points: bigSeries }) });
+    const { container } = render(
+      <IvHistory scenarioId="s1" candidate={spreadCandidate()} />);
+    await waitFor(() =>
+      expect(container.querySelector(".iv-trend-chart")).toBeInTheDocument());
+    expect(container.querySelectorAll("[role='button']")).toHaveLength(0);
+    // 唯一的 tab stop 是每張圖的 SVG 本身，一張圖一個，不是逐點命中圓點
+    // 那種兩三百個。
+    expect(container.querySelectorAll("[tabindex='0']"))
+      .toHaveLength(container.querySelectorAll(".iv-trend-chart").length);
   });
 });
 
@@ -553,17 +718,21 @@ describe("就地展開的診斷詳情（DG-05／#148）", () => {
   });
 
   it("200 但帶有 warning／error events 時也觸發診斷區塊——這是「資料是空的」" +
-     "最常見的症狀，光看 HTTP 狀態碼看不出來", async () => {
+     "最常見的症狀，光看 HTTP 狀態碼看不出來（但主資料已成功，摘要文案是" +
+     "中性的「診斷資訊」，不是「資料取得失敗」——需求方 2026-08-22 反饋：" +
+     "那句話該留給真正沒有資料可顯示的情境）", async () => {
     mockApi({ enabled: true, iv: ivView({
       diagnostics: { correlation_id: "cid-warn",
                     events: [diagEvent()] },
     }) });
     render(<IvHistory scenarioId="s1" candidate={spreadCandidate()} />);
     await waitFor(() => expect(
-      screen.getByText("Historical IV 資料取得失敗 · 查看詳情"),
+      screen.getByText("Historical IV 診斷資訊 · 查看詳情"),
     ).toBeInTheDocument());
     // 這是 additive 的一塊，資料本身（走勢圖／百分位）照常渲染。
     expect(screen.getByText("Normalized Skew")).toBeInTheDocument();
+    // 主資料已經成功——不能出現誤導使用者以為主圖壞掉的「資料取得失敗」。
+    expect(screen.queryByText(/Historical IV 資料取得失敗/)).not.toBeInTheDocument();
   });
 
   it("只有 info severity 的 events 時不觸發診斷區塊", async () => {
@@ -575,6 +744,8 @@ describe("就地展開的診斷詳情（DG-05／#148）", () => {
     await waitFor(() =>
       expect(screen.getByText("Normalized Skew")).toBeInTheDocument());
     expect(screen.queryByText("Historical IV 資料取得失敗 · 查看詳情"))
+      .not.toBeInTheDocument();
+    expect(screen.queryByText("Historical IV 診斷資訊 · 查看詳情"))
       .not.toBeInTheDocument();
   });
 
@@ -589,7 +760,7 @@ describe("就地展開的診斷詳情（DG-05／#148）", () => {
     const { container } = render(
       <IvHistory scenarioId="s1" candidate={spreadCandidate()} />);
     const summary = await screen.findByText(
-      "Historical IV 資料取得失敗 · 查看詳情");
+      "Historical IV 診斷資訊 · 查看詳情");
     await userEvent.click(summary);
 
     expect(screen.getByText("payload_parse")).toBeInTheDocument();
@@ -608,7 +779,7 @@ describe("就地展開的診斷詳情（DG-05／#148）", () => {
     }) });
     render(<IvHistory scenarioId="s1" candidate={spreadCandidate()} />);
     const summary = await screen.findByText(
-      "Historical IV 資料取得失敗 · 查看詳情");
+      "Historical IV 診斷資訊 · 查看詳情");
     await userEvent.click(summary);
 
     expect(screen.getByText("raw_rows")).toBeInTheDocument();
@@ -628,7 +799,7 @@ describe("就地展開的診斷詳情（DG-05／#148）", () => {
     }) });
     render(<IvHistory scenarioId="s1" candidate={spreadCandidate()} />);
     const summary = await screen.findByText(
-      "Historical IV 資料取得失敗 · 查看詳情");
+      "Historical IV 診斷資訊 · 查看詳情");
     await userEvent.click(summary);
 
     expect(screen.getByText("vendor_fetch")).toBeInTheDocument();
@@ -737,7 +908,7 @@ describe("Inline Diagnostics 的 Copy 按鈕（QA 反饋，2026-08-16）", () =>
     }) });
     render(<IvHistory scenarioId="s1" candidate={spreadCandidate()} />);
     const summary = await screen.findByText(
-      "Historical IV 資料取得失敗 · 查看詳情");
+      "Historical IV 診斷資訊 · 查看詳情");
     await userEvent.click(summary);
 
     const copyButton = screen.getByRole("button", { name: "Copy diagnostics" });
@@ -754,7 +925,7 @@ describe("Inline Diagnostics 的 Copy 按鈕（QA 反饋，2026-08-16）", () =>
     }) });
     render(<IvHistory scenarioId="s1" candidate={spreadCandidate()} />);
     const summary = await screen.findByText(
-      "Historical IV 資料取得失敗 · 查看詳情");
+      "Historical IV 診斷資訊 · 查看詳情");
     await userEvent.click(summary);
     await userEvent.click(screen.getByRole("button", { name: "Copy diagnostics" }));
 
@@ -796,7 +967,7 @@ describe("Inline Diagnostics 的 Copy 按鈕（QA 反饋，2026-08-16）", () =>
     }) });
     render(<IvHistory scenarioId="s1" candidate={spreadCandidate()} />);
     const summary = await screen.findByText(
-      "Historical IV 資料取得失敗 · 查看詳情");
+      "Historical IV 診斷資訊 · 查看詳情");
     await userEvent.click(summary);
     await userEvent.click(screen.getByRole("button", { name: "Copy diagnostics" }));
 
@@ -813,7 +984,7 @@ describe("Inline Diagnostics 的 Copy 按鈕（QA 反饋，2026-08-16）", () =>
     const { container } = render(
       <IvHistory scenarioId="s1" candidate={spreadCandidate()} />);
     const summary = await screen.findByText(
-      "Historical IV 資料取得失敗 · 查看詳情");
+      "Historical IV 診斷資訊 · 查看詳情");
     const details = container.querySelector(".iv-diagnostics") as HTMLDetailsElement;
     expect(details.open).toBe(false);
 

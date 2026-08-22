@@ -45,6 +45,7 @@ import ScenarioList from "./ScenarioList";
 import Settings from "./Settings";
 import Toolbar, { type RefreshProgress } from "./Toolbar";
 import TrashView from "./TrashView";
+import { useIsDesktop } from "./useIsDesktop";
 import { GearIcon } from "./icons";
 import {
   archiveScenario,
@@ -64,31 +65,15 @@ import {
   trashHash,
 } from "./route";
 
-// 桌面／手機斷點——與 `styles.css` 的 `@media (min-width: 1100px)` 同一個
-// 數字，兩邊各自維護一份（CSS 沒辦法直接讀 JS 常數），改動時要一起改。
-// 1100 不是隨手取的：`styles.css` 的 20/80 版面下限（220px）恰好是
-// 1100 的 20%，斷點與下限彼此對齊，比例才會在整個桌面寬度範圍內都
-// 貼近「約 20%」，而不是被下限卡死在一個更寬的固定值上。
-const DESKTOP_QUERY = "(min-width: 1100px)";
-
 /**
  * 桌面版真正的 master/detail（#72）：桌面寬度下劇本庫常駐、詳細頁另開
  * 一欄；手機寬度維持既有的整頁替換。用 `matchMedia` 而不是只用 CSS
  * 隱藏——手機版「選了劇本後建立表單／劇本庫不在畫面上」是既有行為
  * 的一部分，CSS `display:none` 只藏視覺，元件仍會掛載並佔用資源。
+ *
+ * 斷點常數與 hook 本身已搬到 `./useIsDesktop`（Historical IV 手機圖表
+ * 瘦身需要同一個判斷，不重寫第二份），這裡改成直接複用。
  */
-function useIsDesktop(): boolean {
-  const [isDesktop, setIsDesktop] = useState(
-    () => window.matchMedia(DESKTOP_QUERY).matches,
-  );
-  useEffect(() => {
-    const mql = window.matchMedia(DESKTOP_QUERY);
-    const sync = () => setIsDesktop(mql.matches);
-    mql.addEventListener("change", sync);
-    return () => mql.removeEventListener("change", sync);
-  }, []);
-  return isDesktop;
-}
 
 export default function App() {
   const [rows, setRows] = useState<ScenarioSummary[]>([]);

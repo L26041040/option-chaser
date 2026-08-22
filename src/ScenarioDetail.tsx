@@ -189,7 +189,7 @@ function DetailBody({ scenarioId, view, analyzedAt }: {
           插槽〕→ Payoff Heatmap，全部圍繞同一組
           baseline 候選。 */}
       <Summary view={view} candidate={candidate} analyzedAt={analyzedAt} />
-      <IvHistory scenarioId={scenarioId} candidate={candidate} />
+      <IvHistory scenarioId={scenarioId} candidate={candidate} analyzedAt={analyzedAt} />
       <Chart candidate={candidate} />
       {/* 到期日結構（V6／#54）接在主圖之下。切換到期日只換這
           一塊的清單，基準候選不動——固定是 baseline 期第 1 名（QA1-06
