@@ -1445,17 +1445,20 @@ test("Historical IV：Δ4w 帶正負號與單位，跟 percentile／涵蓋時間
   await expect(block.getByText(/4週 \+0\.6 pts/)).toHaveCount(0);
 });
 
-test("Historical IV：手機點按資料點顯示 tooltip，位置落在走勢圖範圍內（#140／#141）",
+test("Historical IV：手機點按圖表任意位置顯示 tooltip，位置落在走勢圖範圍內" +
+     "（#140／#141；整張圖是單一 scrubber 介面，需求方 2026-08-22 反饋——" +
+     "不再要求使用者精準點中某顆逐點命中圓點）",
    async ({ page }) => {
   await routeDetailWithIv(page, true);
   await page.goto("/#/s/s1");
 
   const chart = page.locator(".iv-history .iv-trend-chart").first();
   await expect(chart).toBeVisible();
-  const point = chart.getByRole("button").first();
-  await expect(point).toBeVisible();
+  await expect(chart.getByRole("button")).toHaveCount(0);
 
-  await point.click();
+  // 點在圖表任意位置（預設中心點）就該找到最近的資料點，不必點準
+  // 哪一顆隱形圓點。
+  await chart.click();
   const tooltip = chart.locator(".chart-tooltip");
   await expect(tooltip).toBeVisible();
 
@@ -1843,8 +1846,11 @@ test("Historical IV 200 但帶 warning events：一樣觸發診斷區塊，資�
   // inline diagnostics 展開內容搬進 Advanced（SIG-02／#173），先展開
   // 才看得到。
   await openAdvanced(block);
-  await expect(block.getByText("Historical IV 資料取得失敗 · 查看詳情"))
+  await expect(block.getByText("Historical IV 診斷資訊 · 查看詳情"))
     .toBeVisible();
+  // 主資料已成功（買／賣腿卡片照常渲染）——不能出現誤導使用者以為主圖
+  // 壞掉的「資料取得失敗」（需求方 2026-08-22 反饋）。
+  await expect(block.getByText("Historical IV 資料取得失敗")).toHaveCount(0);
   await expect(block.getByText("Normalized Skew")).toBeVisible();
 });
 
@@ -1900,7 +1906,7 @@ test("手機版：Inline Diagnostics 的 Copy 按鈕——版面順序、複製�
   // inline diagnostics 展開內容搬進 Advanced（SIG-02／#173），先展開
   // 才看得到 summary。
   await openAdvanced(block);
-  const summary = block.getByText("Historical IV 資料取得失敗 · 查看詳情");
+  const summary = block.getByText("Historical IV 診斷資訊 · 查看詳情");
   await expect(summary).toBeVisible();
   await summary.click();
 

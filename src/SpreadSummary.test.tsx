@@ -132,7 +132,8 @@ describe("四種 delta_4w_status 狀態各自的文案（手機文字瘦身後�
     for (const status of ["ok", "near_zero_base", "sign_flip"] as const) {
       const sg = spreadGap({ delta_4w_status: status, delta_4w: 0.025 });
       const { unmount } = render(<SpreadSummary spreadGap={sg} legs={legs()} />);
-      expect(screen.getByText("4週 +2.5 pts")).toBeInTheDocument();
+      // 手機瘦身後跟百分位合併同一行，用 regex 比對子字串。
+      expect(screen.getByText(/4週 \+2\.5 pts/)).toBeInTheDocument();
       unmount();
     }
   });
@@ -149,7 +150,10 @@ describe("百分位：直接顯示 spread_gap.current_percentile", () => {
   it("有值時格式化成第 N 百分位", () => {
     const sg = spreadGap({ current_percentile: 0.62 });
     render(<SpreadSummary spreadGap={sg} legs={legs()} />);
-    expect(screen.getByText("第 62 百分位")).toBeInTheDocument();
+    // 手機瘦身後（需求方 2026-08-22 反饋）百分位與 Δ4w 合併成同一行
+    // 文字節點，不再是獨立的一段——用 regex 比對子字串，不要求整段
+    // 文字剛好只有這幾個字。
+    expect(screen.getByText(/第 62 百分位/)).toBeInTheDocument();
   });
 
   it("為 null 時顯示沒有歷史資料，跟既有逐腿卡片同一種說法", () => {
@@ -175,6 +179,33 @@ describe("涵蓋揭露小字：讀 shared_history_span_days，不是 history_spa
     const sg = spreadGap({ observation_count: 0, shared_history_span_days: 0 });
     render(<SpreadSummary spreadGap={sg} legs={legs()} />);
     expect(screen.getByText(/^Buy \d+・Sell \d+・Shared 0$/)).toBeInTheDocument();
+  });
+});
+
+describe("手機再瘦身（需求方 2026-08-22 反饋）：標籤＋現值合併一行、百分位＋Δ4w 合併一行，" +
+        "桌面維持原本各自一行", () => {
+  it("手機（預設 matchMedia 假體＝手機）標籤與現值同一個 .iv-compact-head", () => {
+    const { container } = render(
+      <SpreadSummary spreadGap={spreadGap()} legs={legs()} />);
+    const head = container.querySelector(".iv-compact-head");
+    expect(head).toBeInTheDocument();
+    expect(head!.textContent).toContain("Spread IV Gap");
+    expect(head!.querySelector(".iv-value-primary")).toBeInTheDocument();
+    // 百分位與 Δ4w 合併成同一行，涵蓋揭露小字仍是獨立一行（不合併）。
+    const stats = screen.getByText(/第 60 百分位/);
+    expect(stats.textContent).toMatch(/4週 \+2\.0 pts/);
+    expect(screen.getByText(/^Buy \d+・Sell \d+・Shared \d+/)).toBeInTheDocument();
+  });
+
+  it("桌面斷點下維持標籤／現值／百分位／Δ4w 各自一行，不合併", () => {
+    vi.stubGlobal("matchMedia", (q: string) => fakeMediaQueryList(true, q));
+    const { container } = render(
+      <SpreadSummary spreadGap={spreadGap()} legs={legs()} />);
+    expect(container.querySelector(".iv-compact-head")).not.toBeInTheDocument();
+    expect(screen.getByText("Spread IV Gap")).toBeInTheDocument();
+    // 桌面：百分位與 Δ4w 分別是獨立的文字節點，不是同一段合併文字。
+    const percentileNode = screen.getByText("第 60 百分位");
+    expect(percentileNode.textContent).not.toMatch(/4週/);
   });
 });
 

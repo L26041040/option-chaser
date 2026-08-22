@@ -27,10 +27,3 @@ export function useIsDesktop(): boolean {
   }, []);
   return isDesktop;
 }
-
-/** 依斷點在兩個數字之間二選一——`IvTrendCard`／`./SpreadSummary` 各自的
- *  走勢圖高度都是同一個形狀（手機矮、桌面維持原高度），抽出來一次寫，
- *  不必兩邊各自重複同一句 `isDesktop ? … : …`。 */
-export function useResponsiveHeight(mobile: number, desktop: number): number {
-  return useIsDesktop() ? desktop : mobile;
-}

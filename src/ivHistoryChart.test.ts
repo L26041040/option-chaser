@@ -6,7 +6,8 @@
  */
 import { describe, expect, it } from "vitest";
 
-import { ivChartPoints, ivYAxisDomain, projectOntoDomain } from "./ivHistoryChart";
+import { ivChartPoints, ivYAxisDomain, nearestIndexForClientX,
+        projectOntoDomain } from "./ivHistoryChart";
 
 describe("ivYAxisDomain", () => {
   it("非空值各留 10% 邊界", () => {
@@ -92,6 +93,81 @@ describe("ivChartPoints", () => {
   it("domain 塌成一個點時（span=0）y 一律為 null，不除以零", () => {
     const points = ivChartPoints(["2026-01-01"], [0.2], [0.2, 0.2]);
     expect(points[0].y).toBeNull();
+  });
+});
+
+describe("nearestIndexForClientX（Firstrade 風格整張圖 scrubber 的座標數學，" +
+        "需求方 2026-08-22 反饋）", () => {
+  const VIEWBOX_WIDTH = 300;
+  const PAD_LEFT = 34;
+  const PAD_RIGHT = 6;
+
+  it("游標在繪圖區左邊界時找到第一個點", () => {
+    const idx = nearestIndexForClientX(
+      PAD_LEFT, { left: 0, width: VIEWBOX_WIDTH }, VIEWBOX_WIDTH,
+      PAD_LEFT, PAD_RIGHT, 10);
+    expect(idx).toBe(0);
+  });
+
+  it("游標在繪圖區右邊界時找到最後一個點", () => {
+    const idx = nearestIndexForClientX(
+      VIEWBOX_WIDTH - PAD_RIGHT, { left: 0, width: VIEWBOX_WIDTH }, VIEWBOX_WIDTH,
+      PAD_LEFT, PAD_RIGHT, 10);
+    expect(idx).toBe(9);
+  });
+
+  it("游標在繪圖區正中央時找到中間附近的點", () => {
+    const plotWidth = VIEWBOX_WIDTH - PAD_LEFT - PAD_RIGHT;
+    const idx = nearestIndexForClientX(
+      PAD_LEFT + plotWidth / 2, { left: 0, width: VIEWBOX_WIDTH }, VIEWBOX_WIDTH,
+      PAD_LEFT, PAD_RIGHT, 10);
+    expect(idx).toBe(5); // round(0.5 * 9) = round(4.5) = 5
+  });
+
+  it("游標超出圖表右側時夾在最後一個點，不是找不到", () => {
+    const idx = nearestIndexForClientX(
+      1000, { left: 0, width: VIEWBOX_WIDTH }, VIEWBOX_WIDTH,
+      PAD_LEFT, PAD_RIGHT, 10);
+    expect(idx).toBe(9);
+  });
+
+  it("游標在圖表左側之外（負座標）時夾在第一個點", () => {
+    const idx = nearestIndexForClientX(
+      -100, { left: 0, width: VIEWBOX_WIDTH }, VIEWBOX_WIDTH,
+      PAD_LEFT, PAD_RIGHT, 10);
+    expect(idx).toBe(0);
+  });
+
+  it("SVG 實際渲染寬度（CSS width:100%）跟 viewBox 座標不同時仍正確換算——" +
+     "這裡渲染寬度是 viewBox 的兩倍", () => {
+    const rect = { left: 20, width: VIEWBOX_WIDTH * 2 };
+    const plotWidth = VIEWBOX_WIDTH - PAD_LEFT - PAD_RIGHT;
+    // viewBox 座標系裡繪圖區中點；換算回螢幕座標要乘上縮放比例、再加
+    // 上 rect.left 的位移。
+    const midViewBoxX = PAD_LEFT + plotWidth / 2;
+    const clientX = rect.left + midViewBoxX * 2;
+    const idx = nearestIndexForClientX(
+      clientX, rect, VIEWBOX_WIDTH, PAD_LEFT, PAD_RIGHT, 10);
+    expect(idx).toBe(5);
+  });
+
+  it("只有一個資料點時永遠指向那一個點", () => {
+    const idx = nearestIndexForClientX(
+      PAD_LEFT, { left: 0, width: VIEWBOX_WIDTH }, VIEWBOX_WIDTH,
+      PAD_LEFT, PAD_RIGHT, 1);
+    expect(idx).toBe(0);
+  });
+
+  it("沒有資料點時回傳 null", () => {
+    expect(nearestIndexForClientX(
+      150, { left: 0, width: VIEWBOX_WIDTH }, VIEWBOX_WIDTH,
+      PAD_LEFT, PAD_RIGHT, 0)).toBeNull();
+  });
+
+  it("量到的渲染寬度是 0（元素還沒真的佈局）時回傳 null，不除以零", () => {
+    expect(nearestIndexForClientX(
+      150, { left: 0, width: 0 }, VIEWBOX_WIDTH,
+      PAD_LEFT, PAD_RIGHT, 10)).toBeNull();
   });
 });
 
