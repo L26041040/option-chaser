@@ -3379,9 +3379,18 @@ PERF-03→PERF-01→PERF-02→PERF-05→PERF-06→PERF-07）。這是需求方
   3 條批次寫入／retention 等價性測試（memory＋postgres 各一份）、
   端到端測試驗證健康 request（兩腿各灌 60 天 round-trip 觀測涵蓋
   bands／Δ4w 兩個窗口）對 diagnostics 資料表寫入 0 筆但回應完整帶著
-  info 事件。`/code-review` 兩軸皆無 hard violation，Spec 軸額外確認
-  三層優先序與 `emit()` 皆逐行核對零改動、測試資料修正方向正確。
-  全套後端測試（記憶體＋Postgres 兩組）1485 條全綠。
+  info 事件。`/code-review` Spec 軸確認三層優先序與 `emit()` 皆逐行
+  核對零改動、測試資料修正方向正確，無 scope creep；Standards 軸抓到
+  兩處已修正：(1) 其中一條測試的 docstring 誤稱「`_rich_surface`
+  全程成功只有 info」——實測並非如此（預設空 `contract_history` 下
+  exact-contract 家族本來就會冒出 reconstruction／metrics warning），
+  已改寫成準確說明改用 `_telemetry_surface({})` 的真正理由（驗證
+  legacy 家族刻意、可預期的 warning，不糾纏在另一子系統的旁支行為裡）；
+  (2) `postgres.py` 的 `append_diagnostic()`／`append_diagnostics()`
+  重複同一份欄位清單與 trim SQL 字面值，已抽成模組層級常數
+  `_DIAGNOSTICS_INSERT_COLS`／`_DIAGNOSTICS_TRIM_SQL` 共用（比照既有
+  `_RESULT_COLS`／`_SCENARIO_COLS` 慣例）。全套後端測試（記憶體＋
+  Postgres 兩組）1485 條全綠。
 
 **探測環境選擇（#120／#111 共同記錄）**：使用者原始指示要求建臨時
 Vercel probe，但本輪 Vercel MCP 的 `deploy_to_vercel` 可成功部署，

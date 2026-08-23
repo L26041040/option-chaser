@@ -1063,8 +1063,12 @@ def test_persisted_events_are_a_subset_of_what_the_response_shows(db):
     那個方向：**任何存進資料庫的，一定也在回應裡看得到**——不會有使用者
     在畫面上看不到、卻默默寫進資料庫的事件。用 `_telemetry_surface({})`
     （比照既有 `test_weekday_no_data_still_warns_but_does_not_abort_
-    the_batch`）而非 `_rich_surface`：後者全程成功、只有 info，落盤
-    集合會是空集合，`set() <= shown_ids` 恆真、測不到真正的過濾行為。
+    the_batch`）而非 `_rich_surface`：這裡要驗證的是 legacy 家族
+    `backfill` 摘要落盤這件刻意、可預期的事，不依賴 exact-contract
+    家族在預設空 `contract_history` 下碰巧也會冒出的 reconstruction／
+    metrics warning（那是另一個獨立子系統的旁支行為，見下面
+    `test_a_healthy_request_writes_zero_diagnostics_rows_...` 的
+    docstring 說明；`_rich_surface` 本身不是「全程成功只有 info」）。
     """
     client = _client(db, surface=_telemetry_surface({}))
     _unlock(client)

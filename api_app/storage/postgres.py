@@ -239,6 +239,17 @@ _SCENARIO_COLS = ("id, symbol, direction, target_price, target_month, "
                   "notes, strategies, created_at, archived_at, "
                   "best_price, worst_price")
 
+# PERF-02（#178）：`append_diagnostic()`／`append_diagnostics()` 共用
+# 同一份欄位清單與 trim-on-write 查詢——單筆／批次寫入本來就該是同一套
+# SQL 的兩種呼叫方式，不是各自維護一份容易漂移的複本。trim 只留全域
+# 最新 RETENTION_LIMIT 筆：子查詢在不到上限時回空，`seq <= NULL`
+# 恆假，DELETE 是安全的 no-op。
+_DIAGNOSTICS_INSERT_COLS = ("(event_id, correlation_id, ts, subsystem, "
+                           "stage, severity, message, context)")
+_DIAGNOSTICS_TRIM_SQL = (
+    "DELETE FROM diagnostics WHERE seq <= ("
+    "SELECT seq FROM diagnostics ORDER BY seq DESC OFFSET %s LIMIT 1)")
+
 
 def _usage_to_dict(u: UsageSetting) -> dict:
     return {"mode": u.mode, "provider": u.provider}
@@ -757,18 +768,12 @@ class PostgresStorage:
     def append_diagnostic(self, event: DiagnosticEvent) -> None:
         with self._connect() as conn:
             conn.execute(
-                "INSERT INTO diagnostics (event_id, correlation_id, ts, "
-                "subsystem, stage, severity, message, context) "
+                f"INSERT INTO diagnostics {_DIAGNOSTICS_INSERT_COLS} "
                 "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
                 (event.event_id, event.correlation_id, event.ts,
                  event.subsystem, event.stage, event.severity, event.message,
                  Jsonb(event.context)))
-            # trim-on-write：只留全域最新 RETENTION_LIMIT 筆。子查詢在
-            # 不到上限時回空，`seq <= NULL` 恆假，DELETE 是安全的 no-op。
-            conn.execute(
-                "DELETE FROM diagnostics WHERE seq <= ("
-                "SELECT seq FROM diagnostics ORDER BY seq DESC "
-                "OFFSET %s LIMIT 1)", (RETENTION_LIMIT,))
+            conn.execute(_DIAGNOSTICS_TRIM_SQL, (RETENTION_LIMIT,))
 
     def append_diagnostics(self, events: list[DiagnosticEvent]) -> None:
         """批次版（PERF-02／#178）：一次多列 INSERT，不是逐筆迴圈呼叫
@@ -786,13 +791,9 @@ class PostgresStorage:
                           event.message, Jsonb(event.context)])
         with self._connect() as conn:
             conn.execute(
-                "INSERT INTO diagnostics (event_id, correlation_id, ts, "
-                "subsystem, stage, severity, message, context) "
+                f"INSERT INTO diagnostics {_DIAGNOSTICS_INSERT_COLS} "
                 f"VALUES {values_sql}", params)
-            conn.execute(
-                "DELETE FROM diagnostics WHERE seq <= ("
-                "SELECT seq FROM diagnostics ORDER BY seq DESC "
-                "OFFSET %s LIMIT 1)", (RETENTION_LIMIT,))
+            conn.execute(_DIAGNOSTICS_TRIM_SQL, (RETENTION_LIMIT,))
 
     def list_diagnostics(self, *, limit: int = 50) -> list[DiagnosticEvent]:
         with self._connect() as conn:
