@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import dataclasses
 import uuid
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, timedelta
 from typing import Callable, Literal
 
@@ -66,6 +67,15 @@ _MVP_STRATEGIES = ("bull-call-spread",)
 # 每個 symbol 每批最多補幾天（#130）。66 個目標觀測 ÷ 25 ≈ 三天補齊，
 # 就是需求方 progressive backfill 草圖裡那三格進度條。
 _IV_BACKFILL_PER_RUN = 25
+
+# PERF-05（#181）：cold backfill 同一天內、跨到期日的併發呼叫上限——
+# 保守值，不是「猜到期日通常有幾個就設幾個」。到期日梯子
+# （`ivhistory.nearby_expirations()`）目前實務上是個位數項目，這個
+# 常數的用意是**防禦性上限**：不論梯子未來變多長，一次最多同時有這
+# 麼多個尚未完成的呼叫在飛，不是「一次把全部到期日同時發出去」的
+# 無上限 fan-out。具名、可調整——沒有查到 vendor 端逐秒配額文件，
+# 用一個明顯遠低於「同時炸開全部」的保守數字。
+_IV_BACKFILL_DAY_CONCURRENCY = 4
 
 # V1（#48）的一次性分析端點沿用：無劇本身分時的 view dict 欄位值，
 # 不影響任何計算。V3 之後前端改走劇本端點，屆時此路徑可移除。
@@ -441,7 +451,11 @@ def _emit_backfill_summary(emit, *, symbol: str, attempted_days: int,
                            days_no_data_expected: int,
                            days_no_data_unexpected: int,
                            aborted_on: str | None, abort_reason: str | None,
-                           remaining_gap: int, outcome: str) -> None:
+                           remaining_gap: int, outcome: str,
+                           failed_expiration: str | None = None,
+                           in_flight_after_failure_succeeded: int = 0,
+                           in_flight_after_failure_failed: int = 0,
+                           unstarted_due_to_failure: int = 0) -> None:
     """Backfill 摘要（HIVR-10／#169）：一次批次最多 25 天、每天可能查
     好幾個到期日，舊版逐日／逐到期日各發一筆 `vendor_fetch`／
     `payload_parse`（外加每天一筆 `database_write`），輕鬆破百筆。改成
@@ -453,6 +467,14 @@ def _emit_backfill_summary(emit, *, symbol: str, attempted_days: int,
     （交易日卻沒資料，值得留意）——`severity` 依這個區分：只有真正
     中止（`aborted_on`）或「交易日卻沒資料」時才是 warning，單純撞到
     週末不是。
+
+    PERF-05（#181）新增四個欄位，皆只在真正中止（`aborted_on` 有值）
+    時才有意義（沒中止時維持預設 0／`None`）：`failed_expiration`——
+    哪一個到期日觸發了這次失敗；`in_flight_after_failure_succeeded`／
+    `_failed`——觸發失敗那一批裡，在它之後才完成的其他呼叫各自成功／
+    失敗幾個（bounded concurrency 下這批本來就可能不只一個呼叫在飛）；
+    `unstarted_due_to_failure`——因為提早中止，整批原本規劃要抓的
+    (日期, 到期日) 組合裡有幾組完全沒被送出去。
     """
     emit(stage="backfill",
         severity="warning" if aborted_on or days_no_data_unexpected > 0
@@ -465,7 +487,11 @@ def _emit_backfill_summary(emit, *, symbol: str, attempted_days: int,
         days_no_data_unexpected=days_no_data_unexpected,
         days_failed=1 if aborted_on else 0,
         aborted_on=aborted_on, abort_reason=abort_reason,
-        remaining_gap=remaining_gap, outcome=outcome)
+        remaining_gap=remaining_gap, outcome=outcome,
+        failed_expiration=failed_expiration,
+        in_flight_after_failure_succeeded=in_flight_after_failure_succeeded,
+        in_flight_after_failure_failed=in_flight_after_failure_failed,
+        unstarted_due_to_failure=unstarted_due_to_failure)
 
 
 def _reanchor_in_grid(reanchored: dict, coords: dict) -> bool:
@@ -1286,6 +1312,58 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         # 好過完全不抓——這種情況只有候選算不出 tenor 才會發生。
         expirations = target_expirations or [None]
 
+        def _fetch_day_bounded(day: str):
+            """PERF-05（#181）：一天份的到期日梯子改成有明確保守上限的
+            併發呼叫，取代原本逐一序列呼叫——`_IV_BACKFILL_DAY_
+            CONCURRENCY` 個一批，上一批全部真正跑完（不論成功失敗）
+            才決定要不要送出下一批；批次裡只要有一個失敗，這一批**其餘
+            已經送出、還在飛的**呼叫仍讓它們正常跑完（`ThreadPoolExecutor`
+            的 `with` 區塊本來就會等全部 submit 的工作做完才離開，
+            不強制 cancel），成功的一樣併入這天的 surface；失敗之後
+            **不再送出下一批**。用 `as_completed()` 取得真實完成順序，
+            才分得出「第一個失敗」跟「同一批裡在它之後才完成的其他
+            呼叫」——不是照送出順序猜。
+
+            回傳 `(merged, first_failure, after_ok, after_fail,
+            dispatched)`：`first_failure` 是 `(reason, exc, exp) | None`；
+            `after_ok`／`after_fail` 是**觸發失敗的那一批**裡，在它之後
+            才完成的其他呼叫各自成功／失敗幾個；`dispatched` 是這天總共
+            真正送出去幾個呼叫（供批次層級統計「因失敗未啟動幾組」用）。
+            """
+            merged: dict[str, list] = {"call": [], "put": []}
+            first_failure = None
+            after_ok = after_fail = dispatched = 0
+            idx = 0
+            while idx < len(expirations) and first_failure is None:
+                batch = expirations[idx: idx + _IV_BACKFILL_DAY_CONCURRENCY]
+                idx += len(batch)
+                dispatched += len(batch)
+                with ThreadPoolExecutor(max_workers=len(batch)) as pool:
+                    futures = {pool.submit(historical_surface, provider,
+                                          symbol, day, token, expiration=exp): exp
+                              for exp in batch}
+                    for future in as_completed(futures):
+                        exp = futures[future]
+                        try:
+                            got = future.result()
+                        except QuotaExhausted as e:
+                            if first_failure is None:
+                                first_failure = ("quota", e, exp)
+                            else:
+                                after_fail += 1
+                            continue
+                        except FetchError as e:
+                            if first_failure is None:
+                                first_failure = ("vendor", e, exp)
+                            else:
+                                after_fail += 1
+                            continue
+                        if first_failure is not None:
+                            after_ok += 1
+                        merged["call"].extend(got.get("call") or [])
+                        merged["put"].extend(got.get("put") or [])
+            return merged, first_failure, after_ok, after_fail, dispatched
+
         outcome, note = "ok", None
         attempted_days = 0
         saved_days = 0
@@ -1294,35 +1372,53 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         days_no_data_unexpected = 0   # 交易日撲空——值得留意
         aborted_on: str | None = None
         abort_reason: str | None = None
-        for day in sorted(missing, reverse=True)[:_IV_BACKFILL_PER_RUN]:
+        failed_expiration = None
+        in_flight_after_failure_succeeded = 0
+        in_flight_after_failure_failed = 0
+        total_dispatched = 0
+        schedule = sorted(missing, reverse=True)[:_IV_BACKFILL_PER_RUN]
+        for day in schedule:
             attempted_days += 1
-            merged: dict[str, list] = {"call": [], "put": []}
-            try:
-                for exp in expirations:
-                    # HIVR-10（#169）：逐日／逐到期日的 telemetry 不再各自
-                    # 轉成事件（見上方 docstring），不必再傳 observer。
-                    got = historical_surface(provider, symbol, day, token,
-                                            expiration=exp)
-                    merged["call"].extend(got.get("call") or [])
-                    merged["put"].extend(got.get("put") or [])
-            except QuotaExhausted as e:
-                outcome, note = "quota", str(e)
-                aborted_on, abort_reason = day, "quota"
+            merged, first_failure, after_ok, after_fail, dispatched = \
+                _fetch_day_bounded(day)
+            total_dispatched += dispatched
+
+            def _save_day(merged=merged, day=day) -> bool:
+                """這天的 surface 落盤，回傳是否真的有資料——不論這天
+                最終判定為成功還是（部分）失敗；PERF-05 修正版契約第
+                5 點：已經成功拿到的資料不為了模擬序列版本的「整天
+                作廢」而丟棄。"""
+                db.save_iv_observation(IvObservation(
+                    symbol=symbol, observed_on=day,
+                    surface=_surface_to_rows(merged), fetched_at=now_utc_iso()))
+                return bool(merged["call"] or merged["put"])
+
+            if first_failure is not None:
+                reason, exc, failed_expiration = first_failure
+                outcome, note = reason, str(exc)
+                aborted_on, abort_reason = day, reason
+                in_flight_after_failure_succeeded += after_ok
+                in_flight_after_failure_failed += after_fail
+                if merged["call"] or merged["put"]:
+                    _save_day()
+                    saved_days += 1
+                    days_with_data += 1
                 break
-            except FetchError as e:
-                outcome, note = "vendor", str(e)
-                aborted_on, abort_reason = day, "vendor"
-                break
-            db.save_iv_observation(IvObservation(
-                symbol=symbol, observed_on=day,
-                surface=_surface_to_rows(merged), fetched_at=now_utc_iso()))
-            saved_days += 1
-            if merged["call"] or merged["put"]:
+
+            if _save_day():
                 days_with_data += 1
             elif _is_weekend(day):
                 days_no_data_expected += 1
             else:
                 days_no_data_unexpected += 1
+            saved_days += 1
+
+        # 因失敗而完全沒被送出去的組合數——「這批工作實際要抓哪幾天
+        # 哪幾個到期日」跟序列版本完全相同（PERF-05 AC），這裡只是算出
+        # 因為提早中止而少送了幾組，不是縮小涵蓋範圍本身。
+        total_planned = len(expirations) * len(schedule)
+        unstarted_due_to_failure = (total_planned - total_dispatched
+                                    if aborted_on else 0)
 
         _emit_backfill_summary(
             emit, symbol=symbol, attempted_days=attempted_days,
@@ -1330,7 +1426,11 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
             days_no_data_expected=days_no_data_expected,
             days_no_data_unexpected=days_no_data_unexpected,
             aborted_on=aborted_on, abort_reason=abort_reason,
-            remaining_gap=len(missing) - saved_days, outcome=outcome)
+            remaining_gap=len(missing) - saved_days, outcome=outcome,
+            failed_expiration=failed_expiration,
+            in_flight_after_failure_succeeded=in_flight_after_failure_succeeded,
+            in_flight_after_failure_failed=in_flight_after_failure_failed,
+            unstarted_due_to_failure=unstarted_due_to_failure)
 
         db.save_iv_backfill_run(IvBackfillRun(symbol=symbol,
                                              ran_on=today.isoformat(),

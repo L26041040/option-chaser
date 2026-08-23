@@ -1045,6 +1045,115 @@ def test_backfill_abort_is_visible_in_the_summary_event(db):
     assert summary[0]["context"]["saved_days"] == 0
 
 
+class _ExpirationRecorder:
+    """PERF-05（#181）：記錄每一次呼叫的到期日，只在特定到期日失敗——
+    模擬同一天的到期日梯子裡「有些成功、剛好某一個撞到配額」，跟
+    `Recorder(fail=...)`（每次呼叫都失敗）刻意不同。"""
+
+    def __init__(self, fail_on):
+        self.calls: list[tuple[str, str, str]] = []
+        self._fail_on = fail_on
+
+    def __call__(self, provider, symbol, on_date, token, expiration=None,
+                observer=None):
+        self.calls.append((symbol, on_date, expiration))
+        if expiration == self._fail_on:
+            raise QuotaExhausted("額度用完")
+        return {"call": [], "put": []}
+
+
+def _client_with_long_expiration_ladder(db, monkeypatch, *, fail_on_first):
+    """壓寬到期日梯子到 20 個（遠超過 `_IV_BACKFILL_DAY_CONCURRENCY`），
+    只讓第一個觸發失敗——bounded concurrency 的行為只有在梯子比批次
+    大小長時才測得出來（梯子比批次小時，「一批」跟「全部」是同一件
+    事，測不出「還有沒送出去的」這件事本身）。"""
+    fake_expirations = [f"2028-{i:02d}-01" for i in range(1, 21)]
+    monkeypatch.setattr(ivhistory, "nearby_expirations",
+                        lambda known, *, today, tenor_days: fake_expirations)
+    rec = _ExpirationRecorder(fail_on=fake_expirations[0] if fail_on_first else None)
+    client = _client(db, surface=rec)
+    _unlock(client)
+    sid = _scenario(client)
+    _get(client, sid, _candidate_key(client, sid))
+    return rec
+
+
+def test_bounded_concurrency_stops_launching_new_batches_after_the_first_failure(
+        db, monkeypatch):
+    """PERF-05（#181）新增：併發批次裡某一次呼叫觸發配額用盡，斷言在
+    那之後沒有新呼叫被啟動——這裡驗證的是「沒有第二天的呼叫」，因為
+    第一天一失敗整批就中止（既有行為，本票不改，見上面
+    `test_backfill_abort_is_visible_in_the_summary_event`）。"""
+    from api_app.main import _IV_BACKFILL_DAY_CONCURRENCY
+
+    rec = _client_with_long_expiration_ladder(db, monkeypatch, fail_on_first=True)
+
+    days_called = {d for _, d, _ in rec.calls}
+    assert len(days_called) == 1, "第一天失敗後不該有任何第二天的呼叫被送出"
+    assert len(rec.calls) <= _IV_BACKFILL_DAY_CONCURRENCY, (
+        "失敗後不該再送出下一批——這一批之後不該有更多批次")
+
+
+def test_the_extra_calls_from_a_failure_are_bounded_by_concurrency_minus_one(
+        db, monkeypatch):
+    """PERF-05（#181）新增：failure 相對 serial 版本多發起的額外呼叫數，
+    硬性上界為 concurrency－1——序列版本遇到第一個失敗就停（只打 1
+    次），bounded concurrency 下同一批次裡其他已經送出的呼叫仍會跑完，
+    但這批的大小本身就是上限，不會無上限發散到梯子剩下的 20 個。"""
+    from api_app.main import _IV_BACKFILL_DAY_CONCURRENCY
+
+    rec = _client_with_long_expiration_ladder(db, monkeypatch, fail_on_first=True)
+
+    extra_calls = len(rec.calls) - 1   # serial 版本本來就會打的那 1 次
+    assert extra_calls <= _IV_BACKFILL_DAY_CONCURRENCY - 1
+
+
+def test_a_failure_in_the_middle_of_a_batch_still_saves_the_successful_siblings(
+        db, monkeypatch):
+    """PERF-05（#181）修正版契約第 5 點：已成功完成的 in-flight
+    observations 正常保留並落盤，不為了模擬 serial 而丟棄已經呼叫
+    vendor、已經付出配額成本拿到的資料——這裡讓梯子裡**不是第一個**
+    的某個到期日失敗，其餘同一批次的到期日仍應該成功落盤。"""
+    fake_expirations = [f"2028-{i:02d}-01" for i in range(1, 5)]  # 剛好一批
+    monkeypatch.setattr(ivhistory, "nearby_expirations",
+                        lambda known, *, today, tenor_days: fake_expirations)
+
+    class _RichExceptOne:
+        def __init__(self):
+            self.calls = []
+
+        def __call__(self, provider, symbol, on_date, token, expiration=None,
+                    observer=None):
+            self.calls.append(expiration)
+            if expiration == fake_expirations[1]:
+                raise QuotaExhausted("額度用完")
+            return _grid()
+
+    rec = _RichExceptOne()
+    client = _client(db, surface=rec)
+    _unlock(client)
+    sid = _scenario(client)
+    body = _get(client, sid, _candidate_key(client, sid)).json()
+
+    summary = _events_for(body, "backfill")
+    assert summary[0]["context"]["outcome"] == "quota"
+    assert summary[0]["context"]["failed_expiration"] == fake_expirations[1]
+    # 3 個到期日成功、1 個失敗——這天仍然落盤（saved_days == 1），
+    # 不是因為那天有一個失敗就整天的資料都不算數。
+    assert summary[0]["context"]["saved_days"] == 1
+    assert summary[0]["context"]["days_with_data"] == 1
+    assert len(rec.calls) == 4, "同一批次的 4 個到期日都該真的被送出去"
+    # `in_flight_after_failure_succeeded`／`_failed` 只計「在 as_completed()
+    # 真實完成順序裡，晚於那個失敗才完成」的呼叫——這 3 個成功呼叫哪些
+    # 算「失敗之前」哪些算「失敗之後」是真實執行緒排程的時間差，不是
+    # 決定性的，這裡只驗證這兩個計數本身合理（非負、總和不超過批次裡
+    # 除了失敗者以外的 3 個），不鎖死切分點。
+    after_ok = summary[0]["context"]["in_flight_after_failure_succeeded"]
+    after_fail = summary[0]["context"]["in_flight_after_failure_failed"]
+    assert after_fail == 0, "這批只有一個失敗，不該有第二個失敗算進 in-flight"
+    assert 0 <= after_ok <= 3
+
+
 def test_response_correlation_id_matches_the_header(db):
     client = _client(db, surface=_rich_surface)
     _unlock(client)
@@ -1159,7 +1268,12 @@ def test_the_backfill_and_reanchor_summaries_take_no_free_text_vendor_params(db)
     assert backfill_params == {
         "emit", "symbol", "attempted_days", "saved_days", "days_with_data",
         "days_no_data_expected", "days_no_data_unexpected", "aborted_on",
-        "abort_reason", "remaining_gap", "outcome"}
+        "abort_reason", "remaining_gap", "outcome",
+        # PERF-05（#181）新增四個：到期日字串（來自 `target_expirations`，
+        # 引擎算出的真實到期日，不是 vendor 自由格式文字）與三個整數
+        # 計數，同樣不是攻擊面。
+        "failed_expiration", "in_flight_after_failure_succeeded",
+        "in_flight_after_failure_failed", "unstarted_due_to_failure"}
 
     reanchor_params = set(inspect.signature(_emit_reanchor_summary).parameters)
     assert reanchor_params == {"emit", "coords", "in_grid", "out_of_grid"}

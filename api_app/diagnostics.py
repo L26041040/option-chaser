@@ -103,6 +103,13 @@ _CONTEXT_KEY_WHITELIST = frozenset({
     "attempted_days", "saved_days", "days_with_data",
     "days_no_data_expected", "days_no_data_unexpected", "days_failed",
     "aborted_on", "abort_reason", "remaining_gap", "outcome",
+    # PERF-05（#181）：cold backfill bounded concurrency 中止時的補充
+    # 欄位——哪個到期日觸發失敗（`failed_expiration`，真實到期日字串，
+    # 不是 vendor 自由格式文字）、觸發失敗那一批裡在它之後才完成的其他
+    # 呼叫各自成功／失敗幾個、因提早中止整批原本規劃的組合裡有幾組
+    # 完全沒被送出去。
+    "failed_expiration", "in_flight_after_failure_succeeded",
+    "in_flight_after_failure_failed", "unstarted_due_to_failure",
     # database_write
     "observed_on", "call_points", "put_points",
     # reanchor 摘要（HIVR-10／#169：`total_dates`／`in_grid_dates`／

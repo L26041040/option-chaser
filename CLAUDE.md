@@ -3391,6 +3391,44 @@ PERF-03→PERF-01→PERF-02→PERF-05→PERF-06→PERF-07）。這是需求方
   `_DIAGNOSTICS_INSERT_COLS`／`_DIAGNOSTICS_TRIM_SQL` 共用（比照既有
   `_RESULT_COLS`／`_SCENARIO_COLS` 慣例）。全套後端測試（記憶體＋
   Postgres 兩組）1485 條全綠。
+- **PERF-05**（#181）✅ Cold Normalized Skew backfill——bounded
+  concurrency，依 2026-08-23 修正版契約（見上方 sequencing 定案段落）
+  施工。設計取捨：併發套用在**單一天內跨到期日**的扇出（一批最多
+  `_IV_BACKFILL_DAY_CONCURRENCY`＝4，`ThreadPoolExecutor`＋
+  `as_completed()` 取真實完成順序），**天與天之間維持嚴格序列**——
+  一天的批次完全解決（全部成功，或整批中止）才會考慮下一天。這是
+  刻意的選擇：既有 regression test（`Recorder` 每次呼叫都失敗、斷言
+  `attempted_days==1`）若允許跨天併發，一個永遠失敗的假體會讓多天的
+  呼叫同時在飛，那條斷言結構上守不住；`/code-review` Spec 軸判斷這是
+  「保守但合規」的實作，不是偷工減料——到期日梯子實務上是個位數項目
+  （量級對齊 concurrency＝4），單天內扇出已經收斂掉主要成本（100 次
+  序列呼叫→約 25 輪），跨天併發留給未來如果需要再開新票。修正版契約
+  七點逐一落實：`_fetch_day_bounded()` 內建批次迴圈，`while idx <
+  len(expirations) and first_failure is None` 確保失敗後不再送出新
+  批次；`ThreadPoolExecutor` 的 `with` 區塊本來就會等全部已送出的
+  futures 做完才離開，不強制 cancel；批次大小＝concurrency，額外呼叫
+  數上界精確等於 concurrency－1；程式註解／測試皆未宣稱「不會多花
+  serial 原本會擋下的額度」（Spec 軸逐字 grep 確認零命中）；同一批次
+  裡失敗前後成功的呼叫一律併入 `merged` 並落盤，不因整天判定失敗而
+  丟棄。Diagnostics：`_emit_backfill_summary()` 新增
+  `failed_expiration`／`in_flight_after_failure_succeeded`／`_failed`／
+  `unstarted_due_to_failure` 四個欄位（已加進 `diagnostics.py` 的
+  `_CONTEXT_KEY_WHITELIST`，否則會被白名單機制悄悄丟棄——這是施工中
+  抓到的一個真實坑，不是預先想到的）。測試：保留既有
+  `test_backfill_abort_is_visible_in_the_summary_event` 不動；新增
+  3 條——併發批次失敗後不再啟動新呼叫、額外呼叫數不超過
+  concurrency－1、批次中段失敗仍保留成功的同批次資料（其中
+  in-flight-after-failure 的成功／失敗切分點刻意不鎖死，因為真實
+  執行緒完成順序本來就不是決定性的，`/code-review` 確認這個鬆綁合理、
+  不是偷懶）。`/code-review`：Standards 軸抓到已修正——`failed_
+  expiration` 缺型別標註、`db.save_iv_observation(...)` 重複邏輯已
+  抽成 `_save_day()` 共用；Spec 軸抓到一項真的漏做——before/after
+  牆鐘量測完全沒留下痕跡（AC 硬性要求）——已補上：本地模擬（不是
+  production 實測，沙箱無出口網路）25 天×4 到期日、模擬延遲
+  50ms／次，serial 5.019s vs bounded concurrency 1.287s，3.9x，
+  推估真實 vendor RTT 落在 profiling 觀察的 15–60 秒量級時可望縮短到
+  約 4–15 秒（未經 production 驗證）。全套後端測試（記憶體＋Postgres
+  兩組）1488 條全綠。
 
 **探測環境選擇（#120／#111 共同記錄）**：使用者原始指示要求建臨時
 Vercel probe，但本輪 Vercel MCP 的 `deploy_to_vercel` 可成功部署，
