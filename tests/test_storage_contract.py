@@ -1135,3 +1135,107 @@ def test_migration_still_applies_when_table_creation_hits_a_race():
     st.create_scenario(_scenario("race"))
     st.save_result(ResultRecord("race", "2026-08-01T00:00:00+00:00", {"n": 1}, 0.5))
     assert st.latest_summaries()["race"].best_return == 0.5
+
+
+# ---------- Request-scoped 連線（PERF-01／#177） ----------
+#
+# adapter 層級測試，不透過 HTTP endpoint（spec 明文要求）：monkeypatch
+# 真正的 `psycopg.connect` 成計數版本，直接驗證 `request_scope()` 讓
+# 一個 scope 內任意多個不同 method 呼叫只開一條連線。
+
+def test_multiple_calls_within_a_request_scope_share_a_single_connection():
+    if not TEST_DB_URL:
+        pytest.skip("需要 OC_TEST_DATABASE_URL（一個跑著的 Postgres）")
+    import psycopg
+
+    from api_app.storage import postgres as pg
+
+    st = pg.PostgresStorage(TEST_DB_URL)
+    with psycopg.connect(TEST_DB_URL, autocommit=True) as conn:
+        conn.execute("TRUNCATE scenarios, results, snapshots, events, rate_cache, "
+                     "dividend_cache, treasury_year_cache, data_source_settings, "
+                     "provider_credentials, provider_verifications, "
+                     "iv_observations, iv_backfill_runs, contract_iv_history "
+                     "RESTART IDENTITY")
+
+    connect_calls = []
+    real_connect = psycopg.connect
+
+    def counting_connect(*args, **kwargs):
+        connect_calls.append((args, kwargs))
+        return real_connect(*args, **kwargs)
+
+    import api_app.storage.postgres as pg_module
+    original_connect = pg_module.psycopg.connect
+    pg_module.psycopg.connect = counting_connect
+    try:
+        with st.request_scope():
+            # 一個 scope 內呼叫好幾個不同的 method——恰好一次 connect()。
+            st.create_scenario(_scenario("scope1"))
+            st.get_rate_cache()
+            st.get_dividend_cache("TLT")
+            st.list_diagnostics()
+        assert len(connect_calls) == 1
+    finally:
+        pg_module.psycopg.connect = original_connect
+
+    # 離開 scope 後：借用中的連線確實關閉、清空——下一次呼叫（scope 外）
+    # 照舊各自開一條新的，不會誤用一條已經關閉的連線。
+    assert pg_module._request_connection.get() is None
+    assert st.get_rate_cache() is None   # 沒炸掉＝沒有沿用一條已關閉的連線
+
+
+def test_request_scope_reconnects_correctly_for_a_fresh_request_afterwards():
+    """離開 scope 後再進一次新的 scope——確認不會沿用上一個 scope 已經
+    關閉的連線物件（ContextVar 每次 scope 都設一條新的）。"""
+    if not TEST_DB_URL:
+        pytest.skip("需要 OC_TEST_DATABASE_URL（一個跑著的 Postgres）")
+    import psycopg
+
+    from api_app.storage import postgres as pg
+
+    st = pg.PostgresStorage(TEST_DB_URL)
+    with psycopg.connect(TEST_DB_URL, autocommit=True) as conn:
+        conn.execute("TRUNCATE scenarios, results, snapshots, events, rate_cache, "
+                     "dividend_cache, treasury_year_cache, data_source_settings, "
+                     "provider_credentials, provider_verifications, "
+                     "iv_observations, iv_backfill_runs, contract_iv_history "
+                     "RESTART IDENTITY")
+
+    with st.request_scope():
+        st.create_scenario(_scenario("scope2"))
+    with st.request_scope():
+        # 新的 scope、新的連線——這裡如果誤用了上一個已關閉的連線會直接炸掉。
+        assert st.get_scenario("scope2") is not None
+
+
+def test_a_failure_opening_the_scope_falls_back_to_per_call_connections():
+    """`request_scope()` 開連線本身失敗時，不讓整個 request 跟著炸掉
+    ——退回既有逐次開連線行為，呼叫端完全不受影響。"""
+    if not TEST_DB_URL:
+        pytest.skip("需要 OC_TEST_DATABASE_URL（一個跑著的 Postgres）")
+    import psycopg
+
+    from api_app.storage import postgres as pg
+
+    st = pg.PostgresStorage(TEST_DB_URL)
+    with psycopg.connect(TEST_DB_URL, autocommit=True) as conn:
+        conn.execute("TRUNCATE scenarios, results, snapshots, events, rate_cache, "
+                     "dividend_cache, treasury_year_cache, data_source_settings, "
+                     "provider_credentials, provider_verifications, "
+                     "iv_observations, iv_backfill_runs, contract_iv_history "
+                     "RESTART IDENTITY")
+
+    import api_app.storage.postgres as pg_module
+    original_connect = pg_module.psycopg.connect
+    pg_module.psycopg.connect = lambda *a, **k: (_ for _ in ()).throw(
+        RuntimeError("db 暫時連不上"))
+    try:
+        with st.request_scope():
+            pass   # __enter__ 本身沒有拋出——開連線失敗被吞掉了
+        assert pg_module._request_connection.get() is None
+    finally:
+        pg_module.psycopg.connect = original_connect
+
+    # scope 結束後，正常呼叫（連線已恢復）不受影響。
+    assert st.get_rate_cache() is None

@@ -755,6 +755,25 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
             cached["db"] = storage_from_env()
         return cached["db"]
 
+    # PERF-01（#177）：warm 的 storage-heavy 路徑（例如 `/iv-history`）
+    # 一次 request 觸發十幾次 `Storage` method 呼叫，Postgres adapter
+    # 原本每次呼叫都各自重新開一條全新連線——這裡在 request 最外層借出
+    # 一條共用連線，離開時歸還。`memory.py` 沒有 `request_scope()` 這個
+    # 方法（`Storage` Protocol 也沒有這個方法，兩者皆零改動），用
+    # `getattr` 拿不到就直接跳過，行為完全比照今天。`_db()` 本身可能
+    # 丟出例外（例如環境變數沒設好）——這裡也要容忍，不然會連
+    # `/api/health` 這種本來就設計成容忍連不上的端點都被這層擋在前面。
+    @app.middleware("http")
+    async def _storage_connection_scope_middleware(request: Request, call_next):
+        try:
+            scope = getattr(_db(), "request_scope", None)
+        except Exception:  # noqa: BLE001 — 拿不到 storage 就整個跳過，交給下游端點自己的錯誤處理
+            scope = None
+        if scope is None:
+            return await call_next(request)
+        with scope():
+            return await call_next(request)
+
     # 同一個道理：包快取的動作本身不必每次分析重做一次，惰性建一次、
     # 快取物件重用即可（`cached_loader()` 回傳的閉包內部沒有狀態，
     # 重不重建都不影響行為，這裡只是省一次函式呼叫）。
@@ -1180,14 +1199,27 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
 
     # ---------- Historical IV：快取、漸進補齊、額度（#126／#130） ----------
 
-    def _known_secrets() -> tuple[str, ...]:
+    def _credential_map() -> dict[str, ProviderCredential | None]:
+        """一次拿齊全部 Provider 的 credential（PERF-01／#177）——
+        `_settings_view()`／`_known_secrets()`／iv-history 端點裡挑選中
+        Provider 的 token 取得，原本三處各自對 storage 重新查一次同一批
+        資料，這裡改成算一次、往下傳給需要的地方使用。兩個參數皆為
+        `None` 時的既有呼叫端（Settings 端點等）不受影響——那些端點本來
+        就只呼叫一次，沒有重複讀取的問題，不必跟著改。"""
+        db = _db()
+        return {p.id: db.get_credential(p.id) for p in providers.SUPPORTED_PROVIDERS}
+
+    def _known_secrets(*, credentials: dict[str, ProviderCredential | None] | None = None
+                       ) -> tuple[str, ...]:
         """目前現行的祕密值——provider token 與 `DATABASE_URL` 家族環境
         變數的值（DG-03／#146）。這是 redaction 白名單以外的最後一道
         防線：即使某個字串意外落在白名單欄位裡，只要逐字等於這裡的
-        任何一個值，一樣會被換成 `[redacted]`。"""
-        db = _db()
-        tokens = tuple(cred.token for p in providers.SUPPORTED_PROVIDERS
-                       if (cred := db.get_credential(p.id)) is not None)
+        任何一個值，一樣會被換成 `[redacted]`。
+
+        `credentials` 可選——傳入時直接使用（PERF-01／#177，呼叫端已經
+        算過一次），不傳時照舊自己查一次，行為不變。"""
+        creds = credentials if credentials is not None else _credential_map()
+        tokens = tuple(cred.token for cred in creds.values() if cred is not None)
         return tokens + database_url_candidates()
 
     def _backfill_iv(symbol: str, provider: str, token: str,
@@ -1664,14 +1696,18 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         什麼才查得到。
         """
         sc = _require(scenario_id)
-        settings_view = _settings_view()
+        # PERF-01（#177）：這個 request 內 credential 只查一次，往下傳給
+        # `_settings_view()`／`_known_secrets()`／挑選中 Provider 的
+        # token 取得三處共用——原本各自重新查一次同一批資料。
+        credentials = _credential_map()
+        settings_view = _settings_view(credentials=credentials)
         if not settings_view["historical_iv_enabled"]:
             raise HTTPException(
                 status_code=403,
                 detail="Historical IV 未啟用——請在設定頁選擇自訂資料源並通過測試連線")
 
         diag = _CollectingDiagnostics()
-        secrets = _known_secrets()
+        secrets = _known_secrets(credentials=credentials)
 
         def _make_emit(subsystem: str):
             def _emit(*, stage: str, severity: str, message: str, **context):
@@ -1704,7 +1740,7 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
                                 detail=f"找不到候選：{candidate_key}")
 
         provider = settings_view["historical_iv"]["provider"]
-        token = _db().get_credential(provider).token
+        token = credentials[provider].token
 
         # Exact-contract 家族（HIVT-02／#153）：跟下面 (tenor, delta)
         # 重錨定家族完全獨立，不吃 `coords`，兩邊都算完才一起回應。
@@ -1791,14 +1827,21 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
 
     # ---------- 設定：資料源與 Provider credential（Settings／#124） ----------
 
-    def _settings_view() -> dict:
+    def _settings_view(*, credentials: dict[str, ProviderCredential | None] | None = None
+                       ) -> dict:
         """設定頁的完整 view dict。
 
         **這裡是 token 的邊界**：回應只帶 `providers.mask_token()` 的遮罩
         形式，完整 token 不曾出現在任何欄位裡（#124 硬性 AC，有測試明文
-        斷言）。`credentials` 以 **provider** 為 key，不是以資料用途為
-        key——兩列選同一個 Provider 時看到的是同一筆，前端因此不會要求
-        使用者輸入同一把 token 兩次。
+        斷言）。`credentials` 回應欄位以 **provider** 為 key，不是以資料
+        用途為 key——兩列選同一個 Provider 時看到的是同一筆，前端因此
+        不會要求使用者輸入同一把 token 兩次。
+
+        `credentials` 參數（PERF-01／#177）：呼叫端已經算過一次 provider
+        → credential 的對照時可以直接傳進來，不傳就照舊自己查一次
+        （`_credential_map()`），行為不變——只有 `credential` 這批資料
+        會被重用，`get_verification()` 仍然照舊逐一查（沒有重複讀取的
+        問題，`_known_secrets()` 不需要驗證結果）。
         """
         db = _db()
         stored = db.get_settings()
@@ -1808,9 +1851,10 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
             providers.HISTORICAL_IV:
                 stored.historical_iv if stored else UsageSetting(mode=providers.MODE_DEFAULT),
         }
+        creds_map = credentials if credentials is not None else _credential_map()
         creds: dict[str, dict] = {}
         for p in providers.SUPPORTED_PROVIDERS:
-            got = db.get_credential(p.id)
+            got = creds_map[p.id]
             checked = db.get_verification(p.id)
             creds[p.id] = {
                 "configured": got is not None,

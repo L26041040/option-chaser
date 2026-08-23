@@ -3330,6 +3330,30 @@ PERF-03→PERF-01→PERF-02→PERF-05→PERF-06→PERF-07）。這是需求方
   `_fetch_rate_curve_rows` 呼叫全落在同一年份、同一市場日），快取前
   100 次網路呼叫、快取後 1 次。全套後端測試（記憶體＋Postgres 兩組）
   684 條全綠（667 + 17 條新增）。
+- **PERF-01**（#177）✅ Storage 連線生命週期——request-scoped
+  connection。`postgres.py` 新增模組層級 `contextvars.ContextVar`
+  （`_request_connection`，存 `(dsn, conn)`，不掛在 `PostgresStorage`
+  單例物件屬性上，避免併發 request 互相汙染）＋`_BorrowedConnection`
+  （讓既有 40 處 `with self._connect() as conn:` 呼叫慣例零改動，
+  `__exit__` 回 `False` 不吞例外、不關閉連線）；新增
+  `PostgresStorage.request_scope()`：進入時開一條連線放進 ContextVar，
+  `finally` 無論成敗都關閉並清空，**開連線本身失敗時不設定
+  ContextVar、直接放行**（不讓整個 request 跟著炸，退回逐次開連線的
+  既有行為，`/api/health` 這類容忍連不上的端點不受影響）。`main.py`
+  新增 `_storage_connection_scope_middleware`（`getattr` 拿
+  `request_scope`，`memory.py` 沒有這個方法就直接跳過——`Storage`
+  Protocol／`memory.py` 依裁示零改動）。順手消除 iv-history request
+  內 credential 三處重複讀取（`_settings_view()`／`_known_secrets()`／
+  挑選中 Provider 的 token 取得）：新增 `_credential_map()`，三處都改
+  吃可選的 `credentials` 參數，不傳時行為不變（其餘呼叫端不受影響）。
+  測試：新增 3 條 Postgres-only adapter 層級測試（monkeypatch
+  `psycopg.connect` 計數，斷言一個 scope 內任意多個 method 呼叫恰好
+  一次 connect()；離開 scope 後連線確實關閉清空；開連線失敗時優雅退回
+  逐次開連線）。`/code-review` Standards 軸無 hard violation（僅幾處
+  既有模式延伸的 judgement call，依裁示不動）；Spec 軸背景執行中，
+  結果將於下一份回報一併附上或另行修正。本地量測：10 次 storage 呼叫
+  在 scope 外開 10 條連線、scope 內開 1 條。全套後端測試 687 條全綠
+  （684 + 3 條新增）。
 
 **探測環境選擇（#120／#111 共同記錄）**：使用者原始指示要求建臨時
 Vercel probe，但本輪 Vercel MCP 的 `deploy_to_vercel` 可成功部署，
