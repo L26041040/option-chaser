@@ -27,7 +27,7 @@ block 裡，不能切成好幾個 code block、也不能中間插普通文字把
 `［回報#001］spec #137 拆票完成`）。編號是**累計總數**，不因換
 session、換分支、換主題而歸零——目前最新編號記在這裡：
 
-> 目前次序：022（下一份回報用 023）
+> 目前次序：023（下一份回報用 024）
 
 每發一份回報就把上面這個數字改成剛剛用掉的那個，跟著那次改動一起
 commit（沒有其他改動要 commit 時，單獨為這一行開一個小 commit 也
@@ -3258,6 +3258,28 @@ backfill 必須是 bounded concurrency，不要求現在指定固定數字但不
 排序（風險最低、獨立可驗證），非強制依賴順序。範圍再次確認排除：
 不做 V2、不做 N-leg、不做 main.py architecture extraction、不做
 無關 cleanup。**尚未開始 implementation**，等需求方指示。
+
+**PERF-05 [#181] AC 修正——不可能契約改寫（2026-08-23，施工前，
+尚未開始 implementation）**：需求方拆票整體批准後，指出原 AC 有一條
+不可能契約——「不會因為併發而多花掉序列版本本來會擋下來的額度」。
+Bounded concurrency 下這件事在數學上不成立：第一個 failure 被觀測前，
+最多已有 concurrency－1 個其他 requests 已經 in-flight。已改寫為
+誠實、可驗證的上界式契約：(1) 第一個 failure 被觀測後不再啟動任何
+新 vendor request；(2) 已 in-flight 的 requests 允許完成、不強制
+cancel；(3) failure 相對 serial 造成的額外 request 數硬性上界為
+concurrency－1；(4) 不得宣稱「不會多花 serial 原本會擋下的額度」；
+(5) 已成功完成的 in-flight observations 正常保留落盤，不為模擬
+serial 而丟棄已付出配額成本拿到的資料；(6) diagnostics 新增記錄
+failure 事件／in-flight completions／本批最終結果摘要三項；
+(7) regression test 新增鎖住上界與「failure 後不再啟動新工作」兩條
+斷言，原「序列版本整批中止」測試維持不動。issue #181 body 已更新
+（保留修正前歷史於 issue 內文，未刪除重寫）。
+
+**Sequencing 定案（2026-08-23，取代先前「建議排序」）**：
+`#180 → #179 → #177 → #178 → #181 → #182 → #183`（即 PERF-04→
+PERF-03→PERF-01→PERF-02→PERF-05→PERF-06→PERF-07）。這是需求方
+指定的固定執行順序，非程式碼層級硬阻擋——PERF-01～06 之間仍然沒有
+`Blocked by` 依賴，只有 PERF-07 繼續 `Blocked by` 全部六張。
 
 **探測環境選擇（#120／#111 共同記錄）**：使用者原始指示要求建臨時
 Vercel probe，但本輪 Vercel MCP 的 `deploy_to_vercel` 可成功部署，
