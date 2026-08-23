@@ -9,7 +9,6 @@ from datetime import timedelta
 
 from fastapi.testclient import TestClient
 
-from api_app import chain_cache
 from api_app.main import create_app
 from api_app.storage.memory import MemoryStorage
 from option_chaser.data.snapshot import load_snapshot, snapshot_to_csv
@@ -18,9 +17,10 @@ FIX = "tests/fixtures/xyz_v4_six_expiries.json"
 NEW = {"symbol": "XYZ", "target_price": 130.0, "target_month": "2026-09"}
 
 
-def _client(*, storage=None):
+def _client(*, storage=None, **overrides):
     snap = load_snapshot(FIX)
-    return TestClient(create_app(fetch=lambda symbol: snap, storage=storage or MemoryStorage()))
+    return TestClient(create_app(fetch=lambda symbol: snap,
+                                 storage=storage or MemoryStorage(), **overrides))
 
 
 def _create(client, **overrides):
@@ -107,23 +107,23 @@ def test_raw_data_json_and_csv_carry_the_same_row_count():
     assert len(raw["contracts"]) == csv_data_rows
 
 
-def test_raw_data_follows_the_latest_refresh_not_a_stale_one(monkeypatch):
+def test_raw_data_follows_the_latest_refresh_not_a_stale_one():
     """原始資料跟著「最新一次結果」的 `analyzed_at` 走——重刷後拿到的
     要是新的那份快照，不是第一次刷新時存的舊資料。"""
     import dataclasses
 
     # PERF-06（#182）：這裡刻意對同一個 symbol 連續觸發兩次「真的重新
-    # 抓一次」，跟短效期 chain cache 的設計目的直接衝突，關掉這裡的
-    # 快取重用——這條測試驗證的是「回應跟著最新結果走」，不是在測
-    # chain cache 本身。
-    monkeypatch.setattr(chain_cache, "CHAIN_CACHE_TTL", timedelta(seconds=0))
+    # 抓一次」，跟短效期 chain cache 的設計目的直接衝突，傳
+    # chain_cache_ttl=0 停用快取重用（create_app() 既有 DI 慣例）——
+    # 這條測試驗證的是「回應跟著最新結果走」，不是在測 chain cache 本身。
     storage = MemoryStorage()
-    c = _client(storage=storage)
+    c = _client(storage=storage, chain_cache_ttl=timedelta(seconds=0))
     sc = _create(c)
     c.post(f"/api/scenarios/{sc['id']}/refresh").raise_for_status()
 
     newer = dataclasses.replace(load_snapshot(FIX), fetched_at="2026-07-16T09:30:00-04:00")
-    c2 = TestClient(create_app(fetch=lambda symbol: newer, storage=storage))
+    c2 = TestClient(create_app(fetch=lambda symbol: newer, storage=storage,
+                               chain_cache_ttl=timedelta(seconds=0)))
     c2.post(f"/api/scenarios/{sc['id']}/refresh").raise_for_status()
 
     raw = c2.get(f"/api/scenarios/{sc['id']}/raw-data").json()

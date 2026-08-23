@@ -9,7 +9,6 @@ from datetime import timedelta
 
 from fastapi.testclient import TestClient
 
-from api_app import chain_cache
 from api_app.main import create_app
 from api_app.storage.memory import MemoryStorage
 from option_chaser.data.snapshot import load_snapshot
@@ -301,18 +300,18 @@ def test_list_does_not_ship_the_whole_view():
     assert "view" not in row
 
 
-def test_reanalysis_updates_the_card_to_the_newer_numbers(monkeypatch):
+def test_reanalysis_updates_the_card_to_the_newer_numbers():
     """清單讀的必須是**最新**那一筆結果，不是第一筆。
 
     兩次都餵同一份快照的話，時間戳與數字都一樣，測不出讀新讀舊的差別
     ——所以第二次餵一份 `fetched_at` 與價格都不同的快照。
 
     PERF-06（#182）：這裡刻意連續對同一個 symbol 觸發兩次「真的重新
-    抓一次」，跟短效期 chain cache 的設計目的直接衝突，關掉這裡的
-    快取重用——這條測試驗證的是清單讀新不讀舊，不是在測 chain cache
-    本身。
+    抓一次」，跟短效期 chain cache 的設計目的直接衝突——傳
+    `chain_cache_ttl=0` 停用快取重用（`create_app()` 既有 DI 慣例，
+    不用伸手改模組內部狀態），讓這條測試繼續驗證它原本要驗證的事
+    （清單讀新不讀舊），不是在測 chain cache 本身。
     """
-    monkeypatch.setattr(chain_cache, "CHAIN_CACHE_TTL", timedelta(seconds=0))
     import dataclasses
 
     snaps = [load_snapshot(FIX)]
@@ -326,7 +325,8 @@ def test_reanalysis_updates_the_card_to_the_newer_numbers(monkeypatch):
         calls["n"] += 1
         return snap
 
-    client = TestClient(create_app(fetch=fetch, storage=MemoryStorage()))
+    client = TestClient(create_app(fetch=fetch, storage=MemoryStorage(),
+                                   chain_cache_ttl=timedelta(seconds=0)))
     sc = _create(client)
 
     client.post(f"/api/scenarios/{sc['id']}/refresh").raise_for_status()

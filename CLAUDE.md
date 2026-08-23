@@ -3432,27 +3432,48 @@ PERF-03→PERF-01→PERF-02→PERF-05→PERF-06→PERF-07）。這是需求方
 - **PERF-06**（#182）✅ 同 symbol chain 重複抓取去重——次要、範圍受限，
   單獨切掉不影響 PERF-01～05／07。新增 `api_app/chain_cache.py`：
   `cached_fetch_chain()` 包住整個既有 `_fetch_chain()`（不管內部走
-  自訂還是預設來源），鍵是 symbol，短效期 `CHAIN_CACHE_TTL`（2 分鐘，
-  具名可調）——刻意**不**比照 `rate_cache.py`／`dividend_cache.py`／
+  自訂還是預設來源），鍵是 symbol，短效期 `CHAIN_CACHE_TTL`，具名
+  可調——刻意**不**比照 `rate_cache.py`／`dividend_cache.py`／
   `treasury_cache.py` 的市場日／年份三態設計：這裡是即時報價，短效期
   本身就是正確語意，失敗也不快取（例外原樣往上炸，跟今天行為一致）。
   `Storage` Protocol 新增 `ChainCacheEntry`＋`get_chain_cache`／
   `save_chain_cache`（memory／postgres 皆補齊，postgres 新增
-  `chain_cache` 表）。main.py 用既有 `_rate_curve_loader()` 同一套
-  惰性單例模式包裝，快取命中時連 `_fetch_chain()` 自己的 settings／
-  credential 查詢都省下來。**施工中發現一個真實坑並修正**：3 條既有
-  測試（`test_history_is_one_continuous_series_across_refreshes_
-  with_a_gap`／`test_raw_data_follows_the_latest_refresh_not_a_
-  stale_one`／`test_reanalysis_updates_the_card_to_the_newer_
-  numbers`）刻意對同一個 symbol 連續觸發兩三次「真的重新抓一次」
-  （驗證歷史序列／原始資料／清單都跟著最新結果走），跟新快取的設計
-  目的直接衝突——這三條測試各自 `monkeypatch.setattr(chain_cache,
-  "CHAIN_CACHE_TTL", timedelta(seconds=0))` 關掉快取重用，讓它們繼續
-  驗證原本要驗證的事，不是在測 chain cache 本身；已加註解說明原因。
-  這也是一個誠實記在案的產品層取捨：使用者在 TTL 視窗內對**同一個**
-  劇本連續按兩次刷新，第二次會拿到跟第一次一樣的快照（不是 bug，是
-  AC 明文裁示的「即時報價，短效期本身就是正確語意」，跟「同一批刷新
-  裡不同劇本共用同一個 symbol」是同一套機制、不可分離的副作用）。
+  `chain_cache` 表）。main.py 新增 `chain_cache_ttl` 參數（比照既有
+  `fetch`／`rate_loader`／`dividend_loader` 的 DI 慣例），用既有
+  `_rate_curve_loader()` 同一套惰性單例模式包裝，快取命中時連
+  `_fetch_chain()` 自己的 settings／credential 查詢都省下來。
+
+  **施工中發現一個真實坑並修正**：3 條既有測試（`test_history_is_
+  one_continuous_series_across_refreshes_with_a_gap`／`test_raw_
+  data_follows_the_latest_refresh_not_a_stale_one`／`test_
+  reanalysis_updates_the_card_to_the_newer_numbers`）刻意對同一個
+  symbol 連續觸發兩三次「真的重新抓一次」（驗證歷史序列／原始資料／
+  清單都跟著最新結果走），跟新快取的設計目的直接衝突——已改傳
+  `chain_cache_ttl=timedelta(seconds=0)`（`create_app()` DI 參數）
+  停用快取重用，讓它們繼續驗證原本要驗證的事，不是在測 chain cache
+  本身。
+
+  **`/code-review` 兩輪修正**：第一輪（Standards 軸）：原本用
+  `monkeypatch.setattr(chain_cache, "CHAIN_CACHE_TTL", ...)` 改模組
+  內部狀態停用測試裡的快取——本地檢查全部通過（截斷時間戳不會導致
+  `age` 算成負值，邏輯本身正確），但抓到這不是本專案既有慣例（既有
+  `monkeypatch` 案例一律打在抓取／IO 接縫，不是內部調校常數上，本專案
+  DI 早就有 `fetch=`／`rate_loader=`／`dividend_loader=` 這套模式可用）
+  ——已改成 `cached_fetch_chain(..., ttl=...)` 顯式參數＋`create_app()`
+  的 `chain_cache_ttl` DI 參數，三條測試改用 `create_app(...,
+  chain_cache_ttl=timedelta(0))`。第二輪（Spec 軸）：明確指出「使用者
+  對同一個劇本連續按兩次刷新」跟「同一批刷新裡不同劇本共用同一個
+  symbol」在這個純 wall-clock TTL 設計下**結構上無法區分**，原本
+  2 分鐘的 TTL 對真實使用者「過一陣子再手動重新整理」這個明顯不同的
+  操作意圖太寬鬆，會讓使用者在毫無提示的情況下看到舊快照——這是需要
+  誠實記在案的產品層取捨，不能默默吸收成測試修正的副作用。已將
+  `CHAIN_CACHE_TTL` 從 2 分鐘壓到 **15 秒**（大到足以吃到前端逐劇本
+  序列送出的同批次請求，小到讓「使用者稍後再手動重新整理」幾乎不會
+  落在窗內看到沒有提示的舊資料），並在 `chain_cache.py` 模組 docstring
+  明文記下這個取捨與依據；AC 本身已明文接受「即時報價、短效期即正確
+  語意」這個政策方向，本輪修正是把 TTL 數字調整到更保守、更貼近
+  AC 意圖的值，不是推翻 AC。
+
   測試：新增 `tests/test_api_chain_cache.py`（8 條，涵蓋首次快取／
   TTL 內重用／過期後恢復各自抓取／symbol 互相獨立／失敗不快取／
   快取讀取失敗優雅退回／序列化往返）與 `test_storage_contract.py`

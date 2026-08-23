@@ -33,6 +33,7 @@ from option_chaser.valuation import DAYS_PER_YEAR, days_between
 from option_chaser.workspace import now_utc_iso, ny_today
 
 from . import diagnostics, providers
+from . import chain_cache
 from .chain_cache import cached_fetch_chain
 from .dividend_cache import cached_loader as cached_dividend_loader
 from .rate_cache import cached_loader
@@ -736,6 +737,7 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
                    providers.default_contract_history,
                rate_curve_rows: RateCurveRowsFetch =
                    treasury_data.fetch_curve_range,
+               chain_cache_ttl: timedelta = chain_cache.CHAIN_CACHE_TTL,
                ) -> FastAPI:
     """`fetch`／`storage`／`rate_loader`／`dividend_loader` 皆可注入：
     測試傳入固定快照、記憶體假體與假來源，因此不打真網路、不碰真資料庫，
@@ -883,7 +885,8 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
 
     def _cached_fetch_chain() -> Callable[[str], ChainSnapshot]:
         if "fn" not in cached_chain:
-            cached_chain["fn"] = cached_fetch_chain(_db(), _fetch_chain)
+            cached_chain["fn"] = cached_fetch_chain(_db(), _fetch_chain,
+                                                    ttl=chain_cache_ttl)
         return cached_chain["fn"]
 
     def _require(scenario_id: str) -> Scenario:
