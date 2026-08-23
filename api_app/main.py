@@ -39,6 +39,7 @@ from .storage import (ContractHistory, DataSourceSettings, IvBackfillRun,
                       RateCacheEntry, ResultRecord, ResultSummary, Scenario,
                       ScenarioExists, Storage, UsageSetting)
 from .storage.factory import database_url_candidates, storage_from_env
+from .treasury_cache import cached_rate_curve_rows
 
 FetchChain = Callable[[str], ChainSnapshot]
 # 自訂 Provider 的兩條路徑（Settings／#125），皆可注入 → 測試離線。
@@ -705,11 +706,13 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
     專用，回傳一段區間**全部**的曲線列（不是只回最新一列的
     `rate_loader`）——`ratecurve.curve_asof()` 用它逐一觀測日查表，
     每筆觀測的利率因此對齊自己的日期，不是套用「今天」的曲線。預設接
-    HIVR-01（#160）新增的 `treasury.fetch_curve_range`；Treasury 不像
-    付費 vendor 有配額顧慮，本票範圍內選擇每次請求即時抓取、不另外
-    疊一層持久快取（跟 `rate_loader`／`dividend_loader` 為了扛
-    serverless 唯讀檔案系統與 vendor 配額而疊的 Neon 持久快取不同一個
-    考量），失敗只讓那幾天的觀測記成 `no_rate`、不擋其餘計算。
+    HIVR-01（#160）新增的 `treasury.fetch_curve_range`，是這個參數本身
+    收到的**未快取**來源——真正對外生效的是 `_cached_rate_curve_rows()`
+    包出來、疊了 PERF-03（#179）年份為鍵持久快取的版本，見下方；失敗
+    只讓那幾天的觀測記成 `no_rate`、不擋其餘計算。（HIVR-06 當時的決定
+    「不疊持久快取、每次即時抓取」已由 PERF-03 的效能實測結果取代——
+    同一 symbol 第二次以後的 iv-history 請求不必再對外打 Treasury 的
+    即時 HTTP 請求。）
 
     `rate_loader`（#67）是資料源本身的介面——目前預設接的
     `service.default_rate_curve_loader`（Treasury）是 #73／#74 選型與
@@ -768,6 +771,15 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         if "loader" not in cached_dividend:
             cached_dividend["loader"] = cached_dividend_loader(_db(), dividend_loader)
         return cached_dividend["loader"]
+
+    # PERF-03（#179）：同一個惰性建一次、重用閉包的模式，鍵是年份而非
+    # 固定一筆／symbol，見 `treasury_cache.cached_rate_curve_rows`。
+    cached_treasury_rows: dict[str, Callable] = {}
+
+    def _cached_rate_curve_rows() -> Callable[[date, date, date], tuple]:
+        if "fn" not in cached_treasury_rows:
+            cached_treasury_rows["fn"] = cached_rate_curve_rows(_db(), rate_curve_rows)
+        return cached_treasury_rows["fn"]
 
     def _fetch_chain(symbol: str) -> ChainSnapshot:
         """依設定挑抓鏈路徑（Settings／#125）。
@@ -1416,13 +1428,22 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         """HIVR-06（#165）：涵蓋 `dates` 全部日期所需年份的曲線列，供
         `_rate_by_date_for_leg()` 逐一觀測日查表。空輸入或抓取失敗都回
         空 tuple——呼叫端據此讓每一筆觀測記成 `no_rate`，不擋其餘計算
-        （這裡刻意不拋出，抓取失敗不是使用者能做什麼的錯誤）。"""
+        （這裡刻意不拋出，抓取失敗不是使用者能做什麼的錯誤）。
+
+        PERF-03（#179）：走 `_cached_rate_curve_rows()`（年份為鍵的
+        持久快取），不是直接呼叫注入進來的 `rate_curve_rows`——後者是
+        快取層底下**未快取**的來源，測試假體也接在這一層（`treasury_
+        cache.cached_rate_curve_rows()` 本身對任意 `Callable[[date,
+        date], tuple]` 都成立，包括測試的固定回傳假體）。`today` 用
+        `ny_today()`（紐約曆日）判斷「今年」——與全站既有市場日語意
+        同一個時區基準。
+        """
         if not dates:
             return ()
         from_date = date.fromisoformat(min(dates))
         to_date = date.fromisoformat(max(dates))
         try:
-            return rate_curve_rows(from_date, to_date)
+            return _cached_rate_curve_rows()(from_date, to_date, ny_today())
         except Exception:  # noqa: BLE001 — 抓不到就讓下游逐筆記 no_rate
             return ()
 

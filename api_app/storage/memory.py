@@ -11,7 +11,7 @@ from collections import deque
 from . import (ContractHistory, DataSourceSettings, DividendCacheEntry,
                IvBackfillRun, IvObservation, ProviderCredential,
                ProviderVerification, RateCacheEntry, ResultRecord,
-               ResultSummary, Scenario, ScenarioExists)
+               ResultSummary, Scenario, ScenarioExists, TreasuryYearCacheEntry)
 from ..diagnostics import RETENTION_LIMIT, DiagnosticEvent
 
 
@@ -23,6 +23,7 @@ class MemoryStorage:
         self._events: list[dict] = []
         self._rate_cache: RateCacheEntry | None = None
         self._dividend_cache: dict[str, DividendCacheEntry] = {}
+        self._treasury_year_cache: dict[int, TreasuryYearCacheEntry] = {}
         self._settings: DataSourceSettings | None = None
         self._credentials: dict[str, ProviderCredential] = {}
         self._verifications: dict[str, ProviderVerification] = {}
@@ -150,6 +151,14 @@ class MemoryStorage:
 
     def save_dividend_cache(self, entry: DividendCacheEntry) -> None:
         self._dividend_cache[entry.symbol] = entry
+
+    # ---------- Treasury 曲線列快取（PERF-03／#179，per-year） ----------
+
+    def get_treasury_year_cache(self, year: int) -> TreasuryYearCacheEntry | None:
+        return self._treasury_year_cache.get(year)
+
+    def save_treasury_year_cache(self, entry: TreasuryYearCacheEntry) -> None:
+        self._treasury_year_cache[entry.year] = entry
 
     # ---------- 資料源設定與 credential（Settings／#124） ----------
 

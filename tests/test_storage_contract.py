@@ -20,7 +20,8 @@ from api_app.storage import (ContractHistory, DataSourceSettings,
                              DividendCacheEntry, IvBackfillRun, IvObservation,
                              ProviderCredential, ProviderVerification,
                              RateCacheEntry, ResultRecord, Scenario,
-                             ScenarioExists, UsageSetting)
+                             ScenarioExists, TreasuryYearCacheEntry,
+                             UsageSetting)
 from api_app.storage.memory import MemoryStorage
 
 TEST_DB_URL = os.environ.get("OC_TEST_DATABASE_URL")
@@ -47,7 +48,7 @@ def storage(request):
     # 清庫是測試自己的事，不放進正式 adapter（正式環境不該有 TRUNCATE）。
     with psycopg.connect(TEST_DB_URL, autocommit=True) as conn:
         conn.execute("TRUNCATE scenarios, results, snapshots, events, rate_cache, "
-                     "dividend_cache, data_source_settings, "
+                     "dividend_cache, treasury_year_cache, data_source_settings, "
                      "provider_credentials, provider_verifications, "
                      "iv_observations, iv_backfill_runs, contract_iv_history, "
                      "diagnostics RESTART IDENTITY")
@@ -481,6 +482,67 @@ def test_dividend_cache_does_not_leak_across_symbols(storage):
     assert storage.get_dividend_cache("TLT").history["symbol"] == "TLT"
     assert storage.get_dividend_cache("SPY").history is None
     assert storage.get_dividend_cache("SPY").note == "SPY 配息資料不可得"
+
+
+# ---------- Treasury 曲線列快取（PERF-03／#179，per-year） ----------
+
+def test_treasury_year_cache_starts_empty(storage):
+    assert storage.get_treasury_year_cache(2026) is None
+
+
+def test_treasury_year_cache_roundtrips_a_successful_fetch(storage):
+    entry = TreasuryYearCacheEntry(
+        year=2026, fetched_at="2026-08-10T12:00:00+00:00",
+        rows=[["2026-01-01", [[1.0, 0.041], [30.0, 0.043]]]],
+        note="Treasury 2026 年曲線（1 個交易日）")
+    storage.save_treasury_year_cache(entry)
+    assert storage.get_treasury_year_cache(2026) == entry
+
+
+def test_treasury_year_cache_roundtrips_market_day_and_attempted_day(storage):
+    entry = TreasuryYearCacheEntry(
+        year=2026, fetched_at="2026-08-10T12:00:00+00:00",
+        rows=[["2026-01-01", [[1.0, 0.041]]]],
+        note="Treasury 2026 年曲線",
+        market_day="2026-08-10", attempted_day="2026-08-10")
+    storage.save_treasury_year_cache(entry)
+    assert storage.get_treasury_year_cache(2026) == entry
+
+
+def test_treasury_year_cache_can_record_a_failed_attempt(storage):
+    entry = TreasuryYearCacheEntry(year=2026, fetched_at="2026-08-10T12:00:00+00:00",
+                                   rows=None, note="Treasury 曲線不可得")
+    storage.save_treasury_year_cache(entry)
+    assert storage.get_treasury_year_cache(2026) == entry
+
+
+def test_treasury_year_cache_overwrites_rather_than_accumulates(storage):
+    storage.save_treasury_year_cache(TreasuryYearCacheEntry(
+        year=2026, fetched_at="2026-08-10T00:00:00+00:00",
+        rows=None, note="Treasury 曲線不可得"))
+    storage.save_treasury_year_cache(TreasuryYearCacheEntry(
+        year=2026, fetched_at="2026-08-10T06:00:00+00:00",
+        rows=[["2026-01-01", [[1.0, 0.041]]]],
+        note="Treasury 2026 年曲線（1 個交易日）"))
+
+    entry = storage.get_treasury_year_cache(2026)
+    assert entry.fetched_at == "2026-08-10T06:00:00+00:00"
+    assert entry.rows == [["2026-01-01", [[1.0, 0.041]]]]
+
+
+def test_treasury_year_cache_does_not_leak_across_years(storage):
+    """核心不變量（PIT 安全）：per-year 鍵，一個年份的紀錄不該覆蓋或
+    污染另一個年份——這是本票存在的理由本身，不是順手測一下。"""
+    storage.save_treasury_year_cache(TreasuryYearCacheEntry(
+        year=2025, fetched_at="2026-08-10T00:00:00+00:00",
+        rows=[["2025-01-01", [[1.0, 0.0111]]]], note="2025"))
+    storage.save_treasury_year_cache(TreasuryYearCacheEntry(
+        year=2026, fetched_at="2026-08-10T00:00:00+00:00",
+        rows=None, note="2026 不可得"))
+
+    assert storage.get_treasury_year_cache(2025).rows == [["2025-01-01", [[1.0, 0.0111]]]]
+    assert storage.get_treasury_year_cache(2026).rows is None
+    assert storage.get_treasury_year_cache(2026).note == "2026 不可得"
 
 
 # ---------- 清單摘要（V3／#51） ----------
@@ -983,7 +1045,7 @@ def test_existing_results_table_gains_the_new_column():
         # 得自己清乾淨——否則殘留的劇本會讓它以 ScenarioExists 失敗，
         # 看起來像遷移壞了，其實是測試自己髒。
         conn.execute("TRUNCATE scenarios, results, snapshots, events, rate_cache, "
-                     "dividend_cache, data_source_settings, "
+                     "dividend_cache, treasury_year_cache, data_source_settings, "
                      "provider_credentials, provider_verifications, "
                      "iv_observations, iv_backfill_runs, contract_iv_history "
                      "RESTART IDENTITY")
@@ -1016,7 +1078,7 @@ def test_existing_results_table_gains_the_representative_candidate_column():
 
     with psycopg.connect(TEST_DB_URL, autocommit=True) as conn:
         conn.execute("TRUNCATE scenarios, results, snapshots, events, rate_cache, "
-                     "dividend_cache, data_source_settings, "
+                     "dividend_cache, treasury_year_cache, data_source_settings, "
                      "provider_credentials, provider_verifications, "
                      "iv_observations, iv_backfill_runs, contract_iv_history "
                      "RESTART IDENTITY")
@@ -1051,7 +1113,7 @@ def test_migration_still_applies_when_table_creation_hits_a_race():
 
     with psycopg.connect(TEST_DB_URL, autocommit=True) as conn:
         conn.execute("TRUNCATE scenarios, results, snapshots, events, rate_cache, "
-                     "dividend_cache, data_source_settings, "
+                     "dividend_cache, treasury_year_cache, data_source_settings, "
                      "provider_credentials, provider_verifications, "
                      "iv_observations, iv_backfill_runs, contract_iv_history "
                      "RESTART IDENTITY")

@@ -3302,6 +3302,34 @@ PERF-03→PERF-01→PERF-02→PERF-05→PERF-06→PERF-07）。這是需求方
   約 80% 涵蓋率的序列）：舊版 O(n²) 3.891 ms/call，新版 O(n) 0.600
   ms/call，6.5x，且新舊輸出逐位元相同（`assert old_out == new_out`
   通過）。全套後端測試（記憶體＋Postgres 兩組）667 條全綠。
+- **PERF-03**（#179）✅ Treasury 曲線列快取，鍵是**年份**——本輪風險
+  最高的一項。新增 `api_app/treasury_cache.py`（結構逐一鏡射
+  `rate_cache.py`／`dividend_cache.py` 三態快取設計：成功／近期嘗試
+  失敗／陳舊備援），新增 `Storage` Protocol 的 `TreasuryYearCacheEntry`
+  ＋`get_treasury_year_cache`／`save_treasury_year_cache`（memory／
+  postgres 兩個 adapter 皆補齊，postgres 新增 `treasury_year_cache`
+  表）。PIT 安全靠鍵設計本身鎖死：過去年份（`year < today.year`）一旦
+  `rows is not None` 即永久新鮮，不看 `fetched_at` 多舊；當年比照
+  `rate_cache.py` 市場日語意（5 分鐘失敗去重窗、7 天陳舊備援窗）。
+  `main.py` 的 `_fetch_rate_curve_rows` 改呼叫新的
+  `_cached_rate_curve_rows()`（惰性單例，同一套 `_rate_curve_loader()`
+  模式），取代直接呼叫注入的 `rate_curve_rows`；一律以整年範圍向底層
+  來源請求（Treasury／`fetch_curve_range` 本來就只看年份，不看月日）。
+  測試：新增 `tests/test_api_treasury_cache.py`（17 條，含 spec 點名
+  「唯一真正重要」的
+  `test_a_past_years_rate_is_never_shadowed_by_the_current_years_cache`
+  ——2025／2026 各自灌入可辨識假利率，熱快取後反覆查
+  `observation_date="2025-01-15"`，斷言永遠拿到 2025 的利率）與
+  `test_storage_contract.py` 新增 6 條 per-year 隔離的 round-trip 契約
+  測試（memory＋postgres 各一份）。`/code-review` 兩軸皆無 hard
+  violation：Standards 軸指出 `main.py` 「惰性單例 dict」模式（`_db`／
+  `_rate_curve_loader`／`_dividend_loader`）這次多了第四個重複實例，
+  屬既有模式延伸、非本票新增，依「不做 main.py architecture
+  extraction／不做無關 cleanup」裁示不動；Spec 軸確認全部 AC 落實、
+  無 scope creep。本地量測：模擬冷啟動 25 天×4 到期日情境（100 次
+  `_fetch_rate_curve_rows` 呼叫全落在同一年份、同一市場日），快取前
+  100 次網路呼叫、快取後 1 次。全套後端測試（記憶體＋Postgres 兩組）
+  684 條全綠（667 + 17 條新增）。
 
 **探測環境選擇（#120／#111 共同記錄）**：使用者原始指示要求建臨時
 Vercel probe，但本輪 Vercel MCP 的 `deploy_to_vercel` 可成功部署，

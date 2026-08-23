@@ -15,7 +15,8 @@ from psycopg.types.json import Jsonb
 from . import (ContractHistory, DataSourceSettings, DividendCacheEntry,
                IvBackfillRun, IvObservation, ProviderCredential,
                ProviderVerification, RateCacheEntry, ResultRecord,
-               ResultSummary, Scenario, ScenarioExists, UsageSetting)
+               ResultSummary, Scenario, ScenarioExists,
+               TreasuryYearCacheEntry, UsageSetting)
 from ..diagnostics import RETENTION_LIMIT, DiagnosticEvent
 
 # 每個 lambda 程序只需建表一次。`IF NOT EXISTS` 在 Postgres 並非完全
@@ -85,6 +86,19 @@ CREATE TABLE IF NOT EXISTS dividend_cache (
     symbol            TEXT PRIMARY KEY,
     fetched_at        TEXT NOT NULL,
     history           JSONB,
+    note              TEXT NOT NULL,
+    last_success_at   TEXT,
+    market_day        TEXT,
+    attempted_day     TEXT
+);
+-- Treasury 利率曲線列快取（PERF-03／#179）：per-year——歷史 reconstruction
+-- 逐一觀測日查表，任何歷史日期的查詢結構上只可能被它所在年份的這筆
+-- 紀錄滿足；欄位語意逐一對應 rate_cache／dividend_cache 同一套三態
+-- 設計，差異只在「成功是否永久新鮮」由呼叫端依 year 是否早於今年判斷。
+CREATE TABLE IF NOT EXISTS treasury_year_cache (
+    year              INTEGER PRIMARY KEY,
+    fetched_at        TEXT NOT NULL,
+    rows              JSONB,
     note              TEXT NOT NULL,
     last_success_at   TEXT,
     market_day        TEXT,
@@ -477,6 +491,37 @@ class PostgresStorage:
                  Jsonb(entry.history) if entry.history is not None else None,
                  entry.note, entry.last_success_at, entry.market_day,
                  entry.attempted_day))
+
+    # ---------- Treasury 曲線列快取（PERF-03／#179，per-year） ----------
+
+    def get_treasury_year_cache(self, year: int) -> TreasuryYearCacheEntry | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT year, fetched_at, rows, note, last_success_at, "
+                "market_day, attempted_day FROM treasury_year_cache "
+                "WHERE year = %s", (year,)).fetchone()
+        return (TreasuryYearCacheEntry(year=row[0], fetched_at=row[1], rows=row[2],
+                                       note=row[3], last_success_at=row[4],
+                                       market_day=row[5], attempted_day=row[6])
+                if row else None)
+
+    def save_treasury_year_cache(self, entry: TreasuryYearCacheEntry) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO treasury_year_cache "
+                "(year, fetched_at, rows, note, last_success_at, market_day, "
+                "attempted_day) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s) "
+                "ON CONFLICT (year) DO UPDATE "
+                "SET fetched_at = EXCLUDED.fetched_at, rows = EXCLUDED.rows, "
+                "note = EXCLUDED.note, last_success_at = EXCLUDED.last_success_at, "
+                "market_day = EXCLUDED.market_day, "
+                "attempted_day = EXCLUDED.attempted_day",
+                (entry.year, entry.fetched_at,
+                 Jsonb(entry.rows) if entry.rows is not None else None,
+                 entry.note, entry.last_success_at, entry.market_day,
+                 entry.attempted_day))
+
     # ---------- 資料源設定與 credential（Settings／#124） ----------
 
     def get_settings(self) -> DataSourceSettings | None:
