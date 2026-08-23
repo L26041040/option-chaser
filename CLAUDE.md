@@ -3281,6 +3281,28 @@ PERF-03→PERF-01→PERF-02→PERF-05→PERF-06→PERF-07）。這是需求方
 指定的固定執行順序，非程式碼層級硬阻擋——PERF-01～06 之間仍然沒有
 `Blocked by` 依賴，只有 PERF-07 繼續 `Blocked by` 全部六張。
 
+**Performance 修正輪施工中（2026-08-23，`/implement` 依定案順序連續
+施工，中途不停）**：
+
+- **PERF-04**（#180）✅ `_rolling_windows()` 雙指標 O(n) 化——`left`
+  指標隨排序後的日期單調前進、不回頭；視窗邊界「含當天、含左邊界」
+  不變，三個呼叫端呼叫方式不變，未換成增量式統計。重構前先補一條
+  含真實日期缺口＋剛好卡在 30 天邊界的特徵化測試（先綠燈於重構前）。
+  `/code-review` 兩軸：Standards 無程式面問題（僅提醒 CLAUDE.md 待
+  更新，即本次一併處理）；Spec 抓到一個真正的邊界情境——舊版逐點全掃描
+  對「同一天兩筆有效觀測」是對稱可見（不論列表位置），新版切片
+  `valid[left:right+1]` 只對「同天稍後那筆」對稱、「同天較早那筆」看
+  不到後面那筆，理論上不是逐位元相同。查證後確認：這個情境在既有
+  pipeline 裡結構性不會發生——`reconstruct_iv_series()` 與 storage 的
+  contract history 都是 per-contract per-date 語意（`test_rewriting_
+  the_same_contract_overwrites_rather_than_duplicates` 等既有測試把關），
+  輸出序列與輸入 quotes 逐筆一一對應、quotes 本身不含同日重複。已在
+  `_rolling_windows()` docstring 明文記下這個前提，不新增用不到的
+  duplicate-date 處理邏輯（避免無謂的一般化）。本地量測（合成 365 天、
+  約 80% 涵蓋率的序列）：舊版 O(n²) 3.891 ms/call，新版 O(n) 0.600
+  ms/call，6.5x，且新舊輸出逐位元相同（`assert old_out == new_out`
+  通過）。全套後端測試（記憶體＋Postgres 兩組）667 條全綠。
+
 **探測環境選擇（#120／#111 共同記錄）**：使用者原始指示要求建臨時
 Vercel probe，但本輪 Vercel MCP 的 `deploy_to_vercel` 可成功部署，
 該 session 內所有讀回工具（`get_deployment`／`list_projects`／

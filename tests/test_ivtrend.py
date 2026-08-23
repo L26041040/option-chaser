@@ -141,6 +141,24 @@ def test_moving_average_boundary_day_exactly_at_window_edge_is_included():
     assert got[-1][1] == mean([0.10] * 5 + [0.20])
 
 
+def test_moving_average_boundary_with_date_gaps_and_edge_observation():
+    """PERF-04（#180）重構前的特徵化測試：真實資料含缺口（週末／假日／
+    缺席觀測，不是連續每日）時，卡在視窗邊界的觀測仍要被含入——雙指標
+    重構後這條必須維持逐位元相同的斷言。"""
+    points = [
+        ("2026-06-30", 999.0),  # 31 天前，超出視窗；若誤含會把平均拉爆
+        ("2026-07-01", 0.10),   # 恰好 30 天前，邊界含入
+        ("2026-07-03", 0.11),   # 缺口（跳過週末）
+        ("2026-07-06", 0.12),   # 缺口（跳過假日）
+        ("2026-07-10", 0.14),   # 缺口（缺席觀測）
+        ("2026-07-20", 0.16),
+        ("2026-07-31", 0.20),   # 視窗右端
+    ]
+    got = moving_average(points, window_days=30)
+    ivs = [0.10, 0.11, 0.12, 0.14, 0.16, 0.20]
+    assert got[-1] == ("2026-07-31", mean(ivs))
+
+
 def test_moving_average_respects_a_custom_window_days():
     points = _daily(date(2026, 8, 1), [0.10, 0.12, 0.14, 0.16, 0.18, 0.20])
     got = moving_average(points, window_days=2)
