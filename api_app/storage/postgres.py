@@ -20,10 +20,10 @@ from contextlib import contextmanager
 import psycopg
 from psycopg.types.json import Jsonb
 
-from . import (ContractHistory, DataSourceSettings, DividendCacheEntry,
-               IvBackfillRun, IvObservation, ProviderCredential,
-               ProviderVerification, RateCacheEntry, ResultRecord,
-               ResultSummary, Scenario, ScenarioExists,
+from . import (ChainCacheEntry, ContractHistory, DataSourceSettings,
+               DividendCacheEntry, IvBackfillRun, IvObservation,
+               ProviderCredential, ProviderVerification, RateCacheEntry,
+               ResultRecord, ResultSummary, Scenario, ScenarioExists,
                TreasuryYearCacheEntry, UsageSetting)
 from ..diagnostics import RETENTION_LIMIT, DiagnosticEvent
 
@@ -137,6 +137,15 @@ CREATE TABLE IF NOT EXISTS treasury_year_cache (
     last_success_at   TEXT,
     market_day        TEXT,
     attempted_day     TEXT
+);
+-- Option chain 短效期快取（PERF-06／#182）：per-symbol，即時報價的
+-- 短 TTL 重用，不是市場日三態設計——欄位因此只有 `fetched_at`／
+-- `snapshot` 兩個，沒有 rate_cache／dividend_cache／treasury_year_cache
+-- 那套 last_success_at／market_day／attempted_day。
+CREATE TABLE IF NOT EXISTS chain_cache (
+    symbol            TEXT PRIMARY KEY,
+    fetched_at        TEXT NOT NULL,
+    snapshot          JSONB NOT NULL
 );
 -- 資料源設定（Settings／#124）：兩列的模式選擇，單一一筆狀態——跟
 -- `rate_cache` 同一個 `id = 1` ＋ `CHECK` 的寫法。存 JSONB 而不是攤平成
@@ -607,6 +616,26 @@ class PostgresStorage:
                  Jsonb(entry.rows) if entry.rows is not None else None,
                  entry.note, entry.last_success_at, entry.market_day,
                  entry.attempted_day))
+
+    # ---------- Option chain 短效期快取（PERF-06／#182，per-symbol） ----------
+
+    def get_chain_cache(self, symbol: str) -> ChainCacheEntry | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT symbol, fetched_at, snapshot FROM chain_cache "
+                "WHERE symbol = %s", (symbol,)).fetchone()
+        return (ChainCacheEntry(symbol=row[0], fetched_at=row[1], snapshot=row[2])
+                if row else None)
+
+    def save_chain_cache(self, entry: ChainCacheEntry) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO chain_cache (symbol, fetched_at, snapshot) "
+                "VALUES (%s, %s, %s) "
+                "ON CONFLICT (symbol) DO UPDATE "
+                "SET fetched_at = EXCLUDED.fetched_at, "
+                "snapshot = EXCLUDED.snapshot",
+                (entry.symbol, entry.fetched_at, Jsonb(entry.snapshot)))
 
     # ---------- 資料源設定與 credential（Settings／#124） ----------
 

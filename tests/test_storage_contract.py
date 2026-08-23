@@ -16,12 +16,12 @@ import pytest
 from dataclasses import replace
 
 from api_app.diagnostics import RETENTION_LIMIT, DiagnosticEvent
-from api_app.storage import (ContractHistory, DataSourceSettings,
-                             DividendCacheEntry, IvBackfillRun, IvObservation,
-                             ProviderCredential, ProviderVerification,
-                             RateCacheEntry, ResultRecord, Scenario,
-                             ScenarioExists, TreasuryYearCacheEntry,
-                             UsageSetting)
+from api_app.storage import (ChainCacheEntry, ContractHistory,
+                             DataSourceSettings, DividendCacheEntry,
+                             IvBackfillRun, IvObservation, ProviderCredential,
+                             ProviderVerification, RateCacheEntry,
+                             ResultRecord, Scenario, ScenarioExists,
+                             TreasuryYearCacheEntry, UsageSetting)
 from api_app.storage.memory import MemoryStorage
 
 TEST_DB_URL = os.environ.get("OC_TEST_DATABASE_URL")
@@ -48,7 +48,7 @@ def storage(request):
     # 清庫是測試自己的事，不放進正式 adapter（正式環境不該有 TRUNCATE）。
     with psycopg.connect(TEST_DB_URL, autocommit=True) as conn:
         conn.execute("TRUNCATE scenarios, results, snapshots, events, rate_cache, "
-                     "dividend_cache, treasury_year_cache, data_source_settings, "
+                     "dividend_cache, treasury_year_cache, chain_cache, data_source_settings, "
                      "provider_credentials, provider_verifications, "
                      "iv_observations, iv_backfill_runs, contract_iv_history, "
                      "diagnostics RESTART IDENTITY")
@@ -543,6 +543,55 @@ def test_treasury_year_cache_does_not_leak_across_years(storage):
     assert storage.get_treasury_year_cache(2025).rows == [["2025-01-01", [[1.0, 0.0111]]]]
     assert storage.get_treasury_year_cache(2026).rows is None
     assert storage.get_treasury_year_cache(2026).note == "2026 不可得"
+
+
+# ---------- Option chain 短效期快取（PERF-06／#182，per-symbol） ----------
+
+def test_chain_cache_starts_empty(storage):
+    assert storage.get_chain_cache("XYZ") is None
+
+
+def test_chain_cache_roundtrips_a_snapshot(storage):
+    entry = ChainCacheEntry(
+        symbol="XYZ", fetched_at="2026-08-23T12:00:00+00:00",
+        snapshot={"schema_version": 2, "symbol": "XYZ",
+                 "fetched_at": "2026-08-23T12:00:00+00:00", "spot": 100.0,
+                 "source": "cboe", "contracts": []})
+    storage.save_chain_cache(entry)
+    assert storage.get_chain_cache("XYZ") == entry
+
+
+def test_chain_cache_overwrites_rather_than_accumulates(storage):
+    storage.save_chain_cache(ChainCacheEntry(
+        symbol="XYZ", fetched_at="2026-08-23T12:00:00+00:00",
+        snapshot={"schema_version": 2, "symbol": "XYZ",
+                 "fetched_at": "2026-08-23T12:00:00+00:00", "spot": 100.0,
+                 "source": "cboe", "contracts": []}))
+    storage.save_chain_cache(ChainCacheEntry(
+        symbol="XYZ", fetched_at="2026-08-23T12:05:00+00:00",
+        snapshot={"schema_version": 2, "symbol": "XYZ",
+                 "fetched_at": "2026-08-23T12:05:00+00:00", "spot": 105.0,
+                 "source": "cboe", "contracts": []}))
+
+    entry = storage.get_chain_cache("XYZ")
+    assert entry.fetched_at == "2026-08-23T12:05:00+00:00"
+    assert entry.snapshot["spot"] == 105.0
+
+
+def test_chain_cache_does_not_leak_across_symbols(storage):
+    storage.save_chain_cache(ChainCacheEntry(
+        symbol="XYZ", fetched_at="2026-08-23T12:00:00+00:00",
+        snapshot={"schema_version": 2, "symbol": "XYZ",
+                 "fetched_at": "2026-08-23T12:00:00+00:00", "spot": 100.0,
+                 "source": "cboe", "contracts": []}))
+    storage.save_chain_cache(ChainCacheEntry(
+        symbol="SPY", fetched_at="2026-08-23T12:00:00+00:00",
+        snapshot={"schema_version": 2, "symbol": "SPY",
+                 "fetched_at": "2026-08-23T12:00:00+00:00", "spot": 550.0,
+                 "source": "cboe", "contracts": []}))
+
+    assert storage.get_chain_cache("XYZ").snapshot["symbol"] == "XYZ"
+    assert storage.get_chain_cache("SPY").snapshot["symbol"] == "SPY"
 
 
 # ---------- 清單摘要（V3／#51） ----------
@@ -1081,7 +1130,7 @@ def test_existing_results_table_gains_the_new_column():
         # 得自己清乾淨——否則殘留的劇本會讓它以 ScenarioExists 失敗，
         # 看起來像遷移壞了，其實是測試自己髒。
         conn.execute("TRUNCATE scenarios, results, snapshots, events, rate_cache, "
-                     "dividend_cache, treasury_year_cache, data_source_settings, "
+                     "dividend_cache, treasury_year_cache, chain_cache, data_source_settings, "
                      "provider_credentials, provider_verifications, "
                      "iv_observations, iv_backfill_runs, contract_iv_history "
                      "RESTART IDENTITY")
@@ -1114,7 +1163,7 @@ def test_existing_results_table_gains_the_representative_candidate_column():
 
     with psycopg.connect(TEST_DB_URL, autocommit=True) as conn:
         conn.execute("TRUNCATE scenarios, results, snapshots, events, rate_cache, "
-                     "dividend_cache, treasury_year_cache, data_source_settings, "
+                     "dividend_cache, treasury_year_cache, chain_cache, data_source_settings, "
                      "provider_credentials, provider_verifications, "
                      "iv_observations, iv_backfill_runs, contract_iv_history "
                      "RESTART IDENTITY")
@@ -1149,7 +1198,7 @@ def test_migration_still_applies_when_table_creation_hits_a_race():
 
     with psycopg.connect(TEST_DB_URL, autocommit=True) as conn:
         conn.execute("TRUNCATE scenarios, results, snapshots, events, rate_cache, "
-                     "dividend_cache, treasury_year_cache, data_source_settings, "
+                     "dividend_cache, treasury_year_cache, chain_cache, data_source_settings, "
                      "provider_credentials, provider_verifications, "
                      "iv_observations, iv_backfill_runs, contract_iv_history "
                      "RESTART IDENTITY")
@@ -1189,7 +1238,7 @@ def test_multiple_calls_within_a_request_scope_share_a_single_connection():
     st = pg.PostgresStorage(TEST_DB_URL)
     with psycopg.connect(TEST_DB_URL, autocommit=True) as conn:
         conn.execute("TRUNCATE scenarios, results, snapshots, events, rate_cache, "
-                     "dividend_cache, treasury_year_cache, data_source_settings, "
+                     "dividend_cache, treasury_year_cache, chain_cache, data_source_settings, "
                      "provider_credentials, provider_verifications, "
                      "iv_observations, iv_backfill_runs, contract_iv_history "
                      "RESTART IDENTITY")
@@ -1246,7 +1295,7 @@ def test_request_scope_reconnects_correctly_for_a_fresh_request_afterwards():
     st = pg.PostgresStorage(TEST_DB_URL)
     with psycopg.connect(TEST_DB_URL, autocommit=True) as conn:
         conn.execute("TRUNCATE scenarios, results, snapshots, events, rate_cache, "
-                     "dividend_cache, treasury_year_cache, data_source_settings, "
+                     "dividend_cache, treasury_year_cache, chain_cache, data_source_settings, "
                      "provider_credentials, provider_verifications, "
                      "iv_observations, iv_backfill_runs, contract_iv_history "
                      "RESTART IDENTITY")
@@ -1270,7 +1319,7 @@ def test_a_failure_opening_the_scope_falls_back_to_per_call_connections():
     st = pg.PostgresStorage(TEST_DB_URL)
     with psycopg.connect(TEST_DB_URL, autocommit=True) as conn:
         conn.execute("TRUNCATE scenarios, results, snapshots, events, rate_cache, "
-                     "dividend_cache, treasury_year_cache, data_source_settings, "
+                     "dividend_cache, treasury_year_cache, chain_cache, data_source_settings, "
                      "provider_credentials, provider_verifications, "
                      "iv_observations, iv_backfill_runs, contract_iv_history "
                      "RESTART IDENTITY")

@@ -3429,6 +3429,36 @@ PERF-03→PERF-01→PERF-02→PERF-05→PERF-06→PERF-07）。這是需求方
   推估真實 vendor RTT 落在 profiling 觀察的 15–60 秒量級時可望縮短到
   約 4–15 秒（未經 production 驗證）。全套後端測試（記憶體＋Postgres
   兩組）1488 條全綠。
+- **PERF-06**（#182）✅ 同 symbol chain 重複抓取去重——次要、範圍受限，
+  單獨切掉不影響 PERF-01～05／07。新增 `api_app/chain_cache.py`：
+  `cached_fetch_chain()` 包住整個既有 `_fetch_chain()`（不管內部走
+  自訂還是預設來源），鍵是 symbol，短效期 `CHAIN_CACHE_TTL`（2 分鐘，
+  具名可調）——刻意**不**比照 `rate_cache.py`／`dividend_cache.py`／
+  `treasury_cache.py` 的市場日／年份三態設計：這裡是即時報價，短效期
+  本身就是正確語意，失敗也不快取（例外原樣往上炸，跟今天行為一致）。
+  `Storage` Protocol 新增 `ChainCacheEntry`＋`get_chain_cache`／
+  `save_chain_cache`（memory／postgres 皆補齊，postgres 新增
+  `chain_cache` 表）。main.py 用既有 `_rate_curve_loader()` 同一套
+  惰性單例模式包裝，快取命中時連 `_fetch_chain()` 自己的 settings／
+  credential 查詢都省下來。**施工中發現一個真實坑並修正**：3 條既有
+  測試（`test_history_is_one_continuous_series_across_refreshes_
+  with_a_gap`／`test_raw_data_follows_the_latest_refresh_not_a_
+  stale_one`／`test_reanalysis_updates_the_card_to_the_newer_
+  numbers`）刻意對同一個 symbol 連續觸發兩三次「真的重新抓一次」
+  （驗證歷史序列／原始資料／清單都跟著最新結果走），跟新快取的設計
+  目的直接衝突——這三條測試各自 `monkeypatch.setattr(chain_cache,
+  "CHAIN_CACHE_TTL", timedelta(seconds=0))` 關掉快取重用，讓它們繼續
+  驗證原本要驗證的事，不是在測 chain cache 本身；已加註解說明原因。
+  這也是一個誠實記在案的產品層取捨：使用者在 TTL 視窗內對**同一個**
+  劇本連續按兩次刷新，第二次會拿到跟第一次一樣的快照（不是 bug，是
+  AC 明文裁示的「即時報價，短效期本身就是正確語意」，跟「同一批刷新
+  裡不同劇本共用同一個 symbol」是同一套機制、不可分離的副作用）。
+  測試：新增 `tests/test_api_chain_cache.py`（8 條，涵蓋首次快取／
+  TTL 內重用／過期後恢復各自抓取／symbol 互相獨立／失敗不快取／
+  快取讀取失敗優雅退回／序列化往返）與 `test_storage_contract.py`
+  新增 4 條 round-trip 契約測試。本地量測：模擬 5 個劇本共用同一個
+  symbol 的整批刷新情境，底層 vendor chain 抓取次數從 5 次降到 1 次。
+  前端程式碼零改動。全套後端測試（記憶體＋Postgres 兩組）1504 條全綠。
 
 **探測環境選擇（#120／#111 共同記錄）**：使用者原始指示要求建臨時
 Vercel probe，但本輪 Vercel MCP 的 `deploy_to_vercel` 可成功部署，

@@ -33,6 +33,7 @@ from option_chaser.valuation import DAYS_PER_YEAR, days_between
 from option_chaser.workspace import now_utc_iso, ny_today
 
 from . import diagnostics, providers
+from .chain_cache import cached_fetch_chain
 from .dividend_cache import cached_loader as cached_dividend_loader
 from .rate_cache import cached_loader
 from .storage import (ContractHistory, DataSourceSettings, IvBackfillRun,
@@ -873,6 +874,18 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
             checked_at=now_utc_iso()))
         return snap
 
+    # PERF-06（#182）：同一個道理，惰性建一次、重用閉包——鍵是 symbol，
+    # 短效期（`chain_cache.CHAIN_CACHE_TTL`），不是市場日／年份那套
+    # 三態設計，見 `chain_cache.cached_fetch_chain` 說明。包住整個
+    # `_fetch_chain()`（不管內部走自訂還是預設來源），快取命中時連
+    # `_fetch_chain()` 自己的 settings／credential 查詢都省下來。
+    cached_chain: dict[str, Callable] = {}
+
+    def _cached_fetch_chain() -> Callable[[str], ChainSnapshot]:
+        if "fn" not in cached_chain:
+            cached_chain["fn"] = cached_fetch_chain(_db(), _fetch_chain)
+        return cached_chain["fn"]
+
     def _require(scenario_id: str) -> Scenario:
         sc = _db().get_scenario(scenario_id)
         if sc is None:
@@ -901,7 +914,7 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         # 兩段各自 try：抓鏈與分析是兩個不同的失敗環節（V4／#52），
         # 包在同一個 try 裡就只能事後靠例外型別猜是哪一段出的事。
         try:
-            snap = _fetch_chain(symbol)
+            snap = _cached_fetch_chain()(symbol)
         except FetchError as e:
             # 上游報價來源不可用（Cboe 與 yfinance 皆失敗）＝下游依賴問題。
             # 只認 FetchError：把這裡寫成 `except Exception` 的話，我們自己
