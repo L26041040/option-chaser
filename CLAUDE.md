@@ -27,7 +27,7 @@ block 裡，不能切成好幾個 code block、也不能中間插普通文字把
 `［回報#001］spec #137 拆票完成`）。編號是**累計總數**，不因換
 session、換分支、換主題而歸零——目前最新編號記在這裡：
 
-> 目前次序：021（下一份回報用 022）
+> 目前次序：022（下一份回報用 023）
 
 每發一份回報就把上面這個數字改成剛剛用掉的那個，跟著那次改動一起
 commit（沒有其他改動要 commit 時，單獨為這一行開一個小 commit 也
@@ -3237,6 +3237,27 @@ rate/dividend cache 市場日語意，PIT 正確性由鍵設計本身保證；
 （storage 連線／diagnostics／Treasury cache／ivtrend CPU／cold
 backfill 併發化／同 symbol chain 重複抓取次要項），已回報需求方，
 等待確認後 `/to-tickets`。
+
+**Performance 修正輪——tickets 已開（2026-08-23，issues #177–#183，
+共 7 張，全數以 GitHub native sub-issue 掛在 #176 底下）**：需求方
+確認 spec #176 通過後裁示 `/to-tickets`，並補一條施工護欄——cold
+backfill 必須是 bounded concurrency，不要求現在指定固定數字但不得
+無上限 fan-out，失敗後不得繼續大量啟動尚未開始的 vendor requests，
+且保留 spec 已要求的 failure regression test；此護欄已寫進 PERF-05
+的 Acceptance Criteria。七張票：**PERF-01** [#177]（Storage 連線
+生命週期——request-scoped connection）、**PERF-02** [#178]
+（Diagnostics 批次寫入＋只留 warning／error 落盤）、**PERF-03**
+[#179]（Treasury 曲線快取，以年份為鍵、PIT 安全）、**PERF-04**
+[#180]（`ivtrend._rolling_windows` 雙指標 O(n) 化）、**PERF-05**
+[#181]（cold Normalized Skew backfill——bounded concurrency）、
+**PERF-06** [#182]（同 symbol chain 重複抓取去重，次要、範圍受限）、
+**PERF-07** [#183]（全面 before/after 對照＋最終回歸驗收）。**依賴
+結構**：PERF-01～06 彼此互相獨立、沒有硬阻擋邊（各自命中不同檔案／
+不同 seam，spec 自身 Further Notes 已確認過一次）；只有 PERF-07 是
+六張的匯總驗收，`Blocked by` 全部六張。標 PERF-01 為下一張純屬建議
+排序（風險最低、獨立可驗證），非強制依賴順序。範圍再次確認排除：
+不做 V2、不做 N-leg、不做 main.py architecture extraction、不做
+無關 cleanup。**尚未開始 implementation**，等需求方指示。
 
 **探測環境選擇（#120／#111 共同記錄）**：使用者原始指示要求建臨時
 Vercel probe，但本輪 Vercel MCP 的 `deploy_to_vercel` 可成功部署，
