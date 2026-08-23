@@ -1054,8 +1054,19 @@ def test_response_correlation_id_matches_the_header(db):
     assert body["diagnostics"]["correlation_id"] == resp.headers["X-Correlation-Id"]
 
 
-def test_events_shown_in_the_response_also_land_in_the_diagnostics_store(db):
-    client = _client(db, surface=_rich_surface)
+def test_persisted_events_are_a_subset_of_what_the_response_shows(db):
+    """PERF-02（#178）之前，這條斷言是反過來的（`shown_ids <= stored_
+    ids`）——那時 `kept` 原封不動全部落盤，回應看得到的必然也存得到。
+    PERF-02 後只有 `warning`／`error` 真的落盤，`info` 事件只出現在
+    回應裡、不進資料庫，原本的方向因此結構性不再成立（一個健康的
+    request 大多數事件是 info）。這裡改成驗證仍然成立、且同樣有意義的
+    那個方向：**任何存進資料庫的，一定也在回應裡看得到**——不會有使用者
+    在畫面上看不到、卻默默寫進資料庫的事件。用 `_telemetry_surface({})`
+    （比照既有 `test_weekday_no_data_still_warns_but_does_not_abort_
+    the_batch`）而非 `_rich_surface`：後者全程成功、只有 info，落盤
+    集合會是空集合，`set() <= shown_ids` 恆真、測不到真正的過濾行為。
+    """
+    client = _client(db, surface=_telemetry_surface({}))
     _unlock(client)
     sid = _scenario(client)
     body = _get(client, sid, _candidate_key(client, sid)).json()
@@ -1064,10 +1075,64 @@ def test_events_shown_in_the_response_also_land_in_the_diagnostics_store(db):
     # 一份完整的 per-request 保留名額，一次 request 因此可能寫進去超過
     # `/api/diagnostics` 預設的 `limit=50`——這裡明確拉高查詢上限到
     # `RETENTION_LIMIT`，只是為了讓比較涵蓋到這次 request 實際寫進去的
-    # 全部事件，斷言本身（`shown_ids <= stored_ids`）不變、不放鬆。
+    # 全部事件。
     stored_ids = {e["event_id"]
                  for e in client.get("/api/diagnostics?limit=200").json()}
-    assert shown_ids <= stored_ids
+    assert stored_ids, "這個 fixture 本來就該產生至少一筆落盤事件，測試前提才成立"
+    assert stored_ids <= shown_ids
+
+
+def test_only_warning_and_error_severity_events_are_persisted(db):
+    """PERF-02（#178）新增：同一次 request 裡 info 與 warning 事件並存
+    時，info 只出現在回應裡，資料庫裡只有 warning／error——不是「大致上
+    比較少」，是一個 info 都沒有。"""
+    client = _client(db, surface=_telemetry_surface({}))
+    _unlock(client)
+    sid = _scenario(client)
+    body = _get(client, sid, _candidate_key(client, sid)).json()
+    shown = body["diagnostics"]["events"]
+    assert any(e["severity"] == "info" for e in shown), (
+        "這個 fixture 本來就該同時產生 info 事件，測試前提才成立")
+    assert any(e["severity"] == "warning" for e in shown), (
+        "這個 fixture 本來就該產生 warning 事件（weekday no data），"
+        "測試前提才成立")
+
+    stored = client.get("/api/diagnostics?limit=200").json()
+    assert stored, "這個 fixture 本來就該有 warning 事件真的落盤"
+    assert all(e["severity"] in ("warning", "error") for e in stored)
+
+
+def test_a_healthy_request_writes_zero_diagnostics_rows_but_the_response_is_unaffected(db):
+    """spec #178 明文驗收方式：一個健康的 warm iv-history request 對
+    diagnostics 資料表寫入 0 筆，但這次 HTTP 回應仍完整帶著 info 事件。
+
+    「健康」在這裡意味著兩腿的 exact-contract 統計量全部算得出來，不是
+    只有 legacy (tenor,delta) 家族成功（那樣 exact-contract 那半仍會
+    因為缺觀測而回報一堆 `unavailable` warning）——兩腿各自灌 60 天
+    連續、可 round-trip 反解的觀測（`_synthetic_consecutive_days`），
+    同時涵蓋 moving_average／bollinger／zscore 的 30 天 lookback 與
+    Δ4w 的 [today−42, today−21] 窗口，reconstruction 全數成功。"""
+    rec = ContractHistoryRecorder()
+    client = _client(db, surface=_rich_surface, contract_history=rec)
+    _unlock(client)
+    sid = _scenario(client)
+    key = _candidate_key(client, sid)
+    buy, sell = _leg_identities(client, sid, key)
+    today = ny_today()
+    for leg in (buy, sell):
+        rec._points_by_symbol[leg["contract_symbol"]] = _synthetic_consecutive_days(
+            today, 60, [0.10] * 60, option_type=leg["option_type"],
+            strike=leg["strike"], expiration=leg["expiry"])
+
+    body = _get(client, sid, key).json()
+    shown = body["diagnostics"]["events"]
+    assert len(shown) > 0
+    assert all(e["severity"] == "info" for e in shown), (
+        "這個情境本來就該全部成功、沒有 warning／error，測試前提才成立"
+        f"：{[e for e in shown if e['severity'] != 'info']}")
+
+    stored = client.get("/api/diagnostics?limit=200").json()
+    assert stored == []
 
 
 def test_the_backfill_and_reanchor_summaries_take_no_free_text_vendor_params(db):
@@ -1209,6 +1274,51 @@ def test_reconstruction_and_vendor_benchmark_survive_a_synthetic_cap_overflow():
               ev("bench", stage="vendor_benchmark")]
     kept_ids = {e.event_id for e in _select_for_persistence(events)}
     assert {"recon", "bench"} <= kept_ids
+
+
+# ---------- 只留 warning／error 落盤（PERF-02／#178） ----------
+
+def test_select_for_storage_drops_info_and_keeps_warning_and_error():
+    from api_app.diagnostics import DiagnosticEvent
+    from api_app.main import _select_for_storage
+
+    def ev(event_id, severity):
+        return DiagnosticEvent(event_id=event_id, correlation_id="c",
+                               ts=event_id, subsystem="historical_iv",
+                               stage="vendor_fetch", severity=severity,
+                               message="m")
+
+    events = [ev("i1", "info"), ev("w1", "warning"), ev("i2", "info"),
+             ev("e1", "error"), ev("i3", "info")]
+    kept_ids = {e.event_id for e in _select_for_storage(events)}
+    assert kept_ids == {"w1", "e1"}
+
+
+def test_select_for_storage_on_an_all_info_batch_returns_empty():
+    from api_app.diagnostics import DiagnosticEvent
+    from api_app.main import _select_for_storage
+
+    events = [DiagnosticEvent(event_id=f"i{i}", correlation_id="c", ts=f"t{i}",
+                              subsystem="historical_iv", stage="cache",
+                              severity="info", message="m") for i in range(23)]
+    assert _select_for_storage(events) == []
+
+
+def test_select_for_storage_applies_after_the_cap_not_instead_of_it():
+    """PERF-02 的過濾是 `_select_for_persistence()` 選出 `kept` 之後
+    **額外**的一層，不是取代既有三層優先序——`_select_for_storage()`
+    本身不做任何上限判斷，交給呼叫端先跑完 `_select_for_persistence()`
+    再套用。"""
+    from api_app.diagnostics import DiagnosticEvent
+    from api_app.main import _select_for_storage
+
+    events = [DiagnosticEvent(event_id=f"w{i}", correlation_id="c", ts=f"t{i}",
+                              subsystem="historical_iv", stage="vendor_fetch",
+                              severity="warning", message="m")
+             for i in range(500)]
+    # `_select_for_storage()` 本身不裁切數量——裁切是 `_select_for_
+    # persistence()` 的責任，這裡只做 severity 過濾。
+    assert len(_select_for_storage(events)) == 500
 
 
 # ---------- Diagnostics subsystem 拆分（HIVR-03／#162） ----------

@@ -1024,6 +1024,42 @@ def test_diagnostics_retention_is_capped_globally(storage):
     assert "e20" in kept_ids
 
 
+def test_append_diagnostics_batch_writes_all_events(storage):
+    """PERF-02（#178）：複數形式的批次寫入，跟逐筆呼叫單筆版並存、
+    不取代——這裡驗證批次版本身就能把整批寫進去、讀得回來。"""
+    events = [_diag(event_id=f"b{i}", ts=f"2026-08-15T00:0{i}:00+00:00")
+             for i in range(3)]
+    storage.append_diagnostics(events)
+    got = {e.event_id for e in storage.list_diagnostics(limit=10)}
+    assert got == {"b0", "b1", "b2"}
+
+
+def test_append_diagnostics_on_an_empty_list_is_a_no_op(storage):
+    storage.append_diagnostics([])
+    assert storage.list_diagnostics() == []
+
+
+def test_append_diagnostics_batch_matches_looping_the_singular_method_on_retention(storage):
+    """核心不變量：批次寫入與逐筆寫入在 trim-on-write 上必須產生完全
+    一致的最終保留集合——不是「差不多」，是同一組 event_id、同一個
+    順序。用兩個獨立的 storage 實例分別跑批次版／逐筆版，比對最終
+    狀態。"""
+    total = RETENTION_LIMIT + 20
+    events = [_diag(event_id=f"e{i}", ts=f"t{i}") for i in range(total)]
+
+    storage.append_diagnostics(events)
+    batch_result = [(e.event_id, e.ts) for e in storage.list_diagnostics(
+        limit=RETENTION_LIMIT + 50)]
+
+    looped = MemoryStorage()
+    for event in events:
+        looped.append_diagnostic(event)
+    looped_result = [(e.event_id, e.ts) for e in looped.list_diagnostics(
+        limit=RETENTION_LIMIT + 50)]
+
+    assert batch_result == looped_result
+
+
 # ---------- schema 遷移（V3／#51） ----------
 
 def test_existing_results_table_gains_the_new_column():
@@ -1168,6 +1204,7 @@ def test_multiple_calls_within_a_request_scope_share_a_single_connection():
     import api_app.storage.postgres as pg_module
     original_connect = pg_module.psycopg.connect
     pg_module.psycopg.connect = counting_connect
+    borrowed_conn = None
     try:
         with st.request_scope():
             # 一個 scope 內呼叫好幾個不同的 method——恰好一次 connect()。
@@ -1175,13 +1212,25 @@ def test_multiple_calls_within_a_request_scope_share_a_single_connection():
             st.get_rate_cache()
             st.get_dividend_cache("TLT")
             st.list_diagnostics()
+            # 抓住這個 scope 實際借用中的連線物件本身——下面要驗證的是
+            # *這一條*連線確實被關閉，不是只驗證「離開後可以再開一條
+            # 新的」（那樣即使舊連線從沒被關閉、只是被丟棄，斷言一樣會
+            # 通過，驗不到 `finally` 真的呼叫了 `conn.close()`）。
+            held = pg_module._request_connection.get()
+            assert held is not None
+            borrowed_conn = held[1]
         assert len(connect_calls) == 1
     finally:
         pg_module.psycopg.connect = original_connect
 
-    # 離開 scope 後：借用中的連線確實關閉、清空——下一次呼叫（scope 外）
-    # 照舊各自開一條新的，不會誤用一條已經關閉的連線。
+    # 離開 scope 後：ContextVar 清空，且**這一條**借用中的連線物件本身
+    # 確實被關閉——不是換一條新的、舊的置之不理。
     assert pg_module._request_connection.get() is None
+    assert borrowed_conn is not None
+    assert borrowed_conn.closed
+
+    # 下一次呼叫（scope 外）照舊各自開一條新的，不會誤用一條已經關閉的
+    # 連線。
     assert st.get_rate_cache() is None   # 沒炸掉＝沒有沿用一條已關閉的連線
 
 

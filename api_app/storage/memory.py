@@ -215,6 +215,12 @@ class MemoryStorage:
     def append_diagnostic(self, event: DiagnosticEvent) -> None:
         self._diagnostics.append(event)
 
+    def append_diagnostics(self, events: list[DiagnosticEvent]) -> None:
+        # `deque(maxlen=...)` 的 `extend()` 逐一 push、超過上限時左端
+        # 自動擠掉最舊的——跟逐筆呼叫 `append_diagnostic()` 的 trim
+        # 效果完全一致，只是一次呼叫做完。
+        self._diagnostics.extend(events)
+
     def list_diagnostics(self, *, limit: int = 50) -> list[DiagnosticEvent]:
         # deque 存的是寫入順序（舊→新）；最新在最上要反過來。
         return list(reversed(self._diagnostics))[:limit]

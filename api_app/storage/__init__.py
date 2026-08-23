@@ -453,6 +453,13 @@ class Storage(Protocol):
         `diagnostics.RETENTION_LIMIT` 筆，較舊的直接淘汰——不是靠背景
         清理 job（serverless 沒有地方掛），上限因此是結構性的。"""
 
+    def append_diagnostics(self, events: list[DiagnosticEvent]) -> None:
+        """批次版（PERF-02／#178）——與單筆版 `append_diagnostic()` 並存，
+        不取代（既有呼叫端／測試直接呼叫單筆版的地方不受影響）。同一份
+        trim-on-write 語意：整批寫完後只保留全域最新
+        `diagnostics.RETENTION_LIMIT` 筆，跟逐筆呼叫單筆版比較，最終
+        保留集合完全一致。空清單是合法的 no-op。"""
+
     def list_diagnostics(self, *, limit: int = 50) -> list[DiagnosticEvent]:
         """最新在最上（依寫入順序反排）。"""
 

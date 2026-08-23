@@ -770,6 +770,30 @@ class PostgresStorage:
                 "SELECT seq FROM diagnostics ORDER BY seq DESC "
                 "OFFSET %s LIMIT 1)", (RETENTION_LIMIT,))
 
+    def append_diagnostics(self, events: list[DiagnosticEvent]) -> None:
+        """批次版（PERF-02／#178）：一次多列 INSERT，不是逐筆迴圈呼叫
+        `append_diagnostic()`——政策（哪些 event 值得進資料庫）掛在
+        `main.py` 呼叫端，這裡只負責把給定的清單一次寫完。trim-on-write
+        插入後只跑一次，跟逐筆寫入「每筆各自跑一次」比較，兩者都是
+        「只留全域最新 RETENTION_LIMIT 筆」，最終保留集合完全一致。"""
+        if not events:
+            return
+        values_sql = ", ".join(["(%s, %s, %s, %s, %s, %s, %s, %s)"] * len(events))
+        params: list = []
+        for event in events:
+            params.extend([event.event_id, event.correlation_id, event.ts,
+                          event.subsystem, event.stage, event.severity,
+                          event.message, Jsonb(event.context)])
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO diagnostics (event_id, correlation_id, ts, "
+                "subsystem, stage, severity, message, context) "
+                f"VALUES {values_sql}", params)
+            conn.execute(
+                "DELETE FROM diagnostics WHERE seq <= ("
+                "SELECT seq FROM diagnostics ORDER BY seq DESC "
+                "OFFSET %s LIMIT 1)", (RETENTION_LIMIT,))
+
     def list_diagnostics(self, *, limit: int = 50) -> list[DiagnosticEvent]:
         with self._connect() as conn:
             rows = conn.execute(

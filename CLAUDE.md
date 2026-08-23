@@ -3350,10 +3350,38 @@ PERF-03→PERF-01→PERF-02→PERF-05→PERF-06→PERF-07）。這是需求方
   `psycopg.connect` 計數，斷言一個 scope 內任意多個 method 呼叫恰好
   一次 connect()；離開 scope 後連線確實關閉清空；開連線失敗時優雅退回
   逐次開連線）。`/code-review` Standards 軸無 hard violation（僅幾處
-  既有模式延伸的 judgement call，依裁示不動）；Spec 軸背景執行中，
-  結果將於下一份回報一併附上或另行修正。本地量測：10 次 storage 呼叫
-  在 scope 外開 10 條連線、scope 內開 1 條。全套後端測試 687 條全綠
-  （684 + 3 條新增）。
+  既有模式延伸的 judgement call，依裁示不動）；Spec 軸稍後回報：全部
+  AC 落實、無 scope creep，但抓到一處測試強度不足——「離開 scope 後
+  連線確實關閉」原本只斷言 ContextVar 清空＋下一次呼叫不炸掉，沒有
+  真的抓住那條連線物件斷言 `.closed`（舊連線只是被丟棄、從未關閉一樣
+  會通過）。已修正：測試改成在 scope 內抓住 `_request_connection`
+  當下借用的連線物件，離開後直接斷言 `borrowed_conn.closed`（fix 隨
+  下一次 commit 一併附上，未另開 PERF-01 專屬 commit）。本地量測：
+  10 次 storage 呼叫在 scope 外開 10 條連線、scope 內開 1 條。
+- **PERF-02**（#178）✅ Diagnostics 批次寫入＋只留 warning／error
+  落盤。`Storage` Protocol 新增複數形式 `append_diagnostics()`，與
+  既有單筆 `append_diagnostic()` 並存不取代；postgres.py 用一次多列
+  INSERT（VALUES 佔位符數量依 `len(events)` 動態組出，不是逐筆迴圈，
+  沒有使用者資料進到 SQL 文字本身、無注入風險）＋retention DELETE
+  跑一次；memory.py 用一次 `deque.extend()`。main.py 新增純函式
+  `_select_for_storage()`（只留 `severity in ("warning","error")`），
+  掛在 `_flush_diagnostics()` 裡、`_select_for_persistence()`／
+  `_select_family_for_persistence()` 既有三層優先序完全不動、
+  `diagnostics.py` 的 `emit()` 也未觸碰——過濾只影響「寫進資料庫」
+  這一步，回應的 `kept` 清單維持過濾前的完整版本。測試：`test_api_
+  iv_history.py` 裡「用全 info 合成事件驗回應與落盤一致」的既有測試
+  改用 `_telemetry_surface({})`（混合 severity）重新驗證，斷言方向從
+  `shown_ids <= stored_ids` 改為 `stored_ids <= shown_ids`（前者
+  PERF-02 後結構性不再成立：健康 request 大多數事件是 info、不落盤，
+  舊方向的驗證意義本來就是「回應看得到的必然也存得到」，這件事本身
+  不成立了；不是放寬斷言，是測試前提換了）；新增 `_select_for_
+  storage()` 的 3 條純函式單元測試、`test_storage_contract.py` 新增
+  3 條批次寫入／retention 等價性測試（memory＋postgres 各一份）、
+  端到端測試驗證健康 request（兩腿各灌 60 天 round-trip 觀測涵蓋
+  bands／Δ4w 兩個窗口）對 diagnostics 資料表寫入 0 筆但回應完整帶著
+  info 事件。`/code-review` 兩軸皆無 hard violation，Spec 軸額外確認
+  三層優先序與 `emit()` 皆逐行核對零改動、測試資料修正方向正確。
+  全套後端測試（記憶體＋Postgres 兩組）1485 條全綠。
 
 **探測環境選擇（#120／#111 共同記錄）**：使用者原始指示要求建臨時
 Vercel probe，但本輪 Vercel MCP 的 `deploy_to_vercel` 可成功部署，

@@ -359,6 +359,18 @@ def _select_family_for_persistence(
     return [e for e in events if id(e) in keep_ids]
 
 
+def _select_for_storage(
+        events: list[diagnostics.DiagnosticEvent],
+) -> list[diagnostics.DiagnosticEvent]:
+    """PERF-02（#178）：`_select_for_persistence()` 選出「這次回應要
+    顯示哪些 events」之後，這裡再決定「其中哪些真的值得寫進資料庫」——
+    只有 `warning`／`error`，`info` 事件不落盤。這是**額外一層**、獨立
+    於既有三層優先序（`_select_family_for_persistence`）之外的過濾，
+    只影響落盤，不影響回應內容（呼叫端仍然用未經這層過濾的 `kept` 組
+    回應）。回傳順序與輸入順序一致。"""
+    return [e for e in events if e.severity in ("warning", "error")]
+
+
 def _rate_limit_context(telemetry: dict) -> dict:
     return {k: v for k, v in telemetry.items()
            if k.startswith("X-Api-Ratelimit-")}
@@ -1660,17 +1672,22 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         }
 
     def _flush_diagnostics(diag: _CollectingDiagnostics) -> dict:
-        """這次 request 收集到的 events 依優先序落盤（per-request 上限，
-        #146），並組出要塞進回應的 `diagnostics` 欄位——兩者用同一份
-        capped 清單，畫面上看到的跟真的存進 Settings／Diagnostics 的
-        是同一批，不會兜不起來。"""
+        """這次 request 收集到的 events 依優先序選出 `kept`（per-request
+        上限，#146），組出要塞進回應的 `diagnostics` 欄位——回應永遠用
+        完整的 `kept`，畫面上看到的是這次 request 實際發生過的全部
+        重要事件。
+
+        PERF-02（#178）：`kept` 不是原封不動全部落盤——`_select_for_
+        storage()` 只留 `warning`／`error`，`info` 事件不佔用資料庫寫入
+        次數（這個過濾只影響「寫進資料庫」這一步，不影響上面回應用的
+        `kept`，也不動 `_select_for_persistence()` 既有的三層優先序）。
+        批次寫入取代逐筆呼叫 `append_diagnostic()`。
+        """
         kept = _select_for_persistence(diag.events)
-        db = _db()
-        for event in kept:
-            try:
-                db.append_diagnostic(event)
-            except Exception:  # noqa: BLE001 — 落盤失敗不影響這次回應
-                pass
+        try:
+            _db().append_diagnostics(_select_for_storage(kept))
+        except Exception:  # noqa: BLE001 — 落盤失敗不影響這次回應
+            pass
         return {"correlation_id": diagnostics.current_correlation_id(),
                "events": [dataclasses.asdict(e) for e in kept]}
 
