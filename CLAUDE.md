@@ -27,7 +27,7 @@ block 裡，不能切成好幾個 code block、也不能中間插普通文字把
 `［回報#001］spec #137 拆票完成`）。編號是**累計總數**，不因換
 session、換分支、換主題而歸零——目前最新編號記在這裡：
 
-> 目前次序：023（下一份回報用 024）
+> 目前次序：024（下一份回報用 025）
 
 每發一份回報就把上面這個數字改成剛剛用掉的那個，跟著那次改動一起
 commit（沒有其他改動要 commit 時，單獨為這一行開一個小 commit 也
@@ -3480,6 +3480,60 @@ PERF-03→PERF-01→PERF-02→PERF-05→PERF-06→PERF-07）。這是需求方
   新增 4 條 round-trip 契約測試。本地量測：模擬 5 個劇本共用同一個
   symbol 的整批刷新情境，底層 vendor chain 抓取次數從 5 次降到 1 次。
   前端程式碼零改動。全套後端測試（記憶體＋Postgres 兩組）1504 條全綠。
+- **PERF-07**（#183）✅ 全面 before/after 對照＋最終回歸驗收——本輪
+  最後一張票，合併 PERF-01～06 後重新量測、跑全套回歸。
+
+  **全套回歸（不鬆綁任何既有斷言）**：後端 pytest（記憶體＋本機
+  Postgres）1504 條全綠；前端 `tsc --noEmit` 乾淨；前端 Vitest 614
+  條全綠；`vite build` 成功；Playwright e2e 87 條全綠（iPhone＋
+  Desktop，含大量 Historical IV／Exact-contract／Spread IV Gap／
+  Normalized Skew 專屬案例，例如 SIG-04 兩條紅線鎖定測試）。全部
+  Historical IV 相關數值語意（Spread IV Gap／買賣腿走勢圖／百分位／
+  Δ4w／Normalized Skew）跟施工前逐位元相同——本輪六張票只動效能相關
+  的內部機制（連線重用／批次寫入策略／快取層／`_rolling_windows`
+  演算法／併發排程），沒有任何一處改變計算邏輯或輸出格式；PERF-04
+  另外有專屬一致性斷言（`assert old_out == new_out`）鎖住這件事。
+  `ruff check` 額外掃過本輪新增／改動的檔案：僅 1 處發現（`main.py`
+  的 `RateCacheEntry` unused import），確認是**施工前既有**（`git log`
+  對照 commit `17873b4` 已存在），依「不做無關 cleanup」裁示不動；
+  本輪新增的所有檔案（`chain_cache.py`／`treasury_cache.py` 等）本身
+  乾淨無警告。
+
+  **Before/after 對照表**（逐項標示本地實測 vs 推估，兩者不混寫）：
+
+  | 項目 | 施工前 | 施工後 | 依據 |
+  |---|---|---|---|
+  | Storage 連線數（一次 warm request 內） | ~36 條各自新連線 | 1 條共用連線 | 本地實測（PERF-01：10 次呼叫 scope 外 10 條連線→scope 內 1 條，同一套機制） |
+  | Diagnostics 寫入次數（健康 warm request） | ~23 次 INSERT＋trim DELETE（全 info） | 0 次 | 本地實測（PERF-02 端到端測試：`test_a_healthy_request_writes_zero_diagnostics_rows_...`） |
+  | Treasury 曲線抓取（cold backfill 情境，25 天×4 到期日同一年份同一市場日） | 100 次網路請求 | 1 次 | 本地實測（PERF-03 demo script） |
+  | 同 symbol chain 重複抓取（5 個劇本共用一個 symbol） | 5 次 | 1 次 | 本地實測（PERF-06 demo script） |
+  | `ivtrend._rolling_windows` CPU（合成 365 天、80% 涵蓋率序列） | 3.891 ms/call（O(n²)） | 0.600 ms/call（O(n)），6.5x | 本地實測（PERF-04），輸出逐位元相同 |
+  | `ivreconstruct` CPU | ~62ms（回報#020 profiling 估計） | 不變（62ms） | 推估——本輪範圍明確排除 reconstruction，PERF-04 只動 ivtrend，這段程式碼未被觸碰 |
+  | Cold backfill 牆鐘時間（25 天×4 到期日 = 100 次序列呼叫） | 15–60 秒（回報#020 profiling 估計，未在本機用真實 vendor 網路量過） | 本地模擬（50ms/call 模擬延遲）：5.019s→1.287s，3.9x；推估 production：15–60秒→約 4–15秒 | 本地實測（模擬延遲）＋推估（production，實際 vendor RTT 未知） |
+  | warm 端到端總時間（含真實 Neon／vendor 網路延遲） | 未曾在本機精確量過（sandbox 無出口網路連正式 Neon／vendor） | 無法本地重現，只能推估：連線數 36→1 省下約 35 次 Postgres/Neon 連線建立開銷（典型量級數十至兩三百毫秒／次，非本次量測得出，屬一般認知），diagnostics 寫入 23→0 再省一批對應的網路往返；兩者疊加方向正確，但沒有本地實測支持任何具體秒數 | 推估 |
+
+  **驗收目標回報**：
+  - **warm < 1 秒目標**：無法在本機驗證（sandbox 連不到正式 Neon／
+    vendor）。結構性改善方向明確（連線數 36→1、diagnostics 寫入
+    23→0、ivtrend CPU 6.5x）且互不衝突可疊加，但沒有本地實測支持
+    「確實達到 < 1 秒」這個具體門檻——需要 production 部署後實測確認。
+  - **cold path 不再出現 15–60 秒級卡頓**：本地模擬顯示 bounded
+    concurrency 在 concurrency=4 下可貢獻約 3.9x 加速，量級對齊
+    profiling 原始 15–60 秒範圍換算約縮短到 4–15 秒——但這是基於
+    50ms/call 的模擬延遲，不是真實 vendor RTT，正式環境實際 RTT
+    可能更高或更低，需要 production 實測確認是否真正跳出「正常情況
+    下 15–60 秒級卡頓」這個問題。
+
+  **本輪發現的真實缺陷**：全部在各自的票內當場修掉，沒有延到這張票
+  ——PERF-01（連線關閉斷言強度不足）、PERF-02（測試 docstring 對
+  fixture 行為描述不準確＋SQL 片段重複）、PERF-05（遺漏 wall-clock
+  量測記錄）、PERF-06（monkeypatch 內部常數改成正式 DI 參數＋TTL
+  從 2 分鐘壓到 15 秒，修正一個真實的產品層取捨）皆已個別修正並
+  重新驗證。PERF-07 本身的最終回歸掃描沒有發現新的真實缺陷。
+
+  **各票 commit**：PERF-04 `0653460`；PERF-03 `0181191`；PERF-01
+  `9b7b782`（fix 隨 PERF-02 `978ad73` 一併附上）；PERF-02 `d1d66fd`
+  ＋`978ad73`；PERF-05 `b8380f7`；PERF-06 `cceeaa2`＋`4ac238f`。
 
 **探測環境選擇（#120／#111 共同記錄）**：使用者原始指示要求建臨時
 Vercel probe，但本輪 Vercel MCP 的 `deploy_to_vercel` 可成功部署，
