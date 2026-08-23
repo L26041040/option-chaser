@@ -27,7 +27,7 @@ block 裡，不能切成好幾個 code block、也不能中間插普通文字把
 `［回報#001］spec #137 拆票完成`）。編號是**累計總數**，不因換
 session、換分支、換主題而歸零——目前最新編號記在這裡：
 
-> 目前次序：017（下一份回報用 018）
+> 目前次序：021（下一份回報用 022）
 
 每發一份回報就把上面這個數字改成剛剛用掉的那個，跟著那次改動一起
 commit（沒有其他改動要 commit 時，單獨為這一行開一個小 commit 也
@@ -3211,6 +3211,32 @@ QA-01 收尾後緊接開始的下一波，承接 #102 尚未完成的部分（#1
   抓到的既有缺陷，兩者都沒有犧牲任何資訊，因此未刻意收斂回原區間）。
   全套回歸：typecheck 乾淨、Vitest 614 passed、build 乾淨、Playwright
   e2e 87 passed（iPhone＋Desktop）。
+
+**Performance 修正輪——spec 已發佈（2026-08-22，issue #176，票未開）**：
+需求方裁示下一階段暫停 MVP V2／N-leg／任何新 Strategy／跨 Strategy
+Dashboard，只處理 Option Chaser V1 效能問題。依據：session 內
+Architecture + Performance Survey（回報編號 #019，非 GitHub issue）與
+一次輕量記憶體假體 profiling（回報編號 #020）——確認 warm
+`/iv-history` 一次約 36 次 storage calls（production Postgres adapter
+每個 method 各開新 Neon 連線）、diagnostics 落盤佔 23 次全 info、
+credential/settings 重複讀 3 次、Treasury 曲線這條路徑完全無快取、
+本機 CPU 大宗是 `ivtrend._rolling_windows` O(n²)（126ms）＞
+reconstruction（62ms），以及 cold Normalized Skew backfill（25 天×4
+到期日）inline 最多 100 次序列 vendor 呼叫、量級 15–60 秒——需求方
+明確裁示 Normalized Skew 必須保留且維持預先計算，不接受「Advanced
+展開才觸發」當主要解法。`/to-spec` 前先跑一輪 5 個並行 Explore agent
+逐一確認五個修正方向各自的最小安全 seam（storage 連線用
+`contextvars.ContextVar` 侷限在 `postgres.py` 內部、Protocol 簽章不
+動；diagnostics 新增 `append_diagnostics()` 批次方法＋政策掛在
+`main.py` 的 `_flush_diagnostics()`、回應內容不變只影響落盤；Treasury
+快取以**年份**為鍵而非「今天」，過去年份可永久快取、當年比照既有
+rate/dividend cache 市場日語意，PIT 正確性由鍵設計本身保證；
+`_rolling_windows` 雙指標 O(n) 化，保留完全相同的日曆天視窗與邊界
+判定；cold backfill 改併發呼叫而非序列，vendor 端批次已確認結構上
+不可行）。Spec（issue #176，`ready-for-agent`）涵蓋五＋一項修正
+（storage 連線／diagnostics／Treasury cache／ivtrend CPU／cold
+backfill 併發化／同 symbol chain 重複抓取次要項），已回報需求方，
+等待確認後 `/to-tickets`。
 
 **探測環境選擇（#120／#111 共同記錄）**：使用者原始指示要求建臨時
 Vercel probe，但本輪 Vercel MCP 的 `deploy_to_vercel` 可成功部署，
