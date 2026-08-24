@@ -426,9 +426,14 @@ const REQUEST_TIMEOUT_MS = 90_000;
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
   let resp: Response;
   try {
+    // T03（#187）：`init.signal`（呼叫端要求可被中途取消）與既有的
+    // 逾時 signal 合併——任一個先觸發都算數，兩者不互相取代。
+    const timeoutSignal = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
     resp = await fetch(url, {
       ...init,
-      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+      signal: init?.signal
+        ? AbortSignal.any([init.signal, timeoutSignal])
+        : timeoutSignal,
     });
   } catch (e) {
     // 逾時／連線斷掉：說「等不到回應」，而不是把 DOMException 的英文
@@ -521,8 +526,12 @@ export function refreshScenario(id: string): Promise<ScenarioSummary> {
 }
 
 /** 詳細頁用（V5／#53）：整份 view 只有這裡會拖，清單列不帶。 */
-export function getScenario(id: string): Promise<ScenarioDetail> {
-  return request<ScenarioDetail>(`/api/scenarios/${encodeURIComponent(id)}`);
+export function getScenario(
+  id: string,
+  signal?: AbortSignal,
+): Promise<ScenarioDetail> {
+  return request<ScenarioDetail>(
+    `/api/scenarios/${encodeURIComponent(id)}`, { signal });
 }
 
 export function archiveScenario(id: string): Promise<{ archived: boolean }> {
@@ -709,8 +718,8 @@ export interface UsageChoice {
   provider: string | null;
 }
 
-export function getSettings(): Promise<SettingsView> {
-  return request<SettingsView>("/api/settings");
+export function getSettings(signal?: AbortSignal): Promise<SettingsView> {
+  return request<SettingsView>("/api/settings", { signal });
 }
 
 export function saveSettings(body: {
@@ -958,10 +967,12 @@ export interface IvHistoryView {
 export function ivHistory(
   scenarioId: string,
   candidateKey: string,
+  signal?: AbortSignal,
 ): Promise<IvHistoryView> {
   return request<IvHistoryView>(
     `/api/scenarios/${encodeURIComponent(scenarioId)}/iv-history`
     + `?candidate_key=${encodeURIComponent(candidateKey)}`,
+    { signal },
   );
 }
 
