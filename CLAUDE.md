@@ -627,13 +627,79 @@ Candidate 去重，避免瑣碎刪除跟結構改動混在同一份 diff）。�
   修改」逐位元成立。全套後端測試（記憶體＋真實 Postgres 雙後端）
   1505 條全綠。純後端模組改動，未觸碰任何前端／E2E 檔案。
 
-**待辦（← 為下一張；標注「被誰擋」）**：
+**已完成**（續前）：
 
-- **T13** [#197] 全面回歸與最終驗收——被 #185–#196 全部擋，T11／T12
-  完成後 blocker 已全數解除，需求方真機驗收通過才算完 ←
+- **T13** [#197] 全面回歸與最終驗收（本輪 T01–T13 最後一張票，純
+  驗證＋整理，未新增任何 production 程式碼）：
 
-下一步：照專案規則「全部 ticket 做完才開 PR」，繼續 `/implement`
-T13——這是本輪（T01–T13）最後一張票，做完即整批收尾。
+  **自動化把關（AC 前 3 項）**：後端 pytest（記憶體＋本機真實
+  Postgres 兩組合併跑）**1423 條全綠**；前端 `typecheck` 乾淨、
+  Vitest **633 條全綠**、`vite build` 成功；Playwright **88 條全綠**
+  （iPhone 55＋Desktop 33）。
+
+  **既有數值語意零回歸（AC 第 4 項）**：`git log` 逐一核對整個
+  T01–T12 範圍（`365f1dd~1..HEAD`），`option_chaser/ranking.py`／
+  `filters.py`／`valuation.py` **零 commit 觸碰**——排名／過濾／估值
+  三個核心模組從第一張票到最後一張票原封不動，不是靠測試巡邏出來的
+  結果，是結構上不可能被本輪動到。`#118` 選取身份回歸守門
+  （`tests/test_selection_regression.py`）與 `test_ivpipeline_parity.py`
+  合併 12 條全綠——Historical IV／Exact-contract／Spread IV Gap／
+  Normalized Skew／排名／收益率的既有斷言一條都沒有鬆綁或改寫成更
+  寬鬆的版本，T11 施工中唯一需要「換句話說」的既有測試
+  （`test_the_full_ledger_covers_every_stage_and_shares_one_
+  correlation_id`）已在 T11 自己的紀錄裡說明原因並保留完整驗證力，
+  不是本票才發現、也不是弱化。
+
+  **Before/after 對照表**（逐項標示本地實測 vs 推估，兩者不混寫；
+  格式沿用 Performance 輪 PERF-07 既有慣例）：
+
+  | 項目 | 施工前 | 施工後 | 依據 |
+  |---|---|---|---|
+  | `api_app/main.py` 行數 | 2121 行（T01 開工前，`git show 365f1dd~1:api_app/main.py`） | 1450 行 | 本地實測（`wc -l`，直接量測，非估計） |
+  | `main.py` 職責 | ~1000 行 domain 邏輯（IV 編排 680 行、Refresh Run 編排、儲存半邊死碼與檔案系統 fallback 等混在 HTTP handler 裡） | 金融決策邏輯全部下沉（`ivpipeline.py`／`scenarios.py` 等引擎模組），`main.py` 只剩 HTTP 邊界職責（gate／port 組裝／diagnostics 信封） | 本地實測＋結構檢視（T01／T05／T10／T11 逐票記錄的職責遷移，`ranking.py`／`filters.py`／`valuation.py` 零改動佐證核心引擎未被牽動） |
+  | 一輪刷新的 serverless invocation 數（N 個劇本） | N 個（`App.tsx` 逐一 `await` 單一劇本端點，回報#025 診斷） | 1 個（`POST /api/scenarios/refresh-run`，超過時間預算才 continuation 續跑） | 本地實測（T06／T07／T08 各自測試套件：`test_api_refresh.py` 一輪刷新 14 條、Continuation 6 條、前端 `runBatch()` 迴圈追 `remaining` 直到清空皆有專屬斷言） |
+  | 同一輪刷新內同 symbol 的 chain 抓取次數 | 每個劇本各自抓一次（即使同一個 symbol） | 每個 distinct symbol 只抓一次（`_fetch_chain()` 純記憶體 dict 共用，ADR-0001） | 本地實測（T06 commit `bac4785`，`tests/test_api_refresh.py` 專屬斷言） |
+  | View 契約 payload 大小（`candidate_pool` 去重前後） | 229KB／231KB（兩份契約樣本） | 55KB／55KB，各縮減約 76% | 本地實測（T09，`scripts/gen_contract_sample.py` 重產後直接量測檔案大小） |
+  | `completion_scan`（韌性計算，單次分析最貴的部分）呼叫次數 | 16 次 | 9 次（−44%），View 三個容器與 report 文字路徑共用同一份快取字典 | 本地實測（T09，對 `xyz_v2_snapshot.json` 實測） |
+  | 詳細頁 deep-link 開啟的 refetch cascade | 3 次 ~100KB 全量下載＋2 次 iv-history（回報#025 診斷觀察） | 同一個資料身分（key）的並發呼叫只真的發一次底層請求（in-flight 去重＋參照計數快取） | 結構性保證＋本地單元測試實測（T03，`src/fetchCache.test.ts`：N 個並發呼叫者→`calls` 恰好等於 1）；**未在本沙箱對真實 deep-link 頁面做端到端網路請求計數**（sandbox 連不到正式 Neon／vendor，無法重現真實頁面載入的完整請求序列）——「cascade 這個問題類別被消滅」是結構性事實，但「這個頁面實際從 5 次變成幾次」沒有本地端到端量測數字，屬推估 |
+  | Storage 連線數（一次完全不碰 storage 的 request，例如某些驗證即失敗的路徑） | 1 條（PERF-01 既有機制：scope 一進入就無條件開一條，不論這次 request 用不用得到） | 0 條（T02：scope 進入時只註冊空狀態，第一次真正呼叫 `_connect()` 才開） | 本地實測（T02，`tests/test_storage_contract.py::test_a_scope_with_no_storage_calls_never_opens_a_connection`：monkeypatch `psycopg.connect` 計數，確認全程零呼叫） |
+  | Storage 連線數（一次 warm、真的會碰到 storage 的 request 內） | 沿用 PERF-01 既有的「整個 request scope 共用一條」（本輪未改變這件事） | 不變——T02 只修「要不要開」的時機（惰性），不改「開了之後共不共用」（一直都是共用） | 沿用既有事實，非本輪新測量；PERF-07 的 36→1 數字對這個情境依然成立 |
+  | Legacy (tenor,delta) 冷 backfill 執行緒池建立次數（25 天×20 個到期日梯子的完整一次 run） | 125 次（25 天 × 每天 5 批，每批各自新建銷毀） | 1 次（整個 run 共用） | 本地實測（T12，`test_the_whole_backfill_run_creates_exactly_one_thread_pool`：對修正前後的程式碼分別跑同一條測試，125 vs 1 兩個數字都是實際執行量到的，不是推算） |
+  | Legacy backfill 的「今天已跑過」重複觸發成本 | 同步夾在 `GET /iv-history` 裡，使用者每次打開詳細頁都可能觸發一次冷啟動延遲（即使當天已經補過） | 兩段式：`GET` 只讀狀態（零 vendor 呼叫），真正觸發交給獨立 `POST .../iv-history/backfill`，前端只在 `backfill_pending: true` 時嘗試一次 | 本地實測（T11，`legacy_backfill_status()` 為純讀取函式，`tests/test_api_iv_history.py` 多條端點層測試佐證；`backfillAttempted` ref 守門確認同一掛載期間至多一次前端觸發） |
+
+  **P1–P4 產品語意運作確認（AC 第 6 項）**：四項裁示對應的既有／
+  本輪測試逐一核對，皆有專屬自動化覆蓋（手機＋桌面 viewport 皆有）：
+  - **P1（更新中徽章，非整段灰化鎖定）**：T08 `App.tsx` 的
+    `updatingIds` 機制與既有 Playwright 案例（`smoke.spec.ts`／
+    `desktop.spec.ts` 既有 refresh-run 相關案例）維持全綠，本輪未
+    再修改這段前端邏輯
+  - **P2（部分成功摘要，N 成功／M 失敗）**：T06／T08 的
+    `formatRunSummary()`／後端 `{stage, message}` 失敗分層測試維持
+    全綠
+  - **P3（兩段式 backfill）**：T11 新增專屬 E2E（`smoke.spec.ts`，
+    手機 viewport：`backfill_pending` 觸發補建、進行中顯示「歷史
+    資料補建中……」、完成後自動重抓補全）
+  - **P4（建立劇本只刷新該新劇本，範圍收斂）**：T06 既有的
+    「帶 id＝只刷新那幾個」路徑與 T08 前端 `runBatch([created.id])`
+    測試維持全綠
+
+  **上一輪 Performance 修正確認未受影響（AC 第 7 項）**：`git log
+  365f1dd~1..HEAD -- api_app/treasury_cache.py api_app/rate_cache.py
+  option_chaser/ivtrend.py api_app/diagnostics.py` 四個檔案**零
+  commit 命中**——Diagnostics 降噪（PERF-02）、Treasury 年快取
+  （PERF-03）、`ivtrend` 演算法改良（PERF-04）三個檔案本輪完全沒有
+  被觸碰，不是「測過沒壞」，是結構上不可能被本輪動到；三者各自的
+  既有測試套件（`test_api_treasury_cache.py`／`test_ivtrend.py`／
+  diagnostics 相關測試）皆包含在上面 1423 條全綠裡。
+
+  **AC 最後一項——需求方真機驗收：本票無法自行完成**，這是唯一需要
+  人工執行的項目，記錄於此供需求方核對；其餘七項 AC 已全數以自動化
+  或結構檢視方式驗證完畢。
+
+**T01–T13（Architecture Review 輪，spec #184）全數完成。** 依專案
+規則「全部 ticket 做完才開 PR，中途不主動開」——本輪 13 張票（含
+T13 自己）程式碼與測試層面已全數完工，等需求方在正式部署版完成真機
+驗收、下指示後才開 PR、準備合併回 master。
 
 ### Spec #151（2026-08-17 發佈）——Historical IV Trend v1（Exact Contract Canonical Series）
 
