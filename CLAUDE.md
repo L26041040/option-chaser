@@ -27,7 +27,7 @@ block 裡，不能切成好幾個 code block、也不能中間插普通文字把
 `［回報#001］spec #137 拆票完成`）。編號是**累計總數**，不因換
 session、換分支、換主題而歸零——目前最新編號記在這裡：
 
-> 目前次序：025（下一份回報用 026）
+> 目前次序：026（下一份回報用 027）
 
 每發一份回報就把上面這個數字改成剛剛用掉的那個，跟著那次改動一起
 commit（沒有其他改動要 commit 時，單獨為這一行開一個小 commit 也
@@ -273,6 +273,42 @@ C1 批次取代）。
 （60s 上限的分批策略、進度回饋形狀、`refresh-run` interface 細節），
 grilling 中依裁決 lazily 建立 `CONTEXT.md`／ADR，再 `/to-spec`／
 拆票施工。C5 無爭議可隨時先行。
+
+**Grilling 結果（2026-08-24，回報#026）**——需求方授權：工程選擇
+直接拍板、產品決策彙整一次提問。
+
+已拍板（工程，E1–E8）：
+- **E1** Refresh Run interface：`POST /api/refresh-run`（body 可選
+  scenario ids，預設全部未過期），一次 invocation 內 symbol 去重
+  （in-process dict）→ 逐劇本 `run_with_snapshot` → 批次寫回；回應
+  含 server 端時間預算的 continuation——逾時回傳「已完成 rows＋
+  remaining ids」，前端自動再呼叫直到清空（單次請求為常態，分段是
+  安全閥）。實測支持：引擎 CPU 7ms/劇本（11-contract fixture）、
+  瓶頸在網路，realistic 一輪 <15s。
+- **E2** `chain_cache` 模組＋資料表＋15s TTL 刪除（被 E1 取代）。
+- **E3** PERF-01 修形：連線 lazy（首次用到才開）、兩層
+  BaseHTTPMiddleware 合併為一、schema DDL 移出請求路徑；memory
+  adapter 補 `request_scope` 讓 1,504 條測試走到 production 路徑。
+- **E4** PERF-05 修形：ThreadPoolExecutor 提出迴圈建一次；
+  concurrency=4 維持，留待 production 量測。
+- **E5** C2 下沉：`main.py:1279–1959` → engine 深模組（ports：
+  vendor history／surface／storage／clock）；補 iv-history contract
+  fixture。
+- **E6** C3 瘦身：candidates 單一容器＋key 引用；`report_text`／
+  `methodology_text` 移出 view payload（src/ 零引用已驗證；CLI 照
+  舊自 render）；schema_version 升版＋樣本重產＋TS types 同步。
+  舊已存 view 不遷移（讀取端相容）。
+- **E7** C4 前端：fetch module 以 `(id, analyzed_at)` 為 cache key
+  ＋in-flight 去重＋settings 共享＋AbortController；不引外部套件。
+- **E8** C5 死重清除全部執行（workspace.py／store.py 檔案系統半邊
+  ／data/base.py／data 層 on-disk cache 死碼／main.py:2121 第二個
+  app／殘骸檔案），對應舊測試依 replace-don't-layer 一併刪。
+
+待需求方（產品決策，P1–P4，見回報#026）：P1 刷新中卡片鎖定 vs
+可瀏覽舊資料＋徽章；P2 逾時／失敗語意（部分成功落地＋燈號 vs
+整輪失敗）；P3 IV 歷史冷 backfill 兩段式 vs 同步＋文案；P4 建立
+劇本後刷新範圍維持全量 vs 只刷新劇本。裁決後：ADR（chain 共用
+只在 run 內）＋CONTEXT.md（Refresh Run 詞彙）→ /to-spec → 拆票。
 
 ### Spec #151（2026-08-17 發佈）——Historical IV Trend v1（Exact Contract Canonical Series）
 
