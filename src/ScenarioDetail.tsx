@@ -230,7 +230,7 @@ export default function ScenarioDetail({
   busy = false,
   failure,
   onRefresh = () => {},
-  refreshLocked = false,
+  updating = false,
 }: {
   id: string;
   /**
@@ -250,13 +250,14 @@ export default function ScenarioDetail({
   failure?: RefreshFailure;
   onRefresh?: () => void;
   /**
-   * 這個劇本本輪還沒刷新完（V4 跟進票／#136）：桌面 master/detail
-   * 常駐，右側開著的劇本若還在排隊或正在抓，畫面上的數字是上一輪的
-   * 舊快照，不能讓它看起來像已經是這一輪的結果——比 `busy`（任何劇本
-   * 在跑都算）更精確，`busy` 只影響按鈕文案／停用，這個才是「這一個
-   * 劇本」的鎖定狀態。
+   * 這個劇本正在被刷新（T08／#196 P1「更新中徽章」，前身是 V4 跟進票
+   * ／#136 的整段鎖定）：桌面 master/detail 常駐，右側開著的劇本若正在
+   * 被 Refresh Run 或單一劇本刷新處理，畫面上的數字是上一輪的舊快照，
+   * 不能讓它看起來像已經是這一輪的結果——比 `busy`（任何劇本在跑都算）
+   * 更精確，`busy` 只影響按鈕文案／停用，這個才是「這一個劇本」的狀態。
+   * 純資訊性提示，不影響頁面其餘內容是否可瀏覽。
    */
-  refreshLocked?: boolean;
+  updating?: boolean;
 }) {
   const [detail, setDetail] = useState<Detail | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -294,7 +295,7 @@ export default function ScenarioDetail({
         <div className="toolbar-row">
           <h1 className="toolbar-title">{detail?.symbol ?? "劇本"}</h1>
           {/* #70：與劇本庫功能列同一個視覺語言（標題列右側膠囊鈕），
-              走 App 既有的那條刷新佇列——不是第四種獨立管道。已過期
+              走既有的單一劇本刷新端點——不是第四種獨立管道。已過期
               （#68）沿用清單卡片同一句文案並停用——後端會把它當無害
               no-op，按了等於沒按，不該讓它看起來還有用。 */}
           <button className="pill" onClick={onRefresh}
@@ -304,12 +305,13 @@ export default function ScenarioDetail({
         </div>
       </header>
 
-      {/* V4 跟進票／#136：本輪還沒輪到、或正在抓這個劇本——桌面右側
-          常駐面板最容易讓使用者誤以為畫面已經更新完，所以放在最上面、
-          搶在其他任何內容之前。刻意跟下面的失敗提示互斥判斷分開：
-          鎖著時失敗提示還沒有意義（這次嘗試根本還沒有結論），等解鎖後
-          若真的失敗，下面那段才會出現。 */}
-      {refreshLocked && (
+      {/* T08／#196 P1：正在被刷新（Refresh Run 或單一劇本刷新）——桌面
+          右側常駐面板最容易讓使用者誤以為畫面已經更新完，所以放在最
+          上面、搶在其他任何內容之前。純資訊性提示，不影響下面內容是否
+          可瀏覽（P1 明文：全程可瀏覽、可進詳細頁）。刻意跟下面的失敗
+          提示互斥判斷分開：更新中時失敗提示還沒有意義（這次嘗試根本
+          還沒有結論），等它解決後若真的失敗，下面那段才會出現。 */}
+      {updating && (
         <div className="notice warn" role="status">
           本輪刷新排隊中或進行中，以下暫時是上一輪的舊資料。
         </div>
@@ -319,7 +321,7 @@ export default function ScenarioDetail({
           （V4／#52 既有語彙），不是重新發明一套說法。已過期優先於刷新
           失敗（#68 既有判斷）：兩種狀態同時出現會讓使用者搞不清楚現在
           是哪一種。 */}
-      {!refreshLocked && failure && !detail?.expired && (
+      {!updating && failure && !detail?.expired && (
         <div className="notice error" role="alert">
           <div className="row-value">{failureLabel(failure.stage)}</div>
           <p className="caption">{failure.message}</p>

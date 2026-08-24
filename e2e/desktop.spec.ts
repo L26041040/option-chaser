@@ -42,9 +42,15 @@ async function routeTwoScenarios(page: import("@playwright/test").Page) {
     route.fulfill({ json: { ...rowA, latest_result: sample } }));
   await page.route("**/api/scenarios/s2", (route) =>
     route.fulfill({ json: { ...rowB, latest_result: sample } }));
-  // 開站的批次刷新（時機一）兩個劇本各打一次 /refresh——各自回傳
-  // 自己那筆，不能共用同一個回應：那樣兩個劇本的清單列會被同一份
-  // 資料蓋掉，其中一個劇本的卡片就從清單上「消失」了。
+  // 開站的批次刷新（時機一，T08／#196）打的是 Refresh Run，一次帶兩個
+  // id、一次回應涵蓋兩筆——不是各自打一次 `/refresh`。
+  await page.route("**/api/scenarios/refresh-run", (route) =>
+    route.fulfill({ json: {
+      results: [{ scenario_id: "s1", ok: true, row: rowA },
+               { scenario_id: "s2", ok: true, row: rowB }],
+      remaining: [],
+    } }));
+  // 卡片重試／詳細頁手動刷新走的是單一劇本端點，維持原樣。
   await page.route("**/api/scenarios/s1/refresh", (route) =>
     route.fulfill({ json: rowA }));
   await page.route("**/api/scenarios/s2/refresh", (route) =>
@@ -832,6 +838,11 @@ test("劇本庫卡片瘦身：固定左側欄視窗一次看到的劇本數比�
     libraryRow({ id: `s${i}`, symbol: `SYM${i}`,
                  latest_analyzed_at: null, best_return: null }));
   await page.route("**/api/scenarios", (route) => route.fulfill({ json: rows }));
+  await page.route("**/api/scenarios/refresh-run", (route) =>
+    route.fulfill({ json: {
+      results: rows.map((r) => ({ scenario_id: (r as { id: string }).id, ok: true, row: r })),
+      remaining: [],
+    } }));
   await page.route("**/api/scenarios/*/refresh", (route, req) =>
     route.fulfill({ json: rows.find((r) => req.url().includes(`/${r.id}/`)) }));
 
@@ -941,6 +952,11 @@ test("桌面主劇本庫：批次選取後動作列同樣吸底（QA-FIX-4／QA-
     libraryRow({ id: `s${i}`, symbol: `SYM${i}`,
                  latest_analyzed_at: null, best_return: null }));
   await page.route("**/api/scenarios", (route) => route.fulfill({ json: rows }));
+  await page.route("**/api/scenarios/refresh-run", (route) =>
+    route.fulfill({ json: {
+      results: rows.map((r) => ({ scenario_id: (r as { id: string }).id, ok: true, row: r })),
+      remaining: [],
+    } }));
   await page.route("**/api/scenarios/*/refresh", (route, req) =>
     route.fulfill({ json: rows.find((r) => req.url().includes(`/${r.id}/`)) }));
 
@@ -1180,6 +1196,10 @@ test("桌面版：編輯劇本沿用工作區上方的既有表單，取消隨�
   });
   await page.route("**/api/scenarios/s1/refresh", (route) =>
     route.fulfill({ json: current }));
+  // 開站那一輪走批次端點（T08／#196）。
+  await page.route("**/api/scenarios/refresh-run", (route) =>
+    route.fulfill({ json: { results: [{ scenario_id: "s1", ok: true,
+      row: current }], remaining: [] } }));
 
   await page.goto("/");
   await page.getByRole("button", { name: /編輯 TLT/ }).click();

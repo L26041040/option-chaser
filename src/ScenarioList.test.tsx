@@ -24,7 +24,7 @@ function list(
   rows: ScenarioSummary[],
   props: {
     failures?: Record<string, RefreshFailure>;
-    lockedIds?: ReadonlySet<string>;
+    updatingIds?: ReadonlySet<string>;
     onArchive?: (id: string) => void;
     onEdit?: (id: string) => void;
     onRetry?: (id: string) => void;
@@ -41,7 +41,7 @@ function list(
     <ScenarioList
       rows={rows}
       failures={props.failures ?? {}}
-      lockedIds={props.lockedIds ?? new Set()}
+      updatingIds={props.updatingIds ?? new Set()}
       onArchive={props.onArchive ?? vi.fn()}
       onEdit={props.onEdit ?? vi.fn()}
       onRetry={props.onRetry ?? vi.fn()}
@@ -421,6 +421,34 @@ describe("刷新失敗的分層與重試入口（V4／#52）", () => {
     // 只要旁邊誠實標明它是舊的。
     expect(screen.getByText("123.4%")).toBeInTheDocument();
     expect(screen.getByText("舊資料")).toBeInTheDocument();
+  });
+});
+
+describe("更新中徽章（T08／#196 P1，取代整段灰化鎖定）", () => {
+  it("更新中的卡片標「更新中」，但仍是可點的連結、仍顯示上一輪的舊資料", () => {
+    list([row({ id: "a", best_return: 2.5 })], { updatingIds: new Set(["a"]) });
+
+    expect(screen.getByText("更新中")).toBeInTheDocument();
+    // 全程可點——不是像舊版 #136 那樣拿掉 href：
+    expect(screen.getByRole("link", { name: /TLT/ })).toBeInTheDocument();
+    // 上一輪的舊數字仍顯示，不會因為更新中就消失或變成「—」：
+    expect(screen.getByText("250.0%")).toBeInTheDocument();
+  });
+
+  it("不是更新中的卡片顯示一般燈號，不是「更新中」", () => {
+    list([row({ id: "a" })], { updatingIds: new Set() });
+    expect(screen.queryByText("更新中")).not.toBeInTheDocument();
+  });
+
+  it("更新中的劇本用它上一輪的舊收益率正常參與排序，不獨立排到後面", () => {
+    list([
+      row({ id: "a", symbol: "AAA", best_return: 0.5 }),
+      row({ id: "b", symbol: "BBB", best_return: 9.0 }),
+    ], { updatingIds: new Set(["b"]) });
+
+    const symbols = screen.getAllByRole("listitem")
+      .map((li) => li.querySelector(".compact-symbol")!.textContent);
+    expect(symbols).toEqual(["BBB", "AAA"]);
   });
 });
 

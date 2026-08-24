@@ -39,6 +39,13 @@ test.beforeEach(async ({ page }) => {
   // V3 起開站就打劇本清單。E2E 沒有後端，預設回空清單；需要劇本的
   // 測試自己覆寫這條路由。
   await page.route("**/api/scenarios", (route) => route.fulfill({ json: [] }));
+  // 開站與頂部刷新鈕打的是批次端點（Refresh Run，T08／#196）——預設
+  // 給一個空成功回應（不改動任何劇本），不必為了不讓開站那輪報錯，
+  // 每條測試都各自覆寫一次。真的要驗證刷新結果的測試（例如整輪刷新／
+  // Continuation）會在自己的測試本體裡覆寫這條路由（Playwright 後
+  // 註冊的路由優先），拿到有意義的回應。
+  await page.route("**/api/scenarios/refresh-run", (route) =>
+    route.fulfill({ json: { results: [], remaining: [] } }));
 });
 
 /** 劇本清單列：形狀取自前後端共用的契約樣本，只覆寫測試在意的欄位。 */
@@ -82,6 +89,16 @@ async function routeLibrary(page: import("@playwright/test").Page, row: unknown)
   await page.route("**/api/scenarios", (route) => route.fulfill({ json: [row] }));
   await page.route("**/api/scenarios/s1", (route) =>
     route.fulfill({ json: { ...(row as object), latest_result: sample } }));
+  // 開站與頂部刷新鈕打的是批次端點（Refresh Run，T08／#196）——
+  // `"/refresh-run"` 不會被下面那條 `**/api/scenarios/*/refresh`
+  // 比對到（Playwright 的 `*` 只吃一個路徑區段，`refresh-run` 沒有
+  // `/refresh` 這個子路徑），得另外給一條路由，否則開站那輪會撲空。
+  await page.route("**/api/scenarios/refresh-run", (route) =>
+    route.fulfill({ json: {
+      results: [{ scenario_id: (row as { id: string }).id, ok: true, row }],
+      remaining: [],
+    } }));
+  // 卡片重試／詳細頁手動刷新走的是單一劇本端點，維持原樣。
   await page.route("**/api/scenarios/*/refresh", (route) =>
     route.fulfill({ json: row }));
   await page.route("**/api/scenarios/*/raw-data", (route) =>
@@ -659,6 +676,18 @@ test("功能列捲動時仍釘在頂部、而且按得到（V3／#51 驗收第 1
   });
   await page.route("**/api/scenarios/*/refresh", (route, req) =>
     route.fulfill({ json: rows.find((r) => req.url().includes(`/${r.id}/`)) }));
+  // 開站觸發的是批次端點（T08／#196）——沒有它，開站那輪
+  // `updatingIds` 永遠清不掉，後面點「重新整理」的按鈕會卡在
+  // disabled。回傳全部成功，等同單一劇本端點的邏輯。
+  await page.route("**/api/scenarios/refresh-run", (route, req) => {
+    const body = req.postDataJSON() as { scenario_ids: string[] | null };
+    const ids = body.scenario_ids ?? rows.map((r) => r.id);
+    return route.fulfill({ json: {
+      results: ids.map((id) => ({ scenario_id: id, ok: true,
+        row: rows.find((r) => r.id === id) })),
+      remaining: [],
+    } });
+  });
 
   await page.goto("/");
   const toolbar = page.getByText("劇本庫");
@@ -700,39 +729,42 @@ function refreshedRow() {
            latest_analyzed_at: new Date().toISOString() };
 }
 
-test("開站自動刷新：進度 → 卡片換成新數字（V4／#52）", async ({ page }) => {
+test("開站自動刷新：進度 → 卡片換成新數字（V4／#52，T08／#196 更新文案）", async ({ page }) => {
   await page.route("**/api/scenarios", (route) =>
     route.fulfill({ json: [pendingRow] }));
-  await page.route("**/api/scenarios/*/refresh", async (route) => {
-    // 刻意延遲，讓「刷新中」的進度真的看得到——秒回的話這條測試會在
-    // 進度根本沒渲染的情況下照樣綠。
+  await page.route("**/api/scenarios/refresh-run", async (route) => {
+    // 刻意延遲，讓「更新中」的狀態真的看得到——秒回的話這條測試會在
+    // 狀態根本沒渲染的情況下照樣綠。
     await new Promise((resolve) => setTimeout(resolve, 600));
-    await route.fulfill({ json: refreshedRow() });
+    await route.fulfill({ json: { results: [{ scenario_id: "s1", ok: true,
+      row: refreshedRow() }], remaining: [] } });
   });
 
   await page.goto("/");
 
-  await expect(page.getByRole("status")).toHaveText("1/1");
+  // T08／#196：整輪刷新不再是「N/M」逐一進度，是單一「更新中……」狀態，
+  // 且劇本列項全程可點（不反灰、不禁用）——見下方 P1 專屬測試。
+  await expect(page.getByRole("status")).toHaveText("更新中……");
   await expect(page.getByRole("button", { name: "刷新中……" })).toBeDisabled();
 
   await expect(page.getByText("250.0%")).toBeVisible();
   await expect(page.getByRole("button", { name: "重新整理" })).toBeEnabled();
-  await expect(page.getByRole("status")).toBeHidden();
+  await expect(page.getByRole("status")).toHaveText("1 成功");
   // 收益率口徑就寫在數字旁邊
   await expect(page.getByText(/最差成交價/)).toBeVisible();
 });
 
 test("刷新失敗說明是哪一段，重試就地重來（V4／#52）", async ({ page }) => {
-  let attempts = 0;
   await page.route("**/api/scenarios", (route) =>
     route.fulfill({ json: [pendingRow] }));
-  await page.route("**/api/scenarios/*/refresh", (route) => {
-    attempts += 1;
-    return attempts === 1
-      ? route.fulfill({ status: 502, json: { detail: {
-          stage: "fetch", message: "抓不到 TLT 的報價：來源無回應" } } })
-      : route.fulfill({ json: refreshedRow() });
-  });
+  // 開站那一輪走批次端點（T08／#196），失敗以 `ok:false` 表達；重試
+  // 走單一劇本端點（`refreshOne`），與批次端點各自獨立成功/失敗。
+  await page.route("**/api/scenarios/refresh-run", (route) =>
+    route.fulfill({ json: { results: [{ scenario_id: "s1", ok: false,
+      stage: "fetch", message: "抓不到 TLT 的報價：來源無回應" }],
+      remaining: [] } }));
+  await page.route("**/api/scenarios/*/refresh", (route) =>
+    route.fulfill({ json: refreshedRow() }));
 
   await page.goto("/");
 
@@ -755,6 +787,10 @@ test("Compact row 刷新失敗時，封存鈕不會疊在重試鈕上（code rev
     // 回歸的測法，jsdom 不會算真實版面。
     await page.route("**/api/scenarios", (route) =>
       route.fulfill({ json: [pendingRow] }));
+    await page.route("**/api/scenarios/refresh-run", (route) =>
+      route.fulfill({ json: { results: [{ scenario_id: "s1", ok: false,
+        stage: "fetch", message: "抓不到 TLT 的報價：來源無回應" }],
+        remaining: [] } }));
     await page.route("**/api/scenarios/*/refresh", (route) =>
       route.fulfill({ status: 502, json: { detail: {
         stage: "fetch", message: "抓不到 TLT 的報價：來源無回應" } } }));
@@ -782,6 +818,10 @@ test("久未刷新的資料標成舊資料（V4／#52）", async ({ page }) => {
     route.fulfill({ json: [{ ...pendingRow, best_return: 1.0,
                              latest_analyzed_at: old }] }));
   // 刷新一直失敗，所以卡片上留著的就是那份三天前的數字
+  await page.route("**/api/scenarios/refresh-run", (route) =>
+    route.fulfill({ json: { results: [{ scenario_id: "s1", ok: false,
+      stage: "fetch", message: "抓不到 TLT 的報價：來源無回應" }],
+      remaining: [] } }));
   await page.route("**/api/scenarios/*/refresh", (route) =>
     route.fulfill({ status: 502, json: { detail: {
       stage: "fetch", message: "抓不到 TLT 的報價：來源無回應" } } }));

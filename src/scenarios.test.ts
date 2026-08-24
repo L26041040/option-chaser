@@ -9,10 +9,10 @@ import {
   formatRepresentativeExpiry,
   formatRepresentativeLegs,
   formatReturn,
+  formatRunSummary,
   hasPriceRange,
   isStale,
   moneyOrDash,
-  partitionByLock,
   scenarioSignal,
   signalLabel,
   sortScenarios,
@@ -220,50 +220,26 @@ describe("劇本庫卡片的價格欄位（QA 修正）", () => {
   });
 });
 
-describe("整輪刷新的漸進解鎖（#136）", () => {
-  it("鎖著的劇本不進已完成區，即使收益率更高", () => {
-    // B 鎖著、舊收益率 9.0 遠高於已完成的 A（0.5）——不該因此排到前面。
-    const { unlocked, locked } = partitionByLock(
-      [row("1", 0.5), row("2", 9.0)],
-      new Set(["2"]),
-    );
-    expect(unlocked.map((r) => r.id)).toEqual(["1"]);
-    expect(locked.map((r) => r.id)).toEqual(["2"]);
+describe("更新中的劇本照樣參與排序（T08／#196 P1，取代 #136 partitionByLock）", () => {
+  it("正在更新的劇本用它上一輪的舊 best_return 正常排序，不獨立排到後面", () => {
+    // B 正在更新、舊收益率 9.0 遠高於 A（0.5）——它照樣排在最前面，因為
+    // `sortScenarios` 根本不知道、也不需要知道誰在更新中（P1：更新中
+    // 只是徽章顯示，不是排序輸入）。
+    const rows = [row("1", 0.5), row("2", 9.0)];
+    expect(sortScenarios(rows).map((r) => r.id)).toEqual(["2", "1"]);
+  });
+});
+
+describe("一輪刷新摘要（T08／#196 P2）", () => {
+  it("全部成功時只講成功數，不硬湊一個「0 失敗」", () => {
+    expect(formatRunSummary(3, 0)).toBe("3 成功");
   });
 
-  it("已完成區維持既有的收益率排序規則", () => {
-    const { unlocked } = partitionByLock(
-      [row("1", 0.5), row("2", 2.5), row("3", 1.0)],
-      new Set(),
-    );
-    expect(unlocked.map((r) => r.id)).toEqual(["2", "3", "1"]);
+  it("有失敗時兩個數字並列", () => {
+    expect(formatRunSummary(2, 1)).toBe("2 成功／1 失敗");
   });
 
-  it("鎖著的那段維持傳入順序（佇列先後），不重新排序", () => {
-    const { locked } = partitionByLock(
-      [row("1", 9.0), row("2", 0.1), row("3", 5.0)],
-      new Set(["1", "2", "3"]),
-    );
-    expect(locked.map((r) => r.id)).toEqual(["1", "2", "3"]);
-  });
-
-  it("完成的那一刻立即離開鎖著的那段，回到已完成區依收益率排序", () => {
-    const rows = [row("1", 0.5), row("2", 2.5), row("3", 1.0)];
-    // C 還鎖著時：A、B 已完成區排序，C 獨自在鎖著的那段。
-    const midway = partitionByLock(rows, new Set(["3"]));
-    expect(midway.unlocked.map((r) => r.id)).toEqual(["2", "1"]);
-    expect(midway.locked.map((r) => r.id)).toEqual(["3"]);
-
-    // C 完成、解鎖後：三個都在已完成區，依收益率重新排序。
-    const done = partitionByLock(rows, new Set());
-    expect(done.unlocked.map((r) => r.id)).toEqual(["2", "3", "1"]);
-    expect(done.locked).toEqual([]);
-  });
-
-  it("沒有任何劇本鎖著時等同於一般排序", () => {
-    const rows = [row("1", 0.5), row("2", 2.5), row("3", 1.0)];
-    const { unlocked, locked } = partitionByLock(rows, new Set());
-    expect(unlocked).toEqual(sortScenarios(rows));
-    expect(locked).toEqual([]);
+  it("全部失敗時仍講「0 成功」，不是省略成功那一半", () => {
+    expect(formatRunSummary(0, 3)).toBe("0 成功／3 失敗");
   });
 });

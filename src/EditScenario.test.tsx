@@ -38,6 +38,15 @@ function mockApi(onPatch?: (body: unknown) => ScenarioSummary) {
       current = onPatch?.(body) ?? card({ ...(body as object) } as never);
       return { ok: true, status: 200, json: async () => current } as Response;
     }
+    // 開站觸發的是批次端點（T08／#196）——`"/refresh-run"` 本身也含
+    // `"/refresh"` 子字串，這條分支得排在下面那條泛用 `/refresh` 判斷
+    // 之前，否則會被吃掉、回錯形狀（一份 `ScenarioSummary` 而不是
+    // `{results, remaining}`）。
+    if (url === "/api/scenarios/refresh-run" && method === "POST") {
+      return { ok: true, status: 200, json: async () => (
+        { results: [{ scenario_id: current.id, ok: true, row: current }],
+         remaining: [] }) } as Response;
+    }
     if (url.includes("/refresh")) {
       return { ok: true, status: 200, json: async () => current } as Response;
     }

@@ -29,7 +29,7 @@ function list(
   rows: ScenarioSummary[],
   props: {
     failures?: Record<string, RefreshFailure>;
-    lockedIds?: ReadonlySet<string>;
+    updatingIds?: ReadonlySet<string>;
     onArchive?: (id: string) => void;
     onEdit?: (id: string) => void;
     onRetry?: (id: string) => void;
@@ -46,7 +46,7 @@ function list(
     <CompactScenarioList
       rows={rows}
       failures={props.failures ?? {}}
-      lockedIds={props.lockedIds ?? new Set()}
+      updatingIds={props.updatingIds ?? new Set()}
       onArchive={props.onArchive ?? vi.fn()}
       onEdit={props.onEdit ?? vi.fn()}
       onRetry={props.onRetry ?? vi.fn()}
@@ -227,6 +227,21 @@ describe("批次選取移入垃圾桶（TR6／#91）", () => {
     await userEvent.click(screen.getByRole("button", { name: "取消" }));
 
     expect(onCancelSelectMode).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("更新中徽章（T08／#196 P1，取代整段灰化鎖定）", () => {
+  it("更新中的列項標「更新中」，但仍是可點的連結、仍顯示上一輪的舊資料", () => {
+    list([row({ id: "a", best_return: 2.5 })], { updatingIds: new Set(["a"]) });
+
+    expect(screen.getByText("更新中")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /TLT/ })).toBeInTheDocument();
+    expect(screen.getByText("250.0%")).toBeInTheDocument();
+  });
+
+  it("不是更新中的列項顯示一般燈號，不是「更新中」", () => {
+    list([row({ id: "a" })], { updatingIds: new Set() });
+    expect(screen.queryByText("更新中")).not.toBeInTheDocument();
   });
 });
 

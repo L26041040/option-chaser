@@ -17,9 +17,13 @@
  * 點卡片進詳細頁（`ScenarioDetail`，V5／#53）；V1 的一次性分析畫面
  * 隨詳細頁落地一併移除，候選池診斷搬進詳細頁。
  *
- * 刷新時機只有三種（沿用 QA1-07／#34 的既有裁示）：開站、建立劇本後、
- * 功能列的刷新鈕。卡片上的「重試」不是第四種——它重跑的是**那一次
- * 失敗的刷新**，範圍是單一劇本。
+ * 刷新時機只有三種（沿用 QA1-07／#34 的既有裁示，2026-08-24 裁示 P4
+ * 修改了「建立劇本」這一種的範圍）：開站、頂部刷新鈕（範圍皆為全部未
+ * 過期劇本）、建立劇本後（範圍只有新建立的那一個）。三者皆呼叫後端
+ * Refresh Run 批次端點（T08／#196，`runBatch()`）。卡片上的「重試」、
+ * 詳細頁的手動刷新、編輯後重新分析都不是第四種時機——它們走既有的
+ * 單一劇本刷新端點（`refreshOne()`），重跑的是那一個劇本，不牽動
+ * Refresh Run 的批次與 Continuation 機制。
  *
  * 這一層只做編排與狀態：排序、格式化在 `./scenarios`，驗證在
  * `./CreateForm`，金融計算全部在後端引擎。
@@ -43,7 +47,7 @@ import Dashboard from "./Dashboard";
 import ScenarioDetail from "./ScenarioDetail";
 import ScenarioList from "./ScenarioList";
 import Settings from "./Settings";
-import Toolbar, { type RefreshProgress } from "./Toolbar";
+import Toolbar from "./Toolbar";
 import TrashView from "./TrashView";
 import { useIsDesktop } from "./useIsDesktop";
 import { GearIcon } from "./icons";
@@ -52,6 +56,7 @@ import {
   createScenario,
   editScenario,
   listScenarios,
+  refreshRun,
   refreshScenario,
   toFailure,
   type RefreshFailure,
@@ -64,6 +69,7 @@ import {
   settingsHash,
   trashHash,
 } from "./route";
+import { formatRunSummary } from "./scenarios";
 
 /**
  * 桌面版真正的 master/detail（#72）：桌面寬度下劇本庫常駐、詳細頁另開
@@ -79,14 +85,16 @@ export default function App() {
   const [rows, setRows] = useState<ScenarioSummary[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [progress, setProgress] = useState<RefreshProgress | null>(null);
   const [failures, setFailures] = useState<Record<string, RefreshFailure>>({});
-  // 整輪刷新的漸進解鎖（V4 跟進票／#136）：排進佇列（不管是整輪、單一
-  // 劇本重試、還是建立後那一批）就立刻反灰＋禁止點入——避免使用者以為
-  // 看到的是這次刷新的結果；那次嘗試一結束（成功或失敗）立刻解鎖，不用
-  // 等整條佇列跑完。跟 `progress`／`failures` 是同一批狀態、同一顆佇列
-  // 跑者更新，不是另一套機制。
-  const [lockedIds, setLockedIds] = useState<Set<string>>(new Set());
+  // 更新中徽章（T08／#196，P1，取代 V4 跟進票／#136 的整段灰化鎖定）：
+  // 正在被刷新（不論是 Refresh Run 批次還是單一劇本刷新）的劇本 id——
+  // 卡片標「更新中」但**不**反灰、不禁止點入，資料與連結全程可用，只是
+  // 顯示的是上一輪的舊數字。一解決（成功或失敗）立刻從這裡移除。
+  const [updatingIds, setUpdatingIds] = useState<Set<string>>(new Set());
+  // 上一輪 Refresh Run 的「N 成功／M 失敗」摘要（P2）；新一輪開始時清空
+  // （見 `runBatch`），跑完才重新設定。
+  const [runSummary, setRunSummary] = useState<string | null>(null);
+  const refreshBusy = updatingIds.size > 0;
   // #75：建立劇本表單預設收合，靠工具列的膠囊鈕展開／收合——不再是
   // 掛在全部劇本卡片下面、永遠展開的表單。
   const [showCreateForm, setShowCreateForm] = useState(false);
@@ -98,16 +106,6 @@ export default function App() {
   // 補 `aria-hidden`。`aria-controls` 沿用 `MonthPicker`（同檔案）
   // 既有的「展開鈕指向自己控制的面板」寫法，兩處手法一致。
   const createPanelId = useId();
-  // 刷新是「一條佇列、一個跑者」：同時跑兩輪只會讓同一批劇本各被抓
-  // 兩次、進度互相蓋掉。用佇列而不是「進行中就不理」——三種時機會重疊
-  // （開站那一輪還沒跑完就建立了劇本），直接丟掉的話新劇本會靜靜地
-  // 永遠停在「尚未分析」。
-  const queue = useRef<string[]>([]);
-  const running = useRef(false);
-  // 事件處理器裡拿得到「此刻」的 rows：狀態閉包停在該次渲染，而刷新
-  // 佇列隨時在更新 rows。
-  const rowsRef = useRef<ScenarioSummary[]>(rows);
-  rowsRef.current = rows;
 
   const reload = useCallback(async (): Promise<ScenarioSummary[] | null> => {
     try {
@@ -121,10 +119,15 @@ export default function App() {
     }
   }, []);
 
-  /** 解除單一劇本的刷新鎖——成功、失敗都要走到這裡，不能只在成功分支
-   *  解鎖，否則失敗的劇本會永遠反灰、卡在「刷新中」（票上明文紅線）。 */
-  const unlock = useCallback((id: string) => {
-    setLockedIds((prev) => {
+  const markUpdating = useCallback((ids: string[]) => {
+    if (ids.length === 0) return;
+    setUpdatingIds((prev) => new Set([...prev, ...ids]));
+  }, []);
+
+  /** 解除單一劇本的更新中徽章——成功、失敗都要走到這裡，不能只在成功
+   *  分支解除，否則失敗的劇本會永遠卡在「更新中」（票上明文紅線）。 */
+  const clearUpdating = useCallback((id: string) => {
+    setUpdatingIds((prev) => {
       if (!prev.has(id)) return prev;
       const next = new Set(prev);
       next.delete(id);
@@ -132,8 +135,15 @@ export default function App() {
     });
   }, []);
 
-  /** 刷新單一劇本。失敗只記在那張卡上，不中斷整輪。 */
+  /**
+   * 刷新單一劇本，走既有的單一 Scenario 刷新端點（不是 Refresh Run）
+   * ——用於卡片「重試」、詳細頁刷新入口、編輯後重新分析：這三者都不是
+   * 正式的三個 Refresh Trigger 之一（開站／頂部刷新鈕／建立劇本），
+   * 語意上是「單獨重跑這一個」，不該牽動 Refresh Run 的批次與
+   * Continuation 機制。失敗只記在那張卡上，不影響其他劇本。
+   */
   const refreshOne = useCallback(async (id: string) => {
+    markUpdating([id]);
     try {
       const row = await refreshScenario(id);
       setRows((prev) => prev.map((r) => (r.id === id ? row : r)));
@@ -145,69 +155,90 @@ export default function App() {
     } catch (e) {
       setFailures((prev) => ({ ...prev, [id]: toFailure(e) }));
     } finally {
-      // 這次嘗試到此結束——不論成敗都立刻解鎖，讓這張卡回到可點、
-      // 可能還帶著剛更新的收益率參與已完成區排序（票上明文：失敗也要
-      // 解鎖，沿用既有 yellow／stale 語意，不得永久反灰）。
-      unlock(id);
+      clearUpdating(id);
     }
-  }, [unlock]);
+  }, [markUpdating, clearUpdating]);
 
   /**
-   * 排入刷新佇列並確保有人在跑。依序（不併發）：一次一趟網路往返，
-   * 進度才有意義，也不會同時對資料源打 N 個請求。
+   * 一輪刷新（T08／#196，接上後端 Refresh Run／T06＋T07）：三個正式
+   * Refresh Trigger（開站、頂部刷新鈕、建立劇本）共用這一個函式，差別
+   * 只在傳入的 `ids`——前兩者是「全部未過期劇本」（呼叫端先篩好），
+   * 建立劇本只傳新建立的那一個（P4，取代 QA1-07 時期的全量刷新）。
    *
-   * 跑到一半被追加的劇本會一起跑完，總數隨之變大——那是實話，好過
-   * 讓進度停在一個早就不對的分母上。
+   * P1：涉及的卡片標「更新中」但不鎖定，資料與連結全程可用。
+   * P2：每次 HTTP 回應（含 Continuation 的每一段）一到就逐批落地，不
+   * 等全部完成才一次跳動；結束後彙整「N 成功／M 失敗」摘要。
    *
-   * 進佇列的當下就整批反灰＋鎖住（V4 跟進票／#136）：不是只鎖「正在
-   * 抓」的那一個——排隊中的其他劇本一樣顯示的是上一輪的舊結果，同樣
-   * 該反灰，不能讓使用者以為那些也是這一輪的最新結果。
+   * 每次呼叫是獨立的一個 Run，彼此互不等待——`updatingIds`／`rows`／
+   * `failures` 全部走函式式更新，多個 Run 同時進行（例如開站那輪全量
+   * 刷新還沒跑完，使用者已經建立了新劇本）不會互相打架，也不需要像
+   * 舊版 `enqueue` 那樣共用一條序列佇列：Refresh Run 端點本身已經把
+   * 「一次處理一批」這件事收進後端，前端不必再自己排隊。
    */
-  const enqueue = useCallback(
-    async (ids: string[]) => {
-      const fresh: string[] = [];
-      for (const id of ids) {
-        if (!queue.current.includes(id)) {
-          queue.current.push(id);
-          fresh.push(id);
+  const runBatch = useCallback(async (ids: string[]) => {
+    if (ids.length === 0) return;
+    markUpdating(ids);
+    setRunSummary(null);
+    let succeeded = 0;
+    let failed = 0;
+    let pendingIds = ids;
+    try {
+      for (;;) {
+        let response;
+        try {
+          response = await refreshRun(pendingIds);
+        } catch (e) {
+          // 整趟 HTTP 呼叫本身失敗（不是個別劇本的 partial failure）——
+          // 這批還沒解決的全部記成失敗，不留在「更新中」卡死。
+          const failure = toFailure(e);
+          setFailures((prev) => {
+            const next = { ...prev };
+            for (const id of pendingIds) next[id] = failure;
+            return next;
+          });
+          failed += pendingIds.length;
+          pendingIds.forEach(clearUpdating);
+          break;
         }
-      }
-      if (fresh.length > 0) {
-        setLockedIds((prev) => new Set([...prev, ...fresh]));
-      }
-      if (running.current || queue.current.length === 0) return;
-
-      running.current = true;
-      let done = 0;
-      try {
-        while (queue.current.length > 0) {
-          // 1-based：顯示的是「正在跑第幾個」，不是「跑完幾個」——
-          // 功能列寫的是「第幾個／共幾個」。
-          setProgress({ current: done + 1, total: done + queue.current.length });
-          await refreshOne(queue.current.shift()!);
-          done += 1;
+        for (const r of response.results) {
+          if (r.ok) {
+            succeeded += 1;
+            const row = r.row;
+            setRows((prev) => prev.map((old) => (old.id === row.id ? row : old)));
+            setFailures((prev) => {
+              if (!(r.scenario_id in prev)) return prev;
+              const { [r.scenario_id]: _gone, ...rest } = prev;
+              return rest;
+            });
+          } else {
+            failed += 1;
+            setFailures((prev) => ({
+              ...prev, [r.scenario_id]: { stage: r.stage, message: r.message },
+            }));
+          }
+          clearUpdating(r.scenario_id);
         }
-      } finally {
-        // 刻意不清空佇列：真有東西沒跑完（例如迴圈裡爆了），留著讓下一次
-        // enqueue 接手，而不是照著「不靜靜丟掉」的註解反其道而行。
-        running.current = false;
-        setProgress(null);
+        if (response.remaining.length === 0) break;
+        // Continuation（T07）：下一次呼叫改用 `remaining`，不是原始
+        // `ids`——否則會把已經處理過的劇本重新排進去。
+        pendingIds = response.remaining;
       }
-    },
-    [refreshOne],
-  );
+    } finally {
+      setRunSummary(formatRunSummary(succeeded, failed));
+    }
+  }, [markUpdating, clearUpdating]);
 
   /** 時機一與時機三共用：先取回最新清單（別台裝置可能加過劇本），
-   *  再逐一刷新。
+   *  再整批刷新。
    *
-   * 目標月已過完的劇本（#68）不排進去——後端 `refresh` 端點本身也會擋
-   * （唯一真正的擋點，任何入口都繞不過），這裡先篩掉純粹是不浪費一趟
-   * 網路往返，讓進度的分母從一開始就是對的。
+   * 目標月已過完的劇本（#68）不排進去——後端 Refresh Run 端點本身也會
+   * 對顯式帶進去的過期劇本短路處理，這裡先篩掉純粹是不浪費一趟網路
+   * 往返，讓送出去的批次從一開始就是對的範圍。
    */
   const reloadAndRefresh = useCallback(async () => {
     const fresh = await reload();
-    if (fresh) await enqueue(fresh.filter((r) => !r.expired).map((r) => r.id));
-  }, [reload, enqueue]);
+    if (fresh) await runBatch(fresh.filter((r) => !r.expired).map((r) => r.id));
+  }, [reload, runBatch]);
 
   // 時機一：開站。只跑一次——`StrictMode` 在開發模式下會把 effect 跑
   // 兩遍，沒有這道閘的話每個劇本開站就被分析兩次（各一趟抓鏈＋一次引擎
@@ -283,12 +314,10 @@ export default function App() {
     setRows((prev) => [...prev, created]);
     setError(null);
     // 時機二：建立劇本後。刻意不 await——表單要立刻清空並可再輸入，
-    // 不該被後面 N 趟刷新綁住。既有清單裡目標月已過完的劇本（#68）
-    // 一併篩掉——剛建立的這個不可能過期（後端建立時就擋了），不必篩。
-    void enqueue([
-      ...rowsRef.current.filter((r) => !r.expired).map((r) => r.id),
-      created.id,
-    ]);
+    // 不該被後面的刷新綁住。P4（2026-08-24 裁示，取代 QA1-07 時期的
+    // 全量刷新）：只刷新新建立的這一個，既有劇本的資料與時間戳不受
+    // 影響——不再把整份清單一起併進這一輪。
+    void runBatch([created.id]);
   }
 
   /** 點卡片上的編輯：把原資料交給既有表單並展開它。 */
@@ -326,8 +355,8 @@ export default function App() {
     setShowCreateForm(false);
     setError(null);
     // thesis 改了的話後端已經清掉舊結果（#132），這裡把它重新分析一次
-    // ——沿用既有的單一佇列，不是第四種刷新管道。
-    void enqueue([id]);
+    // ——走單一劇本刷新端點，不是第四種刷新管道，也不是 Refresh Run。
+    void refreshOne(id);
   }
 
   async function archive(id: string) {
@@ -370,13 +399,12 @@ export default function App() {
 
   // ---------- 批次選取移入垃圾桶（TR6／#91） ----------
   //
-  // 沒有新增後端批次端點：依序（不併發）呼叫既有單筆 `/archive`，跟
-  // `enqueue` 刷新佇列同一種「一次一趟網路往返」的理由——批次操作本身
-  // 不搶進行中的刷新佇列（archive 與 refresh 是不同端點，天生不衝突，
-  // 這裡的序列只是不讓 N 個請求同時炸出去）。每完成一筆就立刻從畫面
-  // 移除那一列，個別失敗不中斷其餘筆——跟單筆 `archive()` 的樂觀更新
-  // 同一個原則，只是失敗時不回滾（使用者仍在選取模式裡，看得到哪些
-  // 還留著、旁邊的錯誤說明解釋為什麼）。
+  // 沒有新增後端批次端點：依序（不併發）呼叫既有單筆 `/archive`——
+  // 批次操作本身不搶進行中的刷新（archive 與 refresh 是不同端點，天生
+  // 不衝突，這裡的序列只是不讓 N 個請求同時炸出去）。每完成一筆就立刻
+  // 從畫面移除那一列，個別失敗不中斷其餘筆——跟單筆 `archive()` 的樂觀
+  // 更新同一個原則，只是失敗時不回滾（使用者仍在選取模式裡，看得到
+  // 哪些還留著、旁邊的錯誤說明解釋為什麼）。
   const [selectMode, setSelectMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [batchArchiveErrors, setBatchArchiveErrors] =
@@ -437,16 +465,16 @@ export default function App() {
     // 把該劇本在清單上的資料時間一起交出去：開站那輪刷新完成後它會變，
     // 詳細頁據此重新取一次，直接開詳細頁網址的人才不會停在舊快照上。
     refreshedAt: rows.find((r) => r.id === detailId)?.latest_analyzed_at ?? null,
-    // #70：詳細頁的刷新走 App 既有的那條單一佇列——`busy` 沿用
-    // `Toolbar` 同一個判準（任何刷新進行中都算），`onRefresh` 就是
-    // `enqueue([這個劇本])`，不是另開一條管道。
-    busy: progress !== null,
+    // #70：詳細頁的刷新走既有的單一劇本刷新端點（`refreshOne`）——
+    // `busy` 沿用 `Toolbar` 同一個判準（任何刷新進行中都算，含 Refresh
+    // Run 與單一劇本刷新，見 `refreshBusy`）。
+    busy: refreshBusy,
     failure: failures[detailId],
-    onRefresh: () => void enqueue([detailId]),
+    onRefresh: () => void refreshOne(detailId),
     // 桌面 master/detail 常駐：右側開著的劇本若本輪還沒刷新完，內容
-    // 不能看起來像已經是最新結果（V4 跟進票／#136）。手機版此時本來就
+    // 不能看起來像已經是最新結果（P1 更新中徽章）。手機版此時本來就
     // 整頁替換成詳細頁、不會跟清單同時看到，傳了也無害。
-    refreshLocked: lockedIds.has(detailId),
+    updating: updatingIds.has(detailId),
   } : null;
 
   // TR6（#91）：批次移入垃圾桶時個別失敗的說明——列在「哪個劇本、
@@ -487,7 +515,8 @@ export default function App() {
       <div className="screen">
         <Toolbar
           count={rows.length}
-          progress={progress}
+          busy={refreshBusy}
+          runSummary={runSummary}
           showCreateButton={false}
           // 時機三：功能列刷新鈕
           onRefresh={() => void reloadAndRefresh()}
@@ -527,13 +556,13 @@ export default function App() {
         <CompactScenarioList
           rows={rows}
           failures={failures}
-          lockedIds={lockedIds}
+          updatingIds={updatingIds}
           now={now}
           onArchive={archive}
           onEdit={startEdit}
-          // 重試不是第四種刷新時機——它重跑的就是那一次失敗的刷新，而且
-          // 走同一條佇列，不會與進行中的那一輪搶資料源。
-          onRetry={(id) => void enqueue([id])}
+          // 重試不是第四種刷新時機——它重跑的就是那一次失敗的刷新，走
+          // 單一劇本刷新端點，不牽動 Refresh Run。
+          onRetry={(id) => void refreshOne(id)}
           selectMode={selectMode}
           selectedIds={selectedIds}
           onToggleSelect={toggleSelected}
@@ -554,7 +583,8 @@ export default function App() {
     <div className="screen">
       <Toolbar
         count={rows.length}
-        progress={progress}
+        busy={refreshBusy}
+        runSummary={runSummary}
         showCreateButton
         createOpen={showCreateForm}
         createPanelId={createPanelId}
@@ -588,13 +618,13 @@ export default function App() {
       <ScenarioList
         rows={rows}
         failures={failures}
-        lockedIds={lockedIds}
+        updatingIds={updatingIds}
         now={now}
         onArchive={archive}
         onEdit={startEdit}
-        // 重試不是第四種刷新時機——它重跑的就是那一次失敗的刷新，而且
-        // 走同一條佇列，不會與進行中的那一輪搶資料源。
-        onRetry={(id) => void enqueue([id])}
+        // 重試不是第四種刷新時機——它重跑的就是那一次失敗的刷新，走
+        // 單一劇本刷新端點，不牽動 Refresh Run。
+        onRetry={(id) => void refreshOne(id)}
         // #72：桌面版清單裡標出目前選中的劇本；手機版此時本來就不會
         // 渲染這份清單（上面已整頁替換掉），傳了也無害。
         selectedId={detailId}

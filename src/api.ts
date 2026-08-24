@@ -537,6 +537,35 @@ export function refreshScenario(id: string): Promise<ScenarioSummary> {
   );
 }
 
+/**
+ * 一輪刷新（T08／#196，接上後端 T06／#190＋T07／#193）：批次版的
+ * `refreshScenario`，接受一組 id（`null` ＝全部未過期劇本，後端
+ * 決定範圍）。成功項帶完整卡片列（與 `refreshScenario` 同形狀），
+ * 失敗項沿用既有 `{stage, message}` 失敗分層——跟單一劇本刷新完全
+ * 同一套語彙，不是另一套錯誤格式。
+ *
+ * `remaining` 非空代表 server 端時間預算耗盡、還有劇本沒處理到
+ * （T07 的 Continuation）；呼叫端（`App.tsx`）拿它原樣再打一次這個
+ * 端點即可接續，直到 `remaining` 為空。
+ */
+export type RefreshRunResult =
+  | { scenario_id: string; ok: true; row: ScenarioSummary }
+  | { scenario_id: string; ok: false; stage: FailureStage; message: string };
+
+export interface RefreshRunResponse {
+  results: RefreshRunResult[];
+  remaining: string[];
+}
+
+export function refreshRun(
+  scenarioIds: string[] | null,
+): Promise<RefreshRunResponse> {
+  return request<RefreshRunResponse>(
+    "/api/scenarios/refresh-run",
+    POST_JSON({ scenario_ids: scenarioIds }),
+  );
+}
+
 /** 詳細頁用（V5／#53）：整份 view 只有這裡會拖，清單列不帶。 */
 export function getScenario(
   id: string,
