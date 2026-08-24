@@ -304,11 +304,22 @@ grilling 中依裁決 lazily 建立 `CONTEXT.md`／ADR，再 `/to-spec`／
   ／data/base.py／data 層 on-disk cache 死碼／main.py:2121 第二個
   app／殘骸檔案），對應舊測試依 replace-don't-layer 一併刪。
 
-待需求方（產品決策，P1–P4，見回報#026）：P1 刷新中卡片鎖定 vs
-可瀏覽舊資料＋徽章；P2 逾時／失敗語意（部分成功落地＋燈號 vs
-整輪失敗）；P3 IV 歷史冷 backfill 兩段式 vs 同步＋文案；P4 建立
-劇本後刷新範圍維持全量 vs 只刷新劇本。裁決後：ADR（chain 共用
-只在 run 內）＋CONTEXT.md（Refresh Run 詞彙）→ /to-spec → 拆票。
+**產品決策已裁示（2026-08-24，需求方回覆回報#026）**：
+- **P1-b** 刷新進行中，卡片顯示上一輪舊資料＋「更新中」徽章，
+  全程可瀏覽、可進詳細頁，結果回來逐批換新（取代整段灰化鎖定）。
+- **P2-a** 部分成功：成功劇本照常落地，失敗劇本保留舊資料＋亮既有
+  失敗燈號＋可單卡重試，頂部顯示「N 成功／M 失敗」。
+- **P3-a** IV 冷 backfill 兩段式：先立即回既有歷史畫圖，backfill 由
+  第二個請求觸發，完成後自動補全，期間卡片標「歷史資料補建中」。
+- **P4-b（改動既有規則）** 建立新劇本時**只刷新該新劇本**；開站與
+  使用者主動全量 Refresh 才刷新全部未過期劇本。這修改了 QA1-07
+  時期「建立劇本＝全量刷新」的產品規則，三個刷新時機本身不變。
+
+裁示落地：`docs/adr/0001-chain-sharing-within-run-only.md`（chain
+共用只在 run 內，不跨 invocation）＋根目錄 `CONTEXT.md`（領域詞彙，
+含 Refresh Run／Continuation／Partial Success／Updating Badge／
+Two-Phase Backfill 等新詞）。下一步：`/to-spec` → 拆票 → 逐張
+`/implement`。
 
 ### Spec #151（2026-08-17 發佈）——Historical IV Trend v1（Exact Contract Canonical Series）
 
