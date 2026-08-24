@@ -174,9 +174,19 @@ export interface Candidate {
   comparator: Comparator | null;
 }
 
+/**
+ * T09（#191）：同一個 `Candidate` 過去在 `candidates`／`expiry_best`／
+ * `expiry_top10`／`expiry_groups[].rows[]` 四個容器裡各自完整重複一份，
+ * 現在集中存在這裡（頂層，鍵＝`candidate_key`，跨策略共用一份——
+ * `candidate_key` 本身已含策略前綴，天生不衝突），四個容器改存 key
+ * 字串。`CandidateMap`（不叫 `CandidatePool`——那個名字已經是
+ * `./CandidatePool` 這個既有元件在用，避免同名混淆）。
+ */
+export type CandidateMap = Record<string, Candidate>;
+
 export interface ExpiryTop10 {
   expiry: string;
-  candidates: Candidate[];
+  candidate_keys: string[];
 }
 
 /** 一道品質過濾關卡砍掉的筆數（引擎的 `FilterReport.stages`）。 */
@@ -299,6 +309,23 @@ export interface AnalysisView {
   params: AnalysisParams;
   baseline_expiry: string | null;
   results: StrategyResult[];
+  /** T09（#191）：完整候選內容的單一來源，見 `CandidateMap` 說明。
+   *  可選——舊存的 View（schema_version < 3）沒有這個欄位，`resolveCandidate()`
+   *  對此誠實回傳 `null`，不假造內容。 */
+  candidate_pool?: CandidateMap;
+}
+
+/**
+ * 依 key 查出候選的完整內容（T09／#191，取代過去容器裡的內嵌字典）。
+ * 舊 schema（沒有 `candidate_pool`，或 key 不在裡面）一律回傳 `null`——
+ * 舊存的 View 這幾個位置本就已經不會再產生（下一次刷新就是新 schema），
+ * 不值得為了過渡期另外撐一套內嵌解析邏輯。
+ */
+export function resolveCandidate(
+  view: AnalysisView, key: string | undefined,
+): Candidate | null {
+  if (key === undefined) return null;
+  return view.candidate_pool?.[key] ?? null;
 }
 
 /**
@@ -685,7 +712,7 @@ export function baselineTopCandidate(view: AnalysisView): Candidate | null {
   const ok = primaryResult(view);
   if (!ok?.expiry_top10) return null;
   const group = ok.expiry_top10.find((g) => g.expiry === view.baseline_expiry);
-  return group?.candidates[0] ?? null;
+  return resolveCandidate(view, group?.candidate_keys[0]);
 }
 
 /**

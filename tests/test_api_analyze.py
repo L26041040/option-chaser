@@ -173,7 +173,8 @@ def test_bear_put_contract_sample_matches_the_live_api_response():
         "put comparator 契約樣本與 API 回應不一致——請跑 "
         "scripts/gen_contract_sample.py 重產樣本")
     # 這份樣本存在的唯一理由就是要示範 put comparator——空手覆蓋沒有意義。
-    cand = actual["results"][0]["candidates"][0]
+    key = actual["results"][0]["candidates"][0]
+    cand = actual["candidate_pool"][key]
     assert cand["comparator"] is not None
     assert cand["comparator"]["option_type"] == "put"
 

@@ -152,13 +152,19 @@ def _filter_lines(
     return lines
 
 
-def _resilience_lines(val, spot: float, today: date, p: AnalysisParams) -> list[str]:
+def _resilience_lines(val, spot: float, today: date, p: AnalysisParams,
+                      resilience_cache: dict | None = None) -> list[str]:
     """v4 spec §5: 7-scenario resilience section (report layer calls scenarios.py
-    directly, same primitives as service — numbers stay identical)."""
-    from .scenarios import (SCENARIO_NAMES, completion_curve, completion_scan,
-                            friction, natural_cost, scenario_vector)
+    directly, same primitives as service — numbers stay identical).
+
+    T09（#191）：`resilience_cache` 讓這裡與 View 路徑（`service._v4_fields`）
+    共用同一次 `scenario_vector`／`completion_curve`／`completion_scan`
+    計算結果（`scenarios.resilience_metrics()`，鍵是 `id(val)`）——不傳
+    （`None`，預設）時每次都重算，行為與這個參數存在之前完全一樣。"""
+    from .scenarios import SCENARIO_NAMES, friction, natural_cost, resilience_metrics
     from .valuation import SpreadValuation
-    sv = scenario_vector(val, spot, today, p)
+    rm = resilience_metrics(val, spot, today, p, cache=resilience_cache)
+    sv, curve, k, be = rm.scenario, rm.curve, rm.threshold, rm.breakeven
     expiry = date.fromisoformat(
         val.long_leg.expiry if isinstance(val, SpreadValuation) else val.contract.expiry
     )
@@ -171,10 +177,8 @@ def _resilience_lines(val, spot: float, today: date, p: AnalysisParams) -> list[
             note = "（合約先到期，內插價 payoff）"
         mark = "   ◀ 情境最壞" if code == sv.worst_code else ""
         lines.append(f"- {code} {SCENARIO_NAMES[code]}: {_pct(ret)}{note}{mark}")
-    curve = completion_curve(val, spot, today, p)
     lines.append("劇本完成度: " + " | ".join(
         f"{int(k * 100)}%→{_pct(r)}" for k, r in curve))
-    k, be = completion_scan(val, spot, today, p)
     if k is None:
         thr = "— ⚠劇本全成仍不保本"
     elif k <= 0:
@@ -195,6 +199,7 @@ def _candidate_lines(
     ranked: dict[str, list[ContractValuation]],
     snap: ChainSnapshot, n_qualified: int, p: AnalysisParams, today: date,
     violations: frozenset[str] = frozenset(),
+    resilience_cache: dict | None = None,
 ) -> list[str]:
     c = v.contract
     word = "高於" if c.option_type == "call" else "低於"
@@ -238,7 +243,7 @@ def _candidate_lines(
             lines.append(f"- 警示: {m}")
     else:
         lines.append("- 目前 Ask 低於全部三層天花板")
-    lines += _resilience_lines(v, snap.spot, today, p)
+    lines += _resilience_lines(v, snap.spot, today, p, resilience_cache)
     pros, cons = build_reasons(v, band, ranked, snap.spot, n_qualified, p)
     lines.append("")
     lines.append("評語:")
@@ -379,7 +384,11 @@ def render(
     ranked: dict[str, list[ContractValuation]], n_qualified: int, today: date,
     violations: frozenset[str] = frozenset(),
     quality_flags: tuple[QualityFlagCount, ...] = (),
+    resilience_cache: dict | None = None,
 ) -> str:
+    """`resilience_cache`：T09（#191）——與 View 路徑共用韌性／完成度
+    計算的快取字典，見 `_resilience_lines()` 說明；不傳（`None`）不影響
+    既有行為，本函式既有呼叫端（含測試）不需要改動。"""
     lines = _header_lines(snap, p, today) + _filter_lines(freport, p, quality_flags)
     idx = 0
     for band in BAND_ORDER:
@@ -391,7 +400,7 @@ def render(
         for j, v in enumerate(ranked[band]):
             idx += 1
             lines += _candidate_lines(v, idx, band, ranked, snap, n_qualified, p,
-                                      today, violations)
+                                      today, violations, resilience_cache)
             if j == 0 or p.matrix_all:
                 c = v.contract
                 lines += _matrix_block(
@@ -419,7 +428,8 @@ def _pair_lines(pr) -> list[str]:
 
 
 def _spread_candidate_lines(sv, idx, n_pairs, p, spot: float, today: date,
-                            violations: frozenset[str] = frozenset()) -> list[str]:
+                            violations: frozenset[str] = frozenset(),
+                            resilience_cache: dict | None = None) -> list[str]:
     from .ranking import build_spread_reasons
     from .valuation import spread_guidance_judgments
     ll, sl = sv.long_leg, sv.short_leg
@@ -454,7 +464,7 @@ def _spread_candidate_lines(sv, idx, n_pairs, p, spot: float, today: date,
         lines += [f"- 警示: {m}" for m in judgments]
     else:
         lines.append("- 目前最差進場成本低於全部天花板")
-    lines += _resilience_lines(sv, spot, today, p)
+    lines += _resilience_lines(sv, spot, today, p, resilience_cache)
     pros, cons = build_spread_reasons(sv, idx, n_pairs, p)
     lines += ["", "評語:"] + [f"- 優點: {s}" for s in pros] + [f"- 代價: {s}" for s in cons]
     return lines
@@ -462,14 +472,19 @@ def _spread_candidate_lines(sv, idx, n_pairs, p, spot: float, today: date,
 
 def render_spreads(snap, p, freport, pair_report, ranked, n_pairs, today,
                    violations: frozenset[str] = frozenset(),
-                   quality_flags: tuple[QualityFlagCount, ...] = ()) -> str:
+                   quality_flags: tuple[QualityFlagCount, ...] = (),
+                   resilience_cache: dict | None = None) -> str:
+    """`resilience_cache`：T09（#191）——與 View 路徑共用韌性／完成度
+    計算的快取字典，見 `_resilience_lines()` 說明；不傳（`None`）不影響
+    既有行為，本函式既有呼叫端（含測試）不需要改動。"""
     lines = (_header_lines(snap, p, today) + _filter_lines(freport, p, quality_flags)
             + _pair_lines(pair_report))
     if not ranked:
         lines += ["", "無合格價差組合，不產生推薦。", ""]
         return "\n".join(lines)
     for i, sv in enumerate(ranked):
-        lines += _spread_candidate_lines(sv, i, n_pairs, p, snap.spot, today, violations)
+        lines += _spread_candidate_lines(sv, i, n_pairs, p, snap.spot, today,
+                                         violations, resilience_cache)
         if i == 0 or p.matrix_all:
             lng, sht = sv.long_leg, sv.short_leg
             lc, sc = sv.long_carry, sv.short_carry

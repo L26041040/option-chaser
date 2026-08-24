@@ -116,13 +116,15 @@ def test_history_entries_carry_key_cost_return_rank_but_no_heatmap(tmp_path):
 
 
 def test_expiry_top10_candidates_carry_heatmap_matrix(tmp_path):
+    """T09（#191）：`expiry_top10[].candidate_keys` 現在只是 key 清單，
+    完整內容（含 Heatmap 矩陣）統一查頂層 `candidate_pool`。"""
     result = _run(tmp_path)
     view = store.serialize_result(result, "XYZ-130-202610", None)
     strat = view["results"][0]
     for group in strat["expiry_top10"]:
-        assert group["candidates"]
-        for cand in group["candidates"]:
-            assert cand["matrix"]["cells"]
+        assert group["candidate_keys"]
+        for key in group["candidate_keys"]:
+            assert view["candidate_pool"][key]["matrix"]["cells"]
 
 
 def test_expiry_top10_matches_expiry_ranked_prefix_and_expiry_field(tmp_path):
@@ -131,7 +133,7 @@ def test_expiry_top10_matches_expiry_ranked_prefix_and_expiry_field(tmp_path):
     strat = view["results"][0]
     for group in strat["expiry_top10"]:
         assert group["expiry"] in (BIG_EXPIRY, SMALL_EXPIRY)
-        keys = [c["candidate_key"] for c in group["candidates"]]
+        keys = group["candidate_keys"]
         assert len(keys) == len(set(keys))   # 同一期內不重複
 
 

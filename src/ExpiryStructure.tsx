@@ -14,7 +14,7 @@
 import { useState } from "react";
 
 import Heatmap from "./Heatmap";
-import type { Candidate, StrategyResult } from "./api";
+import type { AnalysisView, Candidate, StrategyResult } from "./api";
 import { candidateTitle } from "./detail";
 import { expiryOptions, isThinPool, legPrices, resolveExpiry } from "./expiry";
 import { formatReturn, money } from "./scenarios";
@@ -78,14 +78,16 @@ function CandidateRow({ candidate, rank }: { candidate: Candidate; rank: number 
 }
 
 export default function ExpiryStructure({
+  view,
   result,
   baselineExpiry,
 }: {
+  view: AnalysisView;
   result: StrategyResult;
   baselineExpiry: string | null;
 }) {
   const [picked, setPicked] = useState<string | null>(null);
-  const options = expiryOptions(result);
+  const options = expiryOptions(view, result);
   // 選中的那期由純函式決定：重新分析後該期可能整個消失，此時退回
   // baseline 而不是留在一個空白清單上。
   const current = resolveExpiry(options, picked, baselineExpiry);

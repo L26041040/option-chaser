@@ -127,3 +127,46 @@ def completion_curve(val: ContractValuation | SpreadValuation, spot: float,
         s = _grid_price(spot, p.target_price, k)
         out.append((k, (fn(s, tgt, p) - mid) / mid))
     return tuple(out)
+
+
+@dataclass(frozen=True)
+class ResilienceMetrics:
+    """T09（#191）：`scenario_vector()`／`completion_curve()`／
+    `completion_scan()` 三個純函式常見的組合輸出，供 `resilience_metrics()`
+    的呼叫端一次拿齊，不必各自呼叫三次。"""
+    scenario: ScenarioVector
+    curve: tuple[tuple[float, float], ...]
+    threshold: float | None
+    breakeven: float | None
+
+
+def resilience_metrics(val: ContractValuation | SpreadValuation, spot: float,
+                       today: date, p: AnalysisParams,
+                       cache: dict[int, "ResilienceMetrics"] | None = None,
+                       ) -> ResilienceMetrics:
+    """韌性向量／完成度曲線／保本掃描——供文字報告（`report._resilience_
+    lines`）與 View（`service._v4_fields`）兩條路徑共用同一次計算
+    （T09／#191）。`completion_scan()` 是三者中最貴的一個（1200 步線性
+    掃描），同一個候選在一輪分析裡最多會被兩條路徑各呼叫一次；沒有這層
+    快取就是白算一次。
+
+    `cache`：呼叫端（單次 `_single_leg_result`／`_spread_result`）建立、
+    貫穿整輪分析傳下去的字典，鍵是 `id(val)`——同一輪分析裡，同一個
+    候選的估值物件在報告文字與 View 兩條路徑用的是同一個 Python 物件
+    （`rank_spreads`／`rank` 只排序、不複製元素，`sorted()`／切片沿用
+    既有 object identity），object identity 因此是安全、不需要額外身分
+    鍵計算的快取鍵；不同輪分析各自建立新字典，不會跨輪誤命中。不傳
+    （`None`，預設）就是每次都重算，行為與這個函式存在之前完全一樣——
+    沒有快取機制的呼叫端（例如既有測試直接呼叫 `scenario_vector` 等
+    個別函式）不受影響，本函式本身也可以在沒有 cache 時單獨呼叫。"""
+    key = id(val)
+    if cache is not None and key in cache:
+        return cache[key]
+    threshold, breakeven = completion_scan(val, spot, today, p)
+    result = ResilienceMetrics(
+        scenario=scenario_vector(val, spot, today, p),
+        curve=completion_curve(val, spot, today, p),
+        threshold=threshold, breakeven=breakeven)
+    if cache is not None:
+        cache[key] = result
+    return result

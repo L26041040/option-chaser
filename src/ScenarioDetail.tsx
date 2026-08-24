@@ -195,7 +195,8 @@ function DetailBody({ scenarioId, view, analyzedAt }: {
           一塊的清單，基準候選不動——固定是 baseline 期第 1 名（QA1-06
           的既有裁示）。 */}
       {result && (
-        <ExpiryStructure result={result} baselineExpiry={view.baseline_expiry} />
+        <ExpiryStructure view={view} result={result}
+                         baselineExpiry={view.baseline_expiry} />
       )}
       {/* 候選池診斷（FB4-01／#60）：第 1 名如果是整池僅存者，那個名次
           沒有意義。它本來掛在 V1 的一次性分析畫面上，隨那塊一起搬進

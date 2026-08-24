@@ -18,22 +18,34 @@ const sampleRow = JSON.parse(
   ),
 );
 
+type SampleCandidate = {
+  candidate_key: string;
+  baseline_return: number;
+  natural_cost: number;
+  legs: { strike: number; ask: number; bid: number }[];
+};
+
 const view = sample as unknown as {
   meta: { spot: number; source: string; target_move: number };
   params: { target_price: number; target_month: string };
   baseline_expiry: string;
+  // T09（#191）：完整候選內容集中在這裡，`expiry_top10` 等容器只留
+  // `candidate_key`／`candidate_keys` 引用。
+  candidate_pool: Record<string, SampleCandidate>;
   results: {
     status: string;
     expiry_top10?: {
       expiry: string;
-      candidates: {
-        baseline_return: number;
-        natural_cost: number;
-        legs: { strike: number; ask: number; bid: number }[];
-      }[];
+      candidate_keys: string[];
     }[];
   }[];
 };
+
+/** 依 key 查回完整候選內容——e2e 手造 fixture 走跟正式程式碼一樣的
+ *  查表路徑，不直接內嵌完整候選字典。 */
+function candOf(v: typeof view, key: string): SampleCandidate {
+  return v.candidate_pool[key];
+}
 
 test.beforeEach(async ({ page }) => {
   // V3 起開站就打劇本清單。E2E 沒有後端，預設回空清單；需要劇本的
@@ -128,8 +140,9 @@ test("清單 → 詳細頁：摘要、基準候選、進場成本、主圖、候
 
   // QA 修正：基準候選與進場成本不再是兩張獨立卡片，跟劇本摘要合成
   // 同一張高密度卡。數字一項沒少，只是換了位置。
-  const top = view.results.find((r) => r.status === "ok" && r.expiry_top10)!
-    .expiry_top10!.find((g) => g.expiry === view.baseline_expiry)!.candidates[0];
+  const topKey = view.results.find((r) => r.status === "ok" && r.expiry_top10)!
+    .expiry_top10!.find((g) => g.expiry === view.baseline_expiry)!.candidate_keys[0];
+  const top = candOf(view, topKey);
   const [buy, sell] = top.legs;
   const summary = page.getByRole("region", { name: "劇本摘要" });
   await expect(summary).toContainText(`買 ${buy.strike} / 賣 ${sell.strike}`);

@@ -20,8 +20,8 @@ from .ranking import (BAND_ORDER, _spread_tie_key, _tie_break_key,
                       classify, rank, rank_spreads, return_at_price,
                       spread_baseline_return)
 from .report import STRATEGY_LABELS, render, render_filter_only, render_spreads
-from .scenarios import (ScenarioVector, completion_curve, completion_scan,
-                        friction, natural_cost, scenario_vector, _grid_price,
+from .scenarios import (ResilienceMetrics, ScenarioVector, friction,
+                        natural_cost, resilience_metrics, _grid_price,
                         _value_fn)
 from .timeframe import (TargetMonth, calendar_anchor, ensure_month_open,
                         select_expiries)
@@ -353,14 +353,22 @@ def _price_ladder(val: ContractValuation | SpreadValuation,
 
 def _v4_fields(val: ContractValuation | SpreadValuation, spot: float,
               today: date, p: AnalysisParams,
-              violations: frozenset[str] = frozenset()) -> dict:
+              violations: frozenset[str] = frozenset(),
+              resilience_cache: dict[int, ResilienceMetrics] | None = None,
+              ) -> dict:
     """`violations`＝`filters.monotonicity_violations()` 的輸出，由呼叫端
     對整批 qualified 合約算一次、傳進來（FB5-03／#64）——單一候選這裡
     只做查表，不重算，避免每個候選各自重新掃一次全部合約。預設空集合：
     沒有呼叫端傳（理論上不會發生，所有 `_v4_fields` 呼叫都經過
-    `_single_leg_view`／`_spread_view`）就是「沒有已知違反」，不是壞掉。"""
-    sv = scenario_vector(val, spot, today, p)
-    k, be = completion_scan(val, spot, today, p)
+    `_single_leg_view`／`_spread_view`）就是「沒有已知違反」，不是壞掉。
+
+    `resilience_cache`：T09（#191）——韌性向量／完成度曲線／保本掃描
+    透過 `scenarios.resilience_metrics()` 與文字報告路徑
+    （`report._resilience_lines`）共用同一個依 `id(val)` 鍵入的快取，
+    同一輪分析裡同一個候選不會被兩條路徑各自重算一次。不傳（`None`）
+    時退回每次都重算，行為與這層快取加入前完全一樣。"""
+    rm = resilience_metrics(val, spot, today, p, cache=resilience_cache)
+    sv, curve, k, be = rm.scenario, rm.curve, rm.threshold, rm.breakeven
     fr = friction(val)
     if isinstance(val, SpreadValuation):
         expiry = val.long_leg.expiry
@@ -377,7 +385,6 @@ def _v4_fields(val: ContractValuation | SpreadValuation, spot: float,
         wide_spread = is_spread_wide(val.contract.bid, val.contract.ask, p)
         monotonicity_warning = val.contract.contract_symbol in violations
     mid_cost = _mid_cost(val)
-    curve = completion_curve(val, spot, today, p)
     return dict(
         scenario=sv,
         completion_curve=curve,
@@ -408,7 +415,9 @@ def _v4_fields(val: ContractValuation | SpreadValuation, spot: float,
 def _single_leg_view(v: ContractValuation, band: str,
                      ranked: dict[str, list[ContractValuation]], spot: float,
                      n_qualified: int, today: date, p: AnalysisParams,
-                     violations: frozenset[str] = frozenset()) -> CandidateView:
+                     violations: frozenset[str] = frozenset(),
+                     resilience_cache: dict[int, ResilienceMetrics] | None = None,
+                     ) -> CandidateView:
     pros, cons = build_reasons(v, band, ranked, spot, n_qualified, p)
     # #113：矩陣迴圈維持 (S,t) 純函式——carry 已在 evaluate_contract() 算
     # 過一次、掛在 v.carry 上，這裡直接傳，不重新反解。
@@ -420,7 +429,7 @@ def _single_leg_view(v: ContractValuation, band: str,
         baseline_pnl=v.baseline_value - v.contract.ask,
         baseline_return=baseline_return(v),
         carry_calibrated=v.carry.carry_calibrated,
-        **_v4_fields(v, spot, today, p, violations))
+        **_v4_fields(v, spot, today, p, violations, resilience_cache))
 
 
 def _spread_catchup_price(sv: SpreadValuation, snap: ChainSnapshot) -> float | None:
@@ -467,7 +476,9 @@ def _spread_comparator(sv: SpreadValuation, spot: float, today: date,
 
 def _spread_view(sv: SpreadValuation, idx: int, n_pairs: int, spot: float,
                  today: date, p: AnalysisParams, snap: ChainSnapshot,
-                 violations: frozenset[str] = frozenset()) -> CandidateView:
+                 violations: frozenset[str] = frozenset(),
+                 resilience_cache: dict[int, ResilienceMetrics] | None = None,
+                 ) -> CandidateView:
     pros, cons = build_spread_reasons(sv, idx, n_pairs, p)
     mv = _matrix_view(
         lambda S, d, lng=sv.long_leg, sht=sv.short_leg, lc=sv.long_carry, \
@@ -484,7 +495,7 @@ def _spread_view(sv: SpreadValuation, idx: int, n_pairs: int, spot: float,
         carry_calibrated=(sv.long_carry.carry_calibrated
                           and sv.short_carry.carry_calibrated),
         comparator=_spread_comparator(sv, spot, today, p),
-        **_v4_fields(sv, spot, today, p, violations))
+        **_v4_fields(sv, spot, today, p, violations, resilience_cache))
 
 
 def valuation_key(v: ContractValuation | SpreadValuation) -> str:
@@ -618,8 +629,16 @@ def _single_leg_result(p: AnalysisParams, snap: ChainSnapshot,
     quality_flags = quality_flag_counts(qualified, violations, p)
     vals = [evaluate_contract(c, snap.spot, today, p) for c in qualified]
     ranked = rank(vals, p)
+    # T09（#191）：韌性／完成度指標只算一次，文字報告與 View 兩條路徑
+    # 共用同一個快取——`ranked`／`vals_sorted`／`best_by_expiry` 全部
+    # 沿用 `vals` 裡的同一批物件（`sorted()`／切片不複製元素），`id(val)`
+    # 因此在文字報告（下面 `render()`）與 View（下面 `_single_leg_view()`）
+    # 兩條路徑之間、以及 View 自己的 `candidates`／`expiry_best` 兩個
+    # 容器之間都能正確命中。
+    resilience_cache: dict[int, ResilienceMetrics] = {}
     text = render(snap, p, freport, ranked, n_qualified=len(qualified),
-                  today=today, violations=violations, quality_flags=quality_flags)
+                  today=today, violations=violations, quality_flags=quality_flags,
+                  resilience_cache=resilience_cache)
     candidates = []
     for band in BAND_ORDER:
         if not ranked[band]:
@@ -627,7 +646,7 @@ def _single_leg_result(p: AnalysisParams, snap: ChainSnapshot,
         v = ranked[band][0]
         candidates.append(_single_leg_view(v, band, ranked, snap.spot,
                                            len(qualified), today, p,
-                                           violations))
+                                           violations, resilience_cache))
 
     # v4 spec §3.2: per-expiry best over ALL qualified (not just top-3 bands),
     # for expiry grouping. Cost control: CandidateView only built for winners.
@@ -648,7 +667,7 @@ def _single_leg_result(p: AnalysisParams, snap: ChainSnapshot,
                          classify(best_by_expiry[exp].classification_delta,
                                  p.delta_bands),
                          ranked, snap.spot, len(qualified), today, p,
-                         violations)
+                         violations, resilience_cache)
         for exp in sorted(best_by_expiry))
     expiry_counts = tuple(sorted(counts.items()))
 
@@ -678,13 +697,19 @@ def _spread_result(p: AnalysisParams, snap: ChainSnapshot,
     quality_flags = quality_flag_counts(qualified, violations, p)
     spreads = [evaluate_spread(l, s, snap.spot, today, p) for l, s in pairs]
     ranked = rank_spreads(spreads, p)
+    # T09（#191）：韌性／完成度指標只算一次，文字報告與 View 兩條路徑
+    # 共用同一個快取——見 `_single_leg_result` 同一段註解，`spreads` 裡
+    # 的物件被 `ranked`／`all_ranked`／`by_expiry` 全數沿用，不複製。
+    resilience_cache: dict[int, ResilienceMetrics] = {}
     text = render_spreads(snap, p, freport, pair_report, ranked,
                           n_pairs=pair_report.passed, today=today,
-                          violations=violations, quality_flags=quality_flags)
+                          violations=violations, quality_flags=quality_flags,
+                          resilience_cache=resilience_cache)
     candidates = []
     for i, sv in enumerate(ranked[:3]):
         candidates.append(_spread_view(sv, i, pair_report.passed, snap.spot,
-                                       today, p, snap, violations))
+                                       today, p, snap, violations,
+                                       resilience_cache))
 
     # v4 spec §3.2: per-expiry best over ALL qualified spreads (not just the
     # top-3 in `candidates`), for expiry grouping. T9（#23）：同一輪順便把
@@ -704,7 +729,8 @@ def _spread_result(p: AnalysisParams, snap: ChainSnapshot,
         by_expiry.setdefault(exp, []).append(sv)
     expiry_best = tuple(
         _spread_view(best_by_expiry[exp][1], best_by_expiry[exp][0],
-                     pair_report.passed, snap.spot, today, p, snap, violations)
+                     pair_report.passed, snap.spot, today, p, snap, violations,
+                     resilience_cache)
         for exp in sorted(best_by_expiry))
     expiry_counts = tuple(sorted(counts.items()))
     # 各到期日自己的前十名（Heatmap 矩陣只隨這至多 5×10 檔入快照，附錄A10.3）；
@@ -712,7 +738,7 @@ def _spread_result(p: AnalysisParams, snap: ChainSnapshot,
     # 前十名的節錄。
     expiry_top10 = tuple(
         (exp, tuple(_spread_view(sv, i, len(by_expiry[exp]), snap.spot,
-                                 today, p, snap, violations)
+                                 today, p, snap, violations, resilience_cache)
                     for i, sv in enumerate(by_expiry[exp][:10])))
         for exp in sorted(by_expiry))
     expiry_ranked = tuple((exp, tuple(by_expiry[exp]))

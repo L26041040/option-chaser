@@ -21,6 +21,20 @@ from .valuation import SpreadValuation, guidance_judgments, spread_guidance_judg
 SCENARIO_SCHEMA_VERSION = 2   # v2: target_date（YYYY-MM-DD）→ target_month（YYYY-MM）
 
 
+def _candidate_of(view: dict, row: dict) -> dict | None:
+    """T09（#191）：`expiry_groups[].rows[]` 現在存 `candidate_key`（新
+    schema，`view["candidate_pool"]` 解出完整內容），不再直接內嵌完整
+    候選字典。`representative_candidate()` 只在**剛做完**一次
+    `serialize_result()` 的新鮮 view 上呼叫（never 讀舊存的 view——見
+    `api_app/main.py` 唯一呼叫點緊接在 `_analyze()` 之後），所以理論上
+    只會走新 schema 這條路；仍保留舊形狀（`row["candidate"]` 直接內嵌）
+    的相容分支，供直接手造 view fixture 的既有測試與任何未來仍傳入舊
+    形狀 view 的呼叫端使用，不因為結構改變而整組炸掉。"""
+    if "candidate_key" in row:
+        return (view.get("candidate_pool") or {}).get(row["candidate_key"])
+    return row.get("candidate")
+
+
 # ---------- ScenarioResult 契約（spec §3） ----------
 
 def representative_candidate(view: dict | None) -> dict | None:
@@ -52,8 +66,8 @@ def representative_candidate(view: dict | None) -> dict | None:
     if group is None or not group["rows"]:
         return None
     best_row = max(group["rows"],
-                   key=lambda row: row["candidate"]["baseline_return"])
-    candidate = best_row["candidate"]
+                   key=lambda row: _candidate_of(view, row)["baseline_return"])
+    candidate = _candidate_of(view, best_row)
     return {
         "strategy": best_row["strategy"],
         "legs": [{"strike": leg["strike"], "option_type": leg["option_type"]}
@@ -284,12 +298,29 @@ def serialize_result(result: AnalysisResult, scenario_id: str,
     base = result.request.base_params
     today = result.today
 
-    def cand(cv, strategy):
-        # V8（#56，spec R1 §4.2 A2）：`_candidate()` 現在還要算買價指引
-        # 警示（`guidance_judgments`／`spread_guidance_judgments`），兩者
-        # 只讀 `p.iv_shifts`，不讀 `p.strategy`——`base` 不必為每個 `r`
-        # 各自替換 strategy 也正確，跟既有 `base.anchor` 的用法一致。
-        return _candidate(cv, strategy, capital, today, base.anchor, base)
+    # T09（#191）：同一個 Candidate 過去在 `candidates`／`expiry_best`／
+    # `expiry_top10`／`expiry_groups[].rows[]` 四個容器裡各自完整序列化
+    # 一份（同一組合約在多個容器重疊出現時，最多重複 4 次）。現在集中
+    # 存進 `candidate_pool`（單一頂層字典，鍵＝`candidate_key`，跨策略
+    # 共用一份——`candidate_key` 本身已含策略前綴，天生跨策略不衝突），
+    # 其餘四個位置一律只存 key 引用。`_candidate()` 的輸出對於同一個
+    # `candidate_key` 是 container-invariant（不讀入選它的是哪個容器、
+    # 第幾名、跟誰比較——`idx`／`n_pairs` 這類容器相依資訊只餵給
+    # `CandidateView.pros`，而 `pros` 從不序列化進 View，見
+    # `_candidate()` 逐欄核對），因此「由哪個容器第一個把它放進池子」
+    # 不影響輸出內容，去重可以安全地只看 key。
+    pool: dict[str, dict] = {}
+
+    def cand_key(cv, strategy) -> str:
+        key = candidate_key(cv)
+        if key not in pool:
+            # V8（#56，spec R1 §4.2 A2）：`_candidate()` 現在還要算買價
+            # 指引警示（`guidance_judgments`／`spread_guidance_judgments`），
+            # 兩者只讀 `p.iv_shifts`，不讀 `p.strategy`——`base` 不必為
+            # 每個 `r` 各自替換 strategy 也正確，跟既有 `base.anchor`
+            # 的用法一致。
+            pool[key] = _candidate(cv, strategy, capital, today, base.anchor, base)
+        return key
 
     def strat(r):
         return {
@@ -314,12 +345,15 @@ def serialize_result(result: AnalysisResult, scenario_id: str,
                              "removed_sanity": r.pair_report.removed_sanity,
                              "passed": r.pair_report.passed}
                             if r.pair_report else None),
-            "candidates": [cand(cv, r.strategy) for cv in r.candidates],
-            "expiry_best": [cand(cv, r.strategy) for cv in r.expiry_best],
+            "candidates": [cand_key(cv, r.strategy) for cv in r.candidates],
+            "expiry_best": [cand_key(cv, r.strategy) for cv in r.expiry_best],
             "expiry_counts": [list(e) for e in r.expiry_counts],
             # T9（#23）：各到期日自己的前十名（含 Heatmap 矩陣，供 T10 詳細頁）。
+            # T09（#191）：`candidates`（完整內容）→ `candidate_keys`
+            # （key 引用），完整內容改到頂層 `candidate_pool`。
             "expiry_top10": [{"expiry": exp,
-                              "candidates": [cand(cv, r.strategy) for cv in cvs]}
+                              "candidate_keys": [cand_key(cv, r.strategy)
+                                                for cv in cvs]}
                              for exp, cvs in r.expiry_top10],
             # T9（附錄A7）：該次全部有效候選的歷史五欄位（不只入榜者）；
             # 更新時間／標的價共用父層 analyzed_at／meta.spot，不逐候選重複。
@@ -341,9 +375,13 @@ def serialize_result(result: AnalysisResult, scenario_id: str,
     def group(g):
         return {"expiry": g.expiry, "buffer_days": g.buffer_days,
                 "hidden_count": g.hidden_count,
+                # T09（#191）：`candidate`（完整內容）→ `candidate_key`
+                # （key 引用）——這裡橫跨多個策略（同一到期日、不同
+                # 策略各一列），`candidate_key` 本身跨策略不衝突，池子
+                # 因此不必按策略分開。
                 "rows": [{"strategy": row.strategy,
                           "badges": list(row.badges),
-                          "candidate": cand(row.candidate, row.strategy)}
+                          "candidate_key": cand_key(row.candidate, row.strategy)}
                          for row in g.rows]}
 
     all_quotes_filtered = bool(result.results) and all(
@@ -353,13 +391,18 @@ def serialize_result(result: AnalysisResult, scenario_id: str,
         for r in result.results)
 
     m = result.meta
+    results = [strat(r) for r in result.results]
+    expiry_groups = [group(g) for g in result.expiry_groups]
     return {
         # T04（#188）：1→2——report_text／methodology_text 從每個策略的
-        # 結果物件移除。純資訊性欄位，讀取端不依它分派任何邏輯（見
-        # 全文唯一引用點：test_store_serialize.py 的版本斷言）；既有
-        # 已存的 View（schema_version=1，仍含這兩個欄位）不做遷移，
-        # 讀取端本來就只挑需要的鍵，多餘欄位不影響任何既有行為。
-        "schema_version": 2,
+        # 結果物件移除。T09（#191）：2→3——`candidates`／`expiry_best`／
+        # `expiry_top10`／`expiry_groups[].rows[]` 四個容器裡的完整候選
+        # 內容集中到新增的頂層 `candidate_pool`，四個位置一律只留 key
+        # 引用。純資訊性欄位，讀取端不依它分派任何邏輯（見全文唯一引用
+        # 點：test_store_serialize.py 的版本斷言）；既有已存的 View
+        # （schema_version=1／2，仍是舊形狀）不做遷移，讀取端（`find_
+        # candidate()`／`representative_candidate()`）維持相容分支。
+        "schema_version": 3,
         "engine_version": __version__,
         "analyzed_at": m.fetched_at,
         "scenario_id": scenario_id,
@@ -375,8 +418,14 @@ def serialize_result(result: AnalysisResult, scenario_id: str,
         "capital_assumed": capital,
         "data_quality": {"fetched_at": m.fetched_at,
                          "all_quotes_filtered": all_quotes_filtered},
-        "results": [strat(r) for r in result.results],
-        "expiry_groups": [group(g) for g in result.expiry_groups],
+        "results": results,
+        # T09（#191）：`results`／`expiry_groups` 兩者的生成式都經由
+        # `cand_key()` 這個共用 closure 寫入同一個 `pool`——上面已先
+        # 算成區域變數 `results`／`expiry_groups`（而不是把生成式直接
+        # 寫進這個字典字面量），確保這裡讀到的 `pool` 已收齊兩邊寫入的
+        # 全部候選，不受字典字面量鍵值對求值順序影響。
+        "candidate_pool": pool,
+        "expiry_groups": expiry_groups,
         "hidden_expiries": list(result.hidden_expiries),
         "default_selection": (list(result.default_selection)
                               if result.default_selection else None),
@@ -405,16 +454,39 @@ def find_candidate(view: dict, key: str) -> dict | None:
     分組時才退去掃這份清單（#139）：兩腿策略（Spread）一律只認
     `expiry_top10`，「候選有沒有入榜」是既有規則的一部分，不因此擴大
     查找範圍——這保證兩腿路徑的既有行為與數值一字不動。
+
+    T09（#191，schema_version 3）：`expiry_top10[].candidates`／
+    `r["candidates"]` 從完整候選字典改成 `candidate_keys`／
+    `candidates`（key 字串清單），完整內容改查頂層 `candidate_pool`；
+    key「是否在這個容器的清單裡」才是既有規則的判準，`candidate_pool`
+    本身跨策略共用、不能單獨拿來判斷某個 key 是否屬於這個策略。舊存的
+    View（schema_version 1／2，無 `candidate_pool`）維持原始邏輯不動，
+    讀取端相容——這條票（#191）明文要求「既有已儲存的 View 不做資料
+    遷移，讀取端維持相容」。
     """
+    pool = view.get("candidate_pool")
+    if pool is None:
+        # 舊 schema（<=2）：容器內直接內嵌完整候選字典，原始邏輯不動。
+        for r in view.get("results", []):
+            groups = r.get("expiry_top10") or []
+            for group in groups:
+                for cand in group.get("candidates", []):
+                    if cand.get("candidate_key") == key:
+                        return cand
+            if groups:
+                continue
+            for cand in r.get("candidates", []) or []:
+                if cand.get("candidate_key") == key:
+                    return cand
+        return None
+    # 新 schema（>=3）：容器內只有 key 引用，完整內容統一查 `pool`。
     for r in view.get("results", []):
         groups = r.get("expiry_top10") or []
         for group in groups:
-            for cand in group.get("candidates", []):
-                if cand.get("candidate_key") == key:
-                    return cand
+            if key in (group.get("candidate_keys") or []):
+                return pool.get(key)
         if groups:
             continue
-        for cand in r.get("candidates", []) or []:
-            if cand.get("candidate_key") == key:
-                return cand
+        if key in (r.get("candidates") or []):
+            return pool.get(key)
     return None

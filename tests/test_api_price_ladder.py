@@ -39,10 +39,10 @@ def _analyzed(client, **overrides):
 def _ladder(view):
     """baseline 期第 1 名候選的三價位對照。"""
     result = view["results"][0]
-    top = next(c["candidates"] for e, c in
-               [(g["expiry"], g) for g in result["expiry_top10"]]
-               if e == view["baseline_expiry"])
-    return top[0]["price_ladder"]
+    top_keys = next(c["candidate_keys"] for e, c in
+                    [(g["expiry"], g) for g in result["expiry_top10"]]
+                    if e == view["baseline_expiry"])
+    return view["candidate_pool"][top_keys[0]]["price_ladder"]
 
 
 # ---------- 欄位存活 ----------
@@ -116,7 +116,8 @@ def test_target_entry_matches_the_headline_return_for_every_candidate():
     view = _analyzed(_client(), best_price=150.0)["latest_result"]
     checked = 0
     for group in view["results"][0]["expiry_top10"]:
-        for cand in group["candidates"]:
+        for key in group["candidate_keys"]:
+            cand = view["candidate_pool"][key]
             target = next(p for p in cand["price_ladder"] if p["label"] == "target")
             assert target["return"] == cand["baseline_return"], (
                 f"{group['expiry']} / {cand['candidate_key']}")

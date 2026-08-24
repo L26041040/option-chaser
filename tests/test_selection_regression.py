@@ -52,8 +52,10 @@ def _view(strategy: str) -> dict:
     return store.serialize_result(result, scenario_id=f"SEL-{strategy}", capital=None)
 
 
-def _candidate_keys(candidates: list[dict]) -> tuple[str, ...]:
-    return tuple(c["candidate_key"] for c in candidates)
+def _candidate_keys(candidate_keys: list[str]) -> tuple[str, ...]:
+    """T09（#191）：容器裡本來就是 key 字串清單（`candidate_key`），這裡
+    只是轉成 tuple 供比對——不再需要從候選字典裡挖 `candidate_key`。"""
+    return tuple(candidate_keys)
 
 
 def snapshot_identity(strategy: str) -> dict:
@@ -64,7 +66,7 @@ def snapshot_identity(strategy: str) -> dict:
     ranking_identity = _candidate_keys(res["candidates"])
     expiry_best_identity = _candidate_keys(res["expiry_best"])
     expiry_top10_identity = {
-        group["expiry"]: _candidate_keys(group["candidates"])
+        group["expiry"]: _candidate_keys(group["candidate_keys"])
         for group in res["expiry_top10"]
     }
     # all_candidates＝expiry_ranked 的序列化：每到期日組內已排序（T9）。
@@ -150,8 +152,8 @@ def test_ranking_identity_matches_baseline_return_order():
     """身份序列的順序必須是 baseline_return 遞減——這樣後續票才能拿
     ranking_identity 的『順序』當成真正的排序斷言，而不只是集合成員。"""
     view = _view("bull-call-spread")
-    candidates = view["results"][0]["candidates"]
-    returns = [c["baseline_return"] for c in candidates]
+    candidate_keys = view["results"][0]["candidates"]
+    returns = [view["candidate_pool"][k]["baseline_return"] for k in candidate_keys]
     assert returns == sorted(returns, reverse=True)
 
 
@@ -217,11 +219,12 @@ def test_exercising_ivhistory_between_two_identity_snapshots_changes_nothing():
     view = _view("bull-call-spread")
     for r in view["results"]:
         for group in r.get("expiry_top10") or []:
-            for cand in group["candidates"]:
+            for key in group["candidate_keys"]:
+                cand = view["candidate_pool"][key]
                 coords = ivhistory.spread_coordinates(cand, spot=view["meta"]["spot"])
                 if coords is not None:
                     ivhistory.reanchor_spread({"call": [], "put": []}, coords)
-                store.find_candidate(view, cand["candidate_key"])
+                store.find_candidate(view, key)
     points = [{"date": "2026-01-01", "normalized_skew": 0.1, "buy_iv": 0.2,
               "sell_iv": 0.22, "atm_iv": 0.21}]
     ivhistory.field_metrics(points, today=date(2026, 8, 12))

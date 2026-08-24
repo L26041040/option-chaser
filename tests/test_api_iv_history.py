@@ -175,11 +175,13 @@ def _unlock(client, *, mode="custom", verified=True):
 
 
 def _candidate_key(client, sid):
+    # T09（#191）：`expiry_top10[].candidate_keys` 現在已經是 key 字串，
+    # 不必再從候選字典裡挖 `candidate_key`。
     view = client.get(f"/api/scenarios/{sid}").json()["latest_result"]
     for r in view["results"]:
         for g in r.get("expiry_top10") or []:
-            for c in g["candidates"]:
-                return c["candidate_key"]
+            for key in g["candidate_keys"]:
+                return key
     raise AssertionError("樣本裡沒有候選可用")
 
 
@@ -329,8 +331,8 @@ def _long_call_candidate_key_and_view(client):
     assert resp.status_code == 200, resp.text
     view = resp.json()
     for r in view["results"]:
-        for c in r.get("candidates") or []:
-            return c["candidate_key"], view
+        for key in r.get("candidates") or []:
+            return key, view
     raise AssertionError("adhoc long-call 分析沒有產生任何候選")
 
 
@@ -482,7 +484,7 @@ def test_unlocking_iv_history_changes_no_candidate_and_no_ordering(db):
     after = unlocked.get(f"/api/scenarios/{sid}").json()["latest_result"]
 
     def identities(view):
-        return [[c["candidate_key"] for c in g["candidates"]]
+        return [g["candidate_keys"]
                 for r in view["results"] for g in r.get("expiry_top10") or []]
 
     assert identities(before) == identities(after)
@@ -496,10 +498,8 @@ def test_the_analysis_view_gains_no_iv_history_field(db):
     sid = _scenario(client)
     view = client.get(f"/api/scenarios/{sid}").json()["latest_result"]
     assert "iv_history" not in view
-    for r in view["results"]:
-        for g in r.get("expiry_top10") or []:
-            for c in g["candidates"]:
-                assert not any("iv_history" in k for k in c)
+    for c in view["candidate_pool"].values():
+        assert not any("iv_history" in k for k in c)
 
 
 def _function_source(module_src: str, name: str) -> str:
@@ -803,10 +803,12 @@ def _candidate_key_from_farthest_expiry(client, sid):
     """挑分析結果裡到期日最遠的那個候選——這是「vendor 預設下一個月選
     覆蓋不到」的那一類，正是需求方回報的 bug 重現條件。"""
     view = client.get(f"/api/scenarios/{sid}").json()["latest_result"]
+    pool = view["candidate_pool"]
     best = None
     for r in view["results"]:
         for g in r.get("expiry_top10") or []:
-            for c in g["candidates"]:
+            for key in g["candidate_keys"]:
+                c = pool[key]
                 if best is None or c["days_to_expiry"] > best["days_to_expiry"]:
                     best = c
     if best is None:
@@ -1815,9 +1817,8 @@ def _leg_identities(client, sid, key):
     view = client.get(f"/api/scenarios/{sid}").json()["latest_result"]
     for r in view["results"]:
         for g in r.get("expiry_top10") or []:
-            for c in g["candidates"]:
-                if c["candidate_key"] == key:
-                    return c["legs"]
+            if key in g["candidate_keys"]:
+                return view["candidate_pool"][key]["legs"]
     raise AssertionError("找不到這個候選")
 
 

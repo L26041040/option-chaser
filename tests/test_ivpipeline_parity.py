@@ -184,9 +184,11 @@ def _scenario_and_candidate(client):
         "target_month": "2026-09"}).json()["id"]
     client.post(f"/api/scenarios/{sid}/refresh")
     view = client.get(f"/api/scenarios/{sid}").json()["latest_result"]
+    pool = view["candidate_pool"]
     for r in view["results"]:
         for g in r.get("expiry_top10") or []:
-            for c in g["candidates"]:
+            for key in g["candidate_keys"]:
+                c = pool[key]
                 if len(c["legs"]) >= 2:
                     return sid, c, view
     raise AssertionError("樣本裡沒有兩腿的候選可用")

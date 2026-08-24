@@ -20,14 +20,25 @@ function detail(overrides: Record<string, unknown> = {}) {
   };
 }
 
-/** 改寫 baseline 期第 1 名候選的某些欄位，其餘契約原樣。 */
+/** 改寫 baseline 期第 1 名候選的某些欄位，其餘契約原樣。
+ *
+ * T09（#191）：完整內容集中在 `candidate_pool`，容器只留 key 引用——
+ * 這裡只需要 patch 池子裡那一筆，`expiry_top10[].candidate_keys` 完全不用
+ * 動（就算 patch 改了候選自己的 `candidate_key` 欄位值，容器裡引用它
+ * 的那個 dict key 字串本身仍是原來的，`resolveCandidate()` 靠 dict key
+ * 找到它、回傳的物件內容才是 patch 過的那份，跟 `baselineTopCandidate()`
+ * 的既有讀取路徑一致）。 */
 function withTopCandidate(patch: Record<string, unknown>): AnalysisView {
   const result = view.results[0];
-  const groups = result.expiry_top10!.map((g) =>
-    g.expiry === view.baseline_expiry
-      ? { ...g, candidates: [{ ...g.candidates[0], ...patch }, ...g.candidates.slice(1)] }
-      : g);
-  return { ...view, results: [{ ...result, expiry_top10: groups }] };
+  const group = result.expiry_top10!.find((g) => g.expiry === view.baseline_expiry)!;
+  const key = group.candidate_keys[0];
+  return {
+    ...view,
+    candidate_pool: {
+      ...view.candidate_pool,
+      [key]: { ...view.candidate_pool![key], ...patch },
+    },
+  };
 }
 
 /**
