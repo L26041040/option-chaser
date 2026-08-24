@@ -13,7 +13,6 @@ from __future__ import annotations
 import dataclasses
 import time
 import uuid
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, timedelta
 from typing import Callable, Literal
 
@@ -21,16 +20,14 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import Response
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from option_chaser import (__version__, dividends, ivhistory, ivreconstruct,
-                           ivspread, ivtrend, ratecurve, service, store)
+from option_chaser import __version__, ivpipeline, service, store
 from option_chaser.data import treasury as treasury_data
 from option_chaser.data.snapshot import snapshot_from_dict, snapshot_to_csv
 from option_chaser.models import (AnalysisParams, ChainSnapshot, FetchError,
-                                  ParamError, QuotaExhausted, STRATEGIES)
+                                  ParamError, STRATEGIES)
 from option_chaser.service import DividendLoader, RateCurveLoader
 from option_chaser.timeframe import (TargetMonth, calendar_anchor,
                                      ensure_month_open, month_is_over)
-from option_chaser.valuation import DAYS_PER_YEAR, days_between
 
 from . import diagnostics, providers
 from .clock import now_utc_iso, ny_today
@@ -71,19 +68,6 @@ REFRESH_RUN_BUDGET = timedelta(seconds=45)
 # 是固定值，不由前端送。需要看空或多策略時再由對應的票加上。
 _MVP_DIRECTION = "bullish"
 _MVP_STRATEGIES = ("bull-call-spread",)
-
-# 每個 symbol 每批最多補幾天（#130）。66 個目標觀測 ÷ 25 ≈ 三天補齊，
-# 就是需求方 progressive backfill 草圖裡那三格進度條。
-_IV_BACKFILL_PER_RUN = 25
-
-# PERF-05（#181）：cold backfill 同一天內、跨到期日的併發呼叫上限——
-# 保守值，不是「猜到期日通常有幾個就設幾個」。到期日梯子
-# （`ivhistory.nearby_expirations()`）目前實務上是個位數項目，這個
-# 常數的用意是**防禦性上限**：不論梯子未來變多長，一次最多同時有這
-# 麼多個尚未完成的呼叫在飛，不是「一次把全部到期日同時發出去」的
-# 無上限 fan-out。具名、可調整——沒有查到 vendor 端逐秒配額文件，
-# 用一個明顯遠低於「同時炸開全部」的保守數字。
-_IV_BACKFILL_DAY_CONCURRENCY = 4
 
 # V1（#48）的一次性分析端點沿用：無劇本身分時的 view dict 欄位值，
 # 不影響任何計算。V3 之後前端改走劇本端點，屆時此路徑可移除。
@@ -209,71 +193,6 @@ class CredentialRequest(BaseModel):
         return out
 
 
-def _surface_to_rows(surface: dict) -> dict:
-    """`SurfacePoint` → 三元組陣列（落盤用）。一天的鏈有數千筆，欄位名
-    重複數千次只是在燒儲存空間。"""
-    return {side: [[p.dte, p.delta, p.iv] for p in points]
-            for side, points in surface.items()}
-
-
-def _rows_to_surface(rows: dict) -> dict:
-    """落盤形式 → `SurfacePoint`。"""
-    return {side: [ivhistory.SurfacePoint(dte=int(r[0]), delta=float(r[1]),
-                                          iv=float(r[2]))
-                   for r in (points or [])]
-            for side, points in (rows or {}).items()}
-
-
-def _leg_contract_identity(leg: dict, underlying: str) -> dict:
-    """一條腿的 exact contract identity（HIVT-02／#153，spec #151 §1）。
-
-    **重用既有欄位，不另組 formatter**：每條腿早就帶著 vendor 發的真實
-    OCC symbol（`store._leg()` 的 `contract_symbol`），這就是這張合約的
-    身分本身——不同 strike／expiry／call-put 天然是不同 symbol，不需要
-    另外拼一個複合鍵或反過來從 symbol 解析回四個欄位。`underlying` 不在
-    leg dict 上（那是整個候選的標的，不是腿的屬性），由呼叫端傳入
-    （`Scenario.symbol`）。
-    """
-    return {"underlying": underlying, "expiration": leg["expiry"],
-           "strike": leg["strike"], "option_type": leg["option_type"],
-           "contract_symbol": leg["contract_symbol"]}
-
-
-def _iv_payload(candidate_key: str, points: list[dict], status: str,
-                note: str | None) -> dict:
-    """Historical IV 的回應形狀（#133，HIVT-04／#155 裁切後）。
-
-    `status`（ok／quota／vendor）只描述**這次 backfill 嘗試**的結果，
-    不用來決定要不要給 percentile——需求方 2026-08-12 二次修正裁示：
-    coverage／樣本數不得當作隱藏 percentile 的門檻，「今天補不補得動」
-    跟「資料能不能看」是兩件事。
-
-    **HIVT-04（#155）欄位裁切**：舊回應信封裡的 `buy_iv`／`sell_iv`／
-    `atm_iv`（`points` 逐日子欄位與 `metrics` 對應項）已被新的逐腿
-    exact-contract 卡片（`legs`，HIVT-02／03）取代，這裡不再往外送。
-    `normalized_skew` 本身——連同它自己的走勢圖——是 spec #151 §0／§7
-    明文保留、繼續獨立運作的既有功能，**不受這次裁切影響**：內部計算
-    （`ivhistory.field_metrics()`／`reanchor_spread()`）完全沒動，只是
-    信封裡的 `points` 改叫 `normalized_skew_points` 並且只留
-    `date`／`normalized_skew` 兩個子欄位——舊的 `points` 這個名字連同它
-    夾帶的 buy_iv／sell_iv／atm_iv 子欄位，跟著上面三個 `metrics` 欄位
-    一起真正消失，不是換個名字繼續夾帶被取代的資料。這是本票對「移除
-    points／metrics.buy_iv／metrics.sell_iv／metrics.atm_iv」與「
-    Normalized Skew 卡片不受影響」兩條要求的解讀：字面上點名的
-    `points` 這個信封鍵確實消失了，但 Normalized Skew 需要的走勢圖
-    資料沒有跟著陪葬。
-    """
-    metrics = ivhistory.field_metrics(points, today=ny_today())
-    return {
-        "candidate_key": candidate_key,
-        "status": status,
-        "normalized_skew_points": [
-            {"date": p["date"], "normalized_skew": p["normalized_skew"]}
-            for p in points],
-        "metrics": {"normalized_skew": metrics["normalized_skew"]},
-        "observations": len(points),
-        "note": note,
-    }
 
 
 # ---------- Historical IV 診斷接線（DG-03／#146） ----------
@@ -394,266 +313,6 @@ def _select_for_storage(
     只影響落盤，不影響回應內容（呼叫端仍然用未經這層過濾的 `kept` 組
     回應）。回傳順序與輸入順序一致。"""
     return [e for e in events if e.severity in ("warning", "error")]
-
-
-def _rate_limit_context(telemetry: dict) -> dict:
-    return {k: v for k, v in telemetry.items()
-           if k.startswith("X-Api-Ratelimit-")}
-
-
-def _identity_context(identity: dict) -> dict:
-    """`ContractIdentity` 的四個公開欄位（underlying／expiration／
-    strike／option_type）——spec #151 §5／issue #153 明文列出這四項要
-    additive 進白名單，且每一站 diagnostic event 都要帶得出**可讀的**
-    exact contract identity，不能只留 `contract_symbol`（OCC symbol
-    本身雖然編碼了這四項，但要求使用者反解 OCC 格式才看得懂身分，違背
-    診斷「不必讀程式碼就能看懂」的既有原則，DG-04 帳本的既有精神）。"""
-    return {"underlying": identity["underlying"],
-            "expiration": identity["expiration"],
-            "strike": identity["strike"],
-            "option_type": identity["option_type"]}
-
-
-def _emit_contract_history_telemetry(emit, telemetry: dict, *, provider: str,
-                                     identity: dict, requested_from: str,
-                                     requested_to: str) -> None:
-    """`marketdata.fetch_contract_history` 的 observer callback 落地處
-    （HIVT-02／#153）——比照 `_emit_surface_telemetry` 拆成 `vendor_fetch`
-    與 `payload_parse` 兩站，但這裡沒有「no_data 是正常結果」那個分支
-    （#152 真實驗證：超界／週末窗口皆回 `s=ok`，這個端點不像整鏈查詢
-    那樣有 no_data 狀態），`vendor_status != "ok"` 一律是 error。
-    """
-    vendor_status = telemetry.get("vendor_status")
-    emit(stage="vendor_fetch",
-        severity="info" if vendor_status == "ok" else "error",
-        message=f"vendor 回應 s={vendor_status!r}",
-        provider=provider, contract_symbol=identity["contract_symbol"],
-        **_identity_context(identity),
-        requested_from=requested_from, requested_to=requested_to,
-        http_status=telemetry.get("http_status"),
-        vendor_status=vendor_status,
-        vendor_errmsg=telemetry.get("vendor_errmsg"),
-        raw_rows=telemetry.get("raw_rows"),
-        **_rate_limit_context(telemetry))
-    emit(stage="payload_parse",
-        severity="warning" if (telemetry.get("raw_rows") or 0) > 0
-                 and (telemetry.get("parsed_rows") or 0) == 0 else "info",
-        message="解析單合約歷史欄狀回應",
-        provider=provider, contract_symbol=identity["contract_symbol"],
-        **_identity_context(identity),
-        raw_rows=telemetry.get("raw_rows"),
-        parsed_rows=telemetry.get("parsed_rows"),
-        null_iv_count=telemetry.get("null_iv_count"),
-        dropped_missing_date=telemetry.get("dropped_missing_date"))
-
-
-def _min_max(values) -> tuple | None:
-    values = list(values)
-    return (min(values), max(values)) if values else None
-
-
-def _is_weekend(day: str) -> bool:
-    """只濾週末、不維護一份美股假日表——跟 `ivhistory.trading_days_back()`
-    既有的同一個判斷（`weekday() < 5`）與其記錄的取捨一致：假日表會過期，
-    多打幾天假日的代價（一年裡少數幾筆本可省下的判斷）比維護一份可能
-    過期的假日表可靠。少數市場假日因此仍會落進「交易日撲空」那個桶子、
-    照常警示——這是本函式刻意接受的已知殘留噪音，不是遺漏。"""
-    return date.fromisoformat(day).weekday() >= 5
-
-
-def _emit_backfill_summary(emit, *, symbol: str, attempted_days: int,
-                           saved_days: int, days_with_data: int,
-                           days_no_data_expected: int,
-                           days_no_data_unexpected: int,
-                           aborted_on: str | None, abort_reason: str | None,
-                           remaining_gap: int, outcome: str,
-                           failed_expiration: str | None = None,
-                           in_flight_after_failure_succeeded: int = 0,
-                           in_flight_after_failure_failed: int = 0,
-                           unstarted_due_to_failure: int = 0) -> None:
-    """Backfill 摘要（HIVR-10／#169）：一次批次最多 25 天、每天可能查
-    好幾個到期日，舊版逐日／逐到期日各發一筆 `vendor_fetch`／
-    `payload_parse`（外加每天一筆 `database_write`），輕鬆破百筆。改成
-    批次結束後只發**一筆**摘要，攜帶「有幾天有資料、有幾天沒資料、
-    有幾天失敗」（AC 明文的三分類）。
-
-    沒資料的天再分兩種：`days_no_data_expected`（週末／假日，正常現象，
-    不該讓使用者對著一個關閉的市場皺眉）與 `days_no_data_unexpected`
-    （交易日卻沒資料，值得留意）——`severity` 依這個區分：只有真正
-    中止（`aborted_on`）或「交易日卻沒資料」時才是 warning，單純撞到
-    週末不是。
-
-    PERF-05（#181）新增四個欄位，皆只在真正中止（`aborted_on` 有值）
-    時才有意義（沒中止時維持預設 0／`None`）：`failed_expiration`——
-    哪一個到期日觸發了這次失敗；`in_flight_after_failure_succeeded`／
-    `_failed`——觸發失敗那一批裡，在它之後才完成的其他呼叫各自成功／
-    失敗幾個（bounded concurrency 下這批本來就可能不只一個呼叫在飛）；
-    `unstarted_due_to_failure`——因為提早中止，整批原本規劃要抓的
-    (日期, 到期日) 組合裡有幾組完全沒被送出去。
-    """
-    emit(stage="backfill",
-        severity="warning" if aborted_on or days_no_data_unexpected > 0
-                 else "info",
-        message=(f"backfill 在 {aborted_on} 中止：{abort_reason}"
-                if aborted_on else "backfill 批次完成"),
-        symbol=symbol, attempted_days=attempted_days, saved_days=saved_days,
-        days_with_data=days_with_data,
-        days_no_data_expected=days_no_data_expected,
-        days_no_data_unexpected=days_no_data_unexpected,
-        days_failed=1 if aborted_on else 0,
-        aborted_on=aborted_on, abort_reason=abort_reason,
-        remaining_gap=remaining_gap, outcome=outcome,
-        failed_expiration=failed_expiration,
-        in_flight_after_failure_succeeded=in_flight_after_failure_succeeded,
-        in_flight_after_failure_failed=in_flight_after_failure_failed,
-        unstarted_due_to_failure=unstarted_due_to_failure)
-
-
-def _reanchor_in_grid(reanchored: dict, coords: dict) -> bool:
-    """這一天的座標是否至少有一個核心欄位真的查到值（DG-04／#147 既有
-    判準原樣保留）：`iv_at()` 誠實回 `None` 且不外插（既有行為，這裡
-    不動），這裡只是判斷「今天曲面涵蓋得到候選要查的座標」與否。單腳
-    候選（沒有 `sell`）的 `sell_iv`／`normalized_skew` 結構上必為
-    `None`，不該被算進「全部落在網格外」的判準，否則每個 Long Call
-    候選都會永遠判定為 out-of-grid。
-    """
-    sell = coords.get("sell")
-    core_fields = ("buy_iv", "atm_iv") if sell is None else (
-        "buy_iv", "sell_iv", "atm_iv", "normalized_skew")
-    return not all(reanchored.get(f) is None for f in core_fields)
-
-
-def _emit_reanchor_summary(emit, *, coords: dict, in_grid: int,
-                           out_of_grid: int) -> None:
-    """重錨定摘要（HIVR-10／#169）：舊版逐日重錨定每個歷史快照各發一筆
-    `reanchor` 事件——一個累積了一年快照的 Scenario，光是打開頁面就會
-    因此炸出幾十筆事件，且沒有一筆描述的是**這次 request** 本身發生了
-    什麼。改成一次 request 只發一筆摘要：`total` 個歷史日期裡有幾個落在
-    網格內（`in_grid`，`_reanchor_in_grid()` 判準原樣沿用）、幾個落在
-    網格外（`out_of_grid`）。查詢座標（`buy_delta`／`sell_delta`／
-    `tenor_days`）取自 `coords`——這是這次 request 要查的目標，同一個
-    candidate 的每個歷史日期共用同一組，不隨日期改變，因此只在摘要裡
-    出現一次。
-    """
-    buy = coords.get("buy")
-    sell = coords.get("sell")
-    total = in_grid + out_of_grid
-    emit(stage="reanchor",
-        severity="warning" if out_of_grid > 0 else "info",
-        message=f"{total} 個歷史日期：{in_grid} 個落在網格內／"
-                f"{out_of_grid} 個落在網格外",
-        total_dates=total, in_grid_dates=in_grid, out_of_grid_dates=out_of_grid,
-        tenor_days=buy.tenor_days if buy is not None else None,
-        buy_delta=buy.delta if buy is not None else None,
-        sell_delta=sell.delta if sell is not None else None)
-
-
-def _emit_metrics(emit, points: list[dict], coords: dict) -> None:
-    """`field_metrics()` 之後（DG-04／#147）：每個欄位各自一筆事件——
-    比起一筆合併事件，逐欄位才看得出來是哪一項指標沒有觀測可用。單腳
-    候選結構上沒有 `sell_iv`／`normalized_skew`（見 `_reanchor_in_grid`
-    同一條理由），這兩項本來就必然 count=0，不進來湊「這個候選是不是
-    沒資料」的判斷，否則每個 Long Call 永遠亮 warning。
-    """
-    metrics = ivhistory.field_metrics(points, today=ny_today())
-    applicable = (("buy_iv", "atm_iv") if coords.get("sell") is None
-                 else tuple(metrics.keys()))
-    for field_name in applicable:
-        m = metrics[field_name]
-        count = m["count"]
-        emit(stage="metrics",
-            severity="warning" if count == 0 else "info",
-            message=f"{field_name} 沒有有效觀測" if count == 0
-                    else f"{field_name} 指標計算完成",
-            field=field_name, count=count,
-            percentile_available=m["percentile"] is not None,
-            trend_base_count=m["trend_base_count"])
-
-
-def _emit_staleness(emit, *, identity: dict, observation: dict,
-                    request_time: str, today: date) -> None:
-    """一次歷史抓取回應有多陳舊（HIVR-07／#166）：vendor 文件明載
-    professional status 未定的帳號會被靜默降級成至少一天前的資料且
-    不報錯，且選擇權要到**次一交易日 9:30:01 ET** 才從 Delayed 轉
-    Historical——`s="ok"` 因此不代表新鮮，只有 `updated` 這個時戳才算數
-    （見 `option_chaser/data/marketdata.py` 頂端 HTTP 203 註解更正的
-    同一條原則）。取這次新抓回來的觀測裡**最新**的一筆代表這次回應的
-    新鮮度；`vendor_dte`／`computed_dte` 並列讓兩者的落差不必用猜的。
-
-    `staleness_days <= 1`（次一交易日 rollover 屬既有已知、非異常行為）
-    定 info，超過才升級 warning——不是任何陳舊都要驚動使用者，只有
-    「比正常 rollover 還舊」才是。
-    """
-    obs_date = date.fromisoformat(observation["date"])
-    exp_date = date.fromisoformat(identity["expiration"])
-    staleness_days = (today - obs_date).days
-    computed_dte = days_between(obs_date, exp_date)
-    emit(stage="staleness",
-        severity="info" if staleness_days <= 1 else "warning",
-        message=(f"最新觀測 {staleness_days} 天前" if staleness_days > 1
-                else "最新觀測新鮮"),
-        contract_symbol=identity["contract_symbol"], **_identity_context(identity),
-        date=obs_date.isoformat(), request_time=request_time,
-        observation_timestamp=observation.get("updated"),
-        staleness_days=staleness_days, vendor_dte=observation.get("dte"),
-        computed_dte=computed_dte)
-
-
-def _emit_reconstruction_ledger(emit, *, identity: dict, fetched: int,
-                                series: list[tuple[str, float | None]],
-                                failure_counts: dict[str, int]) -> None:
-    """Reconstruction 帳本（HIVR-07／#166）：抓到幾筆觀測 → 成功重建
-    幾筆 → 逐原因失敗計數 → 最終可用筆數，一筆事件回答「這張圖為什麼
-    這麼稀疏」。四個失敗原因全部給（含 0），跟 `ivreconstruct.
-    FAILURE_REASONS` 對齊——不是只列有發生的那幾個，讀者才看得出「不是
-    敗在這一站」也是有意義的資訊。
-    """
-    reconstructed = sum(1 for _, iv in series if iv is not None)
-    emit(stage="reconstruction",
-        severity="info" if reconstructed > 0 else "warning",
-        message="重建完成" if reconstructed > 0 else "整段序列沒有任何一筆重建成功",
-        contract_symbol=identity["contract_symbol"], **_identity_context(identity),
-        fetched=fetched, reconstructed=reconstructed, usable=reconstructed,
-        **{reason: failure_counts.get(reason, 0)
-           for reason in ivreconstruct.FAILURE_REASONS})
-
-
-def _emit_vendor_benchmark(emit, *, identity: dict, quotes: list[dict],
-                           series: list[tuple[str, float | None]]) -> None:
-    """Vendor IV benchmark 合理性比較（HIVR-09／#168）：canonical series
-    （`series`，只由我們自己反解出來，從不讀 `vendor_iv`）跟 vendor 自己
-    回報的 `iv` 差多少——只在通過 `ivreconstruct.vendor_iv_is_
-    benchmarkable()` 的觀測上比較，門檻外的一律計入 `vendor_iv_excluded_
-    degenerate`（可見、不是靜默丟棄），也不進 `mean_abs_diff`。門檻內
-    值不受影響：canonical series 本身完全不因這個 gate 而改變，這個 gate
-    只決定「這一筆算不算進比較」。
-    """
-    reconstructed_by_date = dict(series)
-    present = 0
-    excluded_degenerate = 0
-    compared = 0
-    total_abs_diff = 0.0
-    for q in quotes:
-        vendor_iv = q.get("vendor_iv")
-        if vendor_iv is None:
-            continue
-        present += 1
-        if not ivreconstruct.vendor_iv_is_benchmarkable(vendor_iv):
-            excluded_degenerate += 1
-            continue
-        reconstructed = reconstructed_by_date.get(q["date"])
-        if reconstructed is None:
-            continue
-        compared += 1
-        total_abs_diff += abs(reconstructed - vendor_iv)
-    mean_abs_diff = (total_abs_diff / compared) if compared else None
-    emit(stage="vendor_benchmark", severity="info",
-        message=(f"vendor IV 合理性比較：{present} 筆有值，"
-                f"{excluded_degenerate} 筆被 gate 排除，{compared} 筆可比較"),
-        contract_symbol=identity["contract_symbol"], **_identity_context(identity),
-        vendor_iv_present=present,
-        vendor_iv_excluded_degenerate=excluded_degenerate,
-        vendor_iv_compared=compared, mean_abs_diff=mean_abs_diff)
 
 
 def _timing_json(sc: Scenario, today: date) -> dict:
@@ -1412,517 +1071,6 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         tokens = tuple(cred.token for cred in creds.values() if cred is not None)
         return tokens + database_url_candidates()
 
-    def _backfill_iv(symbol: str, provider: str, token: str,
-                     target_expirations: list[str], *, emit
-                     ) -> tuple[str, str | None]:
-        """把這個 symbol 的歷史觀測往前補一批，回傳 (狀態, 說明)。
-
-        四條規則直接寫在這裡，因為它們決定了會不會白白燒掉使用者的額度：
-
-        1. **已有的日期一次都不重抓**——只補「排程要、快取沒有」的那幾天。
-        2. **每個 symbol 每天只跑一批**。同一天多開幾個同 ticker 的
-           Scenario 不該各自再燒一批；額度用完時也不必每次都再去撞一次
-           才知道。
-        3. **每批有上限**。第一次使用一個新 ticker 時不是一口氣抓滿，而是
-           分幾天補齊（需求方的 progressive backfill）。
-        4. **每天只鎖定 `target_expirations` 這幾個到期日**（#134）——
-           不帶 `expiration` 篩選會撲空長天期候選（vendor 預設只回下一
-           個月選），帶 `expiration=all` 又會扣光整條鏈的額度；呼叫端
-           （`ivhistory.nearby_expirations()`）已經把範圍收斂成離目標
-           tenor 最近的少數幾個真實到期日，這裡逐一打、合併成同一天的
-           曲面再存一次——**曲面是聯集，不是覆蓋**：同一天原本沒有的
-           到期日才會真的觸發 vendor 請求。
-
-        補的順序由新到舊：近期的觀測對「現在的 IV 站在哪」最有用，額度
-        中途用完時留下的也是比較有價值的那一段。
-
-        `emit`（DG-03／#146）：**這四條決策規則本身逐字不動**——`emit`
-        呼叫只是把已經在發生的事情說出來，不參與任何 if／break 的判斷。
-
-        HIVR-10（#169）：每天每個到期日原本各發一筆 `vendor_fetch`／
-        `payload_parse`（外加每天一筆 `database_write`），一次 25 天的
-        批次輕鬆破百筆。這裡改成逐日累計、批次結束後只發**一筆**
-        `backfill` 摘要——`_emit_surface_telemetry` 那組逐日事件整個
-        不再呼叫，取而代之的是本函式自己的計數器。
-        """
-        db = _db()
-        today = ny_today()
-        run = db.get_iv_backfill_run(symbol)
-        if run is not None and run.ran_on == today.isoformat():
-            # 今天已經跑過——直接沿用當時的結論，不再碰 vendor。
-            emit(stage="cache", severity="info", message="今天已跑過 backfill，沿用既有結論",
-                symbol=symbol, already_ran_today=True, outcome=run.outcome)
-            return run.outcome, run.note
-
-        wanted = ivhistory.sampling_schedule(symbol, today)
-        have = set(db.iv_observation_dates(symbol))
-        missing = [d for d in wanted if d not in have]
-        emit(stage="cache", severity="info", message="計算 backfill 缺口",
-            symbol=symbol, wanted_days=len(wanted), have_days=len(have),
-            missing_days=len(missing), already_ran_today=False)
-        # 沒算出目標到期日時退回舊行為（vendor 預設的下一個月選），
-        # 好過完全不抓——這種情況只有候選算不出 tenor 才會發生。
-        expirations = target_expirations or [None]
-
-        def _fetch_day_bounded(day: str):
-            """PERF-05（#181）：一天份的到期日梯子改成有明確保守上限的
-            併發呼叫，取代原本逐一序列呼叫——`_IV_BACKFILL_DAY_
-            CONCURRENCY` 個一批，上一批全部真正跑完（不論成功失敗）
-            才決定要不要送出下一批；批次裡只要有一個失敗，這一批**其餘
-            已經送出、還在飛的**呼叫仍讓它們正常跑完（`ThreadPoolExecutor`
-            的 `with` 區塊本來就會等全部 submit 的工作做完才離開，
-            不強制 cancel），成功的一樣併入這天的 surface；失敗之後
-            **不再送出下一批**。用 `as_completed()` 取得真實完成順序，
-            才分得出「第一個失敗」跟「同一批裡在它之後才完成的其他
-            呼叫」——不是照送出順序猜。
-
-            回傳 `(merged, first_failure, after_ok, after_fail,
-            dispatched)`：`first_failure` 是 `(reason, exc, exp) | None`；
-            `after_ok`／`after_fail` 是**觸發失敗的那一批**裡，在它之後
-            才完成的其他呼叫各自成功／失敗幾個；`dispatched` 是這天總共
-            真正送出去幾個呼叫（供批次層級統計「因失敗未啟動幾組」用）。
-            """
-            merged: dict[str, list] = {"call": [], "put": []}
-            first_failure = None
-            after_ok = after_fail = dispatched = 0
-            idx = 0
-            while idx < len(expirations) and first_failure is None:
-                batch = expirations[idx: idx + _IV_BACKFILL_DAY_CONCURRENCY]
-                idx += len(batch)
-                dispatched += len(batch)
-                with ThreadPoolExecutor(max_workers=len(batch)) as pool:
-                    futures = {pool.submit(historical_surface, provider,
-                                          symbol, day, token, expiration=exp): exp
-                              for exp in batch}
-                    for future in as_completed(futures):
-                        exp = futures[future]
-                        try:
-                            got = future.result()
-                        except QuotaExhausted as e:
-                            if first_failure is None:
-                                first_failure = ("quota", e, exp)
-                            else:
-                                after_fail += 1
-                            continue
-                        except FetchError as e:
-                            if first_failure is None:
-                                first_failure = ("vendor", e, exp)
-                            else:
-                                after_fail += 1
-                            continue
-                        if first_failure is not None:
-                            after_ok += 1
-                        merged["call"].extend(got.get("call") or [])
-                        merged["put"].extend(got.get("put") or [])
-            return merged, first_failure, after_ok, after_fail, dispatched
-
-        outcome, note = "ok", None
-        attempted_days = 0
-        saved_days = 0
-        days_with_data = 0
-        days_no_data_expected = 0     # 週末／假日撲空——正常現象
-        days_no_data_unexpected = 0   # 交易日撲空——值得留意
-        aborted_on: str | None = None
-        abort_reason: str | None = None
-        failed_expiration = None
-        in_flight_after_failure_succeeded = 0
-        in_flight_after_failure_failed = 0
-        total_dispatched = 0
-        schedule = sorted(missing, reverse=True)[:_IV_BACKFILL_PER_RUN]
-        for day in schedule:
-            attempted_days += 1
-            merged, first_failure, after_ok, after_fail, dispatched = \
-                _fetch_day_bounded(day)
-            total_dispatched += dispatched
-
-            def _save_day(merged=merged, day=day) -> bool:
-                """這天的 surface 落盤，回傳是否真的有資料——不論這天
-                最終判定為成功還是（部分）失敗；PERF-05 修正版契約第
-                5 點：已經成功拿到的資料不為了模擬序列版本的「整天
-                作廢」而丟棄。"""
-                db.save_iv_observation(IvObservation(
-                    symbol=symbol, observed_on=day,
-                    surface=_surface_to_rows(merged), fetched_at=now_utc_iso()))
-                return bool(merged["call"] or merged["put"])
-
-            if first_failure is not None:
-                reason, exc, failed_expiration = first_failure
-                outcome, note = reason, str(exc)
-                aborted_on, abort_reason = day, reason
-                in_flight_after_failure_succeeded += after_ok
-                in_flight_after_failure_failed += after_fail
-                if merged["call"] or merged["put"]:
-                    _save_day()
-                    saved_days += 1
-                    days_with_data += 1
-                break
-
-            if _save_day():
-                days_with_data += 1
-            elif _is_weekend(day):
-                days_no_data_expected += 1
-            else:
-                days_no_data_unexpected += 1
-            saved_days += 1
-
-        # 因失敗而完全沒被送出去的組合數——「這批工作實際要抓哪幾天
-        # 哪幾個到期日」跟序列版本完全相同（PERF-05 AC），這裡只是算出
-        # 因為提早中止而少送了幾組，不是縮小涵蓋範圍本身。
-        total_planned = len(expirations) * len(schedule)
-        unstarted_due_to_failure = (total_planned - total_dispatched
-                                    if aborted_on else 0)
-
-        _emit_backfill_summary(
-            emit, symbol=symbol, attempted_days=attempted_days,
-            saved_days=saved_days, days_with_data=days_with_data,
-            days_no_data_expected=days_no_data_expected,
-            days_no_data_unexpected=days_no_data_unexpected,
-            aborted_on=aborted_on, abort_reason=abort_reason,
-            remaining_gap=len(missing) - saved_days, outcome=outcome,
-            failed_expiration=failed_expiration,
-            in_flight_after_failure_succeeded=in_flight_after_failure_succeeded,
-            in_flight_after_failure_failed=in_flight_after_failure_failed,
-            unstarted_due_to_failure=unstarted_due_to_failure)
-
-        db.save_iv_backfill_run(IvBackfillRun(symbol=symbol,
-                                             ran_on=today.isoformat(),
-                                             outcome=outcome, note=note))
-        return outcome, note
-
-    def _ensure_contract_history(identity: dict, provider: str, token: str, *,
-                                 emit) -> tuple[list[dict], str, str | None]:
-        """一條腿的 exact contract 歷史：快取命中且今天已嘗試過就不打
-        vendor，否則只補 `fetched_through` 之後到今天的缺口（HIVT-02／
-        #153）。回傳 `(points, status, note)`——`status` 比照既有
-        `_backfill_iv` 的 "ok"／"quota"／"vendor" 詞彙，只描述**這次
-        嘗試**，已快取的 points 不因今天補不下去就被藏起來（#133 既有
-        原則，同一套邏輯搬到 exact-contract 家族）。`points` 每筆是一個
-        quote dict（HIVR-04／#163：`date`／`updated`／`dte`／`bid`／
-        `ask`／`mid`／`underlying_price`／`vendor_iv`）。
-
-        跟 `_backfill_iv` 的關鍵差異：那邊一次呼叫只回**一天**的整條鏈，
-        這裡一次呼叫回**整段區間**（已由 #152 真實驗證），因此不需要
-        `_IV_BACKFILL_PER_RUN` 那種逐日分批機制——缺口不論多長，一次
-        請求就補齊。
-        """
-        db = _db()
-        today = ny_today()
-        occ_symbol = identity["contract_symbol"]
-        cached = db.get_contract_history(occ_symbol)
-        today_iso = today.isoformat()
-
-        # HIVR-04（#163）：HIVT-02 時代寫入的舊格式列是 `[date, iv]`
-        # 二元組（`list`），不是新版 quote `dict`——結構上缺 reconstruction
-        # 必要欄位，繼續當新格式讀會直接讀錯欄位。純快取、可再生，視為
-        # cache miss 整批重抓（一次性代價：每張合約 1 credit），而不是
-        # 事後遷移一份讀不出原始報價的殘缺資料。
-        if cached is not None and cached.points and not isinstance(
-                cached.points[0], dict):
-            cached = None
-
-        if cached is not None and cached.last_attempt_on == today_iso:
-            emit(stage="cache", severity="info",
-                message="今天已嘗試過這張合約，沿用既有結論",
-                contract_symbol=occ_symbol, **_identity_context(identity),
-                already_fetched_today=True,
-                fetched_through=cached.fetched_through,
-                observations_returned=len(cached.points))
-            return list(cached.points), cached.last_status, cached.last_note
-
-        existing_points = list(cached.points) if cached is not None else []
-        fetched_through = cached.fetched_through if cached is not None else None
-        from_date = ((date.fromisoformat(fetched_through) + timedelta(days=1))
-                    .isoformat() if fetched_through
-                    else (today - timedelta(days=ivtrend.IV_TREND_MAX_HISTORY_DAYS))
-                    .isoformat())
-        to_date = today_iso
-
-        emit(stage="cache", severity="info", message="計算歷史缺口",
-            contract_symbol=occ_symbol, **_identity_context(identity),
-            requested_from=from_date, requested_to=to_date,
-            already_fetched_today=False, fetched_through=fetched_through)
-
-        def _observer(telemetry):
-            _emit_contract_history_telemetry(
-                emit, telemetry, provider=provider, identity=identity,
-                requested_from=from_date, requested_to=to_date)
-
-        try:
-            new_points = contract_history(provider, occ_symbol, from_date,
-                                          to_date, token, observer=_observer)
-        except QuotaExhausted as e:
-            status, note = "quota", str(e)
-        except FetchError as e:
-            status, note = "vendor", str(e)
-        else:
-            merged = {q["date"]: q for q in existing_points}
-            merged.update({q["date"]: q for q in new_points})
-            merged_points = [merged[d] for d in sorted(merged)]
-            db.save_contract_history(ContractHistory(
-                contract_symbol=occ_symbol, points=tuple(merged_points),
-                fetched_through=to_date, last_attempt_on=today_iso,
-                last_status="ok", last_note=None))
-            emit(stage="database_write", severity="info",
-                message="寫入合約歷史觀測", contract_symbol=occ_symbol,
-                **_identity_context(identity),
-                observations_returned=len(new_points),
-                null_iv_count=sum(1 for q in new_points
-                                  if q["vendor_iv"] is None))
-            if new_points:
-                _emit_staleness(emit, identity=identity,
-                                observation=max(new_points, key=lambda q: q["date"]),
-                                request_time=now_utc_iso(), today=today)
-            return merged_points, "ok", None
-
-        # 失敗路徑：既有觀測原樣保留，只更新「今天嘗試過」的狀態，不
-        # 讓下一次同一天的請求再打一次 vendor。
-        db.save_contract_history(ContractHistory(
-            contract_symbol=occ_symbol, points=tuple(existing_points),
-            fetched_through=fetched_through, last_attempt_on=today_iso,
-            last_status=status, last_note=note))
-        emit(stage="database_write", severity="warning",
-            message="vendor 這次嘗試失敗，沿用既有觀測",
-            contract_symbol=occ_symbol, **_identity_context(identity),
-            observations_returned=len(existing_points))
-        return existing_points, status, note
-
-    # 這三個統計量共用同一份 rolling window（`ivtrend._rolling_windows`），
-    # available／unavailable 都看**最新那一點**（使用者畫面上看到的
-    # 「目前」統計量），是不是有值——不是整條序列有沒有任何一點可用，
-    # 序列起始端天然會有空窗，那不代表這個統計量現在不可用。
-    _WINDOWED_STAT_FIELDS = frozenset(
-        {"moving_average", "bollinger_bands", "current_zscore"})
-
-    def _leg_stat_is_available(field_name: str, value) -> bool:
-        if field_name == "moving_average":
-            return bool(value) and value[-1][1] is not None
-        if field_name == "bollinger_bands":
-            upper = (value or {}).get("upper") or []
-            return bool(upper) and upper[-1][1] is not None
-        return value is not None   # current_zscore／percentile／delta_4w：純量
-
-    def _emit_leg_stat_metrics(emit, *, identity: dict, stats: dict,
-                               observation_count: int) -> None:
-        """每個統計量各自一筆 `metrics` 事件（HIVT-03／#154）——沿用
-        `_emit_metrics()` 在舊 (tenor,delta) 家族建立的既有模式（DG-04：
-        一個欄位一筆事件，不合併、資料驅動迴圈而非逐欄位手抄），這裡是
-        同一個模式在 exact-contract 家族的版本。`stats` 的 key 就是
-        `field` context 的值——呼叫端傳什麼名字，畫面上就看到什麼名字。
-        """
-        for field_name, value in stats.items():
-            available = _leg_stat_is_available(field_name, value)
-            windowed = ({"lookback_days": ivtrend.IV_TREND_LOOKBACK_DAYS}
-                       if field_name in _WINDOWED_STAT_FIELDS else {})
-            emit(stage="metrics",
-                severity="info" if available else "warning",
-                message=f"{field_name} 計算完成" if available
-                        else f"{field_name} 回報 unavailable",
-                **_identity_context(identity), field=field_name,
-                count=observation_count, **windowed)
-
-    def _fetch_rate_curve_rows(dates: list[str]) -> tuple:
-        """HIVR-06（#165）：涵蓋 `dates` 全部日期所需年份的曲線列，供
-        `_rate_by_date_for_leg()` 逐一觀測日查表。空輸入或抓取失敗都回
-        空 tuple——呼叫端據此讓每一筆觀測記成 `no_rate`，不擋其餘計算
-        （這裡刻意不拋出，抓取失敗不是使用者能做什麼的錯誤）。
-
-        PERF-03（#179）：走 `_cached_rate_curve_rows()`（年份為鍵的
-        持久快取），不是直接呼叫注入進來的 `rate_curve_rows`——後者是
-        快取層底下**未快取**的來源，測試假體也接在這一層（`treasury_
-        cache.cached_rate_curve_rows()` 本身對任意 `Callable[[date,
-        date], tuple]` 都成立，包括測試的固定回傳假體）。`today` 用
-        `ny_today()`（紐約曆日）判斷「今年」——與全站既有市場日語意
-        同一個時區基準。
-        """
-        if not dates:
-            return ()
-        from_date = date.fromisoformat(min(dates))
-        to_date = date.fromisoformat(max(dates))
-        try:
-            return _cached_rate_curve_rows()(from_date, to_date, ny_today())
-        except Exception:  # noqa: BLE001 — 抓不到就讓下游逐筆記 no_rate
-            return ()
-
-    def _rate_by_date_for_leg(rows: tuple, quotes: list[dict],
-                              expiration: str) -> dict[str, float]:
-        """逐一觀測日：那天的曲線（`curve_asof`，找不到就跳過）→ 那天到
-        `expiration` 的年期 → 期限對齊利率（`rate_for_tenor`）。跟
-        `ivreconstruct.reconstruct_iv_series()` 算 `T` 的方式完全一致
-        （同一個 `DAYS_PER_YEAR`／`days_between`），這裡只是預先算好
-        逐日的純量利率供它查表，不重算 T 的定義。
-        """
-        exp_date = date.fromisoformat(expiration)
-        out: dict[str, float] = {}
-        for q in quotes:
-            d = q["date"]
-            if d in out:
-                continue
-            curve = ratecurve.curve_asof(rows, d)
-            if curve is None:
-                continue
-            T = days_between(date.fromisoformat(d), exp_date) / DAYS_PER_YEAR
-            out[d] = ratecurve.rate_for_tenor(curve, T)
-        return out
-
-    def _dividend_yield_by_date_for_leg(history, quotes: list[dict],
-                                        ) -> dict[str, float]:
-        """逐一觀測日：那天的 q＝那筆觀測**自己的** `underlying_price`
-        （跟 reconstruction 用同一筆報價的原則一致——分母是那個時刻的
-        現價，不是另一個時刻的）。`history` 為 `None`（配息資料完全
-        抓不到）或 `underlying_price` 缺席時該筆跳過，讓
-        `reconstruct_iv_series()` 記成 `no_dividend_yield`。
-        """
-        if history is None:
-            return {}
-        out: dict[str, float] = {}
-        for q in quotes:
-            spot = q.get("underlying_price")
-            if spot is None or spot <= 0:
-                continue
-            d = q["date"]
-            out[d] = dividends.compute_q_asof(
-                history, spot=spot, observation_date=date.fromisoformat(d))
-        return out
-
-    def _reconstruct_leg_series(identity: dict, quotes: list[dict],
-                                rate_rows: tuple, dividend_history, *,
-                                emit) -> list[tuple[str, float | None]]:
-        """HIVR-06（#165）：寬版 quote 序列 → reconstruction（#164）→
-        `(date, iv)` 序列，餵給既有 `_leg_historical_iv_payload`／
-        `ivtrend` 統計量——**每一筆都重新反解，包含 vendor 剛好給了非
-        null `iv` 的那些**（spec #159：全期間同一把尺，不得混用 vendor
-        算的與自己算的）。存 raw quote、讀取時重算是既有架構決策
-        （spec #159 §3）——這裡就是那個「讀取時」。
-
-        HIVR-07（#166）：重建完後緊接著發一筆帳本事件（`_emit_
-        reconstruction_ledger`）——「這張圖為什麼這麼稀疏」的答案就在
-        這裡，不必另外讀程式碼推敲。
-
-        HIVR-09（#168）：緊接著再發一筆 vendor IV 合理性比較（`_emit_
-        vendor_benchmark`）——單純的診斷比較，`series` 本身（canonical
-        series）在這一步之前就已經確定，這個 gate 不回頭改動它。
-        """
-        rate_by_date = _rate_by_date_for_leg(
-            rate_rows, quotes, identity["expiration"])
-        q_by_date = _dividend_yield_by_date_for_leg(dividend_history, quotes)
-        series, failure_counts = ivreconstruct.reconstruct_iv_series(
-            identity["option_type"], identity["strike"], identity["expiration"],
-            quotes, rate_by_date, q_by_date)
-        _emit_reconstruction_ledger(emit, identity=identity, fetched=len(quotes),
-                                    series=series, failure_counts=failure_counts)
-        _emit_vendor_benchmark(emit, identity=identity, quotes=quotes,
-                               series=series)
-        return series
-
-    def _leg_historical_iv_payload(identity: dict, points: list[tuple],
-                                   status: str, note: str | None, *,
-                                   today, emit) -> dict:
-        """`LegHistoricalIv` 的完整形狀（HIVT-02／#153＋HIVT-03／#154，
-        spec #151 §4）：原始序列＋描述性欄位（HIVT-02）＋統計量套組
-        （HIVT-03）。
-
-        `history_span_days` 用**裁窗後**的序列算——「這張圖實際涵蓋多長
-        時間」講的是使用者看到的那段，不是裁窗前 storage 裡累積的全部。
-        `observation_count` 只算 `iv` 非 `None` 的那些：null IV 是缺席
-        觀測（spec §2／§3 紅線），不進這個計數；`current_percentile`／
-        `delta_4w` 的「current」都是這個非 null 集合裡最新一筆，兩者用
-        同一個 `latest_iv`，不各自各推一次可能漂移的「最新值」。
-
-        HIVR-08（#167）：每個點額外帶 `low_confidence`（`ivreconstruct.
-        is_low_confidence()`，純粹的天數比較）——單純的資訊品質標記，
-        點本身依然在 `points` 裡、依然被 `trimmed` 餵給上面這整組統計量，
-        不從這裡的計算路徑拿掉任何一筆。
-        """
-        trimmed = ivtrend.trim_to_window(points, today=today)
-        valid = sorted((d, iv) for d, iv in trimmed if iv is not None)
-        latest_iv = valid[-1][1] if valid else None
-
-        ma = ivtrend.moving_average(trimmed)
-        bands = ivtrend.bollinger_bands(trimmed)
-        zscore = ivtrend.current_zscore(trimmed)
-        percentile = ivtrend.historical_percentile(trimmed, latest_iv)
-        d4w = ivtrend.delta_4w(trimmed, latest=latest_iv, today=today)
-
-        _emit_leg_stat_metrics(
-            emit, identity=identity, observation_count=len(valid),
-            stats={"moving_average": ma, "bollinger_bands": bands,
-                  "current_zscore": zscore,
-                  "historical_percentile": percentile, "delta_4w": d4w})
-
-        return {
-            "contract": identity,
-            "points": [
-                {"date": d, "iv": iv,
-                 "low_confidence": ivreconstruct.is_low_confidence(
-                     d, identity["expiration"])}
-                for d, iv in trimmed
-            ],
-            "moving_average": [{"date": d, "value": v} for d, v in ma],
-            "bollinger_upper": [{"date": d, "value": v}
-                                for d, v in bands["upper"]],
-            "bollinger_lower": [{"date": d, "value": v}
-                                for d, v in bands["lower"]],
-            "current_percentile": percentile,
-            "current_zscore": zscore,
-            "delta_4w": d4w,
-            "observation_count": len(valid),
-            "history_span_days": ivtrend.history_span_days(trimmed),
-            "lookback_days_config": ivtrend.IV_TREND_LOOKBACK_DAYS,
-            "status": status,
-            "note": note,
-        }
-
-    def _spread_gap_payload(buy_series: list[tuple[str, float | None]],
-                            sell_series: list[tuple[str, float | None]], *,
-                            today) -> dict:
-        """`spread_gap` 區塊的完整形狀（SIG-01／#172，spec #171）：買賣
-        兩腿裁窗前的原始 reconstructed 序列先對齊（`ivspread.
-        align_spread_gap`）、再裁窗（既有 `ivtrend.trim_to_window`）——
-        順序是先對齊、再裁窗。裁窗後的 Gap 序列直接餵給既有
-        `moving_average`／`bollinger_bands`／`historical_percentile`／
-        `delta_4w`，這幾個既有函式零修改。
-
-        只要候選有賣腿就一定回傳這個區塊（呼叫端保證），即使
-        `observation_count` 是 0——`points`／`moving_average`／
-        `bollinger_upper`／`bollinger_lower` 回空陣列，`current_
-        percentile`／`delta_4w`／`delta_4w_ratio` 回 `None`、
-        `delta_4w_status` 回 `"no_baseline"`、`shared_history_span_days`
-        回 0，形狀永遠完整。
-
-        `points[-1]`（對齊後 Gap 序列裡日期最新的一筆）是「目前 IV Gap
-        現值」的正式資料來源——`ivspread.align_spread_gap` 已保證輸出
-        依 date 嚴格遞增排序，這裡直接取最後一筆，不必另外排序。
-
-        不含 `rolling_window_days`（施工前最終裁示：前端不需要讀這個
-        值，直接不序列化）；不含 `current_zscore`；不含 `status`／
-        `note`——這幾項是跟既有 `LegHistoricalIv` 的刻意契約差異
-        （spec #171 契約清理）。
-        """
-        aligned = ivspread.align_spread_gap(buy_series, sell_series)
-        trimmed = ivtrend.trim_to_window(aligned, today=today)
-        current_gap = trimmed[-1][1] if trimmed else None
-
-        ma = ivtrend.moving_average(trimmed)
-        bands = ivtrend.bollinger_bands(trimmed)
-        percentile = ivtrend.historical_percentile(trimmed, current_gap)
-        d4w = ivtrend.delta_4w(trimmed, latest=current_gap, today=today)
-        ratio, status = ivspread.spread_delta_4w_ratio_status(current_gap, d4w)
-
-        return {
-            "points": [{"date": d, "gap": g} for d, g in trimmed],
-            "moving_average": [{"date": d, "value": v} for d, v in ma],
-            "bollinger_upper": [{"date": d, "value": v}
-                                for d, v in bands["upper"]],
-            "bollinger_lower": [{"date": d, "value": v}
-                                for d, v in bands["lower"]],
-            "current_percentile": percentile,
-            "delta_4w": d4w,
-            "delta_4w_ratio": ratio,
-            "delta_4w_status": status,
-            "observation_count": len(trimmed),
-            "shared_history_span_days": ivtrend.history_span_days(trimmed),
-        }
-
     def _flush_diagnostics(diag: _CollectingDiagnostics) -> dict:
         """這次 request 收集到的 events 依優先序選出 `kept`（per-request
         上限，#146），組出要塞進回應的 `diagnostics` 欄位——回應永遠用
@@ -1945,19 +1093,25 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
 
     @app.get("/api/scenarios/{scenario_id}/iv-history")
     def iv_history(scenario_id: str, candidate_key: str) -> dict:
-        """候選的 (tenor, delta) 座標**逐日重錨定**的 IV 序列。
+        """候選的 Historical IV 完整回應（Exact-Contract Series 逐腿＋
+        Legacy (tenor, delta) Re-anchor Series）。
+
+        T10（#192）：金融決策邏輯全部下沉到 `ivpipeline.build_iv_history()`
+        （T05／#189 建置、已由 `tests/test_ivpipeline_parity.py` 證明與
+        切換前的內嵌編排逐位元一致）——這裡只做 HTTP 邊界的事：權限
+        gate、candidate 404、把 `create_app()` 收到的資料源與 storage
+        接成 `ivpipeline` 認得的 port 形狀、呼叫模組、把 diagnostics
+        信封疊上去。
 
         資料來自 **per-symbol 快取**（#129）：同一 ticker 的所有 Scenario
-        共用同一份歷史，各自只是投影到自己的座標。target price／target
-        month／scenario id 不同都不會觸發重抓。
+        共用同一份 Legacy 家族歷史，各自只是投影到自己的座標；
+        Exact-Contract 家族則是逐張合約各自快取（HIVT-02／#153）。
 
         **閘門**：Historical IV 未解鎖時直接 403，一個 vendor 請求都不發。
 
         回應的 `status`（`ok`／`quota`／`vendor`）只描述**這次 backfill
-        嘗試**的結果，不代表資料能不能看——那是兩件事（`unset`／
-        `invalid` 兩種在閘門那關就 403 了，畫面連模組都不渲染）。已快取
-        的觀測算出的 percentile 不因為今天補不下去就被藏起來，見
-        `_iv_payload`。
+        嘗試**的結果，不代表資料能不能看——已快取的觀測算出的 percentile
+        不因今天補不下去就被藏起來（#133）。
 
         **`diagnostics`（DG-03／#146）**：這次 request 產生的 sanitized
         events，跟資料一起回——目前最常見的症狀是 HTTP 200 但資料是空
@@ -1989,8 +1143,8 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         # HIVR-03（#162）：exact-contract 與 legacy (tenor,delta) 重錨定
         # 兩個獨立 subsystem 各自的 emit，見 `_select_for_persistence`
         # 的逐 subsystem 保留預算。
-        _emit_exact = _make_emit(diagnostics.SUBSYSTEM_EXACT_CONTRACT)
-        _emit_legacy = _make_emit(diagnostics.SUBSYSTEM_LEGACY_REANCHOR)
+        emit_exact = _make_emit(diagnostics.SUBSYSTEM_EXACT_CONTRACT)
+        emit_legacy = _make_emit(diagnostics.SUBSYSTEM_LEGACY_REANCHOR)
 
         rec = _db().latest_result(scenario_id)
         if rec is None:
@@ -1998,11 +1152,11 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         cand = store.find_candidate(rec.view, candidate_key)
         groups_scanned = sum(len(r.get("expiry_top10") or [])
                              for r in rec.view.get("results") or [])
-        _emit_exact(stage="candidate_lookup",
-                   severity="info" if cand is not None else "error",
-                   message="找到候選" if cand is not None else "找不到候選",
-                   scenario_id=scenario_id, candidate_key=candidate_key,
-                   found=cand is not None, groups_scanned=groups_scanned)
+        emit_exact(stage="candidate_lookup",
+                  severity="info" if cand is not None else "error",
+                  message="找到候選" if cand is not None else "找不到候選",
+                  scenario_id=scenario_id, candidate_key=candidate_key,
+                  found=cand is not None, groups_scanned=groups_scanned)
         if cand is None:
             _flush_diagnostics(diag)
             raise HTTPException(status_code=404,
@@ -2011,88 +1165,50 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         provider = settings_view["historical_iv"]["provider"]
         token = credentials[provider].token
 
-        # Exact-contract 家族（HIVT-02／#153）：跟下面 (tenor, delta)
-        # 重錨定家族完全獨立，不吃 `coords`，兩邊都算完才一起回應。
-        legs_payload: dict[str, dict] = {}
-        candidate_legs = cand.get("legs") or []
-        leg_names = ("buy", "sell") if len(candidate_legs) >= 2 else ("buy",)
-        leg_fetches = []
-        for name, leg in zip(leg_names, candidate_legs):
-            identity = _leg_contract_identity(leg, sc.symbol)
-            leg_points, leg_status, leg_note = _ensure_contract_history(
-                identity, provider, token, emit=_emit_exact)
-            leg_fetches.append((name, identity, leg_points, leg_status, leg_note))
-
-        # HIVR-06（#165）：point-in-time r／q 輸入是兩腿共用的——Treasury
-        # 曲線與配息紀錄跟哪一條腿無關，一次抓好即可，不必逐腿各抓一次。
-        all_dates = [q["date"] for _, _, points, _, _ in leg_fetches
-                    for q in points]
-        rate_rows = _fetch_rate_curve_rows(all_dates)
-        dividend_history, _div_note = _dividend_loader()(sc.symbol, ny_today())
-
-        reconstructed_by_name: dict[str, list[tuple[str, float | None]]] = {}
-        for name, identity, leg_points, leg_status, leg_note in leg_fetches:
-            reconstructed = _reconstruct_leg_series(
-                identity, leg_points, rate_rows, dividend_history,
-                emit=_emit_exact)
-            reconstructed_by_name[name] = reconstructed
-            legs_payload[name] = _leg_historical_iv_payload(
-                identity, reconstructed, leg_status, leg_note,
-                today=ny_today(), emit=_emit_exact)
-
-        # SIG-01（#172）：Spread IV Gap——只要候選有賣腿就一定存在這個
-        # 區塊；單腳候選（`reconstructed_by_name` 沒有 "sell"）完全沒有
-        # 這個欄位，不是空區塊。
-        spread_gap_payload = None
-        if "sell" in reconstructed_by_name:
-            spread_gap_payload = _spread_gap_payload(
-                reconstructed_by_name["buy"], reconstructed_by_name["sell"],
-                today=ny_today())
-
         # `expiry_counts` 掛在每個策略結果（`results[i]`）底下，不是
         # view 頂層——這裡只要「有哪些到期日」，跨策略去重即可。
         known_expiries = sorted({
             e for r in rec.view.get("results") or []
             for e, _ in r.get("expiry_counts") or []
         })
-        target_expirations = ivhistory.nearby_expirations(
-            known_expiries, today=ny_today(),
-            tenor_days=cand.get("days_to_expiry") or 0)
-        outcome, note = _backfill_iv(sc.symbol, provider, token,
-                                     target_expirations, emit=_emit_legacy)
 
-        coords = ivhistory.spread_coordinates(cand, spot=rec.view["meta"]["spot"])
-        if coords is None:
-            diag_payload = _flush_diagnostics(diag)
-            return {**_iv_payload(candidate_key, [], outcome,
-                                  "這個候選算不出 (tenor, delta) 座標"),
-                   "legs": legs_payload,
-                   **({"spread_gap": spread_gap_payload}
-                      if spread_gap_payload is not None else {}),
-                   "diagnostics": diag_payload}
+        db = _db()
+        # `ivpipeline` 的 port 型別只認識未包裝的關鍵字參數／原始形狀——
+        # `save_contract_history`／`save_iv_backfill_run`／
+        # `save_iv_observation` 三個 storage 寫入方法在 `Storage` 這一層
+        # 收的是各自的 dataclass，這裡用小轉接 lambda 包起來，模組本身
+        # 不需要認識 `api_app.storage` 的型別。
+        vendor = ivpipeline.VendorPorts(
+            historical_surface=historical_surface,
+            contract_history=contract_history,
+            rate_curve_rows=_cached_rate_curve_rows(),
+            dividend_loader=_dividend_loader(),
+        )
+        storage_ports = ivpipeline.StoragePorts(
+            get_contract_history=db.get_contract_history,
+            save_contract_history=lambda **kw:
+                db.save_contract_history(ContractHistory(**kw)),
+            get_iv_backfill_run=db.get_iv_backfill_run,
+            save_iv_backfill_run=lambda symbol, ran_on, outcome, note:
+                db.save_iv_backfill_run(IvBackfillRun(
+                    symbol=symbol, ran_on=ran_on, outcome=outcome, note=note)),
+            iv_observation_dates=db.iv_observation_dates,
+            save_iv_observation=lambda symbol, observed_on, surface, fetched_at:
+                db.save_iv_observation(IvObservation(
+                    symbol=symbol, observed_on=observed_on, surface=surface,
+                    fetched_at=fetched_at)),
+            iv_observations=db.iv_observations,
+        )
 
-        points = []
-        in_grid = 0
-        out_of_grid = 0
-        for obs in _db().iv_observations(sc.symbol):
-            surface = _rows_to_surface(obs.surface)
-            reanchored = ivhistory.reanchor_spread(surface, coords)
-            if _reanchor_in_grid(reanchored, coords):
-                in_grid += 1
-            else:
-                out_of_grid += 1
-            points.append({"date": obs.observed_on, **reanchored})
+        payload = ivpipeline.build_iv_history(
+            symbol=sc.symbol, candidate=cand, spot=rec.view["meta"]["spot"],
+            known_expiries=known_expiries, provider=provider, token=token,
+            today=ny_today(), now_utc_iso=now_utc_iso,
+            vendor=vendor, storage=storage_ports,
+            emit_exact=emit_exact, emit_legacy=emit_legacy)
 
-        _emit_reanchor_summary(_emit_legacy, coords=coords,
-                               in_grid=in_grid, out_of_grid=out_of_grid)
-        _emit_metrics(_emit_legacy, points, coords)
         diag_payload = _flush_diagnostics(diag)
-
-        return {**_iv_payload(candidate_key, points, outcome, note),
-               "legs": legs_payload,
-               **({"spread_gap": spread_gap_payload}
-                  if spread_gap_payload is not None else {}),
-               "diagnostics": diag_payload}
+        return {**payload, "diagnostics": diag_payload}
 
     # ---------- 設定：資料源與 Provider credential（Settings／#124） ----------
 

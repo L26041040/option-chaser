@@ -284,7 +284,7 @@ def test_normalized_skew_points_only_carry_date_and_normalized_skew(db):
 
 def _prefill(db, symbol="XYZ"):
     """把整份排程灌進快取——模擬 backfill 已經跑完的那一天。"""
-    from api_app.main import _surface_to_rows
+    from option_chaser.ivpipeline import surface_to_rows as _surface_to_rows
     from api_app.storage import IvObservation
 
     for day in sampling_schedule(symbol, ny_today()):
@@ -520,27 +520,38 @@ def test_exact_contract_pipeline_never_calls_the_reanchoring_functions():
     `test_the_analysis_view_gains_no_iv_history_field` 證的是「新家族
     不外洩進舊家族的資料形狀」，這裡證反方向：新家族（`legs` 回應）的
     產生路徑完全不呼叫舊 (tenor,delta) 重錨定家族的任何函式。逐函式
-    （而不是整個 main.py）檢查，因為 main.py 本身合法地為舊家族呼叫
-    這些函式——隔離紅線畫在新家族自己的函式邊界，不是整個檔案。"""
-    import api_app.main as main
+    （而不是整個模組）檢查，因為進入點 `build_iv_history()` 本身合法地
+    為舊家族呼叫這些函式——隔離紅線畫在新家族自己的函式邊界，不是整個
+    檔案。
 
-    src = open(main.__file__, encoding="utf-8").read()
+    T10（#192）：整個 exact-contract 家族連同這條隔離紅線的檢查對象，
+    一併從 `api_app.main`（HTTP 層 closure）搬到 `option_chaser.
+    ivpipeline`（引擎模組）——這是這一票的核心動作本身。隔離保證因此
+    變得**更強**：`ivpipeline.py` 本身結構上不 import `api_app` 的任何
+    東西（模組 docstring 明文），新家族與舊家族現在活在同一個模組裡，
+    這條測試改用函式名稱逐一檢查同一件事。名稱本身在搬遷過程中，部分
+    函式從 closure 私有名（`_foo`）變成模組公開名（`foo`）——見
+    `ivpipeline.py` 逐一對照。
+    """
+    from option_chaser import ivpipeline as pipeline_module
+
+    src = open(pipeline_module.__file__, encoding="utf-8").read()
     forbidden = ("reanchor_spread", "iv_at(", "spread_coordinates(",
                 "leg_coordinate(", "nearby_expirations(")
     exact_contract_functions = (
-        "_leg_contract_identity", "_identity_context",
-        "_emit_contract_history_telemetry", "_ensure_contract_history",
-        "_emit_leg_stat_metrics", "_leg_historical_iv_payload",
+        "leg_contract_identity", "_identity_context",
+        "_emit_contract_history_telemetry", "ensure_contract_history",
+        "_emit_leg_stat_metrics", "leg_historical_iv_payload",
         # HIVR-06（#165）：reconstruction 接線也是 exact-contract 家族
         # 的一部分，同一條隔離紅線延伸過來。
-        "_fetch_rate_curve_rows", "_rate_by_date_for_leg",
-        "_dividend_yield_by_date_for_leg", "_reconstruct_leg_series",
+        "_fetch_rate_curve_rows", "rate_by_date_for_leg",
+        "dividend_yield_by_date_for_leg", "reconstruct_leg_series",
         # HIVR-07（#166）：帳本＋staleness 可見性一樣是 exact-contract
         # 家族的一部分。HIVR-09（#168）：vendor IV benchmark 比較同理。
         "_emit_reconstruction_ledger", "_emit_staleness",
         "_emit_vendor_benchmark",
         # SIG-01（#172）：Spread IV Gap 接線同理屬於 exact-contract 家族。
-        "_spread_gap_payload",
+        "spread_gap_payload",
     )
     for fn_name in exact_contract_functions:
         body = _function_source(src, fn_name)
@@ -699,7 +710,7 @@ def test_trend_4w_reflects_a_real_change_across_the_cached_series(db):
               for d in (0.01, 0.05, 0.25, 0.5, 0.75, 0.95)]
         return {"call": pts, "put": pts}
 
-    from api_app.main import _surface_to_rows
+    from option_chaser.ivpipeline import surface_to_rows as _surface_to_rows
 
     for i, day in enumerate(schedule):
         # 越晚的日子斜率越陡——delta 軸上不同位置的兩腿因此隨時間分歧。
@@ -781,7 +792,7 @@ def test_normalized_skew_is_bit_identical_to_an_independent_reanchored_computati
     _prefill(db)
     body = _get(client, sid, key).json()
 
-    from api_app.main import _rows_to_surface
+    from option_chaser.ivpipeline import rows_to_surface as _rows_to_surface
     from option_chaser import store
 
     rec = client.get(f"/api/scenarios/{sid}").json()["latest_result"]
@@ -873,7 +884,7 @@ def test_a_quota_failure_today_does_not_hide_yesterdays_cached_percentiles(db):
     schedule = sampling_schedule("XYZ", ny_today())
     # 手動只灌一部分——模擬「先前幾天已經補到這裡」，留下缺口讓「今天」
     # 的 backfill 真的有事要做（尚未跑過，`get_iv_backfill_run` 是 None）。
-    from api_app.main import _surface_to_rows
+    from option_chaser.ivpipeline import surface_to_rows as _surface_to_rows
 
     for day in schedule[:10]:
         db.save_iv_observation(IvObservation(
@@ -898,7 +909,7 @@ def test_a_vendor_failure_today_does_not_hide_cached_percentiles_either(db):
     key = _candidate_key(working, sid)
 
     schedule = sampling_schedule("XYZ", ny_today())
-    from api_app.main import _surface_to_rows
+    from option_chaser.ivpipeline import surface_to_rows as _surface_to_rows
 
     for day in schedule[:5]:
         db.save_iv_observation(IvObservation(
@@ -942,7 +953,7 @@ def _prefill_all_but_one(db, symbol="XYZ"):
     """把排程灌到只剩一天缺口——讓 backfill 迴圈只真的跑一次，事件數遠
     低於 per-request 上限（#146），不必連帶測到排放量控制那條路徑
     （那個有自己專屬的測試）。"""
-    from api_app.main import _surface_to_rows
+    from option_chaser.ivpipeline import surface_to_rows as _surface_to_rows
     from api_app.storage import IvObservation
 
     schedule = sorted(sampling_schedule(symbol, ny_today()))
@@ -1086,7 +1097,7 @@ def test_bounded_concurrency_stops_launching_new_batches_after_the_first_failure
     那之後沒有新呼叫被啟動——這裡驗證的是「沒有第二天的呼叫」，因為
     第一天一失敗整批就中止（既有行為，本票不改，見上面
     `test_backfill_abort_is_visible_in_the_summary_event`）。"""
-    from api_app.main import _IV_BACKFILL_DAY_CONCURRENCY
+    from option_chaser.ivpipeline import IV_BACKFILL_DAY_CONCURRENCY as _IV_BACKFILL_DAY_CONCURRENCY
 
     rec = _client_with_long_expiration_ladder(db, monkeypatch, fail_on_first=True)
 
@@ -1102,7 +1113,7 @@ def test_the_extra_calls_from_a_failure_are_bounded_by_concurrency_minus_one(
     硬性上界為 concurrency－1——序列版本遇到第一個失敗就停（只打 1
     次），bounded concurrency 下同一批次裡其他已經送出的呼叫仍會跑完，
     但這批的大小本身就是上限，不會無上限發散到梯子剩下的 20 個。"""
-    from api_app.main import _IV_BACKFILL_DAY_CONCURRENCY
+    from option_chaser.ivpipeline import IV_BACKFILL_DAY_CONCURRENCY as _IV_BACKFILL_DAY_CONCURRENCY
 
     rec = _client_with_long_expiration_ladder(db, monkeypatch, fail_on_first=True)
 
@@ -1264,7 +1275,7 @@ def test_the_backfill_and_reanchor_summaries_take_no_free_text_vendor_params(db)
     的簽章鎖住這件事，即使簽章未來被改動走樣也會在這裡先紅燈。"""
     import inspect
 
-    from api_app.main import _emit_backfill_summary, _emit_reanchor_summary
+    from option_chaser.ivpipeline import _emit_backfill_summary, _emit_reanchor_summary
 
     backfill_params = set(inspect.signature(_emit_backfill_summary).parameters)
     assert backfill_params == {
@@ -1566,7 +1577,7 @@ def _mark_backfill_done_today(db, symbol="XYZ"):
 
 
 def _seed_days(db, days_and_points, symbol="XYZ"):
-    from api_app.main import _surface_to_rows
+    from option_chaser.ivpipeline import surface_to_rows as _surface_to_rows
     from api_app.storage import IvObservation
 
     for day, pts in days_and_points:
