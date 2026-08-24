@@ -5,8 +5,6 @@
 由 `tests/test_storage_contract.py` 保證（同一份契約、兩個實作都跑），
 所以這裡用假體驗出來的結論對正式環境也成立。
 """
-from datetime import timedelta
-
 from fastapi.testclient import TestClient
 
 from api_app.main import create_app
@@ -306,11 +304,9 @@ def test_reanalysis_updates_the_card_to_the_newer_numbers():
     兩次都餵同一份快照的話，時間戳與數字都一樣，測不出讀新讀舊的差別
     ——所以第二次餵一份 `fetched_at` 與價格都不同的快照。
 
-    PERF-06（#182）：這裡刻意連續對同一個 symbol 觸發兩次「真的重新
-    抓一次」，跟短效期 chain cache 的設計目的直接衝突——傳
-    `chain_cache_ttl=0` 停用快取重用（`create_app()` 既有 DI 慣例，
-    不用伸手改模組內部狀態），讓這條測試繼續驗證它原本要驗證的事
-    （清單讀新不讀舊），不是在測 chain cache 本身。
+    T06（#190）：chain 快取已整組移除（ADR-0001——重複抓取只在單一
+    Refresh Run 的記憶體內去重，不做跨 invocation 的快取），這裡連續
+    兩次刷新自然各自真的重新抓一次，不需要任何特殊處理。
     """
     import dataclasses
 
@@ -325,8 +321,7 @@ def test_reanalysis_updates_the_card_to_the_newer_numbers():
         calls["n"] += 1
         return snap
 
-    client = TestClient(create_app(fetch=fetch, storage=MemoryStorage(),
-                                   chain_cache_ttl=timedelta(seconds=0)))
+    client = TestClient(create_app(fetch=fetch, storage=MemoryStorage()))
     sc = _create(client)
 
     client.post(f"/api/scenarios/{sc['id']}/refresh").raise_for_status()

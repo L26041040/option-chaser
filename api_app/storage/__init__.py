@@ -162,26 +162,6 @@ class TreasuryYearCacheEntry:
 
 
 @dataclass(frozen=True)
-class ChainCacheEntry:
-    """完整 option chain 快照的短效期快取，**per-symbol**（PERF-06／
-    #182）——開站整批刷新時，同一個 symbol 的多個劇本各自序列觸發一次
-    完全相同的完整抓取，跟 `RateCacheEntry`／`DividendCacheEntry` 同一個
-    理由（serverless 彼此不共享行程內記憶體，快取放儲存介面）需要放在
-    這裡，但**不是**同一套市場日三態設計：這裡是即時報價，不是需要
-    point-in-time 正確性的歷史資料，新鮮度只看 `fetched_at` 距今是否
-    超過短效期 TTL（`api_app.chain_cache.CHAIN_CACHE_TTL`），沒有
-    「陳舊備援」或「今天已經成功過」的概念。失敗不快取——只有成功抓到
-    才會有這筆紀錄，抓取失敗時呼叫端照舊直接看到例外。
-
-    `snapshot` 是 `dataclasses.asdict(ChainSnapshot)` 的輸出，用既有
-    `option_chaser.data.snapshot.snapshot_from_dict()` 還原。
-    """
-    symbol: str
-    fetched_at: str          # 這筆快取寫入的時間（ISO），用於 TTL 判斷
-    snapshot: dict
-
-
-@dataclass(frozen=True)
 class UsageSetting:
     """`Data / API` 其中一列的選擇（Settings／#124）。
 
@@ -410,15 +390,6 @@ class Storage(Protocol):
 
     def save_treasury_year_cache(self, entry: TreasuryYearCacheEntry) -> None:
         """覆蓋該年份既有那一筆——per-year 單一狀態，不是歷史序列。"""
-
-    # ---------- Option chain 短效期快取（PERF-06／#182，per-symbol） ----------
-
-    def get_chain_cache(self, symbol: str) -> ChainCacheEntry | None:
-        """該 symbol 尚未快取過時回 `None`。TTL 判斷交給呼叫端
-        （`api_app.chain_cache`），這裡只負責讀回最後一筆。"""
-
-    def save_chain_cache(self, entry: ChainCacheEntry) -> None:
-        """覆蓋該 symbol 既有那一筆——per-symbol 單一狀態，不是歷史序列。"""
 
     # ---------- 資料源設定與 credential（Settings／#124） ----------
 

@@ -5,8 +5,6 @@ CSV 內容正確性本就由既有純函式 `data.snapshot.snapshot_to_csv` 的�
 覆蓋（QA1-10／#37）；這裡只驗證「接線」——端點真的把 refresh 時存進去
 的那份原始快照原樣交出來，JSON 查看與 CSV 下載走的是同一份資料。
 """
-from datetime import timedelta
-
 from fastapi.testclient import TestClient
 
 from api_app.main import create_app
@@ -112,18 +110,15 @@ def test_raw_data_follows_the_latest_refresh_not_a_stale_one():
     要是新的那份快照，不是第一次刷新時存的舊資料。"""
     import dataclasses
 
-    # PERF-06（#182）：這裡刻意對同一個 symbol 連續觸發兩次「真的重新
-    # 抓一次」，跟短效期 chain cache 的設計目的直接衝突，傳
-    # chain_cache_ttl=0 停用快取重用（create_app() 既有 DI 慣例）——
-    # 這條測試驗證的是「回應跟著最新結果走」，不是在測 chain cache 本身。
+    # T06（#190）：chain 快取已整組移除（ADR-0001），這裡對同一個 symbol
+    # 連續觸發兩次刷新自然各自真的重新抓一次，不需要任何特殊處理。
     storage = MemoryStorage()
-    c = _client(storage=storage, chain_cache_ttl=timedelta(seconds=0))
+    c = _client(storage=storage)
     sc = _create(c)
     c.post(f"/api/scenarios/{sc['id']}/refresh").raise_for_status()
 
     newer = dataclasses.replace(load_snapshot(FIX), fetched_at="2026-07-16T09:30:00-04:00")
-    c2 = TestClient(create_app(fetch=lambda symbol: newer, storage=storage,
-                               chain_cache_ttl=timedelta(seconds=0)))
+    c2 = TestClient(create_app(fetch=lambda symbol: newer, storage=storage))
     c2.post(f"/api/scenarios/{sc['id']}/refresh").raise_for_status()
 
     raw = c2.get(f"/api/scenarios/{sc['id']}/raw-data").json()

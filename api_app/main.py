@@ -32,9 +32,7 @@ from option_chaser.timeframe import (TargetMonth, calendar_anchor,
 from option_chaser.valuation import DAYS_PER_YEAR, days_between
 
 from . import diagnostics, providers
-from . import chain_cache
 from .clock import now_utc_iso, ny_today
-from .chain_cache import cached_fetch_chain
 from .dividend_cache import cached_loader as cached_dividend_loader
 from .rate_cache import cached_loader
 from .storage import (ContractHistory, DataSourceSettings, IvBackfillRun,
@@ -153,6 +151,13 @@ class EditScenarioRequest(BaseModel):
             raise ValueError(
                 f"最低價位（{self.worst_price}）不可高於目標價（{self.target_price}）")
         return self
+
+
+class RefreshRunRequest(BaseModel):
+    """一輪刷新（T06／#190）的請求體。`scenario_ids` 省略或 `null` ＝
+    範圍是全部未過期劇本（開站／頂部刷新鈕）；帶一組 id ＝只刷新這幾個
+    （建立新劇本，P4）。"""
+    scenario_ids: list[str] | None = None
 
 
 class UsageRequest(BaseModel):
@@ -737,7 +742,6 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
                    providers.default_contract_history,
                rate_curve_rows: RateCurveRowsFetch =
                    treasury_data.fetch_curve_range,
-               chain_cache_ttl: timedelta = chain_cache.CHAIN_CACHE_TTL,
                ) -> FastAPI:
     """`fetch`／`storage`／`rate_loader`／`dividend_loader` 皆可注入：
     測試傳入固定快照、記憶體假體與假來源，因此不打真網路、不碰真資料庫，
@@ -876,19 +880,6 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
             checked_at=now_utc_iso()))
         return snap
 
-    # PERF-06（#182）：同一個道理，惰性建一次、重用閉包——鍵是 symbol，
-    # 短效期（`chain_cache.CHAIN_CACHE_TTL`），不是市場日／年份那套
-    # 三態設計，見 `chain_cache.cached_fetch_chain` 說明。包住整個
-    # `_fetch_chain()`（不管內部走自訂還是預設來源），快取命中時連
-    # `_fetch_chain()` 自己的 settings／credential 查詢都省下來。
-    cached_chain: dict[str, Callable] = {}
-
-    def _cached_fetch_chain() -> Callable[[str], ChainSnapshot]:
-        if "fn" not in cached_chain:
-            cached_chain["fn"] = cached_fetch_chain(_db(), _fetch_chain,
-                                                    ttl=chain_cache_ttl)
-        return cached_chain["fn"]
-
     def _require(scenario_id: str) -> Scenario:
         sc = _db().get_scenario(scenario_id)
         if sc is None:
@@ -898,13 +889,20 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
     def _analyze(*, scenario_id: str, symbol: str, target_price: float,
                  target_month: str, strategies: tuple[str, ...],
                  best_price: float | None = None,
-                 worst_price: float | None = None) -> tuple[dict, dict]:
+                 worst_price: float | None = None,
+                 snap: ChainSnapshot | None = None) -> tuple[dict, dict]:
         """跑一次分析，回傳 (view dict, 原始快照 dict)。
 
         只吃分析真正需要的欄位——不要求一個完整的 `Scenario`，一次性
         分析端點才不必為了呼叫它而捏造一個沒有建立時間的假劇本。
         原始快照一併回傳：view dict 裡沒有逐筆合約報價，而 V8 的
-        「原始資料」要的正是那個。"""
+        「原始資料」要的正是那個。
+
+        `snap`（T06／#190）：Refresh Run 批次端點在呼叫這裡之前，已經
+        依 symbol 分組抓過一次（ADR-0001，Run 內記憶體去重），這裡就不
+        重複抓。單一劇本刷新端點不傳這個參數，走下面的直接抓取——
+        chain 快取已隨 ADR-0001 整組移除，重複抓取的去重範圍現在只在
+        單一 Refresh Run 內，不再跨 invocation。"""
         # base_params.strategy 只是引擎逐策略覆寫前的起點（`_analyze` 會
         # 對 `strategies` 每一項各自替換），取第一項即可——與既有
         # `workspace._request_for` 同樣的做法。
@@ -916,15 +914,16 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
                                       strategies=tuple(strategies))
         # 兩段各自 try：抓鏈與分析是兩個不同的失敗環節（V4／#52），
         # 包在同一個 try 裡就只能事後靠例外型別猜是哪一段出的事。
-        try:
-            snap = _cached_fetch_chain()(symbol)
-        except FetchError as e:
-            # 上游報價來源不可用（Cboe 與 yfinance 皆失敗）＝下游依賴問題。
-            # 只認 FetchError：把這裡寫成 `except Exception` 的話，我們自己
-            # 程式裡的 bug 會被貼上「抓不到報價、可稍後重試」的標籤，正好是
-            # 這張票要消滅的那種誤導。其他例外照樣往上走成 500——「不知道
-            # 是哪一段」時說不知道，好過說一個錯的分層。
-            raise _fail("fetch", 502, f"抓不到 {symbol} 的報價：{e}") from e
+        if snap is None:
+            try:
+                snap = _fetch_chain(symbol)
+            except FetchError as e:
+                # 上游報價來源不可用（Cboe 與 yfinance 皆失敗）＝下游依賴
+                # 問題。只認 FetchError：把這裡寫成 `except Exception` 的話，
+                # 我們自己程式裡的 bug 會被貼上「抓不到報價、可稍後重試」的
+                # 標籤，正好是這張票要消滅的那種誤導。其他例外照樣往上走成
+                # 500——「不知道是哪一段」時說不知道，好過說一個錯的分層。
+                raise _fail("fetch", 502, f"抓不到 {symbol} 的報價：{e}") from e
         try:
             result = service.run_with_snapshot(
                 req, snap, rate_curve_loader=_rate_curve_loader(),
@@ -1141,38 +1140,39 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         _db().delete_scenario(scenario_id)
         return Response(status_code=204)
 
-    @app.post("/api/scenarios/{scenario_id}/refresh")
-    def refresh_scenario(scenario_id: str) -> dict:
-        """單劇本刷新（V4／#52）：抓鏈→分析→結果與原始快照入庫。
+    def _refresh_and_save(sc: Scenario, today: date, *,
+                          snap: ChainSnapshot | None) -> dict:
+        """一個劇本的刷新→入庫，`refresh_scenario`／`refresh_run`
+        共用的核心（T06／#190 從前者抽出，理由是批次端點需要同一套
+        過期短路與落地邏輯，不能各寫一份）。
 
-        回傳的是**卡片列**而非整份 view：客戶端要依序刷新 N 個劇本、
-        每完成一個就更新那張卡，每次拖回十萬字元級的 view 在手機上是
-        實打實的浪費。要看完整 view 走 detail 端點。
-
-        本端點是所有刷新入口共用的**唯一**擋點（#68）：目標月已過完的
-        劇本直接短路成一次無害的讀取（不抓鏈、不跑引擎、不入庫、不留
+        目標月已過完的劇本是所有刷新入口共用的**唯一**擋點（#68）：
+        直接短路成一次無害的讀取（不抓鏈、不跑引擎、不入庫、不留
         事件），回傳目前既有的卡片列。這裡是唯一必須擋住的地方——批次
         流程本該在排隊前就先篩掉這類劇本以免浪費一趟網路往返，但擋點
         設在這裡才能保證「任何入口都擋得住」，含日後新增的、忘記先篩
         的呼叫端。
+
+        垃圾桶擋點**不**在這裡——`refresh_scenario` 與 `refresh_run`
+        對垃圾桶劇本要給的回應形狀不同（前者是一次 HTTP 409、後者是
+        批次結果裡的一筆失敗項），各自在呼叫這裡之前自己判斷。
+
+        `snap`：`None` 時直接呼叫 `_analyze()` 自己抓（單一劇本刷新走
+        這條）；非 `None` 時是呼叫端已經抓好、要求跳過重複抓取的那份
+        （Refresh Run 批次端點走這條，ADR-0001 的 Run 內 symbol 去重）。
+
+        任何分析失敗（`_analyze()` 丟出的 `HTTPException`）原樣往外炸——
+        `refresh_scenario` 讓它變成一次 HTTP 錯誤回應，`refresh_run`
+        接住它轉成批次結果裡的一筆失敗項，兩邊的失敗語意（`stage`／
+        `message`）完全共用同一份，不重複定義。
         """
-        sc = _require(scenario_id)
-        # TR1（#88）：垃圾桶劇本硬擋——跟過期擋點（下面）刻意不同，過期
-        # 是「還是能看，只是不再花資源更新」的靜默短路（回既有卡片列，
-        # 200）；垃圾桶是使用者主動丟掉的，任何背景動作都不該再發生，
-        # 錯誤要明確到前端分辨得出「這是因為在垃圾桶」，不是靜靜地回一
-        # 份「無害的舊資料」。擋在 `_require` 之後、任何抓鏈／分析動作
-        # 之前——不抓鏈、不跑引擎、不入庫、不留事件。
-        if sc.archived_at is not None:
-            raise _fail("archived", 409, f"劇本已在垃圾桶，不再刷新：{scenario_id}")
-        today = ny_today()
         if month_is_over(TargetMonth.from_key(sc.target_month), today):
-            latest = _db().latest_result(scenario_id)
+            latest = _db().latest_result(sc.id)
             return _row_json(sc, today, **_summary_of(latest))
         view, snapshot = _analyze(
             scenario_id=sc.id, symbol=sc.symbol, target_price=sc.target_price,
             target_month=sc.target_month, strategies=sc.strategies,
-            best_price=sc.best_price, worst_price=sc.worst_price)
+            best_price=sc.best_price, worst_price=sc.worst_price, snap=snap)
         analyzed_at = view["analyzed_at"]
         # 兩者同一次走訪（`store.representative_candidate`），`best_return`
         # 由它導出——結構上不可能對不上（MVP-v2／#77、#78）。
@@ -1193,6 +1193,103 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
                          best_return=best_return,
                          representative_candidate=representative_candidate,
                          spot=store.spot(view))
+
+    @app.post("/api/scenarios/{scenario_id}/refresh")
+    def refresh_scenario(scenario_id: str) -> dict:
+        """單劇本刷新（V4／#52）：抓鏈→分析→結果與原始快照入庫。
+
+        回傳的是**卡片列**而非整份 view：客戶端要依序刷新 N 個劇本、
+        每完成一個就更新那張卡，每次拖回十萬字元級的 view 在手機上是
+        實打實的浪費。要看完整 view 走 detail 端點。
+
+        過期短路與落地邏輯見 `_refresh_and_save()`；這裡只負責垃圾桶
+        擋點（下方）與把結果包成單一 HTTP 回應。
+        """
+        sc = _require(scenario_id)
+        # TR1（#88）：垃圾桶劇本硬擋——跟過期擋點（下面）刻意不同，過期
+        # 是「還是能看，只是不再花資源更新」的靜默短路（回既有卡片列，
+        # 200）；垃圾桶是使用者主動丟掉的，任何背景動作都不該再發生，
+        # 錯誤要明確到前端分辨得出「這是因為在垃圾桶」，不是靜靜地回一
+        # 份「無害的舊資料」。擋在 `_require` 之後、任何抓鏈／分析動作
+        # 之前——不抓鏈、不跑引擎、不入庫、不留事件。
+        if sc.archived_at is not None:
+            raise _fail("archived", 409, f"劇本已在垃圾桶，不再刷新：{scenario_id}")
+        return _refresh_and_save(sc, ny_today(), snap=None)
+
+    @app.post("/api/scenarios/refresh-run")
+    def refresh_run(body: RefreshRunRequest) -> dict:
+        """一輪刷新（E1／#190，T06）：批次版的 `refresh_scenario`。
+
+        `scenario_ids` 省略或為 `null` ＝範圍是全部未過期劇本（開站／
+        頂部刷新鈕兩個 Refresh Trigger，CONTEXT.md 的 Refresh Trigger
+        定義）；帶一組 id ＝只刷新這幾個（建立新劇本的 Refresh
+        Trigger，P4）。垃圾桶劇本不會出現在省略時的預設範圍
+        （`list_scenarios()` 預設排除），過期劇本也一併篩掉——不是
+        「抓了但短路」，是根本不排進這一輪，省下無謂的一次結果讀取；
+        顯式帶 id 時垃圾桶／過期劇本仍可能出現（呼叫端的競態，或就是
+        故意要用單一劇本刷新既有的短路讀取行為），照樣個別回報、不
+        中止整輪。
+
+        **Run 內 symbol 去重**（ADR-0001）：先把這批劇本依 symbol 分組，
+        每個 distinct symbol 只呼叫一次 `_fetch_chain()`，同組全部劇本
+        共用那次抓取結果，純記憶體 dict、不寫任何跨 invocation 的快取。
+        一個 symbol 抓取失敗時，那一組全部劇本各自記一筆 `stage=fetch`
+        的失敗，其他 symbol 不受影響（Partial Success／P2）。
+
+        **這一票不做 Continuation**（T07／#193 才做）：`remaining` 目前
+        固定回空陣列——先把回應形狀定案，時間預算與續跑邏輯留給下一票，
+        避免那張票還要再改一次契約形狀。
+        """
+        today = ny_today()
+        if body.scenario_ids is None:
+            targets = [sc for sc in _db().list_scenarios()
+                      if not month_is_over(TargetMonth.from_key(sc.target_month), today)]
+        else:
+            targets = [sc for sc in
+                      (_db().get_scenario(sid) for sid in body.scenario_ids)
+                      if sc is not None]
+
+        groups: dict[str, list[Scenario]] = {}
+        for sc in targets:
+            groups.setdefault(sc.symbol, []).append(sc)
+
+        results: list[dict] = []
+        for symbol, scenarios in groups.items():
+            # 這一組裡有沒有任何劇本真的需要一份 Chain——垃圾桶與過期的
+            # 都不需要，全組都不需要時就不必為這個 symbol 打一趟網路。
+            needs_chain = any(
+                sc.archived_at is None
+                and not month_is_over(TargetMonth.from_key(sc.target_month), today)
+                for sc in scenarios)
+            snap: ChainSnapshot | None = None
+            fetch_error: FetchError | None = None
+            if needs_chain:
+                try:
+                    snap = _fetch_chain(symbol)
+                except FetchError as e:
+                    fetch_error = e
+            for sc in scenarios:
+                if sc.archived_at is not None:
+                    results.append({"scenario_id": sc.id, "ok": False,
+                                    "stage": "archived",
+                                    "message": f"劇本已在垃圾桶，不再刷新：{sc.id}"})
+                    continue
+                if (fetch_error is not None and not month_is_over(
+                        TargetMonth.from_key(sc.target_month), today)):
+                    results.append({"scenario_id": sc.id, "ok": False,
+                                    "stage": "fetch",
+                                    "message": f"抓不到 {symbol} 的報價：{fetch_error}"})
+                    continue
+                try:
+                    row = _refresh_and_save(sc, today, snap=snap)
+                except HTTPException as e:
+                    detail = e.detail if isinstance(e.detail, dict) else {}
+                    results.append({"scenario_id": sc.id, "ok": False,
+                                    "stage": detail.get("stage"),
+                                    "message": detail.get("message", str(e.detail))})
+                else:
+                    results.append({"scenario_id": sc.id, "ok": True, "row": row})
+        return {"results": results, "remaining": []}
 
     @app.get("/api/scenarios/{scenario_id}/results")
     def list_results(scenario_id: str) -> list[dict]:

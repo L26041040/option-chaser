@@ -364,3 +364,203 @@ def test_refresh_on_an_archived_scenario_never_reaches_fetch():
 # `test_refresh_on_an_expired_scenario_still_404s_when_unknown`／
 # 這個檔案最上面的 `test_refresh_on_unknown_scenario_is_404` 蓋到，
 # 不必為垃圾桶再重複一次同一組斷言。
+
+
+# ---------- 一輪刷新（E1／#190，T06） ----------
+#
+# 批次版的單劇本刷新：接受一組 scenario id（省略＝全部未過期劇本），
+# Run 內同 symbol 只抓一次 Chain（ADR-0001），任一劇本失敗不中止整輪
+# （Partial Success／P2）。`_refresh_and_save()` 已經涵蓋的過期／
+# 分析失敗分層邏輯這裡不重複逐項驗證，只驗批次特有的行為：分組去重、
+# 部分成功、垃圾桶／過期劇本在批次裡的位置、`remaining` 這一票固定
+# 是空陣列（Continuation 留給 T07／#193）。
+
+def _run(client, scenario_ids=None):
+    body = {} if scenario_ids is None else {"scenario_ids": scenario_ids}
+    resp = client.post("/api/scenarios/refresh-run", json=body)
+    assert resp.status_code == 200, resp.text
+    return resp.json()
+
+
+def _by_id(run_response, scenario_id):
+    return next(r for r in run_response["results"] if r["scenario_id"] == scenario_id)
+
+
+def test_refresh_run_with_omitted_ids_covers_all_non_expired_scenarios():
+    c = _client()
+    a = _create(c, symbol="XYZ")
+    b = _create(c, symbol="XYZ")
+
+    out = _run(c)
+
+    ids = {r["scenario_id"] for r in out["results"]}
+    assert ids == {a["id"], b["id"]}
+    assert all(r["ok"] for r in out["results"])
+    assert out["remaining"] == []
+
+
+def test_refresh_run_with_explicit_ids_only_touches_those():
+    c = _client()
+    a = _create(c, symbol="XYZ")
+    b = _create(c, symbol="XYZ")
+
+    out = _run(c, scenario_ids=[a["id"]])
+
+    assert [r["scenario_id"] for r in out["results"]] == [a["id"]]
+    # 沒被排進這一輪的劇本維持「尚未分析」，不受影響（P4 的範圍收斂
+    # 靠的正是呼叫端只送它想刷新的那個 id，這裡驗的是端點本身確實
+    # 只動了送進來的那些）。
+    untouched = c.get(f"/api/scenarios/{b['id']}").json()
+    assert untouched["latest_analyzed_at"] is None
+
+
+def test_refresh_run_deduplicates_chain_fetch_within_the_same_symbol():
+    calls = []
+
+    def fetch(symbol):
+        calls.append(symbol)
+        return load_snapshot(FIX)
+
+    c = _client(fetch=fetch)
+    a = _create(c, symbol="XYZ")
+    b = _create(c, symbol="XYZ")
+    d = _create(c, symbol="SPY")
+
+    out = _run(c, scenario_ids=[a["id"], b["id"], d["id"]])
+
+    assert sorted(calls) == ["SPY", "XYZ"]   # XYZ 只抓一次，即使兩個劇本共用
+    assert all(r["ok"] for r in out["results"])
+
+
+def test_refresh_run_partial_success_one_symbol_failing_does_not_block_another():
+    def fetch(symbol):
+        if symbol == "BAD":
+            raise FetchError("BAD 沒回應")
+        return load_snapshot(FIX)
+
+    c = _client(fetch=fetch)
+    good = _create(c, symbol="XYZ")
+    bad = _create(c, symbol="BAD")
+
+    out = _run(c, scenario_ids=[good["id"], bad["id"]])
+
+    good_r = _by_id(out, good["id"])
+    bad_r = _by_id(out, bad["id"])
+    assert good_r["ok"] is True
+    assert bad_r["ok"] is False
+    assert bad_r["stage"] == "fetch"
+    assert "BAD 沒回應" in bad_r["message"]
+    # 失敗的那個沒有留下任何結果——保留「尚未分析」，不是半吊子資料
+    assert c.get(f"/api/scenarios/{bad['id']}/results").json() == []
+
+
+def test_refresh_run_failed_scenario_keeps_its_prior_result():
+    """P2：失敗的劇本保留上一輪的舊資料，不是被清空。"""
+    storage = MemoryStorage()
+    c = TestClient(create_app(fetch=lambda symbol: load_snapshot(FIX), storage=storage))
+    sc = _create(c, symbol="XYZ")
+    c.post(f"/api/scenarios/{sc['id']}/refresh").raise_for_status()
+    first = c.get(f"/api/scenarios/{sc['id']}").json()["latest_analyzed_at"]
+
+    def boom(symbol):
+        raise FetchError("這次抓不到")
+    c2 = TestClient(create_app(fetch=boom, storage=storage))
+
+    out = _run(c2, scenario_ids=[sc["id"]])
+
+    assert _by_id(out, sc["id"])["ok"] is False
+    still = c2.get(f"/api/scenarios/{sc['id']}").json()
+    assert still["latest_analyzed_at"] == first   # 舊結果原封不動
+
+
+def test_refresh_run_an_engine_failure_reports_the_analyze_stage(monkeypatch):
+    def boom(*args, **kwargs):
+        raise RuntimeError("引擎爆了")
+    monkeypatch.setattr(service, "run_with_snapshot", boom)
+    c = _client()
+    sc = _create(c)
+
+    out = _run(c, scenario_ids=[sc["id"]])
+
+    r = _by_id(out, sc["id"])
+    assert r["ok"] is False
+    assert r["stage"] == "analyze"
+
+
+def test_refresh_run_skips_archived_scenarios_without_blocking_others():
+    c = _client()
+    ok_sc = _create(c, symbol="XYZ")
+    trashed = _create(c, symbol="XYZ")
+    c.post(f"/api/scenarios/{trashed['id']}/archive").raise_for_status()
+
+    out = _run(c, scenario_ids=[ok_sc["id"], trashed["id"]])
+
+    assert _by_id(out, ok_sc["id"])["ok"] is True
+    trashed_r = _by_id(out, trashed["id"])
+    assert trashed_r["ok"] is False
+    assert trashed_r["stage"] == "archived"
+
+
+def test_refresh_run_short_circuits_expired_scenarios_without_fetching():
+    storage = MemoryStorage()
+    expired = _expired_scenario(storage)
+
+    def boom(symbol):
+        raise AssertionError("過期劇本不該抓鏈")
+    c = TestClient(create_app(fetch=boom, storage=storage))
+
+    out = _run(c, scenario_ids=[expired.id])
+
+    r = _by_id(out, expired.id)
+    assert r["ok"] is True
+    assert r["row"]["expired"] is True
+
+
+def test_refresh_run_with_omitted_ids_excludes_expired_scenarios():
+    """省略 id 的預設範圍是「全部未過期劇本」（CONTEXT.md Refresh
+    Trigger 定義）——過期劇本根本不排進這一輪，不是排進去了才短路。"""
+    storage = MemoryStorage()
+    expired = _expired_scenario(storage)
+    c = TestClient(create_app(fetch=lambda symbol: load_snapshot(FIX), storage=storage))
+    live = _create(c, symbol="XYZ")
+
+    out = _run(c)
+
+    ids = {r["scenario_id"] for r in out["results"]}
+    assert ids == {live["id"]}
+    assert expired.id not in ids
+
+
+def test_refresh_run_a_symbol_group_of_only_expired_scenarios_never_fetches():
+    """省下一趟白跑的網路往返：一整組（同 symbol）全是過期或垃圾桶劇本
+    時，這個 symbol 完全不必抓鏈——不是「抓了但沒用上」。"""
+    storage = MemoryStorage()
+    expired = _expired_scenario(storage)
+
+    def boom(symbol):
+        raise AssertionError("這組全過期，不該抓鏈")
+    c = TestClient(create_app(fetch=boom, storage=storage))
+
+    out = _run(c, scenario_ids=[expired.id])
+    assert _by_id(out, expired.id)["ok"] is True
+
+
+def test_refresh_run_silently_skips_ids_that_no_longer_exist():
+    c = _client()
+    sc = _create(c, symbol="XYZ")
+
+    out = _run(c, scenario_ids=[sc["id"], "nope"])
+
+    assert [r["scenario_id"] for r in out["results"]] == [sc["id"]]
+
+
+def test_refresh_run_updates_the_scenario_list():
+    """批次刷新完，清單端點讀到的是這一輪剛落地的新結果——批次端點與
+    清單共用同一份儲存層寫入路徑，不是自己另存一份客戶端看不到的狀態。"""
+    c = _client()
+    sc = _create(c, symbol="XYZ")
+
+    out = _run(c, scenario_ids=[sc["id"]])
+
+    listed = c.get("/api/scenarios").json()[0]
+    assert listed["latest_analyzed_at"] == _by_id(out, sc["id"])["row"]["latest_analyzed_at"]

@@ -6,7 +6,6 @@
 `ResultRecord` → 端點如實聚合回一條時間序列，缺席那次是斷點。
 """
 import dataclasses
-from datetime import timedelta
 
 from fastapi.testclient import TestClient
 
@@ -44,25 +43,21 @@ def _create(client, **overrides):
 
 
 def test_history_is_one_continuous_series_across_refreshes_with_a_gap():
-    # PERF-06（#182）：這裡刻意連續對同一個 symbol 觸發三次「真的重新
-    # 抓一次」的刷新（每次餵不同快照）——跟短效期 chain cache 的設計
-    # 目的（同一批刷新裡同一個 symbol 重用剛抓到的結果）直接衝突，傳
-    # chain_cache_ttl=0 停用快取重用（create_app() 既有 DI 慣例），
-    # 讓這條測試繼續驗證它原本要驗證的事（歷史序列跨刷新正確串接），
-    # 不是在測 chain cache 本身。
+    # T06（#190）：chain 快取已整組移除（ADR-0001），這裡連續對同一個
+    # symbol 觸發三次「真的重新抓一次」的刷新（每次餵不同快照）不需要
+    # 任何特殊處理，自然就會各自真的重新抓一次。
     storage = MemoryStorage()
     snapshots = [
         _snapshot_with_bid(2.2, 1.4, "2026-07-15T21:30:00-04:00"),   # 正常
         _snapshot_with_bid(0.0, 1.4, "2026-07-16T21:30:00-04:00"),   # 118 報價異常→缺席
         _snapshot_with_bid(2.3, 1.5, "2026-07-17T21:30:00-04:00"),   # 恢復
     ]
-    ttl_off = {"chain_cache_ttl": timedelta(seconds=0)}
 
-    c1 = _client(lambda symbol: snapshots[0], storage, **ttl_off)
+    c1 = _client(lambda symbol: snapshots[0], storage)
     sc = _create(c1)
     c1.post(f"/api/scenarios/{sc['id']}/refresh").raise_for_status()
     for snap in snapshots[1:]:
-        c = _client(lambda symbol, s=snap: s, storage, **ttl_off)
+        c = _client(lambda symbol, s=snap: s, storage)
         c.post(f"/api/scenarios/{sc['id']}/refresh").raise_for_status()
 
     r = c1.get(f"/api/scenarios/{sc['id']}/history",
