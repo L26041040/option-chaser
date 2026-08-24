@@ -771,22 +771,10 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
     """
     app = FastAPI(title="Option Chaser API", version=__version__)
 
-    # correlation ID（DG-02／#145）：每個 request 一個，整段處理過程中
-    # `diagnostics.emit()` 都讀得到同一個，不必逐層往下傳參數。回應一律
-    # 帶 `X-Correlation-Id`，錯誤回應也有——FastAPI 把 `HTTPException`
-    # 轉成回應的動作發生在 `call_next()` 之內，這裡看到的已經是那個
-    # 回應物件，不是例外本身。
-    @app.middleware("http")
-    async def _correlation_id_middleware(request: Request, call_next):
-        with diagnostics.correlation_scope() as cid:
-            response = await call_next(request)
-            response.headers["X-Correlation-Id"] = cid
-        return response
-
-    # 延遲建構：Postgres adapter 在建構時就連線＋建表，若放在 import 期，
-    # 資料庫暫時連不上會讓整個 lambda 起不來——連本來要負責「讓儲存後端
-    # 看得見」的 /api/health 都會 500，正好毀掉它的用途。改成第一次真正
-    # 用到時才建，並快取起來。
+    # 延遲建構：Postgres adapter 建構本身不再連線（T02／#186——schema
+    # 就緒檢查移到第一次真正呼叫 `_connect()`），這裡的快取純粹是省下
+    # 重建物件本身，不是為了避免連線副作用；但保留「延遲」仍然重要，
+    # 因為 `storage` 這個依賴注入參數要到 `create_app()` 呼叫時才決定。
     cached: dict[str, Storage] = {}
 
     def _db() -> Storage:
@@ -796,24 +784,36 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
             cached["db"] = storage_from_env()
         return cached["db"]
 
-    # PERF-01（#177）：warm 的 storage-heavy 路徑（例如 `/iv-history`）
-    # 一次 request 觸發十幾次 `Storage` method 呼叫，Postgres adapter
-    # 原本每次呼叫都各自重新開一條全新連線——這裡在 request 最外層借出
-    # 一條共用連線，離開時歸還。`memory.py` 沒有 `request_scope()` 這個
-    # 方法（`Storage` Protocol 也沒有這個方法，兩者皆零改動），用
-    # `getattr` 拿不到就直接跳過，行為完全比照今天。`_db()` 本身可能
-    # 丟出例外（例如環境變數沒設好）——這裡也要容忍，不然會連
-    # `/api/health` 這種本來就設計成容忍連不上的端點都被這層擋在前面。
+    # 合併 correlation id（DG-02／#145）與 storage 連線 scope
+    # （PERF-01／#177，T02／#186 修形）成單一層 middleware——原本兩層
+    # 各自的 `call_next()` 轉送對大 payload（`/iv-history` 十萬字元級）
+    # 是多餘的額外一趟。
+    #
+    # `_db()` 本身現在是零連線的物件建構（見上），呼叫它拿
+    # `request_scope` 不再是「進 scope 前先偷跑一條連線」；`memory.py`
+    # 沒有 `request_scope()` 這個方法（`Storage` Protocol 也沒有這個
+    # 方法，兩者皆零改動），用 `getattr` 拿不到就直接跳過，行為完全
+    # 比照今天。`_db()` 本身可能丟出例外（例如環境變數沒設好）——這裡
+    # 也要容忍，不然會連 `/api/health` 這種本來就設計成容忍連不上的
+    # 端點都被這層擋在前面。
+    #
+    # `request_scope()` 現在是**惰性**的（進入不主動開連線，第一次
+    # 真正用到 storage 才開）——完全不碰 storage 的 request（例如某些
+    # 純驗證錯誤）因此不再付任何連線握手。
     @app.middleware("http")
-    async def _storage_connection_scope_middleware(request: Request, call_next):
-        try:
-            scope = getattr(_db(), "request_scope", None)
-        except Exception:  # noqa: BLE001 — 拿不到 storage 就整個跳過，交給下游端點自己的錯誤處理
-            scope = None
-        if scope is None:
-            return await call_next(request)
-        with scope():
-            return await call_next(request)
+    async def _request_scope_middleware(request: Request, call_next):
+        with diagnostics.correlation_scope() as cid:
+            try:
+                scope = getattr(_db(), "request_scope", None)
+            except Exception:  # noqa: BLE001 — 拿不到 storage 就整個跳過，交給下游端點自己的錯誤處理
+                scope = None
+            if scope is None:
+                response = await call_next(request)
+            else:
+                with scope():
+                    response = await call_next(request)
+            response.headers["X-Correlation-Id"] = cid
+        return response
 
     # 同一個道理：包快取的動作本身不必每次分析重做一次，惰性建一次、
     # 快取物件重用即可（`cached_loader()` 回傳的閉包內部沒有狀態，
@@ -944,10 +944,14 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         # 記憶體假體，資料不會存活——這一行讓它在畫面上看得見，而不是
         # 靜默丟失（與快照的 `source` 欄位同樣的用意）。
         # `path` 回報 app 收到的路徑，供確認 Vercel rewrite 的行為。
-        try:
-            kind = _db().kind
-        except Exception as e:  # noqa: BLE001 — 連不上也要能回答，這正是本端點的用途
-            kind = f"unavailable: {e}"
+        #
+        # T02（#186）：`kind` 與 `rate` 共用同一個 try/except——`_db()`
+        # 建構本身不再連線（schema 就緒檢查移到第一次真正呼叫
+        # `_connect()`），`.kind` 因此不再是一次真連線的副作用。改成
+        # 靠緊接著的 `get_rate_cache()`（本來就有的真連線）來偵測「連
+        # 不上」，`kind` 的成功／失敗跟著同一次嘗試走，維持修正前
+        # 「連不上時 storage 欄位如實顯示 unavailable」的既有行為。
+        #
         # 利率狀態（#67）：最近一次嘗試的結果——尚無任何分析跑過時為
         # `None`（不是「失敗」，是「還沒發生過」）；讀不到快取比照
         # `storage` 的做法，同樣不讓 /api/health 本身炸掉。
@@ -961,13 +965,15 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         # 分析結果 `q_note` 欄位裡，不需要另開一條全站端點。
         rate: dict | None = None
         try:
-            entry = _db().get_rate_cache()
+            db = _db()
+            kind = db.kind
+            entry = db.get_rate_cache()
             if entry is not None:
                 rate = {"fetched_at": entry.fetched_at,
                        "ok": entry.curve is not None, "note": entry.note,
                        "last_success_at": entry.last_success_at}
-        except Exception:  # noqa: BLE001 — 同上，本端點的用途就是連不上也要能回答
-            pass
+        except Exception as e:  # noqa: BLE001 — 連不上也要能回答，這正是本端點的用途
+            kind = f"unavailable: {e}"
         return {"status": "ok", "engine_version": __version__,
                 "storage": kind, "path": request.url.path, "rate": rate}
 

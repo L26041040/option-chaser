@@ -1222,7 +1222,7 @@ def test_migration_still_applies_when_table_creation_hits_a_race():
     assert st.latest_summaries()["race"].best_return == 0.5
 
 
-# ---------- Request-scoped 連線（PERF-01／#177） ----------
+# ---------- Request-scoped 連線（PERF-01／#177，T02／#186 修形） ----------
 #
 # adapter 層級測試，不透過 HTTP endpoint（spec 明文要求）：monkeypatch
 # 真正的 `psycopg.connect` 成計數版本，直接驗證 `request_scope()` 讓
@@ -1256,7 +1256,8 @@ def test_multiple_calls_within_a_request_scope_share_a_single_connection():
     borrowed_conn = None
     try:
         with st.request_scope():
-            # 一個 scope 內呼叫好幾個不同的 method——恰好一次 connect()。
+            # 一個 scope 內呼叫好幾個不同的 method——恰好一次 connect()
+            # （惰性：第一次真正用到才開，這裡是 create_scenario）。
             st.create_scenario(_scenario("scope1"))
             st.get_rate_cache()
             st.get_dividend_cache("TLT")
@@ -1265,22 +1266,52 @@ def test_multiple_calls_within_a_request_scope_share_a_single_connection():
             # *這一條*連線確實被關閉，不是只驗證「離開後可以再開一條
             # 新的」（那樣即使舊連線從沒被關閉、只是被丟棄，斷言一樣會
             # 通過，驗不到 `finally` 真的呼叫了 `conn.close()`）。
-            held = pg_module._request_connection.get()
+            held = pg_module._request_scope_state.get()
             assert held is not None
-            borrowed_conn = held[1]
+            borrowed_conn = held.conn
         assert len(connect_calls) == 1
     finally:
         pg_module.psycopg.connect = original_connect
 
     # 離開 scope 後：ContextVar 清空，且**這一條**借用中的連線物件本身
     # 確實被關閉——不是換一條新的、舊的置之不理。
-    assert pg_module._request_connection.get() is None
+    assert pg_module._request_scope_state.get() is None
     assert borrowed_conn is not None
     assert borrowed_conn.closed
 
     # 下一次呼叫（scope 外）照舊各自開一條新的，不會誤用一條已經關閉的
     # 連線。
     assert st.get_rate_cache() is None   # 沒炸掉＝沒有沿用一條已關閉的連線
+
+
+def test_a_scope_with_no_storage_calls_never_opens_a_connection():
+    """T02（#186）的核心承諾：完全不碰 storage 的 request 零連線
+    握手——進 scope、什麼都不呼叫、離開，`connect()` 一次都不該被
+    呼叫過。"""
+    if not TEST_DB_URL:
+        pytest.skip("需要 OC_TEST_DATABASE_URL（一個跑著的 Postgres）")
+    import psycopg
+
+    from api_app.storage import postgres as pg
+
+    st = pg.PostgresStorage(TEST_DB_URL)
+
+    connect_calls = []
+    real_connect = psycopg.connect
+
+    def counting_connect(*args, **kwargs):
+        connect_calls.append((args, kwargs))
+        return real_connect(*args, **kwargs)
+
+    import api_app.storage.postgres as pg_module
+    original_connect = pg_module.psycopg.connect
+    pg_module.psycopg.connect = counting_connect
+    try:
+        with st.request_scope():
+            pass   # 故意什麼都不做
+        assert connect_calls == []
+    finally:
+        pg_module.psycopg.connect = original_connect
 
 
 def test_request_scope_reconnects_correctly_for_a_fresh_request_afterwards():
@@ -1307,9 +1338,11 @@ def test_request_scope_reconnects_correctly_for_a_fresh_request_afterwards():
         assert st.get_scenario("scope2") is not None
 
 
-def test_a_failure_opening_the_scope_falls_back_to_per_call_connections():
-    """`request_scope()` 開連線本身失敗時，不讓整個 request 跟著炸掉
-    ——退回既有逐次開連線行為，呼叫端完全不受影響。"""
+def test_a_failure_opening_the_shared_connection_falls_back_to_a_per_call_one():
+    """T02（#186）：惰性設計下，「開連線失敗」發生在 scope 內**第一次
+    真正呼叫到 storage** 的那一刻，不是 `request_scope()` 的 `__enter__`
+    本身（那裡現在什麼都不連）。那次呼叫本身不該跟著炸掉——退回逐次
+    開連線，且這個 scope 剩餘的呼叫不再嘗試共用（`state.failed`）。"""
     if not TEST_DB_URL:
         pytest.skip("需要 OC_TEST_DATABASE_URL（一個跑著的 Postgres）")
     import psycopg
@@ -1326,12 +1359,25 @@ def test_a_failure_opening_the_scope_falls_back_to_per_call_connections():
 
     import api_app.storage.postgres as pg_module
     original_connect = pg_module.psycopg.connect
-    pg_module.psycopg.connect = lambda *a, **k: (_ for _ in ()).throw(
-        RuntimeError("db 暫時連不上"))
+    call_count = {"n": 0}
+
+    def flaky_connect(*args, **kwargs):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            raise RuntimeError("db 暫時連不上")
+        return original_connect(*args, **kwargs)
+
+    pg_module.psycopg.connect = flaky_connect
     try:
         with st.request_scope():
-            pass   # __enter__ 本身沒有拋出——開連線失敗被吞掉了
-        assert pg_module._request_connection.get() is None
+            # 第一次真正用到 storage：共用連線開不成（第 1 次 connect
+            # 呼叫故意失敗），這次呼叫本身退回逐次開連線（第 2 次
+            # connect 呼叫成功），正常拿到結果，不炸掉。
+            assert st.get_rate_cache() is None
+            state = pg_module._request_scope_state.get()
+            assert state is not None
+            assert state.failed is True
+            assert state.conn is None
     finally:
         pg_module.psycopg.connect = original_connect
 

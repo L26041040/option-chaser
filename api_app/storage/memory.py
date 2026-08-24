@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 from collections import deque
+from contextlib import contextmanager
 
 from . import (ChainCacheEntry, ContractHistory, DataSourceSettings,
                DividendCacheEntry, IvBackfillRun, IvObservation,
@@ -43,6 +44,16 @@ class MemoryStorage:
     @property
     def kind(self) -> str:
         return "memory"
+
+    @contextmanager
+    def request_scope(self):
+        """T02（#186）：純 no-op——記憶體假體沒有連線可共用，這裡存在
+        的唯一理由是讓 `main.py` 的 middleware 走跟 production（Postgres）
+        同一條 `with scope():` 分支，而不是 `getattr(..., None)` 拿不到
+        就整段跳過。這樣以 `TestClient`＋記憶體假體為主的既有 HTTP 測試
+        套件，才真正涵蓋到這段 middleware 控制流（而不只是那幾條
+        Postgres-only 的 adapter 層測試）。"""
+        yield
 
     # ---------- 劇本 ----------
 

@@ -1,12 +1,14 @@
 """Neon Postgres 儲存 adapter（V2／#50）。
 
 serverless 前提：函式壽命極短，不在程序內自行維護長連線，仍靠 Neon 的
-pooler 端點負責連線池化。**PERF-01（#177）**：同一個 HTTP request 期間
-共用同一條連線（`request_scope()`，由 `main.py` 的 middleware 進入時
-借出、離開時歸還），不是像 warm `/iv-history` 這種一次觸發十幾次
-`Storage` method 呼叫的路徑那樣，每次呼叫都各自重新開一條全新連線；
-沒有進到 `request_scope()`（例如測試直接呼叫 adapter method、或
-middleware 借連線本身失敗）時退回逐次開連線的既有行為，見 `_connect()`。
+pooler 端點負責連線池化。**PERF-01（#177）／T02（#186）修形**：同一個
+HTTP request 期間共用同一條連線（`request_scope()`，由 `main.py` 的
+middleware 進入時註冊、離開時歸還），不是像 warm `/iv-history` 這種一次
+觸發十幾次 `Storage` method 呼叫的路徑那樣，每次呼叫都各自重新開一條
+全新連線；**惰性**：scope 進入時不主動開連線，第一次真正呼叫到某個
+`Storage` method 才開——完全不碰 storage 的 request 因此零連線握手。
+沒有進到 `request_scope()`（例如測試直接呼叫 adapter method）或 scope
+內共用連線已經試過且失敗時，退回逐次開連線的既有行為，見 `_connect()`。
 
 大 JSON（結果 view dict，十萬字元等級）存 JSONB：psycopg 直接對應
 Python dict，不需自己 `json.dumps`。時間欄位存 ISO 字串而非 timestamptz
@@ -32,15 +34,29 @@ from ..diagnostics import RETENTION_LIMIT, DiagnosticEvent
 # 下面也把重複建立視為良性。
 _schema_ready: set[str] = set()
 
-# PERF-01（#177）：目前 request 借用中的連線，`(dsn, conn)`——放在
+class _ScopeState:
+    """一個 `request_scope()` 的可變狀態——`conn` 惰性填入（T02／#186）：
+    scope 剛進入時是 `None`，第一次真正呼叫 `_connect()` 才開。`failed`
+    記著這個 scope 內共用連線是否已經試過且失敗，避免同一個 scope 反覆
+    對著暫時連不上的資料庫重試。"""
+
+    __slots__ = ("dsn", "conn", "failed")
+
+    def __init__(self, dsn: str) -> None:
+        self.dsn = dsn
+        self.conn = None
+        self.failed = False
+
+
+# PERF-01（#177）／T02（#186）：目前 request 的 scope 狀態——放在
 # `contextvars.ContextVar`（模組層級）而不是 `PostgresStorage` 單例
 # 物件的一般屬性上，避免併發 request 互相汙染彼此借到的連線（ASGI
 # 併發處理多個 request 時，同一個 `PostgresStorage` 實例會被共用，
-# 一般屬性沒有 per-request 隔離）。存 `dsn` 一起是防禦性寫法：理論上
-# 若同一個 process 裡有兩個不同 DSN 的 `PostgresStorage` 實例，借到的
-# 連線也不會被錯誤的實例借走。
-_request_connection: contextvars.ContextVar = contextvars.ContextVar(
-    "postgres_request_connection", default=None)
+# 一般屬性沒有 per-request 隔離）。狀態物件存 `dsn` 一起是防禦性寫法：
+# 理論上若同一個 process 裡有兩個不同 DSN 的 `PostgresStorage` 實例，
+# 借到的連線也不會被錯誤的實例借走。
+_request_scope_state: contextvars.ContextVar = contextvars.ContextVar(
+    "postgres_request_scope_state", default=None)
 
 
 class _BorrowedConnection:
@@ -282,56 +298,82 @@ def _row_to_scenario(row) -> Scenario:
 
 class PostgresStorage:
     def __init__(self, dsn: str) -> None:
+        """T02（#186）：建構本身不再連線／不再確保 schema——那個代價
+        現在掛在第一次真正呼叫 `_connect()` 上（見下），才能跟該次
+        request 自己要用的共用連線一起分攤，而不是在 middleware 為了
+        判斷「這個 adapter 有沒有 `request_scope`」而呼叫 `_db()` 時，
+        於 scope 都還沒進入前就先付掉。"""
         self._dsn = dsn
-        self._ensure_schema()
 
     @property
     def kind(self) -> str:
         return "postgres"
 
+    def _raw_connect(self):
+        """實際借用／開連線的邏輯，不含 schema 就緒檢查——供 `_connect()`
+        （已確保 schema 就緒後）與 `_ensure_schema()` 自己（就緒檢查
+        本身要用連線）共用，避免兩者互相呼叫造成無窮遞迴。"""
+        state = _request_scope_state.get()
+        if state is None or state.dsn != self._dsn or state.failed:
+            return psycopg.connect(self._dsn, autocommit=True)
+        if state.conn is None:
+            try:
+                state.conn = psycopg.connect(self._dsn, autocommit=True)
+            except Exception:  # noqa: BLE001 — 這次共用開不成，這次呼叫退回逐次開連線
+                state.failed = True
+                return psycopg.connect(self._dsn, autocommit=True)
+        return _BorrowedConnection(state.conn)
+
     def _connect(self):
-        """ContextVar 有一條這個 dsn 借用中的連線就借用它（回傳
-        `_BorrowedConnection`，`with` 結束不會真的關閉）；否則退回今天
-        「開一條、`with` 結束就關」的既有行為——沒有 `request_scope()`
-        的路徑（測試直接呼叫 adapter method、或借連線本身失敗時）行為
-        完全不變。"""
-        held = _request_connection.get()
-        if held is not None and held[0] == self._dsn:
-            return _BorrowedConnection(held[1])
-        return psycopg.connect(self._dsn, autocommit=True)
+        """T02（#186）：連線改成**惰性**——scope 內第一次真正呼叫
+        `_connect()` 時才開、開好後存回 scope 狀態物件供同一 scope
+        內其餘呼叫重用；完全不碰 storage 的 request 因此零連線。
+
+        沒有進到 `request_scope()`（測試直接呼叫 adapter method）或
+        scope 內先前已經開失敗過（`state.failed`）時，退回今天
+        「開一條、`with` 結束就關」的既有行為。
+
+        第一次呼叫時順便確保 schema 就緒（`_ensure_schema()` 內部走
+        `_raw_connect()`，不會回頭呼叫這裡造成遞迴）——這樣冷啟動後
+        第一個真正碰 storage 的 request，schema 的兩次連線也能跟這次
+        request 本身要用的共用連線一起分攤，而不是額外多付兩條。
+        """
+        if self._dsn not in _schema_ready:
+            self._ensure_schema()
+        return self._raw_connect()
 
     @contextmanager
     def request_scope(self):
-        """PERF-01（#177）：一次 HTTP request 期間，這個實例的全部
-        `Storage` method 呼叫共用同一條連線——由 `main.py` 的
-        middleware 在每個 request 最外層呼叫。
+        """PERF-01（#177）／T02（#186）修形：一次 HTTP request 期間，
+        這個實例的全部 `Storage` method 呼叫共用同一條連線——由
+        `main.py` 的 middleware 在每個 request 最外層呼叫。
 
-        進入時就開一條連線（不是等到第一次真正用到 storage 才開），
-        整個 scope 結束時（無論成功或例外）都在 `finally` 關閉並清空
-        ContextVar。**開連線本身失敗時不讓整個 request 跟著炸掉**：
-        直接 `yield` 而不設定 ContextVar，讓 `_connect()` 照舊退回逐次
-        開連線的既有行為——這個 context manager 只負責「有機會就共用」，
-        不負責「保證連得上」，下游各自既有的錯誤處理（例如 `/api/health`
-        本來就容忍連不上）不因此被繞過。
+        **惰性**：進入時只註冊一個空的 scope 狀態，不主動開連線；第一次
+        真正呼叫到 `_connect()` 時才開（見上）。完全不碰 storage 的
+        request（例如健康檢查）因此零連線握手，這是 T02 相對 PERF-01
+        （進入就無條件開一條）的主要修正。
+
+        scope 結束時（無論成功或例外）都在 `finally` 關閉「如果有開過」
+        的那條連線並清空 ContextVar。開連線本身失敗時不讓那次呼叫跟著
+        炸掉——退回逐次開連線的既有行為，且該次失敗後這個 scope 剩餘的
+        呼叫不再嘗試共用（`state.failed`），避免對著暫時連不上的資料庫
+        重複重試。
 
         `autocommit=True` 連著這條共用連線走，共用之後每個敘述依然
         各自 autocommit——沒有因為共用連線而引入橫跨多個敘述的隱含
         交易。
         """
-        try:
-            conn = psycopg.connect(self._dsn, autocommit=True)
-        except Exception:  # noqa: BLE001 — 開不成就不共用，退回既有逐次開連線行為
-            yield
-            return
-        token = _request_connection.set((self._dsn, conn))
+        state = _ScopeState(self._dsn)
+        token = _request_scope_state.set(state)
         try:
             yield
         finally:
-            _request_connection.reset(token)
-            try:
-                conn.close()
-            except Exception:  # noqa: BLE001 — 關閉失敗不影響這次 request 已經跑完的結果
-                pass
+            _request_scope_state.reset(token)
+            if state.conn is not None:
+                try:
+                    state.conn.close()
+                except Exception:  # noqa: BLE001 — 關閉失敗不影響這次 request 已經跑完的結果
+                    pass
 
     def _ensure_schema(self) -> None:
         """`CREATE TABLE IF NOT EXISTS` 冪等——單人專案不值得為此扛一整套
@@ -343,12 +385,19 @@ class PostgresStorage:
 
         建表與遷移**各送一次**：同批送的話，建表撞上冷啟動競爭會讓遷移
         跟著 rollback（見 `_MIGRATIONS` 的說明）。ready 只在兩批都不是
-        致命錯誤時才標記——標了卻沒真的建好，後面每次寫入都會炸。"""
+        致命錯誤時才標記——標了卻沒真的建好，後面每次寫入都會炸。
+
+        T02（#186）：走 `_raw_connect()` 而非 `_connect()`——`_connect()`
+        本身在就緒檢查沒過時會回頭呼叫這裡，兩者互相呼叫會無窮遞迴；
+        `_raw_connect()` 不含就緒檢查，且一樣享有 scope 內的惰性連線
+        共用（如果已經在 scope 內、且這是第一次真正用到連線，這兩次
+        `_raw_connect()` 呼叫會開同一條、供這次 request 剩餘操作繼續
+        重用）。"""
         if self._dsn in _schema_ready:
             return
         for stmt in (_SCHEMA, _MIGRATIONS):
             try:
-                with self._connect() as conn:
+                with self._raw_connect() as conn:
                     conn.execute(stmt)
             except _BENIGN:
                 pass
