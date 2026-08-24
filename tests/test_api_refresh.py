@@ -9,6 +9,9 @@
 使用者能做的處置也不同，所以錯誤主體帶 `stage`——只回一個 500 或一顆
 黃燈，畫面就只能說「失敗了」。
 """
+import time
+from datetime import timedelta
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -23,10 +26,10 @@ FIX = "tests/fixtures/xyz_v4_six_expiries.json"
 NEW = {"symbol": "XYZ", "target_price": 130.0, "target_month": "2026-09"}
 
 
-def _client(*, fetch=None, storage=None):
+def _client(*, fetch=None, storage=None, **overrides):
     snap = load_snapshot(FIX)
     return TestClient(create_app(fetch=fetch or (lambda symbol: snap),
-                                 storage=storage or MemoryStorage()))
+                                 storage=storage or MemoryStorage(), **overrides))
 
 
 def _create(client, **overrides):
@@ -564,3 +567,104 @@ def test_refresh_run_updates_the_scenario_list():
 
     listed = c.get("/api/scenarios").json()[0]
     assert listed["latest_analyzed_at"] == _by_id(out, sc["id"])["row"]["latest_analyzed_at"]
+
+
+# ---------- Continuation（T07／#193） ----------
+#
+# server 端時間預算：每處理完一個劇本就檢查剩餘預算，預算用完就停止取
+# 新工作，回傳「已完成的 rows ＋ remaining ids」。可注入
+# （`create_app(refresh_run_budget=...)`），測試用「人為調小預算」或
+# 「人為拉長單一劇本處理時間」逼出耗盡，不假裝時間流逝。
+
+
+def test_refresh_run_with_a_zero_budget_only_completes_the_first_scenario():
+    c = _client(refresh_run_budget=timedelta(seconds=0))
+    ids = [_create(c, symbol="XYZ")["id"] for _ in range(3)]
+
+    out = _run(c, scenario_ids=ids)
+
+    assert len(out["results"]) == 1
+    assert out["results"][0]["ok"] is True
+    assert out["remaining"] == ids[1:]
+
+
+def test_refresh_run_budget_exhaustion_covers_every_id_exactly_once():
+    """已完成 ＋ remaining 合起來要等於送進去的全集，不遺漏、不重複。"""
+    c = _client(refresh_run_budget=timedelta(seconds=0))
+    symbols = ["AAA", "BBB", "CCC", "DDD", "EEE"]
+    ids = [_create(c, symbol=s)["id"] for s in symbols]
+
+    out = _run(c, scenario_ids=ids)
+
+    done_ids = [r["scenario_id"] for r in out["results"]]
+    assert done_ids + out["remaining"] == ids
+    assert len(set(done_ids) & set(out["remaining"])) == 0
+
+
+def test_refresh_run_a_slow_scenario_can_exhaust_the_budget_mid_batch():
+    """人為拉長單一劇本的處理時間（而不是把預算調成 0）也要能逼出
+    Continuation——驗的是真實耗時觸發，不是只驗「預算等於 0」這個
+    退化情況。"""
+    def slow_fetch(symbol):
+        time.sleep(0.05)
+        return load_snapshot(FIX)
+
+    c = _client(fetch=slow_fetch, refresh_run_budget=timedelta(seconds=0.02))
+    symbols = ["AAA", "BBB", "CCC"]
+    ids = [_create(c, symbol=s)["id"] for s in symbols]
+
+    out = _run(c, scenario_ids=ids)
+
+    assert len(out["results"]) < len(ids)
+    assert out["remaining"]
+
+
+def test_refresh_run_continuation_resumes_and_matches_a_single_pass():
+    """用同一組 remaining id 再打一次，最終結果要跟一次做完的結果一致
+    （用同一份固定快照，`analyzed_at` 由快照本身的 `fetched_at` 決定，
+    兩條路徑因此逐位元可比）。"""
+    storage_once = MemoryStorage()
+    once = _client(storage=storage_once)
+    once_ids = [_create(once, symbol="XYZ")["id"], _create(once, symbol="SPY")["id"]]
+    single_pass = _run(once, scenario_ids=once_ids)
+    assert single_pass["remaining"] == []
+
+    storage_split = MemoryStorage()
+    tiny = _client(storage=storage_split, refresh_run_budget=timedelta(seconds=0))
+    split_ids = [_create(tiny, symbol="XYZ")["id"], _create(tiny, symbol="SPY")["id"]]
+    first = _run(tiny, scenario_ids=split_ids)
+    assert first["remaining"]   # 這批確實還沒做完
+
+    normal = _client(storage=storage_split)
+    second = _run(normal, scenario_ids=first["remaining"])
+    assert second["remaining"] == []
+
+    def _rows_by_symbol(run_response, ids_by_symbol):
+        return {sym: next(r for r in run_response["results"]
+                          if r["scenario_id"] == sid)["row"]
+               for sym, sid in ids_by_symbol.items()}
+
+    once_by_symbol = {"XYZ": once_ids[0], "SPY": once_ids[1]}
+    split_by_symbol = {"XYZ": split_ids[0], "SPY": split_ids[1]}
+    once_rows = _rows_by_symbol(single_pass, once_by_symbol)
+    split_results = first["results"] + second["results"]
+    split_rows = {sym: next(r for r in split_results if r["scenario_id"] == sid)["row"]
+                 for sym, sid in split_by_symbol.items()}
+    for sym in ("XYZ", "SPY"):
+        assert once_rows[sym]["best_return"] == split_rows[sym]["best_return"]
+        assert once_rows[sym]["latest_analyzed_at"] == split_rows[sym]["latest_analyzed_at"]
+
+
+def test_refresh_run_a_realistic_batch_completes_in_a_single_call():
+    """常見規模（十來個劇本、少數幾個 distinct symbol）在預設時間預算下
+    單次請求就該處理完，不觸發 Continuation——用真實量級的測試資料驗證，
+    不只驗機制存在。"""
+    c = _client()   # 預設 REFRESH_RUN_BUDGET，不注入任何人為延遲
+    symbols = ["XYZ", "SPY", "QQQ"]
+    ids = [_create(c, symbol=symbols[i % len(symbols)])["id"] for i in range(12)]
+
+    out = _run(c, scenario_ids=ids)
+
+    assert len(out["results"]) == len(ids)
+    assert all(r["ok"] for r in out["results"])
+    assert out["remaining"] == []

@@ -11,6 +11,7 @@ serverless 前提：全程不碰檔案系統（Vercel 唯讀），走
 from __future__ import annotations
 
 import dataclasses
+import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, timedelta
@@ -58,6 +59,13 @@ ContractHistoryFetch = Callable[..., list]
 # 的 `ratecurve.curve_asof` 吃這個形狀），跟上面 `RateCurveLoader`（只回
 # 「今天」單一曲線，live 分析路徑專用）是不同的資料語意，不共用注入點。
 RateCurveRowsFetch = Callable[[date, date], tuple]
+
+# 一輪刷新（T07／#193）的 server 端時間預算——明顯小於 serverless 函式
+# 的硬性時間上限（CONTEXT.md：60 秒），留出寫回與回應序列化的餘裕。
+# 可注入（`create_app()` 既有 DI 慣例）：測試要逼真模擬「預算耗盡→
+# 續跑」，靠調小這個值或注入一個處理較久的 `fetch`／分析路徑，不是
+# 假裝時間流逝。
+REFRESH_RUN_BUDGET = timedelta(seconds=45)
 
 # MVP 範圍（沿用既有 Streamlit 版與 spec #47 的三欄表單）：方向與策略
 # 是固定值，不由前端送。需要看空或多策略時再由對應的票加上。
@@ -742,6 +750,7 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
                    providers.default_contract_history,
                rate_curve_rows: RateCurveRowsFetch =
                    treasury_data.fetch_curve_range,
+               refresh_run_budget: timedelta = REFRESH_RUN_BUDGET,
                ) -> FastAPI:
     """`fetch`／`storage`／`rate_loader`／`dividend_loader` 皆可注入：
     測試傳入固定快照、記憶體假體與假來源，因此不打真網路、不碰真資料庫，
@@ -1218,7 +1227,8 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
 
     @app.post("/api/scenarios/refresh-run")
     def refresh_run(body: RefreshRunRequest) -> dict:
-        """一輪刷新（E1／#190，T06）：批次版的 `refresh_scenario`。
+        """一輪刷新（E1／#190，T06；Continuation／T07／#193）：批次版的
+        `refresh_scenario`。
 
         `scenario_ids` 省略或為 `null` ＝範圍是全部未過期劇本（開站／
         頂部刷新鈕兩個 Refresh Trigger，CONTEXT.md 的 Refresh Trigger
@@ -1236,9 +1246,22 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         一個 symbol 抓取失敗時，那一組全部劇本各自記一筆 `stage=fetch`
         的失敗，其他 symbol 不受影響（Partial Success／P2）。
 
-        **這一票不做 Continuation**（T07／#193 才做）：`remaining` 目前
-        固定回空陣列——先把回應形狀定案，時間預算與續跑邏輯留給下一票，
-        避免那張票還要再改一次契約形狀。
+        **Continuation（T07／#193）**：`refresh_run_budget` 是明顯小於
+        serverless 函式硬性時間上限（CONTEXT.md：60 秒）的時間預算，
+        留出寫回與回應序列化的餘裕。每處理完一個劇本（不論成功失敗）
+        就檢查剩餘預算；預算用完時，這個劇本之後的全部劇本（含還沒
+        開始的 symbol 分組）一個都不處理，原樣進 `remaining`——不遺漏、
+        不重複，呼叫端拿同一組 `remaining` 再打一次這個端點即可接續。
+        分組的處理順序等於 `dict` 的插入順序（劇本依 `targets` 原序
+        依序分組），因此「已完成」與「remaining」合起來、順序不重疊，
+        永遠等於 `targets` 的全集。
+
+        **注意（ADR-0001 的直接後果）**：續跑那次呼叫是全新的
+        serverless invocation，這裡的 symbol 去重 dict 不會跨呼叫存活
+        ——remaining 裡如果又出現同一個 symbol，續跑那次一樣會重新抓一次
+        它的 Chain。這不是 bug，是「去重範圍只在單一 invocation 內」
+        這個既有決策在分段時的自然結果，兩次呼叫各自仍然享有「同一次
+        invocation 內」的去重。
         """
         today = ny_today()
         if body.scenario_ids is None:
@@ -1254,7 +1277,13 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
             groups.setdefault(sc.symbol, []).append(sc)
 
         results: list[dict] = []
+        remaining: list[str] = []
+        deadline = time.monotonic() + refresh_run_budget.total_seconds()
+        budget_exhausted = False
         for symbol, scenarios in groups.items():
+            if budget_exhausted:
+                remaining.extend(sc.id for sc in scenarios)
+                continue
             # 這一組裡有沒有任何劇本真的需要一份 Chain——垃圾桶與過期的
             # 都不需要，全組都不需要時就不必為這個 symbol 打一趟網路。
             needs_chain = any(
@@ -1269,27 +1298,31 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
                 except FetchError as e:
                     fetch_error = e
             for sc in scenarios:
+                if budget_exhausted:
+                    remaining.append(sc.id)
+                    continue
                 if sc.archived_at is not None:
                     results.append({"scenario_id": sc.id, "ok": False,
                                     "stage": "archived",
                                     "message": f"劇本已在垃圾桶，不再刷新：{sc.id}"})
-                    continue
-                if (fetch_error is not None and not month_is_over(
+                elif (fetch_error is not None and not month_is_over(
                         TargetMonth.from_key(sc.target_month), today)):
                     results.append({"scenario_id": sc.id, "ok": False,
                                     "stage": "fetch",
                                     "message": f"抓不到 {symbol} 的報價：{fetch_error}"})
-                    continue
-                try:
-                    row = _refresh_and_save(sc, today, snap=snap)
-                except HTTPException as e:
-                    detail = e.detail if isinstance(e.detail, dict) else {}
-                    results.append({"scenario_id": sc.id, "ok": False,
-                                    "stage": detail.get("stage"),
-                                    "message": detail.get("message", str(e.detail))})
                 else:
-                    results.append({"scenario_id": sc.id, "ok": True, "row": row})
-        return {"results": results, "remaining": []}
+                    try:
+                        row = _refresh_and_save(sc, today, snap=snap)
+                    except HTTPException as e:
+                        detail = e.detail if isinstance(e.detail, dict) else {}
+                        results.append({"scenario_id": sc.id, "ok": False,
+                                        "stage": detail.get("stage"),
+                                        "message": detail.get("message", str(e.detail))})
+                    else:
+                        results.append({"scenario_id": sc.id, "ok": True, "row": row})
+                if time.monotonic() >= deadline:
+                    budget_exhausted = True
+        return {"results": results, "remaining": remaining}
 
     @app.get("/api/scenarios/{scenario_id}/results")
     def list_results(scenario_id: str) -> list[dict]:
