@@ -27,7 +27,7 @@ block 裡，不能切成好幾個 code block、也不能中間插普通文字把
 `［回報#001］spec #137 拆票完成`）。編號是**累計總數**，不因換
 session、換分支、換主題而歸零——目前最新編號記在這裡：
 
-> 目前次序：027（下一份回報用 028）
+> 目前次序：028（下一份回報用 029）
 
 每發一份回報就把上面這個數字改成剛剛用掉的那個，跟著那次改動一起
 commit（沒有其他改動要 commit 時，單獨為這一行開一個小 commit 也
@@ -331,7 +331,41 @@ Two-Phase Backfill 等新詞）。
 測試檔的編排斷言**搬過去**而非兩層都留；(4) 前端＝既有
 `global.fetch` mock＋Playwright，新增「每畫面請求數上限」斷言防
 cascade 回歸。建議施工順序：E8→E3→E1+E2→E7→E6→E5→P3→E4。
-下一步：`/to-tickets` 拆票 → 逐張 `/implement`。
+
+**拆票完成（2026-08-24，`/to-tickets`，回報#028）**——依「不求快、
+求正確性」裁示，granularity 比原建議更細：Refresh Run 拆三張
+（核心／Continuation／前端整合，隔離三個獨立正確性風險）、IV
+pipeline 拆兩張（隔離建置／上線切換，先在零風險環境驗完全等價
+再做可逐位元驗證的小切換）、View 契約瘦身拆兩張（死欄位移出／
+Candidate 去重，避免瑣碎刪除跟結構改動混在同一份 diff）。全數
+13 張、依拓撲順序（blocker 先發佈）發佈完成、皆標 `ready-for-agent`：
+
+- **T01** [#185] 死重清除——無 blocker
+- **T02** [#186] Storage 連線生命週期修形——無 blocker
+- **T03** [#187] 詳細頁 fetch 紀律（消滅 refetch cascade）——無 blocker
+- **T04** [#188] View 契約：移出死欄位（report_text／
+  methodology_text）——無 blocker
+- **T05** [#189] IV history pipeline 模組化（隔離建置，尚未上線，
+  production 路徑本票結束時完全不變）——無 blocker
+- **T06** [#190] Refresh Run 核心（批次＋symbol 去重＋Partial
+  Success，先不做 Continuation）——被 #186 擋
+- **T07** [#193] Refresh Run Continuation（時間預算＋續跑）——被
+  #190 擋
+- **T08** [#196] Refresh Run 前端整合（P1 更新中徽章／P2 部分成功
+  摘要／P4 建立範圍收斂）——被 #193 擋
+- **T09** [#191] View 契約：Candidate 去重（四容器收斂＋重複計算
+  收斂）——被 #188 擋
+- **T10** [#192] IV history pipeline 上線（main.py 換線＋測試搬家＋
+  契約樣本＋刪舊 680 行）——被 #189 擋
+- **T11** [#194] IV 冷 backfill 兩段式（P3）——被 #192 擋
+- **T12** [#195] Backfill 併發形狀修正（執行緒池只建一次）——被
+  #192 擋（同一段程式碼已搬新模組，新位置修一次到位）
+- **T13** [#197] 全面回歸與最終驗收——被 #185–#196 全部擋，需求方
+  真機驗收通過才算完
+
+下一步：照專案規則`「全部 ticket 做完才開 PR」`，從 frontier（T01／
+T02／T03／T04／T05，五張無 blocker 可任意順序或平行認領）開始
+逐張 `/implement`。
 
 ### Spec #151（2026-08-17 發佈）——Historical IV Trend v1（Exact Contract Canonical Series）
 
