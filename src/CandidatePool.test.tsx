@@ -75,7 +75,6 @@ function view(overrides: Partial<Overrides> = {}): AnalysisView {
         ? { total_pairs: 780, removed_sanity: 100, passed: 680 }
         : overrides.pairs,
       expiry_counts: overrides.counts ?? [["2028-06-16", 25], ["2028-09-15", 30]],
-      methodology_text: "",
       disclaimer_text: "",
     }],
     ...(overrides.results ? { results: overrides.results } : {}),
@@ -158,7 +157,7 @@ describe("候選池診斷", () => {
       results: [{ strategy: "bull-call-spread", status: "empty", message: "",
                   n_qualified: 0, filter_report: null, filter_stages: [],
                   quality_flags: [], pair_report: null, expiry_counts: [],
-                  methodology_text: "", disclaimer_text: "" }],
+                  disclaimer_text: "" }],
     })} />);
     expect(screen.getByText("這個策略沒有產生結果。")).toBeInTheDocument();
   });
@@ -170,7 +169,7 @@ describe("候選池診斷", () => {
                   message: "目前沒有符合流動性與報價條件的合約。",
                   n_qualified: 0, filter_report: null, filter_stages: [],
                   quality_flags: [], pair_report: null, expiry_counts: [],
-                  methodology_text: "", disclaimer_text: "" }],
+                  disclaimer_text: "" }],
     };
     render(<CandidatePool view={empty} />);
     expect(

@@ -12,7 +12,7 @@ from typing import Iterable
 from . import __version__
 from .models import AnalysisParams, ChainSnapshot
 from .ranking import spread_baseline_return
-from .report import disclaimer_text, methodology_lines
+from .report import disclaimer_text
 from .scenarios import natural_cost
 from .service import AnalysisResult, CandidateView, candidate_key, valuation_key
 from .valuation import SpreadValuation, guidance_judgments, spread_guidance_judgments
@@ -326,15 +326,15 @@ def serialize_result(result: AnalysisResult, scenario_id: str,
             "all_candidates": [_history_entry(sv, exp, rank)
                               for exp, ranked_group in r.expiry_ranked
                               for rank, sv in enumerate(ranked_group, start=1)],
-            "report_text": r.report_text,
-            # V8（#56，spec R1 §4.1）：新版型「⑥ 方法與假設」／「⑦ 免責
-            # 聲明」要獨立顯示、不再是 `report_text` 尾端的散文——內容
-            # 出自同一個 `report.py`（單一事實來源），只是拆成欄位。
-            # 每個策略各印一份而非全域一份：`p.spread_floor`／
-            # `max_spread_pct` 理論上策略間相同，但方法論文字本就是
-            # 逐 `render()`／`render_spreads()` 呼叫產生的，跟著 `r` 走
-            # 才不會在契約裡無中生有一個「全域方法論」概念。
-            "methodology_text": "\n".join(methodology_lines(base)).strip("\n"),
+            # T04（#188）：`report_text`／`methodology_text` 不再進 View
+            # payload——前端 `src/` 對兩者皆零引用（`methodology_text`
+            # 曾經宣告在契約型別裡，但既有測試明文斷言它從不被渲染）。
+            # `report_text` 本身仍是引擎欄位（`StrategyResult.report_text`，
+            # `option_chaser/cli.py` 的文字報告輸出直接讀 `res.report_text`，
+            # 不經過這個序列化函式），只是不再複製進 View；
+            # `methodology_text` 純粹是這裡的序列化產物，移除後
+            # `methodology_lines` 這個匯入在本檔案已無他用，一併移除。
+            # `disclaimer_text` 前端仍會渲染，維持不動。
             "disclaimer_text": disclaimer_text(),
         }
 
@@ -354,7 +354,12 @@ def serialize_result(result: AnalysisResult, scenario_id: str,
 
     m = result.meta
     return {
-        "schema_version": 1,
+        # T04（#188）：1→2——report_text／methodology_text 從每個策略的
+        # 結果物件移除。純資訊性欄位，讀取端不依它分派任何邏輯（見
+        # 全文唯一引用點：test_store_serialize.py 的版本斷言）；既有
+        # 已存的 View（schema_version=1，仍含這兩個欄位）不做遷移，
+        # 讀取端本來就只挑需要的鍵，多餘欄位不影響任何既有行為。
+        "schema_version": 2,
         "engine_version": __version__,
         "analyzed_at": m.fetched_at,
         "scenario_id": scenario_id,

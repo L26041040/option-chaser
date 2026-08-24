@@ -411,11 +411,13 @@ describe("依決策 G 移除、不再渲染的項目（負向斷言）", () => {
   });
 
   it("不含大段 methodology 散文原文", async () => {
+    // T04（#188）：`methodology_text` 已從契約移除（前端零引用），這裡
+    // 只剩「沒有這個 DOM 節點」可斷言——契約層級已經保證這段散文
+    // 不會出現在 payload 裡，不需要再對照一個不存在的欄位值。
     render(<AnalysisReport view={view} result={result} candidate={real} />);
     await expand();
     await userEvent.click(screen.getByText("Model & Assumptions"));
     expect(document.querySelector(".report-methodology-text")).not.toBeInTheDocument();
-    expect(screen.queryByText(result.methodology_text)).not.toBeInTheDocument();
   });
 
   it("不含保本門檻、不漲保留率——未在四區塊清單內", async () => {

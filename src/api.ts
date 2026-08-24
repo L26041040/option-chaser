@@ -233,13 +233,9 @@ export interface StrategyResult {
   /** [到期日, 該期通過配對的有效候選組數]，引擎的 `expiry_counts`。 */
   expiry_counts: [string, number][];
   expiry_top10?: ExpiryTop10[];
-  /**
-   * V8（#56，spec R1 §4.1）：新版型「⑥ 方法與假設」——`report.py` 的
-   * `methodology_lines()`，與純文字報告同一個事實來源，只是拆出獨立
-   * 欄位。多行文字，前端逐行呈現或原樣顯示皆可。
-   */
-  methodology_text: string;
-  /** 新版型「⑦ 免責聲明」——獨立、不折疊的擴充版本（R1 §4.4.4）。 */
+  /** 新版型「⑦ 免責聲明」——獨立、不折疊的擴充版本（R1 §4.4.4）。
+   *  T04（#188）：`methodology_text`／`report_text` 前端零引用，已從
+   *  View payload 移除，型別同步拿掉。 */
   disclaimer_text: string;
 }
 

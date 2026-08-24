@@ -26,7 +26,7 @@ def _result(strategies=("long-call", "bull-call-spread")):
 
 def test_top_level_fields_and_versions():
     view = store.serialize_result(_result(), "XYZ-120-202608", 100000.0)
-    assert view["schema_version"] == 1
+    assert view["schema_version"] == 2   # T04（#188）：1→report_text／methodology_text 移除
     assert view["engine_version"] == option_chaser.__version__ == "0.5.0"
     assert view["scenario_id"] == "XYZ-120-202608"
     assert view["analyzed_at"] == view["snapshot_ref"]["fetched_at"]
@@ -108,24 +108,36 @@ def test_spread_candidate_carries_l2_l3_cons_and_guidance_warnings():
         sv, result.request.base_params)
 
 
-def test_methodology_and_disclaimer_text_are_serialized_once_per_strategy():
-    """V8（#56，spec R1 §4.1）：新版型「⑥ 方法與假設」／「⑦ 免責聲明」
-    要獨立於 `report_text` 之外，各自是完整字串，內容出自同一個
-    `report.py`（單一事實來源），不是前端另外拼出來的。"""
-    from option_chaser.report import disclaimer_text, methodology_lines
+def test_disclaimer_text_is_serialized_once_per_strategy():
+    """V8（#56，spec R1 §4.1）：新版型「⑦ 免責聲明」是完整字串，內容
+    出自 `report.py`（單一事實來源），不是前端另外拼出來的。"""
+    from option_chaser.report import disclaimer_text
 
     result = _result(("long-call", "bull-call-spread"))
     view = store.serialize_result(result, "S", None)
-    p = result.request.base_params
-    expected_methodology = "\n".join(methodology_lines(p)).strip("\n")
 
     for r in view["results"]:
-        assert r["methodology_text"] == expected_methodology
         assert r["disclaimer_text"] == disclaimer_text()
         # 免責段落要能自己說清楚，不能只是 CLI 那句精簡版的重複貼上——
         # 這是它存在的理由（R1 §4.4.4 明列的擴充內容）。
         assert "OCC" in r["disclaimer_text"]
         assert "FINRA" not in r["disclaimer_text"]   # 不得聲稱受其管轄
+
+
+def test_report_text_and_methodology_text_are_not_in_the_view():
+    """T04（#188）：這兩個欄位前端零引用（`methodology_text` 曾經宣告
+    在契約型別裡，但既有前端測試明文斷言它從不被渲染），移出 View
+    payload。`report_text` 仍是引擎欄位（CLI 直接讀 `StrategyResult.
+    report_text`，不經過這個序列化函式）——這裡鎖的是「View 裡沒有」，
+    不是「引擎不再算」。"""
+    result = _result(("long-call", "bull-call-spread"))
+    assert all(r.report_text for r in result.results)   # 引擎仍然算了
+
+    view = store.serialize_result(result, "S", None)
+    for r in view["results"]:
+        assert "report_text" not in r
+        assert "methodology_text" not in r
+        assert "disclaimer_text" in r   # 沒被一併誤刪
 
 
 def test_spread_legs_order_and_max_profit():
