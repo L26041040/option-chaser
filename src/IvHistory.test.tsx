@@ -260,6 +260,16 @@ describe("閘門（#126）", () => {
     await waitFor(() => expect(container).toBeEmptyDOMElement());
     expect(ivCalls(urls)).toEqual([]);
   });
+
+  it("T03（#187）：兩張卡片同時掛載，settings 只真的問一次", async () => {
+    const urls = mockApi({ enabled: true });
+    render(<IvHistory scenarioId="s1" candidate={spreadCandidate()} />);
+    render(<IvHistory scenarioId="s2" candidate={spreadCandidate()} />);
+    await waitFor(() => expect(ivCalls(urls)).toHaveLength(2));
+
+    const settingsCalls = urls.filter((u) => u.startsWith("/api/settings"));
+    expect(settingsCalls).toHaveLength(1);
+  });
 });
 
 describe("Normalized Skew 頭條（Spread 限定，(tenor,delta) 家族維持原樣）", () => {

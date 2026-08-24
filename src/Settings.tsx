@@ -20,7 +20,6 @@ import { useEffect, useState } from "react";
 
 import {
   clearCredential,
-  getSettings,
   saveCredential,
   saveSettings,
   testCredential,
@@ -29,6 +28,7 @@ import {
   type UsageChoice,
 } from "./api";
 import Diagnostics from "./Diagnostics";
+import { getSettingsCached, setSettingsCache } from "./fetchCache";
 
 /** 兩列的識別鍵——與後端 `api_app/providers.py` 的 `USAGES` 同名。 */
 type UsageKey = "market_data" | "historical_iv";
@@ -75,9 +75,12 @@ export default function Settings() {
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState<UsageKey | null>(null);
 
+  // T03（#187）：走快取——與 `IvHistory` 自己那次讀取共用同一份
+  // settings 結果，不各自 mount 各抓一次。
   useEffect(() => {
     let alive = true;
-    getSettings()
+    const { promise, release } = getSettingsCached();
+    promise
       .then((v) => {
         if (!alive) return;
         setView(v);
@@ -86,6 +89,7 @@ export default function Settings() {
       .catch((e) => alive && setError(e instanceof Error ? e.message : String(e)));
     return () => {
       alive = false;
+      release();
     };
   }, []);
 
@@ -111,6 +115,7 @@ export default function Settings() {
       }
       setView(next);
       setDraft(draftFrom(next));
+      setSettingsCache(next);   // T03（#187）：這次拿到的就是最新狀態
       // 送出後就地清掉——完整 token 沒有留在畫面上的理由，留著只是多一份
       // 暴露面。
       setTokens((prev) => ({ ...prev, [usage]: "" }));
@@ -129,7 +134,9 @@ export default function Settings() {
     setTesting(usage);
     setError(null);
     try {
-      setView(await testCredential(provider));
+      const next = await testCredential(provider);
+      setView(next);
+      setSettingsCache(next);   // T03（#187）
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -143,6 +150,7 @@ export default function Settings() {
       const next = await clearCredential(provider);
       setView(next);
       setDraft(draftFrom(next));
+      setSettingsCache(next);   // T03（#187）
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }

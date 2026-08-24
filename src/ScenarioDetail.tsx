@@ -28,7 +28,6 @@ import RawData from "./RawData";
 import SpreadHistory from "./SpreadHistory";
 import {
   baselineTopCandidate,
-  getScenario,
   primaryResult,
   type AnalysisView,
   type Candidate,
@@ -37,6 +36,7 @@ import {
 } from "./api";
 import { candidateTitle, formatMove, strategyLabel } from "./detail";
 import { isThinPool, legPrices, validPairsForExpiry } from "./expiry";
+import { getScenarioCached } from "./fetchCache";
 import {
   failureLabel, formatAnalyzedAt, formatReturn, money, moneyOrDash,
 } from "./scenarios";
@@ -261,16 +261,22 @@ export default function ScenarioDetail({
   const [detail, setDetail] = useState<Detail | null>(null);
   const [error, setError] = useState<string | null>(null);
 
+  // T03（#187）：以 (id, refreshedAt) 為資料身分快取——`refreshedAt`
+  // 還沒對上目前劇本庫清單的最新值（null）時容忍沿用已有快取，真的
+  // 對上新版本才重抓；deep-link 開頁常見的三次重複下載因此收斂成
+  // 有意義的一到兩次。`release()` 掛在清理函式：換頁或 id／refreshedAt
+  // 再變都算「不再需要」，最後一個等待者離開時才真的 abort。
   useEffect(() => {
     let live = true;
     setError(null);
-    getScenario(id)
+    const { promise, release } = getScenarioCached(id, refreshedAt);
+    promise
       .then((d) => { if (live) setDetail(d); })
       .catch((e) => {
         // 換頁後才回來的舊請求不該蓋掉新畫面
         if (live) setError(e instanceof Error ? e.message : String(e));
       });
-    return () => { live = false; };
+    return () => { live = false; release(); };
   }, [id, refreshedAt]);
 
   // 換劇本時先清空，免得新劇本的標題底下短暫掛著上一個劇本的數字。

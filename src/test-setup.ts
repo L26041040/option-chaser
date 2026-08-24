@@ -1,4 +1,15 @@
+import { afterEach } from "vitest";
+
 import "@testing-library/jest-dom/vitest";
+import { _resetCacheForTests } from "./fetchCache";
+
+// T03（#187）：`fetchCache` 是模組層級的單例快取，會在測試之間持續
+// 存在——不清空的話，前一個測試 mock 的回應會被後一個測試沿用，兩者
+// 互相汙染。每個測試結束都清空，回到「這個測試自己決定 mock 什麼」
+// 的既有假設。
+afterEach(() => {
+  _resetCacheForTests();
+});
 
 /**
  * jsdom 沒有實作 `window.matchMedia`——桌面／手機版面判斷（#72）靠它。

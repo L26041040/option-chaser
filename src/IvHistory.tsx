@@ -58,8 +58,6 @@ import { useEffect, useRef, useState } from "react";
 
 import {
   ApiError,
-  getSettings,
-  ivHistory,
   type Candidate,
   type DiagnosticEvent,
   type IvFieldMetric,
@@ -68,6 +66,7 @@ import {
   type NormalizedSkewPoint,
 } from "./api";
 import { CopyDiagnosticButton, DiagnosticEventFieldList } from "./DiagnosticDetail";
+import { getIvHistoryCached, getSettingsCached } from "./fetchCache";
 import IvTrend, { zscoreCaption } from "./IvTrend";
 import { contiguousRuns, ivChartPoints, ivYAxisDomain, nearestIndexForClientX,
         xAxisTicks, type ChartPoint } from "./ivHistoryChart";
@@ -529,16 +528,20 @@ export default function IvHistory({ scenarioId, candidate, analyzedAt = null }: 
 
   const key = candidate?.candidate_key ?? null;
 
-  // 先問解不解鎖。鎖著就到此為止——**不發 IV 請求**。
+  // 先問解不解鎖。鎖著就到此為止——**不發 IV 請求**。T03（#187）：走
+  // 快取（settings 是單一全站狀態，鍵固定），跟 Settings 頁自己那次
+  // 讀取共用同一份結果，不各自 mount 各抓一次。
   useEffect(() => {
     let alive = true;
-    getSettings()
+    const { promise, release } = getSettingsCached();
+    promise
       .then((s) => alive && setEnabled(s.historical_iv_enabled))
       // 設定讀不到時當成鎖著：寧可少顯示一塊 enrichment，也不要在狀態
       // 不明時對 vendor 發請求。
       .catch(() => alive && setEnabled(false));
     return () => {
       alive = false;
+      release();
     };
   }, []);
 
@@ -552,7 +555,8 @@ export default function IvHistory({ scenarioId, candidate, analyzedAt = null }: 
     // 候選的資料被誤認成這個候選的」，同一個候選重新嘗試時則正是要保留
     // 舊資料，讓失敗降級成非阻斷警示而不是整塊消失。
     setError(null);
-    ivHistory(scenarioId, key)
+    const { promise, release } = getIvHistoryCached(scenarioId, key, analyzedAt);
+    promise
       .then((v) => {
         if (!alive) return;
         setData(v);
@@ -564,6 +568,7 @@ export default function IvHistory({ scenarioId, candidate, analyzedAt = null }: 
       });
     return () => {
       alive = false;
+      release();
     };
   }, [enabled, key, scenarioId, analyzedAt]);
 

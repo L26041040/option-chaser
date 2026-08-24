@@ -275,6 +275,26 @@ describe("刷新完成後詳細頁跟著更新（V5／#53 檢視回饋）", () =
     expect(mainChart().getByRole("table")).toBeInTheDocument();
     expect(screen.queryByText(/尚未分析/)).not.toBeInTheDocument();
   });
+
+  it("T03（#187）：同一輪內反覆進出詳細頁，同一份資料不重新下載", async () => {
+    // `mockDetail` 對任何 URL 都回同一份 body（含 IvHistory 自己的
+    // settings 請求）——這裡只數打到 scenario detail 端點本身的次數。
+    const spy = mockDetail(detail());
+    const detailCalls = () =>
+      (spy.mock.calls as unknown as [string][])
+        .filter(([url]) => url.includes("/api/scenarios/s1")).length;
+
+    const { unmount } = render(<ScenarioDetail id="s1" refreshedAt="2026-08-04T09:30:00+00:00" />);
+    expect(await screen.findByText(/劇本主圖/)).toBeInTheDocument();
+    expect(detailCalls()).toBe(1);
+
+    unmount();
+    render(<ScenarioDetail id="s1" refreshedAt="2026-08-04T09:30:00+00:00" />);
+    expect(await screen.findByText(/劇本主圖/)).toBeInTheDocument();
+
+    // 離開又進來，analyzedAt 沒變——快取命中，底層請求次數不變。
+    expect(detailCalls()).toBe(1);
+  });
 });
 
 describe("詳細頁刷新入口（#70）", () => {

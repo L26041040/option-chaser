@@ -423,16 +423,32 @@ function stageOf(value: unknown): FailureStage {
  */
 const REQUEST_TIMEOUT_MS = 90_000;
 
+/**
+ * T03（#187）：合併兩個 `AbortSignal`——任一個先觸發都算數。手寫而非
+ * 用 `AbortSignal.any`（2023 年才進主流瀏覽器，jsdom 測試環境與部分
+ * 舊版行動瀏覽器都還沒有），這個小函式在所有支援 `AbortController`
+ * 的環境都能跑。已經 aborted 的來源直接同步觸發，不必等事件。
+ */
+function combineSignals(a: AbortSignal, b: AbortSignal): AbortSignal {
+  const controller = new AbortController();
+  const abort = (signal: AbortSignal) => controller.abort(signal.reason);
+  if (a.aborted) return a;
+  if (b.aborted) return b;
+  a.addEventListener("abort", () => abort(a), { once: true });
+  b.addEventListener("abort", () => abort(b), { once: true });
+  return controller.signal;
+}
+
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
   let resp: Response;
   try {
-    // T03（#187）：`init.signal`（呼叫端要求可被中途取消）與既有的
-    // 逾時 signal 合併——任一個先觸發都算數，兩者不互相取代。
+    // `init.signal`（呼叫端要求可被中途取消）與既有的逾時 signal
+    // 合併——任一個先觸發都算數，兩者不互相取代。
     const timeoutSignal = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
     resp = await fetch(url, {
       ...init,
       signal: init?.signal
-        ? AbortSignal.any([init.signal, timeoutSignal])
+        ? combineSignals(init.signal, timeoutSignal)
         : timeoutSignal,
     });
   } catch (e) {

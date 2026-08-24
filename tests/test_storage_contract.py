@@ -45,6 +45,12 @@ def storage(request):
 
     from api_app.storage.postgres import PostgresStorage
     st = PostgresStorage(TEST_DB_URL)
+    # T02（#186）：schema 就緒檢查移到第一次真正呼叫 `_connect()`才做
+    # （建構本身不再連線）——下面這段清庫用的是繞過 `st` 的原始
+    # `psycopg.connect`，不會觸發那個惰性檢查，在全新的資料庫上會撞
+    # `UndefinedTable`。先讓 `st` 自己碰一次 storage（等同 production
+    # 第一個真正打到這個 adapter 的請求），schema 才會就緒。
+    st._ensure_schema()
     # 清庫是測試自己的事，不放進正式 adapter（正式環境不該有 TRUNCATE）。
     with psycopg.connect(TEST_DB_URL, autocommit=True) as conn:
         conn.execute("TRUNCATE scenarios, results, snapshots, events, rate_cache, "
