@@ -190,6 +190,16 @@ def _get(client, sid, key):
                       params={"candidate_key": key})
 
 
+def _backfill(client, sid, key):
+    """T11（#194，兩段式補建 P3-a）：Legacy 家族的補建現在要顯式觸發
+    ——`GET .../iv-history` 只讀既有快取＋回報 `backfill_pending`，不再
+    在同一個請求裡同步跑 `backfill_iv()`。既有測試裡任何原本靠著單純
+    呼叫 `_get()` 就順便觸發一次 backfill 的斷言，改成先呼叫這個
+    helper（對應 `POST .../iv-history/backfill`）。"""
+    return client.post(f"/api/scenarios/{sid}/iv-history/backfill",
+                       params={"candidate_key": key})
+
+
 # ---------- 閘門 ----------
 
 def test_locked_by_default_and_no_vendor_request_is_made(db):
@@ -265,7 +275,9 @@ def test_series_comes_from_the_cache_and_is_re_anchored(db):
     client = _client(db, surface=_rich_surface)
     _unlock(client)
     sid = _scenario(client)
-    body = _get(client, sid, _candidate_key(client, sid)).json()
+    key = _candidate_key(client, sid)
+    _backfill(client, sid, key)
+    body = _get(client, sid, key).json()
     cached = db.iv_observation_dates("XYZ")
     assert [p["date"] for p in body["normalized_skew_points"]] == cached
     assert body["metrics"]["normalized_skew"]["value"] is not None
@@ -277,8 +289,9 @@ def test_normalized_skew_points_only_carry_date_and_normalized_skew(db):
     client = _client(db, surface=_rich_surface)
     _unlock(client)
     sid = _scenario(client)
-    point = _get(client, sid, _candidate_key(client, sid)).json()[
-        "normalized_skew_points"][0]
+    key = _candidate_key(client, sid)
+    _backfill(client, sid, key)
+    point = _get(client, sid, key).json()["normalized_skew_points"][0]
     assert set(point) == {"date", "normalized_skew"}
 
 
@@ -421,7 +434,9 @@ def test_a_coordinate_outside_the_grid_is_left_blank_not_faked(db):
     client = _client(db, surface=lambda *a, **k: {"call": narrow, "put": narrow})
     _unlock(client)
     sid = _scenario(client)
-    body = _get(client, sid, _candidate_key(client, sid)).json()
+    key = _candidate_key(client, sid)
+    _backfill(client, sid, key)
+    body = _get(client, sid, key).json()
     assert body["normalized_skew_points"], "應該有觀測，只是每一點都插不出值"
     assert all(p["normalized_skew"] is None
               for p in body["normalized_skew_points"])
@@ -439,7 +454,9 @@ def test_a_vendor_failure_is_reported_rather_than_swallowed(db):
     client = _client(db, surface=broken)
     _unlock(client)
     sid = _scenario(client)
-    body = _get(client, sid, _candidate_key(client, sid)).json()
+    key = _candidate_key(client, sid)
+    _backfill(client, sid, key)
+    body = _get(client, sid, key).json()
     assert body["normalized_skew_points"] == []
     assert "額度用盡" in body["note"]
 
@@ -562,14 +579,18 @@ def test_exact_contract_pipeline_never_calls_the_reanchoring_functions():
 # ---------- 快取、漸進補齊、額度（#130） ----------
 
 def test_backfill_only_touches_dates_the_cache_is_missing(db):
-    """已有日期一次都不重抓——這是整個 quota 架構的地基。"""
+    """已有日期一次都不重抓——這是整個 quota 架構的地基。
+
+    T11（#194）：backfill 現在要顯式觸發（`_backfill()`，對應
+    `POST .../iv-history/backfill`）——`_get()` 只讀既有快取，不再順便
+    觸發這件事。"""
     rec = Recorder()
     client = _client(db, surface=rec)
     _unlock(client)
     sid = _scenario(client)
     key = _candidate_key(client, sid)
 
-    _get(client, sid, key)
+    _backfill(client, sid, key)
     first = set(rec.dates)
     assert first, "第一次應該真的去抓"
 
@@ -577,7 +598,7 @@ def test_backfill_only_touches_dates_the_cache_is_missing(db):
     db.save_iv_backfill_run(IvBackfillRun(symbol="XYZ", ran_on="1900-01-01",
                                           outcome="ok"))
     rec.calls.clear()
-    _get(client, sid, key)
+    _backfill(client, sid, key)
     assert not (set(rec.dates) & first), "已經在快取裡的日期被重抓了"
 
 
@@ -587,11 +608,11 @@ def test_a_second_scenario_on_the_same_symbol_costs_no_quota(db):
     client = _client(db, surface=rec)
     _unlock(client)
     a = _scenario(client)
-    _get(client, a, _candidate_key(client, a))
+    _backfill(client, a, _candidate_key(client, a))
     rec.calls.clear()
 
     b = _scenario(client, target_price=140.0)
-    _get(client, b, _candidate_key(client, b))
+    _backfill(client, b, _candidate_key(client, b))
     assert rec.calls == [], "第二個同 ticker 劇本不該再打 vendor"
 
 
@@ -601,11 +622,11 @@ def test_a_different_target_does_not_trigger_a_refetch(db):
     client = _client(db, surface=rec)
     _unlock(client)
     a = _scenario(client)
-    _get(client, a, _candidate_key(client, a))
+    _backfill(client, a, _candidate_key(client, a))
     before = len(rec.calls)
 
     b = _scenario(client, target_month="2026-10")
-    _get(client, b, _candidate_key(client, b))
+    _backfill(client, b, _candidate_key(client, b))
     assert len(rec.calls) == before
 
 
@@ -617,10 +638,10 @@ def test_only_one_backfill_batch_per_symbol_per_day(db):
     sid = _scenario(client)
     key = _candidate_key(client, sid)
 
-    _get(client, sid, key)
+    _backfill(client, sid, key)
     after_first = len(rec.calls)
     for _ in range(3):
-        _get(client, sid, key)
+        _backfill(client, sid, key)
     assert len(rec.calls) == after_first
 
 
@@ -630,7 +651,7 @@ def test_each_batch_is_bounded_so_the_first_day_does_not_drain_quota(db):
     client = _client(db, surface=rec)
     _unlock(client)
     sid = _scenario(client)
-    _get(client, sid, _candidate_key(client, sid))
+    _backfill(client, sid, _candidate_key(client, sid))
     assert 0 < len(rec.calls) <= 25
 
 
@@ -640,7 +661,7 @@ def test_the_newest_gaps_are_filled_first(db):
     client = _client(db, surface=rec)
     _unlock(client)
     sid = _scenario(client)
-    _get(client, sid, _candidate_key(client, sid))
+    _backfill(client, sid, _candidate_key(client, sid))
     schedule = sampling_schedule("XYZ", ny_today())
     assert set(rec.dates) == set(sorted(schedule, reverse=True)[:len(rec.dates)])
 
@@ -652,7 +673,9 @@ def test_quota_exhaustion_is_reported_as_its_own_state(db):
     client = _client(db, surface=rec)
     _unlock(client)
     sid = _scenario(client)
-    body = _get(client, sid, _candidate_key(client, sid)).json()
+    key = _candidate_key(client, sid)
+    _backfill(client, sid, key)
+    body = _get(client, sid, key).json()
     assert body["status"] == "quota"
     assert "額度" in body["note"]
 
@@ -663,7 +686,9 @@ def test_a_transient_vendor_failure_is_a_different_state_from_quota(db):
     client = _client(db, surface=rec)
     _unlock(client)
     sid = _scenario(client)
-    body = _get(client, sid, _candidate_key(client, sid)).json()
+    key = _candidate_key(client, sid)
+    _backfill(client, sid, key)
+    body = _get(client, sid, key).json()
     assert body["status"] == "vendor"
 
 
@@ -674,9 +699,9 @@ def test_quota_exhaustion_stops_further_vendor_calls_that_day(db):
     _unlock(client)
     sid = _scenario(client)
     key = _candidate_key(client, sid)
-    _get(client, sid, key)
+    _backfill(client, sid, key)
     after_first = len(rec.calls)
-    _get(client, sid, key)
+    _backfill(client, sid, key)
     assert len(rec.calls) == after_first == 1
 
 
@@ -688,7 +713,9 @@ def test_zero_cached_observations_yields_no_percentile(db):
     client = _client(db, surface=rec)
     _unlock(client)
     sid = _scenario(client)
-    body = _get(client, sid, _candidate_key(client, sid)).json()
+    key = _candidate_key(client, sid)
+    _backfill(client, sid, key)
+    body = _get(client, sid, key).json()
     assert body["observations"] == 0
     assert body["metrics"]["normalized_skew"] == \
         {"value": None, "percentile": None, "count": 0,
@@ -737,7 +764,9 @@ def test_a_first_day_run_with_partial_data_still_shows_a_percentile(db):
     client = _client(db, surface=_rich_surface)
     _unlock(client)
     sid = _scenario(client)
-    body = _get(client, sid, _candidate_key(client, sid)).json()
+    key = _candidate_key(client, sid)
+    _backfill(client, sid, key)
+    body = _get(client, sid, key).json()
     assert body["status"] == "ok"
     assert 0 < body["observations"] < 66     # 真的只補了一部分
     metrics = body["metrics"]["normalized_skew"]
@@ -846,7 +875,7 @@ def test_a_long_dated_candidate_actually_receives_non_default_expirations(db):
     sid = _scenario(client)
     key = _candidate_key_from_farthest_expiry(client, sid)
 
-    _get(client, sid, key)
+    _backfill(client, sid, key)
     assert any(e is not None for e in rec.expirations), \
         "長天期候選一次 expiration 篩選都沒帶，會撲空 vendor 的預設下一個月選"
 
@@ -869,7 +898,8 @@ def test_a_short_dated_candidate_keeps_using_the_cheap_vendor_default(db):
     sid = _scenario(client)
     key = _candidate_key(client, sid)   # 樣本裡第一個候選＝最近到期日那組
 
-    _get(client, sid, key)
+    _backfill(client, sid, key)
+    assert rec.expirations, "測試前提才成立：backfill 真的打過 vendor"
     assert all(e is None for e in rec.expirations)
 
 
@@ -893,6 +923,7 @@ def test_a_quota_failure_today_does_not_hide_yesterdays_cached_percentiles(db):
 
     failing = _client(db, surface=Recorder(fail=QuotaExhausted("額度用完")))
     _unlock(failing)
+    _backfill(failing, sid, key)
     body = _get(failing, sid, key).json()
 
     assert body["status"] == "quota"
@@ -918,6 +949,7 @@ def test_a_vendor_failure_today_does_not_hide_cached_percentiles_either(db):
 
     failing = _client(db, surface=Recorder(fail=FetchError("連線逾時")))
     _unlock(failing)
+    _backfill(failing, sid, key)
     body = _get(failing, sid, key).json()
 
     assert body["status"] == "vendor"
@@ -1000,7 +1032,8 @@ def test_weekday_no_data_still_warns_but_does_not_abort_the_batch(db):
     client = _client(db, surface=_telemetry_surface({}, call_counter=calls))
     _unlock(client)
     sid = _scenario(client)
-    body = _get(client, sid, _candidate_key(client, sid)).json()
+    key = _candidate_key(client, sid)
+    body = _backfill(client, sid, key).json()
 
     assert len(calls) > 1, "撲空不該讓 backfill 在第一天就中止"
 
@@ -1030,7 +1063,8 @@ def test_weekend_no_data_is_informational_not_a_warning(db, monkeypatch):
     client = _client(db, surface=_telemetry_surface({}))
     _unlock(client)
     sid = _scenario(client)
-    body = _get(client, sid, _candidate_key(client, sid)).json()
+    key = _candidate_key(client, sid)
+    body = _backfill(client, sid, key).json()
 
     backfill_summary = _events_for(body, "backfill")
     assert len(backfill_summary) == 1
@@ -1046,7 +1080,8 @@ def test_backfill_abort_is_visible_in_the_summary_event(db):
     client = _client(db, surface=rec)
     _unlock(client)
     sid = _scenario(client)
-    body = _get(client, sid, _candidate_key(client, sid)).json()
+    key = _candidate_key(client, sid)
+    body = _backfill(client, sid, key).json()
 
     summary = _events_for(body, "backfill")
     assert len(summary) == 1
@@ -1087,7 +1122,7 @@ def _client_with_long_expiration_ladder(db, monkeypatch, *, fail_on_first):
     client = _client(db, surface=rec)
     _unlock(client)
     sid = _scenario(client)
-    _get(client, sid, _candidate_key(client, sid))
+    _backfill(client, sid, _candidate_key(client, sid))
     return rec
 
 
@@ -1146,7 +1181,7 @@ def test_a_failure_in_the_middle_of_a_batch_still_saves_the_successful_siblings(
     client = _client(db, surface=rec)
     _unlock(client)
     sid = _scenario(client)
-    body = _get(client, sid, _candidate_key(client, sid)).json()
+    body = _backfill(client, sid, _candidate_key(client, sid)).json()
 
     summary = _events_for(body, "backfill")
     assert summary[0]["context"]["outcome"] == "quota"
@@ -1191,11 +1226,16 @@ def test_persisted_events_are_a_subset_of_what_the_response_shows(db):
     metrics warning（那是另一個獨立子系統的旁支行為，見下面
     `test_a_healthy_request_writes_zero_diagnostics_rows_...` 的
     docstring 說明；`_rich_surface` 本身不是「全程成功只有 info」）。
+
+    T11（#194，兩段式補建 P3-a）：legacy 家族的 `backfill` 摘要現在只
+    在 `_backfill()`（`POST .../iv-history/backfill`）自己的回應裡
+    出現——`_get()` 不再同步觸發它，這裡改讀 backfill 回應本身。
     """
     client = _client(db, surface=_telemetry_surface({}))
     _unlock(client)
     sid = _scenario(client)
-    body = _get(client, sid, _candidate_key(client, sid)).json()
+    key = _candidate_key(client, sid)
+    body = _backfill(client, sid, key).json()
     shown_ids = {e["event_id"] for e in body["diagnostics"]["events"]}
     # HIVR-03（#162）：exact-contract 與 legacy 兩個 subsystem 各自享有
     # 一份完整的 per-request 保留名額，一次 request 因此可能寫進去超過
@@ -1211,11 +1251,15 @@ def test_persisted_events_are_a_subset_of_what_the_response_shows(db):
 def test_only_warning_and_error_severity_events_are_persisted(db):
     """PERF-02（#178）新增：同一次 request 裡 info 與 warning 事件並存
     時，info 只出現在回應裡，資料庫裡只有 warning／error——不是「大致上
-    比較少」，是一個 info 都沒有。"""
+    比較少」，是一個 info 都沒有。
+
+    T11（#194）：backfill 的 warning（weekday no data）現在要靠
+    `_backfill()` 觸發，`_get()` 不再順便產生它。"""
     client = _client(db, surface=_telemetry_surface({}))
     _unlock(client)
     sid = _scenario(client)
-    body = _get(client, sid, _candidate_key(client, sid)).json()
+    key = _candidate_key(client, sid)
+    body = _backfill(client, sid, key).json()
     shown = body["diagnostics"]["events"]
     assert any(e["severity"] == "info" for e in shown), (
         "這個 fixture 本來就該同時產生 info 事件，測試前提才成立")
@@ -1237,7 +1281,13 @@ def test_a_healthy_request_writes_zero_diagnostics_rows_but_the_response_is_unaf
     因為缺觀測而回報一堆 `unavailable` warning）——兩腿各自灌 60 天
     連續、可 round-trip 反解的觀測（`_synthetic_consecutive_days`），
     同時涵蓋 moving_average／bollinger／zscore 的 30 天 lookback 與
-    Δ4w 的 [today−42, today−21] 窗口，reconstruction 全數成功。"""
+    Δ4w 的 [today−42, today−21] 窗口，reconstruction 全數成功。
+
+    T11（#194）：legacy (tenor,delta) 家族也要「健康」——`_get()` 不再
+    順便觸發 backfill，一個從沒補建過的 symbol 每次都會因為零觀測而
+    在 `normalized_skew` 那半報 `warning`。先用 `_rich_surface`（任何
+    日期都能插出值）跑一次 `_backfill()` 把快取灌滿，兩個家族才會同時
+    處在「健康」狀態，這個測試才真的在驗證它宣稱要驗證的事。"""
     rec = ContractHistoryRecorder()
     client = _client(db, surface=_rich_surface, contract_history=rec)
     _unlock(client)
@@ -1250,6 +1300,7 @@ def test_a_healthy_request_writes_zero_diagnostics_rows_but_the_response_is_unaf
             today, 60, [0.10] * 60, option_type=leg["option_type"],
             strike=leg["strike"], expiration=leg["expiry"])
 
+    _backfill(client, sid, key)
     body = _get(client, sid, key).json()
     shown = body["diagnostics"]["events"]
     assert len(shown) > 0
@@ -1305,7 +1356,9 @@ def test_diagnostics_storage_failure_does_not_break_the_response():
     client = _client(wrapped, surface=_rich_surface)
     _unlock(client)
     sid = _scenario(client)
-    resp = _get(client, sid, _candidate_key(client, sid))
+    key = _candidate_key(client, sid)
+    _backfill(client, sid, key)   # T11（#194）：backfill 現在要顯式觸發
+    resp = _get(client, sid, key)
     assert resp.status_code == 200
     assert resp.json()["normalized_skew_points"]
 
@@ -1741,7 +1794,16 @@ def test_the_full_ledger_covers_every_stage_and_shares_one_correlation_id(db):
     假體，因此 exact-contract 家族這次也不會有 `vendor_fetch`／
     `payload_parse`——這兩個 stage 名稱在其他情境下仍會出現（HIVR-04
     exact-contract 家族自己的 `_emit_contract_history_telemetry`），
-    只是不在這個特定場景裡。"""
+    只是不在這個特定場景裡。
+
+    T11（#194，兩段式補建 P3-a）：`cache`／`backfill` 兩個 legacy 階段
+    現在只活在 `POST .../iv-history/backfill` 自己的回應裡——
+    `legacy_backfill_status()`（`GET .../iv-history` 讀的那個函式）是
+    純讀取、零 `emit` 呼叫。「同一個 correlation_id 涵蓋全部八站」因此
+    拆成兩份、各自完整、各自帶著自己 correlation_id 的帳本：觸發補建
+    那次請求涵蓋 `cache`／`backfill`；隨後讀取的那次 GET 涵蓋其餘六站
+    ——兩次請求合起來仍是完整的「N→0」故事，只是不再擠在同一個
+    correlation_id 底下。"""
     telemetry = {"http_status": 200, "vendor_status": "ok",
                 "vendor_errmsg": None, "raw_rows": 5,
                 "parsed_call_rows": 0, "parsed_put_rows": 0}
@@ -1750,21 +1812,31 @@ def test_the_full_ledger_covers_every_stage_and_shares_one_correlation_id(db):
     sid = _scenario(client)
     key = _candidate_key(client, sid)
     _prefill_all_but_one(db)
-    body = _get(client, sid, key).json()
 
-    stages_seen = {e["stage"] for e in body["diagnostics"]["events"]}
-    assert stages_seen == {"candidate_lookup", "cache", "database_write",
-                           "backfill", "reanchor", "metrics",
-                           "reconstruction", "vendor_benchmark"}
-    cids = {e["correlation_id"] for e in body["diagnostics"]["events"]}
-    assert cids == {body["diagnostics"]["correlation_id"]}
+    backfill_body = _backfill(client, sid, key).json()
+    backfill_stages = {e["stage"] for e in backfill_body["diagnostics"]["events"]}
+    assert backfill_stages == {"candidate_lookup", "cache", "backfill"}
+    backfill_cids = {e["correlation_id"]
+                     for e in backfill_body["diagnostics"]["events"]}
+    assert backfill_cids == {backfill_body["diagnostics"]["correlation_id"]}
 
     # 帳本本身：這份 fixture 的 surface 假體沒有真的傳回任何點
     # （`points=None` 預設回空），因此摘要要能看出「這一天沒資料」，
     # 不需要讀程式碼就找得到答案。
-    backfill_summary = _events_for(body, "backfill")[0]
+    backfill_summary = _events_for(backfill_body, "backfill")[0]
     assert backfill_summary["context"]["days_with_data"] == 0
     assert backfill_summary["context"]["attempted_days"] == 1
+
+    body = _get(client, sid, key).json()
+    stages_seen = {e["stage"] for e in body["diagnostics"]["events"]}
+    # `cache`（exact-contract 家族自己的「計算歷史缺口」，HIVR-04）在
+    # 這裡跟 legacy 家族的 `cache` 是同名不同來源——每次 GET 都會發，
+    # 不是這次 T11 拆分才多出來的。
+    assert stages_seen == {"candidate_lookup", "cache", "database_write",
+                           "reanchor", "metrics",
+                           "reconstruction", "vendor_benchmark"}
+    cids = {e["correlation_id"] for e in body["diagnostics"]["events"]}
+    assert cids == {body["diagnostics"]["correlation_id"]}
 
 
 # ---------- Exact-contract 逐腿歷史 IV（HIVT-02／#153） ----------

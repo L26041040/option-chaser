@@ -58,6 +58,7 @@ import { useEffect, useRef, useState } from "react";
 
 import {
   ApiError,
+  ivHistoryBackfill,
   type Candidate,
   type DiagnosticEvent,
   type IvFieldMetric,
@@ -66,7 +67,7 @@ import {
   type NormalizedSkewPoint,
 } from "./api";
 import { CopyDiagnosticButton, DiagnosticEventFieldList } from "./DiagnosticDetail";
-import { getIvHistoryCached, getSettingsCached } from "./fetchCache";
+import { getIvHistoryCached, getSettingsCached, invalidateIvHistoryCache } from "./fetchCache";
 import IvTrend, { zscoreCaption } from "./IvTrend";
 import { contiguousRuns, ivChartPoints, ivYAxisDomain, nearestIndexForClientX,
         xAxisTicks, type ChartPoint } from "./ivHistoryChart";
@@ -525,6 +526,16 @@ export default function IvHistory({ scenarioId, candidate, analyzedAt = null }: 
   // 手上這份資料還不能當成「這個候選」的東西來畫（見下方 `currentData`）。
   const [dataKey, setDataKey] = useState<string | null>(null);
   const [error, setError] = useState<Error | null>(null);
+  // T11（#194，兩段式補建 P3-a）：`backfillTick` 只是拿來讓下面的主
+  // fetch effect 在補建完成後重新跑一次（配合 `invalidateIvHistoryCache`
+  // 清掉舊快取）——值本身沒有意義，純粹是個觸發訊號。
+  const [backfillTick, setBackfillTick] = useState(0);
+  const [backfillInFlight, setBackfillInFlight] = useState(false);
+  // 同一個 (scenario, candidate) 這個掛載期間只嘗試一次補建——避免
+  // POST 本身失敗（例如網路根本打不通，連後端的「今天已經跑過」短路
+  // 都沒機會生效）時，`backfill_pending` 永遠是 `true`、每次重抓又
+  // 立刻再觸發一次，變成無限重試迴圈。
+  const backfillAttempted = useRef<Set<string>>(new Set());
 
   const key = candidate?.candidate_key ?? null;
 
@@ -570,7 +581,50 @@ export default function IvHistory({ scenarioId, candidate, analyzedAt = null }: 
       alive = false;
       release();
     };
-  }, [enabled, key, scenarioId, analyzedAt]);
+    // `backfillTick` 刻意列進相依陣列：補建完成後靠它讓這個 effect 重新
+    // 跑一次，拿到補建後的新資料（配合下面那個 effect 先 invalidate 掉
+    // 舊快取，這裡才會真的重抓而不是繼續吃快取裡那份 `backfill_pending`）。
+  }, [enabled, key, scenarioId, analyzedAt, backfillTick]);
+
+  // T11（#194，兩段式補建 P3-a）：`GET .../iv-history` 回的
+  // `backfill_pending` 說「Legacy 家族今天還沒補過一批」——這裡另外
+  // 呼叫 `POST .../iv-history/backfill` 觸發，完成後（不論成功或失敗，
+  // 後端的「今天已跑過」短路兩種情況都會記一筆，不會無限重試）invalidate
+  // 快取＋重新整份請求一次，讓補全後的資料自動出現，不必使用者手動
+  // 重新整理。Exact-Contract 家族（`legs`／`spread_gap`）完全不受影響
+  // ——那半資料已經在這次回應裡是最新的。
+  useEffect(() => {
+    // 這裡是這個元件裡唯一在早退（`enabled !== true || !key`）之前就
+    // 需要判斷「這份資料是不是這個候選的」的地方，所以自己重算一次
+    // `dataKey === key`——跟下面 render 用的 `currentData` 是同一條
+    // 判斷式，只是那個變數宣告在早退之後、這裡的 hooks 呼叫不到它。
+    const pendingData = dataKey === key ? data : null;
+    if (!pendingData?.backfill_pending || !key) return;
+    const attemptKey = `${scenarioId}:${key}`;
+    if (backfillAttempted.current.has(attemptKey)) return;
+    backfillAttempted.current.add(attemptKey);
+
+    let alive = true;
+    setBackfillInFlight(true);
+    ivHistoryBackfill(scenarioId, key)
+      .catch(() => { /* 失敗也要往下走：仍然重抓一次讓畫面反映最新狀態 */ })
+      .finally(() => {
+        if (!alive) return;
+        setBackfillInFlight(false);
+        invalidateIvHistoryCache(scenarioId, key, analyzedAt);
+        setBackfillTick((t) => t + 1);
+      });
+    return () => {
+      alive = false;
+      // 不論是同一個候選重新觸發（`data`／`dataKey` 更新）還是切到別的
+      // 候選，這個 effect 實例都被淘汰了——一律把「補建中」旗標收掉，
+      // 避免它卡在 `true` 一路帶到不相干的候選畫面上。若真的是同一個
+      // 候選還沒補完就被這個 cleanup 打斷，`backfillAttempted` 已經記過
+      // 這個 key，不會重新觸發第二次；使用者頂多提早看不到這句文字，
+      // 不會看到錯的候選卡著這句文字。
+      setBackfillInFlight(false);
+    };
+  }, [data, dataKey, key, scenarioId, analyzedAt]);
 
   // 鎖著、還沒問完、或這個候選根本沒有身份鍵 → 不輸出任何節點（#126
   // AC——這條紅線原封不動，跟下面「卡片固定版位」是兩件事：鎖著時連
@@ -607,7 +661,11 @@ export default function IvHistory({ scenarioId, candidate, analyzedAt = null }: 
               ⚠ 最新資料更新失敗，目前顯示先前取得的快取資料：{error.message}
             </p>
           )}
-          <IvHistoryContent data={currentData} isSingleLeg={isSingleLeg} />
+          <IvHistoryContent
+            data={currentData}
+            isSingleLeg={isSingleLeg}
+            backfillInFlight={backfillInFlight}
+          />
         </>
       ) : error ? (
         // 這個候選目前真的沒有任何資料可退回顯示，才整塊改成錯誤狀態
@@ -705,9 +763,13 @@ function IvAdvanced({ data, isSingleLeg, notableEvents }: {
  *  （`./SpreadSummary`，只在 `spread_gap` 這個 key 存在時掛載）→
  *  Buy／Sell 逐腿卡片（`./IvTrend`）→ Advanced／Diagnostics 預設收合區
  *  （`IvAdvanced`）。 */
-function IvHistoryContent({ data, isSingleLeg }: {
+function IvHistoryContent({ data, isSingleLeg, backfillInFlight }: {
   data: IvHistoryView;
   isSingleLeg: boolean;
+  /** T11（#194，兩段式補建 P3-a）：這個候選的 Legacy 家族今天觸發了一次
+   *  補建、還沒跑完——卡片標一句話讓使用者知道資料還在補齊，不必猜為
+   *  什麼 Normalized Skew 那半看起來還沒更新。 */
+  backfillInFlight: boolean;
 }) {
   // 200 但資料是空的——目前最常見的症狀，只看 HTTP 狀態碼看不出來。
   // severity >= warning 的 events 是唯一能指出這件事的地方（DG-05／
@@ -720,6 +782,11 @@ function IvHistoryContent({ data, isSingleLeg }: {
 
   return (
     <>
+      {backfillInFlight && (
+        <p className="caption iv-history-backfill-pending" role="status">
+          歷史資料補建中……
+        </p>
+      )}
       {/* 渲染條件是「回應裡有 spread_gap 這個 key」，不是「points 非
           空」——單腳候選這個 key 整個不存在，`data.spread_gap &&`
           天然只在有賣腿的候選才掛載；`points` 為空時 `SpreadSummary`

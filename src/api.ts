@@ -1030,6 +1030,12 @@ export interface IvHistoryView {
    *  單腳候選整個省略（不是設成 `undefined` 以外的假值）——跟 `legs.
    *  sell` 同一種「key 存在與否即結構性事實」的慣例。 */
   spread_gap?: SpreadGap;
+  /** T11（#194，兩段式補建 P3-a）：Legacy (tenor,delta) 家族今天還沒
+   *  補建過一批——`true` 時畫面該顯示「歷史資料補建中」並呼叫
+   *  `ivHistoryBackfill()`，完成後重打一次這個端點取得補全後的資料。
+   *  Exact-Contract 家族（`legs`／`spread_gap`）不受這個欄位影響，
+   *  已經是這個回應裡最新的資料。 */
+  backfill_pending: boolean;
 }
 
 export function ivHistory(
@@ -1041,6 +1047,27 @@ export function ivHistory(
     `/api/scenarios/${encodeURIComponent(scenarioId)}/iv-history`
     + `?candidate_key=${encodeURIComponent(candidateKey)}`,
     { signal },
+  );
+}
+
+export interface IvHistoryBackfillResult {
+  outcome: string;
+  note: string | null;
+  diagnostics: IvHistoryDiagnostics;
+}
+
+/** T11（#194，兩段式補建 P3-a）：Legacy 家族冷 backfill 的獨立觸發
+ *  端點——`ivHistory()` 不再同步跑這件事，只回報 `backfill_pending`。
+ *  呼叫這裡完成後，重打一次 `ivHistory()` 就能看到補全後的資料。 */
+export function ivHistoryBackfill(
+  scenarioId: string,
+  candidateKey: string,
+  signal?: AbortSignal,
+): Promise<IvHistoryBackfillResult> {
+  return request<IvHistoryBackfillResult>(
+    `/api/scenarios/${encodeURIComponent(scenarioId)}/iv-history/backfill`
+    + `?candidate_key=${encodeURIComponent(candidateKey)}`,
+    { method: "POST", signal },
   );
 }
 

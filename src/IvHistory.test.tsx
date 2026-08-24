@@ -112,6 +112,7 @@ function ivView(over: Partial<IvHistoryView> = {}): IvHistoryView {
     diagnostics: { correlation_id: "cid-test", events: [] },
     legs: { buy: legHistoricalIv(),
            sell: legHistoricalIv({ contract: contract({ strike: 125 }) }) },
+    backfill_pending: false,
     ...over,
   };
 }
@@ -1096,5 +1097,129 @@ describe("Spread Summary（SIG-03／#174）：接進 IvHistory 的三種情境",
     const legCard = container.querySelector(".iv-trend-card")!;
     expect(summary.compareDocumentPosition(legCard)
       & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+});
+
+describe("兩段式補建（T11／#194，P3-a）——Legacy 家族冷 backfill 不再同步夾在 GET 裡", () => {
+  /** GET `/iv-history` 回傳可控（每次呼叫都問一次 `ivFor(callIndex)`），
+   *  POST `/iv-history/backfill` 另外算一支 spy——區分兩種端點的呼叫
+   *  次數與時機，這是這組測試唯一在乎的事。 */
+  function mockApiTwoPhase(
+    ivFor: (getCallIndex: number) => IvHistoryView,
+    backfillOutcome: { outcome: string; note: string | null } =
+      { outcome: "ok", note: null },
+  ) {
+    let getCalls = 0;
+    const backfillCalls: string[] = [];
+    let resolveBackfill!: () => void;
+    const backfillGate = new Promise<void>((r) => { resolveBackfill = r; });
+    vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
+      if (url.startsWith("/api/settings")) {
+        return { ok: true, status: 200,
+                 json: async () => ({ historical_iv_enabled: true }) } as Response;
+      }
+      if (url.includes("/iv-history/backfill")) {
+        backfillCalls.push(url);
+        void init?.method;   // 呼叫端一律用 POST，這裡不需要另外斷言
+        await backfillGate;
+        return { ok: true, status: 200, json: async () => (
+          { outcome: backfillOutcome.outcome, note: backfillOutcome.note,
+           diagnostics: { correlation_id: "cid-backfill", events: [] } }) } as Response;
+      }
+      const v = ivFor(getCalls);
+      getCalls += 1;
+      return { ok: true, status: 200, json: async () => v } as Response;
+    }));
+    return { backfillCalls, releaseBackfill: () => resolveBackfill() };
+  }
+
+  it("backfill_pending 為 true 時自動呼叫補建端點", async () => {
+    const { backfillCalls, releaseBackfill } = mockApiTwoPhase(
+      () => ivView({ backfill_pending: true }));
+    render(<IvHistory scenarioId="s1" candidate={spreadCandidate()} />);
+    await waitFor(() => expect(backfillCalls).toHaveLength(1));
+    expect(backfillCalls[0]).toContain(encodeURIComponent(KEY));
+    releaseBackfill();
+    // 讓補建完成後的重抓與 state 更新在測試結束前跑完，不留未 flush 的
+    // state 更新（否則會在下一條測試才悄悄觸發 act() 警告）。
+    await waitFor(() =>
+      expect(screen.queryByText("歷史資料補建中……")).not.toBeInTheDocument());
+  });
+
+  it("backfill_pending 為 false 時完全不呼叫補建端點", async () => {
+    const { backfillCalls } = mockApiTwoPhase(
+      () => ivView({ backfill_pending: false }));
+    render(<IvHistory scenarioId="s1" candidate={spreadCandidate()} />);
+    await waitFor(() =>
+      expect(screen.getByText("Normalized Skew")).toBeInTheDocument());
+    expect(backfillCalls).toEqual([]);
+  });
+
+  it("補建進行中顯示「歷史資料補建中」，完成後自動重抓並消失", async () => {
+    const { releaseBackfill } = mockApiTwoPhase(
+      (i) => ivView({ backfill_pending: i === 0,
+                      observations: i === 0 ? 10 : 66 }));
+    render(<IvHistory scenarioId="s1" candidate={spreadCandidate()} />);
+
+    await screen.findByText("歷史資料補建中……");
+    // 這時已經有舊資料可看（P1 精神延伸：補建中不擋內容），不是空白卡片。
+    expect(screen.getByText("Normalized Skew")).toBeInTheDocument();
+
+    releaseBackfill();
+    await waitFor(() =>
+      expect(screen.queryByText("歷史資料補建中……")).not.toBeInTheDocument());
+    // 補建完成後自動重抓：畫面換成新一輪回應（66 筆觀測）的內容。
+    await waitFor(() =>
+      expect(screen.getByText(/66 個觀測/)).toBeInTheDocument());
+  });
+
+  it("同一個候選只嘗試一次補建——即使重抓後 backfill_pending 依然是 true",
+     async () => {
+    // 這份假體回應永遠 `backfill_pending: true`（模擬「已經試過但今天
+    // 仍未真的補完」的邊界情況）——這裡要驗證的正是 `backfillAttempted`
+    // 這道守門本身，不是單純的 React 相依陣列沒變就不重跑 effect。
+    const { backfillCalls, releaseBackfill } = mockApiTwoPhase(
+      () => ivView({ backfill_pending: true }));
+    const { rerender } = render(
+      <IvHistory scenarioId="s1" candidate={spreadCandidate()} analyzedAt="t1" />);
+    await waitFor(() => expect(backfillCalls).toHaveLength(1));
+    releaseBackfill();
+    await waitFor(() => expect(
+      screen.queryByText("歷史資料補建中……")).not.toBeInTheDocument());
+
+    // 換一個新的 `analyzedAt`——這會讓主要的 fetch effect 真的重新
+    // 打一次 GET（等同「新分析完成後同一個候選再問一次 vendor」的既有
+    // 語意），GET 依然回 `backfill_pending: true`；`backfillAttempted`
+    // 這個 (scenarioId, candidate_key) 組合已經在這個掛載期間試過一次，
+    // 不該因此又打第二次 POST。
+    rerender(
+      <IvHistory scenarioId="s1" candidate={spreadCandidate()} analyzedAt="t2" />);
+    await waitFor(() =>
+      expect(screen.getByText("Normalized Skew")).toBeInTheDocument());
+    expect(backfillCalls).toHaveLength(1);
+  });
+
+  it("補建端點本身失敗，仍然重抓一次讓畫面反映最新狀態，不會卡在補建中",
+     async () => {
+    let getCalls = 0;
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+      if (url.startsWith("/api/settings")) {
+        return { ok: true, status: 200,
+                 json: async () => ({ historical_iv_enabled: true }) } as Response;
+      }
+      if (url.includes("/iv-history/backfill")) {
+        return { ok: false, status: 500,
+                 json: async () => ({ detail: "backfill 掛了" }) } as Response;
+      }
+      const v = ivView({ backfill_pending: getCalls === 0 });
+      getCalls += 1;
+      return { ok: true, status: 200, json: async () => v } as Response;
+    }));
+    render(<IvHistory scenarioId="s1" candidate={spreadCandidate()} />);
+
+    await screen.findByText("歷史資料補建中……");
+    await waitFor(() =>
+      expect(screen.queryByText("歷史資料補建中……")).not.toBeInTheDocument());
+    expect(screen.getByText("Normalized Skew")).toBeInTheDocument();
   });
 });

@@ -703,6 +703,52 @@ def spread_gap_payload(buy_series: list[tuple[str, float | None]],
 
 # ---------- 進入點：兩個家族一起跑，合併成一份回應 ----------
 
+def legacy_target_expirations(candidate: dict, known_expiries: list[str],
+                              today: date) -> list[str]:
+    """T11（#194）：Legacy 家族要鎖定哪幾個到期日——`build_iv_history()`
+    本身與獨立補建端點（`run_legacy_backfill()` 的呼叫端）用同一條規則，
+    抽成公開函式避免兩處各自重算出不同答案。"""
+    return ivhistory.nearby_expirations(
+        known_expiries, today=today,
+        tenor_days=candidate.get("days_to_expiry") or 0)
+
+
+def legacy_backfill_status(symbol: str, today: date, *,
+                           storage: StoragePorts,
+                           ) -> tuple[str, str | None, bool]:
+    """T11（#194，spec 兩段式補建 P3-a）：Legacy 家族「今天的 backfill
+    狀態」，純讀取、零 vendor 呼叫——`build_iv_history()` 不再同步觸發
+    補建，只回報「今天已經跑過一批了嗎」；真正觸發交給獨立進入點
+    `run_legacy_backfill()`（即既有 `backfill_iv()`，Progressive
+    Backfill 的配額／取樣排程／到期日梯子演算法完全不變）。
+
+    回傳 `(outcome, note, needs_backfill)`：`outcome`／`note` 是**上一次
+    真正跑過**的結果——`run is None`（這個 symbol 從未補建過）時回
+    `("ok", None)`，這不代表「今天已經補建成功」，只是「還沒試過、不是
+    失敗」的中性起點，與既有 `_iv_payload`／`iv_payload` 的既有語意一致
+    （`status` 不影響 percentile 顯示，#133）。`needs_backfill` 是今天
+    是否還沒跑過這個 symbol 的一批。
+    """
+    run = storage.get_iv_backfill_run(symbol)
+    if run is None:
+        return "ok", None, True
+    return run.outcome, run.note, run.ran_on != today.isoformat()
+
+
+def run_legacy_backfill(symbol: str, provider: str, token: str,
+                        target_expirations: list[str], *,
+                        today: date, now_utc_iso: Callable[[], str],
+                        vendor: VendorPorts, storage: StoragePorts,
+                        emit: EmitFn) -> tuple[str, str | None]:
+    """T11（#194）：兩段式補建第二段的公開進入點——就是既有
+    `backfill_iv()`，這裡另開一個名字給獨立補建端點呼叫，讓呼叫端
+    讀起來對應「這是補建，不是讀取」，函式本身零改動、零重複邏輯。
+    """
+    return backfill_iv(symbol, provider, token, target_expirations,
+                       today=today, now_utc_iso=now_utc_iso,
+                       vendor=vendor, storage=storage, emit=emit)
+
+
 def build_iv_history(*, symbol: str, candidate: dict, spot: float,
                      known_expiries: list[str], provider: str, token: str,
                      today: date, now_utc_iso: Callable[[], str],
@@ -710,13 +756,19 @@ def build_iv_history(*, symbol: str, candidate: dict, spot: float,
                      emit_exact: EmitFn, emit_legacy: EmitFn) -> dict:
     """一個候選的完整 Historical IV 回應——Exact-Contract Series（逐腿）
     與 Legacy Re-anchor Series（(tenor, delta) 重錨定，含 Spread IV
-    Gap）兩條獨立 pipeline 都跑完才合併回應，形狀與 T05 之前
-    `api_app/main.py` 的 `iv_history()` 端點編排完全一致（不含
-    `diagnostics` 信封——那由呼叫端在 flush 之後另外附加）。
+    Gap）兩條獨立 pipeline 都跑完才合併回應（不含 `diagnostics` 信封——
+    那由呼叫端在 flush 之後另外附加）。
 
     `candidate` 是 `store.find_candidate()` 的結果（含 `legs`／
     `days_to_expiry`）；`known_expiries` 是這個劇本全部策略結果裡出現
     過的到期日聯集（跨策略去重）；`spot` 是這次分析當下的標的現價。
+
+    T11（#194，兩段式補建 P3-a）：Legacy 家族不再同步觸發 backfill——
+    立即回傳既有歷史資料（可能是空的、可能是前幾天補到的一部分），
+    並在回應裡標示 `backfill_pending`（今天還沒補過一批）。Exact-
+    Contract 家族**不受影響**：`ensure_contract_history()` 本身就是
+    輕量、增量式的補缺口（不是「冷啟動一次補一大批」的 backfill 概念，
+    CONTEXT.md 明文區分兩者），沒有「兩段式」這回事可言。
     """
     # ---- Exact-Contract Series（逐腿） ----
     legs_payload: dict[str, dict] = {}
@@ -751,18 +803,16 @@ def build_iv_history(*, symbol: str, candidate: dict, spot: float,
             today=today)
 
     # ---- Legacy (tenor, delta) Re-anchor Series ----
-    target_expirations = ivhistory.nearby_expirations(
-        known_expiries, today=today,
-        tenor_days=candidate.get("days_to_expiry") or 0)
-    outcome, note = backfill_iv(symbol, provider, token, target_expirations,
-                                today=today, now_utc_iso=now_utc_iso,
-                                vendor=vendor, storage=storage, emit=emit_legacy)
+    # T11（#194）：不再同步呼叫 backfill_iv()——只讀「今天跑過了嗎」，
+    # 觸發交給獨立進入點 `run_legacy_backfill()`。
+    outcome, note, backfill_pending = legacy_backfill_status(
+        symbol, today, storage=storage)
 
     coords = ivhistory.spread_coordinates(candidate, spot=spot)
     if coords is None:
         return {**iv_payload(candidate["candidate_key"], [], outcome,
                              "這個候選算不出 (tenor, delta) 座標", today=today),
-               "legs": legs_payload,
+               "legs": legs_payload, "backfill_pending": backfill_pending,
                **({"spread_gap": spread_gap} if spread_gap is not None else {})}
 
     points = []
@@ -783,5 +833,5 @@ def build_iv_history(*, symbol: str, candidate: dict, spot: float,
 
     return {**iv_payload(candidate["candidate_key"], points, outcome, note,
                          today=today),
-           "legs": legs_payload,
+           "legs": legs_payload, "backfill_pending": backfill_pending,
            **({"spread_gap": spread_gap} if spread_gap is not None else {})}

@@ -1091,45 +1091,14 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         return {"correlation_id": diagnostics.current_correlation_id(),
                "events": [dataclasses.asdict(e) for e in kept]}
 
-    @app.get("/api/scenarios/{scenario_id}/iv-history")
-    def iv_history(scenario_id: str, candidate_key: str) -> dict:
-        """候選的 Historical IV 完整回應（Exact-Contract Series 逐腿＋
-        Legacy (tenor, delta) Re-anchor Series）。
-
-        T10（#192）：金融決策邏輯全部下沉到 `ivpipeline.build_iv_history()`
-        （T05／#189 建置、已由 `tests/test_ivpipeline_parity.py` 證明與
-        切換前的內嵌編排逐位元一致）——這裡只做 HTTP 邊界的事：權限
-        gate、candidate 404、把 `create_app()` 收到的資料源與 storage
-        接成 `ivpipeline` 認得的 port 形狀、呼叫模組、把 diagnostics
-        信封疊上去。
-
-        資料來自 **per-symbol 快取**（#129）：同一 ticker 的所有 Scenario
-        共用同一份 Legacy 家族歷史，各自只是投影到自己的座標；
-        Exact-Contract 家族則是逐張合約各自快取（HIVT-02／#153）。
-
-        **閘門**：Historical IV 未解鎖時直接 403，一個 vendor 請求都不發。
-
-        回應的 `status`（`ok`／`quota`／`vendor`）只描述**這次 backfill
-        嘗試**的結果，不代表資料能不能看——已快取的觀測算出的 percentile
-        不因今天補不下去就被藏起來（#133）。
-
-        **`diagnostics`（DG-03／#146）**：這次 request 產生的 sanitized
-        events，跟資料一起回——目前最常見的症狀是 HTTP 200 但資料是空
-        的，詳情不夾在回應裡的話，前端得先猜這次的 correlation id 是
-        什麼才查得到。
-        """
-        sc = _require(scenario_id)
-        # PERF-01（#177）：這個 request 內 credential 只查一次，往下傳給
-        # `_settings_view()`／`_known_secrets()`／挑選中 Provider 的
-        # token 取得三處共用——原本各自重新查一次同一批資料。
-        credentials = _credential_map()
-        settings_view = _settings_view(credentials=credentials)
-        if not settings_view["historical_iv_enabled"]:
-            raise HTTPException(
-                status_code=403,
-                detail="Historical IV 未啟用——請在設定頁選擇自訂資料源並通過測試連線")
-
-        diag = _CollectingDiagnostics()
+    def _iv_diagnostics_emitters(
+            diag: _CollectingDiagnostics, *,
+            credentials: dict[str, ProviderCredential | None] | None = None,
+    ) -> tuple[Callable, Callable]:
+        """建立 exact-contract／legacy 兩個 subsystem 各自的 emit closure
+        （HIVR-03／#162 既有的兩線分離）。T11（#194）從 `iv_history()`
+        內嵌的 `_make_emit` 抽出，供新增的 `/iv-history/backfill` 端點
+        共用同一套 redaction 邏輯，不必各自重寫一份。"""
         secrets = _known_secrets(credentials=credentials)
 
         def _make_emit(subsystem: str):
@@ -1140,11 +1109,30 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
                                         secrets=secrets, **context)
             return _emit
 
-        # HIVR-03（#162）：exact-contract 與 legacy (tenor,delta) 重錨定
-        # 兩個獨立 subsystem 各自的 emit，見 `_select_for_persistence`
-        # 的逐 subsystem 保留預算。
-        emit_exact = _make_emit(diagnostics.SUBSYSTEM_EXACT_CONTRACT)
-        emit_legacy = _make_emit(diagnostics.SUBSYSTEM_LEGACY_REANCHOR)
+        return (_make_emit(diagnostics.SUBSYSTEM_EXACT_CONTRACT),
+               _make_emit(diagnostics.SUBSYSTEM_LEGACY_REANCHOR))
+
+    def _iv_history_gate(
+            scenario_id: str, candidate_key: str, *,
+            diag: _CollectingDiagnostics, emit_exact: Callable,
+            credentials: dict[str, ProviderCredential | None] | None = None,
+    ) -> tuple:
+        """iv-history 相關端點共用的權限 gate＋candidate 查找（T11／#194
+        從 `iv_history()` 抽出，供新增的 `/iv-history/backfill` 端點
+        共用——兩個端點面對同一個 scenario_id／candidate_key 因此不會
+        給出不一致的答案）。
+
+        candidate 找不到時已經把 diagnostics flush 進 storage 才拋
+        404（呼叫端不需要再處理這件事）。回傳
+        `(sc, rec, cand, provider, token, known_expiries)`。
+        """
+        sc = _require(scenario_id)
+        creds = credentials if credentials is not None else _credential_map()
+        settings_view = _settings_view(credentials=creds)
+        if not settings_view["historical_iv_enabled"]:
+            raise HTTPException(
+                status_code=403,
+                detail="Historical IV 未啟用——請在設定頁選擇自訂資料源並通過測試連線")
 
         rec = _db().latest_result(scenario_id)
         if rec is None:
@@ -1163,7 +1151,7 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
                                 detail=f"找不到候選：{candidate_key}")
 
         provider = settings_view["historical_iv"]["provider"]
-        token = credentials[provider].token
+        token = creds[provider].token
 
         # `expiry_counts` 掛在每個策略結果（`results[i]`）底下，不是
         # view 頂層——這裡只要「有哪些到期日」，跨策略去重即可。
@@ -1171,7 +1159,13 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
             e for r in rec.view.get("results") or []
             for e, _ in r.get("expiry_counts") or []
         })
+        return sc, rec, cand, provider, token, known_expiries
 
+    def _iv_pipeline_ports() -> tuple:
+        """`ivpipeline` 認得的 Vendor／Storage port 組裝（T11／#194 從
+        `iv_history()` 抽出，`/iv-history/backfill` 共用同一套接線，
+        兩個端點打到同一組資料源與 storage adapter）。回傳
+        `(vendor, storage_ports)`。"""
         db = _db()
         # `ivpipeline` 的 port 型別只認識未包裝的關鍵字參數／原始形狀——
         # `save_contract_history`／`save_iv_backfill_run`／
@@ -1199,7 +1193,55 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
                     fetched_at=fetched_at)),
             iv_observations=db.iv_observations,
         )
+        return vendor, storage_ports
 
+    @app.get("/api/scenarios/{scenario_id}/iv-history")
+    def iv_history(scenario_id: str, candidate_key: str) -> dict:
+        """候選的 Historical IV 完整回應（Exact-Contract Series 逐腿＋
+        Legacy (tenor, delta) Re-anchor Series）。
+
+        T10（#192）：金融決策邏輯全部下沉到 `ivpipeline.build_iv_history()`
+        （T05／#189 建置、已由 `tests/test_ivpipeline_parity.py` 證明與
+        切換前的內嵌編排逐位元一致）——這裡只做 HTTP 邊界的事：權限
+        gate、candidate 404、把 `create_app()` 收到的資料源與 storage
+        接成 `ivpipeline` 認得的 port 形狀、呼叫模組、把 diagnostics
+        信封疊上去。
+
+        資料來自 **per-symbol 快取**（#129）：同一 ticker 的所有 Scenario
+        共用同一份 Legacy 家族歷史，各自只是投影到自己的座標；
+        Exact-Contract 家族則是逐張合約各自快取（HIVT-02／#153）。
+
+        **閘門**：Historical IV 未解鎖時直接 403，一個 vendor 請求都不發。
+
+        T11（#194，兩段式補建 P3-a）：**Legacy 家族的冷 backfill 不再
+        同步夾在這個請求裡**——這裡只讀「今天跑過了嗎」（`backfill_
+        pending` 欄位），既有歷史立刻回傳把圖畫出來；真正觸發補建交給
+        `POST .../iv-history/backfill`。Exact-Contract 家族的漸進式
+        `ensure_contract_history()` 不受影響，仍在這個請求內同步跑
+        （成本只補缺口、不是整批冷抓）。
+
+        回應的 `status`（`ok`／`quota`／`vendor`）只描述**最近一次
+        backfill 嘗試**的結果，不代表資料能不能看——已快取的觀測算出的
+        percentile 不因今天補不下去就被藏起來（#133）。
+
+        **`diagnostics`（DG-03／#146）**：這次 request 產生的 sanitized
+        events，跟資料一起回——目前最常見的症狀是 HTTP 200 但資料是空
+        的，詳情不夾在回應裡的話，前端得先猜這次的 correlation id 是
+        什麼才查得到。
+        """
+        # PERF-01（#177）：這個 request 內 credential 只查一次，往下傳給
+        # `_iv_diagnostics_emitters()`／`_iv_history_gate()` 共用——原本
+        # 各自重新查一次同一批資料。
+        credentials = _credential_map()
+        diag = _CollectingDiagnostics()
+        emit_exact, emit_legacy = _iv_diagnostics_emitters(
+            diag, credentials=credentials)
+        gate = _iv_history_gate(scenario_id, candidate_key,
+                                diag=diag, emit_exact=emit_exact,
+                                credentials=credentials)
+        sc, rec, cand, provider, token, known_expiries = gate
+
+        vendor, storage_ports = _iv_pipeline_ports()
         payload = ivpipeline.build_iv_history(
             symbol=sc.symbol, candidate=cand, spot=rec.view["meta"]["spot"],
             known_expiries=known_expiries, provider=provider, token=token,
@@ -1209,6 +1251,44 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
 
         diag_payload = _flush_diagnostics(diag)
         return {**payload, "diagnostics": diag_payload}
+
+    @app.post("/api/scenarios/{scenario_id}/iv-history/backfill")
+    def iv_history_backfill(scenario_id: str, candidate_key: str) -> dict:
+        """T11（#194，兩段式補建 P3-a）：Legacy (tenor, delta) 家族的
+        獨立補建進入點——`GET .../iv-history` 不再同步觸發這件事（見
+        該端點回應裡的 `backfill_pending`），前端在收到 `backfill_
+        pending: true` 時另外呼叫這裡，完成後重打一次
+        `GET .../iv-history` 就能看到補全後的圖表。
+
+        Progressive Backfill 本身（配額、取樣排程、到期日梯子演算法）
+        完全不變——這裡呼叫的就是既有 `backfill_iv()`（`ivpipeline.
+        run_legacy_backfill`），連同它既有的「今天已經跑過就直接沿用
+        結論」短路：同一個 symbol 同一天重複呼叫這個端點不會重複燒
+        vendor 額度，這個保證在引擎層、不是靠這裡另外擋一次。
+
+        閘門與 candidate 查找跟主端點共用同一套規則（`_iv_history_
+        gate()`）——未解鎖一樣 403、候選找不到一樣 404，兩個端點面對
+        同一個 scenario_id／candidate_key 不會給出不一致的答案。
+        """
+        credentials = _credential_map()
+        diag = _CollectingDiagnostics()
+        emit_exact, emit_legacy = _iv_diagnostics_emitters(
+            diag, credentials=credentials)
+        gate = _iv_history_gate(scenario_id, candidate_key,
+                                diag=diag, emit_exact=emit_exact,
+                                credentials=credentials)
+        sc, rec, cand, provider, token, known_expiries = gate
+
+        vendor, storage_ports = _iv_pipeline_ports()
+        target_expirations = ivpipeline.legacy_target_expirations(
+            cand, known_expiries, ny_today())
+        outcome, note = ivpipeline.run_legacy_backfill(
+            sc.symbol, provider, token, target_expirations,
+            today=ny_today(), now_utc_iso=now_utc_iso,
+            vendor=vendor, storage=storage_ports, emit=emit_legacy)
+
+        diag_payload = _flush_diagnostics(diag)
+        return {"outcome": outcome, "note": note, "diagnostics": diag_payload}
 
     # ---------- 設定：資料源與 Provider credential（Settings／#124） ----------
 

@@ -166,6 +166,17 @@ export function getIvHistoryCached(
   );
 }
 
+/** T11（#194，兩段式補建 P3-a）：Legacy 家族的補建（`ivHistoryBackfill`）
+ *  完成後，這個候選的 iv-history 快取已經過期——下一次 `getIvHistoryCached`
+ *  該真的重抓，不是繼續沿用補建前拿到的那份 `backfill_pending: true`。 */
+export function invalidateIvHistoryCache(
+  scenarioId: string,
+  candidateKey: string,
+  analyzedAt: string | null,
+): void {
+  invalidate(ivHistoryKey(scenarioId, candidateKey, analyzedAt));
+}
+
 /** 測試專用：清空整個快取，避免測試之間互相汙染。 */
 export function _resetCacheForTests(): void {
   cache.clear();

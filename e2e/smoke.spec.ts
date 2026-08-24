@@ -1316,6 +1316,9 @@ function fullIvResponse(overrides: Record<string, unknown> = {}) {
       sell: legHistoricalIv({ contract: SELL_CONTRACT, current_percentile: 0.55,
                              delta_4w: -0.004 }),
     },
+    // T11（#194，兩段式補建 P3-a）：既有測試絕大多數不關心這個欄位，
+    // 預設「今天已經補過」——不會意外觸發本輪新增的補建 POST。
+    backfill_pending: false,
     ...overrides,
   };
 }
@@ -1569,6 +1572,62 @@ test("Historical IV 今日額度用完：percentile／Δ4w 照樣顯示，只多
 
   // 主分析頁其餘部分照常
   await expect(page.getByText("劇本主圖")).toBeVisible();
+});
+
+test("Historical IV 兩段式補建（T11／#194，P3-a）：backfill_pending 觸發" +
+     "補建端點，完成後自動重抓補全，卡片期間標「歷史資料補建中」",
+   async ({ page }) => {
+  await routeLibrary(page, libraryRow());
+  await page.route("**/api/settings", (route) =>
+    route.fulfill({ json: { historical_iv_enabled: true } }));
+
+  // 第一次 GET 帶著上一輪的舊資料＋`backfill_pending: true`；補建完成
+  // 後前端會重抓一次，這次回應換成補全後的新資料
+  // （`observations` 66→驗證畫面真的換新，不是原地不動）。
+  let ivCallCount = 0;
+  await page.route("**/api/scenarios/*/iv-history*", (route) => {
+    ivCallCount += 1;
+    return route.fulfill({ json: fullIvResponse({
+      backfill_pending: ivCallCount === 1,
+      observations: ivCallCount === 1 ? 10 : 66,
+    }) });
+  });
+
+  // 更具體的路徑（含 `/backfill` 這個額外路徑段）晚註冊、優先匹配
+  // ——Playwright glob 的 `*` 不吃路徑分隔符，上面 `iv-history*` 這條
+  // 本來就匹配不到 `/iv-history/backfill`（既有教訓，見本檔多處
+  // `*` 尾綴慣例），這裡明確再獨立掛一條，不依賴匹配順序僥倖成立。
+  const backfillCalls: string[] = [];
+  await page.route("**/api/scenarios/*/iv-history/backfill*", async (route) => {
+    expect(route.request().method()).toBe("POST");
+    backfillCalls.push(route.request().url());
+    // 刻意延遲：真實 backfill 會真的花時間打 vendor，這裡給一個短暫
+    // 延遲，讓「補建中」這個中間狀態有機會被斷言到，不是瞬間完成、
+    // 從沒真正可觀察過。
+    await new Promise((r) => setTimeout(r, 400));
+    return route.fulfill({ json: {
+      outcome: "ok", note: null,
+      diagnostics: { correlation_id: "cid-e2e-backfill", events: [] },
+    } });
+  });
+
+  await page.goto("/#/s/s1");
+
+  const block = page.locator(".iv-history");
+  await expect(block).toBeVisible();
+  // 補建進行中：卡片上有一句話說明，且舊資料（10 個觀測）仍然完整可看
+  // ——不是整塊清空等新資料。
+  await expect(block.getByText("歷史資料補建中……")).toBeVisible();
+  await openAdvanced(block);
+  await expect(block.getByText(/10 個觀測/).first()).toBeVisible();
+
+  // 補建結束後自動重抓：說明文字消失，畫面換成新一輪回應（買／賣腿與
+  // Normalized Skew 三處都各自帶著這個新數字，`.first()` 只是取其一
+  // 確認畫面真的換新，不是特別要驗哪一處）。
+  await expect(block.getByText("歷史資料補建中……")).toHaveCount(0);
+  await expect(block.getByText(/66 個觀測/).first()).toBeVisible();
+  expect(backfillCalls).toHaveLength(1);
+  expect(backfillCalls[0]).toContain("/iv-history/backfill");
 });
 
 test("Historical IV 完全沒有可比較觀測：誠實顯示沒有歷史資料，不硬湊（#133／#140／HIVT-05）",

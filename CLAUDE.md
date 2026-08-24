@@ -521,19 +521,83 @@ Candidate 去重，避免瑣碎刪除跟結構改動混在同一份 diff）。�
   全綠（本票不觸碰任何前端檔案）；typecheck 通過；Playwright e2e
   Historical IV 相關 18 條全綠（cutover 對前端完全透明）。
 
+**已完成**（續前）：
+
+- **T11** [#194] IV 冷 backfill 兩段式（P3-a）：`option_chaser/
+  ivpipeline.py` 新增三個函式——`legacy_target_expirations()`（票面
+  「Legacy 家族要鎖定哪幾個到期日」判準抽出，`build_iv_history()`
+  與獨立補建端點共用同一條規則，避免兩處各自重算出不同答案）、
+  `legacy_backfill_status()`（純讀取、零 vendor 呼叫，只回報「今天
+  跑過了嗎」與上一次真正跑過的 `outcome`／`note`）、
+  `run_legacy_backfill()`（既有 `backfill_iv()` 的別名進入點，
+  Progressive Backfill 本身——配額、取樣排程、到期日梯子演算法、
+  「今天已跑過」短路——逐字沿用，零重複邏輯）。`build_iv_history()`
+  的 Legacy 家族段落改呼叫 `legacy_backfill_status()` 取代原本同步
+  呼叫 `backfill_iv()`，回應新增 `backfill_pending` 欄位；Exact-
+  Contract 家族（`ensure_contract_history()` 漸進式補缺口）完全不受
+  影響——CONTEXT.md 明文區分兩者不是同一種「backfill」概念。
+
+  `api_app/main.py`：`iv_history()` 路由拆出三個共用 helper
+  （`_iv_diagnostics_emitters()`／`_iv_history_gate()`／
+  `_iv_pipeline_ports()`，把原本內嵌的閘門／candidate 查找／emitter
+  建構／port 組裝抽出來，PERF-01 的「credential 只查一次」優化透過
+  顯式 `credentials` 參數延續，不因拆分而退化成重複查詢），新增
+  `POST /api/scenarios/{id}/iv-history/backfill` 端點呼叫
+  `ivpipeline.legacy_target_expirations()`／`run_legacy_backfill()`
+  觸發真正的補建，兩個端點共用同一套 gate 因此對同一個
+  scenario_id／candidate_key 不會給出不一致的答案。
+
+  **測試（`tests/test_api_iv_history.py`）大規模更新**：21 條既有
+  測試因為「`GET .../iv-history` 不再同步觸發 backfill」而斷言失敗，
+  另外發現 6 條測試雖然仍綠燈、但已經悄悄變成**只驗證到跟原意不同的
+  事**——`rec.calls == []`／`all(e is None for e in rec.expirations)`
+  這類「沒有東西發生」式的斷言，在 backfill 觸發權轉移到新端點後
+  變成恆真（vacuous pass），不是真的在驗證「不重抓」「不多帶
+  expiration」。逐一排查後全數修正：新增 `_backfill()` test helper
+  （對應 `POST .../backfill`），既有靠 `_get()` 順便觸發 backfill 的
+  斷言改成先呼叫 `_backfill()` 再視情況讀 `_get()`／backfill 回應
+  本身；`test_the_full_ledger_covers_every_stage_and_shares_one_
+  correlation_id`（DG-04 核心交付）改寫成兩段——`cache`／`backfill`
+  兩個 stage 現在只活在 backfill 回應自己的 correlation_id 底下，
+  `GET` 回應涵蓋其餘六站，兩次請求合起來仍是完整的「N→0」帳本，只是
+  不再擠在同一個 correlation_id——這是兩段式設計的真實、預期後果，
+  不是需要掩蓋的缺陷，已在測試 docstring 記錄。全套後端測試（記憶體
+  ＋真實 Postgres 雙後端）1504 條全綠。
+
+  **前端**：`src/api.ts` 新增 `IvHistoryView.backfill_pending`／
+  `ivHistoryBackfill()`／`IvHistoryBackfillResult`；`src/fetchCache.ts`
+  新增 `invalidateIvHistoryCache()`；`src/IvHistory.tsx` 新增獨立
+  effect——偵測 `backfill_pending` 時呼叫補建端點，完成（不論成功
+  失敗，皆已設計成不會無限重試：同一個 (scenario, candidate) 組合
+  這次掛載只嘗試一次，`backfillAttempted` ref 守門）後 invalidate
+  快取＋重新整份請求，卡片頂端顯示「歷史資料補建中……」（不必展開
+  Advanced 就看得到，比照「補建中不擋內容、舊資料照常可看」的既有
+  P1 精神延伸）。**施工中抓到並修正一個真 bug**：第一版直接引用了
+  沒宣告過的 `currentDataRef`（編譯不會過，是 hooks 呼叫順序限制下
+  一時筆誤），改成在 early-return 之前重算 `dataKey === key ? data
+  : null` 這條跟 render 用的 `currentData` 同一條判斷式；另外發現若
+  同一個候選的補建仍在飛行中就切換候選，`backfillInFlight` 會卡在
+  `true` 永遠不清（`finally` 裡的 `if (!alive) return` 連帶跳過了
+  重置），已改成 effect cleanup 一律重置這個旗標，換候選時「補建中」
+  提示不會誤留在新候選的卡片上。前端測試新增 5 條（`IvHistory.
+  test.tsx`：自動觸發／`backfill_pending` 為 false 時不觸發／進行中
+  文字＋完成後自動重抓換新資料／同一候選只嘗試一次即使重抓後仍
+  pending／補建端點本身失敗也會重抓、不會卡住），Playwright 新增
+  1 條（`smoke.spec.ts`，手機 viewport：完整兩段式流程，含明確掛獨立
+  route `**/api/scenarios/*/iv-history/backfill*`——既有教訓
+  「`iv-history*` 尾綴 `*` 不吃路徑分隔符」，不依賴既有 route 順序
+  僥倖成立）。全套：後端 1504、前端 Vitest 633、typecheck／build
+  皆過、Playwright e2e 88 條（iPhone 55＋Desktop 33）全綠。
+
 **待辦（← 為下一張；標注「被誰擋」）**：
 
-- **T11** [#194] IV 冷 backfill 兩段式（P3）——被 #192 擋（已解除，
-  無其他 blocker）←
 - **T12** [#195] Backfill 併發形狀修正（執行緒池只建一次）——被
-  #192 擋（已解除，同一段程式碼已搬新模組，新位置修一次到位、可與
-  T11 任意順序穿插）
+  #192 擋（已解除，同一段程式碼已搬新模組，可穿插不受 T11 影響）←
 - **T13** [#197] 全面回歸與最終驗收——被 #185–#196 全部擋，需求方
   真機驗收通過才算完
 
 下一步：照專案規則「全部 ticket 做完才開 PR」，繼續 `/implement`
-T11（依賴順序），T12 已無 blocker、之後可任意時候穿插，完成兩者後
-只剩 T13 收尾。
+T12，完成後只剩 T13 收尾。
 
 ### Spec #151（2026-08-17 發佈）——Historical IV Trend v1（Exact Contract Canonical Series）
 
