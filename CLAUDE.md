@@ -398,12 +398,28 @@ Candidate 去重，避免瑣碎刪除跟結構改動混在同一份 diff）。�
   `remaining`，本票固定回空陣列，Continuation 留給 T07。新增
   `tests/test_api_refresh.py` 一輪刷新測試區塊 14 條
 
+**已完成**（續前）：
+
+- **T07** [#193] Refresh Run Continuation（commit `d349dbc`）：
+  `refresh-run` 新增 server 端時間預算（模組常數
+  `REFRESH_RUN_BUDGET = timedelta(seconds=45)`，明顯小於 CONTEXT.md
+  記錄的 60 秒函式硬性上限，可注入）。每處理完一個劇本（不論成敗）用
+  `time.monotonic()` 檢查是否超過 deadline，超過後之後全部劇本
+  （含還沒開始的 symbol 分組）原樣依序進 `remaining`——分組順序等於
+  `dict` 插入順序，已完成＋remaining 永遠等於送進去的全集。已知且
+  刻意接受的架構後果：續跑是全新 invocation，ADR-0001 的 symbol
+  去重不會跨呼叫存活，remaining 裡同一個 symbol 續跑會重新抓一次
+  （docstring 已記錄，非本票要解決的問題）。新增 Continuation 測試
+  區塊 6 條：零預算只完成第一個、其餘全進 remaining；已完成＋
+  remaining 精確覆蓋全集不遺漏不重複；人為拉長單一劇本處理時間
+  （而非只調預算為 0）也能逼出耗盡；同一組 remaining 再打一次能接續
+  完成且與一次做完結果一致；常見規模（12 劇本、3 symbol）預設預算
+  下單次完成不觸發 Continuation
+
 **待辦（← 為下一張；標注「被誰擋」）**：
 
-- **T07** [#193] Refresh Run Continuation（時間預算＋續跑）——被
-  #190 擋（已解除）←
 - **T08** [#196] Refresh Run 前端整合（P1 更新中徽章／P2 部分成功
-  摘要／P4 建立範圍收斂）——被 #193 擋
+  摘要／P4 建立範圍收斂）——被 #193 擋（已解除）←
 - **T09** [#191] View 契約：Candidate 去重（四容器收斂＋重複計算
   收斂）——被 #188 擋（已解除，無其他 blocker，可任意時候認領）
 - **T10** [#192] IV history pipeline 上線（main.py 換線＋測試搬家＋
@@ -415,7 +431,7 @@ Candidate 去重，避免瑣碎刪除跟結構改動混在同一份 diff）。�
   真機驗收通過才算完
 
 下一步：照專案規則「全部 ticket 做完才開 PR」，繼續 `/implement`
-T06（依賴順序），T09／T10 目前也已無 blocker、之後可任意順序穿插。
+T08（依賴順序），T09／T10 目前也已無 blocker、之後可任意順序穿插。
 
 ### Spec #151（2026-08-17 發佈）——Historical IV Trend v1（Exact Contract Canonical Series）
 
