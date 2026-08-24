@@ -416,12 +416,39 @@ Candidate 去重，避免瑣碎刪除跟結構改動混在同一份 diff）。�
   完成且與一次做完結果一致；常見規模（12 劇本、3 symbol）預設預算
   下單次完成不觸發 Continuation
 
+- **T08** [#196] Refresh Run 前端整合（commit `bc4f03f`）：`App.tsx`
+  從「一條佇列、逐一送出單一劇本刷新」（V4 跟進票／#136）改接後端
+  T06/T07 的批次端點。**P1** 整段灰化鎖定（`partitionByLock()`）整組
+  移除，改成 `updatingIds: Set<string>`「更新中」徽章——列項全程
+  可點、顯示上一輪舊資料，不反灰、不拿掉 `href`；`sortScenarios()`
+  不再把更新中的項目獨立排到後面（用它上一輪的 `best_return` 正常
+  排序）。**P2** `runBatch()` 累計整輪成功／失敗數，Toolbar 顯示
+  「N 成功／M 失敗」（`formatRunSummary()`），取代逐一「第幾個／
+  共幾個」進度。**P4** 新建劇本只呼叫 `runBatch([created.id])`，不再
+  刷新全部劇本；開站與手動點「重新整理」才刷新全部未過期劇本。
+  **Continuation** `runBatch()` 用迴圈追 `response.remaining` 直到
+  清空，對呼叫端透明——後端分批續跑不需要前端知道正在分批。單一
+  劇本重試（卡片失敗重試、詳細頁刷新入口）維持走既有單一劇本
+  `refresh` 端點（`refreshOne()`），不占用批次端點。
+  **E2E 連鎖修正**（本票最大宗的非功能性工作）：Playwright glob
+  `**/api/scenarios/*/refresh` 不匹配 `/api/scenarios/refresh-run`
+  （`*` 只吃一個路徑段，`refresh-run` 是單一段、不含 `/refresh`
+  子路徑）——開站與建立劇本現在一律打批次端點，既有大量 E2E 測試的
+  單一劇本 refresh route mock 因此攔不到，`updatingIds` 卡住不清、
+  後續斷言逐一 timeout。修法：`smoke.spec.ts` 新增全域
+  `test.beforeEach` 空氣回應（`{results:[],remaining:[]}`）當安全網，
+  逐一補上測試專屬的 `refresh-run` route（含失敗案例回
+  `{ok:false,stage,message}`）；`desktop.spec.ts` 的共用
+  `routeTwoScenarios()` 與個別測試同步補上。順手修正一條文案斷言
+  過期（`"1/1"` 進度→新版「更新中……」單一狀態文字）。
+  全套測試：後端 1434 條（記憶體＋真實 Postgres）全綠；前端 Vitest
+  628 條全綠；typecheck／build 通過；Playwright e2e 87 條全綠
+  （iPhone 54＋Desktop 33）。
+
 **待辦（← 為下一張；標注「被誰擋」）**：
 
-- **T08** [#196] Refresh Run 前端整合（P1 更新中徽章／P2 部分成功
-  摘要／P4 建立範圍收斂）——被 #193 擋（已解除）←
 - **T09** [#191] View 契約：Candidate 去重（四容器收斂＋重複計算
-  收斂）——被 #188 擋（已解除，無其他 blocker，可任意時候認領）
+  收斂）——被 #188 擋（已解除，無其他 blocker，可任意時候認領）←
 - **T10** [#192] IV history pipeline 上線（main.py 換線＋測試搬家＋
   契約樣本＋刪舊 680 行）——被 #189 擋（已解除，無其他 blocker）
 - **T11** [#194] IV 冷 backfill 兩段式（P3）——被 #192 擋
@@ -431,7 +458,7 @@ Candidate 去重，避免瑣碎刪除跟結構改動混在同一份 diff）。�
   真機驗收通過才算完
 
 下一步：照專案規則「全部 ticket 做完才開 PR」，繼續 `/implement`
-T08（依賴順序），T09／T10 目前也已無 blocker、之後可任意順序穿插。
+T09（依賴順序，目前已無 blocker），T10 之後接續、T11／T12 依序解鎖。
 
 ### Spec #151（2026-08-17 發佈）——Historical IV Trend v1（Exact Contract Canonical Series）
 
