@@ -27,7 +27,7 @@ block 裡，不能切成好幾個 code block、也不能中間插普通文字把
 `［回報#001］spec #137 拆票完成`）。編號是**累計總數**，不因換
 session、換分支、換主題而歸零——目前最新編號記在這裡：
 
-> 目前次序：024（下一份回報用 025）
+> 目前次序：025（下一份回報用 026）
 
 每發一份回報就把上面這個數字改成剛剛用掉的那個，跟著那次改動一起
 commit（沒有其他改動要 commit 時，單獨為這一行開一個小 commit 也
@@ -216,6 +216,63 @@ commit（沒有其他改動要 commit 時，單獨為這一行開一個小 commi
   之後。唯一取捨：目標價差距（gap）計算留在 render 層（與既有
   `render_summary` 的 `move_pct` 同類手法一致，非新模式），未額外
   搬進服務層——標準面審查列為非阻塞建議，判斷維持現狀
+
+### Architecture Review 輪（2026-08-24，`/improve-codebase-architecture`，回報#025）
+
+需求方授權完全自主跑 skill 原生流程（自選 candidate、自選優先序、
+可裁定既有 PERF-01~06 保留／修改／回退；紅線＝不得刪使用者功能、
+不得開新功能）。四路 Explore（API 請求生命週期／engine 模組深度／
+前端請求模式／PERF 輪 vs serverless forensics）已完成，HTML 報告
+已交付需求方（tmp 檔，依 skill 裁示不進 repo）。
+
+**核心診斷**：「局部 benchmark 變快、production 體感變慢」兩者同時
+為真——慢在執行結構不在單一 endpoint。(1) 前端一輪刷新＝N 個串行
+serverless invocation（`App.tsx:187` 逐一 await），每次各付 Neon TLS
+握手＋vendor 抓取＋兩份大 JSONB 寫入；(2) 四個「cache」全是 Neon 表，
+命中＝數百 KB JSONB 網路 SELECT＋dataclass 重建，PERF 輪 benchmark
+只數「省掉的 upstream 抓取」從未計入「新增的 Neon 往返」；(3) 詳細頁
+deep-link 有 refetch cascade（3 次 ~100KB 全量下載＋2 次 iv-history）；
+(4) `api_app/main.py` 2,121 行中約 1,000 行是 domain 邏輯（IV 編排
+680 行只能靠 2,970 行的 `test_api_iv_history.py` 從 HTTP 測）。
+
+**六個 candidates**（詳見 HTML 報告；C1 為自選 top）：
+- **C1 Refresh Run（Strong，top）**：一輪刷新收進一個深模組——單一
+  interface 收整批劇本，一次 invocation 內按 symbol 去重抓 chain
+  （純 in-process dict）、逐劇本分析、批次寫回；`chain_cache` 模組
+  ＋資料表＋15s TTL 整個刪除（deletion test 通過：複雜度集中進 run
+  module）；前端佇列塌縮成一個請求。
+- **C2 IV History Pipeline（Strong）**：`main.py:1279–1959` 下沉為
+  engine 深模組（ports：vendor history／surface／storage／clock），
+  HTTP handler 縮回 glue；補 iv-history contract fixture（全站最大
+  payload、目前唯一沒有 fixture）。
+- **C3 View 契約瘦身（Worth exploring）**：4 candidates → 15 份序列化
+  收斂為一處＋key 引用；`report_text`／`methodology_text`（前端不
+  渲染）移出 view；schema_version 升版＋樣本重產。
+- **C4 前端取數紀律（Strong）**：以 `(id, analyzed_at)` 為 key 的
+  fetch module，消滅 cascade／settings 重抓／無 AbortController。
+- **C5 死重清除（Strong）**：`workspace.py`（348/354 行 prod 不可達，
+  僅 2 個 clock helper 存活）、`store.py` 檔案系統半邊（~350 行零
+  caller）、`data/base.py` 零實作 Protocol、data 層 on-disk cache
+  死碼、`main.py:2121` 冷啟建第二個 app——deletion test 全過。
+- **C6 Storage lifecycle 對 serverless 誠實（Worth exploring，隨
+  C1/C2 施工）**：PERF-01 共用連線語意保留但改 lazy、合併兩層
+  BaseHTTPMiddleware、schema DDL 移出請求路徑、PERF-05 pool 提出
+  迴圈；memory adapter 補 `request_scope` 讓測試走到 production 路徑。
+
+**舊決策裁定**：保留 PERF-02（serverless-correct）、PERF-03（方向
+正確，註明命中非免費）、PERF-04（純 CPU）、Neon pooled DSN 優先序、
+「刷新只有三個觸發時機」產品規則（C1 只改執行結構不改觸發語意）。
+推翻／修形：PERF-06 chain_cache（miss 純加成本、hit 無證據比 Cboe
+CDN 便宜、15s TTL 被串行佇列擊敗——由 C1 取代後刪除）、PERF-01 形狀
+（eager connect＋第二層 middleware → lazy＋合併）、PERF-05 形狀
+（每天新建 ThreadPoolExecutor ×25 → 提出迴圈；50ms sleep mock 的
+3.9x 在 fractional vCPU＋GIL 下存疑）、前端串行單劇本刷新設計（由
+C1 批次取代）。
+
+**下一步（skill 原生流程）**：needs 需求方——對 C1 進 grilling loop
+（60s 上限的分批策略、進度回饋形狀、`refresh-run` interface 細節），
+grilling 中依裁決 lazily 建立 `CONTEXT.md`／ADR，再 `/to-spec`／
+拆票施工。C5 無爭議可隨時先行。
 
 ### Spec #151（2026-08-17 發佈）——Historical IV Trend v1（Exact Contract Canonical Series）
 
