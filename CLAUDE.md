@@ -27,7 +27,7 @@ block 裡，不能切成好幾個 code block、也不能中間插普通文字把
 `［回報#001］spec #137 拆票完成`）。編號是**累計總數**，不因換
 session、換分支、換主題而歸零——目前最新編號記在這裡：
 
-> 目前次序：026（下一份回報用 027）
+> 目前次序：027（下一份回報用 028）
 
 每發一份回報就把上面這個數字改成剛剛用掉的那個，跟著那次改動一起
 commit（沒有其他改動要 commit 時，單獨為這一行開一個小 commit 也
@@ -318,8 +318,20 @@ grilling 中依裁決 lazily 建立 `CONTEXT.md`／ADR，再 `/to-spec`／
 裁示落地：`docs/adr/0001-chain-sharing-within-run-only.md`（chain
 共用只在 run 內，不跨 invocation）＋根目錄 `CONTEXT.md`（領域詞彙，
 含 Refresh Run／Continuation／Partial Success／Updating Badge／
-Two-Phase Backfill 等新詞）。下一步：`/to-spec` → 拆票 → 逐張
-`/implement`。
+Two-Phase Backfill 等新詞）。
+
+**Spec 已發佈＝issue #184**（2026-08-24，`ready-for-agent`，回報#027）：
+涵蓋 E1–E8＋P1–P4 全部裁定，66 條 user stories。**測試接縫定案**
+（4 條，唯一新增是第 3 條）：(1) HTTP API＝既有主接縫（Refresh Run
+批次／去重／Continuation／Partial Success／P4 範圍／契約形狀）；
+(2) Storage port＝既有，E3 補記憶體 adapter 的 request scope 後，
+既有契約測試組首次真正涵蓋 production 連線路徑（補既有覆蓋缺口，
+非新接縫）；(3) **IV history pipeline 模組 interface＝唯一新增**，
+兩個 adapter（marketdata＋記憶體假體）證成真 seam，2,970 行 HTTP
+測試檔的編排斷言**搬過去**而非兩層都留；(4) 前端＝既有
+`global.fetch` mock＋Playwright，新增「每畫面請求數上限」斷言防
+cascade 回歸。建議施工順序：E8→E3→E1+E2→E7→E6→E5→P3→E4。
+下一步：`/to-tickets` 拆票 → 逐張 `/implement`。
 
 ### Spec #151（2026-08-17 發佈）——Historical IV Trend v1（Exact Contract Canonical Series）
 
