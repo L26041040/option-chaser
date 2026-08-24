@@ -445,12 +445,46 @@ Candidate 去重，避免瑣碎刪除跟結構改動混在同一份 diff）。�
   628 條全綠；typecheck／build 通過；Playwright e2e 87 條全綠
   （iPhone 54＋Desktop 33）。
 
+- **T09** [#191] View 契約：Candidate 去重（commit `1266a6b`）：
+  `candidates`／`expiry_best`／`expiry_top10`／`expiry_groups[].
+  rows[]` 四個容器過去各自完整序列化一份同一個 Candidate（重疊時最多
+  重複 4 次），新增頂層 `candidate_pool`（單一字典，鍵＝
+  `candidate_key`，跨策略共用一份——key 本身已含策略前綴天生不衝突），
+  四個容器改存 key 字串引用。`_candidate()` 的輸出對同一個 key 是
+  container-invariant（唯一依賴入選容器的欄位是 `CandidateView.pros`，
+  而 `pros` 從不序列化進 View），去重因此只需要比對 key。
+  `find_candidate()`／`representative_candidate()` 兩個讀取端同步改走
+  pool，並保留舊 schema（<=2，容器內直接內嵌完整字典）的相容分支——
+  「既有已儲存的 View 不做資料遷移」，這兩處是僅有需要相容的讀取
+  路徑（其餘容器只在剛產生的新鮮 view 上被讀取，不會遇到舊格式）。
+  schema_version 2→3。Payload 實測：契約樣本 229KB→55KB、
+  231KB→55KB，各縮減約 76%。
+  韌性／完成度計算共用：`scenarios.py` 新增 `ResilienceMetrics`／
+  `resilience_metrics()`，把 `scenario_vector()`／`completion_curve()`／
+  `completion_scan()`（最貴，1200 步線性掃描）依 `id(val)` 快取；
+  `service._v4_fields()`（View 路徑）與 `report._resilience_lines()`
+  （CLI／API 文字報告路徑）共用同一個由 `_single_leg_result()`／
+  `_spread_result()` 建立、貫穿整輪分析的快取字典——`rank_spreads()`／
+  `sorted()`／切片不複製元素，同一個候選在 report 與 View 兩條路徑、
+  以及 View 自己三個容器之間用的都是同一個 Python 物件，`id()` 因此
+  是安全的快取鍵。實測（`xyz_v2_snapshot.json`）：`completion_scan`
+  呼叫次數 16→9（−44%）。
+  前端：`api.ts` 新增 `CandidateMap`（不叫 CandidatePool，避免跟既有
+  `./CandidatePool` 元件同名）與 `resolveCandidate(view, key)`；
+  `ExpiryTop10.candidates` → `candidate_keys`；`baselineTopCandidate()`
+  改走 pool；`expiry.ts::expiryOptions()` 新增 `view` 參數解回完整
+  內容；`ExpiryStructure.tsx` 新增 `view` prop，呼叫端
+  `ScenarioDetail.tsx` 同步補上。六個共用契約樣本的既有 Vitest 檔
+  （`AnalysisReport`／`ExpiryStructure`／`Heatmap`／`ScenarioDetail`／
+  `SpreadHistory`／`expiry`）與兩個 Playwright 規格全部同步通過。
+  全套測試：後端（記憶體＋真實 Postgres）全綠；前端 Vitest 628 條
+  全綠；typecheck／build 通過；Playwright e2e 87 條全綠（iPhone 54＋
+  Desktop 33）。
+
 **待辦（← 為下一張；標注「被誰擋」）**：
 
-- **T09** [#191] View 契約：Candidate 去重（四容器收斂＋重複計算
-  收斂）——被 #188 擋（已解除，無其他 blocker，可任意時候認領）←
 - **T10** [#192] IV history pipeline 上線（main.py 換線＋測試搬家＋
-  契約樣本＋刪舊 680 行）——被 #189 擋（已解除，無其他 blocker）
+  契約樣本＋刪舊 680 行）——被 #189 擋（已解除，無其他 blocker）←
 - **T11** [#194] IV 冷 backfill 兩段式（P3）——被 #192 擋
 - **T12** [#195] Backfill 併發形狀修正（執行緒池只建一次）——被
   #192 擋（同一段程式碼已搬新模組，新位置修一次到位）
@@ -458,7 +492,7 @@ Candidate 去重，避免瑣碎刪除跟結構改動混在同一份 diff）。�
   真機驗收通過才算完
 
 下一步：照專案規則「全部 ticket 做完才開 PR」，繼續 `/implement`
-T09（依賴順序，目前已無 blocker），T10 之後接續、T11／T12 依序解鎖。
+T10（依賴順序，目前已無 blocker），完成後 T11／T12 依序解鎖。
 
 ### Spec #151（2026-08-17 發佈）——Historical IV Trend v1（Exact Contract Canonical Series）
 
