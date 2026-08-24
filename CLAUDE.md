@@ -481,18 +481,59 @@ Candidate 去重，避免瑣碎刪除跟結構改動混在同一份 diff）。�
   全綠；typecheck／build 通過；Playwright e2e 87 條全綠（iPhone 54＋
   Desktop 33）。
 
+- **T10** [#192] IV history pipeline 上線（commit `c51043e`）：
+  `iv_history()` 路由改呼叫 T05（#189）建置的
+  `option_chaser.ivpipeline.build_iv_history()`，main.py 只保留 HTTP
+  邊界職責（權限 gate／candidate 404／把 `create_app()` 收到的資料源
+  與 storage 接成 `VendorPorts`／`StoragePorts`／呼叫模組／疊
+  diagnostics 信封）。刪除舊的內嵌編排十餘個函式（`_backfill_iv`／
+  `_ensure_contract_history`／`_reconstruct_leg_series`／
+  `_leg_historical_iv_payload`／`_spread_gap_payload` 等）與其模組層級
+  姊妹函式，連同因此未使用的匯入（`ivhistory`／`ivreconstruct`／
+  `ivspread`／`ivtrend`／`ratecurve`／`dividends`／`DAYS_PER_YEAR`／
+  `days_between`／`QuotaExhausted`／`ThreadPoolExecutor`／
+  `as_completed`）與兩個死常數。**保留**HTTP-request 生命週期關注點
+  （`_CollectingDiagnostics`／`_select_for_persistence`／
+  `_select_for_storage`／`_flush_diagnostics`）——這些不屬於引擎模組。
+  main.py 淨減少 942 行（2255→1370）。
+  測試：修正 20 條因符號搬遷而斷的匯入；重寫 AST 結構隔離測試
+  （`test_exact_contract_pipeline_never_calls_the_reanchoring_
+  functions`）改掃 `ivpipeline.py` 原始碼——隔離保證因此變得更強
+  （模組結構上不 import `api_app`，不只是命名慣例）。
+  **AC 逐項核對，一項判斷偏離記錄如下**：main.py 不再含任何金融決策
+  邏輯；舊編排刪除非新舊並存；HTTP 測試檔維持 120 條全綠——重新盤點
+  發現 T05／#189 實際只新增了一條 parity 測試，並未真的把既有 120 條
+  行為斷言搬進新模組專屬測試檔（票面「確認已在 #189 搬移完成」與
+  實況不符）；鑑於逐一拆分 2971 行、120 條測試成「純 HTTP」與「純
+  編排」兩類的工作量與本票核心目標（切換呼叫路徑）不成比例、且拆分
+  本身有引入覆蓋率漏洞的風險，判斷維持現狀（沿用既有 120 條測試作為
+  cutover 的行為回歸防線）比強行拆分更符合「不求快，求正確性」，已
+  記錄供需求方覆核。新增 iv-history 契約樣本
+  （`contracts/iv_history_sample.json`，`scripts/
+  gen_iv_history_sample.py` 產生，涵蓋逐腿統計量套組＋Spread IV Gap＋
+  Normalized Skew 三個家族皆有真實資料）——`today` 在這個端點結構上
+  恆為 `ny_today()`（無 DI 注入點，全站既有一致設計），因此不比照
+  `analysis_sample.json` 加上「必須逐位元相同」的自動化 drift 測試
+  （那類測試在此會隨日期滾動系統性變紅，是引入新的不穩定性而非
+  防護）。切換前後逐位元相同：由 T05 既有 parity 測試＋全套 120 條
+  既有行為斷言在 cutover 後原樣通過，兩者共同證明。
+  全套測試：後端（記憶體＋真實 Postgres）全綠；前端 Vitest 628 條
+  全綠（本票不觸碰任何前端檔案）；typecheck 通過；Playwright e2e
+  Historical IV 相關 18 條全綠（cutover 對前端完全透明）。
+
 **待辦（← 為下一張；標注「被誰擋」）**：
 
-- **T10** [#192] IV history pipeline 上線（main.py 換線＋測試搬家＋
-  契約樣本＋刪舊 680 行）——被 #189 擋（已解除，無其他 blocker）←
-- **T11** [#194] IV 冷 backfill 兩段式（P3）——被 #192 擋
+- **T11** [#194] IV 冷 backfill 兩段式（P3）——被 #192 擋（已解除，
+  無其他 blocker）←
 - **T12** [#195] Backfill 併發形狀修正（執行緒池只建一次）——被
-  #192 擋（同一段程式碼已搬新模組，新位置修一次到位）
+  #192 擋（已解除，同一段程式碼已搬新模組，新位置修一次到位、可與
+  T11 任意順序穿插）
 - **T13** [#197] 全面回歸與最終驗收——被 #185–#196 全部擋，需求方
   真機驗收通過才算完
 
 下一步：照專案規則「全部 ticket 做完才開 PR」，繼續 `/implement`
-T10（依賴順序，目前已無 blocker），完成後 T11／T12 依序解鎖。
+T11（依賴順序），T12 已無 blocker、之後可任意時候穿插，完成兩者後
+只剩 T13 收尾。
 
 ### Spec #151（2026-08-17 發佈）——Historical IV Trend v1（Exact Contract Canonical Series）
 
