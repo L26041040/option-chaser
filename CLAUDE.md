@@ -340,32 +340,67 @@ pipeline 拆兩張（隔離建置／上線切換，先在零風險環境驗完�
 Candidate 去重，避免瑣碎刪除跟結構改動混在同一份 diff）。全數
 13 張、依拓撲順序（blocker 先發佈）發佈完成、皆標 `ready-for-agent`：
 
-- **T01** [#185] 死重清除——無 blocker
-- **T02** [#186] Storage 連線生命週期修形——無 blocker
-- **T03** [#187] 詳細頁 fetch 紀律（消滅 refetch cascade）——無 blocker
-- **T04** [#188] View 契約：移出死欄位（report_text／
-  methodology_text）——無 blocker
-- **T05** [#189] IV history pipeline 模組化（隔離建置，尚未上線，
-  production 路徑本票結束時完全不變）——無 blocker
+**已完成**：
+
+- **T01** [#185] 死重清除（commit `365f1dd`）：刪
+  `option_chaser/workspace.py`／`data/base.py`／`webapp/`（已空）／
+  10 個死測試檔；`store.py` 移除檔案系統／event-sourcing 半邊
+  （~315 行）；`now_utc_iso`／`ny_today` 搬進新的 `api_app/clock.py`；
+  `main.py` 底部重複的 `app = create_app()` 一併刪。**兩處刻意不刪**
+  （偏離票面字面範圍，皆已在 commit message 記錄原因）：
+  `store.best_return()`——測試明文把它當跨層一致性規則（防
+  QA1-03 迴歸），不是死碼；`data/treasury.py`／`data/dividends.py`
+  的本機檔案快取——雖然 Vercel 唯讀 FS 讓這支分支正式環境不會走到，
+  但 44 條測試明確測這三層 fallback 設計，屬環境限制、非死碼
+- **T02** [#186] Storage 連線生命週期修形（commit `937f9a1`）：
+  `PostgresStorage` 建構不再 eager `_ensure_schema()`；`request_scope()`
+  只在 `ContextVar` 放空狀態、真正呼叫才 lazy connect；`main.py` 兩個
+  middleware（correlation id／storage scope）合併成一個。過程中在 T03
+  驗證階段抓到 T02 自己留下的一個真 bug：`storage` pytest fixture 在
+  全新資料庫上會撞 `UndefinedTable`（schema 建立時機被延後、fixture
+  卻假設它已存在），已在 T03 一併修正並記錄
+- **T03** [#187] 詳細頁 fetch 紀律（commit `f257abe`）：新增
+  `src/fetchCache.ts`（in-flight 去重＋參照計數快取＋`AbortController`），
+  `ScenarioDetail`／`IvHistory`／`Settings` 接線。抓到兩個問題：jsdom
+  不支援 `AbortSignal.any`（改手寫 `combineSignals`）、快取是模組級
+  singleton 會跨測試污染（`test-setup.ts` 補 `afterEach` 重置）
+- **T04** [#188] View 契約：移出死欄位（commit `74f7517`）：
+  `serialize_result()` 移除 `report_text`／`methodology_text`
+  兩個從未被前端讀取的欄位，`schema_version` 2→（本次不變動語意，
+  純粹欄位瘦身）；契約樣本重產、前端型別與測試同步瘦身
+- **T05** [#189] IV history pipeline 模組化（commit `446e2d7`）：新增
+  `option_chaser/ivpipeline.py`（~770 行，port-based：`VendorPorts`／
+  `StoragePorts`＋單一進入點 `build_iv_history()`），把 `main.py` 內嵌
+  的 IV history 編排（Exact-Contract 逐腿重建＋Legacy 兩段式
+  backfill＋Spread IV Gap）搬成獨立引擎模組，**本票刻意不動
+  `main.py` 呼叫路徑**（T10／#192 才切換）。新增
+  `tests/test_ivpipeline_parity.py`：同一組輸入分別跑「真正 HTTP
+  endpoint」與「新模組直接呼叫＋純記憶體 `FakeIvStorage`」兩條路徑，
+  逐位元比對輸出。過程中抓到測試假體本身的排序 bug（`iv_observations`
+  沒依 `observed_on` 排序，兩個既有 adapter 都有排序、這是 port 的
+  隱含契約）並修正，同時把這條契約寫進 `StoragePorts.iv_observations`
+  欄位註解
+
+**待辦（← 為下一張；標注「被誰擋」）**：
+
 - **T06** [#190] Refresh Run 核心（批次＋symbol 去重＋Partial
-  Success，先不做 Continuation）——被 #186 擋
+  Success，先不做 Continuation）——被 #186 擋（已解除）←
 - **T07** [#193] Refresh Run Continuation（時間預算＋續跑）——被
   #190 擋
 - **T08** [#196] Refresh Run 前端整合（P1 更新中徽章／P2 部分成功
   摘要／P4 建立範圍收斂）——被 #193 擋
 - **T09** [#191] View 契約：Candidate 去重（四容器收斂＋重複計算
-  收斂）——被 #188 擋
+  收斂）——被 #188 擋（已解除，無其他 blocker，可任意時候認領）
 - **T10** [#192] IV history pipeline 上線（main.py 換線＋測試搬家＋
-  契約樣本＋刪舊 680 行）——被 #189 擋
+  契約樣本＋刪舊 680 行）——被 #189 擋（已解除，無其他 blocker）
 - **T11** [#194] IV 冷 backfill 兩段式（P3）——被 #192 擋
 - **T12** [#195] Backfill 併發形狀修正（執行緒池只建一次）——被
   #192 擋（同一段程式碼已搬新模組，新位置修一次到位）
 - **T13** [#197] 全面回歸與最終驗收——被 #185–#196 全部擋，需求方
   真機驗收通過才算完
 
-下一步：照專案規則`「全部 ticket 做完才開 PR」`，從 frontier（T01／
-T02／T03／T04／T05，五張無 blocker 可任意順序或平行認領）開始
-逐張 `/implement`。
+下一步：照專案規則「全部 ticket 做完才開 PR」，繼續 `/implement`
+T06（依賴順序），T09／T10 目前也已無 blocker、之後可任意順序穿插。
 
 ### Spec #151（2026-08-17 發佈）——Historical IV Trend v1（Exact Contract Canonical Series）
 
