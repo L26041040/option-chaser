@@ -589,15 +589,51 @@ Candidate 去重，避免瑣碎刪除跟結構改動混在同一份 diff）。�
   僥倖成立）。全套：後端 1504、前端 Vitest 633、typecheck／build
   皆過、Playwright e2e 88 條（iPhone 55＋Desktop 33）全綠。
 
+**已完成**（續前）：
+
+- **T12** [#195] Backfill 併發形狀修正（執行緒池只建一次）：
+  `option_chaser/ivpipeline.py::backfill_iv()` 原本在 `_fetch_day_
+  bounded()` 內每處理一批到期日梯子（≤ `IV_BACKFILL_DAY_CONCURRENCY`
+  ＝4 個）就 `with ThreadPoolExecutor(...) as pool:` 新建銷毀一次——
+  不只「每天一次」（票面敘述），是「每批一次」，一天若有 20 個到期日
+  就已經是 5 次。改成 `ThreadPoolExecutor(max_workers=
+  IV_BACKFILL_DAY_CONCURRENCY)` 只在 `for day in schedule:` 迴圈外
+  建立一次，整個 `with` 區塊涵蓋跨全部天數、跨每天內全部批次的迴圈，
+  `_fetch_day_bounded()` 改吃呼叫端傳入的既有 `pool`、自己不再開關；
+  併發上限數值（`max_workers`）與既有的「批次大小＝併發上限」邏輯
+  完全不變，只是 worker 數量固定掛在整個 run 而非重新配置。函式
+  結束（含中途 `break` 中止）時 `with` 的 `__exit__` 才
+  `shutdown(wait=True)`——已送出但尚未完成的呼叫仍會先跑完，這條
+  既有保護語意本來就活在 `as_completed(futures)` 逐一等待的迴圈裡，
+  未被本票觸碰。
+
+  測試：新增 `test_the_whole_backfill_run_creates_exactly_one_thread_
+  pool`（`tests/test_api_iv_history.py`）——monkeypatch
+  `ivpipeline.ThreadPoolExecutor` 為計數子類別，沿用既有
+  `_client_with_long_expiration_ladder`（20 個到期日梯子，遠超併發
+  上限）但**不觸發失敗**（`fail_on_first=False`，前次 PERF-05 測試
+  皆刻意讓第一天就失敗以驗證中止語意，本票要的是完整跑滿多天多批次
+  才測得出「真的只建一次」），並用兩條前提斷言（真的橫跨多天、真的
+  每天拆成一批以上）確保不是巧合只有單一批次的退化情境。修正前
+  ／修正後對照驗證：對修正前的舊程式碼跑這條新測試，實測建立
+  **125 次**執行緒池（25 天 × 每天 5 批）；修正後恰好 **1 次**——證明
+  這條測試真的抓得住這個迴歸，不是掛著看形狀的擺設。既有 PERF-05
+  三條 concurrency 測試（`test_bounded_concurrency_stops_launching_
+  new_batches_after_the_first_failure`／`test_the_extra_calls_from_a_
+  failure_are_bounded_by_concurrency_minus_one`／
+  `test_a_failure_in_the_middle_of_a_batch_still_saves_the_
+  successful_siblings`）與既有取樣排程／到期日梯子測試逐一核對，
+  一條斷言都沒改、全數原樣通過——AC 明文要求的「不受影響、不需要
+  修改」逐位元成立。全套後端測試（記憶體＋真實 Postgres 雙後端）
+  1505 條全綠。純後端模組改動，未觸碰任何前端／E2E 檔案。
+
 **待辦（← 為下一張；標注「被誰擋」）**：
 
-- **T12** [#195] Backfill 併發形狀修正（執行緒池只建一次）——被
-  #192 擋（已解除，同一段程式碼已搬新模組，可穿插不受 T11 影響）←
-- **T13** [#197] 全面回歸與最終驗收——被 #185–#196 全部擋，需求方
-  真機驗收通過才算完
+- **T13** [#197] 全面回歸與最終驗收——被 #185–#196 全部擋，T11／T12
+  完成後 blocker 已全數解除，需求方真機驗收通過才算完 ←
 
 下一步：照專案規則「全部 ticket 做完才開 PR」，繼續 `/implement`
-T12，完成後只剩 T13 收尾。
+T13——這是本輪（T01–T13）最後一張票，做完即整批收尾。
 
 ### Spec #151（2026-08-17 發佈）——Historical IV Trend v1（Exact Contract Canonical Series）
 

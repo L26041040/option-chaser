@@ -1156,6 +1156,42 @@ def test_the_extra_calls_from_a_failure_are_bounded_by_concurrency_minus_one(
     assert extra_calls <= _IV_BACKFILL_DAY_CONCURRENCY - 1
 
 
+def test_the_whole_backfill_run_creates_exactly_one_thread_pool(db, monkeypatch):
+    """T12（#195）：執行緒池整個 run 只建立一次，不是每天、每批各自新建
+    銷毀一次。用 20 個到期日的梯子（遠超過併發上限，同一天內就會拆成
+    5 批）＋不設任何失敗（`fail_on_first=False`）讓 backfill 真的跑滿
+    `IV_BACKFILL_PER_RUN` 天——這樣「只建一次」才是真的在測整個 run
+    橫跨多天、多批次，不是剛好只有一天一批、巧合看起來像只建了一次。
+    透過計數 `ThreadPoolExecutor` 的建構次數直接驗證，不是只驗證最終
+    落盤結果（AC 明文要求的驗證方式）。"""
+    from option_chaser import ivpipeline
+
+    construct_count = 0
+    real_pool_cls = ivpipeline.ThreadPoolExecutor
+
+    class _CountingThreadPoolExecutor(real_pool_cls):
+        def __init__(self, *args, **kwargs):
+            nonlocal construct_count
+            construct_count += 1
+            super().__init__(*args, **kwargs)
+
+    monkeypatch.setattr(ivpipeline, "ThreadPoolExecutor",
+                        _CountingThreadPoolExecutor)
+
+    rec = _client_with_long_expiration_ladder(db, monkeypatch, fail_on_first=False)
+
+    # 前提：這個情境真的橫跨多天、每天多批次，不是退化成單一批次。
+    days_called = {d for _, d, _ in rec.calls}
+    assert len(days_called) > 1, "測試前提才成立：這個情境要真的橫跨多天"
+    per_day_calls = len(rec.calls) / len(days_called)
+    assert per_day_calls > ivpipeline.IV_BACKFILL_DAY_CONCURRENCY, (
+        "測試前提才成立：單一天內也要真的拆成一批以上")
+
+    assert construct_count == 1, (
+        f"整個 backfill run 應該只建立一次執行緒池，實際建立了 "
+        f"{construct_count} 次")
+
+
 def test_a_failure_in_the_middle_of_a_batch_still_saves_the_successful_siblings(
         db, monkeypatch):
     """PERF-05（#181）修正版契約第 5 點：已成功完成的 in-flight

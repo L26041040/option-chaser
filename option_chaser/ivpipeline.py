@@ -382,9 +382,13 @@ def backfill_iv(symbol: str, provider: str, token: str,
         missing_days=len(missing), already_ran_today=False)
     expirations = target_expirations or [None]
 
-    def _fetch_day_bounded(day: str):
+    def _fetch_day_bounded(day: str, pool: ThreadPoolExecutor):
         """一天份的到期日梯子，有上限的併發呼叫（PERF-05 既有設計，
-        T05 原樣沿用；執行緒池建立時機的修正是 T12 的事）。"""
+        T05 原樣沿用）。T12（#195）：執行緒池由呼叫端傳入、整個 run
+        只建一次——這裡不再自己開關執行緒池，批次大小（≤
+        `IV_BACKFILL_DAY_CONCURRENCY`）只決定這一輪同時送出幾個
+        `submit()`，不決定 worker 數量（worker 數量固定等於整個 run
+        的併發上限，跟批次大小無關）。"""
         merged: dict[str, list] = {"call": [], "put": []}
         first_failure = None
         after_ok = after_fail = dispatched = 0
@@ -393,30 +397,29 @@ def backfill_iv(symbol: str, provider: str, token: str,
             batch = expirations[idx: idx + IV_BACKFILL_DAY_CONCURRENCY]
             idx += len(batch)
             dispatched += len(batch)
-            with ThreadPoolExecutor(max_workers=len(batch)) as pool:
-                futures = {pool.submit(vendor.historical_surface, provider,
-                                      symbol, day, token, expiration=exp): exp
-                          for exp in batch}
-                for future in as_completed(futures):
-                    exp = futures[future]
-                    try:
-                        got = future.result()
-                    except QuotaExhausted as e:
-                        if first_failure is None:
-                            first_failure = ("quota", e, exp)
-                        else:
-                            after_fail += 1
-                        continue
-                    except FetchError as e:
-                        if first_failure is None:
-                            first_failure = ("vendor", e, exp)
-                        else:
-                            after_fail += 1
-                        continue
-                    if first_failure is not None:
-                        after_ok += 1
-                    merged["call"].extend(got.get("call") or [])
-                    merged["put"].extend(got.get("put") or [])
+            futures = {pool.submit(vendor.historical_surface, provider,
+                                  symbol, day, token, expiration=exp): exp
+                      for exp in batch}
+            for future in as_completed(futures):
+                exp = futures[future]
+                try:
+                    got = future.result()
+                except QuotaExhausted as e:
+                    if first_failure is None:
+                        first_failure = ("quota", e, exp)
+                    else:
+                        after_fail += 1
+                    continue
+                except FetchError as e:
+                    if first_failure is None:
+                        first_failure = ("vendor", e, exp)
+                    else:
+                        after_fail += 1
+                    continue
+                if first_failure is not None:
+                    after_ok += 1
+                merged["call"].extend(got.get("call") or [])
+                merged["put"].extend(got.get("put") or [])
         return merged, first_failure, after_ok, after_fail, dispatched
 
     outcome, note = "ok", None
@@ -432,36 +435,42 @@ def backfill_iv(symbol: str, provider: str, token: str,
     in_flight_after_failure_failed = 0
     total_dispatched = 0
     schedule = sorted(missing, reverse=True)[:IV_BACKFILL_PER_RUN]
-    for day in schedule:
-        attempted_days += 1
-        merged, first_failure, after_ok, after_fail, dispatched = \
-            _fetch_day_bounded(day)
-        total_dispatched += dispatched
+    # T12（#195）：整個 backfill run（跨全部天數、跨每天內的每一批到期
+    # 日梯子）只建立一次執行緒池，不是舊版那樣每處理一批就新建銷毀一次。
+    # `max_workers` 維持既有的併發上限數值不變；`with` 區塊涵蓋整個
+    # 迴圈，函式結束（含中途 `break` 中止）時才 `shutdown(wait=True)`
+    # ——已經送出去的呼叫會先跑完，不是被強制打斷。
+    with ThreadPoolExecutor(max_workers=IV_BACKFILL_DAY_CONCURRENCY) as pool:
+        for day in schedule:
+            attempted_days += 1
+            merged, first_failure, after_ok, after_fail, dispatched = \
+                _fetch_day_bounded(day, pool)
+            total_dispatched += dispatched
 
-        def _save_day(merged=merged, day=day) -> bool:
-            storage.save_iv_observation(
-                symbol, day, surface_to_rows(merged), now_utc_iso())
-            return bool(merged["call"] or merged["put"])
+            def _save_day(merged=merged, day=day) -> bool:
+                storage.save_iv_observation(
+                    symbol, day, surface_to_rows(merged), now_utc_iso())
+                return bool(merged["call"] or merged["put"])
 
-        if first_failure is not None:
-            reason, exc, failed_expiration = first_failure
-            outcome, note = reason, str(exc)
-            aborted_on, abort_reason = day, reason
-            in_flight_after_failure_succeeded += after_ok
-            in_flight_after_failure_failed += after_fail
-            if merged["call"] or merged["put"]:
-                _save_day()
-                saved_days += 1
+            if first_failure is not None:
+                reason, exc, failed_expiration = first_failure
+                outcome, note = reason, str(exc)
+                aborted_on, abort_reason = day, reason
+                in_flight_after_failure_succeeded += after_ok
+                in_flight_after_failure_failed += after_fail
+                if merged["call"] or merged["put"]:
+                    _save_day()
+                    saved_days += 1
+                    days_with_data += 1
+                break
+
+            if _save_day():
                 days_with_data += 1
-            break
-
-        if _save_day():
-            days_with_data += 1
-        elif _is_weekend(day):
-            days_no_data_expected += 1
-        else:
-            days_no_data_unexpected += 1
-        saved_days += 1
+            elif _is_weekend(day):
+                days_no_data_expected += 1
+            else:
+                days_no_data_unexpected += 1
+            saved_days += 1
 
     total_planned = len(expirations) * len(schedule)
     unstarted_due_to_failure = (total_planned - total_dispatched
