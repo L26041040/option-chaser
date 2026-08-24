@@ -348,7 +348,7 @@ def test_list_carries_the_target_month_anchor_and_days_left():
     from datetime import date
 
     from option_chaser.timeframe import TargetMonth, calendar_anchor
-    from option_chaser.workspace import ny_today
+    from api_app.clock import ny_today
 
     client = _client()
     _create(client)

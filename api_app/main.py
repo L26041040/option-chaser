@@ -30,10 +30,10 @@ from option_chaser.service import DividendLoader, RateCurveLoader
 from option_chaser.timeframe import (TargetMonth, calendar_anchor,
                                      ensure_month_open, month_is_over)
 from option_chaser.valuation import DAYS_PER_YEAR, days_between
-from option_chaser.workspace import now_utc_iso, ny_today
 
 from . import diagnostics, providers
 from . import chain_cache
+from .clock import now_utc_iso, ny_today
 from .chain_cache import cached_fetch_chain
 from .dividend_cache import cached_loader as cached_dividend_loader
 from .rate_cache import cached_loader
@@ -2116,6 +2116,3 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         return _settings_view()
 
     return app
-
-
-app = create_app()

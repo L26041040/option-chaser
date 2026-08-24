@@ -13,8 +13,8 @@ from pathlib import Path
 
 import pytest
 
+from api_app.storage import Scenario
 from option_chaser.models import AnalysisParams
-from option_chaser.store import Scenario
 
 BANNED = ["獲利機率", "機率加權", "勝率", "POP", "probability",
           "期望報酬", "expected profit", "Sharpe", "CVaR",
@@ -22,7 +22,7 @@ BANNED = ["獲利機率", "機率加權", "勝率", "POP", "probability",
           # 零成交量推論而來的措辭，一律禁用——⚠ 只認「Bid/Ask 過寬」。
           "報價非最新", "報價品質有疑慮"]
 TARGETS = [Path("option_chaser/glossary.py"),
-           Path("option_chaser/store.py"), Path("option_chaser/workspace.py"),
+           Path("option_chaser/store.py"),
            Path("option_chaser/vocabulary.py"), Path("option_chaser/filters.py"),
            *sorted(Path("tests/fixtures").glob("golden_*.txt"))]
 
@@ -39,7 +39,6 @@ def test_new_copy_avoids_bare_probability_word():
     for path in [Path("option_chaser/glossary.py"),
                  Path("option_chaser/scenarios.py"),
                  Path("option_chaser/store.py"),
-                 Path("option_chaser/workspace.py"),
                  Path("option_chaser/vocabulary.py")]:
         assert "機率" not in path.read_text(encoding="utf-8"), path
 
@@ -57,8 +56,7 @@ def _sources():
 def test_nothing_writes_a_target_date_anywhere_in_sources():
     """生產程式碼不得產生任何目標日期——沒有欄位指派、沒有具名參數、沒有 JSON 鍵。
 
-    只讀不寫是允許的：`store.migrate_scenario` 必須認得舊檔的 target_date 鍵才
-    能把它遷移掉。這裡鎖的是「寫出一天」的形狀。
+    這裡鎖的是「寫出一天」的形狀；只讀不寫不受影響。
     """
     written = re.compile(r'target_date\s*=|["\']target_date["\']\s*:')
     offenders = [str(p) for p in _sources()

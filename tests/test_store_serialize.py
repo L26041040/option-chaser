@@ -148,32 +148,12 @@ def test_pct_null_without_capital():
             assert cand["pct_of_capital"] is None
 
 
-def test_byte_determinism(tmp_path):
+def test_byte_determinism():
     r = _result()
     a = store.serialize_result(r, "S", 100000.0)
     b = store.serialize_result(r, "S", 100000.0)
     dump = lambda d: json.dumps(d, ensure_ascii=False, sort_keys=True)
     assert dump(a).encode("utf-8") == dump(b).encode("utf-8")
-    p1 = store.save_result(tmp_path, "S", a)
-    (tmp_path / "results" / "S2").mkdir(parents=True)
-    p2 = Path(str(p1).replace("S", "S2", 1))
-    store.save_result(tmp_path, "S2", b)
-    assert p1.read_bytes() == p2.read_bytes()
-
-
-def test_save_result_filename_windows_safe(tmp_path):
-    view = store.serialize_result(_result(), "S", None)
-    path = store.save_result(tmp_path, "S", view)
-    expected_ts = view["snapshot_ref"]["fetched_at"].replace(":", "")
-    assert path.name == f"{expected_ts}.json"
-    assert ":" not in path.name
-    assert store.latest_result_path(tmp_path, "S") == path
-    assert store.load_result(path) == json.loads(
-        path.read_text(encoding="utf-8"))
-
-
-def test_latest_result_path_none_when_empty(tmp_path):
-    assert store.latest_result_path(tmp_path, "NOPE") is None
 
 
 def test_data_quality_all_quotes_filtered(tmp_path):

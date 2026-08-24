@@ -25,7 +25,7 @@ from option_chaser.models import FetchError, QuotaExhausted
 from option_chaser.ratecurve import RateCurve
 from option_chaser.valuation import (DAYS_PER_YEAR, american_price,
                                      days_between)
-from option_chaser.workspace import ny_today
+from api_app.clock import ny_today
 
 FIX = "tests/fixtures/xyz_v4_six_expiries.json"
 PROVIDER = providers.MARKETDATA_APP.id
