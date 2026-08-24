@@ -381,12 +381,27 @@ Candidate 去重，避免瑣碎刪除跟結構改動混在同一份 diff）。�
   隱含契約）並修正，同時把這條契約寫進 `StoragePorts.iv_observations`
   欄位註解
 
+**已完成**（續前）：
+
+- **T06** [#190] Refresh Run 核心（commit `bac4785`）：新增
+  `POST /api/scenarios/refresh-run`——省略 id＝全部未過期劇本（且真的
+  排除，不是排進去才短路）、帶 id＝只刷新那幾個（P4 用這條路徑）。
+  Run 內依 symbol 分組，每個 distinct symbol 只呼叫一次
+  `_fetch_chain()`（純記憶體 dict 共用，ADR-0001），任一劇本失敗
+  不中止整輪、沿用既有 `{stage, message}` 失敗分層（未發明新詞彙），
+  失敗項保留舊資料。從 `refresh_scenario` 抽出
+  `_refresh_and_save(sc, today, snap=None)` 共用核心，兩端點共用同一套
+  過期短路／落地邏輯。E2：`chain_cache` 模組、`ChainCacheEntry`、
+  Storage Protocol 對應方法、Postgres 資料表整組移除（schema 只拿掉
+  `CREATE TABLE`，沿用專案既有「只加不減」遷移慣例，不下 `DROP
+  TABLE`——已部署 Neon 會留一張不再寫入的孤兒表，無害）。回應含
+  `remaining`，本票固定回空陣列，Continuation 留給 T07。新增
+  `tests/test_api_refresh.py` 一輪刷新測試區塊 14 條
+
 **待辦（← 為下一張；標注「被誰擋」）**：
 
-- **T06** [#190] Refresh Run 核心（批次＋symbol 去重＋Partial
-  Success，先不做 Continuation）——被 #186 擋（已解除）←
 - **T07** [#193] Refresh Run Continuation（時間預算＋續跑）——被
-  #190 擋
+  #190 擋（已解除）←
 - **T08** [#196] Refresh Run 前端整合（P1 更新中徽章／P2 部分成功
   摘要／P4 建立範圍收斂）——被 #193 擋
 - **T09** [#191] View 契約：Candidate 去重（四容器收斂＋重複計算
