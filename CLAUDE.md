@@ -27,7 +27,7 @@ block 裡，不能切成好幾個 code block、也不能中間插普通文字把
 `［回報#001］spec #137 拆票完成`）。編號是**累計總數**，不因換
 session、換分支、換主題而歸零——目前最新編號記在這裡：
 
-> 目前次序：029（下一份回報用 030）
+> 目前次序：030（下一份回報用 031）
 
 每發一份回報就把上面這個數字改成剛剛用掉的那個，跟著那次改動一起
 commit（沒有其他改動要 commit 時，單獨為這一行開一個小 commit 也
@@ -4047,6 +4047,111 @@ Nasdaq 當下鏈免鑰可達但歷史日期參數被明確拒絕、Cboe 現行�
 新增 crumb+cookie 驗證且既有研究已確認其 chart 端點結構上無 bid/ask/
 IV。免 key 路線已窮盡，**blocker 未解除**，仍需需求方申請
 Alpha Vantage／Market Data App／ORATS 任一家金鑰。
+
+### V1 Product Correctness + Historical IV UX Cleanup（2026-08-25，`/grill-with-docs`，只分析不施工）
+
+需求方提出四項問題，`/grilling` 依 CONTEXT.md／ADR-0001／既有實作與
+測試自主 audit，未動 production code。
+
+**1. Updating Lock 需要恢復**：需求方裁示推翻 2026-08-24 的 P1-b
+（更新中不鎖定、卡片標徽章仍可點入）——查證確認範圍集中在
+`src/App.tsx::runBatch()` docstring 明文的「P1：涉及的卡片標『更新中』
+但不鎖定，資料與連結全程可用」與 `ScenarioList.tsx`／
+`CompactScenarioList.tsx` 的卡片渲染（`updating` 只加徽章、`<a href>`
+本身未被攔截）。Refresh Run 範圍規則（開站／手動＝全部未過期，建立
+新劇本＝只刷新新劇本，P4-b）與 Continuation／Partial Success 機制
+不受影響，鎖定只管卡片能不能點進去。
+
+**2. Diagnostics 語意分級**：逐一核對 `option_chaser/ivpipeline.py`
+全部 `emit(...)` call site 的 severity 判準，找出四個在**正常、成功
+顯示資料的情況下也會頻繁觸發 warning** 的既有事件源：
+  - `staleness`（exact-contract，`staleness_days > 1` 才警示）——
+    vendor 的 Delayed→Historical 轉換要等次一交易日 9:30:01 ET
+    （HIVT-06 研究已查證），`staleness_days == 1` 其實是**正常交易日
+    的健康狀態**；warning 主要集中在週一或假日後第一次抓取，是行事曆
+    產物，不是資料異常
+  - `metrics`（legacy 家族，`count == 0` 才警示）——T11 兩段式補建後，
+    任何 symbol 第一次被看到（backfill 還沒觸發過）在 legacy 家族的
+    `buy_iv`／`atm_iv`／`normalized_skew` 結構上**必然** count=0，這是
+    設計上的過渡態，不是資料品質問題
+  - `reanchor`（legacy 家族，`out_of_grid_dates > 0` 才警示）——LEAPS
+    等長天期候選的座標本來就不是每天的歷史 surface 都覆蓋得到
+    （#134 的既有已知限制），結構性會反覆觸發
+  - `backfill` 摘要（`days_no_data_unexpected > 0` 才警示）——本站不維護
+    美股假日表（HIVR-10 已記錄的已知殘留噪音），市場假日撲空會被算成
+    「非預期無資料」
+  這四項的共同特徵：**warning severity 目前混合了「這次分析結果可能
+  不完整或不可信，使用者該知道」跟「這是系統正常運作下的預期過渡態／
+  行事曆產物」兩種完全不同的事**，這正是需求方描述的「資料明明成功
+  顯示，但 Advanced／Diagnostics 還有大量 warning/error」的根本原因。
+  `vendor_fetch`（exact-contract，vendor 真的回報失敗）與
+  `reconstruction`（整段序列零筆重建成功）兩個既有的 warning／error
+  來源查證後**確認是真警訊**，不在降噪範圍內。
+
+**3. Percentile 正確性——結論：程式碼與定義本身皆正確；「常看到
+80–90 百分位」極可能是統計性質、不是 bug**。全部針對 spec #159／
+#151 明文機制逐項查證，並用 production 函式（`ivreconstruct.
+reconstruct_iv_series`／`ivtrend.trim_to_window`／
+`ivtrend.historical_percentile`／`ivspread.align_spread_gap`）跑過
+可獨立重現的合成序列，percentile 另外用完全獨立的手算邏輯核對：
+  - current 是否為最新有效觀測：`leg_historical_iv_payload()` 的
+    `valid = sorted(... if iv is not None); latest_iv = valid[-1][1]`
+    ——確認排序鍵是日期字串（正確按時間排序），且明確排除 `None`；
+    刻意讓「今天」的 quote 反解失敗（crossed quote），驗證 latest
+    正確退回到前一個有效觀測日，不是 crash、不是誤用 None、不是偷用
+    vendor_iv
+  - 是否只用同一張 exact listed contract：快取鍵是 `contract_symbol`
+    （OCC 身份字串），逐張合約各自一列，結構上不可能混入別的合約
+  - 一年 window：`trim_to_window()` 用日曆天 cutoff（`today - 365`），
+    篩選條件正確、順序保留
+  - null／failed reconstruction：`reconstruct_iv_series()` 逐筆獨立、
+    任一筆缺輸入或反解無解只讓那一筆變 `(date, None)`，不影響其他筆、
+    不外插、不換合約、不退回 vendor_iv——四種失敗原因獨立計數
+  - Spread IV Gap 只用共同存在日期：`align_spread_gap()` 用
+    `set(buy_map) & set(sell_map)` 交集，任一天只有一腿有值就整天不
+    進輸出，回傳 gap 恆為 `float` 從不為 `None`——**確認**
+  - percentile 的 `≤` 定義與顯示值一致：`sum(1 for x in series if x
+    <= current) / len(series)`，前端 `第 N 百分位` 文案未與此矛盾
+  - production 函式輸出與獨立手算結果**逐位元相符**（3 個場景各自
+    驗證：全年持平／持平＋雜訊／近三週真實 vol spike，皆 match）
+
+  **關鍵發現（Monte Carlo，500 次試驗，零真實 vol 變化、只有逐日
+  ±1% 報價雜訊）**：平均 percentile 0.4749（≈理論預期 0.50，證明**無
+  系統性偏誤**），但 **P(percentile ≥ 80%) = 18.4%、P(≥90%) = 8.2%**
+  ——即使 IV 完全沒有真的變貴變便宜，單一最新觀測相對於一年歷史母體
+  的百分位排名，光靠雜訊就有將近五分之一的機會落在 80 以上。這是因為
+  `current_percentile` 定義上取的是**未平滑的單一最新觀測**（跟 30 天
+  `moving_average` 不同），單點排名統計天生沒有「該收斂到 50%」的
+  性質。**這解釋了「常看到 80–90 百分位」這個症狀本身，且不需要真實
+  production 資料就能證明**——是統計量本身的雜訊敏感度，不是計算
+  邏輯錯誤，程式碼行為與 spec #151/#159 的既有定義逐字一致（`current`
+  一律是最新原始觀測，非本輪才發現的既有設計，非意外）。
+
+  **需要 production 實測才能確認的部分**（無法用本地合成資料回答）：
+  真實市場在特定時期是否也存在額外的系統性（非雜訊）貴估——例如
+  point-in-time r／q 資料源在近期是否有系統性缺口導致晚近觀測的
+  reconstruction 品質下降；這需要真實 exact contract 的完整一年歷史
+  報價（沙箱對 vendor 網域仍是 403，且本輪未依過去慣例推送臨時
+  GitHub Actions probe——範圍明確限定「只分析不施工」，動 CI 或觸碰
+  master 不在這輪授權內）。
+
+**4. Historical IV UI hierarchy**：查證 `IvHistory.tsx`／
+`SpreadSummary.tsx`／`IvTrend.tsx` 目前結構後發現，**page 層級順序
+已經符合需求方要的階層**（SIG-02／SIG-03 上一輪已經做到）：
+`SpreadSummary`（Spread IV Gap，Current／Percentile／Δ4w／Chart／
+涵蓋小字）→ `IvTrend`（買／賣腿次要資訊）→ `IvAdvanced`（預設收合，
+Normalized Skew／z-score／diagnostics 三級資訊）。唯一的落差在
+**卡片內部**：`SpreadSummary`／`IvTrendCard` 的桌面版把 Chart 排在
+Percentile／Δ4w**之前**，跟需求方要的 Current→Percentile→Δ4w→Chart
+順序不符；手機版（`iv-compact-head`＋`iv-compact-stats`）已經是
+Current→Percentile→Δ4w→Chart 的正確順序。建議：桌面版對齊手機版
+既有順序（純 JSX 元素重排，不改資料流、不改元件介面）。
+
+**建議下一步**：percentile 與 diagnostics 兩項核心正確性疑慮已收斂，
+無殘留邏輯 bug；updating lock 與 UI hierarchy 範圍明確、風險低。
+**尚有兩個需要需求方裁決的「產品行為」問題**（詳見本輪回報），其餘
+（diagnostics 語意分級的實際分類表、UI 排序調整方式）待裁示後即可
+`/to-spec`。本輪未開票、未動 production code。
 
 ### 施工依據
 
