@@ -27,7 +27,7 @@ block 裡，不能切成好幾個 code block、也不能中間插普通文字把
 `［回報#001］spec #137 拆票完成`）。編號是**累計總數**，不因換
 session、換分支、換主題而歸零——目前最新編號記在這裡：
 
-> 目前次序：030（下一份回報用 031）
+> 目前次序：031（下一份回報用 032）
 
 每發一份回報就把上面這個數字改成剛剛用掉的那個，跟著那次改動一起
 commit（沒有其他改動要 commit 時，單獨為這一行開一個小 commit 也
@@ -4152,6 +4152,44 @@ Current→Percentile→Δ4w→Chart 的正確順序。建議：桌面版對齊�
 **尚有兩個需要需求方裁決的「產品行為」問題**（詳見本輪回報），其餘
 （diagnostics 語意分級的實際分類表、UI 排序調整方式）待裁示後即可
 `/to-spec`。本輪未開票、未動 production code。
+
+**需求方裁示（2026-08-25，回覆回報#030）**：percentile 採 A(a)——
+維持現行演算法完全不變，只加一句說明文字，不得使用「異常」「離群」
+「貴」等字眼；額外要求 spec 必須把「production 真資料 cross-check」
+獨立列為驗收項，明文禁止用本輪 Monte Carlo／synthetic data 宣稱這項
+已驗證完成。Diagnostics 裁示採「engineering observability != user-
+facing error state」——四個候選事件（staleness=1 日、backfill 進行中
+的 metrics count=0、市場假日 no-data、reanchor out-of-grid 但功能
+正常）不得再讓一般使用者誤認故障，但不得刪除或吞掉底層診斷能力。
+Updating lock 明確要求恢復灰化＋不可點入，不改 Refresh Run 觸發規則
+／Continuation／Partial Success。Desktop hierarchy 維持 #030 建議
+（對齊手機版 Current→Percentile→Δ4w→Chart）。
+
+**`/to-spec` 已發佈——issue #198**（`ready-for-agent`）：五項工程
+決策逐一寫成明確 Implementation Decisions／Acceptance Criteria：
+- Percentile：`ivtrend.py`／`ivreconstruct.py`／`ivspread.py` 零改動；
+  新增純格式化說明文字＋banned-word 檢查
+- Production cross-check：獨立驗收項，明文「script 本身可以有 fixture
+  測試證明機制正確，但驗收本身只能靠對正式部署版跑出來的真實結果
+  滿足，不能靠本輪任何 synthetic／Monte Carlo 證據替代」；沙箱若連不到
+  production，明確標記交需求方／deployment 後人工驗收
+- Diagnostics：新增獨立於既有 `severity` 的 `user_facing` 布林欄位
+  （`DiagnosticEvent` 新欄位），`severity` 本身連同 `/api/diagnostics`
+  ／Settings 頁完全不受影響、繼續完整顯示；四個覆寫點各自用該站既有
+  就拿得到的資料計算（staleness 改成交易日感知，非單純日曆天；
+  legacy metrics count=0 綁 `backfill_pending`；backfill 假日 no-data
+  維持既有「不維護假日表」限制下唯一可行的處理；reanchor 只在真的
+  導致 Normalized Skew count=0 時才算 user-facing）；預設值＝鏡射既有
+  `severity`，只有這四個明確覆寫點例外，避免任何未來新事件源意外被
+  靜默降噪
+- Updating lock：復用既有 `compact-card-tap` 攔截點擊的既有機制
+  （原本只服務批次選取模式），沿用 `styles.css` 註解裡記載的
+  pre-P1-b 視覺樣式（`opacity`／`pointer-events`）
+- Desktop hierarchy：`SpreadSummary.tsx`／`IvTrend.tsx` 桌面分支純
+  JSX 元素重排，不改 props／資料流／圖表幾何
+
+四項工作流彼此獨立、無相依關係，可任意順序或平行施工。本輪 `/to-spec`
+到此為止，未 implementation、未開 PR、未 merge master。
 
 ### 施工依據
 
