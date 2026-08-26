@@ -21,7 +21,7 @@
  * 名稱與逐腿卡片的形狀一致，直接傳。
  */
 import type { IvHistoryLegs, SpreadGap, SpreadGapDeltaStatus } from "./api";
-import { valueLabel } from "./IvHistory";
+import { roundPercentile, valueLabel } from "./IvHistory";
 import { CHART_WIDTH, IvTrendChart, SPREAD_CHART_HEIGHT_DESKTOP,
         SPREAD_CHART_HEIGHT_MOBILE, spanLabel,
         type IvTrendChartSeries } from "./IvTrend";
@@ -78,7 +78,7 @@ function percentileCaption(percentile: number | null): string {
  *  措辭——Gap 的比較窗是兩張合約共同存在的歷史，可能短於一年。 */
 export function gapPercentileExplanation(percentile: number | null): string {
   if (percentile === null) return "目前沒有足夠的共同歷史觀測可以比較。";
-  const pct = Math.round(percentile * 100);
+  const pct = roundPercentile(percentile);
   return `現在的 Gap 比這兩張合約共同歷史期間內大約 ${pct}% 的有效觀測都高。`
     + "單日數字可能隨市場報價波動。";
 }

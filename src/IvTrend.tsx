@@ -22,7 +22,8 @@
  */
 import type { IvHistoryLegs, IvTrendStatPoint, LegHistoricalIv } from "./api";
 import { BACKFILL_NOTES, ChartTooltip, PAD_BOTTOM, PAD_LEFT,
-        PAD_TOP, tickLabel, toPixel, useChartScrubber, valueLabel } from "./IvHistory";
+        PAD_TOP, roundPercentile, tickLabel, toPixel, useChartScrubber,
+        valueLabel } from "./IvHistory";
 import { contiguousRuns, ivChartPoints, ivYAxisDomain, projectOntoDomain,
         xAxisTicks, type ChartPoint } from "./ivHistoryChart";
 import { useIsDesktop } from "./useIsDesktop";
@@ -58,7 +59,7 @@ const IV_TREND_CAPTION =
  *  事實一致、措辭各自貼合家族語言。 */
 export function ivPercentileExplanation(percentile: number | null): string {
   if (percentile === null) return "目前沒有足夠的歷史觀測可以比較。";
-  const pct = Math.round(percentile * 100);
+  const pct = roundPercentile(percentile);
   return `現在的 IV 比過去一年大約 ${pct}% 的有效歷史觀測都高。單日數字可能隨市場報價波動。`;
 }
 

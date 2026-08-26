@@ -126,6 +126,16 @@ function metricCaption(m: IvFieldMetric, unit: TrendUnit): string {
     trendLabel(m, unit)}`;
 }
 
+/** `percentile`（0–1 小數）換成畫面上的整數百分位——`percentileCaption`／
+ *  `metricCaption`（既有、本輪不動）與下面三個「白話說明句」函式共用
+ *  同一個換算，兩處讀到的數字才保證一致。刻意只給這輪新增的三個說明
+ *  函式共用（code review 建議延伸到既有 caption 函式，但那三個屬於
+ *  「不動任何 percentile 計算」的既有程式碼，本輪不觸碰），不是重構
+ *  既有計算本身。 */
+export function roundPercentile(percentile: number): number {
+  return Math.round(percentile * 100);
+}
+
 /** PC-01（#199，spec #198）；2026-08-26 真機驗收後改寫為白話句——跟
  *  `./IvTrend`／`./SpreadSummary` 的姊妹函式同一個目的、同一次改寫理由
  *  （直接把「第 N 百分位」翻譯成一句話、把 N 帶進句子裡，數字跟旁邊
@@ -134,7 +144,7 @@ function metricCaption(m: IvFieldMetric, unit: TrendUnit): string {
  *  單一 IV 水準）。 */
 export function skewPercentileExplanation(percentile: number | null): string {
   if (percentile === null) return "目前沒有足夠的歷史觀測可以比較。";
-  const pct = Math.round(percentile * 100);
+  const pct = roundPercentile(percentile);
   return `現在的偏斜程度比過去一年大約 ${pct}% 的有效歷史觀測都高。`
     + "單日數字可能隨市場報價波動。";
 }
