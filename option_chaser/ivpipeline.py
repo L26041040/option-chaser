@@ -204,6 +204,17 @@ def _is_weekend(day: str) -> bool:
     return date.fromisoformat(day).weekday() >= 5
 
 
+def _most_recent_trading_day_before(day: date) -> date:
+    """PC-04（#204）：staleness 覆寫用——只處理週末，不新增假日表（AC
+    明文範圍）。市場假日因此會被誤判成「還沒補到」而非「今天沒有交易」
+    ——這是與 `_emit_backfill_summary` 的 `days_no_data_expected` 同一種
+    已知、已接受的殘留噪音，不是本函式獨有的新缺口。"""
+    d = day - timedelta(days=1)
+    while _is_weekend(d.isoformat()):
+        d -= timedelta(days=1)
+    return d
+
+
 def _emit_backfill_summary(emit: EmitFn, *, symbol: str, attempted_days: int,
                            saved_days: int, days_with_data: int,
                            days_no_data_expected: int,
@@ -214,9 +225,18 @@ def _emit_backfill_summary(emit: EmitFn, *, symbol: str, attempted_days: int,
                            in_flight_after_failure_succeeded: int = 0,
                            in_flight_after_failure_failed: int = 0,
                            unstarted_due_to_failure: int = 0) -> None:
+    # PC-04（#204）：warning 的唯一成因是「交易日撲空」
+    # （`days_no_data_unexpected > 0`）且批次沒有中止（`aborted_on`
+    # 為 None）時，不對使用者顯示——那是本站不維護美股假日表的既有、
+    # 已接受限制（跟這裡的 `days_no_data_expected`／`_is_weekend` 同一
+    # 個取捨），不是系統壞掉。批次因額度用盡或 vendor 失敗而中止時
+    # （`aborted_on` 非 None），無論是否同時有交易日撲空，一律照舊對
+    # 使用者顯示——那才是真的需要使用者知道的失敗。`severity` 計算式
+    # 本身完全不動。
     emit(stage="backfill",
         severity="warning" if aborted_on or days_no_data_unexpected > 0
                  else "info",
+        user_facing=bool(aborted_on),
         message=(f"backfill 在 {aborted_on} 中止：{abort_reason}"
                 if aborted_on else "backfill 批次完成"),
         symbol=symbol, attempted_days=attempted_days, saved_days=saved_days,
@@ -245,8 +265,15 @@ def _emit_reanchor_summary(emit: EmitFn, *, coords: dict, in_grid: int,
     buy = coords.get("buy")
     sell = coords.get("sell")
     total = in_grid + out_of_grid
+    # PC-04（#204）：只有整段快取歷史全部落在網格外（`in_grid == 0`
+    # 且確實有歷史可言，即 `total > 0`）——連帶讓 Normalized Skew 變成
+    # count=0——才對使用者顯示。部分覆蓋（`in_grid > 0`，Normalized
+    # Skew 仍然正常算得出來）不顯示，即使 `out_of_grid` 本身不是 0；
+    # 沒有任何歷史（`total == 0`）也不是這個事件要講的故事，`severity`
+    # 在這個分支本來就已經是 info。`severity` 計算式本身完全不動。
     emit(stage="reanchor",
         severity="warning" if out_of_grid > 0 else "info",
+        user_facing=total > 0 and in_grid == 0,
         message=f"{total} 個歷史日期：{in_grid} 個落在網格內／"
                 f"{out_of_grid} 個落在網格外",
         total_dates=total, in_grid_dates=in_grid, out_of_grid_dates=out_of_grid,
@@ -256,7 +283,17 @@ def _emit_reanchor_summary(emit: EmitFn, *, coords: dict, in_grid: int,
 
 
 def _emit_metrics(emit: EmitFn, points: list[dict], coords: dict, *,
-                  today: date) -> None:
+                  today: date, backfill_pending: bool = False) -> None:
+    """`backfill_pending`（PC-04／#204）：這個 symbol 的 Legacy 家族今天
+    還沒跑過任何一次 backfill（T11／#194 既有欄位，`build_iv_history()`
+    在呼叫這裡之前就已經算好）。`count == 0` 同時符合「backfill 還在
+    pending」時，這只是預期中的過渡態——UI 沿用既有「歷史資料補建中」
+    語意（見 `IvHistory.tsx` 的 `backfillInFlight`），不需要再疊一層
+    使用者可見的警示；backfill 已經跑過一次仍然 `count == 0`，才是真的
+    缺口，維持對使用者可見。此覆寫只作用於這裡（Legacy 家族自己的
+    metrics）——`_emit_leg_stat_metrics()`（Exact-Contract 家族逐腿
+    統計量）沒有 `backfill_pending` 這個概念，不受影響、未改動。
+    `severity` 計算式本身完全不動。"""
     metrics = ivhistory.field_metrics(points, today=today)
     applicable = (("buy_iv", "atm_iv") if coords.get("sell") is None
                  else tuple(metrics.keys()))
@@ -265,6 +302,7 @@ def _emit_metrics(emit: EmitFn, points: list[dict], coords: dict, *,
         count = m["count"]
         emit(stage="metrics",
             severity="warning" if count == 0 else "info",
+            user_facing=count == 0 and not backfill_pending,
             message=f"{field_name} 沒有有效觀測" if count == 0
                     else f"{field_name} 指標計算完成",
             field=field_name, count=count,
@@ -278,8 +316,16 @@ def _emit_staleness(emit: EmitFn, *, identity: dict, observation: dict,
     exp_date = date.fromisoformat(identity["expiration"])
     staleness_days = (today - obs_date).days
     computed_dte = days_between(obs_date, exp_date)
+    # PC-04（#204）：最新觀測落在「今天之前最近一個交易日」（含正常跨
+    # 週末）時不對使用者顯示——這是預期中的過渡態，不是系統壞掉；只有
+    # 落後超過這個範圍才是真的陳舊。交易日判斷只處理週末（AC 明文
+    # 範圍），可能因此把市場假日誤判成落後，屬既有已接受的殘留噪音。
+    # `severity` 計算式本身完全不動——`_most_recent_trading_day_before`
+    # 只影響 `user_facing`，不影響上面 `staleness_days` 的門檻判斷。
+    benign = obs_date >= _most_recent_trading_day_before(today)
     emit(stage="staleness",
         severity="info" if staleness_days <= 1 else "warning",
+        user_facing=not benign,
         message=(f"最新觀測 {staleness_days} 天前" if staleness_days > 1
                 else "最新觀測新鮮"),
         contract_symbol=identity["contract_symbol"], **_identity_context(identity),
@@ -842,7 +888,8 @@ def build_iv_history(*, symbol: str, candidate: dict, spot: float,
 
     _emit_reanchor_summary(emit_legacy, coords=coords,
                            in_grid=in_grid, out_of_grid=out_of_grid)
-    _emit_metrics(emit_legacy, points, coords, today=today)
+    _emit_metrics(emit_legacy, points, coords, today=today,
+                 backfill_pending=backfill_pending)
 
     return {**iv_payload(candidate["candidate_key"], points, outcome, note,
                          today=today),

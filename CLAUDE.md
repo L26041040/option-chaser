@@ -4340,6 +4340,51 @@ UI 數字不一致、明確可重現的 contract rank 錯誤、historical series
   typecheck／648 條 Vitest／build 全綠；Playwright Historical
   IV／Diagnostics／Copy 相關 29 條（iPhone＋Desktop）全綠。
 
+- **PC-04**（#204）— Diagnostics 四項 user-facing 分類覆寫：只動
+  `option_chaser/ivpipeline.py` 四個 emit 函式，每處都只加
+  `user_facing=` 這一個具名參數、`severity` 計算式逐字未動（測試
+  逐一鎖住兩者同時成立）。**staleness**：新增
+  `_most_recent_trading_day_before(day)`（只處理週末，沿用既有
+  `_is_weekend`，不新增假日表）；`obs_date >= 那個交易日` 視為預期
+  中的正常過渡態（含跨週末），`user_facing = not benign`。**Legacy
+  metrics count=0**：`_emit_metrics()` 新增參數 `backfill_pending:
+  bool = False`（`build_iv_history()` 既有的 `legacy_backfill_status()`
+  結果直接傳入，不新增任何抓取），`user_facing = count==0 and not
+  backfill_pending`——只影響 Legacy 家族自己的 metrics，`_emit_leg_
+  stat_metrics()`（Exact-Contract 家族逐腿統計量）完全未觸碰。
+  **backfill 批次摘要**：`user_facing = bool(aborted_on)`——warning
+  唯一成因是交易日撲空且未中止時為 False（本站不維護美股假日表的
+  既有已接受限制，跟 `days_no_data_expected`／`_is_weekend` 同一個
+  取捨），中止（額度用盡／vendor 失敗）時無論是否同時有撲空一律
+  True。**reanchor 覆蓋率**：`user_facing = total > 0 and in_grid ==
+  0`——只有整段快取歷史全部落在網格外才顯示，部分覆蓋不顯示；真的
+  顯示時 Normalized Skew 的中性文案（`metricCaption()` 既有的「沒有
+  歷史資料」）與 `InlineDiagnostics` 的 `variant="info"`（非紅色阻斷
+  樣式，`.iv-diagnostics-summary-info` 既有 CSS 早已是中性語氣）兩者
+  都是既有架構、不需要任何新程式碼即滿足這條 AC，純檢視確認。
+  `_emit_contract_history_telemetry`／`_emit_reconstruction_ledger`／
+  `_emit_vendor_benchmark`／`_emit_leg_stat_metrics` 四個函式完全未
+  觸碰（維持預設規則，reconstruction 全零成功與 vendor 真失敗依然
+  對使用者可見）；施工中未發現其他行為類似、需要另行裁決的診斷事件源。
+  測試：`test_api_iv_history.py` 對 reanchor／metrics／backfill 三組
+  既有測試逐一補上 `user_facing` 斷言（與既有 `severity` 斷言並列，
+  證明兩者互相獨立）；新增 `test_metrics_zero_count_is_not_user_
+  facing_while_backfill_is_still_pending`（pending 情境專屬）；新增
+  三條直接呼叫 `_emit_staleness()`／`_most_recent_trading_day_before()`
+  的純函式測試（HTTP 端點層級的 `today` 是真實系統時鐘、無法穩定
+  構造「今天是星期幾」，比照既有 `test_the_backfill_and_reanchor_
+  summaries_take_no_free_text_vendor_params` 直接匯入私有函式的既有
+  慣例）——正常跨週末不可見、真的跳過交易日則可見、新鮮觀測不可見。
+  前端 `IvHistory.test.tsx` 新增兩條：`severity=warning`＋
+  `user_facing=false`（PC-04 良性覆寫的形狀）不觸發面板；
+  `severity=info`＋`user_facing=true` 觸發面板——雙向證明過濾條件是
+  獨立軸，不是 severity 的別名。契約樣本重產，4 筆 metrics 事件（該
+  fixture 的 Legacy 家族 backfill_pending 為 true）`user_facing`
+  正確從 true 翻成 false，親眼核對非本票造成的意外行為。全套回歸：
+  後端 pytest 無新增失敗（同一組 4 條既有 flake）；前端 typecheck／
+  650 條 Vitest／build 全綠；Playwright Historical IV／Diagnostics
+  相關 29 條（iPhone＋Desktop）全綠。
+
 ### 施工依據
 
 - 需求與決策紀錄：`docs/modifyRequestV1.md`（附錄 A1–A12）

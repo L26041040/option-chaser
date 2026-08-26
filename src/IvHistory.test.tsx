@@ -766,6 +766,34 @@ describe("就地展開的診斷詳情（DG-05／#148）", () => {
       .not.toBeInTheDocument();
   });
 
+  it("PC-04（#204）：severity 是 warning 但 user_facing 為 false（後端四項" +
+     "良性覆寫的形狀）時不觸發診斷區塊——過濾條件真的讀 user_facing，" +
+     "不是碰巧鏡射 severity 才通過", async () => {
+    mockApi({ enabled: true, iv: ivView({
+      diagnostics: { correlation_id: "cid-benign",
+                    events: [diagEvent({ severity: "warning", user_facing: false })] },
+    }) });
+    render(<IvHistory scenarioId="s1" candidate={spreadCandidate()} />);
+    await waitFor(() =>
+      expect(screen.getByText("Normalized Skew")).toBeInTheDocument());
+    expect(screen.queryByText("Historical IV 資料取得失敗 · 查看詳情"))
+      .not.toBeInTheDocument();
+    expect(screen.queryByText("Historical IV 診斷資訊 · 查看詳情"))
+      .not.toBeInTheDocument();
+  });
+
+  it("PC-04（#204）：user_facing 為 true 時觸發診斷區塊，即使 severity 是" +
+     "info——反向證明過濾條件是獨立軸，不是 severity 的別名", async () => {
+    mockApi({ enabled: true, iv: ivView({
+      diagnostics: { correlation_id: "cid-forced",
+                    events: [diagEvent({ severity: "info", user_facing: true })] },
+    }) });
+    render(<IvHistory scenarioId="s1" candidate={spreadCandidate()} />);
+    await waitFor(() => expect(
+      screen.getByText("Historical IV 診斷資訊 · 查看詳情"),
+    ).toBeInTheDocument());
+  });
+
   it("展開後看得到事件欄位：timestamp／stage／severity／context", async () => {
     mockApi({ enabled: true, iv: ivView({
       diagnostics: { correlation_id: "cid-fields",

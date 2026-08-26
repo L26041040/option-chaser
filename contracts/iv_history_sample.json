@@ -9,15 +9,15 @@
           "candidate_key": "bull-call-spread|118|122|2026-08-07",
           "found": true,
           "groups_scanned": 4,
-          "scenario_id": "9b7eaaaf0715"
+          "scenario_id": "b03763e41ab8"
         },
-        "correlation_id": "1682c51b84bf49de930ffc1641cb5893",
-        "event_id": "ea7662d0851a4b6ca37d0711d05cec6b",
+        "correlation_id": "107c09ff38264f0395e4eb8dc46d7df9",
+        "event_id": "32bd1ff472d34ec7af2531bfce8d1d91",
         "message": "找到候選",
         "severity": "info",
         "stage": "candidate_lookup",
         "subsystem": "historical_iv",
-        "ts": "2026-08-26T09:37:27+00:00",
+        "ts": "2026-08-26T09:51:14+00:00",
         "user_facing": false
       },
       {
@@ -31,13 +31,13 @@
           "strike": 118.0,
           "underlying": "XYZ"
         },
-        "correlation_id": "1682c51b84bf49de930ffc1641cb5893",
-        "event_id": "3f5dc3959934458f8e59a960129f39a9",
+        "correlation_id": "107c09ff38264f0395e4eb8dc46d7df9",
+        "event_id": "05d4af9742984171bbebe3bde05065a2",
         "message": "計算歷史缺口",
         "severity": "info",
         "stage": "cache",
         "subsystem": "historical_iv",
-        "ts": "2026-08-26T09:37:27+00:00",
+        "ts": "2026-08-26T09:51:14+00:00",
         "user_facing": false
       },
       {
@@ -50,13 +50,13 @@
           "strike": 118.0,
           "underlying": "XYZ"
         },
-        "correlation_id": "1682c51b84bf49de930ffc1641cb5893",
-        "event_id": "ad385f5df5d84ae69b530c70f2026a64",
+        "correlation_id": "107c09ff38264f0395e4eb8dc46d7df9",
+        "event_id": "6350f33c9d1f42d6a7506274e3590482",
         "message": "寫入合約歷史觀測",
         "severity": "info",
         "stage": "database_write",
         "subsystem": "historical_iv",
-        "ts": "2026-08-26T09:37:27+00:00",
+        "ts": "2026-08-26T09:51:14+00:00",
         "user_facing": false
       },
       {
@@ -67,18 +67,18 @@
           "expiration": "2026-08-07",
           "observation_timestamp": 1,
           "option_type": "call",
-          "request_time": "2026-08-26T09:37:27+00:00",
+          "request_time": "2026-08-26T09:51:14+00:00",
           "staleness_days": 0,
           "strike": 118.0,
           "underlying": "XYZ"
         },
-        "correlation_id": "1682c51b84bf49de930ffc1641cb5893",
-        "event_id": "6811558adf8e41a3837fea1814b83f72",
+        "correlation_id": "107c09ff38264f0395e4eb8dc46d7df9",
+        "event_id": "b0db5785c3084128bee01ee436ee2210",
         "message": "最新觀測新鮮",
         "severity": "info",
         "stage": "staleness",
         "subsystem": "historical_iv",
-        "ts": "2026-08-26T09:37:27+00:00",
+        "ts": "2026-08-26T09:51:14+00:00",
         "user_facing": false
       },
       {
@@ -92,13 +92,13 @@
           "strike": 122.0,
           "underlying": "XYZ"
         },
-        "correlation_id": "1682c51b84bf49de930ffc1641cb5893",
-        "event_id": "434bda75ae9348d1ac355e17269270ba",
+        "correlation_id": "107c09ff38264f0395e4eb8dc46d7df9",
+        "event_id": "3581798c79b546fe80974dec74e905fe",
         "message": "計算歷史缺口",
         "severity": "info",
         "stage": "cache",
         "subsystem": "historical_iv",
-        "ts": "2026-08-26T09:37:27+00:00",
+        "ts": "2026-08-26T09:51:14+00:00",
         "user_facing": false
       },
       {
@@ -111,13 +111,13 @@
           "strike": 122.0,
           "underlying": "XYZ"
         },
-        "correlation_id": "1682c51b84bf49de930ffc1641cb5893",
-        "event_id": "627bc85f4554490aafc41819b95da90c",
+        "correlation_id": "107c09ff38264f0395e4eb8dc46d7df9",
+        "event_id": "09580ce5882148bdb7d2a0f34b10a5ee",
         "message": "寫入合約歷史觀測",
         "severity": "info",
         "stage": "database_write",
         "subsystem": "historical_iv",
-        "ts": "2026-08-26T09:37:27+00:00",
+        "ts": "2026-08-26T09:51:14+00:00",
         "user_facing": false
       },
       {
@@ -128,18 +128,18 @@
           "expiration": "2026-08-07",
           "observation_timestamp": 1,
           "option_type": "call",
-          "request_time": "2026-08-26T09:37:27+00:00",
+          "request_time": "2026-08-26T09:51:14+00:00",
           "staleness_days": 0,
           "strike": 122.0,
           "underlying": "XYZ"
         },
-        "correlation_id": "1682c51b84bf49de930ffc1641cb5893",
-        "event_id": "b9c78cb8c8bb43ae9983bc44a5540c6b",
+        "correlation_id": "107c09ff38264f0395e4eb8dc46d7df9",
+        "event_id": "fb5371acafa544028fe6908e2c410fb1",
         "message": "最新觀測新鮮",
         "severity": "info",
         "stage": "staleness",
         "subsystem": "historical_iv",
-        "ts": "2026-08-26T09:37:27+00:00",
+        "ts": "2026-08-26T09:51:14+00:00",
         "user_facing": false
       },
       {
@@ -157,13 +157,13 @@
           "unusable_quote": 0,
           "usable": 27
         },
-        "correlation_id": "1682c51b84bf49de930ffc1641cb5893",
-        "event_id": "9f1a96dc2daf4f1fabff8580732d94e4",
+        "correlation_id": "107c09ff38264f0395e4eb8dc46d7df9",
+        "event_id": "12df3fc4ed7c42ee9ec396ea3ecc295e",
         "message": "重建完成",
         "severity": "info",
         "stage": "reconstruction",
         "subsystem": "historical_iv",
-        "ts": "2026-08-26T09:37:27+00:00",
+        "ts": "2026-08-26T09:51:14+00:00",
         "user_facing": false
       },
       {
@@ -177,13 +177,13 @@
           "vendor_iv_excluded_degenerate": 0,
           "vendor_iv_present": 0
         },
-        "correlation_id": "1682c51b84bf49de930ffc1641cb5893",
-        "event_id": "f1bfd14ee3004f31a8e5f68c58dbe5db",
+        "correlation_id": "107c09ff38264f0395e4eb8dc46d7df9",
+        "event_id": "edbc110e5d4d48eda6246de6a503097f",
         "message": "vendor IV 合理性比較：0 筆有值，0 筆被 gate 排除，0 筆可比較",
         "severity": "info",
         "stage": "vendor_benchmark",
         "subsystem": "historical_iv",
-        "ts": "2026-08-26T09:37:27+00:00",
+        "ts": "2026-08-26T09:51:14+00:00",
         "user_facing": false
       },
       {
@@ -196,13 +196,13 @@
           "strike": 118.0,
           "underlying": "XYZ"
         },
-        "correlation_id": "1682c51b84bf49de930ffc1641cb5893",
-        "event_id": "057bb572a48248ad8a822e7683cadb27",
+        "correlation_id": "107c09ff38264f0395e4eb8dc46d7df9",
+        "event_id": "e43afdbe2f074feb9c311a927a386fcf",
         "message": "moving_average 計算完成",
         "severity": "info",
         "stage": "metrics",
         "subsystem": "historical_iv",
-        "ts": "2026-08-26T09:37:27+00:00",
+        "ts": "2026-08-26T09:51:14+00:00",
         "user_facing": false
       },
       {
@@ -215,13 +215,13 @@
           "strike": 118.0,
           "underlying": "XYZ"
         },
-        "correlation_id": "1682c51b84bf49de930ffc1641cb5893",
-        "event_id": "20db6bb64c8a450bbfca1e613240e8aa",
+        "correlation_id": "107c09ff38264f0395e4eb8dc46d7df9",
+        "event_id": "889d66ade0e64be5abdcf83852131c4f",
         "message": "bollinger_bands 計算完成",
         "severity": "info",
         "stage": "metrics",
         "subsystem": "historical_iv",
-        "ts": "2026-08-26T09:37:27+00:00",
+        "ts": "2026-08-26T09:51:14+00:00",
         "user_facing": false
       },
       {
@@ -234,13 +234,13 @@
           "strike": 118.0,
           "underlying": "XYZ"
         },
-        "correlation_id": "1682c51b84bf49de930ffc1641cb5893",
-        "event_id": "6b73e2a1e0fe4d70b1b09f0b3702e54e",
+        "correlation_id": "107c09ff38264f0395e4eb8dc46d7df9",
+        "event_id": "cfd490bc5bec434b8edb4b5e8ab6c1e5",
         "message": "current_zscore 計算完成",
         "severity": "info",
         "stage": "metrics",
         "subsystem": "historical_iv",
-        "ts": "2026-08-26T09:37:27+00:00",
+        "ts": "2026-08-26T09:51:14+00:00",
         "user_facing": false
       },
       {
@@ -252,13 +252,13 @@
           "strike": 118.0,
           "underlying": "XYZ"
         },
-        "correlation_id": "1682c51b84bf49de930ffc1641cb5893",
-        "event_id": "12cba8e2619e4a14815591933a1852e0",
+        "correlation_id": "107c09ff38264f0395e4eb8dc46d7df9",
+        "event_id": "4e04e1c140114683b706f081f4b052f2",
         "message": "historical_percentile 計算完成",
         "severity": "info",
         "stage": "metrics",
         "subsystem": "historical_iv",
-        "ts": "2026-08-26T09:37:27+00:00",
+        "ts": "2026-08-26T09:51:14+00:00",
         "user_facing": false
       },
       {
@@ -270,13 +270,13 @@
           "strike": 118.0,
           "underlying": "XYZ"
         },
-        "correlation_id": "1682c51b84bf49de930ffc1641cb5893",
-        "event_id": "85c1f09fffd942bc8a8f28127c69d8b2",
+        "correlation_id": "107c09ff38264f0395e4eb8dc46d7df9",
+        "event_id": "946d7ac8988a47bd812b2e537b95e024",
         "message": "delta_4w 計算完成",
         "severity": "info",
         "stage": "metrics",
         "subsystem": "historical_iv",
-        "ts": "2026-08-26T09:37:27+00:00",
+        "ts": "2026-08-26T09:51:14+00:00",
         "user_facing": false
       },
       {
@@ -294,13 +294,13 @@
           "unusable_quote": 0,
           "usable": 26
         },
-        "correlation_id": "1682c51b84bf49de930ffc1641cb5893",
-        "event_id": "188c57db69fd4458b8e090169e7266fb",
+        "correlation_id": "107c09ff38264f0395e4eb8dc46d7df9",
+        "event_id": "96615703230b4d25a93b1a4a83a9859c",
         "message": "重建完成",
         "severity": "info",
         "stage": "reconstruction",
         "subsystem": "historical_iv",
-        "ts": "2026-08-26T09:37:27+00:00",
+        "ts": "2026-08-26T09:51:14+00:00",
         "user_facing": false
       },
       {
@@ -314,13 +314,13 @@
           "vendor_iv_excluded_degenerate": 0,
           "vendor_iv_present": 0
         },
-        "correlation_id": "1682c51b84bf49de930ffc1641cb5893",
-        "event_id": "bff85f9e48914b148f6212a0d87c84d7",
+        "correlation_id": "107c09ff38264f0395e4eb8dc46d7df9",
+        "event_id": "392cb92196ed430a92890e0b17a14769",
         "message": "vendor IV 合理性比較：0 筆有值，0 筆被 gate 排除，0 筆可比較",
         "severity": "info",
         "stage": "vendor_benchmark",
         "subsystem": "historical_iv",
-        "ts": "2026-08-26T09:37:27+00:00",
+        "ts": "2026-08-26T09:51:14+00:00",
         "user_facing": false
       },
       {
@@ -333,13 +333,13 @@
           "strike": 122.0,
           "underlying": "XYZ"
         },
-        "correlation_id": "1682c51b84bf49de930ffc1641cb5893",
-        "event_id": "8144a3446c494c5e92c8ce0af70de78f",
+        "correlation_id": "107c09ff38264f0395e4eb8dc46d7df9",
+        "event_id": "6b854cf9f4a7409fab3b88ac041c2eb4",
         "message": "moving_average 計算完成",
         "severity": "info",
         "stage": "metrics",
         "subsystem": "historical_iv",
-        "ts": "2026-08-26T09:37:27+00:00",
+        "ts": "2026-08-26T09:51:14+00:00",
         "user_facing": false
       },
       {
@@ -352,13 +352,13 @@
           "strike": 122.0,
           "underlying": "XYZ"
         },
-        "correlation_id": "1682c51b84bf49de930ffc1641cb5893",
-        "event_id": "e64c97b87faa470bbe0e0d7a436e823e",
+        "correlation_id": "107c09ff38264f0395e4eb8dc46d7df9",
+        "event_id": "e5301ad169d94b9885280bbdba98b0a1",
         "message": "bollinger_bands 計算完成",
         "severity": "info",
         "stage": "metrics",
         "subsystem": "historical_iv",
-        "ts": "2026-08-26T09:37:27+00:00",
+        "ts": "2026-08-26T09:51:14+00:00",
         "user_facing": false
       },
       {
@@ -371,13 +371,13 @@
           "strike": 122.0,
           "underlying": "XYZ"
         },
-        "correlation_id": "1682c51b84bf49de930ffc1641cb5893",
-        "event_id": "16a8de69f4b64ec380db09a9e93373d2",
+        "correlation_id": "107c09ff38264f0395e4eb8dc46d7df9",
+        "event_id": "b326a558c0cd4961839b4b754ec3abae",
         "message": "current_zscore 計算完成",
         "severity": "info",
         "stage": "metrics",
         "subsystem": "historical_iv",
-        "ts": "2026-08-26T09:37:27+00:00",
+        "ts": "2026-08-26T09:51:14+00:00",
         "user_facing": false
       },
       {
@@ -389,13 +389,13 @@
           "strike": 122.0,
           "underlying": "XYZ"
         },
-        "correlation_id": "1682c51b84bf49de930ffc1641cb5893",
-        "event_id": "59194e06b9f44bad9abfcd3342e0631e",
+        "correlation_id": "107c09ff38264f0395e4eb8dc46d7df9",
+        "event_id": "8269f840ad6d4c1db3ad25639120d6c7",
         "message": "historical_percentile 計算完成",
         "severity": "info",
         "stage": "metrics",
         "subsystem": "historical_iv",
-        "ts": "2026-08-26T09:37:27+00:00",
+        "ts": "2026-08-26T09:51:14+00:00",
         "user_facing": false
       },
       {
@@ -407,13 +407,13 @@
           "strike": 122.0,
           "underlying": "XYZ"
         },
-        "correlation_id": "1682c51b84bf49de930ffc1641cb5893",
-        "event_id": "aad744b48db24585b2e20c0dc0f4d7f2",
+        "correlation_id": "107c09ff38264f0395e4eb8dc46d7df9",
+        "event_id": "a53180719d1547f488b744eef5e369e0",
         "message": "delta_4w 計算完成",
         "severity": "info",
         "stage": "metrics",
         "subsystem": "historical_iv",
-        "ts": "2026-08-26T09:37:27+00:00",
+        "ts": "2026-08-26T09:51:14+00:00",
         "user_facing": false
       },
       {
@@ -425,13 +425,13 @@
           "tenor_days": 23,
           "total_dates": 0
         },
-        "correlation_id": "1682c51b84bf49de930ffc1641cb5893",
-        "event_id": "8589b950daa74cbb82ff58b2390e869d",
+        "correlation_id": "107c09ff38264f0395e4eb8dc46d7df9",
+        "event_id": "436beb2d591443699acba1540b960e69",
         "message": "0 個歷史日期：0 個落在網格內／0 個落在網格外",
         "severity": "info",
         "stage": "reanchor",
         "subsystem": "normalized_skew",
-        "ts": "2026-08-26T09:37:27+00:00",
+        "ts": "2026-08-26T09:51:14+00:00",
         "user_facing": false
       },
       {
@@ -441,14 +441,14 @@
           "percentile_available": false,
           "trend_base_count": 0
         },
-        "correlation_id": "1682c51b84bf49de930ffc1641cb5893",
-        "event_id": "d55833b809334182a68ef19d7c1620b8",
+        "correlation_id": "107c09ff38264f0395e4eb8dc46d7df9",
+        "event_id": "5518b34a624a414b91ef8f90709c1c4f",
         "message": "normalized_skew 沒有有效觀測",
         "severity": "warning",
         "stage": "metrics",
         "subsystem": "normalized_skew",
-        "ts": "2026-08-26T09:37:27+00:00",
-        "user_facing": true
+        "ts": "2026-08-26T09:51:14+00:00",
+        "user_facing": false
       },
       {
         "context": {
@@ -457,14 +457,14 @@
           "percentile_available": false,
           "trend_base_count": 0
         },
-        "correlation_id": "1682c51b84bf49de930ffc1641cb5893",
-        "event_id": "02f2f5f6e7a7406d83b388ea6bed6787",
+        "correlation_id": "107c09ff38264f0395e4eb8dc46d7df9",
+        "event_id": "043129a900b14290b351ffd2300fa12f",
         "message": "buy_iv 沒有有效觀測",
         "severity": "warning",
         "stage": "metrics",
         "subsystem": "normalized_skew",
-        "ts": "2026-08-26T09:37:27+00:00",
-        "user_facing": true
+        "ts": "2026-08-26T09:51:14+00:00",
+        "user_facing": false
       },
       {
         "context": {
@@ -473,14 +473,14 @@
           "percentile_available": false,
           "trend_base_count": 0
         },
-        "correlation_id": "1682c51b84bf49de930ffc1641cb5893",
-        "event_id": "86aeb2a8524549899ad6c70fac735e5a",
+        "correlation_id": "107c09ff38264f0395e4eb8dc46d7df9",
+        "event_id": "ecb5c424b7c64d37906587489f56e52e",
         "message": "sell_iv 沒有有效觀測",
         "severity": "warning",
         "stage": "metrics",
         "subsystem": "normalized_skew",
-        "ts": "2026-08-26T09:37:27+00:00",
-        "user_facing": true
+        "ts": "2026-08-26T09:51:14+00:00",
+        "user_facing": false
       },
       {
         "context": {
@@ -489,14 +489,14 @@
           "percentile_available": false,
           "trend_base_count": 0
         },
-        "correlation_id": "1682c51b84bf49de930ffc1641cb5893",
-        "event_id": "84d4fbb80ada44bf885e8c0e16d715ea",
+        "correlation_id": "107c09ff38264f0395e4eb8dc46d7df9",
+        "event_id": "ba4516363a1c48e699c706aa3fe3664e",
         "message": "atm_iv 沒有有效觀測",
         "severity": "warning",
         "stage": "metrics",
         "subsystem": "normalized_skew",
-        "ts": "2026-08-26T09:37:27+00:00",
-        "user_facing": true
+        "ts": "2026-08-26T09:51:14+00:00",
+        "user_facing": false
       }
     ]
   },

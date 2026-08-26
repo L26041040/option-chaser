@@ -1046,6 +1046,10 @@ def test_weekday_no_data_still_warns_but_does_not_abort_the_batch(db):
     assert backfill_summary[0]["context"]["days_failed"] == 0
     assert "aborted_on" not in backfill_summary[0]["context"]
     assert backfill_summary[0]["context"]["outcome"] == "ok"
+    # PC-04（#204）：warning 的唯一成因是交易日撲空、批次沒有中止——
+    # 這是本站不維護美股假日表的既有、已接受限制，不對使用者顯示，
+    # 即使 `severity` 仍然是 warning（工程可見度不變）。
+    assert backfill_summary[0]["user_facing"] is False
 
 
 def test_weekend_no_data_is_informational_not_a_warning(db, monkeypatch):
@@ -1072,6 +1076,7 @@ def test_weekend_no_data_is_informational_not_a_warning(db, monkeypatch):
     assert backfill_summary[0]["context"]["days_no_data_expected"] == 1
     assert backfill_summary[0]["context"]["days_no_data_unexpected"] == 0
     assert "aborted_on" not in backfill_summary[0]["context"]
+    assert backfill_summary[0]["user_facing"] is False
 
 
 def test_backfill_abort_is_visible_in_the_summary_event(db):
@@ -1091,6 +1096,9 @@ def test_backfill_abort_is_visible_in_the_summary_event(db):
     assert summary[0]["context"]["abort_reason"] == "quota"
     assert summary[0]["context"]["attempted_days"] == 1
     assert summary[0]["context"]["saved_days"] == 0
+    # PC-04（#204）：批次因額度用盡（或 vendor 失敗）而中止時，照舊對
+    # 使用者顯示——那是真的需要使用者知道的失敗，不是預期過渡態。
+    assert summary[0]["user_facing"] is True
 
 
 class _ExpirationRecorder:
@@ -1710,6 +1718,10 @@ def test_reanchor_summary_marks_out_of_grid_dates_as_a_warning(db):
     assert got[0]["context"]["total_dates"] == 1
     assert got[0]["context"]["in_grid_dates"] == 0
     assert got[0]["context"]["out_of_grid_dates"] == 1
+    # PC-04（#204）：整段快取歷史全部落在網格外（唯一一天，in_grid=0）
+    # ——連帶讓 Normalized Skew 變成 count=0，這才是真正的覆蓋率失敗，
+    # 對使用者顯示。
+    assert got[0]["user_facing"] is True
 
 
 def test_reanchor_summary_is_info_when_the_grid_covers_the_candidate(db):
@@ -1727,6 +1739,7 @@ def test_reanchor_summary_is_info_when_the_grid_covers_the_candidate(db):
     assert got[0]["context"]["total_dates"] == 1
     assert got[0]["context"]["in_grid_dates"] == 1
     assert got[0]["context"]["out_of_grid_dates"] == 0
+    assert got[0]["user_facing"] is False
 
 
 def test_reanchor_summary_counts_mixed_in_and_out_of_grid_dates(db):
@@ -1752,6 +1765,10 @@ def test_reanchor_summary_counts_mixed_in_and_out_of_grid_dates(db):
     assert got[0]["context"]["in_grid_dates"] == 3
     assert got[0]["context"]["out_of_grid_dates"] == 2
     assert got[0]["severity"] == "warning"
+    # PC-04（#204）：部分覆蓋（仍有 3 天落在網格內，Normalized Skew
+    # 正常算得出來）不對使用者顯示，即使 `severity` 仍是 warning
+    # （工程可見度不變——`out_of_grid_dates` 非 0 這件事本身沒有消失）。
+    assert got[0]["user_facing"] is False
 
 
 def test_single_leg_reanchor_summary_is_not_penalized_for_the_missing_sell_leg(db):
@@ -1772,6 +1789,7 @@ def test_single_leg_reanchor_summary_is_not_penalized_for_the_missing_sell_leg(d
     assert got[0]["context"]["in_grid_dates"] == 1
     assert got[0]["context"]["out_of_grid_dates"] == 0
     assert "sell_delta" not in got[0]["context"]
+    assert got[0]["user_facing"] is False
 
 
 _REANCHORED_METRIC_FIELDS = {"normalized_skew", "buy_iv", "sell_iv", "atm_iv"}
@@ -1798,6 +1816,7 @@ def test_metrics_events_are_info_when_data_is_available(db):
     assert set(by_field) == {"normalized_skew", "buy_iv", "sell_iv", "atm_iv"}
     assert all(e["severity"] == "info" for e in by_field.values())
     assert all(e["context"]["count"] > 0 for e in by_field.values())
+    assert all(e["user_facing"] is False for e in by_field.values())
 
 
 def test_metrics_events_flag_zero_count_fields_as_warning(db):
@@ -1812,6 +1831,29 @@ def test_metrics_events_flag_zero_count_fields_as_warning(db):
     by_field = {e["context"]["field"]: e for e in _events_for(body, "metrics")}
     assert all(e["severity"] == "warning" for e in by_field.values())
     assert all(e["context"]["count"] == 0 for e in by_field.values())
+    # PC-04（#204）：backfill 已經跑過一次（`_mark_backfill_done_today`）
+    # 仍然 count=0——這是真的缺口，對使用者顯示。
+    assert all(e["user_facing"] is True for e in by_field.values())
+
+
+def test_metrics_zero_count_is_not_user_facing_while_backfill_is_still_pending(db):
+    """PC-04（#204）：這個 symbol 的 Legacy 家族今天還沒跑過任何一次
+    backfill（不呼叫 `_mark_backfill_done_today`）——count=0 只是預期中
+    的過渡態，UI 沿用既有「歷史資料補建中」語意，不疊加使用者可見的
+    警示。`severity` 依然是 warning，不受這個覆寫影響。"""
+    client = _client(db, surface=_surface_never_called)
+    _unlock(client)
+    sid = _scenario(client)
+    key = _candidate_key(client, sid)
+    _seed_days(db, [("2026-05-01", _NARROW_GRID)])
+
+    body = _get(client, sid, key).json()
+    assert body["backfill_pending"] is True
+    by_field = {e["context"]["field"]: e for e in _events_for(body, "metrics")
+               if e["context"]["field"] in _REANCHORED_METRIC_FIELDS}
+    assert all(e["severity"] == "warning" for e in by_field.values())
+    assert all(e["context"]["count"] == 0 for e in by_field.values())
+    assert all(e["user_facing"] is False for e in by_field.values())
 
 
 def test_single_leg_metrics_do_not_flag_the_structurally_absent_fields(db):
@@ -2886,6 +2928,96 @@ def test_a_stale_but_successful_fetch_is_identifiable_from_diagnostics_alone(db)
     assert len(events) == 1
     assert events[0]["severity"] == "warning"
     assert events[0]["context"]["staleness_days"] > 1
+    # PC-04（#204）：100 天前遠遠超過「今天之前最近一個交易日」的容忍
+    # 範圍——這是真的陳舊，維持對使用者可見。
+    assert events[0]["user_facing"] is True
+
+
+# ---------- PC-04（#204）：staleness 覆寫——交易日感知的正常過渡態 ----------
+#
+# 這三條直接呼叫 `_emit_staleness()`（純函式層級），不透過 HTTP 端點：
+# 這個模組在端點層級的 `today` 是真實系統時鐘（見 `_before_expiry`
+# docstring 的既有說明），沒有穩定的方法在 HTTP 測試裡構造「今天剛好是
+# 星期幾」這件事本身——而這正是本覆寫要驗證的核心變因，因此改用可以
+# 精確控制 `today`／觀測日的直接呼叫，比照既有
+# `test_the_backfill_and_reanchor_summaries_take_no_free_text_vendor_params`
+# 直接匯入私有函式驗證簽章／行為的既有慣例。
+
+def _collect_emit():
+    events: list[dict] = []
+
+    def emit(**kwargs):
+        events.append(kwargs)
+
+    return events, emit
+
+
+_STALENESS_IDENTITY = {
+    "underlying": "XYZ", "expiration": "2026-12-18", "strike": 100,
+    "option_type": "call", "contract_symbol": "XYZ261218C00100000",
+}
+
+
+def test_most_recent_trading_day_before_skips_weekends():
+    from option_chaser.ivpipeline import _most_recent_trading_day_before
+
+    # 星期三 → 星期二（前一天本來就是交易日）
+    assert (_most_recent_trading_day_before(date(2026, 8, 26))
+           == date(2026, 8, 25))
+    # 星期一 → 上星期五（跨過週六日）
+    assert (_most_recent_trading_day_before(date(2026, 8, 24))
+           == date(2026, 8, 21))
+    # 星期日 → 星期五
+    assert (_most_recent_trading_day_before(date(2026, 8, 23))
+           == date(2026, 8, 21))
+
+
+def test_staleness_is_not_user_facing_across_a_normal_weekend_rollover():
+    """今天是星期一（2026-08-24），最新觀測是上星期五（2026-08-21）——
+    每週都會發生的正常過渡態。`staleness_days` 是 3（>1），`severity`
+    依然是 warning（計算式沒動），但不該讓使用者以為系統壞掉。"""
+    from option_chaser.ivpipeline import _emit_staleness
+
+    events, emit = _collect_emit()
+    _emit_staleness(
+        emit, identity=_STALENESS_IDENTITY,
+        observation={"date": "2026-08-21", "updated": None, "dte": None},
+        request_time="2026-08-24T00:00:00+00:00", today=date(2026, 8, 24))
+
+    assert len(events) == 1
+    assert events[0]["severity"] == "warning"
+    assert events[0]["user_facing"] is False
+
+
+def test_staleness_is_user_facing_when_it_skips_a_real_trading_day():
+    """今天是星期二（2026-08-25），最新觀測卻還是上星期五
+    （2026-08-21）——中間跳過了星期一這個交易日，是真的落後，該讓
+    使用者看到。"""
+    from option_chaser.ivpipeline import _emit_staleness
+
+    events, emit = _collect_emit()
+    _emit_staleness(
+        emit, identity=_STALENESS_IDENTITY,
+        observation={"date": "2026-08-21", "updated": None, "dte": None},
+        request_time="2026-08-25T00:00:00+00:00", today=date(2026, 8, 25))
+
+    assert len(events) == 1
+    assert events[0]["severity"] == "warning"
+    assert events[0]["user_facing"] is True
+
+
+def test_staleness_fresh_observation_is_not_user_facing():
+    from option_chaser.ivpipeline import _emit_staleness
+
+    events, emit = _collect_emit()
+    _emit_staleness(
+        emit, identity=_STALENESS_IDENTITY,
+        observation={"date": "2026-08-25", "updated": None, "dte": None},
+        request_time="2026-08-25T00:00:00+00:00", today=date(2026, 8, 25))
+
+    assert len(events) == 1
+    assert events[0]["severity"] == "info"
+    assert events[0]["user_facing"] is False
 
 
 def test_reconstruction_ledger_coexists_with_a_full_legacy_backfill(db):
