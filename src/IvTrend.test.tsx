@@ -153,7 +153,7 @@ describe("資訊順序（桌面，PC-06／#203 對齊手機版）：現值 → �
     }) };
     const { container } = render(<IvTrend legs={legs} />);
     const delta4w = screen.getByText(/4週 \+2\.0 pts/);
-    const explanation = screen.getByText(/百分位：目前 IV 高於近一年內/);
+    const explanation = screen.getByText(/現在的 IV 比過去一年大約 \d+% 的有效歷史觀測都高/);
     const chart = container.querySelector(".iv-trend-chart")!;
 
     expect(delta4w.compareDocumentPosition(explanation)
@@ -220,7 +220,7 @@ describe("百分位說明文字（PC-01／#199，常駐可見，不必展開才�
       buy: legHistoricalIv(), sell: legHistoricalIv(),
     };
     render(<IvTrend legs={legs} />);
-    expect(screen.getAllByText(/百分位：目前 IV 高於近一年內/).length).toBe(2);
+    expect(screen.getAllByText(/現在的 IV 比過去一年大約 \d+% 的有效歷史觀測都高/).length).toBe(2);
   });
 
   it("桌面斷點下同樣看得到說明——PC-06（#203）起排在 Δ4w 之後、走勢圖之前" +
@@ -230,7 +230,7 @@ describe("百分位說明文字（PC-01／#199，常駐可見，不必展開才�
     const legs: IvHistoryLegs = { buy: legHistoricalIv({ current_percentile: 0.7 }) };
     render(<IvTrend legs={legs} />);
     expect(screen.getByText(/第 70 百分位/)).toBeInTheDocument();
-    expect(screen.getByText(/百分位：目前 IV 高於近一年內/)).toBeInTheDocument();
+    expect(screen.getByText(/現在的 IV 比過去一年大約 \d+% 的有效歷史觀測都高/)).toBeInTheDocument();
   });
 });
 

@@ -166,7 +166,7 @@ describe("百分位：直接顯示 spread_gap.current_percentile", () => {
 describe("百分位說明文字（PC-01／#199，常駐可見於主卡片，不必展開 Advanced）", () => {
   it("手機（預設 matchMedia 假體＝手機）主卡片看得到說明", () => {
     render(<SpreadSummary spreadGap={spreadGap()} legs={legs()} />);
-    expect(screen.getByText(/百分位：目前 Gap 高於這兩張合約共同歷史期間內/))
+    expect(screen.getByText(/現在的 Gap 比這兩張合約共同歷史期間內大約 \d+% 的有效觀測都高/))
       .toBeInTheDocument();
   });
 
@@ -177,7 +177,7 @@ describe("百分位說明文字（PC-01／#199，常駐可見於主卡片，不�
     render(<SpreadSummary spreadGap={spreadGap({ current_percentile: 0.6 })}
                          legs={legs()} />);
     expect(screen.getByText(/第 60 百分位/)).toBeInTheDocument();
-    expect(screen.getByText(/百分位：目前 Gap 高於這兩張合約共同歷史期間內/))
+    expect(screen.getByText(/現在的 Gap 比這兩張合約共同歷史期間內大約 \d+% 的有效觀測都高/))
       .toBeInTheDocument();
   });
 });
@@ -288,7 +288,7 @@ describe("資訊順序（桌面，PC-06／#203 對齊手機版）：現值 → �
                     legs={legs()} />);
     const delta4w = screen.getByText(/4週 \+2\.0 pts/);
     const explanation = screen.getByText(
-      /百分位：目前 Gap 高於這兩張合約共同歷史期間內/);
+      /現在的 Gap 比這兩張合約共同歷史期間內大約 \d+% 的有效觀測都高/);
     const chart = container.querySelector(".iv-trend-chart")!;
 
     expect(delta4w.compareDocumentPosition(explanation)
@@ -303,7 +303,7 @@ describe("資訊順序（桌面，PC-06／#203 對齊手機版）：現值 → �
                     legs={legs()} />);
     const stats = screen.getByText(/第 60 百分位/);
     const explanation = screen.getByText(
-      /百分位：目前 Gap 高於這兩張合約共同歷史期間內/);
+      /現在的 Gap 比這兩張合約共同歷史期間內大約 \d+% 的有效觀測都高/);
     const chart = container.querySelector(".iv-trend-chart")!;
 
     expect(stats.compareDocumentPosition(explanation)

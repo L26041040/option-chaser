@@ -126,12 +126,18 @@ function metricCaption(m: IvFieldMetric, unit: TrendUnit): string {
     trendLabel(m, unit)}`;
 }
 
-/** PC-01（#199，spec #198）：跟 `./IvTrend`／`./SpreadSummary` 的姊妹
- *  常數同一個目的——講清楚百分位的定義＋提醒單日讀數會隨市場報價波動。
- *  Normalized Skew 沿用既有「偏斜」語彙、不硬套「IV」字樣（這個家族量
- *  的是買賣兩腳結構是否偏斜，不是單一 IV 水準）。 */
-export const SKEW_PERCENTILE_EXPLANATION =
-  "百分位：目前偏斜程度高於近一年內多少比例的有效歷史觀測；單日讀數可能隨市場報價而波動。";
+/** PC-01（#199，spec #198）；2026-08-26 真機驗收後改寫為白話句——跟
+ *  `./IvTrend`／`./SpreadSummary` 的姊妹函式同一個目的、同一次改寫理由
+ *  （直接把「第 N 百分位」翻譯成一句話、把 N 帶進句子裡，數字跟旁邊
+ *  `metricCaption()` 顯示的保證一致）。Normalized Skew 沿用既有「偏斜」
+ *  語彙、不硬套「IV」字樣（這個家族量的是買賣兩腳結構是否偏斜，不是
+ *  單一 IV 水準）。 */
+export function skewPercentileExplanation(percentile: number | null): string {
+  if (percentile === null) return "目前沒有足夠的歷史觀測可以比較。";
+  const pct = Math.round(percentile * 100);
+  return `現在的偏斜程度比過去一年大約 ${pct}% 的有效歷史觀測都高。`
+    + "單日數字可能隨市場報價波動。";
+}
 
 export const PAD_TOP = 12;
 export const PAD_RIGHT = 6;
@@ -743,7 +749,7 @@ function IvAdvanced({ data, isSingleLeg, notableEvents }: {
             unit="unitless"
             metric={data.metrics.normalized_skew}
             points={normalizedSkewSeries(data.normalized_skew_points)}
-            explanation={SKEW_PERCENTILE_EXPLANATION}
+            explanation={skewPercentileExplanation(data.metrics.normalized_skew.percentile)}
           />
           <p className="caption">
             近 1 年 {data.observations} 個觀測，依候選的到期天數與 delta 座標

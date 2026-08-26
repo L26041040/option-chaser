@@ -67,13 +67,21 @@ function percentileCaption(percentile: number | null): string {
   return `第 ${Math.round(percentile * 100)} 百分位`;
 }
 
-/** PC-01（#199，spec #198）：跟 `./IvTrend` 的 `IV_PERCENTILE_EXPLANATION`
- *  同一個目的，換成 Gap 專屬語彙——常駐可見，不藏進 Advanced。這句解釋
- *  的是「百分位」這個統計量本身（定義＋單日會隨報價波動），跟既有只在
- *  Advanced 出現的 `SPREAD_PERCENTILE_CAPTION`（解釋「Gap 是什麼」）是
- *  兩件不同的事，`SPREAD_PERCENTILE_CAPTION` 完全不動。 */
-export const GAP_PERCENTILE_EXPLANATION =
-  "百分位：目前 Gap 高於這兩張合約共同歷史期間內多少比例的有效觀測；單日讀數可能隨市場報價而波動。";
+/** PC-01（#199，spec #198）；2026-08-26 真機驗收後改寫為白話句——跟
+ *  `./IvTrend` 的 `ivPercentileExplanation` 同一個目的、同一次改寫理由
+ *  （直接把「第 N 百分位」翻譯成一句話、把 N 帶進句子裡，數字跟旁邊
+ *  `percentileCaption()` 顯示的保證一致），換成 Gap 專屬語彙——常駐
+ *  可見，不藏進 Advanced。這句解釋的是「百分位」這個統計量本身（換算＋
+ *  單日會隨報價波動），跟既有只在 Advanced 出現的 `SPREAD_PERCENTILE_
+ *  CAPTION`（解釋「Gap 是什麼」）是兩件不同的事，`SPREAD_PERCENTILE_
+ *  CAPTION` 完全不動。「共同歷史期間」而非「近一年」是刻意保留的既有
+ *  措辭——Gap 的比較窗是兩張合約共同存在的歷史，可能短於一年。 */
+export function gapPercentileExplanation(percentile: number | null): string {
+  if (percentile === null) return "目前沒有足夠的共同歷史觀測可以比較。";
+  const pct = Math.round(percentile * 100);
+  return `現在的 Gap 比這兩張合約共同歷史期間內大約 ${pct}% 的有效觀測都高。`
+    + "單日數字可能隨市場報價波動。";
+}
 
 /** 小字涵蓋揭露：買／賣腿各自觀測筆數（既有 `legs.buy/sell.
  *  observation_count`，不變動）＋Gap 重疊筆數（`spread_gap.
@@ -138,7 +146,7 @@ export default function SpreadSummary({ spreadGap, legs }: {
           {percentileCaption(spreadGap.current_percentile)}・
           {delta4wMagnitudeCaption(spreadGap.delta_4w)}
         </p>
-        <p className="caption">{GAP_PERCENTILE_EXPLANATION}</p>
+        <p className="caption">{gapPercentileExplanation(spreadGap.current_percentile)}</p>
         {chart}
         <p className="caption">{coverageCaption(spreadGap, legs)}</p>
       </div>
@@ -158,7 +166,7 @@ export default function SpreadSummary({ spreadGap, legs }: {
       </span>
       <p className="caption">{percentileCaption(spreadGap.current_percentile)}</p>
       <p className="caption">{delta4wMagnitudeCaption(spreadGap.delta_4w)}</p>
-      <p className="caption">{GAP_PERCENTILE_EXPLANATION}</p>
+      <p className="caption">{gapPercentileExplanation(spreadGap.current_percentile)}</p>
       {chart}
       <p className="caption">{coverageCaption(spreadGap, legs)}</p>
     </div>

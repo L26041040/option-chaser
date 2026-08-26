@@ -1076,7 +1076,7 @@ describe("Advanced／Diagnostics 收合區（SIG-02／#173）", () => {
     await userEvent.click(summary);
 
     expect(screen.getByText("Normalized Skew")).toBeInTheDocument();
-    expect(screen.getByText(/百分位：目前偏斜程度高於近一年內/)).toBeInTheDocument();
+    expect(screen.getByText(/現在的偏斜程度比過去一年大約 \d+% 的有效歷史觀測都高/)).toBeInTheDocument();
   });
 
   it("單腳候選：Advanced 只有一行 z-score（無買／賣標籤），沒有 Normalized Skew",
