@@ -152,9 +152,15 @@ function emptySpreadGap() {
 }
 
 function diagEvent(over: Partial<DiagnosticEvent> = {}): DiagnosticEvent {
+  const severity = over.severity ?? "warning";
   return {
     event_id: "evt-1", correlation_id: "cid-test", ts: "2026-08-15T00:00:00+00:00",
-    subsystem: "historical_iv", stage: "payload_parse", severity: "warning",
+    subsystem: "historical_iv", stage: "payload_parse", severity,
+    // PC-03（#201）：省略時鏡射 `severity`（跟 `emit()` 同一套預設
+    // 規則）——`diagEvent({ severity: "info" })` 這種既有呼叫因此自動
+    // 得到 `user_facing: false`，跟舊版 severity-based 過濾器的行為
+    // 一致，不必逐一改既有呼叫端。
+    user_facing: severity === "warning" || severity === "error",
     message: "raw_rows > 0 but parsed rows are 0",
     context: { raw_rows: 5, parsed_call_rows: 0 },
     ...over,

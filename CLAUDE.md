@@ -4301,6 +4301,45 @@ UI 數字不一致、明確可重現的 contract rank 錯誤、historical series
   環境依賴性 flake，非本票造成的回歸，未嘗試修正（不在 spec #198
   範圍內）。
 
+- **PC-03**（#201）— Diagnostics `user_facing` 軸：`DiagnosticEvent`
+  新增必填欄位 `user_facing: bool`（刻意不給 class-level 預設值——
+  真正的預設規則只活在 `emit()` 一個地方，避免兩處邏輯漂移；直接
+  建構 `DiagnosticEvent` 的既有測試因此逐一補上顯式值，鏡射各自的
+  `severity`，斷言本身一行未動）。`diagnostics.emit()` 新增具名參數
+  `user_facing: bool | None = None`，省略時套預設規則（`severity` 為
+  warning／error 視為 true，info 視為 false）——具名參數確保它不會被
+  `**context` 收集吸走、被欄位白名單靜默丟棄（AC 明文擔心的那個坑）。
+  `main.py` 的 `_emit` closure 與 `ivpipeline.EmitFn` 的呼叫慣例文件
+  同步補上這個參數（純文件／簽章澄清，PC-03 本身沒有任何呼叫端傳入
+  覆寫值，PC-04 才會用到）。`postgres.py`：`diagnostics` 表新增
+  nullable 欄位 `user_facing`（走 `_MIGRATIONS`，不改 `_SCHEMA`——沿用
+  既有「建表與遷移分開送」慣例）、insert／select 兩條路徑同步接上，
+  讀回時對舊列（遷移前寫入、欄位為 NULL）套用跟 `emit()` 相同的規則
+  補值，新舊列讀回行為一致。`memory.py` 不需改動（dataclass 物件本身
+  攜帶這個欄位）。前端：`DiagnosticEvent` 型別新增 `user_facing:
+  boolean`；`IvHistory.tsx` 的 `notableEvents` 過濾條件從
+  `severity==="warning"||"error"` 改為 `user_facing===true`——PC-03
+  的預設規則與舊過濾條件逐一等價，這一行改動因此是零行為變更；
+  `/api/diagnostics` 端點（`dataclasses.asdict()` 直接吐全部欄位）與
+  Settings／Diagnostics 頁（`Diagnostics.tsx`／`DiagnosticDetail.tsx`
+  只讀 `severity`）完全不受影響、未改一行。契約樣本
+  `contracts/iv_history_sample.json` 重產（事件數 28→26 為既有已知的
+  跨日期非決定性，同一天內重複執行两次皆為 26，已驗證非本票造成）。
+  新增測試：`test_diagnostics.py` 三條（預設鏡射三種 severity、顯式
+  覆蓋、`user_facing` 不落入 `context`）；`test_storage_contract.py`
+  一條 round-trip（true／false 兩個方向都要能存活過 Postgres）；
+  frontend `Diagnostics.test.tsx`／`IvHistory.test.tsx` 的既有假體
+  工廠函式（`event()`／`diagEvent()`）改為動態鏡射 `severity`（而非
+  寫死常數），沿用同一套「省略時鏡射」哲學，既有呼叫端（含
+  `severity: "info"` 覆寫）因此零修改就自動得到正確值；e2e
+  （`smoke.spec.ts`／`desktop.spec.ts`）三處手造的 diagnostics 假體
+  補上 `user_facing`——這些不受 TypeScript 檢查（純 JSON 假體），漏補
+  會讓依賴 iv-history 診斷面板觸發的既有 e2e 案例失去觸發條件而非
+  型別錯誤，已逐一核對三處足夠。全套回歸：後端 pytest 無新增失敗
+  （與 PC-01 記錄的同一組 4 條既有環境依賴性 flake 完全相同）；前端
+  typecheck／648 條 Vitest／build 全綠；Playwright Historical
+  IV／Diagnostics／Copy 相關 29 條（iPhone＋Desktop）全綠。
+
 ### 施工依據
 
 - 需求與決策紀錄：`docs/modifyRequestV1.md`（附錄 A1–A12）

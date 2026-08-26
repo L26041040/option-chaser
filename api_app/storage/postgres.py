@@ -242,6 +242,10 @@ ALTER TABLE scenarios ADD COLUMN IF NOT EXISTS worst_price DOUBLE PRECISION;
 ALTER TABLE rate_cache ADD COLUMN IF NOT EXISTS last_success_at TEXT;
 ALTER TABLE rate_cache ADD COLUMN IF NOT EXISTS market_day TEXT;
 ALTER TABLE rate_cache ADD COLUMN IF NOT EXISTS attempted_day TEXT;
+-- PC-03（#201，spec #198）：nullable——既有部署的舊列沒有這一欄，讀回
+-- 時用跟 `emit()` 相同的規則（severity 為 warning／error 視為 true）
+-- 補一份合理值，而不是硬性 NOT NULL 逼一次資料回填。
+ALTER TABLE diagnostics ADD COLUMN IF NOT EXISTS user_facing BOOLEAN;
 """
 
 # 冷啟動競爭下的良性錯誤：別人已經建好／加好了。
@@ -261,7 +265,7 @@ _SCENARIO_COLS = ("id, symbol, direction, target_price, target_month, "
 # 最新 RETENTION_LIMIT 筆：子查詢在不到上限時回空，`seq <= NULL`
 # 恆假，DELETE 是安全的 no-op。
 _DIAGNOSTICS_INSERT_COLS = ("(event_id, correlation_id, ts, subsystem, "
-                           "stage, severity, message, context)")
+                           "stage, severity, user_facing, message, context)")
 _DIAGNOSTICS_TRIM_SQL = (
     "DELETE FROM diagnostics WHERE seq <= ("
     "SELECT seq FROM diagnostics ORDER BY seq DESC OFFSET %s LIMIT 1)")
@@ -818,9 +822,10 @@ class PostgresStorage:
         with self._connect() as conn:
             conn.execute(
                 f"INSERT INTO diagnostics {_DIAGNOSTICS_INSERT_COLS} "
-                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
                 (event.event_id, event.correlation_id, event.ts,
-                 event.subsystem, event.stage, event.severity, event.message,
+                 event.subsystem, event.stage, event.severity,
+                 event.user_facing, event.message,
                  Jsonb(event.context)))
             conn.execute(_DIAGNOSTICS_TRIM_SQL, (RETENTION_LIMIT,))
 
@@ -832,12 +837,14 @@ class PostgresStorage:
         「只留全域最新 RETENTION_LIMIT 筆」，最終保留集合完全一致。"""
         if not events:
             return
-        values_sql = ", ".join(["(%s, %s, %s, %s, %s, %s, %s, %s)"] * len(events))
+        values_sql = ", ".join(
+            ["(%s, %s, %s, %s, %s, %s, %s, %s, %s)"] * len(events))
         params: list = []
         for event in events:
             params.extend([event.event_id, event.correlation_id, event.ts,
                           event.subsystem, event.stage, event.severity,
-                          event.message, Jsonb(event.context)])
+                          event.user_facing, event.message,
+                          Jsonb(event.context)])
         with self._connect() as conn:
             conn.execute(
                 f"INSERT INTO diagnostics {_DIAGNOSTICS_INSERT_COLS} "
@@ -848,11 +855,16 @@ class PostgresStorage:
         with self._connect() as conn:
             rows = conn.execute(
                 "SELECT event_id, correlation_id, ts, subsystem, stage, "
-                "severity, message, context FROM diagnostics "
+                "severity, user_facing, message, context FROM diagnostics "
                 "ORDER BY seq DESC LIMIT %s", (limit,)).fetchall()
-        return [DiagnosticEvent(event_id=r[0], correlation_id=r[1], ts=r[2],
-                                subsystem=r[3], stage=r[4], severity=r[5],
-                                message=r[6], context=r[7]) for r in rows]
+        # `user_facing`（r[6]）為 NULL 只會發生在遷移前寫入的舊列——套用
+        # 跟 `diagnostics.emit()` 完全相同的預設規則補值，讀回的行為因此
+        # 對新舊列一致，不會讓查詢端還要另外處理 NULL。
+        return [DiagnosticEvent(
+            event_id=r[0], correlation_id=r[1], ts=r[2], subsystem=r[3],
+            stage=r[4], severity=r[5],
+            user_facing=r[6] if r[6] is not None else r[5] in ("warning", "error"),
+            message=r[7], context=r[8]) for r in rows]
 
     def clear_diagnostics(self) -> int:
         with self._connect() as conn:

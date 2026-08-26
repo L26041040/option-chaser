@@ -883,6 +883,11 @@ export interface DiagnosticEvent {
   subsystem: string;
   stage: string;
   severity: "info" | "warning" | "error";
+  /** PC-03（#201，spec #198）：獨立於 `severity` 的軸——這件事該不該讓
+   *  一般使用者看到。卡片就地展開的 inline diagnostics 依這個欄位決定
+   *  要不要顯示；Settings／Diagnostics 頁（工程用介面）繼續完整依
+   *  `severity` 列出全部事件，不讀這個欄位。 */
+  user_facing: boolean;
   message: string;
   context: Record<string, string | number | boolean>;
 }

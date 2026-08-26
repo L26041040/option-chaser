@@ -1159,6 +1159,11 @@ const DIAG_EVENT_E2E = {
   event_id: "evt-e2e-1", correlation_id: "cid-e2e-1",
   ts: "2026-08-15T00:00:00+00:00", subsystem: "historical_iv",
   stage: "payload_parse", severity: "warning",
+  // PC-03（#201）：`user_facing` 鏡射 severity（warning→true）——這個
+  // 常數同時餵進 Settings 頁（不讀這個欄位）與 iv-history 回應的
+  // `notableEvents` 過濾（讀這個欄位），後者若缺這個欄位會讓「200 但帶
+  // warning events」那類 e2e 測試失去觸發條件。
+  user_facing: true,
   message: "raw_rows > 0 but parsed rows are 0",
   context: { raw_rows: 5, parsed_call_rows: 0 },
 };

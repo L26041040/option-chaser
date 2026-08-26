@@ -175,6 +175,18 @@ class DiagnosticEvent:
     subsystem: str
     stage: str
     severity: str
+    # PC-03（#201，spec #198）：獨立於 `severity` 的第二個維度——回答
+    # 「這件事該不該讓一般使用者看到」，而不是「這件事有多嚴重」。
+    # engineering observability（`severity`）與 user-facing error state
+    # 是兩件事：`/api/diagnostics`／Settings 頁繼續完整依 `severity`
+    # 列出全部事件（工程可見度零損失），前端卡片就地展開的
+    # inline diagnostics 改依這個欄位決定要不要顯示。刻意不給類別層級
+    # 預設值（必填）——真正的預設規則（`severity` 為 warning／error 時
+    # true，info 時 false）只活在 `emit()` 一個地方，不要在這裡重複一份
+    # 可能漂移的邏輯；直接建構 `DiagnosticEvent`（測試裡的既有慣例）
+    # 因此都要顯式給值，而不是依賴一個可能跟 `emit()` 的規則對不上的
+    # class-level 預設。
+    user_facing: bool
     message: str
     context: dict = field(default_factory=dict)
 
@@ -273,7 +285,8 @@ def _log_line(event: DiagnosticEvent) -> str:
 
 def emit(storage: DiagnosticsStorage, *, subsystem: str, stage: str,
         severity: str, message: str, ts: str,
-        secrets: tuple[str, ...] = (), **context) -> DiagnosticEvent | None:
+        secrets: tuple[str, ...] = (), user_facing: bool | None = None,
+        **context) -> DiagnosticEvent | None:
     """唯一的產生入口。做四件事：組出 event → sanitize → 印 structured
     JSON log → 寫 storage。任何一步失敗都吞掉、**絕不拋出**——診斷不得
     成為新的故障源，呼叫端也不必為了呼叫 `emit()` 額外包 try/except。
@@ -289,12 +302,24 @@ def emit(storage: DiagnosticsStorage, *, subsystem: str, stage: str,
     （provider token、`DATABASE_URL`……），用於逐字比對替換；
     `sanitize_context()` 的白名單與樣式遮蔽不依賴這份清單也會擋掉常見
     洩漏形式，這是額外一層針對「已知就是這把」的精準防護。
+
+    `user_facing`（PC-03／#201）：**具名參數**，不會被 `**context` 吸走
+    ——那條路徑走欄位白名單，不在白名單裡的 key 會被 `sanitize_context()`
+    靜默丟棄。省略（`None`）時套用預設規則：`severity` 為 warning／error
+    視為 user-facing，info 視為工程可見度。這條預設規則只在這裡定義
+    一次——PC-04 之後的分類覆寫都是在呼叫端顯式傳入 `user_facing=`
+    覆蓋這個預設，不是改這裡的規則本身。
     """
+    resolved_user_facing = (
+        severity in ("warning", "error") if user_facing is None
+        else user_facing
+    )
     try:
         event = DiagnosticEvent(
             event_id=uuid.uuid4().hex,
             correlation_id=current_correlation_id() or new_correlation_id(),
             ts=ts, subsystem=subsystem, stage=stage, severity=severity,
+            user_facing=resolved_user_facing,
             message=sanitize_string(_truncate(message, _MESSAGE_MAX_LEN),
                                     secrets=secrets),
             context=sanitize_context(context, secrets=secrets),

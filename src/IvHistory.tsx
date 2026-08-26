@@ -785,13 +785,18 @@ function IvHistoryContent({ data, isSingleLeg, backfillInFlight }: {
   backfillInFlight: boolean;
 }) {
   // 200 但資料是空的——目前最常見的症狀，只看 HTTP 狀態碼看不出來。
-  // severity >= warning 的 events 是唯一能指出這件事的地方（DG-05／
-  // #148）。`?.`／`?? []`：`diagnostics` 是後端純加法新增的欄位，
-  // 這裡不因為回應剛好沒帶它（例如手造的測試假體）就整塊炸掉。這批
-  // 事件涵蓋 Normalized Skew 與逐腿 Historical IV Trend 兩個家族——
-  // 兩者共用同一個 per-request 診斷收集層（HIVT-02／#153）。
+  // `user_facing`（PC-03／#201）是唯一能指出這件事的地方——獨立於
+  // `severity` 的第二個維度，回答「這件事該不該讓一般使用者看到」，
+  // 不是「這件事有多嚴重」。預設鏡射 severity（warning／error 為
+  // true），PC-04 起後端在幾個已知的良性情境（例如兩段式 backfill
+  // 進行中的暫時空缺）會顯式覆寫成 false，這裡不需要跟著改一行——
+  // 過濾條件本身已經正確表達意圖，覆寫發生在資料源那端。`?.`／`?? []`：
+  // `diagnostics` 是後端純加法新增的欄位，這裡不因為回應剛好沒帶它
+  // （例如手造的測試假體）就整塊炸掉。這批事件涵蓋 Normalized Skew
+  // 與逐腿 Historical IV Trend 兩個家族——兩者共用同一個 per-request
+  // 診斷收集層（HIVT-02／#153）。
   const notableEvents = (data.diagnostics?.events ?? []).filter(
-    (e) => e.severity === "warning" || e.severity === "error");
+    (e) => e.user_facing === true);
 
   return (
     <>

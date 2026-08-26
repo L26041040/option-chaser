@@ -1102,11 +1102,13 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         secrets = _known_secrets(credentials=credentials)
 
         def _make_emit(subsystem: str):
-            def _emit(*, stage: str, severity: str, message: str, **context):
+            def _emit(*, stage: str, severity: str, message: str,
+                     user_facing: bool | None = None, **context):
                 return diagnostics.emit(diag, subsystem=subsystem,
                                         stage=stage, severity=severity,
                                         message=message, ts=now_utc_iso(),
-                                        secrets=secrets, **context)
+                                        secrets=secrets,
+                                        user_facing=user_facing, **context)
             return _emit
 
         return (_make_emit(diagnostics.SUBSYSTEM_EXACT_CONTRACT),

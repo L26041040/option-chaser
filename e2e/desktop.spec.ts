@@ -299,6 +299,10 @@ test("桌面版：Inline Diagnostics 的 Copy 按鈕——版面順序、複製�
     event_id: "evt-e2e-1", correlation_id: "cid-e2e-1",
     ts: "2026-08-15T00:00:00+00:00", subsystem: "historical_iv",
     stage: "payload_parse", severity: "warning",
+    // PC-03（#201）：`user_facing` 鏡射 severity——這是餵進
+    // `IvHistory` 的 `notableEvents` 過濾，缺這個欄位會讓 Inline
+    // Diagnostics 面板失去觸發條件。
+    user_facing: true,
     message: "raw_rows > 0 but parsed rows are 0",
     context: { raw_rows: 5, parsed_call_rows: 0 },
   };
@@ -1150,7 +1154,7 @@ test("桌面版：Settings 的 Diagnostics 區塊可讀可操作（DG-06／#149�
   let events: unknown[] = [{
     event_id: "evt-e2e-desktop", correlation_id: "cid-e2e-desktop",
     ts: "2026-08-15T00:00:00+00:00", subsystem: "historical_iv",
-    stage: "vendor_fetch", severity: "error",
+    stage: "vendor_fetch", severity: "error", user_facing: true,
     message: "vendor 連線失敗", context: { http_status: 429 },
   }];
   await page.route("**/api/diagnostics*", (route) => {

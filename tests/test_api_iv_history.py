@@ -1409,7 +1409,9 @@ def test_error_and_warning_events_survive_the_per_request_cap():
     def ev(event_id, severity="info", stage="vendor_fetch"):
         return DiagnosticEvent(event_id=event_id, correlation_id="c",
                                ts=event_id, subsystem="historical_iv",
-                               stage=stage, severity=severity, message="m")
+                               stage=stage, severity=severity,
+                               user_facing=severity in ("warning", "error"),
+                               message="m")
 
     # 事件數要真的超過 cap 才測到取捨——HIVT-03 起 cap 已提高
     # （容納新家族每腿 5 筆統計量事件），數量要跟著這個常數走，不能寫死
@@ -1434,7 +1436,9 @@ def test_the_batch_summary_event_survives_the_cap_even_when_priority_events_alon
     def ev(event_id, severity="info", stage="vendor_fetch"):
         return DiagnosticEvent(event_id=event_id, correlation_id="c",
                                ts=event_id, subsystem="historical_iv",
-                               stage=stage, severity=severity, message="m")
+                               stage=stage, severity=severity,
+                               user_facing=severity in ("warning", "error"),
+                               message="m")
 
     events = [ev(f"err{i}", severity="error")
              for i in range(_DIAGNOSTICS_STORAGE_CAP_PER_REQUEST + 10)]
@@ -1450,7 +1454,8 @@ def test_under_the_cap_nothing_is_dropped():
 
     events = [DiagnosticEvent(event_id=f"e{i}", correlation_id="c", ts=f"t{i}",
                               subsystem="historical_iv", stage="cache",
-                              severity="info", message="m") for i in range(5)]
+                              severity="info", user_facing=False,
+                              message="m") for i in range(5)]
     assert _select_for_persistence(events) == events
 
 
@@ -1463,7 +1468,8 @@ def test_metrics_events_also_survive_the_cap_alongside_backfill():
     def ev(event_id, stage="reanchor"):
         return DiagnosticEvent(event_id=event_id, correlation_id="c",
                                ts=event_id, subsystem="historical_iv",
-                               stage=stage, severity="info", message="m")
+                               stage=stage, severity="info",
+                               user_facing=False, message="m")
 
     events = [ev(f"r{i}") for i in range(70)]
     events += [ev("m1", stage="metrics"), ev("m2", stage="metrics"),
@@ -1487,7 +1493,8 @@ def test_reconstruction_and_vendor_benchmark_survive_a_synthetic_cap_overflow():
     def ev(event_id, stage="vendor_fetch"):
         return DiagnosticEvent(event_id=event_id, correlation_id="c",
                                ts=event_id, subsystem="historical_iv",
-                               stage=stage, severity="info", message="m")
+                               stage=stage, severity="info",
+                               user_facing=False, message="m")
 
     events = [ev(f"v{i}") for i in range(70)]
     events += [ev("recon", stage="reconstruction"),
@@ -1506,6 +1513,7 @@ def test_select_for_storage_drops_info_and_keeps_warning_and_error():
         return DiagnosticEvent(event_id=event_id, correlation_id="c",
                                ts=event_id, subsystem="historical_iv",
                                stage="vendor_fetch", severity=severity,
+                               user_facing=severity in ("warning", "error"),
                                message="m")
 
     events = [ev("i1", "info"), ev("w1", "warning"), ev("i2", "info"),
@@ -1520,7 +1528,8 @@ def test_select_for_storage_on_an_all_info_batch_returns_empty():
 
     events = [DiagnosticEvent(event_id=f"i{i}", correlation_id="c", ts=f"t{i}",
                               subsystem="historical_iv", stage="cache",
-                              severity="info", message="m") for i in range(23)]
+                              severity="info", user_facing=False,
+                              message="m") for i in range(23)]
     assert _select_for_storage(events) == []
 
 
@@ -1534,7 +1543,8 @@ def test_select_for_storage_applies_after_the_cap_not_instead_of_it():
 
     events = [DiagnosticEvent(event_id=f"w{i}", correlation_id="c", ts=f"t{i}",
                               subsystem="historical_iv", stage="vendor_fetch",
-                              severity="warning", message="m")
+                              severity="warning", user_facing=True,
+                              message="m")
              for i in range(500)]
     # `_select_for_storage()` 本身不裁切數量——裁切是 `_select_for_
     # persistence()` 的責任，這裡只做 severity 過濾。
@@ -1556,6 +1566,7 @@ def test_a_flood_of_legacy_events_does_not_starve_exact_contract_events():
         return DiagnosticEvent(event_id=event_id, correlation_id="c",
                                ts=event_id, subsystem=subsystem,
                                stage="vendor_fetch", severity=severity,
+                               user_facing=severity in ("warning", "error"),
                                message="m")
 
     exact_events = [ev(f"exact{i}", SUBSYSTEM_EXACT_CONTRACT) for i in range(6)]
@@ -1583,7 +1594,7 @@ def test_each_subsystem_independently_respects_the_same_cap():
         return DiagnosticEvent(event_id=event_id, correlation_id="c",
                                ts=event_id, subsystem=subsystem,
                                stage="vendor_fetch", severity="info",
-                               message="m")
+                               user_facing=False, message="m")
 
     over = _DIAGNOSTICS_STORAGE_CAP_PER_REQUEST + 10
     exact_events = [ev(f"exact{i}", SUBSYSTEM_EXACT_CONTRACT) for i in range(over)]

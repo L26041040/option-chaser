@@ -962,11 +962,16 @@ def test_an_old_shape_date_iv_tuple_row_is_structurally_distinguishable(storage)
 
 def _diag(*, event_id="e1", correlation_id="c1", ts="2026-08-15T00:00:00+00:00",
          subsystem="historical_iv", stage="vendor_fetch", severity="error",
-         message="boom", context=None):
+         user_facing=None, message="boom", context=None):
+    # PC-03（#201）：`user_facing` 省略時鏡射 `severity`——跟 `emit()`
+    # 的預設規則同一套，這裡直接構造 `DiagnosticEvent`（繞過 `emit()`）
+    # 因此要自己套一次，不然這批既有測試全部要逐一補這個新欄位。
+    if user_facing is None:
+        user_facing = severity in ("warning", "error")
     return DiagnosticEvent(event_id=event_id, correlation_id=correlation_id,
                            ts=ts, subsystem=subsystem, stage=stage,
-                           severity=severity, message=message,
-                           context=context or {})
+                           severity=severity, user_facing=user_facing,
+                           message=message, context=context or {})
 
 
 def test_diagnostics_start_out_empty(storage):
@@ -984,6 +989,19 @@ def test_appended_diagnostic_reads_back_identically(storage):
     assert got[0].severity == "error"
     assert got[0].message == "boom"
     assert got[0].context == {"symbol": "TLT"}
+
+
+def test_diagnostic_user_facing_round_trips_for_both_true_and_false(storage):
+    """PC-03（#201）：`user_facing` 是獨立於 `severity` 的欄位——存 True
+    讀回 True、存 False 讀回 False，兩個布林值都要能存活過 round-trip，
+    不能只驗其中一個方向（例如剛好都是 truthy 就測不出 Postgres 那端
+    欄位型別／讀取邏輯搞錯的情況）。"""
+    storage.append_diagnostic(_diag(event_id="t1", severity="warning",
+                                    user_facing=True))
+    storage.append_diagnostic(_diag(event_id="t2", severity="warning",
+                                    user_facing=False))
+    got = {e.event_id: e.user_facing for e in storage.list_diagnostics()}
+    assert got == {"t1": True, "t2": False}
 
 
 def test_diagnostics_come_back_newest_first(storage):

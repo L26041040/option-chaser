@@ -1,4 +1,5 @@
 {
+  "backfill_pending": true,
   "candidate_key": "bull-call-spread|118|122|2026-08-07",
   "diagnostics": {
     "correlation_id": "sample-correlation-id",
@@ -8,15 +9,16 @@
           "candidate_key": "bull-call-spread|118|122|2026-08-07",
           "found": true,
           "groups_scanned": 4,
-          "scenario_id": "c8265d706f3e"
+          "scenario_id": "9b7eaaaf0715"
         },
-        "correlation_id": "98825ab0b3f44dbfb5fc3a34bac3b9ae",
-        "event_id": "36eec4a7a3a949f7b2ffc47ab69186cc",
+        "correlation_id": "1682c51b84bf49de930ffc1641cb5893",
+        "event_id": "ea7662d0851a4b6ca37d0711d05cec6b",
         "message": "找到候選",
         "severity": "info",
         "stage": "candidate_lookup",
         "subsystem": "historical_iv",
-        "ts": "2026-08-24T20:48:28+00:00"
+        "ts": "2026-08-26T09:37:27+00:00",
+        "user_facing": false
       },
       {
         "context": {
@@ -24,18 +26,19 @@
           "contract_symbol": "XYZC1180807_0",
           "expiration": "2026-08-07",
           "option_type": "call",
-          "requested_from": "2025-08-24",
-          "requested_to": "2026-08-24",
+          "requested_from": "2025-08-26",
+          "requested_to": "2026-08-26",
           "strike": 118.0,
           "underlying": "XYZ"
         },
-        "correlation_id": "98825ab0b3f44dbfb5fc3a34bac3b9ae",
-        "event_id": "769c918dcbcb4352a6c62e7ad1448a32",
+        "correlation_id": "1682c51b84bf49de930ffc1641cb5893",
+        "event_id": "3f5dc3959934458f8e59a960129f39a9",
         "message": "計算歷史缺口",
         "severity": "info",
         "stage": "cache",
         "subsystem": "historical_iv",
-        "ts": "2026-08-24T20:48:28+00:00"
+        "ts": "2026-08-26T09:37:27+00:00",
+        "user_facing": false
       },
       {
         "context": {
@@ -47,34 +50,36 @@
           "strike": 118.0,
           "underlying": "XYZ"
         },
-        "correlation_id": "98825ab0b3f44dbfb5fc3a34bac3b9ae",
-        "event_id": "85647b7d03f94c6ca1b58001218f76fb",
+        "correlation_id": "1682c51b84bf49de930ffc1641cb5893",
+        "event_id": "ad385f5df5d84ae69b530c70f2026a64",
         "message": "寫入合約歷史觀測",
         "severity": "info",
         "stage": "database_write",
         "subsystem": "historical_iv",
-        "ts": "2026-08-24T20:48:28+00:00"
+        "ts": "2026-08-26T09:37:27+00:00",
+        "user_facing": false
       },
       {
         "context": {
-          "computed_dte": -17,
+          "computed_dte": -19,
           "contract_symbol": "XYZC1180807_0",
-          "date": "2026-08-24",
+          "date": "2026-08-26",
           "expiration": "2026-08-07",
           "observation_timestamp": 1,
           "option_type": "call",
-          "request_time": "2026-08-24T20:48:28+00:00",
+          "request_time": "2026-08-26T09:37:27+00:00",
           "staleness_days": 0,
           "strike": 118.0,
           "underlying": "XYZ"
         },
-        "correlation_id": "98825ab0b3f44dbfb5fc3a34bac3b9ae",
-        "event_id": "fb758f80249f426fa6299c44e53e9af1",
+        "correlation_id": "1682c51b84bf49de930ffc1641cb5893",
+        "event_id": "6811558adf8e41a3837fea1814b83f72",
         "message": "最新觀測新鮮",
         "severity": "info",
         "stage": "staleness",
         "subsystem": "historical_iv",
-        "ts": "2026-08-24T20:48:28+00:00"
+        "ts": "2026-08-26T09:37:27+00:00",
+        "user_facing": false
       },
       {
         "context": {
@@ -82,18 +87,19 @@
           "contract_symbol": "XYZC1220807_1",
           "expiration": "2026-08-07",
           "option_type": "call",
-          "requested_from": "2025-08-24",
-          "requested_to": "2026-08-24",
+          "requested_from": "2025-08-26",
+          "requested_to": "2026-08-26",
           "strike": 122.0,
           "underlying": "XYZ"
         },
-        "correlation_id": "98825ab0b3f44dbfb5fc3a34bac3b9ae",
-        "event_id": "0d8f1213f9d84b5f801559e1e4d512af",
+        "correlation_id": "1682c51b84bf49de930ffc1641cb5893",
+        "event_id": "434bda75ae9348d1ac355e17269270ba",
         "message": "計算歷史缺口",
         "severity": "info",
         "stage": "cache",
         "subsystem": "historical_iv",
-        "ts": "2026-08-24T20:48:28+00:00"
+        "ts": "2026-08-26T09:37:27+00:00",
+        "user_facing": false
       },
       {
         "context": {
@@ -105,57 +111,60 @@
           "strike": 122.0,
           "underlying": "XYZ"
         },
-        "correlation_id": "98825ab0b3f44dbfb5fc3a34bac3b9ae",
-        "event_id": "b3425cb864f847ed82f97a0eaf6c2d4e",
+        "correlation_id": "1682c51b84bf49de930ffc1641cb5893",
+        "event_id": "627bc85f4554490aafc41819b95da90c",
         "message": "寫入合約歷史觀測",
         "severity": "info",
         "stage": "database_write",
         "subsystem": "historical_iv",
-        "ts": "2026-08-24T20:48:28+00:00"
+        "ts": "2026-08-26T09:37:27+00:00",
+        "user_facing": false
       },
       {
         "context": {
-          "computed_dte": -17,
+          "computed_dte": -19,
           "contract_symbol": "XYZC1220807_1",
-          "date": "2026-08-24",
+          "date": "2026-08-26",
           "expiration": "2026-08-07",
           "observation_timestamp": 1,
           "option_type": "call",
-          "request_time": "2026-08-24T20:48:28+00:00",
+          "request_time": "2026-08-26T09:37:27+00:00",
           "staleness_days": 0,
           "strike": 122.0,
           "underlying": "XYZ"
         },
-        "correlation_id": "98825ab0b3f44dbfb5fc3a34bac3b9ae",
-        "event_id": "151711799b004f0ab31f8970fb4b834c",
+        "correlation_id": "1682c51b84bf49de930ffc1641cb5893",
+        "event_id": "b9c78cb8c8bb43ae9983bc44a5540c6b",
         "message": "最新觀測新鮮",
         "severity": "info",
         "stage": "staleness",
         "subsystem": "historical_iv",
-        "ts": "2026-08-24T20:48:28+00:00"
+        "ts": "2026-08-26T09:37:27+00:00",
+        "user_facing": false
       },
       {
         "context": {
           "contract_symbol": "XYZC1180807_0",
           "expiration": "2026-08-07",
           "fetched": 43,
-          "inversion_failed": 14,
+          "inversion_failed": 16,
           "no_dividend_yield": 0,
           "no_rate": 0,
           "option_type": "call",
-          "reconstructed": 29,
+          "reconstructed": 27,
           "strike": 118.0,
           "underlying": "XYZ",
           "unusable_quote": 0,
-          "usable": 29
+          "usable": 27
         },
-        "correlation_id": "98825ab0b3f44dbfb5fc3a34bac3b9ae",
-        "event_id": "02ebf359c1044308af679a11c7ddbf22",
+        "correlation_id": "1682c51b84bf49de930ffc1641cb5893",
+        "event_id": "9f1a96dc2daf4f1fabff8580732d94e4",
         "message": "重建完成",
         "severity": "info",
         "stage": "reconstruction",
         "subsystem": "historical_iv",
-        "ts": "2026-08-24T20:48:28+00:00"
+        "ts": "2026-08-26T09:37:27+00:00",
+        "user_facing": false
       },
       {
         "context": {
@@ -168,17 +177,18 @@
           "vendor_iv_excluded_degenerate": 0,
           "vendor_iv_present": 0
         },
-        "correlation_id": "98825ab0b3f44dbfb5fc3a34bac3b9ae",
-        "event_id": "387837c726084795952597eefc658a4b",
+        "correlation_id": "1682c51b84bf49de930ffc1641cb5893",
+        "event_id": "f1bfd14ee3004f31a8e5f68c58dbe5db",
         "message": "vendor IV 合理性比較：0 筆有值，0 筆被 gate 排除，0 筆可比較",
         "severity": "info",
         "stage": "vendor_benchmark",
         "subsystem": "historical_iv",
-        "ts": "2026-08-24T20:48:28+00:00"
+        "ts": "2026-08-26T09:37:27+00:00",
+        "user_facing": false
       },
       {
         "context": {
-          "count": 29,
+          "count": 27,
           "expiration": "2026-08-07",
           "field": "moving_average",
           "lookback_days": 30,
@@ -186,17 +196,18 @@
           "strike": 118.0,
           "underlying": "XYZ"
         },
-        "correlation_id": "98825ab0b3f44dbfb5fc3a34bac3b9ae",
-        "event_id": "8f249dae7b784ed490dd58948d91dd81",
+        "correlation_id": "1682c51b84bf49de930ffc1641cb5893",
+        "event_id": "057bb572a48248ad8a822e7683cadb27",
         "message": "moving_average 計算完成",
         "severity": "info",
         "stage": "metrics",
         "subsystem": "historical_iv",
-        "ts": "2026-08-24T20:48:28+00:00"
+        "ts": "2026-08-26T09:37:27+00:00",
+        "user_facing": false
       },
       {
         "context": {
-          "count": 29,
+          "count": 27,
           "expiration": "2026-08-07",
           "field": "bollinger_bands",
           "lookback_days": 30,
@@ -204,17 +215,18 @@
           "strike": 118.0,
           "underlying": "XYZ"
         },
-        "correlation_id": "98825ab0b3f44dbfb5fc3a34bac3b9ae",
-        "event_id": "9d3ddbd8a25b414b8a6e2fb9a77698fd",
+        "correlation_id": "1682c51b84bf49de930ffc1641cb5893",
+        "event_id": "20db6bb64c8a450bbfca1e613240e8aa",
         "message": "bollinger_bands 計算完成",
         "severity": "info",
         "stage": "metrics",
         "subsystem": "historical_iv",
-        "ts": "2026-08-24T20:48:28+00:00"
+        "ts": "2026-08-26T09:37:27+00:00",
+        "user_facing": false
       },
       {
         "context": {
-          "count": 29,
+          "count": 27,
           "expiration": "2026-08-07",
           "field": "current_zscore",
           "lookback_days": 30,
@@ -222,70 +234,74 @@
           "strike": 118.0,
           "underlying": "XYZ"
         },
-        "correlation_id": "98825ab0b3f44dbfb5fc3a34bac3b9ae",
-        "event_id": "4baaf1ba5ef74a7b93d5f4bc61cff199",
+        "correlation_id": "1682c51b84bf49de930ffc1641cb5893",
+        "event_id": "6b73e2a1e0fe4d70b1b09f0b3702e54e",
         "message": "current_zscore 計算完成",
         "severity": "info",
         "stage": "metrics",
         "subsystem": "historical_iv",
-        "ts": "2026-08-24T20:48:28+00:00"
+        "ts": "2026-08-26T09:37:27+00:00",
+        "user_facing": false
       },
       {
         "context": {
-          "count": 29,
+          "count": 27,
           "expiration": "2026-08-07",
           "field": "historical_percentile",
           "option_type": "call",
           "strike": 118.0,
           "underlying": "XYZ"
         },
-        "correlation_id": "98825ab0b3f44dbfb5fc3a34bac3b9ae",
-        "event_id": "eedacc0712c841669a5f3f9c770b2bd9",
+        "correlation_id": "1682c51b84bf49de930ffc1641cb5893",
+        "event_id": "12cba8e2619e4a14815591933a1852e0",
         "message": "historical_percentile 計算完成",
         "severity": "info",
         "stage": "metrics",
         "subsystem": "historical_iv",
-        "ts": "2026-08-24T20:48:28+00:00"
+        "ts": "2026-08-26T09:37:27+00:00",
+        "user_facing": false
       },
       {
         "context": {
-          "count": 29,
+          "count": 27,
           "expiration": "2026-08-07",
           "field": "delta_4w",
           "option_type": "call",
           "strike": 118.0,
           "underlying": "XYZ"
         },
-        "correlation_id": "98825ab0b3f44dbfb5fc3a34bac3b9ae",
-        "event_id": "28f53926511d4babbf6fbaffacbf9268",
+        "correlation_id": "1682c51b84bf49de930ffc1641cb5893",
+        "event_id": "85c1f09fffd942bc8a8f28127c69d8b2",
         "message": "delta_4w 計算完成",
         "severity": "info",
         "stage": "metrics",
         "subsystem": "historical_iv",
-        "ts": "2026-08-24T20:48:28+00:00"
+        "ts": "2026-08-26T09:37:27+00:00",
+        "user_facing": false
       },
       {
         "context": {
           "contract_symbol": "XYZC1220807_1",
           "expiration": "2026-08-07",
           "fetched": 43,
-          "inversion_failed": 15,
+          "inversion_failed": 17,
           "no_dividend_yield": 0,
           "no_rate": 0,
           "option_type": "call",
-          "reconstructed": 28,
+          "reconstructed": 26,
           "strike": 122.0,
           "underlying": "XYZ",
           "unusable_quote": 0,
-          "usable": 28
+          "usable": 26
         },
-        "correlation_id": "98825ab0b3f44dbfb5fc3a34bac3b9ae",
-        "event_id": "e3c564613d2f4ef8ac74149310c549b0",
+        "correlation_id": "1682c51b84bf49de930ffc1641cb5893",
+        "event_id": "188c57db69fd4458b8e090169e7266fb",
         "message": "重建完成",
         "severity": "info",
         "stage": "reconstruction",
         "subsystem": "historical_iv",
-        "ts": "2026-08-24T20:48:28+00:00"
+        "ts": "2026-08-26T09:37:27+00:00",
+        "user_facing": false
       },
       {
         "context": {
@@ -298,17 +314,18 @@
           "vendor_iv_excluded_degenerate": 0,
           "vendor_iv_present": 0
         },
-        "correlation_id": "98825ab0b3f44dbfb5fc3a34bac3b9ae",
-        "event_id": "f732f43d8d5c46ffa5c351fd02fd3159",
+        "correlation_id": "1682c51b84bf49de930ffc1641cb5893",
+        "event_id": "bff85f9e48914b148f6212a0d87c84d7",
         "message": "vendor IV 合理性比較：0 筆有值，0 筆被 gate 排除，0 筆可比較",
         "severity": "info",
         "stage": "vendor_benchmark",
         "subsystem": "historical_iv",
-        "ts": "2026-08-24T20:48:28+00:00"
+        "ts": "2026-08-26T09:37:27+00:00",
+        "user_facing": false
       },
       {
         "context": {
-          "count": 28,
+          "count": 26,
           "expiration": "2026-08-07",
           "field": "moving_average",
           "lookback_days": 30,
@@ -316,17 +333,18 @@
           "strike": 122.0,
           "underlying": "XYZ"
         },
-        "correlation_id": "98825ab0b3f44dbfb5fc3a34bac3b9ae",
-        "event_id": "89501887472342ac81bc2839e056171c",
+        "correlation_id": "1682c51b84bf49de930ffc1641cb5893",
+        "event_id": "8144a3446c494c5e92c8ce0af70de78f",
         "message": "moving_average 計算完成",
         "severity": "info",
         "stage": "metrics",
         "subsystem": "historical_iv",
-        "ts": "2026-08-24T20:48:28+00:00"
+        "ts": "2026-08-26T09:37:27+00:00",
+        "user_facing": false
       },
       {
         "context": {
-          "count": 28,
+          "count": 26,
           "expiration": "2026-08-07",
           "field": "bollinger_bands",
           "lookback_days": 30,
@@ -334,17 +352,18 @@
           "strike": 122.0,
           "underlying": "XYZ"
         },
-        "correlation_id": "98825ab0b3f44dbfb5fc3a34bac3b9ae",
-        "event_id": "888b3f355b494654af1369c3fbcbb01a",
+        "correlation_id": "1682c51b84bf49de930ffc1641cb5893",
+        "event_id": "e64c97b87faa470bbe0e0d7a436e823e",
         "message": "bollinger_bands 計算完成",
         "severity": "info",
         "stage": "metrics",
         "subsystem": "historical_iv",
-        "ts": "2026-08-24T20:48:28+00:00"
+        "ts": "2026-08-26T09:37:27+00:00",
+        "user_facing": false
       },
       {
         "context": {
-          "count": 28,
+          "count": 26,
           "expiration": "2026-08-07",
           "field": "current_zscore",
           "lookback_days": 30,
@@ -352,163 +371,132 @@
           "strike": 122.0,
           "underlying": "XYZ"
         },
-        "correlation_id": "98825ab0b3f44dbfb5fc3a34bac3b9ae",
-        "event_id": "f37395f5cd5940aa9dc1148c14117fa6",
+        "correlation_id": "1682c51b84bf49de930ffc1641cb5893",
+        "event_id": "16a8de69f4b64ec380db09a9e93373d2",
         "message": "current_zscore 計算完成",
         "severity": "info",
         "stage": "metrics",
         "subsystem": "historical_iv",
-        "ts": "2026-08-24T20:48:28+00:00"
+        "ts": "2026-08-26T09:37:27+00:00",
+        "user_facing": false
       },
       {
         "context": {
-          "count": 28,
+          "count": 26,
           "expiration": "2026-08-07",
           "field": "historical_percentile",
           "option_type": "call",
           "strike": 122.0,
           "underlying": "XYZ"
         },
-        "correlation_id": "98825ab0b3f44dbfb5fc3a34bac3b9ae",
-        "event_id": "df12edaeb7a44743841dc55c53108a0e",
+        "correlation_id": "1682c51b84bf49de930ffc1641cb5893",
+        "event_id": "59194e06b9f44bad9abfcd3342e0631e",
         "message": "historical_percentile 計算完成",
         "severity": "info",
         "stage": "metrics",
         "subsystem": "historical_iv",
-        "ts": "2026-08-24T20:48:28+00:00"
+        "ts": "2026-08-26T09:37:27+00:00",
+        "user_facing": false
       },
       {
         "context": {
-          "count": 28,
+          "count": 26,
           "expiration": "2026-08-07",
           "field": "delta_4w",
           "option_type": "call",
           "strike": 122.0,
           "underlying": "XYZ"
         },
-        "correlation_id": "98825ab0b3f44dbfb5fc3a34bac3b9ae",
-        "event_id": "12c06b97615f4ec59bc848ff1e3747de",
+        "correlation_id": "1682c51b84bf49de930ffc1641cb5893",
+        "event_id": "aad744b48db24585b2e20c0dc0f4d7f2",
         "message": "delta_4w 計算完成",
         "severity": "info",
         "stage": "metrics",
         "subsystem": "historical_iv",
-        "ts": "2026-08-24T20:48:28+00:00"
-      },
-      {
-        "context": {
-          "already_ran_today": false,
-          "have_days": 0,
-          "missing_days": 65,
-          "symbol": "XYZ",
-          "wanted_days": 65
-        },
-        "correlation_id": "98825ab0b3f44dbfb5fc3a34bac3b9ae",
-        "event_id": "69773916a04146089053797545fa57b0",
-        "message": "計算 backfill 缺口",
-        "severity": "info",
-        "stage": "cache",
-        "subsystem": "normalized_skew",
-        "ts": "2026-08-24T20:48:28+00:00"
-      },
-      {
-        "context": {
-          "attempted_days": 25,
-          "days_failed": 0,
-          "days_no_data_expected": 0,
-          "days_no_data_unexpected": 0,
-          "days_with_data": 25,
-          "in_flight_after_failure_failed": 0,
-          "in_flight_after_failure_succeeded": 0,
-          "outcome": "ok",
-          "remaining_gap": 40,
-          "saved_days": 25,
-          "symbol": "XYZ",
-          "unstarted_due_to_failure": 0
-        },
-        "correlation_id": "98825ab0b3f44dbfb5fc3a34bac3b9ae",
-        "event_id": "489ddf5da0244e03aa556a6ca35a9ef9",
-        "message": "backfill 批次完成",
-        "severity": "info",
-        "stage": "backfill",
-        "subsystem": "normalized_skew",
-        "ts": "2026-08-24T20:48:28+00:00"
+        "ts": "2026-08-26T09:37:27+00:00",
+        "user_facing": false
       },
       {
         "context": {
           "buy_delta": 0.05792323890135792,
-          "in_grid_dates": 25,
+          "in_grid_dates": 0,
           "out_of_grid_dates": 0,
           "sell_delta": 0.035236193275498984,
           "tenor_days": 23,
-          "total_dates": 25
+          "total_dates": 0
         },
-        "correlation_id": "98825ab0b3f44dbfb5fc3a34bac3b9ae",
-        "event_id": "5008f2633b214cc6b5255ab7fb4c6336",
-        "message": "25 個歷史日期：25 個落在網格內／0 個落在網格外",
+        "correlation_id": "1682c51b84bf49de930ffc1641cb5893",
+        "event_id": "8589b950daa74cbb82ff58b2390e869d",
+        "message": "0 個歷史日期：0 個落在網格內／0 個落在網格外",
         "severity": "info",
         "stage": "reanchor",
         "subsystem": "normalized_skew",
-        "ts": "2026-08-24T20:48:28+00:00"
+        "ts": "2026-08-26T09:37:27+00:00",
+        "user_facing": false
       },
       {
         "context": {
-          "count": 25,
+          "count": 0,
           "field": "normalized_skew",
-          "percentile_available": true,
-          "trend_base_count": 6
+          "percentile_available": false,
+          "trend_base_count": 0
         },
-        "correlation_id": "98825ab0b3f44dbfb5fc3a34bac3b9ae",
-        "event_id": "e31db31e65784e2bbeb84b47ef218d80",
-        "message": "normalized_skew 指標計算完成",
-        "severity": "info",
+        "correlation_id": "1682c51b84bf49de930ffc1641cb5893",
+        "event_id": "d55833b809334182a68ef19d7c1620b8",
+        "message": "normalized_skew 沒有有效觀測",
+        "severity": "warning",
         "stage": "metrics",
         "subsystem": "normalized_skew",
-        "ts": "2026-08-24T20:48:28+00:00"
+        "ts": "2026-08-26T09:37:27+00:00",
+        "user_facing": true
       },
       {
         "context": {
-          "count": 25,
+          "count": 0,
           "field": "buy_iv",
-          "percentile_available": true,
-          "trend_base_count": 6
+          "percentile_available": false,
+          "trend_base_count": 0
         },
-        "correlation_id": "98825ab0b3f44dbfb5fc3a34bac3b9ae",
-        "event_id": "931a4aa47318465792fe2bfa91d49b47",
-        "message": "buy_iv 指標計算完成",
-        "severity": "info",
+        "correlation_id": "1682c51b84bf49de930ffc1641cb5893",
+        "event_id": "02f2f5f6e7a7406d83b388ea6bed6787",
+        "message": "buy_iv 沒有有效觀測",
+        "severity": "warning",
         "stage": "metrics",
         "subsystem": "normalized_skew",
-        "ts": "2026-08-24T20:48:28+00:00"
+        "ts": "2026-08-26T09:37:27+00:00",
+        "user_facing": true
       },
       {
         "context": {
-          "count": 25,
+          "count": 0,
           "field": "sell_iv",
-          "percentile_available": true,
-          "trend_base_count": 6
+          "percentile_available": false,
+          "trend_base_count": 0
         },
-        "correlation_id": "98825ab0b3f44dbfb5fc3a34bac3b9ae",
-        "event_id": "c4d4538ccb114a84a178790f2c36c48f",
-        "message": "sell_iv 指標計算完成",
-        "severity": "info",
+        "correlation_id": "1682c51b84bf49de930ffc1641cb5893",
+        "event_id": "86aeb2a8524549899ad6c70fac735e5a",
+        "message": "sell_iv 沒有有效觀測",
+        "severity": "warning",
         "stage": "metrics",
         "subsystem": "normalized_skew",
-        "ts": "2026-08-24T20:48:28+00:00"
+        "ts": "2026-08-26T09:37:27+00:00",
+        "user_facing": true
       },
       {
         "context": {
-          "count": 25,
+          "count": 0,
           "field": "atm_iv",
-          "percentile_available": true,
-          "trend_base_count": 6
+          "percentile_available": false,
+          "trend_base_count": 0
         },
-        "correlation_id": "98825ab0b3f44dbfb5fc3a34bac3b9ae",
-        "event_id": "2d0b21aeea70450f87b5442f8869c763",
-        "message": "atm_iv 指標計算完成",
-        "severity": "info",
+        "correlation_id": "1682c51b84bf49de930ffc1641cb5893",
+        "event_id": "84d4fbb80ada44bf885e8c0e16d715ea",
+        "message": "atm_iv 沒有有效觀測",
+        "severity": "warning",
         "stage": "metrics",
         "subsystem": "normalized_skew",
-        "ts": "2026-08-24T20:48:28+00:00"
+        "ts": "2026-08-26T09:37:27+00:00",
+        "user_facing": true
       }
     ]
   },
@@ -516,14 +504,6 @@
     "buy": {
       "bollinger_lower": [
         {
-          "date": "2026-06-25",
-          "value": null
-        },
-        {
-          "date": "2026-06-26",
-          "value": null
-        },
-        {
           "date": "2026-06-29",
           "value": null
         },
@@ -533,115 +513,107 @@
         },
         {
           "date": "2026-07-01",
-          "value": 0.21883772233992801
+          "value": null
         },
         {
           "date": "2026-07-02",
-          "value": 0.21875834261320082
+          "value": null
         },
         {
           "date": "2026-07-03",
-          "value": 0.21867950620103618
+          "value": 0.21883772233992801
         },
         {
           "date": "2026-07-06",
-          "value": 0.21860102051445437
+          "value": 0.21875834261320082
         },
         {
           "date": "2026-07-07",
-          "value": 0.2185227744248876
+          "value": 0.21867950620103618
         },
         {
           "date": "2026-07-08",
-          "value": 0.21844469929173638
+          "value": 0.21860102051445437
         },
         {
           "date": "2026-07-09",
-          "value": 0.21836675041925172
+          "value": 0.2185227744248876
         },
         {
           "date": "2026-07-10",
-          "value": 0.21828889744908642
+          "value": 0.21844469929173638
         },
         {
           "date": "2026-07-13",
-          "value": 0.21821111903627605
+          "value": 0.21836675041925172
         },
         {
           "date": "2026-07-14",
-          "value": 0.21813339973463391
+          "value": 0.21828889744897612
         },
         {
           "date": "2026-07-15",
-          "value": 0.21805572809000098
+          "value": 0.21821111903619816
         },
         {
           "date": "2026-07-16",
-          "value": 0.21797809542856766
+          "value": 0.21813339973458043
         },
         {
           "date": "2026-07-17",
-          "value": 0.21790049506158793
+          "value": 0.21805572808996623
         },
         {
           "date": "2026-07-20",
-          "value": 0.2178229217479344
+          "value": 0.21797809542854746
         },
         {
           "date": "2026-07-21",
-          "value": 0.21774537132257538
+          "value": 0.21790049506157916
         },
         {
           "date": "2026-07-22",
-          "value": 0.21766784043377538
+          "value": 0.21782292174793466
         },
         {
           "date": "2026-07-23",
-          "value": 0.21759032635398373
+          "value": 0.21774537132258284
         },
         {
           "date": "2026-07-24",
-          "value": 0.21751282684080675
+          "value": 0.21766784043378862
         },
         {
           "date": "2026-07-27",
-          "value": 0.21959032635395662
+          "value": 0.21759032635419526
         },
         {
           "date": "2026-07-28",
-          "value": 0.21951282684057055
+          "value": 0.21751282684055662
         },
         {
           "date": "2026-07-29",
-          "value": 0.21943534003372545
+          "value": 0.21743534003339116
         },
         {
           "date": "2026-07-30",
-          "value": 0.22043534003651188
+          "value": 0.21843534003435694
         },
         {
           "date": "2026-07-31",
-          "value": 0.22143534003585386
+          "value": 0.21943534003319545
         },
         {
           "date": "2026-08-03",
-          "value": 0.22459031725844286
+          "value": 0.22259024353951268
         },
         {
           "date": "2026-08-04",
-          "value": 0.22454536902171152
+          "value": 0.22258333141067804
         }
       ],
       "bollinger_upper": [
         {
-          "date": "2026-06-25",
-          "value": null
-        },
-        {
-          "date": "2026-06-26",
-          "value": null
-        },
-        {
           "date": "2026-06-29",
           "value": null
         },
@@ -651,103 +623,103 @@
         },
         {
           "date": "2026-07-01",
-          "value": 0.22516227765995775
+          "value": null
         },
         {
           "date": "2026-07-02",
-          "value": 0.22624165738675006
+          "value": null
         },
         {
           "date": "2026-07-03",
-          "value": 0.22732049379891492
+          "value": 0.22516227765995775
         },
         {
           "date": "2026-07-06",
-          "value": 0.22839897948545632
+          "value": 0.22624165738675006
         },
         {
           "date": "2026-07-07",
-          "value": 0.22947722557508193
+          "value": 0.22732049379891492
         },
         {
           "date": "2026-07-08",
-          "value": 0.23055530070824776
+          "value": 0.22839897948545632
         },
         {
           "date": "2026-07-09",
-          "value": 0.23163324958071488
+          "value": 0.22947722557508193
         },
         {
           "date": "2026-07-10",
-          "value": 0.2327111025508385
+          "value": 0.23055530070824776
         },
         {
           "date": "2026-07-13",
-          "value": 0.23378888096367612
+          "value": 0.23163324958071488
         },
         {
           "date": "2026-07-14",
-          "value": 0.23486660026531847
+          "value": 0.23271110255104355
         },
         {
           "date": "2026-07-15",
-          "value": 0.23594427190992992
+          "value": 0.23378888096384148
         },
         {
           "date": "2026-07-16",
-          "value": 0.23702190457139521
+          "value": 0.2348666002654531
         },
         {
           "date": "2026-07-17",
-          "value": 0.23809950493838405
+          "value": 0.23594427191004044
         },
         {
           "date": "2026-07-20",
-          "value": 0.2391770782520277
+          "value": 0.23702190457148647
         },
         {
           "date": "2026-07-21",
-          "value": 0.24025462867736075
+          "value": 0.23809950493845972
         },
         {
           "date": "2026-07-22",
-          "value": 0.24133215956617807
+          "value": 0.2391770782520906
         },
         {
           "date": "2026-07-23",
-          "value": 0.24240967364596988
+          "value": 0.24025462867741312
         },
         {
           "date": "2026-07-24",
-          "value": 0.24348717315913226
+          "value": 0.24133215956622167
         },
         {
           "date": "2026-07-27",
-          "value": 0.24440967364599772
+          "value": 0.24240967364565005
         },
         {
           "date": "2026-07-28",
-          "value": 0.24548717315954638
+          "value": 0.2434871731596408
         },
         {
           "date": "2026-07-29",
-          "value": 0.24656465996622923
+          "value": 0.2445646599669159
         },
         {
           "date": "2026-07-30",
-          "value": 0.24756465996109173
+          "value": 0.2455646599652302
         },
         {
           "date": "2026-07-31",
-          "value": 0.24856465996201849
+          "value": 0.24656465996725355
         },
         {
           "date": "2026-08-03",
-          "value": 0.24940969036984445
+          "value": 0.24740982591962196
         },
         {
           "date": "2026-08-04",
-          "value": 0.2504269003635583
+          "value": 0.2483552781172848
         }
       ],
       "contract": {
@@ -758,19 +730,11 @@
         "underlying": "XYZ"
       },
       "current_percentile": 1.0,
-      "current_zscore": 1.5777657532667362,
-      "delta_4w": 0.008194883140891562,
-      "history_span_days": 60,
+      "current_zscore": 1.5295190285598497,
+      "delta_4w": 0.006323975486536959,
+      "history_span_days": 58,
       "lookback_days_config": 30,
       "moving_average": [
-        {
-          "date": "2026-06-25",
-          "value": null
-        },
-        {
-          "date": "2026-06-26",
-          "value": null
-        },
         {
           "date": "2026-06-29",
           "value": null
@@ -781,251 +745,241 @@
         },
         {
           "date": "2026-07-01",
-          "value": 0.22199999999994288
+          "value": null
         },
         {
           "date": "2026-07-02",
-          "value": 0.22249999999997544
+          "value": null
         },
         {
           "date": "2026-07-03",
-          "value": 0.22299999999997555
+          "value": 0.22199999999994288
         },
         {
           "date": "2026-07-06",
-          "value": 0.22349999999995535
+          "value": 0.22249999999997544
         },
         {
           "date": "2026-07-07",
-          "value": 0.22399999999998477
+          "value": 0.22299999999997555
         },
         {
           "date": "2026-07-08",
-          "value": 0.22449999999999207
+          "value": 0.22349999999995535
         },
         {
           "date": "2026-07-09",
-          "value": 0.2249999999999833
+          "value": 0.22399999999998477
         },
         {
           "date": "2026-07-10",
-          "value": 0.22549999999996245
+          "value": 0.22449999999999207
         },
         {
           "date": "2026-07-13",
-          "value": 0.22599999999997608
+          "value": 0.2249999999999833
         },
         {
           "date": "2026-07-14",
-          "value": 0.2264999999999762
+          "value": 0.22550000000000983
         },
         {
           "date": "2026-07-15",
-          "value": 0.22699999999996545
+          "value": 0.22600000000001982
         },
         {
           "date": "2026-07-16",
-          "value": 0.22749999999998144
+          "value": 0.22650000000001677
         },
         {
           "date": "2026-07-17",
-          "value": 0.227999999999986
+          "value": 0.22700000000000334
         },
         {
           "date": "2026-07-20",
-          "value": 0.22849999999998105
+          "value": 0.22750000000001697
         },
         {
           "date": "2026-07-21",
-          "value": 0.22899999999996806
+          "value": 0.22800000000001944
         },
         {
           "date": "2026-07-22",
-          "value": 0.22949999999997672
+          "value": 0.22850000000001264
         },
         {
           "date": "2026-07-23",
-          "value": 0.2299999999999768
+          "value": 0.22899999999999798
         },
         {
           "date": "2026-07-24",
-          "value": 0.2304999999999695
+          "value": 0.22950000000000514
         },
         {
           "date": "2026-07-27",
-          "value": 0.23199999999997717
+          "value": 0.22999999999992266
         },
         {
           "date": "2026-07-28",
-          "value": 0.23250000000005847
+          "value": 0.2305000000000987
         },
         {
           "date": "2026-07-29",
-          "value": 0.23299999999997734
+          "value": 0.23100000000015353
         },
         {
           "date": "2026-07-30",
-          "value": 0.2339999999988018
+          "value": 0.23199999999979357
         },
         {
           "date": "2026-07-31",
-          "value": 0.23499999999893617
+          "value": 0.2330000000002245
         },
         {
           "date": "2026-08-03",
-          "value": 0.23700000381414366
+          "value": 0.23500003472956732
         },
         {
           "date": "2026-08-04",
-          "value": 0.2374861346926349
+          "value": 0.23546930476398142
         }
       ],
       "note": null,
-      "observation_count": 29,
+      "observation_count": 27,
       "points": [
         {
-          "date": "2026-06-25",
+          "date": "2026-06-29",
           "iv": 0.21999999999981257,
           "low_confidence": false
         },
         {
-          "date": "2026-06-26",
+          "date": "2026-06-30",
           "iv": 0.2210000000002188,
           "low_confidence": false
         },
         {
-          "date": "2026-06-29",
+          "date": "2026-07-01",
           "iv": 0.2220000000000566,
           "low_confidence": false
         },
         {
-          "date": "2026-06-30",
+          "date": "2026-07-02",
           "iv": 0.22299999999989434,
           "low_confidence": false
         },
         {
-          "date": "2026-07-01",
+          "date": "2026-07-03",
           "iv": 0.22399999999973208,
           "low_confidence": false
         },
         {
-          "date": "2026-07-02",
+          "date": "2026-07-06",
           "iv": 0.2250000000001383,
           "low_confidence": false
         },
         {
-          "date": "2026-07-03",
+          "date": "2026-07-07",
           "iv": 0.2259999999999761,
           "low_confidence": false
         },
         {
-          "date": "2026-07-06",
+          "date": "2026-07-08",
           "iv": 0.2269999999998139,
           "low_confidence": false
         },
         {
-          "date": "2026-07-07",
+          "date": "2026-07-09",
           "iv": 0.22800000000022008,
           "low_confidence": false
         },
         {
-          "date": "2026-07-08",
+          "date": "2026-07-10",
           "iv": 0.22900000000005777,
           "low_confidence": false
         },
         {
-          "date": "2026-07-09",
+          "date": "2026-07-13",
           "iv": 0.22999999999989557,
           "low_confidence": false
         },
         {
-          "date": "2026-07-10",
-          "iv": 0.23099999999973342,
-          "low_confidence": false
-        },
-        {
-          "date": "2026-07-13",
-          "iv": 0.2320000000001396,
-          "low_confidence": false
-        },
-        {
           "date": "2026-07-14",
-          "iv": 0.2329999999999774,
+          "iv": 0.23100000000030185,
           "low_confidence": false
         },
         {
           "date": "2026-07-15",
-          "iv": 0.23399999999981508,
+          "iv": 0.2320000000001396,
           "low_confidence": false
         },
         {
           "date": "2026-07-16",
-          "iv": 0.2350000000002213,
+          "iv": 0.2329999999999774,
           "low_confidence": false
         },
         {
           "date": "2026-07-17",
-          "iv": 0.23600000000005905,
+          "iv": 0.23399999999981508,
           "low_confidence": false
         },
         {
           "date": "2026-07-20",
-          "iv": 0.23699999999989685,
+          "iv": 0.2350000000002213,
           "low_confidence": false
         },
         {
           "date": "2026-07-21",
-          "iv": 0.2379999999997346,
+          "iv": 0.23600000000005905,
           "low_confidence": false
         },
         {
           "date": "2026-07-22",
-          "iv": 0.23900000000014082,
+          "iv": 0.23699999999989685,
           "low_confidence": false
         },
         {
           "date": "2026-07-23",
-          "iv": 0.23999999999997862,
+          "iv": 0.2379999999997346,
           "low_confidence": false
         },
         {
           "date": "2026-07-24",
-          "iv": 0.24099999999981642,
+          "iv": 0.23900000000014082,
           "low_confidence": false
         },
         {
           "date": "2026-07-27",
-          "iv": 0.24200000000022254,
+          "iv": 0.23999999999827332,
           "low_confidence": true
         },
         {
           "date": "2026-07-28",
-          "iv": 0.2430000000017657,
+          "iv": 0.24100000000379546,
           "low_confidence": true
         },
         {
           "date": "2026-07-29",
-          "iv": 0.24399999999819277,
+          "iv": 0.2420000000013594,
           "low_confidence": true
         },
         {
           "date": "2026-07-30",
-          "iv": 0.24499999997301952,
+          "iv": 0.24299999999153388,
           "low_confidence": true
         },
         {
           "date": "2026-07-31",
-          "iv": 0.24600000000298428,
+          "iv": 0.2440000000101299,
           "low_confidence": true
         },
         {
           "date": "2026-08-03",
-          "iv": 0.24700008012133123,
+          "iv": 0.24500072931543337,
           "low_confidence": true
         },
         {
           "date": "2026-08-04",
-          "iv": 0.24769488314095128,
+          "iv": 0.24532397548667778,
           "low_confidence": true
         },
         {
@@ -1097,6 +1051,16 @@
           "date": "2026-08-24",
           "iv": null,
           "low_confidence": true
+        },
+        {
+          "date": "2026-08-25",
+          "iv": null,
+          "low_confidence": true
+        },
+        {
+          "date": "2026-08-26",
+          "iv": null,
+          "low_confidence": true
         }
       ],
       "status": "ok"
@@ -1104,14 +1068,6 @@
     "sell": {
       "bollinger_lower": [
         {
-          "date": "2026-06-25",
-          "value": null
-        },
-        {
-          "date": "2026-06-26",
-          "value": null
-        },
-        {
           "date": "2026-06-29",
           "value": null
         },
@@ -1121,111 +1077,103 @@
         },
         {
           "date": "2026-07-01",
-          "value": 0.21883772233992801
+          "value": null
         },
         {
           "date": "2026-07-02",
-          "value": 0.21875834261320082
+          "value": null
         },
         {
           "date": "2026-07-03",
-          "value": 0.21867950620103618
+          "value": 0.21883772233992801
         },
         {
           "date": "2026-07-06",
-          "value": 0.21860102051445437
+          "value": 0.21875834261320082
         },
         {
           "date": "2026-07-07",
-          "value": 0.2185227744248876
+          "value": 0.21867950620103618
         },
         {
           "date": "2026-07-08",
-          "value": 0.21844469929173638
+          "value": 0.21860102051445437
         },
         {
           "date": "2026-07-09",
-          "value": 0.21836675041925172
+          "value": 0.2185227744248876
         },
         {
           "date": "2026-07-10",
-          "value": 0.21828889744908642
+          "value": 0.21844469929173638
         },
         {
           "date": "2026-07-13",
-          "value": 0.21821111903627605
+          "value": 0.21836675041925172
         },
         {
           "date": "2026-07-14",
-          "value": 0.21813339973463391
+          "value": 0.21828889744897612
         },
         {
           "date": "2026-07-15",
-          "value": 0.21805572809000098
+          "value": 0.21821111903619816
         },
         {
           "date": "2026-07-16",
-          "value": 0.21797809542856766
+          "value": 0.21813339973458043
         },
         {
           "date": "2026-07-17",
-          "value": 0.21790049506158793
+          "value": 0.21805572808996623
         },
         {
           "date": "2026-07-20",
-          "value": 0.2178229217479344
+          "value": 0.21797809542854746
         },
         {
           "date": "2026-07-21",
-          "value": 0.21774537132250427
+          "value": 0.21790049506157916
         },
         {
           "date": "2026-07-22",
-          "value": 0.21766784043392082
+          "value": 0.21782292174800957
         },
         {
           "date": "2026-07-23",
-          "value": 0.21759032635410364
+          "value": 0.21774537132271382
         },
         {
           "date": "2026-07-24",
-          "value": 0.21751282684127535
+          "value": 0.21766784043429957
         },
         {
           "date": "2026-07-27",
-          "value": 0.21959032635295223
+          "value": 0.21759032635486902
         },
         {
           "date": "2026-07-28",
-          "value": 0.21951282685490994
+          "value": 0.21751282682950568
         },
         {
           "date": "2026-07-29",
-          "value": 0.21943534002004317
+          "value": 0.21743534006351417
         },
         {
           "date": "2026-07-30",
-          "value": 0.2204353400059306
+          "value": 0.21843533981490507
         },
         {
           "date": "2026-07-31",
-          "value": 0.2214353406867891
+          "value": 0.2194353382294338
         },
         {
           "date": "2026-08-03",
-          "value": 0.22393241286590432
+          "value": 0.22230990503770975
         }
       ],
       "bollinger_upper": [
         {
-          "date": "2026-06-25",
-          "value": null
-        },
-        {
-          "date": "2026-06-26",
-          "value": null
-        },
-        {
           "date": "2026-06-29",
           "value": null
         },
@@ -1235,99 +1183,99 @@
         },
         {
           "date": "2026-07-01",
-          "value": 0.22516227765995775
+          "value": null
         },
         {
           "date": "2026-07-02",
-          "value": 0.22624165738675006
+          "value": null
         },
         {
           "date": "2026-07-03",
-          "value": 0.22732049379891492
+          "value": 0.22516227765995775
         },
         {
           "date": "2026-07-06",
-          "value": 0.22839897948545632
+          "value": 0.22624165738675006
         },
         {
           "date": "2026-07-07",
-          "value": 0.22947722557508193
+          "value": 0.22732049379891492
         },
         {
           "date": "2026-07-08",
-          "value": 0.23055530070824776
+          "value": 0.22839897948545632
         },
         {
           "date": "2026-07-09",
-          "value": 0.23163324958071488
+          "value": 0.22947722557508193
         },
         {
           "date": "2026-07-10",
-          "value": 0.2327111025508385
+          "value": 0.23055530070824776
         },
         {
           "date": "2026-07-13",
-          "value": 0.23378888096367612
+          "value": 0.23163324958071488
         },
         {
           "date": "2026-07-14",
-          "value": 0.23486660026531847
+          "value": 0.23271110255104355
         },
         {
           "date": "2026-07-15",
-          "value": 0.23594427190992992
+          "value": 0.23378888096384148
         },
         {
           "date": "2026-07-16",
-          "value": 0.23702190457139521
+          "value": 0.2348666002654531
         },
         {
           "date": "2026-07-17",
-          "value": 0.23809950493838405
+          "value": 0.23594427191004044
         },
         {
           "date": "2026-07-20",
-          "value": 0.2391770782520277
+          "value": 0.23702190457148647
         },
         {
           "date": "2026-07-21",
-          "value": 0.2402546286774917
+          "value": 0.23809950493845972
         },
         {
           "date": "2026-07-22",
-          "value": 0.24133215956591894
+          "value": 0.23917707825195253
         },
         {
           "date": "2026-07-23",
-          "value": 0.24240967364574167
+          "value": 0.24025462867716252
         },
         {
           "date": "2026-07-24",
-          "value": 0.24348717315825028
+          "value": 0.24133215956525597
         },
         {
           "date": "2026-07-27",
-          "value": 0.24440967364776
+          "value": 0.2424096736443267
         },
         {
           "date": "2026-07-28",
-          "value": 0.2454871731332182
+          "value": 0.2434871731797867
         },
         {
           "date": "2026-07-29",
-          "value": 0.24656465998989618
+          "value": 0.24456465991257265
         },
         {
           "date": "2026-07-30",
-          "value": 0.24756466001707958
+          "value": 0.24556466036608668
         },
         {
           "date": "2026-07-31",
-          "value": 0.24856465876973627
+          "value": 0.24656466330094315
         },
         {
           "date": "2026-08-03",
-          "value": 0.25050789133484724
+          "value": 0.24789926298104148
         }
       ],
       "contract": {
@@ -1338,19 +1286,11 @@
         "underlying": "XYZ"
       },
       "current_percentile": 1.0,
-      "current_zscore": 2.167870395884294,
-      "delta_4w": 0.012123200358489183,
-      "history_span_days": 60,
+      "current_zscore": 1.890108007342429,
+      "delta_4w": 0.008696246599288138,
+      "history_span_days": 58,
       "lookback_days_config": 30,
       "moving_average": [
-        {
-          "date": "2026-06-25",
-          "value": null
-        },
-        {
-          "date": "2026-06-26",
-          "value": null
-        },
         {
           "date": "2026-06-29",
           "value": null
@@ -1361,242 +1301,232 @@
         },
         {
           "date": "2026-07-01",
-          "value": 0.22199999999994288
+          "value": null
         },
         {
           "date": "2026-07-02",
-          "value": 0.22249999999997544
+          "value": null
         },
         {
           "date": "2026-07-03",
-          "value": 0.22299999999997555
+          "value": 0.22199999999994288
         },
         {
           "date": "2026-07-06",
-          "value": 0.22349999999995535
+          "value": 0.22249999999997544
         },
         {
           "date": "2026-07-07",
-          "value": 0.22399999999998477
+          "value": 0.22299999999997555
         },
         {
           "date": "2026-07-08",
-          "value": 0.22449999999999207
+          "value": 0.22349999999995535
         },
         {
           "date": "2026-07-09",
-          "value": 0.2249999999999833
+          "value": 0.22399999999998477
         },
         {
           "date": "2026-07-10",
-          "value": 0.22549999999996245
+          "value": 0.22449999999999207
         },
         {
           "date": "2026-07-13",
-          "value": 0.22599999999997608
+          "value": 0.2249999999999833
         },
         {
           "date": "2026-07-14",
-          "value": 0.2264999999999762
+          "value": 0.22550000000000983
         },
         {
           "date": "2026-07-15",
-          "value": 0.22699999999996545
+          "value": 0.22600000000001982
         },
         {
           "date": "2026-07-16",
-          "value": 0.22749999999998144
+          "value": 0.22650000000001677
         },
         {
           "date": "2026-07-17",
-          "value": 0.227999999999986
+          "value": 0.22700000000000334
         },
         {
           "date": "2026-07-20",
-          "value": 0.22849999999998105
+          "value": 0.22750000000001697
         },
         {
           "date": "2026-07-21",
-          "value": 0.22899999999999798
+          "value": 0.22800000000001944
         },
         {
           "date": "2026-07-22",
-          "value": 0.22949999999991988
+          "value": 0.22849999999998105
         },
         {
           "date": "2026-07-23",
-          "value": 0.22999999999992266
+          "value": 0.22899999999993817
         },
         {
           "date": "2026-07-24",
-          "value": 0.2304999999997628
+          "value": 0.22949999999977777
         },
         {
           "date": "2026-07-27",
-          "value": 0.23200000000035612
+          "value": 0.22999999999959786
         },
         {
           "date": "2026-07-28",
-          "value": 0.23249999999406407
+          "value": 0.23050000000464618
         },
         {
           "date": "2026-07-29",
-          "value": 0.23300000000496968
+          "value": 0.2309999999880434
         },
         {
           "date": "2026-07-30",
-          "value": 0.2340000000115051
+          "value": 0.23200000009049587
         },
         {
           "date": "2026-07-31",
-          "value": 0.2349999997282627
+          "value": 0.23300000076518848
         },
         {
           "date": "2026-08-03",
-          "value": 0.23722015210037578
+          "value": 0.23510458400937562
         }
       ],
       "note": null,
-      "observation_count": 28,
+      "observation_count": 26,
       "points": [
         {
-          "date": "2026-06-25",
+          "date": "2026-06-29",
           "iv": 0.21999999999981257,
           "low_confidence": false
         },
         {
-          "date": "2026-06-26",
+          "date": "2026-06-30",
           "iv": 0.2210000000002188,
           "low_confidence": false
         },
         {
-          "date": "2026-06-29",
+          "date": "2026-07-01",
           "iv": 0.2220000000000566,
           "low_confidence": false
         },
         {
-          "date": "2026-06-30",
+          "date": "2026-07-02",
           "iv": 0.22299999999989434,
           "low_confidence": false
         },
         {
-          "date": "2026-07-01",
+          "date": "2026-07-03",
           "iv": 0.22399999999973208,
           "low_confidence": false
         },
         {
-          "date": "2026-07-02",
+          "date": "2026-07-06",
           "iv": 0.2250000000001383,
           "low_confidence": false
         },
         {
-          "date": "2026-07-03",
+          "date": "2026-07-07",
           "iv": 0.2259999999999761,
           "low_confidence": false
         },
         {
-          "date": "2026-07-06",
+          "date": "2026-07-08",
           "iv": 0.2269999999998139,
           "low_confidence": false
         },
         {
-          "date": "2026-07-07",
+          "date": "2026-07-09",
           "iv": 0.22800000000022008,
           "low_confidence": false
         },
         {
-          "date": "2026-07-08",
+          "date": "2026-07-10",
           "iv": 0.22900000000005777,
           "low_confidence": false
         },
         {
-          "date": "2026-07-09",
+          "date": "2026-07-13",
           "iv": 0.22999999999989557,
           "low_confidence": false
         },
         {
-          "date": "2026-07-10",
-          "iv": 0.23099999999973342,
-          "low_confidence": false
-        },
-        {
-          "date": "2026-07-13",
-          "iv": 0.2320000000001396,
-          "low_confidence": false
-        },
-        {
           "date": "2026-07-14",
-          "iv": 0.2329999999999774,
+          "iv": 0.23100000000030185,
           "low_confidence": false
         },
         {
           "date": "2026-07-15",
-          "iv": 0.23399999999981508,
+          "iv": 0.2320000000001396,
           "low_confidence": false
         },
         {
           "date": "2026-07-16",
-          "iv": 0.2350000000002213,
+          "iv": 0.2329999999999774,
           "low_confidence": false
         },
         {
           "date": "2026-07-17",
-          "iv": 0.23600000000005905,
+          "iv": 0.23399999999981508,
           "low_confidence": false
         },
         {
           "date": "2026-07-20",
-          "iv": 0.23699999999989685,
+          "iv": 0.2350000000002213,
           "low_confidence": false
         },
         {
           "date": "2026-07-21",
-          "iv": 0.23800000000030302,
+          "iv": 0.23600000000005905,
           "low_confidence": false
         },
         {
           "date": "2026-07-22",
-          "iv": 0.23899999999843552,
+          "iv": 0.23699999999932841,
           "low_confidence": false
         },
         {
           "date": "2026-07-23",
-          "iv": 0.23999999999997862,
+          "iv": 0.23799999999916616,
           "low_confidence": false
         },
         {
           "date": "2026-07-24",
-          "iv": 0.2409999999964058,
+          "iv": 0.23899999999673022,
           "low_confidence": false
         },
         {
           "date": "2026-07-27",
-          "iv": 0.2420000000127281,
+          "iv": 0.23999999999599958,
           "low_confidence": true
         },
         {
           "date": "2026-07-28",
-          "iv": 0.24299999986193088,
+          "iv": 0.24100000011066108,
           "low_confidence": true
         },
         {
           "date": "2026-07-29",
-          "iv": 0.24400000024489316,
+          "iv": 0.2419999996227823,
           "low_confidence": true
         },
         {
           "date": "2026-07-30",
-          "iv": 0.24500000015037093,
+          "iv": 0.2430000023562196,
           "low_confidence": true
         },
         {
           "date": "2026-07-31",
-          "iv": 0.24599999348531915,
+          "iv": 0.24400001551814837,
           "low_confidence": true
         },
         {
           "date": "2026-08-03",
-          "iv": 0.25162320035769625,
+          "iv": 0.24719624659723632,
           "low_confidence": true
         },
         {
@@ -1673,6 +1603,16 @@
           "date": "2026-08-24",
           "iv": null,
           "low_confidence": true
+        },
+        {
+          "date": "2026-08-25",
+          "iv": null,
+          "low_confidence": true
+        },
+        {
+          "date": "2026-08-26",
+          "iv": null,
+          "low_confidence": true
         }
       ],
       "status": "ok"
@@ -1680,127 +1620,18 @@
   },
   "metrics": {
     "normalized_skew": {
-      "count": 25,
-      "percentile": 1.0,
-      "trend_4w": 0.0,
-      "trend_base_count": 6,
-      "value": -0.009074818250343508
+      "count": 0,
+      "percentile": null,
+      "trend_4w": null,
+      "trend_base_count": 0,
+      "value": null
     }
   },
-  "normalized_skew_points": [
-    {
-      "date": "2026-05-28",
-      "normalized_skew": -0.009074818250343508
-    },
-    {
-      "date": "2026-06-01",
-      "normalized_skew": -0.009074818250343508
-    },
-    {
-      "date": "2026-06-03",
-      "normalized_skew": -0.009074818250343508
-    },
-    {
-      "date": "2026-06-08",
-      "normalized_skew": -0.009074818250343508
-    },
-    {
-      "date": "2026-06-10",
-      "normalized_skew": -0.009074818250343508
-    },
-    {
-      "date": "2026-06-15",
-      "normalized_skew": -0.009074818250343508
-    },
-    {
-      "date": "2026-06-19",
-      "normalized_skew": -0.009074818250343508
-    },
-    {
-      "date": "2026-06-22",
-      "normalized_skew": -0.009074818250343508
-    },
-    {
-      "date": "2026-06-26",
-      "normalized_skew": -0.009074818250343508
-    },
-    {
-      "date": "2026-07-02",
-      "normalized_skew": -0.009074818250343508
-    },
-    {
-      "date": "2026-07-03",
-      "normalized_skew": -0.009074818250343508
-    },
-    {
-      "date": "2026-07-08",
-      "normalized_skew": -0.009074818250343508
-    },
-    {
-      "date": "2026-07-09",
-      "normalized_skew": -0.009074818250343508
-    },
-    {
-      "date": "2026-07-13",
-      "normalized_skew": -0.009074818250343508
-    },
-    {
-      "date": "2026-07-14",
-      "normalized_skew": -0.009074818250343508
-    },
-    {
-      "date": "2026-07-20",
-      "normalized_skew": -0.009074818250343508
-    },
-    {
-      "date": "2026-07-22",
-      "normalized_skew": -0.009074818250343508
-    },
-    {
-      "date": "2026-07-28",
-      "normalized_skew": -0.009074818250343508
-    },
-    {
-      "date": "2026-07-30",
-      "normalized_skew": -0.009074818250343508
-    },
-    {
-      "date": "2026-08-06",
-      "normalized_skew": -0.009074818250343508
-    },
-    {
-      "date": "2026-08-07",
-      "normalized_skew": -0.009074818250343508
-    },
-    {
-      "date": "2026-08-13",
-      "normalized_skew": -0.009074818250343508
-    },
-    {
-      "date": "2026-08-14",
-      "normalized_skew": -0.009074818250343508
-    },
-    {
-      "date": "2026-08-17",
-      "normalized_skew": -0.009074818250343508
-    },
-    {
-      "date": "2026-08-20",
-      "normalized_skew": -0.009074818250343508
-    }
-  ],
+  "normalized_skew_points": [],
   "note": null,
-  "observations": 25,
+  "observations": 0,
   "spread_gap": {
     "bollinger_lower": [
-      {
-        "date": "2026-06-25",
-        "value": null
-      },
-      {
-        "date": "2026-06-26",
-        "value": null
-      },
       {
         "date": "2026-06-29",
         "value": null
@@ -1811,11 +1642,11 @@
       },
       {
         "date": "2026-07-01",
-        "value": 0.0
+        "value": null
       },
       {
         "date": "2026-07-02",
-        "value": 0.0
+        "value": null
       },
       {
         "date": "2026-07-03",
@@ -1867,55 +1698,47 @@
       },
       {
         "date": "2026-07-21",
-        "value": -2.3089790419917057e-13
+        "value": 0.0
       },
       {
         "date": "2026-07-22",
-        "value": -8.733250597965796e-13
+        "value": -2.995421234269243e-13
       },
       {
         "date": "2026-07-23",
-        "value": -8.503310494644142e-13
+        "value": -4.1829178666111395e-13
       },
       {
         "date": "2026-07-24",
-        "value": -1.835224356747402e-12
+        "value": -1.765964038620392e-12
       },
       {
         "date": "2026-07-27",
-        "value": -5.421672694358048e-12
+        "value": -2.0702523589440747e-12
       },
       {
         "date": "2026-07-28",
-        "value": -6.604914170619788e-11
+        "value": -4.119041603830373e-11
       },
       {
         "date": "2026-07-29",
-        "value": -1.1562190384354067e-10
+        "value": -1.7801550013588655e-10
       },
       {
         "date": "2026-07-30",
-        "value": -1.2763920805588424e-10
+        "value": -9.144913013482166e-10
       },
       {
         "date": "2026-07-31",
-        "value": -2.997873954018033e-09
+        "value": -5.740784901092099e-09
       },
       {
         "date": "2026-08-03",
-        "value": -0.001797546938194999
+        "value": -0.000853652634702878
       }
     ],
     "bollinger_upper": [
       {
-        "date": "2026-06-25",
-        "value": null
-      },
-      {
-        "date": "2026-06-26",
-        "value": null
-      },
-      {
         "date": "2026-06-29",
         "value": null
       },
@@ -1925,11 +1748,11 @@
       },
       {
         "date": "2026-07-01",
-        "value": 0.0
+        "value": null
       },
       {
         "date": "2026-07-02",
-        "value": 0.0
+        "value": null
       },
       {
         "date": "2026-07-03",
@@ -1981,59 +1804,51 @@
       },
       {
         "date": "2026-07-21",
-        "value": 2.907330819473895e-13
+        "value": 0.0
       },
       {
         "date": "2026-07-22",
-        "value": 7.596382220749636e-13
+        "value": 2.363827691371376e-13
       },
       {
         "date": "2026-07-23",
-        "value": 7.420578706819227e-13
+        "value": 2.9862143116467606e-13
       },
       {
         "date": "2026-07-24",
-        "value": 1.4218176741233438e-12
+        "value": 1.311216687733928e-12
       },
       {
         "date": "2026-07-27",
-        "value": 6.179584945835488e-12
+        "value": 1.4206132862491258e-12
       },
       {
         "date": "2026-07-28",
-        "value": 5.406034791010019e-11
+        "value": 5.0285363056033015e-11
       },
       {
         "date": "2026-07-29",
-        "value": 1.2560656911203466e-10
+        "value": 1.5379526562225106e-10
       },
       {
         "date": "2026-07-30",
-        "value": 1.5304573517955822e-10
+        "value": 1.0958959124875597e-09
       },
       {
         "date": "2026-07-31",
-        "value": 2.4565269915918136e-09
+        "value": 7.270712858361209e-09
       },
       {
         "date": "2026-08-03",
-        "value": 0.0022378435106592803
+        "value": 0.0010627511943194932
       }
     ],
     "current_percentile": 1.0,
-    "delta_4w": 0.004623120236365019,
+    "delta_4w": 0.00219551728180295,
     "delta_4w_ratio": null,
     "delta_4w_status": "near_zero_base",
     "moving_average": [
       {
-        "date": "2026-06-25",
-        "value": null
-      },
-      {
-        "date": "2026-06-26",
-        "value": null
-      },
-      {
         "date": "2026-06-29",
         "value": null
       },
@@ -2043,11 +1858,11 @@
       },
       {
         "date": "2026-07-01",
-        "value": 0.0
+        "value": null
       },
       {
         "date": "2026-07-02",
-        "value": 0.0
+        "value": null
       },
       {
         "date": "2026-07-03",
@@ -2099,55 +1914,47 @@
       },
       {
         "date": "2026-07-21",
-        "value": 2.991758887410948e-14
+        "value": 0.0
       },
       {
         "date": "2026-07-22",
-        "value": -5.684341886080802e-14
+        "value": -3.157967714489334e-14
       },
       {
         "date": "2026-07-23",
-        "value": -5.4136589391245725e-14
+        "value": -5.983517774821896e-14
       },
       {
         "date": "2026-07-24",
-        "value": -2.0670334131202914e-13
+        "value": -2.2737367544323206e-13
       },
       {
         "date": "2026-07-27",
-        "value": 3.789561257387201e-13
+        "value": -3.248195363474744e-13
       },
       {
         "date": "2026-07-28",
-        "value": -5.994396898048845e-12
+        "value": 4.547473508864641e-12
       },
       {
         "date": "2026-07-29",
-        "value": 4.992332634246998e-12
+        "value": -1.2110117256817741e-11
       },
       {
         "date": "2026-07-30",
-        "value": 1.2703263561836989e-11
+        "value": 9.07023055696715e-11
       },
       {
         "date": "2026-07-31",
-        "value": -2.706734812131095e-10
+        "value": 7.649639786345551e-10
       },
       {
         "date": "2026-08-03",
-        "value": 0.00022014828623214054
+        "value": 0.00010454927980830755
       }
     ],
-    "observation_count": 28,
+    "observation_count": 26,
     "points": [
-      {
-        "date": "2026-06-25",
-        "gap": 0.0
-      },
-      {
-        "date": "2026-06-26",
-        "gap": 0.0
-      },
       {
         "date": "2026-06-29",
         "gap": 0.0
@@ -2214,15 +2021,15 @@
       },
       {
         "date": "2026-07-21",
-        "gap": 5.684341886080801e-13
+        "gap": 0.0
       },
       {
         "date": "2026-07-22",
-        "gap": -1.7053025658242404e-12
+        "gap": -5.684341886080801e-13
       },
       {
         "date": "2026-07-23",
-        "gap": 0.0
+        "gap": -5.684341886080801e-13
       },
       {
         "date": "2026-07-24",
@@ -2230,30 +2037,30 @@
       },
       {
         "date": "2026-07-27",
-        "gap": 1.2505552149377763e-11
+        "gap": -2.2737367544323206e-12
       },
       {
         "date": "2026-07-28",
-        "gap": -1.3983481039758772e-10
+        "gap": 1.0686562745831907e-10
       },
       {
         "date": "2026-07-29",
-        "gap": 2.4670038234475555e-10
+        "gap": -3.7857711410183015e-10
       },
       {
         "date": "2026-07-30",
-        "gap": 1.7735141133456978e-10
+        "gap": 2.3646857250092523e-09
       },
       {
         "date": "2026-07-31",
-        "gap": -6.517665129823769e-09
+        "gap": 1.5508018480492325e-08
       },
       {
         "date": "2026-08-03",
-        "gap": 0.004623120236365019
+        "gap": 0.00219551728180295
       }
     ],
-    "shared_history_span_days": 39
+    "shared_history_span_days": 35
   },
   "status": "ok"
 }

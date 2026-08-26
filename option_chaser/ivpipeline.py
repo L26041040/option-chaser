@@ -37,10 +37,14 @@ from .valuation import DAYS_PER_YEAR, days_between
 # ---------- Port 型別 ----------
 
 EmitFn = Callable[..., None]
-"""`emit(*, stage, severity, message, **context) -> None`——與
-`api_app/diagnostics.py` 的 `emit()` 呼叫慣例一致，呼叫端（main.py）
-負責把它接到真正的 `diagnostics.emit()`（帶 correlation id、secrets
-遮罩等 HTTP-request 專屬的東西），本模組只認識這個最小呼叫介面。"""
+"""`emit(*, stage, severity, message, user_facing=None, **context) -> None`
+——與 `api_app/diagnostics.py` 的 `emit()` 呼叫慣例一致，呼叫端
+（main.py）負責把它接到真正的 `diagnostics.emit()`（帶 correlation id、
+secrets 遮罩等 HTTP-request 專屬的東西），本模組只認識這個最小呼叫
+介面。`user_facing`（PC-03／#201）：省略時由 `emit()` 依 `severity`
+套預設規則；PC-04 起，本模組內少數呼叫點會顯式傳入覆蓋這個預設
+（見各自函式的說明），藉此把「這件事該不該讓使用者看到」跟「這件事
+有多嚴重」拆成兩個獨立判斷。"""
 
 # (provider, symbol, date, token, expiration=None, observer=None) ->
 #   {"call": [SurfacePoint-like], "put": [...]}
