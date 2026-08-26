@@ -42,9 +42,15 @@ async function routeTwoScenarios(page: import("@playwright/test").Page) {
     route.fulfill({ json: { ...rowA, latest_result: sample } }));
   await page.route("**/api/scenarios/s2", (route) =>
     route.fulfill({ json: { ...rowB, latest_result: sample } }));
-  // 開站的批次刷新（時機一）兩個劇本各打一次 /refresh——各自回傳
-  // 自己那筆，不能共用同一個回應：那樣兩個劇本的清單列會被同一份
-  // 資料蓋掉，其中一個劇本的卡片就從清單上「消失」了。
+  // 開站的批次刷新（時機一，T08／#196）打的是 Refresh Run，一次帶兩個
+  // id、一次回應涵蓋兩筆——不是各自打一次 `/refresh`。
+  await page.route("**/api/scenarios/refresh-run", (route) =>
+    route.fulfill({ json: {
+      results: [{ scenario_id: "s1", ok: true, row: rowA },
+               { scenario_id: "s2", ok: true, row: rowB }],
+      remaining: [],
+    } }));
+  // 卡片重試／詳細頁手動刷新走的是單一劇本端點，維持原樣。
   await page.route("**/api/scenarios/s1/refresh", (route) =>
     route.fulfill({ json: rowA }));
   await page.route("**/api/scenarios/s2/refresh", (route) =>
@@ -293,6 +299,10 @@ test("桌面版：Inline Diagnostics 的 Copy 按鈕——版面順序、複製�
     event_id: "evt-e2e-1", correlation_id: "cid-e2e-1",
     ts: "2026-08-15T00:00:00+00:00", subsystem: "historical_iv",
     stage: "payload_parse", severity: "warning",
+    // PC-03（#201）：`user_facing` 鏡射 severity——這是餵進
+    // `IvHistory` 的 `notableEvents` 過濾，缺這個欄位會讓 Inline
+    // Diagnostics 面板失去觸發條件。
+    user_facing: true,
     message: "raw_rows > 0 but parsed rows are 0",
     context: { raw_rows: 5, parsed_call_rows: 0 },
   };
@@ -640,6 +650,102 @@ test("可以直接點另一個劇本切換，不必先返回劇本庫", async ({
     .toHaveAttribute("aria-current", "page");
 });
 
+test("PC-05（#202）：鎖定卡片點下去路由不變——桌面版", async ({ page }) => {
+  await page.route("**/api/scenarios", (route) =>
+    route.fulfill({ json: [rowA, rowB] }));
+  await page.route("**/api/scenarios/s1", (route) =>
+    route.fulfill({ json: { ...rowA, latest_result: sample } }));
+  await page.route("**/api/scenarios/s2", (route) =>
+    route.fulfill({ json: { ...rowB, latest_result: sample } }));
+  await page.route("**/api/scenarios/refresh-run", async (route) => {
+    // 刻意延遲，讓「更新中」＋反灰的狀態真的看得到，才點得下去測試。
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    await route.fulfill({ json: {
+      results: [{ scenario_id: "s1", ok: true, row: rowA },
+               { scenario_id: "s2", ok: true, row: rowB }],
+      remaining: [],
+    } });
+  });
+
+  await page.goto("/");
+
+  const abcLink = page.getByRole("link", { name: /ABC/ });
+  await expect(abcLink).toBeVisible();
+  const abcCard = page.locator(".compact-card").filter({ hasText: "ABC" });
+  await expect(abcCard).toHaveClass(/locked/);
+
+  const before = page.url();
+  await abcLink.click();
+
+  // 沒有導向詳細頁：網址沒變，右側工作區也還是空狀態，不是 s2 的內容。
+  expect(page.url()).toBe(before);
+  await expect(page.getByText(/選擇左側的劇本/)).toBeVisible();
+
+  // 這一輪跑完後解鎖、正常可點——確認上面攔截到的是真的鎖定，不是這個
+  // 候選本身結構上就到不了詳細頁。
+  await expect(abcCard).not.toHaveClass(/locked/);
+  await abcLink.click();
+  await expect(page).toHaveURL(/#\/s\/s2$/);
+});
+
+test("2026-08-26 真機驗收：Refresh Run 逐張完成、逐張立即可用——桌面版",
+  async ({ page }) => {
+  const rowFor = (id: string, symbol: string) => libraryRow({
+    id, symbol, latest_analyzed_at: null, best_return: null,
+  });
+  const rows = [rowFor("a", "AAA"), rowFor("b", "BBB"), rowFor("c", "CCC")];
+
+  await page.route("**/api/scenarios", (route) =>
+    route.fulfill({ json: rows }));
+  // 對齊真實後端的 Refresh Run Group Limit（預設 1）——同一套三階段
+  // 劇本，桌面版驗一次確認不是只有手機版才有這個行為。
+  await page.route("**/api/scenarios/refresh-run", async (route, req) => {
+    const body = req.postDataJSON() as { scenario_ids: string[] };
+    const ids = body.scenario_ids;
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    if (ids.length === 3) {
+      return route.fulfill({ json: {
+        results: [{ scenario_id: "a", ok: true,
+          row: { ...rows[0], best_return: 1,
+                 latest_analyzed_at: new Date().toISOString() } }],
+        remaining: ["b", "c"],
+      } });
+    }
+    if (ids.length === 2) {
+      return route.fulfill({ json: {
+        results: [{ scenario_id: "b", ok: false,
+          stage: "fetch", message: "抓不到 BBB 的報價" }],
+        remaining: ["c"],
+      } });
+    }
+    return route.fulfill({ json: {
+      results: [{ scenario_id: "c", ok: true,
+        row: { ...rows[2], best_return: 0.25,
+               latest_analyzed_at: new Date().toISOString() } }],
+      remaining: [],
+    } });
+  });
+
+  await page.goto("/");
+
+  const aCard = page.locator(".compact-card").filter({ hasText: "AAA" });
+  const bCard = page.locator(".compact-card").filter({ hasText: "BBB" });
+  const cCard = page.locator(".compact-card").filter({ hasText: "CCC" });
+
+  await expect(page.getByText("100.0%")).toBeVisible();
+  await expect(aCard).not.toHaveClass(/locked/);
+  await expect(bCard).toHaveClass(/locked/);
+  await expect(cCard).toHaveClass(/locked/);
+
+  await expect(page.getByText("抓不到 BBB 的報價")).toBeVisible();
+  await expect(bCard).not.toHaveClass(/locked/);
+  await expect(cCard).toHaveClass(/locked/);
+  await expect(aCard).not.toHaveClass(/locked/);
+
+  await expect(page.getByText("25.0%")).toBeVisible();
+  await expect(cCard).not.toHaveClass(/locked/);
+});
+
 test("左右比例約 20/80，不是置中的窄直欄", async ({ page }) => {
   await routeTwoScenarios(page);
   await page.goto("/");
@@ -832,6 +938,11 @@ test("劇本庫卡片瘦身：固定左側欄視窗一次看到的劇本數比�
     libraryRow({ id: `s${i}`, symbol: `SYM${i}`,
                  latest_analyzed_at: null, best_return: null }));
   await page.route("**/api/scenarios", (route) => route.fulfill({ json: rows }));
+  await page.route("**/api/scenarios/refresh-run", (route) =>
+    route.fulfill({ json: {
+      results: rows.map((r) => ({ scenario_id: (r as { id: string }).id, ok: true, row: r })),
+      remaining: [],
+    } }));
   await page.route("**/api/scenarios/*/refresh", (route, req) =>
     route.fulfill({ json: rows.find((r) => req.url().includes(`/${r.id}/`)) }));
 
@@ -941,6 +1052,11 @@ test("桌面主劇本庫：批次選取後動作列同樣吸底（QA-FIX-4／QA-
     libraryRow({ id: `s${i}`, symbol: `SYM${i}`,
                  latest_analyzed_at: null, best_return: null }));
   await page.route("**/api/scenarios", (route) => route.fulfill({ json: rows }));
+  await page.route("**/api/scenarios/refresh-run", (route) =>
+    route.fulfill({ json: {
+      results: rows.map((r) => ({ scenario_id: (r as { id: string }).id, ok: true, row: r })),
+      remaining: [],
+    } }));
   await page.route("**/api/scenarios/*/refresh", (route, req) =>
     route.fulfill({ json: rows.find((r) => req.url().includes(`/${r.id}/`)) }));
 
@@ -1134,7 +1250,7 @@ test("桌面版：Settings 的 Diagnostics 區塊可讀可操作（DG-06／#149�
   let events: unknown[] = [{
     event_id: "evt-e2e-desktop", correlation_id: "cid-e2e-desktop",
     ts: "2026-08-15T00:00:00+00:00", subsystem: "historical_iv",
-    stage: "vendor_fetch", severity: "error",
+    stage: "vendor_fetch", severity: "error", user_facing: true,
     message: "vendor 連線失敗", context: { http_status: 429 },
   }];
   await page.route("**/api/diagnostics*", (route) => {
@@ -1180,6 +1296,10 @@ test("桌面版：編輯劇本沿用工作區上方的既有表單，取消隨�
   });
   await page.route("**/api/scenarios/s1/refresh", (route) =>
     route.fulfill({ json: current }));
+  // 開站那一輪走批次端點（T08／#196）。
+  await page.route("**/api/scenarios/refresh-run", (route) =>
+    route.fulfill({ json: { results: [{ scenario_id: "s1", ok: true,
+      row: current }], remaining: [] } }));
 
   await page.goto("/");
   await page.getByRole("button", { name: /編輯 TLT/ }).click();

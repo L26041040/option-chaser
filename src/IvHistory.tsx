@@ -58,8 +58,7 @@ import { useEffect, useRef, useState } from "react";
 
 import {
   ApiError,
-  getSettings,
-  ivHistory,
+  ivHistoryBackfill,
   type Candidate,
   type DiagnosticEvent,
   type IvFieldMetric,
@@ -68,6 +67,7 @@ import {
   type NormalizedSkewPoint,
 } from "./api";
 import { CopyDiagnosticButton, DiagnosticEventFieldList } from "./DiagnosticDetail";
+import { getIvHistoryCached, getSettingsCached, invalidateIvHistoryCache } from "./fetchCache";
 import IvTrend, { zscoreCaption } from "./IvTrend";
 import { contiguousRuns, ivChartPoints, ivYAxisDomain, nearestIndexForClientX,
         xAxisTicks, type ChartPoint } from "./ivHistoryChart";
@@ -124,6 +124,29 @@ function metricCaption(m: IvFieldMetric, unit: TrendUnit): string {
   if (m.count === 0 || m.percentile === null) return "沒有歷史資料";
   return `第 ${Math.round(m.percentile * 100)} 百分位・${m.count} 筆觀測・${
     trendLabel(m, unit)}`;
+}
+
+/** `percentile`（0–1 小數）換成畫面上的整數百分位——`percentileCaption`／
+ *  `metricCaption`（既有、本輪不動）與下面三個「白話說明句」函式共用
+ *  同一個換算，兩處讀到的數字才保證一致。刻意只給這輪新增的三個說明
+ *  函式共用（code review 建議延伸到既有 caption 函式，但那三個屬於
+ *  「不動任何 percentile 計算」的既有程式碼，本輪不觸碰），不是重構
+ *  既有計算本身。 */
+export function roundPercentile(percentile: number): number {
+  return Math.round(percentile * 100);
+}
+
+/** PC-01（#199，spec #198）；2026-08-26 真機驗收後改寫為白話句——跟
+ *  `./IvTrend`／`./SpreadSummary` 的姊妹函式同一個目的、同一次改寫理由
+ *  （直接把「第 N 百分位」翻譯成一句話、把 N 帶進句子裡，數字跟旁邊
+ *  `metricCaption()` 顯示的保證一致）。Normalized Skew 沿用既有「偏斜」
+ *  語彙、不硬套「IV」字樣（這個家族量的是買賣兩腳結構是否偏斜，不是
+ *  單一 IV 水準）。 */
+export function skewPercentileExplanation(percentile: number | null): string {
+  if (percentile === null) return "目前沒有足夠的歷史觀測可以比較。";
+  const pct = roundPercentile(percentile);
+  return `現在的偏斜程度比過去一年大約 ${pct}% 的有效歷史觀測都高。`
+    + "單日數字可能隨市場報價波動。";
 }
 
 export const PAD_TOP = 12;
@@ -397,12 +420,16 @@ function normalizedSkewSeries(
  * 走勢圖。目前只有 Normalized Skew 這一項還在用（HIVT-04 後買／賣腿／
  * ATM 次要顯示已移除，改由 `./IvTrend` 供應）。
  */
-function Metric({ label, metric, points, unit, primary = false }: {
+function Metric({ label, metric, points, unit, primary = false, explanation }: {
   label: string;
   metric: IvFieldMetric;
   points: { date: string; value: number | null }[];
   unit: TrendUnit;
   primary?: boolean;
+  /** PC-01（#199）：常駐可見的百分位說明，掛在「這一項指標」旁邊——
+   *  目前只有 Normalized Skew 這一個呼叫端會傳，選填不影響其他潛在
+   *  呼叫端的既有行為（不傳就不渲染這一行，跟今天完全一樣）。 */
+  explanation?: string;
 }) {
   const width = primary ? 300 : 200;
   const height = primary ? 104 : 60;
@@ -412,6 +439,7 @@ function Metric({ label, metric, points, unit, primary = false }: {
         <span className="row-label">{label}</span>
         <span className="caption">{metricCaption(metric, unit)}</span>
       </div>
+      {explanation && <p className="caption">{explanation}</p>}
       <span className={primary ? "iv-value-primary" : "iv-value"}>
         {valueLabel(metric.value, unit)}
       </span>
@@ -526,19 +554,33 @@ export default function IvHistory({ scenarioId, candidate, analyzedAt = null }: 
   // 手上這份資料還不能當成「這個候選」的東西來畫（見下方 `currentData`）。
   const [dataKey, setDataKey] = useState<string | null>(null);
   const [error, setError] = useState<Error | null>(null);
+  // T11（#194，兩段式補建 P3-a）：`backfillTick` 只是拿來讓下面的主
+  // fetch effect 在補建完成後重新跑一次（配合 `invalidateIvHistoryCache`
+  // 清掉舊快取）——值本身沒有意義，純粹是個觸發訊號。
+  const [backfillTick, setBackfillTick] = useState(0);
+  const [backfillInFlight, setBackfillInFlight] = useState(false);
+  // 同一個 (scenario, candidate) 這個掛載期間只嘗試一次補建——避免
+  // POST 本身失敗（例如網路根本打不通，連後端的「今天已經跑過」短路
+  // 都沒機會生效）時，`backfill_pending` 永遠是 `true`、每次重抓又
+  // 立刻再觸發一次，變成無限重試迴圈。
+  const backfillAttempted = useRef<Set<string>>(new Set());
 
   const key = candidate?.candidate_key ?? null;
 
-  // 先問解不解鎖。鎖著就到此為止——**不發 IV 請求**。
+  // 先問解不解鎖。鎖著就到此為止——**不發 IV 請求**。T03（#187）：走
+  // 快取（settings 是單一全站狀態，鍵固定），跟 Settings 頁自己那次
+  // 讀取共用同一份結果，不各自 mount 各抓一次。
   useEffect(() => {
     let alive = true;
-    getSettings()
+    const { promise, release } = getSettingsCached();
+    promise
       .then((s) => alive && setEnabled(s.historical_iv_enabled))
       // 設定讀不到時當成鎖著：寧可少顯示一塊 enrichment，也不要在狀態
       // 不明時對 vendor 發請求。
       .catch(() => alive && setEnabled(false));
     return () => {
       alive = false;
+      release();
     };
   }, []);
 
@@ -552,7 +594,8 @@ export default function IvHistory({ scenarioId, candidate, analyzedAt = null }: 
     // 候選的資料被誤認成這個候選的」，同一個候選重新嘗試時則正是要保留
     // 舊資料，讓失敗降級成非阻斷警示而不是整塊消失。
     setError(null);
-    ivHistory(scenarioId, key)
+    const { promise, release } = getIvHistoryCached(scenarioId, key, analyzedAt);
+    promise
       .then((v) => {
         if (!alive) return;
         setData(v);
@@ -564,8 +607,52 @@ export default function IvHistory({ scenarioId, candidate, analyzedAt = null }: 
       });
     return () => {
       alive = false;
+      release();
     };
-  }, [enabled, key, scenarioId, analyzedAt]);
+    // `backfillTick` 刻意列進相依陣列：補建完成後靠它讓這個 effect 重新
+    // 跑一次，拿到補建後的新資料（配合下面那個 effect 先 invalidate 掉
+    // 舊快取，這裡才會真的重抓而不是繼續吃快取裡那份 `backfill_pending`）。
+  }, [enabled, key, scenarioId, analyzedAt, backfillTick]);
+
+  // T11（#194，兩段式補建 P3-a）：`GET .../iv-history` 回的
+  // `backfill_pending` 說「Legacy 家族今天還沒補過一批」——這裡另外
+  // 呼叫 `POST .../iv-history/backfill` 觸發，完成後（不論成功或失敗，
+  // 後端的「今天已跑過」短路兩種情況都會記一筆，不會無限重試）invalidate
+  // 快取＋重新整份請求一次，讓補全後的資料自動出現，不必使用者手動
+  // 重新整理。Exact-Contract 家族（`legs`／`spread_gap`）完全不受影響
+  // ——那半資料已經在這次回應裡是最新的。
+  useEffect(() => {
+    // 這裡是這個元件裡唯一在早退（`enabled !== true || !key`）之前就
+    // 需要判斷「這份資料是不是這個候選的」的地方，所以自己重算一次
+    // `dataKey === key`——跟下面 render 用的 `currentData` 是同一條
+    // 判斷式，只是那個變數宣告在早退之後、這裡的 hooks 呼叫不到它。
+    const pendingData = dataKey === key ? data : null;
+    if (!pendingData?.backfill_pending || !key) return;
+    const attemptKey = `${scenarioId}:${key}`;
+    if (backfillAttempted.current.has(attemptKey)) return;
+    backfillAttempted.current.add(attemptKey);
+
+    let alive = true;
+    setBackfillInFlight(true);
+    ivHistoryBackfill(scenarioId, key)
+      .catch(() => { /* 失敗也要往下走：仍然重抓一次讓畫面反映最新狀態 */ })
+      .finally(() => {
+        if (!alive) return;
+        setBackfillInFlight(false);
+        invalidateIvHistoryCache(scenarioId, key, analyzedAt);
+        setBackfillTick((t) => t + 1);
+      });
+    return () => {
+      alive = false;
+      // 不論是同一個候選重新觸發（`data`／`dataKey` 更新）還是切到別的
+      // 候選，這個 effect 實例都被淘汰了——一律把「補建中」旗標收掉，
+      // 避免它卡在 `true` 一路帶到不相干的候選畫面上。若真的是同一個
+      // 候選還沒補完就被這個 cleanup 打斷，`backfillAttempted` 已經記過
+      // 這個 key，不會重新觸發第二次；使用者頂多提早看不到這句文字，
+      // 不會看到錯的候選卡著這句文字。
+      setBackfillInFlight(false);
+    };
+  }, [data, dataKey, key, scenarioId, analyzedAt]);
 
   // 鎖著、還沒問完、或這個候選根本沒有身份鍵 → 不輸出任何節點（#126
   // AC——這條紅線原封不動，跟下面「卡片固定版位」是兩件事：鎖著時連
@@ -602,7 +689,11 @@ export default function IvHistory({ scenarioId, candidate, analyzedAt = null }: 
               ⚠ 最新資料更新失敗，目前顯示先前取得的快取資料：{error.message}
             </p>
           )}
-          <IvHistoryContent data={currentData} isSingleLeg={isSingleLeg} />
+          <IvHistoryContent
+            data={currentData}
+            isSingleLeg={isSingleLeg}
+            backfillInFlight={backfillInFlight}
+          />
         </>
       ) : error ? (
         // 這個候選目前真的沒有任何資料可退回顯示，才整塊改成錯誤狀態
@@ -668,6 +759,7 @@ function IvAdvanced({ data, isSingleLeg, notableEvents }: {
             unit="unitless"
             metric={data.metrics.normalized_skew}
             points={normalizedSkewSeries(data.normalized_skew_points)}
+            explanation={skewPercentileExplanation(data.metrics.normalized_skew.percentile)}
           />
           <p className="caption">
             近 1 年 {data.observations} 個觀測，依候選的到期天數與 delta 座標
@@ -700,21 +792,35 @@ function IvAdvanced({ data, isSingleLeg, notableEvents }: {
  *  （`./SpreadSummary`，只在 `spread_gap` 這個 key 存在時掛載）→
  *  Buy／Sell 逐腿卡片（`./IvTrend`）→ Advanced／Diagnostics 預設收合區
  *  （`IvAdvanced`）。 */
-function IvHistoryContent({ data, isSingleLeg }: {
+function IvHistoryContent({ data, isSingleLeg, backfillInFlight }: {
   data: IvHistoryView;
   isSingleLeg: boolean;
+  /** T11（#194，兩段式補建 P3-a）：這個候選的 Legacy 家族今天觸發了一次
+   *  補建、還沒跑完——卡片標一句話讓使用者知道資料還在補齊，不必猜為
+   *  什麼 Normalized Skew 那半看起來還沒更新。 */
+  backfillInFlight: boolean;
 }) {
   // 200 但資料是空的——目前最常見的症狀，只看 HTTP 狀態碼看不出來。
-  // severity >= warning 的 events 是唯一能指出這件事的地方（DG-05／
-  // #148）。`?.`／`?? []`：`diagnostics` 是後端純加法新增的欄位，
-  // 這裡不因為回應剛好沒帶它（例如手造的測試假體）就整塊炸掉。這批
-  // 事件涵蓋 Normalized Skew 與逐腿 Historical IV Trend 兩個家族——
-  // 兩者共用同一個 per-request 診斷收集層（HIVT-02／#153）。
+  // `user_facing`（PC-03／#201）是唯一能指出這件事的地方——獨立於
+  // `severity` 的第二個維度，回答「這件事該不該讓一般使用者看到」，
+  // 不是「這件事有多嚴重」。預設鏡射 severity（warning／error 為
+  // true），PC-04 起後端在幾個已知的良性情境（例如兩段式 backfill
+  // 進行中的暫時空缺）會顯式覆寫成 false，這裡不需要跟著改一行——
+  // 過濾條件本身已經正確表達意圖，覆寫發生在資料源那端。`?.`／`?? []`：
+  // `diagnostics` 是後端純加法新增的欄位，這裡不因為回應剛好沒帶它
+  // （例如手造的測試假體）就整塊炸掉。這批事件涵蓋 Normalized Skew
+  // 與逐腿 Historical IV Trend 兩個家族——兩者共用同一個 per-request
+  // 診斷收集層（HIVT-02／#153）。
   const notableEvents = (data.diagnostics?.events ?? []).filter(
-    (e) => e.severity === "warning" || e.severity === "error");
+    (e) => e.user_facing === true);
 
   return (
     <>
+      {backfillInFlight && (
+        <p className="caption iv-history-backfill-pending" role="status">
+          歷史資料補建中……
+        </p>
+      )}
       {/* 渲染條件是「回應裡有 spread_gap 這個 key」，不是「points 非
           空」——單腳候選這個 key 整個不存在，`data.spread_gap &&`
           天然只在有賣腿的候選才掛載；`points` 為空時 `SpreadSummary`

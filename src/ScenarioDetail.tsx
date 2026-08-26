@@ -28,7 +28,6 @@ import RawData from "./RawData";
 import SpreadHistory from "./SpreadHistory";
 import {
   baselineTopCandidate,
-  getScenario,
   primaryResult,
   type AnalysisView,
   type Candidate,
@@ -37,6 +36,7 @@ import {
 } from "./api";
 import { candidateTitle, formatMove, strategyLabel } from "./detail";
 import { isThinPool, legPrices, validPairsForExpiry } from "./expiry";
+import { getScenarioCached } from "./fetchCache";
 import {
   failureLabel, formatAnalyzedAt, formatReturn, money, moneyOrDash,
 } from "./scenarios";
@@ -195,7 +195,8 @@ function DetailBody({ scenarioId, view, analyzedAt }: {
           一塊的清單，基準候選不動——固定是 baseline 期第 1 名（QA1-06
           的既有裁示）。 */}
       {result && (
-        <ExpiryStructure result={result} baselineExpiry={view.baseline_expiry} />
+        <ExpiryStructure view={view} result={result}
+                         baselineExpiry={view.baseline_expiry} />
       )}
       {/* 候選池診斷（FB4-01／#60）：第 1 名如果是整池僅存者，那個名次
           沒有意義。它本來掛在 V1 的一次性分析畫面上，隨那塊一起搬進
@@ -230,7 +231,7 @@ export default function ScenarioDetail({
   busy = false,
   failure,
   onRefresh = () => {},
-  refreshLocked = false,
+  updating = false,
 }: {
   id: string;
   /**
@@ -250,27 +251,34 @@ export default function ScenarioDetail({
   failure?: RefreshFailure;
   onRefresh?: () => void;
   /**
-   * 這個劇本本輪還沒刷新完（V4 跟進票／#136）：桌面 master/detail
-   * 常駐，右側開著的劇本若還在排隊或正在抓，畫面上的數字是上一輪的
-   * 舊快照，不能讓它看起來像已經是這一輪的結果——比 `busy`（任何劇本
-   * 在跑都算）更精確，`busy` 只影響按鈕文案／停用，這個才是「這一個
-   * 劇本」的鎖定狀態。
+   * 這個劇本正在被刷新（T08／#196 P1「更新中徽章」，前身是 V4 跟進票
+   * ／#136 的整段鎖定）：桌面 master/detail 常駐，右側開著的劇本若正在
+   * 被 Refresh Run 或單一劇本刷新處理，畫面上的數字是上一輪的舊快照，
+   * 不能讓它看起來像已經是這一輪的結果——比 `busy`（任何劇本在跑都算）
+   * 更精確，`busy` 只影響按鈕文案／停用，這個才是「這一個劇本」的狀態。
+   * 純資訊性提示，不影響頁面其餘內容是否可瀏覽。
    */
-  refreshLocked?: boolean;
+  updating?: boolean;
 }) {
   const [detail, setDetail] = useState<Detail | null>(null);
   const [error, setError] = useState<string | null>(null);
 
+  // T03（#187）：以 (id, refreshedAt) 為資料身分快取——`refreshedAt`
+  // 還沒對上目前劇本庫清單的最新值（null）時容忍沿用已有快取，真的
+  // 對上新版本才重抓；deep-link 開頁常見的三次重複下載因此收斂成
+  // 有意義的一到兩次。`release()` 掛在清理函式：換頁或 id／refreshedAt
+  // 再變都算「不再需要」，最後一個等待者離開時才真的 abort。
   useEffect(() => {
     let live = true;
     setError(null);
-    getScenario(id)
+    const { promise, release } = getScenarioCached(id, refreshedAt);
+    promise
       .then((d) => { if (live) setDetail(d); })
       .catch((e) => {
         // 換頁後才回來的舊請求不該蓋掉新畫面
         if (live) setError(e instanceof Error ? e.message : String(e));
       });
-    return () => { live = false; };
+    return () => { live = false; release(); };
   }, [id, refreshedAt]);
 
   // 換劇本時先清空，免得新劇本的標題底下短暫掛著上一個劇本的數字。
@@ -288,7 +296,7 @@ export default function ScenarioDetail({
         <div className="toolbar-row">
           <h1 className="toolbar-title">{detail?.symbol ?? "劇本"}</h1>
           {/* #70：與劇本庫功能列同一個視覺語言（標題列右側膠囊鈕），
-              走 App 既有的那條刷新佇列——不是第四種獨立管道。已過期
+              走既有的單一劇本刷新端點——不是第四種獨立管道。已過期
               （#68）沿用清單卡片同一句文案並停用——後端會把它當無害
               no-op，按了等於沒按，不該讓它看起來還有用。 */}
           <button className="pill" onClick={onRefresh}
@@ -298,12 +306,13 @@ export default function ScenarioDetail({
         </div>
       </header>
 
-      {/* V4 跟進票／#136：本輪還沒輪到、或正在抓這個劇本——桌面右側
-          常駐面板最容易讓使用者誤以為畫面已經更新完，所以放在最上面、
-          搶在其他任何內容之前。刻意跟下面的失敗提示互斥判斷分開：
-          鎖著時失敗提示還沒有意義（這次嘗試根本還沒有結論），等解鎖後
-          若真的失敗，下面那段才會出現。 */}
-      {refreshLocked && (
+      {/* T08／#196 P1：正在被刷新（Refresh Run 或單一劇本刷新）——桌面
+          右側常駐面板最容易讓使用者誤以為畫面已經更新完，所以放在最
+          上面、搶在其他任何內容之前。純資訊性提示，不影響下面內容是否
+          可瀏覽（P1 明文：全程可瀏覽、可進詳細頁）。刻意跟下面的失敗
+          提示互斥判斷分開：更新中時失敗提示還沒有意義（這次嘗試根本
+          還沒有結論），等它解決後若真的失敗，下面那段才會出現。 */}
+      {updating && (
         <div className="notice warn" role="status">
           本輪刷新排隊中或進行中，以下暫時是上一輪的舊資料。
         </div>
@@ -313,7 +322,7 @@ export default function ScenarioDetail({
           （V4／#52 既有語彙），不是重新發明一套說法。已過期優先於刷新
           失敗（#68 既有判斷）：兩種狀態同時出現會讓使用者搞不清楚現在
           是哪一種。 */}
-      {!refreshLocked && failure && !detail?.expired && (
+      {!updating && failure && !detail?.expired && (
         <div className="notice error" role="alert">
           <div className="row-value">{failureLabel(failure.stage)}</div>
           <p className="caption">{failure.message}</p>

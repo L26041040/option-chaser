@@ -136,6 +136,32 @@ class DividendCacheEntry:
 
 
 @dataclass(frozen=True)
+class TreasuryYearCacheEntry:
+    """Treasury 利率曲線列的快取，**per-year**（PERF-03／#179）——鍵是
+    年份，不是「今天」：歷史 reconstruction 對任一觀測日 D 的查詢，結構
+    上只可能被 D 所在年份的這筆紀錄滿足，快取鍵本身就不留「不小心套用
+    到今天曲線回答歷史查詢」的路徑（本輪風險最高的一項，正確性必須靠
+    鍵設計本身鎖死，不能只靠呼叫端小心）。
+
+    `rows` 是 `option_chaser.data.treasury.fetch_curve_rows_for_year()`
+    的輸出（`option_chaser.ratecurve.CurveRows`）序列化成 JSON 安全形狀
+    `[[date, [[tenor, rate], ...]], ...]`；目前沒有堪用資料時為 `None`。
+    其餘欄位語意逐一對應 `RateCacheEntry`／`DividendCacheEntry` 同一套
+    三態快取設計（成功／近期嘗試失敗／陳舊備援），差異只在「成功是否
+    永久新鮮」由呼叫端依 `year` 是否早於今年判斷，不是看這個 dataclass
+    本身——過去年份一旦成功即永久有效（Treasury 不會回頭修正已公布的
+    歷史曲線），當年比照既有市場日語意，隔天第一次請求才重新嘗試。
+    """
+    year: int
+    fetched_at: str          # 這筆狀態寫入的時間（ISO），不是曲線本身的年份
+    rows: list | None
+    note: str
+    last_success_at: str | None = None
+    market_day: str | None = None
+    attempted_day: str | None = None
+
+
+@dataclass(frozen=True)
 class UsageSetting:
     """`Data / API` 其中一列的選擇（Settings／#124）。
 
@@ -357,6 +383,14 @@ class Storage(Protocol):
     def save_dividend_cache(self, entry: DividendCacheEntry) -> None:
         """覆蓋該 symbol 既有那一筆——per-symbol 單一狀態，不是歷史序列。"""
 
+    # ---------- Treasury 曲線列快取（PERF-03／#179，per-year） ----------
+
+    def get_treasury_year_cache(self, year: int) -> TreasuryYearCacheEntry | None:
+        """該年份尚未有任何嘗試（成功或失敗）時回 `None`。"""
+
+    def save_treasury_year_cache(self, entry: TreasuryYearCacheEntry) -> None:
+        """覆蓋該年份既有那一筆——per-year 單一狀態，不是歷史序列。"""
+
     # ---------- 資料源設定與 credential（Settings／#124） ----------
 
     def get_settings(self) -> DataSourceSettings | None:
@@ -418,6 +452,13 @@ class Storage(Protocol):
         """寫入一筆診斷事件。**trim-on-write**：寫入後只保留全域最新
         `diagnostics.RETENTION_LIMIT` 筆，較舊的直接淘汰——不是靠背景
         清理 job（serverless 沒有地方掛），上限因此是結構性的。"""
+
+    def append_diagnostics(self, events: list[DiagnosticEvent]) -> None:
+        """批次版（PERF-02／#178）——與單筆版 `append_diagnostic()` 並存，
+        不取代（既有呼叫端／測試直接呼叫單筆版的地方不受影響）。同一份
+        trim-on-write 語意：整批寫完後只保留全域最新
+        `diagnostics.RETENTION_LIMIT` 筆，跟逐筆呼叫單筆版比較，最終
+        保留集合完全一致。空清單是合法的 no-op。"""
 
     def list_diagnostics(self, *, limit: int = 50) -> list[DiagnosticEvent]:
         """最新在最上（依寫入順序反排）。"""

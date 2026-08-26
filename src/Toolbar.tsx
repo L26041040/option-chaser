@@ -1,18 +1,14 @@
 /**
  * 釘選功能列（V3／#51；V4／#52 接上刷新與進度；MVP-v2／#77、#81 起
- * 建立入口在手機版搬到 Dashboard 下方，工具列本身不再重複一份）。
+ * 建立入口在手機版搬到 Dashboard 下方，工具列本身不再重複一份；
+ * T08／#196 改接 Refresh Run，進行中不再是「第幾個／共幾個」——一輪
+ * 刷新是一次批次請求（可能含 Continuation），沒有「正在跑第幾個」這件
+ * 事可講，改成跑完後顯示「N 成功／M 失敗」摘要，見 `App.tsx` 的
+ * `runSummary`）。
  *
- * 刷新是全站三種時機之一（另兩種是開站與建立劇本）。進行中顯示
- * 「第幾個／共幾個」——刷新是逐一跑的，一個劇本一趟網路往返，只給一顆
- * 轉圈的話使用者無從判斷是快好了還是卡住了。
+ * 刷新是全站三種時機之一（另兩種是開站與建立劇本）。
  */
 import { GearIcon, TrashIcon } from "./icons";
-
-export interface RefreshProgress {
-  /** 正在刷新第幾個（1-based）。 */
-  current: number;
-  total: number;
-}
 
 /**
  * `showCreateButton` 與其餘建立相關欄位綁在一起（判別聯合）：桌面版
@@ -34,14 +30,22 @@ type CreateButtonProps =
 
 export default function Toolbar({
   count,
-  progress,
+  busy,
+  runSummary,
   onRefresh,
   onOpenTrash,
   onOpenSettings,
   ...createProps
 }: {
   count: number;
-  progress: RefreshProgress | null;
+  /** 有任何刷新（Refresh Run 或單一劇本刷新）進行中——沿用既有「一條
+   *  忙碌狀態」判準，不分是哪一種刷新觸發的（`App.tsx` 的 `refreshBusy`，
+   *  由 `updatingIds.size > 0` 導出）。 */
+  busy: boolean;
+  /** 上一輪 Refresh Run 結束後的「N 成功／M 失敗」摘要（T08／#196
+   *  P2）——`null` 表示還沒有任何一輪跑完過，或正在跑（`busy` 時優先
+   *  顯示「更新中」，不與舊摘要並存混淆）。 */
+  runSummary: string | null;
   onRefresh: () => void;
   /** 設定入口（Settings／#124）。**只有手機版傳**——需求方指定的位置是
    *  「主要工作區右上角」，而這個工具列正在那裡。桌面版不傳：那邊的
@@ -54,7 +58,6 @@ export default function Toolbar({
    *  重新整理」，兩種寬度共用同一段 JSX，不必分支。 */
   onOpenTrash: () => void;
 } & CreateButtonProps) {
-  const busy = progress !== null;
   return (
     <header className="toolbar">
       <div className="toolbar-row">
@@ -91,12 +94,14 @@ export default function Toolbar({
       </div>
       <div className="toolbar-row">
         <span className="caption">{count} 個劇本</span>
-        {/* 進度用 role="status"：螢幕閱讀器會唸出變化，而不是讓使用者
-            自己不斷回頭看畫面。 */}
-        {progress && (
-          <span className="caption progress" role="status">
-            {progress.current}/{progress.total}
-          </span>
+        {/* role="status"：螢幕閱讀器會唸出變化，而不是讓使用者自己不斷
+            回頭看畫面。進行中優先顯示「更新中」（不論是 Refresh Run 或
+            單一劇本刷新），跑完才換成上一輪的「N 成功／M 失敗」摘要——
+            兩者互斥，不會同時出現造成「這句話是現在還是剛才」的混淆。 */}
+        {busy ? (
+          <span className="caption progress" role="status">更新中……</span>
+        ) : runSummary && (
+          <span className="caption progress" role="status">{runSummary}</span>
         )}
       </div>
     </header>

@@ -24,6 +24,13 @@ import type {
  * 沒跑過 ≠ 收益率 0：拿 0 代入排序會讓一個未知的劇本插在虧損劇本前面，
  * 憑空得到一個它沒有的名次。同為 null 者維持傳入順序（`sort` 穩定），
  * 也就是後端的 created_at 順序。
+ *
+ * 一輪刷新（T08／#196，P1「更新中徽章」取代整段灰化鎖定）進行中的
+ * 劇本**照樣參與排序**，用它上一輪的 `best_return`（卡片同時顯示
+ * Updating 徽章與舊資料時間戳，見 `App.tsx`）——不像舊版
+ * `partitionByLock`（V4 跟進票／#136，已隨本票移除）那樣把它們獨立
+ * 排在後面。理由：使用者現在看得到、點得進去的正是這份舊資料，讓它
+ * 消失在清單順序裡才是誤導；新結果一到，它自然依新數字重新排列。
  */
 export function sortScenarios(rows: ScenarioSummary[]): ScenarioSummary[] {
   return [...rows].sort((a, b) => {
@@ -33,27 +40,6 @@ export function sortScenarios(rows: ScenarioSummary[]): ScenarioSummary[] {
     if (b.best_return === null) return -1;
     return b.best_return - a.best_return;
   });
-}
-
-/**
- * 整輪刷新期間的漸進解鎖（V4 跟進票／#136）：把清單拆成「已完成」（照
- * 舊規則排序）與「還在排隊／刷新中」兩段。
- *
- * 鎖著的那段刻意**不**參與排序：它們的 `best_return` 可能是上一輪的
- * 舊數字，跟著已完成的候選混排會讓一張還沒刷新完的卡片，單純因為舊
- * 收益率夠高就跑到清單很前面——使用者以為那是「這一輪」的名次，其實
- * 只是巧合。鎖著的維持傳入順序（佇列先後），已完成的才套用既有排序。
- */
-export function partitionByLock(
-  rows: ScenarioSummary[],
-  lockedIds: ReadonlySet<string>,
-): { unlocked: ScenarioSummary[]; locked: ScenarioSummary[] } {
-  const unlocked: ScenarioSummary[] = [];
-  const locked: ScenarioSummary[] = [];
-  for (const row of rows) {
-    (lockedIds.has(row.id) ? locked : unlocked).push(row);
-  }
-  return { unlocked: sortScenarios(unlocked), locked };
 }
 
 /**
@@ -229,4 +215,12 @@ export function failureLabel(stage: FailureStage): string {
     default:
       return "刷新失敗";
   }
+}
+
+/**
+ * 一輪刷新（T08／#196，P2）結束後的摘要——「N 成功／M 失敗」。全部
+ * 成功時省略失敗那一半（沒有失敗可講時不必硬湊一個「0 失敗」）。
+ */
+export function formatRunSummary(succeeded: number, failed: number): string {
+  return failed > 0 ? `${succeeded} 成功／${failed} 失敗` : `${succeeded} 成功`;
 }

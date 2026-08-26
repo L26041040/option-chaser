@@ -6,7 +6,8 @@
  * `natural_cost`（最差成交假設：買腿 Ask − 賣腿 Bid）。這裡只做挑選與
  * 併攏，不做任何加減。
  */
-import type { Candidate, StrategyResult } from "./api";
+import type { AnalysisView, Candidate, StrategyResult } from "./api";
+import { resolveCandidate } from "./api";
 
 /** 低於這個組數就警示——沿用 Streamlit 版 FB3-02（#45）的門檻。 */
 export const THIN_POOL = 3;
@@ -26,14 +27,26 @@ export interface ExpiryOption {
  *
  * 按鈕上的數字與點開後清單的第 1 名必然一致——兩者取自同一個陣列，
  * 而不是各自去別的欄位撈（`expiry_best` 是另一份，容易對不上）。
+ *
+ * T09（#191）：`expiry_top10[].candidate_keys` 現在只是 key 清單，這裡
+ * 透過 `view`（`resolveCandidate()`）解回完整內容——找不到（理論上
+ * 不會發生，key 一律來自同一次分析自己的 `candidate_pool`）就從清單裡
+ * 濾掉，不讓 `null` 混進 `Candidate[]`。
  */
-export function expiryOptions(result: StrategyResult): ExpiryOption[] {
-  return (result.expiry_top10 ?? []).map((group) => ({
-    expiry: group.expiry,
-    bestReturn: group.candidates[0]?.baseline_return ?? null,
-    count: validPairsForExpiry(result, group.expiry),
-    candidates: group.candidates,
-  }));
+export function expiryOptions(
+  view: AnalysisView, result: StrategyResult,
+): ExpiryOption[] {
+  return (result.expiry_top10 ?? []).map((group) => {
+    const candidates = group.candidate_keys
+      .map((key) => resolveCandidate(view, key))
+      .filter((c): c is Candidate => c !== null);
+    return {
+      expiry: group.expiry,
+      bestReturn: candidates[0]?.baseline_return ?? null,
+      count: validPairsForExpiry(result, group.expiry),
+      candidates,
+    };
+  });
 }
 
 /**

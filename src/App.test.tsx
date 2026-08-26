@@ -49,20 +49,85 @@ async function openCreateForm() {
  * 一個「不管問什麼都回同一份分析結果」的 stub 會讓劇本清單收到一份
  * 不是陣列的東西，測出來的東西也就不代表真實行為。
  */
+/** 依 URL 從路由表找最長前綴比對的回應；找不到就丟錯，跟 `mockRoutes`
+ *  本體同一套邏輯，抽出來給批次刷新的橋接邏輯共用。 */
+function _matchRoute(
+  routes: Record<string, Partial<Response> & { json: () => Promise<unknown> }>,
+  url: string,
+) {
+  const key = Object.keys(routes)
+    .sort((a, b) => b.length - a.length)
+    .find((k) => url.startsWith(k));
+  if (key === undefined) throw new Error(`測試沒有為 ${url} 準備回應`);
+  return { ok: true, status: 200, ...routes[key] };
+}
+
 function mockRoutes(
   routes: Record<string, Partial<Response> & { json: () => Promise<unknown> }>,
 ) {
-  const spy = vi.fn(async (url: string, _init?: RequestInit) => {
+  const spy = vi.fn(async (url: string, init?: RequestInit) => {
+    // T08／#196：開站與頂部刷新鈕改打這個批次端點。既有測試的路由表
+    // 多半是為了舊版逐一 `/refresh` 寫的（`"/api/scenarios/": {...}`
+    // 這種前綴、或明確的 `/api/scenarios/{id}/refresh`）——這裡把批次
+    // 請求拆回逐一查同一份路由表，沿用既有定義，不必為了這一票改寫
+    // 每一條既有測試的路由表。
+    if (url === "/api/scenarios/refresh-run" && init?.method === "POST") {
+      const body = JSON.parse(String(init.body ?? "{}")) as
+        { scenario_ids?: string[] | null };
+      const ids = body.scenario_ids ?? [];
+      const results = await Promise.all(ids.map(async (id) => {
+        const resp = _matchRoute(routes, `/api/scenarios/${id}/refresh`);
+        if (resp.ok === false) {
+          const body = await resp.json() as
+            { detail?: { stage?: string; message?: string } };
+          return { scenario_id: id, ok: false,
+                   stage: body.detail?.stage ?? null,
+                   message: body.detail?.message ?? "刷新失敗" };
+        }
+        return { scenario_id: id, ok: true, row: await resp.json() };
+      }));
+      return { ok: true, status: 200, json: async () => ({ results, remaining: [] }) };
+    }
     // 最長前綴優先：`/api/scenarios/s1/refresh` 也以 `/api/scenarios`
     // 開頭，先比對長的才不會被清單那條路由吃掉（V4／#52 起有子路徑）。
-    const key = Object.keys(routes)
-      .sort((a, b) => b.length - a.length)
-      .find((k) => url.startsWith(k));
-    if (key === undefined) throw new Error(`測試沒有為 ${url} 準備回應`);
-    return { ok: true, status: 200, ...routes[key] };
+    return _matchRoute(routes, url);
   });
   vi.stubGlobal("fetch", spy);
   return spy;
+}
+
+/**
+ * 讓自訂 fetch handler 也吃得懂批次刷新端點（T08／#196）——把
+ * `POST /api/scenarios/refresh-run` 拆回逐一呼叫 `handler` 查
+ * `/api/scenarios/{id}/refresh`，其餘 URL 原樣轉給 `handler`。既有
+ * 測試的 handler 多半是為了舊版逐一 `/refresh` 寫的，套上這層薄殼就能
+ * 繼續沿用，不必為了這一票重寫每一條測試的路由邏輯。
+ */
+type MockResponse = { ok: boolean; status: number; json: () => Promise<unknown> };
+
+function withRefreshRunBridge(
+  handler: (url: string, init?: RequestInit) => Promise<MockResponse>,
+): (url: string, init?: RequestInit) => Promise<MockResponse> {
+  return async (url: string, init?: RequestInit) => {
+    if (url === "/api/scenarios/refresh-run" && init?.method === "POST") {
+      const body = JSON.parse(String(init.body ?? "{}")) as
+        { scenario_ids?: string[] | null };
+      const ids = body.scenario_ids ?? [];
+      const results = await Promise.all(ids.map(async (id) => {
+        const resp = await handler(`/api/scenarios/${id}/refresh`);
+        if (resp.ok === false) {
+          const body = await resp.json() as
+            { detail?: { stage?: string; message?: string } };
+          return { scenario_id: id, ok: false,
+                   stage: body.detail?.stage ?? null,
+                   message: body.detail?.message ?? "刷新失敗" };
+        }
+        return { scenario_id: id, ok: true, row: await resp.json() };
+      }));
+      return { ok: true, status: 200, json: async () => ({ results, remaining: [] }) };
+    }
+    return handler(url, init);
+  };
 }
 
 afterEach(() => {
@@ -107,19 +172,19 @@ describe("劇本庫（V3／#51）", () => {
     const spy = mockRoutes({
       "/api/scenarios": { json: async () => [] },
     });
-    spy.mockImplementation(async (url: string, init?: RequestInit) => {
+    spy.mockImplementation(withRefreshRunBridge(async (url, init) => {
       if (url === "/api/scenarios" && init?.method === "POST") {
         return { ok: true, status: 201, json: async () => created };
       }
       if (url.endsWith("/refresh")) {
-        // 建立後的刷新（V4／#52）：這個標的目前抓不到報價，因此卡片
-        // 上的收益率仍是「—」——本測試要驗的正是那個。
+        // 建立後的刷新（P4：只刷新新建立的這一個）：這個標的目前抓不到
+        // 報價，因此卡片上的收益率仍是「—」——本測試要驗的正是那個。
         return { ok: false, status: 502,
                  json: async () => ({ detail: { stage: "fetch",
                                                 message: "抓不到報價" } }) };
       }
       return { ok: true, status: 200, json: async () => [] };
-    });
+    }));
     render(<App />);
 
     await openCreateForm();
@@ -135,7 +200,7 @@ describe("劇本庫（V3／#51）", () => {
 
   it("封存後卡片從清單消失", async () => {
     const spy = mockRoutes({ "/api/scenarios": { json: async () => [row] } });
-    spy.mockImplementation(async (url: string) => {
+    spy.mockImplementation(withRefreshRunBridge(async (url) => {
       if (url.endsWith("/archive")) {
         return { ok: true, status: 200, json: async () => ({ archived: true }) };
       }
@@ -143,7 +208,7 @@ describe("劇本庫（V3／#51）", () => {
         return { ok: true, status: 200, json: async () => row };
       }
       return { ok: true, status: 200, json: async () => [row] };
-    });
+    }));
     render(<App />);
 
     // 開站那輪批次刷新跑完再操作——否則背景那輪還在跑時測試就結束，
@@ -159,7 +224,7 @@ describe("劇本庫（V3／#51）", () => {
 
   it("封存失敗時卡片回到清單上，並說明原因", async () => {
     const spy = mockRoutes({ "/api/scenarios": { json: async () => [row] } });
-    spy.mockImplementation(async (url: string) => {
+    spy.mockImplementation(withRefreshRunBridge(async (url) => {
       if (url.endsWith("/archive")) {
         return { ok: false, status: 404,
                  json: async () => ({ detail: "劇本不存在" }) };
@@ -168,7 +233,7 @@ describe("劇本庫（V3／#51）", () => {
         return { ok: true, status: 200, json: async () => row };
       }
       return { ok: true, status: 200, json: async () => [row] };
-    });
+    }));
     render(<App />);
 
     // 開站那輪批次刷新跑完再操作，理由同上一個測試案例。
@@ -199,7 +264,7 @@ describe("垃圾桶（TR6／#91）", () => {
     return mockRoutes({
       "/api/scenarios": { json: async () => rows },
       "/api/scenarios?include_archived=true": { json: async () => [] },
-    }).mockImplementation(async (url: string) => {
+    }).mockImplementation(withRefreshRunBridge(async (url) => {
       if (url.endsWith("/refresh")) {
         const id = url.split("/").at(-2);
         return { ok: true, status: 200,
@@ -217,7 +282,7 @@ describe("垃圾桶（TR6／#91）", () => {
         return { ok: true, status: 200, json: async () => [] };
       }
       return { ok: true, status: 200, json: async () => rows };
-    });
+    }));
   }
 
   it("點垃圾桶入口進到垃圾桶畫面，返回鍵回到劇本庫", async () => {
@@ -236,7 +301,7 @@ describe("垃圾桶（TR6／#91）", () => {
 
   it("垃圾桶還原後回到劇本庫，那個劇本重新出現在主清單（TR4／#92）", async () => {
     const archivedRow = { ...rowB, archived_at: "2026-08-05T00:00:00+00:00" };
-    mockRoutes({}).mockImplementation(async (url: string) => {
+    mockRoutes({}).mockImplementation(withRefreshRunBridge(async (url) => {
       if (url === "/api/scenarios?include_archived=true") {
         return { ok: true, status: 200, json: async () => [archivedRow] };
       }
@@ -250,7 +315,7 @@ describe("垃圾桶（TR6／#91）", () => {
         return { ok: true, status: 200, json: async () => [rowA] };
       }
       return { ok: true, status: 200, json: async () => [rowA] };
-    });
+    }));
     render(<App />);
     await screen.findByText("TLT");
 
@@ -346,7 +411,7 @@ describe("樂觀封存的併發（V3／#51 檢視回饋）", () => {
   it("A 封存失敗回滾時，不會讓已成功封存的 B 復活", async () => {
     const rowB = { ...row, id: "s2", symbol: "SPY" };
     let failA: (() => void) | null = null;
-    const spy = vi.fn(async (url: string) => {
+    const spy = vi.fn(withRefreshRunBridge(async (url: string) => {
       if (url.includes("/s1/archive")) {
         // A 停在半空中，讓 B 先完成——回滾若存整份陣列就會蓋回 B
         await new Promise<void>((resolve) => { failA = resolve; });
@@ -361,7 +426,7 @@ describe("樂觀封存的併發（V3／#51 檢視回饋）", () => {
                  json: async () => (id === "s1" ? row : rowB) };
       }
       return { ok: true, status: 200, json: async () => [row, rowB] };
-    });
+    }));
     vi.stubGlobal("fetch", spy);
     render(<App />);
 
@@ -382,7 +447,7 @@ describe("樂觀封存的併發（V3／#51 檢視回饋）", () => {
   });
 });
 
-describe("刷新與進度（V4／#52）", () => {
+describe("刷新與進度（T08／#196，接上 Refresh Run）", () => {
   const base = sampleRow as unknown as Record<string, unknown>;
   const card = (id: string, symbol: string, extra: Record<string, unknown> = {}) => ({
     ...base, id, symbol, target_price: 120, target_month: "2028-05",
@@ -391,16 +456,30 @@ describe("刷新與進度（V4／#52）", () => {
   });
 
   /**
-   * 劇本庫的路由：GET 清單、POST 單劇本刷新。`refresh` 由各測試決定
-   * 每個 id 得到什麼回應（成功／失敗／停在半空中）。
+   * 劇本庫的路由：GET 清單、POST 批次刷新（Refresh Run）。`refresh` 由
+   * 各測試決定每個送進去的 id 得到什麼結果（成功／失敗／停在半空中）
+   * ——這裡把 `scenario_ids` 逐一丟給它、組回 `{results, remaining}`
+   * 這份契約形狀，測試本身不必自己組裝。`remaining` 固定回空陣列
+   * （單次呼叫處理完，Continuation 相關行為由下面獨立測試涵蓋）。
    */
   function mockLibrary(
     rows: Record<string, unknown>[],
-    refresh: (id: string) => Promise<Partial<Response> & { json: () => Promise<unknown> }>,
+    refresh: (id: string) => Promise<
+      { ok: true; row: Record<string, unknown> } |
+      { ok: false; stage: string; message: string }>,
   ) {
-    const spy = vi.fn(async (url: string, _init?: RequestInit) => {
-      const hit = /\/api\/scenarios\/([^/]+)\/refresh$/.exec(url);
-      if (hit) return refresh(hit[1]);
+    const spy = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url === "/api/scenarios/refresh-run" && init?.method === "POST") {
+        const body = JSON.parse(String(init.body ?? "{}")) as
+          { scenario_ids?: string[] | null };
+        const ids = body.scenario_ids ?? [];
+        const results = await Promise.all(ids.map(async (id) => {
+          const outcome = await refresh(id);
+          return { scenario_id: id, ...outcome };
+        }));
+        return { ok: true, status: 200,
+                 json: async () => ({ results, remaining: [] }) };
+      }
       if (url === "/api/scenarios") {
         return { ok: true, status: 200, json: async () => rows };
       }
@@ -410,18 +489,27 @@ describe("刷新與進度（V4／#52）", () => {
     return spy;
   }
 
-  const ok = (row: Record<string, unknown>) =>
-    ({ ok: true, status: 200, json: async () => row });
-  const fail = (status: number, stage: string, message: string) =>
-    ({ ok: false, status, json: async () => ({ detail: { stage, message } }) });
+  const ok = (row: Record<string, unknown>) => ({ ok: true as const, row });
+  const fail = (stage: string, message: string) =>
+    ({ ok: false as const, stage, message });
 
-  function refreshCalls(spy: ReturnType<typeof vi.fn>) {
+  /** 每次 Refresh Run 呼叫送出的 `scenario_ids`，攤平成逐一 id 的清單
+   *  ——跟舊版「逐一 `/refresh` 呼叫」的斷言風格對齊，方便比對。 */
+  function refreshedIds(spy: ReturnType<typeof vi.fn>) {
     return spy.mock.calls
-      .map(([url]) => /\/api\/scenarios\/([^/]+)\/refresh$/.exec(String(url))?.[1])
-      .filter((id): id is string => id !== undefined);
+      .filter(([url, init]) =>
+        url === "/api/scenarios/refresh-run" && (init as RequestInit)?.method === "POST")
+      .flatMap(([, init]) =>
+        (JSON.parse(String((init as RequestInit).body ?? "{}")).scenario_ids ?? []) as string[]);
   }
 
-  it("開站後逐一刷新每個劇本，卡片換成刷新後的數字", async () => {
+  function runCallCount(spy: ReturnType<typeof vi.fn>) {
+    return spy.mock.calls.filter(([url, init]) =>
+      url === "/api/scenarios/refresh-run" && (init as RequestInit)?.method === "POST").length;
+  }
+
+  it("開站後批次刷新，卡片換成刷新後的數字，一次請求處理完不是逐一各打一次",
+     async () => {
     const spy = mockLibrary(
       [card("s1", "TLT"), card("s2", "SPY")],
       async (id) => ok(card(id, id === "s1" ? "TLT" : "SPY", {
@@ -433,32 +521,31 @@ describe("刷新與進度（V4／#52）", () => {
 
     expect(await screen.findByText("250.0%")).toBeInTheDocument();
     expect(await screen.findByText("50.0%")).toBeInTheDocument();
-    expect(refreshCalls(spy).sort()).toEqual(["s1", "s2"]);
+    expect(refreshedIds(spy).sort()).toEqual(["s1", "s2"]);
+    expect(runCallCount(spy)).toBe(1);
   });
 
-  it("刷新中顯示第幾個／共幾個，完成後收起", async () => {
-    let releaseFirst: (() => void) | null = null;
-    const spy = mockLibrary(
+  it("刷新中顯示「更新中……」，完成後顯示「N 成功」摘要", async () => {
+    // 兩個 id 各自呼叫一次 `refresh`，各自要有自己的 resolver——共用
+    // 同一個變數會被後呼叫的那個覆蓋掉，`releaseAll` 收集全部再一次放行。
+    const releasers: (() => void)[] = [];
+    mockLibrary(
       [card("s1", "TLT"), card("s2", "SPY")],
       async (id) => {
-        if (id === "s1") {
-          await new Promise<void>((resolve) => { releaseFirst = resolve; });
-        }
-        return ok(card(id, "X", { best_return: 1, latest_analyzed_at: "2026-08-04T09:30:00+00:00" }));
+        await new Promise<void>((resolve) => { releasers.push(resolve); });
+        return ok(card(id, "X", { best_return: 1,
+                                  latest_analyzed_at: "2026-08-04T09:30:00+00:00" }));
       },
     );
     render(<App />);
 
-    // 正在跑第一個、總共 2 個
-    expect(await screen.findByRole("status")).toHaveTextContent("1/2");
-    // 逐一刷新，不是同時打兩個請求——第一個沒回來前不該有第二個
-    expect(refreshCalls(spy)).toEqual(["s1"]);
+    expect(await screen.findByRole("status")).toHaveTextContent("更新中");
+    await waitFor(() => expect(releasers).toHaveLength(2));
 
-    releaseFirst!();
+    releasers.forEach((release) => release());
 
     expect(await screen.findByText("重新整理")).toBeEnabled();
-    expect(screen.queryByRole("status")).not.toBeInTheDocument();
-    expect(refreshCalls(spy)).toEqual(["s1", "s2"]);
+    expect(await screen.findByRole("status")).toHaveTextContent("2 成功");
   });
 
   it("刷新進行中不能再按一次刷新", async () => {
@@ -479,52 +566,67 @@ describe("刷新與進度（V4／#52）", () => {
       ok(card(id, "TLT", { best_return: 1 })));
     render(<App />);
     await screen.findByText("100.0%");
-    expect(refreshCalls(spy)).toEqual(["s1"]);
+    expect(runCallCount(spy)).toBe(1);
 
     await userEvent.click(screen.getByRole("button", { name: "重新整理" }));
 
-    expect(refreshCalls(spy)).toEqual(["s1", "s1"]);
+    await waitFor(() => expect(runCallCount(spy)).toBe(2));
+    expect(refreshedIds(spy)).toEqual(["s1", "s1"]);
   });
 
-  it("一個劇本失敗不會中斷其他劇本的刷新", async () => {
+  it("一個劇本失敗不會中斷其他劇本的刷新——同一次批次請求裡的部分成功", async () => {
     const spy = mockLibrary(
       [card("s1", "TLT"), card("s2", "SPY")],
       async (id) => id === "s1"
-        ? fail(502, "fetch", "抓不到 TLT 的報價：來源無回應")
+        ? fail("fetch", "抓不到 TLT 的報價：來源無回應")
         : ok(card(id, "SPY", { best_return: 0.8,
                                latest_analyzed_at: "2026-08-04T09:30:00+00:00" })),
     );
     render(<App />);
 
     expect(await screen.findByText("80.0%")).toBeInTheDocument();
-    expect(refreshCalls(spy)).toEqual(["s1", "s2"]);
+    expect(refreshedIds(spy).sort()).toEqual(["s1", "s2"]);
+    expect(runCallCount(spy)).toBe(1);   // 兩個劇本同一次批次請求
     expect(screen.getByText(/抓不到報價/)).toBeInTheDocument();
     expect(screen.getByText(/來源無回應/)).toBeInTheDocument();
   });
 
   it("分析失敗與抓不到報價分屬不同訊息", async () => {
     mockLibrary([card("s1", "TLT")], async () =>
-      fail(500, "analyze", "分析失敗：boom"));
+      fail("analyze", "分析失敗：boom"));
     render(<App />);
 
     expect(await screen.findByText(/分析沒跑完/)).toBeInTheDocument();
     expect(screen.queryByText(/抓不到報價/)).not.toBeInTheDocument();
   });
 
-  it("重試只重打那一個劇本，成功後失敗訊息消失", async () => {
-    let firstTry = true;
-    const spy = mockLibrary(
-      [card("s1", "TLT"), card("s2", "SPY")],
-      async (id) => {
-        if (id === "s1" && firstTry) {
-          firstTry = false;
-          return fail(502, "fetch", "抓不到 TLT 的報價：來源無回應");
-        }
-        return ok(card(id, id === "s1" ? "TLT" : "SPY", {
-          best_return: id === "s1" ? 1.1 : 0.8,
-          latest_analyzed_at: "2026-08-04T09:30:00+00:00" }));
-      },
-    );
+  it("重試走既有的單一劇本刷新端點，不是 Refresh Run；成功後失敗訊息消失",
+     async () => {
+    const spy = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url === "/api/scenarios") {
+        return { ok: true, status: 200,
+                 json: async () => [card("s1", "TLT"), card("s2", "SPY")] };
+      }
+      if (url === "/api/scenarios/refresh-run" && init?.method === "POST") {
+        return { ok: true, status: 200, json: async () => ({
+          results: [
+            { scenario_id: "s1", ok: false, stage: "fetch",
+             message: "抓不到 TLT 的報價：來源無回應" },
+            { scenario_id: "s2", ok: true,
+             row: card("s2", "SPY", { best_return: 0.8,
+                                      latest_analyzed_at: "2026-08-04T09:30:00+00:00" }) },
+          ],
+          remaining: [],
+        }) };
+      }
+      if (url === "/api/scenarios/s1/refresh") {
+        return { ok: true, status: 200,
+                 json: async () => card("s1", "TLT", { best_return: 1.1,
+                   latest_analyzed_at: "2026-08-04T09:30:00+00:00" }) };
+      }
+      throw new Error(`測試沒有為 ${url} 準備回應`);
+    });
+    vi.stubGlobal("fetch", spy);
     render(<App />);
     await screen.findByText(/抓不到報價/);
 
@@ -533,8 +635,12 @@ describe("刷新與進度（V4／#52）", () => {
 
     expect(await screen.findByText("110.0%")).toBeInTheDocument();
     expect(screen.queryByText(/抓不到報價/)).not.toBeInTheDocument();
-    // 重試就是重試那一個，不是又刷一輪全部
-    expect(refreshCalls(spy)).toEqual(["s1", "s2", "s1"]);
+    // 重試打的是單一劇本端點，不是又發一次批次請求
+    const retryCalls = spy.mock.calls.filter(([u]) => u === "/api/scenarios/s1/refresh");
+    expect(retryCalls).toHaveLength(1);
+    const runCalls = spy.mock.calls.filter(([u, i]) =>
+      u === "/api/scenarios/refresh-run" && (i as RequestInit)?.method === "POST");
+    expect(runCalls).toHaveLength(1);   // 只有開站那一次，重試沒有另外打批次端點
   });
 
   it("卡片上沒有第四種刷新管道——只有失敗時的重試", async () => {
@@ -560,94 +666,155 @@ describe("刷新與進度（V4／#52）", () => {
     render(<App />);
     await screen.findByText(/還沒有劇本/);
 
-    expect(refreshCalls(spy)).toEqual([]);
+    expect(runCallCount(spy)).toBe(0);
     expect(screen.queryByRole("status")).not.toBeInTheDocument();
   });
 
-  describe("整輪刷新的漸進解鎖與反灰（V4 跟進票／#136）", () => {
-    it("開始時全部反灰＋禁止點入；輪到的那個完成就立刻解鎖，其餘的還鎖著",
-       async () => {
-      // 兩個都各自卡住，才能精確控制「這一刻誰完成了、誰還沒」——沒有
-      // 人工延遲的話，佇列可能在斷言跑到之前就整個處理完，測不出
-      // 「s1 完成的當下 s2 依然鎖著」這個中間狀態。
-      let releaseFirst: (() => void) | null = null;
-      let releaseSecond: (() => void) | null = null;
-      mockLibrary(
-        [card("s1", "TLT"), card("s2", "SPY")],
-        async (id) => {
-          await new Promise<void>((resolve) => {
-            if (id === "s1") releaseFirst = resolve;
-            else releaseSecond = resolve;
-          });
-          return ok(card(id, id === "s1" ? "TLT" : "SPY",
-            { best_return: 1, latest_analyzed_at: "2026-08-04T09:30:00+00:00" }));
-        },
-      );
+  describe("更新中徽章與逐批落地（P1／P2 首次引入；PC-05／#202 恢復反灰＋" +
+          "不可點入）", () => {
+    it("更新中的卡片反灰、href 仍在；結果透過 Continuation 逐批落地，不必等" +
+       "全部完成", async () => {
+      // 第一次呼叫（scenario_ids=[s1,s2]）回 s1 成功＋remaining=[s2]；
+      // 第二次呼叫（scenario_ids=[s2]，App 收到 remaining 後自動接續）
+      // 卡住，讓測試能精確控制「s1 已落地、s2 還在更新中」這個中間狀態。
+      let releaseSecondCall: (() => void) | null = null;
+      const spy = vi.fn(async (url: string, init?: RequestInit) => {
+        if (url === "/api/scenarios") {
+          return { ok: true, status: 200,
+                   json: async () => [card("s1", "TLT"), card("s2", "SPY")] };
+        }
+        if (url === "/api/scenarios/refresh-run" && init?.method === "POST") {
+          const body = JSON.parse(String(init.body ?? "{}")) as { scenario_ids?: string[] };
+          const ids = body.scenario_ids ?? [];
+          if (ids.length === 2) {
+            return { ok: true, status: 200, json: async () => ({
+              results: [{ scenario_id: "s1", ok: true,
+                         row: card("s1", "TLT", { best_return: 1,
+                           latest_analyzed_at: "2026-08-04T09:30:00+00:00" }) }],
+              remaining: ["s2"],
+            }) };
+          }
+          await new Promise<void>((resolve) => { releaseSecondCall = resolve; });
+          return { ok: true, status: 200, json: async () => ({
+            results: [{ scenario_id: "s2", ok: true,
+                       row: card("s2", "SPY", { best_return: 0.5,
+                         latest_analyzed_at: "2026-08-04T09:30:00+00:00" }) }],
+            remaining: [],
+          }) };
+        }
+        throw new Error(`測試沒有為 ${url} 準備回應`);
+      });
+      vi.stubGlobal("fetch", spy);
       render(<App />);
 
-      // 兩張卡在整輪跑完前都還沒有 `href`——沒有 `href` 的 `<a>` 不是
-      // `role=link`，這正是「禁止點入」的機制本身，不必另外斷言點擊
-      // 沒有反應。
-      await screen.findByText("TLT");
-      expect(screen.queryByRole("link", { name: /TLT/ })).not.toBeInTheDocument();
-      expect(screen.queryByRole("link", { name: /SPY/ })).not.toBeInTheDocument();
-      expect(screen.getAllByText("更新中")).toHaveLength(2);
+      // s1 已經逐批落地（不必等 s2 的 Continuation 呼叫也回來）；s1 的
+      // href 正常保留，s2（還在更新中）反灰＋鎖定。
+      expect(await screen.findByText("100.0%")).toBeInTheDocument();
+      expect(screen.getByRole("link", { name: /TLT/ })).toBeInTheDocument();
+      const spyLink = screen.getByRole("link", { name: /SPY/ });
+      expect(spyLink).toBeInTheDocument();
+      expect(spyLink.closest(".compact-card")).toHaveClass("locked");
+      expect(screen.getByText("更新中")).toBeInTheDocument();   // 只有 s2
 
-      releaseFirst!();
+      releaseSecondCall!();
 
-      // s1 完成、立刻解鎖可點；s2 還在排隊（`releaseSecond` 還沒放行），
-      // 維持反灰＋禁止點入。
-      expect(await screen.findByRole("link", { name: /TLT/ })).toBeInTheDocument();
-      expect(screen.queryByRole("link", { name: /SPY/ })).not.toBeInTheDocument();
-      expect(screen.getAllByText("更新中")).toHaveLength(1);
+      expect(await screen.findByText("50.0%")).toBeInTheDocument();
+      expect(screen.queryByText("更新中")).not.toBeInTheDocument();
+      expect(spyLink.closest(".compact-card")).not.toHaveClass("locked");
+    });
 
-      releaseSecond!();
+    it("2026-08-26 真機驗收：A／B／C 三張同時更新，逐張完成、逐張立即" +
+       "可用，不必等最後一張；中間那張失敗只影響它自己", async () => {
+      // 對齊真實後端的 Refresh Run Group Limit（預設 1）：三個不同
+      // symbol 分屬三個分組，每次回應只完成一組——第一次呼叫帶三個
+      // id 回 A 的結果＋remaining=[B,C]；第二次呼叫帶 [B,C] 回 B 的
+      // 結果（刻意失敗）＋remaining=[C]；第三次呼叫帶 [C] 回 C 的結果。
+      // 第二、三次呼叫各自卡住，讓測試能精確控制每個中間狀態。
+      let releaseSecondCall: (() => void) | null = null;
+      let releaseThirdCall: (() => void) | null = null;
+      const spy = vi.fn(async (url: string, init?: RequestInit) => {
+        if (url === "/api/scenarios") {
+          return { ok: true, status: 200,
+                   json: async () => [card("a", "AAA"), card("b", "BBB"),
+                                       card("c", "CCC")] };
+        }
+        if (url === "/api/scenarios/refresh-run" && init?.method === "POST") {
+          const body = JSON.parse(String(init.body ?? "{}")) as { scenario_ids?: string[] };
+          const ids = body.scenario_ids ?? [];
+          if (ids.length === 3) {
+            return { ok: true, status: 200, json: async () => ({
+              results: [{ scenario_id: "a", ok: true,
+                         row: card("a", "AAA", { best_return: 1,
+                           latest_analyzed_at: "2026-08-26T09:30:00+00:00" }) }],
+              remaining: ["b", "c"],
+            }) };
+          }
+          if (ids.length === 2) {
+            await new Promise<void>((resolve) => { releaseSecondCall = resolve; });
+            return { ok: true, status: 200, json: async () => ({
+              results: [{ scenario_id: "b", ok: false,
+                         stage: "fetch", message: "抓不到 BBB 的報價" }],
+              remaining: ["c"],
+            }) };
+          }
+          await new Promise<void>((resolve) => { releaseThirdCall = resolve; });
+          return { ok: true, status: 200, json: async () => ({
+            results: [{ scenario_id: "c", ok: true,
+                       row: card("c", "CCC", { best_return: 0.25,
+                         latest_analyzed_at: "2026-08-26T09:30:00+00:00" }) }],
+            remaining: [],
+          }) };
+        }
+        throw new Error(`測試沒有為 ${url} 準備回應`);
+      });
+      vi.stubGlobal("fetch", spy);
+      render(<App />);
 
-      // 整輪跑完後兩張都解鎖。
-      await screen.findByRole("link", { name: /SPY/ });
+      // 第一輪回應到位：A 立刻落地解鎖，B／C 這時都還鎖著、都還沒有
+      // 各自的結果——不是「A 完成、B 也順便跟著做了一半」。
+      expect(await screen.findByText("100.0%")).toBeInTheDocument();
+      const aLink = screen.getByRole("link", { name: /AAA/ });
+      expect(aLink.closest(".compact-card")).not.toHaveClass("locked");
+      const bLink = screen.getByRole("link", { name: /BBB/ });
+      const cLink = screen.getByRole("link", { name: /CCC/ });
+      expect(bLink.closest(".compact-card")).toHaveClass("locked");
+      expect(cLink.closest(".compact-card")).toHaveClass("locked");
+
+      releaseSecondCall!();
+
+      // 第二輪回應到位：B 解鎖，但這次是失敗——失敗一樣要立刻解鎖、
+      // 顯示原因，不會因為在等 C 而卡住；C 不必等 B 這輪結束，此時仍
+      // 單純維持鎖定，不受 B 失敗影響。
+      await screen.findByText(/抓不到 BBB 的報價/);
+      expect(bLink.closest(".compact-card")).not.toHaveClass("locked");
+      expect(cLink.closest(".compact-card")).toHaveClass("locked");
+      // A 的資料與解鎖狀態完全不受 B 這輪影響。
+      expect(screen.getByText("100.0%")).toBeInTheDocument();
+      expect(aLink.closest(".compact-card")).not.toHaveClass("locked");
+
+      releaseThirdCall!();
+
+      // 第三輪回應到位：C 也立刻解鎖顯示新資料，三張全部完成。
+      expect(await screen.findByText("25.0%")).toBeInTheDocument();
+      expect(cLink.closest(".compact-card")).not.toHaveClass("locked");
       expect(screen.queryByText("更新中")).not.toBeInTheDocument();
     });
 
-    it("失敗的那個也會解鎖，不會永久反灰——沿用既有黃燈語意", async () => {
+    it("失敗的那個也會脫離更新中、立刻解鎖，不會永久卡住——沿用既有黃燈語意",
+       async () => {
       mockLibrary(
         [card("s1", "TLT")],
-        async () => fail(502, "fetch", "抓不到報價"),
+        async () => fail("fetch", "抓不到報價"),
       );
       render(<App />);
 
       // 失敗結束後：不是「更新中」，也不是「已過期」——是既有的刷新
-      // 失敗分層指引與重試入口，卡片本身回到可點狀態。
+      // 失敗分層指引與重試入口，卡片解鎖、恢復可點。
       await screen.findByText(/抓不到報價/);
       expect(screen.queryByText("更新中")).not.toBeInTheDocument();
-      expect(screen.getByRole("link", { name: /TLT/ })).toBeInTheDocument();
-    });
-
-    it("完成的劇本立刻用最新收益率參與已完成區排序，不必等整輪跑完",
-       async () => {
-      let releaseB: (() => void) | null = null;
-      mockLibrary(
-        [card("s1", "A", { best_return: 0.5 }),
-         card("s2", "B", { best_return: 0.5 })],
-        async (id) => {
-          if (id === "s1") return ok(card("s1", "A", { best_return: 2.38 }));
-          await new Promise<void>((resolve) => { releaseB = resolve; });
-          return ok(card("s2", "B", { best_return: 1.8 }));
-        },
-      );
-      render(<App />);
-
-      // A 完成、B 還鎖著：已完成區只有 A（見 `partitionByLock` 的純
-      // 函式測試覆蓋精確排序規則，這裡只斷言「B 這一刻還鎖著、進不去
-      // 已完成區」這個整合層面的事）。
-      expect(await screen.findByText("238.0%")).toBeInTheDocument();
-      expect(screen.getAllByText("更新中")).toHaveLength(1);
-
-      releaseB!();
-
-      // C（此處是 B）完成後兩者都在已完成區，依收益率排序——這裡只
-      // 驗證兩個數字都出現且不再反灰，精確順序交給 `scenarios.test.ts`。
-      expect(await screen.findByText("180.0%")).toBeInTheDocument();
-      expect(screen.queryByText("更新中")).not.toBeInTheDocument();
+      const link = screen.getByRole("link", { name: /TLT/ });
+      expect(link).toBeInTheDocument();
+      expect(link.closest(".compact-card")).not.toHaveClass("locked");
     });
   });
 });
@@ -660,7 +827,44 @@ describe("過期劇本不再進入批次刷新（#68）", () => {
     latest_analyzed_at: null, best_return: null, ...extra,
   });
 
-  it("開站批次刷新跳過已過期的劇本，分母也不算它", async () => {
+  function mockLibrary(
+    rows: Record<string, unknown>[],
+    refresh: (id: string) => Promise<
+      { ok: true; row: Record<string, unknown> } |
+      { ok: false; stage: string; message: string }>,
+  ) {
+    const spy = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url === "/api/scenarios/refresh-run" && init?.method === "POST") {
+        const body = JSON.parse(String(init.body ?? "{}")) as
+          { scenario_ids?: string[] | null };
+        const ids = body.scenario_ids ?? [];
+        const results = await Promise.all(ids.map(async (id) => {
+          const outcome = await refresh(id);
+          return { scenario_id: id, ...outcome };
+        }));
+        return { ok: true, status: 200,
+                 json: async () => ({ results, remaining: [] }) };
+      }
+      if (url === "/api/scenarios") {
+        return { ok: true, status: 200, json: async () => rows };
+      }
+      throw new Error(`測試沒有為 ${url} 準備回應`);
+    });
+    vi.stubGlobal("fetch", spy);
+    return spy;
+  }
+
+  const ok = (row: Record<string, unknown>) => ({ ok: true as const, row });
+
+  function refreshedIds(spy: ReturnType<typeof vi.fn>) {
+    return spy.mock.calls
+      .filter(([url, init]) =>
+        url === "/api/scenarios/refresh-run" && (init as RequestInit)?.method === "POST")
+      .flatMap(([, init]) =>
+        (JSON.parse(String((init as RequestInit).body ?? "{}")).scenario_ids ?? []) as string[]);
+  }
+
+  it("開站批次刷新跳過已過期的劇本，範圍從一開始就不含它", async () => {
     const spy = mockLibrary(
       [card("s1", "OLD", { expired: true }), card("s2", "SPY", {
         target_month: "2028-05", expired: false })],
@@ -671,19 +875,21 @@ describe("過期劇本不再進入批次刷新（#68）", () => {
     render(<App />);
 
     expect(await screen.findByText("50.0%")).toBeInTheDocument();
-    // 過期的那個從沒被排進去——佇列只跑了 s2
-    expect(refreshCalls(spy)).toEqual(["s2"]);
+    // 過期的那個從沒被排進去——批次請求只帶 s2
+    expect(refreshedIds(spy)).toEqual(["s2"]);
   });
 
   it("已過期的劇本顯示標記，且不落在「尚未分析」的樣子上", async () => {
-    mockLibrary([card("s1", "OLD", { expired: true })], async () => ok({}));
+    mockLibrary([card("s1", "OLD", { expired: true })], async () =>
+      ok({}) as never);
     render(<App />);
 
     expect(await screen.findByText("已過期，不再刷新")).toBeInTheDocument();
     expect(screen.queryByText("尚未分析")).toBeInTheDocument();  // 沒分析過，兩件事並存
   });
 
-  it("建立劇本後刷新，清單裡既有的過期劇本不會被排進那一輪", async () => {
+  it("建立劇本後刷新只帶新建立的那一個（P4），既有的過期劇本不會被排進去",
+     async () => {
     const created = card("s2", "SPY", { target_month: "2028-05", expired: false,
                                         latest_analyzed_at: null, best_return: null });
     const spy = vi.fn(async (url: string, init?: RequestInit) => {
@@ -693,10 +899,14 @@ describe("過期劇本不再進入批次刷新（#68）", () => {
       if (url === "/api/scenarios") {
         return { ok: true, status: 200, json: async () => [card("s1", "OLD", { expired: true })] };
       }
-      if (url.endsWith("/refresh")) {
-        const id = url.split("/").at(-2);
-        if (id === "s1") throw new Error("過期劇本不該被刷新");
-        return { ok: true, status: 200, json: async () => created };
+      if (url === "/api/scenarios/refresh-run" && init?.method === "POST") {
+        const body = JSON.parse(String(init.body ?? "{}")) as { scenario_ids?: string[] };
+        const ids = body.scenario_ids ?? [];
+        if (ids.includes("s1")) throw new Error("過期劇本不該被排進批次刷新");
+        return { ok: true, status: 200, json: async () => ({
+          results: ids.map((id) => ({ scenario_id: id, ok: true, row: created })),
+          remaining: [],
+        }) };
       }
       throw new Error(`測試沒有為 ${url} 準備回應`);
     });
@@ -710,33 +920,13 @@ describe("過期劇本不再進入批次刷新（#68）", () => {
     await userEvent.click(screen.getByRole("button", { name: "建立" }));
 
     expect(await screen.findByText("SPY")).toBeInTheDocument();
-    expect(refreshCalls(spy)).toEqual(["s2"]);
+    const createRunCall = spy.mock.calls.find(([u, i]) =>
+      u === "/api/scenarios/refresh-run" && (i as RequestInit)?.method === "POST"
+      && JSON.parse(String((i as RequestInit).body ?? "{}")).scenario_ids?.includes("s2"));
+    expect(createRunCall).toBeDefined();
+    const ids = JSON.parse(String((createRunCall![1] as RequestInit).body ?? "{}")).scenario_ids;
+    expect(ids).toEqual(["s2"]);   // 只有新建立的這個，不含既有的過期劇本
   });
-
-  function mockLibrary(
-    rows: Record<string, unknown>[],
-    refresh: (id: string) => Promise<Partial<Response> & { json: () => Promise<unknown> }>,
-  ) {
-    const spy = vi.fn(async (url: string, _init?: RequestInit) => {
-      const hit = /\/api\/scenarios\/([^/]+)\/refresh$/.exec(url);
-      if (hit) return refresh(hit[1]);
-      if (url === "/api/scenarios") {
-        return { ok: true, status: 200, json: async () => rows };
-      }
-      throw new Error(`測試沒有為 ${url} 準備回應`);
-    });
-    vi.stubGlobal("fetch", spy);
-    return spy;
-  }
-
-  const ok = (row: Record<string, unknown>) =>
-    ({ ok: true, status: 200, json: async () => row });
-
-  function refreshCalls(spy: ReturnType<typeof vi.fn>) {
-    return spy.mock.calls
-      .map(([url]) => /\/api\/scenarios\/([^/]+)\/refresh$/.exec(String(url))?.[1])
-      .filter((id): id is string => id !== undefined);
-  }
 });
 
 describe("建立與刷新同時發生（V4／#52 檢視回饋）", () => {
@@ -748,12 +938,13 @@ describe("建立與刷新同時發生（V4／#52 檢視回饋）", () => {
   });
 
   it("建立劇本不會把建立期間刷新好的卡片打回未分析", async () => {
-    // 建立的請求飛在半空中時，開站那一輪剛好把 s1 刷新完。若建立完成後
-    // 用「送出前那份 rows」蓋回去，s1 就會退回未分析的樣子——使用者看到
-    // 的是一個剛剛才有過的數字憑空消失。
-    let releaseRefresh: (() => void) | null = null;
+    // 建立的請求飛在半空中時，開站那一輪（Refresh Run 只帶 s1）剛好把
+    // s1 刷新完。若建立完成後用「送出前那份 rows」蓋回去，s1 就會退回
+    // 未分析的樣子——使用者看到的是一個剛剛才有過的數字憑空消失。P4
+    // 之下建立劇本自己的 Refresh Run 只帶新建的 s2，兩個批次請求彼此
+    // 獨立、範圍不重疊，這條測試驗的正是兩者不會互相打架。
+    let releaseS1Run: (() => void) | null = null;
     let releaseCreate: (() => void) | null = null;
-    let s1Calls = 0;
 
     const spy = vi.fn(async (url: string, init?: RequestInit) => {
       if (url === "/api/scenarios" && init?.method === "POST") {
@@ -763,20 +954,24 @@ describe("建立與刷新同時發生（V4／#52 檢視回饋）", () => {
       if (url === "/api/scenarios") {
         return { ok: true, status: 200, json: async () => [card("s1", "TLT")] };
       }
-      if (url.endsWith("/s1/refresh")) {
-        s1Calls += 1;
-        if (s1Calls === 1) {
-          await new Promise<void>((resolve) => { releaseRefresh = resolve; });
-          return { ok: true, status: 200, json: async () => card("s1", "TLT", {
-            best_return: 2.0, latest_analyzed_at: "2026-08-04T09:30:00+00:00" }) };
+      if (url === "/api/scenarios/refresh-run" && init?.method === "POST") {
+        const body = JSON.parse(String(init.body ?? "{}")) as { scenario_ids?: string[] };
+        const ids = body.scenario_ids ?? [];
+        if (ids.includes("s1")) {
+          await new Promise<void>((resolve) => { releaseS1Run = resolve; });
+          return { ok: true, status: 200, json: async () => ({
+            results: [{ scenario_id: "s1", ok: true,
+                       row: card("s1", "TLT", { best_return: 2.0,
+                         latest_analyzed_at: "2026-08-04T09:30:00+00:00" }) }],
+            remaining: [],
+          }) };
         }
-        // 第二趟失敗：否則「重刷一次就恢復」會把回歸蓋掉，測不出東西
-        return { ok: false, status: 502, json: async () => ({
-          detail: { stage: "fetch", message: "抓不到報價" } }) };
-      }
-      if (url.endsWith("/s2/refresh")) {
-        return { ok: true, status: 200, json: async () => card("s2", "SPY", {
-          best_return: 0.3, latest_analyzed_at: "2026-08-04T09:30:00+00:00" }) };
+        return { ok: true, status: 200, json: async () => ({
+          results: ids.map((id) => ({ scenario_id: id, ok: true,
+            row: card(id, "SPY", { best_return: 0.3,
+              latest_analyzed_at: "2026-08-04T09:30:00+00:00" }) })),
+          remaining: [],
+        }) };
       }
       throw new Error(`測試沒有為 ${url} 準備回應`);
     });
@@ -789,7 +984,7 @@ describe("建立與刷新同時發生（V4／#52 檢視回饋）", () => {
     await pickMonth(2028, 5);
     await userEvent.click(screen.getByRole("button", { name: "建立" }));
 
-    releaseRefresh!();                       // 建立還沒回來，s1 先刷新完
+    releaseS1Run!();                       // 建立還沒回來，s1 先刷新完
     expect(await screen.findByText("200.0%")).toBeInTheDocument();
 
     releaseCreate!();
@@ -810,18 +1005,27 @@ describe("詳細頁刷新入口與劇本庫共用同一條佇列（#70）", () =
   afterEach(() => { window.location.hash = ""; });
 
   it("在詳細頁按刷新，打的是同一個劇本的 refresh 端點", async () => {
-    // 開站本身也會自動刷新這唯一的劇本一次——這條測試要驗的是「按鈕
-    // 點擊本身」有沒有另外觸發一次，所以要先等開站那輪跑完，再比對
-    // 點擊前後的呼叫次數，不能只看「有沒有打過 /refresh」（那樣點不
-    // 點都會通過）。
+    // 開站本身會打批次端點（Refresh Run，T08／#196），跟詳細頁按鈕走的
+    // 單一劇本刷新端點是不同呼叫——先等開站那輪跑完，只計數按鈕點擊後
+    // 觸發的那一次，不會被開站那輪混進來。
+
     window.location.hash = "#/s/s1";
     const refreshCalls: string[] = [];
-    const spy = vi.fn(async (url: string) => {
+    const spy = vi.fn(async (url: string, init?: RequestInit) => {
       if (url === "/api/scenarios") {
         return { ok: true, status: 200, json: async () => [row] };
       }
       if (url === "/api/scenarios/s1") {
         return { ok: true, status: 200, json: async () => ({ ...row, latest_result: null }) };
+      }
+      // 開站觸發的是批次端點（T08／#196），跟這條測試要驗的「點按鈕
+      // 本身」是不同的呼叫——給它一個成功結果讓開站那輪順利跑完（每個
+      // 送出去的 id 都要在 results 裡有對應項，否則會永遠卡在更新中），
+      // 不必涉入這條測試的斷言。
+      if (url === "/api/scenarios/refresh-run" && init?.method === "POST") {
+        return { ok: true, status: 200,
+                 json: async () => ({ results: [{ scenario_id: "s1", ok: true, row }],
+                                      remaining: [] }) };
       }
       if (url.endsWith("/s1/refresh")) {
         refreshCalls.push(url);
@@ -845,23 +1049,27 @@ describe("詳細頁刷新入口與劇本庫共用同一條佇列（#70）", () =
   it("批次刷新進行中，詳細頁的刷新按鈕也停用——同一條忙碌狀態", async () => {
     window.location.hash = "#/s/s1";
     let releaseRefresh: (() => void) | null = null;
-    const spy = vi.fn(async (url: string) => {
+    const spy = vi.fn(async (url: string, init?: RequestInit) => {
       if (url === "/api/scenarios") {
         return { ok: true, status: 200, json: async () => [row] };
       }
       if (url === "/api/scenarios/s1") {
         return { ok: true, status: 200, json: async () => ({ ...row, latest_result: null }) };
       }
-      if (url.endsWith("/s1/refresh")) {
+      // 開站觸發的批次端點卡住不回應——`updatingIds` 因此持續含 s1，
+      // 詳細頁自己的 `busy` prop（`refreshBusy`）沿用同一個判準。
+      if (url === "/api/scenarios/refresh-run" && init?.method === "POST") {
         await new Promise<void>((resolve) => { releaseRefresh = resolve; });
-        return { ok: true, status: 200, json: async () => row };
+        return { ok: true, status: 200,
+                 json: async () => ({ results: [{ scenario_id: "s1", ok: true, row }],
+                                      remaining: [] }) };
       }
       throw new Error(`測試沒有為 ${url} 準備回應`);
     });
     vi.stubGlobal("fetch", spy);
     render(<App />);
 
-    // 開站那輪刷新正在跑（s1 是清單裡唯一的劇本，卡在 refresh 半路）
+    // 開站那輪刷新正在跑（s1 是清單裡唯一的劇本，Refresh Run 卡在半路）
     expect(await screen.findByRole("button", { name: "刷新中……" })).toBeDisabled();
 
     releaseRefresh!();
@@ -1061,6 +1269,58 @@ describe("桌面版真正的 master/detail（#72）", () => {
     const otherLink = screen.getByRole("link", { name: /SPY 2027-01/ });
     expect(selectedLink.closest("li")).toHaveClass("selected");
     expect(otherLink.closest("li")).not.toHaveClass("selected");
+  });
+
+  it("PC-05（#202）：另一個劇本在清單上鎖定中，不影響使用者目前正在看的" +
+     "這個劇本詳細頁", async () => {
+    stubDesktopViewport();
+    window.location.hash = "#/s/s1";
+    let releaseS2: (() => void) | null = null;
+    const spy = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url === "/api/scenarios") {
+        return { ok: true, status: 200, json: async () => [rowA, rowB] };
+      }
+      if (url === "/api/scenarios/s1") {
+        return { ok: true, status: 200,
+                json: async () => ({ ...rowA, latest_result: null }) };
+      }
+      if (url === "/api/scenarios/refresh-run" && init?.method === "POST") {
+        const body = JSON.parse(String(init.body ?? "{}")) as
+          { scenario_ids?: string[] };
+        const ids = body.scenario_ids ?? [];
+        if (ids.length === 2) {
+          return { ok: true, status: 200, json: async () => ({
+            results: [{ scenario_id: "s1", ok: true, row: rowA }],
+            remaining: ["s2"],
+          }) };
+        }
+        await new Promise<void>((resolve) => { releaseS2 = resolve; });
+        return { ok: true, status: 200, json: async () => ({
+          results: [{ scenario_id: "s2", ok: true, row: rowB }],
+          remaining: [],
+        }) };
+      }
+      throw new Error(`測試沒有為 ${url} 準備回應`);
+    });
+    vi.stubGlobal("fetch", spy);
+    render(<App />);
+
+    // s1 是使用者目前正在看的劇本，自己這一輪已經落地——詳細頁正常
+    // 顯示內容，沒有任何「刷新排隊中」提示。
+    expect(await screen.findByText("尚未分析")).toBeInTheDocument();
+    expect(screen.queryByText(/本輪刷新排隊中或進行中/)).not.toBeInTheDocument();
+
+    // s2 還在更新中——清單上那一列反灰、標「更新中」，完全不影響 s1
+    // 的詳細頁內容或提示。
+    const spyLink = screen.getByRole("link", { name: /SPY 2027-01/ });
+    expect(spyLink.closest(".compact-card")).toHaveClass("locked");
+    expect(screen.getByText("更新中")).toBeInTheDocument();
+    expect(screen.getByText("尚未分析")).toBeInTheDocument();
+    expect(screen.queryByText(/本輪刷新排隊中或進行中/)).not.toBeInTheDocument();
+
+    releaseS2!();
+    await waitFor(() =>
+      expect(screen.queryByText("更新中")).not.toBeInTheDocument());
   });
 
   it("未選任何劇本時，右側工作區顯示合理的空狀態", async () => {

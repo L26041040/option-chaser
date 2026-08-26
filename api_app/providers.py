@@ -2,8 +2,8 @@
 
 **自訂不等於任意 API**：使用者只能從本檔案這份清單挑選，不能填入任意
 endpoint 或 schema——每個 Provider 都得先在本系統有一支對應的 adapter
-（`option_chaser/data/base.py` 的 `ChainProvider` 協定），資料才進得了
-引擎。註冊表因此是白名單，不是建議清單。
+（`option_chaser/data/` 底下同名模組的 `fetch_chain(symbol)` 函式），
+資料才進得了引擎。註冊表因此是白名單，不是建議清單。
 
 UI 文案的用詞在此定調並由測試守門（#124）：寫「目前支援」，不寫
 「推薦」；不做 vendor 比較、不寫未來規劃。理由是這份清單描述的是

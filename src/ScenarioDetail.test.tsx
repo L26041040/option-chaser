@@ -20,14 +20,25 @@ function detail(overrides: Record<string, unknown> = {}) {
   };
 }
 
-/** 改寫 baseline 期第 1 名候選的某些欄位，其餘契約原樣。 */
+/** 改寫 baseline 期第 1 名候選的某些欄位，其餘契約原樣。
+ *
+ * T09（#191）：完整內容集中在 `candidate_pool`，容器只留 key 引用——
+ * 這裡只需要 patch 池子裡那一筆，`expiry_top10[].candidate_keys` 完全不用
+ * 動（就算 patch 改了候選自己的 `candidate_key` 欄位值，容器裡引用它
+ * 的那個 dict key 字串本身仍是原來的，`resolveCandidate()` 靠 dict key
+ * 找到它、回傳的物件內容才是 patch 過的那份，跟 `baselineTopCandidate()`
+ * 的既有讀取路徑一致）。 */
 function withTopCandidate(patch: Record<string, unknown>): AnalysisView {
   const result = view.results[0];
-  const groups = result.expiry_top10!.map((g) =>
-    g.expiry === view.baseline_expiry
-      ? { ...g, candidates: [{ ...g.candidates[0], ...patch }, ...g.candidates.slice(1)] }
-      : g);
-  return { ...view, results: [{ ...result, expiry_top10: groups }] };
+  const group = result.expiry_top10!.find((g) => g.expiry === view.baseline_expiry)!;
+  const key = group.candidate_keys[0];
+  return {
+    ...view,
+    candidate_pool: {
+      ...view.candidate_pool,
+      [key]: { ...view.candidate_pool![key], ...patch },
+    },
+  };
 }
 
 /**
@@ -275,6 +286,26 @@ describe("刷新完成後詳細頁跟著更新（V5／#53 檢視回饋）", () =
     expect(mainChart().getByRole("table")).toBeInTheDocument();
     expect(screen.queryByText(/尚未分析/)).not.toBeInTheDocument();
   });
+
+  it("T03（#187）：同一輪內反覆進出詳細頁，同一份資料不重新下載", async () => {
+    // `mockDetail` 對任何 URL 都回同一份 body（含 IvHistory 自己的
+    // settings 請求）——這裡只數打到 scenario detail 端點本身的次數。
+    const spy = mockDetail(detail());
+    const detailCalls = () =>
+      (spy.mock.calls as unknown as [string][])
+        .filter(([url]) => url.includes("/api/scenarios/s1")).length;
+
+    const { unmount } = render(<ScenarioDetail id="s1" refreshedAt="2026-08-04T09:30:00+00:00" />);
+    expect(await screen.findByText(/劇本主圖/)).toBeInTheDocument();
+    expect(detailCalls()).toBe(1);
+
+    unmount();
+    render(<ScenarioDetail id="s1" refreshedAt="2026-08-04T09:30:00+00:00" />);
+    expect(await screen.findByText(/劇本主圖/)).toBeInTheDocument();
+
+    // 離開又進來，analyzedAt 沒變——快取命中，底層請求次數不變。
+    expect(detailCalls()).toBe(1);
+  });
 });
 
 describe("詳細頁刷新入口（#70）", () => {
@@ -304,17 +335,17 @@ describe("詳細頁刷新入口（#70）", () => {
       .toBeDisabled();
   });
 
-  it("這個劇本本輪還沒刷新完（V4 跟進票／#136）：明確提示，搶在其他內容之前，" +
+  it("這個劇本正在被刷新（T08／#196 P1）：明確提示，搶在其他內容之前，" +
      "不能讓桌面右側常駐面板的舊內容看起來像已經更新完成", async () => {
     mockDetail(detail());
-    render(<ScenarioDetail id="s1" refreshLocked />);
+    render(<ScenarioDetail id="s1" updating />);
 
     const notice = await screen.findByRole("status");
     expect(notice).toHaveTextContent(/排隊中或進行中/);
     expect(notice).toHaveTextContent(/上一輪的舊資料/);
   });
 
-  it("沒有鎖著時不顯示這個提示", async () => {
+  it("沒有更新中時不顯示這個提示", async () => {
     mockDetail(detail());
     render(<ScenarioDetail id="s1" />);
 
@@ -322,13 +353,13 @@ describe("詳細頁刷新入口（#70）", () => {
     expect(screen.queryByText(/排隊中或進行中/)).not.toBeInTheDocument();
   });
 
-  it("鎖著又剛好帶著上一次的失敗紀錄時，先顯示鎖定提示——這次嘗試還沒有" +
-     "結論，失敗提示要等解鎖後才有意義", async () => {
+  it("更新中又剛好帶著上一次的失敗紀錄時，先顯示更新中提示——這次嘗試還" +
+     "沒有結論，失敗提示要等它解決後才有意義", async () => {
     mockDetail(detail());
     render(
       <ScenarioDetail
         id="s1"
-        refreshLocked
+        updating
         failure={{ stage: "fetch", message: "抓不到報價" }}
       />,
     );

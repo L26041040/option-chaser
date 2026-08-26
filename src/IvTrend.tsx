@@ -22,7 +22,8 @@
  */
 import type { IvHistoryLegs, IvTrendStatPoint, LegHistoricalIv } from "./api";
 import { BACKFILL_NOTES, ChartTooltip, PAD_BOTTOM, PAD_LEFT,
-        PAD_TOP, tickLabel, toPixel, useChartScrubber, valueLabel } from "./IvHistory";
+        PAD_TOP, roundPercentile, tickLabel, toPixel, useChartScrubber,
+        valueLabel } from "./IvHistory";
 import { contiguousRuns, ivChartPoints, ivYAxisDomain, projectOntoDomain,
         xAxisTicks, type ChartPoint } from "./ivHistoryChart";
 import { useIsDesktop } from "./useIsDesktop";
@@ -45,6 +46,22 @@ export const SPREAD_CHART_HEIGHT_MOBILE = 62;
 /** spec #151 §6 逐字原文——固定文案，不是每張卡各自改寫一次。 */
 const IV_TREND_CAPTION =
   "比較同一張 option 自己的歷史 IV；僅供歷史位置參考，不代表未來 IV 方向。";
+
+/** PC-01（#199，spec #198）；2026-08-26 真機驗收後改寫為白話句——需求方
+ *  反饋原本的技術性說法（「百分位：…高於…多少比例的…觀測」）讀起來還是
+ *  不夠直覺。現在直接把「第 N 百分位」翻譯成一句話，把 N 帶進句子裡
+ *  （跟旁邊 `percentileCaption()` 顯示的數字是同一個來源、同一種
+ *  `Math.round(percentile*100)` 換算，兩處讀到的數字保證一致），不需要
+ *  使用者自己在腦中做「百分位＝多少比例」這一步轉換，並保留單日讀數
+ *  會隨市場報價波動的提醒，避免被誤讀成系統算錯或「這張合約很貴」。
+ *  演算法／裁窗／exact-contract 身份規則本身完全不受影響，純文字改寫。
+ *  `./SpreadSummary`、`./IvHistory` 各自有語彙微調過的姊妹函式，三者
+ *  事實一致、措辭各自貼合家族語言。 */
+export function ivPercentileExplanation(percentile: number | null): string {
+  if (percentile === null) return "目前沒有足夠的歷史觀測可以比較。";
+  const pct = roundPercentile(percentile);
+  return `現在的 IV 比過去一年大約 ${pct}% 的有效歷史觀測都高。單日數字可能隨市場報價波動。`;
+}
 
 /** 這隻腳最新一筆非 null 的市場 IV——`points` 的最後一天可能剛好是
  *  null（vendor 對那天沒有值），要找的是「最新一筆有值」，不是「最後
@@ -345,6 +362,7 @@ function IvTrendCard({ label, leg }: { label?: string; leg: LegHistoricalIv }) {
         <p className="caption iv-compact-stats">
           {percentileCaption(leg)}・{delta4wCaption(leg)}
         </p>
+        <p className="caption">{ivPercentileExplanation(leg.current_percentile)}</p>
         {chart}
         <p className="caption">{spanCaption(leg)}</p>
         {backfillNote}
@@ -352,15 +370,23 @@ function IvTrendCard({ label, leg }: { label?: string; leg: LegHistoricalIv }) {
     );
   }
 
+  // PC-06（#203，spec #198）：桌面版資訊順序對齊手機版——現值 → 百分位
+  // → Δ4w → 走勢圖（AC 逐字列出的四項），百分位說明句（PC-01／#199）
+  // 緊接在 Δ4w 之後、走勢圖之前，跟手機版「percentile+Δ4w 合併行 →
+  // 說明句 → 走勢圖」同一個相對位置；涵蓋時間與 backfill 說明維持在
+  // 走勢圖之後（低優先度的頁尾資訊，AC 沒有把它們納入排序範圍）。圖表
+  // 資料／scrubber／responsive 高度切換／任何計算或 props 完全不變，
+  // 純粹是 JSX 元素順序重排。
   return (
     <div className="iv-trend-card">
       {label && <div className="row-label iv-trend-card-label">{label}</div>}
       <span className="iv-value-primary">
         {valueLabel(currentIv(leg), "vol-pts")}
       </span>
-      {chart}
       <p className="caption">{percentileCaption(leg)}</p>
       <p className="caption">{delta4wCaption(leg)}</p>
+      <p className="caption">{ivPercentileExplanation(leg.current_percentile)}</p>
+      {chart}
       <p className="caption">{spanCaption(leg)}</p>
       {backfillNote}
     </div>

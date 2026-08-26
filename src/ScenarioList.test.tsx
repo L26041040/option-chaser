@@ -1,6 +1,6 @@
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import ScenarioList from "./ScenarioList";
 import sampleRow from "../contracts/scenario_row_sample.json";
@@ -24,7 +24,7 @@ function list(
   rows: ScenarioSummary[],
   props: {
     failures?: Record<string, RefreshFailure>;
-    lockedIds?: ReadonlySet<string>;
+    updatingIds?: ReadonlySet<string>;
     onArchive?: (id: string) => void;
     onEdit?: (id: string) => void;
     onRetry?: (id: string) => void;
@@ -41,7 +41,7 @@ function list(
     <ScenarioList
       rows={rows}
       failures={props.failures ?? {}}
-      lockedIds={props.lockedIds ?? new Set()}
+      updatingIds={props.updatingIds ?? new Set()}
       onArchive={props.onArchive ?? vi.fn()}
       onEdit={props.onEdit ?? vi.fn()}
       onRetry={props.onRetry ?? vi.fn()}
@@ -421,6 +421,75 @@ describe("刷新失敗的分層與重試入口（V4／#52）", () => {
     // 只要旁邊誠實標明它是舊的。
     expect(screen.getByText("123.4%")).toBeInTheDocument();
     expect(screen.getByText("舊資料")).toBeInTheDocument();
+  });
+});
+
+describe("更新中徽章＋鎖定（T08／#196 P1 首次引入；PC-05／#202 恢復反灰＋" +
+        "不可點入）", () => {
+  afterEach(() => {
+    window.location.hash = "";
+  });
+
+  it("更新中的卡片標「更新中」、反灰，但仍顯示上一輪的舊資料（徽章與資料" +
+     "本身不受這張票影響）", () => {
+    const { container } = list([row({ id: "a", best_return: 2.5 })],
+                               { updatingIds: new Set(["a"]) });
+
+    expect(screen.getByText("更新中")).toBeInTheDocument();
+    expect(container.querySelector(".compact-card.locked")).toBeInTheDocument();
+    // 上一輪的舊數字仍顯示，不會因為更新中就消失或變成「—」：
+    expect(screen.getByText("250.0%")).toBeInTheDocument();
+  });
+
+  it("PC-05（#202）：點更新中的卡片不會導向詳細頁——href 仍在（連結" +
+     "語意保留：長按可複製、螢幕閱讀器認得），但點擊被攔截", async () => {
+    window.location.hash = "";
+    list([row({ id: "a", symbol: "AAA" })], { updatingIds: new Set(["a"]) });
+
+    const link = screen.getByRole("link", { name: /AAA/ });
+    expect(link).toHaveAttribute("href", "#/s/a");
+    await userEvent.click(link);
+
+    expect(window.location.hash).toBe("");
+  });
+
+  it("不是更新中的卡片點下去正常導向詳細頁（對照組：證明上一條測試真的" +
+     "是攔截生效，不是 jsdom 本來就不會跳轉）", async () => {
+    window.location.hash = "";
+    list([row({ id: "a", symbol: "AAA" })], { updatingIds: new Set() });
+
+    await userEvent.click(screen.getByRole("link", { name: /AAA/ }));
+
+    expect(window.location.hash).toBe("#/s/a");
+  });
+
+  it("不是更新中的卡片顯示一般燈號，不是「更新中」，也不帶 locked class", () => {
+    const { container } = list([row({ id: "a" })], { updatingIds: new Set() });
+    expect(screen.queryByText("更新中")).not.toBeInTheDocument();
+    expect(container.querySelector(".locked")).not.toBeInTheDocument();
+  });
+
+  it("更新中的劇本用它上一輪的舊收益率正常參與排序，不獨立排到後面", () => {
+    list([
+      row({ id: "a", symbol: "AAA", best_return: 0.5 }),
+      row({ id: "b", symbol: "BBB", best_return: 9.0 }),
+    ], { updatingIds: new Set(["b"]) });
+
+    const symbols = screen.getAllByRole("listitem")
+      .map((li) => li.querySelector(".compact-symbol")!.textContent);
+    expect(symbols).toEqual(["BBB", "AAA"]);
+  });
+
+  it("批次選取模式下，更新中的卡片一樣點得到 checkbox 切換選取——既有" +
+     "批次選取互動不受這張票影響", async () => {
+    const onToggleSelect = vi.fn();
+    list([row({ id: "a", symbol: "AAA" })], {
+      updatingIds: new Set(["a"]), selectMode: true, onToggleSelect,
+    });
+
+    await userEvent.click(screen.getByRole("link", { name: /AAA/ }));
+
+    expect(onToggleSelect).toHaveBeenCalledWith("a");
   });
 });
 

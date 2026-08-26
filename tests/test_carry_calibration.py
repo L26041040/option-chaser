@@ -229,8 +229,9 @@ def test_selection_identity_unchanged_despite_real_delta_band_flips(tmp_path):
         from option_chaser import store
         view = store.serialize_result(result, scenario_id="carry-test", capital=None)
         r = view["results"][0]
-        candidate_keys = tuple(c["candidate_key"] for c in r["candidates"])
-        expiry_best_keys = tuple(c["candidate_key"] for c in r["expiry_best"])
+        # T09（#191）：容器裡本來就是 `candidate_key` 字串清單。
+        candidate_keys = tuple(r["candidates"])
+        expiry_best_keys = tuple(r["expiry_best"])
         return {
             "status": r["status"],
             "ranking_identity": candidate_keys,

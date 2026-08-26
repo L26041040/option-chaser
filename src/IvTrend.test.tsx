@@ -123,21 +123,43 @@ describe("Vertical Spread：正好兩張卡，買賣腿各自獨立正確", () =
   });
 });
 
-describe("資訊順序（桌面）：現值 → 走勢圖 → percentile → Δ4w → 涵蓋時間（SIG-02／#173 瘦身後，" +
-        "手機再瘦身一輪不影響桌面這套順序）", () => {
-  it("依瘦身後順序渲染，z-score 不在主要區塊裡", () => {
+describe("資訊順序（桌面，PC-06／#203 對齊手機版）：現值 → 百分位 → Δ4w → " +
+        "走勢圖", () => {
+  it("依新順序渲染：現值在百分位之前、百分位在 Δ4w 之前、Δ4w 在走勢圖之前，" +
+     "z-score 不在主要區塊裡", () => {
     vi.stubGlobal("matchMedia", (q: string) => fakeMediaQueryList(true, q));
-    const legs: IvHistoryLegs = { buy: legHistoricalIv() };
+    const legs: IvHistoryLegs = { buy: legHistoricalIv({
+      current_percentile: 0.7, delta_4w: 0.02,
+    }) };
     const { container } = render(<IvTrend legs={legs} />);
-    const card = container.querySelector(".iv-trend-card")!;
-    // `.className` 在 SVG 元素上是 SVGAnimatedString，不是字串——一律用
-    // `getAttribute("class")` 取得跨 HTML／SVG 一致的類別字串。
-    const classes = Array.from(card.children)
-      .map((el) => el.getAttribute("class"));
-    expect(classes).toEqual([
-      "iv-value-primary", "iv-trend-chart",
-      "caption", "caption", "caption",
-    ]);
+    const value = container.querySelector(".iv-value-primary")!;
+    const percentile = screen.getByText(/第 70 百分位/);
+    const delta4w = screen.getByText(/4週 \+2\.0 pts/);
+    const chart = container.querySelector(".iv-trend-chart")!;
+
+    expect(value.compareDocumentPosition(percentile)
+      & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(percentile.compareDocumentPosition(delta4w)
+      & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(delta4w.compareDocumentPosition(chart)
+      & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.queryByText(/觀測數不足|Z-score/)).not.toBeInTheDocument();
+  });
+
+  it("百分位說明句（PC-01／#199）緊接在 Δ4w 之後、走勢圖之前", () => {
+    vi.stubGlobal("matchMedia", (q: string) => fakeMediaQueryList(true, q));
+    const legs: IvHistoryLegs = { buy: legHistoricalIv({
+      current_percentile: 0.7, delta_4w: 0.02,
+    }) };
+    const { container } = render(<IvTrend legs={legs} />);
+    const delta4w = screen.getByText(/4週 \+2\.0 pts/);
+    const explanation = screen.getByText(/現在的 IV 比過去一年大約 \d+% 的有效歷史觀測都高/);
+    const chart = container.querySelector(".iv-trend-chart")!;
+
+    expect(delta4w.compareDocumentPosition(explanation)
+      & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(explanation.compareDocumentPosition(chart)
+      & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
   it("Spread 模式：買腿卡片標籤在現值之前", () => {
@@ -162,8 +184,11 @@ describe("資訊順序（手機再瘦身一輪，需求方 2026-08-22 反饋）�
     const card = container.querySelector(".iv-trend-card")!;
     const classes = Array.from(card.children)
       .map((el) => el.getAttribute("class"));
+    // PC-01（#199）新增一句常駐的百分位說明，緊接在合併後的
+    // 百分位＋Δ4w 那一行之後、走勢圖之前。
     expect(classes).toEqual([
-      "iv-compact-head", "caption iv-compact-stats", "iv-trend-chart", "caption",
+      "iv-compact-head", "caption iv-compact-stats", "caption",
+      "iv-trend-chart", "caption",
     ]);
   });
 
@@ -186,6 +211,26 @@ describe("資訊順序（手機再瘦身一輪，需求方 2026-08-22 反饋）�
     expect(head).toBeInTheDocument();
     expect(head.textContent).toContain("買腿");
     expect(head.querySelector(".iv-value-primary")).toBeInTheDocument();
+  });
+});
+
+describe("百分位說明文字（PC-01／#199，常駐可見，不必展開才看得到）", () => {
+  it("手機（預設 matchMedia 假體＝手機）買賣腿卡片都看得到說明", () => {
+    const legs: IvHistoryLegs = {
+      buy: legHistoricalIv(), sell: legHistoricalIv(),
+    };
+    render(<IvTrend legs={legs} />);
+    expect(screen.getAllByText(/現在的 IV 比過去一年大約 \d+% 的有效歷史觀測都高/).length).toBe(2);
+  });
+
+  it("桌面斷點下同樣看得到說明——PC-06（#203）起排在 Δ4w 之後、走勢圖之前" +
+     "（見「資訊順序」describe block 的 DOM 順序斷言），這裡只驗證看得到，" +
+     "不必展開任何東西", () => {
+    vi.stubGlobal("matchMedia", (q: string) => fakeMediaQueryList(true, q));
+    const legs: IvHistoryLegs = { buy: legHistoricalIv({ current_percentile: 0.7 }) };
+    render(<IvTrend legs={legs} />);
+    expect(screen.getByText(/第 70 百分位/)).toBeInTheDocument();
+    expect(screen.getByText(/現在的 IV 比過去一年大約 \d+% 的有效歷史觀測都高/)).toBeInTheDocument();
   });
 });
 

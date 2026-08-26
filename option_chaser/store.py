@@ -1,301 +1,38 @@
-"""v5 spec §2/§3: 工作區檔案層。純 stdlib、零 wall-clock（時間由呼叫端傳入）。
+"""ScenarioResult 契約（spec §3）：`AnalysisResult` → View dict 的序列化層。
 
-events.jsonl 是唯一真實來源；scenario 檔的 status 欄位是快取；
-groups.json 是全量可重建快取。所有寫入 temp 檔＋os.replace 原子替換。
+純函式、零 wall-clock（時間由呼叫端傳入）。持久化本身（把 View 寫進
+Storage）是 `api_app/storage/` 的職責，這裡只負責形狀轉換。
 """
 from __future__ import annotations
 
 import dataclasses
-import json
-import os
-from dataclasses import dataclass
 from datetime import date
-from pathlib import Path
 from typing import Iterable
 
 from . import __version__
 from .models import AnalysisParams, ChainSnapshot
 from .ranking import spread_baseline_return
-from .report import disclaimer_text, methodology_lines
+from .report import disclaimer_text
 from .scenarios import natural_cost
 from .service import AnalysisResult, CandidateView, candidate_key, valuation_key
-from .timeframe import TargetMonth
 from .valuation import SpreadValuation, guidance_judgments, spread_guidance_judgments
-from .vocabulary import EVENT_TYPES_V5
 
 
 SCENARIO_SCHEMA_VERSION = 2   # v2: target_date（YYYY-MM-DD）→ target_month（YYYY-MM）
 
 
-class WorkspaceIntegrityError(Exception):
-    """快取與事件投影不一致（竄改型，spec §2.2）。"""
-
-
-@dataclass(frozen=True)
-class Scenario:
-    schema_version: int
-    id: str
-    symbol: str
-    direction: str          # "bullish" | "bearish"
-    target_price: float
-    target_month: str       # YYYY-MM（年月語意；不並存任何目標日期欄位）
-    created_at: str         # ISO 8601 UTC
-    notes: str
-    group_id: str
-    status: str             # vocabulary.SCENARIO_STATUSES
-    strategies: tuple[str, ...]
-
-
-def _atomic_write_text(path: Path, text: str) -> None:
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(text, encoding="utf-8")
-    os.replace(tmp, path)
-
-
-def atomic_write_json(path: Path, obj) -> None:
-    _atomic_write_text(
-        Path(path),
-        json.dumps(obj, ensure_ascii=False, sort_keys=True, indent=2) + "\n")
-
-
-# ---------- Scenario ----------
-
-def scenario_id(symbol: str, target_price: float, target_month: str,
-                existing_ids: set[str]) -> str:
-    """spec §2.2: {symbol}-{target:g 且 '.'→'p'}-{yyyymm}; 撞名 -2、-3（決定性）。
-
-    ID 格式不變——原本就只取年月，換成年月輸入後輸出逐字相同，既有結果檔案與
-    歷史仍然對得上。
-    """
-    month = TargetMonth.from_key(target_month)   # 順帶把關格式，不做字串切片
-    price = format(target_price, "g").replace(".", "p")
-    base = f"{symbol}-{price}-{month.year:04d}{month.month:02d}"
-    if base not in existing_ids:
-        return base
-    n = 2
-    while f"{base}-{n}" in existing_ids:
-        n += 1
-    return f"{base}-{n}"
-
-
-def scenario_path(ws_root, sid: str) -> Path:
-    return Path(ws_root) / "scenarios" / f"{sid}.json"
-
-
-def save_scenario(ws_root, sc: Scenario) -> None:
-    atomic_write_json(scenario_path(ws_root, sc.id), dataclasses.asdict(sc))
-
-
-def migrate_scenario(data: dict) -> dict:
-    """v1 → v2：舊的 target_date 取其年月成為 target_month。
-
-    以「舊欄位是否還在」而非 schema_version 分派：版本號是敘述，欄位才是事實，
-    而遷移要修的正是欄位。版本號因此是遷移的結果，不是它的前提。
-
-    一個劇本都不丟，ID 不變（ID 本來就只用到年月）。
-    """
-    if "target_date" not in data:
-        return data
-    data = dict(data)
-    data["target_month"] = data.pop("target_date")[:7]
-    data["schema_version"] = SCENARIO_SCHEMA_VERSION
-    return data
-
-
-def load_scenario(path) -> Scenario:
-    """載入劇本；遇到舊格式就地遷移並落盤。
-
-    落盤是必要的：「不並存任何目標日期欄位」是對**磁碟**的要求，只在記憶體裡
-    改名的話，一個從此只被列出、never 分析的舊劇本會永遠留著 target_date。
-    寫入沿用 atomic replace，且遷移冪等——重跑不會產生第二種結果。
-    """
-    raw = json.loads(Path(path).read_text(encoding="utf-8"))
-    data = migrate_scenario(raw)
-    if data is not raw:
-        atomic_write_json(Path(path), data)
-    data = dict(data, strategies=tuple(data["strategies"]))
-    return Scenario(**data)
-
-
-def list_scenario_files(ws_root) -> list[Path]:
-    d = Path(ws_root) / "scenarios"
-    if not d.is_dir():
-        return []
-    return sorted(d.glob("*.json"))
-
-
-# ---------- constraints ----------
-
-def load_constraints(ws_root) -> dict:
-    path = Path(ws_root) / "constraints.json"
-    if not path.exists():
-        return {"schema_version": 1, "total_capital": None}
-    return json.loads(path.read_text(encoding="utf-8"))
-
-
-def save_constraints(ws_root, total_capital: float | None) -> None:
-    atomic_write_json(Path(ws_root) / "constraints.json",
-                      {"schema_version": 1, "total_capital": total_capital})
-
-
-# ---------- events.jsonl ----------
-
-ALLOWED_TRANSITIONS: set[tuple[str, str]] = {
-    ("Active", "Reached"), ("Active", "Invalidated"), ("Active", "Expired")}
-
-
-def _events_path(ws_root) -> Path:
-    return Path(ws_root) / "events.jsonl"
-
-
-def append_event(ws_root, ts: str, scenario_id: str | None, event: str,
-                 payload: dict) -> None:
-    """spec §6: event 值域鎖定 EVENT_TYPES_V5（v7 預留在 v5 拒寫）。"""
-    if event not in EVENT_TYPES_V5:
-        raise ValueError(f"事件值不在 v5 詞彙表內: {event}")
-    line = json.dumps({"ts": ts, "scenario_id": scenario_id,
-                       "event": event, "payload": payload},
-                      ensure_ascii=False, sort_keys=True)
-    path = _events_path(ws_root)
-    existing = path.read_text(encoding="utf-8") if path.exists() else ""
-    _atomic_write_text(path, existing + line + "\n")
-
-
-def read_events(ws_root) -> list[dict]:
-    path = _events_path(ws_root)
-    if not path.exists():
-        return []
-    return [json.loads(ln) for ln in
-            path.read_text(encoding="utf-8").splitlines() if ln.strip()]
-
-
-def _last_index(events: list[dict], sid: str, etype: str) -> int:
-    idx = -1
-    for i, e in enumerate(events):
-        if e.get("scenario_id") == sid and e.get("event") == etype:
-            idx = i
-    return idx
-
-
-# 終結現行生命週期的兩種事件：硬刪除與軟刪除（附錄 A8.2）。兩者對投影的
-# 作用相同——差別只在檔案，不在語意。
-_LIFECYCLE_ENDING = ("SCENARIO_DELETED", "SCENARIO_REMOVED")
-
-
-def _lifecycle_start(events: list[dict], sid: str) -> int:
-    """spec §2.3: 行序權威。回傳最後一筆 CREATED 的行序；
-    其後若有刪除／移除（或根本無 CREATED）→ -1（無現行生命週期）。"""
-    created = _last_index(events, sid, "SCENARIO_CREATED")
-    if created == -1:
-        return -1
-    ended = max(_last_index(events, sid, e) for e in _LIFECYCLE_ENDING)
-    return -1 if ended > created else created
-
-
-def is_removed(events: list[dict], sid: str) -> bool:
-    """附錄 A8.2 軟刪除投影：最後一筆移除事件晚於最後一筆建立 → 已移除。"""
-    return (_last_index(events, sid, "SCENARIO_REMOVED")
-            > _last_index(events, sid, "SCENARIO_CREATED"))
-
-
-def lifecycle_events(events: list[dict], sid: str) -> list[dict]:
-    start = _lifecycle_start(events, sid)
-    if start == -1:
-        return []
-    return [e for i, e in enumerate(events)
-            if i > start and e.get("scenario_id") == sid]
-
-
-def project_status(events: list[dict], sid: str) -> str | None:
-    if _lifecycle_start(events, sid) == -1:
-        return None
-    status = "Active"
-    for e in lifecycle_events(events, sid):
-        if e["event"] == "STATUS_CHANGED":
-            status = e["payload"]["to"]
-    return status
-
-
-def reconcile_status(ws_root, sc: Scenario, events: list[dict]) -> Scenario:
-    """spec §2.2 兩型：崩潰窗修復（快取==最後 STATUS_CHANGED 的 from）／竄改拋錯。"""
-    projected = project_status(events, sc.id)
-    if projected is None:
-        raise WorkspaceIntegrityError(
-            f"劇本 {sc.id} 檔案存在但事件投影無現行生命週期")
-    if sc.status == projected:
-        return sc
-    changes = [e for e in lifecycle_events(events, sc.id)
-               if e["event"] == "STATUS_CHANGED"]
-    if changes and sc.status == changes[-1]["payload"]["from"]:
-        repaired = dataclasses.replace(sc, status=projected)
-        save_scenario(ws_root, repaired)     # 修復快取，不追加事件
-        return repaired
-    raise WorkspaceIntegrityError(
-        f"劇本 {sc.id} 狀態快取 {sc.status} 與事件投影 {projected} 不一致（非崩潰窗型）")
-
-
-def change_status(ws_root, ts: str, sc: Scenario, to: str, reason: str,
-                  by: str = "user", extra_payload: dict | None = None) -> Scenario:
-    """先 append 事件、再改快取（spec §2.5 統一寫入次序）。"""
-    if (sc.status, to) not in ALLOWED_TRANSITIONS:
-        raise ValueError(f"非法狀態轉移: {sc.status} -> {to}")
-    payload = {"from": sc.status, "to": to, "reason": reason, "by": by}
-    if extra_payload:
-        payload.update(extra_payload)
-    append_event(ws_root, ts, sc.id, "STATUS_CHANGED", payload)
-    updated = dataclasses.replace(sc, status=to)
-    save_scenario(ws_root, updated)
-    return updated
-
-
-# ---------- groups.json（全量可重建快取，spec §2.4） ----------
-
-def propose_relation(a: Scenario, b: Scenario) -> str:
-    """相鄰提案（a 為 target_month 較早者）。確定性，零 LLM。"""
-    if a.direction != b.direction:
-        return "exclusive-candidate"
-    if a.direction == "bullish":
-        progressing = a.target_price <= b.target_price
-    else:
-        progressing = a.target_price >= b.target_price
-    return "milestone-path" if progressing else "review-needed"
-
-
-def rebuild_groups(ws_root, scenarios: list[Scenario],
-                   events: list[dict]) -> dict:
-    """members/proposed 由 scenario 檔決定性重建；confirmed 由事件投影
-    （行序權威＋生命週期界定：僅計入 pair 兩成員各自最新 CREATED 之後者）。"""
-    by_symbol: dict[str, list[Scenario]] = {}
-    for sc in scenarios:
-        by_symbol.setdefault(sc.symbol, []).append(sc)
-
-    groups = []
-    for symbol in sorted(by_symbol):
-        members = sorted(by_symbol[symbol],
-                         key=lambda s: (s.target_month, s.id))
-        relations = []
-        for a, b in zip(members, members[1:]):
-            confirmed, confirmed_at = "undefined", None
-            created_a = _last_index(events, a.id, "SCENARIO_CREATED")
-            created_b = _last_index(events, b.id, "SCENARIO_CREATED")
-            for i, e in enumerate(events):
-                if (e.get("event") == "GROUP_RELATION_CONFIRMED"
-                        and set(e["payload"].get("pair", [])) == {a.id, b.id}
-                        and i > created_a and i > created_b):
-                    confirmed = e["payload"]["choice"]
-                    confirmed_at = e["ts"]
-            relations.append({"pair": [a.id, b.id],
-                              "proposed": propose_relation(a, b),
-                              "confirmed": confirmed,
-                              "confirmed_at": confirmed_at})
-        groups.append({"id": f"G-{symbol}", "symbol": symbol,
-                       "members": [m.id for m in members],
-                       "relations": relations})
-    data = {"schema_version": 1, "groups": groups}
-    atomic_write_json(Path(ws_root) / "groups.json", data)
-    return data
+def _candidate_of(view: dict, row: dict) -> dict | None:
+    """T09（#191）：`expiry_groups[].rows[]` 現在存 `candidate_key`（新
+    schema，`view["candidate_pool"]` 解出完整內容），不再直接內嵌完整
+    候選字典。`representative_candidate()` 只在**剛做完**一次
+    `serialize_result()` 的新鮮 view 上呼叫（never 讀舊存的 view——見
+    `api_app/main.py` 唯一呼叫點緊接在 `_analyze()` 之後），所以理論上
+    只會走新 schema 這條路；仍保留舊形狀（`row["candidate"]` 直接內嵌）
+    的相容分支，供直接手造 view fixture 的既有測試與任何未來仍傳入舊
+    形狀 view 的呼叫端使用，不因為結構改變而整組炸掉。"""
+    if "candidate_key" in row:
+        return (view.get("candidate_pool") or {}).get(row["candidate_key"])
+    return row.get("candidate")
 
 
 # ---------- ScenarioResult 契約（spec §3） ----------
@@ -329,8 +66,8 @@ def representative_candidate(view: dict | None) -> dict | None:
     if group is None or not group["rows"]:
         return None
     best_row = max(group["rows"],
-                   key=lambda row: row["candidate"]["baseline_return"])
-    candidate = best_row["candidate"]
+                   key=lambda row: _candidate_of(view, row)["baseline_return"])
+    candidate = _candidate_of(view, best_row)
     return {
         "strategy": best_row["strategy"],
         "legs": [{"strike": leg["strike"], "option_type": leg["option_type"]}
@@ -347,7 +84,10 @@ def best_return(view: dict | None) -> float | None:
 
     由 `representative_candidate()` 導出而非各走各的一次走訪
     （MVP-v2／#77、#78）：兩者必須在結構上不可能對不上，卡片上的報酬率
-    才會永遠是它旁邊那組履約價真正算出來的數字。
+    才會永遠是它旁邊那組履約價真正算出來的數字。這是跨層一致性的
+    canonical 規則——`api_app/main.py` 為了不重複走訪 `representative_
+    candidate()` 而在呼叫端內聯同一條算式，不代表這個公開純函式本身
+    是死碼（多處測試把它當獨立於呼叫端的真相來源做交叉驗證）。
     """
     rep = representative_candidate(view)
     return rep["baseline_return"] if rep is not None else None
@@ -558,12 +298,29 @@ def serialize_result(result: AnalysisResult, scenario_id: str,
     base = result.request.base_params
     today = result.today
 
-    def cand(cv, strategy):
-        # V8（#56，spec R1 §4.2 A2）：`_candidate()` 現在還要算買價指引
-        # 警示（`guidance_judgments`／`spread_guidance_judgments`），兩者
-        # 只讀 `p.iv_shifts`，不讀 `p.strategy`——`base` 不必為每個 `r`
-        # 各自替換 strategy 也正確，跟既有 `base.anchor` 的用法一致。
-        return _candidate(cv, strategy, capital, today, base.anchor, base)
+    # T09（#191）：同一個 Candidate 過去在 `candidates`／`expiry_best`／
+    # `expiry_top10`／`expiry_groups[].rows[]` 四個容器裡各自完整序列化
+    # 一份（同一組合約在多個容器重疊出現時，最多重複 4 次）。現在集中
+    # 存進 `candidate_pool`（單一頂層字典，鍵＝`candidate_key`，跨策略
+    # 共用一份——`candidate_key` 本身已含策略前綴，天生跨策略不衝突），
+    # 其餘四個位置一律只存 key 引用。`_candidate()` 的輸出對於同一個
+    # `candidate_key` 是 container-invariant（不讀入選它的是哪個容器、
+    # 第幾名、跟誰比較——`idx`／`n_pairs` 這類容器相依資訊只餵給
+    # `CandidateView.pros`，而 `pros` 從不序列化進 View，見
+    # `_candidate()` 逐欄核對），因此「由哪個容器第一個把它放進池子」
+    # 不影響輸出內容，去重可以安全地只看 key。
+    pool: dict[str, dict] = {}
+
+    def cand_key(cv, strategy) -> str:
+        key = candidate_key(cv)
+        if key not in pool:
+            # V8（#56，spec R1 §4.2 A2）：`_candidate()` 現在還要算買價
+            # 指引警示（`guidance_judgments`／`spread_guidance_judgments`），
+            # 兩者只讀 `p.iv_shifts`，不讀 `p.strategy`——`base` 不必為
+            # 每個 `r` 各自替換 strategy 也正確，跟既有 `base.anchor`
+            # 的用法一致。
+            pool[key] = _candidate(cv, strategy, capital, today, base.anchor, base)
+        return key
 
     def strat(r):
         return {
@@ -588,36 +345,43 @@ def serialize_result(result: AnalysisResult, scenario_id: str,
                              "removed_sanity": r.pair_report.removed_sanity,
                              "passed": r.pair_report.passed}
                             if r.pair_report else None),
-            "candidates": [cand(cv, r.strategy) for cv in r.candidates],
-            "expiry_best": [cand(cv, r.strategy) for cv in r.expiry_best],
+            "candidates": [cand_key(cv, r.strategy) for cv in r.candidates],
+            "expiry_best": [cand_key(cv, r.strategy) for cv in r.expiry_best],
             "expiry_counts": [list(e) for e in r.expiry_counts],
             # T9（#23）：各到期日自己的前十名（含 Heatmap 矩陣，供 T10 詳細頁）。
+            # T09（#191）：`candidates`（完整內容）→ `candidate_keys`
+            # （key 引用），完整內容改到頂層 `candidate_pool`。
             "expiry_top10": [{"expiry": exp,
-                              "candidates": [cand(cv, r.strategy) for cv in cvs]}
+                              "candidate_keys": [cand_key(cv, r.strategy)
+                                                for cv in cvs]}
                              for exp, cvs in r.expiry_top10],
             # T9（附錄A7）：該次全部有效候選的歷史五欄位（不只入榜者）；
             # 更新時間／標的價共用父層 analyzed_at／meta.spot，不逐候選重複。
             "all_candidates": [_history_entry(sv, exp, rank)
                               for exp, ranked_group in r.expiry_ranked
                               for rank, sv in enumerate(ranked_group, start=1)],
-            "report_text": r.report_text,
-            # V8（#56，spec R1 §4.1）：新版型「⑥ 方法與假設」／「⑦ 免責
-            # 聲明」要獨立顯示、不再是 `report_text` 尾端的散文——內容
-            # 出自同一個 `report.py`（單一事實來源），只是拆成欄位。
-            # 每個策略各印一份而非全域一份：`p.spread_floor`／
-            # `max_spread_pct` 理論上策略間相同，但方法論文字本就是
-            # 逐 `render()`／`render_spreads()` 呼叫產生的，跟著 `r` 走
-            # 才不會在契約裡無中生有一個「全域方法論」概念。
-            "methodology_text": "\n".join(methodology_lines(base)).strip("\n"),
+            # T04（#188）：`report_text`／`methodology_text` 不再進 View
+            # payload——前端 `src/` 對兩者皆零引用（`methodology_text`
+            # 曾經宣告在契約型別裡，但既有測試明文斷言它從不被渲染）。
+            # `report_text` 本身仍是引擎欄位（`StrategyResult.report_text`，
+            # `option_chaser/cli.py` 的文字報告輸出直接讀 `res.report_text`，
+            # 不經過這個序列化函式），只是不再複製進 View；
+            # `methodology_text` 純粹是這裡的序列化產物，移除後
+            # `methodology_lines` 這個匯入在本檔案已無他用，一併移除。
+            # `disclaimer_text` 前端仍會渲染，維持不動。
             "disclaimer_text": disclaimer_text(),
         }
 
     def group(g):
         return {"expiry": g.expiry, "buffer_days": g.buffer_days,
                 "hidden_count": g.hidden_count,
+                # T09（#191）：`candidate`（完整內容）→ `candidate_key`
+                # （key 引用）——這裡橫跨多個策略（同一到期日、不同
+                # 策略各一列），`candidate_key` 本身跨策略不衝突，池子
+                # 因此不必按策略分開。
                 "rows": [{"strategy": row.strategy,
                           "badges": list(row.badges),
-                          "candidate": cand(row.candidate, row.strategy)}
+                          "candidate_key": cand_key(row.candidate, row.strategy)}
                          for row in g.rows]}
 
     all_quotes_filtered = bool(result.results) and all(
@@ -627,8 +391,18 @@ def serialize_result(result: AnalysisResult, scenario_id: str,
         for r in result.results)
 
     m = result.meta
+    results = [strat(r) for r in result.results]
+    expiry_groups = [group(g) for g in result.expiry_groups]
     return {
-        "schema_version": 1,
+        # T04（#188）：1→2——report_text／methodology_text 從每個策略的
+        # 結果物件移除。T09（#191）：2→3——`candidates`／`expiry_best`／
+        # `expiry_top10`／`expiry_groups[].rows[]` 四個容器裡的完整候選
+        # 內容集中到新增的頂層 `candidate_pool`，四個位置一律只留 key
+        # 引用。純資訊性欄位，讀取端不依它分派任何邏輯（見全文唯一引用
+        # 點：test_store_serialize.py 的版本斷言）；既有已存的 View
+        # （schema_version=1／2，仍是舊形狀）不做遷移，讀取端（`find_
+        # candidate()`／`representative_candidate()`）維持相容分支。
+        "schema_version": 3,
         "engine_version": __version__,
         "analyzed_at": m.fetched_at,
         "scenario_id": scenario_id,
@@ -644,8 +418,14 @@ def serialize_result(result: AnalysisResult, scenario_id: str,
         "capital_assumed": capital,
         "data_quality": {"fetched_at": m.fetched_at,
                          "all_quotes_filtered": all_quotes_filtered},
-        "results": [strat(r) for r in result.results],
-        "expiry_groups": [group(g) for g in result.expiry_groups],
+        "results": results,
+        # T09（#191）：`results`／`expiry_groups` 兩者的生成式都經由
+        # `cand_key()` 這個共用 closure 寫入同一個 `pool`——上面已先
+        # 算成區域變數 `results`／`expiry_groups`（而不是把生成式直接
+        # 寫進這個字典字面量），確保這裡讀到的 `pool` 已收齊兩邊寫入的
+        # 全部候選，不受字典字面量鍵值對求值順序影響。
+        "candidate_pool": pool,
+        "expiry_groups": expiry_groups,
         "hidden_expiries": list(result.hidden_expiries),
         "default_selection": (list(result.default_selection)
                               if result.default_selection else None),
@@ -661,33 +441,6 @@ def serialize_result(result: AnalysisResult, scenario_id: str,
     }
 
 
-def save_result(ws_root, scenario_id: str, view: dict) -> Path:
-    """檔名 = fetched_at.replace(':','')（Windows 安全；字典序＝時間序）。"""
-    ts = view["snapshot_ref"]["fetched_at"].replace(":", "")
-    path = Path(ws_root) / "results" / scenario_id / f"{ts}.json"
-    atomic_write_json(path, view)
-    return path
-
-
-def load_result(path) -> dict:
-    return json.loads(Path(path).read_text(encoding="utf-8"))
-
-
-def list_result_paths(ws_root, scenario_id: str) -> list[Path]:
-    """該劇本全部歷史快照檔案，依檔名（＝fetched_at，字典序＝時間序）排序。
-    `results/<sid>/` 目錄結構的唯一存取點——`latest_result_path()`／
-    `workspace.spread_history()`（T11，#25）都透過這裡讀，不各自 glob。"""
-    d = Path(ws_root) / "results" / scenario_id
-    if not d.is_dir():
-        return []
-    return sorted(d.glob("*.json"))
-
-
-def latest_result_path(ws_root, scenario_id: str) -> Path | None:
-    files = list_result_paths(ws_root, scenario_id)
-    return files[-1] if files else None
-
-
 def find_candidate(view: dict, key: str) -> dict | None:
     """依身份鍵在 view dict 裡找出那個候選的**完整**形狀（含各腿）。
 
@@ -701,16 +454,39 @@ def find_candidate(view: dict, key: str) -> dict | None:
     分組時才退去掃這份清單（#139）：兩腿策略（Spread）一律只認
     `expiry_top10`，「候選有沒有入榜」是既有規則的一部分，不因此擴大
     查找範圍——這保證兩腿路徑的既有行為與數值一字不動。
+
+    T09（#191，schema_version 3）：`expiry_top10[].candidates`／
+    `r["candidates"]` 從完整候選字典改成 `candidate_keys`／
+    `candidates`（key 字串清單），完整內容改查頂層 `candidate_pool`；
+    key「是否在這個容器的清單裡」才是既有規則的判準，`candidate_pool`
+    本身跨策略共用、不能單獨拿來判斷某個 key 是否屬於這個策略。舊存的
+    View（schema_version 1／2，無 `candidate_pool`）維持原始邏輯不動，
+    讀取端相容——這條票（#191）明文要求「既有已儲存的 View 不做資料
+    遷移，讀取端維持相容」。
     """
+    pool = view.get("candidate_pool")
+    if pool is None:
+        # 舊 schema（<=2）：容器內直接內嵌完整候選字典，原始邏輯不動。
+        for r in view.get("results", []):
+            groups = r.get("expiry_top10") or []
+            for group in groups:
+                for cand in group.get("candidates", []):
+                    if cand.get("candidate_key") == key:
+                        return cand
+            if groups:
+                continue
+            for cand in r.get("candidates", []) or []:
+                if cand.get("candidate_key") == key:
+                    return cand
+        return None
+    # 新 schema（>=3）：容器內只有 key 引用，完整內容統一查 `pool`。
     for r in view.get("results", []):
         groups = r.get("expiry_top10") or []
         for group in groups:
-            for cand in group.get("candidates", []):
-                if cand.get("candidate_key") == key:
-                    return cand
+            if key in (group.get("candidate_keys") or []):
+                return pool.get(key)
         if groups:
             continue
-        for cand in r.get("candidates", []) or []:
-            if cand.get("candidate_key") == key:
-                return cand
+        if key in (r.get("candidates") or []):
+            return pool.get(key)
     return None

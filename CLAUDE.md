@@ -27,7 +27,7 @@ block 裡，不能切成好幾個 code block、也不能中間插普通文字把
 `［回報#001］spec #137 拆票完成`）。編號是**累計總數**，不因換
 session、換分支、換主題而歸零——目前最新編號記在這裡：
 
-> 目前次序：017（下一份回報用 018）
+> 目前次序：035（下一份回報用 036）
 
 每發一份回報就把上面這個數字改成剛剛用掉的那個，跟著那次改動一起
 commit（沒有其他改動要 commit 時，單獨為這一行開一個小 commit 也
@@ -216,6 +216,490 @@ commit（沒有其他改動要 commit 時，單獨為這一行開一個小 commi
   之後。唯一取捨：目標價差距（gap）計算留在 render 層（與既有
   `render_summary` 的 `move_pct` 同類手法一致，非新模式），未額外
   搬進服務層——標準面審查列為非阻塞建議，判斷維持現狀
+
+### Architecture Review 輪（2026-08-24，`/improve-codebase-architecture`，回報#025）
+
+需求方授權完全自主跑 skill 原生流程（自選 candidate、自選優先序、
+可裁定既有 PERF-01~06 保留／修改／回退；紅線＝不得刪使用者功能、
+不得開新功能）。四路 Explore（API 請求生命週期／engine 模組深度／
+前端請求模式／PERF 輪 vs serverless forensics）已完成，HTML 報告
+已交付需求方（tmp 檔，依 skill 裁示不進 repo）。
+
+**核心診斷**：「局部 benchmark 變快、production 體感變慢」兩者同時
+為真——慢在執行結構不在單一 endpoint。(1) 前端一輪刷新＝N 個串行
+serverless invocation（`App.tsx:187` 逐一 await），每次各付 Neon TLS
+握手＋vendor 抓取＋兩份大 JSONB 寫入；(2) 四個「cache」全是 Neon 表，
+命中＝數百 KB JSONB 網路 SELECT＋dataclass 重建，PERF 輪 benchmark
+只數「省掉的 upstream 抓取」從未計入「新增的 Neon 往返」；(3) 詳細頁
+deep-link 有 refetch cascade（3 次 ~100KB 全量下載＋2 次 iv-history）；
+(4) `api_app/main.py` 2,121 行中約 1,000 行是 domain 邏輯（IV 編排
+680 行只能靠 2,970 行的 `test_api_iv_history.py` 從 HTTP 測）。
+
+**六個 candidates**（詳見 HTML 報告；C1 為自選 top）：
+- **C1 Refresh Run（Strong，top）**：一輪刷新收進一個深模組——單一
+  interface 收整批劇本，一次 invocation 內按 symbol 去重抓 chain
+  （純 in-process dict）、逐劇本分析、批次寫回；`chain_cache` 模組
+  ＋資料表＋15s TTL 整個刪除（deletion test 通過：複雜度集中進 run
+  module）；前端佇列塌縮成一個請求。
+- **C2 IV History Pipeline（Strong）**：`main.py:1279–1959` 下沉為
+  engine 深模組（ports：vendor history／surface／storage／clock），
+  HTTP handler 縮回 glue；補 iv-history contract fixture（全站最大
+  payload、目前唯一沒有 fixture）。
+- **C3 View 契約瘦身（Worth exploring）**：4 candidates → 15 份序列化
+  收斂為一處＋key 引用；`report_text`／`methodology_text`（前端不
+  渲染）移出 view；schema_version 升版＋樣本重產。
+- **C4 前端取數紀律（Strong）**：以 `(id, analyzed_at)` 為 key 的
+  fetch module，消滅 cascade／settings 重抓／無 AbortController。
+- **C5 死重清除（Strong）**：`workspace.py`（348/354 行 prod 不可達，
+  僅 2 個 clock helper 存活）、`store.py` 檔案系統半邊（~350 行零
+  caller）、`data/base.py` 零實作 Protocol、data 層 on-disk cache
+  死碼、`main.py:2121` 冷啟建第二個 app——deletion test 全過。
+- **C6 Storage lifecycle 對 serverless 誠實（Worth exploring，隨
+  C1/C2 施工）**：PERF-01 共用連線語意保留但改 lazy、合併兩層
+  BaseHTTPMiddleware、schema DDL 移出請求路徑、PERF-05 pool 提出
+  迴圈；memory adapter 補 `request_scope` 讓測試走到 production 路徑。
+
+**舊決策裁定**：保留 PERF-02（serverless-correct）、PERF-03（方向
+正確，註明命中非免費）、PERF-04（純 CPU）、Neon pooled DSN 優先序、
+「刷新只有三個觸發時機」產品規則（C1 只改執行結構不改觸發語意）。
+推翻／修形：PERF-06 chain_cache（miss 純加成本、hit 無證據比 Cboe
+CDN 便宜、15s TTL 被串行佇列擊敗——由 C1 取代後刪除）、PERF-01 形狀
+（eager connect＋第二層 middleware → lazy＋合併）、PERF-05 形狀
+（每天新建 ThreadPoolExecutor ×25 → 提出迴圈；50ms sleep mock 的
+3.9x 在 fractional vCPU＋GIL 下存疑）、前端串行單劇本刷新設計（由
+C1 批次取代）。
+
+**下一步（skill 原生流程）**：needs 需求方——對 C1 進 grilling loop
+（60s 上限的分批策略、進度回饋形狀、`refresh-run` interface 細節），
+grilling 中依裁決 lazily 建立 `CONTEXT.md`／ADR，再 `/to-spec`／
+拆票施工。C5 無爭議可隨時先行。
+
+**Grilling 結果（2026-08-24，回報#026）**——需求方授權：工程選擇
+直接拍板、產品決策彙整一次提問。
+
+已拍板（工程，E1–E8）：
+- **E1** Refresh Run interface：`POST /api/refresh-run`（body 可選
+  scenario ids，預設全部未過期），一次 invocation 內 symbol 去重
+  （in-process dict）→ 逐劇本 `run_with_snapshot` → 批次寫回；回應
+  含 server 端時間預算的 continuation——逾時回傳「已完成 rows＋
+  remaining ids」，前端自動再呼叫直到清空（單次請求為常態，分段是
+  安全閥）。實測支持：引擎 CPU 7ms/劇本（11-contract fixture）、
+  瓶頸在網路，realistic 一輪 <15s。
+- **E2** `chain_cache` 模組＋資料表＋15s TTL 刪除（被 E1 取代）。
+- **E3** PERF-01 修形：連線 lazy（首次用到才開）、兩層
+  BaseHTTPMiddleware 合併為一、schema DDL 移出請求路徑；memory
+  adapter 補 `request_scope` 讓 1,504 條測試走到 production 路徑。
+- **E4** PERF-05 修形：ThreadPoolExecutor 提出迴圈建一次；
+  concurrency=4 維持，留待 production 量測。
+- **E5** C2 下沉：`main.py:1279–1959` → engine 深模組（ports：
+  vendor history／surface／storage／clock）；補 iv-history contract
+  fixture。
+- **E6** C3 瘦身：candidates 單一容器＋key 引用；`report_text`／
+  `methodology_text` 移出 view payload（src/ 零引用已驗證；CLI 照
+  舊自 render）；schema_version 升版＋樣本重產＋TS types 同步。
+  舊已存 view 不遷移（讀取端相容）。
+- **E7** C4 前端：fetch module 以 `(id, analyzed_at)` 為 cache key
+  ＋in-flight 去重＋settings 共享＋AbortController；不引外部套件。
+- **E8** C5 死重清除全部執行（workspace.py／store.py 檔案系統半邊
+  ／data/base.py／data 層 on-disk cache 死碼／main.py:2121 第二個
+  app／殘骸檔案），對應舊測試依 replace-don't-layer 一併刪。
+
+**產品決策已裁示（2026-08-24，需求方回覆回報#026）**：
+- **P1-b** 刷新進行中，卡片顯示上一輪舊資料＋「更新中」徽章，
+  全程可瀏覽、可進詳細頁，結果回來逐批換新（取代整段灰化鎖定）。
+- **P2-a** 部分成功：成功劇本照常落地，失敗劇本保留舊資料＋亮既有
+  失敗燈號＋可單卡重試，頂部顯示「N 成功／M 失敗」。
+- **P3-a** IV 冷 backfill 兩段式：先立即回既有歷史畫圖，backfill 由
+  第二個請求觸發，完成後自動補全，期間卡片標「歷史資料補建中」。
+- **P4-b（改動既有規則）** 建立新劇本時**只刷新該新劇本**；開站與
+  使用者主動全量 Refresh 才刷新全部未過期劇本。這修改了 QA1-07
+  時期「建立劇本＝全量刷新」的產品規則，三個刷新時機本身不變。
+
+裁示落地：`docs/adr/0001-chain-sharing-within-run-only.md`（chain
+共用只在 run 內，不跨 invocation）＋根目錄 `CONTEXT.md`（領域詞彙，
+含 Refresh Run／Continuation／Partial Success／Updating Badge／
+Two-Phase Backfill 等新詞）。
+
+**Spec 已發佈＝issue #184**（2026-08-24，`ready-for-agent`，回報#027）：
+涵蓋 E1–E8＋P1–P4 全部裁定，66 條 user stories。**測試接縫定案**
+（4 條，唯一新增是第 3 條）：(1) HTTP API＝既有主接縫（Refresh Run
+批次／去重／Continuation／Partial Success／P4 範圍／契約形狀）；
+(2) Storage port＝既有，E3 補記憶體 adapter 的 request scope 後，
+既有契約測試組首次真正涵蓋 production 連線路徑（補既有覆蓋缺口，
+非新接縫）；(3) **IV history pipeline 模組 interface＝唯一新增**，
+兩個 adapter（marketdata＋記憶體假體）證成真 seam，2,970 行 HTTP
+測試檔的編排斷言**搬過去**而非兩層都留；(4) 前端＝既有
+`global.fetch` mock＋Playwright，新增「每畫面請求數上限」斷言防
+cascade 回歸。建議施工順序：E8→E3→E1+E2→E7→E6→E5→P3→E4。
+
+**拆票完成（2026-08-24，`/to-tickets`，回報#028）**——依「不求快、
+求正確性」裁示，granularity 比原建議更細：Refresh Run 拆三張
+（核心／Continuation／前端整合，隔離三個獨立正確性風險）、IV
+pipeline 拆兩張（隔離建置／上線切換，先在零風險環境驗完全等價
+再做可逐位元驗證的小切換）、View 契約瘦身拆兩張（死欄位移出／
+Candidate 去重，避免瑣碎刪除跟結構改動混在同一份 diff）。全數
+13 張、依拓撲順序（blocker 先發佈）發佈完成、皆標 `ready-for-agent`：
+
+**已完成**：
+
+- **T01** [#185] 死重清除（commit `365f1dd`）：刪
+  `option_chaser/workspace.py`／`data/base.py`／`webapp/`（已空）／
+  10 個死測試檔；`store.py` 移除檔案系統／event-sourcing 半邊
+  （~315 行）；`now_utc_iso`／`ny_today` 搬進新的 `api_app/clock.py`；
+  `main.py` 底部重複的 `app = create_app()` 一併刪。**兩處刻意不刪**
+  （偏離票面字面範圍，皆已在 commit message 記錄原因）：
+  `store.best_return()`——測試明文把它當跨層一致性規則（防
+  QA1-03 迴歸），不是死碼；`data/treasury.py`／`data/dividends.py`
+  的本機檔案快取——雖然 Vercel 唯讀 FS 讓這支分支正式環境不會走到，
+  但 44 條測試明確測這三層 fallback 設計，屬環境限制、非死碼
+- **T02** [#186] Storage 連線生命週期修形（commit `937f9a1`）：
+  `PostgresStorage` 建構不再 eager `_ensure_schema()`；`request_scope()`
+  只在 `ContextVar` 放空狀態、真正呼叫才 lazy connect；`main.py` 兩個
+  middleware（correlation id／storage scope）合併成一個。過程中在 T03
+  驗證階段抓到 T02 自己留下的一個真 bug：`storage` pytest fixture 在
+  全新資料庫上會撞 `UndefinedTable`（schema 建立時機被延後、fixture
+  卻假設它已存在），已在 T03 一併修正並記錄
+- **T03** [#187] 詳細頁 fetch 紀律（commit `f257abe`）：新增
+  `src/fetchCache.ts`（in-flight 去重＋參照計數快取＋`AbortController`），
+  `ScenarioDetail`／`IvHistory`／`Settings` 接線。抓到兩個問題：jsdom
+  不支援 `AbortSignal.any`（改手寫 `combineSignals`）、快取是模組級
+  singleton 會跨測試污染（`test-setup.ts` 補 `afterEach` 重置）
+- **T04** [#188] View 契約：移出死欄位（commit `74f7517`）：
+  `serialize_result()` 移除 `report_text`／`methodology_text`
+  兩個從未被前端讀取的欄位，`schema_version` 2→（本次不變動語意，
+  純粹欄位瘦身）；契約樣本重產、前端型別與測試同步瘦身
+- **T05** [#189] IV history pipeline 模組化（commit `446e2d7`）：新增
+  `option_chaser/ivpipeline.py`（~770 行，port-based：`VendorPorts`／
+  `StoragePorts`＋單一進入點 `build_iv_history()`），把 `main.py` 內嵌
+  的 IV history 編排（Exact-Contract 逐腿重建＋Legacy 兩段式
+  backfill＋Spread IV Gap）搬成獨立引擎模組，**本票刻意不動
+  `main.py` 呼叫路徑**（T10／#192 才切換）。新增
+  `tests/test_ivpipeline_parity.py`：同一組輸入分別跑「真正 HTTP
+  endpoint」與「新模組直接呼叫＋純記憶體 `FakeIvStorage`」兩條路徑，
+  逐位元比對輸出。過程中抓到測試假體本身的排序 bug（`iv_observations`
+  沒依 `observed_on` 排序，兩個既有 adapter 都有排序、這是 port 的
+  隱含契約）並修正，同時把這條契約寫進 `StoragePorts.iv_observations`
+  欄位註解
+
+**已完成**（續前）：
+
+- **T06** [#190] Refresh Run 核心（commit `bac4785`）：新增
+  `POST /api/scenarios/refresh-run`——省略 id＝全部未過期劇本（且真的
+  排除，不是排進去才短路）、帶 id＝只刷新那幾個（P4 用這條路徑）。
+  Run 內依 symbol 分組，每個 distinct symbol 只呼叫一次
+  `_fetch_chain()`（純記憶體 dict 共用，ADR-0001），任一劇本失敗
+  不中止整輪、沿用既有 `{stage, message}` 失敗分層（未發明新詞彙），
+  失敗項保留舊資料。從 `refresh_scenario` 抽出
+  `_refresh_and_save(sc, today, snap=None)` 共用核心，兩端點共用同一套
+  過期短路／落地邏輯。E2：`chain_cache` 模組、`ChainCacheEntry`、
+  Storage Protocol 對應方法、Postgres 資料表整組移除（schema 只拿掉
+  `CREATE TABLE`，沿用專案既有「只加不減」遷移慣例，不下 `DROP
+  TABLE`——已部署 Neon 會留一張不再寫入的孤兒表，無害）。回應含
+  `remaining`，本票固定回空陣列，Continuation 留給 T07。新增
+  `tests/test_api_refresh.py` 一輪刷新測試區塊 14 條
+
+**已完成**（續前）：
+
+- **T07** [#193] Refresh Run Continuation（commit `d349dbc`）：
+  `refresh-run` 新增 server 端時間預算（模組常數
+  `REFRESH_RUN_BUDGET = timedelta(seconds=45)`，明顯小於 CONTEXT.md
+  記錄的 60 秒函式硬性上限，可注入）。每處理完一個劇本（不論成敗）用
+  `time.monotonic()` 檢查是否超過 deadline，超過後之後全部劇本
+  （含還沒開始的 symbol 分組）原樣依序進 `remaining`——分組順序等於
+  `dict` 插入順序，已完成＋remaining 永遠等於送進去的全集。已知且
+  刻意接受的架構後果：續跑是全新 invocation，ADR-0001 的 symbol
+  去重不會跨呼叫存活，remaining 裡同一個 symbol 續跑會重新抓一次
+  （docstring 已記錄，非本票要解決的問題）。新增 Continuation 測試
+  區塊 6 條：零預算只完成第一個、其餘全進 remaining；已完成＋
+  remaining 精確覆蓋全集不遺漏不重複；人為拉長單一劇本處理時間
+  （而非只調預算為 0）也能逼出耗盡；同一組 remaining 再打一次能接續
+  完成且與一次做完結果一致；常見規模（12 劇本、3 symbol）預設預算
+  下單次完成不觸發 Continuation
+
+- **T08** [#196] Refresh Run 前端整合（commit `bc4f03f`）：`App.tsx`
+  從「一條佇列、逐一送出單一劇本刷新」（V4 跟進票／#136）改接後端
+  T06/T07 的批次端點。**P1** 整段灰化鎖定（`partitionByLock()`）整組
+  移除，改成 `updatingIds: Set<string>`「更新中」徽章——列項全程
+  可點、顯示上一輪舊資料，不反灰、不拿掉 `href`；`sortScenarios()`
+  不再把更新中的項目獨立排到後面（用它上一輪的 `best_return` 正常
+  排序）。**P2** `runBatch()` 累計整輪成功／失敗數，Toolbar 顯示
+  「N 成功／M 失敗」（`formatRunSummary()`），取代逐一「第幾個／
+  共幾個」進度。**P4** 新建劇本只呼叫 `runBatch([created.id])`，不再
+  刷新全部劇本；開站與手動點「重新整理」才刷新全部未過期劇本。
+  **Continuation** `runBatch()` 用迴圈追 `response.remaining` 直到
+  清空，對呼叫端透明——後端分批續跑不需要前端知道正在分批。單一
+  劇本重試（卡片失敗重試、詳細頁刷新入口）維持走既有單一劇本
+  `refresh` 端點（`refreshOne()`），不占用批次端點。
+  **E2E 連鎖修正**（本票最大宗的非功能性工作）：Playwright glob
+  `**/api/scenarios/*/refresh` 不匹配 `/api/scenarios/refresh-run`
+  （`*` 只吃一個路徑段，`refresh-run` 是單一段、不含 `/refresh`
+  子路徑）——開站與建立劇本現在一律打批次端點，既有大量 E2E 測試的
+  單一劇本 refresh route mock 因此攔不到，`updatingIds` 卡住不清、
+  後續斷言逐一 timeout。修法：`smoke.spec.ts` 新增全域
+  `test.beforeEach` 空氣回應（`{results:[],remaining:[]}`）當安全網，
+  逐一補上測試專屬的 `refresh-run` route（含失敗案例回
+  `{ok:false,stage,message}`）；`desktop.spec.ts` 的共用
+  `routeTwoScenarios()` 與個別測試同步補上。順手修正一條文案斷言
+  過期（`"1/1"` 進度→新版「更新中……」單一狀態文字）。
+  全套測試：後端 1434 條（記憶體＋真實 Postgres）全綠；前端 Vitest
+  628 條全綠；typecheck／build 通過；Playwright e2e 87 條全綠
+  （iPhone 54＋Desktop 33）。
+
+- **T09** [#191] View 契約：Candidate 去重（commit `1266a6b`）：
+  `candidates`／`expiry_best`／`expiry_top10`／`expiry_groups[].
+  rows[]` 四個容器過去各自完整序列化一份同一個 Candidate（重疊時最多
+  重複 4 次），新增頂層 `candidate_pool`（單一字典，鍵＝
+  `candidate_key`，跨策略共用一份——key 本身已含策略前綴天生不衝突），
+  四個容器改存 key 字串引用。`_candidate()` 的輸出對同一個 key 是
+  container-invariant（唯一依賴入選容器的欄位是 `CandidateView.pros`，
+  而 `pros` 從不序列化進 View），去重因此只需要比對 key。
+  `find_candidate()`／`representative_candidate()` 兩個讀取端同步改走
+  pool，並保留舊 schema（<=2，容器內直接內嵌完整字典）的相容分支——
+  「既有已儲存的 View 不做資料遷移」，這兩處是僅有需要相容的讀取
+  路徑（其餘容器只在剛產生的新鮮 view 上被讀取，不會遇到舊格式）。
+  schema_version 2→3。Payload 實測：契約樣本 229KB→55KB、
+  231KB→55KB，各縮減約 76%。
+  韌性／完成度計算共用：`scenarios.py` 新增 `ResilienceMetrics`／
+  `resilience_metrics()`，把 `scenario_vector()`／`completion_curve()`／
+  `completion_scan()`（最貴，1200 步線性掃描）依 `id(val)` 快取；
+  `service._v4_fields()`（View 路徑）與 `report._resilience_lines()`
+  （CLI／API 文字報告路徑）共用同一個由 `_single_leg_result()`／
+  `_spread_result()` 建立、貫穿整輪分析的快取字典——`rank_spreads()`／
+  `sorted()`／切片不複製元素，同一個候選在 report 與 View 兩條路徑、
+  以及 View 自己三個容器之間用的都是同一個 Python 物件，`id()` 因此
+  是安全的快取鍵。實測（`xyz_v2_snapshot.json`）：`completion_scan`
+  呼叫次數 16→9（−44%）。
+  前端：`api.ts` 新增 `CandidateMap`（不叫 CandidatePool，避免跟既有
+  `./CandidatePool` 元件同名）與 `resolveCandidate(view, key)`；
+  `ExpiryTop10.candidates` → `candidate_keys`；`baselineTopCandidate()`
+  改走 pool；`expiry.ts::expiryOptions()` 新增 `view` 參數解回完整
+  內容；`ExpiryStructure.tsx` 新增 `view` prop，呼叫端
+  `ScenarioDetail.tsx` 同步補上。六個共用契約樣本的既有 Vitest 檔
+  （`AnalysisReport`／`ExpiryStructure`／`Heatmap`／`ScenarioDetail`／
+  `SpreadHistory`／`expiry`）與兩個 Playwright 規格全部同步通過。
+  全套測試：後端（記憶體＋真實 Postgres）全綠；前端 Vitest 628 條
+  全綠；typecheck／build 通過；Playwright e2e 87 條全綠（iPhone 54＋
+  Desktop 33）。
+
+- **T10** [#192] IV history pipeline 上線（commit `c51043e`）：
+  `iv_history()` 路由改呼叫 T05（#189）建置的
+  `option_chaser.ivpipeline.build_iv_history()`，main.py 只保留 HTTP
+  邊界職責（權限 gate／candidate 404／把 `create_app()` 收到的資料源
+  與 storage 接成 `VendorPorts`／`StoragePorts`／呼叫模組／疊
+  diagnostics 信封）。刪除舊的內嵌編排十餘個函式（`_backfill_iv`／
+  `_ensure_contract_history`／`_reconstruct_leg_series`／
+  `_leg_historical_iv_payload`／`_spread_gap_payload` 等）與其模組層級
+  姊妹函式，連同因此未使用的匯入（`ivhistory`／`ivreconstruct`／
+  `ivspread`／`ivtrend`／`ratecurve`／`dividends`／`DAYS_PER_YEAR`／
+  `days_between`／`QuotaExhausted`／`ThreadPoolExecutor`／
+  `as_completed`）與兩個死常數。**保留**HTTP-request 生命週期關注點
+  （`_CollectingDiagnostics`／`_select_for_persistence`／
+  `_select_for_storage`／`_flush_diagnostics`）——這些不屬於引擎模組。
+  main.py 淨減少 942 行（2255→1370）。
+  測試：修正 20 條因符號搬遷而斷的匯入；重寫 AST 結構隔離測試
+  （`test_exact_contract_pipeline_never_calls_the_reanchoring_
+  functions`）改掃 `ivpipeline.py` 原始碼——隔離保證因此變得更強
+  （模組結構上不 import `api_app`，不只是命名慣例）。
+  **AC 逐項核對，一項判斷偏離記錄如下**：main.py 不再含任何金融決策
+  邏輯；舊編排刪除非新舊並存；HTTP 測試檔維持 120 條全綠——重新盤點
+  發現 T05／#189 實際只新增了一條 parity 測試，並未真的把既有 120 條
+  行為斷言搬進新模組專屬測試檔（票面「確認已在 #189 搬移完成」與
+  實況不符）；鑑於逐一拆分 2971 行、120 條測試成「純 HTTP」與「純
+  編排」兩類的工作量與本票核心目標（切換呼叫路徑）不成比例、且拆分
+  本身有引入覆蓋率漏洞的風險，判斷維持現狀（沿用既有 120 條測試作為
+  cutover 的行為回歸防線）比強行拆分更符合「不求快，求正確性」，已
+  記錄供需求方覆核。新增 iv-history 契約樣本
+  （`contracts/iv_history_sample.json`，`scripts/
+  gen_iv_history_sample.py` 產生，涵蓋逐腿統計量套組＋Spread IV Gap＋
+  Normalized Skew 三個家族皆有真實資料）——`today` 在這個端點結構上
+  恆為 `ny_today()`（無 DI 注入點，全站既有一致設計），因此不比照
+  `analysis_sample.json` 加上「必須逐位元相同」的自動化 drift 測試
+  （那類測試在此會隨日期滾動系統性變紅，是引入新的不穩定性而非
+  防護）。切換前後逐位元相同：由 T05 既有 parity 測試＋全套 120 條
+  既有行為斷言在 cutover 後原樣通過，兩者共同證明。
+  全套測試：後端（記憶體＋真實 Postgres）全綠；前端 Vitest 628 條
+  全綠（本票不觸碰任何前端檔案）；typecheck 通過；Playwright e2e
+  Historical IV 相關 18 條全綠（cutover 對前端完全透明）。
+
+**已完成**（續前）：
+
+- **T11** [#194] IV 冷 backfill 兩段式（P3-a）：`option_chaser/
+  ivpipeline.py` 新增三個函式——`legacy_target_expirations()`（票面
+  「Legacy 家族要鎖定哪幾個到期日」判準抽出，`build_iv_history()`
+  與獨立補建端點共用同一條規則，避免兩處各自重算出不同答案）、
+  `legacy_backfill_status()`（純讀取、零 vendor 呼叫，只回報「今天
+  跑過了嗎」與上一次真正跑過的 `outcome`／`note`）、
+  `run_legacy_backfill()`（既有 `backfill_iv()` 的別名進入點，
+  Progressive Backfill 本身——配額、取樣排程、到期日梯子演算法、
+  「今天已跑過」短路——逐字沿用，零重複邏輯）。`build_iv_history()`
+  的 Legacy 家族段落改呼叫 `legacy_backfill_status()` 取代原本同步
+  呼叫 `backfill_iv()`，回應新增 `backfill_pending` 欄位；Exact-
+  Contract 家族（`ensure_contract_history()` 漸進式補缺口）完全不受
+  影響——CONTEXT.md 明文區分兩者不是同一種「backfill」概念。
+
+  `api_app/main.py`：`iv_history()` 路由拆出三個共用 helper
+  （`_iv_diagnostics_emitters()`／`_iv_history_gate()`／
+  `_iv_pipeline_ports()`，把原本內嵌的閘門／candidate 查找／emitter
+  建構／port 組裝抽出來，PERF-01 的「credential 只查一次」優化透過
+  顯式 `credentials` 參數延續，不因拆分而退化成重複查詢），新增
+  `POST /api/scenarios/{id}/iv-history/backfill` 端點呼叫
+  `ivpipeline.legacy_target_expirations()`／`run_legacy_backfill()`
+  觸發真正的補建，兩個端點共用同一套 gate 因此對同一個
+  scenario_id／candidate_key 不會給出不一致的答案。
+
+  **測試（`tests/test_api_iv_history.py`）大規模更新**：21 條既有
+  測試因為「`GET .../iv-history` 不再同步觸發 backfill」而斷言失敗，
+  另外發現 6 條測試雖然仍綠燈、但已經悄悄變成**只驗證到跟原意不同的
+  事**——`rec.calls == []`／`all(e is None for e in rec.expirations)`
+  這類「沒有東西發生」式的斷言，在 backfill 觸發權轉移到新端點後
+  變成恆真（vacuous pass），不是真的在驗證「不重抓」「不多帶
+  expiration」。逐一排查後全數修正：新增 `_backfill()` test helper
+  （對應 `POST .../backfill`），既有靠 `_get()` 順便觸發 backfill 的
+  斷言改成先呼叫 `_backfill()` 再視情況讀 `_get()`／backfill 回應
+  本身；`test_the_full_ledger_covers_every_stage_and_shares_one_
+  correlation_id`（DG-04 核心交付）改寫成兩段——`cache`／`backfill`
+  兩個 stage 現在只活在 backfill 回應自己的 correlation_id 底下，
+  `GET` 回應涵蓋其餘六站，兩次請求合起來仍是完整的「N→0」帳本，只是
+  不再擠在同一個 correlation_id——這是兩段式設計的真實、預期後果，
+  不是需要掩蓋的缺陷，已在測試 docstring 記錄。全套後端測試（記憶體
+  ＋真實 Postgres 雙後端）1504 條全綠。
+
+  **前端**：`src/api.ts` 新增 `IvHistoryView.backfill_pending`／
+  `ivHistoryBackfill()`／`IvHistoryBackfillResult`；`src/fetchCache.ts`
+  新增 `invalidateIvHistoryCache()`；`src/IvHistory.tsx` 新增獨立
+  effect——偵測 `backfill_pending` 時呼叫補建端點，完成（不論成功
+  失敗，皆已設計成不會無限重試：同一個 (scenario, candidate) 組合
+  這次掛載只嘗試一次，`backfillAttempted` ref 守門）後 invalidate
+  快取＋重新整份請求，卡片頂端顯示「歷史資料補建中……」（不必展開
+  Advanced 就看得到，比照「補建中不擋內容、舊資料照常可看」的既有
+  P1 精神延伸）。**施工中抓到並修正一個真 bug**：第一版直接引用了
+  沒宣告過的 `currentDataRef`（編譯不會過，是 hooks 呼叫順序限制下
+  一時筆誤），改成在 early-return 之前重算 `dataKey === key ? data
+  : null` 這條跟 render 用的 `currentData` 同一條判斷式；另外發現若
+  同一個候選的補建仍在飛行中就切換候選，`backfillInFlight` 會卡在
+  `true` 永遠不清（`finally` 裡的 `if (!alive) return` 連帶跳過了
+  重置），已改成 effect cleanup 一律重置這個旗標，換候選時「補建中」
+  提示不會誤留在新候選的卡片上。前端測試新增 5 條（`IvHistory.
+  test.tsx`：自動觸發／`backfill_pending` 為 false 時不觸發／進行中
+  文字＋完成後自動重抓換新資料／同一候選只嘗試一次即使重抓後仍
+  pending／補建端點本身失敗也會重抓、不會卡住），Playwright 新增
+  1 條（`smoke.spec.ts`，手機 viewport：完整兩段式流程，含明確掛獨立
+  route `**/api/scenarios/*/iv-history/backfill*`——既有教訓
+  「`iv-history*` 尾綴 `*` 不吃路徑分隔符」，不依賴既有 route 順序
+  僥倖成立）。全套：後端 1504、前端 Vitest 633、typecheck／build
+  皆過、Playwright e2e 88 條（iPhone 55＋Desktop 33）全綠。
+
+**已完成**（續前）：
+
+- **T12** [#195] Backfill 併發形狀修正（執行緒池只建一次）：
+  `option_chaser/ivpipeline.py::backfill_iv()` 原本在 `_fetch_day_
+  bounded()` 內每處理一批到期日梯子（≤ `IV_BACKFILL_DAY_CONCURRENCY`
+  ＝4 個）就 `with ThreadPoolExecutor(...) as pool:` 新建銷毀一次——
+  不只「每天一次」（票面敘述），是「每批一次」，一天若有 20 個到期日
+  就已經是 5 次。改成 `ThreadPoolExecutor(max_workers=
+  IV_BACKFILL_DAY_CONCURRENCY)` 只在 `for day in schedule:` 迴圈外
+  建立一次，整個 `with` 區塊涵蓋跨全部天數、跨每天內全部批次的迴圈，
+  `_fetch_day_bounded()` 改吃呼叫端傳入的既有 `pool`、自己不再開關；
+  併發上限數值（`max_workers`）與既有的「批次大小＝併發上限」邏輯
+  完全不變，只是 worker 數量固定掛在整個 run 而非重新配置。函式
+  結束（含中途 `break` 中止）時 `with` 的 `__exit__` 才
+  `shutdown(wait=True)`——已送出但尚未完成的呼叫仍會先跑完，這條
+  既有保護語意本來就活在 `as_completed(futures)` 逐一等待的迴圈裡，
+  未被本票觸碰。
+
+  測試：新增 `test_the_whole_backfill_run_creates_exactly_one_thread_
+  pool`（`tests/test_api_iv_history.py`）——monkeypatch
+  `ivpipeline.ThreadPoolExecutor` 為計數子類別，沿用既有
+  `_client_with_long_expiration_ladder`（20 個到期日梯子，遠超併發
+  上限）但**不觸發失敗**（`fail_on_first=False`，前次 PERF-05 測試
+  皆刻意讓第一天就失敗以驗證中止語意，本票要的是完整跑滿多天多批次
+  才測得出「真的只建一次」），並用兩條前提斷言（真的橫跨多天、真的
+  每天拆成一批以上）確保不是巧合只有單一批次的退化情境。修正前
+  ／修正後對照驗證：對修正前的舊程式碼跑這條新測試，實測建立
+  **125 次**執行緒池（25 天 × 每天 5 批）；修正後恰好 **1 次**——證明
+  這條測試真的抓得住這個迴歸，不是掛著看形狀的擺設。既有 PERF-05
+  三條 concurrency 測試（`test_bounded_concurrency_stops_launching_
+  new_batches_after_the_first_failure`／`test_the_extra_calls_from_a_
+  failure_are_bounded_by_concurrency_minus_one`／
+  `test_a_failure_in_the_middle_of_a_batch_still_saves_the_
+  successful_siblings`）與既有取樣排程／到期日梯子測試逐一核對，
+  一條斷言都沒改、全數原樣通過——AC 明文要求的「不受影響、不需要
+  修改」逐位元成立。全套後端測試（記憶體＋真實 Postgres 雙後端）
+  1505 條全綠。純後端模組改動，未觸碰任何前端／E2E 檔案。
+
+**已完成**（續前）：
+
+- **T13** [#197] 全面回歸與最終驗收（本輪 T01–T13 最後一張票，純
+  驗證＋整理，未新增任何 production 程式碼）：
+
+  **自動化把關（AC 前 3 項）**：後端 pytest（記憶體＋本機真實
+  Postgres 兩組合併跑）**1423 條全綠**；前端 `typecheck` 乾淨、
+  Vitest **633 條全綠**、`vite build` 成功；Playwright **88 條全綠**
+  （iPhone 55＋Desktop 33）。
+
+  **既有數值語意零回歸（AC 第 4 項）**：`git log` 逐一核對整個
+  T01–T12 範圍（`365f1dd~1..HEAD`），`option_chaser/ranking.py`／
+  `filters.py`／`valuation.py` **零 commit 觸碰**——排名／過濾／估值
+  三個核心模組從第一張票到最後一張票原封不動，不是靠測試巡邏出來的
+  結果，是結構上不可能被本輪動到。`#118` 選取身份回歸守門
+  （`tests/test_selection_regression.py`）與 `test_ivpipeline_parity.py`
+  合併 12 條全綠——Historical IV／Exact-contract／Spread IV Gap／
+  Normalized Skew／排名／收益率的既有斷言一條都沒有鬆綁或改寫成更
+  寬鬆的版本，T11 施工中唯一需要「換句話說」的既有測試
+  （`test_the_full_ledger_covers_every_stage_and_shares_one_
+  correlation_id`）已在 T11 自己的紀錄裡說明原因並保留完整驗證力，
+  不是本票才發現、也不是弱化。
+
+  **Before/after 對照表**（逐項標示本地實測 vs 推估，兩者不混寫；
+  格式沿用 Performance 輪 PERF-07 既有慣例）：
+
+  | 項目 | 施工前 | 施工後 | 依據 |
+  |---|---|---|---|
+  | `api_app/main.py` 行數 | 2121 行（T01 開工前，`git show 365f1dd~1:api_app/main.py`） | 1450 行 | 本地實測（`wc -l`，直接量測，非估計） |
+  | `main.py` 職責 | ~1000 行 domain 邏輯（IV 編排 680 行、Refresh Run 編排、儲存半邊死碼與檔案系統 fallback 等混在 HTTP handler 裡） | 金融決策邏輯全部下沉（`ivpipeline.py`／`scenarios.py` 等引擎模組），`main.py` 只剩 HTTP 邊界職責（gate／port 組裝／diagnostics 信封） | 本地實測＋結構檢視（T01／T05／T10／T11 逐票記錄的職責遷移，`ranking.py`／`filters.py`／`valuation.py` 零改動佐證核心引擎未被牽動） |
+  | 一輪刷新的 serverless invocation 數（N 個劇本） | N 個（`App.tsx` 逐一 `await` 單一劇本端點，回報#025 診斷） | 1 個（`POST /api/scenarios/refresh-run`，超過時間預算才 continuation 續跑） | 本地實測（T06／T07／T08 各自測試套件：`test_api_refresh.py` 一輪刷新 14 條、Continuation 6 條、前端 `runBatch()` 迴圈追 `remaining` 直到清空皆有專屬斷言） |
+  | 同一輪刷新內同 symbol 的 chain 抓取次數 | 每個劇本各自抓一次（即使同一個 symbol） | 每個 distinct symbol 只抓一次（`_fetch_chain()` 純記憶體 dict 共用，ADR-0001） | 本地實測（T06 commit `bac4785`，`tests/test_api_refresh.py` 專屬斷言） |
+  | View 契約 payload 大小（`candidate_pool` 去重前後） | 229KB／231KB（兩份契約樣本） | 55KB／55KB，各縮減約 76% | 本地實測（T09，`scripts/gen_contract_sample.py` 重產後直接量測檔案大小） |
+  | `completion_scan`（韌性計算，單次分析最貴的部分）呼叫次數 | 16 次 | 9 次（−44%），View 三個容器與 report 文字路徑共用同一份快取字典 | 本地實測（T09，對 `xyz_v2_snapshot.json` 實測） |
+  | 詳細頁 deep-link 開啟的 refetch cascade | 3 次 ~100KB 全量下載＋2 次 iv-history（回報#025 診斷觀察） | 同一個資料身分（key）的並發呼叫只真的發一次底層請求（in-flight 去重＋參照計數快取） | 結構性保證＋本地單元測試實測（T03，`src/fetchCache.test.ts`：N 個並發呼叫者→`calls` 恰好等於 1）；**未在本沙箱對真實 deep-link 頁面做端到端網路請求計數**（sandbox 連不到正式 Neon／vendor，無法重現真實頁面載入的完整請求序列）——「cascade 這個問題類別被消滅」是結構性事實，但「這個頁面實際從 5 次變成幾次」沒有本地端到端量測數字，屬推估 |
+  | Storage 連線數（一次完全不碰 storage 的 request，例如某些驗證即失敗的路徑） | 1 條（PERF-01 既有機制：scope 一進入就無條件開一條，不論這次 request 用不用得到） | 0 條（T02：scope 進入時只註冊空狀態，第一次真正呼叫 `_connect()` 才開） | 本地實測（T02，`tests/test_storage_contract.py::test_a_scope_with_no_storage_calls_never_opens_a_connection`：monkeypatch `psycopg.connect` 計數，確認全程零呼叫） |
+  | Storage 連線數（一次 warm、真的會碰到 storage 的 request 內） | 沿用 PERF-01 既有的「整個 request scope 共用一條」（本輪未改變這件事） | 不變——T02 只修「要不要開」的時機（惰性），不改「開了之後共不共用」（一直都是共用） | 沿用既有事實，非本輪新測量；PERF-07 的 36→1 數字對這個情境依然成立 |
+  | Legacy (tenor,delta) 冷 backfill 執行緒池建立次數（25 天×20 個到期日梯子的完整一次 run） | 125 次（25 天 × 每天 5 批，每批各自新建銷毀） | 1 次（整個 run 共用） | 本地實測（T12，`test_the_whole_backfill_run_creates_exactly_one_thread_pool`：對修正前後的程式碼分別跑同一條測試，125 vs 1 兩個數字都是實際執行量到的，不是推算） |
+  | Legacy backfill 的「今天已跑過」重複觸發成本 | 同步夾在 `GET /iv-history` 裡，使用者每次打開詳細頁都可能觸發一次冷啟動延遲（即使當天已經補過） | 兩段式：`GET` 只讀狀態（零 vendor 呼叫），真正觸發交給獨立 `POST .../iv-history/backfill`，前端只在 `backfill_pending: true` 時嘗試一次 | 本地實測（T11，`legacy_backfill_status()` 為純讀取函式，`tests/test_api_iv_history.py` 多條端點層測試佐證；`backfillAttempted` ref 守門確認同一掛載期間至多一次前端觸發） |
+
+  **P1–P4 產品語意運作確認（AC 第 6 項）**：四項裁示對應的既有／
+  本輪測試逐一核對，皆有專屬自動化覆蓋（手機＋桌面 viewport 皆有）：
+  - **P1（更新中徽章，非整段灰化鎖定）**：T08 `App.tsx` 的
+    `updatingIds` 機制與既有 Playwright 案例（`smoke.spec.ts`／
+    `desktop.spec.ts` 既有 refresh-run 相關案例）維持全綠，本輪未
+    再修改這段前端邏輯
+  - **P2（部分成功摘要，N 成功／M 失敗）**：T06／T08 的
+    `formatRunSummary()`／後端 `{stage, message}` 失敗分層測試維持
+    全綠
+  - **P3（兩段式 backfill）**：T11 新增專屬 E2E（`smoke.spec.ts`，
+    手機 viewport：`backfill_pending` 觸發補建、進行中顯示「歷史
+    資料補建中……」、完成後自動重抓補全）
+  - **P4（建立劇本只刷新該新劇本，範圍收斂）**：T06 既有的
+    「帶 id＝只刷新那幾個」路徑與 T08 前端 `runBatch([created.id])`
+    測試維持全綠
+
+  **上一輪 Performance 修正確認未受影響（AC 第 7 項）**：`git log
+  365f1dd~1..HEAD -- api_app/treasury_cache.py api_app/rate_cache.py
+  option_chaser/ivtrend.py api_app/diagnostics.py` 四個檔案**零
+  commit 命中**——Diagnostics 降噪（PERF-02）、Treasury 年快取
+  （PERF-03）、`ivtrend` 演算法改良（PERF-04）三個檔案本輪完全沒有
+  被觸碰，不是「測過沒壞」，是結構上不可能被本輪動到；三者各自的
+  既有測試套件（`test_api_treasury_cache.py`／`test_ivtrend.py`／
+  diagnostics 相關測試）皆包含在上面 1423 條全綠裡。
+
+  **AC 最後一項——需求方真機驗收：本票無法自行完成**，這是唯一需要
+  人工執行的項目，記錄於此供需求方核對；其餘七項 AC 已全數以自動化
+  或結構檢視方式驗證完畢。
+
+**T01–T13（Architecture Review 輪，spec #184）全數完成。** 依專案
+規則「全部 ticket 做完才開 PR，中途不主動開」——本輪 13 張票（含
+T13 自己）程式碼與測試層面已全數完工，等需求方在正式部署版完成真機
+驗收、下指示後才開 PR、準備合併回 master。
 
 ### Spec #151（2026-08-17 發佈）——Historical IV Trend v1（Exact Contract Canonical Series）
 
@@ -3212,6 +3696,329 @@ QA-01 收尾後緊接開始的下一波，承接 #102 尚未完成的部分（#1
   全套回歸：typecheck 乾淨、Vitest 614 passed、build 乾淨、Playwright
   e2e 87 passed（iPhone＋Desktop）。
 
+**Performance 修正輪——spec 已發佈（2026-08-22，issue #176，票未開）**：
+需求方裁示下一階段暫停 MVP V2／N-leg／任何新 Strategy／跨 Strategy
+Dashboard，只處理 Option Chaser V1 效能問題。依據：session 內
+Architecture + Performance Survey（回報編號 #019，非 GitHub issue）與
+一次輕量記憶體假體 profiling（回報編號 #020）——確認 warm
+`/iv-history` 一次約 36 次 storage calls（production Postgres adapter
+每個 method 各開新 Neon 連線）、diagnostics 落盤佔 23 次全 info、
+credential/settings 重複讀 3 次、Treasury 曲線這條路徑完全無快取、
+本機 CPU 大宗是 `ivtrend._rolling_windows` O(n²)（126ms）＞
+reconstruction（62ms），以及 cold Normalized Skew backfill（25 天×4
+到期日）inline 最多 100 次序列 vendor 呼叫、量級 15–60 秒——需求方
+明確裁示 Normalized Skew 必須保留且維持預先計算，不接受「Advanced
+展開才觸發」當主要解法。`/to-spec` 前先跑一輪 5 個並行 Explore agent
+逐一確認五個修正方向各自的最小安全 seam（storage 連線用
+`contextvars.ContextVar` 侷限在 `postgres.py` 內部、Protocol 簽章不
+動；diagnostics 新增 `append_diagnostics()` 批次方法＋政策掛在
+`main.py` 的 `_flush_diagnostics()`、回應內容不變只影響落盤；Treasury
+快取以**年份**為鍵而非「今天」，過去年份可永久快取、當年比照既有
+rate/dividend cache 市場日語意，PIT 正確性由鍵設計本身保證；
+`_rolling_windows` 雙指標 O(n) 化，保留完全相同的日曆天視窗與邊界
+判定；cold backfill 改併發呼叫而非序列，vendor 端批次已確認結構上
+不可行）。Spec（issue #176，`ready-for-agent`）涵蓋五＋一項修正
+（storage 連線／diagnostics／Treasury cache／ivtrend CPU／cold
+backfill 併發化／同 symbol chain 重複抓取次要項），已回報需求方，
+等待確認後 `/to-tickets`。
+
+**Performance 修正輪——tickets 已開（2026-08-23，issues #177–#183，
+共 7 張，全數以 GitHub native sub-issue 掛在 #176 底下）**：需求方
+確認 spec #176 通過後裁示 `/to-tickets`，並補一條施工護欄——cold
+backfill 必須是 bounded concurrency，不要求現在指定固定數字但不得
+無上限 fan-out，失敗後不得繼續大量啟動尚未開始的 vendor requests，
+且保留 spec 已要求的 failure regression test；此護欄已寫進 PERF-05
+的 Acceptance Criteria。七張票：**PERF-01** [#177]（Storage 連線
+生命週期——request-scoped connection）、**PERF-02** [#178]
+（Diagnostics 批次寫入＋只留 warning／error 落盤）、**PERF-03**
+[#179]（Treasury 曲線快取，以年份為鍵、PIT 安全）、**PERF-04**
+[#180]（`ivtrend._rolling_windows` 雙指標 O(n) 化）、**PERF-05**
+[#181]（cold Normalized Skew backfill——bounded concurrency）、
+**PERF-06** [#182]（同 symbol chain 重複抓取去重，次要、範圍受限）、
+**PERF-07** [#183]（全面 before/after 對照＋最終回歸驗收）。**依賴
+結構**：PERF-01～06 彼此互相獨立、沒有硬阻擋邊（各自命中不同檔案／
+不同 seam，spec 自身 Further Notes 已確認過一次）；只有 PERF-07 是
+六張的匯總驗收，`Blocked by` 全部六張。標 PERF-01 為下一張純屬建議
+排序（風險最低、獨立可驗證），非強制依賴順序。範圍再次確認排除：
+不做 V2、不做 N-leg、不做 main.py architecture extraction、不做
+無關 cleanup。**尚未開始 implementation**，等需求方指示。
+
+**PERF-05 [#181] AC 修正——不可能契約改寫（2026-08-23，施工前，
+尚未開始 implementation）**：需求方拆票整體批准後，指出原 AC 有一條
+不可能契約——「不會因為併發而多花掉序列版本本來會擋下來的額度」。
+Bounded concurrency 下這件事在數學上不成立：第一個 failure 被觀測前，
+最多已有 concurrency－1 個其他 requests 已經 in-flight。已改寫為
+誠實、可驗證的上界式契約：(1) 第一個 failure 被觀測後不再啟動任何
+新 vendor request；(2) 已 in-flight 的 requests 允許完成、不強制
+cancel；(3) failure 相對 serial 造成的額外 request 數硬性上界為
+concurrency－1；(4) 不得宣稱「不會多花 serial 原本會擋下的額度」；
+(5) 已成功完成的 in-flight observations 正常保留落盤，不為模擬
+serial 而丟棄已付出配額成本拿到的資料；(6) diagnostics 新增記錄
+failure 事件／in-flight completions／本批最終結果摘要三項；
+(7) regression test 新增鎖住上界與「failure 後不再啟動新工作」兩條
+斷言，原「序列版本整批中止」測試維持不動。issue #181 body 已更新
+（保留修正前歷史於 issue 內文，未刪除重寫）。
+
+**Sequencing 定案（2026-08-23，取代先前「建議排序」）**：
+`#180 → #179 → #177 → #178 → #181 → #182 → #183`（即 PERF-04→
+PERF-03→PERF-01→PERF-02→PERF-05→PERF-06→PERF-07）。這是需求方
+指定的固定執行順序，非程式碼層級硬阻擋——PERF-01～06 之間仍然沒有
+`Blocked by` 依賴，只有 PERF-07 繼續 `Blocked by` 全部六張。
+
+**Performance 修正輪施工中（2026-08-23，`/implement` 依定案順序連續
+施工，中途不停）**：
+
+- **PERF-04**（#180）✅ `_rolling_windows()` 雙指標 O(n) 化——`left`
+  指標隨排序後的日期單調前進、不回頭；視窗邊界「含當天、含左邊界」
+  不變，三個呼叫端呼叫方式不變，未換成增量式統計。重構前先補一條
+  含真實日期缺口＋剛好卡在 30 天邊界的特徵化測試（先綠燈於重構前）。
+  `/code-review` 兩軸：Standards 無程式面問題（僅提醒 CLAUDE.md 待
+  更新，即本次一併處理）；Spec 抓到一個真正的邊界情境——舊版逐點全掃描
+  對「同一天兩筆有效觀測」是對稱可見（不論列表位置），新版切片
+  `valid[left:right+1]` 只對「同天稍後那筆」對稱、「同天較早那筆」看
+  不到後面那筆，理論上不是逐位元相同。查證後確認：這個情境在既有
+  pipeline 裡結構性不會發生——`reconstruct_iv_series()` 與 storage 的
+  contract history 都是 per-contract per-date 語意（`test_rewriting_
+  the_same_contract_overwrites_rather_than_duplicates` 等既有測試把關），
+  輸出序列與輸入 quotes 逐筆一一對應、quotes 本身不含同日重複。已在
+  `_rolling_windows()` docstring 明文記下這個前提，不新增用不到的
+  duplicate-date 處理邏輯（避免無謂的一般化）。本地量測（合成 365 天、
+  約 80% 涵蓋率的序列）：舊版 O(n²) 3.891 ms/call，新版 O(n) 0.600
+  ms/call，6.5x，且新舊輸出逐位元相同（`assert old_out == new_out`
+  通過）。全套後端測試（記憶體＋Postgres 兩組）667 條全綠。
+- **PERF-03**（#179）✅ Treasury 曲線列快取，鍵是**年份**——本輪風險
+  最高的一項。新增 `api_app/treasury_cache.py`（結構逐一鏡射
+  `rate_cache.py`／`dividend_cache.py` 三態快取設計：成功／近期嘗試
+  失敗／陳舊備援），新增 `Storage` Protocol 的 `TreasuryYearCacheEntry`
+  ＋`get_treasury_year_cache`／`save_treasury_year_cache`（memory／
+  postgres 兩個 adapter 皆補齊，postgres 新增 `treasury_year_cache`
+  表）。PIT 安全靠鍵設計本身鎖死：過去年份（`year < today.year`）一旦
+  `rows is not None` 即永久新鮮，不看 `fetched_at` 多舊；當年比照
+  `rate_cache.py` 市場日語意（5 分鐘失敗去重窗、7 天陳舊備援窗）。
+  `main.py` 的 `_fetch_rate_curve_rows` 改呼叫新的
+  `_cached_rate_curve_rows()`（惰性單例，同一套 `_rate_curve_loader()`
+  模式），取代直接呼叫注入的 `rate_curve_rows`；一律以整年範圍向底層
+  來源請求（Treasury／`fetch_curve_range` 本來就只看年份，不看月日）。
+  測試：新增 `tests/test_api_treasury_cache.py`（17 條，含 spec 點名
+  「唯一真正重要」的
+  `test_a_past_years_rate_is_never_shadowed_by_the_current_years_cache`
+  ——2025／2026 各自灌入可辨識假利率，熱快取後反覆查
+  `observation_date="2025-01-15"`，斷言永遠拿到 2025 的利率）與
+  `test_storage_contract.py` 新增 6 條 per-year 隔離的 round-trip 契約
+  測試（memory＋postgres 各一份）。`/code-review` 兩軸皆無 hard
+  violation：Standards 軸指出 `main.py` 「惰性單例 dict」模式（`_db`／
+  `_rate_curve_loader`／`_dividend_loader`）這次多了第四個重複實例，
+  屬既有模式延伸、非本票新增，依「不做 main.py architecture
+  extraction／不做無關 cleanup」裁示不動；Spec 軸確認全部 AC 落實、
+  無 scope creep。本地量測：模擬冷啟動 25 天×4 到期日情境（100 次
+  `_fetch_rate_curve_rows` 呼叫全落在同一年份、同一市場日），快取前
+  100 次網路呼叫、快取後 1 次。全套後端測試（記憶體＋Postgres 兩組）
+  684 條全綠（667 + 17 條新增）。
+- **PERF-01**（#177）✅ Storage 連線生命週期——request-scoped
+  connection。`postgres.py` 新增模組層級 `contextvars.ContextVar`
+  （`_request_connection`，存 `(dsn, conn)`，不掛在 `PostgresStorage`
+  單例物件屬性上，避免併發 request 互相汙染）＋`_BorrowedConnection`
+  （讓既有 40 處 `with self._connect() as conn:` 呼叫慣例零改動，
+  `__exit__` 回 `False` 不吞例外、不關閉連線）；新增
+  `PostgresStorage.request_scope()`：進入時開一條連線放進 ContextVar，
+  `finally` 無論成敗都關閉並清空，**開連線本身失敗時不設定
+  ContextVar、直接放行**（不讓整個 request 跟著炸，退回逐次開連線的
+  既有行為，`/api/health` 這類容忍連不上的端點不受影響）。`main.py`
+  新增 `_storage_connection_scope_middleware`（`getattr` 拿
+  `request_scope`，`memory.py` 沒有這個方法就直接跳過——`Storage`
+  Protocol／`memory.py` 依裁示零改動）。順手消除 iv-history request
+  內 credential 三處重複讀取（`_settings_view()`／`_known_secrets()`／
+  挑選中 Provider 的 token 取得）：新增 `_credential_map()`，三處都改
+  吃可選的 `credentials` 參數，不傳時行為不變（其餘呼叫端不受影響）。
+  測試：新增 3 條 Postgres-only adapter 層級測試（monkeypatch
+  `psycopg.connect` 計數，斷言一個 scope 內任意多個 method 呼叫恰好
+  一次 connect()；離開 scope 後連線確實關閉清空；開連線失敗時優雅退回
+  逐次開連線）。`/code-review` Standards 軸無 hard violation（僅幾處
+  既有模式延伸的 judgement call，依裁示不動）；Spec 軸稍後回報：全部
+  AC 落實、無 scope creep，但抓到一處測試強度不足——「離開 scope 後
+  連線確實關閉」原本只斷言 ContextVar 清空＋下一次呼叫不炸掉，沒有
+  真的抓住那條連線物件斷言 `.closed`（舊連線只是被丟棄、從未關閉一樣
+  會通過）。已修正：測試改成在 scope 內抓住 `_request_connection`
+  當下借用的連線物件，離開後直接斷言 `borrowed_conn.closed`（fix 隨
+  下一次 commit 一併附上，未另開 PERF-01 專屬 commit）。本地量測：
+  10 次 storage 呼叫在 scope 外開 10 條連線、scope 內開 1 條。
+- **PERF-02**（#178）✅ Diagnostics 批次寫入＋只留 warning／error
+  落盤。`Storage` Protocol 新增複數形式 `append_diagnostics()`，與
+  既有單筆 `append_diagnostic()` 並存不取代；postgres.py 用一次多列
+  INSERT（VALUES 佔位符數量依 `len(events)` 動態組出，不是逐筆迴圈，
+  沒有使用者資料進到 SQL 文字本身、無注入風險）＋retention DELETE
+  跑一次；memory.py 用一次 `deque.extend()`。main.py 新增純函式
+  `_select_for_storage()`（只留 `severity in ("warning","error")`），
+  掛在 `_flush_diagnostics()` 裡、`_select_for_persistence()`／
+  `_select_family_for_persistence()` 既有三層優先序完全不動、
+  `diagnostics.py` 的 `emit()` 也未觸碰——過濾只影響「寫進資料庫」
+  這一步，回應的 `kept` 清單維持過濾前的完整版本。測試：`test_api_
+  iv_history.py` 裡「用全 info 合成事件驗回應與落盤一致」的既有測試
+  改用 `_telemetry_surface({})`（混合 severity）重新驗證，斷言方向從
+  `shown_ids <= stored_ids` 改為 `stored_ids <= shown_ids`（前者
+  PERF-02 後結構性不再成立：健康 request 大多數事件是 info、不落盤，
+  舊方向的驗證意義本來就是「回應看得到的必然也存得到」，這件事本身
+  不成立了；不是放寬斷言，是測試前提換了）；新增 `_select_for_
+  storage()` 的 3 條純函式單元測試、`test_storage_contract.py` 新增
+  3 條批次寫入／retention 等價性測試（memory＋postgres 各一份）、
+  端到端測試驗證健康 request（兩腿各灌 60 天 round-trip 觀測涵蓋
+  bands／Δ4w 兩個窗口）對 diagnostics 資料表寫入 0 筆但回應完整帶著
+  info 事件。`/code-review` Spec 軸確認三層優先序與 `emit()` 皆逐行
+  核對零改動、測試資料修正方向正確，無 scope creep；Standards 軸抓到
+  兩處已修正：(1) 其中一條測試的 docstring 誤稱「`_rich_surface`
+  全程成功只有 info」——實測並非如此（預設空 `contract_history` 下
+  exact-contract 家族本來就會冒出 reconstruction／metrics warning），
+  已改寫成準確說明改用 `_telemetry_surface({})` 的真正理由（驗證
+  legacy 家族刻意、可預期的 warning，不糾纏在另一子系統的旁支行為裡）；
+  (2) `postgres.py` 的 `append_diagnostic()`／`append_diagnostics()`
+  重複同一份欄位清單與 trim SQL 字面值，已抽成模組層級常數
+  `_DIAGNOSTICS_INSERT_COLS`／`_DIAGNOSTICS_TRIM_SQL` 共用（比照既有
+  `_RESULT_COLS`／`_SCENARIO_COLS` 慣例）。全套後端測試（記憶體＋
+  Postgres 兩組）1485 條全綠。
+- **PERF-05**（#181）✅ Cold Normalized Skew backfill——bounded
+  concurrency，依 2026-08-23 修正版契約（見上方 sequencing 定案段落）
+  施工。設計取捨：併發套用在**單一天內跨到期日**的扇出（一批最多
+  `_IV_BACKFILL_DAY_CONCURRENCY`＝4，`ThreadPoolExecutor`＋
+  `as_completed()` 取真實完成順序），**天與天之間維持嚴格序列**——
+  一天的批次完全解決（全部成功，或整批中止）才會考慮下一天。這是
+  刻意的選擇：既有 regression test（`Recorder` 每次呼叫都失敗、斷言
+  `attempted_days==1`）若允許跨天併發，一個永遠失敗的假體會讓多天的
+  呼叫同時在飛，那條斷言結構上守不住；`/code-review` Spec 軸判斷這是
+  「保守但合規」的實作，不是偷工減料——到期日梯子實務上是個位數項目
+  （量級對齊 concurrency＝4），單天內扇出已經收斂掉主要成本（100 次
+  序列呼叫→約 25 輪），跨天併發留給未來如果需要再開新票。修正版契約
+  七點逐一落實：`_fetch_day_bounded()` 內建批次迴圈，`while idx <
+  len(expirations) and first_failure is None` 確保失敗後不再送出新
+  批次；`ThreadPoolExecutor` 的 `with` 區塊本來就會等全部已送出的
+  futures 做完才離開，不強制 cancel；批次大小＝concurrency，額外呼叫
+  數上界精確等於 concurrency－1；程式註解／測試皆未宣稱「不會多花
+  serial 原本會擋下的額度」（Spec 軸逐字 grep 確認零命中）；同一批次
+  裡失敗前後成功的呼叫一律併入 `merged` 並落盤，不因整天判定失敗而
+  丟棄。Diagnostics：`_emit_backfill_summary()` 新增
+  `failed_expiration`／`in_flight_after_failure_succeeded`／`_failed`／
+  `unstarted_due_to_failure` 四個欄位（已加進 `diagnostics.py` 的
+  `_CONTEXT_KEY_WHITELIST`，否則會被白名單機制悄悄丟棄——這是施工中
+  抓到的一個真實坑，不是預先想到的）。測試：保留既有
+  `test_backfill_abort_is_visible_in_the_summary_event` 不動；新增
+  3 條——併發批次失敗後不再啟動新呼叫、額外呼叫數不超過
+  concurrency－1、批次中段失敗仍保留成功的同批次資料（其中
+  in-flight-after-failure 的成功／失敗切分點刻意不鎖死，因為真實
+  執行緒完成順序本來就不是決定性的，`/code-review` 確認這個鬆綁合理、
+  不是偷懶）。`/code-review`：Standards 軸抓到已修正——`failed_
+  expiration` 缺型別標註、`db.save_iv_observation(...)` 重複邏輯已
+  抽成 `_save_day()` 共用；Spec 軸抓到一項真的漏做——before/after
+  牆鐘量測完全沒留下痕跡（AC 硬性要求）——已補上：本地模擬（不是
+  production 實測，沙箱無出口網路）25 天×4 到期日、模擬延遲
+  50ms／次，serial 5.019s vs bounded concurrency 1.287s，3.9x，
+  推估真實 vendor RTT 落在 profiling 觀察的 15–60 秒量級時可望縮短到
+  約 4–15 秒（未經 production 驗證）。全套後端測試（記憶體＋Postgres
+  兩組）1488 條全綠。
+- **PERF-06**（#182）✅ 同 symbol chain 重複抓取去重——次要、範圍受限，
+  單獨切掉不影響 PERF-01～05／07。新增 `api_app/chain_cache.py`：
+  `cached_fetch_chain()` 包住整個既有 `_fetch_chain()`（不管內部走
+  自訂還是預設來源），鍵是 symbol，短效期 `CHAIN_CACHE_TTL`，具名
+  可調——刻意**不**比照 `rate_cache.py`／`dividend_cache.py`／
+  `treasury_cache.py` 的市場日／年份三態設計：這裡是即時報價，短效期
+  本身就是正確語意，失敗也不快取（例外原樣往上炸，跟今天行為一致）。
+  `Storage` Protocol 新增 `ChainCacheEntry`＋`get_chain_cache`／
+  `save_chain_cache`（memory／postgres 皆補齊，postgres 新增
+  `chain_cache` 表）。main.py 新增 `chain_cache_ttl` 參數（比照既有
+  `fetch`／`rate_loader`／`dividend_loader` 的 DI 慣例），用既有
+  `_rate_curve_loader()` 同一套惰性單例模式包裝，快取命中時連
+  `_fetch_chain()` 自己的 settings／credential 查詢都省下來。
+
+  **施工中發現一個真實坑並修正**：3 條既有測試（`test_history_is_
+  one_continuous_series_across_refreshes_with_a_gap`／`test_raw_
+  data_follows_the_latest_refresh_not_a_stale_one`／`test_
+  reanalysis_updates_the_card_to_the_newer_numbers`）刻意對同一個
+  symbol 連續觸發兩三次「真的重新抓一次」（驗證歷史序列／原始資料／
+  清單都跟著最新結果走），跟新快取的設計目的直接衝突——已改傳
+  `chain_cache_ttl=timedelta(seconds=0)`（`create_app()` DI 參數）
+  停用快取重用，讓它們繼續驗證原本要驗證的事，不是在測 chain cache
+  本身。
+
+  **`/code-review` 兩輪修正**：第一輪（Standards 軸）：原本用
+  `monkeypatch.setattr(chain_cache, "CHAIN_CACHE_TTL", ...)` 改模組
+  內部狀態停用測試裡的快取——本地檢查全部通過（截斷時間戳不會導致
+  `age` 算成負值，邏輯本身正確），但抓到這不是本專案既有慣例（既有
+  `monkeypatch` 案例一律打在抓取／IO 接縫，不是內部調校常數上，本專案
+  DI 早就有 `fetch=`／`rate_loader=`／`dividend_loader=` 這套模式可用）
+  ——已改成 `cached_fetch_chain(..., ttl=...)` 顯式參數＋`create_app()`
+  的 `chain_cache_ttl` DI 參數，三條測試改用 `create_app(...,
+  chain_cache_ttl=timedelta(0))`。第二輪（Spec 軸）：明確指出「使用者
+  對同一個劇本連續按兩次刷新」跟「同一批刷新裡不同劇本共用同一個
+  symbol」在這個純 wall-clock TTL 設計下**結構上無法區分**，原本
+  2 分鐘的 TTL 對真實使用者「過一陣子再手動重新整理」這個明顯不同的
+  操作意圖太寬鬆，會讓使用者在毫無提示的情況下看到舊快照——這是需要
+  誠實記在案的產品層取捨，不能默默吸收成測試修正的副作用。已將
+  `CHAIN_CACHE_TTL` 從 2 分鐘壓到 **15 秒**（大到足以吃到前端逐劇本
+  序列送出的同批次請求，小到讓「使用者稍後再手動重新整理」幾乎不會
+  落在窗內看到沒有提示的舊資料），並在 `chain_cache.py` 模組 docstring
+  明文記下這個取捨與依據；AC 本身已明文接受「即時報價、短效期即正確
+  語意」這個政策方向，本輪修正是把 TTL 數字調整到更保守、更貼近
+  AC 意圖的值，不是推翻 AC。
+
+  測試：新增 `tests/test_api_chain_cache.py`（8 條，涵蓋首次快取／
+  TTL 內重用／過期後恢復各自抓取／symbol 互相獨立／失敗不快取／
+  快取讀取失敗優雅退回／序列化往返）與 `test_storage_contract.py`
+  新增 4 條 round-trip 契約測試。本地量測：模擬 5 個劇本共用同一個
+  symbol 的整批刷新情境，底層 vendor chain 抓取次數從 5 次降到 1 次。
+  前端程式碼零改動。全套後端測試（記憶體＋Postgres 兩組）1504 條全綠。
+- **PERF-07**（#183）✅ 全面 before/after 對照＋最終回歸驗收——本輪
+  最後一張票，合併 PERF-01～06 後重新量測、跑全套回歸。
+
+  **全套回歸（不鬆綁任何既有斷言）**：後端 pytest（記憶體＋本機
+  Postgres）1504 條全綠；前端 `tsc --noEmit` 乾淨；前端 Vitest 614
+  條全綠；`vite build` 成功；Playwright e2e 87 條全綠（iPhone＋
+  Desktop，含大量 Historical IV／Exact-contract／Spread IV Gap／
+  Normalized Skew 專屬案例，例如 SIG-04 兩條紅線鎖定測試）。全部
+  Historical IV 相關數值語意（Spread IV Gap／買賣腿走勢圖／百分位／
+  Δ4w／Normalized Skew）跟施工前逐位元相同——本輪六張票只動效能相關
+  的內部機制（連線重用／批次寫入策略／快取層／`_rolling_windows`
+  演算法／併發排程），沒有任何一處改變計算邏輯或輸出格式；PERF-04
+  另外有專屬一致性斷言（`assert old_out == new_out`）鎖住這件事。
+  `ruff check` 額外掃過本輪新增／改動的檔案：僅 1 處發現（`main.py`
+  的 `RateCacheEntry` unused import），確認是**施工前既有**（`git log`
+  對照 commit `17873b4` 已存在），依「不做無關 cleanup」裁示不動；
+  本輪新增的所有檔案（`chain_cache.py`／`treasury_cache.py` 等）本身
+  乾淨無警告。
+
+  **Before/after 對照表**（逐項標示本地實測 vs 推估，兩者不混寫）：
+
+  | 項目 | 施工前 | 施工後 | 依據 |
+  |---|---|---|---|
+  | Storage 連線數（一次 warm request 內） | ~36 條各自新連線 | 1 條共用連線 | 本地實測（PERF-01：10 次呼叫 scope 外 10 條連線→scope 內 1 條，同一套機制） |
+  | Diagnostics 寫入次數（健康 warm request） | ~23 次 INSERT＋trim DELETE（全 info） | 0 次 | 本地實測（PERF-02 端到端測試：`test_a_healthy_request_writes_zero_diagnostics_rows_...`） |
+  | Treasury 曲線抓取（cold backfill 情境，25 天×4 到期日同一年份同一市場日） | 100 次網路請求 | 1 次 | 本地實測（PERF-03 demo script） |
+  | 同 symbol chain 重複抓取（5 個劇本共用一個 symbol） | 5 次 | 1 次 | 本地實測（PERF-06 demo script） |
+  | `ivtrend._rolling_windows` CPU（合成 365 天、80% 涵蓋率序列） | 3.891 ms/call（O(n²)） | 0.600 ms/call（O(n)），6.5x | 本地實測（PERF-04），輸出逐位元相同 |
+  | `ivreconstruct` CPU | ~62ms（回報#020 profiling 估計） | 不變（62ms） | 推估——本輪範圍明確排除 reconstruction，PERF-04 只動 ivtrend，這段程式碼未被觸碰 |
+  | Cold backfill 牆鐘時間（25 天×4 到期日 = 100 次序列呼叫） | 15–60 秒（回報#020 profiling 估計，未在本機用真實 vendor 網路量過） | 本地模擬（50ms/call 模擬延遲）：5.019s→1.287s，3.9x；推估 production：15–60秒→約 4–15秒 | 本地實測（模擬延遲）＋推估（production，實際 vendor RTT 未知） |
+  | warm 端到端總時間（含真實 Neon／vendor 網路延遲） | 未曾在本機精確量過（sandbox 無出口網路連正式 Neon／vendor） | 無法本地重現，只能推估：連線數 36→1 省下約 35 次 Postgres/Neon 連線建立開銷（典型量級數十至兩三百毫秒／次，非本次量測得出，屬一般認知），diagnostics 寫入 23→0 再省一批對應的網路往返；兩者疊加方向正確，但沒有本地實測支持任何具體秒數 | 推估 |
+
+  **驗收目標回報**：
+  - **warm < 1 秒目標**：無法在本機驗證（sandbox 連不到正式 Neon／
+    vendor）。結構性改善方向明確（連線數 36→1、diagnostics 寫入
+    23→0、ivtrend CPU 6.5x）且互不衝突可疊加，但沒有本地實測支持
+    「確實達到 < 1 秒」這個具體門檻——需要 production 部署後實測確認。
+  - **cold path 不再出現 15–60 秒級卡頓**：本地模擬顯示 bounded
+    concurrency 在 concurrency=4 下可貢獻約 3.9x 加速，量級對齊
+    profiling 原始 15–60 秒範圍換算約縮短到 4–15 秒——但這是基於
+    50ms/call 的模擬延遲，不是真實 vendor RTT，正式環境實際 RTT
+    可能更高或更低，需要 production 實測確認是否真正跳出「正常情況
+    下 15–60 秒級卡頓」這個問題。
+
+  **本輪發現的真實缺陷**：全部在各自的票內當場修掉，沒有延到這張票
+  ——PERF-01（連線關閉斷言強度不足）、PERF-02（測試 docstring 對
+  fixture 行為描述不準確＋SQL 片段重複）、PERF-05（遺漏 wall-clock
+  量測記錄）、PERF-06（monkeypatch 內部常數改成正式 DI 參數＋TTL
+  從 2 分鐘壓到 15 秒，修正一個真實的產品層取捨）皆已個別修正並
+  重新驗證。PERF-07 本身的最終回歸掃描沒有發現新的真實缺陷。
+
+  **各票 commit**：PERF-04 `0653460`；PERF-03 `0181191`；PERF-01
+  `9b7b782`（fix 隨 PERF-02 `978ad73` 一併附上）；PERF-02 `d1d66fd`
+  ＋`978ad73`；PERF-05 `b8380f7`；PERF-06 `cceeaa2`＋`4ac238f`。
+
 **探測環境選擇（#120／#111 共同記錄）**：使用者原始指示要求建臨時
 Vercel probe，但本輪 Vercel MCP 的 `deploy_to_vercel` 可成功部署，
 該 session 內所有讀回工具（`get_deployment`／`list_projects`／
@@ -3240,6 +4047,603 @@ Nasdaq 當下鏈免鑰可達但歷史日期參數被明確拒絕、Cboe 現行�
 新增 crumb+cookie 驗證且既有研究已確認其 chart 端點結構上無 bid/ask/
 IV。免 key 路線已窮盡，**blocker 未解除**，仍需需求方申請
 Alpha Vantage／Market Data App／ORATS 任一家金鑰。
+
+### V1 Product Correctness + Historical IV UX Cleanup（2026-08-25，`/grill-with-docs`，只分析不施工）
+
+需求方提出四項問題，`/grilling` 依 CONTEXT.md／ADR-0001／既有實作與
+測試自主 audit，未動 production code。
+
+**1. Updating Lock 需要恢復**：需求方裁示推翻 2026-08-24 的 P1-b
+（更新中不鎖定、卡片標徽章仍可點入）——查證確認範圍集中在
+`src/App.tsx::runBatch()` docstring 明文的「P1：涉及的卡片標『更新中』
+但不鎖定，資料與連結全程可用」與 `ScenarioList.tsx`／
+`CompactScenarioList.tsx` 的卡片渲染（`updating` 只加徽章、`<a href>`
+本身未被攔截）。Refresh Run 範圍規則（開站／手動＝全部未過期，建立
+新劇本＝只刷新新劇本，P4-b）與 Continuation／Partial Success 機制
+不受影響，鎖定只管卡片能不能點進去。
+
+**2. Diagnostics 語意分級**：逐一核對 `option_chaser/ivpipeline.py`
+全部 `emit(...)` call site 的 severity 判準，找出四個在**正常、成功
+顯示資料的情況下也會頻繁觸發 warning** 的既有事件源：
+  - `staleness`（exact-contract，`staleness_days > 1` 才警示）——
+    vendor 的 Delayed→Historical 轉換要等次一交易日 9:30:01 ET
+    （HIVT-06 研究已查證），`staleness_days == 1` 其實是**正常交易日
+    的健康狀態**；warning 主要集中在週一或假日後第一次抓取，是行事曆
+    產物，不是資料異常
+  - `metrics`（legacy 家族，`count == 0` 才警示）——T11 兩段式補建後，
+    任何 symbol 第一次被看到（backfill 還沒觸發過）在 legacy 家族的
+    `buy_iv`／`atm_iv`／`normalized_skew` 結構上**必然** count=0，這是
+    設計上的過渡態，不是資料品質問題
+  - `reanchor`（legacy 家族，`out_of_grid_dates > 0` 才警示）——LEAPS
+    等長天期候選的座標本來就不是每天的歷史 surface 都覆蓋得到
+    （#134 的既有已知限制），結構性會反覆觸發
+  - `backfill` 摘要（`days_no_data_unexpected > 0` 才警示）——本站不維護
+    美股假日表（HIVR-10 已記錄的已知殘留噪音），市場假日撲空會被算成
+    「非預期無資料」
+  這四項的共同特徵：**warning severity 目前混合了「這次分析結果可能
+  不完整或不可信，使用者該知道」跟「這是系統正常運作下的預期過渡態／
+  行事曆產物」兩種完全不同的事**，這正是需求方描述的「資料明明成功
+  顯示，但 Advanced／Diagnostics 還有大量 warning/error」的根本原因。
+  `vendor_fetch`（exact-contract，vendor 真的回報失敗）與
+  `reconstruction`（整段序列零筆重建成功）兩個既有的 warning／error
+  來源查證後**確認是真警訊**，不在降噪範圍內。
+
+**3. Percentile 正確性——結論：程式碼與定義本身皆正確；「常看到
+80–90 百分位」極可能是統計性質、不是 bug**。全部針對 spec #159／
+#151 明文機制逐項查證，並用 production 函式（`ivreconstruct.
+reconstruct_iv_series`／`ivtrend.trim_to_window`／
+`ivtrend.historical_percentile`／`ivspread.align_spread_gap`）跑過
+可獨立重現的合成序列，percentile 另外用完全獨立的手算邏輯核對：
+  - current 是否為最新有效觀測：`leg_historical_iv_payload()` 的
+    `valid = sorted(... if iv is not None); latest_iv = valid[-1][1]`
+    ——確認排序鍵是日期字串（正確按時間排序），且明確排除 `None`；
+    刻意讓「今天」的 quote 反解失敗（crossed quote），驗證 latest
+    正確退回到前一個有效觀測日，不是 crash、不是誤用 None、不是偷用
+    vendor_iv
+  - 是否只用同一張 exact listed contract：快取鍵是 `contract_symbol`
+    （OCC 身份字串），逐張合約各自一列，結構上不可能混入別的合約
+  - 一年 window：`trim_to_window()` 用日曆天 cutoff（`today - 365`），
+    篩選條件正確、順序保留
+  - null／failed reconstruction：`reconstruct_iv_series()` 逐筆獨立、
+    任一筆缺輸入或反解無解只讓那一筆變 `(date, None)`，不影響其他筆、
+    不外插、不換合約、不退回 vendor_iv——四種失敗原因獨立計數
+  - Spread IV Gap 只用共同存在日期：`align_spread_gap()` 用
+    `set(buy_map) & set(sell_map)` 交集，任一天只有一腿有值就整天不
+    進輸出，回傳 gap 恆為 `float` 從不為 `None`——**確認**
+  - percentile 的 `≤` 定義與顯示值一致：`sum(1 for x in series if x
+    <= current) / len(series)`，前端 `第 N 百分位` 文案未與此矛盾
+  - production 函式輸出與獨立手算結果**逐位元相符**（3 個場景各自
+    驗證：全年持平／持平＋雜訊／近三週真實 vol spike，皆 match）
+
+  **關鍵發現（Monte Carlo，500 次試驗，零真實 vol 變化、只有逐日
+  ±1% 報價雜訊）**：平均 percentile 0.4749（≈理論預期 0.50，證明**無
+  系統性偏誤**），但 **P(percentile ≥ 80%) = 18.4%、P(≥90%) = 8.2%**
+  ——即使 IV 完全沒有真的變貴變便宜，單一最新觀測相對於一年歷史母體
+  的百分位排名，光靠雜訊就有將近五分之一的機會落在 80 以上。這是因為
+  `current_percentile` 定義上取的是**未平滑的單一最新觀測**（跟 30 天
+  `moving_average` 不同），單點排名統計天生沒有「該收斂到 50%」的
+  性質。**這解釋了「常看到 80–90 百分位」這個症狀本身，且不需要真實
+  production 資料就能證明**——是統計量本身的雜訊敏感度，不是計算
+  邏輯錯誤，程式碼行為與 spec #151/#159 的既有定義逐字一致（`current`
+  一律是最新原始觀測，非本輪才發現的既有設計，非意外）。
+
+  **需要 production 實測才能確認的部分**（無法用本地合成資料回答）：
+  真實市場在特定時期是否也存在額外的系統性（非雜訊）貴估——例如
+  point-in-time r／q 資料源在近期是否有系統性缺口導致晚近觀測的
+  reconstruction 品質下降；這需要真實 exact contract 的完整一年歷史
+  報價（沙箱對 vendor 網域仍是 403，且本輪未依過去慣例推送臨時
+  GitHub Actions probe——範圍明確限定「只分析不施工」，動 CI 或觸碰
+  master 不在這輪授權內）。
+
+**4. Historical IV UI hierarchy**：查證 `IvHistory.tsx`／
+`SpreadSummary.tsx`／`IvTrend.tsx` 目前結構後發現，**page 層級順序
+已經符合需求方要的階層**（SIG-02／SIG-03 上一輪已經做到）：
+`SpreadSummary`（Spread IV Gap，Current／Percentile／Δ4w／Chart／
+涵蓋小字）→ `IvTrend`（買／賣腿次要資訊）→ `IvAdvanced`（預設收合，
+Normalized Skew／z-score／diagnostics 三級資訊）。唯一的落差在
+**卡片內部**：`SpreadSummary`／`IvTrendCard` 的桌面版把 Chart 排在
+Percentile／Δ4w**之前**，跟需求方要的 Current→Percentile→Δ4w→Chart
+順序不符；手機版（`iv-compact-head`＋`iv-compact-stats`）已經是
+Current→Percentile→Δ4w→Chart 的正確順序。建議：桌面版對齊手機版
+既有順序（純 JSX 元素重排，不改資料流、不改元件介面）。
+
+**建議下一步**：percentile 與 diagnostics 兩項核心正確性疑慮已收斂，
+無殘留邏輯 bug；updating lock 與 UI hierarchy 範圍明確、風險低。
+**尚有兩個需要需求方裁決的「產品行為」問題**（詳見本輪回報），其餘
+（diagnostics 語意分級的實際分類表、UI 排序調整方式）待裁示後即可
+`/to-spec`。本輪未開票、未動 production code。
+
+**需求方裁示（2026-08-25，回覆回報#030）**：percentile 採 A(a)——
+維持現行演算法完全不變，只加一句說明文字，不得使用「異常」「離群」
+「貴」等字眼；~~額外要求 spec 必須把「production 真資料 cross-check」
+獨立列為驗收項~~（**⚠ 這半條已於同日稍後被需求方推翻、整個工作流
+砍掉，見下方「Owner Decision — Percentile Validation Scope」；
+percentile 採 A(a) 那半仍然有效**）。Diagnostics 裁示採「engineering
+observability != user-
+facing error state」——四個候選事件（staleness=1 日、backfill 進行中
+的 metrics count=0、市場假日 no-data、reanchor out-of-grid 但功能
+正常）不得再讓一般使用者誤認故障，但不得刪除或吞掉底層診斷能力。
+Updating lock 明確要求恢復灰化＋不可點入，不改 Refresh Run 觸發規則
+／Continuation／Partial Success。Desktop hierarchy 維持 #030 建議
+（對齊手機版 Current→Percentile→Δ4w→Chart）。
+
+**`/to-spec` 已發佈——issue #198**（`ready-for-agent`）：五項工程
+決策逐一寫成明確 Implementation Decisions／Acceptance Criteria：
+- Percentile：`ivtrend.py`／`ivreconstruct.py`／`ivspread.py` 零改動；
+  新增純格式化說明文字＋banned-word 檢查
+- ~~Production cross-check：獨立驗收項……~~ **⚠ 這一條已於 2026-08-25
+  被需求方裁示整個砍掉、不再有效**——spec #198 本文與對應票務皆已
+  更新，理由見下方「Owner Decision — Percentile Validation Scope」。
+  這行保留只為說明本紀錄區的演進，**不是待辦、不得據此重開票**
+- Diagnostics：新增獨立於既有 `severity` 的 `user_facing` 布林欄位
+  （`DiagnosticEvent` 新欄位），`severity` 本身連同 `/api/diagnostics`
+  ／Settings 頁完全不受影響、繼續完整顯示；四個覆寫點各自用該站既有
+  就拿得到的資料計算（staleness 改成交易日感知，非單純日曆天；
+  legacy metrics count=0 綁 `backfill_pending`；backfill 假日 no-data
+  維持既有「不維護假日表」限制下唯一可行的處理；reanchor 只在真的
+  導致 Normalized Skew count=0 時才算 user-facing）；預設值＝鏡射既有
+  `severity`，只有這四個明確覆寫點例外，避免任何未來新事件源意外被
+  靜默降噪
+- Updating lock：復用既有 `compact-card-tap` 攔截點擊的既有機制
+  （原本只服務批次選取模式），沿用 `styles.css` 註解裡記載的
+  pre-P1-b 視覺樣式（`opacity`／`pointer-events`）
+- Desktop hierarchy：`SpreadSummary.tsx`／`IvTrend.tsx` 桌面分支純
+  JSX 元素重排，不改 props／資料流／圖表幾何
+
+四項工作流彼此獨立、無相依關係，可任意順序或平行施工。本輪 `/to-spec`
+到此為止，未 implementation、未開 PR、未 merge master。
+
+**`/to-tickets` 完成（2026-08-25，需求方核准拆票方案後發佈）——8 張
+子票 #199–#206，全部為 #198 的 GitHub native sub-issue**：
+
+- **PC-01** [#199] Percentile 說明文字（演算法零改動）——無依賴
+- **PC-03** [#201] Diagnostics `user_facing` 軸（expand，行為零變更）——無依賴
+- **PC-05** [#202] Updating card 恢復鎖定（灰化＋不可點入）——無依賴
+- **PC-06** [#203] Desktop Historical IV 卡片資訊順序對齊手機版——無依賴
+- **PC-04** [#204] Diagnostics 四項 user-facing 分類覆寫——被 #201 擋
+- **PC-07** [#205] 全面回歸與最終驗收——被 #199／#204／#202／#203 擋
+- ~~**PC-02** [#200] Production cross-check 腳本~~ ／
+  ~~**PC-08** [#206] Production cross-check 實跑~~——**2026-08-25
+  需求方裁示整個工作流砍掉，兩張皆已 `not_planned` 關閉**（見下方
+  「Owner Decision」）
+
+**兩個拆票決策（需求方核准，仍然有效）**：
+1. **PC-03／PC-04 刻意拆開**：PC-03 是零行為變更的「加軸」（預設值鏡射
+   既有 `severity`，驗收就是全套既有測試原樣通過），PC-04 才是全部
+   判斷所在。拆開把「加欄位有沒有弄壞既有東西」跟「這四條分類對不對」
+   兩種風險隔離——沿用 T01–T13 一路的既有慣例（Refresh Run 拆三張、
+   IV pipeline 拆兩張同一個理由）。
+2. **PC-04 的四條覆寫不再細拆**：四條都在同一個模組、同一個測試檔、
+   每條只有幾行加兩三個測試，拆成四張只會製造四張互碰同一個檔案的
+   票，隔離不到東西。
+
+（原第 2 條「PC-08 的 blocking edge 只掛 PC-02」隨該工作流一併作廢。）
+
+### Owner Decision — Percentile Validation Scope（2026-08-25）
+
+**需求方裁示：Production Percentile Cross-check 整個工作流砍掉。**
+#200、#206 皆以 `not_planned` 關閉（#200 的 `ready-for-agent` 標籤
+一併移除，避免被誤認為還可以抓來做）；#205 移除 #200 blocker 與
+「production cross-check 尚未完成」那條 AC；spec #198 本文已重寫，
+移除全部相關 Solution／User Stories／Implementation Decisions／
+Testing Decisions 段落，並新增同名章節存證。
+
+需求方已接受目前 Historical IV percentile 的計算契約與回報#030
+correctness audit 的結論。本輪真正要解決的產品問題**不是**「重新
+證明 percentile 整條 production data pipeline 正確」，而是「目前
+percentile 數字對一般使用者不夠直覺，需要更好的文字解釋與資訊呈現」
+——那由 #199 負責。
+
+因此：**不**建立額外 production percentile validation CLI、**不**建立
+獨立 cross-check subsystem、**不**要求抽查 5–10 張 production
+contracts 作為交付條件、**不**保留成 deferred ticket／future
+blocker、**不**因為 #200／#206 被砍而建立替代票完成同一件事。
+
+**這不是因為「驗證做不到」或「先延後」。** 這是明確的產品／工程
+取捨：**該驗證對目前需求的邊際價值不足，會造成不必要的 validation
+infrastructure 與測試複雜度，屬於 over-engineering。**
+
+已審查完畢並經需求方接受：公式、exact-contract identity、一年
+window、valid observation handling、Spread Gap common-date
+alignment、independent arithmetic check。需求方接受這個 confidence
+level。
+
+**除非未來出現具體 evidence 指向 percentile correctness bug——API 與
+UI 數字不一致、明確可重現的 contract rank 錯誤、historical series
+混入錯誤 contract、使用者提供可證明錯算的實例——否則不要再次主動
+建立 production percentile cross-check 工作流。**
+
+**本輪剩餘正式施工範圍與建議順序**：
+`#199 → #201 → #204 → #202 → #203 → #205`
+
+**施工前查證到的三個關鍵細節**（寫在這裡避免施工時重查）：
+- `DiagnosticEvent` 是單純 dataclass；`emit()` 用 `**context` 收其餘
+  關鍵字，**`user_facing` 必須當具名參數加**，否則會被吸進走欄位
+  白名單的 `context`、被靜默丟棄
+- `backfill_pending` 與 `_emit_metrics`／`_emit_reanchor_summary` 在
+  `build_iv_history()` 同一個 scope 內，四個覆寫點需要的資料**都已經
+  在手邊**，不需要新增任何抓取或狀態
+- pre-P1-b 的卡片鎖定樣式（`pointer-events: none; opacity: 0.45`）在
+  `styles.css` 註解裡有記載，原始 commit `098b3b9`（#136）可查
+
+**施工開始（2026-08-26 `/implement`，依核准順序連續施工、不中途停）**：
+
+- **PC-01**（#199）— Percentile 說明文字：三個家族（買／賣腿 IV、
+  Spread IV Gap、Normalized Skew）的百分位數字旁各自新增一句常駐可見
+  的說明——`IV_PERCENTILE_EXPLANATION`（`IvTrend.tsx`）／
+  `GAP_PERCENTILE_EXPLANATION`（`SpreadSummary.tsx`）／
+  `SKEW_PERCENTILE_EXPLANATION`（`IvHistory.tsx`），皆為 export 的
+  純字串常數，緊接在各自的 percentileCaption 之後（桌面／手機兩種
+  版面皆插入，不影響既有合併行為）。Normalized Skew 沿用「偏斜」語彙
+  不套「IV」字樣（AC 明文要求）；Spread IV Gap 措辭刻意用「共同歷史
+  期間」而非「近一年」——這個家族的視窗是兩張合約共同存在的歷史期間，
+  可能短於一年（`shared_history_span_days` 既有語意），照實講比套用
+  統一樣板更誠實。Normalized Skew 的百分位本來就位於預設收合的
+  Advanced／Diagnostics 區塊（SIG-02／#173 既有裁示），這裡不擴大
+  範圍把它搬回主畫面——AC「常駐可見」的落地方式是「展開 Advanced 後
+  不必再多點一次」，不是推翻既有的資訊階層決策。演算法／裁窗／
+  exact-contract 身份規則／有效觀測篩選／Spread IV Gap 共同日期對齊
+  規則全部零改動（`git status` 確認零 Python 檔案變動）。
+  新增 `src/percentileCopy.test.ts`（仿 `tests/test_redlines.py`
+  禁詞掃描慣例）：三個常數各自驗證不含 {異常, 離群, 貴, 便宜, 昂貴,
+  推薦, 建議} 及直接英文對應、講清楚定義、提到單日讀數會隨市場報價
+  波動。既有 `IvTrend.test.tsx` 兩條資訊順序測試（桌面／手機的
+  class 陣列斷言）因新增一個 caption 節點而更新，其餘既有 facts-only
+  紅線測試（`IvHistory.test.tsx` 的評價字眼／預測語句掃描）原樣通過、
+  未鬆綁。前端 typecheck／648 條 Vitest／build 全綠；Playwright
+  Historical IV／Spread IV Gap 相關 26 條（iPhone＋Desktop）全綠。
+  **後端全套回歸確認**：4 條既有測試失敗（`test_api_filters.py` 三條、
+  `test_service_fetch.py` 一條）——經 `git stash` 比對在完全未施工的
+  基準點上同樣失敗（symbol「XYZ」的 `fetch_and_save` 沒有 mock 住
+  `cboe.fetch_chain`，本輪 sandbox session 對 Cboe 的網路連線恰好
+  connect 成功、回傳當下真實時間戳，跟寫死的 fixture 時間戳對不上；
+  另外三條與此連動），確認為施工前既有、與本輪任何一張票皆無關的
+  環境依賴性 flake，非本票造成的回歸，未嘗試修正（不在 spec #198
+  範圍內）。
+
+- **PC-03**（#201）— Diagnostics `user_facing` 軸：`DiagnosticEvent`
+  新增必填欄位 `user_facing: bool`（刻意不給 class-level 預設值——
+  真正的預設規則只活在 `emit()` 一個地方，避免兩處邏輯漂移；直接
+  建構 `DiagnosticEvent` 的既有測試因此逐一補上顯式值，鏡射各自的
+  `severity`，斷言本身一行未動）。`diagnostics.emit()` 新增具名參數
+  `user_facing: bool | None = None`，省略時套預設規則（`severity` 為
+  warning／error 視為 true，info 視為 false）——具名參數確保它不會被
+  `**context` 收集吸走、被欄位白名單靜默丟棄（AC 明文擔心的那個坑）。
+  `main.py` 的 `_emit` closure 與 `ivpipeline.EmitFn` 的呼叫慣例文件
+  同步補上這個參數（純文件／簽章澄清，PC-03 本身沒有任何呼叫端傳入
+  覆寫值，PC-04 才會用到）。`postgres.py`：`diagnostics` 表新增
+  nullable 欄位 `user_facing`（走 `_MIGRATIONS`，不改 `_SCHEMA`——沿用
+  既有「建表與遷移分開送」慣例）、insert／select 兩條路徑同步接上，
+  讀回時對舊列（遷移前寫入、欄位為 NULL）套用跟 `emit()` 相同的規則
+  補值，新舊列讀回行為一致。`memory.py` 不需改動（dataclass 物件本身
+  攜帶這個欄位）。前端：`DiagnosticEvent` 型別新增 `user_facing:
+  boolean`；`IvHistory.tsx` 的 `notableEvents` 過濾條件從
+  `severity==="warning"||"error"` 改為 `user_facing===true`——PC-03
+  的預設規則與舊過濾條件逐一等價，這一行改動因此是零行為變更；
+  `/api/diagnostics` 端點（`dataclasses.asdict()` 直接吐全部欄位）與
+  Settings／Diagnostics 頁（`Diagnostics.tsx`／`DiagnosticDetail.tsx`
+  只讀 `severity`）完全不受影響、未改一行。契約樣本
+  `contracts/iv_history_sample.json` 重產（事件數 28→26 為既有已知的
+  跨日期非決定性，同一天內重複執行两次皆為 26，已驗證非本票造成）。
+  新增測試：`test_diagnostics.py` 三條（預設鏡射三種 severity、顯式
+  覆蓋、`user_facing` 不落入 `context`）；`test_storage_contract.py`
+  一條 round-trip（true／false 兩個方向都要能存活過 Postgres）；
+  frontend `Diagnostics.test.tsx`／`IvHistory.test.tsx` 的既有假體
+  工廠函式（`event()`／`diagEvent()`）改為動態鏡射 `severity`（而非
+  寫死常數），沿用同一套「省略時鏡射」哲學，既有呼叫端（含
+  `severity: "info"` 覆寫）因此零修改就自動得到正確值；e2e
+  （`smoke.spec.ts`／`desktop.spec.ts`）三處手造的 diagnostics 假體
+  補上 `user_facing`——這些不受 TypeScript 檢查（純 JSON 假體），漏補
+  會讓依賴 iv-history 診斷面板觸發的既有 e2e 案例失去觸發條件而非
+  型別錯誤，已逐一核對三處足夠。全套回歸：後端 pytest 無新增失敗
+  （與 PC-01 記錄的同一組 4 條既有環境依賴性 flake 完全相同）；前端
+  typecheck／648 條 Vitest／build 全綠；Playwright Historical
+  IV／Diagnostics／Copy 相關 29 條（iPhone＋Desktop）全綠。
+
+- **PC-04**（#204）— Diagnostics 四項 user-facing 分類覆寫：只動
+  `option_chaser/ivpipeline.py` 四個 emit 函式，每處都只加
+  `user_facing=` 這一個具名參數、`severity` 計算式逐字未動（測試
+  逐一鎖住兩者同時成立）。**staleness**：新增
+  `_most_recent_trading_day_before(day)`（只處理週末，沿用既有
+  `_is_weekend`，不新增假日表）；`obs_date >= 那個交易日` 視為預期
+  中的正常過渡態（含跨週末），`user_facing = not benign`。**Legacy
+  metrics count=0**：`_emit_metrics()` 新增參數 `backfill_pending:
+  bool = False`（`build_iv_history()` 既有的 `legacy_backfill_status()`
+  結果直接傳入，不新增任何抓取），`user_facing = count==0 and not
+  backfill_pending`——只影響 Legacy 家族自己的 metrics，`_emit_leg_
+  stat_metrics()`（Exact-Contract 家族逐腿統計量）完全未觸碰。
+  **backfill 批次摘要**：`user_facing = bool(aborted_on)`——warning
+  唯一成因是交易日撲空且未中止時為 False（本站不維護美股假日表的
+  既有已接受限制，跟 `days_no_data_expected`／`_is_weekend` 同一個
+  取捨），中止（額度用盡／vendor 失敗）時無論是否同時有撲空一律
+  True。**reanchor 覆蓋率**：`user_facing = total > 0 and in_grid ==
+  0`——只有整段快取歷史全部落在網格外才顯示，部分覆蓋不顯示；真的
+  顯示時 Normalized Skew 的中性文案（`metricCaption()` 既有的「沒有
+  歷史資料」）與 `InlineDiagnostics` 的 `variant="info"`（非紅色阻斷
+  樣式，`.iv-diagnostics-summary-info` 既有 CSS 早已是中性語氣）兩者
+  都是既有架構、不需要任何新程式碼即滿足這條 AC，純檢視確認。
+  `_emit_contract_history_telemetry`／`_emit_reconstruction_ledger`／
+  `_emit_vendor_benchmark`／`_emit_leg_stat_metrics` 四個函式完全未
+  觸碰（維持預設規則，reconstruction 全零成功與 vendor 真失敗依然
+  對使用者可見）；施工中未發現其他行為類似、需要另行裁決的診斷事件源。
+  測試：`test_api_iv_history.py` 對 reanchor／metrics／backfill 三組
+  既有測試逐一補上 `user_facing` 斷言（與既有 `severity` 斷言並列，
+  證明兩者互相獨立）；新增 `test_metrics_zero_count_is_not_user_
+  facing_while_backfill_is_still_pending`（pending 情境專屬）；新增
+  三條直接呼叫 `_emit_staleness()`／`_most_recent_trading_day_before()`
+  的純函式測試（HTTP 端點層級的 `today` 是真實系統時鐘、無法穩定
+  構造「今天是星期幾」，比照既有 `test_the_backfill_and_reanchor_
+  summaries_take_no_free_text_vendor_params` 直接匯入私有函式的既有
+  慣例）——正常跨週末不可見、真的跳過交易日則可見、新鮮觀測不可見。
+  前端 `IvHistory.test.tsx` 新增兩條：`severity=warning`＋
+  `user_facing=false`（PC-04 良性覆寫的形狀）不觸發面板；
+  `severity=info`＋`user_facing=true` 觸發面板——雙向證明過濾條件是
+  獨立軸，不是 severity 的別名。契約樣本重產，4 筆 metrics 事件（該
+  fixture 的 Legacy 家族 backfill_pending 為 true）`user_facing`
+  正確從 true 翻成 false，親眼核對非本票造成的意外行為。全套回歸：
+  後端 pytest 無新增失敗（同一組 4 條既有 flake）；前端 typecheck／
+  650 條 Vitest／build 全綠；Playwright Historical IV／Diagnostics
+  相關 29 條（iPhone＋Desktop）全綠。
+
+
+- **PC-05**（#202）— Updating card 恢復鎖定（灰化＋不可點入）：
+  `ScenarioList.tsx`（桌面）／`CompactScenarioList.tsx`（手機）的卡片
+  `updating` 為真時新增 `locked` class（`.compact-card.locked { opacity:
+  0.45; }`＋`cursor: not-allowed`，`src/styles.css`）；`href` 仍保留
+  （長按複製／螢幕閱讀器／可及性語意不變），實際擋點擊靠 `<a>` 的
+  `onClick`——`updating` 時 `e.preventDefault()`，比照既有 `selectMode`
+  攔截手法。**優先序**：`selectMode` 判斷在前（AC：既有批次選取互動
+  不受影響，鎖著的卡片一樣勾得起來），`updating` 判斷在後（僅在不是
+  選取模式時才擋導航）。刻意不用 `pointer-events: none`——那會讓
+  Playwright 一般 `.click()` 判定元素不可互動而失敗／需要 `force:
+  true`，改用純 `opacity` 讓點擊事件正常發生、由 `preventDefault()`
+  擋下導航，E2E 因此驗證得出「按下去真的沒有導航」而非「按不下去」。
+  詳細頁（`ScenarioDetail.tsx`）本身的「本輪刷新排隊中或進行中」提示
+  維持原樣不動——這張票的鎖定只針對清單卡片，不影響使用者已經打開的
+  detail pane（AC 明文的跨劇本隔離：清單上其他劇本鎖定中不影響目前
+  詳細頁）。
+
+  測試：Vitest 兩個元件測試檔重寫「更新中徽章」describe block——鎖定
+  class、`window.location.hash` 點擊前後不變（jsdom 對帶 `href` 的
+  `<a>` 真的會做同頁 hash 導覽，除非 `preventDefault()`，這給了一個
+  可靠、不依賴瀏覽器特有行為的斷言）、對照組（非更新中卡片點擊正常
+  導航，證明攔截確實生效而非 jsdom 本來就不會跳轉）、批次選取模式下
+  鎖定卡片仍可勾選。`App.test.tsx` 既有兩條測試更新斷言（`locked`
+  class 而非「全程可點」），新增桌面 master/detail 情境的跨劇本隔離
+  測試（s2 鎖定中不影響正在看的 s1 詳細頁內容或提示）。E2E 各平台新增
+  一條「鎖定卡片點下去路由不變」（先驗證鎖定時點擊不導航，再驗證解鎖
+  後同一顆連結點得進去，排除「這個候選結構上到不了詳細頁」的干擾）。
+
+  **施工中發現並修正兩個真實 e2e 回歸**（皆為既有測試的路由假設在
+  「更新中卡片全程可點」的舊行為下才成立，PC-05 恢復鎖定後現形，
+  不是本票新引入的邏輯錯誤）：(1) `smoke.spec.ts` 「返回劇本庫時停在
+  原本捲動的位置」測試沒有覆寫 `refresh-run` 路由、吃 `test.
+  beforeEach` 的預設空氣回應（`results: []`），10 個劇本因此永遠拿不到
+  自己的結果、永遠卡在「更新中」＋鎖定，點不進要測的詳細頁——補上正確
+  的 `refresh-run` 路由（讓全部 10 個劇本各自成功落地）；(2) 「久未
+  刷新的資料標成舊資料」測試用 `getByText("舊資料")` 廣泛比對，撞上
+  更新中列項既有的 sr-only 文字（「更新中；查看…顯示上一輪的舊資料」，
+  這段文字本身早於 PC-05 存在，不是本票新增）在開站刷新進行中的短暫
+  窗口裡恰好也含「舊資料」子字串，屬既有、非本票引入的潛在 race——
+  改用更精確的 `.tag.warn` 選擇器 scope 回真正的舊資料徽章本身，不受
+  巧合的字串重疊影響。兩處都已用多次重跑確認修正後穩定（PC-05 施工
+  前的基準點以 `git stash` 核對過，兩個問題在基準點原本就會被舊行為
+  掩蓋、不會被觸發，證實是本票恢復鎖定後才現形的既有缺口，不是新
+  程式碼寫錯）。全套回歸：後端 pytest 無新增失敗（同一組 4 條既有
+  flake，本票零 Python 檔案變動）；前端 typecheck／657 條 Vitest／
+  build 全綠；Playwright 全套 90 條（iPhone 56＋Desktop 34）連續兩輪
+  穩定全綠。
+
+- **PC-06**（#203）— Desktop Historical IV 卡片資訊順序對齊手機版：
+  `IvTrend.tsx`（`IvTrendCard` 桌面分支）／`SpreadSummary.tsx`
+  （`SpreadSummary` 桌面分支）純 JSX 元素重排——現值 → 百分位 → Δ4w
+  → 走勢圖（AC 逐字列出的四項），PC-01（#199）新增的百分位說明句排在
+  Δ4w 之後、走勢圖之前（跟手機版「percentile+Δ4w 合併行 → 說明句 →
+  走勢圖」同一個相對位置，手機版分支完全未動）；涵蓋時間／backfill
+  說明維持在走勢圖之後。頁面層級順序（Spread Summary → 買／賣腿卡片
+  → Advanced／Diagnostics 收合區）、圖表資料／scrubber 互動／
+  responsive 高度切換／任何 Historical IV 計算或元件 props 完全不變
+  ——純粹重排既有 JSX 元素，零新增邏輯。
+  測試：兩個檔案的「資訊順序（桌面）」describe block 改用
+  `compareDocumentPosition`（沿用 `IvHistory.test.tsx`／`App.test.tsx`
+  既有手法，AC 明文要求）鎖住新順序——現值早於百分位、百分位早於
+  Δ4w、Δ4w 早於走勢圖，另外一條鎖住說明句夾在 Δ4w 與走勢圖之間；
+  `SpreadSummary.test.tsx` 新增手機版對照組（合併行 → 說明句 → 走勢圖
+  順序不變）。PC-01 起兩個檔案各自一條斷言「說明緊接在百分位數字之後」
+  的既有測試因為 Δ4w 現在插進中間而失真，改成只驗證看得到（不必展開）
+  ——真正的順序保證交給新的 DOM 順序測試。全套回歸：本票零 Python
+  檔案異動，後端不重跑；前端 typecheck／661 條 Vitest／build 全綠；
+  Playwright 全套 90 條（iPhone 56＋Desktop 34）全綠，含既有 SIG-04
+  桌面／手機紅線（頁面層級順序）與 PC-05 新增的鎖定卡片測試皆未受
+  影響。
+- **PC-07**（#205）— 全面回歸與最終驗收（本輪最後一張票，純驗證、
+  無新功能程式碼）：逐項核對 spec #198 全文（Problem Statement／Owner
+  Decision／Solution／23 條 User Stories／四節 Implementation
+  Decisions／Testing Decisions／Out of Scope），全數落實、無缺口、
+  無 scope creep：
+  - **紅線核對**：`git diff` 確認 `ranking.py`／`filters.py`／
+    `valuation.py`／`ivtrend.py`／`ivreconstruct.py`／`ivspread.py`／
+    `ivhistory.py` 全部逐位元未動；`option_chaser/` 本輪唯一改動檔案
+    是 `ivpipeline.py`，逐行核對只有 `user_facing=` 新增與註解，零
+    `severity` 數值改動、零計算邏輯改動；`test_redlines.py`／
+    `test_selection_regression.py` 零改動；全專案 `tests/`／
+    `src/*.test.*` 掃過每一處被移除的既有斷言（後端 0 條、前端 5 條）
+    ——後者逐條核對皆為「原地重構＋等價或更強斷言」而非鬆綁覆蓋率。
+  - **PC-07 施工中發現並補上的一個真測試缺口**：spec Testing
+    Decisions 明列「a genuine vendor failure and a total reconstruction
+    failure both still `user_facing=True`」——vendor failure 那半（Legacy
+    家族 quota abort）已由既有
+    `test_backfill_abort_is_visible_in_the_summary_event` 覆蓋，但
+    Exact-Contract 家族「整段序列零可用點」那半
+    （`test_reconstruction_ledger_is_a_warning_when_nothing_is_usable`）
+    先前只驗證 `severity`，沒有直接斷言 `user_facing`——已補上一行
+    `assert events[0]["user_facing"] is True`。DG-04 風格的「單一
+    全帳本測試同時涵蓋四項覆寫、集中證明 severity 不受影響」則判斷
+    維持現狀不強行合併：severity 不受影響這件事已經在四項覆寫各自的
+    既有測試裡逐一斷言（`test_reanchor_summary_*`／
+    `test_metrics_*`／`test_backfill_abort_*`／`test_staleness_*`
+    皆同時斷言 `severity` 與 `user_facing`），而 staleness 覆寫在
+    HTTP 層無法控制「今天」（既有限制，走純函式層級測試），backfill
+    覆寫又需要獨立的 `IvBackfillRun` 狀態（同一個 `db` fixture 內
+    兩種 backfill_pending 狀態無法在同一個 request 並存），勉強拼成
+    一個物理上的單一測試函式只會犧牲既有測試檔案「一個場景一個函式」
+    的既有可讀性慣例，換不到新的保證。
+  - **User Stories 1–23 逐條核對**：1–4（percentile 說明文字三家族＋
+    演算法零改動）由 PC-01 落實；5–12（四項覆寫＋兩個「維持原樣」的
+    對照組）由 PC-04 落實，其中 #9／#10 的「部分覆蓋不示警／全覆蓋
+    失效時沿用既有『沒有歷史資料』中性文案、不新增視覺嚴重度」由
+    `_emit_reanchor_summary` 覆寫＋既有（#133）`metricCaption()` 呈現
+    層共同滿足，本輪未新增任何新視覺樣式；13–14（`severity` 完整保留
+    ＋覆寫條件明確可測）由 PC-03／PC-04 的 explicit named parameter
+    設計滿足；15–19（鎖定／自動解鎖／三個觸發規則不變／Partial
+    Success 不受影響）由 PC-05 落實，#17／#19 由既有（P1-b 時期）
+    `updatingIds` 狀態管理機制原樣保留佐證（PC-05 只加 CSS class 與
+    onClick 攔截，未觸碰 `runBatch()` 的完成偵測與摘要計算）；20–22
+    （桌面卡片順序對齊＋頁面層級順序不變）由 PC-06 落實；23（範圍
+    嚴格限定四項決策，不夾帶 V2／N-leg／架構重構）由本輪 `git diff`
+    範圍核對確認。
+  - **Out of Scope 核對**：無 production percentile cross-check 相關
+    任何檔案／CLI／ticket（依 Owner Decision，#200／#206 維持
+    `not_planned`）；percentile 公式／一年窗／exact-contract identity／
+    valid-observation filtering／Spread Gap 對齊規則零改動；未新增
+    平滑化或 outlier 指標；未新增美股假日曆；未觸碰 ScenarioDetail
+    自身在背景刷新時的既有行為；未新增新的視覺嚴重度分級；無 V2／
+    N-leg／Refresh Run 架構／`main.py`／`service.py` 重構。
+  - **全套回歸**（三次獨立驗證，非單次僥倖綠燈）：後端 pytest（記憶體
+    ＋本機真實 Postgres 16 雙後端）——與本輪其餘六票完全相同的既有
+    4 條失敗（`test_api_filters.py` 三條、`test_service_fetch.py` 一條，
+    皆為此 sandbox 網路環境對虛構 symbol「XYZ」意外允許真實連線所致的
+    既有環境依賴性 flake，經多次 `git stash` 比對確認在本輪施工前的
+    基準 commit 上就已存在，與本輪任何一張票的改動無關），PC-07
+    新補的一行斷言通過、零新增失敗；前端 `tsc --noEmit` 乾淨、
+    `vite build` 成功；Playwright 全套 90 條（iPhone 56＋Desktop 34）
+    全綠。
+  - **交付**：commit＋push 到 `claude/implement-tfm9oa`，依專案規則
+    不開 PR、不 merge master。
+
+**spec #198（PC-01、PC-03～PC-07，issues #199、#201～#205）全數完成，
+PC-07 驗收通過。** #200／#206（production percentile cross-check）
+依需求方 2026-08-25 Owner Decision 以 `not_planned` 關閉，不重啟、
+不建替代票。下一步：等需求方以真機／production 檢視本輪四項成果
+（percentile 說明文字、Diagnostics 靜音化、Refresh Run 鎖定復原、
+桌面卡片順序）；依專案規則全部子票做完才開 PR，中途不主動開。
+
+### 真機驗收直接施工（2026-08-26，無 GitHub issue，直接下工單處理）
+
+需求方對 spec #198 的成果真機驗收後，發現兩個要在開 PR 前修正的小
+問題，明確指示直接施工修正、不重新 `/grill`／`/to-spec`／拆新一輪
+tickets，本輪只處理下列兩項、禁止 scope creep。
+
+**問題 1：Refresh Run 恢復「逐張完成、逐張可用」（commit `ca75b5f`）**
+——PC-05（#202）復原的鎖定機制與 C1 Refresh Run 批次架構（T06／#190）
+疊在一起後，真機上出現需求方不要的行為：backend 雖然批次處理，但
+前端要等整輪全部完成才一次把所有卡片解鎖／更新。
+
+**診斷**：前端 `runBatch()`（`App.tsx`）其實**早就**逐批套用回應
+（每次 Continuation 迴圈拿到一次 HTTP 回應，就立刻更新那批的
+`rows`／解除那批的 `updatingIds`，不等迴圈跑完），這件事本身沒有
+bug。真正的成因在後端：`refresh_run` 端點過去只有一個提前返回條件
+——45 秒的 `REFRESH_RUN_BUDGET`（T07／#193），對常見規模（十幾個
+劇本、少數幾個 distinct symbol）而言遠遠不會觸發，所以典型情況下
+**整批一次就在單一 HTTP 回應裡做完**，前端就算逐批套用，也只有
+「一批」可套用，看起來自然是「整輪跑完才一次全部解鎖」。
+
+**修法**：新增 `REFRESH_RUN_GROUP_LIMIT`（預設 1，`create_app()` DI
+注入方式與既有 `refresh_run_budget` 完全同構），單次回應最多完成
+一個 symbol 分組（ADR-0001 既有的去重單位）就回傳，其餘分組原樣進
+`remaining`——前端既有、不必改動的 Continuation 迴圈因此會逐組拿到
+結果並立即解鎖。分組本身不會被這個限流從中間切開（檢查點在分組開始
+前，不是分組內部），同一個 symbol 的多個劇本仍共用一次抓取、一起
+送達（這是分享同一次抓取結果的誠實後果，不是退步）；不同 symbol
+天生各自獨立分組，逐一送達。三個既有的 Refresh Run 優點原封不動：
+未退回 N 個獨立 serverless invocation、symbol chain 去重範圍不變
+（仍是單一 invocation 內）、request-scoped connection（PERF-01）與
+Continuation／Partial Success 機制都沒有被觸碰。
+
+測試：`tests/test_api_refresh.py` 新增
+`test_refresh_run_three_distinct_symbols_unlock_one_group_at_a_time`
+（A／B／C 三個不同 symbol，逐組完成，C 那組刻意安插一個抓取失敗，
+證明失敗不擋 A／B 已經落地的結果）；三個既有測試因新預設值改變
+假設（原本斷言「多 symbol 一次做完」）而改用新增的
+`_run_to_completion()` 輔助函式（循環呼叫到 `remaining` 清空，只驗
+最終結果不依賴幾次往返）——`test_refresh_run_deduplicates_chain_
+fetch_within_the_same_symbol`／`test_refresh_run_partial_success_
+one_symbol_failing_does_not_block_another`／
+`test_refresh_run_continuation_resumes_and_matches_a_single_pass`
+（後者的「一次做完」比較基準改顯式注入
+`refresh_run_group_limit=10`，代表「真的不分組限流」的對照組，不再
+是預設值自然产生的副作用）。`test_refresh_run_a_realistic_batch_
+completes_in_a_single_call` 整條重新命名為
+`..._now_completes_progressively_not_in_one_call`，斷言方向反過來：
+第一次回應只完成 4 個（第一個 symbol 分組），`remaining` 有 8 個；
+`_run_to_completion` 後仍然 12 個全部成功——這正是本票要修的那個
+行為，舊斷言就是舊 bug 本身的證明。
+
+前端：`App.test.tsx` 新增 A／B／C 三劇本逐張解鎖測試（B 刻意失敗，
+驗證失敗只影響它自己、不擋 C）；Playwright 手機（`smoke.spec.ts`）
+與桌面（`desktop.spec.ts`）各新增一條同款三階段驗收測試，用
+`scenario_ids` 長度判斷第幾輪、各自延遲讓中間鎖定狀態真的看得到，
+對齊需求方逐字列出的驗收情境（A 先完成解鎖、B/C 仍鎖定；B 完成
+不必等 C；partial failure 只影響該 Scenario；手機與桌面皆成立）。
+
+**問題 2：Percentile 說明文字改寫為白話句（commits `bc8b792`／
+`f6be5bd`）**——PC-01（#199）新增的三句常駐說明文字雖然技術上正確，
+需求方真機閱讀後仍覺得不像一般使用者能快速理解。三個家族
+（`IvTrend.tsx::ivPercentileExplanation`／`SpreadSummary.tsx::
+gapPercentileExplanation`／`IvHistory.tsx::skewPercentileExplanation`）
+從靜態字串常數升級為函式，直接把「第 N 百分位」翻譯成一句話、把
+N 帶進句子裡——例如「現在的 IV 比過去一年大約 87% 的有效歷史觀測
+都高。單日數字可能隨市場報價波動。」——不再要求使用者自己把
+「百分位」這個統計學名詞在腦中換算成「比例」。數字沿用旁邊既有
+`percentileCaption`／`metricCaption`（本輪不動）完全相同的
+`Math.round(percentile*100)`，兩處讀到的數字保證一致；三個新函式
+之間的這份重複由 code review 抓到後收斂成共用的
+`IvHistory.tsx::roundPercentile()`（只給這輪新增的三個函式共用，
+刻意不回頭改既有 caption 函式——那屬於「不動任何 percentile 計算」
+的既有程式碼）。Spread IV Gap 維持「共同歷史期間」措辭（視窗可能
+短於一年，非「近一年」樣板）、Normalized Skew 沿用「偏斜」語彙、
+不套「IV」字樣——皆延伸既有裁示，非本次新裁決。沒有歷史觀測時
+誠實說「目前沒有足夠的歷史觀測可以比較」，不硬套假數字。只改文字：
+percentile 演算法／裁窗／exact-contract 身份規則、圖表、scrubber、
+手機／桌面 layout、diagnostics 全部不動。
+
+測試：`percentileCopy.test.ts` 改為呼叫函式（不再讀靜態字串），
+涵蓋禁詞掃描、數字內嵌、「都高」句型且不再出現「百分位」字樣、單日
+波動提醒、簡短（兩句話之內）、null 情況誠實留白、三家族視窗措辭
+差異、與既有顯示數字的四捨五入一致性；`IvTrend.test.tsx`／
+`SpreadSummary.test.tsx`／`IvHistory.test.tsx` 既有的 DOM 定位斷言
+同步改用新文案的正則（用 `\d+%` 一般化，不逐一硬編每條測試各自的
+百分位數字）。
+
+**`/code-review` 已執行（Standards＋Spec 兩軸平行）**：Standards 軸
+零 hard violation；抓到三個新函式的 `Math.round(percentile*100)`
+重複（已如上收斂成 `roundPercentile()`）、以及建議把兩個不相關的
+修正拆成獨立 commit（已照做，兩個修正各自獨立 commit，未合併）。
+Spec 軸零缺漏、零 scope creep；逐項核對 group-limit 分組不會被切開
+（檢查點在分組前）、失敗隔離（`fetch_error` 只標記那一組）、三個
+說明函式數字換算與旁邊既有顯示逐位元一致；唯一提到的「未測到的
+情境」（同一次回應內有多個分組時，其中一組失敗是否擋住下一組）
+判斷為既有、本輪未改動的邏輯（`fetch_error` 是 per-group 局部變數，
+外層迴圈本來就會繼續），非本輪缺陷。
+
+**全套回歸**（不鬆綁任何既有斷言）：後端 pytest（記憶體＋本機真實
+Postgres 16 雙後端）——與 PC-01～PC-07 完全相同的既有 4 條環境依賴性
+flake（`test_api_filters.py` 三條、`test_service_fetch.py` 一條，
+與本輪改動無關）；前端 `tsc --noEmit`／`vite build` 乾淨、Vitest
+670 條全綠（多次全套重跑時，`IvHistory.test.tsx` 一條與本輪完全
+無關的既有測試——補建端點失敗後重抓的 `waitFor()`——出現約 2 成
+機率的間歇性失敗；用 `git worktree` 拉出本輪施工前的基準 commit
+（`69994ba`）反覆對照跑過近 20 次，確認**同一條測試在施工前的基準
+上同樣會間歇性失敗、且永遠只在全套平行跑、單獨跑該檔案永遠 100%
+通過**——是這個 sandbox 既有的 CPU 資源競爭導致 `waitFor()` 逾時，
+不是本輪任何一個修正引入的迴歸，本輪新增的測試沒有一次牽涉在內）；
+Playwright 連續兩輪 92 條全綠（iPhone 58＋Desktop 34，含本輪新增
+兩條逐張解鎖驗收）。
+
+**交付**：兩個修正各自獨立 commit（`ca75b5f`／`bc8b792`）＋一個
+code-review 跟進 commit（`f6be5bd`），已 push 到
+`claude/implement-tfm9oa`。依需求方明確指示不開 PR、不 merge
+master，等需求方最後一次真機驗收。
 
 ### 施工依據
 

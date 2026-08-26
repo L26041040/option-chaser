@@ -174,9 +174,19 @@ export interface Candidate {
   comparator: Comparator | null;
 }
 
+/**
+ * T09（#191）：同一個 `Candidate` 過去在 `candidates`／`expiry_best`／
+ * `expiry_top10`／`expiry_groups[].rows[]` 四個容器裡各自完整重複一份，
+ * 現在集中存在這裡（頂層，鍵＝`candidate_key`，跨策略共用一份——
+ * `candidate_key` 本身已含策略前綴，天生不衝突），四個容器改存 key
+ * 字串。`CandidateMap`（不叫 `CandidatePool`——那個名字已經是
+ * `./CandidatePool` 這個既有元件在用，避免同名混淆）。
+ */
+export type CandidateMap = Record<string, Candidate>;
+
 export interface ExpiryTop10 {
   expiry: string;
-  candidates: Candidate[];
+  candidate_keys: string[];
 }
 
 /** 一道品質過濾關卡砍掉的筆數（引擎的 `FilterReport.stages`）。 */
@@ -233,13 +243,9 @@ export interface StrategyResult {
   /** [到期日, 該期通過配對的有效候選組數]，引擎的 `expiry_counts`。 */
   expiry_counts: [string, number][];
   expiry_top10?: ExpiryTop10[];
-  /**
-   * V8（#56，spec R1 §4.1）：新版型「⑥ 方法與假設」——`report.py` 的
-   * `methodology_lines()`，與純文字報告同一個事實來源，只是拆出獨立
-   * 欄位。多行文字，前端逐行呈現或原樣顯示皆可。
-   */
-  methodology_text: string;
-  /** 新版型「⑦ 免責聲明」——獨立、不折疊的擴充版本（R1 §4.4.4）。 */
+  /** 新版型「⑦ 免責聲明」——獨立、不折疊的擴充版本（R1 §4.4.4）。
+   *  T04（#188）：`methodology_text`／`report_text` 前端零引用，已從
+   *  View payload 移除，型別同步拿掉。 */
   disclaimer_text: string;
 }
 
@@ -303,6 +309,23 @@ export interface AnalysisView {
   params: AnalysisParams;
   baseline_expiry: string | null;
   results: StrategyResult[];
+  /** T09（#191）：完整候選內容的單一來源，見 `CandidateMap` 說明。
+   *  可選——舊存的 View（schema_version < 3）沒有這個欄位，`resolveCandidate()`
+   *  對此誠實回傳 `null`，不假造內容。 */
+  candidate_pool?: CandidateMap;
+}
+
+/**
+ * 依 key 查出候選的完整內容（T09／#191，取代過去容器裡的內嵌字典）。
+ * 舊 schema（沒有 `candidate_pool`，或 key 不在裡面）一律回傳 `null`——
+ * 舊存的 View 這幾個位置本就已經不會再產生（下一次刷新就是新 schema），
+ * 不值得為了過渡期另外撐一套內嵌解析邏輯。
+ */
+export function resolveCandidate(
+  view: AnalysisView, key: string | undefined,
+): Candidate | null {
+  if (key === undefined) return null;
+  return view.candidate_pool?.[key] ?? null;
 }
 
 /**
@@ -423,12 +446,33 @@ function stageOf(value: unknown): FailureStage {
  */
 const REQUEST_TIMEOUT_MS = 90_000;
 
+/**
+ * T03（#187）：合併兩個 `AbortSignal`——任一個先觸發都算數。手寫而非
+ * 用 `AbortSignal.any`（2023 年才進主流瀏覽器，jsdom 測試環境與部分
+ * 舊版行動瀏覽器都還沒有），這個小函式在所有支援 `AbortController`
+ * 的環境都能跑。已經 aborted 的來源直接同步觸發，不必等事件。
+ */
+function combineSignals(a: AbortSignal, b: AbortSignal): AbortSignal {
+  const controller = new AbortController();
+  const abort = (signal: AbortSignal) => controller.abort(signal.reason);
+  if (a.aborted) return a;
+  if (b.aborted) return b;
+  a.addEventListener("abort", () => abort(a), { once: true });
+  b.addEventListener("abort", () => abort(b), { once: true });
+  return controller.signal;
+}
+
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
   let resp: Response;
   try {
+    // `init.signal`（呼叫端要求可被中途取消）與既有的逾時 signal
+    // 合併——任一個先觸發都算數，兩者不互相取代。
+    const timeoutSignal = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
     resp = await fetch(url, {
       ...init,
-      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+      signal: init?.signal
+        ? combineSignals(init.signal, timeoutSignal)
+        : timeoutSignal,
     });
   } catch (e) {
     // 逾時／連線斷掉：說「等不到回應」，而不是把 DOMException 的英文
@@ -520,9 +564,42 @@ export function refreshScenario(id: string): Promise<ScenarioSummary> {
   );
 }
 
+/**
+ * 一輪刷新（T08／#196，接上後端 T06／#190＋T07／#193）：批次版的
+ * `refreshScenario`，接受一組 id（`null` ＝全部未過期劇本，後端
+ * 決定範圍）。成功項帶完整卡片列（與 `refreshScenario` 同形狀），
+ * 失敗項沿用既有 `{stage, message}` 失敗分層——跟單一劇本刷新完全
+ * 同一套語彙，不是另一套錯誤格式。
+ *
+ * `remaining` 非空代表 server 端時間預算耗盡、還有劇本沒處理到
+ * （T07 的 Continuation）；呼叫端（`App.tsx`）拿它原樣再打一次這個
+ * 端點即可接續，直到 `remaining` 為空。
+ */
+export type RefreshRunResult =
+  | { scenario_id: string; ok: true; row: ScenarioSummary }
+  | { scenario_id: string; ok: false; stage: FailureStage; message: string };
+
+export interface RefreshRunResponse {
+  results: RefreshRunResult[];
+  remaining: string[];
+}
+
+export function refreshRun(
+  scenarioIds: string[] | null,
+): Promise<RefreshRunResponse> {
+  return request<RefreshRunResponse>(
+    "/api/scenarios/refresh-run",
+    POST_JSON({ scenario_ids: scenarioIds }),
+  );
+}
+
 /** 詳細頁用（V5／#53）：整份 view 只有這裡會拖，清單列不帶。 */
-export function getScenario(id: string): Promise<ScenarioDetail> {
-  return request<ScenarioDetail>(`/api/scenarios/${encodeURIComponent(id)}`);
+export function getScenario(
+  id: string,
+  signal?: AbortSignal,
+): Promise<ScenarioDetail> {
+  return request<ScenarioDetail>(
+    `/api/scenarios/${encodeURIComponent(id)}`, { signal });
 }
 
 export function archiveScenario(id: string): Promise<{ archived: boolean }> {
@@ -635,7 +712,7 @@ export function baselineTopCandidate(view: AnalysisView): Candidate | null {
   const ok = primaryResult(view);
   if (!ok?.expiry_top10) return null;
   const group = ok.expiry_top10.find((g) => g.expiry === view.baseline_expiry);
-  return group?.candidates[0] ?? null;
+  return resolveCandidate(view, group?.candidate_keys[0]);
 }
 
 /**
@@ -709,8 +786,8 @@ export interface UsageChoice {
   provider: string | null;
 }
 
-export function getSettings(): Promise<SettingsView> {
-  return request<SettingsView>("/api/settings");
+export function getSettings(signal?: AbortSignal): Promise<SettingsView> {
+  return request<SettingsView>("/api/settings", { signal });
 }
 
 export function saveSettings(body: {
@@ -806,6 +883,11 @@ export interface DiagnosticEvent {
   subsystem: string;
   stage: string;
   severity: "info" | "warning" | "error";
+  /** PC-03（#201，spec #198）：獨立於 `severity` 的軸——這件事該不該讓
+   *  一般使用者看到。卡片就地展開的 inline diagnostics 依這個欄位決定
+   *  要不要顯示；Settings／Diagnostics 頁（工程用介面）繼續完整依
+   *  `severity` 列出全部事件，不讀這個欄位。 */
+  user_facing: boolean;
   message: string;
   context: Record<string, string | number | boolean>;
 }
@@ -953,15 +1035,44 @@ export interface IvHistoryView {
    *  單腳候選整個省略（不是設成 `undefined` 以外的假值）——跟 `legs.
    *  sell` 同一種「key 存在與否即結構性事實」的慣例。 */
   spread_gap?: SpreadGap;
+  /** T11（#194，兩段式補建 P3-a）：Legacy (tenor,delta) 家族今天還沒
+   *  補建過一批——`true` 時畫面該顯示「歷史資料補建中」並呼叫
+   *  `ivHistoryBackfill()`，完成後重打一次這個端點取得補全後的資料。
+   *  Exact-Contract 家族（`legs`／`spread_gap`）不受這個欄位影響，
+   *  已經是這個回應裡最新的資料。 */
+  backfill_pending: boolean;
 }
 
 export function ivHistory(
   scenarioId: string,
   candidateKey: string,
+  signal?: AbortSignal,
 ): Promise<IvHistoryView> {
   return request<IvHistoryView>(
     `/api/scenarios/${encodeURIComponent(scenarioId)}/iv-history`
     + `?candidate_key=${encodeURIComponent(candidateKey)}`,
+    { signal },
+  );
+}
+
+export interface IvHistoryBackfillResult {
+  outcome: string;
+  note: string | null;
+  diagnostics: IvHistoryDiagnostics;
+}
+
+/** T11（#194，兩段式補建 P3-a）：Legacy 家族冷 backfill 的獨立觸發
+ *  端點——`ivHistory()` 不再同步跑這件事，只回報 `backfill_pending`。
+ *  呼叫這裡完成後，重打一次 `ivHistory()` 就能看到補全後的資料。 */
+export function ivHistoryBackfill(
+  scenarioId: string,
+  candidateKey: string,
+  signal?: AbortSignal,
+): Promise<IvHistoryBackfillResult> {
+  return request<IvHistoryBackfillResult>(
+    `/api/scenarios/${encodeURIComponent(scenarioId)}/iv-history/backfill`
+    + `?candidate_key=${encodeURIComponent(candidateKey)}`,
+    { method: "POST", signal },
   );
 }
 

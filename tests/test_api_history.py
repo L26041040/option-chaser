@@ -31,8 +31,9 @@ def _snapshot_with_bid(bid_118, bid_122, fetched_at):
     return dataclasses.replace(snap, contracts=tuple(contracts), fetched_at=fetched_at)
 
 
-def _client(fetch, storage=None):
-    return TestClient(create_app(fetch=fetch, storage=storage or MemoryStorage()))
+def _client(fetch, storage=None, **overrides):
+    return TestClient(create_app(fetch=fetch, storage=storage or MemoryStorage(),
+                                 **overrides))
 
 
 def _create(client, **overrides):
@@ -42,6 +43,9 @@ def _create(client, **overrides):
 
 
 def test_history_is_one_continuous_series_across_refreshes_with_a_gap():
+    # T06（#190）：chain 快取已整組移除（ADR-0001），這裡連續對同一個
+    # symbol 觸發三次「真的重新抓一次」的刷新（每次餵不同快照）不需要
+    # 任何特殊處理，自然就會各自真的重新抓一次。
     storage = MemoryStorage()
     snapshots = [
         _snapshot_with_bid(2.2, 1.4, "2026-07-15T21:30:00-04:00"),   # 正常

@@ -71,12 +71,25 @@ def _rolling_windows(points: list[tuple[str, float | None]], *,
     同一份視窗計算——三者「用同一份 mean／std」（spec #151 §3 z-score
     定義的明文要求）就是靠共用這個輔助函式做到，不是三處各自重算一次
     容易漂移的邏輯。
+
+    **前提：同一個 `points` 序列裡每個日期最多一筆有效觀測**——上游
+    `reconstruct_iv_series()`／storage 的 per-contract per-date 語意
+    （見兩者各自 docstring／`test_rewriting_the_same_*_overwrites_
+    rather_than_duplicates`）保證這點；雙指標視窗（`left:right+1`
+    切片）依賴這個前提才能跟舊版逐點全掃描的結果逐位元相同——同一天
+    出現兩筆的輸入不在既有呼叫端的資料形狀範圍內（PERF-04／#180）。
     """
     valid = sorted((d, iv) for d, iv in points if iv is not None)
     out: list[tuple[str, list[float]]] = []
-    for d, _ in valid:
+    left = 0
+    for right, (d, _) in enumerate(valid):
         window_start = (date.fromisoformat(d) - timedelta(days=window_days)).isoformat()
-        window_vals = [v for dd, v in valid if window_start <= dd <= d]
+        # `window_start` 隨 `d`（已排序遞增）單調不減，所以 `left` 只會
+        # 往前推進、不需要回頭——雙指標把「逐點重新掃描整個序列」的
+        # O(n²) 收斂成 O(n) 次指標移動。
+        while valid[left][0] < window_start:
+            left += 1
+        window_vals = [v for _, v in valid[left:right + 1]]
         out.append((d, window_vals))
     return out
 

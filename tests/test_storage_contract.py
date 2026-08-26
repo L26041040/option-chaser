@@ -16,11 +16,12 @@ import pytest
 from dataclasses import replace
 
 from api_app.diagnostics import RETENTION_LIMIT, DiagnosticEvent
-from api_app.storage import (ContractHistory, DataSourceSettings,
-                             DividendCacheEntry, IvBackfillRun, IvObservation,
-                             ProviderCredential, ProviderVerification,
-                             RateCacheEntry, ResultRecord, Scenario,
-                             ScenarioExists, UsageSetting)
+from api_app.storage import (ContractHistory,
+                             DataSourceSettings, DividendCacheEntry,
+                             IvBackfillRun, IvObservation, ProviderCredential,
+                             ProviderVerification, RateCacheEntry,
+                             ResultRecord, Scenario, ScenarioExists,
+                             TreasuryYearCacheEntry, UsageSetting)
 from api_app.storage.memory import MemoryStorage
 
 TEST_DB_URL = os.environ.get("OC_TEST_DATABASE_URL")
@@ -44,10 +45,16 @@ def storage(request):
 
     from api_app.storage.postgres import PostgresStorage
     st = PostgresStorage(TEST_DB_URL)
+    # T02（#186）：schema 就緒檢查移到第一次真正呼叫 `_connect()`才做
+    # （建構本身不再連線）——下面這段清庫用的是繞過 `st` 的原始
+    # `psycopg.connect`，不會觸發那個惰性檢查，在全新的資料庫上會撞
+    # `UndefinedTable`。先讓 `st` 自己碰一次 storage（等同 production
+    # 第一個真正打到這個 adapter 的請求），schema 才會就緒。
+    st._ensure_schema()
     # 清庫是測試自己的事，不放進正式 adapter（正式環境不該有 TRUNCATE）。
     with psycopg.connect(TEST_DB_URL, autocommit=True) as conn:
         conn.execute("TRUNCATE scenarios, results, snapshots, events, rate_cache, "
-                     "dividend_cache, data_source_settings, "
+                     "dividend_cache, treasury_year_cache, data_source_settings, "
                      "provider_credentials, provider_verifications, "
                      "iv_observations, iv_backfill_runs, contract_iv_history, "
                      "diagnostics RESTART IDENTITY")
@@ -483,6 +490,67 @@ def test_dividend_cache_does_not_leak_across_symbols(storage):
     assert storage.get_dividend_cache("SPY").note == "SPY 配息資料不可得"
 
 
+# ---------- Treasury 曲線列快取（PERF-03／#179，per-year） ----------
+
+def test_treasury_year_cache_starts_empty(storage):
+    assert storage.get_treasury_year_cache(2026) is None
+
+
+def test_treasury_year_cache_roundtrips_a_successful_fetch(storage):
+    entry = TreasuryYearCacheEntry(
+        year=2026, fetched_at="2026-08-10T12:00:00+00:00",
+        rows=[["2026-01-01", [[1.0, 0.041], [30.0, 0.043]]]],
+        note="Treasury 2026 年曲線（1 個交易日）")
+    storage.save_treasury_year_cache(entry)
+    assert storage.get_treasury_year_cache(2026) == entry
+
+
+def test_treasury_year_cache_roundtrips_market_day_and_attempted_day(storage):
+    entry = TreasuryYearCacheEntry(
+        year=2026, fetched_at="2026-08-10T12:00:00+00:00",
+        rows=[["2026-01-01", [[1.0, 0.041]]]],
+        note="Treasury 2026 年曲線",
+        market_day="2026-08-10", attempted_day="2026-08-10")
+    storage.save_treasury_year_cache(entry)
+    assert storage.get_treasury_year_cache(2026) == entry
+
+
+def test_treasury_year_cache_can_record_a_failed_attempt(storage):
+    entry = TreasuryYearCacheEntry(year=2026, fetched_at="2026-08-10T12:00:00+00:00",
+                                   rows=None, note="Treasury 曲線不可得")
+    storage.save_treasury_year_cache(entry)
+    assert storage.get_treasury_year_cache(2026) == entry
+
+
+def test_treasury_year_cache_overwrites_rather_than_accumulates(storage):
+    storage.save_treasury_year_cache(TreasuryYearCacheEntry(
+        year=2026, fetched_at="2026-08-10T00:00:00+00:00",
+        rows=None, note="Treasury 曲線不可得"))
+    storage.save_treasury_year_cache(TreasuryYearCacheEntry(
+        year=2026, fetched_at="2026-08-10T06:00:00+00:00",
+        rows=[["2026-01-01", [[1.0, 0.041]]]],
+        note="Treasury 2026 年曲線（1 個交易日）"))
+
+    entry = storage.get_treasury_year_cache(2026)
+    assert entry.fetched_at == "2026-08-10T06:00:00+00:00"
+    assert entry.rows == [["2026-01-01", [[1.0, 0.041]]]]
+
+
+def test_treasury_year_cache_does_not_leak_across_years(storage):
+    """核心不變量（PIT 安全）：per-year 鍵，一個年份的紀錄不該覆蓋或
+    污染另一個年份——這是本票存在的理由本身，不是順手測一下。"""
+    storage.save_treasury_year_cache(TreasuryYearCacheEntry(
+        year=2025, fetched_at="2026-08-10T00:00:00+00:00",
+        rows=[["2025-01-01", [[1.0, 0.0111]]]], note="2025"))
+    storage.save_treasury_year_cache(TreasuryYearCacheEntry(
+        year=2026, fetched_at="2026-08-10T00:00:00+00:00",
+        rows=None, note="2026 不可得"))
+
+    assert storage.get_treasury_year_cache(2025).rows == [["2025-01-01", [[1.0, 0.0111]]]]
+    assert storage.get_treasury_year_cache(2026).rows is None
+    assert storage.get_treasury_year_cache(2026).note == "2026 不可得"
+
+
 # ---------- 清單摘要（V3／#51） ----------
 
 def test_latest_summaries_returns_the_newest_result_per_scenario(storage):
@@ -894,11 +962,16 @@ def test_an_old_shape_date_iv_tuple_row_is_structurally_distinguishable(storage)
 
 def _diag(*, event_id="e1", correlation_id="c1", ts="2026-08-15T00:00:00+00:00",
          subsystem="historical_iv", stage="vendor_fetch", severity="error",
-         message="boom", context=None):
+         user_facing=None, message="boom", context=None):
+    # PC-03（#201）：`user_facing` 省略時鏡射 `severity`——跟 `emit()`
+    # 的預設規則同一套，這裡直接構造 `DiagnosticEvent`（繞過 `emit()`）
+    # 因此要自己套一次，不然這批既有測試全部要逐一補這個新欄位。
+    if user_facing is None:
+        user_facing = severity in ("warning", "error")
     return DiagnosticEvent(event_id=event_id, correlation_id=correlation_id,
                            ts=ts, subsystem=subsystem, stage=stage,
-                           severity=severity, message=message,
-                           context=context or {})
+                           severity=severity, user_facing=user_facing,
+                           message=message, context=context or {})
 
 
 def test_diagnostics_start_out_empty(storage):
@@ -916,6 +989,19 @@ def test_appended_diagnostic_reads_back_identically(storage):
     assert got[0].severity == "error"
     assert got[0].message == "boom"
     assert got[0].context == {"symbol": "TLT"}
+
+
+def test_diagnostic_user_facing_round_trips_for_both_true_and_false(storage):
+    """PC-03（#201）：`user_facing` 是獨立於 `severity` 的欄位——存 True
+    讀回 True、存 False 讀回 False，兩個布林值都要能存活過 round-trip，
+    不能只驗其中一個方向（例如剛好都是 truthy 就測不出 Postgres 那端
+    欄位型別／讀取邏輯搞錯的情況）。"""
+    storage.append_diagnostic(_diag(event_id="t1", severity="warning",
+                                    user_facing=True))
+    storage.append_diagnostic(_diag(event_id="t2", severity="warning",
+                                    user_facing=False))
+    got = {e.event_id: e.user_facing for e in storage.list_diagnostics()}
+    assert got == {"t1": True, "t2": False}
 
 
 def test_diagnostics_come_back_newest_first(storage):
@@ -962,6 +1048,42 @@ def test_diagnostics_retention_is_capped_globally(storage):
     assert "e20" in kept_ids
 
 
+def test_append_diagnostics_batch_writes_all_events(storage):
+    """PERF-02（#178）：複數形式的批次寫入，跟逐筆呼叫單筆版並存、
+    不取代——這裡驗證批次版本身就能把整批寫進去、讀得回來。"""
+    events = [_diag(event_id=f"b{i}", ts=f"2026-08-15T00:0{i}:00+00:00")
+             for i in range(3)]
+    storage.append_diagnostics(events)
+    got = {e.event_id for e in storage.list_diagnostics(limit=10)}
+    assert got == {"b0", "b1", "b2"}
+
+
+def test_append_diagnostics_on_an_empty_list_is_a_no_op(storage):
+    storage.append_diagnostics([])
+    assert storage.list_diagnostics() == []
+
+
+def test_append_diagnostics_batch_matches_looping_the_singular_method_on_retention(storage):
+    """核心不變量：批次寫入與逐筆寫入在 trim-on-write 上必須產生完全
+    一致的最終保留集合——不是「差不多」，是同一組 event_id、同一個
+    順序。用兩個獨立的 storage 實例分別跑批次版／逐筆版，比對最終
+    狀態。"""
+    total = RETENTION_LIMIT + 20
+    events = [_diag(event_id=f"e{i}", ts=f"t{i}") for i in range(total)]
+
+    storage.append_diagnostics(events)
+    batch_result = [(e.event_id, e.ts) for e in storage.list_diagnostics(
+        limit=RETENTION_LIMIT + 50)]
+
+    looped = MemoryStorage()
+    for event in events:
+        looped.append_diagnostic(event)
+    looped_result = [(e.event_id, e.ts) for e in looped.list_diagnostics(
+        limit=RETENTION_LIMIT + 50)]
+
+    assert batch_result == looped_result
+
+
 # ---------- schema 遷移（V3／#51） ----------
 
 def test_existing_results_table_gains_the_new_column():
@@ -983,7 +1105,7 @@ def test_existing_results_table_gains_the_new_column():
         # 得自己清乾淨——否則殘留的劇本會讓它以 ScenarioExists 失敗，
         # 看起來像遷移壞了，其實是測試自己髒。
         conn.execute("TRUNCATE scenarios, results, snapshots, events, rate_cache, "
-                     "dividend_cache, data_source_settings, "
+                     "dividend_cache, treasury_year_cache, data_source_settings, "
                      "provider_credentials, provider_verifications, "
                      "iv_observations, iv_backfill_runs, contract_iv_history "
                      "RESTART IDENTITY")
@@ -1016,7 +1138,7 @@ def test_existing_results_table_gains_the_representative_candidate_column():
 
     with psycopg.connect(TEST_DB_URL, autocommit=True) as conn:
         conn.execute("TRUNCATE scenarios, results, snapshots, events, rate_cache, "
-                     "dividend_cache, data_source_settings, "
+                     "dividend_cache, treasury_year_cache, data_source_settings, "
                      "provider_credentials, provider_verifications, "
                      "iv_observations, iv_backfill_runs, contract_iv_history "
                      "RESTART IDENTITY")
@@ -1051,7 +1173,7 @@ def test_migration_still_applies_when_table_creation_hits_a_race():
 
     with psycopg.connect(TEST_DB_URL, autocommit=True) as conn:
         conn.execute("TRUNCATE scenarios, results, snapshots, events, rate_cache, "
-                     "dividend_cache, data_source_settings, "
+                     "dividend_cache, treasury_year_cache, data_source_settings, "
                      "provider_credentials, provider_verifications, "
                      "iv_observations, iv_backfill_runs, contract_iv_history "
                      "RESTART IDENTITY")
@@ -1073,3 +1195,166 @@ def test_migration_still_applies_when_table_creation_hits_a_race():
     st.create_scenario(_scenario("race"))
     st.save_result(ResultRecord("race", "2026-08-01T00:00:00+00:00", {"n": 1}, 0.5))
     assert st.latest_summaries()["race"].best_return == 0.5
+
+
+# ---------- Request-scoped 連線（PERF-01／#177，T02／#186 修形） ----------
+#
+# adapter 層級測試，不透過 HTTP endpoint（spec 明文要求）：monkeypatch
+# 真正的 `psycopg.connect` 成計數版本，直接驗證 `request_scope()` 讓
+# 一個 scope 內任意多個不同 method 呼叫只開一條連線。
+
+def test_multiple_calls_within_a_request_scope_share_a_single_connection():
+    if not TEST_DB_URL:
+        pytest.skip("需要 OC_TEST_DATABASE_URL（一個跑著的 Postgres）")
+    import psycopg
+
+    from api_app.storage import postgres as pg
+
+    st = pg.PostgresStorage(TEST_DB_URL)
+    with psycopg.connect(TEST_DB_URL, autocommit=True) as conn:
+        conn.execute("TRUNCATE scenarios, results, snapshots, events, rate_cache, "
+                     "dividend_cache, treasury_year_cache, data_source_settings, "
+                     "provider_credentials, provider_verifications, "
+                     "iv_observations, iv_backfill_runs, contract_iv_history "
+                     "RESTART IDENTITY")
+
+    connect_calls = []
+    real_connect = psycopg.connect
+
+    def counting_connect(*args, **kwargs):
+        connect_calls.append((args, kwargs))
+        return real_connect(*args, **kwargs)
+
+    import api_app.storage.postgres as pg_module
+    original_connect = pg_module.psycopg.connect
+    pg_module.psycopg.connect = counting_connect
+    borrowed_conn = None
+    try:
+        with st.request_scope():
+            # 一個 scope 內呼叫好幾個不同的 method——恰好一次 connect()
+            # （惰性：第一次真正用到才開，這裡是 create_scenario）。
+            st.create_scenario(_scenario("scope1"))
+            st.get_rate_cache()
+            st.get_dividend_cache("TLT")
+            st.list_diagnostics()
+            # 抓住這個 scope 實際借用中的連線物件本身——下面要驗證的是
+            # *這一條*連線確實被關閉，不是只驗證「離開後可以再開一條
+            # 新的」（那樣即使舊連線從沒被關閉、只是被丟棄，斷言一樣會
+            # 通過，驗不到 `finally` 真的呼叫了 `conn.close()`）。
+            held = pg_module._request_scope_state.get()
+            assert held is not None
+            borrowed_conn = held.conn
+        assert len(connect_calls) == 1
+    finally:
+        pg_module.psycopg.connect = original_connect
+
+    # 離開 scope 後：ContextVar 清空，且**這一條**借用中的連線物件本身
+    # 確實被關閉——不是換一條新的、舊的置之不理。
+    assert pg_module._request_scope_state.get() is None
+    assert borrowed_conn is not None
+    assert borrowed_conn.closed
+
+    # 下一次呼叫（scope 外）照舊各自開一條新的，不會誤用一條已經關閉的
+    # 連線。
+    assert st.get_rate_cache() is None   # 沒炸掉＝沒有沿用一條已關閉的連線
+
+
+def test_a_scope_with_no_storage_calls_never_opens_a_connection():
+    """T02（#186）的核心承諾：完全不碰 storage 的 request 零連線
+    握手——進 scope、什麼都不呼叫、離開，`connect()` 一次都不該被
+    呼叫過。"""
+    if not TEST_DB_URL:
+        pytest.skip("需要 OC_TEST_DATABASE_URL（一個跑著的 Postgres）")
+    import psycopg
+
+    from api_app.storage import postgres as pg
+
+    st = pg.PostgresStorage(TEST_DB_URL)
+
+    connect_calls = []
+    real_connect = psycopg.connect
+
+    def counting_connect(*args, **kwargs):
+        connect_calls.append((args, kwargs))
+        return real_connect(*args, **kwargs)
+
+    import api_app.storage.postgres as pg_module
+    original_connect = pg_module.psycopg.connect
+    pg_module.psycopg.connect = counting_connect
+    try:
+        with st.request_scope():
+            pass   # 故意什麼都不做
+        assert connect_calls == []
+    finally:
+        pg_module.psycopg.connect = original_connect
+
+
+def test_request_scope_reconnects_correctly_for_a_fresh_request_afterwards():
+    """離開 scope 後再進一次新的 scope——確認不會沿用上一個 scope 已經
+    關閉的連線物件（ContextVar 每次 scope 都設一條新的）。"""
+    if not TEST_DB_URL:
+        pytest.skip("需要 OC_TEST_DATABASE_URL（一個跑著的 Postgres）")
+    import psycopg
+
+    from api_app.storage import postgres as pg
+
+    st = pg.PostgresStorage(TEST_DB_URL)
+    with psycopg.connect(TEST_DB_URL, autocommit=True) as conn:
+        conn.execute("TRUNCATE scenarios, results, snapshots, events, rate_cache, "
+                     "dividend_cache, treasury_year_cache, data_source_settings, "
+                     "provider_credentials, provider_verifications, "
+                     "iv_observations, iv_backfill_runs, contract_iv_history "
+                     "RESTART IDENTITY")
+
+    with st.request_scope():
+        st.create_scenario(_scenario("scope2"))
+    with st.request_scope():
+        # 新的 scope、新的連線——這裡如果誤用了上一個已關閉的連線會直接炸掉。
+        assert st.get_scenario("scope2") is not None
+
+
+def test_a_failure_opening_the_shared_connection_falls_back_to_a_per_call_one():
+    """T02（#186）：惰性設計下，「開連線失敗」發生在 scope 內**第一次
+    真正呼叫到 storage** 的那一刻，不是 `request_scope()` 的 `__enter__`
+    本身（那裡現在什麼都不連）。那次呼叫本身不該跟著炸掉——退回逐次
+    開連線，且這個 scope 剩餘的呼叫不再嘗試共用（`state.failed`）。"""
+    if not TEST_DB_URL:
+        pytest.skip("需要 OC_TEST_DATABASE_URL（一個跑著的 Postgres）")
+    import psycopg
+
+    from api_app.storage import postgres as pg
+
+    st = pg.PostgresStorage(TEST_DB_URL)
+    with psycopg.connect(TEST_DB_URL, autocommit=True) as conn:
+        conn.execute("TRUNCATE scenarios, results, snapshots, events, rate_cache, "
+                     "dividend_cache, treasury_year_cache, data_source_settings, "
+                     "provider_credentials, provider_verifications, "
+                     "iv_observations, iv_backfill_runs, contract_iv_history "
+                     "RESTART IDENTITY")
+
+    import api_app.storage.postgres as pg_module
+    original_connect = pg_module.psycopg.connect
+    call_count = {"n": 0}
+
+    def flaky_connect(*args, **kwargs):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            raise RuntimeError("db 暫時連不上")
+        return original_connect(*args, **kwargs)
+
+    pg_module.psycopg.connect = flaky_connect
+    try:
+        with st.request_scope():
+            # 第一次真正用到 storage：共用連線開不成（第 1 次 connect
+            # 呼叫故意失敗），這次呼叫本身退回逐次開連線（第 2 次
+            # connect 呼叫成功），正常拿到結果，不炸掉。
+            assert st.get_rate_cache() is None
+            state = pg_module._request_scope_state.get()
+            assert state is not None
+            assert state.failed is True
+            assert state.conn is None
+    finally:
+        pg_module.psycopg.connect = original_connect
+
+    # scope 結束後，正常呼叫（連線已恢復）不受影響。
+    assert st.get_rate_cache() is None

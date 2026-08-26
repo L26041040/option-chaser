@@ -24,9 +24,18 @@ def _result(strategies=("long-call", "bull-call-spread")):
         FIX)
 
 
+def _cand(view: dict, key: str) -> dict:
+    """T09（#191）：容器裡現在只有 `candidate_key`（字串），完整內容統一
+    查頂層 `candidate_pool`——測試用這個小 helper 取代直接索引，避免每個
+    呼叫點各自重複同一段解引用。"""
+    return view["candidate_pool"][key]
+
+
 def test_top_level_fields_and_versions():
     view = store.serialize_result(_result(), "XYZ-120-202608", 100000.0)
-    assert view["schema_version"] == 1
+    # T04（#188）：1→2 report_text／methodology_text 移除。
+    # T09（#191）：2→3 候選內容集中進 `candidate_pool`，四個容器改存 key。
+    assert view["schema_version"] == 3
     assert view["engine_version"] == option_chaser.__version__ == "0.5.0"
     assert view["scenario_id"] == "XYZ-120-202608"
     assert view["analyzed_at"] == view["snapshot_ref"]["fetched_at"]
@@ -47,7 +56,7 @@ def test_candidate_fields_hand_checked():
     view = store.serialize_result(result, "S", 100000.0)
     res0 = view["results"][0]
     assert res0["strategy"] == "long-call" and res0["status"] == "ok"
-    cand = res0["candidates"][0]
+    cand = _cand(view, res0["candidates"][0])
     cv = result.results[0].candidates[0]
     v = cv.valuation
     assert cand["candidate_key"] == service.candidate_key(cv)
@@ -80,7 +89,7 @@ def test_candidate_carries_l2_l3_cons_and_guidance_warnings():
 
     result = _result(("long-call",))
     view = store.serialize_result(result, "S", None)
-    cand = view["results"][0]["candidates"][0]
+    cand = _cand(view, view["results"][0]["candidates"][0])
     cv = result.results[0].candidates[0]
     v = cv.valuation
 
@@ -97,7 +106,7 @@ def test_spread_candidate_carries_l2_l3_cons_and_guidance_warnings():
 
     result = _result(("bull-call-spread",))
     view = store.serialize_result(result, "S", None)
-    cand = view["results"][0]["candidates"][0]
+    cand = _cand(view, view["results"][0]["candidates"][0])
     cv = result.results[0].candidates[0]
     sv = cv.valuation
 
@@ -108,19 +117,15 @@ def test_spread_candidate_carries_l2_l3_cons_and_guidance_warnings():
         sv, result.request.base_params)
 
 
-def test_methodology_and_disclaimer_text_are_serialized_once_per_strategy():
-    """V8（#56，spec R1 §4.1）：新版型「⑥ 方法與假設」／「⑦ 免責聲明」
-    要獨立於 `report_text` 之外，各自是完整字串，內容出自同一個
-    `report.py`（單一事實來源），不是前端另外拼出來的。"""
-    from option_chaser.report import disclaimer_text, methodology_lines
+def test_disclaimer_text_is_serialized_once_per_strategy():
+    """V8（#56，spec R1 §4.1）：新版型「⑦ 免責聲明」是完整字串，內容
+    出自 `report.py`（單一事實來源），不是前端另外拼出來的。"""
+    from option_chaser.report import disclaimer_text
 
     result = _result(("long-call", "bull-call-spread"))
     view = store.serialize_result(result, "S", None)
-    p = result.request.base_params
-    expected_methodology = "\n".join(methodology_lines(p)).strip("\n")
 
     for r in view["results"]:
-        assert r["methodology_text"] == expected_methodology
         assert r["disclaimer_text"] == disclaimer_text()
         # 免責段落要能自己說清楚，不能只是 CLI 那句精簡版的重複貼上——
         # 這是它存在的理由（R1 §4.4.4 明列的擴充內容）。
@@ -128,10 +133,26 @@ def test_methodology_and_disclaimer_text_are_serialized_once_per_strategy():
         assert "FINRA" not in r["disclaimer_text"]   # 不得聲稱受其管轄
 
 
+def test_report_text_and_methodology_text_are_not_in_the_view():
+    """T04（#188）：這兩個欄位前端零引用（`methodology_text` 曾經宣告
+    在契約型別裡，但既有前端測試明文斷言它從不被渲染），移出 View
+    payload。`report_text` 仍是引擎欄位（CLI 直接讀 `StrategyResult.
+    report_text`，不經過這個序列化函式）——這裡鎖的是「View 裡沒有」，
+    不是「引擎不再算」。"""
+    result = _result(("long-call", "bull-call-spread"))
+    assert all(r.report_text for r in result.results)   # 引擎仍然算了
+
+    view = store.serialize_result(result, "S", None)
+    for r in view["results"]:
+        assert "report_text" not in r
+        assert "methodology_text" not in r
+        assert "disclaimer_text" in r   # 沒被一併誤刪
+
+
 def test_spread_legs_order_and_max_profit():
     result = _result(("bull-call-spread",))
     view = store.serialize_result(result, "S", None)
-    cand = view["results"][0]["candidates"][0]
+    cand = _cand(view, view["results"][0]["candidates"][0])
     sv = result.results[0].candidates[0].valuation
     assert cand["legs"][0]["strike"] == sv.long_leg.strike    # [0]=long
     assert cand["legs"][1]["strike"] == sv.short_leg.strike   # [1]=short
@@ -144,36 +165,16 @@ def test_pct_null_without_capital():
     view = store.serialize_result(_result(), "S", None)
     assert view["capital_assumed"] is None
     for res in view["results"]:
-        for cand in res["candidates"]:
-            assert cand["pct_of_capital"] is None
+        for key in res["candidates"]:
+            assert _cand(view, key)["pct_of_capital"] is None
 
 
-def test_byte_determinism(tmp_path):
+def test_byte_determinism():
     r = _result()
     a = store.serialize_result(r, "S", 100000.0)
     b = store.serialize_result(r, "S", 100000.0)
     dump = lambda d: json.dumps(d, ensure_ascii=False, sort_keys=True)
     assert dump(a).encode("utf-8") == dump(b).encode("utf-8")
-    p1 = store.save_result(tmp_path, "S", a)
-    (tmp_path / "results" / "S2").mkdir(parents=True)
-    p2 = Path(str(p1).replace("S", "S2", 1))
-    store.save_result(tmp_path, "S2", b)
-    assert p1.read_bytes() == p2.read_bytes()
-
-
-def test_save_result_filename_windows_safe(tmp_path):
-    view = store.serialize_result(_result(), "S", None)
-    path = store.save_result(tmp_path, "S", view)
-    expected_ts = view["snapshot_ref"]["fetched_at"].replace(":", "")
-    assert path.name == f"{expected_ts}.json"
-    assert ":" not in path.name
-    assert store.latest_result_path(tmp_path, "S") == path
-    assert store.load_result(path) == json.loads(
-        path.read_text(encoding="utf-8"))
-
-
-def test_latest_result_path_none_when_empty(tmp_path):
-    assert store.latest_result_path(tmp_path, "NOPE") is None
 
 
 def test_data_quality_all_quotes_filtered(tmp_path):
@@ -233,7 +234,8 @@ def test_best_return_is_public_and_baseline_expiry_only():
     view = store.serialize_result(_result(), "S", None)
     group = next(g for g in view["expiry_groups"]
                  if g["expiry"] == view["baseline_expiry"])
-    expected = max(row["candidate"]["baseline_return"] for row in group["rows"])
+    expected = max(_cand(view, row["candidate_key"])["baseline_return"]
+                   for row in group["rows"])
 
     assert store.best_return(view) == expected
     assert store.best_return(None) is None
@@ -241,7 +243,7 @@ def test_best_return_is_public_and_baseline_expiry_only():
     # QA1-03 的 bug 版本是「取全部到期日的全域最大值」。要抓得到它，
     # 必須確認全域最大值真的落在**別的**到期日，然後斷言兩者不同——
     # 只斷言「子集最大值 ≤ 全集最大值」的話恆真，bug 版本照樣通過。
-    everything = max(row["candidate"]["baseline_return"]
+    everything = max(_cand(view, row["candidate_key"])["baseline_return"]
                      for g in view["expiry_groups"] for row in g["rows"])
     assert everything > expected, "這份 fixture 的全域最大值不在別期，測不到 QA1-03"
     assert store.best_return(view) != everything
@@ -330,7 +332,7 @@ def test_representative_candidate_single_leg_has_exactly_one_leg():
 
 def test_find_candidate_locates_a_single_leg_candidate_via_the_flat_list():
     view = store.serialize_result(_result(("long-call",)), "S", None)
-    key = view["results"][0]["candidates"][0]["candidate_key"]
+    key = view["results"][0]["candidates"][0]
     got = store.find_candidate(view, key)
     assert got is not None
     assert got["candidate_key"] == key
@@ -341,7 +343,7 @@ def test_find_candidate_still_locates_a_spread_candidate_via_expiry_top10():
     """回歸：兩腿路徑的既有行為不變——一樣走 `expiry_top10`。"""
     view = store.serialize_result(_result(("bull-call-spread",)), "S", None)
     r0 = view["results"][0]
-    key = r0["expiry_top10"][0]["candidates"][0]["candidate_key"]
+    key = r0["expiry_top10"][0]["candidate_keys"][0]
     got = store.find_candidate(view, key)
     assert got is not None
     assert got["candidate_key"] == key

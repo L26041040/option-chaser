@@ -303,6 +303,10 @@ def test_reanalysis_updates_the_card_to_the_newer_numbers():
 
     兩次都餵同一份快照的話，時間戳與數字都一樣，測不出讀新讀舊的差別
     ——所以第二次餵一份 `fetched_at` 與價格都不同的快照。
+
+    T06（#190）：chain 快取已整組移除（ADR-0001——重複抓取只在單一
+    Refresh Run 的記憶體內去重，不做跨 invocation 的快取），這裡連續
+    兩次刷新自然各自真的重新抓一次，不需要任何特殊處理。
     """
     import dataclasses
 
@@ -339,7 +343,7 @@ def test_list_carries_the_target_month_anchor_and_days_left():
     from datetime import date
 
     from option_chaser.timeframe import TargetMonth, calendar_anchor
-    from option_chaser.workspace import ny_today
+    from api_app.clock import ny_today
 
     client = _client()
     _create(client)

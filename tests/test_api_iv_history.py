@@ -25,7 +25,7 @@ from option_chaser.models import FetchError, QuotaExhausted
 from option_chaser.ratecurve import RateCurve
 from option_chaser.valuation import (DAYS_PER_YEAR, american_price,
                                      days_between)
-from option_chaser.workspace import ny_today
+from api_app.clock import ny_today
 
 FIX = "tests/fixtures/xyz_v4_six_expiries.json"
 PROVIDER = providers.MARKETDATA_APP.id
@@ -175,17 +175,29 @@ def _unlock(client, *, mode="custom", verified=True):
 
 
 def _candidate_key(client, sid):
+    # T09（#191）：`expiry_top10[].candidate_keys` 現在已經是 key 字串，
+    # 不必再從候選字典裡挖 `candidate_key`。
     view = client.get(f"/api/scenarios/{sid}").json()["latest_result"]
     for r in view["results"]:
         for g in r.get("expiry_top10") or []:
-            for c in g["candidates"]:
-                return c["candidate_key"]
+            for key in g["candidate_keys"]:
+                return key
     raise AssertionError("樣本裡沒有候選可用")
 
 
 def _get(client, sid, key):
     return client.get(f"/api/scenarios/{sid}/iv-history",
                       params={"candidate_key": key})
+
+
+def _backfill(client, sid, key):
+    """T11（#194，兩段式補建 P3-a）：Legacy 家族的補建現在要顯式觸發
+    ——`GET .../iv-history` 只讀既有快取＋回報 `backfill_pending`，不再
+    在同一個請求裡同步跑 `backfill_iv()`。既有測試裡任何原本靠著單純
+    呼叫 `_get()` 就順便觸發一次 backfill 的斷言，改成先呼叫這個
+    helper（對應 `POST .../iv-history/backfill`）。"""
+    return client.post(f"/api/scenarios/{sid}/iv-history/backfill",
+                       params={"candidate_key": key})
 
 
 # ---------- 閘門 ----------
@@ -263,7 +275,9 @@ def test_series_comes_from_the_cache_and_is_re_anchored(db):
     client = _client(db, surface=_rich_surface)
     _unlock(client)
     sid = _scenario(client)
-    body = _get(client, sid, _candidate_key(client, sid)).json()
+    key = _candidate_key(client, sid)
+    _backfill(client, sid, key)
+    body = _get(client, sid, key).json()
     cached = db.iv_observation_dates("XYZ")
     assert [p["date"] for p in body["normalized_skew_points"]] == cached
     assert body["metrics"]["normalized_skew"]["value"] is not None
@@ -275,14 +289,15 @@ def test_normalized_skew_points_only_carry_date_and_normalized_skew(db):
     client = _client(db, surface=_rich_surface)
     _unlock(client)
     sid = _scenario(client)
-    point = _get(client, sid, _candidate_key(client, sid)).json()[
-        "normalized_skew_points"][0]
+    key = _candidate_key(client, sid)
+    _backfill(client, sid, key)
+    point = _get(client, sid, key).json()["normalized_skew_points"][0]
     assert set(point) == {"date", "normalized_skew"}
 
 
 def _prefill(db, symbol="XYZ"):
     """把整份排程灌進快取——模擬 backfill 已經跑完的那一天。"""
-    from api_app.main import _surface_to_rows
+    from option_chaser.ivpipeline import surface_to_rows as _surface_to_rows
     from api_app.storage import IvObservation
 
     for day in sampling_schedule(symbol, ny_today()):
@@ -329,8 +344,8 @@ def _long_call_candidate_key_and_view(client):
     assert resp.status_code == 200, resp.text
     view = resp.json()
     for r in view["results"]:
-        for c in r.get("candidates") or []:
-            return c["candidate_key"], view
+        for key in r.get("candidates") or []:
+            return key, view
     raise AssertionError("adhoc long-call 分析沒有產生任何候選")
 
 
@@ -419,7 +434,9 @@ def test_a_coordinate_outside_the_grid_is_left_blank_not_faked(db):
     client = _client(db, surface=lambda *a, **k: {"call": narrow, "put": narrow})
     _unlock(client)
     sid = _scenario(client)
-    body = _get(client, sid, _candidate_key(client, sid)).json()
+    key = _candidate_key(client, sid)
+    _backfill(client, sid, key)
+    body = _get(client, sid, key).json()
     assert body["normalized_skew_points"], "應該有觀測，只是每一點都插不出值"
     assert all(p["normalized_skew"] is None
               for p in body["normalized_skew_points"])
@@ -437,7 +454,9 @@ def test_a_vendor_failure_is_reported_rather_than_swallowed(db):
     client = _client(db, surface=broken)
     _unlock(client)
     sid = _scenario(client)
-    body = _get(client, sid, _candidate_key(client, sid)).json()
+    key = _candidate_key(client, sid)
+    _backfill(client, sid, key)
+    body = _get(client, sid, key).json()
     assert body["normalized_skew_points"] == []
     assert "額度用盡" in body["note"]
 
@@ -482,7 +501,7 @@ def test_unlocking_iv_history_changes_no_candidate_and_no_ordering(db):
     after = unlocked.get(f"/api/scenarios/{sid}").json()["latest_result"]
 
     def identities(view):
-        return [[c["candidate_key"] for c in g["candidates"]]
+        return [g["candidate_keys"]
                 for r in view["results"] for g in r.get("expiry_top10") or []]
 
     assert identities(before) == identities(after)
@@ -496,10 +515,8 @@ def test_the_analysis_view_gains_no_iv_history_field(db):
     sid = _scenario(client)
     view = client.get(f"/api/scenarios/{sid}").json()["latest_result"]
     assert "iv_history" not in view
-    for r in view["results"]:
-        for g in r.get("expiry_top10") or []:
-            for c in g["candidates"]:
-                assert not any("iv_history" in k for k in c)
+    for c in view["candidate_pool"].values():
+        assert not any("iv_history" in k for k in c)
 
 
 def _function_source(module_src: str, name: str) -> str:
@@ -520,27 +537,38 @@ def test_exact_contract_pipeline_never_calls_the_reanchoring_functions():
     `test_the_analysis_view_gains_no_iv_history_field` 證的是「新家族
     不外洩進舊家族的資料形狀」，這裡證反方向：新家族（`legs` 回應）的
     產生路徑完全不呼叫舊 (tenor,delta) 重錨定家族的任何函式。逐函式
-    （而不是整個 main.py）檢查，因為 main.py 本身合法地為舊家族呼叫
-    這些函式——隔離紅線畫在新家族自己的函式邊界，不是整個檔案。"""
-    import api_app.main as main
+    （而不是整個模組）檢查，因為進入點 `build_iv_history()` 本身合法地
+    為舊家族呼叫這些函式——隔離紅線畫在新家族自己的函式邊界，不是整個
+    檔案。
 
-    src = open(main.__file__, encoding="utf-8").read()
+    T10（#192）：整個 exact-contract 家族連同這條隔離紅線的檢查對象，
+    一併從 `api_app.main`（HTTP 層 closure）搬到 `option_chaser.
+    ivpipeline`（引擎模組）——這是這一票的核心動作本身。隔離保證因此
+    變得**更強**：`ivpipeline.py` 本身結構上不 import `api_app` 的任何
+    東西（模組 docstring 明文），新家族與舊家族現在活在同一個模組裡，
+    這條測試改用函式名稱逐一檢查同一件事。名稱本身在搬遷過程中，部分
+    函式從 closure 私有名（`_foo`）變成模組公開名（`foo`）——見
+    `ivpipeline.py` 逐一對照。
+    """
+    from option_chaser import ivpipeline as pipeline_module
+
+    src = open(pipeline_module.__file__, encoding="utf-8").read()
     forbidden = ("reanchor_spread", "iv_at(", "spread_coordinates(",
                 "leg_coordinate(", "nearby_expirations(")
     exact_contract_functions = (
-        "_leg_contract_identity", "_identity_context",
-        "_emit_contract_history_telemetry", "_ensure_contract_history",
-        "_emit_leg_stat_metrics", "_leg_historical_iv_payload",
+        "leg_contract_identity", "_identity_context",
+        "_emit_contract_history_telemetry", "ensure_contract_history",
+        "_emit_leg_stat_metrics", "leg_historical_iv_payload",
         # HIVR-06（#165）：reconstruction 接線也是 exact-contract 家族
         # 的一部分，同一條隔離紅線延伸過來。
-        "_fetch_rate_curve_rows", "_rate_by_date_for_leg",
-        "_dividend_yield_by_date_for_leg", "_reconstruct_leg_series",
+        "_fetch_rate_curve_rows", "rate_by_date_for_leg",
+        "dividend_yield_by_date_for_leg", "reconstruct_leg_series",
         # HIVR-07（#166）：帳本＋staleness 可見性一樣是 exact-contract
         # 家族的一部分。HIVR-09（#168）：vendor IV benchmark 比較同理。
         "_emit_reconstruction_ledger", "_emit_staleness",
         "_emit_vendor_benchmark",
         # SIG-01（#172）：Spread IV Gap 接線同理屬於 exact-contract 家族。
-        "_spread_gap_payload",
+        "spread_gap_payload",
     )
     for fn_name in exact_contract_functions:
         body = _function_source(src, fn_name)
@@ -551,14 +579,18 @@ def test_exact_contract_pipeline_never_calls_the_reanchoring_functions():
 # ---------- 快取、漸進補齊、額度（#130） ----------
 
 def test_backfill_only_touches_dates_the_cache_is_missing(db):
-    """已有日期一次都不重抓——這是整個 quota 架構的地基。"""
+    """已有日期一次都不重抓——這是整個 quota 架構的地基。
+
+    T11（#194）：backfill 現在要顯式觸發（`_backfill()`，對應
+    `POST .../iv-history/backfill`）——`_get()` 只讀既有快取，不再順便
+    觸發這件事。"""
     rec = Recorder()
     client = _client(db, surface=rec)
     _unlock(client)
     sid = _scenario(client)
     key = _candidate_key(client, sid)
 
-    _get(client, sid, key)
+    _backfill(client, sid, key)
     first = set(rec.dates)
     assert first, "第一次應該真的去抓"
 
@@ -566,7 +598,7 @@ def test_backfill_only_touches_dates_the_cache_is_missing(db):
     db.save_iv_backfill_run(IvBackfillRun(symbol="XYZ", ran_on="1900-01-01",
                                           outcome="ok"))
     rec.calls.clear()
-    _get(client, sid, key)
+    _backfill(client, sid, key)
     assert not (set(rec.dates) & first), "已經在快取裡的日期被重抓了"
 
 
@@ -576,11 +608,11 @@ def test_a_second_scenario_on_the_same_symbol_costs_no_quota(db):
     client = _client(db, surface=rec)
     _unlock(client)
     a = _scenario(client)
-    _get(client, a, _candidate_key(client, a))
+    _backfill(client, a, _candidate_key(client, a))
     rec.calls.clear()
 
     b = _scenario(client, target_price=140.0)
-    _get(client, b, _candidate_key(client, b))
+    _backfill(client, b, _candidate_key(client, b))
     assert rec.calls == [], "第二個同 ticker 劇本不該再打 vendor"
 
 
@@ -590,11 +622,11 @@ def test_a_different_target_does_not_trigger_a_refetch(db):
     client = _client(db, surface=rec)
     _unlock(client)
     a = _scenario(client)
-    _get(client, a, _candidate_key(client, a))
+    _backfill(client, a, _candidate_key(client, a))
     before = len(rec.calls)
 
     b = _scenario(client, target_month="2026-10")
-    _get(client, b, _candidate_key(client, b))
+    _backfill(client, b, _candidate_key(client, b))
     assert len(rec.calls) == before
 
 
@@ -606,10 +638,10 @@ def test_only_one_backfill_batch_per_symbol_per_day(db):
     sid = _scenario(client)
     key = _candidate_key(client, sid)
 
-    _get(client, sid, key)
+    _backfill(client, sid, key)
     after_first = len(rec.calls)
     for _ in range(3):
-        _get(client, sid, key)
+        _backfill(client, sid, key)
     assert len(rec.calls) == after_first
 
 
@@ -619,7 +651,7 @@ def test_each_batch_is_bounded_so_the_first_day_does_not_drain_quota(db):
     client = _client(db, surface=rec)
     _unlock(client)
     sid = _scenario(client)
-    _get(client, sid, _candidate_key(client, sid))
+    _backfill(client, sid, _candidate_key(client, sid))
     assert 0 < len(rec.calls) <= 25
 
 
@@ -629,7 +661,7 @@ def test_the_newest_gaps_are_filled_first(db):
     client = _client(db, surface=rec)
     _unlock(client)
     sid = _scenario(client)
-    _get(client, sid, _candidate_key(client, sid))
+    _backfill(client, sid, _candidate_key(client, sid))
     schedule = sampling_schedule("XYZ", ny_today())
     assert set(rec.dates) == set(sorted(schedule, reverse=True)[:len(rec.dates)])
 
@@ -641,7 +673,9 @@ def test_quota_exhaustion_is_reported_as_its_own_state(db):
     client = _client(db, surface=rec)
     _unlock(client)
     sid = _scenario(client)
-    body = _get(client, sid, _candidate_key(client, sid)).json()
+    key = _candidate_key(client, sid)
+    _backfill(client, sid, key)
+    body = _get(client, sid, key).json()
     assert body["status"] == "quota"
     assert "額度" in body["note"]
 
@@ -652,7 +686,9 @@ def test_a_transient_vendor_failure_is_a_different_state_from_quota(db):
     client = _client(db, surface=rec)
     _unlock(client)
     sid = _scenario(client)
-    body = _get(client, sid, _candidate_key(client, sid)).json()
+    key = _candidate_key(client, sid)
+    _backfill(client, sid, key)
+    body = _get(client, sid, key).json()
     assert body["status"] == "vendor"
 
 
@@ -663,9 +699,9 @@ def test_quota_exhaustion_stops_further_vendor_calls_that_day(db):
     _unlock(client)
     sid = _scenario(client)
     key = _candidate_key(client, sid)
-    _get(client, sid, key)
+    _backfill(client, sid, key)
     after_first = len(rec.calls)
-    _get(client, sid, key)
+    _backfill(client, sid, key)
     assert len(rec.calls) == after_first == 1
 
 
@@ -677,7 +713,9 @@ def test_zero_cached_observations_yields_no_percentile(db):
     client = _client(db, surface=rec)
     _unlock(client)
     sid = _scenario(client)
-    body = _get(client, sid, _candidate_key(client, sid)).json()
+    key = _candidate_key(client, sid)
+    _backfill(client, sid, key)
+    body = _get(client, sid, key).json()
     assert body["observations"] == 0
     assert body["metrics"]["normalized_skew"] == \
         {"value": None, "percentile": None, "count": 0,
@@ -699,7 +737,7 @@ def test_trend_4w_reflects_a_real_change_across_the_cached_series(db):
               for d in (0.01, 0.05, 0.25, 0.5, 0.75, 0.95)]
         return {"call": pts, "put": pts}
 
-    from api_app.main import _surface_to_rows
+    from option_chaser.ivpipeline import surface_to_rows as _surface_to_rows
 
     for i, day in enumerate(schedule):
         # 越晚的日子斜率越陡——delta 軸上不同位置的兩腿因此隨時間分歧。
@@ -726,7 +764,9 @@ def test_a_first_day_run_with_partial_data_still_shows_a_percentile(db):
     client = _client(db, surface=_rich_surface)
     _unlock(client)
     sid = _scenario(client)
-    body = _get(client, sid, _candidate_key(client, sid)).json()
+    key = _candidate_key(client, sid)
+    _backfill(client, sid, key)
+    body = _get(client, sid, key).json()
     assert body["status"] == "ok"
     assert 0 < body["observations"] < 66     # 真的只補了一部分
     metrics = body["metrics"]["normalized_skew"]
@@ -781,7 +821,7 @@ def test_normalized_skew_is_bit_identical_to_an_independent_reanchored_computati
     _prefill(db)
     body = _get(client, sid, key).json()
 
-    from api_app.main import _rows_to_surface
+    from option_chaser.ivpipeline import rows_to_surface as _rows_to_surface
     from option_chaser import store
 
     rec = client.get(f"/api/scenarios/{sid}").json()["latest_result"]
@@ -803,10 +843,12 @@ def _candidate_key_from_farthest_expiry(client, sid):
     """挑分析結果裡到期日最遠的那個候選——這是「vendor 預設下一個月選
     覆蓋不到」的那一類，正是需求方回報的 bug 重現條件。"""
     view = client.get(f"/api/scenarios/{sid}").json()["latest_result"]
+    pool = view["candidate_pool"]
     best = None
     for r in view["results"]:
         for g in r.get("expiry_top10") or []:
-            for c in g["candidates"]:
+            for key in g["candidate_keys"]:
+                c = pool[key]
                 if best is None or c["days_to_expiry"] > best["days_to_expiry"]:
                     best = c
     if best is None:
@@ -833,7 +875,7 @@ def test_a_long_dated_candidate_actually_receives_non_default_expirations(db):
     sid = _scenario(client)
     key = _candidate_key_from_farthest_expiry(client, sid)
 
-    _get(client, sid, key)
+    _backfill(client, sid, key)
     assert any(e is not None for e in rec.expirations), \
         "長天期候選一次 expiration 篩選都沒帶，會撲空 vendor 的預設下一個月選"
 
@@ -856,7 +898,8 @@ def test_a_short_dated_candidate_keeps_using_the_cheap_vendor_default(db):
     sid = _scenario(client)
     key = _candidate_key(client, sid)   # 樣本裡第一個候選＝最近到期日那組
 
-    _get(client, sid, key)
+    _backfill(client, sid, key)
+    assert rec.expirations, "測試前提才成立：backfill 真的打過 vendor"
     assert all(e is None for e in rec.expirations)
 
 
@@ -871,7 +914,7 @@ def test_a_quota_failure_today_does_not_hide_yesterdays_cached_percentiles(db):
     schedule = sampling_schedule("XYZ", ny_today())
     # 手動只灌一部分——模擬「先前幾天已經補到這裡」，留下缺口讓「今天」
     # 的 backfill 真的有事要做（尚未跑過，`get_iv_backfill_run` 是 None）。
-    from api_app.main import _surface_to_rows
+    from option_chaser.ivpipeline import surface_to_rows as _surface_to_rows
 
     for day in schedule[:10]:
         db.save_iv_observation(IvObservation(
@@ -880,6 +923,7 @@ def test_a_quota_failure_today_does_not_hide_yesterdays_cached_percentiles(db):
 
     failing = _client(db, surface=Recorder(fail=QuotaExhausted("額度用完")))
     _unlock(failing)
+    _backfill(failing, sid, key)
     body = _get(failing, sid, key).json()
 
     assert body["status"] == "quota"
@@ -896,7 +940,7 @@ def test_a_vendor_failure_today_does_not_hide_cached_percentiles_either(db):
     key = _candidate_key(working, sid)
 
     schedule = sampling_schedule("XYZ", ny_today())
-    from api_app.main import _surface_to_rows
+    from option_chaser.ivpipeline import surface_to_rows as _surface_to_rows
 
     for day in schedule[:5]:
         db.save_iv_observation(IvObservation(
@@ -905,6 +949,7 @@ def test_a_vendor_failure_today_does_not_hide_cached_percentiles_either(db):
 
     failing = _client(db, surface=Recorder(fail=FetchError("連線逾時")))
     _unlock(failing)
+    _backfill(failing, sid, key)
     body = _get(failing, sid, key).json()
 
     assert body["status"] == "vendor"
@@ -940,7 +985,7 @@ def _prefill_all_but_one(db, symbol="XYZ"):
     """把排程灌到只剩一天缺口——讓 backfill 迴圈只真的跑一次，事件數遠
     低於 per-request 上限（#146），不必連帶測到排放量控制那條路徑
     （那個有自己專屬的測試）。"""
-    from api_app.main import _surface_to_rows
+    from option_chaser.ivpipeline import surface_to_rows as _surface_to_rows
     from api_app.storage import IvObservation
 
     schedule = sorted(sampling_schedule(symbol, ny_today()))
@@ -987,7 +1032,8 @@ def test_weekday_no_data_still_warns_but_does_not_abort_the_batch(db):
     client = _client(db, surface=_telemetry_surface({}, call_counter=calls))
     _unlock(client)
     sid = _scenario(client)
-    body = _get(client, sid, _candidate_key(client, sid)).json()
+    key = _candidate_key(client, sid)
+    body = _backfill(client, sid, key).json()
 
     assert len(calls) > 1, "撲空不該讓 backfill 在第一天就中止"
 
@@ -1000,6 +1046,10 @@ def test_weekday_no_data_still_warns_but_does_not_abort_the_batch(db):
     assert backfill_summary[0]["context"]["days_failed"] == 0
     assert "aborted_on" not in backfill_summary[0]["context"]
     assert backfill_summary[0]["context"]["outcome"] == "ok"
+    # PC-04（#204）：warning 的唯一成因是交易日撲空、批次沒有中止——
+    # 這是本站不維護美股假日表的既有、已接受限制，不對使用者顯示，
+    # 即使 `severity` 仍然是 warning（工程可見度不變）。
+    assert backfill_summary[0]["user_facing"] is False
 
 
 def test_weekend_no_data_is_informational_not_a_warning(db, monkeypatch):
@@ -1017,7 +1067,8 @@ def test_weekend_no_data_is_informational_not_a_warning(db, monkeypatch):
     client = _client(db, surface=_telemetry_surface({}))
     _unlock(client)
     sid = _scenario(client)
-    body = _get(client, sid, _candidate_key(client, sid)).json()
+    key = _candidate_key(client, sid)
+    body = _backfill(client, sid, key).json()
 
     backfill_summary = _events_for(body, "backfill")
     assert len(backfill_summary) == 1
@@ -1025,6 +1076,7 @@ def test_weekend_no_data_is_informational_not_a_warning(db, monkeypatch):
     assert backfill_summary[0]["context"]["days_no_data_expected"] == 1
     assert backfill_summary[0]["context"]["days_no_data_unexpected"] == 0
     assert "aborted_on" not in backfill_summary[0]["context"]
+    assert backfill_summary[0]["user_facing"] is False
 
 
 def test_backfill_abort_is_visible_in_the_summary_event(db):
@@ -1033,7 +1085,8 @@ def test_backfill_abort_is_visible_in_the_summary_event(db):
     client = _client(db, surface=rec)
     _unlock(client)
     sid = _scenario(client)
-    body = _get(client, sid, _candidate_key(client, sid)).json()
+    key = _candidate_key(client, sid)
+    body = _backfill(client, sid, key).json()
 
     summary = _events_for(body, "backfill")
     assert len(summary) == 1
@@ -1043,6 +1096,154 @@ def test_backfill_abort_is_visible_in_the_summary_event(db):
     assert summary[0]["context"]["abort_reason"] == "quota"
     assert summary[0]["context"]["attempted_days"] == 1
     assert summary[0]["context"]["saved_days"] == 0
+    # PC-04（#204）：批次因額度用盡（或 vendor 失敗）而中止時，照舊對
+    # 使用者顯示——那是真的需要使用者知道的失敗，不是預期過渡態。
+    assert summary[0]["user_facing"] is True
+
+
+class _ExpirationRecorder:
+    """PERF-05（#181）：記錄每一次呼叫的到期日，只在特定到期日失敗——
+    模擬同一天的到期日梯子裡「有些成功、剛好某一個撞到配額」，跟
+    `Recorder(fail=...)`（每次呼叫都失敗）刻意不同。"""
+
+    def __init__(self, fail_on):
+        self.calls: list[tuple[str, str, str]] = []
+        self._fail_on = fail_on
+
+    def __call__(self, provider, symbol, on_date, token, expiration=None,
+                observer=None):
+        self.calls.append((symbol, on_date, expiration))
+        if expiration == self._fail_on:
+            raise QuotaExhausted("額度用完")
+        return {"call": [], "put": []}
+
+
+def _client_with_long_expiration_ladder(db, monkeypatch, *, fail_on_first):
+    """壓寬到期日梯子到 20 個（遠超過 `_IV_BACKFILL_DAY_CONCURRENCY`），
+    只讓第一個觸發失敗——bounded concurrency 的行為只有在梯子比批次
+    大小長時才測得出來（梯子比批次小時，「一批」跟「全部」是同一件
+    事，測不出「還有沒送出去的」這件事本身）。"""
+    fake_expirations = [f"2028-{i:02d}-01" for i in range(1, 21)]
+    monkeypatch.setattr(ivhistory, "nearby_expirations",
+                        lambda known, *, today, tenor_days: fake_expirations)
+    rec = _ExpirationRecorder(fail_on=fake_expirations[0] if fail_on_first else None)
+    client = _client(db, surface=rec)
+    _unlock(client)
+    sid = _scenario(client)
+    _backfill(client, sid, _candidate_key(client, sid))
+    return rec
+
+
+def test_bounded_concurrency_stops_launching_new_batches_after_the_first_failure(
+        db, monkeypatch):
+    """PERF-05（#181）新增：併發批次裡某一次呼叫觸發配額用盡，斷言在
+    那之後沒有新呼叫被啟動——這裡驗證的是「沒有第二天的呼叫」，因為
+    第一天一失敗整批就中止（既有行為，本票不改，見上面
+    `test_backfill_abort_is_visible_in_the_summary_event`）。"""
+    from option_chaser.ivpipeline import IV_BACKFILL_DAY_CONCURRENCY as _IV_BACKFILL_DAY_CONCURRENCY
+
+    rec = _client_with_long_expiration_ladder(db, monkeypatch, fail_on_first=True)
+
+    days_called = {d for _, d, _ in rec.calls}
+    assert len(days_called) == 1, "第一天失敗後不該有任何第二天的呼叫被送出"
+    assert len(rec.calls) <= _IV_BACKFILL_DAY_CONCURRENCY, (
+        "失敗後不該再送出下一批——這一批之後不該有更多批次")
+
+
+def test_the_extra_calls_from_a_failure_are_bounded_by_concurrency_minus_one(
+        db, monkeypatch):
+    """PERF-05（#181）新增：failure 相對 serial 版本多發起的額外呼叫數，
+    硬性上界為 concurrency－1——序列版本遇到第一個失敗就停（只打 1
+    次），bounded concurrency 下同一批次裡其他已經送出的呼叫仍會跑完，
+    但這批的大小本身就是上限，不會無上限發散到梯子剩下的 20 個。"""
+    from option_chaser.ivpipeline import IV_BACKFILL_DAY_CONCURRENCY as _IV_BACKFILL_DAY_CONCURRENCY
+
+    rec = _client_with_long_expiration_ladder(db, monkeypatch, fail_on_first=True)
+
+    extra_calls = len(rec.calls) - 1   # serial 版本本來就會打的那 1 次
+    assert extra_calls <= _IV_BACKFILL_DAY_CONCURRENCY - 1
+
+
+def test_the_whole_backfill_run_creates_exactly_one_thread_pool(db, monkeypatch):
+    """T12（#195）：執行緒池整個 run 只建立一次，不是每天、每批各自新建
+    銷毀一次。用 20 個到期日的梯子（遠超過併發上限，同一天內就會拆成
+    5 批）＋不設任何失敗（`fail_on_first=False`）讓 backfill 真的跑滿
+    `IV_BACKFILL_PER_RUN` 天——這樣「只建一次」才是真的在測整個 run
+    橫跨多天、多批次，不是剛好只有一天一批、巧合看起來像只建了一次。
+    透過計數 `ThreadPoolExecutor` 的建構次數直接驗證，不是只驗證最終
+    落盤結果（AC 明文要求的驗證方式）。"""
+    from option_chaser import ivpipeline
+
+    construct_count = 0
+    real_pool_cls = ivpipeline.ThreadPoolExecutor
+
+    class _CountingThreadPoolExecutor(real_pool_cls):
+        def __init__(self, *args, **kwargs):
+            nonlocal construct_count
+            construct_count += 1
+            super().__init__(*args, **kwargs)
+
+    monkeypatch.setattr(ivpipeline, "ThreadPoolExecutor",
+                        _CountingThreadPoolExecutor)
+
+    rec = _client_with_long_expiration_ladder(db, monkeypatch, fail_on_first=False)
+
+    # 前提：這個情境真的橫跨多天、每天多批次，不是退化成單一批次。
+    days_called = {d for _, d, _ in rec.calls}
+    assert len(days_called) > 1, "測試前提才成立：這個情境要真的橫跨多天"
+    per_day_calls = len(rec.calls) / len(days_called)
+    assert per_day_calls > ivpipeline.IV_BACKFILL_DAY_CONCURRENCY, (
+        "測試前提才成立：單一天內也要真的拆成一批以上")
+
+    assert construct_count == 1, (
+        f"整個 backfill run 應該只建立一次執行緒池，實際建立了 "
+        f"{construct_count} 次")
+
+
+def test_a_failure_in_the_middle_of_a_batch_still_saves_the_successful_siblings(
+        db, monkeypatch):
+    """PERF-05（#181）修正版契約第 5 點：已成功完成的 in-flight
+    observations 正常保留並落盤，不為了模擬 serial 而丟棄已經呼叫
+    vendor、已經付出配額成本拿到的資料——這裡讓梯子裡**不是第一個**
+    的某個到期日失敗，其餘同一批次的到期日仍應該成功落盤。"""
+    fake_expirations = [f"2028-{i:02d}-01" for i in range(1, 5)]  # 剛好一批
+    monkeypatch.setattr(ivhistory, "nearby_expirations",
+                        lambda known, *, today, tenor_days: fake_expirations)
+
+    class _RichExceptOne:
+        def __init__(self):
+            self.calls = []
+
+        def __call__(self, provider, symbol, on_date, token, expiration=None,
+                    observer=None):
+            self.calls.append(expiration)
+            if expiration == fake_expirations[1]:
+                raise QuotaExhausted("額度用完")
+            return _grid()
+
+    rec = _RichExceptOne()
+    client = _client(db, surface=rec)
+    _unlock(client)
+    sid = _scenario(client)
+    body = _backfill(client, sid, _candidate_key(client, sid)).json()
+
+    summary = _events_for(body, "backfill")
+    assert summary[0]["context"]["outcome"] == "quota"
+    assert summary[0]["context"]["failed_expiration"] == fake_expirations[1]
+    # 3 個到期日成功、1 個失敗——這天仍然落盤（saved_days == 1），
+    # 不是因為那天有一個失敗就整天的資料都不算數。
+    assert summary[0]["context"]["saved_days"] == 1
+    assert summary[0]["context"]["days_with_data"] == 1
+    assert len(rec.calls) == 4, "同一批次的 4 個到期日都該真的被送出去"
+    # `in_flight_after_failure_succeeded`／`_failed` 只計「在 as_completed()
+    # 真實完成順序裡，晚於那個失敗才完成」的呼叫——這 3 個成功呼叫哪些
+    # 算「失敗之前」哪些算「失敗之後」是真實執行緒排程的時間差，不是
+    # 決定性的，這裡只驗證這兩個計數本身合理（非負、總和不超過批次裡
+    # 除了失敗者以外的 3 個），不鎖死切分點。
+    after_ok = summary[0]["context"]["in_flight_after_failure_succeeded"]
+    after_fail = summary[0]["context"]["in_flight_after_failure_failed"]
+    assert after_fail == 0, "這批只有一個失敗，不該有第二個失敗算進 in-flight"
+    assert 0 <= after_ok <= 3
 
 
 def test_response_correlation_id_matches_the_header(db):
@@ -1054,20 +1255,105 @@ def test_response_correlation_id_matches_the_header(db):
     assert body["diagnostics"]["correlation_id"] == resp.headers["X-Correlation-Id"]
 
 
-def test_events_shown_in_the_response_also_land_in_the_diagnostics_store(db):
-    client = _client(db, surface=_rich_surface)
+def test_persisted_events_are_a_subset_of_what_the_response_shows(db):
+    """PERF-02（#178）之前，這條斷言是反過來的（`shown_ids <= stored_
+    ids`）——那時 `kept` 原封不動全部落盤，回應看得到的必然也存得到。
+    PERF-02 後只有 `warning`／`error` 真的落盤，`info` 事件只出現在
+    回應裡、不進資料庫，原本的方向因此結構性不再成立（一個健康的
+    request 大多數事件是 info）。這裡改成驗證仍然成立、且同樣有意義的
+    那個方向：**任何存進資料庫的，一定也在回應裡看得到**——不會有使用者
+    在畫面上看不到、卻默默寫進資料庫的事件。用 `_telemetry_surface({})`
+    （比照既有 `test_weekday_no_data_still_warns_but_does_not_abort_
+    the_batch`）而非 `_rich_surface`：這裡要驗證的是 legacy 家族
+    `backfill` 摘要落盤這件刻意、可預期的事，不依賴 exact-contract
+    家族在預設空 `contract_history` 下碰巧也會冒出的 reconstruction／
+    metrics warning（那是另一個獨立子系統的旁支行為，見下面
+    `test_a_healthy_request_writes_zero_diagnostics_rows_...` 的
+    docstring 說明；`_rich_surface` 本身不是「全程成功只有 info」）。
+
+    T11（#194，兩段式補建 P3-a）：legacy 家族的 `backfill` 摘要現在只
+    在 `_backfill()`（`POST .../iv-history/backfill`）自己的回應裡
+    出現——`_get()` 不再同步觸發它，這裡改讀 backfill 回應本身。
+    """
+    client = _client(db, surface=_telemetry_surface({}))
     _unlock(client)
     sid = _scenario(client)
-    body = _get(client, sid, _candidate_key(client, sid)).json()
+    key = _candidate_key(client, sid)
+    body = _backfill(client, sid, key).json()
     shown_ids = {e["event_id"] for e in body["diagnostics"]["events"]}
     # HIVR-03（#162）：exact-contract 與 legacy 兩個 subsystem 各自享有
     # 一份完整的 per-request 保留名額，一次 request 因此可能寫進去超過
     # `/api/diagnostics` 預設的 `limit=50`——這裡明確拉高查詢上限到
     # `RETENTION_LIMIT`，只是為了讓比較涵蓋到這次 request 實際寫進去的
-    # 全部事件，斷言本身（`shown_ids <= stored_ids`）不變、不放鬆。
+    # 全部事件。
     stored_ids = {e["event_id"]
                  for e in client.get("/api/diagnostics?limit=200").json()}
-    assert shown_ids <= stored_ids
+    assert stored_ids, "這個 fixture 本來就該產生至少一筆落盤事件，測試前提才成立"
+    assert stored_ids <= shown_ids
+
+
+def test_only_warning_and_error_severity_events_are_persisted(db):
+    """PERF-02（#178）新增：同一次 request 裡 info 與 warning 事件並存
+    時，info 只出現在回應裡，資料庫裡只有 warning／error——不是「大致上
+    比較少」，是一個 info 都沒有。
+
+    T11（#194）：backfill 的 warning（weekday no data）現在要靠
+    `_backfill()` 觸發，`_get()` 不再順便產生它。"""
+    client = _client(db, surface=_telemetry_surface({}))
+    _unlock(client)
+    sid = _scenario(client)
+    key = _candidate_key(client, sid)
+    body = _backfill(client, sid, key).json()
+    shown = body["diagnostics"]["events"]
+    assert any(e["severity"] == "info" for e in shown), (
+        "這個 fixture 本來就該同時產生 info 事件，測試前提才成立")
+    assert any(e["severity"] == "warning" for e in shown), (
+        "這個 fixture 本來就該產生 warning 事件（weekday no data），"
+        "測試前提才成立")
+
+    stored = client.get("/api/diagnostics?limit=200").json()
+    assert stored, "這個 fixture 本來就該有 warning 事件真的落盤"
+    assert all(e["severity"] in ("warning", "error") for e in stored)
+
+
+def test_a_healthy_request_writes_zero_diagnostics_rows_but_the_response_is_unaffected(db):
+    """spec #178 明文驗收方式：一個健康的 warm iv-history request 對
+    diagnostics 資料表寫入 0 筆，但這次 HTTP 回應仍完整帶著 info 事件。
+
+    「健康」在這裡意味著兩腿的 exact-contract 統計量全部算得出來，不是
+    只有 legacy (tenor,delta) 家族成功（那樣 exact-contract 那半仍會
+    因為缺觀測而回報一堆 `unavailable` warning）——兩腿各自灌 60 天
+    連續、可 round-trip 反解的觀測（`_synthetic_consecutive_days`），
+    同時涵蓋 moving_average／bollinger／zscore 的 30 天 lookback 與
+    Δ4w 的 [today−42, today−21] 窗口，reconstruction 全數成功。
+
+    T11（#194）：legacy (tenor,delta) 家族也要「健康」——`_get()` 不再
+    順便觸發 backfill，一個從沒補建過的 symbol 每次都會因為零觀測而
+    在 `normalized_skew` 那半報 `warning`。先用 `_rich_surface`（任何
+    日期都能插出值）跑一次 `_backfill()` 把快取灌滿，兩個家族才會同時
+    處在「健康」狀態，這個測試才真的在驗證它宣稱要驗證的事。"""
+    rec = ContractHistoryRecorder()
+    client = _client(db, surface=_rich_surface, contract_history=rec)
+    _unlock(client)
+    sid = _scenario(client)
+    key = _candidate_key(client, sid)
+    buy, sell = _leg_identities(client, sid, key)
+    today = ny_today()
+    for leg in (buy, sell):
+        rec._points_by_symbol[leg["contract_symbol"]] = _synthetic_consecutive_days(
+            today, 60, [0.10] * 60, option_type=leg["option_type"],
+            strike=leg["strike"], expiration=leg["expiry"])
+
+    _backfill(client, sid, key)
+    body = _get(client, sid, key).json()
+    shown = body["diagnostics"]["events"]
+    assert len(shown) > 0
+    assert all(e["severity"] == "info" for e in shown), (
+        "這個情境本來就該全部成功、沒有 warning／error，測試前提才成立"
+        f"：{[e for e in shown if e['severity'] != 'info']}")
+
+    stored = client.get("/api/diagnostics?limit=200").json()
+    assert stored == []
 
 
 def test_the_backfill_and_reanchor_summaries_take_no_free_text_vendor_params(db):
@@ -1084,13 +1370,18 @@ def test_the_backfill_and_reanchor_summaries_take_no_free_text_vendor_params(db)
     的簽章鎖住這件事，即使簽章未來被改動走樣也會在這裡先紅燈。"""
     import inspect
 
-    from api_app.main import _emit_backfill_summary, _emit_reanchor_summary
+    from option_chaser.ivpipeline import _emit_backfill_summary, _emit_reanchor_summary
 
     backfill_params = set(inspect.signature(_emit_backfill_summary).parameters)
     assert backfill_params == {
         "emit", "symbol", "attempted_days", "saved_days", "days_with_data",
         "days_no_data_expected", "days_no_data_unexpected", "aborted_on",
-        "abort_reason", "remaining_gap", "outcome"}
+        "abort_reason", "remaining_gap", "outcome",
+        # PERF-05（#181）新增四個：到期日字串（來自 `target_expirations`，
+        # 引擎算出的真實到期日，不是 vendor 自由格式文字）與三個整數
+        # 計數，同樣不是攻擊面。
+        "failed_expiration", "in_flight_after_failure_succeeded",
+        "in_flight_after_failure_failed", "unstarted_due_to_failure"}
 
     reanchor_params = set(inspect.signature(_emit_reanchor_summary).parameters)
     assert reanchor_params == {"emit", "coords", "in_grid", "out_of_grid"}
@@ -1109,7 +1400,9 @@ def test_diagnostics_storage_failure_does_not_break_the_response():
     client = _client(wrapped, surface=_rich_surface)
     _unlock(client)
     sid = _scenario(client)
-    resp = _get(client, sid, _candidate_key(client, sid))
+    key = _candidate_key(client, sid)
+    _backfill(client, sid, key)   # T11（#194）：backfill 現在要顯式觸發
+    resp = _get(client, sid, key)
     assert resp.status_code == 200
     assert resp.json()["normalized_skew_points"]
 
@@ -1124,7 +1417,9 @@ def test_error_and_warning_events_survive_the_per_request_cap():
     def ev(event_id, severity="info", stage="vendor_fetch"):
         return DiagnosticEvent(event_id=event_id, correlation_id="c",
                                ts=event_id, subsystem="historical_iv",
-                               stage=stage, severity=severity, message="m")
+                               stage=stage, severity=severity,
+                               user_facing=severity in ("warning", "error"),
+                               message="m")
 
     # 事件數要真的超過 cap 才測到取捨——HIVT-03 起 cap 已提高
     # （容納新家族每腿 5 筆統計量事件），數量要跟著這個常數走，不能寫死
@@ -1149,7 +1444,9 @@ def test_the_batch_summary_event_survives_the_cap_even_when_priority_events_alon
     def ev(event_id, severity="info", stage="vendor_fetch"):
         return DiagnosticEvent(event_id=event_id, correlation_id="c",
                                ts=event_id, subsystem="historical_iv",
-                               stage=stage, severity=severity, message="m")
+                               stage=stage, severity=severity,
+                               user_facing=severity in ("warning", "error"),
+                               message="m")
 
     events = [ev(f"err{i}", severity="error")
              for i in range(_DIAGNOSTICS_STORAGE_CAP_PER_REQUEST + 10)]
@@ -1165,7 +1462,8 @@ def test_under_the_cap_nothing_is_dropped():
 
     events = [DiagnosticEvent(event_id=f"e{i}", correlation_id="c", ts=f"t{i}",
                               subsystem="historical_iv", stage="cache",
-                              severity="info", message="m") for i in range(5)]
+                              severity="info", user_facing=False,
+                              message="m") for i in range(5)]
     assert _select_for_persistence(events) == events
 
 
@@ -1178,7 +1476,8 @@ def test_metrics_events_also_survive_the_cap_alongside_backfill():
     def ev(event_id, stage="reanchor"):
         return DiagnosticEvent(event_id=event_id, correlation_id="c",
                                ts=event_id, subsystem="historical_iv",
-                               stage=stage, severity="info", message="m")
+                               stage=stage, severity="info",
+                               user_facing=False, message="m")
 
     events = [ev(f"r{i}") for i in range(70)]
     events += [ev("m1", stage="metrics"), ev("m2", stage="metrics"),
@@ -1202,13 +1501,62 @@ def test_reconstruction_and_vendor_benchmark_survive_a_synthetic_cap_overflow():
     def ev(event_id, stage="vendor_fetch"):
         return DiagnosticEvent(event_id=event_id, correlation_id="c",
                                ts=event_id, subsystem="historical_iv",
-                               stage=stage, severity="info", message="m")
+                               stage=stage, severity="info",
+                               user_facing=False, message="m")
 
     events = [ev(f"v{i}") for i in range(70)]
     events += [ev("recon", stage="reconstruction"),
               ev("bench", stage="vendor_benchmark")]
     kept_ids = {e.event_id for e in _select_for_persistence(events)}
     assert {"recon", "bench"} <= kept_ids
+
+
+# ---------- 只留 warning／error 落盤（PERF-02／#178） ----------
+
+def test_select_for_storage_drops_info_and_keeps_warning_and_error():
+    from api_app.diagnostics import DiagnosticEvent
+    from api_app.main import _select_for_storage
+
+    def ev(event_id, severity):
+        return DiagnosticEvent(event_id=event_id, correlation_id="c",
+                               ts=event_id, subsystem="historical_iv",
+                               stage="vendor_fetch", severity=severity,
+                               user_facing=severity in ("warning", "error"),
+                               message="m")
+
+    events = [ev("i1", "info"), ev("w1", "warning"), ev("i2", "info"),
+             ev("e1", "error"), ev("i3", "info")]
+    kept_ids = {e.event_id for e in _select_for_storage(events)}
+    assert kept_ids == {"w1", "e1"}
+
+
+def test_select_for_storage_on_an_all_info_batch_returns_empty():
+    from api_app.diagnostics import DiagnosticEvent
+    from api_app.main import _select_for_storage
+
+    events = [DiagnosticEvent(event_id=f"i{i}", correlation_id="c", ts=f"t{i}",
+                              subsystem="historical_iv", stage="cache",
+                              severity="info", user_facing=False,
+                              message="m") for i in range(23)]
+    assert _select_for_storage(events) == []
+
+
+def test_select_for_storage_applies_after_the_cap_not_instead_of_it():
+    """PERF-02 的過濾是 `_select_for_persistence()` 選出 `kept` 之後
+    **額外**的一層，不是取代既有三層優先序——`_select_for_storage()`
+    本身不做任何上限判斷，交給呼叫端先跑完 `_select_for_persistence()`
+    再套用。"""
+    from api_app.diagnostics import DiagnosticEvent
+    from api_app.main import _select_for_storage
+
+    events = [DiagnosticEvent(event_id=f"w{i}", correlation_id="c", ts=f"t{i}",
+                              subsystem="historical_iv", stage="vendor_fetch",
+                              severity="warning", user_facing=True,
+                              message="m")
+             for i in range(500)]
+    # `_select_for_storage()` 本身不裁切數量——裁切是 `_select_for_
+    # persistence()` 的責任，這裡只做 severity 過濾。
+    assert len(_select_for_storage(events)) == 500
 
 
 # ---------- Diagnostics subsystem 拆分（HIVR-03／#162） ----------
@@ -1226,6 +1574,7 @@ def test_a_flood_of_legacy_events_does_not_starve_exact_contract_events():
         return DiagnosticEvent(event_id=event_id, correlation_id="c",
                                ts=event_id, subsystem=subsystem,
                                stage="vendor_fetch", severity=severity,
+                               user_facing=severity in ("warning", "error"),
                                message="m")
 
     exact_events = [ev(f"exact{i}", SUBSYSTEM_EXACT_CONTRACT) for i in range(6)]
@@ -1253,7 +1602,7 @@ def test_each_subsystem_independently_respects_the_same_cap():
         return DiagnosticEvent(event_id=event_id, correlation_id="c",
                                ts=event_id, subsystem=subsystem,
                                stage="vendor_fetch", severity="info",
-                               message="m")
+                               user_facing=False, message="m")
 
     over = _DIAGNOSTICS_STORAGE_CAP_PER_REQUEST + 10
     exact_events = [ev(f"exact{i}", SUBSYSTEM_EXACT_CONTRACT) for i in range(over)]
@@ -1336,7 +1685,7 @@ def _mark_backfill_done_today(db, symbol="XYZ"):
 
 
 def _seed_days(db, days_and_points, symbol="XYZ"):
-    from api_app.main import _surface_to_rows
+    from option_chaser.ivpipeline import surface_to_rows as _surface_to_rows
     from api_app.storage import IvObservation
 
     for day, pts in days_and_points:
@@ -1369,6 +1718,10 @@ def test_reanchor_summary_marks_out_of_grid_dates_as_a_warning(db):
     assert got[0]["context"]["total_dates"] == 1
     assert got[0]["context"]["in_grid_dates"] == 0
     assert got[0]["context"]["out_of_grid_dates"] == 1
+    # PC-04（#204）：整段快取歷史全部落在網格外（唯一一天，in_grid=0）
+    # ——連帶讓 Normalized Skew 變成 count=0，這才是真正的覆蓋率失敗，
+    # 對使用者顯示。
+    assert got[0]["user_facing"] is True
 
 
 def test_reanchor_summary_is_info_when_the_grid_covers_the_candidate(db):
@@ -1386,6 +1739,7 @@ def test_reanchor_summary_is_info_when_the_grid_covers_the_candidate(db):
     assert got[0]["context"]["total_dates"] == 1
     assert got[0]["context"]["in_grid_dates"] == 1
     assert got[0]["context"]["out_of_grid_dates"] == 0
+    assert got[0]["user_facing"] is False
 
 
 def test_reanchor_summary_counts_mixed_in_and_out_of_grid_dates(db):
@@ -1411,6 +1765,10 @@ def test_reanchor_summary_counts_mixed_in_and_out_of_grid_dates(db):
     assert got[0]["context"]["in_grid_dates"] == 3
     assert got[0]["context"]["out_of_grid_dates"] == 2
     assert got[0]["severity"] == "warning"
+    # PC-04（#204）：部分覆蓋（仍有 3 天落在網格內，Normalized Skew
+    # 正常算得出來）不對使用者顯示，即使 `severity` 仍是 warning
+    # （工程可見度不變——`out_of_grid_dates` 非 0 這件事本身沒有消失）。
+    assert got[0]["user_facing"] is False
 
 
 def test_single_leg_reanchor_summary_is_not_penalized_for_the_missing_sell_leg(db):
@@ -1431,6 +1789,7 @@ def test_single_leg_reanchor_summary_is_not_penalized_for_the_missing_sell_leg(d
     assert got[0]["context"]["in_grid_dates"] == 1
     assert got[0]["context"]["out_of_grid_dates"] == 0
     assert "sell_delta" not in got[0]["context"]
+    assert got[0]["user_facing"] is False
 
 
 _REANCHORED_METRIC_FIELDS = {"normalized_skew", "buy_iv", "sell_iv", "atm_iv"}
@@ -1457,6 +1816,7 @@ def test_metrics_events_are_info_when_data_is_available(db):
     assert set(by_field) == {"normalized_skew", "buy_iv", "sell_iv", "atm_iv"}
     assert all(e["severity"] == "info" for e in by_field.values())
     assert all(e["context"]["count"] > 0 for e in by_field.values())
+    assert all(e["user_facing"] is False for e in by_field.values())
 
 
 def test_metrics_events_flag_zero_count_fields_as_warning(db):
@@ -1471,6 +1831,29 @@ def test_metrics_events_flag_zero_count_fields_as_warning(db):
     by_field = {e["context"]["field"]: e for e in _events_for(body, "metrics")}
     assert all(e["severity"] == "warning" for e in by_field.values())
     assert all(e["context"]["count"] == 0 for e in by_field.values())
+    # PC-04（#204）：backfill 已經跑過一次（`_mark_backfill_done_today`）
+    # 仍然 count=0——這是真的缺口，對使用者顯示。
+    assert all(e["user_facing"] is True for e in by_field.values())
+
+
+def test_metrics_zero_count_is_not_user_facing_while_backfill_is_still_pending(db):
+    """PC-04（#204）：這個 symbol 的 Legacy 家族今天還沒跑過任何一次
+    backfill（不呼叫 `_mark_backfill_done_today`）——count=0 只是預期中
+    的過渡態，UI 沿用既有「歷史資料補建中」語意，不疊加使用者可見的
+    警示。`severity` 依然是 warning，不受這個覆寫影響。"""
+    client = _client(db, surface=_surface_never_called)
+    _unlock(client)
+    sid = _scenario(client)
+    key = _candidate_key(client, sid)
+    _seed_days(db, [("2026-05-01", _NARROW_GRID)])
+
+    body = _get(client, sid, key).json()
+    assert body["backfill_pending"] is True
+    by_field = {e["context"]["field"]: e for e in _events_for(body, "metrics")
+               if e["context"]["field"] in _REANCHORED_METRIC_FIELDS}
+    assert all(e["severity"] == "warning" for e in by_field.values())
+    assert all(e["context"]["count"] == 0 for e in by_field.values())
+    assert all(e["user_facing"] is False for e in by_field.values())
 
 
 def test_single_leg_metrics_do_not_flag_the_structurally_absent_fields(db):
@@ -1500,7 +1883,16 @@ def test_the_full_ledger_covers_every_stage_and_shares_one_correlation_id(db):
     假體，因此 exact-contract 家族這次也不會有 `vendor_fetch`／
     `payload_parse`——這兩個 stage 名稱在其他情境下仍會出現（HIVR-04
     exact-contract 家族自己的 `_emit_contract_history_telemetry`），
-    只是不在這個特定場景裡。"""
+    只是不在這個特定場景裡。
+
+    T11（#194，兩段式補建 P3-a）：`cache`／`backfill` 兩個 legacy 階段
+    現在只活在 `POST .../iv-history/backfill` 自己的回應裡——
+    `legacy_backfill_status()`（`GET .../iv-history` 讀的那個函式）是
+    純讀取、零 `emit` 呼叫。「同一個 correlation_id 涵蓋全部八站」因此
+    拆成兩份、各自完整、各自帶著自己 correlation_id 的帳本：觸發補建
+    那次請求涵蓋 `cache`／`backfill`；隨後讀取的那次 GET 涵蓋其餘六站
+    ——兩次請求合起來仍是完整的「N→0」故事，只是不再擠在同一個
+    correlation_id 底下。"""
     telemetry = {"http_status": 200, "vendor_status": "ok",
                 "vendor_errmsg": None, "raw_rows": 5,
                 "parsed_call_rows": 0, "parsed_put_rows": 0}
@@ -1509,21 +1901,31 @@ def test_the_full_ledger_covers_every_stage_and_shares_one_correlation_id(db):
     sid = _scenario(client)
     key = _candidate_key(client, sid)
     _prefill_all_but_one(db)
-    body = _get(client, sid, key).json()
 
-    stages_seen = {e["stage"] for e in body["diagnostics"]["events"]}
-    assert stages_seen == {"candidate_lookup", "cache", "database_write",
-                           "backfill", "reanchor", "metrics",
-                           "reconstruction", "vendor_benchmark"}
-    cids = {e["correlation_id"] for e in body["diagnostics"]["events"]}
-    assert cids == {body["diagnostics"]["correlation_id"]}
+    backfill_body = _backfill(client, sid, key).json()
+    backfill_stages = {e["stage"] for e in backfill_body["diagnostics"]["events"]}
+    assert backfill_stages == {"candidate_lookup", "cache", "backfill"}
+    backfill_cids = {e["correlation_id"]
+                     for e in backfill_body["diagnostics"]["events"]}
+    assert backfill_cids == {backfill_body["diagnostics"]["correlation_id"]}
 
     # 帳本本身：這份 fixture 的 surface 假體沒有真的傳回任何點
     # （`points=None` 預設回空），因此摘要要能看出「這一天沒資料」，
     # 不需要讀程式碼就找得到答案。
-    backfill_summary = _events_for(body, "backfill")[0]
+    backfill_summary = _events_for(backfill_body, "backfill")[0]
     assert backfill_summary["context"]["days_with_data"] == 0
     assert backfill_summary["context"]["attempted_days"] == 1
+
+    body = _get(client, sid, key).json()
+    stages_seen = {e["stage"] for e in body["diagnostics"]["events"]}
+    # `cache`（exact-contract 家族自己的「計算歷史缺口」，HIVR-04）在
+    # 這裡跟 legacy 家族的 `cache` 是同名不同來源——每次 GET 都會發，
+    # 不是這次 T11 拆分才多出來的。
+    assert stages_seen == {"candidate_lookup", "cache", "database_write",
+                           "reanchor", "metrics",
+                           "reconstruction", "vendor_benchmark"}
+    cids = {e["correlation_id"] for e in body["diagnostics"]["events"]}
+    assert cids == {body["diagnostics"]["correlation_id"]}
 
 
 # ---------- Exact-contract 逐腿歷史 IV（HIVT-02／#153） ----------
@@ -1587,9 +1989,8 @@ def _leg_identities(client, sid, key):
     view = client.get(f"/api/scenarios/{sid}").json()["latest_result"]
     for r in view["results"]:
         for g in r.get("expiry_top10") or []:
-            for c in g["candidates"]:
-                if c["candidate_key"] == key:
-                    return c["legs"]
+            if key in g["candidate_keys"]:
+                return view["candidate_pool"][key]["legs"]
     raise AssertionError("找不到這個候選")
 
 
@@ -2476,6 +2877,11 @@ def test_reconstruction_ledger_is_a_warning_when_nothing_is_usable(db):
     assert len(events) == 1
     assert events[0]["severity"] == "warning"
     assert events[0]["context"]["usable"] == 0
+    # PC-04（#204）：整段序列零可用點——這個事件不在四項覆寫範圍內
+    # （spec 明文：reconstruction all-null 維持既有預設行為），
+    # `user_facing` 沿用預設規則（severity=warning → True），對使用者
+    # 顯示，證明「總重建失敗」這類真缺口沒有被本輪覆寫誤傷。
+    assert events[0]["user_facing"] is True
 
 
 def test_staleness_event_records_request_time_observation_and_dte_mismatch(db):
@@ -2527,6 +2933,96 @@ def test_a_stale_but_successful_fetch_is_identifiable_from_diagnostics_alone(db)
     assert len(events) == 1
     assert events[0]["severity"] == "warning"
     assert events[0]["context"]["staleness_days"] > 1
+    # PC-04（#204）：100 天前遠遠超過「今天之前最近一個交易日」的容忍
+    # 範圍——這是真的陳舊，維持對使用者可見。
+    assert events[0]["user_facing"] is True
+
+
+# ---------- PC-04（#204）：staleness 覆寫——交易日感知的正常過渡態 ----------
+#
+# 這三條直接呼叫 `_emit_staleness()`（純函式層級），不透過 HTTP 端點：
+# 這個模組在端點層級的 `today` 是真實系統時鐘（見 `_before_expiry`
+# docstring 的既有說明），沒有穩定的方法在 HTTP 測試裡構造「今天剛好是
+# 星期幾」這件事本身——而這正是本覆寫要驗證的核心變因，因此改用可以
+# 精確控制 `today`／觀測日的直接呼叫，比照既有
+# `test_the_backfill_and_reanchor_summaries_take_no_free_text_vendor_params`
+# 直接匯入私有函式驗證簽章／行為的既有慣例。
+
+def _collect_emit():
+    events: list[dict] = []
+
+    def emit(**kwargs):
+        events.append(kwargs)
+
+    return events, emit
+
+
+_STALENESS_IDENTITY = {
+    "underlying": "XYZ", "expiration": "2026-12-18", "strike": 100,
+    "option_type": "call", "contract_symbol": "XYZ261218C00100000",
+}
+
+
+def test_most_recent_trading_day_before_skips_weekends():
+    from option_chaser.ivpipeline import _most_recent_trading_day_before
+
+    # 星期三 → 星期二（前一天本來就是交易日）
+    assert (_most_recent_trading_day_before(date(2026, 8, 26))
+           == date(2026, 8, 25))
+    # 星期一 → 上星期五（跨過週六日）
+    assert (_most_recent_trading_day_before(date(2026, 8, 24))
+           == date(2026, 8, 21))
+    # 星期日 → 星期五
+    assert (_most_recent_trading_day_before(date(2026, 8, 23))
+           == date(2026, 8, 21))
+
+
+def test_staleness_is_not_user_facing_across_a_normal_weekend_rollover():
+    """今天是星期一（2026-08-24），最新觀測是上星期五（2026-08-21）——
+    每週都會發生的正常過渡態。`staleness_days` 是 3（>1），`severity`
+    依然是 warning（計算式沒動），但不該讓使用者以為系統壞掉。"""
+    from option_chaser.ivpipeline import _emit_staleness
+
+    events, emit = _collect_emit()
+    _emit_staleness(
+        emit, identity=_STALENESS_IDENTITY,
+        observation={"date": "2026-08-21", "updated": None, "dte": None},
+        request_time="2026-08-24T00:00:00+00:00", today=date(2026, 8, 24))
+
+    assert len(events) == 1
+    assert events[0]["severity"] == "warning"
+    assert events[0]["user_facing"] is False
+
+
+def test_staleness_is_user_facing_when_it_skips_a_real_trading_day():
+    """今天是星期二（2026-08-25），最新觀測卻還是上星期五
+    （2026-08-21）——中間跳過了星期一這個交易日，是真的落後，該讓
+    使用者看到。"""
+    from option_chaser.ivpipeline import _emit_staleness
+
+    events, emit = _collect_emit()
+    _emit_staleness(
+        emit, identity=_STALENESS_IDENTITY,
+        observation={"date": "2026-08-21", "updated": None, "dte": None},
+        request_time="2026-08-25T00:00:00+00:00", today=date(2026, 8, 25))
+
+    assert len(events) == 1
+    assert events[0]["severity"] == "warning"
+    assert events[0]["user_facing"] is True
+
+
+def test_staleness_fresh_observation_is_not_user_facing():
+    from option_chaser.ivpipeline import _emit_staleness
+
+    events, emit = _collect_emit()
+    _emit_staleness(
+        emit, identity=_STALENESS_IDENTITY,
+        observation={"date": "2026-08-25", "updated": None, "dte": None},
+        request_time="2026-08-25T00:00:00+00:00", today=date(2026, 8, 25))
+
+    assert len(events) == 1
+    assert events[0]["severity"] == "info"
+    assert events[0]["user_facing"] is False
 
 
 def test_reconstruction_ledger_coexists_with_a_full_legacy_backfill(db):

@@ -34,9 +34,9 @@ import {
   isStale,
   money,
   moneyOrDash,
-  partitionByLock,
   scenarioSignal,
   signalLabel,
+  sortScenarios,
 } from "./scenarios";
 
 function ScenarioCard({
@@ -44,7 +44,7 @@ function ScenarioCard({
   failure,
   now,
   selected,
-  locked,
+  updating,
   onArchive,
   onEdit,
   onRetry,
@@ -56,9 +56,13 @@ function ScenarioCard({
   failure: RefreshFailure | undefined;
   now: Date;
   selected: boolean;
-  /** 這一輪刷新還沒輪到、或正在抓的劇本（V4 跟進票／#136）：反灰＋
-   *  禁止點入，避免使用者誤以為看到的是這一輪的最新結果。 */
-  locked: boolean;
+  /** 這個劇本正在被刷新（PC-05／#202，spec #198：恢復 T08／#196 P1
+   *  當時拿掉的鎖定——反灰＋不可點入，避免使用者在更新過程中點進去
+   *  看到一份即將被取代的舊資料卻不知道畫面正在改變）：標「更新中」
+   *  徽章、卡片反灰、點擊不導向詳細頁。這個劇本自己的結果一落地
+   *  （成功或失敗）就立刻從 `updatingIds` 移除、解鎖，不等同批其他
+   *  劇本跑完。 */
+  updating: boolean;
   onArchive: (id: string) => void;
   onEdit: (id: string) => void;
   onRetry: (id: string) => void;
@@ -75,7 +79,7 @@ function ScenarioCard({
   const signal = scenarioSignal(row, failure);
   const rep = row.representative_candidate;
 
-  const cardClass = ["compact-card", selected && "selected", locked && "locked"]
+  const cardClass = ["compact-card", selected && "selected", updating && "locked"]
     .filter(Boolean).join(" ");
 
   return (
@@ -90,9 +94,9 @@ function ScenarioCard({
         {/* 整張卡就是進詳細頁的入口。用真的 `<a>` 而不是掛 onClick 的
             div：長按可以複製連結、返回手勢可用、鍵盤與螢幕閱讀器也認得。
             封存鈕留在連結外面——按鈕不能包在連結裡。
-            V4 跟進票／#136：鎖著時不給 `href`——沒有 href 的 `<a>` 本來
-            就不可點、不進 tab 順序，不必額外攔截 click／keydown，也不會
-            讓「禁止點入」跟「連結可及性」互相打架。 */}
+            PC-05（#202）：更新中的卡片仍然給 `href`（結構不變），但
+            `onClick` 會 `preventDefault()`——點下去不導向詳細頁，見
+            下方 `onClick` 實作與 `.compact-card.locked` CSS。 */}
         {/* 不掛 `aria-label`：那會**取代**連結內容當成可及名稱，螢幕閱讀器
             就只聽得到「TLT 2028-05 詳細」，收益率／目標／到期日／資料
             時間全部被吃掉。改在結尾補一段只有輔助技術讀得到的字。 */}
@@ -102,14 +106,20 @@ function ScenarioCard({
             屬性）。
             TR6（#91）：批次選取模式時整張卡攔截點擊改成切換選取，不導向
             詳細頁——`preventDefault` 而不是換成 `<button>`，內容結構完全
-            不用重寫一份。 */}
-        <a className="compact-card-tap" href={locked ? undefined : detailHash(row.id)}
+            不用重寫一份。
+            PC-05（#202）：`updating` 時同樣攔截點擊、不導向詳細頁——但
+            `selectMode` 優先判斷（AC：既有批次選取互動不受這張票影響，
+            更新中的卡片一樣勾得起來）。`href` 仍然保留（跟 `selectMode`
+            同一種手法：CSS 用 `opacity` 反灰，不是 `pointer-events:
+            none`，Playwright 一般點擊才驗證得出「按下去沒有導航」）。 */}
+        <a className="compact-card-tap" href={detailHash(row.id)}
            aria-current={selected ? "page" : undefined}
-           aria-disabled={locked ? "true" : undefined}
            onClick={(e) => {
              if (selectMode) {
                e.preventDefault();
                onToggleSelect(row.id);
+             } else if (updating) {
+               e.preventDefault();
              }
            }}>
           <div className="compact-tier1">
@@ -130,11 +140,13 @@ function ScenarioCard({
               {" → "}
               {money(row.target_price)}　{row.target_month}
             </span>
-            {/* V4 跟進票／#136：鎖著時燈號位置換成「更新中」——這一刻的
-                燈號（紅／黃／綠）講的是上一輪的結果，這一輪還沒有結論，
-                繼續顯示舊燈號會誤導成「這是這次的狀態」。 */}
-            {locked ? (
-              <span className="tag locked-tag">更新中</span>
+            {/* T08／#196 P1：更新中時燈號位置換成「更新中」徽章——這一刻
+                的燈號（紅／黃／綠）講的是上一輪的結果，這一輪還沒有
+                結論，繼續顯示舊燈號會誤導成「這是這次的狀態」。PC-05
+                （#202）起卡片本身反灰＋不可點入（見 `cardClass`／
+                `onClick`），徽章維持不變（AC 明文：徽章本身不變）。 */}
+            {updating ? (
+              <span className="tag updating-tag">更新中</span>
             ) : (
               // 顏色不是唯一的資訊管道：`title` 給滑鼠停留時看得到的
               // 文字、圓點本身 `aria-hidden`，可及名稱另外交給 sr-only
@@ -196,8 +208,8 @@ function ScenarioCard({
           )}
 
           <span className="sr-only">
-            {locked ? "這一輪刷新還沒完成，暫時無法查看詳細"
-                    : `${signalLabel(signal)}；查看 ${who} 詳細`}
+            {updating ? `更新中；查看 ${who} 詳細（顯示上一輪的舊資料）`
+                      : `${signalLabel(signal)}；查看 ${who} 詳細`}
           </span>
         </a>
 
@@ -251,7 +263,7 @@ function ScenarioCard({
 export default function ScenarioList({
   rows,
   failures,
-  lockedIds,
+  updatingIds,
   now,
   selectedId = null,
   onArchive,
@@ -266,9 +278,9 @@ export default function ScenarioList({
 }: {
   rows: ScenarioSummary[];
   failures: Record<string, RefreshFailure>;
-  /** 整輪刷新期間還沒完成的劇本（V4 跟進票／#136）——反灰＋禁止點入，
-   *  一完成（成功或失敗）立刻從這裡移除。 */
-  lockedIds: ReadonlySet<string>;
+  /** 正在被刷新的劇本（T08／#196 P1）——標「更新中」徽章，一完成
+   *  （成功或失敗）立刻從這裡移除。 */
+  updatingIds: ReadonlySet<string>;
   now: Date;
   /** 桌面版 master/detail（#72）目前選中的劇本；手機版不傳，恆不標記。 */
   selectedId?: string | null;
@@ -288,9 +300,11 @@ export default function ScenarioList({
   if (rows.length === 0) {
     return <p className="caption">還沒有劇本，用下面的表單建立。</p>;
   }
-  // V4 跟進票／#136：已完成區照舊排序；鎖著的那段維持佇列順序、獨立
-  // 排在後面（分隔線），不跟已完成的混排——見 `partitionByLock` 說明。
-  const { unlocked, locked } = partitionByLock(rows, lockedIds);
+  // T08／#196 P1：正在更新的劇本照樣參與排序（用它上一輪的
+  // `best_return`），不再像舊版 `partitionByLock`（V4 跟進票／#136，
+  // 已隨本票移除）那樣獨立排在後面——見 `./scenarios` 的
+  // `sortScenarios` 說明。
+  const sorted = sortScenarios(rows);
   return (
     <>
       {/* 收益率口徑就寫在數字旁邊（V4／#52）。放進說明頁等於沒寫——
@@ -322,38 +336,14 @@ export default function ScenarioList({
       )}
 
       <ul className="compact-list">
-        {unlocked.map((row) => (
+        {sorted.map((row) => (
           <ScenarioCard
             key={row.id}
             row={row}
             failure={failures[row.id]}
             now={now}
             selected={row.id === selectedId}
-            locked={false}
-            onArchive={onArchive}
-            onEdit={onEdit}
-            onRetry={onRetry}
-            selectMode={selectMode}
-            isChecked={selectedIds.has(row.id)}
-            onToggleSelect={onToggleSelect}
-          />
-        ))}
-
-        {/* 分隔線只在兩段都非空時才有意義——沒有已完成的（例如整輪剛
-            開始）或沒有鎖著的（整輪已跑完）都不必畫一條沒有分隔作用的
-            線（V4 跟進票／#136 的 ASCII 概念圖）。 */}
-        {unlocked.length > 0 && locked.length > 0 && (
-          <li className="compact-list-separator" aria-hidden="true" />
-        )}
-
-        {locked.map((row) => (
-          <ScenarioCard
-            key={row.id}
-            row={row}
-            failure={failures[row.id]}
-            now={now}
-            selected={row.id === selectedId}
-            locked
+            updating={updatingIds.has(row.id)}
             onArchive={onArchive}
             onEdit={onEdit}
             onRetry={onRetry}

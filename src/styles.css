@@ -1476,30 +1476,28 @@ body {
   box-shadow: inset 3px 0 0 var(--tint);
 }
 
-/* ---------- 整輪刷新的漸進解鎖（V4 跟進票／#136） ---------- */
+/* ---------- 更新中徽章（T08／#196 P1，前身是 V4 跟進票／#136 的
+   整段灰化鎖定） ---------- */
 
-/* 反灰＋禁止點入：`pointer-events: none` 收在 tap 區本身，不是整張
-   `<li>`——編輯／封存鈕仍要能操作（鎖的是「這份結果還沒刷新完」，不是
-   整張卡的其他功能）。`href` 拿掉之後 `<a>` 本來就不進 tab 順序，這裡
-   只是同時處理滑鼠與觸控的視覺與互動。 */
-.compact-card.locked .compact-card-tap {
-  pointer-events: none;
-  opacity: 0.45;
-}
-
-.tag.locked-tag {
+.tag.updating-tag {
   margin-right: 0;
   margin-left: 0;
 }
 
-/* 分隔線本身是清單裡的一個 `<li>`，不是額外插進 `<ul>` 的無效標記
-   ——只畫一條上緣線＋留一點呼吸空間，把「已完成」與「還在排隊／刷新
-   中」兩段隔開（V4 跟進票／#136 的 ASCII 概念圖）。 */
-.compact-list-separator {
-  height: 0;
-  margin: 4px 0;
-  border-top: 0.5px solid var(--separator);
-  list-style: none;
+/* PC-05（#202，spec #198）：反灰＋不可點入恢復——取代 T08／#196 P1
+   當時「卡片全程可點、不反灰」的裁示（原註解已移除，避免跟現在的
+   行為互相矛盾）。只用 `opacity`（不用 `pointer-events: none`）——
+   點擊本身在 `ScenarioList.tsx`／`CompactScenarioList.tsx` 的 `<a>`
+   onClick 裡用跟既有 `selectMode` 一樣的 `preventDefault()` 手法擋掉，
+   這樣 Playwright 的一般 `.click()` 仍然能正常觸發並驗證「按下去沒有
+   導航」，不必用 `force: true` 繞過瀏覽器對 `pointer-events: none`
+   元素的可點性檢查。`cursor: not-allowed` 是免費的額外提示。 */
+.compact-card.locked {
+  opacity: 0.45;
+}
+
+.compact-card.locked .compact-card-tap {
+  cursor: not-allowed;
 }
 
 /* 常駐但目前沒話講的 live region 不該佔掉卡片的一段間距。 */

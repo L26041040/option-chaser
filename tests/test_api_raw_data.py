@@ -15,9 +15,10 @@ FIX = "tests/fixtures/xyz_v4_six_expiries.json"
 NEW = {"symbol": "XYZ", "target_price": 130.0, "target_month": "2026-09"}
 
 
-def _client(*, storage=None):
+def _client(*, storage=None, **overrides):
     snap = load_snapshot(FIX)
-    return TestClient(create_app(fetch=lambda symbol: snap, storage=storage or MemoryStorage()))
+    return TestClient(create_app(fetch=lambda symbol: snap,
+                                 storage=storage or MemoryStorage(), **overrides))
 
 
 def _create(client, **overrides):
@@ -109,6 +110,8 @@ def test_raw_data_follows_the_latest_refresh_not_a_stale_one():
     要是新的那份快照，不是第一次刷新時存的舊資料。"""
     import dataclasses
 
+    # T06（#190）：chain 快取已整組移除（ADR-0001），這裡對同一個 symbol
+    # 連續觸發兩次刷新自然各自真的重新抓一次，不需要任何特殊處理。
     storage = MemoryStorage()
     c = _client(storage=storage)
     sc = _create(c)

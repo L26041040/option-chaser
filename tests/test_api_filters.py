@@ -36,12 +36,15 @@ def _client():
 def test_low_open_interest_candidate_survives_and_pool_grows():
     r = _client().post("/api/analyze", json=REQUEST)
     assert r.status_code == 200
-    result = r.json()["results"][0]
+    body = r.json()
+    result = body["results"][0]
+    pool = body["candidate_pool"]
 
     assert result["filter_report"] == {"total": 10, "passed": 8}
     # single-leg 路徑的候選走 `candidates`，不是 `all_candidates`（T9
-    # 附錄A13：`all_candidates` 只序列化 spread 路徑）。
-    strikes = {c["legs"][0]["strike"] for c in result["candidates"]}
+    # 附錄A13：`all_candidates` 只序列化 spread 路徑）。T09（#191）：
+    # `candidates` 現在是 key 清單，完整內容查頂層 `candidate_pool`。
+    strikes = {pool[k]["legs"][0]["strike"] for k in result["candidates"]}
     assert 100.5 in strikes, "OI=5 的合約應留在候選池裡，不再被 OI 關卡刷掉"
 
 
@@ -100,16 +103,17 @@ def test_filter_stages_only_data_integrity_and_iv_remain():
 
 def test_open_interest_still_visible_on_each_leg():
     """未平倉量不是消失——只是不再有生殺大權，資料仍隨候選一併回傳。"""
-    r = _client().post("/api/analyze", json=REQUEST)
-    result = r.json()["results"][0]
-    assert all("open_interest" in c["legs"][0] for c in result["candidates"])
+    body = _client().post("/api/analyze", json=REQUEST).json()
+    result, pool = body["results"][0], body["candidate_pool"]
+    assert all("open_interest" in pool[k]["legs"][0] for k in result["candidates"])
 
 
 def test_cost_convention_unchanged():
     """spec #61：本輪只改「哪些候選進得了排名」，不改成本口徑（附錄 A14.2）。"""
-    r = _client().post("/api/analyze", json=REQUEST)
-    result = r.json()["results"][0]
-    for c in result["candidates"]:
+    body = _client().post("/api/analyze", json=REQUEST).json()
+    result, pool = body["results"][0], body["candidate_pool"]
+    for k in result["candidates"]:
+        c = pool[k]
         leg = c["legs"][0]
         assert c["natural_cost"] == leg["ask"]  # 單腿最差成交＝Ask
 
@@ -125,10 +129,10 @@ def test_ranking_formula_still_picks_highest_return_within_band():
     若排名公式（依基準情境報酬率降冪排序取級內第一）壞了或方向反了，
     這裡不會是 100.5 中選——不是憑空斷言，是這組真實數字逼出來的。
     """
-    r = _client().post("/api/analyze", json=REQUEST)
-    result = r.json()["results"][0]
-    balanced = next(c for c in result["candidates"]
-                    if 0.35 <= abs(c["net_delta"]) <= 0.65)
+    body = _client().post("/api/analyze", json=REQUEST).json()
+    result, pool = body["results"][0], body["candidate_pool"]
+    balanced = next(pool[k] for k in result["candidates"]
+                    if 0.35 <= abs(pool[k]["net_delta"]) <= 0.65)
     assert balanced["legs"][0]["strike"] == 100.5
 
 
@@ -145,10 +149,10 @@ def test_monotonicity_warning_reaches_the_serialized_candidate():
     旗標，取代已不對外序列化的 `quote_warning`）不該被單調性違反污染
     （XYZC100D 本身報價／價差都正常，`wide_spread_warning` 應為 False）。
     """
-    r = _client().post("/api/analyze", json=REQUEST)
-    result = r.json()["results"][0]
-    balanced = next(c for c in result["candidates"]
-                    if 0.35 <= abs(c["net_delta"]) <= 0.65)
+    body = _client().post("/api/analyze", json=REQUEST).json()
+    result, pool = body["results"][0], body["candidate_pool"]
+    balanced = next(pool[k] for k in result["candidates"]
+                    if 0.35 <= abs(pool[k]["net_delta"]) <= 0.65)
     assert balanced["legs"][0]["strike"] == 100.5
     assert balanced["monotonicity_warning"] is True
     assert balanced["wide_spread_warning"] is False

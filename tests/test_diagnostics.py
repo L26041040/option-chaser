@@ -206,6 +206,53 @@ def test_emit_logs_a_parseable_json_line(caplog):
     assert parsed["context"] == {"symbol": "TLT"}
 
 
+# ---------- user_facing（PC-03／#201） ----------
+
+@pytest.mark.parametrize("severity,expected", [
+    ("error", True), ("warning", True), ("info", False),
+])
+def test_emit_default_user_facing_mirrors_severity(severity, expected):
+    """省略 `user_facing` 時的預設規則：warning／error 視為
+    user-facing，info 視為工程可見度——這是本票唯一定義一次的規則。"""
+    storage = _RecordingStorage()
+    event = diagnostics.emit(storage, subsystem="historical_iv",
+                             stage="vendor_fetch", severity=severity,
+                             message="m", ts="2026-08-15T00:00:00+00:00")
+    assert event.user_facing is expected
+
+
+def test_emit_user_facing_can_be_explicitly_overridden_against_the_default():
+    """`user_facing` 是具名參數，能覆蓋預設規則——這是 PC-04 之後四項
+    覆寫賴以掛上去的機制：即使 severity 是 warning，呼叫端仍能顯式說
+    這件事不該讓使用者看到。"""
+    storage = _RecordingStorage()
+    event = diagnostics.emit(storage, subsystem="historical_iv",
+                             stage="backfill", severity="warning",
+                             user_facing=False, message="m",
+                             ts="2026-08-15T00:00:00+00:00")
+    assert event.user_facing is False
+
+    event2 = diagnostics.emit(storage, subsystem="historical_iv",
+                              stage="cache", severity="info",
+                              user_facing=True, message="m",
+                              ts="2026-08-15T00:00:00+00:00")
+    assert event2.user_facing is True
+
+
+def test_emit_user_facing_is_not_swallowed_into_context():
+    """`user_facing` 走具名參數這條路，不會被 `**context` 收集、也不會
+    被 `sanitize_context()` 的欄位白名單靜默丟棄——它是 `DiagnosticEvent`
+    自己的欄位，不是 `context` dict 裡的一個 key。"""
+    storage = _RecordingStorage()
+    event = diagnostics.emit(storage, subsystem="historical_iv",
+                             stage="backfill", severity="warning",
+                             user_facing=False, message="m",
+                             ts="2026-08-15T00:00:00+00:00", symbol="TLT")
+    assert "user_facing" not in event.context
+    assert event.context == {"symbol": "TLT"}
+    assert event.user_facing is False
+
+
 def test_emit_logging_failure_does_not_block_the_storage_write(monkeypatch):
     """log 那一步失敗（例如序列化爆掉）不該連帶讓 storage 也寫不進去——
     兩條路徑各自獨立失敗、互不牽連。"""

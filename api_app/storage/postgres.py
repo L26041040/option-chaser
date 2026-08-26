@@ -1,7 +1,14 @@
 """Neon Postgres 儲存 adapter（V2／#50）。
 
-serverless 前提：函式壽命極短，每次請求開新連線（Neon 的 pooler 端點
-負責連線池化），不在程序內自行維護長連線。
+serverless 前提：函式壽命極短，不在程序內自行維護長連線，仍靠 Neon 的
+pooler 端點負責連線池化。**PERF-01（#177）／T02（#186）修形**：同一個
+HTTP request 期間共用同一條連線（`request_scope()`，由 `main.py` 的
+middleware 進入時註冊、離開時歸還），不是像 warm `/iv-history` 這種一次
+觸發十幾次 `Storage` method 呼叫的路徑那樣，每次呼叫都各自重新開一條
+全新連線；**惰性**：scope 進入時不主動開連線，第一次真正呼叫到某個
+`Storage` method 才開——完全不碰 storage 的 request 因此零連線握手。
+沒有進到 `request_scope()`（例如測試直接呼叫 adapter method）或 scope
+內共用連線已經試過且失敗時，退回逐次開連線的既有行為，見 `_connect()`。
 
 大 JSON（結果 view dict，十萬字元等級）存 JSONB：psycopg 直接對應
 Python dict，不需自己 `json.dumps`。時間欄位存 ISO 字串而非 timestamptz
@@ -9,19 +16,63 @@ Python dict，不需自己 `json.dumps`。時間欄位存 ISO 字串而非 times
 """
 from __future__ import annotations
 
+import contextvars
+from contextlib import contextmanager
+
 import psycopg
 from psycopg.types.json import Jsonb
 
-from . import (ContractHistory, DataSourceSettings, DividendCacheEntry,
-               IvBackfillRun, IvObservation, ProviderCredential,
-               ProviderVerification, RateCacheEntry, ResultRecord,
-               ResultSummary, Scenario, ScenarioExists, UsageSetting)
+from . import (ContractHistory, DataSourceSettings,
+               DividendCacheEntry, IvBackfillRun, IvObservation,
+               ProviderCredential, ProviderVerification, RateCacheEntry,
+               ResultRecord, ResultSummary, Scenario, ScenarioExists,
+               TreasuryYearCacheEntry, UsageSetting)
 from ..diagnostics import RETENTION_LIMIT, DiagnosticEvent
 
 # 每個 lambda 程序只需建表一次。`IF NOT EXISTS` 在 Postgres 並非完全
 # race-free（同時冷啟動可能撞上 duplicate 錯誤），因此除了這個旗標，
 # 下面也把重複建立視為良性。
 _schema_ready: set[str] = set()
+
+class _ScopeState:
+    """一個 `request_scope()` 的可變狀態——`conn` 惰性填入（T02／#186）：
+    scope 剛進入時是 `None`，第一次真正呼叫 `_connect()` 才開。`failed`
+    記著這個 scope 內共用連線是否已經試過且失敗，避免同一個 scope 反覆
+    對著暫時連不上的資料庫重試。"""
+
+    __slots__ = ("dsn", "conn", "failed")
+
+    def __init__(self, dsn: str) -> None:
+        self.dsn = dsn
+        self.conn = None
+        self.failed = False
+
+
+# PERF-01（#177）／T02（#186）：目前 request 的 scope 狀態——放在
+# `contextvars.ContextVar`（模組層級）而不是 `PostgresStorage` 單例
+# 物件的一般屬性上，避免併發 request 互相汙染彼此借到的連線（ASGI
+# 併發處理多個 request 時，同一個 `PostgresStorage` 實例會被共用，
+# 一般屬性沒有 per-request 隔離）。狀態物件存 `dsn` 一起是防禦性寫法：
+# 理論上若同一個 process 裡有兩個不同 DSN 的 `PostgresStorage` 實例，
+# 借到的連線也不會被錯誤的實例借走。
+_request_scope_state: contextvars.ContextVar = contextvars.ContextVar(
+    "postgres_request_scope_state", default=None)
+
+
+class _BorrowedConnection:
+    """讓 `with self._connect() as conn:` 這個既有呼叫慣例完全不用改
+    ——借用中的連線在 `__exit__` 不真的關閉，它的生命週期歸
+    `PostgresStorage.request_scope()` 的 `finally` 管，不是每個個別
+    method 呼叫自己的 `with` 區塊。"""
+
+    def __init__(self, conn) -> None:
+        self._conn = conn
+
+    def __enter__(self):
+        return self._conn
+
+    def __exit__(self, *exc_info) -> bool:
+        return False   # 不吞例外、不關閉連線
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS scenarios (
@@ -85,6 +136,19 @@ CREATE TABLE IF NOT EXISTS dividend_cache (
     symbol            TEXT PRIMARY KEY,
     fetched_at        TEXT NOT NULL,
     history           JSONB,
+    note              TEXT NOT NULL,
+    last_success_at   TEXT,
+    market_day        TEXT,
+    attempted_day     TEXT
+);
+-- Treasury 利率曲線列快取（PERF-03／#179）：per-year——歷史 reconstruction
+-- 逐一觀測日查表，任何歷史日期的查詢結構上只可能被它所在年份的這筆
+-- 紀錄滿足；欄位語意逐一對應 rate_cache／dividend_cache 同一套三態
+-- 設計，差異只在「成功是否永久新鮮」由呼叫端依 year 是否早於今年判斷。
+CREATE TABLE IF NOT EXISTS treasury_year_cache (
+    year              INTEGER PRIMARY KEY,
+    fetched_at        TEXT NOT NULL,
+    rows              JSONB,
     note              TEXT NOT NULL,
     last_success_at   TEXT,
     market_day        TEXT,
@@ -178,6 +242,10 @@ ALTER TABLE scenarios ADD COLUMN IF NOT EXISTS worst_price DOUBLE PRECISION;
 ALTER TABLE rate_cache ADD COLUMN IF NOT EXISTS last_success_at TEXT;
 ALTER TABLE rate_cache ADD COLUMN IF NOT EXISTS market_day TEXT;
 ALTER TABLE rate_cache ADD COLUMN IF NOT EXISTS attempted_day TEXT;
+-- PC-03（#201，spec #198）：nullable——既有部署的舊列沒有這一欄，讀回
+-- 時用跟 `emit()` 相同的規則（severity 為 warning／error 視為 true）
+-- 補一份合理值，而不是硬性 NOT NULL 逼一次資料回填。
+ALTER TABLE diagnostics ADD COLUMN IF NOT EXISTS user_facing BOOLEAN;
 """
 
 # 冷啟動競爭下的良性錯誤：別人已經建好／加好了。
@@ -190,6 +258,17 @@ _RESULT_COLS = ("scenario_id, analyzed_at, view, best_return, "
 _SCENARIO_COLS = ("id, symbol, direction, target_price, target_month, "
                   "notes, strategies, created_at, archived_at, "
                   "best_price, worst_price")
+
+# PERF-02（#178）：`append_diagnostic()`／`append_diagnostics()` 共用
+# 同一份欄位清單與 trim-on-write 查詢——單筆／批次寫入本來就該是同一套
+# SQL 的兩種呼叫方式，不是各自維護一份容易漂移的複本。trim 只留全域
+# 最新 RETENTION_LIMIT 筆：子查詢在不到上限時回空，`seq <= NULL`
+# 恆假，DELETE 是安全的 no-op。
+_DIAGNOSTICS_INSERT_COLS = ("(event_id, correlation_id, ts, subsystem, "
+                           "stage, severity, user_facing, message, context)")
+_DIAGNOSTICS_TRIM_SQL = (
+    "DELETE FROM diagnostics WHERE seq <= ("
+    "SELECT seq FROM diagnostics ORDER BY seq DESC OFFSET %s LIMIT 1)")
 
 
 def _usage_to_dict(u: UsageSetting) -> dict:
@@ -214,15 +293,82 @@ def _row_to_scenario(row) -> Scenario:
 
 class PostgresStorage:
     def __init__(self, dsn: str) -> None:
+        """T02（#186）：建構本身不再連線／不再確保 schema——那個代價
+        現在掛在第一次真正呼叫 `_connect()` 上（見下），才能跟該次
+        request 自己要用的共用連線一起分攤，而不是在 middleware 為了
+        判斷「這個 adapter 有沒有 `request_scope`」而呼叫 `_db()` 時，
+        於 scope 都還沒進入前就先付掉。"""
         self._dsn = dsn
-        self._ensure_schema()
 
     @property
     def kind(self) -> str:
         return "postgres"
 
+    def _raw_connect(self):
+        """實際借用／開連線的邏輯，不含 schema 就緒檢查——供 `_connect()`
+        （已確保 schema 就緒後）與 `_ensure_schema()` 自己（就緒檢查
+        本身要用連線）共用，避免兩者互相呼叫造成無窮遞迴。"""
+        state = _request_scope_state.get()
+        if state is None or state.dsn != self._dsn or state.failed:
+            return psycopg.connect(self._dsn, autocommit=True)
+        if state.conn is None:
+            try:
+                state.conn = psycopg.connect(self._dsn, autocommit=True)
+            except Exception:  # noqa: BLE001 — 這次共用開不成，這次呼叫退回逐次開連線
+                state.failed = True
+                return psycopg.connect(self._dsn, autocommit=True)
+        return _BorrowedConnection(state.conn)
+
     def _connect(self):
-        return psycopg.connect(self._dsn, autocommit=True)
+        """T02（#186）：連線改成**惰性**——scope 內第一次真正呼叫
+        `_connect()` 時才開、開好後存回 scope 狀態物件供同一 scope
+        內其餘呼叫重用；完全不碰 storage 的 request 因此零連線。
+
+        沒有進到 `request_scope()`（測試直接呼叫 adapter method）或
+        scope 內先前已經開失敗過（`state.failed`）時，退回今天
+        「開一條、`with` 結束就關」的既有行為。
+
+        第一次呼叫時順便確保 schema 就緒（`_ensure_schema()` 內部走
+        `_raw_connect()`，不會回頭呼叫這裡造成遞迴）——這樣冷啟動後
+        第一個真正碰 storage 的 request，schema 的兩次連線也能跟這次
+        request 本身要用的共用連線一起分攤，而不是額外多付兩條。
+        """
+        if self._dsn not in _schema_ready:
+            self._ensure_schema()
+        return self._raw_connect()
+
+    @contextmanager
+    def request_scope(self):
+        """PERF-01（#177）／T02（#186）修形：一次 HTTP request 期間，
+        這個實例的全部 `Storage` method 呼叫共用同一條連線——由
+        `main.py` 的 middleware 在每個 request 最外層呼叫。
+
+        **惰性**：進入時只註冊一個空的 scope 狀態，不主動開連線；第一次
+        真正呼叫到 `_connect()` 時才開（見上）。完全不碰 storage 的
+        request（例如健康檢查）因此零連線握手，這是 T02 相對 PERF-01
+        （進入就無條件開一條）的主要修正。
+
+        scope 結束時（無論成功或例外）都在 `finally` 關閉「如果有開過」
+        的那條連線並清空 ContextVar。開連線本身失敗時不讓那次呼叫跟著
+        炸掉——退回逐次開連線的既有行為，且該次失敗後這個 scope 剩餘的
+        呼叫不再嘗試共用（`state.failed`），避免對著暫時連不上的資料庫
+        重複重試。
+
+        `autocommit=True` 連著這條共用連線走，共用之後每個敘述依然
+        各自 autocommit——沒有因為共用連線而引入橫跨多個敘述的隱含
+        交易。
+        """
+        state = _ScopeState(self._dsn)
+        token = _request_scope_state.set(state)
+        try:
+            yield
+        finally:
+            _request_scope_state.reset(token)
+            if state.conn is not None:
+                try:
+                    state.conn.close()
+                except Exception:  # noqa: BLE001 — 關閉失敗不影響這次 request 已經跑完的結果
+                    pass
 
     def _ensure_schema(self) -> None:
         """`CREATE TABLE IF NOT EXISTS` 冪等——單人專案不值得為此扛一整套
@@ -234,12 +380,19 @@ class PostgresStorage:
 
         建表與遷移**各送一次**：同批送的話，建表撞上冷啟動競爭會讓遷移
         跟著 rollback（見 `_MIGRATIONS` 的說明）。ready 只在兩批都不是
-        致命錯誤時才標記——標了卻沒真的建好，後面每次寫入都會炸。"""
+        致命錯誤時才標記——標了卻沒真的建好，後面每次寫入都會炸。
+
+        T02（#186）：走 `_raw_connect()` 而非 `_connect()`——`_connect()`
+        本身在就緒檢查沒過時會回頭呼叫這裡，兩者互相呼叫會無窮遞迴；
+        `_raw_connect()` 不含就緒檢查，且一樣享有 scope 內的惰性連線
+        共用（如果已經在 scope 內、且這是第一次真正用到連線，這兩次
+        `_raw_connect()` 呼叫會開同一條、供這次 request 剩餘操作繼續
+        重用）。"""
         if self._dsn in _schema_ready:
             return
         for stmt in (_SCHEMA, _MIGRATIONS):
             try:
-                with self._connect() as conn:
+                with self._raw_connect() as conn:
                     conn.execute(stmt)
             except _BENIGN:
                 pass
@@ -477,6 +630,37 @@ class PostgresStorage:
                  Jsonb(entry.history) if entry.history is not None else None,
                  entry.note, entry.last_success_at, entry.market_day,
                  entry.attempted_day))
+
+    # ---------- Treasury 曲線列快取（PERF-03／#179，per-year） ----------
+
+    def get_treasury_year_cache(self, year: int) -> TreasuryYearCacheEntry | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT year, fetched_at, rows, note, last_success_at, "
+                "market_day, attempted_day FROM treasury_year_cache "
+                "WHERE year = %s", (year,)).fetchone()
+        return (TreasuryYearCacheEntry(year=row[0], fetched_at=row[1], rows=row[2],
+                                       note=row[3], last_success_at=row[4],
+                                       market_day=row[5], attempted_day=row[6])
+                if row else None)
+
+    def save_treasury_year_cache(self, entry: TreasuryYearCacheEntry) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO treasury_year_cache "
+                "(year, fetched_at, rows, note, last_success_at, market_day, "
+                "attempted_day) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s) "
+                "ON CONFLICT (year) DO UPDATE "
+                "SET fetched_at = EXCLUDED.fetched_at, rows = EXCLUDED.rows, "
+                "note = EXCLUDED.note, last_success_at = EXCLUDED.last_success_at, "
+                "market_day = EXCLUDED.market_day, "
+                "attempted_day = EXCLUDED.attempted_day",
+                (entry.year, entry.fetched_at,
+                 Jsonb(entry.rows) if entry.rows is not None else None,
+                 entry.note, entry.last_success_at, entry.market_day,
+                 entry.attempted_day))
+
     # ---------- 資料源設定與 credential（Settings／#124） ----------
 
     def get_settings(self) -> DataSourceSettings | None:
@@ -637,28 +821,50 @@ class PostgresStorage:
     def append_diagnostic(self, event: DiagnosticEvent) -> None:
         with self._connect() as conn:
             conn.execute(
-                "INSERT INTO diagnostics (event_id, correlation_id, ts, "
-                "subsystem, stage, severity, message, context) "
-                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+                f"INSERT INTO diagnostics {_DIAGNOSTICS_INSERT_COLS} "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
                 (event.event_id, event.correlation_id, event.ts,
-                 event.subsystem, event.stage, event.severity, event.message,
+                 event.subsystem, event.stage, event.severity,
+                 event.user_facing, event.message,
                  Jsonb(event.context)))
-            # trim-on-write：只留全域最新 RETENTION_LIMIT 筆。子查詢在
-            # 不到上限時回空，`seq <= NULL` 恆假，DELETE 是安全的 no-op。
+            conn.execute(_DIAGNOSTICS_TRIM_SQL, (RETENTION_LIMIT,))
+
+    def append_diagnostics(self, events: list[DiagnosticEvent]) -> None:
+        """批次版（PERF-02／#178）：一次多列 INSERT，不是逐筆迴圈呼叫
+        `append_diagnostic()`——政策（哪些 event 值得進資料庫）掛在
+        `main.py` 呼叫端，這裡只負責把給定的清單一次寫完。trim-on-write
+        插入後只跑一次，跟逐筆寫入「每筆各自跑一次」比較，兩者都是
+        「只留全域最新 RETENTION_LIMIT 筆」，最終保留集合完全一致。"""
+        if not events:
+            return
+        values_sql = ", ".join(
+            ["(%s, %s, %s, %s, %s, %s, %s, %s, %s)"] * len(events))
+        params: list = []
+        for event in events:
+            params.extend([event.event_id, event.correlation_id, event.ts,
+                          event.subsystem, event.stage, event.severity,
+                          event.user_facing, event.message,
+                          Jsonb(event.context)])
+        with self._connect() as conn:
             conn.execute(
-                "DELETE FROM diagnostics WHERE seq <= ("
-                "SELECT seq FROM diagnostics ORDER BY seq DESC "
-                "OFFSET %s LIMIT 1)", (RETENTION_LIMIT,))
+                f"INSERT INTO diagnostics {_DIAGNOSTICS_INSERT_COLS} "
+                f"VALUES {values_sql}", params)
+            conn.execute(_DIAGNOSTICS_TRIM_SQL, (RETENTION_LIMIT,))
 
     def list_diagnostics(self, *, limit: int = 50) -> list[DiagnosticEvent]:
         with self._connect() as conn:
             rows = conn.execute(
                 "SELECT event_id, correlation_id, ts, subsystem, stage, "
-                "severity, message, context FROM diagnostics "
+                "severity, user_facing, message, context FROM diagnostics "
                 "ORDER BY seq DESC LIMIT %s", (limit,)).fetchall()
-        return [DiagnosticEvent(event_id=r[0], correlation_id=r[1], ts=r[2],
-                                subsystem=r[3], stage=r[4], severity=r[5],
-                                message=r[6], context=r[7]) for r in rows]
+        # `user_facing`（r[6]）為 NULL 只會發生在遷移前寫入的舊列——套用
+        # 跟 `diagnostics.emit()` 完全相同的預設規則補值，讀回的行為因此
+        # 對新舊列一致，不會讓查詢端還要另外處理 NULL。
+        return [DiagnosticEvent(
+            event_id=r[0], correlation_id=r[1], ts=r[2], subsystem=r[3],
+            stage=r[4], severity=r[5],
+            user_facing=r[6] if r[6] is not None else r[5] in ("warning", "error"),
+            message=r[7], context=r[8]) for r in rows]
 
     def clear_diagnostics(self) -> int:
         with self._connect() as conn:

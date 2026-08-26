@@ -18,27 +18,46 @@ const sampleRow = JSON.parse(
   ),
 );
 
+type SampleCandidate = {
+  candidate_key: string;
+  baseline_return: number;
+  natural_cost: number;
+  legs: { strike: number; ask: number; bid: number }[];
+};
+
 const view = sample as unknown as {
   meta: { spot: number; source: string; target_move: number };
   params: { target_price: number; target_month: string };
   baseline_expiry: string;
+  // T09（#191）：完整候選內容集中在這裡，`expiry_top10` 等容器只留
+  // `candidate_key`／`candidate_keys` 引用。
+  candidate_pool: Record<string, SampleCandidate>;
   results: {
     status: string;
     expiry_top10?: {
       expiry: string;
-      candidates: {
-        baseline_return: number;
-        natural_cost: number;
-        legs: { strike: number; ask: number; bid: number }[];
-      }[];
+      candidate_keys: string[];
     }[];
   }[];
 };
+
+/** 依 key 查回完整候選內容——e2e 手造 fixture 走跟正式程式碼一樣的
+ *  查表路徑，不直接內嵌完整候選字典。 */
+function candOf(v: typeof view, key: string): SampleCandidate {
+  return v.candidate_pool[key];
+}
 
 test.beforeEach(async ({ page }) => {
   // V3 起開站就打劇本清單。E2E 沒有後端，預設回空清單；需要劇本的
   // 測試自己覆寫這條路由。
   await page.route("**/api/scenarios", (route) => route.fulfill({ json: [] }));
+  // 開站與頂部刷新鈕打的是批次端點（Refresh Run，T08／#196）——預設
+  // 給一個空成功回應（不改動任何劇本），不必為了不讓開站那輪報錯，
+  // 每條測試都各自覆寫一次。真的要驗證刷新結果的測試（例如整輪刷新／
+  // Continuation）會在自己的測試本體裡覆寫這條路由（Playwright 後
+  // 註冊的路由優先），拿到有意義的回應。
+  await page.route("**/api/scenarios/refresh-run", (route) =>
+    route.fulfill({ json: { results: [], remaining: [] } }));
 });
 
 /** 劇本清單列：形狀取自前後端共用的契約樣本，只覆寫測試在意的欄位。 */
@@ -82,6 +101,16 @@ async function routeLibrary(page: import("@playwright/test").Page, row: unknown)
   await page.route("**/api/scenarios", (route) => route.fulfill({ json: [row] }));
   await page.route("**/api/scenarios/s1", (route) =>
     route.fulfill({ json: { ...(row as object), latest_result: sample } }));
+  // 開站與頂部刷新鈕打的是批次端點（Refresh Run，T08／#196）——
+  // `"/refresh-run"` 不會被下面那條 `**/api/scenarios/*/refresh`
+  // 比對到（Playwright 的 `*` 只吃一個路徑區段，`refresh-run` 沒有
+  // `/refresh` 這個子路徑），得另外給一條路由，否則開站那輪會撲空。
+  await page.route("**/api/scenarios/refresh-run", (route) =>
+    route.fulfill({ json: {
+      results: [{ scenario_id: (row as { id: string }).id, ok: true, row }],
+      remaining: [],
+    } }));
+  // 卡片重試／詳細頁手動刷新走的是單一劇本端點，維持原樣。
   await page.route("**/api/scenarios/*/refresh", (route) =>
     route.fulfill({ json: row }));
   await page.route("**/api/scenarios/*/raw-data", (route) =>
@@ -111,8 +140,9 @@ test("清單 → 詳細頁：摘要、基準候選、進場成本、主圖、候
 
   // QA 修正：基準候選與進場成本不再是兩張獨立卡片，跟劇本摘要合成
   // 同一張高密度卡。數字一項沒少，只是換了位置。
-  const top = view.results.find((r) => r.status === "ok" && r.expiry_top10)!
-    .expiry_top10!.find((g) => g.expiry === view.baseline_expiry)!.candidates[0];
+  const topKey = view.results.find((r) => r.status === "ok" && r.expiry_top10)!
+    .expiry_top10!.find((g) => g.expiry === view.baseline_expiry)!.candidate_keys[0];
+  const top = candOf(view, topKey);
   const [buy, sell] = top.legs;
   const summary = page.getByRole("region", { name: "劇本摘要" });
   await expect(summary).toContainText(`買 ${buy.strike} / 賣 ${sell.strike}`);
@@ -659,6 +689,18 @@ test("功能列捲動時仍釘在頂部、而且按得到（V3／#51 驗收第 1
   });
   await page.route("**/api/scenarios/*/refresh", (route, req) =>
     route.fulfill({ json: rows.find((r) => req.url().includes(`/${r.id}/`)) }));
+  // 開站觸發的是批次端點（T08／#196）——沒有它，開站那輪
+  // `updatingIds` 永遠清不掉，後面點「重新整理」的按鈕會卡在
+  // disabled。回傳全部成功，等同單一劇本端點的邏輯。
+  await page.route("**/api/scenarios/refresh-run", (route, req) => {
+    const body = req.postDataJSON() as { scenario_ids: string[] | null };
+    const ids = body.scenario_ids ?? rows.map((r) => r.id);
+    return route.fulfill({ json: {
+      results: ids.map((id) => ({ scenario_id: id, ok: true,
+        row: rows.find((r) => r.id === id) })),
+      remaining: [],
+    } });
+  });
 
   await page.goto("/");
   const toolbar = page.getByText("劇本庫");
@@ -700,39 +742,140 @@ function refreshedRow() {
            latest_analyzed_at: new Date().toISOString() };
 }
 
-test("開站自動刷新：進度 → 卡片換成新數字（V4／#52）", async ({ page }) => {
+test("開站自動刷新：進度 → 卡片換成新數字（V4／#52，T08／#196 更新文案）", async ({ page }) => {
   await page.route("**/api/scenarios", (route) =>
     route.fulfill({ json: [pendingRow] }));
-  await page.route("**/api/scenarios/*/refresh", async (route) => {
-    // 刻意延遲，讓「刷新中」的進度真的看得到——秒回的話這條測試會在
-    // 進度根本沒渲染的情況下照樣綠。
+  await page.route("**/api/scenarios/refresh-run", async (route) => {
+    // 刻意延遲，讓「更新中」的狀態真的看得到——秒回的話這條測試會在
+    // 狀態根本沒渲染的情況下照樣綠。
     await new Promise((resolve) => setTimeout(resolve, 600));
-    await route.fulfill({ json: refreshedRow() });
+    await route.fulfill({ json: { results: [{ scenario_id: "s1", ok: true,
+      row: refreshedRow() }], remaining: [] } });
   });
 
   await page.goto("/");
 
-  await expect(page.getByRole("status")).toHaveText("1/1");
+  // T08／#196：整輪刷新不再是「N/M」逐一進度，是單一「更新中……」狀態。
+  // PC-05（#202）起，正在更新的劇本列項本身反灰、點擊不導向詳細頁——
+  // 見下方「鎖定卡片點下去路由不變」專屬測試。
+  await expect(page.getByRole("status")).toHaveText("更新中……");
   await expect(page.getByRole("button", { name: "刷新中……" })).toBeDisabled();
 
   await expect(page.getByText("250.0%")).toBeVisible();
   await expect(page.getByRole("button", { name: "重新整理" })).toBeEnabled();
-  await expect(page.getByRole("status")).toBeHidden();
+  await expect(page.getByRole("status")).toHaveText("1 成功");
   // 收益率口徑就寫在數字旁邊
   await expect(page.getByText(/最差成交價/)).toBeVisible();
 });
 
-test("刷新失敗說明是哪一段，重試就地重來（V4／#52）", async ({ page }) => {
-  let attempts = 0;
+test("PC-05（#202）：鎖定卡片點下去路由不變——手機版", async ({ page }) => {
   await page.route("**/api/scenarios", (route) =>
     route.fulfill({ json: [pendingRow] }));
-  await page.route("**/api/scenarios/*/refresh", (route) => {
-    attempts += 1;
-    return attempts === 1
-      ? route.fulfill({ status: 502, json: { detail: {
-          stage: "fetch", message: "抓不到 TLT 的報價：來源無回應" } } })
-      : route.fulfill({ json: refreshedRow() });
+  await page.route("**/api/scenarios/refresh-run", async (route) => {
+    // 刻意延遲，讓「更新中」＋反灰的狀態真的看得到，才點得下去測試。
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    await route.fulfill({ json: { results: [{ scenario_id: "s1", ok: true,
+      row: refreshedRow() }], remaining: [] } });
   });
+
+  await page.goto("/");
+  await expect(page.getByRole("status")).toHaveText("更新中……");
+
+  const card = page.locator(".compact-card").filter({ hasText: "TLT" });
+  await expect(card).toHaveClass(/locked/);
+  const link = page.getByRole("link", { name: /TLT/ });
+  const before = page.url();
+  await link.click();
+
+  // 沒有導向詳細頁：網址沒變，也看不到詳細頁專屬的返回連結。
+  expect(page.url()).toBe(before);
+  await expect(page.getByRole("link", { name: "‹ 劇本庫" })).not.toBeVisible();
+
+  // 這一輪跑完後解鎖、正常可點——確認上面攔截到的是真的鎖定，不是
+  // 這個候選本身結構上就到不了詳細頁。
+  await expect(page.getByText("250.0%")).toBeVisible();
+  await expect(card).not.toHaveClass(/locked/);
+  await link.click();
+  await expect(page.getByRole("link", { name: "‹ 劇本庫" })).toBeVisible();
+});
+
+test("2026-08-26 真機驗收：Refresh Run 逐張完成、逐張立即可用——手機版",
+  async ({ page }) => {
+  const rowFor = (id: string, symbol: string) => ({
+    ...sampleRow, id, symbol, target_price: 120, target_month: "2028-05",
+    target_anchor: "2028-05-19", days_to_anchor: 653,
+    latest_analyzed_at: null, best_return: null,
+  });
+  const rows = [rowFor("a", "AAA"), rowFor("b", "BBB"), rowFor("c", "CCC")];
+
+  await page.route("**/api/scenarios", (route) =>
+    route.fulfill({ json: rows }));
+  // 對齊真實後端的 Refresh Run Group Limit（預設 1）：三個不同 symbol
+  // 分屬三個分組，每次回應只完成一組——依這次請求帶了幾個 `scenario_
+  // ids` 判斷是第幾輪，刻意各自延遲讓中間的鎖定狀態真的看得到，而不是
+  // 秒回讓測試在畫面根本沒渲染出中間狀態的情況下照樣綠。
+  await page.route("**/api/scenarios/refresh-run", async (route, req) => {
+    const body = req.postDataJSON() as { scenario_ids: string[] };
+    const ids = body.scenario_ids;
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    if (ids.length === 3) {
+      return route.fulfill({ json: {
+        results: [{ scenario_id: "a", ok: true,
+          row: { ...rows[0], best_return: 1,
+                 latest_analyzed_at: new Date().toISOString() } }],
+        remaining: ["b", "c"],
+      } });
+    }
+    if (ids.length === 2) {
+      return route.fulfill({ json: {
+        results: [{ scenario_id: "b", ok: false,
+          stage: "fetch", message: "抓不到 BBB 的報價" }],
+        remaining: ["c"],
+      } });
+    }
+    return route.fulfill({ json: {
+      results: [{ scenario_id: "c", ok: true,
+        row: { ...rows[2], best_return: 0.25,
+               latest_analyzed_at: new Date().toISOString() } }],
+      remaining: [],
+    } });
+  });
+
+  await page.goto("/");
+
+  const aCard = page.locator(".compact-card").filter({ hasText: "AAA" });
+  const bCard = page.locator(".compact-card").filter({ hasText: "BBB" });
+  const cCard = page.locator(".compact-card").filter({ hasText: "CCC" });
+
+  // 第一輪：A 落地解鎖，B／C 這時都還鎖著、不必等它們。
+  await expect(page.getByText("100.0%")).toBeVisible();
+  await expect(aCard).not.toHaveClass(/locked/);
+  await expect(bCard).toHaveClass(/locked/);
+  await expect(cCard).toHaveClass(/locked/);
+
+  // 第二輪：B 完成（刻意失敗）並立刻解鎖，不必等 C；C 仍維持鎖定，
+  // A 的狀態完全不受 B 這輪影響。
+  await expect(page.getByText("抓不到 BBB 的報價")).toBeVisible();
+  await expect(bCard).not.toHaveClass(/locked/);
+  await expect(cCard).toHaveClass(/locked/);
+  await expect(aCard).not.toHaveClass(/locked/);
+
+  // 第三輪：C 完成解鎖，三張全部就緒。
+  await expect(page.getByText("25.0%")).toBeVisible();
+  await expect(cCard).not.toHaveClass(/locked/);
+});
+
+test("刷新失敗說明是哪一段，重試就地重來（V4／#52）", async ({ page }) => {
+  await page.route("**/api/scenarios", (route) =>
+    route.fulfill({ json: [pendingRow] }));
+  // 開站那一輪走批次端點（T08／#196），失敗以 `ok:false` 表達；重試
+  // 走單一劇本端點（`refreshOne`），與批次端點各自獨立成功/失敗。
+  await page.route("**/api/scenarios/refresh-run", (route) =>
+    route.fulfill({ json: { results: [{ scenario_id: "s1", ok: false,
+      stage: "fetch", message: "抓不到 TLT 的報價：來源無回應" }],
+      remaining: [] } }));
+  await page.route("**/api/scenarios/*/refresh", (route) =>
+    route.fulfill({ json: refreshedRow() }));
 
   await page.goto("/");
 
@@ -755,6 +898,10 @@ test("Compact row 刷新失敗時，封存鈕不會疊在重試鈕上（code rev
     // 回歸的測法，jsdom 不會算真實版面。
     await page.route("**/api/scenarios", (route) =>
       route.fulfill({ json: [pendingRow] }));
+    await page.route("**/api/scenarios/refresh-run", (route) =>
+      route.fulfill({ json: { results: [{ scenario_id: "s1", ok: false,
+        stage: "fetch", message: "抓不到 TLT 的報價：來源無回應" }],
+        remaining: [] } }));
     await page.route("**/api/scenarios/*/refresh", (route) =>
       route.fulfill({ status: 502, json: { detail: {
         stage: "fetch", message: "抓不到 TLT 的報價：來源無回應" } } }));
@@ -782,6 +929,10 @@ test("久未刷新的資料標成舊資料（V4／#52）", async ({ page }) => {
     route.fulfill({ json: [{ ...pendingRow, best_return: 1.0,
                              latest_analyzed_at: old }] }));
   // 刷新一直失敗，所以卡片上留著的就是那份三天前的數字
+  await page.route("**/api/scenarios/refresh-run", (route) =>
+    route.fulfill({ json: { results: [{ scenario_id: "s1", ok: false,
+      stage: "fetch", message: "抓不到 TLT 的報價：來源無回應" }],
+      remaining: [] } }));
   await page.route("**/api/scenarios/*/refresh", (route) =>
     route.fulfill({ status: 502, json: { detail: {
       stage: "fetch", message: "抓不到 TLT 的報價：來源無回應" } } }));
@@ -789,7 +940,14 @@ test("久未刷新的資料標成舊資料（V4／#52）", async ({ page }) => {
   await page.goto("/");
 
   await expect(page.getByText("100.0%")).toBeVisible();
-  await expect(page.getByText("舊資料")).toBeVisible();
+  // PC-05（#202）起，更新中的列項有一段 sr-only 文字（「更新中；查看…
+  // 顯示上一輪的舊資料」）也含有「舊資料」這個子字串——開站那輪刷新
+  // 進行中的短暫窗口裡，`getByText("舊資料")` 因此可能撞到兩個元素
+  // （既有的舊資料徽章＋這段 sr-only 文字），是既有的、非本票引入的
+  // 潛在 race（sr-only 文字本身早於 PC-05 就存在），本票施工中偶然
+  // 撞見。改成 scope 到真正的舊資料徽章本身，不受這個巧合字串重疊
+  // 影響。
+  await expect(page.locator(".tag.warn", { hasText: "舊資料" })).toBeVisible();
 });
 
 test("手機首頁版面順序：Dashboard 佔位 → 新增劇本入口 → 劇本庫（MVP-v2／#77、#81）",
@@ -930,6 +1088,18 @@ test("返回劇本庫時停在原本捲動的位置，不必重新往下找（MV
     await page.route("**/api/scenarios", (route) => route.fulfill({ json: rows }));
     await page.route("**/api/scenarios/*/refresh", (route, req) =>
       route.fulfill({ json: rows.find((r) => req.url().includes(`/${r.id}/`)) }));
+    // 開站那輪打的是批次端點（T08／#196）——`test.beforeEach` 的預設
+    // 回應是空氣（`results: []`），PC-05（#202）起更新中的卡片點下去
+    // 不會導向詳細頁，若沒有這條明確覆寫，全部 10 個劇本會因為批次
+    // 回應裡找不到自己對應的 result 而永遠卡在「更新中」、永遠鎖著，
+    // 點不進下面要測的詳細頁（本輪施工中發現：這條測試原本純屬僥倖
+    // ——鎖定restored 之前，更新中的卡片本來就點得進去，沒暴露過
+    // 這個路由缺口）。
+    await page.route("**/api/scenarios/refresh-run", (route) =>
+      route.fulfill({ json: {
+        results: rows.map((r) => ({ scenario_id: r.id, ok: true, row: r })),
+        remaining: [],
+      } }));
     // 詳細頁路由：任一劇本 id 都指回同一份形狀，測試只在乎「回得去、
     // 回去後畫面上是原本那份清單」，不在乎詳細頁內容本身。
     await page.route("**/api/scenarios/s*", (route, req) => {
@@ -1106,6 +1276,11 @@ const DIAG_EVENT_E2E = {
   event_id: "evt-e2e-1", correlation_id: "cid-e2e-1",
   ts: "2026-08-15T00:00:00+00:00", subsystem: "historical_iv",
   stage: "payload_parse", severity: "warning",
+  // PC-03（#201）：`user_facing` 鏡射 severity（warning→true）——這個
+  // 常數同時餵進 Settings 頁（不讀這個欄位）與 iv-history 回應的
+  // `notableEvents` 過濾（讀這個欄位），後者若缺這個欄位會讓「200 但帶
+  // warning events」那類 e2e 測試失去觸發條件。
+  user_facing: true,
   message: "raw_rows > 0 but parsed rows are 0",
   context: { raw_rows: 5, parsed_call_rows: 0 },
 };
@@ -1263,6 +1438,9 @@ function fullIvResponse(overrides: Record<string, unknown> = {}) {
       sell: legHistoricalIv({ contract: SELL_CONTRACT, current_percentile: 0.55,
                              delta_4w: -0.004 }),
     },
+    // T11（#194，兩段式補建 P3-a）：既有測試絕大多數不關心這個欄位，
+    // 預設「今天已經補過」——不會意外觸發本輪新增的補建 POST。
+    backfill_pending: false,
     ...overrides,
   };
 }
@@ -1516,6 +1694,62 @@ test("Historical IV 今日額度用完：percentile／Δ4w 照樣顯示，只多
 
   // 主分析頁其餘部分照常
   await expect(page.getByText("劇本主圖")).toBeVisible();
+});
+
+test("Historical IV 兩段式補建（T11／#194，P3-a）：backfill_pending 觸發" +
+     "補建端點，完成後自動重抓補全，卡片期間標「歷史資料補建中」",
+   async ({ page }) => {
+  await routeLibrary(page, libraryRow());
+  await page.route("**/api/settings", (route) =>
+    route.fulfill({ json: { historical_iv_enabled: true } }));
+
+  // 第一次 GET 帶著上一輪的舊資料＋`backfill_pending: true`；補建完成
+  // 後前端會重抓一次，這次回應換成補全後的新資料
+  // （`observations` 66→驗證畫面真的換新，不是原地不動）。
+  let ivCallCount = 0;
+  await page.route("**/api/scenarios/*/iv-history*", (route) => {
+    ivCallCount += 1;
+    return route.fulfill({ json: fullIvResponse({
+      backfill_pending: ivCallCount === 1,
+      observations: ivCallCount === 1 ? 10 : 66,
+    }) });
+  });
+
+  // 更具體的路徑（含 `/backfill` 這個額外路徑段）晚註冊、優先匹配
+  // ——Playwright glob 的 `*` 不吃路徑分隔符，上面 `iv-history*` 這條
+  // 本來就匹配不到 `/iv-history/backfill`（既有教訓，見本檔多處
+  // `*` 尾綴慣例），這裡明確再獨立掛一條，不依賴匹配順序僥倖成立。
+  const backfillCalls: string[] = [];
+  await page.route("**/api/scenarios/*/iv-history/backfill*", async (route) => {
+    expect(route.request().method()).toBe("POST");
+    backfillCalls.push(route.request().url());
+    // 刻意延遲：真實 backfill 會真的花時間打 vendor，這裡給一個短暫
+    // 延遲，讓「補建中」這個中間狀態有機會被斷言到，不是瞬間完成、
+    // 從沒真正可觀察過。
+    await new Promise((r) => setTimeout(r, 400));
+    return route.fulfill({ json: {
+      outcome: "ok", note: null,
+      diagnostics: { correlation_id: "cid-e2e-backfill", events: [] },
+    } });
+  });
+
+  await page.goto("/#/s/s1");
+
+  const block = page.locator(".iv-history");
+  await expect(block).toBeVisible();
+  // 補建進行中：卡片上有一句話說明，且舊資料（10 個觀測）仍然完整可看
+  // ——不是整塊清空等新資料。
+  await expect(block.getByText("歷史資料補建中……")).toBeVisible();
+  await openAdvanced(block);
+  await expect(block.getByText(/10 個觀測/).first()).toBeVisible();
+
+  // 補建結束後自動重抓：說明文字消失，畫面換成新一輪回應（買／賣腿與
+  // Normalized Skew 三處都各自帶著這個新數字，`.first()` 只是取其一
+  // 確認畫面真的換新，不是特別要驗哪一處）。
+  await expect(block.getByText("歷史資料補建中……")).toHaveCount(0);
+  await expect(block.getByText(/66 個觀測/).first()).toBeVisible();
+  expect(backfillCalls).toHaveLength(1);
+  expect(backfillCalls[0]).toContain("/iv-history/backfill");
 });
 
 test("Historical IV 完全沒有可比較觀測：誠實顯示沒有歷史資料，不硬湊（#133／#140／HIVT-05）",

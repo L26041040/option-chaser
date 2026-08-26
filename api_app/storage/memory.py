@@ -7,11 +7,13 @@
 from __future__ import annotations
 
 from collections import deque
+from contextlib import contextmanager
 
-from . import (ContractHistory, DataSourceSettings, DividendCacheEntry,
-               IvBackfillRun, IvObservation, ProviderCredential,
-               ProviderVerification, RateCacheEntry, ResultRecord,
-               ResultSummary, Scenario, ScenarioExists)
+from . import (ContractHistory, DataSourceSettings,
+               DividendCacheEntry, IvBackfillRun, IvObservation,
+               ProviderCredential, ProviderVerification, RateCacheEntry,
+               ResultRecord, ResultSummary, Scenario, ScenarioExists,
+               TreasuryYearCacheEntry)
 from ..diagnostics import RETENTION_LIMIT, DiagnosticEvent
 
 
@@ -23,6 +25,7 @@ class MemoryStorage:
         self._events: list[dict] = []
         self._rate_cache: RateCacheEntry | None = None
         self._dividend_cache: dict[str, DividendCacheEntry] = {}
+        self._treasury_year_cache: dict[int, TreasuryYearCacheEntry] = {}
         self._settings: DataSourceSettings | None = None
         self._credentials: dict[str, ProviderCredential] = {}
         self._verifications: dict[str, ProviderVerification] = {}
@@ -40,6 +43,16 @@ class MemoryStorage:
     @property
     def kind(self) -> str:
         return "memory"
+
+    @contextmanager
+    def request_scope(self):
+        """T02（#186）：純 no-op——記憶體假體沒有連線可共用，這裡存在
+        的唯一理由是讓 `main.py` 的 middleware 走跟 production（Postgres）
+        同一條 `with scope():` 分支，而不是 `getattr(..., None)` 拿不到
+        就整段跳過。這樣以 `TestClient`＋記憶體假體為主的既有 HTTP 測試
+        套件，才真正涵蓋到這段 middleware 控制流（而不只是那幾條
+        Postgres-only 的 adapter 層測試）。"""
+        yield
 
     # ---------- 劇本 ----------
 
@@ -151,6 +164,14 @@ class MemoryStorage:
     def save_dividend_cache(self, entry: DividendCacheEntry) -> None:
         self._dividend_cache[entry.symbol] = entry
 
+    # ---------- Treasury 曲線列快取（PERF-03／#179，per-year） ----------
+
+    def get_treasury_year_cache(self, year: int) -> TreasuryYearCacheEntry | None:
+        return self._treasury_year_cache.get(year)
+
+    def save_treasury_year_cache(self, entry: TreasuryYearCacheEntry) -> None:
+        self._treasury_year_cache[entry.year] = entry
+
     # ---------- 資料源設定與 credential（Settings／#124） ----------
 
     def get_settings(self) -> DataSourceSettings | None:
@@ -205,6 +226,12 @@ class MemoryStorage:
 
     def append_diagnostic(self, event: DiagnosticEvent) -> None:
         self._diagnostics.append(event)
+
+    def append_diagnostics(self, events: list[DiagnosticEvent]) -> None:
+        # `deque(maxlen=...)` 的 `extend()` 逐一 push、超過上限時左端
+        # 自動擠掉最舊的——跟逐筆呼叫 `append_diagnostic()` 的 trim
+        # 效果完全一致，只是一次呼叫做完。
+        self._diagnostics.extend(events)
 
     def list_diagnostics(self, *, limit: int = 50) -> list[DiagnosticEvent]:
         # deque 存的是寫入順序（舊→新）；最新在最上要反過來。
