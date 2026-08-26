@@ -4266,6 +4266,41 @@ UI 數字不一致、明確可重現的 contract rank 錯誤、historical series
 - pre-P1-b 的卡片鎖定樣式（`pointer-events: none; opacity: 0.45`）在
   `styles.css` 註解裡有記載，原始 commit `098b3b9`（#136）可查
 
+**施工開始（2026-08-26 `/implement`，依核准順序連續施工、不中途停）**：
+
+- **PC-01**（#199）— Percentile 說明文字：三個家族（買／賣腿 IV、
+  Spread IV Gap、Normalized Skew）的百分位數字旁各自新增一句常駐可見
+  的說明——`IV_PERCENTILE_EXPLANATION`（`IvTrend.tsx`）／
+  `GAP_PERCENTILE_EXPLANATION`（`SpreadSummary.tsx`）／
+  `SKEW_PERCENTILE_EXPLANATION`（`IvHistory.tsx`），皆為 export 的
+  純字串常數，緊接在各自的 percentileCaption 之後（桌面／手機兩種
+  版面皆插入，不影響既有合併行為）。Normalized Skew 沿用「偏斜」語彙
+  不套「IV」字樣（AC 明文要求）；Spread IV Gap 措辭刻意用「共同歷史
+  期間」而非「近一年」——這個家族的視窗是兩張合約共同存在的歷史期間，
+  可能短於一年（`shared_history_span_days` 既有語意），照實講比套用
+  統一樣板更誠實。Normalized Skew 的百分位本來就位於預設收合的
+  Advanced／Diagnostics 區塊（SIG-02／#173 既有裁示），這裡不擴大
+  範圍把它搬回主畫面——AC「常駐可見」的落地方式是「展開 Advanced 後
+  不必再多點一次」，不是推翻既有的資訊階層決策。演算法／裁窗／
+  exact-contract 身份規則／有效觀測篩選／Spread IV Gap 共同日期對齊
+  規則全部零改動（`git status` 確認零 Python 檔案變動）。
+  新增 `src/percentileCopy.test.ts`（仿 `tests/test_redlines.py`
+  禁詞掃描慣例）：三個常數各自驗證不含 {異常, 離群, 貴, 便宜, 昂貴,
+  推薦, 建議} 及直接英文對應、講清楚定義、提到單日讀數會隨市場報價
+  波動。既有 `IvTrend.test.tsx` 兩條資訊順序測試（桌面／手機的
+  class 陣列斷言）因新增一個 caption 節點而更新，其餘既有 facts-only
+  紅線測試（`IvHistory.test.tsx` 的評價字眼／預測語句掃描）原樣通過、
+  未鬆綁。前端 typecheck／648 條 Vitest／build 全綠；Playwright
+  Historical IV／Spread IV Gap 相關 26 條（iPhone＋Desktop）全綠。
+  **後端全套回歸確認**：4 條既有測試失敗（`test_api_filters.py` 三條、
+  `test_service_fetch.py` 一條）——經 `git stash` 比對在完全未施工的
+  基準點上同樣失敗（symbol「XYZ」的 `fetch_and_save` 沒有 mock 住
+  `cboe.fetch_chain`，本輪 sandbox session 對 Cboe 的網路連線恰好
+  connect 成功、回傳當下真實時間戳，跟寫死的 fixture 時間戳對不上；
+  另外三條與此連動），確認為施工前既有、與本輪任何一張票皆無關的
+  環境依賴性 flake，非本票造成的回歸，未嘗試修正（不在 spec #198
+  範圍內）。
+
 ### 施工依據
 
 - 需求與決策紀錄：`docs/modifyRequestV1.md`（附錄 A1–A12）

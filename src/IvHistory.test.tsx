@@ -1034,6 +1034,17 @@ describe("Advanced／Diagnostics 收合區（SIG-02／#173）", () => {
     expect(screen.getByText("Normalized Skew")).toBeInTheDocument();
   });
 
+  it("Normalized Skew 百分位旁有常駐說明（PC-01／#199），展開 Advanced 後" +
+     "不必再點開任何東西就看得到", async () => {
+    mockApi({ enabled: true });
+    render(<IvHistory scenarioId="s1" candidate={spreadCandidate()} />);
+    const summary = await screen.findByText("Advanced／Diagnostics");
+    await userEvent.click(summary);
+
+    expect(screen.getByText("Normalized Skew")).toBeInTheDocument();
+    expect(screen.getByText(/百分位：目前偏斜程度高於近一年內/)).toBeInTheDocument();
+  });
+
   it("單腳候選：Advanced 只有一行 z-score（無買／賣標籤），沒有 Normalized Skew",
      async () => {
     mockApi({ enabled: true, iv: singleLegIvView() });

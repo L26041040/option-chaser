@@ -134,9 +134,11 @@ describe("資訊順序（桌面）：現值 → 走勢圖 → percentile → Δ4
     // `getAttribute("class")` 取得跨 HTML／SVG 一致的類別字串。
     const classes = Array.from(card.children)
       .map((el) => el.getAttribute("class"));
+    // PC-01（#199）新增一句常駐的百分位說明，緊接在 percentileCaption
+    // 之後——多一個 "caption"，其餘既有順序不變。
     expect(classes).toEqual([
       "iv-value-primary", "iv-trend-chart",
-      "caption", "caption", "caption",
+      "caption", "caption", "caption", "caption",
     ]);
   });
 
@@ -162,8 +164,11 @@ describe("資訊順序（手機再瘦身一輪，需求方 2026-08-22 反饋）�
     const card = container.querySelector(".iv-trend-card")!;
     const classes = Array.from(card.children)
       .map((el) => el.getAttribute("class"));
+    // PC-01（#199）新增一句常駐的百分位說明，緊接在合併後的
+    // 百分位＋Δ4w 那一行之後、走勢圖之前。
     expect(classes).toEqual([
-      "iv-compact-head", "caption iv-compact-stats", "iv-trend-chart", "caption",
+      "iv-compact-head", "caption iv-compact-stats", "caption",
+      "iv-trend-chart", "caption",
     ]);
   });
 
@@ -186,6 +191,28 @@ describe("資訊順序（手機再瘦身一輪，需求方 2026-08-22 反饋）�
     expect(head).toBeInTheDocument();
     expect(head.textContent).toContain("買腿");
     expect(head.querySelector(".iv-value-primary")).toBeInTheDocument();
+  });
+});
+
+describe("百分位說明文字（PC-01／#199，常駐可見，不必展開才看得到）", () => {
+  it("手機（預設 matchMedia 假體＝手機）買賣腿卡片都看得到說明", () => {
+    const legs: IvHistoryLegs = {
+      buy: legHistoricalIv(), sell: legHistoricalIv(),
+    };
+    render(<IvTrend legs={legs} />);
+    expect(screen.getAllByText(/百分位：目前 IV 高於近一年內/).length).toBe(2);
+  });
+
+  it("桌面斷點下同樣看得到說明，緊接在百分位數字之後", () => {
+    vi.stubGlobal("matchMedia", (q: string) => fakeMediaQueryList(true, q));
+    const legs: IvHistoryLegs = { buy: legHistoricalIv({ current_percentile: 0.7 }) };
+    const { container } = render(<IvTrend legs={legs} />);
+    const card = container.querySelector(".iv-trend-card")!;
+    const captions = Array.from(card.querySelectorAll(".caption"))
+      .map((el) => el.textContent);
+    const percentileIdx = captions.findIndex((t) => t?.includes("第 70 百分位"));
+    expect(percentileIdx).toBeGreaterThanOrEqual(0);
+    expect(captions[percentileIdx + 1]).toMatch(/百分位：目前 IV 高於近一年內/);
   });
 });
 

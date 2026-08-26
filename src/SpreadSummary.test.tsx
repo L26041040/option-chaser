@@ -163,6 +163,26 @@ describe("百分位：直接顯示 spread_gap.current_percentile", () => {
   });
 });
 
+describe("百分位說明文字（PC-01／#199，常駐可見於主卡片，不必展開 Advanced）", () => {
+  it("手機（預設 matchMedia 假體＝手機）主卡片看得到說明", () => {
+    render(<SpreadSummary spreadGap={spreadGap()} legs={legs()} />);
+    expect(screen.getByText(/百分位：目前 Gap 高於這兩張合約共同歷史期間內/))
+      .toBeInTheDocument();
+  });
+
+  it("桌面斷點下同樣看得到說明，緊接在百分位數字之後", () => {
+    vi.stubGlobal("matchMedia", (q: string) => fakeMediaQueryList(true, q));
+    const { container } = render(
+      <SpreadSummary spreadGap={spreadGap({ current_percentile: 0.6 })} legs={legs()} />);
+    const captions = Array.from(container.querySelectorAll(".caption"))
+      .map((el) => el.textContent);
+    const percentileIdx = captions.findIndex((t) => t?.includes("第 60 百分位"));
+    expect(percentileIdx).toBeGreaterThanOrEqual(0);
+    expect(captions[percentileIdx + 1])
+      .toMatch(/百分位：目前 Gap 高於這兩張合約共同歷史期間內/);
+  });
+});
+
 describe("涵蓋揭露小字：讀 shared_history_span_days，不是 history_span_days", () => {
   it("組成 Buy／Sell／Shared／涵蓋時間", () => {
     const sg = spreadGap({ observation_count: 161, shared_history_span_days: 240 });

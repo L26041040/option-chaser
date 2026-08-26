@@ -46,6 +46,15 @@ export const SPREAD_CHART_HEIGHT_MOBILE = 62;
 const IV_TREND_CAPTION =
   "比較同一張 option 自己的歷史 IV；僅供歷史位置參考，不代表未來 IV 方向。";
 
+/** PC-01（#199，spec #198）：百分位數字旁邊常駐的說明——講清楚這個數字
+ *  量的是什麼（目前值在近一年有效歷史觀測裡的相對位置），並提醒單日
+ *  讀數本來就會隨市場報價波動，避免被誤讀成系統算錯或「這張合約很
+ *  貴」。演算法／裁窗／exact-contract 身份規則本身完全不受影響，這裡
+ *  純粹是加一句常駐文字。`./SpreadSummary`、`./IvHistory` 各自有語彙
+ *  微調過的姊妹常數，三者事實一致、措辭各自貼合家族語言。 */
+export const IV_PERCENTILE_EXPLANATION =
+  "百分位：目前 IV 高於近一年內多少比例的有效歷史觀測；單日讀數可能隨市場報價而波動。";
+
 /** 這隻腳最新一筆非 null 的市場 IV——`points` 的最後一天可能剛好是
  *  null（vendor 對那天沒有值），要找的是「最新一筆有值」，不是「最後
  *  一筆」。 */
@@ -345,6 +354,7 @@ function IvTrendCard({ label, leg }: { label?: string; leg: LegHistoricalIv }) {
         <p className="caption iv-compact-stats">
           {percentileCaption(leg)}・{delta4wCaption(leg)}
         </p>
+        <p className="caption">{IV_PERCENTILE_EXPLANATION}</p>
         {chart}
         <p className="caption">{spanCaption(leg)}</p>
         {backfillNote}
@@ -360,6 +370,7 @@ function IvTrendCard({ label, leg }: { label?: string; leg: LegHistoricalIv }) {
       </span>
       {chart}
       <p className="caption">{percentileCaption(leg)}</p>
+      <p className="caption">{IV_PERCENTILE_EXPLANATION}</p>
       <p className="caption">{delta4wCaption(leg)}</p>
       <p className="caption">{spanCaption(leg)}</p>
       {backfillNote}

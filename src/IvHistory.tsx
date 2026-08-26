@@ -126,6 +126,13 @@ function metricCaption(m: IvFieldMetric, unit: TrendUnit): string {
     trendLabel(m, unit)}`;
 }
 
+/** PC-01（#199，spec #198）：跟 `./IvTrend`／`./SpreadSummary` 的姊妹
+ *  常數同一個目的——講清楚百分位的定義＋提醒單日讀數會隨市場報價波動。
+ *  Normalized Skew 沿用既有「偏斜」語彙、不硬套「IV」字樣（這個家族量
+ *  的是買賣兩腳結構是否偏斜，不是單一 IV 水準）。 */
+export const SKEW_PERCENTILE_EXPLANATION =
+  "百分位：目前偏斜程度高於近一年內多少比例的有效歷史觀測；單日讀數可能隨市場報價而波動。";
+
 export const PAD_TOP = 12;
 export const PAD_RIGHT = 6;
 export const PAD_BOTTOM = 16;
@@ -397,12 +404,16 @@ function normalizedSkewSeries(
  * 走勢圖。目前只有 Normalized Skew 這一項還在用（HIVT-04 後買／賣腿／
  * ATM 次要顯示已移除，改由 `./IvTrend` 供應）。
  */
-function Metric({ label, metric, points, unit, primary = false }: {
+function Metric({ label, metric, points, unit, primary = false, explanation }: {
   label: string;
   metric: IvFieldMetric;
   points: { date: string; value: number | null }[];
   unit: TrendUnit;
   primary?: boolean;
+  /** PC-01（#199）：常駐可見的百分位說明，掛在「這一項指標」旁邊——
+   *  目前只有 Normalized Skew 這一個呼叫端會傳，選填不影響其他潛在
+   *  呼叫端的既有行為（不傳就不渲染這一行，跟今天完全一樣）。 */
+  explanation?: string;
 }) {
   const width = primary ? 300 : 200;
   const height = primary ? 104 : 60;
@@ -412,6 +423,7 @@ function Metric({ label, metric, points, unit, primary = false }: {
         <span className="row-label">{label}</span>
         <span className="caption">{metricCaption(metric, unit)}</span>
       </div>
+      {explanation && <p className="caption">{explanation}</p>}
       <span className={primary ? "iv-value-primary" : "iv-value"}>
         {valueLabel(metric.value, unit)}
       </span>
@@ -731,6 +743,7 @@ function IvAdvanced({ data, isSingleLeg, notableEvents }: {
             unit="unitless"
             metric={data.metrics.normalized_skew}
             points={normalizedSkewSeries(data.normalized_skew_points)}
+            explanation={SKEW_PERCENTILE_EXPLANATION}
           />
           <p className="caption">
             近 1 年 {data.observations} 個觀測，依候選的到期天數與 delta 座標
