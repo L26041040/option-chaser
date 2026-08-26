@@ -27,7 +27,7 @@ block 裡，不能切成好幾個 code block、也不能中間插普通文字把
 `［回報#001］spec #137 拆票完成`）。編號是**累計總數**，不因換
 session、換分支、換主題而歸零——目前最新編號記在這裡：
 
-> 目前次序：036（下一份回報用 037）
+> 目前次序：037（下一份回報用 038）
 
 每發一份回報就把上面這個數字改成剛剛用掉的那個，跟著那次改動一起
 commit（沒有其他改動要 commit 時，單獨為這一行開一個小 commit 也
@@ -4703,6 +4703,73 @@ Review 輪、spec #198、以及本節兩項直接施工修正），merge commit
 #102／#59 四張因真實 blocker 或需求方尚未裁示而維持 open。詳見檔案
 最上方 2026-08-26 版「現況總覽」。
 
+### Strategy-specific valuation metric 研究輪（2026-08-26，`/research`，只研究不施工）
+
+需求方裁示核心產品原則：**不同 strategy 不需要、也不應強迫共用同一套
+valuation metric**；跨 strategy 唯一的共同座標是「該 strategy 自己的
+metric 目前落在自己歷史分布的第幾百分位」。本輪唯一任務＝逐 strategy
+找出那個底層 metric。產出
+`docs/research/strategy-valuation-metric-percentile.md`。**未寫
+production code、未開 ticket、未設計 UI、未改 percentile 演算法。**
+
+**Step 0 Prior Research Ledger**：既有 27 份研究、17,258 行全數盤點，
+26 個問題分級 **ANSWERED 15／PARTIAL 5／OPEN 6**，ANSWERED 一律不重研究。
+⚠ 需求方點名的 `candidate-iv-history-proxy.md` **在 repo 不存在**，
+最可能是指 `candidate-iv-relative-value.md`。
+
+**三條核心裁定**：
+
+1. **現行出貨的 `Spread IV Gap = Sell IV − Buy IV` percentile 必須停用。**
+   引擎實算（真實 TLT LEAPS fixture）：vol level 12%→22% 而 skew 不動時，
+   gap 讀數 **0.0% 完全失明**、Ĝ **−44.9% 反向**，而使用者實付 debit
+   **+59.9%**；skew 變陡時兩個指標往「更貴」走、價格卻往便宜走。四個純
+   vol 衝擊的符號吻合 **0/4**、量級吻合 **0/4**。**根因**：業界「vertical
+   ＝純 skew 玩法」預設兩腿履約價相鄰，而本產品實際產生 **W=40（47% of
+   spot）**、net vega 是買腿的 **92.3%**，level 分量權重是 skew 的 12 倍
+   ——既有研究沒錯，錯在被套用到不適用的幾何上。⚠ **gap 當走勢圖仍有
+   價值**，要拿掉的只是 percentile 與「歷史位置」語意。⚠ 這件事 repo
+   自己的 `candidate-iv-relative-value.md` §4.3 與
+   `historical-rich-cheap-canonical-methodology.md` §11.3 早已明文寫過
+   ——**出貨與既有裁決不一致**。
+2. **三個 bounded 結構（butterfly／iron butterfly／iron condor）在數學上
+   是同一個工具**：`butterfly/(DF·h) = E^Q[tent]`（驗到 5.6e-10）、
+   `condor/(DF·W) + credit/(DF·W) = 1`（驗到 1.78e-14）。共用一個公式
+   **不違反「不得為整齊硬湊」紅線——no-arbitrage 說它們本來就是同一個
+   東西**。統一形式 `M = price/(DF × max_payoff)`，值域 [0,1]，且
+   **Cboe BFLY／CNDR 官方 methodology 就是這樣錨定的**【官方文件】。
+3. **Straddle 價格 percentile ≡ ATM IV percentile 逐筆等價**
+   （`straddle/(DF·F) = 2(2N(σ√T/2)−1)`，嚴格遞增雙射）——**不必反解
+   IV**，直接繞開本 repo 已知的 `implied_vol()` 在 LEAPS 與退化 vendor
+   IV 上的脆弱性。本輪最強的單一結果。
+
+**核心前提的誠實答案**：跨 strategy percentile 是**「同一種語句」可比，
+不是「同一種經濟後果」可比**。Cboe 官方 `VIX_History.csv`（9,258 筆）
+實測：**VIX=18 在樣本裡同時當過最便宜與最貴的讀數，509 次**；同一個
+VIX 用 126/252/504/756 天窗口算出 10.2/15.4/18.2/35.4，**3.5 倍擺動來自
+使用者看不見的參數**。兩條必要條件：全部 strategy 共用同一個回看窗口
+且對使用者可見；percentile 必須與原始值並陳。
+
+**三個待需求方裁示點**：(a) bounded structures 用 `M`（有 Cboe 官方先例、
+但留 r/q 汙染）還是統一版 `M_VORD`（汙染結構性為零、但無業界先例）；
+(b) 回看窗口選多長（本輪找不到可辯護的預設值）；(c) strangle 報一個數字
+還是拆 `σ_ATM`／`BF` 兩個。
+
+**誠實缺口**：vertical spread／VORD 那條線**本輪一手原文 0 筆、官方文件
+0 筆**，說服力全來自數字可重跑與交叉驗證；**VORD 是本輪自創、無具名業界
+先例**（若「符合機構實務」從嚴解釋，目前只有 `M` 滿足）；#111 仍 blocked
+故**所有歷史 percentile 的行為主張都未用真實序列驗證過**。
+
+**順帶查證到、與本輪主題正交但需求方應知**：現行排行榜排的是「賠率」不是
+「價值」——`ranking.py:151` 的 `spread_baseline_return` 本質是
+`width/debit − 1 ≈ 1/p̂ − 1`，由高到低排等於照風險中性機率由低到高排。
+**這不是 bug**（「劇本必定成立」前提下選賠率最高是對的），但它結構上不看
+劇本成立的機率，與本輪要建的軸互相獨立，文案上必須分清楚。另
+`api_app/main.py:84` 的 `_MVP_STRATEGIES = ("bull-call-spread",)`——
+委託點名的九個 strategy **今天只有一個有 candidate generator**，其餘八個
+的裁定全部是前瞻性的。
+
+**下一步**：等需求方審閱與三個裁示點的方向，**本輪不進 `/to-spec`**。
+
 ### 施工依據
 
 - 需求與決策紀錄：`docs/modifyRequestV1.md`（附錄 A1–A12）
@@ -4716,6 +4783,19 @@ Review 輪、spec #198、以及本節兩項直接施工修正），merge commit
 
 ## 環境
 
+- **⚠ 沙箱外部網路現況（2026-08-26 實測更新，推翻本檔案更早的記載）**：
+  過去幾輪記載「`raw.githubusercontent.com` 是唯一一手通道」——**該記載
+  已過期**。本輪實測：
+  - `raw.githubusercontent.com`：**已失效**（前輪 papers 鏡像路徑回 404）
+  - `WebFetch`：**被擋**
+  - **`curl` 沒有被閘道攔截，`WebFetch` 有**——這是關鍵區別
+  - `curl` 可通：**`cdn.cboe.com`**（官方 methodology、完整即時全鏈、
+    數十年指數歷史 CSV）、`arxiv.org`、`federalreserve.gov`、
+    `nber.org`、`bis.org`
+  - 各 vendor／交易所／監管網域（`api.marketdata.app` 等）：CONNECT 403
+    或 DNS 失敗（不變）
+
+  做研究輪要取一手文獻時，**先試 `curl`，不要先試 `WebFetch`**。
 - **⚠ 容器會不定時倒退回較早的提交**（多次發生，連 `.venv` 套件與本地
   Postgres 資料目錄一起消失，且 `git status` 會誤報「已是最新」）。
   發現 `git log` 對不上 `git log origin/<branch>` 時，**不要用
