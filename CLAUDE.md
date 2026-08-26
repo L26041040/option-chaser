@@ -27,7 +27,7 @@ block 裡，不能切成好幾個 code block、也不能中間插普通文字把
 `［回報#001］spec #137 拆票完成`）。編號是**累計總數**，不因換
 session、換分支、換主題而歸零——目前最新編號記在這裡：
 
-> 目前次序：034（下一份回報用 035）
+> 目前次序：035（下一份回報用 036）
 
 每發一份回報就把上面這個數字改成剛剛用掉的那個，跟著那次改動一起
 commit（沒有其他改動要 commit 時，單獨為這一行開一個小 commit 也
@@ -4527,6 +4527,123 @@ PC-07 驗收通過。** #200／#206（production percentile cross-check）
 不建替代票。下一步：等需求方以真機／production 檢視本輪四項成果
 （percentile 說明文字、Diagnostics 靜音化、Refresh Run 鎖定復原、
 桌面卡片順序）；依專案規則全部子票做完才開 PR，中途不主動開。
+
+### 真機驗收直接施工（2026-08-26，無 GitHub issue，直接下工單處理）
+
+需求方對 spec #198 的成果真機驗收後，發現兩個要在開 PR 前修正的小
+問題，明確指示直接施工修正、不重新 `/grill`／`/to-spec`／拆新一輪
+tickets，本輪只處理下列兩項、禁止 scope creep。
+
+**問題 1：Refresh Run 恢復「逐張完成、逐張可用」（commit `ca75b5f`）**
+——PC-05（#202）復原的鎖定機制與 C1 Refresh Run 批次架構（T06／#190）
+疊在一起後，真機上出現需求方不要的行為：backend 雖然批次處理，但
+前端要等整輪全部完成才一次把所有卡片解鎖／更新。
+
+**診斷**：前端 `runBatch()`（`App.tsx`）其實**早就**逐批套用回應
+（每次 Continuation 迴圈拿到一次 HTTP 回應，就立刻更新那批的
+`rows`／解除那批的 `updatingIds`，不等迴圈跑完），這件事本身沒有
+bug。真正的成因在後端：`refresh_run` 端點過去只有一個提前返回條件
+——45 秒的 `REFRESH_RUN_BUDGET`（T07／#193），對常見規模（十幾個
+劇本、少數幾個 distinct symbol）而言遠遠不會觸發，所以典型情況下
+**整批一次就在單一 HTTP 回應裡做完**，前端就算逐批套用，也只有
+「一批」可套用，看起來自然是「整輪跑完才一次全部解鎖」。
+
+**修法**：新增 `REFRESH_RUN_GROUP_LIMIT`（預設 1，`create_app()` DI
+注入方式與既有 `refresh_run_budget` 完全同構），單次回應最多完成
+一個 symbol 分組（ADR-0001 既有的去重單位）就回傳，其餘分組原樣進
+`remaining`——前端既有、不必改動的 Continuation 迴圈因此會逐組拿到
+結果並立即解鎖。分組本身不會被這個限流從中間切開（檢查點在分組開始
+前，不是分組內部），同一個 symbol 的多個劇本仍共用一次抓取、一起
+送達（這是分享同一次抓取結果的誠實後果，不是退步）；不同 symbol
+天生各自獨立分組，逐一送達。三個既有的 Refresh Run 優點原封不動：
+未退回 N 個獨立 serverless invocation、symbol chain 去重範圍不變
+（仍是單一 invocation 內）、request-scoped connection（PERF-01）與
+Continuation／Partial Success 機制都沒有被觸碰。
+
+測試：`tests/test_api_refresh.py` 新增
+`test_refresh_run_three_distinct_symbols_unlock_one_group_at_a_time`
+（A／B／C 三個不同 symbol，逐組完成，C 那組刻意安插一個抓取失敗，
+證明失敗不擋 A／B 已經落地的結果）；三個既有測試因新預設值改變
+假設（原本斷言「多 symbol 一次做完」）而改用新增的
+`_run_to_completion()` 輔助函式（循環呼叫到 `remaining` 清空，只驗
+最終結果不依賴幾次往返）——`test_refresh_run_deduplicates_chain_
+fetch_within_the_same_symbol`／`test_refresh_run_partial_success_
+one_symbol_failing_does_not_block_another`／
+`test_refresh_run_continuation_resumes_and_matches_a_single_pass`
+（後者的「一次做完」比較基準改顯式注入
+`refresh_run_group_limit=10`，代表「真的不分組限流」的對照組，不再
+是預設值自然产生的副作用）。`test_refresh_run_a_realistic_batch_
+completes_in_a_single_call` 整條重新命名為
+`..._now_completes_progressively_not_in_one_call`，斷言方向反過來：
+第一次回應只完成 4 個（第一個 symbol 分組），`remaining` 有 8 個；
+`_run_to_completion` 後仍然 12 個全部成功——這正是本票要修的那個
+行為，舊斷言就是舊 bug 本身的證明。
+
+前端：`App.test.tsx` 新增 A／B／C 三劇本逐張解鎖測試（B 刻意失敗，
+驗證失敗只影響它自己、不擋 C）；Playwright 手機（`smoke.spec.ts`）
+與桌面（`desktop.spec.ts`）各新增一條同款三階段驗收測試，用
+`scenario_ids` 長度判斷第幾輪、各自延遲讓中間鎖定狀態真的看得到，
+對齊需求方逐字列出的驗收情境（A 先完成解鎖、B/C 仍鎖定；B 完成
+不必等 C；partial failure 只影響該 Scenario；手機與桌面皆成立）。
+
+**問題 2：Percentile 說明文字改寫為白話句（commits `bc8b792`／
+`f6be5bd`）**——PC-01（#199）新增的三句常駐說明文字雖然技術上正確，
+需求方真機閱讀後仍覺得不像一般使用者能快速理解。三個家族
+（`IvTrend.tsx::ivPercentileExplanation`／`SpreadSummary.tsx::
+gapPercentileExplanation`／`IvHistory.tsx::skewPercentileExplanation`）
+從靜態字串常數升級為函式，直接把「第 N 百分位」翻譯成一句話、把
+N 帶進句子裡——例如「現在的 IV 比過去一年大約 87% 的有效歷史觀測
+都高。單日數字可能隨市場報價波動。」——不再要求使用者自己把
+「百分位」這個統計學名詞在腦中換算成「比例」。數字沿用旁邊既有
+`percentileCaption`／`metricCaption`（本輪不動）完全相同的
+`Math.round(percentile*100)`，兩處讀到的數字保證一致；三個新函式
+之間的這份重複由 code review 抓到後收斂成共用的
+`IvHistory.tsx::roundPercentile()`（只給這輪新增的三個函式共用，
+刻意不回頭改既有 caption 函式——那屬於「不動任何 percentile 計算」
+的既有程式碼）。Spread IV Gap 維持「共同歷史期間」措辭（視窗可能
+短於一年，非「近一年」樣板）、Normalized Skew 沿用「偏斜」語彙、
+不套「IV」字樣——皆延伸既有裁示，非本次新裁決。沒有歷史觀測時
+誠實說「目前沒有足夠的歷史觀測可以比較」，不硬套假數字。只改文字：
+percentile 演算法／裁窗／exact-contract 身份規則、圖表、scrubber、
+手機／桌面 layout、diagnostics 全部不動。
+
+測試：`percentileCopy.test.ts` 改為呼叫函式（不再讀靜態字串），
+涵蓋禁詞掃描、數字內嵌、「都高」句型且不再出現「百分位」字樣、單日
+波動提醒、簡短（兩句話之內）、null 情況誠實留白、三家族視窗措辭
+差異、與既有顯示數字的四捨五入一致性；`IvTrend.test.tsx`／
+`SpreadSummary.test.tsx`／`IvHistory.test.tsx` 既有的 DOM 定位斷言
+同步改用新文案的正則（用 `\d+%` 一般化，不逐一硬編每條測試各自的
+百分位數字）。
+
+**`/code-review` 已執行（Standards＋Spec 兩軸平行）**：Standards 軸
+零 hard violation；抓到三個新函式的 `Math.round(percentile*100)`
+重複（已如上收斂成 `roundPercentile()`）、以及建議把兩個不相關的
+修正拆成獨立 commit（已照做，兩個修正各自獨立 commit，未合併）。
+Spec 軸零缺漏、零 scope creep；逐項核對 group-limit 分組不會被切開
+（檢查點在分組前）、失敗隔離（`fetch_error` 只標記那一組）、三個
+說明函式數字換算與旁邊既有顯示逐位元一致；唯一提到的「未測到的
+情境」（同一次回應內有多個分組時，其中一組失敗是否擋住下一組）
+判斷為既有、本輪未改動的邏輯（`fetch_error` 是 per-group 局部變數，
+外層迴圈本來就會繼續），非本輪缺陷。
+
+**全套回歸**（不鬆綁任何既有斷言）：後端 pytest（記憶體＋本機真實
+Postgres 16 雙後端）——與 PC-01～PC-07 完全相同的既有 4 條環境依賴性
+flake（`test_api_filters.py` 三條、`test_service_fetch.py` 一條，
+與本輪改動無關）；前端 `tsc --noEmit`／`vite build` 乾淨、Vitest
+670 條全綠（多次全套重跑時，`IvHistory.test.tsx` 一條與本輪完全
+無關的既有測試——補建端點失敗後重抓的 `waitFor()`——出現約 2 成
+機率的間歇性失敗；用 `git worktree` 拉出本輪施工前的基準 commit
+（`69994ba`）反覆對照跑過近 20 次，確認**同一條測試在施工前的基準
+上同樣會間歇性失敗、且永遠只在全套平行跑、單獨跑該檔案永遠 100%
+通過**——是這個 sandbox 既有的 CPU 資源競爭導致 `waitFor()` 逾時，
+不是本輪任何一個修正引入的迴歸，本輪新增的測試沒有一次牽涉在內）；
+Playwright 連續兩輪 92 條全綠（iPhone 58＋Desktop 34，含本輪新增
+兩條逐張解鎖驗收）。
+
+**交付**：兩個修正各自獨立 commit（`ca75b5f`／`bc8b792`）＋一個
+code-review 跟進 commit（`f6be5bd`），已 push 到
+`claude/implement-tfm9oa`。依需求方明確指示不開 PR、不 merge
+master，等需求方最後一次真機驗收。
 
 ### 施工依據
 
