@@ -4434,6 +4434,29 @@ UI 數字不一致、明確可重現的 contract rank 錯誤、historical series
   build 全綠；Playwright 全套 90 條（iPhone 56＋Desktop 34）連續兩輪
   穩定全綠。
 
+- **PC-06**（#203）— Desktop Historical IV 卡片資訊順序對齊手機版：
+  `IvTrend.tsx`（`IvTrendCard` 桌面分支）／`SpreadSummary.tsx`
+  （`SpreadSummary` 桌面分支）純 JSX 元素重排——現值 → 百分位 → Δ4w
+  → 走勢圖（AC 逐字列出的四項），PC-01（#199）新增的百分位說明句排在
+  Δ4w 之後、走勢圖之前（跟手機版「percentile+Δ4w 合併行 → 說明句 →
+  走勢圖」同一個相對位置，手機版分支完全未動）；涵蓋時間／backfill
+  說明維持在走勢圖之後。頁面層級順序（Spread Summary → 買／賣腿卡片
+  → Advanced／Diagnostics 收合區）、圖表資料／scrubber 互動／
+  responsive 高度切換／任何 Historical IV 計算或元件 props 完全不變
+  ——純粹重排既有 JSX 元素，零新增邏輯。
+  測試：兩個檔案的「資訊順序（桌面）」describe block 改用
+  `compareDocumentPosition`（沿用 `IvHistory.test.tsx`／`App.test.tsx`
+  既有手法，AC 明文要求）鎖住新順序——現值早於百分位、百分位早於
+  Δ4w、Δ4w 早於走勢圖，另外一條鎖住說明句夾在 Δ4w 與走勢圖之間；
+  `SpreadSummary.test.tsx` 新增手機版對照組（合併行 → 說明句 → 走勢圖
+  順序不變）。PC-01 起兩個檔案各自一條斷言「說明緊接在百分位數字之後」
+  的既有測試因為 Δ4w 現在插進中間而失真，改成只驗證看得到（不必展開）
+  ——真正的順序保證交給新的 DOM 順序測試。全套回歸：本票零 Python
+  檔案異動，後端不重跑；前端 typecheck／661 條 Vitest／build 全綠；
+  Playwright 全套 90 條（iPhone 56＋Desktop 34）全綠，含既有 SIG-04
+  桌面／手機紅線（頁面層級順序）與 PC-05 新增的鎖定卡片測試皆未受
+  影響。
+
 ### 施工依據
 
 - 需求與決策紀錄：`docs/modifyRequestV1.md`（附錄 A1–A12）

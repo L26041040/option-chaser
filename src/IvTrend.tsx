@@ -362,16 +362,23 @@ function IvTrendCard({ label, leg }: { label?: string; leg: LegHistoricalIv }) {
     );
   }
 
+  // PC-06（#203，spec #198）：桌面版資訊順序對齊手機版——現值 → 百分位
+  // → Δ4w → 走勢圖（AC 逐字列出的四項），百分位說明句（PC-01／#199）
+  // 緊接在 Δ4w 之後、走勢圖之前，跟手機版「percentile+Δ4w 合併行 →
+  // 說明句 → 走勢圖」同一個相對位置；涵蓋時間與 backfill 說明維持在
+  // 走勢圖之後（低優先度的頁尾資訊，AC 沒有把它們納入排序範圍）。圖表
+  // 資料／scrubber／responsive 高度切換／任何計算或 props 完全不變，
+  // 純粹是 JSX 元素順序重排。
   return (
     <div className="iv-trend-card">
       {label && <div className="row-label iv-trend-card-label">{label}</div>}
       <span className="iv-value-primary">
         {valueLabel(currentIv(leg), "vol-pts")}
       </span>
-      {chart}
       <p className="caption">{percentileCaption(leg)}</p>
-      <p className="caption">{IV_PERCENTILE_EXPLANATION}</p>
       <p className="caption">{delta4wCaption(leg)}</p>
+      <p className="caption">{IV_PERCENTILE_EXPLANATION}</p>
+      {chart}
       <p className="caption">{spanCaption(leg)}</p>
       {backfillNote}
     </div>

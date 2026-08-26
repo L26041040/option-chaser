@@ -170,16 +170,15 @@ describe("百分位說明文字（PC-01／#199，常駐可見於主卡片，不�
       .toBeInTheDocument();
   });
 
-  it("桌面斷點下同樣看得到說明，緊接在百分位數字之後", () => {
+  it("桌面斷點下同樣看得到說明——PC-06（#203）起排在 Δ4w 之後、走勢圖之前" +
+     "（見「資訊順序」describe block 的 DOM 順序斷言），這裡只驗證看得到，" +
+     "不必展開任何東西", () => {
     vi.stubGlobal("matchMedia", (q: string) => fakeMediaQueryList(true, q));
-    const { container } = render(
-      <SpreadSummary spreadGap={spreadGap({ current_percentile: 0.6 })} legs={legs()} />);
-    const captions = Array.from(container.querySelectorAll(".caption"))
-      .map((el) => el.textContent);
-    const percentileIdx = captions.findIndex((t) => t?.includes("第 60 百分位"));
-    expect(percentileIdx).toBeGreaterThanOrEqual(0);
-    expect(captions[percentileIdx + 1])
-      .toMatch(/百分位：目前 Gap 高於這兩張合約共同歷史期間內/);
+    render(<SpreadSummary spreadGap={spreadGap({ current_percentile: 0.6 })}
+                         legs={legs()} />);
+    expect(screen.getByText(/第 60 百分位/)).toBeInTheDocument();
+    expect(screen.getByText(/百分位：目前 Gap 高於這兩張合約共同歷史期間內/))
+      .toBeInTheDocument();
   });
 });
 
@@ -259,5 +258,57 @@ describe("固定 facts-only 說明文字（手機文字瘦身後搬進 SpreadSum
   it("主卡片（SpreadSummary）不再顯示這句解釋——瘦身後只留主要事實", () => {
     render(<SpreadSummary spreadGap={spreadGap()} legs={legs()} />);
     expect(screen.queryByText(/Spread Percentile：/)).not.toBeInTheDocument();
+  });
+});
+
+describe("資訊順序（桌面，PC-06／#203 對齊手機版）：現值 → 百分位 → Δ4w → " +
+        "走勢圖", () => {
+  it("依新順序渲染：現值在百分位之前、百分位在 Δ4w 之前、Δ4w 在走勢圖之前", () => {
+    vi.stubGlobal("matchMedia", (q: string) => fakeMediaQueryList(true, q));
+    const { container } = render(
+      <SpreadSummary spreadGap={spreadGap({ current_percentile: 0.6 })}
+                    legs={legs()} />);
+    const value = container.querySelector(".iv-value-primary")!;
+    const percentile = screen.getByText(/第 60 百分位/);
+    const delta4w = screen.getByText(/4週 \+2\.0 pts/);
+    const chart = container.querySelector(".iv-trend-chart")!;
+
+    expect(value.compareDocumentPosition(percentile)
+      & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(percentile.compareDocumentPosition(delta4w)
+      & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(delta4w.compareDocumentPosition(chart)
+      & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("百分位說明句（PC-01／#199）緊接在 Δ4w 之後、走勢圖之前", () => {
+    vi.stubGlobal("matchMedia", (q: string) => fakeMediaQueryList(true, q));
+    const { container } = render(
+      <SpreadSummary spreadGap={spreadGap({ current_percentile: 0.6 })}
+                    legs={legs()} />);
+    const delta4w = screen.getByText(/4週 \+2\.0 pts/);
+    const explanation = screen.getByText(
+      /百分位：目前 Gap 高於這兩張合約共同歷史期間內/);
+    const chart = container.querySelector(".iv-trend-chart")!;
+
+    expect(delta4w.compareDocumentPosition(explanation)
+      & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(explanation.compareDocumentPosition(chart)
+      & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("手機版順序完全不變（對照組）：百分位＋Δ4w 合併行 → 說明句 → 走勢圖", () => {
+    const { container } = render(
+      <SpreadSummary spreadGap={spreadGap({ current_percentile: 0.6 })}
+                    legs={legs()} />);
+    const stats = screen.getByText(/第 60 百分位/);
+    const explanation = screen.getByText(
+      /百分位：目前 Gap 高於這兩張合約共同歷史期間內/);
+    const chart = container.querySelector(".iv-trend-chart")!;
+
+    expect(stats.compareDocumentPosition(explanation)
+      & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(explanation.compareDocumentPosition(chart)
+      & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 });

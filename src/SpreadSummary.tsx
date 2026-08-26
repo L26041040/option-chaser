@@ -145,16 +145,21 @@ export default function SpreadSummary({ spreadGap, legs }: {
     );
   }
 
+  // PC-06（#203，spec #198）：桌面版資訊順序對齊手機版——現值 → 百分位
+  // → Δ4w → 走勢圖，說明句緊接在 Δ4w 之後、走勢圖之前（跟 `./IvTrend`
+  // 的 `IvTrendCard` 同一套排序理由，見該檔案註解）；涵蓋揭露小字維持
+  // 在走勢圖之後。圖表資料／scrubber／responsive 高度切換／任何計算或
+  // props 完全不變，純粹是 JSX 元素順序重排。
   return (
     <div className="iv-spread-summary">
       <div className="row-label iv-trend-card-label">Spread IV Gap</div>
       <span className="iv-value-primary">
         {valueLabel(currentGap(spreadGap), "vol-pts")}
       </span>
-      {chart}
       <p className="caption">{percentileCaption(spreadGap.current_percentile)}</p>
-      <p className="caption">{GAP_PERCENTILE_EXPLANATION}</p>
       <p className="caption">{delta4wMagnitudeCaption(spreadGap.delta_4w)}</p>
+      <p className="caption">{GAP_PERCENTILE_EXPLANATION}</p>
+      {chart}
       <p className="caption">{coverageCaption(spreadGap, legs)}</p>
     </div>
   );
