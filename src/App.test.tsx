@@ -723,6 +723,83 @@ describe("刷新與進度（T08／#196，接上 Refresh Run）", () => {
       expect(spyLink.closest(".compact-card")).not.toHaveClass("locked");
     });
 
+    it("2026-08-26 真機驗收：A／B／C 三張同時更新，逐張完成、逐張立即" +
+       "可用，不必等最後一張；中間那張失敗只影響它自己", async () => {
+      // 對齊真實後端的 Refresh Run Group Limit（預設 1）：三個不同
+      // symbol 分屬三個分組，每次回應只完成一組——第一次呼叫帶三個
+      // id 回 A 的結果＋remaining=[B,C]；第二次呼叫帶 [B,C] 回 B 的
+      // 結果（刻意失敗）＋remaining=[C]；第三次呼叫帶 [C] 回 C 的結果。
+      // 第二、三次呼叫各自卡住，讓測試能精確控制每個中間狀態。
+      let releaseSecondCall: (() => void) | null = null;
+      let releaseThirdCall: (() => void) | null = null;
+      const spy = vi.fn(async (url: string, init?: RequestInit) => {
+        if (url === "/api/scenarios") {
+          return { ok: true, status: 200,
+                   json: async () => [card("a", "AAA"), card("b", "BBB"),
+                                       card("c", "CCC")] };
+        }
+        if (url === "/api/scenarios/refresh-run" && init?.method === "POST") {
+          const body = JSON.parse(String(init.body ?? "{}")) as { scenario_ids?: string[] };
+          const ids = body.scenario_ids ?? [];
+          if (ids.length === 3) {
+            return { ok: true, status: 200, json: async () => ({
+              results: [{ scenario_id: "a", ok: true,
+                         row: card("a", "AAA", { best_return: 1,
+                           latest_analyzed_at: "2026-08-26T09:30:00+00:00" }) }],
+              remaining: ["b", "c"],
+            }) };
+          }
+          if (ids.length === 2) {
+            await new Promise<void>((resolve) => { releaseSecondCall = resolve; });
+            return { ok: true, status: 200, json: async () => ({
+              results: [{ scenario_id: "b", ok: false,
+                         stage: "fetch", message: "抓不到 BBB 的報價" }],
+              remaining: ["c"],
+            }) };
+          }
+          await new Promise<void>((resolve) => { releaseThirdCall = resolve; });
+          return { ok: true, status: 200, json: async () => ({
+            results: [{ scenario_id: "c", ok: true,
+                       row: card("c", "CCC", { best_return: 0.25,
+                         latest_analyzed_at: "2026-08-26T09:30:00+00:00" }) }],
+            remaining: [],
+          }) };
+        }
+        throw new Error(`測試沒有為 ${url} 準備回應`);
+      });
+      vi.stubGlobal("fetch", spy);
+      render(<App />);
+
+      // 第一輪回應到位：A 立刻落地解鎖，B／C 這時都還鎖著、都還沒有
+      // 各自的結果——不是「A 完成、B 也順便跟著做了一半」。
+      expect(await screen.findByText("100.0%")).toBeInTheDocument();
+      const aLink = screen.getByRole("link", { name: /AAA/ });
+      expect(aLink.closest(".compact-card")).not.toHaveClass("locked");
+      const bLink = screen.getByRole("link", { name: /BBB/ });
+      const cLink = screen.getByRole("link", { name: /CCC/ });
+      expect(bLink.closest(".compact-card")).toHaveClass("locked");
+      expect(cLink.closest(".compact-card")).toHaveClass("locked");
+
+      releaseSecondCall!();
+
+      // 第二輪回應到位：B 解鎖，但這次是失敗——失敗一樣要立刻解鎖、
+      // 顯示原因，不會因為在等 C 而卡住；C 不必等 B 這輪結束，此時仍
+      // 單純維持鎖定，不受 B 失敗影響。
+      await screen.findByText(/抓不到 BBB 的報價/);
+      expect(bLink.closest(".compact-card")).not.toHaveClass("locked");
+      expect(cLink.closest(".compact-card")).toHaveClass("locked");
+      // A 的資料與解鎖狀態完全不受 B 這輪影響。
+      expect(screen.getByText("100.0%")).toBeInTheDocument();
+      expect(aLink.closest(".compact-card")).not.toHaveClass("locked");
+
+      releaseThirdCall!();
+
+      // 第三輪回應到位：C 也立刻解鎖顯示新資料，三張全部完成。
+      expect(await screen.findByText("25.0%")).toBeInTheDocument();
+      expect(cLink.closest(".compact-card")).not.toHaveClass("locked");
+      expect(screen.queryByText("更新中")).not.toBeInTheDocument();
+    });
+
     it("失敗的那個也會脫離更新中、立刻解鎖，不會永久卡住——沿用既有黃燈語意",
        async () => {
       mockLibrary(

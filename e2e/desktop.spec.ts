@@ -688,6 +688,64 @@ test("PC-05（#202）：鎖定卡片點下去路由不變——桌面版", async
   await expect(page).toHaveURL(/#\/s\/s2$/);
 });
 
+test("2026-08-26 真機驗收：Refresh Run 逐張完成、逐張立即可用——桌面版",
+  async ({ page }) => {
+  const rowFor = (id: string, symbol: string) => libraryRow({
+    id, symbol, latest_analyzed_at: null, best_return: null,
+  });
+  const rows = [rowFor("a", "AAA"), rowFor("b", "BBB"), rowFor("c", "CCC")];
+
+  await page.route("**/api/scenarios", (route) =>
+    route.fulfill({ json: rows }));
+  // 對齊真實後端的 Refresh Run Group Limit（預設 1）——同一套三階段
+  // 劇本，桌面版驗一次確認不是只有手機版才有這個行為。
+  await page.route("**/api/scenarios/refresh-run", async (route, req) => {
+    const body = req.postDataJSON() as { scenario_ids: string[] };
+    const ids = body.scenario_ids;
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    if (ids.length === 3) {
+      return route.fulfill({ json: {
+        results: [{ scenario_id: "a", ok: true,
+          row: { ...rows[0], best_return: 1,
+                 latest_analyzed_at: new Date().toISOString() } }],
+        remaining: ["b", "c"],
+      } });
+    }
+    if (ids.length === 2) {
+      return route.fulfill({ json: {
+        results: [{ scenario_id: "b", ok: false,
+          stage: "fetch", message: "抓不到 BBB 的報價" }],
+        remaining: ["c"],
+      } });
+    }
+    return route.fulfill({ json: {
+      results: [{ scenario_id: "c", ok: true,
+        row: { ...rows[2], best_return: 0.25,
+               latest_analyzed_at: new Date().toISOString() } }],
+      remaining: [],
+    } });
+  });
+
+  await page.goto("/");
+
+  const aCard = page.locator(".compact-card").filter({ hasText: "AAA" });
+  const bCard = page.locator(".compact-card").filter({ hasText: "BBB" });
+  const cCard = page.locator(".compact-card").filter({ hasText: "CCC" });
+
+  await expect(page.getByText("100.0%")).toBeVisible();
+  await expect(aCard).not.toHaveClass(/locked/);
+  await expect(bCard).toHaveClass(/locked/);
+  await expect(cCard).toHaveClass(/locked/);
+
+  await expect(page.getByText("抓不到 BBB 的報價")).toBeVisible();
+  await expect(bCard).not.toHaveClass(/locked/);
+  await expect(cCard).toHaveClass(/locked/);
+  await expect(aCard).not.toHaveClass(/locked/);
+
+  await expect(page.getByText("25.0%")).toBeVisible();
+  await expect(cCard).not.toHaveClass(/locked/);
+});
+
 test("左右比例約 20/80，不是置中的窄直欄", async ({ page }) => {
   await routeTwoScenarios(page);
   await page.goto("/");

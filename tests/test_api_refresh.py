@@ -375,14 +375,37 @@ def test_refresh_on_an_archived_scenario_never_reaches_fetch():
 # Run 內同 symbol 只抓一次 Chain（ADR-0001），任一劇本失敗不中止整輪
 # （Partial Success／P2）。`_refresh_and_save()` 已經涵蓋的過期／
 # 分析失敗分層邏輯這裡不重複逐項驗證，只驗批次特有的行為：分組去重、
-# 部分成功、垃圾桶／過期劇本在批次裡的位置、`remaining` 這一票固定
-# 是空陣列（Continuation 留給 T07／#193）。
+# 部分成功、垃圾桶／過期劇本在批次裡的位置。
+#
+# 2026-08-26 真機驗收後：`REFRESH_RUN_GROUP_LIMIT` 預設 1，單次呼叫
+# 只完成一個 symbol 分組就回傳——這一節大部分測試只用單一 symbol
+# （分組本身不受影響，`remaining` 依然是空陣列），涉及**多個 distinct
+# symbol**、且原本斷言「一次呼叫就全部做完」的測試改用下面的
+# `_run_to_completion()`（循環呼叫直到 `remaining` 清空，語意等同
+# 前端 `runBatch()` 的 Continuation 迴圈）——這幾條測試在意的是最終
+# 結果與失敗隔離，不是「幾次 HTTP 往返做完」，改用它才不會把「這個
+# 產品特性現在需要幾次往返」誤寫死進斷言裡。專門測「單次回應到底
+# 涵蓋幾個分組」這件事本身的測試在下面 Continuation 小節。
 
 def _run(client, scenario_ids=None):
     body = {} if scenario_ids is None else {"scenario_ids": scenario_ids}
     resp = client.post("/api/scenarios/refresh-run", json=body)
     assert resp.status_code == 200, resp.text
     return resp.json()
+
+
+def _run_to_completion(client, scenario_ids=None):
+    """循環呼叫直到 `remaining` 清空，回傳合併後的 `results`——跟前端
+    `runBatch()` 的 Continuation 迴圈同一個邏輯，供只在意「整輪跑完
+    的最終結果」而不在意「幾次往返」的測試使用。"""
+    out = _run(client, scenario_ids=scenario_ids)
+    results = list(out["results"])
+    remaining = out["remaining"]
+    while remaining:
+        out = _run(client, scenario_ids=remaining)
+        results.extend(out["results"])
+        remaining = out["remaining"]
+    return {"results": results, "remaining": []}
 
 
 def _by_id(run_response, scenario_id):
@@ -429,7 +452,10 @@ def test_refresh_run_deduplicates_chain_fetch_within_the_same_symbol():
     b = _create(c, symbol="XYZ")
     d = _create(c, symbol="SPY")
 
-    out = _run(c, scenario_ids=[a["id"], b["id"], d["id"]])
+    # XYZ、SPY 是兩個不同分組，預設 `REFRESH_RUN_GROUP_LIMIT=1` 下這一輪
+    # 會分兩次往返才做完——用 `_run_to_completion` 驗證最終結果，去重
+    # 本身（同一組內只抓一次）不受影響。
+    out = _run_to_completion(c, scenario_ids=[a["id"], b["id"], d["id"]])
 
     assert sorted(calls) == ["SPY", "XYZ"]   # XYZ 只抓一次，即使兩個劇本共用
     assert all(r["ok"] for r in out["results"])
@@ -445,7 +471,10 @@ def test_refresh_run_partial_success_one_symbol_failing_does_not_block_another()
     good = _create(c, symbol="XYZ")
     bad = _create(c, symbol="BAD")
 
-    out = _run(c, scenario_ids=[good["id"], bad["id"]])
+    # 兩個不同分組，預設分組上限下這一輪要分兩次往返——`_run_to_
+    # completion` 驗的是「失敗的那個不會擋住另一個最終完成」，不是
+    # 「兩個 symbol 是否擠進同一次回應」（那件事本身另有專屬測試）。
+    out = _run_to_completion(c, scenario_ids=[good["id"], bad["id"]])
 
     good_r = _by_id(out, good["id"])
     bad_r = _by_id(out, bad["id"])
@@ -622,9 +651,11 @@ def test_refresh_run_a_slow_scenario_can_exhaust_the_budget_mid_batch():
 def test_refresh_run_continuation_resumes_and_matches_a_single_pass():
     """用同一組 remaining id 再打一次，最終結果要跟一次做完的結果一致
     （用同一份固定快照，`analyzed_at` 由快照本身的 `fetched_at` 決定，
-    兩條路徑因此逐位元可比）。"""
+    兩條路徑因此逐位元可比）。「一次做完」這個比較基準本身需要顯式調大
+    `refresh_run_group_limit`——預設值 1 下兩個 distinct symbol 天生
+    就會分兩次，不再是「一次做完」的自然結果，這裡要的正是那個對照組。"""
     storage_once = MemoryStorage()
-    once = _client(storage=storage_once)
+    once = _client(storage=storage_once, refresh_run_group_limit=10)
     once_ids = [_create(once, symbol="XYZ")["id"], _create(once, symbol="SPY")["id"]]
     single_pass = _run(once, scenario_ids=once_ids)
     assert single_pass["remaining"] == []
@@ -655,16 +686,73 @@ def test_refresh_run_continuation_resumes_and_matches_a_single_pass():
         assert once_rows[sym]["latest_analyzed_at"] == split_rows[sym]["latest_analyzed_at"]
 
 
-def test_refresh_run_a_realistic_batch_completes_in_a_single_call():
-    """常見規模（十來個劇本、少數幾個 distinct symbol）在預設時間預算下
-    單次請求就該處理完，不觸發 Continuation——用真實量級的測試資料驗證，
-    不只驗機制存在。"""
+def test_refresh_run_a_realistic_batch_now_completes_progressively_not_in_one_call():
+    """2026-08-26 真機驗收：這條測試的舊版本斷言「常見規模在預設時間
+    預算下單次請求就該處理完」——那正是本輪要修掉的體驗（backend 批次
+    處理完才一次把全部卡片解鎖／更新，使用者要等整輪跑完才看得到任何
+    一張新資料）。`REFRESH_RUN_GROUP_LIMIT` 預設 1 之後，即使離 45 秒
+    預算還很遠，單次回應也只涵蓋一個 symbol 分組——前端既有的
+    Continuation 迴圈因此會逐組（在這份資料裡等於逐張，因為 12 個劇本
+    分屬 3 個不同 symbol、每組 4 個）取得結果並立即解鎖，不必等其餘
+    兩組。"""
     c = _client()   # 預設 REFRESH_RUN_BUDGET，不注入任何人為延遲
     symbols = ["XYZ", "SPY", "QQQ"]
     ids = [_create(c, symbol=symbols[i % len(symbols)])["id"] for i in range(12)]
 
-    out = _run(c, scenario_ids=ids)
+    first = _run(c, scenario_ids=ids)
 
+    # 第一次回應只完成第一個 symbol 分組（XYZ，插入順序最早）的 4 個
+    # 劇本，其餘 8 個原樣進 remaining——這就是「逐組解鎖」在單次回應
+    # 層級的樣子。
+    assert len(first["results"]) == 4
+    assert all(r["ok"] for r in first["results"])
+    assert len(first["remaining"]) == 8
+
+    # 整輪最終仍然會做完全部 12 個、全部成功——這個產品保證沒有變，
+    # 變的只是「幾次往返才看得到」。
+    out = _run_to_completion(c, scenario_ids=ids)
     assert len(out["results"]) == len(ids)
     assert all(r["ok"] for r in out["results"])
     assert out["remaining"] == []
+
+
+def test_refresh_run_three_distinct_symbols_unlock_one_group_at_a_time():
+    """需求方 2026-08-26 真機驗收明確要求的驗收情境：A／B／C 三個不同
+    symbol（各自獨立分組，`REFRESH_RUN_GROUP_LIMIT` 預設 1）——A 先
+    完成，B／C 這時都還在 remaining（尚未鎖定解除）；再打一次才輪到
+    B，這時 C 仍在 remaining、不必等它；C 那組中間刻意安插一個抓取
+    失敗的劇本，驗證失敗不會擋住同一組其餘劇本、也不會擋住更前面已經
+    完成的 A／B。"""
+    def fetch(symbol):
+        if symbol == "C":
+            raise FetchError("C 沒回應")
+        return load_snapshot(FIX)
+
+    c = _client(fetch=fetch)
+    a = _create(c, symbol="A")
+    b = _create(c, symbol="B")
+    c_ok = _create(c, symbol="C")
+    ids = [a["id"], b["id"], c_ok["id"]]
+
+    first = _run(c, scenario_ids=ids)
+    assert [r["scenario_id"] for r in first["results"]] == [a["id"]]
+    assert first["results"][0]["ok"] is True
+    # B、C 都還沒處理——不是「A 完成、B 也順便跟著做了一半」。
+    assert first["remaining"] == [b["id"], c_ok["id"]]
+
+    second = _run(c, scenario_ids=first["remaining"])
+    assert [r["scenario_id"] for r in second["results"]] == [b["id"]]
+    assert second["results"][0]["ok"] is True
+    # 不必等 C：這次回應完全不提 C，C 原封不動留在 remaining。
+    assert second["remaining"] == [c_ok["id"]]
+
+    third = _run(c, scenario_ids=second["remaining"])
+    assert third["remaining"] == []
+    c_result = _by_id(third, c_ok["id"])
+    assert c_result["ok"] is False
+    assert c_result["stage"] == "fetch"
+    # C 這組的失敗完全不影響已經在前兩次回應裡落地的 A／B。
+    a_row = c.get(f"/api/scenarios/{a['id']}").json()
+    b_row = c.get(f"/api/scenarios/{b['id']}").json()
+    assert a_row["latest_analyzed_at"] is not None
+    assert b_row["latest_analyzed_at"] is not None

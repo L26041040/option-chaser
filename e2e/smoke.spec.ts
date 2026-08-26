@@ -799,6 +799,72 @@ test("PC-05（#202）：鎖定卡片點下去路由不變——手機版", async
   await expect(page.getByRole("link", { name: "‹ 劇本庫" })).toBeVisible();
 });
 
+test("2026-08-26 真機驗收：Refresh Run 逐張完成、逐張立即可用——手機版",
+  async ({ page }) => {
+  const rowFor = (id: string, symbol: string) => ({
+    ...sampleRow, id, symbol, target_price: 120, target_month: "2028-05",
+    target_anchor: "2028-05-19", days_to_anchor: 653,
+    latest_analyzed_at: null, best_return: null,
+  });
+  const rows = [rowFor("a", "AAA"), rowFor("b", "BBB"), rowFor("c", "CCC")];
+
+  await page.route("**/api/scenarios", (route) =>
+    route.fulfill({ json: rows }));
+  // 對齊真實後端的 Refresh Run Group Limit（預設 1）：三個不同 symbol
+  // 分屬三個分組，每次回應只完成一組——依這次請求帶了幾個 `scenario_
+  // ids` 判斷是第幾輪，刻意各自延遲讓中間的鎖定狀態真的看得到，而不是
+  // 秒回讓測試在畫面根本沒渲染出中間狀態的情況下照樣綠。
+  await page.route("**/api/scenarios/refresh-run", async (route, req) => {
+    const body = req.postDataJSON() as { scenario_ids: string[] };
+    const ids = body.scenario_ids;
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    if (ids.length === 3) {
+      return route.fulfill({ json: {
+        results: [{ scenario_id: "a", ok: true,
+          row: { ...rows[0], best_return: 1,
+                 latest_analyzed_at: new Date().toISOString() } }],
+        remaining: ["b", "c"],
+      } });
+    }
+    if (ids.length === 2) {
+      return route.fulfill({ json: {
+        results: [{ scenario_id: "b", ok: false,
+          stage: "fetch", message: "抓不到 BBB 的報價" }],
+        remaining: ["c"],
+      } });
+    }
+    return route.fulfill({ json: {
+      results: [{ scenario_id: "c", ok: true,
+        row: { ...rows[2], best_return: 0.25,
+               latest_analyzed_at: new Date().toISOString() } }],
+      remaining: [],
+    } });
+  });
+
+  await page.goto("/");
+
+  const aCard = page.locator(".compact-card").filter({ hasText: "AAA" });
+  const bCard = page.locator(".compact-card").filter({ hasText: "BBB" });
+  const cCard = page.locator(".compact-card").filter({ hasText: "CCC" });
+
+  // 第一輪：A 落地解鎖，B／C 這時都還鎖著、不必等它們。
+  await expect(page.getByText("100.0%")).toBeVisible();
+  await expect(aCard).not.toHaveClass(/locked/);
+  await expect(bCard).toHaveClass(/locked/);
+  await expect(cCard).toHaveClass(/locked/);
+
+  // 第二輪：B 完成（刻意失敗）並立刻解鎖，不必等 C；C 仍維持鎖定，
+  // A 的狀態完全不受 B 這輪影響。
+  await expect(page.getByText("抓不到 BBB 的報價")).toBeVisible();
+  await expect(bCard).not.toHaveClass(/locked/);
+  await expect(cCard).toHaveClass(/locked/);
+  await expect(aCard).not.toHaveClass(/locked/);
+
+  // 第三輪：C 完成解鎖，三張全部就緒。
+  await expect(page.getByText("25.0%")).toBeVisible();
+  await expect(cCard).not.toHaveClass(/locked/);
+});
+
 test("刷新失敗說明是哪一段，重試就地重來（V4／#52）", async ({ page }) => {
   await page.route("**/api/scenarios", (route) =>
     route.fulfill({ json: [pendingRow] }));

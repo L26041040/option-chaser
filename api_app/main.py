@@ -64,6 +64,20 @@ RateCurveRowsFetch = Callable[[date, date], tuple]
 # 假裝時間流逝。
 REFRESH_RUN_BUDGET = timedelta(seconds=45)
 
+# 2026-08-26 真機驗收反饋：恢復「逐張 Scenario 完成、逐張立即可用」的
+# 產品語意（P1-b／PC-05 之前的舊行為），但不退回 N 個獨立 serverless
+# invocation——做法是把「一次 HTTP 回應最多處理幾個 symbol 分組」單獨
+# 限流，跟既有 `REFRESH_RUN_BUDGET`（安全網，防止單一分組本身耗時過久
+# 撞到 60 秒硬上限）分開、互不取代。預設 1：完成一個分組（同一 symbol
+# 的全部劇本）就回傳，其餘分組原樣進 `remaining`，交給前端既有的
+# Continuation 迴圈立刻打下一次請求。分組本身不會被這個限流切開
+# （ADR-0001 的去重範圍只在單一 invocation 內，切開分組等於讓同一組
+# 劇本重複抓兩次 Chain）——各自獨立 symbol 的劇本因此天生逐一送達，
+# 同一 symbol 的劇本仍共用一次抓取、一起送達（這是分享同一份抓取結果
+# 的誠實後果，不是退步）。可注入，測試用小數值＋多 distinct symbol
+# 逼出分段，不假裝時間流逝。
+REFRESH_RUN_GROUP_LIMIT = 1
+
 # MVP 範圍（沿用既有 Streamlit 版與 spec #47 的三欄表單）：方向與策略
 # 是固定值，不由前端送。需要看空或多策略時再由對應的票加上。
 _MVP_DIRECTION = "bullish"
@@ -410,6 +424,7 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
                rate_curve_rows: RateCurveRowsFetch =
                    treasury_data.fetch_curve_range,
                refresh_run_budget: timedelta = REFRESH_RUN_BUDGET,
+               refresh_run_group_limit: int = REFRESH_RUN_GROUP_LIMIT,
                ) -> FastAPI:
     """`fetch`／`storage`／`rate_loader`／`dividend_loader` 皆可注入：
     測試傳入固定快照、記憶體假體與假來源，因此不打真網路、不碰真資料庫，
@@ -921,6 +936,21 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         它的 Chain。這不是 bug，是「去重範圍只在單一 invocation 內」
         這個既有決策在分段時的自然結果，兩次呼叫各自仍然享有「同一次
         invocation 內」的去重。
+
+        **逐組漸進回應**（2026-08-26 真機驗收）：`refresh_run_group_limit`
+        （預設 1）限制單次回應最多完成幾個 symbol 分組就要回傳，跟
+        `refresh_run_budget` 是兩條獨立的提前返回條件（任一個成立就
+        停止取新分組，`or` 關係）——後者是安全網（防止單一分組本身
+        耗時過久撞到 60 秒硬上限），前者才是本段真正要的行為：讓前端
+        既有的 Continuation 迴圈（`response.remaining` 非空就立刻打下
+        一次請求）在**每個分組完成的當下**就拿到那批結果，逐張／逐組
+        解鎖顯示，不必等這一整輪全部 targets 都處理完。分組本身不會
+        被這個限流從中間切開（下面的迴圈只在**完整處理完一個分組後**
+        才檢查是否已達上限）——切開的話 remaining 裡剩下那半個分組
+        會在續跑時重新抓一次同一張 Chain，白白多付一次代價。同一個
+        symbol 底下的多個劇本因此仍會一起送達（它們本來就共用同一次
+        抓取，同時就緒是誠實的結果，不是退步）；不同 symbol 的劇本則
+        天生分屬不同分組，各自那組一完成就先送出、不等其餘分組。
         """
         today = ny_today()
         if body.scenario_ids is None:
@@ -939,8 +969,9 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         remaining: list[str] = []
         deadline = time.monotonic() + refresh_run_budget.total_seconds()
         budget_exhausted = False
+        groups_completed = 0
         for symbol, scenarios in groups.items():
-            if budget_exhausted:
+            if budget_exhausted or groups_completed >= refresh_run_group_limit:
                 remaining.extend(sc.id for sc in scenarios)
                 continue
             # 這一組裡有沒有任何劇本真的需要一份 Chain——垃圾桶與過期的
@@ -981,6 +1012,7 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
                         results.append({"scenario_id": sc.id, "ok": True, "row": row})
                 if time.monotonic() >= deadline:
                     budget_exhausted = True
+            groups_completed += 1
         return {"results": results, "remaining": remaining}
 
     @app.get("/api/scenarios/{scenario_id}/results")
