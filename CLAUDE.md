@@ -27,7 +27,7 @@ block 裡，不能切成好幾個 code block、也不能中間插普通文字把
 `［回報#001］spec #137 拆票完成`）。編號是**累計總數**，不因換
 session、換分支、換主題而歸零——目前最新編號記在這裡：
 
-> 目前次序：035（下一份回報用 036）
+> 目前次序：036（下一份回報用 037）
 
 每發一份回報就把上面這個數字改成剛剛用掉的那個，跟著那次改動一起
 commit（沒有其他改動要 commit 時，單獨為這一行開一個小 commit 也
@@ -38,7 +38,56 @@ commit（沒有其他改動要 commit 時，單獨為這一行開一個小 commi
 
 ## 專案紀錄區
 
-> **現況總覽（2026-08-07，寫給接手的新 session 看）**：T1–T12、QA1
+> **現況總覽（2026-08-26，寫給接手的新 session 看，取代下面所有更舊的
+> 「現況總覽」／「目前狀態」標頭——那些是歷史留存，內文本身依然正確，
+> 但「現在該做什麼」一律以這段為準）**：
+>
+> **master 現況**：截至今天，本檔案記錄過的每一輪工作——T1–T12、QA1
+> 系列、D1、FB3、FB5、V1–V10、QA-v2、MVP V2 手機版劇本庫、Trash 語意
+> 修正、過濾器修正輪、MVP V3（spec #102 主線＋spec #117 Continuation）、
+> Historical IV Trend／Reconstruction／資訊架構重整（spec #151／#159／
+> #171）、Application Diagnostics（spec #143）、Performance 修正輪
+> （spec #176）、Architecture Review 輪（spec #184）、V1 Product
+> Correctness + Historical IV UX Cleanup（spec #198）、以及 2026-08-26
+> 真機驗收直接施工的兩項修正（Refresh Run 逐張解鎖＋percentile 白話
+> 文案）——**全部已 merge 回 master**（PR #207，merge commit
+> `459fb4f`，需求方 2026-08-26 核准後 merge）。工作分支
+> `claude/implement-tfm9oa` 與 master 目前同步；production 網址
+> `option-chaser.vercel.app` 對應 master，下次部署會拿到這裡列的
+> 全部成果。
+>
+> **GitHub issue 現況**：藉這次 merge 順手清點，補關了一批早就做完
+> 但忘記關閉的舊票（spec #124–143、#151、#159、#171、#176 各自的
+> parent／子票，共 25 張；#136 是被 Refresh Run 架構取代的舊票，
+> 標 `not_planned`）。**目前只剩 4 張 open**：
+> - **#111**（`needs-human-validation`）——IV 歷史 vendor 三步驗證，
+>   credential-blocked，需要需求方申請一組 Market Data App／Alpha
+>   Vantage／ORATS 任一家的免費金鑰後才能繼續（免 key 路線已窮盡，
+>   見「MVP V3 Continuation」小節內的查證紀錄）
+> - **#114**（`ready-for-agent`，但被 #111 擋）——Historical IV
+>   Position 模組，等 #111 解除才動工（⚠ 需注意：Historical IV Trend
+>   後來以 spec #151／#159／#171 另外一條路線做出來並已上線，#114
+>   當初設想的模組是否還有必要、或該視為被取代，下次要動這張票前
+>   建議先跟需求方確認範圍是否仍然成立，不要照舊字面直接施工）
+> - **#102**（`ready-for-agent`）——MVP V3 spec 母票，因為 #111／#114
+>   兩張子票未解而維持 open，其餘全部子票已完成
+> - **#59**（未標 `ready-for-agent`）——多使用者隔離，需求方尚未裁示
+>   要不要開工，`/implement` 不會取到
+>
+> **下一步**：等需求方指示新一輪方向。若要繼續 MVP V3 剩餘範圍，
+> 起點是 #111 的免費金鑰申請（不受 agent 沙箱環境限制，需人工執行）；
+> 若是全新方向，比照慣例先 `/qa` 或 `/research` 或直接發 spec。
+> 環境操作細節（venv／本地 Postgres／**容器倒退修法**／部署網址）見
+> 檔案最底下「## 環境」一節；**本 session 兩度遇到容器倒退**（HEAD
+> 憑空跳回舊 commit、工作目錄留下與任何單一 commit 都對不上的雜訊
+> 檔案），皆用 `git stash push -u` 存證後 `git fetch`＋
+> `git reset --hard origin/<branch>` 安全復原，過程詳見「## 環境」
+> 一節的既有說明，這是已知、有標準流程的環境限制，不是新狀況。
+
+> **以下「現況總覽（2026-08-07）」原文照舊保留，與更舊的各段落標頭
+> 一樣皆為歷史留存**：
+
+> 現況總覽（2026-08-07，寫給接手的新 session 看）：T1–T12、QA1
 > 系列、D1、FB3、FB5、V1–V10、QA-v2（#67–#75）、**MVP V2 手機版劇本庫
 > （M1a–M6，#78–#84）全數完結，已 merge 回 master**（PR #85，squash
 > merge commit `8b52f41`，需求方真機驗收通過後 2026-08-07 merge）。
@@ -4644,6 +4693,15 @@ Playwright 連續兩輪 92 條全綠（iPhone 58＋Desktop 34，含本輪新增
 code-review 跟進 commit（`f6be5bd`），已 push 到
 `claude/implement-tfm9oa`。依需求方明確指示不開 PR、不 merge
 master，等需求方最後一次真機驗收。
+
+**2026-08-26 需求方真機驗收通過，指示「可以了，先 merge 回去吧」**：
+開 PR #207（涵蓋自上次 merge master 以來累積的全部工作——Architecture
+Review 輪、spec #198、以及本節兩項直接施工修正），merge commit
+`459fb4f`。順手清點 GitHub issues：補關 25 張早就做完但忘記關閉的
+舊票（spec #124–143、#151、#159、#171、#176 的 parent／子票；#136
+標 `not_planned`，已被 Refresh Run 架構取代），確認只剩 #111／#114／
+#102／#59 四張因真實 blocker 或需求方尚未裁示而維持 open。詳見檔案
+最上方 2026-08-26 版「現況總覽」。
 
 ### 施工依據
 
