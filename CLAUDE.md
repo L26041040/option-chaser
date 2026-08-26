@@ -4385,6 +4385,55 @@ UI 數字不一致、明確可重現的 contract rank 錯誤、historical series
   650 條 Vitest／build 全綠；Playwright Historical IV／Diagnostics
   相關 29 條（iPhone＋Desktop）全綠。
 
+
+- **PC-05**（#202）— Updating card 恢復鎖定（灰化＋不可點入）：
+  `ScenarioList.tsx`（桌面）／`CompactScenarioList.tsx`（手機）的卡片
+  `updating` 為真時新增 `locked` class（`.compact-card.locked { opacity:
+  0.45; }`＋`cursor: not-allowed`，`src/styles.css`）；`href` 仍保留
+  （長按複製／螢幕閱讀器／可及性語意不變），實際擋點擊靠 `<a>` 的
+  `onClick`——`updating` 時 `e.preventDefault()`，比照既有 `selectMode`
+  攔截手法。**優先序**：`selectMode` 判斷在前（AC：既有批次選取互動
+  不受影響，鎖著的卡片一樣勾得起來），`updating` 判斷在後（僅在不是
+  選取模式時才擋導航）。刻意不用 `pointer-events: none`——那會讓
+  Playwright 一般 `.click()` 判定元素不可互動而失敗／需要 `force:
+  true`，改用純 `opacity` 讓點擊事件正常發生、由 `preventDefault()`
+  擋下導航，E2E 因此驗證得出「按下去真的沒有導航」而非「按不下去」。
+  詳細頁（`ScenarioDetail.tsx`）本身的「本輪刷新排隊中或進行中」提示
+  維持原樣不動——這張票的鎖定只針對清單卡片，不影響使用者已經打開的
+  detail pane（AC 明文的跨劇本隔離：清單上其他劇本鎖定中不影響目前
+  詳細頁）。
+
+  測試：Vitest 兩個元件測試檔重寫「更新中徽章」describe block——鎖定
+  class、`window.location.hash` 點擊前後不變（jsdom 對帶 `href` 的
+  `<a>` 真的會做同頁 hash 導覽，除非 `preventDefault()`，這給了一個
+  可靠、不依賴瀏覽器特有行為的斷言）、對照組（非更新中卡片點擊正常
+  導航，證明攔截確實生效而非 jsdom 本來就不會跳轉）、批次選取模式下
+  鎖定卡片仍可勾選。`App.test.tsx` 既有兩條測試更新斷言（`locked`
+  class 而非「全程可點」），新增桌面 master/detail 情境的跨劇本隔離
+  測試（s2 鎖定中不影響正在看的 s1 詳細頁內容或提示）。E2E 各平台新增
+  一條「鎖定卡片點下去路由不變」（先驗證鎖定時點擊不導航，再驗證解鎖
+  後同一顆連結點得進去，排除「這個候選結構上到不了詳細頁」的干擾）。
+
+  **施工中發現並修正兩個真實 e2e 回歸**（皆為既有測試的路由假設在
+  「更新中卡片全程可點」的舊行為下才成立，PC-05 恢復鎖定後現形，
+  不是本票新引入的邏輯錯誤）：(1) `smoke.spec.ts` 「返回劇本庫時停在
+  原本捲動的位置」測試沒有覆寫 `refresh-run` 路由、吃 `test.
+  beforeEach` 的預設空氣回應（`results: []`），10 個劇本因此永遠拿不到
+  自己的結果、永遠卡在「更新中」＋鎖定，點不進要測的詳細頁——補上正確
+  的 `refresh-run` 路由（讓全部 10 個劇本各自成功落地）；(2) 「久未
+  刷新的資料標成舊資料」測試用 `getByText("舊資料")` 廣泛比對，撞上
+  更新中列項既有的 sr-only 文字（「更新中；查看…顯示上一輪的舊資料」，
+  這段文字本身早於 PC-05 存在，不是本票新增）在開站刷新進行中的短暫
+  窗口裡恰好也含「舊資料」子字串，屬既有、非本票引入的潛在 race——
+  改用更精確的 `.tag.warn` 選擇器 scope 回真正的舊資料徽章本身，不受
+  巧合的字串重疊影響。兩處都已用多次重跑確認修正後穩定（PC-05 施工
+  前的基準點以 `git stash` 核對過，兩個問題在基準點原本就會被舊行為
+  掩蓋、不會被觸發，證實是本票恢復鎖定後才現形的既有缺口，不是新
+  程式碼寫錯）。全套回歸：後端 pytest 無新增失敗（同一組 4 條既有
+  flake，本票零 Python 檔案變動）；前端 typecheck／657 條 Vitest／
+  build 全綠；Playwright 全套 90 條（iPhone 56＋Desktop 34）連續兩輪
+  穩定全綠。
+
 ### 施工依據
 
 - 需求與決策紀錄：`docs/modifyRequestV1.md`（附錄 A1–A12）

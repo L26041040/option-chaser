@@ -56,9 +56,12 @@ function ScenarioCard({
   failure: RefreshFailure | undefined;
   now: Date;
   selected: boolean;
-  /** 這個劇本正在被刷新（T08／#196 P1，前身是 V4 跟進票／#136 的
-   *  整段鎖定）：標「更新中」徽章，但**不**反灰、不禁止點入——卡片仍
-   *  顯示上一輪的舊資料，全程可瀏覽、可點進詳細頁。 */
+  /** 這個劇本正在被刷新（PC-05／#202，spec #198：恢復 T08／#196 P1
+   *  當時拿掉的鎖定——反灰＋不可點入，避免使用者在更新過程中點進去
+   *  看到一份即將被取代的舊資料卻不知道畫面正在改變）：標「更新中」
+   *  徽章、卡片反灰、點擊不導向詳細頁。這個劇本自己的結果一落地
+   *  （成功或失敗）就立刻從 `updatingIds` 移除、解鎖，不等同批其他
+   *  劇本跑完。 */
   updating: boolean;
   onArchive: (id: string) => void;
   onEdit: (id: string) => void;
@@ -76,7 +79,7 @@ function ScenarioCard({
   const signal = scenarioSignal(row, failure);
   const rep = row.representative_candidate;
 
-  const cardClass = ["compact-card", selected && "selected"]
+  const cardClass = ["compact-card", selected && "selected", updating && "locked"]
     .filter(Boolean).join(" ");
 
   return (
@@ -91,9 +94,9 @@ function ScenarioCard({
         {/* 整張卡就是進詳細頁的入口。用真的 `<a>` 而不是掛 onClick 的
             div：長按可以複製連結、返回手勢可用、鍵盤與螢幕閱讀器也認得。
             封存鈕留在連結外面——按鈕不能包在連結裡。
-            T08／#196 P1：更新中的卡片**照樣給 `href`**——取代 V4 跟進票
-            ／#136 的「鎖著時不給 href」，全程可點進詳細頁看上一輪的
-            舊資料，不再整段禁止點入。 */}
+            PC-05（#202）：更新中的卡片仍然給 `href`（結構不變），但
+            `onClick` 會 `preventDefault()`——點下去不導向詳細頁，見
+            下方 `onClick` 實作與 `.compact-card.locked` CSS。 */}
         {/* 不掛 `aria-label`：那會**取代**連結內容當成可及名稱，螢幕閱讀器
             就只聽得到「TLT 2028-05 詳細」，收益率／目標／到期日／資料
             時間全部被吃掉。改在結尾補一段只有輔助技術讀得到的字。 */}
@@ -103,13 +106,20 @@ function ScenarioCard({
             屬性）。
             TR6（#91）：批次選取模式時整張卡攔截點擊改成切換選取，不導向
             詳細頁——`preventDefault` 而不是換成 `<button>`，內容結構完全
-            不用重寫一份。 */}
+            不用重寫一份。
+            PC-05（#202）：`updating` 時同樣攔截點擊、不導向詳細頁——但
+            `selectMode` 優先判斷（AC：既有批次選取互動不受這張票影響，
+            更新中的卡片一樣勾得起來）。`href` 仍然保留（跟 `selectMode`
+            同一種手法：CSS 用 `opacity` 反灰，不是 `pointer-events:
+            none`，Playwright 一般點擊才驗證得出「按下去沒有導航」）。 */}
         <a className="compact-card-tap" href={detailHash(row.id)}
            aria-current={selected ? "page" : undefined}
            onClick={(e) => {
              if (selectMode) {
                e.preventDefault();
                onToggleSelect(row.id);
+             } else if (updating) {
+               e.preventDefault();
              }
            }}>
           <div className="compact-tier1">
@@ -132,9 +142,9 @@ function ScenarioCard({
             </span>
             {/* T08／#196 P1：更新中時燈號位置換成「更新中」徽章——這一刻
                 的燈號（紅／黃／綠）講的是上一輪的結果，這一輪還沒有
-                結論，繼續顯示舊燈號會誤導成「這是這次的狀態」。徽章與
-                資料本身並存（不像舊版整段鎖定），使用者看得出「這是
-                舊的、新的正在路上」。 */}
+                結論，繼續顯示舊燈號會誤導成「這是這次的狀態」。PC-05
+                （#202）起卡片本身反灰＋不可點入（見 `cardClass`／
+                `onClick`），徽章維持不變（AC 明文：徽章本身不變）。 */}
             {updating ? (
               <span className="tag updating-tag">更新中</span>
             ) : (

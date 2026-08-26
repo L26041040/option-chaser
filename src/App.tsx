@@ -86,10 +86,12 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [failures, setFailures] = useState<Record<string, RefreshFailure>>({});
-  // 更新中徽章（T08／#196，P1，取代 V4 跟進票／#136 的整段灰化鎖定）：
-  // 正在被刷新（不論是 Refresh Run 批次還是單一劇本刷新）的劇本 id——
-  // 卡片標「更新中」但**不**反灰、不禁止點入，資料與連結全程可用，只是
-  // 顯示的是上一輪的舊數字。一解決（成功或失敗）立刻從這裡移除。
+  // 更新中徽章＋鎖定（T08／#196 P1 首次引入；PC-05／#202，spec #198
+  // 恢復反灰＋不可點入）：正在被刷新（不論是 Refresh Run 批次還是
+  // 單一劇本刷新）的劇本 id——卡片標「更新中」、反灰、點擊不導向
+  // 詳細頁（實際的鎖定視覺與點擊攔截在 `ScenarioList.tsx`／
+  // `CompactScenarioList.tsx`，這裡只維護這個 id 集合本身）。一解決
+  // （成功或失敗）立刻從這裡移除、該劇本立刻解鎖，不等其他劇本跑完。
   const [updatingIds, setUpdatingIds] = useState<Set<string>>(new Set());
   // 上一輪 Refresh Run 的「N 成功／M 失敗」摘要（P2）；新一輪開始時清空
   // （見 `runBatch`），跑完才重新設定。
@@ -165,7 +167,8 @@ export default function App() {
    * 只在傳入的 `ids`——前兩者是「全部未過期劇本」（呼叫端先篩好），
    * 建立劇本只傳新建立的那一個（P4，取代 QA1-07 時期的全量刷新）。
    *
-   * P1：涉及的卡片標「更新中」但不鎖定，資料與連結全程可用。
+   * P1：涉及的卡片標「更新中」（PC-05／#202 起同時反灰＋不可點入，
+   * 見 `ScenarioList.tsx`／`CompactScenarioList.tsx`）。
    * P2：每次 HTTP 回應（含 Continuation 的每一段）一到就逐批落地，不
    * 等全部完成才一次跳動；結束後彙整「N 成功／M 失敗」摘要。
    *

@@ -670,9 +670,10 @@ describe("刷新與進度（T08／#196，接上 Refresh Run）", () => {
     expect(screen.queryByRole("status")).not.toBeInTheDocument();
   });
 
-  describe("更新中徽章與逐批落地（P1／P2，取代 #136 整段灰化鎖定）", () => {
-    it("更新中的卡片仍是可點的連結；結果透過 Continuation 逐批落地，不必等全部完成",
-       async () => {
+  describe("更新中徽章與逐批落地（P1／P2 首次引入；PC-05／#202 恢復反灰＋" +
+          "不可點入）", () => {
+    it("更新中的卡片反灰、href 仍在；結果透過 Continuation 逐批落地，不必等" +
+       "全部完成", async () => {
       // 第一次呼叫（scenario_ids=[s1,s2]）回 s1 成功＋remaining=[s2]；
       // 第二次呼叫（scenario_ids=[s2]，App 收到 remaining 後自動接續）
       // 卡住，讓測試能精確控制「s1 已落地、s2 還在更新中」這個中間狀態。
@@ -706,20 +707,24 @@ describe("刷新與進度（T08／#196，接上 Refresh Run）", () => {
       vi.stubGlobal("fetch", spy);
       render(<App />);
 
-      // s1 已經逐批落地（不必等 s2 的 Continuation 呼叫也回來）；
-      // 兩張卡全程都還是可點的連結（P1：不整段禁止點入）。
+      // s1 已經逐批落地（不必等 s2 的 Continuation 呼叫也回來）；s1 的
+      // href 正常保留，s2（還在更新中）反灰＋鎖定。
       expect(await screen.findByText("100.0%")).toBeInTheDocument();
       expect(screen.getByRole("link", { name: /TLT/ })).toBeInTheDocument();
-      expect(screen.getByRole("link", { name: /SPY/ })).toBeInTheDocument();
+      const spyLink = screen.getByRole("link", { name: /SPY/ });
+      expect(spyLink).toBeInTheDocument();
+      expect(spyLink.closest(".compact-card")).toHaveClass("locked");
       expect(screen.getByText("更新中")).toBeInTheDocument();   // 只有 s2
 
       releaseSecondCall!();
 
       expect(await screen.findByText("50.0%")).toBeInTheDocument();
       expect(screen.queryByText("更新中")).not.toBeInTheDocument();
+      expect(spyLink.closest(".compact-card")).not.toHaveClass("locked");
     });
 
-    it("失敗的那個也會脫離更新中，不會永久卡住——沿用既有黃燈語意", async () => {
+    it("失敗的那個也會脫離更新中、立刻解鎖，不會永久卡住——沿用既有黃燈語意",
+       async () => {
       mockLibrary(
         [card("s1", "TLT")],
         async () => fail("fetch", "抓不到報價"),
@@ -727,10 +732,12 @@ describe("刷新與進度（T08／#196，接上 Refresh Run）", () => {
       render(<App />);
 
       // 失敗結束後：不是「更新中」，也不是「已過期」——是既有的刷新
-      // 失敗分層指引與重試入口，卡片本身仍是可點的連結。
+      // 失敗分層指引與重試入口，卡片解鎖、恢復可點。
       await screen.findByText(/抓不到報價/);
       expect(screen.queryByText("更新中")).not.toBeInTheDocument();
-      expect(screen.getByRole("link", { name: /TLT/ })).toBeInTheDocument();
+      const link = screen.getByRole("link", { name: /TLT/ });
+      expect(link).toBeInTheDocument();
+      expect(link.closest(".compact-card")).not.toHaveClass("locked");
     });
   });
 });
@@ -1185,6 +1192,58 @@ describe("桌面版真正的 master/detail（#72）", () => {
     const otherLink = screen.getByRole("link", { name: /SPY 2027-01/ });
     expect(selectedLink.closest("li")).toHaveClass("selected");
     expect(otherLink.closest("li")).not.toHaveClass("selected");
+  });
+
+  it("PC-05（#202）：另一個劇本在清單上鎖定中，不影響使用者目前正在看的" +
+     "這個劇本詳細頁", async () => {
+    stubDesktopViewport();
+    window.location.hash = "#/s/s1";
+    let releaseS2: (() => void) | null = null;
+    const spy = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url === "/api/scenarios") {
+        return { ok: true, status: 200, json: async () => [rowA, rowB] };
+      }
+      if (url === "/api/scenarios/s1") {
+        return { ok: true, status: 200,
+                json: async () => ({ ...rowA, latest_result: null }) };
+      }
+      if (url === "/api/scenarios/refresh-run" && init?.method === "POST") {
+        const body = JSON.parse(String(init.body ?? "{}")) as
+          { scenario_ids?: string[] };
+        const ids = body.scenario_ids ?? [];
+        if (ids.length === 2) {
+          return { ok: true, status: 200, json: async () => ({
+            results: [{ scenario_id: "s1", ok: true, row: rowA }],
+            remaining: ["s2"],
+          }) };
+        }
+        await new Promise<void>((resolve) => { releaseS2 = resolve; });
+        return { ok: true, status: 200, json: async () => ({
+          results: [{ scenario_id: "s2", ok: true, row: rowB }],
+          remaining: [],
+        }) };
+      }
+      throw new Error(`測試沒有為 ${url} 準備回應`);
+    });
+    vi.stubGlobal("fetch", spy);
+    render(<App />);
+
+    // s1 是使用者目前正在看的劇本，自己這一輪已經落地——詳細頁正常
+    // 顯示內容，沒有任何「刷新排隊中」提示。
+    expect(await screen.findByText("尚未分析")).toBeInTheDocument();
+    expect(screen.queryByText(/本輪刷新排隊中或進行中/)).not.toBeInTheDocument();
+
+    // s2 還在更新中——清單上那一列反灰、標「更新中」，完全不影響 s1
+    // 的詳細頁內容或提示。
+    const spyLink = screen.getByRole("link", { name: /SPY 2027-01/ });
+    expect(spyLink.closest(".compact-card")).toHaveClass("locked");
+    expect(screen.getByText("更新中")).toBeInTheDocument();
+    expect(screen.getByText("尚未分析")).toBeInTheDocument();
+    expect(screen.queryByText(/本輪刷新排隊中或進行中/)).not.toBeInTheDocument();
+
+    releaseS2!();
+    await waitFor(() =>
+      expect(screen.queryByText("更新中")).not.toBeInTheDocument());
   });
 
   it("未選任何劇本時，右側工作區顯示合理的空狀態", async () => {

@@ -1,6 +1,6 @@
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import CompactScenarioList from "./CompactScenarioList";
 import sampleRow from "../contracts/scenario_row_sample.json";
@@ -230,18 +230,57 @@ describe("批次選取移入垃圾桶（TR6／#91）", () => {
   });
 });
 
-describe("更新中徽章（T08／#196 P1，取代整段灰化鎖定）", () => {
-  it("更新中的列項標「更新中」，但仍是可點的連結、仍顯示上一輪的舊資料", () => {
-    list([row({ id: "a", best_return: 2.5 })], { updatingIds: new Set(["a"]) });
+describe("更新中徽章＋鎖定（T08／#196 P1 首次引入；PC-05／#202 恢復反灰＋" +
+        "不可點入）", () => {
+  afterEach(() => {
+    window.location.hash = "";
+  });
+
+  it("更新中的列項標「更新中」、反灰，但仍顯示上一輪的舊資料", () => {
+    const { container } = list([row({ id: "a", best_return: 2.5 })],
+                               { updatingIds: new Set(["a"]) });
 
     expect(screen.getByText("更新中")).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: /TLT/ })).toBeInTheDocument();
+    expect(container.querySelector(".compact-card.locked")).toBeInTheDocument();
     expect(screen.getByText("250.0%")).toBeInTheDocument();
   });
 
-  it("不是更新中的列項顯示一般燈號，不是「更新中」", () => {
-    list([row({ id: "a" })], { updatingIds: new Set() });
+  it("PC-05（#202）：點更新中的列項不會導向詳細頁——href 仍在，但點擊" +
+     "被攔截", async () => {
+    window.location.hash = "";
+    list([row({ id: "a", symbol: "AAA" })], { updatingIds: new Set(["a"]) });
+
+    const link = screen.getByRole("link", { name: /AAA/ });
+    expect(link).toHaveAttribute("href", "#/s/a");
+    await userEvent.click(link);
+
+    expect(window.location.hash).toBe("");
+  });
+
+  it("不是更新中的列項點下去正常導向詳細頁（對照組）", async () => {
+    window.location.hash = "";
+    list([row({ id: "a", symbol: "AAA" })], { updatingIds: new Set() });
+
+    await userEvent.click(screen.getByRole("link", { name: /AAA/ }));
+
+    expect(window.location.hash).toBe("#/s/a");
+  });
+
+  it("不是更新中的列項顯示一般燈號，不是「更新中」，也不帶 locked class", () => {
+    const { container } = list([row({ id: "a" })], { updatingIds: new Set() });
     expect(screen.queryByText("更新中")).not.toBeInTheDocument();
+    expect(container.querySelector(".locked")).not.toBeInTheDocument();
+  });
+
+  it("批次選取模式下，更新中的列項一樣點得到 checkbox 切換選取", async () => {
+    const onToggleSelect = vi.fn();
+    list([row({ id: "a", symbol: "AAA" })], {
+      updatingIds: new Set(["a"]), selectMode: true, onToggleSelect,
+    });
+
+    await userEvent.click(screen.getByRole("link", { name: /AAA/ }));
+
+    expect(onToggleSelect).toHaveBeenCalledWith("a");
   });
 });
 

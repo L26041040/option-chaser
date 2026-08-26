@@ -755,8 +755,9 @@ test("開站自動刷新：進度 → 卡片換成新數字（V4／#52，T08／#
 
   await page.goto("/");
 
-  // T08／#196：整輪刷新不再是「N/M」逐一進度，是單一「更新中……」狀態，
-  // 且劇本列項全程可點（不反灰、不禁用）——見下方 P1 專屬測試。
+  // T08／#196：整輪刷新不再是「N/M」逐一進度，是單一「更新中……」狀態。
+  // PC-05（#202）起，正在更新的劇本列項本身反灰、點擊不導向詳細頁——
+  // 見下方「鎖定卡片點下去路由不變」專屬測試。
   await expect(page.getByRole("status")).toHaveText("更新中……");
   await expect(page.getByRole("button", { name: "刷新中……" })).toBeDisabled();
 
@@ -765,6 +766,37 @@ test("開站自動刷新：進度 → 卡片換成新數字（V4／#52，T08／#
   await expect(page.getByRole("status")).toHaveText("1 成功");
   // 收益率口徑就寫在數字旁邊
   await expect(page.getByText(/最差成交價/)).toBeVisible();
+});
+
+test("PC-05（#202）：鎖定卡片點下去路由不變——手機版", async ({ page }) => {
+  await page.route("**/api/scenarios", (route) =>
+    route.fulfill({ json: [pendingRow] }));
+  await page.route("**/api/scenarios/refresh-run", async (route) => {
+    // 刻意延遲，讓「更新中」＋反灰的狀態真的看得到，才點得下去測試。
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    await route.fulfill({ json: { results: [{ scenario_id: "s1", ok: true,
+      row: refreshedRow() }], remaining: [] } });
+  });
+
+  await page.goto("/");
+  await expect(page.getByRole("status")).toHaveText("更新中……");
+
+  const card = page.locator(".compact-card").filter({ hasText: "TLT" });
+  await expect(card).toHaveClass(/locked/);
+  const link = page.getByRole("link", { name: /TLT/ });
+  const before = page.url();
+  await link.click();
+
+  // 沒有導向詳細頁：網址沒變，也看不到詳細頁專屬的返回連結。
+  expect(page.url()).toBe(before);
+  await expect(page.getByRole("link", { name: "‹ 劇本庫" })).not.toBeVisible();
+
+  // 這一輪跑完後解鎖、正常可點——確認上面攔截到的是真的鎖定，不是
+  // 這個候選本身結構上就到不了詳細頁。
+  await expect(page.getByText("250.0%")).toBeVisible();
+  await expect(card).not.toHaveClass(/locked/);
+  await link.click();
+  await expect(page.getByRole("link", { name: "‹ 劇本庫" })).toBeVisible();
 });
 
 test("刷新失敗說明是哪一段，重試就地重來（V4／#52）", async ({ page }) => {
@@ -842,7 +874,14 @@ test("久未刷新的資料標成舊資料（V4／#52）", async ({ page }) => {
   await page.goto("/");
 
   await expect(page.getByText("100.0%")).toBeVisible();
-  await expect(page.getByText("舊資料")).toBeVisible();
+  // PC-05（#202）起，更新中的列項有一段 sr-only 文字（「更新中；查看…
+  // 顯示上一輪的舊資料」）也含有「舊資料」這個子字串——開站那輪刷新
+  // 進行中的短暫窗口裡，`getByText("舊資料")` 因此可能撞到兩個元素
+  // （既有的舊資料徽章＋這段 sr-only 文字），是既有的、非本票引入的
+  // 潛在 race（sr-only 文字本身早於 PC-05 就存在），本票施工中偶然
+  // 撞見。改成 scope 到真正的舊資料徽章本身，不受這個巧合字串重疊
+  // 影響。
+  await expect(page.locator(".tag.warn", { hasText: "舊資料" })).toBeVisible();
 });
 
 test("手機首頁版面順序：Dashboard 佔位 → 新增劇本入口 → 劇本庫（MVP-v2／#77、#81）",
@@ -983,6 +1022,18 @@ test("返回劇本庫時停在原本捲動的位置，不必重新往下找（MV
     await page.route("**/api/scenarios", (route) => route.fulfill({ json: rows }));
     await page.route("**/api/scenarios/*/refresh", (route, req) =>
       route.fulfill({ json: rows.find((r) => req.url().includes(`/${r.id}/`)) }));
+    // 開站那輪打的是批次端點（T08／#196）——`test.beforeEach` 的預設
+    // 回應是空氣（`results: []`），PC-05（#202）起更新中的卡片點下去
+    // 不會導向詳細頁，若沒有這條明確覆寫，全部 10 個劇本會因為批次
+    // 回應裡找不到自己對應的 result 而永遠卡在「更新中」、永遠鎖著，
+    // 點不進下面要測的詳細頁（本輪施工中發現：這條測試原本純屬僥倖
+    // ——鎖定restored 之前，更新中的卡片本來就點得進去，沒暴露過
+    // 這個路由缺口）。
+    await page.route("**/api/scenarios/refresh-run", (route) =>
+      route.fulfill({ json: {
+        results: rows.map((r) => ({ scenario_id: r.id, ok: true, row: r })),
+        remaining: [],
+      } }));
     // 詳細頁路由：任一劇本 id 都指回同一份形狀，測試只在乎「回得去、
     // 回去後畫面上是原本那份清單」，不在乎詳細頁內容本身。
     await page.route("**/api/scenarios/s*", (route, req) => {

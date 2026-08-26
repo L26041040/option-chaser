@@ -650,6 +650,44 @@ test("可以直接點另一個劇本切換，不必先返回劇本庫", async ({
     .toHaveAttribute("aria-current", "page");
 });
 
+test("PC-05（#202）：鎖定卡片點下去路由不變——桌面版", async ({ page }) => {
+  await page.route("**/api/scenarios", (route) =>
+    route.fulfill({ json: [rowA, rowB] }));
+  await page.route("**/api/scenarios/s1", (route) =>
+    route.fulfill({ json: { ...rowA, latest_result: sample } }));
+  await page.route("**/api/scenarios/s2", (route) =>
+    route.fulfill({ json: { ...rowB, latest_result: sample } }));
+  await page.route("**/api/scenarios/refresh-run", async (route) => {
+    // 刻意延遲，讓「更新中」＋反灰的狀態真的看得到，才點得下去測試。
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    await route.fulfill({ json: {
+      results: [{ scenario_id: "s1", ok: true, row: rowA },
+               { scenario_id: "s2", ok: true, row: rowB }],
+      remaining: [],
+    } });
+  });
+
+  await page.goto("/");
+
+  const abcLink = page.getByRole("link", { name: /ABC/ });
+  await expect(abcLink).toBeVisible();
+  const abcCard = page.locator(".compact-card").filter({ hasText: "ABC" });
+  await expect(abcCard).toHaveClass(/locked/);
+
+  const before = page.url();
+  await abcLink.click();
+
+  // 沒有導向詳細頁：網址沒變，右側工作區也還是空狀態，不是 s2 的內容。
+  expect(page.url()).toBe(before);
+  await expect(page.getByText(/選擇左側的劇本/)).toBeVisible();
+
+  // 這一輪跑完後解鎖、正常可點——確認上面攔截到的是真的鎖定，不是這個
+  // 候選本身結構上就到不了詳細頁。
+  await expect(abcCard).not.toHaveClass(/locked/);
+  await abcLink.click();
+  await expect(page).toHaveURL(/#\/s\/s2$/);
+});
+
 test("左右比例約 20/80，不是置中的窄直欄", async ({ page }) => {
   await routeTwoScenarios(page);
   await page.goto("/");
