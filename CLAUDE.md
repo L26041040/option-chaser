@@ -27,7 +27,7 @@ block 裡，不能切成好幾個 code block、也不能中間插普通文字把
 `［回報#001］spec #137 拆票完成`）。編號是**累計總數**，不因換
 session、換分支、換主題而歸零——目前最新編號記在這裡：
 
-> 目前次序：032（下一份回報用 033）
+> 目前次序：033（下一份回報用 034）
 
 每發一份回報就把上面這個數字改成剛剛用掉的那個，跟著那次改動一起
 commit（沒有其他改動要 commit 時，單獨為這一行開一個小 commit 也
@@ -4155,9 +4155,11 @@ Current→Percentile→Δ4w→Chart 的正確順序。建議：桌面版對齊�
 
 **需求方裁示（2026-08-25，回覆回報#030）**：percentile 採 A(a)——
 維持現行演算法完全不變，只加一句說明文字，不得使用「異常」「離群」
-「貴」等字眼；額外要求 spec 必須把「production 真資料 cross-check」
-獨立列為驗收項，明文禁止用本輪 Monte Carlo／synthetic data 宣稱這項
-已驗證完成。Diagnostics 裁示採「engineering observability != user-
+「貴」等字眼；~~額外要求 spec 必須把「production 真資料 cross-check」
+獨立列為驗收項~~（**⚠ 這半條已於同日稍後被需求方推翻、整個工作流
+砍掉，見下方「Owner Decision — Percentile Validation Scope」；
+percentile 採 A(a) 那半仍然有效**）。Diagnostics 裁示採「engineering
+observability != user-
 facing error state」——四個候選事件（staleness=1 日、backfill 進行中
 的 metrics count=0、市場假日 no-data、reanchor out-of-grid 但功能
 正常）不得再讓一般使用者誤認故障，但不得刪除或吞掉底層診斷能力。
@@ -4169,10 +4171,10 @@ Updating lock 明確要求恢復灰化＋不可點入，不改 Refresh Run 觸�
 決策逐一寫成明確 Implementation Decisions／Acceptance Criteria：
 - Percentile：`ivtrend.py`／`ivreconstruct.py`／`ivspread.py` 零改動；
   新增純格式化說明文字＋banned-word 檢查
-- Production cross-check：獨立驗收項，明文「script 本身可以有 fixture
-  測試證明機制正確，但驗收本身只能靠對正式部署版跑出來的真實結果
-  滿足，不能靠本輪任何 synthetic／Monte Carlo 證據替代」；沙箱若連不到
-  production，明確標記交需求方／deployment 後人工驗收
+- ~~Production cross-check：獨立驗收項……~~ **⚠ 這一條已於 2026-08-25
+  被需求方裁示整個砍掉、不再有效**——spec #198 本文與對應票務皆已
+  更新，理由見下方「Owner Decision — Percentile Validation Scope」。
+  這行保留只為說明本紀錄區的演進，**不是待辦、不得據此重開票**
 - Diagnostics：新增獨立於既有 `severity` 的 `user_facing` 布林欄位
   （`DiagnosticEvent` 新欄位），`severity` 本身連同 `/api/diagnostics`
   ／Settings 頁完全不受影響、繼續完整顯示；四個覆寫點各自用該站既有
@@ -4195,28 +4197,64 @@ Updating lock 明確要求恢復灰化＋不可點入，不改 Refresh Run 觸�
 子票 #199–#206，全部為 #198 的 GitHub native sub-issue**：
 
 - **PC-01** [#199] Percentile 說明文字（演算法零改動）——無依賴
-- **PC-02** [#200] Production cross-check 腳本（建工具，不含實跑）——無依賴
 - **PC-03** [#201] Diagnostics `user_facing` 軸（expand，行為零變更）——無依賴
 - **PC-05** [#202] Updating card 恢復鎖定（灰化＋不可點入）——無依賴
 - **PC-06** [#203] Desktop Historical IV 卡片資訊順序對齊手機版——無依賴
 - **PC-04** [#204] Diagnostics 四項 user-facing 分類覆寫——被 #201 擋
-- **PC-07** [#205] 全面回歸與最終驗收——被 #199／#200／#204／#202／#203 擋
-- **PC-08** [#206] Production percentile cross-check 實跑——被 #200 擋，
-  **標 `needs-human-validation` 而非 `ready-for-agent`**（其餘七張皆
-  `ready-for-agent`）
+- **PC-07** [#205] 全面回歸與最終驗收——被 #199／#204／#202／#203 擋
+- ~~**PC-02** [#200] Production cross-check 腳本~~ ／
+  ~~**PC-08** [#206] Production cross-check 實跑~~——**2026-08-25
+  需求方裁示整個工作流砍掉，兩張皆已 `not_planned` 關閉**（見下方
+  「Owner Decision」）
 
-**三個拆票決策（需求方核准）**：
+**兩個拆票決策（需求方核准，仍然有效）**：
 1. **PC-03／PC-04 刻意拆開**：PC-03 是零行為變更的「加軸」（預設值鏡射
    既有 `severity`，驗收就是全套既有測試原樣通過），PC-04 才是全部
    判斷所在。拆開把「加欄位有沒有弄壞既有東西」跟「這四條分類對不對」
    兩種風險隔離——沿用 T01–T13 一路的既有慣例（Refresh Run 拆三張、
    IV pipeline 拆兩張同一個理由）。
-2. **PC-08 的 blocking edge 只掛 PC-02**：技術上真正擋住它的只有
-   「腳本要先存在」；它實際上還要等部署，但部署不是一張票，因此掛
-   真實技術依賴、在票面文字寫明「對部署後的正式版執行」。
-3. **PC-04 的四條覆寫不再細拆**：四條都在同一個模組、同一個測試檔、
+2. **PC-04 的四條覆寫不再細拆**：四條都在同一個模組、同一個測試檔、
    每條只有幾行加兩三個測試，拆成四張只會製造四張互碰同一個檔案的
    票，隔離不到東西。
+
+（原第 2 條「PC-08 的 blocking edge 只掛 PC-02」隨該工作流一併作廢。）
+
+### Owner Decision — Percentile Validation Scope（2026-08-25）
+
+**需求方裁示：Production Percentile Cross-check 整個工作流砍掉。**
+#200、#206 皆以 `not_planned` 關閉（#200 的 `ready-for-agent` 標籤
+一併移除，避免被誤認為還可以抓來做）；#205 移除 #200 blocker 與
+「production cross-check 尚未完成」那條 AC；spec #198 本文已重寫，
+移除全部相關 Solution／User Stories／Implementation Decisions／
+Testing Decisions 段落，並新增同名章節存證。
+
+需求方已接受目前 Historical IV percentile 的計算契約與回報#030
+correctness audit 的結論。本輪真正要解決的產品問題**不是**「重新
+證明 percentile 整條 production data pipeline 正確」，而是「目前
+percentile 數字對一般使用者不夠直覺，需要更好的文字解釋與資訊呈現」
+——那由 #199 負責。
+
+因此：**不**建立額外 production percentile validation CLI、**不**建立
+獨立 cross-check subsystem、**不**要求抽查 5–10 張 production
+contracts 作為交付條件、**不**保留成 deferred ticket／future
+blocker、**不**因為 #200／#206 被砍而建立替代票完成同一件事。
+
+**這不是因為「驗證做不到」或「先延後」。** 這是明確的產品／工程
+取捨：**該驗證對目前需求的邊際價值不足，會造成不必要的 validation
+infrastructure 與測試複雜度，屬於 over-engineering。**
+
+已審查完畢並經需求方接受：公式、exact-contract identity、一年
+window、valid observation handling、Spread Gap common-date
+alignment、independent arithmetic check。需求方接受這個 confidence
+level。
+
+**除非未來出現具體 evidence 指向 percentile correctness bug——API 與
+UI 數字不一致、明確可重現的 contract rank 錯誤、historical series
+混入錯誤 contract、使用者提供可證明錯算的實例——否則不要再次主動
+建立 production percentile cross-check 工作流。**
+
+**本輪剩餘正式施工範圍與建議順序**：
+`#199 → #201 → #204 → #202 → #203 → #205`
 
 **施工前查證到的三個關鍵細節**（寫在這裡避免施工時重查）：
 - `DiagnosticEvent` 是單純 dataclass；`emit()` 用 `**context` 收其餘
