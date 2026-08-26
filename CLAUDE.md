@@ -27,7 +27,7 @@ block 裡，不能切成好幾個 code block、也不能中間插普通文字把
 `［回報#001］spec #137 拆票完成`）。編號是**累計總數**，不因換
 session、換分支、換主題而歸零——目前最新編號記在這裡：
 
-> 目前次序：031（下一份回報用 032）
+> 目前次序：032（下一份回報用 033）
 
 每發一份回報就把上面這個數字改成剛剛用掉的那個，跟著那次改動一起
 commit（沒有其他改動要 commit 時，單獨為這一行開一個小 commit 也
@@ -4190,6 +4190,43 @@ Updating lock 明確要求恢復灰化＋不可點入，不改 Refresh Run 觸�
 
 四項工作流彼此獨立、無相依關係，可任意順序或平行施工。本輪 `/to-spec`
 到此為止，未 implementation、未開 PR、未 merge master。
+
+**`/to-tickets` 完成（2026-08-25，需求方核准拆票方案後發佈）——8 張
+子票 #199–#206，全部為 #198 的 GitHub native sub-issue**：
+
+- **PC-01** [#199] Percentile 說明文字（演算法零改動）——無依賴
+- **PC-02** [#200] Production cross-check 腳本（建工具，不含實跑）——無依賴
+- **PC-03** [#201] Diagnostics `user_facing` 軸（expand，行為零變更）——無依賴
+- **PC-05** [#202] Updating card 恢復鎖定（灰化＋不可點入）——無依賴
+- **PC-06** [#203] Desktop Historical IV 卡片資訊順序對齊手機版——無依賴
+- **PC-04** [#204] Diagnostics 四項 user-facing 分類覆寫——被 #201 擋
+- **PC-07** [#205] 全面回歸與最終驗收——被 #199／#200／#204／#202／#203 擋
+- **PC-08** [#206] Production percentile cross-check 實跑——被 #200 擋，
+  **標 `needs-human-validation` 而非 `ready-for-agent`**（其餘七張皆
+  `ready-for-agent`）
+
+**三個拆票決策（需求方核准）**：
+1. **PC-03／PC-04 刻意拆開**：PC-03 是零行為變更的「加軸」（預設值鏡射
+   既有 `severity`，驗收就是全套既有測試原樣通過），PC-04 才是全部
+   判斷所在。拆開把「加欄位有沒有弄壞既有東西」跟「這四條分類對不對」
+   兩種風險隔離——沿用 T01–T13 一路的既有慣例（Refresh Run 拆三張、
+   IV pipeline 拆兩張同一個理由）。
+2. **PC-08 的 blocking edge 只掛 PC-02**：技術上真正擋住它的只有
+   「腳本要先存在」；它實際上還要等部署，但部署不是一張票，因此掛
+   真實技術依賴、在票面文字寫明「對部署後的正式版執行」。
+3. **PC-04 的四條覆寫不再細拆**：四條都在同一個模組、同一個測試檔、
+   每條只有幾行加兩三個測試，拆成四張只會製造四張互碰同一個檔案的
+   票，隔離不到東西。
+
+**施工前查證到的三個關鍵細節**（寫在這裡避免施工時重查）：
+- `DiagnosticEvent` 是單純 dataclass；`emit()` 用 `**context` 收其餘
+  關鍵字，**`user_facing` 必須當具名參數加**，否則會被吸進走欄位
+  白名單的 `context`、被靜默丟棄
+- `backfill_pending` 與 `_emit_metrics`／`_emit_reanchor_summary` 在
+  `build_iv_history()` 同一個 scope 內，四個覆寫點需要的資料**都已經
+  在手邊**，不需要新增任何抓取或狀態
+- pre-P1-b 的卡片鎖定樣式（`pointer-events: none; opacity: 0.45`）在
+  `styles.css` 註解裡有記載，原始 commit `098b3b9`（#136）可查
 
 ### 施工依據
 
