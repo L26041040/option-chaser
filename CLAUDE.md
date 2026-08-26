@@ -27,7 +27,7 @@ block 裡，不能切成好幾個 code block、也不能中間插普通文字把
 `［回報#001］spec #137 拆票完成`）。編號是**累計總數**，不因換
 session、換分支、換主題而歸零——目前最新編號記在這裡：
 
-> 目前次序：033（下一份回報用 034）
+> 目前次序：034（下一份回報用 035）
 
 每發一份回報就把上面這個數字改成剛剛用掉的那個，跟著那次改動一起
 commit（沒有其他改動要 commit 時，單獨為這一行開一個小 commit 也
@@ -4456,6 +4456,77 @@ UI 數字不一致、明確可重現的 contract rank 錯誤、historical series
   Playwright 全套 90 條（iPhone 56＋Desktop 34）全綠，含既有 SIG-04
   桌面／手機紅線（頁面層級順序）與 PC-05 新增的鎖定卡片測試皆未受
   影響。
+- **PC-07**（#205）— 全面回歸與最終驗收（本輪最後一張票，純驗證、
+  無新功能程式碼）：逐項核對 spec #198 全文（Problem Statement／Owner
+  Decision／Solution／23 條 User Stories／四節 Implementation
+  Decisions／Testing Decisions／Out of Scope），全數落實、無缺口、
+  無 scope creep：
+  - **紅線核對**：`git diff` 確認 `ranking.py`／`filters.py`／
+    `valuation.py`／`ivtrend.py`／`ivreconstruct.py`／`ivspread.py`／
+    `ivhistory.py` 全部逐位元未動；`option_chaser/` 本輪唯一改動檔案
+    是 `ivpipeline.py`，逐行核對只有 `user_facing=` 新增與註解，零
+    `severity` 數值改動、零計算邏輯改動；`test_redlines.py`／
+    `test_selection_regression.py` 零改動；全專案 `tests/`／
+    `src/*.test.*` 掃過每一處被移除的既有斷言（後端 0 條、前端 5 條）
+    ——後者逐條核對皆為「原地重構＋等價或更強斷言」而非鬆綁覆蓋率。
+  - **PC-07 施工中發現並補上的一個真測試缺口**：spec Testing
+    Decisions 明列「a genuine vendor failure and a total reconstruction
+    failure both still `user_facing=True`」——vendor failure 那半（Legacy
+    家族 quota abort）已由既有
+    `test_backfill_abort_is_visible_in_the_summary_event` 覆蓋，但
+    Exact-Contract 家族「整段序列零可用點」那半
+    （`test_reconstruction_ledger_is_a_warning_when_nothing_is_usable`）
+    先前只驗證 `severity`，沒有直接斷言 `user_facing`——已補上一行
+    `assert events[0]["user_facing"] is True`。DG-04 風格的「單一
+    全帳本測試同時涵蓋四項覆寫、集中證明 severity 不受影響」則判斷
+    維持現狀不強行合併：severity 不受影響這件事已經在四項覆寫各自的
+    既有測試裡逐一斷言（`test_reanchor_summary_*`／
+    `test_metrics_*`／`test_backfill_abort_*`／`test_staleness_*`
+    皆同時斷言 `severity` 與 `user_facing`），而 staleness 覆寫在
+    HTTP 層無法控制「今天」（既有限制，走純函式層級測試），backfill
+    覆寫又需要獨立的 `IvBackfillRun` 狀態（同一個 `db` fixture 內
+    兩種 backfill_pending 狀態無法在同一個 request 並存），勉強拼成
+    一個物理上的單一測試函式只會犧牲既有測試檔案「一個場景一個函式」
+    的既有可讀性慣例，換不到新的保證。
+  - **User Stories 1–23 逐條核對**：1–4（percentile 說明文字三家族＋
+    演算法零改動）由 PC-01 落實；5–12（四項覆寫＋兩個「維持原樣」的
+    對照組）由 PC-04 落實，其中 #9／#10 的「部分覆蓋不示警／全覆蓋
+    失效時沿用既有『沒有歷史資料』中性文案、不新增視覺嚴重度」由
+    `_emit_reanchor_summary` 覆寫＋既有（#133）`metricCaption()` 呈現
+    層共同滿足，本輪未新增任何新視覺樣式；13–14（`severity` 完整保留
+    ＋覆寫條件明確可測）由 PC-03／PC-04 的 explicit named parameter
+    設計滿足；15–19（鎖定／自動解鎖／三個觸發規則不變／Partial
+    Success 不受影響）由 PC-05 落實，#17／#19 由既有（P1-b 時期）
+    `updatingIds` 狀態管理機制原樣保留佐證（PC-05 只加 CSS class 與
+    onClick 攔截，未觸碰 `runBatch()` 的完成偵測與摘要計算）；20–22
+    （桌面卡片順序對齊＋頁面層級順序不變）由 PC-06 落實；23（範圍
+    嚴格限定四項決策，不夾帶 V2／N-leg／架構重構）由本輪 `git diff`
+    範圍核對確認。
+  - **Out of Scope 核對**：無 production percentile cross-check 相關
+    任何檔案／CLI／ticket（依 Owner Decision，#200／#206 維持
+    `not_planned`）；percentile 公式／一年窗／exact-contract identity／
+    valid-observation filtering／Spread Gap 對齊規則零改動；未新增
+    平滑化或 outlier 指標；未新增美股假日曆；未觸碰 ScenarioDetail
+    自身在背景刷新時的既有行為；未新增新的視覺嚴重度分級；無 V2／
+    N-leg／Refresh Run 架構／`main.py`／`service.py` 重構。
+  - **全套回歸**（三次獨立驗證，非單次僥倖綠燈）：後端 pytest（記憶體
+    ＋本機真實 Postgres 16 雙後端）——與本輪其餘六票完全相同的既有
+    4 條失敗（`test_api_filters.py` 三條、`test_service_fetch.py` 一條，
+    皆為此 sandbox 網路環境對虛構 symbol「XYZ」意外允許真實連線所致的
+    既有環境依賴性 flake，經多次 `git stash` 比對確認在本輪施工前的
+    基準 commit 上就已存在，與本輪任何一張票的改動無關），PC-07
+    新補的一行斷言通過、零新增失敗；前端 `tsc --noEmit` 乾淨、
+    `vite build` 成功；Playwright 全套 90 條（iPhone 56＋Desktop 34）
+    全綠。
+  - **交付**：commit＋push 到 `claude/implement-tfm9oa`，依專案規則
+    不開 PR、不 merge master。
+
+**spec #198（PC-01、PC-03～PC-07，issues #199、#201～#205）全數完成，
+PC-07 驗收通過。** #200／#206（production percentile cross-check）
+依需求方 2026-08-25 Owner Decision 以 `not_planned` 關閉，不重啟、
+不建替代票。下一步：等需求方以真機／production 檢視本輪四項成果
+（percentile 說明文字、Diagnostics 靜音化、Refresh Run 鎖定復原、
+桌面卡片順序）；依專案規則全部子票做完才開 PR，中途不主動開。
 
 ### 施工依據
 

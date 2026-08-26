@@ -2877,6 +2877,11 @@ def test_reconstruction_ledger_is_a_warning_when_nothing_is_usable(db):
     assert len(events) == 1
     assert events[0]["severity"] == "warning"
     assert events[0]["context"]["usable"] == 0
+    # PC-04（#204）：整段序列零可用點——這個事件不在四項覆寫範圍內
+    # （spec 明文：reconstruction all-null 維持既有預設行為），
+    # `user_facing` 沿用預設規則（severity=warning → True），對使用者
+    # 顯示，證明「總重建失敗」這類真缺口沒有被本輪覆寫誤傷。
+    assert events[0]["user_facing"] is True
 
 
 def test_staleness_event_records_request_time_observation_and_dte_mismatch(db):
