@@ -27,7 +27,7 @@ block 裡，不能切成好幾個 code block、也不能中間插普通文字把
 `［回報#001］spec #137 拆票完成`）。編號是**累計總數**，不因換
 session、換分支、換主題而歸零——目前最新編號記在這裡：
 
-> 目前次序：037（下一份回報用 038）
+> 目前次序：038（下一份回報用 039）
 
 每發一份回報就把上面這個數字改成剛剛用掉的那個，跟著那次改動一起
 commit（沒有其他改動要 commit 時，單獨為這一行開一個小 commit 也
@@ -4769,6 +4769,83 @@ VIX 用 126/252/504/756 天窗口算出 10.2/15.4/18.2/35.4，**3.5 倍擺動來
 的裁定全部是前瞻性的。
 
 **下一步**：等需求方審閱與三個裁示點的方向，**本輪不進 `/to-spec`**。
+
+### Wayfinder：方向性策略擴充（2026-08-27，`/wayfinder`，只畫地圖不施工）
+
+需求方 `/wayfinder` 指示規劃「方向性策略擴充」：使用者面對 4 個
+Strategy Family（Call/Put、Vertical Spread、Butterfly、Iron Condor），
+backend 可自由增加 subtype 而不使 frontend 膨脹。**本輪只 Wayfind**
+——未施工、未開 PR、未進 `/to-spec`。
+
+**地圖＝issue #209**（label `wayfinder:map`），六張子票 #210–#215。
+Frontier（可立即開工）：#210／#211／#212；#213／#214 被 #210 擋；
+#215 被全部擋。六張**全是 grilling 票**，需需求方親自裁示，
+本 session 依 skill 規範不自問自答、不代答。
+
+**Prior Decision / Research Ledger（九條已 ANSWERED，不重新研究）**
+最關鍵的三條：
+
+1. **`strategies` 不是新概念，是既有已持久化欄位**——
+   `Scenario.strategies: tuple[str,...]`（`api_app/storage/__init__.py:26`、
+   `postgres.py:85` `strategies JSONB NOT NULL`），建立與編輯都寫、分析
+   路徑都讀，`_MVP_STRATEGIES` 全 repo **只有一個 production 寫入點**
+   （`main.py:703`）。**若該行寫入不同 tuple，backend 今天就能跑
+   multi-strategy。** 需求方原本的第 4 題（strategy selection 怎麼存）
+   因此不需要開票。
+2. **Long Call／Long Put 已端到端可跑**，四策略皆有 byte-locked golden
+   fixtures。唯一缺口是 `_single_leg_result` 未填 `expiry_top10`
+   （刻意 MVP scoping，`service.py:194-200`），導致詳細頁空白。
+   **是兩個欄位，不是架構。**
+3. **多 family 成本：CPU ~1.5×、network 1×**（實測 372 合約鏈
+   218ms→334ms；chain fetch 已提到 per-strategy 迴圈外，且 ADR-0001
+   保證 Run 內同 symbol 只抓一次）。**真正 scale 的是 payload：每多
+   一個 active spread 策略 +495KB→1001KB，且目前無任何機制 bound 它。**
+
+**五顆已埋好的地雷（現在就存在，非理論風險）**
+
+- **C1 單邊 chain 過濾**（`filters.py:104-105`）：一行讓 Iron Condor／
+  Iron Butterfly **結構上不可能**（對面半條鏈在枚舉前就被丟棄），
+  且 `FilterReport.total` 變單邊分母、診斷數字也會錯。
+- **C2 `[0,width]` clamp**（`valuation.py:326-334`，**最危險因為靜默**）：
+  是 long debit vertical 的 payoff 包絡被寫成算術。對任何 credit 結構
+  short leg 恆較值錢 ⇒ `raw ≤ 0` ⇒ **baseline_value 在每個價格恆等於
+  0**。實測真實 bull put spread：`baseline_return` 恆為 −1.0（每個
+  credit spread 都一樣）、`max_profit` 算出 7.25 > width 5.0、leverage
+  與 friction 符號翻轉、`completion_scan` 宣稱任何價格都損益兩平——
+  **全部不拋例外**。目前靠 `filters.py:104`／`:162`／`:176` 三道閘門
+  擋著，而**擴充策略時要拆的正是這三道閘門**，bug 會在拆的當下醒來。
+- **C3 前端寫死兩腿**：`formatRepresentativeLegs`／`candidateTitle` 皆
+  destructure `[buy, sell]`，遇第一個 butterfly 靜默丟棄第 3 腿以後。
+- **C4 單腿詳細頁靜默空白**（見上第 2 條）。
+- **C5 `is_bullish` 硬編碼兩名字表**（`models.py:180-181`）：加
+  `"bull-put-spread"` 會回 `False`，direction gate 於是拒絕所有
+  bullish target。
+
+**枚舉量實測**（真實鏈 per-expiry 合格數，5 個到期日總和）：
+vertical `C(n,2)`＝1,463（28ms）／butterfly `C(n,3)`＝11,966（~230ms）／
+iron condor 有序 `C(n,4)`＝73,100（~1.4–3s）／**無序 `C(n,2)²`＝
+511,859（~20s）**。Butterfly 舒服，Iron Condor 需要收斂規則。
+
+**本輪最重要的領域洞察（#210 的核心）**：同一個 `target_price` 對三類
+結構語意根本不同——Call/Put 是**門檻**（越遠越好）、Vertical 是
+**上界**（漲到這裡封頂）、Butterfly/Condor 是**中心**（pin 在這裡最賺、
+漲過頭反而虧）。把後者接進現有 Scenario **會改變既有欄位的意義**，
+且 `target == spot` 目前被 direction gate 直接拒絕、`_grid_price` 會把
+五個 k 塌成同一價格——**純中性的 Iron Condor 現行模型無法表達**。
+
+**Out of scope（需求方已裁示）**：Straddle／Strangle 等純 volatility
+strategies、Calendar／Diagonal 跨 expiration 結構、Covered Call／
+Protective Put／Collar（需 stock-position context）、Dashboard、
+Recommended／Not Recommended ranking semantics。
+
+**順帶更正 tracker 狀態**：#111／#114 是**過期 blocker**——#111 最後
+更新停在 2026-08-12，但 HIVT-01（#152）之後已用真實 probe 驗證
+Market Data App 單合約歷史端點可用，HIVR-01～11（#160–170）已把
+reconstruction pipeline 出貨，**歷史 IV 今天實際拿得到**。兩張應重新
+評估而非續當 blocker。
+
+**下一步**：需求方逐張處理 frontier 三票（#210／#211／#212），
+`/wayfinder <map>` 一次一張。六張走完才進 `/to-spec`。
 
 ### 施工依據
 
