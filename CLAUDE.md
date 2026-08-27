@@ -27,7 +27,7 @@ block 裡，不能切成好幾個 code block、也不能中間插普通文字把
 `［回報#001］spec #137 拆票完成`）。編號是**累計總數**，不因換
 session、換分支、換主題而歸零——目前最新編號記在這裡：
 
-> 目前次序：038（下一份回報用 039）
+> 目前次序：039（下一份回報用 040）
 
 每發一份回報就把上面這個數字改成剛剛用掉的那個，跟著那次改動一起
 commit（沒有其他改動要 commit 時，單獨為這一行開一個小 commit 也
@@ -4846,6 +4846,39 @@ reconstruction pipeline 出貨，**歷史 IV 今天實際拿得到**。兩張應
 
 **下一步**：需求方逐張處理 frontier 三票（#210／#211／#212），
 `/wayfinder <map>` 一次一張。六張走完才進 `/to-spec`。
+
+**#210 已 resolve（2026-08-27 第二場，`/wayfinder 209` 單票 grilling，
+回報#039）**——`target_price` 語意 Owner Decision 全數定案：
+
+1. **全 family 統一為「點預測」**：`target_price`＝使用者預測
+   target_date 當天標的所在的單一價位；所有 family 的劇本報酬回答
+   同一個問題「如果剛好是這個價，我賺多少」（把既有引擎行為升格為
+   正式產品語言）。Butterfly 的 body ≈ target 由排名自然湧現，
+   不新增欄位。
+2. **Iron Condor 自 Initial V2 defer**（地圖 Destination 從 4 family
+   改 3 family）：Condor 實質主張是「區間寬度」，單點給不出；照點
+   排名必退化成照權利金排名（短腿貼 target 的最高風險 Condor 恆
+   第一）。劃界寫死：**點預測＝價格主張；區間寬度＝波動率主張**
+   （與已排除的 volatility scenario 同類）。#214（Condor 枚舉收斂）
+   隨之以 not_planned 關閉、入地圖 Out of scope；未來要做需以
+   range-scenario 另起新地圖。
+3. **`target == spot` 開放**：方向升為衍生三態（漲／跌／持平），
+   分析當下由 target vs spot 算出、永不落盤；持平時僅 Butterfly
+   可選。不發明容忍帶。direction gate（`service.py:915`）與
+   `_grid_price` 塌陷的修法屬實作，交下游。
+4. **漲過頭不是失敗**：`best_return`／卡片燈號語意不隨 family 變
+   （燈號維持資料層語意；與 QA1-08 移除「標記達成／失效」一致），
+   Butterfly 的 tent 下行由 heatmap＋三價位照既有機制如實揭露。
+5. **可選／不可選矩陣定案**（純衍生規則）：看漲 Call✓ Vertical✓
+   Butterfly✓ Put✗；看跌對稱；持平僅 Butterfly✓。判準＝該 payoff
+   能否誠實表達該方向的點主張；沿用 `skipped_direction` 先例。
+   subtype 層歸 #212／#213。
+
+**Frontier 現況**：#210 closed（completed）、#214 closed
+（not_planned）→ **#213 解鎖**（`baseline_value`＝劇本成真時的價值、
+非路徑最差值，已由 #210 給定輸入）；frontier＝#211／#212／#213；
+#215 剩 #211／#212／#213 三個 blocker。地圖 #209 的 Destination／
+Decisions so far／Not yet specified／Out of scope 均已同步更新。
 
 ### 施工依據
 
