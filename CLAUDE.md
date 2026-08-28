@@ -27,7 +27,7 @@ block 裡，不能切成好幾個 code block、也不能中間插普通文字把
 `［回報#001］spec #137 拆票完成`）。編號是**累計總數**，不因換
 session、換分支、換主題而歸零——目前最新編號記在這裡：
 
-> 目前次序：039（下一份回報用 040）
+> 目前次序：040（下一份回報用 041）
 
 每發一份回報就把上面這個數字改成剛剛用掉的那個，跟著那次改動一起
 commit（沒有其他改動要 commit 時，單獨為這一行開一個小 commit 也
@@ -4879,6 +4879,35 @@ reconstruction pipeline 出貨，**歷史 IV 今天實際拿得到**。兩張應
 非路徑最差值，已由 #210 給定輸入）；frontier＝#211／#212／#213；
 #215 剩 #211／#212／#213 三個 blocker。地圖 #209 的 Destination／
 Decisions so far／Not yet specified／Out of scope 均已同步更新。
+
+**#212 已 resolve（2026-08-28，`/wayfinder 209` 單票 grilling，
+回報#040）**——Family ↔ subtype domain model 邊界 Owner Decision 定案：
+
+1. **(a) 存 family**：`Scenario.strategies` 詞彙從 subtype 代碼改存
+   family 代碼（`single-leg`／`vertical-spread`／`butterfly`），
+   legacy subtype 字串讀取端靜態映射、不做資料遷移；backend 日後
+   新增 subtype 時既有劇本下次 refresh 自動吃到，零遷移。
+   SCENARIO_CREATED 只記 family（stored preference，合法）。
+2. **subtype 於分析時間由 backend 展開**（family × 衍生三態方向 ×
+   啟用集合），使用者永遠不接觸 subtype 選擇。
+3. **首版 roster debit 先行 6 個**：long-call／long-put／
+   bull-call-spread／bear-put-spread（＝今天引擎原樣）／call-fly／
+   put-fly。credit 三兀（bull-put／bear-call／iron-fly）名字進
+   詞彙表、**啟用 gate 掛在 #213**（C2 clamp 讓 credit 每個數字
+   靜默錯誤，修對前不啟用）。
+4. **同 family 多 subtype 同一池競爭**：subtype 是候選屬性（如同
+   履約價）、不是分組維度，不設 subtype 分區／tab。
+5. **eligibility 在 backend、以 subtype 為單位**（skipped_direction
+   先例）；family 的可選／不可選＝旗下任一啟用 subtype eligible
+   （OR 投影逐格重現 #210 矩陣）；frontend 只渲染 verdict。
+6. 候選攜帶具體 subtype 代碼（沿用既有引擎 strategy 字串不改名）；
+   `subtype→family` 全站唯一靜態對照表。反過度抽象護欄確認：無
+   registry／plugin／策略類別階層／per-family config，詞彙固定
+   3 family × 9 subtype（6 啟用）。
+
+**Frontier 現況**：#212 closed（completed）；frontier＝#211／#213
+（#215 剩這兩個 blocker）。fog「family tab 空狀態與 eligibility
+揭露文案」隨 #210＋#212 定案降級為 /to-spec 文案細節，自地圖移除。
 
 ### 施工依據
 
