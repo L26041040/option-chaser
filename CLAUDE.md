@@ -27,7 +27,7 @@ block 裡，不能切成好幾個 code block、也不能中間插普通文字把
 `［回報#001］spec #137 拆票完成`）。編號是**累計總數**，不因換
 session、換分支、換主題而歸零——目前最新編號記在這裡：
 
-> 目前次序：040（下一份回報用 041）
+> 目前次序：041（下一份回報用 042）
 
 每發一份回報就把上面這個數字改成剛剛用掉的那個，跟著那次改動一起
 commit（沒有其他改動要 commit 時，單獨為這一行開一個小 commit 也
@@ -4908,6 +4908,39 @@ Decisions so far／Not yet specified／Out of scope 均已同步更新。
 **Frontier 現況**：#212 closed（completed）；frontier＝#211／#213
 （#215 剩這兩個 blocker）。fog「family tab 空狀態與 eligibility
 揭露文案」隨 #210＋#212 定案降級為 /to-spec 文案細節，自地圖移除。
+
+**#213 已 resolve（2026-08-28，`/wayfinder 209` 單票 grilling，
+回報#041）**——非單調／credit payoff 估值與排名語意 Owner Decision
+定案（canonical payoff semantics）：
+
+1. **payoff 一律逐腿直算**：`V(S)＝Σ 方向符號×口數×單腿價值`；
+   `[0,width]` clamp（C2 地雷，`valuation.py:326-334`）廢除，
+   max profit／max loss／breakeven 由 piecewise-linear 導出，不寫
+   per-subtype 封套公式（C2 正是那條路線的產物）。
+2. **return 分母＝max loss（最大可損資本，worst 口徑）**——T12／
+   附錄 A14.2 成本口徑的修訂，需求方明示核准：worst execution
+   原則不動，分母語意從「debit 成本」升級為「最大可損資本」，
+   debit 下兩者恆等（全家族逐位元不變為硬條件）；credit＝W−C；
+   「−100%＝全損」成為全 family 不變量（否決「收到的 credit 當
+   分母」——崩盤 −122% 穿破不變量；否決券商保證金公式——非市場
+   事實）。驗算真實 bull put K85/K90：達標 +81.8%、崩盤 −100%，
+   現行病態（恆 −1.0／max_profit 7.25＞width／符號翻轉）全消失。
+3. **ranking 維持 point evaluation**（V(target) 於自身 expiry，
+   #210 給定）；breakeven 泛化為導出根集合（單調 1 點、fly 2 點）；
+   completion 單調家族逐位元不變、非單調改報獲利區間（兩邊界，
+   含 target 上方側）；七情境／resilience／heatmap 全 family 沿用。
+4. **衍生指標分母同步**：leverage＝|net_delta|×spot/max loss、
+   friction＝(net_worst−net_mid)/|net_mid|、`_spread_tie_key` 同步
+   ——debit 全部恆等不變。filters 三道閘門（單邊過濾／
+   long_is_lower／net_mid≤0）改 per-subtype 結構合法性規則。
+5. **Butterfly spec-ready**（語意齊備，剩 #211 payload）；**credit
+   三兀「語意未定」gate 解除**，轉為可驗證工程＋驗證 AC（逐腿
+   估值取代 C2＋回歸斷言含「credit baseline_return 不得為常數」、
+   per-subtype 合法性、真實資料驗證、「收到 credit＋最大風險」
+   兩欄顯示），是否進 V2 首發歸 #215。
+
+**Frontier 現況**：#213 closed（completed）；frontier＝**#211**
+（最後一張 grilling 票；#215 只剩它一個 blocker）。
 
 ### 施工依據
 
