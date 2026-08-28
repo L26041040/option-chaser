@@ -27,7 +27,7 @@ block 裡，不能切成好幾個 code block、也不能中間插普通文字把
 `［回報#001］spec #137 拆票完成`）。編號是**累計總數**，不因換
 session、換分支、換主題而歸零——目前最新編號記在這裡：
 
-> 目前次序：041（下一份回報用 042）
+> 目前次序：042（下一份回報用 043）
 
 每發一份回報就把上面這個數字改成剛剛用掉的那個，跟著那次改動一起
 commit（沒有其他改動要 commit 時，單獨為這一行開一個小 commit 也
@@ -4941,6 +4941,54 @@ Decisions so far／Not yet specified／Out of scope 均已同步更新。
 
 **Frontier 現況**：#213 closed（completed）；frontier＝**#211**
 （最後一張 grilling 票；#215 只剩它一個 blocker）。
+
+**#213 Addendum＋#211＋#216 已完成（2026-08-28，回報#042）**——
+需求方兩段式指示：先補 #213 clarification、再 resolve #211。
+
+**#213 Addendum（Owner clarification，不重開票）**：①詞彙分離
+**Scenario Value**（ranking 評估量＝「underlying 在 target_date
+當天剛好等於 target_price 時 position 在那一刻值多少」；expiration
+晚於 target_date 的候選**含剩餘時間價值**、早於等於者＝Expiration
+Payoff at target；target 前後多個 expiration 共同參與 ranking）vs
+**Expiration Payoff**（max profit／max loss／breakeven／profit
+region 唯一來源），不得混用——原 resolution「於自身 expiry」表述
+被取代；②defined-risk candidate 導出 max_loss 必須 > 0，否則
+invalid（不進 ranking、不計 ROI、只記 diagnostic，不得產生
+Infinity／宇宙級 ROI）；③**friction 自 canonical model 移除**
+（worst executable entry 已內生 execution spread，不二次處理；
+原 friction 公式撤回、credit AC 的 friction 項移除；既有
+friction 欄位／函式標記 spec 階段 legacy 清理對象）。
+
+**#211 已 resolve（`/wayfinder 209` 單票 grilling）**：
+1. 代表候選＝**「B 儲存＋A 顯示」**（需求方原話）：卡片頭條＝
+   跨 family 冠軍（#213 統一分母後同一把尺；口徑升級明文入
+   spec／CONTEXT.md 非靜默），儲存 scalar 冠軍保留（排序零改動）
+   ＋新增 per-family 代表 map（additive JSONB）——資料不在儲存面
+   抹殺，日後改 per-family 顯示零遷移。詳細頁預設 tab＝冠軍
+   family。
+2. payload＝**儲存全保真、wire 投影＋top-N**：detail 回應每啟用
+   family 只帶 expiry_top10（≤5 期×10）＋expiry_best＋
+   representative＋pool 只留被引用 key；all_candidates（歷史
+   連續性用）永不上 wire。
+3. **matrix 全候選照帶不 lazy**（需求方硬需求：每候選展開即見
+   熱力圖），採 #216 研究組合一壓縮。
+4. candidate wire＝共用骨架＋`legs[]`（任意腿數；C3 地雷修形
+   定案），subtype 代碼＋靜態標籤表。
+5. lazy 名單不動；detail 單一 fetch per (id, analyzed_at) 含全部
+   family；tab 首屏最小集＝verdict＋representative＋top-N 列；
+   Refresh Run 語意不動；新增優化僅限使用者觸發或有上限預取。
+
+**#216 已 resolve（research，Sonnet subagent）**：Candidate
+heatmap matrix 傳輸壓縮——組合一（shared axes dedup＋cells flat
+array／round4，交 Vercel gzip／brotli）：150 候選模擬
+candidate_pool raw 726KB→437KB（−39.8%）、brotli 50KB→28KB；
+軸數與候選數結構性脫鉤（實測 10 組軸）。base64 Float32 壓縮後
+反而更差、否決；「傳種子前端重算」違反零金融計算紅線、否決。
+組合二（progressive prefetch）defer 至 production 數字（入 map
+fog）。文件 `docs/research/heatmap-matrix-payload-compression.md`。
+
+**Frontier 現況**：#211／#216 closed；**#215 正式解鎖**（blockers
+#210–#214 全 closed）＝地圖最後一張票，走完即可安全進 /to-spec。
 
 ### 施工依據
 
