@@ -27,7 +27,7 @@ block 裡，不能切成好幾個 code block、也不能中間插普通文字把
 `［回報#001］spec #137 拆票完成`）。編號是**累計總數**，不因換
 session、換分支、換主題而歸零——目前最新編號記在這裡：
 
-> 目前次序：042（下一份回報用 043）
+> 目前次序：043（下一份回報用 044）
 
 每發一份回報就把上面這個數字改成剛剛用掉的那個，跟著那次改動一起
 commit（沒有其他改動要 commit 時，單獨為這一行開一個小 commit 也
@@ -4989,6 +4989,60 @@ fog）。文件 `docs/research/heatmap-matrix-payload-compression.md`。
 
 **Frontier 現況**：#211／#216 closed；**#215 正式解鎖**（blockers
 #210–#214 全 closed）＝地圖最後一張票，走完即可安全進 /to-spec。
+
+**#213 Correction＋#215 已完成——地圖 #209 Destination 達成
+（2026-08-29，回報#043）**：
+
+**#213 Correction（Owner canonical product model 訂正，superseding
+comment 落 #213／#211，不重開票）**：①產品＝**Scenario Bet
+Ranking**（「劇本成立時哪個 candidate 成功情境報酬最好」），不是
+risk-adjusted return optimizer；②**「全 family 統一 max_loss 當
+return 分母」撤回 canonical 地位**——debit 維持既有語意（劇本成立
+時相對**實際投入成本**的報酬；數值不變、T12/A14.2 不視為被修訂），
+失敗情境不是 ranking 維度；③**credit return semantics＝unresolved
+scope**（要啟用 credit 必須先有符合 Scenario Bet 哲學的獨立分母
+定義，不自行決定 max_loss／credit／margin）；④Scenario Value／
+Expiration Payoff 降級為 implementation-level 計算區分（不進產品
+概念、不改 UI、不要求使用者理解）；⑤**expiration 分組是產品結構
+必須保留**（多 expiration 共同分析、依 expiration 分區呈現）；
+⑥#211 的跨 family 可比理據同步訂正（首發全 debit＝同為「相對
+實際投入成本」同一把尺，非 risk-capital 尺）。仍 canonical：逐腿
+直算、worst execution entry、point ranking、BE 導出根、獲利區間、
+max_loss>0 validity、friction 移除、#210／#212 全部裁定。
+
+**#215 已 resolve（`/wayfinder 209` 收尾票，grilling）**：
+1. **Initial V2 封板**：3 family × 6 debit subtype（long-call／
+   long-put／bull-call／bear-put／call-fly／put-fly）；**持平劇本
+   （target==spot）首發就上**（Owner：「就當作停在原地」，僅
+   Butterfly 可選，照畫該到期日熱力圖，不多發明設計）；credit
+   vertical 與 iron-fly **deferred**（return semantics 未
+   canonical）；首發全 debit ⇒ C1 單邊過濾本輪不需拆。
+2. Vertical／Butterfly 的「貴不貴」區塊**整塊不顯示**（不留空
+   狀態文字）；Butterfly M percentile 緩發（3 腿涵蓋率未量測）；
+   兩腿 IV 走勢與 IV Gap 走勢（descriptive）照常。
+3. 舊劇本：讀成 vertical-spread family、升版當天逐位元不變、
+   不自動開新 family（編輯可加勾）。
+4. 硬回歸紅線六條：#118 沿用＋debit bitwise parity（估值改逐腿
+   直算後）＋到期日分組結構不變＋四策略 golden fixtures
+   byte-locked＋stored view 讀取相容不遷移＋既有功能零回歸；
+   另 fly 歷史身份列 day-1 落盤＋fly 淨成本走勢圖首發即支援。
+5. 施工六段式（風險遞減、每段獨立可驗）：**A 護欄**（#118 擴充
+   ＋debit bitwise 基準）→**B 估值核心**（逐腿直算取代 clamp，
+   畫面零變化下 bitwise 驗證）→**C 儲存/domain**（family 詞彙＋
+   legacy 映射＋per-family map）→**D Call/Put 端到端**（C4 兩
+   欄位修＋family tab 首例）→**E Butterfly 端到端**（枚舉＋
+   validity＋legs[]/C3＋獲利區間＋持平三態/_grid_price＋payload
+   投影/matrix 壓縮/schema 升版）→**F 收尾**（全面回歸＋E2E＋
+   真機驗收清單）。
+6. Out of scope 封板：credit 三兀／Condor／Straddle-Strangle／
+   Calendar-Diagonal／Covered-Collar／Dashboard／Recommended／
+   兩 family package percentile／prefetch／多使用者／N-leg／
+   新 friction 指標／順手 cleanup，施工不得順手加入。
+
+**地圖 #209 全部收尾**：#210–#216 七張全 closed（#214
+not_planned），Destination 標記達成、Notes 補 Scenario Bet 紅線、
+credit 三兀入 Out of scope。**下一步＝/to-spec，等需求方 cue，
+本 session 依規停止。**
 
 ### 施工依據
 
