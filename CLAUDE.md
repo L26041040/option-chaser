@@ -27,7 +27,7 @@ block 裡，不能切成好幾個 code block、也不能中間插普通文字把
 `［回報#001］spec #137 拆票完成`）。編號是**累計總數**，不因換
 session、換分支、換主題而歸零——目前最新編號記在這裡：
 
-> 目前次序：043（下一份回報用 044）
+> 目前次序：044（下一份回報用 045）
 
 每發一份回報就把上面這個數字改成剛剛用掉的那個，跟著那次改動一起
 commit（沒有其他改動要 commit 時，單獨為這一行開一個小 commit 也
@@ -5043,6 +5043,39 @@ max_loss>0 validity、friction 移除、#210／#212 全部裁定。
 not_planned），Destination 標記達成、Notes 補 Scenario Bet 紅線、
 credit 三兀入 Out of scope。**下一步＝/to-spec，等需求方 cue，
 本 session 依規停止。**
+
+### Initial V2 spec 已發布＝issue #217（2026-08-29，`/to-spec`，回報#044）
+
+地圖 #209 的七張票決策收斂成單一份 spec：**issue #217「Initial V2：
+方向性策略擴充（Call / Put、Vertical Spread、Butterfly）」**，標
+`ready-for-agent`，63 條 user stories。
+
+**施工前先讀 spec §A**（產品定位）與 **§Q**（六段式順序）。重點：
+
+- **測試接縫：沿用既有七個、零新增**（需求方核准）——① HTTP API
+  ② 引擎純函式 ③ Storage port 契約（memory＋真 Postgres 雙跑）
+  ④ 契約樣本 drift（需新增一份 Butterfly 樣本）⑤ 選取身份守門
+  （#118，本輪**擴充**加上 debit 數值 bitwise parity）⑥ CLI golden
+  fixtures ⑦ 前端 Vitest＋Playwright 兩 project。
+- **12 條硬回歸紅線**寫進 spec Testing Decisions，含「既有
+  bull-call／bear-put 逐位元不變」「到期日分組結構不變」「fly
+  legs[] 長度 3」「熱力圖展開零額外請求」等。
+- **施工中一個必須避開的陷阱**（已在 #213 留防呆註記）：#213
+  Addendum A 的字面文字會讓人以為要把後錨點到期日的候選改成
+  「在錨點當天含時間價值估值」——**不可以**。需求方澄清「劇本只是
+  設定，以某個到期日來看，最佳收益如何」，ranking 維持 T3／#17
+  的「各候選用自身到期日」既有語意，Scenario Value／Expiration
+  Payoff 的區分只是 implementation-level，且在既有熱力圖裡本來就
+  存在，本次不新增、不改任何 ranking 數字。
+- **詞彙對齊**：地圖討論用 `target_date`，但產品既有時間語意是
+  月級 `target_month`（CONTEXT.md 明文「不要用目標日期」），spec
+  一律用 `target_month`，`target_date` 不進產品詞彙。
+- **施工前先更新 CONTEXT.md**（該檔自身規則）：新增 Strategy
+  Family／Subtype／Scenario Bet Ranking／Direction（衍生三態）／
+  Eligibility／Profit Region／Per-family Representative 七個詞條，
+  並記錄 friction 已自 canonical model 退場。
+
+**下一步＝/to-tickets**（依 spec §Q 六段切票），等需求方 cue。
 
 ### 施工依據
 
