@@ -65,10 +65,17 @@ def test_natural_return_merged_into_baseline():
 def test_quote_warning_is_two_conditions_since_friction_retired():
     """T04（#220，#217 決策 D）：friction 自 canonical model 退場後，
     `quote_warning` 的第三個條件（fr>0.25）隨之移除，不新增任何替代
-    指標——現在只剩零成交量與價差過寬兩個 OR 條件。這是本票對這個
-    既有選取閘門唯一預期中的行為變動；已用真實 fixture 核對過
-    friction>0.25 的既有候選全部本來就已因 wide_spread 觸發，選取
-    身份因此逐位元不變（見 `CandidateView.quote_warning` 欄位註解）。"""
+    指標——現在只剩零成交量與價差過寬兩個 OR 條件。
+
+    ⚠ 更正（`/code-review` Spec 軸抓到）：這個公式變動**確實會讓某些
+    候選的 quote_warning 值翻轉**（例如 `contracts/analysis_sample.
+    json` 的 bull-call-spread|118|122 候選，friction 恰為 0.25、
+    wide_spread_warning=False），這份 fixture（`xyz_v2_snapshot.json`）
+    剛好沒有踩到那個交集不代表公式沒變。真正的安全網是
+    `quote_warning` 唯一的消費端（`_build_groups` 的
+    `default_selection`／`ExpiryGroup.rows[].badges`）是 `src/` 全站
+    零消費者的既有死碼（#104 施工時已 grep 確認過），見
+    `CandidateView.quote_warning` 欄位註解。"""
     result = service.run_offline(_request(), SNAP)
     for res in result.results:
         p = _params_for(result, res.strategy)

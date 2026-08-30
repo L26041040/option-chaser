@@ -131,10 +131,20 @@ class CandidateView:
     # `_build_groups` 內部挑選 default_pair。顯示旗標另外分家成
     # `wide_spread_warning`（見下），語意收斂成單一、可行動的判準。
     # T04（#220，#217 決策 D）：friction 已自 canonical model 退場，
-    # 原本的第三個條件（fr>0.25）隨之移除，不新增任何替代指標——
-    # 這是本票唯一預期中的 quote_warning 行為變動，已用真實 fixture
-    # 核對：friction>0.25 的既有候選全部本來就已因 wide_spread 觸發，
-    # 沒有任何候選單獨依賴這個條件，選取身份因此逐位元不變。
+    # 原本的第三個條件（fr>0.25）隨之移除，不新增任何替代指標——這是
+    # 本票唯一預期中的 quote_warning 行為變動。
+    # ⚠ 更正（`/code-review` Spec 軸抓到）：這個公式變動**確實會讓某些
+    # 候選的 quote_warning 從 True 翻成 False**——例如
+    # `contracts/analysis_sample.json` 的 bull-call-spread|118|122
+    # 候選（friction 恰為 0.25、wide_spread_warning=False），先前
+    # commit 聲稱「沒有任何候選單獨依賴這個條件」不準確，已用契約樣本
+    # 逐位元核對推翻。真正成立的是：quote_warning 唯一的消費端是
+    # `_build_groups()` 產生的 `default_selection`／
+    # `ExpiryGroup.rows[].badges`——這是 v4 舊「到期日分組比較」遺留
+    # 結構，`src/` 全站零消費者（#104 施工時已 grep 確認過的既有死碼，
+    # 非本票新產生），因此這個翻轉**沒有任何使用者可見影響**，但這是
+    # 「消費端剛好是死碼」的巧合結果，不是「這個公式改動本身不影響
+    # 任何候選」。
     quote_warning: bool
     # 顯示旗標（決策 F）：⚠ 徽章與候選池文案只認這個——僅 `is_spread_wide`
     # 一項，不含零成交量。
