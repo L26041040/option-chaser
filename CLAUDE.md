@@ -27,7 +27,7 @@ block 裡，不能切成好幾個 code block、也不能中間插普通文字把
 `［回報#001］spec #137 拆票完成`）。編號是**累計總數**，不因換
 session、換分支、換主題而歸零——目前最新編號記在這裡：
 
-> 目前次序：049（下一份回報用 050）
+> 目前次序：050（下一份回報用 051）
 
 每發一份回報就把上面這個數字改成剛剛用掉的那個，跟著那次改動一起
 commit（沒有其他改動要 commit 時，單獨為這一行開一個小 commit 也
@@ -5395,6 +5395,50 @@ Long Put／Bull Call Spread／Bear Put Spread 的 `max_profit`／
 異動，未重寫 spec 本文。
 
 **下一張＝T04 #220**（friction 自 canonical model 退場），無 blocker。
+
+### T04（#220）完成——friction 自 canonical model 整個退場（2026-08-30，回報#050）
+
+friction 概念從 `option_chaser/scenarios.py`（`friction()` 函式）、
+`CandidateView.friction`／`friction_amount` 兩欄位（`service.py`）、
+契約序列化（`store.py`）、CLI 報告一行（`report.py`）、前端型別
+（`api.ts`）與 Analysis Report「Execution Friction」列（`AnalysisReport.
+tsx`）**全部一併移除**，不新增任何替代的 friction／滑價／執行成本
+指標。新增兩條結構性測試防止它悄悄回來（契約裡不得出現這兩個 key；
+`scenarios.py`／`service.py`／`store.py`／`report.py` 原始碼不含
+`friction` 字樣）。
+
+**既有 `quote_warning` 選取閘門的複合公式**（FB5-02／#63，
+`zero_vol or wide_spread or fr>0.25`）拿掉第三個條件，改為
+`zero_vol or wide_spread`——**`/code-review` Spec 軸抓到一個真的不
+準確的宣稱並已修正**：commit `09a224e` 原本聲稱「沒有任何候選單獨
+依賴這個條件，選取身份因此逐位元不變」，實測用契約樣本逐位元核對
+後推翻——`contracts/analysis_sample.json`／`analysis_sample_bear_
+put.json` 各有一個候選真的翻轉了（`ExpiryGroup.rows[].badges` 從
+`['warning']` 變 `[]`）。真正站得住的理由是：`quote_warning` 唯一的
+消費端 `_build_groups()`／`default_selection`／`badges` 是 v4 舊
+「到期日分組比較」遺留結構，`src/` 全站零消費者（#104 施工時已
+grep 確認的既有死碼，非本票新產生）——這個翻轉因此沒有使用者可見
+影響，但這是「消費端剛好是死碼」的巧合，不是「公式改動不影響任何
+候選」。已在 `service.py` 欄位註解與對應測試 docstring 更正
+（follow-up commit `65f1ec5`，純註解修正）。
+
+**golden fixtures／契約樣本重產，逐一核對 diff 範圍**：四份 CLI
+golden 各自只少一句 `| Bid-Ask Spread: X%（$Y/股）` 後綴；兩份契約
+樣本只刪除每個候選的 `friction`／`friction_amount` 兩個 key；T01
+（#218）數值基準把這兩個欄位從凍結名單移到完全不存在（本基準腳本
+文件裡記錄的唯一第二個合法重產時機）。
+
+**全套測試**：後端 1453 passed（記憶體＋真實 Postgres，含 T01 基準與
+選取身份守門）；前端 typecheck 乾淨、vitest 671 passed、production
+build 成功；Playwright e2e 92 passed（iPhone＋Desktop）。`/code-
+review`（Standards＋Spec 兩軸）：Standards 軸零 hard violation；Spec
+軸抓到上述一處真發現並已修正跟進。
+
+**#220 已 close。** commit `09a224e`＋follow-up `65f1ec5`。
+
+**下一個 frontier**：依 Step 4 指示本輪到此為止，**不自行施工
+T06／T09／T12／T15**，等 Owner 下一步指示。T06 #221、T09 #222、
+T12 #228 三張目前皆無 blocker、可立即開工。
 
 ### 施工依據
 
