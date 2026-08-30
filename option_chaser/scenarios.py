@@ -1,7 +1,9 @@
 """v4 spec §2: seven-scenario resilience engine. Pure, deterministic.
 
 Every valuation goes through the existing primitives scenario_leg_value /
-spread_scenario_value (American clamp + [0, width] clamp included).
+spread_scenario_value. T02（#219）：後者的 `[0, width]` clamp 已廢除，
+現在是純逐腿加總（`valuation.payoff_value`）——American clamp（`clamped_
+price`／`american_price` 的內在價值下限）仍在單腿層級生效，不受影響。
 """
 from __future__ import annotations
 

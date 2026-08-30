@@ -13,8 +13,19 @@ Initial V2 的 T02（逐腿 payoff 直算）與 T03（包絡量由 payoff 導出
 「零變化」的可執行證明。
 
 **什麼時候可以重跑這支腳本**：只有在數字**確定是刻意改變**的時候，
-而且要跟需求方確認過。已知的合法時機只有一個：T04（#220）把 friction
-自 canonical model 移除（#217 決策 D）。T02／T03 期間跑出差異＝有 bug，
+而且要跟需求方確認過。已知的合法時機目前有兩個：
+
+1. **T02（#219，2026-08-30 Owner 核准）**——`spread_scenario_value` 的
+   `[0, width]` clamp 廢除後，兩腿 vendor IV 不同（真實市場 skew）時，
+   逐腿直算值可能微幅超出 width；舊 clamp 會無聲地夾掉這個張力，新版
+   如實顯示。實測影響：XYZ bull-call-spread 105/110 候選的 3 個
+   Heatmap 格點（`matrix.cells[9][0]`／`[10][0]`／`[10][1]`）。範圍
+   極窄——僅此一組候選、僅這 3 格，其餘 1999 格與其餘三個策略逐位元
+   不變，已用「監控每一種輸出、不是只看測試綠燈」的方式核對過
+   （CLI golden fixtures、契約樣本皆零漂移）。
+2. **T04（#220）**把 friction 自 canonical model 移除（#217 決策 D）。
+
+除了以上兩個已知、已記錄的例外，T03 及之後的票期間跑出差異＝有 bug，
 不是基準過期。
 
     PYTHONPATH=. .venv/bin/python scripts/gen_numeric_baseline.py

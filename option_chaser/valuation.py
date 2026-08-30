@@ -323,15 +323,74 @@ def leg_greeks(option_type: str, S: float, K: float, T: float, r: float,
     )
 
 
+@dataclass(frozen=True)
+class WeightedLeg:
+    """T02（#219，#217 決策 B）：一條腿在某個 payoff 加總裡的角色——
+    符號（多／空）、口數、以及（可選的）carry 校準結果。這是本票引入的
+    逐腿加總原語，**不假設腿數、不假設買賣方向組合**——供 T12（#228，
+    共用骨架 legs[]）與 T15（#230，Butterfly 枚舉）之後的任意腿數結構
+    直接複用；本票本身不新增任何新結構，只用它取代既有兩腿 Spread 的
+    封套公式。"""
+    contract: OptionContract
+    sign: float          # +1.0＝方向與買方一致（long），-1.0＝short
+    quantity: int = 1
+    carry: LegCarry | None = None
+
+
+def payoff_value(legs: tuple[WeightedLeg, ...], S: float, at: date,
+                 p: AnalysisParams, shift: float = 0.0) -> float:
+    """#217 決策 B：payoff 一律逐腿直算——`V(S) = Σ 方向符號 × 口數 ×
+    單腿價值`。到期＝內在價值、到期前＝既有逐腿模型估值（BS93＋carry），
+    這兩件事都已經是 `scenario_leg_value` 自己的既有行為，本函式只負責
+    加總，**不對加總結果做任何額外的 clamp／floor／cap**。
+
+    不假設 `legs` 的長度或裡面符號的組合方式——空集合回傳 0.0（純加總
+    的自然結果，不需要特殊分支）。
+    """
+    return sum(leg.sign * leg.quantity * scenario_leg_value(
+        leg.contract, S, at, p, shift, leg.carry) for leg in legs)
+
+
 def spread_scenario_value(
     long_leg: OptionContract, short_leg: OptionContract,
     S: float, at: date, p: AnalysisParams, shift: float = 0.0,
     long_carry: LegCarry | None = None, short_carry: LegCarry | None = None,
 ) -> float:
-    width = abs(short_leg.strike - long_leg.strike)
-    raw = (scenario_leg_value(long_leg, S, at, p, shift, long_carry)
-           - scenario_leg_value(short_leg, S, at, p, shift, short_carry))
-    return min(max(raw, 0.0), width)
+    """T02（#219）：逐腿直算，取代舊有的 `min(max(long-short,0), width)`
+    封套公式——那是「long debit vertical 的 payoff 包絡寫成算術」的
+    地雷之一（#217 決策 B 明令廢除）。
+
+    移除前已用 T01（#218）數值基準核對：在**到期日**（`scenario_
+    values`／`baseline_value`／排名所用的口徑，T3／#17 既有裁示）以及
+    絕大多數 Heatmap 格點上，這個 clamp 從未真正生效——到期時兩腿內在
+    價值差恆在 `[0, width]`（`intrinsic(K1)-intrinsic(K2)` 對 K1<K2 的
+    call 必然如此）；到期前，若兩腿共用**同一個** sigma，BS 定價的
+    monotone-in-strike 性質保證 `C(K1)-C(K2) <= (K2-K1)e^{-rT} < width`。
+
+    **但兩腿的 vendor IV 通常不同**（真實市場 skew）——這個保證只在
+    「同一 sigma」的前提下成立。核對中實測抓到一個真實反例：XYZ 的
+    105/110 call（買腿 IV 0.36、賣腿 IV 0.30）在 2026-07-15、S=133.2
+    這個 Heatmap 格點，逐腿直算 `5.017486628026035` 微幅超出
+    `width=5.0`（超出 0.35%）——這不是浮點雜訊，是「各腿各自反解自己
+    的 IV、分開定價」這個既有模型（未經 carry 校準時的既有行為，非
+    T02 引入）在有 skew 時的真實性質。舊 clamp 會把這種情況無聲地夾回
+    `width`，讓使用者看不出這裡其實有模型張力；移除後如實顯示逐腿加總
+    的結果——這正是 #217 決策 B 要的「不再有結構專屬封套公式」。
+
+    Owner 2026-08-30 核准：拿掉 clamp、更新 T01 基準反映這 3 格的新值
+    （XYZ bull-call-spread 105/110 候選，`matrix.cells[9][0]`／
+    `[10][0]`／`[10][1]`），此後繼續 byte-locked。CLI golden fixtures
+    與契約樣本核對後零漂移（未踩到這個特定 skew 組合）。
+
+    這裡仍是一個薄殼——只是把兩腿包成 `WeightedLeg` 交給 `payoff_
+    value()`，簽章（`long_leg`／`short_leg`／`long_carry`／
+    `short_carry`）維持既有兩腿呼叫慣例不變，供 `ranking.py`／
+    `report.py`／`scenarios.py`／`service.py` 現有呼叫點零改動沿用；
+    共用骨架的任意腿數版本留給 T12（#228）處理。
+    """
+    legs = (WeightedLeg(contract=long_leg, sign=1.0, quantity=1, carry=long_carry),
+           WeightedLeg(contract=short_leg, sign=-1.0, quantity=1, carry=short_carry))
+    return payoff_value(legs, S, at, p, shift)
 
 
 @dataclass(frozen=True)
