@@ -200,7 +200,8 @@ test("進階區：分析報告與原始資料展開才載入（V8／#56，MVP V3
   await report.getByText("📄 分析報告").click();
   await expect(report.getByText("Risk / Payoff")).toBeVisible();
   await expect(report.getByText("Position Sensitivity")).toBeVisible();
-  // 精確比對——「Execution」是「Execution Friction」列標籤的子字串。
+  // 精確比對區塊標題本身（T04／#220 起 friction 已退場，不再有
+  // 「Execution Friction」列標籤這個子字串疑慮，但精確比對仍是好習慣）。
   await expect(report.getByText("Execution", { exact: true })).toBeVisible();
   await expect(report.getByText("Model & Assumptions")).toBeVisible();
   // Model & Assumptions 是巢狀收合區，外層展開不代表它也展開。

@@ -28,9 +28,10 @@ function CandidateRow({ candidate, rank }: { candidate: Candidate; rank: number 
           <span className="candidate-head">
             <span className="rank">#{rank}</span>
             {/* MVP V3（#104，spec #102 決策 F）：⚠ 只在 Bid/Ask 過寬時
-                出現，文案明確寫「Bid/Ask 過寬」——零成交量與 Execution
-                friction 超過 25% 不再觸發這個徽章（LEAPS／冷門履約價
-                零成交是常態，不是報價可疑的證據）。 */}
+                出現，文案明確寫「Bid/Ask 過寬」——零成交量不再觸發這個
+                徽章（LEAPS／冷門履約價零成交是常態，不是報價可疑的
+                證據）。T04（#220）起 friction 已自 canonical model
+                整個退場，不再是這個徽章曾經的觸發條件之一。 */}
             {candidate.wide_spread_warning && (
               <span className="tag warn" title="Bid/Ask 過寬">
                 ⚠

@@ -225,8 +225,6 @@ def _candidate(cv: CandidateView, strategy: str, capital: float | None,
         "completion_threshold": cv.completion_threshold,
         "breakeven_at_target": cv.breakeven_at_target,
         "retention": cv.retention,
-        "friction": cv.friction,
-        "friction_amount": cv.friction_amount,
         "buffer_days": cv.buffer_days,
         # MVP V3（#104，spec #102 決策 F）：`quote_warning`（選取閘門用的
         # 複合旗標）不對外序列化——只有 `wide_spread_warning`（僅

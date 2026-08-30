@@ -522,9 +522,7 @@
        "volume": 2,
        "open_interest": 60
       }
-     ],
-     "friction": 0.028901734104046308,
-     "friction_amount": 0.15000000000000036
+     ]
     },
     "bear-put-spread|100|85|2026-10-16": {
      "baseline_pnl": 10.7,
@@ -1034,9 +1032,7 @@
        "volume": 0,
        "open_interest": 300
       }
-     ],
-     "friction": 0.04242424242424237,
-     "friction_amount": 0.17499999999999982
+     ]
     },
     "bear-put-spread|100|90|2026-10-16": {
      "baseline_pnl": 8.1,
@@ -1546,9 +1542,7 @@
        "volume": 10,
        "open_interest": 3
       }
-     ],
-     "friction": 0.11764705882352922,
-     "friction_amount": 0.19999999999999973
+     ]
     },
     "bear-put-spread|100|92|2026-10-16": {
      "baseline_pnl": 5.6,
@@ -2058,9 +2052,7 @@
        "volume": 10,
        "open_interest": 100
       }
-     ],
-     "friction": 0.8461538461538454,
-     "friction_amount": 1.0999999999999996
+     ]
     },
     "bear-put-spread|85|70|2026-10-16": {
      "baseline_pnl": 3.81,
@@ -2570,9 +2562,7 @@
        "volume": 2,
        "open_interest": 60
       }
-     ],
-     "friction": 0.11737089201877934,
-     "friction_amount": 0.125
+     ]
     },
     "bear-put-spread|90|70|2026-10-16": {
      "baseline_pnl": 6.359999999999999,
@@ -3082,9 +3072,7 @@
        "volume": 2,
        "open_interest": 60
       }
-     ],
-     "friction": 0.04297994269340971,
-     "friction_amount": 0.1499999999999999
+     ]
     },
     "bear-put-spread|90|85|2026-10-16": {
      "baseline_pnl": 2.4,
@@ -3594,9 +3582,7 @@
        "volume": 0,
        "open_interest": 300
       }
-     ],
-     "friction": 0.07216494845360837,
-     "friction_amount": 0.17500000000000027
+     ]
     },
     "bear-put-spread|92|70|2026-10-16": {
      "baseline_pnl": 7.06,
@@ -4106,9 +4092,7 @@
        "volume": 2,
        "open_interest": 60
       }
-     ],
-     "friction": 0.26992287917737795,
-     "friction_amount": 1.0500000000000003
+     ]
     },
     "bear-put-spread|92|85|2026-10-16": {
      "baseline_pnl": 3.1,
@@ -4618,9 +4602,7 @@
        "volume": 0,
        "open_interest": 300
       }
-     ],
-     "friction": 0.3805309734513273,
-     "friction_amount": 1.0749999999999997
+     ]
     },
     "bear-put-spread|92|90|2026-10-16": {
      "baseline_pnl": 0.5,
@@ -5130,9 +5112,7 @@
        "volume": 10,
        "open_interest": 3
       }
-     ],
-     "friction": 2.750000000000001,
-     "friction_amount": 1.1
+     ]
     }
    }
   },
@@ -5656,9 +5636,7 @@
        "volume": 10,
        "open_interest": 100
       }
-     ],
-     "friction": 5.999999999999996,
-     "friction_amount": 1.2000000000000002
+     ]
     },
     "bull-call-spread|100.5|110|2026-10-16": {
      "baseline_pnl": 7.1,
@@ -6168,9 +6146,7 @@
        "volume": 0,
        "open_interest": 830
       }
-     ],
-     "friction": 0.15662650602409645,
-     "friction_amount": 0.3250000000000002
+     ]
     },
     "bull-call-spread|100.5|130|2026-10-16": {
      "baseline_pnl": 14.149999999999999,
@@ -6680,9 +6656,7 @@
        "volume": 3,
        "open_interest": 50
       }
-     ],
-     "friction": 0.04901960784313725,
-     "friction_amount": 0.25
+     ]
     },
     "bull-call-spread|102|110|2026-10-16": {
      "baseline_pnl": 5.0,
@@ -7192,9 +7166,7 @@
        "volume": 0,
        "open_interest": 830
       }
-     ],
-     "friction": 0.6,
-     "friction_amount": 1.125
+     ]
     },
     "bull-call-spread|102|130|2026-10-16": {
      "baseline_pnl": 12.05,
@@ -7704,9 +7676,7 @@
        "volume": 3,
        "open_interest": 50
       }
-     ],
-     "friction": 0.21428571428571425,
-     "friction_amount": 1.0499999999999998
+     ]
     },
     "bull-call-spread|105|110|2026-10-16": {
      "baseline_pnl": 2.5,
@@ -8216,9 +8186,7 @@
        "volume": 0,
        "open_interest": 830
       }
-     ],
-     "friction": 0.09890109890109873,
-     "friction_amount": 0.22499999999999964
+     ]
     },
     "bull-call-spread|105|130|2026-10-16": {
      "baseline_pnl": 9.55,
@@ -8728,9 +8696,7 @@
        "volume": 3,
        "open_interest": 50
       }
-     ],
-     "friction": 0.028301886792452727,
-     "friction_amount": 0.14999999999999947
+     ]
     },
     "bull-call-spread|110|130|2026-10-16": {
      "baseline_pnl": 6.8,
@@ -9240,9 +9206,7 @@
        "volume": 3,
        "open_interest": 50
       }
-     ],
-     "friction": 0.05785123966942158,
-     "friction_amount": 0.17500000000000027
+     ]
     },
     "bull-call-spread|95|130|2026-10-16": {
      "baseline_pnl": -5.949999999999999,
@@ -9752,9 +9716,7 @@
        "volume": 3,
        "open_interest": 50
       }
-     ],
-     "friction": 0.008143322475570033,
-     "friction_amount": 0.25
+     ]
     }
    }
   },
@@ -10072,9 +10034,7 @@
        "volume": 10,
        "open_interest": 5
       }
-     ],
-     "friction": 0.03846153846153849,
-     "friction_amount": 0.20000000000000018
+     ]
     },
     "long-call|100|2026-08-01": {
      "baseline_pnl": 14.7,
@@ -10378,9 +10338,7 @@
        "volume": 10,
        "open_interest": 100
       }
-     ],
-     "friction": 0.029126213592232903,
-     "friction_amount": 0.14999999999999947
+     ]
     },
     "long-call|110|2026-10-16": {
      "baseline_pnl": 6.75,
@@ -10684,9 +10642,7 @@
        "volume": 0,
        "open_interest": 830
       }
-     ],
-     "friction": 0.04,
-     "friction_amount": 0.125
+     ]
     },
     "long-call|90|2026-11-20": {
      "baseline_pnl": 16.95375749111009,
@@ -10990,9 +10946,7 @@
        "volume": 120,
        "open_interest": 500
       }
-     ],
-     "friction": 0.015151515151515233,
-     "friction_amount": 0.20000000000000107
+     ]
     }
    }
   },
@@ -11310,9 +11264,7 @@
        "volume": 10,
        "open_interest": 100
       }
-     ],
-     "friction": 0.01960784313725501,
-     "friction_amount": 0.10000000000000053
+     ]
     },
     "long-put|115|2026-11-20": {
      "baseline_pnl": 18.0,
@@ -11616,9 +11568,7 @@
        "volume": 50,
        "open_interest": 200
       }
-     ],
-     "friction": 0.011904761904761862,
-     "friction_amount": 0.1999999999999993
+     ]
     },
     "long-put|85|2026-10-16": {
      "baseline_pnl": 3.75,
@@ -11922,9 +11872,7 @@
        "volume": 0,
        "open_interest": 300
       }
-     ],
-     "friction": 0.0638297872340425,
-     "friction_amount": 0.07499999999999996
+     ]
     }
    }
   }

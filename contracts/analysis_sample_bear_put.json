@@ -251,8 +251,6 @@
       "days_to_target": 65,
       "decay_30d_return": -1.0,
       "effective_leverage": 7.719193455126171,
-      "friction": 0.20000000000000018,
-      "friction_amount": 0.10000000000000009,
       "guidance_warnings": [],
       "l2": 4.0,
       "l3": 4.0,
@@ -770,8 +768,6 @@
       "days_to_target": 65,
       "decay_30d_return": -0.9594293669865408,
       "effective_leverage": 6.218520327414946,
-      "friction": 0.2499999999999998,
-      "friction_amount": 0.1499999999999999,
       "guidance_warnings": [],
       "l2": 4.0,
       "l3": 4.0,
@@ -1289,8 +1285,6 @@
       "days_to_target": 65,
       "decay_30d_return": -0.4341892657629244,
       "effective_leverage": 4.732694344675037,
-      "friction": 0.2500000000000003,
-      "friction_amount": 0.20000000000000018,
       "guidance_warnings": [],
       "l2": 4.0,
       "l3": 4.0,
@@ -1808,8 +1802,6 @@
       "days_to_target": 65,
       "decay_30d_return": -0.13184787131264158,
       "effective_leverage": 3.000873011758467,
-      "friction": 0.24444444444444496,
-      "friction_amount": 0.27500000000000036,
       "guidance_warnings": [],
       "l2": 4.0,
       "l3": 4.0,
@@ -2140,9 +2132,7 @@
       "hidden_count": 0,
       "rows": [
         {
-          "badges": [
-            "warning"
-          ],
+          "badges": [],
           "candidate_key": "bear-put-spread|82|78|2026-09-18",
           "strategy": "bear-put-spread"
         }

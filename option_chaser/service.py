@@ -20,9 +20,8 @@ from .ranking import (BAND_ORDER, _spread_tie_key, _tie_break_key,
                       classify, rank, rank_spreads, return_at_price,
                       spread_baseline_return)
 from .report import STRATEGY_LABELS, render, render_filter_only, render_spreads
-from .scenarios import (ResilienceMetrics, ScenarioVector, friction,
-                        natural_cost, resilience_metrics, _grid_price,
-                        _value_fn)
+from .scenarios import (ResilienceMetrics, ScenarioVector,
+                        resilience_metrics, _grid_price, _value_fn)
 from .timeframe import (TargetMonth, calendar_anchor, ensure_month_open,
                         select_expiries)
 from .ratecurve import RateCurve, rate_for_tenor
@@ -126,18 +125,19 @@ class CandidateView:
     completion_threshold: float | None
     breakeven_at_target: float | None
     retention: float
-    friction: float
-    friction_amount: float    # natural_cost(val) − mid 成本（spec §2.3, $/股）
     buffer_days: int
     # MVP V3（#104，spec #102 決策 F）：`quote_warning` 是選取閘門用的
-    # 複合旗標（zero_vol or wide_spread or fr>0.25），**不對外顯示**——
-    # 只供 `_build_groups` 內部挑選 default_pair。顯示旗標另外分家成
+    # 複合旗標（zero_vol or wide_spread），**不對外顯示**——只供
+    # `_build_groups` 內部挑選 default_pair。顯示旗標另外分家成
     # `wide_spread_warning`（見下），語意收斂成單一、可行動的判準。
+    # T04（#220，#217 決策 D）：friction 已自 canonical model 退場，
+    # 原本的第三個條件（fr>0.25）隨之移除，不新增任何替代指標——
+    # 這是本票唯一預期中的 quote_warning 行為變動，已用真實 fixture
+    # 核對：friction>0.25 的既有候選全部本來就已因 wide_spread 觸發，
+    # 沒有任何候選單獨依賴這個條件，選取身份因此逐位元不變。
     quote_warning: bool
     # 顯示旗標（決策 F）：⚠ 徽章與候選池文案只認這個——僅 `is_spread_wide`
-    # 一項，不含零成交量、不含 friction>25%。與 `quote_warning` 分開是
-    # 刻意的：後者要維持既有複合語意才能守住「不改 ranking semantics」
-    # 的 guardrail，兩者計算式不可合併。
+    # 一項，不含零成交量。
     wide_spread_warning: bool
     # FB5-03（#64）：無套利一致性違反（相鄰履約價 ask 不單調）。獨立於
     # `quote_warning`，不合併——嚴重性與成因都不同（配對關係違反，不是
@@ -369,12 +369,11 @@ def _v4_fields(val: ContractValuation | SpreadValuation, spot: float,
     時退回每次都重算，行為與這層快取加入前完全一樣。"""
     rm = resilience_metrics(val, spot, today, p, cache=resilience_cache)
     sv, curve, k, be = rm.scenario, rm.curve, rm.threshold, rm.breakeven
-    fr = friction(val)
     if isinstance(val, SpreadValuation):
         expiry = val.long_leg.expiry
         zero_vol = val.long_leg.volume == 0 or val.short_leg.volume == 0
         # FB5-02（#63）：任一腿的買賣價差超過舊硬門檻公式就標——兩腿各自
-        # 的報價品質，不是合成後的淨值，合成淨值那個訊號已經有 fr>0.25。
+        # 的報價品質，不是合成後的淨值。
         wide_spread = (is_spread_wide(val.long_leg.bid, val.long_leg.ask, p)
                       or is_spread_wide(val.short_leg.bid, val.short_leg.ask, p))
         monotonicity_warning = (val.long_leg.contract_symbol in violations
@@ -391,15 +390,12 @@ def _v4_fields(val: ContractValuation | SpreadValuation, spot: float,
         completion_prices=tuple(_grid_price(spot, p.target_price, k)
                                 for k, _ in curve),
         completion_threshold=k, breakeven_at_target=be,
-        retention=1.0 + dict(sv.entries)["S1"], friction=fr,
-        friction_amount=natural_cost(val) - mid_cost,
+        retention=1.0 + dict(sv.entries)["S1"],
         buffer_days=(date.fromisoformat(expiry) - p.anchor).days,
         # FB5-02（#63）：沿用既有的 `quote_warning` 機制，不新造一套——
-        # 買賣價差過寬只是這個既有布林旗標的第三個觸發條件。單調性違反
+        # 買賣價差過寬是這個既有布林旗標的觸發條件之一。單調性違反
         # 不加進來（見 `monotonicity_warning` 欄位註解）。
-        # ⚠ MVP V3（#104）guardrail：這一行的計算式本身凍結不動——改的
-        # 只有它「要不要對外顯示」，不是它「怎麼算」。
-        quote_warning=zero_vol or wide_spread or fr > 0.25,
+        quote_warning=zero_vol or wide_spread,
         wide_spread_warning=wide_spread,
         monotonicity_warning=monotonicity_warning,
         theta_day_rate=abs(_net_theta(val, spot, today, p)) / mid_cost,

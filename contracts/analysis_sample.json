@@ -251,8 +251,6 @@
       "days_to_target": 65,
       "decay_30d_return": -1.0,
       "effective_leverage": 9.661875580426088,
-      "friction": 0.20000000000000018,
-      "friction_amount": 0.10000000000000009,
       "guidance_warnings": [],
       "l2": 4.0,
       "l3": 4.0,
@@ -770,8 +768,6 @@
       "days_to_target": 65,
       "decay_30d_return": -0.9622276977469707,
       "effective_leverage": 7.804153503018218,
-      "friction": 0.2499999999999998,
-      "friction_amount": 0.1499999999999999,
       "guidance_warnings": [],
       "l2": 4.0,
       "l3": 4.0,
@@ -1289,8 +1285,6 @@
       "days_to_target": 65,
       "decay_30d_return": -0.44523248490277456,
       "effective_leverage": 6.029708716020432,
-      "friction": 0.2500000000000003,
-      "friction_amount": 0.20000000000000018,
       "guidance_warnings": [],
       "l2": 4.0,
       "l3": 4.0,
@@ -1808,8 +1802,6 @@
       "days_to_target": 65,
       "decay_30d_return": -0.1381642553170896,
       "effective_leverage": 3.9232231392268297,
-      "friction": 0.24444444444444496,
-      "friction_amount": 0.27500000000000036,
       "guidance_warnings": [],
       "l2": 4.0,
       "l3": 4.0,
@@ -2140,9 +2132,7 @@
       "hidden_count": 0,
       "rows": [
         {
-          "badges": [
-            "warning"
-          ],
+          "badges": [],
           "candidate_key": "bull-call-spread|118|122|2026-09-18",
           "strategy": "bull-call-spread"
         }

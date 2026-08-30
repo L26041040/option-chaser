@@ -17,9 +17,11 @@ def test_resilience_section_present_and_formatted():
         text = res.report_text
         for needle in ["韌性向量（7 情境，Mid 口徑）:", "- S1 不漲: ",
                        "◀ 情境最壞", "劇本完成度: ", "保本門檻: ",
-                       "不漲保留率: ", "Bid-Ask Spread: "]:
+                       "不漲保留率: "]:
             assert needle in text, (res.strategy, needle)
-        assert "/股）" in text, "friction absolute amount must be shown (spec §2.3)"
+        # T04（#220，#217 決策 D）：friction／Bid-Ask Spread 自 canonical
+        # model 退場，這一行不再印它——保本門檻／不漲保留率兩項維持不變。
+        assert "Bid-Ask Spread" not in text
         # T12（附錄 A14.2）：主數字改最差口徑後，原「Natural 成交報酬」列
         # 與基準情境列重合，已合併移除。
         assert "Natural 成交報酬" not in text

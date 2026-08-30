@@ -298,18 +298,20 @@ NUMERIC_BASELINE_FIELDS = (
     "days_to_target", "days_to_expiry",
     "carry_calibrated", "wide_spread_warning", "monotonicity_warning",
     "legs",
-    # ⚠ friction／friction_amount：#217 決策 D 已裁定 friction 自 canonical
-    # model 退場（施工在 T04／#220）。這裡**仍然凍結它們的現況值**——
-    # T04 真的把它們拿掉時這條會紅燈，那是本基準唯一**預期內**、需要
-    # 有意識重新產生 golden 的一處，不是可以順手放寬的斷言。T02／T03
-    # 期間它們必須與其餘欄位一樣逐位元不變。
-    "friction", "friction_amount",
 )
 
 #: 刻意**不**進數值基準的候選欄位，各有既有覆蓋負責：
 #:   candidate_key／strategy — 身份，上半部的身份守門負責
 #:   cons／guidance_warnings — 文字評語，CLI golden fixtures 已 byte-lock
 #:     （#217「必須存在的回歸斷言」第 4 條）
+#:
+#: `friction`／`friction_amount` 原本也在這份基準裡（凍結現況值，等
+#: T04／#220 真的移除時當作本基準唯一預期內的重產時機）——T04 已完成，
+#: 這兩個名字現在**完全不存在**於候選契約裡，因此不再出現在
+#: `NUMERIC_BASELINE_FIELDS` 或這裡：兩者都假設欄位存在，一個凍結數值、
+#: 一個豁免數值比對，但「欄位已消失」是第三種狀態，兩者都不適用。
+#: 見 `test_friction_never_reappears_in_candidate_contract` 鎖住它不會
+#: 悄悄回來。
 NUMERIC_BASELINE_EXCLUDED = ("candidate_key", "strategy",
                              "cons", "guidance_warnings")
 
@@ -524,3 +526,28 @@ def test_long_call_max_profit_is_absent_not_infinite():
         assert fields["max_profit"] is None, (
             f"{key}: Long Call 的 max_profit 應為 None（不適用），"
             f"實際為 {fields['max_profit']!r}")
+
+
+# ---------- T04（#220，#217 決策 D）：friction 自 canonical model 退場 ----------
+
+def test_friction_never_reappears_in_candidate_contract():
+    """AC：新增結構性測試防止 friction canonical metric 再被加回。凡是
+    候選契約裡出現 `friction`／`friction_amount` 這兩個 key，一律視為
+    回歸——不是「數值變了」，是「這個概念本不該存在於這裡」。"""
+    view = _view("bull-call-spread")
+    for key, fields in view["candidate_pool"].items():
+        assert "friction" not in fields, f"{key}: friction 不該再出現在契約裡"
+        assert "friction_amount" not in fields, (
+            f"{key}: friction_amount 不該再出現在契約裡")
+
+
+def test_friction_function_and_field_do_not_exist_in_source():
+    """結構性證明，不靠測試綠燈間接推論：估值與排名路徑（`scenarios.py`／
+    `service.py`／`store.py`／`report.py`）的原始碼裡不再有 `friction`
+    這個識別字（排除註解與字串裡解釋歷史脈絡的提及）。"""
+    for mod in ("option_chaser/scenarios.py", "option_chaser/service.py",
+               "option_chaser/store.py", "option_chaser/report.py"):
+        src = Path(mod).read_text(encoding="utf-8")
+        code_lines = [ln for ln in src.splitlines() if not ln.strip().startswith("#")]
+        code = "\n".join(code_lines)
+        assert "friction" not in code, f"{mod} 不該再有可執行的 friction 引用"

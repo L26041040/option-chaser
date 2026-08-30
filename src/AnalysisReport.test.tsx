@@ -56,15 +56,19 @@ describe("四區塊固定存在（決策 G：只保留四塊）", () => {
 });
 
 describe("Risk / Payoff", () => {
-  it("Breakeven／Max Profit／Max Loss／Execution Friction 都顯示實際數字", async () => {
+  it("Breakeven／Max Profit／Max Loss 都顯示實際數字", async () => {
     render(<AnalysisReport view={view} result={result} candidate={real} />);
     await expand();
     const breakevenRow = screen.getByText("Breakeven").closest(".row")!;
     expect(breakevenRow).toHaveTextContent(`$${real.breakeven.toFixed(2)}`);
     const maxLossRow = screen.getByText("Max Loss").closest(".row")!;
     expect(maxLossRow).toHaveTextContent(`$${real.natural_cost.toFixed(2)}`);
-    const frictionRow = screen.getByText("Execution Friction").closest(".row")!;
-    expect(frictionRow).toHaveTextContent(`${(real.friction * 100).toFixed(1)}%`);
+  });
+
+  it("T04（#220，#217 決策 D）：Execution Friction 這一列已移除，不再顯示", async () => {
+    render(<AnalysisReport view={view} result={result} candidate={real} />);
+    await expand();
+    expect(screen.queryByText("Execution Friction")).not.toBeInTheDocument();
   });
 
   it("Long Call 無上限時 Max Profit 顯示「無上限」，不是留白或 0", async () => {

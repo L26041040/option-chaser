@@ -6,7 +6,7 @@ import pytest
 from option_chaser.models import AnalysisParams, OptionContract
 from option_chaser import scenarios
 from option_chaser.scenarios import (ScenarioVector, scenario_vector,
-                                     completion_curve, completion_scan, friction)
+                                     completion_curve, completion_scan)
 from option_chaser.valuation import (evaluate_contract, evaluate_spread,
                                      scenario_leg_value, spread_scenario_value)
 
@@ -242,18 +242,6 @@ def test_completion_curve_identities():
     tgt = p.anchor
     base = (scenario_leg_value(c, p.target_price, tgt, p) - v.mid) / v.mid
     assert dict(curve)[1.0] == pytest.approx(base)                     # k=1 == baseline
-
-
-def test_friction():
-    c = _call(93.0, "2028-01-21", 4.0, 4.4, 0.20)
-    p = _p()
-    v = evaluate_contract(c, SPOT, TODAY, p)
-    assert friction(v) == pytest.approx((4.4 - 4.2) / 4.2)
-    lng = _call(93.0, "2028-01-21", 4.0, 4.4, 0.20)
-    sht = _call(100.0, "2028-01-21", 1.8, 2.2, 0.22)
-    sp = evaluate_spread(lng, sht, SPOT, TODAY, _p(strategy="bull-call-spread"))
-    assert friction(sp) == pytest.approx(
-        ((lng.ask - sht.bid) - sp.net_mid) / sp.net_mid)
 
 
 def test_completion_scan_suffix_semantics_synthetic(monkeypatch):

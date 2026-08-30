@@ -161,7 +161,7 @@ def _resilience_lines(val, spot: float, today: date, p: AnalysisParams,
     共用同一次 `scenario_vector`／`completion_curve`／`completion_scan`
     計算結果（`scenarios.resilience_metrics()`，鍵是 `id(val)`）——不傳
     （`None`，預設）時每次都重算，行為與這個參數存在之前完全一樣。"""
-    from .scenarios import SCENARIO_NAMES, friction, natural_cost, resilience_metrics
+    from .scenarios import SCENARIO_NAMES, resilience_metrics
     from .valuation import SpreadValuation
     rm = resilience_metrics(val, spot, today, p, cache=resilience_cache)
     sv, curve, k, be = rm.scenario, rm.curve, rm.threshold, rm.breakeven
@@ -186,11 +186,10 @@ def _resilience_lines(val, spot: float, today: date, p: AnalysisParams,
     else:
         thr = f"完成 {_pct(k)}（錨點日保本價 ${_money(be)}，基準IV）"
     retention = 1.0 + dict(sv.entries)["S1"]
-    mid = val.net_mid if isinstance(val, SpreadValuation) else val.mid
-    friction_amount = natural_cost(val) - mid
-    lines.append(f"保本門檻: {thr} | 不漲保留率: {_pct(retention)}"
-                 f" | Bid-Ask Spread: {_pct(min(friction(val), 9.99))}"
-                 f"（${_money(friction_amount)}/股）")
+    # T04（#220，#217 決策 D）：friction／Bid-Ask Spread 這一項已自
+    # canonical model 退場，這一行不再印它——保本門檻／不漲保留率兩項
+    # 維持不變。
+    lines.append(f"保本門檻: {thr} | 不漲保留率: {_pct(retention)}")
     return lines
 
 

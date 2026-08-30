@@ -128,8 +128,6 @@ export interface Candidate {
   completion_curve: [number, number][];
   completion_threshold: number | null;
   retention: number;
-  friction: number;
-  friction_amount: number;
   /**
    * V8（#56，spec R1 §4.2 A2）：買價指引天花板——純文字報告早就在印，
    * 這裡補上序列化。單腿的 L1（＝保守底線）依票上 A2 表範圍不補。
@@ -150,10 +148,10 @@ export interface Candidate {
   price_ladder?: PricePoint[];
   /**
    * MVP V3（#104，spec #102 決策 F）：⚠ 徽章與候選池文案唯一該接的
-   * 顯示旗標——僅 Bid/Ask 過寬（`is_spread_wide`）。零成交量、
-   * Execution friction 超過 25% 都不再觸發顯示。舊的複合旗標
-   * `quote_warning`（選取閘門用，含 zero_vol／friction 兩項）不對外
-   * 序列化，此契約裡不會出現這個鍵。
+   * 顯示旗標——僅 Bid/Ask 過寬（`is_spread_wide`）。零成交量都不再
+   * 觸發顯示。舊的複合旗標 `quote_warning`（選取閘門用，含 zero_vol／
+   * wide_spread 兩項，T04／#220 起 friction 已自 canonical model 退場）
+   * 不對外序列化，此契約裡不會出現這個鍵。
    */
   wide_spread_warning: boolean;
   /**

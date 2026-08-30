@@ -135,7 +135,9 @@ function QRow({ params }: { params: AnalysisView["params"] }) {
   );
 }
 
-/** Risk / Payoff：Breakeven／Max Profit／Max Loss／Execution Friction。 */
+/** Risk / Payoff：Breakeven／Max Profit／Max Loss。
+ * T04（#220，#217 決策 D）：Execution Friction 這一列已隨 friction
+ * 自 canonical model 退場移除，不新增任何替代指標。 */
 function RiskPayoff({ candidate }: { candidate: Candidate }) {
   return (
     <>
@@ -146,10 +148,6 @@ function RiskPayoff({ candidate }: { candidate: Candidate }) {
       {/* debit 策略（本站四種皆是）最大損失恆等於進場成本，見
           `store.py` 的 `max_loss_per_contract` 註解——不是巧合，是定義。 */}
       <Row label="Max Loss">{money(candidate.natural_cost)}</Row>
-      <Row label="Execution Friction">
-        {formatReturn(candidate.friction)}
-        <span className="row-note">（{money(candidate.friction_amount)}/股）</span>
-      </Row>
     </>
   );
 }

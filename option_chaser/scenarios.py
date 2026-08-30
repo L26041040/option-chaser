@@ -89,12 +89,6 @@ def natural_cost(val: ContractValuation | SpreadValuation) -> float:
     return val.contract.ask
 
 
-def friction(val: ContractValuation | SpreadValuation) -> float:
-    """(Natural - Mid) / Mid. Display cap handled by presentation layers."""
-    mid = val.net_mid if isinstance(val, SpreadValuation) else val.mid
-    return (natural_cost(val) - mid) / mid
-
-
 def _grid_price(spot: float, target: float, k: float) -> float:
     """Spec §2.3: positive floor min(0.01*spot, target) keeps k=1 == target."""
     return max(spot + k * (target - spot), min(0.01 * spot, target))
