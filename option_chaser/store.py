@@ -201,21 +201,14 @@ def _candidate(cv: CandidateView, strategy: str, capital: float | None,
     else:
         legs = [_leg(v.contract)]
         mid_cost, expiry = v.mid, v.contract.expiry
-        # T03（#223）：`v.max_profit` 現在由 `evaluate_contract()` 的
-        # payoff 導出直接算好（None＝這個方向沒有上界，Long Call 的
-        # 既有行為）——這裡不再需要拿 `strategy` 字串判斷「是不是
-        # long-call」，那正是 T03 要消滅的結構專屬封套公式之一。
-        max_profit = v.max_profit
+        # 與 service._comparison 相同定義（long-call 無上限 → None）
+        max_profit = (None if strategy == "long-call"
+                      else v.contract.strike - v.contract.ask)
         net_delta = v.delta
         guidance_warnings = guidance_judgments(v, p)
-    # T12（附錄 A14.2）：資本以最差成交成本計（natural_cost 即買 Ask／
-    # 賣 Bid 口徑）；mid_cost 保留為次要顯示欄位。
+    # T12（附錄 A14.2）：資本／最大虧損以最差成交成本計（natural_cost 即
+    # 買 Ask／賣 Bid 口徑）；mid_cost 保留為次要顯示欄位。
     cap_per = natural_cost(v) * 100
-    # T03（#223）：最大損失改由 payoff 導出（`v.max_loss`），不再假設
-    # 「debit 恆等於成本」——對既有四個策略而言兩者數值相同（到期
-    # payoff 的下界恆為 0），但這個假設本身不再寫死在這裡；T05（#226）
-    # 判斷候選是否 invalid 需要的正是這個真正由 payoff 算出的數字。
-    max_loss_per = v.max_loss * 100
     return {
         "candidate_key": candidate_key(cv),
         "strategy": strategy,
@@ -292,7 +285,7 @@ def _candidate(cv: CandidateView, strategy: str, capital: float | None,
         # 不畫這一區（不是畫一個只有一格的表）。
         "price_ladder": [{"label": pt.label, "price": pt.price, "return": pt.ret}
                          for pt in cv.price_ladder],
-        "max_loss_per_contract": max_loss_per,
+        "max_loss_per_contract": cap_per,   # debit 恆等於成本
         "pct_of_capital": (cap_per / capital) if capital else None,
         # 參考日＝日曆錨點（附錄 A9）；年月本身不映射成任何一天。
         "days_to_target": (anchor - today).days,

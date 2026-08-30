@@ -180,8 +180,7 @@ def test_comparator_is_none_when_buy_legs_ask_is_missing(tmp_path):
         long_leg=long_leg, short_leg=short_leg, width=10.0, net_mid=1.0,
         net_worst=1.0, net_delta=0.3, breakeven=101.0, breakeven_vs_target=0.1,
         effective_leverage=1.0, scenario_values=((0.0, 1.0),), baseline_value=1.0,
-        l2=1.0, l3=1.0, max_profit=9.0, max_loss=1.0,
-        long_carry=carry, short_carry=carry)
+        l2=1.0, l3=1.0, max_profit=9.0, long_carry=carry, short_carry=carry)
     p = AnalysisParams(strategy="bull-call-spread", target_price=120.0,
                        target_month="2026-10")
 

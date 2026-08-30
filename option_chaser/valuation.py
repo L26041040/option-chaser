@@ -159,12 +159,6 @@ class ContractValuation:
     # #113：這條腿的 carry 校準結果，算一次、掛在這裡供所有下游呼叫
     # （Heatmap 矩陣、七情境、CLI 報告……）共用，不重新反解。
     carry: LegCarry
-    # T03（#223）：由到期 payoff 導出——None＝這個方向沒有上界（裸買
-    # Call 的既有行為）。`max_loss` 恆為非負，是「以 Ask 進場的最壞情況
-    # 虧損金額」（單股口徑，未乘 100）；T05（#226）拿它判斷候選是否
-    # invalid（`<= 0` 代表報價不可信，見該票決策）。
-    max_profit: float | None
-    max_loss: float
 
 
 def scenario_leg_value(
@@ -218,23 +212,15 @@ def evaluate_contract(
     baseline_value = dict(scenario_values)[0.0]
     floor_value = intrinsic_value(c.option_type, p.target_price, c.strike)
     # T12（附錄 A14.2）：主數字成本口徑＝最差成交假設（單腿＝Ask）。
-    # T03（#223）：breakeven／max_profit／max_loss 一律由到期 payoff
-    # 導出（`payoff_envelope`／`payoff_breakeven_points`），不再是
-    # 「strike ± ask」這種結構專屬算術——單腿是這個通用機制唯一一腿
-    # 的特例，逐位元等於既有公式（已用 T01 基準核對）。純算術、不經
-    # 估值模型，因此不受 carry 影響，維持既有性質不變。
-    leg_for_payoff = (WeightedLeg(contract=c, sign=1.0, quantity=1),)
-    min_payoff, max_profit_raw = payoff_envelope(leg_for_payoff)
-    breakeven_roots = payoff_breakeven_points(leg_for_payoff, c.ask)
-    assert len(breakeven_roots) == 1, (
-        "單腿結構的損益兩平只可能有一個根；出現非 1 代表報價或邏輯有誤")
-    breakeven = breakeven_roots[0]
-    max_profit = None if max_profit_raw is None else max_profit_raw - c.ask
-    max_loss = c.ask - min_payoff
+    # breakeven／槓桿等成本衍生數字同口徑；mid 保留為次要顯示。breakeven
+    # 純粹是市場報價（strike ± ask）的算術，不經任何估值模型，因此不受
+    # carry 影響——這與研究文件 §8 對 Spread 排名的觀察是同一件事。
     if c.option_type == "call":
+        breakeven = c.strike + c.ask
         be_vs_spot = (breakeven - spot) / spot
         be_vs_target = (p.target_price - breakeven) / p.target_price
     else:
+        breakeven = c.strike - c.ask
         be_vs_spot = (spot - breakeven) / spot
         be_vs_target = (breakeven - p.target_price) / p.target_price
     l2 = scenario_leg_value(c, p.target_price, target, p, min(p.iv_shifts), carry)
@@ -249,7 +235,7 @@ def evaluate_contract(
         floor_value=floor_value, scenario_values=scenario_values,
         baseline_value=baseline_value,
         l1=floor_value, l2=l2, l3=baseline_value / (1.0 + p.min_return),
-        carry=carry, max_profit=max_profit, max_loss=max_loss,
+        carry=carry,
     )
 
 
@@ -365,107 +351,6 @@ def payoff_value(legs: tuple[WeightedLeg, ...], S: float, at: date,
         leg.contract, S, at, p, shift, leg.carry) for leg in legs)
 
 
-# ---------- T03（#219／#223，#217 決策 B）：包絡量由 payoff 導出 ----------
-#
-# 最大獲利／最大損失／損益兩平點，從「寬度減成本」「履約價加減成本」這類
-# 結構專屬封套公式，改成從到期 payoff 本身導出。payoff 是分段線性函式，
-# 極值只可能出現在折點（各腿履約價）或評價區間邊界；損益兩平是
-# `P&L(S)=payoff(S)-cost=0` 的根集合。
-#
-# **範圍界定（#223 修訂後明文）**：評價區間是這個 payoff 函式**真實的
-# 合法定義域** `[0, +∞)`——左邊界 `S=0` 是價格不可能為負這個事實，不是
-# 任意選定的搜尋窗；右邊界 `S→+∞` 若該側斜率非零，代表這個方向沒有
-# 上界，直接回傳 `None`（不外插、不改標成無限大）——這正是既有 Long
-# Call `max_profit=None` 的行為，本票只是把它從「structure 名字判斷」
-# 換成「payoff 斜率分析」得出，不新增任何 unbounded 產品概念。
-
-
-def _payoff_breakpoints(legs: tuple[WeightedLeg, ...]) -> list[float]:
-    """所有腿的履約價，去重排序——payoff 分段線性函式的折點。"""
-    return sorted({leg.contract.strike for leg in legs})
-
-
-def _payoff_at_expiry(legs: tuple[WeightedLeg, ...], S: float) -> float:
-    """到期 payoff＝逐腿內在價值的加權和（`payoff_value` 到期分支的
-    純算術版本，不需要 `at`／`p`／carry——到期時定價模型不再介入）。"""
-    return sum(leg.sign * leg.quantity * intrinsic_value(
-        leg.contract.option_type, S, leg.contract.strike) for leg in legs)
-
-
-def _payoff_slope(legs: tuple[WeightedLeg, ...], S: float) -> float:
-    """payoff 在價位 `S`（不等於任何折點）附近的斜率——每腿只在自己
-    「被履約的那一側」貢獻 `±sign×quantity`，call 是 `S>strike`、
-    put 是 `S<strike`（put 的內在價值隨 S 遞減，故取負號）。"""
-    slope = 0.0
-    for leg in legs:
-        if leg.contract.option_type == "call":
-            if S > leg.contract.strike:
-                slope += leg.sign * leg.quantity
-        else:
-            if S < leg.contract.strike:
-                slope -= leg.sign * leg.quantity
-    return slope
-
-
-def payoff_envelope(legs: tuple[WeightedLeg, ...]) -> tuple[float, float | None]:
-    """回傳 `(min_payoff, max_payoff)`。`max_payoff` 為 `None`＝這個
-    方向沒有上界（例如裸買一口 Call）——呼叫端據此保持既有的「不顯示
-    最大獲利」行為，不得自行外插或改標成無限大。
-
-    不假設腿數，也不假設 payoff 的單調性——折點集合本身就是通用的，
-    Butterfly（T15／#230）的兩個以上折點直接沿用同一套邏輯。
-    """
-    bps = _payoff_breakpoints(legs)
-    candidates = [_payoff_at_expiry(legs, 0.0)]
-    candidates += [_payoff_at_expiry(legs, k) for k in bps]
-    right_slope = _payoff_slope(legs, bps[-1] + 1.0) if bps else 0.0
-    if right_slope <= 0.0:
-        # 斜率 <=0：右側漸近值是一個真實、有限的水平值（斜率 0）或本身
-        # 就在下降（斜率 <0，此時真正的極值早就在左邊的折點中，取樣一個
-        # 右側的點不影響 min/max，純粹是為了讓候選集合完整）。
-        probe = (bps[-1] + 1.0) if bps else 1.0
-        candidates.append(_payoff_at_expiry(legs, probe))
-    max_payoff = None if right_slope > 0.0 else max(candidates)
-    return min(candidates), max_payoff
-
-
-def payoff_breakeven_points(legs: tuple[WeightedLeg, ...],
-                            cost: float) -> tuple[float, ...]:
-    """`P&L(S) = payoff(S) - cost = 0` 的根集合，逐段線性求解——單調
-    結構恆一個根，非單調結構（Butterfly）最多兩個根（本票不啟用
-    Butterfly，這裡只是不假設單調性，不新增 Butterfly 本身）。
-
-    每段的斜率用 `_payoff_slope()`（逐腿符號加總，恆為小整數）直接
-    算出，不透過「兩端值相減除以區間寬度」反推——後者對非整數履約價
-    間距會引入不必要的浮點捨入，可能破壞既有四策略的 bitwise parity
-    （已用 T01 基準實測驗證兩種做法在真實 fixture 上的差異）。
-    """
-    bps = _payoff_breakpoints(legs)
-    points = [0.0] + bps
-    values = [_payoff_at_expiry(legs, s) for s in points]
-    roots: list[float] = []
-    for i in range(len(points) - 1):
-        s_lo, s_hi = points[i], points[i + 1]
-        v_lo, v_hi = values[i], values[i + 1]
-        if v_lo == v_hi:
-            continue
-        slope = _payoff_slope(legs, (s_lo + s_hi) / 2.0)
-        if slope == 0.0:
-            continue
-        s_root = s_lo + (cost - v_lo) / slope
-        if s_lo - 1e-9 <= s_root <= s_hi + 1e-9:
-            roots.append(s_root)
-    if bps:
-        s_last = bps[-1]
-        v_last = values[-1]
-        slope = _payoff_slope(legs, s_last + 1.0)
-        if slope != 0.0:
-            s_root = s_last + (cost - v_last) / slope
-            if s_root >= s_last - 1e-9:
-                roots.append(s_root)
-    return tuple(roots)
-
-
 def spread_scenario_value(
     long_leg: OptionContract, short_leg: OptionContract,
     S: float, at: date, p: AnalysisParams, shift: float = 0.0,
@@ -528,10 +413,6 @@ class SpreadValuation:
     # （見 `LegCarry` docstring）。
     long_carry: LegCarry
     short_carry: LegCarry
-    # T03（#223）：由到期 payoff 導出——本輪兩個啟用的 Vertical
-    # subtype 天生兩側都有界，故恆為 `float`（不像單腿可能是 None）。
-    # 見 `ContractValuation.max_loss` 同一欄位的說明。
-    max_loss: float
 
 
 def evaluate_spread(
@@ -563,26 +444,14 @@ def evaluate_spread(
     )
     baseline = dict(scenario_values)[0.0]
     # T12（附錄 A14.2）：主數字成本口徑＝net_worst（買腿 Ask − 賣腿 Bid），
-    # 定位「保守成交假設收益」。net_mid 保留為次要顯示。
-    # T03（#223）：breakeven／max_profit／max_loss 一律由到期 payoff
-    # 導出（`payoff_envelope`／`payoff_breakeven_points`），取代
-    # 「strike ± net_worst」「width - net_worst」這類結構專屬算術——
-    # 純算術、不經估值模型，因此不受 carry 影響，維持既有性質不變
-    # （已用 T01 基準核對逐位元相同）。
-    payoff_legs = (WeightedLeg(contract=long_leg, sign=1.0, quantity=1),
-                  WeightedLeg(contract=short_leg, sign=-1.0, quantity=1))
-    min_payoff, max_payoff = payoff_envelope(payoff_legs)
-    assert max_payoff is not None, (
-        "本輪啟用的 Vertical subtype 結構上兩側皆有界；出現 None 代表"
-        "腿位組成有誤（例如兩腿權別不同）")
-    breakeven_roots = payoff_breakeven_points(payoff_legs, net_worst)
-    assert len(breakeven_roots) == 1, (
-        "Vertical Spread 的損益兩平只可能有一個根；出現非 1 代表報價"
-        "或邏輯有誤")
-    breakeven = breakeven_roots[0]
-    be_vs_target = ((p.target_price - breakeven) / p.target_price
-                    if long_leg.option_type == "call"
-                    else (breakeven - p.target_price) / p.target_price)
+    # 定位「保守成交假設收益」。breakeven／最大獲利／槓桿同口徑；net_mid
+    # 保留為次要顯示。breakeven 是市場報價算術，不經模型，不受 carry 影響。
+    if long_leg.option_type == "call":
+        breakeven = long_leg.strike + net_worst
+        be_vs_target = (p.target_price - breakeven) / p.target_price
+    else:
+        breakeven = long_leg.strike - net_worst
+        be_vs_target = (breakeven - p.target_price) / p.target_price
     return SpreadValuation(
         long_leg=long_leg, short_leg=short_leg, width=width,
         net_mid=net_mid, net_worst=net_worst, net_delta=net_delta,
@@ -591,8 +460,7 @@ def evaluate_spread(
         scenario_values=scenario_values, baseline_value=baseline,
         l2=min(v for _, v in scenario_values),
         l3=baseline / (1.0 + p.min_return),
-        max_profit=max_payoff - net_worst,
-        max_loss=net_worst - min_payoff,
+        max_profit=width - net_worst,
         long_carry=long_carry, short_carry=short_carry,
     )
 
