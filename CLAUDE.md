@@ -27,7 +27,7 @@ block 裡，不能切成好幾個 code block、也不能中間插普通文字把
 `［回報#001］spec #137 拆票完成`）。編號是**累計總數**，不因換
 session、換分支、換主題而歸零——目前最新編號記在這裡：
 
-> 目前次序：045（下一份回報用 046）
+> 目前次序：046（下一份回報用 047）
 
 每發一份回報就把上面這個數字改成剛剛用掉的那個，跟著那次改動一起
 commit（沒有其他改動要 commit 時，單獨為這一行開一個小 commit 也
@@ -5122,6 +5122,113 @@ ranking**（排名用 worst 口徑成本），只活在候選契約欄位、CLI 
 Testing Decisions）。
 
 **下一步＝`/implement`**，從 #218 開始，等需求方 cue。
+
+### Initial V2 票面澄清＋T01 施工（2026-08-30，回報#046）
+
+**票面澄清（需求方三點指正，未重跑 `/to-tickets`，票號與依賴全數保留）**：
+
+- **#223（T03）** — 原文「極值只可能出現在各履約價與**兩端**——掃描
+  這些點」會被讀成「掃描全價格域取理論極值」，進而生出「Long Call
+  max profit = ∞」這種不屬於本產品的語意。已改寫為「分段折點與**所
+  評價區間**的端點」，新增「範圍界定」一節：只導出既有產品真正需要的
+  payoff envelope／extrema、遵守既有 target／expiration scenario 搜尋
+  範圍、**不新增 unbounded max-profit product concept**、評價端點取自
+  既有搜尋區間邊界而非 `0` 與 `+∞`。Owner semantics 未動，四策略
+  bitwise parity 仍為硬條件。
+- **#226（T05）** — 原 AC 把「debit spread 權利金大於價差寬度」列為
+  `max_loss <= 0` 的驗證 fixture，但 width=5／debit=6 的 max loss 是
+  **+6**，結構上不可能觸發該規則。已移除，改為真正的壞報價／不自洽
+  報價（單腿倒掛、兩腿矛盾致 net debit ≤ 0、跨時點凍結報價）。同時
+  明文加註**不新增 `max_profit <= 0` 過濾規則**、不新增任何新產品
+  判斷——成功劇本仍為負報酬的候選由既有 ranking 自然沉底即可。
+- **#228（T12）** — `legs[]` 陣列保留，但撤掉「任意腿數／任意長度」
+  scope（與 spec #217 Out of Scope 明文排除的「四腿以上結構與 N-leg
+  泛化」衝突）。Canonical boundary 改為 **`1 <= len(legs) <= 4`**：
+  1 腿 Long Call/Put、2 腿 Vertical、3 腿 Butterfly 為本輪實際啟用，
+  4 腿只保留 contract／data-shape 容量、**不啟用任何四腿 strategy**、
+  不建立 arbitrary N-leg strategy framework，`len(legs) > 4` 應
+  validation fail。標題同步修正。
+
+**已完成**：
+
+- **T01** [#218] 護欄與詞彙（commit `ffab545`）——**零 production
+  code 改動**，只新增測試、fixture、產生用 dev script 與文件。
+  - `tests/test_selection_regression.py` **擴充**出數值那一半：新增
+    `snapshot_numbers()`／`assert_numbers_unchanged()`，與既有的
+    `snapshot_identity()`／`assert_identity_unchanged()` **兩個獨立
+    入口並存、刻意不合併**（#118 把「誰／第幾個」與「值多少」分開的
+    設計原封不動）。11 → 24 條測試。
+  - 現況凍結成磁碟 golden `tests/fixtures/valuation_numeric_baseline.
+    json`（4 策略、26 候選、227KB），由 `scripts/gen_numeric_baseline.
+    py` 產生——腳本直接 import 守門測試本身取得 `snapshot_numbers()`，
+    不複製一份快照邏輯，基準與守門因此不會各自漂移。`indent=1` 是
+    刻意的：每個數字獨佔一行，git diff 能直接指到變動的那一格。
+  - 決定性：`run_offline` 預設不接利率／股利 loader，`today` 由快照
+    自己的 `fetched_at` 推出（`snapshot_today`）——離線、零網路、不讀
+    系統時鐘。另有一條測試釘住「JSON 往返後逐位元相同」。
+  - 凍結 **37 個欄位**（劇本報酬、包絡量、情境向量、heatmap 格值、
+    完成度、Greeks 比率、利率輸入、價格階梯、Crossover comparator
+    含其 matrix、逐腿報價），明確排除 **4 個**並各記理由
+    （`candidate_key`／`strategy` 歸身份守門；`cons`／
+    `guidance_warnings` 是文字、已由 CLI golden byte-lock）。另加一條
+    **completeness 測試**斷言「候選的每個欄位非凍結即明文排除」——
+    新增欄位時紅燈，逼出一次有意識的決定。
+  - **紅燈實測**：臨時把 `valuation.py` 的 `max_profit` 加 `1e-9`，
+    守門立刻紅並逐筆列出「策略／候選鍵／欄位／舊值→新值」；驗完
+    `git checkout` 還原。另兩條測試分別鎖住「訊息要指得出候選與
+    欄位」與「改一格 heatmap 也要指到 `matrix.cells[2][3]`」。
+  - 順手釘住一顆 #223 的引信：`test_long_call_max_profit_is_absent_
+    not_infinite`——Long Call 今天的 `max_profit` 是 **None（不適用）**
+    而非無限大；T03 若誤引入全價格域理論極值，這條會紅。
+  - `CONTEXT.md` 新增七個詞條（Strategy Family／Subtype／Scenario
+    Bet Ranking／Direction 衍生三態／Eligibility／Profit Region／
+    Per-family Representative），獨立成「策略與方向」一節；「名詞
+    紀律」記錄 **Friction 已自 canonical model 退場**（#217 決策 D，
+    施工在 T04／#220）。數值基準**仍然凍結** `friction`／
+    `friction_amount` 的現況值——T04 移除它們時這條會紅，那是本基準
+    唯一預期內、需有意識重產 golden 的一處。
+
+> **⚠ 分支上有 5 條先前就存在的紅燈，與 T01 無關**（已用「stash 掉
+> T01 改動後在乾淨 HEAD 重跑」與「乾淨 HEAD worktree 對照」兩種方式
+> 各確認一次，五條逐字相同）：`test_api_filters.py` 三條、
+> `test_api_iv_history.py` 一條、`test_service_fetch.py` 一條。
+>
+> **共同病因是測試非 hermetic，不是引擎回歸。** 三條 filters 的機制
+> 已鎖定：這些 `/api/analyze` 測試用假 symbol `"XYZ"`，卻走
+> `create_app()` 的**預設 dividend loader**——而 `XYZ` 是真實上市代號
+> （Block Inc.），在**連得到外網**的環境裡會抓到真實配息、算出非零
+> q、`carry_calibrated` 變 True，估值與級距排名跟著位移，strike 100.5
+> 因此掉出榜。實測：把 `dividend_loader` 換成回傳 `None` 的假體，三條
+> 立刻全綠。`test_service_fetch` 同一家族——`fetch_and_save` 實際打到
+> 真 vendor，回傳 `fetched_at` 是「現在」而非 fixture 的時間（會隨
+> 沙箱 egress 通不通而間歇紅／綠）。第 5 條（iv-history 的
+> `delta_4w 回報 unavailable`）走 `ny_today()`、疑似日曆漂移，成因
+> **未完全鎖定**。
+>
+> 先前紀錄的「全套全綠」是在沙箱擋外網（q 退回 0、vendor 抓不到）的
+> 條件下量到的——**環境變了，測試就變了**，這本身就是缺陷。三者皆不
+> 在 #218 範圍（該票明令不動 production code），未修，**建議另開一張
+> hermetic-test 修正票**。T01 自己的基準不受影響——它走 `run_offline`，
+> loader 預設 `None`。
+
+> **⚠ 容器倒退再度發生（本 session）**：本地 checkout 落後 origin
+> **29 個 commit**（停在 `945977c`，遠端已到 `22b9d4b`），且 working
+> tree 帶著一份**已經推上去的** T11（#194）改動的殘影，看起來像未提交
+> 工作。依 CLAUDE.md 既有處置：`git fetch` → `git reset --hard
+> origin/claude/implement-tfm9oa`，零內容遺失。**本輪的實際教訓**：
+> T01 的基準第一次是在 stale base 上產生的，reset 後重新產生一份逐位元
+> 比對——**兩份完全相同**（那 29 個 commit 沒有動到估值），但這個核對
+> 是必要的，不是多餘的。回報編號也因此差了一大截（stale 版寫 028，
+> 真值是 045）。**動筆前先 `git fetch` 該分支本身、核對 `git log
+> origin/<branch>`。**
+
+**待辦（← 為下一張）**：
+
+- **T02** [#219] 逐腿 payoff 直算（取代 debit-only 包絡）——被 #218
+  擋，**已解除** ←
+- 同時解鎖：**T04** [#220] friction 退場、**T06** [#221] family 詞彙、
+  **T09** [#222] 單腿補欄位（三者亦只被 #218 擋）
+- 其餘依 spec #217 §Q 六段順序推進
 
 ### 施工依據
 
