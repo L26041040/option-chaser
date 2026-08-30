@@ -27,7 +27,7 @@ block 裡，不能切成好幾個 code block、也不能中間插普通文字把
 `［回報#001］spec #137 拆票完成`）。編號是**累計總數**，不因換
 session、換分支、換主題而歸零——目前最新編號記在這裡：
 
-> 目前次序：044（下一份回報用 045）
+> 目前次序：045（下一份回報用 046）
 
 每發一份回報就把上面這個數字改成剛剛用掉的那個，跟著那次改動一起
 commit（沒有其他改動要 commit 時，單獨為這一行開一個小 commit 也
@@ -5076,6 +5076,52 @@ credit 三兀入 Out of scope。**下一步＝/to-spec，等需求方 cue，
   並記錄 friction 已自 canonical model 退場。
 
 **下一步＝/to-tickets**（依 spec §Q 六段切票），等需求方 cue。
+
+### Initial V2 拆票完成＝#218–#235（2026-08-29，`/to-tickets`，回報#045）
+
+spec #217 拆成 **18 張票（#218–#235）**，全數為 #217 的 GitHub
+sub-issue、全數標 `ready-for-agent`。依賴邊寫在各票 body 的
+「Blocked by」（本 repo 的 MCP 工具沒有 native blocking 寫入能力，
+沿用 body 慣例）。
+
+**四張無依賴、可立即開工**：#219（T02 逐腿 payoff）／#220（T04
+friction 退場）／#221（T06 family 詞彙）／#222（T09 單腿補欄位）
+——皆只被 #218（T01 護欄與詞彙）擋。
+
+**施工順序**（spec §Q 六段的落地，粒度比六段更細，沿用專案
+「不求快、求正確性」的拆票先例）：
+
+- **A 護欄**：T01 #218（凍結四策略數值 bitwise 基準＋CONTEXT.md
+  七個新詞條，零產品行為改動）
+- **B 估值核心**：T02 #219（逐腿 payoff 取代 debit-only 包絡）→
+  T03 #223（包絡量改由 payoff 導出）→ T05 #226（max loss ≤ 0
+  直接淘汰）。**T04 #220（friction 退場）刻意與 T02/T03 分開**：
+  後者是 bitwise-identical 的改動、前者會動 golden fixtures，
+  兩種混在同一份 diff 就分不出是誰讓 fixture 移動的
+- **C 儲存／domain**：T06 #221 → T07 #224（per-family 代表 map）
+  ／T08 #225（衍生三態方向＋per-subtype eligibility）
+- **D Call/Put 端到端**：T09 #222 → T10 #227（表單 family 勾選）
+  → T11 #229（詳細頁 family tab，Call/Put 到此端到端可用）
+- **E Butterfly 端到端**：T12 #228（共用骨架 legs[]，**刻意排在
+  Butterfly 之前**——先用既有兩腿資料把任意腿數的骨架驗好，
+  Butterfly 只是多一個產生器，「make the change easy, then make
+  the easy change」）→ T15 #230（Butterfly 後端）→ T16 #232
+  （前端三腿／獲利區間）→ T13 #231（payload 投影）→ T14 #233
+  （matrix 壓縮）→ T17 #234（持平劇本）
+- **F 收尾**：T18 #235（12 條硬紅線逐條對照＋全套回歸＋真機
+  驗收清單）
+
+**T04 friction 的範圍已釐清**（需求方：「摩擦力不需要考慮，因為
+我們的模型早已按最差價格計算了」）：friction 今天其實**已經不進
+ranking**（排名用 worst 口徑成本），只活在候選契約欄位、CLI 報告
+一行、詳細頁分析報告一列——三處一併移除，並加結構性測試讓它回
+不來。**golden fixtures 會因此重產一次**（只含那一行的移除），
+之後繼續 byte-locked；這是 T04 唯一預期中的 fixture 變動。
+
+**測試接縫沿用既有七個、零新增**（需求方核准，見 spec #217
+Testing Decisions）。
+
+**下一步＝`/implement`**，從 #218 開始，等需求方 cue。
 
 ### 施工依據
 
