@@ -257,3 +257,270 @@ def test_ranking_and_filters_do_not_depend_on_diagnostics():
     for mod in ("option_chaser/ranking.py", "option_chaser/filters.py"):
         src = open(mod, encoding="utf-8").read()
         assert "diagnostics" not in src, f"{mod} 不該依賴 diagnostics"
+
+
+# ---------- T01（#218，spec #217 §Q-A）：既有四策略的數值 bitwise 基準 ----------
+#
+# 上面那半只問「誰」「第幾個」，刻意不問「值多少」——那是 #118 當時的
+# 正確取捨（估值修正輪允許數字變動）。Initial V2（#217）的處境相反：
+# T02（逐腿 payoff 直算）與 T03（包絡量由 payoff 導出）要換掉估值核心，
+# 而唯一的驗收判準是**畫面零變化**。沒有數值基準，這件事無從驗證。
+#
+# 因此本票**新增**數值那一半，兩半各自獨立、不合併成同一個斷言：
+#
+#   身份： snapshot_identity()  →  assert_identity_unchanged()
+#   數值： snapshot_numbers()   →  assert_numbers_unchanged()
+#
+# 數值那一半另外把現況凍結成磁碟上的 golden（`_NUMERIC_BASELINE_PATH`），
+# 因此它不只能比對「同一次執行的前後」，還能跨 session 抓出漂移。
+
+import json
+from pathlib import Path
+
+_NUMERIC_BASELINE_PATH = Path("tests/fixtures/valuation_numeric_baseline.json")
+
+#: 進入數值基準的候選欄位（allowlist）。凡是**估值導出的值**都在這裡：
+#: 劇本報酬、包絡量、情境向量、heatmap 格值、完成度、Greeks 比率、
+#: 利率輸入、價格階梯、Crossover comparator（含它自己的 matrix）。
+#: 逐腿報價（`legs`）也在內——它是輸入而非導出值，凍結它是為了讓
+#: 「fixture 本身被動過」與「估值邏輯被動過」在失敗訊息裡分得開。
+NUMERIC_BASELINE_FIELDS = (
+    "baseline_pnl", "baseline_return",
+    "breakeven", "breakeven_at_target", "max_profit", "max_loss_per_contract",
+    "natural_cost", "mid_cost", "capital_per_contract", "pct_of_capital",
+    "effective_leverage", "l2", "l3",
+    "scenario_vector", "retention", "buffer_days",
+    "completion_curve", "completion_prices", "completion_threshold",
+    "matrix", "comparator",
+    "net_delta", "theta_day_rate", "vega_per_pt", "decay_30d_return",
+    "rate_used", "rate_tenor_years",
+    "price_ladder", "catchup_price",
+    "days_to_target", "days_to_expiry",
+    "carry_calibrated", "wide_spread_warning", "monotonicity_warning",
+    "legs",
+    # ⚠ friction／friction_amount：#217 決策 D 已裁定 friction 自 canonical
+    # model 退場（施工在 T04／#220）。這裡**仍然凍結它們的現況值**——
+    # T04 真的把它們拿掉時這條會紅燈，那是本基準唯一**預期內**、需要
+    # 有意識重新產生 golden 的一處，不是可以順手放寬的斷言。T02／T03
+    # 期間它們必須與其餘欄位一樣逐位元不變。
+    "friction", "friction_amount",
+)
+
+#: 刻意**不**進數值基準的候選欄位，各有既有覆蓋負責：
+#:   candidate_key／strategy — 身份，上半部的身份守門負責
+#:   cons／guidance_warnings — 文字評語，CLI golden fixtures 已 byte-lock
+#:     （#217「必須存在的回歸斷言」第 4 條）
+NUMERIC_BASELINE_EXCLUDED = ("candidate_key", "strategy",
+                             "cons", "guidance_warnings")
+
+
+def snapshot_numbers(strategy: str) -> dict:
+    """單一策略的完整**數值**快照——與 `snapshot_identity()` 平行的另一半。
+
+    離線、決定性（`today` 由快照自己的 `fetched_at` 推出，不讀系統時鐘；
+    利率／股利 loader 在 `run_offline` 預設為 None），因此可重跑、可跨
+    session 逐位元比對。
+    """
+    view = _view(strategy)
+    res = view["results"][0]
+    pool = view["candidate_pool"]
+    rep = store.representative_candidate(view)
+    return {
+        "strategy": strategy,
+        "meta": {"spot": view["meta"]["spot"],
+                 "fetched_at": view["meta"]["fetched_at"],
+                 "target_move": view["meta"]["target_move"]},
+        "result_level": {
+            "best_return": store.best_return(view),
+            "representative_baseline_return":
+                None if rep is None else rep["baseline_return"],
+        },
+        "candidates": {
+            key: {f: pool[key][f] for f in NUMERIC_BASELINE_FIELDS}
+            for key in sorted(pool)
+        },
+    }
+
+
+def _diff_paths(before, after, path: str, out: list[str], limit: int) -> None:
+    """遞迴比對，把差異收斂成「欄位路徑：舊值 → 新值」的可讀清單。
+    matrix 這種巢狀結構因此能指到 `matrix.cells[3][5]` 那一格。"""
+    if len(out) >= limit:
+        return
+    if type(before) is not type(after):
+        out.append(f"{path}: {before!r} → {after!r}（型別也變了）")
+        return
+    if isinstance(before, dict):
+        for k in sorted(set(before) | set(after)):
+            if k not in before:
+                out.append(f"{path}.{k}: 新增 {after[k]!r}")
+            elif k not in after:
+                out.append(f"{path}.{k}: 消失（原本 {before[k]!r}）")
+            else:
+                _diff_paths(before[k], after[k], f"{path}.{k}", out, limit)
+        return
+    if isinstance(before, list):
+        if len(before) != len(after):
+            out.append(f"{path}: 長度 {len(before)} → {len(after)}")
+            return
+        for i, (b, a) in enumerate(zip(before, after)):
+            _diff_paths(b, a, f"{path}[{i}]", out, limit)
+        return
+    if before != after:
+        out.append(f"{path}: {before!r} → {after!r}")
+
+
+def assert_numbers_unchanged(before: dict, after: dict, *,
+                             max_reported: int = 20) -> None:
+    """後續票（尤其 T02／#219、T03／#223）在改寫估值核心後呼叫本函式，
+    把改寫前後的 `snapshot_numbers()` 輸出傳進來比對。
+
+    與 `assert_identity_unchanged()` 是**兩個獨立的入口**，不得合併：
+    身份不變但數字變了、或反過來，是兩種不同的事故，訊息也該不同。
+
+    失敗訊息會指出是哪個策略、哪個候選（`candidate_key`）、哪個欄位
+    （含 `matrix.cells[i][j]` 這種巢狀路徑）變了，以及新舊值。
+    任何一項不相等都應該讓呼叫端的測試失敗並停下——不得放寬或刪減
+    這裡比對的欄位。
+    """
+    diffs: list[str] = []
+    _diff_paths(before, after, f"[{before.get('strategy', '?')}]",
+                diffs, max_reported)
+    if diffs:
+        shown = "\n  ".join(diffs[:max_reported])
+        more = ("\n  …（還有更多差異未列出）"
+                if len(diffs) >= max_reported else "")
+        raise AssertionError(
+            f"數值基準不符（策略 {before.get('strategy', '?')}）：\n  "
+            f"{shown}{more}")
+
+
+def _load_numeric_baseline() -> dict:
+    with open(_NUMERIC_BASELINE_PATH, encoding="utf-8") as fh:
+        return json.load(fh)
+
+
+# ---------- Golden：磁碟上的 bitwise 基準 ----------
+
+def test_numeric_baseline_file_exists_and_covers_all_four_strategies():
+    baseline = _load_numeric_baseline()
+    assert set(baseline["strategies"]) == set(SCENARIOS)
+
+
+def test_bull_call_spread_numbers_are_bitwise_frozen():
+    baseline = _load_numeric_baseline()
+    assert_numbers_unchanged(baseline["strategies"]["bull-call-spread"],
+                             snapshot_numbers("bull-call-spread"))
+
+
+def test_bear_put_spread_numbers_are_bitwise_frozen():
+    baseline = _load_numeric_baseline()
+    assert_numbers_unchanged(baseline["strategies"]["bear-put-spread"],
+                             snapshot_numbers("bear-put-spread"))
+
+
+def test_long_call_numbers_are_bitwise_frozen():
+    baseline = _load_numeric_baseline()
+    assert_numbers_unchanged(baseline["strategies"]["long-call"],
+                             snapshot_numbers("long-call"))
+
+
+def test_long_put_numbers_are_bitwise_frozen():
+    baseline = _load_numeric_baseline()
+    assert_numbers_unchanged(baseline["strategies"]["long-put"],
+                             snapshot_numbers("long-put"))
+
+
+def test_numeric_baseline_survives_a_json_round_trip_bitwise():
+    """凍結在磁碟上的是 JSON，因此「逐位元」這件事必須連 JSON 往返都
+    成立——否則基準本身就是浮點雜訊的來源，不是護欄。CPython 的
+    `float.__repr__` 保證最短且可還原，這條把那個保證釘在測試裡。"""
+    live = snapshot_numbers("bull-call-spread")
+    assert json.loads(json.dumps(live)) == live
+
+
+# ---------- 護欄本身的護欄 ----------
+
+def test_every_candidate_field_is_either_frozen_or_explicitly_excluded():
+    """新增候選欄位時，這條會紅燈，逼出一次「它該不該進數值基準」的
+    有意識決定——不讓新欄位靜默地不被任何護欄覆蓋。"""
+    view = _view("bull-call-spread")
+    pool = view["candidate_pool"]
+    actual = set(next(iter(pool.values())))
+    covered = set(NUMERIC_BASELINE_FIELDS) | set(NUMERIC_BASELINE_EXCLUDED)
+    assert actual == covered, (
+        f"未覆蓋的新欄位：{sorted(actual - covered)}；"
+        f"已消失的欄位：{sorted(covered - actual)}")
+
+
+def test_numbers_snapshot_is_deterministic_across_repeated_runs():
+    assert snapshot_numbers("bull-call-spread") == snapshot_numbers(
+        "bull-call-spread")
+
+
+def test_assert_numbers_unchanged_accepts_identical_snapshots():
+    snap = snapshot_numbers("long-call")
+    assert_numbers_unchanged(snap, snap)  # 不應拋錯
+
+
+def test_assert_numbers_unchanged_names_the_candidate_and_the_field():
+    """護欄的價值一半在「有沒有紅」，一半在「紅了看不看得懂」。這條
+    直接驗後者：訊息要指得出策略、候選、欄位與新舊值。"""
+    snap = snapshot_numbers("bull-call-spread")
+    key = sorted(snap["candidates"])[0]
+    tampered = json.loads(json.dumps(snap))
+    tampered["candidates"][key]["baseline_return"] += 1e-9
+    try:
+        assert_numbers_unchanged(snap, tampered)
+        assert False, "應該要因為數值被動過而失敗"
+    except AssertionError as exc:
+        msg = str(exc)
+        assert "bull-call-spread" in msg
+        assert key in msg
+        assert "baseline_return" in msg
+
+
+def test_assert_numbers_unchanged_catches_a_single_heatmap_cell():
+    """heatmap 格值是最容易被靜默改掉、也最難用肉眼發現的一塊——
+    改一格就必須紅，而且訊息要指到那一格。"""
+    snap = snapshot_numbers("long-put")
+    key = sorted(snap["candidates"])[0]
+    tampered = json.loads(json.dumps(snap))
+    tampered["candidates"][key]["matrix"]["cells"][2][3] += 1e-9
+    try:
+        assert_numbers_unchanged(snap, tampered)
+        assert False, "應該要因為 heatmap 格值被動過而失敗"
+    except AssertionError as exc:
+        assert "matrix.cells[2][3]" in str(exc)
+
+
+def test_identity_and_numbers_stay_two_separate_entry_points():
+    """#118 刻意把身份與數值分開，本票是新增數值那一半、不是把兩者
+    混成一個斷言。這條把那個分工釘住：只動數值時，身份守門必須仍然
+    是綠的（反之亦然由既有身份測試涵蓋）。"""
+    ident_before = snapshot_identity("bull-call-spread")
+    nums = snapshot_numbers("bull-call-spread")
+    tampered = json.loads(json.dumps(nums))
+    key = sorted(tampered["candidates"])[0]
+    tampered["candidates"][key]["baseline_return"] += 1.0
+    try:
+        assert_numbers_unchanged(nums, tampered)
+        assert False, "數值守門應該要紅"
+    except AssertionError:
+        pass
+    # 身份那一半完全不受影響——兩個入口互不干涉。
+    assert_identity_unchanged(ident_before, snapshot_identity("bull-call-spread"))
+
+
+def test_long_call_max_profit_is_absent_not_infinite():
+    """#223（T03）修訂後的紅線在本基準上的落點：Long Call 今天的
+    `max_profit` 是 **None（不適用）**，不是無限大。T03 把包絡量改成由
+    payoff 導出時，若不小心引入「掃描全價格域取理論極值」的語意，這裡
+    會變成 `inf` 或一個巨大的數字——這條測試就是那顆地雷的引信。
+    Option Chaser 是 Scenario Bet Ranking 機器，不提供 unbounded
+    max-profit 概念（#217 決策 A、#223 範圍界定）。"""
+    snap = snapshot_numbers("long-call")
+    for key, fields in snap["candidates"].items():
+        assert fields["max_profit"] is None, (
+            f"{key}: Long Call 的 max_profit 應為 None（不適用），"
+            f"實際為 {fields['max_profit']!r}")

@@ -34,6 +34,53 @@ locality）依 `/codebase-design` skill 的定義，不在這裡重複。
 
 ---
 
+## 策略與方向（Initial V2，spec #217）
+
+**Strategy Family（策略家族）** — 使用者在建立／編輯劇本時勾選的層級，
+也是 `Scenario.strategies` 實際持久化的詞彙。首版三個：Call / Put、
+Vertical Spread、Butterfly。使用者永遠只選到這一層，不接觸下面的
+Subtype。
+
+**Subtype（子型）** — Family 底下的具體結構（`long-call`、`long-put`、
+`bull-call-spread`、`bear-put-spread`、call／put butterfly）。**由
+backend 在分析當下展開**（family × Direction × 啟用集合），不落盤、
+不進畫面選項；新增 subtype 不得讓前端多一個 tab 或 checkbox。既有
+資料裡的 subtype 字串由**全站唯一一張靜態對照表**映射回 Family，
+不做資料遷移。每個候選帶著它實際的 subtype 代碼。
+
+**Scenario Bet Ranking（劇本下注排名）** — 本產品的定位：回答「如果
+我的價格劇本成立，哪一個 Candidate 的成功情境報酬最好」。**不是**
+risk-adjusted return、return on risk capital、max-loss efficiency、
+portfolio optimization 或 suitability engine。報酬分母是今天實際投入
+的成本（worst executable entry 的 net debit）；失敗情境不是排名維度。
+推論：**不存在 unbounded max-profit 概念**——包絡量一律在既有的
+scenario／到期日搜尋區間內導出，不掃描整個 underlying price domain
+取教科書式的理論極值。
+
+**Direction（方向，衍生三態）** — 看漲／看跌／持平，由 `target_price`
+相對 spot 於**分析當下**算出。**永不落盤、不進事件**（它會隨 spot
+改變，不是使用者存下來的偏好）。沒有容忍帶：極接近但不等於現價的
+方向性劇本本來就合法。
+
+**Eligibility（可選／不可選）** — 某個 Family 在某個劇本下能不能用。
+在 backend 以 **subtype 為單位**判定，Family 層是「旗下任一啟用
+subtype eligible」的 OR 投影。不可選的 Family 在畫面上要看得到並
+說明原因；**frontend 只渲染 verdict，永不自行計算 eligibility**。
+這是事實陳述，不是推薦、不是評語（見「名詞紀律」）。
+
+**Profit Region（獲利區間）** — 非單調結構（Butterfly）兩個損益兩平
+點所夾的區間。既有的保本 suffix 掃描只對**單調** payoff 成立，對
+Butterfly 會誤報「永遠不損益兩平」，因此非單調家族改報這個區間；
+單調家族的掃描邏輯逐位元不變。
+
+**Per-family Representative（家族代表候選）** — 每個 Family 各自的
+代表候選與其劇本報酬，落盤成 `family → {representative, best_return}`
+的 map（additive 加欄位）。既有的 scalar `best_return` 與
+`representative_candidate` **保留**，語意＝**跨 family 冠軍**——劇本
+卡片頭條數字與詳細頁預設打開的主圖永遠是它，兩邊同一口徑。
+
+---
+
 ## Refresh（刷新）語意
 
 **Refresh Run（一輪刷新）** — 一次使用者動作所涵蓋的整批劇本刷新，
@@ -115,3 +162,10 @@ serverless bundle），故雲端環境實際上不可用。
 - 不要說「成交摩擦」——用 **Bid-Ask Spread**。
 - 不要對候選下人工評語（「收斂完全」「中庸帶」之類自創詞）。
 - 不要用「目標日期」——時間語意是月級的，只有 **target_month**。
+- **Friction 已自 canonical model 退場**（spec #217 決策 D）：收益與
+  排名一律從 worst executable entry 起算，execution spread 已內生於
+  進場價格，不該二次處理——不額外扣除、不做排名 penalty、不建 score、
+  不作為估值輸入，也不為診斷保留一個可能被後續誤用的 canonical
+  metric。**不得新增任何 friction 指標。** 既有的 `friction`／
+  `friction_amount` 欄位屬 legacy 清理／隔離對象（T04／#220）；在它
+  真正退場之前，T01 的數值基準仍然凍結它們的現況值。
