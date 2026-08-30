@@ -27,7 +27,7 @@ block 裡，不能切成好幾個 code block、也不能中間插普通文字把
 `［回報#001］spec #137 拆票完成`）。編號是**累計總數**，不因換
 session、換分支、換主題而歸零——目前最新編號記在這裡：
 
-> 目前次序：048（下一份回報用 049）
+> 目前次序：049（下一份回報用 050）
 
 每發一份回報就把上面這個數字改成剛剛用掉的那個，跟著那次改動一起
 commit（沒有其他改動要 commit 時，單獨為這一行開一個小 commit 也
@@ -5344,6 +5344,57 @@ bitwise 不變」在有**買賣腿 vendor IV 不同（真實市場 skew）**時�
 **下一張＝T03 #223**（包絡量由 payoff 導出），被 #219 擋、現已解除。
 同時已解鎖（原本只被 #218 擋，現在也可開工）：T04 #220、T06 #221、
 T09 #222。
+
+### T03（#223）正式收斂為 not planned＋下游票修正（2026-08-30，回報#049）
+
+T03 兩次嘗試皆被 Owner 判定方向錯誤，**正式收斂、不再嘗試第三套演算法**：
+
+- **第一次**（commit `5691fdc`，已 revert 於 `c6b6e0b`，保留在分支歷史作
+  audit trail）——自建 payoff continuous-function／slope／tail 分析
+  （`payoff_envelope()` 用「在履約價之外任選一點求斜率」判斷是否封頂）。
+  雖對真實 fixture 19/19 逐位元核對通過，但機制本身偏離 Option Chaser
+  從頭到尾「窮舉既有價格網格逐點計算」的產品模型（heatmap／情境向量／
+  完成度掃描皆是如此），Owner 判定方向錯誤。
+- **第二次**（未進 commit，本地驗證後即捨棄）——改用既有 `price_axis()`
+  網格逐點窮舉。實測 19 個既有候選中 **17 個數值改變**（Long Call
+  max_profit 從 `None` 變成有限數字、Long Put max_profit 遠小於真實值、
+  部分 Spread breakeven 出現線性內插誤差）。根因**不是取樣太粗**，是
+  `price_axis()` 本來服務 **Scenario Bet**（圍繞使用者填的
+  spot／target／best/worst），不服務**結構本身的數學極值**（不受劇本
+  範圍限制的真實 max/min）——這兩者只在 Vertical Spread 上巧合重疊。
+
+**Canonical 結論**：Initial V2 不需要先建立一套跨所有 strategy 的
+generic payoff-envelope／extrema engine。新 family 只實作自己真正需要、
+且既有模型沒有的語意，不為「架構漂亮」提前泛化。既有 Long Call／
+Long Put／Bull Call Spread／Bear Put Spread 的 `max_profit`／
+`max_loss`／`breakeven` **維持 T02／#219 完成時的既有公式**
+（`width-net_worst`、`strike±ask`、`None if strategy=="long-call"`），
+不受本輪探索影響。
+
+**#223 已 close（state_reason=not_planned）**，收尾 comment 記錄兩次
+否決的完整證據與原因區分。
+
+**下游三張票已修正**（各自 comment＋本文皆已更新）：
+
+- **T05 #226** — 解除 Blocked by #223，**無 blocker，可立即開工**。
+  B 層安全網改為只檢查**既有**成本／報酬欄位（`net_worst`／
+  `natural_cost`／報酬率），明文禁止為了本票重建 generic max-loss
+  推導引擎。A/B 兩層架構、範圍紅線本身未變。
+- **T12 #228** — 解除 Blocked by #223，**無 blocker，可立即開工**。
+  新增「schema 裡的數值欄位是透傳，不是本票要建的引擎」一節：
+  `max_profit`／`max_loss`／`breakeven` 數值沿用既有四策略既有公式，
+  本票只動 `legs[]` 傳輸形狀；損益兩平兩點容量純粹是預留給 T15 的
+  空間，本票不實作產生兩點的邏輯。
+- **T15 #230（Butterfly）** — Blocked by 維持 #225／#226／#228（本來
+  就沒有 #223）。移除「兩個損益兩平點由 T03 的導出機制自然得到」這句
+  已失效引用，改為 Butterfly 真正需要的三腿 payoff／兩個損益兩平點／
+  獲利區間**收回本票自己獨立完成**，只服務 Butterfly 這個結構，明文
+  禁止趁機重建跨 family 的 generic extrema framework。
+
+**#217 已留 scope/dependency clarification comment** 彙整索引以上
+異動，未重寫 spec 本文。
+
+**下一張＝T04 #220**（friction 自 canonical model 退場），無 blocker。
 
 ### 施工依據
 
