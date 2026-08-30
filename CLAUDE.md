@@ -27,7 +27,7 @@ block 裡，不能切成好幾個 code block、也不能中間插普通文字把
 `［回報#001］spec #137 拆票完成`）。編號是**累計總數**，不因換
 session、換分支、換主題而歸零——目前最新編號記在這裡：
 
-> 目前次序：047（下一份回報用 048）
+> 目前次序：048（下一份回報用 049）
 
 每發一份回報就把上面這個數字改成剛剛用掉的那個，跟著那次改動一起
 commit（沒有其他改動要 commit 時，單獨為這一行開一個小 commit 也
@@ -5303,6 +5303,47 @@ code 零改動**，既有斷言一條都沒放寬。
 
 **下一張＝T02 #219**（逐腿 payoff 直算），無 blocker；同時解鎖的還有
 T04 #220、T06 #221、T09 #222。
+
+### T02（#219）完成（2026-08-30，回報#048）
+
+`spread_scenario_value` 的 `min(max(long-short,0), width)` 封套公式已
+廢除，改為逐腿直算 `V(S) = Σ 方向符號 × 口數 × 單腿價值`。新增原語
+`WeightedLeg`／`payoff_value`（`option_chaser/valuation.py`）——不假設
+腿數為 2、不假設買賣方向組合，供 T12（#228）／T15（#230）的任意腿數
+結構直接複用。`spread_scenario_value` 縮成薄殼，簽章不變，既有呼叫點
+（`ranking.py`／`report.py`／`scenarios.py`／`service.py`）零改動沿用。
+
+**施工中攤開一個真實衝突並取得 Owner 裁示**：「拿掉 clamp 後四策略
+bitwise 不變」在有**買賣腿 vendor IV 不同（真實市場 skew）**時不成立
+——BS 定價的 monotone-in-strike 保證只在兩腿共用同一 sigma 時才有效。
+實測反例：XYZ bull-call-spread 105/110（買腿 IV 0.36、賣腿 IV 0.30）
+在 Heatmap 格點 S=133.2／2026-07-15，逐腿直算 `5.017486628026035`
+微幅超出 `width=5.0`（+0.35%）——不是浮點雜訊，是既有模型（未經 carry
+校準的預設路徑）在有 skew 時的真實性質，舊 clamp 把它無聲夾掉。
+**Owner 裁示：拿掉 clamp，更新 T01 基準**（AskUserQuestion，三選一中
+選推薦項）。範圍已核對到最嚴格：全部 4 策略、2002 個 heatmap 格值
+逐格掃過，只有這一組候選的 **3 格**不同，CLI golden fixtures 與契約
+樣本零漂移。決策記錄三處：`valuation.py` docstring、
+`scripts/gen_numeric_baseline.py`（新增第二個已知合法重產時機）、
+新回歸測試鎖住這個發現本身。
+
+`/code-review`（Standards＋Spec 兩軸）均無 hard violation。全套後端
+1455 passed；前端零改動、typecheck 乾淨。commit `71f837c`，issue #219
+已附完整驗收留言並關閉。
+
+> **⚠ 容器倒退再度發生（本 session 第二次）**：這次連當下未 commit 的
+> T02 進度一起消失（本地 HEAD 掉回 `945977c`，落後真 HEAD `f5df5ec`
+> 3 個 commit；working tree 也回到帶著 T11 舊殘影的狀態）。標準處置：
+> `git fetch` + `git reset --hard origin/claude/implement-tfm9oa`
+> 復原（T01／hermetic repair 皆已推上遠端，零損失），T02 全部改動
+> 重做一次（已完整記得先前做過什麼，重做無額外損耗）。**教訓更新**：
+> 這個 bug 不只在 commit 之間發生，**同一票施工過程中**（尚未 commit）
+> 也可能發生——每完成一張票的全部改動就立刻 commit＋push，不要在單票
+> 內累積過多未提交進度。
+
+**下一張＝T03 #223**（包絡量由 payoff 導出），被 #219 擋、現已解除。
+同時已解鎖（原本只被 #218 擋，現在也可開工）：T04 #220、T06 #221、
+T09 #222。
 
 ### 施工依據
 
