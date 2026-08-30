@@ -1,4 +1,6 @@
 from datetime import date
+from pathlib import Path
+
 from option_chaser.models import AnalysisParams, OptionContract
 from option_chaser.valuation import (
     evaluate_spread, spread_scenario_value, spread_guidance_judgments,
@@ -177,3 +179,145 @@ def test_leg_valued_differently_can_transiently_exceed_width_before_expiry():
     S, at = 133.2, date(2026, 7, 15)
     raw = spread_scenario_value(long_leg, short_leg, S, at, P)
     assert raw > 5.0, "這正是本票拿掉 clamp 後才如實顯示出來的張力"
+
+
+# ---------- T03（#223）：包絡量由 payoff 導出 ----------
+
+def _leg(option_type, strike, sign, qty=1):
+    from option_chaser.valuation import WeightedLeg
+    return WeightedLeg(contract=make("X", strike, 1.0, 1.0, opt=option_type),
+                       sign=sign, quantity=qty)
+
+
+def test_payoff_envelope_long_call_is_unbounded_above():
+    """裸買一口 Call 的 payoff 沒有上界——回傳 None，不外插、不改標成
+    無限大（#223 修訂後的範圍界定核心案例）。"""
+    from option_chaser.valuation import payoff_envelope
+    legs = (_leg("call", 100.0, 1.0),)
+    min_payoff, max_payoff = payoff_envelope(legs)
+    assert min_payoff == 0.0
+    assert max_payoff is None
+
+
+def test_payoff_envelope_long_put_bounded_at_zero_price():
+    """裸買一口 Put 的最大 payoff 在 S=0 達到，值＝履約價——這是價格
+    不可能為負這個真實邊界給出的，不是任意搜尋窗。"""
+    from option_chaser.valuation import payoff_envelope
+    legs = (_leg("put", 100.0, 1.0),)
+    min_payoff, max_payoff = payoff_envelope(legs)
+    assert min_payoff == 0.0
+    assert max_payoff == 100.0
+
+
+def test_payoff_envelope_vertical_spread_bounded_both_sides():
+    """兩腿 Vertical（買低賣高履約價的 call）payoff 天然有界於
+    [0, width]——不需要任何 clamp，折點＋漸近值分析自然給出。"""
+    from option_chaser.valuation import payoff_envelope
+    legs = (_leg("call", 100.0, 1.0), _leg("call", 105.0, -1.0))
+    min_payoff, max_payoff = payoff_envelope(legs)
+    assert min_payoff == 0.0
+    assert max_payoff == 5.0
+
+
+def test_payoff_envelope_does_not_assume_two_legs_or_monotonicity():
+    """三腿非單調結構（模擬 Butterfly）：payoff 在 body 履約價達到峰值，
+    兩翼歸零——折點掃描不需要知道這是不是單調函式。"""
+    from option_chaser.valuation import payoff_envelope
+    legs = (_leg("call", 95.0, 1.0), _leg("call", 100.0, -1.0, qty=2),
+           _leg("call", 105.0, 1.0))
+    min_payoff, max_payoff = payoff_envelope(legs)
+    assert min_payoff == 0.0
+    assert max_payoff == 5.0   # 峰值在 S=100：(100-95) - 0 + 0 = 5
+
+
+def test_payoff_breakeven_points_round_trip_single_leg():
+    """Round-trip：任選一個履約價與成本，反推損益兩平價，代回 payoff
+    驗證真的等於成本——不手猜期望值。"""
+    from option_chaser.valuation import payoff_breakeven_points, _payoff_at_expiry
+    legs = (_leg("call", 100.0, 1.0),)
+    cost = 5.4
+    roots = payoff_breakeven_points(legs, cost)
+    assert len(roots) == 1
+    assert abs(_payoff_at_expiry(legs, roots[0]) - cost) < 1e-9
+
+
+def test_payoff_breakeven_points_round_trip_two_leg_spread():
+    from option_chaser.valuation import payoff_breakeven_points, _payoff_at_expiry
+    legs = (_leg("put", 110.0, 1.0), _leg("put", 105.0, -1.0))
+    cost = 2.5
+    roots = payoff_breakeven_points(legs, cost)
+    assert len(roots) == 1
+    assert abs(_payoff_at_expiry(legs, roots[0]) - cost) < 1e-9
+
+
+def test_payoff_breakeven_points_two_roots_for_non_monotonic_structure():
+    """非單調結構（模擬 Butterfly）在成本落在峰值以下時有兩個損益兩平
+    點——round-trip 驗證兩個根代回 payoff 都等於成本。"""
+    from option_chaser.valuation import payoff_breakeven_points, _payoff_at_expiry
+    legs = (_leg("call", 95.0, 1.0), _leg("call", 100.0, -1.0, qty=2),
+           _leg("call", 105.0, 1.0))
+    cost = 2.0
+    roots = payoff_breakeven_points(legs, cost)
+    assert len(roots) == 2
+    for r in roots:
+        assert abs(_payoff_at_expiry(legs, r) - cost) < 1e-9
+    assert roots[0] < roots[1]
+
+
+def test_derived_envelope_matches_existing_formulas_exactly_on_real_fixture():
+    """對真實 fixture 的每一組候選（含所有真實 bid/ask/strike 浮點值），
+    導出的 max_profit／breakeven 逐位元等於既有的結構專屬封套公式——
+    這是 bitwise parity 的直接證明，不是靠全套測試綠燈間接推論。"""
+    import sys
+    sys.path.insert(0, "tests")
+    from test_selection_regression import SCENARIOS, SNAP
+    from option_chaser import service
+    from option_chaser.valuation import (WeightedLeg, payoff_envelope,
+                                         payoff_breakeven_points)
+
+    checked = 0
+    for strat in ("bull-call-spread", "bear-put-spread", "long-call", "long-put"):
+        p = SCENARIOS[strat]
+        req = service.AnalysisRequest(symbol="XYZ", base_params=p,
+                                      strategies=(strat,))
+        result = service.run_offline(req, SNAP)
+        for r in result.results:
+            for sv in (r.ranked_spreads or ()):
+                legs = (WeightedLeg(contract=sv.long_leg, sign=1.0, quantity=1),
+                       WeightedLeg(contract=sv.short_leg, sign=-1.0, quantity=1))
+                _, max_payoff = payoff_envelope(legs)
+                width = abs(sv.short_leg.strike - sv.long_leg.strike)
+                assert max_payoff - sv.net_worst == width - sv.net_worst
+                roots = payoff_breakeven_points(legs, sv.net_worst)
+                assert len(roots) == 1
+                assert roots[0] == sv.breakeven
+                checked += 1
+            for band_list in (r.ranked_bands or {}).values():
+                for cv in band_list:
+                    legs = (WeightedLeg(contract=cv.contract, sign=1.0, quantity=1),)
+                    min_payoff, max_payoff = payoff_envelope(legs)
+                    if cv.contract.option_type == "call":
+                        assert max_payoff is None
+                    else:
+                        assert max_payoff - cv.contract.ask == (
+                            cv.contract.strike - cv.contract.ask)
+                    roots = payoff_breakeven_points(legs, cv.contract.ask)
+                    assert len(roots) == 1
+                    assert roots[0] == cv.breakeven
+                    checked += 1
+    assert checked >= 19, f"樣本數太少不足以當回歸證據：{checked}"
+
+
+def test_no_structure_specific_envelope_formula_remains_in_store_or_valuation():
+    """AC：『程式碼中不再有結構專屬的封套公式』——結構性證明，不靠測試
+    綠燈間接推論。舊公式（`strategy=="long-call"` 判斷、`strike±ask`／
+    `width-net_worst` 硬寫算術）不得出現在任何生產程式碼的可執行行裡
+    （註解裡提及舊公式名字沒關係，那是解釋歷史脈絡）。"""
+    for mod in ("option_chaser/store.py", "option_chaser/valuation.py"):
+        src = Path(mod).read_text(encoding="utf-8")
+        code_lines = [ln for ln in src.splitlines() if not ln.strip().startswith("#")]
+        code = "\n".join(code_lines)
+        assert 'strategy == "long-call"' not in code, (
+            f"{mod} 不該再用策略名字判斷 max_profit 是否為 None")
+        assert "width - net_worst" not in code, (
+            f"{mod} 不該再有 width-net_worst 這條硬寫封套公式")
