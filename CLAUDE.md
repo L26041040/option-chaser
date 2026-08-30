@@ -27,7 +27,7 @@ block 裡，不能切成好幾個 code block、也不能中間插普通文字把
 `［回報#001］spec #137 拆票完成`）。編號是**累計總數**，不因換
 session、換分支、換主題而歸零——目前最新編號記在這裡：
 
-> 目前次序：046（下一份回報用 047）
+> 目前次序：047（下一份回報用 048）
 
 每發一份回報就把上面這個數字改成剛剛用掉的那個，跟著那次改動一起
 commit（沒有其他改動要 commit 時，單獨為這一行開一個小 commit 也
@@ -5229,6 +5229,80 @@ Testing Decisions）。
 - 同時解鎖：**T04** [#220] friction 退場、**T06** [#221] family 詞彙、
   **T09** [#222] 單腿補欄位（三者亦只被 #218 擋）
 - 其餘依 spec #217 §Q 六段順序推進
+
+### #226 兩層化＋Hermetic test repair #236（2026-08-30，回報#047）
+
+**#226（T05）票面第二次修訂——Candidate validity 明確拆成兩層**：
+原文把 `bid > ask` 等報價層問題描述成「導致 `max_loss <= 0`」的成因，
+等於讓報價層的剔除**依賴**導出層的結果——那是錯的：倒掛報價有時不會
+讓 max loss 變號，但它本來就該被剔除。現改為——
+
+- **A. Quote-level invalidity**：原始報價本身不可信即 invalid
+  （`bid > ask`、缺失／非有限值、同候選腿位間互相矛盾、已被**既有**
+  資料品質規則判定失效的 stale／frozen quote）。**不需要先證明它一定
+  導致 `max_loss <= 0`**；程式碼與測試中不得出現「`bid > ask` ⇒
+  `max_loss <= 0`」這種因果敘述。
+- **B. Derived mathematical safety net**：即使通過 A 層，只要導出結果
+  出現 `max_loss <= 0` 或 `Infinity`／`NaN` 等不可能值，仍直接
+  invalid＋diagnostic。**獨立於 A 層成立**，是最後一道網不是 A 的推論。
+
+診斷要看得出**是哪一層**剔除的、各層各幾筆。仍**不新增**
+`max_profit <= 0` 或任何新的產品 ranking 規則——負報酬但自洽的候選由
+既有 ranking 沉底。標題同步改為「兩層——報價層不可信、導出層數學安全網」。
+
+**Hermetic test repair ＝ issue #236（新開，非 #217 的 18 張施工票之
+一），已完成並關閉**（commit `ad783ab`）。修掉 T01 收尾時發現、擋住
+#218 「全套測試綠燈」AC 的那 5 條紅燈。**只動 3 個測試檔，production
+code 零改動**，既有斷言一條都沒放寬。
+
+- **`test_api_filters.py`（3 條）** — `_client()` 只注入 `fetch=`，
+  其餘走 `create_app()` 的**預設 loader**（真管線）。而 fixture 用的
+  假 symbol **`"XYZ"` 是真實上市代號**，連得到外網時會抓到那家公司的
+  真實配息 → 非零 q → `carry_calibrated` True → 估值與級距排名位移 →
+  `strike 100.5` 掉出榜；`rate_used` 也在 `0.0390…`／`0.04` 之間跳。
+  改為明確注入固定假利率曲線＋「合成標的不配息」的假 dividend loader
+  （q=0）——那正是 FB5-01（#62）期望值成立的條件。
+  ⚠ 同一個坑 `scripts/gen_contract_sample.py` 檔頭**早就寫過**，只是
+  這個測試檔沒跟上。
+- **`test_service_fetch.py`（1 條）** — 只 monkeypatch 了
+  `data.yf.fetch_chain`，也就是**備援**那層；但 FB3-01（#44）之後主源
+  已是 Cboe。連得到外網時 Cboe 直接成功、回傳帶「現在」時間戳的真實
+  快照 → `got_snap == snap` 失敗；擋外網時 Cboe 拋 FetchError 退到
+  備援就綠——**同一份程式碼隨環境紅綠不定**。改為主源回傳 fixture、
+  備援放地雷（被呼叫到就 AssertionError）。
+- **`test_api_iv_history.py`（1 條）** — 該檔 `_client()` 早就注入了
+  rate／dividend／vendor 三個假體，唯一非 hermetic 的是 **`ny_today()`**。
+  fixture `fetched_at` 是 2026-07-15、候選兩腿到期日 2026-08-07；真實
+  日曆走到 2026-08-30 時該合約已到期 23 天。測試以 `ny_today()` 為終點
+  造 60 天合成觀測，落在到期日當天或之後的被 `implied_vol()` 正確判為
+  無解（T ≤ 0）：買腿剩 22 筆、賣腿剩 15 筆且全在 2026-07-16 之前，而
+  Δ4w 基準窗是 `[today-42, today-21]`＝07-19～08-09——**窗還沒開資料就
+  沒了**。新增 module 層 autouse fixture 把時鐘釘在
+  **`FROZEN_TODAY = 2026-07-15`**（＝fixture 自己的 `fetched_at`），
+  只換 `api_app.main` 與測試模組各自綁定的名字，`api_app/clock.py`
+  本身不動、**production 日期語意零變更**；14 處既有 `ny_today()` 呼叫
+  點自動跟著凍結，不必逐一改寫。
+  連帶修正 `test_delta_4w_is_none_without_a_baseline_window_observation`
+  ——它把觀測錨在「到期日前 50 天」，但 Δ4w 的窗是相對 **today** 的，
+  原本只是碰巧落在窗外。改成從 today 往回數 43 天（窗口起點 today-42），
+  斷言一字未動，這條測試從「碰巧通過」變成「真的在測窗口」。
+
+**驗證**：全套後端（記憶體＋真實 Postgres）**1449 passed / 0 failed**；
+同一套在 **socket 層封鎖所有對外連線**下重跑**同樣 1449 passed**
+（一次性驗證插件，未入 repo）——「可上網與不可上網結果一致」是實測，
+不是推論。前端 typecheck 乾淨、vitest 670 條全綠（本輪未觸碰前端）。
+
+> **教訓（值得記住）**：先前多次紀錄的「全套全綠」都是在沙箱**擋外網**
+> 的條件下量到的。環境一變（本 session 的沙箱恰好連得到 Treasury／
+> Cboe／Yahoo），同一份程式碼就紅——這不是引擎回歸，是測試把「環境
+> 剛好連不到外網」當成了隱含前提。**判斷一條紅燈是不是回歸之前，先問
+> 它會不會打真網路、會不會讀系統時鐘。**
+
+**#218（T01）全部 AC 通過，已 close。** 阻擋它的唯一一條
+（「全套測試綠燈」）由 #236 解除。
+
+**下一張＝T02 #219**（逐腿 payoff 直算），無 blocker；同時解鎖的還有
+T04 #220、T06 #221、T09 #222。
 
 ### 施工依據
 
