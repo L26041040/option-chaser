@@ -17,6 +17,7 @@ from api_app.main import create_app
 from option_chaser.data.snapshot import load_snapshot
 from option_chaser.filters import is_spread_wide
 from option_chaser.models import AnalysisParams
+from option_chaser.ratecurve import RateCurve
 
 # 既有 fixture（`tests/test_service.py` 亦用它）：10 個 call。修法前
 # （FB5-01／FB5-02 之前）4 道硬門檻，池子只剩 6 組：
@@ -28,9 +29,36 @@ REQUEST = {"symbol": "XYZ", "target_price": 120.0, "target_month": "2026-08",
           "strategies": ["long-call"]}
 
 
+# Hermetic（#236）：`create_app()` 的 `rate_loader`／`dividend_loader`
+# **預設接的是真管線**（Treasury／Yahoo→FMP→Nasdaq）。這份 fixture 用的
+# 假 symbol `"XYZ"` 恰好是**真實上市代號**，所以在連得到外網的環境裡，
+# 預設 loader 會抓到那家公司的真實配息、算出非零 q、`carry_calibrated`
+# 變 True，估值與級距排名跟著位移——下面幾條測試斷言的 `strike 100.5`
+# 就是這樣掉出榜的。同一個坑 `scripts/gen_contract_sample.py` 早有紀錄。
+#
+# 因此這裡把兩個輸入都釘死。合成標的沒有配息（q=0），利率用一條固定
+# 假曲線——這正是這幾條測試的既有期望值（FB5-01／#62 當初量到的那組
+# 數字）成立的條件，不是為了讓測試變綠而調的參數。
+_FAKE_RATE_CURVE = RateCurve(curve_date="2026-07-15",
+                             nodes=((0.25, 0.045), (1.0, 0.043),
+                                    (2.0, 0.041), (5.0, 0.040)))
+
+
+def _fake_rate_loader(today):
+    return _FAKE_RATE_CURVE, f"假曲線 {_FAKE_RATE_CURVE.curve_date}"
+
+
+def _fake_dividend_loader(symbol, today):
+    """合成標的不配息 → q=0。回傳 `None` 是這個介面表達「沒有配息資料」
+    的既有方式（見 `service._resolve_q` 的 fallback 分層）。"""
+    return None, "測試 fixture 的合成標的沒有配息"
+
+
 def _client():
     snap = load_snapshot(FIX)
-    return TestClient(create_app(fetch=lambda symbol: snap))
+    return TestClient(create_app(fetch=lambda symbol: snap,
+                                 rate_loader=_fake_rate_loader,
+                                 dividend_loader=_fake_dividend_loader))
 
 
 def test_low_open_interest_candidate_survives_and_pool_grows():
