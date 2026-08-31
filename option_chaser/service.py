@@ -285,10 +285,10 @@ def _skip_message(direction: str) -> str:
     成兩段互斥文字——新增 subtype 時這裡不需要修改，訊息會自動涵蓋
     新的 eligible／skipped 名單。"""
     label = DIRECTION_LABELS.get(direction, direction)
-    skipped = [STRATEGY_LABELS[s] for s in STRATEGIES
-              if not subtype_eligible(s, direction)]
-    available = [STRATEGY_LABELS[s] for s in STRATEGIES
-                if subtype_eligible(s, direction)]
+    skipped, available = [], []
+    for s in STRATEGIES:
+        (available if subtype_eligible(s, direction) else skipped).append(
+            STRATEGY_LABELS[s])
     msg = f"目前劇本方向為「{label}」，因此未執行 {'、'.join(skipped)}。"
     if available:
         msg += f"可改選 {'、'.join(available)}。"

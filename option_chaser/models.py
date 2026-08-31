@@ -294,7 +294,16 @@ def is_bullish(strategy: str) -> bool:
     """T08（#225）：改為資料驅動（查 `SUBTYPE_DIRECTIONS`），不再是
     硬編碼的名字比對——對既有四個 subtype 逐位元行為不變，這個函式
     服務的是 Heatmap／CLI 報告的價格軸走向這類與 eligibility gate
-    無關的既有用途，不在本票改動範圍內。"""
+    無關的既有用途，不在本票改動範圍內。
+
+    ⚠ `/code-review` Standards 軸留下的已知後續：這裡回傳的仍是**二元**
+    布林值，而 `DIRECTIONS` 已經是三態。T15（#230）新增 call-fly／
+    put-fly（預期收 `{"flat"}`）之後，任何還在對 flat-only 的 subtype
+    呼叫 `is_bullish()` 來決定價格軸走向的既有呼叫端（`report.py`／
+    `cli.py` 的 `price_axis` 用法）都會拿到 `False`、被誤判成
+    「看跌走向」——這不是本票要解決的問題（今天沒有任何 flat-only
+    subtype 存在，`price_axis` 的方向語意本來就只服務單調的 bull/bear
+    結構），但 T15／T16 施工前應該重新檢視這幾個呼叫點是否仍然適用。"""
     return "bullish" in SUBTYPE_DIRECTIONS.get(strategy, frozenset())
 
 

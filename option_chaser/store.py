@@ -413,7 +413,15 @@ def _candidate(cv: CandidateView, strategy: str, capital: float | None,
 def _family_eligibility_map(target_price: float, spot: float) -> dict:
     """T08（#225，Initial V2）：全部 `FAMILIES` 各自的可選／不可選
     verdict，鍵是 family 代碼——`serialize_result()` 與（未來 T10 若
-    需要）任何其他呼叫端共用同一份計算，不各自重算方向一次。"""
+    需要）任何其他呼叫端共用同一份計算，不各自重算方向一次。
+
+    `/code-review` Standards 軸提醒的隱性前提：呼叫端傳入的 `spot`
+    必須是**這次分析當下**用的現價，與 `service._analyze()` 自己算
+    `direction` 時用的 `snap.spot` 是同一個數字——今天恆成立
+    （`AnalysisResult.meta.spot` 就是 `SnapshotMeta(spot=snap.spot,
+    ...)`，見 `service.py`），但這是兩個模組各自獨立呼叫
+    `derive_direction()` 才會浮現的跨模組前提，值得留一句話而不是
+    讓它隱形。"""
     direction = derive_direction(target_price, spot)
     return {fam: dataclasses.asdict(family_eligibility(fam, direction))
            for fam in FAMILIES}
