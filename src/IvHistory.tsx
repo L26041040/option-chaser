@@ -23,6 +23,11 @@
  * 節點，也**不發任何 IV 請求**——不是空卡片、不是「尚未啟用」提示。
  * 解不解鎖讀後端算好的 `historical_iv_enabled`，前端不自己重推規則。
  *
+ * **第二個閘門（T16／#232，Initial V2）**：候選腿數 > 2（Butterfly）
+ * 同樣不輸出任何節點、不發請求，見下方 `supportsIvHistory` 註解——
+ * 這塊功能的兩個家族結構上都只認得單腿與兩腿，本輪不新增第三腿的
+ * 支援，畫面因此完全不出現，不是留個空狀態或說明文字硬撐版位。
+ *
  * **backfill 狀態只是附加說明，不取代資料**：今天補不補得動（quota／
  * vendor）跟資料能不能看是兩件事——已經算出來的 percentile／Δ4w 不因為
  * 今天撞額度就被藏起來，只是額外多一行「今日額度已用完」之類的說明。
@@ -566,6 +571,19 @@ export default function IvHistory({ scenarioId, candidate, analyzedAt = null }: 
   const backfillAttempted = useRef<Set<string>>(new Set());
 
   const key = candidate?.candidate_key ?? null;
+  // T16（#232，Initial V2）：後端 `ivpipeline.build_iv_history()` 的
+  // 既有 `leg_names = ("buy","sell") if len(legs)>=2 else ("buy",)`
+  // 對三腿以上的候選（Butterfly）會靜默丟掉第三隻腿、把中腿誤標成
+  // 「賣腿」——等同對使用者顯示錯誤的兩腿資料。這塊的方法論本來就只
+  // 服務單腿與兩腿結構（spec #151 §0：Normalized Skew 只在 Vertical
+  // Spread 出現）；#215 Owner Decision 明訂「Vertical／Butterfly 的
+  // 『貴不貴』區塊整塊不顯示」指的是尚未建置、本輪也不建置的 package
+  // percentile（三腿歷史重建可得率未量測，緩發），不是要藏起這裡描述
+  // 性的既有功能——但既有功能本身結構上只認得 <=2 腿，因此在請求層
+  // 直接擋下 Butterfly：不觸發任何 fetch，也不渲染任何 DOM（AC：「不
+  // 出現……不留空狀態、不留說明文字」）。修正管線本身讓它認得三腿是
+  // 另一張票的範圍，不在本票（前端呈現）動 `ivpipeline.py`。
+  const supportsIvHistory = (candidate?.legs.length ?? 0) <= 2;
 
   // 先問解不解鎖。鎖著就到此為止——**不發 IV 請求**。T03（#187）：走
   // 快取（settings 是單一全站狀態，鍵固定），跟 Settings 頁自己那次
@@ -585,7 +603,7 @@ export default function IvHistory({ scenarioId, candidate, analyzedAt = null }: 
   }, []);
 
   useEffect(() => {
-    if (enabled !== true || !key) return;
+    if (enabled !== true || !key || !supportsIvHistory) return;
     let alive = true;
     // 每次重新嘗試（換候選、或新分析完成後同一個候選要跟著問一次）都
     // 先清掉上一輪的錯誤——這次嘗試還沒有結論，不該讓使用者看到跟這次
@@ -654,12 +672,13 @@ export default function IvHistory({ scenarioId, candidate, analyzedAt = null }: 
     };
   }, [data, dataKey, key, scenarioId, analyzedAt]);
 
-  // 鎖著、還沒問完、或這個候選根本沒有身份鍵 → 不輸出任何節點（#126
-  // AC——這條紅線原封不動，跟下面「卡片固定版位」是兩件事：鎖著時連
-  // 卡片外框都不該出現）。`!candidate` 這條分支實務上不會單獨發生
-  // （`key` 已經蘊含 `candidate` 存在），寫出來純粹是讓 TS 把下面的
-  // `candidate.legs` 收窄成非 null。
-  if (enabled !== true || !key || !candidate) return null;
+  // 鎖著、還沒問完、這個候選根本沒有身份鍵、或這個候選是這塊功能結構上
+  // 不支援的三腿以上（Butterfly，T16／#232，見上方 `supportsIvHistory`
+  // 註解）→ 不輸出任何節點（#126 AC——這條紅線原封不動，跟下面「卡片
+  // 固定版位」是兩件事：鎖著時連卡片外框都不該出現）。`!candidate` 這條
+  // 分支實務上不會單獨發生（`key` 已經蘊含 `candidate` 存在），寫出來
+  // 純粹是讓 TS 把下面的 `candidate.legs` 收窄成非 null。
+  if (enabled !== true || !key || !candidate || !supportsIvHistory) return null;
 
   // 從這裡開始卡片本身固定存在——loading／error／有資料（含「資料是空
   // 的」）三種狀態都在同一個版位裡切換，不再因為請求還沒回來就整塊

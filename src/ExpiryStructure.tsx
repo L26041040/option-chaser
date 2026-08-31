@@ -17,7 +17,8 @@ import Heatmap from "./Heatmap";
 import type { AnalysisView, Candidate } from "./api";
 import { candidateTitle, strategyLabel } from "./detail";
 import {
-  expiryOptions, isThinPool, legPrices, resolveExpiry, type ExpiryBearing,
+  expiryOptions, isThinPool, legPriceEntries, legPrices, resolveExpiry,
+  type ExpiryBearing,
 } from "./expiry";
 import { heatmapProps } from "./heatmap";
 import { formatReturn, money } from "./scenarios";
@@ -68,15 +69,31 @@ function CandidateRow({ view, candidate, rank }: {
             </span>
           </span>
           {/* 三個價格就在收合狀態下看得到——要比較幾組候選時，把每一組
-              都展開一次才看得到成本是折磨。 */}
+              都展開一次才看得到成本是折磨。
+
+              T16（#232，Initial V2）：三腿以上（Butterfly）改逐腿列出
+              ——固定「買／賣」兩個欄位的既有版式會靜默丟掉中腿口數與
+              第三隻腿，AC 明文禁止。既有兩腿／單腿候選走原本的格式，
+              逐字不變。 */}
           <span className="candidate-prices">
-            <span>
-              買 {prices.buyAsk === null ? "—" : money(prices.buyAsk)}
-            </span>
-            <span>
-              賣 {prices.sellBid === null ? "—" : money(prices.sellBid)}
-            </span>
-            <span>淨成本 {money(prices.net)}</span>
+            {candidate.legs.length > 2 ? (
+              <>
+                {legPriceEntries(candidate).map((entry, i) => (
+                  <span key={i}>{entry.label} {money(entry.price)}</span>
+                ))}
+                <span>淨成本 {money(prices.net)}</span>
+              </>
+            ) : (
+              <>
+                <span>
+                  買 {prices.buyAsk === null ? "—" : money(prices.buyAsk)}
+                </span>
+                <span>
+                  賣 {prices.sellBid === null ? "—" : money(prices.sellBid)}
+                </span>
+                <span>淨成本 {money(prices.net)}</span>
+              </>
+            )}
           </span>
         </summary>
         {/* Crossover Boundary（#116）：同 `ScenarioDetail.tsx` 的判準

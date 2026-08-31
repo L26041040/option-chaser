@@ -27,6 +27,11 @@ const SUBTYPE_FAMILY: Record<string, string> = {
   "long-put": "single-leg",
   "bull-call-spread": "vertical-spread",
   "bear-put-spread": "vertical-spread",
+  // T16（#232，Initial V2）：T15（#230）新增了這兩個 subtype，但那張票
+  // 是純後端票、依票面範圍未動這個檔案——本票（前端呈現）才是它們第一次
+  // 真的需要被歸進正確 family 分頁的地方，補上檔頭註解早就提醒過的兩項。
+  "call-fly": "butterfly",
+  "put-fly": "butterfly",
 };
 
 export function familyOf(subtype: string): string {

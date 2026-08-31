@@ -21,8 +21,14 @@ describe("familyOf", () => {
     expect(familyOf("bear-put-spread")).toBe("vertical-spread");
   });
 
-  it("未知 subtype 原樣回傳，不假造一個 family", () => {
-    expect(familyOf("call-fly")).toBe("call-fly");
+  it("T16（#232）：call-fly／put-fly 映射到 butterfly（T15／#230 新增"
+     + "的兩個 subtype，這裡是它們第一次真的被歸進正確 family 的地方）", () => {
+    expect(familyOf("call-fly")).toBe("butterfly");
+    expect(familyOf("put-fly")).toBe("butterfly");
+  });
+
+  it("真的未知的 subtype 原樣回傳，不假造一個 family", () => {
+    expect(familyOf("something-new")).toBe("something-new");
   });
 });
 
@@ -62,6 +68,15 @@ describe("resultsByFamily", () => {
     expect(grouped.get("single-leg")!.map((r) => r.strategy))
       .toEqual(["long-call"]);
     expect(grouped.has("butterfly")).toBe(false);
+  });
+
+  it("T16（#232）：call-fly 真的分進 butterfly 這一組，不是自成一組"
+     + "（`SUBTYPE_FAMILY` 漏掉這兩個 subtype 的話，這裡會斷）", () => {
+    const results = [result("call-fly", "ok", { "2026-09-18": ["k1"] })];
+    const grouped = resultsByFamily(view(results, {}));
+    expect(grouped.get("butterfly")!.map((r) => r.strategy))
+      .toEqual(["call-fly"]);
+    expect(grouped.has("call-fly")).toBe(false);
   });
 });
 

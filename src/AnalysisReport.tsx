@@ -135,19 +135,53 @@ function QRow({ params }: { params: AnalysisView["params"] }) {
   );
 }
 
+/**
+ * Breakeven（含 T16／#232 新增的獲利區間）：既有四策略恆單點，
+ * `breakeven_points` 長度 1，沿用既有格式逐字不變。Butterfly
+ * （T15／#230）可能是兩點（獲利區間存在，額外顯示範圍）或空陣列
+ * （到期時任何價位都無法獲利，`profit_region` 恆為 null，見
+ * `api.ts::Candidate.profit_region` 註解）——都誠實顯示，不假造
+ * 一個數字。
+ */
+function BreakevenRow({ candidate }: { candidate: Candidate }) {
+  const points = candidate.breakeven_points;
+  if (points.length === 0) {
+    return <Row label="Breakeven">無（到期時任何價位都無法獲利）</Row>;
+  }
+  return (
+    <>
+      <Row label="Breakeven">{points.map((p) => money(p)).join(" / ")}</Row>
+      {candidate.profit_region && (
+        <Row label="獲利區間">
+          {money(candidate.profit_region[0])} ~ {money(candidate.profit_region[1])}
+          <span className="row-note">（標的落在這個範圍內，到期時為正報酬）</span>
+        </Row>
+      )}
+    </>
+  );
+}
+
 /** Risk / Payoff：Breakeven／Max Profit／Max Loss。
  * T04（#220，#217 決策 D）：Execution Friction 這一列已隨 friction
  * 自 canonical model 退場移除，不新增任何替代指標。 */
 function RiskPayoff({ candidate }: { candidate: Candidate }) {
   return (
     <>
-      <Row label="Breakeven">{money(candidate.breakeven)}</Row>
+      <BreakevenRow candidate={candidate} />
       <Row label="Max Profit">
         {candidate.max_profit === null ? "無上限" : money(candidate.max_profit)}
       </Row>
-      {/* debit 策略（本站四種皆是）最大損失恆等於進場成本，見
-          `store.py` 的 `max_loss_per_contract` 註解——不是巧合，是定義。 */}
-      <Row label="Max Loss">{money(candidate.natural_cost)}</Row>
+      {/*
+        既有四策略（debit，`max_loss_per_contract === capital_per_
+        contract` 恆成立）讀這個欄位與讀 `natural_cost` 逐位元相同
+        （見 `store.py` 的 `max_loss_per_contract` 註解），但 Butterfly
+        （T15／#230）broken-wing 組合的最大損失可能超過已付權利金
+        本身——`max_loss_per_contract` 是唯一對兩種情況都誠實的欄位，
+        `natural_cost` 只是進場成本、不是這組候選真正的最大損失。
+        `/100` 是既有的「每股→每口（100 股）」既有換算慣例，見
+        `store.py` 的 `capital_per_contract` 同一套口徑。
+      */}
+      <Row label="Max Loss">{money(candidate.max_loss_per_contract / 100)}</Row>
     </>
   );
 }

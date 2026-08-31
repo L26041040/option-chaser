@@ -48,4 +48,13 @@ describe("候選標題（T12／#228：不再解構固定兩個變數）", () => 
     } as unknown as Candidate;
     expect(candidateTitle(c)).toBe("買 100 / 賣 105 / 買 110");
   });
+
+  it("T16（#232）：口數 > 1 的腿標出倍數，中腿口數不再隱形", () => {
+    const c = {
+      legs: [leg({ strike: 100, side: "buy", quantity: 1 }),
+            leg({ strike: 106, side: "sell", quantity: 2 }),
+            leg({ strike: 115, side: "buy", quantity: 1 })],
+    } as unknown as Candidate;
+    expect(candidateTitle(c)).toBe("買 100 / 賣 2×106 / 買 115");
+  });
 });

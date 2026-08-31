@@ -22,6 +22,7 @@ export function candidate(key: string, strategy: string, ret: number): Candidate
     mid_cost: 1,
     breakeven: 100,
     breakeven_points: [100],
+    profit_region: null,
     days_to_expiry: 30,
     max_profit: null,
     max_loss_per_contract: 100,

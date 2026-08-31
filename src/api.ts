@@ -185,14 +185,29 @@ export interface Candidate {
    *  對照。序列化早就存在（`store._candidate` 的 `mid_cost`），本票起
    *  前端才開始讀它。 */
   mid_cost: number;
-  breakeven: number;
   /**
-   * T12（#228，Initial V2）：損益兩平的**傳輸格式**——1～2 點的陣列，
-   * 容量預留給 Butterfly（T15／#230）未來用。既有四策略恆是單點、
-   * 值等於上面的 `breakeven`——這是新增的傳輸容量，不是 `breakeven`
-   * 的替代品，本票（T12）不消費它、不新增任何 UI。
+   * T15（#230，Initial V2）：Butterfly 到期時連峰值都賺不到（`profit_
+   * region` 為 `None`）時後端如實回傳 `null`——不假造一個數字。既有
+   * 四策略恆有值。畫面呈現改讀下面的 `breakeven_points`（T16／#232），
+   * 這個欄位保留給尚未升級的既有讀取端與型別相容。
+   */
+  breakeven: number | null;
+  /**
+   * T12（#228，Initial V2）：損益兩平的**傳輸格式**——0～2 點的陣列，
+   * 容量預留給 Butterfly（T15／#230）用。既有四策略恆是單點、值等於
+   * 上面的 `breakeven`；Butterfly 到期時完全無法獲利時是空陣列（見
+   * `profit_region`）、有獲利空間時恰好兩點。T16（#232）起前端據此
+   * 呈現多點 Breakeven 與獲利區間。
    */
   breakeven_points: number[];
+  /**
+   * T15（#230，Initial V2）：獲利區間——標的落在這個範圍內、到期時為
+   * 正報酬。只有 Butterfly 會非 null（且恰在 `breakeven_points` 有
+   * 兩點時才非 null，兩者同進同出）；既有四策略恆為 `null`（它們的
+   * payoff 對照組是單調的，「獲利區間」這個概念本身不成立，不是
+   * 缺了一個數字）。
+   */
+  profit_region: [number, number] | null;
   /** 距這組候選自己的到期日還有幾天（V8／#56，spec R1 §4.2 B「剩餘
    *  天數」——早就序列化了，純文字報告沒印）。 */
   days_to_expiry: number;

@@ -44,11 +44,21 @@ export function formatMove(ratio: number): string {
  * 解構固定兩個變數——三腿以上的候選（Butterfly，T15／#232）不會被
  * 靜默丟腿，例如 `買 100 / 賣 105 / 買 110`。既有兩腿／單腿候選的
  * 輸出逐字不變。
+ *
+ * T16（#232，Initial V2）：口數 > 1 的腿（Butterfly 中腿賣 2 口）額外
+ * 標出 `2×`——單純列出履約價會讓「中腿其實是兩口」這個結構性事實對
+ * 使用者不可見（AC 明文：「中腿口數 2 要看得出來」）。既有兩腿／單腿
+ * 候選 `quantity` 恆為 1，不觸發這個分支，輸出逐字不變。標示語法沿用
+ * 後端 `service._comparison()` 既有的 `f"2×{mid_leg.strike:g}"` 慣例，
+ * 前後端同一套寫法。
  */
 export function candidateTitle(candidate: Candidate): string {
   // `CandidateLegs` 的型別本身保證至少一隻腿（canonical boundary
   // 1<=len<=4），這裡不需要再防禦性檢查空陣列。
   return candidate.legs
-    .map((leg) => `${leg.side === "buy" ? "買" : "賣"} ${leg.strike}`)
+    .map((leg) => {
+      const side = leg.side === "buy" ? "買" : "賣";
+      return leg.quantity > 1 ? `${side} ${leg.quantity}×${leg.strike}` : `${side} ${leg.strike}`;
+    })
     .join(" / ");
 }

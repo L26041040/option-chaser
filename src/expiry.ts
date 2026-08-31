@@ -90,8 +90,9 @@ export interface LegPrices {
 export function legPrices(candidate: Candidate): LegPrices {
   // T12（#228，Initial V2）：改用 `side` 找腿，不再靠陣列位置——既有
   // 兩腿策略 `[0]=buy`／`[1]=sell` 剛好對應位置，這裡的行為因此不變；
-  // 三腿以上候選（Butterfly）只取第一組買／賣腿，多腿的完整摘要是
-  // T16（#232）的顯示範圍，不是這裡要解決的事。
+  // 三腿以上候選（Butterfly）只取第一組買／賣腿——這個函式服務的是
+  // 既有兩腿／單腿摘要格式，多腿的完整摘要改走下面的 `legPriceEntries`
+  // （T16／#232），不在這裡擴充，兩者服務不同的顯示情境。
   const buy = findLeg(candidate.legs, "buy");
   const sell = findLeg(candidate.legs, "sell");
   return {
@@ -99,6 +100,30 @@ export function legPrices(candidate: Candidate): LegPrices {
     sellBid: sell ? sell.bid : null,
     net: candidate.natural_cost,
   };
+}
+
+export interface LegPriceEntry {
+  /** 這隻腿的方向與口數標示，例如 "買"／"賣 2×"——口數 1 不顯示倍數
+   *  （與 `candidateTitle()` 同一套語法，前後端候選標題與價格摘要
+   *  用同一種標示方式，不是兩套規則）。 */
+  label: string;
+  /** 這隻腿最差成交會用到的那一邊：買腿 Ask、賣腿 Bid。 */
+  price: number;
+}
+
+/**
+ * T16（#232，Initial V2）：逐腿最差成交價，不靠固定買／賣兩個變數
+ * ——三腿以上的候選（Butterfly）不會有任何一隻腿被靜默丟棄（AC 明文：
+ * 「沒有任何腿被靜默丟棄」）。既有兩腿／單腿摘要沿用 `legPrices()`
+ * 不受影響，這個函式只服務 `ExpiryStructure.tsx` 的三腿以上顯示分支。
+ */
+export function legPriceEntries(candidate: Candidate): LegPriceEntry[] {
+  return candidate.legs.map((leg) => ({
+    label: leg.quantity > 1
+      ? `${leg.side === "buy" ? "買" : "賣"} ${leg.quantity}×`
+      : leg.side === "buy" ? "買" : "賣",
+    price: leg.side === "buy" ? leg.ask : leg.bid,
+  }));
 }
 
 /**

@@ -18,6 +18,18 @@ const sampleRow = JSON.parse(
   ),
 );
 
+/** T16（#232，Initial V2）：Butterfly 契約樣本（T15／#230 產出）——真實
+ *  broken-wing 候選（買 100／賣 2×106／買 115，兩個損益兩平點、獲利
+ *  區間，`max_loss_per_contract` 超過 `capital_per_contract`），不是
+ *  手造合成資料。 */
+const sampleCallFly: any = JSON.parse(
+  readFileSync(
+    fileURLToPath(
+      new URL("../contracts/analysis_sample_call_fly.json", import.meta.url)),
+    "utf-8",
+  ),
+);
+
 type SampleCandidate = {
   candidate_key: string;
   baseline_return: number;
@@ -2522,4 +2534,138 @@ test("SIG-04（#175）：Spread IV Gap 對齊只讀兩腿各自 reconstructed �
 
   const summary = page.locator(".iv-spread-summary");
   await expect(summary.locator(".iv-value-primary")).toHaveText("12.3%");
+});
+
+/* ---------- T16（#232，Initial V2）：Butterfly 前端呈現，端到端 ---------- */
+
+const butterflyKey = sampleCallFly.results[0].candidates[0];
+const butterflyCand = sampleCallFly.candidate_pool[butterflyKey];
+
+const rowCallFly = {
+  ...sampleRow,
+  id: "s1", symbol: "XYZ",
+  target_price: sampleCallFly.params.target_price,
+  target_month: sampleCallFly.params.target_month,
+  strategies: ["butterfly"],
+  family_eligibility: {
+    "single-leg": { family: "single-leg", eligible: false,
+                   reason: "這個策略家族目前還沒有任何已啟用的具體結構。" },
+    "vertical-spread": { family: "vertical-spread", eligible: false,
+                         reason: "這個策略家族目前還沒有任何已啟用的具體結構。" },
+    "butterfly": { family: "butterfly", eligible: true, reason: null },
+  },
+  representative_candidate: {
+    baseline_return: butterflyCand.baseline_return,
+    expiry: butterflyCand.legs[0].expiry,
+    legs: butterflyCand.legs.map((l: any) =>
+      ({ option_type: l.option_type, side: l.side, strike: l.strike })),
+    strategy: "call-fly",
+  },
+};
+
+const BUTTERFLY_SPREAD_HISTORY = {
+  entries: [
+    { analyzed_at: "2026-07-01T21:30:00-04:00", spot: 100.0, cost: 0.55,
+     baseline_return: 9.0, rank_in_expiry: 2 },
+    { analyzed_at: "2026-07-15T21:30:00-04:00", spot: 100.0,
+     cost: butterflyCand.natural_cost,
+     baseline_return: butterflyCand.baseline_return, rank_in_expiry: 1 },
+  ],
+};
+
+async function routeButterflyDetail(page: import("@playwright/test").Page) {
+  await page.route("**/api/scenarios", (route) => route.fulfill({ json: [rowCallFly] }));
+  await page.route("**/api/scenarios/s1", (route) =>
+    route.fulfill({ json: { ...rowCallFly, latest_result: sampleCallFly } }));
+  await page.route("**/api/scenarios/refresh-run", (route) =>
+    route.fulfill({ json: {
+      results: [{ scenario_id: "s1", ok: true, row: rowCallFly }], remaining: [],
+    } }));
+  await page.route("**/api/scenarios/*/refresh", (route) =>
+    route.fulfill({ json: rowCallFly }));
+  await page.route("**/api/scenarios/*/history*", (route) =>
+    route.fulfill({ json: BUTTERFLY_SPREAD_HISTORY }));
+  // Historical IV **明確解鎖**（不是靠設定讀取失敗才鎖著）——這裡要
+  // 證明的是「三腿候選結構上不支援，即使解鎖也不出現」，不是「反正
+  // 沒設定所以看不到」那種偽陽性。
+  const ivCalls: string[] = [];
+  await page.route("**/api/settings", (route) =>
+    route.fulfill({ json: { historical_iv_enabled: true } }));
+  await page.route("**/api/scenarios/*/iv-history*", (route) => {
+    ivCalls.push(route.request().url());
+    return route.fulfill({ json: { candidate_key: butterflyKey } });
+  });
+  return ivCalls;
+}
+
+test("T16（#232）：Butterfly 三隻腿完整顯示，中腿口數看得出來——" +
+     "候選標題與收合狀態的價格摘要都不漏任何一隻腿", async ({ page }) => {
+  await routeButterflyDetail(page);
+  await page.goto("/#/s/s1");
+
+  await expect(page.getByText("買 100 / 賣 2×106 / 買 115").first()).toBeVisible();
+
+  // 到期日結構的候選窄列：收合狀態下逐腿價格都看得到（不是只有兩腿）。
+  const row = page.locator(".candidate").first();
+  await expect(row).toContainText("買 $");
+  await expect(row).toContainText("賣 2× $");
+  await expect(row).toContainText("淨成本");
+});
+
+test("T16（#232）：Butterfly 兩個損益兩平點與獲利區間都在分析報告裡", async ({ page }) => {
+  await routeButterflyDetail(page);
+  await page.goto("/#/s/s1");
+
+  await page.getByText("📄 分析報告").click();
+  const breakevenRow = page.getByText("Breakeven", { exact: true }).locator("xpath=..");
+  await expect(breakevenRow).toContainText(
+    `$${butterflyCand.breakeven_points[0].toFixed(2)}`);
+  await expect(breakevenRow).toContainText(
+    `$${butterflyCand.breakeven_points[1].toFixed(2)}`);
+  const regionRow = page.getByText("獲利區間", { exact: true }).locator("xpath=..");
+  await expect(regionRow).toContainText(
+    `$${butterflyCand.profit_region[0].toFixed(2)}`);
+  await expect(regionRow).toContainText(
+    `$${butterflyCand.profit_region[1].toFixed(2)}`);
+
+  // AC 明文性質：broken-wing 的 Max Loss 超過已付權利金，兩者不相等。
+  const maxLossRow = page.getByText("Max Loss", { exact: true }).locator("xpath=..");
+  await expect(maxLossRow).toContainText(
+    `$${(butterflyCand.max_loss_per_contract / 100).toFixed(2)}`);
+  await expect(maxLossRow).not.toContainText(
+    `$${butterflyCand.natural_cost.toFixed(2)}`);
+});
+
+test("T16（#232）：展開 Butterfly 候選看得到 Heatmap，且不觸發任何額外網路請求",
+   async ({ page }) => {
+  const requestUrls: string[] = [];
+  page.on("request", (req) => requestUrls.push(req.url()));
+  await routeButterflyDetail(page);
+  await page.goto("/#/s/s1");
+  await expect(page.getByRole("heading", { name: "到期日" })).toBeVisible();
+
+  requestUrls.length = 0;   // 只在乎展開這個動作本身有沒有多發請求
+  await page.locator(".candidate summary").first().click();
+
+  await expect(page.locator(".candidate").first().locator("table")).toBeVisible();
+  expect(requestUrls).toEqual([]);
+});
+
+test("T16（#232）：Butterfly 詳細頁不出現「IV 相對位置」——即使已解鎖，" +
+     "這塊功能結構上只認得單腿與兩腿，一個 IV 請求都不發", async ({ page }) => {
+  const ivCalls = await routeButterflyDetail(page);
+  await page.goto("/#/s/s1");
+
+  await expect(page.getByText("劇本主圖")).toBeVisible();   // 頁面其餘部分照常
+  await expect(page.getByText("IV 相對位置")).toHaveCount(0);
+  expect(ivCalls).toEqual([]);
+});
+
+test("T16（#232）：Butterfly 候選有淨成本走勢圖——既有元件的身份鍵泛化即可支援",
+   async ({ page }) => {
+  await routeButterflyDetail(page);
+  await page.goto("/#/s/s1");
+
+  await page.getByText("Spread 淨成本走勢").click();
+  await expect(page.locator(".spread-history-chart")).toBeVisible();
 });

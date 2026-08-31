@@ -35,6 +35,16 @@ function libraryRow(overrides: Record<string, unknown> = {}) {
 const rowA = libraryRow({ id: "s1", symbol: "XYZ" });
 const rowB = libraryRow({ id: "s2", symbol: "ABC", best_return: 1.23 });
 
+/** T16（#232，Initial V2）：Butterfly 契約樣本（T15／#230 產出）——真實
+ *  broken-wing 候選，同一份 smoke.spec.ts 也在用。 */
+const sampleCallFly: any = JSON.parse(
+  readFileSync(
+    fileURLToPath(
+      new URL("../contracts/analysis_sample_call_fly.json", import.meta.url)),
+    "utf-8",
+  ),
+);
+
 async function routeTwoScenarios(page: import("@playwright/test").Page) {
   await page.route("**/api/scenarios", (route) =>
     route.fulfill({ json: [rowA, rowB] }));
@@ -1554,4 +1564,83 @@ test("SIG-04（#175）Desktop 紅線：買／賣腿卡片並排、Spread Summary
   await expect(summary.locator(".iv-trend-chart")).toBeVisible();
   await expect(legCards.nth(0).locator(".iv-value-primary")).toBeVisible();
   await expect(legCards.nth(1).locator(".iv-value-primary")).toBeVisible();
+});
+
+/* ---------- T16（#232，Initial V2）：Butterfly 前端呈現，桌面 viewport ---------- */
+
+const butterflyKeyDesktop = sampleCallFly.results[0].candidates[0];
+const butterflyCandDesktop = sampleCallFly.candidate_pool[butterflyKeyDesktop];
+
+const rowCallFlyDesktop = {
+  ...sampleRow,
+  id: "s1", symbol: "XYZ",
+  target_price: sampleCallFly.params.target_price,
+  target_month: sampleCallFly.params.target_month,
+  strategies: ["butterfly"],
+  family_eligibility: {
+    "single-leg": { family: "single-leg", eligible: false,
+                   reason: "這個策略家族目前還沒有任何已啟用的具體結構。" },
+    "vertical-spread": { family: "vertical-spread", eligible: false,
+                         reason: "這個策略家族目前還沒有任何已啟用的具體結構。" },
+    "butterfly": { family: "butterfly", eligible: true, reason: null },
+  },
+  representative_candidate: {
+    baseline_return: butterflyCandDesktop.baseline_return,
+    expiry: butterflyCandDesktop.legs[0].expiry,
+    legs: butterflyCandDesktop.legs.map((l: any) =>
+      ({ option_type: l.option_type, side: l.side, strike: l.strike })),
+    strategy: "call-fly",
+  },
+};
+
+async function routeButterflyDetailDesktop(page: import("@playwright/test").Page) {
+  await page.route("**/api/scenarios", (route) =>
+    route.fulfill({ json: [rowCallFlyDesktop] }));
+  await page.route("**/api/scenarios/s1", (route) =>
+    route.fulfill({ json: { ...rowCallFlyDesktop, latest_result: sampleCallFly } }));
+  await page.route("**/api/scenarios/refresh-run", (route) =>
+    route.fulfill({ json: {
+      results: [{ scenario_id: "s1", ok: true, row: rowCallFlyDesktop }], remaining: [],
+    } }));
+  await page.route("**/api/scenarios/s1/refresh", (route) =>
+    route.fulfill({ json: rowCallFlyDesktop }));
+  const ivCalls: string[] = [];
+  // 明確解鎖——證明的是「三腿候選結構上不支援」，不是「反正沒設定所以
+  // 看不到」那種偽陽性（跟 smoke.spec.ts 同一個理由）。
+  await page.route("**/api/settings", (route) =>
+    route.fulfill({ json: { historical_iv_enabled: true } }));
+  await page.route("**/api/scenarios/*/iv-history*", (route) => {
+    ivCalls.push(route.request().url());
+    return route.fulfill({ json: { candidate_key: butterflyKeyDesktop } });
+  });
+  return ivCalls;
+}
+
+test("T16（#232）：桌面版 Butterfly 三隻腿完整顯示、兩個損益兩平點、" +
+     "展開零額外請求、不出現「IV 相對位置」——與手機版同一套邏輯", async ({ page }) => {
+  const requestUrls: string[] = [];
+  page.on("request", (req) => requestUrls.push(req.url()));
+  const ivCalls = await routeButterflyDetailDesktop(page);
+  await page.goto("/#/s/s1");
+
+  const detail = page.locator(".detail-pane");
+  await expect(detail.getByText("買 100 / 賣 2×106 / 買 115").first()).toBeVisible();
+
+  await detail.getByText("📄 分析報告").click();
+  const breakevenRow = detail.getByText("Breakeven", { exact: true }).locator("xpath=..");
+  await expect(breakevenRow).toContainText(
+    `$${butterflyCandDesktop.breakeven_points[0].toFixed(2)}`);
+  await expect(breakevenRow).toContainText(
+    `$${butterflyCandDesktop.breakeven_points[1].toFixed(2)}`);
+  const regionRow = detail.getByText("獲利區間", { exact: true }).locator("xpath=..");
+  await expect(regionRow).toContainText(
+    `$${butterflyCandDesktop.profit_region[0].toFixed(2)}`);
+
+  requestUrls.length = 0;
+  await detail.locator(".candidate summary").first().click();
+  await expect(detail.locator(".candidate").first().locator("table")).toBeVisible();
+  expect(requestUrls).toEqual([]);
+
+  await expect(detail.getByText("IV 相對位置")).toHaveCount(0);
+  expect(ivCalls).toEqual([]);
 });

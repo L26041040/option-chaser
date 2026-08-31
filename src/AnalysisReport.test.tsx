@@ -60,9 +60,55 @@ describe("Risk / Payoff", () => {
     render(<AnalysisReport view={view} result={result} candidate={real} />);
     await expand();
     const breakevenRow = screen.getByText("Breakeven").closest(".row")!;
-    expect(breakevenRow).toHaveTextContent(`$${real.breakeven.toFixed(2)}`);
+    expect(breakevenRow).toHaveTextContent(`$${real.breakeven_points[0].toFixed(2)}`);
+    const maxLossRow = screen.getByText("Max Loss").closest(".row")!;
+    expect(maxLossRow).toHaveTextContent(
+      `$${(real.max_loss_per_contract / 100).toFixed(2)}`);
+  });
+
+  it("T16（#232）：既有四策略 max_loss_per_contract／natural_cost 逐位元" +
+     "相同——Max Loss 改讀前者不改變既有畫面數字", async () => {
+    render(<AnalysisReport view={view} result={result} candidate={real} />);
+    await expand();
     const maxLossRow = screen.getByText("Max Loss").closest(".row")!;
     expect(maxLossRow).toHaveTextContent(`$${real.natural_cost.toFixed(2)}`);
+  });
+
+  it("T16（#232）：Butterfly 兩個損益兩平點都顯示，並附獲利區間說明", async () => {
+    const two = candidate({
+      breakeven: null, breakeven_points: [100.49, 111.51],
+      profit_region: [100.49, 111.51],
+    });
+    render(<AnalysisReport view={view} result={result} candidate={two} />);
+    await expand();
+    const breakevenRow = screen.getByText("Breakeven").closest(".row")!;
+    expect(breakevenRow).toHaveTextContent("$100.49");
+    expect(breakevenRow).toHaveTextContent("$111.51");
+    const regionRow = screen.getByText("獲利區間").closest(".row")!;
+    expect(regionRow).toHaveTextContent("$100.49");
+    expect(regionRow).toHaveTextContent("$111.51");
+  });
+
+  it("T16（#232）：Butterfly 到期時任何價位都無法獲利時，Breakeven 誠實" +
+     "顯示「無」，不假造一個數字，也不顯示獲利區間列", async () => {
+    const none = candidate({ breakeven: null, breakeven_points: [], profit_region: null });
+    render(<AnalysisReport view={view} result={result} candidate={none} />);
+    await expand();
+    const breakevenRow = screen.getByText("Breakeven").closest(".row")!;
+    expect(breakevenRow).toHaveTextContent("無（到期時任何價位都無法獲利）");
+    expect(screen.queryByText("獲利區間")).not.toBeInTheDocument();
+  });
+
+  it("T16（#232）：broken-wing Butterfly 的 Max Loss 可能超過進場成本" +
+     "（natural_cost）——讀 max_loss_per_contract 才是誠實的數字", async () => {
+    const brokenWing = candidate({
+      natural_cost: 0.49, max_loss_per_contract: 349.0,
+    });
+    render(<AnalysisReport view={view} result={result} candidate={brokenWing} />);
+    await expand();
+    const maxLossRow = screen.getByText("Max Loss").closest(".row")!;
+    expect(maxLossRow).toHaveTextContent("$3.49");
+    expect(maxLossRow).not.toHaveTextContent("$0.49");
   });
 
   it("T04（#220，#217 決策 D）：Execution Friction 這一列已移除，不再顯示", async () => {

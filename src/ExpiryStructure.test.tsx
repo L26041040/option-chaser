@@ -1,6 +1,6 @@
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import ExpiryStructure from "./ExpiryStructure";
 import sample from "../contracts/analysis_sample.json";
@@ -9,6 +9,7 @@ import {
   type AnalysisView, type Candidate, type StrategyResult,
 } from "./api";
 import { legPrices } from "./expiry";
+import { money } from "./scenarios";
 
 const view = sample as unknown as AnalysisView;
 const result = primaryResult(view)!;
@@ -173,6 +174,30 @@ describe("候選窄列", () => {
     expect(rows[0]).toHaveTextContent("#1");
     expect(rows.at(-1)).toHaveTextContent("#12");
   });
+
+  it("T16（#232）：Butterfly（三腿）在收合狀態就完整列出三隻腿的價格，" +
+     "中腿口數看得出來，沒有任何一隻腿被靜默丟棄", () => {
+    const base = firstCandidate(view, view.baseline_expiry!);
+    const legTemplate = base.legs[0]!;
+    const threeLegs: [import("./api").Leg, import("./api").Leg, import("./api").Leg] = [
+      { ...legTemplate, strike: 100, side: "buy", quantity: 1 },
+      { ...legTemplate, strike: 106, side: "sell", quantity: 2 },
+      { ...legTemplate, strike: 115, side: "buy", quantity: 1 },
+    ];
+    const three: Candidate = { ...base, strategy: "call-fly", legs: threeLegs };
+    const { resultOverrides, poolPatch } = withCandidates(
+      view.baseline_expiry!, 1, () => three);
+    show(resultOverrides, poolPatch);
+
+    const row = screen.getAllByRole("listitem")[0];
+    // 標題與收合狀態的價格摘要都要看得到全部三隻腿——不是只有標題有、
+    // 摘要價格漏一隻（那正是這張票要修的既有落差）。
+    expect(row).toHaveTextContent("買 100 / 賣 2×106 / 買 115");
+    expect(row).toHaveTextContent(`買 ${money(threeLegs[0].ask)}`);
+    expect(row).toHaveTextContent(`賣 2× ${money(threeLegs[1].bid)}`);
+    expect(row).toHaveTextContent(`買 ${money(threeLegs[2].ask)}`);
+    expect(row).toHaveTextContent(`淨成本 ${money(three.natural_cost)}`);
+  });
 });
 
 describe("就地展開", () => {
@@ -207,6 +232,33 @@ describe("就地展開", () => {
     // 不再在價格 rowheader 裡。
     expect(rows[1].querySelector("td.heatmap-move-pct"))
       .toHaveTextContent("+1.0%");
+  });
+
+  it("T16（#232）：展開候選（含三腿 Butterfly）不觸發任何額外網路請求" +
+     "——Heatmap 純解碼已經抓到的 `candidate.matrix`，不是另外打 API", async () => {
+    const base = firstCandidate(view, view.baseline_expiry!);
+    const legTemplate = base.legs[0]!;
+    const three: Candidate = {
+      ...base, strategy: "call-fly",
+      legs: [
+        { ...legTemplate, strike: 100, side: "buy", quantity: 1 },
+        { ...legTemplate, strike: 106, side: "sell", quantity: 2 },
+        { ...legTemplate, strike: 115, side: "buy", quantity: 1 },
+      ],
+    };
+    const { resultOverrides, poolPatch } = withCandidates(
+      view.baseline_expiry!, 1, () => three);
+    const spy = vi.fn(async () => {
+      throw new Error("展開不該觸發任何 fetch");
+    });
+    vi.stubGlobal("fetch", spy);
+    show(resultOverrides, poolPatch);
+
+    await userEvent.click(screen.getAllByRole("listitem")[0].querySelector("summary")!);
+
+    expect(screen.getByRole("table")).toBeVisible();
+    expect(spy).not.toHaveBeenCalled();
+    vi.unstubAllGlobals();
   });
 });
 

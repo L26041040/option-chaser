@@ -624,7 +624,7 @@ describe("多 family 並存（T11／#229）", () => {
       legs: CandidateLegs = [leg(100)],
     ) => ({
       candidate_key: key, strategy, baseline_return: ret, natural_cost: 1,
-      mid_cost: 1, breakeven: 100, breakeven_points: [100],
+      mid_cost: 1, breakeven: 100, breakeven_points: [100], profit_region: null,
       days_to_expiry: 30, max_profit: null, max_loss_per_contract: 100,
       net_delta: 0.5, effective_leverage: 1, theta_day_rate: 0,
       rate_used: 0.04, rate_tenor_years: 0.1, vega_per_pt: 0,

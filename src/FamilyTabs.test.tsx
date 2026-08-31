@@ -61,6 +61,29 @@ describe("多 family——分頁切換", () => {
     expect(screen.getByRole("heading", { name: "到期日" })).toBeInTheDocument();
   });
 
+  it("T16（#232）：冠軍是 Butterfly 時預設打開 Butterfly 分頁——"
+     + "`family.ts::SUBTYPE_FAMILY` 若漏掉 call-fly／put-fly 這裡會退回"
+     + "第一個 family 而不是冠軍所屬的那個", () => {
+    const v = view(
+      [
+        result("long-call", "ok", { "2026-09-18": ["lc"] }),
+        result("call-fly", "ok", { "2026-09-18": ["cf"] }),
+      ],
+      {
+        lc: candidate("lc", "long-call", 0.3),
+        cf: candidate("cf", "call-fly", 0.9),
+      },
+      { familyEligibility: {
+        "single-leg": { family: "single-leg", eligible: true, reason: null },
+        "butterfly": { family: "butterfly", eligible: true, reason: null },
+      } },
+    );
+    render(<FamilyTabs view={v} strategies={["single-leg", "butterfly"]} />);
+    const tabs = screen.getByRole("group", { name: "策略家族" });
+    expect(within(tabs).getByRole("button", { name: "Butterfly" }))
+      .toHaveAttribute("aria-pressed", "true");
+  });
+
   it("切到另一個分頁只換排名內容，不是整頁重載", async () => {
     render(<FamilyTabs view={multiView()} strategies={["single-leg", "vertical-spread"]} />);
     await userEvent.click(screen.getByRole("button", { name: "Call / Put" }));
