@@ -5684,10 +5684,65 @@ CLAUDE.md 隨手更新。
   （iPhone 63＋Desktop 38）全綠；後端全套 1590 條維持通過（本票零
   Python 檔案變動）。
 
-**下一步**：T13（#231，被 T12／T11 解鎖，無其他 blocker）與 T15
-（#230，被 T08／T05／T12 解鎖，無其他 blocker）皆已可開工，依建議
-施工順序（T11→T13→T14→T15→T16→T17→T18）先做 T13。T05–T12 均已
-完成，Initial V2 剩餘票的 blocker 狀態依此更新。
+- **T13**（#231，commits `9a97b13`＋跟進 `049a025`）✅ 詳細頁 payload
+  投影與 top-N 上限——完整候選序列不上 wire。新增純函式
+  `store.project_for_detail(view: dict) -> dict`，只在
+  `api_app/main.py::get_scenario()`（`GET /api/scenarios/{id}`）這
+  一個 HTTP 端點套用，`serialize_result()`／落盤的 `ResultRecord.view`
+  本身逐字未動。
+
+  **真正的體積來源已鎖定並移除**：`results[].candidates`——引擎全量
+  候選 key 清單，未經任何上限裁切，會把每一筆通過過濾的候選都拉進
+  `candidate_pool`，遠遠超出 `expiry_top10` 每期前十名的既有上限，
+  這才是「每多啟用一個 spread 策略就多約 495KB」的真正成因；
+  `results[].all_candidates`（V9 Spread 淨成本走勢的歷史序列）同樣
+  移除——前端 `src/api.ts` 的 `StrategyResult`／`Candidate` 型別從
+  未宣告過這兩個容器欄位，移除對前端零影響。候選池只保留還被
+  `expiry_best`／`expiry_top10`／`expiry_groups`／`default_selection`／
+  `baseline_selection` 引用到的鍵（`serialize_result()` 裡全部四個
+  `cand_key(` 呼叫點都涵蓋），這些容器加總起來已被引擎既有規則限制
+  在「到期日數 × 10」量級，移除那兩個無界欄位後上限是結構上自動
+  成立的，不需要另外寫檢查邏輯。
+
+  `expiry_groups`（v4 舊「到期日分組比較」結構）**刻意保留**：本身
+  很小（每個到期日×策略只有一列，不是候選序列），且
+  `representative_candidate()`／`best_return()` 需要它才能對任何
+  view dict 正常運作——`test_api_scenarios.py` 既有測試就是這樣呼叫
+  的，移除會直接弄壞它們。
+
+  修正一條既有測試（`test_strategy_family.py`）：原本透過 HTTP 回應
+  驗證 family 展開後的位元組相同性，現在改讀 `storage.latest_result
+  (sc_id).view`（落盤那份，未經投影）——這正是 AC「儲存的內容維持
+  全保真」該用的驗證方式，比先前透過 HTTP 回應間接驗證更貼近實際
+  保證的對象。
+
+  新增 `tests/test_detail_projection.py`（12 條）：HTTP 層驗證回應
+  不含完整候選序列、候選池無孤兒項目、候選數上限、`representative_
+  candidate()`／`best_return()` 對投影後的 view 仍正確運作、V9／V8
+  兩個既有端點（`/history`／`/raw-data`）走 storage 直接讀取不受
+  影響；純函式層驗證不修改輸入、`default_selection`／`baseline_
+  selection` 引用的候選仍可解析、空 view 邊界情況。真實量測
+  （`xyz_v4_six_expiries.json`，single-leg ＋ vertical-spread 兩個
+  family 皆啟用）：66,495 → 64,271 bytes（縮減 3.3%）——這份測試
+  fixture 刻意精簡（跑得快），縮減幅度遠低於票上引用的 production
+  觀察值，測試斷言只鎖「結構性修法確實生效」，不編一個這個 fixture
+  量不出來的百分比門檻。
+
+  `/code-review` 兩軸：Spec 軸 8 條 AC 全數 done、零 scope creep、
+  零 concern；Standards 軸兩項判斷已於跟進 commit 處理（一條測試
+  多餘的本地 import 別名改回一致寫法；docstring 補一句說明
+  `expiry_groups` 的防禦性引用收集不是依賴子集關係才可省略）。
+
+  全套測試：後端全套 1602 條通過（記憶體＋真實 Postgres 雙後端，
+  1590 + 12 條新增）；前端本票零檔案變動，typecheck／724 條
+  Vitest／build／Playwright e2e 101 條（iPhone 63＋Desktop 38）全數
+  重跑確認無回歸（移除的三個欄位前端從未宣告型別、從未讀取，投影對
+  前端結構上不可見）。
+
+**下一步**：T14（#233，被 T13 解鎖，無其他 blocker）與 T15（#230，
+被 T08／T05／T12 解鎖，無其他 blocker）皆已可開工，依建議施工順序
+（T11→T13→T14→T15→T16→T17→T18）先做 T14。T05–T13 均已完成，
+Initial V2 剩餘票的 blocker 狀態依此更新。
 
 ### 施工依據
 
