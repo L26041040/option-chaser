@@ -330,7 +330,8 @@ export default function App() {
     setEditing({
       id: row.id, symbol: row.symbol, target_price: row.target_price,
       target_month: row.target_month, best_price: row.best_price,
-      worst_price: row.worst_price,
+      worst_price: row.worst_price, strategies: row.strategies,
+      family_eligibility: row.family_eligibility,
     });
     setShowCreateForm(true);
     setError(null);

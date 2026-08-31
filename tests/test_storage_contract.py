@@ -677,6 +677,50 @@ def test_latest_summaries_carries_per_family(storage):
     assert storage.latest_summaries()["s1"].per_family == _PER_FAMILY
 
 
+# ---------- family_eligibility（T10／#227，Initial V2） ----------
+
+_FAMILY_ELIGIBILITY = {
+    "single-leg": {"family": "single-leg", "eligible": True, "reason": None},
+    "vertical-spread": {"family": "vertical-spread", "eligible": True,
+                        "reason": None},
+    "butterfly": {"family": "butterfly", "eligible": False,
+                 "reason": "這個策略家族目前還沒有任何已啟用的具體結構。"},
+}
+
+
+def test_family_eligibility_survives_the_result_roundtrip(storage):
+    """與 `per_family` 同一個模式：規則只有一份
+    （`store._family_eligibility_map`），這裡只是落盤結果要能存得進、
+    讀得回，含 `latest_result`／`result_history` 兩個讀取路徑。"""
+    storage.create_scenario(_scenario("s1"))
+    storage.save_result(ResultRecord(
+        "s1", "2026-08-01T00:00:00+00:00", {"n": 1},
+        best_return=1.25, representative_candidate=_REP,
+        family_eligibility=_FAMILY_ELIGIBILITY))
+    assert storage.latest_result("s1").family_eligibility == _FAMILY_ELIGIBILITY
+    assert storage.result_history("s1")[0].family_eligibility == _FAMILY_ELIGIBILITY
+
+
+def test_family_eligibility_defaults_to_none(storage):
+    """舊結果紀錄（本票之前寫入的）讀回來是 `None`，不是假造一份
+    「全部可選」的 verdict。"""
+    storage.create_scenario(_scenario("s1"))
+    storage.save_result(ResultRecord("s1", "2026-08-01T00:00:00+00:00",
+                                     {"n": 1}, best_return=None))
+    assert storage.latest_result("s1").family_eligibility is None
+
+
+def test_latest_summaries_carries_family_eligibility(storage):
+    """清單查詢一併帶著 family_eligibility——編輯表單開啟時讀這裡，
+    不打 detail 端點。"""
+    storage.create_scenario(_scenario("s1"))
+    storage.save_result(ResultRecord(
+        "s1", "2026-08-01T00:00:00+00:00", {"n": 1},
+        best_return=1.25, representative_candidate=_REP,
+        family_eligibility=_FAMILY_ELIGIBILITY))
+    assert storage.latest_summaries()["s1"].family_eligibility == _FAMILY_ELIGIBILITY
+
+
 # ---------- 資料源設定與 credential（Settings／#124） ----------
 
 _CUSTOM = UsageSetting(mode="custom", provider="marketdata-app")
@@ -1237,6 +1281,42 @@ def test_existing_results_table_gains_the_per_family_column():
                                best_return=0.75, representative_candidate=_REP,
                                per_family=_PER_FAMILY))
     assert st.latest_summaries()["mig3"].per_family == _PER_FAMILY
+
+
+def test_existing_results_table_gains_the_family_eligibility_column():
+    """T10（#227，Initial V2）：既有部署的 `results` 表在本票之前只有到
+    `per_family` 為止——`family_eligibility` 一樣得靠 `ALTER TABLE ...
+    ADD COLUMN IF NOT EXISTS` 補上，同一條路徑、同一個理由（見
+    `test_existing_results_table_gains_the_new_column`）。"""
+    if not TEST_DB_URL:
+        pytest.skip("需要 OC_TEST_DATABASE_URL（一個跑著的 Postgres）")
+    import psycopg
+
+    from api_app.storage import postgres as pg
+
+    with psycopg.connect(TEST_DB_URL, autocommit=True) as conn:
+        conn.execute("TRUNCATE scenarios, results, snapshots, events, rate_cache, "
+                     "dividend_cache, treasury_year_cache, data_source_settings, "
+                     "provider_credentials, provider_verifications, "
+                     "iv_observations, iv_backfill_runs, contract_iv_history "
+                     "RESTART IDENTITY")
+        conn.execute("DROP TABLE IF EXISTS results")
+        # T10 之前的舊表：有 per_family，還沒有 family_eligibility。
+        conn.execute("CREATE TABLE results ("
+                     "scenario_id TEXT NOT NULL, analyzed_at TEXT NOT NULL, "
+                     "view JSONB NOT NULL, best_return DOUBLE PRECISION, "
+                     "representative_candidate JSONB, spot DOUBLE PRECISION, "
+                     "per_family JSONB, "
+                     "PRIMARY KEY (scenario_id, analyzed_at))")
+
+    pg._schema_ready.discard(TEST_DB_URL)
+    st = pg.PostgresStorage(TEST_DB_URL)
+
+    st.create_scenario(_scenario("mig4"))
+    st.save_result(ResultRecord("mig4", "2026-08-01T00:00:00+00:00", {"n": 1},
+                               best_return=0.75, representative_candidate=_REP,
+                               family_eligibility=_FAMILY_ELIGIBILITY))
+    assert st.latest_summaries()["mig4"].family_eligibility == _FAMILY_ELIGIBILITY
 
 
 def test_migration_still_applies_when_table_creation_hits_a_race():

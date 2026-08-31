@@ -98,6 +98,9 @@ CREATE TABLE IF NOT EXISTS results (
     -- T07（#224，Initial V2）：per-family 代表候選與最高報酬，見
     -- `_MIGRATIONS` 底下同名欄位的 ALTER 說明。
     per_family              JSONB,
+    -- T10（#227，Initial V2）：最近一次分析當下算出的 family 可選／
+    -- 不可選 verdict，見 `_MIGRATIONS` 底下同名欄位的 ALTER 說明。
+    family_eligibility      JSONB,
     PRIMARY KEY (scenario_id, analyzed_at)
 );
 -- V3（#51）／MVP-v2（#77、#78）加的欄位。既有部署已經有 results 表，
@@ -253,6 +256,10 @@ ALTER TABLE diagnostics ADD COLUMN IF NOT EXISTS user_facing BOOLEAN;
 -- 讀回時是 NULL，`ResultRecord.per_family` 天然是 `None`，不影響任何
 -- 既有行為（純加法欄位，非 NOT NULL，不需要資料回填）。
 ALTER TABLE results ADD COLUMN IF NOT EXISTS per_family JSONB;
+-- T10（#227，Initial V2）：既有部署的 results 表沒有這一欄——舊列
+-- 讀回時是 NULL，`ResultRecord.family_eligibility` 天然是 `None`，
+-- 不影響任何既有行為（純加法欄位）。
+ALTER TABLE results ADD COLUMN IF NOT EXISTS family_eligibility JSONB;
 """
 
 # 冷啟動競爭下的良性錯誤：別人已經建好／加好了。
@@ -260,7 +267,8 @@ _BENIGN = (psycopg.errors.DuplicateTable, psycopg.errors.DuplicateObject,
            psycopg.errors.DuplicateColumn, psycopg.errors.UniqueViolation)
 
 _RESULT_COLS = ("scenario_id, analyzed_at, view, best_return, "
-                "representative_candidate, spot, per_family")
+                "representative_candidate, spot, per_family, "
+                "family_eligibility")
 
 _SCENARIO_COLS = ("id, symbol, direction, target_price, target_month, "
                   "notes, strategies, created_at, archived_at, "
@@ -496,18 +504,22 @@ class PostgresStorage:
         with self._connect() as conn:
             conn.execute(
                 "INSERT INTO results (scenario_id, analyzed_at, view, "
-                "best_return, representative_candidate, spot, per_family) "
-                "VALUES (%s, %s, %s, %s, %s, %s, %s) "
+                "best_return, representative_candidate, spot, per_family, "
+                "family_eligibility) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s) "
                 "ON CONFLICT (scenario_id, analyzed_at) DO UPDATE "
                 "SET view = EXCLUDED.view, best_return = EXCLUDED.best_return, "
                 "representative_candidate = EXCLUDED.representative_candidate, "
-                "spot = EXCLUDED.spot, per_family = EXCLUDED.per_family",
+                "spot = EXCLUDED.spot, per_family = EXCLUDED.per_family, "
+                "family_eligibility = EXCLUDED.family_eligibility",
                 (rec.scenario_id, rec.analyzed_at, Jsonb(rec.view),
                  rec.best_return,
                  Jsonb(rec.representative_candidate)
                  if rec.representative_candidate is not None else None,
                  rec.spot,
-                 Jsonb(rec.per_family) if rec.per_family is not None else None))
+                 Jsonb(rec.per_family) if rec.per_family is not None else None,
+                 Jsonb(rec.family_eligibility)
+                 if rec.family_eligibility is not None else None))
 
     def latest_result(self, scenario_id: str) -> ResultRecord | None:
         with self._connect() as conn:
@@ -527,11 +539,12 @@ class PostgresStorage:
         with self._connect() as conn:
             rows = conn.execute(
                 "SELECT DISTINCT ON (scenario_id) scenario_id, analyzed_at, "
-                "best_return, representative_candidate, spot, per_family "
+                "best_return, representative_candidate, spot, per_family, "
+                "family_eligibility "
                 "FROM results ORDER BY scenario_id, analyzed_at DESC").fetchall()
         return {r[0]: ResultSummary(analyzed_at=r[1], best_return=r[2],
                                     representative_candidate=r[3], spot=r[4],
-                                    per_family=r[5])
+                                    per_family=r[5], family_eligibility=r[6])
                 for r in rows}
 
     def result_history(self, scenario_id: str) -> list[ResultRecord]:

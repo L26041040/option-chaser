@@ -6,6 +6,23 @@
   "days_to_anchor": 653,
   "direction": "bullish",
   "expired": false,
+  "family_eligibility": {
+    "butterfly": {
+      "eligible": false,
+      "family": "butterfly",
+      "reason": "這個策略家族目前還沒有任何已啟用的具體結構。"
+    },
+    "single-leg": {
+      "eligible": true,
+      "family": "single-leg",
+      "reason": null
+    },
+    "vertical-spread": {
+      "eligible": true,
+      "family": "vertical-spread",
+      "reason": null
+    }
+  },
   "id": "sample-id",
   "latest_analyzed_at": "2026-07-15T21:30:00-04:00",
   "notes": "",

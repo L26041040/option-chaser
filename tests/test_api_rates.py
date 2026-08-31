@@ -13,7 +13,8 @@ from option_chaser.data.snapshot import load_snapshot
 from option_chaser.ratecurve import RateCurve
 
 FIX = "tests/fixtures/xyz_v4_six_expiries.json"
-NEW = {"symbol": "XYZ", "target_price": 130.0, "target_month": "2026-09"}
+NEW = {"symbol": "XYZ", "target_price": 130.0, "target_month": "2026-09",
+       "strategies": ["vertical-spread"]}
 CURVE = RateCurve(curve_date="2026-07-15", nodes=((0.5, 0.04), (2.0, 0.042)))
 
 

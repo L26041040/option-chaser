@@ -14,7 +14,8 @@ from api_app.storage.memory import MemoryStorage
 from option_chaser.data.snapshot import load_snapshot
 
 FIX = "tests/fixtures/xyz_v4_six_expiries.json"
-NEW = {"symbol": "XYZ", "target_price": 130.0, "target_month": "2026-09"}
+NEW = {"symbol": "XYZ", "target_price": 130.0, "target_month": "2026-09",
+       "strategies": ["vertical-spread"]}
 # 118/122 Call Spread，到期 2026-09-18——fixture 本身就有這組合約。
 KEY = "bull-call-spread|118|122|2026-09-18"
 

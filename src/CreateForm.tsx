@@ -16,15 +16,34 @@
  */
 import { useEffect, useId, useRef, useState } from "react";
 
+import type { FamilyEligibility } from "./api";
+
 export interface DraftScenario {
   symbol: string;
   target_price: number;
   target_month: string;
+  /**
+   * T10（#227，Initial V2）：使用者勾選的 Strategy Family 代碼——
+   * 必填、無預設值，至少要有一個。
+   */
+  strategies: string[];
   /** V7（#55）劇本區間兩端，選填。未設定時**不出現在物件裡**（而不是送
    *  `null`）——後端的 optional 欄位語意是「沒送＝沒設定」。 */
   best_price?: number;
   worst_price?: number;
 }
+
+/**
+ * T10（#227，Initial V2）：Strategy Family 勾選選項——family 代碼與
+ * 顯示標籤的唯一對照表，直接沿用 CONTEXT.md「策略與方向」一節列出的
+ * 三個名字（"Call / Put"／"Vertical Spread"／"Butterfly"），不是自創
+ * 譯名。順序即畫面呈現順序。
+ */
+const FAMILY_OPTIONS: { code: string; label: string }[] = [
+  { code: "single-leg", label: "Call / Put" },
+  { code: "vertical-spread", label: "Vertical Spread" },
+  { code: "butterfly", label: "Butterfly" },
+];
 
 /** 選填價位欄位的解析。留白＝未設定（不是錯誤）。 */
 function parseOptionalPrice(
@@ -49,6 +68,7 @@ export function validateDraft(
   symbol: string,
   price: string,
   month: string,
+  families: string[],
   best = "",
   worst = "",
 ): { ok: true; draft: DraftScenario } | { ok: false; error: string } {
@@ -75,6 +95,11 @@ export function validateDraft(
   if (!/^\d{4}-\d{2}$/.test(month)) {
     return { ok: false, error: "目標年月格式為 YYYY-MM（例如 2028-05）" };
   }
+  // T10（#227，Initial V2）：AC「至少要選一個才能送出」——後端也擋
+  // （pydantic `Field(min_length=1)`），這裡先擋只是省一趟往返。
+  if (families.length === 0) {
+    return { ok: false, error: "請至少勾選一個策略類型" };
+  }
   // V7（#55）兩端。與後端 `_ends_must_straddle_the_target` 同一套規則——
   // 前端先擋只是省一趟往返，後端仍是權威（重複的是規則，不是真相來源）。
   const b = parseOptionalPrice(best, "最高價位");
@@ -92,6 +117,7 @@ export function validateDraft(
     ok: true,
     draft: {
       symbol: sym, target_price: value, target_month: month,
+      strategies: families,
       // 未設定就整個不放進物件——`best_price: undefined` 會被 JSON.stringify
       // 丟掉，行為雖同，但型別上留一個永遠是 undefined 的欄位只會誤導讀者。
       ...(b.value !== undefined ? { best_price: b.value } : {}),
@@ -250,6 +276,16 @@ export interface EditTarget {
   target_month: string;
   best_price: number | null;
   worst_price: number | null;
+  /** T10（#227，Initial V2）：目前勾選的 Strategy Family，預填成
+   *  checkbox 的初始狀態。 */
+  strategies: string[];
+  /**
+   * T10（#227，Initial V2）：最近一次分析的 family verdict——編輯
+   * 表單據此顯示「這個 family 現在為什麼不可選」。`null` ＝ 這個劇本
+   * 還沒成功分析過，沒有可顯示的 verdict（checkbox 仍可勾選，只是
+   * 不顯示任何原因文字）。
+   */
+  family_eligibility: Record<string, FamilyEligibility> | null;
 }
 
 function str(value: number | null | undefined): string {
@@ -281,8 +317,16 @@ export default function CreateForm({
   const [month, setMonth] = useState("");
   const [best, setBest] = useState("");
   const [worst, setWorst] = useState("");
+  // T10（#227）：勾選狀態同樣沒有預設值——空陣列起手，使用者自己選。
+  const [families, setFamilies] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
   const monthLabelId = useId();
+  const familyLabelId = useId();
+
+  function toggleFamily(code: string) {
+    setFamilies((prev) =>
+      prev.includes(code) ? prev.filter((f) => f !== code) : [...prev, code]);
+  }
 
   // 進入／切換編輯目標時預填。用 `editing?.id` 當相依：同一個劇本重新
   // 渲染不該把使用者打到一半的內容蓋回原值。
@@ -295,6 +339,7 @@ export default function CreateForm({
       setMonth("");
       setBest("");
       setWorst("");
+      setFamilies([]);
       return;
     }
     setSymbol(editing.symbol);
@@ -302,12 +347,13 @@ export default function CreateForm({
     setMonth(editing.target_month);
     setBest(str(editing.best_price));
     setWorst(str(editing.worst_price));
+    setFamilies(editing.strategies);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [editingId]);
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
-    const checked = validateDraft(symbol, price, month, best, worst);
+    const checked = validateDraft(symbol, price, month, families, best, worst);
     if (!checked.ok) {
       setError(checked.error);
       return;
@@ -328,6 +374,7 @@ export default function CreateForm({
       setMonth("");
       setBest("");
       setWorst("");
+      setFamilies([]);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
@@ -372,6 +419,39 @@ export default function CreateForm({
         <span className="row-label" id={monthLabelId}>目標年月</span>
         <MonthPicker value={month} onChange={setMonth} today={today}
                      labelId={monthLabelId} />
+      </div>
+
+      {/* T10（#227，Initial V2）：Strategy Family 勾選——沒有預設值
+          （AC「必填留白」延伸到這裡），至少要選一個才能送出。不是
+          `<label>` 隱式包裹（同 `MonthPicker` 的理由），改用
+          `aria-labelledby`。不可選的 family（`family_eligibility`，
+          僅編輯模式才可能有值）只顯示原因文字，checkbox 本身仍可勾選
+          ——「使用者已經可以勾選，後端也真的會跑」（票上原文），不是
+          禁止勾選，也不做推薦／不推薦，只有可選／不可選兩種事實陳述。 */}
+      <div className="field">
+        <span className="row-label" id={familyLabelId}>策略類型</span>
+        <div role="group" aria-labelledby={familyLabelId}
+             className="family-options">
+          {FAMILY_OPTIONS.map((opt) => {
+            const verdict = editing?.family_eligibility?.[opt.code];
+            const ineligible = verdict !== undefined && !verdict.eligible;
+            return (
+              <label key={opt.code} className="family-option">
+                <input
+                  type="checkbox"
+                  checked={families.includes(opt.code)}
+                  onChange={() => toggleFamily(opt.code)}
+                />
+                <span>{opt.label}</span>
+                {ineligible && (
+                  <span className="family-ineligible-reason">
+                    {verdict.reason}
+                  </span>
+                )}
+              </label>
+            );
+          })}
+        </div>
       </div>
 
       {/* V7（#55）劇本區間兩端：選填，擺在三個必填欄位之後——它們是

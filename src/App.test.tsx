@@ -191,6 +191,7 @@ describe("劇本庫（V3／#51）", () => {
     await userEvent.type(screen.getByLabelText("標的代號"), "spy");
     await userEvent.type(screen.getByLabelText("目標價位"), "700");
     await pickMonth(2028, 5);
+    await userEvent.click(screen.getByRole("checkbox", { name: "Call / Put" }));
     await userEvent.click(screen.getByRole("button", { name: "建立" }));
 
     expect(await screen.findByText("SPY")).toBeInTheDocument();
@@ -917,6 +918,7 @@ describe("過期劇本不再進入批次刷新（#68）", () => {
     await userEvent.type(screen.getByLabelText("標的代號"), "spy");
     await userEvent.type(screen.getByLabelText("目標價位"), "700");
     await pickMonth(2028, 5);
+    await userEvent.click(screen.getByRole("checkbox", { name: "Call / Put" }));
     await userEvent.click(screen.getByRole("button", { name: "建立" }));
 
     expect(await screen.findByText("SPY")).toBeInTheDocument();
@@ -982,6 +984,7 @@ describe("建立與刷新同時發生（V4／#52 檢視回饋）", () => {
     await userEvent.type(screen.getByLabelText("標的代號"), "spy");
     await userEvent.type(screen.getByLabelText("目標價位"), "700");
     await pickMonth(2028, 5);
+    await userEvent.click(screen.getByRole("checkbox", { name: "Call / Put" }));
     await userEvent.click(screen.getByRole("button", { name: "建立" }));
 
     releaseS1Run!();                       // 建立還沒回來，s1 先刷新完

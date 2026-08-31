@@ -1857,6 +1857,35 @@ body {
   font-weight: 700;
 }
 
+/* T10（#227，Initial V2）：Strategy Family 勾選。checkbox 本身永遠
+   可互動（不可選只是資訊性標示，不是禁止勾選），因此不用 `disabled`
+   樣式——`.family-ineligible-reason` 只是額外一行說明文字。 */
+.family-options {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.family-option {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  font-size: 17px;
+  color: var(--label);
+}
+
+.family-option input[type="checkbox"] {
+  width: 20px;
+  height: 20px;
+}
+
+.family-ineligible-reason {
+  flex-basis: 100%;
+  font-size: 13px;
+  color: var(--label-secondary);
+}
+
 /* ---------- 設定頁（Settings／#124） ---------- */
 
 /* 桌面版 sidebar 最下方的設定入口。`margin-top:auto` 不需要——它已經是

@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
@@ -15,39 +15,46 @@ async function pickMonth(year: number, month: number) {
 
 describe("建立表單的驗證", () => {
   it("三欄都必填，訊息明確指出缺哪一欄", () => {
-    expect(validateDraft("", "120", "2028-05")).toEqual({
+    expect(validateDraft("", "120", "2028-05", [])).toEqual({
       ok: false, error: "請填標的代號（例如 TLT）",
     });
-    expect(validateDraft("TLT", "", "2028-05")).toEqual({
+    expect(validateDraft("TLT", "", "2028-05", [])).toEqual({
       ok: false, error: "請填目標價位",
     });
-    expect(validateDraft("TLT", "120", "")).toEqual({
+    expect(validateDraft("TLT", "120", "", [])).toEqual({
       ok: false, error: "請選目標年月",
     });
   });
 
   it("目標價位必須是大於 0 的數字", () => {
-    expect(validateDraft("TLT", "abc", "2028-05")).toEqual({
+    expect(validateDraft("TLT", "abc", "2028-05", [])).toEqual({
       ok: false, error: "目標價位要是數字",
     });
-    expect(validateDraft("TLT", "0", "2028-05")).toEqual({
+    expect(validateDraft("TLT", "0", "2028-05", [])).toEqual({
       ok: false, error: "目標價位要大於 0",
     });
-    expect(validateDraft("TLT", "-5", "2028-05")).toEqual({
+    expect(validateDraft("TLT", "-5", "2028-05", [])).toEqual({
       ok: false, error: "目標價位要大於 0",
     });
   });
 
   it("標的代號限制與後端同一套字元集", () => {
-    expect(validateDraft("TL T", "120", "2028-05").ok).toBe(false);
-    expect(validateDraft("BRK.B", "120", "2028-05").ok).toBe(true);
+    expect(validateDraft("TL T", "120", "2028-05", ["single-leg"]).ok).toBe(false);
+    expect(validateDraft("BRK.B", "120", "2028-05", ["single-leg"]).ok).toBe(true);
   });
 
   it("標的代號自動去空白並轉大寫", () => {
-    const checked = validateDraft("  tlt ", "120.5", "2028-05");
+    const checked = validateDraft("  tlt ", "120.5", "2028-05", ["single-leg"]);
     expect(checked).toEqual({
       ok: true,
-      draft: { symbol: "TLT", target_price: 120.5, target_month: "2028-05" },
+      draft: { symbol: "TLT", target_price: 120.5, target_month: "2028-05",
+              strategies: ["single-leg"] },
+    });
+  });
+
+  it("T10（#227）：至少要選一個策略類型才能送出", () => {
+    expect(validateDraft("TLT", "120", "2028-05", [])).toEqual({
+      ok: false, error: "請至少勾選一個策略類型",
     });
   });
 });
@@ -79,14 +86,17 @@ describe("建立表單的畫面", () => {
     await userEvent.type(screen.getByLabelText("標的代號"), "tlt");
     await userEvent.type(screen.getByLabelText("目標價位"), "120");
     await pickMonth(2028, 5);
+    await userEvent.click(screen.getByRole("checkbox", { name: "Call / Put" }));
     await userEvent.click(screen.getByRole("button", { name: "建立" }));
 
     expect(onCreate).toHaveBeenCalledWith({
       symbol: "TLT", target_price: 120, target_month: "2028-05",
+      strategies: ["single-leg"],
     });
     expect(screen.getByLabelText("標的代號")).toHaveValue("");
     expect(screen.getByLabelText("目標價位")).toHaveValue("");
     expect(screen.getByText("20xx-xx")).toBeInTheDocument();
+    expect(screen.getByRole("checkbox", { name: "Call / Put" })).not.toBeChecked();
   });
 
   it("建立失敗時顯示後端訊息，且不清空使用者填的東西", async () => {
@@ -96,30 +106,33 @@ describe("建立表單的畫面", () => {
     await userEvent.type(screen.getByLabelText("標的代號"), "TLT");
     await userEvent.type(screen.getByLabelText("目標價位"), "120");
     await pickMonth(2020, 1);
+    await userEvent.click(screen.getByRole("checkbox", { name: "Call / Put" }));
     await userEvent.click(screen.getByRole("button", { name: "建立" }));
 
     expect(screen.getByRole("alert")).toHaveTextContent("目標月已經過完了");
     expect(screen.getByLabelText("標的代號")).toHaveValue("TLT");
     expect(screen.getByText("2020-01")).toBeInTheDocument();
+    // 失敗不清空——連 checkbox 的勾選狀態也保留，使用者不必重選一次。
+    expect(screen.getByRole("checkbox", { name: "Call / Put" })).toBeChecked();
   });
 });
 
 describe("建立表單驗證的邊界（V3／#51 檢視回饋）", () => {
   it("目標年月格式不對時明講格式，不丟一個看不懂的 422 回來", () => {
     // 桌面 Safari／Firefox 的 type="month" 會退化成純文字框
-    expect(validateDraft("TLT", "120", "May 2028")).toEqual({
+    expect(validateDraft("TLT", "120", "May 2028", [])).toEqual({
       ok: false, error: "目標年月格式為 YYYY-MM（例如 2028-05）",
     });
-    expect(validateDraft("TLT", "120", "2028-5").ok).toBe(false);
+    expect(validateDraft("TLT", "120", "2028-5", []).ok).toBe(false);
   });
 
   it("不把十六進位／科學記號讀成價格", () => {
     // Number("0x1f") 是 31、Number("1e5") 是 100000——都不是使用者
     // 以為自己填的那個價格
-    expect(validateDraft("TLT", "0x1f", "2028-05")).toEqual({
+    expect(validateDraft("TLT", "0x1f", "2028-05", [])).toEqual({
       ok: false, error: "目標價位要是數字",
     });
-    expect(validateDraft("TLT", "1e5", "2028-05")).toEqual({
+    expect(validateDraft("TLT", "1e5", "2028-05", [])).toEqual({
       ok: false, error: "目標價位要是數字",
     });
   });
@@ -127,25 +140,26 @@ describe("建立表單驗證的邊界（V3／#51 檢視回饋）", () => {
 
 describe("劇本區間兩端（V7／#55）", () => {
   it("兩端都是選填，留白照樣送得出去，且不出現在送出的資料裡", () => {
-    expect(validateDraft("TLT", "120", "2028-05", "", "")).toEqual({
+    expect(validateDraft("TLT", "120", "2028-05", ["single-leg"], "", "")).toEqual({
       ok: true,
-      draft: { symbol: "TLT", target_price: 120, target_month: "2028-05" },
+      draft: { symbol: "TLT", target_price: 120, target_month: "2028-05",
+              strategies: ["single-leg"] },
     });
   });
 
   it("只填一端也可以", () => {
-    expect(validateDraft("TLT", "120", "2028-05", "150", "")).toEqual({
+    expect(validateDraft("TLT", "120", "2028-05", ["single-leg"], "150", "")).toEqual({
       ok: true,
       draft: {
         symbol: "TLT", target_price: 120, target_month: "2028-05",
-        best_price: 150,
+        strategies: ["single-leg"], best_price: 150,
       },
     });
-    expect(validateDraft("TLT", "120", "2028-05", "", "100")).toEqual({
+    expect(validateDraft("TLT", "120", "2028-05", ["single-leg"], "", "100")).toEqual({
       ok: true,
       draft: {
         symbol: "TLT", target_price: 120, target_month: "2028-05",
-        worst_price: 100,
+        strategies: ["single-leg"], worst_price: 100,
       },
     });
   });
@@ -153,20 +167,21 @@ describe("劇本區間兩端（V7／#55）", () => {
   it("方向填反了要當場擋下，不要等後端回 422", () => {
     // 與後端 `_ends_must_straddle_the_target` 同一套規則：看漲劇本必然是
     // 最低 <= 目標 <= 最高。前端先擋只是為了省一趟往返，後端仍是權威。
-    expect(validateDraft("TLT", "120", "2028-05", "110", "")).toEqual({
+    expect(validateDraft("TLT", "120", "2028-05", ["single-leg"], "110", "")).toEqual({
       ok: false, error: "最高價位不可低於目標價",
     });
-    expect(validateDraft("TLT", "120", "2028-05", "", "130")).toEqual({
+    expect(validateDraft("TLT", "120", "2028-05", ["single-leg"], "", "130")).toEqual({
       ok: false, error: "最低價位不可高於目標價",
     });
   });
 
   it("兩端等於目標價是允許的（＝這一端沒有想像空間，是有意義的主張）", () => {
-    expect(validateDraft("TLT", "120", "2028-05", "120", "120").ok).toBe(true);
+    expect(validateDraft("TLT", "120", "2028-05", ["single-leg"], "120", "120").ok)
+      .toBe(true);
   });
 
   it("兩端也要是數字", () => {
-    expect(validateDraft("TLT", "120", "2028-05", "abc", "")).toEqual({
+    expect(validateDraft("TLT", "120", "2028-05", ["single-leg"], "abc", "")).toEqual({
       ok: false, error: "最高價位要是數字",
     });
   });
@@ -175,6 +190,138 @@ describe("劇本區間兩端（V7／#55）", () => {
     render(<CreateForm onCreate={vi.fn()} />);
     expect(screen.getByLabelText("最高價位（選填）")).toHaveValue("");
     expect(screen.getByLabelText("最低價位（選填）")).toHaveValue("");
+  });
+});
+
+describe("Strategy Family 勾選（T10／#227，Initial V2）", () => {
+  it("三個 family 都看得到，沒有預設勾選", () => {
+    render(<CreateForm onCreate={vi.fn()} />);
+    for (const label of ["Call / Put", "Vertical Spread", "Butterfly"]) {
+      const box = screen.getByRole("checkbox", { name: label });
+      expect(box).toBeInTheDocument();
+      expect(box).not.toBeChecked();
+    }
+  });
+
+  it("可以同時勾選多個 family", async () => {
+    const onCreate = vi.fn().mockResolvedValue(undefined);
+    render(<CreateForm onCreate={onCreate} />);
+    await userEvent.type(screen.getByLabelText("標的代號"), "TLT");
+    await userEvent.type(screen.getByLabelText("目標價位"), "120");
+    await pickMonth(2028, 5);
+    await userEvent.click(screen.getByRole("checkbox", { name: "Call / Put" }));
+    await userEvent.click(screen.getByRole("checkbox", { name: "Vertical Spread" }));
+    await userEvent.click(screen.getByRole("button", { name: "建立" }));
+
+    expect(onCreate).toHaveBeenCalledWith(expect.objectContaining({
+      strategies: ["single-leg", "vertical-spread"],
+    }));
+  });
+
+  it("再點一次可以取消勾選", async () => {
+    render(<CreateForm onCreate={vi.fn()} />);
+    const box = screen.getByRole("checkbox", { name: "Call / Put" });
+    await userEvent.click(box);
+    expect(box).toBeChecked();
+    await userEvent.click(box);
+    expect(box).not.toBeChecked();
+  });
+
+  it("一個都沒勾就送出，顯示明確的錯誤訊息、不呼叫 onCreate", async () => {
+    const onCreate = vi.fn();
+    render(<CreateForm onCreate={onCreate} />);
+    await userEvent.type(screen.getByLabelText("標的代號"), "TLT");
+    await userEvent.type(screen.getByLabelText("目標價位"), "120");
+    await pickMonth(2028, 5);
+    await userEvent.click(screen.getByRole("button", { name: "建立" }));
+
+    expect(onCreate).not.toHaveBeenCalled();
+    expect(screen.getByRole("alert")).toHaveTextContent("請至少勾選一個策略類型");
+  });
+
+  it("建立模式沒有任何劇本可比對方向，不顯示任何不可選原因", () => {
+    render(<CreateForm onCreate={vi.fn()} />);
+    expect(screen.queryByText(/這個策略家族/)).not.toBeInTheDocument();
+  });
+
+  it("編輯模式預填目前勾選的 family", () => {
+    render(<CreateForm onCreate={vi.fn()} onSaveEdit={vi.fn()}
+                       editing={{
+                         id: "s1", symbol: "TLT", target_price: 120,
+                         target_month: "2028-05", best_price: null,
+                         worst_price: null,
+                         strategies: ["vertical-spread"],
+                         family_eligibility: null,
+                       }} />);
+    expect(screen.getByRole("checkbox", { name: "Call / Put" })).not.toBeChecked();
+    expect(screen.getByRole("checkbox", { name: "Vertical Spread" })).toBeChecked();
+  });
+
+  it("編輯模式顯示不可選的 family 與原因——checkbox 本身仍可勾選，" +
+     "不是禁止勾選（AC：只有可選／不可選兩種事實陳述，不是推薦）", () => {
+    render(<CreateForm onCreate={vi.fn()} onSaveEdit={vi.fn()}
+                       editing={{
+                         id: "s1", symbol: "TLT", target_price: 120,
+                         target_month: "2028-05", best_price: null,
+                         worst_price: null,
+                         strategies: ["vertical-spread"],
+                         family_eligibility: {
+                           "single-leg": { family: "single-leg", eligible: true,
+                                          reason: null },
+                           "vertical-spread": { family: "vertical-spread",
+                                               eligible: true, reason: null },
+                           "butterfly": { family: "butterfly", eligible: false,
+                                         reason: "這個策略家族目前還沒有任何已啟用的具體結構。" },
+                         },
+                       }} />);
+    expect(screen.getByText(
+      "這個策略家族目前還沒有任何已啟用的具體結構。")).toBeInTheDocument();
+    const butterflyBox = screen.getByRole("checkbox", { name: /Butterfly/ });
+    expect(butterflyBox).toBeEnabled();
+    expect(butterflyBox).not.toBeChecked();
+  });
+
+  it("編輯模式下可選的 family 不顯示任何原因文字", () => {
+    render(<CreateForm onCreate={vi.fn()} onSaveEdit={vi.fn()}
+                       editing={{
+                         id: "s1", symbol: "TLT", target_price: 120,
+                         target_month: "2028-05", best_price: null,
+                         worst_price: null,
+                         strategies: ["vertical-spread"],
+                         family_eligibility: {
+                           "single-leg": { family: "single-leg", eligible: true,
+                                          reason: null },
+                           "vertical-spread": { family: "vertical-spread",
+                                               eligible: true, reason: null },
+                           "butterfly": { family: "butterfly", eligible: false,
+                                         reason: "這個策略家族目前還沒有任何已啟用的具體結構。" },
+                         },
+                       }} />);
+    const singleLegLabel = screen.getByRole("checkbox", { name: "Call / Put" })
+      .closest("label")!;
+    expect(within(singleLegLabel).queryByText(/這個策略家族/)).not.toBeInTheDocument();
+  });
+
+  it("畫面不出現任何推薦／不推薦字眼（AC：只有可選與不可選兩種狀態）", () => {
+    render(<CreateForm onCreate={vi.fn()} onSaveEdit={vi.fn()}
+                       editing={{
+                         id: "s1", symbol: "TLT", target_price: 120,
+                         target_month: "2028-05", best_price: null,
+                         worst_price: null,
+                         strategies: ["vertical-spread"],
+                         family_eligibility: {
+                           "single-leg": { family: "single-leg", eligible: true,
+                                          reason: null },
+                           "vertical-spread": { family: "vertical-spread",
+                                               eligible: true, reason: null },
+                           "butterfly": { family: "butterfly", eligible: false,
+                                         reason: "這個策略家族目前還沒有任何已啟用的具體結構。" },
+                         },
+                       }} />);
+    const text = document.body.textContent ?? "";
+    for (const banned of ["推薦", "較適合", "Weak Fit", "Recommended"]) {
+      expect(text).not.toContain(banned);
+    }
   });
 });
 
@@ -329,6 +476,7 @@ describe("自製年月選擇器（#71）", () => {
     await userEvent.type(screen.getByLabelText("標的代號"), "TLT");
     await userEvent.type(screen.getByLabelText("目標價位"), "120");
     await pickMonth(2020, 1);
+    await userEvent.click(screen.getByRole("checkbox", { name: "Call / Put" }));
     await userEvent.click(screen.getByRole("button", { name: "建立" }));
 
     expect(onCreate).toHaveBeenCalledWith(

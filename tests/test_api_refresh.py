@@ -23,7 +23,8 @@ from option_chaser.data.snapshot import load_snapshot
 from option_chaser.models import FetchError, ParamError
 
 FIX = "tests/fixtures/xyz_v4_six_expiries.json"
-NEW = {"symbol": "XYZ", "target_price": 130.0, "target_month": "2026-09"}
+NEW = {"symbol": "XYZ", "target_price": 130.0, "target_month": "2026-09",
+       "strategies": ["vertical-spread"]}
 
 
 def _client(*, fetch=None, storage=None, **overrides):

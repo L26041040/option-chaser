@@ -136,7 +136,7 @@ def _client(storage=None):
 
 def test_created_scenario_persists_a_family_code_not_a_subtype():
     r = _client().post("/api/scenarios", json={
-        "symbol": "XYZ", "target_price": 130.0, "target_month": "2026-09"})
+        "symbol": "XYZ", "target_price": 130.0, "target_month": "2026-09", "strategies": ["vertical-spread"]})
     assert r.status_code == 201, r.text
     sc = r.json()
     assert sc["strategies"] == ["vertical-spread"]
@@ -152,7 +152,7 @@ def test_refresh_saves_a_per_family_representative_alongside_the_scalar_champion
     storage = MemoryStorage()
     client = _client(storage)
     sc_id = client.post("/api/scenarios", json={
-        "symbol": "XYZ", "target_price": 130.0, "target_month": "2026-09"}).json()["id"]
+        "symbol": "XYZ", "target_price": 130.0, "target_month": "2026-09", "strategies": ["vertical-spread"]}).json()["id"]
     client.post(f"/api/scenarios/{sc_id}/refresh")
 
     rec = storage.latest_result(sc_id)
@@ -166,7 +166,7 @@ def test_scenario_created_event_records_only_the_family():
     當日而變的推導結果（例如展開後的 subtype 清單、方向 eligibility）。"""
     storage = MemoryStorage()
     r = _client(storage).post("/api/scenarios", json={
-        "symbol": "XYZ", "target_price": 130.0, "target_month": "2026-09"})
+        "symbol": "XYZ", "target_price": 130.0, "target_month": "2026-09", "strategies": ["vertical-spread"]})
     sc_id = r.json()["id"]
     events = storage.list_events(scenario_id=sc_id)
     created = next(e for e in events if e["event"] == "SCENARIO_CREATED")
@@ -187,7 +187,7 @@ def test_refreshing_a_scenario_expands_the_family_and_keeps_today_bitwise_identi
     subtype 的任何輸出。"""
     c = _client()
     r = c.post("/api/scenarios", json={
-        "symbol": "XYZ", "target_price": 130.0, "target_month": "2026-09"})
+        "symbol": "XYZ", "target_price": 130.0, "target_month": "2026-09", "strategies": ["vertical-spread"]})
     sc_id = r.json()["id"]
     c.post(f"/api/scenarios/{sc_id}/refresh")
     view = c.get(f"/api/scenarios/{sc_id}").json()["latest_result"]

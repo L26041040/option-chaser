@@ -30,7 +30,8 @@ ROW_OUT = Path("contracts/scenario_row_sample.json")
 # （買賣價差超標被濾光），不適合當骨架樣本——樣本要代表正常情況。
 REQUEST = {"symbol": "XYZ", "target_price": 130.0, "target_month": "2026-09",
            "strategies": ["bull-call-spread"]}
-SCENARIO = {"symbol": "XYZ", "target_price": 130.0, "target_month": "2026-09"}
+SCENARIO = {"symbol": "XYZ", "target_price": 130.0, "target_month": "2026-09",
+           "strategies": ["vertical-spread"]}
 
 # #115（spec #117 §4）：Crossover comparator 需要「每個策略各一個範例，
 # call／put comparator 都有覆蓋」。單一 `/api/analyze` 呼叫只能吃一個

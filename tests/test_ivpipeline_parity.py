@@ -181,7 +181,7 @@ def _unlock(client):
 def _scenario_and_candidate(client):
     sid = client.post("/api/scenarios", json={
         "symbol": "XYZ", "target_price": 130.0,
-        "target_month": "2026-09"}).json()["id"]
+        "target_month": "2026-09", "strategies": ["vertical-spread"]}).json()["id"]
     client.post(f"/api/scenarios/{sid}/refresh")
     view = client.get(f"/api/scenarios/{sid}").json()["latest_result"]
     pool = view["candidate_pool"]

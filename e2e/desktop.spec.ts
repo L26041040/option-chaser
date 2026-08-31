@@ -1320,6 +1320,109 @@ test("桌面版：編輯劇本沿用工作區上方的既有表單，取消隨�
   expect(patched).toHaveLength(1);
 });
 
+/* ---------- Strategy Family 勾選與 eligibility（T10／#227） ---------- */
+
+test("桌面版：建立劇本一個 family 都沒勾就送出，擋在前端並說明原因（T10／#227）",
+   async ({ page }) => {
+  let postCount = 0;
+  await page.route("**/api/scenarios", (route) => {
+    if (route.request().method() === "POST") {
+      postCount += 1;
+      return route.fulfill({ status: 422, json: { detail: "不該送到這裡" } });
+    }
+    return route.fulfill({ json: [] });
+  });
+  await page.goto("/");
+  await expect(page.getByText(/還沒有劇本/)).toBeVisible();
+
+  await page.getByRole("button", { name: "＋ 建立劇本" }).click();
+  await page.getByLabel("標的代號").fill("tlt");
+  await page.getByLabel("目標價位").fill("120");
+  await page.getByLabel("目標年月").click();
+  await page.getByLabel("年份").fill("2028");
+  await page.getByRole("button", { name: "5 月" }).click();
+  await expect(page.getByRole("checkbox", { name: "Call / Put" }))
+    .not.toBeChecked();
+  await expect(page.getByRole("checkbox", { name: "Vertical Spread" }))
+    .not.toBeChecked();
+  await expect(page.getByRole("checkbox", { name: "Butterfly" }))
+    .not.toBeChecked();
+
+  await page.getByRole("button", { name: "建立", exact: true }).click();
+  await expect(page.getByRole("alert")).toContainText("請至少勾選一個策略類型");
+  await expect(page.getByText(/還沒有劇本/)).toBeVisible();
+  expect(postCount).toBe(0);
+});
+
+test("桌面版：編輯表單顯示不可選的 family 與原因，checkbox 仍可勾選——" +
+   "不做推薦／不推薦（T10／#227）", async ({ page }) => {
+  const row = {
+    ...libraryRow({ id: "s1", symbol: "TLT" }),
+    strategies: ["vertical-spread"],
+    family_eligibility: {
+      "single-leg": { family: "single-leg", eligible: true, reason: null },
+      "vertical-spread": { family: "vertical-spread", eligible: true,
+                          reason: null },
+      "butterfly": { family: "butterfly", eligible: false,
+                    reason: "這個策略家族目前還沒有任何已啟用的具體結構。" },
+    },
+  };
+  await page.route("**/api/scenarios", (route) =>
+    route.fulfill({ json: [row] }));
+  await page.route("**/api/scenarios/s1", (route) => route.fulfill({ json: row }));
+  await page.route("**/api/scenarios/s1/refresh", (route) =>
+    route.fulfill({ json: row }));
+  await page.goto("/");
+
+  await page.getByRole("button", { name: /編輯 TLT/ }).click();
+  await expect(page.getByText("編輯劇本")).toBeVisible();
+
+  await expect(page.getByRole("checkbox", { name: "Vertical Spread" }))
+    .toBeChecked();
+  await expect(page.getByRole("checkbox", { name: "Call / Put" }))
+    .not.toBeChecked();
+
+  await expect(page.getByText(
+    "這個策略家族目前還沒有任何已啟用的具體結構。")).toBeVisible();
+  const butterflyBox = page.getByRole("checkbox", { name: /Butterfly/ });
+  await expect(butterflyBox).toBeEnabled();
+  await butterflyBox.check();
+  await expect(butterflyBox).toBeChecked();
+
+  for (const banned of ["推薦", "較適合", "Weak Fit"]) {
+    await expect(page.getByText(banned)).toHaveCount(0);
+  }
+});
+
+test("桌面版：編輯可以增減 family，儲存後送出目前完整的勾選集合（T10／#227）",
+   async ({ page }) => {
+  let current: any = { ...libraryRow({ id: "s1", symbol: "TLT" }),
+                       strategies: ["vertical-spread"] };
+  const patched: any[] = [];
+  await page.route("**/api/scenarios", (route) =>
+    route.fulfill({ json: [current] }));
+  await page.route("**/api/scenarios/s1", (route) => {
+    if (route.request().method() === "PATCH") {
+      const body = route.request().postDataJSON();
+      patched.push(body);
+      current = { ...current, ...body };
+      return route.fulfill({ json: current });
+    }
+    return route.fulfill({ json: current });
+  });
+  await page.route("**/api/scenarios/s1/refresh", (route) =>
+    route.fulfill({ json: current }));
+  await page.goto("/");
+
+  await page.getByRole("button", { name: /編輯 TLT/ }).click();
+  await page.getByRole("checkbox", { name: "Call / Put" }).check();
+  await page.getByRole("button", { name: "儲存變更" }).click();
+
+  await expect(page.getByText("編輯劇本")).toHaveCount(0);
+  expect(patched).toHaveLength(1);
+  expect(patched[0].strategies).toEqual(["vertical-spread", "single-leg"]);
+});
+
 /* ---------- SIG-04（#175）：Desktop 紅線鎖定 ---------- */
 
 /** Spread IV Gap（SIG-01／#172）的完整回應區塊——跟這個檔案既有

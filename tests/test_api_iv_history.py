@@ -186,7 +186,8 @@ def _scenario(client, *, target_price=130.0, target_month="2026-09"):
     """建立**並跑一次分析**——建立本身不分析，沒有結果就沒有候選可查。"""
     sid = client.post("/api/scenarios", json={
         "symbol": "XYZ", "target_price": target_price,
-        "target_month": target_month}).json()["id"]
+        "target_month": target_month,
+        "strategies": ["vertical-spread"]}).json()["id"]
     client.post(f"/api/scenarios/{sid}/refresh")
     return sid
 

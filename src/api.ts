@@ -492,6 +492,21 @@ export interface ScenarioSummary {
    * 一邊是 null）。
    */
   representative_candidate: RepresentativeCandidate | null;
+  /**
+   * T10（#227，Initial V2）：使用者勾選的 Strategy Family 代碼（不是
+   * 具體 subtype 字串）。編輯表單用它預填目前的勾選狀態——之前這個
+   * 欄位雖然一直存在於後端回應裡，但前端從未宣告過型別（`_MVP_
+   * STRATEGIES` 過去恆為同一個值，沒有畫面需要知道它）。
+   */
+  strategies: string[];
+  /**
+   * T10（#227，Initial V2）：最近一次分析當下算出的 family 可選／
+   * 不可選 verdict（鍵是 family 代碼），涵蓋全部三個 family。編輯
+   * 表單讀這裡顯示「這個 family 現在為什麼不可選」，不必打 detail
+   * 端點。`null` ＝ 這個劇本還沒成功分析過，沒有可顯示的 verdict
+   * （不是假造一份「全部可選」）。
+   */
+  family_eligibility: Record<string, FamilyEligibility> | null;
 }
 
 /**
@@ -507,6 +522,13 @@ export interface CreateScenarioRequest {
   symbol: string;
   target_price: number;
   target_month: string;
+  /**
+   * T10（#227，Initial V2）：使用者勾選的 Strategy Family 代碼——
+   * 必填、無預設值（AC「必填留白」），至少要有一個才能送出。
+   * `editScenario()` 沿用同一個型別，編輯表單永遠送出目前完整的
+   * 勾選集合，不是差異。
+   */
+  strategies: string[];
   /** V7（#55）劇本區間兩端，選填——沒設定就不送這兩個鍵。 */
   best_price?: number;
   worst_price?: number;
