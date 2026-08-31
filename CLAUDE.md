@@ -5575,8 +5575,36 @@ CLAUDE.md 隨手更新。
   雙後端）。純後端／儲存層改動，未觸碰任何前端檔案與 API 契約序列化。
   **#224 已 close**。
 
-**下一步**：T08（#225，被 T06 解鎖、無其他 blocker）。T05／T06／T07／
-T09／T12 均已完成，Initial V2 剩餘票的 blocker 狀態依此更新。
+- **T08**（#225，commit `58ed4df`＋跟進 `3db3198`）✅ 衍生三態方向與
+  per-subtype eligibility（family verdict＝OR）——把方向判斷從硬編碼
+  的兩個策略名字表換成 per-subtype 的方向適用性資料，方向本身成為
+  衍生的三態（看漲／看跌／持平），由目標價位相對現價在分析當下算出、
+  永不落盤、永不進事件。`option_chaser/models.py` 新增
+  `DIRECTIONS`／`SUBTYPE_DIRECTIONS`（每個 subtype 適用哪些方向的
+  靜態資料表，新增 subtype 只需加資料不需改判斷邏輯）／
+  `derive_direction()`（無容忍帶）／`subtype_eligible()`（純查表）／
+  `FamilyEligibility` dataclass＋`family_eligibility()`（OR 投影，
+  不可選附帶原因文字，兩種成因分開表達）。`is_bullish()` 改為資料
+  驅動但保留簽章與行為（服務 Heatmap／CLI 報告價格軸走向這類與
+  eligibility gate 無關的既有用途，明確標註為本票範圍外、留言註記
+  T15 的 flat-only subtype 出現後需重新檢視）。`service.py::_analyze()`
+  的閘門改為方向算一次、逐 subtype 查 `subtype_eligible()`；
+  `_skip_message()` 改用資料反查產生訊息，沿用既有 `skipped_direction`
+  機制。`store.py::serialize_result()` 新增頂層 `family_eligibility`
+  （涵蓋全部 `FAMILIES`，`schema_version` 5→6，純加法）。`src/api.ts`
+  新增對應型別。`/code-review` 兩軸：Spec 軸零缺漏零 scope creep（手動
+  逐一核對新舊閘門在全部方向×subtype 組合下判定相同，含 `target==
+  spot` 邊界）；Standards 軸三項 judgement call 已於跟進 commit 處理
+  （`is_bullish` 二元本質留言註記、`_family_eligibility_map` 跨模組
+  隱性前提補說明、`_skip_message` 迴圈重複消除）。新增 24 條測試
+  （純函式三態／per-subtype／OR 投影／bytecode 結構驗證／閘門端到端／
+  契約覆蓋）。全套後端測試綠燈（記憶體＋真實 Postgres 雙後端），T01
+  數值基準未受影響。前端 typecheck／678 條 Vitest／build 皆過。
+  **#225 已 close**。
+
+**下一步**：T10（#227，被 T08 解鎖）與 T15（#230，被 T08／T05／T12
+解鎖）皆已無 blocker，可任意順序開工。T05／T06／T07／T08／T09／T12
+均已完成，Initial V2 剩餘票的 blocker 狀態依此更新。
 
 ### 施工依據
 
