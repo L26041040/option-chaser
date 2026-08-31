@@ -608,6 +608,68 @@ def serialize_result(result: AnalysisResult, scenario_id: str,
     }
 
 
+def project_for_detail(view: dict) -> dict:
+    """T13（#231，Initial V2）：詳細頁端點（`GET /api/scenarios/{id}`）
+    傳輸投影——**只服務這一個 HTTP 端點**，不動儲存層。落盤的
+    `ResultRecord.view` 維持 `serialize_result()` 原樣的全保真輸出；
+    V9 Spread 淨成本走勢（`spread_cost_history()`）、`find_candidate()`
+    （`/iv-history` 用）等既有 server 端路徑都直接讀 storage 裡完整的
+    `rec.view`，完全不經過這個函式，因此零回歸。
+
+    移除兩個前端從未消費、只服務 server 端歷史查詢的完整候選序列
+    （`Candidate` 這個 TS 型別本身就沒有 `strategy` 以外的容器層欄位
+    宣告——`src/api.ts` 從未宣告過 `results[].candidates` 或
+    `results[].all_candidates`）：
+    - `all_candidates`（附錄A7：`spread_cost_history()` 專用，該函式吃
+      的是 storage 裡完整的 `rec.view`，不吃這個投影後的結果）
+    - `candidates`（引擎全量候選 key 清單——這才是「每多啟用一個
+      spread 策略就多約 495KB」的真正成因：它會把**每一筆**通過過濾的
+      候選都拉進 `candidate_pool`，遠遠超出 `expiry_top10` 每期前十名
+      的既有上限）
+
+    `expiry_groups`（v4 舊「到期日分組比較」結構）**刻意保留**：它本身
+    很小（每個 (到期日, 策略) 組合只有一列，不是候選序列），且
+    `representative_candidate()`／`best_return()` 需要它才能對**任何**
+    view dict（含這個投影後的結果）正常運作——既有測試
+    （`test_api_scenarios.py`）就是這樣呼叫的。它引用的候選鍵本來就是
+    `expiry_best` 的子集（`_build_groups()` 對同一個 (到期日, 策略)
+    取的是同一個 `pe_best` 候選），不會讓 pool 變大。
+
+    候選池只保留還被 `expiry_best`／`expiry_top10`／`expiry_groups`／
+    `default_selection`／`baseline_selection` 引用到的鍵——這些容器
+    加總起來已被引擎的既有規則限制在「到期日數 × 10」量級（`expiry_
+    top10` 每期至多十筆，其餘容器的引用集合都是它的子集），因此不需要
+    另外寫一段「檢查候選數不超過上限」的邏輯：移除 `candidates`／
+    `all_candidates` 這兩個唯二會讓池子無界成長的來源之後，這個上限是
+    結構上自動成立的。
+
+    純函式、不修改輸入：回傳全新的頂層字典與 `results[]` 列表，`view`
+    本身（連同它內部所有巢狀物件）維持原封不動，因此可以放心把
+    `ResultRecord.view` 直接傳進來，不必先複製。
+    """
+    referenced: set[str] = set()
+
+    def project_result(r: dict) -> dict:
+        referenced.update(r.get("expiry_best") or ())
+        for group in r.get("expiry_top10") or ():
+            referenced.update(group["candidate_keys"])
+        return {k: v for k, v in r.items()
+               if k not in ("candidates", "all_candidates")}
+
+    results = [project_result(r) for r in view.get("results", [])]
+    for group in view.get("expiry_groups") or ():
+        for row in group.get("rows", []):
+            referenced.add(row["candidate_key"])
+    if view.get("default_selection"):
+        referenced.add(view["default_selection"][1])
+    if view.get("baseline_selection"):
+        referenced.add(view["baseline_selection"][1])
+
+    pool = view.get("candidate_pool") or {}
+    projected_pool = {k: pool[k] for k in referenced if k in pool}
+    return {**view, "results": results, "candidate_pool": projected_pool}
+
+
 def find_candidate(view: dict, key: str) -> dict | None:
     """依身份鍵在 view dict 裡找出那個候選的**完整**形狀（含各腿）。
 

@@ -815,8 +815,12 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         latest = _db().latest_result(scenario_id)
         # `best_return` 也要在——detail 少一個欄位的話，客戶端就沒辦法把
         # 同一個型別套用在清單列與詳細回應上（V5 的詳細頁會踩到）。
+        # T13（#231，Initial V2）：回應走 `store.project_for_detail()`
+        # 傳輸投影，不是落盤的那份原樣——儲存本身（`latest.view`）維持
+        # 全保真，只有這個端點回給前端的那份瘦身。
         return {**_row_json(sc, ny_today(), **_summary_of(latest)),
-                "latest_result": latest.view if latest else None}
+                "latest_result": (store.project_for_detail(latest.view)
+                                  if latest else None)}
 
     @app.post("/api/scenarios/{scenario_id}/archive")
     def archive_scenario(scenario_id: str) -> dict:

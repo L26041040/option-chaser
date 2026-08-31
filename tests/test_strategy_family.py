@@ -184,13 +184,24 @@ def test_refreshing_a_scenario_expands_the_family_and_keeps_today_bitwise_identi
     （`bull-call-spread`）的候選／排名／劇本報酬必須與直接呼叫引擎、
     只傳 `strategies=("bull-call-spread",)` 逐位元相同——family 展開
     只是多了一個被方向閘門擋掉的 `bear-put-spread` 條目，不改變既有
-    subtype 的任何輸出。"""
-    c = _client()
+    subtype 的任何輸出。
+
+    T13（#231，Initial V2）起，`GET /api/scenarios/{id}` 回傳的是
+    `store.project_for_detail()` 投影後的瘦身版（`results[].candidates`
+    這個全量清單不再上 wire）——這條測試要驗證的是**儲存層**全保真，
+    因此改讀 `storage.latest_result(sc_id).view`（落盤那份，未經投影），
+    不是 HTTP 回應。這正是 T13 AC「儲存的內容維持全保真」該用的驗證
+    方式，比先前透過 HTTP 回應間接驗證更貼近實際保證的對象。
+    """
+    from api_app.storage.memory import MemoryStorage as _MemoryStorage
+
+    storage = _MemoryStorage()
+    c = _client(storage)
     r = c.post("/api/scenarios", json={
         "symbol": "XYZ", "target_price": 130.0, "target_month": "2026-09", "strategies": ["vertical-spread"]})
     sc_id = r.json()["id"]
     c.post(f"/api/scenarios/{sc_id}/refresh")
-    view = c.get(f"/api/scenarios/{sc_id}").json()["latest_result"]
+    view = storage.latest_result(sc_id).view
 
     by_strategy = {res["strategy"]: res for res in view["results"]}
     assert set(by_strategy) == {"bull-call-spread", "bear-put-spread"}
