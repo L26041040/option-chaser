@@ -193,9 +193,7 @@ def test_refreshing_a_scenario_expands_the_family_and_keeps_today_bitwise_identi
     不是 HTTP 回應。這正是 T13 AC「儲存的內容維持全保真」該用的驗證
     方式，比先前透過 HTTP 回應間接驗證更貼近實際保證的對象。
     """
-    from api_app.storage.memory import MemoryStorage as _MemoryStorage
-
-    storage = _MemoryStorage()
+    storage = MemoryStorage()
     c = _client(storage)
     r = c.post("/api/scenarios", json={
         "symbol": "XYZ", "target_price": 130.0, "target_month": "2026-09", "strategies": ["vertical-spread"]})

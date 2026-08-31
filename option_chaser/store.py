@@ -631,9 +631,13 @@ def project_for_detail(view: dict) -> dict:
     很小（每個 (到期日, 策略) 組合只有一列，不是候選序列），且
     `representative_candidate()`／`best_return()` 需要它才能對**任何**
     view dict（含這個投影後的結果）正常運作——既有測試
-    （`test_api_scenarios.py`）就是這樣呼叫的。它引用的候選鍵本來就是
-    `expiry_best` 的子集（`_build_groups()` 對同一個 (到期日, 策略)
-    取的是同一個 `pe_best` 候選），不會讓 pool 變大。
+    （`test_api_scenarios.py`）就是這樣呼叫的。它引用的候選鍵今天
+    確實是 `expiry_best` 的子集（`_build_groups()` 對同一個 (到期日,
+    策略) 取的是同一個 `pe_best` 候選），不會讓 pool 變大——但下面
+    仍然把它自己的引用集合逐一走一遍納入 `referenced`，是刻意的防禦
+    寫法，不是依賴這條子集關係省事：`_build_groups()` 未來若改變候選
+    挑選邏輯而讓兩者出現分歧，這裡也不會不小心把 `expiry_groups` 真正
+    需要的候選漏出投影後的池子。
 
     候選池只保留還被 `expiry_best`／`expiry_top10`／`expiry_groups`／
     `default_selection`／`baseline_selection` 引用到的鍵——這些容器
