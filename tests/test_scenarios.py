@@ -270,6 +270,7 @@ def test_completion_scan_suffix_semantics_synthetic(monkeypatch):
     monkeypatch.setattr(sc, "_value_fn", fake_value_fn)
     k_star, be = sc.completion_scan(v, SPOT, TODAY, p)
     assert k_star == pytest.approx(0.5)
+    assert be == pytest.approx(SPOT + 0.5 * (p.target_price - SPOT))
 
 
 # ---------- T17（#234，Initial V2）：持平劇本（target_price == spot）
