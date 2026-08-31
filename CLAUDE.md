@@ -27,7 +27,7 @@ block 裡，不能切成好幾個 code block、也不能中間插普通文字把
 `［回報#001］spec #137 拆票完成`）。編號是**累計總數**，不因換
 session、換分支、換主題而歸零——目前最新編號記在這裡：
 
-> 目前次序：050（下一份回報用 051）
+> 目前次序：051（下一份回報用 052）
 
 每發一份回報就把上面這個數字改成剛剛用掉的那個，跟著那次改動一起
 commit（沒有其他改動要 commit 時，單獨為這一行開一個小 commit 也
@@ -6005,9 +6005,66 @@ CLAUDE.md 隨手更新。
   Postgres 雙後端）全綠；前端 typecheck 乾淨、747 條 Vitest 全綠、
   build 成功；Playwright e2e 109 條（iPhone 58＋Desktop 34）全綠。
 
-**下一步**：T18（#235，最終回歸與驗收——Initial V2 最後一張票）為
-下一張，blocked by T05–T17（全數已完成）。12 條硬紅線逐條對照＋全套
-回歸＋真機驗收清單。T18 完成後才回報 Owner，全程依授權不中途停下。
+- **T18**（#235，commits `3125611`＋`822d165`）✅ 全面回歸與最終
+  驗收——Initial V2 最後一張票，純驗證＋補測試缺口，未新增任何
+  production 程式碼。
+
+  用兩個背景 agent 分工稽核 spec #217 Testing Decisions 章節列出的
+  12 條硬回歸紅線（每條要求列出守它的測試），逐條對照結果：10 條
+  完全有測試把關（含逐一核對「沒有斷言被弱化」——`git diff`
+  自 T01 開工前的 `22b9d4b` 至今，後端 17 行、前端 24 行被刪除的
+  `assert`/`expect()`，全數對照為 spec 明文要求的結構性變更如
+  friction 退場、`Scenario.strategies` 改存 family、`schema_version`
+  升版等，無一為單純放寬）；**2 條發現缺口並補齊**：
+
+  - **紅線 8**（導出 max_loss≤0 的候選不出現在排名中，且留下
+    diagnostic）：Butterfly 路徑此前只有機制層測試，未經真實
+    `service.run_offline()` wiring 驗證。深入查證發現一個數學事實
+    ——`evaluate_butterfly()` 的 `max_loss = net_worst - min(v1,v3)`，
+    call-fly 到期時 K1 那一點三腿恆為 OTM/ATM（`v1` 恆為 0），配合
+    A 層 `bid<=ask` 前提與既有配對層 `net_mid<=0` 門檻，可證明任何
+    撐過既有門檻的三腿組合 `max_loss>0` 在數學上已經保證成立——無法
+    用任何真實報價構造出反例。新增兩條測試：一條證明性測試（惡意
+    構造三組報價含逼近邊界案例試圖找反例，全數失敗，其中一組近零
+    價差案例 `max_loss=0.002` 逼近邊界但從未跨界）；一條 wiring
+    測試（monkeypatch `service.evaluate_butterfly()` 對真實候選注入
+    `max_loss=-1.0`，證明排除機制與 diagnostic 身份揭露確實接上）。
+  - **紅線 12**（任一前十名候選展開熱力圖零額外請求）：既有測試
+    （T16／#232）只用 Butterfly 候選驗證過，字面「任一」未涵蓋。
+    新增手機＋桌面各一條，改用一般 Vertical Spread 候選重複同一套
+    斷言。
+
+  `/code-review` 兩軸：Spec 軸零缺口（獨立重新驗算紅線 8 的數學論證
+  通過、確認 wiring 測試兩半都驗到、確認 e2e 用的是非 Butterfly
+  樣本、零 scope creep）；Standards 軸三項 judgement call 已修正
+  （desktop.spec.ts 補回原本只在 smoke.spec.ts 出現的完整說明文字、
+  改掉會隨編輯漂移的行號交叉引用、`poisoned()` 內聯組出的身份字串
+  改呼叫共用的 `triple_key()` 消除重複定義來源）。
+
+  Out of Scope 逐項 grep 確認：credit 三兀／Iron Condor／straddle／
+  calendar／covered call／推薦評語／package percentile／prefetch／
+  多使用者隔離／N-leg（`legs[]` 有結構性 `1<=len<=4` 上限強制）／
+  新 friction 指標，皆無違反。
+
+  新增 `docs/initial-v2-acceptance-checklist.md`（比照既有
+  `docs/v10-acceptance-checklist.md` 慣例），逐條列出三個 family
+  建立與瀏覽、持平劇本、Butterfly 三腿與獲利區間、熱力圖展開、舊
+  劇本相容、桌面與手機版面，標明哪些已由自動化覆蓋、哪些需要需求方
+  親自用真機確認。
+
+  全套：後端 pytest（記憶體＋真實 Postgres 雙後端）全綠；前端
+  typecheck 乾淨、747 條 Vitest 全綠、build 成功；Playwright e2e
+  111 條（iPhone 59＋Desktop 34＋T18 新增 2 條）全綠，連續兩輪穩定
+  無 flake。
+
+  **AC9（需求方真機驗收通過才算完成）為唯一未完成項目**——已在
+  issue #235 留言完整回報，issue 保留 open、不強行關閉（這是它自己
+  AC 明文的完成條件，不是 agent 能代勞的動作）。
+
+**Initial V2（spec #217，T01–T18，issues #218–#235）工程與自動化
+驗證面全數完成。** 依專案規則不主動開 PR，等需求方走過
+`docs/initial-v2-acceptance-checklist.md` 給出 go-ahead 後才開 PR、
+準備合併回 master。**下一步**：等需求方真機驗收回饋。
 
 ### 施工依據
 
