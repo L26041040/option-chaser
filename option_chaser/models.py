@@ -171,6 +171,70 @@ STRATEGIES = ("long-call", "long-put", "bull-call-spread", "bear-put-spread")
 SINGLE_LEG_STRATEGIES = ("long-call", "long-put")
 SPREAD_STRATEGIES = ("bull-call-spread", "bear-put-spread")
 
+# T06（#221，Initial V2 spec #217）：Strategy Family 詞彙。
+#
+# Family 是使用者持久化的選擇（`Scenario.strategies` 存的是這個），
+# Subtype（上面 `STRATEGIES` 的四個具體策略代碼）是分析當下由
+# family×方向展開出的結構，從不持久化、從不是使用者可見的選項。
+#
+# "butterfly" 現在還沒有任何 subtype 可以展開（call-fly／put-fly 是
+# T15／#230 的範圍）——先把詞彙定下來是 #221 本票明文要求的（family
+# 代碼就是 single-leg／vertical-spread／butterfly 這三個），`FAMILY_
+# SUBTYPES["butterfly"]` 暫時是空 tuple，不是預留的空殼架構。
+FAMILIES = ("single-leg", "vertical-spread", "butterfly")
+
+# 唯一一張 subtype → family 的靜態對照表，全站共用，沒有第二處硬編碼
+# 對應關係。新資料寫入 family 代碼；舊資料（`Scenario.strategies` 裡
+# 存的是 subtype 字串）在讀取端用這張表換算回 family，不做資料遷移
+# ——兩個字串集合（`STRATEGY_FAMILY` 的 key 與 `FAMILIES`）互斥，讀取
+# 時不需要額外的版本欄位就能判斷一個字串屬於哪一邊。
+STRATEGY_FAMILY: dict[str, str] = {
+    "long-call": "single-leg",
+    "long-put": "single-leg",
+    "bull-call-spread": "vertical-spread",
+    "bear-put-spread": "vertical-spread",
+}
+
+# family → 該 family 目前擁有的全部 subtype（不分方向）。方向是否
+# 「啟用」由既有的 direction 閘門（`is_bullish`／`skipped_direction`）
+# 在分析當下判斷，這裡只負責「這個 family 底下有哪些 subtype」。
+FAMILY_SUBTYPES: dict[str, tuple[str, ...]] = {
+    "single-leg": SINGLE_LEG_STRATEGIES,
+    "vertical-spread": SPREAD_STRATEGIES,
+    "butterfly": (),
+}
+
+
+def normalize_families(raw: tuple[str, ...]) -> tuple[str, ...]:
+    """讀取層正規化：`Scenario.strategies` 可能是舊資料（存 subtype
+    字串，例如遷移前建立的 `("bull-call-spread",)`）或新資料（存
+    family 字串，例如 `("vertical-spread",)`）。兩者字串集合互斥，
+    因此逐一查 `STRATEGY_FAMILY`：查得到就是舊 subtype、換算成 family；
+    查不到就當作它已經是 family 字串，原樣保留。去重、保序。"""
+    out: list[str] = []
+    for v in raw:
+        fam = STRATEGY_FAMILY.get(v, v)
+        if fam not in out:
+            out.append(fam)
+    return tuple(out)
+
+
+def subtypes_of(families: tuple[str, ...]) -> tuple[str, ...]:
+    """使用者選的 family 集合 → 分析要跑的 subtype 清單，去重、保序。
+
+    這是分析時序的展開點：呼叫端先用 `normalize_families()` 把讀到的
+    `Scenario.strategies` 正規化成 family 集合，再用本函式展開成
+    `AnalysisRequest.strategies` 要的 subtype tuple。哪些 subtype 因
+    方向與目標價矛盾而被跳過，不是這裡的事——那是既有的
+    `skipped_direction` 機制（`service._analyze`），本函式一律展開
+    family 底下的全部 subtype，讓既有的方向閘門在分析當下自己過濾。"""
+    out: list[str] = []
+    for fam in families:
+        for s in FAMILY_SUBTYPES[fam]:
+            if s not in out:
+                out.append(s)
+    return tuple(out)
+
 
 def leg_option_type(strategy: str) -> str:
     """Which chain side the strategy trades (spec §4.1)."""

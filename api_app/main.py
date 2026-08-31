@@ -24,7 +24,8 @@ from option_chaser import __version__, ivpipeline, service, store
 from option_chaser.data import treasury as treasury_data
 from option_chaser.data.snapshot import snapshot_from_dict, snapshot_to_csv
 from option_chaser.models import (AnalysisParams, ChainSnapshot, FetchError,
-                                  ParamError, STRATEGIES)
+                                  ParamError, STRATEGIES, normalize_families,
+                                  subtypes_of)
 from option_chaser.service import DividendLoader, RateCurveLoader
 from option_chaser.timeframe import (TargetMonth, calendar_anchor,
                                      ensure_month_open, month_is_over)
@@ -78,10 +79,17 @@ REFRESH_RUN_BUDGET = timedelta(seconds=45)
 # 逼出分段，不假裝時間流逝。
 REFRESH_RUN_GROUP_LIMIT = 1
 
-# MVP 範圍（沿用既有 Streamlit 版與 spec #47 的三欄表單）：方向與策略
-# 是固定值，不由前端送。需要看空或多策略時再由對應的票加上。
+# MVP 範圍（沿用既有 Streamlit 版與 spec #47 的三欄表單）：方向是固定值，
+# 不由前端送。需要看空時再由對應的票加上（`direction` 欄位是 legacy
+# 遺留，T06／#221 起不再被任何判斷邏輯讀取，見 `_scenario_json`）。
 _MVP_DIRECTION = "bullish"
-_MVP_STRATEGIES = ("bull-call-spread",)
+# T06（#221，Initial V2 spec #217）：這裡存的是 Strategy Family 代碼
+# （`option_chaser.models.FAMILIES`），不是具體 subtype 字串——分析時
+# 由 `_refresh_and_save()` 透過 `subtypes_of()` 展開成 subtype 清單。
+# 建立劇本的路徑目前仍只寫入 Vertical Spread 這一個 family（前端勾選
+# 是 T10／#227 的範圍），展開後跑出來的候選與 T06 之前完全相同——
+# 另一個方向的 subtype（`bear-put-spread`）照樣被既有方向閘門擋掉。
+_MVP_STRATEGIES = ("vertical-spread",)
 
 # V1（#48）的一次性分析端點沿用：無劇本身分時的 view dict 欄位值，
 # 不影響任何計算。V3 之後前端改走劇本端點，屆時此路徑可移除。
@@ -852,9 +860,13 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         if month_is_over(TargetMonth.from_key(sc.target_month), today):
             latest = _db().latest_result(sc.id)
             return _row_json(sc, today, **_summary_of(latest))
+        # T06（#221）：`sc.strategies` 存的是 family 代碼（新資料）或
+        # legacy subtype 字串（舊資料，無遷移）——這是**唯一**的展開點，
+        # 把它換算成 `AnalysisRequest.strategies` 要的具體 subtype 清單。
+        subtypes = subtypes_of(normalize_families(sc.strategies))
         view, snapshot = _analyze(
             scenario_id=sc.id, symbol=sc.symbol, target_price=sc.target_price,
-            target_month=sc.target_month, strategies=sc.strategies,
+            target_month=sc.target_month, strategies=subtypes,
             best_price=sc.best_price, worst_price=sc.worst_price, snap=snap)
         analyzed_at = view["analyzed_at"]
         # 兩者同一次走訪（`store.representative_candidate`），`best_return`
