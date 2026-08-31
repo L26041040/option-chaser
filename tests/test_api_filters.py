@@ -120,11 +120,13 @@ def test_per_expiry_pool_size_grows_not_just_the_aggregate():
 
 def test_filter_stages_only_data_integrity_and_iv_remain():
     """spec #61 三分類：C 類（OI／成交量／價差寬度）全部不再是硬門檻，
-    `filter_stages` 只剩 A 類（報價健全性）與 B 類（IV 數學前提）。"""
+    `filter_stages` 只剩 A 類（報價健全性）／B 類（IV 數學前提）＋
+    T05（#226，Initial V2）新增的 B 類導出層安全網（正常報價下恆為
+    0 筆移除，仍會作為一個 stage 出現，讓剔除是可見的而非靜默）。"""
     r = _client().post("/api/analyze", json=REQUEST)
     result = r.json()["results"][0]
     labels = [s["label"] for s in result["filter_stages"]]
-    assert labels == ["報價異常", "IV 異常"]
+    assert labels == ["報價異常", "IV 異常", "成本或報酬為不可能值（B 層安全網）"]
     assert not any(kw in l for l in labels
                    for kw in ("OI", "成交量", "Spread", "價差"))
 
@@ -204,6 +206,7 @@ def test_filter_stages_carry_their_class_over_http():
     result = r.json()["results"][0]
     assert [(s["label"], s["filter_class"]) for s in result["filter_stages"]] == [
         ("報價異常", "A"), ("IV 異常", "B"),
+        ("成本或報酬為不可能值（B 層安全網）", "B"),
     ]
 
 

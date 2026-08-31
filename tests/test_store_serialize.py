@@ -38,7 +38,9 @@ def test_top_level_fields_and_versions():
     # 四個容器改存 key。
     # T12（#228，Initial V2）：3→4 每腿新增 side/quantity，候選新增
     # breakeven_points（純加法）。
-    assert view["schema_version"] == 4
+    # T05（#226，Initial V2）：4→5 pair_report 新增 b_layer_removed
+    # （純加法）。
+    assert view["schema_version"] == 5
     assert view["engine_version"] == option_chaser.__version__ == "0.5.0"
     assert view["scenario_id"] == "XYZ-120-202608"
     assert view["analyzed_at"] == view["snapshot_ref"]["fetched_at"]

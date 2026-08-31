@@ -3150,6 +3150,11 @@
           "filter_class": "B",
           "label": "IV 異常",
           "removed": 0
+        },
+        {
+          "filter_class": "B",
+          "label": "成本或報酬為不可能值（B 層安全網）",
+          "removed": 0
         }
       ],
       "message": "",
@@ -3174,7 +3179,7 @@
     }
   ],
   "scenario_id": "adhoc",
-  "schema_version": 4,
+  "schema_version": 5,
   "snapshot_ref": {
     "fetched_at": "2026-07-15T21:30:00-04:00",
     "path": "(in-memory)",

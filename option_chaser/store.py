@@ -402,6 +402,10 @@ def serialize_result(result: AnalysisResult, scenario_id: str,
                               for qf in r.quality_flags],
             "pair_report": ({"total_pairs": r.pair_report.total_pairs,
                              "removed_sanity": r.pair_report.removed_sanity,
+                             # T05（#226）：B 層淘汰數，配對單位，獨立於
+                             # 既有的 removed_sanity（A 層／per-subtype
+                             # 結構合法性）。
+                             "b_layer_removed": r.pair_report.b_layer_removed,
                              "passed": r.pair_report.passed}
                             if r.pair_report else None),
             "candidates": [cand_key(cv, r.strategy) for cv in r.candidates],
@@ -467,7 +471,9 @@ def serialize_result(result: AnalysisResult, scenario_id: str,
         # `breakeven` 純量欄位不變）。純新增，讀取端無需相容分支——舊
         # View 沒有這兩個欄位，`representative_candidate()` 對缺欄位的
         # `side` 有位置回推備援（見上）。
-        "schema_version": 4,
+        # T05（#226，Initial V2）：4→5——`pair_report` 新增
+        # `b_layer_removed`（純加法）。
+        "schema_version": 5,
         "engine_version": __version__,
         "analyzed_at": m.fetched_at,
         "scenario_id": scenario_id,

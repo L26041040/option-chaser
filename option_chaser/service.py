@@ -10,7 +10,8 @@ from typing import Callable
 from .data.snapshot import find_contract, load_snapshot, save_snapshot, snapshot_today
 from .dividends import DividendHistory, compute_q
 from .filters import (apply_filters, generate_spread_pairs, is_spread_wide,
-                      monotonicity_violations, quality_flag_counts)
+                      monotonicity_violations, quality_flag_counts,
+                      validate_derived_values)
 from .matrix import GUI_MAX_GAP_DAYS, date_axis, matrix_grid, price_axis
 from .models import (AnalysisParams, ChainSnapshot, FetchError, FilterReport,
                      PairReport, ParamError, QualityFlagCount, SPREAD_STRATEGIES,
@@ -20,7 +21,7 @@ from .ranking import (BAND_ORDER, _spread_tie_key, _tie_break_key,
                       classify, rank, rank_spreads, return_at_price,
                       spread_baseline_return)
 from .report import STRATEGY_LABELS, render, render_filter_only, render_spreads
-from .scenarios import (ResilienceMetrics, ScenarioVector,
+from .scenarios import (ResilienceMetrics, ScenarioVector, natural_cost,
                         resilience_metrics, _grid_price, _value_fn)
 from .timeframe import (TargetMonth, calendar_anchor, ensure_month_open,
                         select_expiries)
@@ -634,6 +635,14 @@ def _single_leg_result(p: AnalysisParams, snap: ChainSnapshot,
     violations = monotonicity_violations(qualified)
     quality_flags = quality_flag_counts(qualified, violations, p)
     vals = [evaluate_contract(c, snap.spot, today, p) for c in qualified]
+    # T05（#226，Initial V2 spec #217）：B 層——導出層數學安全網，接在
+    # 既有計算路徑之後、排名之前，獨立於 A 層（`apply_filters()`）成立。
+    # `n_qualified` 隨之改用 B 層之後的數量——「合格池」語意上就該是
+    # 「真的進得了排名」的那些，不是「通過 A 層但可能算出不可能值」。
+    vals, b_stage = validate_derived_values(vals, natural_cost, baseline_return)
+    freport = dataclasses.replace(freport, stages=freport.stages + (b_stage,),
+                                  passed=len(vals))
+    n_qualified = len(vals)
     ranked = rank(vals, p)
     # T09（#191）：韌性／完成度指標只算一次，文字報告與 View 兩條路徑
     # 共用同一個快取——`ranked`／`vals_sorted`／`best_by_expiry` 全部
@@ -642,7 +651,7 @@ def _single_leg_result(p: AnalysisParams, snap: ChainSnapshot,
     # 兩條路徑之間、以及 View 自己的 `candidates`／`expiry_best` 兩個
     # 容器之間都能正確命中。
     resilience_cache: dict[int, ResilienceMetrics] = {}
-    text = render(snap, p, freport, ranked, n_qualified=len(qualified),
+    text = render(snap, p, freport, ranked, n_qualified=n_qualified,
                   today=today, violations=violations, quality_flags=quality_flags,
                   resilience_cache=resilience_cache)
     candidates = []
@@ -651,7 +660,7 @@ def _single_leg_result(p: AnalysisParams, snap: ChainSnapshot,
             continue
         v = ranked[band][0]
         candidates.append(_single_leg_view(v, band, ranked, snap.spot,
-                                           len(qualified), today, p,
+                                           n_qualified, today, p,
                                            violations, resilience_cache))
 
     # v4 spec §3.2: per-expiry best over ALL qualified (not just top-3 bands),
@@ -680,7 +689,7 @@ def _single_leg_result(p: AnalysisParams, snap: ChainSnapshot,
         _single_leg_view(best_by_expiry[exp],
                          classify(best_by_expiry[exp].classification_delta,
                                  p.delta_bands),
-                         ranked, snap.spot, len(qualified), today, p,
+                         ranked, snap.spot, n_qualified, today, p,
                          violations, resilience_cache)
         for exp in sorted(best_by_expiry))
     expiry_counts = tuple(sorted(counts.items()))
@@ -694,14 +703,14 @@ def _single_leg_result(p: AnalysisParams, snap: ChainSnapshot,
     # `_spread_view()` 吃的是**本期**組內大小＋本期索引
     # （`len(by_expiry[exp])`／`enumerate()`），因為 Spread 的
     # `build_spread_reasons()` 文字明講「合格 N 組中第 idx+1」；這裡
-    # 仍傳**全域** `len(qualified)`（跟 `candidates`／`expiry_best` 用的
+    # 仍傳**全域** `n_qualified`（跟 `candidates`／`expiry_best` 用的
     # 是同一個既有呼叫慣例），因為 `_single_leg_view` 的 `n_qualified`
     # 只餵 `build_reasons()` 拿去跟全域 `max_ret` 比較，不像 Spread 那樣
     # 把組內大小寫進文字——單腿路徑沒有「本期組內大小」這個概念要傳。
     expiry_top10 = tuple(
         (exp, tuple(_single_leg_view(
             v, classify(v.classification_delta, p.delta_bands), ranked,
-            snap.spot, len(qualified), today, p, violations, resilience_cache)
+            snap.spot, n_qualified, today, p, violations, resilience_cache)
             for v in by_expiry[exp][:10]))
         for exp in sorted(by_expiry))
     expiry_ranked = tuple((exp, tuple(by_expiry[exp]))
@@ -709,7 +718,7 @@ def _single_leg_result(p: AnalysisParams, snap: ChainSnapshot,
 
     return StrategyResult(
         strategy=p.strategy, status="ok", candidates=tuple(candidates),
-        ranked_bands=ranked, ranked_spreads=None, n_qualified=len(qualified),
+        ranked_bands=ranked, ranked_spreads=None, n_qualified=n_qualified,
         filter_report=freport, pair_report=None, report_text=text, message="",
         expiry_best=expiry_best, expiry_counts=expiry_counts,
         expiry_top10=expiry_top10, expiry_ranked=expiry_ranked,
@@ -733,6 +742,15 @@ def _spread_result(p: AnalysisParams, snap: ChainSnapshot,
     violations = monotonicity_violations(qualified)
     quality_flags = quality_flag_counts(qualified, violations, p)
     spreads = [evaluate_spread(l, s, snap.spot, today, p) for l, s in pairs]
+    # T05（#226，Initial V2 spec #217）：B 層——導出層數學安全網，接在
+    # 既有計算路徑之後、排名之前，獨立於 A 層（`generate_spread_pairs()`
+    # 既有的配對健全性檢查）成立。單位是「配對」，記在 `pair_report`
+    # 而非 `freport`（後者是腿級單位，混在一起會讓同一份報告裡出現
+    # 兩種不同單位的數字）。
+    spreads, b_stage = validate_derived_values(spreads, natural_cost,
+                                               spread_baseline_return)
+    pair_report = dataclasses.replace(pair_report, passed=len(spreads),
+                                      b_layer_removed=b_stage.removed)
     ranked = rank_spreads(spreads, p)
     # T09（#191）：韌性／完成度指標只算一次，文字報告與 View 兩條路徑
     # 共用同一個快取——見 `_single_leg_result` 同一段註解，`spreads` 裡

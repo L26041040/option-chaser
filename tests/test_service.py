@@ -30,7 +30,8 @@ def test_multi_strategy_shared_snapshot_and_order():
 
 
 def test_single_leg_result_matches_engine_and_report():
-    from option_chaser.filters import apply_filters
+    from option_chaser.filters import apply_filters, validate_derived_values
+    from option_chaser.scenarios import natural_cost
     from option_chaser.valuation import evaluate_contract
     from option_chaser.ranking import rank
     from option_chaser.report import render
@@ -46,8 +47,14 @@ def test_single_leg_result_matches_engine_and_report():
     today = snapshot_today(snap.fetched_at)
     snap, _ = service._scoped_to_selected_expiries(snap, p.anchor, today)
     qualified, freport = apply_filters(snap.contracts, p)
-    assert res.n_qualified == len(qualified)
     vals = [evaluate_contract(c, snap.spot, today, p) for c in qualified]
+    # T05（#226，Initial V2）：B 層——導出層數學安全網，接在既有計算
+    # 路徑之後、排名之前，`n_qualified`／`freport` 都要反映這一步之後
+    # 的狀態，才跟 `_single_leg_result()` 實際做的事一致。
+    vals, b_stage = validate_derived_values(vals, natural_cost, baseline_return)
+    freport = dataclasses.replace(freport, stages=freport.stages + (b_stage,),
+                                  passed=len(vals))
+    assert res.n_qualified == len(vals)
     ranked = rank(vals, p)
     # FB5-03（#64）：`render()` 現在吃 `violations`，這份 fixture 剛好帶著
     # 一組真實的單調性違反（XYZC100D／XYZC102O）——沒補這個參數，重算出
@@ -57,7 +64,7 @@ def test_single_leg_result_matches_engine_and_report():
     # 少補這個參數，[過濾統計] 區會少掉整段「[C類標示]」小節。
     quality_flags = quality_flag_counts(qualified, violations, p)
     assert res.report_text == render(snap, p, freport, ranked,
-                                     n_qualified=len(qualified), today=today,
+                                     n_qualified=len(vals), today=today,
                                      violations=violations,
                                      quality_flags=quality_flags)
     # tab candidates = band #1s

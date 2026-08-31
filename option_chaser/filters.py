@@ -37,6 +37,7 @@ FB5-04（#65）：分類本身現在是程式碼裡的一個結構，不只是�
 """
 from __future__ import annotations
 
+import math
 from itertools import combinations
 from typing import Iterable
 
@@ -106,10 +107,21 @@ def apply_filters(
     total = len(remaining)
 
     def quote_ok(c: OptionContract) -> bool:
-        return c.bid is not None and c.ask is not None and c.bid > 0 and c.ask >= c.bid
+        # T05（#226，Initial V2 spec #217，A 層）：缺失值／非有限數值
+        # （`NaN`／`Infinity`）與買賣價倒掛（`bid>ask`）同屬「報價本身
+        # 不可信」——`math.isfinite()` 明確擋掉 `NaN`／`±Infinity`。
+        # 既有 `c.bid > 0`／`c.ask >= c.bid` 兩條件本身已隱含攔住多數
+        # 這類壞值（`NaN` 比較恆為 False、`Infinity` 的 ask 若 bid 有限
+        # 會通過），這裡把 A 層「非有限數值」的判準寫成明確的檢查，不
+        # 依賴比較運算子的副作用當作判準。
+        return (c.bid is not None and c.ask is not None
+                and math.isfinite(c.bid) and math.isfinite(c.ask)
+                and c.bid > 0 and c.ask >= c.bid)
 
     def iv_ok(c: OptionContract) -> bool:
-        return c.implied_volatility is not None and 0.01 <= c.implied_volatility <= 5.0
+        return (c.implied_volatility is not None
+                and math.isfinite(c.implied_volatility)
+                and 0.01 <= c.implied_volatility <= 5.0)
 
     stages = (
         ("A", "報價異常", quote_ok),
@@ -122,6 +134,55 @@ def apply_filters(
                                          filter_class=filter_class))
         remaining = kept
     return remaining, FilterReport(total=total, stages=tuple(results), passed=len(remaining))
+
+
+def validate_derived_values(
+    candidates: list, cost_fn, return_fn,
+) -> tuple[list, FilterStageResult]:
+    """T05（#226，Initial V2 spec #217）：B 層——導出層數學安全網。
+
+    接在既有計算路徑之後（`evaluate_contract()`／`evaluate_spread()`
+    算完之後）、排名之前，是**獨立的最後一道網**：即使 A 層（本模組
+    `apply_filters()`／`generate_spread_pairs()` 的既有報價層檢查）
+    全數通過，這裡仍會執行——不是 A 層的推論，是另一組獨立成立的證據。
+
+    只檢查**既有計算路徑本來就會產出**的兩種量：
+    - `cost_fn(v)`（`scenarios.natural_cost`，Initial V2 全為 debit
+      結構，理應恆為正值）出現 `<=0`／`NaN`／`Infinity`
+    - `return_fn(v)`（`ranking.baseline_return`／`spread_baseline_
+      return`，任何回報給使用者的導出量）出現 `NaN`／`Infinity`
+
+    **不引入任何新的估值／推導邏輯**——`cost_fn`／`return_fn` 都是
+    呼叫端既有的純函式，這裡只是把它們的輸出拿來做有限性／正負號檢查，
+    不新增 max_loss／max_profit 之類的新概念，也不是跨 strategy 的
+    generic payoff-envelope／extrema engine（#223 已判定 Initial V2
+    不需要，正式收斂為 not planned）。
+
+    劇本成立時報酬為負、但報價自洽的候選**不受影響**——`return_fn` 回
+    一個有限的負數（例如 `-0.5`）完全合法，只有 `NaN`／`Infinity` 才
+    invalid；這是既有 ranking 自然沉底的正常結果，不是本函式要攔的
+    對象（票上明文紅線：不新增 `max_profit<=0` 過濾規則）。
+    """
+    def _finite(x) -> bool:
+        # `/code-review` Standards 軸抓到：本函式的 `cost_fn`／`return_fn`
+        # 是泛型參數，今天的兩個呼叫端（`natural_cost`／`baseline_return`／
+        # `spread_baseline_return`）保證回傳 `float`，但簽章本身不強制。
+        # `math.isfinite(None)` 會拋 `TypeError`，跟 `apply_filters()`
+        # 既有 `quote_ok()` 的防禦風格一致，這裡也先擋 `None`。
+        return x is not None and math.isfinite(x)
+
+    kept = []
+    removed = 0
+    for v in candidates:
+        cost = cost_fn(v)
+        ret = return_fn(v)
+        if _finite(cost) and cost > 0 and _finite(ret):
+            kept.append(v)
+        else:
+            removed += 1
+    stage = FilterStageResult(label="成本或報酬為不可能值（B 層安全網）",
+                              removed=removed, filter_class="B")
+    return kept, stage
 
 
 def quality_flag_counts(

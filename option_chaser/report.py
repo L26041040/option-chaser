@@ -423,7 +423,11 @@ def _band_range(band: str, p: AnalysisParams) -> str:
 
 def _pair_lines(pr) -> list[str]:
     return ["", "[配對統計]", f"- 配對總數: {pr.total_pairs}",
-            f"- 健全性淘汰: {pr.removed_sanity}", f"- 合格組數: {pr.passed}"]
+            f"- 健全性淘汰: {pr.removed_sanity}",
+            # T05（#226，Initial V2 spec #217）：B 層獨立於健全性淘汰
+            # （A 層／per-subtype 結構合法性）成立，各自一行不合併計數。
+            f"- 成本或報酬為不可能值淘汰（B 層）: {pr.b_layer_removed}",
+            f"- 合格組數: {pr.passed}"]
 
 
 def _spread_candidate_lines(sv, idx, n_pairs, p, spot: float, today: date,

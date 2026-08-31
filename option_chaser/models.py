@@ -250,3 +250,10 @@ class PairReport:
     total_pairs: int
     removed_sanity: int
     passed: int
+    # T05（#226，Initial V2 spec #217）：B 層（導出層數學安全網）在配對
+    # 這個單位上的淘汰數——與 `removed_sanity`（配對時既有的「結構合法性」
+    # 檢查，A 層／per-subtype 規則）獨立成不同欄位，因為淘汰依據不同：
+    # 這裡是「算出來的成本／報酬是不可能值」，不是「配對本身不成立」。
+    # 預設 0：既有呼叫端（`generate_spread_pairs()`）不知道也不需要知道
+    # B 層，只有 `_spread_result()` 事後補上這個數字。
+    b_layer_removed: int = 0

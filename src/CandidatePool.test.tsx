@@ -72,7 +72,7 @@ function view(overrides: Partial<Overrides> = {}): AnalysisView {
         { label: "報價與鄰近履約價不一致，疑似陳舊報價", count: 0 },
       ],
       pair_report: overrides.pairs === undefined
-        ? { total_pairs: 780, removed_sanity: 100, passed: 680 }
+        ? { total_pairs: 780, removed_sanity: 100, b_layer_removed: 0, passed: 680 }
         : overrides.pairs,
       expiry_counts: overrides.counts ?? [["2028-06-16", 25], ["2028-09-15", 30]],
       disclaimer_text: "",

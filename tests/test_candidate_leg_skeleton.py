@@ -134,6 +134,9 @@ def test_representative_candidate_falls_back_to_position_for_legacy_views():
 
 # ---------- schema_version 升版 ----------
 
-def test_schema_version_is_four():
+def test_schema_version_is_at_least_four():
+    """T12（#228）落地時是 4；後續票（T05／#226 起）可能再升版——這裡
+    只鎖住『不小於 4』，逐字等於哪個數字交給各自票的專屬測試釘住
+    （見 tests/test_store_serialize.py）。"""
     view = _view()
-    assert view["schema_version"] == 4
+    assert view["schema_version"] >= 4

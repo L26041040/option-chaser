@@ -271,6 +271,12 @@ export interface FilterReportCounts {
 export interface PairReport {
   total_pairs: number;
   removed_sanity: number;
+  /**
+   * T05（#226，Initial V2）：B 層（導出層數學安全網）在配對這個單位上
+   * 的淘汰數，獨立於 `removed_sanity`（A 層／per-subtype 結構合法性）。
+   * 前端目前不消費這個欄位，純粹型別同步；正常報價下恆為 0。
+   */
+  b_layer_removed: number;
   passed: number;
 }
 
