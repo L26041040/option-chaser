@@ -5465,8 +5465,29 @@ CLAUDE.md 隨手更新。
   逐行掃描鎖定它從未進入任何判斷邏輯。全套測試（記憶體＋真實 Postgres
   雙後端）綠燈；`/code-review` 兩軸皆無 hard violation。**#221 已 close**。
 
-**下一步**：依既有依賴圖，T09（#222，無 blocker）與 T12（#228，無
-blocker）可任意順序穿插；T07（#224）／T08（#225）現在被 T06 解鎖。
+- **T09**（#222，commit `35868f2`；另有獨立 commit `abb0c23` 修正 T06
+  遺留的 `scenario_row_sample.json` strategies 值）✅ 單腿策略補齊到期日
+  分組欄位：`_single_leg_result()` 補齊 `expiry_top10`／`expiry_ranked`，
+  照既有 `_spread_result()` 寫法補齊、重用同一輪已排序的 `vals_sorted`。
+  `store._history_entry()` 過去只服務過 Spread，改為依型別分派
+  （`isinstance(sv, SpreadValuation)`）正確處理 `ContractValuation`。
+  `find_candidate()`／`representative_candidate()` 兩條既有讀取路徑不必
+  改邏輯即可正確解出單腿候選——前者原有的「`expiry_top10` 空才退回扁平
+  清單」fallback（#139）自然接手，後者本來就讀早已填入的 `expiry_best`。
+  驗證：T01 數值基準逐鍵比對，`bull-call-spread`／`bear-put-spread` 0
+  modified/0 removed，`long-call`／`long-put` 純新增（4／5 筆候選）——
+  記錄為基準第三個合法重產事件（`scripts/gen_numeric_baseline.py`
+  docstring 已更新）。新增獨立契約樣本 `analysis_sample_long_call.json`
+  ＋drift 測試（不硬湊進主樣本，理由同既有 bear-put 獨立樣本）。全套
+  測試（記憶體＋真實 Postgres 雙後端）綠燈；`/code-review` 兩軸完成，
+  findings 已修正（`service.py` 補一句 `n_qualified` 全域 vs 本期組內
+  大小的不對稱說明；`store.py` 更新 `find_candidate()` 過期 docstring；
+  補齊三條鏡射 `test_expiry_top10.py` 的既有測試）。前端零改動——
+  `_MVP_STRATEGIES` 仍只啟用 vertical-spread family，single-leg 尚未
+  被任何 Scenario/API 路徑觸發。**#222 已 close**。
+
+**下一步**：T12（#228，無 blocker，candidate 共用骨架 legs[] 陣列）
+可立即開工；T07（#224）／T08（#225）已被 T06 解鎖。
 
 ### 施工依據
 
