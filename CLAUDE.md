@@ -5943,9 +5943,71 @@ CLAUDE.md 隨手更新。
   107 條（iPhone 67＋Desktop 40）全綠，桌面與手機兩個 viewport 皆
   驗過。
 
-**下一步**：T17（#234，flat 情境：target==spot 時僅 Butterfly 可選，
-被 T16 解鎖，無其他 blocker）為下一張。T05–T16 均已完成，Initial V2
-剩餘票（T17→T18）依建議施工順序推進，blocker 狀態依此更新。
+- **T17**（#234，commits `c775735`＋跟進 `1d17f5d`）✅ 持平劇本
+  （`target_price == spot`）：方向閘門這半**零程式碼改動**——T08
+  （#225）既有的 `derive_direction()`／`SUBTYPE_DIRECTIONS`／
+  `subtype_eligible()`／`family_eligibility()` 早已是完全資料驅動的
+  三態設計（`bullish`/`bearish`/`flat`），`call-fly`／`put-fly` 在
+  T15（#230）就標好 `{bullish,flat}`／`{bearish,flat}`，
+  `service.py::_analyze()` 呼叫這些函式時本就正確處理 flat 情境。
+  真正要修的是 spec #217 §F／§P.5 點名的既有地雷——**價格網格塌陷**：
+  `option_chaser/scenarios.py` 的 `_grid_price()`／`scenario_vector()`
+  的 S2–S5／`_delay_value()`／`completion_scan()` 全部依賴「spot 走到
+  target」這條線性插值路徑取樣，`target == spot` 時路徑長度為零，
+  全部取樣點塌成同一個價格（spot 本身），韌性指標因此退化失真。
+
+  修法：新增 `_effective_target(spot, target)`——`target != spot` 時
+  原樣回傳 `target`（既有看漲／看跌劇本這條路徑逐位元不變，T01
+  基準）；只有 `target == spot` 才換成合成終點 `spot * 1.15`（沿用
+  `matrix.price_axis()` 無最高／最低價位時既有預設路徑已核准的同一個
+  15% 係數，該處算的是 `target * 1.15`，兩者只在 `target==spot` 這個
+  分支下數值相同，基底名字不同）。`_grid_price()`／`scenario_vector()`
+  ／`_delay_value()` 內部改呼叫這個函式；S1（不漲＝spot 本身）與
+  S6/S7（劇本成立時的真實 target_price 評價點，flat 時就是 spot）
+  完全不受影響——這三點的既有語意本來就不是退化。`completion_scan()`
+  既有的 Butterfly 短路（`isinstance(val, ButterflyValuation): return
+  None, None`）未受影響，那是非單調 payoff 的既有正確行為（由
+  `profit_region` 取代），不是本票要修的東西；CLI `--force` 讓非
+  Butterfly 候選觸發這條路徑的邊界情況，因為修法在 `_grid_price()`
+  內部，透明涵蓋、不需另外處理。
+
+  測試：`tests/test_scenarios.py` 新增 7 條單元測試（`_effective_
+  target` 只在退化情境生效、`_grid_price` 不再塌縮、flat Butterfly
+  的 `scenario_vector`／`completion_curve` 產生非退化多值、
+  `completion_scan` 對 flat Butterfly 仍正確短路、對 CLI-forced flat
+  單腿仍滿足 suffix property）；`tests/test_family_selection.py` 新增
+  一條端到端整合測試（真的建立 `target_price==spot` 的劇本跑分析——
+  4 個非 Butterfly subtype 全部 `skipped_direction`，Butterfly 至少
+  一個 `ok` 且候選非退化，二次 refresh 同樣成功）；`e2e/smoke.spec.ts`
+  ／`e2e/desktop.spec.ts` 各新增一條端到端案例，真的走 CreateForm UI
+  建立 flat 劇本，全程不被拒絕、看得到 Butterfly 候選、Call/Put 與
+  Vertical Spread 分頁顯示「持平」原因且不可選。
+
+  施工中順手修正一個真實、與 T17 無關的既有 e2e flake：T16 的「展開
+  Butterfly 候選零額外請求」測試在全套跑時偶發失敗（React StrictMode
+  在 Vite dev server 下把 `IvHistory.tsx` 的 settings-fetch effect
+  重複觸發一次，Playwright `webServer` 跑的是 `npm run dev` 非
+  production build），兩個 spec 檔皆補上
+  `page.waitForLoadState("networkidle")` 讓 StrictMode 重複觸發的
+  請求先落定再歸零計數器，重跑 5 次穩定通過。
+
+  `/code-review` 兩軸：Standards 軸零 hard violation，三項 judgement
+  call（15% 常數說明精確度已修正、`_effective_target` 三處獨立呼叫、
+  函式命名自我說明性）；Spec 軸抓到一個真問題——編輯
+  `tests/test_scenarios.py` 尾端追加新測試時，意外刪除一條既有、與
+  T17 無關但仍有效的斷言（`test_completion_scan_suffix_semantics_
+  synthetic` 的 `be == pytest.approx(...)`），直接牴觸本票自己「T01
+  基準逐位元不變」的宣稱——已用 `git log -p` 核對基準版本確認該行
+  原本存在且數學上依然成立，已補回。兩項修正皆在跟進 commit
+  `1d17f5d` 完成。
+
+  全套（跟進 commit 之後重新驗證）：後端 pytest（記憶體＋真實
+  Postgres 雙後端）全綠；前端 typecheck 乾淨、747 條 Vitest 全綠、
+  build 成功；Playwright e2e 109 條（iPhone 58＋Desktop 34）全綠。
+
+**下一步**：T18（#235，最終回歸與驗收——Initial V2 最後一張票）為
+下一張，blocked by T05–T17（全數已完成）。12 條硬紅線逐條對照＋全套
+回歸＋真機驗收清單。T18 完成後才回報 Owner，全程依授權不中途停下。
 
 ### 施工依據
 
