@@ -869,15 +869,20 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
             target_month=sc.target_month, strategies=subtypes,
             best_price=sc.best_price, worst_price=sc.worst_price, snap=snap)
         analyzed_at = view["analyzed_at"]
-        # 兩者同一次走訪（`store.representative_candidate`），`best_return`
-        # 由它導出——結構上不可能對不上（MVP-v2／#77、#78）。
-        representative_candidate = store.representative_candidate(view)
+        # T07（#224，Initial V2）：per-family map 只走訪一次
+        # （`representative_candidates_by_family`），scalar 冠軍改由它
+        # 取 `max()` 導出而非各自獨立呼叫 `store.representative_
+        # candidate()` 再走一次——與既有 `best_return` 由
+        # `representative_candidate()` 導出、`main.py` 為避免重複走訪
+        # 而內聯同一條算式，是同一種既有作法（見 `store.best_return()`
+        # docstring）；`store.representative_candidate()` 本身作為獨立
+        # 公開純函式維持不變，多處測試仍拿它當交叉驗證的真相來源。
+        per_family = store.representative_candidates_by_family(view)
+        representative_candidate = (
+            max(per_family.values(), key=lambda v: v["baseline_return"])
+            if per_family else None)
         best_return = (representative_candidate["baseline_return"]
                        if representative_candidate is not None else None)
-        # T07（#224，Initial V2）：per-family 版本額外落盤——Owner 裁示
-        # 的「B 儲存＋A 顯示」，顯示面（`_row_json`／`_summary_of`）本輪
-        # 不消費它，只有 `ResultRecord.per_family` 帶著。
-        per_family = store.representative_candidates_by_family(view)
         _db().save_result(ResultRecord(
             scenario_id=sc.id, analyzed_at=analyzed_at, view=view,
             best_return=best_return,
