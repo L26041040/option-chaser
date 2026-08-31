@@ -22,7 +22,9 @@ type SampleCandidate = {
   candidate_key: string;
   baseline_return: number;
   natural_cost: number;
-  legs: { strike: number; ask: number; bid: number }[];
+  // T11（#229，Initial V2）：`side` 補進型別——`multiFamilyView()` 要靠
+  // 它找出買腿，補上這個欄位就不必再對 `champ` 打 `as any` 繞過型別。
+  legs: { strike: number; ask: number; bid: number; side: string }[];
 };
 
 const view = sample as unknown as {
@@ -2355,7 +2357,7 @@ test("手機版：編輯可以增減 family，儲存後送出目前完整的勾�
 function multiFamilyView() {
   const champKey = view.results[0].expiry_top10![0].candidate_keys[0];
   const champ = candOf(view, champKey);
-  const buyLeg = (champ as any).legs.find((l: any) => l.side === "buy");
+  const buyLeg = champ.legs.find((l) => l.side === "buy");
   const lc = {
     ...champ, candidate_key: "lc-key", strategy: "long-call",
     baseline_return: 0.2, comparator: null, legs: [buyLeg],

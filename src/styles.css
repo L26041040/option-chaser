@@ -1438,7 +1438,12 @@ body {
   color: #fff;
 }
 
-.chip-date {
+/* T11（#229，Initial V2，`/code-review` Standards 軸回饋）：`.chip-date`
+   原本專屬到期日文字，`FamilyTabs.tsx` 的分頁按鈕（顯示 "Vertical
+   Spread" 這類 family 名稱，不是日期）改用這個同樣式但名字不誤導的
+   別名——沿用同一組視覺（`tabular-nums` 對純文字是無害的 no-op）。 */
+.chip-date,
+.chip-label {
   font-size: 13px;
   font-weight: 600;
   font-variant-numeric: tabular-nums;

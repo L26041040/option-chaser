@@ -85,7 +85,7 @@ export default function FamilyTabs({
               className={family === current ? "chip selected" : "chip"}
               onClick={() => setPicked(family)}
             >
-              <span className="chip-date">{FAMILY_LABELS[family] ?? family}</span>
+              <span className="chip-label">{FAMILY_LABELS[family] ?? family}</span>
             </button>
           ))}
         </div>
