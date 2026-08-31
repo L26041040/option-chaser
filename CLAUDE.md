@@ -5486,8 +5486,28 @@ CLAUDE.md 隨手更新。
   `_MVP_STRATEGIES` 仍只啟用 vertical-spread family，single-leg 尚未
   被任何 Scenario/API 路徑觸發。**#222 已 close**。
 
-**下一步**：T12（#228，無 blocker，candidate 共用骨架 legs[] 陣列）
-可立即開工；T07（#224）／T08（#225）已被 T06 解鎖。
+- **T12**（#228，commit `e7b82e8`）✅ Candidate 共用骨架——`legs[]`
+  陣列，1-4 腿容量上限：`_leg()` 新增顯式 `side`／`quantity`，取代
+  「陣列位置＝方向」的隱性慣例；新增 `_validate_leg_count()`（
+  `1<=len(legs)<=4`，獨立可測試純函式，接在 `_candidate()` 建構
+  路徑上）；新增 `breakeven_points`（純加法，值 `[既有 breakeven]`，
+  容量預留給 T15 Butterfly，本票不實作產生兩點的邏輯）；
+  `representative_candidate()` 投影補上 `side`（舊 View 位置回推
+  備援）；`schema_version` 3→4。「每個候選帶著它實際的 subtype
+  代碼」確認既有 `strategy` 欄位本來就是，不新增冗餘欄位。T01 基準
+  第四個合法重產事件：逐鍵程式化 diff 驗證四個既有策略除新增
+  `side`／`quantity`／`breakeven_points` 外零財務數值變化。前端
+  新增 `CandidateLegs`（1-4 腿容量的 tuple union，型別本身即容量
+  邊界）；修掉 `expiry.ts`／`scenarios.ts`／`detail.ts`／
+  `AnalysisReport.tsx` 四處把腿位解構成固定兩個變數的寫法（三腿以上
+  候選過去會被靜默丟腿），既有兩腿／單腿候選輸出逐字不變；新增合成
+  3 腿候選的元件測試證明不丟腿。`/code-review` 兩軸完成，Standards
+  軸抓到的 leg 查找重複已抽成 `api.ts::findLeg()` 共用。全套測試
+  （後端記憶體＋真實 Postgres 雙後端、前端 typecheck／675 Vitest／
+  build、Playwright e2e 92 條）綠燈。**#228 已 close**。
+
+**下一步**：T07（#224）／T08（#225，皆被 T06 解鎖、無其他 blocker）
+可任意順序開工；T05（#226，無 blocker）尚未施工，可隨時穿插。
 
 ### 施工依據
 
