@@ -15,7 +15,8 @@ from .filters import (apply_filters, generate_spread_pairs, is_spread_wide,
 from .matrix import GUI_MAX_GAP_DAYS, date_axis, matrix_grid, price_axis
 from .models import (AnalysisParams, ChainSnapshot, FetchError, FilterReport,
                      PairReport, ParamError, QualityFlagCount, SPREAD_STRATEGIES,
-                     STRATEGIES, is_bullish)
+                     STRATEGIES, DIRECTION_LABELS, derive_direction, is_bullish,
+                     subtype_eligible)
 from .ranking import (BAND_ORDER, _spread_tie_key, _tie_break_key,
                       baseline_return, build_reasons, build_spread_reasons,
                       classify, rank, rank_spreads, return_at_price,
@@ -278,12 +279,20 @@ def _emit(progress: Progress | None, msg: str) -> None:
         progress(msg)
 
 
-def _skip_message(strategy: str) -> str:
-    if is_bullish(strategy):
-        return ("目標價低於目前股價，因此未執行 Long Call 與 Bull Call Spread。"
-                "可改選 Long Put 或 Bear Put Spread。")
-    return ("目標價高於目前股價，因此未執行 Long Put 與 Bear Put Spread。"
-            "可改選 Long Call 或 Bull Call Spread。")
+def _skip_message(direction: str) -> str:
+    """T08（#225，Initial V2 spec #217）：訊息內容改用『這個方向適用
+    哪些既有 subtype』的資料反查（`SUBTYPE_DIRECTIONS`），不再硬編碼
+    成兩段互斥文字——新增 subtype 時這裡不需要修改，訊息會自動涵蓋
+    新的 eligible／skipped 名單。"""
+    label = DIRECTION_LABELS.get(direction, direction)
+    skipped = [STRATEGY_LABELS[s] for s in STRATEGIES
+              if not subtype_eligible(s, direction)]
+    available = [STRATEGY_LABELS[s] for s in STRATEGIES
+                if subtype_eligible(s, direction)]
+    msg = f"目前劇本方向為「{label}」，因此未執行 {'、'.join(skipped)}。"
+    if available:
+        msg += f"可改選 {'、'.join(available)}。"
+    return msg
 
 
 def _matrix_view(value_fn, cost: float, spot: float, p: AnalysisParams,
@@ -968,17 +977,20 @@ def _analyze(request: AnalysisRequest, snap: ChainSnapshot,
     request = dataclasses.replace(request, base_params=base)
     results = []
     _emit(progress, "正在過濾合約……")
+    # T08（#225，Initial V2 spec #217）：Direction 是衍生值，分析當下
+    # 算一次、不落盤、不進事件——由 `target_price` 相對 `spot` 推導，
+    # 三態、無容忍帶。取代舊版逐 subtype 各自呼叫 `is_bullish()` 再湊
+    # 一次 bull/bear 互斥判斷的寫法。
+    direction = derive_direction(base.target_price, snap.spot)
     for s in request.strategies:
         p = dataclasses.replace(base, strategy=s)
-        bull = is_bullish(s)
-        mismatch = ((bull and p.target_price <= snap.spot)
-                    or ((not bull) and p.target_price >= snap.spot))
+        mismatch = not subtype_eligible(s, direction)
         if mismatch and not base.force:
             results.append(StrategyResult(
                 strategy=s, status="skipped_direction", candidates=(),
                 ranked_bands=None, ranked_spreads=None, n_qualified=0,
                 filter_report=None, pair_report=None, report_text=None,
-                message=_skip_message(s)))
+                message=_skip_message(direction)))
             continue
         if s in SPREAD_STRATEGIES:
             _emit(progress, f"正在窮舉 {STRATEGY_LABELS[s]}……")

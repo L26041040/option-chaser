@@ -2935,6 +2935,23 @@
       ]
     }
   ],
+  "family_eligibility": {
+    "butterfly": {
+      "eligible": false,
+      "family": "butterfly",
+      "reason": "這個策略家族目前還沒有任何已啟用的具體結構。"
+    },
+    "single-leg": {
+      "eligible": true,
+      "family": "single-leg",
+      "reason": null
+    },
+    "vertical-spread": {
+      "eligible": true,
+      "family": "vertical-spread",
+      "reason": null
+    }
+  },
   "hidden_expiries": [],
   "meta": {
     "fetched_at": "2026-07-15T21:30:00-04:00",
@@ -3182,7 +3199,7 @@
     }
   ],
   "scenario_id": "adhoc",
-  "schema_version": 5,
+  "schema_version": 6,
   "snapshot_ref": {
     "fetched_at": "2026-07-15T21:30:00-04:00",
     "path": "(in-memory)",

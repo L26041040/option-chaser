@@ -40,7 +40,8 @@ def test_top_level_fields_and_versions():
     # breakeven_points（純加法）。
     # T05（#226，Initial V2）：4→5 pair_report 新增 b_layer_removed
     # （純加法）。
-    assert view["schema_version"] == 5
+    # T08（#225，Initial V2）：5→6 新增頂層 family_eligibility（純加法）。
+    assert view["schema_version"] == 6
     assert view["engine_version"] == option_chaser.__version__ == "0.5.0"
     assert view["scenario_id"] == "XYZ-120-202608"
     assert view["analyzed_at"] == view["snapshot_ref"]["fetched_at"]

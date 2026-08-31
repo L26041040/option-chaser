@@ -203,7 +203,7 @@ STRATEGY_FAMILY: dict[str, str] = {
 }
 
 # family → 該 family 目前擁有的全部 subtype（不分方向）。方向是否
-# 「啟用」由既有的 direction 閘門（`is_bullish`／`skipped_direction`）
+# 「啟用」由 `subtype_eligible()`／既有的 `skipped_direction` 機制
 # 在分析當下判斷，這裡只負責「這個 family 底下有哪些 subtype」。
 FAMILY_SUBTYPES: dict[str, tuple[str, ...]] = {
     "single-leg": SINGLE_LEG_STRATEGIES,
@@ -248,8 +248,89 @@ def leg_option_type(strategy: str) -> str:
     return "call" if strategy in ("long-call", "bull-call-spread") else "put"
 
 
+# T08（#225，Initial V2 spec #217）：Direction（方向，衍生三態，
+# CONTEXT.md「策略與方向」一節）——看漲／看跌／持平，由 `target_price`
+# 相對 spot 於分析當下算出，永不落盤、不進事件（`Scenario` 本身沒有
+# 這個欄位，這裡是純函式的回傳值，不是 dataclass 欄位）。
+DIRECTIONS = ("bullish", "bearish", "flat")
+
+DIRECTION_LABELS: dict[str, str] = {
+    "bullish": "看漲", "bearish": "看跌", "flat": "持平",
+}
+
+# 每個 subtype 適用哪些方向——取代硬編碼的策略名字比對（舊版
+# `is_bullish(strategy) -> strategy in ("long-call", "bull-call-spread")`）。
+# 新增 subtype（T15／#230 的 call-fly／put-fly，預期收 `{"flat"}`）只需
+# 在這裡加一筆資料，`subtype_eligible()`／`family_eligibility()` 兩個
+# 判斷函式完全不需要修改。
+SUBTYPE_DIRECTIONS: dict[str, frozenset[str]] = {
+    "long-call": frozenset({"bullish"}),
+    "bull-call-spread": frozenset({"bullish"}),
+    "long-put": frozenset({"bearish"}),
+    "bear-put-spread": frozenset({"bearish"}),
+}
+
+
+def derive_direction(target_price: float, spot: float) -> str:
+    """方向由目標價位相對現價於**分析當下**推導，三態、無容忍帶
+    （AC 明文：不發明容忍帶，極接近但不等於現價的方向性劇本照常成立）
+    ——只有完全相等才算 `"flat"`。"""
+    if target_price > spot:
+        return "bullish"
+    if target_price < spot:
+        return "bearish"
+    return "flat"
+
+
+def subtype_eligible(subtype: str, direction: str) -> bool:
+    """這個 subtype 在這個方向下適不適用——資料驅動，取代舊版
+    `is_bullish` 的硬編碼名字比對。未知 subtype（理論上不會發生，
+    `STRATEGY_FAMILY`／`SUBTYPE_DIRECTIONS` 兩張表本應同步）保守回
+    `False`，不是預設放行。"""
+    return direction in SUBTYPE_DIRECTIONS.get(subtype, frozenset())
+
+
 def is_bullish(strategy: str) -> bool:
-    return strategy in ("long-call", "bull-call-spread")
+    """T08（#225）：改為資料驅動（查 `SUBTYPE_DIRECTIONS`），不再是
+    硬編碼的名字比對——對既有四個 subtype 逐位元行為不變，這個函式
+    服務的是 Heatmap／CLI 報告的價格軸走向這類與 eligibility gate
+    無關的既有用途，不在本票改動範圍內。"""
+    return "bullish" in SUBTYPE_DIRECTIONS.get(strategy, frozenset())
+
+
+@dataclass(frozen=True)
+class FamilyEligibility:
+    """T08（#225，Initial V2 spec #217）：Family 的可選／不可選 verdict
+    ——旗下任一啟用 subtype 在目前方向下適用即為可選（OR 投影）。
+    `reason` 只在不可選時有值，供前端直接顯示（frontend 只渲染，永遠
+    不自行計算 eligibility，CONTEXT.md「Eligibility」一節）。"""
+    family: str
+    eligible: bool
+    reason: str | None = None
+
+
+def family_eligibility(family: str, direction: str) -> FamilyEligibility:
+    """OR 投影：`family_eligible ⟺ 旗下任一啟用 subtype 在這個方向下
+    適用`。不可選有兩種成因，訊息分開表達：
+    - 這個 family 底下目前一個 subtype 都沒有（`butterfly` 在 T15 之
+      前的現況）——與方向無關，方向再怎麼換都一樣不可選；
+    - 底下已有的 subtype 都存在，只是沒有一個適用目前這個方向。
+
+    純資料驅動：不論哪一種成因，`family_eligibility()` 本身都不需要
+    知道具體是哪個 subtype、哪個 family——`FAMILY_SUBTYPES`／
+    `SUBTYPE_DIRECTIONS` 兩張表換了內容，這個函式一行都不用改。"""
+    subtypes = FAMILY_SUBTYPES.get(family, ())
+    if not subtypes:
+        return FamilyEligibility(
+            family=family, eligible=False,
+            reason="這個策略家族目前還沒有任何已啟用的具體結構。")
+    if any(subtype_eligible(s, direction) for s in subtypes):
+        return FamilyEligibility(family=family, eligible=True, reason=None)
+    label = DIRECTION_LABELS.get(direction, direction)
+    return FamilyEligibility(
+        family=family, eligible=False,
+        reason=f"目前劇本方向為「{label}」，這個策略家族底下已啟用的"
+              "策略都不適用這個方向。")
 
 
 @dataclass(frozen=True)

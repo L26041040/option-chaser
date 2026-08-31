@@ -375,6 +375,26 @@ export interface AnalysisView {
    *  可選——舊存的 View（schema_version < 3）沒有這個欄位，`resolveCandidate()`
    *  對此誠實回傳 `null`，不假造內容。 */
   candidate_pool?: CandidateMap;
+  /**
+   * T08（#225，Initial V2）：每個 Strategy Family 的可選／不可選
+   * verdict（鍵是 family 代碼），涵蓋全部三個 family，不只這個劇本
+   * 目前選中的那些。方向是分析當下由 target_price 相對 spot 推導的
+   * 衍生值，不落盤。前端**只渲染**這個 verdict，永不自行計算
+   * eligibility（CONTEXT.md「Eligibility」一節）。可選——舊存的 View
+   * （schema_version < 6）沒有這個欄位。
+   */
+  family_eligibility?: Record<string, FamilyEligibility>;
+}
+
+/**
+ * T08（#225，Initial V2）：Family 的可選／不可選 verdict——`reason`
+ * 只在 `eligible === false` 時有值，直接顯示給使用者看，不必前端
+ * 自己編字。
+ */
+export interface FamilyEligibility {
+  family: string;
+  eligible: boolean;
+  reason: string | null;
 }
 
 /**

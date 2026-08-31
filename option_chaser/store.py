@@ -10,7 +10,8 @@ from datetime import date
 from typing import Iterable
 
 from . import __version__
-from .models import AnalysisParams, ChainSnapshot, STRATEGY_FAMILY
+from .models import (AnalysisParams, ChainSnapshot, FAMILIES, STRATEGY_FAMILY,
+                     derive_direction, family_eligibility)
 from .ranking import baseline_return, spread_baseline_return
 from .report import disclaimer_text
 from .scenarios import natural_cost
@@ -409,6 +410,15 @@ def _candidate(cv: CandidateView, strategy: str, capital: float | None,
     }
 
 
+def _family_eligibility_map(target_price: float, spot: float) -> dict:
+    """T08（#225，Initial V2）：全部 `FAMILIES` 各自的可選／不可選
+    verdict，鍵是 family 代碼——`serialize_result()` 與（未來 T10 若
+    需要）任何其他呼叫端共用同一份計算，不各自重算方向一次。"""
+    direction = derive_direction(target_price, spot)
+    return {fam: dataclasses.asdict(family_eligibility(fam, direction))
+           for fam in FAMILIES}
+
+
 def serialize_result(result: AnalysisResult, scenario_id: str,
                      capital: float | None) -> dict:
     base = result.request.base_params
@@ -540,7 +550,9 @@ def serialize_result(result: AnalysisResult, scenario_id: str,
         # `b_layer_removed`／`b_layer_removed_examples`，`filter_stages`
         # 每一關新增 `removed_examples`（皆純加法，`/code-review` Spec
         # 軸回饋補上——診斷需要指認「是哪一組」，不是只有計數）。
-        "schema_version": 5,
+        # T08（#225，Initial V2）：5→6——新增頂層 `family_eligibility`
+        # （純加法）。
+        "schema_version": 6,
         "engine_version": __version__,
         "analyzed_at": m.fetched_at,
         "scenario_id": scenario_id,
@@ -576,6 +588,15 @@ def serialize_result(result: AnalysisResult, scenario_id: str,
         "comparison": [dataclasses.asdict(c) for c in result.comparison],
         "best_strategy": result.best_strategy,
         "today": today.isoformat(),
+        # T08（#225，Initial V2 spec #217）：每個 family 的可選／不可選
+        # verdict，涵蓋全部 `FAMILIES`（不只這次請求的 `request.
+        # strategies`）——建立／編輯表單（T10）需要看到全部三個 family
+        # 的 checkbox 狀態，不只是這個劇本目前選中的那些。方向由
+        # `target_price` 相對 `spot` 於**這次分析當下**推導，衍生值，
+        # 不落盤（`AnalysisResult` 本身沒有 `direction` 欄位）。前端
+        # 只渲染這個 verdict，永不自行計算 eligibility（CONTEXT.md
+        # 「Eligibility」一節）。
+        "family_eligibility": _family_eligibility_map(base.target_price, m.spot),
     }
 
 
