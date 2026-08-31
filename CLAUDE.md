@@ -5793,9 +5793,95 @@ CLAUDE.md 隨手更新。
   橫向捲動／Crossover 邊界疊色）逐一確認不受影響、候選展開零額外
   網路請求。
 
-**下一步**：T15（#230，被 T08／T05／T12 解鎖，無其他 blocker）已可
-開工，依建議施工順序（T11→T13→T14→T15→T16→T17→T18）為下一張。
-T05–T14 均已完成，Initial V2 剩餘票的 blocker 狀態依此更新。
+- **T15**（#230，commits `008ae99`＋跟進 `72e25c5`）✅ Butterfly
+  後端：枚舉、獲利區間、兩個損益兩平點——地圖 #209 收斂的三個 debit
+  family 中最後一個尚未接線的結構，端到端可用。
+
+  `option_chaser/valuation.py` 新增 `ButterflyValuation`／
+  `ButterflyProfitRegion`／`butterfly_expiry_payoff()`（到期 payoff
+  純算術）／`butterfly_breakeven_and_profit_region()`（封閉式代數
+  直接求兩個損益兩平點與獲利區間，**不透過任何通用求根／extrema
+  引擎**——沿用 #223 已收斂的裁示：「買一賣二買一」結構的分段線性
+  斜率恆為 ±1 是這個特定權重組合才有的不變量，不是任意 N 腿的
+  一般化性質，因此可以用封閉式代數求解，不需要 #223 兩次被否決的
+  那種 payoff-envelope／slope／tail 分析）／`butterfly_scenario_value()`
+  （複用 T02／#219 已核准的 `payoff_value()`／`WeightedLeg` 逐腿加總
+  原語，非新引擎）／`evaluate_butterfly()`（`evaluate_spread()` 的
+  三腿版本，worst 成交口徑、排名情境＝自身到期日等於目標價）。
+
+  `option_chaser/filters.py` 新增 `generate_butterfly_triples()`
+  （依到期日分組、`itertools.combinations(group, 3)`，A 層
+  `net_mid<=0` 檢查）；`validate_derived_values()` 新增選填
+  `max_loss_fn` 參數（#213 Addendum：defined-risk candidate 的
+  max_loss 必須 > 0，向下相容不影響既有四策略）。
+
+  `option_chaser/ranking.py`／`scenarios.py` 三分支擴充（`_value_fn`／
+  `natural_cost`／`valuation_key`／`_strategy_of`／`_expiry_of` 等既有
+  isinstance-dispatch 慣例延伸為三路）；`completion_scan()` 對
+  `ButterflyValuation` **短路直接回 `(None, None)`**——既有「從
+  k=1.0 反向掃描」演算法假設 payoff 沿掃描路徑單調，對 Butterfly
+  硬套會誤報「劇本全成仍不保本」，Owner Decision 已明訂用
+  `profit_region` 取代，兩者互斥出現（單調家族恆 `completion_
+  threshold`／`breakeven_at_target` 有值＋`profit_region` 為 None，
+  Butterfly 恆相反）。
+
+  `option_chaser/service.py` 新增 `_butterfly_result()`（`_spread_
+  result()` 的三腿鏡射：枚舉→估值→A/B 層驗證→排名→序列化，
+  `expiry_top10`／`expiry_best`／`expiry_ranked` 從第一天就落盤，
+  不是留給未來的空殼）與 `_butterfly_view()`／`_butterfly_leg_
+  greeks()`；`CandidateView` 新增 `profit_region` 欄位（純加法）；
+  `_comparison()` 新增 Butterfly 分支。
+
+  `option_chaser/store.py::_candidate()` 三分支擴充：`legs[]` 三腿
+  （`side`／`quantity`，T12／#228 打的底）、`breakeven_points` 兩點、
+  **`max_loss_per_contract` 獨立於 `capital_per_contract`**——AC
+  明文性質：broken-wing（兩翼不等寬）到期時某一翼可能為負值，讓
+  最大損失超過已付權利金本身，既有四策略「max_loss 恆等於成本」
+  這條不變量在 Butterfly 上不成立，契約層如實反映不假裝相等；新增
+  `profit_region` 頂層候選欄位（純加法，頂層 `schema_version` 未變，
+  只加候選層欄位）。
+
+  `option_chaser/report.py`／`cli.py`：`render_butterflies()`（列
+  三腿、獲利區間或誠實文案「無——到期時任何標的價都無法獲利」）；
+  `STRATEGY_LABELS` 補 call-fly／put-fly；新增 byte-locked golden
+  fixture `golden_call_fly.txt`。`src/detail.ts` 補兩個新 subtype
+  的前端顯示標籤（本票唯一前端改動）。
+
+  **`/code-review` 兩軸結果與修正**（跟進 commit `72e25c5`）：Spec
+  軸零缺漏零 scope creep；Standards 軸兩項發現皆已修正——(1)
+  `evaluate_butterfly()` 與 `butterfly_breakeven_and_profit_region()`
+  原本各自獨立算 K1/K2/K3 到期 payoff 節點（v1/v2/v3）共兩遍，抽出
+  `_butterfly_knots()`（算一次節點）與 `_butterfly_region_from_
+  knots()`（吃現成節點的核心判斷邏輯），後者維持公開簽章不變的
+  `butterfly_breakeven_and_profit_region()` 內部委派使用，
+  `evaluate_butterfly()` 改直接呼叫 `_butterfly_region_from_knots()`
+  複用同一組節點——`butterfly_expiry_payoff()` 呼叫次數從每次
+  `evaluate_butterfly()` 6 次降到 3 次；(2) `_comparison()` 的
+  Butterfly 分支在沒有損益兩平點時（到期時連峰值都賺不到）用
+  `bv.low_leg.strike` 當 `ComparisonRow.breakeven` 這個既有 scalar
+  欄位的佔位值，抽成具名變數並加註解澄清這不是真正的損益兩平點，
+  避免讀者誤讀。
+
+  新增 45 條專屬測試（`test_butterfly_valuation.py` 20、
+  `test_butterfly_triples.py` 4、`test_butterfly_service.py` 12、
+  `test_butterfly_store.py` 6、`test_butterfly_performance.py` 3），
+  新增獨立中密度契約樣本 `contracts/analysis_sample_call_fly.json`
+  （241KB——密集效能測試 fixture 若拿來產樣本會撐到 2.5MB，改用
+  `scripts/gen_butterfly_fixture.py` 額外產生的中密度版本）。效能
+  量測（密集 fixture，26 履約價×5 到期日）：枚舉 3.7ms/13000 組合、
+  完整估值 373.2ms/9998 組合、端到端 435.7ms。T01（#218）數值基準
+  第六個合法重產事件：只新增 `profit_region: null` 欄位本身（既有
+  四策略永遠是 `None`），其餘既有四策略估值全數欄位逐位元不變。
+
+  全套後端測試（記憶體＋真實 Postgres 雙後端）1660 條全數通過；
+  前端 typecheck 乾淨、732 條 Vitest／build／Playwright e2e 101 條
+  （iPhone＋Desktop）皆過（本票除 `src/detail.ts` 標籤新增外未觸碰
+  任何前端檔案）。
+
+**下一步**：T16（#232，Butterfly 前端：三腿展示、獲利區間視覺化，
+被 T11／T15 解鎖，無其他 blocker）為下一張。T05–T15 均已完成，
+Initial V2 剩餘票（T16→T17→T18）依建議施工順序推進，blocker 狀態
+依此更新。
 
 ### 施工依據
 
