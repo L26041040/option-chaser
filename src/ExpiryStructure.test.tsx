@@ -103,8 +103,10 @@ describe("候選窄列", () => {
 
     const row = screen.getAllByRole("listitem")[0];
     const top = firstCandidate(view, view.baseline_expiry!);
+    const buy = top.legs.find((leg) => leg.side === "buy")!;
+    const sell = top.legs.find((leg) => leg.side === "sell")!;
     expect(row).toHaveTextContent("#1");
-    expect(row).toHaveTextContent(`買 ${top.legs[0].strike} / 賣 ${top.legs[1].strike}`);
+    expect(row).toHaveTextContent(`買 ${buy.strike} / 賣 ${sell.strike}`);
     expect(row).toHaveTextContent(`${(top.baseline_return * 100).toFixed(1)}%`);
   });
 

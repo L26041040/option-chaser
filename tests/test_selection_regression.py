@@ -286,7 +286,8 @@ _NUMERIC_BASELINE_PATH = Path("tests/fixtures/valuation_numeric_baseline.json")
 #: 「fixture 本身被動過」與「估值邏輯被動過」在失敗訊息裡分得開。
 NUMERIC_BASELINE_FIELDS = (
     "baseline_pnl", "baseline_return",
-    "breakeven", "breakeven_at_target", "max_profit", "max_loss_per_contract",
+    "breakeven", "breakeven_points",
+    "breakeven_at_target", "max_profit", "max_loss_per_contract",
     "natural_cost", "mid_cost", "capital_per_contract", "pct_of_capital",
     "effective_leverage", "l2", "l3",
     "scenario_vector", "retention", "buffer_days",

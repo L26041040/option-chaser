@@ -182,13 +182,33 @@ function LegRow({ label, leg }: { label: string; leg: Leg }) {
   );
 }
 
-/** Execution：逐腿雙邊報價／Net Mid／Net Worst（保守進場成本）。 */
+/**
+ * Execution：逐腿雙邊報價／Net Mid／Net Worst（保守進場成本）。
+ *
+ * T12（#228，Initial V2）：改成逐腿渲染整個 `legs[]`，不再解構固定的
+ * 買／賣兩個變數——三腿以上的候選（Butterfly，T15／T16）不會有一隻腿
+ * 被靜默丟掉。既有兩腿／單腿候選只有一個買腿／一個賣腿，標籤因此
+ * 逐字等於改動前（"Buy Leg"／"Sell Leg"）；同一個 side 出現超過一次
+ * 時才加編號（例如未來 Butterfly 兩個買腿：「Buy Leg 1」「Buy Leg 2」）。
+ */
 function ExecutionSection({ candidate }: { candidate: Candidate }) {
-  const [buy, sell] = candidate.legs;
+  const buyCount = candidate.legs.filter((leg) => leg.side === "buy").length;
+  const sellCount = candidate.legs.filter((leg) => leg.side === "sell").length;
+  let buySeen = 0;
+  let sellSeen = 0;
   return (
     <>
-      {buy && <LegRow label="Buy Leg" leg={buy} />}
-      {sell && <LegRow label="Sell Leg" leg={sell} />}
+      {candidate.legs.map((leg, i) => {
+        let label: string;
+        if (leg.side === "buy") {
+          buySeen += 1;
+          label = buyCount > 1 ? `Buy Leg ${buySeen}` : "Buy Leg";
+        } else {
+          sellSeen += 1;
+          label = sellCount > 1 ? `Sell Leg ${sellSeen}` : "Sell Leg";
+        }
+        return <LegRow key={i} label={label} leg={leg} />;
+      })}
       <Row label="Net Mid">{money(candidate.mid_cost)}</Row>
       <Row label="Net Worst（保守進場成本）">{money(candidate.natural_cost)}</Row>
     </>

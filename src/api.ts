@@ -30,13 +30,52 @@ export interface Leg {
    *  中性 metadata（低權重、無警示樣式），與 #104 的顯示旗標無關。 */
   volume: number;
   open_interest: number;
+  /**
+   * T12（#228，Initial V2）：這隻腿的買賣方向——取代「陣列位置＝方向」
+   * 的隱性慣例（過去 `legs[0]` 恆是買腿、`legs[1]` 恆是賣腿，前端到處
+   * 靠 `const [buy, sell] = candidate.legs` 這樣猜）。三腿以上的候選
+   * （Butterfly，T15／#230）陣列位置不再天然對應方向，前端一律讀這個
+   * 欄位判斷，不再靠位置。
+   */
+  side: "buy" | "sell";
+  /** 這隻腿的口數。既有兩腿策略恆為 1；Butterfly 中腿為 2（#217 決策 H）。 */
+  quantity: number;
+}
+
+/**
+ * T12（#228，Initial V2）：candidate 的腿位陣列，canonical boundary
+ * `1 <= len(legs) <= 4`——型別本身就是這個容量邊界，不是註解裡的一句
+ * 提醒。今天實際只會出現 1 或 2 腿（Initial V2 啟用到 3 腿，見 #228）；
+ * 4 腿僅為 data-shape 容量，本輪不啟用任何四腿 strategy。
+ */
+export type CandidateLegs =
+  | readonly [Leg]
+  | readonly [Leg, Leg]
+  | readonly [Leg, Leg, Leg]
+  | readonly [Leg, Leg, Leg, Leg];
+
+/**
+ * T12（#228，Initial V2）：找出這組腿位陣列裡第一隻符合方向的腿——
+ * 取代散在 `expiry.ts`／`scenarios.ts`／`detail.ts`／`AnalysisReport.tsx`
+ * 四處各自重複一次的 `.find(leg => leg.side === ...)`（`/code-review`
+ * Standards 軸抓到，Rule of Three 已超過）。找不到回 `null`（單腳候選
+ * 找賣腿、或未來多買腿候選找「第一個買腿」以外的其他買腿都可能落空），
+ * 不是拋錯——沒有這個方向的腿是正常狀態，不是資料錯誤。泛型是因為
+ * `Candidate.legs`（`CandidateLegs`，完整 `Leg`）與
+ * `RepresentativeCandidate.legs`（`RepresentativeCandidateLeg[]`，
+ * 精簡子集）都需要同一個查找邏輯，兩者共通的只有 `side` 這個欄位。
+ */
+export function findLeg<T extends { side: "buy" | "sell" }>(
+  legs: readonly T[], side: "buy" | "sell",
+): T | null {
+  return legs.find((leg) => leg.side === side) ?? null;
 }
 
 /** 代表候選（MVP-v2／#77、#78）：劇本清單卡片要的候選完整身分——只到
  *  「顯示要用」這一層，不是完整的 `Candidate`／`Leg`（報價、IV、量能等
- *  欄位留在詳細頁）。`legs[0]` 是買腿，`legs[1]`（若有）是賣腿——沿用
- *  後端序列化層既有的 `[0]=long, [1]=short` 慣例。單腳策略只有一隻腿；
- *  結構上不假設腿數固定，未來策略種類增加不必改型別。
+ *  欄位留在詳細頁）。T12（#228，Initial V2）起每一腿帶顯式 `side`，
+ *  前端讀這個欄位判斷買賣方向，不再靠陣列位置猜（`[0]`/`[1]` 只是
+ *  今天兩腿策略剛好等於 buy/sell 的順序，Butterfly 之後不成立）。
  *
  *  `baseline_return` 與卡片列的 `best_return` 必為同一個數字（後端
  *  `store.best_return` 由這個結構導出，口徑恆等）——前端不重算、只顯示。
@@ -44,6 +83,7 @@ export interface Leg {
 export interface RepresentativeCandidateLeg {
   strike: number;
   option_type: string;
+  side: "buy" | "sell";
 }
 
 export interface RepresentativeCandidate {
@@ -106,6 +146,13 @@ export interface Candidate {
    *  前端才開始讀它。 */
   mid_cost: number;
   breakeven: number;
+  /**
+   * T12（#228，Initial V2）：損益兩平的**傳輸格式**——1～2 點的陣列，
+   * 容量預留給 Butterfly（T15／#230）未來用。既有四策略恆是單點、
+   * 值等於上面的 `breakeven`——這是新增的傳輸容量，不是 `breakeven`
+   * 的替代品，本票（T12）不消費它、不新增任何 UI。
+   */
+  breakeven_points: number[];
   /** 距這組候選自己的到期日還有幾天（V8／#56，spec R1 §4.2 B「剩餘
    *  天數」——早就序列化了，純文字報告沒印）。 */
   days_to_expiry: number;
@@ -161,7 +208,7 @@ export interface Candidate {
    * 布林值。
    */
   monotonicity_warning: boolean;
-  legs: Leg[];
+  legs: CandidateLegs;
   matrix: Matrix;
   /**
    * #115（spec #117 §4）：Crossover 對照——只有 Spread 候選有值；單腿

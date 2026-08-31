@@ -5,11 +5,12 @@
  * 與詳細頁主圖同一口徑），`days_to_anchor` 也是後端依「該月第三個星期五」
  * 與紐約日曆算好的。本檔只決定「怎麼排、怎麼寫」。
  */
-import type {
-  FailureStage,
-  RefreshFailure,
-  RepresentativeCandidate,
-  ScenarioSummary,
+import {
+  findLeg,
+  type FailureStage,
+  type RefreshFailure,
+  type RepresentativeCandidate,
+  type ScenarioSummary,
 } from "./api";
 
 /**
@@ -180,8 +181,10 @@ export function formatRepresentativeLegs(
   rep: RepresentativeCandidate | null,
 ): string {
   if (rep === null) return "—";
-  const [buy, sell] = rep.legs;
+  // T12（#228，Initial V2）：改用 `side` 找腿，不再靠陣列位置猜方向。
+  const buy = findLeg(rep.legs, "buy");
   if (!buy) return "—";
+  const sell = findLeg(rep.legs, "sell");
   return sell ? `買 ${buy.strike} / 賣 ${sell.strike}` : `買 ${buy.strike}`;
 }
 

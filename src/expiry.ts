@@ -7,7 +7,7 @@
  * 併攏，不做任何加減。
  */
 import type { AnalysisView, Candidate, StrategyResult } from "./api";
-import { resolveCandidate } from "./api";
+import { findLeg, resolveCandidate } from "./api";
 
 /** 低於這個組數就警示——沿用 Streamlit 版 FB3-02（#45）的門檻。 */
 export const THIN_POOL = 3;
@@ -79,7 +79,12 @@ export interface LegPrices {
 }
 
 export function legPrices(candidate: Candidate): LegPrices {
-  const [buy, sell] = candidate.legs;
+  // T12（#228，Initial V2）：改用 `side` 找腿，不再靠陣列位置——既有
+  // 兩腿策略 `[0]=buy`／`[1]=sell` 剛好對應位置，這裡的行為因此不變；
+  // 三腿以上候選（Butterfly）只取第一組買／賣腿，多腿的完整摘要是
+  // T16（#232）的顯示範圍，不是這裡要解決的事。
+  const buy = findLeg(candidate.legs, "buy");
+  const sell = findLeg(candidate.legs, "sell");
   return {
     buyAsk: buy ? buy.ask : null,
     sellBid: sell ? sell.bid : null,

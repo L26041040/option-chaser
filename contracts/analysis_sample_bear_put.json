@@ -12,6 +12,9 @@
       "baseline_return": 5.666666666666666,
       "breakeven": 81.4,
       "breakeven_at_target": 81.49000000000001,
+      "breakeven_points": [
+        81.4
+      ],
       "buffer_days": -42,
       "candidate_key": "bear-put-spread|82|78|2026-08-07",
       "capital_per_contract": 60.00000000000001,
@@ -263,6 +266,8 @@
           "iv": 0.4,
           "open_interest": 100,
           "option_type": "put",
+          "quantity": 1,
+          "side": "buy",
           "strike": 82.0,
           "volume": 30
         },
@@ -274,6 +279,8 @@
           "iv": 0.42,
           "open_interest": 80,
           "option_type": "put",
+          "quantity": 1,
+          "side": "sell",
           "strike": 78.0,
           "volume": 20
         }
@@ -529,6 +536,9 @@
       "baseline_return": 4.333333333333333,
       "breakeven": 81.25,
       "breakeven_at_target": 81.37,
+      "breakeven_points": [
+        81.25
+      ],
       "buffer_days": -28,
       "candidate_key": "bear-put-spread|82|78|2026-08-21",
       "capital_per_contract": 75.0,
@@ -780,6 +790,8 @@
           "iv": 0.38,
           "open_interest": 120,
           "option_type": "put",
+          "quantity": 1,
+          "side": "buy",
           "strike": 82.0,
           "volume": 30
         },
@@ -791,6 +803,8 @@
           "iv": 0.4,
           "open_interest": 90,
           "option_type": "put",
+          "quantity": 1,
+          "side": "sell",
           "strike": 78.0,
           "volume": 20
         }
@@ -1046,6 +1060,9 @@
       "baseline_return": 3.0,
       "breakeven": 81.0,
       "breakeven_at_target": 81.19,
+      "breakeven_points": [
+        81.0
+      ],
       "buffer_days": 0,
       "candidate_key": "bear-put-spread|82|78|2026-09-18",
       "capital_per_contract": 100.0,
@@ -1297,6 +1314,8 @@
           "iv": 0.36,
           "open_interest": 150,
           "option_type": "put",
+          "quantity": 1,
+          "side": "buy",
           "strike": 82.0,
           "volume": 30
         },
@@ -1308,6 +1327,8 @@
           "iv": 0.38,
           "open_interest": 100,
           "option_type": "put",
+          "quantity": 1,
+          "side": "sell",
           "strike": 78.0,
           "volume": 20
         }
@@ -1563,6 +1584,9 @@
       "baseline_return": 1.8571428571428583,
       "breakeven": 80.6,
       "breakeven_at_target": 92.83,
+      "breakeven_points": [
+        80.6
+      ],
       "buffer_days": 63,
       "candidate_key": "bear-put-spread|82|78|2026-11-20",
       "capital_per_contract": 139.99999999999994,
@@ -1814,6 +1838,8 @@
           "iv": 0.34,
           "open_interest": 180,
           "option_type": "put",
+          "quantity": 1,
+          "side": "buy",
           "strike": 82.0,
           "volume": 30
         },
@@ -1825,6 +1851,8 @@
           "iv": 0.35,
           "open_interest": 120,
           "option_type": "put",
+          "quantity": 1,
+          "side": "sell",
           "strike": 78.0,
           "volume": 20
         }
@@ -2347,7 +2375,7 @@
     }
   ],
   "scenario_id": "adhoc",
-  "schema_version": 3,
+  "schema_version": 4,
   "snapshot_ref": {
     "fetched_at": "2026-07-15T21:30:00-04:00",
     "path": "(in-memory)",

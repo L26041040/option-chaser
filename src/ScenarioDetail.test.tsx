@@ -105,7 +105,8 @@ describe("詳細頁摘要（QA 修正：劇本摘要／基準候選／進場成�
     render(<ScenarioDetail id="s1" />);
 
     const top = baselineTopCandidate(view)!;
-    const [buy, sell] = top.legs;
+    const buy = top.legs.find((leg) => leg.side === "buy")!;
+    const sell = top.legs.find((leg) => leg.side === "sell")!;
     await screen.findByText(/劇本主圖/);
     const summary = summarySection();
     expect(summary.getByText(`買 ${buy.strike} / 賣 ${sell.strike}`))
@@ -123,7 +124,8 @@ describe("詳細頁摘要（QA 修正：劇本摘要／基準候選／進場成�
     render(<ScenarioDetail id="s1" />);
 
     const top = baselineTopCandidate(view)!;
-    const [buy, sell] = top.legs;
+    const buy = top.legs.find((leg) => leg.side === "buy")!;
+    const sell = top.legs.find((leg) => leg.side === "sell")!;
     await screen.findByText(/劇本主圖/);
     const summary = summarySection();
     expect(summary.getByText("買腿 Ask")).toBeInTheDocument();

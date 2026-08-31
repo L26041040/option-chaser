@@ -136,6 +136,24 @@ describe("Execution", () => {
     expect(buyRow.querySelector(".notice")).toBeNull();
     expect(buyRow.querySelector(".row-note")).not.toBeNull();
   });
+
+  it("T12（#228）：三隻腿的候選完整渲染，一隻都不丟——合成資料（Butterfly 產生器要等 T15）",
+     async () => {
+    const leg1 = real.legs[0];
+    const leg2 = real.legs.find((l) => l.side === "sell")!;
+    const legThree = { ...leg1, strike: 130, side: "buy" as const };
+    const three = candidate({ legs: [leg1, leg2, legThree] });
+    render(<AnalysisReport view={view} result={result} candidate={three} />);
+    await expand();
+
+    // 兩個買腿都在，各自帶編號區分；賣腿維持單一不編號。
+    const buy1Row = screen.getByText("Buy Leg 1").closest(".row")!;
+    const buy2Row = screen.getByText("Buy Leg 2").closest(".row")!;
+    const sellRow = screen.getByText("Sell Leg").closest(".row")!;
+    expect(buy1Row).toHaveTextContent(`Strike ${leg1.strike}`);
+    expect(buy2Row).toHaveTextContent(`Strike ${legThree.strike}`);
+    expect(sellRow).toHaveTextContent(`Strike ${leg2.strike}`);
+  });
 });
 
 describe("Model & Assumptions", () => {

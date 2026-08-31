@@ -134,8 +134,8 @@ describe("代表候選格式（MVP-v2／#77、#78）", () => {
   it("價差寫成「買 X / 賣 Y」，買腿在前、賣腿在後", () => {
     expect(formatRepresentativeLegs({
       strategy: "bull-call-spread",
-      legs: [{ strike: 118, option_type: "call" },
-            { strike: 122, option_type: "call" }],
+      legs: [{ strike: 118, option_type: "call", side: "buy" },
+            { strike: 122, option_type: "call", side: "sell" }],
       expiry: "2026-09-18", baseline_return: 1.5,
     })).toBe("買 118 / 賣 122");
   });
@@ -143,7 +143,7 @@ describe("代表候選格式（MVP-v2／#77、#78）", () => {
   it("單腳只寫「買 X」，不憑空生出賣腿", () => {
     expect(formatRepresentativeLegs({
       strategy: "long-call",
-      legs: [{ strike: 118, option_type: "call" }],
+      legs: [{ strike: 118, option_type: "call", side: "buy" }],
       expiry: "2026-09-18", baseline_return: 0.3,
     })).toBe("買 118");
   });
@@ -155,8 +155,8 @@ describe("代表候選格式（MVP-v2／#77、#78）", () => {
   it("實際到期日原樣顯示，沒有代表候選時說「—」", () => {
     expect(formatRepresentativeExpiry({
       strategy: "bull-call-spread",
-      legs: [{ strike: 118, option_type: "call" },
-            { strike: 122, option_type: "call" }],
+      legs: [{ strike: 118, option_type: "call", side: "buy" },
+            { strike: 122, option_type: "call", side: "sell" }],
       expiry: "2026-09-18", baseline_return: 1.5,
     })).toBe("2026-09-18");
     expect(formatRepresentativeExpiry(null)).toBe("—");

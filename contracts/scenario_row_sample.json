@@ -15,10 +15,12 @@
     "legs": [
       {
         "option_type": "call",
+        "side": "buy",
         "strike": 118.0
       },
       {
         "option_type": "call",
+        "side": "sell",
         "strike": 122.0
       }
     ],

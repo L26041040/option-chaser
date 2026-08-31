@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import sample from "../contracts/analysis_sample.json";
-import { primaryResult, resolveCandidate, type AnalysisView, type StrategyResult } from "./api";
+import { primaryResult, resolveCandidate, type AnalysisView, type Candidate, type StrategyResult } from "./api";
 import { expiryOptions, legPrices, resolveExpiry } from "./expiry";
 
 const view = sample as unknown as AnalysisView;
@@ -41,14 +41,17 @@ describe("腿價與淨成本", () => {
   it("買腿取 Ask、賣腿取 Bid、淨成本取引擎的最差成交成本", () => {
     const candidate = resolveCandidate(view, result.expiry_top10![0].candidate_keys[0])!;
     const prices = legPrices(candidate);
-    expect(prices.buyAsk).toBe(candidate.legs[0].ask);
-    expect(prices.sellBid).toBe(candidate.legs[1].bid);
+    const buy = candidate.legs.find((leg) => leg.side === "buy")!;
+    const sell = candidate.legs.find((leg) => leg.side === "sell")!;
+    expect(prices.buyAsk).toBe(buy.ask);
+    expect(prices.sellBid).toBe(sell.bid);
     expect(prices.net).toBe(candidate.natural_cost);
   });
 
   it("單腳候選沒有賣腿——說 null，不是 0", () => {
     const candidate = resolveCandidate(view, result.expiry_top10![0].candidate_keys[0])!;
-    const single = { ...candidate, legs: [candidate.legs[0]] };
+    const buy = candidate.legs.find((leg) => leg.side === "buy")!;
+    const single: Candidate = { ...candidate, legs: [buy] };
     expect(legPrices(single).sellBid).toBeNull();
   });
 });

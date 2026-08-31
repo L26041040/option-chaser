@@ -18,6 +18,9 @@
      "baseline_pnl": 14.66,
      "baseline_return": 2.745318352059925,
      "breakeven": 94.66,
+     "breakeven_points": [
+      94.66
+     ],
      "breakeven_at_target": 94.8,
      "max_profit": 24.66,
      "max_loss_per_contract": 534.0000000000001,
@@ -509,7 +512,9 @@
        "ask": 5.4,
        "iv": 0.36,
        "volume": 60,
-       "open_interest": 250
+       "open_interest": 250,
+       "side": "buy",
+       "quantity": 1
       },
       {
        "contract_symbol": "XYZP70O",
@@ -520,7 +525,9 @@
        "ask": 0.16,
        "iv": 0.5,
        "volume": 2,
-       "open_interest": 60
+       "open_interest": 60,
+       "side": "sell",
+       "quantity": 1
       }
      ]
     },
@@ -528,6 +535,9 @@
      "baseline_pnl": 10.7,
      "baseline_return": 2.4883720930232553,
      "breakeven": 95.7,
+     "breakeven_points": [
+      95.7
+     ],
      "breakeven_at_target": 95.86,
      "max_profit": 10.7,
      "max_loss_per_contract": 430.00000000000006,
@@ -1019,7 +1029,9 @@
        "ask": 5.4,
        "iv": 0.36,
        "volume": 60,
-       "open_interest": 250
+       "open_interest": 250,
+       "side": "buy",
+       "quantity": 1
       },
       {
        "contract_symbol": "XYZP85O",
@@ -1030,7 +1042,9 @@
        "ask": 1.25,
        "iv": 0.35,
        "volume": 0,
-       "open_interest": 300
+       "open_interest": 300,
+       "side": "sell",
+       "quantity": 1
       }
      ]
     },
@@ -1038,6 +1052,9 @@
      "baseline_pnl": 8.1,
      "baseline_return": 4.263157894736841,
      "breakeven": 98.1,
+     "breakeven_points": [
+      98.1
+     ],
      "breakeven_at_target": 98.3,
      "max_profit": 8.1,
      "max_loss_per_contract": 190.00000000000003,
@@ -1529,7 +1546,9 @@
        "ask": 5.4,
        "iv": 0.36,
        "volume": 60,
-       "open_interest": 250
+       "open_interest": 250,
+       "side": "buy",
+       "quantity": 1
       },
       {
        "contract_symbol": "XYZP90O",
@@ -1540,7 +1559,9 @@
        "ask": 3.7,
        "iv": 0.35,
        "volume": 10,
-       "open_interest": 3
+       "open_interest": 3,
+       "side": "sell",
+       "quantity": 1
       }
      ]
     },
@@ -1548,6 +1569,9 @@
      "baseline_pnl": 5.6,
      "baseline_return": 2.333333333333333,
      "breakeven": 97.6,
+     "breakeven_points": [
+      97.6
+     ],
      "breakeven_at_target": 98.68,
      "max_profit": 5.6,
      "max_loss_per_contract": 240.00000000000003,
@@ -2039,7 +2063,9 @@
        "ask": 5.4,
        "iv": 0.36,
        "volume": 60,
-       "open_interest": 250
+       "open_interest": 250,
+       "side": "buy",
+       "quantity": 1
       },
       {
        "contract_symbol": "XYZP92O",
@@ -2050,7 +2076,9 @@
        "ask": 5.0,
        "iv": 0.35,
        "volume": 10,
-       "open_interest": 100
+       "open_interest": 100,
+       "side": "sell",
+       "quantity": 1
       }
      ]
     },
@@ -2058,6 +2086,9 @@
      "baseline_pnl": 3.81,
      "baseline_return": 3.2016806722689077,
      "breakeven": 83.81,
+     "breakeven_points": [
+      83.81
+     ],
      "breakeven_at_target": 83.92,
      "max_profit": 13.81,
      "max_loss_per_contract": 119.0,
@@ -2549,7 +2580,9 @@
        "ask": 1.25,
        "iv": 0.35,
        "volume": 0,
-       "open_interest": 300
+       "open_interest": 300,
+       "side": "buy",
+       "quantity": 1
       },
       {
        "contract_symbol": "XYZP70O",
@@ -2560,7 +2593,9 @@
        "ask": 0.16,
        "iv": 0.5,
        "volume": 2,
-       "open_interest": 60
+       "open_interest": 60,
+       "side": "sell",
+       "quantity": 1
       }
      ]
     },
@@ -2568,6 +2603,9 @@
      "baseline_pnl": 6.359999999999999,
      "baseline_return": 1.747252747252747,
      "breakeven": 86.36,
+     "breakeven_points": [
+      86.36
+     ],
      "breakeven_at_target": 86.5,
      "max_profit": 16.36,
      "max_loss_per_contract": 364.0,
@@ -3059,7 +3097,9 @@
        "ask": 3.7,
        "iv": 0.35,
        "volume": 10,
-       "open_interest": 3
+       "open_interest": 3,
+       "side": "buy",
+       "quantity": 1
       },
       {
        "contract_symbol": "XYZP70O",
@@ -3070,7 +3110,9 @@
        "ask": 0.16,
        "iv": 0.5,
        "volume": 2,
-       "open_interest": 60
+       "open_interest": 60,
+       "side": "sell",
+       "quantity": 1
       }
      ]
     },
@@ -3078,6 +3120,9 @@
      "baseline_pnl": 2.4,
      "baseline_return": 0.923076923076923,
      "breakeven": 87.4,
+     "breakeven_points": [
+      87.4
+     ],
      "breakeven_at_target": 87.56,
      "max_profit": 2.4,
      "max_loss_per_contract": 260.0,
@@ -3569,7 +3614,9 @@
        "ask": 3.7,
        "iv": 0.35,
        "volume": 10,
-       "open_interest": 3
+       "open_interest": 3,
+       "side": "buy",
+       "quantity": 1
       },
       {
        "contract_symbol": "XYZP85O",
@@ -3580,7 +3627,9 @@
        "ask": 1.25,
        "iv": 0.35,
        "volume": 0,
-       "open_interest": 300
+       "open_interest": 300,
+       "side": "sell",
+       "quantity": 1
       }
      ]
     },
@@ -3588,6 +3637,9 @@
      "baseline_pnl": 7.06,
      "baseline_return": 1.42914979757085,
      "breakeven": 87.06,
+     "breakeven_points": [
+      87.06
+     ],
      "breakeven_at_target": 88.1,
      "max_profit": 17.06,
      "max_loss_per_contract": 494.00000000000006,
@@ -4079,7 +4131,9 @@
        "ask": 5.0,
        "iv": 0.35,
        "volume": 10,
-       "open_interest": 100
+       "open_interest": 100,
+       "side": "buy",
+       "quantity": 1
       },
       {
        "contract_symbol": "XYZP70O",
@@ -4090,7 +4144,9 @@
        "ask": 0.16,
        "iv": 0.5,
        "volume": 2,
-       "open_interest": 60
+       "open_interest": 60,
+       "side": "sell",
+       "quantity": 1
       }
      ]
     },
@@ -4098,6 +4154,9 @@
      "baseline_pnl": 3.1,
      "baseline_return": 0.7948717948717949,
      "breakeven": 88.1,
+     "breakeven_points": [
+      88.1
+     ],
      "breakeven_at_target": 89.16,
      "max_profit": 3.1,
      "max_loss_per_contract": 390.0,
@@ -4589,7 +4648,9 @@
        "ask": 5.0,
        "iv": 0.35,
        "volume": 10,
-       "open_interest": 100
+       "open_interest": 100,
+       "side": "buy",
+       "quantity": 1
       },
       {
        "contract_symbol": "XYZP85O",
@@ -4600,7 +4661,9 @@
        "ask": 1.25,
        "iv": 0.35,
        "volume": 0,
-       "open_interest": 300
+       "open_interest": 300,
+       "side": "sell",
+       "quantity": 1
       }
      ]
     },
@@ -4608,6 +4671,9 @@
      "baseline_pnl": 0.5,
      "baseline_return": 0.3333333333333333,
      "breakeven": 90.5,
+     "breakeven_points": [
+      90.5
+     ],
      "breakeven_at_target": 91.6,
      "max_profit": 0.5,
      "max_loss_per_contract": 150.0,
@@ -5099,7 +5165,9 @@
        "ask": 5.0,
        "iv": 0.35,
        "volume": 10,
-       "open_interest": 100
+       "open_interest": 100,
+       "side": "buy",
+       "quantity": 1
       },
       {
        "contract_symbol": "XYZP90O",
@@ -5110,7 +5178,9 @@
        "ask": 3.7,
        "iv": 0.35,
        "volume": 10,
-       "open_interest": 3
+       "open_interest": 3,
+       "side": "sell",
+       "quantity": 1
       }
      ]
     }
@@ -5132,6 +5202,9 @@
      "baseline_pnl": 0.09999999999999964,
      "baseline_return": 0.07142857142857116,
      "breakeven": 101.9,
+     "breakeven_points": [
+      101.9
+     ],
      "breakeven_at_target": 100.7,
      "max_profit": 0.09999999999999964,
      "max_loss_per_contract": 140.00000000000003,
@@ -5623,7 +5696,9 @@
        "ask": 5.4,
        "iv": 0.35,
        "volume": 10,
-       "open_interest": 5
+       "open_interest": 5,
+       "side": "buy",
+       "quantity": 1
       },
       {
        "contract_symbol": "XYZC102O",
@@ -5634,7 +5709,9 @@
        "ask": 6.0,
        "iv": 0.35,
        "volume": 10,
-       "open_interest": 100
+       "open_interest": 100,
+       "side": "sell",
+       "quantity": 1
       }
      ]
     },
@@ -5642,6 +5719,9 @@
      "baseline_pnl": 7.1,
      "baseline_return": 2.9583333333333326,
      "breakeven": 102.9,
+     "breakeven_points": [
+      102.9
+     ],
      "breakeven_at_target": 102.58,
      "max_profit": 7.1,
      "max_loss_per_contract": 240.00000000000003,
@@ -6133,7 +6213,9 @@
        "ask": 5.4,
        "iv": 0.35,
        "volume": 10,
-       "open_interest": 5
+       "open_interest": 5,
+       "side": "buy",
+       "quantity": 1
       },
       {
        "contract_symbol": "XYZC110O",
@@ -6144,7 +6226,9 @@
        "ask": 3.25,
        "iv": 0.3,
        "volume": 0,
-       "open_interest": 830
+       "open_interest": 830,
+       "side": "sell",
+       "quantity": 1
       }
      ]
     },
@@ -6152,6 +6236,9 @@
      "baseline_pnl": 14.149999999999999,
      "baseline_return": 2.6448598130841114,
      "breakeven": 105.85,
+     "breakeven_points": [
+      105.85
+     ],
      "breakeven_at_target": 105.62,
      "max_profit": 24.15,
      "max_loss_per_contract": 535.0,
@@ -6643,7 +6730,9 @@
        "ask": 5.4,
        "iv": 0.35,
        "volume": 10,
-       "open_interest": 5
+       "open_interest": 5,
+       "side": "buy",
+       "quantity": 1
       },
       {
        "contract_symbol": "XYZC130O",
@@ -6654,7 +6743,9 @@
        "ask": 0.15,
        "iv": 0.45,
        "volume": 3,
-       "open_interest": 50
+       "open_interest": 50,
+       "side": "sell",
+       "quantity": 1
       }
      ]
     },
@@ -6662,6 +6753,9 @@
      "baseline_pnl": 5.0,
      "baseline_return": 1.6666666666666667,
      "breakeven": 105.0,
+     "breakeven_points": [
+      105.0
+     ],
      "breakeven_at_target": 103.88,
      "max_profit": 5.0,
      "max_loss_per_contract": 300.0,
@@ -7153,7 +7247,9 @@
        "ask": 6.0,
        "iv": 0.35,
        "volume": 10,
-       "open_interest": 100
+       "open_interest": 100,
+       "side": "buy",
+       "quantity": 1
       },
       {
        "contract_symbol": "XYZC110O",
@@ -7164,7 +7260,9 @@
        "ask": 3.25,
        "iv": 0.3,
        "volume": 0,
-       "open_interest": 830
+       "open_interest": 830,
+       "side": "sell",
+       "quantity": 1
       }
      ]
     },
@@ -7172,6 +7270,9 @@
      "baseline_pnl": 12.05,
      "baseline_return": 2.0252100840336134,
      "breakeven": 107.95,
+     "breakeven_points": [
+      107.95
+     ],
      "breakeven_at_target": 106.9,
      "max_profit": 22.05,
      "max_loss_per_contract": 595.0,
@@ -7663,7 +7764,9 @@
        "ask": 6.0,
        "iv": 0.35,
        "volume": 10,
-       "open_interest": 100
+       "open_interest": 100,
+       "side": "buy",
+       "quantity": 1
       },
       {
        "contract_symbol": "XYZC130O",
@@ -7674,7 +7777,9 @@
        "ask": 0.15,
        "iv": 0.45,
        "volume": 3,
-       "open_interest": 50
+       "open_interest": 50,
+       "side": "sell",
+       "quantity": 1
       }
      ]
     },
@@ -7682,6 +7787,9 @@
      "baseline_pnl": 2.5,
      "baseline_return": 1.0,
      "breakeven": 107.5,
+     "breakeven_points": [
+      107.5
+     ],
      "breakeven_at_target": 107.28,
      "max_profit": 2.5,
      "max_loss_per_contract": 250.0,
@@ -8173,7 +8281,9 @@
        "ask": 5.5,
        "iv": 0.36,
        "volume": 80,
-       "open_interest": 300
+       "open_interest": 300,
+       "side": "buy",
+       "quantity": 1
       },
       {
        "contract_symbol": "XYZC110O",
@@ -8184,7 +8294,9 @@
        "ask": 3.25,
        "iv": 0.3,
        "volume": 0,
-       "open_interest": 830
+       "open_interest": 830,
+       "side": "sell",
+       "quantity": 1
       }
      ]
     },
@@ -8192,6 +8304,9 @@
      "baseline_pnl": 9.55,
      "baseline_return": 1.7522935779816515,
      "breakeven": 110.45,
+     "breakeven_points": [
+      110.45
+     ],
      "breakeven_at_target": 110.32,
      "max_profit": 19.55,
      "max_loss_per_contract": 545.0,
@@ -8683,7 +8798,9 @@
        "ask": 5.5,
        "iv": 0.36,
        "volume": 80,
-       "open_interest": 300
+       "open_interest": 300,
+       "side": "buy",
+       "quantity": 1
       },
       {
        "contract_symbol": "XYZC130O",
@@ -8694,7 +8811,9 @@
        "ask": 0.15,
        "iv": 0.45,
        "volume": 3,
-       "open_interest": 50
+       "open_interest": 50,
+       "side": "sell",
+       "quantity": 1
       }
      ]
     },
@@ -8702,6 +8821,9 @@
      "baseline_pnl": 6.8,
      "baseline_return": 2.125,
      "breakeven": 113.2,
+     "breakeven_points": [
+      113.2
+     ],
      "breakeven_at_target": 113.04,
      "max_profit": 16.8,
      "max_loss_per_contract": 320.0,
@@ -9193,7 +9315,9 @@
        "ask": 3.25,
        "iv": 0.3,
        "volume": 0,
-       "open_interest": 830
+       "open_interest": 830,
+       "side": "buy",
+       "quantity": 1
       },
       {
        "contract_symbol": "XYZC130O",
@@ -9204,7 +9328,9 @@
        "ask": 0.15,
        "iv": 0.45,
        "volume": 3,
-       "open_interest": 50
+       "open_interest": 50,
+       "side": "sell",
+       "quantity": 1
       }
      ]
     },
@@ -9212,6 +9338,9 @@
      "baseline_pnl": -5.949999999999999,
      "baseline_return": -0.19224555735056542,
      "breakeven": 125.95,
+     "breakeven_points": [
+      125.95
+     ],
      "breakeven_at_target": null,
      "max_profit": 4.050000000000001,
      "max_loss_per_contract": 3095.0,
@@ -9703,7 +9832,9 @@
        "ask": 31.0,
        "iv": 0.9,
        "volume": 5,
-       "open_interest": 40
+       "open_interest": 40,
+       "side": "buy",
+       "quantity": 1
       },
       {
        "contract_symbol": "XYZC130O",
@@ -9714,7 +9845,9 @@
        "ask": 0.15,
        "iv": 0.45,
        "volume": 3,
-       "open_interest": 50
+       "open_interest": 50,
+       "side": "sell",
+       "quantity": 1
       }
      ]
     }
@@ -9736,6 +9869,9 @@
      "baseline_pnl": 14.1,
      "baseline_return": 2.6111111111111107,
      "breakeven": 105.9,
+     "breakeven_points": [
+      105.9
+     ],
      "breakeven_at_target": 105.7,
      "max_profit": null,
      "max_loss_per_contract": 540.0,
@@ -10032,7 +10168,9 @@
        "ask": 5.4,
        "iv": 0.35,
        "volume": 10,
-       "open_interest": 5
+       "open_interest": 5,
+       "side": "buy",
+       "quantity": 1
       }
      ]
     },
@@ -10040,6 +10178,9 @@
      "baseline_pnl": 14.7,
      "baseline_return": 2.7735849056603774,
      "breakeven": 105.3,
+     "breakeven_points": [
+      105.3
+     ],
      "breakeven_at_target": 105.16,
      "max_profit": null,
      "max_loss_per_contract": 530.0,
@@ -10336,7 +10477,9 @@
        "ask": 5.3,
        "iv": 0.35,
        "volume": 10,
-       "open_interest": 100
+       "open_interest": 100,
+       "side": "buy",
+       "quantity": 1
       }
      ]
     },
@@ -10344,6 +10487,9 @@
      "baseline_pnl": 12.0,
      "baseline_return": 2.0,
      "breakeven": 108.0,
+     "breakeven_points": [
+      108.0
+     ],
      "breakeven_at_target": 107.0,
      "max_profit": null,
      "max_loss_per_contract": 600.0,
@@ -10640,7 +10786,9 @@
        "ask": 6.0,
        "iv": 0.35,
        "volume": 10,
-       "open_interest": 100
+       "open_interest": 100,
+       "side": "buy",
+       "quantity": 1
       }
      ]
     },
@@ -10648,6 +10796,9 @@
      "baseline_pnl": 9.5,
      "baseline_return": 1.7272727272727273,
      "breakeven": 110.5,
+     "breakeven_points": [
+      110.5
+     ],
      "breakeven_at_target": 110.4,
      "max_profit": null,
      "max_loss_per_contract": 550.0,
@@ -10944,7 +11095,9 @@
        "ask": 5.5,
        "iv": 0.36,
        "volume": 80,
-       "open_interest": 300
+       "open_interest": 300,
+       "side": "buy",
+       "quantity": 1
       }
      ]
     },
@@ -10952,6 +11105,9 @@
      "baseline_pnl": 6.75,
      "baseline_return": 2.076923076923077,
      "breakeven": 113.25,
+     "breakeven_points": [
+      113.25
+     ],
      "breakeven_at_target": 113.14,
      "max_profit": null,
      "max_loss_per_contract": 325.0,
@@ -11248,7 +11404,9 @@
        "ask": 3.25,
        "iv": 0.3,
        "volume": 0,
-       "open_interest": 830
+       "open_interest": 830,
+       "side": "buy",
+       "quantity": 1
       }
      ]
     },
@@ -11256,6 +11414,9 @@
      "baseline_pnl": -0.15,
      "baseline_return": -1.0,
      "breakeven": 130.15,
+     "breakeven_points": [
+      130.15
+     ],
      "breakeven_at_target": null,
      "max_profit": null,
      "max_loss_per_contract": 15.0,
@@ -11552,7 +11713,9 @@
        "ask": 0.15,
        "iv": 0.45,
        "volume": 3,
-       "open_interest": 50
+       "open_interest": 50,
+       "side": "buy",
+       "quantity": 1
       }
      ]
     },
@@ -11560,6 +11723,9 @@
      "baseline_pnl": 16.95375749111009,
      "baseline_return": 1.2652057829186634,
      "breakeven": 103.4,
+     "breakeven_points": [
+      103.4
+     ],
      "breakeven_at_target": 102.36,
      "max_profit": null,
      "max_loss_per_contract": 1340.0,
@@ -11856,7 +12022,9 @@
        "ask": 13.4,
        "iv": 0.34,
        "volume": 120,
-       "open_interest": 500
+       "open_interest": 500,
+       "side": "buy",
+       "quantity": 1
       }
      ]
     },
@@ -11864,6 +12032,9 @@
      "baseline_pnl": -6.0,
      "baseline_return": -0.1935483870967742,
      "breakeven": 126.0,
+     "breakeven_points": [
+      126.0
+     ],
      "breakeven_at_target": null,
      "max_profit": null,
      "max_loss_per_contract": 3100.0,
@@ -12160,7 +12331,9 @@
        "ask": 31.0,
        "iv": 0.9,
        "volume": 5,
-       "open_interest": 40
+       "open_interest": 40,
+       "side": "buy",
+       "quantity": 1
       }
      ]
     }
@@ -12182,6 +12355,9 @@
      "baseline_pnl": 14.8,
      "baseline_return": 2.8461538461538463,
      "breakeven": 94.8,
+     "breakeven_points": [
+      94.8
+     ],
      "breakeven_at_target": 94.88,
      "max_profit": 94.8,
      "max_loss_per_contract": 520.0,
@@ -12478,7 +12654,9 @@
        "ask": 5.2,
        "iv": 0.35,
        "volume": 10,
-       "open_interest": 100
+       "open_interest": 100,
+       "side": "buy",
+       "quantity": 1
       }
      ]
     },
@@ -12486,6 +12664,9 @@
      "baseline_pnl": 14.6,
      "baseline_return": 2.7037037037037033,
      "breakeven": 94.6,
+     "breakeven_points": [
+      94.6
+     ],
      "breakeven_at_target": 94.68,
      "max_profit": 94.6,
      "max_loss_per_contract": 540.0,
@@ -12782,7 +12963,9 @@
        "ask": 5.4,
        "iv": 0.36,
        "volume": 60,
-       "open_interest": 250
+       "open_interest": 250,
+       "side": "buy",
+       "quantity": 1
       }
      ]
     },
@@ -12790,6 +12973,9 @@
      "baseline_pnl": 18.0,
      "baseline_return": 1.0588235294117647,
      "breakeven": 98.0,
+     "breakeven_points": [
+      98.0
+     ],
      "breakeven_at_target": 98.18,
      "max_profit": 98.0,
      "max_loss_per_contract": 1700.0,
@@ -13086,7 +13272,9 @@
        "ask": 17.0,
        "iv": 0.3,
        "volume": 50,
-       "open_interest": 200
+       "open_interest": 200,
+       "side": "buy",
+       "quantity": 1
       }
      ]
     },
@@ -13094,6 +13282,9 @@
      "baseline_pnl": -1.5,
      "baseline_return": -0.03614457831325301,
      "breakeven": 78.5,
+     "breakeven_points": [
+      78.5
+     ],
      "breakeven_at_target": null,
      "max_profit": 78.5,
      "max_loss_per_contract": 4150.0,
@@ -13390,7 +13581,9 @@
        "ask": 41.5,
        "iv": 0.4,
        "volume": 5,
-       "open_interest": 40
+       "open_interest": 40,
+       "side": "buy",
+       "quantity": 1
       }
      ]
     },
@@ -13398,6 +13591,9 @@
      "baseline_pnl": -0.16,
      "baseline_return": -1.0,
      "breakeven": 69.84,
+     "breakeven_points": [
+      69.84
+     ],
      "breakeven_at_target": null,
      "max_profit": 69.84,
      "max_loss_per_contract": 16.0,
@@ -13694,7 +13890,9 @@
        "ask": 0.16,
        "iv": 0.5,
        "volume": 2,
-       "open_interest": 60
+       "open_interest": 60,
+       "side": "buy",
+       "quantity": 1
       }
      ]
     },
@@ -13702,6 +13900,9 @@
      "baseline_pnl": 3.75,
      "baseline_return": 3.0,
      "breakeven": 83.75,
+     "breakeven_points": [
+      83.75
+     ],
      "breakeven_at_target": 83.82,
      "max_profit": 83.75,
      "max_loss_per_contract": 125.0,
@@ -13998,7 +14199,9 @@
        "ask": 1.25,
        "iv": 0.35,
        "volume": 0,
-       "open_interest": 300
+       "open_interest": 300,
+       "side": "buy",
+       "quantity": 1
       }
      ]
     },
@@ -14006,6 +14209,9 @@
      "baseline_pnl": 6.3,
      "baseline_return": 1.7027027027027026,
      "breakeven": 86.3,
+     "breakeven_points": [
+      86.3
+     ],
      "breakeven_at_target": 86.38,
      "max_profit": 86.3,
      "max_loss_per_contract": 370.0,
@@ -14302,7 +14508,9 @@
        "ask": 3.7,
        "iv": 0.35,
        "volume": 10,
-       "open_interest": 3
+       "open_interest": 3,
+       "side": "buy",
+       "quantity": 1
       }
      ]
     },
@@ -14310,6 +14518,9 @@
      "baseline_pnl": 7.0,
      "baseline_return": 1.4,
      "breakeven": 87.0,
+     "breakeven_points": [
+      87.0
+     ],
      "breakeven_at_target": 88.0,
      "max_profit": 87.0,
      "max_loss_per_contract": 500.0,
@@ -14606,7 +14817,9 @@
        "ask": 5.0,
        "iv": 0.35,
        "volume": 10,
-       "open_interest": 100
+       "open_interest": 100,
+       "side": "buy",
+       "quantity": 1
       }
      ]
     }

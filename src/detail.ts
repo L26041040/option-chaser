@@ -37,9 +37,16 @@ export function formatMove(ratio: number): string {
 /**
  * 候選的一句話身分：`買 118 / 賣 122`。單腳候選只有一隻腿，寫成
  * `買 118`——硬要寫成價差的樣子會憑空生出一隻不存在的腿。
+ *
+ * T12（#228，Initial V2）：改成逐腿迭代（讀 `side` 判斷買賣），不再
+ * 解構固定兩個變數——三腿以上的候選（Butterfly，T15／#232）不會被
+ * 靜默丟腿，例如 `買 100 / 賣 105 / 買 110`。既有兩腿／單腿候選的
+ * 輸出逐字不變。
  */
 export function candidateTitle(candidate: Candidate): string {
-  const [buy, sell] = candidate.legs;
-  if (!buy) return "—";
-  return sell ? `買 ${buy.strike} / 賣 ${sell.strike}` : `買 ${buy.strike}`;
+  // `CandidateLegs` 的型別本身保證至少一隻腿（canonical boundary
+  // 1<=len<=4），這裡不需要再防禦性檢查空陣列。
+  return candidate.legs
+    .map((leg) => `${leg.side === "buy" ? "買" : "賣"} ${leg.strike}`)
+    .join(" / ");
 }

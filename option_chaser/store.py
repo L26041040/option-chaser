@@ -71,8 +71,15 @@ def representative_candidate(view: dict | None) -> dict | None:
     candidate = _candidate_of(view, best_row)
     return {
         "strategy": best_row["strategy"],
-        "legs": [{"strike": leg["strike"], "option_type": leg["option_type"]}
-                 for leg in candidate["legs"]],
+        # T12（#228，Initial V2）：`side` 一併投影進這個輕量代表候選——
+        # 前端 `formatRepresentativeLegs()` 過去靠陣列位置（[0]=買、
+        # [1]=賣）猜方向，現在改讀這個顯式欄位。`leg.get("side", ...)`
+        # 對已存的舊 View（schema_version < 4，序列化當下還沒有這個
+        # 欄位）用位置回推當備援——既有已儲存的 View 不做資料遷移，
+        # 讀取端維持相容（沿用 T09／#191 當時定下的同一條規則）。
+        "legs": [{"strike": leg["strike"], "option_type": leg["option_type"],
+                 "side": leg.get("side", "buy" if i == 0 else "sell")}
+                for i, leg in enumerate(candidate["legs"])],
         "expiry": group["expiry"],
         "baseline_return": candidate["baseline_return"],
     }
@@ -138,11 +145,32 @@ def _history_entry(sv: SpreadValuation | ContractValuation, expiry: str,
     }
 
 
-def _leg(c) -> dict:
+def _leg(c, side: str, quantity: int = 1) -> dict:
+    """T12（#228）：`side`（"buy"／"sell"）與 `quantity`（口數）現在是
+    每一腿自己攜帶的顯式欄位，取代「腿在陣列裡的位置＝買賣方向」這個
+    只對兩腿策略成立的隱性慣例——呼叫端（`_candidate()`）本來就知道
+    每條腿的方向與口數，這裡只是把它序列化出來。既有兩腿策略維持
+    `quantity=1`（既有預設值），數值本身完全不變。"""
     return {"contract_symbol": c.contract_symbol, "option_type": c.option_type,
             "strike": c.strike, "expiry": c.expiry, "bid": c.bid,
             "ask": c.ask, "iv": c.implied_volatility, "volume": c.volume,
-            "open_interest": c.open_interest}
+            "open_interest": c.open_interest, "side": side, "quantity": quantity}
+
+
+def _validate_leg_count(legs: list) -> None:
+    """T12（#228）：candidate 契約的容量邊界——`1 <= len(legs) <= 4`。
+
+    這是共用骨架明訂的 canonical boundary，不是留在註解裡的一句提醒：
+    `len(legs) > 4` 或 `len(legs) == 0` 一律 validation fail。4 腿只是
+    contract／data-shape 容量，Initial V2 本輪不啟用任何四腿 strategy
+    （Iron 系列等一律 out of scope，#217），今天實際只會產生 1 或 2 腿；
+    這個函式獨立成型別好讓「邊界會不會真的擋下不合法輸入」可以脫離引擎
+    直接測試——引擎今天結構上不會產生 0 或 5+ 腿，所以這條邊界靠的是
+    這個函式本身被直接呼叫測試，不是靠引擎湊出一個真實的違規案例。"""
+    if not (1 <= len(legs) <= 4):
+        raise ValueError(
+            f"候選腿數必須介於 1 到 4 之間（contract 容量上限），"
+            f"實際 {len(legs)}")
 
 
 def spread_cost_history(views: Iterable[dict], candidate_key: str) -> list[dict]:
@@ -205,24 +233,37 @@ def _candidate(cv: CandidateView, strategy: str, capital: float | None,
                today: date, anchor: date, p: AnalysisParams) -> dict:
     v = cv.valuation
     if isinstance(v, SpreadValuation):
-        legs = [_leg(v.long_leg), _leg(v.short_leg)]   # [0]=long, [1]=short
+        # T12（#228，Initial V2）：`side` 現在顯式標在每一腿上（見
+        # `_leg()`），不再只靠陣列位置暗示——position [0]=long/buy、
+        # [1]=short/sell 這個既有慣例本身不變，只是現在同時也寫進資料裡。
+        legs = [_leg(v.long_leg, "buy"), _leg(v.short_leg, "sell")]
         mid_cost, expiry = v.net_mid, v.long_leg.expiry
         max_profit, net_delta = v.max_profit, v.net_delta
         guidance_warnings = spread_guidance_judgments(v, p)
     else:
-        legs = [_leg(v.contract)]
+        legs = [_leg(v.contract, "buy")]
         mid_cost, expiry = v.mid, v.contract.expiry
         # 與 service._comparison 相同定義（long-call 無上限 → None）
         max_profit = (None if strategy == "long-call"
                       else v.contract.strike - v.contract.ask)
         net_delta = v.delta
         guidance_warnings = guidance_judgments(v, p)
-    # T12（附錄 A14.2）：資本／最大虧損以最差成交成本計（natural_cost 即
-    # 買 Ask／賣 Bid 口徑）；mid_cost 保留為次要顯示欄位。
+    _validate_leg_count(legs)
+    # T12（附錄 A14.2，MVP-v2 舊票，非本輪 #228）：資本／最大虧損以
+    # 最差成交成本計（natural_cost 即買 Ask／賣 Bid 口徑）；mid_cost
+    # 保留為次要顯示欄位。
     cap_per = natural_cost(v) * 100
     return {
         "candidate_key": candidate_key(cv),
         "strategy": strategy,
+        # T12（#228，Initial V2）：AC「每個候選帶著它實際的 subtype 代碼」
+        # ——`strategy` 這個既有欄位本來就已經是具體 subtype 字串（例如
+        # "bull-call-spread"，不是 family 代碼；family→subtype 展開在
+        # T06／#221 的 `api_app/main.py` 那一層就完成了，`AnalysisRequest.
+        # strategies` 與這裡的 `strategy` 參數從頭到尾只認識 subtype）。
+        # 不新增一個名字不同、值卻恆等的 `subtype` 欄位——那是無意義的
+        # 重複概念，用測試鎖住這個事實即可（見
+        # tests/test_candidate_leg_skeleton.py）。
         "legs": legs,
         "mid_cost": mid_cost,
         "natural_cost": natural_cost(v),
@@ -257,6 +298,15 @@ def _candidate(cv: CandidateView, strategy: str, capital: float | None,
         "rate_tenor_years": cv.rate_tenor_years,
         "net_delta": net_delta,
         "breakeven": v.breakeven,
+        # T12（#228，Initial V2）：損益兩平的**傳輸格式**——共用骨架要
+        # 能裝得下 1～2 個點（Butterfly 未來會有兩個），但本票只搬動
+        # 資料形狀、不碰計算（Owner 2026-08-30 範圍界定）。既有四策略
+        # 一律是單點，這裡就是把上面那個純量 `v.breakeven` 包成
+        # 一元素陣列，數值逐位元不變；不移除既有的純量 `breakeven`
+        # 欄位（前端 `AnalysisReport.tsx` 仍讀它，本票不強迫它改讀
+        # 陣列——這是新增的傳輸容量，不是既有欄位的替代品）。產生
+        # 第二個點的邏輯是 T15（#230）的範圍，本票不實作。
+        "breakeven_points": [v.breakeven],
         "max_profit": max_profit,
         "effective_leverage": v.effective_leverage,
         # V8（#56，spec R1 §4.2 A2）：買價指引天花板 L2/L3——純文字報告
@@ -411,7 +461,13 @@ def serialize_result(result: AnalysisResult, scenario_id: str,
         # 點：test_store_serialize.py 的版本斷言）；既有已存的 View
         # （schema_version=1／2，仍是舊形狀）不做遷移，讀取端（`find_
         # candidate()`／`representative_candidate()`）維持相容分支。
-        "schema_version": 3,
+        # T12（#228，Initial V2）：3→4——每一腿新增顯式 `side`／`quantity`
+        # 欄位（取代「陣列位置＝方向」的隱性慣例）＋候選新增
+        # `breakeven_points`（損益兩平的點集合傳輸格式，純加法，既有
+        # `breakeven` 純量欄位不變）。純新增，讀取端無需相容分支——舊
+        # View 沒有這兩個欄位，`representative_candidate()` 對缺欄位的
+        # `side` 有位置回推備援（見上）。
+        "schema_version": 4,
         "engine_version": __version__,
         "analyzed_at": m.fetched_at,
         "scenario_id": scenario_id,

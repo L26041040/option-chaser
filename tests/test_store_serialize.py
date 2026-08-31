@@ -34,8 +34,11 @@ def _cand(view: dict, key: str) -> dict:
 def test_top_level_fields_and_versions():
     view = store.serialize_result(_result(), "XYZ-120-202608", 100000.0)
     # T04（#188）：1→2 report_text／methodology_text 移除。
-    # T09（#191）：2→3 候選內容集中進 `candidate_pool`，四個容器改存 key。
-    assert view["schema_version"] == 3
+    # T09（#191，MVP-v2 舊票）：2→3 候選內容集中進 `candidate_pool`，
+    # 四個容器改存 key。
+    # T12（#228，Initial V2）：3→4 每腿新增 side/quantity，候選新增
+    # breakeven_points（純加法）。
+    assert view["schema_version"] == 4
     assert view["engine_version"] == option_chaser.__version__ == "0.5.0"
     assert view["scenario_id"] == "XYZ-120-202608"
     assert view["analyzed_at"] == view["snapshot_ref"]["fetched_at"]

@@ -123,8 +123,8 @@ describe("決策 K（#108）：桌面卡片瘦身後七項決策資訊一項不�
       best_return: 1.234,
       representative_candidate: {
         strategy: "bull-call-spread",
-        legs: [{ strike: 118, option_type: "call" },
-              { strike: 122, option_type: "call" }],
+        legs: [{ strike: 118, option_type: "call", side: "buy" },
+              { strike: 122, option_type: "call", side: "sell" }],
         expiry: "2026-09-18", baseline_return: 1.234,
       },
       latest_analyzed_at: "2026-08-04T09:30:00+00:00",
@@ -218,8 +218,8 @@ describe("代表候選（MVP-v2／#77、#78）", () => {
     list([row({
       representative_candidate: {
         strategy: "bull-call-spread",
-        legs: [{ strike: 118, option_type: "call" },
-              { strike: 122, option_type: "call" }],
+        legs: [{ strike: 118, option_type: "call", side: "buy" },
+              { strike: 122, option_type: "call", side: "sell" }],
         expiry: "2026-09-18", baseline_return: 1.234,
       },
     })]);
@@ -235,7 +235,7 @@ describe("代表候選（MVP-v2／#77、#78）", () => {
     list([row({
       representative_candidate: {
         strategy: "long-call",
-        legs: [{ strike: 118, option_type: "call" }],
+        legs: [{ strike: 118, option_type: "call", side: "buy" }],
         expiry: "2026-09-18", baseline_return: 0.29,
       },
     })]);
@@ -268,8 +268,8 @@ describe("代表候選（MVP-v2／#77、#78）", () => {
       best_return: 3.33,
       representative_candidate: {
         strategy: "bull-call-spread",
-        legs: [{ strike: 100, option_type: "call" },
-              { strike: 105, option_type: "call" }],
+        legs: [{ strike: 100, option_type: "call", side: "buy" },
+              { strike: 105, option_type: "call", side: "sell" }],
         expiry: "2026-09-18", baseline_return: 3.33,
       },
     })]);

@@ -26,6 +26,7 @@ const KEY = "bull-call-spread|118C|125C|2026-09-18";
 function leg(overrides: Partial<Leg> = {}): Leg {
   return { strike: 118, option_type: "call", expiry: "2026-09-18",
           ask: 5, bid: 4.8, iv: 0.24, volume: 100, open_interest: 500,
+          side: "buy", quantity: 1,
           ...overrides };
 }
 

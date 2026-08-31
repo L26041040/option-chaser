@@ -12,6 +12,9 @@
       "baseline_return": 9.909090909090908,
       "breakeven": 119.1,
       "breakeven_at_target": 119.08,
+      "breakeven_points": [
+        119.1
+      ],
       "buffer_days": -42,
       "candidate_key": "long-call|118|2026-08-07",
       "capital_per_contract": 110.00000000000001,
@@ -67,6 +70,8 @@
           "iv": 0.4,
           "open_interest": 100,
           "option_type": "call",
+          "quantity": 1,
+          "side": "buy",
           "strike": 118.0,
           "volume": 30
         }
@@ -322,6 +327,9 @@
       "baseline_return": 6.741935483870967,
       "breakeven": 119.55,
       "breakeven_at_target": 119.5,
+      "breakeven_points": [
+        119.55
+      ],
       "buffer_days": -28,
       "candidate_key": "long-call|118|2026-08-21",
       "capital_per_contract": 155.0,
@@ -378,6 +386,8 @@
           "iv": 0.38,
           "open_interest": 120,
           "option_type": "call",
+          "quantity": 1,
+          "side": "buy",
           "strike": 118.0,
           "volume": 30
         }
@@ -633,6 +643,9 @@
       "baseline_return": 4.0,
       "breakeven": 120.4,
       "breakeven_at_target": 120.31,
+      "breakeven_points": [
+        120.4
+      ],
       "buffer_days": 0,
       "candidate_key": "long-call|118|2026-09-18",
       "capital_per_contract": 240.0,
@@ -688,6 +701,8 @@
           "iv": 0.36,
           "open_interest": 150,
           "option_type": "call",
+          "quantity": 1,
+          "side": "buy",
           "strike": 118.0,
           "volume": 30
         }
@@ -943,6 +958,9 @@
       "baseline_return": 2.543136242026414,
       "breakeven": 122.6,
       "breakeven_at_target": 108.91,
+      "breakeven_points": [
+        122.6
+      ],
       "buffer_days": 63,
       "candidate_key": "long-call|118|2026-11-20",
       "capital_per_contract": 459.99999999999994,
@@ -998,6 +1016,8 @@
           "iv": 0.34,
           "open_interest": 180,
           "option_type": "call",
+          "quantity": 1,
+          "side": "buy",
           "strike": 118.0,
           "volume": 30
         }
@@ -1253,6 +1273,9 @@
       "baseline_return": 12.333333333333334,
       "breakeven": 122.6,
       "breakeven_at_target": 122.56,
+      "breakeven_points": [
+        122.6
+      ],
       "buffer_days": -42,
       "candidate_key": "long-call|122|2026-08-07",
       "capital_per_contract": 60.0,
@@ -1308,6 +1331,8 @@
           "iv": 0.42,
           "open_interest": 80,
           "option_type": "call",
+          "quantity": 1,
+          "side": "buy",
           "strike": 122.0,
           "volume": 20
         }
@@ -1563,6 +1588,9 @@
       "baseline_return": 7.421052631578948,
       "breakeven": 122.95,
       "breakeven_at_target": 122.89,
+      "breakeven_points": [
+        122.95
+      ],
       "buffer_days": -28,
       "candidate_key": "long-call|122|2026-08-21",
       "capital_per_contract": 95.0,
@@ -1619,6 +1647,8 @@
           "iv": 0.4,
           "open_interest": 90,
           "option_type": "call",
+          "quantity": 1,
+          "side": "buy",
           "strike": 122.0,
           "volume": 20
         }
@@ -1874,6 +1904,9 @@
       "baseline_return": 4.0,
       "breakeven": 123.6,
       "breakeven_at_target": 123.52,
+      "breakeven_points": [
+        123.6
+      ],
       "buffer_days": 0,
       "candidate_key": "long-call|122|2026-09-18",
       "capital_per_contract": 160.0,
@@ -1930,6 +1963,8 @@
           "iv": 0.38,
           "open_interest": 100,
           "option_type": "call",
+          "quantity": 1,
+          "side": "buy",
           "strike": 122.0,
           "volume": 20
         }
@@ -2185,6 +2220,9 @@
       "baseline_return": 2.891670674108008,
       "breakeven": 125.45,
       "breakeven_at_target": 109.57,
+      "breakeven_points": [
+        125.45
+      ],
       "buffer_days": 63,
       "candidate_key": "long-call|122|2026-11-20",
       "capital_per_contract": 345.0,
@@ -2240,6 +2278,8 @@
           "iv": 0.35,
           "open_interest": 120,
           "option_type": "call",
+          "quantity": 1,
+          "side": "buy",
           "strike": 122.0,
           "volume": 20
         }
@@ -2495,6 +2535,9 @@
       "baseline_return": 0.7547103967532778,
       "breakeven": 100.0,
       "breakeven_at_target": 99.43,
+      "breakeven_points": [
+        100.0
+      ],
       "buffer_days": 28,
       "candidate_key": "long-call|60|2026-10-16",
       "capital_per_contract": 4000.0,
@@ -2550,6 +2593,8 @@
           "iv": 0.3,
           "open_interest": 500,
           "option_type": "call",
+          "quantity": 1,
+          "side": "buy",
           "strike": 60.0,
           "volume": 50
         }
@@ -3129,7 +3174,7 @@
     }
   ],
   "scenario_id": "adhoc",
-  "schema_version": 3,
+  "schema_version": 4,
   "snapshot_ref": {
     "fetched_at": "2026-07-15T21:30:00-04:00",
     "path": "(in-memory)",

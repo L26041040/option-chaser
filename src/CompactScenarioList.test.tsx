@@ -17,8 +17,8 @@ function row(overrides: Partial<ScenarioSummary> = {}): ScenarioSummary {
     target_anchor: "2028-05-19", days_to_anchor: 653,
     representative_candidate: {
       strategy: "bull-call-spread",
-      legs: [{ strike: 118, option_type: "call" },
-            { strike: 122, option_type: "call" }],
+      legs: [{ strike: 118, option_type: "call", side: "buy" },
+            { strike: 122, option_type: "call", side: "sell" }],
       expiry: "2026-09-18", baseline_return: 1.234,
     },
     ...overrides,
