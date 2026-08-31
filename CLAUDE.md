@@ -5878,10 +5878,74 @@ CLAUDE.md 隨手更新。
   （iPhone＋Desktop）皆過（本票除 `src/detail.ts` 標籤新增外未觸碰
   任何前端檔案）。
 
-**下一步**：T16（#232，Butterfly 前端：三腿展示、獲利區間視覺化，
-被 T11／T15 解鎖，無其他 blocker）為下一張。T05–T15 均已完成，
-Initial V2 剩餘票（T16→T17→T18）依建議施工順序推進，blocker 狀態
-依此更新。
+- **T16**（#232，commits `c8e49b3`＋跟進 `dec724b`）✅ Butterfly
+  前端呈現：三腿完整顯示、兩個損益兩平點、獲利區間、淨成本走勢圖，
+  端到端可用——純前端票，**零 Python 檔案異動**（T15／#230 後端已
+  就緒，`git diff` 確認）。
+
+  施工中查證到三個真缺口，皆修正（非 AC 字面新增）：(1)
+  `family.ts::SUBTYPE_FAMILY` 漏掉 `call-fly`／`put-fly`（T15 是純
+  後端票，依票面範圍未動這個檔案，檔頭本就留有「新增 subtype 時記得
+  同步」的提醒；不修的話 Butterfly 候選會被歸進錯誤 family、預設分頁
+  選不對）——已補上兩筆映射，新增回歸測試（含「冠軍是 Butterfly 時
+  預設打開 Butterfly 分頁」的端到端場景）；(2) `AnalysisReport.tsx`
+  的 Max Loss 列原本讀 `natural_cost`（既有四策略「max_loss 恆等於
+  成本」不變量的既有假設），Butterfly broken-wing 組合的真實最大
+  損失可能超過已付權利金（T15 AC 明文性質）——改讀
+  `max_loss_per_contract / 100`：對既有四策略逐位元相同（已驗證），
+  對 Butterfly 才是誠實數字，這是跨全部策略的共用元件改動、非只影響
+  Butterfly，已在測試中明確驗證等價性；(3) `IvHistory.tsx` 的兩個
+  既有家族（Normalized Skew／逐腿 Historical IV Trend）結構上只認得
+  單腿與兩腿——後端 `ivpipeline.build_iv_history()` 的 `leg_names =
+  ("buy","sell") if len(legs)>=2 else ("buy",)` 對三腿候選會靜默丟掉
+  第三隻腿、把中腿誤標成「賣腿」，新增 `supportsIvHistory` 閘門讓
+  Butterfly 候選一個 IV 請求都不發、不輸出任何 DOM 節點——這是 #215
+  Owner Decision「Vertical／Butterfly 的『貴不貴』區塊整塊不顯示」的
+  字面落地（該裁示指的是尚未建置、本輪也不建置的 package percentile，
+  不是要藏起既有描述性功能，但既有功能本身只認得 ≤2 腿，因此必須在
+  請求層擋下 Butterfly）；修正管線本身讓它認得三腿是另一張票的範圍。
+
+  正式新增：`api.ts` 的 `Candidate.breakeven` 拓寬為 `number | null`
+  （Butterfly 到期時連峰值都賺不到時如實回傳 null）＋新增
+  `profit_region: [number, number] | null`＋共用的 `legSide()`／
+  `legQuantityPrefix()`；`detail.ts::candidateTitle()` 口數 > 1 的腿
+  標出倍數（`賣 2×106`，沿用後端 `service._comparison()` 既有的
+  `2×{strike:g}` 語法）；`expiry.ts::legPriceEntries()` 逐腿最差成交
+  價，三腿以上不會有任何一隻腿被靜默丟棄，既有 `legPrices()`（兩腿／
+  單腿摘要）原封不動；`ExpiryStructure.tsx` 候選窄列收合狀態的價格
+  摘要三腿以上改逐腿列出；`AnalysisReport.tsx::BreakevenRow` 0 點
+  誠實顯示「無（到期時任何價位都無法獲利）」、1 點沿用既有格式、
+  2 點顯示兩個損益兩平點＋獨立的「獲利區間」列。
+
+  `/code-review` 兩軸結果與修正（跟進 commit `dec724b`）：Spec 軸零
+  缺漏零 scope creep（未觸碰 T17／T18 範圍：無 flat-scenario
+  eligibility gating、無 final regression 程式碼；唯一標記的「Max
+  Loss 讀法是跨全部策略的共用元件改動」已確認安全並記錄）；Standards
+  軸零 hard violation，四項 judgement call 中三項已修正——(1)
+  `candidateTitle()`／`legPriceEntries()` 重複的方向／口數標示邏輯
+  抽到 `api.ts` 共用（比照既有 `findLeg()` 同一次 Standards 軸抓到、
+  同一個檔案收斂的先例）；(2) `ExpiryStructure.tsx` 的
+  `legs.length > 2` 命名為 `isMultiLeg`（刻意不與 `IvHistory.tsx` 的
+  `supportsIvHistory` 共用常數——兩者今天數值相同但語意不同，一個是
+  「收合摘要版式該用哪一種」的 UI 呈現決定，一個是「IV pipeline
+  結構上支援哪些腿數」的後端能力邊界，強行共用會製造不存在的耦合，
+  已記錄判斷）；(3) `candidate-prices` 重複兩次的「淨成本」span 收斂
+  為一次。第四項（`breakeven` 型別拓寬後前端無直接讀取端）判斷維持
+  現狀——那是契約型別的誠實反映，不是投機性彈性。
+
+  新增 16 條 Vitest（`detail.test.ts`／`expiry.test.ts`／
+  `AnalysisReport.test.tsx`／`IvHistory.test.tsx`／
+  `ExpiryStructure.test.tsx`／`family.test.ts`／`FamilyTabs.test.tsx`）
+  ＋6 條 Playwright（iPhone 5＋Desktop 1，涵蓋三腿渲染、兩個損益兩平
+  點、獲利區間、展開零額外請求、IV History 不出現、淨成本走勢圖
+  支援）。全套：後端零改動（1660 條測試不受影響，`git diff` 確認）；
+  前端 typecheck 乾淨、747 條 Vitest、build 通過、Playwright e2e
+  107 條（iPhone 67＋Desktop 40）全綠，桌面與手機兩個 viewport 皆
+  驗過。
+
+**下一步**：T17（#234，flat 情境：target==spot 時僅 Butterfly 可選，
+被 T16 解鎖，無其他 blocker）為下一張。T05–T16 均已完成，Initial V2
+剩餘票（T17→T18）依建議施工順序推進，blocker 狀態依此更新。
 
 ### 施工依據
 
