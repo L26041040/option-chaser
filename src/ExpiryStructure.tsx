@@ -27,6 +27,14 @@ function CandidateRow({ view, candidate, rank }: {
   view: AnalysisView; candidate: Candidate; rank: number;
 }) {
   const prices = legPrices(candidate);
+  // T16（#232，Initial V2，`/code-review` Standards 軸抓到）：命名這個
+  // 判準，不留一個沒有名字的 `> 2`——固定「買／賣」兩欄的收合摘要只
+  // 服務兩腿以下候選，三腿以上（Butterfly）才需要逐腿列出。這條邊界
+  // 是這個元件自己「摘要版式選哪一種」的規則，跟 `IvHistory.tsx` 的
+  // `supportsIvHistory`（IV pipeline 結構上支援哪些腿數）是兩件不同
+  // 的事，只是今天恰好同一個數字——沒有強行共用一個跨檔常數，避免
+  // 兩個不相干的邊界被綁死在一起。
+  const isMultiLeg = candidate.legs.length > 2;
   return (
     <li>
       <details className="candidate">
@@ -76,13 +84,10 @@ function CandidateRow({ view, candidate, rank }: {
               第三隻腿，AC 明文禁止。既有兩腿／單腿候選走原本的格式，
               逐字不變。 */}
           <span className="candidate-prices">
-            {candidate.legs.length > 2 ? (
-              <>
-                {legPriceEntries(candidate).map((entry, i) => (
-                  <span key={i}>{entry.label} {money(entry.price)}</span>
-                ))}
-                <span>淨成本 {money(prices.net)}</span>
-              </>
+            {isMultiLeg ? (
+              legPriceEntries(candidate).map((entry, i) => (
+                <span key={i}>{entry.label} {money(entry.price)}</span>
+              ))
             ) : (
               <>
                 <span>
@@ -91,9 +96,9 @@ function CandidateRow({ view, candidate, rank }: {
                 <span>
                   賣 {prices.sellBid === null ? "—" : money(prices.sellBid)}
                 </span>
-                <span>淨成本 {money(prices.net)}</span>
               </>
             )}
+            <span>淨成本 {money(prices.net)}</span>
           </span>
         </summary>
         {/* Crossover Boundary（#116）：同 `ScenarioDetail.tsx` 的判準

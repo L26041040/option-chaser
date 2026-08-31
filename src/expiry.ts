@@ -7,7 +7,7 @@
  * 併攏，不做任何加減。
  */
 import type { AnalysisView, Candidate, StrategyResult } from "./api";
-import { findLeg, resolveCandidate } from "./api";
+import { findLeg, legQuantityPrefix, legSide, resolveCandidate } from "./api";
 
 /** 低於這個組數就警示——沿用 Streamlit 版 FB3-02（#45）的門檻。 */
 export const THIN_POOL = 3;
@@ -116,12 +116,13 @@ export interface LegPriceEntry {
  * ——三腿以上的候選（Butterfly）不會有任何一隻腿被靜默丟棄（AC 明文：
  * 「沒有任何腿被靜默丟棄」）。既有兩腿／單腿摘要沿用 `legPrices()`
  * 不受影響，這個函式只服務 `ExpiryStructure.tsx` 的三腿以上顯示分支。
+ * `legSide()`／`legQuantityPrefix()`（`./api`）與 `detail.ts::
+ * candidateTitle()` 共用同一套「怎麼標示方向與口數」規則（`/code-review`
+ * Standards 軸抓到兩處各自重複同一句三元運算式）。
  */
 export function legPriceEntries(candidate: Candidate): LegPriceEntry[] {
   return candidate.legs.map((leg) => ({
-    label: leg.quantity > 1
-      ? `${leg.side === "buy" ? "買" : "賣"} ${leg.quantity}×`
-      : leg.side === "buy" ? "買" : "賣",
+    label: `${legSide(leg)}${leg.quantity > 1 ? ` ${legQuantityPrefix(leg)}` : ""}`,
     price: leg.side === "buy" ? leg.ask : leg.bid,
   }));
 }

@@ -71,6 +71,26 @@ export function findLeg<T extends { side: "buy" | "sell" }>(
   return legs.find((leg) => leg.side === side) ?? null;
 }
 
+/**
+ * T16（#232，Initial V2，`/code-review` Standards 軸抓到）：這隻腿的
+ * 買賣方向中文字——`detail.ts::candidateTitle()` 與
+ * `expiry.ts::legPriceEntries()` 原本各自獨立重複同一句
+ * `leg.side === "buy" ? "買" : "賣"`，抽到這裡讓兩處共用同一個字彙來源。
+ */
+export function legSide(leg: { side: "buy" | "sell" }): string {
+  return leg.side === "buy" ? "買" : "賣";
+}
+
+/**
+ * T16（#232，Initial V2）：口數 > 1 的腿的倍數標示（例如 Butterfly 中腿
+ * 賣 2 口 →「2×」），口數 1 時是空字串——與上面 `legSide()` 同一次
+ * 重構抽出，供 `candidateTitle()`／`legPriceEntries()` 共用同一套
+ * 「怎麼標示口數」規則。
+ */
+export function legQuantityPrefix(leg: { quantity: number }): string {
+  return leg.quantity > 1 ? `${leg.quantity}×` : "";
+}
+
 /** 代表候選（MVP-v2／#77、#78）：劇本清單卡片要的候選完整身分——只到
  *  「顯示要用」這一層，不是完整的 `Candidate`／`Leg`（報價、IV、量能等
  *  欄位留在詳細頁）。T12（#228，Initial V2）起每一腿帶顯式 `side`，
