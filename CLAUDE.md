@@ -5436,9 +5436,37 @@ review`（Standards＋Spec 兩軸）：Standards 軸零 hard violation；Spec
 
 **#220 已 close。** commit `09a224e`＋follow-up `65f1ec5`。
 
-**下一個 frontier**：依 Step 4 指示本輪到此為止，**不自行施工
-T06／T09／T12／T15**，等 Owner 下一步指示。T06 #221、T09 #222、
-T12 #228 三張目前皆無 blocker、可立即開工。
+### Initial V2 自主執行輪（2026-08-31 起，Owner 授權全自主施工至全部完成才一次回報）
+
+Owner 明確裁示：不再逐票停下等待，依 #217／#218–#235 dependency graph
+自主完成 Initial V2 剩餘全部 tickets，只在六種情況才停下（新的 Owner
+裁示題、無法在既有 scope 內修正的硬回歸紅線、ticket/spec 互相矛盾、
+必須突破 out-of-scope、需要非票面明文允許的 baseline 更新、真正無法
+判斷方案）。全部完成前不主動回報（不占用「回報#0NN」編號，下面 4 條
+規則本身仍照舊遵守，只是回報時機挪到全部票做完那一刻）。逐票仍維持
+既有紀律：TDD、`/code-review` 兩軸、AC 全過才 close、獨立 commit、
+CLAUDE.md 隨手更新。
+
+- **T06**（#221，commit `5c13469`）✅ Strategy Family 詞彙、legacy 映射、
+  分析時 subtype 展開：`option_chaser/models.py` 新增 `FAMILIES`（
+  single-leg／vertical-spread／butterfly）、唯一一張 `STRATEGY_FAMILY`
+  對照表、`FAMILY_SUBTYPES`、`normalize_families()`／`subtypes_of()`
+  兩個純函式；`api_app/main.py` 的 `_MVP_STRATEGIES` 改存 family 代碼
+  （`"vertical-spread"`），`_refresh_and_save()` 是唯一展開點。改動
+  完全侷限在 HTTP 層（`option_chaser/service.py`／`AnalysisRequest`
+  介面一行未動）——T01（#218）的引擎層基準結構上摸不到這次改動，因此
+  另外寫了 API 層級的逐位元比對測試（`tests/test_strategy_family.py`
+  的 `test_refreshing_a_scenario_expands_the_family_and_keeps_today_
+  bitwise_identical`：展開後 `bull-call-spread` 的 candidates／
+  expiry_best／expiry_top10／candidate_pool 與直接呼叫引擎逐項相同；
+  `bear-put-spread` 如預期被既有方向閘門擋成 `skipped_direction`）與
+  舊資料相容測試（裸存 subtype 字串的劇本刷新行為不變）。`direction`
+  欄位確認只在建立時寫入、`_scenario_json` 純顯示回顯，結構性測試
+  逐行掃描鎖定它從未進入任何判斷邏輯。全套測試（記憶體＋真實 Postgres
+  雙後端）綠燈；`/code-review` 兩軸皆無 hard violation。**#221 已 close**。
+
+**下一步**：依既有依賴圖，T09（#222，無 blocker）與 T12（#228，無
+blocker）可任意順序穿插；T07（#224）／T08（#225）現在被 T06 解鎖。
 
 ### 施工依據
 
