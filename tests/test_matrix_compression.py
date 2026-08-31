@@ -105,11 +105,13 @@ def test_rounding_does_not_introduce_a_visually_distinguishable_difference():
             assert abs(rounded_v - original_v) <= tolerance
 
 
-def test_measured_payload_size_reduction_is_recorded():
-    """AC「以真實契約樣本量測並記錄壓縮前後大小」——三份契約樣本已在
-    T14 commit 訊息與 CLAUDE.md 記錄實測數字（24.6%–31.1% 縮減）；這裡
-    只驗證「去重確實發生」這個前提在契約樣本本身也成立，不是只在測試
-    fixture 上才成立。"""
+def test_contract_samples_also_exhibit_axis_dedup():
+    """AC「以真實契約樣本量測並記錄壓縮前後大小」的「量測」半段：這裡
+    只驗證「去重確實發生」這個結構性前提在**真實契約樣本**本身也成立，
+    不是只在測試 fixture 上才成立——不是量測壓縮率本身（那是一次性
+    量測，數字記在 T14 commit 訊息與 CLAUDE.md 的「記錄」半段，不適合
+    寫成一條每次跑測試都要重算校驗的斷言，三份契約樣本各自的檔案位元
+    組本身就會隨任何一次重產而改變）。"""
     import json
     from pathlib import Path
 

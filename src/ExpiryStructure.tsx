@@ -19,7 +19,7 @@ import { candidateTitle, strategyLabel } from "./detail";
 import {
   expiryOptions, isThinPool, legPrices, resolveExpiry, type ExpiryBearing,
 } from "./expiry";
-import { resolveComparator, resolveMatrix } from "./heatmap";
+import { heatmapProps } from "./heatmap";
 import { formatReturn, money } from "./scenarios";
 
 function CandidateRow({ view, candidate, rank }: {
@@ -81,9 +81,7 @@ function CandidateRow({ view, candidate, rank }: {
         </summary>
         {/* Crossover Boundary（#116）：同 `ScenarioDetail.tsx` 的判準
             ——單腿候選不傳 `comparator`，不是渲染成「缺席」。 */}
-        <Heatmap matrix={resolveMatrix(view, candidate.matrix)}
-                 comparator={candidate.legs.length === 2
-                   ? resolveComparator(view, candidate.comparator) : undefined} />
+        <Heatmap {...heatmapProps(view, candidate)} />
       </details>
     </li>
   );

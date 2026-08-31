@@ -12,11 +12,12 @@ import {
   formatCell,
   formatMovePct,
   formatMovePctShort,
+  heatmapProps,
   priceTags,
   resolveComparator,
   resolveMatrix,
 } from "./heatmap";
-import type { AnalysisView, Comparator, Matrix } from "./api";
+import type { AnalysisView, Candidate, Comparator, Matrix } from "./api";
 
 function alphaOf(color: string): number {
   const hit = /rgba\([^)]*,\s*([\d.]+)\)/.exec(color);
@@ -337,5 +338,49 @@ describe("resolveMatrix／resolveComparator（T14／#233：熱力圖 matrix 傳�
       prices: axisSets[0].prices, dates: axisSets[0].dates,
       cells: [[1, 2, 3], [4, 5, 6]],
     });
+  });
+});
+
+describe("heatmapProps（T14／#233 code-review 跟進：兩個既有呼叫端" +
+  "重複的「解碼＋單腿候選不傳 comparator」判斷收斂成一個函式）", () => {
+  const axisSets = [
+    { prices: [[100, "", 0]] as Matrix["prices"],
+      dates: [["2026-08-07", ""]] as Matrix["dates"] },
+  ];
+  const view = { axis_sets: axisSets } as unknown as AnalysisView;
+
+  function candidateWithLegs(nLegs: number, comparator: Comparator | null): Candidate {
+    return {
+      legs: Array.from({ length: nLegs }, () => ({})),
+      matrix: { axis_index: 0, cells: [0.5] },
+      comparator,
+    } as unknown as Candidate;
+  }
+
+  it("兩腿候選：matrix 解碼、comparator 也解碼（非 undefined／非透傳 wire 形狀）", () => {
+    const comparator: Comparator = {
+      option_type: "call", strike: 118, expiry: "2026-08-07", cost: 1.1,
+      matrix: { axis_index: 0, cells: [0.9] },
+    };
+    const { matrix, comparator: resolved } =
+      heatmapProps(view, candidateWithLegs(2, comparator));
+    expect(matrix).toEqual({ prices: axisSets[0].prices, dates: axisSets[0].dates, cells: [[0.5]] });
+    expect(resolved).toEqual({ ...comparator, matrix: { ...matrix, cells: [[0.9]] } });
+  });
+
+  it("兩腿候選但買腿報價缺失（comparator 為 null）：原樣傳回 null，" +
+     "不是渲染成「概念不存在」", () => {
+    const { comparator } = heatmapProps(view, candidateWithLegs(2, null));
+    expect(comparator).toBeNull();
+  });
+
+  it("單腿候選：即使 candidate.comparator 有值也回傳 undefined——" +
+     "單腿沒有 Crossover 概念，這條規則現在只寫在這一個函式裡", () => {
+    const comparator: Comparator = {
+      option_type: "call", strike: 118, expiry: "2026-08-07", cost: 1.1,
+      matrix: { axis_index: 0, cells: [0.9] },
+    };
+    const { comparator: resolved } = heatmapProps(view, candidateWithLegs(1, comparator));
+    expect(resolved).toBeUndefined();
   });
 });

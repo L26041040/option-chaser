@@ -7,7 +7,7 @@
  * `webapp/render.py` 的 `cell_color`／`_price_tag` 同一份語意。
  */
 import type {
-  AnalysisView, Comparator, Matrix, WireMatrix,
+  AnalysisView, Candidate, Comparator, Matrix, WireMatrix,
 } from "./api";
 
 /**
@@ -51,6 +51,25 @@ export function resolveComparator(
 ): ResolvedComparator | null {
   if (comparator === null) return null;
   return { ...comparator, matrix: resolveMatrix(view, comparator.matrix) };
+}
+
+/**
+ * `<Heatmap>` 的 `matrix`／`comparator` 兩個 prop 一次解好——`
+ * ExpiryStructure.tsx`（候選展開清單）與 `ScenarioDetail.tsx`（主圖）
+ * 兩個既有呼叫點原本各自重複同一段「解碼＋單腿候選不傳 comparator」
+ * 判斷（`/code-review` Standards 軸抓到的重複），收斂成這一個函式。
+ * 「只有兩腿候選才有 Crossover comparator 概念」的規則因此只寫一次；
+ * 之後若出現第三個呼叫端（例如 Butterfly 三腿展示），也只需要呼叫
+ * 這裡，不必再抄一次判斷式。
+ */
+export function heatmapProps(
+  view: AnalysisView, candidate: Candidate,
+): { matrix: Matrix; comparator: ResolvedComparator | null | undefined } {
+  return {
+    matrix: resolveMatrix(view, candidate.matrix),
+    comparator: candidate.legs.length === 2
+      ? resolveComparator(view, candidate.comparator) : undefined,
+  };
 }
 
 /** |報酬率| 小於這個值視為中性（不上色）。沿用既有 5% 口徑。 */

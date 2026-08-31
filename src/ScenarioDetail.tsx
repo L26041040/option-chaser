@@ -38,7 +38,7 @@ import {
 import { candidateTitle, formatMove, strategyLabel } from "./detail";
 import { championCandidate, resultForStrategy } from "./family";
 import { isThinPool, legPrices, validPairsForExpiry } from "./expiry";
-import { resolveComparator, resolveMatrix } from "./heatmap";
+import { heatmapProps } from "./heatmap";
 import { getScenarioCached } from "./fetchCache";
 import {
   failureLabel, formatAnalyzedAt, formatReturn, money, moneyOrDash,
@@ -87,9 +87,7 @@ function Chart({ view, candidate }: { view: AnalysisView; candidate: Candidate |
           概念——單腿候選（買腿本身就是持倉，沒有「跟自己比較」的
           Crossover 概念）刻意不傳這個 prop，讓 `Heatmap` 完全不渲染
           相關區塊，不是渲染成「缺席」。 */}
-      <Heatmap matrix={resolveMatrix(view, candidate.matrix)}
-               comparator={candidate.legs.length === 2
-                 ? resolveComparator(view, candidate.comparator) : undefined} />
+      <Heatmap {...heatmapProps(view, candidate)} />
     </section>
   );
 }
