@@ -41,7 +41,11 @@ def test_top_level_fields_and_versions():
     # T05（#226，Initial V2）：4→5 pair_report 新增 b_layer_removed
     # （純加法）。
     # T08（#225，Initial V2）：5→6 新增頂層 family_eligibility（純加法）。
-    assert view["schema_version"] == 6
+    # T14（#233，Initial V2）：6→7 熱力圖 matrix 傳輸壓縮——座標軸去重
+    # （新增頂層 `axis_sets`）＋格值攤平＋捨入，破壞性改變 `matrix`／
+    # `comparator.matrix` 的既有形狀。
+    assert view["schema_version"] == 7
+    assert isinstance(view["axis_sets"], list)
     assert view["engine_version"] == option_chaser.__version__ == "0.5.0"
     assert view["scenario_id"] == "XYZ-120-202608"
     assert view["analyzed_at"] == view["snapshot_ref"]["fetched_at"]
@@ -84,7 +88,15 @@ def test_candidate_fields_hand_checked():
     assert cand["scenario_vector"]["worst_code"] == cv.scenario.worst_code
     assert cand["max_profit"] is None                            # long-call
     assert cand["net_delta"] == v.delta
-    assert cand["matrix"]["cells"] == [list(r) for r in cv.matrix.cells]
+    # T14（#233，Initial V2）：`cells` 攤平成一維陣列＋捨入
+    # （`store.MATRIX_CELL_DECIMALS`），`prices`／`dates` 移到頂層
+    # `axis_sets`、候選只留 `axis_index` 引用。
+    assert cand["matrix"]["cells"] == [
+        round(v, store.MATRIX_CELL_DECIMALS)
+        for row in cv.matrix.cells for v in row]
+    axis = view["axis_sets"][cand["matrix"]["axis_index"]]
+    assert axis["prices"] == [list(pt) for pt in cv.matrix.prices]
+    assert axis["dates"] == [list(d) for d in cv.matrix.dates]
 
 
 def test_candidate_carries_l2_l3_cons_and_guidance_warnings():

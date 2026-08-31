@@ -42,7 +42,19 @@ Initial V2 的 T02（逐腿 payoff 直算）與 T03（包絡量由 payoff 導出
    `[既有 breakeven 值]`；除了這兩處新增，其餘任何欄位、任何候選的
    數值零變化（含新增／刪除候選集合本身也不變）。
 
-除了以上四個已知、已記錄的例外，其餘期間跑出差異＝有 bug，不是基準
+5. **T14（#233，Initial V2）**——熱力圖 matrix 傳輸壓縮（座標軸去重
+   ＋格值捨入，研究 #216 定案）。這是**破壞性**改變 `matrix`／
+   `comparator.matrix` 的既有形狀：`{prices, dates, cells}`（`cells`
+   為二維陣列）→ `{axis_index, cells}`（`cells` 攤平成一維陣列，並
+   捨入到 `store.MATRIX_CELL_DECIMALS`＝4 位小數——遠細於畫面顯示
+   精度，不造成任何看得到的格值差異）；`prices`／`dates` 移到頂層新增
+   的 `axis_sets` 陣列，本快照函式（`snapshot_numbers()`）同步新增
+   `"axis_sets"` 欄位捕捉它，否則座標軸內容本身被動過但索引剛好沒變
+   時會偵測不到。四個既有策略的**估值本身**（`baseline_return`／
+   Greeks／情境向量等其餘全部欄位）逐位元不變，只有 `matrix` 這一項
+   的傳輸形狀改變，已用腳本逐鍵比對過（不是只看測試綠燈）。
+
+除了以上五個已知、已記錄的例外，其餘期間跑出差異＝有 bug，不是基準
 過期。
 
     PYTHONPATH=. .venv/bin/python scripts/gen_numeric_baseline.py

@@ -342,6 +342,12 @@ def snapshot_numbers(strategy: str) -> dict:
             key: {f: pool[key][f] for f in NUMERIC_BASELINE_FIELDS}
             for key in sorted(pool)
         },
+        # T14（#233，Initial V2）：候選的 `matrix` 現在只存 `axis_index`
+        # 引用（見 `NUMERIC_BASELINE_FIELDS` 裡的 `"matrix"`），實際的
+        # 座標軸內容（`prices`／`dates`）搬到這個獨立的頂層陣列——沒有
+        # 這一份，`axis_sets[N]` 的內容本身若被動過（而索引恰好沒變），
+        # 上面 `candidates` 那份快照完全看不出來。
+        "axis_sets": view.get("axis_sets", []),
     }
 
 
@@ -485,16 +491,20 @@ def test_assert_numbers_unchanged_names_the_candidate_and_the_field():
 
 def test_assert_numbers_unchanged_catches_a_single_heatmap_cell():
     """heatmap 格值是最容易被靜默改掉、也最難用肉眼發現的一塊——
-    改一格就必須紅，而且訊息要指到那一格。"""
+    改一格就必須紅，而且訊息要指到那一格。
+
+    T14（#233，Initial V2）起 `matrix.cells` 是攤平後的一維陣列
+    （座標軸去重＋格值捨入，見 `store.py::_matrix_to_dict()`），改一
+    個索引即可，不再是巢狀的 `[i][j]`。"""
     snap = snapshot_numbers("long-put")
     key = sorted(snap["candidates"])[0]
     tampered = json.loads(json.dumps(snap))
-    tampered["candidates"][key]["matrix"]["cells"][2][3] += 1e-9
+    tampered["candidates"][key]["matrix"]["cells"][0] += 1e-9
     try:
         assert_numbers_unchanged(snap, tampered)
         assert False, "應該要因為 heatmap 格值被動過而失敗"
     except AssertionError as exc:
-        assert "matrix.cells[2][3]" in str(exc)
+        assert "matrix.cells[0]" in str(exc)
 
 
 def test_identity_and_numbers_stay_two_separate_entry_points():

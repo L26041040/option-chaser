@@ -13,7 +13,10 @@ import {
   formatMovePct,
   formatMovePctShort,
   priceTags,
+  resolveComparator,
+  resolveMatrix,
 } from "./heatmap";
+import type { AnalysisView, Comparator, Matrix } from "./api";
 
 function alphaOf(color: string): number {
   const hit = /rgba\([^)]*,\s*([\d.]+)\)/.exec(color);
@@ -279,5 +282,60 @@ describe("Crossover 兩側歸屬（QA 修正：依實際矩陣判定，不預設
   it("矩陣形狀不一致時回 null，不猜、不半算", () => {
     expect(crossoverSides([[0.1, 0.2], [0.3, 0.4]], [[0.1, 0.2]])).toBeNull();
     expect(crossoverSides([[0.1, 0.2]], [[0.1]])).toBeNull();
+  });
+});
+
+describe("resolveMatrix／resolveComparator（T14／#233：熱力圖 matrix 傳輸壓縮）", () => {
+  const axisSets = [
+    { prices: [[90, "<最低>", -0.1], [100, "<現價>", 0]] as Matrix["prices"],
+      dates: [["2026-08-07", ""], ["2026-09-07", ""], ["2026-10-07", ""]] as Matrix["dates"] },
+  ];
+  const view = { axis_sets: axisSets } as unknown as AnalysisView;
+
+  it("新形狀：依 axis_index 查表、把攤平的 cells 依日期數切回二維，"+
+     "順序與後端列優先攤平一致", () => {
+    const wm = { axis_index: 0, cells: [1, 2, 3, 4, 5, 6] };
+    const resolved = resolveMatrix(view, wm);
+    expect(resolved.prices).toEqual(axisSets[0].prices);
+    expect(resolved.dates).toEqual(axisSets[0].dates);
+    expect(resolved.cells).toEqual([[1, 2, 3], [4, 5, 6]]);
+  });
+
+  it("舊形狀（schema_version < 7 的已存 View）：`axis_index` 不存在時" +
+     "原樣回傳，不嘗試解碼——讀取端相容、不做資料遷移", () => {
+    const full: Matrix = {
+      prices: [[100, "", 0]], dates: [["2026-08-07", ""]], cells: [[0.42]],
+    };
+    expect(resolveMatrix(view, full)).toBe(full);
+  });
+
+  it("`axis_index` 越界或 `view.axis_sets` 缺席時回傳空矩陣，"+
+     "不拋錯、不假造內容", () => {
+    expect(resolveMatrix(view, { axis_index: 99, cells: [] }))
+      .toEqual({ prices: [], dates: [], cells: [] });
+    const noAxisView = {} as unknown as AnalysisView;
+    expect(resolveMatrix(noAxisView, { axis_index: 0, cells: [1] }))
+      .toEqual({ prices: [], dates: [], cells: [] });
+  });
+
+  it("comparator 為 null 時原樣回傳 null，不嘗試解它的 matrix", () => {
+    expect(resolveComparator(view, null)).toBeNull();
+  });
+
+  it("comparator 有值時只換掉 matrix 欄位，其餘欄位（option_type／" +
+     "strike／expiry／cost）逐一保留", () => {
+    const comparator: Comparator = {
+      option_type: "call", strike: 118, expiry: "2026-08-07", cost: 1.1,
+      matrix: { axis_index: 0, cells: [1, 2, 3, 4, 5, 6] },
+    };
+    const resolved = resolveComparator(view, comparator)!;
+    expect(resolved.option_type).toBe("call");
+    expect(resolved.strike).toBe(118);
+    expect(resolved.expiry).toBe("2026-08-07");
+    expect(resolved.cost).toBe(1.1);
+    expect(resolved.matrix).toEqual({
+      prices: axisSets[0].prices, dates: axisSets[0].dates,
+      cells: [[1, 2, 3], [4, 5, 6]],
+    });
   });
 });

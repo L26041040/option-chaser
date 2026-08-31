@@ -38,6 +38,7 @@ import {
 import { candidateTitle, formatMove, strategyLabel } from "./detail";
 import { championCandidate, resultForStrategy } from "./family";
 import { isThinPool, legPrices, validPairsForExpiry } from "./expiry";
+import { resolveComparator, resolveMatrix } from "./heatmap";
 import { getScenarioCached } from "./fetchCache";
 import {
   failureLabel, formatAnalyzedAt, formatReturn, money, moneyOrDash,
@@ -68,7 +69,7 @@ function Stat({ label, children }: { label: string; children: React.ReactNode })
  * Payoff Heatmap（spec #102 決策 A）：候選身分、名次、目標報酬與候選池
  * 過少警語已搬到上方的「基準候選」區塊——這裡只剩圖本身。
  */
-function Chart({ candidate }: { candidate: Candidate | null }) {
+function Chart({ view, candidate }: { view: AnalysisView; candidate: Candidate | null }) {
   if (!candidate) {
     return (
       <section className="card">
@@ -86,8 +87,9 @@ function Chart({ candidate }: { candidate: Candidate | null }) {
           概念——單腿候選（買腿本身就是持倉，沒有「跟自己比較」的
           Crossover 概念）刻意不傳這個 prop，讓 `Heatmap` 完全不渲染
           相關區塊，不是渲染成「缺席」。 */}
-      <Heatmap matrix={candidate.matrix}
-               comparator={candidate.legs.length === 2 ? candidate.comparator : undefined} />
+      <Heatmap matrix={resolveMatrix(view, candidate.matrix)}
+               comparator={candidate.legs.length === 2
+                 ? resolveComparator(view, candidate.comparator) : undefined} />
     </section>
   );
 }
@@ -216,7 +218,7 @@ function DetailBody({ scenarioId, view, analyzedAt, strategies }: {
           baseline 候選。 */}
       <Summary view={view} candidate={candidate} result={result} analyzedAt={analyzedAt} />
       <IvHistory scenarioId={scenarioId} candidate={candidate} analyzedAt={analyzedAt} />
-      <Chart candidate={candidate} />
+      <Chart view={view} candidate={candidate} />
       {/* Strategy Family 分頁（T11／#229）：到期日結構／候選池／分析
           報告依目前選中的 family 各自呈現，單一 family 時完全不畫分頁
           列（視覺上與 T11 之前逐位元相同）。 */}

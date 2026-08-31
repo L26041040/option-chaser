@@ -31,23 +31,23 @@
  * 讀成警告），而且線一律畫在 **Spread 較高的那一側**——方向是從矩陣
  * 算出來的，不預設「左上是 Spread、右下是 Long Call」。
  */
-import type { Comparator, Matrix } from "./api";
+import type { Matrix } from "./api";
 import {
   cellColor, columnLabel, crossoverCellSides, crossoverEdges,
   crossoverFavoredSide, crossoverSides, formatCell, formatMovePct,
   formatMovePctShort, priceTags,
-  type CrossoverSide, type CrossoverSides,
+  type CrossoverSide, type CrossoverSides, type ResolvedComparator,
 } from "./heatmap";
 import { money } from "./scenarios";
 
 /** 「Long Call」／「Long Put」——直接讀 `option_type`，不從 strategy
  *  反推（後端已經把型別放進契約，前端只格式化）。 */
-function comparatorKind(c: Comparator): string {
+function comparatorKind(c: ResolvedComparator): string {
   return c.option_type === "call" ? "Long Call" : "Long Put";
 }
 
 /** Comparator 完整標籤：「12/05 105 Long Call」。 */
-function comparatorLabel(c: Comparator): string {
+function comparatorLabel(c: ResolvedComparator): string {
   const [, month, day] = c.expiry.split("-");
   return `${month}/${day} ${c.strike} ${comparatorKind(c)}`;
 }
@@ -80,7 +80,7 @@ function sidesSentence(sides: CrossoverSides, kind: string): string {
 }
 
 function CrossoverLegend({ comparator, edges, favoredSide, sides }: {
-  comparator: Comparator;
+  comparator: ResolvedComparator;
   edges: ReturnType<typeof crossoverEdges>;
   favoredSide: ReturnType<typeof crossoverFavoredSide>;
   sides: CrossoverSides | null;
@@ -110,7 +110,7 @@ function CrossoverLegend({ comparator, edges, favoredSide, sides }: {
 
 export default function Heatmap({ matrix, comparator }: {
   matrix: Matrix;
-  comparator?: Comparator | null;
+  comparator?: ResolvedComparator | null;
 }) {
   const { prices, dates, cells } = matrix;
   // 由高價到低價，與看盤軟體一致（漲在上、跌在下）

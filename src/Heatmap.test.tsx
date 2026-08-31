@@ -4,9 +4,13 @@ import { describe, expect, it } from "vitest";
 import Heatmap from "./Heatmap";
 import sample from "../contracts/analysis_sample.json";
 import { baselineTopCandidate, type AnalysisView, type Matrix } from "./api";
+import { resolveMatrix } from "./heatmap";
 
 const view = sample as unknown as AnalysisView;
-const matrix = baselineTopCandidate(view)!.matrix;
+// T14（#233）：契約樣本的 matrix 是壓縮形狀（{axis_index, cells}），
+// 這份測試檔全程操作的是**已解出**的完整 Matrix——resolveMatrix 只在
+// 讀契約樣本這裡呼叫一次，其餘手造的 Matrix 字面量本來就是完整形狀。
+const matrix = resolveMatrix(view, baselineTopCandidate(view)!.matrix);
 
 /** 報酬率格子＝日期欄那些 `<td>`，不含最右邊的 ±% annotation 欄
  *  （QA-FIX-1）。兩者都是 `<td>`，用 class 分開才不會把 annotation

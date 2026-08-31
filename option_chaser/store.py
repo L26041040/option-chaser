@@ -278,17 +278,33 @@ def raw_snapshot_json(snap: ChainSnapshot) -> dict:
     }
 
 
-def _matrix_to_dict(mv) -> dict:
+# T14（#233，Initial V2，研究 #216 定案的「組合一」）：格值捨入的小數
+# 位數。畫面顯示（`formatCell()`）只到整數百分點（fraction 粒度
+# 0.01），這裡捨入到 0.0001——比顯示精度細 100 倍，純粹省 JSON 文字
+# 位元組，不會造成任何看得到的格值差異；`crossoverEdges()` 這類逐格
+# 比較的前端純函式容忍度（多個百分點量級）也遠粗於這個捨入誤差。
+MATRIX_CELL_DECIMALS = 4
+
+
+def _matrix_to_dict(mv, axis_of) -> dict:
     """`MatrixView`／`ComparatorView.matrix` 共用的序列化形狀——#115 前
     只有 `CandidateView.matrix` 用得到，抽成小函式避免 comparator 的
-    matrix 另外複製一份同樣的三行。"""
-    return {"prices": [list(pt) for pt in mv.prices],
-           "dates": [list(d) for d in mv.dates],
-           "cells": [list(r) for r in mv.cells]}
+    matrix 另外複製一份同樣的三行。
+
+    T14（#233）：座標軸（`prices`／`dates`）不再逐候選內嵌，改由呼叫端
+    傳入的 `axis_of(mv)` 去重後回傳索引（見 `serialize_result()` 裡的
+    `axis_pool`／`axis_sets`）——同一個 scenario 內大量候選共用同一組
+    座標（150 候選實測僅 10 組相異軸，見研究 #216），這是壓縮的主要
+    來源。`cells` 攤平成一維陣列並捨入，恢復成二維要靠 `axis_sets
+    [axis_index].dates` 的長度切分，前端 `resolveMatrix()` 負責這一步
+    （純解碼，不是計算）。"""
+    return {"axis_index": axis_of(mv),
+           "cells": [round(v, MATRIX_CELL_DECIMALS)
+                    for row in mv.cells for v in row]}
 
 
 def _candidate(cv: CandidateView, strategy: str, capital: float | None,
-               today: date, anchor: date, p: AnalysisParams) -> dict:
+               today: date, anchor: date, p: AnalysisParams, axis_of) -> dict:
     v = cv.valuation
     if isinstance(v, SpreadValuation):
         # T12（#228，Initial V2）：`side` 現在顯式標在每一腿上（見
@@ -386,15 +402,18 @@ def _candidate(cv: CandidateView, strategy: str, capital: float | None,
         # `p: AnalysisParams` 參數同名，在同一個函式體裡容易讓人誤讀成
         # 同一個東西（雖然 Python 3 生成式有獨立作用域，實際不會互相
         # 污染）。改用 `pt`（price point）避免這個混淆。
-        "matrix": _matrix_to_dict(cv.matrix),
+        "matrix": _matrix_to_dict(cv.matrix, axis_of),
         # #115（spec #117 §4）：Crossover 對照——None＝單腿候選（無意義）
         # 或買腿報價缺失（結構上不該發生的防禦性 case）。matrix 用同一個
-        # `_matrix_to_dict` 序列化，跟主 matrix 同形狀。
+        # `_matrix_to_dict` 序列化，跟主 matrix 同形狀。T14（#233）：
+        # comparator 的 matrix 與候選自己的 matrix 是同一組 price×date
+        # 座標（#116 既有保證），`axis_of()` 因此自然把兩者去重成同一個
+        # `axis_index`，不需要另外處理。
         "comparator": ({"option_type": cv.comparator.option_type,
                        "strike": cv.comparator.strike,
                        "expiry": cv.comparator.expiry,
                        "cost": cv.comparator.cost,
-                       "matrix": _matrix_to_dict(cv.comparator.matrix)}
+                       "matrix": _matrix_to_dict(cv.comparator.matrix, axis_of)}
                       if cv.comparator is not None else None),
         # spec §3 新增四組（乘除法與日期差，非估值邏輯）
         "capital_per_contract": cap_per,
@@ -445,6 +464,22 @@ def serialize_result(result: AnalysisResult, scenario_id: str,
     # 不影響輸出內容，去重可以安全地只看 key。
     pool: dict[str, dict] = {}
 
+    # T14（#233，Initial V2）：座標軸去重——與上面 `pool` 同一種模式
+    # （見 `cand_key()`），鍵是 `(prices 的 tuple, dates 的 tuple)`，
+    # 第一次遇到某組座標才序列化進 `axis_sets`，其餘候選改存索引引用。
+    axis_pool: dict[tuple, int] = {}
+    axis_sets: list[dict] = []
+
+    def axis_of(mv) -> int:
+        key = (tuple(mv.prices), tuple(mv.dates))
+        idx = axis_pool.get(key)
+        if idx is None:
+            idx = len(axis_sets)
+            axis_pool[key] = idx
+            axis_sets.append({"prices": [list(pt) for pt in mv.prices],
+                              "dates": [list(d) for d in mv.dates]})
+        return idx
+
     def cand_key(cv, strategy) -> str:
         key = candidate_key(cv)
         if key not in pool:
@@ -453,7 +488,8 @@ def serialize_result(result: AnalysisResult, scenario_id: str,
             # 兩者只讀 `p.iv_shifts`，不讀 `p.strategy`——`base` 不必為
             # 每個 `r` 各自替換 strategy 也正確，跟既有 `base.anchor`
             # 的用法一致。
-            pool[key] = _candidate(cv, strategy, capital, today, base.anchor, base)
+            pool[key] = _candidate(cv, strategy, capital, today, base.anchor,
+                                   base, axis_of)
         return key
 
     def strat(r):
@@ -560,7 +596,17 @@ def serialize_result(result: AnalysisResult, scenario_id: str,
         # 軸回饋補上——診斷需要指認「是哪一組」，不是只有計數）。
         # T08（#225，Initial V2）：5→6——新增頂層 `family_eligibility`
         # （純加法）。
-        "schema_version": 6,
+        # T14（#233，Initial V2，研究 #216 定案的「組合一」）：6→7——
+        # 熱力圖 matrix 傳輸壓縮，這次是**破壞性**改變既有欄位形狀
+        # （非純加法）：候選的 `matrix`／`comparator.matrix` 從內嵌完整
+        # `{prices, dates, cells}` 改成 `{axis_index, cells}`（`cells`
+        # 攤平成一維陣列＋捨入到 `MATRIX_CELL_DECIMALS` 位），座標軸
+        # 集中存進新增的頂層 `axis_sets`（去重，見 `axis_of()`）。舊存
+        # 的 View（schema_version < 7）沒有 `axis_sets`，前端
+        # `resolveMatrix()` 讀不到座標軸會顯示「無法解析」而不是誤讀
+        # 出錯誤的圖——這與 T09（#191）當時「既有已儲存的 View 不做
+        # 資料遷移」的既有裁示一致，下一次刷新就會拿到新 schema。
+        "schema_version": 7,
         "engine_version": __version__,
         "analyzed_at": m.fetched_at,
         "scenario_id": scenario_id,
@@ -583,6 +629,11 @@ def serialize_result(result: AnalysisResult, scenario_id: str,
         # 寫進這個字典字面量），確保這裡讀到的 `pool` 已收齊兩邊寫入的
         # 全部候選，不受字典字面量鍵值對求值順序影響。
         "candidate_pool": pool,
+        # T14（#233，Initial V2）：座標軸去重後的集中儲存區——同一份
+        # `axis_of()` closure 已在算 `results`／`expiry_groups` 的過程
+        # 副作用寫入，這裡直接讀已經填好的區域變數（跟 `pool` 同一個
+        # 讀取時機保證）。
+        "axis_sets": axis_sets,
         "expiry_groups": expiry_groups,
         "hidden_expiries": list(result.hidden_expiries),
         "default_selection": (list(result.default_selection)

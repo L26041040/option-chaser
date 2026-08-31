@@ -6,6 +6,52 @@
  * 「長什麼樣」：配色、格式、標籤文字。與舊 Streamlit 版
  * `webapp/render.py` 的 `cell_color`／`_price_tag` 同一份語意。
  */
+import type {
+  AnalysisView, Comparator, Matrix, WireMatrix,
+} from "./api";
+
+/**
+ * T14（#233，Initial V2，研究 #216 定案的「組合一」）：把候選矩陣的
+ * 傳輸形狀（`WireMatrix`）解回 `<Heatmap>` 要吃的完整 `Matrix`——
+ * 純解碼，不是計算：
+ *
+ * - 新 schema（`{axis_index, cells}`）：查 `view.axis_sets[axis_index]`
+ *   拿回 `prices`／`dates`，再把攤平的 `cells` 依 `dates.length` 切回
+ *   二維（`cells[i*numDates+j]` 對應舊版 `cells[i][j]`，與後端
+ *   `_matrix_to_dict()` 攤平時的列優先順序一致）。
+ * - 舊 schema（`schema_version < 7` 的已存 View，直接就是完整
+ *   `{prices, dates, cells}`）：`"axis_index" in wm` 為假，原樣回傳
+ *   ——T09（#191）既有裁示「舊存的 View 不做資料遷移」的延伸，讀取端
+ *   維持相容。
+ *
+ * 解不出座標軸（理論上不該發生：`axis_sets` 缺席或索引越界）時回傳
+ * 空矩陣而不是拋錯或假造內容——`<Heatmap>` 對空 `prices`／`dates`
+ * 已經能正常畫出一張沒有任何列的表，不會白屏。
+ */
+export function resolveMatrix(view: AnalysisView, wm: WireMatrix): Matrix {
+  if (!("axis_index" in wm)) return wm;
+  const axis = view.axis_sets?.[wm.axis_index];
+  if (!axis) return { prices: [], dates: [], cells: [] };
+  const numDates = axis.dates.length;
+  const cells: number[][] = [];
+  for (let i = 0; i < axis.prices.length; i++) {
+    cells.push(wm.cells.slice(i * numDates, (i + 1) * numDates));
+  }
+  return { prices: axis.prices, dates: axis.dates, cells };
+}
+
+/** `<Heatmap>` 的 `comparator` prop 要吃的形狀——`matrix` 已經是解碼
+ *  過的完整 `Matrix`，不是 wire 上的 `WireMatrix`。 */
+export type ResolvedComparator = Omit<Comparator, "matrix"> & { matrix: Matrix };
+
+/** `resolveMatrix()` 的 Comparator 版本——`null` 原樣穿透（誠實的
+ *  「買腿報價缺失」狀態，不是要解碼的東西）。 */
+export function resolveComparator(
+  view: AnalysisView, comparator: Comparator | null,
+): ResolvedComparator | null {
+  if (comparator === null) return null;
+  return { ...comparator, matrix: resolveMatrix(view, comparator.matrix) };
+}
 
 /** |報酬率| 小於這個值視為中性（不上色）。沿用既有 5% 口徑。 */
 export const NEUTRAL_BAND = 0.05;

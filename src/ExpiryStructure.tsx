@@ -19,9 +19,12 @@ import { candidateTitle, strategyLabel } from "./detail";
 import {
   expiryOptions, isThinPool, legPrices, resolveExpiry, type ExpiryBearing,
 } from "./expiry";
+import { resolveComparator, resolveMatrix } from "./heatmap";
 import { formatReturn, money } from "./scenarios";
 
-function CandidateRow({ candidate, rank }: { candidate: Candidate; rank: number }) {
+function CandidateRow({ view, candidate, rank }: {
+  view: AnalysisView; candidate: Candidate; rank: number;
+}) {
   const prices = legPrices(candidate);
   return (
     <li>
@@ -78,8 +81,9 @@ function CandidateRow({ candidate, rank }: { candidate: Candidate; rank: number 
         </summary>
         {/* Crossover Boundary（#116）：同 `ScenarioDetail.tsx` 的判準
             ——單腿候選不傳 `comparator`，不是渲染成「缺席」。 */}
-        <Heatmap matrix={candidate.matrix}
-                 comparator={candidate.legs.length === 2 ? candidate.comparator : undefined} />
+        <Heatmap matrix={resolveMatrix(view, candidate.matrix)}
+                 comparator={candidate.legs.length === 2
+                   ? resolveComparator(view, candidate.comparator) : undefined} />
       </details>
     </li>
   );
@@ -146,6 +150,7 @@ export default function ExpiryStructure({
           {shown.candidates.map((candidate, i) => (
             <CandidateRow
               key={candidate.candidate_key}
+              view={view}
               candidate={candidate}
               rank={i + 1}
             />

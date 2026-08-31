@@ -106,6 +106,34 @@ export interface Matrix {
   cells: number[][];
 }
 
+/**
+ * T14（#233，Initial V2，研究 #216 定案的「組合一」）：座標軸集合——
+ * 同一個 scenario 內，不同候選之間的 (prices, dates) 座標高度重複
+ * （150 候選實測僅 10 組相異軸），因此抽到 `AnalysisView.axis_sets`
+ * 集中存放一次，候選只留索引引用（`CompactMatrix.axis_index`）。
+ */
+export type AxisSet = Pick<Matrix, "prices" | "dates">;
+
+/**
+ * 候選矩陣在**新** schema（`schema_version >= 7`）下的傳輸形狀——
+ * `cells` 攤平成一維陣列並捨入（`option_chaser/store.py::
+ * MATRIX_CELL_DECIMALS`），恢復成二維要靠 `axis_sets[axis_index].
+ * dates` 的長度切分（`resolveMatrix()`，`./heatmap`）。
+ */
+export interface CompactMatrix {
+  axis_index: number;
+  cells: number[];
+}
+
+/**
+ * 候選矩陣的兩種可能形狀：新分析一律產出 `CompactMatrix`；
+ * `schema_version < 7` 時已存的舊 View（T09／#191 既有裁示：舊存的
+ * View 不做資料遷移）仍是完整內嵌的 `Matrix`。`resolveMatrix()` 對
+ * 兩種形狀都能正確解出同一份完整 `Matrix`——用 `"axis_index" in`
+ * 判斷是哪一種，不靠 `schema_version` 分支（呼叫端不必知道版本號）。
+ */
+export type WireMatrix = CompactMatrix | Matrix;
+
 /** 一個劇本價位與該候選在那個價位上的報酬（口徑同 `baseline_return`）。 */
 export interface PricePoint {
   label: "worst" | "target" | "best";
@@ -126,7 +154,10 @@ export interface Comparator {
   strike: number;
   expiry: string;
   cost: number;
-  matrix: Matrix;
+  /** T14（#233，Initial V2）：與該候選自己的 `matrix` 共用同一個
+   *  `axis_index`（#116 既有的「同一組 price×date grid」保證，去重
+   *  自然成立，不需要另外處理）。 */
+  matrix: WireMatrix;
 }
 
 /** 引擎的 `ScenarioVector`（7 個固定壓力情境，Mid 口徑）。 */
@@ -218,7 +249,11 @@ export interface Candidate {
    */
   monotonicity_warning: boolean;
   legs: CandidateLegs;
-  matrix: Matrix;
+  /** T14（#233，Initial V2）：座標軸去重＋格值攤平捨入後的傳輸形狀
+   *  ——用 `resolveMatrix(view, candidate.matrix)`（`./heatmap`）解回
+   *  完整 `Matrix` 才能餵給 `<Heatmap>`，不要直接把這個欄位當
+   *  `Matrix` 用。 */
+  matrix: WireMatrix;
   /**
    * #115（spec #117 §4）：Crossover 對照——只有 Spread 候選有值；單腿
    * 恆為 `null`（沒有「跟自己比較」的概念）。Spread 候選理論上也可能
@@ -393,6 +428,15 @@ export interface AnalysisView {
    * （schema_version < 6）沒有這個欄位。
    */
   family_eligibility?: Record<string, FamilyEligibility>;
+  /**
+   * T14（#233，Initial V2）：座標軸去重後的集中儲存區——候選的
+   * `matrix.axis_index`／`comparator.matrix.axis_index` 都是這個陣列
+   * 的索引。可選——舊存的 View（schema_version < 7）沒有這個欄位，
+   * 此時候選的 `matrix` 本身就是完整 `Matrix`（`WireMatrix` 的另一種
+   * 形狀），`resolveMatrix()` 用 `"axis_index" in` 判斷、不依賴這個
+   * 欄位是否存在。
+   */
+  axis_sets?: AxisSet[];
 }
 
 /**
