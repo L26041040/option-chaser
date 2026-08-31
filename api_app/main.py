@@ -773,6 +773,13 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         # 可能仍是遷移前的 legacy subtype 字串（#221），兩邊都先正規化
         # 成 family 再比較——否則「同一個 family、只是舊資料存的是
         # subtype 字串」會被誤判成改變，白白清掉還沒過期的結果。
+        # ⚠ 兩側正規化不對稱是刻意、非巧合：`updated.strategies` 已經是
+        # `new_strategies`（上面已正規化過），這裡不必再正規化一次；
+        # 只有 `sc.strategies`（可能是遷移前的 legacy subtype 字串）
+        # 需要正規化才能跟已正規化的 `updated.strategies` 比對。若日後
+        # `updated.strategies` 的來源不再保證已正規化（例如 pydantic
+        # 白名單放寬），這裡也要同步補上正規化，否則這條不對稱假設會
+        # 悄悄失效。
         thesis_changed = (
             (sc.target_price, sc.target_month, sc.best_price, sc.worst_price,
              normalize_families(sc.strategies))
