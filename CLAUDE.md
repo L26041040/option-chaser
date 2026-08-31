@@ -5549,9 +5549,34 @@ CLAUDE.md 隨手更新。
   build 皆過；Playwright e2e 92 條（iPhone＋Desktop）全綠。**#226
   已 close**。
 
-**下一步**：T07（#224）／T08（#225，皆被 T06 解鎖、無其他 blocker）
-可任意順序開工。T05／T06／T09／T12 均已完成，Initial V2 剩餘票的
-blocker 狀態依此更新。
+- **T07**（#224，commit `1bc4153`＋跟進 `f993884`）✅ per-family 代表
+  候選與最高報酬落盤（additive）——Owner 裁示「B 儲存＋A 顯示」：
+  顯示面本輪維持單一個跨 family 冠軍，儲存面額外把每個 family 各自
+  的代表候選與最高報酬也落盤。`option_chaser/store.py` 新增
+  `representative_candidates_by_family(view)`：與既有
+  `representative_candidate()` 同一次走訪、同一個候選池（抽出共用
+  `_baseline_group()`／`_project_representative_row()` 兩個私有函式，
+  既有函式行為逐位元不變），只是依 family（`STRATEGY_FAMILY` 對照表）
+  分組各自取最大值。一致性保證（AC 要求：per-family map 取 max 後
+  等於 scalar 冠軍）是代數性質、非巧合。`api_app/storage/__init__.py`
+  的 `ResultRecord`／`ResultSummary` 新增 `per_family: dict | None =
+  None`（純加法，落盤層 `None` 語意與既有 `representative_candidate`
+  一致）；`postgres.py` 的 `results` 表新增 `per_family JSONB`，沿用
+  既有「建表與遷移分兩批送」教訓；`memory.py` 補上轉遞。
+  `main.py::_refresh_and_save()` 接上——卡片列（`_row_json`／
+  `_summary_of`）刻意未觸碰，AC 明文「清單排序與卡片讀取端零改動」。
+  `/code-review` 兩軸：Spec 軸零缺漏、零 scope creep；Standards 軸
+  抓到一個真重複（`_refresh_and_save()` 原本各自獨立呼叫兩個函式、
+  各自重掃一次候選池），已在跟進 commit 修正為只呼叫 per-family
+  版本一次、scalar 冠軍改用 `max()` 從中導出（與既有 `best_return()`
+  由 `representative_candidate()` 導出、`main.py` 內聯避免重複走訪
+  同一種既有作法）。新增 10 條測試（純函式 5 條、儲存契約 4 條、
+  端到端 wiring 1 條），全套後端測試綠燈（記憶體＋真實 Postgres
+  雙後端）。純後端／儲存層改動，未觸碰任何前端檔案與 API 契約序列化。
+  **#224 已 close**。
+
+**下一步**：T08（#225，被 T06 解鎖、無其他 blocker）。T05／T06／T07／
+T09／T12 均已完成，Initial V2 剩餘票的 blocker 狀態依此更新。
 
 ### 施工依據
 
