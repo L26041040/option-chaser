@@ -326,6 +326,64 @@ def test_representative_candidate_single_leg_has_exactly_one_leg():
     assert rep["legs"][0]["option_type"] == "call"
 
 
+# ---------- per-family 代表候選（T07／#224，Initial V2）----------
+
+def test_representative_candidates_by_family_splits_by_family_not_strategy():
+    """`long-call` 屬於 `single-leg` family，`bull-call-spread` 屬於
+    `vertical-spread` family——兩者同時出現在同一次分析時，per-family
+    map 應該各自有一筆，而不是被單一跨 family 冠軍蓋掉其中一個。"""
+    view = store.serialize_result(_result(("long-call", "bull-call-spread")),
+                                  "S", None)
+    per_family = store.representative_candidates_by_family(view)
+    assert set(per_family) == {"single-leg", "vertical-spread"}
+    assert per_family["single-leg"]["strategy"] == "long-call"
+    assert per_family["vertical-spread"]["strategy"] == "bull-call-spread"
+
+
+def test_representative_candidates_by_family_max_equals_the_scalar_champion():
+    """AC 明文要求的一致性保證：per-family map 裡的最高報酬取 `max()`
+    後，等於跨 family 的 scalar 冠軍（`representative_candidate()`）
+    ——兩者是同一個候選池、同一個排序鍵，只是分組粒度不同。"""
+    for strategies in (("long-call",), ("bull-call-spread",),
+                       ("long-call", "bull-call-spread")):
+        view = store.serialize_result(_result(strategies), "S", None)
+        per_family = store.representative_candidates_by_family(view)
+        scalar = store.representative_candidate(view)
+        assert max(v["baseline_return"] for v in per_family.values()) == \
+            scalar["baseline_return"]
+
+
+def test_representative_candidates_by_family_is_empty_dict_not_none_when_view_present():
+    """與 `representative_candidate()` 回 `None` 的差異是刻意的
+    （見函式 docstring）：這裡回空 dict，呼叫端不必為了「完全沒有任何
+    family」多判斷一次 `None`。"""
+    view = store.serialize_result(_result(), "S", None)
+    empty = dict(view, baseline_expiry="2099-12-31")
+    assert store.representative_candidates_by_family(empty) == {}
+    assert store.representative_candidates_by_family(None) == {}
+
+
+def test_representative_candidates_by_family_ignores_comparison_and_stays_baseline_scoped():
+    """同 `representative_candidate()` 的既有回歸防護（MVP-v2／#77、#78
+    口徑鎖死裁示）：per-family 版本必須看到完全相同的候選池，否則
+    「max 後等於 scalar 冠軍」這條一致性保證會失效。"""
+    view = store.serialize_result(_result(), "S", None)
+    decoy = [{"strategy": "bull-call-spread", "baseline_return": 999.0,
+             "expiry": "1999-01-01", "label": "decoy", "cost": 0.0,
+             "breakeven": 0.0, "max_profit": None}]
+    poisoned = dict(view, comparison=decoy)
+
+    per_family = store.representative_candidates_by_family(poisoned)
+    assert all(v["baseline_return"] != 999.0 for v in per_family.values())
+    assert per_family == store.representative_candidates_by_family(view)
+
+
+def test_representative_candidates_by_family_single_leg_has_exactly_one_leg():
+    view = store.serialize_result(_result(("long-call",)), "S", None)
+    per_family = store.representative_candidates_by_family(view)
+    assert len(per_family["single-leg"]["legs"]) == 1
+
+
 # ---------- find_candidate：單腳候選查找（#139／spec #137）----------
 #
 # 施工中發現：`find_candidate` 原本只掃 `expiry_top10`（T9 附錄A7 明文

@@ -632,6 +632,51 @@ def test_latest_summaries_carries_the_representative_candidate(storage):
     assert storage.latest_summaries()["s1"].representative_candidate == _REP
 
 
+# ---------- per-family 代表候選（T07／#224，Initial V2） ----------
+
+_PER_FAMILY = {
+    "vertical-spread": _REP,
+    "single-leg": {"strategy": "long-call",
+                  "legs": [{"strike": 110.0, "option_type": "call", "side": "buy"}],
+                  "expiry": "2028-05-19", "baseline_return": 0.9},
+}
+
+
+def test_per_family_survives_the_result_roundtrip(storage):
+    """與 `representative_candidate` 同一個模式：規則只有一份
+    （`store.representative_candidates_by_family`），這裡只是落盤結果
+    要能存得進、讀得回，含 `latest_result`／`result_history` 兩個
+    讀取路徑，形狀不失真。"""
+    storage.create_scenario(_scenario("s1"))
+    storage.save_result(ResultRecord(
+        "s1", "2026-08-01T00:00:00+00:00", {"n": 1},
+        best_return=1.25, representative_candidate=_REP,
+        per_family=_PER_FAMILY))
+    assert storage.latest_result("s1").per_family == _PER_FAMILY
+    assert storage.result_history("s1")[0].per_family == _PER_FAMILY
+
+
+def test_per_family_defaults_to_none(storage):
+    """舊結果紀錄（本票之前寫入的、或本票之後但分析當下沒有 baseline
+    期可比的）讀回來是 `None`，不是一個編出來的空 dict——`ResultRecord`
+    的預設值本身就是 `None`，既有行為不受影響。"""
+    storage.create_scenario(_scenario("s1"))
+    storage.save_result(ResultRecord("s1", "2026-08-01T00:00:00+00:00",
+                                     {"n": 1}, best_return=None))
+    assert storage.latest_result("s1").per_family is None
+
+
+def test_latest_summaries_carries_per_family(storage):
+    """清單查詢一併帶著 per-family map——本輪 UI 不消費它，但落盤與
+    讀取路徑必須先接通，日後才可能零遷移切換顯示面。"""
+    storage.create_scenario(_scenario("s1"))
+    storage.save_result(ResultRecord(
+        "s1", "2026-08-01T00:00:00+00:00", {"n": 1},
+        best_return=1.25, representative_candidate=_REP,
+        per_family=_PER_FAMILY))
+    assert storage.latest_summaries()["s1"].per_family == _PER_FAMILY
+
+
 # ---------- 資料源設定與 credential（Settings／#124） ----------
 
 _CUSTOM = UsageSetting(mode="custom", provider="marketdata-app")
@@ -1156,6 +1201,42 @@ def test_existing_results_table_gains_the_representative_candidate_column():
     st.save_result(ResultRecord("mig2", "2026-08-01T00:00:00+00:00", {"n": 1},
                                best_return=0.75, representative_candidate=_REP))
     assert st.latest_summaries()["mig2"].representative_candidate == _REP
+
+
+def test_existing_results_table_gains_the_per_family_column():
+    """T07（#224，Initial V2）：既有部署的 `results` 表在本票之前只有到
+    `spot` 為止——`per_family` 一樣得靠 `ALTER TABLE ... ADD COLUMN
+    IF NOT EXISTS` 補上，同一條路徑、同一個理由（見
+    `test_existing_results_table_gains_the_new_column`）。"""
+    if not TEST_DB_URL:
+        pytest.skip("需要 OC_TEST_DATABASE_URL（一個跑著的 Postgres）")
+    import psycopg
+
+    from api_app.storage import postgres as pg
+
+    with psycopg.connect(TEST_DB_URL, autocommit=True) as conn:
+        conn.execute("TRUNCATE scenarios, results, snapshots, events, rate_cache, "
+                     "dividend_cache, treasury_year_cache, data_source_settings, "
+                     "provider_credentials, provider_verifications, "
+                     "iv_observations, iv_backfill_runs, contract_iv_history "
+                     "RESTART IDENTITY")
+        conn.execute("DROP TABLE IF EXISTS results")
+        # T07 之前的舊表：有 best_return／representative_candidate／
+        # spot，還沒有 per_family。
+        conn.execute("CREATE TABLE results ("
+                     "scenario_id TEXT NOT NULL, analyzed_at TEXT NOT NULL, "
+                     "view JSONB NOT NULL, best_return DOUBLE PRECISION, "
+                     "representative_candidate JSONB, spot DOUBLE PRECISION, "
+                     "PRIMARY KEY (scenario_id, analyzed_at))")
+
+    pg._schema_ready.discard(TEST_DB_URL)
+    st = pg.PostgresStorage(TEST_DB_URL)
+
+    st.create_scenario(_scenario("mig3"))
+    st.save_result(ResultRecord("mig3", "2026-08-01T00:00:00+00:00", {"n": 1},
+                               best_return=0.75, representative_candidate=_REP,
+                               per_family=_PER_FAMILY))
+    assert st.latest_summaries()["mig3"].per_family == _PER_FAMILY
 
 
 def test_migration_still_applies_when_table_creation_hits_a_race():

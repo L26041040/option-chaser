@@ -142,6 +142,25 @@ def test_created_scenario_persists_a_family_code_not_a_subtype():
     assert sc["strategies"] == ["vertical-spread"]
 
 
+def test_refresh_saves_a_per_family_representative_alongside_the_scalar_champion():
+    """T07（#224，Initial V2）：`_refresh_and_save()` 接上
+    `store.representative_candidates_by_family()`——落盤的
+    `ResultRecord.per_family` 要能指到 `_MVP_STRATEGIES` 唯一啟用的
+    family（`vertical-spread`），且其報酬與既有的 scalar 冠軍
+    （`representative_candidate`）一致（本輪只有一個 family 啟用，
+    兩者理應完全相等）。"""
+    storage = MemoryStorage()
+    client = _client(storage)
+    sc_id = client.post("/api/scenarios", json={
+        "symbol": "XYZ", "target_price": 130.0, "target_month": "2026-09"}).json()["id"]
+    client.post(f"/api/scenarios/{sc_id}/refresh")
+
+    rec = storage.latest_result(sc_id)
+    assert rec.per_family is not None
+    assert set(rec.per_family) == {"vertical-spread"}
+    assert rec.per_family["vertical-spread"] == rec.representative_candidate
+
+
 def test_scenario_created_event_records_only_the_family():
     """AC：建立事件只記錄 family（使用者的選擇），不記錄任何依賴現價或
     當日而變的推導結果（例如展開後的 subtype 清單、方向 eligibility）。"""

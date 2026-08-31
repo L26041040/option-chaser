@@ -874,11 +874,15 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         representative_candidate = store.representative_candidate(view)
         best_return = (representative_candidate["baseline_return"]
                        if representative_candidate is not None else None)
+        # T07（#224，Initial V2）：per-family 版本額外落盤——Owner 裁示
+        # 的「B 儲存＋A 顯示」，顯示面（`_row_json`／`_summary_of`）本輪
+        # 不消費它，只有 `ResultRecord.per_family` 帶著。
+        per_family = store.representative_candidates_by_family(view)
         _db().save_result(ResultRecord(
             scenario_id=sc.id, analyzed_at=analyzed_at, view=view,
             best_return=best_return,
             representative_candidate=representative_candidate,
-            spot=store.spot(view)))
+            spot=store.spot(view), per_family=per_family or None))
         _db().save_snapshot(sc.id, analyzed_at, snapshot)
         _db().append_event(ts=now_utc_iso(), scenario_id=sc.id,
                            event="ANALYSIS_COMPLETED",

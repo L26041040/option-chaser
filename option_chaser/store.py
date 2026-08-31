@@ -10,7 +10,7 @@ from datetime import date
 from typing import Iterable
 
 from . import __version__
-from .models import AnalysisParams, ChainSnapshot
+from .models import AnalysisParams, ChainSnapshot, STRATEGY_FAMILY
 from .ranking import baseline_return, spread_baseline_return
 from .report import disclaimer_text
 from .scenarios import natural_cost
@@ -62,15 +62,32 @@ def representative_candidate(view: dict | None) -> dict | None:
     """
     if view is None:
         return None
-    group = next((g for g in view["expiry_groups"]
-                 if g["expiry"] == view.get("baseline_expiry")), None)
+    group = _baseline_group(view)
     if group is None or not group["rows"]:
         return None
     best_row = max(group["rows"],
                    key=lambda row: _candidate_of(view, row)["baseline_return"])
-    candidate = _candidate_of(view, best_row)
+    return _project_representative_row(view, group, best_row)
+
+
+def _baseline_group(view: dict) -> dict | None:
+    """`representative_candidate()`／`representative_candidates_by_
+    family()` 共用的同一次走訪起點——baseline 期（最接近目標年月的
+    到期日）在 `expiry_groups` 裡的那一組。抽出來是 T07（#224）新增
+    per-family 版本時發現的重複，不是新規則：兩個函式必須看到完全
+    相同的候選池，才能保證「per-family map 取最大值後等於 scalar
+    冠軍」這條一致性。"""
+    return next((g for g in view["expiry_groups"]
+                if g["expiry"] == view.get("baseline_expiry")), None)
+
+
+def _project_representative_row(view: dict, group: dict, row: dict) -> dict:
+    """把 baseline 期一列 row 投影成清單卡片要的輕量代表候選形狀——
+    `representative_candidate()`／`representative_candidates_by_
+    family()` 共用同一份投影邏輯，只是挑選 row 的分組粒度不同。"""
+    candidate = _candidate_of(view, row)
     return {
-        "strategy": best_row["strategy"],
+        "strategy": row["strategy"],
         # T12（#228，Initial V2）：`side` 一併投影進這個輕量代表候選——
         # 前端 `formatRepresentativeLegs()` 過去靠陣列位置（[0]=買、
         # [1]=賣）猜方向，現在改讀這個顯式欄位。`leg.get("side", ...)`
@@ -82,6 +99,46 @@ def representative_candidate(view: dict | None) -> dict | None:
                 for i, leg in enumerate(candidate["legs"])],
         "expiry": group["expiry"],
         "baseline_return": candidate["baseline_return"],
+    }
+
+
+def representative_candidates_by_family(view: dict | None) -> dict:
+    """T07（#224，Initial V2 spec #217）：Owner 裁示的「B 儲存＋A 顯示」
+    ——顯示面本輪維持單一個跨 family 冠軍（`representative_candidate()`，
+    T11 消費），但儲存面額外把每個 family 各自的代表候選與最高報酬也
+    落盤，日後若要改成逐 family 顯示，不必回頭重新分析所有歷史結果。
+
+    與 `representative_candidate()` **同一次走訪、同一個候選池**
+    （`_baseline_group()`），只是改成先依 family（`STRATEGY_FAMILY`
+    對照表，`row["strategy"]` 已經是具體 subtype 代碼）分組，各組
+    各自取 `baseline_return` 最高者——不是另一套排名規則，純粹是
+    分組粒度不同。
+
+    一致性保證（AC 明文要求）：這份 map 裡的最高報酬取 `max()` 後，
+    等於 `representative_candidate()` 的報酬——因為兩者是同一個候選
+    池、同一個排序鍵，只是分組粒度不同：全池的最大值必然等於「各
+    family 子池最大值」的最大值，這是 `max()` 對分割後子集合取最大值
+    再取最大值的代數性質，不是需要另外維護的規則。
+
+    baseline 期不在 `expiry_groups`、該期零合格候選、或 view 本身為
+    `None` → 空 dict（與 `representative_candidate()` 回 `None` 同一種
+    「沒有東西可顯示」，這裡回空 map 而非 `None`——呼叫端不必為了
+    「完全沒有任何 family」多判斷一次 `None`，`{}` 本身已經自然表達
+    「這裡什麼都沒有」）。"""
+    if view is None:
+        return {}
+    group = _baseline_group(view)
+    if group is None or not group["rows"]:
+        return {}
+    by_family: dict[str, list[dict]] = {}
+    for row in group["rows"]:
+        family = STRATEGY_FAMILY.get(row["strategy"], row["strategy"])
+        by_family.setdefault(family, []).append(row)
+    return {
+        family: _project_representative_row(
+            view, group,
+            max(rows, key=lambda row: _candidate_of(view, row)["baseline_return"]))
+        for family, rows in by_family.items()
     }
 
 
