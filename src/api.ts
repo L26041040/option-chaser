@@ -138,6 +138,15 @@ export interface ScenarioVectorView {
 
 export interface Candidate {
   candidate_key: string;
+  /**
+   * T11（#229，Initial V2）：這組候選實際跑的 subtype 代碼（例如
+   * "bull-call-spread"）——後端 `store._candidate()` 早就序列化這個
+   * 欄位（T12／#228 施工時已確認「不新增一個名字不同、值卻恆等的
+   * `subtype` 欄位」），前端直到本票才開始讀它：多 family 並存後，
+   * 同一個排名池裡的候選可能來自不同 subtype，每一列需要標示出它
+   * 實際是哪一種結構（`detail.strategyLabel()` 格式化成人看得懂的名字）。
+   */
+  strategy: string;
   baseline_return: number;
   natural_cost: number;
   /** MVP V3（#105）：Mid 口徑進場成本——Analysis Report → Execution

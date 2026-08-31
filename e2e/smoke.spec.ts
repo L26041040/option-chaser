@@ -2343,6 +2343,99 @@ test("手機版：編輯可以增減 family，儲存後送出目前完整的勾�
   expect(patched[0].strategies).toEqual(["vertical-spread", "single-leg"]);
 });
 
+/* ---------- T11（#229）：Strategy Family 分頁 ---------- */
+
+/**
+ * 手造一份包含兩個 family 的 view——真實契約樣本恆為單一策略，測不出
+ * 分頁列與切換行為。champion（Vertical Spread）沿用契約樣本的完整
+ * 候選（矩陣／腿位皆真實），Call / Put 那組另外拼一份較低報酬的單腿
+ * 候選，確保冠軍固定停在 Vertical Spread（AC：卡片頭條＝跨 family
+ * 冠軍，切換分頁不影響它）。
+ */
+function multiFamilyView() {
+  const champKey = view.results[0].expiry_top10![0].candidate_keys[0];
+  const champ = candOf(view, champKey);
+  const buyLeg = (champ as any).legs.find((l: any) => l.side === "buy");
+  const lc = {
+    ...champ, candidate_key: "lc-key", strategy: "long-call",
+    baseline_return: 0.2, comparator: null, legs: [buyLeg],
+  };
+  return {
+    ...view,
+    results: [
+      { strategy: "bear-put-spread", status: "skipped_direction", message: "跳過",
+       n_qualified: 0, filter_report: null, filter_stages: [], quality_flags: [],
+       pair_report: null, expiry_counts: [], expiry_top10: [], disclaimer_text: "" },
+      ...view.results,
+      { strategy: "long-call", status: "ok", message: "", n_qualified: 1,
+       filter_report: { total: 1, passed: 1 }, filter_stages: [], quality_flags: [],
+       pair_report: null,
+       expiry_counts: [[view.baseline_expiry, 1]],
+       expiry_top10: [{ expiry: view.baseline_expiry, candidate_keys: ["lc-key"] }],
+       disclaimer_text: "" },
+    ],
+    candidate_pool: { ...view.candidate_pool, "lc-key": lc },
+    family_eligibility: {
+      "single-leg": { family: "single-leg", eligible: true, reason: null },
+      "vertical-spread": { family: "vertical-spread", eligible: true, reason: null },
+      "butterfly": { family: "butterfly", eligible: false,
+                    reason: "這個策略家族目前還沒有任何已啟用的具體結構。" },
+    },
+  };
+}
+
+test("手機版：多 family 並存——分頁列出、預設打開冠軍所屬 family、切換分頁"
+     + "只換排名內容不影響頭條（T11／#229，Call/Put 端到端可用）",
+   async ({ page }) => {
+  const row = { ...libraryRow(), strategies: ["single-leg", "vertical-spread"] };
+  const multi = multiFamilyView();
+  await routeLibrary(page, row);
+  await page.route("**/api/scenarios/s1", (route) =>
+    route.fulfill({ json: { ...row, latest_result: multi } }));
+
+  await page.goto("/");
+  await page.getByRole("link", { name: /XYZ/ }).click();
+  await expect(page.getByText(/劇本主圖/)).toBeVisible();
+
+  const tabs = page.getByRole("group", { name: "策略家族" });
+  await expect(tabs.getByRole("button")).toHaveCount(2);
+  await expect(tabs.getByRole("button", { name: "Vertical Spread" }))
+    .toHaveAttribute("aria-pressed", "true");
+
+  // 頭條（摘要卡）固定顯示冠軍——Bull Call Spread。
+  const summary = page.getByRole("region", { name: "劇本摘要" });
+  await expect(summary.getByText("Bull Call Spread")).toBeVisible();
+
+  await tabs.getByRole("button", { name: "Call / Put" }).click();
+  await expect(tabs.getByRole("button", { name: "Call / Put" }))
+    .toHaveAttribute("aria-pressed", "true");
+  // Long Call 到期日分組真的可看——這正是 AC「Call/Put 端到端可用」。
+  await expect(page.getByText("Long Call").first()).toBeVisible();
+
+  // 分頁切走了，頭條依然是冠軍，不隨分頁切換而改變。
+  await expect(summary.getByText("Bull Call Spread")).toBeVisible();
+});
+
+test("手機版：不可選的 family 有分頁、點得進去看得到原因（T11／#229，facts-only）",
+   async ({ page }) => {
+  const row = { ...libraryRow(),
+               strategies: ["single-leg", "vertical-spread", "butterfly"] };
+  const multi = multiFamilyView();
+  await routeLibrary(page, row);
+  await page.route("**/api/scenarios/s1", (route) =>
+    route.fulfill({ json: { ...row, latest_result: multi } }));
+
+  await page.goto("/");
+  await page.getByRole("link", { name: /XYZ/ }).click();
+  await expect(page.getByText(/劇本主圖/)).toBeVisible();
+
+  await page.getByRole("group", { name: "策略家族" })
+    .getByRole("button", { name: "Butterfly" }).click();
+
+  await expect(page.getByText("這個策略家族目前還沒有任何已啟用的具體結構。"))
+    .toBeVisible();
+});
+
 /* ---------- SIG-04（#175）：Mobile 紅線鎖定 ---------- */
 
 /** Spread IV Gap（SIG-01／#172）的完整回應區塊——跟 `legHistoricalIv()`

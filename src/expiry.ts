@@ -12,6 +12,15 @@ import { findLeg, resolveCandidate } from "./api";
 /** 低於這個組數就警示——沿用 Streamlit 版 FB3-02（#45）的門檻。 */
 export const THIN_POOL = 3;
 
+/**
+ * T11（#229，Initial V2）：`expiryOptions`／`validPairsForExpiry` 只
+ * 真正讀取這兩個欄位——窄化型別讓 `family.ts::mergedExpiryTop10()`
+ * 合併多個 subtype 排名池後產生的「非真實 `StrategyResult`」也能直接
+ * 餵進來，不必為了滿足型別而假造一份其餘欄位無意義的完整物件。既有
+ * 呼叫端傳入真正的 `StrategyResult` 依然成立（結構上是這個型別的子集）。
+ */
+export type ExpiryBearing = Pick<StrategyResult, "expiry_top10" | "expiry_counts">;
+
 export interface ExpiryOption {
   expiry: string;
   /** 該期最高收益＝該期第 1 名的劇本報酬。沒有候選時為 null。 */
@@ -34,7 +43,7 @@ export interface ExpiryOption {
  * 濾掉，不讓 `null` 混進 `Candidate[]`。
  */
 export function expiryOptions(
-  view: AnalysisView, result: StrategyResult,
+  view: AnalysisView, result: ExpiryBearing,
 ): ExpiryOption[] {
   return (result.expiry_top10 ?? []).map((group) => {
     const candidates = group.candidate_keys
@@ -56,7 +65,7 @@ export function expiryOptions(
  * 到期日結構與候選池診斷都問這一件事，所以只有這一份實作。
  */
 export function validPairsForExpiry(
-  result: StrategyResult,
+  result: ExpiryBearing,
   expiry: string | null,
 ): number | null {
   if (expiry === null) return null;

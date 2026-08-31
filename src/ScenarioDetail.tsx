@@ -1,17 +1,21 @@
 /**
  * 劇本詳細頁（MVP V3／#103，資訊階層依 spec #102 決策 A 重整）：
  * 摘要（含基準候選與進場成本，QA 修正後三卡合一）→〔Historical IV
- * Position 插槽〕→ Payoff Heatmap → Expiry Structure
- * → Advanced（候選池／分析報告／Spread 歷史／原始資料）。
+ * Position 插槽〕→ Payoff Heatmap → Strategy Family 分頁（依到期日
+ * 分組的 Expiry Structure／候選池／分析報告，見 `FamilyTabs`）
+ * → Spread 歷史／原始資料。
  *
  * 資料只從 `GET /api/scenarios/{id}` 來，畫面上每個數字都是引擎算好的：
  * 現價與所需漲幅在 `meta`、目標在 `params`、報酬矩陣在候選的 `matrix`。
  * 格式化在 `./detail` 與 `./heatmap` 的純函式裡，這一層只做編排。
  *
- * 基準候選固定是 baseline 期的第 1 名（沿用既有「預設選中」語意，
- * QA1-06：主圖就是主圖，不跟著別處的互動改變）——「第 1 名」是
- * `baselineTopCandidate` 的定義本身（該期 `candidates[0]`），不是另外
- * 算出來的名次欄位。
+ * T11（#229，Initial V2）：摘要卡與主圖固定顯示**跨 family 冠軍**
+ * （`family.ts::championCandidate`，CONTEXT.md「Per-family
+ * Representative」／「Family Tab」兩節記錄的口徑升級），不隨
+ * `FamilyTabs` 的分頁切換而改變——沿用既有「主圖就是主圖，不跟著別處
+ * 的互動改變」原則（QA1-06 對到期日切換的裁示，這裡延伸到 family 這個
+ * 新維度）。單一 family 的既有劇本（Initial V2 之前建立的全部劇本）
+ * 冠軍恆等於該 family 唯一候選，畫面逐位元不變。
  *
  * 舊「Long Call 追平價格」獨立區塊已依 spec 決策 E 移除（Crossover
  * Boundary 後續票將取代它）：後端序列化欄位與計算函式維持不動，僅供
@@ -19,22 +23,20 @@
  */
 import { useEffect, useState } from "react";
 
-import AnalysisReport from "./AnalysisReport";
-import CandidatePool from "./CandidatePool";
+import FamilyTabs from "./FamilyTabs";
 import IvHistory from "./IvHistory";
-import ExpiryStructure from "./ExpiryStructure";
 import Heatmap from "./Heatmap";
 import RawData from "./RawData";
 import SpreadHistory from "./SpreadHistory";
 import {
-  baselineTopCandidate,
-  primaryResult,
   type AnalysisView,
   type Candidate,
   type RefreshFailure,
   type ScenarioDetail as Detail,
+  type StrategyResult,
 } from "./api";
 import { candidateTitle, formatMove, strategyLabel } from "./detail";
+import { championCandidate, resultForStrategy } from "./family";
 import { isThinPool, legPrices, validPairsForExpiry } from "./expiry";
 import { getScenarioCached } from "./fetchCache";
 import {
@@ -101,14 +103,24 @@ function Chart({ candidate }: { candidate: Candidate | null }) {
  * **數字一項沒少**——現價、目標價（含所需漲幅）、目標年月、策略、
  * 到期日、名次、買腿 Ask、賣腿 Bid、淨成本、資料時間、資料來源，連
  * 候選池過少的警語都跟著搬過來。壓掉的是留白，不是資訊。
+ *
+ * T11（#229，Initial V2）：`candidate`／`result` 改由呼叫端傳入跨
+ * family 冠軍（`family.ts::championCandidate`）與冠軍自己的
+ * `StrategyResult`——這是 AC 明文要求的「口徑升級」本身（詳見
+ * CONTEXT.md「Per-family Representative」／「Family Tab」兩節）：
+ * 「策略」這一格與候選池過少警語現在說的是冠軍所屬的那個 subtype，
+ * 不再是 `results[0]`（多 family 之後只是「第一個被展開的 subtype」，
+ * 不保證是冠軍）。既有單一 family 劇本的 `championCandidate` 恆等於
+ * 舊版 `primaryResult` 的候選，數字逐位元不變。
  */
-function Summary({ view, candidate, analyzedAt }: {
+function Summary({ view, candidate, result, analyzedAt }: {
   view: AnalysisView;
   candidate: Candidate | null;
+  result: StrategyResult | null;
   analyzedAt: string | null;
 }) {
-  const strategy = primaryResult(view)?.strategy ?? view.params.strategy;
-  const pool = validPairsForExpiry(primaryResult(view)!, view.baseline_expiry);
+  const strategy = candidate?.strategy ?? view.params.strategy;
+  const pool = result ? validPairsForExpiry(result, view.baseline_expiry) : null;
   const prices = candidate ? legPrices(candidate) : null;
   return (
     <section className="card summary-card" aria-label="劇本摘要">
@@ -174,40 +186,41 @@ function Summary({ view, candidate, analyzedAt }: {
   );
 }
 
-/** 有結果時的頁面主體。baseline 期第 1 名只在這裡取一次，三個區塊共用。 */
-function DetailBody({ scenarioId, view, analyzedAt }: {
+/**
+ * 有結果時的頁面主體。
+ *
+ * T11（#229，Initial V2）：`candidate`／`result` 只取一次、全域共用
+ * ——但取的是**跨 family 冠軍**（`championCandidate`），不是舊版的
+ * `baselineTopCandidate`／`primaryResult`。摘要（Summary）、Historical
+ * IV、主圖（Chart）、Spread 淨成本走勢（SpreadHistory）四塊固定顯示
+ * 冠軍，不隨下方 `FamilyTabs` 的分頁切換而改變——沿用 QA1-06「主圖就是
+ * 主圖，不跟著別處的互動改變」的既有原則，延伸到 family 這個新維度。
+ * 「依到期日分組」的排名內容（`ExpiryStructure`／`CandidatePool`／
+ * `AnalysisReport`）改由 `FamilyTabs` 依目前選中的分頁各自決定，不再
+ * 全域固定於冠軍所屬的那個 family——這樣使用者切到別的分頁才看得到
+ * *那個* family 自己的候選，不是冠軍的候選重複顯示三次。
+ */
+function DetailBody({ scenarioId, view, analyzedAt, strategies }: {
   scenarioId: string;
   view: AnalysisView;
   analyzedAt: string | null;
+  strategies: readonly string[];
 }) {
-  const candidate = baselineTopCandidate(view);
-  const result = primaryResult(view);
+  const candidate = championCandidate(view);
+  const result = candidate ? resultForStrategy(view, candidate.strategy) : null;
   return (
     <>
       {/* spec #102 決策 A 的資訊階層不變，只是前三格（劇本摘要／基準
           候選／進場成本）合併成同一張高密度卡：摘要 →〔IV History
           插槽〕→ Payoff Heatmap，全部圍繞同一組
           baseline 候選。 */}
-      <Summary view={view} candidate={candidate} analyzedAt={analyzedAt} />
+      <Summary view={view} candidate={candidate} result={result} analyzedAt={analyzedAt} />
       <IvHistory scenarioId={scenarioId} candidate={candidate} analyzedAt={analyzedAt} />
       <Chart candidate={candidate} />
-      {/* 到期日結構（V6／#54）接在主圖之下。切換到期日只換這
-          一塊的清單，基準候選不動——固定是 baseline 期第 1 名（QA1-06
-          的既有裁示）。 */}
-      {result && (
-        <ExpiryStructure view={view} result={result}
-                         baselineExpiry={view.baseline_expiry} />
-      )}
-      {/* 候選池診斷（FB4-01／#60）：第 1 名如果是整池僅存者，那個名次
-          沒有意義。它本來掛在 V1 的一次性分析畫面上，隨那塊一起搬進
-          詳細頁——池子本來就是「這個劇本這次分析」的事。 */}
-      <CandidatePool view={view} />
-      {/* 進階區（V8／#56、V9／#57）：分析報告新版型＋Spread 淨成本走勢
-          ＋原始資料，接在候選池診斷之後——這幾塊是「想深入研究這個
-          劇本」才會打開的東西，不該搶在主圖與到期日結構之前。 */}
-      {result && (
-        <AnalysisReport view={view} result={result} candidate={candidate} />
-      )}
+      {/* Strategy Family 分頁（T11／#229）：到期日結構／候選池／分析
+          報告依目前選中的 family 各自呈現，單一 family 時完全不畫分頁
+          列（視覺上與 T11 之前逐位元相同）。 */}
+      <FamilyTabs view={view} strategies={strategies} />
       {/* #69：`key` 綁定這次分析的身分——新分析一到，React 直接卸載重掛
           這兩個元件，內部 state（已抓到的資料、`<details open>`）連同
           歸零，不會在畫面上混用新舊 cache。刷新後收合、下次展開重新
@@ -349,7 +362,8 @@ export default function ScenarioDetail({
 
       {detail && detail.latest_result && (
         <DetailBody scenarioId={id} view={detail.latest_result}
-                    analyzedAt={detail.latest_analyzed_at} />
+                    analyzedAt={detail.latest_analyzed_at}
+                    strategies={detail.strategies} />
       )}
     </div>
   );

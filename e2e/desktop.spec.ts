@@ -1423,6 +1423,77 @@ test("桌面版：編輯可以增減 family，儲存後送出目前完整的勾�
   expect(patched[0].strategies).toEqual(["vertical-spread", "single-leg"]);
 });
 
+/* ---------- T11（#229）：Strategy Family 分頁 ---------- */
+
+/** 手造一份包含兩個 family 的 view——見 `smoke.spec.ts` 同名函式的
+ *  說明，這裡是桌面版對照組，`results[0]` 同樣刻意是被方向閘門擋掉的
+ *  那筆（真實回歸情境）。 */
+function multiFamilyView() {
+  const champKey = sample.results[0].expiry_top10[0].candidate_keys[0];
+  const champ = sample.candidate_pool[champKey];
+  const buyLeg = champ.legs.find((l: any) => l.side === "buy");
+  const lc = {
+    ...champ, candidate_key: "lc-key", strategy: "long-call",
+    baseline_return: 0.2, comparator: null, legs: [buyLeg],
+  };
+  return {
+    ...sample,
+    results: [
+      { strategy: "bear-put-spread", status: "skipped_direction", message: "跳過",
+       n_qualified: 0, filter_report: null, filter_stages: [], quality_flags: [],
+       pair_report: null, expiry_counts: [], expiry_top10: [], disclaimer_text: "" },
+      ...sample.results,
+      { strategy: "long-call", status: "ok", message: "", n_qualified: 1,
+       filter_report: { total: 1, passed: 1 }, filter_stages: [], quality_flags: [],
+       pair_report: null,
+       expiry_counts: [[sample.baseline_expiry, 1]],
+       expiry_top10: [{ expiry: sample.baseline_expiry, candidate_keys: ["lc-key"] }],
+       disclaimer_text: "" },
+    ],
+    candidate_pool: { ...sample.candidate_pool, "lc-key": lc },
+    family_eligibility: {
+      "single-leg": { family: "single-leg", eligible: true, reason: null },
+      "vertical-spread": { family: "vertical-spread", eligible: true, reason: null },
+      "butterfly": { family: "butterfly", eligible: false,
+                    reason: "這個策略家族目前還沒有任何已啟用的具體結構。" },
+    },
+  };
+}
+
+test("桌面版：多 family 並存——分頁列出、預設打開冠軍所屬 family、切換分頁"
+     + "只換排名內容不影響頭條（T11／#229，Call/Put 端到端可用）",
+   async ({ page }) => {
+  const row = { ...libraryRow({ id: "s1", symbol: "XYZ" }),
+               strategies: ["single-leg", "vertical-spread"] };
+  const multi = multiFamilyView();
+  await page.route("**/api/scenarios", (route) => route.fulfill({ json: [row] }));
+  await page.route("**/api/scenarios/s1", (route) =>
+    route.fulfill({ json: { ...row, latest_result: multi } }));
+  await page.route("**/api/scenarios/refresh-run", (route) =>
+    route.fulfill({ json: { results: [{ scenario_id: "s1", ok: true, row }],
+                            remaining: [] } }));
+  await page.goto("/#/s/s1");
+
+  const detail = page.locator(".detail-pane");
+  await expect(detail.getByText(/劇本主圖/)).toBeVisible();
+
+  const tabs = detail.getByRole("group", { name: "策略家族" });
+  await expect(tabs.getByRole("button")).toHaveCount(2);
+  await expect(tabs.getByRole("button", { name: "Vertical Spread" }))
+    .toHaveAttribute("aria-pressed", "true");
+
+  const summary = detail.getByRole("region", { name: "劇本摘要" });
+  await expect(summary.getByText("Bull Call Spread")).toBeVisible();
+
+  await tabs.getByRole("button", { name: "Call / Put" }).click();
+  await expect(tabs.getByRole("button", { name: "Call / Put" }))
+    .toHaveAttribute("aria-pressed", "true");
+  await expect(detail.getByText("Long Call").first()).toBeVisible();
+
+  // 分頁切走了，頭條依然是冠軍，不隨分頁切換而改變。
+  await expect(summary.getByText("Bull Call Spread")).toBeVisible();
+});
+
 /* ---------- SIG-04（#175）：Desktop 紅線鎖定 ---------- */
 
 /** Spread IV Gap（SIG-01／#172）的完整回應區塊——跟這個檔案既有

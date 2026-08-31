@@ -19,12 +19,19 @@
  * 是「排除」（這幾筆真的不在合格池裡了），後者是「標示」（合格池裡有
  * 這麼多筆帶著品質疑慮，但一筆都沒少）。混在同一個列表裡，使用者會分
  * 不出哪個數字代表候選變少、哪個只是備註。
+ *
+ * T11（#229，Initial V2）：`result` 改由呼叫端明確傳入，不再自己用
+ * `primaryResult(view)` 猜——多 family 並存後，「這頁唯一的策略結果」
+ * 這個假設不再成立，呼叫端（`FamilyTabs`）知道目前分頁該顯示哪個
+ * subtype 的診斷，這裡只負責呈現。既有單一 family 呼叫端行為不變。
  */
-import { primaryResult, type AnalysisView } from "./api";
+import type { AnalysisView, StrategyResult } from "./api";
 import { validPairsForExpiry } from "./expiry";
 
-export default function CandidatePool({ view }: { view: AnalysisView }) {
-  const result = primaryResult(view);
+export default function CandidatePool({ view, result }: {
+  view: AnalysisView;
+  result: StrategyResult | null;
+}) {
   if (!result) return null;
 
   if (result.status !== "ok") {

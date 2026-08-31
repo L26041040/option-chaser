@@ -79,6 +79,28 @@ Butterfly 會誤報「永遠不損益兩平」，因此非單調家族改報這�
 `representative_candidate` **保留**，語意＝**跨 family 冠軍**——劇本
 卡片頭條數字與詳細頁預設打開的主圖永遠是它，兩邊同一口徑。
 
+**Family Tab（家族分頁，T11／#229 落地）** — 詳細頁呈現多 Family 並存
+的機制：每個使用者啟用的 Family 各一個分頁，內部維持既有「依到期日
+分組」結構完全不變；同一 Family 底下多個 Subtype 的候選在**同一個
+排名池**裡競爭（依 `baseline_return` 合併重排），不依 Subtype 分區。
+不可選的 Family 一樣有分頁、點得進去，內容顯示 Eligibility 給的原因
+——facts-only，不隱藏、不反灰。**分頁選取獨立於「跨 family 冠軍」**：
+切換分頁只換下面的排名內容，詳細頁最上方的摘要卡與主圖固定顯示冠軍
+候選，不隨分頁切換而改變（沿用 QA1-06「主圖就是主圖，不跟著別處的
+互動改變」既有原則，延伸到 Family 這個新維度）。只有一個 Family 時
+完全不畫分頁列——這正是「口徑升級」對既有單一 Family 劇本的隱形性
+保證：畫面逐位元不變，升級只在真的有多個 Family 並存時才看得出來。
+
+⚠ **T11 施工時確認、需一併記住的既有事實**：`Scenario.strategies`
+只要選了 `vertical-spread` 或 `single-leg`，`AnalysisRequest.strategies`
+展開後恆是 2 個 subtype（該 family 的正反兩個方向），其中被 Direction
+擋下的那個是 `status="skipped_direction"`——這代表 `view.results` 的
+**第一筆不保證是冠軍**（`request.strategies` 的展開順序固定，不看
+方向；被擋下的那個可能排在陣列前面）。任何要找「這次分析真正該顯示
+的候選」的程式碼，都必須逐一掃過 `view.results` 找 `status==="ok"`
+的那些再比大小，不能只取 `results[0]`——`family.ts::championCandidate()`
+就是這個規則的落地。
+
 ---
 
 ## Refresh（刷新）語意

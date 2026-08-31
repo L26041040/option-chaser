@@ -14,9 +14,11 @@
 import { useState } from "react";
 
 import Heatmap from "./Heatmap";
-import type { AnalysisView, Candidate, StrategyResult } from "./api";
-import { candidateTitle } from "./detail";
-import { expiryOptions, isThinPool, legPrices, resolveExpiry } from "./expiry";
+import type { AnalysisView, Candidate } from "./api";
+import { candidateTitle, strategyLabel } from "./detail";
+import {
+  expiryOptions, isThinPool, legPrices, resolveExpiry, type ExpiryBearing,
+} from "./expiry";
 import { formatReturn, money } from "./scenarios";
 
 function CandidateRow({ candidate, rank }: { candidate: Candidate; rank: number }) {
@@ -27,6 +29,11 @@ function CandidateRow({ candidate, rank }: { candidate: Candidate; rank: number 
         <summary>
           <span className="candidate-head">
             <span className="rank">#{rank}</span>
+            {/* T11（#229，Initial V2）：這組候選實際跑的 subtype——多
+                family 並存後，同一個排名池裡的候選可能來自不同
+                subtype（今天仍恆為單一 subtype，見 `family.ts` 說明），
+                每一列都標示出來，不是等到真的混合時才補。 */}
+            <span className="candidate-subtype">{strategyLabel(candidate.strategy)}</span>
             {/* MVP V3（#104，spec #102 決策 F）：⚠ 只在 Bid/Ask 過寬時
                 出現，文案明確寫「Bid/Ask 過寬」——零成交量不再觸發這個
                 徽章（LEAPS／冷門履約價零成交是常態，不是報價可疑的
@@ -84,7 +91,11 @@ export default function ExpiryStructure({
   baselineExpiry,
 }: {
   view: AnalysisView;
-  result: StrategyResult;
+  /** T11（#229，Initial V2）：窄化為 `ExpiryBearing`——多 family 並存
+   *  後，這裡收到的可能是 `family.ts::mergedExpiryTop10()` 合併多個
+   *  subtype 排名池後的結果，不是完整的 `StrategyResult`。既有單一
+   *  family 呼叫端（傳入真正的 `StrategyResult`）結構上仍然相容。 */
+  result: ExpiryBearing;
   baselineExpiry: string | null;
 }) {
   const [picked, setPicked] = useState<string | null>(null);

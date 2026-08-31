@@ -1574,6 +1574,15 @@ body {
   flex: 1;
 }
 
+/* T11（#229，Initial V2）：這組候選實際跑的 subtype——次要資訊，跟
+   `.rank` 同一種弱化處理，不搶履約價與報酬率的視線。 */
+.candidate-subtype {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--label-tertiary);
+  white-space: nowrap;
+}
+
 .candidate-return {
   font-size: 17px;
   font-weight: 700;
