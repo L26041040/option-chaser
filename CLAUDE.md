@@ -27,7 +27,7 @@ block 裡，不能切成好幾個 code block、也不能中間插普通文字把
 `［回報#001］spec #137 拆票完成`）。編號是**累計總數**，不因換
 session、換分支、換主題而歸零——目前最新編號記在這裡：
 
-> 目前次序：052（下一份回報用 053）
+> 目前次序：053（下一份回報用 054）
 
 每發一份回報就把上面這個數字改成剛剛用掉的那個，跟著那次改動一起
 commit（沒有其他改動要 commit 時，單獨為這一行開一個小 commit 也
@@ -6064,7 +6064,66 @@ CLAUDE.md 隨手更新。
 **Initial V2（spec #217，T01–T18，issues #218–#235）工程與自動化
 驗證面全數完成。** 依專案規則不主動開 PR，等需求方走過
 `docs/initial-v2-acceptance-checklist.md` 給出 go-ahead 後才開 PR、
-準備合併回 master。**下一步**：等需求方真機驗收回饋。
+準備合併回 master。
+
+### Production Regression Audit（2026-08-31，回報#052）＋ Repair Spec
+（issue #237，2026-08-31）
+
+需求方在 Vercel preview deployment 真機驗收（T18 AC9）時發現四組
+production regression（P1 舊劇本編輯 422、P2 失敗卡片沒反灰、P3
+刷新失敗比例升高＋部分數字異常、P4 新建劇本刷新必敗）。需求方以
+`/code-review`＋額外 Production Regression Audit 指令下工單，另一個
+平行 session（本機 JSONL `a2a2958d-...`，同一帳號、同一時段）完成
+audit 並交付**回報#052**（fixed point `22b9d4b`→HEAD `a6ba02b`，
+Standards／Spec／P1-P2 追蹤／60 秒 profiling／financial drift 五路
+並行 sub-agent，關鍵結論逐條獨立覆核過）。**該份完整原文已存
+`session-history/2026-08-31_225102+0800_a2a2958d.md`**（本輪順手
+補存，原本只存在本機暫存、未進 repo）。
+
+**Audit 核心結論**：三個獨立根因（不是四個）——(A) `_scenario_json()`
+唯一沒呼叫 `normalize_families()` 的讀取路徑，T06／#221 commit
+`5c13469` 引入，T10／#227 引爆；(B) `calibrate_leg` 在單次
+Butterfly 分析內完全沒有跨候選 memoize，171,100 組候選×3 腿＝
+513,300 次 solver 呼叫但只有約 300 條相異腿，19.8× 差距、約 95%
+wall time，正是 Vercel `Task timed out after 60 seconds` 的成因；
+外加獨立發現的失敗放大器 `REFRESH_RUN_GROUP_LIMIT=1` 讓任一劇本
+504 就連坐標記整批 `pendingIds`；(C) 單腿用固定日曆錨點估值、
+Vertical／Butterfly 用自身到期日估值，兩者在 select_expiries「錨點
+前 2 後 2」下必然相遇，`_refresh_and_save()` 跨 family champion
+把兩者混進同一排行榜，單腿系統性灌水（實測最高 +166.1 pp）——V1
+兩把尺從未碰過面（`_MVP_STRATEGIES` 只有 bull-call-spread），
+Initial V2 才是讓它們相遇的那一輪，不是寫錯數字的那一輪。六次既有
+T01 基準重產事件（T02／T04／T09／T12／T14／T15）全數 VERIFIED，
+無隱藏漂移。`/code-review` 抓到一項 hard violation（即 A 根因）與
+三項判斷為刻意反泛化取捨的 judgement call。
+
+**Owner 裁示 OD-01–OD-04**（FROZEN，完整內容見 issue #237）：
+legacy 相容不遷移、只修讀取端正規化；跨 family 估值日統一為
+own-expiration payoff（單腿改，Vertical／Butterfly 既有數值凍結
+不動）；失敗卡片分「曾成功過」／「從未成功過」兩態、皆反灰皆保留
+Retry；Strategy Family 新增全選（create＋edit，toggle，無獨立全
+不選鈕）。
+
+**`/to-spec` 已發佈——issue #237「OPTION-CHASER-REPAIR-001」**
+（`ready-for-agent`）：涵蓋 FIX-01（legacy 相容）、FIX-02
+（memoization）、FIX-09（refresh 失敗隔離）、FIX-03（條件式，
+Butterfly 枚舉重新設計，明確不預設施工，由 FIX-02 後的
+production-equivalent＋q≠0 re-profile 結果對照 **20 秒 acceptance
+threshold** 決定 NEEDED／NOT_NEEDED）、FIX-04（timeout safety net，
+非效能替代方案）、FIX-05（own-expiration 修正，第 7 次合法基準
+重產事件，四項 collateral-drift 驗證步驟明訂）、FIX-08（守門擴充：
+多 family 數值凍結＋production-scale 效能守門）、FIX-06（failure
+卡片兩態）、FIX-07（Select All）。新增 5 條本輪專屬回歸紅線
+（13–17，含既有 12 條紅線的例外註記：紅線 1 不再涵蓋 long-call／
+long-put 到期日晚於錨點的候選數值）。九段 staged order（A 守門
+擴充→B FIX-01→C FIX-02＋強制 re-profile→〔決策閘門〕→D FIX-09
+（與 C 並行）→E FIX-03（條件式）→F FIX-04→G FIX-05＋FIX-08→H
+FIX-06＋FIX-07→I 最終驗證）。測試接縫沿用既有七個、零新增。Spec
+Self-Review 逐項核對 OD-01–OD-04 與 audit 結論無矛盾，標記
+**READY_FOR_TICKETING**。
+
+**下一步**：等需求方 cue `/to-tickets`。本輪依指示只產出 spec，
+未執行 `/to-tickets`、未 implementation、未開 PR。
 
 ### 施工依據
 
