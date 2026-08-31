@@ -8,16 +8,21 @@ B. Derived mathematical safety net（導出層：數學安全網）
 既有計算路徑（`natural_cost`／`baseline_return`／`spread_baseline_
 return`）本來就會產出的量。
 """
+import dataclasses
 import math
+from datetime import date
 
 import pytest
 
 from option_chaser import service
-from option_chaser.filters import apply_filters, generate_spread_pairs, validate_derived_values
+from option_chaser.filters import (apply_filters, generate_butterfly_triples,
+                                   generate_spread_pairs, validate_derived_values)
 from option_chaser.models import AnalysisParams, OptionContract
 from option_chaser.ranking import baseline_return, spread_baseline_return
+from option_chaser.valuation import evaluate_butterfly
 
 FIX = "tests/fixtures/xyz_v2_snapshot.json"
+FIX_BUTTERFLY = "tests/fixtures/xyz_v7_butterfly_moderate.json"
 
 
 def _contract(symbol="C1", option_type="call", strike=100.0, expiry="2026-10-16",
@@ -416,6 +421,112 @@ def test_spread_removal_diagnostic_identifies_the_specific_pair(monkeypatch):
                                 strategies=("bull-call-spread",)), FIX)
     poisoned_res = next(r for r in poisoned_result.results if r.strategy == "bull-call-spread")
     assert expected_identity in poisoned_res.pair_report.b_layer_removed_examples
+
+
+# ---------- T18（#235，Initial V2）：Butterfly 的 max_loss_fn 安全網 ----------
+
+def test_butterfly_max_loss_is_structurally_guaranteed_positive_by_the_pair_sanity_gate():
+    """T18（#235）稽核紅線 8 時發現的數學事實，先用一條證明性測試把它
+    釘住，再由下一條測試補真正的 wiring 缺口。
+
+    `evaluate_butterfly()` 的 `max_loss = net_worst - min(v1, v3)`——
+    對 call-fly（K1<K2<K3），到期時 S=K1 那一點三腿必然全部
+    OTM／ATM，`v1` 恆為 0，因此 `min(v1, v3) = min(0, v3) <= 0`，
+    `max_loss = net_worst - min(v1,v3) >= net_worst` 恆成立（put-fly
+    由對稱性同理，`v3` 恆為 0）。另一方面 `net_worst`（買腿 Ask、賣腿
+    Bid 的 worst 成交口徑）在 A 層 `bid<=ask` 前提下恆 `>= net_mid`
+    （`generate_butterfly_triples()` 既有配對層 `net_mid<=0` 健全性
+    門檻用的量，見該函式 docstring）。串起來：任何撐過既有配對層門檻
+    的三腿組合，`max_loss > 0` 已經由這兩條不等式保證成立——不管報價
+    多壞、買賣價差多寬，只要通過 A 層既有的 `bid<=ask` 前提就是如此。
+
+    這裡刻意用**惡意構造的、故意像是報價錯亂**的組合（中間履約價的
+    買賣價異常偏高，模擬 crossed／stale quote）去嘗試打破這個保證，
+    而不是隨手挑幾組正常數字——證明這不是「剛好沒測到反例」，是真的
+    找不到反例。"""
+    def leg(strike, bid, ask):
+        return OptionContract(contract_symbol=f"C{strike:g}", option_type="call",
+                              strike=strike, expiry="2026-10-16", bid=bid, ask=ask,
+                              last=(bid + ask) / 2, volume=50, open_interest=100,
+                              implied_volatility=0.3)
+
+    adversarial_quotes = [
+        # 對稱翼、中腿報價異常偏高（crossed-looking quote）。
+        [leg(90, 11.0, 11.2), leg(95, 6.5, 6.7), leg(100, 9.0, 9.2), leg(105, 1.0, 1.2)],
+        # broken wing（翼寬不對稱）＋同樣的中腿異常報價。
+        [leg(85, 15.0, 15.3), leg(95, 6.0, 6.3), leg(100, 8.5, 8.8), leg(105, 1.0, 1.3)],
+        # 極端窄價差（bid 幾乎等於 ask，逼近門檻邊界）。
+        [leg(90, 10.999, 11.0), leg(95, 6.0, 6.001), leg(100, 5.999, 6.0),
+         leg(105, 0.999, 1.0)],
+    ]
+    p = AnalysisParams(strategy="call-fly", target_price=100.0, target_month="2026-10")
+    today = date(2026, 8, 31)
+    checked_any_surviving_triple = False
+    for legs in adversarial_quotes:
+        triples, _pair_report = generate_butterfly_triples(legs, p)
+        for lo, mid, hi in triples:
+            bv = evaluate_butterfly(lo, mid, hi, 100.0, today, p)
+            checked_any_surviving_triple = True
+            assert bv.max_loss > 0, (
+                f"反例：{lo.strike}/{mid.strike}/{hi.strike} 撐過配對層門檻卻 "
+                f"max_loss={bv.max_loss} <= 0——上面的數學論證有誤，需要重新檢視")
+    assert checked_any_surviving_triple, "adversarial_quotes 一組都沒撐過配對層門檻，測試沒驗到東西"
+
+
+def test_butterfly_removal_diagnostic_identifies_the_specific_triple(monkeypatch):
+    """紅線 8 真正的 wiring 缺口：上一條測試證明了「用真實報價構造
+    max_loss<=0 的 Butterfly 候選」在數學上不可能（只要撐過既有配對層
+    `net_mid<=0` 門檻），所以無法比照 `test_single_leg_removal_
+    diagnostic_identifies_the_specific_contract`／`test_spread_removal_
+    diagnostic_identifies_the_specific_pair` 兩條既有測試的手法（用
+    monkeypatch 讓 `baseline_return`／`spread_baseline_return` 對特定
+    候選回傳 NaN）直接套用——那兩條測的是「非有限數值」這個獨立判準，
+    不是 Butterfly 專屬新增的 `max_loss_fn` 判準本身。
+
+    改成同一個技巧的變體：monkeypatch `service.evaluate_butterfly()`
+    本身，對真實 fixture 上真的排出來的某一組三腿，把它算出來的
+    `max_loss` 換成 -1.0（`dataclasses.replace`，`ButterflyValuation`
+    是 frozen dataclass）——這樣就繞過「找不到真實壞報價」這個數學
+    限制，直接驗證 T05（#226）接進 `_butterfly_result()` 的 wiring
+    本身：一旦 `max_loss<=0`，這組三腿真的會從候選、`expiry_top10`
+    消失，且 `pair_report.b_layer_removed_examples` 真的帶出這組三腿
+    的合約身份（不只是計數）。"""
+    def triple_key(bv):
+        return f"{bv.low_leg.contract_symbol}/{bv.mid_leg.contract_symbol}/{bv.high_leg.contract_symbol}"
+
+    original = service.evaluate_butterfly
+    poisoned_key: str | None = None
+
+    def poisoned(lo, mid, hi, spot, today, p):
+        # `evaluate_butterfly()` 原樣把傳入的 lo/mid/hi 存進回傳值的
+        # low_leg/mid_leg/high_leg（見 valuation.py），身份鍵因此改從
+        # 這個已算好的 `bv` 取得，不再另外用 lo/mid/hi 重組一次同款
+        # 字串——單一定義來源，跟下面比對用的是同一個 `triple_key()`。
+        bv = original(lo, mid, hi, spot, today, p)
+        if poisoned_key is not None and triple_key(bv) == poisoned_key:
+            bv = dataclasses.replace(bv, max_loss=-1.0)
+        return bv
+
+    p = _params("call-fly", 108.0)
+    baseline_result = service.run_offline(
+        service.AnalysisRequest(symbol="XYZ", base_params=p,
+                                strategies=("call-fly",)), FIX_BUTTERFLY)
+    res = next(r for r in baseline_result.results if r.strategy == "call-fly")
+    assert res.status == "ok" and res.candidates
+    poisoned_key = triple_key(res.candidates[0].valuation)
+
+    monkeypatch.setattr(service, "evaluate_butterfly", poisoned)
+    poisoned_result = service.run_offline(
+        service.AnalysisRequest(symbol="XYZ", base_params=p,
+                                strategies=("call-fly",)), FIX_BUTTERFLY)
+    poisoned_res = next(r for r in poisoned_result.results if r.strategy == "call-fly")
+
+    surviving_keys = {triple_key(cv.valuation) for cv in poisoned_res.candidates}
+    assert poisoned_key not in surviving_keys
+    for exp, group in poisoned_res.expiry_top10:
+        assert all(triple_key(cv.valuation) != poisoned_key for cv in group)
+    assert poisoned_res.pair_report.b_layer_removed >= 1
+    assert poisoned_key in poisoned_res.pair_report.b_layer_removed_examples
 
 
 # ---------- 驗證與回歸：既有四策略逐位元不變（T01／#218）----------

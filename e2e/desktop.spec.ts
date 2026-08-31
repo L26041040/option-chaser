@@ -1746,3 +1746,29 @@ test("T17（#234）：桌面版建立持平劇本（目標價＝現價）全程�
   await expect(detail.getByText(/持平/)).toBeVisible();
   await expect(detail.getByRole("heading", { name: "候選池" })).toHaveCount(0);
 });
+
+/* ---------- T18（#235，Initial V2）：最終回歸與驗收，桌面 viewport ---------- */
+
+test("T18（#235）紅線 12：桌面版展開一般 Vertical Spread 候選（非 Butterfly）" +
+     "看得到 Heatmap，且不觸發任何額外網路請求——與手機版 smoke.spec.ts 同一條" +
+     "補件，證明零額外請求不是只在 Butterfly 這一個 family 上成立",
+   async ({ page }) => {
+  const requestUrls: string[] = [];
+  page.on("request", (req) => requestUrls.push(req.url()));
+  await routeTwoScenarios(page);
+  await page.goto("/#/s/s1");
+
+  const detail = page.locator(".detail-pane");
+  await expect(detail.getByText("劇本主圖")).toBeVisible();
+  // Dev server（React StrictMode）會把初次掛載的 effect 重複觸發一次
+  // ——`/api/settings` 等頁面載入本身就會發的請求可能還沒真的落定。
+  // 等網路真的靜下來才歸零計數器，這樣「展開」這個動作本身有沒有多發
+  // 請求的量測才不會被頁面載入尾聲的既有請求汙染成偽陽性（同一份
+  // 教訓，T16／#232 的桌面版 Butterfly 測試已示範過一次）。
+  await page.waitForLoadState("networkidle");
+
+  requestUrls.length = 0;
+  await detail.locator(".candidate summary").first().click();
+  await expect(detail.locator(".candidate").first().locator("table")).toBeVisible();
+  expect(requestUrls).toEqual([]);
+});
