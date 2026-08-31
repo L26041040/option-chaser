@@ -5506,8 +5506,52 @@ CLAUDE.md 隨手更新。
   （後端記憶體＋真實 Postgres 雙後端、前端 typecheck／675 Vitest／
   build、Playwright e2e 92 條）綠燈。**#228 已 close**。
 
+- **T05**（#226，commit `8594b51`＋跟進 commit `005f20f`）✅ Candidate
+  validity 兩層——A. Quote-level invalidity（報價層：`apply_filters()`
+  的 `quote_ok`／`iv_ok` 強化為明確 `math.isfinite()` 檢查，判定不以
+  「是否導致某導出量變成不可能值」為前提）＋B. Derived mathematical
+  safety net（新函式 `validate_derived_values()`，接在既有計算路徑
+  之後、排名之前，獨立於 A 層成立，只檢查既有 `cost_fn`／`return_fn`
+  ——`natural_cost`／`baseline_return`／`spread_baseline_return`——
+  的輸出，零讀取候選欄位，用編譯後 bytecode 名稱檢查證明不含
+  `max_profit`／`max_loss`／`payoff_envelope`／`extrema`）。單腳
+  `n_qualified` 隨 B 層之後的數量改口徑，Spread 記在
+  `pair_report.b_layer_removed`（配對單位，與腿級 `freport` 分開）。
+  明確不做：不新增 `max_profit<=0` 規則（劇本成立時報酬為負但報價
+  自洽的候選照常留在排名裡自然沉底）、不用「權利金大於價差寬度」當
+  驗證案例（該情境兩層皆不觸發）、未重啟 #223 已收斂為 not planned
+  的 generic payoff-envelope engine。
+
+  **`/code-review` 兩軸各抓到一個真缺口，已在跟進 commit `005f20f`
+  修正**：Standards 軸——`validate_derived_values()` 對泛型
+  `cost_fn`／`return_fn` 缺 `None`-safety（`math.isfinite(None)` 會
+  拋 `TypeError`），已加 `_finite()` 內部輔助函式。Spec 軸——AC「每一
+  筆被剔除的候選留下一筆診斷事件，內容足以指認是哪一組合約」與「剔除
+  可見……各層各幾筆」對 Spread UI 不成立：`FilterStageResult`／
+  `PairReport` 先前只有聚合計數，`CandidatePool.tsx` 只渲染
+  `removed_sanity`、從未渲染 `b_layer_removed`。修法：`FilterStage
+  Result` 新增 `removed_examples`、`PairReport` 新增
+  `b_layer_removed_examples`（皆純加法，預設空 tuple）；
+  `apply_filters()` 兩個 A 層 stage 記下被剔除合約的 `contract_
+  symbol`（上限 5 筆範例）；`validate_derived_values()` 新增選填
+  `identity_fn` 參數，單腳傳合約代碼、Spread 傳買賣兩腿代碼組合；
+  CLI 報告與 API 序列化跟進；`CandidatePool.tsx` 補上 Spread 路徑的
+  「成本或報酬為不可能值（B 層）」列（單腳早已透過 `filter_stages.
+  map()` 通用渲染），並用瀏覽器原生 `title` tooltip 呈現範例。
+
+  新增 22 條後端測試（`tests/test_candidate_validity.py`）＋3 條前端
+  測試（`CandidatePool.test.tsx`）。契約樣本三份（含 T09 新增的
+  long-call 樣本）重產：純加法，只多兩個 key，其餘逐位元不變。CLI
+  golden fixtures 四份重產：各自只在既有兩行後面附加「（例：
+  XYZxxxB／XYZxxxC）」，其餘逐位元不變。T01（#218）數值基準未受
+  影響——`ranking.py`／`valuation.py` 零改動。全套後端測試綠燈
+  （記憶體＋真實 Postgres 雙後端）；前端 typecheck／678 條 Vitest／
+  build 皆過；Playwright e2e 92 條（iPhone＋Desktop）全綠。**#226
+  已 close**。
+
 **下一步**：T07（#224）／T08（#225，皆被 T06 解鎖、無其他 blocker）
-可任意順序開工；T05（#226，無 blocker）尚未施工，可隨時穿插。
+可任意順序開工。T05／T06／T09／T12 均已完成，Initial V2 剩餘票的
+blocker 狀態依此更新。
 
 ### 施工依據
 
