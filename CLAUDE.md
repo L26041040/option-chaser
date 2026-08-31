@@ -5628,10 +5628,66 @@ CLAUDE.md 隨手更新。
   typecheck／692 條 Vitest／build、Playwright e2e 98 條。詳細頁的
   多 family 呈現留給 T11（票上明文範圍，未觸碰）。**#227 已 close**。
 
-**下一步**：T15（#230，被 T08／T05／T12 解鎖，無其他 blocker）與
-T11（#229，被 T09／T10 解鎖，無其他 blocker）皆已可開工。T05／T06／
-T07／T08／T09／T10／T12 均已完成，Initial V2 剩餘票的 blocker 狀態
-依此更新。
+- **T11**（#229，commits `d19dfa9`＋跟進 `2cbf3d9`）✅ 詳細頁 family
+  tab——多 family 並存呈現，Call / Put 端到端可用。每個啟用的 family
+  一個分頁（新增 `src/FamilyTabs.tsx`），分頁內部維持既有「依到期日
+  分組」結構與版面完全不變（`ExpiryStructure` 零改動複用）；同一
+  family 底下不同 subtype 的候選合併進同一個排名池（新增
+  `family.ts::mergedExpiryTop10()`，依 `baseline_return` 重排、逐
+  到期日各取前十，跟後端 `expiry_top10` 自己「排序取前 N」是同一種
+  選取操作，不是新的財務推導），畫面上不依 subtype 分區；每個候選在
+  `ExpiryStructure` 的候選列標示它實際的 subtype（後端 `strategy`
+  欄位早就序列化，前端補上型別宣告即可讀取）。不可選的 family 一樣
+  有分頁、點得進去看得到 eligibility 給的原因（facts-only）。單一
+  family 時完全不畫分頁列，既有單一 family 劇本畫面逐位元不變。
+
+  頭條數字＝跨 family 冠軍（新增 `family.ts::championCandidate()`），
+  與主圖／摘要卡固定顯示同一組候選，不隨分頁切換而改變——沿用
+  QA1-06「主圖就是主圖，不跟著別處的互動改變」既有原則，延伸到
+  family 這個新維度。這是 AC 明文要求的「口徑升級」，已在
+  `CONTEXT.md` 新增「Family Tab」一節明文記錄，不是靜默發生。
+
+  **施工中發現並修正一個真實 bug**（Initial V2 尚未發布，不影響
+  production master）：T06（#221）家族展開後，`view.results` 的順序
+  固定跟隨 `subtypes_of()` 展開順序、不看方向——`bull-call-spread`
+  固定排在 `bear-put-spread` 之前，於是**方向不合被擋掉的那個
+  subtype 反而可能排在陣列前面**（bearish 劇本裡 `bull-call-spread`
+  是 `skipped_direction`、`bear-put-spread` 才是真正有候選的那個，
+  卻排在它後面）。用真實 HTTP 路徑（`create_app()` + `xyz_v5_put_
+  ladder.json` fixture）重現過這個排列，舊版 `primaryResult(view) =
+  results[0]`／`baselineTopCandidate()` 因此會挑到 `skipped_
+  direction` 那筆、顯示「無合格候選」——`championCandidate()` 改為
+  逐一掃過 `view.results` 找 `status==="ok"` 的再比大小，天然修正
+  此問題；已記錄在 `CONTEXT.md`「Family Tab」一節與 `family.test.ts`
+  的專屬回歸測試裡。
+
+  其餘結構性改動：`CandidatePool` 改由呼叫端明確傳入 `result`（不再
+  自己用 `primaryResult(view)` 猜，多 family 並存後這個假設不成立）；
+  `ExpiryStructure`／`expiry.ts` 的 `result` 參數窄化為新型別
+  `ExpiryBearing`（`Pick<StrategyResult, "expiry_top10"|"expiry_
+  counts">`），讓合併後的排名池不需要假造一份其餘欄位無意義的完整
+  `StrategyResult` 即可直接餵入；`Candidate` 型別新增 `strategy`
+  欄位（後端早已序列化，純加法宣告）。
+
+  `/code-review` 兩軸：Spec 軸 11 條 AC 全數 done、零 scope creep，
+  唯一前瞻性提醒（`CandidatePool`／`AnalysisReport` 今天只吃
+  `okResults[0]`，等 T15／#230 真的出現雙 subtype 同時 ok 才需要
+  重新檢視）已寫進 `family.ts` 檔頭，不在本票範圍處理；Standards
+  軸三項判斷已於跟進 commit 處理（兩份測試檔逐字重複的假體建構式
+  抽成共用 `src/family.fixtures.ts`；`e2e/smoke.spec.ts` 補型別消除
+  一處 `as any`；`FamilyTabs.tsx` 分頁按鈕改用語意正確的
+  `.chip-label`，不再借用專屬到期日文字的 `.chip-date`）。
+
+  全套測試：前端 typecheck／724 條 Vitest（新增 `family.test.ts`
+  20 條、`FamilyTabs.test.tsx` 9 條、`ScenarioDetail.test.tsx` 新增
+  3 條多 family 端到端案例）／build 皆過；Playwright e2e 101 條
+  （iPhone 63＋Desktop 38）全綠；後端全套 1590 條維持通過（本票零
+  Python 檔案變動）。
+
+**下一步**：T13（#231，被 T12／T11 解鎖，無其他 blocker）與 T15
+（#230，被 T08／T05／T12 解鎖，無其他 blocker）皆已可開工，依建議
+施工順序（T11→T13→T14→T15→T16→T17→T18）先做 T13。T05–T12 均已
+完成，Initial V2 剩餘票的 blocker 狀態依此更新。
 
 ### 施工依據
 
