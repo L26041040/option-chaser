@@ -3144,17 +3144,20 @@
         {
           "filter_class": "A",
           "label": "報價異常",
-          "removed": 0
+          "removed": 0,
+          "removed_examples": []
         },
         {
           "filter_class": "B",
           "label": "IV 異常",
-          "removed": 0
+          "removed": 0,
+          "removed_examples": []
         },
         {
           "filter_class": "B",
           "label": "成本或報酬為不可能值（B 層安全網）",
-          "removed": 0
+          "removed": 0,
+          "removed_examples": []
         }
       ],
       "message": "",

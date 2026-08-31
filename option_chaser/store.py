@@ -392,7 +392,10 @@ def serialize_result(result: AnalysisResult, scenario_id: str,
                                "passed": r.filter_report.passed}
                               if r.filter_report else None),
             "filter_stages": ([{"label": s.label, "removed": s.removed,
-                               "filter_class": s.filter_class}
+                               "filter_class": s.filter_class,
+                               # T05（#226，Initial V2）：純加法——被這一關
+                               # 剔除掉的候選身份範例，供診斷指認「是哪一組」。
+                               "removed_examples": list(s.removed_examples)}
                                for s in r.filter_report.stages]
                               if r.filter_report else []),
             # FB5-04（#65，spec #61）：C 類品質標示在整個合格池裡的計數
@@ -406,6 +409,11 @@ def serialize_result(result: AnalysisResult, scenario_id: str,
                              # 既有的 removed_sanity（A 層／per-subtype
                              # 結構合法性）。
                              "b_layer_removed": r.pair_report.b_layer_removed,
+                             # T05（`/code-review` Spec 軸回饋）：純加法——
+                             # B 層剔除掉的配對身份範例（買腿／賣腿合約
+                             # 代碼組成），供診斷指認「是哪兩腿」。
+                             "b_layer_removed_examples":
+                                 list(r.pair_report.b_layer_removed_examples),
                              "passed": r.pair_report.passed}
                             if r.pair_report else None),
             "candidates": [cand_key(cv, r.strategy) for cv in r.candidates],
@@ -472,7 +480,9 @@ def serialize_result(result: AnalysisResult, scenario_id: str,
         # View 沒有這兩個欄位，`representative_candidate()` 對缺欄位的
         # `side` 有位置回推備援（見上）。
         # T05（#226，Initial V2）：4→5——`pair_report` 新增
-        # `b_layer_removed`（純加法）。
+        # `b_layer_removed`／`b_layer_removed_examples`，`filter_stages`
+        # 每一關新增 `removed_examples`（皆純加法，`/code-review` Spec
+        # 軸回饋補上——診斷需要指認「是哪一組」，不是只有計數）。
         "schema_version": 5,
         "engine_version": __version__,
         "analyzed_at": m.fetched_at,

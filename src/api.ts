@@ -244,6 +244,12 @@ export interface FilterStage {
    * 出現在這裡，見 `QualityFlag`。
    */
   filter_class: string;
+  /**
+   * T05（#226，Initial V2，`/code-review` Spec 軸回饋）：這一關剔除掉的
+   * 候選身份範例（合約代碼，或配對的兩腿合約代碼組合）——只是前幾筆
+   * 範例，不是完整清單，供診斷指認「是哪一組」。
+   */
+  removed_examples: string[];
 }
 
 /**
@@ -274,9 +280,14 @@ export interface PairReport {
   /**
    * T05（#226，Initial V2）：B 層（導出層數學安全網）在配對這個單位上
    * 的淘汰數，獨立於 `removed_sanity`（A 層／per-subtype 結構合法性）。
-   * 前端目前不消費這個欄位，純粹型別同步；正常報價下恆為 0。
+   * `CandidatePool` 與 `removed_sanity` 並排呈現；正常報價下恆為 0。
    */
   b_layer_removed: number;
+  /**
+   * T05（`/code-review` Spec 軸回饋）：B 層剔除掉的配對身份範例（買腿／
+   * 賣腿合約代碼組成），只是前幾筆範例，供診斷指認「是哪兩腿」。
+   */
+  b_layer_removed_examples: string[];
   passed: number;
 }
 

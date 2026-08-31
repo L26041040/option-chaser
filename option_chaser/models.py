@@ -147,6 +147,13 @@ class FilterStageResult:
     # C 類（品質標示）從不出現在這裡：它從不淘汰候選，所以不是「一關」，
     # 是 `filters.quality_flag_counts()` 另外算的計數。
     filter_class: str
+    # T05（#226，Initial V2 spec #217，`/code-review` Spec 軸回饋）：這一關
+    # 剔除掉的候選身份範例（合約代碼，或 spread 兩腿合約代碼的組合），供
+    # 診斷指認「是哪一組」——不是完整清單（呼叫端自行決定要留幾筆，通常
+    # 只取前幾筆當範例），純粹是「這一關砍了幾筆」之外再加一句「砍了誰」。
+    # 預設空 tuple：既有兩個呼叫端（`quote_ok`／`iv_ok`）在補上這個欄位前
+    # 就已存在，不能因此要求它們全部改寫。
+    removed_examples: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -257,3 +264,9 @@ class PairReport:
     # 預設 0：既有呼叫端（`generate_spread_pairs()`）不知道也不需要知道
     # B 層，只有 `_spread_result()` 事後補上這個數字。
     b_layer_removed: int = 0
+    # T05（`/code-review` Spec 軸回饋）：B 層在配對這個單位上淘汰掉的組合
+    # 身份範例（買腿／賣腿合約代碼組成的字串），與 `b_layer_removed`（純
+    # 計數）配對成同一種「數字＋範例」形狀，比照 `FilterStageResult.
+    # removed_examples` 同一個模式——兩者都是「一個計數配一份可指認的
+    # 範例清單」。預設空 tuple，理由與 `b_layer_removed` 相同。
+    b_layer_removed_examples: tuple[str, ...] = ()

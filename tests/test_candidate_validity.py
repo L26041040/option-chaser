@@ -39,6 +39,17 @@ def test_a_layer_rejects_bid_greater_than_ask():
     assert freport.stages[0].filter_class == "A"
 
 
+def test_a_layer_removed_examples_identify_the_dropped_contract():
+    """`/code-review` Spec 軸回饋：AC 明文要求「內容足以指認是哪一組
+    合約」——不能只有一個計數，範例要指得出是哪張。"""
+    bad = _contract(symbol="BADQ1", bid=5.5, ask=5.0)
+    good = _contract(symbol="GOOD1", bid=4.9, ask=5.0)
+    kept, freport = apply_filters([bad, good], AnalysisParams(
+        target_price=110.0, target_month="2026-10", strategy="long-call"))
+    assert kept == [good]
+    assert freport.stages[0].removed_examples == ("BADQ1",)
+
+
 def test_a_layer_rejects_missing_quote():
     bad = _contract(bid=None, ask=5.0)
     kept, _ = apply_filters([bad], AnalysisParams(
@@ -134,6 +145,52 @@ def test_b_layer_rejects_non_positive_cost():
     assert kept == [good]
     assert stage.removed == 1
     assert stage.filter_class == "B"
+
+
+def test_b_layer_removed_examples_use_identity_fn_when_provided():
+    """`/code-review` Spec 軸回饋：`identity_fn` 是選填的擴充點——提供時
+    `removed_examples` 帶著被剔除候選的身份，不提供時維持既有行為
+    （空 tuple，向下相容既有呼叫端）。"""
+    class Fake:
+        def __init__(self, name):
+            self.name = name
+
+    good, bad = Fake("good"), Fake("bad")
+    kept, stage = validate_derived_values(
+        [good, bad], cost_fn=lambda v: 5.0 if v is good else 0.0,
+        return_fn=lambda v: 0.5, identity_fn=lambda v: v.name)
+    assert kept == [good]
+    assert stage.removed_examples == ("bad",)
+
+
+def test_b_layer_removed_examples_empty_without_identity_fn():
+    class Fake:
+        def __init__(self, name):
+            self.name = name
+
+    good, bad = Fake("good"), Fake("bad")
+    kept, stage = validate_derived_values(
+        [good, bad], cost_fn=lambda v: 5.0 if v is good else 0.0,
+        return_fn=lambda v: 0.5)
+    assert stage.removed == 1
+    assert stage.removed_examples == ()
+
+
+def test_b_layer_removed_examples_are_capped_not_a_full_dump():
+    """診斷要的是「指認得出是哪一組」的範例，不是把整個被剔除的池子
+    搬進報告——`_MAX_REMOVED_EXAMPLES` 之外的不再收錄，但 `removed`
+    計數仍誠實反映全部淘汰筆數。"""
+    class Fake:
+        def __init__(self, name):
+            self.name = name
+
+    bad = [Fake(f"bad{i}") for i in range(8)]
+    kept, stage = validate_derived_values(
+        bad, cost_fn=lambda _: 0.0, return_fn=lambda _: 0.5,
+        identity_fn=lambda v: v.name)
+    assert stage.removed == 8
+    assert len(stage.removed_examples) == 5
+    assert stage.removed_examples == tuple(f"bad{i}" for i in range(5))
 
 
 def test_b_layer_rejects_nan_or_infinite_cost():
@@ -254,6 +311,65 @@ def test_removal_is_visible_not_silent():
     res = next(r for r in baseline_result.results if r.strategy == "long-call")
     labels = [s.label for s in res.filter_report.stages]
     assert any("不可能值" in label for label in labels)
+
+
+def test_single_leg_removal_diagnostic_identifies_the_specific_contract(monkeypatch):
+    """`/code-review` Spec 軸回饋（AC「內容足以指認是哪一組合約」）：
+    這條走完整的 `service.run_offline` wiring，而不是只呼叫
+    `validate_derived_values` 本身——證明 `_single_leg_result()` 真的
+    把 `identity_fn` 接上了，不是只有純函式層級測過。"""
+    original = service.baseline_return
+    poisoned_strike = None
+
+    def poisoned(v):
+        if poisoned_strike is not None and v.contract.strike == poisoned_strike:
+            return float("nan")
+        return original(v)
+
+    p = _params("long-call", 120.0)
+    baseline_result = service.run_offline(
+        service.AnalysisRequest(symbol="XYZ", base_params=p,
+                                strategies=("long-call",)), FIX)
+    res = next(r for r in baseline_result.results if r.strategy == "long-call")
+    target = res.candidates[0].valuation.contract
+    poisoned_strike = target.strike
+
+    monkeypatch.setattr(service, "baseline_return", poisoned)
+    poisoned_result = service.run_offline(
+        service.AnalysisRequest(symbol="XYZ", base_params=p,
+                                strategies=("long-call",)), FIX)
+    poisoned_res = next(r for r in poisoned_result.results if r.strategy == "long-call")
+    b_stage = next(s for s in poisoned_res.filter_report.stages
+                  if s.filter_class == "B" and "不可能值" in s.label)
+    assert target.contract_symbol in b_stage.removed_examples
+
+
+def test_spread_removal_diagnostic_identifies_the_specific_pair(monkeypatch):
+    """同上，Spread 路徑：`pair_report.b_layer_removed_examples` 帶著
+    買腿／賣腿兩張合約代碼組成的身份，而不是只有計數。"""
+    original = service.spread_baseline_return
+    poisoned_key = None
+
+    def poisoned(v):
+        if poisoned_key is not None and (v.long_leg.strike, v.short_leg.strike) == poisoned_key:
+            return float("nan")
+        return original(v)
+
+    p = _params("bull-call-spread", 120.0)
+    baseline_result = service.run_offline(
+        service.AnalysisRequest(symbol="XYZ", base_params=p,
+                                strategies=("bull-call-spread",)), FIX)
+    res = next(r for r in baseline_result.results if r.strategy == "bull-call-spread")
+    target = res.candidates[0].valuation
+    poisoned_key = (target.long_leg.strike, target.short_leg.strike)
+    expected_identity = f"{target.long_leg.contract_symbol}/{target.short_leg.contract_symbol}"
+
+    monkeypatch.setattr(service, "spread_baseline_return", poisoned)
+    poisoned_result = service.run_offline(
+        service.AnalysisRequest(symbol="XYZ", base_params=p,
+                                strategies=("bull-call-spread",)), FIX)
+    poisoned_res = next(r for r in poisoned_result.results if r.strategy == "bull-call-spread")
+    assert expected_identity in poisoned_res.pair_report.b_layer_removed_examples
 
 
 # ---------- 驗證與回歸：既有四策略逐位元不變（T01／#218）----------

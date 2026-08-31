@@ -133,6 +133,15 @@ def _header_lines(snap: ChainSnapshot, p: AnalysisParams, today: date) -> list[s
     ]
 
 
+def _examples_suffix(examples: tuple[str, ...]) -> str:
+    """T05（#226，Initial V2 spec #217，`/code-review` Spec 軸回饋）：
+    把「砍了幾筆」延伸成「砍了誰」——只印範例（本來就只存了前幾筆），
+    沒有範例（既有呼叫端尚未提供，或這一關沒砍到人）就不印這一段。"""
+    if not examples:
+        return ""
+    return f"（例：{', '.join(examples)}）"
+
+
 def _filter_lines(
     freport: FilterReport, p: AnalysisParams,
     quality_flags: tuple[QualityFlagCount, ...] = (),
@@ -143,7 +152,8 @@ def _filter_lines(
     side = "Call 側" if leg_option_type(p.strategy) == "call" else "Put 側"
     lines = ["", "[過濾統計]", f"- 掃描合約（{side}）: {freport.total} 張"]
     for s in freport.stages:
-        lines.append(f"- [{s.filter_class}類排除] {s.label}刷掉: {s.removed}")
+        lines.append(f"- [{s.filter_class}類排除] {s.label}刷掉: {s.removed}"
+                     f"{_examples_suffix(s.removed_examples)}")
     lines.append(f"- 合格: {freport.passed} 張")
     if quality_flags:
         lines.append(f"- [C類標示，不影響入選，計於上方{freport.passed}張合格內]:")
@@ -426,7 +436,10 @@ def _pair_lines(pr) -> list[str]:
             f"- 健全性淘汰: {pr.removed_sanity}",
             # T05（#226，Initial V2 spec #217）：B 層獨立於健全性淘汰
             # （A 層／per-subtype 結構合法性）成立，各自一行不合併計數。
-            f"- 成本或報酬為不可能值淘汰（B 層）: {pr.b_layer_removed}",
+            # `/code-review` Spec 軸回饋：附上範例讓「刷掉幾組」也指認得出
+            # 「是哪兩腿」。
+            f"- 成本或報酬為不可能值淘汰（B 層）: {pr.b_layer_removed}"
+            f"{_examples_suffix(pr.b_layer_removed_examples)}",
             f"- 合格組數: {pr.passed}"]
 
 

@@ -639,7 +639,9 @@ def _single_leg_result(p: AnalysisParams, snap: ChainSnapshot,
     # 既有計算路徑之後、排名之前，獨立於 A 層（`apply_filters()`）成立。
     # `n_qualified` 隨之改用 B 層之後的數量——「合格池」語意上就該是
     # 「真的進得了排名」的那些，不是「通過 A 層但可能算出不可能值」。
-    vals, b_stage = validate_derived_values(vals, natural_cost, baseline_return)
+    vals, b_stage = validate_derived_values(
+        vals, natural_cost, baseline_return,
+        identity_fn=lambda v: v.contract.contract_symbol)
     freport = dataclasses.replace(freport, stages=freport.stages + (b_stage,),
                                   passed=len(vals))
     n_qualified = len(vals)
@@ -747,10 +749,12 @@ def _spread_result(p: AnalysisParams, snap: ChainSnapshot,
     # 既有的配對健全性檢查）成立。單位是「配對」，記在 `pair_report`
     # 而非 `freport`（後者是腿級單位，混在一起會讓同一份報告裡出現
     # 兩種不同單位的數字）。
-    spreads, b_stage = validate_derived_values(spreads, natural_cost,
-                                               spread_baseline_return)
-    pair_report = dataclasses.replace(pair_report, passed=len(spreads),
-                                      b_layer_removed=b_stage.removed)
+    spreads, b_stage = validate_derived_values(
+        spreads, natural_cost, spread_baseline_return,
+        identity_fn=lambda v: f"{v.long_leg.contract_symbol}/{v.short_leg.contract_symbol}")
+    pair_report = dataclasses.replace(
+        pair_report, passed=len(spreads), b_layer_removed=b_stage.removed,
+        b_layer_removed_examples=b_stage.removed_examples)
     ranked = rank_spreads(spreads, p)
     # T09（#191）：韌性／完成度指標只算一次，文字報告與 View 兩條路徑
     # 共用同一個快取——見 `_single_leg_result` 同一段註解，`spreads` 裡

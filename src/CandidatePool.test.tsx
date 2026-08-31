@@ -61,8 +61,8 @@ function view(overrides: Partial<Overrides> = {}): AnalysisView {
       // 寬度皆已從硬門檻移除，spec #61 三分類），這裡的假資料照實際
       // 形狀給。FB5-04（#65）：每關現在帶著三分類的 `filter_class`。
       filter_stages: overrides.stages ?? [
-        { label: "報價異常", removed: 12, filter_class: "A" },
-        { label: "IV 異常", removed: 8, filter_class: "B" },
+        { label: "報價異常", removed: 12, filter_class: "A", removed_examples: [] },
+        { label: "IV 異常", removed: 8, filter_class: "B", removed_examples: [] },
       ],
       // FB5-04（#65，spec #61）：C 類品質標示——整個合格池裡的計數，
       // 跟 `filter_stages` 分開放，不影響入選。
@@ -72,7 +72,8 @@ function view(overrides: Partial<Overrides> = {}): AnalysisView {
         { label: "報價與鄰近履約價不一致，疑似陳舊報價", count: 0 },
       ],
       pair_report: overrides.pairs === undefined
-        ? { total_pairs: 780, removed_sanity: 100, b_layer_removed: 0, passed: 680 }
+        ? { total_pairs: 780, removed_sanity: 100, b_layer_removed: 0,
+            b_layer_removed_examples: [], passed: 680 }
         : overrides.pairs,
       expiry_counts: overrides.counts ?? [["2028-06-16", 25], ["2028-09-15", 30]],
       disclaimer_text: "",
@@ -122,6 +123,39 @@ describe("候選池診斷", () => {
     // 少了這一列，780 → 680 中間那 100 組會沒有交代
     expect(screen.getByText("−100")).toBeInTheDocument();
     expect(screen.getByText("680 組")).toBeInTheDocument();
+  });
+
+  it("T05（#226）：B 層淘汰數也顯示，不是只序列化沒渲染", () => {
+    render(<CandidatePool view={view({
+      pairs: { total_pairs: 780, removed_sanity: 100, b_layer_removed: 3,
+              b_layer_removed_examples: ["A1/B1", "A2/B2", "A3/B3"], passed: 677 },
+    })} />);
+    expect(screen.getByText("成本或報酬為不可能值（B 層）")).toBeInTheDocument();
+    expect(screen.getByText("−3")).toBeInTheDocument();
+    expect(screen.getByText("677 組")).toBeInTheDocument();
+  });
+
+  it("B 層淘汰為 0 時顯示 0，不是「−0」", () => {
+    render(<CandidatePool view={view()} />);
+    // 預設 fixture 的 b_layer_removed 是 0
+    const row = screen.getByText("成本或報酬為不可能值（B 層）").closest(".row");
+    expect(row).toHaveTextContent("0");
+    expect(row).not.toHaveTextContent("−0");
+  });
+
+  it("每一關剔除的候選範例可從 tooltip 指認是哪一組（AC：內容足以指認）", () => {
+    render(<CandidatePool view={view({
+      stages: [
+        { label: "報價異常", removed: 2, filter_class: "A",
+         removed_examples: ["XYZC100B", "XYZC105B"] },
+      ],
+      pairs: { total_pairs: 780, removed_sanity: 100, b_layer_removed: 1,
+              b_layer_removed_examples: ["XYZC100B/XYZC120S"], passed: 679 },
+    })} />);
+    const stageRow = screen.getByText("報價異常").closest(".row");
+    expect(stageRow).toHaveAttribute("title", "例：XYZC100B, XYZC105B");
+    const pairRow = screen.getByText("成本或報酬為不可能值（B 層）").closest(".row");
+    expect(pairRow).toHaveAttribute("title", "例：XYZC100B/XYZC120S");
   });
 
   it("單腳策略沒有配對報告時，配對那幾列整組不顯示", () => {

@@ -55,7 +55,18 @@ export default function CandidatePool({ view }: { view: AnalysisView }) {
       </div>
 
       {result.filter_stages.map((stage) => (
-        <div className="row sub" key={stage.label}>
+        <div
+          className="row sub"
+          key={stage.label}
+          // T05（#226，Initial V2，`/code-review` Spec 軸回饋）：被這一關
+          // 剔除掉的候選身份範例——瀏覽器原生 tooltip，不佔額外畫面空間，
+          // 沒有範例（這關沒砍到人）就不掛這個屬性。
+          title={
+            stage.removed_examples.length > 0
+              ? `例：${stage.removed_examples.join(", ")}`
+              : undefined
+          }
+        >
           <span className="row-label">{stage.label}</span>
           <span className="row-value">
             {/* FB5-04（#65，spec #61）：這關屬於哪一類（A＝資料健全性、
@@ -111,6 +122,27 @@ export default function CandidatePool({ view }: { view: AnalysisView }) {
               }
             >
               {pairs.removed_sanity > 0 ? `−${pairs.removed_sanity}` : "0"}
+            </span>
+          </div>
+          {/* T05（#226，Initial V2，`/code-review` Spec 軸回饋）：B 層
+              （導出層數學安全網）獨立於上面的合理性檢查，各自一列——
+              先前只序列化沒渲染，這裡補上，跟單腳路徑（上方 filter_stages
+              已經通用渲染 B 層那關）享有同等的可見度。 */}
+          <div
+            className="row sub"
+            title={
+              pairs.b_layer_removed_examples.length > 0
+                ? `例：${pairs.b_layer_removed_examples.join(", ")}`
+                : undefined
+            }
+          >
+            <span className="row-label">成本或報酬為不可能值（B 層）</span>
+            <span
+              className={
+                pairs.b_layer_removed > 0 ? "row-value negative" : "row-value"
+              }
+            >
+              {pairs.b_layer_removed > 0 ? `−${pairs.b_layer_removed}` : "0"}
             </span>
           </div>
           <div className="row">

@@ -2341,18 +2341,21 @@
         {
           "filter_class": "A",
           "label": "報價異常",
-          "removed": 0
+          "removed": 0,
+          "removed_examples": []
         },
         {
           "filter_class": "B",
           "label": "IV 異常",
-          "removed": 0
+          "removed": 0,
+          "removed_examples": []
         }
       ],
       "message": "",
       "n_qualified": 4,
       "pair_report": {
         "b_layer_removed": 0,
+        "b_layer_removed_examples": [],
         "passed": 4,
         "removed_sanity": 0,
         "total_pairs": 4

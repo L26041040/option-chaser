@@ -44,6 +44,12 @@ from typing import Iterable
 from .models import (AnalysisParams, FilterReport, FilterStageResult, OptionContract,
                      PairReport, QualityFlagCount, leg_option_type)
 
+# T05（#226，Initial V2 spec #217，`/code-review` Spec 軸回饋）：每一關剔除
+# 掉的候選只記「前幾筆」的身份當範例，不是整份清單——診斷要的是「指認得出
+# 是哪一組」，不是把整個被剔除的池子搬進報告裡（合約壞得夠多時清單本身
+# 就會失去可讀性）。
+_MAX_REMOVED_EXAMPLES = 5
+
 # FB5-04（#65，spec #61）：三分類的人話說明，`FilterStageResult.filter_class` 與
 # `quality_flag_counts()` 的呼叫端（report.py／store.py）共用同一份措辭，
 # 不各自重複硬編碼一次。
@@ -130,14 +136,17 @@ def apply_filters(
     results: list[FilterStageResult] = []
     for filter_class, label, pred in stages:
         kept = [c for c in remaining if pred(c)]
-        results.append(FilterStageResult(label=label, removed=len(remaining) - len(kept),
-                                         filter_class=filter_class))
+        dropped = [c for c in remaining if not pred(c)]
+        examples = tuple(c.contract_symbol for c in dropped[:_MAX_REMOVED_EXAMPLES])
+        results.append(FilterStageResult(label=label, removed=len(dropped),
+                                         filter_class=filter_class,
+                                         removed_examples=examples))
         remaining = kept
     return remaining, FilterReport(total=total, stages=tuple(results), passed=len(remaining))
 
 
 def validate_derived_values(
-    candidates: list, cost_fn, return_fn,
+    candidates: list, cost_fn, return_fn, identity_fn=None,
 ) -> tuple[list, FilterStageResult]:
     """T05（#226，Initial V2 spec #217）：B 層——導出層數學安全網。
 
@@ -162,6 +171,12 @@ def validate_derived_values(
     一個有限的負數（例如 `-0.5`）完全合法，只有 `NaN`／`Infinity` 才
     invalid；這是既有 ranking 自然沉底的正常結果，不是本函式要攔的
     對象（票上明文紅線：不新增 `max_profit<=0` 過濾規則）。
+
+    `identity_fn`（選填，`/code-review` Spec 軸回饋新增）：從被剔除的
+    候選萃取一個可指認的身份字串（單腳給合約代碼、Spread 給買賣兩腿
+    合約代碼的組合），供診斷指認「是哪一組」。省略時（呼叫端尚未提供）
+    回傳的 `FilterStageResult.removed_examples` 就是空 tuple——不強迫
+    既有呼叫端立刻補上。
     """
     def _finite(x) -> bool:
         # `/code-review` Standards 軸抓到：本函式的 `cost_fn`／`return_fn`
@@ -173,6 +188,7 @@ def validate_derived_values(
 
     kept = []
     removed = 0
+    examples: list[str] = []
     for v in candidates:
         cost = cost_fn(v)
         ret = return_fn(v)
@@ -180,8 +196,11 @@ def validate_derived_values(
             kept.append(v)
         else:
             removed += 1
+            if identity_fn is not None and len(examples) < _MAX_REMOVED_EXAMPLES:
+                examples.append(identity_fn(v))
     stage = FilterStageResult(label="成本或報酬為不可能值（B 層安全網）",
-                              removed=removed, filter_class="B")
+                              removed=removed, filter_class="B",
+                              removed_examples=tuple(examples))
     return kept, stage
 
 
