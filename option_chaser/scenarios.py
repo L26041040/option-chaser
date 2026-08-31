@@ -61,13 +61,43 @@ def _value_fn(val):
             scenario_leg_value(c, S, at, p, shift, carry)), val.mid, c.ask, c.expiry
 
 
+def _effective_target(spot: float, target: float) -> float:
+    """T17（#234，Initial V2 spec #217 §F／§P.5）：持平劇本
+    （`target_price == spot`）時，「從 spot 走到 target」這條既有插值
+    路徑的長度是零——`_grid_price()`／`scenario_vector()` 的
+    S2/S3/S4/S5／`completion_curve()`／`completion_scan()`（後者今天
+    只有 CLI `--force` 才可能對非 Butterfly 候選觸發，見下方
+    `completion_scan()` docstring）全部依賴這條路徑取樣，字面上路徑
+    長度為零會讓全部取樣點塌成同一個價格（spec 明文點名的既有地雷：
+    「價格網格產生器在該情況下會把五個 k 塌成同一個價格」）。
+
+    這裡只在真正持平時換一個非零的合成終點，讓依賴這條路徑的既有函式
+    的既有插值公式原封不動繼續運作、不必逐一改寫每個呼叫端；沿用
+    `matrix.price_axis()` 無最高／最低價位時既有預設路徑已經在用、且
+    已通過需求方核准的 15% 這個比例（該處是看漲情境的預設上限係數），
+    不是為本票另外發明一個新數字。
+
+    **只影響這裡列出的內部取樣座標，不改變 `AnalysisParams.
+    target_price` 本身**——S1（不漲＝spot 本身）、S6／S7（劇本成立時
+    的真實 target_price 評價點，target==spot 時該點就是 spot，這是
+    正確答案不是退化）、以及排名／估值／breakeven-vs-target 等其餘
+    一切真正讀取使用者目標價的地方完全不受影響，也不會被這裡改到。
+
+    `target != spot` 時原樣回傳 `target`——既有看漲／看跌劇本用到這條
+    路徑的函式因此逐位元不變（T01 基準；AC 明文要求）。"""
+    if target != spot:
+        return target
+    return spot * 1.15
+
+
 def _delay_value(fn, spot: float, today: date, p: AnalysisParams,
                  expiry: date, delta_days: int) -> float:
     """Spec §2.2: linear path spot->target over [today, anchor+delta]."""
     arrive = p.anchor + timedelta(days=delta_days)
     d = min(arrive, expiry)
     frac = (d - today).days / (arrive - today).days
-    s_at_d = spot + (p.target_price - spot) * frac
+    target = _effective_target(spot, p.target_price)
+    s_at_d = spot + (target - spot) * frac
     return fn(s_at_d, d, p)
 
 
@@ -80,8 +110,13 @@ def scenario_vector(val: ContractValuation | SpreadValuation, spot: float,
     def ret(value: float, cost: float) -> float:
         return (value - cost) / cost
 
-    s_half = spot + 0.5 * (p.target_price - spot)
-    s_most = spot + 0.75 * (p.target_price - spot)
+    # T17（#234）：S2／S3 是「走到半程／大半程」的路徑插值點，target==
+    # spot 時改用 `_effective_target()` 的合成終點，不再塌成 spot 本身
+    # 的重複值；S1（原地不漲）／S6／S7（真實 target_price 評價）不經過
+    # 這條路徑，維持讀取真正的 `p.target_price`。
+    target = _effective_target(spot, p.target_price)
+    s_half = spot + 0.5 * (target - spot)
+    s_most = spot + 0.75 * (target - spot)
     values = [
         ("S1", ret(fn(spot, tgt, p), mid)),
         ("S2", ret(fn(s_half, tgt, p), mid)),
@@ -107,7 +142,14 @@ def natural_cost(val: ContractValuation | SpreadValuation | ButterflyValuation) 
 
 
 def _grid_price(spot: float, target: float, k: float) -> float:
-    """Spec §2.3: positive floor min(0.01*spot, target) keeps k=1 == target."""
+    """Spec §2.3: positive floor min(0.01*spot, target) keeps k=1 == target.
+
+    T17（#234）：`target` 先過 `_effective_target()`——`target==spot`
+    （持平劇本）時換成非零的合成終點，否則每個 k 都算出同一個 `spot`
+    （既有地雷，見 `_effective_target()` docstring）。`target != spot`
+    時原樣不變，既有呼叫端（`completion_scan()`／`completion_curve()`）
+    逐位元不變。"""
+    target = _effective_target(spot, target)
     return max(spot + k * (target - spot), min(0.01 * spot, target))
 
 
@@ -128,7 +170,15 @@ def completion_scan(val: ContractValuation | SpreadValuation, spot: float,
     `valuation.evaluate_butterfly()` 已經用這個結構自己的分段線性性質
     算出的 `profit_region`（見 `service._v4_fields()` 如何把它接進
     `CandidateView`）。既有四策略的掃描邏輯完全不受影響——它們從不會
-    走到這個分支，`isinstance` 判斷本身就是逐位元不變的保證。"""
+    走到這個分支，`isinstance` 判斷本身就是逐位元不變的保證。
+
+    T17（#234）：Butterfly 的持平劇本走上面的 `isinstance` 短路，本來
+    就不會碰到下面的網格掃描——「保本掃描對它正常」的意思就是誠實回
+    `(None, None)`（既有 spec 裁示：Butterfly 的保本概念改由
+    `profit_region` 承接，不是這個 suffix 掃描）。下面的網格仍然可能
+    以 `target_price == spot` 被呼叫到（單腿／Spread 候選在 CLI
+    `--force` 繞過方向閘門時）——`_grid_price()` 已經在函式內部處理
+    這個退化情況（見其 docstring），這裡不需要另外判斷。"""
     if isinstance(val, ButterflyValuation):
         return None, None
     fn, mid, _, _ = _value_fn(val)

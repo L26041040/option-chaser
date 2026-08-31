@@ -2643,6 +2643,11 @@ test("T16（#232）：展開 Butterfly 候選看得到 Heatmap，且不觸發任
   await routeButterflyDetail(page);
   await page.goto("/#/s/s1");
   await expect(page.getByRole("heading", { name: "到期日" })).toBeVisible();
+  // Dev server（React StrictMode）會把初次掛載的 effect 重複觸發一次
+  // ——`/api/settings` 等頁面載入本身就會發的請求可能還沒真的落定。
+  // 等網路真的靜下來才歸零計數器，這樣「展開」這個動作本身有沒有多發
+  // 請求的量測才不會被頁面載入尾聲的既有請求汙染成偽陽性。
+  await page.waitForLoadState("networkidle");
 
   requestUrls.length = 0;   // 只在乎展開這個動作本身有沒有多發請求
   await page.locator(".candidate summary").first().click();
@@ -2668,4 +2673,119 @@ test("T16（#232）：Butterfly 候選有淨成本走勢圖——既有元件的
 
   await page.getByText("Spread 淨成本走勢").click();
   await expect(page.locator(".spread-history-chart")).toBeVisible();
+});
+
+/* ---------- T17（#234，Initial V2）：持平劇本（target_price == spot），
+   端到端 ---------- */
+
+/** 目前劇本方向為「持平」時的真實後端訊息（`option_chaser.models.
+ *  family_eligibility()`／`service._skip_message()` 逐字複製，非湊字）。 */
+const FLAT_SKIP_MESSAGE =
+  "目前劇本方向為「持平」，因此未執行 Long Call、Long Put、Bull Call " +
+  "Spread、Bear Put Spread。可改選 Call Butterfly、Put Butterfly。";
+const FLAT_INELIGIBLE_REASON =
+  "目前劇本方向為「持平」，這個策略家族底下已啟用的策略都不適用這個方向。";
+
+function flatSkippedResult(strategy: string) {
+  return {
+    strategy, status: "skipped_direction", message: FLAT_SKIP_MESSAGE,
+    n_qualified: 0, filter_report: null, filter_stages: [], quality_flags: [],
+    pair_report: null, expiry_counts: [], expiry_top10: [], disclaimer_text: "",
+  };
+}
+
+/** 持平劇本（`target_price === spot`）的詳細頁回應——沿用 T16 既有的
+ *  真實 Butterfly 契約樣本（`sampleCallFly`），只補上另外四個 subtype
+ *  被方向閘門擋下的 `skipped_direction` 結果與對應的 `family_
+ *  eligibility`，不手造假的候選內容。 */
+function flatMultiFamilyView() {
+  return {
+    ...sampleCallFly,
+    params: { ...sampleCallFly.params, target_price: sampleCallFly.meta.spot },
+    results: [
+      flatSkippedResult("long-call"), flatSkippedResult("long-put"),
+      flatSkippedResult("bull-call-spread"), flatSkippedResult("bear-put-spread"),
+      ...sampleCallFly.results,
+    ],
+    family_eligibility: {
+      "single-leg": { family: "single-leg", eligible: false,
+                     reason: FLAT_INELIGIBLE_REASON },
+      "vertical-spread": { family: "vertical-spread", eligible: false,
+                          reason: FLAT_INELIGIBLE_REASON },
+      "butterfly": { family: "butterfly", eligible: true, reason: null },
+    },
+  };
+}
+
+test("T17（#234）：建立持平劇本（目標價＝現價）全程不被拒絕，看得到 " +
+     "Butterfly 候選；Call/Put 與 Vertical Spread 顯示不可選並說明原因",
+   async ({ page }) => {
+  const flatSpot = sampleCallFly.meta.spot;   // 100.0
+  const flatView = flatMultiFamilyView();
+  const created = {
+    ...sampleRow, id: "s1", symbol: "XYZ",
+    target_price: flatSpot, target_month: "2026-10",
+    strategies: ["single-leg", "vertical-spread", "butterfly"],
+    latest_analyzed_at: null, best_return: null,
+  };
+
+  await page.route("**/api/scenarios", (route) =>
+    route.request().method() === "POST"
+      ? route.fulfill({ status: 201, json: created })
+      : route.fulfill({ json: [] }));
+  // 建立劇本只刷新該新劇本（P4-b，既有規則）——批次端點回這一筆真的
+  // 分析完成的結果，不是留白。
+  await page.route("**/api/scenarios/refresh-run", (route) =>
+    route.fulfill({ json: {
+      results: [{ scenario_id: "s1", ok: true, row: {
+        ...created, latest_analyzed_at: "2026-10-16T21:30:00-04:00",
+        best_return: butterflyCand.baseline_return,
+      } }],
+      remaining: [],
+    } }));
+  await page.route("**/api/scenarios/s1", (route) =>
+    route.fulfill({ json: { ...created, latest_result: flatView } }));
+
+  await page.goto("/");
+  await page.getByRole("button", { name: "＋ 新增劇本" }).click();
+  await page.getByLabel("標的代號").fill("xyz");
+  // AC 明文：不為持平劇本新增任何使用者輸入欄位——目標價位就是
+  // 現價本身，走既有的純數字輸入欄位，沒有任何專屬互動。
+  await page.getByLabel("目標價位").fill(String(flatSpot));
+  await page.getByLabel("目標年月").click();
+  await page.getByLabel("年份").fill("2026");
+  await page.getByRole("button", { name: "10 月" }).click();
+  await page.getByRole("checkbox", { name: "Call / Put" }).check();
+  await page.getByRole("checkbox", { name: "Vertical Spread" }).check();
+  await page.getByRole("checkbox", { name: "Butterfly" }).check();
+  await page.getByRole("button", { name: "建立", exact: true }).click();
+
+  // 建立没被拒絕——劇本卡片真的出現在清單上。
+  const card = page.getByRole("listitem").filter({ hasText: "2026-10" });
+  await expect(card.getByText("XYZ", { exact: true })).toBeVisible();
+
+  await page.getByRole("link", { name: /XYZ/ }).click();
+  await expect(page.getByText(/劇本主圖/)).toBeVisible();
+  // 頭條（唯一產生候選的 family）就是 Butterfly 冠軍——三隻腿完整顯示。
+  await expect(page.getByText("買 100 / 賣 2×106 / 買 115").first())
+    .toBeVisible();
+
+  const tabs = page.getByRole("group", { name: "策略家族" });
+  await expect(tabs.getByRole("button")).toHaveCount(3);
+  await expect(tabs.getByRole("button", { name: "Butterfly" }))
+    .toHaveAttribute("aria-pressed", "true");   // 預設打開冠軍所屬 family
+
+  // FamilyTabs 的既有優先序（T11／#229）：這個 family 底下有 result
+  // 條目（雖然全是 skipped_direction）時，顯示的是該筆結果自己的
+  // `message`（`FLAT_SKIP_MESSAGE`），不是 `family_eligibility.reason`
+  // （後者只在這個 family 完全沒有任何 result 條目時才顯示）——兩種
+  // 訊息都提到「持平」，這裡只驗證原因確實可見、確實提到方向，不綁死
+  // 是哪一種訊息路徑（那是既有 FamilyTabs 自己的既有裁示，不是本票
+  // 要驗證的行為）。
+  await tabs.getByRole("button", { name: "Call / Put" }).click();
+  await expect(page.getByText(/持平/)).toBeVisible();
+  await tabs.getByRole("button", { name: "Vertical Spread" }).click();
+  await expect(page.getByText(/持平/)).toBeVisible();
+  // 兩個不可選分頁都不渲染排名內容（facts-only，既有裁示）。
+  await expect(page.getByRole("heading", { name: "候選池" })).toHaveCount(0);
 });

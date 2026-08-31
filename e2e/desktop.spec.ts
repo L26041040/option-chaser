@@ -1636,6 +1636,12 @@ test("T16（#232）：桌面版 Butterfly 三隻腿完整顯示、兩個損益�
   await expect(regionRow).toContainText(
     `$${butterflyCandDesktop.profit_region[0].toFixed(2)}`);
 
+  // Dev server（React StrictMode）會把初次掛載的 effect 重複觸發一次
+  // ——`/api/settings` 等頁面載入本身就會發的請求可能還沒真的落定。
+  // 等網路真的靜下來才歸零計數器（同 smoke.spec.ts 同一條測試的既有
+  // 教訓），避免「展開」動作本身有沒有多發請求的量測被頁面載入尾聲
+  // 的既有請求汙染成偽陽性。
+  await page.waitForLoadState("networkidle");
   requestUrls.length = 0;
   await detail.locator(".candidate summary").first().click();
   await expect(detail.locator(".candidate").first().locator("table")).toBeVisible();
@@ -1643,4 +1649,100 @@ test("T16（#232）：桌面版 Butterfly 三隻腿完整顯示、兩個損益�
 
   await expect(detail.getByText("IV 相對位置")).toHaveCount(0);
   expect(ivCalls).toEqual([]);
+});
+
+/* ---------- T17（#234，Initial V2）：持平劇本，桌面 viewport ---------- */
+
+const FLAT_SKIP_MESSAGE_DESKTOP =
+  "目前劇本方向為「持平」，因此未執行 Long Call、Long Put、Bull Call " +
+  "Spread、Bear Put Spread。可改選 Call Butterfly、Put Butterfly。";
+const FLAT_INELIGIBLE_REASON_DESKTOP =
+  "目前劇本方向為「持平」，這個策略家族底下已啟用的策略都不適用這個方向。";
+
+function flatSkippedResultDesktop(strategy: string) {
+  return {
+    strategy, status: "skipped_direction", message: FLAT_SKIP_MESSAGE_DESKTOP,
+    n_qualified: 0, filter_report: null, filter_stages: [], quality_flags: [],
+    pair_report: null, expiry_counts: [], expiry_top10: [], disclaimer_text: "",
+  };
+}
+
+function flatMultiFamilyViewDesktop() {
+  return {
+    ...sampleCallFly,
+    params: { ...sampleCallFly.params, target_price: sampleCallFly.meta.spot },
+    results: [
+      flatSkippedResultDesktop("long-call"), flatSkippedResultDesktop("long-put"),
+      flatSkippedResultDesktop("bull-call-spread"),
+      flatSkippedResultDesktop("bear-put-spread"),
+      ...sampleCallFly.results,
+    ],
+    family_eligibility: {
+      "single-leg": { family: "single-leg", eligible: false,
+                     reason: FLAT_INELIGIBLE_REASON_DESKTOP },
+      "vertical-spread": { family: "vertical-spread", eligible: false,
+                          reason: FLAT_INELIGIBLE_REASON_DESKTOP },
+      "butterfly": { family: "butterfly", eligible: true, reason: null },
+    },
+  };
+}
+
+test("T17（#234）：桌面版建立持平劇本（目標價＝現價）全程不被拒絕，" +
+     "看得到 Butterfly 候選；Call/Put 與 Vertical Spread 顯示不可選並說明原因",
+   async ({ page }) => {
+  const flatSpot = sampleCallFly.meta.spot;
+  const flatView = flatMultiFamilyViewDesktop();
+  const created = {
+    ...sampleRow, id: "s1", symbol: "XYZ",
+    target_price: flatSpot, target_month: "2026-10",
+    strategies: ["single-leg", "vertical-spread", "butterfly"],
+    latest_analyzed_at: null, best_return: null,
+  };
+
+  await page.route("**/api/scenarios", (route) =>
+    route.request().method() === "POST"
+      ? route.fulfill({ status: 201, json: created })
+      : route.fulfill({ json: [] }));
+  await page.route("**/api/scenarios/refresh-run", (route) =>
+    route.fulfill({ json: {
+      results: [{ scenario_id: "s1", ok: true, row: {
+        ...created, latest_analyzed_at: "2026-10-16T21:30:00-04:00",
+        best_return: butterflyCandDesktop.baseline_return,
+      } }],
+      remaining: [],
+    } }));
+  await page.route("**/api/scenarios/s1", (route) =>
+    route.fulfill({ json: { ...created, latest_result: flatView } }));
+
+  await page.goto("/");
+  await page.getByRole("button", { name: "＋ 建立劇本" }).click();
+  await page.getByLabel("標的代號").fill("xyz");
+  await page.getByLabel("目標價位").fill(String(flatSpot));
+  await page.getByLabel("目標年月").click();
+  await page.getByLabel("年份").fill("2026");
+  await page.getByRole("button", { name: "10 月" }).click();
+  await page.getByRole("checkbox", { name: "Call / Put" }).check();
+  await page.getByRole("checkbox", { name: "Vertical Spread" }).check();
+  await page.getByRole("checkbox", { name: "Butterfly" }).check();
+  await page.getByRole("button", { name: "建立", exact: true }).click();
+
+  // 桌面版建立後不自動選中——跟其他既有桌面建立流程一樣，點左側清單
+  // 那張新卡片才會在右側工作區打開詳細頁。
+  await page.getByRole("link", { name: /XYZ/ }).click();
+
+  const detail = page.locator(".detail-pane");
+  await expect(detail.getByText(/劇本主圖/)).toBeVisible();
+  await expect(detail.getByText("買 100 / 賣 2×106 / 買 115").first())
+    .toBeVisible();
+
+  const tabs = detail.getByRole("group", { name: "策略家族" });
+  await expect(tabs.getByRole("button")).toHaveCount(3);
+  await expect(tabs.getByRole("button", { name: "Butterfly" }))
+    .toHaveAttribute("aria-pressed", "true");
+
+  await tabs.getByRole("button", { name: "Call / Put" }).click();
+  await expect(detail.getByText(/持平/)).toBeVisible();
+  await tabs.getByRole("button", { name: "Vertical Spread" }).click();
+  await expect(detail.getByText(/持平/)).toBeVisible();
+  await expect(detail.getByRole("heading", { name: "候選池" })).toHaveCount(0);
 });

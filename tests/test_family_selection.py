@@ -232,3 +232,75 @@ def test_family_eligibility_survives_the_storage_roundtrip_via_edit_response():
     # target_price／strategies 都沒變（同一個值再送一次）——沒有
     # thesis_changed，因此保留舊 verdict，不是 None。
     assert body["family_eligibility"] is not None
+
+
+# ---------- T17（#234，Initial V2）：持平劇本（target_price == spot）
+# 全程不被拒絕，只有 Butterfly 可選 ----------
+
+def test_flat_scenario_creates_analyses_and_refreshes_without_being_rejected():
+    """AC：目標價位等於現價的劇本可以建立、分析、刷新，全程不被拒絕
+    ——這是 T17 要修的兩件事（方向閘門＋價格網格塌陷）合起來的端到端
+    證明。
+
+    改用 T15（#230）既有的中密度 Butterfly fixture
+    （`xyz_v7_butterfly_moderate.json`，spot 同樣是 100.0）而非本檔案
+    其餘測試共用的 `xyz_v4_six_expiries.json`——後者履約價梯子太稀疏，
+    C(n,3) 枚舉排不出任何正 max_profit 的三腿組合（`status="empty"`，
+    這是候選池密度不足，不是方向閘門或本票要修的問題），T15 施工時已
+    確認過這個限制、專門為此另建了這份 fixture。"""
+    client = _client()
+    snap = load_snapshot("tests/fixtures/xyz_v7_butterfly_moderate.json")
+    client = TestClient(create_app(
+        fetch=lambda symbol: snap, storage=MemoryStorage(),
+        rate_loader=_offline_rate_loader, dividend_loader=_offline_dividend_loader))
+    sid = _create(client, target_price=100.0,
+                  strategies=["single-leg", "vertical-spread", "butterfly"])["id"]
+
+    row = client.post(f"/api/scenarios/{sid}/refresh").json()
+    assert row["representative_candidate"] is not None, (
+        "持平劇本被全面拒絕——一個候選都沒有")
+
+    elig = row["family_eligibility"]
+    assert elig["butterfly"]["eligible"] is True
+    assert elig["butterfly"]["reason"] is None
+    for family in ("single-leg", "vertical-spread"):
+        assert elig[family]["eligible"] is False
+        assert "持平" in elig[family]["reason"]
+
+    view = client.get(f"/api/scenarios/{sid}").json()["latest_result"]
+    results_by_strategy = {r["strategy"]: r for r in view["results"]}
+    # Call/Put／Vertical 四個 subtype 全部被方向閘門擋下，不是分析失敗。
+    for strategy in ("long-call", "long-put",
+                     "bull-call-spread", "bear-put-spread"):
+        assert results_by_strategy[strategy]["status"] == "skipped_direction"
+    # Butterfly 兩個 subtype 至少一個真的產生候選（同一個合格池，call-fly／
+    # put-fly 兩者皆為 flat-eligible，取決於哪邊報價撐得出正的 max_profit）。
+    # 契約形狀：候選鍵在 `expiry_top10[].candidate_keys`（T13／#231 payload
+    # 投影後的既有形狀），不是頂層 `candidates` 欄位。
+    butterfly_results = [results_by_strategy[s] for s in ("call-fly", "put-fly")]
+
+    def _keys(r):
+        return [k for g in (r["expiry_top10"] or []) for k in g["candidate_keys"]]
+
+    assert any(r["status"] == "ok" and _keys(r) for r in butterfly_results), (
+        "Butterfly 在持平方向下一個候選都沒產生")
+
+    for r in butterfly_results:
+        if r["status"] != "ok":
+            continue
+        for key in _keys(r):
+            cand = view["candidate_pool"][key]
+            # T17 修正前：completion_curve 五個點全部塌成同一個報酬率
+            # （因為底層的 5 個取樣點全部塌成 spot 本身）。
+            curve_returns = [pt[1] for pt in cand["completion_curve"]]
+            assert len(set(curve_returns)) > 1, (
+                f"{key} 的完成度曲線仍然整條退化成同一個值")
+            # 七情境向量同理：S2/S3（半程／大半程）不能塌成同一個數字。
+            entries = dict(cand["scenario_vector"]["entries"])
+            assert len({entries["S1"], entries["S2"], entries["S3"]}) > 1, (
+                f"{key} 的七情境向量 S1/S2/S3 仍然塌成同一個數字")
+
+    # 刷新（第二次）同樣不被拒絕——AC 明文要求「建立、分析、刷新」三者
+    # 全程都要走得通，不只是建立那一刻。
+    row2 = client.post(f"/api/scenarios/{sid}/refresh").json()
+    assert row2["representative_candidate"] is not None
