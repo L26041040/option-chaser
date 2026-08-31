@@ -11,8 +11,9 @@ from dataclasses import dataclass
 from datetime import date, timedelta
 
 from .models import AnalysisParams
-from .valuation import (ContractValuation, SpreadValuation,
-                        scenario_leg_value, spread_scenario_value)
+from .valuation import (ButterflyValuation, ContractValuation, SpreadValuation,
+                        butterfly_scenario_value, scenario_leg_value,
+                        spread_scenario_value)
 
 SCENARIO_NAMES = {
     "S1": "不漲", "S2": "半程", "S3": "大半程", "S4": "晚30天",
@@ -28,18 +29,32 @@ class ScenarioVector:
 
 
 def _value_fn(val):
-    """Uniform (S, at, shift) -> value callable for single legs and spreads.
+    """Uniform (S, at, shift) -> value callable for single legs, spreads, and
+    (T15／#230) butterflies.
 
     #113：帶上 `val.carry`／`val.long_carry`+`val.short_carry`（每腿只算
     一次，見 `valuation.LegCarry` docstring）——七情境、保本掃描等全部
     共用同一個 closure，不重新反解 IV。
-    """
+
+    T15：Butterfly 分支重用既有、已核准的 `butterfly_scenario_value()`
+    （逐腿加總，T02／#219 原語的具體呼叫），這裡只是把它包成跟另外
+    兩型別同一種 `(fn, mid, natural, expiry)` 四元組——`scenario_
+    vector()`／`completion_curve()` 兩者都是逐點評價，對任何結構皆
+    正常運作（AC 明文）；`completion_scan()`（非單調結構下算法本身
+    不適用）在它自己的函式內用 isinstance 短路，不靠這裡的分派擋。"""
     if isinstance(val, SpreadValuation):
         lng, sht = val.long_leg, val.short_leg
         lc, sc = val.long_carry, val.short_carry
         return (lambda S, at, p, shift=0.0:
                 spread_scenario_value(lng, sht, S, at, p, shift, lc, sc)), \
                val.net_mid, (lng.ask - sht.bid), lng.expiry
+    if isinstance(val, ButterflyValuation):
+        lo, mid, hi = val.low_leg, val.mid_leg, val.high_leg
+        lc, mc, hc = val.low_carry, val.mid_carry, val.high_carry
+        natural = lo.ask - 2.0 * mid.bid + hi.ask
+        return (lambda S, at, p, shift=0.0:
+                butterfly_scenario_value(lo, mid, hi, S, at, p, shift, lc, mc, hc)), \
+               val.net_mid, natural, lo.expiry
     c = val.contract
     carry = val.carry
     return (lambda S, at, p, shift=0.0:
@@ -83,9 +98,11 @@ def scenario_vector(val: ContractValuation | SpreadValuation, spot: float,
                           worst_return=worst)
 
 
-def natural_cost(val: ContractValuation | SpreadValuation) -> float:
+def natural_cost(val: ContractValuation | SpreadValuation | ButterflyValuation) -> float:
     if isinstance(val, SpreadValuation):
         return val.long_leg.ask - val.short_leg.bid
+    if isinstance(val, ButterflyValuation):
+        return val.low_leg.ask - 2.0 * val.mid_leg.bid + val.high_leg.ask
     return val.contract.ask
 
 
@@ -98,7 +115,22 @@ def completion_scan(val: ContractValuation | SpreadValuation, spot: float,
                     today: date, p: AnalysisParams
                     ) -> tuple[float | None, float | None]:
     """Suffix-condition grid scan (spec §2.3): k* = smallest k such that
-    value >= Mid cost at EVERY grid point in [k, 1.0]. Walk down from 1.0."""
+    value >= Mid cost at EVERY grid point in [k, 1.0]. Walk down from 1.0.
+
+    T15（#230）：這個「從 k=1.0 反向掃描、遇第一個失敗就停」的演算法
+    假設 payoff 沿掃描路徑單調——這個假設對既有四個 debit 策略成立
+    （T3／#17：Spread 排名用自身到期日的內在價值，其掃描路徑本來就是
+    單調的），但 Butterfly 的 payoff 是分段線性、非單調（兩翼歸零、
+    中間有峰值），對它硬套這個演算法會誤報「劇本全成仍不保本」（AC
+    明文的錯誤案例）。ButterflyValuation 因此在這裡短路直接回
+    `(None, None)`，不進入下面的掃描迴圈——這不是「Butterfly 沒有這個
+    概念」，而是這個特定演算法對它結構性地給不出正確答案，正確答案是
+    `valuation.evaluate_butterfly()` 已經用這個結構自己的分段線性性質
+    算出的 `profit_region`（見 `service._v4_fields()` 如何把它接進
+    `CandidateView`）。既有四策略的掃描邏輯完全不受影響——它們從不會
+    走到這個分支，`isinstance` 判斷本身就是逐位元不變的保證。"""
+    if isinstance(val, ButterflyValuation):
+        return None, None
     fn, mid, _, _ = _value_fn(val)
     tgt = p.anchor                            # 附錄 A9 錨點：估值參考日
     k_star = None

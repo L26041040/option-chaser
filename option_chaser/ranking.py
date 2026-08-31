@@ -5,8 +5,11 @@ from datetime import date
 
 from .models import AnalysisParams
 from .valuation import (
+    ButterflyValuation,
     ContractValuation,
     SpreadValuation,
+    butterfly_guidance_judgments,
+    butterfly_scenario_value,
     guidance_judgments,
     intrinsic_value,
     scenario_leg_value,
@@ -41,19 +44,22 @@ def baseline_return(v: ContractValuation) -> float:
 
 
 def return_at_price(
-    val: ContractValuation | SpreadValuation, S: float, p: AnalysisParams
+    val: ContractValuation | SpreadValuation | ButterflyValuation, S: float,
+    p: AnalysisParams,
 ) -> float:
     """任意標的價位下的劇本報酬（V7／#55，三價位對照用）。
 
     口徑與主排名數字**完全相同**——基準 IV、最差成交成本（單腿＝Ask；
-    價差＝買腿 Ask − 賣腿 Bid，附錄 A14.2），只有標的價換成 `S`。這是
-    刻意的：三價位要能與頭條那個數字並排讀，就不能是另一套算法。
+    價差＝買腿 Ask − 賣腿 Bid，附錄 A14.2；Butterfly＝買腿 Ask 合計 −
+    2×中腿 Bid，T15／#230），只有標的價換成 `S`。這是刻意的：三價位要
+    能與頭條那個數字並排讀，就不能是另一套算法。
     `return_at_price(v, p.target_price, p) == baseline_return(v)` 由測試釘住，
     且**必須在 expiry != anchor 的候選上驗證**——兩者相等時這條斷言是空的。
 
     估值日**兩條路徑不同，各自沿用既有裁示**，不可統一：
-    - 價差＝該組**自身的到期日**（T3／#17：排名估值改為各 Spread 自身到期日
-      的內在價值，見 `valuation.evaluate_spread`）
+    - 價差／Butterfly＝該組**自身的到期日**（T3／#17：排名估值改為各
+      Spread 自身到期日的內在價值，見 `valuation.evaluate_spread`／
+      `evaluate_butterfly`）
     - 單腿＝日曆錨點（附錄 A9，見 `valuation.evaluate_contract`）
 
     不改排名（spec #47 明文：仍以目標價排名）——本函式只供呈現。
@@ -63,6 +69,13 @@ def return_at_price(
         value = spread_scenario_value(val.long_leg, val.short_leg, S, at, p,
                                       long_carry=val.long_carry,
                                       short_carry=val.short_carry)
+        cost = val.net_worst
+    elif isinstance(val, ButterflyValuation):
+        at = date.fromisoformat(val.low_leg.expiry)
+        value = butterfly_scenario_value(
+            val.low_leg, val.mid_leg, val.high_leg, S, at, p,
+            low_carry=val.low_carry, mid_carry=val.mid_carry,
+            high_carry=val.high_carry)
         cost = val.net_worst
     else:
         value = scenario_leg_value(val.contract, S, p.anchor, p, carry=val.carry)
@@ -171,4 +184,51 @@ def build_spread_reasons(
     if legs_spread > max(p.spread_floor, (2.0 / 3.0) * p.max_spread_pct * sv.net_mid):
         cons.append("買賣價差偏大（兩腿合計）")
     cons.extend(spread_guidance_judgments(sv, p))
+    return pros, cons
+
+
+def butterfly_baseline_return(bv: ButterflyValuation) -> float:
+    """主排名數字。成本口徑＝net_worst（買腿 Ask 合計 − 2×中腿 Bid，
+    附錄 A14.2 的延伸——debit 維持既有語意：劇本成立時相對**實際投入
+    成本**的報酬，#213 Correction，非 risk-capital 分母）。公式形狀
+    (基準值−成本)/成本 逐字沿用既有兩個 debit 家族。"""
+    return (bv.baseline_value - bv.net_worst) / bv.net_worst
+
+
+def _butterfly_tie_key(bv: ButterflyValuation) -> tuple:
+    legs_spread = ((bv.low_leg.ask - bv.low_leg.bid)
+                  + (bv.mid_leg.ask - bv.mid_leg.bid)
+                  + (bv.high_leg.ask - bv.high_leg.bid))
+    return (legs_spread / bv.net_worst, bv.low_leg.strike, bv.low_leg.expiry,
+           bv.low_leg.contract_symbol)
+
+
+def rank_butterflies(
+    butterflies: list[ButterflyValuation], p: AnalysisParams
+) -> list[ButterflyValuation]:
+    """Owner 2026-08-30 明確裁示（#230）：body 的位置不寫死，由「在目標
+    價位那一點的報酬最大化」的排名自然湧現——這裡跟既有 `rank_spreads()`
+    是同一套排序邏輯，不特別偏好任何履約價組合。"""
+    ordered = sorted(
+        butterflies,
+        key=lambda b: (-butterfly_baseline_return(b), *_butterfly_tie_key(b)))
+    return ordered[: p.top]
+
+
+def build_butterfly_reasons(
+    bv: ButterflyValuation, idx: int, n_triples: int, p: AnalysisParams
+) -> tuple[list[str], list[str]]:
+    pros = [f"劇本成立時報酬率 {_pct(butterfly_baseline_return(bv))}"
+           f"（合格 {n_triples} 組中第 {idx + 1}）"]
+    if bv.profit_region is not None:
+        cons = [f"獲利區間 ${bv.profit_region.lower:.2f} ~ "
+               f"${bv.profit_region.upper:.2f}（區間外到期時無法獲利）"]
+    else:
+        cons = ["到期時任何標的價都無法獲利（峰值仍低於進場成本）"]
+    legs_spread = ((bv.low_leg.ask - bv.low_leg.bid)
+                  + (bv.mid_leg.ask - bv.mid_leg.bid)
+                  + (bv.high_leg.ask - bv.high_leg.bid))
+    if legs_spread > max(p.spread_floor, (2.0 / 3.0) * p.max_spread_pct * bv.net_mid):
+        cons.append("買賣價差偏大（三腿合計）")
+    cons.extend(butterfly_guidance_judgments(bv, p))
     return pros, cons

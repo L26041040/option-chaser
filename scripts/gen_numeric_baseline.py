@@ -53,8 +53,13 @@ Initial V2 的 T02（逐腿 payoff 直算）與 T03（包絡量由 payoff 導出
    時會偵測不到。四個既有策略的**估值本身**（`baseline_return`／
    Greeks／情境向量等其餘全部欄位）逐位元不變，只有 `matrix` 這一項
    的傳輸形狀改變，已用腳本逐鍵比對過（不是只看測試綠燈）。
+6. **T15（#230，Initial V2）**——Butterfly（`call-fly`／`put-fly`）
+   落地，候選契約新增 `profit_region`（非單調結構的獲利區間，只有
+   Butterfly 用得到）。既有四策略這個欄位恆為 `None`——純加法，逐鍵
+   核對過既有四個策略的其餘全部欄位（含新增的 `call-fly`／`put-fly`
+   各自候選集合本身）零修改零刪除，只有這一個新增鍵。
 
-除了以上五個已知、已記錄的例外，其餘期間跑出差異＝有 bug，不是基準
+除了以上六個已知、已記錄的例外，其餘期間跑出差異＝有 bug，不是基準
 過期。
 
     PYTHONPATH=. .venv/bin/python scripts/gen_numeric_baseline.py

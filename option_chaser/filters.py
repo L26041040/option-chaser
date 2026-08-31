@@ -146,7 +146,7 @@ def apply_filters(
 
 
 def validate_derived_values(
-    candidates: list, cost_fn, return_fn, identity_fn=None,
+    candidates: list, cost_fn, return_fn, identity_fn=None, max_loss_fn=None,
 ) -> tuple[list, FilterStageResult]:
     """T05（#226，Initial V2 spec #217）：B 層——導出層數學安全網。
 
@@ -155,17 +155,25 @@ def validate_derived_values(
     `apply_filters()`／`generate_spread_pairs()` 的既有報價層檢查）
     全數通過，這裡仍會執行——不是 A 層的推論，是另一組獨立成立的證據。
 
-    只檢查**既有計算路徑本來就會產出**的兩種量：
+    只檢查**既有計算路徑本來就會產出**的量：
     - `cost_fn(v)`（`scenarios.natural_cost`，Initial V2 全為 debit
       結構，理應恆為正值）出現 `<=0`／`NaN`／`Infinity`
     - `return_fn(v)`（`ranking.baseline_return`／`spread_baseline_
       return`，任何回報給使用者的導出量）出現 `NaN`／`Infinity`
+    - `max_loss_fn(v)`（選填，T15／#230 新增：`ButterflyValuation.
+      max_loss`）出現 `<=0`／`NaN`／`Infinity`——defined-risk 的候選
+      結構上必須真的有風險可言，`max_loss<=0` 代表這組報價組合出來的
+      是「怎麼樣都不會虧」的不可能局面（#213 Addendum，Owner 明文）。
+      既有兩個呼叫端（單腳／Spread）不傳這個參數，`max_loss` 對它們
+      本來就等於 `cost_fn` 的結果（既有不變量，見
+      `valuation.SpreadValuation`／`ContractValuation` 各自的
+      docstring），不需要重複檢查。
 
-    **不引入任何新的估值／推導邏輯**——`cost_fn`／`return_fn` 都是
-    呼叫端既有的純函式，這裡只是把它們的輸出拿來做有限性／正負號檢查，
-    不新增 max_loss／max_profit 之類的新概念，也不是跨 strategy 的
-    generic payoff-envelope／extrema engine（#223 已判定 Initial V2
-    不需要，正式收斂為 not planned）。
+    **不引入任何新的估值／推導邏輯**——`cost_fn`／`return_fn`／
+    `max_loss_fn` 都是呼叫端既有的純函式，這裡只是把它們的輸出拿來做
+    有限性／正負號檢查，不新增 max_profit 之類的新概念，也不是跨
+    strategy 的 generic payoff-envelope／extrema engine（#223 已判定
+    Initial V2 不需要，正式收斂為 not planned）。
 
     劇本成立時報酬為負、但報價自洽的候選**不受影響**——`return_fn` 回
     一個有限的負數（例如 `-0.5`）完全合法，只有 `NaN`／`Infinity` 才
@@ -192,7 +200,9 @@ def validate_derived_values(
     for v in candidates:
         cost = cost_fn(v)
         ret = return_fn(v)
-        if _finite(cost) and cost > 0 and _finite(ret):
+        max_loss_ok = max_loss_fn is None or (
+            _finite(max_loss_fn(v)) and max_loss_fn(v) > 0)
+        if _finite(cost) and cost > 0 and _finite(ret) and max_loss_ok:
             kept.append(v)
         else:
             removed += 1
@@ -257,4 +267,46 @@ def generate_spread_pairs(
                 removed += 1
                 continue
             out.append((lng, sht))
+    return out, PairReport(total_pairs=total, removed_sanity=removed, passed=len(out))
+
+
+def generate_butterfly_triples(
+    legs: list[OptionContract], p: AnalysisParams
+) -> tuple[list[tuple[OptionContract, OptionContract, OptionContract]], PairReport]:
+    """T15（#230，Initial V2 spec #217）：同一到期日、同一權別的合格合約
+    窮舉三個履約價組合（低／中／高，中腿口數 2）——比照 `generate_spread_
+    pairs()` 同一種寫法，`itertools.combinations` 依履約價排序後直接給
+    出 `k1<k2<k3`，不另外判斷方向（Butterfly 不像 Vertical 有
+    `long_is_lower` 這種依 subtype 決定買賣腿順序的概念——call-fly／
+    put-fly 皆是「買低賣中買高」同一套結構，差別只在 `leg_option_type()`
+    決定窮舉哪一側的鏈）。
+
+    A 層健全性判準沿用既有精神（配對層級的結構合法性，不重複 apply_
+    filters 已做過的報價品質檢查）：`net_mid <= 0`——三腿組合出來的
+    平均成本不是真正的 debit，這組合本身不成立（不是報價壞了，是這三
+    個履約價湊不出一個有意義的 Butterfly）。**不在這裡檢查 max_loss**
+    ——那是 T05（#226）的 B 層安全網職責（見 `validate_derived_values`
+    的 `max_loss_fn` 參數），這裡只做配對層級的結構前提。`PairReport`
+    沿用既有型別（欄位形狀通用，命名雖是「pair」但不因此另建一個
+    幾乎相同的型別，Standards：避免 Primitive Obsession 式的過度切分）。
+    """
+    by_expiry: dict[str, list[OptionContract]] = {}
+    for c in legs:
+        by_expiry.setdefault(c.expiry, []).append(c)
+    total = 0
+    removed = 0
+    out: list[tuple[OptionContract, OptionContract, OptionContract]] = []
+    for expiry in sorted(by_expiry):
+        group = sorted(by_expiry[expiry], key=lambda c: (c.strike, c.contract_symbol))
+        for lo, mid, hi in combinations(group, 3):   # lo.strike < mid.strike < hi.strike
+            if lo.strike == mid.strike or mid.strike == hi.strike:
+                continue
+            total += 1
+            net_mid = ((lo.bid + lo.ask) / 2.0
+                      - 2.0 * (mid.bid + mid.ask) / 2.0
+                      + (hi.bid + hi.ask) / 2.0)
+            if net_mid <= 0:
+                removed += 1
+                continue
+            out.append((lo, mid, hi))
     return out, PairReport(total_pairs=total, removed_sanity=removed, passed=len(out))

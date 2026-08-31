@@ -299,6 +299,10 @@ NUMERIC_BASELINE_FIELDS = (
     "days_to_target", "days_to_expiry",
     "carry_calibrated", "wide_spread_warning", "monotonicity_warning",
     "legs",
+    # T15（#230，Initial V2）：Butterfly 專屬的獲利區間，既有四策略恆為
+    # `None`——凍結它跟凍結其他既有欄位是同一個道理，`None` 對
+    # `None` 的比對不會漂移。
+    "profit_region",
 )
 
 #: 刻意**不**進數值基準的候選欄位，各有既有覆蓋負責：

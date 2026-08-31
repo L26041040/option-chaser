@@ -72,8 +72,12 @@ def test_subtype_eligible_matches_existing_four_subtypes_directionality():
 
 def test_subtype_eligible_unknown_subtype_is_false_not_a_crash():
     """未知 subtype（理論上不會發生）保守回 False，不是預設放行、
-    也不拋例外——`SUBTYPE_DIRECTIONS.get(subtype, frozenset())`。"""
-    assert subtype_eligible("call-fly", "flat") is False
+    也不拋例外——`SUBTYPE_DIRECTIONS.get(subtype, frozenset())`。
+
+    T15（#230）：`call-fly` 現在是真正定義過的 subtype（`{bullish,
+    flat}`），不再適合當「未知 subtype」的範例——這裡改用一個真正
+    不存在的名字。"""
+    assert subtype_eligible("nonexistent", "flat") is False
     assert subtype_eligible("nonexistent", "bullish") is False
 
 
@@ -140,13 +144,15 @@ def test_family_eligibility_ineligible_when_no_subtype_matches_direction():
         assert "持平" in v.reason
 
 
-def test_family_eligibility_butterfly_ineligible_in_every_direction_today():
-    """Butterfly 在 T15（#230）之前一個 subtype 都沒有——三個方向都
-    不可選，且原因與「方向不符」不同（這是「還沒支援任何結構」）。"""
+def test_family_eligibility_butterfly_is_eligible_in_every_direction():
+    """T15（#230）落地後：Owner 2026-08-27「可選／不可選矩陣定案」——
+    Butterfly 是唯一在看漲／看跌／持平三個方向都可選的 family（call-fly
+    收 `{bullish, flat}`、put-fly 收 `{bearish, flat}`，聯集涵蓋全部
+    三個方向）。"""
     for direction in DIRECTIONS:
         v = family_eligibility("butterfly", direction)
-        assert v.eligible is False
-        assert "還沒有任何已啟用的具體結構" in v.reason
+        assert v.eligible is True
+        assert v.reason is None
 
 
 def test_family_eligibility_covers_every_named_family():
@@ -254,10 +260,10 @@ def test_family_eligibility_direction_matches_target_vs_spot():
 
     view = store.serialize_result(_result(("long-call",), 120.0), "S", None)
     # spot 在這份 fixture 低於 120，方向應為 bullish：single-leg／
-    # vertical-spread 可選，butterfly 不可選。
+    # vertical-spread／butterfly（T15／#230 起）皆可選。
     assert view["family_eligibility"]["single-leg"]["eligible"] is True
     assert view["family_eligibility"]["vertical-spread"]["eligible"] is True
-    assert view["family_eligibility"]["butterfly"]["eligible"] is False
+    assert view["family_eligibility"]["butterfly"]["eligible"] is True
 
 
 def test_family_eligibility_field_is_purely_additive_to_the_schema():

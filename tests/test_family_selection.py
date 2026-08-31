@@ -203,7 +203,9 @@ def test_family_eligibility_appears_on_the_row_after_refresh():
     row = client.post(f"/api/scenarios/{sid}/refresh").json()
     assert set(row["family_eligibility"]) == {
         "single-leg", "vertical-spread", "butterfly"}
-    assert row["family_eligibility"]["butterfly"]["eligible"] is False
+    # T15（#230）：Butterfly 是三個方向都可選的 family（Owner 2026-08-27
+    # 「可選／不可選矩陣定案」），不論這個劇本的方向為何都應是 True。
+    assert row["family_eligibility"]["butterfly"]["eligible"] is True
 
 
 def test_family_eligibility_appears_in_the_list_endpoint():

@@ -247,6 +247,52 @@ def test_b_layer_does_not_reject_when_premium_exceeds_width():
     assert stage.removed == 0
 
 
+def test_b_layer_max_loss_fn_rejects_non_positive_max_loss():
+    """T15（#230，#213 Addendum）：defined-risk 候選的 max_loss 必須
+    > 0——`max_loss_fn` 是選填參數，既有兩個呼叫端（單腳／Spread）不傳
+    時完全不受影響（見 `test_b_layer_rejects_non_positive_cost` 等既有
+    測試，皆未傳這個參數仍然通過）。"""
+    class Fake:
+        def __init__(self, name, max_loss):
+            self.name = name
+            self.max_loss = max_loss
+
+    good, bad = Fake("good", 3.0), Fake("bad", 0.0)
+    kept, stage = validate_derived_values(
+        [good, bad], cost_fn=lambda v: 5.0, return_fn=lambda v: 0.5,
+        max_loss_fn=lambda v: v.max_loss)
+    assert kept == [good]
+    assert stage.removed == 1
+
+
+def test_b_layer_max_loss_fn_rejects_negative_and_nonfinite():
+    class Fake:
+        def __init__(self, max_loss):
+            self.max_loss = max_loss
+
+    negative, nan, inf, ok = (Fake(-1.0), Fake(float("nan")),
+                              Fake(float("inf")), Fake(2.0))
+    kept, stage = validate_derived_values(
+        [negative, nan, inf, ok], cost_fn=lambda v: 5.0,
+        return_fn=lambda v: 0.5, max_loss_fn=lambda v: v.max_loss)
+    assert kept == [ok]
+    assert stage.removed == 3
+
+
+def test_b_layer_max_loss_fn_omitted_does_not_affect_existing_callers():
+    """既有單腳／Spread 呼叫端不傳 `max_loss_fn`——即使候選本身根本沒有
+    `max_loss` 屬性，B 層也完全不會嘗試讀取它（不傳等於不檢查，不是
+    傳一個預設值 0 進去）。"""
+    class Fake:
+        pass  # 刻意不給 max_loss 屬性
+
+    v = Fake()
+    kept, stage = validate_derived_values(
+        [v], cost_fn=lambda _: 5.0, return_fn=lambda _: 0.5)
+    assert kept == [v]
+    assert stage.removed == 0
+
+
 def test_b_layer_introduces_no_new_valuation_concept():
     """B 層只接受呼叫端既有的 cost_fn／return_fn，本身零讀取任何候選
     欄位——結構上不可能新增一套推導邏輯，因為它根本不知道候選長什麼

@@ -662,3 +662,186 @@ def spread_guidance_judgments(sv: SpreadValuation, p: AnalysisParams) -> list[st
     if sv.net_worst > sv.l3:
         msgs.append("以最差進場成本達不到你設定的最低報酬（min-return）")
     return msgs
+
+
+# ---------- T15（#230，Initial V2 spec #217）：Butterfly——只服務這個
+# 結構自己的邏輯，不透過任何通用跨 strategy 的 payoff-envelope／extrema
+# 引擎（#223 已判定 Initial V2 不需要，正式收斂為 not planned）。買一口
+# 低履約價（K1）、賣兩口中間履約價（K2）、買一口高履約價（K3），
+# call／put 兩個 subtype 共用同一套結構與算式（`intrinsic_value()` 已
+# 吸收兩者差異）。 ----------
+
+
+@dataclass(frozen=True)
+class ButterflyProfitRegion:
+    """到期時 payoff 高於進場成本（`net_worst`）的標的價範圍，左右邊界
+    各自是這個結構自己的分段線性交叉點（見
+    `butterfly_breakeven_and_profit_region()` docstring）。"""
+    lower: float
+    upper: float
+
+
+def butterfly_expiry_payoff(option_type: str, k1: float, k2: float, k3: float,
+                            S: float) -> float:
+    """到期時的獲利（1 口買 K1、2 口賣 K2、1 口買 K3），純算術。
+
+    `intrinsic_value()` 已經處理了 call／put 的差異，這個公式本身對
+    兩種權別通用；k1<k2<k3 是呼叫端的既有前提（`generate_butterfly_
+    triples()` 依履約價排序後才組成三元組），這裡不重複驗證。"""
+    return (intrinsic_value(option_type, S, k1)
+           - 2.0 * intrinsic_value(option_type, S, k2)
+           + intrinsic_value(option_type, S, k3))
+
+
+def butterfly_breakeven_and_profit_region(
+    option_type: str, k1: float, k2: float, k3: float, net_cost: float,
+) -> tuple[tuple[float, ...], ButterflyProfitRegion | None]:
+    """Butterfly 專屬（不透過任何通用求根／extrema 引擎）：到期時的
+    payoff 是分段線性、非單調的「帳篷」形狀——不論 call 或 put、不論
+    兩翼是否等寬，[K1,K2] 段斜率恆為 +1、[K2,K3] 段斜率恆為 -1（可由
+    「買一賣二買一」的權重組合直接推導：兩段各自只有一條腿的斜率係數
+    尚未被抵銷，且係數恰為 ±1），K1 之外與 K3 之外則各自恆定——這是
+    這個特定權重結構（不是任意 N 腿組合）才有的不變量，因此兩個損益
+    兩平點可以用封閉式代數直接求出，不需要迭代逼近或通用求根機制。
+
+    峰值必然落在 K2（`v2 = v1 + (K2-K1)` 恆 > v1、`v2 = v3 + (K3-K2)`
+    恆 > v3，因為 K1<K2<K3），若峰值扣掉成本仍 <= 0，代表**連峰值都
+    賺不到**，到期時任何價位都無法獲利——回傳空的損益兩平點與 `None`
+    （不硬擠成一個假的區間）。
+
+    峰值有獲利空間時，左／右兩個交叉點各自落在峰值左側／右側的線性
+    段上；若某一側的翼端本身已經獲利（該側翼端的成本方是負值，即
+    `v1 - net_cost >= 0` 或 `v3 - net_cost >= 0`——這只在履約價明顯
+    不對稱、俗稱「broken wing」的組合上才可能發生），該側就沒有落在
+    對應線性段內的真交叉點，這裡用該側翼端履約價（K1／K3）本身當
+    邊界——這是這個已知邊界情況的合理近似（獲利region 實際上延伸到
+    該翼端之外的恆定平台，見函式頂端的段落分析），不是憑空發明的
+    容忍值。"""
+    v1 = butterfly_expiry_payoff(option_type, k1, k2, k3, k1)
+    v2 = butterfly_expiry_payoff(option_type, k1, k2, k3, k2)   # 峰值
+    v3 = butterfly_expiry_payoff(option_type, k1, k2, k3, k3)
+    peak_profit = v2 - net_cost
+    if peak_profit <= 0.0:
+        return (), None
+    left_tail_profit = v1 - net_cost
+    right_tail_profit = v3 - net_cost
+    # [K1,K2] 斜率恆 +1：f(S) = left_tail_profit + (S-K1)，根 = K1 - left_tail_profit
+    lower = k1 if left_tail_profit >= 0.0 else k1 - left_tail_profit
+    # [K2,K3] 斜率恆 -1：f(S) = peak_profit - (S-K2)，根 = K2 + peak_profit
+    upper = k3 if right_tail_profit >= 0.0 else k2 + peak_profit
+    return (lower, upper), ButterflyProfitRegion(lower=lower, upper=upper)
+
+
+@dataclass(frozen=True)
+class ButterflyValuation:
+    option_type: str
+    low_leg: OptionContract     # K1，買 1 口
+    mid_leg: OptionContract     # K2，賣 2 口
+    high_leg: OptionContract    # K3，買 1 口
+    net_mid: float
+    net_worst: float
+    net_delta: float
+    effective_leverage: float
+    breakeven_points: tuple[float, ...]
+    profit_region: ButterflyProfitRegion | None
+    scenario_values: tuple[tuple[float, float], ...]
+    baseline_value: float
+    l2: float
+    l3: float
+    max_profit: float
+    # 到期時最壞可能損失（`net_worst - min(兩翼到期值)`）——**不假設**
+    # 恆等於 `net_worst`：兩翼等寬（對稱蝶式）時兩者確實相等，但不對稱
+    # 履約價組合（broken wing）可能讓某一翼到期時價值為負，使最壞損失
+    # 超過已付權利金本身。這是這個結構的真實性質，不是既有四策略
+    # 「max_loss 恆等於成本」這條不變量的例外或錯誤，只是 Butterfly
+    # 結構性地不保證這條不變量成立。
+    max_loss: float
+    low_carry: LegCarry
+    mid_carry: LegCarry
+    high_carry: LegCarry
+
+
+def butterfly_scenario_value(
+    low_leg: OptionContract, mid_leg: OptionContract, high_leg: OptionContract,
+    S: float, at: date, p: AnalysisParams, shift: float = 0.0,
+    low_carry: LegCarry | None = None, mid_carry: LegCarry | None = None,
+    high_carry: LegCarry | None = None,
+) -> float:
+    """薄殼：把三腿包成 `WeightedLeg` 交給既有的、已核准的逐腿加總原語
+    `payoff_value()`（T02／#219）——這不是新的通用引擎，`payoff_value`
+    本身早已支援任意腿數，這裡只是 Butterfly 這個具體結構的呼叫慣例。"""
+    legs = (
+        WeightedLeg(contract=low_leg, sign=1.0, quantity=1, carry=low_carry),
+        WeightedLeg(contract=mid_leg, sign=-1.0, quantity=2, carry=mid_carry),
+        WeightedLeg(contract=high_leg, sign=1.0, quantity=1, carry=high_carry),
+    )
+    return payoff_value(legs, S, at, p, shift)
+
+
+def evaluate_butterfly(
+    low_leg: OptionContract, mid_leg: OptionContract, high_leg: OptionContract,
+    spot: float, today: date, p: AnalysisParams,
+) -> ButterflyValuation:
+    """`evaluate_spread()` 的三腿版本——同一套既有裁示逐條延伸：
+    worst 成交口徑（附錄 A14.2：買腿 Ask、賣腿 Bid，中腿口數 2）、
+    排名情境＝標的在**自身到期日**等於目標價（T3／#17），breakeven／
+    max_profit／max_loss 由這個結構自己的分段線性性質直接算（見
+    `butterfly_breakeven_and_profit_region()`），不透過任何通用機制。
+    """
+    net_mid = ((low_leg.bid + low_leg.ask) / 2.0
+              - 2.0 * (mid_leg.bid + mid_leg.ask) / 2.0
+              + (high_leg.bid + high_leg.ask) / 2.0)
+    net_worst = low_leg.ask - 2.0 * mid_leg.bid + high_leg.ask
+    expiry = date.fromisoformat(low_leg.expiry)
+    t_now = days_between(today, expiry) / DAYS_PER_YEAR
+    low_carry = calibrate_leg(low_leg, spot, today, p)
+    mid_carry = calibrate_leg(mid_leg, spot, today, p)
+    high_carry = calibrate_leg(high_leg, spot, today, p)
+    g_lo = leg_greeks(low_leg.option_type, spot, low_leg.strike, t_now,
+                      leg_rate(p, low_leg.expiry), low_carry.sigma, low_carry.q)
+    g_mid = leg_greeks(mid_leg.option_type, spot, mid_leg.strike, t_now,
+                       leg_rate(p, mid_leg.expiry), mid_carry.sigma, mid_carry.q)
+    g_hi = leg_greeks(high_leg.option_type, spot, high_leg.strike, t_now,
+                      leg_rate(p, high_leg.expiry), high_carry.sigma, high_carry.q)
+    net_delta = g_lo.delta - 2.0 * g_mid.delta + g_hi.delta
+    # 需求 §三／T3／#17 既有裁示：排名情境＝標的在自身到期日等於目標價。
+    scenario_values = tuple(
+        (shift, butterfly_scenario_value(low_leg, mid_leg, high_leg,
+                                         p.target_price, expiry, p, shift,
+                                         low_carry, mid_carry, high_carry))
+        for shift in p.iv_shifts)
+    baseline_value = dict(scenario_values)[0.0]
+    breakeven_points, profit_region = butterfly_breakeven_and_profit_region(
+        low_leg.option_type, low_leg.strike, mid_leg.strike, high_leg.strike,
+        net_worst)
+    max_profit = (butterfly_expiry_payoff(
+        low_leg.option_type, low_leg.strike, mid_leg.strike, high_leg.strike,
+        mid_leg.strike) - net_worst)   # 峰值必然在 K2，見上方 docstring
+    v1 = butterfly_expiry_payoff(low_leg.option_type, low_leg.strike,
+                                 mid_leg.strike, high_leg.strike, low_leg.strike)
+    v3 = butterfly_expiry_payoff(low_leg.option_type, low_leg.strike,
+                                 mid_leg.strike, high_leg.strike, high_leg.strike)
+    max_loss = net_worst - min(v1, v3)
+    return ButterflyValuation(
+        option_type=low_leg.option_type,
+        low_leg=low_leg, mid_leg=mid_leg, high_leg=high_leg,
+        net_mid=net_mid, net_worst=net_worst, net_delta=net_delta,
+        effective_leverage=abs(net_delta) * spot / net_worst,
+        breakeven_points=breakeven_points, profit_region=profit_region,
+        scenario_values=scenario_values, baseline_value=baseline_value,
+        l2=min(v for _, v in scenario_values),
+        l3=baseline_value / (1.0 + p.min_return),
+        max_profit=max_profit, max_loss=max_loss,
+        low_carry=low_carry, mid_carry=mid_carry, high_carry=high_carry,
+    )
+
+
+def butterfly_guidance_judgments(bv: ButterflyValuation, p: AnalysisParams) -> list[str]:
+    """比照 `spread_guidance_judgments()` 同一套判準（無 L1，L2＝情境
+    包絡最小值）。"""
+    msgs: list[str] = []
+    if bv.net_worst > bv.l2:
+        msgs.append(f"劇本成立但最保守 IV 情境下仍虧損（IV 情境最低值 ${bv.l2:.2f}）")
+    if bv.net_worst > bv.l3:
+        msgs.append("以最差進場成本達不到你設定的最低報酬（min-return）")
+    return msgs

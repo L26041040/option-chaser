@@ -57,6 +57,21 @@ LONG_CALL_OUT = Path("contracts/analysis_sample_long_call.json")
 LONG_CALL_REQUEST = {"symbol": "XYZ", "target_price": 130.0,
                      "target_month": "2026-09", "strategies": ["long-call"]}
 
+# T15（#230，Initial V2）：獨立的 Butterfly 契約樣本，比照上面 put／
+# long-call 樣本同一種理由——主樣本已被前端 mock／E2E 大量引用，混進
+# 第三個 family 會改變它的既有形狀，這份樣本存在的唯一理由是示範
+# 三腿候選（`legs[]` 長度 3、中腿 `quantity=2`、`profit_region`），
+# 不需要也不該牽動主樣本。用**中密度**履約價梯子快照
+# （`xyz_v7_butterfly_moderate.json`，`scripts/gen_butterfly_fixture.py`
+# 產生）——主 fixture 的稀疏履約價梯子在合理目標價下排不出正的
+# `max_profit`，不適合當「代表正常情況」的樣本；`xyz_v6_butterfly_
+# ladder.json`（同腳本產生的密集版）又太密，`all_candidates` 歷史
+# 五欄位序列會撐出 2MB+ 的樣本檔案，兩者都不合適。
+BUTTERFLY_FIXTURE = Path("tests/fixtures/xyz_v7_butterfly_moderate.json")
+BUTTERFLY_OUT = Path("contracts/analysis_sample_call_fly.json")
+BUTTERFLY_REQUEST = {"symbol": "XYZ", "target_price": 106.0,
+                     "target_month": "2026-10", "strategies": ["call-fly"]}
+
 # 隨執行時間變動的欄位換成固定值：樣本要釘住形狀，不是當下的鐘。
 FROZEN = {"id": "sample-id", "created_at": "2026-08-01T00:00:00+00:00",
           "days_to_anchor": 653}
@@ -140,6 +155,18 @@ def main() -> None:
                                         indent=2, sort_keys=True) + "\n",
                              encoding="utf-8")
     print(f"寫入 {LONG_CALL_OUT}（{LONG_CALL_OUT.stat().st_size:,} bytes）")
+
+    # T15（#230）：獨立的 Butterfly 樣本，見上方 BUTTERFLY_OUT 註解。
+    butterfly_snap = load_snapshot(BUTTERFLY_FIXTURE)
+    butterfly_client = TestClient(create_app(fetch=lambda symbol: butterfly_snap,
+                                             rate_loader=_sample_rate_loader,
+                                             dividend_loader=_sample_dividend_loader))
+    bf_resp = butterfly_client.post("/api/analyze", json=BUTTERFLY_REQUEST)
+    bf_resp.raise_for_status()
+    BUTTERFLY_OUT.write_text(json.dumps(bf_resp.json(), ensure_ascii=False,
+                                        indent=2, sort_keys=True) + "\n",
+                             encoding="utf-8")
+    print(f"寫入 {BUTTERFLY_OUT}（{BUTTERFLY_OUT.stat().st_size:,} bytes）")
 
 
 if __name__ == "__main__":

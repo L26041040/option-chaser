@@ -17,6 +17,8 @@ const STRATEGY_LABELS: Record<string, string> = {
   "long-put": "Long Put",
   "bull-call-spread": "Bull Call Spread",
   "bear-put-spread": "Bear Put Spread",
+  "call-fly": "Call Butterfly",
+  "put-fly": "Put Butterfly",
 };
 
 export function strategyLabel(strategy: string): string {

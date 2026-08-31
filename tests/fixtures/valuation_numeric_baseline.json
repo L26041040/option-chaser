@@ -313,7 +313,8 @@
        "side": "sell",
        "quantity": 1
       }
-     ]
+     ],
+     "profit_region": null
     },
     "bear-put-spread|100|85|2026-10-16": {
      "baseline_pnl": 10.7,
@@ -614,7 +615,8 @@
        "side": "sell",
        "quantity": 1
       }
-     ]
+     ],
+     "profit_region": null
     },
     "bear-put-spread|100|90|2026-10-16": {
      "baseline_pnl": 8.1,
@@ -915,7 +917,8 @@
        "side": "sell",
        "quantity": 1
       }
-     ]
+     ],
+     "profit_region": null
     },
     "bear-put-spread|100|92|2026-10-16": {
      "baseline_pnl": 5.6,
@@ -1216,7 +1219,8 @@
        "side": "sell",
        "quantity": 1
       }
-     ]
+     ],
+     "profit_region": null
     },
     "bear-put-spread|85|70|2026-10-16": {
      "baseline_pnl": 3.81,
@@ -1517,7 +1521,8 @@
        "side": "sell",
        "quantity": 1
       }
-     ]
+     ],
+     "profit_region": null
     },
     "bear-put-spread|90|70|2026-10-16": {
      "baseline_pnl": 6.359999999999999,
@@ -1818,7 +1823,8 @@
        "side": "sell",
        "quantity": 1
       }
-     ]
+     ],
+     "profit_region": null
     },
     "bear-put-spread|90|85|2026-10-16": {
      "baseline_pnl": 2.4,
@@ -2119,7 +2125,8 @@
        "side": "sell",
        "quantity": 1
       }
-     ]
+     ],
+     "profit_region": null
     },
     "bear-put-spread|92|70|2026-10-16": {
      "baseline_pnl": 7.06,
@@ -2420,7 +2427,8 @@
        "side": "sell",
        "quantity": 1
       }
-     ]
+     ],
+     "profit_region": null
     },
     "bear-put-spread|92|85|2026-10-16": {
      "baseline_pnl": 3.1,
@@ -2721,7 +2729,8 @@
        "side": "sell",
        "quantity": 1
       }
-     ]
+     ],
+     "profit_region": null
     },
     "bear-put-spread|92|90|2026-10-16": {
      "baseline_pnl": 0.5,
@@ -3022,7 +3031,8 @@
        "side": "sell",
        "quantity": 1
       }
-     ]
+     ],
+     "profit_region": null
     }
    },
    "axis_sets": [
@@ -3428,7 +3438,8 @@
        "side": "sell",
        "quantity": 1
       }
-     ]
+     ],
+     "profit_region": null
     },
     "bull-call-spread|100.5|110|2026-10-16": {
      "baseline_pnl": 7.1,
@@ -3729,7 +3740,8 @@
        "side": "sell",
        "quantity": 1
       }
-     ]
+     ],
+     "profit_region": null
     },
     "bull-call-spread|100.5|130|2026-10-16": {
      "baseline_pnl": 14.149999999999999,
@@ -4030,7 +4042,8 @@
        "side": "sell",
        "quantity": 1
       }
-     ]
+     ],
+     "profit_region": null
     },
     "bull-call-spread|102|110|2026-10-16": {
      "baseline_pnl": 5.0,
@@ -4331,7 +4344,8 @@
        "side": "sell",
        "quantity": 1
       }
-     ]
+     ],
+     "profit_region": null
     },
     "bull-call-spread|102|130|2026-10-16": {
      "baseline_pnl": 12.05,
@@ -4632,7 +4646,8 @@
        "side": "sell",
        "quantity": 1
       }
-     ]
+     ],
+     "profit_region": null
     },
     "bull-call-spread|105|110|2026-10-16": {
      "baseline_pnl": 2.5,
@@ -4933,7 +4948,8 @@
        "side": "sell",
        "quantity": 1
       }
-     ]
+     ],
+     "profit_region": null
     },
     "bull-call-spread|105|130|2026-10-16": {
      "baseline_pnl": 9.55,
@@ -5234,7 +5250,8 @@
        "side": "sell",
        "quantity": 1
       }
-     ]
+     ],
+     "profit_region": null
     },
     "bull-call-spread|110|130|2026-10-16": {
      "baseline_pnl": 6.8,
@@ -5535,7 +5552,8 @@
        "side": "sell",
        "quantity": 1
       }
-     ]
+     ],
+     "profit_region": null
     },
     "bull-call-spread|95|130|2026-10-16": {
      "baseline_pnl": -5.949999999999999,
@@ -5836,7 +5854,8 @@
        "side": "sell",
        "quantity": 1
       }
-     ]
+     ],
+     "profit_region": null
     }
    },
    "axis_sets": [
@@ -6142,7 +6161,8 @@
        "side": "buy",
        "quantity": 1
       }
-     ]
+     ],
+     "profit_region": null
     },
     "long-call|100|2026-08-01": {
      "baseline_pnl": 14.7,
@@ -6343,7 +6363,8 @@
        "side": "buy",
        "quantity": 1
       }
-     ]
+     ],
+     "profit_region": null
     },
     "long-call|102|2026-10-16": {
      "baseline_pnl": 12.0,
@@ -6544,7 +6565,8 @@
        "side": "buy",
        "quantity": 1
       }
-     ]
+     ],
+     "profit_region": null
     },
     "long-call|105|2026-10-16": {
      "baseline_pnl": 9.5,
@@ -6745,7 +6767,8 @@
        "side": "buy",
        "quantity": 1
       }
-     ]
+     ],
+     "profit_region": null
     },
     "long-call|110|2026-10-16": {
      "baseline_pnl": 6.75,
@@ -6946,7 +6969,8 @@
        "side": "buy",
        "quantity": 1
       }
-     ]
+     ],
+     "profit_region": null
     },
     "long-call|130|2026-10-16": {
      "baseline_pnl": -0.15,
@@ -7147,7 +7171,8 @@
        "side": "buy",
        "quantity": 1
       }
-     ]
+     ],
+     "profit_region": null
     },
     "long-call|90|2026-11-20": {
      "baseline_pnl": 16.95375749111009,
@@ -7348,7 +7373,8 @@
        "side": "buy",
        "quantity": 1
       }
-     ]
+     ],
+     "profit_region": null
     },
     "long-call|95|2026-10-16": {
      "baseline_pnl": -6.0,
@@ -7549,7 +7575,8 @@
        "side": "buy",
        "quantity": 1
       }
-     ]
+     ],
+     "profit_region": null
     }
    },
    "axis_sets": [
@@ -8033,7 +8060,8 @@
        "side": "buy",
        "quantity": 1
       }
-     ]
+     ],
+     "profit_region": null
     },
     "long-put|100|2026-10-16": {
      "baseline_pnl": 14.6,
@@ -8234,7 +8262,8 @@
        "side": "buy",
        "quantity": 1
       }
-     ]
+     ],
+     "profit_region": null
     },
     "long-put|115|2026-11-20": {
      "baseline_pnl": 18.0,
@@ -8435,7 +8464,8 @@
        "side": "buy",
        "quantity": 1
       }
-     ]
+     ],
+     "profit_region": null
     },
     "long-put|120|2026-10-16": {
      "baseline_pnl": -1.5,
@@ -8636,7 +8666,8 @@
        "side": "buy",
        "quantity": 1
       }
-     ]
+     ],
+     "profit_region": null
     },
     "long-put|70|2026-10-16": {
      "baseline_pnl": -0.16,
@@ -8837,7 +8868,8 @@
        "side": "buy",
        "quantity": 1
       }
-     ]
+     ],
+     "profit_region": null
     },
     "long-put|85|2026-10-16": {
      "baseline_pnl": 3.75,
@@ -9038,7 +9070,8 @@
        "side": "buy",
        "quantity": 1
       }
-     ]
+     ],
+     "profit_region": null
     },
     "long-put|90|2026-10-16": {
      "baseline_pnl": 6.3,
@@ -9239,7 +9272,8 @@
        "side": "buy",
        "quantity": 1
       }
-     ]
+     ],
+     "profit_region": null
     },
     "long-put|92|2026-10-16": {
      "baseline_pnl": 7.0,
@@ -9440,7 +9474,8 @@
        "side": "buy",
        "quantity": 1
       }
-     ]
+     ],
+     "profit_region": null
     }
    },
    "axis_sets": [

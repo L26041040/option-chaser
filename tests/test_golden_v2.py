@@ -50,3 +50,41 @@ def test_no_box_drawing_all_strategies():
 def test_no_stress_section():
     _, out = run("long-call", "120")
     assert "壓力測試" not in out
+
+
+# ---------- T15（#230，Initial V2）：Butterfly golden fixture ----------
+#
+# 獨立的 run 函式而非塞進上面的 `CASES`／`run()`——Butterfly 需要專屬
+# 的中密度履約價梯子快照（`xyz_v7_butterfly_moderate.json`，稀疏的
+# `xyz_v2_snapshot.json` 排不出正的 max_profit）與不同的 target-month，
+# 硬要共用既有 `run()` 只會讓那個函式多出一堆條件參數，服務兩種不同
+# 的東西。
+
+def _run_call_fly():
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        rc = main(["XYZ", "--strategy", "call-fly", "--target-price", "106",
+                   "--target-month", "2026/10",
+                   "--snapshot", str(FIX / "xyz_v7_butterfly_moderate.json")])
+    return rc, buf.getvalue()
+
+
+def test_call_fly_golden_byte_identical():
+    rc, out = _run_call_fly()
+    assert rc == 0
+    assert out == (FIX / "golden_call_fly.txt").read_text(encoding="utf-8")
+
+
+def test_call_fly_deterministic_rerun():
+    assert _run_call_fly()[1] == _run_call_fly()[1]
+
+
+def test_call_fly_no_box_drawing():
+    _, out = _run_call_fly()
+    assert not any(0x2500 <= ord(ch) <= 0x257F for ch in out)
+
+
+def test_call_fly_names_all_three_legs_and_the_profit_region():
+    _, out = _run_call_fly()
+    assert "低履約腿" in out and "中履約腿（賣 2 口）" in out and "高履約腿" in out
+    assert "獲利區間（到期）" in out

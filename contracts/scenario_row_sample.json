@@ -8,9 +8,9 @@
   "expired": false,
   "family_eligibility": {
     "butterfly": {
-      "eligible": false,
+      "eligible": true,
       "family": "butterfly",
-      "reason": "這個策略家族目前還沒有任何已啟用的具體結構。"
+      "reason": null
     },
     "single-leg": {
       "eligible": true,

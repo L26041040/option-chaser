@@ -47,10 +47,11 @@ def test_family_subtypes_round_trips_with_strategy_family():
         assert s in FAMILY_SUBTYPES[fam]
 
 
-def test_butterfly_has_no_subtypes_yet():
-    """T15（#230）建立 call-fly／put-fly 前，butterfly family 展開結果
-    是空的——這是詞彙先行、subtype 未到位的誠實狀態，不是遺漏。"""
-    assert FAMILY_SUBTYPES["butterfly"] == ()
+def test_butterfly_now_has_two_subtypes():
+    """T15（#230）落地——`call-fly`／`put-fly` 是 butterfly family 底下
+    的具體結構，取代 T06／#221 當時「詞彙先行、subtype 未到位」的空
+    tuple 狀態。"""
+    assert FAMILY_SUBTYPES["butterfly"] == ("call-fly", "put-fly")
 
 
 def test_strategy_family_keys_and_families_are_disjoint():
@@ -98,8 +99,11 @@ def test_subtypes_of_dedupes_across_families():
         "long-call", "long-put")
 
 
-def test_subtypes_of_butterfly_is_empty_today():
-    assert subtypes_of(("butterfly",)) == ()
+def test_subtypes_of_butterfly_is_the_two_fly_subtypes():
+    """T15（#230）：`butterfly` family 展開成 `call-fly`／`put-fly`，
+    鏡射 `test_round_trip_legacy_single_subtype_expands_back_to_the_
+    whole_family()` 對 `vertical-spread` 的同一種驗證。"""
+    assert subtypes_of(("butterfly",)) == ("call-fly", "put-fly")
 
 
 def test_round_trip_legacy_single_subtype_expands_back_to_the_whole_family():

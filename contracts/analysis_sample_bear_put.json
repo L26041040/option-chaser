@@ -631,6 +631,7 @@
           "return": 5.666666666666666
         }
       ],
+      "profit_region": null,
       "rate_tenor_years": 0.06301369863013699,
       "rate_used": 0.041,
       "retention": 0.0,
@@ -939,6 +940,7 @@
           "return": 4.333333333333333
         }
       ],
+      "profit_region": null,
       "rate_tenor_years": 0.10136986301369863,
       "rate_used": 0.041,
       "retention": 0.0,
@@ -1247,6 +1249,7 @@
           "return": 3.0
         }
       ],
+      "profit_region": null,
       "rate_tenor_years": 0.1780821917808219,
       "rate_used": 0.041,
       "retention": 0.0,
@@ -1555,6 +1558,7 @@
           "return": 1.8571428571428583
         }
       ],
+      "profit_region": null,
       "rate_tenor_years": 0.3506849315068493,
       "rate_used": 0.041,
       "retention": 0.6448002726445773,
@@ -1677,9 +1681,9 @@
   ],
   "family_eligibility": {
     "butterfly": {
-      "eligible": false,
+      "eligible": true,
       "family": "butterfly",
-      "reason": "這個策略家族目前還沒有任何已啟用的具體結構。"
+      "reason": null
     },
     "single-leg": {
       "eligible": true,
@@ -1890,7 +1894,7 @@
     }
   ],
   "scenario_id": "adhoc",
-  "schema_version": 7,
+  "schema_version": 8,
   "snapshot_ref": {
     "fetched_at": "2026-07-15T21:30:00-04:00",
     "path": "(in-memory)",

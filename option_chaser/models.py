@@ -174,9 +174,14 @@ class QualityFlagCount:
     count: int
 
 
-STRATEGIES = ("long-call", "long-put", "bull-call-spread", "bear-put-spread")
+STRATEGIES = ("long-call", "long-put", "bull-call-spread", "bear-put-spread",
+             "call-fly", "put-fly")
 SINGLE_LEG_STRATEGIES = ("long-call", "long-put")
 SPREAD_STRATEGIES = ("bull-call-spread", "bear-put-spread")
+# T15（#230，Initial V2 spec #217）：Butterfly 兩個 subtype——買一口低
+# 履約價、賣兩口中間履約價、買一口高履約價，call／put 各一個 subtype
+# （同一到期日、同一權別的三個履約價組合，中腿口數 2）。
+BUTTERFLY_STRATEGIES = ("call-fly", "put-fly")
 
 # T06（#221，Initial V2 spec #217）：Strategy Family 詞彙。
 #
@@ -184,10 +189,9 @@ SPREAD_STRATEGIES = ("bull-call-spread", "bear-put-spread")
 # Subtype（上面 `STRATEGIES` 的四個具體策略代碼）是分析當下由
 # family×方向展開出的結構，從不持久化、從不是使用者可見的選項。
 #
-# "butterfly" 現在還沒有任何 subtype 可以展開（call-fly／put-fly 是
-# T15／#230 的範圍）——先把詞彙定下來是 #221 本票明文要求的（family
-# 代碼就是 single-leg／vertical-spread／butterfly 這三個），`FAMILY_
-# SUBTYPES["butterfly"]` 暫時是空 tuple，不是預留的空殼架構。
+# T15（#230）：`call-fly`／`put-fly` 落地，`FAMILY_SUBTYPES["butterfly"]`
+# 從空 tuple 變成真正的兩個 subtype——詞彙表本身（#221 當初的設計）
+# 不需要因此改一行，這正是先把詞彙定下來的用意。
 FAMILIES = ("single-leg", "vertical-spread", "butterfly")
 
 # 唯一一張 subtype → family 的靜態對照表，全站共用，沒有第二處硬編碼
@@ -200,6 +204,8 @@ STRATEGY_FAMILY: dict[str, str] = {
     "long-put": "single-leg",
     "bull-call-spread": "vertical-spread",
     "bear-put-spread": "vertical-spread",
+    "call-fly": "butterfly",
+    "put-fly": "butterfly",
 }
 
 # family → 該 family 目前擁有的全部 subtype（不分方向）。方向是否
@@ -208,7 +214,7 @@ STRATEGY_FAMILY: dict[str, str] = {
 FAMILY_SUBTYPES: dict[str, tuple[str, ...]] = {
     "single-leg": SINGLE_LEG_STRATEGIES,
     "vertical-spread": SPREAD_STRATEGIES,
-    "butterfly": (),
+    "butterfly": BUTTERFLY_STRATEGIES,
 }
 
 
@@ -245,7 +251,8 @@ def subtypes_of(families: tuple[str, ...]) -> tuple[str, ...]:
 
 def leg_option_type(strategy: str) -> str:
     """Which chain side the strategy trades (spec §4.1)."""
-    return "call" if strategy in ("long-call", "bull-call-spread") else "put"
+    return ("call" if strategy in ("long-call", "bull-call-spread", "call-fly")
+           else "put")
 
 
 # T08（#225，Initial V2 spec #217）：Direction（方向，衍生三態，
@@ -260,14 +267,26 @@ DIRECTION_LABELS: dict[str, str] = {
 
 # 每個 subtype 適用哪些方向——取代硬編碼的策略名字比對（舊版
 # `is_bullish(strategy) -> strategy in ("long-call", "bull-call-spread")`）。
-# 新增 subtype（T15／#230 的 call-fly／put-fly，預期收 `{"flat"}`）只需
-# 在這裡加一筆資料，`subtype_eligible()`／`family_eligibility()` 兩個
-# 判斷函式完全不需要修改。
+# 新增 subtype 只需在這裡加一筆資料，`subtype_eligible()`／
+# `family_eligibility()` 兩個判斷函式完全不需要修改。
+#
+# T15（#230）：`call-fly`／`put-fly` 落地，方向集合對照 Owner 2026-08-27
+# 「可選／不可選矩陣定案」（CONTEXT.md「策略與方向」一節）——看漲
+# Butterfly✓、看跌 Butterfly✓（對稱）、**持平僅 Butterfly✓**（Call／
+# Vertical 兩個 family 在持平時皆不可選，這是 Butterfly 獨有的性質）。
+# family 層級的 OR 投影要同時在三個方向都成立，落到 subtype 層就是
+# ——call-fly 收 `{bullish, flat}`（call 結構、天生跟 bullish 家族
+# 同側，且它的帳篷形狀本來就適合表達「釘在某價位」的持平劇本）、
+# put-fly 收 `{bearish, flat}`（對稱）。兩者聯集涵蓋全部三個方向，
+# family_eligibility() 的 OR 投影因此在 bullish／bearish／flat 都能
+# 找到至少一個可用 subtype——不需要改判斷函式本身，純資料。
 SUBTYPE_DIRECTIONS: dict[str, frozenset[str]] = {
     "long-call": frozenset({"bullish"}),
     "bull-call-spread": frozenset({"bullish"}),
     "long-put": frozenset({"bearish"}),
     "bear-put-spread": frozenset({"bearish"}),
+    "call-fly": frozenset({"bullish", "flat"}),
+    "put-fly": frozenset({"bearish", "flat"}),
 }
 
 
@@ -296,14 +315,15 @@ def is_bullish(strategy: str) -> bool:
     服務的是 Heatmap／CLI 報告的價格軸走向這類與 eligibility gate
     無關的既有用途，不在本票改動範圍內。
 
-    ⚠ `/code-review` Standards 軸留下的已知後續：這裡回傳的仍是**二元**
-    布林值，而 `DIRECTIONS` 已經是三態。T15（#230）新增 call-fly／
-    put-fly（預期收 `{"flat"}`）之後，任何還在對 flat-only 的 subtype
-    呼叫 `is_bullish()` 來決定價格軸走向的既有呼叫端（`report.py`／
-    `cli.py` 的 `price_axis` 用法）都會拿到 `False`、被誤判成
-    「看跌走向」——這不是本票要解決的問題（今天沒有任何 flat-only
-    subtype 存在，`price_axis` 的方向語意本來就只服務單調的 bull/bear
-    結構），但 T15／T16 施工前應該重新檢視這幾個呼叫點是否仍然適用。"""
+    T15（#230）後續：`call-fly`／`put-fly` 收的是 `{bullish, flat}`／
+    `{bearish, flat}`（非 flat-only），這裡回傳的二元值因此對兩者分別
+    是 True／False——與既有 `long-call`／`bull-call-spread` 同一側
+    （call 結構→True）、`long-put`／`bear-put-spread` 同一側（put
+    結構→False）一致，`price_axis()` 的價格軸走向（決定較密集的一端
+    往哪個方向延伸）因此對 Butterfly 沿用「call 結構偏多方視覺、put
+    結構偏空方視覺」這條既有慣例，是一個合理但非唯一可能的選擇——
+    Butterfly 的 body 位置本來就可能落在現價任一側，價格軸走向只是
+    視覺呈現的次要決策，不影響任何排名或計算。"""
     return "bullish" in SUBTYPE_DIRECTIONS.get(strategy, frozenset())
 
 

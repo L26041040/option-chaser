@@ -12,11 +12,12 @@ from typing import Iterable
 from . import __version__
 from .models import (AnalysisParams, ChainSnapshot, FAMILIES, STRATEGY_FAMILY,
                      derive_direction, family_eligibility)
-from .ranking import baseline_return, spread_baseline_return
+from .ranking import baseline_return, butterfly_baseline_return, spread_baseline_return
 from .report import disclaimer_text
 from .scenarios import natural_cost
 from .service import AnalysisResult, CandidateView, candidate_key, valuation_key
-from .valuation import (ContractValuation, SpreadValuation, guidance_judgments,
+from .valuation import (ButterflyValuation, ContractValuation, SpreadValuation,
+                        butterfly_guidance_judgments, guidance_judgments,
                         spread_guidance_judgments)
 
 
@@ -176,8 +177,8 @@ def spot(view: dict | None) -> float | None:
     return value if isinstance(value, (int, float)) else None
 
 
-def _history_entry(sv: SpreadValuation | ContractValuation, expiry: str,
-                   rank_in_expiry: int) -> dict:
+def _history_entry(sv: SpreadValuation | ContractValuation | ButterflyValuation,
+                   expiry: str, rank_in_expiry: int) -> dict:
     """T9（#23，附錄A7）：全部有效候選的歷史五欄位之三（成本／收益率／期內
     名次）；另外兩欄（更新時間、標的價）不逐候選重複，共用父層 `analyzed_at`／
     `meta.spot`（既有設計，`_candidate()` 對完整 CandidateView 同樣不重複）。
@@ -188,9 +189,17 @@ def _history_entry(sv: SpreadValuation | ContractValuation, expiry: str,
     單腿路徑補上 `expiry_ranked` 後同一個函式要能吃 `ContractValuation`，
     改用既有的 `ranking.baseline_return`（單腿口徑：`(baseline_value -
     ask) / ask`，附錄 A14.2），`natural_cost`／`valuation_key` 本來就是
-    對兩種型別皆已定義的既有多型函式，不必跟著改。"""
-    ret = (spread_baseline_return(sv) if isinstance(sv, SpreadValuation)
-          else baseline_return(sv))
+    對兩種型別皆已定義的既有多型函式，不必跟著改。
+
+    T15（#230，Initial V2）：Butterfly 的 `expiry_ranked` 從第一天就會
+    非空（AC「歷史身份列從第一天就落盤」）——這裡加第三個分支即可，
+    `natural_cost`／`valuation_key` 早已支援 `ButterflyValuation`。"""
+    if isinstance(sv, SpreadValuation):
+        ret = spread_baseline_return(sv)
+    elif isinstance(sv, ButterflyValuation):
+        ret = butterfly_baseline_return(sv)
+    else:
+        ret = baseline_return(sv)
     return {
         "candidate_key": valuation_key(sv),
         "expiry": expiry,
@@ -306,6 +315,12 @@ def _matrix_to_dict(mv, axis_of) -> dict:
 def _candidate(cv: CandidateView, strategy: str, capital: float | None,
                today: date, anchor: date, p: AnalysisParams, axis_of) -> dict:
     v = cv.valuation
+    # T15（#230，Initial V2）：Butterfly 的 `max_loss_per_contract` 可能
+    # 不等於進場成本（broken-wing 組合，見 `ButterflyValuation.max_loss`
+    # 欄位註解）——`max_loss_override` 非 None 時取代下面 `cap_per` 當
+    # `max_loss_per_contract` 的值；既有兩個型別維持 `None`（該欄位
+    # 恆等於 `cap_per`，既有不變量不變）。
+    max_loss_override = None
     if isinstance(v, SpreadValuation):
         # T12（#228，Initial V2）：`side` 現在顯式標在每一腿上（見
         # `_leg()`），不再只靠陣列位置暗示——position [0]=long/buy、
@@ -314,6 +329,25 @@ def _candidate(cv: CandidateView, strategy: str, capital: float | None,
         mid_cost, expiry = v.net_mid, v.long_leg.expiry
         max_profit, net_delta = v.max_profit, v.net_delta
         guidance_warnings = spread_guidance_judgments(v, p)
+        breakeven_points = [v.breakeven]
+        breakeven_scalar = v.breakeven
+    elif isinstance(v, ButterflyValuation):
+        # T15（#230）：買 1／賣 2／買 1，`_leg()` 的 `quantity` 參數把
+        # 中腿的口數顯式標出來——取代既有「陣列位置＝方向」慣例（T12）
+        # 的延伸：陣列位置現在還多了「中間那個是賣兩口」這件事。
+        legs = [_leg(v.low_leg, "buy"), _leg(v.mid_leg, "sell", quantity=2),
+               _leg(v.high_leg, "buy")]
+        mid_cost, expiry = v.net_mid, v.low_leg.expiry
+        max_profit, net_delta = v.max_profit, v.net_delta
+        guidance_warnings = butterfly_guidance_judgments(v, p)
+        breakeven_points = list(v.breakeven_points)
+        max_loss_override = v.max_loss
+        # 既有純量 `breakeven` 欄位（前端 `AnalysisReport.tsx` 仍讀它）
+        # 沒有對應到 Butterfly 的單一自然定義——用較低的那個損益兩平點
+        # 當代表值（與 `service._comparison()` 的 `ComparisonRow.
+        # breakeven` 同一個選擇），沒有損益兩平點（到期時任何價位都
+        # 無法獲利）時誠實給 `None`，不假造一個數字。
+        breakeven_scalar = breakeven_points[0] if breakeven_points else None
     else:
         legs = [_leg(v.contract, "buy")]
         mid_cost, expiry = v.mid, v.contract.expiry
@@ -322,11 +356,15 @@ def _candidate(cv: CandidateView, strategy: str, capital: float | None,
                       else v.contract.strike - v.contract.ask)
         net_delta = v.delta
         guidance_warnings = guidance_judgments(v, p)
+        breakeven_points = [v.breakeven]
+        breakeven_scalar = v.breakeven
     _validate_leg_count(legs)
     # T12（附錄 A14.2，MVP-v2 舊票，非本輪 #228）：資本／最大虧損以
     # 最差成交成本計（natural_cost 即買 Ask／賣 Bid 口徑）；mid_cost
     # 保留為次要顯示欄位。
     cap_per = natural_cost(v) * 100
+    max_loss_per_contract = (max_loss_override * 100
+                             if max_loss_override is not None else cap_per)
     return {
         "candidate_key": candidate_key(cv),
         "strategy": strategy,
@@ -350,6 +388,14 @@ def _candidate(cv: CandidateView, strategy: str, capital: float | None,
         "completion_prices": list(cv.completion_prices),
         "completion_threshold": cv.completion_threshold,
         "breakeven_at_target": cv.breakeven_at_target,
+        # T15（#230，Initial V2）：非單調結構（Butterfly）的獲利區間——
+        # 兩個邊界價，或 `None`（單調家族恆為 `None`；Butterfly 峰值
+        # 都賺不回成本時也是 `None`，不是「沒算」）。與
+        # `completion_threshold`／`breakeven_at_target`（單調家族的
+        # 保本掃描單一數字）互斥出現，見 `service.CandidateView.
+        # profit_region` 欄位註解。純加法。
+        "profit_region": (list(cv.profit_region)
+                          if cv.profit_region is not None else None),
         "retention": cv.retention,
         "buffer_days": cv.buffer_days,
         # MVP V3（#104，spec #102 決策 F）：`quote_warning`（選取閘門用的
@@ -371,16 +417,15 @@ def _candidate(cv: CandidateView, strategy: str, capital: float | None,
         "rate_used": cv.rate_used,
         "rate_tenor_years": cv.rate_tenor_years,
         "net_delta": net_delta,
-        "breakeven": v.breakeven,
+        "breakeven": breakeven_scalar,
         # T12（#228，Initial V2）：損益兩平的**傳輸格式**——共用骨架要
-        # 能裝得下 1～2 個點（Butterfly 未來會有兩個），但本票只搬動
-        # 資料形狀、不碰計算（Owner 2026-08-30 範圍界定）。既有四策略
-        # 一律是單點，這裡就是把上面那個純量 `v.breakeven` 包成
-        # 一元素陣列，數值逐位元不變；不移除既有的純量 `breakeven`
-        # 欄位（前端 `AnalysisReport.tsx` 仍讀它，本票不強迫它改讀
-        # 陣列——這是新增的傳輸容量，不是既有欄位的替代品）。產生
-        # 第二個點的邏輯是 T15（#230）的範圍，本票不實作。
-        "breakeven_points": [v.breakeven],
+        # 能裝得下 1～2 個點。既有四策略一律是單點（純量 `breakeven`
+        # 包成一元素陣列，數值逐位元不變，前端 `AnalysisReport.tsx`
+        # 仍讀純量 `breakeven`，這是新增的傳輸容量，不是既有欄位的
+        # 替代品）；T15（#230）Butterfly 用真正的兩個點（或到期時任何
+        # 價位都無法獲利時的空陣列）填滿這個容量——這正是 T12 當初
+        # 預留這個形狀時說的「產生第二個點的邏輯是 T15 的範圍」。
+        "breakeven_points": breakeven_points,
         "max_profit": max_profit,
         "effective_leverage": v.effective_leverage,
         # V8（#56，spec R1 §4.2 A2）：買價指引天花板 L2/L3——純文字報告
@@ -421,7 +466,12 @@ def _candidate(cv: CandidateView, strategy: str, capital: float | None,
         # 不畫這一區（不是畫一個只有一格的表）。
         "price_ladder": [{"label": pt.label, "price": pt.price, "return": pt.ret}
                          for pt in cv.price_ladder],
-        "max_loss_per_contract": cap_per,   # debit 恆等於成本
+        # 既有四策略：debit 恆等於成本（`cap_per`）。T15（#230）
+        # Butterfly：不假設這條不變量成立——broken-wing 組合到期時可能
+        # 損失超過已付權利金，`max_loss_override` 帶著這個結構自己
+        # 算出的真實最壞損失（見上方 `ButterflyValuation.max_loss`
+        # 欄位註解）。
+        "max_loss_per_contract": max_loss_per_contract,
         "pct_of_capital": (cap_per / capital) if capital else None,
         # 參考日＝日曆錨點（附錄 A9）；年月本身不映射成任何一天。
         "days_to_target": (anchor - today).days,
@@ -606,7 +656,13 @@ def serialize_result(result: AnalysisResult, scenario_id: str,
         # `resolveMatrix()` 讀不到座標軸會顯示「無法解析」而不是誤讀
         # 出錯誤的圖——這與 T09（#191）當時「既有已儲存的 View 不做
         # 資料遷移」的既有裁示一致，下一次刷新就會拿到新 schema。
-        "schema_version": 7,
+        # T15（#230，Initial V2）：7→8——候選新增 `profit_region`
+        # （純加法，非單調結構的獲利區間，見 `CandidateView.
+        # profit_region` 欄位註解）；`legs[].quantity` 首次出現大於 1
+        # 的真實值（Butterfly 中腿賣 2 口）——欄位本身在 T12（#228）
+        # 就已存在，這裡只是第一次真的用到，不是新增欄位，因此本身
+        # 不構成版本升版理由，`profit_region` 才是。
+        "schema_version": 8,
         "engine_version": __version__,
         "analyzed_at": m.fetched_at,
         "scenario_id": scenario_id,
