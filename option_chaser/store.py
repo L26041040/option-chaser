@@ -11,11 +11,12 @@ from typing import Iterable
 
 from . import __version__
 from .models import AnalysisParams, ChainSnapshot
-from .ranking import spread_baseline_return
+from .ranking import baseline_return, spread_baseline_return
 from .report import disclaimer_text
 from .scenarios import natural_cost
 from .service import AnalysisResult, CandidateView, candidate_key, valuation_key
-from .valuation import SpreadValuation, guidance_judgments, spread_guidance_judgments
+from .valuation import (ContractValuation, SpreadValuation, guidance_judgments,
+                        spread_guidance_judgments)
 
 
 SCENARIO_SCHEMA_VERSION = 2   # v2: target_date（YYYY-MM-DD）→ target_month（YYYY-MM）
@@ -110,11 +111,21 @@ def spot(view: dict | None) -> float | None:
     return value if isinstance(value, (int, float)) else None
 
 
-def _history_entry(sv: SpreadValuation, expiry: str, rank_in_expiry: int) -> dict:
+def _history_entry(sv: SpreadValuation | ContractValuation, expiry: str,
+                   rank_in_expiry: int) -> dict:
     """T9（#23，附錄A7）：全部有效候選的歷史五欄位之三（成本／收益率／期內
     名次）；另外兩欄（更新時間、標的價）不逐候選重複，共用父層 `analyzed_at`／
     `meta.spot`（既有設計，`_candidate()` 對完整 CandidateView 同樣不重複）。
-    不建 CandidateView：這裡只需要輕量欄位，沒有 Heatmap 矩陣（附錄A10.3）。"""
+    不建 CandidateView：這裡只需要輕量欄位，沒有 Heatmap 矩陣（附錄A10.3）。
+
+    T09（#222）：單腿路徑的 `expiry_ranked` 過去恆空，本函式只被 Spread
+    呼叫過——`baseline_return` 因此原本直接寫死 `spread_baseline_return`。
+    單腿路徑補上 `expiry_ranked` 後同一個函式要能吃 `ContractValuation`，
+    改用既有的 `ranking.baseline_return`（單腿口徑：`(baseline_value -
+    ask) / ask`，附錄 A14.2），`natural_cost`／`valuation_key` 本來就是
+    對兩種型別皆已定義的既有多型函式，不必跟著改。"""
+    ret = (spread_baseline_return(sv) if isinstance(sv, SpreadValuation)
+          else baseline_return(sv))
     return {
         "candidate_key": valuation_key(sv),
         "expiry": expiry,
@@ -122,7 +133,7 @@ def _history_entry(sv: SpreadValuation, expiry: str, rank_in_expiry: int) -> dic
         # 與 `_candidate()` 的 `natural_cost`／`cap_per` 同一條路徑，不直接
         # 讀 `sv.net_worst`（spread 之下數值恆等，但少一層轉譯依賴）。
         "cost": natural_cost(sv),
-        "baseline_return": spread_baseline_return(sv),
+        "baseline_return": ret,
         "rank_in_expiry": rank_in_expiry,
     }
 
@@ -446,12 +457,17 @@ def find_candidate(view: dict, key: str) -> dict | None:
     成本與名次，沒有腿）——呼叫端要的是腿上的 IV／履約價／權別。找不到
     回 `None`，不拋錯：候選可能在這次刷新被過濾掉，那是正常狀態。
 
-    單腳策略（Long Call／Long Put）沒有 `expiry_top10` 分組（T9 附錄A7：
-    範圍限定 Spread 路徑，single-leg 依 MVP 範圍不動）——候選活在扁平
-    的 `r["candidates"]` 清單裡。只在該策略**完全沒有** `expiry_top10`
-    分組時才退去掃這份清單（#139）：兩腿策略（Spread）一律只認
-    `expiry_top10`，「候選有沒有入榜」是既有規則的一部分，不因此擴大
-    查找範圍——這保證兩腿路徑的既有行為與數值一字不動。
+    單腳策略（Long Call／Long Put）過去沒有 `expiry_top10` 分組（T9
+    附錄A7：範圍限定 Spread 路徑，single-leg 依 MVP 範圍不動）——候選
+    活在扁平的 `r["candidates"]` 清單裡，只在該策略**完全沒有**
+    `expiry_top10` 分組時才退去掃這份清單（#139）。**Initial V2 T09
+    （#222）起，單腿策略正常情況下也會有非空的 `expiry_top10`**（見
+    `service._single_leg_result()`），因此單腿候選現在多半也走
+    `expiry_top10` 這條路——扁平清單 fallback 只在該策略**完全零合格
+    候選**（`status != "ok"`，`expiry_top10` 恆空）時才會真正被用到，
+    這種情況兩種策略（單腿／Spread）本來就一致。兩腿策略（Spread）
+    一律只認 `expiry_top10`，「候選有沒有入榜」是既有規則的一部分，
+    不因此擴大查找範圍——這保證兩腿路徑的既有行為與數值一字不動。
 
     T09（#191，schema_version 3）：`expiry_top10[].candidates`／
     `r["candidates"]` 從完整候選字典改成 `candidate_keys`／

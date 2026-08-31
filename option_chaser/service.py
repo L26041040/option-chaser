@@ -656,14 +656,22 @@ def _single_leg_result(p: AnalysisParams, snap: ChainSnapshot,
 
     # v4 spec §3.2: per-expiry best over ALL qualified (not just top-3 bands),
     # for expiry grouping. Cost control: CandidateView only built for winners.
+    #
+    # T09（#222）：`by_expiry` 順便在同一輪迴圈裡收集齊——`vals_sorted`
+    # 已是全域依 `(-baseline_return, *_tie_break_key)` 排序，分組後各自
+    # 的相對順序與獨立對該組排序等價（全域鍵不依賴其他組），跟
+    # `_spread_result()` 的既有裁示同一條理由：不必為 `expiry_top10`／
+    # `expiry_ranked` 另跑一次排序。
     vals_sorted = sorted(vals, key=lambda v: (-baseline_return(v),
                                               *_tie_break_key(v)))
     counts: dict[str, int] = {}
     best_by_expiry: dict[str, ContractValuation] = {}
+    by_expiry: dict[str, list[ContractValuation]] = {}
     for v in vals_sorted:
         exp = v.contract.expiry
         counts[exp] = counts.get(exp, 0) + 1
         best_by_expiry.setdefault(exp, v)
+        by_expiry.setdefault(exp, []).append(v)
     expiry_best = tuple(
         # #122：分級標籤同樣只讀 classification_delta（同一條紅線），
         # 不影響 best_by_expiry 本身的選取——那是 vals_sorted 依
@@ -676,12 +684,35 @@ def _single_leg_result(p: AnalysisParams, snap: ChainSnapshot,
                          violations, resilience_cache)
         for exp in sorted(best_by_expiry))
     expiry_counts = tuple(sorted(counts.items()))
+    # T09（#222）：單腿路徑補齊與 Spread 同形狀的到期日分組欄位——
+    # `expiry_top10`（各期前十名，含 Heatmap 矩陣）／`expiry_ranked`
+    # （該期全部有效候選，供 `all_candidates` 歷史五欄位序列化）。
+    # MVP 範圍當初只做 Spread（附錄A13）留下的空白，這裡照 `_spread_
+    # result()` 既有寫法補齊，不引入新的分組邏輯。
+    #
+    # ⚠ 刻意的一處不對稱（`/code-review` Standards 軸抓到、值得記錄）：
+    # `_spread_view()` 吃的是**本期**組內大小＋本期索引
+    # （`len(by_expiry[exp])`／`enumerate()`），因為 Spread 的
+    # `build_spread_reasons()` 文字明講「合格 N 組中第 idx+1」；這裡
+    # 仍傳**全域** `len(qualified)`（跟 `candidates`／`expiry_best` 用的
+    # 是同一個既有呼叫慣例），因為 `_single_leg_view` 的 `n_qualified`
+    # 只餵 `build_reasons()` 拿去跟全域 `max_ret` 比較，不像 Spread 那樣
+    # 把組內大小寫進文字——單腿路徑沒有「本期組內大小」這個概念要傳。
+    expiry_top10 = tuple(
+        (exp, tuple(_single_leg_view(
+            v, classify(v.classification_delta, p.delta_bands), ranked,
+            snap.spot, len(qualified), today, p, violations, resilience_cache)
+            for v in by_expiry[exp][:10]))
+        for exp in sorted(by_expiry))
+    expiry_ranked = tuple((exp, tuple(by_expiry[exp]))
+                          for exp in sorted(by_expiry))
 
     return StrategyResult(
         strategy=p.strategy, status="ok", candidates=tuple(candidates),
         ranked_bands=ranked, ranked_spreads=None, n_qualified=len(qualified),
         filter_report=freport, pair_report=None, report_text=text, message="",
         expiry_best=expiry_best, expiry_counts=expiry_counts,
+        expiry_top10=expiry_top10, expiry_ranked=expiry_ranked,
         quality_flags=quality_flags)
 
 

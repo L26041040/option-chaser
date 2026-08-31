@@ -179,6 +179,28 @@ def test_bear_put_contract_sample_matches_the_live_api_response():
     assert cand["comparator"]["option_type"] == "put"
 
 
+def test_long_call_contract_sample_matches_the_live_api_response():
+    """T09（#222）：獨立的單腿到期日分組樣本——同一份主 fixture、同一個
+    target_price，只換策略成 `long-call`，一樣是真實 `/api/analyze`
+    回應、一樣有 drift 測試守著。不硬湊進主樣本的理由與 put 樣本相同
+    （見上一條測試 docstring）：主樣本被前端 mock／E2E 大量引用，混進
+    第二個策略會改變它既有的 `results` 形狀。"""
+    lc_sample = Path("contracts/analysis_sample_long_call.json")
+    assert lc_sample.exists(), "契約樣本不存在，請跑 scripts/gen_contract_sample.py"
+    expected = json.loads(lc_sample.read_text(encoding="utf-8"))
+    lc_request = {"symbol": "XYZ", "target_price": 130.0,
+                 "target_month": "2026-09", "strategies": ["long-call"]}
+    actual = _client().post("/api/analyze", json=lc_request).json()
+    assert actual == expected, (
+        "單腿到期日分組契約樣本與 API 回應不一致——請跑 "
+        "scripts/gen_contract_sample.py 重產樣本")
+    # 這份樣本存在的唯一理由就是要示範單腿的到期日分組——空手覆蓋沒有意義。
+    result = actual["results"][0]
+    assert result["expiry_top10"]
+    for group in result["expiry_top10"]:
+        assert group["candidate_keys"]
+
+
 def test_symbol_is_restricted_to_ticker_shaped_input():
     """symbol 會被代入資料源 URL，不讓路徑片段之類的東西進去。"""
     for bad in ("../evil", "A/B", "", "TOOLONGSYMBOL"):

@@ -46,6 +46,16 @@ PUT_OUT = Path("contracts/analysis_sample_bear_put.json")
 PUT_REQUEST = {"symbol": "XYZ", "target_price": 70.0, "target_month": "2026-09",
                "strategies": ["bear-put-spread"]}
 
+# T09（#222）：單腿到期日分組（`expiry_top10`／`expiry_ranked`）的契約
+# 樣本——同一份主 fixture、同一個 target_price（bullish，long-call 天生
+# 方向相容），走**獨立**的第三份樣本而不是硬湊進主樣本，理由與上面 put
+# 樣本相同：主樣本已被前端 mock／E2E 大量引用，混進第二個策略會改變它的
+# 既有形狀（`results` 從一筆變兩筆），這份樣本存在的唯一理由是示範單腿
+# 到期日分組，不需要也不該牽動主樣本。
+LONG_CALL_OUT = Path("contracts/analysis_sample_long_call.json")
+LONG_CALL_REQUEST = {"symbol": "XYZ", "target_price": 130.0,
+                     "target_month": "2026-09", "strategies": ["long-call"]}
+
 # 隨執行時間變動的欄位換成固定值：樣本要釘住形狀，不是當下的鐘。
 FROZEN = {"id": "sample-id", "created_at": "2026-08-01T00:00:00+00:00",
           "days_to_anchor": 653}
@@ -121,6 +131,14 @@ def main() -> None:
     PUT_OUT.write_text(json.dumps(put_resp.json(), ensure_ascii=False, indent=2,
                                   sort_keys=True) + "\n", encoding="utf-8")
     print(f"寫入 {PUT_OUT}（{PUT_OUT.stat().st_size:,} bytes）")
+
+    # T09（#222）：獨立的單腿到期日分組樣本，見上方 LONG_CALL_OUT 註解。
+    lc_resp = client.post("/api/analyze", json=LONG_CALL_REQUEST)
+    lc_resp.raise_for_status()
+    LONG_CALL_OUT.write_text(json.dumps(lc_resp.json(), ensure_ascii=False,
+                                        indent=2, sort_keys=True) + "\n",
+                             encoding="utf-8")
+    print(f"寫入 {LONG_CALL_OUT}（{LONG_CALL_OUT.stat().st_size:,} bytes）")
 
 
 if __name__ == "__main__":

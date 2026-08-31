@@ -24,9 +24,17 @@ Initial V2 的 T02（逐腿 payoff 直算）與 T03（包絡量由 payoff 導出
    不變，已用「監控每一種輸出、不是只看測試綠燈」的方式核對過
    （CLI golden fixtures、契約樣本皆零漂移）。
 2. **T04（#220）**把 friction 自 canonical model 移除（#217 決策 D）。
+3. **T09（#222，2026-08-31）**——單腿策略補齊 `expiry_top10`／
+   `expiry_ranked` 到期日分組欄位後，`candidate_pool` 隨之收進過去
+   從未序列化過的候選（單腿 MVP 範圍當初只做到 `expiry_best`，附錄
+   A13）。這是**純新增**：`long-call` 4 筆、`long-put` 5 筆候選加入
+   基準，既有候選逐一核對零修改零刪除，`bull-call-spread`／
+   `bear-put-spread` 兩個策略（T09 AC 明文要求「Spread 路徑逐位元
+   不變」）100% 零差異——已用腳本逐鍵比對過（不是只看測試綠燈），見
+   T09 commit 訊息。
 
-除了以上兩個已知、已記錄的例外，T03 及之後的票期間跑出差異＝有 bug，
-不是基準過期。
+除了以上三個已知、已記錄的例外，其餘期間跑出差異＝有 bug，不是基準
+過期。
 
     PYTHONPATH=. .venv/bin/python scripts/gen_numeric_baseline.py
 """
