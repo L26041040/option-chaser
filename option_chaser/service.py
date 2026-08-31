@@ -1009,14 +1009,22 @@ def _comparison(results: tuple[StrategyResult, ...]) -> tuple[ComparisonRow, ...
             continue
         if res.strategy in BUTTERFLY_STRATEGIES:
             bv = res.ranked_butterflies[0]
+            # `ComparisonRow.breakeven` 是單一 scalar 欄位（跨 family 比較表
+            # 的既有形狀），但 Butterfly 到期時連峰值都賺不到時
+            # `breakeven_points` 是空的（見 `butterfly_breakeven_and_
+            # profit_region()`）——這裡沒有真正的損益兩平點可填。
+            # `bv.low_leg.strike` 不是損益兩平點，只是這個既有 scalar
+            # 欄位在「沒有損益兩平點」情境下的佔位值（比較表本身仍要顯示
+            # 一個數字），不得誤讀成任何財務意義。
+            breakeven = (bv.breakeven_points[0] if bv.breakeven_points
+                        else bv.low_leg.strike)
             rows.append(ComparisonRow(
                 strategy=res.strategy,
                 label=(f"買 {bv.low_leg.strike:g} / 賣 2×{bv.mid_leg.strike:g} / "
                       f"買 {bv.high_leg.strike:g}"),
                 expiry=bv.low_leg.expiry, cost=bv.net_worst,
                 baseline_return=butterfly_baseline_return(bv),
-                breakeven=bv.breakeven_points[0] if bv.breakeven_points else bv.low_leg.strike,
-                max_profit=bv.max_profit))
+                breakeven=breakeven, max_profit=bv.max_profit))
         elif res.strategy in SPREAD_STRATEGIES:
             sv = res.ranked_spreads[0]
             rows.append(ComparisonRow(

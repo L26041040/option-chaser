@@ -693,10 +693,29 @@ def butterfly_expiry_payoff(option_type: str, k1: float, k2: float, k3: float,
            + intrinsic_value(option_type, S, k3))
 
 
-def butterfly_breakeven_and_profit_region(
-    option_type: str, k1: float, k2: float, k3: float, net_cost: float,
+def _butterfly_knots(option_type: str, k1: float, k2: float,
+                     k3: float) -> tuple[float, float, float]:
+    """三個履約價各自的到期 payoff（`v1`＝K1、`v2`＝K2 峰值、`v3`＝K3），
+    只算一次——`butterfly_breakeven_and_profit_region()` 與
+    `evaluate_butterfly()` 都需要這三個數字，抽出來避免兩處各自呼叫
+    `butterfly_expiry_payoff()` 三次（`/code-review` Standards 軸抓到
+    的重複）。"""
+    return (butterfly_expiry_payoff(option_type, k1, k2, k3, k1),
+           butterfly_expiry_payoff(option_type, k1, k2, k3, k2),
+           butterfly_expiry_payoff(option_type, k1, k2, k3, k3))
+
+
+def _butterfly_region_from_knots(
+    k1: float, k2: float, k3: float, v1: float, v2: float, v3: float,
+    net_cost: float,
 ) -> tuple[tuple[float, ...], ButterflyProfitRegion | None]:
-    """Butterfly 專屬（不透過任何通用求根／extrema 引擎）：到期時的
+    """`butterfly_breakeven_and_profit_region()` 的核心邏輯，改吃已經
+    算好的三個到期 payoff 節點（`v1`／`v2`／`v3`）而非自己重算——供
+    `evaluate_butterfly()` 在已經算過一次 `_butterfly_knots()` 之後
+    直接複用，不必為了呼叫這個公開函式再算第二次（`/code-review`
+    Standards 軸抓到的重複，此為完整消除，非表面上少寫幾行）。
+
+    Butterfly 專屬（不透過任何通用求根／extrema 引擎）：到期時的
     payoff 是分段線性、非單調的「帳篷」形狀——不論 call 或 put、不論
     兩翼是否等寬，[K1,K2] 段斜率恆為 +1、[K2,K3] 段斜率恆為 -1（可由
     「買一賣二買一」的權重組合直接推導：兩段各自只有一條腿的斜率係數
@@ -717,9 +736,6 @@ def butterfly_breakeven_and_profit_region(
     邊界——這是這個已知邊界情況的合理近似（獲利region 實際上延伸到
     該翼端之外的恆定平台，見函式頂端的段落分析），不是憑空發明的
     容忍值。"""
-    v1 = butterfly_expiry_payoff(option_type, k1, k2, k3, k1)
-    v2 = butterfly_expiry_payoff(option_type, k1, k2, k3, k2)   # 峰值
-    v3 = butterfly_expiry_payoff(option_type, k1, k2, k3, k3)
     peak_profit = v2 - net_cost
     if peak_profit <= 0.0:
         return (), None
@@ -730,6 +746,18 @@ def butterfly_breakeven_and_profit_region(
     # [K2,K3] 斜率恆 -1：f(S) = peak_profit - (S-K2)，根 = K2 + peak_profit
     upper = k3 if right_tail_profit >= 0.0 else k2 + peak_profit
     return (lower, upper), ButterflyProfitRegion(lower=lower, upper=upper)
+
+
+def butterfly_breakeven_and_profit_region(
+    option_type: str, k1: float, k2: float, k3: float, net_cost: float,
+) -> tuple[tuple[float, ...], ButterflyProfitRegion | None]:
+    """公開進入點：算一次 `_butterfly_knots()`，交給
+    `_butterfly_region_from_knots()` 做核心判斷。簽章維持不變（不吃
+    現成節點），供只有履約價、沒有算過節點的呼叫端直接使用；已經算過
+    節點的呼叫端（`evaluate_butterfly()`）改直接呼叫
+    `_butterfly_region_from_knots()` 避免重算。"""
+    v1, v2, v3 = _butterfly_knots(option_type, k1, k2, k3)
+    return _butterfly_region_from_knots(k1, k2, k3, v1, v2, v3, net_cost)
 
 
 @dataclass(frozen=True)
@@ -811,16 +839,17 @@ def evaluate_butterfly(
                                          low_carry, mid_carry, high_carry))
         for shift in p.iv_shifts)
     baseline_value = dict(scenario_values)[0.0]
-    breakeven_points, profit_region = butterfly_breakeven_and_profit_region(
-        low_leg.option_type, low_leg.strike, mid_leg.strike, high_leg.strike,
-        net_worst)
-    max_profit = (butterfly_expiry_payoff(
-        low_leg.option_type, low_leg.strike, mid_leg.strike, high_leg.strike,
-        mid_leg.strike) - net_worst)   # 峰值必然在 K2，見上方 docstring
-    v1 = butterfly_expiry_payoff(low_leg.option_type, low_leg.strike,
-                                 mid_leg.strike, high_leg.strike, low_leg.strike)
-    v3 = butterfly_expiry_payoff(low_leg.option_type, low_leg.strike,
-                                 mid_leg.strike, high_leg.strike, high_leg.strike)
+    # 三個履約價各自的到期 payoff 只算一次（`_butterfly_knots()`），供
+    # breakeven／profit region 與 max_profit／max_loss 共用——原本
+    # `butterfly_breakeven_and_profit_region()` 內部會重算一次、這裡
+    # 又為了 max_profit／max_loss 各自呼叫 `butterfly_expiry_payoff()`
+    # 三次，是 `/code-review` Standards 軸抓到的重複，改直接呼叫
+    # `_butterfly_region_from_knots()` 複用同一組節點。
+    v1, v2, v3 = _butterfly_knots(
+        low_leg.option_type, low_leg.strike, mid_leg.strike, high_leg.strike)
+    breakeven_points, profit_region = _butterfly_region_from_knots(
+        low_leg.strike, mid_leg.strike, high_leg.strike, v1, v2, v3, net_worst)
+    max_profit = v2 - net_worst   # 峰值必然在 K2，見上方 docstring
     max_loss = net_worst - min(v1, v3)
     return ButterflyValuation(
         option_type=low_leg.option_type,
