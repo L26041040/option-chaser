@@ -5602,9 +5602,36 @@ CLAUDE.md 隨手更新。
   數值基準未受影響。前端 typecheck／678 條 Vitest／build 皆過。
   **#225 已 close**。
 
-**下一步**：T10（#227，被 T08 解鎖）與 T15（#230，被 T08／T05／T12
-解鎖）皆已無 blocker，可任意順序開工。T05／T06／T07／T08／T09／T12
-均已完成，Initial V2 剩餘票的 blocker 狀態依此更新。
+- **T10**（#227，commit `9fa6c6c`＋跟進 `a617d1c`）✅ 建立／編輯表單的
+  Strategy Family 勾選與 eligibility 呈現——使用者第一次可以自己決定
+  這個劇本要看哪幾類策略。`CreateScenarioRequest`／
+  `EditScenarioRequest` 新增必填 `strategies: list[Literal[FAMILIES]]`
+  （`Field(min_length=1)`，白名單本身就是型別，沿用既有
+  `AnalyzeRequest.strategies` 同一種寫法）。`create_scenario()` 移除
+  寫死的 `_MVP_STRATEGIES`；`edit_scenario()` 編輯表單永遠送出目前
+  完整勾選集合，`thesis_changed` 新增 family 比較（改變視同 thesis
+  改變、清掉舊結果），兩邊比較前正規化成 family 避免 legacy subtype
+  字串誤判。`ResultRecord`／`ResultSummary` 新增 `family_eligibility`
+  （與 T07 `per_family` 同一個模式，額外落盤供編輯表單讀取不必打
+  detail 端點），Postgres schema 沿用「建表＋遷移分兩批送」教訓；
+  `_refresh_and_save()` 直接讀 T08 已算好的 `view["family_
+  eligibility"]`。前端 `CreateForm.tsx` 新增 Strategy Family
+  checkbox 群組（`role="group"`＋`aria-labelledby`，比照
+  `MonthPicker` 既有寫法）；`validateDraft()` 新增「至少勾選一個」
+  驗證；不可選的 family 顯示後端 verdict 的原因文字（前端零計算），
+  checkbox 本身仍可勾選，只有事實陳述、不做推薦。`/code-review`
+  兩軸：Spec 軸零缺漏零 scope creep；Standards 軸一項 judgement call
+  （`thesis_changed` 兩側正規化不對稱缺行內註記）已於跟進 commit
+  處理。新增後端 24 條測試、既有 10 個測試檔補上必填 `strategies`
+  欄位、前端新增 13 條元件測試、E2E 新增 6 條（手機＋桌面各 3 條）。
+  全套測試綠燈：後端（記憶體＋真實 Postgres 雙後端）、前端
+  typecheck／692 條 Vitest／build、Playwright e2e 98 條。詳細頁的
+  多 family 呈現留給 T11（票上明文範圍，未觸碰）。**#227 已 close**。
+
+**下一步**：T15（#230，被 T08／T05／T12 解鎖，無其他 blocker）與
+T11（#229，被 T09／T10 解鎖，無其他 blocker）皆已可開工。T05／T06／
+T07／T08／T09／T10／T12 均已完成，Initial V2 剩餘票的 blocker 狀態
+依此更新。
 
 ### 施工依據
 
