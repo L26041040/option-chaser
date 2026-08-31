@@ -5739,10 +5739,63 @@ CLAUDE.md 隨手更新。
   重跑確認無回歸（移除的三個欄位前端從未宣告型別、從未讀取，投影對
   前端結構上不可見）。
 
-**下一步**：T14（#233，被 T13 解鎖，無其他 blocker）與 T15（#230，
-被 T08／T05／T12 解鎖，無其他 blocker）皆已可開工，依建議施工順序
-（T11→T13→T14→T15→T16→T17→T18）先做 T14。T05–T13 均已完成，
-Initial V2 剩餘票的 blocker 狀態依此更新。
+- **T14**（#233，commits `048e4e1`＋跟進 `739d1d5`）✅ 熱力圖 matrix
+  傳輸壓縮——座標軸去重＋格值緊湊編碼（研究 #216 定案的「組合一」）。
+  `option_chaser/store.py` 新增 `axis_pool`／`axis_sets`／`axis_of()`
+  closure（比照既有 `cand_key()`／`pool` 候選去重手法），把候選
+  `matrix`／`comparator.matrix` 從 `{prices, dates, cells}`（二維）
+  換成 `{axis_index, cells}`（`cells` 攤平成一維＋捨入到
+  `MATRIX_CELL_DECIMALS`＝4 位小數，遠細於畫面顯示精度）；`prices`／
+  `dates` 只在第一次遇到某組座標時序列化進頂層新增的 `axis_sets`，
+  其餘候選（含候選自己的 Crossover comparator）改存索引引用。
+  `schema_version` 6→7。
+
+  真實去重效果（`tests/test_matrix_compression.py` 新增 5 條測試，
+  皆用真實 fixture 而非合成小物件證明）：同一到期日 9 組候選共用 1
+  組軸；跨到期日的軸數與到期日數同量級，不隨候選數線性成長；候選
+  自己的 Crossover comparator 與候選本身的 matrix 共用同一個
+  `axis_index`（不是各自序列化一份）；捨入誤差上界（0.5×10⁻⁴）逐格
+  核對小於畫面一位小數百分比顯示精度的半格（0.0005）。契約樣本三份
+  實測（本地量測，非推估）：`analysis_sample.json` 55,808→38,612
+  bytes（−30.8%）、`analysis_sample_bear_put.json` 56,248→38,749
+  bytes（−31.1%）、`analysis_sample_long_call.json` 71,881→54,183
+  bytes（−24.6%）。
+
+  前端：`src/heatmap.ts` 新增純解碼函式 `resolveMatrix()`／
+  `resolveComparator()`（查 `AnalysisView.axis_sets` 把攤平的
+  `cells` 依日期數切回二維；`"axis_index" in wm` 為假時原樣透傳——
+  T09（#191）既有「舊存 View 不做資料遷移」裁示的延伸，讀取端維持
+  相容，新舊形狀共用 `WireMatrix` 聯集型別）；`Heatmap.tsx` 本身
+  維持只吃已解碼的完整 `Matrix`／新型別 `ResolvedComparator`，解碼
+  動作收斂在 `ExpiryStructure.tsx`（候選展開清單）與
+  `ScenarioDetail.tsx`（主圖）兩個既有呼叫點——前端零金融計算，只做
+  解碼與格式化。
+
+  `/code-review` 兩軸：Standards 軸抓到上述兩個呼叫端原本各自重複
+  同一段「解碼＋單腿候選不傳 comparator」判斷（Duplicated Code），
+  已收斂成 `heatmap.ts::heatmapProps(view, candidate)`，兩處呼叫點
+  改為 `<Heatmap {...heatmapProps(view, candidate)} />`——「只有兩腿
+  候選才有 Crossover comparator 概念」這條規則現在只寫在一個地方，
+  未來出現第三個呼叫端（例如 Butterfly 三腿展示，T16／#232）時也
+  只需要呼叫這裡；同軸另抓到一條測試命名與斷言不符（宣稱「量測並
+  記錄」，實際斷言只驗證去重比例的結構性前提），已更名為
+  `test_contract_samples_also_exhibit_axis_dedup`。Spec 軸確認核心
+  機制忠實、零 scope creep（無 base64 Float32、前端未從任何「種子」
+  重算格值），唯一提到的「記錄」缺口（AC 要求記錄壓縮前後大小，
+  commit 訊息當時已記但 CLAUDE.md 尚未更新）已隨本節一併補上。
+
+  T01（#218）數值基準第五個合法重產事件：只有 `matrix`／
+  `comparator.matrix`／新增 `axis_sets` 欄位改變，其餘估值全數欄位
+  逐位元不變（已用腳本逐鍵比對，非只看測試綠燈）。全套測試：後端
+  （記憶體＋真實 Postgres 雙後端）綠燈；前端 typecheck／732 條
+  Vitest（新增 3 條）／build 皆過；Playwright e2e 101 條（iPhone＋
+  Desktop）綠燈，含既有熱力圖既有呈現（價格軸／日期軸／±% 右欄／
+  橫向捲動／Crossover 邊界疊色）逐一確認不受影響、候選展開零額外
+  網路請求。
+
+**下一步**：T15（#230，被 T08／T05／T12 解鎖，無其他 blocker）已可
+開工，依建議施工順序（T11→T13→T14→T15→T16→T17→T18）為下一張。
+T05–T14 均已完成，Initial V2 剩餘票的 blocker 狀態依此更新。
 
 ### 施工依據
 
