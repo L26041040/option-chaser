@@ -302,6 +302,30 @@ describe("Strategy Family 勾選（T10／#227，Initial V2）", () => {
     expect(within(singleLegLabel).queryByText(/這個策略家族/)).not.toBeInTheDocument();
   });
 
+  it("編輯模式下，舊劇本已正規化的 family 值不改動任何 checkbox 直接" +
+     "送出，onSaveEdit 收到的仍是合法 family 代碼（REPAIR-02／#239 " +
+     "round trip：正規化只做在讀取端，本元件消費到的 `editing.strategies` " +
+     "必須已經是 family 代碼——checkbox 才會正確顯示已勾選，"+
+     "不改動直接儲存才會送出合法值，不是前端自己再做一次 legacy→family " +
+     "映射）", async () => {
+    const onSaveEdit = vi.fn().mockResolvedValue(undefined);
+    render(<CreateForm onCreate={vi.fn()} onSaveEdit={onSaveEdit}
+                       editing={{
+                         id: "legacy-1", symbol: "XYZ", target_price: 130,
+                         target_month: "2026-09", best_price: null,
+                         worst_price: null,
+                         strategies: ["vertical-spread"],
+                         family_eligibility: null,
+                       }} />);
+    expect(screen.getByRole("checkbox", { name: "Vertical Spread" }))
+      .toBeChecked();
+
+    await userEvent.click(screen.getByRole("button", { name: "儲存變更" }));
+
+    expect(onSaveEdit).toHaveBeenCalledWith("legacy-1",
+      expect.objectContaining({ strategies: ["vertical-spread"] }));
+  });
+
   it("畫面不出現任何推薦／不推薦字眼（AC：只有可選與不可選兩種狀態）", () => {
     render(<CreateForm onCreate={vi.fn()} onSaveEdit={vi.fn()}
                        editing={{

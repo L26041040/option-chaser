@@ -259,6 +259,115 @@ def test_a_legacy_scenario_with_a_bare_subtype_still_refreshes_as_before():
     assert by_strategy["bear-put-spread"]["status"] == "skipped_direction"
 
 
+# ---------- REPAIR-02（#239，FIX-01）：序列化路徑正規化 read-boundary ----------
+#
+# #052 audit Root Cause A：`Scenario.strategies` 有四條讀取路徑會被消費，
+# 其中 `create_scenario()`（寫入前正規化）、`edit_scenario()`（寫入前
+# 正規化）、分析／刷新路徑（`subtypes_of(normalize_families(sc.strategies))`
+# 展開前正規化）三條本來就正確；唯一沒有正規化的是 `_scenario_json()`
+# ——`GET /api/scenarios`／`GET /api/scenarios/{id}` 回應裡的 `strategies`
+# 欄位直接透傳 `Scenario.strategies` 原始值。舊（pre-V2）劇本存的是
+# legacy subtype 字串（例如 `"bull-call-spread"`），前端 `CreateForm`
+# 的 checkbox 判斷式 `families.includes(opt.code)` 拿 family 代碼跟這個
+# 字串比對永遠對不上，checkbox 顯示未勾選；使用者不改動任何 checkbox
+# 直接送出，前端把讀到的原始值原封不動塞進 PATCH body，後端
+# `EditScenarioRequest.strategies: list[Literal[FAMILIES]]` 白名單驗證
+# 到這個 legacy subtype 字串直接拒絕（422）。
+#
+# OD-01 裁示：只修讀取端的正規化，不做任何 DB migration、不 backfill
+# 歷史 Scenario 資料——舊 stored 值原樣留在資料庫裡。
+
+
+def test_get_scenario_normalizes_a_legacy_subtype_string_to_its_family():
+    storage = MemoryStorage()
+    storage.create_scenario(StoredScenario(
+        id="legacy-1", symbol="XYZ", direction="bullish", target_price=130.0,
+        target_month="2026-09", notes="", strategies=("bull-call-spread",),
+        created_at="2019-06-01T00:00:00+00:00"))
+    c = _client(storage)
+
+    r = c.get("/api/scenarios/legacy-1")
+
+    assert r.status_code == 200, r.text
+    assert r.json()["strategies"] == ["vertical-spread"]
+
+
+def test_list_scenarios_also_normalizes_legacy_subtype_strings():
+    storage = MemoryStorage()
+    storage.create_scenario(StoredScenario(
+        id="legacy-1", symbol="XYZ", direction="bullish", target_price=130.0,
+        target_month="2026-09", notes="", strategies=("bull-call-spread",),
+        created_at="2019-06-01T00:00:00+00:00"))
+    c = _client(storage)
+
+    rows = c.get("/api/scenarios").json()
+
+    row = next(r for r in rows if r["id"] == "legacy-1")
+    assert row["strategies"] == ["vertical-spread"]
+
+
+def test_editing_a_legacy_scenario_with_the_value_it_reads_back_now_succeeds():
+    """核心 round trip——這條測試不手造中繼值，直接串接 GET→PATCH：
+    先讀（正規化前是唯一有問題的一步），把讀回來的 `strategies` 原封
+    不動塞進 PATCH body（模擬使用者打開編輯表單、一個 checkbox 都沒動
+    就按儲存）。正規化修好之前，GET 回傳的是 legacy 字串
+    `["bull-call-spread"]`，塞進 PATCH 會被 pydantic 白名單拒絕、這條
+    測試在這裡就會紅（422）；修好之後 GET 回傳合法 family 代碼，PATCH
+    必須成功。"""
+    storage = MemoryStorage()
+    storage.create_scenario(StoredScenario(
+        id="legacy-1", symbol="XYZ", direction="bullish", target_price=130.0,
+        target_month="2026-09", notes="", strategies=("bull-call-spread",),
+        created_at="2019-06-01T00:00:00+00:00"))
+    c = _client(storage)
+    got = c.get("/api/scenarios/legacy-1").json()
+
+    r = c.patch("/api/scenarios/legacy-1", json={
+        "target_price": got["target_price"], "target_month": got["target_month"],
+        "notes": got["notes"], "strategies": got["strategies"],
+        "best_price": got["best_price"], "worst_price": got["worst_price"]})
+
+    assert r.status_code == 200, r.text
+    assert r.json()["strategies"] == ["vertical-spread"]
+
+
+def test_editing_a_legacy_scenario_to_add_a_family_succeeds():
+    """AC「加勾其他 family（例如 Butterfly）後送出編輯表單，必須成功」
+    ——同樣先讀正規化後的值，在上面加一個 family 再送出。"""
+    storage = MemoryStorage()
+    storage.create_scenario(StoredScenario(
+        id="legacy-1", symbol="XYZ", direction="bullish", target_price=130.0,
+        target_month="2026-09", notes="", strategies=("bull-call-spread",),
+        created_at="2019-06-01T00:00:00+00:00"))
+    c = _client(storage)
+    got = c.get("/api/scenarios/legacy-1").json()
+
+    r = c.patch("/api/scenarios/legacy-1", json={
+        "target_price": got["target_price"], "target_month": got["target_month"],
+        "notes": got["notes"], "strategies": got["strategies"] + ["butterfly"],
+        "best_price": got["best_price"], "worst_price": got["worst_price"]})
+
+    assert r.status_code == 200, r.text
+    assert set(r.json()["strategies"]) == {"vertical-spread", "butterfly"}
+
+
+def test_the_stored_legacy_value_itself_is_never_migrated():
+    """OD-01：只修讀取端正規化，不做任何 DB migration／backfill——
+    stored 的原始 legacy subtype 字串必須原封不動留在資料庫裡，即使
+    讀取端點已經回傳正規化後的 family 代碼。"""
+    storage = MemoryStorage()
+    storage.create_scenario(StoredScenario(
+        id="legacy-1", symbol="XYZ", direction="bullish", target_price=130.0,
+        target_month="2026-09", notes="", strategies=("bull-call-spread",),
+        created_at="2019-06-01T00:00:00+00:00"))
+    c = _client(storage)
+
+    c.get("/api/scenarios/legacy-1")   # 讀取本身不得有寫入副作用
+
+    stored = storage.get_scenario("legacy-1")
+    assert stored.strategies == ("bull-call-spread",)
+
+
 # ---------- direction 欄位是 legacy 遺留，不再被任何判斷邏輯讀取 ----------
 
 def test_direction_field_is_never_read_by_any_decision_logic():

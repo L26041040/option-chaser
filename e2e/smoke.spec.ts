@@ -2249,6 +2249,28 @@ test("手機版：編輯 → 取消，原劇本完全不變、不寫入任何東
   expect(patched).toEqual([]);
 });
 
+test("手機版：舊（pre-V2）劇本開編輯表單，checkbox 正確顯示已勾選、" +
+   "不改動任何 checkbox 直接送出就能成功（REPAIR-02／#239 round trip）",
+   async ({ page }) => {
+  // 後端已正規化——`GET /api/scenarios` 回傳的 `strategies` 一律是
+  // family 代碼（本票的修法本身，見 `_scenario_json()`），本測試驗證
+  // 前端拿到這個值後的完整流程：checkbox 正確顯示已勾選 → 不改動任何
+  // 東西直接按儲存 → PATCH 成功、表單關閉。
+  const patched = await routeEditable(page);
+  await page.goto("/");
+
+  await page.getByRole("button", { name: /編輯 TLT/ }).click();
+  await expect(page.getByText("編輯劇本")).toBeVisible();
+  await expect(page.getByRole("checkbox", { name: "Vertical Spread" }))
+    .toBeChecked();
+
+  await page.getByRole("button", { name: "儲存變更" }).click();
+
+  await expect(page.getByText("編輯劇本")).toHaveCount(0);
+  expect(patched).toHaveLength(1);
+  expect(patched[0].strategies).toEqual(["vertical-spread"]);
+});
+
 /* ---------- Strategy Family 勾選與 eligibility（T10／#227） ---------- */
 
 test("手機版：建立劇本一個 family 都沒勾就送出，擋在前端並說明原因（T10／#227）",

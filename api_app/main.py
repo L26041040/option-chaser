@@ -372,9 +372,17 @@ def _timing_json(sc: Scenario, today: date) -> dict:
 
 
 def _scenario_json(sc: Scenario) -> dict:
+    # REPAIR-02（#239，FIX-01，#052 audit Root Cause A）：唯一一個沒有
+    # 把 `Scenario.strategies` 正規化成 family 代碼的讀取路徑——舊
+    # （pre-V2）劇本存的是 legacy subtype 字串，未正規化直接透傳的話，
+    # 前端 checkbox 判斷式對不上、使用者不改動任何 checkbox 直接儲存
+    # 都會被後端 family 白名單拒絕（422）。`create_scenario()`／
+    # `edit_scenario()` 寫入前已各自正規化過，這裡再正規化一次是
+    # 冪等的（不會改變已經是 family 代碼的值），OD-01：只修讀取端，
+    # 不做任何 DB migration，stored 的原始值不受影響。
     return {"id": sc.id, "symbol": sc.symbol, "direction": sc.direction,
             "target_price": sc.target_price, "target_month": sc.target_month,
-            "notes": sc.notes, "strategies": list(sc.strategies),
+            "notes": sc.notes, "strategies": list(normalize_families(sc.strategies)),
             "created_at": sc.created_at, "archived_at": sc.archived_at,
             "best_price": sc.best_price, "worst_price": sc.worst_price}
 
