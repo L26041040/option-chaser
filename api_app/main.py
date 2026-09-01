@@ -628,7 +628,19 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         依 symbol 分組抓過一次（ADR-0001，Run 內記憶體去重），這裡就不
         重複抓。單一劇本刷新端點不傳這個參數，走下面的直接抓取——
         chain 快取已隨 ADR-0001 整組移除，重複抓取的去重範圍現在只在
-        單一 Refresh Run 內，不再跨 invocation。"""
+        單一 Refresh Run 內，不再跨 invocation。
+
+        REPAIR-08（#245）：`analysis_deadline_seconds` 的計時點必須在
+        抓鏈**之前**就啟動（`/code-review` Spec 軸抓到的真發現）——
+        票面點名的異常輸入情境就包含「vendor 回應異常慢」，deadline
+        若只在抓鏈之後才起算，抓鏈本身耗時異常時完全不受保護、也讓
+        `service.run()` 與這裡宣稱的「同一種寫法」名不符實。`deadline`
+        在函式最上方算好絕對時間點，`snap is not None`（Refresh Run
+        批次路徑，抓鏈發生在呼叫這裡之前）時同樣適用——差別只是抓鏈
+        那段已經花掉的時間發生在呼叫端，這裡起算的時間點本來就已經
+        比那更早，涵蓋範圍不會漏掉。"""
+        deadline = (time.monotonic() + analysis_deadline_seconds
+                   if analysis_deadline_seconds is not None else None)
         # base_params.strategy 只是引擎逐策略覆寫前的起點（`_analyze` 會
         # 對 `strategies` 每一項各自替換），取第一項即可——與既有
         # `workspace._request_for` 同樣的做法。
@@ -654,7 +666,12 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
             result = service.run_with_snapshot(
                 req, snap, rate_curve_loader=_rate_curve_loader(),
                 dividend_loader=_dividend_loader(),
-                deadline_seconds=analysis_deadline_seconds)
+                # `run_with_snapshot()` 要的是**剩餘**秒數（它自己不做
+                # 抓鏈，見該函式 docstring），這裡把抓鏈已經花掉的時間
+                # 扣掉再傳——負值一樣正確傳達「已經超時」，`_absolute_
+                # deadline()` 的加法會把它算回過去的時間點。
+                deadline_seconds=(deadline - time.monotonic()
+                                  if deadline is not None else None))
         except ParamError as e:
             raise _fail("params", 400, str(e)) from e
         except Exception as e:  # noqa: BLE001 — 引擎任何失敗都要說是哪一段，不留白畫面

@@ -796,6 +796,50 @@ def test_a_past_analysis_deadline_degrades_the_refresh_response_gracefully():
     assert by_strategy["bear-put-spread"]["status"] == "skipped_direction"
 
 
+def test_a_slow_fetch_counts_against_the_analysis_deadline_too():
+    """`/code-review` Spec 軸抓到的真發現：deadline 計時點原本擺在
+    抓鏈**之後**才啟動，票面自己點名的異常輸入情境（「vendor 回應
+    異常慢」）完全不受保護——已修正為在抓鏈之前就起算。這裡直接證明：
+    人為拉長抓鏈本身的耗時（比照上面 `test_refresh_run_a_slow_
+    scenario_can_exhaust_the_budget_mid_batch` 同一種真實 `time.sleep`
+    手法，不是調小 deadline 這種退化情況），deadline 只給 100ms、
+    抓鏈刻意睡 300ms——抓鏈本身就吃光預算，分析階段連開始都不會開始。
+
+    ⚠ 校準紀錄：`TestClient` 對**第一次**請求有可觀的一次性暖機成本
+    （實測跨 ASGI 分派＋惰性單例初始化＋pydantic 編譯，第一次請求
+    ~1.2 秒，之後同一個 client 穩定在 ~35ms），這個成本發生在
+    `_analyze()` closure 內部（`deadline` 已經開始計時之後），會讓
+    任何極短的 deadline（例如原本嘗試的 20ms）在**第一次**請求上
+    無論有沒有本票的 bug 都必定逾時——那不是在測本票的修法，是在測
+    `TestClient` 的暖機成本，是一條偽陽性測試。已改為先送一次快速
+    warm-up 請求付清暖機成本，用**同一個**已暖機的 client 才進行
+    真正的計時比較；100ms／300ms 兩個數字經本地實測驗證：暖機後的
+    正常（快速抓鏈）耗時穩定在 ~35ms，遠低於 100ms 門檻不會誤觸發，
+    300ms 的刻意延遲則穩定超過門檻。"""
+    calls = {"n": 0}
+
+    def flaky_fetch(symbol):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return load_snapshot(FIX)   # warm-up：快速，不佔用 deadline 測試
+        time.sleep(0.3)
+        return load_snapshot(FIX)
+
+    c = _client(fetch=flaky_fetch, analysis_deadline_seconds=0.1)
+    sc = _create(c)
+    warmup = c.post(f"/api/scenarios/{sc['id']}/refresh")
+    assert warmup.status_code == 200, warmup.text
+
+    r = c.post(f"/api/scenarios/{sc['id']}/refresh")
+
+    assert r.status_code == 200, r.text
+    assert r.json()["representative_candidate"] is None
+    detail = c.get(f"/api/scenarios/{sc['id']}").json()
+    by_strategy = {res["strategy"]: res
+                  for res in detail["latest_result"]["results"]}
+    assert by_strategy["bull-call-spread"]["status"] == "timed_out"
+
+
 def test_the_default_analysis_deadline_never_fires_during_a_normal_refresh():
     """既有大量 refresh 測試（本檔案通篇）在本票之前就已經全數通過，
     本身就是「預設 45 秒 deadline 不影響正常規模」的隱性證明——這裡

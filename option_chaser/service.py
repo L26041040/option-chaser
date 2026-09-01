@@ -1337,13 +1337,23 @@ def _absolute_deadline(deadline_seconds: float | None) -> float | None:
 
 def run(request: AnalysisRequest, progress: Progress | None = None, *,
        deadline_seconds: float | None = None) -> AnalysisResult:
+    """`deadline_seconds`：REPAIR-08（#245）——`/code-review` Spec 軸
+    抓到的真發現：這裡的抓鏈（`fetch_and_save`）本身就可能是票面點名
+    的「vendor 回應異常慢」那個異常輸入情境，deadline 計時點因此必須
+    在抓鏈**之前**就啟動，才能真的涵蓋整個 request 的總耗時（比照
+    `refresh_run` 的 `REFRESH_RUN_BUDGET` 在任何抓鏈動作之前就先算好
+    deadline 的既有寫法）——先前版本把 `_absolute_deadline()` 擺在
+    抓鏈之後才呼叫，deadline 只涵蓋到分析階段，沒涵蓋抓鏈階段，
+    與這段 docstring／`ANALYSIS_SOFT_DEADLINE` 定義處聲稱的「跟
+    `refresh_run` 同一種寫法」名不符實，已修正。"""
     _validate_request(request)
+    deadline = _absolute_deadline(deadline_seconds)
     _emit(progress, f"正在抓取 {request.symbol} 市場資料……")
     snap, out = fetch_and_save(request.symbol)
     return _analyze(request, snap, out, progress,
                     rate_curve_loader=default_rate_curve_loader,
                     dividend_loader=default_dividend_loader,
-                    deadline=_absolute_deadline(deadline_seconds))
+                    deadline=deadline)
 
 
 def run_with_snapshot(request: AnalysisRequest, snap: ChainSnapshot,
@@ -1366,7 +1376,13 @@ def run_with_snapshot(request: AnalysisRequest, snap: ChainSnapshot,
 
     `deadline_seconds`：REPAIR-08（#245）——api_app 層（HTTP 入口）
     走這裡注入 `service.ANALYSIS_SOFT_DEADLINE`，`None`（預設）＝
-    不啟用，既有呼叫端（測試直接呼叫）行為不變。"""
+    不啟用，既有呼叫端（測試直接呼叫）行為不變。⚠ 這裡收到的必須是
+    **剩餘**秒數，不是整個 request 的原始預算——本函式不做任何抓鏈
+    （V1／#48 的既有設計，快照已在記憶體中），呼叫端若在抓鏈之前就
+    已經算過一次絕對 deadline，傳進來時要先扣掉抓鏈已經花掉的時間
+    （`api_app/main.py::_analyze()` closure 的既有寫法），不能重新
+    起算，否則等於讓抓鏈那段時間不計入 deadline（`/code-review` Spec
+    軸抓到的真發現：先前 `api_app/main.py` 曾經就是這樣寫的）。"""
     _validate_request(request)
     return _analyze(request, snap, snapshot_ref, progress,
                     rate_curve_loader=rate_curve_loader,
