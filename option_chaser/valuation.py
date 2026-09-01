@@ -130,8 +130,16 @@ def calibrate_leg(c: OptionContract, spot: float, today: date,
     `(contract_symbol, spot, today, q_by_symbol)`——這四項在單次分析
     呼叫內皆為常數，只有 `contract_symbol` 真正會變，寫全四項是為了
     誠實表達「這個結果依賴什麼」，不是暗示這幾項在單次呼叫內真的會變。
-    不傳（`None`，預設）就是每次都重算，行為與這個快取機制存在之前
-    完全一樣——沒有快取的既有呼叫端（測試直接呼叫本函式）不受影響。
+    ⚠ 快取正確性還隱性依賴 `p`（`AnalysisParams`，經 `leg_rate(p, ...)`
+    影響利率查表）在快取字典的存活期間不變——這一項**沒有**寫進 key，
+    因為呼叫端（`_single_leg_result`／`_spread_result`／`_butterfly_
+    result`）建立 `carry_cache` 後只在同一個 `p` 底下的單一迴圈使用，
+    `AnalysisParams` 本身是 frozen dataclass、迴圈內不會被替換；若未來
+    呼叫端改成同一個快取字典跨不同 `p` 重用，這個假設就會失效，屆時
+    需要把 `p`（或至少它影響 `calibrate_leg` 結果的那些欄位）一併
+    納入 key。不傳（`None`，預設）就是每次都重算，行為與這個快取機制
+    存在之前完全一樣——沒有快取的既有呼叫端（測試直接呼叫本函式）
+    不受影響。
     範圍侷限在單次分析呼叫內，**不是**跨 HTTP request 的快取層（那是
     完全不同風險等級的改動，不在本票範圍）。
     """
