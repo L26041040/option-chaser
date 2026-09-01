@@ -24,9 +24,14 @@ expiry_best／expiry_top10／representative candidate／best_return。
 from __future__ import annotations
 
 from option_chaser import service, store
-from option_chaser.models import AnalysisParams
+from option_chaser.models import AnalysisParams, normalize_families, subtypes_of
 
 SNAP = "tests/fixtures/xyz_v2_snapshot.json"
+
+# REPAIR-01（#238，OPTION-CHASER-REPAIR-001）：T15（#230）的中密度
+# Butterfly fixture——spot=100，三個到期日（2026-09-18／10-16／12-18），
+# 每側 11 個履約價，三個 family 在真實規模下都能產生候選（相較 SNAP
+# 只有 11 張合約、Butterfly C(n,3) 幾乎不可能有正報酬候選）。
 
 # 涵蓋兩個策略方向、多個到期日、call 與 put 都有——身份序列才有意義。
 SCENARIOS = {
@@ -566,3 +571,105 @@ def test_friction_function_and_field_do_not_exist_in_source():
         code_lines = [ln for ln in src.splitlines() if not ln.strip().startswith("#")]
         code = "\n".join(code_lines)
         assert "friction" not in code, f"{mod} 不該再有可執行的 friction 引用"
+
+
+# ---------- REPAIR-01（#238，OPTION-CHASER-REPAIR-001）：多 family 守門 ----------
+#
+# #052 audit（Production Regression Audit，issue #237）指出既有這支守門
+# 檔案結構性看不到的兩個缺口：(1) `_run()` 永遠只跑一個 strategy，
+# `store.representative_candidates_by_family()`／跨 family champion 選取
+# 邏輯（`api_app/main.py::_refresh_and_save()` 的
+# `max(per_family.values(), key=...)`）從未被行使過；(2) 永遠是
+# `q_by_symbol=None`，「只在 q≠0 才顯現」的漂移（Root Cause C，見
+# #237）結構上不可能被這支守門抓到。
+#
+# 這兩條新測試補上這兩個缺口的**基礎設施**——凍結的是修復前的**身份**，
+# 不是數值（數值即將被 FIX-05／#246 合法改變）。
+
+MULTI_FAMILY_FIX = "tests/fixtures/xyz_v7_butterfly_moderate.json"
+
+
+def _multi_family_view(q_by_symbol: float | None) -> dict:
+    """三個 family 全開的離線分析，target_month="2026-09" 讓 baseline
+    到期日（2026-09-18）恰好等於日曆錨點、另外兩個到期日（10-16／
+    12-18）晚於錨點——這正是 select_expiries「錨點前 2 後 2」在真實
+    production 規模下的常態分布，也是 Root Cause C 唯一會顯現的情境。"""
+    p = AnalysisParams(target_price=110.0, target_month="2026-09",
+                       strategy="long-call", q_by_symbol=q_by_symbol)
+    subtypes = subtypes_of(normalize_families(
+        ("single-leg", "vertical-spread", "butterfly")))
+    req = service.AnalysisRequest(symbol="XYZ", base_params=p, strategies=subtypes)
+    result = service.run_offline(req, MULTI_FAMILY_FIX)
+    return store.serialize_result(result, scenario_id="MULTI", capital=None)
+
+
+def test_cross_family_champion_identity_is_recorded_as_a_baseline():
+    """#052 audit 守門缺口第 1 點：`test_selection_regression.py::_run()`
+    永遠一次一個 strategy，`championCandidate`／
+    `representative_candidates_by_family`／卡片頭條邏輯結構上完全沒被
+    覆蓋。這條測試補上：真的跑三個 family 全開，凍結**目前（修復前）**
+    的跨 family champion 身份（family／strategy／到期日／逐腿履約價，
+    不含 `baseline_return`——那個數值即將被 FIX-05／#246 合法改變，
+    凍結它會讓這支測試在合法修復後也紅燈，違背本票「不凍結數值」的
+    明文範圍）。
+
+    這條測試要能真的抓到回歸：champion 的選取邏輯
+    （`api_app/main.py::_refresh_and_save()` 的
+    `max(per_family.values(), key=lambda v: v["baseline_return"])`）
+    若被意外改動，per_family 的成員或 champion 的身份就會跟這裡凍結的
+    不同，測試就會紅——不是恆真的裝飾性斷言。"""
+    view = _multi_family_view(q_by_symbol=0.02)
+    per_family = store.representative_candidates_by_family(view)
+
+    # 三個 family 在這個 target/fixture 下都應該有合格候選（bullish
+    # 方向，call-fly／bull-call-spread／long-call 皆 eligible）——若這
+    # 個集合縮小，代表某個 family 的枚舉或方向閘門被動到了。
+    assert set(per_family) == {"single-leg", "vertical-spread", "butterfly"}
+
+    champion_family = max(per_family, key=lambda k: per_family[k]["baseline_return"])
+    champion = per_family[champion_family]
+
+    # 身份凍結——目前（修復前）的答案。FIX-05（#246）合法改變單腿估值
+    # 語意後，若 champion 的身份本身跟著變了（不只是數值變了），必須
+    # 停下查明是選取邏輯被動到還是合法的排名重新洗牌，不能默默更新
+    # 這裡的斷言了事。
+    assert champion_family == "butterfly"
+    assert champion["strategy"] == "call-fly"
+    assert champion["expiry"] == "2026-09-18"
+    leg_strikes = tuple((leg["side"], leg["strike"]) for leg in champion["legs"])
+    assert leg_strikes == (("buy", 106.0), ("sell", 109.0), ("buy", 112.0))
+
+
+def test_q_nonzero_execution_path_produces_different_values_than_q_none():
+    """#052 audit 守門缺口第 2 點：既有守門永遠 `q_by_symbol=None`
+    （`run_offline` 預設離線行為），Root Cause C 的漂移只在 `q≠0` 時
+    顯現——這支守門結構上永遠看不到。
+
+    直接證明兩件事：(1) `q_by_symbol` 這個管線真的有被 `run_offline`
+    行使、不是靜默忽略；(2) 到期日**等於**日曆錨點時 q 不影響結果
+    （退化成內在價值，這正是 #052 §T01 守門員缺口第 3 點——既有
+    `xyz_v2_snapshot.json` 剛好只有這種退化情境），到期日**晚於**錨點
+    時 q 才真正改變數值——這個對比本身就是 Root Cause C 成因的直接
+    證據，不只是「q 有作用」這麼籠統。"""
+    def top_by_expiry(q_by_symbol):
+        p = AnalysisParams(target_price=110.0, target_month="2026-09",
+                           strategy="long-call", q_by_symbol=q_by_symbol)
+        req = service.AnalysisRequest(symbol="XYZ", base_params=p,
+                                      strategies=("long-call",))
+        result = service.run_offline(req, MULTI_FAMILY_FIX)
+        view = store.serialize_result(result, scenario_id="Q", capital=None)
+        res = view["results"][0]
+        out = {}
+        for group in res["expiry_top10"]:
+            top_key = group["candidate_keys"][0]
+            out[group["expiry"]] = view["candidate_pool"][top_key]["baseline_return"]
+        return out
+
+    at_q_none = top_by_expiry(None)
+    at_q_set = top_by_expiry(0.02)
+
+    # 錨點本身（baseline 到期日）：單腿也退化成內在價值，q 不該有作用。
+    assert at_q_none["2026-09-18"] == at_q_set["2026-09-18"]
+    # 晚於錨點的到期日：q 真的改變了估值（時間價值的計算路徑被觸發）。
+    assert at_q_none["2026-10-16"] != at_q_set["2026-10-16"]
+    assert at_q_none["2026-12-18"] != at_q_set["2026-12-18"]
