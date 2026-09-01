@@ -6122,8 +6122,44 @@ FIX-06＋FIX-07→I 最終驗證）。測試接縫沿用既有七個、零新增
 Self-Review 逐項核對 OD-01–OD-04 與 audit 結論無矛盾，標記
 **READY_FOR_TICKETING**。
 
-**下一步**：等需求方 cue `/to-tickets`。本輪依指示只產出 spec，
-未執行 `/to-tickets`、未 implementation、未開 PR。
+**`/to-tickets` 完成（2026-08-31，需求方裁示 Q1=A／Q2=A／Q3=B 後
+發佈）——12 張票，issues #238–#249，全數為 #237 的 GitHub native
+sub-issue、皆標 `ready-for-agent`**：
+
+- **REPAIR-01**［#238］多 family baseline 守門擴充（Stage A，
+  prefactor，零 production 改動）——無 blocker
+- **REPAIR-02**［#239］FIX-01：Legacy Scenario 編輯相容——無 blocker
+- **REPAIR-03**［#240］FIX-02：`calibrate_leg` memoization＋強制
+  production-equivalent re-profile＋FIX-03 決策閘門——無 blocker
+- **REPAIR-04**［#241］FIX-09：refresh-run 失敗隔離（消除
+  `pendingIds` 連坐）——無 blocker，可與 #240 並行
+- **REPAIR-05**［#242］FIX-06：刷新失敗卡片兩態 UX——無 blocker
+- **REPAIR-06**［#243］FIX-07：Strategy Family 全選——無 blocker
+- **REPAIR-07**［#244］FIX-03：Butterfly 枚舉 lazy calibration
+  （條件式，依 #240 決策閘門判定是否施工，NOT_NEEDED 時直接關閉
+  標 not_planned）——blocked by #240
+- **REPAIR-08**［#245］FIX-04：Timeout safety net（per-scenario
+  soft deadline，僅限異常輸入，不得替代效能修復）——blocked by
+  #240；若 #244 判定 NEEDED 且真的施工，一併等 #244
+- **REPAIR-09**［#246］FIX-05：跨 family 估值日修正（單腿改
+  own-expiration payoff，T01 基準第 7 次合法重產＋四步驟
+  collateral-drift 證明）——blocked by #238
+- **REPAIR-10**［#247］FIX-08a：Performance Guard（production-scale
+  效能守門，20 秒門檻永久 CI 斷言）——blocked by #240；若 #244
+  施工，一併等 #244（需求方 Q3=B 裁示：FIX-08 拆成 Performance／
+  Financial 兩張獨立票）
+- **REPAIR-11**［#248］FIX-08b：Financial Guard（多 family
+  champion 數值凍結，E2E-5 完整版）——blocked by #246
+- **REPAIR-12**［#249］最終 production-equivalent regression
+  validation（Stage I 收尾，17 條紅線逐條核對＋真機驗收清單
+  更新）——blocked by #238–#248 全部（#244 需已解決，施工完成或
+  關閉 NOT_PLANNED 皆可）
+
+**Frontier（立即可開工、彼此互不依賴）＝ 6 張**：#238、#239、
+#240、#241、#242、#243。
+
+**下一步**：等需求方 cue `/implement`。本輪依指示只執行
+`/to-tickets`，未 implementation、未開 PR。
 
 ### 施工依據
 
