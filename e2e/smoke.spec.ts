@@ -2489,6 +2489,56 @@ test("手機版：編輯可以增減 family，儲存後送出目前完整的勾�
   expect(patched[0].strategies).toEqual(["vertical-spread", "single-leg"]);
 });
 
+test("手機版：全選一次勾起三個 family，已全選時再點同一顆按鈕即取消" +
+  "全選，全選後可正常送出（REPAIR-06／#243）", async ({ page }) => {
+  const created = { ...libraryRow({ id: "s2", symbol: "SPY" }),
+                    strategies: ["single-leg", "vertical-spread", "butterfly"] };
+  let postedBody: any = null;
+  await page.route("**/api/scenarios", (route) => {
+    if (route.request().method() === "POST") {
+      postedBody = route.request().postDataJSON();
+      return route.fulfill({ status: 201, json: created });
+    }
+    return route.fulfill({ json: [] });
+  });
+  await page.route("**/api/scenarios/refresh-run", (route) =>
+    route.fulfill({ json: { results: [], remaining: [] } }));
+  await page.goto("/");
+
+  await page.getByRole("button", { name: "＋ 新增劇本" }).click();
+  // 開啟時仍是「全選」文案——沒有任何 checkbox 被系統預先勾起。
+  // `exact: true`：Playwright 對按鈕名稱是子字串比對，「全選」是
+  // 「取消全選」的子字串，不指定 exact 會連後者一起比對到。
+  await expect(page.getByRole("button", { name: "全選", exact: true }))
+    .toBeVisible();
+
+  await page.getByRole("button", { name: "全選", exact: true }).click();
+  for (const label of ["Call / Put", "Vertical Spread", "Butterfly"]) {
+    await expect(page.getByRole("checkbox", { name: label })).toBeChecked();
+  }
+
+  // 已全選狀態下按鈕文案變成「取消全選」——同一顆按鈕、不是新增了一顆。
+  await expect(page.getByRole("button", { name: "全選", exact: true }))
+    .toHaveCount(0);
+  await page.getByRole("button", { name: "取消全選" }).click();
+  for (const label of ["Call / Put", "Vertical Spread", "Butterfly"]) {
+    await expect(page.getByRole("checkbox", { name: label })).not.toBeChecked();
+  }
+
+  // 全選後正常送出，後端收到全部三個 family 代碼。
+  await page.getByLabel("標的代號").fill("spy");
+  await page.getByLabel("目標價位").fill("700");
+  await page.getByLabel("目標年月").click();
+  await page.getByLabel("年份").fill("2028");
+  await page.getByRole("button", { name: "5 月" }).click();
+  await page.getByRole("button", { name: "全選", exact: true }).click();
+  await page.getByRole("button", { name: "建立", exact: true }).click();
+
+  await expect(page.getByRole("link", { name: /SPY/ })).toBeVisible();
+  expect(postedBody.strategies).toEqual(
+    ["single-leg", "vertical-spread", "butterfly"]);
+});
+
 /* ---------- T11（#229）：Strategy Family 分頁 ---------- */
 
 /**

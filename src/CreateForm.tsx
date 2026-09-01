@@ -328,6 +328,18 @@ export default function CreateForm({
       prev.includes(code) ? prev.filter((f) => f !== code) : [...prev, code]);
   }
 
+  // REPAIR-06（#243，OD-04）：全選——單一操作，已全選時再觸發同一個
+  // 操作就是取消全選（AC 明文的 toggle 行為），不是獨立的「全不選」
+  // 按鈕。`allFamilyCodes` 直接沿用 `FAMILY_OPTIONS` 順序，不另外
+  // 維護一份代碼清單。
+  const allFamilyCodes = FAMILY_OPTIONS.map((opt) => opt.code);
+  const allFamiliesSelected =
+    allFamilyCodes.every((code) => families.includes(code));
+
+  function toggleAllFamilies() {
+    setFamilies(allFamiliesSelected ? [] : allFamilyCodes);
+  }
+
   // 進入／切換編輯目標時預填。用 `editing?.id` 當相依：同一個劇本重新
   // 渲染不該把使用者打到一半的內容蓋回原值。
   const editingId = editing?.id ?? null;
@@ -429,7 +441,18 @@ export default function CreateForm({
           ——「使用者已經可以勾選，後端也真的會跑」（票上原文），不是
           禁止勾選，也不做推薦／不推薦，只有可選／不可選兩種事實陳述。 */}
       <div className="field">
-        <span className="row-label" id={familyLabelId}>策略類型</span>
+        {/* REPAIR-06（#243，OD-04）：全選／取消全選——同一顆按鈕、
+            依目前是否已全選切換文案與行為，不是兩顆按鈕。沿用
+            `.yield-note-row`（劇本庫既有「說明文字＋操作入口同一行」
+            的版面手法，`ScenarioList.tsx` 的垃圾桶批次選取入口同一種
+            用法）。 */}
+        <div className="yield-note-row">
+          <span className="row-label" id={familyLabelId}>策略類型</span>
+          <button type="button" className="text-button"
+                  onClick={toggleAllFamilies}>
+            {allFamiliesSelected ? "取消全選" : "全選"}
+          </button>
+        </div>
         <div role="group" aria-labelledby={familyLabelId}
              className="family-options">
           {FAMILY_OPTIONS.map((opt) => {

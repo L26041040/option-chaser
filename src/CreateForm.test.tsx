@@ -227,6 +227,115 @@ describe("Strategy Family 勾選（T10／#227，Initial V2）", () => {
     expect(box).not.toBeChecked();
   });
 
+  describe("全選（REPAIR-06／#243，OD-04）", () => {
+    it("建立表單開啟時預設仍是「全選」文案，不是「取消全選」——沒有" +
+       "任何 checkbox 被系統預先勾選", () => {
+      render(<CreateForm onCreate={vi.fn()} />);
+      expect(screen.getByRole("button", { name: "全選" })).toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: "取消全選" }))
+        .not.toBeInTheDocument();
+    });
+
+    it("點「全選」一次勾起全部三個 family", async () => {
+      render(<CreateForm onCreate={vi.fn()} />);
+      await userEvent.click(screen.getByRole("button", { name: "全選" }));
+
+      for (const label of ["Call / Put", "Vertical Spread", "Butterfly"]) {
+        expect(screen.getByRole("checkbox", { name: label })).toBeChecked();
+      }
+    });
+
+    it("已全選狀態下再點同一顆按鈕（此時文案變成「取消全選」）＝取消" +
+       "全選——不是新增一顆獨立的「全不選」按鈕，是同一個操作 toggle", async () => {
+      render(<CreateForm onCreate={vi.fn()} />);
+      await userEvent.click(screen.getByRole("button", { name: "全選" }));
+      const toggle = screen.getByRole("button", { name: "取消全選" });
+      // 全選狀態下不會同時留著一顆獨立的「全選」鈕。
+      expect(screen.queryByRole("button", { name: "全選" })).not.toBeInTheDocument();
+
+      await userEvent.click(toggle);
+
+      for (const label of ["Call / Put", "Vertical Spread", "Butterfly"]) {
+        expect(screen.getByRole("checkbox", { name: label })).not.toBeChecked();
+      }
+      expect(screen.getByRole("button", { name: "全選" })).toBeInTheDocument();
+    });
+
+    it("只手動勾選部分 family 時，按鈕仍顯示「全選」——只有真的全部" +
+       "勾選才算「已全選」", async () => {
+      render(<CreateForm onCreate={vi.fn()} />);
+      await userEvent.click(screen.getByRole("checkbox", { name: "Call / Put" }));
+      await userEvent.click(
+        screen.getByRole("checkbox", { name: "Vertical Spread" }));
+
+      expect(screen.getByRole("button", { name: "全選" })).toBeInTheDocument();
+    });
+
+    it("既有「至少選一個才能送出」的驗證不受全選操作本身影響——全選後" +
+       "取消全選，一樣要擋下送出", async () => {
+      const onCreate = vi.fn();
+      render(<CreateForm onCreate={onCreate} />);
+      await userEvent.type(screen.getByLabelText("標的代號"), "TLT");
+      await userEvent.type(screen.getByLabelText("目標價位"), "120");
+      await pickMonth(2028, 5);
+      await userEvent.click(screen.getByRole("button", { name: "全選" }));
+      await userEvent.click(screen.getByRole("button", { name: "取消全選" }));
+      await userEvent.click(screen.getByRole("button", { name: "建立" }));
+
+      expect(onCreate).not.toHaveBeenCalled();
+      expect(screen.getByRole("alert")).toHaveTextContent("請至少勾選一個策略類型");
+    });
+
+    it("全選後可以正常送出，onCreate 收到全部三個 family 代碼", async () => {
+      const onCreate = vi.fn().mockResolvedValue(undefined);
+      render(<CreateForm onCreate={onCreate} />);
+      await userEvent.type(screen.getByLabelText("標的代號"), "TLT");
+      await userEvent.type(screen.getByLabelText("目標價位"), "120");
+      await pickMonth(2028, 5);
+      await userEvent.click(screen.getByRole("button", { name: "全選" }));
+      await userEvent.click(screen.getByRole("button", { name: "建立" }));
+
+      expect(onCreate).toHaveBeenCalledWith(expect.objectContaining({
+        strategies: ["single-leg", "vertical-spread", "butterfly"],
+      }));
+    });
+
+    it("編輯表單同樣有全選操作——從部分預填狀態點下去補齊剩下的，儲存後" +
+       "送出完整集合", async () => {
+      const onSaveEdit = vi.fn().mockResolvedValue(undefined);
+      render(<CreateForm onCreate={vi.fn()} onSaveEdit={onSaveEdit}
+                         editing={{
+                           id: "s1", symbol: "TLT", target_price: 120,
+                           target_month: "2028-05", best_price: null,
+                           worst_price: null,
+                           strategies: ["vertical-spread"],
+                           family_eligibility: null,
+                         }} />);
+      // 已經有一個勾選（非全選），按鈕該講「全選」而非「取消全選」。
+      expect(screen.getByRole("button", { name: "全選" })).toBeInTheDocument();
+
+      await userEvent.click(screen.getByRole("button", { name: "全選" }));
+      await userEvent.click(screen.getByRole("button", { name: "儲存變更" }));
+
+      expect(onSaveEdit).toHaveBeenCalledWith("s1", expect.objectContaining({
+        strategies: ["single-leg", "vertical-spread", "butterfly"],
+      }));
+    });
+
+    it("編輯表單一開始就是全選（舊劇本三個都勾）時，按鈕顯示「取消" +
+       "全選」——不是恆講「全選」", () => {
+      render(<CreateForm onCreate={vi.fn()} onSaveEdit={vi.fn()}
+                         editing={{
+                           id: "s1", symbol: "TLT", target_price: 120,
+                           target_month: "2028-05", best_price: null,
+                           worst_price: null,
+                           strategies: ["single-leg", "vertical-spread", "butterfly"],
+                           family_eligibility: null,
+                         }} />);
+      expect(screen.getByRole("button", { name: "取消全選" })).toBeInTheDocument();
+    });
+  });
+
   it("一個都沒勾就送出，顯示明確的錯誤訊息、不呼叫 onCreate", async () => {
     const onCreate = vi.fn();
     render(<CreateForm onCreate={onCreate} />);
