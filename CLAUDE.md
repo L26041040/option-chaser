@@ -6147,10 +6147,10 @@ sub-issue、皆標 `ready-for-agent`**：
 - **REPAIR-09**［#246］FIX-05：跨 family 估值日修正（單腿改
   own-expiration payoff，T01 基準第 7 次合法重產＋四步驟
   collateral-drift 證明）——blocked by #238
-- **REPAIR-10**［#247］FIX-08a：Performance Guard（production-scale
-  效能守門，20 秒門檻永久 CI 斷言）——blocked by #240；若 #244
-  施工，一併等 #244（需求方 Q3=B 裁示：FIX-08 拆成 Performance／
-  Financial 兩張獨立票）
+- **REPAIR-10**［#247］✅ FIX-08a：Performance Guard（production-scale
+  效能守門，20 秒門檻永久 CI 斷言，commits `1e14b31`＋跟進 `a7e8540`）
+  ——blocked by #240（已解除）；#244 NOT_NEEDED 未施工，不必等
+  （需求方 Q3=B 裁示：FIX-08 拆成 Performance／Financial 兩張獨立票）
 - **REPAIR-11**［#248］FIX-08b：Financial Guard（多 family
   champion 數值凍結，E2E-5 完整版）——blocked by #246
 - **REPAIR-12**［#249］最終 production-equivalent regression
@@ -6185,15 +6185,21 @@ sub-issue、皆標 `ready-for-agent`**：
 一併等」）與 `#247`（REPAIR-10，同上）**均已解鎖**——#244 已關閉且
 未施工，兩張票的條件式 blocker 因此不再成立。
 
-**下一張＝ REPAIR-10（#247，FIX-08a：Performance Guard，production-
-scale 效能守門固化成永久 CI 斷言）**——與剛完成的 #240 同一個測試
-基礎設施，AC 要求測的是 `_refresh_and_save()` 完整路徑（比 #240
-測的 `run_offline()` 更貼近 production HTTP 端點行為）且要處理既有
-`test_butterfly_performance.py` 的兩個失真維度（`q=None`、規模過
-小），非重複勞動。接著 **REPAIR-08（#245，FIX-04：Timeout safety
-net）**——同一個效能領域，異常輸入的優雅降級。最後回到原始 frontier
-剩餘的 **#241、#242、#243**（Refresh Run 失敗隔離／失敗卡片 UX／
-Strategy Family 全選）。
+- **REPAIR-10**［#247］✅ 已完成（commits `1e14b31`＋`a7e8540`）。
+  新增 `tests/_production_scale_fixtures.py` 收斂 #240／#247 兩份
+  效能測試共用的 dividend_loader／fixture／門檻常數；`/code-review`
+  抓到並修正一個真缺陷（`representative_candidate is not None` 不足
+  以證明三個 family 都成功、也沒驗證 IV 反解真的觸發，已改用
+  `results[].status`＋`candidate_pool[...].carry_calibrated`，並
+  用 q=None 假 loader 驗證新斷言非恆真）。詳見上方「Frontier」條目。
+
+**下一張＝ REPAIR-08（#245，FIX-04：Timeout safety net，per-scenario
+soft deadline，異常輸入專用）**——同一個效能領域，`_analyze()`／
+`_butterfly_result()` 內部補 soft deadline 與優雅降級，明確不得替代
+效能修復（#240 已經是效能修復本身）。blocked by #240（已解除）；
+#244 NOT_NEEDED 未施工，不必等。完成後回到原始 frontier 剩餘的
+**#241、#242、#243**（Refresh Run 失敗隔離／失敗卡片 UX／Strategy
+Family 全選）。
 
 ### 施工依據
 
