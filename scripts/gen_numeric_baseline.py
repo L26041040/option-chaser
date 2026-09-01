@@ -58,8 +58,32 @@ Initial V2 的 T02（逐腿 payoff 直算）與 T03（包絡量由 payoff 導出
    Butterfly 用得到）。既有四策略這個欄位恆為 `None`——純加法，逐鍵
    核對過既有四個策略的其餘全部欄位（含新增的 `call-fly`／`put-fly`
    各自候選集合本身）零修改零刪除，只有這一個新增鍵。
+7. **REPAIR-09（#246，OPTION-CHASER-REPAIR-001，2026-09-01）**——單腿
+   （`long-call`／`long-put`）排名基準估值日從固定日曆錨點（附錄
+   A9）改為候選**自身到期日**，與 Vertical／Butterfly（T3／#17）既有
+   語意對齊，修掉 #052 audit 找到的跨 family champion 系統性灌水
+   （Root Cause C：到期日晚於錨點的單腿候選會殘留時間價值，Vertical／
+   Butterfly 卻已經是純內在價值，兩者混進同一個排行榜）。四步驟
+   collateral-drift 驗證：(1) 修法前對此基準跑 `bitwise_frozen` 四條
+   測試，逐一綠燈，確認 diff 工具本身在真的沒有差異時如實回報零差異；
+   (2) 修法後重跑，只有 `long-call` 一個策略紅燈、且只有唯一一個候選
+   `long-call|90|2026-11-20`（到期日 2026-11-20，晚於這份 fixture 的
+   `target_month="2026-10"` 錨點 2026-10-16，人工核對過）的
+   `baseline_pnl`／`baseline_return`／`l2`／`l3` 四個欄位改變，
+   `long-put`／`bull-call-spread`／`bear-put-spread` 三個策略逐位元
+   零差異（`bull-call-spread`／`bear-put-spread` 為 AC 硬約束）；
+   (3) 已納入本次重產；(4) 另以三 family 全開的真實劇本
+   （`tests/fixtures/xyz_v7_butterfly_moderate.json`）對照修法前後的
+   跨 family champion，身份不變（見
+   `tests/test_selection_regression.py::test_cross_family_champion_
+   identity_is_recorded_as_a_baseline`），數值合法改變（見同檔案
+   `test_q_no_longer_moves_single_leg_ranking_at_any_expiry_after_
+   the_fix`）。`ranking.py`／`filters.py`／`evaluate_spread()`／
+   `evaluate_butterfly()` 內部估值邏輯零改動——修法侷限在
+   `valuation.py::evaluate_contract()` 的單一行（`target = p.anchor`
+   → `target = expiry`）。
 
-除了以上六個已知、已記錄的例外，其餘期間跑出差異＝有 bug，不是基準
+除了以上七個已知、已記錄的例外，其餘期間跑出差異＝有 bug，不是基準
 過期。
 
     PYTHONPATH=. .venv/bin/python scripts/gen_numeric_baseline.py

@@ -1,8 +1,7 @@
 from datetime import date
 from option_chaser.models import AnalysisParams, OptionContract
 from option_chaser.valuation import (
-    bs_call, bs_put, catchup_price, evaluate_contract, intrinsic_value,
-    scenario_leg_value,
+    catchup_price, evaluate_contract, intrinsic_value, scenario_leg_value,
 )
 
 TODAY = date(2026, 7, 15)
@@ -20,14 +19,18 @@ def make_contract(**kw):
 
 def test_call_anchors_and_scenarios():
     v = evaluate_contract(make_contract(), spot=100.0, today=TODAY, p=P)
-    # T12（附錄 A14.2）：breakeven 等成本衍生數字＝Ask 口徑
+    # T12（附錄 A14.2）：breakeven 等成本衍生數字＝Ask 口徑，是市場報價
+    # 算術、不經估值模型，不受估值日影響。
     assert v.mid == 3.125 and v.breakeven == 113.25
     assert abs(v.breakeven_vs_spot - 0.1325) < 1e-9
     assert abs(v.breakeven_vs_target - (120 - 113.25) / 120) < 1e-9
-    t_rem = (date(2026, 10, 16) - P.anchor).days / 365.0
     assert v.floor_value == 10.0 == v.l1
+    # REPAIR-09（#246）：排名基準估值日改為候選自身到期日（這裡是
+    # 2026-10-16，晚於 `P.anchor`）——與 Vertical／Butterfly（T3／
+    # #17）既有裁示對齊，到期時只剩內在價值，IV shift 不再改變任何
+    # 情境的數值（詳見 `tests/test_contract_baseline_at_expiry.py`）。
     for shift, val in v.scenario_values:
-        assert abs(val - max(bs_call(120.0, 110.0, t_rem, P.rate, 0.38 * (1 + shift)), 10.0)) < 1e-12
+        assert val == 10.0
     assert v.l1 <= v.l2 <= v.baseline_value + 1e-12
 
 
@@ -50,10 +53,19 @@ def test_scenario_leg_value_at_and_after_expiry():
 
 
 def test_deep_itm_put_scenario_clamped():
+    """`clamped_price()` 的地板行為（BS 歐式值低於內在價值時夾住，防
+    「模型值低於內在價值」這種荒謬結果——非提前履約權利價值本身）。
+
+    REPAIR-09（#246）之後，`evaluate_contract()` 的排名基準估值日恆為
+    候選自身到期日，`scenario_leg_value` 的 `at >= expiry` 分支提前
+    回傳純內在價值，不再走得到 `clamped_price()`——這個地板行為現在
+    只在到期**前**估值（Heatmap 逐格 BS／V7 三價位等舊表面）還看得到，
+    改直接呼叫 `scenario_leg_value()` 在到期前一個日期驗證，不是繞過
+    問題，是換到真正還會用到它的路徑。"""
     c = make_contract(contract_symbol="P120", option_type="put", strike=120.0,
                       bid=41.0, ask=41.5, implied_volatility=0.40)
-    v = evaluate_contract(c, spot=100.0, today=TODAY, p=P_PUT)
-    assert v.baseline_value == 40.0  # BS European below intrinsic -> clamped
+    val = scenario_leg_value(c, 80.0, date(2026, 8, 15), P_PUT)
+    assert val == 40.0  # BS European below intrinsic -> clamped
 
 
 # ---------- D1（#14）：catchup_price —— Long Call 追平價格 S*=K+C×(1+R) ----------

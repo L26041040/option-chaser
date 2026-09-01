@@ -640,17 +640,22 @@ def test_cross_family_champion_identity_is_recorded_as_a_baseline():
     assert leg_strikes == (("buy", 106.0), ("sell", 109.0), ("buy", 112.0))
 
 
-def test_q_nonzero_execution_path_produces_different_values_than_q_none():
-    """#052 audit 守門缺口第 2 點：既有守門永遠 `q_by_symbol=None`
-    （`run_offline` 預設離線行為），Root Cause C 的漂移只在 `q≠0` 時
-    顯現——這支守門結構上永遠看不到。
+def test_q_no_longer_moves_single_leg_ranking_at_any_expiry_after_the_fix():
+    """#052 audit Root Cause C 收尾驗證（REPAIR-09／#246）——這條測試在
+    修法**前**（見 git 歷史）證明的是相反的事：q≠0 只在到期日**晚於**
+    日曆錨點時才改變單腿的 `baseline_return`，那正是灌水成因本身
+    （殘留時間價值受股利殖利率影響）。修法把排名基準估值日改成候選
+    自身到期日後，任何到期日都退化成純內在價值——q 因此對**任何**
+    到期日的 `baseline_return` 都不再有作用，不再是「只有等於錨點
+    那個才不受影響」。這條測試從「證明 bug 存在」改成「證明 bug 已經
+    修好、不會又悄悄回來」。
 
-    直接證明兩件事：(1) `q_by_symbol` 這個管線真的有被 `run_offline`
-    行使、不是靜默忽略；(2) 到期日**等於**日曆錨點時 q 不影響結果
-    （退化成內在價值，這正是 #052 §T01 守門員缺口第 3 點——既有
-    `xyz_v2_snapshot.json` 剛好只有這種退化情境），到期日**晚於**錨點
-    時 q 才真正改變數值——這個對比本身就是 Root Cause C 成因的直接
-    證據，不只是「q 有作用」這麼籠統。"""
+    同時保留 #052 audit 守門缺口第 2 點原本要證明的另一半：`q_by_
+    symbol` 這個管線真的有被 `run_offline` 行使、不是靜默忽略——
+    `net_delta`（carry 校準後的 Greeks，見 `store.py` 對
+    `ContractValuation.delta` 的序列化）在任何到期日都仍會隨 q 改變，
+    因為 Greeks 的估值時點是 `today`／`t_now`，不是這次修正的排名
+    估值日；q 真正被拿掉的作用範圍精準只在 `baseline_return`。"""
     def top_by_expiry(q_by_symbol):
         p = AnalysisParams(target_price=110.0, target_month="2026-09",
                            strategy="long-call", q_by_symbol=q_by_symbol)
@@ -662,14 +667,16 @@ def test_q_nonzero_execution_path_produces_different_values_than_q_none():
         out = {}
         for group in res["expiry_top10"]:
             top_key = group["candidate_keys"][0]
-            out[group["expiry"]] = view["candidate_pool"][top_key]["baseline_return"]
+            cand = view["candidate_pool"][top_key]
+            out[group["expiry"]] = (cand["baseline_return"], cand["net_delta"])
         return out
 
     at_q_none = top_by_expiry(None)
     at_q_set = top_by_expiry(0.02)
 
-    # 錨點本身（baseline 到期日）：單腿也退化成內在價值，q 不該有作用。
-    assert at_q_none["2026-09-18"] == at_q_set["2026-09-18"]
-    # 晚於錨點的到期日：q 真的改變了估值（時間價值的計算路徑被觸發）。
-    assert at_q_none["2026-10-16"] != at_q_set["2026-10-16"]
-    assert at_q_none["2026-12-18"] != at_q_set["2026-12-18"]
+    for expiry in ("2026-09-18", "2026-10-16", "2026-12-18"):
+        # 排名基準：q 對任一到期日的 baseline_return 都不再有作用。
+        assert at_q_none[expiry][0] == at_q_set[expiry][0], expiry
+        # 但 q_by_symbol 管線本身確實還在運作——顯示用的 Greeks（跟
+        # 排名估值日無關）仍隨 q 改變，證明不是整條管線被靜默忽略。
+        assert at_q_none[expiry][1] != at_q_set[expiry][1], expiry

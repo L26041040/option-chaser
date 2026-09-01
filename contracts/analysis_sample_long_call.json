@@ -1080,8 +1080,8 @@
       "wide_spread_warning": false
     },
     "long-call|118|2026-11-20": {
-      "baseline_pnl": 11.698426713321505,
-      "baseline_return": 2.543136242026414,
+      "baseline_pnl": 7.4,
+      "baseline_return": 1.6086956521739133,
       "breakeven": 122.6,
       "breakeven_at_target": 108.91,
       "breakeven_points": [
@@ -1131,8 +1131,8 @@
       "decay_30d_return": -0.25122247108153994,
       "effective_leverage": 6.690586918292291,
       "guidance_warnings": [],
-      "l2": 14.846327099918241,
-      "l3": 16.298426713321504,
+      "l2": 12.0,
+      "l3": 12.0,
       "legs": [
         {
           "ask": 4.6,
@@ -1914,8 +1914,8 @@
       "wide_spread_warning": false
     },
     "long-call|122|2026-11-20": {
-      "baseline_pnl": 9.976263825672628,
-      "baseline_return": 2.891670674108008,
+      "baseline_pnl": 4.55,
+      "baseline_return": 1.3188405797101448,
       "breakeven": 125.45,
       "breakeven_at_target": 109.57,
       "breakeven_points": [
@@ -1965,8 +1965,8 @@
       "decay_30d_return": -0.2894752508514667,
       "effective_leverage": 7.32874997948608,
       "guidance_warnings": [],
-      "l2": 11.854544574487143,
-      "l3": 13.426263825672628,
+      "l2": 8.0,
+      "l3": 8.0,
       "legs": [
         {
           "ask": 3.45,
@@ -2122,8 +2122,8 @@
       "wide_spread_warning": false
     },
     "long-call|60|2026-10-16": {
-      "baseline_pnl": 30.18841587013111,
-      "baseline_return": 0.7547103967532778,
+      "baseline_pnl": 30.0,
+      "baseline_return": 0.75,
       "breakeven": 100.0,
       "breakeven_at_target": 99.43,
       "breakeven_points": [
@@ -2173,8 +2173,8 @@
       "decay_30d_return": 0.020786312483365803,
       "effective_leverage": 2.4994565095219805,
       "guidance_warnings": [],
-      "l2": 70.18841587013111,
-      "l3": 70.18841587013111,
+      "l2": 70.0,
+      "l3": 70.0,
       "legs": [
         {
           "ask": 40.0,
@@ -2413,7 +2413,7 @@
       "rows": [
         {
           "badges": [],
-          "candidate_key": "long-call|122|2026-11-20",
+          "candidate_key": "long-call|118|2026-11-20",
           "strategy": "long-call"
         }
       ]
@@ -2546,23 +2546,23 @@
           "rank_in_expiry": 2
         },
         {
-          "baseline_return": 0.7547103967532778,
+          "baseline_return": 0.75,
           "candidate_key": "long-call|60|2026-10-16",
           "cost": 40.0,
           "expiry": "2026-10-16",
           "rank_in_expiry": 1
         },
         {
-          "baseline_return": 2.891670674108008,
-          "candidate_key": "long-call|122|2026-11-20",
-          "cost": 3.45,
+          "baseline_return": 1.6086956521739133,
+          "candidate_key": "long-call|118|2026-11-20",
+          "cost": 4.6,
           "expiry": "2026-11-20",
           "rank_in_expiry": 1
         },
         {
-          "baseline_return": 2.543136242026414,
-          "candidate_key": "long-call|118|2026-11-20",
-          "cost": 4.6,
+          "baseline_return": 1.3188405797101448,
+          "candidate_key": "long-call|122|2026-11-20",
+          "cost": 3.45,
           "expiry": "2026-11-20",
           "rank_in_expiry": 2
         }
@@ -2577,7 +2577,7 @@
         "long-call|122|2026-08-21",
         "long-call|118|2026-09-18",
         "long-call|60|2026-10-16",
-        "long-call|122|2026-11-20"
+        "long-call|118|2026-11-20"
       ],
       "expiry_counts": [
         [
@@ -2631,8 +2631,8 @@
         },
         {
           "candidate_keys": [
-            "long-call|122|2026-11-20",
-            "long-call|118|2026-11-20"
+            "long-call|118|2026-11-20",
+            "long-call|122|2026-11-20"
           ],
           "expiry": "2026-11-20"
         }

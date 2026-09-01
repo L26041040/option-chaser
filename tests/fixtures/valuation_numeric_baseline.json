@@ -7175,8 +7175,8 @@
      "profit_region": null
     },
     "long-call|90|2026-11-20": {
-     "baseline_pnl": 16.95375749111009,
-     "baseline_return": 1.2652057829186634,
+     "baseline_pnl": 16.6,
+     "baseline_return": 1.2388059701492538,
      "breakeven": 103.4,
      "breakeven_points": [
       103.4
@@ -7189,8 +7189,8 @@
      "capital_per_contract": 1340.0,
      "pct_of_capital": null,
      "effective_leverage": 5.642106920019019,
-     "l2": 30.345139938062104,
-     "l3": 30.353757491110088,
+     "l2": 30.0,
+     "l3": 30.0,
      "scenario_vector": {
       "entries": [
        [

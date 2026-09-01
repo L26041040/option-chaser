@@ -238,7 +238,17 @@ def evaluate_contract(
     mid = (c.bid + c.ask) / 2.0
     spread = c.ask - c.bid
     expiry = date.fromisoformat(c.expiry)
-    target = p.anchor          # 附錄 A9 錨點：估值參考日
+    # REPAIR-09（#246，spec #237 OD-02，FIX-05）：排名基準估值日改為
+    # 候選**自身到期日**，與 Vertical／Butterfly（T3／#17，
+    # `evaluate_spread`／`evaluate_butterfly` 既有裁示）對齊——三個
+    # family 從此用同一套「候選自身到期日」比較語意，不再是單腿殘留
+    # 時間價值、Spread／Butterfly 卻已經是純內在價值這種不對稱比較。
+    # 附錄 A9 的 `p.anchor`（固定日曆錨點）仍是舊表面的合法例外
+    # （CLI 報告、單腳買價指引文字、情境曲線、`ranking.return_at_
+    # price` 的 V7 三價位顯示——`ranking.py` 依票面明文不動），只是
+    # 不再是**排名**基準估值日；`target` 變數名沿用既有命名，語意
+    # 改成「這個候選自己的到期日」。
+    target = expiry
     carry = calibrate_leg(c, spot, today, p, carry_cache)   # #113：每腿一次
     t_now = days_between(today, expiry) / DAYS_PER_YEAR
     # #122 核心紅線：分級用的 delta **恆** q=0／vendor IV，不讀 carry——
