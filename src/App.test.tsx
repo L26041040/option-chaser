@@ -817,6 +817,74 @@ describe("刷新與進度（T08／#196，接上 Refresh Run）", () => {
       expect(link).toBeInTheDocument();
       expect(link.closest(".compact-card")).not.toHaveClass("locked");
     });
+
+    it("批次呼叫本身整個失敗（504／transport failure）時改逐一走單一劇本" +
+       "端點——只有真的失敗的那個劇本被標記失敗，其餘不受連坐、正常落地" +
+       "（REPAIR-04／#241，取代舊版整批連坐）", async () => {
+      // 第一輪：三個 id 一起送出，A 成功落地，remaining=[B,C]——鋪陳跟
+      // 上一條 A／B／C 測試同一種 Continuation 情境。
+      // 第二輪：B／C 那一次的批次請求本身整個失敗（504，不是逐一劇本
+      // 各自在 `results[]` 裡回 `ok:false`）——修法前這裡會把 B／C
+      // 兩個都標記失敗；修法後改逐一呼叫單一劇本端點，B 那次呼叫真的
+      // 失敗、C 那次呼叫成功，兩者各自獨立判定，不再因為批次呼叫本身
+      // 失敗而連坐。
+      const spy = vi.fn(async (url: string, init?: RequestInit) => {
+        if (url === "/api/scenarios") {
+          return { ok: true, status: 200,
+                   json: async () => [card("a", "AAA"), card("b", "BBB"),
+                                       card("c", "CCC")] };
+        }
+        if (url === "/api/scenarios/refresh-run" && init?.method === "POST") {
+          const body = JSON.parse(String(init.body ?? "{}")) as { scenario_ids?: string[] };
+          const ids = body.scenario_ids ?? [];
+          if (ids.length === 3) {
+            return { ok: true, status: 200, json: async () => ({
+              results: [{ scenario_id: "a", ok: true,
+                         row: card("a", "AAA", { best_return: 1,
+                           latest_analyzed_at: "2026-08-31T09:30:00+00:00" }) }],
+              remaining: ["b", "c"],
+            }) };
+          }
+          // B／C 那一輪：整趟批次請求本身失敗，不是逐一劇本各自回應。
+          return { ok: false, status: 504,
+                   json: async () => ({ detail: "Gateway Timeout" }) };
+        }
+        if (url === "/api/scenarios/b/refresh") {
+          return { ok: false, status: 502,
+                   json: async () => ({ detail: { stage: "fetch",
+                                                  message: "抓不到 BBB 的報價" } }) };
+        }
+        if (url === "/api/scenarios/c/refresh") {
+          return { ok: true, status: 200,
+                   json: async () => card("c", "CCC", { best_return: 0.25,
+                     latest_analyzed_at: "2026-08-31T09:30:00+00:00" }) };
+        }
+        throw new Error(`測試沒有為 ${url} 準備回應`);
+      });
+      vi.stubGlobal("fetch", spy);
+      render(<App />);
+
+      // A 正常落地；C 雖然身處「整批失敗」的那一輪，最終仍透過逐一
+      // fallback 成功；B 才是真正失敗的那一個——不是整批一起倒。
+      expect(await screen.findByText("100.0%")).toBeInTheDocument();
+      expect(await screen.findByText("25.0%")).toBeInTheDocument();
+      expect(await screen.findByText(/抓不到 BBB 的報價/)).toBeInTheDocument();
+
+      // 三張卡片全部脫離「更新中」，沒有任何一張永久卡住（AC 2）。
+      expect(screen.queryByText("更新中")).not.toBeInTheDocument();
+      expect(screen.getByRole("link", { name: /AAA/ }).closest(".compact-card"))
+        .not.toHaveClass("locked");
+      expect(screen.getByRole("link", { name: /BBB/ }).closest(".compact-card"))
+        .not.toHaveClass("locked");
+      expect(screen.getByRole("link", { name: /CCC/ }).closest(".compact-card"))
+        .not.toHaveClass("locked");
+
+      // fallback 真的個別打了 B／C 各自的單一劇本端點——不是巧合綠燈。
+      const bCalls = spy.mock.calls.filter(([u]) => u === "/api/scenarios/b/refresh");
+      const cCalls = spy.mock.calls.filter(([u]) => u === "/api/scenarios/c/refresh");
+      expect(bCalls).toHaveLength(1);
+      expect(cCalls).toHaveLength(1);
+    });
   });
 });
 

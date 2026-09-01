@@ -882,6 +882,59 @@ test("2026-08-26 真機驗收：Refresh Run 逐張完成、逐張立即可用—
   await expect(cCard).not.toHaveClass(/locked/);
 });
 
+test("REPAIR-04／#241：批次呼叫本身整個失敗（504）時只有真的失敗的那個" +
+  "劇本被標記，其餘不受連坐、正常落地——手機版", async ({ page }) => {
+  const rowFor = (id: string, symbol: string) => ({
+    ...sampleRow, id, symbol, target_price: 120, target_month: "2028-05",
+    target_anchor: "2028-05-19", days_to_anchor: 653,
+    latest_analyzed_at: null, best_return: null,
+  });
+  const rows = [rowFor("a", "AAA"), rowFor("b", "BBB"), rowFor("c", "CCC")];
+
+  await page.route("**/api/scenarios", (route) =>
+    route.fulfill({ json: rows }));
+  // 第一輪（3 個 id）：A 成功，remaining=[b,c]（比照上一條群組上限測試）。
+  // 第二輪（2 個 id）：這次不是逐一劇本各自回應失敗——是整趟批次請求
+  // 本身失敗（504），修法前這會把 b／c 兩個都標記失敗；修法後改逐一
+  // 打單一劇本端點（`**/api/scenarios/*/refresh`），b 那次真的失敗、
+  // c 那次成功，兩者不再因為批次呼叫本身失敗而連坐。
+  await page.route("**/api/scenarios/refresh-run", async (route, req) => {
+    const body = req.postDataJSON() as { scenario_ids: string[] };
+    if (body.scenario_ids.length === 3) {
+      return route.fulfill({ json: {
+        results: [{ scenario_id: "a", ok: true,
+          row: { ...rows[0], best_return: 1,
+                 latest_analyzed_at: new Date().toISOString() } }],
+        remaining: ["b", "c"],
+      } });
+    }
+    return route.fulfill({ status: 504, json: { detail: "Gateway Timeout" } });
+  });
+  await page.route("**/api/scenarios/b/refresh", (route) =>
+    route.fulfill({ status: 502, json: { detail: {
+      stage: "fetch", message: "抓不到 BBB 的報價" } } }));
+  await page.route("**/api/scenarios/c/refresh", (route) =>
+    route.fulfill({ json: { ...rows[2], best_return: 0.25,
+      latest_analyzed_at: new Date().toISOString() } }));
+
+  await page.goto("/");
+
+  const aCard = page.locator(".compact-card").filter({ hasText: "AAA" });
+  const bCard = page.locator(".compact-card").filter({ hasText: "BBB" });
+  const cCard = page.locator(".compact-card").filter({ hasText: "CCC" });
+
+  // A 正常落地；c 雖然身處「整批失敗」的那一輪，最終仍透過逐一
+  // fallback 成功；b 才是真正失敗的那一個——不是整批一起倒。
+  await expect(page.getByText("100.0%")).toBeVisible();
+  await expect(page.getByText("25.0%")).toBeVisible();
+  await expect(page.getByText("抓不到 BBB 的報價")).toBeVisible();
+
+  // 三張卡片全部脫離更新中鎖定，沒有任何一張永久卡住。
+  await expect(aCard).not.toHaveClass(/locked/);
+  await expect(bCard).not.toHaveClass(/locked/);
+  await expect(cCard).not.toHaveClass(/locked/);
+});
+
 test("刷新失敗說明是哪一段，重試就地重來（V4／#52）", async ({ page }) => {
   await page.route("**/api/scenarios", (route) =>
     route.fulfill({ json: [pendingRow] }));
