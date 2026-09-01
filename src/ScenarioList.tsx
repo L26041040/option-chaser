@@ -257,14 +257,18 @@ function ScenarioCard({
           `!updating && failure` 互斥判斷，`cardFailureVariant` 已經
           把三個條件收進同一個純函式）。頭條文案依兩態不同（曾成功過
           ／從未成功過），技術性的分層說明仍照舊附在下面。 */}
-      {failureVariant && (
+      {/* `failureVariant && failure` 而非只判斷前者：`cardFailureVariant`
+          回傳非 null 時 `failure` 邏輯上必為真，但 TS 看不出兩者的
+          關聯——這裡讓型別系統自己窄化，下面才不必逐處補 `failure!`
+          非空斷言。 */}
+      {failureVariant && failure && (
         <div className="notice error compact-notice" role="alert">
           <span className="compact-notice-text">
             <span className="compact-notice-headline">
               {cardFailureHeadline(failureVariant)}
             </span>
             <span className="compact-notice-detail">
-              {failureLabel(failure!.stage)}：{failure!.message}
+              {failureLabel(failure.stage)}：{failure.message}
             </span>
           </span>
           <button
