@@ -372,14 +372,17 @@ def _timing_json(sc: Scenario, today: date) -> dict:
 
 
 def _scenario_json(sc: Scenario) -> dict:
-    # REPAIR-02（#239，FIX-01，#052 audit Root Cause A）：唯一一個沒有
-    # 把 `Scenario.strategies` 正規化成 family 代碼的讀取路徑——舊
-    # （pre-V2）劇本存的是 legacy subtype 字串，未正規化直接透傳的話，
-    # 前端 checkbox 判斷式對不上、使用者不改動任何 checkbox 直接儲存
-    # 都會被後端 family 白名單拒絕（422）。`create_scenario()`／
-    # `edit_scenario()` 寫入前已各自正規化過，這裡再正規化一次是
-    # 冪等的（不會改變已經是 family 代碼的值），OD-01：只修讀取端，
-    # 不做任何 DB migration，stored 的原始值不受影響。
+    # REPAIR-02（#239，FIX-01，#052 audit Root Cause A）：全站唯一序列化
+    # `Scenario.strategies` 的地方——`_row_json()` 內嵌呼叫它，所以這裡
+    # 正規化一次，等於同時修好 `list_scenarios`／`get_scenario` 兩個
+    # GET 端點**與** `refresh_scenario`／`refresh_run`（走
+    # `_refresh_and_save()` → `_row_json()`）對 legacy 劇本的回應——不是
+    # 只挑兩個 GET 端點動。舊（pre-V2）劇本存的是 legacy subtype 字串，
+    # 未正規化直接透傳的話，前端 checkbox 判斷式對不上、使用者不改動
+    # 任何 checkbox 直接儲存都會被後端 family 白名單拒絕（422）。
+    # `create_scenario()`／`edit_scenario()` 寫入前已各自正規化過，這裡
+    # 再正規化一次是冪等的（不會改變已經是 family 代碼的值），OD-01：
+    # 只修讀取端，不做任何 DB migration，stored 的原始值不受影響。
     return {"id": sc.id, "symbol": sc.symbol, "direction": sc.direction,
             "target_price": sc.target_price, "target_month": sc.target_month,
             "notes": sc.notes, "strategies": list(normalize_families(sc.strategies)),

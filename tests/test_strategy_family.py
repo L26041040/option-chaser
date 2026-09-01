@@ -263,16 +263,23 @@ def test_a_legacy_scenario_with_a_bare_subtype_still_refreshes_as_before():
 #
 # #052 audit Root Cause A：`Scenario.strategies` 有四條讀取路徑會被消費，
 # 其中 `create_scenario()`（寫入前正規化）、`edit_scenario()`（寫入前
-# 正規化）、分析／刷新路徑（`subtypes_of(normalize_families(sc.strategies))`
-# 展開前正規化）三條本來就正確；唯一沒有正規化的是 `_scenario_json()`
-# ——`GET /api/scenarios`／`GET /api/scenarios/{id}` 回應裡的 `strategies`
-# 欄位直接透傳 `Scenario.strategies` 原始值。舊（pre-V2）劇本存的是
-# legacy subtype 字串（例如 `"bull-call-spread"`），前端 `CreateForm`
-# 的 checkbox 判斷式 `families.includes(opt.code)` 拿 family 代碼跟這個
-# 字串比對永遠對不上，checkbox 顯示未勾選；使用者不改動任何 checkbox
-# 直接送出，前端把讀到的原始值原封不動塞進 PATCH body，後端
-# `EditScenarioRequest.strategies: list[Literal[FAMILIES]]` 白名單驗證
-# 到這個 legacy subtype 字串直接拒絕（422）。
+# 正規化）兩條本來就正確——寫進去的值本身已經是合法 family 代碼；分析／
+# 刷新路徑（`subtypes_of(normalize_families(sc.strategies))`）也早就
+# 正確，但那是**為了展開成要分析的 subtype 清單**才做的正規化，不代表
+# 它回傳給前端的 HTTP 回應也正確——`_refresh_and_save()` 把同一個未經
+# 正規化的 `sc` 傳進 `_row_json()`，而 `_row_json` 內部呼叫的
+# `_scenario_json()` 正是唯一真正沒有正規化 `strategies` 欄位的那個
+# 序列化函式。⚠ 這代表本票的修法**不只**影響 `GET /api/scenarios`／
+# `GET /api/scenarios/{id}` 兩個端點，`POST /api/scenarios/{id}/refresh`
+# 與 `POST /api/scenarios/refresh-run` 的回應（同樣走 `_row_json`）對
+# legacy 劇本也一併被修正——`_scenario_json()` 是全站唯一的序列化點，
+# 修在那裡就是修給全部呼叫端，不是只挑兩個 GET 端點動。舊（pre-V2）
+# 劇本存的是 legacy subtype 字串（例如 `"bull-call-spread"`），前端
+# `CreateForm` 的 checkbox 判斷式 `families.includes(opt.code)` 拿
+# family 代碼跟這個字串比對永遠對不上，checkbox 顯示未勾選；使用者不
+# 改動任何 checkbox 直接送出，前端把讀到的原始值原封不動塞進 PATCH
+# body，後端 `EditScenarioRequest.strategies: list[Literal[FAMILIES]]`
+# 白名單驗證到這個 legacy subtype 字串直接拒絕（422）。
 #
 # OD-01 裁示：只修讀取端的正規化，不做任何 DB migration、不 backfill
 # 歷史 Scenario 資料——舊 stored 值原樣留在資料庫裡。
@@ -366,6 +373,45 @@ def test_the_stored_legacy_value_itself_is_never_migrated():
 
     stored = storage.get_scenario("legacy-1")
     assert stored.strategies == ("bull-call-spread",)
+
+
+def test_refreshing_a_legacy_scenario_also_returns_a_normalized_strategies_field():
+    """`/code-review` Spec 軸抓到的真缺口：`_refresh_and_save()` 把
+    尚未正規化的 `sc` 傳進 `_row_json()`，而 `_row_json` 內部同樣呼叫
+    `_scenario_json()`——`POST /api/scenarios/{id}/refresh` 這個端點
+    的回應在本票之前，對 legacy 劇本回傳的也是未正規化的 `strategies`
+    （只是原本沒被測到）。這裡直接證明：本票的修法連帶把這個端點也
+    修好了，不是只有兩個 `GET` 端點。"""
+    storage = MemoryStorage()
+    storage.create_scenario(StoredScenario(
+        id="legacy-1", symbol="XYZ", direction="bullish", target_price=130.0,
+        target_month="2026-09", notes="", strategies=("bull-call-spread",),
+        created_at="2019-06-01T00:00:00+00:00"))
+    c = _client(storage)
+
+    r = c.post("/api/scenarios/legacy-1/refresh")
+
+    assert r.status_code == 200, r.text
+    assert r.json()["strategies"] == ["vertical-spread"]
+
+
+def test_refresh_run_also_returns_a_normalized_strategies_field_for_legacy_scenarios():
+    """同上，涵蓋批次端點 `POST /api/scenarios/refresh-run`（T06／#190）
+    ——`refresh_run()` 內部同樣呼叫 `_refresh_and_save()`，走的是同一條
+    `_row_json`／`_scenario_json` 序列化路徑。"""
+    storage = MemoryStorage()
+    storage.create_scenario(StoredScenario(
+        id="legacy-1", symbol="XYZ", direction="bullish", target_price=130.0,
+        target_month="2026-09", notes="", strategies=("bull-call-spread",),
+        created_at="2019-06-01T00:00:00+00:00"))
+    c = _client(storage)
+
+    r = c.post("/api/scenarios/refresh-run", json={"scenario_ids": ["legacy-1"]})
+
+    assert r.status_code == 200, r.text
+    entry = next(x for x in r.json()["results"] if x["scenario_id"] == "legacy-1")
+    assert entry["ok"] is True
+    assert entry["row"]["strategies"] == ["vertical-spread"]
 
 
 # ---------- direction 欄位是 legacy 遺留，不再被任何判斷邏輯讀取 ----------

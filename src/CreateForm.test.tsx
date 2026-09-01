@@ -326,6 +326,24 @@ describe("Strategy Family 勾選（T10／#227，Initial V2）", () => {
       expect.objectContaining({ strategies: ["vertical-spread"] }));
   });
 
+  it("`/code-review` Spec 軸的發現：正規化只在後端做一次，本元件收到" +
+     "真正未正規化的 legacy subtype 字串（例如 \"bull-call-spread\"）" +
+     "時不會自己再做一次映射——這是刻意的架構邊界（OD-01「只修讀取端」" +
+     "＝後端），不是遺漏。這條測試把這個邊界寫成可執行的斷言：本元件" +
+     "拿到真正的 legacy 字串，checkbox 顯示未勾選，證明沒有隱藏的第二套" +
+     "正規化邏輯悄悄掩蓋掉後端萬一回歸的情況", () => {
+    render(<CreateForm onCreate={vi.fn()} onSaveEdit={vi.fn()}
+                       editing={{
+                         id: "legacy-1", symbol: "XYZ", target_price: 130,
+                         target_month: "2026-09", best_price: null,
+                         worst_price: null,
+                         strategies: ["bull-call-spread"],
+                         family_eligibility: null,
+                       }} />);
+    expect(screen.getByRole("checkbox", { name: "Vertical Spread" }))
+      .not.toBeChecked();
+  });
+
   it("畫面不出現任何推薦／不推薦字眼（AC：只有可選與不可選兩種狀態）", () => {
     render(<CreateForm onCreate={vi.fn()} onSaveEdit={vi.fn()}
                        editing={{

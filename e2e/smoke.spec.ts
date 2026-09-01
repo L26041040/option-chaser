@@ -2250,12 +2250,15 @@ test("手機版：編輯 → 取消，原劇本完全不變、不寫入任何東
 });
 
 test("手機版：舊（pre-V2）劇本開編輯表單，checkbox 正確顯示已勾選、" +
-   "不改動任何 checkbox 直接送出就能成功（REPAIR-02／#239 round trip）",
-   async ({ page }) => {
-  // 後端已正規化——`GET /api/scenarios` 回傳的 `strategies` 一律是
-  // family 代碼（本票的修法本身，見 `_scenario_json()`），本測試驗證
-  // 前端拿到這個值後的完整流程：checkbox 正確顯示已勾選 → 不改動任何
-  // 東西直接按儲存 → PATCH 成功、表單關閉。
+   "不改動任何 checkbox 直接送出就能成功（REPAIR-02／#239 round trip " +
+   "的前端半段）", async ({ page }) => {
+  // Playwright 走的是 mock HTTP、不執行真正的 Python `_scenario_json()`
+  // ——round trip 的後端半段（GET／refresh／refresh-run 對 legacy
+  // 劇本正確正規化）由 `tests/test_strategy_family.py` 直接呼叫真正
+  // 的後端證明。本測試假設後端已正規化（`GET /api/scenarios` 回傳的
+  // `strategies` 一律是 family 代碼，見 mock 資料），驗證前端拿到這個
+  // 值後的完整流程：checkbox 正確顯示已勾選 → 不改動任何東西直接按
+  // 儲存 → PATCH 成功、表單關閉。
   const patched = await routeEditable(page);
   await page.goto("/");
 
