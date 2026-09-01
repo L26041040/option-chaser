@@ -38,9 +38,36 @@ commit（沒有其他改動要 commit 時，單獨為這一行開一個小 commi
 
 ## 專案紀錄區
 
-> **現況總覽（2026-08-26，寫給接手的新 session 看，取代下面所有更舊的
-> 「現況總覽」／「目前狀態」標頭——那些是歷史留存，內文本身依然正確，
-> 但「現在該做什麼」一律以這段為準）**：
+> **現況總覽（2026-09-01，寫給接手的新 session 看，取代下面所有更舊
+> 的「現況總覽」／「目前狀態」標頭——那些是歷史留存，內文本身依然
+> 正確，但「現在該做什麼」一律以這段為準）**：
+>
+> **master 現況**：master 仍停在 2026-08-26 那次 merge（PR #207，
+> merge commit `459fb4f`）。工作分支 `claude/implement-tfm9oa`
+> 自那之後已經**遠遠超前**：完整跑完了 **Initial V2**（spec #217，
+> T01–T18，issues #218–#235，三個新 Strategy Family——Call/Put、
+> Vertical Spread、Butterfly——正式上線）＋需求方在 Vercel preview
+> 真機驗收 Initial V2 時發現的四組 production regression（P1–P4）
+> 對應的 **OPTION-CHASER-REPAIR-001**（spec #237，issues
+> #238–#249，共 12 張子票，含一張依決策閘門標記
+> `not_planned` 關閉的 #244）。**兩輪工程與自動化驗證面全數完成**，
+> 工作分支 push 到最新 commit `85a7e3a`。**尚未開 PR、尚未合併回
+> master**——依專案規則全部票做完才開 PR、中途不主動開，目前正是
+> 「全部票做完」但**還沒收到需求方開 PR 的指示**這個時間點。
+>
+> **下一步**：等需求方先在 Vercel preview 走一遍
+> `docs/initial-v2-acceptance-checklist.md`（含本輪新增的 P1–P4
+> 附錄）真機驗收，核准後才開 PR、合併回 master——production 網址
+> `option-chaser.vercel.app` 對應 master，在那之前不會拿到 Initial
+> V2 與這輪 repair 的任何成果。新開的 session 若被要求「繼續做」，
+> 先確認是否已經是「等需求方驗收」這個狀態，不要誤判成還有票沒做。
+>
+> **GitHub issue 現況**：#237（母票）與 #217（Initial V2 母票）皆
+> 依慣例不主動關閉，留給需求方裁示；子票 #218–#235（Initial V2）與
+> #238–#249（Repair）全數已關閉（`completed` 或 `not_planned`）。
+
+> **以下「現況總覽（2026-08-26）」原文照舊保留，供追溯 2026-08-26
+> 那次 merge 之前的完整脈絡；「現在該做什麼」一律以上方新段落為準**：
 >
 > **master 現況**：截至今天，本檔案記錄過的每一輪工作——T1–T12、QA1
 > 系列、D1、FB3、FB5、V1–V10、QA-v2、MVP V2 手機版劇本庫、Trash 語意
@@ -6325,9 +6352,34 @@ sub-issue、皆標 `ready-for-agent`**：
   `_champion_family()` 收斂五處重複的 `max(...)`；Spec 軸零缺口。
   全套後端測試（記憶體＋真實 Postgres 雙後端）**1700 passed**。
 
-**下一張＝REPAIR-12（#249，最終 production-equivalent regression
-validation，Stage I 收尾）**，blocked by #238–#248 全部——全數已
-完成或以 `not_planned` 關閉（#244），現已解鎖。
+- **REPAIR-12**［#249］✅ 已完成（commit `85a7e3a`）。最終
+  production-equivalent regression validation，Stage I 收尾，純
+  驗證票（`option_chaser/`／`api_app/` 零改動，唯一異動是
+  `docs/initial-v2-acceptance-checklist.md` 新增 P1–P4 附錄）。
+  全套綠燈、連續兩輪穩定：後端 pytest（記憶體＋真實 Postgres）兩輪
+  皆 **1700 passed**；前端 typecheck 乾淨、Vitest **772 passed**、
+  build 成功；Playwright（iPhone＋Desktop）兩輪皆 **120 passed**，
+  逐條比對測試名單一致、零 flake。用獨立審計 agent 完成三項稽核：
+  (1) **17 條 Regression Red Lines**（既有 12＋本輪新增 13–17）
+  逐條對照到守門測試，全數有覆蓋、無缺口；(2) **REPAIR-01～11
+  全部觸及測試檔的 commit 逐一掃描**，零裸刪除斷言、零運算子放寬
+  （`==`→`>=`/`<=`）、零新增 skip／xfail，唯一被移除的測試函式在
+  同一 diff 被改名替換且新增了斷言（非減少）；(3) **Out of Scope
+  清單零違反**——`git diff a3a442b..HEAD -- ranking.py filters.py`
+  為空、整個 repair 系列後端只動 3 個檔案（`main.py`／`service.py`／
+  `valuation.py`，皆純加法）、無 DB／schema 改動、`friction`／
+  `iron`／`credit` 等禁詞全站零命中、`legs[]` 仍 `1<=len<=4`、
+  cross-family champion 存在且擴充非移除。`bull-call-spread`／
+  `bear-put-spread` 逐位元不變重新核對通過。#244（FIX-03）確認已
+  以 `not_planned` 關閉、非未決狀態。
+
+**OPTION-CHASER-REPAIR-001（spec #237，issues #238–#249）全部
+12 張子票已完成或依決策閘門妥善關閉（#244）。** 母票 #237 依慣例
+不主動關閉、留給需求方裁示。全輪修復 P1–P4 四組症狀（舊劇本編輯
+422、刷新失敗卡片無反灰、刷新失敗比例偏高＋數字異常、新建劇本刷新
+必敗）；`docs/initial-v2-acceptance-checklist.md` 已備妥 P1–P4
+附錄供需求方回到 Vercel preview 逐條重新驗證。依專案規則全部票
+做完才開 PR，中途不主動開——**等需求方指示開 PR、合併回 master。**
 
 ### 施工依據
 
