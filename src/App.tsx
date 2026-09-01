@@ -143,11 +143,12 @@ export default function App() {
    * 正式的三個 Refresh Trigger 之一（開站／頂部刷新鈕／建立劇本），
    * 語意上是「單獨重跑這一個」，不該牽動 Refresh Run 的批次與
    * Continuation 機制。失敗只記在那張卡上，不影響其他劇本。
+   *
+   * 回傳這一次刷新成不成功——REPAIR-04（#241）的 `runBatch()` 失敗
+   * 隔離 fallback 需要逐一計入「N 成功／M 失敗」摘要，既有四個呼叫端
+   * （卡片重試、詳細頁刷新、編輯後重新分析）沿用既有 `void refreshOne
+   * (id)` 寫法、不讀回傳值，行為不受影響。
    */
-  /** 回傳這一次刷新成不成功——REPAIR-04（#241）的 `runBatch()` 失敗
-   *  隔離 fallback 需要逐一計入「N 成功／M 失敗」摘要，既有四個呼叫端
-   *  （卡片重試、詳細頁刷新、編輯後重新分析）沿用既有 `void refreshOne
-   *  (id)` 寫法、不讀回傳值，行為不受影響。 */
   const refreshOne = useCallback(async (id: string): Promise<boolean> => {
     markUpdating([id]);
     try {
@@ -196,10 +197,12 @@ export default function App() {
         let response;
         try {
           response = await refreshRun(pendingIds);
-        } catch (e) {
+        } catch {
           // 整趟 HTTP 呼叫本身失敗（504／timeout／其他 transport
           // failure，不是個別劇本的 partial failure——後者由下面
-          // `response.results` 逐一處理，本來就只影響那一個劇本）。
+          // `response.results` 逐一處理，本來就只影響那一個劇本）。已知
+          // 這次批次呼叫本身失敗；不需要沿用它的錯誤訊息——每個劇本
+          // 改用自己那次獨立呼叫的真實結果，故不繫結錯誤物件。
           //
           // REPAIR-04（#241，#052 audit）：修法前這裡會把 `pendingIds`
           // 全部標記失敗，等於單一劇本或單一批次的問題連坐整批還沒
@@ -210,8 +213,13 @@ export default function App() {
           // 的失敗隔離特性一致，也天生滿足 AC「其餘尚未處理的劇本
           // 不受影響、繼續被嘗試」：各自獨立呼叫，不會因為同批裡
           // 別人失敗（或這次批次呼叫本身失敗）而被牽連。
-          void e;   // 已知這次批次呼叫本身失敗；不需要沿用它的錯誤
-                   // 訊息——每個劇本改用自己那次獨立呼叫的真實結果。
+          //
+          // 這裡是一次性平行 fan-out（`Promise.allSettled`），不再重新
+          // 進入 Continuation 迴圈重試——`pendingIds` 在這個時間點就是
+          // 一輪 Refresh Run Group Limit（後端預設 1）下最多一兩個
+          // symbol 分組的殘餘量，量體天生小，不設併發上限；沒有內建
+          // retry 是刻意的，個別劇本仍可由使用者透過既有的卡片「重試」
+          // 再次呼叫這同一支 `refreshOne()`。
           const outcomes = await Promise.allSettled(
             pendingIds.map((id) => refreshOne(id)));
           for (const outcome of outcomes) {
