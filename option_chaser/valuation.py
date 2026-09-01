@@ -101,7 +101,8 @@ class LegCarry:
 
 
 def calibrate_leg(c: OptionContract, spot: float, today: date,
-                  p: AnalysisParams) -> LegCarry:
+                  p: AnalysisParams,
+                  cache: dict[tuple, "LegCarry"] | None = None) -> LegCarry:
     """對一條腿做一次 carry 校準（每腿一次，見 `LegCarry` docstring）。
 
     `p.q_by_symbol is None`（q 管線未接、或該次快照校準不出來，#123
@@ -115,19 +116,50 @@ def calibrate_leg(c: OptionContract, spot: float, today: date,
     「目標價落在可行區間外」情況，但這次是嘗試過的）→ 該腿一樣退回
     今天的行為並標記，**不外插、不亂猜**（沿用「缺席就如實缺席」的
     既有原則）。
+
+    REPAIR-03（#240，FIX-02，#052 audit）：`cache` 選填——單次
+    `_spread_result()`／`_butterfly_result()` 呼叫內，`generate_
+    spread_pairs()`／`generate_butterfly_triples()` 窮舉出的候選組合
+    會讓同一條腿（同一張合約）在大量不同組合裡重複出現，`evaluate_
+    spread()`／`evaluate_butterfly()` 因此對同一條腿重複呼叫這個函式
+    ——production-scale 規模下（171,100 組 Butterfly 候選對應約 300
+    條相異腿）這是 60 秒 timeout 的主因，佔整體 wall time 約 95%。
+    比照既有 `scenarios.resilience_metrics()` 的 `cache` 參數慣例：
+    呼叫端（`_single_leg_result`／`_spread_result`／`_butterfly_
+    result`）建立、貫穿單次分析呼叫傳下去的字典，鍵為
+    `(contract_symbol, spot, today, q_by_symbol)`——這四項在單次分析
+    呼叫內皆為常數，只有 `contract_symbol` 真正會變，寫全四項是為了
+    誠實表達「這個結果依賴什麼」，不是暗示這幾項在單次呼叫內真的會變。
+    不傳（`None`，預設）就是每次都重算，行為與這個快取機制存在之前
+    完全一樣——沒有快取的既有呼叫端（測試直接呼叫本函式）不受影響。
+    範圍侷限在單次分析呼叫內，**不是**跨 HTTP request 的快取層（那是
+    完全不同風險等級的改動，不在本票範圍）。
     """
+    key = (c.contract_symbol, spot, today, p.q_by_symbol)
+    if cache is not None and key in cache:
+        return cache[key]
+
     if p.q_by_symbol is None:
-        return LegCarry(q=0.0, sigma=c.implied_volatility, carry_calibrated=False)
-    expiry = date.fromisoformat(c.expiry)
-    T = days_between(today, expiry) / DAYS_PER_YEAR
-    if T <= 0.0:
-        return LegCarry(q=0.0, sigma=c.implied_volatility, carry_calibrated=False)
-    mid = (c.bid + c.ask) / 2.0
-    sigma_hat = implied_vol(c.option_type, mid, spot, c.strike, T,
-                            leg_rate(p, c.expiry), p.q_by_symbol)
-    if sigma_hat is None:
-        return LegCarry(q=0.0, sigma=c.implied_volatility, carry_calibrated=False)
-    return LegCarry(q=p.q_by_symbol, sigma=sigma_hat, carry_calibrated=True)
+        result = LegCarry(q=0.0, sigma=c.implied_volatility, carry_calibrated=False)
+    else:
+        expiry = date.fromisoformat(c.expiry)
+        T = days_between(today, expiry) / DAYS_PER_YEAR
+        if T <= 0.0:
+            result = LegCarry(q=0.0, sigma=c.implied_volatility, carry_calibrated=False)
+        else:
+            mid = (c.bid + c.ask) / 2.0
+            sigma_hat = implied_vol(c.option_type, mid, spot, c.strike, T,
+                                    leg_rate(p, c.expiry), p.q_by_symbol)
+            if sigma_hat is None:
+                result = LegCarry(q=0.0, sigma=c.implied_volatility,
+                                  carry_calibrated=False)
+            else:
+                result = LegCarry(q=p.q_by_symbol, sigma=sigma_hat,
+                                  carry_calibrated=True)
+
+    if cache is not None:
+        cache[key] = result
+    return result
 
 
 @dataclass(frozen=True)
@@ -187,14 +219,19 @@ def scenario_leg_value(
 
 
 def evaluate_contract(
-    c: OptionContract, spot: float, today: date, p: AnalysisParams
+    c: OptionContract, spot: float, today: date, p: AnalysisParams,
+    carry_cache: dict[tuple, LegCarry] | None = None,
 ) -> ContractValuation:
+    """`carry_cache`：REPAIR-03（#240）——傳給 `calibrate_leg()` 的選填
+    快取，單腿路徑本身沒有同一條腿重複出現的問題（`qualified` 逐一
+    對應一次呼叫），這裡接受它只是為了讓三個估值函式共用同一套
+    memoization 機制、呼叫慣例一致；不傳（預設）行為不變。"""
     assert c.bid is not None and c.ask is not None and c.implied_volatility is not None
     mid = (c.bid + c.ask) / 2.0
     spread = c.ask - c.bid
     expiry = date.fromisoformat(c.expiry)
     target = p.anchor          # 附錄 A9 錨點：估值參考日
-    carry = calibrate_leg(c, spot, today, p)          # #113：每腿一次
+    carry = calibrate_leg(c, spot, today, p, carry_cache)   # #113：每腿一次
     t_now = days_between(today, expiry) / DAYS_PER_YEAR
     # #122 核心紅線：分級用的 delta **恆** q=0／vendor IV，不讀 carry——
     # 即使這條腿已校準，legacy 分級路徑也看不到新模型。
@@ -418,14 +455,21 @@ class SpreadValuation:
 def evaluate_spread(
     long_leg: OptionContract, short_leg: OptionContract,
     spot: float, today: date, p: AnalysisParams,
+    carry_cache: dict[tuple, LegCarry] | None = None,
 ) -> SpreadValuation:
+    """`carry_cache`：REPAIR-03（#240，#052 audit）——`generate_spread_
+    pairs()` 窮舉出的候選裡，同一條腿會在多個配對裡重複出現
+    （`C(n,2)` 組合，每條腿平均出現 n-1 次），未加 memoize 時
+    `calibrate_leg()` 對同一條腿被重複反解。傳入呼叫端貫穿單次
+    `_spread_result()` 的字典即可對同一條腿只反解一次；不傳
+    （預設）行為不變，見 `calibrate_leg()` docstring。"""
     width = abs(short_leg.strike - long_leg.strike)
     net_mid = (long_leg.bid + long_leg.ask) / 2.0 - (short_leg.bid + short_leg.ask) / 2.0
     net_worst = long_leg.ask - short_leg.bid
     expiry = date.fromisoformat(long_leg.expiry)
     t_now = days_between(today, expiry) / DAYS_PER_YEAR
-    long_carry = calibrate_leg(long_leg, spot, today, p)      # #113：每腿一次
-    short_carry = calibrate_leg(short_leg, spot, today, p)
+    long_carry = calibrate_leg(long_leg, spot, today, p, carry_cache)  # #113
+    short_carry = calibrate_leg(short_leg, spot, today, p, carry_cache)
     g_l = leg_greeks(long_leg.option_type, spot, long_leg.strike, t_now,
                      leg_rate(p, long_leg.expiry), long_carry.sigma, long_carry.q)
     g_s = leg_greeks(short_leg.option_type, spot, short_leg.strike, t_now,
@@ -809,12 +853,20 @@ def butterfly_scenario_value(
 def evaluate_butterfly(
     low_leg: OptionContract, mid_leg: OptionContract, high_leg: OptionContract,
     spot: float, today: date, p: AnalysisParams,
+    carry_cache: dict[tuple, LegCarry] | None = None,
 ) -> ButterflyValuation:
     """`evaluate_spread()` 的三腿版本——同一套既有裁示逐條延伸：
     worst 成交口徑（附錄 A14.2：買腿 Ask、賣腿 Bid，中腿口數 2）、
     排名情境＝標的在**自身到期日**等於目標價（T3／#17），breakeven／
     max_profit／max_loss 由這個結構自己的分段線性性質直接算（見
     `butterfly_breakeven_and_profit_region()`），不透過任何通用機制。
+
+    `carry_cache`：REPAIR-03（#240，#052 audit）——`generate_butterfly_
+    triples()` 窮舉出的 `C(n,3)` 組合讓同一條腿平均出現 `C(n-1,2)` 次，
+    是三個估值函式裡重複度最高的一個（production-scale 規模下這是
+    60 秒 timeout 的主因）。傳入呼叫端貫穿單次 `_butterfly_result()`
+    的字典即可對同一條腿只反解一次；不傳（預設）行為不變，見
+    `calibrate_leg()` docstring。
     """
     net_mid = ((low_leg.bid + low_leg.ask) / 2.0
               - 2.0 * (mid_leg.bid + mid_leg.ask) / 2.0
@@ -822,9 +874,9 @@ def evaluate_butterfly(
     net_worst = low_leg.ask - 2.0 * mid_leg.bid + high_leg.ask
     expiry = date.fromisoformat(low_leg.expiry)
     t_now = days_between(today, expiry) / DAYS_PER_YEAR
-    low_carry = calibrate_leg(low_leg, spot, today, p)
-    mid_carry = calibrate_leg(mid_leg, spot, today, p)
-    high_carry = calibrate_leg(high_leg, spot, today, p)
+    low_carry = calibrate_leg(low_leg, spot, today, p, carry_cache)
+    mid_carry = calibrate_leg(mid_leg, spot, today, p, carry_cache)
+    high_carry = calibrate_leg(high_leg, spot, today, p, carry_cache)
     g_lo = leg_greeks(low_leg.option_type, spot, low_leg.strike, t_now,
                       leg_rate(p, low_leg.expiry), low_carry.sigma, low_carry.q)
     g_mid = leg_greeks(mid_leg.option_type, spot, mid_leg.strike, t_now,

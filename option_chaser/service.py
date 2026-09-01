@@ -30,10 +30,10 @@ from .timeframe import (TargetMonth, calendar_anchor, ensure_month_open,
                         select_expiries)
 from .ratecurve import RateCurve, rate_for_tenor
 from .valuation import (ButterflyValuation, ContractValuation, DAYS_PER_YEAR,
-                        SpreadValuation, butterfly_scenario_value, catchup_price,
-                        evaluate_butterfly, evaluate_contract, evaluate_spread,
-                        leg_greeks, leg_rate, scenario_leg_value,
-                        spread_scenario_value)
+                        LegCarry, SpreadValuation, butterfly_scenario_value,
+                        catchup_price, evaluate_butterfly, evaluate_contract,
+                        evaluate_spread, leg_greeks, leg_rate,
+                        scenario_leg_value, spread_scenario_value)
 
 Progress = Callable[[str], None]
 
@@ -745,7 +745,12 @@ def _single_leg_result(p: AnalysisParams, snap: ChainSnapshot,
     # ——跟不合格的報價比較沒有意義，也算一次就好，不必每個候選各自重算。
     violations = monotonicity_violations(qualified)
     quality_flags = quality_flag_counts(qualified, violations, p)
-    vals = [evaluate_contract(c, snap.spot, today, p) for c in qualified]
+    # REPAIR-03（#240）：貫穿本次呼叫的 carry 快取——單腿路徑每張合約
+    # 只出現一次，此處不是重複度來源，但三個估值函式共用同一套
+    # memoization 呼叫慣例（見 `calibrate_leg()` docstring）。
+    carry_cache: dict[tuple, LegCarry] = {}
+    vals = [evaluate_contract(c, snap.spot, today, p, carry_cache)
+           for c in qualified]
     # T05（#226，Initial V2 spec #217）：B 層——導出層數學安全網，接在
     # 既有計算路徑之後、排名之前，獨立於 A 層（`apply_filters()`）成立。
     # `n_qualified` 隨之改用 B 層之後的數量——「合格池」語意上就該是
@@ -854,7 +859,12 @@ def _spread_result(p: AnalysisParams, snap: ChainSnapshot,
     # 各自查表——跟單腿路徑同一個函式、同一個口徑。
     violations = monotonicity_violations(qualified)
     quality_flags = quality_flag_counts(qualified, violations, p)
-    spreads = [evaluate_spread(l, s, snap.spot, today, p) for l, s in pairs]
+    # REPAIR-03（#240，#052 audit）：`C(n,2)` 配對讓同一條腿平均出現
+    # n-1 次，貫穿本次呼叫的字典把 `calibrate_leg()` 對同一條腿的反解
+    # 收斂成只做一次（見 `evaluate_spread()`／`calibrate_leg()` docstring）。
+    carry_cache: dict[tuple, LegCarry] = {}
+    spreads = [evaluate_spread(l, s, snap.spot, today, p, carry_cache)
+              for l, s in pairs]
     # T05（#226，Initial V2 spec #217）：B 層——導出層數學安全網，接在
     # 既有計算路徑之後、排名之前，獨立於 A 層（`generate_spread_pairs()`
     # 既有的配對健全性檢查）成立。單位是「配對」，記在 `pair_report`
@@ -941,7 +951,12 @@ def _butterfly_result(p: AnalysisParams, snap: ChainSnapshot,
             message="目前沒有符合流動性與報價條件的合約。")
     violations = monotonicity_violations(qualified)
     quality_flags = quality_flag_counts(qualified, violations, p)
-    butterflies = [evaluate_butterfly(lo, mid, hi, snap.spot, today, p)
+    # REPAIR-03（#240，#052 audit）：三個估值函式裡重複度最高的一個
+    # ——`C(n,3)` 組合讓同一條腿平均出現 `C(n-1,2)` 次，production-
+    # scale 規模下這是 60 秒 timeout 的主因（見 `evaluate_butterfly()`／
+    # `calibrate_leg()` docstring）。
+    carry_cache: dict[tuple, LegCarry] = {}
+    butterflies = [evaluate_butterfly(lo, mid, hi, snap.spot, today, p, carry_cache)
                   for lo, mid, hi in triples]
     # T05（#226）：B 層——導出層數學安全網，這裡額外傳 `max_loss_fn`
     # （#213 Addendum：defined-risk 候選的 max_loss 必須 > 0），既有

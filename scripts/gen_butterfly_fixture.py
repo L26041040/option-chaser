@@ -42,6 +42,13 @@ OUT = Path("tests/fixtures/xyz_v6_butterfly_ladder.json")
 # 兩者刻意分開，不共用同一份——密集版拿去產契約樣本會生出 2MB+ 的
 # JSON（`all_candidates` 近萬筆歷史序列撐大的，不是候選池本身）。
 MODERATE_OUT = Path("tests/fixtures/xyz_v7_butterfly_moderate.json")
+# REPAIR-03（#240，FIX-02，#052 audit）：production-equivalent 規模
+# ——AC 明文要求「≥5 到期日 × ≥60 履約價／側」，60 履約價× C(60,3)=
+# 34,220 組×5 到期日＝171,100，與 audit 引用的 production-scale
+# Butterfly 候選數精確吻合，不是巧合湊出來的數字。只給 REPAIR-03 的
+# 強制 re-profile 測試用，不進契約樣本（履約價梯子夠密，
+# `all_candidates` 歷史序列會撐出遠大於中密度版本的檔案）。
+PRODUCTION_SCALE_OUT = Path("tests/fixtures/xyz_v8_production_scale.json")
 
 SPOT = 100.0
 TODAY = date(2026, 7, 15)
@@ -49,6 +56,8 @@ EXPIRIES = ["2026-08-21", "2026-09-18", "2026-10-16", "2026-12-18", "2027-01-15"
 STRIKES = [round(60.0 + 4.0 * i, 1) for i in range(26)]  # 60..160，25 檔間距 4
 MODERATE_EXPIRIES = ["2026-09-18", "2026-10-16", "2026-12-18"]
 MODERATE_STRIKES = [round(85.0 + 3.0 * i, 1) for i in range(11)]  # 85..115
+PRODUCTION_SCALE_EXPIRIES = EXPIRIES   # 5 個到期日，沿用既有密集版
+PRODUCTION_SCALE_STRIKES = [round(40.0 + 2.0 * i, 1) for i in range(60)]  # 40..158，60 檔
 R, Q, SIGMA = 0.04, 0.0, 0.28
 
 
@@ -97,6 +106,11 @@ def main() -> None:
     save_snapshot(moderate, MODERATE_OUT)
     print(f"寫入 {MODERATE_OUT}（{len(moderate.contracts)} 張合約，"
          f"{MODERATE_OUT.stat().st_size / 1024:.1f} KB）")
+
+    production_scale = _build(PRODUCTION_SCALE_EXPIRIES, PRODUCTION_SCALE_STRIKES)
+    save_snapshot(production_scale, PRODUCTION_SCALE_OUT)
+    print(f"寫入 {PRODUCTION_SCALE_OUT}（{len(production_scale.contracts)} 張合約，"
+         f"{PRODUCTION_SCALE_OUT.stat().st_size / 1024:.1f} KB）")
 
 
 if __name__ == "__main__":

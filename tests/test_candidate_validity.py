@@ -497,12 +497,14 @@ def test_butterfly_removal_diagnostic_identifies_the_specific_triple(monkeypatch
     original = service.evaluate_butterfly
     poisoned_key: str | None = None
 
-    def poisoned(lo, mid, hi, spot, today, p):
+    def poisoned(lo, mid, hi, spot, today, p, carry_cache=None):
         # `evaluate_butterfly()` 原樣把傳入的 lo/mid/hi 存進回傳值的
         # low_leg/mid_leg/high_leg（見 valuation.py），身份鍵因此改從
         # 這個已算好的 `bv` 取得，不再另外用 lo/mid/hi 重組一次同款
         # 字串——單一定義來源，跟下面比對用的是同一個 `triple_key()`。
-        bv = original(lo, mid, hi, spot, today, p)
+        # `carry_cache`：REPAIR-03（#240）新增的選填記憶化參數，這裡
+        # 原樣轉呼叫 `original()` 即可，不影響本測試要驗證的行為。
+        bv = original(lo, mid, hi, spot, today, p, carry_cache)
         if poisoned_key is not None and triple_key(bv) == poisoned_key:
             bv = dataclasses.replace(bv, max_loss=-1.0)
         return bv
