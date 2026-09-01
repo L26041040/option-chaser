@@ -6138,7 +6138,8 @@ sub-issue、皆標 `ready-for-agent`**：
   可與 #240 並行
 - **REPAIR-05**［#242］✅ FIX-06：刷新失敗卡片兩態 UX（commits
   `35b17f8`＋跟進 `7651c25`）——無 blocker
-- **REPAIR-06**［#243］FIX-07：Strategy Family 全選——無 blocker
+- **REPAIR-06**［#243］✅ FIX-07：Strategy Family 全選（commits
+  `ad3df5a`＋跟進 `7be7f1a`）——無 blocker
 - **REPAIR-07**［#244］✅ FIX-03：Butterfly 枚舉 lazy calibration
   （條件式，依 #240 決策閘門判定是否施工）——**判定
   `NOT_NEEDED / NOT_PLANNED`**（#240 實測 7.543s ≤ 20s），依票面
@@ -6249,8 +6250,32 @@ sub-issue、皆標 `ready-for-agent`**：
   缺漏無 scope creep。純前端改動，typecheck／Vitest 764／Playwright
   118／build 全綠。
 
-**下一張＝REPAIR-06（#243，FIX-07：Strategy Family 全選）**，無
-blocker——原始 frontier（#238–#243）至此全數完成。
+- **REPAIR-06**［#243］✅ 已完成（commits `ad3df5a`＋跟進
+  `7be7f1a`）。依 OD-04 落地全選：`CreateForm.tsx`（建立／編輯共用
+  同一個元件）新增單一按鈕，依 `allFamiliesSelected`（`FAMILY_
+  OPTIONS` 三個代碼是否全在 `families` state 裡）切換「全選」／
+  「取消全選」文案與行為，非兩顆獨立按鈕；`toggleAllFamilies()` 把
+  `families` 設成全部代碼或清空。建立表單開啟時 `families` 仍是空
+  陣列起手，全選純粹是使用者主動操作；既有「至少選一個才能送出」
+  的 `validateDraft()` 完全未動。按鈕掛在既有 `.yield-note-row`
+  版面手法（劇本庫「說明文字＋操作入口同一行」既有慣例）。新增
+  測試：`CreateForm.test.tsx` 8 條（全選、已全選再點即取消全選、
+  部分勾選仍顯示「全選」、全選後取消全選仍擋送出、全選後正常送出、
+  編輯表單全選補齊、編輯表單一開始即全選時顯示「取消全選」）、
+  `e2e/smoke.spec.ts`／`e2e/desktop.spec.ts` 各 1 條。`/code-review`
+  Spec 軸零缺漏、AC 七項逐一核對全數落實；Standards 軸一個
+  judgement call（toggle 手法的前例引用改精確指向
+  `TrashView.tsx::toggleSelectAll()`／TR5／#93，同一種「已全選則
+  清空、否則塞滿」形狀與文案）已修正。純前端改動，typecheck／
+  Vitest 772／Playwright 120／build 全綠。
+
+**REPAIR-01–06（GitHub issue #238–#243，原始 frontier）全數完成。**
+接續解鎖的下一批：`#245`／`#244`／`#247` 三張本輪自主執行過程中已
+順帶完成（見上方各自條目——#244 判定 `NOT_NEEDED` 關閉、#245／#247
+皆已 ✅）。剩餘：**REPAIR-09（#246，FIX-05：跨 family 估值日修正）**
+原本 blocked by #238，現已解鎖，**下一張＝REPAIR-09（#246）**；其後
+REPAIR-11（#248，blocked by #246）與 REPAIR-12（#249，blocked by
+#238–#248 全部）依序接續。
 
 ### 施工依據
 
