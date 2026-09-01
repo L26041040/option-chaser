@@ -6126,8 +6126,8 @@ Self-Review 逐項核對 OD-01–OD-04 與 audit 結論無矛盾，標記
 發佈）——12 張票，issues #238–#249，全數為 #237 的 GitHub native
 sub-issue、皆標 `ready-for-agent`**：
 
-- **REPAIR-01**［#238］多 family baseline 守門擴充（Stage A，
-  prefactor，零 production 改動）——無 blocker
+- **REPAIR-01**［#238］✅ 多 family baseline 守門擴充（Stage A，
+  prefactor，零 production 改動，commit `42fd838`）——無 blocker
 - **REPAIR-02**［#239］FIX-01：Legacy Scenario 編輯相容——無 blocker
 - **REPAIR-03**［#240］FIX-02：`calibrate_leg` memoization＋強制
   production-equivalent re-profile＋FIX-03 決策閘門——無 blocker
@@ -6158,8 +6158,14 @@ sub-issue、皆標 `ready-for-agent`**：
 **Frontier（立即可開工、彼此互不依賴）＝ 6 張**：#238、#239、
 #240、#241、#242、#243。
 
-**下一步**：等需求方 cue `/implement`。本輪依指示只執行
-`/to-tickets`，未 implementation、未開 PR。
+**`/implement` 施工開始（2026-08-31 起，需求方裁示全自主執行至全部
+完成才一次回報，比照 Initial V2 自主執行輪同一套授權範圍與紀律）**：
+
+- **REPAIR-01**［#238］✅ 已完成（commit `42fd838`）。詳見上方
+  「Frontier」條目。
+
+**下一張＝ REPAIR-02（#239，FIX-01：Legacy Scenario 編輯相容）**，
+無 blocker。其餘 frontier（#240、#241、#242、#243）依序接續。
 
 ### 施工依據
 
