@@ -619,6 +619,15 @@ def _multi_family_view(q_by_symbol: float | None,
     return store.serialize_result(result, scenario_id="MULTI", capital=None)
 
 
+def _champion_family(per_family: dict) -> str:
+    """`api_app/main.py::_refresh_and_save()` 的
+    `max(per_family.values(), key=lambda v: v["baseline_return"])` 同一條
+    選取邏輯——REPAIR-11（#248）新增的三條測試皆需要重跑這個判斷，
+    抽成共用函式（/code-review Standards 軸 judgement call）避免同一行
+    在檔案裡出現五次。"""
+    return max(per_family, key=lambda k: per_family[k]["baseline_return"])
+
+
 def test_cross_family_champion_identity_is_recorded_as_a_baseline():
     """#052 audit 守門缺口第 1 點：`test_selection_regression.py::_run()`
     永遠一次一個 strategy，`championCandidate`／
@@ -658,7 +667,7 @@ def test_cross_family_champion_identity_is_recorded_as_a_baseline():
     assert per_family["vertical-spread"]["baseline_return"] == 2.4883720930232562
     assert per_family["butterfly"]["baseline_return"] == 5.6666666666666705
 
-    champion_family = max(per_family, key=lambda k: per_family[k]["baseline_return"])
+    champion_family = _champion_family(per_family)
     champion = per_family[champion_family]
 
     # 身份凍結。若 champion 的身份本身跟著變了（不只是數值變了），
@@ -728,7 +737,7 @@ def test_cross_family_champion_baseline_return_is_corrected_when_baseline_expiry
     assert vertical["baseline_return"] == 2.4883720930232562
     assert butterfly["baseline_return"] == 5.6666666666666705
 
-    champion_family = max(per_family, key=lambda k: per_family[k]["baseline_return"])
+    champion_family = _champion_family(per_family)
     assert champion_family == "butterfly"
     assert per_family[champion_family]["strategy"] == "call-fly"
 
@@ -822,8 +831,8 @@ def test_q_reaches_every_family_in_the_multi_family_path_not_just_single_leg():
                == per_family_set[family]["baseline_return"]), family
 
     # champion 身份也不受 q 影響——q 只改變顯示用 Greeks，不改變排名。
-    champion_none = max(per_family_none, key=lambda k: per_family_none[k]["baseline_return"])
-    champion_set = max(per_family_set, key=lambda k: per_family_set[k]["baseline_return"])
+    champion_none = _champion_family(per_family_none)
+    champion_set = _champion_family(per_family_set)
     assert champion_none == champion_set == "butterfly"
 
 
@@ -859,7 +868,7 @@ def test_the_cross_family_numeric_freeze_actually_catches_a_regression(monkeypat
 
     view = _multi_family_view(q_by_symbol=0.02)
     per_family = store.representative_candidates_by_family(view)
-    champion_family = max(per_family, key=lambda k: per_family[k]["baseline_return"])
+    champion_family = _champion_family(per_family)
 
     # 污染後 champion 仍是 butterfly（其餘兩個 family 完全沒被動到），
     # 但數值必須跟凍結測試裡的既有答案不同——若這裡意外相等，代表
