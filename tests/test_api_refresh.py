@@ -757,3 +757,57 @@ def test_refresh_run_three_distinct_symbols_unlock_one_group_at_a_time():
     b_row = c.get(f"/api/scenarios/{b['id']}").json()
     assert a_row["latest_analyzed_at"] is not None
     assert b_row["latest_analyzed_at"] is not None
+
+
+# ---------- REPAIR-08（#245，FIX-04）：analysis_deadline_seconds DI 接線 ----------
+#
+# `/code-review` Standards 軸抓到的真缺口：這個新的 `create_app()`
+# DI 參數（比照既有 `refresh_run_budget`／`chain_cache_ttl` 同一種
+# 「可注入」慣例，見上方 test_refresh_run_budget_exhaustion_* 系列）
+# 只在引擎層（`tests/test_analysis_soft_deadline.py`，直接呼叫
+# `service.run_offline()`）有測試，`api_app/main.py::create_app()`
+# 的實際接線（`analysis_deadline_seconds` → `_analyze()` closure →
+# `service.run_with_snapshot(..., deadline_seconds=...)`）本身沒有
+# 任何一條測試走過——AC 的「不是整個 request 掛掉」講的正是 HTTP
+# request 這一層，這裡才是真正該驗證的地方。
+
+def test_a_past_analysis_deadline_degrades_the_refresh_response_gracefully():
+    """`analysis_deadline_seconds` 已過期時，`POST /api/scenarios/
+    {id}/refresh` 必須正常回應（200，不是 500、不是掛住），且回應與
+    後續 `GET` 的 `latest_result` 都看得出對應 subtype 被標記
+    `timed_out`——證明 DI 參數真的從 `create_app()` 一路接到引擎層，
+    不是只有引擎層自己測得到。"""
+    c = _client(analysis_deadline_seconds=-1.0)
+    sc = _create(c)
+
+    r = c.post(f"/api/scenarios/{sc['id']}/refresh")
+
+    assert r.status_code == 200, r.text
+    row = r.json()
+    # deadline 已過期，`vertical-spread` family 底下唯一 eligible 的
+    # bull-call-spread 也被擋下，這個劇本因此沒有任何候選——代表候選
+    # 欄位如實反映「什麼都沒算出來」，不是靜默回傳舊資料冒充成功。
+    assert row["representative_candidate"] is None
+
+    detail = c.get(f"/api/scenarios/{sc['id']}").json()
+    by_strategy = {res["strategy"]: res
+                  for res in detail["latest_result"]["results"]}
+    assert by_strategy["bull-call-spread"]["status"] == "timed_out"
+    assert by_strategy["bear-put-spread"]["status"] == "skipped_direction"
+
+
+def test_the_default_analysis_deadline_never_fires_during_a_normal_refresh():
+    """既有大量 refresh 測試（本檔案通篇）在本票之前就已經全數通過，
+    本身就是「預設 45 秒 deadline 不影響正常規模」的隱性證明——這裡
+    額外補一條明確、指名道姓的正面斷言，不必推論。"""
+    c = _client()   # 不覆寫 analysis_deadline_seconds，用真正的預設值
+    sc = _create(c)
+
+    r = c.post(f"/api/scenarios/{sc['id']}/refresh")
+
+    assert r.status_code == 200, r.text
+    assert r.json()["representative_candidate"] is not None
+    detail = c.get(f"/api/scenarios/{sc['id']}").json()
+    statuses = {res["strategy"]: res["status"]
+               for res in detail["latest_result"]["results"]}
+    assert "timed_out" not in statuses.values()
