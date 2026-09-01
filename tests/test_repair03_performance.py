@@ -42,29 +42,12 @@ twenty_second_threshold` 是這個判定的永久 CI 回歸鎖：往後任何改
 production-scale 場景重新超過 20 秒，這條測試就會紅，不必等下一次
 使用者回報 timeout 才發現。"""
 import time
-from datetime import date
 
 from option_chaser import service
-from option_chaser.dividends import DividendHistory, DividendRecord
 from option_chaser.models import AnalysisParams
-
-FIX = "tests/fixtures/xyz_v8_production_scale.json"
-
-# 20 秒 acceptance threshold（#237 訂定），測試門檻抓threshold 本身、
-# 不另外加安全餘裕——這條測試的目的就是「有沒有超過這個門檻」，加餘裕
-# 反而會讓真正貼近門檻的回歸被誤判為通過。
-ACCEPTANCE_THRESHOLD_SECONDS = 20.0
-
-
-def _real_dividend_loader(symbol, today):
-    """比照 `tests/test_q_wiring.py` 既有慣例——真實 `dividend_loader`
-    介面（不是直接手設 `AnalysisParams.q_by_symbol`），算出的 q 是
-    非零值，真的會讓 `calibrate_leg()` 走 IV 反解分支，不是退回
-    fallback 短路。"""
-    history = DividendHistory(
-        symbol=symbol, as_of="2026-07-14", source="yahoo", stale=False,
-        distributions=(DividendRecord("2026-06-01", 3.5),))
-    return history, "配息資料 yahoo（2026-07-14，1 筆，profiling 用固定值）"
+from tests._production_scale_fixtures import (
+    ACCEPTANCE_THRESHOLD_SECONDS, PRODUCTION_SCALE_FIXTURE as FIX,
+    real_dividend_loader as _real_dividend_loader)
 
 
 def test_production_scale_three_family_analysis_stays_under_the_twenty_second_threshold():

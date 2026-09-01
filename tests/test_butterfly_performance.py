@@ -12,6 +12,15 @@ wayfinder 地圖 #216 對真實 Cboe 全鏈的估計（11,966 組 ~230ms，該�
 後者比前者貴了兩個數量級，這是誠實的分項記錄，不是把兩件不同的事
 混報成同一個數字。斷言只設寬鬆的回歸上界（真的變慢一個數量級才會
 紅），不是精確比對某個時間點量到的數字（機器效能本身就會浮動）。
+
+⚠ **這份測試不是 production-scale 效能基準**——`dividend_loader`
+從未接上（q 停用，`calibrate_leg()` 的 IV 反解分支完全不會被觸發），
+fixture 規模也只有 production 尺度的 1/17（26 履約價 vs 60）。真正
+量測「production-scale＋真實非零 q」的是
+`tests/test_repair03_performance.py`（引擎層 `run_offline()`）與
+`tests/test_api_performance_guard.py`（HTTP 層完整刷新路徑）——
+REPAIR-03／REPAIR-10（#240／#247，#052 audit）刻意保留本檔案不動，
+理由與判斷詳見那兩個檔案自己的檔頭說明。
 """
 import time
 from datetime import date
