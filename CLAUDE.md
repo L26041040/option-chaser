@@ -6128,7 +6128,8 @@ sub-issue、皆標 `ready-for-agent`**：
 
 - **REPAIR-01**［#238］✅ 多 family baseline 守門擴充（Stage A，
   prefactor，零 production 改動，commit `42fd838`）——無 blocker
-- **REPAIR-02**［#239］FIX-01：Legacy Scenario 編輯相容——無 blocker
+- **REPAIR-02**［#239］✅ FIX-01：Legacy Scenario 編輯相容（commits
+  `87ba2b0`＋跟進 `7042438`）——無 blocker
 - **REPAIR-03**［#240］FIX-02：`calibrate_leg` memoization＋強制
   production-equivalent re-profile＋FIX-03 決策閘門——無 blocker
 - **REPAIR-04**［#241］FIX-09：refresh-run 失敗隔離（消除
@@ -6163,9 +6164,17 @@ sub-issue、皆標 `ready-for-agent`**：
 
 - **REPAIR-01**［#238］✅ 已完成（commit `42fd838`）。詳見上方
   「Frontier」條目。
+- **REPAIR-02**［#239］✅ 已完成（commits `87ba2b0`＋`7042438`）。
+  修法為 `_scenario_json()`（全站唯一序列化 `strategies` 的地方）
+  正規化。`/code-review` 抓到兩點並修正：(1) 修法範圍其實連帶修好
+  `refresh`／`refresh-run` 對 legacy 劇本的回應，不是只有兩個 GET
+  端點，原措辭已更正並補測試；(2) 新增前端測試補上真正餵 raw legacy
+  字串的案例，把「正規化只在後端做一次」的架構邊界寫成可執行斷言。
+  詳見上方「Frontier」條目。
 
-**下一張＝ REPAIR-02（#239，FIX-01：Legacy Scenario 編輯相容）**，
-無 blocker。其餘 frontier（#240、#241、#242、#243）依序接續。
+**下一張＝ REPAIR-03（#240，FIX-02：`calibrate_leg` memoization＋
+強制 production-equivalent re-profile＋FIX-03 決策閘門）**，無
+blocker。其餘 frontier（#241、#242、#243）依序接續。
 
 ### 施工依據
 
