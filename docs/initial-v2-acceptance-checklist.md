@@ -147,3 +147,111 @@ tab 切換不破壞既有版面比例** ✅
   預期範圍）。
 - Initial V2 spec #217 明列的 12 條硬回歸紅線：逐條核對皆有測試把關
   （紅線 8／12 在 T18 稽核時發現覆蓋缺口並已補齊）。
+
+---
+
+# 附錄：OPTION-CHASER-REPAIR-001（spec #237）四組症狀驗收
+
+Initial V2 上線後，Owner 在 Vercel preview 做真機驗收時發現四組症狀
+（P1–P4），已依 spec #237（issue #237）拆成 REPAIR-01～12（issues
+#238–#249）修復完畢。本附錄供你回到 Vercel preview 逐條重新驗證這四
+組症狀確實消失——圖例與正文相同（✅ 自動化覆蓋／⚠ 需你親自確認）。
+
+## P1：舊劇本編輯 422
+
+**22. 開啟任何升版前建立的舊劇本編輯表單，Vertical Spread checkbox
+正確顯示已勾選（不是空的）** ✅
+自動化：`tests/test_strategy_family.py::test_get_scenario_
+normalizes_a_legacy_subtype_string_to_its_family`、
+`CreateForm.test.tsx` legacy round-trip 案例。
+
+**23. 不改動任何 checkbox、直接按儲存，必定成功（不再跳出「422」
+或任何錯誤）** ✅
+自動化：`tests/test_strategy_family.py::test_editing_a_legacy_
+scenario_with_the_value_it_reads_back_now_succeeds`、e2e「legacy
+edit round trip」。真因是 `_scenario_json()`（全站唯一序列化
+`strategies` 的讀取路徑）先前漏呼叫 `normalize_families()`，
+REPAIR-02／#239 補上。
+
+**24. 在舊劇本上加勾其他 family（例如同時勾 Call/Put）後儲存，也必定
+成功** ✅
+自動化：`tests/test_strategy_family.py::test_editing_a_legacy_
+scenario_to_add_a_family_succeeds`。
+
+## P1 附帶新需求：Strategy Family 全選
+
+**25. 建立與編輯表單都有「全選」操作；已全選時再點一次變成「取消
+全選」；沒有獨立的「全不選」按鈕；至少選一個才能送出的規則不變** ✅
+自動化：`CreateForm.test.tsx`（REPAIR-06／#243），e2e「全選／取消
+全選」。
+
+## P2：刷新失敗的卡片沒有明顯反灰／鎖定
+
+**26. 曾經至少成功分析過一次的劇本，這次刷新失敗後：卡片反灰＋
+明確顯示「更新失敗，目前顯示上一次成功結果」＋仍可點入看最後一次
+成功結果＋有 Retry** ✅
+自動化：`scenarios.test.ts`／`ScenarioList.test.tsx`／
+`CompactScenarioList.test.tsx`（REPAIR-05／#242），e2e「失敗卡片
+情境 A」。
+
+**27. 從未成功分析過的劇本（含新建劇本）第一次刷新就失敗：卡片
+反灰＋明確顯示「尚無可用分析結果」＋不會點進一個不存在的詳細頁
+＋有 Retry** ✅
+自動化：同上，e2e「失敗卡片情境 B」。
+
+**28. 「更新中」與「刷新失敗」兩種狀態視覺上分得清楚，不會混在一起**
+✅
+自動化：`cardFailureVariant()` 純函式測試（`updating` 為真時失敗
+提示不顯示）。
+
+## P3：刷新失敗比例偏高＋成功刷新後數字看起來異常
+
+**29. 一個正常規模的劇本（三個 family 全開）刷新不再因為逾時而
+整批失敗——在 Vercel preview 上連續建立、刷新幾個涵蓋多個到期日的
+劇本，不應再看到大量 504／連線逾時** ⚠ 這條需要你在真實 Vercel
+環境確認（沙箱無法重現 production 的網路延遲與 Vercel 60 秒平台
+硬上限）。自動化只能證明「production-equivalent 規模＋真實 q≠0 下，
+單一劇本三 family 全開在本機量測 ≤20 秒完成」（`tests/test_api_
+performance_guard.py`，REPAIR-10／#247，本機實測 7.543 秒，
+`calibrate_leg` memoization 前 154.236 秒——20.4 倍）——本機數字
+不等於 production 網路延遲下的真實體感，需要你實機確認。
+
+**30. 任一劇本刷新逾時或連線失敗，不會連坐拖累同一輪裡其他還沒
+處理到的劇本——其餘劇本應該正常完成，不會一起變成失敗** ✅
+自動化：`App.test.tsx`、e2e（REPAIR-04／#241：`refreshRun()`
+批次呼叫本身失敗時改逐一走單一劇本端點，各自獨立判定成敗）。
+
+**31. 劇本卡片頭條數字（跨 family 冠軍）不再因為 Long Call／
+Long Put 候選到期日較晚就顯得特別誇張——如果你記得舊版某些長天期
+單腿劇本的報酬率看起來高得不合理，重新整理後應該會降到與 Vertical／
+Butterfly 同一個量級可信的數字** ⚠ 建議你挑一個記得舊數字的長天期
+單腿劇本重新整理，肉眼對照。自動化已證明修法方向正確且範圍精準
+（REPAIR-09／#246：`tests/test_selection_regression.py::test_
+cross_family_champion_baseline_return_is_corrected_when_baseline_
+expiry_is_after_anchor`，真實三 family 情境下 single-leg champion
+從灌水值 `1.1926288317629354` 修正到 `0.9569471624266144`，
+Vertical／Butterfly 兩個 family 逐位元不變），但「你記得的那個舊
+數字」是個別 production 資料，自動化測試用的是合成 fixture，數字
+本身無法互相對照。
+
+## P4：新建劇本刷新一律失敗
+
+**32. 新建一個涵蓋多個到期日、三個 family 全開的劇本，建立後緊接著
+的自動刷新應該能拿到分析結果，不再是一律連線失敗** ✅（機制）／
+⚠（production 網路延遲需你確認）
+自動化：`tests/test_api_performance_guard.py`（REPAIR-10／#247）
+證明單一劇本 production-equivalent 規模下本機 7.5 秒可完成，遠低於
+Vercel 60 秒平台硬上限；`_refresh_and_save()` 內建 per-scenario
+soft deadline（REPAIR-08／#245，僅作用於異常輸入，正常規模不觸發）
+作為額外安全網。真實 Vercel 網路延遲下的實際體感，建議你實機建立
+一個新劇本驗證。
+
+---
+
+**收尾狀態**：OPTION-CHASER-REPAIR-001（issues #238–#249）全數
+完成或依決策閘門標記 `not_planned`（#244，FIX-03——REPAIR-10 實測
+production-equivalent 規模 3 family 全開僅 7.543 秒，遠低於 20 秒
+Acceptance Threshold，依 spec #237 決策邏輯明文不施工）。全套後端
+（記憶體＋真實 Postgres）、前端 typecheck／Vitest／build、
+Playwright（iPhone＋Desktop）連續兩輪穩定綠燈，詳見 REPAIR-12
+（#249）GitHub 收尾留言的完整對照表。
