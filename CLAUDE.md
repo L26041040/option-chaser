@@ -6148,9 +6148,10 @@ sub-issue、皆標 `ready-for-agent`**：
   soft deadline，僅限異常輸入，commits `cf66f27`＋跟進 `c347ae1`／
   `3a22318`）——blocked by #240（已解除）；#244 NOT_NEEDED 未施工，
   不必等
-- **REPAIR-09**［#246］FIX-05：跨 family 估值日修正（單腿改
+- **REPAIR-09**［#246］✅ FIX-05：跨 family 估值日修正（單腿改
   own-expiration payoff，T01 基準第 7 次合法重產＋四步驟
-  collateral-drift 證明）——blocked by #238
+  collateral-drift 證明，commits `edda353`＋跟進 `95a9db5`）——
+  blocked by #238（已解除）
 - **REPAIR-10**［#247］✅ FIX-08a：Performance Guard（production-scale
   效能守門，20 秒門檻永久 CI 斷言，commits `1e14b31`＋跟進 `a7e8540`）
   ——blocked by #240（已解除）；#244 NOT_NEEDED 未施工，不必等
@@ -6272,10 +6273,42 @@ sub-issue、皆標 `ready-for-agent`**：
 **REPAIR-01–06（GitHub issue #238–#243，原始 frontier）全數完成。**
 接續解鎖的下一批：`#245`／`#244`／`#247` 三張本輪自主執行過程中已
 順帶完成（見上方各自條目——#244 判定 `NOT_NEEDED` 關閉、#245／#247
-皆已 ✅）。剩餘：**REPAIR-09（#246，FIX-05：跨 family 估值日修正）**
-原本 blocked by #238，現已解鎖，**下一張＝REPAIR-09（#246）**；其後
-REPAIR-11（#248，blocked by #246）與 REPAIR-12（#249，blocked by
-#238–#248 全部）依序接續。
+皆已 ✅）。
+
+- **REPAIR-09**［#246］✅ 已完成（commits `edda353`＋跟進
+  `95a9db5`）。`option_chaser/valuation.py::evaluate_contract()` 的
+  排名基準估值日從固定日曆錨點（`p.anchor`）改為候選自身到期日
+  （直接沿用既有 `expiry` 變數），與 Vertical／Butterfly（T3／#17）
+  既有語意對齊，修掉 #052 audit Root Cause C——單腿到期日晚於錨點時
+  殘留時間價值，讓 `baseline_return` 系統性灌水、污染跨 family
+  champion 選取。修法侷限單一行，`ranking.py`／`filters.py`／
+  `evaluate_spread()`／`evaluate_butterfly()` 零改動。四步驟
+  collateral-drift 驗證全數完成並記錄在 GitHub 收尾留言：T01 數值
+  基準第 7 次合法重產（僅 `long-call|90|2026-11-20` 一筆候選 4 個
+  欄位改變，`long-put`／`bull-call-spread`／`bear-put-spread` 逐位元
+  零差異）；`test_api_filters.py` 三個 delta 級距冠軍因到期日晚於
+  錨點的候選報酬率修正合法換人（改直接查 `candidate_pool` 而非透過
+  排行榜間接驗證，捨棄「級距第一名恰好是特定合約」的失效捷徑）；
+  CLI golden fixtures（`golden_long_call.txt`／`golden_long_put.txt`）
+  與契約樣本（`analysis_sample_long_call.json`）同步重產，diff 範圍
+  逐一核對皆為合法重排。`/code-review` 兩軸：Standards 軸零 hard
+  violation，`target` 別名改回直接用 `expiry`（與 `evaluate_spread()`
+  既有寫法一致）；Spec 軸抓到真缺口——AC 第 4 步驟（真實三 family
+  全開情境對照 champion 身份與數值）先前沒有測試真的證明（既有
+  `test_cross_family_champion_identity_is_recorded_as_a_baseline`
+  的 `target_month="2026-09"` 讓 baseline 到期日恰好等於錨點，champion
+  數值結構上不可能被本票影響），已新增
+  `test_cross_family_champion_baseline_return_is_corrected_when_
+  baseline_expiry_is_after_anchor`（`target_month="2026-08"`，
+  baseline 到期日晚錨點 28 天），用 `git stash` 對照真實數字：
+  single-leg champion 從 `1.1926288317629354`（灌水）修正到
+  `0.9569471624266144`，其餘兩個 family 逐位元不變、champion 身份
+  （butterfly）不受影響，已驗證這條測試對修法前程式碼會真的紅燈。
+  全套後端測試（記憶體＋真實 Postgres 雙後端）**1697 passed**。
+
+**下一張＝REPAIR-11（#248，FIX-08b：Financial Guard）**，原本
+blocked by #246，現已解鎖；其後 REPAIR-12（#249，blocked by
+#238–#248 全部）接續。
 
 ### 施工依據
 
