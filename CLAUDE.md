@@ -6141,9 +6141,10 @@ sub-issue、皆標 `ready-for-agent`**：
   （條件式，依 #240 決策閘門判定是否施工）——**判定
   `NOT_NEEDED / NOT_PLANNED`**（#240 實測 7.543s ≤ 20s），依票面
   裁示直接關閉、零程式碼改動——blocked by #240（已解除）
-- **REPAIR-08**［#245］FIX-04：Timeout safety net（per-scenario
-  soft deadline，僅限異常輸入，不得替代效能修復）——blocked by
-  #240；若 #244 判定 NEEDED 且真的施工，一併等 #244
+- **REPAIR-08**［#245］✅ FIX-04：Timeout safety net（per-scenario
+  soft deadline，僅限異常輸入，commits `cf66f27`＋跟進 `c347ae1`／
+  `3a22318`）——blocked by #240（已解除）；#244 NOT_NEEDED 未施工，
+  不必等
 - **REPAIR-09**［#246］FIX-05：跨 family 估值日修正（單腿改
   own-expiration payoff，T01 基準第 7 次合法重產＋四步驟
   collateral-drift 證明）——blocked by #238
@@ -6193,13 +6194,19 @@ sub-issue、皆標 `ready-for-agent`**：
   `results[].status`＋`candidate_pool[...].carry_calibrated`，並
   用 q=None 假 loader 驗證新斷言非恆真）。詳見上方「Frontier」條目。
 
-**下一張＝ REPAIR-08（#245，FIX-04：Timeout safety net，per-scenario
-soft deadline，異常輸入專用）**——同一個效能領域，`_analyze()`／
-`_butterfly_result()` 內部補 soft deadline 與優雅降級，明確不得替代
-效能修復（#240 已經是效能修復本身）。blocked by #240（已解除）；
-#244 NOT_NEEDED 未施工，不必等。完成後回到原始 frontier 剩餘的
-**#241、#242、#243**（Refresh Run 失敗隔離／失敗卡片 UX／Strategy
-Family 全選）。
+- **REPAIR-08**［#245］✅ 已完成（commits `cf66f27`＋`c347ae1`＋
+  `3a22318`）。`/code-review` 抓到兩項真發現並修正：(1) 新 DI 參數
+  只在引擎層測過，補上 HTTP 層測試；(2) 更關鍵——deadline 計時點
+  原本擺在抓鏈之後才啟動，票面自己點名的「vendor 回應異常慢」情境
+  完全不受保護，已修正為抓鏈之前就起算，並用真實 `time.sleep`
+  ＋`TestClient` warm-up（校準時發現並修掉一個會讓極短 deadline
+  無論有無 bug 都在首次請求誤觸發的偽陽性測試設計）證明修法生效。
+  詳見上方「Frontier」條目。
+
+**下一張回到原始 frontier 剩餘的 #241、#242、#243**（Refresh Run
+失敗隔離／失敗卡片 UX／Strategy Family 全選），彼此獨立、可任意
+順序。依序從 **REPAIR-04（#241，FIX-09：refresh-run 失敗隔離）**
+開始，無 blocker。
 
 ### 施工依據
 
