@@ -6133,8 +6133,9 @@ sub-issue、皆標 `ready-for-agent`**：
 - **REPAIR-03**［#240］✅ FIX-02：`calibrate_leg` memoization＋強制
   production-equivalent re-profile＋FIX-03 決策閘門（commits
   `e28bb0a`＋`9d5e742`＋跟進 `cda0089`）——無 blocker
-- **REPAIR-04**［#241］FIX-09：refresh-run 失敗隔離（消除
-  `pendingIds` 連坐）——無 blocker，可與 #240 並行
+- **REPAIR-04**［#241］✅ FIX-09：refresh-run 失敗隔離（消除
+  `pendingIds` 連坐，commits `fd6be81`＋跟進 `73e96c6`）——無 blocker，
+  可與 #240 並行
 - **REPAIR-05**［#242］FIX-06：刷新失敗卡片兩態 UX——無 blocker
 - **REPAIR-06**［#243］FIX-07：Strategy Family 全選——無 blocker
 - **REPAIR-07**［#244］✅ FIX-03：Butterfly 枚舉 lazy calibration
@@ -6203,10 +6204,32 @@ sub-issue、皆標 `ready-for-agent`**：
   無論有無 bug 都在首次請求誤觸發的偽陽性測試設計）證明修法生效。
   詳見上方「Frontier」條目。
 
-**下一張回到原始 frontier 剩餘的 #241、#242、#243**（Refresh Run
-失敗隔離／失敗卡片 UX／Strategy Family 全選），彼此獨立、可任意
-順序。依序從 **REPAIR-04（#241，FIX-09：refresh-run 失敗隔離）**
-開始，無 blocker。
+- **REPAIR-04**［#241］✅ 已完成（commits `fd6be81`＋跟進
+  `73e96c6`）。真因：`runBatch()` 的 Continuation 迴圈裡，
+  `refreshRun(pendingIds)` 這次 HTTP 呼叫本身整個失敗（504／
+  timeout／transport failure，非個別劇本在 `results[]` 裡各自回
+  `ok:false`）時，舊邏輯把 `pendingIds`（這一輪還沒處理到的全部
+  劇本）一起標記失敗——單一批次呼叫的問題連坐整批，正是「V2 之後
+  刷新失敗比例明顯比 V1 高」的直接機制。修法：改逐一走既有單一
+  劇本刷新端點（`refreshOne()`，經 `Promise.allSettled` 各自獨立
+  呼叫），每個劇本各自判定成敗；`refreshOne` 回傳型別
+  `Promise<void>`→`Promise<boolean>` 供統計 N 成功／M 失敗，既有
+  四個呼叫端沿用 `void refreshOne(id)` 寫法不受影響。新增三條端到
+  端測試（`src/App.test.tsx`＋`e2e/smoke.spec.ts`＋
+  `e2e/desktop.spec.ts`），已用臨時還原舊邏輯的方式驗證新測試在
+  bug 存在時確實紅燈。`/code-review` 兩軸：Standards 軸無 hard
+  violation，`catch (e) { void e; ... }` 改回本站既有的
+  `catch { ... }` 裸接寫法（比照 `IvHistory.tsx`／
+  `DiagnosticDetail.tsx`），`refreshOne` 疊了兩段的 JSDoc 合併成
+  一段；Spec 軸無缺漏無 scope creep，兩點記錄於程式碼註解（fallback
+  是脫離 Continuation 迴圈的一次性平行嘗試而非迴圈內重試，隔離保證
+  本身仍成立；逐一呼叫刻意不設併發上限，因這個時間點的 pendingIds
+  量體天生小）。純前端改動，`option_chaser/`／`api_app/` 零改動；
+  typecheck／750 條 Vitest／114 條 Playwright／build 全綠。
+
+**下一張回到原始 frontier 剩餘的 #242、#243**（失敗卡片兩態 UX／
+Strategy Family 全選），彼此獨立、可任意順序。依序從
+**REPAIR-05（#242，FIX-06：刷新失敗卡片兩態 UX）**開始，無 blocker。
 
 ### 施工依據
 
