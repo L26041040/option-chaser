@@ -623,17 +623,27 @@ def test_cross_family_champion_identity_is_recorded_as_a_baseline():
     """#052 audit 守門缺口第 1 點：`test_selection_regression.py::_run()`
     永遠一次一個 strategy，`championCandidate`／
     `representative_candidates_by_family`／卡片頭條邏輯結構上完全沒被
-    覆蓋。這條測試補上：真的跑三個 family 全開，凍結**目前（修復前）**
-    的跨 family champion 身份（family／strategy／到期日／逐腿履約價，
-    不含 `baseline_return`——那個數值即將被 FIX-05／#246 合法改變，
-    凍結它會讓這支測試在合法修復後也紅燈，違背本票「不凍結數值」的
-    明文範圍）。
+    覆蓋。這條測試補上：真的跑三個 family 全開，凍結跨 family champion
+    的身份（family／strategy／到期日／逐腿履約價）。
+
+    REPAIR-11（#248，FIX-08b）：估值日語意已由 FIX-05／#246 定案，
+    `baseline_return` 現在是穩定、正確的數字，不再是「即將合法改變」
+    的活動目標——本票把它也一併凍結（原本 REPAIR-01／#238 施工時
+    刻意排除，見 git 歷史），連同三個 family 各自的代表候選數值一起
+    納入，不只凍結 champion 一個。四個數字（三個 family＋champion）
+    與 `test_cross_family_champion_baseline_return_is_corrected_when_
+    baseline_expiry_is_after_anchor`（`target_month="2026-08"`）
+    各自獨立、互不重複——那條測試用的是另一個 `target_month`，兩者
+    合起來涵蓋 baseline 到期日等於錨點與晚於錨點兩種情境。
 
     這條測試要能真的抓到回歸：champion 的選取邏輯
     （`api_app/main.py::_refresh_and_save()` 的
     `max(per_family.values(), key=lambda v: v["baseline_return"])`）
     若被意外改動，per_family 的成員或 champion 的身份就會跟這裡凍結的
-    不同，測試就會紅——不是恆真的裝飾性斷言。"""
+    不同，測試就會紅；任一 family 的估值邏輯被意外改動，這裡凍結的
+    數值也會跟著紅——不是恆真的裝飾性斷言（見
+    `test_the_cross_family_numeric_freeze_actually_catches_a_
+    regression` 的 monkeypatch 證明）。"""
     view = _multi_family_view(q_by_symbol=0.02)
     per_family = store.representative_candidates_by_family(view)
 
@@ -642,16 +652,22 @@ def test_cross_family_champion_identity_is_recorded_as_a_baseline():
     # 個集合縮小，代表某個 family 的枚舉或方向閘門被動到了。
     assert set(per_family) == {"single-leg", "vertical-spread", "butterfly"}
 
+    # 數值凍結——三個 family 各自的代表候選（FIX-05／#246 完成後的
+    # 正確答案，已與上方 probe 及既有測試互相核對）。
+    assert per_family["single-leg"]["baseline_return"] == 0.9569471624266144
+    assert per_family["vertical-spread"]["baseline_return"] == 2.4883720930232562
+    assert per_family["butterfly"]["baseline_return"] == 5.6666666666666705
+
     champion_family = max(per_family, key=lambda k: per_family[k]["baseline_return"])
     champion = per_family[champion_family]
 
-    # 身份凍結——目前（修復前）的答案。FIX-05（#246）合法改變單腿估值
-    # 語意後，若 champion 的身份本身跟著變了（不只是數值變了），必須
-    # 停下查明是選取邏輯被動到還是合法的排名重新洗牌，不能默默更新
-    # 這裡的斷言了事。
+    # 身份凍結。若 champion 的身份本身跟著變了（不只是數值變了），
+    # 必須停下查明是選取邏輯被動到還是合法的排名重新洗牌，不能默默
+    # 更新這裡的斷言了事。
     assert champion_family == "butterfly"
     assert champion["strategy"] == "call-fly"
     assert champion["expiry"] == "2026-09-18"
+    assert champion["baseline_return"] == 5.6666666666666705
     leg_strikes = tuple((leg["side"], leg["strike"]) for leg in champion["legs"])
     assert leg_strikes == (("buy", 106.0), ("sell", 109.0), ("buy", 112.0))
 
@@ -757,3 +773,96 @@ def test_q_no_longer_moves_single_leg_ranking_at_any_expiry_after_the_fix():
         # 但 q_by_symbol 管線本身確實還在運作——顯示用的 Greeks（跟
         # 排名估值日無關）仍隨 q 改變，證明不是整條管線被靜默忽略。
         assert at_q_none[expiry][1] != at_q_set[expiry][1], expiry
+
+
+def test_q_reaches_every_family_in_the_multi_family_path_not_just_single_leg():
+    """REPAIR-11（#248，FIX-08b）AC 第 3 點——上一條測試
+    （`test_q_no_longer_moves_single_leg_ranking_at_any_expiry_after_
+    the_fix`）只跑 `strategies=("long-call",)`，是單一 family，不是
+    跨 family champion 這條路徑；#238（REPAIR-01）建立的 q≠0 baseline
+    也從未真正跑過三個 family 全開。這條測試補上：真的用
+    `_multi_family_view()`（三個 family 全開）跑 q=None 與 q=0.02
+    兩次，逐 family 比對。
+
+    已用 Python 直接執行核對過（非猜測）：`net_delta`——`calibrate_leg()`
+    是三個估值函式（`evaluate_contract`／`evaluate_spread`／
+    `evaluate_butterfly`）共用的同一個校準點，q 改變時三個 family 的
+    champion 候選 `net_delta` **全部**跟著變（single-leg
+    0.5475→0.5341、vertical-spread 0.08146→0.08105、butterfly
+    0.01290→0.01190）——證明 q 真的貫穿整條多 family 管線，不是只有
+    single-leg 被行使到。同時 `baseline_return`（排名基準）三個
+    family 全部維持不變，與 FIX-05／#246 的既有結論（q 不再影響任何
+    到期日的排名基準）在跨 family 情境下依然成立。"""
+    def champion_and_pool_deltas(q_by_symbol):
+        view = _multi_family_view(q_by_symbol=q_by_symbol)
+        per_family = store.representative_candidates_by_family(view)
+        baseline_expiry = view["baseline_expiry"]
+        pool = view["candidate_pool"]
+        net_deltas = {}
+        for res in view["results"]:
+            for group in res.get("expiry_top10", []):
+                if group["expiry"] != baseline_expiry:
+                    continue
+                top_key = group["candidate_keys"][0]
+                net_deltas[res["strategy"]] = pool[top_key]["net_delta"]
+        return per_family, net_deltas
+
+    per_family_none, deltas_none = champion_and_pool_deltas(None)
+    per_family_set, deltas_set = champion_and_pool_deltas(0.02)
+
+    assert set(deltas_none) == {"long-call", "bull-call-spread", "call-fly"}
+    assert set(deltas_none) == set(deltas_set)
+    for strategy in deltas_none:
+        # q 真的貫穿到每一個 family 的估值路徑——不是只有 single-leg。
+        assert deltas_none[strategy] != deltas_set[strategy], strategy
+
+    for family in ("single-leg", "vertical-spread", "butterfly"):
+        # 排名基準：q 對任一 family 的 baseline_return 都不再有作用。
+        assert (per_family_none[family]["baseline_return"]
+               == per_family_set[family]["baseline_return"]), family
+
+    # champion 身份也不受 q 影響——q 只改變顯示用 Greeks，不改變排名。
+    champion_none = max(per_family_none, key=lambda k: per_family_none[k]["baseline_return"])
+    champion_set = max(per_family_set, key=lambda k: per_family_set[k]["baseline_return"])
+    assert champion_none == champion_set == "butterfly"
+
+
+def test_the_cross_family_numeric_freeze_actually_catches_a_regression(monkeypatch):
+    """REPAIR-11（#248，FIX-08b）AC 第 2 點——新增的數值凍結守門必須
+    真的能抓到回歸，不能是恆真的裝飾性斷言。
+
+    `option_chaser/service.py` 用 `from .valuation import (...,
+    evaluate_butterfly, ...)` 直接把函式名匯入自己的命名空間——
+    monkeypatch 必須打在 `option_chaser.service.evaluate_butterfly`
+    這個名字上，patch `option_chaser.valuation.evaluate_butterfly`
+    對已經匯入的參照沒有作用（這是 Python 具名匯入的既有行為，不是
+    這個測試發明的規則）。污染 `baseline_value`（`ranking.
+    butterfly_baseline_return()` 的分子，見該函式：`(bv.baseline_value
+    - bv.net_worst) / bv.net_worst`）讓它偏移一個小量，重跑
+    `_multi_family_view()` 同一段計算路徑，確認 champion（本情境下
+    恆為 butterfly）的 `baseline_return` 確實跟著改變——與
+    `test_cross_family_champion_identity_is_recorded_as_a_baseline`
+    凍結的 `5.6666666666666705` 不同，證明那條凍結測試真的在測
+    `evaluate_butterfly()` 這個計算路徑，不是繞過它算出一個巧合相等
+    的常數。"""
+    import dataclasses as dc
+
+    import option_chaser.service as service_module
+
+    original = service_module.evaluate_butterfly
+
+    def corrupted(*args, **kwargs):
+        bv = original(*args, **kwargs)
+        return dc.replace(bv, baseline_value=bv.baseline_value + 1.0)
+
+    monkeypatch.setattr(service_module, "evaluate_butterfly", corrupted)
+
+    view = _multi_family_view(q_by_symbol=0.02)
+    per_family = store.representative_candidates_by_family(view)
+    champion_family = max(per_family, key=lambda k: per_family[k]["baseline_return"])
+
+    # 污染後 champion 仍是 butterfly（其餘兩個 family 完全沒被動到），
+    # 但數值必須跟凍結測試裡的既有答案不同——若這裡意外相等，代表
+    # monkeypatch 沒有真的生效，這條「證明守門有效」的測試本身就失敗。
+    assert champion_family == "butterfly"
+    assert per_family["butterfly"]["baseline_return"] != 5.6666666666666705
