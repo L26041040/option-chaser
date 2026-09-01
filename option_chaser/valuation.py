@@ -239,16 +239,16 @@ def evaluate_contract(
     spread = c.ask - c.bid
     expiry = date.fromisoformat(c.expiry)
     # REPAIR-09（#246，spec #237 OD-02，FIX-05）：排名基準估值日改為
-    # 候選**自身到期日**，與 Vertical／Butterfly（T3／#17，
-    # `evaluate_spread`／`evaluate_butterfly` 既有裁示）對齊——三個
-    # family 從此用同一套「候選自身到期日」比較語意，不再是單腿殘留
-    # 時間價值、Spread／Butterfly 卻已經是純內在價值這種不對稱比較。
-    # 附錄 A9 的 `p.anchor`（固定日曆錨點）仍是舊表面的合法例外
-    # （CLI 報告、單腳買價指引文字、情境曲線、`ranking.return_at_
-    # price` 的 V7 三價位顯示——`ranking.py` 依票面明文不動），只是
-    # 不再是**排名**基準估值日；`target` 變數名沿用既有命名，語意
-    # 改成「這個候選自己的到期日」。
-    target = expiry
+    # 候選**自身到期日**（直接用 `expiry`，不再另立 `target` 別名——
+    # `evaluate_spread()` 本來就是這樣寫，這裡對齊同一種寫法），與
+    # Vertical／Butterfly（T3／#17，`evaluate_spread`／
+    # `evaluate_butterfly` 既有裁示）對齊——三個 family 從此用同一套
+    # 「候選自身到期日」比較語意，不再是單腿殘留時間價值、Spread／
+    # Butterfly 卻已經是純內在價值這種不對稱比較。附錄 A9 的
+    # `p.anchor`（固定日曆錨點）仍是舊表面的合法例外（CLI 報告、單腳
+    # 買價指引文字、情境曲線、`ranking.return_at_price` 的 V7 三價位
+    # 顯示——`ranking.py` 依票面明文不動），只是不再是**排名**基準
+    # 估值日。
     carry = calibrate_leg(c, spot, today, p, carry_cache)   # #113：每腿一次
     t_now = days_between(today, expiry) / DAYS_PER_YEAR
     # #122 核心紅線：分級用的 delta **恆** q=0／vendor IV，不讀 carry——
@@ -261,7 +261,7 @@ def evaluate_contract(
     g = leg_greeks(c.option_type, spot, c.strike, t_now,
                    leg_rate(p, c.expiry), carry.sigma, carry.q)
     scenario_values = tuple(
-        (shift, scenario_leg_value(c, p.target_price, target, p, shift, carry))
+        (shift, scenario_leg_value(c, p.target_price, expiry, p, shift, carry))
         for shift in p.iv_shifts
     )
     baseline_value = dict(scenario_values)[0.0]
@@ -278,7 +278,7 @@ def evaluate_contract(
         breakeven = c.strike - c.ask
         be_vs_spot = (spot - breakeven) / spot
         be_vs_target = (breakeven - p.target_price) / p.target_price
-    l2 = scenario_leg_value(c, p.target_price, target, p, min(p.iv_shifts), carry)
+    l2 = scenario_leg_value(c, p.target_price, expiry, p, min(p.iv_shifts), carry)
     return ContractValuation(
         contract=c, mid=mid, spread=spread,
         delta=g.delta, classification_delta=g_classification.delta,

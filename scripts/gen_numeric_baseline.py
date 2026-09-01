@@ -74,14 +74,27 @@ Initial V2 的 T02（逐腿 payoff 直算）與 T03（包絡量由 payoff 導出
    零差異（`bull-call-spread`／`bear-put-spread` 為 AC 硬約束）；
    (3) 已納入本次重產；(4) 另以三 family 全開的真實劇本
    （`tests/fixtures/xyz_v7_butterfly_moderate.json`）對照修法前後的
-   跨 family champion，身份不變（見
-   `tests/test_selection_regression.py::test_cross_family_champion_
-   identity_is_recorded_as_a_baseline`），數值合法改變（見同檔案
-   `test_q_no_longer_moves_single_leg_ranking_at_any_expiry_after_
-   the_fix`）。`ranking.py`／`filters.py`／`evaluate_spread()`／
-   `evaluate_butterfly()` 內部估值邏輯零改動——修法侷限在
-   `valuation.py::evaluate_contract()` 的單一行（`target = p.anchor`
-   → `target = expiry`）。
+   跨 family champion——`test_cross_family_champion_identity_is_
+   recorded_as_a_baseline`（`target_month="2026-09"`，baseline 到期日
+   恰好等於錨點）證明身份不變，但這個 target_month 下 champion 的
+   **數值**結構上不可能被本票影響（baseline==anchor 時單腿的排名
+   基準估值日修法前後是同一天）；真正證明「數值合法改變、且改變只
+   來自單腿修正」的是另一條測試
+   `test_cross_family_champion_baseline_return_is_corrected_when_
+   baseline_expiry_is_after_anchor`（`target_month="2026-08"`，
+   baseline 到期日 2026-09-18 晚於錨點 2026-08-21 28 天）——已用
+   `git stash` 對照修法前後真實數字：single-leg champion 從
+   1.1926288317629354（灌水）修正到 0.9569471624266144，
+   vertical-spread／butterfly 兩個 family 逐位元不變，champion 身份
+   （butterfly）不受影響（這條測試在對修法前的程式碼跑時會真的紅燈，
+   已驗證過，不是恆真的裝飾性斷言）。`test_q_no_longer_moves_single_
+   leg_ranking_at_any_expiry_after_the_fix` 證明的是另一件事——q 這個
+   輸入本身對 baseline_return 的影響在修法後消失，不是修法前後的
+   before/after 數值比對。`ranking.py`／`filters.py`／
+   `evaluate_spread()`／`evaluate_butterfly()` 內部估值邏輯零改動——
+   修法侷限在 `valuation.py::evaluate_contract()` 的單一行（原本
+   `target = p.anchor`，後改為直接沿用既有變數 `expiry`，不再另立
+   `target` 別名）。
 
 除了以上七個已知、已記錄的例外，其餘期間跑出差異＝有 bug，不是基準
 過期。

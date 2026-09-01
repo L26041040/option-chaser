@@ -589,12 +589,28 @@ def test_friction_function_and_field_do_not_exist_in_source():
 MULTI_FAMILY_FIX = "tests/fixtures/xyz_v7_butterfly_moderate.json"
 
 
-def _multi_family_view(q_by_symbol: float | None) -> dict:
-    """三個 family 全開的離線分析，target_month="2026-09" 讓 baseline
-    到期日（2026-09-18）恰好等於日曆錨點、另外兩個到期日（10-16／
-    12-18）晚於錨點——這正是 select_expiries「錨點前 2 後 2」在真實
-    production 規模下的常態分布，也是 Root Cause C 唯一會顯現的情境。"""
-    p = AnalysisParams(target_price=110.0, target_month="2026-09",
+def _multi_family_view(q_by_symbol: float | None,
+                       target_month: str = "2026-09") -> dict:
+    """三個 family 全開的離線分析。預設 `target_month="2026-09"` 讓
+    baseline 到期日（2026-09-18）恰好等於日曆錨點、另外兩個到期日
+    （10-16／12-18）晚於錨點——這是 select_expiries「錨點前 2 後 3」
+    在真實 production 規模下的常態分布。
+
+    ⚠ 這個預設參數**不是** Root Cause C 會在 champion 這個層級顯現的
+    情境（REPAIR-09／#246 code-review Spec 軸抓到的真缺口）：
+    `representative_candidates_by_family()`／各 family 的「代表候選」
+    只讀 **baseline 期**（M1a／#78 既有裁示，`store.representative_
+    candidate` docstring 同一句話），baseline==anchor 時單腿候選的
+    排名基準估值日（修法前＝`p.anchor`）跟 baseline 到期日本身是
+    同一天，殘留時間價值根本沒有機會出現——已用 `git stash` 對照過
+    這個預設 `target_month` 修法前後三個 family 的 champion 數值
+    逐位元相同（1.1926288317629354 這個灌水數字在這裡不會出現）。
+    要真的看到 champion 層級的灌水／修正，`target_month` 必須讓
+    baseline 到期日**晚於**錨點——見
+    `test_cross_family_champion_baseline_return_is_corrected_when_
+    baseline_expiry_is_after_anchor` 傳入 `target_month="2026-08"`
+    （anchor=2026-08-21，baseline 仍是 09-18，晚 28 天）。"""
+    p = AnalysisParams(target_price=110.0, target_month=target_month,
                        strategy="long-call", q_by_symbol=q_by_symbol)
     subtypes = subtypes_of(normalize_families(
         ("single-leg", "vertical-spread", "butterfly")))
@@ -638,6 +654,67 @@ def test_cross_family_champion_identity_is_recorded_as_a_baseline():
     assert champion["expiry"] == "2026-09-18"
     leg_strikes = tuple((leg["side"], leg["strike"]) for leg in champion["legs"])
     assert leg_strikes == (("buy", 106.0), ("sell", 109.0), ("buy", 112.0))
+
+
+def test_cross_family_champion_baseline_return_is_corrected_when_baseline_expiry_is_after_anchor():
+    """REPAIR-09（#246）code-review Spec 軸抓到的真缺口：AC 要求的第 4
+    步驟（「真實建立一個三 family 全開的劇本，對照修法前後的
+    cross-family champion 身份與數值」）先前**沒有任何測試真的做到**
+    ——上一條測試的 `target_month="2026-09"` 讓 baseline 到期日恰好
+    等於錨點，這個情境下修法前後 target 是同一天，champion 的數值
+    結構上不可能改變（已用這個測試本身的前身確認：修法前後三個
+    family 的 champion 值逐位元相同）。要真的看到 Root Cause C 在
+    champion 這個層級顯現，baseline 到期日必須**晚於**錨點——這裡改用
+    `target_month="2026-08"`（anchor=2026-08-21），baseline 到期日
+    仍是 2026-09-18（同一份 fixture、同一組候選），只是這次晚了錨點
+    28 天。
+
+    已用 `git stash` 對照過修法前後的完整結果（`representative_
+    candidates_by_family()` 的三個 family 各自數值）：
+      修法前：single-leg（long-call@2026-09-18）baseline_return=
+              1.1926288317629354（殘留時間價值灌水）
+              vertical-spread（bull-call-spread@2026-09-18）=
+              2.4883720930232562（T3／#17 既有語意，不受影響）
+              butterfly（call-fly@2026-09-18）=
+              5.6666666666666705（不受影響）
+      修法後：single-leg 降到 0.9569471624266144（跟上一條測試在
+              `target_month="2026-09"` 下算出的數字逐位元相同——這正
+              是修法的核心效果：不管錨點落在哪裡，同一張合約的排名
+              基準估值日只認自己的到期日）
+              vertical-spread／butterfly 兩者逐位元不變
+      champion 身份修法前後皆為 butterfly——不受影響，與上一條凍結
+      測試（不同 target_month，同一份 fixture）一致，這裡額外證明的
+      是**這次身份沒變不是因為數值沒變，而是 butterfly 本來就贏得
+      夠多**（5.6667 > 修法前的 single-leg 1.1926，修法後差距更大）。
+    """
+    view = _multi_family_view(q_by_symbol=0.02, target_month="2026-08")
+    per_family = store.representative_candidates_by_family(view)
+    assert set(per_family) == {"single-leg", "vertical-spread", "butterfly"}
+
+    single_leg = per_family["single-leg"]
+    assert single_leg["strategy"] == "long-call"
+    assert single_leg["expiry"] == "2026-09-18"   # baseline，晚於 anchor 2026-08-21
+    # 修法後的正確值——與 `test_cross_family_champion_identity_is_
+    # recorded_as_a_baseline` 在 `target_month="2026-09"`（baseline==
+    # anchor）下算出的 single-leg 數值逐位元相同，證明「排名基準估值日
+    # 只認候選自身到期日」對這張合約來說，不論錨點落在哪裡，答案都一樣。
+    assert single_leg["baseline_return"] == 0.9569471624266144
+    # 修法前（已用 git stash 對照）的灌水值——留在這裡當文件用，不是
+    # 拿來斷言的目標值，只是讓下一個讀這條測試的人不必自己重跑 stash
+    # 就看得到「錯的答案長什麼樣」：1.1926288317629354。
+
+    vertical = per_family["vertical-spread"]
+    butterfly = per_family["butterfly"]
+    # 兩者的估值路徑（`evaluate_spread`／`evaluate_butterfly`）完全沒被
+    # 這張票觸碰，數值理應與上一條測試在另一個 target_month 算出的
+    # 完全相同——這不是巧合，是它們的估值日本來就一直是候選自身到期日
+    # （T3／#17），不受 anchor 影響。
+    assert vertical["baseline_return"] == 2.4883720930232562
+    assert butterfly["baseline_return"] == 5.6666666666666705
+
+    champion_family = max(per_family, key=lambda k: per_family[k]["baseline_return"])
+    assert champion_family == "butterfly"
+    assert per_family[champion_family]["strategy"] == "call-fly"
 
 
 def test_q_no_longer_moves_single_leg_ranking_at_any_expiry_after_the_fix():
