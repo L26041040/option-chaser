@@ -330,8 +330,12 @@ export default function CreateForm({
 
   // REPAIR-06（#243，OD-04）：全選——單一操作，已全選時再觸發同一個
   // 操作就是取消全選（AC 明文的 toggle 行為），不是獨立的「全不選」
-  // 按鈕。`allFamilyCodes` 直接沿用 `FAMILY_OPTIONS` 順序，不另外
-  // 維護一份代碼清單。
+  // 按鈕。與 `TrashView.tsx::toggleSelectAll()`（TR5／#93）同一種
+  // 「已全選則清空、否則塞滿」toggle 形狀與「全選」／「取消全選」
+  // 文案，但底層型別不同（那裡是 `Set<id>` 對垃圾桶清單，這裡是
+  // `string[]` 對固定三個 family 代碼）不值得抽成共用函式。
+  // `allFamilyCodes` 直接沿用 `FAMILY_OPTIONS` 順序，不另外維護一份
+  // 代碼清單。
   const allFamilyCodes = FAMILY_OPTIONS.map((opt) => opt.code);
   const allFamiliesSelected =
     allFamilyCodes.every((code) => families.includes(code));
