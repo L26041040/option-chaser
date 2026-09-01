@@ -6306,9 +6306,28 @@ sub-issue、皆標 `ready-for-agent`**：
   （butterfly）不受影響，已驗證這條測試對修法前程式碼會真的紅燈。
   全套後端測試（記憶體＋真實 Postgres 雙後端）**1697 passed**。
 
-**下一張＝REPAIR-11（#248，FIX-08b：Financial Guard）**，原本
-blocked by #246，現已解鎖；其後 REPAIR-12（#249，blocked by
-#238–#248 全部）接續。
+- **REPAIR-11**［#248］✅ 已完成（commits `60952b9`＋跟進
+  `0350bb2`）。純測試新增票（`option_chaser/`／`api_app/` 零改動），
+  在 #238 建立的多 family `run_offline` 路徑上，補上 #246 估值日
+  語意定案後的**數值** bitwise 凍結（原本只凍結身份）：
+  `test_cross_family_champion_identity_is_recorded_as_a_baseline`
+  補上三個 family 各自代表候選＋champion 的 `baseline_return`
+  凍結；新增 `test_the_cross_family_numeric_freeze_actually_
+  catches_a_regression`（monkeypatch `service.evaluate_butterfly`，
+  需 patch `service` 自己命名空間，`service.py` 是具名匯入，
+  patch `valuation` 模組對已匯入參照無效——證明凍結斷言真的能抓到
+  回歸，非恆真裝飾性斷言）；新增
+  `test_q_reaches_every_family_in_the_multi_family_path_not_just_
+  single_leg`（既有 q 測試只跑單一 family，這裡真的三 family 全開
+  對照 q=None／0.02：`net_delta` 三個 family 全隨 q 改變、
+  `baseline_return` 三個 family 全維持不變、champion 身份不受 q
+  影響）。`/code-review` Standards 軸抽出共用 helper
+  `_champion_family()` 收斂五處重複的 `max(...)`；Spec 軸零缺口。
+  全套後端測試（記憶體＋真實 Postgres 雙後端）**1700 passed**。
+
+**下一張＝REPAIR-12（#249，最終 production-equivalent regression
+validation，Stage I 收尾）**，blocked by #238–#248 全部——全數已
+完成或以 `not_planned` 關閉（#244），現已解鎖。
 
 ### 施工依據
 
