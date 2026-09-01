@@ -6130,15 +6130,17 @@ sub-issue、皆標 `ready-for-agent`**：
   prefactor，零 production 改動，commit `42fd838`）——無 blocker
 - **REPAIR-02**［#239］✅ FIX-01：Legacy Scenario 編輯相容（commits
   `87ba2b0`＋跟進 `7042438`）——無 blocker
-- **REPAIR-03**［#240］FIX-02：`calibrate_leg` memoization＋強制
-  production-equivalent re-profile＋FIX-03 決策閘門——無 blocker
+- **REPAIR-03**［#240］✅ FIX-02：`calibrate_leg` memoization＋強制
+  production-equivalent re-profile＋FIX-03 決策閘門（commits
+  `e28bb0a`＋`9d5e742`＋跟進 `cda0089`）——無 blocker
 - **REPAIR-04**［#241］FIX-09：refresh-run 失敗隔離（消除
   `pendingIds` 連坐）——無 blocker，可與 #240 並行
 - **REPAIR-05**［#242］FIX-06：刷新失敗卡片兩態 UX——無 blocker
 - **REPAIR-06**［#243］FIX-07：Strategy Family 全選——無 blocker
-- **REPAIR-07**［#244］FIX-03：Butterfly 枚舉 lazy calibration
-  （條件式，依 #240 決策閘門判定是否施工，NOT_NEEDED 時直接關閉
-  標 not_planned）——blocked by #240
+- **REPAIR-07**［#244］✅ FIX-03：Butterfly 枚舉 lazy calibration
+  （條件式，依 #240 決策閘門判定是否施工）——**判定
+  `NOT_NEEDED / NOT_PLANNED`**（#240 實測 7.543s ≤ 20s），依票面
+  裁示直接關閉、零程式碼改動——blocked by #240（已解除）
 - **REPAIR-08**［#245］FIX-04：Timeout safety net（per-scenario
   soft deadline，僅限異常輸入，不得替代效能修復）——blocked by
   #240；若 #244 判定 NEEDED 且真的施工，一併等 #244
@@ -6172,9 +6174,26 @@ sub-issue、皆標 `ready-for-agent`**：
   字串的案例，把「正規化只在後端做一次」的架構邊界寫成可執行斷言。
   詳見上方「Frontier」條目。
 
-**下一張＝ REPAIR-03（#240，FIX-02：`calibrate_leg` memoization＋
-強制 production-equivalent re-profile＋FIX-03 決策閘門）**，無
-blocker。其餘 frontier（#241、#242、#243）依序接續。
+- **REPAIR-03**［#240］✅ 已完成（commits `e28bb0a`＋`9d5e742`＋
+  `cda0089`）。詳見上方「Frontier」條目——修法後 production-scale
+  3 family 全開 7.543 秒（修法前 154.236 秒，20.4x），FIX-03 判定
+  NOT_NEEDED。
+- **REPAIR-07**［#244］✅ 已完成——FIX-03 判定 NOT_NEEDED，直接關閉
+  不施工。詳見上方「Frontier」條目。
+
+`#240` 解除後，`#245`（REPAIR-08，被 #240 擋、原本「若 #244 施工才
+一併等」）與 `#247`（REPAIR-10，同上）**均已解鎖**——#244 已關閉且
+未施工，兩張票的條件式 blocker 因此不再成立。
+
+**下一張＝ REPAIR-10（#247，FIX-08a：Performance Guard，production-
+scale 效能守門固化成永久 CI 斷言）**——與剛完成的 #240 同一個測試
+基礎設施，AC 要求測的是 `_refresh_and_save()` 完整路徑（比 #240
+測的 `run_offline()` 更貼近 production HTTP 端點行為）且要處理既有
+`test_butterfly_performance.py` 的兩個失真維度（`q=None`、規模過
+小），非重複勞動。接著 **REPAIR-08（#245，FIX-04：Timeout safety
+net）**——同一個效能領域，異常輸入的優雅降級。最後回到原始 frontier
+剩餘的 **#241、#242、#243**（Refresh Run 失敗隔離／失敗卡片 UX／
+Strategy Family 全選）。
 
 ### 施工依據
 
