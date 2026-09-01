@@ -79,6 +79,14 @@ REFRESH_RUN_BUDGET = timedelta(seconds=45)
 # 逼出分段，不假裝時間流逝。
 REFRESH_RUN_GROUP_LIMIT = 1
 
+# REPAIR-08（#245，FIX-04，#052 audit）：單次分析的 per-subtype／
+# per-family soft deadline——safety net 專用，處理異常輸入（例如某個
+# symbol 的鏈異常龐大）下的優雅降級，**不是**效能修復的替代方案（正常
+# production-scale 規模的效能已由 #240 的 `calibrate_leg` memoization
+# 解決）。沿用 `service.ANALYSIS_SOFT_DEADLINE` 同一個數值與推導理由。
+# 可注入（既有 DI 慣例），測試用小數值逼出 soft deadline 真的生效。
+ANALYSIS_DEADLINE_SECONDS = service.ANALYSIS_SOFT_DEADLINE.total_seconds()
+
 # MVP 範圍（沿用既有 Streamlit 版與 spec #47 的三欄表單）：方向是固定值，
 # 不由前端送。需要看空時再由對應的票加上（`direction` 欄位是 legacy
 # 遺留，T06／#221 起不再被任何判斷邏輯讀取，見 `_scenario_json`）。
@@ -459,6 +467,7 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
                    treasury_data.fetch_curve_range,
                refresh_run_budget: timedelta = REFRESH_RUN_BUDGET,
                refresh_run_group_limit: int = REFRESH_RUN_GROUP_LIMIT,
+               analysis_deadline_seconds: float | None = ANALYSIS_DEADLINE_SECONDS,
                ) -> FastAPI:
     """`fetch`／`storage`／`rate_loader`／`dividend_loader` 皆可注入：
     測試傳入固定快照、記憶體假體與假來源，因此不打真網路、不碰真資料庫，
@@ -644,7 +653,8 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         try:
             result = service.run_with_snapshot(
                 req, snap, rate_curve_loader=_rate_curve_loader(),
-                dividend_loader=_dividend_loader())
+                dividend_loader=_dividend_loader(),
+                deadline_seconds=analysis_deadline_seconds)
         except ParamError as e:
             raise _fail("params", 400, str(e)) from e
         except Exception as e:  # noqa: BLE001 — 引擎任何失敗都要說是哪一段，不留白畫面

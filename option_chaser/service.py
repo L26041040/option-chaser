@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import dataclasses
+import time
 from dataclasses import dataclass
 from datetime import date, timedelta
 from pathlib import Path
@@ -60,6 +61,15 @@ def default_rate_curve_loader(today: date):
 def default_dividend_loader(symbol: str, today: date):
     from .data.dividends import load_dividend_history  # lazy: 同上
     return load_dividend_history(symbol, today)
+
+
+# REPAIR-08（#245，FIX-04，#052 audit）：per-subtype／per-family soft
+# deadline，異常輸入的優雅降級**專用**——正常 production-scale 規模的
+# 效能已由 #240（calibrate_leg memoization）解決，本常數不是效能修復
+# 的替代方案（不得用來讓正常情況「少算一些 candidate」）。比照既有
+# `api_app/main.py::REFRESH_RUN_BUDGET` 同一個推導理由：明顯小於
+# Vercel serverless 60 秒硬性上限，留出寫回與回應序列化的餘裕。
+ANALYSIS_SOFT_DEADLINE = timedelta(seconds=45)
 
 
 @dataclass(frozen=True)
@@ -935,10 +945,18 @@ def _spread_result(p: AnalysisParams, snap: ChainSnapshot,
 
 
 def _butterfly_result(p: AnalysisParams, snap: ChainSnapshot,
-                      today: date) -> StrategyResult:
+                      today: date, deadline: float | None = None) -> StrategyResult:
     """T15（#230，Initial V2 spec #217）：`_spread_result()` 的三腿版本
     ——同一套結構（A 層→B 層→排名→逐到期日分組），只是配對函式換成
-    `generate_butterfly_triples()`、估值換成 `evaluate_butterfly()`。"""
+    `generate_butterfly_triples()`、估值換成 `evaluate_butterfly()`。
+
+    `deadline`：REPAIR-08（#245，FIX-04）——safety net 專用，`None`
+    （預設）行為不變。Butterfly 是三個估值函式裡重複度最高的一個
+    （`C(n,3)` 組合），異常龐大的鏈（例如某個 symbol 的 chain 意外
+    回傳遠超正常量級的合約數）最可能單獨在**這一個** family 內部就
+    耗盡整個 request 的時間預算，因此需要迴圈內部的檢查點，光靠
+    `_analyze()` 逐 subtype 檢查（下一個 subtype 才擋）不夠——那時
+    這個 subtype 自己已經卡死了。"""
     qualified, freport = apply_filters(snap.contracts, p)
     triples, pair_report = generate_butterfly_triples(qualified, p)
     if not triples:
@@ -956,8 +974,23 @@ def _butterfly_result(p: AnalysisParams, snap: ChainSnapshot,
     # scale 規模下這是 60 秒 timeout 的主因（見 `evaluate_butterfly()`／
     # `calibrate_leg()` docstring）。
     carry_cache: dict[tuple, LegCarry] = {}
-    butterflies = [evaluate_butterfly(lo, mid, hi, snap.spot, today, p, carry_cache)
-                  for lo, mid, hi in triples]
+    butterflies = []
+    for idx, (lo, mid, hi) in enumerate(triples):
+        # REPAIR-08（#245）：每個候選都檢查——`evaluate_butterfly()`
+        # 本身已經是這整條路徑裡最貴的單一操作（IV 反解），逐一檢查的
+        # `time.monotonic()` 開銷相對可以忽略，換來的是逾時後最快
+        # 幾微秒內就能停下，不會「已經知道超時、還硬算完剩下幾萬組」。
+        if deadline is not None and time.monotonic() >= deadline:
+            return StrategyResult(
+                strategy=p.strategy, status="timed_out", candidates=(),
+                ranked_bands=None, ranked_spreads=None, n_qualified=0,
+                filter_report=freport, pair_report=pair_report,
+                report_text=None,
+                message=f"分析耗時超過安全上限，已估值 {idx}／"
+                       f"{len(triples)} 組候選後中止（異常輸入的優雅"
+                       f"降級，非常態）。")
+        butterflies.append(
+            evaluate_butterfly(lo, mid, hi, snap.spot, today, p, carry_cache))
     # T05（#226）：B 層——導出層數學安全網，這裡額外傳 `max_loss_fn`
     # （#213 Addendum：defined-risk 候選的 max_loss 必須 > 0），既有
     # 單腿／Spread 兩個呼叫端不傳這個參數，行為不受影響。
@@ -1174,7 +1207,14 @@ def _resolve_q(p: AnalysisParams, snap: ChainSnapshot, today: date,
 def _analyze(request: AnalysisRequest, snap: ChainSnapshot,
              snapshot_path: str, progress: Progress | None,
              rate_curve_loader: RateCurveLoader | None = None,
-             dividend_loader: DividendLoader | None = None) -> AnalysisResult:
+             dividend_loader: DividendLoader | None = None,
+             deadline: float | None = None) -> AnalysisResult:
+    """`deadline`：REPAIR-08（#245，FIX-04）——`time.monotonic()` 的
+    絕對時間點（不是相對秒數），`None`（預設）＝不啟用，行為與這個
+    safety net 存在之前完全一樣。呼叫端（`run`／`run_with_snapshot`／
+    `run_offline`）各自把 `deadline_seconds` 換算成這個絕對值再傳
+    進來，跟既有 `refresh_run` 的 `deadline = time.monotonic() +
+    budget.total_seconds()` 同一種寫法。"""
     today = snapshot_today(snap.fetched_at)
     base = request.base_params
     month = ensure_month_open(TargetMonth.from_key(base.target_month), today)
@@ -1205,12 +1245,26 @@ def _analyze(request: AnalysisRequest, snap: ChainSnapshot,
                 filter_report=None, pair_report=None, report_text=None,
                 message=_skip_message(direction)))
             continue
+        # REPAIR-08（#245，FIX-04）：per-subtype soft deadline 檢查點
+        # ——safety net 專用，只處理異常輸入（見上方 docstring 與
+        # `ANALYSIS_SOFT_DEADLINE` 定義處的紅線）。前面已經跑掉太多
+        # 時間（通常是某個更早的 subtype 本身異常龐大）時，不再啟動
+        # 新的昂貴計算，直接標記逾時，讓 request 拿回明確狀態而不是
+        # 被平台層 60 秒硬 kill。
+        if deadline is not None and time.monotonic() >= deadline:
+            results.append(StrategyResult(
+                strategy=s, status="timed_out", candidates=(),
+                ranked_bands=None, ranked_spreads=None, n_qualified=0,
+                filter_report=None, pair_report=None, report_text=None,
+                message="分析耗時超過安全上限，這個策略本輪未計算完成"
+                       "（異常輸入的優雅降級，非常態）。"))
+            continue
         if s in SPREAD_STRATEGIES:
             _emit(progress, f"正在窮舉 {STRATEGY_LABELS[s]}……")
             results.append(_spread_result(p, snap, today))
         elif s in BUTTERFLY_STRATEGIES:
             _emit(progress, f"正在窮舉 {STRATEGY_LABELS[s]}……")
-            results.append(_butterfly_result(p, snap, today))
+            results.append(_butterfly_result(p, snap, today, deadline=deadline))
         else:
             _emit(progress, f"正在比較 {STRATEGY_LABELS[s]}……")
             results.append(_single_leg_result(p, snap, today))
@@ -1271,20 +1325,33 @@ def fetch_and_save(symbol: str) -> tuple[ChainSnapshot, str]:
     return snap, str(out)
 
 
-def run(request: AnalysisRequest, progress: Progress | None = None) -> AnalysisResult:
+def _absolute_deadline(deadline_seconds: float | None) -> float | None:
+    """REPAIR-08（#245）：把呼叫端傳入的**相對**秒數換算成
+    `_analyze()` 要的**絕對** `time.monotonic()` 時間點，三個入口
+    （`run`／`run_with_snapshot`／`run_offline`）共用同一條換算，
+    避免各自重複同一行算式。`None` 原樣傳回 `None`（不啟用）。"""
+    if deadline_seconds is None:
+        return None
+    return time.monotonic() + deadline_seconds
+
+
+def run(request: AnalysisRequest, progress: Progress | None = None, *,
+       deadline_seconds: float | None = None) -> AnalysisResult:
     _validate_request(request)
     _emit(progress, f"正在抓取 {request.symbol} 市場資料……")
     snap, out = fetch_and_save(request.symbol)
     return _analyze(request, snap, out, progress,
                     rate_curve_loader=default_rate_curve_loader,
-                    dividend_loader=default_dividend_loader)
+                    dividend_loader=default_dividend_loader,
+                    deadline=_absolute_deadline(deadline_seconds))
 
 
 def run_with_snapshot(request: AnalysisRequest, snap: ChainSnapshot,
                       snapshot_ref: str = "(in-memory)",
                       progress: Progress | None = None, *,
                       rate_curve_loader: RateCurveLoader | None = None,
-                      dividend_loader: DividendLoader | None = None
+                      dividend_loader: DividendLoader | None = None,
+                      deadline_seconds: float | None = None,
                       ) -> AnalysisResult:
     """V1（#48）：分析一份**已在記憶體中**的快照，不讀寫檔案系統。
 
@@ -1295,23 +1362,33 @@ def run_with_snapshot(request: AnalysisRequest, snap: ChainSnapshot,
     既有警告（安全降級，不會拋錯）。新前端的原始資料區（V8／#56）
     改由 API 提供，不再從路徑重讀。
 
-    與 `run_offline` 同樣預設不接利率／股利管線（決定性）。"""
+    與 `run_offline` 同樣預設不接利率／股利管線（決定性）。
+
+    `deadline_seconds`：REPAIR-08（#245）——api_app 層（HTTP 入口）
+    走這裡注入 `service.ANALYSIS_SOFT_DEADLINE`，`None`（預設）＝
+    不啟用，既有呼叫端（測試直接呼叫）行為不變。"""
     _validate_request(request)
     return _analyze(request, snap, snapshot_ref, progress,
                     rate_curve_loader=rate_curve_loader,
-                    dividend_loader=dividend_loader)
+                    dividend_loader=dividend_loader,
+                    deadline=_absolute_deadline(deadline_seconds))
 
 
 def run_offline(request: AnalysisRequest, snapshot_path: str,
                 progress: Progress | None = None, *,
                 rate_curve_loader: RateCurveLoader | None = None,
-                dividend_loader: DividendLoader | None = None
+                dividend_loader: DividendLoader | None = None,
+                deadline_seconds: float | None = None,
                 ) -> AnalysisResult:
     """離線重放預設不接利率／股利管線（決定性、零網路）；networked
     呼叫端（如 workspace 群組刷新，自己剛抓完 chain）可明示傳 loader
-    啟用。"""
+    啟用。
+
+    `deadline_seconds`：REPAIR-08（#245）——測試用這個參數模擬異常
+    輸入下的 soft deadline 生效情境，`None`（預設）＝不啟用。"""
     _validate_request(request)
     snap = load_snapshot(snapshot_path)
     return _analyze(request, snap, str(snapshot_path), progress,
                     rate_curve_loader=rate_curve_loader,
-                    dividend_loader=dividend_loader)
+                    dividend_loader=dividend_loader,
+                    deadline=_absolute_deadline(deadline_seconds))
