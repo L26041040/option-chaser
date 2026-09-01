@@ -1505,6 +1505,34 @@ body {
   cursor: not-allowed;
 }
 
+/* REPAIR-05（#242，OD-03）：刷新失敗兩態的反灰——與 `.locked` 刻意用
+   不同的透明度（0.6 vs 0.45）：`.locked` 代表這份資料正在被取代、
+   點了也進不去（`cursor: not-allowed`）；`.failed` 只是「目前顯示的
+   東西可能不可信」，卡片仍完全可點——曾成功過的可以看最後一次成功
+   結果、從未成功過的會落到詳細頁既有的「尚未分析」空狀態，兩者都不是
+   死路，所以維持正常游標與可點性，不套用 `.locked` 那組規則。兩個
+   class 依 `App.tsx` 的既有判斷邏輯結構上不會同時成立
+   （`cardFailureVariant` 在 `updating` 為真時一律回傳 `null`）。 */
+.compact-card.failed {
+  opacity: 0.6;
+}
+
+.compact-notice-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.compact-notice-headline {
+  font-weight: 600;
+}
+
+.compact-notice-detail {
+  color: var(--label-secondary);
+  font-size: 12px;
+}
+
 /* 常駐但目前沒話講的 live region 不該佔掉卡片的一段間距。 */
 .notice:empty {
   display: none;

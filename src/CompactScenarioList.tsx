@@ -22,6 +22,8 @@ import { strategyLabel } from "./detail";
 import { CheckIcon, EditIcon, TrashIcon } from "./icons";
 import { detailHash } from "./route";
 import {
+  cardFailureHeadline,
+  cardFailureVariant,
   failureLabel,
   formatAnalyzedAt,
   formatDaysLeft,
@@ -29,6 +31,7 @@ import {
   formatRepresentativeLegs,
   formatReturn,
   hasPriceRange,
+  hasResult,
   isStale,
   money,
   moneyOrDash,
@@ -68,18 +71,25 @@ function CompactScenarioCard({
   isChecked: boolean;
   onToggleSelect: (id: string) => void;
 }) {
-  const ran = row.best_return !== null;
+  const ran = hasResult(row);
   const stale = isStale(row.latest_analyzed_at, now);
   const who = `${row.symbol} ${row.target_month}`;
   const signal = scenarioSignal(row, failure);
   const rep = row.representative_candidate;
+  // REPAIR-05（#242，OD-03）：刷新失敗的兩態——`updating` 與 `failure`
+  // 是兩個獨立 state，`cardFailureVariant` 已經把兩者互斥的判準收進
+  // 純函式，這裡只讀結果決定要不要反灰、顯示哪一句頭條。
+  const failureVariant = cardFailureVariant(row, failure, updating);
+  const cardClass = [
+    "compact-card", updating && "locked", failureVariant && "failed",
+  ].filter(Boolean).join(" ");
 
   return (
     // 這裡的 `isChecked` 是批次選取狀態，跟桌面版 `.card.selected`
     // （master/detail 目前選中的劇本）是不同概念——compact row 沒有
     // 對應的常駐詳細頁高亮，選取狀態完全交給下面的 checkbox 外觀表達，
     // 不重用會撞名的 class。
-    <li className={updating ? "compact-card locked" : "compact-card"}>
+    <li className={cardClass}>
       {/* 封存鈕疊在「這一塊」（tap 區）的右下角，而不是整張 `<li>` 的
           右下角——code review 抓到的真實回歸：`.compact-notice`（刷新
           失敗時才出現）是接在 tap 區後面的正常流內容，會把卡片整體
@@ -212,9 +222,21 @@ function CompactScenarioCard({
         )}
       </div>
 
-      {failure && !row.expired && (
+      {/* #68：已過期優先於刷新失敗；REPAIR-05（#242）：`updating` 期間
+          同樣不顯示（沿用詳細頁 `ScenarioDetail.tsx` 既有的
+          `!updating && failure` 互斥判斷，`cardFailureVariant` 已經
+          把三個條件收進同一個純函式）。頭條文案依兩態不同（曾成功過
+          ／從未成功過），技術性的分層說明仍照舊附在下面。 */}
+      {failureVariant && (
         <div className="notice error compact-notice" role="alert">
-          <span>{failureLabel(failure.stage)}：{failure.message}</span>
+          <span className="compact-notice-text">
+            <span className="compact-notice-headline">
+              {cardFailureHeadline(failureVariant)}
+            </span>
+            <span className="compact-notice-detail">
+              {failureLabel(failure!.stage)}：{failure!.message}
+            </span>
+          </span>
           <button
             className="text-button"
             onClick={() => onRetry(row.id)}

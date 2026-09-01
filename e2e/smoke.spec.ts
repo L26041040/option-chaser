@@ -959,6 +959,60 @@ test("刷新失敗說明是哪一段，重試就地重來（V4／#52）", async 
   await expect(page.getByText("抓不到報價（可稍後重試）")).toBeHidden();
 });
 
+test("REPAIR-05／#242 A：曾成功過的劇本刷新失敗——卡片反灰、明講顯示的" +
+  "是舊結果、仍可點入詳細頁看到最後一次成功結果——手機版", async ({ page }) => {
+  const row = refreshedRow();   // best_return 已有值＝曾經至少成功過一次
+  await page.route("**/api/scenarios", (route) => route.fulfill({ json: [row] }));
+  await page.route("**/api/scenarios/s1", (route) =>
+    route.fulfill({ json: { ...row, latest_result: sample } }));
+  await page.route("**/api/scenarios/refresh-run", (route) =>
+    route.fulfill({ json: { results: [{ scenario_id: "s1", ok: false,
+      stage: "fetch", message: "抓不到 TLT 的報價：來源無回應" }],
+      remaining: [] } }));
+
+  await page.goto("/");
+
+  const card = page.locator(".compact-card").filter({ hasText: "TLT" });
+  await expect(card).toHaveClass(/failed/);
+  await expect(card).not.toHaveClass(/locked/);
+  await expect(page.getByText("更新失敗，目前顯示上一次成功結果")).toBeVisible();
+  // 舊結果本身還在，不會因為這次失敗就消失或變成「—」。
+  await expect(page.getByText("250.0%")).toBeVisible();
+  await expect(page.getByRole("button", { name: /重試/ })).toBeVisible();
+
+  // 仍是完全可點的連結，點進去看得到最後一次成功的結果，不是空白或錯誤。
+  await page.getByRole("link", { name: /TLT/ }).click();
+  await expect(page).toHaveURL(/#\/s\/s1/);
+  await expect(page.getByRole("heading", { name: "劇本主圖" })).toBeVisible();
+});
+
+test("REPAIR-05／#242 B：從未成功過的劇本刷新失敗——卡片反灰、明講尚無" +
+  "可用分析結果、仍可點入詳細頁看到既有的「尚未分析」空狀態——手機版",
+  async ({ page }) => {
+  const row = pendingRow;   // best_return 為 null＝從未成功分析過
+  await page.route("**/api/scenarios", (route) => route.fulfill({ json: [row] }));
+  await page.route("**/api/scenarios/s1", (route) =>
+    route.fulfill({ json: { ...row, latest_result: null } }));
+  await page.route("**/api/scenarios/refresh-run", (route) =>
+    route.fulfill({ json: { results: [{ scenario_id: "s1", ok: false,
+      stage: "fetch", message: "抓不到 TLT 的報價：來源無回應" }],
+      remaining: [] } }));
+
+  await page.goto("/");
+
+  const card = page.locator(".compact-card").filter({ hasText: "TLT" });
+  await expect(card).toHaveClass(/failed/);
+  await expect(page.getByText("尚無可用分析結果")).toBeVisible();
+  await expect(page.getByRole("button", { name: /重試/ })).toBeVisible();
+
+  // 點進去不是死路、不是空白錯誤畫面——落到詳細頁既有的「尚未分析」
+  // 空狀態說明（`ScenarioDetail.tsx` 對 `latest_result === null` 既有
+  // 的優雅呈現，不是本票新增）。
+  await page.getByRole("link", { name: /TLT/ }).click();
+  await expect(page).toHaveURL(/#\/s\/s1/);
+  await expect(page.getByText("尚未分析")).toBeVisible();
+});
+
 test("Compact row 刷新失敗時，封存鈕不會疊在重試鈕上（code review 跟進，MVP-v2／#77、#82）",
   async ({ page }) => {
     // 回歸防護：封存鈕原本相對整張卡片定位，`.compact-notice`（失敗

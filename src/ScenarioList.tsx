@@ -24,6 +24,8 @@ import { strategyLabel } from "./detail";
 import { CheckIcon, EditIcon, TrashIcon } from "./icons";
 import { detailHash } from "./route";
 import {
+  cardFailureHeadline,
+  cardFailureVariant,
   failureLabel,
   formatAnalyzedAt,
   formatDaysLeft,
@@ -31,6 +33,7 @@ import {
   formatRepresentativeLegs,
   formatReturn,
   hasPriceRange,
+  hasResult,
   isStale,
   money,
   moneyOrDash,
@@ -72,15 +75,21 @@ function ScenarioCard({
   isChecked: boolean;
   onToggleSelect: (id: string) => void;
 }) {
-  const ran = row.best_return !== null;
+  const ran = hasResult(row);
   const stale = isStale(row.latest_analyzed_at, now);
   const who = `${row.symbol} ${row.target_month}`;
   // MVP-v2（#77、#80）：劇本級燈號，紅＞黃＞綠、一張卡只有一個燈。
   const signal = scenarioSignal(row, failure);
   const rep = row.representative_candidate;
+  // REPAIR-05（#242，OD-03）：刷新失敗的兩態——`updating` 與 `failure`
+  // 是兩個獨立 state，`cardFailureVariant` 已經把兩者互斥的判準收進
+  // 純函式，這裡只讀結果決定要不要反灰、顯示哪一句頭條。
+  const failureVariant = cardFailureVariant(row, failure, updating);
 
-  const cardClass = ["compact-card", selected && "selected", updating && "locked"]
-    .filter(Boolean).join(" ");
+  const cardClass = [
+    "compact-card", selected && "selected",
+    updating && "locked", failureVariant && "failed",
+  ].filter(Boolean).join(" ");
 
   return (
     <li className={cardClass}>
@@ -243,10 +252,21 @@ function ScenarioCard({
           舊的失敗紀錄，就在「已過期，不再刷新」旁邊又冒出一個「重試」
           （重試也只會被後端當成無害的 no-op，按了等於沒按，不該讓它
           看起來像有用）。與舊 Streamlit workspace 的紅燈優先於黃燈是
-          同一個判斷。 */}
-      {failure && !row.expired && (
+          同一個判斷。REPAIR-05（#242）：`updating` 期間同樣不顯示
+          （這次嘗試還沒有結論，沿用詳細頁 `ScenarioDetail.tsx` 既有的
+          `!updating && failure` 互斥判斷，`cardFailureVariant` 已經
+          把三個條件收進同一個純函式）。頭條文案依兩態不同（曾成功過
+          ／從未成功過），技術性的分層說明仍照舊附在下面。 */}
+      {failureVariant && (
         <div className="notice error compact-notice" role="alert">
-          <span>{failureLabel(failure.stage)}：{failure.message}</span>
+          <span className="compact-notice-text">
+            <span className="compact-notice-headline">
+              {cardFailureHeadline(failureVariant)}
+            </span>
+            <span className="compact-notice-detail">
+              {failureLabel(failure!.stage)}：{failure!.message}
+            </span>
+          </span>
           <button
             className="text-button"
             onClick={() => onRetry(row.id)}

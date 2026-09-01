@@ -804,6 +804,58 @@ test("REPAIR-04／#241：批次呼叫本身整個失敗（504）時只有真的�
   await expect(cCard).not.toHaveClass(/locked/);
 });
 
+test("REPAIR-05／#242 A：曾成功過的劇本刷新失敗——卡片反灰、明講顯示的" +
+  "是舊結果、仍可點入詳細頁看到最後一次成功結果——桌面版", async ({ page }) => {
+  const row = libraryRow({ id: "s1", symbol: "XYZ" });   // best_return 已有值
+  await page.route("**/api/scenarios", (route) => route.fulfill({ json: [row] }));
+  await page.route("**/api/scenarios/s1", (route) =>
+    route.fulfill({ json: { ...row, latest_result: sample } }));
+  await page.route("**/api/scenarios/refresh-run", (route) =>
+    route.fulfill({ json: { results: [{ scenario_id: "s1", ok: false,
+      stage: "fetch", message: "抓不到 XYZ 的報價：來源無回應" }],
+      remaining: [] } }));
+
+  await page.goto("/");
+
+  const card = page.locator(".compact-card").filter({ hasText: "XYZ" });
+  await expect(card).toHaveClass(/failed/);
+  await expect(card).not.toHaveClass(/locked/);
+  await expect(page.getByText("更新失敗，目前顯示上一次成功結果")).toBeVisible();
+  await expect(page.getByText("567.0%")).toBeVisible();
+  await expect(page.getByRole("button", { name: /重試/ })).toBeVisible();
+
+  await page.getByRole("link", { name: /XYZ/ }).click();
+  await expect(page).toHaveURL(/#\/s\/s1/);
+  await expect(page.getByRole("heading", { name: "劇本主圖" })).toBeVisible();
+});
+
+test("REPAIR-05／#242 B：從未成功過的劇本刷新失敗——卡片反灰、明講尚無" +
+  "可用分析結果、仍可點入詳細頁看到既有的「尚未分析」空狀態——桌面版",
+  async ({ page }) => {
+  const row = libraryRow({ id: "s1", symbol: "XYZ",
+    best_return: null, latest_analyzed_at: null });
+  await page.route("**/api/scenarios", (route) => route.fulfill({ json: [row] }));
+  await page.route("**/api/scenarios/s1", (route) =>
+    route.fulfill({ json: { ...row, latest_result: null } }));
+  await page.route("**/api/scenarios/refresh-run", (route) =>
+    route.fulfill({ json: { results: [{ scenario_id: "s1", ok: false,
+      stage: "fetch", message: "抓不到 XYZ 的報價：來源無回應" }],
+      remaining: [] } }));
+
+  await page.goto("/");
+
+  const card = page.locator(".compact-card").filter({ hasText: "XYZ" });
+  await expect(card).toHaveClass(/failed/);
+  await expect(page.getByText("尚無可用分析結果")).toBeVisible();
+  await expect(page.getByRole("button", { name: /重試/ })).toBeVisible();
+
+  await page.getByRole("link", { name: /XYZ/ }).click();
+  await expect(page).toHaveURL(/#\/s\/s1/);
+  // 桌面 master/detail：左側卡片自己的「尚未分析」（第三層資料時間）
+  // 與右側詳細頁的空狀態文字會同時出現同一個字串，scope 回右側面板。
+  await expect(page.locator(".detail-pane").getByText("尚未分析")).toBeVisible();
+});
+
 test("左右比例約 20/80，不是置中的窄直欄", async ({ page }) => {
   await routeTwoScenarios(page);
   await page.goto("/");

@@ -200,6 +200,44 @@ export function formatRepresentativeExpiry(
   return rep === null ? "—" : rep.expiry;
 }
 
+/** 這個劇本是否至少成功分析過一次——`best_return` 由已落盤的
+ *  `ResultRecord` 導出，非 null 就代表存在至少一份可看的結果。 */
+export function hasResult(row: { best_return: number | null }): boolean {
+  return row.best_return !== null;
+}
+
+/**
+ * 刷新失敗卡片的兩態（OD-03／#242，REPAIR-05）：
+ * - `"known"`——曾經至少成功分析過，卡片目前顯示的是上一次成功結果。
+ * - `"unknown"`——從未成功分析過（含新建劇本首次刷新即失敗），沒有
+ *   任何結果可看。
+ *
+ * `updating` 與 `failure` 是兩個獨立 state，不得混用——回傳 `null`
+ * 代表這個時間點不該顯示失敗狀態，交給更新中徽章或正常燈號表達：
+ * 正在刷新（`updating`，這次嘗試還沒有結論）、已過期（`row.expired`，
+ * #68 既有規則：紅燈優先於黃燈，不再花力氣區分兩態）、或根本沒有
+ * `failure` 這三種情況皆回 `null`。
+ */
+export type CardFailureVariant = "known" | "unknown";
+
+export function cardFailureVariant(
+  row: { best_return: number | null; expired: boolean },
+  failure: RefreshFailure | undefined,
+  updating: boolean,
+): CardFailureVariant | null {
+  if (updating || !failure || row.expired) return null;
+  return hasResult(row) ? "known" : "unknown";
+}
+
+/** 兩態各自的頭條文案——技術性的 `failureLabel`／`failure.message`
+ *  仍照舊顯示在旁邊，這句話回答的是使用者最先想知道的事：「我現在
+ *  看到的這個東西，是不是可以相信？」 */
+export function cardFailureHeadline(variant: CardFailureVariant): string {
+  return variant === "known"
+    ? "更新失敗，目前顯示上一次成功結果"
+    : "尚無可用分析結果";
+}
+
 /**
  * 刷新失敗的分層標題（V4／#52）。後端 `detail.stage` 已經說明是哪一個
  * 環節出的事，這裡把它翻成使用者能據以行動的一句話——只寫「刷新失敗」

@@ -284,6 +284,85 @@ describe("更新中徽章＋鎖定（T08／#196 P1 首次引入；PC-05／#202 �
   });
 });
 
+describe("刷新失敗卡片兩態（OD-03／#242，REPAIR-05）", () => {
+  afterEach(() => {
+    window.location.hash = "";
+  });
+
+  it("A：曾經至少成功分析過——卡片反灰、頭條說明是舊結果、仍可點入" +
+     "詳細頁、保留重試", async () => {
+    window.location.hash = "";
+    const { container } = list(
+      [row({ id: "a", symbol: "AAA", best_return: 1.5 })],
+      { failures: { a: { stage: "fetch", message: "抓不到 AAA 的報價" } } },
+    );
+
+    expect(container.querySelector(".compact-card.failed")).toBeInTheDocument();
+    // 更新中那個 `.locked` 不該同時出現——updating 與 failure 是兩個
+    // 獨立 state，這裡壓根沒有 updating。
+    expect(container.querySelector(".compact-card.locked")).not.toBeInTheDocument();
+    expect(screen.getByText("更新失敗，目前顯示上一次成功結果"))
+      .toBeInTheDocument();
+    expect(screen.getByText(/抓不到 AAA 的報價/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /重試/ })).toBeInTheDocument();
+
+    // 仍是完全可點的連結——舊結果本身還在，點進去看得到。
+    const link = screen.getByRole("link", { name: /AAA/ });
+    expect(link).toHaveAttribute("href", "#/s/a");
+    await userEvent.click(link);
+    expect(window.location.hash).toBe("#/s/a");
+  });
+
+  it("B：從未成功分析過——卡片反灰、頭條說明尚無可用結果、仍可點入" +
+     "詳細頁（落到既有「尚未分析」空狀態）、保留重試", async () => {
+    window.location.hash = "";
+    const { container } = list(
+      [row({ id: "a", symbol: "AAA", best_return: null,
+            latest_analyzed_at: null, representative_candidate: null })],
+      { failures: { a: { stage: "fetch", message: "抓不到 AAA 的報價" } } },
+    );
+
+    expect(container.querySelector(".compact-card.failed")).toBeInTheDocument();
+    expect(screen.getByText("尚無可用分析結果")).toBeInTheDocument();
+    expect(screen.getByText(/抓不到 AAA 的報價/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /重試/ })).toBeInTheDocument();
+
+    // 沒有既有結果可看，但連結沒有被停用——落到詳細頁既有的「尚未
+    // 分析」空狀態（`ScenarioDetail.tsx`），不是死路。
+    const link = screen.getByRole("link", { name: /AAA/ });
+    expect(link).toHaveAttribute("href", "#/s/a");
+    await userEvent.click(link);
+    expect(window.location.hash).toBe("#/s/a");
+  });
+
+  it("更新中時即使留著舊的失敗紀錄，也不顯示失敗兩態——這次嘗試還沒有" +
+     "結論", () => {
+    const { container } = list(
+      [row({ id: "a", symbol: "AAA", best_return: 1.5 })],
+      {
+        failures: { a: { stage: "fetch", message: "抓不到 AAA 的報價" } },
+        updatingIds: new Set(["a"]),
+      },
+    );
+
+    expect(container.querySelector(".compact-card.failed")).not.toBeInTheDocument();
+    expect(screen.queryByText("更新失敗，目前顯示上一次成功結果"))
+      .not.toBeInTheDocument();
+    expect(screen.queryByText(/抓不到 AAA 的報價/)).not.toBeInTheDocument();
+    expect(screen.getByText("更新中")).toBeInTheDocument();
+  });
+
+  it("已過期時不顯示失敗兩態——沿用 #68 紅燈優先於黃燈", () => {
+    const { container } = list(
+      [row({ id: "a", symbol: "AAA", expired: true })],
+      { failures: { a: { stage: "fetch", message: "抓不到 AAA 的報價" } } },
+    );
+
+    expect(container.querySelector(".compact-card.failed")).not.toBeInTheDocument();
+    expect(screen.queryByText(/抓不到 AAA 的報價/)).not.toBeInTheDocument();
+  });
+});
+
 describe("劇本庫的概覽欄位（QA 修正）", () => {
   it("現價跟目標價並排——卡片上要有比較基準，不然一排目標價沒有意義", () => {
     list([row({ spot: 82.11 })]);

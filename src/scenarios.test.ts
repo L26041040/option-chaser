@@ -4,6 +4,8 @@ import sampleRow from "../contracts/scenario_row_sample.json";
 import type { ScenarioSummary } from "./api";
 import {
   STALE_AFTER_HOURS,
+  cardFailureHeadline,
+  cardFailureVariant,
   failureLabel,
   formatDaysLeft,
   formatRepresentativeExpiry,
@@ -11,6 +13,7 @@ import {
   formatReturn,
   formatRunSummary,
   hasPriceRange,
+  hasResult,
   isStale,
   moneyOrDash,
   scenarioSignal,
@@ -227,6 +230,53 @@ describe("更新中的劇本照樣參與排序（T08／#196 P1，取代 #136 par
     // 只是徽章顯示，不是排序輸入）。
     const rows = [row("1", 0.5), row("2", 9.0)];
     expect(sortScenarios(rows).map((r) => r.id)).toEqual(["2", "1"]);
+  });
+});
+
+describe("刷新失敗卡片兩態（OD-03／#242，REPAIR-05）", () => {
+  const F = { stage: "fetch" as const, message: "抓不到報價" };
+
+  it("曾經至少成功分析過（best_return 非 null）＋有失敗＋未更新中＋" +
+     "未過期 → known", () => {
+    const known = { ...row("1", 1.2), expired: false };
+    expect(hasResult(known)).toBe(true);
+    expect(cardFailureVariant(known, F, false)).toBe("known");
+  });
+
+  it("從未成功分析過（best_return 為 null）＋有失敗＋未更新中＋" +
+     "未過期 → unknown", () => {
+    const neverRun = { ...row("1", null), expired: false };
+    expect(hasResult(neverRun)).toBe(false);
+    expect(cardFailureVariant(neverRun, F, false)).toBe("unknown");
+  });
+
+  it("正在更新中——不論曾不曾成功過，一律不顯示失敗狀態（updating 與" +
+     "failure 是兩個獨立 state，不得混用）", () => {
+    const known = { ...row("1", 1.2), expired: false };
+    const neverRun = { ...row("2", null), expired: false };
+    expect(cardFailureVariant(known, F, true)).toBeNull();
+    expect(cardFailureVariant(neverRun, F, true)).toBeNull();
+  });
+
+  it("已過期——優先於刷新失敗（#68 既有紅燈優先規則），不顯示失敗狀態", () => {
+    const expired = { ...row("1", 1.2), expired: true };
+    expect(cardFailureVariant(expired, F, false)).toBeNull();
+  });
+
+  it("沒有失敗紀錄——不論曾不曾成功過，都不顯示失敗狀態", () => {
+    const known = { ...row("1", 1.2), expired: false };
+    const neverRun = { ...row("2", null), expired: false };
+    expect(cardFailureVariant(known, undefined, false)).toBeNull();
+    expect(cardFailureVariant(neverRun, undefined, false)).toBeNull();
+  });
+
+  it("兩態各自的頭條文案不同，且都不是空字串", () => {
+    const known = cardFailureHeadline("known");
+    const unknown = cardFailureHeadline("unknown");
+    expect(known).toBeTruthy();
+    expect(unknown).toBeTruthy();
+    expect(known).not.toBe(unknown);
+    expect(unknown).toBe("尚無可用分析結果");
   });
 });
 
