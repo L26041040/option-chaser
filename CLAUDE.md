@@ -6136,7 +6136,8 @@ sub-issue、皆標 `ready-for-agent`**：
 - **REPAIR-04**［#241］✅ FIX-09：refresh-run 失敗隔離（消除
   `pendingIds` 連坐，commits `fd6be81`＋跟進 `73e96c6`）——無 blocker，
   可與 #240 並行
-- **REPAIR-05**［#242］FIX-06：刷新失敗卡片兩態 UX——無 blocker
+- **REPAIR-05**［#242］✅ FIX-06：刷新失敗卡片兩態 UX（commits
+  `35b17f8`＋跟進 `7651c25`）——無 blocker
 - **REPAIR-06**［#243］FIX-07：Strategy Family 全選——無 blocker
 - **REPAIR-07**［#244］✅ FIX-03：Butterfly 枚舉 lazy calibration
   （條件式，依 #240 決策閘門判定是否施工）——**判定
@@ -6227,9 +6228,29 @@ sub-issue、皆標 `ready-for-agent`**：
   量體天生小）。純前端改動，`option_chaser/`／`api_app/` 零改動；
   typecheck／750 條 Vitest／114 條 Playwright／build 全綠。
 
-**下一張回到原始 frontier 剩餘的 #242、#243**（失敗卡片兩態 UX／
-Strategy Family 全選），彼此獨立、可任意順序。依序從
-**REPAIR-05（#242，FIX-06：刷新失敗卡片兩態 UX）**開始，無 blocker。
+- **REPAIR-05**［#242］✅ 已完成（commits `35b17f8`＋跟進
+  `7651c25`）。依 OD-03 落地兩態：A（曾成功過）卡片反灰＋「更新失敗，
+  目前顯示上一次成功結果」＋可點入看最後一次成功結果；B（從未成功過）
+  卡片反灰＋「尚無可用分析結果」＋可點入（落到 `ScenarioDetail.tsx`
+  既有的「尚未分析」空狀態，本票未改該檔案）。新增純函式
+  `cardFailureVariant(row, failure, updating)` 集中三個互斥判準
+  （`updating`／無 `failure`／`row.expired`＝#68 既有規則，皆回
+  `null`）；新增 CSS `.compact-card.failed`（opacity 0.6，與
+  `.locked` 的 0.45 刻意不同——failed 卡片仍完全可點）。順手補上
+  `ScenarioList.tsx`／`CompactScenarioList.tsx` 原本沒有的
+  `!updating` 互斥判斷（對齊 `ScenarioDetail.tsx` 既有寫法，避免更新
+  中同時看到「更新中」徽章與過時的失敗提示）——這是票面「updating
+  與 failure 不得混用」明文要求的延伸，已在 GitHub 結案留言向需求方
+  說明。新增測試：`scenarios.test.ts` 6 條、`ScenarioList.test.tsx`／
+  `CompactScenarioList.test.tsx` 各 4 條、`e2e/smoke.spec.ts`／
+  `e2e/desktop.spec.ts` 各 2 條（A／B 兩情境）。`/code-review`
+  Standards 軸一個 judgement call（`failure!` 非空斷言四處，已改用
+  `failureVariant && failure` 讓型別系統自己窄化）已修正；Spec 軸無
+  缺漏無 scope creep。純前端改動，typecheck／Vitest 764／Playwright
+  118／build 全綠。
+
+**下一張＝REPAIR-06（#243，FIX-07：Strategy Family 全選）**，無
+blocker——原始 frontier（#238–#243）至此全數完成。
 
 ### 施工依據
 
