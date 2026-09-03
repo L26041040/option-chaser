@@ -142,11 +142,17 @@ def test_iv_scenarios_collapse_at_expiry():
 def test_heatmap_path_still_carries_time_value():
     """同一張合約、同一個 spot，在到期**前**估值必須高於到期內在價值。
 
-    這是兩種語意分離的證據：本票只改排名的估值時點（`evaluate_
+    這是兩種語意分離的證據：REPAIR-09 只改排名的估值時點（`evaluate_
     contract` 的 `baseline_value`／`scenario_values`／`l2`／`l3`），
-    Heatmap 逐格 BS（直接呼叫 `scenario_leg_value` 帶任意日期）與 V7
-    三價位（`ranking.return_at_price` 沿用既有錨點，票面明文不動）
-    完全不受影響。
+    Heatmap 逐格 BS（直接呼叫 `scenario_leg_value` 帶任意日期）完全
+    不受影響——**這一條至今成立，本測試守的就是它**。
+
+    OPTION-CHASER-CLOSEOUT-003 更正：原文還說「V7 三價位
+    （`ranking.return_at_price` 沿用既有錨點，票面明文不動）完全不受
+    影響」。那是施工範圍的描述被寫成了正確性的宣稱——PR #250 的 merge
+    gate review 抓到 `return_at_price` 因此違反自己 docstring 宣告的
+    不變量（到期日晚於錨點的單腿候選，目標價上與頭條數字不同），已
+    改用候選自身到期日。Heatmap 那一半不變，V7 那一半已對齊。
     """
     c = call_leg("2026-10-16")
     p = params(115.0)

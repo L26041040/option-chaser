@@ -96,10 +96,20 @@ def test_every_subtype_maps_to_the_same_family_on_both_sides():
         assert f'"{subtype}": "{family}"' in front, (
             f"src/family.ts 的 SUBTYPE_FAMILY 缺 {subtype}，或與後端"
             f" models.STRATEGY_FAMILY 不一致（後端是 {family!r}）")
-    for family in FAMILIES:
-        assert f'"{family}"' in front, (
-            f"src/family.ts 的 FAMILIES 缺 {family}，與後端"
-            f" models.FAMILIES 不同步")
+
+    # `FAMILIES` 要單獨從那個陣列宣告裡抓出來比對，不能只掃全檔有沒有
+    # 出現過該字串——每個 family 代碼同時也是 `SUBTYPE_FAMILY` 的
+    # **值**，掃全檔會讓這半永遠成立（本測試第一版就是這樣寫的，
+    # 由 merge gate 的複審實驗抓到：把 `"butterfly"` 從 `FAMILIES`
+    # 陣列刪掉、`SUBTYPE_FAMILY` 留著，測試照樣綠）。
+    # `familiesOf()` 依 `FAMILIES` 的順序輸出分頁，所以順序也要鎖。
+    declared = re.search(r"export const FAMILIES = \[(.*?)\]", front, re.S)
+    assert declared, "在 src/family.ts 找不到 FAMILIES 宣告——這條測試的抓法過時了"
+    front_families = re.findall(r'"([\w-]+)"', declared.group(1))
+    assert front_families == list(FAMILIES), (
+        f"src/family.ts 的 FAMILIES 與後端 models.FAMILIES 不同步"
+        f"（前端 {front_families}，後端 {list(FAMILIES)}）——順序也要一致，"
+        f"`familiesOf()` 依它決定分頁順序")
 
 
 # MVP V3（#105，spec #102 決策 G）起，韌性 7 情境表已從 Analysis Report

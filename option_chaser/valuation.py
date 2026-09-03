@@ -245,10 +245,20 @@ def evaluate_contract(
     # `evaluate_butterfly` 既有裁示）對齊——三個 family 從此用同一套
     # 「候選自身到期日」比較語意，不再是單腿殘留時間價值、Spread／
     # Butterfly 卻已經是純內在價值這種不對稱比較。附錄 A9 的
-    # `p.anchor`（固定日曆錨點）仍是舊表面的合法例外（CLI 報告、單腳
-    # 買價指引文字、情境曲線、`ranking.return_at_price` 的 V7 三價位
-    # 顯示——`ranking.py` 依票面明文不動），只是不再是**排名**基準
-    # 估值日。
+    # `p.anchor`（固定日曆錨點）仍是**情境曲線**那一族的合法用途
+    # （`scenarios.py` 的 S4／S5「晚 30／90 天」與完成度掃描——那些
+    # 依定義就需要一個固定的日曆日；`report.py` 的日數說明同理），
+    # 只是不再是**排名**基準估值日。
+    #
+    # OPTION-CHASER-CLOSEOUT-003 更正：這段註解原本把
+    # `ranking.return_at_price`（V7 三價位）與單腳買價指引文字也列為
+    # 「合法例外」，理由是「`ranking.py` 依票面明文不動」——那是施工
+    # 範圍的描述，不是這些數字**應該**用錨點的理由。PR #250 的 merge
+    # gate review 兩軸獨立抓到：`return_at_price` 因此對到期日晚於
+    # 錨點的單腿候選違反自己 docstring 宣告的不變量，`build_reasons`
+    # 的「劇本半對仍獲利」更會說出與到期真相相反的話。兩處都已改用
+    # 候選自身到期日，這段註解同步更正——留著錯的敘述正是當初藏住
+    # 這個 bug 的東西。
     carry = calibrate_leg(c, spot, today, p, carry_cache)   # #113：每腿一次
     t_now = days_between(today, expiry) / DAYS_PER_YEAR
     # #122 核心紅線：分級用的 delta **恆** q=0／vendor IV，不讀 carry——

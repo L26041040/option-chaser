@@ -140,7 +140,16 @@ def build_reasons(
         word = "高於" if v.contract.option_type == "call" else "低於"
         s = f"breakeven 僅{word}現價 {_pct(v.breakeven_vs_spot)}"
         half_price = spot + 0.5 * (p.target_price - spot)
-        if scenario_leg_value(v.contract, half_price, p.anchor, p,
+        # OPTION-CHASER-CLOSEOUT-003：估值日與 `baseline_return`／
+        # `return_at_price` 同為候選**自身到期日**。原本停在固定日曆
+        # 錨點（附錄 A9），對到期日晚於錨點的候選會說出與到期真相相反
+        # 的話——實測 K110／ask 3.2／anchor 2026-10-16／expiry
+        # 2026-12-18，半價位（110.0）在錨點日值 5.83 > ask，於是印出
+        # 「劇本半對仍獲利」；但那天它自己還沒到期，真正到期時內在
+        # 價值是 0.00，權利金全損。這句話是講給使用者聽的事實陳述，
+        # 不能用一個該候選根本還沒到期的日期去判定。
+        at = date.fromisoformat(v.contract.expiry)
+        if scenario_leg_value(v.contract, half_price, at, p,
                               carry=v.carry) > v.contract.ask:
             s += "，劇本半對仍獲利"
         pros.append(s)
