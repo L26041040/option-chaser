@@ -27,7 +27,7 @@ block 裡，不能切成好幾個 code block、也不能中間插普通文字把
 `［回報#001］spec #137 拆票完成`）。編號是**累計總數**，不因換
 session、換分支、換主題而歸零——目前最新編號記在這裡：
 
-> 目前次序：057（下一份回報用 058）
+> 目前次序：058（下一份回報用 059）
 
 每發一份回報就把上面這個數字改成剛剛用掉的那個，跟著那次改動一起
 commit（沒有其他改動要 commit 時，單獨為這一行開一個小 commit 也
@@ -37,6 +37,65 @@ commit（沒有其他改動要 commit 時，單獨為這一行開一個小 commi
 只有這七條。
 
 ## 專案紀錄區
+
+> **現況總覽（2026-09-03 追加，Market Data Lifecycle & Scaling 研究
+> 完成，取代下面「等需求方下一輪指示」那句的下一步指向——其餘 master／
+> PR #250 現況原文照舊，這裡只補這一輪新開的獨立研究）**：
+>
+> **背景**：Initial V2 merge 之後，需求方開了一個與 Initial V2 無關的
+> 新獨立階段——`OPTION-MARKET-DATA-RESEARCH-001`，盤點 Option Chaser
+> 現有的 Treasury／Dividend／Option Chain 三條外部 market-data 資料流，
+> 研究 100／1,000／10,000 users 規模下的 scaling 風險。**本輪只研究、
+> 不施工、不寫 spec、不開票、不動 production code**（`git status` 確認
+> 只新增兩個檔案，零其他改動）。
+>
+> **產出兩份文件**：`docs/research/market-data-lifecycle-scaling.md`
+> （Executive Summary／Current-State Data Flow／Treasury／Dividend／
+> Option Chain／Vendor 與 Platform 限制／Scaling Model／Architecture
+> Patterns／P0-P1-P2 風險分級／Open Questions for Wayfinder／
+> Sources＋Evidence 十一節齊全，結尾標記
+> `READY_FOR_MARKET_DATA_WAYFINDER`）與
+> `docs/research/market-data-current-state-map.md`（三張 Mermaid 圖＋
+> 四張邊界表，全部標到 file:line）。全部外部限制引用皆為一手來源
+> （Treasury 官方頁、Vercel 官方文件、Neon 官方文件、Market Data App
+> 官方文件、實測 curl 觸及 cdn.cboe.com／query2.finance.yahoo.com／
+> api.nasdaq.com），已抽查點驗過幾項最關鍵主張（`chain_cache.py` 確實
+> 已被刪除、`REFRESH_RUN_GROUP_LIMIT=1`、`cboe.py` 確實是裸的
+> `except Exception`、rate/dividend cache 確實沒有 lock、
+> `all_candidates` 確實是無上限成長來源、`main.py` 確實零 user 隔離）
+> 皆與原始碼相符。
+>
+> **核心結論（完整版見上述兩份文件，回報全文見對話紀錄
+> ［回報#058］）**：
+> - **Treasury／Dividend 兩條線已經是 shared 架構**（Neon 全站快取，
+>   非 per-user／per-scenario），量體本身不是問題；真正的缺口是【沒有
+>   single-flight】——同一市場日第一次 cache miss 的短窗內，並發請求
+>   會各自重打一次 vendor。
+> - **Option Chain 完全沒有共用**——ADR-0001 當初刻意只做「同一次
+>   Refresh Run 內的 symbol 去重」，跨使用者、跨 invocation 一律各抓
+>   各的；且 `cdn.cboe.com` 本輪**實測會回 429**（帶
+>   `retry-after: 34`），而 `option_chaser/data/cboe.py` 目前是無腦
+>   `except Exception → FetchError`，備援 yfinance 在 production 因
+>   `pyproject.toml` 未裝該 extra 而【結構上不可達】——這條路徑一旦被
+>   限流，是全站核心功能中斷，不是效能問題。
+> - **1,000 users 最先撞到的不是 vendor quota，是自家 Neon**：
+>   `results.view` JSONB 單列已實測到 12.18 MiB（Initial V2 三個
+>   family 全開時，96.4% 是 `all_candidates` 這個目前唯一消費者
+>   `spread_cost_history()` 每次只查一個 key 的欄位），且**完全沒有
+>   retention**；疊加既有已知 blocker #59（多使用者隔離未定案，
+>   `main.py` 全檔零 `Depends`／零 user 過濾，任何人開站會刷新資料庫
+>   裡所有人的劇本）會讓成本呈 O(U²) 而非 O(U)。
+> - 研究過程中發現並記錄（**只記錄證據、未修**）CLAUDE.md／既有 ADR
+>   與現況有出入的 7 處（例如「60 秒硬性上限」其實是自設非 Vercel
+>   官方上限、`chain_cache.py` 早被刪除但 PERF-06/07 段落仍描述其存在、
+>   容器網路現況已與「## 環境」一節記載的舊限制不同——WebFetch／各
+>   vendor 網域本輪皆可直接觸及），細節見研究文件 §5／§10。
+> - 8 個問題明確**未裁定、留給 Owner／未來 `/wayfinder`**（最急：#59
+>   多使用者隔離定案是後續一切 scaling 設計的前提；results/snapshots
+>   retention 政策；要不要重開 ADR-0001）。
+>
+> **下一步**：等需求方審閱兩份研究文件，親自或另開 `/wayfinder` 决定
+> 方向；本輪依指示到此為止，未自行進入 `/wayfinder`。
 
 > **現況總覽（2026-09-03，寫給接手的新 session 看，取代下面所有更舊
 > 的「現況總覽」／「目前狀態」標頭——那些是歷史留存，內文本身依然
