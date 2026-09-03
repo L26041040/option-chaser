@@ -103,3 +103,36 @@ def test_history_entry_includes_butterfly_candidates_from_the_first_analysis():
             assert entry["rank_in_expiry"] == rank
             assert entry["cost"] == bv.net_worst
             assert "|" in entry["candidate_key"]
+
+
+def test_representative_candidate_carries_all_three_butterfly_legs_with_quantity():
+    """OPTION-CHASER-CLOSEOUT-001（劇本庫卡片 champion 顯示一致性）：
+
+    `representative_candidate()`／`representative_candidates_by_
+    family()` 給劇本清單卡片用的輕量投影，過去只投影 `strike`／
+    `option_type`／`side`，缺 `quantity`——前端 `formatRepresentative
+    Legs()` 因此無從標出 Butterfly 中腿的「2×」，且舊版格式化邏輯只抓
+    一隻 buy 腿與一隻 sell 腿，會把三腿 champion 靜默截斷成兩腿。
+
+    這裡直接驗證：當跨 family champion 是 Butterfly 時，
+    `representative_candidate()` 回傳的輕量投影本身就帶著完整三腿
+    （含 `quantity`），與 `candidate_pool` 裡的完整候選逐腿一致——
+    卡片顯示需要的資料本來就在同一個 candidate 裡，不需要另一個
+    來源。"""
+    result = _result()
+    view = store.serialize_result(result, "S", 100000.0)
+    key = view["results"][0]["candidates"][0]
+    full_cand = view["candidate_pool"][key]
+
+    rep = store.representative_candidate(view)
+    assert rep is not None
+    assert rep["strategy"] == "call-fly"
+    assert len(rep["legs"]) == 3
+    assert [leg["side"] for leg in rep["legs"]] == ["buy", "sell", "buy"]
+    assert [leg["quantity"] for leg in rep["legs"]] == [1, 2, 1]
+    # 履約價逐一對上完整候選——同一個候選，不是另外湊出來的資料。
+    assert ([leg["strike"] for leg in rep["legs"]]
+           == [leg["strike"] for leg in full_cand["legs"]])
+
+    per_family = store.representative_candidates_by_family(view)
+    assert per_family["butterfly"]["legs"] == rep["legs"]

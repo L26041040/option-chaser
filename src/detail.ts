@@ -25,6 +25,25 @@ export function strategyLabel(strategy: string): string {
   return STRATEGY_LABELS[strategy] ?? strategy;
 }
 
+/**
+ * 衍生方向顯示名（OPTION-CHASER-CLOSEOUT-001，Scenario Detail 補劇本
+ * 摘要）。與後端 `option_chaser/models.py::DIRECTION_LABELS` 同一份
+ * 字彙（`tests/test_frontend_contract.py` 的漂移測試把關）——後端加了
+ * 新方向而這裡沒跟上，該測試會紅。`undefined`（舊存 View，
+ * schema_version 尚未帶這個欄位）與未知代碼都誠實顯示「—」／原始代號，
+ * 不假裝算得出方向。
+ */
+const DIRECTION_LABELS: Record<string, string> = {
+  bullish: "看漲",
+  bearish: "看跌",
+  flat: "持平",
+};
+
+export function directionLabel(direction: string | undefined): string {
+  if (direction === undefined) return "—";
+  return DIRECTION_LABELS[direction] ?? direction;
+}
+
 /** 百分比的大小（不含方向）。方向由呼叫端自己說：有的地方用正負號，
  *  有的地方用「超出／低於」。 */
 function magnitude(ratio: number): string {

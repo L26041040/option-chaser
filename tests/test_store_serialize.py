@@ -46,7 +46,9 @@ def test_top_level_fields_and_versions():
     # `comparator.matrix` 的既有形狀。
     # T15（#230，Initial V2）：7→8 候選新增 `profit_region`（Butterfly
     # 非單調結構的獲利區間，既有四策略恆為 `None`，純加法）。
-    assert view["schema_version"] == 8
+    # OPTION-CHASER-CLOSEOUT-001：8→9 新增頂層 `direction`（Scenario
+    # Detail 補劇本摘要要用的衍生方向，純加法，比照 T08／#225）。
+    assert view["schema_version"] == 9
     assert isinstance(view["axis_sets"], list)
     assert view["engine_version"] == option_chaser.__version__ == "0.5.0"
     assert view["scenario_id"] == "XYZ-120-202608"

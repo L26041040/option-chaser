@@ -6,7 +6,8 @@
  * 與紐約日曆算好的。本檔只決定「怎麼排、怎麼寫」。
  */
 import {
-  findLeg,
+  legQuantityPrefix,
+  legSide,
   type FailureStage,
   type RefreshFailure,
   type RepresentativeCandidate,
@@ -171,9 +172,20 @@ export function isStale(iso: string | null, now: Date): boolean {
 
 /**
  * 代表候選的買賣履約價——「買 118 / 賣 122」（MVP-v2／#77、#78），沿用
- * 詳細頁 `detail.candidateTitle` 既有的「買腿在前、賣腿在後」慣例，同一個
- * 表達方式在清單卡片與詳細頁不該長得不一樣。單腳候選只有一隻腿，寫成
+ * 詳細頁 `detail.candidateTitle()` 既有的「逐腿列出」慣例，同一個表達
+ * 方式在清單卡片與詳細頁不該長得不一樣。單腳候選只有一隻腿，寫成
  * 「買 118」——硬湊一個賣腿會憑空生出一隻不存在的腿。
+ *
+ * OPTION-CHASER-CLOSEOUT-001：原本用 `findLeg()` 各抓一隻 buy／sell
+ * 腿畫成固定兩腿字串，對三腿的 Butterfly champion（買／賣 2 口／買）
+ * 會靜默丟掉第二隻 buy 腿，讓卡片看起來像一組舊的兩腿 Vertical
+ * Spread——這正是「strategy 名稱是新的、legs／strikes 卻對不上」的
+ * 根因：`rep.strategy` 與 `rep.legs` 其實同源自同一個 `rep` 物件，
+ * 只是舊版格式化函式本身把第三隻腿弄丟了，不是兩個資料來源不同步。
+ * 改為逐腿迭代（`detail.ts::candidateTitle()` 同一套寫法，共用
+ * `legSide()`／`legQuantityPrefix()`），對既有兩腿／單腿候選輸出
+ * 逐字不變（`quantity` 恆為 1 時 `legQuantityPrefix()` 回傳空字串），
+ * 三腿以上的候選才會多印出中腿的口數標示。
  *
  * `null`（尚未分析、或該期零合格候選）說「—」，不是編一組假的候選。
  */
@@ -181,11 +193,9 @@ export function formatRepresentativeLegs(
   rep: RepresentativeCandidate | null,
 ): string {
   if (rep === null) return "—";
-  // T12（#228，Initial V2）：改用 `side` 找腿，不再靠陣列位置猜方向。
-  const buy = findLeg(rep.legs, "buy");
-  if (!buy) return "—";
-  const sell = findLeg(rep.legs, "sell");
-  return sell ? `買 ${buy.strike} / 賣 ${sell.strike}` : `買 ${buy.strike}`;
+  return rep.legs
+    .map((leg) => `${legSide(leg)} ${legQuantityPrefix(leg)}${leg.strike}`)
+    .join(" / ");
 }
 
 /**

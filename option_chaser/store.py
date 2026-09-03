@@ -86,7 +86,20 @@ def _baseline_group(view: dict) -> dict | None:
 def _project_representative_row(view: dict, group: dict, row: dict) -> dict:
     """把 baseline 期一列 row 投影成清單卡片要的輕量代表候選形狀——
     `representative_candidate()`／`representative_candidates_by_
-    family()` 共用同一份投影邏輯，只是挑選 row 的分組粒度不同。"""
+    family()` 共用同一份投影邏輯，只是挑選 row 的分組粒度不同。
+
+    OPTION-CHASER-CLOSEOUT-001（劇本庫卡片 champion 顯示一致性）：
+    新增 `quantity` 投影——前端 `formatRepresentativeLegs()` 過去只用
+    `findLeg()` 各抓一隻 buy／sell 腿畫成兩腿價差字串，對 Butterfly
+    （三腿：買／賣 2 口／買）會靜默丟掉第二隻 buy 腿，讓三腿 champion
+    在卡片上被顯示成看起來像舊 Vertical Spread 的兩腿組合——這正是
+    「strategy 名稱正確、legs／strikes 卻對不上」的根因，不是兩個資料
+    來源不同步。修法是前端改為逐腿列出（同一支 `rep` 物件、同一份
+    `legs[]`），這裡補上 `quantity` 讓中腿的「2×」標示能與詳細頁
+    `candidateTitle()` 同一套慣例。`leg.get("quantity", 1)` 對已存的
+    舊 View（schema_version < 4，序列化當下還沒有這個欄位）回退預設
+    值 1——既有已儲存的 View 不做資料遷移，讀取端維持相容（沿用
+    T09／#191 當時定下的同一條規則，`side` 欄位已是同一種寫法）。"""
     candidate = _candidate_of(view, row)
     return {
         "strategy": row["strategy"],
@@ -97,7 +110,8 @@ def _project_representative_row(view: dict, group: dict, row: dict) -> dict:
         # 欄位）用位置回推當備援——既有已儲存的 View 不做資料遷移，
         # 讀取端維持相容（沿用 T09／#191 當時定下的同一條規則）。
         "legs": [{"strike": leg["strike"], "option_type": leg["option_type"],
-                 "side": leg.get("side", "buy" if i == 0 else "sell")}
+                 "side": leg.get("side", "buy" if i == 0 else "sell"),
+                 "quantity": leg.get("quantity", 1)}
                 for i, leg in enumerate(candidate["legs"])],
         "expiry": group["expiry"],
         "baseline_return": candidate["baseline_return"],
@@ -662,7 +676,10 @@ def serialize_result(result: AnalysisResult, scenario_id: str,
         # 的真實值（Butterfly 中腿賣 2 口）——欄位本身在 T12（#228）
         # 就已存在，這裡只是第一次真的用到，不是新增欄位，因此本身
         # 不構成版本升版理由，`profit_region` 才是。
-        "schema_version": 8,
+        # OPTION-CHASER-CLOSEOUT-001（Scenario Detail 補劇本摘要）：
+        # 8→9——新增頂層 `direction`（純加法，比照 T08／#225 的
+        # `family_eligibility` 同一種「新增頂層欄位」升版慣例）。
+        "schema_version": 9,
         "engine_version": __version__,
         "analyzed_at": m.fetched_at,
         "scenario_id": scenario_id,
@@ -712,6 +729,18 @@ def serialize_result(result: AnalysisResult, scenario_id: str,
         # 只渲染這個 verdict，永不自行計算 eligibility（CONTEXT.md
         # 「Eligibility」一節）。
         "family_eligibility": _family_eligibility_map(base.target_price, m.spot),
+        # OPTION-CHASER-CLOSEOUT-001（Scenario Detail 補劇本摘要）：
+        # 衍生方向本身也純加法輸出——detail 頁要呈現「使用者原本建立
+        # 的劇本設定」，方向是其中一項，且必須跟 `family_eligibility`
+        # 用同一個判準算出來的同一個值，不能讓前端自己比較
+        # `target_price` 與 `spot` 再猜一次（那正是 CONTEXT.md
+        # 「Eligibility」一節要擋的事——這裡延伸到「顯示方向本身」，
+        # 不是只有「顯示可選／不可選」）。與 `family_eligibility` 各自
+        # 獨立呼叫 `derive_direction()`——這個函式本身是零 I/O 的純
+        # 比較，`_family_eligibility_map()` docstring 已記錄「兩個模組
+        # 各自獨立呼叫」是既有、刻意接受的跨模組前提，這裡是同一個
+        # 前提在同一個函式內的延伸，不是新增風險。
+        "direction": derive_direction(base.target_price, m.spot),
     }
 
 

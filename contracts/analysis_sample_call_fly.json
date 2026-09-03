@@ -7465,6 +7465,7 @@
     "2026-10-16",
     "call-fly|100|106|115|2026-10-16"
   ],
+  "direction": "bullish",
   "engine_version": "0.5.0",
   "expiry_groups": [
     {
@@ -9964,7 +9965,7 @@
     }
   ],
   "scenario_id": "adhoc",
-  "schema_version": 8,
+  "schema_version": 9,
   "snapshot_ref": {
     "fetched_at": "2026-07-15T21:30:00-04:00",
     "path": "(in-memory)",

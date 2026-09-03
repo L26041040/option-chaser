@@ -11,7 +11,7 @@ subtype 有一份「在哪些方向下適用」的資料（`SUBTYPE_DIRECTIONS`�
 """
 import pytest
 
-from option_chaser import service
+from option_chaser import service, store
 from option_chaser.models import (
     DIRECTIONS, FAMILIES, FAMILY_SUBTYPES, STRATEGIES,
     derive_direction, family_eligibility, is_bullish, subtype_eligible,
@@ -272,3 +272,35 @@ def test_family_eligibility_field_is_purely_additive_to_the_schema():
     view = store_mod.serialize_result(_result(), "S", None)
     assert view["schema_version"] >= 6
     assert "family_eligibility" in view
+
+
+# ---------- store.serialize_result()：頂層 direction（OPTION-CHASER-
+# CLOSEOUT-001，Scenario Detail 補劇本摘要）----------
+
+def test_direction_field_matches_derive_direction_bullish():
+    """target 高於 spot → "bullish"，與同一次呼叫的 `family_eligibility`
+    用的是同一個判準（`_family_eligibility_map()` 內部也呼叫
+    `derive_direction(target_price, spot)`）——這裡直接核對 `view`
+    頂層的 `direction` 欄位本身就是這個值，前端才有得讀，不必自己比較
+    `target_price` 與 `spot`。"""
+    view = store.serialize_result(_result(("long-call",), 120.0), "S", None)
+    assert view["direction"] == derive_direction(120.0, view["meta"]["spot"])
+    assert view["direction"] == "bullish"
+
+
+def test_direction_field_matches_derive_direction_bearish():
+    view = store.serialize_result(_result(("long-put",), 60.0), "S", None)
+    assert view["direction"] == derive_direction(60.0, view["meta"]["spot"])
+    assert view["direction"] == "bearish"
+
+
+def test_direction_field_is_one_of_the_three_named_states():
+    view = store.serialize_result(_result(("long-call",), 120.0), "S", None)
+    assert view["direction"] in ("bullish", "bearish", "flat")
+
+
+def test_direction_field_is_purely_additive_to_the_schema():
+    """純加法：不影響任何既有欄位，只是多一個 key。"""
+    view = store.serialize_result(_result(), "S", None)
+    assert view["schema_version"] >= 9
+    assert "direction" in view

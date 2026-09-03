@@ -201,6 +201,30 @@ test("清單 → 詳細頁：摘要、基準候選、進場成本、主圖、候
   await expect(page.getByRole("heading", { name: "劇本庫" })).toBeVisible();
 });
 
+test("OPTION-CHASER-CLOSEOUT-001：劇本設定卡在劇本摘要卡之前，呈現使用者" +
+     "原本建立的劇本 context（標的／目標價／目標年月／方向／啟用的策略）",
+   async ({ page }) => {
+  const row = libraryRow({ strategies: ["vertical-spread"] });
+  await routeLibrary(page, row);
+
+  await page.goto("/#/s/s1");
+
+  const context = page.getByRole("region", { name: "劇本設定" });
+  await expect(context).toContainText("XYZ");
+  await expect(context).toContainText(`$${view.params.target_price.toFixed(2)}`);
+  await expect(context).toContainText(view.params.target_month);
+  // 契約樣本 target 高於 spot，方向為看漲。
+  await expect(context).toContainText("看漲");
+  await expect(context).toContainText("Vertical Spread");
+
+  // 劇本設定卡必須排在劇本摘要卡之前——先知道「這是什麼劇本」，
+  // 再看「這個劇本下最好的候選」。
+  const summary = page.getByRole("region", { name: "劇本摘要" });
+  const contextBox = await context.boundingBox();
+  const summaryBox = await summary.boundingBox();
+  expect(contextBox!.y).toBeLessThan(summaryBox!.y);
+});
+
 test("進階區：分析報告與原始資料展開才載入（V8／#56，MVP V3／#105 四區塊）",
    async ({ page }) => {
   await routeLibrary(page, libraryRow());
@@ -1269,7 +1293,12 @@ test("手機詳細頁不受桌面密度壓縮影響（QA-FIX-3／QA-01 的 Mobil
 
   // 摘要卡是 QA 修正明文要壓的那一張，手機也要壓——它自己的內距比
   // 一般卡片小，而且統計格線在手機就已經是兩欄（不是桌面才生效）。
-  const summary = page.locator(".summary-card");
+  // OPTION-CHASER-CLOSEOUT-001 新增的「劇本設定」卡也共用
+  // `.summary-card` 這個密度樣式（同一種「高密度統計格線卡片」），
+  // 裸用 class 選擇器會撞到兩張卡，改用 `aria-label` scope 回真正
+  // 要驗的那一張——這裡在意的是「基準候選」摘要卡自己的統計格線
+  // 換行行為，不是隨便哪一張摘要式卡片。
+  const summary = page.getByRole("region", { name: "劇本摘要" });
   await expect(summary).toHaveCSS("padding", "12px");
   const stats = summary.locator(".stat");
   const a = (await stats.nth(0).boundingBox())!;
@@ -2740,7 +2769,8 @@ const rowCallFly = {
     baseline_return: butterflyCand.baseline_return,
     expiry: butterflyCand.legs[0].expiry,
     legs: butterflyCand.legs.map((l: any) =>
-      ({ option_type: l.option_type, side: l.side, strike: l.strike })),
+      ({ option_type: l.option_type, side: l.side, strike: l.strike,
+        quantity: l.quantity })),
     strategy: "call-fly",
   },
 };
@@ -2855,6 +2885,16 @@ test("T16（#232）：Butterfly 候選有淨成本走勢圖——既有元件的
 
   await page.getByText("Spread 淨成本走勢").click();
   await expect(page.locator(".spread-history-chart")).toBeVisible();
+});
+
+test("OPTION-CHASER-CLOSEOUT-001：劇本庫卡片上 Butterfly champion 三腿" +
+     "完整顯示，不會被壓成看起來像舊的兩腿 Vertical Spread", async ({ page }) => {
+  await routeButterflyDetail(page);
+  await page.goto("/#/");
+
+  const card = page.getByRole("listitem").filter({ hasText: "XYZ" });
+  await expect(card).toContainText("Call Butterfly");
+  await expect(card).toContainText("買 100 / 賣 2×106 / 買 115");
 });
 
 /* ---------- T17（#234，Initial V2）：持平劇本（target_price == spot），

@@ -83,6 +83,26 @@ test("選中劇本時，左側劇本庫（含建立劇本入口）與右側詳�
   await expect(page.getByLabel("標的代號")).toBeVisible();
 });
 
+test("OPTION-CHASER-CLOSEOUT-001：桌面版劇本設定卡在劇本摘要卡之前，呈現" +
+     "使用者原本建立的劇本 context（標的／目標價／目標年月／方向／" +
+     "啟用的策略）", async ({ page }) => {
+  await routeTwoScenarios(page);
+  await page.goto("/#/s/s1");
+
+  const detail = page.locator(".detail-pane");
+  const context = detail.getByRole("region", { name: "劇本設定" });
+  await expect(context).toContainText("XYZ");
+  await expect(context).toContainText(`$${sample.params.target_price.toFixed(2)}`);
+  await expect(context).toContainText(sample.params.target_month);
+  await expect(context).toContainText("看漲");
+  await expect(context).toContainText("Vertical Spread");
+
+  const summary = detail.getByRole("region", { name: "劇本摘要" });
+  const contextBox = await context.boundingBox();
+  const summaryBox = await summary.boundingBox();
+  expect(contextBox!.y).toBeLessThan(summaryBox!.y);
+});
+
 test("Spread 淨成本走勢：桌面 hover 資料點顯示 tooltip（MVP V3／#106）", async ({ page }) => {
   await routeTwoScenarios(page);
   const history = {
@@ -1092,7 +1112,11 @@ test("詳細頁密度：桌面一屏能看到的比例明顯提高（QA-FIX-3／
 
   // 資訊一項不減少：QA 修正把「劇本摘要／基準候選／進場成本」三張卡
   // 合成一張，十一項全部都要還在——合併是為了壓高度，不是砍資訊。
-  const summary = page.locator(".detail-pane .summary-card").first();
+  // OPTION-CHASER-CLOSEOUT-001 新增的「劇本設定」卡排在它前面、也
+  // 共用 `.summary-card` 密度樣式，`.first()` 現在會撈到那張而非這裡
+  // 要驗的基準候選摘要卡——改用 `aria-label` scope 回正確的那一張。
+  const summary = page.locator(".detail-pane")
+    .getByRole("region", { name: "劇本摘要" });
   for (const label of ["策略", "現價", "目標價", "目標年月",
                       "買腿 Ask", "賣腿 Bid", "淨成本",
                       "資料時間", "資料來源"]) {
@@ -1735,7 +1759,8 @@ const rowCallFlyDesktop = {
     baseline_return: butterflyCandDesktop.baseline_return,
     expiry: butterflyCandDesktop.legs[0].expiry,
     legs: butterflyCandDesktop.legs.map((l: any) =>
-      ({ option_type: l.option_type, side: l.side, strike: l.strike })),
+      ({ option_type: l.option_type, side: l.side, strike: l.strike,
+        quantity: l.quantity })),
     strategy: "call-fly",
   },
 };
@@ -1796,6 +1821,16 @@ test("T16（#232）：桌面版 Butterfly 三隻腿完整顯示、兩個損益�
 
   await expect(detail.getByText("IV 相對位置")).toHaveCount(0);
   expect(ivCalls).toEqual([]);
+});
+
+test("OPTION-CHASER-CLOSEOUT-001：桌面版劇本庫卡片上 Butterfly champion " +
+     "三腿完整顯示，不會被壓成看起來像舊的兩腿 Vertical Spread", async ({ page }) => {
+  await routeButterflyDetailDesktop(page);
+  await page.goto("/#/");
+
+  const card = page.getByRole("link", { name: /XYZ/ });
+  await expect(card).toContainText("Call Butterfly");
+  await expect(card).toContainText("買 100 / 賣 2×106 / 買 115");
 });
 
 /* ---------- T17（#234，Initial V2）：持平劇本，桌面 viewport ---------- */

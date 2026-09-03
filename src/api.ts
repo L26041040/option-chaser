@@ -104,6 +104,7 @@ export interface RepresentativeCandidateLeg {
   strike: number;
   option_type: string;
   side: "buy" | "sell";
+  quantity: number;
 }
 
 export interface RepresentativeCandidate {
@@ -463,6 +464,15 @@ export interface AnalysisView {
    * （schema_version < 6）沒有這個欄位。
    */
   family_eligibility?: Record<string, FamilyEligibility>;
+  /**
+   * OPTION-CHASER-CLOSEOUT-001（Scenario Detail 補劇本摘要）：這次
+   * 分析當下由 `target_price` 相對 `spot` 推導的衍生方向
+   * （`"bullish"`／`"bearish"`／`"flat"`），與 `family_eligibility`
+   * 用同一個判準算出來的同一個值——前端不重算，只顯示
+   * （`./detail::directionLabel()`）。可選——舊存的 View
+   * （schema_version < 9）沒有這個欄位。
+   */
+  direction?: string;
   /**
    * T14（#233，Initial V2）：座標軸去重後的集中儲存區——候選的
    * `matrix.axis_index`／`comparator.matrix.axis_index` 都是這個陣列

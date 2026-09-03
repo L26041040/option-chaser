@@ -1,9 +1,11 @@
 /**
  * 劇本詳細頁（MVP V3／#103，資訊階層依 spec #102 決策 A 重整）：
- * 摘要（含基準候選與進場成本，QA 修正後三卡合一）→〔Historical IV
- * Position 插槽〕→ Payoff Heatmap → Strategy Family 分頁（依到期日
- * 分組的 Expiry Structure／候選池／分析報告，見 `FamilyTabs`）
- * → Spread 歷史／原始資料。
+ * 劇本設定（OPTION-CHASER-CLOSEOUT-001：使用者原本建立的 context——
+ * 標的／目標價／目標年月／方向／啟用的 family）→ 摘要（含基準候選與
+ * 進場成本，QA 修正後三卡合一）→〔Historical IV Position 插槽〕→
+ * Payoff Heatmap → Strategy Family 分頁（依到期日分組的 Expiry
+ * Structure／候選池／分析報告，見 `FamilyTabs`）→ Spread 歷史／
+ * 原始資料。
  *
  * 資料只從 `GET /api/scenarios/{id}` 來，畫面上每個數字都是引擎算好的：
  * 現價與所需漲幅在 `meta`、目標在 `params`、報酬矩陣在候選的 `matrix`。
@@ -35,8 +37,8 @@ import {
   type ScenarioDetail as Detail,
   type StrategyResult,
 } from "./api";
-import { candidateTitle, formatMove, strategyLabel } from "./detail";
-import { championCandidate, resultForStrategy } from "./family";
+import { candidateTitle, directionLabel, formatMove, strategyLabel } from "./detail";
+import { championCandidate, FAMILY_LABELS, resultForStrategy } from "./family";
 import { isThinPool, legPrices, validPairsForExpiry } from "./expiry";
 import { heatmapProps } from "./heatmap";
 import { getScenarioCached } from "./fetchCache";
@@ -113,6 +115,40 @@ function Chart({ view, candidate }: { view: AnalysisView; candidate: Candidate |
  * 不保證是冠軍）。既有單一 family 劇本的 `championCandidate` 恆等於
  * 舊版 `primaryResult` 的候選，數字逐位元不變。
  */
+/**
+ * 劇本設定（OPTION-CHASER-CLOSEOUT-001，項目 2）：使用者原本建立這個
+ * 劇本時填的東西——標的、目標價、目標年月、系統依此推導出的方向、
+ * 以及使用者勾選啟用的 Strategy Family。放在 `Summary`（哪一組候選
+ * 表現最好）之前，讓使用者先確認「我現在看的劇本是什麼」，再看這個
+ * 劇本下的最佳策略——兩件事分屬不同的卡片，不要混在同一張裡。
+ *
+ * 零金融計算：`direction` 是後端 `derive_direction()` 算好、與
+ * `family_eligibility` 同一個判準的既有欄位（見 `option_chaser/
+ * store.py::serialize_result()`），這裡只格式化顯示；`strategies`
+ * 是使用者建立／編輯劇本時勾選的既有欄位（`ScenarioDetail.strategies`，
+ * `FamilyTabs` 也讀同一個 prop），不是重新計算出來的。
+ */
+function ScenarioContext({ view, strategies }: {
+  view: AnalysisView;
+  strategies: readonly string[];
+}) {
+  return (
+    <section className="card summary-card" aria-label="劇本設定">
+      <div className="summary-grid">
+        <Stat label="標的">{view.meta.symbol}</Stat>
+        <Stat label="目標價">{money(view.params.target_price)}</Stat>
+        <Stat label="目標年月">{view.params.target_month}</Stat>
+        <Stat label="方向">{directionLabel(view.direction)}</Stat>
+        <Stat label="啟用的策略類型">
+          {strategies.length > 0
+            ? strategies.map((code) => FAMILY_LABELS[code] ?? code).join("、")
+            : "—"}
+        </Stat>
+      </div>
+    </section>
+  );
+}
+
 function Summary({ view, candidate, result, analyzedAt }: {
   view: AnalysisView;
   candidate: Candidate | null;
@@ -210,6 +246,10 @@ function DetailBody({ scenarioId, view, analyzedAt, strategies }: {
   const result = candidate ? resultForStrategy(view, candidate.strategy) : null;
   return (
     <>
+      {/* OPTION-CHASER-CLOSEOUT-001：劇本設定（使用者原本建立的
+          context）排在最佳策略內容之前——先知道「這是什麼劇本」，
+          再看「這個劇本下最好的候選」。 */}
+      <ScenarioContext view={view} strategies={strategies} />
       {/* spec #102 決策 A 的資訊階層不變，只是前三格（劇本摘要／基準
           候選／進場成本）合併成同一張高密度卡：摘要 →〔IV History
           插槽〕→ Payoff Heatmap，全部圍繞同一組

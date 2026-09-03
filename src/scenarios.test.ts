@@ -137,8 +137,8 @@ describe("代表候選格式（MVP-v2／#77、#78）", () => {
   it("價差寫成「買 X / 賣 Y」，買腿在前、賣腿在後", () => {
     expect(formatRepresentativeLegs({
       strategy: "bull-call-spread",
-      legs: [{ strike: 118, option_type: "call", side: "buy" },
-            { strike: 122, option_type: "call", side: "sell" }],
+      legs: [{ strike: 118, option_type: "call", side: "buy", quantity: 1 },
+            { strike: 122, option_type: "call", side: "sell", quantity: 1 }],
       expiry: "2026-09-18", baseline_return: 1.5,
     })).toBe("買 118 / 賣 122");
   });
@@ -146,9 +146,27 @@ describe("代表候選格式（MVP-v2／#77、#78）", () => {
   it("單腳只寫「買 X」，不憑空生出賣腿", () => {
     expect(formatRepresentativeLegs({
       strategy: "long-call",
-      legs: [{ strike: 118, option_type: "call", side: "buy" }],
+      legs: [{ strike: 118, option_type: "call", side: "buy", quantity: 1 }],
       expiry: "2026-09-18", baseline_return: 0.3,
     })).toBe("買 118");
+  });
+
+  // OPTION-CHASER-CLOSEOUT-001：舊版用 findLeg() 各抓一隻 buy／sell 腿，
+  // Butterfly champion（買／賣 2 口／買）的第二隻 buy 腿會被靜默丟掉，
+  // 印成「買 106 / 賣 109」——看起來像一組兩腿 Vertical Spread，但
+  // strategy 欄位其實已經正確是 call-fly。這裡直接鎖住三腿逐一列出、
+  // 中腿標出「2×」，證明卡片上的 legs 真的跟 strategy 來自同一個
+  // representative candidate。
+  it("Butterfly 三腿逐一列出，中腿標出口數，不會被壓成兩腿價差", () => {
+    expect(formatRepresentativeLegs({
+      strategy: "call-fly",
+      legs: [
+        { strike: 106, option_type: "call", side: "buy", quantity: 1 },
+        { strike: 109, option_type: "call", side: "sell", quantity: 2 },
+        { strike: 112, option_type: "call", side: "buy", quantity: 1 },
+      ],
+      expiry: "2026-09-18", baseline_return: 5.67,
+    })).toBe("買 106 / 賣 2×109 / 買 112");
   });
 
   it("沒有代表候選時說「—」，不是編一組假的候選", () => {
@@ -158,8 +176,8 @@ describe("代表候選格式（MVP-v2／#77、#78）", () => {
   it("實際到期日原樣顯示，沒有代表候選時說「—」", () => {
     expect(formatRepresentativeExpiry({
       strategy: "bull-call-spread",
-      legs: [{ strike: 118, option_type: "call", side: "buy" },
-            { strike: 122, option_type: "call", side: "sell" }],
+      legs: [{ strike: 118, option_type: "call", side: "buy", quantity: 1 },
+            { strike: 122, option_type: "call", side: "sell", quantity: 1 }],
       expiry: "2026-09-18", baseline_return: 1.5,
     })).toBe("2026-09-18");
     expect(formatRepresentativeExpiry(null)).toBe("—");

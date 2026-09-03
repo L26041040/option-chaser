@@ -17,8 +17,8 @@ function row(overrides: Partial<ScenarioSummary> = {}): ScenarioSummary {
     target_anchor: "2028-05-19", days_to_anchor: 653,
     representative_candidate: {
       strategy: "bull-call-spread",
-      legs: [{ strike: 118, option_type: "call", side: "buy" },
-            { strike: 122, option_type: "call", side: "sell" }],
+      legs: [{ strike: 118, option_type: "call", side: "buy", quantity: 1 },
+            { strike: 122, option_type: "call", side: "sell", quantity: 1 }],
       expiry: "2026-09-18", baseline_return: 1.234,
     },
     ...overrides,
@@ -85,6 +85,27 @@ describe("Compact 劇本列（MVP-v2／#77、#82）", () => {
       expect(within(card).getByText("653 天")).toBeInTheDocument();
       expect(within(card).getByText("8/4 05:30")).toBeInTheDocument();
     });
+
+  // OPTION-CHASER-CLOSEOUT-001：手機版 compact row 與桌面版共用同一份
+  // `formatRepresentativeLegs()`，這裡鏡射 ScenarioList.test.tsx 的
+  // 同一條回歸——Butterfly champion 三腿完整顯示，不會被壓成兩腿價差。
+  it("Butterfly champion 三腿完整顯示，不會被壓成兩腿價差（OPTION-CHASER-CLOSEOUT-001）", () => {
+    list([row({
+      best_return: 5.67,
+      representative_candidate: {
+        strategy: "call-fly",
+        legs: [
+          { strike: 106, option_type: "call", side: "buy", quantity: 1 },
+          { strike: 109, option_type: "call", side: "sell", quantity: 2 },
+          { strike: 112, option_type: "call", side: "buy", quantity: 1 },
+        ],
+        expiry: "2026-09-18", baseline_return: 5.67,
+      },
+    })]);
+    const card = screen.getByRole("listitem");
+    expect(within(card).getByText(/Call Butterfly/)).toBeInTheDocument();
+    expect(within(card).getByText(/買 106 \/ 賣 2×109 \/ 買 112/)).toBeInTheDocument();
+  });
 
   it("代表候選為 null 時報酬率與策略欄都顯示「—」，不是編一組假的候選", () => {
     list([row({ best_return: null, latest_analyzed_at: null,

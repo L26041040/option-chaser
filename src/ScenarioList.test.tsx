@@ -123,8 +123,8 @@ describe("決策 K（#108）：桌面卡片瘦身後七項決策資訊一項不�
       best_return: 1.234,
       representative_candidate: {
         strategy: "bull-call-spread",
-        legs: [{ strike: 118, option_type: "call", side: "buy" },
-              { strike: 122, option_type: "call", side: "sell" }],
+        legs: [{ strike: 118, option_type: "call", side: "buy", quantity: 1 },
+              { strike: 122, option_type: "call", side: "sell", quantity: 1 }],
         expiry: "2026-09-18", baseline_return: 1.234,
       },
       latest_analyzed_at: "2026-08-04T09:30:00+00:00",
@@ -218,8 +218,8 @@ describe("代表候選（MVP-v2／#77、#78）", () => {
     list([row({
       representative_candidate: {
         strategy: "bull-call-spread",
-        legs: [{ strike: 118, option_type: "call", side: "buy" },
-              { strike: 122, option_type: "call", side: "sell" }],
+        legs: [{ strike: 118, option_type: "call", side: "buy", quantity: 1 },
+              { strike: 122, option_type: "call", side: "sell", quantity: 1 }],
         expiry: "2026-09-18", baseline_return: 1.234,
       },
     })]);
@@ -235,7 +235,7 @@ describe("代表候選（MVP-v2／#77、#78）", () => {
     list([row({
       representative_candidate: {
         strategy: "long-call",
-        legs: [{ strike: 118, option_type: "call", side: "buy" }],
+        legs: [{ strike: 118, option_type: "call", side: "buy", quantity: 1 }],
         expiry: "2026-09-18", baseline_return: 0.29,
       },
     })]);
@@ -268,14 +268,37 @@ describe("代表候選（MVP-v2／#77、#78）", () => {
       best_return: 3.33,
       representative_candidate: {
         strategy: "bull-call-spread",
-        legs: [{ strike: 100, option_type: "call", side: "buy" },
-              { strike: 105, option_type: "call", side: "sell" }],
+        legs: [{ strike: 100, option_type: "call", side: "buy", quantity: 1 },
+              { strike: 105, option_type: "call", side: "sell", quantity: 1 }],
         expiry: "2026-09-18", baseline_return: 3.33,
       },
     })]);
 
     expect(screen.getByText("333.0%")).toBeInTheDocument();
     expect(screen.getByText(/買 100 \/ 賣 105/)).toBeInTheDocument();
+  });
+
+  // OPTION-CHASER-CLOSEOUT-001：卡片曾經只抓 champion 的第一隻 buy 腿
+  // 與 sell 腿（`findLeg()`），Butterfly champion 的第二隻 buy 腿會被
+  // 靜默丟掉，畫面上看起來像一組舊的兩腿 Vertical Spread——即使策略
+  // 名稱已經正確顯示 Call Butterfly。這裡驗證卡片上的策略名稱與三腿
+  // 履約價，逐位元來自同一個 `representative_candidate`。
+  it("Butterfly champion 三腿完整顯示，不會被壓成兩腿價差（OPTION-CHASER-CLOSEOUT-001）", () => {
+    list([row({
+      best_return: 5.67,
+      representative_candidate: {
+        strategy: "call-fly",
+        legs: [
+          { strike: 106, option_type: "call", side: "buy", quantity: 1 },
+          { strike: 109, option_type: "call", side: "sell", quantity: 2 },
+          { strike: 112, option_type: "call", side: "buy", quantity: 1 },
+        ],
+        expiry: "2026-09-18", baseline_return: 5.67,
+      },
+    })]);
+
+    expect(screen.getByText(/Call Butterfly/)).toBeInTheDocument();
+    expect(screen.getByText(/買 106 \/ 賣 2×109 \/ 買 112/)).toBeInTheDocument();
   });
 });
 
