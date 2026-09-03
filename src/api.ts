@@ -30,13 +30,90 @@ export interface Leg {
    *  中性 metadata（低權重、無警示樣式），與 #104 的顯示旗標無關。 */
   volume: number;
   open_interest: number;
+  /**
+   * T12（#228，Initial V2）：這隻腿的買賣方向——取代「陣列位置＝方向」
+   * 的隱性慣例（過去 `legs[0]` 恆是買腿、`legs[1]` 恆是賣腿，前端到處
+   * 靠 `const [buy, sell] = candidate.legs` 這樣猜）。三腿以上的候選
+   * （Butterfly，T15／#230）陣列位置不再天然對應方向，前端一律讀這個
+   * 欄位判斷，不再靠位置。
+   */
+  side: "buy" | "sell";
+  /** 這隻腿的口數。既有兩腿策略恆為 1；Butterfly 中腿為 2（#217 決策 H）。 */
+  quantity: number;
+}
+
+/**
+ * T12（#228，Initial V2）：candidate 的腿位陣列，canonical boundary
+ * `1 <= len(legs) <= 4`——型別本身就是這個容量邊界，不是註解裡的一句
+ * 提醒。今天實際只會出現 1 或 2 腿（Initial V2 啟用到 3 腿，見 #228）；
+ * 4 腿僅為 data-shape 容量，本輪不啟用任何四腿 strategy。
+ */
+export type CandidateLegs =
+  | readonly [Leg]
+  | readonly [Leg, Leg]
+  | readonly [Leg, Leg, Leg]
+  | readonly [Leg, Leg, Leg, Leg];
+
+/**
+ * T12（#228，Initial V2）：找出這組腿位陣列裡第一隻符合方向的腿——
+ * 取代散在 `expiry.ts`／`scenarios.ts`／`detail.ts`／`AnalysisReport.tsx`
+ * 四處各自重複一次的 `.find(leg => leg.side === ...)`（`/code-review`
+ * Standards 軸抓到，Rule of Three 已超過）。找不到回 `null`（單腳候選
+ * 找賣腿、或未來多買腿候選找「第一個買腿」以外的其他買腿都可能落空），
+ * 不是拋錯——沒有這個方向的腿是正常狀態，不是資料錯誤。泛型是因為
+ * `Candidate.legs`（`CandidateLegs`，完整 `Leg`）與
+ * `RepresentativeCandidate.legs`（`RepresentativeCandidateLeg[]`，
+ * 精簡子集）都需要同一個查找邏輯，兩者共通的只有 `side` 這個欄位。
+ */
+export function findLeg<T extends { side: "buy" | "sell" }>(
+  legs: readonly T[], side: "buy" | "sell",
+): T | null {
+  return legs.find((leg) => leg.side === side) ?? null;
+}
+
+/**
+ * T16（#232，Initial V2，`/code-review` Standards 軸抓到）：這隻腿的
+ * 買賣方向中文字——`detail.ts::candidateTitle()` 與
+ * `expiry.ts::legPriceEntries()` 原本各自獨立重複同一句
+ * `leg.side === "buy" ? "買" : "賣"`，抽到這裡讓兩處共用同一個字彙來源。
+ */
+export function legSide(leg: { side: "buy" | "sell" }): string {
+  return leg.side === "buy" ? "買" : "賣";
+}
+
+/**
+ * T16（#232，Initial V2）：口數 > 1 的腿的倍數標示（例如 Butterfly 中腿
+ * 賣 2 口 →「2×」），口數 1 時是空字串——與上面 `legSide()` 同一次
+ * 重構抽出，供 `candidateTitle()`／`legPriceEntries()` 共用同一套
+ * 「怎麼標示口數」規則。
+ */
+export function legQuantityPrefix(leg: { quantity: number }): string {
+  return leg.quantity > 1 ? `${leg.quantity}×` : "";
+}
+
+/**
+ * 逐腿列出的候選身分字串——「買 118 / 賣 122」／Butterfly 的
+ * 「買 106 / 賣 2×109 / 買 112」。`detail.ts::candidateTitle()`（詳細頁）
+ * 與 `scenarios.ts::formatRepresentativeLegs()`（劇本庫卡片，
+ * OPTION-CHASER-CLOSEOUT-001）原本各自寫一份逐字相同的
+ * `.map().join(" / ")`，只是輸入型別不同（`CandidateLegs` 完整 `Leg`
+ * vs `RepresentativeCandidateLeg` 精簡子集）——共通的只有 `side`／
+ * `quantity`／`strike` 三個欄位，抽成這裡（`/code-review` Standards
+ * 軸抓到，同一份邏輯不該有兩份程式碼）。
+ */
+export function formatLegs(
+  legs: readonly { side: "buy" | "sell"; quantity: number; strike: number }[],
+): string {
+  return legs
+    .map((leg) => `${legSide(leg)} ${legQuantityPrefix(leg)}${leg.strike}`)
+    .join(" / ");
 }
 
 /** 代表候選（MVP-v2／#77、#78）：劇本清單卡片要的候選完整身分——只到
  *  「顯示要用」這一層，不是完整的 `Candidate`／`Leg`（報價、IV、量能等
- *  欄位留在詳細頁）。`legs[0]` 是買腿，`legs[1]`（若有）是賣腿——沿用
- *  後端序列化層既有的 `[0]=long, [1]=short` 慣例。單腳策略只有一隻腿；
- *  結構上不假設腿數固定，未來策略種類增加不必改型別。
+ *  欄位留在詳細頁）。T12（#228，Initial V2）起每一腿帶顯式 `side`，
+ *  前端讀這個欄位判斷買賣方向，不再靠陣列位置猜（`[0]`/`[1]` 只是
+ *  今天兩腿策略剛好等於 buy/sell 的順序，Butterfly 之後不成立）。
  *
  *  `baseline_return` 與卡片列的 `best_return` 必為同一個數字（後端
  *  `store.best_return` 由這個結構導出，口徑恆等）——前端不重算、只顯示。
@@ -44,6 +121,8 @@ export interface Leg {
 export interface RepresentativeCandidateLeg {
   strike: number;
   option_type: string;
+  side: "buy" | "sell";
+  quantity: number;
 }
 
 export interface RepresentativeCandidate {
@@ -66,6 +145,34 @@ export interface Matrix {
   cells: number[][];
 }
 
+/**
+ * T14（#233，Initial V2，研究 #216 定案的「組合一」）：座標軸集合——
+ * 同一個 scenario 內，不同候選之間的 (prices, dates) 座標高度重複
+ * （150 候選實測僅 10 組相異軸），因此抽到 `AnalysisView.axis_sets`
+ * 集中存放一次，候選只留索引引用（`CompactMatrix.axis_index`）。
+ */
+export type AxisSet = Pick<Matrix, "prices" | "dates">;
+
+/**
+ * 候選矩陣在**新** schema（`schema_version >= 7`）下的傳輸形狀——
+ * `cells` 攤平成一維陣列並捨入（`option_chaser/store.py::
+ * MATRIX_CELL_DECIMALS`），恢復成二維要靠 `axis_sets[axis_index].
+ * dates` 的長度切分（`resolveMatrix()`，`./heatmap`）。
+ */
+export interface CompactMatrix {
+  axis_index: number;
+  cells: number[];
+}
+
+/**
+ * 候選矩陣的兩種可能形狀：新分析一律產出 `CompactMatrix`；
+ * `schema_version < 7` 時已存的舊 View（T09／#191 既有裁示：舊存的
+ * View 不做資料遷移）仍是完整內嵌的 `Matrix`。`resolveMatrix()` 對
+ * 兩種形狀都能正確解出同一份完整 `Matrix`——用 `"axis_index" in`
+ * 判斷是哪一種，不靠 `schema_version` 分支（呼叫端不必知道版本號）。
+ */
+export type WireMatrix = CompactMatrix | Matrix;
+
 /** 一個劇本價位與該候選在那個價位上的報酬（口徑同 `baseline_return`）。 */
 export interface PricePoint {
   label: "worst" | "target" | "best";
@@ -86,7 +193,10 @@ export interface Comparator {
   strike: number;
   expiry: string;
   cost: number;
-  matrix: Matrix;
+  /** T14（#233，Initial V2）：與該候選自己的 `matrix` 共用同一個
+   *  `axis_index`（#116 既有的「同一組 price×date grid」保證，去重
+   *  自然成立，不需要另外處理）。 */
+  matrix: WireMatrix;
 }
 
 /** 引擎的 `ScenarioVector`（7 個固定壓力情境，Mid 口徑）。 */
@@ -98,6 +208,15 @@ export interface ScenarioVectorView {
 
 export interface Candidate {
   candidate_key: string;
+  /**
+   * T11（#229，Initial V2）：這組候選實際跑的 subtype 代碼（例如
+   * "bull-call-spread"）——後端 `store._candidate()` 早就序列化這個
+   * 欄位（T12／#228 施工時已確認「不新增一個名字不同、值卻恆等的
+   * `subtype` 欄位」），前端直到本票才開始讀它：多 family 並存後，
+   * 同一個排名池裡的候選可能來自不同 subtype，每一列需要標示出它
+   * 實際是哪一種結構（`detail.strategyLabel()` 格式化成人看得懂的名字）。
+   */
+  strategy: string;
   baseline_return: number;
   natural_cost: number;
   /** MVP V3（#105）：Mid 口徑進場成本——Analysis Report → Execution
@@ -105,7 +224,37 @@ export interface Candidate {
    *  對照。序列化早就存在（`store._candidate` 的 `mid_cost`），本票起
    *  前端才開始讀它。 */
   mid_cost: number;
-  breakeven: number;
+  /**
+   * T15（#230，Initial V2）：Butterfly 到期時連峰值都賺不到（`profit_
+   * region` 為 `None`）時後端如實回傳 `null`——不假造一個數字。既有
+   * 四策略恆有值。畫面呈現改讀下面的 `breakeven_points`（T16／#232），
+   * 這個欄位保留給尚未升級的既有讀取端與型別相容。
+   */
+  breakeven: number | null;
+  /**
+   * T12（#228，Initial V2）：損益兩平的**傳輸格式**——0～2 點的陣列，
+   * 容量預留給 Butterfly（T15／#230）用。既有四策略恆是單點、值等於
+   * 上面的 `breakeven`；Butterfly 到期時完全無法獲利時是空陣列（見
+   * `profit_region`）。T16（#232）起前端據此呈現多點 Breakeven 與
+   * 獲利區間。
+   *
+   * CLOSEOUT-004（PR #250 review Finding 1）：Butterfly 有獲利空間時
+   * 是**一或兩點**，不再恆為兩點——broken-wing 組合的翼外平台可能本身
+   * 就高於進場成本，那一側沒有由虧轉盈的價位，就不該憑空填一個數字
+   * 進來（修正前填該側履約價，是一個不存在的損益兩平點）。
+   */
+  breakeven_points: number[];
+  /**
+   * T15（#230，Initial V2）：獲利區間——標的落在這個範圍內、到期時為
+   * 正報酬。只有 Butterfly 會非 null；既有四策略恆為 `null`（它們的
+   * payoff 對照組是單調的，「獲利區間」這個概念本身不成立，不是
+   * 缺了一個數字）。
+   *
+   * CLOSEOUT-004（Finding 1）：兩個邊界**各自可為 `null`**＝那一側
+   * 沒有界，往那個方向走多遠到期時都還是獲利（broken-wing 翼外平台
+   * 高於進場成本）。呈現層必須據此改口，不得說「區間外無法獲利」。
+   */
+  profit_region: [number | null, number | null] | null;
   /** 距這組候選自己的到期日還有幾天（V8／#56，spec R1 §4.2 B「剩餘
    *  天數」——早就序列化了，純文字報告沒印）。 */
   days_to_expiry: number;
@@ -128,8 +277,6 @@ export interface Candidate {
   completion_curve: [number, number][];
   completion_threshold: number | null;
   retention: number;
-  friction: number;
-  friction_amount: number;
   /**
    * V8（#56，spec R1 §4.2 A2）：買價指引天花板——純文字報告早就在印，
    * 這裡補上序列化。單腿的 L1（＝保守底線）依票上 A2 表範圍不補。
@@ -150,10 +297,10 @@ export interface Candidate {
   price_ladder?: PricePoint[];
   /**
    * MVP V3（#104，spec #102 決策 F）：⚠ 徽章與候選池文案唯一該接的
-   * 顯示旗標——僅 Bid/Ask 過寬（`is_spread_wide`）。零成交量、
-   * Execution friction 超過 25% 都不再觸發顯示。舊的複合旗標
-   * `quote_warning`（選取閘門用，含 zero_vol／friction 兩項）不對外
-   * 序列化，此契約裡不會出現這個鍵。
+   * 顯示旗標——僅 Bid/Ask 過寬（`is_spread_wide`）。零成交量都不再
+   * 觸發顯示。舊的複合旗標 `quote_warning`（選取閘門用，含 zero_vol／
+   * wide_spread 兩項，T04／#220 起 friction 已自 canonical model 退場）
+   * 不對外序列化，此契約裡不會出現這個鍵。
    */
   wide_spread_warning: boolean;
   /**
@@ -163,8 +310,12 @@ export interface Candidate {
    * 布林值。
    */
   monotonicity_warning: boolean;
-  legs: Leg[];
-  matrix: Matrix;
+  legs: CandidateLegs;
+  /** T14（#233，Initial V2）：座標軸去重＋格值攤平捨入後的傳輸形狀
+   *  ——用 `resolveMatrix(view, candidate.matrix)`（`./heatmap`）解回
+   *  完整 `Matrix` 才能餵給 `<Heatmap>`，不要直接把這個欄位當
+   *  `Matrix` 用。 */
+  matrix: WireMatrix;
   /**
    * #115（spec #117 §4）：Crossover 對照——只有 Spread 候選有值；單腿
    * 恆為 `null`（沒有「跟自己比較」的概念）。Spread 候選理論上也可能
@@ -199,6 +350,12 @@ export interface FilterStage {
    * 出現在這裡，見 `QualityFlag`。
    */
   filter_class: string;
+  /**
+   * T05（#226，Initial V2，`/code-review` Spec 軸回饋）：這一關剔除掉的
+   * 候選身份範例（合約代碼，或配對的兩腿合約代碼組合）——只是前幾筆
+   * 範例，不是完整清單，供診斷指認「是哪一組」。
+   */
+  removed_examples: string[];
 }
 
 /**
@@ -226,6 +383,17 @@ export interface FilterReportCounts {
 export interface PairReport {
   total_pairs: number;
   removed_sanity: number;
+  /**
+   * T05（#226，Initial V2）：B 層（導出層數學安全網）在配對這個單位上
+   * 的淘汰數，獨立於 `removed_sanity`（A 層／per-subtype 結構合法性）。
+   * `CandidatePool` 與 `removed_sanity` 並排呈現；正常報價下恆為 0。
+   */
+  b_layer_removed: number;
+  /**
+   * T05（`/code-review` Spec 軸回饋）：B 層剔除掉的配對身份範例（買腿／
+   * 賣腿合約代碼組成），只是前幾筆範例，供診斷指認「是哪兩腿」。
+   */
+  b_layer_removed_examples: string[];
   passed: number;
 }
 
@@ -313,6 +481,44 @@ export interface AnalysisView {
    *  可選——舊存的 View（schema_version < 3）沒有這個欄位，`resolveCandidate()`
    *  對此誠實回傳 `null`，不假造內容。 */
   candidate_pool?: CandidateMap;
+  /**
+   * T08（#225，Initial V2）：每個 Strategy Family 的可選／不可選
+   * verdict（鍵是 family 代碼），涵蓋全部三個 family，不只這個劇本
+   * 目前選中的那些。方向是分析當下由 target_price 相對 spot 推導的
+   * 衍生值，不落盤。前端**只渲染**這個 verdict，永不自行計算
+   * eligibility（CONTEXT.md「Eligibility」一節）。可選——舊存的 View
+   * （schema_version < 6）沒有這個欄位。
+   */
+  family_eligibility?: Record<string, FamilyEligibility>;
+  /**
+   * OPTION-CHASER-CLOSEOUT-001（Scenario Detail 補劇本摘要）：這次
+   * 分析當下由 `target_price` 相對 `spot` 推導的衍生方向
+   * （`"bullish"`／`"bearish"`／`"flat"`），與 `family_eligibility`
+   * 用同一個判準算出來的同一個值——前端不重算，只顯示
+   * （`./detail::directionLabel()`）。可選——舊存的 View
+   * （schema_version < 9）沒有這個欄位。
+   */
+  direction?: string;
+  /**
+   * T14（#233，Initial V2）：座標軸去重後的集中儲存區——候選的
+   * `matrix.axis_index`／`comparator.matrix.axis_index` 都是這個陣列
+   * 的索引。可選——舊存的 View（schema_version < 7）沒有這個欄位，
+   * 此時候選的 `matrix` 本身就是完整 `Matrix`（`WireMatrix` 的另一種
+   * 形狀），`resolveMatrix()` 用 `"axis_index" in` 判斷、不依賴這個
+   * 欄位是否存在。
+   */
+  axis_sets?: AxisSet[];
+}
+
+/**
+ * T08（#225，Initial V2）：Family 的可選／不可選 verdict——`reason`
+ * 只在 `eligible === false` 時有值，直接顯示給使用者看，不必前端
+ * 自己編字。
+ */
+export interface FamilyEligibility {
+  family: string;
+  eligible: boolean;
+  reason: string | null;
 }
 
 /**
@@ -410,6 +616,21 @@ export interface ScenarioSummary {
    * 一邊是 null）。
    */
   representative_candidate: RepresentativeCandidate | null;
+  /**
+   * T10（#227，Initial V2）：使用者勾選的 Strategy Family 代碼（不是
+   * 具體 subtype 字串）。編輯表單用它預填目前的勾選狀態——之前這個
+   * 欄位雖然一直存在於後端回應裡，但前端從未宣告過型別（`_MVP_
+   * STRATEGIES` 過去恆為同一個值，沒有畫面需要知道它）。
+   */
+  strategies: string[];
+  /**
+   * T10（#227，Initial V2）：最近一次分析當下算出的 family 可選／
+   * 不可選 verdict（鍵是 family 代碼），涵蓋全部三個 family。編輯
+   * 表單讀這裡顯示「這個 family 現在為什麼不可選」，不必打 detail
+   * 端點。`null` ＝ 這個劇本還沒成功分析過，沒有可顯示的 verdict
+   * （不是假造一份「全部可選」）。
+   */
+  family_eligibility: Record<string, FamilyEligibility> | null;
 }
 
 /**
@@ -425,6 +646,13 @@ export interface CreateScenarioRequest {
   symbol: string;
   target_price: number;
   target_month: string;
+  /**
+   * T10（#227，Initial V2）：使用者勾選的 Strategy Family 代碼——
+   * 必填、無預設值（AC「必填留白」），至少要有一個才能送出。
+   * `editScenario()` 沿用同一個型別，編輯表單永遠送出目前完整的
+   * 勾選集合，不是差異。
+   */
+  strategies: string[];
   /** V7（#55）劇本區間兩端，選填——沒設定就不送這兩個鍵。 */
   best_price?: number;
   worst_price?: number;

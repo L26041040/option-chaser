@@ -10,13 +10,17 @@ from .matrix import date_axis, matrix_lines, price_axis
 from .models import (AnalysisParams, ChainSnapshot, FilterReport, QualityFlagCount,
                      is_bullish, leg_option_type)
 from .ranking import BAND_LABELS, BAND_ORDER, build_reasons
-from .valuation import ContractValuation, guidance_judgments, scenario_leg_value, spread_scenario_value
+from .valuation import (ContractValuation, butterfly_scenario_value,
+                        guidance_judgments, scenario_leg_value,
+                        spread_scenario_value)
 
 STRATEGY_LABELS = {
     "long-call": "Long Call",
     "long-put": "Long Put",
     "bull-call-spread": "Bull Call Spread",
     "bear-put-spread": "Bear Put Spread",
+    "call-fly": "Call Butterfly",
+    "put-fly": "Put Butterfly",
 }
 
 
@@ -133,6 +137,15 @@ def _header_lines(snap: ChainSnapshot, p: AnalysisParams, today: date) -> list[s
     ]
 
 
+def _examples_suffix(examples: tuple[str, ...]) -> str:
+    """T05（#226，Initial V2 spec #217，`/code-review` Spec 軸回饋）：
+    把「砍了幾筆」延伸成「砍了誰」——只印範例（本來就只存了前幾筆），
+    沒有範例（既有呼叫端尚未提供，或這一關沒砍到人）就不印這一段。"""
+    if not examples:
+        return ""
+    return f"（例：{', '.join(examples)}）"
+
+
 def _filter_lines(
     freport: FilterReport, p: AnalysisParams,
     quality_flags: tuple[QualityFlagCount, ...] = (),
@@ -143,7 +156,8 @@ def _filter_lines(
     side = "Call 側" if leg_option_type(p.strategy) == "call" else "Put 側"
     lines = ["", "[過濾統計]", f"- 掃描合約（{side}）: {freport.total} 張"]
     for s in freport.stages:
-        lines.append(f"- [{s.filter_class}類排除] {s.label}刷掉: {s.removed}")
+        lines.append(f"- [{s.filter_class}類排除] {s.label}刷掉: {s.removed}"
+                     f"{_examples_suffix(s.removed_examples)}")
     lines.append(f"- 合格: {freport.passed} 張")
     if quality_flags:
         lines.append(f"- [C類標示，不影響入選，計於上方{freport.passed}張合格內]:")
@@ -161,13 +175,17 @@ def _resilience_lines(val, spot: float, today: date, p: AnalysisParams,
     共用同一次 `scenario_vector`／`completion_curve`／`completion_scan`
     計算結果（`scenarios.resilience_metrics()`，鍵是 `id(val)`）——不傳
     （`None`，預設）時每次都重算，行為與這個參數存在之前完全一樣。"""
-    from .scenarios import SCENARIO_NAMES, friction, natural_cost, resilience_metrics
-    from .valuation import SpreadValuation
+    from .scenarios import SCENARIO_NAMES, resilience_metrics
+    from .valuation import ButterflyValuation, SpreadValuation
     rm = resilience_metrics(val, spot, today, p, cache=resilience_cache)
     sv, curve, k, be = rm.scenario, rm.curve, rm.threshold, rm.breakeven
-    expiry = date.fromisoformat(
-        val.long_leg.expiry if isinstance(val, SpreadValuation) else val.contract.expiry
-    )
+    if isinstance(val, SpreadValuation):
+        expiry_iso = val.long_leg.expiry
+    elif isinstance(val, ButterflyValuation):
+        expiry_iso = val.low_leg.expiry
+    else:
+        expiry_iso = val.contract.expiry
+    expiry = date.fromisoformat(expiry_iso)
     tgt = p.anchor                            # 附錄 A9 錨點：估值參考日
     delay_delta = {"S4": 30, "S5": 90}
     lines = ["", "韌性向量（7 情境，Mid 口徑）:"]
@@ -186,11 +204,10 @@ def _resilience_lines(val, spot: float, today: date, p: AnalysisParams,
     else:
         thr = f"完成 {_pct(k)}（錨點日保本價 ${_money(be)}，基準IV）"
     retention = 1.0 + dict(sv.entries)["S1"]
-    mid = val.net_mid if isinstance(val, SpreadValuation) else val.mid
-    friction_amount = natural_cost(val) - mid
-    lines.append(f"保本門檻: {thr} | 不漲保留率: {_pct(retention)}"
-                 f" | Bid-Ask Spread: {_pct(min(friction(val), 9.99))}"
-                 f"（${_money(friction_amount)}/股）")
+    # T04（#220，#217 決策 D）：friction／Bid-Ask Spread 這一項已自
+    # canonical model 退場，這一行不再印它——保本門檻／不漲保留率兩項
+    # 維持不變。
+    lines.append(f"保本門檻: {thr} | 不漲保留率: {_pct(retention)}")
     return lines
 
 
@@ -424,7 +441,14 @@ def _band_range(band: str, p: AnalysisParams) -> str:
 
 def _pair_lines(pr) -> list[str]:
     return ["", "[配對統計]", f"- 配對總數: {pr.total_pairs}",
-            f"- 健全性淘汰: {pr.removed_sanity}", f"- 合格組數: {pr.passed}"]
+            f"- 健全性淘汰: {pr.removed_sanity}",
+            # T05（#226，Initial V2 spec #217）：B 層獨立於健全性淘汰
+            # （A 層／per-subtype 結構合法性）成立，各自一行不合併計數。
+            # `/code-review` Spec 軸回饋：附上範例讓「刷掉幾組」也指認得出
+            # 「是哪兩腿」。
+            f"- 成本或報酬為不可能值淘汰（B 層）: {pr.b_layer_removed}"
+            f"{_examples_suffix(pr.b_layer_removed_examples)}",
+            f"- 合格組數: {pr.passed}"]
 
 
 def _spread_candidate_lines(sv, idx, n_pairs, p, spot: float, today: date,
@@ -468,6 +492,93 @@ def _spread_candidate_lines(sv, idx, n_pairs, p, spot: float, today: date,
     pros, cons = build_spread_reasons(sv, idx, n_pairs, p)
     lines += ["", "評語:"] + [f"- 優點: {s}" for s in pros] + [f"- 代價: {s}" for s in cons]
     return lines
+
+
+def _butterfly_candidate_lines(bv, idx, n_triples, p, spot: float, today: date,
+                               violations: frozenset[str] = frozenset(),
+                               resilience_cache: dict | None = None) -> list[str]:
+    """T15（#230，Initial V2 spec #217）：比照 `_spread_candidate_lines()`
+    同一種寫法，三腿版本。獨立函式而非泛化既有函式——三腿的欄位形狀
+    （買/賣/買、中腿口數 2）與兩腿本質不同，硬要共用只會生出一堆
+    `if len(legs)==2` 分支。"""
+    from .ranking import build_butterfly_reasons, butterfly_profit_region_text
+    from .valuation import butterfly_guidance_judgments
+    lo, mid, hi = bv.low_leg, bv.mid_leg, bv.high_leg
+    lines = [
+        "",
+        f"{idx + 1}) 買 K={_money(lo.strike)} / 賣 2×K={_money(mid.strike)} / "
+        f"買 K={_money(hi.strike)} / {lo.expiry} 到期",
+        f"- 低履約腿 {lo.contract_symbol}: Bid ${_money(lo.bid)} / Ask ${_money(lo.ask)} "
+        f"IV {_pct_iv(lo.implied_volatility)}",
+        f"- 中履約腿（賣 2 口）{mid.contract_symbol}: Bid ${_money(mid.bid)} / "
+        f"Ask ${_money(mid.ask)} IV {_pct_iv(mid.implied_volatility)}",
+        f"- 高履約腿 {hi.contract_symbol}: Bid ${_money(hi.bid)} / Ask ${_money(hi.ask)} "
+        f"IV {_pct_iv(hi.implied_volatility)}",
+        f"- 淨成本: Mid ${_money(bv.net_mid)}（${bv.net_mid * 100:.0f}/張） / "
+        f"最差 ${_money(bv.net_worst)}（${bv.net_worst * 100:.0f}/張）",
+        f"- 最大獲利: ${_money(bv.max_profit)}（${bv.max_profit * 100:.0f}/張） / "
+        f"最大損失: ${_money(bv.max_loss)}（${bv.max_loss * 100:.0f}/張） / "
+        f"淨Delta {bv.net_delta:.2f}",
+    ]
+    # CLOSEOUT-004（Finding 1）：四種情況（兩側有界／單側無界 ×2／完全
+    # 無獲利）的措辭與 `build_butterfly_reasons` 共用同一個函式，兩處
+    # 不各自判斷。
+    lines.append(f"- 獲利區間（到期）: "
+                 f"{butterfly_profit_region_text(bv.profit_region)}")
+    for prefix, leg in (("低履約腿", lo), ("中履約腿", mid), ("高履約腿", hi)):
+        warning = _spread_width_warning(prefix, leg.bid, leg.ask, p)
+        if warning:
+            lines.append(warning)
+        mono_warning = _monotonicity_warning_line(prefix, leg.contract_symbol, violations)
+        if mono_warning:
+            lines.append(mono_warning)
+    lines += [
+        "",
+        "劇本成立時（最差進場）:",
+    ]
+    for shift, val in bv.scenario_values:
+        lines.append(_val_line(_shift_name(shift), val, bv.net_worst))
+    lines.append(_val_line("IV 情境最低值", bv.l2, bv.net_worst))
+    lines += ["", "買價指引:",
+              f"- L2 保守上限（IV 情境最低值）: ${_money(bv.l2)}（${bv.l2 * 100:.0f}/張）",
+              f"- L3 要求報酬上限（min-return {_pct(p.min_return)}）: ${_money(bv.l3)}（${bv.l3 * 100:.0f}/張）"]
+    judgments = butterfly_guidance_judgments(bv, p)
+    if judgments:
+        lines += [f"- 警示: {m}" for m in judgments]
+    else:
+        lines.append("- 目前最差進場成本低於全部天花板")
+    lines += _resilience_lines(bv, spot, today, p, resilience_cache)
+    pros, cons = build_butterfly_reasons(bv, idx, n_triples, p)
+    lines += ["", "評語:"] + [f"- 優點: {s}" for s in pros] + [f"- 代價: {s}" for s in cons]
+    return lines
+
+
+def render_butterflies(snap, p, freport, pair_report, ranked, n_triples, today,
+                       violations: frozenset[str] = frozenset(),
+                       quality_flags: tuple[QualityFlagCount, ...] = (),
+                       resilience_cache: dict | None = None) -> str:
+    """T15（#230，Initial V2 spec #217）：比照 `render_spreads()` 同一種
+    寫法，Butterfly 版本。"""
+    lines = (_header_lines(snap, p, today) + _filter_lines(freport, p, quality_flags)
+            + _pair_lines(pair_report))
+    if not ranked:
+        lines += ["", "無合格 Butterfly 組合，不產生推薦。", ""]
+        return "\n".join(lines)
+    for i, bv in enumerate(ranked):
+        lines += _butterfly_candidate_lines(bv, i, n_triples, p, snap.spot, today,
+                                            violations, resilience_cache)
+        if i == 0 or p.matrix_all:
+            lo, mid, hi = bv.low_leg, bv.mid_leg, bv.high_leg
+            lc, mc, hc = bv.low_carry, bv.mid_carry, bv.high_carry
+            lines += _matrix_block(
+                lambda S, d, lo=lo, mid=mid, hi=hi, lc=lc, mc=mc, hc=hc:
+                    butterfly_scenario_value(lo, mid, hi, S, d, p, low_carry=lc,
+                                             mid_carry=mc, high_carry=hc),
+                bv.net_worst, snap.spot, p, today, _date.fromisoformat(lo.expiry),
+            )
+    lines += _footer_lines(p)
+    lines.append("")
+    return "\n".join(lines)
 
 
 def render_spreads(snap, p, freport, pair_report, ranked, n_pairs, today,

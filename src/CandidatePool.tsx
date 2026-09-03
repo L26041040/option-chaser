@@ -19,12 +19,19 @@
  * 是「排除」（這幾筆真的不在合格池裡了），後者是「標示」（合格池裡有
  * 這麼多筆帶著品質疑慮，但一筆都沒少）。混在同一個列表裡，使用者會分
  * 不出哪個數字代表候選變少、哪個只是備註。
+ *
+ * T11（#229，Initial V2）：`result` 改由呼叫端明確傳入，不再自己用
+ * `primaryResult(view)` 猜——多 family 並存後，「這頁唯一的策略結果」
+ * 這個假設不再成立，呼叫端（`FamilyTabs`）知道目前分頁該顯示哪個
+ * subtype 的診斷，這裡只負責呈現。既有單一 family 呼叫端行為不變。
  */
-import { primaryResult, type AnalysisView } from "./api";
+import type { AnalysisView, StrategyResult } from "./api";
 import { validPairsForExpiry } from "./expiry";
 
-export default function CandidatePool({ view }: { view: AnalysisView }) {
-  const result = primaryResult(view);
+export default function CandidatePool({ view, result }: {
+  view: AnalysisView;
+  result: StrategyResult | null;
+}) {
   if (!result) return null;
 
   if (result.status !== "ok") {
@@ -55,7 +62,18 @@ export default function CandidatePool({ view }: { view: AnalysisView }) {
       </div>
 
       {result.filter_stages.map((stage) => (
-        <div className="row sub" key={stage.label}>
+        <div
+          className="row sub"
+          key={stage.label}
+          // T05（#226，Initial V2，`/code-review` Spec 軸回饋）：被這一關
+          // 剔除掉的候選身份範例——瀏覽器原生 tooltip，不佔額外畫面空間，
+          // 沒有範例（這關沒砍到人）就不掛這個屬性。
+          title={
+            stage.removed_examples.length > 0
+              ? `例：${stage.removed_examples.join(", ")}`
+              : undefined
+          }
+        >
           <span className="row-label">{stage.label}</span>
           <span className="row-value">
             {/* FB5-04（#65，spec #61）：這關屬於哪一類（A＝資料健全性、
@@ -111,6 +129,27 @@ export default function CandidatePool({ view }: { view: AnalysisView }) {
               }
             >
               {pairs.removed_sanity > 0 ? `−${pairs.removed_sanity}` : "0"}
+            </span>
+          </div>
+          {/* T05（#226，Initial V2，`/code-review` Spec 軸回饋）：B 層
+              （導出層數學安全網）獨立於上面的合理性檢查，各自一列——
+              先前只序列化沒渲染，這裡補上，跟單腳路徑（上方 filter_stages
+              已經通用渲染 B 層那關）享有同等的可見度。 */}
+          <div
+            className="row sub"
+            title={
+              pairs.b_layer_removed_examples.length > 0
+                ? `例：${pairs.b_layer_removed_examples.join(", ")}`
+                : undefined
+            }
+          >
+            <span className="row-label">成本或報酬為不可能值（B 層）</span>
+            <span
+              className={
+                pairs.b_layer_removed > 0 ? "row-value negative" : "row-value"
+              }
+            >
+              {pairs.b_layer_removed > 0 ? `−${pairs.b_layer_removed}` : "0"}
             </span>
           </div>
           <div className="row">

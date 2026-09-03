@@ -4,13 +4,17 @@ import sampleRow from "../contracts/scenario_row_sample.json";
 import type { ScenarioSummary } from "./api";
 import {
   STALE_AFTER_HOURS,
+  cardFailureHeadline,
+  cardFailureVariant,
   failureLabel,
   formatDaysLeft,
   formatRepresentativeExpiry,
   formatRepresentativeLegs,
+  formatRepresentativeSummary,
   formatReturn,
   formatRunSummary,
   hasPriceRange,
+  hasResult,
   isStale,
   moneyOrDash,
   scenarioSignal,
@@ -134,8 +138,8 @@ describe("代表候選格式（MVP-v2／#77、#78）", () => {
   it("價差寫成「買 X / 賣 Y」，買腿在前、賣腿在後", () => {
     expect(formatRepresentativeLegs({
       strategy: "bull-call-spread",
-      legs: [{ strike: 118, option_type: "call" },
-            { strike: 122, option_type: "call" }],
+      legs: [{ strike: 118, option_type: "call", side: "buy", quantity: 1 },
+            { strike: 122, option_type: "call", side: "sell", quantity: 1 }],
       expiry: "2026-09-18", baseline_return: 1.5,
     })).toBe("買 118 / 賣 122");
   });
@@ -143,20 +147,92 @@ describe("代表候選格式（MVP-v2／#77、#78）", () => {
   it("單腳只寫「買 X」，不憑空生出賣腿", () => {
     expect(formatRepresentativeLegs({
       strategy: "long-call",
-      legs: [{ strike: 118, option_type: "call" }],
+      legs: [{ strike: 118, option_type: "call", side: "buy", quantity: 1 }],
       expiry: "2026-09-18", baseline_return: 0.3,
     })).toBe("買 118");
+  });
+
+  // OPTION-CHASER-CLOSEOUT-001：舊版用 findLeg() 各抓一隻 buy／sell 腿，
+  // Butterfly champion（買／賣 2 口／買）的第二隻 buy 腿會被靜默丟掉，
+  // 印成「買 106 / 賣 109」——看起來像一組兩腿 Vertical Spread，但
+  // strategy 欄位其實已經正確是 call-fly。這裡直接鎖住三腿逐一列出、
+  // 中腿標出「2×」，證明卡片上的 legs 真的跟 strategy 來自同一個
+  // representative candidate。
+  it("Butterfly 三腿逐一列出，中腿標出口數，不會被壓成兩腿價差", () => {
+    expect(formatRepresentativeLegs({
+      strategy: "call-fly",
+      legs: [
+        { strike: 106, option_type: "call", side: "buy", quantity: 1 },
+        { strike: 109, option_type: "call", side: "sell", quantity: 2 },
+        { strike: 112, option_type: "call", side: "buy", quantity: 1 },
+      ],
+      expiry: "2026-09-18", baseline_return: 5.67,
+    })).toBe("買 106 / 賣 2×109 / 買 112");
   });
 
   it("沒有代表候選時說「—」，不是編一組假的候選", () => {
     expect(formatRepresentativeLegs(null)).toBe("—");
   });
 
+  // OPTION-CHASER-CLOSEOUT-002：卡片上「策略＋履約價」那句完整字串
+  // （`formatRepresentativeSummary()`）——Single-leg／Vertical Spread
+  // 沿用既有完整格式逐字不變；Butterfly 改用緊湊格式（只列履約價、
+  // 不帶買賣方向與口數、不分 call/put subtype），避免卡片固定寬度下
+  // 換行撐高。詳細頁不受影響，`formatRepresentativeLegs()` 本身這個
+  // 函式（見上方測試）維持原樣，只是不再是 Butterfly 卡片直接呼叫的
+  // 對象。
+  describe("formatRepresentativeSummary：卡片上的策略＋履約價完整字串", () => {
+    it("Vertical Spread 維持既有完整格式（策略名稱＋買賣履約價）", () => {
+      expect(formatRepresentativeSummary({
+        strategy: "bull-call-spread",
+        legs: [{ strike: 118, option_type: "call", side: "buy", quantity: 1 },
+              { strike: 122, option_type: "call", side: "sell", quantity: 1 }],
+        expiry: "2026-09-18", baseline_return: 1.5,
+      })).toBe("Bull Call Spread　買 118 / 賣 122");
+    });
+
+    it("Single-leg 維持既有完整格式", () => {
+      expect(formatRepresentativeSummary({
+        strategy: "long-call",
+        legs: [{ strike: 118, option_type: "call", side: "buy", quantity: 1 }],
+        expiry: "2026-09-18", baseline_return: 0.3,
+      })).toBe("Long Call　買 118");
+    });
+
+    it("Butterfly（call-fly）改用緊湊格式，只列履約價、不帶買賣方向與口數", () => {
+      expect(formatRepresentativeSummary({
+        strategy: "call-fly",
+        legs: [
+          { strike: 106, option_type: "call", side: "buy", quantity: 1 },
+          { strike: 109, option_type: "call", side: "sell", quantity: 2 },
+          { strike: 112, option_type: "call", side: "buy", quantity: 1 },
+        ],
+        expiry: "2026-09-18", baseline_return: 5.67,
+      })).toBe("Butterfly 106 / 109 / 112");
+    });
+
+    it("Butterfly（put-fly）同樣走緊湊格式，前綴不分 call/put", () => {
+      expect(formatRepresentativeSummary({
+        strategy: "put-fly",
+        legs: [
+          { strike: 90, option_type: "put", side: "buy", quantity: 1 },
+          { strike: 95, option_type: "put", side: "sell", quantity: 2 },
+          { strike: 100, option_type: "put", side: "buy", quantity: 1 },
+        ],
+        expiry: "2026-09-18", baseline_return: 3.2,
+      })).toBe("Butterfly 90 / 95 / 100");
+    });
+
+    it("沒有代表候選時說「—」", () => {
+      expect(formatRepresentativeSummary(null)).toBe("—");
+    });
+  });
+
   it("實際到期日原樣顯示，沒有代表候選時說「—」", () => {
     expect(formatRepresentativeExpiry({
       strategy: "bull-call-spread",
-      legs: [{ strike: 118, option_type: "call" },
-            { strike: 122, option_type: "call" }],
+      legs: [{ strike: 118, option_type: "call", side: "buy", quantity: 1 },
+            { strike: 122, option_type: "call", side: "sell", quantity: 1 }],
       expiry: "2026-09-18", baseline_return: 1.5,
     })).toBe("2026-09-18");
     expect(formatRepresentativeExpiry(null)).toBe("—");
@@ -227,6 +303,53 @@ describe("更新中的劇本照樣參與排序（T08／#196 P1，取代 #136 par
     // 只是徽章顯示，不是排序輸入）。
     const rows = [row("1", 0.5), row("2", 9.0)];
     expect(sortScenarios(rows).map((r) => r.id)).toEqual(["2", "1"]);
+  });
+});
+
+describe("刷新失敗卡片兩態（OD-03／#242，REPAIR-05）", () => {
+  const F = { stage: "fetch" as const, message: "抓不到報價" };
+
+  it("曾經至少成功分析過（best_return 非 null）＋有失敗＋未更新中＋" +
+     "未過期 → known", () => {
+    const known = { ...row("1", 1.2), expired: false };
+    expect(hasResult(known)).toBe(true);
+    expect(cardFailureVariant(known, F, false)).toBe("known");
+  });
+
+  it("從未成功分析過（best_return 為 null）＋有失敗＋未更新中＋" +
+     "未過期 → unknown", () => {
+    const neverRun = { ...row("1", null), expired: false };
+    expect(hasResult(neverRun)).toBe(false);
+    expect(cardFailureVariant(neverRun, F, false)).toBe("unknown");
+  });
+
+  it("正在更新中——不論曾不曾成功過，一律不顯示失敗狀態（updating 與" +
+     "failure 是兩個獨立 state，不得混用）", () => {
+    const known = { ...row("1", 1.2), expired: false };
+    const neverRun = { ...row("2", null), expired: false };
+    expect(cardFailureVariant(known, F, true)).toBeNull();
+    expect(cardFailureVariant(neverRun, F, true)).toBeNull();
+  });
+
+  it("已過期——優先於刷新失敗（#68 既有紅燈優先規則），不顯示失敗狀態", () => {
+    const expired = { ...row("1", 1.2), expired: true };
+    expect(cardFailureVariant(expired, F, false)).toBeNull();
+  });
+
+  it("沒有失敗紀錄——不論曾不曾成功過，都不顯示失敗狀態", () => {
+    const known = { ...row("1", 1.2), expired: false };
+    const neverRun = { ...row("2", null), expired: false };
+    expect(cardFailureVariant(known, undefined, false)).toBeNull();
+    expect(cardFailureVariant(neverRun, undefined, false)).toBeNull();
+  });
+
+  it("兩態各自的頭條文案不同，且都不是空字串", () => {
+    const known = cardFailureHeadline("known");
+    const unknown = cardFailureHeadline("unknown");
+    expect(known).toBeTruthy();
+    expect(unknown).toBeTruthy();
+    expect(known).not.toBe(unknown);
+    expect(unknown).toBe("尚無可用分析結果");
   });
 });
 

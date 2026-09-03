@@ -144,13 +144,28 @@ def test_default_selection_unchanged_by_wide_spread_warning_split():
 
 
 def test_all_warning_fallback_default_selection_unchanged():
-    """all-warning fixture：連 fallback 分支選出來的候選也必須逐位元相同。"""
+    """all-warning fixture：連 fallback 分支選出來的候選也必須逐位元相同。
+
+    REPAIR-09（#246）之後這個釘死值合法改變——`_build_groups` 的選取
+    邏輯本身（`_return_key` 排序式）一個字沒動，變的是它排序所依賴的
+    `baseline_return` 數值本身：`2026-09-18|122` 這個到期日晚於這份
+    fixture 的錨點（2026-08-21），修法前殘留時間價值讓它的報酬率**灌水
+    成 +177.3%**（`1.7733143398959357`）、蓋過 `2026-08-07|118`（到期日
+    早於錨點，數值本就不受本票影響，維持 0.818 不變）——這正是 #052
+    audit 描述的灌水症狀本身在這份 fixture 上的具體案例，而且是最極端
+    的一種：修法後這張合約其實是 strike 122 > target 120 的價外 call，
+    到期內在價值為 0，正確報酬率是**全損 -100%**（`-1.0`），不是
+    +177%。錯的候選贏了、而且贏得離譜。已用 `git stash` 對照過修法前後
+    的完整候選清單（`2026-08-07|118` 全程 0.818 不變、`2026-08-07|122`
+    全程 -1.0 不變——兩者到期日皆早於錨點；`2026-09-18|118` 從 +150.0%
+    降至 -16.7%、`2026-09-18|122` 從 +177.3% 降至 -100.0%——兩者到期日
+    皆晚於錨點且皆改變），確認是排序輸入合法改變、不是選取邏輯被動到。"""
     r = service.run_offline(service.AnalysisRequest(
         symbol="XYZ",
         base_params=AnalysisParams(strategy="long-call", target_price=120.0,
                                    target_month="2026-08", min_return=0.0),
         strategies=("long-call",)), ALL_WARNING_SNAP)
-    assert r.default_selection == ("2026-09-18", "long-call|122|2026-09-18")
+    assert r.default_selection == ("2026-08-07", "long-call|118|2026-08-07")
 
 
 def _run_six_expiry_two_strategies():

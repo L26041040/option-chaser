@@ -5,12 +5,15 @@
  * 與詳細頁主圖同一口徑），`days_to_anchor` 也是後端依「該月第三個星期五」
  * 與紐約日曆算好的。本檔只決定「怎麼排、怎麼寫」。
  */
-import type {
-  FailureStage,
-  RefreshFailure,
-  RepresentativeCandidate,
-  ScenarioSummary,
+import {
+  formatLegs,
+  type FailureStage,
+  type RefreshFailure,
+  type RepresentativeCandidate,
+  type ScenarioSummary,
 } from "./api";
+import { strategyLabel } from "./detail";
+import { FAMILY_LABELS, familyOf } from "./family";
 
 /**
  * 依最新收益率降序；還沒跑過分析的（`best_return === null`）一律排最後；
@@ -170,9 +173,20 @@ export function isStale(iso: string | null, now: Date): boolean {
 
 /**
  * 代表候選的買賣履約價——「買 118 / 賣 122」（MVP-v2／#77、#78），沿用
- * 詳細頁 `detail.candidateTitle` 既有的「買腿在前、賣腿在後」慣例，同一個
- * 表達方式在清單卡片與詳細頁不該長得不一樣。單腳候選只有一隻腿，寫成
+ * 詳細頁 `detail.candidateTitle()` 既有的「逐腿列出」慣例，同一個表達
+ * 方式在清單卡片與詳細頁不該長得不一樣。單腳候選只有一隻腿，寫成
  * 「買 118」——硬湊一個賣腿會憑空生出一隻不存在的腿。
+ *
+ * OPTION-CHASER-CLOSEOUT-001：原本用 `findLeg()` 各抓一隻 buy／sell
+ * 腿畫成固定兩腿字串，對三腿的 Butterfly champion（買／賣 2 口／買）
+ * 會靜默丟掉第二隻 buy 腿，讓卡片看起來像一組舊的兩腿 Vertical
+ * Spread——這正是「strategy 名稱是新的、legs／strikes 卻對不上」的
+ * 根因：`rep.strategy` 與 `rep.legs` 其實同源自同一個 `rep` 物件，
+ * 只是舊版格式化函式本身把第三隻腿弄丟了，不是兩個資料來源不同步。
+ * 改為逐腿迭代，對既有兩腿／單腿候選輸出逐字不變（`quantity` 恆為 1
+ * 時口數標示回傳空字串），三腿以上的候選才會多印出中腿的口數標示。
+ * 迭代邏輯本身與 `detail.ts::candidateTitle()` 逐字相同，抽成
+ * `api.ts::formatLegs()` 共用（`/code-review` Standards 軸抓到）。
  *
  * `null`（尚未分析、或該期零合格候選）說「—」，不是編一組假的候選。
  */
@@ -180,9 +194,47 @@ export function formatRepresentativeLegs(
   rep: RepresentativeCandidate | null,
 ): string {
   if (rep === null) return "—";
-  const [buy, sell] = rep.legs;
-  if (!buy) return "—";
-  return sell ? `買 ${buy.strike} / 賣 ${sell.strike}` : `買 ${buy.strike}`;
+  return formatLegs(rep.legs);
+}
+
+/**
+ * OPTION-CHASER-CLOSEOUT-002：Butterfly champion 在劇本庫卡片上的緊湊
+ * 履約價字串——「Butterfly 106 / 109 / 112」，只列三個履約價、不帶
+ * 買賣方向與口數標示。`formatRepresentativeLegs()` 的完整格式（「買
+ * 106 / 賣 2×109 / 買 112」）在卡片固定寬度下容易換行、把卡片撐高
+ * （卡片寬高與版面不得變動，見票面明文），詳細頁沒有這個限制、維持
+ * 完整格式不變（`detail.candidateTitle()` 沒有 Butterfly 分支）。
+ *
+ * 用 `FAMILY_LABELS.butterfly`（"Butterfly"）而非 `strategyLabel()`
+ * 給的 subtype 名稱（「Call Butterfly」／「Put Butterfly」）當前綴
+ * ——票面給的範例格式就是單一個「Butterfly」，不分 call／put，卡片上
+ * 已經有履約價可以判斷方向，不需要再重複一次。
+ *
+ * 履約價順序沿用 `rep.legs` 既有排列（後端 `store.py::_candidate()`
+ * 建構 Butterfly 的 `legs` 時已經是 `[low_leg, mid_leg, high_leg]`
+ * 由小到大——見 `option_chaser/store.py` 的 `_leg(v.low_leg, ...)`／
+ * `_leg(v.mid_leg, ...)`／`_leg(v.high_leg, ...)` 三行），這裡不重新
+ * 排序、不做任何金融判斷，純粹格式化既有欄位。
+ */
+function formatButterflyStrikes(rep: RepresentativeCandidate): string {
+  return `${FAMILY_LABELS.butterfly} ${rep.legs.map((leg) => leg.strike).join(" / ")}`;
+}
+
+/**
+ * 劇本庫卡片第二層「策略＋履約價」那句完整字串（MVP-v2／#77、#78 起
+ * 的既有格式）。`ScenarioList.tsx`／`CompactScenarioList.tsx` 原本
+ * 各自重複同一句 `${strategyLabel(rep.strategy)}
+ * ${formatRepresentativeLegs(rep)}` 三元運算式，這裡收斂成一個函式
+ * 共用；OPTION-CHASER-CLOSEOUT-002 起 Butterfly champion 走
+ * `formatButterflyStrikes()` 緊湊分支，Single-leg／Vertical Spread
+ * 維持原本「策略名稱＋完整買賣履約價」格式逐字不變。
+ */
+export function formatRepresentativeSummary(
+  rep: RepresentativeCandidate | null,
+): string {
+  if (rep === null) return "—";
+  if (familyOf(rep.strategy) === "butterfly") return formatButterflyStrikes(rep);
+  return `${strategyLabel(rep.strategy)}　${formatRepresentativeLegs(rep)}`;
 }
 
 /**
@@ -195,6 +247,44 @@ export function formatRepresentativeExpiry(
   rep: RepresentativeCandidate | null,
 ): string {
   return rep === null ? "—" : rep.expiry;
+}
+
+/** 這個劇本是否至少成功分析過一次——`best_return` 由已落盤的
+ *  `ResultRecord` 導出，非 null 就代表存在至少一份可看的結果。 */
+export function hasResult(row: { best_return: number | null }): boolean {
+  return row.best_return !== null;
+}
+
+/**
+ * 刷新失敗卡片的兩態（OD-03／#242，REPAIR-05）：
+ * - `"known"`——曾經至少成功分析過，卡片目前顯示的是上一次成功結果。
+ * - `"unknown"`——從未成功分析過（含新建劇本首次刷新即失敗），沒有
+ *   任何結果可看。
+ *
+ * `updating` 與 `failure` 是兩個獨立 state，不得混用——回傳 `null`
+ * 代表這個時間點不該顯示失敗狀態，交給更新中徽章或正常燈號表達：
+ * 正在刷新（`updating`，這次嘗試還沒有結論）、已過期（`row.expired`，
+ * #68 既有規則：紅燈優先於黃燈，不再花力氣區分兩態）、或根本沒有
+ * `failure` 這三種情況皆回 `null`。
+ */
+export type CardFailureVariant = "known" | "unknown";
+
+export function cardFailureVariant(
+  row: { best_return: number | null; expired: boolean },
+  failure: RefreshFailure | undefined,
+  updating: boolean,
+): CardFailureVariant | null {
+  if (updating || !failure || row.expired) return null;
+  return hasResult(row) ? "known" : "unknown";
+}
+
+/** 兩態各自的頭條文案——技術性的 `failureLabel`／`failure.message`
+ *  仍照舊顯示在旁邊，這句話回答的是使用者最先想知道的事：「我現在
+ *  看到的這個東西，是不是可以相信？」 */
+export function cardFailureHeadline(variant: CardFailureVariant): string {
+  return variant === "known"
+    ? "更新失敗，目前顯示上一次成功結果"
+    : "尚無可用分析結果";
 }
 
 /**

@@ -56,15 +56,101 @@ describe("四區塊固定存在（決策 G：只保留四塊）", () => {
 });
 
 describe("Risk / Payoff", () => {
-  it("Breakeven／Max Profit／Max Loss／Execution Friction 都顯示實際數字", async () => {
+  it("Breakeven／Max Profit／Max Loss 都顯示實際數字", async () => {
     render(<AnalysisReport view={view} result={result} candidate={real} />);
     await expand();
     const breakevenRow = screen.getByText("Breakeven").closest(".row")!;
-    expect(breakevenRow).toHaveTextContent(`$${real.breakeven.toFixed(2)}`);
+    expect(breakevenRow).toHaveTextContent(`$${real.breakeven_points[0].toFixed(2)}`);
+    const maxLossRow = screen.getByText("Max Loss").closest(".row")!;
+    expect(maxLossRow).toHaveTextContent(
+      `$${(real.max_loss_per_contract / 100).toFixed(2)}`);
+  });
+
+  it("T16（#232）：既有四策略 max_loss_per_contract／natural_cost 逐位元" +
+     "相同——Max Loss 改讀前者不改變既有畫面數字", async () => {
+    render(<AnalysisReport view={view} result={result} candidate={real} />);
+    await expand();
     const maxLossRow = screen.getByText("Max Loss").closest(".row")!;
     expect(maxLossRow).toHaveTextContent(`$${real.natural_cost.toFixed(2)}`);
-    const frictionRow = screen.getByText("Execution Friction").closest(".row")!;
-    expect(frictionRow).toHaveTextContent(`${(real.friction * 100).toFixed(1)}%`);
+  });
+
+  it("T16（#232）：Butterfly 兩個損益兩平點都顯示，並附獲利區間說明", async () => {
+    const two = candidate({
+      breakeven: null, breakeven_points: [100.49, 111.51],
+      profit_region: [100.49, 111.51],
+    });
+    render(<AnalysisReport view={view} result={result} candidate={two} />);
+    await expand();
+    const breakevenRow = screen.getByText("Breakeven").closest(".row")!;
+    expect(breakevenRow).toHaveTextContent("$100.49");
+    expect(breakevenRow).toHaveTextContent("$111.51");
+    const regionRow = screen.getByText("獲利區間").closest(".row")!;
+    expect(regionRow).toHaveTextContent("$100.49");
+    expect(regionRow).toHaveTextContent("$111.51");
+  });
+
+  it("CLOSEOUT-004（Finding 1）：broken-wing Butterfly 的獲利區間在上方" +
+     "沒有界時顯示「$X 以上」，且不得說「區間外無法獲利」", async () => {
+    // call-fly 100/110/115、成本 4.00：K3 之外 payoff 恆為 5.00，
+    // 永遠賺 1.00——上界不存在，損益兩平點只有一個。
+    const openUp = candidate({
+      breakeven: 104.0, breakeven_points: [104.0],
+      profit_region: [104.0, null],
+    });
+    render(<AnalysisReport view={view} result={result} candidate={openUp} />);
+    await expand();
+    const breakevenRow = screen.getByText("Breakeven").closest(".row")!;
+    expect(breakevenRow).toHaveTextContent("$104.00");
+    const regionRow = screen.getByText("獲利區間").closest(".row")!;
+    expect(regionRow).toHaveTextContent("$104.00 以上");
+    expect(regionRow).toHaveTextContent("更高的標的價到期時一樣獲利");
+    // 這才是真正要擋的東西：不能對使用者說一個不存在的上界，也不能
+    // 說區間外不賺。修正前這裡會是「$104.00 ~ $115.00（標的落在這個
+    // 範圍內，到期時為正報酬）」。
+    expect(regionRow).not.toHaveTextContent("~");
+    expect(regionRow).not.toHaveTextContent("落在這個範圍內");
+  });
+
+  it("CLOSEOUT-004（Finding 1）：put-fly 的鏡射——下方沒有界時顯示" +
+     "「$X 以下」", async () => {
+    const openDown = candidate({
+      breakeven: 111.0, breakeven_points: [111.0],
+      profit_region: [null, 111.0],
+    });
+    render(<AnalysisReport view={view} result={result} candidate={openDown} />);
+    await expand();
+    const regionRow = screen.getByText("獲利區間").closest(".row")!;
+    expect(regionRow).toHaveTextContent("$111.00 以下");
+    expect(regionRow).toHaveTextContent("更低的標的價到期時一樣獲利");
+    expect(regionRow).not.toHaveTextContent("~");
+  });
+
+  it("T16（#232）：Butterfly 到期時任何價位都無法獲利時，Breakeven 誠實" +
+     "顯示「無」，不假造一個數字，也不顯示獲利區間列", async () => {
+    const none = candidate({ breakeven: null, breakeven_points: [], profit_region: null });
+    render(<AnalysisReport view={view} result={result} candidate={none} />);
+    await expand();
+    const breakevenRow = screen.getByText("Breakeven").closest(".row")!;
+    expect(breakevenRow).toHaveTextContent("無（到期時任何價位都無法獲利）");
+    expect(screen.queryByText("獲利區間")).not.toBeInTheDocument();
+  });
+
+  it("T16（#232）：broken-wing Butterfly 的 Max Loss 可能超過進場成本" +
+     "（natural_cost）——讀 max_loss_per_contract 才是誠實的數字", async () => {
+    const brokenWing = candidate({
+      natural_cost: 0.49, max_loss_per_contract: 349.0,
+    });
+    render(<AnalysisReport view={view} result={result} candidate={brokenWing} />);
+    await expand();
+    const maxLossRow = screen.getByText("Max Loss").closest(".row")!;
+    expect(maxLossRow).toHaveTextContent("$3.49");
+    expect(maxLossRow).not.toHaveTextContent("$0.49");
+  });
+
+  it("T04（#220，#217 決策 D）：Execution Friction 這一列已移除，不再顯示", async () => {
+    render(<AnalysisReport view={view} result={result} candidate={real} />);
+    await expand();
+    expect(screen.queryByText("Execution Friction")).not.toBeInTheDocument();
   });
 
   it("Long Call 無上限時 Max Profit 顯示「無上限」，不是留白或 0", async () => {
@@ -131,6 +217,24 @@ describe("Execution", () => {
     // 低權重＝跟著 IV 走同一個 `row-note`，不是獨立一列、不帶 notice/warn 樣式。
     expect(buyRow.querySelector(".notice")).toBeNull();
     expect(buyRow.querySelector(".row-note")).not.toBeNull();
+  });
+
+  it("T12（#228）：三隻腿的候選完整渲染，一隻都不丟——合成資料（Butterfly 產生器要等 T15）",
+     async () => {
+    const leg1 = real.legs[0];
+    const leg2 = real.legs.find((l) => l.side === "sell")!;
+    const legThree = { ...leg1, strike: 130, side: "buy" as const };
+    const three = candidate({ legs: [leg1, leg2, legThree] });
+    render(<AnalysisReport view={view} result={result} candidate={three} />);
+    await expand();
+
+    // 兩個買腿都在，各自帶編號區分；賣腿維持單一不編號。
+    const buy1Row = screen.getByText("Buy Leg 1").closest(".row")!;
+    const buy2Row = screen.getByText("Buy Leg 2").closest(".row")!;
+    const sellRow = screen.getByText("Sell Leg").closest(".row")!;
+    expect(buy1Row).toHaveTextContent(`Strike ${leg1.strike}`);
+    expect(buy2Row).toHaveTextContent(`Strike ${legThree.strike}`);
+    expect(sellRow).toHaveTextContent(`Strike ${leg2.strike}`);
   });
 });
 

@@ -35,6 +35,16 @@ function libraryRow(overrides: Record<string, unknown> = {}) {
 const rowA = libraryRow({ id: "s1", symbol: "XYZ" });
 const rowB = libraryRow({ id: "s2", symbol: "ABC", best_return: 1.23 });
 
+/** T16（#232，Initial V2）：Butterfly 契約樣本（T15／#230 產出）——真實
+ *  broken-wing 候選，同一份 smoke.spec.ts 也在用。 */
+const sampleCallFly: any = JSON.parse(
+  readFileSync(
+    fileURLToPath(
+      new URL("../contracts/analysis_sample_call_fly.json", import.meta.url)),
+    "utf-8",
+  ),
+);
+
 async function routeTwoScenarios(page: import("@playwright/test").Page) {
   await page.route("**/api/scenarios", (route) =>
     route.fulfill({ json: [rowA, rowB] }));
@@ -71,6 +81,26 @@ test("選中劇本時，左側劇本庫（含建立劇本入口）與右側詳�
   await expect(page.getByRole("link", { name: /ABC/ })).toBeVisible();
   await page.getByRole("button", { name: "＋ 建立劇本" }).click();
   await expect(page.getByLabel("標的代號")).toBeVisible();
+});
+
+test("OPTION-CHASER-CLOSEOUT-001：桌面版劇本設定卡在劇本摘要卡之前，呈現" +
+     "使用者原本建立的劇本 context（標的／目標價／目標年月／方向／" +
+     "啟用的策略）", async ({ page }) => {
+  await routeTwoScenarios(page);
+  await page.goto("/#/s/s1");
+
+  const detail = page.locator(".detail-pane");
+  const context = detail.getByRole("region", { name: "劇本設定" });
+  await expect(context).toContainText("XYZ");
+  await expect(context).toContainText(`$${sample.params.target_price.toFixed(2)}`);
+  await expect(context).toContainText(sample.params.target_month);
+  await expect(context).toContainText("看漲");
+  await expect(context).toContainText("Vertical Spread");
+
+  const summary = detail.getByRole("region", { name: "劇本摘要" });
+  const contextBox = await context.boundingBox();
+  const summaryBox = await summary.boundingBox();
+  expect(contextBox!.y).toBeLessThan(summaryBox!.y);
 });
 
 test("Spread 淨成本走勢：桌面 hover 資料點顯示 tooltip（MVP V3／#106）", async ({ page }) => {
@@ -746,6 +776,106 @@ test("2026-08-26 真機驗收：Refresh Run 逐張完成、逐張立即可用—
   await expect(cCard).not.toHaveClass(/locked/);
 });
 
+test("REPAIR-04／#241：批次呼叫本身整個失敗（504）時只有真的失敗的那個" +
+  "劇本被標記，其餘不受連坐、正常落地——桌面版", async ({ page }) => {
+  const rowFor = (id: string, symbol: string) => libraryRow({
+    id, symbol, latest_analyzed_at: null, best_return: null,
+  });
+  const rows = [rowFor("a", "AAA"), rowFor("b", "BBB"), rowFor("c", "CCC")];
+
+  await page.route("**/api/scenarios", (route) =>
+    route.fulfill({ json: rows }));
+  // 第一輪（3 個 id）：A 成功，remaining=[b,c]。第二輪（2 個 id）：整趟
+  // 批次請求本身失敗（504，不是逐一劇本各自回應）——修法前這會把 b／c
+  // 兩個都標記失敗；修法後改逐一打單一劇本端點，b 那次真的失敗、c 那次
+  // 成功，兩者不再因為批次呼叫本身失敗而連坐。桌面版驗一次確認同一套
+  // 行為不只在手機版成立。
+  await page.route("**/api/scenarios/refresh-run", async (route, req) => {
+    const body = req.postDataJSON() as { scenario_ids: string[] };
+    if (body.scenario_ids.length === 3) {
+      return route.fulfill({ json: {
+        results: [{ scenario_id: "a", ok: true,
+          row: { ...rows[0], best_return: 1,
+                 latest_analyzed_at: new Date().toISOString() } }],
+        remaining: ["b", "c"],
+      } });
+    }
+    return route.fulfill({ status: 504, json: { detail: "Gateway Timeout" } });
+  });
+  await page.route("**/api/scenarios/b/refresh", (route) =>
+    route.fulfill({ status: 502, json: { detail: {
+      stage: "fetch", message: "抓不到 BBB 的報價" } } }));
+  await page.route("**/api/scenarios/c/refresh", (route) =>
+    route.fulfill({ json: { ...rows[2], best_return: 0.25,
+      latest_analyzed_at: new Date().toISOString() } }));
+
+  await page.goto("/");
+
+  const aCard = page.locator(".compact-card").filter({ hasText: "AAA" });
+  const bCard = page.locator(".compact-card").filter({ hasText: "BBB" });
+  const cCard = page.locator(".compact-card").filter({ hasText: "CCC" });
+
+  await expect(page.getByText("100.0%")).toBeVisible();
+  await expect(page.getByText("25.0%")).toBeVisible();
+  await expect(page.getByText("抓不到 BBB 的報價")).toBeVisible();
+
+  await expect(aCard).not.toHaveClass(/locked/);
+  await expect(bCard).not.toHaveClass(/locked/);
+  await expect(cCard).not.toHaveClass(/locked/);
+});
+
+test("REPAIR-05／#242 A：曾成功過的劇本刷新失敗——卡片反灰、明講顯示的" +
+  "是舊結果、仍可點入詳細頁看到最後一次成功結果——桌面版", async ({ page }) => {
+  const row = libraryRow({ id: "s1", symbol: "XYZ" });   // best_return 已有值
+  await page.route("**/api/scenarios", (route) => route.fulfill({ json: [row] }));
+  await page.route("**/api/scenarios/s1", (route) =>
+    route.fulfill({ json: { ...row, latest_result: sample } }));
+  await page.route("**/api/scenarios/refresh-run", (route) =>
+    route.fulfill({ json: { results: [{ scenario_id: "s1", ok: false,
+      stage: "fetch", message: "抓不到 XYZ 的報價：來源無回應" }],
+      remaining: [] } }));
+
+  await page.goto("/");
+
+  const card = page.locator(".compact-card").filter({ hasText: "XYZ" });
+  await expect(card).toHaveClass(/failed/);
+  await expect(card).not.toHaveClass(/locked/);
+  await expect(page.getByText("更新失敗，目前顯示上一次成功結果")).toBeVisible();
+  await expect(page.getByText("567.0%")).toBeVisible();
+  await expect(page.getByRole("button", { name: /重試/ })).toBeVisible();
+
+  await page.getByRole("link", { name: /XYZ/ }).click();
+  await expect(page).toHaveURL(/#\/s\/s1/);
+  await expect(page.getByRole("heading", { name: "劇本主圖" })).toBeVisible();
+});
+
+test("REPAIR-05／#242 B：從未成功過的劇本刷新失敗——卡片反灰、明講尚無" +
+  "可用分析結果、仍可點入詳細頁看到既有的「尚未分析」空狀態——桌面版",
+  async ({ page }) => {
+  const row = libraryRow({ id: "s1", symbol: "XYZ",
+    best_return: null, latest_analyzed_at: null });
+  await page.route("**/api/scenarios", (route) => route.fulfill({ json: [row] }));
+  await page.route("**/api/scenarios/s1", (route) =>
+    route.fulfill({ json: { ...row, latest_result: null } }));
+  await page.route("**/api/scenarios/refresh-run", (route) =>
+    route.fulfill({ json: { results: [{ scenario_id: "s1", ok: false,
+      stage: "fetch", message: "抓不到 XYZ 的報價：來源無回應" }],
+      remaining: [] } }));
+
+  await page.goto("/");
+
+  const card = page.locator(".compact-card").filter({ hasText: "XYZ" });
+  await expect(card).toHaveClass(/failed/);
+  await expect(page.getByText("尚無可用分析結果")).toBeVisible();
+  await expect(page.getByRole("button", { name: /重試/ })).toBeVisible();
+
+  await page.getByRole("link", { name: /XYZ/ }).click();
+  await expect(page).toHaveURL(/#\/s\/s1/);
+  // 桌面 master/detail：左側卡片自己的「尚未分析」（第三層資料時間）
+  // 與右側詳細頁的空狀態文字會同時出現同一個字串，scope 回右側面板。
+  await expect(page.locator(".detail-pane").getByText("尚未分析")).toBeVisible();
+});
+
 test("左右比例約 20/80，不是置中的窄直欄", async ({ page }) => {
   await routeTwoScenarios(page);
   await page.goto("/");
@@ -982,7 +1112,11 @@ test("詳細頁密度：桌面一屏能看到的比例明顯提高（QA-FIX-3／
 
   // 資訊一項不減少：QA 修正把「劇本摘要／基準候選／進場成本」三張卡
   // 合成一張，十一項全部都要還在——合併是為了壓高度，不是砍資訊。
-  const summary = page.locator(".detail-pane .summary-card").first();
+  // OPTION-CHASER-CLOSEOUT-001 新增的「劇本設定」卡排在它前面、也
+  // 共用 `.summary-card` 密度樣式，`.first()` 現在會撈到那張而非這裡
+  // 要驗的基準候選摘要卡——改用 `aria-label` scope 回正確的那一張。
+  const summary = page.locator(".detail-pane")
+    .getByRole("region", { name: "劇本摘要" });
   for (const label of ["策略", "現價", "目標價", "目標年月",
                       "買腿 Ask", "賣腿 Bid", "淨成本",
                       "資料時間", "資料來源"]) {
@@ -1320,6 +1454,227 @@ test("桌面版：編輯劇本沿用工作區上方的既有表單，取消隨�
   expect(patched).toHaveLength(1);
 });
 
+/* ---------- Strategy Family 勾選與 eligibility（T10／#227） ---------- */
+
+test("桌面版：建立劇本一個 family 都沒勾就送出，擋在前端並說明原因（T10／#227）",
+   async ({ page }) => {
+  let postCount = 0;
+  await page.route("**/api/scenarios", (route) => {
+    if (route.request().method() === "POST") {
+      postCount += 1;
+      return route.fulfill({ status: 422, json: { detail: "不該送到這裡" } });
+    }
+    return route.fulfill({ json: [] });
+  });
+  await page.goto("/");
+  await expect(page.getByText(/還沒有劇本/)).toBeVisible();
+
+  await page.getByRole("button", { name: "＋ 建立劇本" }).click();
+  await page.getByLabel("標的代號").fill("tlt");
+  await page.getByLabel("目標價位").fill("120");
+  await page.getByLabel("目標年月").click();
+  await page.getByLabel("年份").fill("2028");
+  await page.getByRole("button", { name: "5 月" }).click();
+  await expect(page.getByRole("checkbox", { name: "Call / Put" }))
+    .not.toBeChecked();
+  await expect(page.getByRole("checkbox", { name: "Vertical Spread" }))
+    .not.toBeChecked();
+  await expect(page.getByRole("checkbox", { name: "Butterfly" }))
+    .not.toBeChecked();
+
+  await page.getByRole("button", { name: "建立", exact: true }).click();
+  await expect(page.getByRole("alert")).toContainText("請至少勾選一個策略類型");
+  await expect(page.getByText(/還沒有劇本/)).toBeVisible();
+  expect(postCount).toBe(0);
+});
+
+test("桌面版：編輯表單顯示不可選的 family 與原因，checkbox 仍可勾選——" +
+   "不做推薦／不推薦（T10／#227）", async ({ page }) => {
+  const row = {
+    ...libraryRow({ id: "s1", symbol: "TLT" }),
+    strategies: ["vertical-spread"],
+    family_eligibility: {
+      "single-leg": { family: "single-leg", eligible: true, reason: null },
+      "vertical-spread": { family: "vertical-spread", eligible: true,
+                          reason: null },
+      "butterfly": { family: "butterfly", eligible: false,
+                    reason: "這個策略家族目前還沒有任何已啟用的具體結構。" },
+    },
+  };
+  await page.route("**/api/scenarios", (route) =>
+    route.fulfill({ json: [row] }));
+  await page.route("**/api/scenarios/s1", (route) => route.fulfill({ json: row }));
+  await page.route("**/api/scenarios/s1/refresh", (route) =>
+    route.fulfill({ json: row }));
+  await page.goto("/");
+
+  await page.getByRole("button", { name: /編輯 TLT/ }).click();
+  await expect(page.getByText("編輯劇本")).toBeVisible();
+
+  await expect(page.getByRole("checkbox", { name: "Vertical Spread" }))
+    .toBeChecked();
+  await expect(page.getByRole("checkbox", { name: "Call / Put" }))
+    .not.toBeChecked();
+
+  await expect(page.getByText(
+    "這個策略家族目前還沒有任何已啟用的具體結構。")).toBeVisible();
+  const butterflyBox = page.getByRole("checkbox", { name: /Butterfly/ });
+  await expect(butterflyBox).toBeEnabled();
+  await butterflyBox.check();
+  await expect(butterflyBox).toBeChecked();
+
+  for (const banned of ["推薦", "較適合", "Weak Fit"]) {
+    await expect(page.getByText(banned)).toHaveCount(0);
+  }
+});
+
+test("桌面版：編輯可以增減 family，儲存後送出目前完整的勾選集合（T10／#227）",
+   async ({ page }) => {
+  let current: any = { ...libraryRow({ id: "s1", symbol: "TLT" }),
+                       strategies: ["vertical-spread"] };
+  const patched: any[] = [];
+  await page.route("**/api/scenarios", (route) =>
+    route.fulfill({ json: [current] }));
+  await page.route("**/api/scenarios/s1", (route) => {
+    if (route.request().method() === "PATCH") {
+      const body = route.request().postDataJSON();
+      patched.push(body);
+      current = { ...current, ...body };
+      return route.fulfill({ json: current });
+    }
+    return route.fulfill({ json: current });
+  });
+  await page.route("**/api/scenarios/s1/refresh", (route) =>
+    route.fulfill({ json: current }));
+  await page.goto("/");
+
+  await page.getByRole("button", { name: /編輯 TLT/ }).click();
+  await page.getByRole("checkbox", { name: "Call / Put" }).check();
+  await page.getByRole("button", { name: "儲存變更" }).click();
+
+  await expect(page.getByText("編輯劇本")).toHaveCount(0);
+  expect(patched).toHaveLength(1);
+  expect(patched[0].strategies).toEqual(["vertical-spread", "single-leg"]);
+});
+
+test("桌面版：全選一次勾起三個 family，已全選時再點同一顆按鈕即取消" +
+  "全選，全選後可正常送出（REPAIR-06／#243）", async ({ page }) => {
+  const created = { ...libraryRow({ id: "s2", symbol: "SPY" }),
+                    strategies: ["single-leg", "vertical-spread", "butterfly"] };
+  let postedBody: any = null;
+  await page.route("**/api/scenarios", (route) => {
+    if (route.request().method() === "POST") {
+      postedBody = route.request().postDataJSON();
+      return route.fulfill({ status: 201, json: created });
+    }
+    return route.fulfill({ json: [] });
+  });
+  await page.route("**/api/scenarios/refresh-run", (route) =>
+    route.fulfill({ json: { results: [], remaining: [] } }));
+  await page.goto("/");
+
+  await page.getByRole("button", { name: "＋ 建立劇本" }).click();
+  // `exact: true`：Playwright 對按鈕名稱是子字串比對，「全選」是
+  // 「取消全選」的子字串，不指定 exact 會連後者一起比對到。
+  await expect(page.getByRole("button", { name: "全選", exact: true }))
+    .toBeVisible();
+
+  await page.getByRole("button", { name: "全選", exact: true }).click();
+  for (const label of ["Call / Put", "Vertical Spread", "Butterfly"]) {
+    await expect(page.getByRole("checkbox", { name: label })).toBeChecked();
+  }
+
+  await expect(page.getByRole("button", { name: "全選", exact: true }))
+    .toHaveCount(0);
+  await page.getByRole("button", { name: "取消全選" }).click();
+  for (const label of ["Call / Put", "Vertical Spread", "Butterfly"]) {
+    await expect(page.getByRole("checkbox", { name: label })).not.toBeChecked();
+  }
+
+  await page.getByLabel("標的代號").fill("spy");
+  await page.getByLabel("目標價位").fill("700");
+  await page.getByLabel("目標年月").click();
+  await page.getByLabel("年份").fill("2028");
+  await page.getByRole("button", { name: "5 月" }).click();
+  await page.getByRole("button", { name: "全選", exact: true }).click();
+  await page.getByRole("button", { name: "建立", exact: true }).click();
+
+  await expect(page.getByRole("link", { name: /SPY/ })).toBeVisible();
+  expect(postedBody.strategies).toEqual(
+    ["single-leg", "vertical-spread", "butterfly"]);
+});
+
+/* ---------- T11（#229）：Strategy Family 分頁 ---------- */
+
+/** 手造一份包含兩個 family 的 view——見 `smoke.spec.ts` 同名函式的
+ *  說明，這裡是桌面版對照組，`results[0]` 同樣刻意是被方向閘門擋掉的
+ *  那筆（真實回歸情境）。 */
+function multiFamilyView() {
+  const champKey = sample.results[0].expiry_top10[0].candidate_keys[0];
+  const champ = sample.candidate_pool[champKey];
+  const buyLeg = champ.legs.find((l: any) => l.side === "buy");
+  const lc = {
+    ...champ, candidate_key: "lc-key", strategy: "long-call",
+    baseline_return: 0.2, comparator: null, legs: [buyLeg],
+  };
+  return {
+    ...sample,
+    results: [
+      { strategy: "bear-put-spread", status: "skipped_direction", message: "跳過",
+       n_qualified: 0, filter_report: null, filter_stages: [], quality_flags: [],
+       pair_report: null, expiry_counts: [], expiry_top10: [], disclaimer_text: "" },
+      ...sample.results,
+      { strategy: "long-call", status: "ok", message: "", n_qualified: 1,
+       filter_report: { total: 1, passed: 1 }, filter_stages: [], quality_flags: [],
+       pair_report: null,
+       expiry_counts: [[sample.baseline_expiry, 1]],
+       expiry_top10: [{ expiry: sample.baseline_expiry, candidate_keys: ["lc-key"] }],
+       disclaimer_text: "" },
+    ],
+    candidate_pool: { ...sample.candidate_pool, "lc-key": lc },
+    family_eligibility: {
+      "single-leg": { family: "single-leg", eligible: true, reason: null },
+      "vertical-spread": { family: "vertical-spread", eligible: true, reason: null },
+      "butterfly": { family: "butterfly", eligible: false,
+                    reason: "這個策略家族目前還沒有任何已啟用的具體結構。" },
+    },
+  };
+}
+
+test("桌面版：多 family 並存——分頁列出、預設打開冠軍所屬 family、切換分頁"
+     + "只換排名內容不影響頭條（T11／#229，Call/Put 端到端可用）",
+   async ({ page }) => {
+  const row = { ...libraryRow({ id: "s1", symbol: "XYZ" }),
+               strategies: ["single-leg", "vertical-spread"] };
+  const multi = multiFamilyView();
+  await page.route("**/api/scenarios", (route) => route.fulfill({ json: [row] }));
+  await page.route("**/api/scenarios/s1", (route) =>
+    route.fulfill({ json: { ...row, latest_result: multi } }));
+  await page.route("**/api/scenarios/refresh-run", (route) =>
+    route.fulfill({ json: { results: [{ scenario_id: "s1", ok: true, row }],
+                            remaining: [] } }));
+  await page.goto("/#/s/s1");
+
+  const detail = page.locator(".detail-pane");
+  await expect(detail.getByText(/劇本主圖/)).toBeVisible();
+
+  const tabs = detail.getByRole("group", { name: "策略家族" });
+  await expect(tabs.getByRole("button")).toHaveCount(2);
+  await expect(tabs.getByRole("button", { name: "Vertical Spread" }))
+    .toHaveAttribute("aria-pressed", "true");
+
+  const summary = detail.getByRole("region", { name: "劇本摘要" });
+  await expect(summary.getByText("Bull Call Spread")).toBeVisible();
+
+  await tabs.getByRole("button", { name: "Call / Put" }).click();
+  await expect(tabs.getByRole("button", { name: "Call / Put" }))
+    .toHaveAttribute("aria-pressed", "true");
+  await expect(detail.getByText("Long Call").first()).toBeVisible();
+
+  // 分頁切走了，頭條依然是冠軍，不隨分頁切換而改變。
+  await expect(summary.getByText("Bull Call Spread")).toBeVisible();
+});
+
 /* ---------- SIG-04（#175）：Desktop 紅線鎖定 ---------- */
 
 /** Spread IV Gap（SIG-01／#172）的完整回應區塊——跟這個檔案既有
@@ -1380,4 +1735,246 @@ test("SIG-04（#175）Desktop 紅線：買／賣腿卡片並排、Spread Summary
   await expect(summary.locator(".iv-trend-chart")).toBeVisible();
   await expect(legCards.nth(0).locator(".iv-value-primary")).toBeVisible();
   await expect(legCards.nth(1).locator(".iv-value-primary")).toBeVisible();
+});
+
+/* ---------- T16（#232，Initial V2）：Butterfly 前端呈現，桌面 viewport ---------- */
+
+const butterflyKeyDesktop = sampleCallFly.results[0].candidates[0];
+const butterflyCandDesktop = sampleCallFly.candidate_pool[butterflyKeyDesktop];
+
+const rowCallFlyDesktop = {
+  ...sampleRow,
+  id: "s1", symbol: "XYZ",
+  target_price: sampleCallFly.params.target_price,
+  target_month: sampleCallFly.params.target_month,
+  strategies: ["butterfly"],
+  family_eligibility: {
+    "single-leg": { family: "single-leg", eligible: false,
+                   reason: "這個策略家族目前還沒有任何已啟用的具體結構。" },
+    "vertical-spread": { family: "vertical-spread", eligible: false,
+                         reason: "這個策略家族目前還沒有任何已啟用的具體結構。" },
+    "butterfly": { family: "butterfly", eligible: true, reason: null },
+  },
+  representative_candidate: {
+    baseline_return: butterflyCandDesktop.baseline_return,
+    expiry: butterflyCandDesktop.legs[0].expiry,
+    legs: butterflyCandDesktop.legs.map((l: any) =>
+      ({ option_type: l.option_type, side: l.side, strike: l.strike,
+        quantity: l.quantity })),
+    strategy: "call-fly",
+  },
+};
+
+async function routeButterflyDetailDesktop(page: import("@playwright/test").Page) {
+  await page.route("**/api/scenarios", (route) =>
+    route.fulfill({ json: [rowCallFlyDesktop] }));
+  await page.route("**/api/scenarios/s1", (route) =>
+    route.fulfill({ json: { ...rowCallFlyDesktop, latest_result: sampleCallFly } }));
+  await page.route("**/api/scenarios/refresh-run", (route) =>
+    route.fulfill({ json: {
+      results: [{ scenario_id: "s1", ok: true, row: rowCallFlyDesktop }], remaining: [],
+    } }));
+  await page.route("**/api/scenarios/s1/refresh", (route) =>
+    route.fulfill({ json: rowCallFlyDesktop }));
+  const ivCalls: string[] = [];
+  // 明確解鎖——證明的是「三腿候選結構上不支援」，不是「反正沒設定所以
+  // 看不到」那種偽陽性（跟 smoke.spec.ts 同一個理由）。
+  await page.route("**/api/settings", (route) =>
+    route.fulfill({ json: { historical_iv_enabled: true } }));
+  await page.route("**/api/scenarios/*/iv-history*", (route) => {
+    ivCalls.push(route.request().url());
+    return route.fulfill({ json: { candidate_key: butterflyKeyDesktop } });
+  });
+  return ivCalls;
+}
+
+test("T16（#232）：桌面版 Butterfly 三隻腿完整顯示、兩個損益兩平點、" +
+     "展開零額外請求、不出現「IV 相對位置」——與手機版同一套邏輯", async ({ page }) => {
+  const requestUrls: string[] = [];
+  page.on("request", (req) => requestUrls.push(req.url()));
+  const ivCalls = await routeButterflyDetailDesktop(page);
+  await page.goto("/#/s/s1");
+
+  const detail = page.locator(".detail-pane");
+  await expect(detail.getByText("買 100 / 賣 2×106 / 買 115").first()).toBeVisible();
+
+  await detail.getByText("📄 分析報告").click();
+  const breakevenRow = detail.getByText("Breakeven", { exact: true }).locator("xpath=..");
+  await expect(breakevenRow).toContainText(
+    `$${butterflyCandDesktop.breakeven_points[0].toFixed(2)}`);
+  await expect(breakevenRow).toContainText(
+    `$${butterflyCandDesktop.breakeven_points[1].toFixed(2)}`);
+  const regionRow = detail.getByText("獲利區間", { exact: true }).locator("xpath=..");
+  await expect(regionRow).toContainText(
+    `$${butterflyCandDesktop.profit_region[0].toFixed(2)}`);
+
+  // Dev server（React StrictMode）會把初次掛載的 effect 重複觸發一次
+  // ——`/api/settings` 等頁面載入本身就會發的請求可能還沒真的落定。
+  // 等網路真的靜下來才歸零計數器（同 smoke.spec.ts 同一條測試的既有
+  // 教訓），避免「展開」動作本身有沒有多發請求的量測被頁面載入尾聲
+  // 的既有請求汙染成偽陽性。
+  await page.waitForLoadState("networkidle");
+  requestUrls.length = 0;
+  await detail.locator(".candidate summary").first().click();
+  await expect(detail.locator(".candidate").first().locator("table")).toBeVisible();
+  expect(requestUrls).toEqual([]);
+
+  await expect(detail.getByText("IV 相對位置")).toHaveCount(0);
+  expect(ivCalls).toEqual([]);
+});
+
+test("OPTION-CHASER-CLOSEOUT-001：桌面版劇本庫卡片上 Butterfly champion " +
+     "三腿完整顯示，不會被壓成看起來像舊的兩腿 Vertical Spread", async ({ page }) => {
+  await routeButterflyDetailDesktop(page);
+  await page.goto("/#/");
+
+  const card = page.getByRole("link", { name: /XYZ/ });
+  // OPTION-CHASER-CLOSEOUT-002：卡片改用緊湊格式（見下一條測試），這裡
+  // 改驗證三腿的履約價都在，三腿沒被靜默丟掉這件事依然成立。
+  await expect(card).toContainText("100");
+  await expect(card).toContainText("106");
+  await expect(card).toContainText("115");
+});
+
+test("OPTION-CHASER-CLOSEOUT-002：桌面版劇本庫卡片上 Butterfly champion 顯示緊湊格式" +
+     "「Butterfly 100 / 106 / 115」，不出現完整格式的買賣方向與口數", async ({ page }) => {
+  await routeButterflyDetailDesktop(page);
+  await page.goto("/#/");
+
+  const card = page.getByRole("link", { name: /XYZ/ });
+  await expect(card).toContainText("Butterfly 100 / 106 / 115");
+  await expect(card).not.toContainText("Call Butterfly");
+  await expect(card).not.toContainText("2×106");
+
+  // 不換行、不增加卡片高度（見手機版 smoke.spec.ts 同名測試的完整
+  // 說明）：`.compact-strategy` 既有 CSS 結構性保證單行，這裡量卡片
+  // 高度沒有被撐大。桌面左側欄本身較窄（#108 既有密度設計），緊湊
+  // 格式在這個寬度下仍可能被 `text-overflow: ellipsis` 視覺裁切
+  // 尾端字元（既有機制，非本票新增；比裁切前的完整格式短得多，裁切
+  // 幅度已縮小），但不影響「不換行、不增加高度」——這正是 ellipsis
+  // 存在的目的。
+  const cardBox = (await card.boundingBox())!;
+  expect(cardBox.height).toBeLessThan(80);
+});
+
+/* ---------- T17（#234，Initial V2）：持平劇本，桌面 viewport ---------- */
+
+const FLAT_SKIP_MESSAGE_DESKTOP =
+  "目前劇本方向為「持平」，因此未執行 Long Call、Long Put、Bull Call " +
+  "Spread、Bear Put Spread。可改選 Call Butterfly、Put Butterfly。";
+const FLAT_INELIGIBLE_REASON_DESKTOP =
+  "目前劇本方向為「持平」，這個策略家族底下已啟用的策略都不適用這個方向。";
+
+function flatSkippedResultDesktop(strategy: string) {
+  return {
+    strategy, status: "skipped_direction", message: FLAT_SKIP_MESSAGE_DESKTOP,
+    n_qualified: 0, filter_report: null, filter_stages: [], quality_flags: [],
+    pair_report: null, expiry_counts: [], expiry_top10: [], disclaimer_text: "",
+  };
+}
+
+function flatMultiFamilyViewDesktop() {
+  return {
+    ...sampleCallFly,
+    params: { ...sampleCallFly.params, target_price: sampleCallFly.meta.spot },
+    results: [
+      flatSkippedResultDesktop("long-call"), flatSkippedResultDesktop("long-put"),
+      flatSkippedResultDesktop("bull-call-spread"),
+      flatSkippedResultDesktop("bear-put-spread"),
+      ...sampleCallFly.results,
+    ],
+    family_eligibility: {
+      "single-leg": { family: "single-leg", eligible: false,
+                     reason: FLAT_INELIGIBLE_REASON_DESKTOP },
+      "vertical-spread": { family: "vertical-spread", eligible: false,
+                          reason: FLAT_INELIGIBLE_REASON_DESKTOP },
+      "butterfly": { family: "butterfly", eligible: true, reason: null },
+    },
+  };
+}
+
+test("T17（#234）：桌面版建立持平劇本（目標價＝現價）全程不被拒絕，" +
+     "看得到 Butterfly 候選；Call/Put 與 Vertical Spread 顯示不可選並說明原因",
+   async ({ page }) => {
+  const flatSpot = sampleCallFly.meta.spot;
+  const flatView = flatMultiFamilyViewDesktop();
+  const created = {
+    ...sampleRow, id: "s1", symbol: "XYZ",
+    target_price: flatSpot, target_month: "2026-10",
+    strategies: ["single-leg", "vertical-spread", "butterfly"],
+    latest_analyzed_at: null, best_return: null,
+  };
+
+  await page.route("**/api/scenarios", (route) =>
+    route.request().method() === "POST"
+      ? route.fulfill({ status: 201, json: created })
+      : route.fulfill({ json: [] }));
+  await page.route("**/api/scenarios/refresh-run", (route) =>
+    route.fulfill({ json: {
+      results: [{ scenario_id: "s1", ok: true, row: {
+        ...created, latest_analyzed_at: "2026-10-16T21:30:00-04:00",
+        best_return: butterflyCandDesktop.baseline_return,
+      } }],
+      remaining: [],
+    } }));
+  await page.route("**/api/scenarios/s1", (route) =>
+    route.fulfill({ json: { ...created, latest_result: flatView } }));
+
+  await page.goto("/");
+  await page.getByRole("button", { name: "＋ 建立劇本" }).click();
+  await page.getByLabel("標的代號").fill("xyz");
+  await page.getByLabel("目標價位").fill(String(flatSpot));
+  await page.getByLabel("目標年月").click();
+  await page.getByLabel("年份").fill("2026");
+  await page.getByRole("button", { name: "10 月" }).click();
+  await page.getByRole("checkbox", { name: "Call / Put" }).check();
+  await page.getByRole("checkbox", { name: "Vertical Spread" }).check();
+  await page.getByRole("checkbox", { name: "Butterfly" }).check();
+  await page.getByRole("button", { name: "建立", exact: true }).click();
+
+  // 桌面版建立後不自動選中——跟其他既有桌面建立流程一樣，點左側清單
+  // 那張新卡片才會在右側工作區打開詳細頁。
+  await page.getByRole("link", { name: /XYZ/ }).click();
+
+  const detail = page.locator(".detail-pane");
+  await expect(detail.getByText(/劇本主圖/)).toBeVisible();
+  await expect(detail.getByText("買 100 / 賣 2×106 / 買 115").first())
+    .toBeVisible();
+
+  const tabs = detail.getByRole("group", { name: "策略家族" });
+  await expect(tabs.getByRole("button")).toHaveCount(3);
+  await expect(tabs.getByRole("button", { name: "Butterfly" }))
+    .toHaveAttribute("aria-pressed", "true");
+
+  await tabs.getByRole("button", { name: "Call / Put" }).click();
+  await expect(detail.getByText(/持平/)).toBeVisible();
+  await tabs.getByRole("button", { name: "Vertical Spread" }).click();
+  await expect(detail.getByText(/持平/)).toBeVisible();
+  await expect(detail.getByRole("heading", { name: "候選池" })).toHaveCount(0);
+});
+
+/* ---------- T18（#235，Initial V2）：最終回歸與驗收，桌面 viewport ---------- */
+
+test("T18（#235）紅線 12：桌面版展開一般 Vertical Spread 候選（非 Butterfly）" +
+     "看得到 Heatmap，且不觸發任何額外網路請求——與手機版 smoke.spec.ts 同一條" +
+     "補件，證明零額外請求不是只在 Butterfly 這一個 family 上成立",
+   async ({ page }) => {
+  const requestUrls: string[] = [];
+  page.on("request", (req) => requestUrls.push(req.url()));
+  await routeTwoScenarios(page);
+  await page.goto("/#/s/s1");
+
+  const detail = page.locator(".detail-pane");
+  await expect(detail.getByText("劇本主圖")).toBeVisible();
+  // Dev server（React StrictMode）會把初次掛載的 effect 重複觸發一次
+  // ——`/api/settings` 等頁面載入本身就會發的請求可能還沒真的落定。
+  // 等網路真的靜下來才歸零計數器，這樣「展開」這個動作本身有沒有多發
+  // 請求的量測才不會被頁面載入尾聲的既有請求汙染成偽陽性（同一份
+  // 教訓，T16／#232 的桌面版 Butterfly 測試已示範過一次）。
+  await page.waitForLoadState("networkidle");
+
+  requestUrls.length = 0;
+  await detail.locator(".candidate summary").first().click();
+  await expect(detail.locator(".candidate").first().locator("table")).toBeVisible();
+  expect(requestUrls).toEqual([]);
 });

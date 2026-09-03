@@ -179,6 +179,58 @@ def test_bear_put_contract_sample_matches_the_live_api_response():
     assert cand["comparator"]["option_type"] == "put"
 
 
+def test_long_call_contract_sample_matches_the_live_api_response():
+    """T09（#222）：獨立的單腿到期日分組樣本——同一份主 fixture、同一個
+    target_price，只換策略成 `long-call`，一樣是真實 `/api/analyze`
+    回應、一樣有 drift 測試守著。不硬湊進主樣本的理由與 put 樣本相同
+    （見上一條測試 docstring）：主樣本被前端 mock／E2E 大量引用，混進
+    第二個策略會改變它既有的 `results` 形狀。"""
+    lc_sample = Path("contracts/analysis_sample_long_call.json")
+    assert lc_sample.exists(), "契約樣本不存在，請跑 scripts/gen_contract_sample.py"
+    expected = json.loads(lc_sample.read_text(encoding="utf-8"))
+    lc_request = {"symbol": "XYZ", "target_price": 130.0,
+                 "target_month": "2026-09", "strategies": ["long-call"]}
+    actual = _client().post("/api/analyze", json=lc_request).json()
+    assert actual == expected, (
+        "單腿到期日分組契約樣本與 API 回應不一致——請跑 "
+        "scripts/gen_contract_sample.py 重產樣本")
+    # 這份樣本存在的唯一理由就是要示範單腿的到期日分組——空手覆蓋沒有意義。
+    result = actual["results"][0]
+    assert result["expiry_top10"]
+    for group in result["expiry_top10"]:
+        assert group["candidate_keys"]
+
+
+def test_call_fly_contract_sample_matches_the_live_api_response():
+    """T15（#230，Initial V2 spec #217）：獨立的 Butterfly 契約樣本
+    ——同一種理由（主樣本被前端 mock／E2E 大量引用，混進第三個 family
+    會改變它既有的 `results` 形狀），一樣是真實 `/api/analyze` 回應、
+    一樣有 drift 測試守著。用**中密度**專屬 fixture
+    （`xyz_v7_butterfly_moderate.json`）——主 fixture 排不出正的
+    `max_profit`，效能測試用的密集 fixture 又會撐出過大的樣本檔案
+    （見 `scripts/gen_contract_sample.py` 的 BUTTERFLY_FIXTURE 註解）。
+    """
+    bf_sample = Path("contracts/analysis_sample_call_fly.json")
+    assert bf_sample.exists(), "契約樣本不存在，請跑 scripts/gen_contract_sample.py"
+    expected = json.loads(bf_sample.read_text(encoding="utf-8"))
+    bf_fixture = load_snapshot("tests/fixtures/xyz_v7_butterfly_moderate.json")
+    bf_request = {"symbol": "XYZ", "target_price": 106.0,
+                 "target_month": "2026-10", "strategies": ["call-fly"]}
+    actual = _client(lambda symbol: bf_fixture).post(
+        "/api/analyze", json=bf_request).json()
+    assert actual == expected, (
+        "Butterfly 契約樣本與 API 回應不一致——請跑 "
+        "scripts/gen_contract_sample.py 重產樣本")
+    # 這份樣本存在的唯一理由就是要示範三腿候選——空手覆蓋沒有意義。
+    key = actual["results"][0]["candidates"][0]
+    cand = actual["candidate_pool"][key]
+    assert len(cand["legs"]) == 3
+    assert cand["legs"][1]["quantity"] == 2
+    assert cand["profit_region"] is not None
+    # AC 明文性質：max_loss 可能超過已付權利金（broken-wing）。
+    assert cand["max_loss_per_contract"] > cand["capital_per_contract"]
+
+
 def test_symbol_is_restricted_to_ticker_shaped_input():
     """symbol 會被代入資料源 URL，不讓路徑片段之類的東西進去。"""
     for bad in ("../evil", "A/B", "", "TOOLONGSYMBOL"):

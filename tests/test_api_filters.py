@@ -8,8 +8,10 @@ HTTP API 驗證（後端唯一接縫，spec #47 裁示；spec #61 Testing Decisi
 確實被觸發）用最小合成快照、不靠這份大 fixture——見
 `tests/test_spread_quality_flag.py` 開頭的說明：
 排名只留每級距第一名，被卡住的那筆不保證擠得進榜。FB5-03 的單調性違反
-是例外：XYZC100D 剛好就是平衡型級距的第一名，直接在這份既有 fixture 上
-就驗得到，見 `test_monotonicity_warning_reaches_the_serialized_candidate`。
+證明改走 `candidate_pool` 直接查找（見
+`test_monotonicity_warning_reaches_the_serialized_candidate` 內的說明——
+REPAIR-09／#246 之前 XYZC100D 剛好是平衡型級距的第一名可以直接從
+`result["candidates"]` 讀到，該票之後不再是，見該測試 docstring）。
 """
 from fastapi.testclient import TestClient
 
@@ -17,6 +19,7 @@ from api_app.main import create_app
 from option_chaser.data.snapshot import load_snapshot
 from option_chaser.filters import is_spread_wide
 from option_chaser.models import AnalysisParams
+from option_chaser.ratecurve import RateCurve
 
 # 既有 fixture（`tests/test_service.py` 亦用它）：10 個 call。修法前
 # （FB5-01／FB5-02 之前）4 道硬門檻，池子只剩 6 組：
@@ -28,9 +31,36 @@ REQUEST = {"symbol": "XYZ", "target_price": 120.0, "target_month": "2026-08",
           "strategies": ["long-call"]}
 
 
+# Hermetic（#236）：`create_app()` 的 `rate_loader`／`dividend_loader`
+# **預設接的是真管線**（Treasury／Yahoo→FMP→Nasdaq）。這份 fixture 用的
+# 假 symbol `"XYZ"` 恰好是**真實上市代號**，所以在連得到外網的環境裡，
+# 預設 loader 會抓到那家公司的真實配息、算出非零 q、`carry_calibrated`
+# 變 True，估值與級距排名跟著位移——下面幾條測試斷言的 `strike 100.5`
+# 就是這樣掉出榜的。同一個坑 `scripts/gen_contract_sample.py` 早有紀錄。
+#
+# 因此這裡把兩個輸入都釘死。合成標的沒有配息（q=0），利率用一條固定
+# 假曲線——這正是這幾條測試的既有期望值（FB5-01／#62 當初量到的那組
+# 數字）成立的條件，不是為了讓測試變綠而調的參數。
+_FAKE_RATE_CURVE = RateCurve(curve_date="2026-07-15",
+                             nodes=((0.25, 0.045), (1.0, 0.043),
+                                    (2.0, 0.041), (5.0, 0.040)))
+
+
+def _fake_rate_loader(today):
+    return _FAKE_RATE_CURVE, f"假曲線 {_FAKE_RATE_CURVE.curve_date}"
+
+
+def _fake_dividend_loader(symbol, today):
+    """合成標的不配息 → q=0。回傳 `None` 是這個介面表達「沒有配息資料」
+    的既有方式（見 `service._resolve_q` 的 fallback 分層）。"""
+    return None, "測試 fixture 的合成標的沒有配息"
+
+
 def _client():
     snap = load_snapshot(FIX)
-    return TestClient(create_app(fetch=lambda symbol: snap))
+    return TestClient(create_app(fetch=lambda symbol: snap,
+                                 rate_loader=_fake_rate_loader,
+                                 dividend_loader=_fake_dividend_loader))
 
 
 def test_low_open_interest_candidate_survives_and_pool_grows():
@@ -41,10 +71,15 @@ def test_low_open_interest_candidate_survives_and_pool_grows():
     pool = body["candidate_pool"]
 
     assert result["filter_report"] == {"total": 10, "passed": 8}
-    # single-leg 路徑的候選走 `candidates`，不是 `all_candidates`（T9
-    # 附錄A13：`all_candidates` 只序列化 spread 路徑）。T09（#191）：
-    # `candidates` 現在是 key 清單，完整內容查頂層 `candidate_pool`。
-    strikes = {pool[k]["legs"][0]["strike"] for k in result["candidates"]}
+    # 「進得了候選池」（過濾器不刪除）與「擠進 `result["candidates"]`
+    # 排行榜前段」是兩件獨立的事——REPAIR-09（#246）之前 strike 100.5
+    # 剛好是它那個級距的排行榜冠軍，兩者恰好疊在一起看得到；修法後它的
+    # 到期日（2026-10-16，晚於這份 fixture 的錨點）殘留時間價值被修正
+    # 拿掉，不再是冠軍（見 `test_ranking_formula_still_picks_highest_
+    # return_within_band`），但它依然完整通過品質過濾、依然在
+    # `candidate_pool`（完整序列化結構，不論排行榜名次）裡——這才是本
+    # 測試真正要證明的事：OI 關卡不再有生殺大權。
+    strikes = {c["legs"][0]["strike"] for c in pool.values()}
     assert 100.5 in strikes, "OI=5 的合約應留在候選池裡，不再被 OI 關卡刷掉"
 
 
@@ -92,11 +127,13 @@ def test_per_expiry_pool_size_grows_not_just_the_aggregate():
 
 def test_filter_stages_only_data_integrity_and_iv_remain():
     """spec #61 三分類：C 類（OI／成交量／價差寬度）全部不再是硬門檻，
-    `filter_stages` 只剩 A 類（報價健全性）與 B 類（IV 數學前提）。"""
+    `filter_stages` 只剩 A 類（報價健全性）／B 類（IV 數學前提）＋
+    T05（#226，Initial V2）新增的 B 類導出層安全網（正常報價下恆為
+    0 筆移除，仍會作為一個 stage 出現，讓剔除是可見的而非靜默）。"""
     r = _client().post("/api/analyze", json=REQUEST)
     result = r.json()["results"][0]
     labels = [s["label"] for s in result["filter_stages"]]
-    assert labels == ["報價異常", "IV 異常"]
+    assert labels == ["報價異常", "IV 異常", "成本或報酬為不可能值（B 層安全網）"]
     assert not any(kw in l for l in labels
                    for kw in ("OI", "成交量", "Spread", "價差"))
 
@@ -122,41 +159,63 @@ def test_ranking_formula_still_picks_highest_return_within_band():
     """spec #61：本輪不改排名公式，這裡不是靠「ranking.py 沒被動過」就
     交差，而是真的算給你看。
 
-    平衡型級距（`ranking.classify` 的 Delta 0.35–0.65）修法後有 4 組候選
-    競爭，包含新留下來的 XYZC100D（strike 100.5，基準報酬率最高，見票上
-    附表）：
-      100.5 → 2.841（新留下）／100.0 → 2.774／105.0 → 2.087／95.0 → 0.003
+    平衡型級距（`ranking.classify` 的 Delta 0.35–0.65）本身有 5 組候選
+    競爭，`net_delta` 不受 REPAIR-09（#246）影響（Greeks 走 `today`／
+    `t_now`，跟排名基準估值日是兩件事，已用 `git stash` 比對修法前後
+    net_delta 逐位元相同）——變的只有各自的 `baseline_return`。
+
+    REPAIR-09（#246）之前，XYZC100D（strike 100.5，到期日 2026-10-16，
+    晚於這份 fixture 的錨點 2026-08-21）殘留時間價值把報酬率灌水到
+    **2.8541**，蓋過同一級距內到期日早於錨點、不受影響的 strike 100.0
+    （2026-08-01 到期，報酬率恆為 **2.7736**）。修法後 XYZC100D 的報酬率
+    正確降到 **2.6111**（到期時是價外／輕度價內的內在價值，不再含時間
+    價值），改由 strike 100.0 中選——已用 `git stash` 對照過修法前後
+    完整候選池數字：
+      修法前 100.5→2.8541（舊冠軍）／100.0→2.7736／102.0→2.2480／
+             105.0→2.0990／95.0→0.0041
+      修法後 100.5→2.6111 ／100.0→2.7736（新冠軍）／102.0→2.0000／
+             105.0→1.7273／95.0→-0.1935
     若排名公式（依基準情境報酬率降冪排序取級內第一）壞了或方向反了，
-    這裡不會是 100.5 中選——不是憑空斷言，是這組真實數字逼出來的。
+    這裡不會是 100.0 中選——不是憑空斷言，是這組真實數字逼出來的。
     """
     body = _client().post("/api/analyze", json=REQUEST).json()
     result, pool = body["results"][0], body["candidate_pool"]
     balanced = next(pool[k] for k in result["candidates"]
                     if 0.35 <= abs(pool[k]["net_delta"]) <= 0.65)
-    assert balanced["legs"][0]["strike"] == 100.5
+    assert balanced["legs"][0]["strike"] == 100.0
+    assert balanced["legs"][0]["expiry"] == "2026-08-01"
 
 
 def test_monotonicity_warning_reaches_the_serialized_candidate():
     """FB5-03（#64）票上驗收標準：「標示出現在候選的序列化結構中」。
 
     這份既有 fixture 剛好自然帶著一組真實的單調性違反：XYZC100D（strike
-    100.5, ask 5.4）比 XYZC102O（strike 102, ask 6.0）便宜，call 履約價
-    越高應該越便宜（或持平），這裡反過來了——跟需求方原話「100/105/110，
-    105 卻比 100 便宜」同一個形狀。XYZC100D 正好是平衡型級距的第一名
-    （上一條測試已確認），不必繞去查全候選列表就能在真實回應上斷言。
+    100.5, ask 5.4, 到期 2026-10-16）比 XYZC102O（strike 102, ask 6.0，
+    同一到期日）便宜，call 履約價越高應該越便宜（或持平），這裡反過來了
+    ——跟需求方原話「100/105/110，105 卻比 100 便宜」同一個形狀。
+
+    REPAIR-09（#246）之前，XYZC100D 剛好是平衡型級距的第一名，可以直接
+    從 `result["candidates"]`（每級距只留冠軍的排行榜）撈到。修法後
+    XYZC100D 的到期日（2026-10-16）晚於這份 fixture 的錨點
+    （2026-08-21），殘留時間價值被修正拿掉，報酬率從 2.8541 降到
+    2.6111——不再是同級距的冠軍（見
+    `test_ranking_formula_still_picks_highest_return_within_band`，冠軍
+    換成到期日早於錨點、不受影響的 strike 100.0）。這證明的是「標示
+    出現在候選的序列化結構中」——XYZC100D 依然通過品質過濾、依然帶著
+    `monotonicity_warning`，只是不再擠進**排行榜前段**，兩者是獨立的
+    事：`candidate_pool` 才是完整的序列化結構（不論有沒有進排行榜），
+    直接按 key 查找。
 
     也順便釘住這是**獨立欄位**：`wide_spread_warning`（MVP V3／#104 顯示
     旗標，取代已不對外序列化的 `quote_warning`）不該被單調性違反污染
     （XYZC100D 本身報價／價差都正常，`wide_spread_warning` 應為 False）。
     """
     body = _client().post("/api/analyze", json=REQUEST).json()
-    result, pool = body["results"][0], body["candidate_pool"]
-    balanced = next(pool[k] for k in result["candidates"]
-                    if 0.35 <= abs(pool[k]["net_delta"]) <= 0.65)
-    assert balanced["legs"][0]["strike"] == 100.5
-    assert balanced["monotonicity_warning"] is True
-    assert balanced["wide_spread_warning"] is False
-    assert "quote_warning" not in balanced
+    pool = body["candidate_pool"]
+    xyzc100d = pool["long-call|100.5|2026-10-16"]
+    assert xyzc100d["monotonicity_warning"] is True
+    assert xyzc100d["wide_spread_warning"] is False
+    assert "quote_warning" not in xyzc100d
 
 
 def test_monotonicity_violation_does_not_shrink_the_pool():
@@ -176,6 +235,7 @@ def test_filter_stages_carry_their_class_over_http():
     result = r.json()["results"][0]
     assert [(s["label"], s["filter_class"]) for s in result["filter_stages"]] == [
         ("報價異常", "A"), ("IV 異常", "B"),
+        ("成本或報酬為不可能值（B 層安全網）", "B"),
     ]
 
 

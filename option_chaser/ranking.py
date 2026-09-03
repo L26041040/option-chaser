@@ -5,8 +5,12 @@ from datetime import date
 
 from .models import AnalysisParams
 from .valuation import (
+    ButterflyProfitRegion,
+    ButterflyValuation,
     ContractValuation,
     SpreadValuation,
+    butterfly_guidance_judgments,
+    butterfly_scenario_value,
     guidance_judgments,
     intrinsic_value,
     scenario_leg_value,
@@ -41,20 +45,36 @@ def baseline_return(v: ContractValuation) -> float:
 
 
 def return_at_price(
-    val: ContractValuation | SpreadValuation, S: float, p: AnalysisParams
+    val: ContractValuation | SpreadValuation | ButterflyValuation, S: float,
+    p: AnalysisParams,
 ) -> float:
     """任意標的價位下的劇本報酬（V7／#55，三價位對照用）。
 
     口徑與主排名數字**完全相同**——基準 IV、最差成交成本（單腿＝Ask；
-    價差＝買腿 Ask − 賣腿 Bid，附錄 A14.2），只有標的價換成 `S`。這是
-    刻意的：三價位要能與頭條那個數字並排讀，就不能是另一套算法。
+    價差＝買腿 Ask − 賣腿 Bid，附錄 A14.2；Butterfly＝買腿 Ask 合計 −
+    2×中腿 Bid，T15／#230），只有標的價換成 `S`。這是刻意的：三價位要
+    能與頭條那個數字並排讀，就不能是另一套算法。
     `return_at_price(v, p.target_price, p) == baseline_return(v)` 由測試釘住，
     且**必須在 expiry != anchor 的候選上驗證**——兩者相等時這條斷言是空的。
 
-    估值日**兩條路徑不同，各自沿用既有裁示**，不可統一：
-    - 價差＝該組**自身的到期日**（T3／#17：排名估值改為各 Spread 自身到期日
-      的內在價值，見 `valuation.evaluate_spread`）
-    - 單腿＝日曆錨點（附錄 A9，見 `valuation.evaluate_contract`）
+    估值日**三個 family 一律是該候選自身的到期日**：
+    - 價差／Butterfly＝T3／#17 既有裁示（見 `valuation.evaluate_spread`／
+      `evaluate_butterfly`）
+    - 單腿＝REPAIR-09（#246，spec #237 OD-02）把排名基準估值日從固定
+      日曆錨點（附錄 A9）改成候選自身到期日之後，這裡跟著對齊（見
+      `valuation.evaluate_contract`）
+
+    OPTION-CHASER-CLOSEOUT-003：這一行原本停在 `p.anchor`——REPAIR-09
+    依票面明文「`ranking.py` 零改動」未動它，於是上面那條「口徑完全
+    相同」的不變量對**到期日晚於錨點的單腿候選**變成假的（實測
+    strike 110／ask 3.2／target 120／anchor 2026-10-16／expiry
+    2026-12-18：`baseline_return` 2.125 vs 這裡 2.942，差的正是
+    REPAIR-09 要消滅的殘留時間價值）。守門測試
+    `test_single_leg_at_target_price_equals_baseline_return` 的 fixture
+    到期日恰好等於錨點，正是它姊妹測試 docstring 早就點名的那種空
+    斷言，因此沒有紅燈。本輪 merge gate review 抓到並修正，單腿分支
+    改用候選自身到期日；價差／Butterfly 兩個分支本來就是自身到期日，
+    一個字沒動，V1 Vertical 凍結數值逐位元不變。
 
     不改排名（spec #47 明文：仍以目標價排名）——本函式只供呈現。
     """
@@ -64,8 +84,16 @@ def return_at_price(
                                       long_carry=val.long_carry,
                                       short_carry=val.short_carry)
         cost = val.net_worst
+    elif isinstance(val, ButterflyValuation):
+        at = date.fromisoformat(val.low_leg.expiry)
+        value = butterfly_scenario_value(
+            val.low_leg, val.mid_leg, val.high_leg, S, at, p,
+            low_carry=val.low_carry, mid_carry=val.mid_carry,
+            high_carry=val.high_carry)
+        cost = val.net_worst
     else:
-        value = scenario_leg_value(val.contract, S, p.anchor, p, carry=val.carry)
+        at = date.fromisoformat(val.contract.expiry)
+        value = scenario_leg_value(val.contract, S, at, p, carry=val.carry)
         cost = val.contract.ask
     return (value - cost) / cost
 
@@ -113,7 +141,16 @@ def build_reasons(
         word = "高於" if v.contract.option_type == "call" else "低於"
         s = f"breakeven 僅{word}現價 {_pct(v.breakeven_vs_spot)}"
         half_price = spot + 0.5 * (p.target_price - spot)
-        if scenario_leg_value(v.contract, half_price, p.anchor, p,
+        # OPTION-CHASER-CLOSEOUT-003：估值日與 `baseline_return`／
+        # `return_at_price` 同為候選**自身到期日**。原本停在固定日曆
+        # 錨點（附錄 A9），對到期日晚於錨點的候選會說出與到期真相相反
+        # 的話——實測 K110／ask 3.2／anchor 2026-10-16／expiry
+        # 2026-12-18，半價位（110.0）在錨點日值 5.83 > ask，於是印出
+        # 「劇本半對仍獲利」；但那天它自己還沒到期，真正到期時內在
+        # 價值是 0.00，權利金全損。這句話是講給使用者聽的事實陳述，
+        # 不能用一個該候選根本還沒到期的日期去判定。
+        at = date.fromisoformat(v.contract.expiry)
+        if scenario_leg_value(v.contract, half_price, at, p,
                               carry=v.carry) > v.contract.ask:
             s += "，劇本半對仍獲利"
         pros.append(s)
@@ -171,4 +208,72 @@ def build_spread_reasons(
     if legs_spread > max(p.spread_floor, (2.0 / 3.0) * p.max_spread_pct * sv.net_mid):
         cons.append("買賣價差偏大（兩腿合計）")
     cons.extend(spread_guidance_judgments(sv, p))
+    return pros, cons
+
+
+def butterfly_baseline_return(bv: ButterflyValuation) -> float:
+    """主排名數字。成本口徑＝net_worst（買腿 Ask 合計 − 2×中腿 Bid，
+    附錄 A14.2 的延伸——debit 維持既有語意：劇本成立時相對**實際投入
+    成本**的報酬，#213 Correction，非 risk-capital 分母）。公式形狀
+    (基準值−成本)/成本 逐字沿用既有兩個 debit 家族。"""
+    return (bv.baseline_value - bv.net_worst) / bv.net_worst
+
+
+def _butterfly_tie_key(bv: ButterflyValuation) -> tuple:
+    legs_spread = ((bv.low_leg.ask - bv.low_leg.bid)
+                  + (bv.mid_leg.ask - bv.mid_leg.bid)
+                  + (bv.high_leg.ask - bv.high_leg.bid))
+    return (legs_spread / bv.net_worst, bv.low_leg.strike, bv.low_leg.expiry,
+           bv.low_leg.contract_symbol)
+
+
+def rank_butterflies(
+    butterflies: list[ButterflyValuation], p: AnalysisParams
+) -> list[ButterflyValuation]:
+    """Owner 2026-08-30 明確裁示（#230）：body 的位置不寫死，由「在目標
+    價位那一點的報酬最大化」的排名自然湧現——這裡跟既有 `rank_spreads()`
+    是同一套排序邏輯，不特別偏好任何履約價組合。"""
+    ordered = sorted(
+        butterflies,
+        key=lambda b: (-butterfly_baseline_return(b), *_butterfly_tie_key(b)))
+    return ordered[: p.top]
+
+
+def butterfly_profit_region_text(region: ButterflyProfitRegion | None) -> str:
+    """獲利區間的人話描述——CLI 純文字報告（`report._butterfly_lines`）與
+    候選評語（`build_butterfly_reasons`）共用同一份措辭決策，兩處不各自
+    判斷四種情況，否則哪天只改一邊就會出現兩種說法。
+
+    CLOSEOUT-004（PR #250 review Finding 1）：`lower`／`upper` 各自可為
+    `None`＝那一側沒有界（broken-wing 的翼外平台本身就高於進場成本，
+    見 `valuation.ButterflyProfitRegion`）。文案**不得**在那種情況下說
+    「區間外到期時無法獲利」——那是對使用者的假話：往那個方向走多遠都
+    還是獲利。"""
+    if region is None:
+        return "無——到期時任何標的價都無法獲利"
+    lo, hi = region.lower, region.upper
+    if lo is not None and hi is not None:
+        return f"${lo:.2f} ~ ${hi:.2f}（區間外到期時無法獲利）"
+    if lo is not None:
+        return f"${lo:.2f} 以上（沒有上界，更高的標的價到期時一樣獲利）"
+    if hi is not None:
+        return f"${hi:.2f} 以下（沒有下界，更低的標的價到期時一樣獲利）"
+    return "任何標的價到期時都獲利（兩側都沒有界）"
+
+
+def build_butterfly_reasons(
+    bv: ButterflyValuation, idx: int, n_triples: int, p: AnalysisParams
+) -> tuple[list[str], list[str]]:
+    pros = [f"劇本成立時報酬率 {_pct(butterfly_baseline_return(bv))}"
+           f"（合格 {n_triples} 組中第 {idx + 1}）"]
+    if bv.profit_region is not None:
+        cons = [f"獲利區間 {butterfly_profit_region_text(bv.profit_region)}"]
+    else:
+        cons = ["到期時任何標的價都無法獲利（峰值仍低於進場成本）"]
+    legs_spread = ((bv.low_leg.ask - bv.low_leg.bid)
+                  + (bv.mid_leg.ask - bv.mid_leg.bid)
+                  + (bv.high_leg.ask - bv.high_leg.bid))
+    if legs_spread > max(p.spread_floor, (2.0 / 3.0) * p.max_spread_pct * bv.net_mid):
+        cons.append("買賣價差偏大（三腿合計）")
+    cons.extend(butterfly_guidance_judgments(bv, p))
     return pros, cons

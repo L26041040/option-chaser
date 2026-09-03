@@ -15,11 +15,22 @@ def make(sym, strike, bid, ask, iv=0.35, opt="call", expiry="2026-10-16"):
                           volume=10, open_interest=100, implied_volatility=iv)
 
 
-def test_value_clamped_to_width_and_zero():
+def test_value_stays_within_zero_and_width_without_an_explicit_clamp():
+    """T02（#219）更正：舊名字 `test_value_clamped_to_width_and_zero`
+    暗示這裡有一道 clamp 在把值夾在 `[0, width]`——那道 clamp 已經被
+    #217 決策 B 廢除（見上面 `test_spread_scenario_value_equals_raw_
+    leg_sum_no_clamp`）。這條測試量的其實是**數學性質**：這份 fixture
+    的兩腿共用同一個 IV，BS 定價在履約價上單調遞減，差值天然落在
+    `[0, width]`，不需要任何顯式 clamp 就會成立——這正是移除 clamp 後
+    T01 基準絕大多數格點逐位元不變的根本原因，不是巧合。（真的有 skew
+    ── 兩腿 IV 不同 ── 時這個保證不成立，見
+    `test_leg_valued_differently_can_transiently_exceed_width_before_
+    expiry`，那是本票施工中實測抓到、Owner 已核准的真實例外。）"""
     lng, sht = make("L", 100.0, 8.0, 8.2), make("S", 105.0, 5.0, 5.2)
-    # very deep scenario: both far ITM -> raw diff < width e^{-rT} but clamps hold
+    # 深度雙邊 ITM：兩腿差值天然貼近 width（不是被夾住，是算出來就在這裡）
     v_hi = spread_scenario_value(lng, sht, 500.0, date(2026, 8, 28), P)
     assert 0.0 <= v_hi <= 5.0
+    # 深度雙邊 OTM：兩腿都趨近 0，差值天然趨近 0（同理不是被夾住）
     v_lo = spread_scenario_value(lng, sht, 1.0, date(2026, 8, 28), P)
     assert v_lo == 0.0
 
@@ -75,3 +86,94 @@ def test_spread_judgments_trigger():
     assert sv.baseline_value == 5.0 and sv.net_worst > sv.baseline_value
     msgs = spread_guidance_judgments(sv, p)
     assert any("最保守 IV 情境" in m for m in msgs)
+
+
+# ---------- T02（#219）：逐腿直算取代 debit-only 包絡 ----------
+
+def test_spread_scenario_value_equals_raw_leg_sum_no_clamp():
+    """#217 決策 B：payoff 一律 `Σ 方向符號 × 口數 × 單腿價值`，
+    `min(max(long-short,0), width)` 這個結構專屬封套公式已廢除。
+
+    這條直接證明 `spread_scenario_value` 現在就是純粹的逐腿相減——
+    不是「剛好通過既有測試」，是拿它跟手算的逐腿相減比對，逐位元相同。
+    """
+    from option_chaser.valuation import scenario_leg_value
+    lng, sht = make("L", 100.0, 8.0, 8.2), make("S", 105.0, 5.0, 5.2)
+    S, at = 102.0, date(2026, 8, 28)
+    expected = (scenario_leg_value(lng, S, at, P)
+               - scenario_leg_value(sht, S, at, P))
+    assert spread_scenario_value(lng, sht, S, at, P) == expected
+
+
+def test_spread_scenario_value_is_not_floored_at_zero_when_raw_is_negative():
+    """把「買、賣」對調（賣低履約價、買高履約價——不是本產品啟用的
+    subtype，純粹用來證明原語本身不偷偷加 floor），到期時的 payoff
+    在標的走高時是負的（賣方那隻腿虧錢）。舊的 `min(max(raw,0),width)`
+    公式會把這個負值打成 0；新的逐腿直算原語不做這件事——這正是
+    「不假設買賣方向組合」的直接證明。"""
+    from option_chaser.valuation import scenario_leg_value
+    low_strike, high_strike = make("A", 100.0, 8.0, 8.2), make("B", 105.0, 5.0, 5.2)
+    S, at = 120.0, date(2026, 10, 16)   # 到期日，深度 ITM
+    # 呼叫端角色對調：low_strike 傳進 short_leg 位置、high_strike 傳進
+    # long_leg 位置——payoff = high_strike 內在價值 − low_strike 內在
+    # 價值 = (120-105) − (120-100) = 15 − 20 = −5（負值）。
+    result = spread_scenario_value(high_strike, low_strike, S, at, P)
+    expected = (scenario_leg_value(high_strike, S, at, P)
+               - scenario_leg_value(low_strike, S, at, P))
+    assert result == expected == -5.0
+    assert result < 0.0, "驗證真的沒有 floor(0)：舊公式在這裡會給 0"
+
+
+def test_payoff_value_round_trip_matches_scenario_leg_value_for_single_leg():
+    """新原語 `payoff_value` 是本票的核心產出：不假設腿數為 2、不假設
+    買賣方向組合。單腿（sign=+1, qty=1）必須精確退化成既有的
+    `scenario_leg_value`——round-trip 驗證，不手猜期望值。"""
+    from option_chaser.valuation import WeightedLeg, payoff_value, scenario_leg_value
+    c = make("A", 100.0, 8.0, 8.2)
+    S, at = 110.0, date(2026, 8, 28)
+    legs = (WeightedLeg(contract=c, sign=1.0, quantity=1),)
+    assert payoff_value(legs, S, at, P) == scenario_leg_value(c, S, at, P)
+
+
+def test_payoff_value_does_not_assume_two_legs():
+    """三腿（模擬 Butterfly：買一口低履約價、賣兩口中間履約價、買一口高
+    履約價）在到期時的 payoff，用純算術手算期望值驗證——不透過任何
+    Spread 專屬公式，因為這個組合根本不是 Spread。"""
+    from option_chaser.valuation import (WeightedLeg, payoff_value,
+                                         intrinsic_value)
+    low = make("L", 95.0, 6.0, 6.2)
+    mid = make("M", 100.0, 3.0, 3.2)
+    high = make("H", 105.0, 1.0, 1.2)
+    legs = (
+        WeightedLeg(contract=low, sign=1.0, quantity=1),
+        WeightedLeg(contract=mid, sign=-1.0, quantity=2),
+        WeightedLeg(contract=high, sign=1.0, quantity=1),
+    )
+    for S in (90.0, 97.0, 100.0, 103.0, 110.0):
+        at = date(2026, 10, 16)   # 到期日，用內在價值手算
+        expected = (intrinsic_value("call", S, 95.0)
+                   - 2 * intrinsic_value("call", S, 100.0)
+                   + intrinsic_value("call", S, 105.0))
+        assert payoff_value(legs, S, at, P) == expected
+
+
+def test_payoff_value_empty_legs_is_zero():
+    """零腿（結構上不該發生，但原語本身不該對此特殊處理／拋錯）：純加總
+    的空集合就是 0，不需要任何 if-empty 分支。"""
+    from option_chaser.valuation import payoff_value
+    assert payoff_value((), 100.0, date(2026, 8, 28), P) == 0.0
+
+
+def test_leg_valued_differently_can_transiently_exceed_width_before_expiry():
+    """記錄一個真實發現（施工過程中在 T01 基準上直接抓到，Owner 已核准
+    拿掉 clamp 並更新基準——這條測試把發現本身鎖進回歸套件）：兩腿的
+    vendor IV 不同時（真實市場 skew，未經 carry 校準的既有預設路徑），
+    逐腿直算的到期前價值差**可能微幅超出 width**——這不是浮點雜訊，
+    是「各腿各自反解自己的 IV、分開定價」這個既有模型在有 skew 時的
+    真實性質。舊 clamp 會把這種情況無聲地夾回 width；新原語如實顯示。
+    """
+    long_leg = make("L", 105.0, 5.3, 5.5, iv=0.36)
+    short_leg = make("S", 110.0, 3.0, 3.25, iv=0.30)
+    S, at = 133.2, date(2026, 7, 15)
+    raw = spread_scenario_value(long_leg, short_leg, S, at, P)
+    assert raw > 5.0, "這正是本票拿掉 clamp 後才如實顯示出來的張力"

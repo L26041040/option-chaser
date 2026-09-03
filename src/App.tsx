@@ -143,8 +143,13 @@ export default function App() {
    * 正式的三個 Refresh Trigger 之一（開站／頂部刷新鈕／建立劇本），
    * 語意上是「單獨重跑這一個」，不該牽動 Refresh Run 的批次與
    * Continuation 機制。失敗只記在那張卡上，不影響其他劇本。
+   *
+   * 回傳這一次刷新成不成功——REPAIR-04（#241）的 `runBatch()` 失敗
+   * 隔離 fallback 需要逐一計入「N 成功／M 失敗」摘要，既有四個呼叫端
+   * （卡片重試、詳細頁刷新、編輯後重新分析）沿用既有 `void refreshOne
+   * (id)` 寫法、不讀回傳值，行為不受影響。
    */
-  const refreshOne = useCallback(async (id: string) => {
+  const refreshOne = useCallback(async (id: string): Promise<boolean> => {
     markUpdating([id]);
     try {
       const row = await refreshScenario(id);
@@ -154,8 +159,10 @@ export default function App() {
         const { [id]: _gone, ...rest } = prev;
         return rest;
       });
+      return true;
     } catch (e) {
       setFailures((prev) => ({ ...prev, [id]: toFailure(e) }));
+      return false;
     } finally {
       clearUpdating(id);
     }
@@ -190,17 +197,35 @@ export default function App() {
         let response;
         try {
           response = await refreshRun(pendingIds);
-        } catch (e) {
-          // 整趟 HTTP 呼叫本身失敗（不是個別劇本的 partial failure）——
-          // 這批還沒解決的全部記成失敗，不留在「更新中」卡死。
-          const failure = toFailure(e);
-          setFailures((prev) => {
-            const next = { ...prev };
-            for (const id of pendingIds) next[id] = failure;
-            return next;
-          });
-          failed += pendingIds.length;
-          pendingIds.forEach(clearUpdating);
+        } catch {
+          // 整趟 HTTP 呼叫本身失敗（504／timeout／其他 transport
+          // failure，不是個別劇本的 partial failure——後者由下面
+          // `response.results` 逐一處理，本來就只影響那一個劇本）。已知
+          // 這次批次呼叫本身失敗；不需要沿用它的錯誤訊息——每個劇本
+          // 改用自己那次獨立呼叫的真實結果，故不繫結錯誤物件。
+          //
+          // REPAIR-04（#241，#052 audit）：修法前這裡會把 `pendingIds`
+          // 全部標記失敗，等於單一劇本或單一批次的問題連坐整批還沒
+          // 處理到的劇本——這正是「V2 之後刷新失敗比例明顯比 V1 高」
+          // 的失敗放大器。改為逐一走既有單一劇本刷新端點
+          // （`refreshOne()`），讓每個劇本各自獨立打一次自己的
+          // request、各自獨立判定成敗——與 V1 時期「一次一個劇本」
+          // 的失敗隔離特性一致，也天生滿足 AC「其餘尚未處理的劇本
+          // 不受影響、繼續被嘗試」：各自獨立呼叫，不會因為同批裡
+          // 別人失敗（或這次批次呼叫本身失敗）而被牽連。
+          //
+          // 這裡是一次性平行 fan-out（`Promise.allSettled`），不再重新
+          // 進入 Continuation 迴圈重試——`pendingIds` 在這個時間點就是
+          // 一輪 Refresh Run Group Limit（後端預設 1）下最多一兩個
+          // symbol 分組的殘餘量，量體天生小，不設併發上限；沒有內建
+          // retry 是刻意的，個別劇本仍可由使用者透過既有的卡片「重試」
+          // 再次呼叫這同一支 `refreshOne()`。
+          const outcomes = await Promise.allSettled(
+            pendingIds.map((id) => refreshOne(id)));
+          for (const outcome of outcomes) {
+            if (outcome.status === "fulfilled" && outcome.value) succeeded += 1;
+            else failed += 1;
+          }
           break;
         }
         for (const r of response.results) {
@@ -229,7 +254,7 @@ export default function App() {
     } finally {
       setRunSummary(formatRunSummary(succeeded, failed));
     }
-  }, [markUpdating, clearUpdating]);
+  }, [markUpdating, clearUpdating, refreshOne]);
 
   /** 時機一與時機三共用：先取回最新清單（別台裝置可能加過劇本），
    *  再整批刷新。
@@ -330,7 +355,8 @@ export default function App() {
     setEditing({
       id: row.id, symbol: row.symbol, target_price: row.target_price,
       target_month: row.target_month, best_price: row.best_price,
-      worst_price: row.worst_price,
+      worst_price: row.worst_price, strategies: row.strategies,
+      family_eligibility: row.family_eligibility,
     });
     setShowCreateForm(true);
     setError(null);

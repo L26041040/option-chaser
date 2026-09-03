@@ -1,14 +1,15 @@
 """FB5-02／FB5-03（#63／#64）：候選品質標示——只標不刪，不影響誰進得了
-候選池。買賣價差寬度沿用既有機制（`CandidateView.quote_warning`／
-`.friction`）；單調性違反走獨立欄位（`.monotonicity_warning`），見各自
-測試前的說明。
+候選池。買賣價差寬度沿用既有機制（`CandidateView.quote_warning`）；
+單調性違反走獨立欄位（`.monotonicity_warning`），見各自測試前的說明。
 
 MVP V3（#104，spec #102 決策 F）起，選取閘門與顯示語意分家：
-`quote_warning`（zero_vol or wide_spread or fr>0.25）計算式凍結不動、
-不對外序列化，只供內部挑選 default_pair；`wide_spread_warning`（僅
-`is_spread_wide`）才是 ⚠ 徽章與候選池文案認的顯示旗標。本檔案下半段
+`quote_warning`（zero_vol or wide_spread，不對外序列化，只供內部挑選
+default_pair）與 `wide_spread_warning`（僅 `is_spread_wide`，⚠ 徽章與
+候選池文案認的顯示旗標）分開算。T04（#220，#217 決策 D）把 `quote_
+warning` 原本的第三個條件（friction>25%）連同 friction 本身自
+canonical model 整個移除，不新增任何替代指標——本檔案下半段
 （`test_zero_volume_alone_does_not_trigger_the_display_flag` 起）驗證
-兩者確實分開算。
+剩下兩個條件確實分開算。
 
 用最小、完全掌控的合成快照測試，不用大 fixture：這裡要驗證的是「特定
 一組合約會不會被標示、標示對不對」，用真實 JSON 快照的話，排名（每級距
@@ -59,21 +60,10 @@ def test_wide_spread_candidate_is_flagged_but_not_excluded(tmp_path):
     assert cv.wide_spread_warning is True   # MVP V3（#104）顯示旗標
 
 
-def test_flag_carries_how_wide_via_existing_friction_field():
-    """票上要求「標示內容說得出寬到什麼程度」——不新增欄位，量級資訊
-    就是既有的 `friction`（Bid-Ask Spread 佔 Mid 的比例，已序列化、
-    已在報告尾註顯示為「Bid-Ask Spread: X%」）。這裡釘住它的公式沒變、
-    確實隨價差寬度增加。"""
-    from option_chaser.scenarios import friction as friction_fn
-    from option_chaser.valuation import evaluate_contract
-    from datetime import date
-
-    p = AnalysisParams(target_price=120.0, target_month="2026-08")
-    tight = evaluate_contract(_contract("t", 110.0, 4.9, 5.1), spot=100.0,
-                              today=date(2026, 7, 15), p=p)
-    wide = evaluate_contract(_contract("w", 110.0, 4.0, 6.0), spot=100.0,
-                             today=date(2026, 7, 15), p=p)
-    assert friction_fn(wide) > friction_fn(tight)
+# T04（#220，#217 決策 D）：`test_flag_carries_how_wide_via_existing_
+# friction_field` 已隨 friction 整個移除——「標示內容說得出寬到什麼
+# 程度」這個票上要求，票上明文「不新增任何替代的 friction 指標」，
+# 因此不補一個新欄位頂替，量級資訊改為使用者從逐腿 Bid/Ask 自行判讀。
 
 
 def test_narrow_spread_candidate_is_not_flagged_for_width(tmp_path):
@@ -87,37 +77,20 @@ def test_narrow_spread_candidate_is_not_flagged_for_width(tmp_path):
 
 
 # --- MVP V3（#104，spec #102 決策 F）：顯示旗標 wide_spread_warning 收斂
-# 成單一判準——volume==0 與 friction>25% 不再觸發顯示，即使 quote_warning
-# （選取閘門用的複合旗標，計算式凍結不動）仍然為真。三案例對應票上 AC。
+# 成單一判準——volume==0 不再觸發顯示，即使 quote_warning（選取閘門用的
+# 複合旗標）仍然為真。T04（#220）之後 quote_warning 只剩 zero_vol 與
+# wide_spread 兩個條件，friction 那一項已整個移除、不補替代指標。
 # --- ---
 
 def test_zero_volume_alone_does_not_trigger_the_display_flag(tmp_path):
-    """volume==0 單獨存在（價差窄、friction 低）：`quote_warning` 仍因
-    零成交量觸發，但顯示旗標不再認這個條件——LEAPS／冷門履約價零成交是
-    常態，不該被說成報價可疑。"""
+    """volume==0 單獨存在（價差窄）：`quote_warning` 仍因零成交量觸發，
+    但顯示旗標不再認這個條件——LEAPS／冷門履約價零成交是常態，不該被
+    說成報價可疑。"""
     quiet = _contract("quiet", strike=110.0, bid=4.95, ask=5.05, volume=0)
     r = _run(tmp_path, [quiet])
     cv = r.results[0].candidates[0]
     assert cv.quote_warning is True         # 選取閘門：零成交量仍算一種觸發
     assert cv.wide_spread_warning is False  # 顯示：零成交量不再算數
-
-
-def test_high_friction_alone_does_not_trigger_the_display_flag(tmp_path):
-    """friction>25% 單獨存在（價差本身不算寬、成交量正常）：`quote_warning`
-    仍因 friction 觸發，顯示旗標不再認這個條件。
-
-    mid=0.15（便宜合約）、spread=0.09：is_spread_wide 門檻是
-    max(0.10, 0.15*0.15=0.0225)=0.10，0.09 未超標，非寬價差；但
-    friction=(0.195-0.15)/0.15=30%，超過 25% 門檻——刻意選在「便宜合約、
-    絕對價差小但佔比高」這個舊制度容易誤觸的角落，證明兩個判準是真的
-    分開算，不是恰好同進退。
-    """
-    thin = _contract("thin", strike=110.0, bid=0.105, ask=0.195)
-    r = _run(tmp_path, [thin])
-    cv = r.results[0].candidates[0]
-    assert cv.friction > 0.25
-    assert cv.quote_warning is True         # 選取閘門：friction 仍算一種觸發
-    assert cv.wide_spread_warning is False  # 顯示：friction 不再算數
 
 
 # --- FB5-03（#64）：無套利一致性違反，走獨立的 `monotonicity_warning`

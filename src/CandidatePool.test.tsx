@@ -61,8 +61,8 @@ function view(overrides: Partial<Overrides> = {}): AnalysisView {
       // 寬度皆已從硬門檻移除，spec #61 三分類），這裡的假資料照實際
       // 形狀給。FB5-04（#65）：每關現在帶著三分類的 `filter_class`。
       filter_stages: overrides.stages ?? [
-        { label: "報價異常", removed: 12, filter_class: "A" },
-        { label: "IV 異常", removed: 8, filter_class: "B" },
+        { label: "報價異常", removed: 12, filter_class: "A", removed_examples: [] },
+        { label: "IV 異常", removed: 8, filter_class: "B", removed_examples: [] },
       ],
       // FB5-04（#65，spec #61）：C 類品質標示——整個合格池裡的計數，
       // 跟 `filter_stages` 分開放，不影響入選。
@@ -72,7 +72,8 @@ function view(overrides: Partial<Overrides> = {}): AnalysisView {
         { label: "報價與鄰近履約價不一致，疑似陳舊報價", count: 0 },
       ],
       pair_report: overrides.pairs === undefined
-        ? { total_pairs: 780, removed_sanity: 100, passed: 680 }
+        ? { total_pairs: 780, removed_sanity: 100, b_layer_removed: 0,
+            b_layer_removed_examples: [], passed: 680 }
         : overrides.pairs,
       expiry_counts: overrides.counts ?? [["2028-06-16", 25], ["2028-09-15", 30]],
       disclaimer_text: "",
@@ -81,9 +82,19 @@ function view(overrides: Partial<Overrides> = {}): AnalysisView {
   };
 }
 
+/**
+ * T11（#229，Initial V2）：`CandidatePool` 不再自己用 `primaryResult(view)`
+ * 猜要顯示哪個策略結果，呼叫端得明確傳入——這裡的假體全部只有一個
+ * `results[0]`，取它即等同舊版 `primaryResult` 的行為，測試意圖不變。
+ */
+function renderPool(overrides: Partial<Overrides> = {}) {
+  const v = view(overrides);
+  return render(<CandidatePool view={v} result={v.results[0] ?? null} />);
+}
+
 describe("候選池診斷", () => {
   it("逐關顯示砍掉幾筆，抓到／通過取引擎的合約層級計數", () => {
-    render(<CandidatePool view={view()} />);
+    renderPool();
 
     expect(screen.getByText("報價異常")).toBeInTheDocument();
     expect(screen.getByText("IV 異常")).toBeInTheDocument();
@@ -98,7 +109,7 @@ describe("候選池診斷", () => {
 
   it("每一關標出屬於三分類的哪一類（FB5-04／#65，在程式碼裡明確可讀，"
      + "也反映在畫面上）", () => {
-    render(<CandidatePool view={view()} />);
+    renderPool();
     expect(screen.getByText("A 類")).toBeInTheDocument();
     expect(screen.getByText("B 類")).toBeInTheDocument();
   });
@@ -106,59 +117,92 @@ describe("候選池診斷", () => {
   it("合約數只認 filter_report，不拿 n_qualified 當合約數", () => {
     // spread 路徑的 n_qualified 是配對數（這裡 680）。若元件誤用它，
     // 「通過品質過濾」就會顯示 680 筆而不是 40 筆。
-    render(<CandidatePool view={view()} />);
+    renderPool();
     expect(screen.queryByText("680 筆")).not.toBeInTheDocument();
   });
 
   it("引擎沒給合約層級計數時顯示未知，不硬湊數字", () => {
-    render(<CandidatePool view={view({ report: null })} />);
+    renderPool({ report: null });
     // 抓到／通過兩列都是「—」，加上 baseline 期存在故有效組數正常顯示。
     expect(screen.getAllByText("—")).toHaveLength(2);
   });
 
   it("配對三段都交代：總配對、合理性砍掉幾組、剩幾組有效", () => {
-    render(<CandidatePool view={view()} />);
+    renderPool();
     expect(screen.getByText("780 組")).toBeInTheDocument();
     // 少了這一列，780 → 680 中間那 100 組會沒有交代
     expect(screen.getByText("−100")).toBeInTheDocument();
     expect(screen.getByText("680 組")).toBeInTheDocument();
   });
 
+  it("T05（#226）：B 層淘汰數也顯示，不是只序列化沒渲染", () => {
+    renderPool({
+      pairs: { total_pairs: 780, removed_sanity: 100, b_layer_removed: 3,
+              b_layer_removed_examples: ["A1/B1", "A2/B2", "A3/B3"], passed: 677 },
+    });
+    expect(screen.getByText("成本或報酬為不可能值（B 層）")).toBeInTheDocument();
+    expect(screen.getByText("−3")).toBeInTheDocument();
+    expect(screen.getByText("677 組")).toBeInTheDocument();
+  });
+
+  it("B 層淘汰為 0 時顯示 0，不是「−0」", () => {
+    renderPool();
+    // 預設 fixture 的 b_layer_removed 是 0
+    const row = screen.getByText("成本或報酬為不可能值（B 層）").closest(".row");
+    expect(row).toHaveTextContent("0");
+    expect(row).not.toHaveTextContent("−0");
+  });
+
+  it("每一關剔除的候選範例可從 tooltip 指認是哪一組（AC：內容足以指認）", () => {
+    renderPool({
+      stages: [
+        { label: "報價異常", removed: 2, filter_class: "A",
+         removed_examples: ["XYZC100B", "XYZC105B"] },
+      ],
+      pairs: { total_pairs: 780, removed_sanity: 100, b_layer_removed: 1,
+              b_layer_removed_examples: ["XYZC100B/XYZC120S"], passed: 679 },
+    });
+    const stageRow = screen.getByText("報價異常").closest(".row");
+    expect(stageRow).toHaveAttribute("title", "例：XYZC100B, XYZC105B");
+    const pairRow = screen.getByText("成本或報酬為不可能值（B 層）").closest(".row");
+    expect(pairRow).toHaveAttribute("title", "例：XYZC100B/XYZC120S");
+  });
+
   it("單腳策略沒有配對報告時，配對那幾列整組不顯示", () => {
-    render(<CandidatePool view={view({ pairs: null })} />);
+    renderPool({ pairs: null });
     expect(screen.queryByText("配對")).not.toBeInTheDocument();
     expect(screen.queryByText("合理性不通過")).not.toBeInTheDocument();
   });
 
   it("顯示 baseline 到期日的有效組數", () => {
-    render(<CandidatePool view={view()} />);
+    renderPool();
     expect(screen.getByText(/25 組/)).toBeInTheDocument();
   });
 
   // 「該期組數過少」的警示自 V6（#54）起在 `ExpiryStructure`，跟著使用者
   // 切換的到期日走；這裡只剩「這個數字本身如實顯示」的責任。
   it("baseline 期不在計數裡時不謊報，顯示為未知", () => {
-    render(<CandidatePool view={view({ counts: [["2099-01-01", 30]] })} />);
+    renderPool({ counts: [["2099-01-01", 30]] });
     expect(screen.getByText("—")).toBeInTheDocument();
   });
 
   it("連 baseline 到期日都沒有時，同樣顯示未知", () => {
-    render(<CandidatePool view={view({ baseline: null })} />);
+    renderPool({ baseline: null });
     expect(screen.getByText("—")).toBeInTheDocument();
   });
 
   it("沒有任何策略結果時整個區塊不顯示", () => {
-    const { container } = render(<CandidatePool view={view({ results: [] })} />);
+    const { container } = renderPool({ results: [] });
     expect(container).toBeEmptyDOMElement();
   });
 
   it("狀態非 ok 又沒有 message 時，仍給得出一句說明", () => {
-    render(<CandidatePool view={view({
+    renderPool({
       results: [{ strategy: "bull-call-spread", status: "empty", message: "",
                   n_qualified: 0, filter_report: null, filter_stages: [],
                   quality_flags: [], pair_report: null, expiry_counts: [],
                   disclaimer_text: "" }],
-    })} />);
+    });
     expect(screen.getByText("這個策略沒有產生結果。")).toBeInTheDocument();
   });
 
@@ -171,7 +215,7 @@ describe("候選池診斷", () => {
                   quality_flags: [], pair_report: null, expiry_counts: [],
                   disclaimer_text: "" }],
     };
-    render(<CandidatePool view={empty} />);
+    render(<CandidatePool view={empty} result={empty.results[0] ?? null} />);
     expect(
       screen.getByText("目前沒有符合流動性與報價條件的合約。"),
     ).toBeInTheDocument();
@@ -180,7 +224,7 @@ describe("候選池診斷", () => {
 
 describe("品質標示（FB5-04／#65，spec #61）", () => {
   it("與排除的關卡分開呈現，橙色計數不跟紅色「−」混在一起", () => {
-    render(<CandidatePool view={view()} />);
+    renderPool();
     expect(screen.getByText("品質標示（不影響入選）")).toBeInTheDocument();
     expect(screen.getByText("買賣價差偏大")).toBeInTheDocument();
     expect(screen.getByText("5 筆")).toHaveClass("flagged");
@@ -190,19 +234,19 @@ describe("品質標示（FB5-04／#65，spec #61）", () => {
   });
 
   it("三項全是 0 時，整個小節不出現——沒有東西好標示就不佔畫面", () => {
-    render(<CandidatePool view={view({
+    renderPool({
       flags: [
         { label: "今日無成交量", count: 0 },
         { label: "買賣價差偏大", count: 0 },
         { label: "報價與鄰近履約價不一致，疑似陳舊報價", count: 0 },
       ],
-    })} />);
+    });
     expect(screen.queryByText("品質標示（不影響入選）")).not.toBeInTheDocument();
   });
 
   it("零成交量只中性描述事實，不用「非最新」「有疑慮」這類推論措辭"
      + "（MVP V3／#104，spec #102 決策 F）", () => {
-    render(<CandidatePool view={view()} />);
+    renderPool();
     expect(screen.getByText("今日無成交量")).toBeInTheDocument();
     // 舊字串（新舊字串皆需明文檢查封鎖，AC 原文）不得復發。
     expect(screen.queryByText(/報價非最新/)).not.toBeInTheDocument();

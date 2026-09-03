@@ -2,7 +2,7 @@
 
 For every ok StrategyResult produced by service.run_offline on a shared
 fixture snapshot, each CandidateView kept in `candidates` must format its
-scenario/threshold/retention/friction numbers (report-style, 1 decimal
+scenario/threshold/retention numbers (report-style, 1 decimal
 percent — mirrors option_chaser.report._pct/_money exactly) into substrings
 that are byte-identical to what appears in that same strategy's report_text.
 This proves the GUI's data source (CandidateView, service layer) and the CLI
@@ -72,10 +72,6 @@ def test_retention_matches_report_text():
                 f"{res.strategy}: {expect!r} missing from report_text")
 
 
-def test_friction_matches_report_text():
-    for res in _ok_results():
-        for cv in res.candidates:
-            expect = (f"Bid-Ask Spread: {_pct(min(cv.friction, 9.99))}"
-                      f"（${_money(cv.friction_amount)}/股）")
-            assert expect in res.report_text, (
-                f"{res.strategy}: {expect!r} missing from report_text")
+# T04（#220，#217 決策 D）：friction 自 canonical model 退場，這條
+# CLI/GUI parity 測試隨之移除——`cv.friction`／`cv.friction_amount`
+# 已不存在，`report_text` 也不再印 Bid-Ask Spread 這一項，沒有東西可比。

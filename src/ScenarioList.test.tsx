@@ -123,8 +123,8 @@ describe("決策 K（#108）：桌面卡片瘦身後七項決策資訊一項不�
       best_return: 1.234,
       representative_candidate: {
         strategy: "bull-call-spread",
-        legs: [{ strike: 118, option_type: "call" },
-              { strike: 122, option_type: "call" }],
+        legs: [{ strike: 118, option_type: "call", side: "buy", quantity: 1 },
+              { strike: 122, option_type: "call", side: "sell", quantity: 1 }],
         expiry: "2026-09-18", baseline_return: 1.234,
       },
       latest_analyzed_at: "2026-08-04T09:30:00+00:00",
@@ -218,8 +218,8 @@ describe("代表候選（MVP-v2／#77、#78）", () => {
     list([row({
       representative_candidate: {
         strategy: "bull-call-spread",
-        legs: [{ strike: 118, option_type: "call" },
-              { strike: 122, option_type: "call" }],
+        legs: [{ strike: 118, option_type: "call", side: "buy", quantity: 1 },
+              { strike: 122, option_type: "call", side: "sell", quantity: 1 }],
         expiry: "2026-09-18", baseline_return: 1.234,
       },
     })]);
@@ -235,7 +235,7 @@ describe("代表候選（MVP-v2／#77、#78）", () => {
     list([row({
       representative_candidate: {
         strategy: "long-call",
-        legs: [{ strike: 118, option_type: "call" }],
+        legs: [{ strike: 118, option_type: "call", side: "buy", quantity: 1 }],
         expiry: "2026-09-18", baseline_return: 0.29,
       },
     })]);
@@ -268,14 +268,69 @@ describe("代表候選（MVP-v2／#77、#78）", () => {
       best_return: 3.33,
       representative_candidate: {
         strategy: "bull-call-spread",
-        legs: [{ strike: 100, option_type: "call" },
-              { strike: 105, option_type: "call" }],
+        legs: [{ strike: 100, option_type: "call", side: "buy", quantity: 1 },
+              { strike: 105, option_type: "call", side: "sell", quantity: 1 }],
         expiry: "2026-09-18", baseline_return: 3.33,
       },
     })]);
 
     expect(screen.getByText("333.0%")).toBeInTheDocument();
     expect(screen.getByText(/買 100 \/ 賣 105/)).toBeInTheDocument();
+  });
+
+  // OPTION-CHASER-CLOSEOUT-001：卡片曾經只抓 champion 的第一隻 buy 腿
+  // 與 sell 腿（`findLeg()`），Butterfly champion 的第二隻 buy 腿會被
+  // 靜默丟掉，畫面上看起來像一組舊的兩腿 Vertical Spread——即使策略
+  // 名稱已經正確顯示 Call Butterfly。三腿不再被丟掉這件事，本身由
+  // `formatButterflyStrikes()`／`formatRepresentativeSummary()` 的
+  // 單元測試（`scenarios.test.ts`）直接證明；這裡驗證的是它真的接到
+  // 卡片畫面上。
+  //
+  // OPTION-CHASER-CLOSEOUT-002：Butterfly champion 的完整格式（策略
+  // 名稱＋「買 106 / 賣 2×109 / 買 112」）在卡片固定寬度下容易換行、
+  // 撐高卡片，改成緊湊格式「Butterfly 106 / 109 / 112」——不分 call／
+  // put subtype、不帶買賣方向與口數。詳細頁不受影響，仍是完整格式
+  // （見 `detail.test.ts::candidateTitle`）。
+  it("Butterfly champion 卡片上顯示緊湊格式「Butterfly 106 / 109 / 112」，不換行不撐高卡片", () => {
+    list([row({
+      best_return: 5.67,
+      representative_candidate: {
+        strategy: "call-fly",
+        legs: [
+          { strike: 106, option_type: "call", side: "buy", quantity: 1 },
+          { strike: 109, option_type: "call", side: "sell", quantity: 2 },
+          { strike: 112, option_type: "call", side: "buy", quantity: 1 },
+        ],
+        expiry: "2026-09-18", baseline_return: 5.67,
+      },
+    })]);
+
+    const card = screen.getByRole("listitem");
+    expect(within(card).getByText("Butterfly 106 / 109 / 112")).toBeInTheDocument();
+    // 舊的完整格式（策略 subtype 名稱、買賣方向、口數標示）在**卡片
+    // 本身**上不該出現——那是詳細頁才有的東西。範圍限定在這張卡片，
+    // 不是整個頁面：頁面別處（例如成本口徑說明文字）本來就會出現
+    // 「買」「賣」等字，不是這條測試要擋的東西。
+    expect(within(card).queryByText(/Call Butterfly/)).not.toBeInTheDocument();
+    expect(within(card).queryByText(/買|賣|2×/)).not.toBeInTheDocument();
+  });
+
+  // Single-leg／Vertical Spread champion 顯示完全不變（票面明文要求）
+  // ——這條測試在改動前就存在（"333.0%" 那一條，見上），這裡另外用
+  // Single-leg champion 補一條，確認緊湊分支只吃 Butterfly、不會意外
+  // 波及其他 family。
+  it("Single-leg champion 維持完整格式不變（OPTION-CHASER-CLOSEOUT-002）", () => {
+    list([row({
+      best_return: 0.82,
+      representative_candidate: {
+        strategy: "long-call",
+        legs: [{ strike: 100, option_type: "call", side: "buy", quantity: 1 }],
+        expiry: "2026-09-18", baseline_return: 0.82,
+      },
+    })]);
+
+    expect(screen.getByText(/Long Call/)).toBeInTheDocument();
+    expect(screen.getByText(/買 100/)).toBeInTheDocument();
   });
 });
 
@@ -421,6 +476,80 @@ describe("刷新失敗的分層與重試入口（V4／#52）", () => {
     // 只要旁邊誠實標明它是舊的。
     expect(screen.getByText("123.4%")).toBeInTheDocument();
     expect(screen.getByText("舊資料")).toBeInTheDocument();
+  });
+});
+
+describe("刷新失敗卡片兩態（OD-03／#242，REPAIR-05）", () => {
+  afterEach(() => {
+    window.location.hash = "";
+  });
+
+  it("A：曾經至少成功分析過——卡片反灰、頭條說明是舊結果、仍可點入" +
+     "詳細頁、保留重試", async () => {
+    window.location.hash = "";
+    const { container } = list(
+      [row({ id: "a", symbol: "AAA", best_return: 1.5 })],
+      { failures: { a: { stage: "fetch", message: "抓不到 AAA 的報價" } } },
+    );
+
+    expect(container.querySelector(".compact-card.failed")).toBeInTheDocument();
+    expect(container.querySelector(".compact-card.locked")).not.toBeInTheDocument();
+    expect(screen.getByText("更新失敗，目前顯示上一次成功結果"))
+      .toBeInTheDocument();
+    expect(screen.getByText(/抓不到 AAA 的報價/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /重試/ })).toBeInTheDocument();
+
+    const link = screen.getByRole("link", { name: /AAA/ });
+    expect(link).toHaveAttribute("href", "#/s/a");
+    await userEvent.click(link);
+    expect(window.location.hash).toBe("#/s/a");
+  });
+
+  it("B：從未成功分析過——卡片反灰、頭條說明尚無可用結果、仍可點入" +
+     "詳細頁（落到既有「尚未分析」空狀態）、保留重試", async () => {
+    window.location.hash = "";
+    const { container } = list(
+      [row({ id: "a", symbol: "AAA", best_return: null,
+            latest_analyzed_at: null, representative_candidate: null })],
+      { failures: { a: { stage: "fetch", message: "抓不到 AAA 的報價" } } },
+    );
+
+    expect(container.querySelector(".compact-card.failed")).toBeInTheDocument();
+    expect(screen.getByText("尚無可用分析結果")).toBeInTheDocument();
+    expect(screen.getByText(/抓不到 AAA 的報價/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /重試/ })).toBeInTheDocument();
+
+    const link = screen.getByRole("link", { name: /AAA/ });
+    expect(link).toHaveAttribute("href", "#/s/a");
+    await userEvent.click(link);
+    expect(window.location.hash).toBe("#/s/a");
+  });
+
+  it("更新中時即使留著舊的失敗紀錄，也不顯示失敗兩態——這次嘗試還沒有" +
+     "結論", () => {
+    const { container } = list(
+      [row({ id: "a", symbol: "AAA", best_return: 1.5 })],
+      {
+        failures: { a: { stage: "fetch", message: "抓不到 AAA 的報價" } },
+        updatingIds: new Set(["a"]),
+      },
+    );
+
+    expect(container.querySelector(".compact-card.failed")).not.toBeInTheDocument();
+    expect(screen.queryByText("更新失敗，目前顯示上一次成功結果"))
+      .not.toBeInTheDocument();
+    expect(screen.queryByText(/抓不到 AAA 的報價/)).not.toBeInTheDocument();
+    expect(screen.getByText("更新中")).toBeInTheDocument();
+  });
+
+  it("已過期時不顯示失敗兩態——沿用 #68 紅燈優先於黃燈", () => {
+    const { container } = list(
+      [row({ id: "a", symbol: "AAA", expired: true })],
+      { failures: { a: { stage: "fetch", message: "抓不到 AAA 的報價" } } },
+    );
+
+    expect(container.querySelector(".compact-card.failed")).not.toBeInTheDocument();
+    expect(screen.queryByText(/抓不到 AAA 的報價/)).not.toBeInTheDocument();
   });
 });
 

@@ -23,7 +23,8 @@ from option_chaser.data.snapshot import load_snapshot
 from option_chaser.models import FetchError, ParamError
 
 FIX = "tests/fixtures/xyz_v4_six_expiries.json"
-NEW = {"symbol": "XYZ", "target_price": 130.0, "target_month": "2026-09"}
+NEW = {"symbol": "XYZ", "target_price": 130.0, "target_month": "2026-09",
+       "strategies": ["vertical-spread"]}
 
 
 def _client(*, fetch=None, storage=None, **overrides):
@@ -756,3 +757,101 @@ def test_refresh_run_three_distinct_symbols_unlock_one_group_at_a_time():
     b_row = c.get(f"/api/scenarios/{b['id']}").json()
     assert a_row["latest_analyzed_at"] is not None
     assert b_row["latest_analyzed_at"] is not None
+
+
+# ---------- REPAIR-08（#245，FIX-04）：analysis_deadline_seconds DI 接線 ----------
+#
+# `/code-review` Standards 軸抓到的真缺口：這個新的 `create_app()`
+# DI 參數（比照既有 `refresh_run_budget`／`chain_cache_ttl` 同一種
+# 「可注入」慣例，見上方 test_refresh_run_budget_exhaustion_* 系列）
+# 只在引擎層（`tests/test_analysis_soft_deadline.py`，直接呼叫
+# `service.run_offline()`）有測試，`api_app/main.py::create_app()`
+# 的實際接線（`analysis_deadline_seconds` → `_analyze()` closure →
+# `service.run_with_snapshot(..., deadline_seconds=...)`）本身沒有
+# 任何一條測試走過——AC 的「不是整個 request 掛掉」講的正是 HTTP
+# request 這一層，這裡才是真正該驗證的地方。
+
+def test_a_past_analysis_deadline_degrades_the_refresh_response_gracefully():
+    """`analysis_deadline_seconds` 已過期時，`POST /api/scenarios/
+    {id}/refresh` 必須正常回應（200，不是 500、不是掛住），且回應與
+    後續 `GET` 的 `latest_result` 都看得出對應 subtype 被標記
+    `timed_out`——證明 DI 參數真的從 `create_app()` 一路接到引擎層，
+    不是只有引擎層自己測得到。"""
+    c = _client(analysis_deadline_seconds=-1.0)
+    sc = _create(c)
+
+    r = c.post(f"/api/scenarios/{sc['id']}/refresh")
+
+    assert r.status_code == 200, r.text
+    row = r.json()
+    # deadline 已過期，`vertical-spread` family 底下唯一 eligible 的
+    # bull-call-spread 也被擋下，這個劇本因此沒有任何候選——代表候選
+    # 欄位如實反映「什麼都沒算出來」，不是靜默回傳舊資料冒充成功。
+    assert row["representative_candidate"] is None
+
+    detail = c.get(f"/api/scenarios/{sc['id']}").json()
+    by_strategy = {res["strategy"]: res
+                  for res in detail["latest_result"]["results"]}
+    assert by_strategy["bull-call-spread"]["status"] == "timed_out"
+    assert by_strategy["bear-put-spread"]["status"] == "skipped_direction"
+
+
+def test_a_slow_fetch_counts_against_the_analysis_deadline_too():
+    """`/code-review` Spec 軸抓到的真發現：deadline 計時點原本擺在
+    抓鏈**之後**才啟動，票面自己點名的異常輸入情境（「vendor 回應
+    異常慢」）完全不受保護——已修正為在抓鏈之前就起算。這裡直接證明：
+    人為拉長抓鏈本身的耗時（比照上面 `test_refresh_run_a_slow_
+    scenario_can_exhaust_the_budget_mid_batch` 同一種真實 `time.sleep`
+    手法，不是調小 deadline 這種退化情況），deadline 只給 100ms、
+    抓鏈刻意睡 300ms——抓鏈本身就吃光預算，分析階段連開始都不會開始。
+
+    ⚠ 校準紀錄：`TestClient` 對**第一次**請求有可觀的一次性暖機成本
+    （實測跨 ASGI 分派＋惰性單例初始化＋pydantic 編譯，第一次請求
+    ~1.2 秒，之後同一個 client 穩定在 ~35ms），這個成本發生在
+    `_analyze()` closure 內部（`deadline` 已經開始計時之後），會讓
+    任何極短的 deadline（例如原本嘗試的 20ms）在**第一次**請求上
+    無論有沒有本票的 bug 都必定逾時——那不是在測本票的修法，是在測
+    `TestClient` 的暖機成本，是一條偽陽性測試。已改為先送一次快速
+    warm-up 請求付清暖機成本，用**同一個**已暖機的 client 才進行
+    真正的計時比較；100ms／300ms 兩個數字經本地實測驗證：暖機後的
+    正常（快速抓鏈）耗時穩定在 ~35ms，遠低於 100ms 門檻不會誤觸發，
+    300ms 的刻意延遲則穩定超過門檻。"""
+    calls = {"n": 0}
+
+    def flaky_fetch(symbol):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return load_snapshot(FIX)   # warm-up：快速，不佔用 deadline 測試
+        time.sleep(0.3)
+        return load_snapshot(FIX)
+
+    c = _client(fetch=flaky_fetch, analysis_deadline_seconds=0.1)
+    sc = _create(c)
+    warmup = c.post(f"/api/scenarios/{sc['id']}/refresh")
+    assert warmup.status_code == 200, warmup.text
+
+    r = c.post(f"/api/scenarios/{sc['id']}/refresh")
+
+    assert r.status_code == 200, r.text
+    assert r.json()["representative_candidate"] is None
+    detail = c.get(f"/api/scenarios/{sc['id']}").json()
+    by_strategy = {res["strategy"]: res
+                  for res in detail["latest_result"]["results"]}
+    assert by_strategy["bull-call-spread"]["status"] == "timed_out"
+
+
+def test_the_default_analysis_deadline_never_fires_during_a_normal_refresh():
+    """既有大量 refresh 測試（本檔案通篇）在本票之前就已經全數通過，
+    本身就是「預設 45 秒 deadline 不影響正常規模」的隱性證明——這裡
+    額外補一條明確、指名道姓的正面斷言，不必推論。"""
+    c = _client()   # 不覆寫 analysis_deadline_seconds，用真正的預設值
+    sc = _create(c)
+
+    r = c.post(f"/api/scenarios/{sc['id']}/refresh")
+
+    assert r.status_code == 200, r.text
+    assert r.json()["representative_candidate"] is not None
+    detail = c.get(f"/api/scenarios/{sc['id']}").json()
+    statuses = {res["strategy"]: res["status"]
+               for res in detail["latest_result"]["results"]}
+    assert "timed_out" not in statuses.values()

@@ -1438,7 +1438,12 @@ body {
   color: #fff;
 }
 
-.chip-date {
+/* T11（#229，Initial V2，`/code-review` Standards 軸回饋）：`.chip-date`
+   原本專屬到期日文字，`FamilyTabs.tsx` 的分頁按鈕（顯示 "Vertical
+   Spread" 這類 family 名稱，不是日期）改用這個同樣式但名字不誤導的
+   別名——沿用同一組視覺（`tabular-nums` 對純文字是無害的 no-op）。 */
+.chip-date,
+.chip-label {
   font-size: 13px;
   font-weight: 600;
   font-variant-numeric: tabular-nums;
@@ -1498,6 +1503,34 @@ body {
 
 .compact-card.locked .compact-card-tap {
   cursor: not-allowed;
+}
+
+/* REPAIR-05（#242，OD-03）：刷新失敗兩態的反灰——與 `.locked` 刻意用
+   不同的透明度（0.6 vs 0.45）：`.locked` 代表這份資料正在被取代、
+   點了也進不去（`cursor: not-allowed`）；`.failed` 只是「目前顯示的
+   東西可能不可信」，卡片仍完全可點——曾成功過的可以看最後一次成功
+   結果、從未成功過的會落到詳細頁既有的「尚未分析」空狀態，兩者都不是
+   死路，所以維持正常游標與可點性，不套用 `.locked` 那組規則。兩個
+   class 依 `App.tsx` 的既有判斷邏輯結構上不會同時成立
+   （`cardFailureVariant` 在 `updating` 為真時一律回傳 `null`）。 */
+.compact-card.failed {
+  opacity: 0.6;
+}
+
+.compact-notice-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.compact-notice-headline {
+  font-weight: 600;
+}
+
+.compact-notice-detail {
+  color: var(--label-secondary);
+  font-size: 12px;
 }
 
 /* 常駐但目前沒話講的 live region 不該佔掉卡片的一段間距。 */
@@ -1572,6 +1605,15 @@ body {
   font-size: 16px;
   font-weight: 600;
   flex: 1;
+}
+
+/* T11（#229，Initial V2）：這組候選實際跑的 subtype——次要資訊，跟
+   `.rank` 同一種弱化處理，不搶履約價與報酬率的視線。 */
+.candidate-subtype {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--label-tertiary);
+  white-space: nowrap;
 }
 
 .candidate-return {
@@ -1855,6 +1897,35 @@ body {
   border-width: 1.5px;
   border-color: var(--tint);
   font-weight: 700;
+}
+
+/* T10（#227，Initial V2）：Strategy Family 勾選。checkbox 本身永遠
+   可互動（不可選只是資訊性標示，不是禁止勾選），因此不用 `disabled`
+   樣式——`.family-ineligible-reason` 只是額外一行說明文字。 */
+.family-options {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.family-option {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  font-size: 17px;
+  color: var(--label);
+}
+
+.family-option input[type="checkbox"] {
+  width: 20px;
+  height: 20px;
+}
+
+.family-ineligible-reason {
+  flex-basis: 100%;
+  font-size: 13px;
+  color: var(--label-secondary);
 }
 
 /* ---------- 設定頁（Settings／#124） ---------- */

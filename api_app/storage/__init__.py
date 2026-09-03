@@ -56,6 +56,25 @@ class ResultRecord:
     # `representative_candidate` 同一個模式：清單卡片只要這一個數字，
     # 不該為它把整份 view 撈回來。
     spot: float | None = None
+    # T07（#224，Initial V2）：每個 strategy family 各自的代表候選與
+    # 最高報酬（`store.representative_candidates_by_family(view)`）。
+    # Owner 裁示的「B 儲存＋A 顯示」——顯示面本輪仍只用上面的 scalar
+    # 冠軍（跨 family），這份 map 純粹是額外落盤、供日後若要改成逐
+    # family 顯示時零遷移可切換。鍵是 family 代碼（`"single-leg"`／
+    # `"vertical-spread"`／`"butterfly"`），值與 `representative_
+    # candidate` 同一種形狀（`{strategy, legs, expiry, baseline_
+    # return}`）。純加法，預設 `None`——舊結果紀錄讀回來時這裡是
+    # `None`；寫入端（`_refresh_and_save()`）在純函式回傳空 dict（沒有
+    # baseline 期可比）時也一併落成 `None`，與 `representative_
+    # candidate` 的既有慣例一致——這個欄位本來就只用 `None` 表達
+    # 「沒有東西可顯示」，不新增第二種空值語意。
+    per_family: dict | None = None
+    # T10（#227，Initial V2）：最近一次分析當下算出的 family 可選／
+    # 不可選 verdict（`store._family_eligibility_map()` 的輸出，鍵是
+    # family 代碼）。與 `per_family` 同一個模式（額外落盤、供編輯表單
+    # 讀取），差別是這個真的被本票的前端消費——編輯表單要顯示「這個
+    # family 現在為什麼不可選」，不該為此把整份 view 撈回來。
+    family_eligibility: dict | None = None
 
 
 @dataclass(frozen=True)
@@ -65,6 +84,13 @@ class ResultSummary:
     best_return: float | None
     representative_candidate: dict | None = None
     spot: float | None = None
+    # T07（#224，Initial V2）：與 `ResultRecord.per_family` 同一個模式，
+    # 供清單卡片讀取——本輪 UI 尚未消費它（顯示面仍是單一冠軍），
+    # 純粹型別同步／落盤攜帶。
+    per_family: dict | None = None
+    # T10（#227，Initial V2）：與 `ResultRecord.family_eligibility`
+    # 同一個模式——編輯表單開啟時讀這裡，不打 detail 端點。
+    family_eligibility: dict | None = None
 
 
 @dataclass(frozen=True)

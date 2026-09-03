@@ -12,8 +12,12 @@ import {
   formatCell,
   formatMovePct,
   formatMovePctShort,
+  heatmapProps,
   priceTags,
+  resolveComparator,
+  resolveMatrix,
 } from "./heatmap";
+import type { AnalysisView, Candidate, Comparator, Matrix } from "./api";
 
 function alphaOf(color: string): number {
   const hit = /rgba\([^)]*,\s*([\d.]+)\)/.exec(color);
@@ -279,5 +283,104 @@ describe("Crossover 兩側歸屬（QA 修正：依實際矩陣判定，不預設
   it("矩陣形狀不一致時回 null，不猜、不半算", () => {
     expect(crossoverSides([[0.1, 0.2], [0.3, 0.4]], [[0.1, 0.2]])).toBeNull();
     expect(crossoverSides([[0.1, 0.2]], [[0.1]])).toBeNull();
+  });
+});
+
+describe("resolveMatrix／resolveComparator（T14／#233：熱力圖 matrix 傳輸壓縮）", () => {
+  const axisSets = [
+    { prices: [[90, "<最低>", -0.1], [100, "<現價>", 0]] as Matrix["prices"],
+      dates: [["2026-08-07", ""], ["2026-09-07", ""], ["2026-10-07", ""]] as Matrix["dates"] },
+  ];
+  const view = { axis_sets: axisSets } as unknown as AnalysisView;
+
+  it("新形狀：依 axis_index 查表、把攤平的 cells 依日期數切回二維，"+
+     "順序與後端列優先攤平一致", () => {
+    const wm = { axis_index: 0, cells: [1, 2, 3, 4, 5, 6] };
+    const resolved = resolveMatrix(view, wm);
+    expect(resolved.prices).toEqual(axisSets[0].prices);
+    expect(resolved.dates).toEqual(axisSets[0].dates);
+    expect(resolved.cells).toEqual([[1, 2, 3], [4, 5, 6]]);
+  });
+
+  it("舊形狀（schema_version < 7 的已存 View）：`axis_index` 不存在時" +
+     "原樣回傳，不嘗試解碼——讀取端相容、不做資料遷移", () => {
+    const full: Matrix = {
+      prices: [[100, "", 0]], dates: [["2026-08-07", ""]], cells: [[0.42]],
+    };
+    expect(resolveMatrix(view, full)).toBe(full);
+  });
+
+  it("`axis_index` 越界或 `view.axis_sets` 缺席時回傳空矩陣，"+
+     "不拋錯、不假造內容", () => {
+    expect(resolveMatrix(view, { axis_index: 99, cells: [] }))
+      .toEqual({ prices: [], dates: [], cells: [] });
+    const noAxisView = {} as unknown as AnalysisView;
+    expect(resolveMatrix(noAxisView, { axis_index: 0, cells: [1] }))
+      .toEqual({ prices: [], dates: [], cells: [] });
+  });
+
+  it("comparator 為 null 時原樣回傳 null，不嘗試解它的 matrix", () => {
+    expect(resolveComparator(view, null)).toBeNull();
+  });
+
+  it("comparator 有值時只換掉 matrix 欄位，其餘欄位（option_type／" +
+     "strike／expiry／cost）逐一保留", () => {
+    const comparator: Comparator = {
+      option_type: "call", strike: 118, expiry: "2026-08-07", cost: 1.1,
+      matrix: { axis_index: 0, cells: [1, 2, 3, 4, 5, 6] },
+    };
+    const resolved = resolveComparator(view, comparator)!;
+    expect(resolved.option_type).toBe("call");
+    expect(resolved.strike).toBe(118);
+    expect(resolved.expiry).toBe("2026-08-07");
+    expect(resolved.cost).toBe(1.1);
+    expect(resolved.matrix).toEqual({
+      prices: axisSets[0].prices, dates: axisSets[0].dates,
+      cells: [[1, 2, 3], [4, 5, 6]],
+    });
+  });
+});
+
+describe("heatmapProps（T14／#233 code-review 跟進：兩個既有呼叫端" +
+  "重複的「解碼＋單腿候選不傳 comparator」判斷收斂成一個函式）", () => {
+  const axisSets = [
+    { prices: [[100, "", 0]] as Matrix["prices"],
+      dates: [["2026-08-07", ""]] as Matrix["dates"] },
+  ];
+  const view = { axis_sets: axisSets } as unknown as AnalysisView;
+
+  function candidateWithLegs(nLegs: number, comparator: Comparator | null): Candidate {
+    return {
+      legs: Array.from({ length: nLegs }, () => ({})),
+      matrix: { axis_index: 0, cells: [0.5] },
+      comparator,
+    } as unknown as Candidate;
+  }
+
+  it("兩腿候選：matrix 解碼、comparator 也解碼（非 undefined／非透傳 wire 形狀）", () => {
+    const comparator: Comparator = {
+      option_type: "call", strike: 118, expiry: "2026-08-07", cost: 1.1,
+      matrix: { axis_index: 0, cells: [0.9] },
+    };
+    const { matrix, comparator: resolved } =
+      heatmapProps(view, candidateWithLegs(2, comparator));
+    expect(matrix).toEqual({ prices: axisSets[0].prices, dates: axisSets[0].dates, cells: [[0.5]] });
+    expect(resolved).toEqual({ ...comparator, matrix: { ...matrix, cells: [[0.9]] } });
+  });
+
+  it("兩腿候選但買腿報價缺失（comparator 為 null）：原樣傳回 null，" +
+     "不是渲染成「概念不存在」", () => {
+    const { comparator } = heatmapProps(view, candidateWithLegs(2, null));
+    expect(comparator).toBeNull();
+  });
+
+  it("單腿候選：即使 candidate.comparator 有值也回傳 undefined——" +
+     "單腿沒有 Crossover 概念，這條規則現在只寫在這一個函式裡", () => {
+    const comparator: Comparator = {
+      option_type: "call", strike: 118, expiry: "2026-08-07", cost: 1.1,
+      matrix: { axis_index: 0, cells: [0.9] },
+    };
+    const { comparator: resolved } = heatmapProps(view, candidateWithLegs(1, comparator));
+    expect(resolved).toBeUndefined();
   });
 });

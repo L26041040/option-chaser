@@ -122,7 +122,8 @@ class MemoryStorage:
                 out[sid] = ResultSummary(
                     analyzed_at=rec.analyzed_at, best_return=rec.best_return,
                     representative_candidate=rec.representative_candidate,
-                    spot=rec.spot)
+                    spot=rec.spot, per_family=rec.per_family,
+                    family_eligibility=rec.family_eligibility)
         return out
 
     def result_history(self, scenario_id: str) -> list[ResultRecord]:

@@ -5,7 +5,10 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import ScenarioDetail from "./ScenarioDetail";
 import sample from "../contracts/analysis_sample.json";
 import sampleRow from "../contracts/scenario_row_sample.json";
-import { baselineTopCandidate, type AnalysisView } from "./api";
+import {
+  baselineTopCandidate,
+  type AnalysisView, type CandidateLegs, type Leg,
+} from "./api";
 
 const view = sample as unknown as AnalysisView;
 const row = sampleRow as unknown as Record<string, unknown>;
@@ -63,6 +66,16 @@ function summarySection() {
   return within(screen.getByRole("region", { name: "劇本摘要" }));
 }
 
+/**
+ * 劇本設定卡（OPTION-CHASER-CLOSEOUT-001）：使用者原本建立劇本時填的
+ * 東西——標的、目標價、目標年月、系統依此推導的方向、以及啟用的
+ * Strategy Family。跟上面的「劇本摘要」（哪一組候選表現最好）是
+ * 兩張不同的卡，各自獨立的 `aria-label`。
+ */
+function scenarioContextSection() {
+  return within(screen.getByRole("region", { name: "劇本設定" }));
+}
+
 function mockDetail(body: unknown, ok = true, status = 200) {
   const spy = vi.fn(async () => ({ ok, status, json: async () => body }));
   vi.stubGlobal("fetch", spy);
@@ -72,6 +85,43 @@ function mockDetail(body: unknown, ok = true, status = 200) {
 afterEach(() => {
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
+});
+
+describe("劇本設定（OPTION-CHASER-CLOSEOUT-001，項目 2）", () => {
+  it("顯示標的、目標價、目標年月、方向、啟用的策略類型——使用者原本" +
+     "建立劇本時填的東西，不是最佳策略的內容", async () => {
+    mockDetail(detail());
+    render(<ScenarioDetail id="s1" />);
+    await screen.findByText(/劇本主圖/);
+
+    const ctx = scenarioContextSection();
+    expect(ctx.getByText(view.meta.symbol)).toBeInTheDocument();
+    expect(ctx.getByText(`$${view.params.target_price.toFixed(2)}`)).toBeInTheDocument();
+    expect(ctx.getByText(view.params.target_month)).toBeInTheDocument();
+    // 契約樣本 target=130 高於 spot，方向應為看漲。
+    expect(ctx.getByText("看漲")).toBeInTheDocument();
+    // 契約樣本劇本只啟用 Vertical Spread 這一個 family。
+    expect(ctx.getByText("Vertical Spread")).toBeInTheDocument();
+  });
+
+  it("啟用多個 family 時全部列出", async () => {
+    mockDetail(detail({ strategies: ["single-leg", "butterfly"] }));
+    render(<ScenarioDetail id="s1" />);
+    await screen.findByText(/劇本主圖/);
+
+    const ctx = scenarioContextSection();
+    expect(ctx.getByText("Call / Put、Butterfly")).toBeInTheDocument();
+  });
+
+  it("舊存 View 沒有 direction 欄位時顯示「—」，不假裝算得出方向", async () => {
+    const { direction: _drop, ...withoutDirection } = view;
+    mockDetail(detail({ latest_result: withoutDirection }));
+    render(<ScenarioDetail id="s1" />);
+    await screen.findByText(/劇本主圖/);
+
+    const ctx = scenarioContextSection();
+    expect(ctx.getByText("—")).toBeInTheDocument();
+  });
 });
 
 describe("詳細頁摘要（QA 修正：劇本摘要／基準候選／進場成本三卡合一）", () => {
@@ -105,7 +155,8 @@ describe("詳細頁摘要（QA 修正：劇本摘要／基準候選／進場成�
     render(<ScenarioDetail id="s1" />);
 
     const top = baselineTopCandidate(view)!;
-    const [buy, sell] = top.legs;
+    const buy = top.legs.find((leg) => leg.side === "buy")!;
+    const sell = top.legs.find((leg) => leg.side === "sell")!;
     await screen.findByText(/劇本主圖/);
     const summary = summarySection();
     expect(summary.getByText(`買 ${buy.strike} / 賣 ${sell.strike}`))
@@ -123,7 +174,8 @@ describe("詳細頁摘要（QA 修正：劇本摘要／基準候選／進場成�
     render(<ScenarioDetail id="s1" />);
 
     const top = baselineTopCandidate(view)!;
-    const [buy, sell] = top.legs;
+    const buy = top.legs.find((leg) => leg.side === "buy")!;
+    const sell = top.legs.find((leg) => leg.side === "sell")!;
     await screen.findByText(/劇本主圖/);
     const summary = summarySection();
     expect(summary.getByText("買腿 Ask")).toBeInTheDocument();
@@ -227,11 +279,25 @@ describe("區塊順序（spec #102 決策 A／#103）", () => {
     ]);
 
     // IV History 插槽本身不輸出任何 DOM 節點——不是一張空卡片，直接就
-    // 不存在於 DOM 裡。卡片總數固定為上面 6 張加上摘要卡（無 section
-    // -title，改用 aria-label），插槽若渲染出任何東西（哪怕只是空卡），
-    // 這裡就會多一張。
-    expect(container.querySelectorAll(".card")).toHaveLength(7);
+    // 不存在於 DOM 裡。卡片總數固定為上面 6 張加上摘要卡與劇本設定卡
+    // （OPTION-CHASER-CLOSEOUT-001，兩張都無 section-title，改用
+    // aria-label），插槽若渲染出任何東西（哪怕只是空卡），這裡就會
+    // 多一張。
+    expect(container.querySelectorAll(".card")).toHaveLength(8);
     expect(screen.queryByText(/Historical IV|IV Position/)).not.toBeInTheDocument();
+  });
+
+  it("劇本設定卡排在劇本摘要卡之前（OPTION-CHASER-CLOSEOUT-001）", async () => {
+    mockDetail(detail());
+    render(<ScenarioDetail id="s1" />);
+    await screen.findByText(/劇本主圖/);
+
+    const contextCard = screen.getByRole("region", { name: "劇本設定" });
+    const summaryCard = screen.getByRole("region", { name: "劇本摘要" });
+    expect(
+      contextCard.compareDocumentPosition(summaryCard)
+        & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
   });
 });
 
@@ -587,5 +653,126 @@ describe("基準候選的候選池警語（V6／#54 檢視回饋，隨 QA 修正
       screen.getByRole("button", { name: new RegExp(other.expiry) }));
 
     expect(summarySection().getByText(/只有 1 組候選/)).toBeInTheDocument();
+  });
+});
+
+// ---------- T11（#229，Initial V2）：多 family 並存 ----------
+
+describe("多 family 並存（T11／#229）", () => {
+  /** 手造一份包含兩個 family 的 view——真實契約樣本恆為單一策略，測不出
+   *  「頭條數字＝跨 family 冠軍」與「results[0] 不保證是冠軍」這兩件事。
+   *  刻意讓報酬較高的候選（bull-call-spread）不是 `results[0]`，逼出
+   *  T11 真正要修的那個坑：舊版 `primaryResult(view) = results[0]` 在
+   *  這個排列下會挑到錯的策略。 */
+  function multiFamilyDetail() {
+    const params = {
+      target_price: 130, target_month: "2026-09", strategy: "long-call",
+      best_price: null, worst_price: null, rate: 0.04, rate_note: "",
+      rate_curve_used: false, rate_curve_date: null, rate_curve_stale: false,
+      rate_explicit: false, q_by_symbol: null, q_source: null, q_as_of: null,
+      q_stale: false, q_note: "", iv_shifts: [-0.2, 0, 0.2],
+      delta_bands: [0.35, 0.65] as [number, number], min_return: 0,
+    };
+    const leg = (strike: number, side: "buy" | "sell" = "buy"): Leg => ({
+      strike, option_type: "call", expiry: "2026-09-18", ask: 1, bid: 1,
+      iv: 0.2, volume: 1, open_interest: 1, side, quantity: 1,
+    });
+    // 冠軍（bull-call-spread）給兩隻腿——標題會是「買 100 / 賣 105」，
+    // 跟 long-call 那組候選的「買 100」（單腿）文字上不會撞在一起，
+    // 兩者才測得出「分頁切換不影響頭條」而不是巧合湊出同一句文字。
+    const candidate = (
+      key: string, strategy: string, ret: number,
+      legs: CandidateLegs = [leg(100)],
+    ) => ({
+      candidate_key: key, strategy, baseline_return: ret, natural_cost: 1,
+      mid_cost: 1, breakeven: 100, breakeven_points: [100], profit_region: null,
+      days_to_expiry: 30, max_profit: null, max_loss_per_contract: 100,
+      net_delta: 0.5, effective_leverage: 1, theta_day_rate: 0,
+      rate_used: 0.04, rate_tenor_years: 0.1, vega_per_pt: 0,
+      scenario_vector: { entries: [], worst_code: "flat", worst_return: 0 },
+      completion_curve: [], completion_threshold: null, retention: 0,
+      l2: 0, l3: 0, cons: [], guidance_warnings: [], catchup_price: null,
+      wide_spread_warning: false, monotonicity_warning: false,
+      legs, matrix: { prices: [], dates: [], cells: [] },
+      comparator: null,
+    });
+    const resultOf = (strategy: string, status: "ok" | "skipped_direction",
+                      keys: string[]) => ({
+      strategy, status, message: status === "ok" ? "" : `${strategy} 跳過`,
+      n_qualified: keys.length, filter_report: null, filter_stages: [],
+      quality_flags: [], pair_report: null,
+      expiry_counts: keys.length ? [["2026-09-18", keys.length] as [string, number]] : [],
+      expiry_top10: keys.length
+        ? [{ expiry: "2026-09-18", candidate_keys: keys }] : [],
+      disclaimer_text: "",
+    });
+    // `results[0]` 是被方向閘門擋掉的 bear-put-spread；真正的冠軍
+    // （bull-call-spread，報酬 0.9）在陣列後面——這正是既有 T06 家族
+    // 展開會產生、T11 之前的舊 `primaryResult()` 邏輯會挑錯的排列。
+    const multiView: AnalysisView = {
+      meta: { symbol: "XYZ", spot: 100, fetched_at: "2026-08-04T09:30:00+00:00",
+              source: "cboe", target_move: 0.3 },
+      params,
+      baseline_expiry: "2026-09-18",
+      results: [
+        resultOf("bear-put-spread", "skipped_direction", []),
+        resultOf("bull-call-spread", "ok", ["champ"]),
+        resultOf("long-call", "ok", ["lc"]),
+      ],
+      candidate_pool: {
+        champ: candidate("champ", "bull-call-spread", 0.9,
+                         [leg(100, "buy"), leg(105, "sell")]),
+        lc: candidate("lc", "long-call", 0.4),
+      },
+      family_eligibility: {
+        "single-leg": { family: "single-leg", eligible: true, reason: null },
+        "vertical-spread": { family: "vertical-spread", eligible: true, reason: null },
+        "butterfly": { family: "butterfly", eligible: false,
+                       reason: "這個策略家族目前還沒有任何已啟用的具體結構。" },
+      },
+    };
+    return detail({
+      strategies: ["single-leg", "vertical-spread"],
+      family_eligibility: multiView.family_eligibility,
+      latest_result: multiView,
+    });
+  }
+
+  it("頭條數字＝跨 family 冠軍，不是 results[0]（真實回歸：舊邏輯在這個"
+     + "排列下會挑到 skipped_direction 那筆、顯示無合格候選）", async () => {
+    mockDetail(multiFamilyDetail());
+    render(<ScenarioDetail id="s1" />);
+    await screen.findByText(/劇本主圖/);
+
+    const summary = summarySection();
+    expect(summary.getByText("Bull Call Spread")).toBeInTheDocument();
+    expect(summary.getByText("90.0%")).toBeInTheDocument();
+    expect(screen.queryByText("無合格候選")).not.toBeInTheDocument();
+  });
+
+  it("分頁列出兩個啟用的 family，預設打開冠軍所屬的 Vertical Spread", async () => {
+    mockDetail(multiFamilyDetail());
+    render(<ScenarioDetail id="s1" />);
+    await screen.findByText(/劇本主圖/);
+
+    const tabs = screen.getByRole("group", { name: "策略家族" });
+    expect(within(tabs).getAllByRole("button")).toHaveLength(2);
+    expect(within(tabs).getByRole("button", { name: "Vertical Spread" }))
+      .toHaveAttribute("aria-pressed", "true");
+  });
+
+  it("切到 Call / Put 分頁只換排名內容，頭條數字仍是冠軍不變", async () => {
+    mockDetail(multiFamilyDetail());
+    render(<ScenarioDetail id="s1" />);
+    await screen.findByText(/劇本主圖/);
+
+    await userEvent.click(screen.getByRole("button", { name: "Call / Put" }));
+
+    // 分頁內容換成 long-call 自己的候選（精確比對——champion 的標題是
+    // 「買 100 / 賣 105」，含 regex 會誤中同一個子字串）
+    expect(screen.getByText("買 100")).toBeInTheDocument();
+    // 頭條（摘要卡）依然是 Bull Call Spread 冠軍，不隨分頁切換而改變
+    expect(summarySection().getByText("Bull Call Spread")).toBeInTheDocument();
+    expect(summarySection().getByText("90.0%")).toBeInTheDocument();
   });
 });

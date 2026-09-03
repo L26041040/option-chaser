@@ -14,23 +14,43 @@
 import { useState } from "react";
 
 import Heatmap from "./Heatmap";
-import type { AnalysisView, Candidate, StrategyResult } from "./api";
-import { candidateTitle } from "./detail";
-import { expiryOptions, isThinPool, legPrices, resolveExpiry } from "./expiry";
+import type { AnalysisView, Candidate } from "./api";
+import { candidateTitle, strategyLabel } from "./detail";
+import {
+  expiryOptions, isThinPool, legPriceEntries, legPrices, resolveExpiry,
+  type ExpiryBearing,
+} from "./expiry";
+import { heatmapProps } from "./heatmap";
 import { formatReturn, money } from "./scenarios";
 
-function CandidateRow({ candidate, rank }: { candidate: Candidate; rank: number }) {
+function CandidateRow({ view, candidate, rank }: {
+  view: AnalysisView; candidate: Candidate; rank: number;
+}) {
   const prices = legPrices(candidate);
+  // T16（#232，Initial V2，`/code-review` Standards 軸抓到）：命名這個
+  // 判準，不留一個沒有名字的 `> 2`——固定「買／賣」兩欄的收合摘要只
+  // 服務兩腿以下候選，三腿以上（Butterfly）才需要逐腿列出。這條邊界
+  // 是這個元件自己「摘要版式選哪一種」的規則，跟 `IvHistory.tsx` 的
+  // `supportsIvHistory`（IV pipeline 結構上支援哪些腿數）是兩件不同
+  // 的事，只是今天恰好同一個數字——沒有強行共用一個跨檔常數，避免
+  // 兩個不相干的邊界被綁死在一起。
+  const isMultiLeg = candidate.legs.length > 2;
   return (
     <li>
       <details className="candidate">
         <summary>
           <span className="candidate-head">
             <span className="rank">#{rank}</span>
+            {/* T11（#229，Initial V2）：這組候選實際跑的 subtype——多
+                family 並存後，同一個排名池裡的候選可能來自不同
+                subtype（今天仍恆為單一 subtype，見 `family.ts` 說明），
+                每一列都標示出來，不是等到真的混合時才補。 */}
+            <span className="candidate-subtype">{strategyLabel(candidate.strategy)}</span>
             {/* MVP V3（#104，spec #102 決策 F）：⚠ 只在 Bid/Ask 過寬時
-                出現，文案明確寫「Bid/Ask 過寬」——零成交量與 Execution
-                friction 超過 25% 不再觸發這個徽章（LEAPS／冷門履約價
-                零成交是常態，不是報價可疑的證據）。 */}
+                出現，文案明確寫「Bid/Ask 過寬」——零成交量不再觸發這個
+                徽章（LEAPS／冷門履約價零成交是常態，不是報價可疑的
+                證據）。T04（#220）起 friction 已自 canonical model
+                整個退場，不再是這個徽章曾經的觸發條件之一。 */}
             {candidate.wide_spread_warning && (
               <span className="tag warn" title="Bid/Ask 過寬">
                 ⚠
@@ -57,21 +77,33 @@ function CandidateRow({ candidate, rank }: { candidate: Candidate; rank: number 
             </span>
           </span>
           {/* 三個價格就在收合狀態下看得到——要比較幾組候選時，把每一組
-              都展開一次才看得到成本是折磨。 */}
+              都展開一次才看得到成本是折磨。
+
+              T16（#232，Initial V2）：三腿以上（Butterfly）改逐腿列出
+              ——固定「買／賣」兩個欄位的既有版式會靜默丟掉中腿口數與
+              第三隻腿，AC 明文禁止。既有兩腿／單腿候選走原本的格式，
+              逐字不變。 */}
           <span className="candidate-prices">
-            <span>
-              買 {prices.buyAsk === null ? "—" : money(prices.buyAsk)}
-            </span>
-            <span>
-              賣 {prices.sellBid === null ? "—" : money(prices.sellBid)}
-            </span>
+            {isMultiLeg ? (
+              legPriceEntries(candidate).map((entry, i) => (
+                <span key={i}>{entry.label} {money(entry.price)}</span>
+              ))
+            ) : (
+              <>
+                <span>
+                  買 {prices.buyAsk === null ? "—" : money(prices.buyAsk)}
+                </span>
+                <span>
+                  賣 {prices.sellBid === null ? "—" : money(prices.sellBid)}
+                </span>
+              </>
+            )}
             <span>淨成本 {money(prices.net)}</span>
           </span>
         </summary>
         {/* Crossover Boundary（#116）：同 `ScenarioDetail.tsx` 的判準
             ——單腿候選不傳 `comparator`，不是渲染成「缺席」。 */}
-        <Heatmap matrix={candidate.matrix}
-                 comparator={candidate.legs.length === 2 ? candidate.comparator : undefined} />
+        <Heatmap {...heatmapProps(view, candidate)} />
       </details>
     </li>
   );
@@ -83,7 +115,11 @@ export default function ExpiryStructure({
   baselineExpiry,
 }: {
   view: AnalysisView;
-  result: StrategyResult;
+  /** T11（#229，Initial V2）：窄化為 `ExpiryBearing`——多 family 並存
+   *  後，這裡收到的可能是 `family.ts::mergedExpiryTop10()` 合併多個
+   *  subtype 排名池後的結果，不是完整的 `StrategyResult`。既有單一
+   *  family 呼叫端（傳入真正的 `StrategyResult`）結構上仍然相容。 */
+  result: ExpiryBearing;
   baselineExpiry: string | null;
 }) {
   const [picked, setPicked] = useState<string | null>(null);
@@ -134,6 +170,7 @@ export default function ExpiryStructure({
           {shown.candidates.map((candidate, i) => (
             <CandidateRow
               key={candidate.candidate_key}
+              view={view}
               candidate={candidate}
               rank={i + 1}
             />

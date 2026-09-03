@@ -7,10 +7,19 @@
  * 併攏，不做任何加減。
  */
 import type { AnalysisView, Candidate, StrategyResult } from "./api";
-import { resolveCandidate } from "./api";
+import { findLeg, legQuantityPrefix, legSide, resolveCandidate } from "./api";
 
 /** 低於這個組數就警示——沿用 Streamlit 版 FB3-02（#45）的門檻。 */
 export const THIN_POOL = 3;
+
+/**
+ * T11（#229，Initial V2）：`expiryOptions`／`validPairsForExpiry` 只
+ * 真正讀取這兩個欄位——窄化型別讓 `family.ts::mergedExpiryTop10()`
+ * 合併多個 subtype 排名池後產生的「非真實 `StrategyResult`」也能直接
+ * 餵進來，不必為了滿足型別而假造一份其餘欄位無意義的完整物件。既有
+ * 呼叫端傳入真正的 `StrategyResult` 依然成立（結構上是這個型別的子集）。
+ */
+export type ExpiryBearing = Pick<StrategyResult, "expiry_top10" | "expiry_counts">;
 
 export interface ExpiryOption {
   expiry: string;
@@ -34,7 +43,7 @@ export interface ExpiryOption {
  * 濾掉，不讓 `null` 混進 `Candidate[]`。
  */
 export function expiryOptions(
-  view: AnalysisView, result: StrategyResult,
+  view: AnalysisView, result: ExpiryBearing,
 ): ExpiryOption[] {
   return (result.expiry_top10 ?? []).map((group) => {
     const candidates = group.candidate_keys
@@ -56,7 +65,7 @@ export function expiryOptions(
  * 到期日結構與候選池診斷都問這一件事，所以只有這一份實作。
  */
 export function validPairsForExpiry(
-  result: StrategyResult,
+  result: ExpiryBearing,
   expiry: string | null,
 ): number | null {
   if (expiry === null) return null;
@@ -79,12 +88,43 @@ export interface LegPrices {
 }
 
 export function legPrices(candidate: Candidate): LegPrices {
-  const [buy, sell] = candidate.legs;
+  // T12（#228，Initial V2）：改用 `side` 找腿，不再靠陣列位置——既有
+  // 兩腿策略 `[0]=buy`／`[1]=sell` 剛好對應位置，這裡的行為因此不變；
+  // 三腿以上候選（Butterfly）只取第一組買／賣腿——這個函式服務的是
+  // 既有兩腿／單腿摘要格式，多腿的完整摘要改走下面的 `legPriceEntries`
+  // （T16／#232），不在這裡擴充，兩者服務不同的顯示情境。
+  const buy = findLeg(candidate.legs, "buy");
+  const sell = findLeg(candidate.legs, "sell");
   return {
     buyAsk: buy ? buy.ask : null,
     sellBid: sell ? sell.bid : null,
     net: candidate.natural_cost,
   };
+}
+
+export interface LegPriceEntry {
+  /** 這隻腿的方向與口數標示，例如 "買"／"賣 2×"——口數 1 不顯示倍數
+   *  （與 `candidateTitle()` 同一套語法，前後端候選標題與價格摘要
+   *  用同一種標示方式，不是兩套規則）。 */
+  label: string;
+  /** 這隻腿最差成交會用到的那一邊：買腿 Ask、賣腿 Bid。 */
+  price: number;
+}
+
+/**
+ * T16（#232，Initial V2）：逐腿最差成交價，不靠固定買／賣兩個變數
+ * ——三腿以上的候選（Butterfly）不會有任何一隻腿被靜默丟棄（AC 明文：
+ * 「沒有任何腿被靜默丟棄」）。既有兩腿／單腿摘要沿用 `legPrices()`
+ * 不受影響，這個函式只服務 `ExpiryStructure.tsx` 的三腿以上顯示分支。
+ * `legSide()`／`legQuantityPrefix()`（`./api`）與 `detail.ts::
+ * candidateTitle()` 共用同一套「怎麼標示方向與口數」規則（`/code-review`
+ * Standards 軸抓到兩處各自重複同一句三元運算式）。
+ */
+export function legPriceEntries(candidate: Candidate): LegPriceEntry[] {
+  return candidate.legs.map((leg) => ({
+    label: `${legSide(leg)}${leg.quantity > 1 ? ` ${legQuantityPrefix(leg)}` : ""}`,
+    price: leg.side === "buy" ? leg.ask : leg.bid,
+  }));
 }
 
 /**

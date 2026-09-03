@@ -5,7 +5,7 @@ import pytest
 
 from option_chaser import service
 from option_chaser.filters import is_spread_wide
-from option_chaser.scenarios import (completion_scan, friction, natural_cost,
+from option_chaser.scenarios import (completion_scan,
                                      scenario_vector, _grid_price, _value_fn)
 from option_chaser.valuation import SpreadValuation, leg_greeks
 from option_chaser.models import AnalysisParams
@@ -31,12 +31,6 @@ def test_candidate_view_scenario_fields_consistent():
             p = _params_for(result, res.strategy)
             expect = scenario_vector(cv.valuation, spot, result.today, p)
             assert cv.scenario == expect
-            assert cv.friction == pytest.approx(friction(cv.valuation))
-            mid_cost = (cv.valuation.net_mid
-                        if isinstance(cv.valuation, SpreadValuation)
-                        else cv.valuation.mid)
-            assert cv.friction_amount == pytest.approx(
-                natural_cost(cv.valuation) - mid_cost)
             k, be = completion_scan(cv.valuation, spot, result.today, p)
             assert cv.completion_threshold == k
             assert cv.breakeven_at_target == be
@@ -68,18 +62,27 @@ def test_natural_return_merged_into_baseline():
     assert not hasattr(row, "natural_return")
 
 
-def test_quote_warning_friction_over_25pct():
-    """FB5-02（#63）：`quote_warning` 現在是三個 OR 條件，不是兩個——
-    這條測試原本（FB5-02 之前）只驗兩個，本次改動之前一直沒真的紅燈，
-    是因為這份 fixture 剛好沒有任何候選在「價差寬但 friction 不到
-    25%」這個交集裡；那不代表公式沒變，只代表這份資料沒踩到差異。"""
+def test_quote_warning_is_two_conditions_since_friction_retired():
+    """T04（#220，#217 決策 D）：friction 自 canonical model 退場後，
+    `quote_warning` 的第三個條件（fr>0.25）隨之移除，不新增任何替代
+    指標——現在只剩零成交量與價差過寬兩個 OR 條件。
+
+    ⚠ 更正（`/code-review` Spec 軸抓到）：這個公式變動**確實會讓某些
+    候選的 quote_warning 值翻轉**（例如 `contracts/analysis_sample.
+    json` 的 bull-call-spread|118|122 候選，friction 恰為 0.25、
+    wide_spread_warning=False），這份 fixture（`xyz_v2_snapshot.json`）
+    剛好沒有踩到那個交集不代表公式沒變。真正的安全網是
+    `quote_warning` 唯一的消費端（`_build_groups` 的
+    `default_selection`／`ExpiryGroup.rows[].badges`）是 `src/` 全站
+    零消費者的既有死碼（#104 施工時已 grep 確認過），見
+    `CandidateView.quote_warning` 欄位註解。"""
     result = service.run_offline(_request(), SNAP)
     for res in result.results:
         p = _params_for(result, res.strategy)
         for cv in res.candidates:
             legs_zero = _any_zero_volume(cv.valuation)
             wide = _any_wide_spread(cv.valuation, p)
-            assert cv.quote_warning == (legs_zero or wide or cv.friction > 0.25)
+            assert cv.quote_warning == (legs_zero or wide)
 
 
 def _any_zero_volume(val):

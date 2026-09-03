@@ -102,3 +102,39 @@ def test_conservative_put_gets_no_total_loss_warning():
     ranked = rank([v], p_put)
     _, cons = build_reasons(ranked["conservative"][0], "conservative", ranked, 100.0, 1, p_put)
     assert not any("權利金可能全損" in s for s in cons)
+
+
+def test_half_way_profit_claim_is_judged_at_the_candidates_own_expiry():
+    """OPTION-CHASER-CLOSEOUT-003（PR #250 merge gate review 抓到）：
+    「劇本半對仍獲利」原本在**固定日曆錨點**（附錄 A9）上判定，對到期日
+    晚於錨點的候選會說出與到期真相相反的話。
+
+    這張 K95 call 的到期日（2026-12-18）晚於 `target_month="2026-10"` 的
+    錨點（2026-10-16），delta 0.672 落在保守型級距（這句話只在保守型
+    出現）。半價位是 110.0（現價 100 → 目標 120 的中點）：
+    - 在錨點那天它還沒到期，殘留兩個月時間價值 → 值 **16.32 > ask 16.0**，
+      舊實作因此印出「劇本半對仍獲利」
+    - 但它真正到期時，標的停在 110.0 的內在價值只有 **15.00 < 16.0**，
+      使用者實際上是**虧損**的
+
+    這句話是講給使用者聽的事實陳述，不能用一個該候選根本還沒到期的
+    日期去判定——估值日已與 `baseline_return`／`return_at_price` 對齊
+    成候選自身到期日。
+
+    ⚠ 這條測試的參數是刻意挑過的：級距必須是保守型（否則整個分支不會
+    執行，斷言變成恆真的空話——本測試第一版就犯了這個錯，用 K110 寫，
+    它落在別的級距，修法前也照樣綠），且「錨點判定」與「到期真相」必須
+    真的相反（16.32 > 16.0 但 15.00 < 16.0）。"""
+    p = AnalysisParams(target_price=120.0, target_month="2026-10")
+    c = OptionContract(contract_symbol="C95", option_type="call", strike=95.0,
+                       expiry="2026-12-18", bid=15.8, ask=16.0, last=None,
+                       volume=10, open_interest=100, implied_volatility=0.30)
+    v = evaluate_contract(c, spot=100.0, today=TODAY, p=p)
+    ranked = rank([v], p)
+    # 前提斷言：這個分支只在保守型級距執行，挑錯級距整條測試就是空的。
+    assert ranked["conservative"], "fixture 必須落在保守型級距，否則斷言恆真"
+    pros, _ = build_reasons(ranked["conservative"][0], "conservative",
+                            ranked, 100.0, 1, p)
+    assert not any("劇本半對仍獲利" in s for s in pros), (
+        "半價位 110.0 時這張 K95 call 到期內在價值 15.00 < ask 16.0，"
+        "使用者是虧損的——不得宣稱『劇本半對仍獲利』")

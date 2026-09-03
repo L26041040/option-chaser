@@ -147,6 +147,13 @@ class FilterStageResult:
     # C 類（品質標示）從不出現在這裡：它從不淘汰候選，所以不是「一關」，
     # 是 `filters.quality_flag_counts()` 另外算的計數。
     filter_class: str
+    # T05（#226，Initial V2 spec #217，`/code-review` Spec 軸回饋）：這一關
+    # 剔除掉的候選身份範例（合約代碼，或 spread 兩腿合約代碼的組合），供
+    # 診斷指認「是哪一組」——不是完整清單（呼叫端自行決定要留幾筆，通常
+    # 只取前幾筆當範例），純粹是「這一關砍了幾筆」之外再加一句「砍了誰」。
+    # 預設空 tuple：既有兩個呼叫端（`quote_ok`／`iv_ok`）在補上這個欄位前
+    # 就已存在，不能因此要求它們全部改寫。
+    removed_examples: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -167,18 +174,192 @@ class QualityFlagCount:
     count: int
 
 
-STRATEGIES = ("long-call", "long-put", "bull-call-spread", "bear-put-spread")
+STRATEGIES = ("long-call", "long-put", "bull-call-spread", "bear-put-spread",
+             "call-fly", "put-fly")
 SINGLE_LEG_STRATEGIES = ("long-call", "long-put")
 SPREAD_STRATEGIES = ("bull-call-spread", "bear-put-spread")
+# T15（#230，Initial V2 spec #217）：Butterfly 兩個 subtype——買一口低
+# 履約價、賣兩口中間履約價、買一口高履約價，call／put 各一個 subtype
+# （同一到期日、同一權別的三個履約價組合，中腿口數 2）。
+BUTTERFLY_STRATEGIES = ("call-fly", "put-fly")
+
+# T06（#221，Initial V2 spec #217）：Strategy Family 詞彙。
+#
+# Family 是使用者持久化的選擇（`Scenario.strategies` 存的是這個），
+# Subtype（上面 `STRATEGIES` 的四個具體策略代碼）是分析當下由
+# family×方向展開出的結構，從不持久化、從不是使用者可見的選項。
+#
+# T15（#230）：`call-fly`／`put-fly` 落地，`FAMILY_SUBTYPES["butterfly"]`
+# 從空 tuple 變成真正的兩個 subtype——詞彙表本身（#221 當初的設計）
+# 不需要因此改一行，這正是先把詞彙定下來的用意。
+FAMILIES = ("single-leg", "vertical-spread", "butterfly")
+
+# 唯一一張 subtype → family 的靜態對照表，全站共用，沒有第二處硬編碼
+# 對應關係。新資料寫入 family 代碼；舊資料（`Scenario.strategies` 裡
+# 存的是 subtype 字串）在讀取端用這張表換算回 family，不做資料遷移
+# ——兩個字串集合（`STRATEGY_FAMILY` 的 key 與 `FAMILIES`）互斥，讀取
+# 時不需要額外的版本欄位就能判斷一個字串屬於哪一邊。
+STRATEGY_FAMILY: dict[str, str] = {
+    "long-call": "single-leg",
+    "long-put": "single-leg",
+    "bull-call-spread": "vertical-spread",
+    "bear-put-spread": "vertical-spread",
+    "call-fly": "butterfly",
+    "put-fly": "butterfly",
+}
+
+# family → 該 family 目前擁有的全部 subtype（不分方向）。方向是否
+# 「啟用」由 `subtype_eligible()`／既有的 `skipped_direction` 機制
+# 在分析當下判斷，這裡只負責「這個 family 底下有哪些 subtype」。
+FAMILY_SUBTYPES: dict[str, tuple[str, ...]] = {
+    "single-leg": SINGLE_LEG_STRATEGIES,
+    "vertical-spread": SPREAD_STRATEGIES,
+    "butterfly": BUTTERFLY_STRATEGIES,
+}
+
+
+def normalize_families(raw: tuple[str, ...]) -> tuple[str, ...]:
+    """讀取層正規化：`Scenario.strategies` 可能是舊資料（存 subtype
+    字串，例如遷移前建立的 `("bull-call-spread",)`）或新資料（存
+    family 字串，例如 `("vertical-spread",)`）。兩者字串集合互斥，
+    因此逐一查 `STRATEGY_FAMILY`：查得到就是舊 subtype、換算成 family；
+    查不到就當作它已經是 family 字串，原樣保留。去重、保序。"""
+    out: list[str] = []
+    for v in raw:
+        fam = STRATEGY_FAMILY.get(v, v)
+        if fam not in out:
+            out.append(fam)
+    return tuple(out)
+
+
+def subtypes_of(families: tuple[str, ...]) -> tuple[str, ...]:
+    """使用者選的 family 集合 → 分析要跑的 subtype 清單，去重、保序。
+
+    這是分析時序的展開點：呼叫端先用 `normalize_families()` 把讀到的
+    `Scenario.strategies` 正規化成 family 集合，再用本函式展開成
+    `AnalysisRequest.strategies` 要的 subtype tuple。哪些 subtype 因
+    方向與目標價矛盾而被跳過，不是這裡的事——那是既有的
+    `skipped_direction` 機制（`service._analyze`），本函式一律展開
+    family 底下的全部 subtype，讓既有的方向閘門在分析當下自己過濾。"""
+    out: list[str] = []
+    for fam in families:
+        for s in FAMILY_SUBTYPES[fam]:
+            if s not in out:
+                out.append(s)
+    return tuple(out)
 
 
 def leg_option_type(strategy: str) -> str:
     """Which chain side the strategy trades (spec §4.1)."""
-    return "call" if strategy in ("long-call", "bull-call-spread") else "put"
+    return ("call" if strategy in ("long-call", "bull-call-spread", "call-fly")
+           else "put")
+
+
+# T08（#225，Initial V2 spec #217）：Direction（方向，衍生三態，
+# CONTEXT.md「策略與方向」一節）——看漲／看跌／持平，由 `target_price`
+# 相對 spot 於分析當下算出，永不落盤、不進事件（`Scenario` 本身沒有
+# 這個欄位，這裡是純函式的回傳值，不是 dataclass 欄位）。
+DIRECTIONS = ("bullish", "bearish", "flat")
+
+DIRECTION_LABELS: dict[str, str] = {
+    "bullish": "看漲", "bearish": "看跌", "flat": "持平",
+}
+
+# 每個 subtype 適用哪些方向——取代硬編碼的策略名字比對（舊版
+# `is_bullish(strategy) -> strategy in ("long-call", "bull-call-spread")`）。
+# 新增 subtype 只需在這裡加一筆資料，`subtype_eligible()`／
+# `family_eligibility()` 兩個判斷函式完全不需要修改。
+#
+# T15（#230）：`call-fly`／`put-fly` 落地，方向集合對照 Owner 2026-08-27
+# 「可選／不可選矩陣定案」（CONTEXT.md「策略與方向」一節）——看漲
+# Butterfly✓、看跌 Butterfly✓（對稱）、**持平僅 Butterfly✓**（Call／
+# Vertical 兩個 family 在持平時皆不可選，這是 Butterfly 獨有的性質）。
+# family 層級的 OR 投影要同時在三個方向都成立，落到 subtype 層就是
+# ——call-fly 收 `{bullish, flat}`（call 結構、天生跟 bullish 家族
+# 同側，且它的帳篷形狀本來就適合表達「釘在某價位」的持平劇本）、
+# put-fly 收 `{bearish, flat}`（對稱）。兩者聯集涵蓋全部三個方向，
+# family_eligibility() 的 OR 投影因此在 bullish／bearish／flat 都能
+# 找到至少一個可用 subtype——不需要改判斷函式本身，純資料。
+SUBTYPE_DIRECTIONS: dict[str, frozenset[str]] = {
+    "long-call": frozenset({"bullish"}),
+    "bull-call-spread": frozenset({"bullish"}),
+    "long-put": frozenset({"bearish"}),
+    "bear-put-spread": frozenset({"bearish"}),
+    "call-fly": frozenset({"bullish", "flat"}),
+    "put-fly": frozenset({"bearish", "flat"}),
+}
+
+
+def derive_direction(target_price: float, spot: float) -> str:
+    """方向由目標價位相對現價於**分析當下**推導，三態、無容忍帶
+    （AC 明文：不發明容忍帶，極接近但不等於現價的方向性劇本照常成立）
+    ——只有完全相等才算 `"flat"`。"""
+    if target_price > spot:
+        return "bullish"
+    if target_price < spot:
+        return "bearish"
+    return "flat"
+
+
+def subtype_eligible(subtype: str, direction: str) -> bool:
+    """這個 subtype 在這個方向下適不適用——資料驅動，取代舊版
+    `is_bullish` 的硬編碼名字比對。未知 subtype（理論上不會發生，
+    `STRATEGY_FAMILY`／`SUBTYPE_DIRECTIONS` 兩張表本應同步）保守回
+    `False`，不是預設放行。"""
+    return direction in SUBTYPE_DIRECTIONS.get(subtype, frozenset())
 
 
 def is_bullish(strategy: str) -> bool:
-    return strategy in ("long-call", "bull-call-spread")
+    """T08（#225）：改為資料驅動（查 `SUBTYPE_DIRECTIONS`），不再是
+    硬編碼的名字比對——對既有四個 subtype 逐位元行為不變，這個函式
+    服務的是 Heatmap／CLI 報告的價格軸走向這類與 eligibility gate
+    無關的既有用途，不在本票改動範圍內。
+
+    T15（#230）後續：`call-fly`／`put-fly` 收的是 `{bullish, flat}`／
+    `{bearish, flat}`（非 flat-only），這裡回傳的二元值因此對兩者分別
+    是 True／False——與既有 `long-call`／`bull-call-spread` 同一側
+    （call 結構→True）、`long-put`／`bear-put-spread` 同一側（put
+    結構→False）一致，`price_axis()` 的價格軸走向（決定較密集的一端
+    往哪個方向延伸）因此對 Butterfly 沿用「call 結構偏多方視覺、put
+    結構偏空方視覺」這條既有慣例，是一個合理但非唯一可能的選擇——
+    Butterfly 的 body 位置本來就可能落在現價任一側，價格軸走向只是
+    視覺呈現的次要決策，不影響任何排名或計算。"""
+    return "bullish" in SUBTYPE_DIRECTIONS.get(strategy, frozenset())
+
+
+@dataclass(frozen=True)
+class FamilyEligibility:
+    """T08（#225，Initial V2 spec #217）：Family 的可選／不可選 verdict
+    ——旗下任一啟用 subtype 在目前方向下適用即為可選（OR 投影）。
+    `reason` 只在不可選時有值，供前端直接顯示（frontend 只渲染，永遠
+    不自行計算 eligibility，CONTEXT.md「Eligibility」一節）。"""
+    family: str
+    eligible: bool
+    reason: str | None = None
+
+
+def family_eligibility(family: str, direction: str) -> FamilyEligibility:
+    """OR 投影：`family_eligible ⟺ 旗下任一啟用 subtype 在這個方向下
+    適用`。不可選有兩種成因，訊息分開表達：
+    - 這個 family 底下目前一個 subtype 都沒有（`butterfly` 在 T15 之
+      前的現況）——與方向無關，方向再怎麼換都一樣不可選；
+    - 底下已有的 subtype 都存在，只是沒有一個適用目前這個方向。
+
+    純資料驅動：不論哪一種成因，`family_eligibility()` 本身都不需要
+    知道具體是哪個 subtype、哪個 family——`FAMILY_SUBTYPES`／
+    `SUBTYPE_DIRECTIONS` 兩張表換了內容，這個函式一行都不用改。"""
+    subtypes = FAMILY_SUBTYPES.get(family, ())
+    if not subtypes:
+        return FamilyEligibility(
+            family=family, eligible=False,
+            reason="這個策略家族目前還沒有任何已啟用的具體結構。")
+    if any(subtype_eligible(s, direction) for s in subtypes):
+        return FamilyEligibility(family=family, eligible=True, reason=None)
+    label = DIRECTION_LABELS.get(direction, direction)
+    return FamilyEligibility(
+        family=family, eligible=False,
+        reason=f"目前劇本方向為「{label}」，這個策略家族底下已啟用的"
+              "策略都不適用這個方向。")
 
 
 @dataclass(frozen=True)
@@ -186,3 +367,16 @@ class PairReport:
     total_pairs: int
     removed_sanity: int
     passed: int
+    # T05（#226，Initial V2 spec #217）：B 層（導出層數學安全網）在配對
+    # 這個單位上的淘汰數——與 `removed_sanity`（配對時既有的「結構合法性」
+    # 檢查，A 層／per-subtype 規則）獨立成不同欄位，因為淘汰依據不同：
+    # 這裡是「算出來的成本／報酬是不可能值」，不是「配對本身不成立」。
+    # 預設 0：既有呼叫端（`generate_spread_pairs()`）不知道也不需要知道
+    # B 層，只有 `_spread_result()` 事後補上這個數字。
+    b_layer_removed: int = 0
+    # T05（`/code-review` Spec 軸回饋）：B 層在配對這個單位上淘汰掉的組合
+    # 身份範例（買腿／賣腿合約代碼組成的字串），與 `b_layer_removed`（純
+    # 計數）配對成同一種「數字＋範例」形狀，比照 `FilterStageResult.
+    # removed_examples` 同一個模式——兩者都是「一個計數配一份可指認的
+    # 範例清單」。預設空 tuple，理由與 `b_layer_removed` 相同。
+    b_layer_removed_examples: tuple[str, ...] = ()

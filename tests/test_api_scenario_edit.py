@@ -36,13 +36,18 @@ def client(db):
 
 
 def _create(client, **over):
-    body = {"symbol": "XYZ", "target_price": 130.0, "target_month": "2026-09"}
+    body = {"symbol": "XYZ", "target_price": 130.0, "target_month": "2026-09",
+           "strategies": ["vertical-spread"]}
     body.update(over)
     return client.post("/api/scenarios", json=body).json()
 
 
 def _edit(client, sid, **over):
-    body = {"target_price": 140.0, "target_month": "2026-09"}
+    # T10（#227）：`strategies` 現在也是必填——編輯表單永遠送出目前
+    # 完整的勾選集合，這裡預設沿用建立時的同一個 family，個別測試需要
+    # 驗證增減 family 時用 `strategies=[...]` 覆寫。
+    body = {"target_price": 140.0, "target_month": "2026-09",
+           "strategies": ["vertical-spread"]}
     body.update(over)
     return client.patch(f"/api/scenarios/{sid}", json=body)
 
@@ -81,6 +86,7 @@ def test_the_request_model_has_no_symbol_field_at_all(client, db):
     sid = _create(client)["id"]
     body = client.patch(f"/api/scenarios/{sid}",
                         json={"target_price": 140.0, "target_month": "2026-09",
+                              "strategies": ["vertical-spread"],
                               "symbol": "SPY"}).json()
     assert body["symbol"] == "XYZ"
     assert db.get_scenario(sid).symbol == "XYZ"

@@ -24,8 +24,9 @@ def _leg(sym, strike, bid, ask, iv=0.30, expiry="2026-10-16"):
                           open_interest=100, implied_volatility=iv)
 
 
-def _val(strike, bid, ask):
-    return evaluate_contract(_leg("c", strike, bid, ask), spot=100.0, today=TODAY, p=P)
+def _val(strike, bid, ask, expiry="2026-10-16"):
+    return evaluate_contract(_leg("c", strike, bid, ask, expiry=expiry),
+                             spot=100.0, today=TODAY, p=P)
 
 
 def _spread(k_long, k_short):
@@ -37,6 +38,26 @@ def _spread(k_long, k_short):
 
 def test_single_leg_at_target_price_equals_baseline_return():
     v = _val(110.0, 3.0, 3.2)
+    assert return_at_price(v, P.target_price, P) == pytest.approx(baseline_return(v))
+
+
+@pytest.mark.parametrize("expiry", ["2026-08-21", "2026-10-16", "2026-12-18"])
+def test_single_leg_equality_holds_when_expiry_is_not_the_anchor(expiry):
+    """OPTION-CHASER-CLOSEOUT-003：上面那條測試的 fixture 到期日
+    （`_leg()` 預設 2026-10-16）恰好等於 `P.target_month="2026-10"` 的
+    錨點，也就是它下面那條 spread 版 docstring 早就點名的**空斷言**
+    ——兩者剛好重合，錯的實作也會過。
+
+    REPAIR-09（#246）把單腿的排名基準估值日從日曆錨點改成候選自身
+    到期日，但依票面明文「`ranking.py` 零改動」沒有動
+    `return_at_price`，於是「口徑與主排名數字完全相同」這條不變量對
+    到期日晚於錨點的單腿候選悄悄變成假的——而守門測試因為上述空斷言
+    沒有紅燈。實測缺陷值：expiry 2026-12-18 時 `baseline_return`
+    2.125 vs `return_at_price` 2.942。
+
+    這條測試比照 spread 版刻意涵蓋錨點之前、之上、之後三種到期日，
+    把那個空斷言補成真的把關。"""
+    v = _val(110.0, 3.0, 3.2, expiry=expiry)
     assert return_at_price(v, P.target_price, P) == pytest.approx(baseline_return(v))
 
 

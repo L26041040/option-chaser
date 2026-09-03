@@ -23,8 +23,9 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 from option_chaser import __version__, ivpipeline, service, store
 from option_chaser.data import treasury as treasury_data
 from option_chaser.data.snapshot import snapshot_from_dict, snapshot_to_csv
-from option_chaser.models import (AnalysisParams, ChainSnapshot, FetchError,
-                                  ParamError, STRATEGIES)
+from option_chaser.models import (AnalysisParams, ChainSnapshot, FAMILIES,
+                                  FetchError, ParamError, STRATEGIES,
+                                  normalize_families, subtypes_of)
 from option_chaser.service import DividendLoader, RateCurveLoader
 from option_chaser.timeframe import (TargetMonth, calendar_anchor,
                                      ensure_month_open, month_is_over)
@@ -78,10 +79,18 @@ REFRESH_RUN_BUDGET = timedelta(seconds=45)
 # 逼出分段，不假裝時間流逝。
 REFRESH_RUN_GROUP_LIMIT = 1
 
-# MVP 範圍（沿用既有 Streamlit 版與 spec #47 的三欄表單）：方向與策略
-# 是固定值，不由前端送。需要看空或多策略時再由對應的票加上。
+# REPAIR-08（#245，FIX-04，#052 audit）：單次分析的 per-subtype／
+# per-family soft deadline——safety net 專用，處理異常輸入（例如某個
+# symbol 的鏈異常龐大）下的優雅降級，**不是**效能修復的替代方案（正常
+# production-scale 規模的效能已由 #240 的 `calibrate_leg` memoization
+# 解決）。沿用 `service.ANALYSIS_SOFT_DEADLINE` 同一個數值與推導理由。
+# 可注入（既有 DI 慣例），測試用小數值逼出 soft deadline 真的生效。
+ANALYSIS_DEADLINE_SECONDS = service.ANALYSIS_SOFT_DEADLINE.total_seconds()
+
+# MVP 範圍（沿用既有 Streamlit 版與 spec #47 的三欄表單）：方向是固定值，
+# 不由前端送。需要看空時再由對應的票加上（`direction` 欄位是 legacy
+# 遺留，T06／#221 起不再被任何判斷邏輯讀取，見 `_scenario_json`）。
 _MVP_DIRECTION = "bullish"
-_MVP_STRATEGIES = ("bull-call-spread",)
 
 # V1（#48）的一次性分析端點沿用：無劇本身分時的 view dict 欄位值，
 # 不影響任何計算。V3 之後前端改走劇本端點，屆時此路徑可移除。
@@ -111,6 +120,13 @@ class CreateScenarioRequest(BaseModel):
     target_price: float = Field(gt=0)
     target_month: str = _MONTH
     notes: str = ""
+    # T10（#227，Initial V2 spec #217）：使用者勾選的 Strategy Family
+    # ——白名單本身就是型別（`Literal[FAMILIES]`），前端下拉只是方便，
+    # 這裡才是真正的防線；`min_length=1`＝「至少要選一個才能送出」。
+    # 與 `AnalyzeRequest.strategies`（`Literal[STRATEGIES]`，具體
+    # subtype 白名單）刻意用同一種寫法、不同的白名單來源——那個端點
+    # 認 subtype，這裡認 family，兩者是不同層次的詞彙，不共用型別。
+    strategies: list[Literal[FAMILIES]] = Field(min_length=1)  # type: ignore[valid-type]
     # V7（#55）劇本區間兩端，選填（留白＝未設定，不報錯）。
     best_price: float | None = Field(default=None, gt=0)
     worst_price: float | None = Field(default=None, gt=0)
@@ -143,6 +159,10 @@ class EditScenarioRequest(BaseModel):
     target_price: float = Field(gt=0)
     target_month: str = _MONTH
     notes: str = ""
+    # T10（#227）：編輯時可以增減 family，與建立同一份白名單／同一條
+    # 「至少選一個」規則——編輯表單永遠送出目前完整的勾選集合（不是
+    # 差異），沒有勾任何一個就是不合法的送出，跟建立時一樣。
+    strategies: list[Literal[FAMILIES]] = Field(min_length=1)  # type: ignore[valid-type]
     best_price: float | None = Field(default=None, gt=0)
     worst_price: float | None = Field(default=None, gt=0)
 
@@ -360,9 +380,20 @@ def _timing_json(sc: Scenario, today: date) -> dict:
 
 
 def _scenario_json(sc: Scenario) -> dict:
+    # REPAIR-02（#239，FIX-01，#052 audit Root Cause A）：全站唯一序列化
+    # `Scenario.strategies` 的地方——`_row_json()` 內嵌呼叫它，所以這裡
+    # 正規化一次，等於同時修好 `list_scenarios`／`get_scenario` 兩個
+    # GET 端點**與** `refresh_scenario`／`refresh_run`（走
+    # `_refresh_and_save()` → `_row_json()`）對 legacy 劇本的回應——不是
+    # 只挑兩個 GET 端點動。舊（pre-V2）劇本存的是 legacy subtype 字串，
+    # 未正規化直接透傳的話，前端 checkbox 判斷式對不上、使用者不改動
+    # 任何 checkbox 直接儲存都會被後端 family 白名單拒絕（422）。
+    # `create_scenario()`／`edit_scenario()` 寫入前已各自正規化過，這裡
+    # 再正規化一次是冪等的（不會改變已經是 family 代碼的值），OD-01：
+    # 只修讀取端，不做任何 DB migration，stored 的原始值不受影響。
     return {"id": sc.id, "symbol": sc.symbol, "direction": sc.direction,
             "target_price": sc.target_price, "target_month": sc.target_month,
-            "notes": sc.notes, "strategies": list(sc.strategies),
+            "notes": sc.notes, "strategies": list(normalize_families(sc.strategies)),
             "created_at": sc.created_at, "archived_at": sc.archived_at,
             "best_price": sc.best_price, "worst_price": sc.worst_price}
 
@@ -370,7 +401,8 @@ def _scenario_json(sc: Scenario) -> dict:
 def _row_json(sc: Scenario, today: date, *, analyzed_at: str | None,
               best_return: float | None,
               representative_candidate: dict | None,
-              spot: float | None = None) -> dict:
+              spot: float | None = None,
+              family_eligibility: dict | None = None) -> dict:
     """劇本在清單上的那一列。建立、列出、刷新三處共用同一個組裝函式——
     形狀只要差一個欄位，客戶端就得為同一個東西維護兩種型別。
 
@@ -380,24 +412,34 @@ def _row_json(sc: Scenario, today: date, *, analyzed_at: str | None,
 
     `spot`（QA 修正）：那次分析當下的標的現價，讓清單卡片有比較基準
     ——目標價／最高／最低（後兩者來自 `_scenario_json`）少了現價就只是
-    三個孤立數字。尚未分析過時為 `None`。"""
+    三個孤立數字。尚未分析過時為 `None`。
+
+    `family_eligibility`（T10／#227，Initial V2）：最近一次分析當下算出
+    的 family 可選／不可選 verdict（`store._family_eligibility_map()`
+    的輸出，鍵是 family 代碼）——編輯表單需要它才能顯示「這個 family
+    現在為什麼不可選」，不該為此把整份 view 撈回來，與
+    `representative_candidate`／`best_return` 同一個模式。尚未分析過
+    時為 `None`（沒有可顯示的 verdict，不是假造一份「全部可選」）。"""
     return {**_scenario_json(sc), **_timing_json(sc, today),
             "latest_analyzed_at": analyzed_at, "best_return": best_return,
             "representative_candidate": representative_candidate,
-            "spot": spot}
+            "spot": spot, "family_eligibility": family_eligibility}
 
 
 def _summary_of(latest: ResultRecord | ResultSummary | None) -> dict:
     """從一筆「最新結果」（`ResultRecord` 或 `ResultSummary`，兩者皆有
-    `analyzed_at`／`best_return`／`representative_candidate`）取出卡片要的
-    欄位；沒有結果（`None`，劇本從未成功分析過）時皆為 `None`——卡片據此
-    顯示「—」與「尚未分析」，不是 0 或一組假的候選。列出、詳細頁、刷新
-    （含過期短路）共用同一個形狀，不必各自重寫一次 `if x else None`。"""
+    `analyzed_at`／`best_return`／`representative_candidate`／
+    `family_eligibility`）取出卡片要的欄位；沒有結果（`None`，劇本從未
+    成功分析過）時皆為 `None`——卡片據此顯示「—」與「尚未分析」，不是
+    0 或一組假的候選。列出、詳細頁、刷新（含過期短路）共用同一個形狀，
+    不必各自重寫一次 `if x else None`。"""
     return {"analyzed_at": latest.analyzed_at if latest else None,
             "best_return": latest.best_return if latest else None,
             "representative_candidate":
                 latest.representative_candidate if latest else None,
-            "spot": latest.spot if latest else None}
+            "spot": latest.spot if latest else None,
+            "family_eligibility":
+                latest.family_eligibility if latest else None}
 
 
 def _fail(stage: str, status: int, message: str) -> HTTPException:
@@ -425,6 +467,7 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
                    treasury_data.fetch_curve_range,
                refresh_run_budget: timedelta = REFRESH_RUN_BUDGET,
                refresh_run_group_limit: int = REFRESH_RUN_GROUP_LIMIT,
+               analysis_deadline_seconds: float | None = ANALYSIS_DEADLINE_SECONDS,
                ) -> FastAPI:
     """`fetch`／`storage`／`rate_loader`／`dividend_loader` 皆可注入：
     測試傳入固定快照、記憶體假體與假來源，因此不打真網路、不碰真資料庫，
@@ -585,7 +628,19 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         依 symbol 分組抓過一次（ADR-0001，Run 內記憶體去重），這裡就不
         重複抓。單一劇本刷新端點不傳這個參數，走下面的直接抓取——
         chain 快取已隨 ADR-0001 整組移除，重複抓取的去重範圍現在只在
-        單一 Refresh Run 內，不再跨 invocation。"""
+        單一 Refresh Run 內，不再跨 invocation。
+
+        REPAIR-08（#245）：`analysis_deadline_seconds` 的計時點必須在
+        抓鏈**之前**就啟動（`/code-review` Spec 軸抓到的真發現）——
+        票面點名的異常輸入情境就包含「vendor 回應異常慢」，deadline
+        若只在抓鏈之後才起算，抓鏈本身耗時異常時完全不受保護、也讓
+        `service.run()` 與這裡宣稱的「同一種寫法」名不符實。`deadline`
+        在函式最上方算好絕對時間點，`snap is not None`（Refresh Run
+        批次路徑，抓鏈發生在呼叫這裡之前）時同樣適用——差別只是抓鏈
+        那段已經花掉的時間發生在呼叫端，這裡起算的時間點本來就已經
+        比那更早，涵蓋範圍不會漏掉。"""
+        deadline = (time.monotonic() + analysis_deadline_seconds
+                   if analysis_deadline_seconds is not None else None)
         # base_params.strategy 只是引擎逐策略覆寫前的起點（`_analyze` 會
         # 對 `strategies` 每一項各自替換），取第一項即可——與既有
         # `workspace._request_for` 同樣的做法。
@@ -610,7 +665,13 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         try:
             result = service.run_with_snapshot(
                 req, snap, rate_curve_loader=_rate_curve_loader(),
-                dividend_loader=_dividend_loader())
+                dividend_loader=_dividend_loader(),
+                # `run_with_snapshot()` 要的是**剩餘**秒數（它自己不做
+                # 抓鏈，見該函式 docstring），這裡把抓鏈已經花掉的時間
+                # 扣掉再傳——負值一樣正確傳達「已經超時」，`_absolute_
+                # deadline()` 的加法會把它算回過去的時間點。
+                deadline_seconds=(deadline - time.monotonic()
+                                  if deadline is not None else None))
         except ParamError as e:
             raise _fail("params", 400, str(e)) from e
         except Exception as e:  # noqa: BLE001 — 引擎任何失敗都要說是哪一段，不留白畫面
@@ -697,10 +758,15 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
             raise HTTPException(status_code=400, detail=str(e)) from e
 
         ts = now_utc_iso()
+        # T10（#227，Initial V2 spec #217）：使用者第一次可以自己決定
+        # 要看哪幾類策略——`_MVP_STRATEGIES` 這個寫死的預設值退場，
+        # 改存使用者實際勾選的 family 集合（`normalize_families()` 去重
+        # 保序，pydantic `Literal[FAMILIES]` 已經擋掉白名單外的字串）。
         sc = Scenario(id=uuid.uuid4().hex[:12], symbol=req.symbol.upper(),
                       direction=_MVP_DIRECTION, target_price=req.target_price,
                       target_month=req.target_month, notes=req.notes,
-                      strategies=_MVP_STRATEGIES, created_at=ts,
+                      strategies=normalize_families(tuple(req.strategies)),
+                      created_at=ts,
                       best_price=req.best_price, worst_price=req.worst_price)
         try:
             _db().create_scenario(sc)
@@ -711,7 +777,8 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         # 回傳與清單同一個形狀（含 timing、尚未分析故摘要欄位皆為 None），
         # 客戶端才不必為「剛建立的」與「列出來的」維護兩種型別。
         return _row_json(sc, ny_today(), analyzed_at=None, best_return=None,
-                         representative_candidate=None, spot=None)
+                         representative_candidate=None, spot=None,
+                         family_eligibility=None)
 
     @app.patch("/api/scenarios/{scenario_id}")
     def edit_scenario(scenario_id: str, req: EditScenarioRequest) -> dict:
@@ -731,14 +798,31 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         except ParamError as e:
             raise HTTPException(status_code=400, detail=str(e)) from e
 
+        # T10（#227）：編輯表單永遠送出目前完整的 family 勾選集合，
+        # 正規化去重保序後直接覆蓋——不是差異合併。
+        new_strategies = normalize_families(tuple(req.strategies))
         updated = dataclasses.replace(
             sc, target_price=req.target_price, target_month=req.target_month,
             notes=req.notes, best_price=req.best_price,
-            worst_price=req.worst_price)
+            worst_price=req.worst_price, strategies=new_strategies)
+        # T10：family 選擇改變也視同 thesis 改變——舊結果是對著另一組
+        # family 跑出來的，繼續顯示會讓使用者以為新勾選的 family 已經
+        # 有結果、或以為剛拿掉的 family 還在生效。舊劇本的 `sc.strategies`
+        # 可能仍是遷移前的 legacy subtype 字串（#221），兩邊都先正規化
+        # 成 family 再比較——否則「同一個 family、只是舊資料存的是
+        # subtype 字串」會被誤判成改變，白白清掉還沒過期的結果。
+        # ⚠ 兩側正規化不對稱是刻意、非巧合：`updated.strategies` 已經是
+        # `new_strategies`（上面已正規化過），這裡不必再正規化一次；
+        # 只有 `sc.strategies`（可能是遷移前的 legacy subtype 字串）
+        # 需要正規化才能跟已正規化的 `updated.strategies` 比對。若日後
+        # `updated.strategies` 的來源不再保證已正規化（例如 pydantic
+        # 白名單放寬），這裡也要同步補上正規化，否則這條不對稱假設會
+        # 悄悄失效。
         thesis_changed = (
-            (sc.target_price, sc.target_month, sc.best_price, sc.worst_price)
+            (sc.target_price, sc.target_month, sc.best_price, sc.worst_price,
+             normalize_families(sc.strategies))
             != (updated.target_price, updated.target_month,
-                updated.best_price, updated.worst_price))
+                updated.best_price, updated.worst_price, updated.strategies))
 
         _db().update_scenario(updated)
         if thesis_changed:
@@ -769,8 +853,12 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         latest = _db().latest_result(scenario_id)
         # `best_return` 也要在——detail 少一個欄位的話，客戶端就沒辦法把
         # 同一個型別套用在清單列與詳細回應上（V5 的詳細頁會踩到）。
+        # T13（#231，Initial V2）：回應走 `store.project_for_detail()`
+        # 傳輸投影，不是落盤的那份原樣——儲存本身（`latest.view`）維持
+        # 全保真，只有這個端點回給前端的那份瘦身。
         return {**_row_json(sc, ny_today(), **_summary_of(latest)),
-                "latest_result": latest.view if latest else None}
+                "latest_result": (store.project_for_detail(latest.view)
+                                  if latest else None)}
 
     @app.post("/api/scenarios/{scenario_id}/archive")
     def archive_scenario(scenario_id: str) -> dict:
@@ -852,21 +940,42 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         if month_is_over(TargetMonth.from_key(sc.target_month), today):
             latest = _db().latest_result(sc.id)
             return _row_json(sc, today, **_summary_of(latest))
+        # T06（#221）：`sc.strategies` 存的是 family 代碼（新資料）或
+        # legacy subtype 字串（舊資料，無遷移）——這是**唯一**的展開點，
+        # 把它換算成 `AnalysisRequest.strategies` 要的具體 subtype 清單。
+        subtypes = subtypes_of(normalize_families(sc.strategies))
         view, snapshot = _analyze(
             scenario_id=sc.id, symbol=sc.symbol, target_price=sc.target_price,
-            target_month=sc.target_month, strategies=sc.strategies,
+            target_month=sc.target_month, strategies=subtypes,
             best_price=sc.best_price, worst_price=sc.worst_price, snap=snap)
         analyzed_at = view["analyzed_at"]
-        # 兩者同一次走訪（`store.representative_candidate`），`best_return`
-        # 由它導出——結構上不可能對不上（MVP-v2／#77、#78）。
-        representative_candidate = store.representative_candidate(view)
+        # T07（#224，Initial V2）：per-family map 只走訪一次
+        # （`representative_candidates_by_family`），scalar 冠軍改由它
+        # 取 `max()` 導出而非各自獨立呼叫 `store.representative_
+        # candidate()` 再走一次——與既有 `best_return` 由
+        # `representative_candidate()` 導出、`main.py` 為避免重複走訪
+        # 而內聯同一條算式，是同一種既有作法（見 `store.best_return()`
+        # docstring）；`store.representative_candidate()` 本身作為獨立
+        # 公開純函式維持不變，多處測試仍拿它當交叉驗證的真相來源。
+        per_family = store.representative_candidates_by_family(view)
+        representative_candidate = (
+            max(per_family.values(), key=lambda v: v["baseline_return"])
+            if per_family else None)
         best_return = (representative_candidate["baseline_return"]
                        if representative_candidate is not None else None)
+        # T10（#227，Initial V2）：`view["family_eligibility"]`（T08 已
+        # 算好、隨 `serialize_result()` 寫進 view）額外落到卡片列這個
+        # 輕量形狀——編輯表單需要它顯示「這個 family 現在為什麼不可選」，
+        # 不必為此把整份 view 撈回來，與 `representative_candidate`／
+        # `per_family` 同一個模式，不重算方向、不重呼叫 `family_
+        # eligibility()`。
+        family_elig = view["family_eligibility"]
         _db().save_result(ResultRecord(
             scenario_id=sc.id, analyzed_at=analyzed_at, view=view,
             best_return=best_return,
             representative_candidate=representative_candidate,
-            spot=store.spot(view)))
+            spot=store.spot(view), per_family=per_family or None,
+            family_eligibility=family_elig))
         _db().save_snapshot(sc.id, analyzed_at, snapshot)
         _db().append_event(ts=now_utc_iso(), scenario_id=sc.id,
                            event="ANALYSIS_COMPLETED",
@@ -875,7 +984,7 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         return _row_json(sc, today, analyzed_at=analyzed_at,
                          best_return=best_return,
                          representative_candidate=representative_candidate,
-                         spot=store.spot(view))
+                         spot=store.spot(view), family_eligibility=family_elig)
 
     @app.post("/api/scenarios/{scenario_id}/refresh")
     def refresh_scenario(scenario_id: str) -> dict:

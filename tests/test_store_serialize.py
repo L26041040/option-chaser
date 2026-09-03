@@ -34,8 +34,22 @@ def _cand(view: dict, key: str) -> dict:
 def test_top_level_fields_and_versions():
     view = store.serialize_result(_result(), "XYZ-120-202608", 100000.0)
     # T04（#188）：1→2 report_text／methodology_text 移除。
-    # T09（#191）：2→3 候選內容集中進 `candidate_pool`，四個容器改存 key。
-    assert view["schema_version"] == 3
+    # T09（#191，MVP-v2 舊票）：2→3 候選內容集中進 `candidate_pool`，
+    # 四個容器改存 key。
+    # T12（#228，Initial V2）：3→4 每腿新增 side/quantity，候選新增
+    # breakeven_points（純加法）。
+    # T05（#226，Initial V2）：4→5 pair_report 新增 b_layer_removed
+    # （純加法）。
+    # T08（#225，Initial V2）：5→6 新增頂層 family_eligibility（純加法）。
+    # T14（#233，Initial V2）：6→7 熱力圖 matrix 傳輸壓縮——座標軸去重
+    # （新增頂層 `axis_sets`）＋格值攤平＋捨入，破壞性改變 `matrix`／
+    # `comparator.matrix` 的既有形狀。
+    # T15（#230，Initial V2）：7→8 候選新增 `profit_region`（Butterfly
+    # 非單調結構的獲利區間，既有四策略恆為 `None`，純加法）。
+    # OPTION-CHASER-CLOSEOUT-001：8→9 新增頂層 `direction`（Scenario
+    # Detail 補劇本摘要要用的衍生方向，純加法，比照 T08／#225）。
+    assert view["schema_version"] == 9
+    assert isinstance(view["axis_sets"], list)
     assert view["engine_version"] == option_chaser.__version__ == "0.5.0"
     assert view["scenario_id"] == "XYZ-120-202608"
     assert view["analyzed_at"] == view["snapshot_ref"]["fetched_at"]
@@ -78,7 +92,15 @@ def test_candidate_fields_hand_checked():
     assert cand["scenario_vector"]["worst_code"] == cv.scenario.worst_code
     assert cand["max_profit"] is None                            # long-call
     assert cand["net_delta"] == v.delta
-    assert cand["matrix"]["cells"] == [list(r) for r in cv.matrix.cells]
+    # T14（#233，Initial V2）：`cells` 攤平成一維陣列＋捨入
+    # （`store.MATRIX_CELL_DECIMALS`），`prices`／`dates` 移到頂層
+    # `axis_sets`、候選只留 `axis_index` 引用。
+    assert cand["matrix"]["cells"] == [
+        round(v, store.MATRIX_CELL_DECIMALS)
+        for row in cv.matrix.cells for v in row]
+    axis = view["axis_sets"][cand["matrix"]["axis_index"]]
+    assert axis["prices"] == [list(pt) for pt in cv.matrix.prices]
+    assert axis["dates"] == [list(d) for d in cv.matrix.dates]
 
 
 def test_candidate_carries_l2_l3_cons_and_guidance_warnings():
@@ -319,6 +341,64 @@ def test_representative_candidate_single_leg_has_exactly_one_leg():
     assert rep["strategy"] == "long-call"
     assert len(rep["legs"]) == 1
     assert rep["legs"][0]["option_type"] == "call"
+
+
+# ---------- per-family 代表候選（T07／#224，Initial V2）----------
+
+def test_representative_candidates_by_family_splits_by_family_not_strategy():
+    """`long-call` 屬於 `single-leg` family，`bull-call-spread` 屬於
+    `vertical-spread` family——兩者同時出現在同一次分析時，per-family
+    map 應該各自有一筆，而不是被單一跨 family 冠軍蓋掉其中一個。"""
+    view = store.serialize_result(_result(("long-call", "bull-call-spread")),
+                                  "S", None)
+    per_family = store.representative_candidates_by_family(view)
+    assert set(per_family) == {"single-leg", "vertical-spread"}
+    assert per_family["single-leg"]["strategy"] == "long-call"
+    assert per_family["vertical-spread"]["strategy"] == "bull-call-spread"
+
+
+def test_representative_candidates_by_family_max_equals_the_scalar_champion():
+    """AC 明文要求的一致性保證：per-family map 裡的最高報酬取 `max()`
+    後，等於跨 family 的 scalar 冠軍（`representative_candidate()`）
+    ——兩者是同一個候選池、同一個排序鍵，只是分組粒度不同。"""
+    for strategies in (("long-call",), ("bull-call-spread",),
+                       ("long-call", "bull-call-spread")):
+        view = store.serialize_result(_result(strategies), "S", None)
+        per_family = store.representative_candidates_by_family(view)
+        scalar = store.representative_candidate(view)
+        assert max(v["baseline_return"] for v in per_family.values()) == \
+            scalar["baseline_return"]
+
+
+def test_representative_candidates_by_family_is_empty_dict_not_none_when_view_present():
+    """與 `representative_candidate()` 回 `None` 的差異是刻意的
+    （見函式 docstring）：這裡回空 dict，呼叫端不必為了「完全沒有任何
+    family」多判斷一次 `None`。"""
+    view = store.serialize_result(_result(), "S", None)
+    empty = dict(view, baseline_expiry="2099-12-31")
+    assert store.representative_candidates_by_family(empty) == {}
+    assert store.representative_candidates_by_family(None) == {}
+
+
+def test_representative_candidates_by_family_ignores_comparison_and_stays_baseline_scoped():
+    """同 `representative_candidate()` 的既有回歸防護（MVP-v2／#77、#78
+    口徑鎖死裁示）：per-family 版本必須看到完全相同的候選池，否則
+    「max 後等於 scalar 冠軍」這條一致性保證會失效。"""
+    view = store.serialize_result(_result(), "S", None)
+    decoy = [{"strategy": "bull-call-spread", "baseline_return": 999.0,
+             "expiry": "1999-01-01", "label": "decoy", "cost": 0.0,
+             "breakeven": 0.0, "max_profit": None}]
+    poisoned = dict(view, comparison=decoy)
+
+    per_family = store.representative_candidates_by_family(poisoned)
+    assert all(v["baseline_return"] != 999.0 for v in per_family.values())
+    assert per_family == store.representative_candidates_by_family(view)
+
+
+def test_representative_candidates_by_family_single_leg_has_exactly_one_leg():
+    view = store.serialize_result(_result(("long-call",)), "S", None)
+    per_family = store.representative_candidates_by_family(view)
+    assert len(per_family["single-leg"]["legs"]) == 1
 
 
 # ---------- find_candidate：單腳候選查找（#139／spec #137）----------

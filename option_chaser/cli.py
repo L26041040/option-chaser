@@ -141,7 +141,7 @@ def validate_scenario(p: AnalysisParams, spot: float, today: date) -> None:
                 f"看跌策略目標價 {p.target_price} 高於現價 {spot}；確定要跑請加 --force")
 
 
-from .models import FetchError, SnapshotSchemaError, SPREAD_STRATEGIES
+from .models import BUTTERFLY_STRATEGIES, FetchError, SnapshotSchemaError, SPREAD_STRATEGIES
 from . import service
 
 USAGE_HINT = "用法示例: option-chaser XYZ --target-price 120 --target-month 2026/8 --strategy long-call"
@@ -180,7 +180,11 @@ def main(argv: list[str] | None = None) -> int:
 
     text = res.report_text
     if res.status == "empty":
-        if p.strategy in SPREAD_STRATEGIES:
+        # T15（#230）：`render_butterflies()` 的空狀態分支跟
+        # `render_spreads()` 同一種形狀（早退在 `_footer_lines()` 之前，
+        # 文字本身已經以換行結尾）——沿用同一個 `print(text, end="")`
+        # 分支，避免印出多一行空白。
+        if p.strategy in SPREAD_STRATEGIES or p.strategy in BUTTERFLY_STRATEGIES:
             print(text, end="")
         else:
             print(text)

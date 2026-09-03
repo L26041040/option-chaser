@@ -6,6 +6,23 @@
   "days_to_anchor": 653,
   "direction": "bullish",
   "expired": false,
+  "family_eligibility": {
+    "butterfly": {
+      "eligible": true,
+      "family": "butterfly",
+      "reason": null
+    },
+    "single-leg": {
+      "eligible": true,
+      "family": "single-leg",
+      "reason": null
+    },
+    "vertical-spread": {
+      "eligible": true,
+      "family": "vertical-spread",
+      "reason": null
+    }
+  },
   "id": "sample-id",
   "latest_analyzed_at": "2026-07-15T21:30:00-04:00",
   "notes": "",
@@ -15,10 +32,14 @@
     "legs": [
       {
         "option_type": "call",
+        "quantity": 1,
+        "side": "buy",
         "strike": 118.0
       },
       {
         "option_type": "call",
+        "quantity": 1,
+        "side": "sell",
         "strike": 122.0
       }
     ],
@@ -26,7 +47,7 @@
   },
   "spot": 100.0,
   "strategies": [
-    "bull-call-spread"
+    "vertical-spread"
   ],
   "symbol": "XYZ",
   "target_anchor": "2026-09-18",

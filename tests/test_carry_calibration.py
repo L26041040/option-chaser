@@ -20,7 +20,11 @@ from pathlib import Path
 import pytest
 
 from option_chaser import service
+from option_chaser.data.snapshot import load_snapshot
+from option_chaser.filters import apply_filters, generate_butterfly_triples, generate_spread_pairs
 from option_chaser.models import AnalysisParams
+from option_chaser.valuation import (LegCarry, calibrate_leg, evaluate_butterfly,
+                                     evaluate_contract, evaluate_spread)
 from option_chaser.valuation import implied_vol as _real_implied_vol
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -365,3 +369,120 @@ def test_matrix_valuation_stays_in_millisecond_range(tmp_path):
     # 整次分析（含過濾、排名、矩陣建構）遠低於 60 秒 serverless 上限；
     # 門檻抓寬鬆一點避免慢速機器假紅，重點是量級不是精確值。
     assert elapsed_ms < 2000, f"分析耗時 {elapsed_ms:.0f}ms，超出預期量級"
+
+
+# ---------- REPAIR-03（#240，FIX-02，#052 audit）：calibrate_leg memoization ----------
+#
+# AC「新增『memoize 前後輸出逐位元相同』的斷言——這是純效能改動，不是
+# 數值改動」。三個層級各驗一次：`calibrate_leg()` 本身（同一條腿、同一
+# 快取物件連續呼叫兩次拿到同一個物件）、`evaluate_spread()`／
+# `evaluate_butterfly()`（`carry_cache=None` vs 貫穿整批的共用字典，
+# 逐一比對每組候選的完整估值結果）、`run_offline()` 端到端（服務層
+# 已經無條件啟用快取，這裡是回歸鎖：往後若快取邏輯壞掉，這條測試會
+# 先紅，不必等到 production-scale 效能測試才發現）。
+
+MOD_FIX = "tests/fixtures/xyz_v7_butterfly_moderate.json"
+MOD_Q = 0.03   # 任意非零值——只是要確認 calibrate_leg 真的走反解分支
+
+
+def test_calibrate_leg_cache_hit_returns_the_identical_object_not_a_recompute():
+    """同一條腿、同一把快取，第二次呼叫必須是快取命中（同一個 Python
+    物件，不只是數值相等）——這是最底層的正確性保證，`is` 比對比
+    `==` 更嚴格，能抓到「算兩次剛好結果一樣」這種偽陽性。"""
+    snap = load_snapshot(MOD_FIX)
+    p = AnalysisParams(target_price=110.0, target_month="2026-09",
+                       strategy="long-call", q_by_symbol=MOD_Q)
+    today = date(2026, 7, 15)
+    c = snap.contracts[0]
+    cache: dict[tuple, LegCarry] = {}
+
+    first = calibrate_leg(c, snap.spot, today, p, cache)
+    second = calibrate_leg(c, snap.spot, today, p, cache)
+
+    assert second is first
+    assert len(cache) == 1
+
+
+def test_spread_valuation_is_bitwise_identical_with_and_without_the_cache():
+    """`evaluate_spread()` 逐一比對：`carry_cache=None`（舊行為，每次
+    都重算）vs 貫穿整批候選的共用字典（新行為）——兩者對同一組候選
+    必須算出完全相同的 `SpreadValuation`（含 `long_carry`／
+    `short_carry` 的 `(q, sigma, carry_calibrated)`），差別只在算了
+    幾次，不是算出什麼。"""
+    snap = load_snapshot(MOD_FIX)
+    p = AnalysisParams(target_price=110.0, target_month="2026-09",
+                       strategy="bull-call-spread", q_by_symbol=MOD_Q)
+    today = date(2026, 7, 15)
+    qualified, _ = apply_filters(snap.contracts, p)
+    pairs, _ = generate_spread_pairs(qualified, p)
+    assert len(pairs) > 20   # 樣本夠大，才測得出真的有重複腿被快取命中
+
+    uncached = [evaluate_spread(l, s, snap.spot, today, p) for l, s in pairs]
+    cache: dict[tuple, LegCarry] = {}
+    cached = [evaluate_spread(l, s, snap.spot, today, p, cache) for l, s in pairs]
+
+    assert uncached == cached
+    # 快取物件裡的相異腿數必須遠少於候選數，否則這條測試沒測到重點
+    # ——快取根本沒發生命中。
+    assert len(cache) < len(pairs)
+
+
+def test_butterfly_valuation_is_bitwise_identical_with_and_without_the_cache():
+    """同上，Butterfly 版——`C(n,3)` 組合讓同一條腿重複出現的次數比
+    Vertical Spread 高得多，是本票要解決的主要案例。"""
+    snap = load_snapshot(MOD_FIX)
+    p = AnalysisParams(target_price=110.0, target_month="2026-09",
+                       strategy="call-fly", q_by_symbol=MOD_Q)
+    today = date(2026, 7, 15)
+    qualified, _ = apply_filters(snap.contracts, p)
+    triples, _ = generate_butterfly_triples(qualified, p)
+    assert len(triples) > 50
+
+    uncached = [evaluate_butterfly(lo, mid, hi, snap.spot, today, p)
+               for lo, mid, hi in triples]
+    cache: dict[tuple, LegCarry] = {}
+    cached = [evaluate_butterfly(lo, mid, hi, snap.spot, today, p, cache)
+             for lo, mid, hi in triples]
+
+    assert uncached == cached
+    assert len(cache) < len(triples)
+
+
+def test_single_leg_valuation_unaffected_by_the_cache_parameter():
+    """`evaluate_contract()` 這裡沒有重複腿問題（`qualified` 逐一對應
+    一次呼叫），加這個參數純粹是三個估值函式呼叫慣例一致——確認傳與
+    不傳快取字典對單腿路徑零影響。"""
+    snap = load_snapshot(MOD_FIX)
+    p = AnalysisParams(target_price=110.0, target_month="2026-09",
+                       strategy="long-call", q_by_symbol=MOD_Q)
+    today = date(2026, 7, 15)
+    qualified, _ = apply_filters(snap.contracts, p)
+
+    uncached = [evaluate_contract(c, snap.spot, today, p) for c in qualified]
+    cache: dict[tuple, LegCarry] = {}
+    cached = [evaluate_contract(c, snap.spot, today, p, cache) for c in qualified]
+
+    assert uncached == cached
+
+
+def test_end_to_end_run_offline_unaffected_by_memoization_across_all_three_families():
+    """回歸鎖：service 層（`_single_leg_result`／`_spread_result`／
+    `_butterfly_result`）已經無條件啟用快取，這裡固定住三個 family
+    在真實 q≠0 下的完整輸出——往後若記憶化邏輯壞掉（例如快取鍵漏了
+    `q_by_symbol` 導致跨 q 誤命中），這條測試會先紅，不必等到
+    production-scale 效能測試才發現。"""
+    p = AnalysisParams(target_price=110.0, target_month="2026-09",
+                       strategy="long-call", q_by_symbol=MOD_Q)
+    req = service.AnalysisRequest(
+        symbol="XYZ", base_params=p,
+        strategies=("long-call", "bull-call-spread", "call-fly"))
+    result = service.run_offline(req, MOD_FIX)
+
+    by_strategy = {r.strategy: r for r in result.results}
+    assert by_strategy["long-call"].status == "ok"
+    assert by_strategy["bull-call-spread"].status == "ok"
+    assert by_strategy["call-fly"].status == "ok"
+    # 每個 family 至少有一個候選，且 carry 真的校準成功過（q≠0 且反解
+    # 有解）——確認這條測試真的在測 calibrate_leg 的反解分支，不是
+    # 全部退回 fallback、快取邏輯根本沒被真正用到。
+    assert any(cv.carry_calibrated for cv in by_strategy["long-call"].candidates)

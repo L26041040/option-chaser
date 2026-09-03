@@ -12,7 +12,8 @@ from api_app.storage.memory import MemoryStorage
 from option_chaser.data.snapshot import load_snapshot
 
 FIX = "tests/fixtures/xyz_v4_six_expiries.json"
-NEW = {"symbol": "XYZ", "target_price": 130.0, "target_month": "2026-09"}
+NEW = {"symbol": "XYZ", "target_price": 130.0, "target_month": "2026-09",
+       "strategies": ["vertical-spread"]}
 
 
 def _client(storage=None):
@@ -39,7 +40,10 @@ def test_created_scenario_comes_back_with_an_id_and_mvp_defaults():
     assert sc["archived_at"] is None
     # 三欄表單（spec #47）：方向與策略是 MVP 固定值，不由前端送。
     assert sc["direction"] == "bullish"
-    assert sc["strategies"] == ["bull-call-spread"]
+    # T06（#221）：這裡存的是 Strategy Family 代碼（`vertical-spread`），
+    # 不是 subtype 字串（`bull-call-spread`）——展開成 subtype 是分析
+    # 當下的事，見 `tests/test_strategy_family.py`。
+    assert sc["strategies"] == ["vertical-spread"]
 
 
 def test_created_scenario_appears_in_the_list():

@@ -6,9 +6,10 @@ import pytest
 from option_chaser.models import AnalysisParams, OptionContract
 from option_chaser import scenarios
 from option_chaser.scenarios import (ScenarioVector, scenario_vector,
-                                     completion_curve, completion_scan, friction)
-from option_chaser.valuation import (evaluate_contract, evaluate_spread,
-                                     scenario_leg_value, spread_scenario_value)
+                                     completion_curve, completion_scan)
+from option_chaser.valuation import (evaluate_butterfly, evaluate_contract,
+                                     evaluate_spread, scenario_leg_value,
+                                     spread_scenario_value)
 
 
 def _p(**kw):
@@ -244,18 +245,6 @@ def test_completion_curve_identities():
     assert dict(curve)[1.0] == pytest.approx(base)                     # k=1 == baseline
 
 
-def test_friction():
-    c = _call(93.0, "2028-01-21", 4.0, 4.4, 0.20)
-    p = _p()
-    v = evaluate_contract(c, SPOT, TODAY, p)
-    assert friction(v) == pytest.approx((4.4 - 4.2) / 4.2)
-    lng = _call(93.0, "2028-01-21", 4.0, 4.4, 0.20)
-    sht = _call(100.0, "2028-01-21", 1.8, 2.2, 0.22)
-    sp = evaluate_spread(lng, sht, SPOT, TODAY, _p(strategy="bull-call-spread"))
-    assert friction(sp) == pytest.approx(
-        ((lng.ask - sht.bid) - sp.net_mid) / sp.net_mid)
-
-
 def test_completion_scan_suffix_semantics_synthetic(monkeypatch):
     """Spec §7.2 附錄A: same-expiry debit verticals provably cannot produce an
     up-down-up value(S) shape (the two legs' deltas cross exactly once, so the
@@ -282,3 +271,126 @@ def test_completion_scan_suffix_semantics_synthetic(monkeypatch):
     k_star, be = sc.completion_scan(v, SPOT, TODAY, p)
     assert k_star == pytest.approx(0.5)
     assert be == pytest.approx(SPOT + 0.5 * (p.target_price - SPOT))
+
+
+# ---------- T17（#234，Initial V2）：持平劇本（target_price == spot）
+# 的價格網格不塌陷 ----------
+#
+# spec #217 §F／§P.5 明文點名的既有地雷：「價格網格產生器在該情況下
+# 會把五個 k 塌成同一個價格」——`_grid_price()`／`scenario_vector()`
+# 的 S2/S3/S4/S5／`completion_curve()` 全部依賴「從 spot 走到 target」
+# 這條路徑取樣，target==spot 時路徑長度為零。
+
+
+def test_effective_target_only_changes_the_degenerate_case():
+    """target != spot 原樣回傳——既有看漲／看跌劇本逐位元不變（T01
+    基準，AC 明文要求）；target == spot 才換成合成終點，且是非零、
+    往上偏移（沿用 `matrix.price_axis()` 既有的 15% 比例）。"""
+    assert scenarios._effective_target(100.0, 105.0) == 105.0
+    assert scenarios._effective_target(100.0, 95.0) == 95.0
+    assert scenarios._effective_target(SPOT, SPOT) == pytest.approx(SPOT * 1.15)
+
+
+def test_grid_price_does_not_collapse_when_target_equals_spot():
+    """修正前：`_grid_price(spot, spot, k)` 對任何 k 都回傳 spot 本身
+    ——這裡直接證明五個既有 k 取樣點（0, 0.25, 0.5, 0.75, 1.0）不再
+    塌成同一個價格，且與 `_effective_target()` 的合成終點吻合。"""
+    prices = [scenarios._grid_price(SPOT, SPOT, k)
+             for k in (0.0, 0.25, 0.5, 0.75, 1.0)]
+    assert len(set(prices)) == 5, "五個取樣點仍塌成少於 5 個相異價格"
+    assert prices[0] == pytest.approx(SPOT)             # k=0 恆為 spot 本身
+    assert prices[-1] == pytest.approx(SPOT * 1.15)      # k=1 恆為合成終點
+    assert prices == sorted(prices)                      # 單調遞增，路徑合理
+
+
+def test_grid_price_unaffected_when_target_differs_from_spot():
+    """既有非持平案例逐位元不變——修正只在 `target == spot` 時介入。"""
+    for k in (-0.2, 0.0, 0.37, 1.0):
+        assert scenarios._grid_price(SPOT, 105.0, k) == pytest.approx(
+            max(SPOT + k * (105.0 - SPOT), min(0.01 * SPOT, 105.0)))
+
+
+def _flat_butterfly(spot=SPOT):
+    """持平劇本（target_price == spot）下的 call-fly 候選——三腿對稱
+    圍繞 spot，body（中腿）落在 spot 附近，符合「body 錨在現價」的
+    Butterfly 招牌情境（spec #217 §Problem Statement）。
+
+    翼寬刻意選得夠寬（±20，K1=65／K3=105）——`_effective_target()` 的
+    合成終點（spot×1.15≈97.2）必須落在 [K1,K3] 這個「還有時間價值」
+    的區間內：測試曾用 ±5 窄翼（K3=90）撞到一個不相干的真相——S_half／
+    S_most 剛好都落在 K3 之外，那裡到期時 payoff 恆為 0（帳篷形狀本身
+    如此，不是網格塌陷的症狀）；`p.anchor` 對這份 fixture 的
+    `target_month="2028-01"` 恰好等於腿的到期日（`2028-01-21`），
+    `at >= expiry` 因此走到期內在價值分支而非平滑的 BS 時間價值，這個
+    「剛好卡在到期日評價」的邊界情況與網格塌陷是兩件不同的事，加寬翼
+    寬讓合成終點落回有意義的區間即可避開，不需要另外處理到期日邊界。"""
+    low = _call(round(spot - 20, 0), "2028-01-21", 26.0, 26.4, 0.20)
+    mid = _call(round(spot, 0), "2028-01-21", 6.4, 6.6, 0.20)
+    high = _call(round(spot + 20, 0), "2028-01-21", 0.4, 0.6, 0.20)
+    p = _p(strategy="call-fly", target_price=spot)
+    v = evaluate_butterfly(low, mid, high, spot, TODAY, p)
+    return v, p
+
+
+def test_scenario_vector_does_not_collapse_for_a_flat_butterfly_scenario():
+    """S2／S3（半程／大半程）不再塌成跟 S1 一樣的數字；S1／S6／S7 維持
+    讀取真正的 `target_price`（== spot，答案本來就該是 spot 本身的
+    評價，不是退化）。"""
+    v, p = _flat_butterfly()
+    sv = scenario_vector(v, SPOT, TODAY, p)
+    by_code = dict(sv.entries)
+    assert len({by_code["S1"], by_code["S2"], by_code["S3"]}) == 3, (
+        "S1/S2/S3 仍然塌成同一個數字")
+    # S1 是「不漲」＝就在 spot 評價，這本來就該等於 spot（不是退化）。
+    tgt = p.anchor
+    fn, mid, natural, expiry_iso = scenarios._value_fn(v)
+    exp_s1 = (fn(SPOT, tgt, p) - mid) / mid
+    assert by_code["S1"] == pytest.approx(exp_s1)
+    # S7 讀真正的 target_price（此情境下等於 spot）——同樣不是退化，
+    # 是「劇本成立時（就停在原地）該有的報酬」這個問題的正確答案。
+    exp_s7 = (fn(p.target_price, tgt, p) - natural) / natural
+    assert by_code["S7"] == pytest.approx(exp_s7)
+
+
+def test_completion_curve_does_not_collapse_for_a_flat_butterfly_scenario():
+    v, p = _flat_butterfly()
+    curve = completion_curve(v, SPOT, TODAY, p)
+    assert [k for k, _ in curve] == [0.0, 0.25, 0.5, 0.75, 1.0]
+    returns = [r for _, r in curve]
+    assert len(set(returns)) > 1, "完成度曲線的五個點仍全部退化成同一個值"
+
+
+def test_completion_scan_flat_butterfly_still_short_circuits_to_profit_region():
+    """T15（#230）既有短路：Butterfly 的保本掃描恆回 (None, None)，
+    「正常」的意思是誠實回這個既有 sentinel（profit_region 才是替代
+    答案），不受本票影響——這條測試釘住這個既有行為在持平情境下
+    依然成立，不是本票不小心動到它。"""
+    v, p = _flat_butterfly()
+    assert completion_scan(v, SPOT, TODAY, p) == (None, None)
+
+
+def test_completion_scan_flat_forced_single_leg_still_respects_suffix_property():
+    """單腿／Spread 候選在 CLI `--force` 繞過方向閘門時，仍可能以
+    `target_price == spot` 呼叫到這條路徑（見 `completion_scan()`
+    docstring）——`_grid_price()` 的修正必須讓這裡的 suffix 條件
+    （k 之後每一格都 >= mid cost）繼續在非退化的網格上成立。"""
+    c = _call(80.0, "2028-01-21", 6.0, 6.4, 0.20)   # 價內，容易保本
+    p = _p(strategy="long-call", target_price=SPOT, force=True)
+    v = evaluate_contract(c, SPOT, TODAY, p)
+    k, be = completion_scan(v, SPOT, TODAY, p)
+    assert k is not None
+    tgt = p.anchor
+    for j in [k, (k + 1.0) / 2, 1.0]:
+        s = scenarios._grid_price(SPOT, p.target_price, j)
+        assert scenario_leg_value(c, s, tgt, p) >= v.mid - 1e-12
+    if k > -0.2:
+        s_prev = scenarios._grid_price(SPOT, p.target_price, k - 0.001)
+        assert scenario_leg_value(c, s_prev, tgt, p) < v.mid
+    assert be == pytest.approx(scenarios._grid_price(SPOT, p.target_price, k))
+    # 非退化的直接證明：這張深價內合約在 k=1.0（合成終點）與 k=0.0
+    # （spot 本身）給出不同的估值，證明網格真的走過不只一個價格。
+    s_k1 = scenarios._grid_price(SPOT, p.target_price, 1.0)
+    s_k0 = scenarios._grid_price(SPOT, p.target_price, 0.0)
+    assert s_k1 != pytest.approx(s_k0)
+    assert scenario_leg_value(c, s_k1, tgt, p) != pytest.approx(
+        scenario_leg_value(c, s_k0, tgt, p))

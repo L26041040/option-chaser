@@ -101,7 +101,8 @@ class LegCarry:
 
 
 def calibrate_leg(c: OptionContract, spot: float, today: date,
-                  p: AnalysisParams) -> LegCarry:
+                  p: AnalysisParams,
+                  cache: dict[tuple, "LegCarry"] | None = None) -> LegCarry:
     """對一條腿做一次 carry 校準（每腿一次，見 `LegCarry` docstring）。
 
     `p.q_by_symbol is None`（q 管線未接、或該次快照校準不出來，#123
@@ -115,19 +116,58 @@ def calibrate_leg(c: OptionContract, spot: float, today: date,
     「目標價落在可行區間外」情況，但這次是嘗試過的）→ 該腿一樣退回
     今天的行為並標記，**不外插、不亂猜**（沿用「缺席就如實缺席」的
     既有原則）。
+
+    REPAIR-03（#240，FIX-02，#052 audit）：`cache` 選填——單次
+    `_spread_result()`／`_butterfly_result()` 呼叫內，`generate_
+    spread_pairs()`／`generate_butterfly_triples()` 窮舉出的候選組合
+    會讓同一條腿（同一張合約）在大量不同組合裡重複出現，`evaluate_
+    spread()`／`evaluate_butterfly()` 因此對同一條腿重複呼叫這個函式
+    ——production-scale 規模下（171,100 組 Butterfly 候選對應約 300
+    條相異腿）這是 60 秒 timeout 的主因，佔整體 wall time 約 95%。
+    比照既有 `scenarios.resilience_metrics()` 的 `cache` 參數慣例：
+    呼叫端（`_single_leg_result`／`_spread_result`／`_butterfly_
+    result`）建立、貫穿單次分析呼叫傳下去的字典，鍵為
+    `(contract_symbol, spot, today, q_by_symbol)`——這四項在單次分析
+    呼叫內皆為常數，只有 `contract_symbol` 真正會變，寫全四項是為了
+    誠實表達「這個結果依賴什麼」，不是暗示這幾項在單次呼叫內真的會變。
+    ⚠ 快取正確性還隱性依賴 `p`（`AnalysisParams`，經 `leg_rate(p, ...)`
+    影響利率查表）在快取字典的存活期間不變——這一項**沒有**寫進 key，
+    因為呼叫端（`_single_leg_result`／`_spread_result`／`_butterfly_
+    result`）建立 `carry_cache` 後只在同一個 `p` 底下的單一迴圈使用，
+    `AnalysisParams` 本身是 frozen dataclass、迴圈內不會被替換；若未來
+    呼叫端改成同一個快取字典跨不同 `p` 重用，這個假設就會失效，屆時
+    需要把 `p`（或至少它影響 `calibrate_leg` 結果的那些欄位）一併
+    納入 key。不傳（`None`，預設）就是每次都重算，行為與這個快取機制
+    存在之前完全一樣——沒有快取的既有呼叫端（測試直接呼叫本函式）
+    不受影響。
+    範圍侷限在單次分析呼叫內，**不是**跨 HTTP request 的快取層（那是
+    完全不同風險等級的改動，不在本票範圍）。
     """
+    key = (c.contract_symbol, spot, today, p.q_by_symbol)
+    if cache is not None and key in cache:
+        return cache[key]
+
     if p.q_by_symbol is None:
-        return LegCarry(q=0.0, sigma=c.implied_volatility, carry_calibrated=False)
-    expiry = date.fromisoformat(c.expiry)
-    T = days_between(today, expiry) / DAYS_PER_YEAR
-    if T <= 0.0:
-        return LegCarry(q=0.0, sigma=c.implied_volatility, carry_calibrated=False)
-    mid = (c.bid + c.ask) / 2.0
-    sigma_hat = implied_vol(c.option_type, mid, spot, c.strike, T,
-                            leg_rate(p, c.expiry), p.q_by_symbol)
-    if sigma_hat is None:
-        return LegCarry(q=0.0, sigma=c.implied_volatility, carry_calibrated=False)
-    return LegCarry(q=p.q_by_symbol, sigma=sigma_hat, carry_calibrated=True)
+        result = LegCarry(q=0.0, sigma=c.implied_volatility, carry_calibrated=False)
+    else:
+        expiry = date.fromisoformat(c.expiry)
+        T = days_between(today, expiry) / DAYS_PER_YEAR
+        if T <= 0.0:
+            result = LegCarry(q=0.0, sigma=c.implied_volatility, carry_calibrated=False)
+        else:
+            mid = (c.bid + c.ask) / 2.0
+            sigma_hat = implied_vol(c.option_type, mid, spot, c.strike, T,
+                                    leg_rate(p, c.expiry), p.q_by_symbol)
+            if sigma_hat is None:
+                result = LegCarry(q=0.0, sigma=c.implied_volatility,
+                                  carry_calibrated=False)
+            else:
+                result = LegCarry(q=p.q_by_symbol, sigma=sigma_hat,
+                                  carry_calibrated=True)
+
+    if cache is not None:
+        cache[key] = result
+    return result
 
 
 @dataclass(frozen=True)
@@ -187,14 +227,39 @@ def scenario_leg_value(
 
 
 def evaluate_contract(
-    c: OptionContract, spot: float, today: date, p: AnalysisParams
+    c: OptionContract, spot: float, today: date, p: AnalysisParams,
+    carry_cache: dict[tuple, LegCarry] | None = None,
 ) -> ContractValuation:
+    """`carry_cache`：REPAIR-03（#240）——傳給 `calibrate_leg()` 的選填
+    快取，單腿路徑本身沒有同一條腿重複出現的問題（`qualified` 逐一
+    對應一次呼叫），這裡接受它只是為了讓三個估值函式共用同一套
+    memoization 機制、呼叫慣例一致；不傳（預設）行為不變。"""
     assert c.bid is not None and c.ask is not None and c.implied_volatility is not None
     mid = (c.bid + c.ask) / 2.0
     spread = c.ask - c.bid
     expiry = date.fromisoformat(c.expiry)
-    target = p.anchor          # 附錄 A9 錨點：估值參考日
-    carry = calibrate_leg(c, spot, today, p)          # #113：每腿一次
+    # REPAIR-09（#246，spec #237 OD-02，FIX-05）：排名基準估值日改為
+    # 候選**自身到期日**（直接用 `expiry`，不再另立 `target` 別名——
+    # `evaluate_spread()` 本來就是這樣寫，這裡對齊同一種寫法），與
+    # Vertical／Butterfly（T3／#17，`evaluate_spread`／
+    # `evaluate_butterfly` 既有裁示）對齊——三個 family 從此用同一套
+    # 「候選自身到期日」比較語意，不再是單腿殘留時間價值、Spread／
+    # Butterfly 卻已經是純內在價值這種不對稱比較。附錄 A9 的
+    # `p.anchor`（固定日曆錨點）仍是**情境曲線**那一族的合法用途
+    # （`scenarios.py` 的 S4／S5「晚 30／90 天」與完成度掃描——那些
+    # 依定義就需要一個固定的日曆日；`report.py` 的日數說明同理），
+    # 只是不再是**排名**基準估值日。
+    #
+    # OPTION-CHASER-CLOSEOUT-003 更正：這段註解原本把
+    # `ranking.return_at_price`（V7 三價位）與單腳買價指引文字也列為
+    # 「合法例外」，理由是「`ranking.py` 依票面明文不動」——那是施工
+    # 範圍的描述，不是這些數字**應該**用錨點的理由。PR #250 的 merge
+    # gate review 兩軸獨立抓到：`return_at_price` 因此對到期日晚於
+    # 錨點的單腿候選違反自己 docstring 宣告的不變量，`build_reasons`
+    # 的「劇本半對仍獲利」更會說出與到期真相相反的話。兩處都已改用
+    # 候選自身到期日，這段註解同步更正——留著錯的敘述正是當初藏住
+    # 這個 bug 的東西。
+    carry = calibrate_leg(c, spot, today, p, carry_cache)   # #113：每腿一次
     t_now = days_between(today, expiry) / DAYS_PER_YEAR
     # #122 核心紅線：分級用的 delta **恆** q=0／vendor IV，不讀 carry——
     # 即使這條腿已校準，legacy 分級路徑也看不到新模型。
@@ -206,7 +271,7 @@ def evaluate_contract(
     g = leg_greeks(c.option_type, spot, c.strike, t_now,
                    leg_rate(p, c.expiry), carry.sigma, carry.q)
     scenario_values = tuple(
-        (shift, scenario_leg_value(c, p.target_price, target, p, shift, carry))
+        (shift, scenario_leg_value(c, p.target_price, expiry, p, shift, carry))
         for shift in p.iv_shifts
     )
     baseline_value = dict(scenario_values)[0.0]
@@ -223,7 +288,7 @@ def evaluate_contract(
         breakeven = c.strike - c.ask
         be_vs_spot = (spot - breakeven) / spot
         be_vs_target = (breakeven - p.target_price) / p.target_price
-    l2 = scenario_leg_value(c, p.target_price, target, p, min(p.iv_shifts), carry)
+    l2 = scenario_leg_value(c, p.target_price, expiry, p, min(p.iv_shifts), carry)
     return ContractValuation(
         contract=c, mid=mid, spread=spread,
         delta=g.delta, classification_delta=g_classification.delta,
@@ -323,15 +388,74 @@ def leg_greeks(option_type: str, S: float, K: float, T: float, r: float,
     )
 
 
+@dataclass(frozen=True)
+class WeightedLeg:
+    """T02（#219，#217 決策 B）：一條腿在某個 payoff 加總裡的角色——
+    符號（多／空）、口數、以及（可選的）carry 校準結果。這是本票引入的
+    逐腿加總原語，**不假設腿數、不假設買賣方向組合**——供 T12（#228，
+    共用骨架 legs[]）與 T15（#230，Butterfly 枚舉）之後的任意腿數結構
+    直接複用；本票本身不新增任何新結構，只用它取代既有兩腿 Spread 的
+    封套公式。"""
+    contract: OptionContract
+    sign: float          # +1.0＝方向與買方一致（long），-1.0＝short
+    quantity: int = 1
+    carry: LegCarry | None = None
+
+
+def payoff_value(legs: tuple[WeightedLeg, ...], S: float, at: date,
+                 p: AnalysisParams, shift: float = 0.0) -> float:
+    """#217 決策 B：payoff 一律逐腿直算——`V(S) = Σ 方向符號 × 口數 ×
+    單腿價值`。到期＝內在價值、到期前＝既有逐腿模型估值（BS93＋carry），
+    這兩件事都已經是 `scenario_leg_value` 自己的既有行為，本函式只負責
+    加總，**不對加總結果做任何額外的 clamp／floor／cap**。
+
+    不假設 `legs` 的長度或裡面符號的組合方式——空集合回傳 0.0（純加總
+    的自然結果，不需要特殊分支）。
+    """
+    return sum(leg.sign * leg.quantity * scenario_leg_value(
+        leg.contract, S, at, p, shift, leg.carry) for leg in legs)
+
+
 def spread_scenario_value(
     long_leg: OptionContract, short_leg: OptionContract,
     S: float, at: date, p: AnalysisParams, shift: float = 0.0,
     long_carry: LegCarry | None = None, short_carry: LegCarry | None = None,
 ) -> float:
-    width = abs(short_leg.strike - long_leg.strike)
-    raw = (scenario_leg_value(long_leg, S, at, p, shift, long_carry)
-           - scenario_leg_value(short_leg, S, at, p, shift, short_carry))
-    return min(max(raw, 0.0), width)
+    """T02（#219）：逐腿直算，取代舊有的 `min(max(long-short,0), width)`
+    封套公式——那是「long debit vertical 的 payoff 包絡寫成算術」的
+    地雷之一（#217 決策 B 明令廢除）。
+
+    移除前已用 T01（#218）數值基準核對：在**到期日**（`scenario_
+    values`／`baseline_value`／排名所用的口徑，T3／#17 既有裁示）以及
+    絕大多數 Heatmap 格點上，這個 clamp 從未真正生效——到期時兩腿內在
+    價值差恆在 `[0, width]`（`intrinsic(K1)-intrinsic(K2)` 對 K1<K2 的
+    call 必然如此）；到期前，若兩腿共用**同一個** sigma，BS 定價的
+    monotone-in-strike 性質保證 `C(K1)-C(K2) <= (K2-K1)e^{-rT} < width`。
+
+    **但兩腿的 vendor IV 通常不同**（真實市場 skew）——這個保證只在
+    「同一 sigma」的前提下成立。核對中實測抓到一個真實反例：XYZ 的
+    105/110 call（買腿 IV 0.36、賣腿 IV 0.30）在 2026-07-15、S=133.2
+    這個 Heatmap 格點，逐腿直算 `5.017486628026035` 微幅超出
+    `width=5.0`（超出 0.35%）——這不是浮點雜訊，是「各腿各自反解自己
+    的 IV、分開定價」這個既有模型（未經 carry 校準時的既有行為，非
+    T02 引入）在有 skew 時的真實性質。舊 clamp 會把這種情況無聲地夾回
+    `width`，讓使用者看不出這裡其實有模型張力；移除後如實顯示逐腿加總
+    的結果——這正是 #217 決策 B 要的「不再有結構專屬封套公式」。
+
+    Owner 2026-08-30 核准：拿掉 clamp、更新 T01 基準反映這 3 格的新值
+    （XYZ bull-call-spread 105/110 候選，`matrix.cells[9][0]`／
+    `[10][0]`／`[10][1]`），此後繼續 byte-locked。CLI golden fixtures
+    與契約樣本核對後零漂移（未踩到這個特定 skew 組合）。
+
+    這裡仍是一個薄殼——只是把兩腿包成 `WeightedLeg` 交給 `payoff_
+    value()`，簽章（`long_leg`／`short_leg`／`long_carry`／
+    `short_carry`）維持既有兩腿呼叫慣例不變，供 `ranking.py`／
+    `report.py`／`scenarios.py`／`service.py` 現有呼叫點零改動沿用；
+    共用骨架的任意腿數版本留給 T12（#228）處理。
+    """
+    legs = (WeightedLeg(contract=long_leg, sign=1.0, quantity=1, carry=long_carry),
+           WeightedLeg(contract=short_leg, sign=-1.0, quantity=1, carry=short_carry))
+    return payoff_value(legs, S, at, p, shift)
 
 
 @dataclass(frozen=True)
@@ -359,14 +483,21 @@ class SpreadValuation:
 def evaluate_spread(
     long_leg: OptionContract, short_leg: OptionContract,
     spot: float, today: date, p: AnalysisParams,
+    carry_cache: dict[tuple, LegCarry] | None = None,
 ) -> SpreadValuation:
+    """`carry_cache`：REPAIR-03（#240，#052 audit）——`generate_spread_
+    pairs()` 窮舉出的候選裡，同一條腿會在多個配對裡重複出現
+    （`C(n,2)` 組合，每條腿平均出現 n-1 次），未加 memoize 時
+    `calibrate_leg()` 對同一條腿被重複反解。傳入呼叫端貫穿單次
+    `_spread_result()` 的字典即可對同一條腿只反解一次；不傳
+    （預設）行為不變，見 `calibrate_leg()` docstring。"""
     width = abs(short_leg.strike - long_leg.strike)
     net_mid = (long_leg.bid + long_leg.ask) / 2.0 - (short_leg.bid + short_leg.ask) / 2.0
     net_worst = long_leg.ask - short_leg.bid
     expiry = date.fromisoformat(long_leg.expiry)
     t_now = days_between(today, expiry) / DAYS_PER_YEAR
-    long_carry = calibrate_leg(long_leg, spot, today, p)      # #113：每腿一次
-    short_carry = calibrate_leg(short_leg, spot, today, p)
+    long_carry = calibrate_leg(long_leg, spot, today, p, carry_cache)  # #113
+    short_carry = calibrate_leg(short_leg, spot, today, p, carry_cache)
     g_l = leg_greeks(long_leg.option_type, spot, long_leg.strike, t_now,
                      leg_rate(p, long_leg.expiry), long_carry.sigma, long_carry.q)
     g_s = leg_greeks(short_leg.option_type, spot, short_leg.strike, t_now,
@@ -601,5 +732,250 @@ def spread_guidance_judgments(sv: SpreadValuation, p: AnalysisParams) -> list[st
     if sv.net_worst > sv.l2:
         msgs.append(f"劇本成立但最保守 IV 情境下仍虧損（IV 情境最低值 ${sv.l2:.2f}）")
     if sv.net_worst > sv.l3:
+        msgs.append("以最差進場成本達不到你設定的最低報酬（min-return）")
+    return msgs
+
+
+# ---------- T15（#230，Initial V2 spec #217）：Butterfly——只服務這個
+# 結構自己的邏輯，不透過任何通用跨 strategy 的 payoff-envelope／extrema
+# 引擎（#223 已判定 Initial V2 不需要，正式收斂為 not planned）。買一口
+# 低履約價（K1）、賣兩口中間履約價（K2）、買一口高履約價（K3），
+# call／put 兩個 subtype 共用同一套結構與算式（`intrinsic_value()` 已
+# 吸收兩者差異）。 ----------
+
+
+@dataclass(frozen=True)
+class ButterflyProfitRegion:
+    """到期時 payoff 高於進場成本（`net_worst`）的標的價範圍，左右邊界
+    各自是這個結構自己的分段線性交叉點（見
+    `butterfly_breakeven_and_profit_region()` docstring）。
+
+    OPTION-CHASER-CLOSEOUT-004（PR #250 review Finding 1）：邊界改為
+    可空——`None` 代表**該側沒有交叉點、獲利區間在那個方向沒有上／下
+    界**。broken-wing（兩翼不等寬）組合的翼外平台 payoff 可能本身就
+    高於進場成本（call-fly 左翼寬於右翼時 `v3 = (K2-K1)-(K3-K2) > 0`，
+    put-fly 對稱），此時該側到期時**永遠**獲利，不存在「超出這個價位
+    就不賺」的邊界。修正前這兩個欄位一律填該側履約價（K1／K3），把
+    unbounded 的一側謊報成有限區間，`breakeven_points` 也因此多出一個
+    不是損益兩平點的數字——實測 shipped 契約樣本
+    （`analysis_sample_call_fly.json`）30 個使用者可見候選中有 6 個
+    中招（例如 `call-fly|100|106|109`：S≥109 之後 payoff 恆為 3.00、
+    成本 1.74，實際是永遠賺 1.26，卻被報成「獲利區間 101.74~109，
+    區間外無法獲利」）。"""
+    lower: float | None
+    upper: float | None
+
+
+def butterfly_expiry_payoff(option_type: str, k1: float, k2: float, k3: float,
+                            S: float) -> float:
+    """到期時的獲利（1 口買 K1、2 口賣 K2、1 口買 K3），純算術。
+
+    `intrinsic_value()` 已經處理了 call／put 的差異，這個公式本身對
+    兩種權別通用；k1<k2<k3 是呼叫端的既有前提（`generate_butterfly_
+    triples()` 依履約價排序後才組成三元組），這裡不重複驗證。"""
+    return (intrinsic_value(option_type, S, k1)
+           - 2.0 * intrinsic_value(option_type, S, k2)
+           + intrinsic_value(option_type, S, k3))
+
+
+def _butterfly_knots(option_type: str, k1: float, k2: float,
+                     k3: float) -> tuple[float, float, float]:
+    """三個履約價各自的到期 payoff（`v1`＝K1、`v2`＝K2 峰值、`v3`＝K3），
+    只算一次——`butterfly_breakeven_and_profit_region()` 與
+    `evaluate_butterfly()` 都需要這三個數字，抽出來避免兩處各自呼叫
+    `butterfly_expiry_payoff()` 三次（`/code-review` Standards 軸抓到
+    的重複）。"""
+    return (butterfly_expiry_payoff(option_type, k1, k2, k3, k1),
+           butterfly_expiry_payoff(option_type, k1, k2, k3, k2),
+           butterfly_expiry_payoff(option_type, k1, k2, k3, k3))
+
+
+def _butterfly_region_from_knots(
+    k1: float, k2: float, k3: float, v1: float, v2: float, v3: float,
+    net_cost: float,
+) -> tuple[tuple[float, ...], ButterflyProfitRegion | None]:
+    """`butterfly_breakeven_and_profit_region()` 的核心邏輯，改吃已經
+    算好的三個到期 payoff 節點（`v1`／`v2`／`v3`）而非自己重算——供
+    `evaluate_butterfly()` 在已經算過一次 `_butterfly_knots()` 之後
+    直接複用，不必為了呼叫這個公開函式再算第二次（`/code-review`
+    Standards 軸抓到的重複，此為完整消除，非表面上少寫幾行）。
+
+    Butterfly 專屬（不透過任何通用求根／extrema 引擎）：到期時的
+    payoff 是分段線性、非單調的「帳篷」形狀——不論 call 或 put、不論
+    兩翼是否等寬，[K1,K2] 段斜率恆為 +1、[K2,K3] 段斜率恆為 -1（可由
+    「買一賣二買一」的權重組合直接推導：兩段各自只有一條腿的斜率係數
+    尚未被抵銷，且係數恰為 ±1），K1 之外與 K3 之外則各自恆定——這是
+    這個特定權重結構（不是任意 N 腿組合）才有的不變量，因此兩個損益
+    兩平點可以用封閉式代數直接求出，不需要迭代逼近或通用求根機制。
+
+    峰值必然落在 K2（`v2 = v1 + (K2-K1)` 恆 > v1、`v2 = v3 + (K3-K2)`
+    恆 > v3，因為 K1<K2<K3），若峰值扣掉成本仍 <= 0，代表**連峰值都
+    賺不到**，到期時任何價位都無法獲利——回傳空的損益兩平點與 `None`
+    （不硬擠成一個假的區間）。
+
+    峰值有獲利空間時，左／右兩個交叉點各自落在峰值左側／右側的線性
+    段上；若某一側的翼端本身已經獲利（`v1 - net_cost > 0` 或
+    `v3 - net_cost > 0`，嚴格大於——剛好等於是打平不是獲利，見下方
+    程式碼註解；這只在履約價明顯不對稱、俗稱「broken wing」的組合上
+    才可能發生），該側**根本沒有交叉點**：K1 之外／K3 之外是
+    恆定平台，平台值本身已高於成本，代表往那個方向走多遠都還是獲利。
+    這種情況該側回傳 `None`（獲利區間在那個方向沒有界），且
+    `breakeven_points` 不收錄那一側——沒有價位在那裡由虧轉盈，填一個
+    數字進去就是謊報一個不存在的損益兩平點。
+
+    OPTION-CHASER-CLOSEOUT-004（PR #250 review Finding 1）：修正前這
+    兩種情況一律以該側履約價（K1／K3）充當邊界，是被明文記載為「合理
+    近似」的錯誤——`ButterflyProfitRegion` 欄位註解有實測影響範圍。"""
+    peak_profit = v2 - net_cost
+    if peak_profit <= 0.0:
+        return (), None
+    left_tail_profit = v1 - net_cost
+    right_tail_profit = v3 - net_cost
+    # 判準是嚴格大於 0，不是 `>= 0`：翼外平台**剛好等於**成本時那一側
+    # 是打平、不是獲利，該側的邊界確實就是該翼履約價本身（平台之內
+    # 到期時損益恆為 0，只有平台與峰值之間才真的獲利）——說成「沒有
+    # 界、更遠一樣獲利」是另一句假話，方向跟本 finding 要修的那句相反
+    # 而已。這條邊界與 `peak_profit <= 0.0` 的既有邊界選擇（剛好打平
+    # 不算「有獲利區間」）是同一套判準。
+    # [K1,K2] 斜率恆 +1：f(S) = left_tail_profit + (S-K1)，根 = K1 - left_tail_profit
+    lower = None if left_tail_profit > 0.0 else k1 - left_tail_profit
+    # [K2,K3] 斜率恆 -1：f(S) = peak_profit - (S-K2)，根 = K2 + peak_profit
+    upper = None if right_tail_profit > 0.0 else k2 + peak_profit
+    breakevens = tuple(b for b in (lower, upper) if b is not None)
+    return breakevens, ButterflyProfitRegion(lower=lower, upper=upper)
+
+
+def butterfly_breakeven_and_profit_region(
+    option_type: str, k1: float, k2: float, k3: float, net_cost: float,
+) -> tuple[tuple[float, ...], ButterflyProfitRegion | None]:
+    """公開進入點：算一次 `_butterfly_knots()`，交給
+    `_butterfly_region_from_knots()` 做核心判斷。簽章維持不變（不吃
+    現成節點），供只有履約價、沒有算過節點的呼叫端直接使用；已經算過
+    節點的呼叫端（`evaluate_butterfly()`）改直接呼叫
+    `_butterfly_region_from_knots()` 避免重算。"""
+    v1, v2, v3 = _butterfly_knots(option_type, k1, k2, k3)
+    return _butterfly_region_from_knots(k1, k2, k3, v1, v2, v3, net_cost)
+
+
+@dataclass(frozen=True)
+class ButterflyValuation:
+    option_type: str
+    low_leg: OptionContract     # K1，買 1 口
+    mid_leg: OptionContract     # K2，賣 2 口
+    high_leg: OptionContract    # K3，買 1 口
+    net_mid: float
+    net_worst: float
+    net_delta: float
+    effective_leverage: float
+    breakeven_points: tuple[float, ...]
+    profit_region: ButterflyProfitRegion | None
+    scenario_values: tuple[tuple[float, float], ...]
+    baseline_value: float
+    l2: float
+    l3: float
+    max_profit: float
+    # 到期時最壞可能損失（`net_worst - min(兩翼到期值)`）——**不假設**
+    # 恆等於 `net_worst`：兩翼等寬（對稱蝶式）時兩者確實相等，但不對稱
+    # 履約價組合（broken wing）可能讓某一翼到期時價值為負，使最壞損失
+    # 超過已付權利金本身。這是這個結構的真實性質，不是既有四策略
+    # 「max_loss 恆等於成本」這條不變量的例外或錯誤，只是 Butterfly
+    # 結構性地不保證這條不變量成立。
+    max_loss: float
+    low_carry: LegCarry
+    mid_carry: LegCarry
+    high_carry: LegCarry
+
+
+def butterfly_scenario_value(
+    low_leg: OptionContract, mid_leg: OptionContract, high_leg: OptionContract,
+    S: float, at: date, p: AnalysisParams, shift: float = 0.0,
+    low_carry: LegCarry | None = None, mid_carry: LegCarry | None = None,
+    high_carry: LegCarry | None = None,
+) -> float:
+    """薄殼：把三腿包成 `WeightedLeg` 交給既有的、已核准的逐腿加總原語
+    `payoff_value()`（T02／#219）——這不是新的通用引擎，`payoff_value`
+    本身早已支援任意腿數，這裡只是 Butterfly 這個具體結構的呼叫慣例。"""
+    legs = (
+        WeightedLeg(contract=low_leg, sign=1.0, quantity=1, carry=low_carry),
+        WeightedLeg(contract=mid_leg, sign=-1.0, quantity=2, carry=mid_carry),
+        WeightedLeg(contract=high_leg, sign=1.0, quantity=1, carry=high_carry),
+    )
+    return payoff_value(legs, S, at, p, shift)
+
+
+def evaluate_butterfly(
+    low_leg: OptionContract, mid_leg: OptionContract, high_leg: OptionContract,
+    spot: float, today: date, p: AnalysisParams,
+    carry_cache: dict[tuple, LegCarry] | None = None,
+) -> ButterflyValuation:
+    """`evaluate_spread()` 的三腿版本——同一套既有裁示逐條延伸：
+    worst 成交口徑（附錄 A14.2：買腿 Ask、賣腿 Bid，中腿口數 2）、
+    排名情境＝標的在**自身到期日**等於目標價（T3／#17），breakeven／
+    max_profit／max_loss 由這個結構自己的分段線性性質直接算（見
+    `butterfly_breakeven_and_profit_region()`），不透過任何通用機制。
+
+    `carry_cache`：REPAIR-03（#240，#052 audit）——`generate_butterfly_
+    triples()` 窮舉出的 `C(n,3)` 組合讓同一條腿平均出現 `C(n-1,2)` 次，
+    是三個估值函式裡重複度最高的一個（production-scale 規模下這是
+    60 秒 timeout 的主因）。傳入呼叫端貫穿單次 `_butterfly_result()`
+    的字典即可對同一條腿只反解一次；不傳（預設）行為不變，見
+    `calibrate_leg()` docstring。
+    """
+    net_mid = ((low_leg.bid + low_leg.ask) / 2.0
+              - 2.0 * (mid_leg.bid + mid_leg.ask) / 2.0
+              + (high_leg.bid + high_leg.ask) / 2.0)
+    net_worst = low_leg.ask - 2.0 * mid_leg.bid + high_leg.ask
+    expiry = date.fromisoformat(low_leg.expiry)
+    t_now = days_between(today, expiry) / DAYS_PER_YEAR
+    low_carry = calibrate_leg(low_leg, spot, today, p, carry_cache)
+    mid_carry = calibrate_leg(mid_leg, spot, today, p, carry_cache)
+    high_carry = calibrate_leg(high_leg, spot, today, p, carry_cache)
+    g_lo = leg_greeks(low_leg.option_type, spot, low_leg.strike, t_now,
+                      leg_rate(p, low_leg.expiry), low_carry.sigma, low_carry.q)
+    g_mid = leg_greeks(mid_leg.option_type, spot, mid_leg.strike, t_now,
+                       leg_rate(p, mid_leg.expiry), mid_carry.sigma, mid_carry.q)
+    g_hi = leg_greeks(high_leg.option_type, spot, high_leg.strike, t_now,
+                      leg_rate(p, high_leg.expiry), high_carry.sigma, high_carry.q)
+    net_delta = g_lo.delta - 2.0 * g_mid.delta + g_hi.delta
+    # 需求 §三／T3／#17 既有裁示：排名情境＝標的在自身到期日等於目標價。
+    scenario_values = tuple(
+        (shift, butterfly_scenario_value(low_leg, mid_leg, high_leg,
+                                         p.target_price, expiry, p, shift,
+                                         low_carry, mid_carry, high_carry))
+        for shift in p.iv_shifts)
+    baseline_value = dict(scenario_values)[0.0]
+    # 三個履約價各自的到期 payoff 只算一次（`_butterfly_knots()`），供
+    # breakeven／profit region 與 max_profit／max_loss 共用——原本
+    # `butterfly_breakeven_and_profit_region()` 內部會重算一次、這裡
+    # 又為了 max_profit／max_loss 各自呼叫 `butterfly_expiry_payoff()`
+    # 三次，是 `/code-review` Standards 軸抓到的重複，改直接呼叫
+    # `_butterfly_region_from_knots()` 複用同一組節點。
+    v1, v2, v3 = _butterfly_knots(
+        low_leg.option_type, low_leg.strike, mid_leg.strike, high_leg.strike)
+    breakeven_points, profit_region = _butterfly_region_from_knots(
+        low_leg.strike, mid_leg.strike, high_leg.strike, v1, v2, v3, net_worst)
+    max_profit = v2 - net_worst   # 峰值必然在 K2，見上方 docstring
+    max_loss = net_worst - min(v1, v3)
+    return ButterflyValuation(
+        option_type=low_leg.option_type,
+        low_leg=low_leg, mid_leg=mid_leg, high_leg=high_leg,
+        net_mid=net_mid, net_worst=net_worst, net_delta=net_delta,
+        effective_leverage=abs(net_delta) * spot / net_worst,
+        breakeven_points=breakeven_points, profit_region=profit_region,
+        scenario_values=scenario_values, baseline_value=baseline_value,
+        l2=min(v for _, v in scenario_values),
+        l3=baseline_value / (1.0 + p.min_return),
+        max_profit=max_profit, max_loss=max_loss,
+        low_carry=low_carry, mid_carry=mid_carry, high_carry=high_carry,
+    )
+
+
+def butterfly_guidance_judgments(bv: ButterflyValuation, p: AnalysisParams) -> list[str]:
+    """比照 `spread_guidance_judgments()` 同一套判準（無 L1，L2＝情境
+    包絡最小值）。"""
+    msgs: list[str] = []
+    if bv.net_worst > bv.l2:
+        msgs.append(f"劇本成立但最保守 IV 情境下仍虧損（IV 情境最低值 ${bv.l2:.2f}）")
+    if bv.net_worst > bv.l3:
         msgs.append("以最差進場成本達不到你設定的最低報酬（min-return）")
     return msgs

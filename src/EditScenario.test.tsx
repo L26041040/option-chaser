@@ -205,3 +205,54 @@ describe("儲存", () => {
         .toBe(true));
   });
 });
+
+// ---------- Strategy Family 增減（T10／#227，Initial V2） ----------
+
+describe("編輯可以增減 Strategy Family", () => {
+  it("預填目前的勾選狀態——sample fixture 是 vertical-spread", async () => {
+    mockApi();
+    await openEditor();
+    expect(screen.getByRole("checkbox", { name: "Vertical Spread" }))
+      .toBeChecked();
+    expect(screen.getByRole("checkbox", { name: "Call / Put" }))
+      .not.toBeChecked();
+  });
+
+  it("可以再多勾一個 family 一起送出", async () => {
+    const calls = mockApi();
+    await openEditor();
+    await userEvent.click(screen.getByRole("checkbox", { name: "Call / Put" }));
+    await userEvent.click(screen.getByRole("button", { name: "儲存變更" }));
+
+    await waitFor(() => {
+      const patch = calls.find((c) => c.method === "PATCH");
+      expect(patch).toBeTruthy();
+      expect((patch!.body as { strategies: string[] }).strategies)
+        .toEqual(["vertical-spread", "single-leg"]);
+    });
+  });
+
+  it("可以拿掉目前唯一的 family、換成別的——不會自動留著沒勾選的家族", async () => {
+    const calls = mockApi();
+    await openEditor();
+    await userEvent.click(screen.getByRole("checkbox", { name: "Vertical Spread" }));
+    await userEvent.click(screen.getByRole("checkbox", { name: "Call / Put" }));
+    await userEvent.click(screen.getByRole("button", { name: "儲存變更" }));
+
+    await waitFor(() => {
+      const patch = calls.find((c) => c.method === "PATCH");
+      expect((patch!.body as { strategies: string[] }).strategies)
+        .toEqual(["single-leg"]);
+    });
+  });
+
+  it("拿掉全部 family 後送出，擋在前端不呼叫後端", async () => {
+    const calls = mockApi();
+    await openEditor();
+    await userEvent.click(screen.getByRole("checkbox", { name: "Vertical Spread" }));
+    await userEvent.click(screen.getByRole("button", { name: "儲存變更" }));
+
+    expect(screen.getByRole("alert")).toHaveTextContent("請至少勾選一個策略類型");
+    expect(calls.some((c) => c.method === "PATCH")).toBe(false);
+  });
+});

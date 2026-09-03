@@ -37,11 +37,18 @@ FB5-04（#65）：分類本身現在是程式碼裡的一個結構，不只是�
 """
 from __future__ import annotations
 
+import math
 from itertools import combinations
-from typing import Iterable
+from typing import Callable, Iterable
 
 from .models import (AnalysisParams, FilterReport, FilterStageResult, OptionContract,
                      PairReport, QualityFlagCount, leg_option_type)
+
+# T05（#226，Initial V2 spec #217，`/code-review` Spec 軸回饋）：每一關剔除
+# 掉的候選只記「前幾筆」的身份當範例，不是整份清單——診斷要的是「指認得出
+# 是哪一組」，不是把整個被剔除的池子搬進報告裡（合約壞得夠多時清單本身
+# 就會失去可讀性）。
+_MAX_REMOVED_EXAMPLES = 5
 
 # FB5-04（#65，spec #61）：三分類的人話說明，`FilterStageResult.filter_class` 與
 # `quality_flag_counts()` 的呼叫端（report.py／store.py）共用同一份措辭，
@@ -106,10 +113,21 @@ def apply_filters(
     total = len(remaining)
 
     def quote_ok(c: OptionContract) -> bool:
-        return c.bid is not None and c.ask is not None and c.bid > 0 and c.ask >= c.bid
+        # T05（#226，Initial V2 spec #217，A 層）：缺失值／非有限數值
+        # （`NaN`／`Infinity`）與買賣價倒掛（`bid>ask`）同屬「報價本身
+        # 不可信」——`math.isfinite()` 明確擋掉 `NaN`／`±Infinity`。
+        # 既有 `c.bid > 0`／`c.ask >= c.bid` 兩條件本身已隱含攔住多數
+        # 這類壞值（`NaN` 比較恆為 False、`Infinity` 的 ask 若 bid 有限
+        # 會通過），這裡把 A 層「非有限數值」的判準寫成明確的檢查，不
+        # 依賴比較運算子的副作用當作判準。
+        return (c.bid is not None and c.ask is not None
+                and math.isfinite(c.bid) and math.isfinite(c.ask)
+                and c.bid > 0 and c.ask >= c.bid)
 
     def iv_ok(c: OptionContract) -> bool:
-        return c.implied_volatility is not None and 0.01 <= c.implied_volatility <= 5.0
+        return (c.implied_volatility is not None
+                and math.isfinite(c.implied_volatility)
+                and 0.01 <= c.implied_volatility <= 5.0)
 
     stages = (
         ("A", "報價異常", quote_ok),
@@ -118,10 +136,82 @@ def apply_filters(
     results: list[FilterStageResult] = []
     for filter_class, label, pred in stages:
         kept = [c for c in remaining if pred(c)]
-        results.append(FilterStageResult(label=label, removed=len(remaining) - len(kept),
-                                         filter_class=filter_class))
+        dropped = [c for c in remaining if not pred(c)]
+        examples = tuple(c.contract_symbol for c in dropped[:_MAX_REMOVED_EXAMPLES])
+        results.append(FilterStageResult(label=label, removed=len(dropped),
+                                         filter_class=filter_class,
+                                         removed_examples=examples))
         remaining = kept
     return remaining, FilterReport(total=total, stages=tuple(results), passed=len(remaining))
+
+
+def validate_derived_values(
+    candidates: list, cost_fn, return_fn, identity_fn=None, max_loss_fn=None,
+) -> tuple[list, FilterStageResult]:
+    """T05（#226，Initial V2 spec #217）：B 層——導出層數學安全網。
+
+    接在既有計算路徑之後（`evaluate_contract()`／`evaluate_spread()`
+    算完之後）、排名之前，是**獨立的最後一道網**：即使 A 層（本模組
+    `apply_filters()`／`generate_spread_pairs()` 的既有報價層檢查）
+    全數通過，這裡仍會執行——不是 A 層的推論，是另一組獨立成立的證據。
+
+    只檢查**既有計算路徑本來就會產出**的量：
+    - `cost_fn(v)`（`scenarios.natural_cost`，Initial V2 全為 debit
+      結構，理應恆為正值）出現 `<=0`／`NaN`／`Infinity`
+    - `return_fn(v)`（`ranking.baseline_return`／`spread_baseline_
+      return`，任何回報給使用者的導出量）出現 `NaN`／`Infinity`
+    - `max_loss_fn(v)`（選填，T15／#230 新增：`ButterflyValuation.
+      max_loss`）出現 `<=0`／`NaN`／`Infinity`——defined-risk 的候選
+      結構上必須真的有風險可言，`max_loss<=0` 代表這組報價組合出來的
+      是「怎麼樣都不會虧」的不可能局面（#213 Addendum，Owner 明文）。
+      既有兩個呼叫端（單腳／Spread）不傳這個參數，`max_loss` 對它們
+      本來就等於 `cost_fn` 的結果（既有不變量，見
+      `valuation.SpreadValuation`／`ContractValuation` 各自的
+      docstring），不需要重複檢查。
+
+    **不引入任何新的估值／推導邏輯**——`cost_fn`／`return_fn`／
+    `max_loss_fn` 都是呼叫端既有的純函式，這裡只是把它們的輸出拿來做
+    有限性／正負號檢查，不新增 max_profit 之類的新概念，也不是跨
+    strategy 的 generic payoff-envelope／extrema engine（#223 已判定
+    Initial V2 不需要，正式收斂為 not planned）。
+
+    劇本成立時報酬為負、但報價自洽的候選**不受影響**——`return_fn` 回
+    一個有限的負數（例如 `-0.5`）完全合法，只有 `NaN`／`Infinity` 才
+    invalid；這是既有 ranking 自然沉底的正常結果，不是本函式要攔的
+    對象（票上明文紅線：不新增 `max_profit<=0` 過濾規則）。
+
+    `identity_fn`（選填，`/code-review` Spec 軸回饋新增）：從被剔除的
+    候選萃取一個可指認的身份字串（單腳給合約代碼、Spread 給買賣兩腿
+    合約代碼的組合），供診斷指認「是哪一組」。省略時（呼叫端尚未提供）
+    回傳的 `FilterStageResult.removed_examples` 就是空 tuple——不強迫
+    既有呼叫端立刻補上。
+    """
+    def _finite(x) -> bool:
+        # `/code-review` Standards 軸抓到：本函式的 `cost_fn`／`return_fn`
+        # 是泛型參數，今天的兩個呼叫端（`natural_cost`／`baseline_return`／
+        # `spread_baseline_return`）保證回傳 `float`，但簽章本身不強制。
+        # `math.isfinite(None)` 會拋 `TypeError`，跟 `apply_filters()`
+        # 既有 `quote_ok()` 的防禦風格一致，這裡也先擋 `None`。
+        return x is not None and math.isfinite(x)
+
+    kept = []
+    removed = 0
+    examples: list[str] = []
+    for v in candidates:
+        cost = cost_fn(v)
+        ret = return_fn(v)
+        max_loss_ok = max_loss_fn is None or (
+            _finite(max_loss_fn(v)) and max_loss_fn(v) > 0)
+        if _finite(cost) and cost > 0 and _finite(ret) and max_loss_ok:
+            kept.append(v)
+        else:
+            removed += 1
+            if identity_fn is not None and len(examples) < _MAX_REMOVED_EXAMPLES:
+                examples.append(identity_fn(v))
+    stage = FilterStageResult(label="成本或報酬為不可能值（B 層安全網）",
+                              removed=removed, filter_class="B",
+                              removed_examples=tuple(examples))
+    return kept, stage
 
 
 def quality_flag_counts(
@@ -177,4 +267,82 @@ def generate_spread_pairs(
                 removed += 1
                 continue
             out.append((lng, sht))
+    return out, PairReport(total_pairs=total, removed_sanity=removed, passed=len(out))
+
+
+# 枚舉迴圈每隔幾個組合徵詢一次 `should_stop`。徵詢本身有成本（呼叫端
+# 那頭通常是一次 `time.monotonic()`），逐一徵詢在 `C(n,3)` 規模下量得
+# 出來；4096 個組合在正常 production-scale 規模下遠低於一毫秒——夠密到
+# 異常龐大的鏈能在瞬間停下，夠疏到正常情況量不出差別。
+_ABORT_CHECK_EVERY = 4096
+
+
+def generate_butterfly_triples(
+    legs: list[OptionContract], p: AnalysisParams,
+    should_stop: Callable[[], bool] | None = None,
+) -> tuple[list[tuple[OptionContract, OptionContract, OptionContract]], PairReport]:
+    """T15（#230，Initial V2 spec #217）：同一到期日、同一權別的合格合約
+    窮舉三個履約價組合（低／中／高，中腿口數 2）——比照 `generate_spread_
+    pairs()` 同一種寫法，`itertools.combinations` 依履約價排序後直接給
+    出 `k1<k2<k3`，不另外判斷方向（Butterfly 不像 Vertical 有
+    `long_is_lower` 這種依 subtype 決定買賣腿順序的概念——call-fly／
+    put-fly 皆是「買低賣中買高」同一套結構，差別只在 `leg_option_type()`
+    決定窮舉哪一側的鏈）。
+
+    A 層健全性判準沿用既有精神（配對層級的結構合法性，不重複 apply_
+    filters 已做過的報價品質檢查）：`net_mid <= 0`——三腿組合出來的
+    平均成本不是真正的 debit，這組合本身不成立（不是報價壞了，是這三
+    個履約價湊不出一個有意義的 Butterfly）。**不在這裡檢查 max_loss**
+    ——那是 T05（#226）的 B 層安全網職責（見 `validate_derived_values`
+    的 `max_loss_fn` 參數），這裡只做配對層級的結構前提。`PairReport`
+    沿用既有型別（欄位形狀通用，命名雖是「pair」但不因此另建一個
+    幾乎相同的型別，Standards：避免 Primitive Obsession 式的過度切分）。
+
+    `should_stop`：OPTION-CHASER-CLOSEOUT-004（PR #250 review Finding
+    3）——呼叫端給的中止判準，每 `_ABORT_CHECK_EVERY` 個組合徵詢一次，
+    回 `True` 就**停止枚舉**、把已經累積的組合原樣回傳（`PairReport`
+    只反映真的走訪過的組合數，不假裝走完）。REPAIR-08（#245）加的
+    soft deadline 原本只活在 `service._butterfly_result()` 的估值迴圈
+    裡，而枚舉在那之前就已經跑完並把整份 `C(n,3)` 清單建好——異常龐大
+    的鏈（例如某個 symbol 的 chain 意外回傳遠超正常量級的合約數）因此
+    可能在任何檢查點生效之前就耗掉整個時間預算、或把 `out` 撐爆記憶體，
+    最後仍被 Vercel hard kill。`combinations()` 本身是惰性的，真正會
+    長大的是 `out`，這個徵詢點同時擋住時間與記憶體兩者。
+
+    **刻意收成一個不帶語意的謂詞而不是直接吃 deadline**：本模組是排名
+    ／過濾核心，既有結構紅線（`tests/test_analysis_soft_deadline.py::
+    test_ranking_and_filters_do_not_import_the_soft_deadline_mechanism`）
+    明文要求 soft deadline 機制不得滲透進 `ranking.py`／`filters.py`。
+    這裡因此不認識時鐘、不認識 deadline，只知道「呼叫端說停就停」；
+    政策留在 `service.py`（它傳進來的是
+    `lambda: time.monotonic() >= deadline`）。
+
+    `None`（預設）＝不啟用，行為與這個參數加入前逐位元相同。
+    """
+    by_expiry: dict[str, list[OptionContract]] = {}
+    for c in legs:
+        by_expiry.setdefault(c.expiry, []).append(c)
+    total = 0
+    removed = 0
+    seen = 0
+    out: list[tuple[OptionContract, OptionContract, OptionContract]] = []
+    for expiry in sorted(by_expiry):
+        group = sorted(by_expiry[expiry], key=lambda c: (c.strike, c.contract_symbol))
+        for lo, mid, hi in combinations(group, 3):   # lo.strike < mid.strike < hi.strike
+            if should_stop is not None:
+                seen += 1
+                if seen % _ABORT_CHECK_EVERY == 0 and should_stop():
+                    return out, PairReport(total_pairs=total,
+                                           removed_sanity=removed,
+                                           passed=len(out))
+            if lo.strike == mid.strike or mid.strike == hi.strike:
+                continue
+            total += 1
+            net_mid = ((lo.bid + lo.ask) / 2.0
+                      - 2.0 * (mid.bid + mid.ask) / 2.0
+                      + (hi.bid + hi.ask) / 2.0)
+            if net_mid <= 0:
+                removed += 1
+                continue
+            out.append((lo, mid, hi))
     return out, PairReport(total_pairs=total, removed_sanity=removed, passed=len(out))

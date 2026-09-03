@@ -135,21 +135,92 @@ function QRow({ params }: { params: AnalysisView["params"] }) {
   );
 }
 
-/** Risk / Payoff：Breakeven／Max Profit／Max Loss／Execution Friction。 */
+/**
+ * 獲利區間的文字——四種情況（兩側有界／單側無界 ×2／兩側皆無界）。
+ *
+ * CLOSEOUT-004（PR #250 review Finding 1）：`profit_region` 的邊界
+ * 各自可為 `null`＝那一側沒有界，往那個方向走多遠到期時都還是獲利
+ * （broken-wing Butterfly 的翼外平台高於進場成本）。這種情況**不得**
+ * 顯示成一個有限區間、也不得說「區間外無法獲利」——那是使用者看得到
+ * 的假話。後端的 `ranking.butterfly_profit_region_text()` 是同一套
+ * 判斷的純文字版本，兩邊措辭刻意一致。
+ */
+function profitRegionText(
+  region: NonNullable<Candidate["profit_region"]>,
+): { range: string; note: string } {
+  const [lo, hi] = region;
+  if (lo !== null && hi !== null) {
+    return { range: `${money(lo)} ~ ${money(hi)}`,
+             note: "（標的落在這個範圍內，到期時為正報酬）" };
+  }
+  if (lo !== null) {
+    return { range: `${money(lo)} 以上`,
+             note: "（沒有上界，更高的標的價到期時一樣獲利）" };
+  }
+  if (hi !== null) {
+    return { range: `${money(hi)} 以下`,
+             note: "（沒有下界，更低的標的價到期時一樣獲利）" };
+  }
+  return { range: "不限", note: "（兩側都沒有界，任何標的價到期時都獲利）" };
+}
+
+/**
+ * Breakeven（含 T16／#232 新增的獲利區間）：既有四策略恆單點，
+ * `breakeven_points` 長度 1，沿用既有格式逐字不變。Butterfly
+ * （T15／#230）是 0～2 點——CLOSEOUT-004 起單側無界的 broken-wing
+ * 組合只有一個真正的損益兩平點，兩側皆無界時一個都沒有。
+ *
+ * 「到期時任何價位都無法獲利」的判準是 **`profit_region === null`**，
+ * 不是 `breakeven_points` 為空：CLOSEOUT-004 之後兩者不再等價——兩側
+ * 皆無界（處處獲利）時損益兩平點同樣是空的，照舊判準會講出正好相反
+ * 的話。這個組合在 production 走不到（`generate_butterfly_triples()`
+ * 的 `net_mid > 0` 讓 debit 恆有一側是真根），但判準本身要說得通，
+ * 不能靠一個結構上的巧合成立。
+ */
+function BreakevenRow({ candidate }: { candidate: Candidate }) {
+  const points = candidate.breakeven_points;
+  if (candidate.profit_region === null && points.length === 0) {
+    return <Row label="Breakeven">無（到期時任何價位都無法獲利）</Row>;
+  }
+  const region = candidate.profit_region
+    ? profitRegionText(candidate.profit_region) : null;
+  return (
+    <>
+      <Row label="Breakeven">
+        {points.length === 0 ? "無（沒有由虧轉盈的價位）"
+                             : points.map((p) => money(p)).join(" / ")}
+      </Row>
+      {region && (
+        <Row label="獲利區間">
+          {region.range}
+          <span className="row-note">{region.note}</span>
+        </Row>
+      )}
+    </>
+  );
+}
+
+/** Risk / Payoff：Breakeven／Max Profit／Max Loss。
+ * T04（#220，#217 決策 D）：Execution Friction 這一列已隨 friction
+ * 自 canonical model 退場移除，不新增任何替代指標。 */
 function RiskPayoff({ candidate }: { candidate: Candidate }) {
   return (
     <>
-      <Row label="Breakeven">{money(candidate.breakeven)}</Row>
+      <BreakevenRow candidate={candidate} />
       <Row label="Max Profit">
         {candidate.max_profit === null ? "無上限" : money(candidate.max_profit)}
       </Row>
-      {/* debit 策略（本站四種皆是）最大損失恆等於進場成本，見
-          `store.py` 的 `max_loss_per_contract` 註解——不是巧合，是定義。 */}
-      <Row label="Max Loss">{money(candidate.natural_cost)}</Row>
-      <Row label="Execution Friction">
-        {formatReturn(candidate.friction)}
-        <span className="row-note">（{money(candidate.friction_amount)}/股）</span>
-      </Row>
+      {/*
+        既有四策略（debit，`max_loss_per_contract === capital_per_
+        contract` 恆成立）讀這個欄位與讀 `natural_cost` 逐位元相同
+        （見 `store.py` 的 `max_loss_per_contract` 註解），但 Butterfly
+        （T15／#230）broken-wing 組合的最大損失可能超過已付權利金
+        本身——`max_loss_per_contract` 是唯一對兩種情況都誠實的欄位，
+        `natural_cost` 只是進場成本、不是這組候選真正的最大損失。
+        `/100` 是既有的「每股→每口（100 股）」既有換算慣例，見
+        `store.py` 的 `capital_per_contract` 同一套口徑。
+      */}
+      <Row label="Max Loss">{money(candidate.max_loss_per_contract / 100)}</Row>
     </>
   );
 }
@@ -184,13 +255,33 @@ function LegRow({ label, leg }: { label: string; leg: Leg }) {
   );
 }
 
-/** Execution：逐腿雙邊報價／Net Mid／Net Worst（保守進場成本）。 */
+/**
+ * Execution：逐腿雙邊報價／Net Mid／Net Worst（保守進場成本）。
+ *
+ * T12（#228，Initial V2）：改成逐腿渲染整個 `legs[]`，不再解構固定的
+ * 買／賣兩個變數——三腿以上的候選（Butterfly，T15／T16）不會有一隻腿
+ * 被靜默丟掉。既有兩腿／單腿候選只有一個買腿／一個賣腿，標籤因此
+ * 逐字等於改動前（"Buy Leg"／"Sell Leg"）；同一個 side 出現超過一次
+ * 時才加編號（例如未來 Butterfly 兩個買腿：「Buy Leg 1」「Buy Leg 2」）。
+ */
 function ExecutionSection({ candidate }: { candidate: Candidate }) {
-  const [buy, sell] = candidate.legs;
+  const buyCount = candidate.legs.filter((leg) => leg.side === "buy").length;
+  const sellCount = candidate.legs.filter((leg) => leg.side === "sell").length;
+  let buySeen = 0;
+  let sellSeen = 0;
   return (
     <>
-      {buy && <LegRow label="Buy Leg" leg={buy} />}
-      {sell && <LegRow label="Sell Leg" leg={sell} />}
+      {candidate.legs.map((leg, i) => {
+        let label: string;
+        if (leg.side === "buy") {
+          buySeen += 1;
+          label = buyCount > 1 ? `Buy Leg ${buySeen}` : "Buy Leg";
+        } else {
+          sellSeen += 1;
+          label = sellCount > 1 ? `Sell Leg ${sellSeen}` : "Sell Leg";
+        }
+        return <LegRow key={i} label={label} leg={leg} />;
+      })}
       <Row label="Net Mid">{money(candidate.mid_cost)}</Row>
       <Row label="Net Worst（保守進場成本）">{money(candidate.natural_cost)}</Row>
     </>

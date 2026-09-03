@@ -46,15 +46,24 @@ def test_snapshot_from_dict_roundtrips_through_asdict():
 
 
 def test_strategy_helpers():
-    assert STRATEGIES == ("long-call", "long-put", "bull-call-spread", "bear-put-spread")
+    assert STRATEGIES == ("long-call", "long-put", "bull-call-spread",
+                          "bear-put-spread", "call-fly", "put-fly")
     assert set(SINGLE_LEG_STRATEGIES) == {"long-call", "long-put"}
     assert set(SPREAD_STRATEGIES) == {"bull-call-spread", "bear-put-spread"}
     assert leg_option_type("long-call") == "call"
     assert leg_option_type("bull-call-spread") == "call"
     assert leg_option_type("long-put") == "put"
     assert leg_option_type("bear-put-spread") == "put"
+    # T15（#230，Initial V2）：call-fly／put-fly 落地，`leg_option_type()`
+    # 對它們同樣沿用「call 結構讀 call 側、put 結構讀 put 側」。
+    assert leg_option_type("call-fly") == "call"
+    assert leg_option_type("put-fly") == "put"
     assert is_bullish("long-call") and is_bullish("bull-call-spread")
     assert not is_bullish("long-put") and not is_bullish("bear-put-spread")
+    # T15：is_bullish 對 call-fly／put-fly 沿用既有二元判準（`bullish`
+    # 是否在該 subtype 的方向集合裡）——兩者皆額外收 `flat`，但
+    # `is_bullish()` 本身只回二元值，見 `models.is_bullish()` docstring。
+    assert is_bullish("call-fly") and not is_bullish("put-fly")
 
 
 def test_schema_mismatch_updated_for_v2(tmp_path):

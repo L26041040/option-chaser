@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import dataclasses
+import time
 from dataclasses import dataclass
 from datetime import date, timedelta
 from pathlib import Path
@@ -9,27 +10,31 @@ from typing import Callable
 
 from .data.snapshot import find_contract, load_snapshot, save_snapshot, snapshot_today
 from .dividends import DividendHistory, compute_q
-from .filters import (apply_filters, generate_spread_pairs, is_spread_wide,
-                      monotonicity_violations, quality_flag_counts)
+from .filters import (apply_filters, generate_butterfly_triples, generate_spread_pairs,
+                      is_spread_wide, monotonicity_violations, quality_flag_counts,
+                      validate_derived_values)
 from .matrix import GUI_MAX_GAP_DAYS, date_axis, matrix_grid, price_axis
-from .models import (AnalysisParams, ChainSnapshot, FetchError, FilterReport,
-                     PairReport, ParamError, QualityFlagCount, SPREAD_STRATEGIES,
-                     STRATEGIES, is_bullish)
-from .ranking import (BAND_ORDER, _spread_tie_key, _tie_break_key,
-                      baseline_return, build_reasons, build_spread_reasons,
-                      classify, rank, rank_spreads, return_at_price,
+from .models import (AnalysisParams, BUTTERFLY_STRATEGIES, ChainSnapshot, FetchError,
+                     FilterReport, PairReport, ParamError, QualityFlagCount,
+                     SPREAD_STRATEGIES, STRATEGIES, DIRECTION_LABELS, derive_direction,
+                     is_bullish, subtype_eligible)
+from .ranking import (BAND_ORDER, _butterfly_tie_key, _spread_tie_key, _tie_break_key,
+                      baseline_return, build_butterfly_reasons, build_reasons,
+                      build_spread_reasons, butterfly_baseline_return, classify,
+                      rank, rank_butterflies, rank_spreads, return_at_price,
                       spread_baseline_return)
-from .report import STRATEGY_LABELS, render, render_filter_only, render_spreads
-from .scenarios import (ResilienceMetrics, ScenarioVector, friction,
-                        natural_cost, resilience_metrics, _grid_price,
-                        _value_fn)
+from .report import (STRATEGY_LABELS, render, render_butterflies, render_filter_only,
+                     render_spreads)
+from .scenarios import (ResilienceMetrics, ScenarioVector, natural_cost,
+                        resilience_metrics, _grid_price, _value_fn)
 from .timeframe import (TargetMonth, calendar_anchor, ensure_month_open,
                         select_expiries)
 from .ratecurve import RateCurve, rate_for_tenor
-from .valuation import (ContractValuation, DAYS_PER_YEAR, SpreadValuation,
-                        catchup_price, evaluate_contract, evaluate_spread,
-                        leg_greeks, leg_rate, scenario_leg_value,
-                        spread_scenario_value)
+from .valuation import (ButterflyValuation, ContractValuation, DAYS_PER_YEAR,
+                        LegCarry, SpreadValuation, butterfly_scenario_value,
+                        catchup_price, evaluate_butterfly, evaluate_contract,
+                        evaluate_spread, leg_greeks, leg_rate,
+                        scenario_leg_value, spread_scenario_value)
 
 Progress = Callable[[str], None]
 
@@ -58,6 +63,15 @@ def default_dividend_loader(symbol: str, today: date):
     return load_dividend_history(symbol, today)
 
 
+# REPAIR-08（#245，FIX-04，#052 audit）：per-subtype／per-family soft
+# deadline，異常輸入的優雅降級**專用**——正常 production-scale 規模的
+# 效能已由 #240（calibrate_leg memoization）解決，本常數不是效能修復
+# 的替代方案（不得用來讓正常情況「少算一些 candidate」）。比照既有
+# `api_app/main.py::REFRESH_RUN_BUDGET` 同一個推導理由：明顯小於
+# Vercel serverless 60 秒硬性上限，留出寫回與回應序列化的餘裕。
+ANALYSIS_SOFT_DEADLINE = timedelta(seconds=45)
+
+
 @dataclass(frozen=True)
 class AnalysisRequest:
     symbol: str
@@ -79,8 +93,9 @@ class PricePoint:
     """V7（#55）：一個劇本價位與該候選在那個價位上的報酬。
 
     `ret` 的口徑與主排名數字完全相同（`ranking.return_at_price`），三價位
-    才能與頭條那個數字並排讀——包含估值日：價差用自身到期日、單腿用
-    日曆錨點，兩條路徑各自沿用既有裁示。
+    才能與頭條那個數字並排讀——包含估值日：**三個 family 一律用該候選
+    自身的到期日**（OPTION-CHASER-CLOSEOUT-003 起單腿也對齊，先前停在
+    日曆錨點，導致到期日晚於錨點的單腿候選在目標價上與頭條數字不符）。
     """
     label: str        # "worst" | "target" | "best"
     price: float
@@ -126,18 +141,29 @@ class CandidateView:
     completion_threshold: float | None
     breakeven_at_target: float | None
     retention: float
-    friction: float
-    friction_amount: float    # natural_cost(val) − mid 成本（spec §2.3, $/股）
     buffer_days: int
     # MVP V3（#104，spec #102 決策 F）：`quote_warning` 是選取閘門用的
-    # 複合旗標（zero_vol or wide_spread or fr>0.25），**不對外顯示**——
-    # 只供 `_build_groups` 內部挑選 default_pair。顯示旗標另外分家成
+    # 複合旗標（zero_vol or wide_spread），**不對外顯示**——只供
+    # `_build_groups` 內部挑選 default_pair。顯示旗標另外分家成
     # `wide_spread_warning`（見下），語意收斂成單一、可行動的判準。
+    # T04（#220，#217 決策 D）：friction 已自 canonical model 退場，
+    # 原本的第三個條件（fr>0.25）隨之移除，不新增任何替代指標——這是
+    # 本票唯一預期中的 quote_warning 行為變動。
+    # ⚠ 更正（`/code-review` Spec 軸抓到）：這個公式變動**確實會讓某些
+    # 候選的 quote_warning 從 True 翻成 False**——例如
+    # `contracts/analysis_sample.json` 的 bull-call-spread|118|122
+    # 候選（friction 恰為 0.25、wide_spread_warning=False），先前
+    # commit 聲稱「沒有任何候選單獨依賴這個條件」不準確，已用契約樣本
+    # 逐位元核對推翻。真正成立的是：quote_warning 唯一的消費端是
+    # `_build_groups()` 產生的 `default_selection`／
+    # `ExpiryGroup.rows[].badges`——這是 v4 舊「到期日分組比較」遺留
+    # 結構，`src/` 全站零消費者（#104 施工時已 grep 確認過的既有死碼，
+    # 非本票新產生），因此這個翻轉**沒有任何使用者可見影響**，但這是
+    # 「消費端剛好是死碼」的巧合結果，不是「這個公式改動本身不影響
+    # 任何候選」。
     quote_warning: bool
     # 顯示旗標（決策 F）：⚠ 徽章與候選池文案只認這個——僅 `is_spread_wide`
-    # 一項，不含零成交量、不含 friction>25%。與 `quote_warning` 分開是
-    # 刻意的：後者要維持既有複合語意才能守住「不改 ranking semantics」
-    # 的 guardrail，兩者計算式不可合併。
+    # 一項，不含零成交量。
     wide_spread_warning: bool
     # FB5-03（#64）：無套利一致性違反（相鄰履約價 ask 不單調）。獨立於
     # `quote_warning`，不合併——嚴重性與成因都不同（配對關係違反，不是
@@ -173,6 +199,17 @@ class CandidateView:
     # 報價缺失（結構上不該發生——上游過濾早已保證雙腿報價齊全，這裡是
     # 防禦性核對，不假造）時才是 None。
     comparator: ComparatorView | None = None
+    # T15（#230，Initial V2 spec #217）：非單調結構（Butterfly）的獲利
+    # 區間——兩個邊界價，見 `valuation.ButterflyProfitRegion`。單腿／
+    # Spread（單調家族）恆為 `None`；Butterfly 峰值連進場成本都賺不回來
+    # 時也是 `None`（到期時任何價位都無法獲利，不是「沒算」）。這是
+    # `completion_threshold`／`breakeven_at_target`（單調家族用的保本
+    # 掃描單一數字，AC 明文「不硬擠成單一數字」）在非單調結構上的替代
+    # 呈現，兩者互斥出現：Butterfly 恆為 `completion_threshold=None`。
+    # CLOSEOUT-004（Finding 1）：兩個邊界各自可為 `None`＝該側沒有界
+    # （broken-wing 的翼外平台本身就獲利），見
+    # `valuation.ButterflyProfitRegion`。
+    profit_region: tuple[float | None, float | None] | None = None
 
 
 @dataclass(frozen=True)
@@ -203,6 +240,11 @@ class StrategyResult:
     # 計算，不受 `expiry_top10` 只填價差策略那個既有 MVP 範圍限制影響
     # （附錄A13）。空池（`status == "empty"`）維持預設空 tuple。
     quality_flags: tuple[QualityFlagCount, ...] = ()
+    # T15（#230，Initial V2）：`ranked_bands`（單腿）／`ranked_spreads`
+    # （Vertical）同一種模式的第三個具名欄位——不是通用容器，跟既有兩個
+    # 一樣是各自 family 專屬的排序結果。預設 `None`：既有兩個呼叫端
+    # （單腿／Spread）不需要知道這個欄位存在。
+    ranked_butterflies: tuple[ButterflyValuation, ...] | None = None
 
 
 @dataclass(frozen=True)
@@ -267,12 +309,20 @@ def _emit(progress: Progress | None, msg: str) -> None:
         progress(msg)
 
 
-def _skip_message(strategy: str) -> str:
-    if is_bullish(strategy):
-        return ("目標價低於目前股價，因此未執行 Long Call 與 Bull Call Spread。"
-                "可改選 Long Put 或 Bear Put Spread。")
-    return ("目標價高於目前股價，因此未執行 Long Put 與 Bear Put Spread。"
-            "可改選 Long Call 或 Bull Call Spread。")
+def _skip_message(direction: str) -> str:
+    """T08（#225，Initial V2 spec #217）：訊息內容改用『這個方向適用
+    哪些既有 subtype』的資料反查（`SUBTYPE_DIRECTIONS`），不再硬編碼
+    成兩段互斥文字——新增 subtype 時這裡不需要修改，訊息會自動涵蓋
+    新的 eligible／skipped 名單。"""
+    label = DIRECTION_LABELS.get(direction, direction)
+    skipped, available = [], []
+    for s in STRATEGIES:
+        (available if subtype_eligible(s, direction) else skipped).append(
+            STRATEGY_LABELS[s])
+    msg = f"目前劇本方向為「{label}」，因此未執行 {'、'.join(skipped)}。"
+    if available:
+        msg += f"可改選 {'、'.join(available)}。"
+    return msg
 
 
 def _matrix_view(value_fn, cost: float, spot: float, p: AnalysisParams,
@@ -292,12 +342,30 @@ def _matrix_view(value_fn, cost: float, spot: float, p: AnalysisParams,
                       cells=cells)
 
 
-def _mid_cost(val: ContractValuation | SpreadValuation) -> float:
-    return val.net_mid if isinstance(val, SpreadValuation) else val.mid
+def _mid_cost(val: ContractValuation | SpreadValuation | ButterflyValuation) -> float:
+    if isinstance(val, (SpreadValuation, ButterflyValuation)):
+        return val.net_mid
+    return val.mid
 
 
-def _net_theta(val: ContractValuation | SpreadValuation, spot: float,
-              today: date, p: AnalysisParams) -> float:
+def _butterfly_leg_greeks(bv: ButterflyValuation, spot: float, today: date,
+                          p: AnalysisParams):
+    """三腿各自的 Greeks（今天的 (t_now, r) 查表方式與既有 Spread 分支
+    逐字相同，只是多一條腿）——`_net_theta`／`_net_vega` 共用，避免兩處
+    複製貼上同一段查表邏輯。"""
+    lo, mid, hi = bv.low_leg, bv.mid_leg, bv.high_leg
+    t_now = (date.fromisoformat(lo.expiry) - today).days / 365.0
+    g_lo = leg_greeks(lo.option_type, spot, lo.strike, t_now,
+                      leg_rate(p, lo.expiry), bv.low_carry.sigma, bv.low_carry.q)
+    g_mid = leg_greeks(mid.option_type, spot, mid.strike, t_now,
+                       leg_rate(p, mid.expiry), bv.mid_carry.sigma, bv.mid_carry.q)
+    g_hi = leg_greeks(hi.option_type, spot, hi.strike, t_now,
+                      leg_rate(p, hi.expiry), bv.high_carry.sigma, bv.high_carry.q)
+    return g_lo, g_mid, g_hi
+
+
+def _net_theta(val: ContractValuation | SpreadValuation | ButterflyValuation,
+              spot: float, today: date, p: AnalysisParams) -> float:
     if isinstance(val, SpreadValuation):
         lng, sht = val.long_leg, val.short_leg
         t_now = (date.fromisoformat(lng.expiry) - today).days / 365.0
@@ -310,11 +378,14 @@ def _net_theta(val: ContractValuation | SpreadValuation, spot: float,
                          leg_rate(p, sht.expiry), val.short_carry.sigma,
                          val.short_carry.q)
         return g_l.theta_per_day - g_s.theta_per_day
+    if isinstance(val, ButterflyValuation):
+        g_lo, g_mid, g_hi = _butterfly_leg_greeks(val, spot, today, p)
+        return g_lo.theta_per_day - 2.0 * g_mid.theta_per_day + g_hi.theta_per_day
     return val.theta_per_day
 
 
-def _net_vega(val: ContractValuation | SpreadValuation, spot: float,
-             today: date, p: AnalysisParams) -> float:
+def _net_vega(val: ContractValuation | SpreadValuation | ButterflyValuation,
+             spot: float, today: date, p: AnalysisParams) -> float:
     if isinstance(val, SpreadValuation):
         lng, sht = val.long_leg, val.short_leg
         t_now = (date.fromisoformat(lng.expiry) - today).days / 365.0
@@ -325,6 +396,9 @@ def _net_vega(val: ContractValuation | SpreadValuation, spot: float,
                          leg_rate(p, sht.expiry), val.short_carry.sigma,
                          val.short_carry.q)
         return g_l.vega_per_pct - g_s.vega_per_pct
+    if isinstance(val, ButterflyValuation):
+        g_lo, g_mid, g_hi = _butterfly_leg_greeks(val, spot, today, p)
+        return g_lo.vega_per_pct - 2.0 * g_mid.vega_per_pct + g_hi.vega_per_pct
     return val.vega_per_pct
 
 
@@ -351,8 +425,8 @@ def _price_ladder(val: ContractValuation | SpreadValuation,
                  for label, price in points if price is not None)
 
 
-def _v4_fields(val: ContractValuation | SpreadValuation, spot: float,
-              today: date, p: AnalysisParams,
+def _v4_fields(val: ContractValuation | SpreadValuation | ButterflyValuation,
+              spot: float, today: date, p: AnalysisParams,
               violations: frozenset[str] = frozenset(),
               resilience_cache: dict[int, ResilienceMetrics] | None = None,
               ) -> dict:
@@ -360,25 +434,48 @@ def _v4_fields(val: ContractValuation | SpreadValuation, spot: float,
     對整批 qualified 合約算一次、傳進來（FB5-03／#64）——單一候選這裡
     只做查表，不重算，避免每個候選各自重新掃一次全部合約。預設空集合：
     沒有呼叫端傳（理論上不會發生，所有 `_v4_fields` 呼叫都經過
-    `_single_leg_view`／`_spread_view`）就是「沒有已知違反」，不是壞掉。
+    `_single_leg_view`／`_spread_view`／`_butterfly_view`）就是「沒有
+    已知違反」，不是壞掉。
 
     `resilience_cache`：T09（#191）——韌性向量／完成度曲線／保本掃描
     透過 `scenarios.resilience_metrics()` 與文字報告路徑
     （`report._resilience_lines`）共用同一個依 `id(val)` 鍵入的快取，
     同一輪分析裡同一個候選不會被兩條路徑各自重算一次。不傳（`None`）
-    時退回每次都重算，行為與這層快取加入前完全一樣。"""
+    時退回每次都重算，行為與這層快取加入前完全一樣。
+
+    T15（#230）：`ButterflyValuation` 分支——`resilience_metrics()`
+    內部的 `completion_scan()` 對它已經短路回 `(None, None)`
+    （`scenarios.completion_scan` docstring），這裡因此額外算
+    `profit_region`（非單調結構的替代呈現，AC 明文「不硬擠成單一
+    數字」）：`ButterflyValuation.profit_region` 早在 `evaluate_
+    butterfly()` 算好，這裡只是把它投影成 `(lower, upper)` 元組（或
+    `None`）——不重新求根，不新增計算。既有兩個型別的 `profit_region`
+    恆為 `None`（`CandidateView` 欄位預設值），這是唯一的新增鍵，
+    其餘欄位對既有兩個型別逐位元不變。"""
     rm = resilience_metrics(val, spot, today, p, cache=resilience_cache)
     sv, curve, k, be = rm.scenario, rm.curve, rm.threshold, rm.breakeven
-    fr = friction(val)
+    profit_region = None
     if isinstance(val, SpreadValuation):
         expiry = val.long_leg.expiry
         zero_vol = val.long_leg.volume == 0 or val.short_leg.volume == 0
         # FB5-02（#63）：任一腿的買賣價差超過舊硬門檻公式就標——兩腿各自
-        # 的報價品質，不是合成後的淨值，合成淨值那個訊號已經有 fr>0.25。
+        # 的報價品質，不是合成後的淨值。
         wide_spread = (is_spread_wide(val.long_leg.bid, val.long_leg.ask, p)
                       or is_spread_wide(val.short_leg.bid, val.short_leg.ask, p))
         monotonicity_warning = (val.long_leg.contract_symbol in violations
                                 or val.short_leg.contract_symbol in violations)
+    elif isinstance(val, ButterflyValuation):
+        expiry = val.low_leg.expiry
+        zero_vol = (val.low_leg.volume == 0 or val.mid_leg.volume == 0
+                   or val.high_leg.volume == 0)
+        wide_spread = (is_spread_wide(val.low_leg.bid, val.low_leg.ask, p)
+                      or is_spread_wide(val.mid_leg.bid, val.mid_leg.ask, p)
+                      or is_spread_wide(val.high_leg.bid, val.high_leg.ask, p))
+        monotonicity_warning = (val.low_leg.contract_symbol in violations
+                                or val.mid_leg.contract_symbol in violations
+                                or val.high_leg.contract_symbol in violations)
+        if val.profit_region is not None:
+            profit_region = (val.profit_region.lower, val.profit_region.upper)
     else:
         expiry = val.contract.expiry
         zero_vol = val.contract.volume == 0
@@ -391,15 +488,12 @@ def _v4_fields(val: ContractValuation | SpreadValuation, spot: float,
         completion_prices=tuple(_grid_price(spot, p.target_price, k)
                                 for k, _ in curve),
         completion_threshold=k, breakeven_at_target=be,
-        retention=1.0 + dict(sv.entries)["S1"], friction=fr,
-        friction_amount=natural_cost(val) - mid_cost,
+        retention=1.0 + dict(sv.entries)["S1"],
         buffer_days=(date.fromisoformat(expiry) - p.anchor).days,
         # FB5-02（#63）：沿用既有的 `quote_warning` 機制，不新造一套——
-        # 買賣價差過寬只是這個既有布林旗標的第三個觸發條件。單調性違反
+        # 買賣價差過寬是這個既有布林旗標的觸發條件之一。單調性違反
         # 不加進來（見 `monotonicity_warning` 欄位註解）。
-        # ⚠ MVP V3（#104）guardrail：這一行的計算式本身凍結不動——改的
-        # 只有它「要不要對外顯示」，不是它「怎麼算」。
-        quote_warning=zero_vol or wide_spread or fr > 0.25,
+        quote_warning=zero_vol or wide_spread,
         wide_spread_warning=wide_spread,
         monotonicity_warning=monotonicity_warning,
         theta_day_rate=abs(_net_theta(val, spot, today, p)) / mid_cost,
@@ -409,7 +503,8 @@ def _v4_fields(val: ContractValuation | SpreadValuation, spot: float,
         # （`_resolve_rates` 建 `rate_by_expiry` 時所用），不是另外重算。
         rate_used=leg_rate(p, expiry),
         rate_tenor_years=(date.fromisoformat(expiry) - today).days / DAYS_PER_YEAR,
-        price_ladder=_price_ladder(val, p))
+        price_ladder=_price_ladder(val, p),
+        profit_region=profit_region)
 
 
 def _single_leg_view(v: ContractValuation, band: str,
@@ -498,14 +593,45 @@ def _spread_view(sv: SpreadValuation, idx: int, n_pairs: int, spot: float,
         **_v4_fields(sv, spot, today, p, violations, resilience_cache))
 
 
-def valuation_key(v: ContractValuation | SpreadValuation) -> str:
-    """需求八：Spread／單腳身分鍵，直接吃估值物件——`candidate_key()` 的
-    CandidateView 包裝只是它的一層外皮。T9 序列化全部有效候選的歷史五欄位
-    時不需要（也不划算）先建 CandidateView，所以底層鍵在這裡獨立出來重用，
-    公開給 `store.py` 跨模組呼叫（非本模組私用，因此不加底線）。"""
+def _butterfly_view(bv: ButterflyValuation, idx: int, n_triples: int, spot: float,
+                    today: date, p: AnalysisParams,
+                    violations: frozenset[str] = frozenset(),
+                    resilience_cache: dict[int, ResilienceMetrics] | None = None,
+                    ) -> CandidateView:
+    """T15（#230，Initial V2 spec #217）：`_spread_view()` 的三腿版本。
+    無 `catchup_price`／`comparator`（兩者皆只對兩腿 Spread 有意義，
+    預設 `None` 即可，不必顯式傳）。"""
+    pros, cons = build_butterfly_reasons(bv, idx, n_triples, p)
+    mv = _matrix_view(
+        lambda S, d, lo=bv.low_leg, mid=bv.mid_leg, hi=bv.high_leg, \
+              lc=bv.low_carry, mc=bv.mid_carry, hc=bv.high_carry:
+            butterfly_scenario_value(lo, mid, hi, S, d, p, low_carry=lc,
+                                     mid_carry=mc, high_carry=hc),
+        bv.net_worst, spot, p, today, bv.low_leg.expiry)
+    return CandidateView(
+        valuation=bv, pros=tuple(pros), cons=tuple(cons), matrix=mv,
+        baseline_pnl=bv.baseline_value - bv.net_worst,
+        baseline_return=butterfly_baseline_return(bv),
+        # 三腿都校準成功才算「這組候選 carry 校準過」——與 Spread 的
+        # 「兩腿都校準」同一種全稱判準延伸到三腿。
+        carry_calibrated=(bv.low_carry.carry_calibrated
+                          and bv.mid_carry.carry_calibrated
+                          and bv.high_carry.carry_calibrated),
+        **_v4_fields(bv, spot, today, p, violations, resilience_cache))
+
+
+def valuation_key(v: ContractValuation | SpreadValuation | ButterflyValuation) -> str:
+    """需求八：Spread／單腳／Butterfly 身分鍵，直接吃估值物件——
+    `candidate_key()` 的 CandidateView 包裝只是它的一層外皮。T9 序列化
+    全部有效候選的歷史五欄位時不需要（也不划算）先建 CandidateView，
+    所以底層鍵在這裡獨立出來重用，公開給 `store.py` 跨模組呼叫（非本
+    模組私用，因此不加底線）。"""
     if isinstance(v, SpreadValuation):
         return (f"{_strategy_of(v)}|{v.long_leg.strike:g}|"
                 f"{v.short_leg.strike:g}|{v.long_leg.expiry}")
+    if isinstance(v, ButterflyValuation):
+        return (f"{_strategy_of(v)}|{v.low_leg.strike:g}|"
+                f"{v.mid_leg.strike:g}|{v.high_leg.strike:g}|{v.low_leg.expiry}")
     return f"{_strategy_of(v)}|{v.contract.strike:g}|{v.contract.expiry}"
 
 
@@ -517,12 +643,18 @@ def _strategy_of(v) -> str:
     if isinstance(v, SpreadValuation):
         return ("bull-call-spread" if v.long_leg.option_type == "call"
                 else "bear-put-spread")
+    if isinstance(v, ButterflyValuation):
+        return "call-fly" if v.option_type == "call" else "put-fly"
     return "long-call" if v.contract.option_type == "call" else "long-put"
 
 
 def _expiry_of(cv: CandidateView) -> str:
     v = cv.valuation
-    return v.long_leg.expiry if isinstance(v, SpreadValuation) else v.contract.expiry
+    if isinstance(v, SpreadValuation):
+        return v.long_leg.expiry
+    if isinstance(v, ButterflyValuation):
+        return v.low_leg.expiry
+    return v.contract.expiry
 
 
 def _build_groups(results: tuple[StrategyResult, ...],
@@ -627,7 +759,22 @@ def _single_leg_result(p: AnalysisParams, snap: ChainSnapshot,
     # ——跟不合格的報價比較沒有意義，也算一次就好，不必每個候選各自重算。
     violations = monotonicity_violations(qualified)
     quality_flags = quality_flag_counts(qualified, violations, p)
-    vals = [evaluate_contract(c, snap.spot, today, p) for c in qualified]
+    # REPAIR-03（#240）：貫穿本次呼叫的 carry 快取——單腿路徑每張合約
+    # 只出現一次，此處不是重複度來源，但三個估值函式共用同一套
+    # memoization 呼叫慣例（見 `calibrate_leg()` docstring）。
+    carry_cache: dict[tuple, LegCarry] = {}
+    vals = [evaluate_contract(c, snap.spot, today, p, carry_cache)
+           for c in qualified]
+    # T05（#226，Initial V2 spec #217）：B 層——導出層數學安全網，接在
+    # 既有計算路徑之後、排名之前，獨立於 A 層（`apply_filters()`）成立。
+    # `n_qualified` 隨之改用 B 層之後的數量——「合格池」語意上就該是
+    # 「真的進得了排名」的那些，不是「通過 A 層但可能算出不可能值」。
+    vals, b_stage = validate_derived_values(
+        vals, natural_cost, baseline_return,
+        identity_fn=lambda v: v.contract.contract_symbol)
+    freport = dataclasses.replace(freport, stages=freport.stages + (b_stage,),
+                                  passed=len(vals))
+    n_qualified = len(vals)
     ranked = rank(vals, p)
     # T09（#191）：韌性／完成度指標只算一次，文字報告與 View 兩條路徑
     # 共用同一個快取——`ranked`／`vals_sorted`／`best_by_expiry` 全部
@@ -636,7 +783,7 @@ def _single_leg_result(p: AnalysisParams, snap: ChainSnapshot,
     # 兩條路徑之間、以及 View 自己的 `candidates`／`expiry_best` 兩個
     # 容器之間都能正確命中。
     resilience_cache: dict[int, ResilienceMetrics] = {}
-    text = render(snap, p, freport, ranked, n_qualified=len(qualified),
+    text = render(snap, p, freport, ranked, n_qualified=n_qualified,
                   today=today, violations=violations, quality_flags=quality_flags,
                   resilience_cache=resilience_cache)
     candidates = []
@@ -645,19 +792,27 @@ def _single_leg_result(p: AnalysisParams, snap: ChainSnapshot,
             continue
         v = ranked[band][0]
         candidates.append(_single_leg_view(v, band, ranked, snap.spot,
-                                           len(qualified), today, p,
+                                           n_qualified, today, p,
                                            violations, resilience_cache))
 
     # v4 spec §3.2: per-expiry best over ALL qualified (not just top-3 bands),
     # for expiry grouping. Cost control: CandidateView only built for winners.
+    #
+    # T09（#222）：`by_expiry` 順便在同一輪迴圈裡收集齊——`vals_sorted`
+    # 已是全域依 `(-baseline_return, *_tie_break_key)` 排序，分組後各自
+    # 的相對順序與獨立對該組排序等價（全域鍵不依賴其他組），跟
+    # `_spread_result()` 的既有裁示同一條理由：不必為 `expiry_top10`／
+    # `expiry_ranked` 另跑一次排序。
     vals_sorted = sorted(vals, key=lambda v: (-baseline_return(v),
                                               *_tie_break_key(v)))
     counts: dict[str, int] = {}
     best_by_expiry: dict[str, ContractValuation] = {}
+    by_expiry: dict[str, list[ContractValuation]] = {}
     for v in vals_sorted:
         exp = v.contract.expiry
         counts[exp] = counts.get(exp, 0) + 1
         best_by_expiry.setdefault(exp, v)
+        by_expiry.setdefault(exp, []).append(v)
     expiry_best = tuple(
         # #122：分級標籤同樣只讀 classification_delta（同一條紅線），
         # 不影響 best_by_expiry 本身的選取——那是 vals_sorted 依
@@ -666,16 +821,39 @@ def _single_leg_result(p: AnalysisParams, snap: ChainSnapshot,
         _single_leg_view(best_by_expiry[exp],
                          classify(best_by_expiry[exp].classification_delta,
                                  p.delta_bands),
-                         ranked, snap.spot, len(qualified), today, p,
+                         ranked, snap.spot, n_qualified, today, p,
                          violations, resilience_cache)
         for exp in sorted(best_by_expiry))
     expiry_counts = tuple(sorted(counts.items()))
+    # T09（#222）：單腿路徑補齊與 Spread 同形狀的到期日分組欄位——
+    # `expiry_top10`（各期前十名，含 Heatmap 矩陣）／`expiry_ranked`
+    # （該期全部有效候選，供 `all_candidates` 歷史五欄位序列化）。
+    # MVP 範圍當初只做 Spread（附錄A13）留下的空白，這裡照 `_spread_
+    # result()` 既有寫法補齊，不引入新的分組邏輯。
+    #
+    # ⚠ 刻意的一處不對稱（`/code-review` Standards 軸抓到、值得記錄）：
+    # `_spread_view()` 吃的是**本期**組內大小＋本期索引
+    # （`len(by_expiry[exp])`／`enumerate()`），因為 Spread 的
+    # `build_spread_reasons()` 文字明講「合格 N 組中第 idx+1」；這裡
+    # 仍傳**全域** `n_qualified`（跟 `candidates`／`expiry_best` 用的
+    # 是同一個既有呼叫慣例），因為 `_single_leg_view` 的 `n_qualified`
+    # 只餵 `build_reasons()` 拿去跟全域 `max_ret` 比較，不像 Spread 那樣
+    # 把組內大小寫進文字——單腿路徑沒有「本期組內大小」這個概念要傳。
+    expiry_top10 = tuple(
+        (exp, tuple(_single_leg_view(
+            v, classify(v.classification_delta, p.delta_bands), ranked,
+            snap.spot, n_qualified, today, p, violations, resilience_cache)
+            for v in by_expiry[exp][:10]))
+        for exp in sorted(by_expiry))
+    expiry_ranked = tuple((exp, tuple(by_expiry[exp]))
+                          for exp in sorted(by_expiry))
 
     return StrategyResult(
         strategy=p.strategy, status="ok", candidates=tuple(candidates),
-        ranked_bands=ranked, ranked_spreads=None, n_qualified=len(qualified),
+        ranked_bands=ranked, ranked_spreads=None, n_qualified=n_qualified,
         filter_report=freport, pair_report=None, report_text=text, message="",
         expiry_best=expiry_best, expiry_counts=expiry_counts,
+        expiry_top10=expiry_top10, expiry_ranked=expiry_ranked,
         quality_flags=quality_flags)
 
 
@@ -695,7 +873,23 @@ def _spread_result(p: AnalysisParams, snap: ChainSnapshot,
     # 各自查表——跟單腿路徑同一個函式、同一個口徑。
     violations = monotonicity_violations(qualified)
     quality_flags = quality_flag_counts(qualified, violations, p)
-    spreads = [evaluate_spread(l, s, snap.spot, today, p) for l, s in pairs]
+    # REPAIR-03（#240，#052 audit）：`C(n,2)` 配對讓同一條腿平均出現
+    # n-1 次，貫穿本次呼叫的字典把 `calibrate_leg()` 對同一條腿的反解
+    # 收斂成只做一次（見 `evaluate_spread()`／`calibrate_leg()` docstring）。
+    carry_cache: dict[tuple, LegCarry] = {}
+    spreads = [evaluate_spread(l, s, snap.spot, today, p, carry_cache)
+              for l, s in pairs]
+    # T05（#226，Initial V2 spec #217）：B 層——導出層數學安全網，接在
+    # 既有計算路徑之後、排名之前，獨立於 A 層（`generate_spread_pairs()`
+    # 既有的配對健全性檢查）成立。單位是「配對」，記在 `pair_report`
+    # 而非 `freport`（後者是腿級單位，混在一起會讓同一份報告裡出現
+    # 兩種不同單位的數字）。
+    spreads, b_stage = validate_derived_values(
+        spreads, natural_cost, spread_baseline_return,
+        identity_fn=lambda v: f"{v.long_leg.contract_symbol}/{v.short_leg.contract_symbol}")
+    pair_report = dataclasses.replace(
+        pair_report, passed=len(spreads), b_layer_removed=b_stage.removed,
+        b_layer_removed_examples=b_stage.removed_examples)
     ranked = rank_spreads(spreads, p)
     # T09（#191）：韌性／完成度指標只算一次，文字報告與 View 兩條路徑
     # 共用同一個快取——見 `_single_leg_result` 同一段註解，`spreads` 裡
@@ -754,12 +948,166 @@ def _spread_result(p: AnalysisParams, snap: ChainSnapshot,
         quality_flags=quality_flags)
 
 
+def _butterfly_timed_out(p: AnalysisParams, freport, pair_report,
+                         progress: str) -> StrategyResult:
+    """soft deadline 逾時的 `StrategyResult`——枚舉階段與估值階段兩個
+    出口共用（CLOSEOUT-004 Finding 3 讓 deadline 也涵蓋枚舉，逾時因此
+    有兩個發生點）。`progress` 是各自階段的進度描述；外框措辭（「分析
+    耗時超過安全上限……異常輸入的優雅降級，非常態」）維持 REPAIR-08
+    既有原文逐字不變。"""
+    return StrategyResult(
+        strategy=p.strategy, status="timed_out", candidates=(),
+        ranked_bands=None, ranked_spreads=None, n_qualified=0,
+        filter_report=freport, pair_report=pair_report, report_text=None,
+        message=f"分析耗時超過安全上限，{progress}後中止"
+               f"（異常輸入的優雅降級，非常態）。")
+
+
+def _butterfly_result(p: AnalysisParams, snap: ChainSnapshot,
+                      today: date, deadline: float | None = None) -> StrategyResult:
+    """T15（#230，Initial V2 spec #217）：`_spread_result()` 的三腿版本
+    ——同一套結構（A 層→B 層→排名→逐到期日分組），只是配對函式換成
+    `generate_butterfly_triples()`、估值換成 `evaluate_butterfly()`。
+
+    `deadline`：REPAIR-08（#245，FIX-04）——safety net 專用，`None`
+    （預設）行為不變。Butterfly 是三個估值函式裡重複度最高的一個
+    （`C(n,3)` 組合），異常龐大的鏈（例如某個 symbol 的 chain 意外
+    回傳遠超正常量級的合約數）最可能單獨在**這一個** family 內部就
+    耗盡整個 request 的時間預算，因此需要迴圈內部的檢查點，光靠
+    `_analyze()` 逐 subtype 檢查（下一個 subtype 才擋）不夠——那時
+    CLOSEOUT-004（PR #250 review Finding 3）：`deadline` 現在也傳進
+    `generate_butterfly_triples()`——枚舉階段本身在估值迴圈之前就跑完，
+    異常龐大的鏈可能在任何既有檢查點生效之前就耗掉時間預算或撐爆
+    `out` 清單。枚舉逾時後這裡直接走 `timed_out`，不會誤報成
+    `empty`（那句「目前沒有符合流動性與報價條件的合約」對逾時是假話）。
+    """
+    qualified, freport = apply_filters(snap.contracts, p)
+    # CLOSEOUT-004（Finding 3）：政策（時鐘、deadline）留在這裡，
+    # `filters.py` 只收到一個不帶語意的「該停了嗎」謂詞——見
+    # `generate_butterfly_triples()` docstring 說明為何刻意如此。
+    should_stop = (None if deadline is None
+                  else lambda: time.monotonic() >= deadline)
+    triples, pair_report = generate_butterfly_triples(
+        qualified, p, should_stop=should_stop)
+    if should_stop is not None and should_stop():
+        return _butterfly_timed_out(
+            p, freport, pair_report,
+            f"已枚舉 {pair_report.total_pairs} 組候選組合")
+    if not triples:
+        return StrategyResult(
+            strategy=p.strategy, status="empty", candidates=(),
+            ranked_bands=None, ranked_spreads=None, n_qualified=0,
+            filter_report=freport, pair_report=pair_report,
+            report_text=render_butterflies(snap, p, freport, pair_report, [], 0,
+                                           today),
+            message="目前沒有符合流動性與報價條件的合約。")
+    violations = monotonicity_violations(qualified)
+    quality_flags = quality_flag_counts(qualified, violations, p)
+    # REPAIR-03（#240，#052 audit）：三個估值函式裡重複度最高的一個
+    # ——`C(n,3)` 組合讓同一條腿平均出現 `C(n-1,2)` 次，production-
+    # scale 規模下這是 60 秒 timeout 的主因（見 `evaluate_butterfly()`／
+    # `calibrate_leg()` docstring）。
+    carry_cache: dict[tuple, LegCarry] = {}
+    butterflies = []
+    for idx, (lo, mid, hi) in enumerate(triples):
+        # REPAIR-08（#245）：每個候選都檢查——`evaluate_butterfly()`
+        # 本身已經是這整條路徑裡最貴的單一操作（IV 反解），逐一檢查的
+        # `time.monotonic()` 開銷相對可以忽略，換來的是逾時後最快
+        # 幾微秒內就能停下，不會「已經知道超時、還硬算完剩下幾萬組」。
+        if deadline is not None and time.monotonic() >= deadline:
+            return _butterfly_timed_out(
+                p, freport, pair_report,
+                f"已估值 {idx}／{len(triples)} 組候選")
+        butterflies.append(
+            evaluate_butterfly(lo, mid, hi, snap.spot, today, p, carry_cache))
+    # T05（#226）：B 層——導出層數學安全網，這裡額外傳 `max_loss_fn`
+    # （#213 Addendum：defined-risk 候選的 max_loss 必須 > 0），既有
+    # 單腿／Spread 兩個呼叫端不傳這個參數，行為不受影響。
+    butterflies, b_stage = validate_derived_values(
+        butterflies, natural_cost, butterfly_baseline_return,
+        identity_fn=lambda v: (f"{v.low_leg.contract_symbol}/"
+                               f"{v.mid_leg.contract_symbol}/"
+                               f"{v.high_leg.contract_symbol}"),
+        max_loss_fn=lambda v: v.max_loss)
+    pair_report = dataclasses.replace(
+        pair_report, passed=len(butterflies), b_layer_removed=b_stage.removed,
+        b_layer_removed_examples=b_stage.removed_examples)
+    ranked = rank_butterflies(butterflies, p)
+    resilience_cache: dict[int, ResilienceMetrics] = {}
+    text = render_butterflies(snap, p, freport, pair_report, ranked,
+                              n_triples=pair_report.passed, today=today,
+                              violations=violations, quality_flags=quality_flags,
+                              resilience_cache=resilience_cache)
+    candidates = []
+    for i, bv in enumerate(ranked[:3]):
+        candidates.append(_butterfly_view(bv, i, pair_report.passed, snap.spot,
+                                          today, p, violations, resilience_cache))
+
+    all_ranked = sorted(butterflies, key=lambda b: (-butterfly_baseline_return(b),
+                                                    *_butterfly_tie_key(b)))
+    counts: dict[str, int] = {}
+    best_by_expiry: dict[str, tuple[int, ButterflyValuation]] = {}
+    by_expiry: dict[str, list[ButterflyValuation]] = {}
+    for idx, bv in enumerate(all_ranked):
+        exp = bv.low_leg.expiry
+        counts[exp] = counts.get(exp, 0) + 1
+        if exp not in best_by_expiry:
+            best_by_expiry[exp] = (idx, bv)
+        by_expiry.setdefault(exp, []).append(bv)
+    expiry_best = tuple(
+        _butterfly_view(best_by_expiry[exp][1], best_by_expiry[exp][0],
+                        pair_report.passed, snap.spot, today, p, violations,
+                        resilience_cache)
+        for exp in sorted(best_by_expiry))
+    expiry_counts = tuple(sorted(counts.items()))
+    expiry_top10 = tuple(
+        (exp, tuple(_butterfly_view(bv, i, len(by_expiry[exp]), snap.spot,
+                                    today, p, violations, resilience_cache)
+                    for i, bv in enumerate(by_expiry[exp][:10])))
+        for exp in sorted(by_expiry))
+    expiry_ranked = tuple((exp, tuple(by_expiry[exp]))
+                          for exp in sorted(by_expiry))
+
+    return StrategyResult(
+        strategy=p.strategy, status="ok", candidates=tuple(candidates),
+        ranked_bands=None, ranked_spreads=None,
+        ranked_butterflies=tuple(ranked),
+        n_qualified=pair_report.passed, filter_report=freport,
+        pair_report=pair_report, report_text=text, message="",
+        expiry_best=expiry_best, expiry_counts=expiry_counts,
+        expiry_top10=expiry_top10, expiry_ranked=expiry_ranked,
+        quality_flags=quality_flags)
+
+
 def _comparison(results: tuple[StrategyResult, ...]) -> tuple[ComparisonRow, ...]:
     rows = []
     for res in results:
         if res.status != "ok" or not res.candidates:
             continue
-        if res.strategy in SPREAD_STRATEGIES:
+        if res.strategy in BUTTERFLY_STRATEGIES:
+            bv = res.ranked_butterflies[0]
+            # `ComparisonRow.breakeven` 是單一 scalar 欄位（跨 family 比較表
+            # 的既有形狀），但 Butterfly 的 `breakeven_points` 可能是空的
+            # ——兩種成因：到期時連峰值都賺不到（`profit_region` 為
+            # `None`），或 CLOSEOUT-004 起的另一種，兩側翼外平台都高於
+            # 進場成本因此處處獲利、沒有由虧轉盈的價位（`profit_region`
+            # 非 `None`，見 `butterfly_breakeven_and_profit_region()`）。
+            # 後者在 production 走不到（`generate_butterfly_triples()` 的
+            # `net_mid > 0` 讓 debit 恆有一側是真根），但這裡的 fallback
+            # 對兩者一視同仁——反正都沒有真正的損益兩平點可填。
+            # `bv.low_leg.strike` 不是損益兩平點，只是這個既有 scalar
+            # 欄位在「沒有損益兩平點」情境下的佔位值（比較表本身仍要顯示
+            # 一個數字），不得誤讀成任何財務意義。
+            breakeven = (bv.breakeven_points[0] if bv.breakeven_points
+                        else bv.low_leg.strike)
+            rows.append(ComparisonRow(
+                strategy=res.strategy,
+                label=(f"買 {bv.low_leg.strike:g} / 賣 2×{bv.mid_leg.strike:g} / "
+                      f"買 {bv.high_leg.strike:g}"),
+                expiry=bv.low_leg.expiry, cost=bv.net_worst,
+                baseline_return=butterfly_baseline_return(bv),
+                breakeven=breakeven, max_profit=bv.max_profit))
+        elif res.strategy in SPREAD_STRATEGIES:
             sv = res.ranked_spreads[0]
             rows.append(ComparisonRow(
                 strategy=res.strategy,
@@ -893,7 +1241,14 @@ def _resolve_q(p: AnalysisParams, snap: ChainSnapshot, today: date,
 def _analyze(request: AnalysisRequest, snap: ChainSnapshot,
              snapshot_path: str, progress: Progress | None,
              rate_curve_loader: RateCurveLoader | None = None,
-             dividend_loader: DividendLoader | None = None) -> AnalysisResult:
+             dividend_loader: DividendLoader | None = None,
+             deadline: float | None = None) -> AnalysisResult:
+    """`deadline`：REPAIR-08（#245，FIX-04）——`time.monotonic()` 的
+    絕對時間點（不是相對秒數），`None`（預設）＝不啟用，行為與這個
+    safety net 存在之前完全一樣。呼叫端（`run`／`run_with_snapshot`／
+    `run_offline`）各自把 `deadline_seconds` 換算成這個絕對值再傳
+    進來，跟既有 `refresh_run` 的 `deadline = time.monotonic() +
+    budget.total_seconds()` 同一種寫法。"""
     today = snapshot_today(snap.fetched_at)
     base = request.base_params
     month = ensure_month_open(TargetMonth.from_key(base.target_month), today)
@@ -909,21 +1264,41 @@ def _analyze(request: AnalysisRequest, snap: ChainSnapshot,
     request = dataclasses.replace(request, base_params=base)
     results = []
     _emit(progress, "正在過濾合約……")
+    # T08（#225，Initial V2 spec #217）：Direction 是衍生值，分析當下
+    # 算一次、不落盤、不進事件——由 `target_price` 相對 `spot` 推導，
+    # 三態、無容忍帶。取代舊版逐 subtype 各自呼叫 `is_bullish()` 再湊
+    # 一次 bull/bear 互斥判斷的寫法。
+    direction = derive_direction(base.target_price, snap.spot)
     for s in request.strategies:
         p = dataclasses.replace(base, strategy=s)
-        bull = is_bullish(s)
-        mismatch = ((bull and p.target_price <= snap.spot)
-                    or ((not bull) and p.target_price >= snap.spot))
+        mismatch = not subtype_eligible(s, direction)
         if mismatch and not base.force:
             results.append(StrategyResult(
                 strategy=s, status="skipped_direction", candidates=(),
                 ranked_bands=None, ranked_spreads=None, n_qualified=0,
                 filter_report=None, pair_report=None, report_text=None,
-                message=_skip_message(s)))
+                message=_skip_message(direction)))
+            continue
+        # REPAIR-08（#245，FIX-04）：per-subtype soft deadline 檢查點
+        # ——safety net 專用，只處理異常輸入（見上方 docstring 與
+        # `ANALYSIS_SOFT_DEADLINE` 定義處的紅線）。前面已經跑掉太多
+        # 時間（通常是某個更早的 subtype 本身異常龐大）時，不再啟動
+        # 新的昂貴計算，直接標記逾時，讓 request 拿回明確狀態而不是
+        # 被平台層 60 秒硬 kill。
+        if deadline is not None and time.monotonic() >= deadline:
+            results.append(StrategyResult(
+                strategy=s, status="timed_out", candidates=(),
+                ranked_bands=None, ranked_spreads=None, n_qualified=0,
+                filter_report=None, pair_report=None, report_text=None,
+                message="分析耗時超過安全上限，這個策略本輪未計算完成"
+                       "（異常輸入的優雅降級，非常態）。"))
             continue
         if s in SPREAD_STRATEGIES:
             _emit(progress, f"正在窮舉 {STRATEGY_LABELS[s]}……")
             results.append(_spread_result(p, snap, today))
+        elif s in BUTTERFLY_STRATEGIES:
+            _emit(progress, f"正在窮舉 {STRATEGY_LABELS[s]}……")
+            results.append(_butterfly_result(p, snap, today, deadline=deadline))
         else:
             _emit(progress, f"正在比較 {STRATEGY_LABELS[s]}……")
             results.append(_single_leg_result(p, snap, today))
@@ -984,20 +1359,43 @@ def fetch_and_save(symbol: str) -> tuple[ChainSnapshot, str]:
     return snap, str(out)
 
 
-def run(request: AnalysisRequest, progress: Progress | None = None) -> AnalysisResult:
+def _absolute_deadline(deadline_seconds: float | None) -> float | None:
+    """REPAIR-08（#245）：把呼叫端傳入的**相對**秒數換算成
+    `_analyze()` 要的**絕對** `time.monotonic()` 時間點，三個入口
+    （`run`／`run_with_snapshot`／`run_offline`）共用同一條換算，
+    避免各自重複同一行算式。`None` 原樣傳回 `None`（不啟用）。"""
+    if deadline_seconds is None:
+        return None
+    return time.monotonic() + deadline_seconds
+
+
+def run(request: AnalysisRequest, progress: Progress | None = None, *,
+       deadline_seconds: float | None = None) -> AnalysisResult:
+    """`deadline_seconds`：REPAIR-08（#245）——`/code-review` Spec 軸
+    抓到的真發現：這裡的抓鏈（`fetch_and_save`）本身就可能是票面點名
+    的「vendor 回應異常慢」那個異常輸入情境，deadline 計時點因此必須
+    在抓鏈**之前**就啟動，才能真的涵蓋整個 request 的總耗時（比照
+    `refresh_run` 的 `REFRESH_RUN_BUDGET` 在任何抓鏈動作之前就先算好
+    deadline 的既有寫法）——先前版本把 `_absolute_deadline()` 擺在
+    抓鏈之後才呼叫，deadline 只涵蓋到分析階段，沒涵蓋抓鏈階段，
+    與這段 docstring／`ANALYSIS_SOFT_DEADLINE` 定義處聲稱的「跟
+    `refresh_run` 同一種寫法」名不符實，已修正。"""
     _validate_request(request)
+    deadline = _absolute_deadline(deadline_seconds)
     _emit(progress, f"正在抓取 {request.symbol} 市場資料……")
     snap, out = fetch_and_save(request.symbol)
     return _analyze(request, snap, out, progress,
                     rate_curve_loader=default_rate_curve_loader,
-                    dividend_loader=default_dividend_loader)
+                    dividend_loader=default_dividend_loader,
+                    deadline=deadline)
 
 
 def run_with_snapshot(request: AnalysisRequest, snap: ChainSnapshot,
                       snapshot_ref: str = "(in-memory)",
                       progress: Progress | None = None, *,
                       rate_curve_loader: RateCurveLoader | None = None,
-                      dividend_loader: DividendLoader | None = None
+                      dividend_loader: DividendLoader | None = None,
+                      deadline_seconds: float | None = None,
                       ) -> AnalysisResult:
     """V1（#48）：分析一份**已在記憶體中**的快照，不讀寫檔案系統。
 
@@ -1008,23 +1406,39 @@ def run_with_snapshot(request: AnalysisRequest, snap: ChainSnapshot,
     既有警告（安全降級，不會拋錯）。新前端的原始資料區（V8／#56）
     改由 API 提供，不再從路徑重讀。
 
-    與 `run_offline` 同樣預設不接利率／股利管線（決定性）。"""
+    與 `run_offline` 同樣預設不接利率／股利管線（決定性）。
+
+    `deadline_seconds`：REPAIR-08（#245）——api_app 層（HTTP 入口）
+    走這裡注入 `service.ANALYSIS_SOFT_DEADLINE`，`None`（預設）＝
+    不啟用，既有呼叫端（測試直接呼叫）行為不變。⚠ 這裡收到的必須是
+    **剩餘**秒數，不是整個 request 的原始預算——本函式不做任何抓鏈
+    （V1／#48 的既有設計，快照已在記憶體中），呼叫端若在抓鏈之前就
+    已經算過一次絕對 deadline，傳進來時要先扣掉抓鏈已經花掉的時間
+    （`api_app/main.py::_analyze()` closure 的既有寫法），不能重新
+    起算，否則等於讓抓鏈那段時間不計入 deadline（`/code-review` Spec
+    軸抓到的真發現：先前 `api_app/main.py` 曾經就是這樣寫的）。"""
     _validate_request(request)
     return _analyze(request, snap, snapshot_ref, progress,
                     rate_curve_loader=rate_curve_loader,
-                    dividend_loader=dividend_loader)
+                    dividend_loader=dividend_loader,
+                    deadline=_absolute_deadline(deadline_seconds))
 
 
 def run_offline(request: AnalysisRequest, snapshot_path: str,
                 progress: Progress | None = None, *,
                 rate_curve_loader: RateCurveLoader | None = None,
-                dividend_loader: DividendLoader | None = None
+                dividend_loader: DividendLoader | None = None,
+                deadline_seconds: float | None = None,
                 ) -> AnalysisResult:
     """離線重放預設不接利率／股利管線（決定性、零網路）；networked
     呼叫端（如 workspace 群組刷新，自己剛抓完 chain）可明示傳 loader
-    啟用。"""
+    啟用。
+
+    `deadline_seconds`：REPAIR-08（#245）——測試用這個參數模擬異常
+    輸入下的 soft deadline 生效情境，`None`（預設）＝不啟用。"""
     _validate_request(request)
     snap = load_snapshot(snapshot_path)
     return _analyze(request, snap, str(snapshot_path), progress,
                     rate_curve_loader=rate_curve_loader,
-                    dividend_loader=dividend_loader)
+                    dividend_loader=dividend_loader,
+                    deadline=_absolute_deadline(deadline_seconds))

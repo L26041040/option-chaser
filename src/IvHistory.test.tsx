@@ -26,6 +26,7 @@ const KEY = "bull-call-spread|118C|125C|2026-09-18";
 function leg(overrides: Partial<Leg> = {}): Leg {
   return { strike: 118, option_type: "call", expiry: "2026-09-18",
           ask: 5, bid: 4.8, iv: 0.24, volume: 100, open_interest: 500,
+          side: "buy", quantity: 1,
           ...overrides };
 }
 
@@ -37,6 +38,17 @@ function spreadCandidate(): Candidate {
 function longCallCandidate(): Candidate {
   return { candidate_key: "long-call|118|2026-09-18", legs: [leg()] } as
     unknown as Candidate;
+}
+
+/** T16（#232，Initial V2）：三腿候選（Butterfly）——這塊功能結構上只
+ *  認得單腿與兩腿，見 `IvHistory.tsx` 的 `supportsIvHistory` 註解。 */
+function butterflyCandidate(): Candidate {
+  return {
+    candidate_key: "call-fly|100|106|115|2026-10-16",
+    legs: [leg({ strike: 100 }),
+          leg({ strike: 106, side: "sell", quantity: 2 }),
+          leg({ strike: 115 })],
+  } as unknown as Candidate;
 }
 
 function contract(overrides: Partial<ContractIdentity> = {}): ContractIdentity {
@@ -276,6 +288,38 @@ describe("閘門（#126）", () => {
 
     const settingsCalls = urls.filter((u) => u.startsWith("/api/settings"));
     expect(settingsCalls).toHaveLength(1);
+  });
+});
+
+describe("第二個閘門（T16／#232，Initial V2）：Butterfly（三腿以上）", () => {
+  it("即使已解鎖，三腿候選也不輸出任何 DOM 節點", async () => {
+    const urls = mockApi({ enabled: true });
+    const { container } = render(
+      <IvHistory scenarioId="s1" candidate={butterflyCandidate()} />);
+    await waitFor(() => expect(urls.some((u) => u.startsWith("/api/settings")))
+      .toBe(true));
+    expect(container).toBeEmptyDOMElement();
+  });
+
+  it("即使已解鎖，三腿候選也一個 IV 請求都不發——settings 仍照常查一次" +
+     "（不受候選腿數影響），但不會有任何 iv-history 呼叫", async () => {
+    const urls = mockApi({ enabled: true });
+    render(<IvHistory scenarioId="s1" candidate={butterflyCandidate()} />);
+    await waitFor(() => expect(urls.some((u) => u.startsWith("/api/settings")))
+      .toBe(true));
+    expect(ivCalls(urls)).toEqual([]);
+  });
+
+  it("換成兩腿候選就恢復正常請求——閘門只針對三腿以上，不是永久壞掉", async () => {
+    const urls = mockApi({ enabled: true });
+    const { rerender } = render(
+      <IvHistory scenarioId="s1" candidate={butterflyCandidate()} />);
+    await waitFor(() => expect(urls.some((u) => u.startsWith("/api/settings")))
+      .toBe(true));
+    expect(ivCalls(urls)).toEqual([]);
+
+    rerender(<IvHistory scenarioId="s1" candidate={spreadCandidate()} />);
+    await waitFor(() => expect(ivCalls(urls)).toHaveLength(1));
   });
 });
 

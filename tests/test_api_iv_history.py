@@ -4,6 +4,7 @@
 `historical_surface` 注入一個會 assert 失敗的假體，任何偷跑都會紅燈。
 """
 import dataclasses
+import sys
 from datetime import date, timedelta
 
 import pytest
@@ -26,8 +27,35 @@ from option_chaser.ratecurve import RateCurve
 from option_chaser.valuation import (DAYS_PER_YEAR, american_price,
                                      days_between)
 from api_app.clock import ny_today
+from api_app import main as api_main
 
 FIX = "tests/fixtures/xyz_v4_six_expiries.json"
+
+# Hermetic（#236）：這個檔案的 `_client()` 早就把 rate／dividend／vendor
+# 三個對外接縫都注入了假體，唯一剩下的非 hermetic 來源是**系統當天日期**。
+#
+# 為什麼會咬人：`FIX` 的 `fetched_at` 是 2026-07-15，候選兩腿的到期日是
+# 2026-08-07。多數測試以 `ny_today()` 為終點造合成觀測，真實日曆一旦走過
+# 到期日，落在到期日當天或之後的那些觀測就會被 `implied_vol()`（正確地）
+# 判為無解（T <= 0），可用觀測數靜靜地掉下來。實測 2026-08-30 那天：
+# 賣腿 60 筆只剩 15 筆可用、全部落在 2026-07-16 之前，而 `delta_4w` 的
+# 基準窗是 [today-42, today-21]——窗還沒開資料就沒了，於是回報
+# unavailable、發出 warning，`test_a_healthy_request_writes_zero_
+# diagnostics_rows_...` 的「這個情境本來就該全部成功」前提整個不成立。
+#
+# 修法是把時鐘釘在 fixture 自己的時代（＝它的 `fetched_at` 那天），
+# **不動 production 的日期語意**：`api_app.clock.ny_today` 本身不改，
+# 只在測試期間把 `api_app.main` 與本模組各自綁定的那個名字換掉。
+FROZEN_TODAY = date(2026, 7, 15)
+
+
+@pytest.fixture(autouse=True)
+def _frozen_clock(monkeypatch):
+    """整個檔案共用同一個「今天」——與 `FIX` 的 `fetched_at` 同一天，
+    六個到期日因此全部在未來，合成觀測不會撞到已到期的合約。"""
+    monkeypatch.setattr(api_main, "ny_today", lambda: FROZEN_TODAY)
+    monkeypatch.setattr(sys.modules[__name__], "ny_today",
+                        lambda: FROZEN_TODAY)
 PROVIDER = providers.MARKETDATA_APP.id
 TOKEN = "mdapp_live_SECRET1234abcd"
 
@@ -158,7 +186,8 @@ def _scenario(client, *, target_price=130.0, target_month="2026-09"):
     """建立**並跑一次分析**——建立本身不分析，沒有結果就沒有候選可查。"""
     sid = client.post("/api/scenarios", json={
         "symbol": "XYZ", "target_price": target_price,
-        "target_month": target_month}).json()["id"]
+        "target_month": target_month,
+        "strategies": ["vertical-spread"]}).json()["id"]
     client.post(f"/api/scenarios/{sid}/refresh")
     return sid
 
@@ -2490,12 +2519,17 @@ def test_delta_4w_is_none_without_a_baseline_window_observation(db):
     sid = _scenario(client)
     key = _candidate_key(client, sid)
     buy = _leg_identities(client, sid, key)[0]
-    end = date.fromisoformat(_before_expiry(buy["expiry"], 50))
-    # 這五天全部落在 [today-42, today-21] 窗口之外（比窗口起點還早，
-    # 選這個位置是遷就這張合約自己的到期日——太靠近到期日時間價值
-    # 趨近 0、無法反解，見 `_before_expiry` 既有說明）——用真正可反解
-    # 的觀測，才是在測「窗口本身擋住了」而不是「反正沒有任何有效觀測，
-    # Δ4w 當然是 None」這種語意被架空的假陽性。
+    # 這五天全部落在 [today-42, today-21] 窗口之外——**比窗口起點還早**。
+    # 用真正可反解的觀測，才是在測「窗口本身擋住了」，而不是「反正沒有
+    # 任何有效觀測，Δ4w 當然是 None」這種語意被架空的假陽性。
+    #
+    # Hermetic（#236）：錨點必須跟著**今天**走，不能跟著到期日走。
+    # Δ4w 的基準窗是相對 today 定義的，原本寫成「到期日前 50 天」只是
+    # 在當時的真實日曆下**碰巧**落在窗口之前；日曆一走，同一組資料就
+    # 掉進窗口裡、Δ4w 算得出來，這條測試就會紅。改成從 today 往回數
+    # 43 天（窗口起點是 today-42），語意直接寫在算式上。這張合約的到期日
+    # 遠在其後，時間價值充足、反解不成問題。
+    end = FROZEN_TODAY - timedelta(days=43)
     rec._points_by_symbol[buy["contract_symbol"]] = _synthetic_consecutive_days(
         end, 5, [0.10, 0.12, 0.14, 0.16, 0.18], option_type=buy["option_type"],
         strike=buy["strike"], expiration=buy["expiry"])
