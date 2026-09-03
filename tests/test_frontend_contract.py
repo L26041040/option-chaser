@@ -12,7 +12,8 @@
 import re
 from pathlib import Path
 
-from option_chaser.models import DIRECTION_LABELS, DIRECTIONS, STRATEGIES
+from option_chaser.models import (DIRECTION_LABELS, DIRECTIONS, FAMILIES,
+                                  STRATEGIES, STRATEGY_FAMILY)
 from option_chaser.report import STRATEGY_LABELS
 
 
@@ -70,6 +71,35 @@ def test_every_direction_has_a_display_name_on_both_sides():
             f"src/detail.ts 的 DIRECTION_LABELS 缺 {direction}，或與後端"
             f" models.DIRECTION_LABELS 不一致（後端是 "
             f"{DIRECTION_LABELS[direction]!r}）")
+
+
+def test_every_subtype_maps_to_the_same_family_on_both_sides():
+    """OPTION-CHASER-CLOSEOUT-003（PR #250 merge gate review 補件）：
+    `src/family.ts` 的 `SUBTYPE_FAMILY`／`FAMILIES` 是後端
+    `option_chaser/models.py::STRATEGY_FAMILY`／`FAMILIES` 的手抄副本
+    ——`family.ts` 檔頭自己寫著「兩邊各自一份、內容必須逐字同步。新增
+    subtype 時記得同時更新這裡」，但先前只有這句註解、沒有測試。
+
+    **這個 bug class 已經真的咬過一次**：T15（#230）純後端票新增
+    `call-fly`／`put-fly`，`SUBTYPE_FAMILY` 沒跟上，Butterfly 候選被
+    歸進錯誤的 family 分頁，直到 T16（#232）前端票才補上（見
+    `src/family.ts` 該兩行上方的註解）。當時沒有補守門測試，這裡補上
+    ——沿用 `test_every_strategy_has_a_display_name_on_both_sides`／
+    `test_every_direction_has_a_display_name_on_both_sides` 同一種
+    「掃前端原始碼、比對後端真相來源」手法。
+
+    漏掉某個 subtype 時 `familyOf()` 的 `?? subtype` 備援會讓它自成
+    一個假 family，分頁列會多出一個代碼當標題的分頁，不會壞但明顯
+    錯誤。"""
+    front = _read("src/family.ts")
+    for subtype, family in STRATEGY_FAMILY.items():
+        assert f'"{subtype}": "{family}"' in front, (
+            f"src/family.ts 的 SUBTYPE_FAMILY 缺 {subtype}，或與後端"
+            f" models.STRATEGY_FAMILY 不一致（後端是 {family!r}）")
+    for family in FAMILIES:
+        assert f'"{family}"' in front, (
+            f"src/family.ts 的 FAMILIES 缺 {family}，與後端"
+            f" models.FAMILIES 不同步")
 
 
 # MVP V3（#105，spec #102 決策 G）起，韌性 7 情境表已從 Analysis Report

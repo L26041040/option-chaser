@@ -56,11 +56,24 @@ def return_at_price(
     `return_at_price(v, p.target_price, p) == baseline_return(v)` 由測試釘住，
     且**必須在 expiry != anchor 的候選上驗證**——兩者相等時這條斷言是空的。
 
-    估值日**兩條路徑不同，各自沿用既有裁示**，不可統一：
-    - 價差／Butterfly＝該組**自身的到期日**（T3／#17：排名估值改為各
-      Spread 自身到期日的內在價值，見 `valuation.evaluate_spread`／
+    估值日**三個 family 一律是該候選自身的到期日**：
+    - 價差／Butterfly＝T3／#17 既有裁示（見 `valuation.evaluate_spread`／
       `evaluate_butterfly`）
-    - 單腿＝日曆錨點（附錄 A9，見 `valuation.evaluate_contract`）
+    - 單腿＝REPAIR-09（#246，spec #237 OD-02）把排名基準估值日從固定
+      日曆錨點（附錄 A9）改成候選自身到期日之後，這裡跟著對齊（見
+      `valuation.evaluate_contract`）
+
+    OPTION-CHASER-CLOSEOUT-003：這一行原本停在 `p.anchor`——REPAIR-09
+    依票面明文「`ranking.py` 零改動」未動它，於是上面那條「口徑完全
+    相同」的不變量對**到期日晚於錨點的單腿候選**變成假的（實測
+    strike 110／ask 3.2／target 120／anchor 2026-10-16／expiry
+    2026-12-18：`baseline_return` 2.125 vs 這裡 2.942，差的正是
+    REPAIR-09 要消滅的殘留時間價值）。守門測試
+    `test_single_leg_at_target_price_equals_baseline_return` 的 fixture
+    到期日恰好等於錨點，正是它姊妹測試 docstring 早就點名的那種空
+    斷言，因此沒有紅燈。本輪 merge gate review 抓到並修正，單腿分支
+    改用候選自身到期日；價差／Butterfly 兩個分支本來就是自身到期日，
+    一個字沒動，V1 Vertical 凍結數值逐位元不變。
 
     不改排名（spec #47 明文：仍以目標價排名）——本函式只供呈現。
     """
@@ -78,7 +91,8 @@ def return_at_price(
             high_carry=val.high_carry)
         cost = val.net_worst
     else:
-        value = scenario_leg_value(val.contract, S, p.anchor, p, carry=val.carry)
+        at = date.fromisoformat(val.contract.expiry)
+        value = scenario_leg_value(val.contract, S, at, p, carry=val.carry)
         cost = val.contract.ask
     return (value - cost) / cost
 

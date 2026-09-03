@@ -96,7 +96,30 @@ Initial V2 的 T02（逐腿 payoff 直算）與 T03（包絡量由 payoff 導出
    `target = p.anchor`，後改為直接沿用既有變數 `expiry`，不再另立
    `target` 別名）。
 
-除了以上七個已知、已記錄的例外，其餘期間跑出差異＝有 bug，不是基準
+8. **OPTION-CHASER-CLOSEOUT-003（2026-09-03，PR #250 merge gate
+   review）**——`ranking.return_at_price()` 的**單腿**分支估值日補上
+   REPAIR-09（#246）的修正。REPAIR-09 依票面明文「`ranking.py` 零
+   改動」只改了 `valuation.evaluate_contract()`，`return_at_price()`
+   還停在固定日曆錨點（附錄 A9），於是該函式 docstring 自己宣告的
+   不變量（`return_at_price(v, p.target_price, p) == baseline_
+   return(v)`，「口徑與主排名數字完全相同」）對**到期日晚於錨點的
+   單腿候選**變成假的；守門測試
+   `test_single_leg_at_target_price_equals_baseline_return` 的 fixture
+   到期日恰好等於錨點，正是它姊妹測試（spread 版）docstring 早就
+   點名的**空斷言**，因此沒有紅燈。本輪 merge gate 的兩軸
+   `/code-review` 獨立收斂到同一個缺陷後修正。
+   影響範圍：**只有一行**——`long-call|90|2026-11-20`（唯一到期日
+   晚於這份 fixture 錨點的單腿候選）的 `price_ladder[0].return`
+   `1.2652057829186634` → `1.2388059701492538`，新值正好等於該候選
+   在 REPAIR-09 已經修正過的 `baseline_return`，也就是不變量恢復
+   本身。`long-put`／`bull-call-spread`／`bear-put-spread` 三個策略
+   逐位元零差異（實測 `bitwise_frozen` 四條測試：1 failed／3 passed，
+   只有 long-call 紅），V1 Vertical 凍結硬約束成立。守門測試同時
+   補上 `test_single_leg_equality_holds_when_expiry_is_not_the_anchor`
+   （比照 spread 版 parametrize 錨點前／上／後三種到期日），已驗證
+   對修法前的程式碼會紅燈。
+
+除了以上八個已知、已記錄的例外，其餘期間跑出差異＝有 bug，不是基準
 過期。
 
     PYTHONPATH=. .venv/bin/python scripts/gen_numeric_baseline.py

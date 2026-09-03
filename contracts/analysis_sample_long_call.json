@@ -1241,7 +1241,7 @@
         {
           "label": "target",
           "price": 130.0,
-          "return": 2.543136242026414
+          "return": 1.6086956521739133
         }
       ],
       "profit_region": null,
@@ -2075,7 +2075,7 @@
         {
           "label": "target",
           "price": 130.0,
-          "return": 2.891670674108008
+          "return": 1.3188405797101448
         }
       ],
       "profit_region": null,
@@ -2283,7 +2283,7 @@
         {
           "label": "target",
           "price": 130.0,
-          "return": 0.7547103967532778
+          "return": 0.75
         }
       ],
       "profit_region": null,
