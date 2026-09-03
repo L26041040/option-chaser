@@ -6,8 +6,7 @@
  * 與紐約日曆算好的。本檔只決定「怎麼排、怎麼寫」。
  */
 import {
-  legQuantityPrefix,
-  legSide,
+  formatLegs,
   type FailureStage,
   type RefreshFailure,
   type RepresentativeCandidate,
@@ -182,10 +181,10 @@ export function isStale(iso: string | null, now: Date): boolean {
  * Spread——這正是「strategy 名稱是新的、legs／strikes 卻對不上」的
  * 根因：`rep.strategy` 與 `rep.legs` 其實同源自同一個 `rep` 物件，
  * 只是舊版格式化函式本身把第三隻腿弄丟了，不是兩個資料來源不同步。
- * 改為逐腿迭代（`detail.ts::candidateTitle()` 同一套寫法，共用
- * `legSide()`／`legQuantityPrefix()`），對既有兩腿／單腿候選輸出
- * 逐字不變（`quantity` 恆為 1 時 `legQuantityPrefix()` 回傳空字串），
- * 三腿以上的候選才會多印出中腿的口數標示。
+ * 改為逐腿迭代，對既有兩腿／單腿候選輸出逐字不變（`quantity` 恆為 1
+ * 時口數標示回傳空字串），三腿以上的候選才會多印出中腿的口數標示。
+ * 迭代邏輯本身與 `detail.ts::candidateTitle()` 逐字相同，抽成
+ * `api.ts::formatLegs()` 共用（`/code-review` Standards 軸抓到）。
  *
  * `null`（尚未分析、或該期零合格候選）說「—」，不是編一組假的候選。
  */
@@ -193,9 +192,7 @@ export function formatRepresentativeLegs(
   rep: RepresentativeCandidate | null,
 ): string {
   if (rep === null) return "—";
-  return rep.legs
-    .map((leg) => `${legSide(leg)} ${legQuantityPrefix(leg)}${leg.strike}`)
-    .join(" / ");
+  return formatLegs(rep.legs);
 }
 
 /**

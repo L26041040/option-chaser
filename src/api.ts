@@ -91,6 +91,24 @@ export function legQuantityPrefix(leg: { quantity: number }): string {
   return leg.quantity > 1 ? `${leg.quantity}×` : "";
 }
 
+/**
+ * 逐腿列出的候選身分字串——「買 118 / 賣 122」／Butterfly 的
+ * 「買 106 / 賣 2×109 / 買 112」。`detail.ts::candidateTitle()`（詳細頁）
+ * 與 `scenarios.ts::formatRepresentativeLegs()`（劇本庫卡片，
+ * OPTION-CHASER-CLOSEOUT-001）原本各自寫一份逐字相同的
+ * `.map().join(" / ")`，只是輸入型別不同（`CandidateLegs` 完整 `Leg`
+ * vs `RepresentativeCandidateLeg` 精簡子集）——共通的只有 `side`／
+ * `quantity`／`strike` 三個欄位，抽成這裡（`/code-review` Standards
+ * 軸抓到，同一份邏輯不該有兩份程式碼）。
+ */
+export function formatLegs(
+  legs: readonly { side: "buy" | "sell"; quantity: number; strike: number }[],
+): string {
+  return legs
+    .map((leg) => `${legSide(leg)} ${legQuantityPrefix(leg)}${leg.strike}`)
+    .join(" / ");
+}
+
 /** 代表候選（MVP-v2／#77、#78）：劇本清單卡片要的候選完整身分——只到
  *  「顯示要用」這一層，不是完整的 `Candidate`／`Leg`（報價、IV、量能等
  *  欄位留在詳細頁）。T12（#228，Initial V2）起每一腿帶顯式 `side`，

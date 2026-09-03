@@ -4,7 +4,7 @@
  * 零金融計算——每個數字都是引擎算好放在契約裡的，這裡只負責「怎麼寫成
  * 一句人看得懂的話」。
  */
-import { legQuantityPrefix, legSide, type Candidate } from "./api";
+import { formatLegs, type Candidate } from "./api";
 
 /**
  * 策略顯示名。與後端 `option_chaser/report.py` 的 `STRATEGY_LABELS`
@@ -72,11 +72,14 @@ export function formatMove(ratio: number): string {
  * 前後端同一套寫法；`legSide()`／`legQuantityPrefix()`（`./api`）與
  * `expiry.ts::legPriceEntries()` 共用同一套「怎麼標示方向與口數」規則
  * （`/code-review` Standards 軸抓到兩處各自重複同一句三元運算式）。
+ *
+ * OPTION-CHASER-CLOSEOUT-001：這個函式本身的迭代邏輯與
+ * `scenarios.ts::formatRepresentativeLegs()`（劇本庫卡片）逐字相同，
+ * 只是輸入型別不同——抽成 `api.ts::formatLegs()` 共用（`/code-review`
+ * Standards 軸抓到，兩份一模一樣的程式碼不該分開維護）。
  */
 export function candidateTitle(candidate: Candidate): string {
   // `CandidateLegs` 的型別本身保證至少一隻腿（canonical boundary
   // 1<=len<=4），這裡不需要再防禦性檢查空陣列。
-  return candidate.legs
-    .map((leg) => `${legSide(leg)} ${legQuantityPrefix(leg)}${leg.strike}`)
-    .join(" / ");
+  return formatLegs(candidate.legs);
 }

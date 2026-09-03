@@ -12,7 +12,7 @@
 import re
 from pathlib import Path
 
-from option_chaser.models import STRATEGIES
+from option_chaser.models import DIRECTION_LABELS, DIRECTIONS, STRATEGIES
 from option_chaser.report import STRATEGY_LABELS
 
 
@@ -51,6 +51,25 @@ def test_every_strategy_has_a_display_name_on_both_sides():
         assert f'"{strategy}": "{STRATEGY_LABELS[strategy]}"' in front, (
             f"src/detail.ts 的 STRATEGY_LABELS 缺 {strategy}，或與後端"
             f" report.STRATEGY_LABELS 不一致（後端是 {STRATEGY_LABELS[strategy]!r}）")
+
+
+def test_every_direction_has_a_display_name_on_both_sides():
+    """OPTION-CHASER-CLOSEOUT-001：`option_chaser/store.py::
+    serialize_result()` 新增的頂層 `direction` 欄位（`"bullish"`／
+    `"bearish"`／`"flat"`）由 Scenario Detail 的「劇本設定」卡顯示
+    ——`src/detail.ts::directionLabel()` 的 docstring 明講「與後端
+    `DIRECTION_LABELS` 同一份字彙……漂移測試把關」，這裡就是那份
+    漂移測試本身（先前只有註解宣稱，沒有真的補上，屬結構同 `test_
+    every_strategy_has_a_display_name_on_both_sides` 的既有漏洞
+    類型）。後端加了新方向而前端沒跟上時，畫面會退回顯示原始英文
+    代號（`directionLabel()` 的 `?? direction` 備援），不會壞、但
+    使用者會看到一個沒翻譯的字串。"""
+    front = _read("src/detail.ts")
+    for direction in DIRECTIONS:
+        assert f'{direction}: "{DIRECTION_LABELS[direction]}"' in front, (
+            f"src/detail.ts 的 DIRECTION_LABELS 缺 {direction}，或與後端"
+            f" models.DIRECTION_LABELS 不一致（後端是 "
+            f"{DIRECTION_LABELS[direction]!r}）")
 
 
 # MVP V3（#105，spec #102 決策 G）起，韌性 7 情境表已從 Analysis Report
