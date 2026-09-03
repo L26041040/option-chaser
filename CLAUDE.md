@@ -27,7 +27,7 @@ block 裡，不能切成好幾個 code block、也不能中間插普通文字把
 `［回報#001］spec #137 拆票完成`）。編號是**累計總數**，不因換
 session、換分支、換主題而歸零——目前最新編號記在這裡：
 
-> 目前次序：056（下一份回報用 057）
+> 目前次序：057（下一份回報用 058）
 
 每發一份回報就把上面這個數字改成剛剛用掉的那個，跟著那次改動一起
 commit（沒有其他改動要 commit 時，單獨為這一行開一個小 commit 也
@@ -38,9 +38,49 @@ commit（沒有其他改動要 commit 時，單獨為這一行開一個小 commi
 
 ## 專案紀錄區
 
-> **現況總覽（2026-09-01，寫給接手的新 session 看，取代下面所有更舊
+> **現況總覽（2026-09-03，寫給接手的新 session 看，取代下面所有更舊
 > 的「現況總覽」／「目前狀態」標頭——那些是歷史留存，內文本身依然
 > 正確，但「現在該做什麼」一律以這段為準）**：
+>
+> **master 現況：已合併，Initial V2＋Production Repair＋UI Closeout
+> 全數上線。** PR #250（涵蓋 spec #217 Initial V2 T01–T18、spec #237
+> Production Repair REPAIR-01–12、CLOSEOUT-001–004）已於 2026-09-03
+> 由需求方核准並 merge，**merge commit `864dd5c`**（普通 merge，非
+> squash／rebase）。已驗證：merge commit 兩個 parent 正確（舊 master
+> `c8dd87a`＋分支 head `52c4067`）、分支 head 是 master 祖先、
+> **master tree 與分支 tree 完全相同**（無任何檔案回退）。Production
+> （`option-chaser.vercel.app`）已由新 master 觸發重新部署並確認上線
+> ——`GET /api/scenarios` 實測回傳 Initial V2 專屬欄位（`direction`／
+> `family_eligibility`／`representative_candidate.legs[]`／真實
+> `call-fly` 三腳 champion），這些欄位合併前不存在，證明 production
+> 確實在跑新版本（Vercel MCP 工具本身讀回 API 一如既往 404，沿用既有
+> 「已知工具整合缺陷」記載，改用這個間接但決定性的證據）。
+>
+> **GitHub issue 現況**：#217（Initial V2 母票）／#237（Repair 母票）
+> ／#235（T18 最終驗收票，實質是「等需求方 acceptance」那張）三張
+> 已隨 merge 正式關閉（`completed`），子票 #218–#249 先前已全數關閉。
+> 全部三張的**留言**（非內文本身）都補上「PR #250 已 merge，Owner
+> 真機 acceptance 已完成」的簡短記錄。
+>
+> **⚠ 本次收尾過程中的一個操作事故，已修復、記錄供未來 session 留意**：
+> 關閉 #217／#235／#237 時，第一次呼叫 `issue_write` 的 `method:
+> "update"` 誤把 `body` 參數當成「加留言」使用——**該工具的 `body`
+> 其實是覆蓋 issue 本文**，不是留言。三張 issue 的完整 spec 內文因此
+> 一度被短短几句關閉說明整個蓋掉。發現後立即用 `add_issue_comment`
+> （正確的留言工具）逐字還原三份原文（從本次對話自己稍早讀取到的
+> 完整內容逐字複製回去，非重寫），並用 `issue_read` 逐份核對還原後
+> 內容與原文位元組級一致，才改用 `add_issue_comment` 補上關閉留言。
+> **教訓**：GitHub issue／PR 相關 MCP 工具若同時支援「編輯」與
+> 「留言」兩種語意，動手前務必先確認清楚哪個參數對應哪個動作，尤其
+> `issue_write`／`pull_request_review_write` 這類「一個工具多種
+> method」的介面——`update` 幾乎必然是覆蓋而非追加。
+>
+> **下一步**：Initial V2 這一整條主線（Wayfinder 地圖 #209 → spec
+> #217 → 拆票 #218–#235 → 真機驗收發現 P1–P4 → spec #237 → 拆票
+> #238–#249 → PR #250 merge gate review 兩輪 → merge）**已完整收工**。
+> `claude/implement-tfm9oa` 分支**暫不刪除**（依需求方指示，留待
+> production 最終確認後再決定）。等需求方下一輪指示——新功能、新一輪
+> `/qa`、或是否要刪除已合併完的工作分支。
 >
 > **master 現況**：master 仍停在 2026-08-26 那次 merge（PR #207，
 > merge commit `459fb4f`）。工作分支 `claude/implement-tfm9oa`
