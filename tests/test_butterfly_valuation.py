@@ -204,8 +204,12 @@ def test_every_finite_bound_really_is_a_boundary():
     `xyz_v6_butterfly_ladder` 9998 組候選中有 4052 組違反、
     `xyz_v7_butterfly_moderate` 323 組中有 159 組違反）。
 
-    不變量：`profit_region` 的某一側若是有限數字，那個方向再走出去
-    就**必須**虧損；若那個方向其實仍然獲利，該側就該是 `None`。"""
+    不變量是**雙向**的（單向版本漏掉了下面第二半，是 `/code-review`
+    Standards 軸抓到的缺口）：
+    - 有限邊界：那個方向再走出去就**必須**不再獲利；
+    - `None` 邊界：那個方向走多遠就**必須**仍然獲利——否則「沒有界」
+      本身是另一句假話（平台剛好等於成本時是打平、不是獲利，那一側
+      的邊界確實存在）。"""
     from option_chaser.data.snapshot import load_snapshot
     from option_chaser.filters import apply_filters, generate_butterfly_triples
 
@@ -233,12 +237,69 @@ def test_every_finite_bound_really_is_a_boundary():
                     f"{lo.contract_symbol}/{mid.contract_symbol}/"
                     f"{hi.contract_symbol} 宣稱上界 "
                     f"{bv.profit_region.upper} 但更高的價位仍獲利")
+            else:
+                # 反向：宣稱沒有上界，那就必須真的一直賺下去。
+                assert payoff(k3 + 10_000.0) - bv.net_worst > 0, (
+                    f"{lo.contract_symbol}/{mid.contract_symbol}/"
+                    f"{hi.contract_symbol} 宣稱上方沒有界，但更高的"
+                    f"價位其實不獲利")
             if bv.profit_region.lower is not None:
                 assert payoff(max(k1 - 10_000.0, 0.0)) - bv.net_worst <= 0, (
                     f"{lo.contract_symbol}/{mid.contract_symbol}/"
                     f"{hi.contract_symbol} 宣稱下界 "
                     f"{bv.profit_region.lower} 但更低的價位仍獲利")
+            else:
+                assert payoff(max(k1 - 10_000.0, 0.0)) - bv.net_worst > 0, (
+                    f"{lo.contract_symbol}/{mid.contract_symbol}/"
+                    f"{hi.contract_symbol} 宣稱下方沒有界，但更低的"
+                    f"價位其實不獲利")
     assert checked > 1000, f"只檢查到 {checked} 組，樣本不足以當守門"
+
+
+def test_a_tail_that_exactly_breaks_even_still_has_a_boundary():
+    """`/code-review` Standards 軸抓到的真缺陷：翼外平台**剛好等於**
+    進場成本時是打平、不是獲利，那一側的邊界確實存在（就是該翼履約價
+    本身）。修正前的判準寫成 `>= 0`，會把這種平手情況也報成「沒有界、
+    更遠一樣獲利」——方向跟本 finding 要修的那句相反的另一句假話。
+
+    call-fly 100/110/115：v3=5.0。成本剛好 5.0 時，S≥115 的損益恆為
+    0（打平），上界因此是 K3=115。"""
+    k1, k2, k3 = 100.0, 110.0, 115.0
+    assert butterfly_expiry_payoff("call", k1, k2, k3, k3) == 5.0
+    breakevens, region = butterfly_breakeven_and_profit_region(
+        "call", k1, k2, k3, net_cost=5.0)
+    assert region is not None
+    assert region.upper == k3      # 平手＝有界，不是 None
+    assert breakevens == (105.0, 115.0)
+    # 獨立核對：平台上恰好打平（不是獲利），區間內確實獲利。
+    assert butterfly_expiry_payoff("call", k1, k2, k3, 9999.0) - 5.0 == 0.0
+    assert butterfly_expiry_payoff("call", k1, k2, k3, 110.0) - 5.0 > 0.0
+
+
+def test_the_profit_region_text_covers_all_four_shapes():
+    """`ranking.butterfly_profit_region_text()` 是 CLI 報告與候選評語
+    共用的唯一文案來源，四個分支都要有直接覆蓋（`/code-review`
+    Standards 軸指出「以下」與「兩側皆無界」兩支先前只有 TS 鏡射版
+    測到）。重點在**不得出現假話**：無界的那一側不能說「區間外無法
+    獲利」。"""
+    from option_chaser.ranking import butterfly_profit_region_text as text
+
+    both = text(ButterflyProfitRegion(lower=94.0, upper=106.0))
+    assert both == "$94.00 ~ $106.00（區間外到期時無法獲利）"
+
+    up = text(ButterflyProfitRegion(lower=104.0, upper=None))
+    assert up.startswith("$104.00 以上")
+    assert "區間外到期時無法獲利" not in up
+
+    down = text(ButterflyProfitRegion(lower=None, upper=111.0))
+    assert down.startswith("$111.00 以下")
+    assert "區間外到期時無法獲利" not in down
+
+    everywhere = text(ButterflyProfitRegion(lower=None, upper=None))
+    assert "都獲利" in everywhere
+    assert "無法獲利" not in everywhere
+
+    assert text(None) == "無——到期時任何標的價都無法獲利"
 
 
 # ---------- evaluate_butterfly：完整型別欄位＋跟 brute-force 掃描對照 ----------

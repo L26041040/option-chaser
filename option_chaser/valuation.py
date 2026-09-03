@@ -814,9 +814,10 @@ def _butterfly_region_from_knots(
     （不硬擠成一個假的區間）。
 
     峰值有獲利空間時，左／右兩個交叉點各自落在峰值左側／右側的線性
-    段上；若某一側的翼端本身已經獲利（`v1 - net_cost >= 0` 或
-    `v3 - net_cost >= 0`——這只在履約價明顯不對稱、俗稱「broken wing」
-    的組合上才可能發生），該側**根本沒有交叉點**：K1 之外／K3 之外是
+    段上；若某一側的翼端本身已經獲利（`v1 - net_cost > 0` 或
+    `v3 - net_cost > 0`，嚴格大於——剛好等於是打平不是獲利，見下方
+    程式碼註解；這只在履約價明顯不對稱、俗稱「broken wing」的組合上
+    才可能發生），該側**根本沒有交叉點**：K1 之外／K3 之外是
     恆定平台，平台值本身已高於成本，代表往那個方向走多遠都還是獲利。
     這種情況該側回傳 `None`（獲利區間在那個方向沒有界），且
     `breakeven_points` 不收錄那一側——沒有價位在那裡由虧轉盈，填一個
@@ -830,10 +831,16 @@ def _butterfly_region_from_knots(
         return (), None
     left_tail_profit = v1 - net_cost
     right_tail_profit = v3 - net_cost
+    # 判準是嚴格大於 0，不是 `>= 0`：翼外平台**剛好等於**成本時那一側
+    # 是打平、不是獲利，該側的邊界確實就是該翼履約價本身（平台之內
+    # 到期時損益恆為 0，只有平台與峰值之間才真的獲利）——說成「沒有
+    # 界、更遠一樣獲利」是另一句假話，方向跟本 finding 要修的那句相反
+    # 而已。這條邊界與 `peak_profit <= 0.0` 的既有邊界選擇（剛好打平
+    # 不算「有獲利區間」）是同一套判準。
     # [K1,K2] 斜率恆 +1：f(S) = left_tail_profit + (S-K1)，根 = K1 - left_tail_profit
-    lower = None if left_tail_profit >= 0.0 else k1 - left_tail_profit
+    lower = None if left_tail_profit > 0.0 else k1 - left_tail_profit
     # [K2,K3] 斜率恆 -1：f(S) = peak_profit - (S-K2)，根 = K2 + peak_profit
-    upper = None if right_tail_profit >= 0.0 else k2 + peak_profit
+    upper = None if right_tail_profit > 0.0 else k2 + peak_profit
     breakevens = tuple(b for b in (lower, upper) if b is not None)
     return breakevens, ButterflyProfitRegion(lower=lower, upper=upper)
 

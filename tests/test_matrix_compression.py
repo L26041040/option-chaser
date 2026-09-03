@@ -131,24 +131,28 @@ def _sign(x: float) -> int:
 
 
 def _crossover_edges(a, b):
-    """`src/heatmap.ts::crossoverEdges()` 的最小 Python 鏡射——只複製
-    「逐格相減、相鄰兩格正負號不同就記一條邊」這條判準本身，不複製它
-    的呈現細節。存在的理由：這條測試要鎖的是 **crossover edge
-    identity**，而那個身分是由前端這段邏輯定義的；只斷言「格值差不多」
-    證明不了邊界沒有變。前端函式本身另有 Vitest 覆蓋，這裡不是要取代
-    它，是要在後端這一側鎖住「餵給它的東西不會讓它改變答案」。"""
+    """`src/heatmap.ts::crossoverEdges()` 的最小 Python 鏡射——複製
+    「逐格相減、相鄰兩格正負號不同就記一條邊」這條判準，**連同該條邊
+    的 `spreadHigher` 方向**（`higher(x, y) = y > x ? "far" : "near"`）。
+    存在的理由：這條測試要鎖的是 **crossover edge identity**，而那個
+    身分是由前端這段邏輯定義的；只斷言「格值差不多」證明不了邊界沒有
+    變。方向也一起鎖是 `/code-review` Spec 軸指出的缺口——線畫在哪一
+    側是使用者看得到的東西，只鎖「有沒有這條邊」還漏了一半。前端函式
+    本身另有 Vitest 覆蓋，這裡不是要取代它，是要在後端這一側鎖住
+    「餵給它的東西不會讓它改變答案」。"""
     n = len(a)
     if n == 0 or len(b) != n:
         return set()
     m = len(a[0])
     d = [[a[i][j] - b[i][j] for j in range(m)] for i in range(n)]
+    higher = lambda x, y: "far" if y > x else "near"
     out = set()
     for i in range(n):
         for j in range(m):
             if i + 1 < n and _sign(d[i][j]) != _sign(d[i + 1][j]):
-                out.add((i, j, "vertical"))
+                out.add((i, j, "vertical", higher(d[i][j], d[i + 1][j])))
             if j + 1 < m and _sign(d[i][j]) != _sign(d[i][j + 1]):
-                out.add((i, j, "horizontal"))
+                out.add((i, j, "horizontal", higher(d[i][j], d[i][j + 1])))
     return out
 
 
@@ -242,12 +246,20 @@ def test_the_sign_fix_does_not_visibly_move_the_comparator_numbers():
     """修法把符號被捨錯的 comparator 格值推到候選值的正負一格
     （±1e-4）——偏離真值的上界因此是 1.5e-4，仍遠細於畫面顯示精度
     （整數百分點，1e-2）。這條把「顯示數字不受影響」寫成可執行斷言，
-    免得未來有人以為這個修法會動到看得見的東西。"""
+    免得未來有人以為這個修法會動到看得見的東西。
+
+    非空守門用的是「真的有格子被**推動**」，不是「有格子跟精確值不
+    同」——後者光靠單純的捨入就恆成立，把修法整個拿掉也照樣通過
+    （`/code-review` Standards 軸抓到的空斷言）。這裡改成跟「單純
+    捨入」的結果比對，數得出真正被推動的格數。"""
     worst = 0.0
+    nudged = 0
     for case in CROSSOVER_CASES:
         for cv, _cells, cmp_cells in _candidates_with_comparator(*case):
             for i, row in enumerate(cv.comparator.matrix.cells):
                 for j, b in enumerate(row):
                     worst = max(worst, abs(cmp_cells[i][j] - b))
+                    if cmp_cells[i][j] != round(b, store.MATRIX_CELL_DECIMALS):
+                        nudged += 1
     assert worst <= 1.5e-4, worst
-    assert worst > 0.0, "完全沒有格子被推動，這條測試沒有驗到東西"
+    assert nudged > 0, "沒有任何格子真的被推動（跟單純捨入的結果完全相同）"

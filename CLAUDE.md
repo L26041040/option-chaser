@@ -6452,6 +6452,44 @@ sub-issue、皆標 `ready-for-agent`**：
 Position、Cross-Scenario；無 unrelated cleanup、無 stylistic 修改、
 無 DB migration、無 generic payoff engine。
 
+**`/code-review` 兩軸各抓到一個真缺陷，皆已修正（跟進 commit）**：
+
+- **Standards 軸（真缺陷）**：`_butterfly_region_from_knots()` 的
+  無界判準寫成 `>= 0.0`——翼外平台**剛好等於**進場成本時是打平、
+  不是獲利，那一側的邊界確實存在（就是該翼履約價本身），報成
+  「沒有界、更遠一樣獲利」是方向相反的另一句假話。已改為嚴格
+  `> 0.0`（與既有 `peak_profit <= 0.0`「剛好打平不算有獲利區間」
+  同一套判準），新增專屬測試；`test_every_finite_bound_really_is_
+  a_boundary` 同時補成**雙向**不變量（有限邊界之外必須不獲利／
+  `None` 邊界之外必須仍獲利），兩條對缺陷版程式碼都真的紅。
+- **Spec 軸（真缺口）**：`docs/initial-v2-acceptance-checklist.md`
+  第 11 項仍寫著「Butterfly 候選顯示**兩個**損益兩平點」——修正後
+  單側無界的候選只有一個真的損益兩平點（契約樣本 30 個可見候選中
+  有 6 個），需求方照舊清單真機驗收會把正確行為誤判成回歸。已改寫
+  並加註「看到只有一個點不是回歸」。
+
+其餘一併處理的 review 項目：`store.MATRIX_CELL_DECIMALS` 上方一句
+「`crossoverEdges()` 的容忍度遠粗於這個捨入誤差」正是 Finding 2 推翻
+的那句話，已更正；`test_the_sign_fix_does_not_visibly_move_the_
+comparator_numbers` 的非空守門原本是空斷言（`worst > 0` 光靠單純捨入
+就恆真），改成跟「單純捨入」的結果對照數出真正被推動的格數；
+`_crossover_edges()` 鏡射補上 `spreadHigher` 方向（線畫在哪一側也是
+使用者看得到的東西，實測壓縮前後方向亦相同）；
+`butterfly_profit_region_text()` 四個分支補上直接測試；
+`_comparator_matrix_to_dict()` 補形狀斷言，避免 `zip()` 靜默截短。
+
+**兩項需求方應知的判斷（非缺陷，但值得存證）**：
+1. `test_ranking_and_filters_do_not_import_the_soft_deadline_
+   mechanism` 從原始碼文字掃描改成 AST 識別字掃描，是為了讓
+   Finding 3 的依賴反轉修法能落地。兩軸都判定為淨強化（另外加了
+   「不得匯入 `time`」），但也都指出：`filters.py` 現在與 deadline
+   政策是**行為上**（非字面上）耦合的——`should_stop` 依構造就滿足
+   這條紅線。改寫既有紅線不在工單明文範圍內，記錄於此供裁示。
+2. V1 Vertical Spread 的凍結在**實質上**成立、但在 wire 上不再逐位元
+   相同——comparator 的 6 格各動了一個捨入網格。comparator 格值結構
+   上從不顯示在畫面，且工單明文允許「保留壓縮的最小修法」，判斷在
+   意圖之內。
+
 ### 施工依據
 
 - 需求與決策紀錄：`docs/modifyRequestV1.md`（附錄 A1–A12）

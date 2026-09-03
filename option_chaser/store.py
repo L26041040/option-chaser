@@ -304,8 +304,14 @@ def raw_snapshot_json(snap: ChainSnapshot) -> dict:
 # T14（#233，Initial V2，研究 #216 定案的「組合一」）：格值捨入的小數
 # 位數。畫面顯示（`formatCell()`）只到整數百分點（fraction 粒度
 # 0.01），這裡捨入到 0.0001——比顯示精度細 100 倍，純粹省 JSON 文字
-# 位元組，不會造成任何看得到的格值差異；`crossoverEdges()` 這類逐格
-# 比較的前端純函式容忍度（多個百分點量級）也遠粗於這個捨入誤差。
+# 位元組，不會造成任何看得到的格值差異。
+#
+# ⚠ CLOSEOUT-004（PR #250 review Finding 2）更正：這裡原本還寫著
+# 「`crossoverEdges()` 這類逐格比較的前端純函式容忍度（多個百分點
+# 量級）也遠粗於這個捨入誤差」——**那句是錯的**。`crossoverEdges()`
+# 沒有容忍度，它做的是精確的正負號比較，捨入誤差因此足以改變它的
+# 答案（實測 6/6 候選的邊界集合都變了）。comparator 那一側的序列化
+# 因此改走 `_comparator_matrix_to_dict()`，見該函式 docstring。
 MATRIX_CELL_DECIMALS = 4
 
 
@@ -367,6 +373,12 @@ def _comparator_matrix_to_dict(mv, base_mv, axis_of) -> dict:
     接受，正是因為這個欄位唯一的用途就是跟同一格的候選值比大小——
     它不是拿來給人看的數字，它是一個比較的參照點。
     """
+    # 形狀不符時 `zip()` 會靜靜截短，序列化出一個比較短的 `cells`，
+    # 前端 `resolveMatrix()` 依日期數切回二維時會整個錯位——寧可在這裡
+    # 大聲失敗。#116 既有保證兩者同一組 price×date 座標，這條斷言是
+    # 那個保證真的壞掉時的哨兵，不是預期會發生的情況。
+    assert [len(r) for r in base_mv.cells] == [len(r) for r in mv.cells], (
+        "候選與 comparator 的 matrix 形狀不一致（#116 保證應為同一組座標）")
     cells: list[float] = []
     for base_row, cmp_row in zip(base_mv.cells, mv.cells):
         for a, b in zip(base_row, cmp_row):
@@ -491,9 +503,12 @@ def _candidate(cv: CandidateView, strategy: str, capital: float | None,
         # 能裝得下 1～2 個點。既有四策略一律是單點（純量 `breakeven`
         # 包成一元素陣列，數值逐位元不變，前端 `AnalysisReport.tsx`
         # 仍讀純量 `breakeven`，這是新增的傳輸容量，不是既有欄位的
-        # 替代品）；T15（#230）Butterfly 用真正的兩個點（或到期時任何
-        # 價位都無法獲利時的空陣列）填滿這個容量——這正是 T12 當初
-        # 預留這個形狀時說的「產生第二個點的邏輯是 T15 的範圍」。
+        # 替代品）；T15（#230）Butterfly 用真正的損益兩平點填滿這個
+        # 容量——這正是 T12 當初預留這個形狀時說的「產生第二個點的
+        # 邏輯是 T15 的範圍」。CLOSEOUT-004（Finding 1）：Butterfly
+        # 是 0～2 點——broken-wing 的翼外平台若本身就高於進場成本，
+        # 那一側沒有由虧轉盈的價位，就只有一個真的損益兩平點（見
+        # `valuation.ButterflyProfitRegion`）。
         "breakeven_points": breakeven_points,
         "max_profit": max_profit,
         "effective_leverage": v.effective_leverage,

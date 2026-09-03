@@ -1087,9 +1087,14 @@ def _comparison(results: tuple[StrategyResult, ...]) -> tuple[ComparisonRow, ...
         if res.strategy in BUTTERFLY_STRATEGIES:
             bv = res.ranked_butterflies[0]
             # `ComparisonRow.breakeven` 是單一 scalar 欄位（跨 family 比較表
-            # 的既有形狀），但 Butterfly 到期時連峰值都賺不到時
-            # `breakeven_points` 是空的（見 `butterfly_breakeven_and_
-            # profit_region()`）——這裡沒有真正的損益兩平點可填。
+            # 的既有形狀），但 Butterfly 的 `breakeven_points` 可能是空的
+            # ——兩種成因：到期時連峰值都賺不到（`profit_region` 為
+            # `None`），或 CLOSEOUT-004 起的另一種，兩側翼外平台都高於
+            # 進場成本因此處處獲利、沒有由虧轉盈的價位（`profit_region`
+            # 非 `None`，見 `butterfly_breakeven_and_profit_region()`）。
+            # 後者在 production 走不到（`generate_butterfly_triples()` 的
+            # `net_mid > 0` 讓 debit 恆有一側是真根），但這裡的 fallback
+            # 對兩者一視同仁——反正都沒有真正的損益兩平點可填。
             # `bv.low_leg.strike` 不是損益兩平點，只是這個既有 scalar
             # 欄位在「沒有損益兩平點」情境下的佔位值（比較表本身仍要顯示
             # 一個數字），不得誤讀成任何財務意義。

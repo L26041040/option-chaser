@@ -167,22 +167,29 @@ function profitRegionText(
 /**
  * Breakeven（含 T16／#232 新增的獲利區間）：既有四策略恆單點，
  * `breakeven_points` 長度 1，沿用既有格式逐字不變。Butterfly
- * （T15／#230）是一或兩點（獲利區間存在；CLOSEOUT-004 起單側無界的
- * broken-wing 組合只有一個真正的損益兩平點）或空陣列（到期時任何
- * 價位都無法獲利，`profit_region` 恆為 null，見
- * `api.ts::Candidate.profit_region` 註解）——都誠實顯示，不假造
- * 一個數字。
+ * （T15／#230）是 0～2 點——CLOSEOUT-004 起單側無界的 broken-wing
+ * 組合只有一個真正的損益兩平點，兩側皆無界時一個都沒有。
+ *
+ * 「到期時任何價位都無法獲利」的判準是 **`profit_region === null`**，
+ * 不是 `breakeven_points` 為空：CLOSEOUT-004 之後兩者不再等價——兩側
+ * 皆無界（處處獲利）時損益兩平點同樣是空的，照舊判準會講出正好相反
+ * 的話。這個組合在 production 走不到（`generate_butterfly_triples()`
+ * 的 `net_mid > 0` 讓 debit 恆有一側是真根），但判準本身要說得通，
+ * 不能靠一個結構上的巧合成立。
  */
 function BreakevenRow({ candidate }: { candidate: Candidate }) {
   const points = candidate.breakeven_points;
-  if (points.length === 0) {
+  if (candidate.profit_region === null && points.length === 0) {
     return <Row label="Breakeven">無（到期時任何價位都無法獲利）</Row>;
   }
   const region = candidate.profit_region
     ? profitRegionText(candidate.profit_region) : null;
   return (
     <>
-      <Row label="Breakeven">{points.map((p) => money(p)).join(" / ")}</Row>
+      <Row label="Breakeven">
+        {points.length === 0 ? "無（沒有由虧轉盈的價位）"
+                             : points.map((p) => money(p)).join(" / ")}
+      </Row>
       {region && (
         <Row label="獲利區間">
           {region.range}
