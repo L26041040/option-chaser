@@ -12,6 +12,8 @@ import {
   type RepresentativeCandidate,
   type ScenarioSummary,
 } from "./api";
+import { strategyLabel } from "./detail";
+import { FAMILY_LABELS, familyOf } from "./family";
 
 /**
  * 依最新收益率降序；還沒跑過分析的（`best_return === null`）一律排最後；
@@ -193,6 +195,46 @@ export function formatRepresentativeLegs(
 ): string {
   if (rep === null) return "—";
   return formatLegs(rep.legs);
+}
+
+/**
+ * OPTION-CHASER-CLOSEOUT-002：Butterfly champion 在劇本庫卡片上的緊湊
+ * 履約價字串——「Butterfly 106 / 109 / 112」，只列三個履約價、不帶
+ * 買賣方向與口數標示。`formatRepresentativeLegs()` 的完整格式（「買
+ * 106 / 賣 2×109 / 買 112」）在卡片固定寬度下容易換行、把卡片撐高
+ * （卡片寬高與版面不得變動，見票面明文），詳細頁沒有這個限制、維持
+ * 完整格式不變（`detail.candidateTitle()` 沒有 Butterfly 分支）。
+ *
+ * 用 `FAMILY_LABELS.butterfly`（"Butterfly"）而非 `strategyLabel()`
+ * 給的 subtype 名稱（「Call Butterfly」／「Put Butterfly」）當前綴
+ * ——票面給的範例格式就是單一個「Butterfly」，不分 call／put，卡片上
+ * 已經有履約價可以判斷方向，不需要再重複一次。
+ *
+ * 履約價順序沿用 `rep.legs` 既有排列（後端 `store.py::_candidate()`
+ * 建構 Butterfly 的 `legs` 時已經是 `[low_leg, mid_leg, high_leg]`
+ * 由小到大——見 `option_chaser/store.py` 的 `_leg(v.low_leg, ...)`／
+ * `_leg(v.mid_leg, ...)`／`_leg(v.high_leg, ...)` 三行），這裡不重新
+ * 排序、不做任何金融判斷，純粹格式化既有欄位。
+ */
+function formatButterflyStrikes(rep: RepresentativeCandidate): string {
+  return `${FAMILY_LABELS.butterfly} ${rep.legs.map((leg) => leg.strike).join(" / ")}`;
+}
+
+/**
+ * 劇本庫卡片第二層「策略＋履約價」那句完整字串（MVP-v2／#77、#78 起
+ * 的既有格式）。`ScenarioList.tsx`／`CompactScenarioList.tsx` 原本
+ * 各自重複同一句 `${strategyLabel(rep.strategy)}
+ * ${formatRepresentativeLegs(rep)}` 三元運算式，這裡收斂成一個函式
+ * 共用；OPTION-CHASER-CLOSEOUT-002 起 Butterfly champion 走
+ * `formatButterflyStrikes()` 緊湊分支，Single-leg／Vertical Spread
+ * 維持原本「策略名稱＋完整買賣履約價」格式逐字不變。
+ */
+export function formatRepresentativeSummary(
+  rep: RepresentativeCandidate | null,
+): string {
+  if (rep === null) return "—";
+  if (familyOf(rep.strategy) === "butterfly") return formatButterflyStrikes(rep);
+  return `${strategyLabel(rep.strategy)}　${formatRepresentativeLegs(rep)}`;
 }
 
 /**

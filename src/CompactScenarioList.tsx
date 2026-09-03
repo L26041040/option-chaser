@@ -18,7 +18,6 @@
  * 用 CSS 疊在卡片右下角，不佔用行高。
  */
 import type { RefreshFailure, ScenarioSummary } from "./api";
-import { strategyLabel } from "./detail";
 import { CheckIcon, EditIcon, TrashIcon } from "./icons";
 import { detailHash } from "./route";
 import {
@@ -28,7 +27,7 @@ import {
   formatAnalyzedAt,
   formatDaysLeft,
   formatRepresentativeExpiry,
-  formatRepresentativeLegs,
+  formatRepresentativeSummary,
   formatReturn,
   hasPriceRange,
   hasResult,
@@ -159,9 +158,7 @@ function CompactScenarioCard({
               {formatReturn(row.best_return)}
             </span>
             <span className="compact-strategy">
-              {rep
-                ? `${strategyLabel(rep.strategy)}　${formatRepresentativeLegs(rep)}`
-                : "—"}
+              {formatRepresentativeSummary(rep)}
             </span>
           </div>
 

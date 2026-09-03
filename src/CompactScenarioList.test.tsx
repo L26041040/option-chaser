@@ -86,10 +86,12 @@ describe("Compact 劇本列（MVP-v2／#77、#82）", () => {
       expect(within(card).getByText("8/4 05:30")).toBeInTheDocument();
     });
 
-  // OPTION-CHASER-CLOSEOUT-001：手機版 compact row 與桌面版共用同一份
-  // `formatRepresentativeLegs()`，這裡鏡射 ScenarioList.test.tsx 的
-  // 同一條回歸——Butterfly champion 三腿完整顯示，不會被壓成兩腿價差。
-  it("Butterfly champion 三腿完整顯示，不會被壓成兩腿價差（OPTION-CHASER-CLOSEOUT-001）", () => {
+  // OPTION-CHASER-CLOSEOUT-001／002：手機版 compact row 與桌面版共用
+  // 同一份 `formatRepresentativeSummary()`，這裡鏡射
+  // ScenarioList.test.tsx 的同一條回歸——Butterfly champion 卡片顯示
+  // 緊湊格式「Butterfly 106 / 109 / 112」，不換行不撐高卡片；詳細頁
+  // 才顯示完整買賣履約價與口數（見 `detail.test.ts`）。
+  it("Butterfly champion 卡片上顯示緊湊格式「Butterfly 106 / 109 / 112」，不換行不撐高卡片", () => {
     list([row({
       best_return: 5.67,
       representative_candidate: {
@@ -103,8 +105,23 @@ describe("Compact 劇本列（MVP-v2／#77、#82）", () => {
       },
     })]);
     const card = screen.getByRole("listitem");
-    expect(within(card).getByText(/Call Butterfly/)).toBeInTheDocument();
-    expect(within(card).getByText(/買 106 \/ 賣 2×109 \/ 買 112/)).toBeInTheDocument();
+    expect(within(card).getByText("Butterfly 106 / 109 / 112")).toBeInTheDocument();
+    expect(within(card).queryByText(/Call Butterfly/)).not.toBeInTheDocument();
+    expect(within(card).queryByText(/買|賣|2×/)).not.toBeInTheDocument();
+  });
+
+  it("Single-leg champion 維持完整格式不變（OPTION-CHASER-CLOSEOUT-002）", () => {
+    list([row({
+      best_return: 0.82,
+      representative_candidate: {
+        strategy: "long-call",
+        legs: [{ strike: 100, option_type: "call", side: "buy", quantity: 1 }],
+        expiry: "2026-09-18", baseline_return: 0.82,
+      },
+    })]);
+    const card = screen.getByRole("listitem");
+    expect(within(card).getByText(/Long Call/)).toBeInTheDocument();
+    expect(within(card).getByText(/買 100/)).toBeInTheDocument();
   });
 
   it("代表候選為 null 時報酬率與策略欄都顯示「—」，不是編一組假的候選", () => {

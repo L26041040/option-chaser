@@ -1829,8 +1829,32 @@ test("OPTION-CHASER-CLOSEOUT-001：桌面版劇本庫卡片上 Butterfly champio
   await page.goto("/#/");
 
   const card = page.getByRole("link", { name: /XYZ/ });
-  await expect(card).toContainText("Call Butterfly");
-  await expect(card).toContainText("買 100 / 賣 2×106 / 買 115");
+  // OPTION-CHASER-CLOSEOUT-002：卡片改用緊湊格式（見下一條測試），這裡
+  // 改驗證三腿的履約價都在，三腿沒被靜默丟掉這件事依然成立。
+  await expect(card).toContainText("100");
+  await expect(card).toContainText("106");
+  await expect(card).toContainText("115");
+});
+
+test("OPTION-CHASER-CLOSEOUT-002：桌面版劇本庫卡片上 Butterfly champion 顯示緊湊格式" +
+     "「Butterfly 100 / 106 / 115」，不出現完整格式的買賣方向與口數", async ({ page }) => {
+  await routeButterflyDetailDesktop(page);
+  await page.goto("/#/");
+
+  const card = page.getByRole("link", { name: /XYZ/ });
+  await expect(card).toContainText("Butterfly 100 / 106 / 115");
+  await expect(card).not.toContainText("Call Butterfly");
+  await expect(card).not.toContainText("2×106");
+
+  // 不換行、不增加卡片高度（見手機版 smoke.spec.ts 同名測試的完整
+  // 說明）：`.compact-strategy` 既有 CSS 結構性保證單行，這裡量卡片
+  // 高度沒有被撐大。桌面左側欄本身較窄（#108 既有密度設計），緊湊
+  // 格式在這個寬度下仍可能被 `text-overflow: ellipsis` 視覺裁切
+  // 尾端字元（既有機制，非本票新增；比裁切前的完整格式短得多，裁切
+  // 幅度已縮小），但不影響「不換行、不增加高度」——這正是 ellipsis
+  // 存在的目的。
+  const cardBox = (await card.boundingBox())!;
+  expect(cardBox.height).toBeLessThan(80);
 });
 
 /* ---------- T17（#234，Initial V2）：持平劇本，桌面 viewport ---------- */

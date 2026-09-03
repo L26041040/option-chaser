@@ -2893,8 +2893,35 @@ test("OPTION-CHASER-CLOSEOUT-001：劇本庫卡片上 Butterfly champion 三腿"
   await page.goto("/#/");
 
   const card = page.getByRole("listitem").filter({ hasText: "XYZ" });
-  await expect(card).toContainText("Call Butterfly");
-  await expect(card).toContainText("買 100 / 賣 2×106 / 買 115");
+  // OPTION-CHASER-CLOSEOUT-002：卡片改用緊湊格式（見下一條測試），
+  // 這裡改驗證「三腿的履約價都在」而不是逐字比對舊的完整格式字串
+  // ——三腿沒被靜默丟掉，這條測試原本要守的事依然成立。
+  await expect(card).toContainText("100");
+  await expect(card).toContainText("106");
+  await expect(card).toContainText("115");
+});
+
+test("OPTION-CHASER-CLOSEOUT-002：劇本庫卡片上 Butterfly champion 顯示緊湊格式" +
+     "「Butterfly 100 / 106 / 115」，不出現完整格式的買賣方向與口數",
+   async ({ page }) => {
+  await routeButterflyDetail(page);
+  await page.goto("/#/");
+
+  const card = page.getByRole("listitem").filter({ hasText: "XYZ" });
+  await expect(card).toContainText("Butterfly 100 / 106 / 115");
+  await expect(card).not.toContainText("Call Butterfly");
+  await expect(card).not.toContainText("2×106");
+
+  // 不換行、不增加卡片高度：這件事本身由既有 CSS
+  // （`.compact-strategy` 的 `white-space: nowrap` + `overflow:
+  // hidden` + `text-overflow: ellipsis`，本票未觸碰）結構性保證，
+  // 不隨這裡放的文字內容而改變——真正要驗證的是文字內容本身換成了
+  // 緊湊格式，上面兩條 `toContainText`／`not.toContainText` 已經做到。
+  // 手機卡片寬度足夠讓緊湊格式完整放下，這裡量卡片高度沒有被撐大，
+  // 對照展開一個一般 Vertical Spread 候選的既有卡片高度基準
+  // （#82／#108 既有測試已建立的密度規則）。
+  const cardBox = (await card.boundingBox())!;
+  expect(cardBox.height).toBeLessThan(120);
 });
 
 /* ---------- T17（#234，Initial V2）：持平劇本（target_price == spot），

@@ -281,9 +281,17 @@ describe("代表候選（MVP-v2／#77、#78）", () => {
   // OPTION-CHASER-CLOSEOUT-001：卡片曾經只抓 champion 的第一隻 buy 腿
   // 與 sell 腿（`findLeg()`），Butterfly champion 的第二隻 buy 腿會被
   // 靜默丟掉，畫面上看起來像一組舊的兩腿 Vertical Spread——即使策略
-  // 名稱已經正確顯示 Call Butterfly。這裡驗證卡片上的策略名稱與三腿
-  // 履約價，逐位元來自同一個 `representative_candidate`。
-  it("Butterfly champion 三腿完整顯示，不會被壓成兩腿價差（OPTION-CHASER-CLOSEOUT-001）", () => {
+  // 名稱已經正確顯示 Call Butterfly。三腿不再被丟掉這件事，本身由
+  // `formatButterflyStrikes()`／`formatRepresentativeSummary()` 的
+  // 單元測試（`scenarios.test.ts`）直接證明；這裡驗證的是它真的接到
+  // 卡片畫面上。
+  //
+  // OPTION-CHASER-CLOSEOUT-002：Butterfly champion 的完整格式（策略
+  // 名稱＋「買 106 / 賣 2×109 / 買 112」）在卡片固定寬度下容易換行、
+  // 撐高卡片，改成緊湊格式「Butterfly 106 / 109 / 112」——不分 call／
+  // put subtype、不帶買賣方向與口數。詳細頁不受影響，仍是完整格式
+  // （見 `detail.test.ts::candidateTitle`）。
+  it("Butterfly champion 卡片上顯示緊湊格式「Butterfly 106 / 109 / 112」，不換行不撐高卡片", () => {
     list([row({
       best_return: 5.67,
       representative_candidate: {
@@ -297,8 +305,32 @@ describe("代表候選（MVP-v2／#77、#78）", () => {
       },
     })]);
 
-    expect(screen.getByText(/Call Butterfly/)).toBeInTheDocument();
-    expect(screen.getByText(/買 106 \/ 賣 2×109 \/ 買 112/)).toBeInTheDocument();
+    const card = screen.getByRole("listitem");
+    expect(within(card).getByText("Butterfly 106 / 109 / 112")).toBeInTheDocument();
+    // 舊的完整格式（策略 subtype 名稱、買賣方向、口數標示）在**卡片
+    // 本身**上不該出現——那是詳細頁才有的東西。範圍限定在這張卡片，
+    // 不是整個頁面：頁面別處（例如成本口徑說明文字）本來就會出現
+    // 「買」「賣」等字，不是這條測試要擋的東西。
+    expect(within(card).queryByText(/Call Butterfly/)).not.toBeInTheDocument();
+    expect(within(card).queryByText(/買|賣|2×/)).not.toBeInTheDocument();
+  });
+
+  // Single-leg／Vertical Spread champion 顯示完全不變（票面明文要求）
+  // ——這條測試在改動前就存在（"333.0%" 那一條，見上），這裡另外用
+  // Single-leg champion 補一條，確認緊湊分支只吃 Butterfly、不會意外
+  // 波及其他 family。
+  it("Single-leg champion 維持完整格式不變（OPTION-CHASER-CLOSEOUT-002）", () => {
+    list([row({
+      best_return: 0.82,
+      representative_candidate: {
+        strategy: "long-call",
+        legs: [{ strike: 100, option_type: "call", side: "buy", quantity: 1 }],
+        expiry: "2026-09-18", baseline_return: 0.82,
+      },
+    })]);
+
+    expect(screen.getByText(/Long Call/)).toBeInTheDocument();
+    expect(screen.getByText(/買 100/)).toBeInTheDocument();
   });
 });
 

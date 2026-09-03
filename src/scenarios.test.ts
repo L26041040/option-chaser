@@ -10,6 +10,7 @@ import {
   formatDaysLeft,
   formatRepresentativeExpiry,
   formatRepresentativeLegs,
+  formatRepresentativeSummary,
   formatReturn,
   formatRunSummary,
   hasPriceRange,
@@ -171,6 +172,60 @@ describe("代表候選格式（MVP-v2／#77、#78）", () => {
 
   it("沒有代表候選時說「—」，不是編一組假的候選", () => {
     expect(formatRepresentativeLegs(null)).toBe("—");
+  });
+
+  // OPTION-CHASER-CLOSEOUT-002：卡片上「策略＋履約價」那句完整字串
+  // （`formatRepresentativeSummary()`）——Single-leg／Vertical Spread
+  // 沿用既有完整格式逐字不變；Butterfly 改用緊湊格式（只列履約價、
+  // 不帶買賣方向與口數、不分 call/put subtype），避免卡片固定寬度下
+  // 換行撐高。詳細頁不受影響，`formatRepresentativeLegs()` 本身這個
+  // 函式（見上方測試）維持原樣，只是不再是 Butterfly 卡片直接呼叫的
+  // 對象。
+  describe("formatRepresentativeSummary：卡片上的策略＋履約價完整字串", () => {
+    it("Vertical Spread 維持既有完整格式（策略名稱＋買賣履約價）", () => {
+      expect(formatRepresentativeSummary({
+        strategy: "bull-call-spread",
+        legs: [{ strike: 118, option_type: "call", side: "buy", quantity: 1 },
+              { strike: 122, option_type: "call", side: "sell", quantity: 1 }],
+        expiry: "2026-09-18", baseline_return: 1.5,
+      })).toBe("Bull Call Spread　買 118 / 賣 122");
+    });
+
+    it("Single-leg 維持既有完整格式", () => {
+      expect(formatRepresentativeSummary({
+        strategy: "long-call",
+        legs: [{ strike: 118, option_type: "call", side: "buy", quantity: 1 }],
+        expiry: "2026-09-18", baseline_return: 0.3,
+      })).toBe("Long Call　買 118");
+    });
+
+    it("Butterfly（call-fly）改用緊湊格式，只列履約價、不帶買賣方向與口數", () => {
+      expect(formatRepresentativeSummary({
+        strategy: "call-fly",
+        legs: [
+          { strike: 106, option_type: "call", side: "buy", quantity: 1 },
+          { strike: 109, option_type: "call", side: "sell", quantity: 2 },
+          { strike: 112, option_type: "call", side: "buy", quantity: 1 },
+        ],
+        expiry: "2026-09-18", baseline_return: 5.67,
+      })).toBe("Butterfly 106 / 109 / 112");
+    });
+
+    it("Butterfly（put-fly）同樣走緊湊格式，前綴不分 call/put", () => {
+      expect(formatRepresentativeSummary({
+        strategy: "put-fly",
+        legs: [
+          { strike: 90, option_type: "put", side: "buy", quantity: 1 },
+          { strike: 95, option_type: "put", side: "sell", quantity: 2 },
+          { strike: 100, option_type: "put", side: "buy", quantity: 1 },
+        ],
+        expiry: "2026-09-18", baseline_return: 3.2,
+      })).toBe("Butterfly 90 / 95 / 100");
+    });
+
+    it("沒有代表候選時說「—」", () => {
+      expect(formatRepresentativeSummary(null)).toBe("—");
+    });
   });
 
   it("實際到期日原樣顯示，沒有代表候選時說「—」", () => {

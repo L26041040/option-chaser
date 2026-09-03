@@ -20,7 +20,6 @@
  * 牽動這個檔案。
  */
 import type { RefreshFailure, ScenarioSummary } from "./api";
-import { strategyLabel } from "./detail";
 import { CheckIcon, EditIcon, TrashIcon } from "./icons";
 import { detailHash } from "./route";
 import {
@@ -30,7 +29,7 @@ import {
   formatAnalyzedAt,
   formatDaysLeft,
   formatRepresentativeExpiry,
-  formatRepresentativeLegs,
+  formatRepresentativeSummary,
   formatReturn,
   hasPriceRange,
   hasResult,
@@ -182,9 +181,7 @@ function ScenarioCard({
               {formatReturn(row.best_return)}
             </span>
             <span className="compact-strategy">
-              {rep
-                ? `${strategyLabel(rep.strategy)}　${formatRepresentativeLegs(rep)}`
-                : "—"}
+              {formatRepresentativeSummary(rep)}
             </span>
           </div>
 
