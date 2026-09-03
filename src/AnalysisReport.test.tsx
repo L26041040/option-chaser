@@ -89,6 +89,42 @@ describe("Risk / Payoff", () => {
     expect(regionRow).toHaveTextContent("$111.51");
   });
 
+  it("CLOSEOUT-004（Finding 1）：broken-wing Butterfly 的獲利區間在上方" +
+     "沒有界時顯示「$X 以上」，且不得說「區間外無法獲利」", async () => {
+    // call-fly 100/110/115、成本 4.00：K3 之外 payoff 恆為 5.00，
+    // 永遠賺 1.00——上界不存在，損益兩平點只有一個。
+    const openUp = candidate({
+      breakeven: 104.0, breakeven_points: [104.0],
+      profit_region: [104.0, null],
+    });
+    render(<AnalysisReport view={view} result={result} candidate={openUp} />);
+    await expand();
+    const breakevenRow = screen.getByText("Breakeven").closest(".row")!;
+    expect(breakevenRow).toHaveTextContent("$104.00");
+    const regionRow = screen.getByText("獲利區間").closest(".row")!;
+    expect(regionRow).toHaveTextContent("$104.00 以上");
+    expect(regionRow).toHaveTextContent("更高的標的價到期時一樣獲利");
+    // 這才是真正要擋的東西：不能對使用者說一個不存在的上界，也不能
+    // 說區間外不賺。修正前這裡會是「$104.00 ~ $115.00（標的落在這個
+    // 範圍內，到期時為正報酬）」。
+    expect(regionRow).not.toHaveTextContent("~");
+    expect(regionRow).not.toHaveTextContent("落在這個範圍內");
+  });
+
+  it("CLOSEOUT-004（Finding 1）：put-fly 的鏡射——下方沒有界時顯示" +
+     "「$X 以下」", async () => {
+    const openDown = candidate({
+      breakeven: 111.0, breakeven_points: [111.0],
+      profit_region: [null, 111.0],
+    });
+    render(<AnalysisReport view={view} result={result} candidate={openDown} />);
+    await expand();
+    const regionRow = screen.getByText("獲利區間").closest(".row")!;
+    expect(regionRow).toHaveTextContent("$111.00 以下");
+    expect(regionRow).toHaveTextContent("更低的標的價到期時一樣獲利");
+    expect(regionRow).not.toHaveTextContent("~");
+  });
+
   it("T16（#232）：Butterfly 到期時任何價位都無法獲利時，Breakeven 誠實" +
      "顯示「無」，不假造一個數字，也不顯示獲利區間列", async () => {
     const none = candidate({ breakeven: null, breakeven_points: [], profit_region: null });

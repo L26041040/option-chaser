@@ -206,7 +206,10 @@ class CandidateView:
     # `completion_threshold`／`breakeven_at_target`（單調家族用的保本
     # 掃描單一數字，AC 明文「不硬擠成單一數字」）在非單調結構上的替代
     # 呈現，兩者互斥出現：Butterfly 恆為 `completion_threshold=None`。
-    profit_region: tuple[float, float] | None = None
+    # CLOSEOUT-004（Finding 1）：兩個邊界各自可為 `None`＝該側沒有界
+    # （broken-wing 的翼外平台本身就獲利），見
+    # `valuation.ButterflyProfitRegion`。
+    profit_region: tuple[float | None, float | None] | None = None
 
 
 @dataclass(frozen=True)
@@ -945,6 +948,21 @@ def _spread_result(p: AnalysisParams, snap: ChainSnapshot,
         quality_flags=quality_flags)
 
 
+def _butterfly_timed_out(p: AnalysisParams, freport, pair_report,
+                         progress: str) -> StrategyResult:
+    """soft deadline 逾時的 `StrategyResult`——枚舉階段與估值階段兩個
+    出口共用（CLOSEOUT-004 Finding 3 讓 deadline 也涵蓋枚舉，逾時因此
+    有兩個發生點）。`progress` 是各自階段的進度描述；外框措辭（「分析
+    耗時超過安全上限……異常輸入的優雅降級，非常態」）維持 REPAIR-08
+    既有原文逐字不變。"""
+    return StrategyResult(
+        strategy=p.strategy, status="timed_out", candidates=(),
+        ranked_bands=None, ranked_spreads=None, n_qualified=0,
+        filter_report=freport, pair_report=pair_report, report_text=None,
+        message=f"分析耗時超過安全上限，{progress}後中止"
+               f"（異常輸入的優雅降級，非常態）。")
+
+
 def _butterfly_result(p: AnalysisParams, snap: ChainSnapshot,
                       today: date, deadline: float | None = None) -> StrategyResult:
     """T15（#230，Initial V2 spec #217）：`_spread_result()` 的三腿版本
@@ -957,9 +975,24 @@ def _butterfly_result(p: AnalysisParams, snap: ChainSnapshot,
     回傳遠超正常量級的合約數）最可能單獨在**這一個** family 內部就
     耗盡整個 request 的時間預算，因此需要迴圈內部的檢查點，光靠
     `_analyze()` 逐 subtype 檢查（下一個 subtype 才擋）不夠——那時
-    這個 subtype 自己已經卡死了。"""
+    CLOSEOUT-004（PR #250 review Finding 3）：`deadline` 現在也傳進
+    `generate_butterfly_triples()`——枚舉階段本身在估值迴圈之前就跑完，
+    異常龐大的鏈可能在任何既有檢查點生效之前就耗掉時間預算或撐爆
+    `out` 清單。枚舉逾時後這裡直接走 `timed_out`，不會誤報成
+    `empty`（那句「目前沒有符合流動性與報價條件的合約」對逾時是假話）。
+    """
     qualified, freport = apply_filters(snap.contracts, p)
-    triples, pair_report = generate_butterfly_triples(qualified, p)
+    # CLOSEOUT-004（Finding 3）：政策（時鐘、deadline）留在這裡，
+    # `filters.py` 只收到一個不帶語意的「該停了嗎」謂詞——見
+    # `generate_butterfly_triples()` docstring 說明為何刻意如此。
+    should_stop = (None if deadline is None
+                  else lambda: time.monotonic() >= deadline)
+    triples, pair_report = generate_butterfly_triples(
+        qualified, p, should_stop=should_stop)
+    if should_stop is not None and should_stop():
+        return _butterfly_timed_out(
+            p, freport, pair_report,
+            f"已枚舉 {pair_report.total_pairs} 組候選組合")
     if not triples:
         return StrategyResult(
             strategy=p.strategy, status="empty", candidates=(),
@@ -982,14 +1015,9 @@ def _butterfly_result(p: AnalysisParams, snap: ChainSnapshot,
         # `time.monotonic()` 開銷相對可以忽略，換來的是逾時後最快
         # 幾微秒內就能停下，不會「已經知道超時、還硬算完剩下幾萬組」。
         if deadline is not None and time.monotonic() >= deadline:
-            return StrategyResult(
-                strategy=p.strategy, status="timed_out", candidates=(),
-                ranked_bands=None, ranked_spreads=None, n_qualified=0,
-                filter_report=freport, pair_report=pair_report,
-                report_text=None,
-                message=f"分析耗時超過安全上限，已估值 {idx}／"
-                       f"{len(triples)} 組候選後中止（異常輸入的優雅"
-                       f"降級，非常態）。")
+            return _butterfly_timed_out(
+                p, freport, pair_report,
+                f"已估值 {idx}／{len(triples)} 組候選")
         butterflies.append(
             evaluate_butterfly(lo, mid, hi, snap.spot, today, p, carry_cache))
     # T05（#226）：B 層——導出層數學安全網，這裡額外傳 `max_loss_fn`

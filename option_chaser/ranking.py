@@ -5,6 +5,7 @@ from datetime import date
 
 from .models import AnalysisParams
 from .valuation import (
+    ButterflyProfitRegion,
     ButterflyValuation,
     ContractValuation,
     SpreadValuation,
@@ -238,14 +239,35 @@ def rank_butterflies(
     return ordered[: p.top]
 
 
+def butterfly_profit_region_text(region: ButterflyProfitRegion | None) -> str:
+    """獲利區間的人話描述——CLI 純文字報告（`report._butterfly_lines`）與
+    候選評語（`build_butterfly_reasons`）共用同一份措辭決策，兩處不各自
+    判斷四種情況，否則哪天只改一邊就會出現兩種說法。
+
+    CLOSEOUT-004（PR #250 review Finding 1）：`lower`／`upper` 各自可為
+    `None`＝那一側沒有界（broken-wing 的翼外平台本身就高於進場成本，
+    見 `valuation.ButterflyProfitRegion`）。文案**不得**在那種情況下說
+    「區間外到期時無法獲利」——那是對使用者的假話：往那個方向走多遠都
+    還是獲利。"""
+    if region is None:
+        return "無——到期時任何標的價都無法獲利"
+    lo, hi = region.lower, region.upper
+    if lo is not None and hi is not None:
+        return f"${lo:.2f} ~ ${hi:.2f}（區間外到期時無法獲利）"
+    if lo is not None:
+        return f"${lo:.2f} 以上（沒有上界，更高的標的價到期時一樣獲利）"
+    if hi is not None:
+        return f"${hi:.2f} 以下（沒有下界，更低的標的價到期時一樣獲利）"
+    return "任何標的價到期時都獲利（兩側都沒有界）"
+
+
 def build_butterfly_reasons(
     bv: ButterflyValuation, idx: int, n_triples: int, p: AnalysisParams
 ) -> tuple[list[str], list[str]]:
     pros = [f"劇本成立時報酬率 {_pct(butterfly_baseline_return(bv))}"
            f"（合格 {n_triples} 組中第 {idx + 1}）"]
     if bv.profit_region is not None:
-        cons = [f"獲利區間 ${bv.profit_region.lower:.2f} ~ "
-               f"${bv.profit_region.upper:.2f}（區間外到期時無法獲利）"]
+        cons = [f"獲利區間 {butterfly_profit_region_text(bv.profit_region)}"]
     else:
         cons = ["到期時任何標的價都無法獲利（峰值仍低於進場成本）"]
     legs_spread = ((bv.low_leg.ask - bv.low_leg.bid)

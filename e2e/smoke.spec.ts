@@ -2848,6 +2848,49 @@ test("T16（#232）：Butterfly 兩個損益兩平點與獲利區間都在分析
     `$${butterflyCand.natural_cost.toFixed(2)}`);
 });
 
+/* CLOSEOUT-004（PR #250 review Finding 1）：broken-wing Butterfly 的
+   獲利區間單側無界。`profit_region`／`breakeven_points` 兩個欄位的值
+   取自**同一份契約樣本裡真的存在**的那種候選（`call-fly|100|106|109`：
+   左翼 6 寬、右翼 3 寬，K3 之外 payoff 恆為 3.00 而成本只有 1.74——
+   漲多高到期時都還是賺），不是手捏的數字；套在既有那個已經跑得通的
+   Butterfly 詳細頁 fixture 上，只換受測的這兩個欄位，其餘結構完全不
+   動，把驗證範圍收斂到「這兩個值進到畫面會被講成什麼話」。 */
+const UNBOUNDED_REGION = (() => {
+  const real = sampleCallFly.candidate_pool["call-fly|100|106|109|2026-09-18"];
+  return { profit_region: real.profit_region,
+          breakeven_points: real.breakeven_points };
+})();
+
+test("CLOSEOUT-004（Finding 1）：獲利區間在上方沒有界的 Butterfly，分析報告" +
+    "顯示「$X 以上」，不得出現不存在的上界、也不得說區間外無法獲利",
+   async ({ page }) => {
+  // 前提斷言：取來的真的是單側無界那種，否則下面驗的是別的東西。
+  expect(UNBOUNDED_REGION.profit_region[1]).toBeNull();
+  expect(UNBOUNDED_REGION.breakeven_points).toHaveLength(1);
+
+  const view = {
+    ...sampleCallFly,
+    candidate_pool: {
+      ...sampleCallFly.candidate_pool,
+      [butterflyKey]: { ...butterflyCand, ...UNBOUNDED_REGION },
+    },
+  };
+  await routeButterflyDetail(page);
+  await page.route("**/api/scenarios/s1", (route) =>
+    route.fulfill({ json: { ...rowCallFly, latest_result: view } }));
+  await page.goto("/#/s/s1");
+
+  await page.getByText("📄 分析報告").click();
+  const regionRow = page.getByText("獲利區間", { exact: true }).locator("xpath=..");
+  await expect(regionRow).toContainText(
+    `$${UNBOUNDED_REGION.profit_region[0]!.toFixed(2)} 以上`);
+  await expect(regionRow).toContainText("更高的標的價到期時一樣獲利");
+  // 修正前這裡會是「$101.74 ~ $109.00（標的落在這個範圍內……）」——
+  // 一個不存在的上界，加上一句對使用者的假話。
+  await expect(regionRow).not.toContainText("~");
+  await expect(regionRow).not.toContainText("落在這個範圍內");
+});
+
 test("T16（#232）：展開 Butterfly 候選看得到 Heatmap，且不觸發任何額外網路請求",
    async ({ page }) => {
   const requestUrls: string[] = [];

@@ -121,3 +121,133 @@ def test_contract_samples_also_exhibit_axis_dedup():
         n_candidates = len(sample["candidate_pool"])
         n_axes = len(sample["axis_sets"])
         assert n_axes <= n_candidates
+
+
+# ---------- CLOSEOUT-004（PR #250 review Finding 2）：捨入不得改變
+# crossover 分類 ----------------------------------------------------------
+
+def _sign(x: float) -> int:
+    return (x > 0.0) - (x < 0.0)
+
+
+def _crossover_edges(a, b):
+    """`src/heatmap.ts::crossoverEdges()` 的最小 Python 鏡射——只複製
+    「逐格相減、相鄰兩格正負號不同就記一條邊」這條判準本身，不複製它
+    的呈現細節。存在的理由：這條測試要鎖的是 **crossover edge
+    identity**，而那個身分是由前端這段邏輯定義的；只斷言「格值差不多」
+    證明不了邊界沒有變。前端函式本身另有 Vitest 覆蓋，這裡不是要取代
+    它，是要在後端這一側鎖住「餵給它的東西不會讓它改變答案」。"""
+    n = len(a)
+    if n == 0 or len(b) != n:
+        return set()
+    m = len(a[0])
+    d = [[a[i][j] - b[i][j] for j in range(m)] for i in range(n)]
+    out = set()
+    for i in range(n):
+        for j in range(m):
+            if i + 1 < n and _sign(d[i][j]) != _sign(d[i + 1][j]):
+                out.add((i, j, "vertical"))
+            if j + 1 < m and _sign(d[i][j]) != _sign(d[i][j + 1]):
+                out.add((i, j, "horizontal"))
+    return out
+
+
+def _unflatten(flat, n_cols):
+    return [list(flat[i:i + n_cols]) for i in range(0, len(flat), n_cols)]
+
+
+def _candidates_with_comparator(fixture, strategy, target_price, target_month):
+    """引擎精確值與序列化後的值成對回傳——比對的兩側必須來自同一次
+    分析，否則比的是兩份不同的資料。"""
+    req = service.AnalysisRequest(
+        symbol="XYZ",
+        base_params=AnalysisParams(strategy=strategy,
+                                   target_price=target_price,
+                                   target_month=target_month),
+        strategies=(strategy,))
+    result = service.run_offline(req, fixture)
+    view = store.serialize_result(result, "S", 100000.0)
+    pool = view["candidate_pool"]
+    out = []
+    for res in result.results:
+        for cv in res.candidates:
+            if cv.comparator is None:
+                continue
+            key = service.candidate_key(cv)
+            wire = pool.get(key)
+            if wire is None or wire.get("comparator") is None:
+                continue
+            n_cols = len(view["axis_sets"][wire["matrix"]["axis_index"]]["dates"])
+            out.append((
+                cv,
+                _unflatten(wire["matrix"]["cells"], n_cols),
+                _unflatten(wire["comparator"]["matrix"]["cells"], n_cols)))
+    return out
+
+
+CROSSOVER_CASES = (
+    ("tests/fixtures/xyz_v4_six_expiries.json", "bull-call-spread", 130.0, "2026-09"),
+    ("tests/fixtures/xyz_v5_put_ladder.json", "bear-put-spread", 70.0, "2026-09"),
+)
+
+
+def test_serialised_cells_keep_the_exact_sign_of_the_crossover_difference():
+    """核心不變量：逐格 `sign(序列化候選 − 序列化 comparator)` 必須等於
+    `sign(引擎精確候選 − 引擎精確 comparator)`。
+
+    前端三個 crossover 消費端（`crossoverEdges()`／
+    `crossoverFavoredSide()`／`crossoverSides()`）全都只讀這個正負號，
+    所以保住它就等於保證「傳輸壓縮不會改變 crossover 分類」。
+
+    修正前（兩個矩陣各自獨立捨入）實測違反：真差 4.4e-05／1.9e-05／
+    1.3e-06 這類格子被捨成相同的數字，`sign()` 變 0。"""
+    checked = 0
+    for case in CROSSOVER_CASES:
+        for cv, cells, cmp_cells in _candidates_with_comparator(*case):
+            exact_a = cv.matrix.cells
+            exact_b = cv.comparator.matrix.cells
+            for i, (row_a, row_b) in enumerate(zip(exact_a, exact_b)):
+                for j, (a, b) in enumerate(zip(row_a, row_b)):
+                    checked += 1
+                    assert _sign(cells[i][j] - cmp_cells[i][j]) == _sign(a - b), (
+                        f"{case[1]} 第 ({i},{j}) 格：精確差 {a - b!r}、"
+                        f"序列化後差 {cells[i][j] - cmp_cells[i][j]!r}")
+    assert checked > 100, f"只比對到 {checked} 格，樣本不足以當守門"
+
+
+def test_crossover_edges_are_identical_before_and_after_wire_compression():
+    """把上面那條不變量直接翻譯成使用者看得到的結果：前端會畫出來的
+    crossover 邊界集合，在「引擎精確值」與「序列化後的值」兩側必須
+    逐條相同。
+
+    修正前實測兩份 fixture **6/6 有 comparator 的候選都不同**（例如
+    bull-call-spread 精確 17 條、捨入後 20 條：抹掉 2 條真的、生出
+    5 條假的）。"""
+    checked = 0
+    for case in CROSSOVER_CASES:
+        for cv, cells, cmp_cells in _candidates_with_comparator(*case):
+            checked += 1
+            exact = _crossover_edges([list(r) for r in cv.matrix.cells],
+                                     [list(r) for r in cv.comparator.matrix.cells])
+            wire = _crossover_edges(cells, cmp_cells)
+            assert wire == exact, (
+                f"{case[1]}：序列化後的邊界與精確值不同——"
+                f"只在精確側 {sorted(exact - wire)}、只在序列化側 "
+                f"{sorted(wire - exact)}")
+            assert exact, "這個候選整張表沒有任何邊界，證明不了什麼"
+    assert checked >= 6, f"只檢查到 {checked} 個候選，樣本不足以當守門"
+
+
+def test_the_sign_fix_does_not_visibly_move_the_comparator_numbers():
+    """修法把符號被捨錯的 comparator 格值推到候選值的正負一格
+    （±1e-4）——偏離真值的上界因此是 1.5e-4，仍遠細於畫面顯示精度
+    （整數百分點，1e-2）。這條把「顯示數字不受影響」寫成可執行斷言，
+    免得未來有人以為這個修法會動到看得見的東西。"""
+    worst = 0.0
+    for case in CROSSOVER_CASES:
+        for cv, _cells, cmp_cells in _candidates_with_comparator(*case):
+            for i, row in enumerate(cv.comparator.matrix.cells):
+                for j, b in enumerate(row):
+                    worst = max(worst, abs(cmp_cells[i][j] - b))
+    assert worst <= 1.5e-4, worst
+    assert worst > 0.0, "完全沒有格子被推動，這條測試沒有驗到東西"

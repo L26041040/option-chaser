@@ -27,7 +27,7 @@ block 裡，不能切成好幾個 code block、也不能中間插普通文字把
 `［回報#001］spec #137 拆票完成`）。編號是**累計總數**，不因換
 session、換分支、換主題而歸零——目前最新編號記在這裡：
 
-> 目前次序：055（下一份回報用 056）
+> 目前次序：056（下一份回報用 057）
 
 每發一份回報就把上面這個數字改成剛剛用掉的那個，跟著那次改動一起
 commit（沒有其他改動要 commit 時，單獨為這一行開一個小 commit 也
@@ -6380,6 +6380,77 @@ sub-issue、皆標 `ready-for-agent`**：
 必敗）；`docs/initial-v2-acceptance-checklist.md` 已備妥 P1–P4
 附錄供需求方回到 Vercel preview 逐條重新驗證。依專案規則全部票
 做完才開 PR，中途不主動開——**等需求方指示開 PR、合併回 master。**
+
+### OPTION-CHASER-CLOSEOUT-004——PR #250 三條 unresolved review thread（2026-09-03）
+
+需求方指示只處理 PR #250 仍 unresolved 的三條 review thread，逐條先
+證明 TRUE／FALSE 再施工。**三條全部 TRUE**，皆已修正並附上證明得了
+「舊 bug 存在時會紅」的 regression test。
+
+- **Finding 1（P1）Butterfly unbounded profit region — TRUE**。
+  broken-wing（兩翼不等寬）組合的翼外平台 payoff 可能本身就高於進場
+  成本（call-fly 左翼寬於右翼時 `v3=(K2-K1)-(K3-K2)>0`，put-fly 對稱），
+  該側到期時**永遠**獲利、不存在邊界。修正前
+  `_butterfly_region_from_knots()` 一律填該側履約價（K1／K3）當邊界，
+  程式碼註解自己寫著「這是這個已知邊界情況的合理近似」——實測那不是
+  近似，是錯的：`breakeven_points` 多出一個不是損益兩平點的數字、
+  `profit_region` 謊報成有限區間、`build_butterfly_reasons()` 對使用者
+  說「區間外到期時無法獲利」的假話。**可達性實測**：
+  `xyz_v6_butterfly_ladder` 9998 組候選中 4052 組違反、
+  `xyz_v7_butterfly_moderate` 323 組中 159 組；**shipped 契約樣本
+  `analysis_sample_call_fly.json` 的 30 個使用者可見候選中有 6 個**
+  （例如 `call-fly|100|106|109`：S≥109 之後 payoff 恆為 3.00、成本
+  1.74，實際永遠賺 1.26，卻被報成「獲利區間 101.74~109，區間外無法
+  獲利」）。修法：`ButterflyProfitRegion.lower`／`.upper` 改為可空，
+  `None`＝該側沒有界；`breakeven_points` 只收錄真的交叉點（因此可能
+  是 1 點而不再恆為 2 點）；四種情況的文案收斂成單一
+  `ranking.butterfly_profit_region_text()`（CLI 報告與候選評語共用，
+  不各自判斷），前端 `AnalysisReport.tsx` 新增對應的
+  `profitRegionText()`。**未**建立 generic payoff-envelope engine、
+  **未**泛化 N-leg framework（#223 收斂的裁示原樣有效）。
+- **Finding 2（P2）Heatmap crossover rounding drift — TRUE**。候選
+  matrix 與 comparator matrix 原本各自獨立捨入到
+  `MATRIX_CELL_DECIMALS`（1e-4），前端 `crossoverEdges()`／
+  `crossoverFavoredSide()`／`crossoverSides()` 再對捨入後的值做**精確
+  的正負號**判斷——真差小於捨入誤差的格子被捨成同一個數字、`sign()`
+  變 0，憑空生出或抹掉邊界。**量化實測：兩份 fixture 6/6 有
+  comparator 的候選 edge 集合都改變**（bull-call-spread 精確 17 條 vs
+  捨入後 20 條——抹掉 2 條真的、生出 5 條假的；成因逐格核對是真差
+  4.4e-05／1.9e-05／1.3e-06 這類格子）。修法選最小的一種：
+  `store._comparator_matrix_to_dict()` 保住逐格
+  `sign(候選 − comparator)`，符號被捨錯的格子把 comparator 值推到候選
+  值的正負一格。**不取消 matrix 壓縮、不改契約形狀、不改前端、前端
+  不做任何新的金融估值**——三個 crossover 消費端全都只讀那個正負號，
+  而 comparator 的格值結構上從不顯示在畫面上（`Heatmap.tsx` 只顯示
+  候選自己的 matrix 與 comparator 的標籤／成本）。已知可接受副作用：
+  推動後的值可能微幅落在物理可達範圍外（-1.0→-1.0001）。
+- **Finding 3（P2）Timeout safety net enumeration gap — TRUE**。
+  REPAIR-08（#245）的 soft deadline 原本只活在 `_butterfly_result()`
+  的估值迴圈裡，`generate_butterfly_triples()` 在那之前就已經把整份
+  `C(n,3)` 走完、把通過的組合全部建成 list。**實測**：300 個履約價
+  的合成鏈（C(300,3)=4,455,100 組）在修正前**於任何檢查點生效之前
+  就建出 2,773,455 組三元組**。修法讓 deadline 涵蓋枚舉本身，但走
+  **依賴反轉**——`generate_butterfly_triples()` 只收一個不帶語意的
+  `should_stop` 謂詞（每 4096 個組合徵詢一次），時鐘與 deadline 政策
+  留在 `service.py`。這麼做是為了**保住既有結構紅線**
+  `test_ranking_and_filters_do_not_import_the_soft_deadline_mechanism`
+  （明文要求 soft deadline 不得滲透進 `ranking.py`／`filters.py`）；
+  該測試本身改成掃 **AST 程式碼識別字**而非整份原始碼文字（原版連
+  docstring 散文都掃，解釋「為何這裡刻意不認識 deadline」就會讓它紅），
+  同時**加嚴**：另外斷言兩個模組都沒有匯入 `time`。`should_stop=None`
+  （全部既有呼叫端）行為逐位元不變，已有專屬對照測試。
+
+**T01 數值基準第 9 次合法重產事件**（Finding 2 造成）：逐鍵比對四個
+既有策略全部欄位，`changed=6 added=0 removed=0`——6 格全在
+`comparator.matrix.cells` 內、每格恰好變動一個捨入網格（±1e-4），
+候選自己的 matrix 與全部金融數值（`baseline_return`／`max_profit`／
+`max_loss`／`breakeven`／Greeks／`price_ladder`）逐位元不變。契約樣本
+三份與 `golden_call_fly.txt` 一併重產，diff 範圍逐一核對。
+
+**Hard boundaries 全數遵守**：未觸碰 single-leg L1/L2/L3 天花板產品
+問題、#223 payoff-envelope open delta、Treasury／Dividend scaling、
+Position、Cross-Scenario；無 unrelated cleanup、無 stylistic 修改、
+無 DB migration、無 generic payoff engine。
 
 ### 施工依據
 

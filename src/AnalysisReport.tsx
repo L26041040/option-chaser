@@ -136,10 +136,40 @@ function QRow({ params }: { params: AnalysisView["params"] }) {
 }
 
 /**
+ * 獲利區間的文字——四種情況（兩側有界／單側無界 ×2／兩側皆無界）。
+ *
+ * CLOSEOUT-004（PR #250 review Finding 1）：`profit_region` 的邊界
+ * 各自可為 `null`＝那一側沒有界，往那個方向走多遠到期時都還是獲利
+ * （broken-wing Butterfly 的翼外平台高於進場成本）。這種情況**不得**
+ * 顯示成一個有限區間、也不得說「區間外無法獲利」——那是使用者看得到
+ * 的假話。後端的 `ranking.butterfly_profit_region_text()` 是同一套
+ * 判斷的純文字版本，兩邊措辭刻意一致。
+ */
+function profitRegionText(
+  region: NonNullable<Candidate["profit_region"]>,
+): { range: string; note: string } {
+  const [lo, hi] = region;
+  if (lo !== null && hi !== null) {
+    return { range: `${money(lo)} ~ ${money(hi)}`,
+             note: "（標的落在這個範圍內，到期時為正報酬）" };
+  }
+  if (lo !== null) {
+    return { range: `${money(lo)} 以上`,
+             note: "（沒有上界，更高的標的價到期時一樣獲利）" };
+  }
+  if (hi !== null) {
+    return { range: `${money(hi)} 以下`,
+             note: "（沒有下界，更低的標的價到期時一樣獲利）" };
+  }
+  return { range: "不限", note: "（兩側都沒有界，任何標的價到期時都獲利）" };
+}
+
+/**
  * Breakeven（含 T16／#232 新增的獲利區間）：既有四策略恆單點，
  * `breakeven_points` 長度 1，沿用既有格式逐字不變。Butterfly
- * （T15／#230）可能是兩點（獲利區間存在，額外顯示範圍）或空陣列
- * （到期時任何價位都無法獲利，`profit_region` 恆為 null，見
+ * （T15／#230）是一或兩點（獲利區間存在；CLOSEOUT-004 起單側無界的
+ * broken-wing 組合只有一個真正的損益兩平點）或空陣列（到期時任何
+ * 價位都無法獲利，`profit_region` 恆為 null，見
  * `api.ts::Candidate.profit_region` 註解）——都誠實顯示，不假造
  * 一個數字。
  */
@@ -148,13 +178,15 @@ function BreakevenRow({ candidate }: { candidate: Candidate }) {
   if (points.length === 0) {
     return <Row label="Breakeven">無（到期時任何價位都無法獲利）</Row>;
   }
+  const region = candidate.profit_region
+    ? profitRegionText(candidate.profit_region) : null;
   return (
     <>
       <Row label="Breakeven">{points.map((p) => money(p)).join(" / ")}</Row>
-      {candidate.profit_region && (
+      {region && (
         <Row label="獲利區間">
-          {money(candidate.profit_region[0])} ~ {money(candidate.profit_region[1])}
-          <span className="row-note">（標的落在這個範圍內，到期時為正報酬）</span>
+          {region.range}
+          <span className="row-note">{region.note}</span>
         </Row>
       )}
     </>

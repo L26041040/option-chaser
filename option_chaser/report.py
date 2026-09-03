@@ -501,7 +501,7 @@ def _butterfly_candidate_lines(bv, idx, n_triples, p, spot: float, today: date,
     同一種寫法，三腿版本。獨立函式而非泛化既有函式——三腿的欄位形狀
     （買/賣/買、中腿口數 2）與兩腿本質不同，硬要共用只會生出一堆
     `if len(legs)==2` 分支。"""
-    from .ranking import build_butterfly_reasons
+    from .ranking import build_butterfly_reasons, butterfly_profit_region_text
     from .valuation import butterfly_guidance_judgments
     lo, mid, hi = bv.low_leg, bv.mid_leg, bv.high_leg
     lines = [
@@ -520,11 +520,11 @@ def _butterfly_candidate_lines(bv, idx, n_triples, p, spot: float, today: date,
         f"最大損失: ${_money(bv.max_loss)}（${bv.max_loss * 100:.0f}/張） / "
         f"淨Delta {bv.net_delta:.2f}",
     ]
-    if bv.profit_region is not None:
-        lines.append(f"- 獲利區間（到期）: ${_money(bv.profit_region.lower)} ~ "
-                     f"${_money(bv.profit_region.upper)}")
-    else:
-        lines.append("- 獲利區間（到期）: 無——到期時任何標的價都無法獲利")
+    # CLOSEOUT-004（Finding 1）：四種情況（兩側有界／單側無界 ×2／完全
+    # 無獲利）的措辭與 `build_butterfly_reasons` 共用同一個函式，兩處
+    # 不各自判斷。
+    lines.append(f"- 獲利區間（到期）: "
+                 f"{butterfly_profit_region_text(bv.profit_region)}")
     for prefix, leg in (("低履約腿", lo), ("中履約腿", mid), ("高履約腿", hi)):
         warning = _spread_width_warning(prefix, leg.bid, leg.ask, p)
         if warning:

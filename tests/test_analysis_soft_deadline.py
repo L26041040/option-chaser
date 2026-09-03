@@ -129,12 +129,142 @@ def test_normal_production_scale_never_times_out_with_the_default_deadline():
     assert "timed_out" not in statuses.values()
 
 
+def _code_identifiers(module) -> set[str]:
+    """模組**程式碼**裡出現的識別字（函式／類別／參數／變數／屬性／
+    匯入名），刻意不含註解與 docstring——那是散文，不是機制。"""
+    import ast
+    import inspect
+    names: set[str] = set()
+    for node in ast.walk(ast.parse(inspect.getsource(module))):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            names.add(node.name)
+        elif isinstance(node, ast.arg):
+            names.add(node.arg)
+        elif isinstance(node, ast.Name):
+            names.add(node.id)
+        elif isinstance(node, ast.Attribute):
+            names.add(node.attr)
+        elif isinstance(node, ast.keyword) and node.arg:
+            names.add(node.arg)
+        elif isinstance(node, ast.Import):
+            names.update(a.asname or a.name.split(".")[0] for a in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            if node.module:
+                names.add(node.module.split(".")[0])
+            names.update(a.asname or a.name for a in node.names)
+    return names
+
+
 def test_ranking_and_filters_do_not_import_the_soft_deadline_mechanism():
     """結構性守門，比照全站既有慣例（`test_selection_regression.py`
-    同一種手法）：`ranking.py`／`filters.py` 原始碼不含 `deadline`
-    字樣——soft deadline 是 `service.py` 內部的流程控制，不該滲透進
-    排名／過濾這兩個核心模組。"""
-    import inspect
+    同一種手法）：`ranking.py`／`filters.py` 不得認識 soft deadline
+    機制——它是 `service.py` 內部的流程控制，不該滲透進排名／過濾這
+    兩個核心模組。
+
+    CLOSEOUT-004（PR #250 review Finding 3）：改掃**程式碼識別字**
+    （AST）而不是整份原始碼文字。原版連註解與 docstring 都掃，於是
+    「解釋為什麼這裡刻意不認識 deadline」這種散文本身就會讓它紅——
+    那不是它想擋的東西。同時把守門**加嚴**：除了識別字不含
+    `deadline`，另外明確斷言兩個模組都沒有匯入 `time`（沒有時鐘＝
+    結構上不可能自己判斷逾時），這比原本的字串掃描更貼近真正的
+    不變量。Finding 3 的修法因此走依賴反轉——`generate_butterfly_
+    triples()` 只收一個不帶語意的 `should_stop` 謂詞，政策留在
+    `service.py`。"""
     from option_chaser import filters, ranking
-    assert "deadline" not in inspect.getsource(ranking)
-    assert "deadline" not in inspect.getsource(filters)
+    for module in (ranking, filters):
+        names = _code_identifiers(module)
+        assert not [n for n in names if "deadline" in n.lower()], module.__name__
+        assert "time" not in names, f"{module.__name__} 匯入了時鐘"
+
+
+# ---------- CLOSEOUT-004（PR #250 review Finding 3）：deadline 必須
+# 涵蓋枚舉階段本身 ------------------------------------------------------
+
+def _oversized_chain(n_strikes: int):
+    """異常龐大的鏈：單一到期日 `n_strikes` 個履約價，`C(n,3)` 組合數
+    在 n=300 時是 445 萬——遠超任何正常 production-scale 規模（#240 的
+    效能守門 fixture 是 26 個履約價 × 5 個到期日）。刻意用合成報價而不
+    是既有 fixture：既有 fixture 沒有一個大到能在枚舉階段本身耗掉時間
+    預算，而這正是本 finding 要重現的情境。"""
+    from option_chaser.models import ChainSnapshot, OptionContract
+    contracts = []
+    for i in range(n_strikes):
+        strike = 50.0 + i * 0.5
+        # 報價維持自洽（bid<ask、IV 在可解區間），確保 A/B 兩層過濾都
+        # 放行——否則枚舉會因為候選被濾光而提早結束，測到的就不是
+        # 「枚舉本身太久」這件事。
+        price = max(120.0 - strike, 0.5)
+        contracts.append(OptionContract(
+            contract_symbol=f"XYZ20261016C{i:05d}", option_type="call",
+            strike=strike, expiry="2026-10-16", bid=round(price - 0.05, 2),
+            ask=round(price + 0.05, 2), last=price, volume=10,
+            open_interest=100, implied_volatility=0.30))
+    return ChainSnapshot(schema_version=1, symbol="XYZ", spot=110.0,
+                         fetched_at="2026-07-15T00:00:00+00:00",
+                         source="test", contracts=tuple(contracts))
+
+
+def test_the_soft_deadline_takes_effect_during_butterfly_enumeration_itself(
+        monkeypatch):
+    """Review Finding 3 的核心：deadline 必須在**枚舉階段**就生效。
+
+    修正前 `generate_butterfly_triples()` 會先把整份 `C(n,3)` 走完、
+    把通過的組合全部建成一個 list，`_butterfly_result()` 的 deadline
+    檢查點在那之後才第一次執行——異常龐大的鏈因此可能在任何檢查點
+    生效之前就耗掉整個時間預算或撐爆記憶體，最後仍被 Vercel hard
+    kill。
+
+    非空斷言的關鍵在 `pair_report.total_pairs`：它記的是**真的走訪過**
+    的組合數。deadline 已經過期的情況下，修好之後它必須遠小於完整的
+    `C(n,3)`；修正前它恆等於完整組合數（枚舉一定跑完）。
+    """
+    from math import comb
+
+    n_strikes = 300
+    snap = _oversized_chain(n_strikes)
+    full = comb(n_strikes, 3)          # 4,455,100 組
+    p = AnalysisParams(target_price=130.0, target_month="2026-10",
+                       strategy="call-fly")
+    req = service.AnalysisRequest(symbol="XYZ", base_params=p,
+                                  strategies=("call-fly",))
+
+    # 假時鐘（沿用本檔案既有手法）讓 deadline 精準落在枚舉階段：
+    # t=1 `_absolute_deadline()`→deadline=1+2=3；t=2 `_analyze()` 逐
+    # subtype 的前置檢查（2>=3 為假，通過，所以真的有進到
+    # `_butterfly_result()`）；t=3 枚舉的第一個徵詢點（3>=3 為真，停）。
+    # 直接用 deadline_seconds=-1 是不行的——那會在 `_analyze()` 那層就
+    # 先被擋下，根本走不到枚舉，測不到本 finding 要測的東西。
+    monkeypatch.setattr(service.time, "monotonic", _fake_monotonic(step=1.0))
+    result = service.run_with_snapshot(req, snap, deadline_seconds=2.0)
+
+    res = result.results[0]
+    assert res.status == "timed_out"
+    assert res.candidates == ()
+    assert "已枚舉" in res.message, res.message
+    # 真的在枚舉中途停下：走訪過的組合數必須遠小於完整 C(n,3)。
+    walked = res.pair_report.total_pairs
+    assert 0 < walked < full / 100, (walked, full)
+    # 前提斷言：這條鏈真的大到值得測（否則上面的比例是巧合）。
+    assert full > 4_000_000, full
+
+
+def test_enumeration_stays_bitwise_identical_when_no_deadline_is_given():
+    """`should_stop=None`（預設，也是全部既有呼叫端的用法）時，枚舉
+    行為與這個參數加入前逐位元相同——正常 production-scale workload
+    的結果不得改變。直接對照「傳謂詞但永遠回 False」與「完全不傳」
+    兩種呼叫，兩者輸出必須完全一致。"""
+    from option_chaser.data.snapshot import load_snapshot
+    from option_chaser.filters import apply_filters, generate_butterfly_triples
+
+    snap = load_snapshot(FIX)
+    p = AnalysisParams(target_price=108.0, target_month="2026-10",
+                       strategy="call-fly")
+    qualified, _ = apply_filters(snap.contracts, p)
+
+    plain, plain_report = generate_butterfly_triples(qualified, p)
+    hooked, hooked_report = generate_butterfly_triples(
+        qualified, p, should_stop=lambda: False)
+
+    assert plain == hooked
+    assert plain_report == hooked_report
+    assert plain, "這份 fixture 沒有候選，比較不出東西"

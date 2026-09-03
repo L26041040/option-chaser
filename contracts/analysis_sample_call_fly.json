@@ -282,8 +282,7 @@
       "breakeven": 101.74,
       "breakeven_at_target": null,
       "breakeven_points": [
-        101.74,
-        109.0
+        101.74
       ],
       "buffer_days": -28,
       "candidate_key": "call-fly|100|106|109|2026-09-18",
@@ -322,7 +321,7 @@
       ],
       "completion_threshold": null,
       "cons": [
-        "獲利區間 $101.74 ~ $109.00（區間外到期時無法獲利）",
+        "獲利區間 $101.74 以上（沒有上界，更高的標的價到期時一樣獲利）",
         "買賣價差偏大（三腿合計）"
       ],
       "days_to_expiry": 65,
@@ -471,7 +470,7 @@
       ],
       "profit_region": [
         101.74,
-        109.0
+        null
       ],
       "rate_tenor_years": 0.1780821917808219,
       "rate_used": 0.041,
@@ -521,8 +520,7 @@
       "breakeven": 101.77,
       "breakeven_at_target": null,
       "breakeven_points": [
-        101.77,
-        109.0
+        101.77
       ],
       "buffer_days": 0,
       "candidate_key": "call-fly|100|106|109|2026-10-16",
@@ -561,7 +559,7 @@
       ],
       "completion_threshold": null,
       "cons": [
-        "獲利區間 $101.77 ~ $109.00（區間外到期時無法獲利）",
+        "獲利區間 $101.77 以上（沒有上界，更高的標的價到期時一樣獲利）",
         "買賣價差偏大（三腿合計）"
       ],
       "days_to_expiry": 93,
@@ -710,7 +708,7 @@
       ],
       "profit_region": [
         101.77,
-        109.0
+        null
       ],
       "rate_tenor_years": 0.2547945205479452,
       "rate_used": 0.041,
@@ -760,8 +758,7 @@
       "breakeven": 101.86,
       "breakeven_at_target": null,
       "breakeven_points": [
-        101.86,
-        109.0
+        101.86
       ],
       "buffer_days": 63,
       "candidate_key": "call-fly|100|106|109|2026-12-18",
@@ -800,7 +797,7 @@
       ],
       "completion_threshold": null,
       "cons": [
-        "獲利區間 $101.86 ~ $109.00（區間外到期時無法獲利）",
+        "獲利區間 $101.86 以上（沒有上界，更高的標的價到期時一樣獲利）",
         "買賣價差偏大（三腿合計）"
       ],
       "days_to_expiry": 156,
@@ -949,7 +946,7 @@
       ],
       "profit_region": [
         101.86,
-        109.0
+        null
       ],
       "rate_tenor_years": 0.4273972602739726,
       "rate_used": 0.041,
@@ -6016,8 +6013,7 @@
       "breakeven": 99.81,
       "breakeven_at_target": null,
       "breakeven_points": [
-        99.81,
-        112.0
+        99.81
       ],
       "buffer_days": -28,
       "candidate_key": "call-fly|97|106|112|2026-09-18",
@@ -6056,7 +6052,7 @@
       ],
       "completion_threshold": null,
       "cons": [
-        "獲利區間 $99.81 ~ $112.00（區間外到期時無法獲利）",
+        "獲利區間 $99.81 以上（沒有上界，更高的標的價到期時一樣獲利）",
         "買賣價差偏大（三腿合計）"
       ],
       "days_to_expiry": 65,
@@ -6205,7 +6201,7 @@
       ],
       "profit_region": [
         99.81,
-        112.0
+        null
       ],
       "rate_tenor_years": 0.1780821917808219,
       "rate_used": 0.041,
@@ -6255,8 +6251,7 @@
       "breakeven": 99.67,
       "breakeven_at_target": null,
       "breakeven_points": [
-        99.67,
-        112.0
+        99.67
       ],
       "buffer_days": 0,
       "candidate_key": "call-fly|97|106|112|2026-10-16",
@@ -6295,7 +6290,7 @@
       ],
       "completion_threshold": null,
       "cons": [
-        "獲利區間 $99.67 ~ $112.00（區間外到期時無法獲利）",
+        "獲利區間 $99.67 以上（沒有上界，更高的標的價到期時一樣獲利）",
         "買賣價差偏大（三腿合計）"
       ],
       "days_to_expiry": 93,
@@ -6444,7 +6439,7 @@
       ],
       "profit_region": [
         99.67,
-        112.0
+        null
       ],
       "rate_tenor_years": 0.2547945205479452,
       "rate_used": 0.041,
@@ -6494,8 +6489,7 @@
       "breakeven": 99.58,
       "breakeven_at_target": null,
       "breakeven_points": [
-        99.58,
-        112.0
+        99.58
       ],
       "buffer_days": 63,
       "candidate_key": "call-fly|97|106|112|2026-12-18",
@@ -6534,7 +6528,7 @@
       ],
       "completion_threshold": null,
       "cons": [
-        "獲利區間 $99.58 ~ $112.00（區間外到期時無法獲利）",
+        "獲利區間 $99.58 以上（沒有上界，更高的標的價到期時一樣獲利）",
         "買賣價差偏大（三腿合計）"
       ],
       "days_to_expiry": 156,
@@ -6683,7 +6677,7 @@
       ],
       "profit_region": [
         99.58,
-        112.0
+        null
       ],
       "rate_tenor_years": 0.4273972602739726,
       "rate_used": 0.041,

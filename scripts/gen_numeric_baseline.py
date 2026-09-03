@@ -119,7 +119,27 @@ Initial V2 的 T02（逐腿 payoff 直算）與 T03（包絡量由 payoff 導出
    （比照 spread 版 parametrize 錨點前／上／後三種到期日），已驗證
    對修法前的程式碼會紅燈。
 
-除了以上八個已知、已記錄的例外，其餘期間跑出差異＝有 bug，不是基準
+9. **OPTION-CHASER-CLOSEOUT-004（2026-09-03，PR #250 review Finding
+   2）**——heatmap crossover 的傳輸捨入漂移。候選 matrix 與 comparator
+   matrix 原本各自獨立捨入到 `store.MATRIX_CELL_DECIMALS`（1e-4），
+   前端 `crossoverEdges()`／`crossoverFavoredSide()`／`crossoverSides()`
+   再對捨入後的值做**精確的正負號**判斷——真差小於捨入誤差的格子會被
+   捨成同一個數字（`sign()` 變 0），憑空生出或抹掉 crossover 邊界。
+   實測兩份 fixture **6/6 有 comparator 的候選 edge 集合都改變**
+   （bull-call-spread 精確 17 條 vs 捨入後 20 條）。修法在
+   `store._comparator_matrix_to_dict()`：符號被捨錯的 comparator 格值
+   推到候選值的正負一格，保住逐格
+   `sign(候選 − comparator)`；comparator 的格值結構上不顯示在畫面上
+   （`Heatmap.tsx` 只顯示候選自己的 matrix 與 comparator 的標籤／
+   成本），偏離真值上界 1.5e-4，比顯示精度（整數百分點）細兩個數量級。
+   影響範圍：**只有 6 格**，全部在 `comparator.matrix.cells` 內、每格
+   恰好變動一個捨入網格（±1e-4）——已用腳本逐鍵比對四個策略的全部
+   欄位，`changed=6 added=0 removed=0`，候選自己的 matrix 與全部金融
+   數值（`baseline_return`／`max_profit`／`max_loss`／`breakeven`／
+   Greeks／`price_ladder` 等）逐位元不變。Butterfly 的 Finding 1
+   修正不影響本基準（`call-fly`／`put-fly` 不在這四個既有策略裡）。
+
+除了以上九個已知、已記錄的例外，其餘期間跑出差異＝有 bug，不是基準
 過期。
 
     PYTHONPATH=. .venv/bin/python scripts/gen_numeric_baseline.py

@@ -235,18 +235,26 @@ export interface Candidate {
    * T12（#228，Initial V2）：損益兩平的**傳輸格式**——0～2 點的陣列，
    * 容量預留給 Butterfly（T15／#230）用。既有四策略恆是單點、值等於
    * 上面的 `breakeven`；Butterfly 到期時完全無法獲利時是空陣列（見
-   * `profit_region`）、有獲利空間時恰好兩點。T16（#232）起前端據此
-   * 呈現多點 Breakeven 與獲利區間。
+   * `profit_region`）。T16（#232）起前端據此呈現多點 Breakeven 與
+   * 獲利區間。
+   *
+   * CLOSEOUT-004（PR #250 review Finding 1）：Butterfly 有獲利空間時
+   * 是**一或兩點**，不再恆為兩點——broken-wing 組合的翼外平台可能本身
+   * 就高於進場成本，那一側沒有由虧轉盈的價位，就不該憑空填一個數字
+   * 進來（修正前填該側履約價，是一個不存在的損益兩平點）。
    */
   breakeven_points: number[];
   /**
    * T15（#230，Initial V2）：獲利區間——標的落在這個範圍內、到期時為
-   * 正報酬。只有 Butterfly 會非 null（且恰在 `breakeven_points` 有
-   * 兩點時才非 null，兩者同進同出）；既有四策略恆為 `null`（它們的
+   * 正報酬。只有 Butterfly 會非 null；既有四策略恆為 `null`（它們的
    * payoff 對照組是單調的，「獲利區間」這個概念本身不成立，不是
    * 缺了一個數字）。
+   *
+   * CLOSEOUT-004（Finding 1）：兩個邊界**各自可為 `null`**＝那一側
+   * 沒有界，往那個方向走多遠到期時都還是獲利（broken-wing 翼外平台
+   * 高於進場成本）。呈現層必須據此改口，不得說「區間外無法獲利」。
    */
-  profit_region: [number, number] | null;
+  profit_region: [number | null, number | null] | null;
   /** 距這組候選自己的到期日還有幾天（V8／#56，spec R1 §4.2 B「剩餘
    *  天數」——早就序列化了，純文字報告沒印）。 */
   days_to_expiry: number;

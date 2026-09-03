@@ -326,6 +326,61 @@ def _matrix_to_dict(mv, axis_of) -> dict:
                     for row in mv.cells for v in row]}
 
 
+# 捨入網格的一格（1e-4）。`_comparator_matrix_to_dict()` 用它把符號被
+# 捨掉的格子推回正確的一側。
+_MATRIX_CELL_STEP = 10.0 ** -MATRIX_CELL_DECIMALS
+
+
+def _sign(x: float) -> int:
+    return (x > 0.0) - (x < 0.0)
+
+
+def _comparator_matrix_to_dict(mv, base_mv, axis_of) -> dict:
+    """Comparator matrix 的序列化——與 `_matrix_to_dict()` 同形狀，但額外
+    保證一條不變量：
+
+        逐格 `sign(序列化候選值 − 序列化 comparator 值)`
+             == `sign(引擎精確候選值 − 引擎精確 comparator 值)`
+
+    OPTION-CHASER-CLOSEOUT-004（PR #250 review Finding 2）：兩個矩陣
+    先各自獨立捨入到 `MATRIX_CELL_DECIMALS`，前端 `crossoverEdges()`／
+    `crossoverFavoredSide()`／`crossoverSides()` 再對捨入後的值做**精確
+    的正負號**判斷——`|a−b|` 小於捨入誤差（≤1e-4）時，兩個真的不相等的
+    值會被捨成相同的數字，`sign()` 因此變成 0，跟兩側的非零符號都不同，
+    憑空製造出一條 crossover 邊界；反過來也可能把真的邊界抹掉。實測
+    （`xyz_v4_six_expiries` bull-call-spread、`xyz_v5_put_ladder`
+    bear-put-spread 兩份 fixture）**6/6 有 comparator 的候選 edge 集合
+    都改變**：例如 bull-call-spread 精確 17 條、捨入後 20 條（抹掉 2 條
+    真的、生出 5 條假的），成因逐格核對是真差 4.4e-05／1.9e-05／1.3e-06
+    這類被捨成 0 的格子。
+
+    修法刻意選最小的一種：**不取消 matrix 壓縮、不改契約形狀、不改前端**
+    ——crossover 三個消費端全都只讀「差值的正負號」（`comparator` 的格值
+    本身從不顯示在畫面上，`Heatmap.tsx` 只顯示候選自己的 matrix 與
+    comparator 的標籤／成本），所以只要序列化時保住那個正負號就夠了。
+    符號被捨錯的那些格子，把 comparator 值改成候選值的正負一格
+    （±1e-4），偏離真值最多 ~1.5e-4——而這個數字結構上不會被顯示，
+    顯示精度（整數百分點）比它粗兩個數量級。
+
+    副作用（已知、可接受）：推動後的值可能微幅落在物理可達範圍之外
+    （例如報酬率 -1.0 被推成 -1.0001，「賠超過 100%」）。之所以可
+    接受，正是因為這個欄位唯一的用途就是跟同一格的候選值比大小——
+    它不是拿來給人看的數字，它是一個比較的參照點。
+    """
+    cells: list[float] = []
+    for base_row, cmp_row in zip(base_mv.cells, mv.cells):
+        for a, b in zip(base_row, cmp_row):
+            ra = round(a, MATRIX_CELL_DECIMALS)
+            rb = round(b, MATRIX_CELL_DECIMALS)
+            want = _sign(a - b)
+            if _sign(ra - rb) != want:
+                rb = (ra if want == 0
+                     else round(ra - want * _MATRIX_CELL_STEP,
+                                MATRIX_CELL_DECIMALS))
+            cells.append(rb)
+    return {"axis_index": axis_of(mv), "cells": cells}
+
+
 def _candidate(cv: CandidateView, strategy: str, capital: float | None,
                today: date, anchor: date, p: AnalysisParams, axis_of) -> dict:
     v = cv.valuation
@@ -467,12 +522,16 @@ def _candidate(cv: CandidateView, strategy: str, capital: float | None,
         # `_matrix_to_dict` 序列化，跟主 matrix 同形狀。T14（#233）：
         # comparator 的 matrix 與候選自己的 matrix 是同一組 price×date
         # 座標（#116 既有保證），`axis_of()` 因此自然把兩者去重成同一個
-        # `axis_index`，不需要另外處理。
+        # `axis_index`，不需要另外處理。CLOSEOUT-004（Finding 2）：
+        # comparator 的格值改走 `_comparator_matrix_to_dict()`——捨入
+        # 必須保住逐格 `sign(候選 − comparator)`，否則前端的 crossover
+        # 邊界會被捨入誤差改掉（見該函式 docstring 的實測數字）。
         "comparator": ({"option_type": cv.comparator.option_type,
                        "strike": cv.comparator.strike,
                        "expiry": cv.comparator.expiry,
                        "cost": cv.comparator.cost,
-                       "matrix": _matrix_to_dict(cv.comparator.matrix, axis_of)}
+                       "matrix": _comparator_matrix_to_dict(
+                           cv.comparator.matrix, cv.matrix, axis_of)}
                       if cv.comparator is not None else None),
         # spec §3 新增四組（乘除法與日期差，非估值邏輯）
         "capital_per_contract": cap_per,

@@ -39,7 +39,7 @@ from __future__ import annotations
 
 import math
 from itertools import combinations
-from typing import Iterable
+from typing import Callable, Iterable
 
 from .models import (AnalysisParams, FilterReport, FilterStageResult, OptionContract,
                      PairReport, QualityFlagCount, leg_option_type)
@@ -270,8 +270,16 @@ def generate_spread_pairs(
     return out, PairReport(total_pairs=total, removed_sanity=removed, passed=len(out))
 
 
+# 枚舉迴圈每隔幾個組合徵詢一次 `should_stop`。徵詢本身有成本（呼叫端
+# 那頭通常是一次 `time.monotonic()`），逐一徵詢在 `C(n,3)` 規模下量得
+# 出來；4096 個組合在正常 production-scale 規模下遠低於一毫秒——夠密到
+# 異常龐大的鏈能在瞬間停下，夠疏到正常情況量不出差別。
+_ABORT_CHECK_EVERY = 4096
+
+
 def generate_butterfly_triples(
-    legs: list[OptionContract], p: AnalysisParams
+    legs: list[OptionContract], p: AnalysisParams,
+    should_stop: Callable[[], bool] | None = None,
 ) -> tuple[list[tuple[OptionContract, OptionContract, OptionContract]], PairReport]:
     """T15（#230，Initial V2 spec #217）：同一到期日、同一權別的合格合約
     窮舉三個履約價組合（低／中／高，中腿口數 2）——比照 `generate_spread_
@@ -289,16 +297,44 @@ def generate_butterfly_triples(
     的 `max_loss_fn` 參數），這裡只做配對層級的結構前提。`PairReport`
     沿用既有型別（欄位形狀通用，命名雖是「pair」但不因此另建一個
     幾乎相同的型別，Standards：避免 Primitive Obsession 式的過度切分）。
+
+    `should_stop`：OPTION-CHASER-CLOSEOUT-004（PR #250 review Finding
+    3）——呼叫端給的中止判準，每 `_ABORT_CHECK_EVERY` 個組合徵詢一次，
+    回 `True` 就**停止枚舉**、把已經累積的組合原樣回傳（`PairReport`
+    只反映真的走訪過的組合數，不假裝走完）。REPAIR-08（#245）加的
+    soft deadline 原本只活在 `service._butterfly_result()` 的估值迴圈
+    裡，而枚舉在那之前就已經跑完並把整份 `C(n,3)` 清單建好——異常龐大
+    的鏈（例如某個 symbol 的 chain 意外回傳遠超正常量級的合約數）因此
+    可能在任何檢查點生效之前就耗掉整個時間預算、或把 `out` 撐爆記憶體，
+    最後仍被 Vercel hard kill。`combinations()` 本身是惰性的，真正會
+    長大的是 `out`，這個徵詢點同時擋住時間與記憶體兩者。
+
+    **刻意收成一個不帶語意的謂詞而不是直接吃 deadline**：本模組是排名
+    ／過濾核心，既有結構紅線（`tests/test_analysis_soft_deadline.py::
+    test_ranking_and_filters_do_not_import_the_soft_deadline_mechanism`）
+    明文要求 soft deadline 機制不得滲透進 `ranking.py`／`filters.py`。
+    這裡因此不認識時鐘、不認識 deadline，只知道「呼叫端說停就停」；
+    政策留在 `service.py`（它傳進來的是
+    `lambda: time.monotonic() >= deadline`）。
+
+    `None`（預設）＝不啟用，行為與這個參數加入前逐位元相同。
     """
     by_expiry: dict[str, list[OptionContract]] = {}
     for c in legs:
         by_expiry.setdefault(c.expiry, []).append(c)
     total = 0
     removed = 0
+    seen = 0
     out: list[tuple[OptionContract, OptionContract, OptionContract]] = []
     for expiry in sorted(by_expiry):
         group = sorted(by_expiry[expiry], key=lambda c: (c.strike, c.contract_symbol))
         for lo, mid, hi in combinations(group, 3):   # lo.strike < mid.strike < hi.strike
+            if should_stop is not None:
+                seen += 1
+                if seen % _ABORT_CHECK_EVERY == 0 and should_stop():
+                    return out, PairReport(total_pairs=total,
+                                           removed_sanity=removed,
+                                           passed=len(out))
             if lo.strike == mid.strike or mid.strike == hi.strike:
                 continue
             total += 1

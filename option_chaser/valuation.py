@@ -748,9 +748,22 @@ def spread_guidance_judgments(sv: SpreadValuation, p: AnalysisParams) -> list[st
 class ButterflyProfitRegion:
     """到期時 payoff 高於進場成本（`net_worst`）的標的價範圍，左右邊界
     各自是這個結構自己的分段線性交叉點（見
-    `butterfly_breakeven_and_profit_region()` docstring）。"""
-    lower: float
-    upper: float
+    `butterfly_breakeven_and_profit_region()` docstring）。
+
+    OPTION-CHASER-CLOSEOUT-004（PR #250 review Finding 1）：邊界改為
+    可空——`None` 代表**該側沒有交叉點、獲利區間在那個方向沒有上／下
+    界**。broken-wing（兩翼不等寬）組合的翼外平台 payoff 可能本身就
+    高於進場成本（call-fly 左翼寬於右翼時 `v3 = (K2-K1)-(K3-K2) > 0`，
+    put-fly 對稱），此時該側到期時**永遠**獲利，不存在「超出這個價位
+    就不賺」的邊界。修正前這兩個欄位一律填該側履約價（K1／K3），把
+    unbounded 的一側謊報成有限區間，`breakeven_points` 也因此多出一個
+    不是損益兩平點的數字——實測 shipped 契約樣本
+    （`analysis_sample_call_fly.json`）30 個使用者可見候選中有 6 個
+    中招（例如 `call-fly|100|106|109`：S≥109 之後 payoff 恆為 3.00、
+    成本 1.74，實際是永遠賺 1.26，卻被報成「獲利區間 101.74~109，
+    區間外無法獲利」）。"""
+    lower: float | None
+    upper: float | None
 
 
 def butterfly_expiry_payoff(option_type: str, k1: float, k2: float, k3: float,
@@ -801,23 +814,28 @@ def _butterfly_region_from_knots(
     （不硬擠成一個假的區間）。
 
     峰值有獲利空間時，左／右兩個交叉點各自落在峰值左側／右側的線性
-    段上；若某一側的翼端本身已經獲利（該側翼端的成本方是負值，即
-    `v1 - net_cost >= 0` 或 `v3 - net_cost >= 0`——這只在履約價明顯
-    不對稱、俗稱「broken wing」的組合上才可能發生），該側就沒有落在
-    對應線性段內的真交叉點，這裡用該側翼端履約價（K1／K3）本身當
-    邊界——這是這個已知邊界情況的合理近似（獲利region 實際上延伸到
-    該翼端之外的恆定平台，見函式頂端的段落分析），不是憑空發明的
-    容忍值。"""
+    段上；若某一側的翼端本身已經獲利（`v1 - net_cost >= 0` 或
+    `v3 - net_cost >= 0`——這只在履約價明顯不對稱、俗稱「broken wing」
+    的組合上才可能發生），該側**根本沒有交叉點**：K1 之外／K3 之外是
+    恆定平台，平台值本身已高於成本，代表往那個方向走多遠都還是獲利。
+    這種情況該側回傳 `None`（獲利區間在那個方向沒有界），且
+    `breakeven_points` 不收錄那一側——沒有價位在那裡由虧轉盈，填一個
+    數字進去就是謊報一個不存在的損益兩平點。
+
+    OPTION-CHASER-CLOSEOUT-004（PR #250 review Finding 1）：修正前這
+    兩種情況一律以該側履約價（K1／K3）充當邊界，是被明文記載為「合理
+    近似」的錯誤——`ButterflyProfitRegion` 欄位註解有實測影響範圍。"""
     peak_profit = v2 - net_cost
     if peak_profit <= 0.0:
         return (), None
     left_tail_profit = v1 - net_cost
     right_tail_profit = v3 - net_cost
     # [K1,K2] 斜率恆 +1：f(S) = left_tail_profit + (S-K1)，根 = K1 - left_tail_profit
-    lower = k1 if left_tail_profit >= 0.0 else k1 - left_tail_profit
+    lower = None if left_tail_profit >= 0.0 else k1 - left_tail_profit
     # [K2,K3] 斜率恆 -1：f(S) = peak_profit - (S-K2)，根 = K2 + peak_profit
-    upper = k3 if right_tail_profit >= 0.0 else k2 + peak_profit
-    return (lower, upper), ButterflyProfitRegion(lower=lower, upper=upper)
+    upper = None if right_tail_profit >= 0.0 else k2 + peak_profit
+    breakevens = tuple(b for b in (lower, upper) if b is not None)
+    return breakevens, ButterflyProfitRegion(lower=lower, upper=upper)
 
 
 def butterfly_breakeven_and_profit_region(
