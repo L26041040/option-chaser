@@ -27,7 +27,7 @@ block 裡，不能切成好幾個 code block、也不能中間插普通文字把
 `［回報#001］spec #137 拆票完成`）。編號是**累計總數**，不因換
 session、換分支、換主題而歸零——目前最新編號記在這裡：
 
-> 目前次序：058（下一份回報用 059）
+> 目前次序：059（下一份回報用 060）
 
 每發一份回報就把上面這個數字改成剛剛用掉的那個，跟著那次改動一起
 commit（沒有其他改動要 commit 時，單獨為這一行開一個小 commit 也
@@ -37,6 +37,54 @@ commit（沒有其他改動要 commit 時，單獨為這一行開一個小 commi
 只有這七條。
 
 ## 專案紀錄區
+
+> **現況總覽（2026-09-04 追加，Scaling Foundation Wayfinder 完成，
+> 取代下面「等需求方審閱兩份研究文件」那句的下一步指向——其餘原文
+> 照舊）**：
+>
+> **背景**：承接 2026-09-03 完成的 market-data scaling 研究，需求方
+> 開了 `OPTION-SCALING-WAYFINDER-001`，指示以 `/wayfinder` 收斂出
+> Option Chaser 走到 ≥1,000 active users 前的**最小必要** Scaling
+> Foundation。**本輪只畫地圖**——不改 production code、不寫 spec、
+> 不開票、不做 migration、不開 PR、不自行回答 Owner Decision
+> （`git status` 確認只新增 `docs/wayfinder/` 一個目錄）。
+>
+> **產出**：`docs/wayfinder/scaling-foundation.md`（962 行，13 節：
+> Current State／Destination Criteria D1–D8／五個 Decision Cluster
+> A–E／Dependency Graph 推導＋Stage 0–7／Minimum Foundation vs
+> Deferred 分級表／Owner Decisions Q1–Q7／Correctness vs Optimization
+> ／Failure Domains／一頁 ASCII 總覽／誠實侷限），結尾標記
+> `READY_FOR_SCALING_OWNER_DECISIONS`。
+>
+> **核心結論**：
+> - **Scaling Foundation 實際只有四塊**——(1) results/snapshots
+>   retention 與 payload 瘦身、(2) user ownership boundary、(3)
+>   option chain 429 韌性、(4) 最小可觀測性。其餘全部可延後或
+>   evidence-gated。
+> - **最貴的兩個問題都不需要 cache／lock／scheduler**：storage
+>   retention 在 U=1 就會咬人（Neon Free 0.5 GB ÷ 12.18 MiB 單列
+>   ⇒ 42–402 次 refresh 就滿），user ownership 是把成本從 O(U²)
+>   壓回 O(U) 的唯一開關（既有 blocker #59）。兩者都是純資料層改動。
+> - **Option chain「共用」刻意延後、掛 evidence gate**：ADR-0001
+>   自己訂的重開條件（traffic shape 改變＋含新往返成本的量測）目前
+>   拿不出來，先建可觀測性再談；但 chain 的 **429 韌性必須現在做**
+>   ——`cboe.py` 裸 `except Exception` 加上 production 結構上不可達
+>   的 yfinance 備援，一旦被限流是全站中斷且無自動恢復。
+> - **本輪自行覆核新增三項發現（F1–F3，寫在地圖 §1.3）**：F1
+>   `all_candidates` 96.4% 的體積只服務 `SpreadHistory` 一條折線的
+>   y 值（`rank_in_expiry`／`baseline_return`／`spot` 在 `src/` 零
+>   讀取端）；F2 `spread_cost_history()` docstring 早已明訂缺席即
+>   斷點、不插值，大幅降低「縮減保存內容」的風險；F3
+>   `provider_credentials` 全站單一、無 user 欄位，同時是隱私、
+>   成本與設計限制問題——由此推導出 §4.4 的約束：共用 chain cache
+>   必須以 `(symbol, source)` 為鍵，且**不得**快取自訂來源
+>   （使用者自己 token）抓到的資料。
+> - **推導出一條不直觀的相依邊**：最小可觀測性（Stage 0）必須早於
+>   chain 共用的決策閘門（Stage 5）——沒有量測就無法依 ADR-0001
+>   自己的標準重開該決策。
+>
+> **下一步**：等需求方回答地圖 §9 的 Owner Decisions Q1–Q7（皆為
+> 白話具體情境題），才進 `/to-spec`。本輪依 Hard Rule 到此為止。
 
 > **現況總覽（2026-09-03 追加，Market Data Lifecycle & Scaling 研究
 > 完成，取代下面「等需求方下一輪指示」那句的下一步指向——其餘 master／
