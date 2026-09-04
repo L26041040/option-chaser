@@ -27,7 +27,7 @@ block 裡，不能切成好幾個 code block、也不能中間插普通文字把
 `［回報#001］spec #137 拆票完成`）。編號是**累計總數**，不因換
 session、換分支、換主題而歸零——目前最新編號記在這裡：
 
-> 目前次序：059（下一份回報用 060）
+> 目前次序：060（下一份回報用 061）
 
 每發一份回報就把上面這個數字改成剛剛用掉的那個，跟著那次改動一起
 commit（沒有其他改動要 commit 時，單獨為這一行開一個小 commit 也
@@ -37,6 +37,58 @@ commit（沒有其他改動要 commit 時，單獨為這一行開一個小 commi
 只有這七條。
 
 ## 專案紀錄區
+
+> **現況總覽（2026-09-04 再追加，Targeted Runtime Research 完成，
+> 取代上面「等需求方回答地圖 §9 的 Owner Decisions Q1–Q7」那句的
+> 下一步指向——上面 Wayfinder 那段其餘原文照舊，本段只補這一輪新查
+> 的兩個事實）**：
+>
+> **背景**：Wayfinder 地圖 §9 Q6 明列兩個「廉價、但會改變設計」的
+> 未查證事實（production 是否啟用 fluid compute、Python runtime
+> 有沒有 `waitUntil` 等價物），需求方指示以 `/research` 開一輪
+> **targeted**（非大型）研究專門查這兩題，不重寫既有結論。已完成，
+> 產出 `docs/research/runtime-targeted-scaling.md`（394 行）＋在
+> `market-data-lifecycle-scaling.md`／`scaling-foundation.md` 各補
+> 一句 pointer（純加法、零刪除，`git diff --stat` 已核對）。
+>
+> **Q1 Fluid Compute＝NOT_CONFIRMED**（不是「沒查」，是「查了查不到」）：
+> Vercel MCP 六種直接查詢路徑（`list_projects`／`get_project`／
+> `get_deployment`／`get_git_deployment_context`／
+> `get_project_deployment_protection`／`web_fetch_vercel_url`）對真實
+> production 專案 `option-chaser` 全數 404 或零可見度（`list_projects`
+> 回空陣列，連「這個團隊有哪些專案」都查不到）——比先前已知的
+> 「MCP 剛建立的臨時專案讀不回來」更明確，這次是**這個 MCP 授權
+> 對它宣稱擁有的團隊底下、任何專案（含真實長期存在的 production）
+> 都沒有讀取權**。用 `curl` 繞過 MCP 直打 production `/api/health`
+> 確認網站本身健康（`HTTP/2 200`），問題只在 MCP 對這個專案的可見度。
+> repo `vercel.json` 無顯式 `fluid` key，故狀態完全取決於 dashboard
+> 設定、本輪查不到。**Owner 可自行一分鐘查完**：Vercel dashboard →
+> `option-chaser` 專案 → Settings → Functions → Fluid Compute 開關。
+>
+> **Q2 Python Background Execution＝NOT_SUPPORTED（as officially
+> documented）**：四份官方文件一致否定——`@vercel/functions` 套件頁
+> `<title>` 本身寫死 `"(Node.js)"`；官方 Python SDK 參考頁
+> （`vercel-sdk-python`）六個章節窮舉列出，`waitUntil` 零命中；
+> Python runtime 主文件頁零命中；2024-05-10 官方 changelog 原文
+> 明講 `waitUntil` 首發範圍是「Node.js and Edge runtimes」。一則
+> dev.to 部落格聲稱 Python 也支援，與四份官方文件矛盾，已列為未仲裁
+> 殘留疑點、不採信為結論（見文件 §5）。
+>
+> **對 Wayfinder 既有結論的影響（地圖本身未改動，只加 pointer）**：
+> - §7.1「process-local cache 只能當 L1」——**結論方向不變、反而
+>   更站得住腳**：連「有沒有開 fluid compute」都確認不了，更沒有
+>   理由把任何正確性建立在它上面；"can" 不是 "will" 的官方原句
+>   本輪逐字覆核成立。
+> - §6.2 stale-while-revalidate——**從「不確定」變成「確定不可行
+>   （原始 fire-and-forget 形狀）」**，但 SWR 目標不必因此放棄：
+>   新文件 §2.3(d) 指出兩個不依賴背景執行 API 的替代觸發形狀——
+>   (a) 同步 refresh-on-miss（`treasury_cache.py`／`rate_cache.py`／
+>   `dividend_cache.py` 既有 PERF-03／#179 落地的形狀，本來就是這樣）
+>   (b) Vercel Cron 打專屬 refresh endpoint；兩者可疊加。
+>
+> **下一步**：地圖 §9 的 Owner Decisions 現況——Q6 已解答（本輪），
+> **Q1–Q5、Q7 仍待需求方回答**，才進 `/to-spec`。本輪依指示只查證、
+> 未修改 Wayfinder 任何既有決策內文。
 
 > **現況總覽（2026-09-04 追加，Scaling Foundation Wayfinder 完成，
 > 取代下面「等需求方審閱兩份研究文件」那句的下一步指向——其餘原文
