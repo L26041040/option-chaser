@@ -1052,6 +1052,10 @@ backoff＋重試？circuit breaker＋顯示舊資料？換備援來源？
    該表格在 Markdown 呈現中為空白）、Vercel Hobby 商業使用條款、
    Python runtime 是否有 `waitUntil` 等價物、部署專案實際是否啟用
    fluid compute（僅能依「2025-04-23 後建立的新專案預設啟用」推定）。
+   （2026-09-04 已於 `docs/research/runtime-targeted-scaling.md` 查證
+   完成，見該文件——結論：Python 無官方 `waitUntil` 等價物；production
+   專案是否啟用 fluid compute 因 MCP 工具對該專案零可見度而未能直接
+   確認，仍為推定）
 5. **`V = 12.18 MiB` 是 TLT（2,414 合約）的數字。** 更大的鏈
    （SPY 12,534 合約）butterfly 是 `C(n,3)`，量體會**更大**——
    我沒有實測，因為那已足以說明問題。

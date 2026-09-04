@@ -528,6 +528,11 @@ Vercel 不承諾任何一件事：實例數量、實例生命週期、哪個請�
 > ⚠ 研究還揭露一個未查證項：**部署專案實際是否啟用 fluid compute
 > 未經確認**（只能依「2025-04-23 後建立的新專案預設啟用」推定）。
 > 這是一個廉價、應該先查清楚的事實 → §9-Q6。
+>
+> **2026-09-04 查證結果**：NOT_CONFIRMED——嘗試過六種 Vercel MCP
+> 直接查詢路徑，對 `option-chaser` 專案全數 404／零可見度，非未查。
+> 上面「"can" 不是 "will"」的論證不受影響、原樣成立。詳見
+> `docs/research/runtime-targeted-scaling.md`。
 
 ### 7.2 是否需要 distributed cache / lock？
 
@@ -850,6 +855,11 @@ ADR 沒評估過的做法」。
    它直接決定 §6.2 的 stale-while-revalidate 可不可行。
 
 > 這是 targeted research，**不是另一輪大型研究**。
+
+> **2026-09-04 兩項均已查證完成**（1. NOT_CONFIRMED／2.
+> NOT_SUPPORTED——官方文件確認無 Python 版 `waitUntil`/`after()`，
+> SWR 需改用同步 refresh-on-miss 或 Cron 觸發，非 fire-and-forget）。
+> 詳見 `docs/research/runtime-targeted-scaling.md`。
 
 ### Q7｜三件與 scaling 無關、但你應該知道的事
 
