@@ -27,7 +27,7 @@ block 裡，不能切成好幾個 code block、也不能中間插普通文字把
 `［回報#001］spec #137 拆票完成`）。編號是**累計總數**，不因換
 session、換分支、換主題而歸零——目前最新編號記在這裡：
 
-> 目前次序：060（下一份回報用 061）
+> 目前次序：061（下一份回報用 062）
 
 每發一份回報就把上面這個數字改成剛剛用掉的那個，跟著那次改動一起
 commit（沒有其他改動要 commit 時，單獨為這一行開一個小 commit 也
@@ -37,6 +37,93 @@ commit（沒有其他改動要 commit 時，單獨為這一行開一個小 commi
 只有這七條。
 
 ## 專案紀錄區
+
+> **現況總覽（2026-09-05 追加，Scaling Foundation Reconciliation
+> 完成，取代上面兩段「下一步」的指向——上面兩段其餘原文照舊，本段
+> 只記這一輪的結果）**：
+>
+> **背景**：需求方對 Wayfinder 地圖下了五條 Owner Decision（OD-01
+> Treasury 排程／OD-02 Storage 核心原則／OD-03 Migration Safety／
+> OD-04 Ownership／OD-05 Chain freshness 與 429），以
+> `OPTION-SCALING-WAYFINDER-002` 開一輪 **reconciliation**——不是
+> 新地圖，是把既有地圖與這五條對齊、移除內部矛盾、重整 Storage
+> lifecycle、更新 dependency graph 與 Stage map、只留真正未決的
+> Owner Decision。**本輪只更新地圖**——不改 production code、不寫
+> spec、不開票、不做 migration、不開 PR、不碰 Cross-Scenario／
+> Position（`git status` 確認只有
+> `docs/wayfinder/scaling-foundation.md` 一個檔案異動）。
+>
+> **產出**：`docs/wayfinder/scaling-foundation.md` 全面改寫
+> （972 → 1,312 行，15 節），結尾標記從
+> `READY_FOR_SCALING_OWNER_DECISIONS` 改為 **`READY_FOR_SCALING_SPEC`**。
+>
+> **本輪最重要的技術發現（OD-02 要求「必須先證明 seed + version →
+> deterministic reconstruction」，這是證明的結果）**：
+> - **F4｜`today` 完全由 snapshot 決定、不吃 wall clock**
+>   （`service.py:1252` `today = snapshot_today(snap.fetched_at)`）。
+>   同一份 snapshot 在任何一天重放，`today` 都是同一個值——determinism
+>   最典型的殺手今天就已經不存在。
+> - **F5｜重建所需的估值輸入「寄生」在要被瘦身的 payload 裡**。
+>   `service._analyze()` 解出 r／q 後回寫 request（`service.py:1264`），
+>   `store.serialize_result()` 把**解析後**的 params 整包序列化
+>   （`store.py:766`）——所以 `rate_by_expiry`／`q_by_symbol`／全部
+>   provenance／`engine_version` 今天的物理位置就在 `results.view`
+>   內部。**先砍 view 再說「反正能重建」，會把重建能力本身一起砍掉。**
+>   由此推導出地圖新增的 **Stage 1-0「拆 seed」**——任何 storage
+>   瘦身的不可跳過前置。
+> - **F6｜`snapshots` 存的是未經裁切的完整鏈**（`main.py::_analyze()`
+>   回傳的是傳入的原始 snap，不是 service 內部 `_scoped_to_selected_
+>   expiries()` 裁切後的 local rebind），且 Cboe 無歷史端點、免 key
+>   路線已於 #111 窮舉確認不存在 ⇒ **snapshot 是不可重新取得的
+>   seed**。這**推翻了 001 版「只保留每個劇本最新一次快照」那個選項**。
+> - **OD-02 的必要例外（委託明文要求列出的那種）**：歷史走勢圖需要的
+>   `cost` 序列**理論上可從 seed 重建、實務上不行**——研究 M8 單次
+>   3.21s（且那是 q=0 快路徑，完整校準路徑既有量測是 7.543s／
+>   REPAIR-03），刷新 30 次的劇本重建整條線 ≥96 秒，放不進一個 GET
+>   request。**因此它必須 materialize**，但最小集合只有四欄
+>   `(scenario_id, analyzed_at, candidate_key, cost)`（F1 已證前端只讀
+>   `cost`，本輪重驗成立：`rank_in_expiry`／`baseline_return` 在 `src/`
+>   生產碼零讀取）。
+> - **determinism 的真實邊界**：`engine_version` 只是標籤、舊版引擎不在
+>   資料庫裡，所以「用今天的引擎重新評價當時資料」（re-analysis）可行，
+>   「逐位元重現當時使用者看到的畫面」（reproduction）**不可行**。
+>   T01 數值基準至今已有 9 次合法重產事件，證明這不是理論風險。
+>
+> **Storage 最終分層（四層，不是 OD-02 字面的兩層）**：L0 Seed
+> （使用者輸入／raw snapshot／估值輸入）＋L1 Provenance & Version
+> ＋**L2 Materialized derived（必要例外）**＋L3 Pure derived。
+> 一句話：**永久＝使用者輸入／raw snapshot／估值輸入+provenance+
+> version／events／走勢圖四欄窄事實；短期＝歷史 view 完整內容；
+> 不動＝current view 的一切（OD-03 紅線）。**
+>
+> **修正的八處內部矛盾**（地圖 §14.1 逐處列表，含 001 版原文與處置）：
+> 最關鍵三處——(C1) 001 版「A-1 解掉 correctness 與 **privacy**」違反
+> OD-04，已改為「A-1 建立的是 data boundary，privacy 只能來自 A-2」；
+> (C2) 「只保留最新一次快照」選項作廢；(C5) C-1（429 韌性）原本卡在
+> 「等 Owner 裁示使用者看到什麼」，**OD-05 第 3～7 條已回答完畢，
+> 阻擋解除**。
+>
+> **OD-05 的關鍵拆解**：七條裡**只有兩條**（30 秒窗、手動 Refresh 不
+> 繞過）需要跨 request 共用機制、留在 evidence gate 後面；**其餘五條
+> （顯示 fetched time／429 顯示上次成功＋stale／honor Retry-After／
+> 禁止立即重打／持續失敗揭露）不需要任何快取，可直接施工**。
+>
+> **可立即開工的項目從 001 版的四項增為五項**：Stage 0 最小量測／
+> Stage 1-0 拆 seed（新增）／Stage 1-1..1-5 storage 遷移／Stage 2
+> 429 韌性／Stage 4 Treasury 排程。**唯一被未決事項擋住的是 Stage
+> 1-6（不可逆 cleanup）**，而 OD-03 自己把它排在六步的最後一步——
+> 所以它擋施工尾端、不擋 spec。
+>
+> **剩餘 Owner Decisions 只有四題**（其餘八題已由 OD-01～05 與
+> runtime 研究解除，地圖 §9.0 有可追溯對照表）：Q1 seed retention
+> （**唯一不可逆的一題**）／Q2 走勢圖 materialize 範圍與時間窗
+> （範圍本輪給了建議值「畫面上點得到的每一個」，時間窗無法從 OD-02
+> 推導）／Q3 diagnostics 的 symbol 算不算需隔離（OD-04 未涵蓋）／
+> Q4 四項知情事項（不要求決定）。
+>
+> **下一步**：可進 `/to-spec`。三條硬前置寫在地圖 §14.3——Stage 1-0
+> 必須最先；Stage 1-6 在 Q1／Q2 有答案前不得執行；Stage 4 不得移除
+> 同步 refresh-on-miss 保底路徑。
 
 > **現況總覽（2026-09-04 再追加，Targeted Runtime Research 完成，
 > 取代上面「等需求方回答地圖 §9 的 Owner Decisions Q1–Q7」那句的
