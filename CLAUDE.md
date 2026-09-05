@@ -27,7 +27,7 @@ block 裡，不能切成好幾個 code block、也不能中間插普通文字把
 `［回報#001］spec #137 拆票完成`）。編號是**累計總數**，不因換
 session、換分支、換主題而歸零——目前最新編號記在這裡：
 
-> 目前次序：061（下一份回報用 062）
+> 目前次序：062（下一份回報用 063）
 
 每發一份回報就把上面這個數字改成剛剛用掉的那個，跟著那次改動一起
 commit（沒有其他改動要 commit 時，單獨為這一行開一個小 commit 也
@@ -37,6 +37,103 @@ commit（沒有其他改動要 commit 時，單獨為這一行開一個小 commi
 只有這七條。
 
 ## 專案紀錄區
+
+> **現況總覽（2026-09-05 再追加，Scaling Foundation Spec 已發布，
+> 取代上一段「下一步：可進 `/to-spec`」那句的指向——上一段其餘原文
+> 照舊，本段只記這一輪的結果）**：
+>
+> **背景**：承接 `OPTION-SCALING-WAYFINDER-002` reconciliation
+> （標記 `READY_FOR_SCALING_SPEC`），需求方以 `OPTION-SCALING-SPEC-001`
+> 指示把地圖固化成正式 spec，並補下三條新的 Owner Decision——
+> **OD-06**（raw option-chain snapshot **永久保存**，Foundation 階段
+> 維持現有 storage location、不新增 object-storage dependency）、
+> **OD-07**（歷史走勢只 materialize **使用者實際點得到**的 candidate，
+> 最小四欄 `scenario_id`／`analyzed_at`／`candidate_key`／`cost`，
+> **永久保存暫不設 retention**）、**OD-08**（diagnostics 視為
+> **user-scoped operational data**，未來 ownership boundary 建立時必須
+> 依 owner 隔離）。**本輪只寫 spec**——不改 production code、不開票、
+> 不做 migration、不開 PR（`git status` 確認只有 `docs/spec/`
+> 新增檔案與 `CLAUDE.md` 兩處異動）。
+>
+> **產出**：**GitHub issue #251**（`ready-for-agent`），repo 內副本
+> `docs/spec/scaling-foundation.md`（905 行，20 節，涵蓋需求方指定的
+> 19 個必要章節），結尾標記 **`READY_FOR_SCALING_TICKETS`**。
+>
+> **兩個施工前接縫問題已由需求方拍板**（寫在 spec §13.1／§8.4）：
+> - **測試接縫＝沿用既有七個、零新增**（HTTP API／引擎純函式／
+>   Storage port 契約(memory＋真 Postgres)／契約樣本 drift／
+>   selection identity＋numeric guard／CLI golden fixtures／
+>   前端 Vitest＋Playwright）。唯一新增的是 `create_app()` 的第九個
+>   DI 注入參數（identity resolver），沿用既有 `fetch=`／
+>   `rate_loader=`／`refresh_run_budget=` 慣例，**不是新接縫**；
+>   Stage 1-2 的 parity proof 是**新測試、不是新接縫**。
+> - **429 backoff 狀態＝持久化進既有 Storage port**（新增極小的
+>   `chain_backoff` 表，鍵 `(source, symbol)`，只存 `blocked_until`／
+>   `retry_after_seconds`／`consecutive_failures`／`observed_at`／
+>   `last_success_at`）。**RL-19 明文紅線：不得儲存任何 chain
+>   payload／市場報價／合約資料**——它與 ADR-0001／OD-05 evidence
+>   gate 卡住的 chain shared cache 是不同的東西，這條界線必須同時
+>   寫進 schema 註解、dataclass docstring 與 commit 訊息（spec N8）。
+>   會需要持久化是因為 `REFRESH_RUN_GROUP_LIMIT = 1` 讓每個 symbol
+>   group 各自是一次獨立 invocation，行程內記憶體依地圖 §8.1 不能當
+>   correctness layer。
+>
+> **Canonical Storage Principle（spec 明文寫入）**：保存不可確定性
+> 重建的 seed ＋ provenance ＋ version；deterministic derived output
+> 原則上不永久保存，除非它位於高成本 read path、必須 materialize。
+> 資料分四層 **L0 Seed／L1 Provenance & Version／L2 Materialized
+> derived（必要例外）／L3 Pure derived**，spec §3.3 逐項列出各資料
+> 類型歸屬。
+>
+> **Storage Migration 硬性順序（不得跳步，spec §6 狀態機）**：
+> **1-0 拆 seed**（把寄生在 `results.view` 內的 r／q／provenance／
+> source／fetched & effective dates／stale state／`engine_version`／
+> `schema_version` 抽成獨立持久化欄位；**這一步完成前禁止移除
+> historical view**）→ **1-1 dual-write** → **1-2 parity proof** →
+> **1-3 切換 read path** → **1-4 production validation** →
+> **1-5 停止 obsolete writes** → **1-6 不可逆 cleanup**（唯一被
+> Owner 未決事項擋住的一步）。三條永久禁令：raw snapshots 不刪、
+> narrow visible-candidate history 不刪、current result view 不瘦身。
+>
+> **Regression Red Lines 共 27 條**（RL-01～RL-27，spec §14 分八組）。
+> 硬紅線一句話：**Performance / product behavior preservation >
+> storage savings**。守門機制**全部沿用既有的**（`test_selection_
+> regression.py` 身份＋數值雙軸、五份 CLI golden fixtures、契約樣本
+> drift、前端 Vitest／Playwright），只在既有 guard 真的不足時才補
+> 必要 guard、不改產品。
+>
+> **spec 施工分級**：**NOW 六項可平行開工**——S0 最小可觀測性
+> （建議最先，它是 EG-1 的唯一證據來源）／S1-0 拆 seed／S1-1～1-5
+> storage 遷移／S2 Cboe 429 韌性／S3 Ownership A-1／S4 Treasury
+> Cron 排程。**BLOCKED_ON_OWNER 只有 S1-6**。**不在本 spec**：
+> S6 chain 30 秒共用窗（受 ADR-0001 evidence gate 約束）、S7
+> authentication（A-2）。
+>
+> **三個 Remaining Evidence Gates**（spec §19）：**EG-1** chain 跨
+> request 共用（參數已定 30 秒、機制未定，需 S0 的量測＋含新增往返
+> 成本的比較；gate 時應一併評估 ADR-0001 從未評估過的 Vercel Edge
+> CDN 選項）／**EG-2** S1-6 要清理的「歷史 view 完整內容」保留多久
+> （**目前無 blocker**，OD-06／OD-07 已把 snapshot 與 narrow history
+> 定為永久；這題只擋施工尾端的不可逆那一步）／**EG-3** per-symbol
+> 觀測計數在 A-2 時的處置（登記在案，不擋任何一步）。
+>
+> **一項必須讓需求方知情、spec 已明文揭露的行為變化**：改成只
+> materialize visible top candidates 之後，一個**今天**在前十名、
+> 但**過去某次刷新**曾掉出前十名的候選，那一格會從「有值」變成
+> 「斷點」。這在 OD-07 字面之內，且既有「缺席即斷點、不插值」語意
+> 已優雅處理（圖上自然斷一格、不會壞掉），但它**確實是歷史圖表的
+> 可見行為變化**——spec 要求 Stage 1-2 parity proof 必須把這類 case
+> **分類計數並報告**，不得混進 pass／fail 兩邊任一側掩蓋掉。
+>
+> **另一項誠實算術**：OD-06 之後成長率降到約 1/25，但 seed 本身仍是
+> 每次刷新 0.48 MiB（TLT）／2.55 MiB（SPY）的硬成長——Neon Free
+> 0.5 GB ⇒ TLT 約 1,000 次／SPY 約 200 次刷新後仍會滿。**這把撞牆
+> 時間往後推了一個數量級，沒有消滅它。** 屆時依 OD-06 的解法是搬到
+> archival／object storage、不是刪 seed，而那明文屬本 spec Out of
+> Scope，需另開一線。
+>
+> **下一步**：可進 `/to-tickets`（依 spec §18 的 Stage Map 為骨架，
+> 三條硬前置寫在 §18.1）。**本輪依指示未自行拆票。**
 
 > **現況總覽（2026-09-05 追加，Scaling Foundation Reconciliation
 > 完成，取代上面兩段「下一步」的指向——上面兩段其餘原文照舊，本段
