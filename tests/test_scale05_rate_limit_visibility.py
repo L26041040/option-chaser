@@ -10,8 +10,10 @@
 - AC-6：`test_is_sustained_incident_*`（純函式 boundary tests）＋
   `test_single_and_batch_refresh_endpoints_agree_on_rate_limited_classification`
   （唯一 canonical 分類點，不在兩個端點各自硬編碼一次）
-- AC-7：`test_frontend_stage_vocabulary_includes_rate_limited`（見
-  `tests/test_frontend_contract.py`，這裡只補後端字彙本身）
+- AC-7：既有的 `test_every_failure_stage_the_backend_emits_is_one_
+  the_frontend_knows`（`tests/test_frontend_contract.py`）用正則掃描
+  `_fail(...)` 呼叫與 `src/api.ts` 的 `STAGES` 宣告，自動涵蓋新增的
+  `"rate_limited"`——不必新開一條專屬測試，這裡只補後端字彙本身
 
 前端（countdown／disable／sustained incident 文案）測試在 Vitest／
 Playwright，不在這個檔案裡。

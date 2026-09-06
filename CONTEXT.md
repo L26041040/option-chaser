@@ -134,6 +134,25 @@ Butterfly 會誤報「永遠不損益兩平」，因此非單調家族改報這�
 看到的數字是哪一刻的」唯一依據，因此 Updating Badge 期間必須仍然
 可見。
 
+**Rate-Limited Stage（限流分層，SCALE-05／#260）** — 抓鏈失敗的既有
+`{stage, message}` 分層家族新增一員。與 `fetch`／`analyze`／`params`／
+`archived` 不同，它恆帶結構化的 additive metadata（`blocked_until`／
+`retry_after_seconds`／`remaining_seconds`／`last_success_at`／
+`incident`）——前端不得靠解析 `message` 字串推回這些事實，唯一
+canonical 判斷點是 `chain_backoff.status()`（後端）。
+
+**Sustained Incident（持續性事故）** — 連續失敗次數達
+`chain_backoff.INCIDENT_THRESHOLD_FAILURES` 這個唯一門檻
+（`is_sustained_incident()`）時的狀態，與單次偶發限流用不同文案
+區分（指名 Cboe，非本站或劇本本身問題）。門檻只在後端定義一次，
+前端只消費布林值 `incident`，不得自行重新設一個門檻猜測。
+
+**Backoff Countdown（限流倒數）** — 前端 `useCountdownSeconds()` 對
+`blocked_until`（絕對時間點）每秒重新計算一次剩餘秒數，來源永遠是
+那個固定的絕對時間點，不是遞減的本地 state——rerender／props 沒變
+不會意外重設倒數。倒數歸零前 backoff window 內重試鈕維持 disabled
+（Regression Red Line：不允許 client retry storm）。
+
 ---
 
 ## Historical IV 子系統

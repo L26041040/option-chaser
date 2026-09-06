@@ -52,6 +52,15 @@ def _parse_blocked_until(entry: ChainBackoffEntry | None) -> datetime | None:
         return None   # 讀不懂的時間戳視同沒有封鎖，fail-open
 
 
+def _is_blocked(blocked_until: datetime | None, now: datetime) -> bool:
+    """`backoff_aware_fetch()`（該不該短路）與 `status()`（該不該回報
+    正在封鎖）必須對同一個 entry 給出相反但一致的答案——兩處各自重寫
+    一次「現在是不是還在封鎖窗內」曾在 `/code-review` 被抓到是同一個
+    判準寫了兩遍（一個判真、一個判假），收斂成單一函式後兩者只能同時
+    對或同時錯，不會各自漂移。"""
+    return blocked_until is not None and now < blocked_until
+
+
 def _read(storage: Storage, source: str) -> ChainBackoffEntry | None:
     try:
         return storage.get_chain_backoff(source)
@@ -107,7 +116,7 @@ def status(storage: Storage, source: str) -> dict | None:
     entry = _read(storage, source)
     blocked_until_dt = _parse_blocked_until(entry)
     now = _now()
-    if entry is None or blocked_until_dt is None or now >= blocked_until_dt:
+    if entry is None or not _is_blocked(blocked_until_dt, now):
         return None
     remaining = max(0, round((blocked_until_dt - now).total_seconds()))
     return {
@@ -141,7 +150,7 @@ def backoff_aware_fetch(storage: Storage, source: str,
     entry = _read(storage, source)
     blocked_until = _parse_blocked_until(entry)
     now = _now()
-    if blocked_until is not None and now < blocked_until:
+    if _is_blocked(blocked_until, now):
         raise FetchError(
             f"{source} 目前處於限流封鎖窗（至 {entry.blocked_until} 前不"
             "重打上游）")
