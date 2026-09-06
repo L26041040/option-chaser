@@ -12,8 +12,8 @@ from contextlib import contextmanager
 from . import (ContractHistory, DataSourceSettings,
                DividendCacheEntry, IvBackfillRun, IvObservation,
                ProviderCredential, ProviderVerification, RateCacheEntry,
-               ResultRecord, ResultSummary, Scenario, ScenarioExists,
-               TreasuryYearCacheEntry)
+               ResultFactContext, ResultRecord, ResultSummary, Scenario,
+               ScenarioExists, TreasuryYearCacheEntry)
 from ..diagnostics import RETENTION_LIMIT, DiagnosticEvent
 
 
@@ -129,6 +129,19 @@ class MemoryStorage:
     def result_history(self, scenario_id: str) -> list[ResultRecord]:
         by_ts = self._results.get(scenario_id, {})
         return [by_ts[k] for k in sorted(by_ts)]
+
+    def result_fact_context(self, scenario_id: str,
+                            analyzed_at: str) -> ResultFactContext | None:
+        rec = self._results.get(scenario_id, {}).get(analyzed_at)
+        if rec is None:
+            return None
+        return ResultFactContext(
+            scenario_id=scenario_id, analyzed_at=analyzed_at,
+            resolved_params=rec.resolved_params,
+            requested_strategies=rec.requested_strategies,
+            engine_version=rec.engine_version,
+            view_schema_version=rec.view_schema_version,
+            history_replay_version=rec.history_replay_version)
 
     def save_snapshot(self, scenario_id: str, analyzed_at: str,
                       snapshot: dict) -> None:

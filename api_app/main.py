@@ -970,12 +970,19 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         # `per_family` 同一個模式，不重算方向、不重呼叫 `family_
         # eligibility()`。
         family_elig = view["family_eligibility"]
+        # SCALE-01（#252，Scaling Foundation Stage 1-0）：把這次分析的
+        # 完整 resolved params／請求的 subtype 清單／引擎與 view schema
+        # 版本／history replay 版本，獨立複製成 `ResultRecord` 的一等
+        # 公民欄位（唯一的計算邏輯在 `store.historical_fact_context()`，
+        # 這裡與既有資料 backfill 腳本共用同一份，不重寫第二次）。
+        # `view` 本身完全不變——這 5 個欄位純粹是它的複本。
+        fact_context = store.historical_fact_context(view)
         _db().save_result(ResultRecord(
             scenario_id=sc.id, analyzed_at=analyzed_at, view=view,
             best_return=best_return,
             representative_candidate=representative_candidate,
             spot=store.spot(view), per_family=per_family or None,
-            family_eligibility=family_elig))
+            family_eligibility=family_elig, **fact_context))
         _db().save_snapshot(sc.id, analyzed_at, snapshot)
         _db().append_event(ts=now_utc_iso(), scenario_id=sc.id,
                            event="ANALYSIS_COMPLETED",

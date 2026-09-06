@@ -666,6 +666,91 @@ def test_per_family_defaults_to_none(storage):
     assert storage.latest_result("s1").per_family is None
 
 
+# ---------- 歷史 fact context（SCALE-01／#252，Scaling Foundation） ----------
+
+_FACT_PARAMS = {"target_price": 120.0, "target_month": "2026-08"}
+
+
+def test_result_fact_fields_survive_the_roundtrip(storage):
+    """與 `per_family`／`representative_candidate` 同一個模式：規則只有
+    一份（`option_chaser.store.historical_fact_context()`），這裡只是
+    落盤結果要能存得進、讀得回，含 `latest_result`／`result_history`
+    兩個讀取路徑，形狀不失真（尤其 `requested_strategies` 讀回仍是
+    tuple，不是 JSONB 給的 list）。"""
+    storage.create_scenario(_scenario("s1"))
+    storage.save_result(ResultRecord(
+        "s1", "2026-08-01T00:00:00+00:00", {"n": 1},
+        resolved_params=_FACT_PARAMS,
+        requested_strategies=("long-call", "bull-call-spread"),
+        engine_version="0.5.0", view_schema_version=9,
+        history_replay_version=1))
+
+    for rec in (storage.latest_result("s1"), storage.result_history("s1")[0]):
+        assert rec.resolved_params == _FACT_PARAMS
+        assert rec.requested_strategies == ("long-call", "bull-call-spread")
+        assert isinstance(rec.requested_strategies, tuple)
+        assert rec.engine_version == "0.5.0"
+        assert rec.view_schema_version == 9
+        assert rec.history_replay_version == 1
+
+
+def test_result_fact_fields_default_to_none(storage):
+    """既有部署的舊列（本票之前寫入的）讀回來全部是 `None`——backfill
+    腳本負責補齊，讀取端在那之前必須容忍這個狀態。"""
+    storage.create_scenario(_scenario("s1"))
+    storage.save_result(ResultRecord("s1", "2026-08-01T00:00:00+00:00",
+                                     {"n": 1}))
+    rec = storage.latest_result("s1")
+    assert rec.resolved_params is None
+    assert rec.requested_strategies is None
+    assert rec.engine_version is None
+    assert rec.view_schema_version is None
+    assert rec.history_replay_version is None
+
+
+def test_result_fact_context_is_a_narrow_projection_of_the_same_row(storage):
+    """AC-1：一個窄查詢就能取得完整 resolved params／analysis
+    context／provenance／engine-schema-replay version，不需要
+    `latest_result()`／`result_history()` 那種連 `view` 一起撈的
+    寬查詢。"""
+    storage.create_scenario(_scenario("s1"))
+    storage.save_result(ResultRecord(
+        "s1", "2026-08-01T00:00:00+00:00", {"n": 1},
+        resolved_params=_FACT_PARAMS,
+        requested_strategies=("long-call",),
+        engine_version="0.5.0", view_schema_version=9,
+        history_replay_version=1))
+
+    ctx = storage.result_fact_context("s1", "2026-08-01T00:00:00+00:00")
+
+    assert ctx.scenario_id == "s1"
+    assert ctx.analyzed_at == "2026-08-01T00:00:00+00:00"
+    assert ctx.resolved_params == _FACT_PARAMS
+    assert ctx.requested_strategies == ("long-call",)
+    assert ctx.engine_version == "0.5.0"
+    assert ctx.view_schema_version == 9
+    assert ctx.history_replay_version == 1
+
+
+def test_result_fact_context_is_none_for_a_missing_row(storage):
+    storage.create_scenario(_scenario("s1"))
+    assert storage.result_fact_context(
+        "s1", "2099-01-01T00:00:00+00:00") is None
+
+
+def test_result_fact_context_does_not_leak_across_scenarios(storage):
+    storage.create_scenario(_scenario("s1"))
+    storage.create_scenario(_scenario("s2", symbol="SPY"))
+    storage.save_result(ResultRecord(
+        "s1", "2026-08-01T00:00:00+00:00", {"n": 1},
+        resolved_params=_FACT_PARAMS,
+        requested_strategies=("long-call",), engine_version="0.5.0",
+        view_schema_version=9, history_replay_version=1))
+
+    assert storage.result_fact_context(
+        "s2", "2026-08-01T00:00:00+00:00") is None
+
+
 def test_latest_summaries_carries_per_family(storage):
     """清單查詢一併帶著 per-family map——本輪 UI 不消費它，但落盤與
     讀取路徑必須先接通，日後才可能零遷移切換顯示面。"""

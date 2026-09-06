@@ -23,6 +23,18 @@ from .valuation import (ButterflyValuation, ContractValuation, SpreadValuation,
 
 SCENARIO_SCHEMA_VERSION = 2   # v2: target_date（YYYY-MM-DD）→ target_month（YYYY-MM）
 
+# SCALE-01（#252，Scaling Foundation Stage 1-0）：凍結「candidate-specific
+# historical membership replay」語意的版本號——不是 `view["schema_version"]`
+# （那個描述 view *形狀*）也不是 `engine_version`（描述引擎程式碼版本），
+# 是描述「這一列歷史 fact 的 eligibility／filter／pair-validity 語意」。
+# 目前唯一的消費者是尚未建立的 SCALE-09 candidate-specific resolver：
+# 未來若 eligibility 規則改變（例如過濾門檻、pair validity 判準），
+# resolver 必須依這個版本號決定怎麼重放舊資料，不得對所有既有列直接
+# 套用新規則重新解讀（那會讓「當時到底發生了什麼」這個歷史事實跟著
+# 現在的程式碼改變）。今天只有版本 1；SCALE-01 把它寫進每一列
+# （新寫入與 backfill 皆同），版本本身尚未被任何邏輯讀取或分派。
+HISTORY_REPLAY_VERSION = 1
+
 
 def _candidate_of(view: dict, row: dict) -> dict | None:
     """T09（#191）：`expiry_groups[].rows[]` 現在存 `candidate_key`（新
@@ -815,6 +827,43 @@ def serialize_result(result: AnalysisResult, scenario_id: str,
         # 各自獨立呼叫」是既有、刻意接受的跨模組前提，這裡是同一個
         # 前提在同一個函式內的延伸，不是新增風險。
         "direction": derive_direction(base.target_price, m.spot),
+    }
+
+
+def historical_fact_context(view: dict) -> dict:
+    """SCALE-01（#252，Scaling Foundation Stage 1-0）：從一份（新鮮或
+    既有）`view` dict 抽出「重建歷史事實所需、真正不可丟的 context」，
+    以獨立、可窄查詢的形式回傳——不是新計算，純粹是把已經在 `view`
+    裡的欄位投影出來，供 `api_app/main.py` 寫入新 `ResultRecord` 欄位、
+    也供既有資料的 backfill 腳本重用同一份邏輯（保證兩條路徑算出來的
+    結果永遠一致，不會各自維護一份、日後漂移）。
+
+    回傳的 5 個 key 直接對應 `ResultRecord` 新增的 5 個欄位：
+
+    - `resolved_params`：完整 resolved `AnalysisParams`（`view["params"]`
+      本身已是 `dataclasses.asdict(base_params)`＋`iv_shifts`／
+      `delta_bands` 轉成 list 的 JSON-safe 形狀，直接引用不重算）。
+    - `requested_strategies`：這次分析實際請求的 subtype 清單——
+      `view["results"]` 的每一項就是 `AnalysisRequest.strategies` 逐一
+      對應的結果（`store.serialize_result()` 的 `results = [strat(r)
+      for r in result.results]`，而 `result.results` 與請求的
+      `strategies` 一一對應），因此不需要另外傳一份、從這裡反推即可。
+    - `engine_version`：`view["engine_version"]`。
+    - `view_schema_version`：`view["schema_version"]`。
+    - `history_replay_version`：**永遠是目前程式碼認得的
+      `HISTORY_REPLAY_VERSION`**，不是 view 裡的任何既有欄位（這個
+      版本號本來就不存在於 view 形狀裡）——不論這份 view 是剛產生的
+      還是很久以前存的舊資料，「用今天的語意去理解它的歷史成員資格」
+      都只有一種答案：今天的版本號。未來版本號真的往前推進時，這個
+      函式本身要跟著改成依某個判準決定舊列該標哪個版本，不能自動沿用
+      「不管多舊都套用最新版」這個目前唯一成立的邏輯。
+    """
+    return {
+        "resolved_params": view["params"],
+        "requested_strategies": tuple(r["strategy"] for r in view["results"]),
+        "engine_version": view["engine_version"],
+        "view_schema_version": view["schema_version"],
+        "history_replay_version": HISTORY_REPLAY_VERSION,
     }
 
 

@@ -75,6 +75,42 @@ class ResultRecord:
     # 讀取），差別是這個真的被本票的前端消費——編輯表單要顯示「這個
     # family 現在為什麼不可選」，不該為此把整份 view 撈回來。
     family_eligibility: dict | None = None
+    # SCALE-01（#252，Scaling Foundation Stage 1-0）：以下 5 個欄位是
+    # 這一列歷史 fact 「重建能力」真正所需、目前寄生在 `view` 內部的
+    # 估值輸入與 provenance，獨立持久化成一等公民欄位——`view` 本身
+    # 完全不變，這 5 個欄位只是它們的**複本**（見
+    # `option_chaser.store.historical_fact_context()`，唯一算出這 5
+    # 個值的地方，新寫入與既有資料 backfill 共用同一份邏輯）。全部
+    # 先 nullable：既有部署的舊列讀回來是 `None`，backfill 腳本負責
+    # 把它們補齊，讀取端在 backfill 完成前必須容忍 `None`。
+    #
+    # 這 5 個欄位存在的唯一理由是讓未來的 storage 瘦身（例如 SCALE-16
+    # 停止永久保存完整 `view`）不會把「回答這個歷史時刻當時發生了
+    # 什麼」的能力一併砍掉——它們本身**不是**給一般讀取路徑用的（那些
+    # 路徑今天仍然讀 `view`），而是給未來的 candidate-specific
+    # historical resolver（SCALE-09）當輸入。
+    resolved_params: dict | None = None
+    requested_strategies: tuple[str, ...] | None = None
+    engine_version: str | None = None
+    view_schema_version: int | None = None
+    history_replay_version: int | None = None
+
+
+@dataclass(frozen=True)
+class ResultFactContext:
+    """SCALE-01（#252）：`ResultRecord` 上述 5 個歷史 fact 欄位的**窄
+    查詢投影**——刻意不含 `view`（也不含 `best_return`／
+    `representative_candidate` 等其餘既有欄位），滿足 AC-1「用一個窄
+    查詢取得完整 resolved params、analysis context、provenance、
+    engine/schema/replay version，不解析 view」：Postgres adapter 的
+    對應 SQL 從一開始就不 SELECT `view` 欄位，不是「查了再丟棄」。"""
+    scenario_id: str
+    analyzed_at: str
+    resolved_params: dict | None
+    requested_strategies: tuple[str, ...] | None
+    engine_version: str | None
+    view_schema_version: int | None
+    history_replay_version: int | None
 
 
 @dataclass(frozen=True)
@@ -380,6 +416,16 @@ class Storage(Protocol):
 
         排序依 `analyzed_at` 的字典序——所有產生端都輸出同一種格式的
         ISO 字串（UTC offset、秒精度），字典序才等於時間序。"""
+
+    def result_fact_context(self, scenario_id: str,
+                            analyzed_at: str) -> ResultFactContext | None:
+        """SCALE-01（#252）：單一 `(scenario_id, analyzed_at)` 的窄查詢
+        ——只回傳 `ResultFactContext` 的 5 個欄位，不觸碰／不解析
+        `view`（Postgres 這條路徑的 SQL 一開始就不 SELECT `view`）。
+        找不到這個 fact row 時回 `None`；找得到但尚未 backfill（5 個
+        欄位皆為 `None`）時回傳一個全欄位皆 `None` 的
+        `ResultFactContext`，呼叫端據此分辨「這列還沒 backfill」與
+        「這列根本不存在」。"""
 
     def save_snapshot(self, scenario_id: str, analyzed_at: str,
                       snapshot: dict) -> None:

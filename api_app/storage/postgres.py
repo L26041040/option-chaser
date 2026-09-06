@@ -25,8 +25,8 @@ from psycopg.types.json import Jsonb
 from . import (ContractHistory, DataSourceSettings,
                DividendCacheEntry, IvBackfillRun, IvObservation,
                ProviderCredential, ProviderVerification, RateCacheEntry,
-               ResultRecord, ResultSummary, Scenario, ScenarioExists,
-               TreasuryYearCacheEntry, UsageSetting)
+               ResultFactContext, ResultRecord, ResultSummary, Scenario,
+               ScenarioExists, TreasuryYearCacheEntry, UsageSetting)
 from ..diagnostics import RETENTION_LIMIT, DiagnosticEvent
 
 # 每個 lambda 程序只需建表一次。`IF NOT EXISTS` 在 Postgres 並非完全
@@ -260,6 +260,17 @@ ALTER TABLE results ADD COLUMN IF NOT EXISTS per_family JSONB;
 -- 讀回時是 NULL，`ResultRecord.family_eligibility` 天然是 `None`，
 -- 不影響任何既有行為（純加法欄位）。
 ALTER TABLE results ADD COLUMN IF NOT EXISTS family_eligibility JSONB;
+-- SCALE-01（#252，Scaling Foundation Stage 1-0）：把寄生在 `view`
+-- JSONB 內部的估值輸入與 provenance 複製成獨立、可窄查詢的欄位（見
+-- `option_chaser.store.historical_fact_context()`）。既有部署的舊列
+-- 讀回時全部是 NULL——backfill 腳本
+-- （`scripts/backfill_result_fact_context.py`）負責補齊，讀取端在
+-- backfill 完成前必須容忍 NULL。純加法，不影響 `view` 本身。
+ALTER TABLE results ADD COLUMN IF NOT EXISTS resolved_params JSONB;
+ALTER TABLE results ADD COLUMN IF NOT EXISTS requested_strategies JSONB;
+ALTER TABLE results ADD COLUMN IF NOT EXISTS engine_version TEXT;
+ALTER TABLE results ADD COLUMN IF NOT EXISTS view_schema_version INTEGER;
+ALTER TABLE results ADD COLUMN IF NOT EXISTS history_replay_version INTEGER;
 """
 
 # 冷啟動競爭下的良性錯誤：別人已經建好／加好了。
@@ -268,7 +279,15 @@ _BENIGN = (psycopg.errors.DuplicateTable, psycopg.errors.DuplicateObject,
 
 _RESULT_COLS = ("scenario_id, analyzed_at, view, best_return, "
                 "representative_candidate, spot, per_family, "
-                "family_eligibility")
+                "family_eligibility, resolved_params, requested_strategies, "
+                "engine_version, view_schema_version, history_replay_version")
+
+# SCALE-01（#252）：`result_fact_context()` 的窄查詢欄位——刻意不含
+# `view`／`best_return`／`representative_candidate` 等，這是它與
+# `_RESULT_COLS` 唯一的差異來源。
+_RESULT_FACT_COLS = ("resolved_params, requested_strategies, "
+                     "engine_version, view_schema_version, "
+                     "history_replay_version")
 
 _SCENARIO_COLS = ("id, symbol, direction, target_price, target_month, "
                   "notes, strategies, created_at, archived_at, "
@@ -505,13 +524,19 @@ class PostgresStorage:
             conn.execute(
                 "INSERT INTO results (scenario_id, analyzed_at, view, "
                 "best_return, representative_candidate, spot, per_family, "
-                "family_eligibility) "
-                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s) "
+                "family_eligibility, resolved_params, requested_strategies, "
+                "engine_version, view_schema_version, history_replay_version) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) "
                 "ON CONFLICT (scenario_id, analyzed_at) DO UPDATE "
                 "SET view = EXCLUDED.view, best_return = EXCLUDED.best_return, "
                 "representative_candidate = EXCLUDED.representative_candidate, "
                 "spot = EXCLUDED.spot, per_family = EXCLUDED.per_family, "
-                "family_eligibility = EXCLUDED.family_eligibility",
+                "family_eligibility = EXCLUDED.family_eligibility, "
+                "resolved_params = EXCLUDED.resolved_params, "
+                "requested_strategies = EXCLUDED.requested_strategies, "
+                "engine_version = EXCLUDED.engine_version, "
+                "view_schema_version = EXCLUDED.view_schema_version, "
+                "history_replay_version = EXCLUDED.history_replay_version",
                 (rec.scenario_id, rec.analyzed_at, Jsonb(rec.view),
                  rec.best_return,
                  Jsonb(rec.representative_candidate)
@@ -519,7 +544,28 @@ class PostgresStorage:
                  rec.spot,
                  Jsonb(rec.per_family) if rec.per_family is not None else None,
                  Jsonb(rec.family_eligibility)
-                 if rec.family_eligibility is not None else None))
+                 if rec.family_eligibility is not None else None,
+                 Jsonb(rec.resolved_params)
+                 if rec.resolved_params is not None else None,
+                 Jsonb(list(rec.requested_strategies))
+                 if rec.requested_strategies is not None else None,
+                 rec.engine_version, rec.view_schema_version,
+                 rec.history_replay_version))
+
+    @staticmethod
+    def _row_to_result(row) -> ResultRecord:
+        """SCALE-01（#252）：`requested_strategies` 從 JSONB 讀回是
+        `list`——`ResultRecord(*row)` 直接 splat 不會做任何型別轉換，
+        這裡補上 list→tuple（比照既有 `_row_to_scenario()` 對
+        `strategies` 的處理），`None`（尚未 backfill 的舊列）原樣穿透。
+        其餘欄位（dict／str／int／`None`）JSONB／純量本來就對應正確
+        的 Python 型別，不需轉換。"""
+        row = list(row)
+        requested_strategies_idx = _RESULT_COLS.split(", ").index(
+            "requested_strategies")
+        if row[requested_strategies_idx] is not None:
+            row[requested_strategies_idx] = tuple(row[requested_strategies_idx])
+        return ResultRecord(*row)
 
     def latest_result(self, scenario_id: str) -> ResultRecord | None:
         with self._connect() as conn:
@@ -527,7 +573,7 @@ class PostgresStorage:
                 f"SELECT {_RESULT_COLS} FROM results "
                 "WHERE scenario_id = %s ORDER BY analyzed_at DESC LIMIT 1",
                 (scenario_id,)).fetchone()
-        return ResultRecord(*row) if row else None
+        return self._row_to_result(row) if row else None
 
     def latest_summaries(self) -> dict[str, ResultSummary]:
         """`DISTINCT ON` 一趟取回每個劇本的最新一筆——**不選 view 欄位**，
@@ -553,7 +599,27 @@ class PostgresStorage:
                 f"SELECT {_RESULT_COLS} FROM results "
                 "WHERE scenario_id = %s ORDER BY analyzed_at",
                 (scenario_id,)).fetchall()
-        return [ResultRecord(*r) for r in rows]
+        return [self._row_to_result(r) for r in rows]
+
+    def result_fact_context(self, scenario_id: str,
+                            analyzed_at: str) -> ResultFactContext | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                f"SELECT {_RESULT_FACT_COLS} FROM results "
+                "WHERE scenario_id = %s AND analyzed_at = %s",
+                (scenario_id, analyzed_at)).fetchone()
+        if row is None:
+            return None
+        resolved_params, requested_strategies, engine_version, \
+            view_schema_version, history_replay_version = row
+        return ResultFactContext(
+            scenario_id=scenario_id, analyzed_at=analyzed_at,
+            resolved_params=resolved_params,
+            requested_strategies=(tuple(requested_strategies)
+                                  if requested_strategies is not None else None),
+            engine_version=engine_version,
+            view_schema_version=view_schema_version,
+            history_replay_version=history_replay_version)
 
     def save_snapshot(self, scenario_id: str, analyzed_at: str,
                       snapshot: dict) -> None:
