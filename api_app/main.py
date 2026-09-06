@@ -975,7 +975,7 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         # 版本／history replay 版本，獨立複製成 `ResultRecord` 的一等
         # 公民欄位（唯一的計算邏輯在 `store.historical_fact_context()`，
         # 這裡與既有資料 backfill 腳本共用同一份，不重寫第二次）。
-        # `view` 本身完全不變——這 5 個欄位純粹是它的複本。
+        # `view` 本身完全不變——這幾個欄位純粹是它的複本。
         fact_context = store.historical_fact_context(view)
         _db().save_result(ResultRecord(
             scenario_id=sc.id, analyzed_at=analyzed_at, view=view,
@@ -1134,10 +1134,16 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
     @app.get("/api/scenarios/{scenario_id}/results")
     def list_results(scenario_id: str) -> list[dict]:
         """歷史索引：只回時間戳，不回整份 view（一份十萬字元等級）。
-        需要單次完整結果時走 detail／後續票的專屬端點。"""
+        需要單次完整結果時走 detail／後續票的專屬端點。
+
+        SCALE-02（#253）：索引來源改為 `Storage.result_timestamps()`
+        ——主要走 `snapshots` 的主鍵（比對舊版 `result_history()` 快
+        約 1.58×，後者連每一列的完整 `view` JSONB 都撈出來，Prototype
+        #065 實測那條路徑對未來 narrow 表做 `DISTINCT` 會慢 12.6×，
+        本票直接繞開這整條問題路徑），輔以 `results` 表窄查詢 UNION
+        補回任何缺 snapshot 的孤兒列（見該方法 docstring）。"""
         _require(scenario_id)
-        return [{"analyzed_at": r.analyzed_at}
-                for r in _db().result_history(scenario_id)]
+        return [{"analyzed_at": ts} for ts in _db().result_timestamps(scenario_id)]
 
     @app.get("/api/scenarios/{scenario_id}/history")
     def get_spread_history(scenario_id: str, candidate_key: str) -> dict:

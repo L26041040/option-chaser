@@ -273,6 +273,74 @@ def test_no_results_yet_is_none_and_empty(storage):
     assert storage.result_history("s1") == []
 
 
+# ---------- 歷史時間戳索引（SCALE-02／#253，Scaling Foundation） ----------
+
+def test_result_timestamps_starts_empty(storage):
+    storage.create_scenario(_scenario())
+    assert storage.result_timestamps("s1") == []
+
+
+def test_result_timestamps_lists_the_normal_lockstep_case(storage):
+    """正常路徑：`results`／`snapshots` 同一個 analyzed_at 都存在
+    （production 今天唯一會發生的情況），兩張表窄查詢 UNION 後只出現
+    一次。"""
+    storage.create_scenario(_scenario())
+    storage.save_result(ResultRecord("s1", "2026-08-01T00:00:00+00:00", {"n": 1}))
+    storage.save_snapshot("s1", "2026-08-01T00:00:00+00:00", {"contracts": []})
+    storage.save_result(ResultRecord("s1", "2026-08-02T00:00:00+00:00", {"n": 2}))
+    storage.save_snapshot("s1", "2026-08-02T00:00:00+00:00", {"contracts": []})
+
+    assert storage.result_timestamps("s1") == [
+        "2026-08-01T00:00:00+00:00", "2026-08-02T00:00:00+00:00"]
+
+
+def test_result_timestamps_falls_back_to_results_when_snapshot_is_missing(storage):
+    """AC-2：`api_app/main.py::_refresh_and_save()` 對 `save_result()`／
+    `save_snapshot()` 是兩次獨立呼叫、未包在同一個交易裡——中途中斷
+    會留下一筆有 `results` 沒有 `snapshots` 的孤兒列。只讀
+    `snapshots` 的話，這次分析的時間戳會從歷史索引裡憑空消失；本測試
+    直接構造這個孤兒情境，證明它不會被靜默丟掉。"""
+    storage.create_scenario(_scenario())
+    storage.save_result(ResultRecord("s1", "2026-08-01T00:00:00+00:00", {"n": 1}))
+    # 刻意不呼叫 save_snapshot——模擬兩次寫入之間中斷的孤兒列。
+    storage.save_result(ResultRecord("s1", "2026-08-02T00:00:00+00:00", {"n": 2}))
+    storage.save_snapshot("s1", "2026-08-02T00:00:00+00:00", {"contracts": []})
+
+    assert storage.result_timestamps("s1") == [
+        "2026-08-01T00:00:00+00:00", "2026-08-02T00:00:00+00:00"]
+
+
+def test_result_timestamps_also_covers_a_snapshot_without_a_result_row(storage):
+    """對稱情況：只有 `snapshots`、沒有 `results`（同一種中斷情境，
+    另一半沒寫成）——UNION 兩邊都要覆蓋，不是只補其中一個方向。"""
+    storage.create_scenario(_scenario())
+    storage.save_snapshot("s1", "2026-08-01T00:00:00+00:00", {"contracts": []})
+
+    assert storage.result_timestamps("s1") == ["2026-08-01T00:00:00+00:00"]
+
+
+def test_result_timestamps_does_not_duplicate_when_both_tables_agree(storage):
+    """UNION 本身會去重——同一個時間戳兩邊都有時只回一次，不需要額外
+    的 DISTINCT。"""
+    storage.create_scenario(_scenario())
+    storage.save_result(ResultRecord("s1", "2026-08-01T00:00:00+00:00", {"n": 1}))
+    storage.save_snapshot("s1", "2026-08-01T00:00:00+00:00", {"contracts": []})
+
+    assert storage.result_timestamps("s1") == ["2026-08-01T00:00:00+00:00"]
+
+
+def test_result_timestamps_does_not_leak_across_scenarios(storage):
+    storage.create_scenario(_scenario("s1"))
+    storage.create_scenario(_scenario("s2", symbol="SPY"))
+    storage.save_result(ResultRecord("s1", "2026-08-01T00:00:00+00:00", {"n": 1}))
+    storage.save_snapshot("s1", "2026-08-01T00:00:00+00:00", {"contracts": []})
+    storage.save_result(ResultRecord("s2", "2026-08-02T00:00:00+00:00", {"n": 2}))
+    storage.save_snapshot("s2", "2026-08-02T00:00:00+00:00", {"contracts": []})
+
+    assert storage.result_timestamps("s1") == ["2026-08-01T00:00:00+00:00"]
+    assert storage.result_timestamps("s2") == ["2026-08-02T00:00:00+00:00"]
+
+
 def test_results_do_not_leak_across_scenarios(storage):
     storage.create_scenario(_scenario("s1"))
     storage.create_scenario(_scenario("s2"))
@@ -683,7 +751,7 @@ def test_result_fact_fields_survive_the_roundtrip(storage):
         resolved_params=_FACT_PARAMS,
         requested_strategies=("long-call", "bull-call-spread"),
         engine_version="0.5.0", view_schema_version=9,
-        history_replay_version=1))
+        history_replay_version=1, snapshot_source="cboe"))
 
     for rec in (storage.latest_result("s1"), storage.result_history("s1")[0]):
         assert rec.resolved_params == _FACT_PARAMS
@@ -692,6 +760,7 @@ def test_result_fact_fields_survive_the_roundtrip(storage):
         assert rec.engine_version == "0.5.0"
         assert rec.view_schema_version == 9
         assert rec.history_replay_version == 1
+        assert rec.snapshot_source == "cboe"
 
 
 def test_result_fact_fields_default_to_none(storage):
@@ -706,6 +775,7 @@ def test_result_fact_fields_default_to_none(storage):
     assert rec.engine_version is None
     assert rec.view_schema_version is None
     assert rec.history_replay_version is None
+    assert rec.snapshot_source is None
 
 
 def test_result_fact_context_is_a_narrow_projection_of_the_same_row(storage):
@@ -719,7 +789,7 @@ def test_result_fact_context_is_a_narrow_projection_of_the_same_row(storage):
         resolved_params=_FACT_PARAMS,
         requested_strategies=("long-call",),
         engine_version="0.5.0", view_schema_version=9,
-        history_replay_version=1))
+        history_replay_version=1, snapshot_source="cboe"))
 
     ctx = storage.result_fact_context("s1", "2026-08-01T00:00:00+00:00")
 
@@ -730,6 +800,7 @@ def test_result_fact_context_is_a_narrow_projection_of_the_same_row(storage):
     assert ctx.engine_version == "0.5.0"
     assert ctx.view_schema_version == 9
     assert ctx.history_replay_version == 1
+    assert ctx.snapshot_source == "cboe"
 
 
 def test_result_fact_context_is_none_for_a_missing_row(storage):
@@ -745,7 +816,8 @@ def test_result_fact_context_does_not_leak_across_scenarios(storage):
         "s1", "2026-08-01T00:00:00+00:00", {"n": 1},
         resolved_params=_FACT_PARAMS,
         requested_strategies=("long-call",), engine_version="0.5.0",
-        view_schema_version=9, history_replay_version=1))
+        view_schema_version=9, history_replay_version=1,
+        snapshot_source="cboe"))
 
     assert storage.result_fact_context(
         "s2", "2026-08-01T00:00:00+00:00") is None

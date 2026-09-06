@@ -130,6 +130,11 @@ class MemoryStorage:
         by_ts = self._results.get(scenario_id, {})
         return [by_ts[k] for k in sorted(by_ts)]
 
+    def result_timestamps(self, scenario_id: str) -> list[str]:
+        from_snapshots = {ts for (sid, ts) in self._snapshots if sid == scenario_id}
+        from_results = set(self._results.get(scenario_id, {}))
+        return sorted(from_snapshots | from_results)
+
     def result_fact_context(self, scenario_id: str,
                             analyzed_at: str) -> ResultFactContext | None:
         rec = self._results.get(scenario_id, {}).get(analyzed_at)
@@ -141,7 +146,8 @@ class MemoryStorage:
             requested_strategies=rec.requested_strategies,
             engine_version=rec.engine_version,
             view_schema_version=rec.view_schema_version,
-            history_replay_version=rec.history_replay_version)
+            history_replay_version=rec.history_replay_version,
+            snapshot_source=rec.snapshot_source)
 
     def save_snapshot(self, scenario_id: str, analyzed_at: str,
                       snapshot: dict) -> None:

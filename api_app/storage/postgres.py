@@ -271,6 +271,12 @@ ALTER TABLE results ADD COLUMN IF NOT EXISTS requested_strategies JSONB;
 ALTER TABLE results ADD COLUMN IF NOT EXISTS engine_version TEXT;
 ALTER TABLE results ADD COLUMN IF NOT EXISTS view_schema_version INTEGER;
 ALTER TABLE results ADD COLUMN IF NOT EXISTS history_replay_version INTEGER;
+-- SCALE-01（`/code-review` Spec 軸回饋）：provenance 明文要求的
+-- 「snapshot source」半邊——原本 5 個欄位只有 rate/q 那一半（藏在
+-- resolved_params 裡），沒有快照本身的資料源，仍得解析 view 才查得
+-- 到；「snapshot fetched_at」半邊不需要獨立欄位，`analyzed_at` 本身
+-- 就是它。
+ALTER TABLE results ADD COLUMN IF NOT EXISTS snapshot_source TEXT;
 """
 
 # 冷啟動競爭下的良性錯誤：別人已經建好／加好了。
@@ -280,14 +286,21 @@ _BENIGN = (psycopg.errors.DuplicateTable, psycopg.errors.DuplicateObject,
 _RESULT_COLS = ("scenario_id, analyzed_at, view, best_return, "
                 "representative_candidate, spot, per_family, "
                 "family_eligibility, resolved_params, requested_strategies, "
-                "engine_version, view_schema_version, history_replay_version")
+                "engine_version, view_schema_version, history_replay_version, "
+                "snapshot_source")
 
 # SCALE-01（#252）：`result_fact_context()` 的窄查詢欄位——刻意不含
 # `view`／`best_return`／`representative_candidate` 等，這是它與
 # `_RESULT_COLS` 唯一的差異來源。
 _RESULT_FACT_COLS = ("resolved_params, requested_strategies, "
                      "engine_version, view_schema_version, "
-                     "history_replay_version")
+                     "history_replay_version, snapshot_source")
+
+# `_row_to_result()` 用來對 `requested_strategies` 做 list→tuple 轉換
+# 的欄位位置——算一次存起來，不必每讀一列就重新 `.split(", ").index(...)`
+# 一次（`result_history()` 對長歷史的劇本會呼叫這條路徑很多次）。
+_REQUESTED_STRATEGIES_IDX = _RESULT_COLS.split(", ").index(
+    "requested_strategies")
 
 _SCENARIO_COLS = ("id, symbol, direction, target_price, target_month, "
                   "notes, strategies, created_at, archived_at, "
@@ -525,8 +538,9 @@ class PostgresStorage:
                 "INSERT INTO results (scenario_id, analyzed_at, view, "
                 "best_return, representative_candidate, spot, per_family, "
                 "family_eligibility, resolved_params, requested_strategies, "
-                "engine_version, view_schema_version, history_replay_version) "
-                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) "
+                "engine_version, view_schema_version, history_replay_version, "
+                "snapshot_source) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) "
                 "ON CONFLICT (scenario_id, analyzed_at) DO UPDATE "
                 "SET view = EXCLUDED.view, best_return = EXCLUDED.best_return, "
                 "representative_candidate = EXCLUDED.representative_candidate, "
@@ -536,7 +550,8 @@ class PostgresStorage:
                 "requested_strategies = EXCLUDED.requested_strategies, "
                 "engine_version = EXCLUDED.engine_version, "
                 "view_schema_version = EXCLUDED.view_schema_version, "
-                "history_replay_version = EXCLUDED.history_replay_version",
+                "history_replay_version = EXCLUDED.history_replay_version, "
+                "snapshot_source = EXCLUDED.snapshot_source",
                 (rec.scenario_id, rec.analyzed_at, Jsonb(rec.view),
                  rec.best_return,
                  Jsonb(rec.representative_candidate)
@@ -550,7 +565,7 @@ class PostgresStorage:
                  Jsonb(list(rec.requested_strategies))
                  if rec.requested_strategies is not None else None,
                  rec.engine_version, rec.view_schema_version,
-                 rec.history_replay_version))
+                 rec.history_replay_version, rec.snapshot_source))
 
     @staticmethod
     def _row_to_result(row) -> ResultRecord:
@@ -561,10 +576,8 @@ class PostgresStorage:
         其餘欄位（dict／str／int／`None`）JSONB／純量本來就對應正確
         的 Python 型別，不需轉換。"""
         row = list(row)
-        requested_strategies_idx = _RESULT_COLS.split(", ").index(
-            "requested_strategies")
-        if row[requested_strategies_idx] is not None:
-            row[requested_strategies_idx] = tuple(row[requested_strategies_idx])
+        if row[_REQUESTED_STRATEGIES_IDX] is not None:
+            row[_REQUESTED_STRATEGIES_IDX] = tuple(row[_REQUESTED_STRATEGIES_IDX])
         return ResultRecord(*row)
 
     def latest_result(self, scenario_id: str) -> ResultRecord | None:
@@ -601,6 +614,21 @@ class PostgresStorage:
                 (scenario_id,)).fetchall()
         return [self._row_to_result(r) for r in rows]
 
+    def result_timestamps(self, scenario_id: str) -> list[str]:
+        # SCALE-02（#253）：兩段皆窄查詢——`snapshots` 用它自己的主鍵，
+        # `results` 這半只選 `analyzed_at`，完全不觸碰 `view` JSONB
+        # 欄位。UNION（非 UNION ALL）本身就會去重與排序前的集合運算，
+        # 外層 ORDER BY 只負責排序，不需要另外 DISTINCT。
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT analyzed_at FROM ("
+                "  SELECT analyzed_at FROM snapshots WHERE scenario_id = %s"
+                "  UNION"
+                "  SELECT analyzed_at FROM results WHERE scenario_id = %s"
+                ") AS ts ORDER BY analyzed_at",
+                (scenario_id, scenario_id)).fetchall()
+        return [r[0] for r in rows]
+
     def result_fact_context(self, scenario_id: str,
                             analyzed_at: str) -> ResultFactContext | None:
         with self._connect() as conn:
@@ -610,8 +638,8 @@ class PostgresStorage:
                 (scenario_id, analyzed_at)).fetchone()
         if row is None:
             return None
-        resolved_params, requested_strategies, engine_version, \
-            view_schema_version, history_replay_version = row
+        (resolved_params, requested_strategies, engine_version,
+         view_schema_version, history_replay_version, snapshot_source) = row
         return ResultFactContext(
             scenario_id=scenario_id, analyzed_at=analyzed_at,
             resolved_params=resolved_params,
@@ -619,7 +647,8 @@ class PostgresStorage:
                                   if requested_strategies is not None else None),
             engine_version=engine_version,
             view_schema_version=view_schema_version,
-            history_replay_version=history_replay_version)
+            history_replay_version=history_replay_version,
+            snapshot_source=snapshot_source)
 
     def save_snapshot(self, scenario_id: str, analyzed_at: str,
                       snapshot: dict) -> None:

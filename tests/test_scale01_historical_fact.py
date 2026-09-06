@@ -48,6 +48,7 @@ def test_historical_fact_context_extracts_exactly_the_view_provenance():
     assert ctx["engine_version"] == view["engine_version"]
     assert ctx["view_schema_version"] == view["schema_version"]
     assert ctx["history_replay_version"] == store.HISTORY_REPLAY_VERSION
+    assert ctx["snapshot_source"] == view["meta"]["source"]
 
 
 def test_requested_strategies_matches_the_actual_request_order():
@@ -103,6 +104,7 @@ def test_refresh_populates_the_new_fact_fields():
     assert rec.engine_version == view["engine_version"]
     assert rec.view_schema_version == view["schema_version"]
     assert rec.history_replay_version == store.HISTORY_REPLAY_VERSION
+    assert rec.snapshot_source == view["meta"]["source"]
 
     ctx = storage.result_fact_context(sc["id"], analyzed_at)
     assert ctx.resolved_params == rec.resolved_params
@@ -110,6 +112,7 @@ def test_refresh_populates_the_new_fact_fields():
     assert ctx.engine_version == rec.engine_version
     assert ctx.view_schema_version == rec.view_schema_version
     assert ctx.history_replay_version == rec.history_replay_version
+    assert ctx.snapshot_source == rec.snapshot_source
 
 
 def test_result_fact_context_is_none_for_an_unknown_analysis():
@@ -132,6 +135,7 @@ def test_view_itself_is_completely_unaffected_by_the_new_fields():
     assert "resolved_params" not in view
     assert "requested_strategies" not in view
     assert "history_replay_version" not in view
+    assert "snapshot_source" not in view
 
 
 # ---------- Backfill：冪等、可續跑、與 view 比對一致 ----------
@@ -155,6 +159,7 @@ def test_backfill_populates_legacy_rows_from_their_view():
     assert rec.engine_version == expected["engine_version"]
     assert rec.view_schema_version == expected["view_schema_version"]
     assert rec.history_replay_version == expected["history_replay_version"]
+    assert rec.snapshot_source == expected["snapshot_source"]
     assert summary == {"scenarios": 1, "rows": 1}
     # 紅線：view 本身必須逐位元不變
     assert storage.latest_result("s1").view == view

@@ -75,16 +75,16 @@ class ResultRecord:
     # 讀取），差別是這個真的被本票的前端消費——編輯表單要顯示「這個
     # family 現在為什麼不可選」，不該為此把整份 view 撈回來。
     family_eligibility: dict | None = None
-    # SCALE-01（#252，Scaling Foundation Stage 1-0）：以下 5 個欄位是
+    # SCALE-01（#252，Scaling Foundation Stage 1-0）：以下 6 個欄位是
     # 這一列歷史 fact 「重建能力」真正所需、目前寄生在 `view` 內部的
     # 估值輸入與 provenance，獨立持久化成一等公民欄位——`view` 本身
-    # 完全不變，這 5 個欄位只是它們的**複本**（見
-    # `option_chaser.store.historical_fact_context()`，唯一算出這 5
-    # 個值的地方，新寫入與既有資料 backfill 共用同一份邏輯）。全部
+    # 完全不變，這幾個欄位只是它們的**複本**（見
+    # `option_chaser.store.historical_fact_context()`，唯一算出這些
+    # 值的地方，新寫入與既有資料 backfill 共用同一份邏輯）。全部
     # 先 nullable：既有部署的舊列讀回來是 `None`，backfill 腳本負責
     # 把它們補齊，讀取端在 backfill 完成前必須容忍 `None`。
     #
-    # 這 5 個欄位存在的唯一理由是讓未來的 storage 瘦身（例如 SCALE-16
+    # 這些欄位存在的唯一理由是讓未來的 storage 瘦身（例如 SCALE-16
     # 停止永久保存完整 `view`）不會把「回答這個歷史時刻當時發生了
     # 什麼」的能力一併砍掉——它們本身**不是**給一般讀取路徑用的（那些
     # 路徑今天仍然讀 `view`），而是給未來的 candidate-specific
@@ -94,12 +94,20 @@ class ResultRecord:
     engine_version: str | None = None
     view_schema_version: int | None = None
     history_replay_version: int | None = None
+    # `analyzed_at` 本身就是快照的 `fetched_at`（見上方欄位註解：
+    # 「＝快照的 fetched_at」），provenance 的「fetched_at」半邊因此
+    # 不需要另開欄位；`snapshot_source` 補上另外半邊（資料源，
+    # `"cboe"`／`"yfinance"`——`view["meta"]["source"]`），`/code-review`
+    # Spec 軸抓到的真缺口：原本 5 個欄位漏了這一項，provenance 只有
+    # rate/q 那一半（藏在 `resolved_params` 裡）、沒有快照本身的
+    # 資料源，仍得解析 `view` 才查得到，牴觸 AC-1。
+    snapshot_source: str | None = None
 
 
 @dataclass(frozen=True)
 class ResultFactContext:
-    """SCALE-01（#252）：`ResultRecord` 上述 5 個歷史 fact 欄位的**窄
-    查詢投影**——刻意不含 `view`（也不含 `best_return`／
+    """SCALE-01（#252）：`ResultRecord` 上述歷史 fact 欄位的**窄查詢
+    投影**——刻意不含 `view`（也不含 `best_return`／
     `representative_candidate` 等其餘既有欄位），滿足 AC-1「用一個窄
     查詢取得完整 resolved params、analysis context、provenance、
     engine/schema/replay version，不解析 view」：Postgres adapter 的
@@ -111,6 +119,7 @@ class ResultFactContext:
     engine_version: str | None
     view_schema_version: int | None
     history_replay_version: int | None
+    snapshot_source: str | None
 
 
 @dataclass(frozen=True)
@@ -417,15 +426,34 @@ class Storage(Protocol):
         排序依 `analyzed_at` 的字典序——所有產生端都輸出同一種格式的
         ISO 字串（UTC offset、秒精度），字典序才等於時間序。"""
 
+    def result_timestamps(self, scenario_id: str) -> list[str]:
+        """SCALE-02（#253，Scaling Foundation C2）：這個劇本歷史上有
+        哪幾次分析時間戳——依遞增排序，**不撈 `view`**。主要索引來源是
+        `snapshots` 的 `(scenario_id, analyzed_at)` 主鍵（Prototype #065
+        實測：對這張表做這個查詢比對 narrow 候選表做 `DISTINCT` 快
+        1.58×；對 narrow 候選表做 `DISTINCT` 反而慢 12.6×，**這個方法
+        本身不得走那條路**），輔以 `results` 表同一個主鍵的窄查詢
+        UNION 補回——理由：`api_app/main.py::_refresh_and_save()` 對
+        `save_result()`／`save_snapshot()` 是兩次獨立呼叫、未包在同一
+        個交易裡，兩者之間若中斷（逾時／崩潰），會留下一筆有 `results`
+        沒有 `snapshots` 的孤兒列；只讀 `snapshots` 會讓那次分析的
+        時間戳從歷史索引裡憑空消失。兩邊都只選 `analyzed_at`
+        （`results` 這邊的 SELECT 完全不觸碰 `view` 欄位），UNION 本身
+        會處理去重，不需要額外的 `DISTINCT`。
+
+        本方法只吃 `scenario_id`，之後 SCALE-11 要替 `snapshots`／
+        `results` 兩張表加上 owner 過濾時，直接在這裡的兩段 WHERE
+        子句上各加一個條件即可覆蓋，不構成繞過 owner boundary 的旁路。
+        """
+
     def result_fact_context(self, scenario_id: str,
                             analyzed_at: str) -> ResultFactContext | None:
         """SCALE-01（#252）：單一 `(scenario_id, analyzed_at)` 的窄查詢
-        ——只回傳 `ResultFactContext` 的 5 個欄位，不觸碰／不解析
-        `view`（Postgres 這條路徑的 SQL 一開始就不 SELECT `view`）。
-        找不到這個 fact row 時回 `None`；找得到但尚未 backfill（5 個
-        欄位皆為 `None`）時回傳一個全欄位皆 `None` 的
-        `ResultFactContext`，呼叫端據此分辨「這列還沒 backfill」與
-        「這列根本不存在」。"""
+        ——只回傳 `ResultFactContext` 的欄位，不觸碰／不解析 `view`
+        （Postgres 這條路徑的 SQL 一開始就不 SELECT `view`）。找不到
+        這個 fact row 時回 `None`；找得到但尚未 backfill（各欄位皆為
+        `None`）時回傳一個全欄位皆 `None` 的 `ResultFactContext`，
+        呼叫端據此分辨「這列還沒 backfill」與「這列根本不存在」。"""
 
     def save_snapshot(self, scenario_id: str, analyzed_at: str,
                       snapshot: dict) -> None:

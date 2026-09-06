@@ -838,7 +838,7 @@ def historical_fact_context(view: dict) -> dict:
     也供既有資料的 backfill 腳本重用同一份邏輯（保證兩條路徑算出來的
     結果永遠一致，不會各自維護一份、日後漂移）。
 
-    回傳的 5 個 key 直接對應 `ResultRecord` 新增的 5 個欄位：
+    回傳的 6 個 key 直接對應 `ResultRecord` 新增的 6 個欄位：
 
     - `resolved_params`：完整 resolved `AnalysisParams`（`view["params"]`
       本身已是 `dataclasses.asdict(base_params)`＋`iv_shifts`／
@@ -857,6 +857,11 @@ def historical_fact_context(view: dict) -> dict:
       都只有一種答案：今天的版本號。未來版本號真的往前推進時，這個
       函式本身要跟著改成依某個判準決定舊列該標哪個版本，不能自動沿用
       「不管多舊都套用最新版」這個目前唯一成立的邏輯。
+    - `snapshot_source`：這次分析用的原始快照資料源（`"cboe"`／
+      `"yfinance"`，`view["meta"]["source"]`）——provenance 明文要求的
+      「snapshot source」半邊；另一半「snapshot fetched_at」不需要
+      獨立欄位，因為 `ResultRecord.analyzed_at` 本身就定義為快照的
+      `fetched_at`（見該欄位既有註解）。
     """
     return {
         "resolved_params": view["params"],
@@ -864,6 +869,7 @@ def historical_fact_context(view: dict) -> dict:
         "engine_version": view["engine_version"],
         "view_schema_version": view["schema_version"],
         "history_replay_version": HISTORY_REPLAY_VERSION,
+        "snapshot_source": view["meta"]["source"],
     }
 
 
