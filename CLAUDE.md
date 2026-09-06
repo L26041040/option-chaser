@@ -27,7 +27,7 @@ block 裡，不能切成好幾個 code block、也不能中間插普通文字把
 `［回報#001］spec #137 拆票完成`）。編號是**累計總數**，不因換
 session、換分支、換主題而歸零——目前最新編號記在這裡：
 
-> 目前次序：065（下一份回報用 066）
+> 目前次序：066（下一份回報用 067）
 
 每發一份回報就把上面這個數字改成剛剛用掉的那個，跟著那次改動一起
 commit（沒有其他改動要 commit 時，單獨為這一行開一個小 commit 也
@@ -37,6 +37,71 @@ commit（沒有其他改動要 commit 時，單獨為這一行開一個小 commi
 只有這七條。
 
 ## 專案紀錄區
+
+> **現況總覽（2026-09-06 四度追加，OPTION-SCALING-TICKETS-REVISE-006
+> 拆票完成——取代下方 PROTOTYPE-004 段落「下一步：可進 `/to-tickets`」
+> 那句的指向，PROTOTYPE-004 段落其餘原文照舊）**：
+>
+> **背景**：需求方先發出 `OPTION-SCALING-TICKETS-005`（`/to-tickets`）
+> 拆出 17 張票草案，發現前正式建立 issue 前，需求方以
+> `OPTION-SCALING-TICKETS-REVISE-006` 下三點必修裁示——**不得先建票**：
+> (1) narrow 表缺格必須先嘗試用快照回填、只有快照本身也不可回填才算
+> genuine gap（不得把「narrow 沒有」直接等同「歷史斷點」）；(2) C10
+> lifecycle 的「停止未來永久累積寫入」必須獨立成一張新票，與「移除
+> `all_candidates` 欄位」分開、各自獨立 rollback 介面；(3)
+> `chain_backoff` 的鍵設計不得預設抄 `(source, symbol)`——沒有證據
+> 顯示 Cboe 限流是 per-symbol，安全預設改為 `source` 單獨
+> （provider-global），否則使用者換個 symbol 就能繞過封鎖窗。
+>
+> **修正後正式建立 18 張 GitHub sub-issue，SCALE-01～18＝
+> issue #252～#269，全數掛在 #251 底下**：
+>
+> | 票 | Issue | 標題 | Blocked by |
+> |---|---|---|---|
+> | SCALE-01 | #252 | Stage 1-0 拆 seed | 無（frontier） |
+> | SCALE-02 | #253 | C2 `/results` 讀 snapshots PK | 無（frontier） |
+> | SCALE-03 | #254 | S1-0b `cost_from_snapshot()` | 無（frontier） |
+> | SCALE-04 | #255 | Cboe 429 後端 `chain_backoff`（**鍵已訂正為 `source` 單獨**） | 無（frontier） |
+> | SCALE-05 | #260 | Cboe 429 使用者可見狀態 | #255 |
+> | SCALE-06 | #256 | Ownership A-1 Expand | 無（frontier） |
+> | SCALE-07 | #257 | Treasury Cron ＋ 保留同步 fallback | 無（frontier） |
+> | SCALE-08 | #258 | S0 最小可觀測性（七項封頂） | 無（frontier） |
+> | SCALE-09 | #261 | Stage 1-1 narrow history 雙寫（含三層回填分類） | #252＋#253＋#254 |
+> | SCALE-10 | #259 | Regression Guard 修復（RL-33） | 無（frontier） |
+> | SCALE-11 | #262 | Ownership A-1 Enforce | #256 |
+> | SCALE-12 | #263 | Stage 1-2 Parity Proof（三層分類＋倒掛邊界） | #254＋#261 |
+> | SCALE-13 | #264 | Ownership A-1 Contract（3 張 singleton 表遷移） | #262 |
+> | SCALE-14 | #265 | Stage 1-3 切換讀取路徑 | #263 |
+> | SCALE-15 | #266 | Stage 1-4 Production Validation Window（`needs-human-validation`） | #265＋#258 |
+> | SCALE-16 | #267 | **Stage 1-5 停止永久累積寫入**（新票，Fix 2） | #252＋#266 |
+> | SCALE-17 | #268 | C1 移除 `all_candidates` 欄位 | #265＋#259＋#267 |
+> | SCALE-18 | #269 | Stage 1-6 不可逆 cleanup（**Owner Decision EG-2 擋著，未標
+>   `ready-for-agent`，明確不施工**） | #267＋#268＋EG-2 |
+>
+> **Frontier（無 blocker，可立即開工）共 8 張**：#252／#253／#254／
+> #255／#256／#257／#258／#259。
+>
+> **09→02（SCALE-09 依賴 SCALE-02）依需求方要求評估後保留**：兩票
+> 皆需編輯 `api_app/storage/postgres.py` 內同一組 schema／查詢常數，
+> 平行施工有真實 merge collision 風險，非預設沿用既有慣例。
+>
+> **Prototype #065 七項 hard finding 全數保留、逐一對應到票**（詳見
+> #251 留言）：`/results` 效能陷阱→SCALE-02；narrow PK 效率不得卡關
+> →SCALE-09 AC-3；100 次刷新量測紀律→沿用既有方法論；
+> `cost_from_snapshot()` 運算式順序逐字保留→SCALE-03；JSON 文字比對
+> 非 Python 物件比對→寫入全部 A/B 比對票的 AC；latest-only 覆寫的
+> autovacuum 覆蓋→SCALE-16 AC-3；`test_selection_regression.py::
+> _view()` 需同時回傳引擎 result→SCALE-10。
+>
+> **EG-2（歷史 view 保留多久）本輪維持不裁示**，SCALE-18／#269 明確
+> 標註「Blocked by Owner Decision EG-2」而非純技術依賴，不得排進自動
+> 施工佇列。
+>
+> `docs/spec/scaling-foundation.md` §8.4 已同步訂正 `chain_backoff`
+> 鍵設計（保留原文＋新增 🛑 訂正標記，非靜默覆蓋）。
+>
+> **下一步**：等需求方指示開工，依 Frontier 8 張票任意順序
+> `/implement`；依專案規則全部票做完才開 PR、中途不主動開。
 
 > **現況總覽（2026-09-06 三度追加，OPTION-STORAGE-PROTOTYPE-004 完成——
 > 取代上一段「下一步：可進 `/to-tickets`」那句的指向，上一段其餘原文照舊）**：

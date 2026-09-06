@@ -862,12 +862,23 @@ except Exception as e:            # ← HTTP 429 走這條
 
 | 欄位 | 用途 |
 |---|---|
-| 鍵：`(source, symbol)` | 哪個來源、哪個標的被限流 |
+| 鍵：`source`（**2026-09-06 訂正，見下方 🛑；原文為 `(source, symbol)`，已由 SCALE-04 拆票時修正**） | 哪個來源被限流——**provider-global**，不分 symbol |
 | `blocked_until` | 封鎖窗結束時間 |
 | `retry_after_seconds` | 上游給的原始值（供揭露與診斷） |
 | `consecutive_failures` | 供 FR-5.7 的 incident 判定 |
 | `observed_at` | 最近一次觀測到限流的時間 |
 | `last_success_at` | 最近一次成功抓取的時間（供 incident 判定與揭露） |
+
+> 🛑 **2026-09-06 訂正（OPTION-SCALING-TICKETS-REVISE-006，Owner 裁示）**：
+> 原文把鍵設計成 `(source, symbol)`，是照抄既有 `rate_cache`／`dividend_cache`
+> 這類「本來就是 per-symbol 資料」的既有慣例，未經證據就套用。Owner 指出
+> Cboe 的 429 限流語意**沒有證據顯示是 per-symbol**——若真是 provider-global
+> 限流，`(source, symbol)` 這個鍵設計會讓使用者「換一個 symbol 繼續打」就
+> 繞過封鎖窗，等於 retry storm 換個馬甲繼續打上游。**在沒有證據證明是
+> per-symbol 限流之前，安全預設是 `source` 單獨當鍵（provider-global）**——
+> 同一來源被限流時，封鎖窗涵蓋該來源底下的全部 symbol。此訂正已同步進
+> SCALE-04 的驗收條件（含一條明確的跨 symbol 防護測試：用 symbol A 觸發
+> backoff 後，同一 `source` 底下的 symbol B 在窗口內也必須被擋下）。
 
 **RL-19（紅線）**：這張表**不得儲存任何 chain payload、任何市場報價、任何合約資料**。它存的是「上游現在讓不讓我打」，零市場資料。
 
