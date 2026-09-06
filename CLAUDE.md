@@ -27,7 +27,7 @@ block 裡，不能切成好幾個 code block、也不能中間插普通文字把
 `［回報#001］spec #137 拆票完成`）。編號是**累計總數**，不因換
 session、換分支、換主題而歸零——目前最新編號記在這裡：
 
-> 目前次序：063（下一份回報用 064）
+> 目前次序：064（下一份回報用 065）
 
 每發一份回報就把上面這個數字改成剛剛用掉的那個，跟著那次改動一起
 commit（沒有其他改動要 commit 時，單獨為這一行開一個小 commit 也
@@ -37,6 +37,86 @@ commit（沒有其他改動要 commit 時，單獨為這一行開一個小 commi
 只有這七條。
 
 ## 專案紀錄區
+
+> **現況總覽（2026-09-06 再追加，OPTION-STORAGE-AUDIT-003 完成——
+> 取代上一段「下一步：可進 `/to-tickets`」那句的指向，上一段其餘原文
+> 照舊）**：
+>
+> **背景**：需求方指示對 storage 做窮舉最佳化稽核（H1 `all_candidates`／
+> H2 snapshot 去重／H3 minimal replay seed／H4 壓縮／H5 全 schema），
+> **硬約束是「功能不得退化、效能不得因省 storage 而惡化」**，且要求
+> 逐項以 production consumer ＋ **measured bytes ＋ measured latency**
+> 驗證、不得靠推論。本輪只 audit——不改 production code、不 migration、
+> 不拆票、不開 PR（`git status` 確認只有 `docs/` 與 `CLAUDE.md`）。
+>
+> **量測環境**：本機 PostgreSQL 16.13（`default_toast_compression=pglz`）、
+> repo 自身 schema／引擎、`xyz_v8_production_scale.json`（600 合約、
+> 6 subtype、真實非零 q）。產出 `docs/research/storage-optimization-audit.md`
+> （314 行，含完整 Storage Optimization Matrix）。
+>
+> **五個最重要的實測發現**：
+> 1. **`all_candidates` 佔 view 97.82%，移除它同時「改善」效能**——
+>    寫入 981→41 ms（24×）、單列讀取 380→10.4 ms（36.5×）、落盤
+>    3,171,586→203,010 B（−93.6%）。不是拿效能換空間，兩者同向。
+> 2. **今天真實落盤是 3.04 MiB／次，不是 12–20 MiB**——TOAST(pglz)
+>    已在壓，view 邏輯 21.1 MB → 落盤 3.17 MB（6.66×）。**既有研究與
+>    spec #251 引用的 12.18 MiB 是邏輯大小**，撞牆時間被低估約 6.7 倍
+>    （Neon Free 0.5 GB 實為 168 次，不是 42 次）。
+> 3. **RD-1 的「安全選項」是災難級假優化**——narrow 表存全部合格候選
+>    實測 **26.0 MB／次**，比今天糟 **8.2 倍**，走勢圖查詢 285 ms
+>    （visible-only 是 0.396 ms，快 720 倍）。根因：關聯表逐列有 header／
+>    索引開銷且**吃不到 TOAST**，JSONB blob 吃得到。⇒ **RD-1 已由量測
+>    回答，不再需要 Owner 裁示**：只有 (a) visible-only ＋ L0 回填合理。
+> 4. **snapshot 逐位元相同性成立**（`count(DISTINCT md5)=1/count(*)=3`），
+>    K=5 去重實測省 **80.0%**，讀取延遲 1.83→1.79 ms（**無代價**）。
+>    但列 VALIDATE_MORE——cascade／archive／GC 語意要重寫，且收益完全
+>    取決於 production 真實 K（無遙測，K=1 時零收益）。
+> 5. **H3 整案 REJECT**——`/raw-data` 面板逐欄渲染全部欄位（含引擎零
+>    消費的 `last`），CSV 匯出用 `fields(OptionContract)` **結構性輸出
+>    全部欄位**，刪任一欄都是功能退化。
+>
+> **H1 的消費端邊界以實證取得**：獨立 git worktree 把 `store.py:680`
+> stub 成 `[]` 跑全套後端測試，**只有 9 條失敗**——4 條契約樣本 drift、
+> 1 條 `/history`（唯一真產品消費端）、1 條「儲存全保真」設計斷言、
+> 3 條直接測該欄位本身。CLI golden fixtures 全數通過。
+>
+> ⚠ **抓到一個沉默陷阱（新紅線 RL-33）**：`test_selection_regression.py`
+> **沒有失敗，但它的 `per_expiry_order` 軸悄悄變成空斷言**——該軸由
+> `all_candidates` 構造（`:78-80`），比對是同一次執行內 before vs after
+> （`:175`），欄位變空時兩邊都是 `{}`、恆真。移除前必須把該軸重新定基
+> 到 `expiry_ranked` 或 narrow 表，否則真正的排序回歸會無聲通過。
+>
+> **明確 REJECT 的假優化**：narrow all-qualified（糟 8.2×）／TOAST 改
+> lz4（**反而變大 15.6%**，pglz 在本負載較優）／bytea+zlib（H1 之後只剩
+> 113 KiB／次，卻永久失去 JSONB 運算子）／snapshot 欄位瘦身／退役
+> `events`（0.006%，量測上等於零）。
+>
+> **修正後的理論下限**：今天 3,190,261 B／次 → 移除 `all_candidates`
+> ＋narrow(visible) 254,180 B（12.5×）→ **再加歷史 view 整份退役
+> 51,170 B（62.3×，Neon Free 可撐 10,494 次）** → 加 snapshot 去重
+> 36,372 B（87.7×）。**下限＝narrow 32,495＋snapshot 18,498＋events 177
+> ≈ 51 KiB／次**，OD-06 之下 snapshot 是不可壓縮的地板。
+>
+> **全 schema 窮舉（14 張表）**：具成長性只有四張——`results`
+> （accidentally unbounded）／`snapshots`（L0 seed，OD-06 永久）／
+> `events`（append-only、零前端消費端、量體可忽略）／以及不在刷新路徑
+> 上但無界的 `contract_iv_history` 與 `iv_observations`。其餘九張皆
+> bounded 或已有 retention（`diagnostics` 全域最新 200 筆）。
+>
+> **spec #251 已修正四處**（新增「第 0.5 部」）：A1 單位更正（邏輯 vs
+> 落盤）／A2 RD-1 由量測解決、(b)(c) 改列 REJECT／A3 移除
+> `all_candidates` 是效能改善非取捨／A4 新增 RL-33＋RL-34（紅線
+> 32 → **34**）；另新增候選 A5 snapshot 去重（VALIDATE_MORE）。
+>
+> **仍存在的 Owner Decision 只剩一題**：**RD-2**
+> `contract_iv_history`／`iv_observations` 的 retention／GC 政策
+> （RD-1 已由量測關閉）。不擋拆票。
+>
+> **誠實揭露**：fixture 是合成的（`volume`／`open_interest` 值單一），
+> 6.66× TOAST ratio 應視為**上界**；未在真實 Neon 上量測；production
+> 的 K 值未知；C1 的 stub 實證證明的是**消費端邊界**，不是施工完整性。
+>
+> **下一步**：可進 `/to-tickets`。**本輪依指示未自行拆票。**
 
 > **現況總覽（2026-09-06，Scaling Foundation Spec Reconciliation 完成，
 > 取代上一段「下一步：可進 `/to-tickets`」那句的指向——上一段其餘原文

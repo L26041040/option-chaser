@@ -321,6 +321,99 @@ READY_FOR_SCALING_TICKETS
 
 ---
 
+# 第 0.5 部：OPTION-STORAGE-AUDIT-003 對第 0／1 部的量測修正（2026-09-06）
+
+> 全文見 `docs/research/storage-optimization-audit.md`。本節只記**推翻或修正**先前文字之處。
+> 量測環境：本機 PostgreSQL 16.13（`default_toast_compression=pglz`）、repo 自身 schema 與引擎、
+> `tests/fixtures/xyz_v8_production_scale.json`（600 合約／6 subtype／真實非零 q）。
+
+## A1｜growth model 的單位錯了：12.18 MiB 是「邏輯」不是「落盤」
+
+**實測**：`results.view` 邏輯 21,112,857 B → `pg_column_size` **3,171,586 B**（TOAST pglz **6.66×**）；
+snapshot 邏輯 126,279 B → 落盤 **18,498 B**（6.83×）。
+
+⇒ 第 0 部 §R7 與第 1 部全部以 12.18 MiB／0.48 MiB 推算的「Neon Free 能撐幾次」**低估約 6.7 倍**。
+**每次刷新的真實落盤合計 ＝ 3,190,261 B ＝ 3.04 MiB**（view 99.41%／snapshot 0.58%／events 0.006%／
+其餘 11 張表 0）。Neon Free 0.5 GB ⇒ **168 次**（不是 42 次）。
+
+⚠ 6.66× 是**合成 fixture 上的上界**（`volume`／`open_interest` 值單一，壓縮偏樂觀），
+真實資料會低於此值。
+
+## A2｜RD-1 已由量測解決——選項 (b) 是假優化，改列 REJECT
+
+第 0 部 §R8-RD-1 把「narrow 表存全部合格候選」描述為「逐位元不變但仍無界」的保守選項。
+**實測推翻**（30 次刷新、含主鍵索引）：
+
+| 方案 | 每次刷新落盤 | 走勢圖查詢（單一候選 30 點） |
+|---|---|---|
+| narrow **visible-only**（150 列/次） | **32,495 B** | **0.396 ms** |
+| narrow **all-qualified**（128,668 列/次） | **26,030,626 B** | 285 ms |
+| （對照）今天的完整 view | 3,171,586 B | 380 ms／列 × 30 ≈ 11,400 ms |
+
+⇒ all-qualified **比今天糟 8.2 倍**、查詢慢 **720 倍**。
+根因：**關聯表逐列有 header／索引開銷且吃不到 TOAST 壓縮，JSONB blob 吃得到。**
+
+**RD-1 因此收斂**：**(a) visible-only ＋ L0 回填**為唯一合理解；(b) 與 (c) 改列 **REJECT**。
+這一題不再需要 Owner 裁示——它已被量測回答。
+
+## A3｜`all_candidates` 的移除同時「改善」效能（非取捨）
+
+**實測**：`save_result` 981.2 ms → **40.7 ms**（24.1×）；單列 `SELECT view` 380.1 ms → **10.4 ms**（36.5×）；
+落盤 3,171,586 B → **203,010 B**（−93.6%）。**功能面**：`project_for_detail` 早已在 wire 剝除它
+（detail 投影 431,675 B ＝ 儲存的 2.18%），current UI 結構上不依賴它。
+
+**實證消費端邊界**：獨立 worktree 把它 stub 成 `[]` 跑全套後端測試，**只有 9 條失敗**——
+4 條契約樣本 drift、1 條 `/history`（唯一真產品消費端）、1 條「儲存全保真」設計斷言、
+3 條直接測該欄位本身。**CLI golden fixtures 與 `test_selection_regression.py` 全數通過。**
+
+## A4｜新增兩條紅線（總數 32 → **34**）
+
+| # | 紅線 |
+|---|---|
+| **RL-33** | **不得把 `all_candidates` 就地清空而不重新定基 `test_selection_regression.py` 的 `per_expiry_order` 軸。** 該軸由 `res["all_candidates"]` 構造（`:78-80`），比對方式是**同一次執行內 before vs after**（`:175`）——欄位變空時兩邊都是 `{}`，斷言**恆真而非紅燈**。實測已確認：stub 成 `[]` 時該檔案全數通過。移除前必須把該軸改基於 `expiry_ranked` 或 narrow 表 |
+| **RL-34** | **`snapshots` 的任何欄位都不得移除。** `/raw-data` 面板逐欄渲染全部欄位（`src/RawData.tsx:115-121`，含引擎零消費的 `last`），且 CSV 匯出用 `fields(OptionContract)` **結構性輸出全部欄位**（`data/snapshot.py:60`）——刪欄位會靜默改變 CSV 表頭。H3「minimal replay seed」因此整案 **REJECT** |
+
+## A5｜新增一個第 0／1 部未涵蓋的候選：snapshot 去重
+
+`refresh-run` 對共用同一 symbol 的 K 個劇本寫入 **K 份逐位元相同** 的 snapshot
+（實測 `count(DISTINCT md5)=1 / count(*)=3`）。**實測（K=5×30 次）**：payload 落盤省 **80.0%**
+（理論上界 (K−1)/K），點查詢延遲 1.83 ms → **1.79 ms（無代價）**。
+
+**但列 `VALIDATE_MORE` 而非 `DO_NOW`**：`delete_scenario` 的 cascade、archive／restore 語意、
+blob refcount／GC 都需重寫，且**收益完全取決於 production 的真實 K（本輪無遙測，K=1 時零收益）**。
+
+## A6｜以下方案經量測後明確 REJECT
+
+| 方案 | 量測結果 |
+|---|---|
+| TOAST 改用 `lz4` | 落盤 3,171,586 → 3,665,657 B，**變大 15.6%**（pglz 在本負載上較優） |
+| `bytea` + 應用層 zlib 取代 JSONB | H1 之前省 33.1%；**H1 之後只剩 113 KiB／次**，卻永久失去 JSONB 運算子 |
+| snapshot 欄位瘦身（含只刪 `last`） | 見 RL-34——功能退化 |
+| 退役 `events` | 177 B／次 ＝ **0.006%**，量測上等於零 |
+
+## A7｜修正後的理論下限
+
+| 情境 | 每次刷新永久成長 | Neon Free 0.5 GB |
+|---|---|---|
+| 今天 | 3,190,261 B | 168 次 |
+| 移除 `all_candidates` ＋ narrow(visible) | 254,180 B | 2,113 次（12.5×） |
+| **＋ 歷史 view 整份退役** | **51,170 B** | **10,494 次（62.3×）** |
+| ＋ snapshot 去重（K=5） | 36,372 B | 14,764 次（87.7×） |
+
+**理論下限 ＝ narrow 32,495 B ＋ snapshot 18,498 B ＋ events 177 B ≈ 51 KiB／次**——
+OD-06 之下 snapshot 是不可壓縮的地板。
+
+## A8｜全 schema 窮舉結論（14 張表）
+
+**具成長性的只有四張**：`results`（canonical history，accidentally unbounded）、
+`snapshots`（L0 seed，OD-06 永久）、`events`（append-only，零前端消費端，量體可忽略）、
+以及**不在刷新路徑上但無界**的 `contract_iv_history` 與 `iv_observations`。
+其餘九張皆 bounded（單列 CHECK／per-symbol／per-year／per-provider upsert）或
+已有 retention（`diagnostics`，全域最新 200 筆 trim-on-write）。
+
+
+---
+
 # 第 1 部：OPTION-SCALING-SPEC-001（原文）
 
 > ⚠ **以下為 SPEC-001 原文，逐字保留供追溯。**
@@ -972,7 +1065,7 @@ Stage 1 內部嚴格順序：1-0 → 1-1 → 1-2 → 1-3 → 1-4 → 1-5 → 1-6
 
 ## 14. Regression Red Lines
 
-**共 32 條（RL-01～RL-27 原文，RL-28～RL-32 由 RECONCILE-002 新增）。**
+**共 34 條（RL-01～RL-27 原文，RL-28～RL-32 由 RECONCILE-002 新增，RL-33～RL-34 由 STORAGE-AUDIT-003 新增，見第 0.5 部 A4）。**
 **任一條被違反即為施工失敗，不得以「storage 省得多」為由交換。**
 
 ### 14.1 產品行為保存（RL-01～RL-08）
