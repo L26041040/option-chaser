@@ -1,5 +1,332 @@
 <!-- 正式發布於 GitHub issue #251（label: ready-for-agent）。本檔案是同一份 spec 的 repo 內副本，供離線閱讀與後續 /to-tickets 引用；兩者內容一致，issue 為權威版本。 -->
 
+# 第 0 部：OPTION-SCALING-SPEC-RECONCILE-002 — Remove Superseded Historical Storage Assumptions
+
+**對象**：spec `OPTION-SCALING-SPEC-001`（GitHub issue #251，repo 副本 `docs/spec/scaling-foundation.md`）。
+**性質**：canonical architecture 的 reconciliation。**不改 production code、不拆票、不開 PR、不做 migration。**
+**證據等級**：本輪以 23 個並行 agent 做 consumer audit ＋ 三路對抗驗證（hidden-consumer／replacement-completeness／
+user-visible-breakage），其中一路**實際啟動應用程式呼叫兩支端點**、一路**用 repo 自己的引擎跑 30 次模擬刷新×4 seeds**。
+全部主張皆有 `file:line`。工作目錄已核對與 HEAD 逐位元相同（audit 期間出現的暫時性實驗改動已還原）。
+
+---
+
+## R0. 本輪最重要的一句話
+
+> **Owner 的「該退役」判斷成立；但委託中指定的替代來源不成立，而真正的替代來源是我們自己已經在存的 raw snapshot。**
+
+這一句同時是好消息與壞消息：
+- **壞消息**：`exact OCC contract historical quotes → 取代 SpreadHistory 的保存需求` 這條**在證據上不成立**（R1）。
+- **好消息**：不需要它。`cost` 是 raw snapshot 上的 1–3 個加減，**同一 vendor、同一瞬間、同一最差成交口徑、免 credential、任何腿數**——
+  逐位元可重算（R2）。因此 **OD-06（snapshot 永久保存）不是成本負擔，而是整個瘦身方案的地基**。
+
+---
+
+## R1. 委託前提的更正（含反證）
+
+委託原文：「Spread / Butterfly 的歷史 net cost 可由各腿 historical quotes deterministic 計算 ⇒ 為 Spread History
+永久保存 result / snapshot 已是 superseded legacy design」。
+
+**這條有三個獨立、各自即足以推翻它的反證**：
+
+| # | 反證 | 證據 |
+|---|---|---|
+| **R1-a** | **預設組態下替代路徑完全不存在。** `GET /history` 只過 `_require(scenario_id)`，無任何 credential gate；`GET /iv-history` 在 `_historical_iv_enabled` 為假時回 **403**，而該旗標要求 `mode==MODE_CUSTOM` ＋ provider ＋ credential `status=="ok"`，出廠預設是 `DEFAULT_LABELS[HISTORICAL_IV] = "無"`。**實測**：一個刷新 3 次的新劇本，`/history` → **200 帶完整 cost 序列**，`/iv-history` → **403**。 | `api_app/main.py:1136-1146`（無 gate）／`:1275-1278`（403）／`:1502-1511`（判準）／`:1457-1462`（預設）；`api_app/providers.py:31`。取得該 credential 正是 repo 自己記載**至今未解**的 blocker #111 |
+| **R1-b** | **兩個功能的閘門是「不相交」而非「包含」——Butterfly 完全落在替代路徑之外。** SpreadHistory 渲染條件是 `legs.length >= 2`（**含三腿**）；IvHistory 是 `legs.length <= 2`（**排除三腿**）。交集只有兩腿 Vertical。後端更是結構性的：`leg_names = ("buy","sell")` 再 `zip` 掉第三腿，且中腿的 `quantity=2` 權重無處表達，而 butterfly 的 `natural_cost = low.ask − 2.0×mid.bid + high.ask` 需要全部三腿與那個 2 倍權重。**且 SpreadHistory 只畫跨 family 冠軍，而 repo 自己的凍結多 family 基準冠軍正是 `call-fly`。** | `src/SpreadHistory.tsx:184`；`src/IvHistory.tsx:586`；`option_chaser/ivpipeline.py:835,837`；`option_chaser/scenarios.py:141-142`；`src/family.ts:97-109` → `src/ScenarioDetail.tsx:245,273`；`tests/test_selection_regression.py:676-679`；`e2e/smoke.spec.ts:2924-2931`（Butterfly 圖表可見的既有 e2e） |
+| **R1-c** | **即使在兩腿交集內，那也不是同一條序列。** 不同 vendor（Cboe 延遲 CDN vs `api.marketdata.app`）、不同時刻（盤中任意秒 vs 前一交易日收盤）、粒度塌縮（`merged = {q["date"]: q}` 每日至多一點 vs 每次刷新一點、秒級）、深度上限 365 天且只能向前補、`_num()` 把真實的 `0.0` bid 映成缺值。**且今天圖表最新一點與同頁「Net Worst（保守進場成本）」逐位元相同（實測 0.49 == 0.49），換來源會打破這個一致性。** | `option_chaser/ivpipeline.py:598-600`／`:574-578`；`option_chaser/store.py:758`；`option_chaser/data/cboe.py:96`；`option_chaser/data/marketdata.py:93-106`；`src/AnalysisReport.tsx:286` |
+
+**另外兩項一併更正**：
+- 替代路徑**今天沒有任何程式碼**：`natural_cost` 在 `ivpipeline.py`／`ivreconstruct.py`／`ivspread.py` 零命中，
+  且價格根本不上 wire（`points` 只序列化 `{date, iv, low_confidence}`）。那是**新增後端工作**，不是接線。
+  （`option_chaser/ivpipeline.py:716-721`）
+- `contract_iv_history` **只在使用者開過 IV 卡片的合約上才有資料**（`_ensure_contract_history` 只從 iv-history
+  端點觸發，`service.py` 零引用），不是刷新時自動累積。刷新路徑從未寫入它。
+
+---
+
+## R2. 更正後的替代來源：raw snapshot（本輪的關鍵發現）
+
+**`cost` 的定義是純算術**：
+
+```
+natural_cost(候選) =  Spread    : long.ask − short.bid
+                      Butterfly : low.ask − 2.0×mid.bid + high.ask
+                      Single-leg: contract.ask          （option_chaser/scenarios.py:138-143）
+```
+
+**而 raw snapshot 存的正是這些數字**：`ChainSnapshot.contracts` 是**未經裁切的完整鏈**，每筆 `OptionContract`
+帶 `bid`／`ask`（`option_chaser/models.py:39-40, 48-54`；未裁切這點見 Wayfinder F6）。
+`candidate_key` 完整編碼 strategy ＋ 全部履約價 ＋ 到期日（`option_chaser/service.py:623-635`），
+而 `find_contract(snap, option_type, strike, expiry)` 已存在（`option_chaser/data/snapshot.py:66-75`）。
+
+> ⇒ **`cost(candidate_key, snapshot)` 是一個完全決定的純函式，逐位元重現今天存下來的那個數字。**
+> 同一個 vendor、同一個瞬間、同一套最差成交口徑、**免 credential、任何腿數、任何 family**。
+
+**這推翻了 spec #251 §3.4 的 L2 例外論證**。原論證說「重建要 96 秒以上、放不進 read path」——那是「**重跑整份分析**」
+的成本（研究 M8 的 3.21s 快路徑／REPAIR-03 的 7.543s 完整校準路徑）。但走勢圖只要 `cost`，而 `cost` 不需要引擎、
+不需要 r／q、不需要 IV 反解、不需要校準。**原前提本身就錯了。**
+
+L2 materialization 仍然值得做，但**理由必須改寫**：不是「重算太慢」，而是「**重算要載入 N 份 snapshot**」——
+30 次刷新 × 0.48 MiB（TLT）≈ 14 MiB／2.55 MiB（SPY）≈ 76 MiB 的 Neon 讀取與反序列化。
+（對照：今天讀 30 份完整 view ＝ **365 MiB**，所以就算完全不 materialize、改為即時從 snapshot 重算，
+**也已經比今天好 25 倍**。）
+
+### R2.1 由此得到的分層架構（本輪的核心修正）
+
+```
+L0  raw snapshot（OD-06，永久）
+      └─ 完整、免 credential、任何腿數、與當時逐位元相同的 cost 唯一冷來源
+           ↓ 純函式 natural_cost∘find_contract，無引擎、無 vendor
+L2  narrow (scenario_id, analyzed_at, candidate_key, cost)（OD-07）
+      └─ 純粹的 read-path 熱快取；缺格可隨時從 L0 回填
+           ↓
+L3  歷史 results.view 完整內容 → 整份退役
+```
+
+**這一層關係解決了本輪對抗驗證最嚴重的那個發現**：OD-07 的「只 materialize 可見候選」被實測為
+**Butterfly 30 點只剩 2–9 點（損失 67–93%）、Vertical 在 spot 跌 17% 那個 seed 20 點只剩 2 點**
+（用 repo 自己的引擎、4 個 seed 跑出來的）。原本這是「無法挽回的可見退化」；
+**但 L0 仍在（OD-06），那些缺格是可回填的**——narrow 表是快取不是真相，真相在 snapshot。
+因此 OD-07 的窄化從「不可逆的資訊損失」降級為「**可回補的快取覆蓋率選擇**」。
+
+⚠ **誠實揭露**：從 snapshot 重算 cost 的程式碼**今天不存在**，是新增工作（純函式層＋一條回填路徑）。
+本輪只定架構，不施工。
+
+---
+
+## R3. Consumer Audit 結果（每一項的今日真實消費端）
+
+| 資料 | 今日 production 消費端 | 替代來源 | 分類 |
+|---|---|---|---|
+| **歷史 `results.view`（非最新列的完整內容）** | **僅一處**：`GET /history` → `spread_cost_history()`，而它只讀 `analyzed_at`／`meta.spot`／`all_candidates` 內單一 key 的 entry | narrow 表（熱）＋ raw snapshot（冷） | **superseded legacy** |
+| `results[].all_candidates` | **僅一處**：同上（`store.py:278`）。前端型別從未宣告它；detail wire 早已剝除（`store.py:871`） | 同上 | **superseded legacy（形狀），canonical（其中兩腿以上的 `cost` 事實）** |
+| ↳ 其中 **single-leg** 的 entries | **零**——SpreadHistory 在 `legs.length < 2` 直接 `return null` | n/a（無消費端） | **superseded legacy（純寫入死重）** |
+| ↳ 其中 `baseline_return`／`rank_in_expiry`／回應的 `spot` | **零**——`src/` 只讀 `cost` 與 `analyzed_at` | n/a | **superseded legacy（wire 死重）** |
+| ↳ 其中 **Butterfly** 的 `(analyzed_at, candidate_key, cost)` | **有，且有 e2e 釘住**；且是 repo 凍結基準的冠軍 family | **只有 in-house**（vendor 路徑結構上做不到） | **canonical（事實本身，非陣列形狀）** |
+| **歷史 raw snapshots（非最新列）** | **零。而且比「未被使用」更強——結構上不可定址**：Storage port 沒有任何列舉方法，Postgres 只有單列點查詢，唯一讀取端硬綁 `latest_result(...).analyzed_at`，25 條路由沒有一條接受 `analyzed_at` | **無**（Cboe 無歷史端點，#111 已窮舉免 key 路線） | **canonical（L0 seed）——維持 OD-06** |
+| **最新 raw snapshot** | `/raw-data`／`/raw-data.csv` 面板 | n/a | **current-only（兼 L0 seed）** |
+| `results[].candidates`（扁平 key 清單） | `find_candidate()` 的 fallback 分支，**只在最新列上** | n/a | **current-only** |
+| **最新 `results.view`** | detail 頁 ＋ iv-history gate | n/a | **current-only（明確不在本輪範圍）** |
+| `GET /api/scenarios/{id}/results`（analyzed_at 索引） | **零前端呼叫端**（`src/api.ts` 全部 URL 字面量中不存在），只有測試呼叫。**且它是實質成本**：`result_history()` 無條件 `SELECT` 含 `view` 的整列，只為投影出一串時間戳 | n/a | **superseded legacy** |
+| `GET /api/scenarios/{id}/events` | **零前端呼叫端** | n/a | **未使用（保留：每次刷新僅約 177 bytes，佔比 0.0014%，是列數問題不是位元組問題）** |
+| `contract_iv_history` | 只從兩支 iv-history 端點；`service.py` 零引用（**不在刷新路徑上**） | 可向 vendor 重抓（需 credential，且只能向前補） | **cache（但無界，見 RD-2）** |
+| `iv_observations` | 同上（legacy 重錨定家族） | 同上 | **cache（但無界、無 retention、`delete_scenario` 不 cascade，見 RD-2）** |
+| `iv_backfill_runs`／`diagnostics`／`rate_cache`／`dividend_cache`／`treasury_year_cache` | 各自既有消費端 | 各自可重抓／重生 | **cache（皆已有界，不動）** |
+| `data_source_settings`／`provider_credentials`／`provider_verifications` | Settings ＋ 來源選擇 ＋ IV gate | n/a（使用者 token 無法重導出） | **canonical（零成長）** |
+| **CLI 檔案系統 snapshots**（`snapshots/{symbol}_{fetched_at}.json`） | `option_chaser/cli.py:163` → `run_offline` → `load_snapshot`，**真的重播任意歷史快照**，且是 `pyproject.toml` 的 console entry point | n/a | **canonical（但是另一個 store：本機磁碟、無 scenario_id、部署函式不可達）** |
+
+> ⚠ **最後一列必須寫進 spec**：任何「退役歷史 snapshots」的敘述**必須指明是哪一個 store**，
+> 否則字面上是錯的——DB 表與 CLI 檔案是兩個不同的東西。
+
+---
+
+## R4. 修正後的 Owner Decisions
+
+### OD-06（修正）— Raw option-chain snapshot
+
+**維持永久保存，但理由升級。** 原理由是「不可重新取得的市場事實／未來 re-analysis 的 canonical seed」。
+本輪新增一條**更強的、當下就成立的**理由：
+
+> **它是歷史 net cost 唯一的完整、免 credential、任何腿數、與當時逐位元相同的來源。**
+> 一旦刪除，Butterfly 與未持有付費 token 的使用者將永久失去補回歷史走勢的能力。
+
+Foundation 階段仍維持現有 storage location、不新增 object-storage dependency。
+
+**新增一條實作紅線（RL-28）**：refresh-run 對共用同一個 symbol 的 K 個劇本，會寫入 **K 份逐位元相同的
+snapshot**（一列一個 `scenario_id`）。這是**去重的機會，不是刪除的理由**——內容定址／共享是零刪除的節省，
+應在 spec 中登記為可選最佳化（不在本輪施工）。
+
+### OD-07（修正）— Historical candidate trend
+
+**維持「只 materialize 使用者實際點得到的 candidate」與最小四欄，但語意重新定性**：
+
+> narrow 表是 **L2 熱快取，不是真相來源**。真相是 L0 snapshot。
+> 因此覆蓋率不足產生的斷格 **可從 L0 回填**，不是不可逆的資訊損失。
+
+**修正「永久保存暫不設 retention」的措辭**：narrow 表**可以**永久保存（它極小），但它的永久性**不是**
+產品保證的來源——產品保證來自 L0。這個區分很重要：它讓未來若要調整 narrow 表覆蓋率或欄位，
+不必再走一次不可逆決策。
+
+**新增（本輪實測結果，必須寫進 spec）**：visible-only 窄化在 repo 自己的引擎上實測，
+Butterfly 30 點只剩 **2–9** 點、Vertical 在大幅方向性移動的 seed 20 點只剩 **2** 點；
+production 的比例比該 fixture **更差**（可見候選佔比 0.07% vs fixture 的 12%）。
+**⇒ 若不實作 L0 回填，OD-07 的窄化會讓 Butterfly 走勢圖失去大多數歷史點。回填路徑因此是 OD-07 的必要配套，不是可選項。**
+
+### OD-08（不變）— Diagnostics ownership
+
+不變。另補一項：`iv_observations` 依 OD-08 同屬 user-scoped operational data，
+且它**沒有任何 retention、`delete_scenario` 也不 cascade** 它——列入 RD-2。
+
+---
+
+## R5. 修正後的 Canonical Storage Principle
+
+原則本文維持，並**新增 Owner 本輪的措辭為第二句**：
+
+> 保存不可確定性重建的 seed ＋ provenance ＋ version；deterministic derived output 原則上不永久保存，
+> 除非它位於高成本 read path、必須 materialize。
+>
+> **並且：不要因為「以前已經存了」就把它升格成永久需求。**
+> 判準永遠是「今天真的有誰在讀它」與「刪掉之後還能不能拿回來」，不是「它一直都在」。
+
+**四層分類不變，但 L2 的判準措辭更正**：
+「可由 seed 重建，但**重建成本結構上不能放進 read path**」——本輪確認對 `cost` 而言，
+那個成本**不是 CPU（引擎），是 I/O（載入 N 份 snapshot）**。原 spec 的 96 秒論證作廢。
+
+---
+
+## R6. 對 spec #251 的具體修改清單
+
+### 刪除／作廢
+
+| 項目 | 處置 | 理由 |
+|---|---|---|
+| §3.4 全節「L2 必要例外」的 96 秒論證 | **改寫** | 前提錯誤：`cost` 不需要跑引擎（R2） |
+| §3.5 L-2「重建成本結構上放不進 read path ⇒ L2 例外」 | **改寫**為 I/O 論證 | 同上 |
+| §6.2「必須誠實揭露的行為差異」段落中「這不是 blocker，是知情事項」 | **升級為必要配套** | 本輪實測顯示損失是多數而非偶發（R4／OD-07） |
+| §19-EG-2 | **關閉** | OD-06／OD-07 已定；且本輪確認 L0 是回填來源，「歷史 view 完整內容保留多久」不再需要 Owner 裁示——**答案是可以全退役，因為 L0 在** |
+
+### 新增
+
+| 項目 | 內容 |
+|---|---|
+| **§3.3 分類表** | 新增 5 列：single-leg `all_candidates`（superseded）／`baseline_return`＋`rank_in_expiry`＋`spot`（wire 死重）／`GET /results` 端點（superseded）／CLI 檔案系統 snapshots（另一個 store）／`iv_observations`＋`contract_iv_history`（無界 cache） |
+| **新 Stage S1-0b「L0 回填路徑」** | 純函式 `cost_from_snapshot(snapshot, candidate_key)` ＋ 一條回填入口。**排在 S1-1 dual-write 之前**——它是 OD-07 窄化的安全網 |
+| **RL-28** | snapshot 的 K 份重複是去重機會、不是刪除理由 |
+| **RL-29** | 任何「退役歷史 snapshots」敘述必須指明 store（DB 表 vs CLI 檔案） |
+| **RL-30** | 不得以 exact-contract vendor 路徑作為任何退役的理由（R1 三條反證） |
+| **RL-31** | 退役實作不得把 `results.view` 設為 NULL／`{}`：`spread_cost_history()` 硬下標 `view["results"]`／`["analyzed_at"]`／`["meta"]["spot"]`，且 `ResultRecord.view` 型別非可選、以位置參數建構 |
+| **RL-32** | 「每次刷新都永久留下完整分析世界」**不再是 canonical requirement**（Owner 本輪明文） |
+| **AC 新增** | (a) 對任一歷史 `analyzed_at` 與任一 `candidate_key`，可從 L0 重算出與當時 `all_candidates` 記錄**逐位元相同**的 `cost`；(b) Butterfly 與 single-leg 皆涵蓋；(c) 全程零 vendor 呼叫、零 credential |
+
+### 改寫
+
+| 項目 | 改法 |
+|---|---|
+| §6 狀態機 | 插入 **1-0b（L0 回填路徑）**於 1-0 與 1-1 之間；**1-6 的範圍擴大**——原本只清「歷史 view 完整內容」，現在確認整份歷史 view 可退役（narrow ＋ L0 已覆蓋全部消費端） |
+| §6.2 parity proof | parity 的定義擴充：除既有比對外，**必須額外證明 L0 重算與 `all_candidates` 記錄逐位元相同**（這是新的、更強的 parity，且它同時證明 OD-07 窄化是安全的） |
+| §17 AC-2 | 「曾掉出 visible 集合」的 case 從「分類計數並報告」升級為「**必須由 L0 回填路徑覆蓋，並驗證回填值逐位元正確**」 |
+| §13.1 測試接縫 | 不變（沿用既有七個、零新增）。L0 重算純函式落在接縫 2；回填端點落在接縫 1；逐位元 parity 落在接縫 5 的既有慣例 |
+
+### 保留不動
+
+- 測試接縫沿用既有七個、零新增（Owner 已裁示）
+- `chain_backoff` 持久化進 Storage port ＋ RL-19 零 payload 紅線（Owner 已裁示）
+- Treasury Cron ＋ 同步保底（OD-01）
+- Ownership A-1 ＋「不等於 privacy」（OD-04／RL-21）
+- Cboe 429 全節（OD-05）
+- Observability 七項封頂
+- 全部既有 RL-01～RL-08 產品行為保存紅線
+
+---
+
+## R7. 修正後的 DB Growth Model
+
+**今日（每次刷新、每個劇本，三 family 全開）**
+
+| 項目 | 大小 | 依據 |
+|---|---|---|
+| `results.view` | **~12.18 MiB**，其中 `all_candidates` 佔 **96.4%**（74,011 筆 / 11.78 MiB） | 【研究文件一手實測 2026-09-03】 |
+| `snapshots` | **0.48 MiB**（TLT，2,414 合約）／**2.55 MiB**（SPY，12,534 合約） | 【研究文件一手實測】 |
+| `events` | ~177 bytes（佔 0.0014%） | 【本輪由酬載形狀計算】 |
+| diagnostics／全部 IV 表／三個市場事實 cache | **0 列** | 【本輪由呼叫圖確認：刷新路徑結構上不觸及】 |
+| **合計** | **~12.66 MiB／次／劇本** | 【兩個實測項相加】 |
+
+⚠ **放大器（本輪新發現，結構性）**：refresh-run 對共用同一 symbol 的 K 個劇本寫入 **K 份逐位元相同的 snapshot**。
+
+**退役後（本輪架構）**
+
+| 階段 | 每次刷新永久成長 | 性質 |
+|---|---|---|
+| 今天 | ~12.66 MiB | — |
+| 退役歷史 view，narrow 保留**全部合格候選** | snapshot ＋ **~3.97 MiB** | 【推估，56 B/entry 實測 × 74,011】逐位元不變，但仍無界 |
+| 退役歷史 view，narrow 只保留 **visible**（OD-07） | snapshot ＋ **~2.7 KiB** | 【推估】**約 4,500 倍差距**；缺格由 L0 回填 |
+| **本輪建議態** | **≈ snapshot（0.48–2.55 MiB）＋ KiB 量級** | 成長從 O(derived) 降為 O(seed) |
+
+**誠實的殘餘（不變，但要重講一次）**：OD-06 之下 seed 本身仍是每次刷新 0.48／2.55 MiB 的硬成長。
+Neon Free 0.5 GB ⇒ TLT 約 **1,000 次**／SPY 約 **200 次**刷新後仍會滿。
+**退役把撞牆時間往後推約一個數量級，沒有消滅它。** 屆時的解法依 OD-06 是搬 archival／object storage、
+不是刪 seed；而那明文屬 Out of Scope。
+**snapshot 去重（RL-28）是本輪新發現的、零刪除的節省來源**，值得在那之前先做。
+
+⚠ **成長模型的兩個既有盲點（本輪新發現，原研究文件從未分析）**：
+`contract_iv_history`（每個開過 IV 卡片的 OCC 合約一列，`points` 陣列 append-only、只在**讀取時**裁到 365 天、
+合約到期後也不 GC）與 `iv_observations`（每 symbol 每年約 66 列、無 retention、`delete_scenario` 不 cascade）。
+兩者都**不在刷新路徑上**（不進每次刷新的數字），但都在長期總量裡，且都**無界**。→ RD-2。
+
+---
+
+## R8. 仍然存在的 Owner Decisions（只有兩題）
+
+本輪把 spec #251 原本的 EG-2 關閉，並把對抗驗證浮現的 RD-2／RD-3／RD-5 **全部解掉**——
+因為它們都建立在「替代來源是 vendor」這個被推翻的前提上；改用 L0 之後，
+credential 不需要、Butterfly 有解、序列逐位元相同。**剩下真正需要大哥拍板的只有兩題**：
+
+### RD-1｜narrow 表的覆蓋率要選哪一檔？
+
+**這是唯一會影響使用者體感的一題，但已經不是不可逆的了**（缺格可從 L0 回填）。
+差別在於「打開走勢圖時有多少點是立刻就有的、多少點要等回填」：
+
+- **(a) 只存 visible top-N（OD-07 現行）**：~2.7 KiB／次。Butterfly 立即可見點實測只剩 2–9/30，其餘靠回填。
+- **(b) 存全部合格候選的窄欄位**：~3.97 MiB／次。逐位元不變、零回填需求，但仍是無界成長。
+- **(c) 中間帶（例如每到期日前 50）**：兩者之間。
+- **老弟的建議**：**(a) ＋ 必做 L0 回填**——因為回填是純函式、免 vendor、逐位元正確，
+  而 (b) 保留了成長類別本身（本輪要消滅的正是這個）。
+
+### RD-2｜`contract_iv_history` 與 `iv_observations` 的 retention／GC 政策？
+
+本輪新發現的兩個無界 store，**沒有任何決策紀錄涵蓋它們**，且原研究文件完全沒分析過。
+它們不在刷新路徑上（不影響每次刷新的數字），但在長期總量裡會累積。
+
+- (a) 維持現狀（只在使用者開 IV 卡片時成長）
+- (b) `contract_iv_history` 的 `points` 改為**寫入時**裁到 365 天渲染窗；到期合約的列做 GC
+- (c) `iv_observations` 加進 `delete_scenario` cascade 與／或保留窗
+- (d) 併入未來 ownership boundary 一起處理（依 OD-08 它們是 user-scoped）
+
+> ⚠ 這兩題**都不擋 spec、不擋拆票、不擋前面任何一步**。RD-1 只擋 S1-1 的欄位定案，RD-2 完全不擋。
+
+---
+
+## R9. 誠實揭露（本輪無法確立的事）
+
+1. **本輪未取得 production 部署的實際組態**。所有「預設 403」的結論是**出廠預設**，不是大哥實際部署的狀態
+   ——credential 存在資料庫裡，不在 repo 裡。**若大哥的 production 其實已設定並驗證過 Market Data App token，
+   R1-a 這條反證消失**（但 R1-b Butterfly 與 R1-c 序列不同一這兩條仍然成立，結論不變）。
+2. **L0 重算的程式碼今天不存在**，是新增工作。本輪只證明它在數學與資料上完全可行（R2），未實作、未量測。
+3. **走勢圖點數損失是模擬值**：用 repo 自己的引擎跑 30 次模擬刷新 × 4 seeds，spot 走 ~25% 年化隨機漫步，
+   fixture 是 22 履約價/到期日的合成鏈。方向在 4 個 seed 上穩健，且 production 比例更差，
+   但「真實使用者會掉幾點」**沒有 production 遙測**。視為嚴重度下界，不是預測。
+4. **`results.view` 12.18 MiB 與 snapshot 0.48／2.55 MiB 引用自既有研究文件的一手實測，本輪未重跑**。
+   本輪自己量的是 checked-in fixture 上的 per-entry 位元組數（148 B 完整／56 B 窄），交叉核對誤差約 13%。
+5. **completeness critic 這一路 agent 因 session limit 未跑完**——本輪的「還缺什麼」自查不完整。
+   已知未涵蓋：`docs/adr/` 是否有本輪會抵觸的既有 ADR（老弟人工核對過 ADR-0001 與本輪無交集，
+   但未逐份檢視全部 ADR）。
+6. **audit 期間工作目錄曾出現一次暫時性的 production code 實驗改動**（`store.py:680` 被 stub 成 `[]`），
+   已還原；本輪結束時 `git status` 乾淨、`git diff HEAD` 對 `option_chaser/`／`api_app/`／`src/` 零差異。
+
+---
+
+## R10. 判定
+
+| 問題 | 答案 |
+|---|---|
+| 委託的「superseded」判斷成立嗎？ | **成立，但替代來源要換人**——不是 vendor 的 exact-contract quotes，是我們自己的 raw snapshot |
+| 歷史 `results.view` 可否整份退役？ | **可以**（narrow 熱快取 ＋ L0 冷來源已覆蓋唯一消費端） |
+| 歷史 raw snapshots 可否退役？ | **不可以，而且理由比 OD-06 原本寫的更強**——它現在是整個方案的地基 |
+| 是否需要發明 narrow-history table？ | **需要**，且符合 Owner 第 7 條的但書：存在獨立、仍有效的 product requirement（Butterfly ＋ 免 credential 使用者的走勢圖）。但它的定位從「真相」降為「快取」 |
+| 是否仍有 Owner Decision？ | **有兩題**（RD-1 覆蓋率檔位、RD-2 IV cache retention），皆不擋 spec 與拆票 |
+| 是否 READY_FOR_SCALING_TICKETS？ | **是** |
+
+READY_FOR_SCALING_TICKETS
+
+
+---
+
+# 第 1 部：OPTION-SCALING-SPEC-001（原文）
+
+> ⚠ **以下為 SPEC-001 原文，逐字保留供追溯。**
+> 凡與上方第 0 部（RECONCILE-002）衝突之處，**一律以第 0 部為準**。
+> 被取代的段落已就地插入標記；未標記者仍然有效。
+
 # OPTION-SCALING-SPEC-001 — Scaling Foundation Spec
 
 **基準**：`origin/master` HEAD `864dd5c`（Initial V2 已 merge 上線）；工作分支 `claude/implement-tfm9oa`。
@@ -111,6 +438,11 @@ Treasury cold miss 最壞 ＝ 3 × 15s ＝ **45 秒**（CSV → XML → 前一�
 | `dividend_cache` | **L3** | 不動 | Wayfinder §2.1 |
 | `chain_backoff`（本 spec 新增，見 §8） | **控制狀態，不屬 L0–L3** | 短期、可隨時丟棄、**零市場資料** | §8.4 |
 
+> 🛑 **本節論證已被 RECONCILE-002 §R2 推翻。** 96 秒是「重跑整份分析」的成本；
+> 走勢圖只要 `cost`，而 `cost` 是 raw snapshot 上的 1–3 個加減（`natural_cost`），
+> 不需要引擎、r／q、IV 反解或校準。L2 materialization 仍然值得做，但**理由改為 I/O**
+> （重算要載入 N 份 snapshot），不是 CPU。以 §R2 為準。
+
 ### 3.4 L2 的「必要例外」為什麼成立（OD-02 要求的證明）
 
 歷史走勢圖需要的 `cost` 序列**理論上可從 seed 重建、實務上不行**：
@@ -142,6 +474,8 @@ Treasury cold miss 最壞 ＝ 3 × 15s ＝ **45 秒**（CSV → XML → 前一�
 | **Reproduction**（逐位元重現當時使用者看到的畫面） | seed ＋ 當時的引擎行為 | ❌ **不可行** |
 
 > **紅線**：任何宣稱「刪掉 derived 也能重現歷史」的說法都必須指明是哪一種。**Re-analysis 可以，Reproduction 不行。**
+
+> 🛑 **本項已被 RECONCILE-002 §R2 更正**：對 `cost` 而言那個成本是 I/O 不是 CPU。
 
 **L-2｜重建成本結構上放不進 read path** ⇒ L2 例外（§3.4）。
 
@@ -337,6 +671,12 @@ Treasury cold miss 最壞 ＝ 3 × 15s ＝ **45 秒**（CSV → XML → 前一�
 | **1-4** | **Production validation** | 1-3 部署 | UI 無退化；history 正確；current analysis bitwise／contract behavior 不變；DB read volume 明顯下降；latency 不惡化 | ❌ | ❌ 無 | ✅ 同 1-3 |
 | **1-5** | **Stop obsolete writes** — 新結果不再產生 `all_candidates` | 1-4 通過且 production 已穩定運行一段時間 | 新列不含 obsolete payload；讀取端全綠 | ❌ | ❌ 無 | ⚠ **半可逆**——停寫之後的新列沒有舊格式，舊列仍在 |
 | **1-6** | **Cleanup（不可逆）** | 1-5 完成 **且** Owner 對 §19-EG-2 有答案 | 見 §6.3 的三條禁令 | ❌ | ⚠ 歷史可見範圍改變 | ❌ **不可逆** |
+
+> 🛑 **本節的「這不是 blocker，是知情事項」已被 RECONCILE-002 §R4／OD-07 升級。**
+> 本輪以 repo 自身引擎實測（30 次模擬刷新×4 seeds）：visible-only 窄化下 Butterfly
+> 30 點只剩 2–9 點、Vertical 在大幅方向性移動的 seed 20 點只剩 2 點。
+> ⇒ **L0 回填路徑（新增 Stage S1-0b）是 OD-07 的必要配套，不是可選項。**
+> parity proof 的定義同步擴充：必須額外證明 L0 重算與 `all_candidates` 逐位元相同。
 
 ### 6.2 Stage 1-2 Parity proof 的範圍與一項必須誠實揭露的例外
 
@@ -632,7 +972,8 @@ Stage 1 內部嚴格順序：1-0 → 1-1 → 1-2 → 1-3 → 1-4 → 1-5 → 1-6
 
 ## 14. Regression Red Lines
 
-**共 27 條。任一條被違反即為施工失敗，不得以「storage 省得多」為由交換。**
+**共 32 條（RL-01～RL-27 原文，RL-28～RL-32 由 RECONCILE-002 新增）。**
+**任一條被違反即為施工失敗，不得以「storage 省得多」為由交換。**
 
 ### 14.1 產品行為保存（RL-01～RL-08）
 
@@ -700,6 +1041,17 @@ Stage 1 內部嚴格順序：1-0 → 1-1 → 1-2 → 1-3 → 1-4 → 1-5 → 1-6
 |---|---|
 | **RL-26** | **diagnostics 必須隨 A-1 一併 owner-scoped**（OD-08）——不得以「它只是營運資料」為由跳過 |
 | **RL-27** | **不得夾帶 unrelated cleanup、stylistic 改動，或為了讓測試綠燈而放寬任何既有斷言** |
+
+
+### 14.9 RECONCILE-002 新增（RL-28～RL-32）
+
+| # | 紅線 |
+|---|---|
+| **RL-28** | refresh-run 對共用同一 symbol 的 K 個劇本寫入 K 份逐位元相同的 snapshot——這是**去重的機會，不是刪除的理由**。零刪除的節省應優先於任何刪除 |
+| **RL-29** | 任何「退役歷史 snapshots」的敘述**必須指明是哪一個 store**：Postgres `snapshots` 表，或 `option_chaser/cli.py` 重播的本機檔案 `snapshots/{symbol}_{fetched_at}.json`。兩者是不同的東西，不指明則該敘述字面上為偽 |
+| **RL-30** | **不得以 exact-contract vendor 路徑（Historical IV）作為任何退役的理由**——它預設 403、結構上排除 Butterfly、且產生的是不同的序列（§R1 三條反證） |
+| **RL-31** | 退役實作**不得把 `results.view` 設為 NULL 或 `{}`**：`spread_cost_history()` 硬下標 `view["results"]`／`view["analyzed_at"]`／`view["meta"]["spot"]`，且 `ResultRecord.view` 型別非可選、以位置參數建構。必須保留成形的 stub 或改寫該函式 |
+| **RL-32** | **「每次刷新都永久留下完整分析世界」不再是 canonical requirement**（Owner RECONCILE-002 明文）。任何設計不得再以「以前已經存了」推導出永久保存需求 |
 
 ---
 
@@ -807,6 +1159,14 @@ Stage 1 內部嚴格順序：1-0 → 1-1 → 1-2 → 1-3 → 1-4 → 1-5 → 1-6
 
 ## 18. Implementation Stages
 
+> 🛑 **RECONCILE-002 對本節的兩處修改（以 §R6 為準）**：
+> 1. **新增 S1-0b「L0 回填路徑」**，排在 S1-0 之後、S1-1 之前——純函式
+>    `cost_from_snapshot(snapshot, candidate_key)`（`natural_cost` ∘ `find_contract`，零 vendor、
+>    零 credential、任何腿數）＋一條回填入口。它是 OD-07 窄化的安全網，**不是可選項**。
+> 2. **S1-6 的範圍擴大**：原本只清「歷史 view 完整內容」的一部分，現在確認**整份歷史 view
+>    可退役**（narrow 熱快取 ＋ L0 冷來源已覆蓋其唯一消費端）；三條永久禁令（§6.3）不變。
+
+
 > 拆票時以此為骨架。**Stage 內部順序是硬性的；Stage 之間可平行。**
 
 | Stage | 名稱 | 前置依賴 | 改 schema | 影響可見行為 | 分級 |
@@ -855,6 +1215,10 @@ Stage 1 內部嚴格順序：1-0 → 1-1 → 1-2 → 1-3 → 1-4 → 1-5 → 1-6
 > **RL-20 明文禁止把它偷偷做進 NOW scope。**
 
 **已知的一項施工前必須確認的約束**（不影響本 spec，但 gate 時必須帶入）：`provider_credentials` 全站共用 ＋ chain 共用快取若同時存在，會產生「A 用自己 token 花 credits 抓的資料被 B 用到」的問題。因此共用快取的鍵必須含 source，且**自訂來源（使用者自備 token）抓來的資料不得進共用快取**。A-1 完成 credential per-user 化之後，這條約束的落地方式會更清楚。
+
+> ✅ **本 gate 已由 RECONCILE-002 關閉。** L0（raw snapshot，OD-06 永久保存）是歷史 cost 的
+> 完整冷來源，因此「歷史 view 完整內容保留多久」不再需要 Owner 裁示——**答案是可以全退役**。
+> 取代它的是 §R8 的 RD-1（narrow 覆蓋率檔位）與 RD-2（IV cache retention）。
 
 ### EG-2｜Seed retention 與 narrow history 時間窗（擋住 S1-6，不擋 spec、不擋前五步）
 

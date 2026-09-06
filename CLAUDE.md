@@ -27,7 +27,7 @@ block 裡，不能切成好幾個 code block、也不能中間插普通文字把
 `［回報#001］spec #137 拆票完成`）。編號是**累計總數**，不因換
 session、換分支、換主題而歸零——目前最新編號記在這裡：
 
-> 目前次序：062（下一份回報用 063）
+> 目前次序：063（下一份回報用 064）
 
 每發一份回報就把上面這個數字改成剛剛用掉的那個，跟著那次改動一起
 commit（沒有其他改動要 commit 時，單獨為這一行開一個小 commit 也
@@ -37,6 +37,108 @@ commit（沒有其他改動要 commit 時，單獨為這一行開一個小 commi
 只有這七條。
 
 ## 專案紀錄區
+
+> **現況總覽（2026-09-06，Scaling Foundation Spec Reconciliation 完成，
+> 取代上一段「下一步：可進 `/to-tickets`」那句的指向——上一段其餘原文
+> 照舊，本段只記這一輪的結果）**：
+>
+> **背景**：需求方以 `OPTION-SCALING-SPEC-RECONCILE-002` 指示對 spec #251
+> 做 reconciliation，判斷是「為 Spread History 永久保存每次 Refresh 的完整
+> result／candidate history／raw chain snapshot 已是 superseded legacy
+> design，因為 Historical IV 系列已提供 exact OCC contract historical
+> quotes」。**本輪只修 canonical architecture**——不改 production code、
+> 不拆票、不開 PR、不做 migration（`git status` 確認只有
+> `docs/spec/`、`docs/wayfinder/`、`CLAUDE.md` 三處異動）。
+>
+> **稽核方式**：23 個並行 agent（6 路 consumer audit ＋ 15 路三 lens
+> 對抗驗證 ＋ 綜合），其中一路**實際啟動應用程式呼叫兩支端點**、一路
+> **用 repo 自己的引擎跑 30 次模擬刷新×4 seeds**。全部主張皆有 file:line。
+> ⚠ audit 期間工作目錄曾出現一次暫時性 production code 實驗改動
+> （`store.py:680` 被 stub 成 `[]`），已還原，收工時 `git diff HEAD` 對
+> `option_chaser/`／`api_app/`／`src/` 零差異——**未來若再用 workflow 做
+> 稽核，要記得收工前核對工作目錄**。
+>
+> **核心結論一句話**：**「該退役」的判斷成立，但委託指定的替代來源不成立，
+> 真正的替代來源是我們自己已經在存的 raw snapshot。**
+>
+> **委託前提被三條獨立反證推翻**（任一條即足以）：
+> (a) **預設組態下替代路徑完全不存在**——`/history` 無 credential gate、
+> 實測回 200 帶完整 cost；`/iv-history` 預設回 **403**（需 `MODE_CUSTOM`＋
+> provider＋credential `status=="ok"`，出廠是「無」），而取得該 token 正是
+> repo 記載至今未解的 blocker #111。
+> (b) **兩個功能的閘門「不相交」——Butterfly 完全落在替代路徑之外**：
+> SpreadHistory 是 `legs>=2`（含三腿）、IvHistory 是 `legs<=2`（排除三腿），
+> 交集只有兩腿 Vertical；後端 `leg_names=("buy","sell")` 再 `zip` 掉第三腿、
+> 中腿 `quantity=2` 權重無處表達。**且 SpreadHistory 只畫跨 family 冠軍，
+> 而 repo 自己的凍結多 family 基準冠軍正是 `call-fly`。**
+> (c) **即使在兩腿交集內也不是同一條序列**：不同 vendor、不同時刻、粒度
+> 塌縮成每日一點、365 天深度上限且只能向前補、`_num()` 把真實 `0.0` bid
+> 映成缺值；且今天圖表最新點與同頁「Net Worst」逐位元相同（實測 0.49），
+> 換來源會打破這個一致性。
+>
+> **本輪關鍵發現（比委託給的理由更硬）**：`cost` 就是
+> `natural_cost`——Spread `long.ask−short.bid`／Butterfly
+> `low.ask−2.0×mid.bid+high.ask`／單腿 `contract.ask`，**純算術**
+> （`scenarios.py:138-143`）。而 raw snapshot 存的正是未裁切完整鏈的
+> 逐筆 bid／ask，`candidate_key` 完整編碼 strategy＋全部履約價＋到期日
+> （`service.py:623-635`），`find_contract()` 已存在。⇒ **`cost` 逐位元
+> 可從 snapshot 重算，同一 vendor、同一瞬間、免 credential、任何腿數。**
+>
+> **因此推翻了 spec #251 §3.4 的 L2 例外論證**：96 秒是「重跑整份分析」
+> 的成本，走勢圖只要 `cost` 不需要引擎／r／q／IV 反解／校準。L2 仍值得做，
+> 但**理由改為 I/O 不是 CPU**。附帶：即使完全不 materialize、改為即時從
+> snapshot 重算，**也已比今天讀 30 份完整 view（365 MiB）好約 25 倍**。
+>
+> **修正後的分層**：`L0 raw snapshot（OD-06 永久，完整冷來源）→ L2 narrow
+> (scenario_id, analyzed_at, candidate_key, cost) 熱快取，缺格可回填 →
+> L3 歷史 results.view 整份退役`。**這解決了對抗驗證最嚴重的發現**——
+> OD-07 的 visible-only 窄化實測讓 Butterfly 30 點只剩 2–9 點、Vertical
+> 在 spot 跌 17% 的 seed 20 點只剩 2 點；原本這是不可挽回的可見退化，
+> **但 L0 仍在，缺格可回填**，因此降級為「可回補的快取覆蓋率選擇」。
+>
+> **OD-06 從成本負擔升格為地基**（理由升級，非改變決策）：它是歷史 net
+> cost 唯一的完整、免 credential、任何腿數、逐位元相同的來源。
+> **OD-07 語意重新定性**：narrow 表是快取不是真相，永久性保證來自 L0；
+> 且 **L0 回填路徑是 OD-07 的必要配套、不是可選項**。
+>
+> **確認為 superseded legacy 的**：歷史 `results.view` 完整內容／
+> `all_candidates` 的陣列形狀／**single-leg entries（零消費端，純寫入
+> 死重）**／`baseline_return`＋`rank_in_expiry`＋回應的 `spot`（wire 死重，
+> 前端只讀 `cost` 與 `analyzed_at`）／`GET /api/scenarios/{id}/results`
+> （零前端呼叫端，且它無條件 SELECT 含 view 整列只為投影時間戳）。
+> **確認為 canonical 的**：raw snapshots（L0）／Butterfly 的
+> `(analyzed_at, candidate_key, cost)` 事實（有 e2e 釘住、vendor 路徑做
+> 不到）／`option_chaser/cli.py` 重播的**本機檔案 snapshots（另一個
+> store，不可與 DB 表混談）**。
+>
+> **spec 修改**：紅線 27 → **32**（新增 RL-28 去重非刪除／RL-29 必須指明
+> 哪個 snapshot store／RL-30 不得以 vendor 路徑當退役理由／RL-31 不得把
+> view 設成 NULL／RL-32「每次刷新永久留下完整分析世界」不再是 canonical
+> requirement）；新增 **Stage S1-0b「L0 回填路徑」**（排 S1-0 後、S1-1 前）；
+> **EG-2 關閉**（答案是可以全退役，因為 L0 在）；S1-6 範圍擴大為整份歷史
+> view 可退役（三條永久禁令不變）。
+>
+> **修正後 growth model**：今天 ~12.66 MiB／次（view 12.18＋snapshot
+> 0.48 TLT）→ 建議態 **≈ snapshot ＋ KiB 量級**，成長從 O(derived) 降為
+> **O(seed)**。誠實殘餘不變：Neon Free 0.5 GB ⇒ TLT 約 1,000 次／SPY 約
+> 200 次仍會滿，**推後一個數量級、沒有消滅**。⚠ 新發現兩個原研究從未分析
+> 的無界 store：`contract_iv_history`（points append-only、只在讀取時裁
+> 365 天、到期不 GC）與 `iv_observations`（無 retention、`delete_scenario`
+> 不 cascade）——不在刷新路徑上，但在長期總量裡。
+>
+> **仍存在的 Owner Decision 只有兩題**（皆不擋 spec 與拆票）：**RD-1**
+> narrow 覆蓋率檔位（(a) visible-only ~2.7 KiB＋回填【建議】／(b) 全部
+> 合格候選 ~3.97 MiB 逐位元不變但仍無界／(c) 中間帶）；**RD-2**
+> `contract_iv_history`／`iv_observations` 的 retention／GC 政策。
+> 對抗驗證原本浮現的 credential／Butterfly／序列不同一三題，**已因改用
+> L0 而全部解掉**。
+>
+> **產出**：`docs/spec/scaling-foundation.md` 改為兩部式（第 0 部
+> RECONCILE-002 全文為準、第 1 部 SPEC-001 原文逐字保留，被取代處已就地
+> 標記）；`docs/wayfinder/scaling-foundation.md` 新增 §16 更正兩處結論；
+> GitHub issue #251 新增 reconciliation 留言（未覆蓋本文）。
+>
+> **下一步**：可進 `/to-tickets`。**本輪依指示未自行拆票。**
 
 > **現況總覽（2026-09-05 再追加，Scaling Foundation Spec 已發布，
 > 取代上一段「下一步：可進 `/to-spec`」那句的指向——上一段其餘原文

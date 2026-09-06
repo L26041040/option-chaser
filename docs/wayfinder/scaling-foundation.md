@@ -1309,4 +1309,42 @@ C-2（chain 30 秒共用窗）  ← 依賴 Obs（證據）＋ Stage 5 gate ＋ A
 
 ---
 
+
+---
+
+## 16. RECONCILE-002 對本地圖的更正（2026-09-06）
+
+> 本節由 `OPTION-SCALING-SPEC-RECONCILE-002` 追加。**地圖其餘原文照舊**，
+> 本節只記兩處被後續證據推翻／更正的結論。權威版本見
+> `docs/spec/scaling-foundation.md` 第 0 部與 GitHub issue #251。
+
+**更正 1｜§3.3-L2「重建成本結構上放不進 read path」的論證前提錯誤。**
+
+地圖用「單次三 family 引擎 3.21s × 30 次 ≈ 96 秒」證成 L2 必要例外。
+但走勢圖只消費 `cost`，而 `cost = natural_cost` 是 raw snapshot 上的 1–3 個加減
+（`option_chaser/scenarios.py:138-143`），**不需要跑引擎、不需要 r／q、不需要 IV 反解、
+不需要校準**。96 秒是「重跑整份分析」的成本，不是「重算 cost」的成本。
+
+L2 materialization 仍然值得做，但**正確的理由是 I/O 不是 CPU**：重算要載入 N 份
+snapshot（30 × 0.48 MiB ≈ 14 MiB／TLT）。附帶結論：**即使完全不 materialize、
+改為即時從 snapshot 重算，也已經比今天讀 30 份完整 view（365 MiB）好約 25 倍。**
+
+**更正 2｜§9.1-Q1 的取捨方向反了——snapshot 不是負擔，是地基。**
+
+地圖把 seed retention 描述為「OD-02 把可逆的決定換成不可逆的決定」。本輪確認一個
+當下就成立、地圖未涵蓋的理由：**raw snapshot 是歷史 net cost 唯一的完整、免 credential、
+任何腿數、與當時逐位元相同的來源。** `candidate_key` 完整編碼 strategy ＋ 全部履約價 ＋
+到期日（`service.py:623-635`），`find_contract()` 已存在（`data/snapshot.py:66-75`），
+`ChainSnapshot.contracts` 是未經裁切的完整鏈（F6）。
+
+因此 §9.1-Q1 的選項 (b)(c)（保留最近 N 次／每交易日最後一次）**若被採用，會直接摧毀
+Butterfly 與未持有付費 token 使用者補回歷史走勢的能力**——而那正是 §6.1 的 C-2 evidence
+gate 之外、地圖原本沒有評估到的相依。**OD-06（永久保存）因此不只是保守選擇，是本輪
+storage 瘦身方案的前提條件。**
+
+**同時作廢的第三方替代路線**：地圖與研究文件都未主張、但本輪委託曾假設的
+「exact OCC contract historical quotes 可取代此保存需求」——**不成立**，三條獨立反證
+（預設 403、Butterfly 結構性排除、序列不同一）見 spec 第 0 部 §R1。
+
+
 READY_FOR_SCALING_SPEC
