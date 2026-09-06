@@ -113,10 +113,16 @@ def test_wrong_secret_is_401_and_touches_nothing():
     assert storage.get_rate_cache() is None
 
 
-def test_cron_secret_not_configured_fails_closed_even_with_a_plausible_header():
+def test_cron_secret_not_configured_fails_closed_even_with_a_plausible_header(monkeypatch):
     """`cron_secret=None`（模擬 production 環境變數也沒設）——不管
     Authorization 帶什麼都一律 401，不會因為「反正沒設就放行」而變成
-    一個形同虛設的驗證。"""
+    一個形同虛設的驗證。
+
+    `/code-review` Standards 軸抓到的非阻擋提醒：`cron_secret=None`
+    會讓 `create_app()` 惰性退回真的讀 `os.environ["CRON_SECRET"]`——
+    這裡明確 `delenv`，不依賴這個沙箱剛好沒設過這個變數（同一類「測試
+    非 hermetic」的既有教訓，見 `#236` hermetic test repair）。"""
+    monkeypatch.delenv("CRON_SECRET", raising=False)
     storage = MemoryStorage()
     loader = _counting_loader()
     c = _client(cron_secret=None, rate_loader=loader, storage=storage)
