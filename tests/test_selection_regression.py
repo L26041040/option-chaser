@@ -52,9 +52,16 @@ def _run(strategy: str):
     return service.run_offline(req, SNAP)
 
 
-def _view(strategy: str) -> dict:
+def _view(strategy: str) -> tuple:
+    """SCALE-10（#259，RL-33 修復）：回傳 `(result, view)` 而不是只回
+    `view`——`result` 是 `service.run_offline()` 產生的完整引擎物件
+    （`expiry_ranked` 掛在它上面，`serialize_result()` 序列化後的
+    `view` 不含這個欄位），`snapshot_identity()` 需要它才能不再依賴
+    `all_candidates` 建構 `per_expiry_order`。其餘既有呼叫端只要
+    `view`，改成 `_, view = _view(strategy)` 解構即可，行為不變。"""
     result = _run(strategy)
-    return store.serialize_result(result, scenario_id=f"SEL-{strategy}", capital=None)
+    view = store.serialize_result(result, scenario_id=f"SEL-{strategy}", capital=None)
+    return result, view
 
 
 def _candidate_keys(candidate_keys: list[str]) -> tuple[str, ...]:
@@ -65,7 +72,7 @@ def _candidate_keys(candidate_keys: list[str]) -> tuple[str, ...]:
 
 def snapshot_identity(strategy: str) -> dict:
     """單一策略的完整身份快照——本模組的核心產出，後續票拿它逐項比對。"""
-    view = _view(strategy)
+    result, view = _view(strategy)
     res = view["results"][0]
 
     ranking_identity = _candidate_keys(res["candidates"])
@@ -74,10 +81,20 @@ def snapshot_identity(strategy: str) -> dict:
         group["expiry"]: _candidate_keys(group["candidate_keys"])
         for group in res["expiry_top10"]
     }
-    # all_candidates＝expiry_ranked 的序列化：每到期日組內已排序（T9）。
-    per_expiry_order: dict[str, list[str]] = {}
-    for entry in res["all_candidates"]:
-        per_expiry_order.setdefault(entry["expiry"], []).append(entry["candidate_key"])
+    # SCALE-10（#259，RL-33 修復）：原本讀 `res["all_candidates"]`——
+    # SCALE-17 移除該欄位後，這一軸會在兩邊都變成 `{}` 而靜默恆真
+    # （RECONCILE-002 抓到的沉默陷阱）。改讀引擎物件自己的
+    # `result.results[0].expiry_ranked`（`_run()` 只請求單一 strategy，
+    # 因此 `results` 恆為單元素 tuple，與 `res = view["results"][0]`
+    # 是同一個索引慣例）——Prototype #065 已證明：100/100 輪非空、且與
+    # `all_candidates` 構造的結果完全相同，是有效的 canonical
+    # regression source。`service.valuation_key()` 對三種估值型別
+    # （單腳／Spread／Butterfly）一視同仁，產出的字串與既有
+    # `candidate_key` 逐位元相同——這是換基準，不是換答案（AC-1）。
+    per_expiry_order: dict[str, list[str]] = {
+        expiry: [service.valuation_key(v) for v in valuations]
+        for expiry, valuations in result.results[0].expiry_ranked
+    }
 
     rep = store.representative_candidate(view)
     rep_identity = (
@@ -156,7 +173,7 @@ def test_identity_is_deterministic_across_repeated_runs():
 def test_ranking_identity_matches_baseline_return_order():
     """身份序列的順序必須是 baseline_return 遞減——這樣後續票才能拿
     ranking_identity 的『順序』當成真正的排序斷言，而不只是集合成員。"""
-    view = _view("bull-call-spread")
+    _, view = _view("bull-call-spread")
     candidate_keys = view["results"][0]["candidates"]
     returns = [view["candidate_pool"][k]["baseline_return"] for k in candidate_keys]
     assert returns == sorted(returns, reverse=True)
@@ -196,6 +213,65 @@ def test_assert_identity_unchanged_rejects_reordered_ranking():
         pass
 
 
+# ---------- SCALE-10（#259）：RL-33 修復——per_expiry_order 改定基 ----------
+
+def test_per_expiry_order_from_expiry_ranked_matches_all_candidates_for_every_scenario():
+    """AC-1：`snapshot_identity()` 現在用 `result.expiry_ranked` 算
+    `per_expiry_order`；這裡對照組是**今天**仍然存在的
+    `res["all_candidates"]`（SCALE-17 尚未上線，這條對照組本身還沒
+    消失），逐一場景獨立重算並比對——證明這是換基準，不是換答案。
+    對照組的建構邏輯刻意獨立於 `snapshot_identity()`（不呼叫它，各自
+    從 `_view()` 重新走一遍），避免「兩邊其實在跑同一段程式碼、
+    當然會一樣」這種虛假的驗證。"""
+    for strategy in SCENARIOS:
+        result, view = _view(strategy)
+        res = view["results"][0]
+
+        from_all_candidates: dict[str, list[str]] = {}
+        for entry in res["all_candidates"]:
+            from_all_candidates.setdefault(
+                entry["expiry"], []).append(entry["candidate_key"])
+
+        from_expiry_ranked = {
+            expiry: [service.valuation_key(v) for v in valuations]
+            for expiry, valuations in result.results[0].expiry_ranked
+        }
+
+        assert from_expiry_ranked == from_all_candidates, strategy
+
+
+def test_per_expiry_order_axis_actually_detects_a_reordering():
+    """AC-2：這條軸不會恆真——刻意讓兩次比對輸入的 `per_expiry_order`
+    不同，確認 `assert_identity_unchanged()` 真的會因為這一項而失敗
+    （不是因為其他項目剛好也變了才失敗）。"""
+    snap = snapshot_identity("bull-call-spread")
+    tampered = dict(snap)
+    some_expiry = next(iter(snap["per_expiry_order"]))
+    tampered["per_expiry_order"] = {
+        **snap["per_expiry_order"],
+        some_expiry: list(reversed(snap["per_expiry_order"][some_expiry])),
+    }
+    try:
+        assert_identity_unchanged(snap, tampered)
+        assert False, "per_expiry_order 被動過，應該要偵測出差異"
+    except AssertionError:
+        pass
+
+
+def test_per_expiry_order_is_never_vacuously_empty_for_an_ok_scenario():
+    """RL-33 的核心風險是「兩邊都變成 `{}` 而恆真」——這裡直接鎖住
+    正常情況下這一軸不是空的，且每個到期日底下的候選清單也不是空
+    清單（`{}` 或 `{expiry: []}` 都會讓後續的『排序有沒有變』失去
+    偵測力）。"""
+    for strategy in SCENARIOS:
+        snap = snapshot_identity(strategy)
+        if snap["status"] != "ok":
+            continue
+        assert snap["per_expiry_order"], f"{strategy}：per_expiry_order 不應為空"
+        for expiry, keys in snap["per_expiry_order"].items():
+            assert keys, f"{strategy}／{expiry}：候選清單不應為空"
+
+
 # ---------- RCT 回合（#137／#138–#142）：Historical IV 趨勢層守門 ----------
 #
 # 這一輪新增的東西——`ivhistory.trend_4w()`／`field_metrics()` 的
@@ -221,7 +297,7 @@ def test_exercising_ivhistory_between_two_identity_snapshots_changes_nothing():
 
     # 用力呼叫本輪新增的每一個函式——包含單腳／兩腿座標、重錨定、
     # Δ4w、單腳候選查找——確認候選產生流程對這些呼叫零感知。
-    view = _view("bull-call-spread")
+    _, view = _view("bull-call-spread")
     for r in view["results"]:
         for group in r.get("expiry_top10") or []:
             for key in group["candidate_keys"]:
@@ -333,7 +409,7 @@ def snapshot_numbers(strategy: str) -> dict:
     利率／股利 loader 在 `run_offline` 預設為 None），因此可重跑、可跨
     session 逐位元比對。
     """
-    view = _view(strategy)
+    _, view = _view(strategy)
     res = view["results"][0]
     pool = view["candidate_pool"]
     rep = store.representative_candidate(view)
@@ -462,7 +538,7 @@ def test_numeric_baseline_survives_a_json_round_trip_bitwise():
 def test_every_candidate_field_is_either_frozen_or_explicitly_excluded():
     """新增候選欄位時，這條會紅燈，逼出一次「它該不該進數值基準」的
     有意識決定——不讓新欄位靜默地不被任何護欄覆蓋。"""
-    view = _view("bull-call-spread")
+    _, view = _view("bull-call-spread")
     pool = view["candidate_pool"]
     actual = set(next(iter(pool.values())))
     covered = set(NUMERIC_BASELINE_FIELDS) | set(NUMERIC_BASELINE_EXCLUDED)
@@ -554,7 +630,7 @@ def test_friction_never_reappears_in_candidate_contract():
     """AC：新增結構性測試防止 friction canonical metric 再被加回。凡是
     候選契約裡出現 `friction`／`friction_amount` 這兩個 key，一律視為
     回歸——不是「數值變了」，是「這個概念本不該存在於這裡」。"""
-    view = _view("bull-call-spread")
+    _, view = _view("bull-call-spread")
     for key, fields in view["candidate_pool"].items():
         assert "friction" not in fields, f"{key}: friction 不該再出現在契約裡"
         assert "friction_amount" not in fields, (

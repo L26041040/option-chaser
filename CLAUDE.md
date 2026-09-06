@@ -176,10 +176,36 @@ owner_id 洩漏、SCALE-07 的測試 hermeticity）皆已修正並重新驗證
 通過；SCALE-08 尚待跑 `/code-review`。全套後端測試（記憶體＋真實
 Postgres 雙後端）持續 zero regression。
 
+- **SCALE-10**［#259］Regression Guard 修復（RL-33）（commit 待補）：
+  `tests/test_selection_regression.py` 的 `per_expiry_order` 軸原本
+  由 `res["all_candidates"]` 構造——SCALE-17 移除該欄位後兩邊都會
+  變成 `{}` 而靜默恆真（RECONCILE-002 抓到的沉默陷阱）。`_view()`
+  改回傳 `(result, view)` tuple（原本只回 `view`，丟棄了引擎物件
+  本身）；`snapshot_identity()` 改讀
+  `result.results[0].expiry_ranked`（`service.valuation_key()` 對
+  三種估值型別一視同仁，產出字串與既有 `candidate_key` 逐位元
+  相同）。AC-1：新增 `test_per_expiry_order_from_expiry_ranked_
+  matches_all_candidates_for_every_scenario`，對全部 4 個既有場景
+  各自獨立重算兩種基準並比對，證明是換基準不是換答案——`all_
+  candidates` 今天仍存在（SCALE-17 尚未上線），這個對照組本身還沒
+  消失，之後失去對照能力時這條測試需要跟著調整（已在測試 docstring
+  記錄）。AC-2：新增 `test_per_expiry_order_axis_actually_detects_
+  a_reordering`（刻意調換某個到期日的候選順序，確認
+  `assert_identity_unchanged()` 真的因為這一項而失敗）與
+  `test_per_expiry_order_is_never_vacuously_empty_for_an_ok_
+  scenario`（直接鎖住正常情況下這一軸不是空的，正面防堵 RL-33 描述
+  的那種恆真路徑）。純測試基礎設施修改，`option_chaser/`／
+  `api_app/` 零改動。全套測試（35 條選取身份守門＋全套後端）綠燈。
+
+五張票皆已跑 `/code-review`（Standards＋Spec 兩軸），發現的真缺口
+（SCALE-04 的 rollback DI 參數與整合測試缺口、SCALE-06 的
+owner_id 洩漏、SCALE-07 的測試 hermeticity）皆已修正並重新驗證
+通過；SCALE-08／SCALE-10 尚待跑 `/code-review`。全套後端測試
+（記憶體＋真實 Postgres 雙後端）持續 zero regression。
+
 **下一步**：依 dependency graph 繼續——SCALE-09（Stage 1-1 narrow
 history 雙寫，被 SCALE-01＋02＋03 擋，現已解除）／SCALE-05（Cboe
-429 使用者可見狀態，被 SCALE-04 擋，現已解除）／SCALE-10（Regression
-Guard 修復，frontier）三張皆可任意順序推進。
+429 使用者可見狀態，被 SCALE-04 擋，現已解除）皆可任意順序推進。
 
 ### OPTION-SCALING-TICKETS-REVISE-006 拆票（2026-09-06，歷史紀錄）
 
