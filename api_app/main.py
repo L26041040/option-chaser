@@ -469,6 +469,7 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
                refresh_run_group_limit: int = REFRESH_RUN_GROUP_LIMIT,
                analysis_deadline_seconds: float | None = ANALYSIS_DEADLINE_SECONDS,
                cboe_fetch: FetchChain | None = None,
+               chain_backoff_default: timedelta = chain_backoff.DEFAULT_BACKOFF,
                ) -> FastAPI:
     """`fetch`／`storage`／`rate_loader`／`dividend_loader` 皆可注入：
     測試傳入固定快照、記憶體假體與假來源，因此不打真網路、不碰真資料庫，
@@ -516,6 +517,19 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
     套用，這是預期行為（測試決定性、零網路）。只有 production 預設
     （`fetch is service.fetch_chain`，未被覆寫）才會把 Cboe 呼叫點
     包上 provider-global backoff（`api_app.chain_backoff`）。
+
+    `chain_backoff_default`（SCALE-04／#255，AC-7）：Retry-After 缺席時
+    要封鎖多久的預設值，`create_app()` 的一般 DI 參數——與
+    `refresh_run_budget`／`analysis_deadline_seconds` 同一種「不可變值
+    當預設值」寫法，不受前面 `cboe_fetch` 那個 eager-binding 陷阱影響
+    （陷阱只發生在把「函式」綁進預設值；`timedelta` 是不可變值，綁死
+    在函式定義當下沒有問題）。這是 AC-7「可透過既有設定／DI 停用或設為
+    0，作 rollback」字面要求的落地：先前只是
+    `chain_backoff.backoff_aware_fetch()` 的私有參數，production 路徑
+    完全碰不到；改成 `create_app()` 的建構參數後，未來要停用 backoff
+    （例如懷疑它本身在搗亂）只需要用 `create_app(chain_backoff_default=
+    timedelta(0))` 重新建構 app，不必修改 `chain_backoff.py` 或
+    `main.py` 任何一行程式碼。
     """
     app = FastAPI(title="Option Chaser API", version=__version__)
 
@@ -546,7 +560,8 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
                              else cboe_module.fetch_chain)
         try:
             return chain_backoff.backoff_aware_fetch(
-                _db(), "cboe", actual_cboe_fetch, symbol)
+                _db(), "cboe", actual_cboe_fetch, symbol,
+                default_backoff=chain_backoff_default)
         except FetchError:
             from option_chaser.data import yf
 

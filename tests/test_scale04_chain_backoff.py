@@ -15,7 +15,14 @@ provider-global 控制狀態表——同一來源被限流時，封鎖窗涵蓋�
   `test_generic_failure_does_not_touch_backoff_state`
 - AC-5：`test_chain_backoff_entry_has_no_market_data_fields`
 - AC-6：`test_storage_failures_are_fail_open`
-- AC-7：`test_backoff_can_be_disabled_via_zero_default_backoff`
+- AC-7：`test_backoff_can_be_disabled_via_zero_default_backoff`／
+  `test_create_app_chain_backoff_default_parameter_is_a_real_rollback_switch`
+  （後者透過 `create_app()` 的公開 DI 參數驗證，不是只碰得到私有函式）
+
+`/code-review` Spec 軸追加缺口（已補上）：以上除最後兩條外，全部直接
+呼叫 `chain_backoff.backoff_aware_fetch()`，從未證明 `api_app.main.
+create_app()` 的 production 預設路徑真的接上了這一層——見下方
+「create_app() 端到端接線」區塊。
 """
 import math
 from datetime import datetime, timedelta, timezone
@@ -28,6 +35,7 @@ from api_app import chain_backoff
 from api_app.storage import ChainBackoffEntry
 from api_app.storage.memory import MemoryStorage
 from option_chaser.data import cboe
+from option_chaser.data.snapshot import load_snapshot
 from option_chaser.models import FetchError, RateLimitedError
 
 
@@ -284,3 +292,115 @@ def test_backoff_can_be_disabled_via_zero_default_backoff():
         default_backoff=timedelta(seconds=0))
     assert result == "snapshot"
     assert calls == ["A", "A"]   # 第二次真的又呼叫了 underlying，沒被卡住
+
+
+# ---------- create_app() 端到端接線 ----------
+#
+# 以上全部測試都是直接呼叫 `chain_backoff.backoff_aware_fetch()`——證明
+# 這個函式本身行為正確，但沒有證明 `api_app.main.create_app()` 真的把
+# production 預設路徑（`fetch` 未被覆寫、走 `_default_fetch()`）接上了
+# 這一層。這裡透過 HTTP 端點走完整條路，monkeypatch 的對象是
+# `cboe.fetch_chain` 本身（`_default_fetch()` 讀到的正是這個模組屬性），
+# 不是任何測試專用的注入點。
+
+def _client_without_fetch_override(storage, **overrides):
+    """刻意不傳 `fetch=`——這樣 `create_app()` 內部
+    `fetch is service.fetch_chain` 判斷才會成立，走到真正接了 backoff
+    的 `_default_fetch()`。"""
+    from fastapi.testclient import TestClient
+
+    from api_app.main import create_app
+
+    return TestClient(create_app(storage=storage, **overrides))
+
+
+def _create_scenario(client, symbol: str) -> dict:
+    r = client.post("/api/scenarios", json={
+        "symbol": symbol, "target_price": 130.0, "target_month": "2026-09",
+        "strategies": ["vertical-spread"]})
+    assert r.status_code == 201, r.text
+    return r.json()
+
+
+def test_create_app_default_wiring_actually_activates_backoff_end_to_end(monkeypatch):
+    """`/code-review` Spec 軸抓到的真缺口：先前只驗證過
+    `chain_backoff.backoff_aware_fetch()` 這個函式本身，從未證明
+    `create_app()` 的 production 預設路徑真的把 Cboe 呼叫點包上了它——
+    若未來 `fetch is service.fetch_chain` 這條識別式或 `_default_fetch()`
+    的接線被重構壞掉，這裡會紅。"""
+    from option_chaser.data import cboe, yf
+
+    cboe_calls: list[str] = []
+
+    def cboe_rate_limited(symbol: str):
+        cboe_calls.append(symbol)
+        raise RateLimitedError("429", retry_after_seconds=60.0)
+
+    # yfinance 備援固定回應——不打真網路，端到端測試仍要決定性。source
+    # 蓋成 "yfinance"（比照 test_api_refresh.py 既有的
+    # test_refresh_falls_back_to_yfinance_and_records_that_it_did 手法）
+    # ——fixture 本身的 source 是 "test"，不改掉就驗不出「畫面上看到的
+    # 確實是備援回答的」。
+    import dataclasses
+
+    fallback_snapshot = dataclasses.replace(
+        load_snapshot("tests/fixtures/xyz_v4_six_expiries.json"),
+        source="yfinance")
+    monkeypatch.setattr(cboe, "fetch_chain", cboe_rate_limited)
+    monkeypatch.setattr(yf, "fetch_chain", lambda symbol: fallback_snapshot)
+
+    storage = MemoryStorage()
+    c = _client_without_fetch_override(storage)
+
+    sc_a = _create_scenario(c, "A")
+    resp_a = c.post(f"/api/scenarios/{sc_a['id']}/refresh")
+    assert resp_a.status_code == 200, resp_a.text
+    assert cboe_calls == ["A"]   # 真的打過一次 Cboe，429 後記錄了 backoff
+
+    # 同一個 source（cboe）底下、從未被打過的另一個 symbol，理論上
+    # `backoff_aware_fetch()` 該直接短路——這裡驗證的是 `create_app()`
+    # 是否真的把這個機制接上了 production 路徑，而不是 `backoff_aware_
+    # fetch()` 本身有沒有做對（那已經由本檔案其餘測試直接證明過）。
+    sc_b = _create_scenario(c, "B")
+    resp_b = c.post(f"/api/scenarios/{sc_b['id']}/refresh")
+    assert resp_b.status_code == 200, resp_b.text
+    assert cboe_calls == ["A"]   # B 沒有讓 Cboe 再被呼叫一次——backoff 生效
+
+    # 兩者都成功落地（走 yfinance 備援），不是被卡死。
+    view_b = c.get(f"/api/scenarios/{sc_b['id']}").json()["latest_result"]
+    assert view_b["meta"]["source"] == "yfinance"
+
+
+def test_create_app_chain_backoff_default_parameter_is_a_real_rollback_switch(monkeypatch):
+    """AC-7：`chain_backoff_default` 是 `create_app()` 的建構參數，不是
+    只能在測試裡直接呼叫私有函式才碰得到——把它設成 0 秒，下一次刷新
+    立刻可以再打 Cboe，不必等待。"""
+    from datetime import timedelta
+
+    from option_chaser.data import cboe, yf
+
+    cboe_calls: list[str] = []
+
+    def cboe_rate_limited_no_retry_after(symbol: str):
+        cboe_calls.append(symbol)
+        raise RateLimitedError("429", retry_after_seconds=None)
+
+    fallback_snapshot = load_snapshot(
+        "tests/fixtures/xyz_v4_six_expiries.json")
+    monkeypatch.setattr(cboe, "fetch_chain", cboe_rate_limited_no_retry_after)
+    monkeypatch.setattr(yf, "fetch_chain", lambda symbol: fallback_snapshot)
+
+    storage = MemoryStorage()
+    c = _client_without_fetch_override(
+        storage, chain_backoff_default=timedelta(seconds=0))
+
+    sc_a = _create_scenario(c, "A")
+    c.post(f"/api/scenarios/{sc_a['id']}/refresh")
+    assert cboe_calls == ["A"]
+
+    # `chain_backoff_default=0` 秒 → 另一個 symbol 幾乎立刻仍然能打
+    # 到 Cboe（backoff 窗口實質上為零），而不是被擋下——這就是 AC-7
+    # 要求的「可透過既有 DI 停用或設為 0，作 rollback」。
+    sc_b = _create_scenario(c, "B")
+    c.post(f"/api/scenarios/{sc_b['id']}/refresh")
+    assert cboe_calls == ["A", "B"]   # B 真的又打了一次 Cboe，沒被卡住
