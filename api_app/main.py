@@ -444,6 +444,26 @@ def _summary_of(latest: ResultRecord | ResultSummary | None) -> dict:
                 latest.family_eligibility if latest else None}
 
 
+def _event_json(event: dict) -> dict:
+    """`Storage.list_events()` 的原始 dict 直接序列化前先過這裡。
+
+    SCALE-06（#256，Ownership A-1 Expand，`/code-review` Spec 軸抓到
+    的真缺口）：`owner_id` 是儲存層的資料 boundary 標記，不是 wire
+    contract 的一部分——AC-3「production 行為逐位元不變」要求本票
+    純加法欄位不能悄悄變成任何既有 HTTP 回應的一部分。過濾發生在
+    序列化邊界，不是在 `Storage.list_events()` 本身（那裡仍然如實
+    回傳完整資料，未來需要真的用到 owner_id 的呼叫端不受影響）。"""
+    return {k: v for k, v in event.items() if k != "owner_id"}
+
+
+def _diagnostic_json(event) -> dict:
+    """`DiagnosticEvent` 直接序列化前先過這裡——同一個理由、同一個
+    修法，見 `_event_json()`。"""
+    d = dataclasses.asdict(event)
+    d.pop("owner_id", None)
+    return d
+
+
 def _fail(stage: str, status: int, message: str) -> HTTPException:
     """失敗分層（V4／#52）。
 
@@ -851,7 +871,7 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         `[1, diagnostics.RETENTION_LIMIT]`——查得到的最多就是留著的
         那些，沒有 pagination、沒有搜尋。"""
         clamped = max(1, min(limit, diagnostics.RETENTION_LIMIT))
-        return [dataclasses.asdict(e)
+        return [_diagnostic_json(e)
                for e in _db().list_diagnostics(limit=clamped)]
 
     @app.delete("/api/diagnostics")
@@ -1328,7 +1348,7 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
     @app.get("/api/scenarios/{scenario_id}/events")
     def list_events(scenario_id: str) -> list[dict]:
         _require(scenario_id)
-        return _db().list_events(scenario_id=scenario_id)
+        return [_event_json(e) for e in _db().list_events(scenario_id=scenario_id)]
 
     # ---------- Historical IV：快取、漸進補齊、額度（#126／#130） ----------
 
@@ -1373,7 +1393,7 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         except Exception:  # noqa: BLE001 — 落盤失敗不影響這次回應
             pass
         return {"correlation_id": diagnostics.current_correlation_id(),
-               "events": [dataclasses.asdict(e) for e in kept]}
+               "events": [_diagnostic_json(e) for e in kept]}
 
     def _iv_diagnostics_emitters(
             diag: _CollectingDiagnostics, *,

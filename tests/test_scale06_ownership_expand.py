@@ -129,7 +129,15 @@ def test_editing_a_scenario_does_not_change_its_own_owner_id():
 def test_owner_id_never_appears_in_any_http_response_body():
     """AC-3「預設 solo-owner 下 production 行為逐位元不變」的字面
     落地：`owner_id` 是純粹的儲存層標記，不該在這一票裡悄悄變成 wire
-    contract 的一部分——清單、詳細頁、建立回應都不該看得到這個字。"""
+    contract 的一部分——清單、詳細頁、建立回應、事件、診斷三處既有
+    端點都不該看得到這個字。
+
+    `/code-review` Spec 軸抓到的真缺口：第一版這條測試只涵蓋了清單／
+    詳細頁／建立回應，沒有涵蓋 `/api/scenarios/{id}/events` 與
+    `/api/diagnostics`——這兩個端點分別直接把 `Storage.list_events()`
+    的原始 dict／`DiagnosticEvent` 序列化出去，`owner_id` 因此曾經
+    真的洩漏進這兩個既有回應（已在 `main.py` 新增 `_event_json()`／
+    `_diagnostic_json()` 兩個序列化邊界過濾修正，這裡補齊涵蓋範圍）。"""
     storage = MemoryStorage()
     c = _client(storage=storage)
     sc = _create(c)
@@ -139,6 +147,13 @@ def test_owner_id_never_appears_in_any_http_response_body():
     assert "owner_id" not in c.get(f"/api/scenarios/{sc['id']}").json()
     (row,) = c.get("/api/scenarios").json()
     assert "owner_id" not in row
+
+    events = c.get(f"/api/scenarios/{sc['id']}/events").json()
+    assert events   # 至少有 SCENARIO_CREATED／ANALYSIS_COMPLETED
+    assert all("owner_id" not in e for e in events)
+
+    diag_events = c.get("/api/diagnostics").json()
+    assert all("owner_id" not in e for e in diag_events)
 
 
 def test_scenarios_created_under_different_identities_are_all_visible_in_the_unfiltered_list():
