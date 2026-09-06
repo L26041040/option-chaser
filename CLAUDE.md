@@ -138,7 +138,8 @@ Ownership／Parity Proof 幾張）——施工一律以 GitHub issue 最新內�
   cron 設定；`docs/deploy-vercel.md` 補操作步驟。`/code-review`：
   Spec 軸 7 條 AC 全數正確、零 scope creep；Standards 軸僅測試對
   `CRON_SECRET` 環境變數的 hermeticity 微調。
-- **SCALE-08**［#258］S0 最小可觀測性，七項封頂（commit 待補）：
+- **SCALE-08**［#258］S0 最小可觀測性，七項封頂（commits `381ee05`＋
+  跟進 `d1bb011`）：
   新增 `api_app/metrics.py`（`METRIC_CATALOGUE` 恰好七類：
   `chain_fetch_count`／`chain_429_count`／`stale_serve_count`／
   `cold_miss_count`／`refresh_duration_ms`／`table_size`／
@@ -169,14 +170,17 @@ Ownership／Parity Proof 幾張）——施工一律以 GitHub issue 最新內�
   快照會因時間戳不同而誤判成「metrics 造成差異」，改為共用同一個
   快照物件；`created_at` 是真實 wall-clock 秒級時間戳，兩次
   `POST /api/scenarios` 偶爾跨過同一秒邊界會讓比對假紅，已濾除。
+  `/code-review`（Standards＋Spec 兩軸，0 hard violation）：`table_
+  size_metrics()` 對空表兩後端行為不一致（memory.py 回 `total_bytes:
+  None`，Postgres 對空表回真實非零頁面開銷）已修正為兩後端一致回
+  「有答案」（memory.py 空表回 0）；`history_read_volume` 的
+  `count` 語意（量 volume 非 occurrence）與 `table_size_metrics()`
+  的 f-string 拼表名安全性各補一句說明性註解；`enable_metrics` 缺
+  獨立環境變數 rollback 開關（僅有建構參數）判斷為可接受、未修正
+  （避免無謂 scope creep）。
 
-四張票皆已跑 `/code-review`（Standards＋Spec 兩軸），發現的真缺口
-（SCALE-04 的 rollback DI 參數與整合測試缺口、SCALE-06 的
-owner_id 洩漏、SCALE-07 的測試 hermeticity）皆已修正並重新驗證
-通過；SCALE-08 尚待跑 `/code-review`。全套後端測試（記憶體＋真實
-Postgres 雙後端）持續 zero regression。
-
-- **SCALE-10**［#259］Regression Guard 修復（RL-33）（commit 待補）：
+- **SCALE-10**［#259］Regression Guard 修復（RL-33）（commit
+  `39de9b5`）：
   `tests/test_selection_regression.py` 的 `per_expiry_order` 軸原本
   由 `res["all_candidates"]` 構造——SCALE-17 移除該欄位後兩邊都會
   變成 `{}` 而靜默恆真（RECONCILE-002 抓到的沉默陷阱）。`_view()`
@@ -195,13 +199,23 @@ Postgres 雙後端）持續 zero regression。
   `test_per_expiry_order_is_never_vacuously_empty_for_an_ok_
   scenario`（直接鎖住正常情況下這一軸不是空的，正面防堵 RL-33 描述
   的那種恆真路徑）。純測試基礎設施修改，`option_chaser/`／
-  `api_app/` 零改動。全套測試（35 條選取身份守門＋全套後端）綠燈。
+  `api_app/` 零改動。全套測試（34 條選取身份守門＋全套後端）綠燈。
+  `/code-review`（Standards＋Spec 兩軸，0 hard violation）：獨立
+  發現 `test_carry_calibration.py` 既有一條測試（非本票改動）用
+  硬編碼字面值把同一種「兩邊恆真」問題複製了一份，記錄供未來覆核，
+  非本票範圍；CLAUDE.md 先前誤記「35 條」，已修正為實測「34 條」
+  （即本段）。
 
-五張票皆已跑 `/code-review`（Standards＋Spec 兩軸），發現的真缺口
-（SCALE-04 的 rollback DI 參數與整合測試缺口、SCALE-06 的
-owner_id 洩漏、SCALE-07 的測試 hermeticity）皆已修正並重新驗證
-通過；SCALE-08／SCALE-10 尚待跑 `/code-review`。全套後端測試
-（記憶體＋真實 Postgres 雙後端）持續 zero regression。
+六張票（SCALE-01–04、SCALE-06–08、SCALE-10）全數跑過
+`/code-review`（Standards＋Spec 兩軸），發現的真缺口（SCALE-02 的
+AC-4 實測缺口、SCALE-04 的 rollback DI 參數與整合測試缺口、
+SCALE-06 的 owner_id 洩漏、SCALE-07 的測試 hermeticity、SCALE-08
+的空表跨後端不一致）皆已修正並重新驗證通過；SCALE-10 review 0
+hard violation、無需修正。全套後端測試（記憶體＋真實 Postgres
+雙後端）曾在某次全跑時出現 32 條非預期紅燈，追查後確認是這個
+session 長壽命共用 `octest` 資料庫累積的 schema 雜訊（非真回歸）
+——單獨重跑該測試檔與整份全套皆為 0 failure，已在乾淨資料庫上
+重新驗證確認。全套持續 zero regression。
 
 **下一步**：依 dependency graph 繼續——SCALE-09（Stage 1-1 narrow
 history 雙寫，被 SCALE-01＋02＋03 擋，現已解除）／SCALE-05（Cboe
