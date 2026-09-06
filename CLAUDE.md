@@ -179,6 +179,24 @@ Ownership／Parity Proof 幾張）——施工一律以 GitHub issue 最新內�
   獨立環境變數 rollback 開關（僅有建構參數）判斷為可接受、未修正
   （避免無謂 scope creep）。
 
+- **SCALE-05**［#260］Cboe 429 使用者可見狀態（commits `dbba6f8`＋
+  跟進 `2f5ad55`）：新增 `chain_backoff.status()`（唯一 canonical
+  判斷點，回傳 `blocked_until`／`retry_after_seconds`／
+  `remaining_seconds`／`last_success_at`／`incident`）與
+  `is_sustained_incident()`（`INCIDENT_THRESHOLD_FAILURES=3` 唯一
+  門檻）；`_fail()` 新增 `**extra` additive metadata（既有三個呼叫端
+  未傳，`detail` 逐位元不變，AC-1）；新增 `_classify_fetch_failure()`
+  作為單一劇本刷新（`_analyze()`）與批次刷新（`refresh_run` 自己的
+  group-level 抓鏈）共用的唯一分類點（AC-6）。前端 `useCountdown.ts`
+  新增 `useCountdownSeconds()`（來源是固定絕對時間點 `blocked_until`，
+  rerender 不重設倒數，AC-3）；`scenarios.ts` 新增限流專屬文案與
+  `isRetryDisabledByRateLimit()`（backoff 視窗內不允許 retry storm）；
+  三個渲染點（`ScenarioList`／`CompactScenarioList`／`ScenarioDetail`）
+  接上結構化倒數與鎖定重試鈕，既有兩態機制（AC-4）不受影響。
+  `/code-review`（0 hard violation）：`chain_backoff.py` 抽出共用
+  `_is_blocked()` 謂詞消除重複判準；`CONTEXT.md` 新增 Rate-Limited
+  Stage／Sustained Incident／Backoff Countdown 三個詞條。
+
 - **SCALE-10**［#259］Regression Guard 修復（RL-33）（commit
   `39de9b5`）：
   `tests/test_selection_regression.py` 的 `per_expiry_order` 軸原本
@@ -206,20 +224,21 @@ Ownership／Parity Proof 幾張）——施工一律以 GitHub issue 最新內�
   非本票範圍；CLAUDE.md 先前誤記「35 條」，已修正為實測「34 條」
   （即本段）。
 
-六張票（SCALE-01–04、SCALE-06–08、SCALE-10）全數跑過
+七張票（SCALE-01–08、SCALE-10，共八張，含 SCALE-05）全數跑過
 `/code-review`（Standards＋Spec 兩軸），發現的真缺口（SCALE-02 的
 AC-4 實測缺口、SCALE-04 的 rollback DI 參數與整合測試缺口、
 SCALE-06 的 owner_id 洩漏、SCALE-07 的測試 hermeticity、SCALE-08
-的空表跨後端不一致）皆已修正並重新驗證通過；SCALE-10 review 0
-hard violation、無需修正。全套後端測試（記憶體＋真實 Postgres
-雙後端）曾在某次全跑時出現 32 條非預期紅燈，追查後確認是這個
-session 長壽命共用 `octest` 資料庫累積的 schema 雜訊（非真回歸）
-——單獨重跑該測試檔與整份全套皆為 0 failure，已在乾淨資料庫上
-重新驗證確認。全套持續 zero regression。
+的空表跨後端不一致、SCALE-05 的 `_is_blocked()` 重複判準與 CONTEXT.md
+詞條缺漏）皆已修正並重新驗證通過；SCALE-10 review 0 hard violation、
+無需修正。全套後端測試（記憶體＋真實 Postgres 雙後端）曾在某次全跑
+時出現 32 條非預期紅燈，追查後確認是這個 session 長壽命共用
+`octest` 資料庫累積的 schema 雜訊（非真回歸）——單獨重跑該測試檔與
+整份全套皆為 0 failure，已在乾淨資料庫上重新驗證確認。全套持續
+zero regression。
 
 **下一步**：依 dependency graph 繼續——SCALE-09（Stage 1-1 narrow
-history 雙寫，被 SCALE-01＋02＋03 擋，現已解除）／SCALE-05（Cboe
-429 使用者可見狀態，被 SCALE-04 擋，現已解除）皆可任意順序推進。
+history 雙寫，被 SCALE-01＋02＋03 擋，現已解除）。SCALE-11（Ownership
+Enforce，被 SCALE-06 擋，現已解除）可與 SCALE-09 任意順序並行推進。
 
 ### OPTION-SCALING-TICKETS-REVISE-006 拆票（2026-09-06，歷史紀錄）
 
