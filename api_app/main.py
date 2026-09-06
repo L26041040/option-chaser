@@ -1431,7 +1431,12 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         # S0（SCALE-08／#258）指標 #7：narrow history 表（SCALE-09）
         # 落地前的等價證明——這裡量的是「答一次 /history 得撈幾筆
         # 完整歷史 view」，SCALE-14 切換讀取路徑後同一個問題該有的
-        # 答案會大幅下降，兩者可直接比較。
+        # 答案會大幅下降，兩者可直接比較。⚠ `count` 在這個指標的語意
+        # 刻意是「累積撈了幾筆歷史列（volume）」，不是其餘六個指標
+        # 「累積發生了幾次事件」的語意——這個指標的存在理由就是量
+        # volume 本身，一次呼叫記 `len(rows)` 才是誠實的量，記 1
+        # 反而會錯失這個指標唯一在乎的數字（`/code-review` SCALE-08
+        # 已標記這是刻意設計、非命名疏忽）。
         _record_metric("history_read_volume", ny_today(), count=len(rows))
         views = [r.view for r in rows]
         return {"entries": store.spread_cost_history(views, candidate_key)}

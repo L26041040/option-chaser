@@ -355,7 +355,15 @@ class MemoryStorage:
     def table_size_metrics(self) -> dict:
         def _stats(records: list[dict]) -> dict:
             if not records:
-                return {"row_count": 0, "total_bytes": None,
+                # `total_bytes`（「這張表現在佔多少空間」）對空表是良好
+                # 定義的 0——跟 Postgres 對空表回真實非零頁面配置一樣，
+                # 兩者都是「有答案」，只是這裡沒有真正的頁面可算，回 0
+                # 是誠實的近似值。`avg_row_bytes`／`max_row_bytes`（單列
+                # 大小的統計量）對零列沒有數學上有意義的答案，維持
+                # `None`——這是 `/code-review` SCALE-08 抓到的真缺口：
+                # 原本 `total_bytes` 也回 `None`，跟 Postgres 對空表的
+                # 行為不一致。
+                return {"row_count": 0, "total_bytes": 0,
                        "avg_row_bytes": None, "max_row_bytes": None}
             # 記憶體假體沒有真正的磁碟頁面/TOAST——用 JSON 序列化長度
             # 當近似值（跟正式 Postgres 的實際落盤大小不會逐位元相同，

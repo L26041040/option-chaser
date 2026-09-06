@@ -1655,10 +1655,20 @@ def test_trimming_one_metric_does_not_touch_another_metrics_buckets(storage):
 
 
 def test_table_size_metrics_on_empty_tables_reports_zero_rows_and_no_size(storage):
+    """`total_bytes`（這張表現在佔多少實體空間）對空表兩個後端都是
+    良好定義、非 `None` 的答案——`memory.py` 回 0（沒有真正頁面可算，
+    誠實近似）、Postgres 回真實頁面配置（通常是一個空表的固定開銷，
+    不會是 0），兩者數值**不跨後端比較**、只各自保證「有答案」這件事
+    一致（`/code-review` SCALE-08 抓到：原本 memory.py 對空表回
+    `None`，跟 Postgres 對空表的行為不一致）。`avg_row_bytes`／
+    `max_row_bytes`（單列大小統計量）對零列沒有數學上有意義的答案，
+    兩後端一致回 `None`。"""
     stats = storage.table_size_metrics()
     assert set(stats) == {"results", "snapshots"}
     for table_stats in stats.values():
         assert table_stats["row_count"] == 0
+        assert table_stats["total_bytes"] is not None
+        assert table_stats["total_bytes"] >= 0
         assert table_stats["avg_row_bytes"] is None
         assert table_stats["max_row_bytes"] is None
 

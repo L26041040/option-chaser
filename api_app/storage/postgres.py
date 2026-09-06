@@ -1137,6 +1137,10 @@ class PostgresStorage:
         return [MetricEntry(*r) for r in rows]
 
     def table_size_metrics(self) -> dict:
+        # `table`／`size_col` 只會是下面 `_stats()` 兩次呼叫寫死的字面
+        # 值（`"results"`／`"view"`、`"snapshots"`／`"snapshot"`）——不是
+        # 外部輸入，f-string 拼接安全（比照 `backfill_missing_owner_
+        # ids()` 對固定表名清單的既有慣例）。
         def _stats(table: str, size_col: str) -> dict:
             with self._connect() as conn:
                 row = conn.execute(
