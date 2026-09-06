@@ -30,7 +30,7 @@ from option_chaser.service import DividendLoader, RateCurveLoader
 from option_chaser.timeframe import (TargetMonth, calendar_anchor,
                                      ensure_month_open, month_is_over)
 
-from . import diagnostics, providers
+from . import chain_backoff, diagnostics, providers
 from .clock import now_utc_iso, ny_today
 from .dividend_cache import cached_loader as cached_dividend_loader
 from .rate_cache import cached_loader
@@ -468,6 +468,7 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
                refresh_run_budget: timedelta = REFRESH_RUN_BUDGET,
                refresh_run_group_limit: int = REFRESH_RUN_GROUP_LIMIT,
                analysis_deadline_seconds: float | None = ANALYSIS_DEADLINE_SECONDS,
+               cboe_fetch: FetchChain | None = None,
                ) -> FastAPI:
     """`fetch`／`storage`／`rate_loader`／`dividend_loader` 皆可注入：
     測試傳入固定快照、記憶體假體與假來源，因此不打真網路、不碰真資料庫，
@@ -498,6 +499,23 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
     production 實測後的落地結果（`docs/research/dividend-yield-source-
     selection.md` §12.4）；真正對外生效的是 `_dividend_loader()` 包出來、
     疊了持久快取（per-symbol，90 天陳舊窗）的版本，見下方。
+
+    `cboe_fetch`（SCALE-04／#255）：Cboe 這一步本身的抓取函式，預設
+    `None`——**故意不直接把預設值定成 `cboe.fetch_chain`**：Python
+    的預設參數值只在函式定義當下算一次，若寫成
+    `cboe_fetch: FetchChain = cboe.fetch_chain`，之後任何
+    `monkeypatch.setattr(cboe, "fetch_chain", ...)` 都會被這個提早
+    綁死的參照繞過（既有大量測試正是這樣注入假體，不是透過這個新
+    DI 參數）。`None` 時 `_default_fetch()` 內部改用延遲的模組屬性
+    查找（`from option_chaser.data import cboe as cboe_module；
+    cboe_module.fetch_chain`），行為與 `service.fetch_chain()` 既有
+    的 lazy import 手法一致，monkeypatch 才吃得到。只在呼叫端沒有
+    覆寫 `fetch` 時才生效（見 `_default_fetch()`）：`fetch` 是完整
+    降級鏈（Cboe→yfinance）的複合入口，既有測試普遍直接整組覆寫它
+    注入固定快照，那些呼叫根本不會走到 Cboe，backoff 包裝也無從
+    套用，這是預期行為（測試決定性、零網路）。只有 production 預設
+    （`fetch is service.fetch_chain`，未被覆寫）才會把 Cboe 呼叫點
+    包上 provider-global backoff（`api_app.chain_backoff`）。
     """
     app = FastAPI(title="Option Chaser API", version=__version__)
 
@@ -513,6 +531,29 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         if "db" not in cached:
             cached["db"] = storage_from_env()
         return cached["db"]
+
+    # SCALE-04（#255）：production 預設抓鏈路徑——Cboe 呼叫點包上
+    # provider-global backoff，失敗（含 `RateLimitedError`）原樣退回
+    # 既有 yfinance 備援鏈，與 `service.fetch_chain` 逐一對齊，只是
+    # Cboe 那一步多了 backoff 檢查與記錄。用 `fetch is service.
+    # fetch_chain` 識別呼叫端有沒有覆寫整條複合鏈——覆寫時（幾乎全部
+    # 既有測試都這樣做，注入固定快照）直接沿用呼叫端給的 `fetch`，
+    # backoff 包裝無從套用也不需要套用。
+    def _default_fetch(symbol: str) -> ChainSnapshot:
+        from option_chaser.data import cboe as cboe_module
+
+        actual_cboe_fetch = (cboe_fetch if cboe_fetch is not None
+                             else cboe_module.fetch_chain)
+        try:
+            return chain_backoff.backoff_aware_fetch(
+                _db(), "cboe", actual_cboe_fetch, symbol)
+        except FetchError:
+            from option_chaser.data import yf
+
+            return yf.fetch_chain(symbol)
+
+    _effective_fetch: FetchChain = (
+        _default_fetch if fetch is service.fetch_chain else fetch)
 
     # 合併 correlation id（DG-02／#145）與 storage 連線 scope
     # （PERF-01／#177，T02／#186 修形）成單一層 middleware——原本兩層
@@ -575,8 +616,10 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         """依設定挑抓鏈路徑（Settings／#125）。
 
         Market Data 選「自訂」且該 Provider 有 credential 時先走自訂；
-        **失敗就退回預設來源**（`fetch`，即既有的 Cboe → yfinance 降級
-        鏈，本身不動），而且把失敗如實記成一次驗證失敗——設定頁的三態
+        **失敗就退回預設來源**（`_effective_fetch`，即既有的 Cboe →
+        yfinance 降級鏈，SCALE-04／#255 起 Cboe 那一步多了
+        provider-global backoff），而且把失敗如實記成一次驗證失敗——
+        設定頁的三態
         因此會自己變成「驗證失敗」並說出原因，不需要另一套「上次
         fallback 過」的機制，也不會出現靜默退回。
 
@@ -586,13 +629,13 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         stored = db.get_settings()
         md = stored.market_data if stored else None
         if md is None or md.mode != providers.MODE_CUSTOM or not md.provider:
-            return fetch(symbol)
+            return _effective_fetch(symbol)
 
         cred = db.get_credential(md.provider)
         if cred is None:
             # 選了自訂卻沒有 token：不是錯誤，是還沒設定完——照常分析，
             # 設定頁那邊會顯示「尚未設定 token，改用預設來源」。
-            return fetch(symbol)
+            return _effective_fetch(symbol)
 
         try:
             snap = custom_fetch(md.provider, symbol, cred.token)
@@ -600,7 +643,7 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
             db.save_verification(ProviderVerification(
                 provider=md.provider, ok=False, reason=str(e),
                 checked_at=now_utc_iso()))
-            return fetch(symbol)
+            return _effective_fetch(symbol)
         db.save_verification(ProviderVerification(
             provider=md.provider, ok=True, reason=None,
             checked_at=now_utc_iso()))

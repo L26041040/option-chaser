@@ -26,6 +26,26 @@ class QuotaExhausted(FetchError):
     """
 
 
+class RateLimitedError(FetchError):
+    """vendor 回 HTTP 429（SCALE-04／#255，Scaling Foundation Cboe 429
+    韌性）。
+
+    刻意繼承 `FetchError`：與 `QuotaExhausted`（#130）同一個理由——
+    既有降級鏈（`service.fetch_chain` 的 Cboe→yfinance）一律
+    `except FetchError`，429 時那條路徑的既有行為不該改變。子類讓
+    **在乎**的呼叫端（`api_app.chain_backoff`）分得出「這次是被限流」
+    與「這次單純失敗」，才能只對前者記錄 backoff 狀態。
+
+    `retry_after_seconds`：上游 `Retry-After` 標頭解析後的秒數
+    （支援 delta-seconds 與 HTTP-date 兩種格式，解析邏輯在
+    `option_chaser.data.cboe`），缺失或無法解析時為 `None`——呼叫端
+    此時改用保守的預設退避時間，不是把 `None` 當成 0 秒。"""
+
+    def __init__(self, message: str, *, retry_after_seconds: float | None = None):
+        super().__init__(message)
+        self.retry_after_seconds = retry_after_seconds
+
+
 class ParamError(Exception):
     pass
 

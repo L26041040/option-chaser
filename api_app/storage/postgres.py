@@ -22,7 +22,7 @@ from contextlib import contextmanager
 import psycopg
 from psycopg.types.json import Jsonb
 
-from . import (ContractHistory, DataSourceSettings,
+from . import (ChainBackoffEntry, ContractHistory, DataSourceSettings,
                DividendCacheEntry, IvBackfillRun, IvObservation,
                ProviderCredential, ProviderVerification, RateCacheEntry,
                ResultFactContext, ResultRecord, ResultSummary, Scenario,
@@ -159,6 +159,22 @@ CREATE TABLE IF NOT EXISTS treasury_year_cache (
     last_success_at   TEXT,
     market_day        TEXT,
     attempted_day     TEXT
+);
+-- SCALE-04（#255，Scaling Foundation Cboe 429 韌性）：上游限流的控制
+-- 狀態，鍵是 **source**（provider-global，不分 symbol——見
+-- docs/spec/scaling-foundation.md §8.4 2026-09-06 訂正）。
+--
+-- ⚠ RL-19（紅線）：這張表只存「上游現在讓不讓我打」的控制中繼資料，
+-- **不得儲存任何 chain payload、市場報價、合約資料**。它與
+-- ADR-0001／OD-05 evidence gate 卡住的 chain shared cache（存市場
+-- 資料本身）是不同的東西，未來擴充這張表前務必重讀這條紅線。
+CREATE TABLE IF NOT EXISTS chain_backoff (
+    source                TEXT PRIMARY KEY,
+    blocked_until         TEXT,
+    retry_after_seconds   DOUBLE PRECISION,
+    consecutive_failures  INTEGER NOT NULL,
+    observed_at           TEXT NOT NULL,
+    last_success_at       TEXT
 );
 -- 資料源設定（Settings／#124）：兩列的模式選擇，單一一筆狀態——跟
 -- `rate_cache` 同一個 `id = 1` ＋ `CHECK` 的寫法。存 JSONB 而不是攤平成
@@ -777,6 +793,37 @@ class PostgresStorage:
                  Jsonb(entry.rows) if entry.rows is not None else None,
                  entry.note, entry.last_success_at, entry.market_day,
                  entry.attempted_day))
+
+    # ---------- Chain 429 backoff（SCALE-04／#255，provider-global） ----------
+
+    def get_chain_backoff(self, source: str) -> ChainBackoffEntry | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT source, blocked_until, retry_after_seconds, "
+                "consecutive_failures, observed_at, last_success_at "
+                "FROM chain_backoff WHERE source = %s", (source,)).fetchone()
+        return (ChainBackoffEntry(source=row[0], blocked_until=row[1],
+                                  retry_after_seconds=row[2],
+                                  consecutive_failures=row[3], observed_at=row[4],
+                                  last_success_at=row[5])
+                if row else None)
+
+    def save_chain_backoff(self, entry: ChainBackoffEntry) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO chain_backoff "
+                "(source, blocked_until, retry_after_seconds, "
+                "consecutive_failures, observed_at, last_success_at) "
+                "VALUES (%s, %s, %s, %s, %s, %s) "
+                "ON CONFLICT (source) DO UPDATE "
+                "SET blocked_until = EXCLUDED.blocked_until, "
+                "retry_after_seconds = EXCLUDED.retry_after_seconds, "
+                "consecutive_failures = EXCLUDED.consecutive_failures, "
+                "observed_at = EXCLUDED.observed_at, "
+                "last_success_at = EXCLUDED.last_success_at",
+                (entry.source, entry.blocked_until, entry.retry_after_seconds,
+                 entry.consecutive_failures, entry.observed_at,
+                 entry.last_success_at))
 
     # ---------- 資料源設定與 credential（Settings／#124） ----------
 

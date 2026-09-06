@@ -9,7 +9,7 @@ from __future__ import annotations
 from collections import deque
 from contextlib import contextmanager
 
-from . import (ContractHistory, DataSourceSettings,
+from . import (ChainBackoffEntry, ContractHistory, DataSourceSettings,
                DividendCacheEntry, IvBackfillRun, IvObservation,
                ProviderCredential, ProviderVerification, RateCacheEntry,
                ResultFactContext, ResultRecord, ResultSummary, Scenario,
@@ -26,6 +26,7 @@ class MemoryStorage:
         self._rate_cache: RateCacheEntry | None = None
         self._dividend_cache: dict[str, DividendCacheEntry] = {}
         self._treasury_year_cache: dict[int, TreasuryYearCacheEntry] = {}
+        self._chain_backoff: dict[str, ChainBackoffEntry] = {}
         self._settings: DataSourceSettings | None = None
         self._credentials: dict[str, ProviderCredential] = {}
         self._verifications: dict[str, ProviderVerification] = {}
@@ -191,6 +192,12 @@ class MemoryStorage:
 
     def save_treasury_year_cache(self, entry: TreasuryYearCacheEntry) -> None:
         self._treasury_year_cache[entry.year] = entry
+
+    def get_chain_backoff(self, source: str) -> ChainBackoffEntry | None:
+        return self._chain_backoff.get(source)
+
+    def save_chain_backoff(self, entry: ChainBackoffEntry) -> None:
+        self._chain_backoff[entry.source] = entry
 
     # ---------- 資料源設定與 credential（Settings／#124） ----------
 

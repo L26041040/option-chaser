@@ -16,7 +16,7 @@ import pytest
 from dataclasses import replace
 
 from api_app.diagnostics import RETENTION_LIMIT, DiagnosticEvent
-from api_app.storage import (ContractHistory,
+from api_app.storage import (ChainBackoffEntry, ContractHistory,
                              DataSourceSettings, DividendCacheEntry,
                              IvBackfillRun, IvObservation, ProviderCredential,
                              ProviderVerification, RateCacheEntry,
@@ -54,7 +54,8 @@ def storage(request):
     # 清庫是測試自己的事，不放進正式 adapter（正式環境不該有 TRUNCATE）。
     with psycopg.connect(TEST_DB_URL, autocommit=True) as conn:
         conn.execute("TRUNCATE scenarios, results, snapshots, events, rate_cache, "
-                     "dividend_cache, treasury_year_cache, data_source_settings, "
+                     "dividend_cache, treasury_year_cache, chain_backoff, "
+                     "data_source_settings, "
                      "provider_credentials, provider_verifications, "
                      "iv_observations, iv_backfill_runs, contract_iv_history, "
                      "diagnostics RESTART IDENTITY")
@@ -617,6 +618,56 @@ def test_treasury_year_cache_does_not_leak_across_years(storage):
     assert storage.get_treasury_year_cache(2025).rows == [["2025-01-01", [[1.0, 0.0111]]]]
     assert storage.get_treasury_year_cache(2026).rows is None
     assert storage.get_treasury_year_cache(2026).note == "2026 不可得"
+
+
+# ---------- Chain 429 backoff（SCALE-04／#255，provider-global） ----------
+
+def test_chain_backoff_starts_empty(storage):
+    assert storage.get_chain_backoff("cboe") is None
+
+
+def test_chain_backoff_roundtrips_a_blocked_state(storage):
+    entry = ChainBackoffEntry(
+        source="cboe", blocked_until="2026-09-06T12:01:00+00:00",
+        retry_after_seconds=34.0, consecutive_failures=1,
+        observed_at="2026-09-06T12:00:00+00:00", last_success_at=None)
+    storage.save_chain_backoff(entry)
+    assert storage.get_chain_backoff("cboe") == entry
+
+
+def test_chain_backoff_roundtrips_a_cleared_state(storage):
+    entry = ChainBackoffEntry(
+        source="cboe", blocked_until=None, retry_after_seconds=None,
+        consecutive_failures=0, observed_at="2026-09-06T12:00:00+00:00",
+        last_success_at="2026-09-06T12:00:00+00:00")
+    storage.save_chain_backoff(entry)
+    assert storage.get_chain_backoff("cboe") == entry
+
+
+def test_chain_backoff_overwrites_rather_than_accumulates(storage):
+    storage.save_chain_backoff(ChainBackoffEntry(
+        source="cboe", blocked_until="2026-09-06T12:01:00+00:00",
+        retry_after_seconds=34.0, consecutive_failures=1,
+        observed_at="2026-09-06T12:00:00+00:00", last_success_at=None))
+    storage.save_chain_backoff(ChainBackoffEntry(
+        source="cboe", blocked_until=None, retry_after_seconds=None,
+        consecutive_failures=0, observed_at="2026-09-06T12:05:00+00:00",
+        last_success_at="2026-09-06T12:05:00+00:00"))
+
+    entry = storage.get_chain_backoff("cboe")
+    assert entry.blocked_until is None
+    assert entry.consecutive_failures == 0
+
+
+def test_chain_backoff_does_not_leak_across_sources(storage):
+    """核心不變量（provider-global 鍵本身存在的理由）：不同 source
+    各自獨立，一個 source 被限流不影響另一個。"""
+    storage.save_chain_backoff(ChainBackoffEntry(
+        source="cboe", blocked_until="2026-09-06T12:01:00+00:00",
+        retry_after_seconds=34.0, consecutive_failures=1,
+        observed_at="2026-09-06T12:00:00+00:00", last_success_at=None))
+
+    assert storage.get_chain_backoff("yfinance") is None
 
 
 # ---------- 清單摘要（V3／#51） ----------

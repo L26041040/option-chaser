@@ -14,12 +14,39 @@ from __future__ import annotations
 import json
 import math
 from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
+from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
-from ..models import SCHEMA_VERSION, ChainSnapshot, FetchError, OptionContract
+from ..models import (SCHEMA_VERSION, ChainSnapshot, FetchError,
+                      OptionContract, RateLimitedError)
 
 _URL = "https://cdn.cboe.com/api/global/delayed_quotes/options/{symbol}.json"
 _TIMEOUT_SECONDS = 15.0
+
+
+def parse_retry_after(value: str | None) -> float | None:
+    """SCALE-04（#255）：`Retry-After` 標頭有兩種合法形式（RFC 9110
+    §10.2.3）——delta-seconds（純數字字串，如 `"34"`）或 HTTP-date
+    （如 `"Wed, 21 Oct 2026 07:28:00 GMT"`）。缺失、空字串或兩種格式
+    都解析不出來時回 `None`——呼叫端改用保守預設值，不當成 0 秒。"""
+    if not value:
+        return None
+    value = value.strip()
+    try:
+        seconds = float(value)
+    except ValueError:
+        pass
+    else:
+        return seconds if seconds >= 0 else None
+    try:
+        target = parsedate_to_datetime(value)
+    except (TypeError, ValueError):
+        return None
+    if target.tzinfo is None:
+        target = target.replace(tzinfo=timezone.utc)
+    delta = (target - datetime.now(timezone.utc)).total_seconds()
+    return delta if delta >= 0 else None
 
 
 def _http_get(url: str) -> str:
@@ -99,6 +126,17 @@ def fetch_chain(symbol: str, http_get=_http_get) -> ChainSnapshot:
         return map_payload(symbol, payload, fetched_at)
     except FetchError:
         raise
+    except HTTPError as e:
+        # SCALE-04（#255）：429 抬成專屬 `RateLimitedError`（`FetchError`
+        # 子類，既有降級鏈相容——見該例外類別 docstring），其餘 HTTP
+        # 錯誤碼維持既有的通用 `FetchError` 收斂行為，不新增分層。
+        if e.code == 429:
+            retry_after = parse_retry_after(e.headers.get("Retry-After")
+                                            if e.headers else None)
+            raise RateLimitedError(
+                f"Cboe 限流（{symbol}）：HTTP 429",
+                retry_after_seconds=retry_after) from e
+        raise FetchError(f"Cboe 抓取失敗（{symbol}）: HTTP {e.code}") from e
     except Exception as e:  # noqa: BLE001 — 任何網路／解析／形狀失敗都是
         # 抓取失敗：必須收斂成 FetchError，service.fetch_and_save 的
         # yfinance 備援才接得住（如 Cboe 回錯誤物件缺 "data" 鍵）。

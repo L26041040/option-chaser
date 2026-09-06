@@ -233,6 +233,39 @@ class TreasuryYearCacheEntry:
 
 
 @dataclass(frozen=True)
+class ChainBackoffEntry:
+    """SCALE-04（#255，Scaling Foundation Cboe 429 韌性）：上游限流的
+    控制狀態——**provider-global 鍵**（`source` 單獨，不分 symbol，
+    見 `docs/spec/scaling-foundation.md` §8.4 2026-09-06 訂正：沒有
+    證據顯示 Cboe 限流是 per-symbol，安全預設是整個來源一起封鎖，
+    否則使用者換個 symbol 就能繞過封鎖窗）。
+
+    **RL-19（紅線）：這張表不得儲存任何 chain payload、任何市場報價、
+    任何合約資料**。它只回答「上游現在讓不讓我打」，欄位逐一都是
+    控制中繼資料，不是市場事實——這與 ADR-0001／OD-05 evidence gate
+    卡住的 chain shared cache（存市場資料本身）是不同的東西，未來
+    讀到這張表切勿誤讀成偷渡的 chain cache。
+
+    `source`：PK，例如 `"cboe"`。
+    `blocked_until`：封鎖窗結束時間（ISO 8601），`None`＝目前未封鎖。
+    `retry_after_seconds`：上游最近一次給的原始 `Retry-After` 值
+    （供揭露與診斷，`None`＝上游沒給或給的值解析不出來，這次改用
+    保守預設退避時間）。
+    `consecutive_failures`：目前連續幾次被限流，供 incident 判定
+    （FR-5.7）——只在遇到 429 時遞增，一次成功即歸零。
+    `observed_at`：最近一次觀測到限流的時間。
+    `last_success_at`：最近一次成功抓取的時間——獨立於
+    `blocked_until`／`consecutive_failures`，只在真正成功時前進。
+    """
+    source: str
+    blocked_until: str | None
+    retry_after_seconds: float | None
+    consecutive_failures: int
+    observed_at: str
+    last_success_at: str | None = None
+
+
+@dataclass(frozen=True)
 class UsageSetting:
     """`Data / API` 其中一列的選擇（Settings／#124）。
 
@@ -490,6 +523,16 @@ class Storage(Protocol):
 
     def save_treasury_year_cache(self, entry: TreasuryYearCacheEntry) -> None:
         """覆蓋該年份既有那一筆——per-year 單一狀態，不是歷史序列。"""
+
+    # ---------- Chain 429 backoff（SCALE-04／#255，provider-global） ----------
+
+    def get_chain_backoff(self, source: str) -> ChainBackoffEntry | None:
+        """該來源尚未有任何觀測（成功或限流）時回 `None`。"""
+
+    def save_chain_backoff(self, entry: ChainBackoffEntry) -> None:
+        """覆蓋該來源既有那一筆——provider-global 單一狀態，不是歷史
+        序列，鍵是 `entry.source`（不分 symbol，見
+        `ChainBackoffEntry` docstring）。"""
 
     # ---------- 資料源設定與 credential（Settings／#124） ----------
 
