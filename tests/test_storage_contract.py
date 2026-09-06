@@ -1259,7 +1259,7 @@ def test_an_old_shape_date_iv_tuple_row_is_structurally_distinguishable(storage)
 
 def _diag(*, event_id="e1", correlation_id="c1", ts="2026-08-15T00:00:00+00:00",
          subsystem="historical_iv", stage="vendor_fetch", severity="error",
-         user_facing=None, message="boom", context=None):
+         user_facing=None, message="boom", context=None, owner_id=None):
     # PC-03（#201）：`user_facing` 省略時鏡射 `severity`——跟 `emit()`
     # 的預設規則同一套，這裡直接構造 `DiagnosticEvent`（繞過 `emit()`）
     # 因此要自己套一次，不然這批既有測試全部要逐一補這個新欄位。
@@ -1268,7 +1268,8 @@ def _diag(*, event_id="e1", correlation_id="c1", ts="2026-08-15T00:00:00+00:00",
     return DiagnosticEvent(event_id=event_id, correlation_id=correlation_id,
                            ts=ts, subsystem=subsystem, stage=stage,
                            severity=severity, user_facing=user_facing,
-                           message=message, context=context or {})
+                           message=message, context=context or {},
+                           owner_id=owner_id)
 
 
 def test_diagnostics_start_out_empty(storage):
@@ -1379,6 +1380,192 @@ def test_append_diagnostics_batch_matches_looping_the_singular_method_on_retenti
         limit=RETENTION_LIMIT + 50)]
 
     assert batch_result == looped_result
+
+
+# ---------- Ownership A-1 Expand（SCALE-06／#256） ----------
+#
+# 只涵蓋 5 張 row-scoped 表——`provider_credentials`／
+# `data_source_settings`／`provider_verifications` 三張 singleton／
+# provider-key 表刻意不在這裡（留給 SCALE-13 做結構遷移），
+# system-wide 共用表（rate/treasury/dividend/IV caches、
+# `chain_backoff`）本來就不該有這個維度，見下方 AC-5 結構性測試。
+
+def test_owner_id_round_trips_on_a_scenario(storage):
+    storage.create_scenario(_scenario())
+    got = storage.get_scenario("s1")
+    assert got.owner_id is None   # 未指定時 nullable，不是空字串
+    storage.create_scenario(_scenario(sid="s2"))
+    storage.get_scenario("s2")   # 冪等讀取不影響下面這筆的獨立驗證
+
+
+def test_owner_id_can_be_set_when_creating_a_scenario(storage):
+    from dataclasses import replace as _replace
+    sc = _replace(_scenario(), owner_id="alice")
+    storage.create_scenario(sc)
+    assert storage.get_scenario("s1").owner_id == "alice"
+
+
+def test_updating_a_scenario_does_not_touch_its_owner_id():
+    """`update_scenario()` 刻意不動 `owner_id`——編輯 thesis 不該連帶
+    改變資料 boundary。這是設計決策，用 memory 假體驗證一次即可（不是
+    兩個後端各自獨立需要驗證的行為差異，是同一份呼叫慣例）。"""
+    from dataclasses import replace as _replace
+    storage = MemoryStorage()
+    sc = _replace(_scenario(), owner_id="alice")
+    storage.create_scenario(sc)
+    updated = _replace(sc, notes="改過的 thesis")
+    storage.update_scenario(updated)
+    assert storage.get_scenario("s1").owner_id == "alice"
+
+
+def test_owner_id_round_trips_on_a_result(storage):
+    storage.create_scenario(_scenario())
+    storage.save_result(ResultRecord("s1", "2026-08-01T00:00:00+00:00",
+                                     {"n": 1}, owner_id="alice"))
+    assert storage.latest_result("s1").owner_id == "alice"
+
+
+def test_owner_id_round_trips_on_a_snapshot(storage):
+    storage.create_scenario(_scenario())
+    storage.save_snapshot("s1", "2026-08-01T00:00:00+00:00", {"n": 1},
+                          owner_id="alice")
+    # 窄讀取不影響既有 `get_snapshot()` 的形狀——仍是純快照 dict，不是
+    # 一個帶著 owner_id 的信封。
+    assert storage.get_snapshot("s1", "2026-08-01T00:00:00+00:00") == {"n": 1}
+    assert storage.get_snapshot_owner("s1", "2026-08-01T00:00:00+00:00") == "alice"
+
+
+def test_snapshot_owner_is_none_when_unspecified_or_missing(storage):
+    storage.create_scenario(_scenario())
+    storage.save_snapshot("s1", "2026-08-01T00:00:00+00:00", {"n": 1})
+    assert storage.get_snapshot_owner("s1", "2026-08-01T00:00:00+00:00") is None
+    # 這一列根本不存在——跟「存在但 owner 尚未 backfill」用同一個 `None`
+    # 表達（見 `Storage.get_snapshot_owner()` docstring 的理由）。
+    assert storage.get_snapshot_owner("s1", "2099-01-01T00:00:00+00:00") is None
+
+
+def test_owner_id_round_trips_on_an_event(storage):
+    storage.append_event(ts="2026-08-01T00:00:00+00:00", scenario_id="s1",
+                         event="SCENARIO_CREATED", payload={}, owner_id="alice")
+    (event,) = storage.list_events()
+    assert event["owner_id"] == "alice"
+
+
+def test_event_owner_id_defaults_to_none(storage):
+    storage.append_event(ts="2026-08-01T00:00:00+00:00", scenario_id="s1",
+                         event="SCENARIO_CREATED", payload={})
+    (event,) = storage.list_events()
+    assert event["owner_id"] is None
+
+
+def test_owner_id_round_trips_on_a_diagnostic(storage):
+    storage.append_diagnostic(_diag(event_id="d1"))   # owner_id 預設 None
+    assert storage.list_diagnostics()[0].owner_id is None
+    storage.append_diagnostic(_diag(event_id="d2", owner_id="alice"))
+    by_id = {e.event_id: e.owner_id for e in storage.list_diagnostics(limit=10)}
+    assert by_id == {"d1": None, "d2": "alice"}
+
+
+def test_backfill_missing_owner_ids_sets_solo_owner_on_every_legacy_row(storage):
+    """AC-1／AC-2：5 張表各留一筆沒有 owner 的舊列，一次 backfill 全部
+    補齊，回傳的計數逐表對得上。"""
+    storage.create_scenario(_scenario())          # owner_id=None
+    storage.save_result(ResultRecord("s1", "2026-08-01T00:00:00+00:00",
+                                     {"n": 1}))    # owner_id=None
+    storage.save_snapshot("s1", "2026-08-01T00:00:00+00:00", {"n": 1})
+    storage.append_event(ts="2026-08-01T00:00:00+00:00", scenario_id="s1",
+                         event="SCENARIO_CREATED", payload={})
+    storage.append_diagnostic(_diag(event_id="d1"))
+
+    counts = storage.backfill_missing_owner_ids("solo")
+    assert counts == {"scenarios": 1, "results": 1, "snapshots": 1,
+                      "events": 1, "diagnostics": 1}
+
+    assert storage.get_scenario("s1").owner_id == "solo"
+    assert storage.latest_result("s1").owner_id == "solo"
+    assert storage.get_snapshot_owner("s1", "2026-08-01T00:00:00+00:00") == "solo"
+    assert storage.list_events()[0]["owner_id"] == "solo"
+    assert storage.list_diagnostics()[0].owner_id == "solo"
+
+
+def test_backfill_missing_owner_ids_is_idempotent_on_rerun(storage):
+    """AC-2：重跑 backfill 0 drift／0 duplicate side effect——第二次呼叫
+    對「已經補過」的列全部回 0，不重複計數、不覆蓋。"""
+    storage.create_scenario(_scenario())
+    storage.save_result(ResultRecord("s1", "2026-08-01T00:00:00+00:00", {"n": 1}))
+    storage.save_snapshot("s1", "2026-08-01T00:00:00+00:00", {"n": 1})
+    storage.append_event(ts="2026-08-01T00:00:00+00:00", scenario_id="s1",
+                         event="SCENARIO_CREATED", payload={})
+    storage.append_diagnostic(_diag(event_id="d1"))
+
+    first = storage.backfill_missing_owner_ids("solo")
+    assert all(v == 1 for v in first.values())
+
+    second = storage.backfill_missing_owner_ids("solo")
+    assert second == {"scenarios": 0, "results": 0, "snapshots": 0,
+                      "events": 0, "diagnostics": 0}
+
+    # 結果不變——不是「回 0 但其實悄悄改了值」。
+    assert storage.get_scenario("s1").owner_id == "solo"
+
+
+def test_backfill_does_not_overwrite_a_row_that_already_has_an_owner(storage):
+    """既有值有 owner 的列不該被覆蓋成 backfill 傳入的值——`WHERE
+    owner_id IS NULL` 的條件式語意，不是無條件蓋掉。"""
+    from dataclasses import replace as _replace
+
+    storage.create_scenario(_replace(_scenario(), owner_id="alice"))
+    counts = storage.backfill_missing_owner_ids("solo")
+    assert counts["scenarios"] == 0
+    assert storage.get_scenario("s1").owner_id == "alice"
+
+
+def test_backfill_on_an_empty_store_reports_zero_for_every_table(storage):
+    counts = storage.backfill_missing_owner_ids("solo")
+    assert counts == {"scenarios": 0, "results": 0, "snapshots": 0,
+                      "events": 0, "diagnostics": 0}
+
+
+# ---------- AC-5：結構性——3 張 singleton 表與 system-wide 表零 owner ----------
+
+def test_singleton_and_system_wide_dataclasses_have_no_owner_field():
+    """SCALE-06 明文範圍界線：3 張 singleton／provider-key user 表
+    （留給 SCALE-13 做結構遷移）與全部 system-wide 共用表（rate／
+    treasury／dividend／IV caches、`chain_backoff`）都不該在這一票
+    悄悄長出 `owner_id`——這是純結構性檢查，不需要打真資料庫。"""
+    import dataclasses as dc
+
+    from api_app.storage import (ChainBackoffEntry, ContractHistory,
+                                 DataSourceSettings, DividendCacheEntry,
+                                 IvBackfillRun, IvObservation,
+                                 ProviderCredential, ProviderVerification,
+                                 RateCacheEntry, TreasuryYearCacheEntry)
+
+    # 3 張 singleton／provider-key user 表——留給 SCALE-13。
+    singleton_user_tables = (ProviderCredential, DataSourceSettings,
+                             ProviderVerification)
+    # system-wide 共用表——不分 owner 是既有、正確的設計，永遠不該加。
+    system_wide_tables = (RateCacheEntry, DividendCacheEntry,
+                          TreasuryYearCacheEntry, ChainBackoffEntry,
+                          IvObservation, IvBackfillRun, ContractHistory)
+
+    for cls in singleton_user_tables + system_wide_tables:
+        field_names = {f.name for f in dc.fields(cls)}
+        assert "owner_id" not in field_names, cls.__name__
+
+
+def test_the_five_row_scoped_dataclasses_do_have_an_owner_field():
+    """反向驗證：確實該有的 5 張表（`ResultFactContext`／
+    `ResultSummary` 這種「窄投影」型別不算——它們本來就不是完整的
+    row 本身，`DiagnosticEvent` 定義在 `diagnostics.py` 不在這裡）。"""
+    import dataclasses as dc
+
+    from api_app.storage import ResultRecord, Scenario
+
+    assert "owner_id" in {f.name for f in dc.fields(Scenario)}
+    assert "owner_id" in {f.name for f in dc.fields(ResultRecord)}
+    from api_app.diagnostics import DiagnosticEvent
+    assert "owner_id" in {f.name for f in dc.fields(DiagnosticEvent)}
 
 
 # ---------- schema 遷移（V3／#51） ----------

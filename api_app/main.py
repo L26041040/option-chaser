@@ -32,6 +32,7 @@ from option_chaser.timeframe import (TargetMonth, calendar_anchor,
 
 from . import chain_backoff, diagnostics, providers
 from .clock import now_utc_iso, ny_today
+from .identity import IdentityResolver, default_identity_resolver
 from .dividend_cache import cached_loader as cached_dividend_loader
 from .rate_cache import cached_loader
 from .storage import (ContractHistory, DataSourceSettings, IvBackfillRun,
@@ -470,6 +471,7 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
                analysis_deadline_seconds: float | None = ANALYSIS_DEADLINE_SECONDS,
                cboe_fetch: FetchChain | None = None,
                chain_backoff_default: timedelta = chain_backoff.DEFAULT_BACKOFF,
+               identity_resolver: IdentityResolver = default_identity_resolver,
                ) -> FastAPI:
     """`fetch`／`storage`／`rate_loader`／`dividend_loader` 皆可注入：
     測試傳入固定快照、記憶體假體與假來源，因此不打真網路、不碰真資料庫，
@@ -530,6 +532,21 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
     （例如懷疑它本身在搗亂）只需要用 `create_app(chain_backoff_default=
     timedelta(0))` 重新建構 app，不必修改 `chain_backoff.py` 或
     `main.py` 任何一行程式碼。
+
+    `identity_resolver`（SCALE-06／#256，Ownership A-1 Expand）：這次
+    request「屬於誰」——**只是 data boundary 標記，不是 authentication／
+    privacy**（那是 out-of-scope 的 A-2）。production 預設
+    `default_identity_resolver`，固定回傳單一 `SOLO_OWNER` 值；今天
+    唯一存在的呼叫端在解析出這個值後，把它寫進 5 張 row-scoped 表
+    （`scenarios`／`results`／`snapshots`／`events`／`diagnostics`）
+    新寫入的 `owner_id` 欄位——本票**不**在任何查詢路徑套用過濾，寫入
+    的值目前純粹是鋪路。這不是 `cboe_fetch` 那種每次呼叫都要吃一個
+    `symbol` 參數的抓取函式，是一個零參數、對整個 app 生命週期只需要
+    決定一次語意的函式，直接當一般函式值傳入即可，不受 `cboe_fetch`
+    那個 eager-binding 陷阱影響（沒有任何測試需要
+    monkeypatch `identity.default_identity_resolver` 這個模組屬性——
+    要換身分邏輯，直接透過這個 DI 參數傳一個不同的函式進來就是了，
+    這正是它存在的目的）。
     """
     app = FastAPI(title="Option Chaser API", version=__version__)
 
@@ -588,7 +605,8 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
     # 純驗證錯誤）因此不再付任何連線握手。
     @app.middleware("http")
     async def _request_scope_middleware(request: Request, call_next):
-        with diagnostics.correlation_scope() as cid:
+        with diagnostics.correlation_scope() as cid, \
+             diagnostics.owner_scope(identity_resolver()):
             try:
                 scope = getattr(_db(), "request_scope", None)
             except Exception:  # noqa: BLE001 — 拿不到 storage 就整個跳過，交給下游端點自己的錯誤處理
@@ -825,13 +843,15 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
                       target_month=req.target_month, notes=req.notes,
                       strategies=normalize_families(tuple(req.strategies)),
                       created_at=ts,
-                      best_price=req.best_price, worst_price=req.worst_price)
+                      best_price=req.best_price, worst_price=req.worst_price,
+                      owner_id=identity_resolver())
         try:
             _db().create_scenario(sc)
         except ScenarioExists as e:   # 48-bit 隨機 id，實務上碰不到；不留 500 的縫
             raise HTTPException(status_code=409, detail=str(e)) from e
         _db().append_event(ts=ts, scenario_id=sc.id,
-                           event="SCENARIO_CREATED", payload=_scenario_json(sc))
+                           event="SCENARIO_CREATED", payload=_scenario_json(sc),
+                           owner_id=identity_resolver())
         # 回傳與清單同一個形狀（含 timing、尚未分析故摘要欄位皆為 None），
         # 客戶端才不必為「剛建立的」與「列出來的」維護兩種型別。
         return _row_json(sc, ny_today(), analyzed_at=None, best_return=None,
@@ -888,7 +908,8 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         ts = now_utc_iso()
         _db().append_event(ts=ts, scenario_id=scenario_id,
                            event="SCENARIO_EDITED",
-                           payload=_scenario_json(updated))
+                           payload=_scenario_json(updated),
+                           owner_id=identity_resolver())
 
         latest = None if thesis_changed else _db().latest_result(scenario_id)
         return _row_json(updated, ny_today(), **_summary_of(latest))
@@ -926,7 +947,8 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         # 視為冪等成功，不當成錯誤。
         if _db().archive_scenario(scenario_id, ts=ts):
             _db().append_event(ts=ts, scenario_id=scenario_id,
-                               event="SCENARIO_ARCHIVED", payload={})
+                               event="SCENARIO_ARCHIVED", payload={},
+                               owner_id=identity_resolver())
         return {"archived": True}
 
     @app.post("/api/scenarios/{scenario_id}/restore")
@@ -944,7 +966,8 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         ts = now_utc_iso()
         if _db().restore_scenario(scenario_id, ts=ts):
             _db().append_event(ts=ts, scenario_id=scenario_id,
-                               event="SCENARIO_RESTORED", payload={})
+                               event="SCENARIO_RESTORED", payload={},
+                               owner_id=identity_resolver())
         return {"restored": True}
 
     @app.delete("/api/scenarios/{scenario_id}", status_code=204)
@@ -1035,17 +1058,19 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         # 這裡與既有資料 backfill 腳本共用同一份，不重寫第二次）。
         # `view` 本身完全不變——這幾個欄位純粹是它的複本。
         fact_context = store.historical_fact_context(view)
+        owner_id = identity_resolver()
         _db().save_result(ResultRecord(
             scenario_id=sc.id, analyzed_at=analyzed_at, view=view,
             best_return=best_return,
             representative_candidate=representative_candidate,
             spot=store.spot(view), per_family=per_family or None,
-            family_eligibility=family_elig, **fact_context))
-        _db().save_snapshot(sc.id, analyzed_at, snapshot)
+            family_eligibility=family_elig, owner_id=owner_id, **fact_context))
+        _db().save_snapshot(sc.id, analyzed_at, snapshot, owner_id=owner_id)
         _db().append_event(ts=now_utc_iso(), scenario_id=sc.id,
                            event="ANALYSIS_COMPLETED",
                            payload={"analyzed_at": analyzed_at,
-                                    "snapshot_ref": view["snapshot_ref"]})
+                                    "snapshot_ref": view["snapshot_ref"]},
+                           owner_id=owner_id)
         return _row_json(sc, today, analyzed_at=analyzed_at,
                          best_return=best_return,
                          representative_candidate=representative_candidate,

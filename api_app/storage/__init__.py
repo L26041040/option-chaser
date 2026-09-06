@@ -29,6 +29,14 @@ class Scenario:
     # V7（#55）劇本區間兩端，選填。既有劇本讀回來是 None，行為不變。
     best_price: float | None = None
     worst_price: float | None = None
+    # SCALE-06（#256，Scaling Foundation Ownership A-1 Expand）：資料
+    # boundary 用的 owner 標記——**不是** authentication／privacy
+    # （那是 out-of-scope 的 A-2）。今天固定解析成同一個 solo-owner
+    # 值（`api_app.identity.default_identity_resolver()`），純加法、
+    # nullable：既有部署的舊列讀回來是 `None`，
+    # `Storage.backfill_missing_owner_ids()` 負責補齊。本票**不**在任何
+    # 查詢路徑套用過濾（那是 SCALE-11 的範圍）。
+    owner_id: str | None = None
 
     def archived(self, ts: str) -> "Scenario":
         return replace(self, archived_at=ts)
@@ -102,6 +110,10 @@ class ResultRecord:
     # rate/q 那一半（藏在 `resolved_params` 裡）、沒有快照本身的
     # 資料源，仍得解析 `view` 才查得到，牴觸 AC-1。
     snapshot_source: str | None = None
+    # SCALE-06（#256，Ownership A-1 Expand）：與 `Scenario.owner_id`
+    # 同一個模式——資料 boundary 標記，非 privacy，nullable，本票不
+    # 加任何查詢過濾。
+    owner_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -489,17 +501,33 @@ class Storage(Protocol):
         呼叫端據此分辨「這列還沒 backfill」與「這列根本不存在」。"""
 
     def save_snapshot(self, scenario_id: str, analyzed_at: str,
-                      snapshot: dict) -> None:
+                      snapshot: dict, *, owner_id: str | None = None) -> None:
         """原始選擇權鏈快照（`ChainSnapshot` 的 dict 形式）。
 
         與結果分開存：一份快照數百 KB（數千筆合約），歷史查詢
-        （`result_history`）不該每次把它一起撈出來。"""
+        （`result_history`）不該每次把它一起撈出來。
+
+        `owner_id`（SCALE-06／#256）：選填，預設 `None`——與
+        `Scenario.owner_id` 同一個資料 boundary 標記，本票不查詢
+        過濾。"""
 
     def get_snapshot(self, scenario_id: str, analyzed_at: str) -> dict | None:
         ...
 
+    def get_snapshot_owner(self, scenario_id: str,
+                           analyzed_at: str) -> str | None:
+        """SCALE-06（#256）：窄讀取，只回這一列的 `owner_id`，不解析／
+        回傳快照本身（那份是數百 KB 等級，`get_snapshot()` 已有的用途
+        不該為了讀一個欄位被迫多做一次）。找不到這一列與「這一列存在但
+        `owner_id` 尚未 backfill」都回 `None`——與 `get_snapshot()` 找不到
+        列時的既有語意一致（呼叫端本來就無法從 `None` 分辨這兩種情況，
+        `result_fact_context()` 才需要分辨「找不到」與「NULL」，那是
+        因為它回傳一整個具名物件；這裡只回一個值，`None` 天然涵蓋兩種
+        情況，不需要引入哨兵）。"""
+
     def append_event(self, *, ts: str, scenario_id: str | None,
-                     event: str, payload: dict) -> None: ...
+                     event: str, payload: dict,
+                     owner_id: str | None = None) -> None: ...
 
     def list_events(self, *, scenario_id: str | None = None) -> list[dict]:
         """依寫入順序（append-only）回傳。"""
@@ -608,6 +636,19 @@ class Storage(Protocol):
 
     def clear_diagnostics(self) -> int:
         """清空，回傳清掉的筆數。"""
+
+    # ---------- Ownership A-1 Expand（SCALE-06／#256） ----------
+
+    def backfill_missing_owner_ids(self, owner_id: str) -> dict[str, int]:
+        """對 5 張 row-scoped 表（`scenarios`／`results`／`snapshots`／
+        `events`／`diagnostics`）**既有** `owner_id IS NULL` 的列，
+        整批補上 `owner_id`。回傳 `{table_name: 更新筆數}`。
+
+        冪等、可重跑：條件式的 `WHERE owner_id IS NULL` 讓重跑只影響
+        「還沒補過」的列，不會覆蓋已經有值（含未來若真的支援多重
+        owner）的既有資料，重跑第二次全部回 0。**這 5 張表以外的表
+        （3 張 singleton user tables、system-wide 市場事實表、
+        `chain_backoff`）本方法不觸碰**——見票面範圍界線。"""
 
     @property
     def kind(self) -> str:

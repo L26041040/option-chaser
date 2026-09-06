@@ -122,6 +122,48 @@ def test_nested_correlation_scopes_restore_the_outer_one():
         assert diagnostics.current_correlation_id() == "outer"
 
 
+# ---------- owner id（SCALE-06／#256） ----------
+
+def test_owner_scope_binds_and_restores():
+    assert diagnostics.current_owner_id() is None
+    with diagnostics.owner_scope("alice") as owner_id:
+        assert owner_id == "alice"
+        assert diagnostics.current_owner_id() == "alice"
+    assert diagnostics.current_owner_id() is None
+
+
+def test_owner_scope_with_no_argument_stays_none():
+    """跟 `correlation_scope()` 不同——`None` 是 owner id 合法、穩定的
+    狀態，沒有對應的『省略就自動生成一個』這條路。"""
+    with diagnostics.owner_scope() as owner_id:
+        assert owner_id is None
+        assert diagnostics.current_owner_id() is None
+
+
+def test_nested_owner_scopes_restore_the_outer_one():
+    with diagnostics.owner_scope("outer"):
+        with diagnostics.owner_scope("inner"):
+            assert diagnostics.current_owner_id() == "inner"
+        assert diagnostics.current_owner_id() == "outer"
+
+
+def test_emit_uses_the_current_owner_id_without_being_told():
+    storage = _RecordingStorage()
+    with diagnostics.owner_scope("owner-auto"):
+        diagnostics.emit(storage, subsystem="historical_iv", stage="cache",
+                         severity="info", message="ok",
+                         ts="2026-08-15T00:00:00+00:00")
+    assert storage.events[0].owner_id == "owner-auto"
+
+
+def test_emit_owner_id_is_none_when_no_scope_is_bound():
+    storage = _RecordingStorage()
+    diagnostics.emit(storage, subsystem="historical_iv", stage="cache",
+                     severity="info", message="ok",
+                     ts="2026-08-15T00:00:00+00:00")
+    assert storage.events[0].owner_id is None
+
+
 # ---------- emit() ----------
 
 def test_emit_writes_to_storage_and_returns_the_event():

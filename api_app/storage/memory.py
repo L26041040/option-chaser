@@ -6,6 +6,7 @@
 """
 from __future__ import annotations
 
+import dataclasses
 from collections import deque
 from contextlib import contextmanager
 
@@ -21,7 +22,12 @@ class MemoryStorage:
     def __init__(self) -> None:
         self._scenarios: dict[str, Scenario] = {}
         self._results: dict[str, dict[str, ResultRecord]] = {}
-        self._snapshots: dict[tuple[str, str], dict] = {}
+        # SCALE-06（#256）：value 改成 `(snapshot_dict, owner_id)`——
+        # 快照本身是原始 dict（不是像 `Scenario`／`ResultRecord` 那樣的
+        # dataclass，沒有欄位可以直接掛 `owner_id`），用 tuple 包一層是
+        # 最小改動；`get_snapshot()` 的既有回傳形狀（純 `dict | None`）
+        # 因此保持不變，`owner_id` 走新增的 `get_snapshot_owner()`。
+        self._snapshots: dict[tuple[str, str], tuple[dict, str | None]] = {}
         self._events: list[dict] = []
         self._rate_cache: RateCacheEntry | None = None
         self._dividend_cache: dict[str, DividendCacheEntry] = {}
@@ -151,18 +157,26 @@ class MemoryStorage:
             snapshot_source=rec.snapshot_source)
 
     def save_snapshot(self, scenario_id: str, analyzed_at: str,
-                      snapshot: dict) -> None:
-        self._snapshots[(scenario_id, analyzed_at)] = snapshot
+                      snapshot: dict, *, owner_id: str | None = None) -> None:
+        self._snapshots[(scenario_id, analyzed_at)] = (snapshot, owner_id)
 
     def get_snapshot(self, scenario_id: str, analyzed_at: str) -> dict | None:
-        return self._snapshots.get((scenario_id, analyzed_at))
+        entry = self._snapshots.get((scenario_id, analyzed_at))
+        return entry[0] if entry is not None else None
+
+    def get_snapshot_owner(self, scenario_id: str,
+                           analyzed_at: str) -> str | None:
+        entry = self._snapshots.get((scenario_id, analyzed_at))
+        return entry[1] if entry is not None else None
 
     # ---------- 事件 ----------
 
     def append_event(self, *, ts: str, scenario_id: str | None,
-                     event: str, payload: dict) -> None:
+                     event: str, payload: dict,
+                     owner_id: str | None = None) -> None:
         self._events.append({"ts": ts, "scenario_id": scenario_id,
-                             "event": event, "payload": payload})
+                             "event": event, "payload": payload,
+                             "owner_id": owner_id})
 
     def list_events(self, *, scenario_id: str | None = None) -> list[dict]:
         if scenario_id is None:
@@ -268,3 +282,41 @@ class MemoryStorage:
         n = len(self._diagnostics)
         self._diagnostics.clear()
         return n
+
+    # ---------- Ownership A-1 Expand（SCALE-06／#256） ----------
+
+    def backfill_missing_owner_ids(self, owner_id: str) -> dict[str, int]:
+        """5 張 row-scoped 表各自獨立掃描、只補 `owner_id is None` 的列
+        ——條件式判斷讓重跑天然冪等（第二次呼叫全部回 0），不需要另外
+        記錄「跑到哪裡了」的游標狀態。"""
+        counts = {"scenarios": 0, "results": 0, "snapshots": 0,
+                 "events": 0, "diagnostics": 0}
+
+        for sid, sc in list(self._scenarios.items()):
+            if sc.owner_id is None:
+                self._scenarios[sid] = dataclasses.replace(sc, owner_id=owner_id)
+                counts["scenarios"] += 1
+
+        for by_ts in self._results.values():
+            for ts, rec in list(by_ts.items()):
+                if rec.owner_id is None:
+                    by_ts[ts] = dataclasses.replace(rec, owner_id=owner_id)
+                    counts["results"] += 1
+
+        for key, (snap, owner) in list(self._snapshots.items()):
+            if owner is None:
+                self._snapshots[key] = (snap, owner_id)
+                counts["snapshots"] += 1
+
+        for e in self._events:
+            if e.get("owner_id") is None:
+                e["owner_id"] = owner_id
+                counts["events"] += 1
+
+        for i in range(len(self._diagnostics)):
+            d = self._diagnostics[i]
+            if d.owner_id is None:
+                self._diagnostics[i] = dataclasses.replace(d, owner_id=owner_id)
+                counts["diagnostics"] += 1
+
+        return counts

@@ -293,6 +293,20 @@ ALTER TABLE results ADD COLUMN IF NOT EXISTS history_replay_version INTEGER;
 -- 到；「snapshot fetched_at」半邊不需要獨立欄位，`analyzed_at` 本身
 -- 就是它。
 ALTER TABLE results ADD COLUMN IF NOT EXISTS snapshot_source TEXT;
+-- SCALE-06（#256，Scaling Foundation Ownership A-1 Expand）：5 張
+-- row-scoped 表新增 nullable `owner_id`——只是資料 boundary 標記，
+-- **不是** authentication／privacy（那是 out-of-scope 的 A-2）。既有
+-- 部署的舊列讀回時是 NULL，`Storage.backfill_missing_owner_ids()`
+-- 負責補齊；本票**不**在任何查詢路徑加過濾（那是 SCALE-11 的範圍）。
+-- 3 張 singleton／provider-key 表（`provider_credentials`／
+-- `data_source_settings`／`provider_verifications`）與 system-wide
+-- 共用表（rate/treasury/dividend/IV caches、`chain_backoff`）刻意
+-- 不在這裡——前者留給 SCALE-13 做結構遷移，後者本來就不該有 owner。
+ALTER TABLE scenarios ADD COLUMN IF NOT EXISTS owner_id TEXT;
+ALTER TABLE results ADD COLUMN IF NOT EXISTS owner_id TEXT;
+ALTER TABLE snapshots ADD COLUMN IF NOT EXISTS owner_id TEXT;
+ALTER TABLE events ADD COLUMN IF NOT EXISTS owner_id TEXT;
+ALTER TABLE diagnostics ADD COLUMN IF NOT EXISTS owner_id TEXT;
 """
 
 # 冷啟動競爭下的良性錯誤：別人已經建好／加好了。
@@ -303,7 +317,7 @@ _RESULT_COLS = ("scenario_id, analyzed_at, view, best_return, "
                 "representative_candidate, spot, per_family, "
                 "family_eligibility, resolved_params, requested_strategies, "
                 "engine_version, view_schema_version, history_replay_version, "
-                "snapshot_source")
+                "snapshot_source, owner_id")
 
 # SCALE-01（#252）：`result_fact_context()` 的窄查詢欄位——刻意不含
 # `view`／`best_return`／`representative_candidate` 等，這是它與
@@ -320,7 +334,7 @@ _REQUESTED_STRATEGIES_IDX = _RESULT_COLS.split(", ").index(
 
 _SCENARIO_COLS = ("id, symbol, direction, target_price, target_month, "
                   "notes, strategies, created_at, archived_at, "
-                  "best_price, worst_price")
+                  "best_price, worst_price, owner_id")
 
 # PERF-02（#178）：`append_diagnostic()`／`append_diagnostics()` 共用
 # 同一份欄位清單與 trim-on-write 查詢——單筆／批次寫入本來就該是同一套
@@ -328,7 +342,8 @@ _SCENARIO_COLS = ("id, symbol, direction, target_price, target_month, "
 # 最新 RETENTION_LIMIT 筆：子查詢在不到上限時回空，`seq <= NULL`
 # 恆假，DELETE 是安全的 no-op。
 _DIAGNOSTICS_INSERT_COLS = ("(event_id, correlation_id, ts, subsystem, "
-                           "stage, severity, user_facing, message, context)")
+                           "stage, severity, user_facing, message, context, "
+                           "owner_id)")
 _DIAGNOSTICS_TRIM_SQL = (
     "DELETE FROM diagnostics WHERE seq <= ("
     "SELECT seq FROM diagnostics ORDER BY seq DESC OFFSET %s LIMIT 1)")
@@ -351,7 +366,8 @@ def _row_to_scenario(row) -> Scenario:
                     target_price=row[3], target_month=row[4], notes=row[5],
                     strategies=tuple(row[6]), created_at=row[7],
                     archived_at=row[8],
-                    best_price=row[9], worst_price=row[10])
+                    best_price=row[9], worst_price=row[10],
+                    owner_id=row[11])
 
 
 class PostgresStorage:
@@ -468,11 +484,11 @@ class PostgresStorage:
             try:
                 conn.execute(
                     f"INSERT INTO scenarios ({_SCENARIO_COLS}) "
-                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
                     (sc.id, sc.symbol, sc.direction, sc.target_price,
                      sc.target_month, sc.notes, Jsonb(list(sc.strategies)),
                      sc.created_at, sc.archived_at,
-                     sc.best_price, sc.worst_price))
+                     sc.best_price, sc.worst_price, sc.owner_id))
             except psycopg.errors.UniqueViolation as e:
                 raise ScenarioExists(sc.id) from e
 
@@ -555,8 +571,8 @@ class PostgresStorage:
                 "best_return, representative_candidate, spot, per_family, "
                 "family_eligibility, resolved_params, requested_strategies, "
                 "engine_version, view_schema_version, history_replay_version, "
-                "snapshot_source) "
-                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) "
+                "snapshot_source, owner_id) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) "
                 "ON CONFLICT (scenario_id, analyzed_at) DO UPDATE "
                 "SET view = EXCLUDED.view, best_return = EXCLUDED.best_return, "
                 "representative_candidate = EXCLUDED.representative_candidate, "
@@ -567,7 +583,8 @@ class PostgresStorage:
                 "engine_version = EXCLUDED.engine_version, "
                 "view_schema_version = EXCLUDED.view_schema_version, "
                 "history_replay_version = EXCLUDED.history_replay_version, "
-                "snapshot_source = EXCLUDED.snapshot_source",
+                "snapshot_source = EXCLUDED.snapshot_source, "
+                "owner_id = EXCLUDED.owner_id",
                 (rec.scenario_id, rec.analyzed_at, Jsonb(rec.view),
                  rec.best_return,
                  Jsonb(rec.representative_candidate)
@@ -581,7 +598,8 @@ class PostgresStorage:
                  Jsonb(list(rec.requested_strategies))
                  if rec.requested_strategies is not None else None,
                  rec.engine_version, rec.view_schema_version,
-                 rec.history_replay_version, rec.snapshot_source))
+                 rec.history_replay_version, rec.snapshot_source,
+                 rec.owner_id))
 
     @staticmethod
     def _row_to_result(row) -> ResultRecord:
@@ -667,14 +685,15 @@ class PostgresStorage:
             snapshot_source=snapshot_source)
 
     def save_snapshot(self, scenario_id: str, analyzed_at: str,
-                      snapshot: dict) -> None:
+                      snapshot: dict, *, owner_id: str | None = None) -> None:
         with self._connect() as conn:
             conn.execute(
-                "INSERT INTO snapshots (scenario_id, analyzed_at, snapshot) "
-                "VALUES (%s, %s, %s) "
+                "INSERT INTO snapshots (scenario_id, analyzed_at, snapshot, "
+                "owner_id) VALUES (%s, %s, %s, %s) "
                 "ON CONFLICT (scenario_id, analyzed_at) DO UPDATE "
-                "SET snapshot = EXCLUDED.snapshot",
-                (scenario_id, analyzed_at, Jsonb(snapshot)))
+                "SET snapshot = EXCLUDED.snapshot, "
+                "owner_id = EXCLUDED.owner_id",
+                (scenario_id, analyzed_at, Jsonb(snapshot), owner_id))
 
     def get_snapshot(self, scenario_id: str, analyzed_at: str) -> dict | None:
         with self._connect() as conn:
@@ -684,18 +703,30 @@ class PostgresStorage:
                 (scenario_id, analyzed_at)).fetchone()
         return row[0] if row else None
 
+    def get_snapshot_owner(self, scenario_id: str,
+                           analyzed_at: str) -> str | None:
+        """SCALE-06（#256）：窄讀取，只選 `owner_id`——不撈 `snapshot`
+        JSONB（數百 KB 等級）。"""
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT owner_id FROM snapshots "
+                "WHERE scenario_id = %s AND analyzed_at = %s",
+                (scenario_id, analyzed_at)).fetchone()
+        return row[0] if row else None
+
     # ---------- 事件 ----------
 
     def append_event(self, *, ts: str, scenario_id: str | None,
-                     event: str, payload: dict) -> None:
+                     event: str, payload: dict,
+                     owner_id: str | None = None) -> None:
         with self._connect() as conn:
             conn.execute(
-                "INSERT INTO events (ts, scenario_id, event, payload) "
-                "VALUES (%s, %s, %s, %s)",
-                (ts, scenario_id, event, Jsonb(payload)))
+                "INSERT INTO events (ts, scenario_id, event, payload, "
+                "owner_id) VALUES (%s, %s, %s, %s, %s)",
+                (ts, scenario_id, event, Jsonb(payload), owner_id))
 
     def list_events(self, *, scenario_id: str | None = None) -> list[dict]:
-        sql = "SELECT ts, scenario_id, event, payload FROM events"
+        sql = "SELECT ts, scenario_id, event, payload, owner_id FROM events"
         params: tuple = ()
         if scenario_id is not None:
             sql += " WHERE scenario_id = %s"
@@ -704,7 +735,7 @@ class PostgresStorage:
         with self._connect() as conn:
             rows = conn.execute(sql, params).fetchall()
         return [{"ts": r[0], "scenario_id": r[1], "event": r[2],
-                 "payload": r[3]} for r in rows]
+                 "payload": r[3], "owner_id": r[4]} for r in rows]
 
     # ---------- 利率曲線快取 ----------
 
@@ -986,11 +1017,11 @@ class PostgresStorage:
         with self._connect() as conn:
             conn.execute(
                 f"INSERT INTO diagnostics {_DIAGNOSTICS_INSERT_COLS} "
-                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
                 (event.event_id, event.correlation_id, event.ts,
                  event.subsystem, event.stage, event.severity,
                  event.user_facing, event.message,
-                 Jsonb(event.context)))
+                 Jsonb(event.context), event.owner_id))
             conn.execute(_DIAGNOSTICS_TRIM_SQL, (RETENTION_LIMIT,))
 
     def append_diagnostics(self, events: list[DiagnosticEvent]) -> None:
@@ -1002,13 +1033,13 @@ class PostgresStorage:
         if not events:
             return
         values_sql = ", ".join(
-            ["(%s, %s, %s, %s, %s, %s, %s, %s, %s)"] * len(events))
+            ["(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"] * len(events))
         params: list = []
         for event in events:
             params.extend([event.event_id, event.correlation_id, event.ts,
                           event.subsystem, event.stage, event.severity,
                           event.user_facing, event.message,
-                          Jsonb(event.context)])
+                          Jsonb(event.context), event.owner_id])
         with self._connect() as conn:
             conn.execute(
                 f"INSERT INTO diagnostics {_DIAGNOSTICS_INSERT_COLS} "
@@ -1019,19 +1050,40 @@ class PostgresStorage:
         with self._connect() as conn:
             rows = conn.execute(
                 "SELECT event_id, correlation_id, ts, subsystem, stage, "
-                "severity, user_facing, message, context FROM diagnostics "
-                "ORDER BY seq DESC LIMIT %s", (limit,)).fetchall()
+                "severity, user_facing, message, context, owner_id "
+                "FROM diagnostics ORDER BY seq DESC LIMIT %s",
+                (limit,)).fetchall()
         # `user_facing`（r[6]）為 NULL 只會發生在遷移前寫入的舊列——套用
         # 跟 `diagnostics.emit()` 完全相同的預設規則補值，讀回的行為因此
-        # 對新舊列一致，不會讓查詢端還要另外處理 NULL。
+        # 對新舊列一致，不會讓查詢端還要另外處理 NULL。`owner_id`（r[9]）
+        # 為 NULL 則原樣穿透——不像 `user_facing` 有個明確的推導規則，
+        # `None` 本身就是這個欄位合法、穩定的值（見 `DiagnosticEvent`
+        # 欄位註解）。
         return [DiagnosticEvent(
             event_id=r[0], correlation_id=r[1], ts=r[2], subsystem=r[3],
             stage=r[4], severity=r[5],
             user_facing=r[6] if r[6] is not None else r[5] in ("warning", "error"),
-            message=r[7], context=r[8]) for r in rows]
+            message=r[7], context=r[8], owner_id=r[9]) for r in rows]
 
     def clear_diagnostics(self) -> int:
         with self._connect() as conn:
             n = conn.execute("SELECT COUNT(*) FROM diagnostics").fetchone()[0]
             conn.execute("DELETE FROM diagnostics")
         return n
+
+    # ---------- Ownership A-1 Expand（SCALE-06／#256） ----------
+
+    def backfill_missing_owner_ids(self, owner_id: str) -> dict[str, int]:
+        """5 張 row-scoped 表各自一條 `UPDATE ... WHERE owner_id IS
+        NULL`——條件式 WHERE 讓重跑天然冪等（第二次呼叫全部回 0），
+        `cur.rowcount` 直接就是「這次真的補了幾筆」，不需要另外
+        SELECT COUNT 再 UPDATE 兩趟。"""
+        tables = ("scenarios", "results", "snapshots", "events", "diagnostics")
+        counts: dict[str, int] = {}
+        with self._connect() as conn:
+            for table in tables:
+                cur = conn.execute(
+                    f"UPDATE {table} SET owner_id = %s "
+                    "WHERE owner_id IS NULL", (owner_id,))
+                counts[table] = cur.rowcount
+        return counts
