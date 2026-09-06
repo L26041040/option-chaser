@@ -11,6 +11,7 @@ serverless 前提：全程不碰檔案系統（Vercel 唯讀），走
 from __future__ import annotations
 
 import dataclasses
+import os
 import time
 import uuid
 from datetime import date, timedelta
@@ -32,8 +33,8 @@ from option_chaser.timeframe import (TargetMonth, calendar_anchor,
 
 from . import chain_backoff, diagnostics, providers
 from .clock import now_utc_iso, ny_today
-from .identity import IdentityResolver, default_identity_resolver
 from .dividend_cache import cached_loader as cached_dividend_loader
+from .identity import IdentityResolver, default_identity_resolver
 from .rate_cache import cached_loader
 from .storage import (ContractHistory, DataSourceSettings, IvBackfillRun,
                       IvObservation, ProviderCredential, ProviderVerification,
@@ -472,6 +473,7 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
                cboe_fetch: FetchChain | None = None,
                chain_backoff_default: timedelta = chain_backoff.DEFAULT_BACKOFF,
                identity_resolver: IdentityResolver = default_identity_resolver,
+               cron_secret: str | None = None,
                ) -> FastAPI:
     """`fetch`／`storage`／`rate_loader`／`dividend_loader` 皆可注入：
     測試傳入固定快照、記憶體假體與假來源，因此不打真網路、不碰真資料庫，
@@ -547,6 +549,19 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
     monkeypatch `identity.default_identity_resolver` 這個模組屬性——
     要換身分邏輯，直接透過這個 DI 參數傳一個不同的函式進來就是了，
     這正是它存在的目的）。
+
+    `cron_secret`（SCALE-07／#257，Treasury Cron）：`GET /api/cron/
+    warm-rate-cache` 驗證 `Authorization: Bearer <cron_secret>` 用的
+    比對值。預設 `None`——production 由呼叫端（`api/index.py`）留白，
+    在函式本體裡才惰性讀 `os.environ.get("CRON_SECRET")`（比照
+    `database_url()` 既有「呼叫時讀環境變數，可用顯式值覆寫供測試」
+    的既有慣例，不是 `cboe_fetch` 那種函式參照的 eager-binding
+    陷阱——這裡只是一個設定字串，讀一次環境變數沒有 monkeypatch
+    失效的問題，但仍選擇惰性讀取以維持測試決定性：傳入顯式字串
+    （含空字串）時完全不去看真實環境變數）。這把 secret 缺失或不符
+    一律 401 fail-closed——不像 `provider_credentials` 那種使用者自己
+    設定的 token，這是 Vercel 平台層級的基礎設施密鑰，沒有對應的
+    Settings UI，本 app 只單純驗證有沒有對上。
     """
     app = FastAPI(title="Option Chaser API", version=__version__)
 
@@ -586,6 +601,11 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
 
     _effective_fetch: FetchChain = (
         _default_fetch if fetch is service.fetch_chain else fetch)
+
+    # SCALE-07（#257）：`None`＝呼叫端沒有覆寫，惰性讀真實環境變數；
+    # 顯式傳入（含空字串）時完全採用那個值，測試才有決定性。
+    _effective_cron_secret = (cron_secret if cron_secret is not None
+                              else os.environ.get("CRON_SECRET"))
 
     # 合併 correlation id（DG-02／#145）與 storage 連線 scope
     # （PERF-01／#177，T02／#186 修形）成單一層 middleware——原本兩層
@@ -795,6 +815,33 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
             kind = f"unavailable: {e}"
         return {"status": "ok", "engine_version": __version__,
                 "storage": kind, "path": request.url.path, "rate": rate}
+
+    # ---------- Treasury Cron 預熱（SCALE-07／#257） ----------
+
+    @app.get("/api/cron/warm-rate-cache")
+    def cron_warm_rate_cache(request: Request) -> dict:
+        """只做刷新、不服務使用者請求——Vercel Cron 每個市場日觸發一次，
+        把 shared `rate_cache` 填新，讓當天第一個真正的使用者不必自己
+        承擔 Treasury cold fetch。**只是預熱，不是 correctness 唯一
+        來源**：與 `_rate_curve_loader()` 是同一條 canonical live
+        loader/cache pipeline（`api_app/rate_cache.py::cached_loader()`
+        本已有的既有機制），不另外寫一套 Treasury 解析邏輯——同一市場日
+        內既有的 `market_day` 判準本身就讓重複呼叫 idempotent（第二次
+        直接命中快取、零 vendor 呼叫），非交易日／vendor 尚未發布時
+        loader 既有的 stale／failure 語意原樣適用，不在這裡另外偽造
+        「今天已經新鮮」。既有同步 refresh-on-miss＋7 日陳舊備援
+        （`api_app/rate_cache.py`）完全不受這個端點存在與否影響——
+        Cron 沒跑到或跑失敗，當天第一次真正的分析仍會自己觸發同一條
+        pipeline 補救。
+
+        授權失敗（secret 未設定或不符）**先驗證再呼叫 pipeline**——
+        不合法的請求零 vendor／cache mutation（AC-2）。
+        """
+        provided = request.headers.get("authorization")
+        if not _effective_cron_secret or provided != f"Bearer {_effective_cron_secret}":
+            raise HTTPException(status_code=401, detail="unauthorized")
+        curve, note = _rate_curve_loader()(ny_today())
+        return {"ok": curve is not None, "note": note}
 
     # ---------- Application diagnostics（DG-02／#145） ----------
 

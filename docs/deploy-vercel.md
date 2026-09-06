@@ -75,6 +75,29 @@ Marketplace 的 Neon 免費層，全程在 Vercel 後台點：
 2. 在 Vercel 後台 **Redeploy**
 3. `GET /api/scenarios` ——那筆還在＝驗證通過
 
+## Treasury Cron 預熱（SCALE-07／#257，需求方操作一次，選用）
+
+`vercel.json` 已設一個每個交易日 UTC 11:00（約美東早上 6-7 點，視
+夏令時）的 Cron，打 `GET /api/cron/warm-rate-cache`，把當天的利率
+曲線快取先填新——目的是讓當天第一個真正的使用者不必自己承擔一次
+Treasury 冷抓取；**這只是預熱，不是必要條件**——不設定
+`CRON_SECRET`、或整個停用 Cron，既有的同步 refresh-on-miss（第一次
+真正分析時自己觸發抓取）完全不受影響。
+
+要讓這個端點真的驗證授權（**強烈建議**，否則任何人都能觸發它）：
+
+1. 專案 → **Settings** → **Environment Variables**
+2. 新增 `CRON_SECRET`，值設一個隨機字串，三個 Environment 都勾
+3. 重新部署一次（環境變數是建置時綁定的）
+
+Vercel 排程觸發 Cron 時會自動帶上
+`Authorization: Bearer <CRON_SECRET>`——不需要另外設定 header。
+`CRON_SECRET` 沒設時這個端點對任何請求一律回 401（fail-closed），
+不會變成一個誰都打得通的公開端點。
+
+停用／回退：把 `vercel.json` 的 `crons` 區塊整段刪掉即可，行為退回
+純 cache-aside（既有同步路徑），零風險。
+
 ## 部署後的第一件事：確認 Cboe 可達性
 
 開部署網址 → 按「跑一次分析」→ 看卡片最下面那行「資料來源」：
