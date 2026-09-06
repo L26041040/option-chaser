@@ -146,6 +146,41 @@ def test_missing_leg_in_a_vertical_spread_is_a_gap():
     assert cost_from_snapshot(without_short, key) is None
 
 
+def test_missing_or_non_finite_leg_in_a_butterfly_is_a_gap():
+    """`/code-review` 抓到的真缺口：AC-2「1/2/3 腿缺失」原本只測到
+    單腳與 vertical 兩種形狀，butterfly（3 腿、獨立的一段
+    `if strategy in _BUTTERFLY_STRATEGIES` 判斷邏輯）完全沒有負向
+    測試覆蓋——結構上與 vertical 平行，但沒測就不算真的驗證過。"""
+    from dataclasses import replace
+
+    snap = load_snapshot(FIX)
+    calls = sorted({c.strike for c in snap.contracts if c.option_type == "call"})
+    low, mid, high = calls[0], calls[1], calls[2]
+    expiry = next(c.expiry for c in snap.contracts
+                 if c.option_type == "call" and c.strike == low)
+    key = f"call-fly|{low:g}|{mid:g}|{high:g}|{expiry}"
+
+    # 三腿齊全時算得出值
+    assert cost_from_snapshot(snap, key) is not None
+
+    # 拿掉中腿——缺腿必須是誠實的 None
+    without_mid = replace(snap, contracts=tuple(
+        c for c in snap.contracts
+        if not (c.option_type == "call" and c.strike == mid
+                and c.expiry == expiry)))
+    assert cost_from_snapshot(without_mid, key) is None
+
+    # 高腿 ask 為 None／NaN／Infinity——同樣是誠實的 None
+    high_c = next(c for c in snap.contracts
+                 if c.option_type == "call" and c.strike == high
+                 and c.expiry == expiry)
+    for bad_ask in (None, math.nan, math.inf):
+        broken = replace(snap, contracts=tuple(
+            replace(high_c, ask=bad_ask) if c is high_c else c
+            for c in snap.contracts))
+        assert cost_from_snapshot(broken, key) is None
+
+
 # ---------- AC-3：bid == ask 不得被誤判成倒掛 ----------
 
 def test_crossed_quote_is_not_misjudged_as_invalid():
@@ -178,6 +213,28 @@ def test_crossed_quote_is_not_misjudged_as_invalid():
     vkey = f"bull-call-spread|{long_strike:g}|{short_strike:g}|{long_c.expiry}"
     expected = long_c.ask - 2.0
     assert cost_from_snapshot(snap3, vkey) == pytest.approx(expected)
+
+    # butterfly 的中腿也一樣：bid==ask 是合法報價，不是倒掛
+    calls_sorted = sorted({c.strike for c in snap.contracts
+                          if c.option_type == "call"})
+    low, mid, high = calls_sorted[0], calls_sorted[1], calls_sorted[2]
+    fly_expiry = next(c.expiry for c in snap.contracts
+                      if c.option_type == "call" and c.strike == low)
+    mid_c = next(c for c in snap.contracts
+                if c.option_type == "call" and c.strike == mid
+                and c.expiry == fly_expiry)
+    low_c = next(c for c in snap.contracts
+                if c.option_type == "call" and c.strike == low
+                and c.expiry == fly_expiry)
+    high_c = next(c for c in snap.contracts
+                 if c.option_type == "call" and c.strike == high
+                 and c.expiry == fly_expiry)
+    tied_mid = replace(mid_c, bid=3.0, ask=3.0)
+    contracts3 = tuple(tied_mid if c is mid_c else c for c in snap.contracts)
+    snap4 = replace(snap, contracts=contracts3)
+    fkey = f"call-fly|{low:g}|{mid:g}|{high:g}|{fly_expiry}"
+    expected_fly = low_c.ask - 2.0 * 3.0 + high_c.ask
+    assert cost_from_snapshot(snap4, fkey) == pytest.approx(expected_fly)
 
 
 # ---------- AC-4：canonical helper 抽出前後 natural_cost() 逐位元不變 ----------
