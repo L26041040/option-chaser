@@ -38,6 +38,74 @@ commit（沒有其他改動要 commit 時，單獨為這一行開一個小 commi
 
 ## 專案紀錄區
 
+### Scaling Foundation 施工中（OPTION-SCALING-IMPLEMENT-001，2026-09-06 起，Owner 授權全自主執行）
+
+Owner 明確裁示：依 #252–#269 dependency graph 自主完成，不逐票停下
+等待確認；只在 SCALE-15（#266，Production Evidence Gate）與 SCALE-18
+（#269，irreversible cleanup）兩個 hard stop 前停下回報。**票面內容
+已被 Owner 大幅修訂過**（比老弟原稿更嚴謹，尤其 narrow history／
+Ownership／Parity Proof 幾張）——施工一律以 GitHub issue 最新內容為
+準，不用舊稿印象。
+
+**已完成**：
+
+- **SCALE-01**［#252］Stage 1-0 拆 seed（commits `d68b6e9`＋跟進
+  `baec0e1`）：`ResultRecord` 新增 6 個歷史 fact 欄位——
+  `resolved_params`（＝`view["params"]`，完整 resolved
+  `AnalysisParams`）、`requested_strategies`（＝
+  `tuple(r["strategy"] for r in view["results"])`，這次分析實際
+  請求的 subtype 清單，可證明與 `AnalysisRequest.strategies` 一一
+  對應）、`engine_version`、`view_schema_version`、
+  `history_replay_version`（新常數 `store.HISTORY_REPLAY_VERSION=1`，
+  凍結未來 candidate-specific historical membership replay 語意，
+  供尚未建立的 SCALE-09 resolver 使用）、`snapshot_source`（＝
+  `view["meta"]["source"]`，`/code-review` Spec 軸抓到原本漏掉的
+  provenance 半邊——snapshot fetched_at 半邊不需要獨立欄位，
+  `analyzed_at` 本身就是它）。純函式
+  `option_chaser.store.historical_fact_context(view)` 是唯一計算
+  邏輯，新寫入（`_refresh_and_save()`）與既有資料 backfill
+  （`api_app/storage/backfill.py::backfill_result_fact_context()`＋
+  `scripts/backfill_result_fact_context.py`，冪等、可續跑、可安全
+  中斷）共用同一份。新增窄查詢 `Storage.result_fact_context()`
+  （新 `ResultFactContext` 型別，SQL 不 SELECT `view`）。`view` 本身
+  逐位元不變（結構性測試鎖住）。
+- **SCALE-02**［#253］C2 `/results` 改讀 snapshots PK（commit
+  `baec0e1`）：新增 `Storage.result_timestamps()`，主要索引來源是
+  `snapshots` 主鍵，UNION `results` 表窄查詢（只選 `analyzed_at`，
+  不觸碰 `view`）補回任何缺 snapshot 的孤兒列——`save_result()`／
+  `save_snapshot()` 是兩次獨立呼叫、未包交易，中途中斷會留下這種
+  孤兒，這是實測會發生的情況而非假想。`/api/scenarios/{id}/results`
+  改用它取代原本連整份 `view` JSONB 都撈出來的 `result_history()`。
+  結構性測試鎖住 SQL 不含 `view`、不對任何表做 `DISTINCT`。**AC-4
+  真實 Postgres 延遲量測**（`/code-review` Spec 軸抓到原本缺實測，
+  跟進 commit `ee18f73` 補上）：100 筆歷史列（每筆 view ~55KB）下
+  實測 median 7.2×、p95 8.1× 改善，寫成可長期守門的 pytest 斷言。
+- **SCALE-03**［#254］S1-0b `cost_from_snapshot()` 快照回填原語
+  （commits `ee18f73`＋跟進 `01f584b`）：`scenarios.natural_cost()`
+  抽出三個 canonical 算式 helper（`_single_leg_cost`／
+  `_vertical_cost`／`_butterfly_cost`，運算式順序逐字不變），新增
+  `option_chaser/snapshot_replay.py::cost_from_snapshot(snapshot,
+  candidate_key)` 與它們共用同一份，不複製第二份公式。只做查表＋
+  算術，**不判定 historical membership／eligibility**（那是
+  SCALE-09 的職責）——`bid==ask` 不被誤判成倒掛（現行 A 層合法
+  報價本就是 `ask>=bid`）。AC-1 用 production-scale fixture（600
+  張合約、六個 subtype、看漲＋看跌兩輪覆蓋全部方向）對整個
+  ranked pool 逐一比對，128,668+ 筆 0 mismatch，遠超 Prototype #065
+  的 4,626 筆基準。`/code-review` 抓到 AC-2／AC-3 原本漏測 butterfly
+  形狀的缺腿／非有限值／`bid==ask` 三種負向案例，已補齊。
+  純函式本身未接任何生產路徑（結構性 AST 隔離測試鎖住不 import
+  `ranking`／`filters`／`service`）。
+
+三張票皆已跑 `/code-review`（Standards＋Spec 兩軸），發現的真缺口
+（snapshot provenance、AC-4 量測、butterfly 負向測試）皆已修正並
+重新驗證通過。全套後端測試（記憶體＋真實 Postgres 雙後端）持續
+zero regression。
+
+**下一步**：依 dependency graph 繼續——SCALE-04（Cboe 429 後端，
+frontier）進行中。
+
+### OPTION-SCALING-TICKETS-REVISE-006 拆票（2026-09-06，歷史紀錄）
+
 > **現況總覽（2026-09-06 四度追加，OPTION-SCALING-TICKETS-REVISE-006
 > 拆票完成——取代下方 PROTOTYPE-004 段落「下一步：可進 `/to-tickets`」
 > 那句的指向，PROTOTYPE-004 段落其餘原文照舊）**：
