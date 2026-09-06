@@ -537,10 +537,62 @@ export function resolveCandidate(
 /**
  * 失敗發生在哪一個環節（後端 `_fail` 的 `stage`，V4／#52）。
  * `null` ＝ 後端沒說（例如 422 之類的驗證錯誤），畫面退回通用說法。
+ * `"rate_limited"`（SCALE-05／#260）：Cboe 目前處於 provider-global
+ * 限流封鎖窗，見下方 `RateLimitInfo`——這個 stage 恆帶著 additive
+ * metadata，重試有沒有意義完全取決於倒數是否歸零，不是「稍後可以
+ * 重試」這種模糊說法。
  */
-export type FailureStage = "fetch" | "analyze" | "params" | "archived" | null;
+export type FailureStage =
+  | "fetch" | "analyze" | "params" | "archived" | "rate_limited" | null;
 
-const STAGES = ["fetch", "analyze", "params", "archived"] as const;
+const STAGES = ["fetch", "analyze", "params", "archived", "rate_limited"] as const;
+
+/**
+ * SCALE-05（#260）：`stage === "rate_limited"` 時，後端額外揭露的
+ * 結構化事實——AC-2 明文要求 UI 不得解析 `message` 字串才知道
+ * `blocked_until`／剩餘時間，因此這裡的每個欄位都是獨立、可直接讀取
+ * 的資料，不是塞進一句話裡的文字。欄位名沿用後端 `chain_backoff.
+ * status()` 的 wire 形狀（snake_case），與本檔案其餘契約型別一致。
+ */
+export interface RateLimitInfo {
+  /** 封鎖窗結束的絕對時間（ISO 8601）——前端倒數的唯一依據，見
+   *  `useCountdownSeconds()`；不是拿伺服器當下算出的秒數往下數。 */
+  blocked_until: string;
+  /** 上游最近一次給的原始 `Retry-After`，`null` ＝ 沒給或解析不出來
+   *  （這次改用保守預設退避時間）。 */
+  retry_after_seconds: number | null;
+  /** 伺服器在**這次回應當下**算出的剩餘秒數——只用來當第一次畫面
+   *  渲染前的參考值，不是持續倒數的來源（那是 `blocked_until`）。 */
+  remaining_seconds: number;
+  /** 最近一次成功抓取的時間，`null` ＝ 目前這輪還沒有過。 */
+  last_success_at: string | null;
+  /** 連續失敗次數是否已達「持續性事故」門檻（後端 `chain_backoff.
+   *  is_sustained_incident()` 唯一判準）——UI 據此換一套文案，
+   *  不得自己重新設一個門檻猜測。 */
+  incident: boolean;
+}
+
+function parseRateLimitInfo(body: {
+  blocked_until?: unknown;
+  retry_after_seconds?: unknown;
+  remaining_seconds?: unknown;
+  last_success_at?: unknown;
+  incident?: unknown;
+}): RateLimitInfo | null {
+  if (typeof body.blocked_until !== "string") return null;
+  return {
+    blocked_until: body.blocked_until,
+    retry_after_seconds:
+      typeof body.retry_after_seconds === "number"
+        ? body.retry_after_seconds
+        : null,
+    remaining_seconds:
+      typeof body.remaining_seconds === "number" ? body.remaining_seconds : 0,
+    last_success_at:
+      typeof body.last_success_at === "string" ? body.last_success_at : null,
+    incident: body.incident === true,
+  };
+}
 
 export class ApiError extends Error {
   readonly stage: FailureStage;
@@ -548,12 +600,16 @@ export class ApiError extends Error {
    *  （DG-02／#145）。請求整個失敗、連回應都沒有時仍是 `null`——那種
    *  情況下伺服器端從未產生過 correlation id 可言。 */
   readonly correlationId: string | null;
+  /** SCALE-05（#260）：只在 `stage === "rate_limited"` 有值。 */
+  readonly rateLimit: RateLimitInfo | null;
 
   constructor(message: string, stage: FailureStage = null,
-             correlationId: string | null = null) {
+             correlationId: string | null = null,
+             rateLimit: RateLimitInfo | null = null) {
     super(message);
     this.stage = stage;
     this.correlationId = correlationId;
+    this.rateLimit = rateLimit;
   }
 }
 
@@ -561,6 +617,12 @@ export class ApiError extends Error {
 export interface RefreshFailure {
   stage: FailureStage;
   message: string;
+  /** SCALE-05（#260）：只在 `stage === "rate_limited"` 有值。選填
+   *  （而非必填的 `RateLimitInfo | null`）是刻意的——既有大量測試
+   *  fixture 直接手寫 `{stage, message}` 物件字面量，要求它們逐一補
+   *  一個與該測試場景無關的 `rateLimit: null` 只會製造無意義的 diff
+   *  噪音；`undefined` 與 `null` 在所有讀取端（`?.`／`??`）視為同義。 */
+  rateLimit?: RateLimitInfo | null;
 }
 
 /**
@@ -568,8 +630,36 @@ export interface RefreshFailure {
  * TypeError，不帶分層——那也要有話講，不能讓卡片空著。
  */
 export function toFailure(e: unknown): RefreshFailure {
-  if (e instanceof ApiError) return { stage: e.stage, message: e.message };
-  return { stage: null, message: e instanceof Error ? e.message : String(e) };
+  if (e instanceof ApiError) {
+    return { stage: e.stage, message: e.message, rateLimit: e.rateLimit };
+  }
+  return {
+    stage: null, message: e instanceof Error ? e.message : String(e),
+    rateLimit: null,
+  };
+}
+
+/**
+ * 把一筆批次刷新結果（`refresh-run` 回應裡 `results[]` 的失敗項）轉成
+ * `RefreshFailure`——與 `toFailure()`（單一劇本刷新的 `ApiError` 路徑）
+ * 共用同一種 `rateLimit` 附加資訊形狀與解析邏輯，兩條路徑不各自維護
+ * 一份（SCALE-05／#260，AC-6 延伸到前端：後端已經統一過一次分類判準，
+ * 前端這裡是同一份判準的唯一消費／再現形狀，不是第二次判斷）。
+ */
+export function refreshFailureFromBatchResult(r: {
+  stage: unknown;
+  message: string;
+  blocked_until?: unknown;
+  retry_after_seconds?: unknown;
+  remaining_seconds?: unknown;
+  last_success_at?: unknown;
+  incident?: unknown;
+}): RefreshFailure {
+  const stage = stageOf(r.stage);
+  return {
+    stage, message: r.message,
+    rateLimit: stage === "rate_limited" ? parseRateLimitInfo(r) : null,
+  };
 }
 
 /**
@@ -727,9 +817,20 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
     // 3. FastAPI 驗證錯誤（422）的物件陣列，直接丟進畫面會變成
     //    [object Object]，所以退回帶狀態碼的通用訊息
     if (detail && typeof detail === "object" && !Array.isArray(detail)) {
-      const body = detail as { stage?: unknown; message?: unknown };
+      const body = detail as {
+        stage?: unknown; message?: unknown;
+        blocked_until?: unknown; retry_after_seconds?: unknown;
+        remaining_seconds?: unknown; last_success_at?: unknown;
+        incident?: unknown;
+      };
       if (typeof body.message === "string") {
-        throw new ApiError(body.message, stageOf(body.stage), correlationId);
+        const stage = stageOf(body.stage);
+        // SCALE-05（#260，AC-2）：additive metadata 是獨立欄位，不必
+        // 解析 `body.message` 這句話——只有 `stage === "rate_limited"`
+        // 時才嘗試解析，其餘 stage 的 `rateLimit` 恆為 `null`。
+        const rateLimit =
+          stage === "rate_limited" ? parseRateLimitInfo(body) : null;
+        throw new ApiError(body.message, stage, correlationId, rateLimit);
       }
     }
     const message =
@@ -805,7 +906,10 @@ export function refreshScenario(id: string): Promise<ScenarioSummary> {
  */
 export type RefreshRunResult =
   | { scenario_id: string; ok: true; row: ScenarioSummary }
-  | { scenario_id: string; ok: false; stage: FailureStage; message: string };
+  | ({ scenario_id: string; ok: false; stage: FailureStage; message: string }
+    // SCALE-05（#260）：`stage === "rate_limited"` 時額外帶著的
+    // additive metadata，見 `RateLimitInfo`／`refreshFailureFromBatchResult`。
+    & Partial<RateLimitInfo>);
 
 export interface RefreshRunResponse {
   results: RefreshRunResult[];

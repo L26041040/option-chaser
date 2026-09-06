@@ -464,15 +464,39 @@ def _diagnostic_json(event) -> dict:
     return d
 
 
-def _fail(stage: str, status: int, message: str) -> HTTPException:
+def _fail(stage: str, status: int, message: str, **extra: object) -> HTTPException:
     """失敗分層（V4／#52）。
 
     錯誤主體帶 `stage`，而不是只給一句話：「抓不到報價」與「分析失敗」
     使用者能做的處置不同（前者重試有意義、後者沒有），畫面要能分開講。
     `message` 仍是給人看的完整句子——舊的字串型 detail 客戶端照樣可讀。
+
+    `**extra`（SCALE-05／#260）：additive metadata，只有呼叫端明確
+    傳入時才會出現在 `detail` 裡——既有三個呼叫端（`params`／
+    `analyze`／`archived`）從未傳入，`detail` 因此逐位元不變（AC-1）。
     """
-    return HTTPException(status_code=status,
-                         detail={"stage": stage, "message": message})
+    detail: dict = {"stage": stage, "message": message}
+    detail.update(extra)
+    return HTTPException(status_code=status, detail=detail)
+
+
+def _classify_fetch_failure(storage: Storage, e: FetchError, symbol: str) -> HTTPException:
+    """抓鏈失敗的**唯一**分類點（SCALE-05／#260，AC-6）——`_analyze()`
+    （`refresh_scenario` 走這條）與 `refresh_run` 的 group-level 抓鏈
+    共用同一份判準：目前是不是正處於 Cboe 的 provider-global 限流
+    封鎖窗（`chain_backoff.status()`），不在兩處各自判斷一次、避免
+    兩個端點的分類邏輯漂移。
+
+    是＝`"rate_limited"`（429，附上 `chain_backoff.status()` 給的全部
+    結構化事實，AC-2）；否＝維持既有 `"fetch"`（502）分層，逐字不變。
+    `.detail` 是純 dict，`refresh_run` 直接拿去併進批次結果的一筆
+    失敗項，不必重新包一次 HTTPException。"""
+    rl = chain_backoff.status(storage, "cboe")
+    if rl is not None:
+        return _fail("rate_limited", 429,
+                     f"{symbol} 的報價來源目前受限流（Cboe），請稍後再試",
+                     **rl)
+    return _fail("fetch", 502, f"抓不到 {symbol} 的報價：{e}")
 
 
 def create_app(*, fetch: FetchChain = service.fetch_chain,
@@ -847,7 +871,7 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
                 # 我們自己程式裡的 bug 會被貼上「抓不到報價、可稍後重試」的
                 # 標籤，正好是這張票要消滅的那種誤導。其他例外照樣往上走成
                 # 500——「不知道是哪一段」時說不知道，好過說一個錯的分層。
-                raise _fail("fetch", 502, f"抓不到 {symbol} 的報價：{e}") from e
+                raise _classify_fetch_failure(_db(), e, symbol) from e
         try:
             result = service.run_with_snapshot(
                 req, snap, rate_curve_loader=_rate_curve_loader(),
@@ -1385,9 +1409,12 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
                                     "message": f"劇本已在垃圾桶，不再刷新：{sc.id}"})
                 elif (fetch_error is not None and not month_is_over(
                         TargetMonth.from_key(sc.target_month), today)):
+                    # SCALE-05（#260，AC-6）：與 `_analyze()` 共用同一個
+                    # 分類點，不在這裡重新判斷一次「是不是限流」。
+                    detail = _classify_fetch_failure(
+                        _db(), fetch_error, symbol).detail
                     results.append({"scenario_id": sc.id, "ok": False,
-                                    "stage": "fetch",
-                                    "message": f"抓不到 {symbol} 的報價：{fetch_error}"})
+                                    **detail})
                 else:
                     try:
                         row = _refresh_and_save(sc, today, snap=snap)

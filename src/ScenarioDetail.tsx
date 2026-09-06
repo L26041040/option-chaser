@@ -43,8 +43,10 @@ import { isThinPool, legPrices, validPairsForExpiry } from "./expiry";
 import { heatmapProps } from "./heatmap";
 import { getScenarioCached } from "./fetchCache";
 import {
-  failureLabel, formatAnalyzedAt, formatReturn, money, moneyOrDash,
+  failureLabel, formatAnalyzedAt, formatReturn, isRetryDisabledByRateLimit,
+  money, moneyOrDash, rateLimitCountdownText, rateLimitHeadline,
 } from "./scenarios";
+import { useCountdownSeconds } from "./useCountdown";
 
 /**
  * 摘要格線裡的一格：標籤在上、數字在下。跟站上其他地方的 `.row`
@@ -278,6 +280,38 @@ function DetailBody({ scenarioId, view, analyzedAt, strategies }: {
   );
 }
 
+/**
+ * SCALE-05（#260）：抽成獨立元件才能在裡面呼叫 `useCountdownSeconds()`
+ * ——這個 hook 只在限流失敗（有 `blocked_until` 可倒數）時才需要跑，
+ * 但它掛在整份 `ScenarioDetail` 主體裡會變成「有時候呼叫、有時候不」
+ * 的條件式 hook（違反 React hook 規則）；獨立成子元件後，呼叫與否
+ * 變成「這個元件有沒有被掛載」，hook 本身在它自己的函式體內永遠是
+ * 無條件呼叫一次，合法。
+ */
+function RefreshFailureNotice({ failure, onRefresh }: {
+  failure: RefreshFailure;
+  onRefresh?: () => void;
+}) {
+  const rateLimit = failure.stage === "rate_limited" ? failure.rateLimit : null;
+  const remaining = useCountdownSeconds(rateLimit?.blocked_until ?? null);
+  return (
+    <div className="notice error" role="alert">
+      <div className="row-value">
+        {rateLimit ? rateLimitHeadline(rateLimit.incident) : failureLabel(failure.stage)}
+      </div>
+      <p className="caption">
+        {/* SCALE-05（#260，AC-2）：限流失敗改講結構化倒數，不解析
+            `message` 字串；其餘失敗沿用既有訊息原文。 */}
+        {rateLimit ? rateLimitCountdownText(remaining ?? 0) : failure.message}
+      </p>
+      <button className="text-button" onClick={onRefresh}
+             disabled={isRetryDisabledByRateLimit(failure, remaining)}>
+        重試
+      </button>
+    </div>
+  );
+}
+
 export default function ScenarioDetail({
   id,
   refreshedAt = null,
@@ -376,13 +410,7 @@ export default function ScenarioDetail({
           失敗（#68 既有判斷）：兩種狀態同時出現會讓使用者搞不清楚現在
           是哪一種。 */}
       {!updating && failure && !detail?.expired && (
-        <div className="notice error" role="alert">
-          <div className="row-value">{failureLabel(failure.stage)}</div>
-          <p className="caption">{failure.message}</p>
-          <button className="text-button" onClick={onRefresh}>
-            重試
-          </button>
-        </div>
+        <RefreshFailureNotice failure={failure} onRefresh={onRefresh} />
       )}
 
       {error && (

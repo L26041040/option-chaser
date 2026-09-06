@@ -8,6 +8,7 @@
 import {
   formatLegs,
   type FailureStage,
+  type RateLimitInfo,
   type RefreshFailure,
   type RepresentativeCandidate,
   type ScenarioSummary,
@@ -302,9 +303,72 @@ export function failureLabel(stage: FailureStage): string {
       return "這個劇本的參數目前無法分析";
     case "archived":
       return "劇本已在垃圾桶，不再刷新";
+    case "rate_limited":
+      return "資料來源目前限流中";
     default:
       return "刷新失敗";
   }
+}
+
+/**
+ * SCALE-05（#260，AC-3）：backoff 視窗還剩幾秒——用戶端自己的時鐘
+ * （`nowMs` 通常來自 `useCountdownSeconds()` 每秒重新讀一次的
+ * `Date.now()`）減去伺服器給的絕對時間點 `blockedUntil`，不是從伺服器
+ * 回應當下算出的 `remaining_seconds` 往下數；rerender／props 沒變不會
+ * 重設倒數，因為來源永遠是同一個固定的絕對時間點。解析失敗（讀不懂的
+ * 時間字串）視同已經到期，不讓一個壞掉的時間戳把重試鈕永久鎖住。
+ */
+export function rateLimitRemainingSeconds(
+  blockedUntil: string, nowMs: number,
+): number {
+  const deadline = Date.parse(blockedUntil);
+  if (Number.isNaN(deadline)) return 0;
+  return Math.max(0, Math.ceil((deadline - nowMs) / 1000));
+}
+
+/** 倒數本身的顯示句——歸零時換成「可以重試了」，不是顯示「0 秒」。 */
+export function rateLimitCountdownText(remainingSeconds: number): string {
+  return remainingSeconds > 0
+    ? `還要等約 ${remainingSeconds} 秒才能重試`
+    : "可以重試了";
+}
+
+/**
+ * 持續性事故（`incident`）與偶發限流用不同文案（票面：「sustained
+ * incident 使用明確 data-source 文案，與 scenario params/analyze
+ * failure 分開」）——都指名 Cboe，讓使用者知道這不是這個劇本本身的
+ * 問題，而是資料來源那一端的事，不是自己劇本的參數或分析出了錯。
+ */
+export function rateLimitHeadline(incident: boolean): string {
+  return incident
+    ? "Cboe 資料來源持續受限，非本站或這個劇本本身的問題"
+    : "Cboe 資料來源目前限流中";
+}
+
+/**
+ * 卡片／詳細頁三處共用的限流狀態詳情句——`remainingSeconds` 由呼叫端
+ * 透過 `useCountdownSeconds(rateLimit.blocked_until)` 算好傳入（純
+ * 函式本身不能呼叫 hook），避免三處各自重寫「headline＋倒數」怎麼
+ * 拼句子的邏輯。
+ */
+export function rateLimitDetailText(
+  rateLimit: RateLimitInfo, remainingSeconds: number,
+): string {
+  return `${rateLimitHeadline(rateLimit.incident)}：` +
+    rateLimitCountdownText(remainingSeconds);
+}
+
+/**
+ * 限流視窗內重試鈕該不該 disabled（AC-3：到期後可重新嘗試；Regression
+ * Red Line：不允許 backoff window 內 client retry storm）。非限流失敗
+ * 一律不受影響——沿用既有「隨時可按重試」行為。`remainingSeconds` 為
+ * `null`（`useCountdownSeconds` 對 `blockedUntil=null` 的回傳）視同
+ * 沒有倒數在跑，不擋。
+ */
+export function isRetryDisabledByRateLimit(
+  failure: RefreshFailure | undefined, remainingSeconds: number | null,
+): boolean {
+  return failure?.stage === "rate_limited" && (remainingSeconds ?? 0) > 0;
 }
 
 /**

@@ -66,6 +66,59 @@ def _write(storage: Storage, entry: ChainBackoffEntry) -> None:
         pass
 
 
+# SCALE-05（#260）：連續幾次被限流才算「持續性事故」，而不是單次偶發
+# 限流——**唯一**判準來源，`is_sustained_incident()` 是全站判斷這件事
+# 的唯一函式（AC-6：不得在多處各自硬編碼一次門檻）。可調常數。
+INCIDENT_THRESHOLD_FAILURES = 3
+
+
+def is_sustained_incident(consecutive_failures: int) -> bool:
+    """`consecutive_failures` 達門檻＝持續性事故，UI 據此與偶發限流
+    使用不同文案（票面：「sustained incident 使用明確 data-source
+    文案，與 scenario params/analyze failure 分開」）。純比較，無 I/O。"""
+    return consecutive_failures >= INCIDENT_THRESHOLD_FAILURES
+
+
+def status(storage: Storage, source: str) -> dict | None:
+    """`source` 目前 backoff 狀態的使用者可見投影（SCALE-05／#260）。
+
+    這是唯一的 canonical 判斷點——`api_app.main` 判斷「這次抓鏈失敗
+    是不是因為限流」與組出要揭露給使用者的 additive metadata，全部
+    透過呼叫這個函式，不在多個端點各自重新判斷一次（AC-6）。
+
+    目前**沒有**處於封鎖窗（無 entry，或 `blocked_until` 已過期）一律
+    回 `None`——呼叫端據此退回既有「一般 fetch 失敗」分類；這也是既有
+    fail-open 哲學的延伸：backoff 狀態讀不到，就當作沒有限流問題，不
+    讓可觀測性機制本身的故障變成新的單點失敗（`_read()` 已經是
+    fail-open，這裡不需要再包一層 try/except）。
+
+    回傳值只包含**結構化事實**（AC-2：UI 不必解析 `message` 字串就能
+    拿到 `blocked_until`／剩餘時間）：
+    - `blocked_until`／`retry_after_seconds`：`ChainBackoffEntry` 原樣
+      投影。
+    - `remaining_seconds`：即時計算的「現在起還要等幾秒」，不是原始
+      `Retry-After` 全長——UI 每次 render 重新問一次這個函式才會拿到
+      新答案，不會自己拿著一個舊數字倒數到底（那是前端 state 該做的
+      事，這裡只保證每次呼叫給的是誠實的當下剩餘量）。
+    - `last_success_at`：最近一次成功抓取，獨立於封鎖狀態本身。
+    - `incident`：`is_sustained_incident()` 的結果，前端不必自己重新
+      判斷一次門檻。
+    """
+    entry = _read(storage, source)
+    blocked_until_dt = _parse_blocked_until(entry)
+    now = _now()
+    if entry is None or blocked_until_dt is None or now >= blocked_until_dt:
+        return None
+    remaining = max(0, round((blocked_until_dt - now).total_seconds()))
+    return {
+        "blocked_until": entry.blocked_until,
+        "retry_after_seconds": entry.retry_after_seconds,
+        "remaining_seconds": remaining,
+        "last_success_at": entry.last_success_at,
+        "incident": is_sustained_incident(entry.consecutive_failures),
+    }
+
+
 def backoff_aware_fetch(storage: Storage, source: str,
                         underlying: Callable[[str], ChainSnapshot],
                         symbol: str, *,

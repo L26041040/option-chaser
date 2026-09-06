@@ -56,6 +56,7 @@ import {
   createScenario,
   editScenario,
   listScenarios,
+  refreshFailureFromBatchResult,
   refreshRun,
   refreshScenario,
   toFailure,
@@ -241,7 +242,7 @@ export default function App() {
           } else {
             failed += 1;
             setFailures((prev) => ({
-              ...prev, [r.scenario_id]: { stage: r.stage, message: r.message },
+              ...prev, [r.scenario_id]: refreshFailureFromBatchResult(r),
             }));
           }
           clearUpdating(r.scenario_id);

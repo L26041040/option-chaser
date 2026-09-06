@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import sampleRow from "../contracts/scenario_row_sample.json";
-import type { ScenarioSummary } from "./api";
+import type { RateLimitInfo, ScenarioSummary } from "./api";
 import {
   STALE_AFTER_HOURS,
   cardFailureHeadline,
@@ -15,8 +15,13 @@ import {
   formatRunSummary,
   hasPriceRange,
   hasResult,
+  isRetryDisabledByRateLimit,
   isStale,
   moneyOrDash,
+  rateLimitCountdownText,
+  rateLimitDetailText,
+  rateLimitHeadline,
+  rateLimitRemainingSeconds,
   scenarioSignal,
   signalLabel,
   sortScenarios,
@@ -278,6 +283,93 @@ describe("刷新失敗分層（V4／#52）", () => {
   it("垃圾桶擋點（TR1／#88）有自己的說法，不是通用的刷新失敗", () => {
     expect(failureLabel("archived")).not.toBe(failureLabel(null));
     expect(failureLabel("archived")).toContain("垃圾桶");
+  });
+
+  it("限流有自己的說法（SCALE-05／#260），不是通用的刷新失敗", () => {
+    expect(failureLabel("rate_limited")).not.toBe(failureLabel(null));
+    expect(failureLabel("rate_limited")).toContain("限流");
+  });
+});
+
+describe("限流可見度（SCALE-05／#260）", () => {
+  const rl = (over: Partial<RateLimitInfo> = {}): RateLimitInfo => ({
+    blocked_until: "2026-09-06T12:01:00+00:00",
+    retry_after_seconds: 45, remaining_seconds: 60,
+    last_success_at: null, incident: false, ...over,
+  });
+
+  describe("rateLimitRemainingSeconds：以絕對時間點為準，不是遞減的本地計數", () => {
+    it("還沒到期時回傳正確的剩餘秒數（無條件進位）", () => {
+      const now = Date.parse("2026-09-06T12:00:00+00:00");
+      const deadline = "2026-09-06T12:00:30.400+00:00";
+      expect(rateLimitRemainingSeconds(deadline, now)).toBe(31);
+    });
+
+    it("已經過期時回傳 0，不是負數", () => {
+      const now = Date.parse("2026-09-06T12:05:00+00:00");
+      const deadline = "2026-09-06T12:00:00+00:00";
+      expect(rateLimitRemainingSeconds(deadline, now)).toBe(0);
+    });
+
+    it("同一個 nowMs 重複呼叫得到同一個答案——rerender 不會讓它自己跳動", () => {
+      const now = Date.parse("2026-09-06T12:00:00+00:00");
+      const deadline = "2026-09-06T12:00:10+00:00";
+      const a = rateLimitRemainingSeconds(deadline, now);
+      const b = rateLimitRemainingSeconds(deadline, now);
+      expect(a).toBe(b);
+      expect(a).toBe(10);
+    });
+
+    it("讀不懂的時間字串視同已到期，不讓重試鈕永久鎖住", () => {
+      expect(rateLimitRemainingSeconds("not-a-date", Date.now())).toBe(0);
+    });
+  });
+
+  describe("rateLimitCountdownText：倒數句", () => {
+    it("還有秒數時講「還要等」", () => {
+      expect(rateLimitCountdownText(30)).toContain("30");
+      expect(rateLimitCountdownText(30)).not.toBe(rateLimitCountdownText(5));
+    });
+
+    it("歸零時講「可以重試了」，不是顯示「0 秒」", () => {
+      expect(rateLimitCountdownText(0)).not.toContain("0");
+      expect(rateLimitCountdownText(0)).toContain("重試");
+    });
+  });
+
+  describe("rateLimitHeadline／rateLimitDetailText：持續性事故用不同文案", () => {
+    it("偶發限流與持續性事故是兩句不同的話，都指名 Cboe", () => {
+      expect(rateLimitHeadline(false)).not.toBe(rateLimitHeadline(true));
+      expect(rateLimitHeadline(false)).toContain("Cboe");
+      expect(rateLimitHeadline(true)).toContain("Cboe");
+    });
+
+    it("詳情句同時含 headline 與倒數，兩者可各自獨立變化", () => {
+      const text = rateLimitDetailText(rl({ incident: true }), 12);
+      expect(text).toContain(rateLimitHeadline(true));
+      expect(text).toContain("12");
+    });
+  });
+
+  describe("isRetryDisabledByRateLimit：Regression Red Line——不允許視窗內 retry storm", () => {
+    it("限流失敗、倒數尚未歸零 → disabled", () => {
+      const failure = { stage: "rate_limited" as const, message: "x", rateLimit: rl() };
+      expect(isRetryDisabledByRateLimit(failure, 5)).toBe(true);
+    });
+
+    it("限流失敗、倒數已經歸零 → 不再 disabled（AC-3：到期後可重新嘗試）", () => {
+      const failure = { stage: "rate_limited" as const, message: "x", rateLimit: rl() };
+      expect(isRetryDisabledByRateLimit(failure, 0)).toBe(false);
+    });
+
+    it("非限流失敗一律不受影響，隨時可按", () => {
+      const failure = { stage: "fetch" as const, message: "x" };
+      expect(isRetryDisabledByRateLimit(failure, 999)).toBe(false);
+    });
+
+    it("沒有失敗（undefined）不受影響", () => {
+      expect(isRetryDisabledByRateLimit(undefined, 999)).toBe(false);
+    });
   });
 });
 

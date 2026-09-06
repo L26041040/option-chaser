@@ -1,6 +1,6 @@
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import ScenarioList from "./ScenarioList";
 import sampleRow from "../contracts/scenario_row_sample.json";
@@ -550,6 +550,43 @@ describe("刷新失敗卡片兩態（OD-03／#242，REPAIR-05）", () => {
 
     expect(container.querySelector(".compact-card.failed")).not.toBeInTheDocument();
     expect(screen.queryByText(/抓不到 AAA 的報價/)).not.toBeInTheDocument();
+  });
+});
+
+describe("限流失敗（SCALE-05／#260）——桌面卡片", () => {
+  const NOW = new Date("2026-08-04T10:00:00+00:00");
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(NOW);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("AC-2＋Regression Red Line：結構化倒數取代 message 原文、視窗內重試" +
+     "鈕 disabled", () => {
+    list(
+      [row({ id: "a", symbol: "AAA", best_return: 1.5 })],
+      {
+        failures: {
+          a: {
+            stage: "rate_limited", message: "AAA 的報價來源目前受限流",
+            rateLimit: {
+              blocked_until: "2026-08-04T10:01:00+00:00",
+              retry_after_seconds: 60, remaining_seconds: 60,
+              last_success_at: null, incident: false,
+            },
+          },
+        },
+      },
+    );
+
+    expect(screen.getByText(/Cboe 資料來源目前限流中/)).toBeInTheDocument();
+    expect(screen.getByText(/還要等約 60 秒才能重試/)).toBeInTheDocument();
+    expect(screen.queryByText(/AAA 的報價來源目前受限流/)).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /重試/ })).toBeDisabled();
   });
 });
 
