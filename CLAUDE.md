@@ -27,7 +27,7 @@ block 裡，不能切成好幾個 code block、也不能中間插普通文字把
 `［回報#001］spec #137 拆票完成`）。編號是**累計總數**，不因換
 session、換分支、換主題而歸零——目前最新編號記在這裡：
 
-> 目前次序：064（下一份回報用 065）
+> 目前次序：065（下一份回報用 066）
 
 每發一份回報就把上面這個數字改成剛剛用掉的那個，跟著那次改動一起
 commit（沒有其他改動要 commit 時，單獨為這一行開一個小 commit 也
@@ -37,6 +37,70 @@ commit（沒有其他改動要 commit 時，單獨為這一行開一個小 commi
 只有這七條。
 
 ## 專案紀錄區
+
+> **現況總覽（2026-09-06 三度追加，OPTION-STORAGE-PROTOTYPE-004 完成——
+> 取代上一段「下一步：可進 `/to-tickets`」那句的指向，上一段其餘原文照舊）**：
+>
+> **背景**：需求方以 `/prototype` 指示建一次性、可丟棄的 prototype，驗證
+> Scaling Foundation 的 storage 核心假設（移除 `all_candidates` ＋
+> visible-only narrow history ＋ snapshot 回填 ＋ 歷史 view 停止累積 ＋
+> current detail 完整）。**不改 production architecture、不 migration、
+> 不拆票、不開 PR、不 merge**（`git diff HEAD` 對 `option_chaser/`／
+> `api_app/`／`src/`／`tests/`／`e2e/`／`contracts/`／`scripts/`／`api/`
+> 零差異）。
+>
+> **判定：PASS_WITH_CHANGES。實測 storage 改善 58.70×**（audit 預測 62×，
+> 差 5.3%）、**functional regressions 0**、**backfill 逐位元 parity 成立**
+> （4,626 次比對、0 mismatch、六個 subtype 全覆蓋）。
+>
+> **A/B 設定**：同一份 `xyz_v8_production_scale.json`（600 合約）、同一組
+> scenario、同一 seed（20260906）、六個 subtype 全開、**100 次刷新**，
+> 每次以固定 seed 施加合成隨機漫步讓排名 churn。每次刷新 `all_candidates`
+> 105,869 筆、visible 集合 120 筆（0.11%）。
+>
+> **五個關鍵實測**：
+> 1. **儲存**（VACUUM FULL 後）：A 2,664,038 B／次 → B 成長部分
+>    **45,384 B／次**，**邊際成長比 58.70×**；B 的 current 固定成本
+>    237,568 B（常數項非成長項）。⚠ N=1 時只有 7.04×（固定頁面配置主導），
+>    **必須量到 100 次才收斂**。
+> 2. **效能全面改善**：`save_result` 722.7→30.6 ms（23.60×）、current
+>    detail 讀取 275.9→9.2 ms（30.00×）、`/history` 常見情況
+>    51,875→1.17 ms（**44,261×**）、最壞情況（99/100 缺格全回填）
+>    192.4 ms（仍快 270×）。
+> 3. **唯一效能回歸已找到根因並驗證修法**：`/results` 若天真地
+>    `DISTINCT` over narrow 是 2.110 ms（**比 A 慢 12.6×**）——因為
+>    narrow 是 per-candidate 粒度。改讀 `snapshots` 的 PK 索引後
+>    **0.106 ms，比 A 還快 1.58×**。**未用 storage 收益掩蓋它。**
+> 4. **backfill 逐位元 parity**：`cost_from_snapshot()` 純函式（零 vendor、
+>    零 credential、不跑引擎，運算式順序逐字複製 `scenarios.py:138-143`）
+>    4,626 次比對全數逐位元一致、0 mismatch；六 subtype 全覆蓋；
+>    **1,179 個 narrow 缺格全部由 snapshot 正確補回**。
+> 5. **RL-33 guard 修復已證明**：引擎的 `expiry_ranked` 在 100/100 輪
+>    非空、且與 `all_candidates` 構造的結果完全相同 ⇒ 有非空的 canonical
+>    regression source，不必用空集合假通過。
+>
+> **五個被證偽的假設**（prototype 的真正價值）：narrow 表不能當
+> analyzed_at 索引用（慢 12.6×）／latest-only 覆寫的 MVCC 膨脹達真實
+> 尺寸 5.7 倍（VACUUM 前 1.35 MB vs 後 237,568 B）／narrow 表的三 TEXT
+> 主鍵佔全表 **46.8%**／N=1 量不出改善幅度／A-B view 不能用 Python 物件
+> 比對（json round-trip 把 tuple 變 list，假陽性，必須比 JSON 文字）。
+>
+> **正式施工必須調整的 7 項**（文件 §11）：`/results` 索引來源改
+> `snapshots`／回填必須 write-through（否則每次開圖重付 192 ms）／
+> `test_selection_regression.py::_view()` 需同時回傳引擎 result／narrow
+> 主鍵設計複審／確認 autovacuum 覆蓋 latest-only 覆寫／parity 測試比
+> JSON 文字／`cost_from_snapshot` 抽出時運算式順序必須逐字保留。
+>
+> **支持 audit 的 C1／C2／C3／C10 全部四項**（C2 附「索引來源要改」但書）。
+>
+> **產出**：`docs/prototypes/storage-foundation-validation.md`（288 行，
+> 12 節齊全）＋兩支丟棄式量測台 `docs/prototypes/PROTOTYPE_*.py`。
+> ⚠ **一處 skill 偏離需裁示**：`/prototype` 規定量測台應存 throwaway
+> branch，但本 session 硬規則是「未經許可不得 push 到指定分支以外」——
+> 老弟選擇遵守後者，量測台留在 `docs/prototypes/`、以 `PROTOTYPE_` 前綴
+> 標記、可一行 `git rm` 移除。
+>
+> **下一步**：可進 `/to-tickets`。**本輪依指示未自行拆票。**
 
 > **現況總覽（2026-09-06 再追加，OPTION-STORAGE-AUDIT-003 完成——
 > 取代上一段「下一步：可進 `/to-tickets`」那句的指向，上一段其餘原文
