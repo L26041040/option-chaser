@@ -7,15 +7,17 @@
 from __future__ import annotations
 
 import dataclasses
+import json
 from collections import deque
 from contextlib import contextmanager
 
 from . import (ChainBackoffEntry, ContractHistory, DataSourceSettings,
-               DividendCacheEntry, IvBackfillRun, IvObservation,
+               DividendCacheEntry, IvBackfillRun, IvObservation, MetricEntry,
                ProviderCredential, ProviderVerification, RateCacheEntry,
                ResultFactContext, ResultRecord, ResultSummary, Scenario,
                ScenarioExists, TreasuryYearCacheEntry)
 from ..diagnostics import RETENTION_LIMIT, DiagnosticEvent
+from ..metrics import retention_cutoff
 
 
 class MemoryStorage:
@@ -46,6 +48,9 @@ class MemoryStorage:
         # 最舊的擠掉，跟 Postgres 那邊的 `DELETE ... OFFSET` 是同一條上限
         # 的兩種實作，契約測試才有意義。
         self._diagnostics: deque[DiagnosticEvent] = deque(maxlen=RETENTION_LIMIT)
+        # S0（SCALE-08／#258）：鍵是 (metric, bucket, source, symbol)——
+        # 與 `MetricEntry` 的複合主鍵一一對應。
+        self._metrics: dict[tuple[str, str, str, str], MetricEntry] = {}
 
     @property
     def kind(self) -> str:
@@ -320,3 +325,50 @@ class MemoryStorage:
                 counts["diagnostics"] += 1
 
         return counts
+
+    # ---------- S0 最小可觀測性（SCALE-08／#258） ----------
+
+    def record_metric(self, metric: str, bucket: str, *, source: str = "",
+                      symbol: str = "", count: int = 0,
+                      amount: float = 0.0) -> None:
+        key = (metric, bucket, source, symbol)
+        existing = self._metrics.get(key)
+        if existing is None:
+            self._metrics[key] = MetricEntry(
+                metric=metric, bucket=bucket, source=source, symbol=symbol,
+                count=count, total=amount, max_value=amount)
+        else:
+            self._metrics[key] = dataclasses.replace(
+                existing, count=existing.count + count,
+                total=existing.total + amount,
+                max_value=max(existing.max_value, amount))
+
+        # trim-on-write：同一個 metric 底下比 cutoff 更舊的桶整批清掉。
+        cutoff = retention_cutoff(bucket)
+        for k in [k for k in self._metrics
+                 if k[0] == metric and k[1] < cutoff]:
+            del self._metrics[k]
+
+    def metric_summary(self) -> list[MetricEntry]:
+        return list(self._metrics.values())
+
+    def table_size_metrics(self) -> dict:
+        def _stats(records: list[dict]) -> dict:
+            if not records:
+                return {"row_count": 0, "total_bytes": None,
+                       "avg_row_bytes": None, "max_row_bytes": None}
+            # 記憶體假體沒有真正的磁碟頁面/TOAST——用 JSON 序列化長度
+            # 當近似值（跟正式 Postgres 的實際落盤大小不會逐位元相同，
+            # 但足夠回答「大概多大、有沒有持續變大」這個 S0 要問的
+            # 問題；真正的量測基準是 Postgres adapter 那一份）。
+            sizes = [len(json.dumps(r, default=str)) for r in records]
+            return {"row_count": len(records), "total_bytes": sum(sizes),
+                   "avg_row_bytes": sum(sizes) / len(sizes),
+                   "max_row_bytes": max(sizes)}
+
+        result_views = [dataclasses.asdict(r)
+                        for by_ts in self._results.values()
+                        for r in by_ts.values()]
+        snapshot_dicts = [snap for (snap, _owner) in self._snapshots.values()]
+        return {"results": _stats(result_views),
+               "snapshots": _stats(snapshot_dicts)}

@@ -23,11 +23,12 @@ import psycopg
 from psycopg.types.json import Jsonb
 
 from . import (ChainBackoffEntry, ContractHistory, DataSourceSettings,
-               DividendCacheEntry, IvBackfillRun, IvObservation,
+               DividendCacheEntry, IvBackfillRun, IvObservation, MetricEntry,
                ProviderCredential, ProviderVerification, RateCacheEntry,
                ResultFactContext, ResultRecord, ResultSummary, Scenario,
                ScenarioExists, TreasuryYearCacheEntry, UsageSetting)
 from ..diagnostics import RETENTION_LIMIT, DiagnosticEvent
+from ..metrics import retention_cutoff
 
 # 每個 lambda 程序只需建表一次。`IF NOT EXISTS` 在 Postgres 並非完全
 # race-free（同時冷啟動可能撞上 duplicate 錯誤），因此除了這個旗標，
@@ -307,6 +308,23 @@ ALTER TABLE results ADD COLUMN IF NOT EXISTS owner_id TEXT;
 ALTER TABLE snapshots ADD COLUMN IF NOT EXISTS owner_id TEXT;
 ALTER TABLE events ADD COLUMN IF NOT EXISTS owner_id TEXT;
 ALTER TABLE diagnostics ADD COLUMN IF NOT EXISTS owner_id TEXT;
+-- S0 最小可觀測性（SCALE-08／#258）：獨立、極小、system-wide 的 bounded
+-- operational metrics store——刻意不是 `diagnostics` 的擴充（後者
+-- owner-scoped 且只留最新 200 筆事件，語意與 retention 都跟這裡的
+-- 「不分 owner、天級聚合、bounded by RETENTION_DAYS」衝突，見
+-- `api_app/metrics.py` 檔頭）。只存 metric 名稱／day bucket／
+-- `source`／`symbol` 兩個允許維度／數值聚合——不存 scenario_id、
+-- owner、任何報價／合約／chain payload（AC-7 紅線）。
+CREATE TABLE IF NOT EXISTS operational_metrics (
+    metric      TEXT NOT NULL,
+    bucket      TEXT NOT NULL,
+    source      TEXT NOT NULL DEFAULT '',
+    symbol      TEXT NOT NULL DEFAULT '',
+    count       BIGINT NOT NULL DEFAULT 0,
+    total       DOUBLE PRECISION NOT NULL DEFAULT 0,
+    max_value   DOUBLE PRECISION,
+    PRIMARY KEY (metric, bucket, source, symbol)
+);
 """
 
 # 冷啟動競爭下的良性錯誤：別人已經建好／加好了。
@@ -1087,3 +1105,50 @@ class PostgresStorage:
                     "WHERE owner_id IS NULL", (owner_id,))
                 counts[table] = cur.rowcount
         return counts
+
+    # ---------- S0 最小可觀測性（SCALE-08／#258） ----------
+
+    def record_metric(self, metric: str, bucket: str, *, source: str = "",
+                      symbol: str = "", count: int = 0,
+                      amount: float = 0.0) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO operational_metrics "
+                "(metric, bucket, source, symbol, count, total, max_value) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s) "
+                "ON CONFLICT (metric, bucket, source, symbol) DO UPDATE "
+                "SET count = operational_metrics.count + EXCLUDED.count, "
+                "total = operational_metrics.total + EXCLUDED.total, "
+                "max_value = GREATEST(operational_metrics.max_value, "
+                "EXCLUDED.max_value)",
+                (metric, bucket, source, symbol, count, amount, amount))
+            # trim-on-write：同一個 metric 底下比 retention 窗更舊的桶
+            # 整批清掉，讓這張表 bounded（AC-3）。
+            conn.execute(
+                "DELETE FROM operational_metrics "
+                "WHERE metric = %s AND bucket < %s",
+                (metric, retention_cutoff(bucket)))
+
+    def metric_summary(self) -> list[MetricEntry]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT metric, bucket, source, symbol, count, total, "
+                "max_value FROM operational_metrics").fetchall()
+        return [MetricEntry(*r) for r in rows]
+
+    def table_size_metrics(self) -> dict:
+        def _stats(table: str, size_col: str) -> dict:
+            with self._connect() as conn:
+                row = conn.execute(
+                    f"SELECT COUNT(*), pg_total_relation_size(%s), "
+                    f"AVG(pg_column_size({size_col})), "
+                    f"MAX(pg_column_size({size_col})) FROM {table}",
+                    (table,)).fetchone()
+            row_count = row[0]
+            return {"row_count": row_count,
+                   "total_bytes": row[1],
+                   "avg_row_bytes": float(row[2]) if row[2] is not None else None,
+                   "max_row_bytes": row[3]}
+
+        return {"results": _stats("results", "view"),
+               "snapshots": _stats("snapshots", "snapshot")}

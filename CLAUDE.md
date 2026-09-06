@@ -96,13 +96,90 @@ Ownership／Parity Proof 幾張）——施工一律以 GitHub issue 最新內�
   純函式本身未接任何生產路徑（結構性 AST 隔離測試鎖住不 import
   `ranking`／`filters`／`service`）。
 
-三張票皆已跑 `/code-review`（Standards＋Spec 兩軸），發現的真缺口
-（snapshot provenance、AC-4 量測、butterfly 負向測試）皆已修正並
-重新驗證通過。全套後端測試（記憶體＋真實 Postgres 雙後端）持續
-zero regression。
+- **SCALE-04**［#255］Cboe 429 後端 `chain_backoff`（commits
+  `c34b28f`＋跟進 `f8a1df4`）：新增 `chain_backoff` Storage port＋
+  memory／postgres 雙後端，PK＝**`source` 單獨**（provider-global，
+  不分 symbol）。`RateLimitedError(FetchError)` 新例外子型別；
+  `cboe.py::parse_retry_after()` 支援 delta-seconds／HTTP-date 兩種
+  Retry-After 格式。`api_app/chain_backoff.py::backoff_aware_fetch()`：
+  封鎖窗內短路（零 vendor call）、成功清除狀態並更新
+  `last_success_at`、storage 讀寫失敗 fail-open。`/code-review` Spec
+  軸抓到真缺口：AC-7「可透過既有設定/DI 停用或設為 0」原本只是
+  `backoff_aware_fetch()` 的私有參數，production 路徑碰不到——已把
+  `chain_backoff_default` 升格為 `create_app()` 建構參數，並補上
+  兩條端到端 HTTP 整合測試證明 production 預設路徑真的接上 backoff、
+  rollback 開關真的可從外部操作。
+- **SCALE-06**［#256］Ownership A-1 Expand（commits `defeccd`＋跟進
+  `d9c46e5`）：5 張 row-scoped 表（`scenarios`／`results`／
+  `snapshots`／`events`／`diagnostics`）新增 nullable `owner_id`
+  （純加法，不查詢過濾）；3 張 singleton 表與 system-wide 表刻意
+  不動，留給 SCALE-13。新增 `api_app/identity.py`
+  （`IdentityResolver`＋`default_identity_resolver`，固定
+  `SOLO_OWNER`）；`create_app()` 新增 `identity_resolver` DI 參數，
+  middleware 用 `diagnostics.owner_scope()` 塞進 ContextVar（鏡射
+  既有 `correlation_scope()`）；8 個新寫入點皆帶上解析出的值；
+  `update_scenario()` 刻意不動 `owner_id`（編輯 thesis 不該連帶改變
+  資料 boundary）。`Storage.backfill_missing_owner_ids()` 兩後端皆
+  實作，`WHERE owner_id IS NULL` 條件式批次更新天然冪等；
+  `scripts/backfill_owner_ids.py` 供正式環境執行。`/code-review`
+  Spec 軸抓到真缺口：`GET /api/scenarios/{id}/events`／`GET
+  /api/diagnostics`／iv-history 診斷信封三處既有端點原本會把
+  `owner_id` 洩漏進回應，違反 AC-3「production 行為逐位元不變」——
+  新增 `_event_json()`／`_diagnostic_json()` 序列化邊界過濾修正。
+- **SCALE-07**［#257］Treasury Cron 預熱（commits `878222e`＋跟進
+  `a17cbf8`）：新增 `GET /api/cron/warm-rate-cache`，直接複用既有
+  `_rate_curve_loader()`（`api_app/rate_cache.py::cached_loader()`）
+  ——不另寫 Treasury 解析邏輯，不把 `treasury_year_cache` 當成功
+  判準。`Authorization: Bearer <CRON_SECRET>` 驗證失敗一律 401
+  fail-closed（含 secret 未設定），且先驗證再呼叫 pipeline（零
+  mutation）。同日重複呼叫 idempotent（複用既有 `market_day` 判準）。
+  `api_app/rate_cache.py` 本身零改動——既有同步 fallback 完全保留。
+  `create_app()` 新增 `cron_secret` DI 參數；`vercel.json` 新增
+  cron 設定；`docs/deploy-vercel.md` 補操作步驟。`/code-review`：
+  Spec 軸 7 條 AC 全數正確、零 scope creep；Standards 軸僅測試對
+  `CRON_SECRET` 環境變數的 hermeticity 微調。
+- **SCALE-08**［#258］S0 最小可觀測性，七項封頂（commit 待補）：
+  新增 `api_app/metrics.py`（`METRIC_CATALOGUE` 恰好七類：
+  `chain_fetch_count`／`chain_429_count`／`stale_serve_count`／
+  `cold_miss_count`／`refresh_duration_ms`／`table_size`／
+  `history_read_volume`；前六類經 `record()` 寫進獨立、極小、
+  system-wide 的 `operational_metrics` 表，只存 `metric`／`bucket`
+  （日粒度）／`source`／`symbol` 四個維度＋`count`／`total`／
+  `max_value` 三個聚合，trim-on-write 讓每個 `metric` 各自 bounded
+  在 `RETENTION_DAYS=30` 內；`table_size` 是 query-time gauge，
+  `Storage.table_size_metrics()` 即時查 `results`／`snapshots`
+  兩表列數與大小，不持久化）。**刻意獨立於既有 `diagnostics`**——
+  後者 owner-scoped 且只留最新 200 筆事件，語意與 retention 都跟
+  這裡「不分 owner、天級聚合」衝突。七類指標的真實掛點：
+  `_metered_chain_fetch()` 包住 `_default_fetch()` 內的 cboe／
+  yfinance 呼叫（#1／#2，短路窗內零呼叫因此天然不誤計）；
+  `_metered_rate_loader`／`_metered_dividend_loader` 包住
+  `rate_loader`／`dividend_loader` 本身、只在 `cached_loader()`
+  真正判定 cache miss 時才會被呼叫到（#4）；`_refresh_and_save()`
+  讀 `view["params"]["rate_curve_stale"]`／`q_stale`（RC1／#87、
+  #123 既有欄位，不重新判斷一次）記 #3，計時 `_analyze()`＋落盤
+  全程記 #5；`get_spread_history()` 記 `len(result_history(...))`
+  當 #7（SCALE-14 切換 narrow 讀取路徑後的對照基準）。新增
+  `GET /api/ops/metrics` 單一 operator 端點一次回答全部七項，
+  `OPS_SECRET`（獨立於 `CRON_SECRET`，兩種不同信任邊界不共用一把）
+  fail-closed 401。`enable_metrics` DI 開關（預設 `True`）：關閉時
+  全部記錄呼叫為 no-op，AC-4 用兩個 client（開／關）跑同一組請求、
+  逐位元比對回應驗證；施工中發現並修正測試自身的兩個真陷阱——
+  `analyzed_at` 由快照 `fetched_at` 決定，兩個 client 各自產生新
+  快照會因時間戳不同而誤判成「metrics 造成差異」，改為共用同一個
+  快照物件；`created_at` 是真實 wall-clock 秒級時間戳，兩次
+  `POST /api/scenarios` 偶爾跨過同一秒邊界會讓比對假紅，已濾除。
 
-**下一步**：依 dependency graph 繼續——SCALE-04（Cboe 429 後端，
-frontier）進行中。
+四張票皆已跑 `/code-review`（Standards＋Spec 兩軸），發現的真缺口
+（SCALE-04 的 rollback DI 參數與整合測試缺口、SCALE-06 的
+owner_id 洩漏、SCALE-07 的測試 hermeticity）皆已修正並重新驗證
+通過；SCALE-08 尚待跑 `/code-review`。全套後端測試（記憶體＋真實
+Postgres 雙後端）持續 zero regression。
+
+**下一步**：依 dependency graph 繼續——SCALE-09（Stage 1-1 narrow
+history 雙寫，被 SCALE-01＋02＋03 擋，現已解除）／SCALE-05（Cboe
+429 使用者可見狀態，被 SCALE-04 擋，現已解除）／SCALE-10（Regression
+Guard 修復，frontier）三張皆可任意順序推進。
 
 ### OPTION-SCALING-TICKETS-REVISE-006 拆票（2026-09-06，歷史紀錄）
 

@@ -58,7 +58,7 @@ def storage(request):
                      "data_source_settings, "
                      "provider_credentials, provider_verifications, "
                      "iv_observations, iv_backfill_runs, contract_iv_history, "
-                     "diagnostics RESTART IDENTITY")
+                     "diagnostics, operational_metrics RESTART IDENTITY")
     yield st
 
 
@@ -1566,6 +1566,131 @@ def test_the_five_row_scoped_dataclasses_do_have_an_owner_field():
     assert "owner_id" in {f.name for f in dc.fields(ResultRecord)}
     from api_app.diagnostics import DiagnosticEvent
     assert "owner_id" in {f.name for f in dc.fields(DiagnosticEvent)}
+
+
+# ---------- S0 最小可觀測性（SCALE-08／#258） ----------
+
+def test_record_metric_creates_a_new_bucket(storage):
+    storage.record_metric("chain_fetch_count", "2026-09-06",
+                          source="cboe", symbol="TLT", count=1)
+    (entry,) = storage.metric_summary()
+    assert entry.metric == "chain_fetch_count"
+    assert entry.bucket == "2026-09-06"
+    assert entry.source == "cboe"
+    assert entry.symbol == "TLT"
+    assert entry.count == 1
+    assert entry.total == 0.0
+
+
+def test_record_metric_accumulates_into_the_same_bucket(storage):
+    for _ in range(3):
+        storage.record_metric("chain_fetch_count", "2026-09-06",
+                              source="cboe", symbol="TLT", count=1)
+    (entry,) = storage.metric_summary()
+    assert entry.count == 3
+
+
+def test_record_metric_keeps_different_dimensions_separate(storage):
+    storage.record_metric("chain_fetch_count", "2026-09-06",
+                          source="cboe", symbol="TLT", count=1)
+    storage.record_metric("chain_fetch_count", "2026-09-06",
+                          source="cboe", symbol="SPY", count=1)
+    storage.record_metric("chain_fetch_count", "2026-09-06",
+                          source="yfinance", symbol="TLT", count=1)
+    entries = {(e.source, e.symbol): e.count for e in storage.metric_summary()}
+    assert entries == {("cboe", "TLT"): 1, ("cboe", "SPY"): 1,
+                       ("yfinance", "TLT"): 1}
+
+
+def test_record_metric_tracks_sum_and_max_for_amount_based_metrics():
+    """`refresh_duration_ms` 這類需要平均值（`total／count`）與量級
+    （`max_value`）的指標——每次呼叫累加 `total`、取較大值進
+    `max_value`。"""
+    storage = MemoryStorage()
+    storage.record_metric("refresh_duration_ms", "2026-09-06",
+                          count=1, amount=120.0)
+    storage.record_metric("refresh_duration_ms", "2026-09-06",
+                          count=1, amount=80.0)
+    storage.record_metric("refresh_duration_ms", "2026-09-06",
+                          count=1, amount=200.0)
+    (entry,) = storage.metric_summary()
+    assert entry.count == 3
+    assert entry.total == 400.0
+    assert entry.max_value == 200.0
+    assert entry.total / entry.count == pytest.approx(133.33, rel=1e-3)
+
+
+def test_metric_summary_on_an_empty_store_is_empty(storage):
+    assert storage.metric_summary() == []
+
+
+def test_old_buckets_for_the_same_metric_are_trimmed_on_write(storage):
+    """AC-3：bounded——寫入比 retention 窗更舊的桶，會在下一次同一個
+    metric 被寫入時被清掉（trim-on-write，比照既有 diagnostics 表的
+    既有慣例，只是這裡按天而非按總筆數裁）。"""
+    from api_app.metrics import RETENTION_DAYS
+
+    old_bucket = "2020-01-01"   # 遠早於任何合理的 today - RETENTION_DAYS
+    storage.record_metric("chain_fetch_count", old_bucket, count=1)
+    assert len(storage.metric_summary()) == 1
+
+    # 寫入一個「今天」的桶，觸發同一個 metric 底下的 trim。
+    storage.record_metric("chain_fetch_count", "2026-09-06", count=1)
+    remaining = {e.bucket for e in storage.metric_summary()}
+    assert old_bucket not in remaining
+    assert "2026-09-06" in remaining
+    assert RETENTION_DAYS > 0   # 護欄本身要有意義——不是 0 天窗口
+
+
+def test_trimming_one_metric_does_not_touch_another_metrics_buckets(storage):
+    """trim 只清同一個 `metric` 底下的舊桶——不同 metric 各自獨立的
+    retention 窗，不會因為某個高流量指標常寫入就把另一個低流量指標
+    的舊資料一起清掉（也不會反過來互相保護）。"""
+    old_bucket = "2020-01-01"
+    storage.record_metric("chain_429_count", old_bucket, count=1)
+    storage.record_metric("chain_fetch_count", "2026-09-06", count=1)
+    remaining = {(e.metric, e.bucket) for e in storage.metric_summary()}
+    assert ("chain_429_count", old_bucket) in remaining
+    assert ("chain_fetch_count", "2026-09-06") in remaining
+
+
+def test_table_size_metrics_on_empty_tables_reports_zero_rows_and_no_size(storage):
+    stats = storage.table_size_metrics()
+    assert set(stats) == {"results", "snapshots"}
+    for table_stats in stats.values():
+        assert table_stats["row_count"] == 0
+        assert table_stats["avg_row_bytes"] is None
+        assert table_stats["max_row_bytes"] is None
+
+
+def test_table_size_metrics_reflects_actual_row_count(storage):
+    storage.create_scenario(_scenario())
+    storage.save_result(ResultRecord("s1", "2026-08-01T00:00:00+00:00",
+                                     {"n": 1, "padding": "x" * 500}))
+    storage.save_snapshot("s1", "2026-08-01T00:00:00+00:00",
+                          {"padding": "y" * 300})
+    stats = storage.table_size_metrics()
+    assert stats["results"]["row_count"] == 1
+    assert stats["results"]["avg_row_bytes"] > 0
+    assert stats["snapshots"]["row_count"] == 1
+    assert stats["snapshots"]["avg_row_bytes"] > 0
+
+
+def test_metric_entry_has_no_disallowed_fields():
+    """AC-7：只允許 `source`／`symbol` 兩個維度——不得有 `scenario_id`／
+    `owner_id`／任何報價或合約欄位。"""
+    import dataclasses as dc
+
+    from api_app.storage import MetricEntry
+
+    field_names = {f.name for f in dc.fields(MetricEntry)}
+    assert field_names == {"metric", "bucket", "source", "symbol",
+                           "count", "total", "max_value"}
+    banned = ("scenario", "owner", "candidate", "quote", "bid", "ask",
+             "chain", "contract", "strike", "premium")
+    for name in field_names:
+        for b in banned:
+            assert b not in name.lower(), (name, b)
 
 
 # ---------- schema 遷移（V3／#51） ----------

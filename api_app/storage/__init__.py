@@ -650,9 +650,67 @@ class Storage(Protocol):
         （3 張 singleton user tables、system-wide 市場事實表、
         `chain_backoff`）本方法不觸碰**——見票面範圍界線。"""
 
+    # ---------- S0 最小可觀測性（SCALE-08／#258） ----------
+
+    def record_metric(self, metric: str, bucket: str, *, source: str = "",
+                      symbol: str = "", count: int = 0,
+                      amount: float = 0.0) -> None:
+        """`api_app.metrics.record()` 唯一呼叫的寫入點——upsert 到
+        `(metric, bucket, source, symbol)` 這個桶：`count`／`total`
+        累加，`max_value` 取較大值。同時把同一個 `metric` 底下比
+        `api_app.metrics.retention_cutoff(bucket)` 更舊的桶清掉
+        （trim-on-write，比照既有 `diagnostics` 表的既有慣例，只是
+        這裡按天而非按總筆數裁，讓「回答昨天」這件事永遠可行）——
+        AC-3 要求 bounded，不得無限成長。"""
+
+    def metric_summary(self) -> list[MetricEntry]:
+        """目前還在 retention 窗內的全部桶——供 operator 端點彙整成
+        七類指標的答案。不分頁、不搜尋（AC-6：這是給運維人工核對用，
+        不是給一般使用者的 API）。"""
+
+    def table_size_metrics(self) -> dict:
+        """S0 第 6 項——`results`／`snapshots` 兩表的列數、總大小、
+        單列大小分布，**query-time gauge，不持久化**（每次呼叫即時
+        查詢，不寫進 `operational_metrics`）。回傳形狀：
+        `{"results": {"row_count", "total_bytes", "avg_row_bytes",
+        "max_row_bytes"}, "snapshots": {同上}}`——任一表沒有任何列時
+        對應的大小/分布欄位為 `None`（沒有東西可以算平均／最大值，
+        不是假裝成 0）。"""
+
     @property
     def kind(self) -> str:
         """"memory" | "postgres"——供 /api/health 如實回報實際用的是哪個。"""
+
+
+@dataclass(frozen=True)
+class MetricEntry:
+    """S0 最小可觀測性（SCALE-08／#258，見 `api_app/metrics.py`）：一個
+    `(metric, bucket, source, symbol)` 桶的目前聚合值。**只存這幾個
+    純量欄位**——不存 `scenario_id`／`owner_id`／任何報價或合約資料
+    （AC-7 紅線）。
+
+    `source`／`symbol` 未使用時為空字串 `""`、不是 `None`——複合主鍵裡
+    `NULL` 在 SQL 語意上不等於自己（`NULL != NULL`），會讓 Postgres 的
+    `ON CONFLICT` upsert 對「兩個維度都缺席」的列每次都當成新列插入，
+    而不是疊加到同一個桶；空字串沒有這個問題，兩個後端因此可以共用
+    同一套「缺席維度＝空字串」語意。
+
+    `count`：這個桶累積的事件次數。`total`：累積量值總和（供
+    `refresh_duration_ms` 這類需要平均值的指標；純計數型指標不傳
+    `amount`，維持 0）。`max_value`：這個桶目前看過的單筆最大值（供
+    概略回答「量級大概多大」，不是完整分位數）——這個欄位在
+    `MetricEntry` 直接建構時預設 `None` 只是型別上允許，實際透過
+    `Storage.record_metric()` 寫入的列一定會是浮點數（純計數型指標
+    `amount` 恆為 0.0，因此 `max_value` 也會穩定停在 0.0，不是
+    `None`——`None` 不代表任何特別語意，只是尚未寫過的列在型別系統
+    上的合法初值）。"""
+    metric: str
+    bucket: str            # 日粒度 "YYYY-MM-DD"
+    source: str = ""
+    symbol: str = ""
+    count: int = 0
+    total: float = 0.0
+    max_value: float | None = None
 
 
 class ScenarioExists(Exception):

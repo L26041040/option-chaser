@@ -25,13 +25,13 @@ from option_chaser import __version__, ivpipeline, service, store
 from option_chaser.data import treasury as treasury_data
 from option_chaser.data.snapshot import snapshot_from_dict, snapshot_to_csv
 from option_chaser.models import (AnalysisParams, ChainSnapshot, FAMILIES,
-                                  FetchError, ParamError, STRATEGIES,
-                                  normalize_families, subtypes_of)
+                                  FetchError, ParamError, RateLimitedError,
+                                  STRATEGIES, normalize_families, subtypes_of)
 from option_chaser.service import DividendLoader, RateCurveLoader
 from option_chaser.timeframe import (TargetMonth, calendar_anchor,
                                      ensure_month_open, month_is_over)
 
-from . import chain_backoff, diagnostics, providers
+from . import chain_backoff, diagnostics, metrics, providers
 from .clock import now_utc_iso, ny_today
 from .dividend_cache import cached_loader as cached_dividend_loader
 from .identity import IdentityResolver, default_identity_resolver
@@ -494,6 +494,8 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
                chain_backoff_default: timedelta = chain_backoff.DEFAULT_BACKOFF,
                identity_resolver: IdentityResolver = default_identity_resolver,
                cron_secret: str | None = None,
+               ops_secret: str | None = None,
+               enable_metrics: bool = True,
                ) -> FastAPI:
     """`fetch`／`storage`／`rate_loader`／`dividend_loader` 皆可注入：
     測試傳入固定快照、記憶體假體與假來源，因此不打真網路、不碰真資料庫，
@@ -582,6 +584,19 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
     一律 401 fail-closed——不像 `provider_credentials` 那種使用者自己
     設定的 token，這是 Vercel 平台層級的基礎設施密鑰，沒有對應的
     Settings UI，本 app 只單純驗證有沒有對上。
+
+    `ops_secret`（SCALE-08／#258，S0 最小可觀測性）：`GET /api/ops/
+    metrics` 的授權比對值——與 `cron_secret` 同一套 fail-closed 設計，
+    但刻意是**獨立的**環境變數（`OPS_SECRET`），不是重用
+    `CRON_SECRET`：一個是「Vercel 排程系統呼叫這個 app」的信任邊界，
+    一個是「人類運維人員查詢這個 app」的信任邊界，威脅模型不同，
+    輪替其中一把不該連帶影響另一把。
+
+    `enable_metrics`（同票）：整組 S0 觀測的總開關（Rollback Point）。
+    關閉時全部七類指標的記錄呼叫直接是 no-op——AC-4 要求觀測 ON/OFF
+    對任何既有產品 API 回應的序列化 JSON **逐位元一致**，這個開關本身
+    就是那個宣稱的可驗證落地點：兩種狀態下跑同一組請求，除了新增的
+    `GET /api/ops/metrics` 端點本身，其餘回應必須無法分辨開關是開是關。
     """
     app = FastAPI(title="Option Chaser API", version=__version__)
 
@@ -605,11 +620,37 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
     # fetch_chain` 識別呼叫端有沒有覆寫整條複合鏈——覆寫時（幾乎全部
     # 既有測試都這樣做，注入固定快照）直接沿用呼叫端給的 `fetch`，
     # backoff 包裝無從套用也不需要套用。
+    def _metered_chain_fetch(fn: FetchChain, source: str) -> FetchChain:
+        """S0（SCALE-08／#258）指標 #1／#2：包住一個實際會打上游的抓鏈
+        函式，記錄「真的打了一次」與「這次是不是被 429 擋下來」。刻意
+        包在這一層、不是包在 `chain_backoff.backoff_aware_fetch()`
+        外面——backoff 短路（封鎖窗內、零上游呼叫）時 `fn` 根本不會被
+        呼叫到，指標因此天然只計真正發生過的上游請求，不會把「被我們
+        自己的 backoff 擋下來」誤算成一次 fetch。"""
+        def wrapped(symbol: str) -> ChainSnapshot:
+            try:
+                snap = fn(symbol)
+            except RateLimitedError:
+                _record_metric("chain_429_count", ny_today(),
+                               source=source, symbol=symbol)
+                _record_metric("chain_fetch_count", ny_today(),
+                               source=source, symbol=symbol)
+                raise
+            except Exception:
+                _record_metric("chain_fetch_count", ny_today(),
+                               source=source, symbol=symbol)
+                raise
+            _record_metric("chain_fetch_count", ny_today(),
+                           source=source, symbol=symbol)
+            return snap
+        return wrapped
+
     def _default_fetch(symbol: str) -> ChainSnapshot:
         from option_chaser.data import cboe as cboe_module
 
-        actual_cboe_fetch = (cboe_fetch if cboe_fetch is not None
-                             else cboe_module.fetch_chain)
+        actual_cboe_fetch = _metered_chain_fetch(
+            cboe_fetch if cboe_fetch is not None else cboe_module.fetch_chain,
+            "cboe")
         try:
             return chain_backoff.backoff_aware_fetch(
                 _db(), "cboe", actual_cboe_fetch, symbol,
@@ -617,7 +658,7 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         except FetchError:
             from option_chaser.data import yf
 
-            return yf.fetch_chain(symbol)
+            return _metered_chain_fetch(yf.fetch_chain, "yfinance")(symbol)
 
     _effective_fetch: FetchChain = (
         _default_fetch if fetch is service.fetch_chain else fetch)
@@ -626,6 +667,20 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
     # 顯式傳入（含空字串）時完全採用那個值，測試才有決定性。
     _effective_cron_secret = (cron_secret if cron_secret is not None
                               else os.environ.get("CRON_SECRET"))
+    # SCALE-08（#258）：同一套設計，獨立的環境變數。
+    _effective_ops_secret = (ops_secret if ops_secret is not None
+                             else os.environ.get("OPS_SECRET"))
+
+    def _record_metric(metric: str, today: date, *, source: str = "",
+                       symbol: str = "", count: int = 1,
+                       amount: float = 0.0) -> None:
+        """S0（SCALE-08／#258）的唯一記錄入口——`enable_metrics=False`
+        時整組觀測是 no-op（AC-4 的 rollback 開關），開啟時委派給
+        `api_app.metrics.record()`（本身已經是 fail-open，這裡不用
+        再包一層 try/except）。"""
+        if enable_metrics:
+            metrics.record(_db(), metric, today, source=source,
+                           symbol=symbol, count=count, amount=amount)
 
     # 合併 correlation id（DG-02／#145）與 storage 連線 scope
     # （PERF-01／#177，T02／#186 修形）成單一層 middleware——原本兩層
@@ -664,16 +719,31 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
     # 重不重建都不影響行為，這裡只是省一次函式呼叫）。
     cached_rate: dict[str, RateCurveLoader] = {}
 
+    def _metered_rate_loader(today: date) -> tuple:
+        """S0（SCALE-08／#258）指標 #4——包在 `rate_loader` 本身（不是
+        `cached_loader()` 外面），只在 `cached_loader()` 內部真的判定
+        「這是 cache miss，得問一次底層來源」時才會被呼叫到，因此
+        天然只計真正的冷抓取，不含快取命中。"""
+        _record_metric("cold_miss_count", ny_today(), source="treasury")
+        return rate_loader(today)
+
     def _rate_curve_loader() -> RateCurveLoader:
         if "loader" not in cached_rate:
-            cached_rate["loader"] = cached_loader(_db(), rate_loader)
+            cached_rate["loader"] = cached_loader(_db(), _metered_rate_loader)
         return cached_rate["loader"]
 
     cached_dividend: dict[str, DividendLoader] = {}
 
+    def _metered_dividend_loader(symbol: str, today: date) -> tuple:
+        """同上，per-symbol（S0 允許的維度）。"""
+        _record_metric("cold_miss_count", ny_today(),
+                       source="dividend", symbol=symbol)
+        return dividend_loader(symbol, today)
+
     def _dividend_loader() -> DividendLoader:
         if "loader" not in cached_dividend:
-            cached_dividend["loader"] = cached_dividend_loader(_db(), dividend_loader)
+            cached_dividend["loader"] = cached_dividend_loader(
+                _db(), _metered_dividend_loader)
         return cached_dividend["loader"]
 
     # PERF-03（#179）：同一個惰性建一次、重用閉包的模式，鍵是年份而非
@@ -862,6 +932,42 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
             raise HTTPException(status_code=401, detail="unauthorized")
         curve, note = _rate_curve_loader()(ny_today())
         return {"ok": curve is not None, "note": note}
+
+    # ---------- S0 最小可觀測性（SCALE-08／#258） ----------
+
+    @app.get("/api/ops/metrics")
+    def ops_metrics(request: Request) -> dict:
+        """七類指標的單一 operator 查詢入口（AC-1），逐一列出：
+
+        1. `chain_fetch_count`——上游抓鏈實際被呼叫的次數（`source`／
+           `symbol` 維度）
+        2. `chain_429_count`——其中被限流擋下的次數
+        3. `stale_serve_count`——這次分析實際用了陳舊利率／股利備援值
+           的次數
+        4. `cold_miss_count`——Treasury／Dividend 真正問過底層來源
+           （快取沒命中）的次數
+        5. `refresh_duration_ms`——一次刷新（抓鏈＋分析＋落盤）耗時，
+           `count`／`total`／`max_value` 供算平均與量級
+        6. `table_size`——`results`／`snapshots` 兩表即時查詢的列數、
+           大小、單列大小分布（query-time gauge，不在上面的桶裡）
+        7. `history_read_volume`——回答一次 `/history` 請求要撈幾筆
+           完整歷史 view（SCALE-14 切換 narrow 讀取路徑後的對照基準）
+
+        **operator-only**（AC-6）：與 cron 端點同一套 fail-closed 設計，
+        `OPS_SECRET` 未設定或不符一律 401；不對一般使用者開放，前端
+        不會呼叫這個端點。
+        """
+        provided = request.headers.get("authorization")
+        if not _effective_ops_secret or provided != f"Bearer {_effective_ops_secret}":
+            raise HTTPException(status_code=401, detail="unauthorized")
+
+        by_metric: dict[str, list[dict]] = {m: [] for m in metrics.PERSISTED_METRICS}
+        for e in _db().metric_summary():
+            by_metric.setdefault(e.metric, []).append(
+                {"bucket": e.bucket, "source": e.source or None,
+                 "symbol": e.symbol or None, "count": e.count,
+                 "total": e.total, "max_value": e.max_value})
+        return {**by_metric, "table_size": _db().table_size_metrics()}
 
     # ---------- Application diagnostics（DG-02／#145） ----------
 
@@ -1092,11 +1198,25 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         # legacy subtype 字串（舊資料，無遷移）——這是**唯一**的展開點，
         # 把它換算成 `AnalysisRequest.strategies` 要的具體 subtype 清單。
         subtypes = subtypes_of(normalize_families(sc.strategies))
+        # S0（SCALE-08／#258）指標 #5：從真正開始做事（抓鏈＋分析＋
+        # 落盤，跳過上面 `month_is_over` 的無害短路）到全部寫完為止，
+        # 這是對「一次刷新要花多久」最有用的定義——短路那條路徑不算
+        # 一次真正的刷新，混進來只會讓平均值失真。
+        _refresh_started = time.monotonic()
         view, snapshot = _analyze(
             scenario_id=sc.id, symbol=sc.symbol, target_price=sc.target_price,
             target_month=sc.target_month, strategies=subtypes,
             best_price=sc.best_price, worst_price=sc.worst_price, snap=snap)
         analyzed_at = view["analyzed_at"]
+        # S0 指標 #3：這次分析實際用掉的是不是陳舊的利率／股利備援值
+        # ——直接讀 `view["params"]`（`dataclasses.asdict(AnalysisParams)`
+        # 的既有欄位，RC1／#87 與 #123 早已存在），不重新判斷一次。
+        params = view.get("params") or {}
+        if params.get("rate_curve_stale"):
+            _record_metric("stale_serve_count", today, source="treasury")
+        if params.get("q_stale"):
+            _record_metric("stale_serve_count", today, source="dividend",
+                           symbol=sc.symbol)
         # T07（#224，Initial V2）：per-family map 只走訪一次
         # （`representative_candidates_by_family`），scalar 冠軍改由它
         # 取 `max()` 導出而非各自獨立呼叫 `store.representative_
@@ -1138,6 +1258,8 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
                            payload={"analyzed_at": analyzed_at,
                                     "snapshot_ref": view["snapshot_ref"]},
                            owner_id=owner_id)
+        _record_metric("refresh_duration_ms", ny_today(),
+                       amount=(time.monotonic() - _refresh_started) * 1000)
         return _row_json(sc, today, analyzed_at=analyzed_at,
                          best_return=best_return,
                          representative_candidate=representative_candidate,
@@ -1305,7 +1427,13 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         dict，不必額外重算——這條端點只是把既有引擎聚合邏輯接上 HTTP。
         """
         _require(scenario_id)
-        views = [r.view for r in _db().result_history(scenario_id)]
+        rows = _db().result_history(scenario_id)
+        # S0（SCALE-08／#258）指標 #7：narrow history 表（SCALE-09）
+        # 落地前的等價證明——這裡量的是「答一次 /history 得撈幾筆
+        # 完整歷史 view」，SCALE-14 切換讀取路徑後同一個問題該有的
+        # 答案會大幅下降，兩者可直接比較。
+        _record_metric("history_read_volume", ny_today(), count=len(rows))
+        views = [r.view for r in rows]
         return {"entries": store.spread_cost_history(views, candidate_key)}
 
     def _load_raw_snapshot(scenario_id: str) -> ChainSnapshot:
