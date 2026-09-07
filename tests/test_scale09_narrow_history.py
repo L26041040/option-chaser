@@ -135,7 +135,8 @@ def test_refresh_dual_writes_narrow_history_without_changing_the_stored_view(
     assert expected_costs
 
     for key, cost in expected_costs.items():
-        entry = storage.get_narrow_history_entry(sc_id, record.analyzed_at, key)
+        entry = storage.get_narrow_history_entry(
+            sc_id, record.analyzed_at, key, owner="solo")
         assert entry is not None, f"visible candidate {key} 沒有被 dual-write"
         assert entry.cost == cost
 

@@ -264,13 +264,73 @@ class MemoryStorage:
 
     def save_narrow_history(self, entries) -> None:
         for entry in entries:
+            require_owner(entry.owner_id)
             key = (entry.scenario_id, entry.analyzed_at, entry.candidate_key)
             self._narrow_history[key] = entry
 
     def get_narrow_history_entry(
         self, scenario_id: str, analyzed_at: str, candidate_key: str,
+        *, owner: str,
     ) -> NarrowHistoryEntry | None:
-        return self._narrow_history.get((scenario_id, analyzed_at, candidate_key))
+        owner = require_owner(owner)
+        entry = self._narrow_history.get((scenario_id, analyzed_at, candidate_key))
+        if entry is None or entry.owner_id != owner:
+            return None
+        return entry
+
+    def narrow_history_for_candidate(
+        self, scenario_id: str, candidate_key: str, analyzed_ats, *, owner: str,
+    ) -> dict[str, float | None]:
+        owner = require_owner(owner)
+        wanted = set(analyzed_ats)
+        return {at: entry.cost
+                for (sid, at, key), entry in self._narrow_history.items()
+                if sid == scenario_id and key == candidate_key
+                and at in wanted and entry.owner_id == owner}
+
+    def result_spot_timestamps(
+        self, scenario_id: str, *, owner: str,
+    ) -> list[tuple[str, float | None]]:
+        owner = require_owner(owner)
+        dates = self.result_timestamps(scenario_id, owner=owner)
+        out = []
+        for at in dates:
+            entry = self._snapshots.get((scenario_id, at))
+            spot = None
+            if entry is not None and entry[1] == owner:
+                spot = entry[0].get("spot")
+            out.append((at, spot))
+        return out
+
+    def result_fact_contexts(
+        self, scenario_id: str, analyzed_ats, *, owner: str,
+    ) -> dict[str, ResultFactContext]:
+        owner = require_owner(owner)
+        wanted = set(analyzed_ats)
+        out: dict[str, ResultFactContext] = {}
+        for at, rec in self._results.get(scenario_id, {}).items():
+            if at not in wanted or rec.owner_id != owner:
+                continue
+            out[at] = ResultFactContext(
+                scenario_id=scenario_id, analyzed_at=at,
+                resolved_params=rec.resolved_params,
+                requested_strategies=rec.requested_strategies,
+                engine_version=rec.engine_version,
+                view_schema_version=rec.view_schema_version,
+                history_replay_version=rec.history_replay_version,
+                snapshot_source=rec.snapshot_source)
+        return out
+
+    def snapshots_batch(
+        self, scenario_id: str, analyzed_ats, *, owner: str,
+    ) -> dict[str, dict]:
+        owner = require_owner(owner)
+        wanted = set(analyzed_ats)
+        out: dict[str, dict] = {}
+        for (sid, at), (snap, snap_owner) in self._snapshots.items():
+            if sid == scenario_id and at in wanted and snap_owner == owner:
+                out[at] = snap
+        return out
 
     # ---------- 資料源設定與 credential（Settings／#124） ----------
 

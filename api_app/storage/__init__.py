@@ -10,7 +10,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from typing import Iterable, Protocol
+from typing import Iterable, Protocol, Sequence
 
 from ..diagnostics import DiagnosticEvent
 
@@ -299,11 +299,19 @@ class NarrowHistoryEntry:
 
     RL：narrow history **永久保存，暫不設 retention**（OD-07）——
     這裡不像 `diagnostics`／`operational_metrics` 有 trim-on-write。
-    """
+
+    `owner_id`（SCALE-14／#265 補記）：SCALE-09 出貨時這張表遺漏了
+    `owner_id`——SCALE-06／SCALE-11 當初列舉的「5 張 row-scoped 表」
+    寫在 `narrow_history` 存在之前，這張新表因此漏接。SCALE-14 要把它
+    真正接進一個 owner-gated 的 production 端點（`GET /history`），
+    在那之前先補齊，與其餘 row-scoped 表同一個模式（nullable、本身
+    不查詢過濾，過濾邏輯在讀寫方法簽章的 `owner` 參數）——不是本票
+    順手做的無關 cleanup，是接線前必要的正確性前提。"""
     scenario_id: str
     analyzed_at: str
     candidate_key: str
     cost: float | None
+    owner_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -798,17 +806,89 @@ class Storage(Protocol):
         冪等操作，不是錯誤）。SCALE-09 本票唯一呼叫端只會傳入
         `cost` 全部非 `None` 的列（visible candidate 的 dual-write，
         票面：「每次 refresh 只 dual-write visible candidate 的
-        non-null cost」）；`cost=None`（negative cache）是這個方法
-        結構上支援、但要等 resolver 真正被呼叫（SCALE-12／14）才會
-        用到的能力，不是本票會產生的資料。"""
+        non-null cost」）；`cost=None`（negative cache）是 SCALE-14
+        write-through 才會真正產生的資料——`resolve_historical_cost()`
+        判定 genuine gap 時也要落盤，避免下次同一個 (analyzed_at,
+        candidate_key) 又重跑一次 resolver。每個 `entry.owner_id`
+        必須非 `None`（`require_owner()` 守門，SCALE-14／#265）。"""
 
     def get_narrow_history_entry(
         self, scenario_id: str, analyzed_at: str, candidate_key: str,
+        *, owner: str,
     ) -> NarrowHistoryEntry | None:
         """單筆查詢——`None` ＝沒有這一列（尚未 materialize，不是
         gap）；非 `None` 時 `.cost` 才是三態裡「已知有效」或「已驗證
         gap」的分野。本票主要用途是儲存契約測試的 round-trip 驗證；
-        SCALE-12（parity proof）會是真正的消費端。"""
+        SCALE-14 的 batch 方法（`narrow_history_for_candidate()`）才是
+        `/history` 端點真正的消費端。"""
+
+    def narrow_history_for_candidate(
+        self, scenario_id: str, candidate_key: str, analyzed_ats: Sequence[str],
+        *, owner: str,
+    ) -> dict[str, float | None]:
+        """SCALE-14（#265）：`GET /history` 讀取路徑的核心批次查詢——
+        一次回答「這個 candidate_key 在這些日期裡，narrow 已經知道
+        什麼」，避免對 `analyzed_ats`（可能是整個劇本的完整歷史）逐一
+        呼叫 `get_narrow_history_entry()` 造成 N+1。
+
+        回傳 `{analyzed_at: cost}`：只包含**真的存在**的列（`cost`
+        本身可能是 `None`，代表已驗證的 genuine gap）；不在回傳 dict
+        裡的 `analyzed_at` ＝ narrow 尚未 materialize（cache miss，
+        需要呼叫端接著跑 resolver），呼叫端據此用
+        `analyzed_at in result` 分辨「查過但是 gap」與「還沒查過」，
+        不能用 `result.get(analyzed_at) is None` 混淆兩者。"""
+
+    def result_spot_timestamps(
+        self, scenario_id: str, *, owner: str,
+    ) -> list[tuple[str, float | None]]:
+        """SCALE-14（#265）：`GET /history` 需要的完整時間軸——`(analyzed_
+        at, spot)` 依 `analyzed_at` 升冪排列，`spot` 讀自 `snapshots`
+        表（JSONB 路徑取值，不整份解析），**不 SELECT `results.view`**
+        （AC-5 硬性紅線）。日期集合沿用 `result_timestamps()` 既有的
+        UNION 判準（`snapshots` 主鍵為主、`results` 補孤兒列）；只存在
+        於 `results`（缺對應 `snapshots` 列的孤兒）的日期，`spot` 誠實
+        回 `None`——這是既有孤兒列本來就是邊界情況（`save_result()`／
+        `save_snapshot()` 兩次獨立呼叫、未包交易）的自然延伸，不寫入
+        `results.view` 的代價。"""
+
+    def result_fact_contexts(
+        self, scenario_id: str, analyzed_ats: Sequence[str], *, owner: str,
+    ) -> dict[str, ResultFactContext]:
+        """SCALE-14（#265）：`result_fact_context()` 的批次版本——一次
+        取得多個 `analyzed_at` 各自的 fact context（供 narrow cache
+        miss 時餵給 `resolve_historical_cost()`），避免逐一呼叫造成
+        N+1。回傳只包含真的查得到的列；`view_schema_version` 全部
+        `None` 的舊列（尚未 backfill）呼叫端必須視為 AC-7 的 fail-safe
+        情境，不得假裝有 fact context 可用。"""
+
+    def snapshots_batch(
+        self, scenario_id: str, analyzed_ats: Sequence[str], *, owner: str,
+    ) -> dict[str, dict]:
+        """SCALE-14（#265）：`get_snapshot()` 的批次版本——resolver 對
+        每一個 narrow cache miss 都需要那一天的完整原始快照（`cost_
+        from_snapshot()`／`find_contract()` 要在整條鏈裡找合約，不能
+        只給單一候選的報價），一次把全部需要的日期批次取回，避免對
+        `analyzed_ats` 逐一查詢造成 N+1（每份快照數百 KB，是這整條
+        讀取路徑裡最貴的部分，批次拿的是「減少往返次數」，不是「減少
+        傳輸位元組」——後者無法避免，resolver 需要哪幾天的完整快照，
+        哪幾天就得整份傳輸）。回傳只包含真的查得到的列。
+
+        **AC-7 相容性回退的裁決（本票明文記錄，非遺漏）**：票面「在
+        legacy view 尚存在時可走明確 compatibility fallback」是「可」
+        （選用），不是「必須」——真正的硬性要求只有「replay version
+        不支援時 fail-safe，不猜測、不回錯值」，而
+        `resolve_historical_cost()` 本身（SCALE-09）在
+        `history_replay_version` 不匹配／`resolved_params`／
+        `requested_strategies` 缺席（尚未 backfill）時已經安全回傳
+        `cost=None, reason="version_mismatch"／"missing_fact_context"`
+        （genuine gap，write-through 落盤成 negative cache），不猜測、
+        不回錯值——硬性要求已滿足。**不額外建置讀取單一歷史列完整
+        `view` 的相容回退路徑**：`HISTORY_REPLAY_VERSION` 目前恆為
+        `1`（SCALE-01 才剛引入這個常數），沒有任何存量資料帶著不同的
+        版本號，這條回退路徑今天無法針對真實資料驗證；等未來真的調高
+        這個常數（版本不相容的既有歷史資料因此出現）才是這個決策真正
+        有輸入可以決定怎麼做的時間點，現在建置屬於沒有具體情境可驗證
+        的推測性程式碼。"""
 
     @property
     def kind(self) -> str:

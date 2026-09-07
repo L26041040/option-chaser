@@ -24,6 +24,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 from option_chaser import __version__, ivpipeline, service, store
 from option_chaser.data import treasury as treasury_data
 from option_chaser.data.snapshot import snapshot_from_dict, snapshot_to_csv
+from option_chaser.history_resolver import resolve_historical_cost
 from option_chaser.models import (AnalysisParams, ChainSnapshot, FAMILIES,
                                   FetchError, ParamError, RateLimitedError,
                                   STRATEGIES, normalize_families, subtypes_of)
@@ -1296,12 +1297,11 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         # SCALE-09（#261，Scaling Foundation Stage 1-1）：dual-write
         # narrow history——只寫 visible candidate 的 non-null cost
         # （`store.visible_candidate_costs()` 即 FR-2.2 定義的聯集），
-        # `results.view` 本身完全不受影響。**這裡不切換任何讀取
-        # 路徑**——`GET /history` 仍然只讀 `result_history()`（Stage
-        # boundary，SCALE-14 才會接線）。
+        # `results.view` 本身完全不受影響。SCALE-14（#265）：`GET
+        # /history` 現已切換到讀這張表＋candidate-specific resolver。
         _db().save_narrow_history(
             NarrowHistoryEntry(scenario_id=sc.id, analyzed_at=analyzed_at,
-                              candidate_key=key, cost=cost)
+                              candidate_key=key, cost=cost, owner_id=owner_id)
             for key, cost in store.visible_candidate_costs(view).items())
         _db().append_event(ts=now_utc_iso(), scenario_id=sc.id,
                            event="ANALYSIS_COMPLETED",
@@ -1480,27 +1480,103 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
 
     @app.get("/api/scenarios/{scenario_id}/history")
     def get_spread_history(scenario_id: str, candidate_key: str) -> dict:
-        """V9（#57，T11／#25 既有語意）：跨這個劇本全部歷史結果，依
-        Spread 身份鍵（`candidate_key`）聚合成時間序列——唯讀，缺席快照
-        如實呈現為斷點（`store.spread_cost_history()`），不插值。
+        """SCALE-14（#265，Stage 1-3）：canonical read semantics——不再
+        整份讀取 `results.view`（AC-5）。時間軸來自
+        `result_spot_timestamps()`（只讀 `snapshots` JSONB 的 `spot`
+        純量欄位），逐 `analyzed_at` 依序：
 
-        `result_history()` 回傳的 `ResultRecord.view` 已經是完整 view
-        dict，不必額外重算——這條端點只是把既有引擎聚合邏輯接上 HTTP。
+        1. narrow row 存在且 `cost != None` → 直接用（hit）。
+        2. narrow row 存在且 `cost == None` → 已知 genuine gap，直接
+           用（negative cache，不重跑 resolver）。
+        3. narrow row 不存在（cache miss）→ 讀該天的 fact context＋原始
+           快照，呼叫 SCALE-09 `resolve_historical_cost()`；valid／
+           invalid 兩種結果**都** write-through 落盤（AC-3），下次同一
+           個 `(analyzed_at, candidate_key)` 就會落在分支 1／2，不必
+           重付 replay 成本（AC-2）。
+
+        `baseline_return`／`rank_in_expiry` 兩個既有回應欄位保留為
+        `null`——Audit 已證實前端零消費者（`tests/test_scale14_
+        history_read_path.py::test_frontend_never_reads_history_
+        baseline_return_or_rank_in_expiry` 有結構性測試鎖定），新
+        canonical path 不重算它們。
+
+        AC-7 fail-safe：`resolve_historical_cost()` 對
+        `history_replay_version` 不支援／`resolved_params` 缺
+        `target_price`／`target_month` 等既有必要欄位一律回傳
+        `reason="missing_fact_context"`／`"version_mismatch"` 的
+        genuine gap（`cost=None`），不猜測、不回錯值。`missing_
+        fact_context`**刻意不 write-through**——那代表 SCALE-01 metadata
+        backfill 尚未跑到這一列，日後補齊後應該能重新正確判定，永久
+        負向快取會讓這個 (analyzed_at, key) 卡死在 `None` 救不回來；
+        其餘 gap 原因（`version_mismatch`／`skipped_direction`／
+        `invalid_iv`／structural invalid 等）是那一天資料本身的穩定
+        事實，不會因為補跑 metadata backfill 而改變，正常 write-through
+        （AC-3）。同一道理，`fact context` 或原始快照本身完全缺席
+        （既有孤兒列，`save_result()`／`save_snapshot()` 兩次獨立呼叫
+        留下的邊界情況）也不 write-through：這是資料本身還不完整，不是
+        resolver 做出的判斷，不該假裝成一個已驗證的結果永久鎖住。
+
+        未在 legacy view 尚存在時提供 compatibility fallback（票面
+        「可走」，非必須；`HISTORY_REPLAY_VERSION` 目前恆為 1，沒有
+        任何存量資料觸發得到這條路徑，見 `Storage.result_spot_
+        timestamps()` docstring 的完整裁決記錄）。
         """
+        owner = identity_resolver()
         _require(scenario_id)
-        rows = _db().result_history(scenario_id, owner=identity_resolver())
-        # S0（SCALE-08／#258）指標 #7：narrow history 表（SCALE-09）
-        # 落地前的等價證明——這裡量的是「答一次 /history 得撈幾筆
-        # 完整歷史 view」，SCALE-14 切換讀取路徑後同一個問題該有的
-        # 答案會大幅下降，兩者可直接比較。⚠ `count` 在這個指標的語意
-        # 刻意是「累積撈了幾筆歷史列（volume）」，不是其餘六個指標
-        # 「累積發生了幾次事件」的語意——這個指標的存在理由就是量
-        # volume 本身，一次呼叫記 `len(rows)` 才是誠實的量，記 1
-        # 反而會錯失這個指標唯一在乎的數字（`/code-review` SCALE-08
-        # 已標記這是刻意設計、非命名疏忽）。
-        _record_metric("history_read_volume", ny_today(), count=len(rows))
-        views = [r.view for r in rows]
-        return {"entries": store.spread_cost_history(views, candidate_key)}
+        timestamps = _db().result_spot_timestamps(scenario_id, owner=owner)
+        all_dates = [at for at, _spot in timestamps]
+        spot_by_date = dict(timestamps)
+
+        narrow = _db().narrow_history_for_candidate(
+            scenario_id, candidate_key, all_dates, owner=owner)
+        miss_dates = [at for at in all_dates if at not in narrow]
+
+        cost_by_date: dict[str, float | None] = dict(narrow)
+        if miss_dates:
+            fact_contexts = _db().result_fact_contexts(
+                scenario_id, miss_dates, owner=owner)
+            snapshots = _db().snapshots_batch(
+                scenario_id, miss_dates, owner=owner)
+            to_write_through: list[NarrowHistoryEntry] = []
+            for at in miss_dates:
+                fact = fact_contexts.get(at)
+                snap_dict = snapshots.get(at)
+                if fact is None or snap_dict is None:
+                    # 前提資料本身不存在（既有孤兒列）——不是 resolver
+                    # 判定過的結果，不 write-through（見上方 docstring）。
+                    cost_by_date[at] = None
+                    continue
+                resolved = resolve_historical_cost(
+                    candidate_key,
+                    history_replay_version=fact.history_replay_version,
+                    requested_strategies=fact.requested_strategies,
+                    resolved_params=fact.resolved_params,
+                    snapshot=snapshot_from_dict(snap_dict))
+                cost_by_date[at] = resolved.cost
+                if resolved.reason == "missing_fact_context":
+                    # SCALE-01 backfill 尚未跑到這一列——日後補齊後應該
+                    # 能重新正確判定，不永久快取（見上方 docstring）。
+                    continue
+                to_write_through.append(NarrowHistoryEntry(
+                    scenario_id=scenario_id, analyzed_at=at,
+                    candidate_key=candidate_key, cost=resolved.cost,
+                    owner_id=owner))
+            if to_write_through:
+                _db().save_narrow_history(to_write_through)
+
+        # S0（SCALE-08／#258）指標 #7：`count` 語意沿用既有「累積撈了
+        # 幾筆歷史列（volume）」——SCALE-14 切換後，narrow hit／
+        # negative-cache 只查小欄位，真正的成本集中在 cache miss 才會
+        # 觸發的完整快照批次讀取，`len(miss_dates)` 才是這條新讀取路徑
+        # 對應舊指標「撈了幾筆完整 view」的誠實類比（兩者皆為「這次
+        # 呼叫付出了幾份大型 payload 的代價」）。
+        _record_metric("history_read_volume", ny_today(), count=len(miss_dates))
+
+        entries = [{"analyzed_at": at, "spot": spot_by_date.get(at),
+                   "cost": cost_by_date.get(at),
+                   "baseline_return": None, "rank_in_expiry": None}
+                  for at in all_dates]
+        return {"entries": entries}
 
     def _load_raw_snapshot(scenario_id: str) -> ChainSnapshot:
         """V8（#56）：原始資料（當次快照）——`refresh_scenario` 早就在

@@ -341,6 +341,12 @@ CREATE TABLE IF NOT EXISTS narrow_history (
     cost            DOUBLE PRECISION,
     PRIMARY KEY (scenario_id, analyzed_at, candidate_key)
 );
+-- SCALE-14（#265）：`narrow_history` 出貨時（SCALE-09）漏接了
+-- `owner_id`——SCALE-06／SCALE-11 當初列舉的「5 張 row-scoped 表」
+-- 寫在這張表存在之前。本票要把它真正接進一個 owner-gated 的
+-- production 端點（`GET /history`），接線前先補齊，與其餘 row-scoped
+-- 表同一個模式（nullable，本身不查詢過濾，過濾邏輯在方法簽章）。
+ALTER TABLE narrow_history ADD COLUMN IF NOT EXISTS owner_id TEXT;
 """
 
 # 冷啟動競爭下的良性錯誤：別人已經建好／加好了。
@@ -909,32 +915,118 @@ class PostgresStorage:
         entries = list(entries)
         if not entries:
             return
-        values_sql = ", ".join(["(%s, %s, %s, %s)"] * len(entries))
+        for entry in entries:
+            require_owner(entry.owner_id)
+        values_sql = ", ".join(["(%s, %s, %s, %s, %s)"] * len(entries))
         params: list = []
         for entry in entries:
             params.extend([entry.scenario_id, entry.analyzed_at,
-                          entry.candidate_key, entry.cost])
+                          entry.candidate_key, entry.cost, entry.owner_id])
         with self._connect() as conn:
             conn.execute(
                 "INSERT INTO narrow_history "
-                "(scenario_id, analyzed_at, candidate_key, cost) "
+                "(scenario_id, analyzed_at, candidate_key, cost, owner_id) "
                 f"VALUES {values_sql} "
                 "ON CONFLICT (scenario_id, analyzed_at, candidate_key) "
-                "DO UPDATE SET cost = EXCLUDED.cost", params)
+                "DO UPDATE SET cost = EXCLUDED.cost, "
+                "owner_id = EXCLUDED.owner_id", params)
 
     def get_narrow_history_entry(
         self, scenario_id: str, analyzed_at: str, candidate_key: str,
+        *, owner: str,
     ) -> NarrowHistoryEntry | None:
+        owner = require_owner(owner)
         with self._connect() as conn:
             row = conn.execute(
-                "SELECT scenario_id, analyzed_at, candidate_key, cost "
-                "FROM narrow_history "
+                "SELECT scenario_id, analyzed_at, candidate_key, cost, "
+                "owner_id FROM narrow_history "
                 "WHERE scenario_id = %s AND analyzed_at = %s "
-                "AND candidate_key = %s",
-                (scenario_id, analyzed_at, candidate_key)).fetchone()
+                "AND candidate_key = %s AND owner_id = %s",
+                (scenario_id, analyzed_at, candidate_key, owner)).fetchone()
         return (NarrowHistoryEntry(scenario_id=row[0], analyzed_at=row[1],
-                                   candidate_key=row[2], cost=row[3])
+                                   candidate_key=row[2], cost=row[3],
+                                   owner_id=row[4])
                 if row else None)
+
+    def narrow_history_for_candidate(
+        self, scenario_id: str, candidate_key: str, analyzed_ats, *, owner: str,
+    ) -> dict[str, float | None]:
+        owner = require_owner(owner)
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT analyzed_at, cost FROM narrow_history "
+                "WHERE scenario_id = %s AND candidate_key = %s "
+                "AND owner_id = %s AND analyzed_at = ANY(%s)",
+                (scenario_id, candidate_key, owner,
+                 list(analyzed_ats))).fetchall()
+        return {r[0]: r[1] for r in rows}
+
+    def result_spot_timestamps(
+        self, scenario_id: str, *, owner: str,
+    ) -> list[tuple[str, float | None]]:
+        # 日期集合沿用 `result_timestamps()` 既有 UNION 判準；`spot`
+        # 只從 `snapshots.snapshot` 用 JSONB 路徑取一個純量欄位
+        # （`->>`），**不觸碰 `results.view`**（AC-5）。只存在於
+        # `results`（缺對應 `snapshots` 列的孤兒）的日期沒有 LEFT JOIN
+        # 對象，`spot` 自然是 `NULL`——誠實反映「這個孤兒列沒有原始
+        # 快照可查」，不是額外去 `results.view` 撈一次來湊。
+        owner = require_owner(owner)
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT ts.analyzed_at, "
+                "(s.snapshot->>'spot')::double precision AS spot "
+                "FROM ("
+                "  SELECT analyzed_at FROM snapshots "
+                "  WHERE scenario_id = %s AND owner_id = %s"
+                "  UNION"
+                "  SELECT analyzed_at FROM results "
+                "  WHERE scenario_id = %s AND owner_id = %s"
+                ") AS ts "
+                "LEFT JOIN snapshots s "
+                "  ON s.scenario_id = %s AND s.analyzed_at = ts.analyzed_at "
+                "  AND s.owner_id = %s "
+                "ORDER BY ts.analyzed_at",
+                (scenario_id, owner, scenario_id, owner,
+                 scenario_id, owner)).fetchall()
+        return [(r[0], r[1]) for r in rows]
+
+    def result_fact_contexts(
+        self, scenario_id: str, analyzed_ats, *, owner: str,
+    ) -> dict[str, ResultFactContext]:
+        owner = require_owner(owner)
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"SELECT analyzed_at, {_RESULT_FACT_COLS} FROM results "
+                "WHERE scenario_id = %s AND owner_id = %s "
+                "AND analyzed_at = ANY(%s)",
+                (scenario_id, owner, list(analyzed_ats))).fetchall()
+        out: dict[str, ResultFactContext] = {}
+        for (at, resolved_params, requested_strategies, engine_version,
+             view_schema_version, history_replay_version,
+             snapshot_source) in rows:
+            out[at] = ResultFactContext(
+                scenario_id=scenario_id, analyzed_at=at,
+                resolved_params=resolved_params,
+                requested_strategies=(tuple(requested_strategies)
+                                      if requested_strategies is not None
+                                      else None),
+                engine_version=engine_version,
+                view_schema_version=view_schema_version,
+                history_replay_version=history_replay_version,
+                snapshot_source=snapshot_source)
+        return out
+
+    def snapshots_batch(
+        self, scenario_id: str, analyzed_ats, *, owner: str,
+    ) -> dict[str, dict]:
+        owner = require_owner(owner)
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT analyzed_at, snapshot FROM snapshots "
+                "WHERE scenario_id = %s AND owner_id = %s "
+                "AND analyzed_at = ANY(%s)",
+                (scenario_id, owner, list(analyzed_ats))).fetchall()
+        return {r[0]: r[1] for r in rows}
 
     # ---------- Chain 429 backoff（SCALE-04／#255，provider-global） ----------
 

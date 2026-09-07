@@ -685,18 +685,20 @@ def test_chain_backoff_does_not_leak_across_sources(storage):
 def test_narrow_history_starts_with_no_row(storage):
     """AC-2：沒有這一列＝尚未 materialize／cache miss，不是 gap——
     呼叫端必須自己分辨「沒有列」與「有列但 cost 是 None」。"""
-    assert storage.get_narrow_history_entry("s1", "2026-09-06T00:00:00+00:00",
-                                            "bull-call-spread|100|110|2026-09-18") is None
+    assert storage.get_narrow_history_entry(
+        "s1", "2026-09-06T00:00:00+00:00",
+        "bull-call-spread|100|110|2026-09-18", owner=OWNER) is None
 
 
 def test_narrow_history_roundtrips_a_known_valid_point(storage):
     entry = NarrowHistoryEntry(
         scenario_id="s1", analyzed_at="2026-09-06T00:00:00+00:00",
-        candidate_key="bull-call-spread|100|110|2026-09-18", cost=3.25)
+        candidate_key="bull-call-spread|100|110|2026-09-18", cost=3.25,
+        owner_id=OWNER)
     storage.save_narrow_history([entry])
     assert storage.get_narrow_history_entry(
         "s1", "2026-09-06T00:00:00+00:00",
-        "bull-call-spread|100|110|2026-09-18") == entry
+        "bull-call-spread|100|110|2026-09-18", owner=OWNER) == entry
 
 
 def test_narrow_history_roundtrips_an_explicit_gap(storage):
@@ -705,11 +707,12 @@ def test_narrow_history_roundtrips_an_explicit_gap(storage):
     支援得住，`cost=None` 不會被 Postgres 誤存成 0 或整列消失）。"""
     entry = NarrowHistoryEntry(
         scenario_id="s1", analyzed_at="2026-09-06T00:00:00+00:00",
-        candidate_key="bull-call-spread|100|110|2026-09-18", cost=None)
+        candidate_key="bull-call-spread|100|110|2026-09-18", cost=None,
+        owner_id=OWNER)
     storage.save_narrow_history([entry])
     got = storage.get_narrow_history_entry(
         "s1", "2026-09-06T00:00:00+00:00",
-        "bull-call-spread|100|110|2026-09-18")
+        "bull-call-spread|100|110|2026-09-18", owner=OWNER)
     assert got is not None
     assert got.cost is None
 
@@ -719,12 +722,12 @@ def test_narrow_history_pk_is_exactly_the_three_identity_columns(storage):
     candidate_key) 重複寫入是 upsert（覆蓋），不是插入第二列／報衝突。"""
     storage.save_narrow_history([NarrowHistoryEntry(
         scenario_id="s1", analyzed_at="2026-09-06T00:00:00+00:00",
-        candidate_key="k", cost=1.0)])
+        candidate_key="k", cost=1.0, owner_id=OWNER)])
     storage.save_narrow_history([NarrowHistoryEntry(
         scenario_id="s1", analyzed_at="2026-09-06T00:00:00+00:00",
-        candidate_key="k", cost=2.0)])
+        candidate_key="k", cost=2.0, owner_id=OWNER)])
     got = storage.get_narrow_history_entry(
-        "s1", "2026-09-06T00:00:00+00:00", "k")
+        "s1", "2026-09-06T00:00:00+00:00", "k", owner=OWNER)
     assert got.cost == 2.0
 
 
@@ -733,36 +736,149 @@ def test_narrow_history_distinguishes_different_analyzed_at_and_scenarios(storag
     各自獨立——這是 PK 真的涵蓋這三個維度的直接證明，不只是「存得進去
     讀得回來」。"""
     storage.save_narrow_history([
-        NarrowHistoryEntry("s1", "2026-09-06T00:00:00+00:00", "k", 1.0),
-        NarrowHistoryEntry("s1", "2026-09-07T00:00:00+00:00", "k", 2.0),
-        NarrowHistoryEntry("s2", "2026-09-06T00:00:00+00:00", "k", 3.0),
+        NarrowHistoryEntry("s1", "2026-09-06T00:00:00+00:00", "k", 1.0, OWNER),
+        NarrowHistoryEntry("s1", "2026-09-07T00:00:00+00:00", "k", 2.0, OWNER),
+        NarrowHistoryEntry("s2", "2026-09-06T00:00:00+00:00", "k", 3.0, OWNER),
     ])
     assert storage.get_narrow_history_entry(
-        "s1", "2026-09-06T00:00:00+00:00", "k").cost == 1.0
+        "s1", "2026-09-06T00:00:00+00:00", "k", owner=OWNER).cost == 1.0
     assert storage.get_narrow_history_entry(
-        "s1", "2026-09-07T00:00:00+00:00", "k").cost == 2.0
+        "s1", "2026-09-07T00:00:00+00:00", "k", owner=OWNER).cost == 2.0
     assert storage.get_narrow_history_entry(
-        "s2", "2026-09-06T00:00:00+00:00", "k").cost == 3.0
+        "s2", "2026-09-06T00:00:00+00:00", "k", owner=OWNER).cost == 3.0
 
 
 def test_narrow_history_batch_write_handles_multiple_candidates_at_once(storage):
     """一次 refresh 通常會 dual-write多個 visible candidate——批次寫入
     要真的把每一筆都存進去，不是只存最後一筆。"""
     entries = [
-        NarrowHistoryEntry("s1", "2026-09-06T00:00:00+00:00", f"k{i}", float(i))
+        NarrowHistoryEntry("s1", "2026-09-06T00:00:00+00:00", f"k{i}",
+                           float(i), OWNER)
         for i in range(5)
     ]
     storage.save_narrow_history(entries)
     for i in range(5):
         got = storage.get_narrow_history_entry(
-            "s1", "2026-09-06T00:00:00+00:00", f"k{i}")
+            "s1", "2026-09-06T00:00:00+00:00", f"k{i}", owner=OWNER)
         assert got is not None and got.cost == float(i)
 
 
 def test_narrow_history_empty_batch_is_a_no_op(storage):
     storage.save_narrow_history([])   # 不得拋錯
     assert storage.get_narrow_history_entry(
-        "s1", "2026-09-06T00:00:00+00:00", "k") is None
+        "s1", "2026-09-06T00:00:00+00:00", "k", owner=OWNER) is None
+
+
+def test_narrow_history_requires_a_real_owner_on_write(storage):
+    """SCALE-14（#265）：`narrow_history` 出貨時（SCALE-09）漏接
+    `owner_id`，本票補齊——與其餘 row-scoped 表同一個模式，`owner_id=
+    None` 執行期直接拒絕，不是型別標註說說而已。"""
+    with pytest.raises(TypeError):
+        storage.save_narrow_history([NarrowHistoryEntry(
+            scenario_id="s1", analyzed_at="2026-09-06T00:00:00+00:00",
+            candidate_key="k", cost=1.0, owner_id=None)])
+
+
+def test_narrow_history_get_excludes_another_owners_row(storage):
+    storage.save_narrow_history([NarrowHistoryEntry(
+        scenario_id="s1", analyzed_at="2026-09-06T00:00:00+00:00",
+        candidate_key="k", cost=1.0, owner_id="alice")])
+    assert storage.get_narrow_history_entry(
+        "s1", "2026-09-06T00:00:00+00:00", "k", owner="bob") is None
+    assert storage.get_narrow_history_entry(
+        "s1", "2026-09-06T00:00:00+00:00", "k", owner="alice").cost == 1.0
+
+
+def test_narrow_history_for_candidate_batches_across_many_dates(storage):
+    """SCALE-14（#265）：`/history` 讀取路徑的核心批次查詢——一次回答
+    多個 `analyzed_at` 的 narrow 狀態，不必逐一呼叫 `get_narrow_
+    history_entry()`（那會是 N+1）。回傳只包含真的存在的列（`cost`
+    本身可能是 `None`＝已驗證 gap），缺席的日期＝尚未 materialize。"""
+    storage.save_narrow_history([
+        NarrowHistoryEntry("s1", "2026-09-01T00:00:00+00:00", "k", 1.0, OWNER),
+        NarrowHistoryEntry("s1", "2026-09-02T00:00:00+00:00", "k", None, OWNER),
+        NarrowHistoryEntry("s1", "2026-09-03T00:00:00+00:00", "k", 3.0, OWNER),
+        # 不同 candidate_key，不該混進來
+        NarrowHistoryEntry("s1", "2026-09-01T00:00:00+00:00", "other", 99.0, OWNER),
+        # 不同 owner，不該混進來
+        NarrowHistoryEntry("s1", "2026-09-04T00:00:00+00:00", "k", 4.0, "bob"),
+    ])
+    result = storage.narrow_history_for_candidate(
+        "s1", "k", ["2026-09-01T00:00:00+00:00", "2026-09-02T00:00:00+00:00",
+                    "2026-09-03T00:00:00+00:00", "2026-09-04T00:00:00+00:00",
+                    "2026-09-05T00:00:00+00:00"],
+        owner=OWNER)
+    assert result == {
+        "2026-09-01T00:00:00+00:00": 1.0,
+        "2026-09-02T00:00:00+00:00": None,
+        "2026-09-03T00:00:00+00:00": 3.0,
+    }
+    assert "2026-09-04T00:00:00+00:00" not in result   # 別的 owner
+    assert "2026-09-05T00:00:00+00:00" not in result   # 尚未 materialize
+
+
+# ---------- SCALE-14（#265）：/history canonical 讀取路徑的批次查詢 ----------
+
+def test_result_spot_timestamps_reads_spot_from_snapshots_not_view(storage):
+    """AC-5：`spot` 只從 `snapshots` 表取得，日期集合與
+    `result_timestamps()` 完全一致——本測試直接構造一個沒有配對
+    `snapshots` 列的孤兒 `results` 列，證明它仍出現在日期清單裡，
+    只是 `spot` 誠實回 `None`。"""
+    storage.create_scenario(_scenario("s1", owner_id=OWNER))
+    storage.save_snapshot("s1", "2026-09-01T00:00:00+00:00",
+                          {"spot": 101.5, "symbol": "XYZ"}, owner_id=OWNER)
+    storage.save_result(ResultRecord(
+        "s1", "2026-09-01T00:00:00+00:00", {}, owner_id=OWNER))
+    # 孤兒列：只有 results，沒有對應的 snapshots。
+    storage.save_result(ResultRecord(
+        "s1", "2026-09-02T00:00:00+00:00", {}, owner_id=OWNER))
+
+    got = storage.result_spot_timestamps("s1", owner=OWNER)
+    assert got == [("2026-09-01T00:00:00+00:00", 101.5),
+                  ("2026-09-02T00:00:00+00:00", None)]
+
+
+def test_result_spot_timestamps_excludes_another_owners_rows(storage):
+    storage.create_scenario(_scenario("s1", owner_id="alice"))
+    storage.save_snapshot("s1", "2026-09-01T00:00:00+00:00",
+                          {"spot": 100.0, "symbol": "XYZ"}, owner_id="alice")
+    assert storage.result_spot_timestamps("s1", owner="bob") == []
+    assert storage.result_spot_timestamps("s1", owner="alice") == [
+        ("2026-09-01T00:00:00+00:00", 100.0)]
+
+
+def test_result_fact_contexts_batches_and_excludes_another_owner(storage):
+    storage.create_scenario(_scenario("s1", owner_id=OWNER))
+    storage.save_result(ResultRecord(
+        "s1", "2026-09-01T00:00:00+00:00", {}, owner_id=OWNER,
+        resolved_params={"target_price": 100.0}, requested_strategies=("k",),
+        engine_version="v1", view_schema_version=7,
+        history_replay_version=1, snapshot_source="cboe"))
+    storage.save_result(ResultRecord(
+        "s1", "2026-09-02T00:00:00+00:00", {}, owner_id="bob"))
+
+    got = storage.result_fact_contexts(
+        "s1", ["2026-09-01T00:00:00+00:00", "2026-09-02T00:00:00+00:00",
+              "2026-09-03T00:00:00+00:00"], owner=OWNER)
+    assert set(got) == {"2026-09-01T00:00:00+00:00"}
+    ctx = got["2026-09-01T00:00:00+00:00"]
+    assert ctx.resolved_params == {"target_price": 100.0}
+    assert ctx.history_replay_version == 1
+
+
+def test_snapshots_batch_returns_only_requested_dates_and_owner(storage):
+    storage.save_snapshot("s1", "2026-09-01T00:00:00+00:00",
+                          {"spot": 1.0}, owner_id=OWNER)
+    storage.save_snapshot("s1", "2026-09-02T00:00:00+00:00",
+                          {"spot": 2.0}, owner_id=OWNER)
+    storage.save_snapshot("s1", "2026-09-03T00:00:00+00:00",
+                          {"spot": 3.0}, owner_id="bob")
+
+    got = storage.snapshots_batch(
+        "s1", ["2026-09-01T00:00:00+00:00", "2026-09-03T00:00:00+00:00",
+              "2026-09-09T00:00:00+00:00"], owner=OWNER)
+    assert set(got) == {"2026-09-01T00:00:00+00:00"}
+    assert got["2026-09-01T00:00:00+00:00"]["spot"] == 1.0
 
 
 # ---------- 清單摘要（V3／#51） ----------
