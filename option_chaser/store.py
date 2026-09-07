@@ -331,6 +331,14 @@ def spread_cost_history(views: Iterable[dict], candidate_key: str) -> list[dict]
     rank_in_expiry 皆為 None：如實呈現斷點，不插值、不跳過、不報錯；
     `analyzed_at`／`spot` 仍取自那次成功更新本身。範圍限定 Spread 路徑
     （`all_candidates` 只有 spread 策略填入，T9 附錄A13 既有 MVP 範圍）。
+
+    **SCALE-14（#265）之後**：`GET /history` 已改讀 narrow history／
+    candidate-specific resolver（`api_app.main.get_spread_history()`，
+    不再呼叫這個函式），**本函式刻意保留、非死碼**——票面明文
+    `Rollback Point`：「Feature/read-path switch 可切回 legacy
+    `spread_cost_history`」，是那條回退路徑本身，也是
+    `tests/test_scale14_history_read_path.py` 裡 AC-4 benchmark 的
+    legacy baseline 對照組。
     """
     out = []
     for view in views:

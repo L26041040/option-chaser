@@ -62,13 +62,36 @@ _VERTICAL_STRIKE_COUNT = 2
 _BUTTERFLY_STRIKE_COUNT = 3
 
 
+# SCALE-14（#265）：narrow history write-through 快取政策——並非所有
+# gap 都該永久快取。只有這一個原因代表「暫時性缺口，日後可能自己
+# 變好」，其餘任何原因（含 valid cost 本身）都是那一天資料的穩定
+# 事實。集中定義在這裡（而非讓呼叫端各自硬編一份字串比對），與下面
+# `ResolvedHistoricalCost.is_write_through_eligible()` 共用同一個
+# 判準來源。
+_TRANSIENT_GAP_REASON = "missing_fact_context"
+
+
 @dataclass(frozen=True)
 class ResolvedHistoricalCost:
     """resolve 的結果——`cost=None` 一律代表 genuine gap，`reason`
-    是給診斷／測試看的人話原因，不是給任何判斷邏輯用的（呼叫端只該
-    讀 `cost`，不該對 `reason` 字串做分支決策）。"""
+    是給診斷／測試看的人話原因，**呼叫端不該自己對 `reason` 字串做
+    分支決策**（SCALE-14／#265 例外：`is_write_through_eligible()`
+    是這個型別自己提供的、唯一被允許讀 `reason` 做決策的地方——呼叫端
+    call 這個方法，不直接比對字串，caching policy 因此集中在這裡，
+    不散落進 `api_app/main.py`）。"""
     cost: float | None
     reason: str
+
+    def is_write_through_eligible(self) -> bool:
+        """SCALE-14（#265）：這個結果可不可以安全落盤進 `narrow_
+        history` 當永久快取——`missing_fact_context`（SCALE-01
+        metadata backfill 尚未跑到這一列）是唯一的例外，日後補齊後
+        應該有機會重新正確判定，永久負向快取會讓它卡死救不回來；其餘
+        任何結果（valid cost，或其他任何 gap reason——
+        `version_mismatch`／`skipped_direction`／`invalid_iv`／
+        structural invalid 等）都是那一天資料本身的穩定事實，可以
+        安全寫進 narrow_history。"""
+        return self.reason != _TRANSIENT_GAP_REASON
 
 
 def _gap(reason: str) -> ResolvedHistoricalCost:
@@ -101,7 +124,7 @@ def resolve_historical_cost(
     """
     if (history_replay_version is None or requested_strategies is None
             or resolved_params is None):
-        return _gap("missing_fact_context")
+        return _gap(_TRANSIENT_GAP_REASON)
     if history_replay_version != HISTORY_REPLAY_VERSION:
         return _gap("version_mismatch")
 
@@ -126,18 +149,18 @@ def resolve_historical_cost(
     # 冒充「有效」（SCALE-09／#261 code review 抓到的缺口）。
     target_price = resolved_params.get("target_price")
     if not isinstance(target_price, (int, float)):
-        return _gap("missing_fact_context")
+        return _gap(_TRANSIENT_GAP_REASON)
     direction = derive_direction(float(target_price), snapshot.spot)
     if not subtype_eligible(strategy, direction):
         return _gap("skipped_direction")
 
     target_month = resolved_params.get("target_month")
     if not isinstance(target_month, str):
-        return _gap("missing_fact_context")
+        return _gap(_TRANSIENT_GAP_REASON)
     try:
         anchor = calendar_anchor(TargetMonth.from_key(target_month))
     except Exception:  # noqa: BLE001 — 讀不懂的月份格式視同缺 context，不猜
-        return _gap("missing_fact_context")
+        return _gap(_TRANSIENT_GAP_REASON)
 
     today = snapshot_today(snapshot.fetched_at)
     tradable = tradable_expiries((c.expiry for c in snapshot.contracts), today)

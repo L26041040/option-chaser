@@ -263,8 +263,14 @@ class MemoryStorage:
     # ---------- Narrow visible-candidate history（SCALE-09／#261） ----------
 
     def save_narrow_history(self, entries) -> None:
+        # 比照既有 `save_result()`／`save_snapshot()`：寫入本身不強制
+        # `owner_id` 非 None（沿用 SCALE-06 Expand 階段「寫入寬鬆、
+        # 讀取才強制」的既有慣例，讓 `backfill_missing_owner_ids()`
+        # 有辦法在測試裡模擬既有無 owner 舊列——`get_narrow_history_
+        # entry()`／`narrow_history_for_candidate()` 兩個讀取方法已經
+        # 強制 `owner` 非 None，正式 production 呼叫端一律傳入解析過
+        # 的真實 owner，不依賴這裡的寫入端檢查）。
         for entry in entries:
-            require_owner(entry.owner_id)
             key = (entry.scenario_id, entry.analyzed_at, entry.candidate_key)
             self._narrow_history[key] = entry
 
@@ -413,11 +419,14 @@ class MemoryStorage:
     # ---------- Ownership A-1 Expand（SCALE-06／#256） ----------
 
     def backfill_missing_owner_ids(self, owner_id: str) -> dict[str, int]:
-        """5 張 row-scoped 表各自獨立掃描、只補 `owner_id is None` 的列
+        """6 張 row-scoped 表各自獨立掃描、只補 `owner_id is None` 的列
         ——條件式判斷讓重跑天然冪等（第二次呼叫全部回 0），不需要另外
-        記錄「跑到哪裡了」的游標狀態。"""
+        記錄「跑到哪裡了」的游標狀態。`narrow_history`（SCALE-14／
+        #265 補上，`/code-review` Spec 軸抓到的真缺口）：SCALE-09 出貨
+        時漏接 `owner_id`，這張表沒有搭其他遷移欄位可以順手帶上這個
+        backfill，需要獨立列出來。"""
         counts = {"scenarios": 0, "results": 0, "snapshots": 0,
-                 "events": 0, "diagnostics": 0}
+                 "events": 0, "diagnostics": 0, "narrow_history": 0}
 
         for sid, sc in list(self._scenarios.items()):
             if sc.owner_id is None:
@@ -445,6 +454,12 @@ class MemoryStorage:
             if d.owner_id is None:
                 self._diagnostics[i] = dataclasses.replace(d, owner_id=owner_id)
                 counts["diagnostics"] += 1
+
+        for key, entry in list(self._narrow_history.items()):
+            if entry.owner_id is None:
+                self._narrow_history[key] = dataclasses.replace(
+                    entry, owner_id=owner_id)
+                counts["narrow_history"] += 1
 
         return counts
 

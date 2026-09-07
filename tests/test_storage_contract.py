@@ -769,14 +769,21 @@ def test_narrow_history_empty_batch_is_a_no_op(storage):
         "s1", "2026-09-06T00:00:00+00:00", "k", owner=OWNER) is None
 
 
-def test_narrow_history_requires_a_real_owner_on_write(storage):
+def test_narrow_history_get_requires_a_real_owner(storage):
     """SCALE-14（#265）：`narrow_history` 出貨時（SCALE-09）漏接
-    `owner_id`，本票補齊——與其餘 row-scoped 表同一個模式，`owner_id=
-    None` 執行期直接拒絕，不是型別標註說說而已。"""
+    `owner_id`，本票補齊——比照既有 `save_result()`／`save_snapshot()`
+    的「寫入寬鬆、讀取才強制」慣例，寫入允許 `owner_id=None`（給
+    `backfill_missing_owner_ids()` 模擬既有無 owner 舊列用），但讀取
+    方法一律拒絕 `owner=None`，不是型別標註說說而已。"""
+    storage.save_narrow_history([NarrowHistoryEntry(
+        scenario_id="s1", analyzed_at="2026-09-06T00:00:00+00:00",
+        candidate_key="k", cost=1.0, owner_id=None)])   # 寫入不拋錯
     with pytest.raises(TypeError):
-        storage.save_narrow_history([NarrowHistoryEntry(
-            scenario_id="s1", analyzed_at="2026-09-06T00:00:00+00:00",
-            candidate_key="k", cost=1.0, owner_id=None)])
+        storage.get_narrow_history_entry(
+            "s1", "2026-09-06T00:00:00+00:00", "k", owner=None)
+    with pytest.raises(TypeError):
+        storage.narrow_history_for_candidate(
+            "s1", "k", ["2026-09-06T00:00:00+00:00"], owner=None)
 
 
 def test_narrow_history_get_excludes_another_owners_row(storage):
@@ -1833,7 +1840,8 @@ def test_list_events_excludes_another_owners_rows(storage):
 
 
 def test_backfill_missing_owner_ids_sets_solo_owner_on_every_legacy_row(storage):
-    """AC-1／AC-2：5 張表各留一筆沒有 owner 的舊列，一次 backfill 全部
+    """AC-1／AC-2：6 張表（SCALE-06 原始 5 張＋SCALE-14 補上的
+    `narrow_history`）各留一筆沒有 owner 的舊列，一次 backfill 全部
     補齊，回傳的計數逐表對得上。
 
     SCALE-11 跟進：`_scenario()` 這份契約測試檔的預設值已改成
@@ -1849,16 +1857,21 @@ def test_backfill_missing_owner_ids_sets_solo_owner_on_every_legacy_row(storage)
     storage.append_event(ts="2026-08-01T00:00:00+00:00", scenario_id="s1",
                          event="SCENARIO_CREATED", payload={})
     storage.append_diagnostic(_diag(event_id="d1"))
+    storage.save_narrow_history([NarrowHistoryEntry(
+        scenario_id="s1", analyzed_at="2026-08-01T00:00:00+00:00",
+        candidate_key="k", cost=1.0, owner_id=None)])
 
     counts = storage.backfill_missing_owner_ids("solo")
     assert counts == {"scenarios": 1, "results": 1, "snapshots": 1,
-                      "events": 1, "diagnostics": 1}
+                      "events": 1, "diagnostics": 1, "narrow_history": 1}
 
     assert storage.get_scenario("s1", owner="solo").owner_id == "solo"
     assert storage.latest_result("s1", owner="solo").owner_id == "solo"
     assert storage.get_snapshot_owner("s1", "2026-08-01T00:00:00+00:00") == "solo"
     assert storage.list_events(owner="solo")[0]["owner_id"] == "solo"
     assert storage.list_diagnostics(owner="solo")[0].owner_id == "solo"
+    assert storage.get_narrow_history_entry(
+        "s1", "2026-08-01T00:00:00+00:00", "k", owner="solo").owner_id == "solo"
 
 
 def test_backfill_missing_owner_ids_is_idempotent_on_rerun(storage):
@@ -1870,13 +1883,16 @@ def test_backfill_missing_owner_ids_is_idempotent_on_rerun(storage):
     storage.append_event(ts="2026-08-01T00:00:00+00:00", scenario_id="s1",
                          event="SCENARIO_CREATED", payload={})
     storage.append_diagnostic(_diag(event_id="d1"))
+    storage.save_narrow_history([NarrowHistoryEntry(
+        scenario_id="s1", analyzed_at="2026-08-01T00:00:00+00:00",
+        candidate_key="k", cost=1.0, owner_id=None)])
 
     first = storage.backfill_missing_owner_ids("solo")
     assert all(v == 1 for v in first.values())
 
     second = storage.backfill_missing_owner_ids("solo")
     assert second == {"scenarios": 0, "results": 0, "snapshots": 0,
-                      "events": 0, "diagnostics": 0}
+                      "events": 0, "diagnostics": 0, "narrow_history": 0}
 
     # 結果不變——不是「回 0 但其實悄悄改了值」。
     assert storage.get_scenario("s1", owner="solo").owner_id == "solo"
@@ -1896,7 +1912,7 @@ def test_backfill_does_not_overwrite_a_row_that_already_has_an_owner(storage):
 def test_backfill_on_an_empty_store_reports_zero_for_every_table(storage):
     counts = storage.backfill_missing_owner_ids("solo")
     assert counts == {"scenarios": 0, "results": 0, "snapshots": 0,
-                      "events": 0, "diagnostics": 0}
+                      "events": 0, "diagnostics": 0, "narrow_history": 0}
 
 
 # ---------- AC-5：結構性——3 張 singleton 表與 system-wide 表零 owner ----------

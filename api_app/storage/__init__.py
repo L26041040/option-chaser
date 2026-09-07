@@ -749,13 +749,16 @@ class Storage(Protocol):
     # ---------- Ownership A-1 Expand（SCALE-06／#256） ----------
 
     def backfill_missing_owner_ids(self, owner_id: str) -> dict[str, int]:
-        """對 5 張 row-scoped 表（`scenarios`／`results`／`snapshots`／
-        `events`／`diagnostics`）**既有** `owner_id IS NULL` 的列，
-        整批補上 `owner_id`。回傳 `{table_name: 更新筆數}`。
+        """對 6 張 row-scoped 表（`scenarios`／`results`／`snapshots`／
+        `events`／`diagnostics`——SCALE-06／#256 原始 5 張；
+        `narrow_history`——SCALE-14／#265 補上，SCALE-09 出貨時漏接
+        `owner_id`，見該方法 postgres/memory 實作的 docstring）
+        **既有** `owner_id IS NULL` 的列，整批補上 `owner_id`。回傳
+        `{table_name: 更新筆數}`。
 
         冪等、可重跑：條件式的 `WHERE owner_id IS NULL` 讓重跑只影響
         「還沒補過」的列，不會覆蓋已經有值（含未來若真的支援多重
-        owner）的既有資料，重跑第二次全部回 0。**這 5 張表以外的表
+        owner）的既有資料，重跑第二次全部回 0。**這 6 張表以外的表
         （3 張 singleton user tables、system-wide 市場事實表、
         `chain_backoff`）本方法不觸碰**——見票面範圍界線。
 
@@ -809,8 +812,14 @@ class Storage(Protocol):
         non-null cost」）；`cost=None`（negative cache）是 SCALE-14
         write-through 才會真正產生的資料——`resolve_historical_cost()`
         判定 genuine gap 時也要落盤，避免下次同一個 (analyzed_at,
-        candidate_key) 又重跑一次 resolver。每個 `entry.owner_id`
-        必須非 `None`（`require_owner()` 守門，SCALE-14／#265）。"""
+        candidate_key) 又重跑一次 resolver。`entry.owner_id`（SCALE-14／
+        #265 補上）比照既有 `save_result()`／`save_snapshot()`：寫入
+        本身不強制非 `None`（SCALE-06 Expand 階段「寫入寬鬆、讀取才
+        強制」的既有慣例，讓 `backfill_missing_owner_ids()` 能處理既有
+        無 owner 的舊列）——production 呼叫端一律傳入解析過的真實
+        owner，讀取方法（`get_narrow_history_entry()`／
+        `narrow_history_for_candidate()`）才是真正強制 `owner` 非
+        `None` 的地方。"""
 
     def get_narrow_history_entry(
         self, scenario_id: str, analyzed_at: str, candidate_key: str,

@@ -912,11 +912,12 @@ class PostgresStorage:
     # ---------- Narrow visible-candidate history（SCALE-09／#261） ----------
 
     def save_narrow_history(self, entries) -> None:
+        # 比照既有 `save_result()`／`save_snapshot()`：寫入本身不強制
+        # `owner_id` 非 None（沿用 SCALE-06 Expand 階段「寫入寬鬆、
+        # 讀取才強制」的既有慣例，見 memory.py 同名方法的完整說明）。
         entries = list(entries)
         if not entries:
             return
-        for entry in entries:
-            require_owner(entry.owner_id)
         values_sql = ", ".join(["(%s, %s, %s, %s, %s)"] * len(entries))
         params: list = []
         for entry in entries:
@@ -1283,11 +1284,18 @@ class PostgresStorage:
     # ---------- Ownership A-1 Expand（SCALE-06／#256） ----------
 
     def backfill_missing_owner_ids(self, owner_id: str) -> dict[str, int]:
-        """5 張 row-scoped 表各自一條 `UPDATE ... WHERE owner_id IS
+        """6 張 row-scoped 表各自一條 `UPDATE ... WHERE owner_id IS
         NULL`——條件式 WHERE 讓重跑天然冪等（第二次呼叫全部回 0），
         `cur.rowcount` 直接就是「這次真的補了幾筆」，不需要另外
-        SELECT COUNT 再 UPDATE 兩趟。"""
-        tables = ("scenarios", "results", "snapshots", "events", "diagnostics")
+        SELECT COUNT 再 UPDATE 兩趟。`narrow_history`（SCALE-14／#265
+        補上，`/code-review` Spec 軸抓到的真缺口）：SCALE-09 出貨時
+        漏接 `owner_id`，這張表本身沒有其他遷移欄位可以順手帶上這個
+        backfill，需要獨立列出來，否則既有部署裡 SCALE-09 dual-write
+        留下的舊列會在 SCALE-14 上線後對任何 owner 永久查不到（只是
+        會被 resolver miss 自動重新算出並覆蓋寫回，不是靜默資料
+        損毀，但仍是本應由這支腳本負責的既有缺口）。"""
+        tables = ("scenarios", "results", "snapshots", "events",
+                 "diagnostics", "narrow_history")
         counts: dict[str, int] = {}
         with self._connect() as conn:
             for table in tables:

@@ -1553,9 +1553,12 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
                     resolved_params=fact.resolved_params,
                     snapshot=snapshot_from_dict(snap_dict))
                 cost_by_date[at] = resolved.cost
-                if resolved.reason == "missing_fact_context":
+                if not resolved.is_write_through_eligible():
                     # SCALE-01 backfill 尚未跑到這一列——日後補齊後應該
-                    # 能重新正確判定，不永久快取（見上方 docstring）。
+                    # 能重新正確判定，不永久快取（見上方 docstring 與
+                    # `ResolvedHistoricalCost.is_write_through_eligible()`
+                    # 自己的說明——caching policy 集中在那裡判斷，這裡
+                    # 不對 `reason` 字串本身做分支決策）。
                     continue
                 to_write_through.append(NarrowHistoryEntry(
                     scenario_id=scenario_id, analyzed_at=at,
