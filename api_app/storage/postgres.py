@@ -29,6 +29,7 @@ from . import (ChainBackoffEntry, ContractHistory, DataSourceSettings,
                Scenario, ScenarioExists, TreasuryYearCacheEntry, UsageSetting,
                require_owner)
 from ..diagnostics import RETENTION_LIMIT, DiagnosticEvent
+from ..identity import SOLO_OWNER
 from ..metrics import retention_cutoff
 
 # 每個 lambda 程序只需建表一次。`IF NOT EXISTS` 在 Postgres 並非完全
@@ -347,6 +348,36 @@ CREATE TABLE IF NOT EXISTS narrow_history (
 -- production 端點（`GET /history`），接線前先補齊，與其餘 row-scoped
 -- 表同一個模式（nullable，本身不查詢過濾，過濾邏輯在方法簽章）。
 ALTER TABLE narrow_history ADD COLUMN IF NOT EXISTS owner_id TEXT;
+-- SCALE-13（#264，Scaling Foundation Ownership A-1 Contract）：3 張
+-- singleton／provider-key 表（`data_source_settings`／
+-- `provider_credentials`／`provider_verifications`）不能用「加欄位再
+-- WHERE owner」直接硬改——它們既有的主鍵（`id=1` 或 `provider`）本身
+-- 就是「全站只有一份」的形狀，加一欄 owner_id 不會讓它變成
+-- per-owner，只會讓同一列被不同 owner 互相覆寫。改用 additive-first：
+-- 建立 3 張全新、從第一天就是正確 per-owner 形狀的表；owner_id 是
+-- PK 的一部分，因此天生 NOT NULL，不需要另外的收斂步驟。舊表凍結但
+-- 保留、仍可讀（見 postgres.py 對應方法的 read-through 說明），
+-- **不做不可逆 DROP**（Rollback Point）。
+CREATE TABLE IF NOT EXISTS owner_settings (
+    owner_id      TEXT PRIMARY KEY,
+    settings      JSONB NOT NULL,
+    updated_at    TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS owner_credentials (
+    owner_id      TEXT NOT NULL,
+    provider      TEXT NOT NULL,
+    token         TEXT NOT NULL,
+    updated_at    TEXT NOT NULL,
+    PRIMARY KEY (owner_id, provider)
+);
+CREATE TABLE IF NOT EXISTS owner_verifications (
+    owner_id      TEXT NOT NULL,
+    provider      TEXT NOT NULL,
+    ok            BOOLEAN NOT NULL,
+    reason        TEXT,
+    checked_at    TEXT NOT NULL,
+    PRIMARY KEY (owner_id, provider)
+);
 """
 
 # 冷啟動競爭下的良性錯誤：別人已經建好／加好了。
@@ -1060,78 +1091,197 @@ class PostgresStorage:
                  entry.consecutive_failures, entry.observed_at,
                  entry.last_success_at))
 
-    # ---------- 資料源設定與 credential（Settings／#124） ----------
+    # ---------- 資料源設定與 credential（Settings／#124，owner 化 SCALE-13／#264） ----------
 
-    def get_settings(self) -> DataSourceSettings | None:
+    def get_settings(self, *, owner: str) -> DataSourceSettings | None:
+        owner = require_owner(owner)
         with self._connect() as conn:
             row = conn.execute(
+                "SELECT settings, updated_at FROM owner_settings "
+                "WHERE owner_id = %s", (owner,)).fetchone()
+            if row is not None:
+                blob = row[0]
+                return DataSourceSettings(
+                    market_data=_usage_from_dict(blob.get("market_data")),
+                    historical_iv=_usage_from_dict(blob.get("historical_iv")),
+                    updated_at=row[1], owner_id=owner)
+            if owner != SOLO_OWNER:
+                return None
+            # read-through：新表沒有，舊表（全站唯一一份）有——舊表結構
+            # 上沒有 owner 維度，只能代表 solo owner。
+            legacy = conn.execute(
                 "SELECT settings, updated_at FROM data_source_settings "
                 "WHERE id = 1").fetchone()
-        if not row:
-            return None
-        blob = row[0]
-        return DataSourceSettings(
-            market_data=_usage_from_dict(blob.get("market_data")),
-            historical_iv=_usage_from_dict(blob.get("historical_iv")),
-            updated_at=row[1])
+            if legacy is None:
+                return None
+            blob = legacy[0]
+            migrated = DataSourceSettings(
+                market_data=_usage_from_dict(blob.get("market_data")),
+                historical_iv=_usage_from_dict(blob.get("historical_iv")),
+                updated_at=legacy[1], owner_id=owner)
+            conn.execute(
+                "INSERT INTO owner_settings (owner_id, settings, updated_at) "
+                "VALUES (%s, %s, %s) "
+                "ON CONFLICT (owner_id) DO UPDATE SET "
+                "settings = EXCLUDED.settings, "
+                "updated_at = EXCLUDED.updated_at",
+                (owner, Jsonb(blob), migrated.updated_at))   # write-through
+            return migrated
 
     def save_settings(self, settings: DataSourceSettings) -> None:
+        owner = require_owner(settings.owner_id)
         blob = {"market_data": _usage_to_dict(settings.market_data),
                 "historical_iv": _usage_to_dict(settings.historical_iv)}
+        # 舊表 `data_source_settings` 這個方法起不再寫入
+        # （write-forward-only，見 Protocol docstring）。
         with self._connect() as conn:
             conn.execute(
-                "INSERT INTO data_source_settings (id, settings, updated_at) "
-                "VALUES (1, %s, %s) "
-                "ON CONFLICT (id) DO UPDATE SET settings = EXCLUDED.settings, "
+                "INSERT INTO owner_settings (owner_id, settings, updated_at) "
+                "VALUES (%s, %s, %s) "
+                "ON CONFLICT (owner_id) DO UPDATE SET "
+                "settings = EXCLUDED.settings, "
                 "updated_at = EXCLUDED.updated_at",
-                (Jsonb(blob), settings.updated_at))
+                (owner, Jsonb(blob), settings.updated_at))
 
-    def get_credential(self, provider: str) -> ProviderCredential | None:
+    def get_credential(self, provider: str, *, owner: str) -> ProviderCredential | None:
+        owner = require_owner(owner)
         with self._connect() as conn:
             row = conn.execute(
+                "SELECT provider, token, updated_at FROM owner_credentials "
+                "WHERE owner_id = %s AND provider = %s",
+                (owner, provider)).fetchone()
+            if row is not None:
+                return ProviderCredential(*row, owner_id=owner)
+            if owner != SOLO_OWNER:
+                return None
+            legacy = conn.execute(
                 "SELECT provider, token, updated_at FROM provider_credentials "
                 "WHERE provider = %s", (provider,)).fetchone()
-        return ProviderCredential(*row) if row else None
+            if legacy is None:
+                return None
+            migrated = ProviderCredential(*legacy, owner_id=owner)
+            conn.execute(
+                "INSERT INTO owner_credentials "
+                "(owner_id, provider, token, updated_at) "
+                "VALUES (%s, %s, %s, %s) "
+                "ON CONFLICT (owner_id, provider) DO UPDATE SET "
+                "token = EXCLUDED.token, updated_at = EXCLUDED.updated_at",
+                (owner, migrated.provider, migrated.token, migrated.updated_at))
+            return migrated
 
     def save_credential(self, cred: ProviderCredential) -> None:
+        owner = require_owner(cred.owner_id)
         with self._connect() as conn:
             conn.execute(
-                "INSERT INTO provider_credentials (provider, token, updated_at) "
-                "VALUES (%s, %s, %s) "
-                "ON CONFLICT (provider) DO UPDATE SET token = EXCLUDED.token, "
-                "updated_at = EXCLUDED.updated_at",
-                (cred.provider, cred.token, cred.updated_at))
+                "INSERT INTO owner_credentials "
+                "(owner_id, provider, token, updated_at) "
+                "VALUES (%s, %s, %s, %s) "
+                "ON CONFLICT (owner_id, provider) DO UPDATE SET "
+                "token = EXCLUDED.token, updated_at = EXCLUDED.updated_at",
+                (owner, cred.provider, cred.token, cred.updated_at))
 
-    def delete_credential(self, provider: str) -> bool:
+    def delete_credential(self, provider: str, *, owner: str) -> bool:
+        owner = require_owner(owner)
         with self._connect() as conn:
             cur = conn.execute(
-                "DELETE FROM provider_credentials WHERE provider = %s",
-                (provider,))
-            removed = cur.rowcount == 1   # 連線關閉前讀
-            # 驗證結果跟著走：它講的是「那把 token 能不能用」。無論剛才
-            # 有沒有刪到 credential 都清——沒有 credential 卻留著一筆
-            # 「已連線」是更糟的狀態。
+                "DELETE FROM owner_credentials "
+                "WHERE owner_id = %s AND provider = %s", (owner, provider))
+            new_removed = cur.rowcount == 1   # 連線關閉前讀
             conn.execute(
-                "DELETE FROM provider_verifications WHERE provider = %s",
-                (provider,))
-            return removed
+                "DELETE FROM owner_verifications "
+                "WHERE owner_id = %s AND provider = %s", (owner, provider))
+            old_removed = False
+            if owner == SOLO_OWNER:
+                # 新舊兩張表都要清——否則使用者明確刪除後，下次讀取的
+                # read-through 還是會把舊表裡沒被清掉的資料復活（殭屍
+                # 復活風險，見 Protocol docstring）。
+                cur2 = conn.execute(
+                    "DELETE FROM provider_credentials WHERE provider = %s",
+                    (provider,))
+                old_removed = cur2.rowcount == 1
+                conn.execute(
+                    "DELETE FROM provider_verifications WHERE provider = %s",
+                    (provider,))
+            return new_removed or old_removed
 
-    def get_verification(self, provider: str) -> ProviderVerification | None:
+    def get_verification(self, provider: str, *, owner: str) -> ProviderVerification | None:
+        owner = require_owner(owner)
         with self._connect() as conn:
             row = conn.execute(
                 "SELECT provider, ok, reason, checked_at FROM "
+                "owner_verifications WHERE owner_id = %s AND provider = %s",
+                (owner, provider)).fetchone()
+            if row is not None:
+                return ProviderVerification(*row, owner_id=owner)
+            if owner != SOLO_OWNER:
+                return None
+            legacy = conn.execute(
+                "SELECT provider, ok, reason, checked_at FROM "
                 "provider_verifications WHERE provider = %s",
                 (provider,)).fetchone()
-        return ProviderVerification(*row) if row else None
+            if legacy is None:
+                return None
+            migrated = ProviderVerification(*legacy, owner_id=owner)
+            conn.execute(
+                "INSERT INTO owner_verifications "
+                "(owner_id, provider, ok, reason, checked_at) "
+                "VALUES (%s, %s, %s, %s, %s) "
+                "ON CONFLICT (owner_id, provider) DO UPDATE SET "
+                "ok = EXCLUDED.ok, reason = EXCLUDED.reason, "
+                "checked_at = EXCLUDED.checked_at",
+                (owner, migrated.provider, migrated.ok, migrated.reason,
+                 migrated.checked_at))
+            return migrated
 
     def save_verification(self, v: ProviderVerification) -> None:
+        owner = require_owner(v.owner_id)
         with self._connect() as conn:
             conn.execute(
-                "INSERT INTO provider_verifications "
-                "(provider, ok, reason, checked_at) VALUES (%s, %s, %s, %s) "
-                "ON CONFLICT (provider) DO UPDATE SET ok = EXCLUDED.ok, "
-                "reason = EXCLUDED.reason, checked_at = EXCLUDED.checked_at",
-                (v.provider, v.ok, v.reason, v.checked_at))
+                "INSERT INTO owner_verifications "
+                "(owner_id, provider, ok, reason, checked_at) "
+                "VALUES (%s, %s, %s, %s, %s) "
+                "ON CONFLICT (owner_id, provider) DO UPDATE SET "
+                "ok = EXCLUDED.ok, reason = EXCLUDED.reason, "
+                "checked_at = EXCLUDED.checked_at",
+                (owner, v.provider, v.ok, v.reason, v.checked_at))
+
+    def backfill_settings_to_owner(self, owner: str) -> dict[str, int]:
+        counts = {"settings": 0, "credentials": 0, "verifications": 0}
+        with self._connect() as conn:
+            legacy_settings = conn.execute(
+                "SELECT settings, updated_at FROM data_source_settings "
+                "WHERE id = 1").fetchone()
+            if legacy_settings is not None:
+                cur = conn.execute(
+                    "INSERT INTO owner_settings (owner_id, settings, updated_at) "
+                    "VALUES (%s, %s, %s) ON CONFLICT (owner_id) DO NOTHING",
+                    (owner, Jsonb(legacy_settings[0]), legacy_settings[1]))
+                counts["settings"] += cur.rowcount
+
+            legacy_creds = conn.execute(
+                "SELECT provider, token, updated_at "
+                "FROM provider_credentials").fetchall()
+            for provider, token, updated_at in legacy_creds:
+                cur = conn.execute(
+                    "INSERT INTO owner_credentials "
+                    "(owner_id, provider, token, updated_at) "
+                    "VALUES (%s, %s, %s, %s) "
+                    "ON CONFLICT (owner_id, provider) DO NOTHING",
+                    (owner, provider, token, updated_at))
+                counts["credentials"] += cur.rowcount
+
+            legacy_verifications = conn.execute(
+                "SELECT provider, ok, reason, checked_at "
+                "FROM provider_verifications").fetchall()
+            for provider, ok, reason, checked_at in legacy_verifications:
+                cur = conn.execute(
+                    "INSERT INTO owner_verifications "
+                    "(owner_id, provider, ok, reason, checked_at) "
+                    "VALUES (%s, %s, %s, %s, %s) "
+                    "ON CONFLICT (owner_id, provider) DO NOTHING",
+                    (owner, provider, ok, reason, checked_at))
+                counts["verifications"] += cur.rowcount
+        return counts
 
     # ---------- 歷史 IV 觀測快取（#129，per-symbol） ----------
 
@@ -1303,6 +1453,25 @@ class PostgresStorage:
                     f"UPDATE {table} SET owner_id = %s "
                     "WHERE owner_id IS NULL", (owner_id,))
                 counts[table] = cur.rowcount
+        return counts
+
+    # ---------- Ownership A-1 Contract（SCALE-13／#264） ----------
+
+    def owner_id_null_counts(self) -> dict[str, int]:
+        # 5＝SCALE-06 原始 row-scoped 表，`narrow_history` 刻意不算在
+        # 這 5+3 裡（見 Protocol docstring）。3 張新表的 `owner_id` 是
+        # PK 一部分，天生 NOT NULL——仍真的下 SQL 查一次而非直接寫死
+        # 0，讓這個方法本身就是可信的結構性核對，不是假設。
+        tables = ("scenarios", "results", "snapshots", "events",
+                 "diagnostics", "owner_settings", "owner_credentials",
+                 "owner_verifications")
+        counts: dict[str, int] = {}
+        with self._connect() as conn:
+            for table in tables:
+                row = conn.execute(
+                    f"SELECT COUNT(*) FROM {table} "
+                    "WHERE owner_id IS NULL").fetchone()
+                counts[table] = row[0]
         return counts
 
     # ---------- S0 最小可觀測性（SCALE-08／#258） ----------
