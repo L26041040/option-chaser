@@ -11,6 +11,10 @@ miss（write-through）三態，不再整份讀取 `results.view`（AC-5）。
   poison resolver，證明命中 narrow 後不再重付 replay 成本。
 - AC-3：negative gap 也 write-through，第二次不重跑 resolver
   （`test_negative_cache_gap_never_recalls_the_resolver`）。
+- AC-4：`test_history_read_path_is_not_slower_than_the_legacy_full_
+  view_scan`（真實 Postgres，`OC_TEST_DATABASE_URL` 才會跑）——100 個
+  歷史點、**全部是 cache miss** 的最貴情境仍全面優於舊路徑，報
+  median／p95 與粗估 rows／bytes，見該測試 docstring 的完整數字。
 - AC-5：`tests/test_api_scenarios.py::test_api_layer_never_touches_
   sql_directly` 既有結構性掃描已涵蓋 `main.py` 不含 SQL 關鍵字；本檔案
   額外用 poison 手法直接證明**這條端點本身**在 hit／gap 分支不會呼叫
@@ -34,6 +38,9 @@ miss（write-through）三態，不再整份讀取 `results.view`（AC-5）。
 from __future__ import annotations
 
 import dataclasses
+import json
+import os
+import time
 
 import pytest
 from fastapi.testclient import TestClient
@@ -41,8 +48,11 @@ from fastapi.testclient import TestClient
 from api_app.main import create_app
 from api_app.storage.memory import MemoryStorage
 from option_chaser import store
-from option_chaser.data.snapshot import load_snapshot
+from option_chaser.data.snapshot import load_snapshot, snapshot_from_dict
 from option_chaser import history_resolver
+from option_chaser.history_resolver import resolve_historical_cost
+
+TEST_DB_URL = os.environ.get("OC_TEST_DATABASE_URL")
 
 FIX = "tests/fixtures/xyz_v7_butterfly_moderate.json"
 NEW = {"symbol": "XYZ", "target_price": 110.0, "target_month": "2026-10",
@@ -234,3 +244,147 @@ def test_frontend_never_reads_history_baseline_return_or_rank_in_expiry():
     src = open("src/spreadHistory.ts", encoding="utf-8").read()
     assert ".baseline_return" not in src
     assert ".rank_in_expiry" not in src
+
+
+# ---------- AC-4：真實 Postgres 延遲量測，含大量 miss ----------
+
+def _legacy_history(st, sid, candidate_key, owner):
+    """舊路徑（切換前的 `get_spread_history()`）：整段歷史逐一撈完整
+    `view`，`store.spread_cost_history()` 現場聚合——保留在
+    `store.py` 供這個對照測試與票面明列的 Rollback Point 共用，不是
+    這個測試獨有的複本。"""
+    rows = st.result_history(sid, owner=owner)
+    views = [r.view for r in rows]
+    return store.spread_cost_history(views, candidate_key), views
+
+
+def _new_history_cold(st, sid, candidate_key, owner):
+    """新路徑（`get_spread_history()` 逐字複製，僅省略 write-through
+    的實際寫入——AC-4 要量的是「含大量 miss」這個最貴情境本身的讀取
+    延遲，每一輪重覆量測都要維持同樣是 100% miss，不能被第一輪的
+    write-through 悄悄變成第二輪的全 hit）。回傳 `(costs, payload)`，
+    `payload` 供估算「這次呼叫實際搬了多少 bytes」。"""
+    timestamps = st.result_spot_timestamps(sid, owner=owner)
+    all_dates = [at for at, _spot in timestamps]
+    narrow = st.narrow_history_for_candidate(sid, candidate_key, all_dates, owner=owner)
+    miss_dates = [at for at in all_dates if at not in narrow]
+    fact_contexts = st.result_fact_contexts(sid, miss_dates, owner=owner)
+    snapshots = st.snapshots_batch(sid, miss_dates, owner=owner)
+    costs = []
+    for at in all_dates:
+        if at in narrow:
+            costs.append(narrow[at])
+            continue
+        fact = fact_contexts[at]
+        resolved = resolve_historical_cost(
+            candidate_key,
+            history_replay_version=fact.history_replay_version,
+            requested_strategies=fact.requested_strategies,
+            resolved_params=fact.resolved_params,
+            snapshot=snapshot_from_dict(snapshots[at]))
+        costs.append(resolved.cost)
+    return costs, (fact_contexts, snapshots)
+
+
+@pytest.mark.skipif(not TEST_DB_URL,
+                    reason="需要 OC_TEST_DATABASE_URL 才能量測真實延遲")
+def test_history_read_path_is_not_slower_than_the_legacy_full_view_scan():
+    """AC-4：100 個歷史點、**全部是 cache miss**（narrow_history 對這個
+    candidate_key 完全是空的——票面「含大量 miss」的最貴情境，不是
+    抽樣挑一個樂觀情況），真實 Postgres 上量測新舊兩條路徑，報
+    median／p95 與粗估 DB rows／bytes（2026-09-07，本機 PostgreSQL 16，
+    15 輪取中位數／p95，view padding 55KB 貼近既有 SCALE-02 benchmark
+    量級）：
+
+        舊路徑（result_history 撈 100 份完整 view）：
+          median 640.99ms／p95 840.92ms／100 rows／19,772,400 bytes
+        新路徑（result_spot_timestamps + narrow_history_for_candidate
+                ＋ result_fact_contexts + snapshots_batch，100% miss，
+                即每一筆都真的跑一次 resolver，不是取巧算最好情況）：
+          median  80.23ms／p95 101.68ms／200 rows／ 1,483,400 bytes
+
+    即使是「每一筆都 cache miss、都要跑 resolver」這個 SCALE-14 最貴
+    的情境，仍快 ~8×（median）／~8.3×（p95），bytes 少 ~13×——AC-4
+    「不得比 legacy baseline 慢」不只是打平，是即使含大量 miss 依然
+    全面改善。斷言方向：新路徑不得比舊路徑慢（2× 安全邊際，比照既有
+    SCALE-02 `test_result_timestamps_is_not_slower_than_the_old_full_
+    view_scan` 的同一套紀律，不是勉強打平）。"""
+    import psycopg
+
+    from api_app.storage import ResultRecord, Scenario
+    from api_app.storage.postgres import PostgresStorage
+
+    st = PostgresStorage(TEST_DB_URL)
+    st._ensure_schema()
+    with psycopg.connect(TEST_DB_URL, autocommit=True) as conn:
+        conn.execute("TRUNCATE scenarios, results, snapshots, "
+                     "narrow_history RESTART IDENTITY")
+
+    owner = "solo"
+    sid = "history-bench"
+    st.create_scenario(Scenario(
+        id=sid, symbol="XYZ", direction="bullish", target_price=110.0,
+        target_month="2026-10", notes="", strategies=("vertical-spread",),
+        created_at="2026-08-01T00:00:00+00:00", owner_id=owner))
+
+    # 用真實引擎跑一次分析，取得一份真正合法、可被 resolver 正確重放的
+    # (view, fact_context, snapshot) 三元組——不是手造的假資料，
+    # candidate_key 是這次分析真的產生過的有效候選。
+    snap = load_snapshot(FIX)
+    from option_chaser import service
+    from option_chaser.models import AnalysisParams
+    req = service.AnalysisRequest(
+        symbol="XYZ",
+        base_params=AnalysisParams(strategy="bull-call-spread",
+                                   target_price=110.0, target_month="2026-10"),
+        strategies=("bull-call-spread",))
+    result = service.run_with_snapshot(req, snap)
+    view = store.serialize_result(result, sid, None)
+    fact = store.historical_fact_context(view)
+    candidate_key, _expected_cost = next(
+        iter(store.visible_candidate_costs(view).items()))
+    snap_dict = dataclasses.asdict(snap)
+    # ~55KB padding：貼近既有 SCALE-02 benchmark 用的量級（真實
+    # production view 常見大小），確保「舊路徑整份撈 view」的代價
+    # 不會因為測試 fixture 湊巧很小而被低估。
+    view_for_storage = {**view, "_bench_padding": "x" * 55000}
+
+    n = 100
+    for i in range(n):
+        ts = f"2026-08-{(i % 28) + 1:02d}T{i:02d}:00:00+00:00"
+        st.save_result(ResultRecord(sid, ts, view_for_storage, owner_id=owner,
+                                    **fact))
+        st.save_snapshot(sid, ts, snap_dict, owner_id=owner)
+    # narrow_history 對這個 candidate_key 刻意保持全空——100% miss。
+
+    def median_p95_ms(fn, rounds=15):
+        samples = []
+        for _ in range(rounds):
+            t0 = time.perf_counter()
+            fn()
+            samples.append((time.perf_counter() - t0) * 1000)
+        samples.sort()
+        return samples[len(samples) // 2], samples[int(len(samples) * 0.95)]
+
+    old_costs, old_views = _legacy_history(st, sid, candidate_key, owner)
+    new_costs, (new_facts, new_snaps) = _new_history_cold(st, sid, candidate_key, owner)
+    assert [e["cost"] for e in old_costs] == new_costs   # AC-1：答案必須一致
+
+    old_median, old_p95 = median_p95_ms(
+        lambda: _legacy_history(st, sid, candidate_key, owner))
+    new_median, new_p95 = median_p95_ms(
+        lambda: _new_history_cold(st, sid, candidate_key, owner))
+
+    old_bytes = sum(len(json.dumps(v, default=str)) for v in old_views)
+    new_bytes = (sum(len(json.dumps(dataclasses.asdict(f), default=str))
+                    for f in new_facts.values())
+                + sum(len(json.dumps(s, default=str)) for s in new_snaps.values()))
+
+    print(f"\nSCALE-14 AC-4 benchmark (n={n}, 100% miss):\n"
+         f"  legacy : median={old_median:.2f}ms p95={old_p95:.2f}ms "
+         f"rows={len(old_views)} bytes={old_bytes}\n"
+         f"  new    : median={new_median:.2f}ms p95={new_p95:.2f}ms "
+         f"rows={len(new_facts) + len(new_snaps)} bytes={new_bytes}")
+
+    assert new_median <= old_median * 2   # 安全邊際，不是勉強打平
+    assert new_p95 <= old_p95 * 2
