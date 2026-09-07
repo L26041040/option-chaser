@@ -224,21 +224,75 @@ Ownership／Parity Proof 幾張）——施工一律以 GitHub issue 最新內�
   非本票範圍；CLAUDE.md 先前誤記「35 條」，已修正為實測「34 條」
   （即本段）。
 
+- **SCALE-09**［#261］Stage 1-1：narrow history 雙寫＋candidate-
+  specific historical resolver（commits `5c0533f`＋跟進 `5b03943`，
+  被 SCALE-01＋02＋03 擋，三者皆已完成故直接開工）：
+  **Part A**——新增 `store.visible_candidate_keys(view)`／
+  `visible_candidate_costs(view)`：從既有 serialized view 導出
+  「使用者實際看得到的候選」集合（`expiry_top10`＋`expiry_best`＋
+  baseline 期全部 rows 的聯集）與各自 `natural_cost`，**不改動
+  `results.view` 本身**（純加法額外寫入）。`Storage` Protocol 新增
+  `NarrowHistoryEntry`＋`save_narrow_history()`／
+  `get_narrow_history_entry()`（memory／postgres 兩後端皆實作，
+  postgres 新增 `narrow_history` 表，複合主鍵
+  `scenario_id`/`analyzed_at`/`candidate_key`，走 `_MIGRATIONS`
+  不動 `_SCHEMA`）；`main.py::_refresh_and_save()` 每次成功刷新後
+  dual-write，`/history` production read path（`get_spread_history()`）
+  結構性鎖住不受影響。**Part B**——新增
+  `option_chaser/history_resolver.py::resolve_historical_cost()`：
+  把「這份快照上算得出這個 candidate 的成本」（SCALE-03）與「這個
+  candidate 當時真的是 all_candidates 成員」（historical
+  membership）分開判斷，只用 O(1) per-candidate/per-leg 判準
+  （`quote_ok`／`iv_ok`／`spread_structural_ok`／
+  `butterfly_structural_ok`，從 `filters.py` 私有 closure 抽成公開
+  函式供這裡重用，不重複維護一份會漂移的複本），從不重新枚舉整條鏈
+  或重跑排名（AC-5，AST 結構性測試鎖住不 import
+  `apply_filters`／`generate_spread_pairs`／
+  `generate_butterfly_triples`／`evaluate_*`／`service`）。
+  `history_replay_version` 是唯一 canonical 版本判準，不匹配時誠實
+  回 `version_mismatch`，不臆測。**數學證明**：對合法報價（A 層
+  `bid<=ask` 通過），vertical／butterfly 的「結構檢查通過」與
+  「`cost_from_snapshot()` 算出 ≤0」互斥（`mid<=ask` 且 `bid<=mid`
+  逐步代入可推導），B 層安全網因此在真實資料上不可構造反例，改用
+  `monkeypatch` 直接證明這段程式碼邏輯本身正確、非死碼。只是
+  internal helper，**不接任何 HTTP 端點**（Stage boundary：本票不
+  切換 `/history` production read path，SCALE-14 才正式接線）。
+
+  `/code-review`（Standards＋Spec 兩軸）：Standards 軸零 hard
+  violation，3 個 judgement call，其中「`service.py::_scoped_to_
+  selected_expiries()` 與本模組重複的 tradable-expiries 過濾邏輯」
+  已抽成 `timeframe.tradable_expiries()` 共用（兩處本來就都 import
+  `timeframe.py`）；「三個鬆散參數取代具型別物件」是刻意記錄的取捨
+  （避免 import `api_app` 型別），維持現狀。**Spec 軸抓到真缺口並
+  已修正**：resolver 原本只檢查 `strategy in requested_strategies`
+  （scenario 設定上啟用的全部 subtype），沒有檢查 T08／#225 的
+  per-day direction eligibility——一個 subtype 若那天因方向不合被
+  `skipped_direction`（那天 `view["results"]` 該筆 `candidates` 是
+  空的），即使原始報價本身合法、能算出一個數字，也不曾是
+  `all_candidates` 的成員；resolver 因此可能誤判為 `"ok"`。已新增
+  `target_price` 讀取＋`derive_direction()`／`subtype_eligible()`
+  （`option_chaser.models` 純函式，未違反 AC-5 forbidden-import
+  清單）檢查，新 gap 原因 `skipped_direction`；新增 3 條測試涵蓋
+  bearish／flat 兩種方向誤判案例＋`target_price` 缺席案例。全套
+  後端測試（記憶體＋真實 Postgres 雙後端）：1934 passed，0 failed
+  （含本票新增 26 條測試）。純後端改動，未觸碰任何前端檔案。
+
 七張票（SCALE-01–08、SCALE-10，共八張，含 SCALE-05）全數跑過
 `/code-review`（Standards＋Spec 兩軸），發現的真缺口（SCALE-02 的
 AC-4 實測缺口、SCALE-04 的 rollback DI 參數與整合測試缺口、
 SCALE-06 的 owner_id 洩漏、SCALE-07 的測試 hermeticity、SCALE-08
 的空表跨後端不一致、SCALE-05 的 `_is_blocked()` 重複判準與 CONTEXT.md
 詞條缺漏）皆已修正並重新驗證通過；SCALE-10 review 0 hard violation、
-無需修正。全套後端測試（記憶體＋真實 Postgres 雙後端）曾在某次全跑
+無需修正。SCALE-09 review 同上發現一項真缺口（direction-eligibility）
+並已修正。全套後端測試（記憶體＋真實 Postgres 雙後端）曾在某次全跑
 時出現 32 條非預期紅燈，追查後確認是這個 session 長壽命共用
 `octest` 資料庫累積的 schema 雜訊（非真回歸）——單獨重跑該測試檔與
 整份全套皆為 0 failure，已在乾淨資料庫上重新驗證確認。全套持續
 zero regression。
 
-**下一步**：依 dependency graph 繼續——SCALE-09（Stage 1-1 narrow
-history 雙寫，被 SCALE-01＋02＋03 擋，現已解除）。SCALE-11（Ownership
-Enforce，被 SCALE-06 擋，現已解除）可與 SCALE-09 任意順序並行推進。
+**下一步**：依 dependency graph 繼續——SCALE-11（Ownership Enforce，
+被 SCALE-06 擋，現已解除）。SCALE-12（Parity Proof，被 SCALE-03＋09
+擋，現已解除）待 SCALE-09 完成後亦可開工。
 
 ### OPTION-SCALING-TICKETS-REVISE-006 拆票（2026-09-06，歷史紀錄）
 
