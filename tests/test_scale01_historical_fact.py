@@ -93,7 +93,7 @@ def test_refresh_populates_the_new_fact_fields():
     row = c.post(f"/api/scenarios/{sc['id']}/refresh").json()
     analyzed_at = row["latest_analyzed_at"]
 
-    rec = storage.latest_result(sc["id"])
+    rec = storage.latest_result(sc["id"], owner="solo")
     detail = c.get(f"/api/scenarios/{sc['id']}").json()
     view = detail["latest_result"]
 
@@ -130,7 +130,7 @@ def test_view_itself_is_completely_unaffected_by_the_new_fields():
         "strategies": ["vertical-spread"]}).json()
     c.post(f"/api/scenarios/{sc['id']}/refresh")
 
-    view = storage.latest_result(sc["id"]).view
+    view = storage.latest_result(sc["id"], owner="solo").view
     assert store.historical_fact_context(view) == store.historical_fact_context(view)
     assert "resolved_params" not in view
     assert "requested_strategies" not in view
@@ -148,11 +148,12 @@ def test_backfill_populates_legacy_rows_from_their_view():
     storage.create_scenario(_scenario())
     view = store.serialize_result(_result(), "s1", None)
     storage.save_result(ResultRecord("s1", "2026-08-01T00:00:00+00:00", view))
-    assert storage.latest_result("s1").resolved_params is None   # backfill 前
+    assert storage.latest_result(
+        "s1", owner=None).resolved_params is None   # backfill 前
 
     summary = backfill_result_fact_context(storage)
 
-    rec = storage.latest_result("s1")
+    rec = storage.latest_result("s1", owner=None)
     expected = store.historical_fact_context(view)
     assert rec.resolved_params == expected["resolved_params"]
     assert rec.requested_strategies == expected["requested_strategies"]
@@ -162,7 +163,7 @@ def test_backfill_populates_legacy_rows_from_their_view():
     assert rec.snapshot_source == expected["snapshot_source"]
     assert summary == {"scenarios": 1, "rows": 1}
     # 紅線：view 本身必須逐位元不變
-    assert storage.latest_result("s1").view == view
+    assert storage.latest_result("s1", owner=None).view == view
 
 
 def test_backfill_is_idempotent_rerunning_produces_zero_drift():
@@ -172,9 +173,9 @@ def test_backfill_is_idempotent_rerunning_produces_zero_drift():
     storage.save_result(ResultRecord("s1", "2026-08-01T00:00:00+00:00", view))
 
     backfill_result_fact_context(storage)
-    first = storage.latest_result("s1")
+    first = storage.latest_result("s1", owner=None)
     backfill_result_fact_context(storage)   # 重跑：可續跑、可安全中斷後重試
-    second = storage.latest_result("s1")
+    second = storage.latest_result("s1", owner=None)
 
     assert first == second   # 0 drift、0 duplicate side effect
 
@@ -184,12 +185,12 @@ def test_backfill_covers_archived_scenarios_too():
     storage.create_scenario(_scenario())
     view = store.serialize_result(_result(), "s1", None)
     storage.save_result(ResultRecord("s1", "2026-08-01T00:00:00+00:00", view))
-    storage.archive_scenario("s1", ts="2026-08-02T00:00:00+00:00")
+    storage.archive_scenario("s1", owner=None, ts="2026-08-02T00:00:00+00:00")
 
     summary = backfill_result_fact_context(storage)
 
     assert summary == {"scenarios": 1, "rows": 1}
-    assert storage.latest_result("s1").resolved_params is not None
+    assert storage.latest_result("s1", owner=None).resolved_params is not None
 
 
 def test_backfill_handles_multiple_rows_per_scenario():
@@ -204,6 +205,6 @@ def test_backfill_handles_multiple_rows_per_scenario():
     summary = backfill_result_fact_context(storage)
 
     assert summary == {"scenarios": 1, "rows": 2}
-    hist = storage.result_history("s1")
+    hist = storage.result_history("s1", owner=None)
     assert hist[0].requested_strategies == ("long-call", "bull-call-spread")
     assert hist[1].requested_strategies == ("bull-call-spread",)

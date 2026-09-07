@@ -28,12 +28,19 @@ def backfill_result_fact_context(db: Storage) -> dict:
 
     回傳 `{"scenarios": N, "rows": M}` 供呼叫端（CLI 腳本／測試）回報
     處理量——不代表「這次真的改了幾筆」，重跑時每一列都會被重新寫入
-    同一組值，這是刻意的冪等設計，不是缺陷。"""
+    同一組值，這是刻意的冪等設計，不是缺陷。
+
+    SCALE-11（#262）：本函式是**跨全部 owner** 的一次性遷移工具，比照
+    既有 `backfill_missing_owner_ids()` 同一類別——它的職責就是修復
+    每一個 owner 的資料，不是替某一個 owner 服務的查詢路徑。
+    `owner=None` 是 `list_scenarios()`／`result_history()` 唯一給這種
+    admin 用途保留的顯式選項（無預設值、不會被誤用），不構成繞過
+    owner boundary 的旁路。"""
     scenarios = 0
     rows = 0
-    for sc in db.list_scenarios(include_archived=True):
+    for sc in db.list_scenarios(owner=None, include_archived=True):
         scenarios += 1
-        for rec in db.result_history(sc.id):
+        for rec in db.result_history(sc.id, owner=None):
             rows += 1
             context = historical_fact_context(rec.view)
             db.save_result(dataclasses.replace(rec, **context))

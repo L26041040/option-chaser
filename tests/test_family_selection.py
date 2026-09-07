@@ -153,12 +153,12 @@ def test_changing_only_strategies_clears_the_stale_result():
     client = _client(db)
     sid = _create(client)["id"]
     client.post(f"/api/scenarios/{sid}/refresh")
-    assert db.latest_result(sid) is not None
+    assert db.latest_result(sid, owner="solo") is not None
 
     body = client.patch(f"/api/scenarios/{sid}", json={
         "target_price": 130.0, "target_month": "2026-09",
         "strategies": ["single-leg"]}).json()
-    assert db.latest_result(sid) is None
+    assert db.latest_result(sid, owner="solo") is None
     assert body["latest_analyzed_at"] is None
 
 
@@ -171,19 +171,19 @@ def test_legacy_subtype_string_normalizes_before_comparing_for_thesis_change():
     created = _create(client)
     sid = created["id"]
     # 直接改寫成 legacy 字串，模擬遷移前建立的舊劇本。
-    sc = db.get_scenario(sid)
+    sc = db.get_scenario(sid, owner="solo")
     import dataclasses
     db.update_scenario(dataclasses.replace(
-        sc, strategies=("bull-call-spread", "bear-put-spread")))
+        sc, strategies=("bull-call-spread", "bear-put-spread")), owner="solo")
     client.post(f"/api/scenarios/{sid}/refresh")
-    assert db.latest_result(sid) is not None
+    assert db.latest_result(sid, owner="solo") is not None
 
     # 送出「同一個 family」（vertical-spread，正規化後與上面的 legacy
     # subtype 字串等價）——不該觸發 thesis_changed。
     body = client.patch(f"/api/scenarios/{sid}", json={
         "target_price": 130.0, "target_month": "2026-09",
         "strategies": ["vertical-spread"]}).json()
-    assert db.latest_result(sid) is not None
+    assert db.latest_result(sid, owner="solo") is not None
     assert body["latest_analyzed_at"] is not None
 
 

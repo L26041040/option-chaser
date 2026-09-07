@@ -39,7 +39,7 @@ def _scenario(sid="s1"):
     return Scenario(id=sid, symbol="XYZ", direction="bullish",
                     target_price=120.0, target_month="2026-08", notes="",
                     strategies=("vertical-spread",),
-                    created_at="2026-08-01T00:00:00+00:00")
+                    created_at="2026-08-01T00:00:00+00:00", owner_id="solo")
 
 
 # ---------- HTTP 層：孤兒列不會消失（AC-2） ----------
@@ -50,9 +50,12 @@ def test_results_endpoint_recovers_a_result_row_missing_its_snapshot():
     改讀 `result_timestamps()` 之後不會。"""
     storage = MemoryStorage()
     storage.create_scenario(_scenario("s1"))
-    storage.save_result(ResultRecord("s1", "2026-08-01T00:00:00+00:00", {"n": 1}))
-    storage.save_result(ResultRecord("s1", "2026-08-02T00:00:00+00:00", {"n": 2}))
-    storage.save_snapshot("s1", "2026-08-02T00:00:00+00:00", {"contracts": []})
+    storage.save_result(ResultRecord("s1", "2026-08-01T00:00:00+00:00", {"n": 1},
+                                     owner_id="solo"))
+    storage.save_result(ResultRecord("s1", "2026-08-02T00:00:00+00:00", {"n": 2},
+                                     owner_id="solo"))
+    storage.save_snapshot("s1", "2026-08-02T00:00:00+00:00", {"contracts": []},
+                          owner_id="solo")
 
     c = _client(storage=storage)
     hist = c.get("/api/scenarios/s1/results").json()
@@ -96,13 +99,16 @@ def test_result_timestamps_implementation_never_uses_distinct():
         assert "distinct" not in " ".join(sql_lines).lower()
 
 
-def test_result_timestamps_scenario_id_is_the_only_filter_argument():
-    """票面備註：本方法只吃 `scenario_id`，供 SCALE-11 之後直接在這裡
-    的 WHERE 子句上加 owner 過濾——用簽章本身鎖住這個介面形狀，避免
-    日後不小心多塞一個會繞過 owner boundary 的參數。"""
+def test_result_timestamps_only_filters_by_scenario_id_and_owner():
+    """票面備註兌現：SCALE-11（#262）在這裡的 WHERE 子句上加了唯一
+    一個新過濾參數——`owner`（keyword-only，必填）。用簽章本身鎖住
+    這個介面形狀，確保不會日後不小心多塞第三個會繞過 owner boundary
+    的參數，也不會被悄悄拿掉這個 SCALE-11 才補上的過濾條件。"""
     from api_app.storage import Storage
     sig = inspect.signature(Storage.result_timestamps)
-    assert list(sig.parameters) == ["self", "scenario_id"]
+    assert list(sig.parameters) == ["self", "scenario_id", "owner"]
+    assert sig.parameters["owner"].kind == inspect.Parameter.KEYWORD_ONLY
+    assert sig.parameters["owner"].default is inspect.Parameter.empty
 
 
 # ---------- 真實 Postgres 延遲量測（AC-4） ----------
@@ -140,8 +146,9 @@ def test_result_timestamps_is_not_slower_than_the_old_full_view_scan():
     n = 100
     for i in range(n):
         ts = f"2026-08-{(i % 28) + 1:02d}T{i:02d}:00:00+00:00"
-        st.save_result(ResultRecord(sid, ts, big_view))
-        st.save_snapshot(sid, ts, {"contracts": list(range(300))})
+        st.save_result(ResultRecord(sid, ts, big_view, owner_id="solo"))
+        st.save_snapshot(sid, ts, {"contracts": list(range(300))},
+                         owner_id="solo")
 
     def median_ms(fn, rounds=15):
         samples = []
@@ -152,12 +159,13 @@ def test_result_timestamps_is_not_slower_than_the_old_full_view_scan():
         samples.sort()
         return samples[len(samples) // 2]
 
-    old_timestamps = sorted(r.analyzed_at for r in st.result_history(sid))
-    new_timestamps = st.result_timestamps(sid)
+    old_timestamps = sorted(
+        r.analyzed_at for r in st.result_history(sid, owner="solo"))
+    new_timestamps = st.result_timestamps(sid, owner="solo")
     assert old_timestamps == new_timestamps   # 結果集合必須一致（AC-1）
 
-    old_median = median_ms(lambda: st.result_history(sid))
-    new_median = median_ms(lambda: st.result_timestamps(sid))
+    old_median = median_ms(lambda: st.result_history(sid, owner="solo"))
+    new_median = median_ms(lambda: st.result_timestamps(sid, owner="solo"))
 
     assert new_median <= old_median * 2   # 安全邊際；實測是 7× 改善，不是勉強打平
     assert new_median < old_median

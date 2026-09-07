@@ -76,42 +76,51 @@ class MemoryStorage:
             raise ScenarioExists(sc.id)
         self._scenarios[sc.id] = sc
 
-    def get_scenario(self, scenario_id: str) -> Scenario | None:
-        return self._scenarios.get(scenario_id)
+    def get_scenario(self, scenario_id: str, *, owner: str) -> Scenario | None:
+        sc = self._scenarios.get(scenario_id)
+        if sc is None or sc.owner_id != owner:
+            return None
+        return sc
 
-    def list_scenarios(self, *, include_archived: bool = False) -> list[Scenario]:
+    def list_scenarios(self, *, owner: str | None,
+                       include_archived: bool = False) -> list[Scenario]:
         rows = [s for s in self._scenarios.values()
-                if include_archived or s.archived_at is None]
+                if (include_archived or s.archived_at is None)
+                and (owner is None or s.owner_id == owner)]
         return sorted(rows, key=lambda s: (s.created_at, s.id))
 
-    def update_scenario(self, sc: Scenario) -> bool:
-        if sc.id not in self._scenarios:
+    def update_scenario(self, sc: Scenario, *, owner: str) -> bool:
+        existing = self._scenarios.get(sc.id)
+        if existing is None or existing.owner_id != owner:
             return False
         self._scenarios[sc.id] = sc
         return True
 
-    def clear_results(self, scenario_id: str) -> None:
+    def clear_results(self, scenario_id: str, *, owner: str) -> None:
+        sc = self._scenarios.get(scenario_id)
+        if sc is None or sc.owner_id != owner:
+            return
         self._results.pop(scenario_id, None)
         self._snapshots = {k: v for k, v in self._snapshots.items()
                            if k[0] != scenario_id}
 
-    def archive_scenario(self, scenario_id: str, *, ts: str) -> bool:
+    def archive_scenario(self, scenario_id: str, *, owner: str, ts: str) -> bool:
         sc = self._scenarios.get(scenario_id)
-        if sc is None or sc.archived_at is not None:
+        if sc is None or sc.owner_id != owner or sc.archived_at is not None:
             return False
         self._scenarios[scenario_id] = sc.archived(ts)
         return True
 
-    def restore_scenario(self, scenario_id: str, *, ts: str) -> bool:
+    def restore_scenario(self, scenario_id: str, *, owner: str, ts: str) -> bool:
         sc = self._scenarios.get(scenario_id)
-        if sc is None or sc.archived_at is None:
+        if sc is None or sc.owner_id != owner or sc.archived_at is None:
             return False
         self._scenarios[scenario_id] = sc.restored()
         return True
 
-    def delete_scenario(self, scenario_id: str) -> bool:
+    def delete_scenario(self, scenario_id: str, *, owner: str) -> bool:
         sc = self._scenarios.get(scenario_id)
-        if sc is None or sc.archived_at is None:
+        if sc is None or sc.owner_id != owner or sc.archived_at is None:
             return False
         del self._scenarios[scenario_id]
         self._results.pop(scenario_id, None)
@@ -125,14 +134,14 @@ class MemoryStorage:
     def save_result(self, rec: ResultRecord) -> None:
         self._results.setdefault(rec.scenario_id, {})[rec.analyzed_at] = rec
 
-    def latest_result(self, scenario_id: str) -> ResultRecord | None:
-        hist = self.result_history(scenario_id)
+    def latest_result(self, scenario_id: str, *, owner: str) -> ResultRecord | None:
+        hist = self.result_history(scenario_id, owner=owner)
         return hist[-1] if hist else None
 
-    def latest_summaries(self) -> dict[str, ResultSummary]:
+    def latest_summaries(self, *, owner: str) -> dict[str, ResultSummary]:
         out: dict[str, ResultSummary] = {}
         for sid in self._results:
-            rec = self.latest_result(sid)
+            rec = self.latest_result(sid, owner=owner)
             if rec is not None:
                 out[sid] = ResultSummary(
                     analyzed_at=rec.analyzed_at, best_return=rec.best_return,
@@ -141,13 +150,23 @@ class MemoryStorage:
                     family_eligibility=rec.family_eligibility)
         return out
 
-    def result_history(self, scenario_id: str) -> list[ResultRecord]:
+    def result_history(self, scenario_id: str, *,
+                       owner: str | None) -> list[ResultRecord]:
         by_ts = self._results.get(scenario_id, {})
-        return [by_ts[k] for k in sorted(by_ts)]
+        rows = [by_ts[k] for k in sorted(by_ts)]
+        if owner is None:
+            return rows
+        return [r for r in rows if r.owner_id == owner]
 
-    def result_timestamps(self, scenario_id: str) -> list[str]:
-        from_snapshots = {ts for (sid, ts) in self._snapshots if sid == scenario_id}
-        from_results = set(self._results.get(scenario_id, {}))
+    def result_timestamps(self, scenario_id: str, *, owner: str) -> list[str]:
+        # 兩邊都用各自那張表自己的 `owner_id` 欄位過濾（SCALE-06 早就
+        # 讓 `snapshots`／`results` 兩張表各自攜帶這個值），不查父劇本
+        # ——與 Postgres 那邊「WHERE 子句上各加一個條件」的既有承諾
+        # 同一種形狀，兩後端可直接比對行為。
+        from_snapshots = {ts for (sid, ts), (_snap, o) in self._snapshots.items()
+                          if sid == scenario_id and o == owner}
+        from_results = {ts for ts, rec in self._results.get(scenario_id, {}).items()
+                        if rec.owner_id == owner}
         return sorted(from_snapshots | from_results)
 
     def result_fact_context(self, scenario_id: str,
@@ -168,9 +187,12 @@ class MemoryStorage:
                       snapshot: dict, *, owner_id: str | None = None) -> None:
         self._snapshots[(scenario_id, analyzed_at)] = (snapshot, owner_id)
 
-    def get_snapshot(self, scenario_id: str, analyzed_at: str) -> dict | None:
+    def get_snapshot(self, scenario_id: str, analyzed_at: str, *,
+                     owner: str) -> dict | None:
         entry = self._snapshots.get((scenario_id, analyzed_at))
-        return entry[0] if entry is not None else None
+        if entry is None or entry[1] != owner:
+            return None
+        return entry[0]
 
     def get_snapshot_owner(self, scenario_id: str,
                            analyzed_at: str) -> str | None:
@@ -186,10 +208,12 @@ class MemoryStorage:
                              "event": event, "payload": payload,
                              "owner_id": owner_id})
 
-    def list_events(self, *, scenario_id: str | None = None) -> list[dict]:
+    def list_events(self, *, scenario_id: str | None = None,
+                    owner: str) -> list[dict]:
+        rows = [e for e in self._events if e.get("owner_id") == owner]
         if scenario_id is None:
-            return list(self._events)
-        return [e for e in self._events if e["scenario_id"] == scenario_id]
+            return rows
+        return [e for e in rows if e["scenario_id"] == scenario_id]
 
     # ---------- 利率曲線快取 ----------
 
@@ -294,14 +318,20 @@ class MemoryStorage:
         # 效果完全一致，只是一次呼叫做完。
         self._diagnostics.extend(events)
 
-    def list_diagnostics(self, *, limit: int = 50) -> list[DiagnosticEvent]:
-        # deque 存的是寫入順序（舊→新）；最新在最上要反過來。
-        return list(reversed(self._diagnostics))[:limit]
+    def list_diagnostics(self, *, limit: int = 50,
+                         owner: str) -> list[DiagnosticEvent]:
+        # deque 存的是寫入順序（舊→新）；最新在最上要反過來，owner 過濾
+        # 在反轉之後做（跟反轉順序無關，先過濾後反轉結果相同，這裡選
+        # 反轉在前只是沿用既有寫法的順序）。
+        return [e for e in reversed(self._diagnostics)
+               if e.owner_id == owner][:limit]
 
-    def clear_diagnostics(self) -> int:
-        n = len(self._diagnostics)
-        self._diagnostics.clear()
-        return n
+    def clear_diagnostics(self, *, owner: str) -> int:
+        kept = deque((e for e in self._diagnostics if e.owner_id != owner),
+                    maxlen=RETENTION_LIMIT)
+        removed = len(self._diagnostics) - len(kept)
+        self._diagnostics = kept
+        return removed
 
     # ---------- Ownership A-1 Expand（SCALE-06／#256） ----------
 

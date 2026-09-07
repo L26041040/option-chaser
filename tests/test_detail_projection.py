@@ -51,7 +51,7 @@ def _multi_family_detail(storage):
         "strategies": ["single-leg", "vertical-spread"]})
     sc_id = r.json()["id"]
     c.post(f"/api/scenarios/{sc_id}/refresh").raise_for_status()
-    full_view = storage.latest_result(sc_id).view
+    full_view = storage.latest_result(sc_id, owner="solo").view
     projected_view = c.get(f"/api/scenarios/{sc_id}").json()["latest_result"]
     return sc_id, full_view, projected_view
 
@@ -121,7 +121,7 @@ def test_storage_stays_full_fidelity_project_for_detail_does_not_touch_it():
 
     # 落盤的那份完全沒被動過——`project_for_detail()` 回傳新字典，不
     # 修改輸入。這裡直接比對整份 dict 逐位元相同，而不只是挑幾個欄位。
-    again = storage.latest_result(sc_id).view
+    again = storage.latest_result(sc_id, owner="solo").view
     assert again == full_view
     assert any(r.get("candidates") for r in full_view["results"])
     assert any(r.get("all_candidates") for r in full_view["results"])
@@ -191,7 +191,7 @@ def test_spread_history_and_raw_data_are_unaffected_because_they_read_storage_di
     sc_id = r.json()["id"]
     c.post(f"/api/scenarios/{sc_id}/refresh").raise_for_status()
 
-    view = storage.latest_result(sc_id).view
+    view = storage.latest_result(sc_id, owner="solo").view
     candidate_key = view["results"][0]["expiry_top10"][0]["candidate_keys"][0]
 
     history = c.get(f"/api/scenarios/{sc_id}/history"

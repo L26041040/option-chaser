@@ -818,7 +818,15 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         return snap
 
     def _require(scenario_id: str) -> Scenario:
-        sc = _db().get_scenario(scenario_id)
+        """SCALE-11（#262，Ownership A-1 Enforce）：這是幾乎全部
+        scenario-derived 端點共用的唯一 chokepoint——存在但屬於別的
+        owner 的劇本與根本不存在的劇本回應一致（皆 404），使呼叫端
+        無法從回應差異分辨兩者。凡是經過這裡授權過的 `Scenario`，
+        往後對同一個 scenario_id 的其餘查詢即使沒有再次帶 owner 過濾
+        也已在授權邊界內——但 Storage 層仍逐一要求 `owner` 參數，
+        提供第二層防禦（AC-2 的「不得新增任何不經 owner scope 的
+        scenario lookup shortcut」）。"""
+        sc = _db().get_scenario(scenario_id, owner=identity_resolver())
         if sc is None:
             raise HTTPException(status_code=404, detail=f"劇本不存在：{scenario_id}")
         return sc
@@ -1003,12 +1011,14 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         那些，沒有 pagination、沒有搜尋。"""
         clamped = max(1, min(limit, diagnostics.RETENTION_LIMIT))
         return [_diagnostic_json(e)
-               for e in _db().list_diagnostics(limit=clamped)]
+               for e in _db().list_diagnostics(limit=clamped,
+                                               owner=identity_resolver())]
 
     @app.delete("/api/diagnostics")
     def clear_diagnostics() -> dict:
-        """清空，回傳清掉的筆數。"""
-        return {"cleared": _db().clear_diagnostics()}
+        """清空這個 owner 名下的診斷事件，回傳清掉的筆數（SCALE-11：
+        過去無條件清空全部 owner 的資料）。"""
+        return {"cleared": _db().clear_diagnostics(owner=identity_resolver())}
 
     # ---------- 一次性分析（V1 遺留，前端改走劇本端點後可移除） ----------
 
@@ -1100,16 +1110,18 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
             != (updated.target_price, updated.target_month,
                 updated.best_price, updated.worst_price, updated.strategies))
 
-        _db().update_scenario(updated)
+        owner = identity_resolver()
+        _db().update_scenario(updated, owner=owner)
         if thesis_changed:
-            _db().clear_results(scenario_id)
+            _db().clear_results(scenario_id, owner=owner)
         ts = now_utc_iso()
         _db().append_event(ts=ts, scenario_id=scenario_id,
                            event="SCENARIO_EDITED",
                            payload=_scenario_json(updated),
-                           owner_id=identity_resolver())
+                           owner_id=owner)
 
-        latest = None if thesis_changed else _db().latest_result(scenario_id)
+        latest = (None if thesis_changed
+                 else _db().latest_result(scenario_id, owner=owner))
         return _row_json(updated, ny_today(), **_summary_of(latest))
 
     @app.get("/api/scenarios")
@@ -1117,17 +1129,18 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         # 卡片要的兩個數字跟著清單一起回（V3／#51）：否則前端得為每張卡
         # 各打一次 detail，而 detail 會拖回整份 view（十萬字元等級）。
         # 沒跑過的劇本兩欄皆 None ＝ 卡片顯示「—」，不是 0。
-        summaries = _db().latest_summaries()
+        owner = identity_resolver()
+        summaries = _db().latest_summaries(owner=owner)
         today = ny_today()          # 整份清單共用同一個「今天」
         rows = []
-        for s in _db().list_scenarios(include_archived=include_archived):
+        for s in _db().list_scenarios(owner=owner, include_archived=include_archived):
             rows.append(_row_json(s, today, **_summary_of(summaries.get(s.id))))
         return rows
 
     @app.get("/api/scenarios/{scenario_id}")
     def get_scenario(scenario_id: str) -> dict:
         sc = _require(scenario_id)
-        latest = _db().latest_result(scenario_id)
+        latest = _db().latest_result(scenario_id, owner=identity_resolver())
         # `best_return` 也要在——detail 少一個欄位的話，客戶端就沒辦法把
         # 同一個型別套用在清單列與詳細回應上（V5 的詳細頁會踩到）。
         # T13（#231，Initial V2）：回應走 `store.project_for_detail()`
@@ -1140,13 +1153,14 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
     @app.post("/api/scenarios/{scenario_id}/archive")
     def archive_scenario(scenario_id: str) -> dict:
         _require(scenario_id)
+        owner = identity_resolver()
         ts = now_utc_iso()
         # 重複封存回 False——對呼叫端而言結果相同（已經封存了），因此
         # 視為冪等成功，不當成錯誤。
-        if _db().archive_scenario(scenario_id, ts=ts):
+        if _db().archive_scenario(scenario_id, owner=owner, ts=ts):
             _db().append_event(ts=ts, scenario_id=scenario_id,
                                event="SCENARIO_ARCHIVED", payload={},
-                               owner_id=identity_resolver())
+                               owner_id=owner)
         return {"archived": True}
 
     @app.post("/api/scenarios/{scenario_id}/restore")
@@ -1161,11 +1175,12 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         scenario` 對重複封存的處理——不留一筆沒意義的事件。
         """
         _require(scenario_id)
+        owner = identity_resolver()
         ts = now_utc_iso()
-        if _db().restore_scenario(scenario_id, ts=ts):
+        if _db().restore_scenario(scenario_id, owner=owner, ts=ts):
             _db().append_event(ts=ts, scenario_id=scenario_id,
                                event="SCENARIO_RESTORED", payload={},
-                               owner_id=identity_resolver())
+                               owner_id=owner)
         return {"restored": True}
 
     @app.delete("/api/scenarios/{scenario_id}", status_code=204)
@@ -1187,7 +1202,7 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
             raise HTTPException(
                 status_code=409,
                 detail=f"劇本尚未移入垃圾桶，無法永久刪除：{scenario_id}")
-        _db().delete_scenario(scenario_id)
+        _db().delete_scenario(scenario_id, owner=identity_resolver())
         return Response(status_code=204)
 
     def _refresh_and_save(sc: Scenario, today: date, *,
@@ -1217,7 +1232,7 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         `message`）完全共用同一份，不重複定義。
         """
         if month_is_over(TargetMonth.from_key(sc.target_month), today):
-            latest = _db().latest_result(sc.id)
+            latest = _db().latest_result(sc.id, owner=identity_resolver())
             return _row_json(sc, today, **_summary_of(latest))
         # T06（#221）：`sc.strategies` 存的是 family 代碼（新資料）或
         # legacy subtype 字串（舊資料，無遷移）——這是**唯一**的展開點，
@@ -1376,12 +1391,19 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         天生分屬不同分組，各自那組一完成就先送出、不等其餘分組。
         """
         today = ny_today()
+        owner = identity_resolver()
+        # SCALE-11（#262）AC-3：目標集合不論走哪個分支都限定在這個
+        # owner 名下——省略 `scenario_ids` 時只列舉自己的未過期劇本；
+        # 帶了 id 時逐一以 owner 授權查找，猜到的別人 id 直接回
+        # `None` 被下面的 `if sc is not None` 篩掉，跟這個 id 根本
+        # 不存在時同一種結果（AC-2 的批次版本）。
         if body.scenario_ids is None:
-            targets = [sc for sc in _db().list_scenarios()
+            targets = [sc for sc in _db().list_scenarios(owner=owner)
                       if not month_is_over(TargetMonth.from_key(sc.target_month), today)]
         else:
             targets = [sc for sc in
-                      (_db().get_scenario(sid) for sid in body.scenario_ids)
+                      (_db().get_scenario(sid, owner=owner)
+                       for sid in body.scenario_ids)
                       if sc is not None]
 
         groups: dict[str, list[Scenario]] = {}
@@ -1453,7 +1475,8 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         本票直接繞開這整條問題路徑），輔以 `results` 表窄查詢 UNION
         補回任何缺 snapshot 的孤兒列（見該方法 docstring）。"""
         _require(scenario_id)
-        return [{"analyzed_at": ts} for ts in _db().result_timestamps(scenario_id)]
+        return [{"analyzed_at": ts} for ts in
+               _db().result_timestamps(scenario_id, owner=identity_resolver())]
 
     @app.get("/api/scenarios/{scenario_id}/history")
     def get_spread_history(scenario_id: str, candidate_key: str) -> dict:
@@ -1465,7 +1488,7 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         dict，不必額外重算——這條端點只是把既有引擎聚合邏輯接上 HTTP。
         """
         _require(scenario_id)
-        rows = _db().result_history(scenario_id)
+        rows = _db().result_history(scenario_id, owner=identity_resolver())
         # S0（SCALE-08／#258）指標 #7：narrow history 表（SCALE-09）
         # 落地前的等價證明——這裡量的是「答一次 /history 得撈幾筆
         # 完整歷史 view」，SCALE-14 切換讀取路徑後同一個問題該有的
@@ -1486,11 +1509,12 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         取「最新一次結果」的 `analyzed_at`，不接受呼叫端指定：詳細頁
         只看得到最新一份分析，原始資料照理跟著它走，不需要另開一個
         「選歷史哪一版」的介面。"""
-        latest = _db().latest_result(scenario_id)
+        owner = identity_resolver()
+        latest = _db().latest_result(scenario_id, owner=owner)
         if latest is None:
             raise HTTPException(status_code=404,
                                 detail=f"劇本尚未分析，無原始資料：{scenario_id}")
-        data = _db().get_snapshot(scenario_id, latest.analyzed_at)
+        data = _db().get_snapshot(scenario_id, latest.analyzed_at, owner=owner)
         if data is None:
             raise HTTPException(status_code=404,
                                 detail=f"找不到原始快照：{scenario_id}")
@@ -1519,7 +1543,8 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
     @app.get("/api/scenarios/{scenario_id}/events")
     def list_events(scenario_id: str) -> list[dict]:
         _require(scenario_id)
-        return [_event_json(e) for e in _db().list_events(scenario_id=scenario_id)]
+        return [_event_json(e) for e in
+               _db().list_events(scenario_id=scenario_id, owner=identity_resolver())]
 
     # ---------- Historical IV：快取、漸進補齊、額度（#126／#130） ----------
 
@@ -1611,7 +1636,7 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
                 status_code=403,
                 detail="Historical IV 未啟用——請在設定頁選擇自訂資料源並通過測試連線")
 
-        rec = _db().latest_result(scenario_id)
+        rec = _db().latest_result(scenario_id, owner=identity_resolver())
         if rec is None:
             raise HTTPException(status_code=404, detail="這個劇本還沒有分析結果")
         cand = store.find_candidate(rec.view, candidate_key)

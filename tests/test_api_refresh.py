@@ -82,7 +82,7 @@ def test_refresh_stores_the_result_and_the_raw_snapshot():
     assert detail["latest_result"]["meta"]["symbol"] == "XYZ"
     assert detail["latest_analyzed_at"] == row["latest_analyzed_at"]
     # 原始逐筆報價只有分析當下拿得到（view 裡沒有），事後補不回來
-    snap = storage.get_snapshot(sc["id"], row["latest_analyzed_at"])
+    snap = storage.get_snapshot(sc["id"], row["latest_analyzed_at"], owner="solo")
     assert snap is not None and snap["contracts"]
 
 
@@ -124,7 +124,8 @@ def test_refresh_falls_back_to_yfinance_and_records_that_it_did(monkeypatch):
 
     row = c.post(f"/api/scenarios/{sc['id']}/refresh").json()
 
-    assert storage.get_snapshot(sc["id"], row["latest_analyzed_at"])["source"] == "yfinance"
+    assert storage.get_snapshot(
+        sc["id"], row["latest_analyzed_at"], owner="solo")["source"] == "yfinance"
     # API 不能把 source 覆寫成固定值——那樣畫面上「資料來源」永遠是對的，
     # 也就永遠沒有資訊。
     view = c.get(f"/api/scenarios/{sc['id']}").json()["latest_result"]
@@ -257,10 +258,11 @@ def _expired_scenario(storage, **overrides):
     狀態的辦法（正常建立路徑本來就不允許生出這種劇本）。"""
     from api_app.storage import Scenario as StoredScenario
 
+    fields = {"owner_id": "solo", **overrides}
     sc = StoredScenario(
         id="expired-1", symbol="XYZ", direction="bullish", target_price=130.0,
         target_month="2020-01", notes="", strategies=("bull-call-spread",),
-        created_at="2019-06-01T00:00:00+00:00", **overrides)
+        created_at="2019-06-01T00:00:00+00:00", **fields)
     storage.create_scenario(sc)
     return sc
 
@@ -287,7 +289,7 @@ def test_refresh_on_an_expired_scenario_does_not_touch_prior_results():
     _expired_scenario(storage)
     storage.save_result(ResultRecord(
         scenario_id="expired-1", analyzed_at="2019-12-01T00:00:00+00:00",
-        view={"meta": {"symbol": "XYZ"}}, best_return=0.42))
+        view={"meta": {"symbol": "XYZ"}}, best_return=0.42, owner_id="solo"))
 
     def boom(symbol):
         raise AssertionError("過期劇本不該抓鏈")
@@ -298,7 +300,7 @@ def test_refresh_on_an_expired_scenario_does_not_touch_prior_results():
     assert row["latest_analyzed_at"] == "2019-12-01T00:00:00+00:00"
     assert row["best_return"] == 0.42
     # 沒有寫入新的一筆——歷史只有原本那一筆
-    assert len(storage.result_history("expired-1")) == 1
+    assert len(storage.result_history("expired-1", owner="solo")) == 1
 
 
 def test_refresh_on_an_expired_scenario_leaves_no_new_event():

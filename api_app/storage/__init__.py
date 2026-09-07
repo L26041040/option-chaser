@@ -445,62 +445,97 @@ class Storage(Protocol):
     def create_scenario(self, sc: Scenario) -> None:
         """id 已存在時拋 `ScenarioExists`。"""
 
-    def get_scenario(self, scenario_id: str) -> Scenario | None: ...
+    def get_scenario(self, scenario_id: str, *, owner: str) -> Scenario | None:
+        """SCALE-11（#262，Ownership A-1 Enforce）：`owner` 為必填
+        keyword-only 參數——存在但屬於別的 owner 的劇本，與根本不存在，
+        對呼叫端而言必須是同一種結果（`None`），這是 AC-2「猜到另一
+        owner 的 scenario_id 也不能讀到資料」成立的關鍵：不能讓
+        呼叫端從回應差異分辨出「這個 id 存在，只是不是你的」。"""
 
-    def list_scenarios(self, *, include_archived: bool = False) -> list[Scenario]:
-        """依 created_at 遞增排序；預設不含已封存者。"""
+    def list_scenarios(self, *, owner: str | None,
+                       include_archived: bool = False) -> list[Scenario]:
+        """依 created_at 遞增排序；預設不含已封存者。
 
-    def update_scenario(self, sc: Scenario) -> bool:
-        """就地更新一個既有劇本（#132）。回傳是否真的更新了（不存在回
-        `False`）。
+        `owner`：SCALE-11 必填 keyword-only（無預設值，逼呼叫端每次
+        明確做選擇）。production HTTP 路徑一律傳目前解析出的 owner
+        字串；`owner=None` 是唯一的例外——**只給
+        `api_app.storage.backfill.backfill_result_fact_context()`
+        這種跨全部 owner 的一次性遷移腳本使用**，代表「不過濾、列出
+        全部」，比照既有 `backfill_missing_owner_ids()` 的既有先例
+        （那個方法本身就是要看見全部資料才能修復它，不是一般查詢
+        路徑）。這不是預設值——沒有任何呼叫端能「不小心」漏帶 owner
+        就拿到全部資料，要拿到就得顯式寫 `owner=None`，grep 得到。"""
+
+    def update_scenario(self, sc: Scenario, *, owner: str) -> bool:
+        """就地更新一個既有劇本（#132）。回傳是否真的更新了（不存在、
+        或存在但屬於別的 owner，皆回 `False`）。
 
         **同一個 id，不是刪除＋重建**：重建會換掉身分，讓所有以
         scenario_id 為鍵的東西（結果、快照、事件）變成孤兒，而使用者只是
-        改了個目標價。`id` 與 `created_at` 由呼叫端負責原樣帶回。"""
+        改了個目標價。`id` 與 `created_at` 由呼叫端負責原樣帶回。
 
-    def clear_results(self, scenario_id: str) -> None:
+        SCALE-11：比對的是資料庫裡**既有那一列**的 `owner_id`，不是
+        `sc.owner_id`（`update_scenario()` 本來就刻意不寫入
+        `sc.owner_id`，見既有 `test_updating_a_scenario_does_not_
+        touch_its_owner_id`——`sc` 這個參數上的 `owner_id` 欄位值
+        本來就不代表任何權威，不能拿來做授權判斷）。"""
+
+    def clear_results(self, scenario_id: str, *, owner: str) -> None:
         """清掉該劇本的全部結果與原始快照，保留劇本本身與事件紀錄（#132）。
 
         用於 thesis 改變之後：目標價餵進 baseline_return、目標月決定選哪
         些到期日，兩者一改，舊結果的每個數字都是對著另一個問題算出來的。
-        留著它們就是拿舊結果冒充新的。事件不刪——那是不可變的事實。"""
+        留著它們就是拿舊結果冒充新的。事件不刪——那是不可變的事實。
 
-    def archive_scenario(self, scenario_id: str, *, ts: str) -> bool:
-        """回傳是否真的封存了（不存在或已封存回 False）。資料不刪除。"""
+        `owner` 不符時整個是 no-op（不清空別人的資料）。"""
 
-    def restore_scenario(self, scenario_id: str, *, ts: str) -> bool:
-        """回傳是否真的還原了（不存在或本來就未封存回 False）。清空
-        `archived_at`，results／snapshots／events 不受影響。`ts` 只為
-        跟 `archive_scenario` 同一種呼叫慣例（呼叫端算一次 timestamp，
-        同時餵給這裡與事件紀錄）保留，`Scenario` 沒有「還原於」欄位
-        需要落盤。"""
+    def archive_scenario(self, scenario_id: str, *, owner: str, ts: str) -> bool:
+        """回傳是否真的封存了（不存在、已封存、或屬於別的 owner，皆回
+        False）。資料不刪除。"""
 
-    def delete_scenario(self, scenario_id: str) -> bool:
+    def restore_scenario(self, scenario_id: str, *, owner: str, ts: str) -> bool:
+        """回傳是否真的還原了（不存在、本來就未封存、或屬於別的
+        owner，皆回 False）。清空 `archived_at`，results／snapshots／
+        events 不受影響。`ts` 只為跟 `archive_scenario` 同一種呼叫慣例
+        （呼叫端算一次 timestamp，同時餵給這裡與事件紀錄）保留，
+        `Scenario` 沒有「還原於」欄位需要落盤。"""
+
+    def delete_scenario(self, scenario_id: str, *, owner: str) -> bool:
         """永久刪除（TR3／#90）。回傳是否真的刪了東西——**只允許刪除
-        已封存的劇本**：不存在或尚未封存（`archived_at is None`）皆回
-        `False`、資料原封不動，這是安全閘門，永久刪除必須先進垃圾桶。
+        已封存、且屬於這個 owner 的劇本**：不存在、尚未封存
+        （`archived_at is None`）、或屬於別的 owner，皆回 `False`、
+        資料原封不動，這是安全閘門，永久刪除必須先進垃圾桶。
         真的刪除時 cascade 清掉該 `scenario_id` 名下的
         results／snapshots／events，不留任何痕跡（不是軟刪除）。"""
 
     def save_result(self, rec: ResultRecord) -> None:
         """同一 (scenario_id, analyzed_at) 重複寫入即覆蓋（冪等）。"""
 
-    def latest_result(self, scenario_id: str) -> ResultRecord | None: ...
+    def latest_result(self, scenario_id: str, *, owner: str) -> ResultRecord | None: ...
 
-    def latest_summaries(self) -> dict[str, ResultSummary]:
-        """每個劇本最新一次結果的摘要，key ＝ scenario_id。
+    def latest_summaries(self, *, owner: str) -> dict[str, ResultSummary]:
+        """每個劇本最新一次結果的摘要，key ＝ scenario_id，範圍限定
+        `owner` 名下的劇本。
 
         沒跑過的劇本不出現在結果裡（呼叫端據此顯示「—」，而不是拿一個
         假的零值當成真的收益率）。專屬查詢的理由見契約測試：清單頁
         不該為了一個數字把每份 view（十萬字元等級）都搬一次。"""
 
-    def result_history(self, scenario_id: str) -> list[ResultRecord]:
+    def result_history(self, scenario_id: str, *, owner: str | None) -> list[ResultRecord]:
         """依 analyzed_at 遞增排序的完整歷史。
 
         排序依 `analyzed_at` 的字典序——所有產生端都輸出同一種格式的
-        ISO 字串（UTC offset、秒精度），字典序才等於時間序。"""
+        ISO 字串（UTC offset、秒精度），字典序才等於時間序。
 
-    def result_timestamps(self, scenario_id: str) -> list[str]:
+        `owner`：SCALE-11 必填 keyword-only。`owner=None` 比照
+        `list_scenarios()` 的同一種例外，只給
+        `backfill_result_fact_context()` 使用（該腳本已經從
+        `list_scenarios(owner=None)` 拿到跨全部 owner 的劇本清單，
+        對每一筆歷史結果一視同仁地補齊 fact context，不該再對它們的
+        owner 過濾一次）；production HTTP 路徑一律傳真實 owner 字串，
+        不符的劇本回空清單（與「這個劇本不存在」同一種行為）。"""
+
+    def result_timestamps(self, scenario_id: str, *, owner: str) -> list[str]:
         """SCALE-02（#253，Scaling Foundation C2）：這個劇本歷史上有
         哪幾次分析時間戳——依遞增排序，**不撈 `view`**。主要索引來源是
         `snapshots` 的 `(scenario_id, analyzed_at)` 主鍵（Prototype #065
@@ -515,10 +550,13 @@ class Storage(Protocol):
         （`results` 這邊的 SELECT 完全不觸碰 `view` 欄位），UNION 本身
         會處理去重，不需要額外的 `DISTINCT`。
 
-        本方法只吃 `scenario_id`，之後 SCALE-11 要替 `snapshots`／
-        `results` 兩張表加上 owner 過濾時，直接在這裡的兩段 WHERE
-        子句上各加一個條件即可覆蓋，不構成繞過 owner boundary 的旁路。
-        """
+        SCALE-11：`owner` 是繼 `scenario_id` 之後**第二個**（也是最後
+        一個）過濾參數——當年 SCALE-02 的 docstring 已預告「直接在這裡
+        的兩段 WHERE 子句上各加一個條件即可覆蓋，不構成繞過 owner
+        boundary 的旁路」，這裡就是那個承諾的兌現。劇本不屬於這個
+        owner 時回空清單，不拋錯（與「這個劇本不存在」同一種行為，
+        呼叫端在此之前已經過 `_require()` 授權，這裡是防禦性的第二
+        層，不是主要判斷點）。"""
 
     def result_fact_context(self, scenario_id: str,
                             analyzed_at: str) -> ResultFactContext | None:
@@ -540,8 +578,10 @@ class Storage(Protocol):
         `Scenario.owner_id` 同一個資料 boundary 標記，本票不查詢
         過濾。"""
 
-    def get_snapshot(self, scenario_id: str, analyzed_at: str) -> dict | None:
-        ...
+    def get_snapshot(self, scenario_id: str, analyzed_at: str, *,
+                     owner: str) -> dict | None:
+        """SCALE-11：`owner` 不符時回 `None`（與「這一列不存在」同一種
+        行為）。"""
 
     def get_snapshot_owner(self, scenario_id: str,
                            analyzed_at: str) -> str | None:
@@ -558,8 +598,15 @@ class Storage(Protocol):
                      event: str, payload: dict,
                      owner_id: str | None = None) -> None: ...
 
-    def list_events(self, *, scenario_id: str | None = None) -> list[dict]:
-        """依寫入順序（append-only）回傳。"""
+    def list_events(self, *, scenario_id: str | None = None,
+                    owner: str) -> list[dict]:
+        """依寫入順序（append-only）回傳。
+
+        SCALE-11：`owner` 必填 keyword-only——`scenario_id=None`
+        （既有的「不指定就回全部」語意）過去會回傳**每一個 owner**
+        的事件，是本票明文點名「不得漏 diagnostics」同一類別裡最寬
+        的既有開放面之一。加上 `owner` 之後，即使不指定
+        `scenario_id`，也只回落盤時記到這個 owner 名下的事件。"""
 
     def get_rate_cache(self) -> RateCacheEntry | None:
         """尚未有任何嘗試（成功或失敗）時回 `None`。"""
@@ -660,11 +707,15 @@ class Storage(Protocol):
         `diagnostics.RETENTION_LIMIT` 筆，跟逐筆呼叫單筆版比較，最終
         保留集合完全一致。空清單是合法的 no-op。"""
 
-    def list_diagnostics(self, *, limit: int = 50) -> list[DiagnosticEvent]:
-        """最新在最上（依寫入順序反排）。"""
+    def list_diagnostics(self, *, limit: int = 50,
+                         owner: str) -> list[DiagnosticEvent]:
+        """最新在最上（依寫入順序反排），只回落盤時記到這個 owner
+        名下的事件（SCALE-11，`owner` 必填 keyword-only）。"""
 
-    def clear_diagnostics(self) -> int:
-        """清空，回傳清掉的筆數。"""
+    def clear_diagnostics(self, *, owner: str) -> int:
+        """清空這個 owner 名下的診斷事件，回傳清掉的筆數
+        （SCALE-11——過去無條件清空全部 owner 的資料，是本票明文點名
+        「不得漏 diagnostics」的另一個既有開放面）。"""
 
     # ---------- Ownership A-1 Expand（SCALE-06／#256） ----------
 

@@ -135,7 +135,7 @@ def test_token_never_reaches_the_event_log(client, db):
     client.put(f"/api/settings/credentials/{PROVIDER}", json={"token": TOKEN})
     client.put("/api/settings", json={"market_data": _custom(),
                                       "historical_iv": _custom()})
-    assert TOKEN not in repr(db.list_events())
+    assert TOKEN not in repr(db.list_events(owner="solo"))
 
 
 def test_token_never_reaches_the_application_log(client, caplog):

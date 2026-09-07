@@ -16,8 +16,17 @@ round-trip、backfill 冪等性由 `tests/test_storage_contract.py` 的
   「production 行為逐位元不變」字面意義的落地——今天任何 HTTP 回應
   都不含 `owner_id`，這一票加了欄位不代表這一票也改了任何一個回應
   形狀）
-- AC-4：`test_scenarios_created_under_different_identities_are_all_
-  visible_in_the_unfiltered_list`
+- AC-4（原字面）：⚠ **本檔案已隨 SCALE-11（#262）跟進更新**——當年
+  `test_scenarios_created_under_different_identities_are_all_visible_
+  in_the_unfiltered_list` 的斷言字面預告「query boundary 是
+  SCALE-11 才會做的事」，SCALE-11 上線後這條測試已改為驗證真正的
+  隔離（見 `test_scenarios_created_under_different_identities_are_
+  isolated_from_each_other`），不再驗證「刻意還沒做」這件事。
+  `test_editing_a_scenario_does_not_change_its_own_owner_id` 原本
+  依賴「用另一個身分編輯同一個劇本仍會成功」這個前提，SCALE-11 上線
+  後這條路徑改為被 `_require()` 擋成 404（AC-2）——已拆成兩條測試：
+  同一身分下 owner_id 不受編輯影響（原意保留）＋不同身分編輯直接被
+  拒絕（新增，SCALE-11 才有意義的正面驗證）。
 - AC-5：見 `test_storage_contract.py`
 - AC-6：全套既有測試套件本身
 """
@@ -59,10 +68,10 @@ def test_default_identity_resolver_is_solo_owner_end_to_end():
     assert r.status_code == 200, r.text
     analyzed_at = r.json()["latest_analyzed_at"]
 
-    assert storage.get_scenario(sc["id"]).owner_id == "solo"
-    assert storage.latest_result(sc["id"]).owner_id == "solo"
+    assert storage.get_scenario(sc["id"], owner="solo").owner_id == "solo"
+    assert storage.latest_result(sc["id"], owner="solo").owner_id == "solo"
     assert storage.get_snapshot_owner(sc["id"], analyzed_at) == "solo"
-    events = storage.list_events(scenario_id=sc["id"])
+    events = storage.list_events(scenario_id=sc["id"], owner="solo")
     assert len(events) >= 2   # SCENARIO_CREATED + ANALYSIS_COMPLETED
     assert all(e["owner_id"] == "solo" for e in events)
 
@@ -76,10 +85,10 @@ def test_identity_resolver_is_injectable_and_new_writes_carry_it():
     r = c.post(f"/api/scenarios/{sc['id']}/refresh")
     analyzed_at = r.json()["latest_analyzed_at"]
 
-    assert storage.get_scenario(sc["id"]).owner_id == "alice"
-    assert storage.latest_result(sc["id"]).owner_id == "alice"
+    assert storage.get_scenario(sc["id"], owner="alice").owner_id == "alice"
+    assert storage.latest_result(sc["id"], owner="alice").owner_id == "alice"
     assert storage.get_snapshot_owner(sc["id"], analyzed_at) == "alice"
-    events = storage.list_events(scenario_id=sc["id"])
+    events = storage.list_events(scenario_id=sc["id"], owner="alice")
     assert all(e["owner_id"] == "alice" for e in events)
 
 
@@ -95,7 +104,7 @@ def test_archive_restore_edit_events_also_carry_the_resolved_owner():
     c.post(f"/api/scenarios/{sc['id']}/restore")
 
     events = {e["event"]: e["owner_id"]
-             for e in storage.list_events(scenario_id=sc["id"])}
+             for e in storage.list_events(scenario_id=sc["id"], owner="bob")}
     assert events["SCENARIO_CREATED"] == "bob"
     assert events["SCENARIO_EDITED"] == "bob"
     assert events["SCENARIO_ARCHIVED"] == "bob"
@@ -105,25 +114,50 @@ def test_archive_restore_edit_events_also_carry_the_resolved_owner():
 def test_editing_a_scenario_does_not_change_its_own_owner_id():
     """`update_scenario()` 不動 `owner_id`（設計決策，見
     `test_storage_contract.py::test_updating_a_scenario_does_not_
-    touch_its_owner_id`）——這裡從 HTTP 層再驗一次同一條規則：即使
-    「現在解析出來的身分」變了，已存在的劇本本身的 owner 依然不變
-    （沒有任何機制會回頭改寫既有列的 owner_id，只有 `backfill_
-    missing_owner_ids()` 這個明確、獨立的操作才會）。"""
+    touch_its_owner_id`）——這裡從 HTTP 層再驗一次同一條規則：同一個
+    owner 多次編輯同一個劇本，`owner_id` 全程不變、不會被表單欄位
+    覆寫掉。
+
+    ⚠ SCALE-11（#262）跟進：原版測試在這裡改用**另一個**身分編輯
+    同一個劇本，驗證「owner_id 沒被悄悄改成新身分」——SCALE-06 時期
+    這個路徑會成功（尚未有 query boundary）。SCALE-11 上線後這個
+    前提本身已經走不到：`_require()` 會先把「非 owner 編輯」擋成
+    404，編輯根本不會發生，`owner_id` 保不保持不變也就無從談起。
+    那個更值得驗證的行為（不同身分編輯被正確拒絕，而不是靜默改變
+    owner_id 或靜默放行）移到下一條
+    `test_editing_under_a_different_identity_is_rejected_not_
+    silently_allowed`。"""
+    storage = MemoryStorage()
+    c = _client(identity_resolver=lambda: "alice", storage=storage)
+    sc = _create(c)
+    assert storage.get_scenario(sc["id"], owner="alice").owner_id == "alice"
+
+    c.patch(f"/api/scenarios/{sc['id']}", json={**NEW, "target_price": 140.0})
+    c.patch(f"/api/scenarios/{sc['id']}", json={**NEW, "target_price": 150.0})
+
+    assert storage.get_scenario(sc["id"], owner="alice").owner_id == "alice"
+    events = {e["event"]: e["owner_id"]
+             for e in storage.list_events(scenario_id=sc["id"], owner="alice")}
+    assert events["SCENARIO_EDITED"] == "alice"
+
+
+def test_editing_under_a_different_identity_is_rejected_not_silently_allowed():
+    """SCALE-11（#262）AC-2：一旦目前解析出的身分不是這個劇本的
+    owner，編輯直接被 `_require()` 擋成 404——不是靜默放行（SCALE-06
+    時期的行為），也不是把 owner_id 悄悄改成新身分。劇本本身（含
+    target_price 等欄位）完全不受影響，連一次無效的編輯痕跡都不留。"""
     storage = MemoryStorage()
     resolver_calls = {"who": "alice"}
     c = _client(identity_resolver=lambda: resolver_calls["who"], storage=storage)
     sc = _create(c)
-    assert storage.get_scenario(sc["id"]).owner_id == "alice"
 
-    resolver_calls["who"] = "carol"   # 之後的 request 換了身分
-    c.patch(f"/api/scenarios/{sc['id']}", json={**NEW, "target_price": 140.0})
+    resolver_calls["who"] = "carol"
+    resp = c.patch(f"/api/scenarios/{sc['id']}", json={**NEW, "target_price": 140.0})
+    assert resp.status_code == 404
 
-    # 劇本自己的 owner_id 沒被編輯動過，還是原本建立時的那個。
-    assert storage.get_scenario(sc["id"]).owner_id == "alice"
-    # 但這次編輯留下的事件，記的是「這次 request」的身分。
-    events = {e["event"]: e["owner_id"]
-             for e in storage.list_events(scenario_id=sc["id"])}
-    assert events["SCENARIO_EDITED"] == "carol"
+    got = storage.get_scenario(sc["id"], owner="alice")
+    assert got.owner_id == "alice"
+    assert got.target_price == 130.0   # 未被那次被拒絕的編輯動到
 
 
 def test_owner_id_never_appears_in_any_http_response_body():
@@ -156,10 +190,13 @@ def test_owner_id_never_appears_in_any_http_response_body():
     assert all("owner_id" not in e for e in diag_events)
 
 
-def test_scenarios_created_under_different_identities_are_all_visible_in_the_unfiltered_list():
-    """AC-4：本票結束時查詢仍未加過濾——即使兩個劇本被不同的
-    identity resolver 值標記，清單端點依然兩個都回，不會因為
-    `owner_id` 不同就互相看不到彼此（那是 SCALE-11 才會做的事）。"""
+def test_scenarios_created_under_different_identities_are_isolated_from_each_other():
+    """⚠ SCALE-11（#262）跟進——此檔案原本這條測試斷言的是
+    SCALE-06 時期刻意保留的「尚未過濾」現況（"那是 SCALE-11 才會做
+    的事"，見本檔案舊版 docstring）。SCALE-11 正是那一票：query
+    boundary 現已啟用，這裡改為驗證真正的隔離本身
+    （AC-1／AC-2 的清單端點版本）——alice 與 bob 各自只看得到自己
+    建立的劇本，互相看不到彼此的。"""
     storage = MemoryStorage()
     c_alice = _client(identity_resolver=lambda: "alice", storage=storage)
     c_bob = _client(identity_resolver=lambda: "bob", storage=storage)
@@ -169,8 +206,8 @@ def test_scenarios_created_under_different_identities_are_all_visible_in_the_unf
 
     symbols_seen_by_alice = {r["symbol"] for r in c_alice.get("/api/scenarios").json()}
     symbols_seen_by_bob = {r["symbol"] for r in c_bob.get("/api/scenarios").json()}
-    assert symbols_seen_by_alice == {"AAA", "BBB"}
-    assert symbols_seen_by_bob == {"AAA", "BBB"}
+    assert symbols_seen_by_alice == {"AAA"}
+    assert symbols_seen_by_bob == {"BBB"}
 
 
 def test_the_middleware_actually_wraps_every_request_in_an_owner_scope(monkeypatch):

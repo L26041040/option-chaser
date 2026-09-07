@@ -371,7 +371,7 @@ def test_days_left_goes_negative_rather_than_clamping_to_zero():
     storage.create_scenario(StoredScenario(
         id="old", symbol="XYZ", direction="bullish", target_price=130.0,
         target_month="2020-01", notes="", strategies=("bull-call-spread",),
-        created_at="2019-06-01T00:00:00+00:00"))
+        created_at="2019-06-01T00:00:00+00:00", owner_id="solo"))
     row = _client(storage).get("/api/scenarios").json()[0]
 
     anchor = calendar_anchor(TargetMonth.from_key("2020-01"))
@@ -393,7 +393,7 @@ def test_a_scenario_with_a_month_already_over_is_marked_expired():
     storage.create_scenario(StoredScenario(
         id="old", symbol="XYZ", direction="bullish", target_price=130.0,
         target_month="2020-01", notes="", strategies=("bull-call-spread",),
-        created_at="2019-06-01T00:00:00+00:00"))
+        created_at="2019-06-01T00:00:00+00:00", owner_id="solo"))
     row = _client(storage).get("/api/scenarios").json()[0]
 
     assert row["expired"] is True

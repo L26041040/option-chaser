@@ -89,7 +89,7 @@ def test_the_request_model_has_no_symbol_field_at_all(client, db):
                               "strategies": ["vertical-spread"],
                               "symbol": "SPY"}).json()
     assert body["symbol"] == "XYZ"
-    assert db.get_scenario(sid).symbol == "XYZ"
+    assert db.get_scenario(sid, owner="solo").symbol == "XYZ"
 
 
 # ---------- 可編輯欄位 ----------
@@ -131,10 +131,10 @@ def test_changing_the_thesis_drops_the_stale_result(client, db):
     舊結果的每個數字都是對著另一個問題算出來的。"""
     sid = _create(client)["id"]
     client.post(f"/api/scenarios/{sid}/refresh")
-    assert db.latest_result(sid) is not None
+    assert db.latest_result(sid, owner="solo") is not None
 
     body = _edit(client, sid, target_price=140.0).json()
-    assert db.latest_result(sid) is None
+    assert db.latest_result(sid, owner="solo") is None
     assert body["latest_analyzed_at"] is None
     assert body["best_return"] is None
 
@@ -144,11 +144,11 @@ def test_saving_without_changing_anything_keeps_the_result(client, db):
     created = _create(client)
     sid = created["id"]
     client.post(f"/api/scenarios/{sid}/refresh")
-    before = db.latest_result(sid).analyzed_at
+    before = db.latest_result(sid, owner="solo").analyzed_at
 
     body = _edit(client, sid, target_price=created["target_price"],
                  target_month=created["target_month"]).json()
-    assert db.latest_result(sid).analyzed_at == before
+    assert db.latest_result(sid, owner="solo").analyzed_at == before
     assert body["latest_analyzed_at"] == before
 
 
@@ -157,21 +157,21 @@ def test_the_scenario_can_be_analysed_again_after_an_edit(client, db):
     client.post(f"/api/scenarios/{sid}/refresh")
     _edit(client, sid, target_price=140.0)
     assert client.post(f"/api/scenarios/{sid}/refresh").status_code == 200
-    assert db.latest_result(sid) is not None
+    assert db.latest_result(sid, owner="solo") is not None
 
 
 def test_an_edit_is_recorded_as_an_event(client, db):
     sid = _create(client)["id"]
     _edit(client, sid)
     assert any(e["event"] == "SCENARIO_EDITED"
-               for e in db.list_events(scenario_id=sid))
+               for e in db.list_events(scenario_id=sid, owner="solo"))
 
 
 def test_editing_does_not_wipe_the_event_history(client, db):
     """事件是不可變的事實，不隨 thesis 改變而消失。"""
     sid = _create(client)["id"]
     _edit(client, sid, target_price=140.0)
-    events = [e["event"] for e in db.list_events(scenario_id=sid)]
+    events = [e["event"] for e in db.list_events(scenario_id=sid, owner="solo")]
     assert "SCENARIO_CREATED" in events
 
 

@@ -129,7 +129,7 @@ def test_refresh_dual_writes_narrow_history_without_changing_the_stored_view(
     resp = c.post(f"/api/scenarios/{sc_id}/refresh")
     assert resp.status_code == 200, resp.text
 
-    record = storage.latest_result(sc_id)
+    record = storage.latest_result(sc_id, owner="solo")
     view = record.view
     expected_costs = store.visible_candidate_costs(view)
     assert expected_costs

@@ -26,10 +26,11 @@ def client(db):
 
 
 def _seed(db, n=1, **over):
-    for i in range(n):
-        diagnostics.emit(db, subsystem="historical_iv", stage="vendor_fetch",
-                         severity="error", message=f"boom-{i}",
-                         ts=f"2026-08-15T00:0{i}:00+00:00", **over)
+    with diagnostics.owner_scope("solo"):
+        for i in range(n):
+            diagnostics.emit(db, subsystem="historical_iv", stage="vendor_fetch",
+                             severity="error", message=f"boom-{i}",
+                             ts=f"2026-08-15T00:0{i}:00+00:00", **over)
 
 
 # ---------- GET /api/diagnostics ----------
@@ -106,10 +107,11 @@ def test_different_requests_get_different_correlation_ids(client):
 
 def test_a_known_provider_token_never_reaches_the_api_response(db, client):
     token = "mdapp_live_SECRET_TOKEN_998877"
-    diagnostics.emit(db, subsystem="historical_iv", stage="vendor_fetch",
-                     severity="error",
-                     message=f"vendor rejected key {token}",
-                     ts="2026-08-15T00:00:00+00:00", secrets=(token,))
+    with diagnostics.owner_scope("solo"):
+        diagnostics.emit(db, subsystem="historical_iv", stage="vendor_fetch",
+                         severity="error",
+                         message=f"vendor rejected key {token}",
+                         ts="2026-08-15T00:00:00+00:00", secrets=(token,))
     resp = client.get("/api/diagnostics")
     assert token not in resp.text
 
@@ -119,10 +121,11 @@ def test_a_known_database_url_never_reaches_the_api_response(db, client):
     `secrets` 對兩者一視同仁——這裡用它真實的樣子單獨測一次，不只是
     論證上的『同理可證』。"""
     db_url = "postgres://appuser:s3cr3t-pw@ep-cool-cloud-12345.neon.tech/main"
-    diagnostics.emit(db, subsystem="historical_iv", stage="vendor_fetch",
-                     severity="error",
-                     message=f"connection failed: {db_url}",
-                     ts="2026-08-15T00:00:00+00:00", secrets=(db_url,))
+    with diagnostics.owner_scope("solo"):
+        diagnostics.emit(db, subsystem="historical_iv", stage="vendor_fetch",
+                         severity="error",
+                         message=f"connection failed: {db_url}",
+                         ts="2026-08-15T00:00:00+00:00", secrets=(db_url,))
     resp = client.get("/api/diagnostics")
     assert db_url not in resp.text
     # 帳密片段也不能單獨留在畫面上（防止只做整串比對漏掉子字串殘留）。
@@ -131,11 +134,12 @@ def test_a_known_database_url_never_reaches_the_api_response(db, client):
 
 def test_a_context_key_outside_the_whitelist_never_reaches_the_api_response(
         db, client):
-    diagnostics.emit(db, subsystem="historical_iv", stage="vendor_fetch",
-                     severity="info", message="ok",
-                     ts="2026-08-15T00:00:00+00:00",
-                     symbol="TLT", authorization="Bearer should-not-survive",
-                     cookie="session=should-not-survive")
+    with diagnostics.owner_scope("solo"):
+        diagnostics.emit(db, subsystem="historical_iv", stage="vendor_fetch",
+                         severity="info", message="ok",
+                         ts="2026-08-15T00:00:00+00:00",
+                         symbol="TLT", authorization="Bearer should-not-survive",
+                         cookie="session=should-not-survive")
     got = client.get("/api/diagnostics").json()[0]
     assert got["context"] == {"symbol": "TLT"}
     assert "authorization" not in got["context"]
@@ -145,10 +149,11 @@ def test_a_context_key_outside_the_whitelist_never_reaches_the_api_response(
 
 def test_an_overlong_errmsg_is_truncated_visibly_in_the_api_response(db, client):
     long_errmsg = "x" * 5000
-    diagnostics.emit(db, subsystem="historical_iv", stage="vendor_fetch",
-                     severity="error", message="vendor error",
-                     ts="2026-08-15T00:00:00+00:00",
-                     vendor_errmsg=long_errmsg)
+    with diagnostics.owner_scope("solo"):
+        diagnostics.emit(db, subsystem="historical_iv", stage="vendor_fetch",
+                         severity="error", message="vendor error",
+                         ts="2026-08-15T00:00:00+00:00",
+                         vendor_errmsg=long_errmsg)
     got = client.get("/api/diagnostics").json()[0]
     assert len(got["context"]["vendor_errmsg"]) < len(long_errmsg)
     assert got["context"]["vendor_errmsg"].endswith("…[截斷]")
@@ -159,11 +164,12 @@ def test_full_http_headers_are_never_recorded_only_the_rate_limit_whitelist(
     """context 白名單本身就不含任何泛用 header 名稱——這裡用一個典型的
     完整 headers dict 當 context 值餵進去，確認白名單過濾一樣把它擋在
     門外（headers 不是白名單認得的 key，整包被丟棄）。"""
-    diagnostics.emit(db, subsystem="historical_iv", stage="vendor_fetch",
-                     severity="info", message="ok",
-                     ts="2026-08-15T00:00:00+00:00",
-                     headers={"Set-Cookie": "sid=abc", "Authorization": "Bearer x"},
-                     **{"X-Api-Ratelimit-Remaining": "42"})
+    with diagnostics.owner_scope("solo"):
+        diagnostics.emit(db, subsystem="historical_iv", stage="vendor_fetch",
+                         severity="info", message="ok",
+                         ts="2026-08-15T00:00:00+00:00",
+                         headers={"Set-Cookie": "sid=abc", "Authorization": "Bearer x"},
+                         **{"X-Api-Ratelimit-Remaining": "42"})
     got = client.get("/api/diagnostics").json()[0]
     assert "headers" not in got["context"]
     assert got["context"].get("X-Api-Ratelimit-Remaining") == "42"

@@ -385,7 +385,7 @@ def _attach_result(db, sid, view, *, analyzed_at="2026-08-12T00:00:00+00:00"):
     from api_app.storage import ResultRecord
 
     db.save_result(ResultRecord(scenario_id=sid, analyzed_at=analyzed_at,
-                                view=view))
+                                view=view, owner_id="solo"))
 
 
 def test_a_long_call_candidate_returns_200_not_the_old_blanket_none(db):

@@ -525,66 +525,84 @@ class PostgresStorage:
             except psycopg.errors.UniqueViolation as e:
                 raise ScenarioExists(sc.id) from e
 
-    def get_scenario(self, scenario_id: str) -> Scenario | None:
+    def get_scenario(self, scenario_id: str, *, owner: str) -> Scenario | None:
         with self._connect() as conn:
             row = conn.execute(
-                f"SELECT {_SCENARIO_COLS} FROM scenarios WHERE id = %s",
-                (scenario_id,)).fetchone()
+                f"SELECT {_SCENARIO_COLS} FROM scenarios "
+                "WHERE id = %s AND owner_id = %s",
+                (scenario_id, owner)).fetchone()
         return _row_to_scenario(row) if row else None
 
-    def list_scenarios(self, *, include_archived: bool = False) -> list[Scenario]:
-        sql = f"SELECT {_SCENARIO_COLS} FROM scenarios"
+    def list_scenarios(self, *, owner: str | None,
+                       include_archived: bool = False) -> list[Scenario]:
+        clauses: list[str] = []
+        params: list = []
         if not include_archived:
-            sql += " WHERE archived_at IS NULL"
+            clauses.append("archived_at IS NULL")
+        if owner is not None:
+            clauses.append("owner_id = %s")
+            params.append(owner)
+        sql = f"SELECT {_SCENARIO_COLS} FROM scenarios"
+        if clauses:
+            sql += " WHERE " + " AND ".join(clauses)
         sql += " ORDER BY created_at, id"
         with self._connect() as conn:
-            rows = conn.execute(sql).fetchall()
+            rows = conn.execute(sql, params).fetchall()
         return [_row_to_scenario(r) for r in rows]
 
-    def update_scenario(self, sc: Scenario) -> bool:
+    def update_scenario(self, sc: Scenario, *, owner: str) -> bool:
         with self._connect() as conn:
             cur = conn.execute(
                 "UPDATE scenarios SET symbol = %s, direction = %s, "
                 "target_price = %s, target_month = %s, notes = %s, "
                 "strategies = %s, best_price = %s, worst_price = %s "
-                "WHERE id = %s",
+                "WHERE id = %s AND owner_id = %s",
                 (sc.symbol, sc.direction, sc.target_price, sc.target_month,
                  sc.notes, Jsonb(list(sc.strategies)), sc.best_price,
-                 sc.worst_price, sc.id))
+                 sc.worst_price, sc.id, owner))
             return cur.rowcount == 1   # 連線關閉前讀
 
-    def clear_results(self, scenario_id: str) -> None:
+    def clear_results(self, scenario_id: str, *, owner: str) -> None:
         with self._connect() as conn:
+            owned = conn.execute(
+                "SELECT 1 FROM scenarios WHERE id = %s AND owner_id = %s",
+                (scenario_id, owner)).fetchone()
+            if owned is None:
+                return
             conn.execute("DELETE FROM results WHERE scenario_id = %s",
                         (scenario_id,))
             conn.execute("DELETE FROM snapshots WHERE scenario_id = %s",
                         (scenario_id,))
 
-    def archive_scenario(self, scenario_id: str, *, ts: str) -> bool:
+    def archive_scenario(self, scenario_id: str, *, owner: str, ts: str) -> bool:
         with self._connect() as conn:
             cur = conn.execute(
                 "UPDATE scenarios SET archived_at = %s "
-                "WHERE id = %s AND archived_at IS NULL", (ts, scenario_id))
+                "WHERE id = %s AND owner_id = %s AND archived_at IS NULL",
+                (ts, scenario_id, owner))
             return cur.rowcount == 1   # 連線關閉前讀
 
-    def restore_scenario(self, scenario_id: str, *, ts: str) -> bool:
+    def restore_scenario(self, scenario_id: str, *, owner: str, ts: str) -> bool:
         with self._connect() as conn:
             cur = conn.execute(
                 "UPDATE scenarios SET archived_at = NULL "
-                "WHERE id = %s AND archived_at IS NOT NULL", (scenario_id,))
+                "WHERE id = %s AND owner_id = %s AND archived_at IS NOT NULL",
+                (scenario_id, owner))
             return cur.rowcount == 1   # 連線關閉前讀
 
-    def delete_scenario(self, scenario_id: str) -> bool:
+    def delete_scenario(self, scenario_id: str, *, owner: str) -> bool:
         # 安全閘門在 DELETE FROM scenarios 那一行的 WHERE 子句本身檢查
-        # （id 存在＋已封存）：rowcount==1 才代表真的刪了，這時才進一步
-        # cascade 清 results／snapshots／events——避免對一個其實沒被
-        # 刪除的劇本（未封存或不存在）誤刪其他表的資料。三張表各自一次
-        # DELETE（不依賴 FK `ON DELETE CASCADE`，沿用專案既有「不用 FK
-        # 約束，應用層自己保證一致性」的設計慣例）。
+        # （id 存在＋屬於這個 owner＋已封存）：rowcount==1 才代表真的
+        # 刪了，這時才進一步 cascade 清 results／snapshots／events——
+        # 避免對一個其實沒被刪除的劇本（未封存、不存在、或屬於別的
+        # owner）誤刪其他表的資料。三張表各自一次 DELETE（不依賴 FK
+        # `ON DELETE CASCADE`，沿用專案既有「不用 FK 約束，應用層自己
+        # 保證一致性」的設計慣例）。
         with self._connect() as conn:
             cur = conn.execute(
-                "DELETE FROM scenarios WHERE id = %s AND archived_at IS NOT NULL",
-                (scenario_id,))
+                "DELETE FROM scenarios WHERE id = %s AND owner_id = %s "
+                "AND archived_at IS NOT NULL",
+                (scenario_id, owner))
             if cur.rowcount != 1:
                 return False
             conn.execute("DELETE FROM results WHERE scenario_id = %s",
@@ -647,53 +665,65 @@ class PostgresStorage:
             row[_REQUESTED_STRATEGIES_IDX] = tuple(row[_REQUESTED_STRATEGIES_IDX])
         return ResultRecord(*row)
 
-    def latest_result(self, scenario_id: str) -> ResultRecord | None:
+    def latest_result(self, scenario_id: str, *, owner: str) -> ResultRecord | None:
         with self._connect() as conn:
             row = conn.execute(
                 f"SELECT {_RESULT_COLS} FROM results "
-                "WHERE scenario_id = %s ORDER BY analyzed_at DESC LIMIT 1",
-                (scenario_id,)).fetchone()
+                "WHERE scenario_id = %s AND owner_id = %s "
+                "ORDER BY analyzed_at DESC LIMIT 1",
+                (scenario_id, owner)).fetchone()
         return self._row_to_result(row) if row else None
 
-    def latest_summaries(self) -> dict[str, ResultSummary]:
+    def latest_summaries(self, *, owner: str) -> dict[str, ResultSummary]:
         """`DISTINCT ON` 一趟取回每個劇本的最新一筆——**不選 view 欄位**，
         清單頁因此不會把每份十萬字元的 view 從資料庫搬過來。
         `representative_candidate` 是小型 JSONB（幾個履約價與策略代號），
         跟 `best_return` 同樣可以安全地隨這條清單查詢一起選（MVP-v2／
         #77、#78）——這正是它獨立落盤成一個欄位、而不是每次從 view
-        現算的理由。"""
+        現算的理由。SCALE-11：`WHERE owner_id = %s` 放在最內層子查詢
+        （`DISTINCT ON` 之前），只在這個 owner 名下的列裡挑最新一筆。"""
         with self._connect() as conn:
             rows = conn.execute(
                 "SELECT DISTINCT ON (scenario_id) scenario_id, analyzed_at, "
                 "best_return, representative_candidate, spot, per_family, "
                 "family_eligibility "
-                "FROM results ORDER BY scenario_id, analyzed_at DESC").fetchall()
+                "FROM results WHERE owner_id = %s "
+                "ORDER BY scenario_id, analyzed_at DESC", (owner,)).fetchall()
         return {r[0]: ResultSummary(analyzed_at=r[1], best_return=r[2],
                                     representative_candidate=r[3], spot=r[4],
                                     per_family=r[5], family_eligibility=r[6])
                 for r in rows}
 
-    def result_history(self, scenario_id: str) -> list[ResultRecord]:
+    def result_history(self, scenario_id: str, *,
+                       owner: str | None) -> list[ResultRecord]:
+        sql = f"SELECT {_RESULT_COLS} FROM results WHERE scenario_id = %s"
+        params: list = [scenario_id]
+        if owner is not None:
+            sql += " AND owner_id = %s"
+            params.append(owner)
+        sql += " ORDER BY analyzed_at"
         with self._connect() as conn:
-            rows = conn.execute(
-                f"SELECT {_RESULT_COLS} FROM results "
-                "WHERE scenario_id = %s ORDER BY analyzed_at",
-                (scenario_id,)).fetchall()
+            rows = conn.execute(sql, params).fetchall()
         return [self._row_to_result(r) for r in rows]
 
-    def result_timestamps(self, scenario_id: str) -> list[str]:
+    def result_timestamps(self, scenario_id: str, *, owner: str) -> list[str]:
         # SCALE-02（#253）：兩段皆窄查詢——`snapshots` 用它自己的主鍵，
         # `results` 這半只選 `analyzed_at`，完全不觸碰 `view` JSONB
         # 欄位。UNION（非 UNION ALL）本身就會去重與排序前的集合運算，
-        # 外層 ORDER BY 只負責排序，不需要另外 DISTINCT。
+        # 外層 ORDER BY 只負責排序，不需要另外 DISTINCT。SCALE-11：
+        # 兩段各自的 `WHERE` 子句上各加一條 `owner_id = %s`——當年
+        # docstring 的承諾兌現，兩張表各自用自己的 owner_id 欄位過濾，
+        # 不需要 JOIN 到 scenarios。
         with self._connect() as conn:
             rows = conn.execute(
                 "SELECT analyzed_at FROM ("
-                "  SELECT analyzed_at FROM snapshots WHERE scenario_id = %s"
+                "  SELECT analyzed_at FROM snapshots "
+                "  WHERE scenario_id = %s AND owner_id = %s"
                 "  UNION"
-                "  SELECT analyzed_at FROM results WHERE scenario_id = %s"
+                "  SELECT analyzed_at FROM results "
+                "  WHERE scenario_id = %s AND owner_id = %s"
                 ") AS ts ORDER BY analyzed_at",
-                (scenario_id, scenario_id)).fetchall()
+                (scenario_id, owner, scenario_id, owner)).fetchall()
         return [r[0] for r in rows]
 
     def result_fact_context(self, scenario_id: str,
@@ -728,12 +758,13 @@ class PostgresStorage:
                 "owner_id = EXCLUDED.owner_id",
                 (scenario_id, analyzed_at, Jsonb(snapshot), owner_id))
 
-    def get_snapshot(self, scenario_id: str, analyzed_at: str) -> dict | None:
+    def get_snapshot(self, scenario_id: str, analyzed_at: str, *,
+                     owner: str) -> dict | None:
         with self._connect() as conn:
             row = conn.execute(
                 "SELECT snapshot FROM snapshots "
-                "WHERE scenario_id = %s AND analyzed_at = %s",
-                (scenario_id, analyzed_at)).fetchone()
+                "WHERE scenario_id = %s AND analyzed_at = %s AND owner_id = %s",
+                (scenario_id, analyzed_at, owner)).fetchone()
         return row[0] if row else None
 
     def get_snapshot_owner(self, scenario_id: str,
@@ -758,12 +789,14 @@ class PostgresStorage:
                 "owner_id) VALUES (%s, %s, %s, %s, %s)",
                 (ts, scenario_id, event, Jsonb(payload), owner_id))
 
-    def list_events(self, *, scenario_id: str | None = None) -> list[dict]:
-        sql = "SELECT ts, scenario_id, event, payload, owner_id FROM events"
-        params: tuple = ()
+    def list_events(self, *, scenario_id: str | None = None,
+                    owner: str) -> list[dict]:
+        sql = "SELECT ts, scenario_id, event, payload, owner_id FROM events " \
+             "WHERE owner_id = %s"
+        params: list = [owner]
         if scenario_id is not None:
-            sql += " WHERE scenario_id = %s"
-            params = (scenario_id,)
+            sql += " AND scenario_id = %s"
+            params.append(scenario_id)
         sql += " ORDER BY seq"
         with self._connect() as conn:
             rows = conn.execute(sql, params).fetchall()
@@ -1112,13 +1145,15 @@ class PostgresStorage:
                 f"VALUES {values_sql}", params)
             conn.execute(_DIAGNOSTICS_TRIM_SQL, (RETENTION_LIMIT,))
 
-    def list_diagnostics(self, *, limit: int = 50) -> list[DiagnosticEvent]:
+    def list_diagnostics(self, *, limit: int = 50,
+                         owner: str) -> list[DiagnosticEvent]:
         with self._connect() as conn:
             rows = conn.execute(
                 "SELECT event_id, correlation_id, ts, subsystem, stage, "
                 "severity, user_facing, message, context, owner_id "
-                "FROM diagnostics ORDER BY seq DESC LIMIT %s",
-                (limit,)).fetchall()
+                "FROM diagnostics WHERE owner_id = %s "
+                "ORDER BY seq DESC LIMIT %s",
+                (owner, limit)).fetchall()
         # `user_facing`（r[6]）為 NULL 只會發生在遷移前寫入的舊列——套用
         # 跟 `diagnostics.emit()` 完全相同的預設規則補值，讀回的行為因此
         # 對新舊列一致，不會讓查詢端還要另外處理 NULL。`owner_id`（r[9]）
@@ -1131,10 +1166,12 @@ class PostgresStorage:
             user_facing=r[6] if r[6] is not None else r[5] in ("warning", "error"),
             message=r[7], context=r[8], owner_id=r[9]) for r in rows]
 
-    def clear_diagnostics(self) -> int:
+    def clear_diagnostics(self, *, owner: str) -> int:
         with self._connect() as conn:
-            n = conn.execute("SELECT COUNT(*) FROM diagnostics").fetchone()[0]
-            conn.execute("DELETE FROM diagnostics")
+            n = conn.execute(
+                "SELECT COUNT(*) FROM diagnostics WHERE owner_id = %s",
+                (owner,)).fetchone()[0]
+            conn.execute("DELETE FROM diagnostics WHERE owner_id = %s", (owner,))
         return n
 
     # ---------- Ownership A-1 Expand（SCALE-06／#256） ----------
