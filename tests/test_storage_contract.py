@@ -66,6 +66,7 @@ def storage(request):
                      "dividend_cache, treasury_year_cache, chain_backoff, "
                      "data_source_settings, "
                      "provider_credentials, provider_verifications, "
+                     "owner_settings, owner_credentials, owner_verifications, "
                      "iv_observations, iv_backfill_runs, contract_iv_history, "
                      "diagnostics, operational_metrics, narrow_history "
                      "RESTART IDENTITY")
@@ -1147,54 +1148,109 @@ def test_latest_summaries_carries_family_eligibility(storage):
     assert storage.latest_summaries(owner=OWNER)["s1"].family_eligibility == _FAMILY_ELIGIBILITY
 
 
-# ---------- 資料源設定與 credential（Settings／#124） ----------
+# ---------- 資料源設定與 credential（Settings／#124，owner 化 SCALE-13／#264） ----------
 
 _CUSTOM = UsageSetting(mode="custom", provider="marketdata-app")
 _DEFAULT_USAGE = UsageSetting(mode="default", provider=None)
 
+ALICE = "alice"
+BOB = "bob"
 
-def _settings(market=_CUSTOM, iv=_DEFAULT_USAGE):
+
+def _settings(market=_CUSTOM, iv=_DEFAULT_USAGE, owner=OWNER):
     return DataSourceSettings(market_data=market, historical_iv=iv,
-                              updated_at="2026-08-12T00:00:00+00:00")
+                              updated_at="2026-08-12T00:00:00+00:00",
+                              owner_id=owner)
+
+
+def _seed_legacy_settings(storage, settings: DataSourceSettings) -> None:
+    """SCALE-13（#264）：直接寫進舊表 `data_source_settings`，模擬
+    「這筆資料是在本票上線之前就已經存在」——正式寫入路徑
+    `save_settings()` 這個方法起不再寫舊表，要驗證 read-through 只能
+    繞過它、直接戳舊表本身（`settings.owner_id` 在這裡刻意被忽略，
+    舊表結構上沒有 owner 欄位）。"""
+    if isinstance(storage, MemoryStorage):
+        storage._settings = replace(settings, owner_id=None)
+        return
+    import psycopg
+    from psycopg.types.json import Jsonb
+
+    from api_app.storage.postgres import _usage_to_dict
+    blob = {"market_data": _usage_to_dict(settings.market_data),
+           "historical_iv": _usage_to_dict(settings.historical_iv)}
+    with psycopg.connect(TEST_DB_URL, autocommit=True) as conn:
+        conn.execute(
+            "INSERT INTO data_source_settings (id, settings, updated_at) "
+            "VALUES (1, %s, %s) ON CONFLICT (id) DO UPDATE SET "
+            "settings = EXCLUDED.settings, updated_at = EXCLUDED.updated_at",
+            (Jsonb(blob), settings.updated_at))
+
+
+def _seed_legacy_credential(storage, cred: ProviderCredential) -> None:
+    if isinstance(storage, MemoryStorage):
+        storage._credentials[cred.provider] = replace(cred, owner_id=None)
+        return
+    import psycopg
+    with psycopg.connect(TEST_DB_URL, autocommit=True) as conn:
+        conn.execute(
+            "INSERT INTO provider_credentials (provider, token, updated_at) "
+            "VALUES (%s, %s, %s) ON CONFLICT (provider) DO UPDATE SET "
+            "token = EXCLUDED.token, updated_at = EXCLUDED.updated_at",
+            (cred.provider, cred.token, cred.updated_at))
+
+
+def _seed_legacy_verification(storage, v: ProviderVerification) -> None:
+    if isinstance(storage, MemoryStorage):
+        storage._verifications[v.provider] = replace(v, owner_id=None)
+        return
+    import psycopg
+    with psycopg.connect(TEST_DB_URL, autocommit=True) as conn:
+        conn.execute(
+            "INSERT INTO provider_verifications "
+            "(provider, ok, reason, checked_at) VALUES (%s, %s, %s, %s) "
+            "ON CONFLICT (provider) DO UPDATE SET ok = EXCLUDED.ok, "
+            "reason = EXCLUDED.reason, checked_at = EXCLUDED.checked_at",
+            (v.provider, v.ok, v.reason, v.checked_at))
 
 
 def test_settings_start_out_unset(storage):
     """從未存過＝`None`，不是一個假的空設定——呼叫端據此用預設值。"""
-    assert storage.get_settings() is None
+    assert storage.get_settings(owner=OWNER) is None
 
 
 def test_saved_settings_read_back_identically(storage):
     storage.save_settings(_settings())
-    assert storage.get_settings() == _settings()
+    assert storage.get_settings(owner=OWNER) == _settings()
 
 
 def test_saving_settings_again_overwrites_the_single_row(storage):
     storage.save_settings(_settings())
     storage.save_settings(_settings(market=_DEFAULT_USAGE, iv=_CUSTOM))
-    got = storage.get_settings()
+    got = storage.get_settings(owner=OWNER)
     assert got.market_data == _DEFAULT_USAGE
     assert got.historical_iv == _CUSTOM
 
 
 def test_credentials_start_out_absent(storage):
-    assert storage.get_credential("marketdata-app") is None
+    assert storage.get_credential("marketdata-app", owner=OWNER) is None
 
 
 def test_saved_credential_reads_back_in_full(storage):
     """遮罩是 API 回應層的事；儲存層必須保住完整 token，否則 #125 的
     測試連線就沒有東西可用。"""
     cred = ProviderCredential(provider="marketdata-app", token="tok-abcd1234",
-                              updated_at="2026-08-12T00:00:00+00:00")
+                              updated_at="2026-08-12T00:00:00+00:00",
+                              owner_id=OWNER)
     storage.save_credential(cred)
-    assert storage.get_credential("marketdata-app") == cred
+    assert storage.get_credential("marketdata-app", owner=OWNER) == cred
 
 
 def test_saving_a_credential_again_replaces_the_token(storage):
     for token in ("first-0000", "second-1111"):
         storage.save_credential(ProviderCredential(
             provider="marketdata-app", token=token,
-            updated_at="2026-08-12T00:00:00+00:00"))
-    assert storage.get_credential("marketdata-app").token == "second-1111"
+            updated_at="2026-08-12T00:00:00+00:00", owner_id=OWNER))
+    assert storage.get_credential("marketdata-app", owner=OWNER).token == "second-1111"
 
 
 def test_credentials_are_keyed_by_provider_and_do_not_collide(storage):
@@ -1202,26 +1258,27 @@ def test_credentials_are_keyed_by_provider_and_do_not_collide(storage):
     for pid in ("marketdata-app", "another-vendor"):
         storage.save_credential(ProviderCredential(
             provider=pid, token=f"tok-{pid}",
-            updated_at="2026-08-12T00:00:00+00:00"))
-    assert storage.get_credential("marketdata-app").token == "tok-marketdata-app"
-    assert storage.get_credential("another-vendor").token == "tok-another-vendor"
+            updated_at="2026-08-12T00:00:00+00:00", owner_id=OWNER))
+    assert storage.get_credential("marketdata-app", owner=OWNER).token == "tok-marketdata-app"
+    assert storage.get_credential("another-vendor", owner=OWNER).token == "tok-another-vendor"
 
 
 def test_deleting_a_credential_reports_whether_it_removed_anything(storage):
     storage.save_credential(ProviderCredential(
         provider="marketdata-app", token="tok",
-        updated_at="2026-08-12T00:00:00+00:00"))
-    assert storage.delete_credential("marketdata-app") is True
-    assert storage.delete_credential("marketdata-app") is False
-    assert storage.get_credential("marketdata-app") is None
+        updated_at="2026-08-12T00:00:00+00:00", owner_id=OWNER))
+    assert storage.delete_credential("marketdata-app", owner=OWNER) is True
+    assert storage.delete_credential("marketdata-app", owner=OWNER) is False
+    assert storage.get_credential("marketdata-app", owner=OWNER) is None
 
 
 def test_deleting_one_credential_leaves_the_others_alone(storage):
     for pid in ("marketdata-app", "another-vendor"):
         storage.save_credential(ProviderCredential(
-            provider=pid, token="tok", updated_at="2026-08-12T00:00:00+00:00"))
-    storage.delete_credential("marketdata-app")
-    assert storage.get_credential("another-vendor") is not None
+            provider=pid, token="tok", updated_at="2026-08-12T00:00:00+00:00",
+            owner_id=OWNER))
+    storage.delete_credential("marketdata-app", owner=OWNER)
+    assert storage.get_credential("another-vendor", owner=OWNER) is not None
 
 
 def test_deleting_a_credential_leaves_the_settings_alone(storage):
@@ -1229,32 +1286,56 @@ def test_deleting_a_credential_leaves_the_settings_alone(storage):
     storage.save_settings(_settings())
     storage.save_credential(ProviderCredential(
         provider="marketdata-app", token="tok",
-        updated_at="2026-08-12T00:00:00+00:00"))
-    storage.delete_credential("marketdata-app")
-    assert storage.get_settings() == _settings()
+        updated_at="2026-08-12T00:00:00+00:00", owner_id=OWNER))
+    storage.delete_credential("marketdata-app", owner=OWNER)
+    assert storage.get_settings(owner=OWNER) == _settings()
 
 
-# ---------- 測試連線的結果（Settings／#125） ----------
+def test_get_settings_requires_a_real_owner(storage):
+    with pytest.raises(TypeError):
+        storage.get_settings(owner=None)
 
-def _verification(ok=True, reason=None):
+
+def test_get_credential_requires_a_real_owner(storage):
+    with pytest.raises(TypeError):
+        storage.get_credential("marketdata-app", owner=None)
+
+
+def test_save_settings_requires_a_real_owner(storage):
+    """新表沒有舊表那種「反正只有一份」的容錯——寫入必須知道是誰的。"""
+    with pytest.raises(TypeError):
+        storage.save_settings(_settings(owner=None))
+
+
+def test_save_credential_requires_a_real_owner(storage):
+    with pytest.raises(TypeError):
+        storage.save_credential(ProviderCredential(
+            provider="marketdata-app", token="tok",
+            updated_at="2026-08-12T00:00:00+00:00", owner_id=None))
+
+
+# ---------- 測試連線的結果（Settings／#125，owner 化 SCALE-13／#264） ----------
+
+def _verification(ok=True, reason=None, owner=OWNER):
     return ProviderVerification(provider="marketdata-app", ok=ok, reason=reason,
-                                checked_at="2026-08-12T01:00:00+00:00")
+                                checked_at="2026-08-12T01:00:00+00:00",
+                                owner_id=owner)
 
 
 def test_verification_starts_out_absent(storage):
-    assert storage.get_verification("marketdata-app") is None
+    assert storage.get_verification("marketdata-app", owner=OWNER) is None
 
 
 def test_saved_verification_reads_back_identically(storage):
     v = _verification(ok=False, reason="認證被拒")
     storage.save_verification(v)
-    assert storage.get_verification("marketdata-app") == v
+    assert storage.get_verification("marketdata-app", owner=OWNER) == v
 
 
 def test_retesting_overwrites_the_previous_result(storage):
     storage.save_verification(_verification(ok=False, reason="連不上"))
     storage.save_verification(_verification(ok=True))
-    got = storage.get_verification("marketdata-app")
+    got = storage.get_verification("marketdata-app", owner=OWNER)
     assert got.ok is True and got.reason is None
 
 
@@ -1263,18 +1344,219 @@ def test_deleting_the_credential_also_drops_its_verification(storage):
     留著會讓設定頁在沒有 credential 的情況下顯示「已連線」。"""
     storage.save_credential(ProviderCredential(
         provider="marketdata-app", token="tok",
-        updated_at="2026-08-12T00:00:00+00:00"))
+        updated_at="2026-08-12T00:00:00+00:00", owner_id=OWNER))
     storage.save_verification(_verification())
-    storage.delete_credential("marketdata-app")
-    assert storage.get_verification("marketdata-app") is None
+    storage.delete_credential("marketdata-app", owner=OWNER)
+    assert storage.get_verification("marketdata-app", owner=OWNER) is None
 
 
 def test_saving_a_credential_does_not_invent_a_verification(storage):
     """存 token 不等於測過——設定頁據此顯示「尚未驗證」而不是「已連線」。"""
     storage.save_credential(ProviderCredential(
         provider="marketdata-app", token="tok",
+        updated_at="2026-08-12T00:00:00+00:00", owner_id=OWNER))
+    assert storage.get_verification("marketdata-app", owner=OWNER) is None
+
+
+def test_get_verification_requires_a_real_owner(storage):
+    with pytest.raises(TypeError):
+        storage.get_verification("marketdata-app", owner=None)
+
+
+def test_save_verification_requires_a_real_owner(storage):
+    with pytest.raises(TypeError):
+        storage.save_verification(_verification(owner=None))
+
+
+# ---------- Ownership A-1 Contract（SCALE-13／#264）：兩個 owner 互相隔離（AC-2） ----------
+
+def test_two_owners_settings_do_not_collide(storage):
+    storage.save_settings(_settings(market=_CUSTOM, owner=ALICE))
+    storage.save_settings(_settings(market=_DEFAULT_USAGE, owner=BOB))
+    assert storage.get_settings(owner=ALICE).market_data == _CUSTOM
+    assert storage.get_settings(owner=BOB).market_data == _DEFAULT_USAGE
+
+
+def test_two_owners_can_save_different_tokens_for_the_same_provider(storage):
+    """AC-2 明文要求的情境——同一個 provider，兩個 owner 各自保存
+    不同 token，互不可讀、互不可覆寫。"""
+    storage.save_credential(ProviderCredential(
+        provider="marketdata-app", token="alice-token",
+        updated_at="2026-08-12T00:00:00+00:00", owner_id=ALICE))
+    storage.save_credential(ProviderCredential(
+        provider="marketdata-app", token="bob-token",
+        updated_at="2026-08-12T00:00:00+00:00", owner_id=BOB))
+    assert storage.get_credential("marketdata-app", owner=ALICE).token == "alice-token"
+    assert storage.get_credential("marketdata-app", owner=BOB).token == "bob-token"
+
+
+def test_deleting_one_owners_credential_does_not_touch_the_others(storage):
+    for owner, token in ((ALICE, "alice-token"), (BOB, "bob-token")):
+        storage.save_credential(ProviderCredential(
+            provider="marketdata-app", token=token,
+            updated_at="2026-08-12T00:00:00+00:00", owner_id=owner))
+    assert storage.delete_credential("marketdata-app", owner=ALICE) is True
+    assert storage.get_credential("marketdata-app", owner=ALICE) is None
+    assert storage.get_credential("marketdata-app", owner=BOB).token == "bob-token"
+
+
+def test_two_owners_verifications_do_not_collide(storage):
+    storage.save_verification(_verification(ok=True, owner=ALICE))
+    storage.save_verification(_verification(ok=False, reason="連不上", owner=BOB))
+    assert storage.get_verification("marketdata-app", owner=ALICE).ok is True
+    got_bob = storage.get_verification("marketdata-app", owner=BOB)
+    assert got_bob.ok is False and got_bob.reason == "連不上"
+
+
+# ---------- Ownership A-1 Contract（SCALE-13／#264）：舊資料 read-through（AC-1／AC-3／AC-4） ----------
+
+def test_solo_owner_settings_read_through_from_the_legacy_table(storage):
+    """AC-1／AC-4：即使沒有人手動跑過 backfill，solo owner 第一次讀取
+    就能看到「本票上線之前」就存在的舊資料——不需要等待任何窗口。"""
+    _seed_legacy_settings(storage, _settings(market=_CUSTOM))
+    got = storage.get_settings(owner=OWNER)
+    assert got is not None
+    assert got.market_data == _CUSTOM
+    assert got.owner_id == OWNER
+
+
+def test_solo_owner_settings_read_through_writes_through_on_hit(storage):
+    """讀到舊資料後順手 write-through 進新表——下次不必再靠舊表。"""
+    _seed_legacy_settings(storage, _settings(market=_CUSTOM))
+    storage.get_settings(owner=OWNER)   # 觸發一次 read-through
+    # 舊表之後改成別的值——若新表沒有真的被寫入，第二次讀取會拿到
+    # 舊表這個新值而非第一次 read-through 存下的那份。
+    _seed_legacy_settings(storage, _settings(market=_DEFAULT_USAGE))
+    got_again = storage.get_settings(owner=OWNER)
+    assert got_again.market_data == _CUSTOM
+
+
+def test_a_non_solo_owner_gets_no_legacy_fallback(storage):
+    """舊表結構上沒有 owner 維度，只能代表 solo owner 存在過的資料
+    ——任何其他 owner 不該意外繼承到它。"""
+    _seed_legacy_settings(storage, _settings(market=_CUSTOM))
+    assert storage.get_settings(owner=ALICE) is None
+
+
+def test_solo_owner_credential_read_through_from_the_legacy_table(storage):
+    _seed_legacy_credential(storage, ProviderCredential(
+        provider="marketdata-app", token="legacy-token",
         updated_at="2026-08-12T00:00:00+00:00"))
-    assert storage.get_verification("marketdata-app") is None
+    got = storage.get_credential("marketdata-app", owner=OWNER)
+    assert got is not None
+    assert got.token == "legacy-token"
+    assert got.owner_id == OWNER
+
+
+def test_solo_owner_verification_read_through_from_the_legacy_table(storage):
+    _seed_legacy_verification(storage, ProviderVerification(
+        provider="marketdata-app", ok=True, reason=None,
+        checked_at="2026-08-12T01:00:00+00:00"))
+    got = storage.get_verification("marketdata-app", owner=OWNER)
+    assert got is not None
+    assert got.ok is True
+    assert got.owner_id == OWNER
+
+
+def test_deleting_a_credential_purges_the_legacy_table_too(storage):
+    """殭屍復活防線：只清新表的話，下次讀取的 read-through 會把舊表
+    裡沒被清掉的資料復活。"""
+    _seed_legacy_credential(storage, ProviderCredential(
+        provider="marketdata-app", token="legacy-token",
+        updated_at="2026-08-12T00:00:00+00:00"))
+    storage.get_credential("marketdata-app", owner=OWNER)   # write-through
+    assert storage.delete_credential("marketdata-app", owner=OWNER) is True
+    assert storage.get_credential("marketdata-app", owner=OWNER) is None
+
+
+def test_deleting_a_credential_that_only_exists_in_the_legacy_table_still_removes_it(storage):
+    """就算從來沒被讀過（新表因此完全沒有這一列），刪除仍要清到舊表
+    ——否則下一次讀取的 read-through 一樣會把它復活。"""
+    _seed_legacy_credential(storage, ProviderCredential(
+        provider="marketdata-app", token="legacy-token",
+        updated_at="2026-08-12T00:00:00+00:00"))
+    assert storage.delete_credential("marketdata-app", owner=OWNER) is True
+    assert storage.get_credential("marketdata-app", owner=OWNER) is None
+
+
+def test_backfill_settings_to_owner_copies_all_three_legacy_tables(storage):
+    """AC-3：明確、可重跑的批次遷移——不依賴任何人先讀過。"""
+    _seed_legacy_settings(storage, _settings(market=_CUSTOM))
+    _seed_legacy_credential(storage, ProviderCredential(
+        provider="marketdata-app", token="legacy-token",
+        updated_at="2026-08-12T00:00:00+00:00"))
+    _seed_legacy_verification(storage, ProviderVerification(
+        provider="marketdata-app", ok=True, reason=None,
+        checked_at="2026-08-12T01:00:00+00:00"))
+    counts = storage.backfill_settings_to_owner(OWNER)
+    assert counts == {"settings": 1, "credentials": 1, "verifications": 1}
+    assert storage.get_settings(owner=OWNER).market_data == _CUSTOM
+    assert storage.get_credential("marketdata-app", owner=OWNER).token == "legacy-token"
+    assert storage.get_verification("marketdata-app", owner=OWNER).ok is True
+
+
+def test_backfill_settings_to_owner_is_idempotent_on_rerun(storage):
+    _seed_legacy_settings(storage, _settings(market=_CUSTOM))
+    first = storage.backfill_settings_to_owner(OWNER)
+    second = storage.backfill_settings_to_owner(OWNER)
+    assert first == {"settings": 1, "credentials": 0, "verifications": 0}
+    assert second == {"settings": 0, "credentials": 0, "verifications": 0}
+
+
+def test_backfill_settings_to_owner_never_overwrites_a_newer_value_already_in_the_new_table(storage):
+    """可中斷續跑：backfill 跑之前使用者若已經自己存過新值（例如靠
+    read-through 或直接呼叫 `save_settings()`），重跑不能用舊表的
+    陳舊值蓋掉它。"""
+    _seed_legacy_settings(storage, _settings(market=_CUSTOM))
+    storage.save_settings(_settings(market=_DEFAULT_USAGE))   # 使用者換了設定
+    counts = storage.backfill_settings_to_owner(OWNER)
+    assert counts["settings"] == 0   # 新表已經有了，不算搬移
+    assert storage.get_settings(owner=OWNER).market_data == _DEFAULT_USAGE
+
+
+def test_backfill_settings_to_owner_on_an_empty_store_reports_all_zero(storage):
+    assert storage.backfill_settings_to_owner(OWNER) == {
+        "settings": 0, "credentials": 0, "verifications": 0}
+
+
+# ---------- Ownership A-1 Contract（SCALE-13／#264）：結構性 NULL 核對（AC-5） ----------
+
+def test_owner_id_null_counts_on_an_empty_store_is_all_zero(storage):
+    assert storage.owner_id_null_counts() == {
+        "scenarios": 0, "results": 0, "snapshots": 0, "events": 0,
+        "diagnostics": 0, "owner_settings": 0, "owner_credentials": 0,
+        "owner_verifications": 0}
+
+
+def test_owner_id_null_counts_after_backfill_missing_owner_ids_is_all_zero(storage):
+    """AC-5：8 張 user tables 均無 NULL owner——5 張既有 row-scoped 表
+    先用 `backfill_missing_owner_ids()` 補齊，3 張新表結構上（PK 一
+    部分）永遠是 0。"""
+    storage.create_scenario(_scenario(owner_id=None))
+    storage.save_result(ResultRecord("s1", "2026-08-01T00:00:00+00:00",
+                                     {"n": 1}))
+    storage.save_snapshot("s1", "2026-08-01T00:00:00+00:00", {"n": 1})
+    storage.append_event(ts="2026-08-01T00:00:00+00:00", scenario_id="s1",
+                         event="SCENARIO_CREATED", payload={})
+    storage.append_diagnostic(_diag(event_id="d1"))
+    storage.backfill_missing_owner_ids("solo")
+    storage.save_settings(_settings())
+    storage.save_credential(ProviderCredential(
+        provider="marketdata-app", token="tok",
+        updated_at="2026-08-12T00:00:00+00:00", owner_id=OWNER))
+    storage.save_verification(_verification())
+    assert storage.owner_id_null_counts() == {
+        "scenarios": 0, "results": 0, "snapshots": 0, "events": 0,
+        "diagnostics": 0, "owner_settings": 0, "owner_credentials": 0,
+        "owner_verifications": 0}
+
+
+def test_owner_id_null_counts_reports_remaining_nulls_before_backfill(storage):
+    """反面驗證：backfill 跑之前，這個核對真的抓得到還沒補的列——不是
+    一個永遠回零的裝飾性檢查。"""
+    storage.create_scenario(_scenario(owner_id=None))
+    counts = storage.owner_id_null_counts()
+    assert counts["scenarios"] == 1
 
 
 # ---------- 歷史 IV 觀測快取（#129，per-symbol） ----------
@@ -1917,28 +2199,26 @@ def test_backfill_on_an_empty_store_reports_zero_for_every_table(storage):
 
 # ---------- AC-5：結構性——3 張 singleton 表與 system-wide 表零 owner ----------
 
-def test_singleton_and_system_wide_dataclasses_have_no_owner_field():
-    """SCALE-06 明文範圍界線：3 張 singleton／provider-key user 表
-    （留給 SCALE-13 做結構遷移）與全部 system-wide 共用表（rate／
-    treasury／dividend／IV caches、`chain_backoff`）都不該在這一票
-    悄悄長出 `owner_id`——這是純結構性檢查，不需要打真資料庫。"""
+def test_system_wide_dataclasses_have_no_owner_field():
+    """system-wide 共用表（rate／treasury／dividend／IV caches、
+    `chain_backoff`）不分 owner 是既有、正確的設計（AC-6），永遠不該
+    悄悄長出 `owner_id`——這是純結構性檢查，不需要打真資料庫。3 張
+    singleton／provider-key user 表（`ProviderCredential`／
+    `DataSourceSettings`／`ProviderVerification`）SCALE-06 當初明文
+    留給 SCALE-13 做結構遷移，SCALE-13（#264）已完成，見下面
+    `test_the_three_settings_dataclasses_now_have_an_owner_field`。"""
     import dataclasses as dc
 
     from api_app.storage import (ChainBackoffEntry, ContractHistory,
-                                 DataSourceSettings, DividendCacheEntry,
-                                 IvBackfillRun, IvObservation,
-                                 ProviderCredential, ProviderVerification,
-                                 RateCacheEntry, TreasuryYearCacheEntry)
+                                 DividendCacheEntry, IvBackfillRun,
+                                 IvObservation, RateCacheEntry,
+                                 TreasuryYearCacheEntry)
 
-    # 3 張 singleton／provider-key user 表——留給 SCALE-13。
-    singleton_user_tables = (ProviderCredential, DataSourceSettings,
-                             ProviderVerification)
-    # system-wide 共用表——不分 owner 是既有、正確的設計，永遠不該加。
     system_wide_tables = (RateCacheEntry, DividendCacheEntry,
                           TreasuryYearCacheEntry, ChainBackoffEntry,
                           IvObservation, IvBackfillRun, ContractHistory)
 
-    for cls in singleton_user_tables + system_wide_tables:
+    for cls in system_wide_tables:
         field_names = {f.name for f in dc.fields(cls)}
         assert "owner_id" not in field_names, cls.__name__
 
@@ -1955,6 +2235,21 @@ def test_the_five_row_scoped_dataclasses_do_have_an_owner_field():
     assert "owner_id" in {f.name for f in dc.fields(ResultRecord)}
     from api_app.diagnostics import DiagnosticEvent
     assert "owner_id" in {f.name for f in dc.fields(DiagnosticEvent)}
+
+
+def test_the_three_settings_dataclasses_now_have_an_owner_field():
+    """SCALE-13（#264）：`ProviderCredential`／`DataSourceSettings`／
+    `ProviderVerification` 從單例／provider-key 升級成 per-owner，見
+    `owner_settings`／`owner_credentials`／`owner_verifications` 三張
+    新表——這 3 個 dataclass 現在也該有 `owner_id`，取代
+    SCALE-06 當初「這 3 張留給 SCALE-13」的舊斷言。"""
+    import dataclasses as dc
+
+    from api_app.storage import (DataSourceSettings, ProviderCredential,
+                                 ProviderVerification)
+
+    for cls in (ProviderCredential, DataSourceSettings, ProviderVerification):
+        assert "owner_id" in {f.name for f in dc.fields(cls)}, cls.__name__
 
 
 # ---------- S0 最小可觀測性（SCALE-08／#258） ----------

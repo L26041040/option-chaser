@@ -93,7 +93,7 @@ def test_credential_for_an_unknown_provider_is_rejected(client, db):
     resp = client.put("/api/settings/credentials/some-other-vendor",
                       json={"token": TOKEN})
     assert resp.status_code == 400
-    assert db.get_credential("some-other-vendor") is None
+    assert db.get_credential("some-other-vendor", owner="solo") is None
 
 
 # ---------- token 的邊界 ----------
@@ -128,7 +128,7 @@ def test_token_is_stored_in_full_behind_the_api(client, db):
     """遮罩是**回應層**的事，後端自己仍握有完整 token（#125 要拿它去
     驗證連線）——否則遮罩就成了資料損毀。"""
     client.put(f"/api/settings/credentials/{PROVIDER}", json={"token": TOKEN})
-    assert db.get_credential(PROVIDER).token == TOKEN
+    assert db.get_credential(PROVIDER, owner="solo").token == TOKEN
 
 
 def test_token_never_reaches_the_event_log(client, db):
@@ -154,7 +154,7 @@ def test_surrounding_whitespace_is_stripped(client, db):
     """貼上時多帶的空白不是 token 的一部分，留著只會讓驗證莫名失敗。"""
     client.put(f"/api/settings/credentials/{PROVIDER}",
                json={"token": f"  {TOKEN}\n"})
-    assert db.get_credential(PROVIDER).token == TOKEN
+    assert db.get_credential(PROVIDER, owner="solo").token == TOKEN
 
 
 # ---------- 一個 Provider 一把 credential（共用） ----------
@@ -176,7 +176,7 @@ def test_both_usages_on_one_provider_share_a_single_credential(client, db):
 def test_replacing_a_token_overwrites_rather_than_accumulates(client, db):
     client.put(f"/api/settings/credentials/{PROVIDER}", json={"token": TOKEN})
     client.put(f"/api/settings/credentials/{PROVIDER}", json={"token": "second-9999"})
-    assert db.get_credential(PROVIDER).token == "second-9999"
+    assert db.get_credential(PROVIDER, owner="solo").token == "second-9999"
 
 
 # ---------- 清除 ----------
