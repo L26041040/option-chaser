@@ -49,7 +49,10 @@ TARGET_MONTH = "2026-09"
 BASE_FACT = {
     "history_replay_version": HISTORY_REPLAY_VERSION,
     "requested_strategies": ("bull-call-spread",),
-    "resolved_params": {"target_month": TARGET_MONTH},
+    # spot=100.0（`snapshot()` 固定值）——target_price=120.0 讓
+    # `derive_direction()` 判成 bullish，`bull-call-spread` 因此保持
+    # eligible，既有測試案例的預期行為不受新增的 direction 檢查影響。
+    "resolved_params": {"target_month": TARGET_MONTH, "target_price": 120.0},
 }
 
 
@@ -103,6 +106,48 @@ def test_strategy_not_requested_is_a_genuine_gap():
     snap = snapshot([VALID_LONG, VALID_SHORT])
     result = _resolve(VALID_KEY, snap, requested_strategies=("long-call",))
     assert result.reason == "strategy_disabled"
+    assert result.cost is None
+
+
+def test_direction_ineligible_subtype_is_a_genuine_gap():
+    """AC-3／AC-4（/code-review 抓到的真缺口，見 history_resolver.py
+    的說明註解）：`bull-call-spread` 只在 bullish 方向才 eligible
+    （`SUBTYPE_DIRECTIONS`）。這裡把 `target_price` 設成低於 spot
+    （bearish），即使 `requested_strategies` 仍列著這個 subtype、且
+    兩腿報價本身完全健全、`cost_from_snapshot()` 單獨呼叫算得出一個
+    數字——那天分析當下這個 subtype 因方向不合根本沒有產生任何候選
+    （`status="skipped_direction"`，`view["results"]` 那筆的
+    `candidates` 是空的），resolver 必須誠實回 gap，不能因為報價本身
+    合法就冒充「這個 candidate 當時是 all_candidates 的成員」。"""
+    snap = snapshot([VALID_LONG, VALID_SHORT])
+    assert cost_from_snapshot(snap, VALID_KEY) is not None   # 佐證 AC-4 前提成立
+    result = _resolve(VALID_KEY, snap,
+                      resolved_params={"target_month": TARGET_MONTH,
+                                       "target_price": 80.0})  # < spot=100 → bearish
+    assert result.reason == "skipped_direction"
+    assert result.cost is None
+
+
+def test_flat_target_keeps_only_butterfly_eligible():
+    """方向三態的 `flat` 分支：`target_price == spot` 時
+    `bull-call-spread` 不 eligible（僅 Butterfly 收 flat），驗證不是
+    只測了 bullish/bearish 兩態就當作涵蓋整個 `derive_direction()`。"""
+    snap = snapshot([VALID_LONG, VALID_SHORT])
+    result = _resolve(VALID_KEY, snap,
+                      resolved_params={"target_month": TARGET_MONTH,
+                                       "target_price": snap.spot})
+    assert result.reason == "skipped_direction"
+    assert result.cost is None
+
+
+def test_missing_target_price_is_a_genuine_gap():
+    """`resolved_params` 裡完全沒有 `target_price` 這個 key（比照既有
+    `target_month` 讀不懂就視同缺 context 的既有處理方式）——資料
+    不完整時誠實回 gap，不猜一個方向。"""
+    snap = snapshot([VALID_LONG, VALID_SHORT])
+    result = _resolve(VALID_KEY, snap,
+                      resolved_params={"target_month": TARGET_MONTH})
+    assert result.reason == "missing_fact_context"
     assert result.cost is None
 
 
@@ -274,7 +319,8 @@ def test_resolver_agrees_with_a_real_engine_run_on_a_genuinely_eligible_candidat
     resolved = resolve_historical_cost(
         real_key, history_replay_version=HISTORY_REPLAY_VERSION,
         requested_strategies=("bull-call-spread",),
-        resolved_params={"target_month": TARGET_MONTH}, snapshot=snap)
+        resolved_params={"target_month": TARGET_MONTH, "target_price": 115.0},
+        snapshot=snap)
 
     assert resolved.reason == "ok"
     assert resolved.cost == real_cost

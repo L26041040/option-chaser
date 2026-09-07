@@ -38,14 +38,14 @@ canonical cost 的算術本身已經由 SCALE-03 的 `cost_from_snapshot()`
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date
 
 from .data.snapshot import find_contract, snapshot_today
 from .filters import (butterfly_structural_ok, iv_ok, quote_ok,
                       spread_structural_ok)
-from .models import ChainSnapshot
+from .models import ChainSnapshot, derive_direction, subtype_eligible
 from .snapshot_replay import cost_from_snapshot, parse_candidate_key
-from .timeframe import TargetMonth, calendar_anchor, select_expiries
+from .timeframe import (TargetMonth, calendar_anchor, select_expiries,
+                        tradable_expiries)
 
 # 與 `store.HISTORY_REPLAY_VERSION` 同一個數字——不 import `store`
 # 本身（那會把這個模組跟一個遠比它重的、序列化用的模組綁在一起），
@@ -113,6 +113,24 @@ def resolve_historical_cost(
     if strategy not in requested_strategies:
         return _gap("strategy_disabled")
 
+    # `requested_strategies`（SCALE-01／`historical_fact_context()`）是
+    # 這個 scenario **設定上**啟用的全部 subtype，不分那天 status 是否
+    # 為 `skipped_direction`——T08（#225）的方向 eligibility 是逐次
+    # analysis、依那天 target_price 相對 spot 算出的衍生事實，跟
+    # `requested_strategies` 是不同層次的問題（前者「這個 subtype 這次
+    # 有沒有跑」，後者「這個 subtype 這個 scenario 有沒有勾選」）。一個
+    # subtype 若那天因方向不合被跳過，`view["results"]` 裡那筆的
+    # `candidates` 是空的、根本沒有產生任何候選——即使這裡指名的
+    # candidate_key 湊巧能從原始報價重新算出合法成本，它當時也不曾是
+    # `all_candidates` 的成員，必須誠實回 gap，不能因為報價本身合法就
+    # 冒充「有效」（SCALE-09／#261 code review 抓到的缺口）。
+    target_price = resolved_params.get("target_price")
+    if not isinstance(target_price, (int, float)):
+        return _gap("missing_fact_context")
+    direction = derive_direction(float(target_price), snapshot.spot)
+    if not subtype_eligible(strategy, direction):
+        return _gap("skipped_direction")
+
     target_month = resolved_params.get("target_month")
     if not isinstance(target_month, str):
         return _gap("missing_fact_context")
@@ -122,8 +140,7 @@ def resolve_historical_cost(
         return _gap("missing_fact_context")
 
     today = snapshot_today(snapshot.fetched_at)
-    tradable = {c.expiry for c in snapshot.contracts
-               if date.fromisoformat(c.expiry) > today}
+    tradable = tradable_expiries((c.expiry for c in snapshot.contracts), today)
     if not tradable or expiry not in select_expiries(tradable, anchor).expiries:
         return _gap("expiry_unselected")
 
