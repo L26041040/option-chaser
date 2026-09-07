@@ -290,9 +290,49 @@ SCALE-06 的 owner_id 洩漏、SCALE-07 的測試 hermeticity、SCALE-08
 整份全套皆為 0 failure，已在乾淨資料庫上重新驗證確認。全套持續
 zero regression。
 
-**下一步**：依 dependency graph 繼續——SCALE-11（Ownership Enforce，
-被 SCALE-06 擋，現已解除）。SCALE-12（Parity Proof，被 SCALE-03＋09
-擋，現已解除）待 SCALE-09 完成後亦可開工。
+- **SCALE-11**［#262］Ownership A-1 Enforce（commits `1f7aa6a`＋跟進
+  `966d826`，被 SCALE-06 擋，現已解除）：`Storage` Protocol 15 個
+  方法新增必填 keyword-only `owner`（`get_scenario`／`list_scenarios`
+  ／`update_scenario`／`clear_results`／`archive_scenario`／
+  `restore_scenario`／`delete_scenario`／`latest_result`／
+  `latest_summaries`／`result_history`／`result_timestamps`／
+  `get_snapshot`／`list_events`／`list_diagnostics`／
+  `clear_diagnostics`），`memory.py`／`postgres.py` 兩後端皆用**各表
+  自己的 `owner_id` 欄位**過濾（不 JOIN，兌現 SCALE-02 當年
+  `result_timestamps()` docstring 的承諾）。`list_scenarios`／
+  `result_history` 保留顯式 `owner=None` 作為唯一跨 owner 遷移逃生門
+  （僅供 `backfill_result_fact_context()` 使用，比照既有
+  `backfill_missing_owner_ids()` 先例）；其餘 13 個方法一律拒絕
+  `None`（新增共用 `require_owner()`，兩後端 import 同一份，執行期
+  真的拋錯，不只是型別標註）。`main.py::_require(scenario_id)`（幾乎
+  全部 scenario-derived 端點共用的唯一 chokepoint）改用
+  `owner=identity_resolver()` 授權，存在但屬於別的 owner 的劇本與
+  根本不存在回應完全一致（AC-2）；`refresh_run` 目標選取兩分支皆
+  owner-scoped（省略 id 只列自己的未過期劇本；帶明確 id 時猜到的
+  別人 id 靜默排除，AC-3）。新增 `tests/test_scale11_ownership_
+  enforce.py`（14 條，HTTP＋MemoryStorage 端到端，涵蓋 detail/edit/
+  archive/restore/delete/refresh/history/raw-data/results/events/
+  diagnostics/refresh-run）；`tests/test_scale06_ownership_expand.py`
+  一條測試（原假設「用另一身分編輯同一劇本仍會成功」）在 enforce 後
+  已不可達，拆成「同 owner 多次編輯不受影響」＋「跨 owner 編輯正確
+  被拒絕」兩條；另一條斷言整條翻轉成驗證真正隔離（其原 docstring
+  早已預告這個時刻）。`/code-review` Spec 軸抓到兩個真缺口並修正：
+  (1) `owner: str` 型別標註執行期不強制，底層 `==`/`!=` 比對會把
+  `owner=None` 當合法值悄悄配對到尚未 backfill 的舊列——新增
+  `require_owner()` 守門；(2) 部署順序風險——enforce 上線後
+  `owner_id IS NULL` 的舊列對任何身分（含 solo）永遠比對失敗，是
+  刻意 fail-closed、非遺漏，但先前沒有任何地方講清楚「必須先跑
+  `backfill_owner_ids.py` 才能部署」，已在 docstring 補上明確部署
+  前提；(3) Postgres 雙後端跨 owner 隔離證明覆蓋率缺口——新增
+  `test_storage_contract.py` 專屬區塊（9 個測試函式×2 後端＝18 條，
+  scenarios/results/snapshots/events 四張表插入兩個真實 owner 各自
+  一筆資料逐一驗證互相排除，已實測驗證過這批測試真的抓得住「SQL
+  AND 誤植成 OR」這類回歸）。全套後端測試（記憶體＋真實 Postgres
+  雙後端）：1969 passed，0 failed。純後端改動。
+
+**下一步**：依 dependency graph 繼續——SCALE-13（Ownership Contract，
+被 SCALE-11 擋，現已解除）。SCALE-12（Parity Proof，被 SCALE-03＋09
+擋，現已解除）可與 SCALE-13 任意順序並行推進。
 
 ### OPTION-SCALING-TICKETS-REVISE-006 拆票（2026-09-06，歷史紀錄）
 
