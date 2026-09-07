@@ -795,12 +795,13 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         自訂成功時同樣記一次成功：那是比任何測試連線都真實的證據。
         """
         db = _db()
-        stored = db.get_settings()
+        owner = identity_resolver()
+        stored = db.get_settings(owner=owner)
         md = stored.market_data if stored else None
         if md is None or md.mode != providers.MODE_CUSTOM or not md.provider:
             return _effective_fetch(symbol)
 
-        cred = db.get_credential(md.provider)
+        cred = db.get_credential(md.provider, owner=owner)
         if cred is None:
             # 選了自訂卻沒有 token：不是錯誤，是還沒設定完——照常分析，
             # 設定頁那邊會顯示「尚未設定 token，改用預設來源」。
@@ -811,11 +812,11 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         except FetchError as e:
             db.save_verification(ProviderVerification(
                 provider=md.provider, ok=False, reason=str(e),
-                checked_at=now_utc_iso()))
+                checked_at=now_utc_iso(), owner_id=owner))
             return _effective_fetch(symbol)
         db.save_verification(ProviderVerification(
             provider=md.provider, ok=True, reason=None,
-            checked_at=now_utc_iso()))
+            checked_at=now_utc_iso(), owner_id=owner))
         return snap
 
     def _require(scenario_id: str) -> Scenario:
@@ -1635,7 +1636,9 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         `None` 時的既有呼叫端（Settings 端點等）不受影響——那些端點本來
         就只呼叫一次，沒有重複讀取的問題，不必跟著改。"""
         db = _db()
-        return {p.id: db.get_credential(p.id) for p in providers.SUPPORTED_PROVIDERS}
+        owner = identity_resolver()
+        return {p.id: db.get_credential(p.id, owner=owner)
+               for p in providers.SUPPORTED_PROVIDERS}
 
     def _known_secrets(*, credentials: dict[str, ProviderCredential | None] | None = None
                        ) -> tuple[str, ...]:
@@ -1890,7 +1893,8 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         問題，`_known_secrets()` 不需要驗證結果）。
         """
         db = _db()
-        stored = db.get_settings()
+        owner = identity_resolver()
+        stored = db.get_settings(owner=owner)
         usages = {
             providers.MARKET_DATA:
                 stored.market_data if stored else UsageSetting(mode=providers.MODE_DEFAULT),
@@ -1901,7 +1905,7 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         creds: dict[str, dict] = {}
         for p in providers.SUPPORTED_PROVIDERS:
             got = creds_map[p.id]
-            checked = db.get_verification(p.id)
+            checked = db.get_verification(p.id, owner=owner)
             creds[p.id] = {
                 "configured": got is not None,
                 "masked": providers.mask_token(got.token) if got else None,
@@ -1979,7 +1983,7 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
                                      provider=req.market_data.provider),
             historical_iv=UsageSetting(mode=req.historical_iv.mode,
                                        provider=req.historical_iv.provider),
-            updated_at=now_utc_iso()))
+            updated_at=now_utc_iso(), owner_id=identity_resolver()))
         # 刻意不寫事件紀錄：這條路徑上有 provider id 沒問題，但把設定變更
         # 寫進 append-only 紀錄會讓「token 絕不進事件紀錄」這條 AC 從
         # 「結構上不可能」退成「靠這裡沒寫錯」。設定是單一狀態、不是需要
@@ -1994,7 +1998,8 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
             raise HTTPException(status_code=400,
                                 detail=f"不支援的資料源：{provider}")
         _db().save_credential(ProviderCredential(
-            provider=provider, token=req.token, updated_at=now_utc_iso()))
+            provider=provider, token=req.token, updated_at=now_utc_iso(),
+            owner_id=identity_resolver()))
         return _settings_view()
 
     @app.post("/api/settings/credentials/{provider}/test")
@@ -2008,14 +2013,15 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         if not providers.is_supported(provider):
             raise HTTPException(status_code=400,
                                 detail=f"不支援的資料源：{provider}")
-        cred = _db().get_credential(provider)
+        owner = identity_resolver()
+        cred = _db().get_credential(provider, owner=owner)
         if cred is None:
             raise HTTPException(status_code=400,
                                 detail="尚未設定 token，無法測試連線")
         outcome = verify_provider(provider, cred.token)
         _db().save_verification(ProviderVerification(
             provider=provider, ok=outcome.ok, reason=outcome.reason,
-            checked_at=now_utc_iso()))
+            checked_at=now_utc_iso(), owner_id=owner))
         return _settings_view()
 
     @app.delete("/api/settings/credentials/{provider}")
@@ -2023,7 +2029,7 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         if not providers.is_supported(provider):
             raise HTTPException(status_code=400,
                                 detail=f"不支援的資料源：{provider}")
-        _db().delete_credential(provider)
+        _db().delete_credential(provider, owner=identity_resolver())
         # 不存在也回 200＋現況：呼叫端要的是「現在沒有這把 credential」，
         # 而那在兩種情況下都已經成立。
         return _settings_view()
