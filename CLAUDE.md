@@ -330,9 +330,54 @@ zero regression。
   AND 誤植成 OR」這類回歸）。全套後端測試（記憶體＋真實 Postgres
   雙後端）：1969 passed，0 failed。純後端改動。
 
-**下一步**：依 dependency graph 繼續——SCALE-13（Ownership Contract，
-被 SCALE-11 擋，現已解除）。SCALE-12（Parity Proof，被 SCALE-03＋09
-擋，現已解除）可與 SCALE-13 任意順序並行推進。
+- **SCALE-12**［#263］Stage 1-2 Parity Proof（commits `3e02c6a`＋跟進
+  `a292648`，被 SCALE-03＋09 擋，現已解除）：純驗證票，零 production
+  code 改動。現場建構一份小型合成鏈（3 到期日×15 履約價/側，不落
+  磁碟、不共用既有 fixture——**刻意不用**既有 600 張合約
+  production-scale fixture，那份是為單次刷新計算時間設計的，60
+  履約價/側在 Butterfly 家族會產生 `C(60,3)≈34220` 組合/到期日/權別，
+  `find_contract()` 線性掃描乘上去會讓窮舉掃描跑到數十分鐘等級——那是
+  在測 Python 迴圈開銷，不是在測 parity 語意），套用決定性合成隨機
+  漫步模擬 8 次刷新，對全部 6 個 subtype 跑真實 `service.
+  run_with_snapshot()`。以 legacy `all_candidates` 為 oracle，對
+  SCALE-09 narrow dual-write ＋ candidate-specific resolver 做逐點
+  A/B（票面明文：不存在已知可接受差異，任何不一致都是 FAIL）。
+  AC-1/AC-6：全面 parity sweep 0 mismatch，`assert not mismatches`
+  硬性失敗、無分類豁免；AC-2：bitwise（`!=`）比對，非近似；AC-3：
+  固定「bid/ask 可算但 IV invalid」adversarial 候選，naive
+  cost-only replay 算得出數字，membership resolver 正確保持 gap；
+  AC-4：production scale 下 backfill 分支自然大量觸發，正面驗證
+  resolver 補回原值而非新斷點；AC-5：resolver miss latency 0.049
+  ms/call（遠低於 10ms 門檻），AST 隔離已由 SCALE-09 既有測試鎖住。
+  其餘 mandatory adversarial cases（expiry 未進 selected expiries／
+  missing leg／invalid quote／pair/structural/B-layer invalid）已由
+  SCALE-09（#261）`tests/test_history_resolver.py` 逐一覆蓋，不重複
+  驗證個別分支邏輯。
+
+  `/code-review`（Standards＋Spec 兩軸）皆抓到真缺口並已修正：
+  (1) Standards——測試檔的 `_base_quote()` 與
+  `scripts/gen_butterfly_fixture.py::_quote()` 各自複製一份定價/
+  價差/IV 公式，抽成共用 `synthetic_bid_ask_iv()`，並重新產生
+  `xyz_v6`/`v7`/`v8` 三份既有 fixture 確認逐位元零漂移（純重構）；
+  (2) Spec——原本的全面 sweep 只迭代 `_ORACLE.items()`，但 oracle
+  dict 的建構方式（只在候選真的出現在 `all_candidates` 時才寫入）讓
+  「oracle 說這個候選是 gap」這個分支結構上不可能被走到，AC-1/AC-6
+  的「gap」類別因此只由兩個手挑的 adversarial case 驗證過、不是在
+  整個真實規模下被正面驗證。新增 `_full_structural_key_space()`：
+  獨立於 oracle/resolver，直接從快照原始履約價重新枚舉全部結構上
+  可能的 candidate_key（不套用任何過濾——不是重造一份 production
+  enumeration，AC-5 那條紅線管的是 resolver 本身），與 oracle/narrow
+  取聯集後才是完整的每日 key 全集，讓 gap 分支在真實規模下正面驗證
+  ——修正後 `hit=720 backfilled=9386 gap=17494`，gap 從結構性 0
+  變成真的被 17,494 個案例覆蓋；這個改法同時免費解掉 narrow→oracle
+  反向包含關係未被驗證的問題（narrow 有值但 oracle 沒有時，
+  `oracle_cost` 會是 `None`，`narrow_cost != None` 恆真，直接落進
+  既有 mismatch 分支）。全套後端測試（記憶體＋真實 Postgres 雙後端）
+  1977 passed，0 failed。
+
+**下一步**：依 dependency graph 繼續——SCALE-14（Stage 1-3 切換讀取
+路徑，被 SCALE-12 擋，現已解除）。SCALE-13（Ownership Contract，被
+SCALE-11 擋，現已解除）可與 SCALE-14 任意順序並行推進。
 
 ### OPTION-SCALING-TICKETS-REVISE-006 拆票（2026-09-06，歷史紀錄）
 
