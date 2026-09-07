@@ -333,15 +333,25 @@ class DataSourceSettings:
     **不含 token**：credential 是 per-Provider 的一把，存在
     `ProviderCredential`。兩列都選同一個 Provider 時因此天然共用同一把，
     不必也不該要求使用者輸入兩次（#124）。
-    """
+
+    `owner_id`（SCALE-13／#264）：新表 `owner_settings` 的 PK 本身就是
+    `owner_id`（一人一筆單一狀態，取代舊表 `data_source_settings` 的
+    `id=1` 單例）——這裡標 `str | None = None` 只是為了讓型別在讀取
+    舊表相容分支（尚未遷移過的資料）時也能構造這個物件，寫入新表的
+    正式路徑一律要求真值（`require_owner()` 守門，見
+    `Storage.save_settings()`）。"""
     market_data: UsageSetting
     historical_iv: UsageSetting
     updated_at: str
+    owner_id: str | None = None
 
 
 @dataclass(frozen=True)
 class ProviderCredential:
-    """某個 Provider 的一把 token。key ＝ provider id，不是資料用途。
+    """某個 Provider 的一把 token。key ＝ (owner_id, provider)——
+    SCALE-13／#264 之前是單純 `provider`（全站唯一一把），新表
+    `owner_credentials` 把它擴成複合鍵，兩個 owner 可以各自保存不同
+    token。`owner_id` 語意同 `DataSourceSettings`。
 
     `token` 是完整明文，**只活在後端**：API 回應一律只給
     `providers.mask_token()` 的遮罩形式（#124 硬性 AC）。
@@ -349,11 +359,14 @@ class ProviderCredential:
     provider: str
     token: str
     updated_at: str
+    owner_id: str | None = None
 
 
 @dataclass(frozen=True)
 class ProviderVerification:
-    """「測試連線」的結果（Settings／#125）。
+    """「測試連線」的結果（Settings／#125）。key ＝ (owner_id,
+    provider)——SCALE-13／#264 起與 `ProviderCredential` 同一種複合鍵
+    擴充，`owner_id` 語意相同。
 
     成功與失敗都存——設定頁重新載入時要看得到上次測的結果與時間，不必
     為了知道現況再打一次 vendor。`reason` 只在失敗時有值，而且是給人看
@@ -363,6 +376,7 @@ class ProviderVerification:
     ok: bool
     reason: str | None
     checked_at: str
+    owner_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -667,25 +681,49 @@ class Storage(Protocol):
         序列，鍵是 `entry.source`（不分 symbol，見
         `ChainBackoffEntry` docstring）。"""
 
-    # ---------- 資料源設定與 credential（Settings／#124） ----------
+    # ---------- 資料源設定與 credential（Settings／#124，owner 化 SCALE-13／#264） ----------
+    #
+    # SCALE-13（#264）：這 3 個概念從「單例／provider-key」升級成
+    # per-owner。**不是原地改 PK**——那需要在同一個 migration 裡先
+    # backfill 舊列的 owner_id 才能安全套用新 PK 約束，風險與部署順序
+    # 依賴都比「另開一組新表」高。改成 additive-first：新表
+    # （`owner_settings`／`owner_credentials`／`owner_verifications`）
+    # 從第一天就是正確的 per-owner 形狀，舊表（`data_source_settings`／
+    # `provider_credentials`／`provider_verifications`）原樣保留、
+    # **停止寫入但仍可讀**——這就是票面「先 dual-read...再停止舊 shape
+    # 的 production read/write」的落地：write 全部只進新表；read 對
+    # 新表 miss 時 fall back 讀舊表（read-through），讀到就順手 write-
+    # through 進新表（下次直接命中新表），讓 AC-1「solo-owner 下行為
+    # 逐位元不變」不必依賴任何人先手動跑過 backfill 腳本才成立——正式
+    # 環境既有資料（若存在）在被讀到的當下就自動遷移完畢。`delete_
+    # credential()` 因此必須**同時清舊表與新表**：否則使用者明確刪除
+    # 後，下次讀取的 read-through 還是會把舊表裡沒被清掉的資料復活
+    # （唯一會被這條「殭屍復活」風險咬到的操作）。
 
-    def get_settings(self) -> DataSourceSettings | None:
-        """從未存過任何設定時回 `None`（呼叫端據此用兩列的預設值）。"""
+    def get_settings(self, *, owner: str) -> DataSourceSettings | None:
+        """這個 owner 從未存過任何設定、也沒有可 read-through 的舊資料
+        時回 `None`（呼叫端據此用兩列的預設值）。"""
 
     def save_settings(self, settings: DataSourceSettings) -> None:
-        """覆蓋既有那一筆——單一狀態，不是歷史序列。"""
+        """寫進新表 `owner_settings`，覆蓋既有那一筆——單一狀態，不是
+        歷史序列。`settings.owner_id` 必須非 `None`（`require_owner()`
+        守門）；舊表 `data_source_settings` 這個方法起不再寫入。"""
 
-    def get_credential(self, provider: str) -> ProviderCredential | None: ...
+    def get_credential(self, provider: str, *, owner: str) -> ProviderCredential | None: ...
 
     def save_credential(self, cred: ProviderCredential) -> None:
-        """同一 provider 重複寫入即覆蓋（換 token 就是這條路徑）。"""
+        """寫進新表 `owner_credentials`，同一個 (owner, provider) 重複
+        寫入即覆蓋（換 token 就是這條路徑）。`cred.owner_id` 必須非
+        `None`；舊表這個方法起不再寫入。"""
 
-    def delete_credential(self, provider: str) -> bool:
-        """回傳是否真的刪了東西（本來就沒存過回 `False`）。
+    def delete_credential(self, provider: str, *, owner: str) -> bool:
+        """回傳是否真的刪了東西（本來就沒存過回 `False`）——只看新表
+        `owner_credentials` 有沒有這一列決定回傳值，但**新舊兩張表都
+        會清**（見上方區塊說明的殭屍復活風險）。
 
-        一併清掉該 provider 的驗證結果——那筆結果講的是「**那把** token
-        能不能用」，token 沒了它就失去意義，留著會讓設定頁在沒有
-        credential 的情況下顯示「已連線」。"""
+        一併清掉該 (owner, provider) 的驗證結果——那筆結果講的是
+        「**那把** token 能不能用」，token 沒了它就失去意義，留著會讓
+        設定頁在沒有 credential 的情況下顯示「已連線」。"""
 
     # ---------- 歷史 IV 觀測快取（#129，per-symbol） ----------
 
@@ -707,11 +745,34 @@ class Storage(Protocol):
     def save_iv_backfill_run(self, run: IvBackfillRun) -> None:
         """覆蓋該 symbol 既有那一筆——單一狀態，不是歷史序列。"""
 
-    def get_verification(self, provider: str) -> ProviderVerification | None:
-        """從未測過時回 `None`（＝「未設定」或「尚未驗證」）。"""
+    def get_verification(self, provider: str, *, owner: str) -> ProviderVerification | None:
+        """從未測過、也沒有可 read-through 的舊資料時回 `None`
+        （＝「未設定」或「尚未驗證」）。"""
 
     def save_verification(self, v: ProviderVerification) -> None:
-        """覆蓋該 provider 既有那一筆——單一狀態，不是歷史序列。"""
+        """寫進新表 `owner_verifications`，覆蓋該 (owner, provider)
+        既有那一筆——單一狀態，不是歷史序列。`v.owner_id` 必須非
+        `None`；舊表這個方法起不再寫入。"""
+
+    def backfill_settings_to_owner(self, owner: str) -> dict[str, int]:
+        """SCALE-13（#264）：**明確、可重跑**的批次遷移（AC-3）——不是
+        只靠上面三個 read-through 方法「有人剛好去讀才順便搬」，而是
+        比照既有 `backfill_missing_owner_ids()` 給操作者一個可以主動
+        執行、結果可驗證的動作。
+
+        只搬「新表這個 owner 還沒有」的那一列／那幾列（settings 用
+        `owner` 本身查、credentials／verifications 用 `(owner,
+        provider)` 逐一查）——**永遠不覆蓋新表已經存在的資料**，不論
+        那份資料是先前跑過這個方法留下的，還是使用者在這之間透過
+        `save_*()` 自己存過的新值。這讓它天生冪等：重跑對「已經搬過」
+        的部分全部回 0，且不會用舊表的陳舊值蓋掉更新的新表資料
+        （AC-3「可重跑、可中斷續跑」）。
+
+        回傳 `{"settings": 0|1, "credentials": N, "verifications": M}`
+        ——與 `backfill_missing_owner_ids()` 同一種「表名 → 補了幾筆」
+        的計數形狀。舊表（`data_source_settings`／`provider_
+        credentials`／`provider_verifications`）本身**不受影響、不被
+        清空**——這是 additive-first 遷移的一部分，不是單向搬家。"""
 
     # ---------- Exact-contract 歷史 IV 快取（HIVT-02／#153） ----------
 
@@ -773,6 +834,40 @@ class Storage(Protocol):
         fail-closed 設計，**不是遺漏**，但正式環境部署 SCALE-11 之前
         必須先跑過 `scripts/backfill_owner_ids.py`（呼叫本方法）——
         順序顛倒會讓既有存量資料看起來像全部憑空消失。"""
+
+    # ---------- Ownership A-1 Contract（SCALE-13／#264） ----------
+
+    def owner_id_null_counts(self) -> dict[str, int]:
+        """AC-5：對「5＋3 共 8 張 user tables」各自回報目前還有幾筆
+        `owner_id IS NULL`——結構性核對用，不是拿來觸發任何行為。
+
+        **5 張**＝SCALE-06 原始 row-scoped 表（`scenarios`／`results`／
+        `snapshots`／`events`／`diagnostics`，跟 `backfill_missing_
+        owner_ids()` 同一份清單，**不含** `narrow_history`——票面
+        （#264）明文只算「5＋3」，`narrow_history` 是 SCALE-09／14 才
+        出現、不在這張票枚舉的表列裡，本方法刻意不多加）。**3 張**＝
+        本票新增的 `owner_settings`／`owner_credentials`／
+        `owner_verifications`——它們的 `owner_id` 是 PK 的一部分，
+        Postgres／記憶體兩邊都結構上不可能存在 NULL（查詢它們只是
+        為了讓呼叫端用同一份 8 表清單一次核對完畢，不必另外記得
+        哪 3 張不必查），因此**恆為 0**，不是假設出來的。
+
+        本票**刻意不**把這 5 張既有表的 `owner_id` 收斂成 DB 層級
+        `NOT NULL`（`ALTER COLUMN ... SET NOT NULL`）——這 5 張表的
+        `owner_id IS NULL` 目前是被至少 14 處既有 storage 契約測試
+        （`tests/test_storage_contract.py`）刻意寫入、用來模擬「尚未
+        backfill 的舊列」以驗證 `backfill_missing_owner_ids()` 冪等性
+        與 SCALE-11 fail-closed 行為本身正確性的必要手段；對 Postgres
+        後端加上硬性 `NOT NULL` 會讓這些測試全數以
+        `NotNullViolation` 失敗，等於為了一個 AC-5 字面上沒有要求
+        （AC-1～AC-7 沒有任何一條要求 DB 層級約束）的額外保證，犧牲
+        既有、仍在使用中的回歸覆蓋。SCALE-11 的 `require_owner()`
+        fail-closed 讀取路徑已經達成同等的實務保證——任何
+        `owner_id IS NULL` 的舊列對任何身分都永久查不到，這正是
+        NOT NULL 想要的行為，只是強制點不同（應用層而非 schema
+        層）。這是刻意記錄的取捨，Owner 若仍要 DB 層級約束，需要先
+        另開一票把那些測試改成不依賴 dataclass 建構式寫入 NULL（例如
+        改用繞過型別驗證的原生 SQL helper），非本票能安全一併完成。"""
 
     # ---------- S0 最小可觀測性（SCALE-08／#258） ----------
 

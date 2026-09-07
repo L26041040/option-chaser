@@ -17,6 +17,7 @@ from . import (ChainBackoffEntry, ContractHistory, DataSourceSettings,
                RateCacheEntry, ResultFactContext, ResultRecord, ResultSummary,
                Scenario, ScenarioExists, TreasuryYearCacheEntry, require_owner)
 from ..diagnostics import RETENTION_LIMIT, DiagnosticEvent
+from ..identity import SOLO_OWNER
 from ..metrics import retention_cutoff
 
 
@@ -38,9 +39,17 @@ class MemoryStorage:
         # SCALE-09（#261）：鍵是三個 identity 欄組成的 tuple，逐字對應
         # PK `(scenario_id, analyzed_at, candidate_key)`。
         self._narrow_history: dict[tuple[str, str, str], NarrowHistoryEntry] = {}
+        # 舊表（SCALE-13／#264 之前）——凍結但仍可讀，供 read-through
+        # 相容分支使用；這個方法起不再寫入。
         self._settings: DataSourceSettings | None = None
         self._credentials: dict[str, ProviderCredential] = {}
         self._verifications: dict[str, ProviderVerification] = {}
+        # 新表（SCALE-13／#264）：per-owner 正確形狀。settings 鍵是
+        # `owner_id` 本身；credentials／verifications 鍵是
+        # `(owner_id, provider)`。
+        self._owner_settings: dict[str, DataSourceSettings] = {}
+        self._owner_credentials: dict[tuple[str, str], ProviderCredential] = {}
+        self._owner_verifications: dict[tuple[str, str], ProviderVerification] = {}
         # 鍵是 (symbol, 日期)——**沒有 scenario 維度**，見 IvObservation。
         self._iv: dict[tuple[str, str], IvObservation] = {}
         self._iv_runs: dict[str, IvBackfillRun] = {}
@@ -338,30 +347,97 @@ class MemoryStorage:
                 out[at] = snap
         return out
 
-    # ---------- 資料源設定與 credential（Settings／#124） ----------
+    # ---------- 資料源設定與 credential（Settings／#124，owner 化 SCALE-13／#264） ----------
 
-    def get_settings(self) -> DataSourceSettings | None:
-        return self._settings
+    def get_settings(self, *, owner: str) -> DataSourceSettings | None:
+        owner = require_owner(owner)
+        got = self._owner_settings.get(owner)
+        if got is not None:
+            return got
+        # read-through：新表沒有，舊表（全站唯一一份）有——只有這個
+        # owner 是 solo owner 時舊資料才有意義（舊表結構上沒有 owner
+        # 維度，只能代表這個唯一存在過的 owner）。
+        if owner == SOLO_OWNER and self._settings is not None:
+            migrated = dataclasses.replace(self._settings, owner_id=owner)
+            self._owner_settings[owner] = migrated   # write-through
+            return migrated
+        return None
 
     def save_settings(self, settings: DataSourceSettings) -> None:
-        self._settings = settings
+        owner = require_owner(settings.owner_id)
+        self._owner_settings[owner] = settings
+        # 舊表這個方法起不再寫入（write-forward-only，見 Protocol
+        # docstring）——`self._settings` 因此在這次呼叫之後會落後，
+        # 這是刻意接受的代價：若真的切回舊程式碼路徑，讀到的會是遷移
+        # 當下那一刻的值，不是最新值。
 
-    def get_credential(self, provider: str) -> ProviderCredential | None:
-        return self._credentials.get(provider)
+    def get_credential(self, provider: str, *, owner: str) -> ProviderCredential | None:
+        owner = require_owner(owner)
+        got = self._owner_credentials.get((owner, provider))
+        if got is not None:
+            return got
+        if owner == SOLO_OWNER:
+            legacy = self._credentials.get(provider)
+            if legacy is not None:
+                migrated = dataclasses.replace(legacy, owner_id=owner)
+                self._owner_credentials[(owner, provider)] = migrated
+                return migrated
+        return None
 
     def save_credential(self, cred: ProviderCredential) -> None:
-        self._credentials[cred.provider] = cred
+        owner = require_owner(cred.owner_id)
+        self._owner_credentials[(owner, cred.provider)] = cred
+        # 舊表這個方法起不再寫入（write-forward-only）。
 
-    def delete_credential(self, provider: str) -> bool:
+    def delete_credential(self, provider: str, *, owner: str) -> bool:
+        owner = require_owner(owner)
         # 驗證結果跟著走：它講的是「那把 token 能不能用」。
-        self._verifications.pop(provider, None)
-        return self._credentials.pop(provider, None) is not None
+        self._owner_verifications.pop((owner, provider), None)
+        new_removed = self._owner_credentials.pop((owner, provider), None) is not None
+        old_removed = False
+        if owner == SOLO_OWNER:
+            # 新舊兩張表都要清——否則使用者明確刪除後，下次讀取的
+            # read-through 還是會把舊表裡沒被清掉的資料復活（殭屍
+            # 復活風險，見 Protocol docstring）。
+            self._verifications.pop(provider, None)
+            old_removed = self._credentials.pop(provider, None) is not None
+        return new_removed or old_removed
 
-    def get_verification(self, provider: str) -> ProviderVerification | None:
-        return self._verifications.get(provider)
+    def get_verification(self, provider: str, *, owner: str) -> ProviderVerification | None:
+        owner = require_owner(owner)
+        got = self._owner_verifications.get((owner, provider))
+        if got is not None:
+            return got
+        if owner == SOLO_OWNER:
+            legacy = self._verifications.get(provider)
+            if legacy is not None:
+                migrated = dataclasses.replace(legacy, owner_id=owner)
+                self._owner_verifications[(owner, provider)] = migrated
+                return migrated
+        return None
 
     def save_verification(self, v: ProviderVerification) -> None:
-        self._verifications[v.provider] = v
+        owner = require_owner(v.owner_id)
+        self._owner_verifications[(owner, v.provider)] = v
+        # 舊表這個方法起不再寫入（write-forward-only）。
+
+    def backfill_settings_to_owner(self, owner: str) -> dict[str, int]:
+        counts = {"settings": 0, "credentials": 0, "verifications": 0}
+        if self._settings is not None and owner not in self._owner_settings:
+            self._owner_settings[owner] = dataclasses.replace(
+                self._settings, owner_id=owner)
+            counts["settings"] += 1
+        for provider, cred in self._credentials.items():
+            if (owner, provider) not in self._owner_credentials:
+                self._owner_credentials[(owner, provider)] = dataclasses.replace(
+                    cred, owner_id=owner)
+                counts["credentials"] += 1
+        for provider, v in self._verifications.items():
+            if (owner, provider) not in self._owner_verifications:
+                self._owner_verifications[(owner, provider)] = dataclasses.replace(
+                    v, owner_id=owner)
+                counts["verifications"] += 1
+        return counts
 
     # ---------- 歷史 IV 觀測快取（#129，per-symbol） ----------
 
@@ -462,6 +538,25 @@ class MemoryStorage:
                 counts["narrow_history"] += 1
 
         return counts
+
+    # ---------- Ownership A-1 Contract（SCALE-13／#264） ----------
+
+    def owner_id_null_counts(self) -> dict[str, int]:
+        scenarios = sum(1 for sc in self._scenarios.values()
+                        if sc.owner_id is None)
+        results = sum(1 for by_ts in self._results.values()
+                     for rec in by_ts.values() if rec.owner_id is None)
+        snapshots = sum(1 for (_snap, owner) in self._snapshots.values()
+                        if owner is None)
+        events = sum(1 for e in self._events if e.get("owner_id") is None)
+        diagnostics = sum(1 for d in self._diagnostics if d.owner_id is None)
+        # 3 張新表的 key 本身就含 owner_id（settings 是 dict key，
+        # credentials／verifications 是 tuple key 的第一個元素）——
+        # 結構上不可能存在 owner_id 為 None 的項目，恆為 0。
+        return {"scenarios": scenarios, "results": results,
+               "snapshots": snapshots, "events": events,
+               "diagnostics": diagnostics, "owner_settings": 0,
+               "owner_credentials": 0, "owner_verifications": 0}
 
     # ---------- S0 最小可觀測性（SCALE-08／#258） ----------
 
