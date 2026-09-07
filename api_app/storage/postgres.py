@@ -26,7 +26,8 @@ from . import (ChainBackoffEntry, ContractHistory, DataSourceSettings,
                DividendCacheEntry, IvBackfillRun, IvObservation, MetricEntry,
                NarrowHistoryEntry, ProviderCredential, ProviderVerification,
                RateCacheEntry, ResultFactContext, ResultRecord, ResultSummary,
-               Scenario, ScenarioExists, TreasuryYearCacheEntry, UsageSetting)
+               Scenario, ScenarioExists, TreasuryYearCacheEntry, UsageSetting,
+               require_owner)
 from ..diagnostics import RETENTION_LIMIT, DiagnosticEvent
 from ..metrics import retention_cutoff
 
@@ -526,6 +527,7 @@ class PostgresStorage:
                 raise ScenarioExists(sc.id) from e
 
     def get_scenario(self, scenario_id: str, *, owner: str) -> Scenario | None:
+        owner = require_owner(owner)
         with self._connect() as conn:
             row = conn.execute(
                 f"SELECT {_SCENARIO_COLS} FROM scenarios "
@@ -551,6 +553,7 @@ class PostgresStorage:
         return [_row_to_scenario(r) for r in rows]
 
     def update_scenario(self, sc: Scenario, *, owner: str) -> bool:
+        owner = require_owner(owner)
         with self._connect() as conn:
             cur = conn.execute(
                 "UPDATE scenarios SET symbol = %s, direction = %s, "
@@ -563,6 +566,7 @@ class PostgresStorage:
             return cur.rowcount == 1   # 連線關閉前讀
 
     def clear_results(self, scenario_id: str, *, owner: str) -> None:
+        owner = require_owner(owner)
         with self._connect() as conn:
             owned = conn.execute(
                 "SELECT 1 FROM scenarios WHERE id = %s AND owner_id = %s",
@@ -575,6 +579,7 @@ class PostgresStorage:
                         (scenario_id,))
 
     def archive_scenario(self, scenario_id: str, *, owner: str, ts: str) -> bool:
+        owner = require_owner(owner)
         with self._connect() as conn:
             cur = conn.execute(
                 "UPDATE scenarios SET archived_at = %s "
@@ -583,6 +588,7 @@ class PostgresStorage:
             return cur.rowcount == 1   # 連線關閉前讀
 
     def restore_scenario(self, scenario_id: str, *, owner: str, ts: str) -> bool:
+        owner = require_owner(owner)
         with self._connect() as conn:
             cur = conn.execute(
                 "UPDATE scenarios SET archived_at = NULL "
@@ -598,6 +604,7 @@ class PostgresStorage:
         # owner）誤刪其他表的資料。三張表各自一次 DELETE（不依賴 FK
         # `ON DELETE CASCADE`，沿用專案既有「不用 FK 約束，應用層自己
         # 保證一致性」的設計慣例）。
+        owner = require_owner(owner)
         with self._connect() as conn:
             cur = conn.execute(
                 "DELETE FROM scenarios WHERE id = %s AND owner_id = %s "
@@ -666,6 +673,7 @@ class PostgresStorage:
         return ResultRecord(*row)
 
     def latest_result(self, scenario_id: str, *, owner: str) -> ResultRecord | None:
+        owner = require_owner(owner)
         with self._connect() as conn:
             row = conn.execute(
                 f"SELECT {_RESULT_COLS} FROM results "
@@ -682,6 +690,7 @@ class PostgresStorage:
         #77、#78）——這正是它獨立落盤成一個欄位、而不是每次從 view
         現算的理由。SCALE-11：`WHERE owner_id = %s` 放在最內層子查詢
         （`DISTINCT ON` 之前），只在這個 owner 名下的列裡挑最新一筆。"""
+        owner = require_owner(owner)
         with self._connect() as conn:
             rows = conn.execute(
                 "SELECT DISTINCT ON (scenario_id) scenario_id, analyzed_at, "
@@ -714,6 +723,7 @@ class PostgresStorage:
         # 兩段各自的 `WHERE` 子句上各加一條 `owner_id = %s`——當年
         # docstring 的承諾兌現，兩張表各自用自己的 owner_id 欄位過濾，
         # 不需要 JOIN 到 scenarios。
+        owner = require_owner(owner)
         with self._connect() as conn:
             rows = conn.execute(
                 "SELECT analyzed_at FROM ("
@@ -760,6 +770,7 @@ class PostgresStorage:
 
     def get_snapshot(self, scenario_id: str, analyzed_at: str, *,
                      owner: str) -> dict | None:
+        owner = require_owner(owner)
         with self._connect() as conn:
             row = conn.execute(
                 "SELECT snapshot FROM snapshots "
@@ -791,6 +802,7 @@ class PostgresStorage:
 
     def list_events(self, *, scenario_id: str | None = None,
                     owner: str) -> list[dict]:
+        owner = require_owner(owner)
         sql = "SELECT ts, scenario_id, event, payload, owner_id FROM events " \
              "WHERE owner_id = %s"
         params: list = [owner]
@@ -1147,6 +1159,7 @@ class PostgresStorage:
 
     def list_diagnostics(self, *, limit: int = 50,
                          owner: str) -> list[DiagnosticEvent]:
+        owner = require_owner(owner)
         with self._connect() as conn:
             rows = conn.execute(
                 "SELECT event_id, correlation_id, ts, subsystem, stage, "
@@ -1167,6 +1180,7 @@ class PostgresStorage:
             message=r[7], context=r[8], owner_id=r[9]) for r in rows]
 
     def clear_diagnostics(self, *, owner: str) -> int:
+        owner = require_owner(owner)
         with self._connect() as conn:
             n = conn.execute(
                 "SELECT COUNT(*) FROM diagnostics WHERE owner_id = %s",

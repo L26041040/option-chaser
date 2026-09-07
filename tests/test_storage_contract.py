@@ -1597,6 +1597,125 @@ def test_owner_id_round_trips_on_a_diagnostic(storage):
     assert solo_only == {"d1": "solo"}
 
 
+# ---------- SCALE-11（#262）：真正的雙 owner 隔離，兩後端皆跑 ----------
+#
+# 上面 SCALE-06 那批只驗證「owner_id 這個值本身寫得進去、讀得回來」
+# （單一 owner 的 round-trip）；這裡才是 `/code-review` Spec 軸抓到的
+# 真缺口——插入兩個不同、非 None 的 owner 各自一筆資料，證明 Postgres
+# 的 SQL（不是只有 memory 假體的 Python `==`）真的把對方的列擋在外面。
+# `test_scale11_ownership_enforce.py` 的等價場景走 HTTP＋MemoryStorage，
+# 抓不到「SQL 參數順序寫反」「AND 誤植成 OR」這類只會在真實 Postgres
+# 上現形的錯誤——這批測試才是那道防線。
+
+def test_get_scenario_excludes_another_owners_row(storage):
+    storage.create_scenario(_scenario(owner_id="alice"))
+    storage.create_scenario(_scenario(sid="s2", owner_id="bob"))
+    assert storage.get_scenario("s1", owner="bob") is None
+    assert storage.get_scenario("s2", owner="alice") is None
+    assert storage.get_scenario("s1", owner="alice").id == "s1"
+    assert storage.get_scenario("s2", owner="bob").id == "s2"
+
+
+def test_list_scenarios_only_returns_the_given_owners_rows(storage):
+    storage.create_scenario(_scenario(owner_id="alice"))
+    storage.create_scenario(_scenario(sid="s2", owner_id="bob"))
+    assert [s.id for s in storage.list_scenarios(owner="alice")] == ["s1"]
+    assert [s.id for s in storage.list_scenarios(owner="bob")] == ["s2"]
+
+
+def test_update_scenario_cannot_touch_another_owners_row(storage):
+    from dataclasses import replace as _replace
+
+    storage.create_scenario(_scenario(owner_id="alice"))
+    attempted = _replace(_scenario(owner_id="alice"), target_price=999.0)
+    assert storage.update_scenario(attempted, owner="bob") is False
+    assert storage.get_scenario("s1", owner="alice").target_price == 120.0
+
+
+def test_archive_restore_delete_cannot_touch_another_owners_row(storage):
+    storage.create_scenario(_scenario(owner_id="alice"))
+    assert storage.archive_scenario("s1", owner="bob", ts="2026-08-02T00:00:00+00:00") is False
+    assert storage.get_scenario("s1", owner="alice").archived_at is None
+
+    storage.archive_scenario("s1", owner="alice", ts="2026-08-02T00:00:00+00:00")
+    assert storage.restore_scenario("s1", owner="bob", ts="2026-08-03T00:00:00+00:00") is False
+    assert storage.get_scenario("s1", owner="alice").archived_at is not None
+
+    assert storage.delete_scenario("s1", owner="bob") is False
+    assert storage.get_scenario("s1", owner="alice") is not None
+
+
+def test_clear_results_cannot_touch_another_owners_row(storage):
+    storage.create_scenario(_scenario(owner_id="alice"))
+    storage.save_result(ResultRecord("s1", "2026-08-01T00:00:00+00:00",
+                                     {"n": 1}, owner_id="alice"))
+    storage.clear_results("s1", owner="bob")
+    assert storage.latest_result("s1", owner="alice") is not None
+
+
+def test_latest_result_and_history_exclude_another_owners_rows(storage):
+    storage.create_scenario(_scenario(owner_id="alice"))
+    storage.create_scenario(_scenario(sid="s2", owner_id="bob"))
+    storage.save_result(ResultRecord("s1", "2026-08-01T00:00:00+00:00",
+                                     {"n": 1}, owner_id="alice"))
+    storage.save_result(ResultRecord("s2", "2026-08-01T00:00:00+00:00",
+                                     {"n": 2}, owner_id="bob"))
+
+    assert storage.latest_result("s1", owner="bob") is None
+    assert storage.latest_result("s2", owner="alice") is None
+    assert storage.result_history("s1", owner="bob") == []
+    assert storage.result_history("s2", owner="alice") == []
+
+
+def test_latest_summaries_only_covers_the_given_owner(storage):
+    storage.create_scenario(_scenario(owner_id="alice"))
+    storage.create_scenario(_scenario(sid="s2", owner_id="bob"))
+    storage.save_result(ResultRecord("s1", "2026-08-01T00:00:00+00:00",
+                                     {"n": 1}, best_return=1.0, owner_id="alice"))
+    storage.save_result(ResultRecord("s2", "2026-08-01T00:00:00+00:00",
+                                     {"n": 2}, best_return=2.0, owner_id="bob"))
+
+    assert set(storage.latest_summaries(owner="alice")) == {"s1"}
+    assert set(storage.latest_summaries(owner="bob")) == {"s2"}
+
+
+def test_result_timestamps_excludes_another_owners_rows(storage):
+    storage.create_scenario(_scenario(owner_id="alice"))
+    storage.create_scenario(_scenario(sid="s2", owner_id="bob"))
+    storage.save_snapshot("s1", "2026-08-01T00:00:00+00:00", {"n": 1},
+                          owner_id="alice")
+    storage.save_snapshot("s2", "2026-08-01T00:00:00+00:00", {"n": 2},
+                          owner_id="bob")
+
+    assert storage.result_timestamps("s1", owner="bob") == []
+    assert storage.result_timestamps("s2", owner="alice") == []
+    assert storage.result_timestamps("s1", owner="alice") == \
+        ["2026-08-01T00:00:00+00:00"]
+
+
+def test_get_snapshot_excludes_another_owners_row(storage):
+    storage.create_scenario(_scenario(owner_id="alice"))
+    storage.save_snapshot("s1", "2026-08-01T00:00:00+00:00", {"n": 1},
+                          owner_id="alice")
+    assert storage.get_snapshot("s1", "2026-08-01T00:00:00+00:00",
+                                owner="bob") is None
+    assert storage.get_snapshot("s1", "2026-08-01T00:00:00+00:00",
+                                owner="alice") == {"n": 1}
+
+
+def test_list_events_excludes_another_owners_rows(storage):
+    storage.append_event(ts="2026-08-01T00:00:00+00:00", scenario_id="s1",
+                         event="SCENARIO_CREATED", payload={}, owner_id="alice")
+    storage.append_event(ts="2026-08-01T00:00:00+00:00", scenario_id="s2",
+                         event="SCENARIO_CREATED", payload={}, owner_id="bob")
+
+    assert [e["scenario_id"] for e in storage.list_events(owner="alice")] == ["s1"]
+    assert [e["scenario_id"] for e in storage.list_events(owner="bob")] == ["s2"]
+    # 帶 scenario_id 過濾時，owner 不符一樣是空清單，不是忽略 owner
+    # 只看 scenario_id。
+    assert storage.list_events(scenario_id="s2", owner="alice") == []
+
+
 def test_backfill_missing_owner_ids_sets_solo_owner_on_every_legacy_row(storage):
     """AC-1／AC-2：5 張表各留一筆沒有 owner 的舊列，一次 backfill 全部
     補齊，回傳的計數逐表對得上。

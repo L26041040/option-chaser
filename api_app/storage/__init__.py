@@ -439,6 +439,27 @@ class ContractHistory:
     last_note: str | None = None
 
 
+def require_owner(owner: str | None) -> str:
+    """SCALE-11（#262）／`/code-review` 抓到的真缺口：`owner: str`
+    這個型別標註在 Python 執行期完全不強制——`memory.py`／
+    `postgres.py` 兩個後端過去各自用 `==`／`!=` 比對 `owner_id`，
+    若呼叫端不慎傳入 `owner=None`，`None` 會被當成一個合法的過濾值，
+    對尚未 backfill（同樣是 `owner_id=None`）的舊列悄悄「配對成功」
+    ——等於在型別系統看不到的地方重新開了一個不經 owner scope 的
+    旁路。兩個後端共用同一份守門實作（而非各自複製一份可能漂移的
+    檢查），讓凡是簽章寫著 `owner: str`（非 optional）的 15 個方法
+    之一，只要真的傳入 `None` 就會在執行期立刻拋錯，不會被 `==`／
+    `!=` 悄悄吃掉。**唯一例外**：`list_scenarios()`／
+    `result_history()` 的簽章本身是 `owner: str | None`，那是
+    `backfill_result_fact_context()` 僅有的合法跨 owner 遷移用途，
+    這兩個方法不呼叫本函式。"""
+    if owner is None:
+        raise TypeError(
+            "owner 不得為 None——只有 list_scenarios()/result_history() "
+            "允許 owner=None 代表跨 owner 的遷移用途")
+    return owner
+
+
 class Storage(Protocol):
     """API 層唯一的資料存取介面——不得繞過它直接碰 SQL 或檔案。"""
 
@@ -728,7 +749,19 @@ class Storage(Protocol):
         「還沒補過」的列，不會覆蓋已經有值（含未來若真的支援多重
         owner）的既有資料，重跑第二次全部回 0。**這 5 張表以外的表
         （3 張 singleton user tables、system-wide 市場事實表、
-        `chain_backoff`）本方法不觸碰**——見票面範圍界線。"""
+        `chain_backoff`）本方法不觸碰**——見票面範圍界線。
+
+        ⚠ **SCALE-11（#262）部署順序（`/code-review` Spec 軸點名的
+        風險，記錄於此供部署前查核）**：一旦 SCALE-11 的 owner query
+        boundary 上線（`require_owner()` 等機制強制拒絕 `owner=None`，
+        `get_scenario()`／`archive_scenario()` 等改用逐字比對
+        `owner_id`），`owner_id IS NULL` 的舊列會對**任何**已解析出的
+        身分（含 `identity.SOLO_OWNER`＝`"solo"`）永遠比對失敗——不是
+        「讀不到」而已，是連 `_require()` 這個 chokepoint 都會回
+        404，等於那些劇本連編輯／封存／刷新都做不到。這是刻意的
+        fail-closed 設計，**不是遺漏**，但正式環境部署 SCALE-11 之前
+        必須先跑過 `scripts/backfill_owner_ids.py`（呼叫本方法）——
+        順序顛倒會讓既有存量資料看起來像全部憑空消失。"""
 
     # ---------- S0 最小可觀測性（SCALE-08／#258） ----------
 

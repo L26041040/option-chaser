@@ -15,7 +15,7 @@ from . import (ChainBackoffEntry, ContractHistory, DataSourceSettings,
                DividendCacheEntry, IvBackfillRun, IvObservation, MetricEntry,
                NarrowHistoryEntry, ProviderCredential, ProviderVerification,
                RateCacheEntry, ResultFactContext, ResultRecord, ResultSummary,
-               Scenario, ScenarioExists, TreasuryYearCacheEntry)
+               Scenario, ScenarioExists, TreasuryYearCacheEntry, require_owner)
 from ..diagnostics import RETENTION_LIMIT, DiagnosticEvent
 from ..metrics import retention_cutoff
 
@@ -71,16 +71,24 @@ class MemoryStorage:
 
     # ---------- 劇本 ----------
 
+    def _owned_scenario(self, scenario_id: str, owner: str) -> Scenario | None:
+        """五個劇本 CRUD 方法共用的「這個 id 存在且屬於這個 owner」
+        判準（`/code-review` Standards 軸抓到的重複邏輯，抽出後五處
+        呼叫點只剩各自獨有的額外條件，例如 archive/restore 各自的
+        `archived_at` 檢查）。"""
+        sc = self._scenarios.get(scenario_id)
+        if sc is None or sc.owner_id != owner:
+            return None
+        return sc
+
     def create_scenario(self, sc: Scenario) -> None:
         if sc.id in self._scenarios:
             raise ScenarioExists(sc.id)
         self._scenarios[sc.id] = sc
 
     def get_scenario(self, scenario_id: str, *, owner: str) -> Scenario | None:
-        sc = self._scenarios.get(scenario_id)
-        if sc is None or sc.owner_id != owner:
-            return None
-        return sc
+        owner = require_owner(owner)
+        return self._owned_scenario(scenario_id, owner)
 
     def list_scenarios(self, *, owner: str | None,
                        include_archived: bool = False) -> list[Scenario]:
@@ -90,37 +98,40 @@ class MemoryStorage:
         return sorted(rows, key=lambda s: (s.created_at, s.id))
 
     def update_scenario(self, sc: Scenario, *, owner: str) -> bool:
-        existing = self._scenarios.get(sc.id)
-        if existing is None or existing.owner_id != owner:
+        owner = require_owner(owner)
+        if self._owned_scenario(sc.id, owner) is None:
             return False
         self._scenarios[sc.id] = sc
         return True
 
     def clear_results(self, scenario_id: str, *, owner: str) -> None:
-        sc = self._scenarios.get(scenario_id)
-        if sc is None or sc.owner_id != owner:
+        owner = require_owner(owner)
+        if self._owned_scenario(scenario_id, owner) is None:
             return
         self._results.pop(scenario_id, None)
         self._snapshots = {k: v for k, v in self._snapshots.items()
                            if k[0] != scenario_id}
 
     def archive_scenario(self, scenario_id: str, *, owner: str, ts: str) -> bool:
-        sc = self._scenarios.get(scenario_id)
-        if sc is None or sc.owner_id != owner or sc.archived_at is not None:
+        owner = require_owner(owner)
+        sc = self._owned_scenario(scenario_id, owner)
+        if sc is None or sc.archived_at is not None:
             return False
         self._scenarios[scenario_id] = sc.archived(ts)
         return True
 
     def restore_scenario(self, scenario_id: str, *, owner: str, ts: str) -> bool:
-        sc = self._scenarios.get(scenario_id)
-        if sc is None or sc.owner_id != owner or sc.archived_at is None:
+        owner = require_owner(owner)
+        sc = self._owned_scenario(scenario_id, owner)
+        if sc is None or sc.archived_at is None:
             return False
         self._scenarios[scenario_id] = sc.restored()
         return True
 
     def delete_scenario(self, scenario_id: str, *, owner: str) -> bool:
-        sc = self._scenarios.get(scenario_id)
-        if sc is None or sc.owner_id != owner or sc.archived_at is None:
+        owner = require_owner(owner)
+        sc = self._owned_scenario(scenario_id, owner)
+        if sc is None or sc.archived_at is None:
             return False
         del self._scenarios[scenario_id]
         self._results.pop(scenario_id, None)
@@ -135,10 +146,11 @@ class MemoryStorage:
         self._results.setdefault(rec.scenario_id, {})[rec.analyzed_at] = rec
 
     def latest_result(self, scenario_id: str, *, owner: str) -> ResultRecord | None:
-        hist = self.result_history(scenario_id, owner=owner)
+        hist = self.result_history(scenario_id, owner=require_owner(owner))
         return hist[-1] if hist else None
 
     def latest_summaries(self, *, owner: str) -> dict[str, ResultSummary]:
+        owner = require_owner(owner)
         out: dict[str, ResultSummary] = {}
         for sid in self._results:
             rec = self.latest_result(sid, owner=owner)
@@ -163,6 +175,7 @@ class MemoryStorage:
         # 讓 `snapshots`／`results` 兩張表各自攜帶這個值），不查父劇本
         # ——與 Postgres 那邊「WHERE 子句上各加一個條件」的既有承諾
         # 同一種形狀，兩後端可直接比對行為。
+        owner = require_owner(owner)
         from_snapshots = {ts for (sid, ts), (_snap, o) in self._snapshots.items()
                           if sid == scenario_id and o == owner}
         from_results = {ts for ts, rec in self._results.get(scenario_id, {}).items()
@@ -189,6 +202,7 @@ class MemoryStorage:
 
     def get_snapshot(self, scenario_id: str, analyzed_at: str, *,
                      owner: str) -> dict | None:
+        owner = require_owner(owner)
         entry = self._snapshots.get((scenario_id, analyzed_at))
         if entry is None or entry[1] != owner:
             return None
@@ -210,6 +224,7 @@ class MemoryStorage:
 
     def list_events(self, *, scenario_id: str | None = None,
                     owner: str) -> list[dict]:
+        owner = require_owner(owner)
         rows = [e for e in self._events if e.get("owner_id") == owner]
         if scenario_id is None:
             return rows
@@ -320,6 +335,7 @@ class MemoryStorage:
 
     def list_diagnostics(self, *, limit: int = 50,
                          owner: str) -> list[DiagnosticEvent]:
+        owner = require_owner(owner)
         # deque 存的是寫入順序（舊→新）；最新在最上要反過來，owner 過濾
         # 在反轉之後做（跟反轉順序無關，先過濾後反轉結果相同，這裡選
         # 反轉在前只是沿用既有寫法的順序）。
@@ -327,6 +343,7 @@ class MemoryStorage:
                if e.owner_id == owner][:limit]
 
     def clear_diagnostics(self, *, owner: str) -> int:
+        owner = require_owner(owner)
         kept = deque((e for e in self._diagnostics if e.owner_id != owner),
                     maxlen=RETENTION_LIMIT)
         removed = len(self._diagnostics) - len(kept)

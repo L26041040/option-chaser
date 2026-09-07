@@ -31,10 +31,14 @@ def _result(strategies=("long-call", "bull-call-spread")):
 
 
 def _scenario(sid="s1"):
+    # SCALE-11（#262）跟進：這個檔案驗證的是 SCALE-01 fact-context
+    # backfill，與 ownership 無關——給一個真實 owner_id，讓下面對
+    # `latest_result()`／`archive_scenario()` 等已強制拒絕 `owner=None`
+    # 的方法可以正常呼叫，不需要模擬一個真的不知道是誰的舊列。
     return Scenario(id=sid, symbol="XYZ", direction="bullish",
                     target_price=120.0, target_month="2026-08", notes="",
                     strategies=("vertical-spread",),
-                    created_at="2026-08-01T00:00:00+00:00")
+                    created_at="2026-08-01T00:00:00+00:00", owner_id="solo")
 
 
 # ---------- 純函式：store.historical_fact_context() ----------
@@ -147,13 +151,13 @@ def test_backfill_populates_legacy_rows_from_their_view():
     storage = MemoryStorage()
     storage.create_scenario(_scenario())
     view = store.serialize_result(_result(), "s1", None)
-    storage.save_result(ResultRecord("s1", "2026-08-01T00:00:00+00:00", view))
+    storage.save_result(ResultRecord("s1", "2026-08-01T00:00:00+00:00", view, owner_id="solo"))
     assert storage.latest_result(
-        "s1", owner=None).resolved_params is None   # backfill 前
+        "s1", owner="solo").resolved_params is None   # backfill 前
 
     summary = backfill_result_fact_context(storage)
 
-    rec = storage.latest_result("s1", owner=None)
+    rec = storage.latest_result("s1", owner="solo")
     expected = store.historical_fact_context(view)
     assert rec.resolved_params == expected["resolved_params"]
     assert rec.requested_strategies == expected["requested_strategies"]
@@ -163,19 +167,19 @@ def test_backfill_populates_legacy_rows_from_their_view():
     assert rec.snapshot_source == expected["snapshot_source"]
     assert summary == {"scenarios": 1, "rows": 1}
     # 紅線：view 本身必須逐位元不變
-    assert storage.latest_result("s1", owner=None).view == view
+    assert storage.latest_result("s1", owner="solo").view == view
 
 
 def test_backfill_is_idempotent_rerunning_produces_zero_drift():
     storage = MemoryStorage()
     storage.create_scenario(_scenario())
     view = store.serialize_result(_result(), "s1", None)
-    storage.save_result(ResultRecord("s1", "2026-08-01T00:00:00+00:00", view))
+    storage.save_result(ResultRecord("s1", "2026-08-01T00:00:00+00:00", view, owner_id="solo"))
 
     backfill_result_fact_context(storage)
-    first = storage.latest_result("s1", owner=None)
+    first = storage.latest_result("s1", owner="solo")
     backfill_result_fact_context(storage)   # 重跑：可續跑、可安全中斷後重試
-    second = storage.latest_result("s1", owner=None)
+    second = storage.latest_result("s1", owner="solo")
 
     assert first == second   # 0 drift、0 duplicate side effect
 
@@ -184,13 +188,13 @@ def test_backfill_covers_archived_scenarios_too():
     storage = MemoryStorage()
     storage.create_scenario(_scenario())
     view = store.serialize_result(_result(), "s1", None)
-    storage.save_result(ResultRecord("s1", "2026-08-01T00:00:00+00:00", view))
-    storage.archive_scenario("s1", owner=None, ts="2026-08-02T00:00:00+00:00")
+    storage.save_result(ResultRecord("s1", "2026-08-01T00:00:00+00:00", view, owner_id="solo"))
+    storage.archive_scenario("s1", owner="solo", ts="2026-08-02T00:00:00+00:00")
 
     summary = backfill_result_fact_context(storage)
 
     assert summary == {"scenarios": 1, "rows": 1}
-    assert storage.latest_result("s1", owner=None).resolved_params is not None
+    assert storage.latest_result("s1", owner="solo").resolved_params is not None
 
 
 def test_backfill_handles_multiple_rows_per_scenario():
@@ -199,8 +203,8 @@ def test_backfill_handles_multiple_rows_per_scenario():
     view1 = store.serialize_result(_result(), "s1", None)
     view2 = store.serialize_result(
         _result(strategies=("bull-call-spread",)), "s1", None)
-    storage.save_result(ResultRecord("s1", "2026-08-01T00:00:00+00:00", view1))
-    storage.save_result(ResultRecord("s1", "2026-08-02T00:00:00+00:00", view2))
+    storage.save_result(ResultRecord("s1", "2026-08-01T00:00:00+00:00", view1, owner_id="solo"))
+    storage.save_result(ResultRecord("s1", "2026-08-02T00:00:00+00:00", view2, owner_id="solo"))
 
     summary = backfill_result_fact_context(storage)
 
