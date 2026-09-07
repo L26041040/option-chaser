@@ -5,17 +5,18 @@ resolver（SCALE-09 Part B，`history_resolver.resolve_historical_cost()`）
 
 ## 設計
 
-以 `xyz_v8_production_scale.json`（600 張合約、5 到期日×60 履約價/側）
-為基礎，套用決定性合成隨機漫步（`_perturb()`，種子固定）模擬
-`N_REFRESHES` 次刷新，每次刷新對全部 6 個 subtype
-（`option_chaser.models.STRATEGIES`）跑一次真實 `service.
+現場建構一份小型合成鏈（3 到期日×15 履約價/側，見 `_load_base()`；
+**刻意不用**其餘 SCALE 票既有的 600 張合約 production-scale fixture，
+理由見 `_load_base()` 上方的規模說明），套用決定性合成隨機漫步
+（`_perturb()`，種子固定）模擬 `N_REFRESHES` 次刷新，每次刷新對全部
+6 個 subtype（`option_chaser.models.STRATEGIES`）跑一次真實 `service.
 run_with_snapshot()`——`all_candidates`（`_history_entry()`／T09-#222
 已修正對單腿／蝶式一視同仁，本檔案不重覆驗證那個修正本身，只是依賴
 其結果作為 oracle）即 legacy 真相來源。
 
 對每一次刷新：
 - oracle：直接讀該次 `view["results"][i]["all_candidates"]`，逐
-  candidate_key 記下 `cost`（找不到＝那天不是有效候選＝genuine gap）。
+  candidate_key 記下 `cost`。
 - narrow：`store.visible_candidate_keys()`／`visible_candidate_costs()`
   （SCALE-09 Part A 的 dual-write 邏輯，這裡直接呼叫純函式，不需要
   真的走 HTTP／storage）。
@@ -32,6 +33,19 @@ run_with_snapshot()`——`all_candidates`（`_history_entry()`／T09-#222
   「gap」類別，AC-3 的正面證明——尤其是「bid/ask 可算但 IV invalid」
   這個 cost-only replay 會答錯、membership resolver 才會答對的案例）
 
+**`/code-review` Spec 軸抓到的真缺口，已修正**：原本主要的全面 sweep
+只迭代 `_ORACLE.items()`——但 `_ORACLE` dict 的建構方式（只在
+`all_candidates` 真的出現該 key 時才寫入）讓「oracle 說這個候選是
+gap」這個分支結構上不可能被走到（不在 dict 裡的 key 根本不會被
+`.items()` 迭代到，不是「迭代到了但值是 `None`」）——「gap」類別因此
+只由兩個手挑的 adversarial case（IV invalid／skipped direction）
+驗證過，不是在整個真實規模下被正面驗證。修法：`_full_structural_key_
+space()` 獨立於 oracle／resolver，直接從快照原始履約價重新枚舉「結構
+上可能被問到」的全部 candidate_key（不套用任何 quote/IV/structural
+過濾），與 oracle／narrow 的 key 集合取聯集後才是完整的每日 key 全集
+——`oracle.get(key)` 對「當時無效」的 key 這時才會真的回傳 `None`，
+讓 gap 分支在整個真實規模下被正面驗證。
+
 ## Mandatory adversarial cases 對照
 
 - **AC-3**（bid/ask 可算但 IV invalid）：`_INVALID_IV_STRIKE_PAIR`
@@ -39,10 +53,12 @@ run_with_snapshot()`——`all_candidates`（`_history_entry()`／T09-#222
   `implied_volatility=0.001`（低於 `filters.iv_ok()` 的 `0.01` 下限）
   ——結構上永遠不會進 oracle 的 `all_candidates`，`cost_from_snapshot()`
   單獨呼叫卻算得出一個數字，直接證明「只看 bid/ask 重放會答錯」。
-- **AC-4**（過去不在 visible/top10 但有效）：600 張合約的候選池遠大於
-  `expiry_top10` 的 10 名上限，`test_at_least_one_oracle_valid_
-  candidate_is_outside_narrow_visible_set` 正面驗證這個情況在真實
-  規模下自然大量發生，不需要另外構造。
+- **AC-4**（過去不在 visible/top10 但有效）：3 到期日×15 履約價/側的
+  候選池（單腳＋Vertical＋Butterfly 六個 subtype 合計每天約 3,450 組
+  結構上可能的候選）遠大於 `expiry_top10` 的 10 名上限，
+  `test_at_least_one_oracle_valid_candidate_is_outside_narrow_
+  visible_set` 正面驗證這個情況在真實規模下自然大量發生，不需要另外
+  構造。
 - **strategy/subtype 當時未啟用或方向不 eligible**：`TARGET_PRICE`
   固定、`_perturb()` 的 drift 讓 spot 在 `N_REFRESHES` 過程中跨越
   它至少一次，自然讓看漲／看跌兩組 subtype 交替變成
@@ -71,6 +87,7 @@ import copy
 import random
 import time
 from datetime import date
+from itertools import combinations
 
 from option_chaser import service, store
 from option_chaser.data.snapshot import snapshot_from_dict
@@ -78,7 +95,7 @@ from option_chaser.history_resolver import resolve_historical_cost
 from option_chaser.models import (
     SCHEMA_VERSION, STRATEGIES, STRATEGY_FAMILY, AnalysisParams)
 from option_chaser.snapshot_replay import cost_from_snapshot
-from option_chaser.valuation import american_price
+from scripts.gen_butterfly_fixture import synthetic_bid_ask_iv
 
 SEED = 20260907
 N_REFRESHES = 8
@@ -118,20 +135,19 @@ _BASE_R, _BASE_Q, _BASE_SIGMA = 0.04, 0.0, 0.28
 
 
 def _base_quote(option_type: str, strike: float, expiry: str, idx: int) -> dict:
+    """報價定價與價差公式沿用 `scripts/gen_butterfly_fixture.py::
+    synthetic_bid_ask_iv()`（`/code-review` Standards 軸抓到的重複，
+    已抽成共用函式）——本函式只負責這個檔案自己的 idx／
+    contract_symbol／volume／open_interest 命名慣例。"""
     T = (date.fromisoformat(expiry) - _BASE_TODAY).days / 365.0
-    theo = american_price(option_type, SPOT, strike, T, _BASE_R, _BASE_Q, _BASE_SIGMA)
-    moneyness = abs(strike - SPOT) / SPOT
-    rel_spread = 0.02 + 0.03 * moneyness + 0.01 * T
-    half = max(0.02, theo * rel_spread / 2.0)
-    bid = round(max(0.01, theo - half), 2)
-    ask = round(theo + half, 2)
-    iv = _BASE_SIGMA + 0.05 * moneyness * (1 if option_type == "call" else -1)
+    bid, ask, iv = synthetic_bid_ask_iv(
+        option_type, strike, SPOT, T, _BASE_R, _BASE_Q, _BASE_SIGMA)
     return {
         "contract_symbol": f"{SYMBOL}{expiry.replace('-', '')}{option_type[0].upper()}{idx:03d}",
         "option_type": option_type, "strike": strike, "expiry": expiry,
         "bid": bid, "ask": ask, "last": round((bid + ask) / 2, 2),
         "volume": 10 + idx, "open_interest": 100 + idx * 3,
-        "implied_volatility": round(max(0.05, iv), 4),
+        "implied_volatility": iv,
     }
 
 
@@ -186,22 +202,31 @@ def _perturb(base: dict, i: int, rng: random.Random) -> dict:
 
 def _run_all_refreshes():
     """跑滿 `N_REFRESHES` 次刷新，回傳
-    `(views, narrow, snapshots, oracle)`：
+    `(views, narrow, snapshots, oracle, adversarial_iv_leaks)`：
     - `views`：每次刷新的完整 serialized view dict（依刷新順序）
     - `narrow`：`{(analyzed_at, candidate_key): cost}`（SCALE-09 Part A
       dual-write 會寫入的內容，只含 visible candidate 的 non-null cost）
     - `snapshots`：`{analyzed_at: ChainSnapshot}`（resolver 需要的原始
       快照，比照 production `save_snapshot()` 落盤的那份）
-    - `oracle`：`{(analyzed_at, candidate_key): cost_or_None}`——legacy
-      `all_candidates` 的完整 membership 真相，`None` 明確代表「這天
-      不是有效候選」而非「沒查過」。
+    - `oracle`：`{(analyzed_at, candidate_key): cost}`——legacy
+      `all_candidates` 的完整 membership 真相；某個 (analyzed_at, key)
+      不在這個 dict 裡即代表那天不是有效候選（見下方
+      `_full_structural_key_space()`／sweep 測試如何運用這個定義）。
+    - `adversarial_iv_leaks`：AC-3 的固定 adversarial 候選（報價健全
+      但 IV invalid）意外進了 oracle 的那些 analyzed_at——正常情況下
+      應為空列，非空代表 `_perturb()` 的合成資料本身壞了，`_perturb()`
+      對應的 adversarial case 因此沒有意義。**不在這裡直接 `assert`**
+      （`/code-review` Standards 軸建議：module 層級的 assert 一旦
+      違反會變成整個檔案的 collection error，改回傳給呼叫端讓專屬測試
+      斷言，違反時才有一個看得懂名字的測試失敗）。
     """
     base = _load_base()
     rng = random.Random(SEED)
     views: list[dict] = []
     narrow: dict[tuple[str, str], float] = {}
     snapshots: dict[str, object] = {}
-    oracle: dict[tuple[str, str], float | None] = {}
+    oracle: dict[tuple[str, str], float] = {}
+    adversarial_iv_leaks: list[str] = []
 
     for i in range(N_REFRESHES):
         snap_dict = _perturb(base, i, rng)
@@ -225,23 +250,56 @@ def _run_all_refreshes():
                 key = entry["candidate_key"]
                 oracle[(analyzed_at, key)] = entry["cost"]
                 seen_this_refresh.add(key)
-        # AC-3 的候選必須真的沒進 oracle——否則這個 adversarial case
-        # 沒有意義（表示 IV 汙染沒生效），提早在這裡爆炸比事後才發現好。
-        assert _INVALID_IV_KEY not in seen_this_refresh, (
-            "adversarial IV-invalid candidate 意外通過了 A/B 層，"
-            "檢查 _perturb() 的履約價/到期日是否真的對得上一組合法配對")
+        if _INVALID_IV_KEY in seen_this_refresh:
+            adversarial_iv_leaks.append(analyzed_at)
 
         # narrow：SCALE-09 Part A 的 dual-write（純函式直接呼叫）。
         for key, cost in store.visible_candidate_costs(view).items():
             narrow[(analyzed_at, key)] = cost
 
-    return views, narrow, snapshots, oracle
+    return views, narrow, snapshots, oracle, adversarial_iv_leaks
 
 
 # 整套模擬只需要跑一次，供本檔案全部測試共用（module 層快取）——
 # 每個測試各自重跑一次 8 輪真實 `run_with_snapshot()` 會不必要地
 # 拖慢整個檔案，且模擬本身是純函式輸入輸出、無副作用可言，共用安全。
-_VIEWS, _NARROW, _SNAPSHOTS, _ORACLE = _run_all_refreshes()
+_VIEWS, _NARROW, _SNAPSHOTS, _ORACLE, _ADVERSARIAL_IV_LEAKS = _run_all_refreshes()
+
+
+def _full_structural_key_space(snap) -> set[str]:
+    """獨立於 oracle／resolver 之外，直接從快照原始履約價重新枚舉
+    「結構上可能被問到」的全部 candidate_key——單腳每個履約價一個、
+    Vertical 每組不同履約價配對一個、Butterfly 每組三個履約價一個，
+    鍵格式對齊 `service.valuation_key()`。**不套用任何 quote/IV/
+    structural 過濾**（不是在重造一份 production enumeration——那正是
+    AC-5 要求 resolver 本身不能做的事；這裡純粹是「這個字串理論上問得
+    出口」的全集，供測試檔案自己拿來對 oracle 做完整的正／負向查核）。
+
+    存在於這個全集、但不在 oracle 裡的 key，依 oracle 的定義（「找不到
+    ＝那天不是有效候選＝genuine gap」）就是 genuine gap，用來在真實
+    規模下正面驗證 resolver 對「structurally-plausible 但當時無效」的
+    候選一律正確回 gap，不只驗證兩個手挑的 adversarial case。"""
+    by_group: dict[tuple[str, str], set[float]] = {}
+    for c in snap.contracts:
+        by_group.setdefault((c.expiry, c.option_type), set()).add(c.strike)
+    keys: set[str] = set()
+    for (expiry, otype), strike_set in by_group.items():
+        strikes = sorted(strike_set)
+        single = "long-call" if otype == "call" else "long-put"
+        for k in strikes:
+            keys.add(f"{single}|{k:g}|{expiry}")
+        vertical = "bull-call-spread" if otype == "call" else "bear-put-spread"
+        for a, b in combinations(strikes, 2):
+            # `service.valuation_key()`：bull-call-spread 的買腿是較低
+            # 履約價（第一個 token），bear-put-spread 的買腿是較高
+            # 履約價（第一個 token）——與 `generate_spread_pairs()` 的
+            # `long_is_lower` 判準同一套規則。
+            lo, hi = (a, b) if vertical == "bull-call-spread" else (b, a)
+            keys.add(f"{vertical}|{lo:g}|{hi:g}|{expiry}")
+        fly = "call-fly" if otype == "call" else "put-fly"
+        for a, b, c3 in combinations(strikes, 3):
+            keys.add(f"{fly}|{a:g}|{b:g}|{c3:g}|{expiry}")
+    return keys
 
 
 def _resolve(analyzed_at: str, candidate_key: str, view: dict):
@@ -254,67 +312,94 @@ def _resolve(analyzed_at: str, candidate_key: str, view: dict):
         snapshot=_SNAPSHOTS[analyzed_at])
 
 
+# ---------- Precondition：adversarial IV-invalid 候選真的沒進 oracle ----------
+
+def test_adversarial_iv_invalid_candidate_never_actually_enters_oracle():
+    """AC-3 的固定 adversarial 候選（報價健全、IV 落在可解區間外）必須
+    在每一次刷新裡都真的沒有進 oracle——否則這個 adversarial case 沒有
+    意義（表示 `_perturb()` 的合成資料本身壞了，例如履約價/到期日沒對上
+    一組合法配對）。獨立成一個測試而非模組層級 assert：違反時是一個
+    看得懂名字的測試失敗，不是整個檔案的 collection error。"""
+    assert not _ADVERSARIAL_IV_LEAKS, (
+        f"adversarial IV-invalid candidate 在這些刷新裡意外進了 oracle："
+        f"{_ADVERSARIAL_IV_LEAKS}——檢查 _perturb() 的履約價/到期日是否"
+        "真的對得上一組合法配對")
+
+
 # ---------- AC-1／AC-2／AC-6：全面 A/B，產出 hit/backfilled/gap 報告 ----------
 
-def test_full_parity_sweep_across_every_refresh_and_oracle_candidate():
-    """對每一次刷新裡 oracle 記錄過的每一個 candidate_key（不論那天是
-    有效還是——注意 oracle dict 只在候選真的出現在 all_candidates 時
-    才有 entry，所以這裡遍歷的是「歷史上至少存在過一次」的候選全集，
-    對每個候選逐一在它「有記錄」的那些 analyzed_at 上核對），逐一比對
-    narrow／resolver 是否與 oracle 一致——票面明文：任何不一致都是
-    FAIL，沒有分類豁免。"""
+def test_full_parity_sweep_across_the_entire_structural_key_space():
+    """對每一次刷新，把 oracle 記錄過的候選集合擴大成整個結構上可能被
+    問到的 key 全集（`_full_structural_key_space()`＋oracle／narrow 的
+    key 聯集），逐一比對 narrow／resolver 是否與 oracle 一致——票面
+    明文：任何不一致都是 FAIL，沒有分類豁免。
+
+    這個聯集寫法（而非只迭代 `_ORACLE.items()`）是必要的：oracle dict
+    只在候選真的出現在 `all_candidates` 時才有 entry，只迭代它會讓
+    「這個 key 結構上存在、但當時因任何原因無效」這個 gap 分支永遠走
+    不到（`.items()` 迭代不到不存在的 key，不是迭代到了但值是
+    `None`）。改成先枚舉完整 key 空間、用 `oracle.get(key)` 查詢，
+    「當時無效」的 key 才會真的回傳 `None`，讓 gap 分支在整個真實規模
+    下被正面驗證，不只是兩個手挑的 adversarial case。"""
     hit = backfilled = gap = 0
     mismatches: list[str] = []
 
     by_view = {v["analyzed_at"]: v for v in _VIEWS}
-    for (analyzed_at, key), oracle_cost in _ORACLE.items():
+    for analyzed_at, snap in _SNAPSHOTS.items():
         view = by_view[analyzed_at]
-        if (analyzed_at, key) in _NARROW:
-            narrow_cost = _NARROW[(analyzed_at, key)]
-            if narrow_cost != oracle_cost:
-                mismatches.append(
-                    f"narrow hit mismatch {analyzed_at}/{key}: "
-                    f"narrow={narrow_cost!r} oracle={oracle_cost!r}")
-            else:
-                hit += 1
-            continue
+        day_keys = _full_structural_key_space(snap)
+        # oracle／narrow 理論上都是 day_keys 的子集（兩者都只可能引用
+        # 這一天快照裡真實存在的履約價/到期日組合）——這裡用聯集只是
+        # 防禦性寫法，不假設子集關係恆成立，確保萬一有遺漏也不會被
+        # 悄悄跳過。
+        day_keys |= {k for (at, k) in _ORACLE if at == analyzed_at}
+        day_keys |= {k for (at, k) in _NARROW if at == analyzed_at}
 
-        resolved = _resolve(analyzed_at, key, view)
-        if oracle_cost is not None:
-            if resolved.cost != oracle_cost:
-                mismatches.append(
-                    f"backfill mismatch {analyzed_at}/{key}: "
-                    f"resolved={resolved.cost!r} (reason={resolved.reason}) "
-                    f"oracle={oracle_cost!r}")
+        for key in day_keys:
+            oracle_cost = _ORACLE.get((analyzed_at, key))
+            if (analyzed_at, key) in _NARROW:
+                narrow_cost = _NARROW[(analyzed_at, key)]
+                if narrow_cost != oracle_cost:
+                    mismatches.append(
+                        f"narrow hit mismatch {analyzed_at}/{key}: "
+                        f"narrow={narrow_cost!r} oracle={oracle_cost!r}")
+                else:
+                    hit += 1
+                continue
+
+            resolved = _resolve(analyzed_at, key, view)
+            if oracle_cost is not None:
+                if resolved.cost != oracle_cost:
+                    mismatches.append(
+                        f"backfill mismatch {analyzed_at}/{key}: "
+                        f"resolved={resolved.cost!r} (reason={resolved.reason}) "
+                        f"oracle={oracle_cost!r}")
+                else:
+                    backfilled += 1
             else:
-                backfilled += 1
-        else:
-            # oracle 對這個 (analyzed_at, key) 沒有 entry 代表當次
-            # all_candidates 沒有它——這裡不會發生，因為 oracle dict
-            # 的 key 集合本身就是從 all_candidates 建的，oracle_cost
-            # 為 None 只可能是那個候選那天存在但 cost 欄位本身是
-            # None（理論上不會發生，`_history_entry()` 的 cost 恆為
-            # 有限數字）。保留這個分支只為窮舉完整、不遺漏任何一種
-            # oracle 值的可能性。
-            if resolved.cost is not None:
-                mismatches.append(
-                    f"false-positive backfill {analyzed_at}/{key}: "
-                    f"resolved={resolved.cost!r} but oracle recorded None")
-            else:
-                gap += 1
+                # 這個 key 從未出現在 all_candidates——legacy 定義下就
+                # 是 genuine gap，resolver 必須同意，不能自己算出一個
+                # 數字來。
+                if resolved.cost is not None:
+                    mismatches.append(
+                        f"false-positive backfill {analyzed_at}/{key}: "
+                        f"resolved={resolved.cost!r} (reason={resolved.reason}) "
+                        "but this key never appeared in legacy all_candidates")
+                else:
+                    gap += 1
 
     assert not mismatches, "\n".join(mismatches[:20])
-    assert hit > 0 and backfilled > 0
-    print(f"\nSCALE-12 parity report: hit={hit} backfilled={backfilled} "
-         f"gap={gap} total={hit + backfilled + gap}")
+    assert hit > 0 and backfilled > 0 and gap > 0
+    print(f"\nSCALE-12 full structural-key-space parity report: "
+         f"hit={hit} backfilled={backfilled} gap={gap} "
+         f"total={hit + backfilled + gap}")
 
 
 def test_at_least_one_oracle_valid_candidate_is_outside_narrow_visible_set():
     """AC-4 前提：production scale 下，oracle 裡「有效」的候選數量
     遠大於 narrow（visible）覆蓋的候選數量——backfill 分支真的會被
     觸發，不是空討論。"""
-    valid_oracle_keys = {k for k, cost in _ORACLE.items() if cost is not None}
-    outside_narrow = valid_oracle_keys - set(_NARROW)
+    outside_narrow = set(_ORACLE) - set(_NARROW)
     assert outside_narrow, "narrow 覆蓋了 oracle 全部候選，AC-4 沒有測試對象"
 
 

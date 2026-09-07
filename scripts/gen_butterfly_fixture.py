@@ -61,23 +61,37 @@ PRODUCTION_SCALE_STRIKES = [round(40.0 + 2.0 * i, 1) for i in range(60)]  # 40..
 R, Q, SIGMA = 0.04, 0.0, 0.28
 
 
-def _quote(option_type: str, strike: float, expiry: str, idx: int) -> OptionContract:
-    T = (date.fromisoformat(expiry) - TODAY).days / 365.0
-    theo = american_price(option_type, SPOT, strike, T, R, Q, SIGMA)
-    # 相對價差：近月價平窄、遠月/深價外寬——純粹讓後續過濾/品質標示
-    # 邏輯有真實可動作的變異，不代表任何真實市場觀察。
-    moneyness = abs(strike - SPOT) / SPOT
+def synthetic_bid_ask_iv(
+    option_type: str, strike: float, spot: float, T: float,
+    r: float, q: float, sigma: float,
+) -> tuple[float, float, float]:
+    """合成報價的價差／IV 公式——**不代表任何真實市場觀察**，純粹是
+    給過濾器／品質標示這類消費端一個真實可動作的變異（`/code-review`
+    Standards 軸抓到 SCALE-12／#263 的
+    `tests/test_scale12_parity_proof.py` 原本各自複製一份同樣的公式，
+    抽成這裡的共用函式，兩處呼叫端只各自保留自己的履約價/到期日梯子
+    與 idx／contract_symbol 這類命名慣例）。回傳 `(bid, ask, iv)`；
+    `last` 與 `contract_symbol` 留給呼叫端自行決定。"""
+    theo = american_price(option_type, spot, strike, T, r, q, sigma)
+    # 相對價差：近月價平窄、遠月/深價外寬。
+    moneyness = abs(strike - spot) / spot
     rel_spread = 0.02 + 0.03 * moneyness + 0.01 * T
     half = max(0.02, theo * rel_spread / 2.0)
     bid = round(max(0.01, theo - half), 2)
     ask = round(theo + half, 2)
-    iv = SIGMA + 0.05 * moneyness * (1 if option_type == "call" else -1)
+    iv = sigma + 0.05 * moneyness * (1 if option_type == "call" else -1)
+    return bid, ask, round(max(0.05, iv), 4)
+
+
+def _quote(option_type: str, strike: float, expiry: str, idx: int) -> OptionContract:
+    T = (date.fromisoformat(expiry) - TODAY).days / 365.0
+    bid, ask, iv = synthetic_bid_ask_iv(option_type, strike, SPOT, T, R, Q, SIGMA)
     return OptionContract(
         contract_symbol=f"XYZ{expiry.replace('-', '')}{option_type[0].upper()}{idx:03d}",
         option_type=option_type, strike=strike, expiry=expiry,
         bid=bid, ask=ask, last=round((bid + ask) / 2, 2),
         volume=10 + idx, open_interest=100 + idx * 3,
-        implied_volatility=round(max(0.05, iv), 4),
+        implied_volatility=iv,
     )
 
 
