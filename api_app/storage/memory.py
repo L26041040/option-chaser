@@ -13,9 +13,9 @@ from contextlib import contextmanager
 
 from . import (ChainBackoffEntry, ContractHistory, DataSourceSettings,
                DividendCacheEntry, IvBackfillRun, IvObservation, MetricEntry,
-               ProviderCredential, ProviderVerification, RateCacheEntry,
-               ResultFactContext, ResultRecord, ResultSummary, Scenario,
-               ScenarioExists, TreasuryYearCacheEntry)
+               NarrowHistoryEntry, ProviderCredential, ProviderVerification,
+               RateCacheEntry, ResultFactContext, ResultRecord, ResultSummary,
+               Scenario, ScenarioExists, TreasuryYearCacheEntry)
 from ..diagnostics import RETENTION_LIMIT, DiagnosticEvent
 from ..metrics import retention_cutoff
 
@@ -35,6 +35,9 @@ class MemoryStorage:
         self._dividend_cache: dict[str, DividendCacheEntry] = {}
         self._treasury_year_cache: dict[int, TreasuryYearCacheEntry] = {}
         self._chain_backoff: dict[str, ChainBackoffEntry] = {}
+        # SCALE-09（#261）：鍵是三個 identity 欄組成的 tuple，逐字對應
+        # PK `(scenario_id, analyzed_at, candidate_key)`。
+        self._narrow_history: dict[tuple[str, str, str], NarrowHistoryEntry] = {}
         self._settings: DataSourceSettings | None = None
         self._credentials: dict[str, ProviderCredential] = {}
         self._verifications: dict[str, ProviderVerification] = {}
@@ -217,6 +220,18 @@ class MemoryStorage:
 
     def save_chain_backoff(self, entry: ChainBackoffEntry) -> None:
         self._chain_backoff[entry.source] = entry
+
+    # ---------- Narrow visible-candidate history（SCALE-09／#261） ----------
+
+    def save_narrow_history(self, entries) -> None:
+        for entry in entries:
+            key = (entry.scenario_id, entry.analyzed_at, entry.candidate_key)
+            self._narrow_history[key] = entry
+
+    def get_narrow_history_entry(
+        self, scenario_id: str, analyzed_at: str, candidate_key: str,
+    ) -> NarrowHistoryEntry | None:
+        return self._narrow_history.get((scenario_id, analyzed_at, candidate_key))
 
     # ---------- 資料源設定與 credential（Settings／#124） ----------
 

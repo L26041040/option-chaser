@@ -18,10 +18,11 @@ from dataclasses import replace
 from api_app.diagnostics import RETENTION_LIMIT, DiagnosticEvent
 from api_app.storage import (ChainBackoffEntry, ContractHistory,
                              DataSourceSettings, DividendCacheEntry,
-                             IvBackfillRun, IvObservation, ProviderCredential,
-                             ProviderVerification, RateCacheEntry,
-                             ResultRecord, Scenario, ScenarioExists,
-                             TreasuryYearCacheEntry, UsageSetting)
+                             IvBackfillRun, IvObservation, NarrowHistoryEntry,
+                             ProviderCredential, ProviderVerification,
+                             RateCacheEntry, ResultRecord, Scenario,
+                             ScenarioExists, TreasuryYearCacheEntry,
+                             UsageSetting)
 from api_app.storage.memory import MemoryStorage
 
 TEST_DB_URL = os.environ.get("OC_TEST_DATABASE_URL")
@@ -58,7 +59,8 @@ def storage(request):
                      "data_source_settings, "
                      "provider_credentials, provider_verifications, "
                      "iv_observations, iv_backfill_runs, contract_iv_history, "
-                     "diagnostics, operational_metrics RESTART IDENTITY")
+                     "diagnostics, operational_metrics, narrow_history "
+                     "RESTART IDENTITY")
     yield st
 
 
@@ -668,6 +670,91 @@ def test_chain_backoff_does_not_leak_across_sources(storage):
         observed_at="2026-09-06T12:00:00+00:00", last_success_at=None))
 
     assert storage.get_chain_backoff("yfinance") is None
+
+
+# ---------- Narrow visible-candidate history（SCALE-09／#261） ----------
+
+def test_narrow_history_starts_with_no_row(storage):
+    """AC-2：沒有這一列＝尚未 materialize／cache miss，不是 gap——
+    呼叫端必須自己分辨「沒有列」與「有列但 cost 是 None」。"""
+    assert storage.get_narrow_history_entry("s1", "2026-09-06T00:00:00+00:00",
+                                            "bull-call-spread|100|110|2026-09-18") is None
+
+
+def test_narrow_history_roundtrips_a_known_valid_point(storage):
+    entry = NarrowHistoryEntry(
+        scenario_id="s1", analyzed_at="2026-09-06T00:00:00+00:00",
+        candidate_key="bull-call-spread|100|110|2026-09-18", cost=3.25)
+    storage.save_narrow_history([entry])
+    assert storage.get_narrow_history_entry(
+        "s1", "2026-09-06T00:00:00+00:00",
+        "bull-call-spread|100|110|2026-09-18") == entry
+
+
+def test_narrow_history_roundtrips_an_explicit_gap(storage):
+    """AC-2：`cost` nullable 且可存 explicit gap——這是 negative cache
+    的落盤形狀（SCALE-12／14 才會真的寫入，這裡先證明型別／schema
+    支援得住，`cost=None` 不會被 Postgres 誤存成 0 或整列消失）。"""
+    entry = NarrowHistoryEntry(
+        scenario_id="s1", analyzed_at="2026-09-06T00:00:00+00:00",
+        candidate_key="bull-call-spread|100|110|2026-09-18", cost=None)
+    storage.save_narrow_history([entry])
+    got = storage.get_narrow_history_entry(
+        "s1", "2026-09-06T00:00:00+00:00",
+        "bull-call-spread|100|110|2026-09-18")
+    assert got is not None
+    assert got.cost is None
+
+
+def test_narrow_history_pk_is_exactly_the_three_identity_columns(storage):
+    """AC-2：PK 只有三個 identity 欄——同一組 (scenario_id, analyzed_at,
+    candidate_key) 重複寫入是 upsert（覆蓋），不是插入第二列／報衝突。"""
+    storage.save_narrow_history([NarrowHistoryEntry(
+        scenario_id="s1", analyzed_at="2026-09-06T00:00:00+00:00",
+        candidate_key="k", cost=1.0)])
+    storage.save_narrow_history([NarrowHistoryEntry(
+        scenario_id="s1", analyzed_at="2026-09-06T00:00:00+00:00",
+        candidate_key="k", cost=2.0)])
+    got = storage.get_narrow_history_entry(
+        "s1", "2026-09-06T00:00:00+00:00", "k")
+    assert got.cost == 2.0
+
+
+def test_narrow_history_distinguishes_different_analyzed_at_and_scenarios(storage):
+    """不同 `analyzed_at`（同一劇本的不同刷新）與不同 `scenario_id`
+    各自獨立——這是 PK 真的涵蓋這三個維度的直接證明，不只是「存得進去
+    讀得回來」。"""
+    storage.save_narrow_history([
+        NarrowHistoryEntry("s1", "2026-09-06T00:00:00+00:00", "k", 1.0),
+        NarrowHistoryEntry("s1", "2026-09-07T00:00:00+00:00", "k", 2.0),
+        NarrowHistoryEntry("s2", "2026-09-06T00:00:00+00:00", "k", 3.0),
+    ])
+    assert storage.get_narrow_history_entry(
+        "s1", "2026-09-06T00:00:00+00:00", "k").cost == 1.0
+    assert storage.get_narrow_history_entry(
+        "s1", "2026-09-07T00:00:00+00:00", "k").cost == 2.0
+    assert storage.get_narrow_history_entry(
+        "s2", "2026-09-06T00:00:00+00:00", "k").cost == 3.0
+
+
+def test_narrow_history_batch_write_handles_multiple_candidates_at_once(storage):
+    """一次 refresh 通常會 dual-write多個 visible candidate——批次寫入
+    要真的把每一筆都存進去，不是只存最後一筆。"""
+    entries = [
+        NarrowHistoryEntry("s1", "2026-09-06T00:00:00+00:00", f"k{i}", float(i))
+        for i in range(5)
+    ]
+    storage.save_narrow_history(entries)
+    for i in range(5):
+        got = storage.get_narrow_history_entry(
+            "s1", "2026-09-06T00:00:00+00:00", f"k{i}")
+        assert got is not None and got.cost == float(i)
+
+
+def test_narrow_history_empty_batch_is_a_no_op(storage):
+    storage.save_narrow_history([])   # 不得拋錯
+    assert storage.get_narrow_history_entry(
+        "s1", "2026-09-06T00:00:00+00:00", "k") is None
 
 
 # ---------- 清單摘要（V3／#51） ----------

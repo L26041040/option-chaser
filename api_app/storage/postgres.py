@@ -24,9 +24,9 @@ from psycopg.types.json import Jsonb
 
 from . import (ChainBackoffEntry, ContractHistory, DataSourceSettings,
                DividendCacheEntry, IvBackfillRun, IvObservation, MetricEntry,
-               ProviderCredential, ProviderVerification, RateCacheEntry,
-               ResultFactContext, ResultRecord, ResultSummary, Scenario,
-               ScenarioExists, TreasuryYearCacheEntry, UsageSetting)
+               NarrowHistoryEntry, ProviderCredential, ProviderVerification,
+               RateCacheEntry, ResultFactContext, ResultRecord, ResultSummary,
+               Scenario, ScenarioExists, TreasuryYearCacheEntry, UsageSetting)
 from ..diagnostics import RETENTION_LIMIT, DiagnosticEvent
 from ..metrics import retention_cutoff
 
@@ -324,6 +324,21 @@ CREATE TABLE IF NOT EXISTS operational_metrics (
     total       DOUBLE PRECISION NOT NULL DEFAULT 0,
     max_value   DOUBLE PRECISION,
     PRIMARY KEY (metric, bucket, source, symbol)
+);
+-- SCALE-09（#261，Scaling Foundation Stage 1-1）：narrow visible-
+-- candidate history——熱快取，不是真相（見 option_chaser/history_
+-- resolver.py 檔頭）。PK 是三個 identity 欄，`cost` 不屬於 PK 且
+-- nullable：非 NULL＝已知有效歷史點，NULL＝已驗證的 genuine gap
+-- （negative cache，SCALE-12／14 才會真的寫入這一種），沒有這一列＝
+-- 尚未 materialize。本票（dual-write）只會寫入 `cost` 非 NULL 的列。
+-- 永久保存、暫不設 retention（OD-07）——不像 `diagnostics`／
+-- `operational_metrics` 有 trim-on-write。
+CREATE TABLE IF NOT EXISTS narrow_history (
+    scenario_id     TEXT NOT NULL,
+    analyzed_at     TEXT NOT NULL,
+    candidate_key   TEXT NOT NULL,
+    cost            DOUBLE PRECISION,
+    PRIMARY KEY (scenario_id, analyzed_at, candidate_key)
 );
 """
 
@@ -842,6 +857,39 @@ class PostgresStorage:
                  Jsonb(entry.rows) if entry.rows is not None else None,
                  entry.note, entry.last_success_at, entry.market_day,
                  entry.attempted_day))
+
+    # ---------- Narrow visible-candidate history（SCALE-09／#261） ----------
+
+    def save_narrow_history(self, entries) -> None:
+        entries = list(entries)
+        if not entries:
+            return
+        values_sql = ", ".join(["(%s, %s, %s, %s)"] * len(entries))
+        params: list = []
+        for entry in entries:
+            params.extend([entry.scenario_id, entry.analyzed_at,
+                          entry.candidate_key, entry.cost])
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO narrow_history "
+                "(scenario_id, analyzed_at, candidate_key, cost) "
+                f"VALUES {values_sql} "
+                "ON CONFLICT (scenario_id, analyzed_at, candidate_key) "
+                "DO UPDATE SET cost = EXCLUDED.cost", params)
+
+    def get_narrow_history_entry(
+        self, scenario_id: str, analyzed_at: str, candidate_key: str,
+    ) -> NarrowHistoryEntry | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT scenario_id, analyzed_at, candidate_key, cost "
+                "FROM narrow_history "
+                "WHERE scenario_id = %s AND analyzed_at = %s "
+                "AND candidate_key = %s",
+                (scenario_id, analyzed_at, candidate_key)).fetchone()
+        return (NarrowHistoryEntry(scenario_id=row[0], analyzed_at=row[1],
+                                   candidate_key=row[2], cost=row[3])
+                if row else None)
 
     # ---------- Chain 429 backoff（SCALE-04／#255，provider-global） ----------
 

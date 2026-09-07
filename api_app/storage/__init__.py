@@ -10,7 +10,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from typing import Protocol
+from typing import Iterable, Protocol
 
 from ..diagnostics import DiagnosticEvent
 
@@ -275,6 +275,35 @@ class ChainBackoffEntry:
     consecutive_failures: int
     observed_at: str
     last_success_at: str | None = None
+
+
+@dataclass(frozen=True)
+class NarrowHistoryEntry:
+    """SCALE-09（#261，Scaling Foundation Stage 1-1）：narrow history
+    表的一列——票面明訂的最小欄位集合。PK 是
+    `(scenario_id, analyzed_at, candidate_key)` 這三個 identity 欄，
+    **`cost` 不屬於 PK**（AC-2）。
+
+    三種快取狀態全部由這個型別加上「查不查得到列」共同表達，呼叫端
+    （`get_narrow_history_entry()`）用回傳值本身分辨：
+    - 回傳非 `None`、`cost` 非 `None` ＝已知有效歷史點。
+    - 回傳非 `None`、`cost` 為 `None` ＝已驗證的 genuine gap
+      （negative cache——resolver 已經判定過這個 candidate 當時不
+      eligible，不必每次查詢都重跑一次 resolver）。
+    - 回傳 `None`（沒有這一列）＝尚未 materialize／cache miss，
+      **不是** gap——SCALE-09 本票的 dual-write 只寫「已知有效」這一
+      種狀態（票面：「每次 refresh 只 dual-write visible candidate 的
+      non-null cost」），negative cache 的寫入是 resolver 實際被呼叫
+      之後（SCALE-12／14 的範圍）才會發生，這個型別本身兩種語意都能
+      承載，不需要因為未來加上 negative cache 而改 schema。
+
+    RL：narrow history **永久保存，暫不設 retention**（OD-07）——
+    這裡不像 `diagnostics`／`operational_metrics` 有 trim-on-write。
+    """
+    scenario_id: str
+    analyzed_at: str
+    candidate_key: str
+    cost: float | None
 
 
 @dataclass(frozen=True)
@@ -676,6 +705,26 @@ class Storage(Protocol):
         "max_row_bytes"}, "snapshots": {同上}}`——任一表沒有任何列時
         對應的大小/分布欄位為 `None`（沒有東西可以算平均／最大值，
         不是假裝成 0）。"""
+
+    # ---------- Narrow visible-candidate history（SCALE-09／#261） ----------
+
+    def save_narrow_history(self, entries: Iterable[NarrowHistoryEntry]) -> None:
+        """Upsert 一批 narrow history 列（PK 衝突即覆蓋——同一個
+        `(scenario_id, analyzed_at, candidate_key)` 重複寫入是合法的
+        冪等操作，不是錯誤）。SCALE-09 本票唯一呼叫端只會傳入
+        `cost` 全部非 `None` 的列（visible candidate 的 dual-write，
+        票面：「每次 refresh 只 dual-write visible candidate 的
+        non-null cost」）；`cost=None`（negative cache）是這個方法
+        結構上支援、但要等 resolver 真正被呼叫（SCALE-12／14）才會
+        用到的能力，不是本票會產生的資料。"""
+
+    def get_narrow_history_entry(
+        self, scenario_id: str, analyzed_at: str, candidate_key: str,
+    ) -> NarrowHistoryEntry | None:
+        """單筆查詢——`None` ＝沒有這一列（尚未 materialize，不是
+        gap）；非 `None` 時 `.cost` 才是三態裡「已知有效」或「已驗證
+        gap」的分野。本票主要用途是儲存契約測試的 round-trip 驗證；
+        SCALE-12（parity proof）會是真正的消費端。"""
 
     @property
     def kind(self) -> str:

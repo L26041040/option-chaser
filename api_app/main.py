@@ -37,8 +37,9 @@ from .dividend_cache import cached_loader as cached_dividend_loader
 from .identity import IdentityResolver, default_identity_resolver
 from .rate_cache import cached_loader
 from .storage import (ContractHistory, DataSourceSettings, IvBackfillRun,
-                      IvObservation, ProviderCredential, ProviderVerification,
-                      RateCacheEntry, ResultRecord, ResultSummary, Scenario,
+                      IvObservation, NarrowHistoryEntry, ProviderCredential,
+                      ProviderVerification, RateCacheEntry, ResultRecord,
+                      ResultSummary, Scenario,
                       ScenarioExists, Storage, UsageSetting)
 from .storage.factory import database_url_candidates, storage_from_env
 from .treasury_cache import cached_rate_curve_rows
@@ -1277,6 +1278,16 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
             spot=store.spot(view), per_family=per_family or None,
             family_eligibility=family_elig, owner_id=owner_id, **fact_context))
         _db().save_snapshot(sc.id, analyzed_at, snapshot, owner_id=owner_id)
+        # SCALE-09（#261，Scaling Foundation Stage 1-1）：dual-write
+        # narrow history——只寫 visible candidate 的 non-null cost
+        # （`store.visible_candidate_costs()` 即 FR-2.2 定義的聯集），
+        # `results.view` 本身完全不受影響。**這裡不切換任何讀取
+        # 路徑**——`GET /history` 仍然只讀 `result_history()`（Stage
+        # boundary，SCALE-14 才會接線）。
+        _db().save_narrow_history(
+            NarrowHistoryEntry(scenario_id=sc.id, analyzed_at=analyzed_at,
+                              candidate_key=key, cost=cost)
+            for key, cost in store.visible_candidate_costs(view).items())
         _db().append_event(ts=now_utc_iso(), scenario_id=sc.id,
                            event="ANALYSIS_COMPLETED",
                            payload={"analyzed_at": analyzed_at,

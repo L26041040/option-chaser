@@ -170,6 +170,54 @@ def representative_candidates_by_family(view: dict | None) -> dict:
     }
 
 
+def visible_candidate_keys(view: dict | None) -> set[str]:
+    """SCALE-09（#261，Scaling Foundation Stage 1-1，FR-2.2）：narrow
+    history dual-write 要覆蓋的「visible candidate」集合——票面明定的
+    三者聯集，逐 family、逐到期日：
+    1. 各到期日的 `expiry_top10`（使用者在到期日結構區點得到的前十名）
+    2. 各到期日的 `expiry_best`
+    3. 跨 family champion（`representative_candidate`）與 per-family
+       代表（`per_family`）
+
+    第 3 項不直接呼叫 `representative_candidate()`／
+    `representative_candidates_by_family()`——那兩個函式回傳的是清單
+    卡片要的**投影**（`{strategy, legs, expiry, baseline_return}`，
+    見 `_project_representative_row()`），不含 `candidate_key` 本身，
+    加這個欄位會是清單卡片契約的破壞性變動、牽動前端型別與契約樣本，
+    超出本票範圍。這裡改為直接收 `_baseline_group()` 這個小池子（每個
+    subtype 各一列，baseline 期）裡**全部**列的 `candidate_key`——
+    `representative_candidate`／`per_family` 兩者的選擇本來就是從這個
+    小池子裡 `max()` 出來的，因此這裡收全部列必然是包含兩者選中結果
+    的超集合，不會漏掉任何一個，多收的那幾個非冠軍 subtype 候選也
+    不違反任何 AC（dual-write 多寫幾個 visible candidate 不是問題，
+    漏寫才是）。
+    """
+    if view is None:
+        return set()
+    keys: set[str] = set()
+    for r in view["results"]:
+        for group in r["expiry_top10"]:
+            keys.update(group["candidate_keys"])
+        keys.update(r["expiry_best"])
+    baseline_group = _baseline_group(view)
+    if baseline_group is not None:
+        keys.update(row["candidate_key"] for row in baseline_group["rows"])
+    return keys
+
+
+def visible_candidate_costs(view: dict | None) -> dict[str, float]:
+    """`visible_candidate_keys(view)` 逐一查 `candidate_pool[key]
+    ["natural_cost"]`——與 V9（#57）`spread_cost_history()` 讀
+    `all_candidates` 裡的 `cost` 欄位是同一個數字的兩種讀法（皆源自
+    `scenarios.natural_cost()`），這裡改讀 `candidate_pool` 是因為
+    T09（#191）之後那才是唯一完整保存全部候選欄位的容器，且不依賴
+    `all_candidates`（SCALE-17 之後會被移除的既有欄位）存續。"""
+    if view is None:
+        return {}
+    pool = view["candidate_pool"]
+    return {key: pool[key]["natural_cost"] for key in visible_candidate_keys(view)}
+
+
 def best_return(view: dict | None) -> float | None:
     """baseline 期（最接近目標年月的到期日）本身的最高收益率——與 Step 2
     主圖同一口徑（QA1-03／#30：先前誤取全部到期日的全域最大值，較早到期日

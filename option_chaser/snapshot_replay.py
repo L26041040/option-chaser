@@ -34,6 +34,44 @@ def _finite(x: float | None) -> bool:
     return x is not None and math.isfinite(x)
 
 
+def parse_candidate_key(
+    candidate_key: str,
+) -> tuple[str, str, tuple[float, ...], str] | None:
+    """把 `candidate_key`（`service.valuation_key()` 的輸出格式）拆成
+    `(strategy, option_type, strikes, expiry)`——`strikes` 依身份鍵
+    既有順序（單腿一個；vertical＝買腿在前賣腿在後；butterfly＝低中高）。
+    格式不合法或 strategy 未知一律回傳 `None`，不拋例外。
+
+    SCALE-09（#261）：抽成獨立公開函式——candidate-specific historical
+    resolver 需要在呼叫 `cost_from_snapshot()`（本模組）之前，先自己
+    找出各腿合約做 A 層／結構合法性檢查，若各自維護一份 `candidate_key`
+    拆解規則，未來格式改動只改到其中一處就會悄悄失準（AC-6 的精神：
+    唯一 canonical 判準）。`cost_from_snapshot()` 本身改為呼叫這個
+    函式，不再各自重複一份拆解邏輯。"""
+    parts = candidate_key.split("|")
+    strategy = parts[0]
+
+    if strategy in _SINGLE_LEG_STRATEGIES:
+        if len(parts) != 3:
+            return None
+        return (strategy, _SINGLE_LEG_STRATEGIES[strategy],
+                (float(parts[1]),), parts[2])
+
+    if strategy in _VERTICAL_STRATEGIES:
+        if len(parts) != 4:
+            return None
+        return (strategy, _VERTICAL_STRATEGIES[strategy],
+                (float(parts[1]), float(parts[2])), parts[3])
+
+    if strategy in _BUTTERFLY_STRATEGIES:
+        if len(parts) != 5:
+            return None
+        return (strategy, _BUTTERFLY_STRATEGIES[strategy],
+                (float(parts[1]), float(parts[2]), float(parts[3])), parts[4])
+
+    return None
+
+
 def cost_from_snapshot(snapshot: ChainSnapshot, candidate_key: str) -> float | None:
     """依 `candidate_key`（`service.valuation_key()` 的輸出格式）解析
     出這個 candidate 的策略與各腿履約價／到期日，從 `snapshot` 逐一
@@ -47,24 +85,20 @@ def cost_from_snapshot(snapshot: ChainSnapshot, candidate_key: str) -> float | N
     的合法前綴集合由 `service._strategy_of()` 窮舉，三個 dict 的鍵
     集合與它逐字一致）。
     """
-    parts = candidate_key.split("|")
-    strategy = parts[0]
+    parsed = parse_candidate_key(candidate_key)
+    if parsed is None:
+        return None
+    strategy, option_type, strikes, expiry = parsed
 
     if strategy in _SINGLE_LEG_STRATEGIES:
-        if len(parts) != 3:
-            return None
-        option_type = _SINGLE_LEG_STRATEGIES[strategy]
-        strike, expiry = float(parts[1]), parts[2]
+        (strike,) = strikes
         contract = find_contract(snapshot, option_type, strike, expiry)
         if contract is None or not _finite(contract.ask):
             return None
         return _single_leg_cost(contract.ask)
 
     if strategy in _VERTICAL_STRATEGIES:
-        if len(parts) != 4:
-            return None
-        option_type = _VERTICAL_STRATEGIES[strategy]
-        long_strike, short_strike, expiry = float(parts[1]), float(parts[2]), parts[3]
+        long_strike, short_strike = strikes
         long_c = find_contract(snapshot, option_type, long_strike, expiry)
         short_c = find_contract(snapshot, option_type, short_strike, expiry)
         if long_c is None or short_c is None:
@@ -74,11 +108,7 @@ def cost_from_snapshot(snapshot: ChainSnapshot, candidate_key: str) -> float | N
         return _vertical_cost(long_c.ask, short_c.bid)
 
     if strategy in _BUTTERFLY_STRATEGIES:
-        if len(parts) != 5:
-            return None
-        option_type = _BUTTERFLY_STRATEGIES[strategy]
-        low_strike, mid_strike, high_strike, expiry = (
-            float(parts[1]), float(parts[2]), float(parts[3]), parts[4])
+        low_strike, mid_strike, high_strike = strikes
         low_c = find_contract(snapshot, option_type, low_strike, expiry)
         mid_c = find_contract(snapshot, option_type, mid_strike, expiry)
         high_c = find_contract(snapshot, option_type, high_strike, expiry)
