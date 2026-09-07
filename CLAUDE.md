@@ -422,15 +422,82 @@ zero regression。
   1999 passed（記憶體＋真實 Postgres 雙後端），前端 typecheck／813
   條 Vitest／build 全綠，零回歸。
 
-**下一步**：依 dependency graph 繼續——SCALE-13（Ownership Contract，
-被 SCALE-11 擋，現已解除）。**SCALE-15（#266，Production Evidence
-Gate）的前置施工（SCALE-14＋SCALE-08）已全數完成，該票本身已解鎖**
-——但 SCALE-15 標 `needs-human-validation`（非 `ready-for-agent`），
-明文要求「在真實部署＋真實 Neon 上完成並記錄」7 項 production
-validation＋「Owner 明確記錄 GO 才解鎖 SCALE-16」，這是 agent 沙箱
-環境結構上做不到的事（無法連到真實 production／Neon，也不能代替
-Owner 簽核）。依 Hard Stop 規則，SCALE-13 做完後即停下回報，不自行
-嘗試繞過或代答 SCALE-15。
+- **SCALE-13**［#264］Ownership A-1 Contract：3 張 settings/credential
+  表 per-owner 遷移（commits `831ce8e`＋`1d5d3bd`＋`276f39d`＋
+  `57e0c66`，被 SCALE-11 擋，現已解除）：`data_source_settings`／
+  `provider_credentials`／`provider_verifications` 三張過去是單例／
+  provider-key 形狀（無 owner 維度），不能像 SCALE-06 那樣單純加欄位
+  ＋WHERE 過濾——加一欄 `owner_id` 不會讓它們變成 per-owner，只會讓
+  不同 owner 的寫入互相覆寫同一列。改用 additive-first：新增 3 張
+  全新、從第一天就是正確 per-owner 形狀的表（`owner_settings`／
+  `owner_credentials`／`owner_verifications`，`owner_id` 是 PK 一
+  部分，天生 NOT NULL），舊表凍結但保留、仍可讀，**不做不可逆 DROP**
+  （Rollback Point 硬性紅線）。7 個既有 Storage Protocol 方法
+  （`get_settings`／`save_settings`／`get_credential`／
+  `save_credential`／`delete_credential`／`get_verification`／
+  `save_verification`）改為 owner-aware：新表 miss 時對 **solo owner**
+  read-through 讀舊表、順手 write-through 進新表（同一個
+  `with self._connect()` 交易內完成，AC-4「切換前後沒有任何窗口會讓
+  credential/settings 查不到或誤讀另一 owner」因此成立，不依賴任何人
+  先手動跑過 backfill）；`save_*()` 這個方法起**不再寫舊表**
+  （write-forward-only）；`delete_credential()` **新舊兩張表都清**——
+  防堵「使用者明確刪除後，下次讀取的 read-through 把舊表裡沒被清掉的
+  資料復活」這個殭屍復活風險。新增 `backfill_settings_to_owner()`
+  （比照既有 `backfill_missing_owner_ids()`：只搬「新表這個 owner 還
+  沒有」的部分，永不覆蓋新表已存在的資料，天生冪等可續跑，AC-3）＋
+  `scripts/backfill_settings_to_owner.py`（比照既有
+  `backfill_owner_ids.py` 慣例）；新增 `owner_id_null_counts()`
+  （AC-5，對 5 張原始 row-scoped 表＋3 張新表共 8 張各自回報還有
+  幾筆 `owner_id IS NULL`——3 張新表因 PK 恆為 0）。`main.py` 的
+  `_fetch_chain()`／`_credential_map()`／`_settings_view()` 與
+  5 個 HTTP 端點（`GET/PUT /api/settings`、`PUT/POST/DELETE
+  /api/settings/credentials/{provider}[/test]`）全數改用
+  `identity_resolver()` 傳入 owner；`/api/settings*` 契約形狀本身
+  逐位元不變（純內部儲存層改動，前端零檔案異動）。
+
+  **一項刻意記錄、未執行的取捨**（AC-5「收斂必要 NOT NULL/keys」）：
+  本票**不**對 5 張原始 row-scoped 表（`scenarios`／`results`／
+  `snapshots`／`events`／`diagnostics`）的 `owner_id` 加 DB 層級
+  `ALTER COLUMN ... SET NOT NULL`——AC-1～AC-7 沒有任何一條要求 DB
+  層級約束，且這 5 張表的 `owner_id IS NULL` 目前被至少 14 處既有
+  `tests/test_storage_contract.py` 契約測試刻意寫入、用來模擬「尚未
+  backfill 的舊列」以驗證 `backfill_missing_owner_ids()` 冪等性與
+  SCALE-11 fail-closed 行為本身正確性；加上 NOT NULL 會讓這些測試對
+  Postgres 後端全數以 `NotNullViolation` 失敗。SCALE-11 的
+  `require_owner()` fail-closed 讀取路徑已達成同等實務保證（`owner_id
+  IS NULL` 的舊列對任何身分都永久查不到），只是強制點在應用層而非
+  schema 層。已記錄在 `owner_id_null_counts()` docstring，Owner 若
+  仍要 DB 層級約束，需先另開一票把那些測試改成不依賴 dataclass
+  建構式寫入 NULL。**`/code-review` 兩軸（Standards＋Spec）皆確認這個
+  判斷合理、AC-5 字面（「均無 NULL owner」的結構性核對，非強制
+  schema 約束）成立**。
+
+  **一項 Spec 軸抓到、經評估判斷為可接受的既有揭露落差**：Rollback
+  Point 原文「讀寫可切回舊路徑」在字面上不完全成立——寫入是
+  write-forward-only（本票之後 `save_*()` 不再寫舊表），若真的把
+  程式碼回退到 SCALE-13 之前的版本，讀得到的是「遷移當下那一刻」的
+  值，不是回退前一刻的最新值（`memory.py`／`postgres.py` 對應方法
+  註解已明文記錄這個後果）。但 Rollback Point 段落自己的**硬性紅線**
+  「不得用破壞性 in-place migration 讓舊 singleton rollback 無路可
+  走」確實成立——舊表未被刪除，回退永遠有路可走，只是有資料新鮮度
+  代價、非資料遺失。判斷維持現行 write-forward-only 設計（不改為
+  dual-write），理由：本產品目前只有 solo 這一個 owner，改回退版本
+  是人工操作、非即時 failover；為一個「事後手動 downgrade」情境
+  維護兩套永久同步的寫入路徑，其複雜度與這個風險的實際發生機率不成
+  比例。此取捨已記錄於此，供 Owner 覆核。
+
+**下一步**：SCALE-13 完成後，dependency graph 上已無其餘可自主開工
+的 unblocked ticket——**Hard Stop 正式達成**。SCALE-15（#266，
+Production Evidence Gate）的前置施工（SCALE-14＋SCALE-08）已全數
+完成、該票本身已解鎖，但標 `needs-human-validation`（非
+`ready-for-agent`），明文要求「在真實部署＋真實 Neon 上完成並記錄」
+7 項 production validation＋「Owner 明確記錄 GO 才解鎖 SCALE-16」，
+這是 agent 沙箱環境結構上做不到的事（無法連到真實 production／
+Neon，也不能代替 Owner 簽核）。SCALE-16（#267）／SCALE-17（#268）
+依 dependency graph 皆被 SCALE-15 的 GO 擋住；SCALE-18（#269）另被
+Owner Decision EG-2（尚未裁示）擋住，且明文標註不可施工。依 Hard
+Stop 規則，本輪自主施工到此為止，不自行嘗試繞過或代答 SCALE-15，
+等待 Owner 完成 production validation 並給出 GO。
 
 ### OPTION-SCALING-TICKETS-REVISE-006 拆票（2026-09-06，歷史紀錄）
 
