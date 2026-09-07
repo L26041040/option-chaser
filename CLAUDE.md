@@ -375,9 +375,62 @@ zero regression。
   既有 mismatch 分支）。全套後端測試（記憶體＋真實 Postgres 雙後端）
   1977 passed，0 failed。
 
-**下一步**：依 dependency graph 繼續——SCALE-14（Stage 1-3 切換讀取
-路徑，被 SCALE-12 擋，現已解除）。SCALE-13（Ownership Contract，被
-SCALE-11 擋，現已解除）可與 SCALE-14 任意順序並行推進。
+- **SCALE-14**［#265］Stage 1-3 切換 `/history` 讀取路徑（commits
+  `0ad7f27`＋跟進 `e901df7`／`a785ad8`，被 SCALE-12 擋，現已解除）：
+  `GET /api/scenarios/{id}/history` 改為 canonical read semantics，
+  不再整份讀取 `results.view`（AC-5）。逐 `analyzed_at`：narrow row
+  存在且 `cost != None` → hit；存在且 `cost == None` → 已知 genuine
+  gap（negative cache，不重跑 resolver）；不存在（cache miss）→ 讀
+  該天 fact context＋原始快照呼叫 SCALE-09 `resolve_historical_cost()`，
+  valid／invalid 兩種結果都 write-through 落盤（AC-3）。新增 4 個
+  owner-scoped 批次查詢方法（`result_spot_timestamps`——spot 只讀
+  `snapshots` JSONB、不碰 `results.view`；`narrow_history_for_
+  candidate`；`result_fact_contexts`；`snapshots_batch`），Postgres
+  皆用 `ANY(%s)` 批次查詢避免 N+1。AC-4 真實 Postgres benchmark（100
+  個歷史點**全部 cache miss**，最貴情境）：舊路徑 median 640.99ms／
+  p95 840.92ms／19.77MB，新路徑 median 80.23ms／p95 101.68ms／
+  1.48MB——即使最貴情境仍快約 8×（median）／8.3×（p95）、bytes 少
+  約 13×。AC-7 fail-safe：`missing_fact_context`（暫時性，SCALE-01
+  backfill 尚未跑到）刻意不 write-through，其餘 gap 原因（含
+  `version_mismatch`）是穩定事實正常快取；未建置選用的 legacy view
+  compatibility fallback（`HISTORY_REPLAY_VERSION` 恆為 1，無存量
+  資料觸發得到，裁決記錄在 `Storage.result_spot_timestamps()`
+  docstring）。`store.spread_cost_history()` 刻意保留、非死碼——是
+  票面明訂 Rollback Point 本身。零前端程式碼改動（回應 JSON 形狀
+  不變，`baseline_return`／`rank_in_expiry` 恆為 `null`，Audit 證實
+  前端零消費者，結構性測試鎖定 `src/spreadHistory.ts` 不讀這兩個
+  欄位）；既有 `test_api_history.py` 5 條測試逐字未改全數通過；
+  Playwright e2e（Spread 相關 11 條，手機＋桌面）全綠。
+
+  `/code-review`（Standards＋Spec 兩軸）皆抓到真缺口並已修正：
+  (1) Standards——`main.py` 原本直接對 `resolved.reason` 字串做
+  分支決策，牴觸 `ResolvedHistoricalCost` 自己既有的文件契約
+  （SCALE-09：「呼叫端只該讀 cost，不該對 reason 字串做分支決策」）。
+  新增 `ResolvedHistoricalCost.is_write_through_eligible()`，caching
+  policy 封裝在 `history_resolver.py` 內部，`main.py` 改呼叫方法而非
+  比對字串；(2) Spec——`backfill_missing_owner_ids()` 沒有把
+  `narrow_history` 加進去（SCALE-09 出貨時漏接 `owner_id`，這張表
+  比 SCALE-06／SCALE-11 當初列舉的「5 張 row-scoped 表」晚出現），
+  正式環境既有 dual-write 舊列在 SCALE-14 上線後會對任何 owner 永久
+  查不到（resolver miss 會自動重算覆蓋，非靜默損毀，但仍是缺口）；
+  已補齊兩後端＋Protocol docstring，變成 6 張表。修正過程中發現並
+  修正自己的一個設計問題：`save_narrow_history()` 原本在寫入時就
+  強制 `owner_id` 非 `None`，與既有 `save_result()`／`save_
+  snapshot()`「寫入寬鬆、讀取才強制」慣例不一致，且會讓 backfill
+  情境結構上不可能發生——已改為只在讀取方法（`get_narrow_history_
+  entry()`／`narrow_history_for_candidate()`）強制。全套後端測試
+  1999 passed（記憶體＋真實 Postgres 雙後端），前端 typecheck／813
+  條 Vitest／build 全綠，零回歸。
+
+**下一步**：依 dependency graph 繼續——SCALE-13（Ownership Contract，
+被 SCALE-11 擋，現已解除）。**SCALE-15（#266，Production Evidence
+Gate）的前置施工（SCALE-14＋SCALE-08）已全數完成，該票本身已解鎖**
+——但 SCALE-15 標 `needs-human-validation`（非 `ready-for-agent`），
+明文要求「在真實部署＋真實 Neon 上完成並記錄」7 項 production
+validation＋「Owner 明確記錄 GO 才解鎖 SCALE-16」，這是 agent 沙箱
+環境結構上做不到的事（無法連到真實 production／Neon，也不能代替
+Owner 簽核）。依 Hard Stop 規則，SCALE-13 做完後即停下回報，不自行
+嘗試繞過或代答 SCALE-15。
 
 ### OPTION-SCALING-TICKETS-REVISE-006 拆票（2026-09-06，歷史紀錄）
 
