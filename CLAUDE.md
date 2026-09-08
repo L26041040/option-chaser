@@ -556,7 +556,14 @@ Owner GO 並 close。
   全綠）。`/code-review`：Spec 軸兩項發現皆屬 SCALE-16 範圍，SCALE-17
   自身零發現。
 
-**全套測試（記憶體＋真實 Postgres 雙後端）2061 passed、0 failed**
+**Write／read latency 追加量測**（commit `7ead12f`，票面 AC 未
+強制，但 Owner 結案回報明確要求，補成永久測試而非只在對話裡報一次
+數字）：同一份 production-scale view，真實 Postgres 30 輪 median/p95
+——**WRITE** OLD 723.58ms → NEW 35.54ms（20.36×）；**READ** OLD
+364.06ms → NEW 12.38ms（29.41×，結構性原因：`current_results` 是
+PK 直接查找，不需要 `ORDER BY analyzed_at DESC LIMIT 1`）。
+
+**全套測試（記憶體＋真實 Postgres 雙後端）2062 passed、0 failed**
 （施工過程中順手修復 6 個既有測試檔因 `latest_result()`／
 `latest_summaries()` 改讀 `current_results` 後失真的 fixture，另
 獨立發現並修復一組與本輪無關的環境依賴性 flake——`test_api_
@@ -564,7 +571,7 @@ filters.py` 等因沙箱恰好連得到真實 `XYZ`／真實股票代號的網�
 非 hermetic，見 `tests/test_scale01_historical_fact.py` 上方
 「容器倒退」記錄旁的教訓，已於本輪一併修正）。前端 typecheck
 乾淨（本輪零前端檔案改動）。功能差異：**無**——AC-2／AC-3 皆有
-逐位元比對測試背書。Branch HEAD：`69a888f`。
+逐位元比對測試背書。Branch HEAD：`7ead12f`。
 
 **Hard Stop 依裁示維持**：SCALE-18（#269）本輪全程未被觸碰
 （`git diff` 確認零命中），未自行嘗試繞過或代答。**最終狀態：
