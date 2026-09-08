@@ -27,7 +27,7 @@ block 裡，不能切成好幾個 code block、也不能中間插普通文字把
 `［回報#001］spec #137 拆票完成`）。編號是**累計總數**，不因換
 session、換分支、換主題而歸零——目前最新編號記在這裡：
 
-> 目前次序：067（下一份回報用 068）
+> 目前次序：068（下一份回報用 069）
 
 每發一份回報就把上面這個數字改成剛剛用掉的那個，跟著那次改動一起
 commit（沒有其他改動要 commit 時，單獨為這一行開一個小 commit 也
@@ -486,18 +486,90 @@ zero regression。
   維護兩套永久同步的寫入路徑，其複雜度與這個風險的實際發生機率不成
   比例。此取捨已記錄於此，供 Owner 覆核。
 
-**下一步**：SCALE-13 完成後，dependency graph 上已無其餘可自主開工
-的 unblocked ticket——**Hard Stop 正式達成**。SCALE-15（#266，
-Production Evidence Gate）的前置施工（SCALE-14＋SCALE-08）已全數
-完成、該票本身已解鎖，但標 `needs-human-validation`（非
-`ready-for-agent`），明文要求「在真實部署＋真實 Neon 上完成並記錄」
-7 項 production validation＋「Owner 明確記錄 GO 才解鎖 SCALE-16」，
-這是 agent 沙箱環境結構上做不到的事（無法連到真實 production／
-Neon，也不能代替 Owner 簽核）。SCALE-16（#267）／SCALE-17（#268）
-依 dependency graph 皆被 SCALE-15 的 GO 擋住；SCALE-18（#269）另被
-Owner Decision EG-2（尚未裁示）擋住，且明文標註不可施工。依 Hard
-Stop 規則，本輪自主施工到此為止，不自行嘗試繞過或代答 SCALE-15，
-等待 Owner 完成 production validation 並給出 GO。
+**下一步（本段已由 OPTION-SCALING-IMPLEMENT-002 取代，見下一節）**：
+SCALE-13 完成後 Hard Stop 曾正式達成，等待 Owner 完成 production
+validation 並給出 GO——**Owner 已於 2026-09-08 完成初步 production
+smoke 並明確給予 SCALE-15／#266 = GO**，見下一節 SCALE-16／SCALE-17
+完成報告。
+
+### OPTION-SCALING-IMPLEMENT-002——SCALE-16／SCALE-17（2026-09-08，Owner 授權自主施工至完成才回報）
+
+Owner 明確裁示：SCALE-15（#266）GO，依 dependency graph 繼續自主
+施工 SCALE-16（#267）／SCALE-17（#268），完成後停止；**Hard Stop
+不變**——SCALE-18（#269）明文不施工（不可逆 legacy cleanup，EG-2
+尚未裁示，先讓 Owner 實際使用完成後的新架構再決定）。#266 已記錄
+Owner GO 並 close。
+
+**已完成**：
+
+- **SCALE-16**［#267］Stage 1-5：分離 historical fact ledger 與
+  current full-view materialization（commits `bc73739`＋`e58a85c`＋
+  `69a888f`）：新增 `current_results` 表（PK=`scenario_id`，`view`
+  恆為完整 dict，`ON CONFLICT DO UPDATE` 覆寫）＋`Storage.save_
+  current_result()`，走 `_MIGRATIONS`（沿用 SCALE-09／SCALE-08 冷
+  啟動競爭安全慣例，非 `_SCHEMA`）；`latest_result()`／
+  `latest_summaries()` 改讀它，`clear_results()`／`delete_scenario()`
+  一併清。`results` 表（historical fact ledger）的 `view` 欄位鬆綁成
+  nullable，新寫入起恆為 `None`，SCALE-01 六個 fact context 欄位
+  照常每次寫入不受影響。`main.py::_refresh_and_save()` 對同一個
+  `ResultRecord` 用 `dataclasses.replace()` 分別衍生兩個寫入形狀，
+  一次分析只算一次、各自落盤各自的目的地。**真實 Postgres AC-5
+  benchmark**（600 張合約、4 個 debit subtype 全開的 production-scale
+  view）：悲觀情境（N 次連續覆寫、只在最後 VACUUM 一次）N=30 時
+  OLD 3,237,205 B/refresh → NEW 169,847 B/refresh（19.06×）、N=100
+  時 19.49×；穩態情境（每次覆寫都 VACUUM，對應 production 三個既有
+  觸發時機之間天然數十分鐘至數小時的間隔，遠超 autovacuum 預設 1
+  分鐘 naptime）N=100 時 **564.41×**——超過 Prototype 的 58.70×。
+  兩種情境的 40 倍差距經拆解驗證（`results`／`current_results` 分開
+  量測）證實完全來自 benchmark 方法本身（是否在寫入間隔中
+  VACUUM），不是形狀改變帶來的真實成本差異，AC-5「解釋與 Prototype
+  差距」的要求因此不是空話。**AC-6 dead-tuple 量測**：真實 350KB 級
+  view（貼近 SCALE-17 剝除後大小）50 次覆寫後 `n_dead_tup=49`，正常
+  （非 FULL）`VACUUM` 後歸零，第二輪 50 次覆寫＋VACUUM 後大小穩定
+  （385,024B vs 401,408B），未無界成長——不依賴人工 `VACUUM FULL`。
+  新增 `tests/test_scale16_ledger_split.py`（9 條，涵蓋 AC-1～AC-7）。
+  `/code-review`（Standards＋Spec 兩軸）：Standards 軸零 hard
+  violation；Spec 軸抓到兩個真缺口並已修正——(1) AC-5 benchmark 原本
+  只跑「連續覆寫、最後才 VACUUM」單一情境，量到的其實是 MVCC 冷
+  啟動膨脹而非 production 穩態足跡，改為同時量測兩種情境（悲觀情境
+  當及格線、穩態情境當 production 代表值，不是挑對自己有利的數字
+  通過）；(2) AC-2「current detail 與切換前 serialized parity」原本
+  只靠既有 HTTP 套件間接佐證，新增
+  `test_current_detail_response_has_serialized_parity_with_the_pre_
+  cutover_shape`（同一 client 打 `GET /api/scenarios/{id}` vs
+  `POST /api/analyze`＋`project_for_detail()`，逐位元比對，只正規化
+  兩端點本身既有就會不同的 `scenario_id`）。
+- **SCALE-17**［#268］C1：停止把 `all_candidates` 寫進 persisted
+  current/result materialization（commit `bc73739`＋`e58a85c` 內
+  含）：新增 `option_chaser/store.py::strip_persisted_all_
+  candidates()`，只在 `_refresh_and_save()` 寫進 `current_results.
+  view` 之前套用；`POST /api/analyze` 與全部引擎內部計算路徑繼續用
+  未剝除的原始 view（結構性保證，AST 掃描確認 handler 原始碼不含這個
+  函式名）。真實引擎量測（4 個 debit subtype 全開、600 張合約）：
+  `all_candidates` 佔 **98.31%**（Audit 原文 97.82%，量級吻合），
+  剝除後邏輯 JSON 縮減 59.25×，落盤欄位 `pg_column_size` 157,460B
+  （遠小於整份塞入的 20,950,398B）。新增
+  `tests/test_scale17_persisted_projection.py`（5 條，涵蓋 AC-1／
+  AC-3；AC-2 由 SCALE-16 新增測試涵蓋；AC-4 SCALE-10 守門結構上
+  未受影響，順手修正一句因 SCALE-17 上線而過期的 docstring；AC-5
+  `/history` 完全不依賴 `all_candidates`，SCALE-12/14 parity suite
+  全綠）。`/code-review`：Spec 軸兩項發現皆屬 SCALE-16 範圍，SCALE-17
+  自身零發現。
+
+**全套測試（記憶體＋真實 Postgres 雙後端）2061 passed、0 failed**
+（施工過程中順手修復 6 個既有測試檔因 `latest_result()`／
+`latest_summaries()` 改讀 `current_results` 後失真的 fixture，另
+獨立發現並修復一組與本輪無關的環境依賴性 flake——`test_api_
+filters.py` 等因沙箱恰好連得到真實 `XYZ`／真實股票代號的網路而
+非 hermetic，見 `tests/test_scale01_historical_fact.py` 上方
+「容器倒退」記錄旁的教訓，已於本輪一併修正）。前端 typecheck
+乾淨（本輪零前端檔案改動）。功能差異：**無**——AC-2／AC-3 皆有
+逐位元比對測試背書。Branch HEAD：`69a888f`。
+
+**Hard Stop 依裁示維持**：SCALE-18（#269）本輪全程未被觸碰
+（`git diff` 確認零命中），未自行嘗試繞過或代答。**最終狀態：
+READY_FOR_FINAL_PRODUCTION_VALIDATION**——等待 Owner 在真實部署
+完成最終驗證後指示下一步；依專案規則不主動開 PR。
 
 ### OPTION-SCALING-TICKETS-REVISE-006 拆票（2026-09-06，歷史紀錄）
 
