@@ -16,6 +16,7 @@ from __future__ import annotations
 import dataclasses
 import json
 import os
+import time
 
 import pytest
 from fastapi.testclient import TestClient
@@ -607,3 +608,106 @@ def test_scale16_normal_vacuum_controls_dead_tuples_on_current_results():
         with psycopg.connect(TEST_DB_URL, autocommit=True) as conn:
             conn.execute("ALTER TABLE current_results "
                          "SET (autovacuum_enabled = true)")
+
+
+# ---------- 寫入／讀取延遲：本票之前 vs 本票之後（真實 Postgres） ----------
+
+@pytest.mark.skipif(not TEST_DB_URL, reason="需要 OC_TEST_DATABASE_URL")
+def test_scale16_write_and_read_latency_before_and_after():
+    """票面本身沒有把「write/read latency」單獨列成 AC（AC-5／AC-6
+    量的是 storage size／dead-tuple，不是時間），但這是需求方在
+    OPTION-SCALING-IMPLEMENT-002 結案回報裡明確要求的量測項目，補在
+    這裡永久留存、供未來回歸比對，而不是只在對話裡報一次就消失。
+
+    量測方法：同一份真實 production-scale view（4 個 debit subtype
+    全開、600 張合約，與 AC-5 benchmark 共用同一份計算），OLD 路徑
+    ＝單一 INSERT/UPSERT 整份 view 進「本票之前」形狀的 `results`
+    （PK (scenario_id, analyzed_at)，`ORDER BY analyzed_at DESC
+    LIMIT 1` 找最新一筆）；NEW 路徑＝雙寫（`save_result` view=None ＋
+    `save_current_result` 剝除後的 view）／`latest_result()` 直接
+    PK 查詢 `current_results`（不需要 `ORDER BY`，這是延遲改善的
+    結構性原因，不是巧合）。30 輪取 median／p95，比照既有 SCALE-02／
+    SCALE-14 benchmark 的量測紀律。"""
+    import psycopg
+    from psycopg.types.json import Jsonb
+
+    from api_app.storage.postgres import PostgresStorage
+
+    st = PostgresStorage(TEST_DB_URL)
+    st._ensure_schema()
+    with psycopg.connect(TEST_DB_URL, autocommit=True) as conn:
+        conn.execute("TRUNCATE scenarios, results, current_results, "
+                     "snapshots RESTART IDENTITY")
+        conn.execute("DROP TABLE IF EXISTS scale16_latency_bench_old")
+        conn.execute("CREATE TABLE scale16_latency_bench_old ("
+                     "scenario_id TEXT NOT NULL, analyzed_at TEXT NOT NULL, "
+                     "view JSONB NOT NULL, "
+                     "PRIMARY KEY (scenario_id, analyzed_at))")
+
+    view = _real_production_view()
+    fact = store.historical_fact_context(view)
+    stripped_view = store.strip_persisted_all_candidates(view)
+    st.create_scenario(Scenario(
+        id="latency-bench", symbol="XYZ", direction="bullish",
+        target_price=110.0, target_month="2026-10", notes="",
+        strategies=("vertical-spread",),
+        created_at="2026-08-01T00:00:00+00:00", owner_id="solo"))
+
+    def median_p95_ms(samples):
+        samples = sorted(samples)
+        return samples[len(samples) // 2], samples[int(len(samples) * 0.95)]
+
+    n = 30
+    old_write, new_write = [], []
+    old_read, new_read = [], []
+
+    with psycopg.connect(TEST_DB_URL, autocommit=True) as conn:
+        for i in range(n):
+            ts = f"2026-08-{(i % 28) + 1:02d}T{i:02d}:00:00+00:00"
+            t0 = time.perf_counter()
+            conn.execute(
+                "INSERT INTO scale16_latency_bench_old "
+                "(scenario_id, analyzed_at, view) VALUES (%s, %s, %s) "
+                "ON CONFLICT (scenario_id, analyzed_at) "
+                "DO UPDATE SET view = EXCLUDED.view",
+                ("latency-bench", ts, Jsonb(view)))
+            old_write.append((time.perf_counter() - t0) * 1000)
+
+        for i in range(n):
+            ts = f"2026-08-{(i % 28) + 1:02d}T{i:02d}:00:00+00:00"
+            t0 = time.perf_counter()
+            rec = ResultRecord("latency-bench", ts, None, owner_id="solo", **fact)
+            st.save_result(rec)
+            st.save_current_result(dataclasses.replace(rec, view=stripped_view))
+            new_write.append((time.perf_counter() - t0) * 1000)
+
+        for _ in range(n):
+            t0 = time.perf_counter()
+            conn.execute(
+                "SELECT view FROM scale16_latency_bench_old "
+                "WHERE scenario_id = %s ORDER BY analyzed_at DESC LIMIT 1",
+                ("latency-bench",)).fetchone()
+            old_read.append((time.perf_counter() - t0) * 1000)
+
+        for _ in range(n):
+            t0 = time.perf_counter()
+            st.latest_result("latency-bench", owner="solo")
+            new_read.append((time.perf_counter() - t0) * 1000)
+
+        conn.execute("DROP TABLE IF EXISTS scale16_latency_bench_old")
+
+    old_wm, old_wp = median_p95_ms(old_write)
+    new_wm, new_wp = median_p95_ms(new_write)
+    old_rm, old_rp = median_p95_ms(old_read)
+    new_rm, new_rp = median_p95_ms(new_read)
+    print(f"\n[SCALE-16 write/read latency] WRITE: OLD median={old_wm:.2f}ms "
+          f"p95={old_wp:.2f}ms → NEW median={new_wm:.2f}ms p95={new_wp:.2f}ms "
+          f"({old_wm/new_wm:.2f}x)")
+    print(f"[SCALE-16 write/read latency] READ:  OLD median={old_rm:.2f}ms "
+          f"p95={old_rp:.2f}ms → NEW median={new_rm:.2f}ms p95={new_rp:.2f}ms "
+          f"({old_rm/new_rm:.2f}x)")
+
+    # 安全邊際 2×（比照既有 SCALE-02／SCALE-14 benchmark 同一套紀律，
+    # 不是勉強打平）——不得比 baseline 慢，一般預期會快得多。
+    assert new_wm <= old_wm / 2
+    assert new_rm <= old_rm / 2
