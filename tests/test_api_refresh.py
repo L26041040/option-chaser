@@ -9,6 +9,7 @@
 使用者能做的處置也不同，所以錯誤主體帶 `stage`——只回一個 500 或一顆
 黃燈，畫面就只能說「失敗了」。
 """
+import dataclasses
 import time
 from datetime import timedelta
 
@@ -287,9 +288,14 @@ def test_refresh_on_an_expired_scenario_does_not_touch_prior_results():
     只是不再花資源刷新，既有結果照樣留著能看。"""
     storage = MemoryStorage()
     _expired_scenario(storage)
-    storage.save_result(ResultRecord(
+    existing = ResultRecord(
         scenario_id="expired-1", analyzed_at="2019-12-01T00:00:00+00:00",
-        view={"meta": {"symbol": "XYZ"}}, best_return=0.42, owner_id="solo"))
+        view={"meta": {"symbol": "XYZ"}}, best_return=0.42, owner_id="solo")
+    # SCALE-16（#267）：卡片列讀的是 `latest_result()`（`current_
+    # results`），既有結果因此兩張表都要有——ledger 一份（歷史事實）＋
+    # current 一份（`refresh_scenario` 的短路分支實際會讀到的那份）。
+    storage.save_result(dataclasses.replace(existing, view=None))
+    storage.save_current_result(existing)
 
     def boom(symbol):
         raise AssertionError("過期劇本不該抓鏈")

@@ -10,6 +10,12 @@ serialize_result()` 的完整輸出）——其中 `results[].candidates`（引�
 `store.project_for_detail()` 只投影**這一個 HTTP 端點**要回傳的內容，
 不動儲存層——落盤的 `ResultRecord.view` 維持 `serialize_result()`
 原樣的全保真輸出，本檔案的測試逐一驗證這條界線。
+
+⚠ SCALE-17（#268，C1）之後這條界線多了一個例外：`current_results.
+view`（`storage.latest_result()` 讀的正是它）本身在持久化前就已經
+剝除 `all_candidates`（見 `store.strip_persisted_all_candidates()`）
+——那是持久化層自己的欄位退場，跟這個端點的投影職責是兩件事，本檔案
+的測試已同步更新反映這個新的、明確的例外。
 """
 import json
 
@@ -114,6 +120,12 @@ def test_candidate_count_per_strategy_bounded_by_expiry_count_times_ten():
 
 
 # ---------- AC：儲存的內容維持全保真——與投影前逐位元相同 ----------
+#
+# SCALE-17（#268，C1）之後這句話多了一個明確例外：`current_results.
+# view`（`storage.latest_result()` 讀的正是它，見 SCALE-16／#267）
+# 不再背負 `all_candidates`——那是持久化層的欄位退場，不是這個端點
+# 的投影職責。`project_for_detail()` 本身完全沒變（它對 `all_
+# candidates` 的過濾原本就是防禦性的，鍵不存在時一樣安全）。
 
 def test_storage_stays_full_fidelity_project_for_detail_does_not_touch_it():
     storage = MemoryStorage()
@@ -123,10 +135,16 @@ def test_storage_stays_full_fidelity_project_for_detail_does_not_touch_it():
     # 修改輸入。這裡直接比對整份 dict 逐位元相同，而不只是挑幾個欄位。
     again = storage.latest_result(sc_id, owner="solo").view
     assert again == full_view
+    # `candidates`（引擎全量候選 key 清單）在儲存層仍是全保真——這一票
+    # 只退休 `all_candidates`，`candidates` 的持久化行為不變。
     assert any(r.get("candidates") for r in full_view["results"])
-    assert any(r.get("all_candidates") for r in full_view["results"])
+    # SCALE-17：`all_candidates` 已在持久化前被剝除，不是投影才拿掉的
+    # ——這裡直接證明「儲存層本身」就已經沒有這個鍵，不是巧合讓下面
+    # 的投影測試看起來正確。
+    assert all("all_candidates" not in r for r in full_view["results"])
 
-    # 投影後的的確變小了，且變小的正是被移除的那兩個欄位。
+    # 投影後的的確變小了，且變小的正是被移除的 `candidates` 欄位
+    # （`all_candidates` 這一項這裡已經不算數——儲存層本身就沒有它）。
     assert len(json.dumps(projected_view)) < len(json.dumps(full_view))
 
 

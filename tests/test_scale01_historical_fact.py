@@ -30,6 +30,16 @@ def _result(strategies=("long-call", "bull-call-spread")):
         FIX)
 
 
+def _latest_ledger_row(storage, sid="s1"):
+    """SCALE-16（#267）跟進：這個檔案測的是 historical fact ledger
+    （`save_result()`／`result_history()`）本身的 backfill 行為——與
+    `latest_result()`（SCALE-16 起改讀 `current_results`，這裡的測試
+    從未寫過那張表）是兩個不同的概念。取 ledger 裡最新一列，維持這個
+    檔案原本「backfill 到的是哪一列」的驗證意圖不變。"""
+    hist = storage.result_history(sid, owner="solo")
+    return hist[-1] if hist else None
+
+
 def _scenario(sid="s1"):
     # SCALE-11（#262）跟進：這個檔案驗證的是 SCALE-01 fact-context
     # backfill，與 ownership 無關——給一個真實 owner_id，讓下面對
@@ -152,12 +162,11 @@ def test_backfill_populates_legacy_rows_from_their_view():
     storage.create_scenario(_scenario())
     view = store.serialize_result(_result(), "s1", None)
     storage.save_result(ResultRecord("s1", "2026-08-01T00:00:00+00:00", view, owner_id="solo"))
-    assert storage.latest_result(
-        "s1", owner="solo").resolved_params is None   # backfill 前
+    assert _latest_ledger_row(storage).resolved_params is None   # backfill 前
 
     summary = backfill_result_fact_context(storage)
 
-    rec = storage.latest_result("s1", owner="solo")
+    rec = _latest_ledger_row(storage)
     expected = store.historical_fact_context(view)
     assert rec.resolved_params == expected["resolved_params"]
     assert rec.requested_strategies == expected["requested_strategies"]
@@ -167,7 +176,7 @@ def test_backfill_populates_legacy_rows_from_their_view():
     assert rec.snapshot_source == expected["snapshot_source"]
     assert summary == {"scenarios": 1, "rows": 1}
     # 紅線：view 本身必須逐位元不變
-    assert storage.latest_result("s1", owner="solo").view == view
+    assert _latest_ledger_row(storage).view == view
 
 
 def test_backfill_is_idempotent_rerunning_produces_zero_drift():
@@ -177,11 +186,11 @@ def test_backfill_is_idempotent_rerunning_produces_zero_drift():
     storage.save_result(ResultRecord("s1", "2026-08-01T00:00:00+00:00", view, owner_id="solo"))
 
     backfill_result_fact_context(storage)
-    first = storage.latest_result("s1", owner="solo")
+    first = _latest_ledger_row(storage)
     backfill_result_fact_context(storage)   # 重跑：可續跑、可安全中斷後重試
-    second = storage.latest_result("s1", owner="solo")
+    second = _latest_ledger_row(storage)
 
-    assert first == second   # 0 drift、0 duplicate side effect
+    assert first is not None and first == second   # 0 drift、0 duplicate side effect
 
 
 def test_backfill_covers_archived_scenarios_too():
@@ -194,7 +203,7 @@ def test_backfill_covers_archived_scenarios_too():
     summary = backfill_result_fact_context(storage)
 
     assert summary == {"scenarios": 1, "rows": 1}
-    assert storage.latest_result("s1", owner="solo").resolved_params is not None
+    assert _latest_ledger_row(storage).resolved_params is not None
 
 
 def test_backfill_handles_multiple_rows_per_scenario():

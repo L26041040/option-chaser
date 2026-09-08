@@ -57,6 +57,18 @@ TEST_DB_URL = os.environ.get("OC_TEST_DATABASE_URL")
 FIX = "tests/fixtures/xyz_v7_butterfly_moderate.json"
 NEW = {"symbol": "XYZ", "target_price": 110.0, "target_month": "2026-10",
        "strategies": ["vertical-spread"]}
+# `POST /api/scenarios`（`CreateScenarioRequest`）認 family 代碼
+# （`Literal[FAMILIES]`），`POST /api/analyze`（`AnalyzeRequest`）認
+# subtype 代碼（`Literal[STRATEGIES]`）——兩者是不同層次的詞彙、刻意
+# 不共用型別（見 `api_app/main.py::CreateScenarioRequest.strategies`
+# 的欄位註解）。fixture spot=100、`NEW["target_price"]`=110 > spot
+# ⇒ 看漲，"vertical-spread" family 底下看漲可選的唯一 subtype 就是
+# "bull-call-spread"（T08／#225 的 `SUBTYPE_DIRECTIONS`）——用它打
+# `/api/analyze` 才會產生跟 scenario 家族展開後同一個 subtype 的
+# 完全相同結果（同一份 snapshot、同一組 target，candidate_key 格式
+# 不含 scenario identity）。
+ANALYZE = {"symbol": "XYZ", "target_price": 110.0, "target_month": "2026-10",
+           "strategies": ["bull-call-spread"]}
 
 
 def _client(storage=None):
@@ -71,13 +83,23 @@ def _create_and_refresh(c):
     return sc["id"], row["latest_analyzed_at"]
 
 
-def _pick_visible_and_miss_candidates(view):
+def _pick_visible_and_miss_candidates(c):
     """回傳 `(visible_key, visible_cost, miss_key, miss_cost)`——
     `visible_key` 是 narrow dual-write 真的覆蓋到的一組（有值），
     `miss_key` 是 `all_candidates` 裡真的有效、但沒被 dual-write 到
     narrow 的一組（moderate fixture 11 履約價/側，Vertical Spread
     每個到期日 `C(11,2)=55` 組合，遠超過 `expiry_top10` 的 10 名
-    上限，這個情況必然存在）。"""
+    上限，這個情況必然存在）。
+
+    SCALE-17（#268）跟進：`current_results.view`（`latest_result()`
+    讀的那份）自本票起已剝除 `all_candidates`，不能再拿它當 key 的
+    來源。改打 `POST /api/analyze`（同一份 `snap`／同一組 `NEW` 參數，
+    `_client()` 的 `fetch` 固定回傳同一份快照，因此答案逐位元相同）
+    ——這條路徑不落盤、永遠回傳未剝除的原始 view（SCALE-17 明文紅線：
+    `/api/analyze` contract 不受影響），candidate_key 的格式（策略＋
+    履約價＋到期日）本身不含 scenario identity，用哪個 scenario 算出來
+    的都一樣，可以安全地拿來對照真正在測的那個 scenario。"""
+    view = c.post("/api/analyze", json=ANALYZE).json()
     visible = store.visible_candidate_costs(view)
     assert visible, "fixture 沒有任何 visible candidate，測試前提不成立"
     visible_key, visible_cost = next(iter(visible.items()))
@@ -102,8 +124,7 @@ def test_narrow_hit_never_calls_the_resolver(monkeypatch):
     storage = MemoryStorage()
     c = _client(storage)
     sc_id, analyzed_at = _create_and_refresh(c)
-    rec = storage.latest_result(sc_id, owner="solo")
-    visible_key, visible_cost, _mk, _mc = _pick_visible_and_miss_candidates(rec.view)
+    visible_key, visible_cost, _mk, _mc = _pick_visible_and_miss_candidates(c)
 
     _poisoned_resolver(monkeypatch)
     r = c.get(f"/api/scenarios/{sc_id}/history",
@@ -144,8 +165,7 @@ def test_cache_miss_resolves_and_writes_through(monkeypatch):
     storage = MemoryStorage()
     c = _client(storage)
     sc_id, analyzed_at = _create_and_refresh(c)
-    rec = storage.latest_result(sc_id, owner="solo")
-    _vk, _vc, miss_key, miss_cost = _pick_visible_and_miss_candidates(rec.view)
+    _vk, _vc, miss_key, miss_cost = _pick_visible_and_miss_candidates(c)
 
     assert storage.get_narrow_history_entry(
         sc_id, analyzed_at, miss_key, owner="solo") is None   # 前提：真的還沒 materialize
@@ -178,11 +198,17 @@ def test_ac7_missing_fact_context_is_a_gap_that_is_not_cached():
     c = _client(storage)
     sc_id, analyzed_at = _create_and_refresh(c)
     rec = storage.latest_result(sc_id, owner="solo")
-    _vk, _vc, miss_key, _mc = _pick_visible_and_miss_candidates(rec.view)
+    _vk, _vc, miss_key, _mc = _pick_visible_and_miss_candidates(c)
 
     # 模擬既有存量資料尚未跑過 SCALE-01 backfill：resolved_params 等
-    # fact-context 欄位為 None。
-    storage.save_result(dataclasses.replace(rec, resolved_params=None))
+    # fact-context 欄位為 None。SCALE-16（#267）跟進：這是在改寫
+    # ledger 那一列（`get_spread_history()` 讀的 fact context 來自
+    # ledger，不是 current_results），`view=None` 貼近本票之後 ledger
+    # 列的真實形狀（`rec` 來自 `latest_result()`／current_results，
+    # 直接沿用它的 view 會誤把已剝除 all_candidates 的內容寫進
+    # ledger，明確蓋成 None 避免這個誤導）。
+    storage.save_result(dataclasses.replace(
+        rec, view=None, resolved_params=None))
 
     r = c.get(f"/api/scenarios/{sc_id}/history",
              params={"candidate_key": miss_key})
@@ -202,10 +228,13 @@ def test_ac7_version_mismatch_is_a_gap_that_is_cached():
     c = _client(storage)
     sc_id, analyzed_at = _create_and_refresh(c)
     rec = storage.latest_result(sc_id, owner="solo")
-    _vk, _vc, miss_key, _mc = _pick_visible_and_miss_candidates(rec.view)
+    _vk, _vc, miss_key, _mc = _pick_visible_and_miss_candidates(c)
 
+    # SCALE-16（#267）跟進：同上一條測試，`view=None` 貼近本票之後
+    # ledger 列的真實形狀。
     storage.save_result(dataclasses.replace(
-        rec, history_replay_version=history_resolver.HISTORY_REPLAY_VERSION + 1))
+        rec, view=None,
+        history_replay_version=history_resolver.HISTORY_REPLAY_VERSION + 1))
 
     r = c.get(f"/api/scenarios/{sc_id}/history",
              params={"candidate_key": miss_key})
@@ -224,8 +253,7 @@ def test_baseline_return_and_rank_in_expiry_are_always_null():
     storage = MemoryStorage()
     c = _client(storage)
     sc_id, analyzed_at = _create_and_refresh(c)
-    rec = storage.latest_result(sc_id, owner="solo")
-    visible_key, _vc, miss_key, _mc = _pick_visible_and_miss_candidates(rec.view)
+    visible_key, _vc, miss_key, _mc = _pick_visible_and_miss_candidates(c)
 
     for key in (visible_key, miss_key):
         r = c.get(f"/api/scenarios/{sc_id}/history", params={"candidate_key": key})
