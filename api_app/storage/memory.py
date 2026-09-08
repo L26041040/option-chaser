@@ -25,6 +25,12 @@ class MemoryStorage:
     def __init__(self) -> None:
         self._scenarios: dict[str, Scenario] = {}
         self._results: dict[str, dict[str, ResultRecord]] = {}
+        # SCALE-16（#267，Stage 1-5）：current full-view materialization
+        # ——每個 scenario_id 恆定一列，覆寫更新。與上面的
+        # `self._results`（historical fact ledger，append-only）分開
+        # 儲存：ledger 列的 `view` 恆為 `None`，這裡的 `view` 恆為完整
+        # dict。`latest_result()`／`latest_summaries()` 改讀這裡。
+        self._current_results: dict[str, ResultRecord] = {}
         # SCALE-06（#256）：value 改成 `(snapshot_dict, owner_id)`——
         # 快照本身是原始 dict（不是像 `Scenario`／`ResultRecord` 那樣的
         # dataclass，沒有欄位可以直接掛 `owner_id`），用 tuple 包一層是
@@ -118,6 +124,7 @@ class MemoryStorage:
         if self._owned_scenario(scenario_id, owner) is None:
             return
         self._results.pop(scenario_id, None)
+        self._current_results.pop(scenario_id, None)
         self._snapshots = {k: v for k, v in self._snapshots.items()
                            if k[0] != scenario_id}
 
@@ -144,6 +151,7 @@ class MemoryStorage:
             return False
         del self._scenarios[scenario_id]
         self._results.pop(scenario_id, None)
+        self._current_results.pop(scenario_id, None)
         self._snapshots = {k: v for k, v in self._snapshots.items()
                            if k[0] != scenario_id}
         self._events = [e for e in self._events if e["scenario_id"] != scenario_id]
@@ -154,22 +162,23 @@ class MemoryStorage:
     def save_result(self, rec: ResultRecord) -> None:
         self._results.setdefault(rec.scenario_id, {})[rec.analyzed_at] = rec
 
+    def save_current_result(self, rec: ResultRecord) -> None:
+        self._current_results[rec.scenario_id] = rec
+
     def latest_result(self, scenario_id: str, *, owner: str) -> ResultRecord | None:
-        hist = self.result_history(scenario_id, owner=require_owner(owner))
-        return hist[-1] if hist else None
+        owner = require_owner(owner)
+        rec = self._current_results.get(scenario_id)
+        return rec if rec is not None and rec.owner_id == owner else None
 
     def latest_summaries(self, *, owner: str) -> dict[str, ResultSummary]:
         owner = require_owner(owner)
-        out: dict[str, ResultSummary] = {}
-        for sid in self._results:
-            rec = self.latest_result(sid, owner=owner)
-            if rec is not None:
-                out[sid] = ResultSummary(
+        return {sid: ResultSummary(
                     analyzed_at=rec.analyzed_at, best_return=rec.best_return,
                     representative_candidate=rec.representative_candidate,
                     spot=rec.spot, per_family=rec.per_family,
                     family_eligibility=rec.family_eligibility)
-        return out
+                for sid, rec in self._current_results.items()
+                if rec.owner_id == owner}
 
     def result_history(self, scenario_id: str, *,
                        owner: str | None) -> list[ResultRecord]:

@@ -49,7 +49,16 @@ class Scenario:
 class ResultRecord:
     scenario_id: str
     analyzed_at: str          # ISO 8601（＝快照的 fetched_at）
-    view: dict                # store.serialize_result 的完整 view dict
+    # store.serialize_result 的完整 view dict。SCALE-16（#267，Stage
+    # 1-5）起可為 `None`——這個型別現在同時服務兩種用途：historical
+    # fact ledger（`results` 表，append-only，`view` 永遠是 `None`，
+    # 完整 payload 不再永久累積）與 current full-view materialization
+    # （`current_results` 表，`view` 永遠是完整 dict，覆寫更新）。
+    # 呼叫端從欄位本身分不出這一列來自哪張表——分不出來是刻意的：
+    # `ResultRecord` 只是共用的列形狀，「這是哪一種」完全由呼叫的是
+    # `save_result()`（ledger）還是 `save_current_result()`（current）
+    # 決定，型別本身不記錄這個維度。
+    view: dict | None
     # baseline 期最高收益率（`store.best_return(view)`）。存成獨立欄位而
     # 不是每次從 view 現算：劇本清單只要這一個數字，卻得為此把整份 view
     # 撈回來。規則仍只有一份（引擎的純函式），這裡只是它的落盤結果。
@@ -530,6 +539,12 @@ class Storage(Protocol):
         些到期日，兩者一改，舊結果的每個數字都是對著另一個問題算出來的。
         留著它們就是拿舊結果冒充新的。事件不刪——那是不可變的事實。
 
+        SCALE-16（#267）：一併清掉 `current_results` 那一份——否則
+        thesis 改變後，historical ledger 雖然清空了，`latest_result()`
+        （現在讀 `current_results`）仍會回傳改變前那份過期的完整
+        view，使用者會在詳細頁看到「對著舊問題算出來的答案」冒充新
+        結果，這正是本方法存在的目的所要防止的那種狀態。
+
         `owner` 不符時整個是 no-op（不清空別人的資料）。"""
 
     def archive_scenario(self, scenario_id: str, *, owner: str, ts: str) -> bool:
@@ -549,12 +564,43 @@ class Storage(Protocol):
         （`archived_at is None`）、或屬於別的 owner，皆回 `False`、
         資料原封不動，這是安全閘門，永久刪除必須先進垃圾桶。
         真的刪除時 cascade 清掉該 `scenario_id` 名下的
-        results／snapshots／events，不留任何痕跡（不是軟刪除）。"""
+        results／snapshots／events／**current_results**（SCALE-16／
+        #267 新增，同一種「劇本沒了、它的資料也不該留著」道理），不留
+        任何痕跡（不是軟刪除）。"""
 
     def save_result(self, rec: ResultRecord) -> None:
-        """同一 (scenario_id, analyzed_at) 重複寫入即覆蓋（冪等）。"""
+        """SCALE-16（#267，Stage 1-5）：寫進 historical fact ledger——
+        每次刷新恆定新增**一列**（PK 含 `analyzed_at`），append-only，
+        同一 `(scenario_id, analyzed_at)` 重複寫入才覆蓋（冪等）。
+        呼叫端自本票起一律傳入 `rec.view=None`（歷史列不再永久保存
+        完整 view payload），但 SCALE-01 的 6 個 fact context 欄位、
+        `best_return`／`representative_candidate`／`spot`／
+        `per_family`／`family_eligibility` 仍照常寫入——這一列存在的
+        目的正是永久保留「這個歷史時刻當時發生了什麼」的事實，只是不
+        再連帶背負它的完整衍生 payload。舊資料（本票之前寫入、`view`
+        非 `None` 的既有列）**原封不動**，本方法對它們的既有內容零
+        影響（不做任何 UPDATE／NULL 化）。"""
 
-    def latest_result(self, scenario_id: str, *, owner: str) -> ResultRecord | None: ...
+    def save_current_result(self, rec: ResultRecord) -> None:
+        """SCALE-16（#267，Stage 1-5）：current full-view
+        materialization——每個 `scenario_id` 恆定**一份**，覆寫更新
+        （PK 是 `scenario_id` 本身，不含 `analyzed_at`）。`rec.view`
+        必須是完整、非 `None` 的 view dict——這張表存在的唯一理由就是
+        持有它，供 current detail／heatmap／champion／ranking／
+        `/iv-history` 等既有 hot read path 使用（`latest_result()` 自
+        本票起改讀這張表，不再讀 historical ledger）。與
+        `save_result()`（ledger，append-only）分開呼叫、分開寫入，
+        `main.py::_refresh_and_save()` 對同一次刷新算出的
+        `ResultRecord` 各呼叫一次，兩邊各自扮演自己的角色。"""
+
+    def latest_result(self, scenario_id: str, *, owner: str) -> ResultRecord | None:
+        """SCALE-16（#267）：改讀 `current_results`（不再是 historical
+        ledger 裡 `analyzed_at` 最大的那一列）——語意對呼叫端沒有變化
+        （仍然是「這個劇本現在的完整結果」），只是來源換成一張恆定
+        一列、不需要 `ORDER BY ... LIMIT 1` 掃描歷史的表，且該列的
+        `view` 保證非 `None`（`save_current_result()` 的唯一寫入來源
+        本來就要求如此）。這個劇本從未成功刷新過（含 thesis 改變後
+        `clear_results()` 剛清空）時回 `None`。"""
 
     def latest_summaries(self, *, owner: str) -> dict[str, ResultSummary]:
         """每個劇本最新一次結果的摘要，key ＝ scenario_id，範圍限定
@@ -562,7 +608,12 @@ class Storage(Protocol):
 
         沒跑過的劇本不出現在結果裡（呼叫端據此顯示「—」，而不是拿一個
         假的零值當成真的收益率）。專屬查詢的理由見契約測試：清單頁
-        不該為了一個數字把每份 view（十萬字元等級）都搬一次。"""
+        不該為了一個數字把每份 view（十萬字元等級）都搬一次。
+
+        SCALE-16（#267）：改讀 `current_results`——每個劇本恆定一列，
+        不再需要對 historical ledger 做 `DISTINCT ON`／`ORDER BY`
+        才能挑出最新一筆（該表本身就是最新一筆，不含 view 欄位的
+        窄選取沿用既有慣例）。"""
 
     def result_history(self, scenario_id: str, *, owner: str | None) -> list[ResultRecord]:
         """依 analyzed_at 遞增排序的完整歷史。

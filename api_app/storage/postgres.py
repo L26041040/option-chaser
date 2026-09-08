@@ -378,6 +378,37 @@ CREATE TABLE IF NOT EXISTS owner_verifications (
     checked_at    TEXT NOT NULL,
     PRIMARY KEY (owner_id, provider)
 );
+-- SCALE-16（#267，Scaling Foundation Stage 1-5）：分離 historical fact
+-- ledger 與 current full-view materialization。`results` 表本身
+-- （PK 含 analyzed_at，append-only）繼續扮演 fact ledger，但這個方法
+-- 起新寫入的列不再背負完整 `view` payload——`view NOT NULL` 因此鬆綁
+-- 成 nullable；**既有（本票之前寫入）的列完全不受影響，它們的 `view`
+-- 原封不動**（這一行只鬆綁約束，不改動任何既有資料，AC-3）。
+ALTER TABLE results ALTER COLUMN view DROP NOT NULL;
+-- current full-view materialization：每個 scenario_id 恆定一列，
+-- 覆寫更新，供 latest_result()／latest_summaries() 等 hot read path
+-- 使用。欄位逐一對應 `results` 表（同一個 `ResultRecord` 形狀），
+-- 差異只在 PK——這裡是 `scenario_id` 單獨，不含 `analyzed_at`。
+-- `view NOT NULL`：這張表存在的唯一理由就是持有完整 view，不該有
+-- 一列連這個都沒有。
+CREATE TABLE IF NOT EXISTS current_results (
+    scenario_id             TEXT PRIMARY KEY,
+    analyzed_at             TEXT NOT NULL,
+    view                    JSONB NOT NULL,
+    best_return             DOUBLE PRECISION,
+    representative_candidate JSONB,
+    spot                    DOUBLE PRECISION,
+    per_family              JSONB,
+    family_eligibility      JSONB,
+    resolved_params         JSONB,
+    requested_strategies    JSONB,
+    engine_version          TEXT,
+    view_schema_version     INTEGER,
+    history_replay_version  INTEGER,
+    snapshot_source         TEXT,
+    owner_id                TEXT
+);
+CREATE INDEX IF NOT EXISTS current_results_owner_idx ON current_results (owner_id);
 """
 
 # 冷啟動競爭下的良性錯誤：別人已經建好／加好了。
@@ -612,6 +643,8 @@ class PostgresStorage:
                 return
             conn.execute("DELETE FROM results WHERE scenario_id = %s",
                         (scenario_id,))
+            conn.execute("DELETE FROM current_results WHERE scenario_id = %s",
+                        (scenario_id,))
             conn.execute("DELETE FROM snapshots WHERE scenario_id = %s",
                         (scenario_id,))
 
@@ -651,6 +684,8 @@ class PostgresStorage:
                 return False
             conn.execute("DELETE FROM results WHERE scenario_id = %s",
                         (scenario_id,))
+            conn.execute("DELETE FROM current_results WHERE scenario_id = %s",
+                        (scenario_id,))
             conn.execute("DELETE FROM snapshots WHERE scenario_id = %s",
                         (scenario_id,))
             conn.execute("DELETE FROM events WHERE scenario_id = %s",
@@ -670,6 +705,52 @@ class PostgresStorage:
                 "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) "
                 "ON CONFLICT (scenario_id, analyzed_at) DO UPDATE "
                 "SET view = EXCLUDED.view, best_return = EXCLUDED.best_return, "
+                "representative_candidate = EXCLUDED.representative_candidate, "
+                "spot = EXCLUDED.spot, per_family = EXCLUDED.per_family, "
+                "family_eligibility = EXCLUDED.family_eligibility, "
+                "resolved_params = EXCLUDED.resolved_params, "
+                "requested_strategies = EXCLUDED.requested_strategies, "
+                "engine_version = EXCLUDED.engine_version, "
+                "view_schema_version = EXCLUDED.view_schema_version, "
+                "history_replay_version = EXCLUDED.history_replay_version, "
+                "snapshot_source = EXCLUDED.snapshot_source, "
+                "owner_id = EXCLUDED.owner_id",
+                (rec.scenario_id, rec.analyzed_at,
+                 Jsonb(rec.view) if rec.view is not None else None,
+                 rec.best_return,
+                 Jsonb(rec.representative_candidate)
+                 if rec.representative_candidate is not None else None,
+                 rec.spot,
+                 Jsonb(rec.per_family) if rec.per_family is not None else None,
+                 Jsonb(rec.family_eligibility)
+                 if rec.family_eligibility is not None else None,
+                 Jsonb(rec.resolved_params)
+                 if rec.resolved_params is not None else None,
+                 Jsonb(list(rec.requested_strategies))
+                 if rec.requested_strategies is not None else None,
+                 rec.engine_version, rec.view_schema_version,
+                 rec.history_replay_version, rec.snapshot_source,
+                 rec.owner_id))
+
+    def save_current_result(self, rec: ResultRecord) -> None:
+        # SCALE-16（#267）：`current_results` 的 PK 是 `scenario_id`
+        # 單獨（不含 `analyzed_at`）——`ON CONFLICT (scenario_id)`，跟
+        # `save_result()` 的 `ON CONFLICT (scenario_id, analyzed_at)`
+        # 刻意不同，這正是「ledger 每次新增一列、current 恆定一列」
+        # 兩種語意在 SQL 層面的體現。`rec.view` 這裡不做 `None` 防禦
+        # ——這張表的 `view` 是 `NOT NULL`，呼叫端傳 `None` 進來就該讓
+        # Postgres 直接拒絕，而不是悄悄吞掉一筆本該報錯的呼叫。
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO current_results (scenario_id, analyzed_at, view, "
+                "best_return, representative_candidate, spot, per_family, "
+                "family_eligibility, resolved_params, requested_strategies, "
+                "engine_version, view_schema_version, history_replay_version, "
+                "snapshot_source, owner_id) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) "
+                "ON CONFLICT (scenario_id) DO UPDATE "
+                "SET analyzed_at = EXCLUDED.analyzed_at, view = EXCLUDED.view, "
+                "best_return = EXCLUDED.best_return, "
                 "representative_candidate = EXCLUDED.representative_candidate, "
                 "spot = EXCLUDED.spot, per_family = EXCLUDED.per_family, "
                 "family_eligibility = EXCLUDED.family_eligibility, "
@@ -710,31 +791,32 @@ class PostgresStorage:
         return ResultRecord(*row)
 
     def latest_result(self, scenario_id: str, *, owner: str) -> ResultRecord | None:
+        # SCALE-16（#267）：改讀 `current_results`——恆定一列，不需要
+        # `ORDER BY ... LIMIT 1` 掃描歷史（該表本身沒有歷史可掃）。
         owner = require_owner(owner)
         with self._connect() as conn:
             row = conn.execute(
-                f"SELECT {_RESULT_COLS} FROM results "
-                "WHERE scenario_id = %s AND owner_id = %s "
-                "ORDER BY analyzed_at DESC LIMIT 1",
+                f"SELECT {_RESULT_COLS} FROM current_results "
+                "WHERE scenario_id = %s AND owner_id = %s",
                 (scenario_id, owner)).fetchone()
         return self._row_to_result(row) if row else None
 
     def latest_summaries(self, *, owner: str) -> dict[str, ResultSummary]:
-        """`DISTINCT ON` 一趟取回每個劇本的最新一筆——**不選 view 欄位**，
-        清單頁因此不會把每份十萬字元的 view 從資料庫搬過來。
+        """SCALE-16（#267）：改讀 `current_results`——每個劇本恆定一列，
+        不再需要 `DISTINCT ON` 從 historical ledger 裡挑出最新一筆
+        （該表本身就是最新一筆）；**不選 view 欄位**，清單頁因此不會把
+        每份十萬字元的 view 從資料庫搬過來，這條既有理由不變。
         `representative_candidate` 是小型 JSONB（幾個履約價與策略代號），
         跟 `best_return` 同樣可以安全地隨這條清單查詢一起選（MVP-v2／
         #77、#78）——這正是它獨立落盤成一個欄位、而不是每次從 view
-        現算的理由。SCALE-11：`WHERE owner_id = %s` 放在最內層子查詢
-        （`DISTINCT ON` 之前），只在這個 owner 名下的列裡挑最新一筆。"""
+        現算的理由。"""
         owner = require_owner(owner)
         with self._connect() as conn:
             rows = conn.execute(
-                "SELECT DISTINCT ON (scenario_id) scenario_id, analyzed_at, "
+                "SELECT scenario_id, analyzed_at, "
                 "best_return, representative_candidate, spot, per_family, "
                 "family_eligibility "
-                "FROM results WHERE owner_id = %s "
-                "ORDER BY scenario_id, analyzed_at DESC", (owner,)).fetchall()
+                "FROM current_results WHERE owner_id = %s", (owner,)).fetchall()
         return {r[0]: ResultSummary(analyzed_at=r[1], best_return=r[2],
                                     representative_candidate=r[3], spot=r[4],
                                     per_family=r[5], family_eligibility=r[6])

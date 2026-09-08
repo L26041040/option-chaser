@@ -995,6 +995,41 @@ def project_for_detail(view: dict) -> dict:
     return {**view, "results": results, "candidate_pool": projected_pool}
 
 
+def strip_persisted_all_candidates(view: dict) -> dict:
+    """SCALE-17（#268，Scaling Foundation C1）：**持久化前**剝除
+    `all_candidates`——與 `project_for_detail()`（T13／#231，**傳輸
+    前**剝除同一個欄位）刻意是兩個獨立函式、服務兩個不同的邊界：
+
+    - `project_for_detail()` 只服務 `GET /api/scenarios/{id}` 這一個
+      HTTP 端點的回應，落盤的 `ResultRecord.view` 本身完全不受影響
+      （其 docstring 原文：「落盤的 `ResultRecord.view` 維持
+      `serialize_result()` 原樣的全保真輸出」）。
+    - 這個函式反過來，是給**寫入路徑**用的：`api_app/main.py::
+      _refresh_and_save()` 把它套用在準備寫進
+      `current_results.view`（current full-view materialization，
+      SCALE-16／#267）的那份 view 上，`POST /api/analyze` 的直接
+      HTTP 回應與 narrow-history／fact-context／per_family 等既有
+      計算全部使用**未經剝除**的原始 `view`（呼叫端在剝除之前就已
+      經算完這些，AC-3「不得只重產 fixture 把 breaking change 洗成
+      綠燈」因此不成立——`/api/analyze` 這條路徑結構上碰不到這個
+      函式）。
+
+    Audit 實測 `all_candidates` 佔 stored view 97.82%，但 current
+    detail 投影（`project_for_detail()`）與前端全部從未消費它——這是
+    C1 最大的持久化收益，純粹是儲存層的欄位退場，不改任何排名邏輯：
+    引擎 canonical 的 `StrategyResult.expiry_ranked`（`all_candidates`
+    的計算來源）本身完全不受影響，仍供 regression guard（SCALE-10）／
+    history resolver（SCALE-09）等既有邏輯使用——它們讀的是引擎回傳
+    物件本身或 `expiry_top10`／`candidate_pool`，從來不是這個序列化
+    後才存在的 `all_candidates` 鍵。
+
+    純函式、不修改輸入：回傳全新的頂層字典與 `results[]` 列表，`view`
+    本身（連同它內部所有巢狀物件）維持原封不動。"""
+    return {**view, "results": [
+        {k: v for k, v in r.items() if k != "all_candidates"}
+        for r in view["results"]]}
+
+
 def find_candidate(view: dict, key: str) -> dict | None:
     """依身份鍵在 view dict 裡找出那個候選的**完整**形狀（含各腿）。
 

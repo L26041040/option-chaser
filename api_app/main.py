@@ -1288,12 +1288,33 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         # `view` 本身完全不變——這幾個欄位純粹是它的複本。
         fact_context = store.historical_fact_context(view)
         owner_id = identity_resolver()
-        _db().save_result(ResultRecord(
+        rec = ResultRecord(
             scenario_id=sc.id, analyzed_at=analyzed_at, view=view,
             best_return=best_return,
             representative_candidate=representative_candidate,
             spot=store.spot(view), per_family=per_family or None,
-            family_eligibility=family_elig, owner_id=owner_id, **fact_context))
+            family_eligibility=family_elig, owner_id=owner_id, **fact_context)
+        # SCALE-16（#267，Stage 1-5）：分離 historical fact ledger 與
+        # current full-view materialization——同一個 `rec` 對象各自
+        # 供給兩次獨立的落盤呼叫。ledger（`save_result()`）從此不再
+        # 背負完整 `view`（AC-4：永久成長改由 fact＋narrow＋snapshot＋
+        # 極小 events 主導，不再是每次刷新都複製一份十萬字元級 payload）
+        # ——SCALE-01 的 6 個 fact context 欄位＋summary 欄位仍照常寫入，
+        # 「這個歷史時刻當時發生了什麼」的能力完整保留。current
+        # materialization（`save_current_result()`）拿到的才是完整
+        # `view`，供 current detail／heatmap／champion／ranking 等既有
+        # hot read path 使用（`latest_result()` 自本票起改讀這裡）。
+        # SCALE-17（#268，C1）：current materialization 落盤前先剝除
+        # `all_candidates`（`store.strip_persisted_all_candidates()`）
+        # ——這是 audit 實測佔 stored view 97.82%、且前端／current
+        # detail 投影從未消費的欄位；`POST /api/analyze` 的直接回應
+        # 用的是這裡的 `view`（未經剝除的原始物件），contract 因此不受
+        # 影響。narrow-history／fact-context／per_family／
+        # representative_candidate 全部已經在剝除之前算完，剝除動作
+        # 因此不影響任何既有計算或既有欄位。
+        _db().save_result(dataclasses.replace(rec, view=None))
+        _db().save_current_result(dataclasses.replace(
+            rec, view=store.strip_persisted_all_candidates(view)))
         _db().save_snapshot(sc.id, analyzed_at, snapshot, owner_id=owner_id)
         # SCALE-09（#261，Scaling Foundation Stage 1-1）：dual-write
         # narrow history——只寫 visible candidate 的 non-null cost
