@@ -129,6 +129,77 @@ def test_current_results_table_has_exactly_one_row_per_scenario_after_n_refreshe
     assert ledger_count == n
 
 
+# ---------- AC-2：current detail 與切換前 serialized parity ----------
+#
+# `/code-review` Spec 軸抓到：AC-2「current detail/heatmap/champion/
+# ranking/user-visible payload 與切換前 serialized parity」只靠既有
+# HTTP 測試套件（`test_detail_projection.py` 等）在改動後仍然通過來
+# 間接佐證，沒有一條測試直接對照「切換前會回什麼」與「切換後回
+# 什麼」。這裡補上：`store.project_for_detail()`（T13／#231，服務
+# `GET /api/scenarios/{id}` 這個端點傳輸投影，本身早就會剝除
+# `all_candidates`／`candidates`——SCALE-17 之前它就是這樣）套用在
+# 「引擎直接算出、完全沒碰過 storage」的新鮮 view 上，即為「切換前
+# 這個端點理應回傳的內容」（因為 T13 這個函式本身沒有被 SCALE-16/17
+# 改動，它的輸入輸出關係是舊行為的真實代表，不是重新發明一份假設）；
+# 拿它跟真的走完整條新路徑（`create_scenario` → `refresh` →
+# `GET /api/scenarios/{id}`，經過 dual-write／SCALE-17 剝除／
+# current_results 讀取）拿到的真實 HTTP 回應逐位元比對。
+
+def test_current_detail_response_has_serialized_parity_with_the_pre_cutover_shape():
+    """AC-2：current detail 的 user-visible payload 與切換前
+    serialized parity——不是「兩者恰好都通過同一組既有斷言」，是
+    直接逐位元比對兩條路徑算出來的 JSON。
+
+    「切換前這個端點理應回傳的內容」不是另外用引擎裸呼叫重算（那樣
+    得自己重現 `create_app()` 預設 loader 的 note 文字等旁支細節，
+    容易做出看似嚴謹、實則比對到不相關雜訊的測試）——改用同一個
+    `TestClient` 打 `POST /api/analyze`：AC-3 已明文保證這條路徑
+    完全不受 SCALE-16/17 影響（`test_scale17_persisted_projection.py`
+    專屬驗證過），因此它的回應就是「引擎對這份參數算出來的原始
+    view」，且與 `GET /api/scenarios/{id}/refresh` 共用同一組
+    loader／snapshot 注入，天生不會有旁支差異。"""
+    storage = MemoryStorage()
+    c = _client(storage=storage)
+    sc = c.post("/api/scenarios", json={
+        "symbol": "XYZ", "target_price": 110.0, "target_month": "2026-10",
+        "strategies": ["vertical-spread"]}).json()
+    c.post(f"/api/scenarios/{sc['id']}/refresh")
+
+    # 真實走完整條新路徑（dual-write ＋ current_results 讀取 ＋ T13
+    # 傳輸投影）拿到的回應。
+    detail = c.get(f"/api/scenarios/{sc['id']}").json()
+
+    # 「切換前這個端點理應回傳的內容」：同一個 client、同一組 loader，
+    # 走 AC-3 保證不受影響的 `/api/analyze` 拿到未剝除的原始 view，
+    # 套用未曾被 SCALE-16/17 改動過的既有 `project_for_detail()`。
+    # 劇本用 "vertical-spread" family（T06／#221 展開成
+    # bull-call-spread／bear-put-spread 兩個 subtype，方向不合的那個
+    # 仍會以 `status="skipped_direction"` 留在 `results[]` 裡，不是
+    # 被移除），`/api/analyze` 不做 family 展開、要顯式帶出同一組
+    # subtype 才會產生同樣兩筆 `results[]` entry，否則只請求一個
+    # subtype 會少一筆、逐位元比對必然失敗——不是 SCALE-16/17 造成的
+    # 差異，是兩個端點本身的既有語意不同（family 展開 vs 明確
+    # subtype），對照組要按照這個既有語意建構才公平。
+    raw_view = c.post("/api/analyze", json={
+        "symbol": "XYZ", "target_price": 110.0, "target_month": "2026-10",
+        "strategies": ["bull-call-spread", "bear-put-spread"]}).json()
+    pre_cutover_shape = store.project_for_detail(raw_view)
+    # `/api/analyze` 是一次性分析、恆用固定的 adhoc scenario id
+    # （`_ADHOC_SCENARIO_ID`，`main.py` 既有常數），真正的劇本則有它
+    # 自己的 id——這是兩個端點本身既有、預期中的差異，不是 SCALE-16/17
+    # 造成的資料不一致，正規化掉才能公平比對其餘內容。
+    pre_cutover_shape = {**pre_cutover_shape, "scenario_id": sc["id"]}
+
+    assert json.dumps(detail["latest_result"], sort_keys=True) == \
+        json.dumps(pre_cutover_shape, sort_keys=True)
+    # 摘要層（champion／ranking／heatmap 依賴的候選池）同樣逐位元核對，
+    # 不只比對「有沒有這個 key」。
+    assert (detail["latest_result"]["candidate_pool"]
+           == pre_cutover_shape["candidate_pool"])
+    assert (detail["representative_candidate"]
+           == store.representative_candidate(raw_view))
+
+
 # ---------- AC-3：pre-cutover legacy row 的 full view byte-for-byte 未變 ----------
 
 def test_pre_cutover_legacy_row_view_survives_post_cutover_activity_unchanged():
@@ -286,6 +357,32 @@ def test_scale16_physical_storage_margin_growth_30_and_100_refreshes():
     數字結構上不會、也不應該與 58.70× 相同——這裡驗證的是
     order-of-magnitude 優於 baseline（AC-5 明文門檻），不是重現
     Prototype 的那個數字。
+
+    ## `/code-review` Spec 軸抓到的真缺口，已修正
+
+    本測試**曾經**只跑一種情境：N 次覆寫全部做完、只在最後 VACUUM 一次
+    （`run_new(n, vacuum_between_writes=False)`），量到 N=100 時邊際
+    成長 166,052 B/refresh、19.49×。`/code-review` Spec 軸指出這個數字
+    「比 Prototype B 的 45,384 B/refresh 還大，即使新 ledger row 本身
+    比 narrow-history 寫入更小」，質疑解釋不完整——**查證後確認這個
+    質疑成立**：連續覆寫同一列、中途不 VACUUM，死 tuple 在整個 burst
+    期間持續累積到 burst 結尾才一次清掉，量到的其實是「MVCC 冷啟動
+    膨脹」而非 production 穩態足跡。直接拆解驗證：`results`（純
+    append）邊際成長穩定在 1,475 B/refresh；`current_results`（單列
+    覆寫）在「連續覆寫、只在最後 VACUUM 一次」情境下量到
+    164,577 B/refresh（幾乎線性隨 N 累積），但在「每次覆寫後就
+    VACUUM」情境下只有 4,260 B/refresh——**40 倍的差距，完全來自
+    benchmark 方法本身，不是形狀改變帶來的真實成本**。
+
+    Production 的真實存取節奏支持「每次覆寫都 VACUUM」這個情境才是
+    穩態代表值：refresh 只有三個既有觸發時機（開站／建立劇本／使用者
+    手動全量刷新，見 CONTEXT.md），單一劇本兩次 refresh 之間天然有
+    數十分鐘到數小時的間隔，遠遠超過 autovacuum 預設 1 分鐘的
+    naptime；本測試因此同時量測**兩種**情境並各自算出對 OLD 基準的
+    倍數：「連續 burst、只在最後 VACUUM 一次」當保守下限（仍需通過
+    AC-5 至少一個數量級的門檻），「每次覆寫都 VACUUM」當 production
+    穩態代表值（供最終報告使用，不是及格線）——不是挑對自己有利的
+    數字通過，兩個數字都印出來、都有各自的物理意義說明。
     """
     import psycopg
 
@@ -335,23 +432,31 @@ def test_scale16_physical_storage_margin_growth_30_and_100_refreshes():
             after = table_bytes(conn, "scale16_bench_old")
         return before, after
 
-    def run_new(n):
+    def run_new(n, *, vacuum_between_writes):
         with psycopg.connect(TEST_DB_URL, autocommit=True) as conn:
             conn.execute("TRUNCATE results, current_results")
             conn.execute("VACUUM FULL results")
             conn.execute("VACUUM FULL current_results")
             before = (table_bytes(conn, "results")
                       + table_bytes(conn, "current_results"))
-        for i in range(n):
-            ts = f"2026-08-{(i % 28) + 1:02d}T{i:02d}:00:00+00:00"
-            rec = ResultRecord("bench", ts, None, owner_id="solo", **fact)
-            st.save_result(rec)
-            st.save_current_result(dataclasses.replace(rec, view=stripped_view))
+        vconn = psycopg.connect(TEST_DB_URL, autocommit=True) if vacuum_between_writes else None
+        try:
+            for i in range(n):
+                ts = f"2026-08-{(i % 28) + 1:02d}T{i:02d}:00:00+00:00"
+                rec = ResultRecord("bench", ts, None, owner_id="solo", **fact)
+                st.save_result(rec)
+                st.save_current_result(dataclasses.replace(rec, view=stripped_view))
+                if vacuum_between_writes:
+                    # 正常（非 FULL）VACUUM——模擬 production 的真實
+                    # 存取型態：refresh 之間天然有數十分鐘到數小時的
+                    # 間隔（三個觸發時機的既有規則，不是緊湊寫入迴圈），
+                    # autovacuum 的預設 1 分鐘 naptime 遠遠來得及在下
+                    # 一次 refresh 前把上一次覆寫留下的死 tuple 收掉。
+                    vconn.execute("VACUUM current_results")
+        finally:
+            if vconn is not None:
+                vconn.close()
         with psycopg.connect(TEST_DB_URL, autocommit=True) as conn:
-            # AC-6 的正常（非 FULL）VACUUM——`current_results` 被
-            # `INSERT ... ON CONFLICT DO UPDATE` 覆寫 N-1 次，一般
-            # VACUUM 應足以把死 tuple 空間收回、不需要 VACUUM FULL
-            # 重寫整張表。`results` 是純 append，本來就不會膨脹。
             conn.execute("VACUUM results")
             conn.execute("VACUUM current_results")
             after = (table_bytes(conn, "results")
@@ -361,19 +466,27 @@ def test_scale16_physical_storage_margin_growth_30_and_100_refreshes():
     results = {}
     for n in (30, 100):
         old_before, old_after = run_old(n)
-        new_before, new_after = run_new(n)
+        new_before_pess, new_after_pess = run_new(n, vacuum_between_writes=False)
+        new_before_ss, new_after_ss = run_new(n, vacuum_between_writes=True)
         old_margin = (old_after - old_before) / n
-        new_margin = (new_after - new_before) / n
-        results[n] = (old_margin, new_margin)
+        new_margin_pessimistic = (new_after_pess - new_before_pess) / n
+        new_margin_steady_state = (new_after_ss - new_before_ss) / n
+        results[n] = (old_margin, new_margin_pessimistic, new_margin_steady_state)
 
-    for n, (old_margin, new_margin) in results.items():
-        ratio = old_margin / new_margin if new_margin > 0 else float("inf")
+    for n, (old_margin, pess_margin, ss_margin) in results.items():
+        pess_ratio = old_margin / pess_margin if pess_margin > 0 else float("inf")
+        ss_ratio = old_margin / ss_margin if ss_margin > 0 else float("inf")
         print(f"\n[SCALE-16 AC-5] N={n}: OLD {old_margin:,.0f} B/refresh, "
-              f"NEW {new_margin:,.0f} B/refresh, ratio {ratio:.2f}x")
-        # AC-5 門檻：至少 order-of-magnitude（10×）優於 baseline。
-        assert ratio >= 10.0, (
-            f"N={n}：新形狀邊際成長只比舊形狀好 {ratio:.2f}x，"
-            f"未達 AC-5 要求的至少一個數量級")
+              f"NEW（連續覆寫、burst 結束才 VACUUM 一次，悲觀情境）"
+              f"{pess_margin:,.0f} B/refresh（{pess_ratio:.2f}x）, "
+              f"NEW（每次覆寫都 VACUUM，模擬 production 真實稀疏存取節奏）"
+              f"{ss_margin:,.0f} B/refresh（{ss_ratio:.2f}x）")
+        # AC-5 門檻：至少 order-of-magnitude（10×）優於 baseline——用
+        # 悲觀情境（連續 burst、VACUUM 追不上）當及格線，這是保守下限，
+        # 不是挑對自己有利的數字通過。
+        assert pess_ratio >= 10.0, (
+            f"N={n}：新形狀邊際成長（悲觀情境）只比舊形狀好 "
+            f"{pess_ratio:.2f}x，未達 AC-5 要求的至少一個數量級")
 
     with psycopg.connect(TEST_DB_URL, autocommit=True) as conn:
         conn.execute("DROP TABLE IF EXISTS scale16_bench_old")

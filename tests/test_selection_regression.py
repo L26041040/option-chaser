@@ -217,12 +217,15 @@ def test_assert_identity_unchanged_rejects_reordered_ranking():
 
 def test_per_expiry_order_from_expiry_ranked_matches_all_candidates_for_every_scenario():
     """AC-1：`snapshot_identity()` 現在用 `result.expiry_ranked` 算
-    `per_expiry_order`；這裡對照組是**今天**仍然存在的
-    `res["all_candidates"]`（SCALE-17 尚未上線，這條對照組本身還沒
-    消失），逐一場景獨立重算並比對——證明這是換基準，不是換答案。
-    對照組的建構邏輯刻意獨立於 `snapshot_identity()`（不呼叫它，各自
-    從 `_view()` 重新走一遍），避免「兩邊其實在跑同一段程式碼、
-    當然會一樣」這種虛假的驗證。"""
+    `per_expiry_order`；這裡對照組是 `res["all_candidates"]`——SCALE-17
+    （#268）只在**持久化寫入路徑**（`_refresh_and_save()` 寫進
+    `current_results` 之前）剝除這個 key，`_view()` 這裡直接呼叫引擎
+    ＋`serialize_result()`、從未經過那條寫入路徑，`all_candidates`
+    因此在這份新鮮計算出來的 view 上原封不動存在，這條對照組不會
+    因為 SCALE-17 上線而消失。逐一場景獨立重算並比對——證明這是換
+    基準，不是換答案。對照組的建構邏輯刻意獨立於 `snapshot_identity()`
+    （不呼叫它，各自從 `_view()` 重新走一遍），避免「兩邊其實在跑
+    同一段程式碼、當然會一樣」這種虛假的驗證。"""
     for strategy in SCENARIOS:
         result, view = _view(strategy)
         res = view["results"][0]
