@@ -159,7 +159,7 @@ def test_refresh_saves_a_per_family_representative_alongside_the_scalar_champion
         "symbol": "XYZ", "target_price": 130.0, "target_month": "2026-09", "strategies": ["vertical-spread"]}).json()["id"]
     client.post(f"/api/scenarios/{sc_id}/refresh")
 
-    rec = storage.latest_result(sc_id)
+    rec = storage.latest_result(sc_id, owner="solo")
     assert rec.per_family is not None
     assert set(rec.per_family) == {"vertical-spread"}
     assert rec.per_family["vertical-spread"] == rec.representative_candidate
@@ -172,7 +172,7 @@ def test_scenario_created_event_records_only_the_family():
     r = _client(storage).post("/api/scenarios", json={
         "symbol": "XYZ", "target_price": 130.0, "target_month": "2026-09", "strategies": ["vertical-spread"]})
     sc_id = r.json()["id"]
-    events = storage.list_events(scenario_id=sc_id)
+    events = storage.list_events(scenario_id=sc_id, owner="solo")
     created = next(e for e in events if e["event"] == "SCENARIO_CREATED")
     assert created["payload"]["strategies"] == ["vertical-spread"]
     # 展開後才會出現的 subtype 字串（`bull-call-spread`／`bear-put-spread`）
@@ -203,7 +203,7 @@ def test_refreshing_a_scenario_expands_the_family_and_keeps_today_bitwise_identi
         "symbol": "XYZ", "target_price": 130.0, "target_month": "2026-09", "strategies": ["vertical-spread"]})
     sc_id = r.json()["id"]
     c.post(f"/api/scenarios/{sc_id}/refresh")
-    view = storage.latest_result(sc_id).view
+    view = storage.latest_result(sc_id, owner="solo").view
 
     by_strategy = {res["strategy"]: res for res in view["results"]}
     assert set(by_strategy) == {"bull-call-spread", "bear-put-spread"}
@@ -247,7 +247,7 @@ def test_a_legacy_scenario_with_a_bare_subtype_still_refreshes_as_before():
     sc = StoredScenario(
         id="legacy-1", symbol="XYZ", direction="bullish", target_price=130.0,
         target_month="2026-09", notes="", strategies=("bull-call-spread",),
-        created_at="2019-06-01T00:00:00+00:00")
+        created_at="2019-06-01T00:00:00+00:00", owner_id="solo")
     storage.create_scenario(sc)
     c = _client(storage)
     c.post("/api/scenarios/legacy-1/refresh")
@@ -290,7 +290,7 @@ def test_get_scenario_normalizes_a_legacy_subtype_string_to_its_family():
     storage.create_scenario(StoredScenario(
         id="legacy-1", symbol="XYZ", direction="bullish", target_price=130.0,
         target_month="2026-09", notes="", strategies=("bull-call-spread",),
-        created_at="2019-06-01T00:00:00+00:00"))
+        created_at="2019-06-01T00:00:00+00:00", owner_id="solo"))
     c = _client(storage)
 
     r = c.get("/api/scenarios/legacy-1")
@@ -304,7 +304,7 @@ def test_list_scenarios_also_normalizes_legacy_subtype_strings():
     storage.create_scenario(StoredScenario(
         id="legacy-1", symbol="XYZ", direction="bullish", target_price=130.0,
         target_month="2026-09", notes="", strategies=("bull-call-spread",),
-        created_at="2019-06-01T00:00:00+00:00"))
+        created_at="2019-06-01T00:00:00+00:00", owner_id="solo"))
     c = _client(storage)
 
     rows = c.get("/api/scenarios").json()
@@ -325,7 +325,7 @@ def test_editing_a_legacy_scenario_with_the_value_it_reads_back_now_succeeds():
     storage.create_scenario(StoredScenario(
         id="legacy-1", symbol="XYZ", direction="bullish", target_price=130.0,
         target_month="2026-09", notes="", strategies=("bull-call-spread",),
-        created_at="2019-06-01T00:00:00+00:00"))
+        created_at="2019-06-01T00:00:00+00:00", owner_id="solo"))
     c = _client(storage)
     got = c.get("/api/scenarios/legacy-1").json()
 
@@ -345,7 +345,7 @@ def test_editing_a_legacy_scenario_to_add_a_family_succeeds():
     storage.create_scenario(StoredScenario(
         id="legacy-1", symbol="XYZ", direction="bullish", target_price=130.0,
         target_month="2026-09", notes="", strategies=("bull-call-spread",),
-        created_at="2019-06-01T00:00:00+00:00"))
+        created_at="2019-06-01T00:00:00+00:00", owner_id="solo"))
     c = _client(storage)
     got = c.get("/api/scenarios/legacy-1").json()
 
@@ -366,12 +366,12 @@ def test_the_stored_legacy_value_itself_is_never_migrated():
     storage.create_scenario(StoredScenario(
         id="legacy-1", symbol="XYZ", direction="bullish", target_price=130.0,
         target_month="2026-09", notes="", strategies=("bull-call-spread",),
-        created_at="2019-06-01T00:00:00+00:00"))
+        created_at="2019-06-01T00:00:00+00:00", owner_id="solo"))
     c = _client(storage)
 
     c.get("/api/scenarios/legacy-1")   # 讀取本身不得有寫入副作用
 
-    stored = storage.get_scenario("legacy-1")
+    stored = storage.get_scenario("legacy-1", owner="solo")
     assert stored.strategies == ("bull-call-spread",)
 
 
@@ -386,7 +386,7 @@ def test_refreshing_a_legacy_scenario_also_returns_a_normalized_strategies_field
     storage.create_scenario(StoredScenario(
         id="legacy-1", symbol="XYZ", direction="bullish", target_price=130.0,
         target_month="2026-09", notes="", strategies=("bull-call-spread",),
-        created_at="2019-06-01T00:00:00+00:00"))
+        created_at="2019-06-01T00:00:00+00:00", owner_id="solo"))
     c = _client(storage)
 
     r = c.post("/api/scenarios/legacy-1/refresh")
@@ -403,7 +403,7 @@ def test_refresh_run_also_returns_a_normalized_strategies_field_for_legacy_scena
     storage.create_scenario(StoredScenario(
         id="legacy-1", symbol="XYZ", direction="bullish", target_price=130.0,
         target_month="2026-09", notes="", strategies=("bull-call-spread",),
-        created_at="2019-06-01T00:00:00+00:00"))
+        created_at="2019-06-01T00:00:00+00:00", owner_id="solo"))
     c = _client(storage)
 
     r = c.post("/api/scenarios/refresh-run", json={"scenario_ids": ["legacy-1"]})

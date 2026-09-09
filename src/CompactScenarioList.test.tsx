@@ -1,6 +1,6 @@
-import { render, screen, within } from "@testing-library/react";
+import { act, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import CompactScenarioList from "./CompactScenarioList";
 import sampleRow from "../contracts/scenario_row_sample.json";
@@ -398,6 +398,154 @@ describe("刷新失敗卡片兩態（OD-03／#242，REPAIR-05）", () => {
 
     expect(container.querySelector(".compact-card.failed")).not.toBeInTheDocument();
     expect(screen.queryByText(/抓不到 AAA 的報價/)).not.toBeInTheDocument();
+  });
+});
+
+describe("限流失敗（SCALE-05／#260）", () => {
+  const blockedUntil = "2026-08-04T10:01:00+00:00";   // NOW + 60s
+
+  // `useCountdownSeconds()` 讀的是真實系統時鐘（`Date.now()`），不是
+  // `list()` 的 `now` prop（那個只影響 `isStale()` 的新鮮度判斷）——
+  // 每個限流測試都要把系統時鐘釘在 `NOW`，倒數秒數才是可預期的值。
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(NOW);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("AC-2：顯示結構化倒數與 headline，不是直接印 message 原文", () => {
+    const { container } = list(
+      [row({ id: "a", symbol: "AAA", best_return: 1.5 })],
+      {
+        failures: {
+          a: {
+            stage: "rate_limited", message: "AAA 的報價來源目前受限流",
+            rateLimit: {
+              blocked_until: blockedUntil, retry_after_seconds: 60,
+              remaining_seconds: 60, last_success_at: null, incident: false,
+            },
+          },
+        },
+        now: NOW,
+      },
+    );
+
+    expect(container.querySelector(".compact-card.failed")).toBeInTheDocument();
+    expect(screen.getByText(/Cboe 資料來源目前限流中/)).toBeInTheDocument();
+    expect(screen.getByText(/還要等約 60 秒才能重試/)).toBeInTheDocument();
+    // AC-2：不解析 message 字串就知道還要等多久——message 原文不會
+    // 出現在畫面上（那句話被結構化的倒數取代了）。
+    expect(screen.queryByText(/AAA 的報價來源目前受限流/)).not.toBeInTheDocument();
+  });
+
+  it("持續性事故（incident）用不同的文案，指名 Cboe 而非本站問題", () => {
+    list(
+      [row({ id: "a", symbol: "AAA", best_return: 1.5 })],
+      {
+        failures: {
+          a: {
+            stage: "rate_limited", message: "x",
+            rateLimit: {
+              blocked_until: blockedUntil, retry_after_seconds: 60,
+              remaining_seconds: 60, last_success_at: null, incident: true,
+            },
+          },
+        },
+        now: NOW,
+      },
+    );
+
+    expect(screen.getByText(/Cboe 資料來源持續受限/)).toBeInTheDocument();
+  });
+
+  it("AC-4：限流失敗不影響既有兩態機制——曾成功過的劇本仍顯示上一次" +
+     "成功結果與資料時間，不是被限流專屬文案蓋掉", () => {
+    const { container } = list(
+      [row({ id: "a", symbol: "AAA", best_return: 1.5,
+            latest_analyzed_at: "2026-08-04T09:30:00+00:00" })],
+      {
+        failures: {
+          a: {
+            stage: "rate_limited", message: "x",
+            rateLimit: {
+              blocked_until: blockedUntil, retry_after_seconds: 60,
+              remaining_seconds: 60, last_success_at: null, incident: false,
+            },
+          },
+        },
+        now: NOW,
+      },
+    );
+
+    expect(container.querySelector(".compact-card.failed")).toBeInTheDocument();
+    // 既有「known」兩態頭條照常出現——限流只是換掉分層說明那一句，
+    // 不取代「這是不是舊結果」的既有告知。
+    expect(screen.getByText("更新失敗，目前顯示上一次成功結果"))
+      .toBeInTheDocument();
+    // 上一次成功結果的報酬率（150.0%＝1.5）仍在畫面上，資料沒被清掉。
+    expect(screen.getByText("150.0%")).toBeInTheDocument();
+    expect(screen.getByText(/Cboe 資料來源目前限流中/)).toBeInTheDocument();
+  });
+
+  it("Regression Red Line：backoff 視窗內重試鈕 disabled，不允許 retry storm", () => {
+    list(
+      [row({ id: "a", symbol: "AAA", best_return: 1.5 })],
+      {
+        failures: {
+          a: {
+            stage: "rate_limited", message: "x",
+            rateLimit: {
+              blocked_until: blockedUntil, retry_after_seconds: 60,
+              remaining_seconds: 60, last_success_at: null, incident: false,
+            },
+          },
+        },
+        now: NOW,
+      },
+    );
+
+    expect(screen.getByRole("button", { name: /重試/ })).toBeDisabled();
+  });
+
+  it("AC-3：到期後倒數歸零、重試鈕恢復可按——用假時鐘推進到 blocked_until 之後", () => {
+    list(
+      [row({ id: "a", symbol: "AAA", best_return: 1.5 })],
+      {
+        failures: {
+          a: {
+            stage: "rate_limited", message: "x",
+            rateLimit: {
+              blocked_until: "2026-08-04T10:00:05+00:00",
+              retry_after_seconds: 5, remaining_seconds: 5,
+              last_success_at: null, incident: false,
+            },
+          },
+        },
+        now: NOW,
+      },
+    );
+
+    expect(screen.getByRole("button", { name: /重試/ })).toBeDisabled();
+    expect(screen.getByText(/還要等約 5 秒才能重試/)).toBeInTheDocument();
+
+    act(() => {
+      vi.advanceTimersByTime(6000);
+    });
+
+    expect(screen.getByRole("button", { name: /重試/ })).toBeEnabled();
+    expect(screen.getByText(/可以重試了/)).toBeInTheDocument();
+  });
+
+  it("非限流失敗不受影響——重試鈕隨時可按", () => {
+    list(
+      [row({ id: "a", symbol: "AAA", best_return: 1.5 })],
+      { failures: { a: { stage: "fetch", message: "抓不到 AAA 的報價" } } },
+    );
+
+    expect(screen.getByRole("button", { name: /重試/ })).toBeEnabled();
   });
 });
 

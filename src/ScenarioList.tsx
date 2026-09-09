@@ -33,13 +33,16 @@ import {
   formatReturn,
   hasPriceRange,
   hasResult,
+  isRetryDisabledByRateLimit,
   isStale,
   money,
   moneyOrDash,
+  rateLimitDetailText,
   scenarioSignal,
   signalLabel,
   sortScenarios,
 } from "./scenarios";
+import { useCountdownSeconds } from "./useCountdown";
 
 function ScenarioCard({
   row,
@@ -84,6 +87,10 @@ function ScenarioCard({
   // 是兩個獨立 state，`cardFailureVariant` 已經把兩者互斥的判準收進
   // 純函式，這裡只讀結果決定要不要反灰、顯示哪一句頭條。
   const failureVariant = cardFailureVariant(row, failure, updating);
+  // SCALE-05（#260，AC-3）：只在限流失敗時才有倒數可言；`blocked_until`
+  // 不變就不會啟動計時器（見 `useCountdownSeconds`）。
+  const rateLimitRemaining = useCountdownSeconds(
+    failure?.rateLimit?.blocked_until ?? null);
 
   const cardClass = [
     "compact-card", selected && "selected",
@@ -265,13 +272,19 @@ function ScenarioCard({
               {cardFailureHeadline(failureVariant)}
             </span>
             <span className="compact-notice-detail">
-              {failureLabel(failure.stage)}：{failure.message}
+              {/* SCALE-05（#260，AC-2）：限流失敗改講「誰的問題、還要等
+                  多久」（結構化倒數，不是解析 message 字串），其餘失敗
+                  沿用既有分層說明。 */}
+              {failure.stage === "rate_limited" && failure.rateLimit
+                ? rateLimitDetailText(failure.rateLimit, rateLimitRemaining ?? 0)
+                : `${failureLabel(failure.stage)}：${failure.message}`}
             </span>
           </span>
           <button
             className="text-button"
             onClick={() => onRetry(row.id)}
             aria-label={`重試 ${who}`}
+            disabled={isRetryDisabledByRateLimit(failure, rateLimitRemaining)}
           >
             重試
           </button>

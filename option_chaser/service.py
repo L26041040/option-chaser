@@ -28,7 +28,7 @@ from .report import (STRATEGY_LABELS, render, render_butterflies, render_filter_
 from .scenarios import (ResilienceMetrics, ScenarioVector, natural_cost,
                         resilience_metrics, _grid_price, _value_fn)
 from .timeframe import (TargetMonth, calendar_anchor, ensure_month_open,
-                        select_expiries)
+                        select_expiries, tradable_expiries)
 from .ratecurve import RateCurve, rate_for_tenor
 from .valuation import (ButterflyValuation, ContractValuation, DAYS_PER_YEAR,
                         LegCarry, SpreadValuation, butterfly_scenario_value,
@@ -1155,8 +1155,7 @@ def _scoped_to_selected_expiries(snap: ChainSnapshot, anchor: date,
     直接餵入空清單時仍然拋錯，這裡只是不讓服務層把「沒有到期日可選」誤讀成
     產品異常；此時 baseline 也無從定義，回傳 None。
     """
-    tradable = {c.expiry for c in snap.contracts
-                if date.fromisoformat(c.expiry) > today}
+    tradable = tradable_expiries((c.expiry for c in snap.contracts), today)
     if not tradable:
         return dataclasses.replace(snap, contracts=()), None
     selection = select_expiries(tradable, anchor)

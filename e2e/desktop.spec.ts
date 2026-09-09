@@ -876,6 +876,35 @@ test("REPAIR-05／#242 B：從未成功過的劇本刷新失敗——卡片反�
   await expect(page.locator(".detail-pane").getByText("尚未分析")).toBeVisible();
 });
 
+test("限流失敗顯示結構化倒數與 Cboe 專屬文案，視窗內重試鈕停用" +
+  "（SCALE-05／#260）——桌面版", async ({ page }) => {
+  const row = libraryRow({ id: "s1", symbol: "XYZ" });
+  await page.route("**/api/scenarios", (route) => route.fulfill({ json: [row] }));
+  await page.route("**/api/scenarios/s1", (route) =>
+    route.fulfill({ json: { ...row, latest_result: sample } }));
+  // `blocked_until` 設在足夠遠的未來（+120s），確保整個測試執行期間
+  // 倒數維持正值。
+  const blockedUntil = new Date(Date.now() + 120_000).toISOString();
+  await page.route("**/api/scenarios/refresh-run", (route) =>
+    route.fulfill({ json: { results: [{ scenario_id: "s1", ok: false,
+      stage: "rate_limited", message: "XYZ 的報價來源目前受限流",
+      blocked_until: blockedUntil, retry_after_seconds: 120,
+      remaining_seconds: 120, last_success_at: null, incident: false }],
+      remaining: [] } }));
+
+  await page.goto("/");
+
+  const card = page.locator(".compact-card").filter({ hasText: "XYZ" });
+  await expect(card).toHaveClass(/failed/);
+  // AC-2：講的是結構化的「誰、還要等多久」，不是把 message 原文吐出來。
+  await expect(page.getByText("Cboe 資料來源目前限流中")).toBeVisible();
+  await expect(page.getByText(/還要等約 1(1[0-9]|20) 秒才能重試/)).toBeVisible();
+  await expect(page.getByText("XYZ 的報價來源目前受限流")).toBeHidden();
+
+  // Regression Red Line：backoff 視窗內不允許 retry storm。
+  await expect(page.getByRole("button", { name: /重試/ })).toBeDisabled();
+});
+
 test("左右比例約 20/80，不是置中的窄直欄", async ({ page }) => {
   await routeTwoScenarios(page);
   await page.goto("/");

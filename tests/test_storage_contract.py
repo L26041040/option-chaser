@@ -16,21 +16,46 @@ import pytest
 from dataclasses import replace
 
 from api_app.diagnostics import RETENTION_LIMIT, DiagnosticEvent
-from api_app.storage import (ContractHistory,
+from api_app.storage import (ChainBackoffEntry, ContractHistory,
                              DataSourceSettings, DividendCacheEntry,
-                             IvBackfillRun, IvObservation, ProviderCredential,
-                             ProviderVerification, RateCacheEntry,
-                             ResultRecord, Scenario, ScenarioExists,
-                             TreasuryYearCacheEntry, UsageSetting)
+                             IvBackfillRun, IvObservation, NarrowHistoryEntry,
+                             ProviderCredential, ProviderVerification,
+                             RateCacheEntry, ResultRecord, Scenario,
+                             ScenarioExists, TreasuryYearCacheEntry,
+                             UsageSetting)
 from api_app.storage.memory import MemoryStorage
 
 TEST_DB_URL = os.environ.get("OC_TEST_DATABASE_URL")
 
+# SCALE-11（#262，Ownership A-1 Enforce）：這份契約測試絕大多數場景
+# 不在乎「哪個 owner」，只在乎「同一個 owner 寫的、同一個 owner 讀得
+# 回」——固定用這個值當預設，測試意圖需要別的 owner（或刻意不指定）
+# 時再逐一覆寫，不必每個測試各自發明一個字串。
+OWNER = "solo"
 
-def _scenario(sid="s1", *, symbol="TLT", created_at="2026-08-01T00:00:00+00:00"):
+
+def _scenario(sid="s1", *, symbol="TLT", created_at="2026-08-01T00:00:00+00:00",
+             owner_id: str | None = OWNER):
     return Scenario(id=sid, symbol=symbol, direction="bullish",
                     target_price=120.0, target_month="2028-05", notes="",
-                    strategies=("bull-call-spread",), created_at=created_at)
+                    strategies=("bull-call-spread",), created_at=created_at,
+                    owner_id=owner_id)
+
+
+def _save_current(storage, rec: ResultRecord) -> None:
+    """SCALE-16（#267）測試輔助：多數既有測試的意圖是「存進去、當作
+    現在最新的結果，也留下一筆歷史事實」——比照
+    `main.py::_refresh_and_save()` 對同一個 `rec` 各呼叫一次
+    `save_result()`（ledger）與 `save_current_result()`（current）。
+    這讓既有測試（原本一次 `save_result()` 呼叫、同時驗證
+    `latest_result()`／`latest_summaries()` 與 `result_history()`
+    兩種語意）只需要改一行呼叫，不必拆成兩次分別想清楚。真正只關心
+    ledger-only 語意、且不檢查 `latest_result()`／`latest_summaries()`
+    的既有測試維持直接呼叫 `storage.save_result()`，不使用這個
+    helper——那些測試在 SCALE-16 之後仍然正確，不需要改動（也已由
+    全套測試跑過確認）。"""
+    storage.save_result(rec)
+    storage.save_current_result(rec)
 
 
 @pytest.fixture(params=["memory", "postgres"])
@@ -53,11 +78,14 @@ def storage(request):
     st._ensure_schema()
     # 清庫是測試自己的事，不放進正式 adapter（正式環境不該有 TRUNCATE）。
     with psycopg.connect(TEST_DB_URL, autocommit=True) as conn:
-        conn.execute("TRUNCATE scenarios, results, snapshots, events, rate_cache, "
-                     "dividend_cache, treasury_year_cache, data_source_settings, "
+        conn.execute("TRUNCATE scenarios, results, current_results, snapshots, events, rate_cache, "
+                     "dividend_cache, treasury_year_cache, chain_backoff, "
+                     "data_source_settings, "
                      "provider_credentials, provider_verifications, "
+                     "owner_settings, owner_credentials, owner_verifications, "
                      "iv_observations, iv_backfill_runs, contract_iv_history, "
-                     "diagnostics RESTART IDENTITY")
+                     "diagnostics, operational_metrics, narrow_history "
+                     "RESTART IDENTITY")
     yield st
 
 
@@ -66,11 +94,11 @@ def storage(request):
 def test_created_scenario_can_be_read_back(storage):
     sc = _scenario()
     storage.create_scenario(sc)
-    assert storage.get_scenario("s1") == sc
+    assert storage.get_scenario("s1", owner=OWNER) == sc
 
 
 def test_missing_scenario_is_none_not_an_error(storage):
-    assert storage.get_scenario("nope") is None
+    assert storage.get_scenario("nope", owner=OWNER) is None
 
 
 def test_duplicate_id_is_rejected(storage):
@@ -82,13 +110,13 @@ def test_duplicate_id_is_rejected(storage):
 def test_list_is_ordered_by_creation_time(storage):
     storage.create_scenario(_scenario("b", created_at="2026-08-02T00:00:00+00:00"))
     storage.create_scenario(_scenario("a", created_at="2026-08-01T00:00:00+00:00"))
-    assert [s.id for s in storage.list_scenarios()] == ["a", "b"]
+    assert [s.id for s in storage.list_scenarios(owner=OWNER)] == ["a", "b"]
 
 
 def test_strategies_survive_the_roundtrip_as_a_tuple(storage):
     sc = _scenario()
     storage.create_scenario(sc)
-    got = storage.get_scenario("s1")
+    got = storage.get_scenario("s1", owner=OWNER)
     assert got.strategies == ("bull-call-spread",)
     assert isinstance(got.strategies, tuple)
 
@@ -97,97 +125,97 @@ def test_strategies_survive_the_roundtrip_as_a_tuple(storage):
 
 def test_update_replaces_fields_but_keeps_identity(storage):
     storage.create_scenario(_scenario())
-    storage.update_scenario(replace(_scenario(), target_price=999.0))
-    got = storage.get_scenario("s1")
+    storage.update_scenario(replace(_scenario(), target_price=999.0), owner=OWNER)
+    got = storage.get_scenario("s1", owner=OWNER)
     assert got.id == "s1" and got.target_price == 999.0
     assert got.created_at == _scenario().created_at
 
 
 def test_updating_a_missing_scenario_reports_false(storage):
-    assert storage.update_scenario(_scenario("nope")) is False
+    assert storage.update_scenario(_scenario("nope"), owner=OWNER) is False
 
 
 def test_update_does_not_create_a_second_row(storage):
     storage.create_scenario(_scenario())
-    storage.update_scenario(replace(_scenario(), target_price=999.0))
-    assert len(storage.list_scenarios()) == 1
+    storage.update_scenario(replace(_scenario(), target_price=999.0), owner=OWNER)
+    assert len(storage.list_scenarios(owner=OWNER)) == 1
 
 
 def test_clear_results_drops_results_and_snapshots_only(storage):
     """thesis 改了之後舊結果不能留；但事件是不可變的事實，不刪。"""
     storage.create_scenario(_scenario())
-    storage.save_result(ResultRecord("s1", "2026-08-01T00:00:00+00:00", {"n": 1}))
-    storage.save_snapshot("s1", "2026-08-01T00:00:00+00:00", {"x": 1})
+    storage.save_result(ResultRecord("s1", "2026-08-01T00:00:00+00:00", {"n": 1}, owner_id=OWNER))
+    storage.save_snapshot("s1", "2026-08-01T00:00:00+00:00", {"x": 1}, owner_id=OWNER)
     storage.append_event(ts="2026-08-01T00:00:00+00:00", scenario_id="s1",
-                         event="SCENARIO_CREATED", payload={})
+                         event="SCENARIO_CREATED", payload={}, owner_id=OWNER)
 
-    storage.clear_results("s1")
-    assert storage.latest_result("s1") is None
-    assert storage.get_snapshot("s1", "2026-08-01T00:00:00+00:00") is None
-    assert storage.get_scenario("s1") is not None
-    assert len(storage.list_events(scenario_id="s1")) == 1
+    storage.clear_results("s1", owner=OWNER)
+    assert storage.latest_result("s1", owner=OWNER) is None
+    assert storage.get_snapshot("s1", "2026-08-01T00:00:00+00:00", owner=OWNER) is None
+    assert storage.get_scenario("s1", owner=OWNER) is not None
+    assert len(storage.list_events(scenario_id="s1", owner=OWNER)) == 1
 
 
 def test_clear_results_leaves_other_scenarios_alone(storage):
     for sid in ("s1", "s2"):
         storage.create_scenario(_scenario(sid))
-        storage.save_result(ResultRecord(sid, "2026-08-01T00:00:00+00:00", {}))
-    storage.clear_results("s1")
-    assert storage.latest_result("s2") is not None
+        _save_current(storage, ResultRecord(sid, "2026-08-01T00:00:00+00:00", {}, owner_id=OWNER))
+    storage.clear_results("s1", owner=OWNER)
+    assert storage.latest_result("s2", owner=OWNER) is not None
 
 
 # ---------- 封存＝軟刪除 ----------
 
 def test_archiving_hides_from_the_default_list_but_keeps_the_record(storage):
     storage.create_scenario(_scenario())
-    assert storage.archive_scenario("s1", ts="2026-08-05T00:00:00+00:00") is True
+    assert storage.archive_scenario("s1", ts="2026-08-05T00:00:00+00:00", owner=OWNER) is True
 
-    assert storage.list_scenarios() == []                      # 預設清單看不到
-    archived = storage.get_scenario("s1")
+    assert storage.list_scenarios(owner=OWNER) == []                      # 預設清單看不到
+    archived = storage.get_scenario("s1", owner=OWNER)
     assert archived is not None                                # 但紀錄還在
     assert archived.archived_at == "2026-08-05T00:00:00+00:00"
-    assert [s.id for s in storage.list_scenarios(include_archived=True)] == ["s1"]
+    assert [s.id for s in storage.list_scenarios(include_archived=True, owner=OWNER)] == ["s1"]
 
 
 def test_archiving_twice_or_a_missing_scenario_reports_false(storage):
     storage.create_scenario(_scenario())
-    storage.archive_scenario("s1", ts="2026-08-05T00:00:00+00:00")
-    assert storage.archive_scenario("s1", ts="2026-08-06T00:00:00+00:00") is False
-    assert storage.archive_scenario("nope", ts="2026-08-06T00:00:00+00:00") is False
+    storage.archive_scenario("s1", ts="2026-08-05T00:00:00+00:00", owner=OWNER)
+    assert storage.archive_scenario("s1", ts="2026-08-06T00:00:00+00:00", owner=OWNER) is False
+    assert storage.archive_scenario("nope", ts="2026-08-06T00:00:00+00:00", owner=OWNER) is False
 
 
 def test_archived_scenario_keeps_its_results(storage):
     storage.create_scenario(_scenario())
-    storage.save_result(ResultRecord("s1", "2026-08-01T12:00:00+00:00", {"a": 1}))
-    storage.archive_scenario("s1", ts="2026-08-05T00:00:00+00:00")
-    assert storage.latest_result("s1").view == {"a": 1}
+    _save_current(storage, ResultRecord("s1", "2026-08-01T12:00:00+00:00", {"a": 1}, owner_id=OWNER))
+    storage.archive_scenario("s1", ts="2026-08-05T00:00:00+00:00", owner=OWNER)
+    assert storage.latest_result("s1", owner=OWNER).view == {"a": 1}
 
 
 # ---------- 還原（TR2／#89） ----------
 
 def test_restoring_an_archived_scenario_brings_it_back_to_the_default_list(storage):
     storage.create_scenario(_scenario())
-    storage.archive_scenario("s1", ts="2026-08-05T00:00:00+00:00")
+    storage.archive_scenario("s1", ts="2026-08-05T00:00:00+00:00", owner=OWNER)
 
-    assert storage.restore_scenario("s1", ts="2026-08-06T00:00:00+00:00") is True
+    assert storage.restore_scenario("s1", ts="2026-08-06T00:00:00+00:00", owner=OWNER) is True
 
-    assert [s.id for s in storage.list_scenarios()] == ["s1"]     # 預設清單重新看得到
-    restored = storage.get_scenario("s1")
+    assert [s.id for s in storage.list_scenarios(owner=OWNER)] == ["s1"]     # 預設清單重新看得到
+    restored = storage.get_scenario("s1", owner=OWNER)
     assert restored.archived_at is None
 
 
 def test_restoring_a_never_archived_or_missing_scenario_reports_false(storage):
     storage.create_scenario(_scenario())
-    assert storage.restore_scenario("s1", ts="2026-08-06T00:00:00+00:00") is False
-    assert storage.restore_scenario("nope", ts="2026-08-06T00:00:00+00:00") is False
+    assert storage.restore_scenario("s1", ts="2026-08-06T00:00:00+00:00", owner=OWNER) is False
+    assert storage.restore_scenario("nope", ts="2026-08-06T00:00:00+00:00", owner=OWNER) is False
 
 
 def test_restored_scenario_keeps_its_results(storage):
     storage.create_scenario(_scenario())
-    storage.save_result(ResultRecord("s1", "2026-08-01T12:00:00+00:00", {"a": 1}))
-    storage.archive_scenario("s1", ts="2026-08-05T00:00:00+00:00")
-    storage.restore_scenario("s1", ts="2026-08-06T00:00:00+00:00")
-    assert storage.latest_result("s1").view == {"a": 1}
+    _save_current(storage, ResultRecord("s1", "2026-08-01T12:00:00+00:00", {"a": 1}, owner_id=OWNER))
+    storage.archive_scenario("s1", ts="2026-08-05T00:00:00+00:00", owner=OWNER)
+    storage.restore_scenario("s1", ts="2026-08-06T00:00:00+00:00", owner=OWNER)
+    assert storage.latest_result("s1", owner=OWNER).view == {"a": 1}
 
 
 # ---------- 永久刪除（TR3／#90） ----------
@@ -199,54 +227,58 @@ def test_restored_scenario_keeps_its_results(storage):
 
 def test_deleting_an_archived_scenario_removes_it_and_everything_under_it(storage):
     storage.create_scenario(_scenario())
-    storage.save_result(ResultRecord("s1", "2026-08-01T12:00:00+00:00", {"a": 1}))
-    storage.save_snapshot("s1", "2026-08-01T12:00:00+00:00", {"contracts": []})
+    storage.save_result(ResultRecord("s1", "2026-08-01T12:00:00+00:00", {"a": 1}, owner_id=OWNER))
+    storage.save_snapshot("s1", "2026-08-01T12:00:00+00:00", {"contracts": []}, owner_id=OWNER)
     storage.append_event(ts="2026-08-01T00:00:00+00:00", scenario_id="s1",
-                         event="SCENARIO_CREATED", payload={})
-    storage.archive_scenario("s1", ts="2026-08-05T00:00:00+00:00")
+                         event="SCENARIO_CREATED", payload={}, owner_id=OWNER)
+    storage.archive_scenario("s1", ts="2026-08-05T00:00:00+00:00", owner=OWNER)
 
-    assert storage.delete_scenario("s1") is True
+    assert storage.delete_scenario("s1", owner=OWNER) is True
 
-    assert storage.get_scenario("s1") is None
-    assert [s.id for s in storage.list_scenarios(include_archived=True)] == []
-    assert storage.result_history("s1") == []
-    assert storage.get_snapshot("s1", "2026-08-01T12:00:00+00:00") is None
-    assert storage.list_events(scenario_id="s1") == []
+    assert storage.get_scenario("s1", owner=OWNER) is None
+    assert [s.id for s in storage.list_scenarios(include_archived=True, owner=OWNER)] == []
+    assert storage.result_history("s1", owner=OWNER) == []
+    assert storage.get_snapshot("s1", "2026-08-01T12:00:00+00:00", owner=OWNER) is None
+    assert storage.list_events(scenario_id="s1", owner=OWNER) == []
 
 
 def test_deleting_an_unarchived_scenario_is_rejected_and_keeps_everything(storage):
     storage.create_scenario(_scenario())
-    storage.save_result(ResultRecord("s1", "2026-08-01T12:00:00+00:00", {"a": 1}))
+    _save_current(storage, ResultRecord("s1", "2026-08-01T12:00:00+00:00", {"a": 1}, owner_id=OWNER))
 
-    assert storage.delete_scenario("s1") is False
+    assert storage.delete_scenario("s1", owner=OWNER) is False
 
-    assert storage.get_scenario("s1") is not None
-    assert storage.latest_result("s1").view == {"a": 1}
+    assert storage.get_scenario("s1", owner=OWNER) is not None
+    assert storage.latest_result("s1", owner=OWNER).view == {"a": 1}
 
 
 def test_deleting_a_missing_scenario_reports_false(storage):
-    assert storage.delete_scenario("nope") is False
+    assert storage.delete_scenario("nope", owner=OWNER) is False
 
 
 def test_deleting_does_not_touch_other_scenarios(storage):
     storage.create_scenario(_scenario("s1"))
     storage.create_scenario(_scenario("s2"))
-    storage.save_result(ResultRecord("s2", "2026-08-01T12:00:00+00:00", {"b": 1}))
-    storage.archive_scenario("s1", ts="2026-08-05T00:00:00+00:00")
+    _save_current(storage, ResultRecord("s2", "2026-08-01T12:00:00+00:00", {"b": 1}, owner_id=OWNER))
+    storage.archive_scenario("s1", ts="2026-08-05T00:00:00+00:00", owner=OWNER)
 
-    storage.delete_scenario("s1")
+    storage.delete_scenario("s1", owner=OWNER)
 
-    assert storage.get_scenario("s2") is not None
-    assert storage.latest_result("s2").view == {"b": 1}
+    assert storage.get_scenario("s2", owner=OWNER) is not None
+    assert storage.latest_result("s2", owner=OWNER).view == {"b": 1}
 
 
 # ---------- 結果與歷史 ----------
 
 def test_latest_result_is_the_newest_by_analyzed_at(storage):
+    """SCALE-16（#267）：`latest_result()` 改讀 `current_results`，「最新」
+    因此不再靠比較 `analyzed_at` 挑出來——它就是覆寫更新那一份，這裡
+    改用 `_save_current()` 依序覆寫兩次，驗證的是「最後一次寫入的才
+    是現在看到的」這件事，語意上與舊測試名稱描述的意圖一致。"""
     storage.create_scenario(_scenario())
-    storage.save_result(ResultRecord("s1", "2026-08-02T12:00:00+00:00", {"n": 2}))
-    storage.save_result(ResultRecord("s1", "2026-08-01T12:00:00+00:00", {"n": 1}))
-    assert storage.latest_result("s1").view == {"n": 2}
+    _save_current(storage, ResultRecord("s1", "2026-08-01T12:00:00+00:00", {"n": 1}, owner_id=OWNER))
+    _save_current(storage, ResultRecord("s1", "2026-08-02T12:00:00+00:00", {"n": 2}, owner_id=OWNER))
+    assert storage.latest_result("s1", owner=OWNER).view == {"n": 2}
 
 
 def test_history_is_ordered_oldest_first(storage):
@@ -254,30 +286,98 @@ def test_history_is_ordered_oldest_first(storage):
     for ts, n in (("2026-08-03T00:00:00+00:00", 3),
                   ("2026-08-01T00:00:00+00:00", 1),
                   ("2026-08-02T00:00:00+00:00", 2)):
-        storage.save_result(ResultRecord("s1", ts, {"n": n}))
-    assert [r.view["n"] for r in storage.result_history("s1")] == [1, 2, 3]
+        storage.save_result(ResultRecord("s1", ts, {"n": n}, owner_id=OWNER))
+    assert [r.view["n"] for r in storage.result_history("s1", owner=OWNER)] == [1, 2, 3]
 
 
 def test_saving_the_same_timestamp_twice_overwrites_rather_than_duplicates(storage):
     """同一次快照重跑（例如重試）不該在歷史裡留下兩筆。"""
     storage.create_scenario(_scenario())
-    storage.save_result(ResultRecord("s1", "2026-08-01T00:00:00+00:00", {"n": 1}))
-    storage.save_result(ResultRecord("s1", "2026-08-01T00:00:00+00:00", {"n": 99}))
-    hist = storage.result_history("s1")
+    storage.save_result(ResultRecord("s1", "2026-08-01T00:00:00+00:00", {"n": 1}, owner_id=OWNER))
+    storage.save_result(ResultRecord("s1", "2026-08-01T00:00:00+00:00", {"n": 99}, owner_id=OWNER))
+    hist = storage.result_history("s1", owner=OWNER)
     assert len(hist) == 1 and hist[0].view["n"] == 99
 
 
 def test_no_results_yet_is_none_and_empty(storage):
     storage.create_scenario(_scenario())
-    assert storage.latest_result("s1") is None
-    assert storage.result_history("s1") == []
+    assert storage.latest_result("s1", owner=OWNER) is None
+    assert storage.result_history("s1", owner=OWNER) == []
+
+
+# ---------- 歷史時間戳索引（SCALE-02／#253，Scaling Foundation） ----------
+
+def test_result_timestamps_starts_empty(storage):
+    storage.create_scenario(_scenario())
+    assert storage.result_timestamps("s1", owner=OWNER) == []
+
+
+def test_result_timestamps_lists_the_normal_lockstep_case(storage):
+    """正常路徑：`results`／`snapshots` 同一個 analyzed_at 都存在
+    （production 今天唯一會發生的情況），兩張表窄查詢 UNION 後只出現
+    一次。"""
+    storage.create_scenario(_scenario())
+    storage.save_result(ResultRecord("s1", "2026-08-01T00:00:00+00:00", {"n": 1}, owner_id=OWNER))
+    storage.save_snapshot("s1", "2026-08-01T00:00:00+00:00", {"contracts": []}, owner_id=OWNER)
+    storage.save_result(ResultRecord("s1", "2026-08-02T00:00:00+00:00", {"n": 2}, owner_id=OWNER))
+    storage.save_snapshot("s1", "2026-08-02T00:00:00+00:00", {"contracts": []}, owner_id=OWNER)
+
+    assert storage.result_timestamps("s1", owner=OWNER) == [
+        "2026-08-01T00:00:00+00:00", "2026-08-02T00:00:00+00:00"]
+
+
+def test_result_timestamps_falls_back_to_results_when_snapshot_is_missing(storage):
+    """AC-2：`api_app/main.py::_refresh_and_save()` 對 `save_result()`／
+    `save_snapshot()` 是兩次獨立呼叫、未包在同一個交易裡——中途中斷
+    會留下一筆有 `results` 沒有 `snapshots` 的孤兒列。只讀
+    `snapshots` 的話，這次分析的時間戳會從歷史索引裡憑空消失；本測試
+    直接構造這個孤兒情境，證明它不會被靜默丟掉。"""
+    storage.create_scenario(_scenario())
+    storage.save_result(ResultRecord("s1", "2026-08-01T00:00:00+00:00", {"n": 1}, owner_id=OWNER))
+    # 刻意不呼叫 save_snapshot——模擬兩次寫入之間中斷的孤兒列。
+    storage.save_result(ResultRecord("s1", "2026-08-02T00:00:00+00:00", {"n": 2}, owner_id=OWNER))
+    storage.save_snapshot("s1", "2026-08-02T00:00:00+00:00", {"contracts": []}, owner_id=OWNER)
+
+    assert storage.result_timestamps("s1", owner=OWNER) == [
+        "2026-08-01T00:00:00+00:00", "2026-08-02T00:00:00+00:00"]
+
+
+def test_result_timestamps_also_covers_a_snapshot_without_a_result_row(storage):
+    """對稱情況：只有 `snapshots`、沒有 `results`（同一種中斷情境，
+    另一半沒寫成）——UNION 兩邊都要覆蓋，不是只補其中一個方向。"""
+    storage.create_scenario(_scenario())
+    storage.save_snapshot("s1", "2026-08-01T00:00:00+00:00", {"contracts": []}, owner_id=OWNER)
+
+    assert storage.result_timestamps("s1", owner=OWNER) == ["2026-08-01T00:00:00+00:00"]
+
+
+def test_result_timestamps_does_not_duplicate_when_both_tables_agree(storage):
+    """UNION 本身會去重——同一個時間戳兩邊都有時只回一次，不需要額外
+    的 DISTINCT。"""
+    storage.create_scenario(_scenario())
+    storage.save_result(ResultRecord("s1", "2026-08-01T00:00:00+00:00", {"n": 1}, owner_id=OWNER))
+    storage.save_snapshot("s1", "2026-08-01T00:00:00+00:00", {"contracts": []}, owner_id=OWNER)
+
+    assert storage.result_timestamps("s1", owner=OWNER) == ["2026-08-01T00:00:00+00:00"]
+
+
+def test_result_timestamps_does_not_leak_across_scenarios(storage):
+    storage.create_scenario(_scenario("s1"))
+    storage.create_scenario(_scenario("s2", symbol="SPY"))
+    storage.save_result(ResultRecord("s1", "2026-08-01T00:00:00+00:00", {"n": 1}, owner_id=OWNER))
+    storage.save_snapshot("s1", "2026-08-01T00:00:00+00:00", {"contracts": []}, owner_id=OWNER)
+    storage.save_result(ResultRecord("s2", "2026-08-02T00:00:00+00:00", {"n": 2}, owner_id=OWNER))
+    storage.save_snapshot("s2", "2026-08-02T00:00:00+00:00", {"contracts": []}, owner_id=OWNER)
+
+    assert storage.result_timestamps("s1", owner=OWNER) == ["2026-08-01T00:00:00+00:00"]
+    assert storage.result_timestamps("s2", owner=OWNER) == ["2026-08-02T00:00:00+00:00"]
 
 
 def test_results_do_not_leak_across_scenarios(storage):
     storage.create_scenario(_scenario("s1"))
     storage.create_scenario(_scenario("s2"))
-    storage.save_result(ResultRecord("s1", "2026-08-01T00:00:00+00:00", {"who": 1}))
-    assert storage.latest_result("s2") is None
+    storage.save_result(ResultRecord("s1", "2026-08-01T00:00:00+00:00", {"who": 1}, owner_id=OWNER))
+    assert storage.latest_result("s2", owner=OWNER) is None
 
 
 def test_large_view_survives_the_roundtrip(storage):
@@ -286,8 +386,8 @@ def test_large_view_survives_the_roundtrip(storage):
     view = {"meta": {"spot": 82.25}, "results": [{"expiry_top10": [
         {"expiry": "2028-06-16", "candidates": [{"k": i} for i in range(50)]}]}],
         "nested": {"deep": {"list": list(range(200))}}}
-    storage.save_result(ResultRecord("s1", "2026-08-01T00:00:00+00:00", view))
-    assert storage.latest_result("s1").view == view
+    _save_current(storage, ResultRecord("s1", "2026-08-01T00:00:00+00:00", view, owner_id=OWNER))
+    assert storage.latest_result("s1", owner=OWNER).view == view
 
 
 # ---------- 原始快照 ----------
@@ -299,28 +399,28 @@ def test_snapshot_is_stored_alongside_its_result_and_read_back(storage):
     snap = {"schema_version": 2, "symbol": "TLT", "spot": 82.25,
             "source": "cboe", "fetched_at": "2026-08-01T00:00:00+00:00",
             "contracts": [{"strike": 100.0, "bid": 1.1, "ask": 1.2}]}
-    storage.save_snapshot("s1", "2026-08-01T00:00:00+00:00", snap)
-    assert storage.get_snapshot("s1", "2026-08-01T00:00:00+00:00") == snap
+    storage.save_snapshot("s1", "2026-08-01T00:00:00+00:00", snap, owner_id=OWNER)
+    assert storage.get_snapshot("s1", "2026-08-01T00:00:00+00:00", owner=OWNER) == snap
 
 
 def test_missing_snapshot_is_none(storage):
-    assert storage.get_snapshot("s1", "2026-08-01T00:00:00+00:00") is None
+    assert storage.get_snapshot("s1", "2026-08-01T00:00:00+00:00", owner=OWNER) is None
 
 
 def test_snapshots_are_keyed_per_analysis(storage):
     storage.create_scenario(_scenario())
-    storage.save_snapshot("s1", "2026-08-01T00:00:00+00:00", {"n": 1})
-    storage.save_snapshot("s1", "2026-08-02T00:00:00+00:00", {"n": 2})
-    assert storage.get_snapshot("s1", "2026-08-01T00:00:00+00:00") == {"n": 1}
-    assert storage.get_snapshot("s1", "2026-08-02T00:00:00+00:00") == {"n": 2}
+    storage.save_snapshot("s1", "2026-08-01T00:00:00+00:00", {"n": 1}, owner_id=OWNER)
+    storage.save_snapshot("s1", "2026-08-02T00:00:00+00:00", {"n": 2}, owner_id=OWNER)
+    assert storage.get_snapshot("s1", "2026-08-01T00:00:00+00:00", owner=OWNER) == {"n": 1}
+    assert storage.get_snapshot("s1", "2026-08-02T00:00:00+00:00", owner=OWNER) == {"n": 2}
 
 
 def test_result_history_does_not_drag_snapshots_along(storage):
     """歷史查詢（V9 走勢圖）會撈很多筆，不該每次附帶數百 KB 的快照。"""
     storage.create_scenario(_scenario())
-    storage.save_result(ResultRecord("s1", "2026-08-01T00:00:00+00:00", {"n": 1}))
-    storage.save_snapshot("s1", "2026-08-01T00:00:00+00:00", {"big": "x" * 1000})
-    (rec,) = storage.result_history("s1")
+    storage.save_result(ResultRecord("s1", "2026-08-01T00:00:00+00:00", {"n": 1}, owner_id=OWNER))
+    storage.save_snapshot("s1", "2026-08-01T00:00:00+00:00", {"big": "x" * 1000}, owner_id=OWNER)
+    (rec,) = storage.result_history("s1", owner=OWNER)
     assert rec.view == {"n": 1}
     assert not hasattr(rec, "snapshot")
 
@@ -329,10 +429,10 @@ def test_result_history_does_not_drag_snapshots_along(storage):
 
 def test_events_are_returned_in_append_order(storage):
     storage.append_event(ts="2026-08-01T00:00:00+00:00", scenario_id="s1",
-                         event="SCENARIO_CREATED", payload={"i": 1})
+                         event="SCENARIO_CREATED", payload={"i": 1}, owner_id=OWNER)
     storage.append_event(ts="2026-08-02T00:00:00+00:00", scenario_id="s1",
-                         event="ANALYSIS_COMPLETED", payload={"i": 2})
-    events = storage.list_events()
+                         event="ANALYSIS_COMPLETED", payload={"i": 2}, owner_id=OWNER)
+    events = storage.list_events(owner=OWNER)
     assert [e["event"] for e in events] == ["SCENARIO_CREATED",
                                             "ANALYSIS_COMPLETED"]
     assert events[0]["payload"] == {"i": 1}
@@ -341,13 +441,13 @@ def test_events_are_returned_in_append_order(storage):
 
 def test_events_can_be_filtered_by_scenario(storage):
     storage.append_event(ts="2026-08-01T00:00:00+00:00", scenario_id="s1",
-                         event="A", payload={})
+                         event="A", payload={}, owner_id=OWNER)
     storage.append_event(ts="2026-08-01T00:00:00+00:00", scenario_id="s2",
-                         event="B", payload={})
+                         event="B", payload={}, owner_id=OWNER)
     storage.append_event(ts="2026-08-01T00:00:00+00:00", scenario_id=None,
-                         event="GLOBAL", payload={})
-    assert [e["event"] for e in storage.list_events(scenario_id="s1")] == ["A"]
-    assert len(storage.list_events()) == 3
+                         event="GLOBAL", payload={}, owner_id=OWNER)
+    assert [e["event"] for e in storage.list_events(scenario_id="s1", owner=OWNER)] == ["A"]
+    assert len(storage.list_events(owner=OWNER)) == 3
 
 
 def test_kind_reports_the_actual_backend(storage, request):
@@ -551,6 +651,264 @@ def test_treasury_year_cache_does_not_leak_across_years(storage):
     assert storage.get_treasury_year_cache(2026).note == "2026 不可得"
 
 
+# ---------- Chain 429 backoff（SCALE-04／#255，provider-global） ----------
+
+def test_chain_backoff_starts_empty(storage):
+    assert storage.get_chain_backoff("cboe") is None
+
+
+def test_chain_backoff_roundtrips_a_blocked_state(storage):
+    entry = ChainBackoffEntry(
+        source="cboe", blocked_until="2026-09-06T12:01:00+00:00",
+        retry_after_seconds=34.0, consecutive_failures=1,
+        observed_at="2026-09-06T12:00:00+00:00", last_success_at=None)
+    storage.save_chain_backoff(entry)
+    assert storage.get_chain_backoff("cboe") == entry
+
+
+def test_chain_backoff_roundtrips_a_cleared_state(storage):
+    entry = ChainBackoffEntry(
+        source="cboe", blocked_until=None, retry_after_seconds=None,
+        consecutive_failures=0, observed_at="2026-09-06T12:00:00+00:00",
+        last_success_at="2026-09-06T12:00:00+00:00")
+    storage.save_chain_backoff(entry)
+    assert storage.get_chain_backoff("cboe") == entry
+
+
+def test_chain_backoff_overwrites_rather_than_accumulates(storage):
+    storage.save_chain_backoff(ChainBackoffEntry(
+        source="cboe", blocked_until="2026-09-06T12:01:00+00:00",
+        retry_after_seconds=34.0, consecutive_failures=1,
+        observed_at="2026-09-06T12:00:00+00:00", last_success_at=None))
+    storage.save_chain_backoff(ChainBackoffEntry(
+        source="cboe", blocked_until=None, retry_after_seconds=None,
+        consecutive_failures=0, observed_at="2026-09-06T12:05:00+00:00",
+        last_success_at="2026-09-06T12:05:00+00:00"))
+
+    entry = storage.get_chain_backoff("cboe")
+    assert entry.blocked_until is None
+    assert entry.consecutive_failures == 0
+
+
+def test_chain_backoff_does_not_leak_across_sources(storage):
+    """核心不變量（provider-global 鍵本身存在的理由）：不同 source
+    各自獨立，一個 source 被限流不影響另一個。"""
+    storage.save_chain_backoff(ChainBackoffEntry(
+        source="cboe", blocked_until="2026-09-06T12:01:00+00:00",
+        retry_after_seconds=34.0, consecutive_failures=1,
+        observed_at="2026-09-06T12:00:00+00:00", last_success_at=None))
+
+    assert storage.get_chain_backoff("yfinance") is None
+
+
+# ---------- Narrow visible-candidate history（SCALE-09／#261） ----------
+
+def test_narrow_history_starts_with_no_row(storage):
+    """AC-2：沒有這一列＝尚未 materialize／cache miss，不是 gap——
+    呼叫端必須自己分辨「沒有列」與「有列但 cost 是 None」。"""
+    assert storage.get_narrow_history_entry(
+        "s1", "2026-09-06T00:00:00+00:00",
+        "bull-call-spread|100|110|2026-09-18", owner=OWNER) is None
+
+
+def test_narrow_history_roundtrips_a_known_valid_point(storage):
+    entry = NarrowHistoryEntry(
+        scenario_id="s1", analyzed_at="2026-09-06T00:00:00+00:00",
+        candidate_key="bull-call-spread|100|110|2026-09-18", cost=3.25,
+        owner_id=OWNER)
+    storage.save_narrow_history([entry])
+    assert storage.get_narrow_history_entry(
+        "s1", "2026-09-06T00:00:00+00:00",
+        "bull-call-spread|100|110|2026-09-18", owner=OWNER) == entry
+
+
+def test_narrow_history_roundtrips_an_explicit_gap(storage):
+    """AC-2：`cost` nullable 且可存 explicit gap——這是 negative cache
+    的落盤形狀（SCALE-12／14 才會真的寫入，這裡先證明型別／schema
+    支援得住，`cost=None` 不會被 Postgres 誤存成 0 或整列消失）。"""
+    entry = NarrowHistoryEntry(
+        scenario_id="s1", analyzed_at="2026-09-06T00:00:00+00:00",
+        candidate_key="bull-call-spread|100|110|2026-09-18", cost=None,
+        owner_id=OWNER)
+    storage.save_narrow_history([entry])
+    got = storage.get_narrow_history_entry(
+        "s1", "2026-09-06T00:00:00+00:00",
+        "bull-call-spread|100|110|2026-09-18", owner=OWNER)
+    assert got is not None
+    assert got.cost is None
+
+
+def test_narrow_history_pk_is_exactly_the_three_identity_columns(storage):
+    """AC-2：PK 只有三個 identity 欄——同一組 (scenario_id, analyzed_at,
+    candidate_key) 重複寫入是 upsert（覆蓋），不是插入第二列／報衝突。"""
+    storage.save_narrow_history([NarrowHistoryEntry(
+        scenario_id="s1", analyzed_at="2026-09-06T00:00:00+00:00",
+        candidate_key="k", cost=1.0, owner_id=OWNER)])
+    storage.save_narrow_history([NarrowHistoryEntry(
+        scenario_id="s1", analyzed_at="2026-09-06T00:00:00+00:00",
+        candidate_key="k", cost=2.0, owner_id=OWNER)])
+    got = storage.get_narrow_history_entry(
+        "s1", "2026-09-06T00:00:00+00:00", "k", owner=OWNER)
+    assert got.cost == 2.0
+
+
+def test_narrow_history_distinguishes_different_analyzed_at_and_scenarios(storage):
+    """不同 `analyzed_at`（同一劇本的不同刷新）與不同 `scenario_id`
+    各自獨立——這是 PK 真的涵蓋這三個維度的直接證明，不只是「存得進去
+    讀得回來」。"""
+    storage.save_narrow_history([
+        NarrowHistoryEntry("s1", "2026-09-06T00:00:00+00:00", "k", 1.0, OWNER),
+        NarrowHistoryEntry("s1", "2026-09-07T00:00:00+00:00", "k", 2.0, OWNER),
+        NarrowHistoryEntry("s2", "2026-09-06T00:00:00+00:00", "k", 3.0, OWNER),
+    ])
+    assert storage.get_narrow_history_entry(
+        "s1", "2026-09-06T00:00:00+00:00", "k", owner=OWNER).cost == 1.0
+    assert storage.get_narrow_history_entry(
+        "s1", "2026-09-07T00:00:00+00:00", "k", owner=OWNER).cost == 2.0
+    assert storage.get_narrow_history_entry(
+        "s2", "2026-09-06T00:00:00+00:00", "k", owner=OWNER).cost == 3.0
+
+
+def test_narrow_history_batch_write_handles_multiple_candidates_at_once(storage):
+    """一次 refresh 通常會 dual-write多個 visible candidate——批次寫入
+    要真的把每一筆都存進去，不是只存最後一筆。"""
+    entries = [
+        NarrowHistoryEntry("s1", "2026-09-06T00:00:00+00:00", f"k{i}",
+                           float(i), OWNER)
+        for i in range(5)
+    ]
+    storage.save_narrow_history(entries)
+    for i in range(5):
+        got = storage.get_narrow_history_entry(
+            "s1", "2026-09-06T00:00:00+00:00", f"k{i}", owner=OWNER)
+        assert got is not None and got.cost == float(i)
+
+
+def test_narrow_history_empty_batch_is_a_no_op(storage):
+    storage.save_narrow_history([])   # 不得拋錯
+    assert storage.get_narrow_history_entry(
+        "s1", "2026-09-06T00:00:00+00:00", "k", owner=OWNER) is None
+
+
+def test_narrow_history_get_requires_a_real_owner(storage):
+    """SCALE-14（#265）：`narrow_history` 出貨時（SCALE-09）漏接
+    `owner_id`，本票補齊——比照既有 `save_result()`／`save_snapshot()`
+    的「寫入寬鬆、讀取才強制」慣例，寫入允許 `owner_id=None`（給
+    `backfill_missing_owner_ids()` 模擬既有無 owner 舊列用），但讀取
+    方法一律拒絕 `owner=None`，不是型別標註說說而已。"""
+    storage.save_narrow_history([NarrowHistoryEntry(
+        scenario_id="s1", analyzed_at="2026-09-06T00:00:00+00:00",
+        candidate_key="k", cost=1.0, owner_id=None)])   # 寫入不拋錯
+    with pytest.raises(TypeError):
+        storage.get_narrow_history_entry(
+            "s1", "2026-09-06T00:00:00+00:00", "k", owner=None)
+    with pytest.raises(TypeError):
+        storage.narrow_history_for_candidate(
+            "s1", "k", ["2026-09-06T00:00:00+00:00"], owner=None)
+
+
+def test_narrow_history_get_excludes_another_owners_row(storage):
+    storage.save_narrow_history([NarrowHistoryEntry(
+        scenario_id="s1", analyzed_at="2026-09-06T00:00:00+00:00",
+        candidate_key="k", cost=1.0, owner_id="alice")])
+    assert storage.get_narrow_history_entry(
+        "s1", "2026-09-06T00:00:00+00:00", "k", owner="bob") is None
+    assert storage.get_narrow_history_entry(
+        "s1", "2026-09-06T00:00:00+00:00", "k", owner="alice").cost == 1.0
+
+
+def test_narrow_history_for_candidate_batches_across_many_dates(storage):
+    """SCALE-14（#265）：`/history` 讀取路徑的核心批次查詢——一次回答
+    多個 `analyzed_at` 的 narrow 狀態，不必逐一呼叫 `get_narrow_
+    history_entry()`（那會是 N+1）。回傳只包含真的存在的列（`cost`
+    本身可能是 `None`＝已驗證 gap），缺席的日期＝尚未 materialize。"""
+    storage.save_narrow_history([
+        NarrowHistoryEntry("s1", "2026-09-01T00:00:00+00:00", "k", 1.0, OWNER),
+        NarrowHistoryEntry("s1", "2026-09-02T00:00:00+00:00", "k", None, OWNER),
+        NarrowHistoryEntry("s1", "2026-09-03T00:00:00+00:00", "k", 3.0, OWNER),
+        # 不同 candidate_key，不該混進來
+        NarrowHistoryEntry("s1", "2026-09-01T00:00:00+00:00", "other", 99.0, OWNER),
+        # 不同 owner，不該混進來
+        NarrowHistoryEntry("s1", "2026-09-04T00:00:00+00:00", "k", 4.0, "bob"),
+    ])
+    result = storage.narrow_history_for_candidate(
+        "s1", "k", ["2026-09-01T00:00:00+00:00", "2026-09-02T00:00:00+00:00",
+                    "2026-09-03T00:00:00+00:00", "2026-09-04T00:00:00+00:00",
+                    "2026-09-05T00:00:00+00:00"],
+        owner=OWNER)
+    assert result == {
+        "2026-09-01T00:00:00+00:00": 1.0,
+        "2026-09-02T00:00:00+00:00": None,
+        "2026-09-03T00:00:00+00:00": 3.0,
+    }
+    assert "2026-09-04T00:00:00+00:00" not in result   # 別的 owner
+    assert "2026-09-05T00:00:00+00:00" not in result   # 尚未 materialize
+
+
+# ---------- SCALE-14（#265）：/history canonical 讀取路徑的批次查詢 ----------
+
+def test_result_spot_timestamps_reads_spot_from_snapshots_not_view(storage):
+    """AC-5：`spot` 只從 `snapshots` 表取得，日期集合與
+    `result_timestamps()` 完全一致——本測試直接構造一個沒有配對
+    `snapshots` 列的孤兒 `results` 列，證明它仍出現在日期清單裡，
+    只是 `spot` 誠實回 `None`。"""
+    storage.create_scenario(_scenario("s1", owner_id=OWNER))
+    storage.save_snapshot("s1", "2026-09-01T00:00:00+00:00",
+                          {"spot": 101.5, "symbol": "XYZ"}, owner_id=OWNER)
+    storage.save_result(ResultRecord(
+        "s1", "2026-09-01T00:00:00+00:00", {}, owner_id=OWNER))
+    # 孤兒列：只有 results，沒有對應的 snapshots。
+    storage.save_result(ResultRecord(
+        "s1", "2026-09-02T00:00:00+00:00", {}, owner_id=OWNER))
+
+    got = storage.result_spot_timestamps("s1", owner=OWNER)
+    assert got == [("2026-09-01T00:00:00+00:00", 101.5),
+                  ("2026-09-02T00:00:00+00:00", None)]
+
+
+def test_result_spot_timestamps_excludes_another_owners_rows(storage):
+    storage.create_scenario(_scenario("s1", owner_id="alice"))
+    storage.save_snapshot("s1", "2026-09-01T00:00:00+00:00",
+                          {"spot": 100.0, "symbol": "XYZ"}, owner_id="alice")
+    assert storage.result_spot_timestamps("s1", owner="bob") == []
+    assert storage.result_spot_timestamps("s1", owner="alice") == [
+        ("2026-09-01T00:00:00+00:00", 100.0)]
+
+
+def test_result_fact_contexts_batches_and_excludes_another_owner(storage):
+    storage.create_scenario(_scenario("s1", owner_id=OWNER))
+    storage.save_result(ResultRecord(
+        "s1", "2026-09-01T00:00:00+00:00", {}, owner_id=OWNER,
+        resolved_params={"target_price": 100.0}, requested_strategies=("k",),
+        engine_version="v1", view_schema_version=7,
+        history_replay_version=1, snapshot_source="cboe"))
+    storage.save_result(ResultRecord(
+        "s1", "2026-09-02T00:00:00+00:00", {}, owner_id="bob"))
+
+    got = storage.result_fact_contexts(
+        "s1", ["2026-09-01T00:00:00+00:00", "2026-09-02T00:00:00+00:00",
+              "2026-09-03T00:00:00+00:00"], owner=OWNER)
+    assert set(got) == {"2026-09-01T00:00:00+00:00"}
+    ctx = got["2026-09-01T00:00:00+00:00"]
+    assert ctx.resolved_params == {"target_price": 100.0}
+    assert ctx.history_replay_version == 1
+
+
+def test_snapshots_batch_returns_only_requested_dates_and_owner(storage):
+    storage.save_snapshot("s1", "2026-09-01T00:00:00+00:00",
+                          {"spot": 1.0}, owner_id=OWNER)
+    storage.save_snapshot("s1", "2026-09-02T00:00:00+00:00",
+                          {"spot": 2.0}, owner_id=OWNER)
+    storage.save_snapshot("s1", "2026-09-03T00:00:00+00:00",
+                          {"spot": 3.0}, owner_id="bob")
+
+    got = storage.snapshots_batch(
+        "s1", ["2026-09-01T00:00:00+00:00", "2026-09-03T00:00:00+00:00",
+              "2026-09-09T00:00:00+00:00"], owner=OWNER)
+    assert set(got) == {"2026-09-01T00:00:00+00:00"}
+    assert got["2026-09-01T00:00:00+00:00"]["spot"] == 1.0
+
+
 # ---------- 清單摘要（V3／#51） ----------
 
 def test_latest_summaries_returns_the_newest_result_per_scenario(storage):
@@ -562,14 +920,14 @@ def test_latest_summaries_returns_the_newest_result_per_scenario(storage):
     """
     storage.create_scenario(_scenario("s1"))
     storage.create_scenario(_scenario("s2", created_at="2026-08-02T00:00:00+00:00"))
-    storage.save_result(ResultRecord("s1", "2026-08-01T00:00:00+00:00",
-                                     {"n": 1}, 0.5))
-    storage.save_result(ResultRecord("s1", "2026-08-03T00:00:00+00:00",
-                                     {"n": 2}, 1.25))
-    storage.save_result(ResultRecord("s2", "2026-08-02T00:00:00+00:00",
-                                     {"n": 3}, None))
+    _save_current(storage, ResultRecord("s1", "2026-08-01T00:00:00+00:00",
+                                        {"n": 1}, 0.5, owner_id=OWNER))
+    _save_current(storage, ResultRecord("s1", "2026-08-03T00:00:00+00:00",
+                                        {"n": 2}, 1.25, owner_id=OWNER))
+    _save_current(storage, ResultRecord("s2", "2026-08-02T00:00:00+00:00",
+                                        {"n": 3}, None, owner_id=OWNER))
 
-    summaries = storage.latest_summaries()
+    summaries = storage.latest_summaries(owner=OWNER)
     assert summaries["s1"].analyzed_at == "2026-08-03T00:00:00+00:00"
     assert summaries["s1"].best_return == 1.25
     # 有跑過但該期零候選 → 有時間戳、收益率是 None（≠ 沒跑過）
@@ -581,15 +939,15 @@ def test_latest_summaries_omits_scenarios_that_never_ran(storage):
     """沒跑過就不該出現在摘要裡——卡片顯示「—」是呼叫端看不到鍵的結果，
     而不是靠一個假的零值。"""
     storage.create_scenario(_scenario("s1"))
-    assert storage.latest_summaries() == {}
+    assert storage.latest_summaries(owner=OWNER) == {}
 
 
 def test_best_return_survives_the_result_roundtrip(storage):
     storage.create_scenario(_scenario("s1"))
-    storage.save_result(ResultRecord("s1", "2026-08-01T00:00:00+00:00",
-                                     {"n": 1}, -0.4))
-    assert storage.latest_result("s1").best_return == -0.4
-    assert storage.result_history("s1")[0].best_return == -0.4
+    _save_current(storage, ResultRecord("s1", "2026-08-01T00:00:00+00:00",
+                                        {"n": 1}, -0.4, owner_id=OWNER))
+    assert storage.latest_result("s1", owner=OWNER).best_return == -0.4
+    assert storage.result_history("s1", owner=OWNER)[0].best_return == -0.4
 
 
 # ---------- 代表候選（MVP-v2／#77、#78） ----------
@@ -605,20 +963,20 @@ def test_representative_candidate_survives_the_result_roundtrip(storage):
     落盤結果要能存得進、讀得回，形狀（`strategy`／`legs`／`expiry`）不失真。
     """
     storage.create_scenario(_scenario("s1"))
-    storage.save_result(ResultRecord(
+    _save_current(storage, ResultRecord(
         "s1", "2026-08-01T00:00:00+00:00", {"n": 1},
-        best_return=1.25, representative_candidate=_REP))
-    assert storage.latest_result("s1").representative_candidate == _REP
-    assert storage.result_history("s1")[0].representative_candidate == _REP
+        best_return=1.25, representative_candidate=_REP, owner_id=OWNER))
+    assert storage.latest_result("s1", owner=OWNER).representative_candidate == _REP
+    assert storage.result_history("s1", owner=OWNER)[0].representative_candidate == _REP
 
 
 def test_representative_candidate_defaults_to_none(storage):
     """沒有代表候選（劇本從未成功分析、或該期零合格候選）時是 `None`，
     不是一組編出來的假資料——`ResultRecord` 的預設值本身就是 `None`。"""
     storage.create_scenario(_scenario("s1"))
-    storage.save_result(ResultRecord("s1", "2026-08-01T00:00:00+00:00",
-                                     {"n": 1}, best_return=None))
-    assert storage.latest_result("s1").representative_candidate is None
+    _save_current(storage, ResultRecord("s1", "2026-08-01T00:00:00+00:00",
+                                        {"n": 1}, best_return=None, owner_id=OWNER))
+    assert storage.latest_result("s1", owner=OWNER).representative_candidate is None
 
 
 def test_latest_summaries_carries_the_representative_candidate(storage):
@@ -626,10 +984,10 @@ def test_latest_summaries_carries_the_representative_candidate(storage):
     `best_return` 那個數字——這正是它獨立落盤成一個欄位、而不是每次從
     `view` 現算的理由：清單頁不該為了這幾個履約價把整份 view 搬一次。"""
     storage.create_scenario(_scenario("s1"))
-    storage.save_result(ResultRecord(
+    _save_current(storage, ResultRecord(
         "s1", "2026-08-01T00:00:00+00:00", {"n": 1},
-        best_return=1.25, representative_candidate=_REP))
-    assert storage.latest_summaries()["s1"].representative_candidate == _REP
+        best_return=1.25, representative_candidate=_REP, owner_id=OWNER))
+    assert storage.latest_summaries(owner=OWNER)["s1"].representative_candidate == _REP
 
 
 # ---------- per-family 代表候選（T07／#224，Initial V2） ----------
@@ -648,12 +1006,12 @@ def test_per_family_survives_the_result_roundtrip(storage):
     要能存得進、讀得回，含 `latest_result`／`result_history` 兩個
     讀取路徑，形狀不失真。"""
     storage.create_scenario(_scenario("s1"))
-    storage.save_result(ResultRecord(
+    _save_current(storage, ResultRecord(
         "s1", "2026-08-01T00:00:00+00:00", {"n": 1},
         best_return=1.25, representative_candidate=_REP,
-        per_family=_PER_FAMILY))
-    assert storage.latest_result("s1").per_family == _PER_FAMILY
-    assert storage.result_history("s1")[0].per_family == _PER_FAMILY
+        per_family=_PER_FAMILY, owner_id=OWNER))
+    assert storage.latest_result("s1", owner=OWNER).per_family == _PER_FAMILY
+    assert storage.result_history("s1", owner=OWNER)[0].per_family == _PER_FAMILY
 
 
 def test_per_family_defaults_to_none(storage):
@@ -661,20 +1019,109 @@ def test_per_family_defaults_to_none(storage):
     期可比的）讀回來是 `None`，不是一個編出來的空 dict——`ResultRecord`
     的預設值本身就是 `None`，既有行為不受影響。"""
     storage.create_scenario(_scenario("s1"))
-    storage.save_result(ResultRecord("s1", "2026-08-01T00:00:00+00:00",
-                                     {"n": 1}, best_return=None))
-    assert storage.latest_result("s1").per_family is None
+    _save_current(storage, ResultRecord("s1", "2026-08-01T00:00:00+00:00",
+                                        {"n": 1}, best_return=None, owner_id=OWNER))
+    assert storage.latest_result("s1", owner=OWNER).per_family is None
+
+
+# ---------- 歷史 fact context（SCALE-01／#252，Scaling Foundation） ----------
+
+_FACT_PARAMS = {"target_price": 120.0, "target_month": "2026-08"}
+
+
+def test_result_fact_fields_survive_the_roundtrip(storage):
+    """與 `per_family`／`representative_candidate` 同一個模式：規則只有
+    一份（`option_chaser.store.historical_fact_context()`），這裡只是
+    落盤結果要能存得進、讀得回，含 `latest_result`／`result_history`
+    兩個讀取路徑，形狀不失真（尤其 `requested_strategies` 讀回仍是
+    tuple，不是 JSONB 給的 list）。"""
+    storage.create_scenario(_scenario("s1"))
+    _save_current(storage, ResultRecord(
+        "s1", "2026-08-01T00:00:00+00:00", {"n": 1},
+        resolved_params=_FACT_PARAMS,
+        requested_strategies=("long-call", "bull-call-spread"),
+        engine_version="0.5.0", view_schema_version=9,
+        history_replay_version=1, snapshot_source="cboe", owner_id=OWNER))
+
+    for rec in (storage.latest_result("s1", owner=OWNER), storage.result_history("s1", owner=OWNER)[0]):
+        assert rec.resolved_params == _FACT_PARAMS
+        assert rec.requested_strategies == ("long-call", "bull-call-spread")
+        assert isinstance(rec.requested_strategies, tuple)
+        assert rec.engine_version == "0.5.0"
+        assert rec.view_schema_version == 9
+        assert rec.history_replay_version == 1
+        assert rec.snapshot_source == "cboe"
+
+
+def test_result_fact_fields_default_to_none(storage):
+    """既有部署的舊列（本票之前寫入的）讀回來全部是 `None`——backfill
+    腳本負責補齊，讀取端在那之前必須容忍這個狀態。"""
+    storage.create_scenario(_scenario("s1"))
+    _save_current(storage, ResultRecord("s1", "2026-08-01T00:00:00+00:00",
+                                        {"n": 1}, owner_id=OWNER))
+    rec = storage.latest_result("s1", owner=OWNER)
+    assert rec.resolved_params is None
+    assert rec.requested_strategies is None
+    assert rec.engine_version is None
+    assert rec.view_schema_version is None
+    assert rec.history_replay_version is None
+    assert rec.snapshot_source is None
+
+
+def test_result_fact_context_is_a_narrow_projection_of_the_same_row(storage):
+    """AC-1：一個窄查詢就能取得完整 resolved params／analysis
+    context／provenance／engine-schema-replay version，不需要
+    `latest_result()`／`result_history()` 那種連 `view` 一起撈的
+    寬查詢。"""
+    storage.create_scenario(_scenario("s1"))
+    storage.save_result(ResultRecord(
+        "s1", "2026-08-01T00:00:00+00:00", {"n": 1},
+        resolved_params=_FACT_PARAMS,
+        requested_strategies=("long-call",),
+        engine_version="0.5.0", view_schema_version=9,
+        history_replay_version=1, snapshot_source="cboe", owner_id=OWNER))
+
+    ctx = storage.result_fact_context("s1", "2026-08-01T00:00:00+00:00")
+
+    assert ctx.scenario_id == "s1"
+    assert ctx.analyzed_at == "2026-08-01T00:00:00+00:00"
+    assert ctx.resolved_params == _FACT_PARAMS
+    assert ctx.requested_strategies == ("long-call",)
+    assert ctx.engine_version == "0.5.0"
+    assert ctx.view_schema_version == 9
+    assert ctx.history_replay_version == 1
+    assert ctx.snapshot_source == "cboe"
+
+
+def test_result_fact_context_is_none_for_a_missing_row(storage):
+    storage.create_scenario(_scenario("s1"))
+    assert storage.result_fact_context(
+        "s1", "2099-01-01T00:00:00+00:00") is None
+
+
+def test_result_fact_context_does_not_leak_across_scenarios(storage):
+    storage.create_scenario(_scenario("s1"))
+    storage.create_scenario(_scenario("s2", symbol="SPY"))
+    storage.save_result(ResultRecord(
+        "s1", "2026-08-01T00:00:00+00:00", {"n": 1},
+        resolved_params=_FACT_PARAMS,
+        requested_strategies=("long-call",), engine_version="0.5.0",
+        view_schema_version=9, history_replay_version=1,
+        snapshot_source="cboe", owner_id=OWNER))
+
+    assert storage.result_fact_context(
+        "s2", "2026-08-01T00:00:00+00:00") is None
 
 
 def test_latest_summaries_carries_per_family(storage):
     """清單查詢一併帶著 per-family map——本輪 UI 不消費它，但落盤與
     讀取路徑必須先接通，日後才可能零遷移切換顯示面。"""
     storage.create_scenario(_scenario("s1"))
-    storage.save_result(ResultRecord(
+    _save_current(storage, ResultRecord(
         "s1", "2026-08-01T00:00:00+00:00", {"n": 1},
         best_return=1.25, representative_candidate=_REP,
-        per_family=_PER_FAMILY))
-    assert storage.latest_summaries()["s1"].per_family == _PER_FAMILY
+        per_family=_PER_FAMILY, owner_id=OWNER))
+    assert storage.latest_summaries(owner=OWNER)["s1"].per_family == _PER_FAMILY
 
 
 # ---------- family_eligibility（T10／#227，Initial V2） ----------
@@ -693,82 +1140,137 @@ def test_family_eligibility_survives_the_result_roundtrip(storage):
     （`store._family_eligibility_map`），這裡只是落盤結果要能存得進、
     讀得回，含 `latest_result`／`result_history` 兩個讀取路徑。"""
     storage.create_scenario(_scenario("s1"))
-    storage.save_result(ResultRecord(
+    _save_current(storage, ResultRecord(
         "s1", "2026-08-01T00:00:00+00:00", {"n": 1},
         best_return=1.25, representative_candidate=_REP,
-        family_eligibility=_FAMILY_ELIGIBILITY))
-    assert storage.latest_result("s1").family_eligibility == _FAMILY_ELIGIBILITY
-    assert storage.result_history("s1")[0].family_eligibility == _FAMILY_ELIGIBILITY
+        family_eligibility=_FAMILY_ELIGIBILITY, owner_id=OWNER))
+    assert storage.latest_result("s1", owner=OWNER).family_eligibility == _FAMILY_ELIGIBILITY
+    assert storage.result_history("s1", owner=OWNER)[0].family_eligibility == _FAMILY_ELIGIBILITY
 
 
 def test_family_eligibility_defaults_to_none(storage):
     """舊結果紀錄（本票之前寫入的）讀回來是 `None`，不是假造一份
     「全部可選」的 verdict。"""
     storage.create_scenario(_scenario("s1"))
-    storage.save_result(ResultRecord("s1", "2026-08-01T00:00:00+00:00",
-                                     {"n": 1}, best_return=None))
-    assert storage.latest_result("s1").family_eligibility is None
+    _save_current(storage, ResultRecord("s1", "2026-08-01T00:00:00+00:00",
+                                        {"n": 1}, best_return=None, owner_id=OWNER))
+    assert storage.latest_result("s1", owner=OWNER).family_eligibility is None
 
 
 def test_latest_summaries_carries_family_eligibility(storage):
     """清單查詢一併帶著 family_eligibility——編輯表單開啟時讀這裡，
     不打 detail 端點。"""
     storage.create_scenario(_scenario("s1"))
-    storage.save_result(ResultRecord(
+    _save_current(storage, ResultRecord(
         "s1", "2026-08-01T00:00:00+00:00", {"n": 1},
         best_return=1.25, representative_candidate=_REP,
-        family_eligibility=_FAMILY_ELIGIBILITY))
-    assert storage.latest_summaries()["s1"].family_eligibility == _FAMILY_ELIGIBILITY
+        family_eligibility=_FAMILY_ELIGIBILITY, owner_id=OWNER))
+    assert storage.latest_summaries(owner=OWNER)["s1"].family_eligibility == _FAMILY_ELIGIBILITY
 
 
-# ---------- 資料源設定與 credential（Settings／#124） ----------
+# ---------- 資料源設定與 credential（Settings／#124，owner 化 SCALE-13／#264） ----------
 
 _CUSTOM = UsageSetting(mode="custom", provider="marketdata-app")
 _DEFAULT_USAGE = UsageSetting(mode="default", provider=None)
 
+ALICE = "alice"
+BOB = "bob"
 
-def _settings(market=_CUSTOM, iv=_DEFAULT_USAGE):
+
+def _settings(market=_CUSTOM, iv=_DEFAULT_USAGE, owner=OWNER):
     return DataSourceSettings(market_data=market, historical_iv=iv,
-                              updated_at="2026-08-12T00:00:00+00:00")
+                              updated_at="2026-08-12T00:00:00+00:00",
+                              owner_id=owner)
+
+
+def _seed_legacy_settings(storage, settings: DataSourceSettings) -> None:
+    """SCALE-13（#264）：直接寫進舊表 `data_source_settings`，模擬
+    「這筆資料是在本票上線之前就已經存在」——正式寫入路徑
+    `save_settings()` 這個方法起不再寫舊表，要驗證 read-through 只能
+    繞過它、直接戳舊表本身（`settings.owner_id` 在這裡刻意被忽略，
+    舊表結構上沒有 owner 欄位）。"""
+    if isinstance(storage, MemoryStorage):
+        storage._settings = replace(settings, owner_id=None)
+        return
+    import psycopg
+    from psycopg.types.json import Jsonb
+
+    from api_app.storage.postgres import _usage_to_dict
+    blob = {"market_data": _usage_to_dict(settings.market_data),
+           "historical_iv": _usage_to_dict(settings.historical_iv)}
+    with psycopg.connect(TEST_DB_URL, autocommit=True) as conn:
+        conn.execute(
+            "INSERT INTO data_source_settings (id, settings, updated_at) "
+            "VALUES (1, %s, %s) ON CONFLICT (id) DO UPDATE SET "
+            "settings = EXCLUDED.settings, updated_at = EXCLUDED.updated_at",
+            (Jsonb(blob), settings.updated_at))
+
+
+def _seed_legacy_credential(storage, cred: ProviderCredential) -> None:
+    if isinstance(storage, MemoryStorage):
+        storage._credentials[cred.provider] = replace(cred, owner_id=None)
+        return
+    import psycopg
+    with psycopg.connect(TEST_DB_URL, autocommit=True) as conn:
+        conn.execute(
+            "INSERT INTO provider_credentials (provider, token, updated_at) "
+            "VALUES (%s, %s, %s) ON CONFLICT (provider) DO UPDATE SET "
+            "token = EXCLUDED.token, updated_at = EXCLUDED.updated_at",
+            (cred.provider, cred.token, cred.updated_at))
+
+
+def _seed_legacy_verification(storage, v: ProviderVerification) -> None:
+    if isinstance(storage, MemoryStorage):
+        storage._verifications[v.provider] = replace(v, owner_id=None)
+        return
+    import psycopg
+    with psycopg.connect(TEST_DB_URL, autocommit=True) as conn:
+        conn.execute(
+            "INSERT INTO provider_verifications "
+            "(provider, ok, reason, checked_at) VALUES (%s, %s, %s, %s) "
+            "ON CONFLICT (provider) DO UPDATE SET ok = EXCLUDED.ok, "
+            "reason = EXCLUDED.reason, checked_at = EXCLUDED.checked_at",
+            (v.provider, v.ok, v.reason, v.checked_at))
 
 
 def test_settings_start_out_unset(storage):
     """從未存過＝`None`，不是一個假的空設定——呼叫端據此用預設值。"""
-    assert storage.get_settings() is None
+    assert storage.get_settings(owner=OWNER) is None
 
 
 def test_saved_settings_read_back_identically(storage):
     storage.save_settings(_settings())
-    assert storage.get_settings() == _settings()
+    assert storage.get_settings(owner=OWNER) == _settings()
 
 
 def test_saving_settings_again_overwrites_the_single_row(storage):
     storage.save_settings(_settings())
     storage.save_settings(_settings(market=_DEFAULT_USAGE, iv=_CUSTOM))
-    got = storage.get_settings()
+    got = storage.get_settings(owner=OWNER)
     assert got.market_data == _DEFAULT_USAGE
     assert got.historical_iv == _CUSTOM
 
 
 def test_credentials_start_out_absent(storage):
-    assert storage.get_credential("marketdata-app") is None
+    assert storage.get_credential("marketdata-app", owner=OWNER) is None
 
 
 def test_saved_credential_reads_back_in_full(storage):
     """遮罩是 API 回應層的事；儲存層必須保住完整 token，否則 #125 的
     測試連線就沒有東西可用。"""
     cred = ProviderCredential(provider="marketdata-app", token="tok-abcd1234",
-                              updated_at="2026-08-12T00:00:00+00:00")
+                              updated_at="2026-08-12T00:00:00+00:00",
+                              owner_id=OWNER)
     storage.save_credential(cred)
-    assert storage.get_credential("marketdata-app") == cred
+    assert storage.get_credential("marketdata-app", owner=OWNER) == cred
 
 
 def test_saving_a_credential_again_replaces_the_token(storage):
     for token in ("first-0000", "second-1111"):
         storage.save_credential(ProviderCredential(
             provider="marketdata-app", token=token,
-            updated_at="2026-08-12T00:00:00+00:00"))
-    assert storage.get_credential("marketdata-app").token == "second-1111"
+            updated_at="2026-08-12T00:00:00+00:00", owner_id=OWNER))
+    assert storage.get_credential("marketdata-app", owner=OWNER).token == "second-1111"
 
 
 def test_credentials_are_keyed_by_provider_and_do_not_collide(storage):
@@ -776,26 +1278,27 @@ def test_credentials_are_keyed_by_provider_and_do_not_collide(storage):
     for pid in ("marketdata-app", "another-vendor"):
         storage.save_credential(ProviderCredential(
             provider=pid, token=f"tok-{pid}",
-            updated_at="2026-08-12T00:00:00+00:00"))
-    assert storage.get_credential("marketdata-app").token == "tok-marketdata-app"
-    assert storage.get_credential("another-vendor").token == "tok-another-vendor"
+            updated_at="2026-08-12T00:00:00+00:00", owner_id=OWNER))
+    assert storage.get_credential("marketdata-app", owner=OWNER).token == "tok-marketdata-app"
+    assert storage.get_credential("another-vendor", owner=OWNER).token == "tok-another-vendor"
 
 
 def test_deleting_a_credential_reports_whether_it_removed_anything(storage):
     storage.save_credential(ProviderCredential(
         provider="marketdata-app", token="tok",
-        updated_at="2026-08-12T00:00:00+00:00"))
-    assert storage.delete_credential("marketdata-app") is True
-    assert storage.delete_credential("marketdata-app") is False
-    assert storage.get_credential("marketdata-app") is None
+        updated_at="2026-08-12T00:00:00+00:00", owner_id=OWNER))
+    assert storage.delete_credential("marketdata-app", owner=OWNER) is True
+    assert storage.delete_credential("marketdata-app", owner=OWNER) is False
+    assert storage.get_credential("marketdata-app", owner=OWNER) is None
 
 
 def test_deleting_one_credential_leaves_the_others_alone(storage):
     for pid in ("marketdata-app", "another-vendor"):
         storage.save_credential(ProviderCredential(
-            provider=pid, token="tok", updated_at="2026-08-12T00:00:00+00:00"))
-    storage.delete_credential("marketdata-app")
-    assert storage.get_credential("another-vendor") is not None
+            provider=pid, token="tok", updated_at="2026-08-12T00:00:00+00:00",
+            owner_id=OWNER))
+    storage.delete_credential("marketdata-app", owner=OWNER)
+    assert storage.get_credential("another-vendor", owner=OWNER) is not None
 
 
 def test_deleting_a_credential_leaves_the_settings_alone(storage):
@@ -803,32 +1306,56 @@ def test_deleting_a_credential_leaves_the_settings_alone(storage):
     storage.save_settings(_settings())
     storage.save_credential(ProviderCredential(
         provider="marketdata-app", token="tok",
-        updated_at="2026-08-12T00:00:00+00:00"))
-    storage.delete_credential("marketdata-app")
-    assert storage.get_settings() == _settings()
+        updated_at="2026-08-12T00:00:00+00:00", owner_id=OWNER))
+    storage.delete_credential("marketdata-app", owner=OWNER)
+    assert storage.get_settings(owner=OWNER) == _settings()
 
 
-# ---------- 測試連線的結果（Settings／#125） ----------
+def test_get_settings_requires_a_real_owner(storage):
+    with pytest.raises(TypeError):
+        storage.get_settings(owner=None)
 
-def _verification(ok=True, reason=None):
+
+def test_get_credential_requires_a_real_owner(storage):
+    with pytest.raises(TypeError):
+        storage.get_credential("marketdata-app", owner=None)
+
+
+def test_save_settings_requires_a_real_owner(storage):
+    """新表沒有舊表那種「反正只有一份」的容錯——寫入必須知道是誰的。"""
+    with pytest.raises(TypeError):
+        storage.save_settings(_settings(owner=None))
+
+
+def test_save_credential_requires_a_real_owner(storage):
+    with pytest.raises(TypeError):
+        storage.save_credential(ProviderCredential(
+            provider="marketdata-app", token="tok",
+            updated_at="2026-08-12T00:00:00+00:00", owner_id=None))
+
+
+# ---------- 測試連線的結果（Settings／#125，owner 化 SCALE-13／#264） ----------
+
+def _verification(ok=True, reason=None, owner=OWNER):
     return ProviderVerification(provider="marketdata-app", ok=ok, reason=reason,
-                                checked_at="2026-08-12T01:00:00+00:00")
+                                checked_at="2026-08-12T01:00:00+00:00",
+                                owner_id=owner)
 
 
 def test_verification_starts_out_absent(storage):
-    assert storage.get_verification("marketdata-app") is None
+    assert storage.get_verification("marketdata-app", owner=OWNER) is None
 
 
 def test_saved_verification_reads_back_identically(storage):
     v = _verification(ok=False, reason="認證被拒")
     storage.save_verification(v)
-    assert storage.get_verification("marketdata-app") == v
+    assert storage.get_verification("marketdata-app", owner=OWNER) == v
 
 
 def test_retesting_overwrites_the_previous_result(storage):
     storage.save_verification(_verification(ok=False, reason="連不上"))
     storage.save_verification(_verification(ok=True))
-    got = storage.get_verification("marketdata-app")
+    got = storage.get_verification("marketdata-app", owner=OWNER)
     assert got.ok is True and got.reason is None
 
 
@@ -837,18 +1364,219 @@ def test_deleting_the_credential_also_drops_its_verification(storage):
     留著會讓設定頁在沒有 credential 的情況下顯示「已連線」。"""
     storage.save_credential(ProviderCredential(
         provider="marketdata-app", token="tok",
-        updated_at="2026-08-12T00:00:00+00:00"))
+        updated_at="2026-08-12T00:00:00+00:00", owner_id=OWNER))
     storage.save_verification(_verification())
-    storage.delete_credential("marketdata-app")
-    assert storage.get_verification("marketdata-app") is None
+    storage.delete_credential("marketdata-app", owner=OWNER)
+    assert storage.get_verification("marketdata-app", owner=OWNER) is None
 
 
 def test_saving_a_credential_does_not_invent_a_verification(storage):
     """存 token 不等於測過——設定頁據此顯示「尚未驗證」而不是「已連線」。"""
     storage.save_credential(ProviderCredential(
         provider="marketdata-app", token="tok",
+        updated_at="2026-08-12T00:00:00+00:00", owner_id=OWNER))
+    assert storage.get_verification("marketdata-app", owner=OWNER) is None
+
+
+def test_get_verification_requires_a_real_owner(storage):
+    with pytest.raises(TypeError):
+        storage.get_verification("marketdata-app", owner=None)
+
+
+def test_save_verification_requires_a_real_owner(storage):
+    with pytest.raises(TypeError):
+        storage.save_verification(_verification(owner=None))
+
+
+# ---------- Ownership A-1 Contract（SCALE-13／#264）：兩個 owner 互相隔離（AC-2） ----------
+
+def test_two_owners_settings_do_not_collide(storage):
+    storage.save_settings(_settings(market=_CUSTOM, owner=ALICE))
+    storage.save_settings(_settings(market=_DEFAULT_USAGE, owner=BOB))
+    assert storage.get_settings(owner=ALICE).market_data == _CUSTOM
+    assert storage.get_settings(owner=BOB).market_data == _DEFAULT_USAGE
+
+
+def test_two_owners_can_save_different_tokens_for_the_same_provider(storage):
+    """AC-2 明文要求的情境——同一個 provider，兩個 owner 各自保存
+    不同 token，互不可讀、互不可覆寫。"""
+    storage.save_credential(ProviderCredential(
+        provider="marketdata-app", token="alice-token",
+        updated_at="2026-08-12T00:00:00+00:00", owner_id=ALICE))
+    storage.save_credential(ProviderCredential(
+        provider="marketdata-app", token="bob-token",
+        updated_at="2026-08-12T00:00:00+00:00", owner_id=BOB))
+    assert storage.get_credential("marketdata-app", owner=ALICE).token == "alice-token"
+    assert storage.get_credential("marketdata-app", owner=BOB).token == "bob-token"
+
+
+def test_deleting_one_owners_credential_does_not_touch_the_others(storage):
+    for owner, token in ((ALICE, "alice-token"), (BOB, "bob-token")):
+        storage.save_credential(ProviderCredential(
+            provider="marketdata-app", token=token,
+            updated_at="2026-08-12T00:00:00+00:00", owner_id=owner))
+    assert storage.delete_credential("marketdata-app", owner=ALICE) is True
+    assert storage.get_credential("marketdata-app", owner=ALICE) is None
+    assert storage.get_credential("marketdata-app", owner=BOB).token == "bob-token"
+
+
+def test_two_owners_verifications_do_not_collide(storage):
+    storage.save_verification(_verification(ok=True, owner=ALICE))
+    storage.save_verification(_verification(ok=False, reason="連不上", owner=BOB))
+    assert storage.get_verification("marketdata-app", owner=ALICE).ok is True
+    got_bob = storage.get_verification("marketdata-app", owner=BOB)
+    assert got_bob.ok is False and got_bob.reason == "連不上"
+
+
+# ---------- Ownership A-1 Contract（SCALE-13／#264）：舊資料 read-through（AC-1／AC-3／AC-4） ----------
+
+def test_solo_owner_settings_read_through_from_the_legacy_table(storage):
+    """AC-1／AC-4：即使沒有人手動跑過 backfill，solo owner 第一次讀取
+    就能看到「本票上線之前」就存在的舊資料——不需要等待任何窗口。"""
+    _seed_legacy_settings(storage, _settings(market=_CUSTOM))
+    got = storage.get_settings(owner=OWNER)
+    assert got is not None
+    assert got.market_data == _CUSTOM
+    assert got.owner_id == OWNER
+
+
+def test_solo_owner_settings_read_through_writes_through_on_hit(storage):
+    """讀到舊資料後順手 write-through 進新表——下次不必再靠舊表。"""
+    _seed_legacy_settings(storage, _settings(market=_CUSTOM))
+    storage.get_settings(owner=OWNER)   # 觸發一次 read-through
+    # 舊表之後改成別的值——若新表沒有真的被寫入，第二次讀取會拿到
+    # 舊表這個新值而非第一次 read-through 存下的那份。
+    _seed_legacy_settings(storage, _settings(market=_DEFAULT_USAGE))
+    got_again = storage.get_settings(owner=OWNER)
+    assert got_again.market_data == _CUSTOM
+
+
+def test_a_non_solo_owner_gets_no_legacy_fallback(storage):
+    """舊表結構上沒有 owner 維度，只能代表 solo owner 存在過的資料
+    ——任何其他 owner 不該意外繼承到它。"""
+    _seed_legacy_settings(storage, _settings(market=_CUSTOM))
+    assert storage.get_settings(owner=ALICE) is None
+
+
+def test_solo_owner_credential_read_through_from_the_legacy_table(storage):
+    _seed_legacy_credential(storage, ProviderCredential(
+        provider="marketdata-app", token="legacy-token",
         updated_at="2026-08-12T00:00:00+00:00"))
-    assert storage.get_verification("marketdata-app") is None
+    got = storage.get_credential("marketdata-app", owner=OWNER)
+    assert got is not None
+    assert got.token == "legacy-token"
+    assert got.owner_id == OWNER
+
+
+def test_solo_owner_verification_read_through_from_the_legacy_table(storage):
+    _seed_legacy_verification(storage, ProviderVerification(
+        provider="marketdata-app", ok=True, reason=None,
+        checked_at="2026-08-12T01:00:00+00:00"))
+    got = storage.get_verification("marketdata-app", owner=OWNER)
+    assert got is not None
+    assert got.ok is True
+    assert got.owner_id == OWNER
+
+
+def test_deleting_a_credential_purges_the_legacy_table_too(storage):
+    """殭屍復活防線：只清新表的話，下次讀取的 read-through 會把舊表
+    裡沒被清掉的資料復活。"""
+    _seed_legacy_credential(storage, ProviderCredential(
+        provider="marketdata-app", token="legacy-token",
+        updated_at="2026-08-12T00:00:00+00:00"))
+    storage.get_credential("marketdata-app", owner=OWNER)   # write-through
+    assert storage.delete_credential("marketdata-app", owner=OWNER) is True
+    assert storage.get_credential("marketdata-app", owner=OWNER) is None
+
+
+def test_deleting_a_credential_that_only_exists_in_the_legacy_table_still_removes_it(storage):
+    """就算從來沒被讀過（新表因此完全沒有這一列），刪除仍要清到舊表
+    ——否則下一次讀取的 read-through 一樣會把它復活。"""
+    _seed_legacy_credential(storage, ProviderCredential(
+        provider="marketdata-app", token="legacy-token",
+        updated_at="2026-08-12T00:00:00+00:00"))
+    assert storage.delete_credential("marketdata-app", owner=OWNER) is True
+    assert storage.get_credential("marketdata-app", owner=OWNER) is None
+
+
+def test_backfill_settings_to_owner_copies_all_three_legacy_tables(storage):
+    """AC-3：明確、可重跑的批次遷移——不依賴任何人先讀過。"""
+    _seed_legacy_settings(storage, _settings(market=_CUSTOM))
+    _seed_legacy_credential(storage, ProviderCredential(
+        provider="marketdata-app", token="legacy-token",
+        updated_at="2026-08-12T00:00:00+00:00"))
+    _seed_legacy_verification(storage, ProviderVerification(
+        provider="marketdata-app", ok=True, reason=None,
+        checked_at="2026-08-12T01:00:00+00:00"))
+    counts = storage.backfill_settings_to_owner(OWNER)
+    assert counts == {"settings": 1, "credentials": 1, "verifications": 1}
+    assert storage.get_settings(owner=OWNER).market_data == _CUSTOM
+    assert storage.get_credential("marketdata-app", owner=OWNER).token == "legacy-token"
+    assert storage.get_verification("marketdata-app", owner=OWNER).ok is True
+
+
+def test_backfill_settings_to_owner_is_idempotent_on_rerun(storage):
+    _seed_legacy_settings(storage, _settings(market=_CUSTOM))
+    first = storage.backfill_settings_to_owner(OWNER)
+    second = storage.backfill_settings_to_owner(OWNER)
+    assert first == {"settings": 1, "credentials": 0, "verifications": 0}
+    assert second == {"settings": 0, "credentials": 0, "verifications": 0}
+
+
+def test_backfill_settings_to_owner_never_overwrites_a_newer_value_already_in_the_new_table(storage):
+    """可中斷續跑：backfill 跑之前使用者若已經自己存過新值（例如靠
+    read-through 或直接呼叫 `save_settings()`），重跑不能用舊表的
+    陳舊值蓋掉它。"""
+    _seed_legacy_settings(storage, _settings(market=_CUSTOM))
+    storage.save_settings(_settings(market=_DEFAULT_USAGE))   # 使用者換了設定
+    counts = storage.backfill_settings_to_owner(OWNER)
+    assert counts["settings"] == 0   # 新表已經有了，不算搬移
+    assert storage.get_settings(owner=OWNER).market_data == _DEFAULT_USAGE
+
+
+def test_backfill_settings_to_owner_on_an_empty_store_reports_all_zero(storage):
+    assert storage.backfill_settings_to_owner(OWNER) == {
+        "settings": 0, "credentials": 0, "verifications": 0}
+
+
+# ---------- Ownership A-1 Contract（SCALE-13／#264）：結構性 NULL 核對（AC-5） ----------
+
+def test_owner_id_null_counts_on_an_empty_store_is_all_zero(storage):
+    assert storage.owner_id_null_counts() == {
+        "scenarios": 0, "results": 0, "snapshots": 0, "events": 0,
+        "diagnostics": 0, "owner_settings": 0, "owner_credentials": 0,
+        "owner_verifications": 0}
+
+
+def test_owner_id_null_counts_after_backfill_missing_owner_ids_is_all_zero(storage):
+    """AC-5：8 張 user tables 均無 NULL owner——5 張既有 row-scoped 表
+    先用 `backfill_missing_owner_ids()` 補齊，3 張新表結構上（PK 一
+    部分）永遠是 0。"""
+    storage.create_scenario(_scenario(owner_id=None))
+    storage.save_result(ResultRecord("s1", "2026-08-01T00:00:00+00:00",
+                                     {"n": 1}))
+    storage.save_snapshot("s1", "2026-08-01T00:00:00+00:00", {"n": 1})
+    storage.append_event(ts="2026-08-01T00:00:00+00:00", scenario_id="s1",
+                         event="SCENARIO_CREATED", payload={})
+    storage.append_diagnostic(_diag(event_id="d1"))
+    storage.backfill_missing_owner_ids("solo")
+    storage.save_settings(_settings())
+    storage.save_credential(ProviderCredential(
+        provider="marketdata-app", token="tok",
+        updated_at="2026-08-12T00:00:00+00:00", owner_id=OWNER))
+    storage.save_verification(_verification())
+    assert storage.owner_id_null_counts() == {
+        "scenarios": 0, "results": 0, "snapshots": 0, "events": 0,
+        "diagnostics": 0, "owner_settings": 0, "owner_credentials": 0,
+        "owner_verifications": 0}
+
+
+def test_owner_id_null_counts_reports_remaining_nulls_before_backfill(storage):
+    """反面驗證：backfill 跑之前，這個核對真的抓得到還沒補的列——不是
+    一個永遠回零的裝飾性檢查。"""
+    storage.create_scenario(_scenario(owner_id=None))
+    counts = storage.owner_id_null_counts()
+    assert counts["scenarios"] == 1
 
 
 # ---------- 歷史 IV 觀測快取（#129，per-symbol） ----------
@@ -915,8 +1643,8 @@ def test_deleting_a_scenario_keeps_the_symbol_cache(storage):
     """別的劇本還在用，而且重抓要再燒一次 quota。"""
     storage.create_scenario(_scenario("s1"))
     storage.save_iv_observation(_obs())
-    storage.archive_scenario("s1", ts="2026-08-12T00:00:00+00:00")
-    assert storage.delete_scenario("s1") is True
+    storage.archive_scenario("s1", ts="2026-08-12T00:00:00+00:00", owner=OWNER)
+    assert storage.delete_scenario("s1", owner=OWNER) is True
     assert storage.iv_observation_dates("TLT") == ["2026-05-04"]
 
 
@@ -1051,7 +1779,7 @@ def test_an_old_shape_date_iv_tuple_row_is_structurally_distinguishable(storage)
 
 def _diag(*, event_id="e1", correlation_id="c1", ts="2026-08-15T00:00:00+00:00",
          subsystem="historical_iv", stage="vendor_fetch", severity="error",
-         user_facing=None, message="boom", context=None):
+         user_facing=None, message="boom", context=None, owner_id=None):
     # PC-03（#201）：`user_facing` 省略時鏡射 `severity`——跟 `emit()`
     # 的預設規則同一套，這裡直接構造 `DiagnosticEvent`（繞過 `emit()`）
     # 因此要自己套一次，不然這批既有測試全部要逐一補這個新欄位。
@@ -1060,16 +1788,17 @@ def _diag(*, event_id="e1", correlation_id="c1", ts="2026-08-15T00:00:00+00:00",
     return DiagnosticEvent(event_id=event_id, correlation_id=correlation_id,
                            ts=ts, subsystem=subsystem, stage=stage,
                            severity=severity, user_facing=user_facing,
-                           message=message, context=context or {})
+                           message=message, context=context or {},
+                           owner_id=owner_id)
 
 
 def test_diagnostics_start_out_empty(storage):
-    assert storage.list_diagnostics() == []
+    assert storage.list_diagnostics(owner=OWNER) == []
 
 
 def test_appended_diagnostic_reads_back_identically(storage):
-    storage.append_diagnostic(_diag(context={"symbol": "TLT"}))
-    got = storage.list_diagnostics()
+    storage.append_diagnostic(_diag(context={"symbol": "TLT"}, owner_id=OWNER))
+    got = storage.list_diagnostics(owner=OWNER)
     assert len(got) == 1
     assert got[0].event_id == "e1"
     assert got[0].correlation_id == "c1"
@@ -1086,38 +1815,38 @@ def test_diagnostic_user_facing_round_trips_for_both_true_and_false(storage):
     不能只驗其中一個方向（例如剛好都是 truthy 就測不出 Postgres 那端
     欄位型別／讀取邏輯搞錯的情況）。"""
     storage.append_diagnostic(_diag(event_id="t1", severity="warning",
-                                    user_facing=True))
+                                    user_facing=True, owner_id=OWNER))
     storage.append_diagnostic(_diag(event_id="t2", severity="warning",
-                                    user_facing=False))
-    got = {e.event_id: e.user_facing for e in storage.list_diagnostics()}
+                                    user_facing=False, owner_id=OWNER))
+    got = {e.event_id: e.user_facing for e in storage.list_diagnostics(owner=OWNER)}
     assert got == {"t1": True, "t2": False}
 
 
 def test_diagnostics_come_back_newest_first(storage):
     for i in range(3):
         storage.append_diagnostic(_diag(event_id=f"e{i}",
-                                        ts=f"2026-08-15T00:0{i}:00+00:00"))
-    assert [e.event_id for e in storage.list_diagnostics()] == ["e2", "e1", "e0"]
+                                        ts=f"2026-08-15T00:0{i}:00+00:00", owner_id=OWNER))
+    assert [e.event_id for e in storage.list_diagnostics(owner=OWNER)] == ["e2", "e1", "e0"]
 
 
 def test_diagnostics_list_respects_the_limit(storage):
     for i in range(5):
-        storage.append_diagnostic(_diag(event_id=f"e{i}"))
-    got = storage.list_diagnostics(limit=2)
+        storage.append_diagnostic(_diag(event_id=f"e{i}", owner_id=OWNER))
+    got = storage.list_diagnostics(limit=2, owner=OWNER)
     assert len(got) == 2
     assert got[0].event_id == "e4"
 
 
 def test_clear_diagnostics_empties_the_list_and_reports_the_count(storage):
     for i in range(3):
-        storage.append_diagnostic(_diag(event_id=f"e{i}"))
-    n = storage.clear_diagnostics()
+        storage.append_diagnostic(_diag(event_id=f"e{i}", owner_id=OWNER))
+    n = storage.clear_diagnostics(owner=OWNER)
     assert n == 3
-    assert storage.list_diagnostics() == []
+    assert storage.list_diagnostics(owner=OWNER) == []
 
 
 def test_clear_diagnostics_on_an_empty_store_reports_zero(storage):
-    assert storage.clear_diagnostics() == 0
+    assert storage.clear_diagnostics(owner=OWNER) == 0
 
 
 def test_diagnostics_retention_is_capped_globally(storage):
@@ -1125,8 +1854,8 @@ def test_diagnostics_retention_is_capped_globally(storage):
     超過上限——兩個實作在這裡必須是同一個行為。"""
     total = RETENTION_LIMIT + 20
     for i in range(total):
-        storage.append_diagnostic(_diag(event_id=f"e{i}"))
-    got = storage.list_diagnostics(limit=RETENTION_LIMIT + 50)
+        storage.append_diagnostic(_diag(event_id=f"e{i}", owner_id=OWNER))
+    got = storage.list_diagnostics(limit=RETENTION_LIMIT + 50, owner=OWNER)
     assert len(got) == RETENTION_LIMIT
     # 最新的一筆（最後寫入）在最上，最舊的那 20 筆被擠掉。
     assert got[0].event_id == f"e{total - 1}"
@@ -1140,16 +1869,16 @@ def test_diagnostics_retention_is_capped_globally(storage):
 def test_append_diagnostics_batch_writes_all_events(storage):
     """PERF-02（#178）：複數形式的批次寫入，跟逐筆呼叫單筆版並存、
     不取代——這裡驗證批次版本身就能把整批寫進去、讀得回來。"""
-    events = [_diag(event_id=f"b{i}", ts=f"2026-08-15T00:0{i}:00+00:00")
+    events = [_diag(event_id=f"b{i}", ts=f"2026-08-15T00:0{i}:00+00:00", owner_id=OWNER)
              for i in range(3)]
     storage.append_diagnostics(events)
-    got = {e.event_id for e in storage.list_diagnostics(limit=10)}
+    got = {e.event_id for e in storage.list_diagnostics(limit=10, owner=OWNER)}
     assert got == {"b0", "b1", "b2"}
 
 
 def test_append_diagnostics_on_an_empty_list_is_a_no_op(storage):
     storage.append_diagnostics([])
-    assert storage.list_diagnostics() == []
+    assert storage.list_diagnostics(owner=OWNER) == []
 
 
 def test_append_diagnostics_batch_matches_looping_the_singular_method_on_retention(storage):
@@ -1158,19 +1887,533 @@ def test_append_diagnostics_batch_matches_looping_the_singular_method_on_retenti
     順序。用兩個獨立的 storage 實例分別跑批次版／逐筆版，比對最終
     狀態。"""
     total = RETENTION_LIMIT + 20
-    events = [_diag(event_id=f"e{i}", ts=f"t{i}") for i in range(total)]
+    events = [_diag(event_id=f"e{i}", ts=f"t{i}", owner_id=OWNER) for i in range(total)]
 
     storage.append_diagnostics(events)
     batch_result = [(e.event_id, e.ts) for e in storage.list_diagnostics(
-        limit=RETENTION_LIMIT + 50)]
+        limit=RETENTION_LIMIT + 50, owner=OWNER)]
 
     looped = MemoryStorage()
     for event in events:
         looped.append_diagnostic(event)
     looped_result = [(e.event_id, e.ts) for e in looped.list_diagnostics(
-        limit=RETENTION_LIMIT + 50)]
+        limit=RETENTION_LIMIT + 50, owner=OWNER)]
 
     assert batch_result == looped_result
+
+
+# ---------- Ownership A-1 Expand（SCALE-06／#256） ----------
+#
+# 只涵蓋 5 張 row-scoped 表——`provider_credentials`／
+# `data_source_settings`／`provider_verifications` 三張 singleton／
+# provider-key 表刻意不在這裡（留給 SCALE-13 做結構遷移），
+# system-wide 共用表（rate/treasury/dividend/IV caches、
+# `chain_backoff`）本來就不該有這個維度，見下方 AC-5 結構性測試。
+
+def test_owner_id_round_trips_on_a_scenario(storage):
+    """SCALE-11 跟進：`_scenario()` 這份契約測試檔的預設值已改成
+    `OWNER`（見檔案上方常數），這裡刻意覆寫成 `None` 才是原本要驗證的
+    「未指定時 nullable」情境。讀回改走 `list_scenarios(owner=None)`
+    ——那是文件明訂的唯一「不過濾、列出全部」例外（`backfill_result_
+    fact_context()` 既有先例）；`get_scenario(owner=...)` 沒有這個
+    例外，`owner=None` 在它身上是逐字比對 `owner_id = NULL`，兩個後端
+    行為不一致（Postgres 恆回 `None`），不能用來讀一列 `owner_id`
+    本身就是 `None` 的資料。"""
+    storage.create_scenario(_scenario(owner_id=None))
+    got = next(s for s in storage.list_scenarios(owner=None) if s.id == "s1")
+    assert got.owner_id is None   # 未指定時 nullable，不是空字串
+    storage.create_scenario(_scenario(sid="s2", owner_id=None))
+    storage.list_scenarios(owner=None)   # 冪等讀取不影響下面這筆的獨立驗證
+
+
+def test_owner_id_can_be_set_when_creating_a_scenario(storage):
+    from dataclasses import replace as _replace
+    sc = _replace(_scenario(), owner_id="alice")
+    storage.create_scenario(sc)
+    assert storage.get_scenario("s1", owner="alice").owner_id == "alice"
+
+
+def test_updating_a_scenario_does_not_touch_its_owner_id():
+    """`update_scenario()` 刻意不動 `owner_id`——編輯 thesis 不該連帶
+    改變資料 boundary。這是設計決策，用 memory 假體驗證一次即可（不是
+    兩個後端各自獨立需要驗證的行為差異，是同一份呼叫慣例）。"""
+    from dataclasses import replace as _replace
+    storage = MemoryStorage()
+    sc = _replace(_scenario(), owner_id="alice")
+    storage.create_scenario(sc)
+    updated = _replace(sc, notes="改過的 thesis")
+    storage.update_scenario(updated, owner="alice")
+    assert storage.get_scenario("s1", owner="alice").owner_id == "alice"
+
+
+def test_owner_id_round_trips_on_a_result(storage):
+    storage.create_scenario(_scenario())
+    _save_current(storage, ResultRecord("s1", "2026-08-01T00:00:00+00:00",
+                                        {"n": 1}, owner_id="alice"))
+    assert storage.latest_result("s1", owner="alice").owner_id == "alice"
+
+
+def test_owner_id_round_trips_on_a_snapshot(storage):
+    storage.create_scenario(_scenario())
+    storage.save_snapshot("s1", "2026-08-01T00:00:00+00:00", {"n": 1},
+                          owner_id="alice")
+    # 窄讀取不影響既有 `get_snapshot()` 的形狀——仍是純快照 dict，不是
+    # 一個帶著 owner_id 的信封。
+    assert storage.get_snapshot("s1", "2026-08-01T00:00:00+00:00",
+                                owner="alice") == {"n": 1}
+    assert storage.get_snapshot_owner("s1", "2026-08-01T00:00:00+00:00") == "alice"
+
+
+def test_snapshot_owner_is_none_when_unspecified_or_missing(storage):
+    storage.create_scenario(_scenario())
+    storage.save_snapshot("s1", "2026-08-01T00:00:00+00:00", {"n": 1})
+    assert storage.get_snapshot_owner("s1", "2026-08-01T00:00:00+00:00") is None
+    # 這一列根本不存在——跟「存在但 owner 尚未 backfill」用同一個 `None`
+    # 表達（見 `Storage.get_snapshot_owner()` docstring 的理由）。
+    assert storage.get_snapshot_owner("s1", "2099-01-01T00:00:00+00:00") is None
+
+
+def test_owner_id_round_trips_on_an_event(storage):
+    storage.append_event(ts="2026-08-01T00:00:00+00:00", scenario_id="s1",
+                         event="SCENARIO_CREATED", payload={}, owner_id="alice")
+    (event,) = storage.list_events(owner="alice")
+    assert event["owner_id"] == "alice"
+
+
+def test_event_owner_id_defaults_to_none(storage):
+    """`append_event()` 省略 `owner_id` 預設 `None`。
+
+    SCALE-11 跟進：`list_events()` 已無「不過濾、直接讀回剛寫入那筆」
+    的讀法（沒有任何 production 或遷移用途需要跨 owner 讀取
+    events——不像 `list_scenarios()`／`result_history()` 有
+    `backfill_result_fact_context()` 這個真實需求，因此刻意沒有給
+    `list_events()` 開這個逃生門）。改用 `backfill_missing_owner_ids()`
+    的回傳計數間接證明「寫入時真的是 `owner_id=None`」——只有本來就是
+    `None` 的列才會被這個條件式 `WHERE owner_id IS NULL` 補到；再用
+    backfill 之後合法可用的 `owner=` 過濾讀回，確認值確實從 None
+    變成 backfill 指定的值。"""
+    storage.create_scenario(_scenario(owner_id=None))
+    storage.append_event(ts="2026-08-01T00:00:00+00:00", scenario_id="s1",
+                         event="SCENARIO_CREATED", payload={})
+    counts = storage.backfill_missing_owner_ids("solo")
+    assert counts["events"] == 1   # 證明寫入時確實是 owner_id=None
+    (event,) = storage.list_events(scenario_id="s1", owner="solo")
+    assert event["owner_id"] == "solo"
+
+
+def test_owner_id_round_trips_on_a_diagnostic(storage):
+    """SCALE-11 跟進：`list_diagnostics()` 同樣無不過濾讀法，兩筆不同
+    owner（含 `None`）不再能用同一次呼叫一起讀回比對。拆成兩段各自
+    驗證：`alice` 那筆直接用 `owner="alice"` 讀回；`None` 那筆比照
+    `test_event_owner_id_defaults_to_none` 的 backfill 間接證明手法
+    （這裡刻意不建立任何 scenario／result／snapshot，backfill 對其餘
+    4 張表的計數自然是 0，不影響這裡只在乎的 `diagnostics` 那格）。"""
+    storage.append_diagnostic(_diag(event_id="d1"))   # owner_id 預設 None
+    storage.append_diagnostic(_diag(event_id="d2", owner_id="alice"))
+
+    alice_only = {e.event_id: e.owner_id
+                 for e in storage.list_diagnostics(limit=10, owner="alice")}
+    assert alice_only == {"d2": "alice"}
+
+    counts = storage.backfill_missing_owner_ids("solo")
+    assert counts["diagnostics"] == 1   # 只有 d1（owner_id=None）被補
+    solo_only = {e.event_id: e.owner_id
+                for e in storage.list_diagnostics(limit=10, owner="solo")}
+    assert solo_only == {"d1": "solo"}
+
+
+# ---------- SCALE-11（#262）：真正的雙 owner 隔離，兩後端皆跑 ----------
+#
+# 上面 SCALE-06 那批只驗證「owner_id 這個值本身寫得進去、讀得回來」
+# （單一 owner 的 round-trip）；這裡才是 `/code-review` Spec 軸抓到的
+# 真缺口——插入兩個不同、非 None 的 owner 各自一筆資料，證明 Postgres
+# 的 SQL（不是只有 memory 假體的 Python `==`）真的把對方的列擋在外面。
+# `test_scale11_ownership_enforce.py` 的等價場景走 HTTP＋MemoryStorage，
+# 抓不到「SQL 參數順序寫反」「AND 誤植成 OR」這類只會在真實 Postgres
+# 上現形的錯誤——這批測試才是那道防線。
+
+def test_get_scenario_excludes_another_owners_row(storage):
+    storage.create_scenario(_scenario(owner_id="alice"))
+    storage.create_scenario(_scenario(sid="s2", owner_id="bob"))
+    assert storage.get_scenario("s1", owner="bob") is None
+    assert storage.get_scenario("s2", owner="alice") is None
+    assert storage.get_scenario("s1", owner="alice").id == "s1"
+    assert storage.get_scenario("s2", owner="bob").id == "s2"
+
+
+def test_list_scenarios_only_returns_the_given_owners_rows(storage):
+    storage.create_scenario(_scenario(owner_id="alice"))
+    storage.create_scenario(_scenario(sid="s2", owner_id="bob"))
+    assert [s.id for s in storage.list_scenarios(owner="alice")] == ["s1"]
+    assert [s.id for s in storage.list_scenarios(owner="bob")] == ["s2"]
+
+
+def test_update_scenario_cannot_touch_another_owners_row(storage):
+    from dataclasses import replace as _replace
+
+    storage.create_scenario(_scenario(owner_id="alice"))
+    attempted = _replace(_scenario(owner_id="alice"), target_price=999.0)
+    assert storage.update_scenario(attempted, owner="bob") is False
+    assert storage.get_scenario("s1", owner="alice").target_price == 120.0
+
+
+def test_archive_restore_delete_cannot_touch_another_owners_row(storage):
+    storage.create_scenario(_scenario(owner_id="alice"))
+    assert storage.archive_scenario("s1", owner="bob", ts="2026-08-02T00:00:00+00:00") is False
+    assert storage.get_scenario("s1", owner="alice").archived_at is None
+
+    storage.archive_scenario("s1", owner="alice", ts="2026-08-02T00:00:00+00:00")
+    assert storage.restore_scenario("s1", owner="bob", ts="2026-08-03T00:00:00+00:00") is False
+    assert storage.get_scenario("s1", owner="alice").archived_at is not None
+
+    assert storage.delete_scenario("s1", owner="bob") is False
+    assert storage.get_scenario("s1", owner="alice") is not None
+
+
+def test_clear_results_cannot_touch_another_owners_row(storage):
+    storage.create_scenario(_scenario(owner_id="alice"))
+    _save_current(storage, ResultRecord("s1", "2026-08-01T00:00:00+00:00",
+                                        {"n": 1}, owner_id="alice"))
+    storage.clear_results("s1", owner="bob")
+    assert storage.latest_result("s1", owner="alice") is not None
+
+
+def test_latest_result_and_history_exclude_another_owners_rows(storage):
+    storage.create_scenario(_scenario(owner_id="alice"))
+    storage.create_scenario(_scenario(sid="s2", owner_id="bob"))
+    _save_current(storage, ResultRecord("s1", "2026-08-01T00:00:00+00:00",
+                                        {"n": 1}, owner_id="alice"))
+    _save_current(storage, ResultRecord("s2", "2026-08-01T00:00:00+00:00",
+                                        {"n": 2}, owner_id="bob"))
+
+    # 正面先確認真的寫得進去、讀得回來——否則下面四條全是空話（本來
+    # 就沒有東西可看，「看不到別人的」自然恆真）。
+    assert storage.latest_result("s1", owner="alice") is not None
+    assert storage.latest_result("s2", owner="bob") is not None
+    assert storage.latest_result("s1", owner="bob") is None
+    assert storage.latest_result("s2", owner="alice") is None
+    assert storage.result_history("s1", owner="bob") == []
+    assert storage.result_history("s2", owner="alice") == []
+
+
+def test_latest_summaries_only_covers_the_given_owner(storage):
+    storage.create_scenario(_scenario(owner_id="alice"))
+    storage.create_scenario(_scenario(sid="s2", owner_id="bob"))
+    _save_current(storage, ResultRecord("s1", "2026-08-01T00:00:00+00:00",
+                                        {"n": 1}, best_return=1.0, owner_id="alice"))
+    _save_current(storage, ResultRecord("s2", "2026-08-01T00:00:00+00:00",
+                                        {"n": 2}, best_return=2.0, owner_id="bob"))
+
+    assert set(storage.latest_summaries(owner="alice")) == {"s1"}
+    assert set(storage.latest_summaries(owner="bob")) == {"s2"}
+
+
+def test_result_timestamps_excludes_another_owners_rows(storage):
+    storage.create_scenario(_scenario(owner_id="alice"))
+    storage.create_scenario(_scenario(sid="s2", owner_id="bob"))
+    storage.save_snapshot("s1", "2026-08-01T00:00:00+00:00", {"n": 1},
+                          owner_id="alice")
+    storage.save_snapshot("s2", "2026-08-01T00:00:00+00:00", {"n": 2},
+                          owner_id="bob")
+
+    assert storage.result_timestamps("s1", owner="bob") == []
+    assert storage.result_timestamps("s2", owner="alice") == []
+    assert storage.result_timestamps("s1", owner="alice") == \
+        ["2026-08-01T00:00:00+00:00"]
+
+
+def test_get_snapshot_excludes_another_owners_row(storage):
+    storage.create_scenario(_scenario(owner_id="alice"))
+    storage.save_snapshot("s1", "2026-08-01T00:00:00+00:00", {"n": 1},
+                          owner_id="alice")
+    assert storage.get_snapshot("s1", "2026-08-01T00:00:00+00:00",
+                                owner="bob") is None
+    assert storage.get_snapshot("s1", "2026-08-01T00:00:00+00:00",
+                                owner="alice") == {"n": 1}
+
+
+def test_list_events_excludes_another_owners_rows(storage):
+    storage.append_event(ts="2026-08-01T00:00:00+00:00", scenario_id="s1",
+                         event="SCENARIO_CREATED", payload={}, owner_id="alice")
+    storage.append_event(ts="2026-08-01T00:00:00+00:00", scenario_id="s2",
+                         event="SCENARIO_CREATED", payload={}, owner_id="bob")
+
+    assert [e["scenario_id"] for e in storage.list_events(owner="alice")] == ["s1"]
+    assert [e["scenario_id"] for e in storage.list_events(owner="bob")] == ["s2"]
+    # 帶 scenario_id 過濾時，owner 不符一樣是空清單，不是忽略 owner
+    # 只看 scenario_id。
+    assert storage.list_events(scenario_id="s2", owner="alice") == []
+
+
+def test_backfill_missing_owner_ids_sets_solo_owner_on_every_legacy_row(storage):
+    """AC-1／AC-2：6 張表（SCALE-06 原始 5 張＋SCALE-14 補上的
+    `narrow_history`）各留一筆沒有 owner 的舊列，一次 backfill 全部
+    補齊，回傳的計數逐表對得上。
+
+    SCALE-11 跟進：`_scenario()` 這份契約測試檔的預設值已改成
+    `OWNER`——這裡刻意覆寫成 `None`，才是這張票真正要留的「沒有
+    owner 的舊列」。backfill 之後改用 `owner="solo"`（backfill 剛
+    寫入的值）讀回，而非固定的 `OWNER` 常數——雖然本檔案裡兩者剛好
+    是同一個字串，但這裡要驗證的是「backfill 真的把它設成了這個值」，
+    寫法上跟著 backfill 呼叫本身走，不是巧合借用另一個常數。"""
+    storage.create_scenario(_scenario(owner_id=None))          # owner_id=None
+    storage.save_result(ResultRecord("s1", "2026-08-01T00:00:00+00:00",
+                                     {"n": 1}))    # owner_id=None
+    storage.save_snapshot("s1", "2026-08-01T00:00:00+00:00", {"n": 1})
+    storage.append_event(ts="2026-08-01T00:00:00+00:00", scenario_id="s1",
+                         event="SCENARIO_CREATED", payload={})
+    storage.append_diagnostic(_diag(event_id="d1"))
+    storage.save_narrow_history([NarrowHistoryEntry(
+        scenario_id="s1", analyzed_at="2026-08-01T00:00:00+00:00",
+        candidate_key="k", cost=1.0, owner_id=None)])
+
+    counts = storage.backfill_missing_owner_ids("solo")
+    assert counts == {"scenarios": 1, "results": 1, "snapshots": 1,
+                      "events": 1, "diagnostics": 1, "narrow_history": 1}
+
+    assert storage.get_scenario("s1", owner="solo").owner_id == "solo"
+    # `backfill_missing_owner_ids()` 只補 6 張既有 row-scoped 表
+    # （SCALE-06 原始 5 張＋`narrow_history`）——`current_results`
+    # 是 SCALE-16 才新增、全新形狀的表，沒有這類舊資料需要回填，
+    # 這裡改查 ledger（`result_history()`）驗證回填確實發生在正確
+    # 的表上。
+    assert storage.result_history("s1", owner="solo")[0].owner_id == "solo"
+    assert storage.get_snapshot_owner("s1", "2026-08-01T00:00:00+00:00") == "solo"
+    assert storage.list_events(owner="solo")[0]["owner_id"] == "solo"
+    assert storage.list_diagnostics(owner="solo")[0].owner_id == "solo"
+    assert storage.get_narrow_history_entry(
+        "s1", "2026-08-01T00:00:00+00:00", "k", owner="solo").owner_id == "solo"
+
+
+def test_backfill_missing_owner_ids_is_idempotent_on_rerun(storage):
+    """AC-2：重跑 backfill 0 drift／0 duplicate side effect——第二次呼叫
+    對「已經補過」的列全部回 0，不重複計數、不覆蓋。"""
+    storage.create_scenario(_scenario(owner_id=None))
+    storage.save_result(ResultRecord("s1", "2026-08-01T00:00:00+00:00", {"n": 1}))
+    storage.save_snapshot("s1", "2026-08-01T00:00:00+00:00", {"n": 1})
+    storage.append_event(ts="2026-08-01T00:00:00+00:00", scenario_id="s1",
+                         event="SCENARIO_CREATED", payload={})
+    storage.append_diagnostic(_diag(event_id="d1"))
+    storage.save_narrow_history([NarrowHistoryEntry(
+        scenario_id="s1", analyzed_at="2026-08-01T00:00:00+00:00",
+        candidate_key="k", cost=1.0, owner_id=None)])
+
+    first = storage.backfill_missing_owner_ids("solo")
+    assert all(v == 1 for v in first.values())
+
+    second = storage.backfill_missing_owner_ids("solo")
+    assert second == {"scenarios": 0, "results": 0, "snapshots": 0,
+                      "events": 0, "diagnostics": 0, "narrow_history": 0}
+
+    # 結果不變——不是「回 0 但其實悄悄改了值」。
+    assert storage.get_scenario("s1", owner="solo").owner_id == "solo"
+
+
+def test_backfill_does_not_overwrite_a_row_that_already_has_an_owner(storage):
+    """既有值有 owner 的列不該被覆蓋成 backfill 傳入的值——`WHERE
+    owner_id IS NULL` 的條件式語意，不是無條件蓋掉。"""
+    from dataclasses import replace as _replace
+
+    storage.create_scenario(_replace(_scenario(), owner_id="alice"))
+    counts = storage.backfill_missing_owner_ids("solo")
+    assert counts["scenarios"] == 0
+    assert storage.get_scenario("s1", owner="alice").owner_id == "alice"
+
+
+def test_backfill_on_an_empty_store_reports_zero_for_every_table(storage):
+    counts = storage.backfill_missing_owner_ids("solo")
+    assert counts == {"scenarios": 0, "results": 0, "snapshots": 0,
+                      "events": 0, "diagnostics": 0, "narrow_history": 0}
+
+
+# ---------- AC-5：結構性——3 張 singleton 表與 system-wide 表零 owner ----------
+
+def test_system_wide_dataclasses_have_no_owner_field():
+    """system-wide 共用表（rate／treasury／dividend／IV caches、
+    `chain_backoff`）不分 owner 是既有、正確的設計（AC-6），永遠不該
+    悄悄長出 `owner_id`——這是純結構性檢查，不需要打真資料庫。3 張
+    singleton／provider-key user 表（`ProviderCredential`／
+    `DataSourceSettings`／`ProviderVerification`）SCALE-06 當初明文
+    留給 SCALE-13 做結構遷移，SCALE-13（#264）已完成，見下面
+    `test_the_three_settings_dataclasses_now_have_an_owner_field`。"""
+    import dataclasses as dc
+
+    from api_app.storage import (ChainBackoffEntry, ContractHistory,
+                                 DividendCacheEntry, IvBackfillRun,
+                                 IvObservation, RateCacheEntry,
+                                 TreasuryYearCacheEntry)
+
+    system_wide_tables = (RateCacheEntry, DividendCacheEntry,
+                          TreasuryYearCacheEntry, ChainBackoffEntry,
+                          IvObservation, IvBackfillRun, ContractHistory)
+
+    for cls in system_wide_tables:
+        field_names = {f.name for f in dc.fields(cls)}
+        assert "owner_id" not in field_names, cls.__name__
+
+
+def test_the_five_row_scoped_dataclasses_do_have_an_owner_field():
+    """反向驗證：確實該有的 5 張表（`ResultFactContext`／
+    `ResultSummary` 這種「窄投影」型別不算——它們本來就不是完整的
+    row 本身，`DiagnosticEvent` 定義在 `diagnostics.py` 不在這裡）。"""
+    import dataclasses as dc
+
+    from api_app.storage import ResultRecord, Scenario
+
+    assert "owner_id" in {f.name for f in dc.fields(Scenario)}
+    assert "owner_id" in {f.name for f in dc.fields(ResultRecord)}
+    from api_app.diagnostics import DiagnosticEvent
+    assert "owner_id" in {f.name for f in dc.fields(DiagnosticEvent)}
+
+
+def test_the_three_settings_dataclasses_now_have_an_owner_field():
+    """SCALE-13（#264）：`ProviderCredential`／`DataSourceSettings`／
+    `ProviderVerification` 從單例／provider-key 升級成 per-owner，見
+    `owner_settings`／`owner_credentials`／`owner_verifications` 三張
+    新表——這 3 個 dataclass 現在也該有 `owner_id`，取代
+    SCALE-06 當初「這 3 張留給 SCALE-13」的舊斷言。"""
+    import dataclasses as dc
+
+    from api_app.storage import (DataSourceSettings, ProviderCredential,
+                                 ProviderVerification)
+
+    for cls in (ProviderCredential, DataSourceSettings, ProviderVerification):
+        assert "owner_id" in {f.name for f in dc.fields(cls)}, cls.__name__
+
+
+# ---------- S0 最小可觀測性（SCALE-08／#258） ----------
+
+def test_record_metric_creates_a_new_bucket(storage):
+    storage.record_metric("chain_fetch_count", "2026-09-06",
+                          source="cboe", symbol="TLT", count=1)
+    (entry,) = storage.metric_summary()
+    assert entry.metric == "chain_fetch_count"
+    assert entry.bucket == "2026-09-06"
+    assert entry.source == "cboe"
+    assert entry.symbol == "TLT"
+    assert entry.count == 1
+    assert entry.total == 0.0
+
+
+def test_record_metric_accumulates_into_the_same_bucket(storage):
+    for _ in range(3):
+        storage.record_metric("chain_fetch_count", "2026-09-06",
+                              source="cboe", symbol="TLT", count=1)
+    (entry,) = storage.metric_summary()
+    assert entry.count == 3
+
+
+def test_record_metric_keeps_different_dimensions_separate(storage):
+    storage.record_metric("chain_fetch_count", "2026-09-06",
+                          source="cboe", symbol="TLT", count=1)
+    storage.record_metric("chain_fetch_count", "2026-09-06",
+                          source="cboe", symbol="SPY", count=1)
+    storage.record_metric("chain_fetch_count", "2026-09-06",
+                          source="yfinance", symbol="TLT", count=1)
+    entries = {(e.source, e.symbol): e.count for e in storage.metric_summary()}
+    assert entries == {("cboe", "TLT"): 1, ("cboe", "SPY"): 1,
+                       ("yfinance", "TLT"): 1}
+
+
+def test_record_metric_tracks_sum_and_max_for_amount_based_metrics():
+    """`refresh_duration_ms` 這類需要平均值（`total／count`）與量級
+    （`max_value`）的指標——每次呼叫累加 `total`、取較大值進
+    `max_value`。"""
+    storage = MemoryStorage()
+    storage.record_metric("refresh_duration_ms", "2026-09-06",
+                          count=1, amount=120.0)
+    storage.record_metric("refresh_duration_ms", "2026-09-06",
+                          count=1, amount=80.0)
+    storage.record_metric("refresh_duration_ms", "2026-09-06",
+                          count=1, amount=200.0)
+    (entry,) = storage.metric_summary()
+    assert entry.count == 3
+    assert entry.total == 400.0
+    assert entry.max_value == 200.0
+    assert entry.total / entry.count == pytest.approx(133.33, rel=1e-3)
+
+
+def test_metric_summary_on_an_empty_store_is_empty(storage):
+    assert storage.metric_summary() == []
+
+
+def test_old_buckets_for_the_same_metric_are_trimmed_on_write(storage):
+    """AC-3：bounded——寫入比 retention 窗更舊的桶，會在下一次同一個
+    metric 被寫入時被清掉（trim-on-write，比照既有 diagnostics 表的
+    既有慣例，只是這裡按天而非按總筆數裁）。"""
+    from api_app.metrics import RETENTION_DAYS
+
+    old_bucket = "2020-01-01"   # 遠早於任何合理的 today - RETENTION_DAYS
+    storage.record_metric("chain_fetch_count", old_bucket, count=1)
+    assert len(storage.metric_summary()) == 1
+
+    # 寫入一個「今天」的桶，觸發同一個 metric 底下的 trim。
+    storage.record_metric("chain_fetch_count", "2026-09-06", count=1)
+    remaining = {e.bucket for e in storage.metric_summary()}
+    assert old_bucket not in remaining
+    assert "2026-09-06" in remaining
+    assert RETENTION_DAYS > 0   # 護欄本身要有意義——不是 0 天窗口
+
+
+def test_trimming_one_metric_does_not_touch_another_metrics_buckets(storage):
+    """trim 只清同一個 `metric` 底下的舊桶——不同 metric 各自獨立的
+    retention 窗，不會因為某個高流量指標常寫入就把另一個低流量指標
+    的舊資料一起清掉（也不會反過來互相保護）。"""
+    old_bucket = "2020-01-01"
+    storage.record_metric("chain_429_count", old_bucket, count=1)
+    storage.record_metric("chain_fetch_count", "2026-09-06", count=1)
+    remaining = {(e.metric, e.bucket) for e in storage.metric_summary()}
+    assert ("chain_429_count", old_bucket) in remaining
+    assert ("chain_fetch_count", "2026-09-06") in remaining
+
+
+def test_table_size_metrics_on_empty_tables_reports_zero_rows_and_no_size(storage):
+    """`total_bytes`（這張表現在佔多少實體空間）對空表兩個後端都是
+    良好定義、非 `None` 的答案——`memory.py` 回 0（沒有真正頁面可算，
+    誠實近似）、Postgres 回真實頁面配置（通常是一個空表的固定開銷，
+    不會是 0），兩者數值**不跨後端比較**、只各自保證「有答案」這件事
+    一致（`/code-review` SCALE-08 抓到：原本 memory.py 對空表回
+    `None`，跟 Postgres 對空表的行為不一致）。`avg_row_bytes`／
+    `max_row_bytes`（單列大小統計量）對零列沒有數學上有意義的答案，
+    兩後端一致回 `None`。"""
+    stats = storage.table_size_metrics()
+    assert set(stats) == {"results", "snapshots"}
+    for table_stats in stats.values():
+        assert table_stats["row_count"] == 0
+        assert table_stats["total_bytes"] is not None
+        assert table_stats["total_bytes"] >= 0
+        assert table_stats["avg_row_bytes"] is None
+        assert table_stats["max_row_bytes"] is None
+
+
+def test_table_size_metrics_reflects_actual_row_count(storage):
+    storage.create_scenario(_scenario())
+    storage.save_result(ResultRecord("s1", "2026-08-01T00:00:00+00:00",
+                                     {"n": 1, "padding": "x" * 500}, owner_id=OWNER))
+    storage.save_snapshot("s1", "2026-08-01T00:00:00+00:00",
+                          {"padding": "y" * 300}, owner_id=OWNER)
+    stats = storage.table_size_metrics()
+    assert stats["results"]["row_count"] == 1
+    assert stats["results"]["avg_row_bytes"] > 0
+    assert stats["snapshots"]["row_count"] == 1
+    assert stats["snapshots"]["avg_row_bytes"] > 0
+
+
+def test_metric_entry_has_no_disallowed_fields():
+    """AC-7：只允許 `source`／`symbol` 兩個維度——不得有 `scenario_id`／
+    `owner_id`／任何報價或合約欄位。"""
+    import dataclasses as dc
+
+    from api_app.storage import MetricEntry
+
+    field_names = {f.name for f in dc.fields(MetricEntry)}
+    assert field_names == {"metric", "bucket", "source", "symbol",
+                           "count", "total", "max_value"}
+    banned = ("scenario", "owner", "candidate", "quote", "bid", "ask",
+             "chain", "contract", "strike", "premium")
+    for name in field_names:
+        for b in banned:
+            assert b not in name.lower(), (name, b)
 
 
 # ---------- schema 遷移（V3／#51） ----------
@@ -1193,7 +2436,7 @@ def test_existing_results_table_gains_the_new_column():
         # 這個測試不吃 `storage` fixture（它要自己控制建表順序），所以
         # 得自己清乾淨——否則殘留的劇本會讓它以 ScenarioExists 失敗，
         # 看起來像遷移壞了，其實是測試自己髒。
-        conn.execute("TRUNCATE scenarios, results, snapshots, events, rate_cache, "
+        conn.execute("TRUNCATE scenarios, results, current_results, snapshots, events, rate_cache, "
                      "dividend_cache, treasury_year_cache, data_source_settings, "
                      "provider_credentials, provider_verifications, "
                      "iv_observations, iv_backfill_runs, contract_iv_history "
@@ -1210,8 +2453,8 @@ def test_existing_results_table_gains_the_new_column():
 
     # 遷移後寫得進去也讀得回來（沒遷移的話這裡是 UndefinedColumn）
     st.create_scenario(_scenario("mig"))
-    st.save_result(ResultRecord("mig", "2026-08-01T00:00:00+00:00", {"n": 1}, 0.75))
-    assert st.latest_summaries()["mig"].best_return == 0.75
+    _save_current(st, ResultRecord("mig", "2026-08-01T00:00:00+00:00", {"n": 1}, 0.75, owner_id=OWNER))
+    assert st.latest_summaries(owner=OWNER)["mig"].best_return == 0.75
 
 
 def test_existing_results_table_gains_the_representative_candidate_column():
@@ -1226,7 +2469,7 @@ def test_existing_results_table_gains_the_representative_candidate_column():
     from api_app.storage import postgres as pg
 
     with psycopg.connect(TEST_DB_URL, autocommit=True) as conn:
-        conn.execute("TRUNCATE scenarios, results, snapshots, events, rate_cache, "
+        conn.execute("TRUNCATE scenarios, results, current_results, snapshots, events, rate_cache, "
                      "dividend_cache, treasury_year_cache, data_source_settings, "
                      "provider_credentials, provider_verifications, "
                      "iv_observations, iv_backfill_runs, contract_iv_history "
@@ -1242,9 +2485,9 @@ def test_existing_results_table_gains_the_representative_candidate_column():
     st = pg.PostgresStorage(TEST_DB_URL)
 
     st.create_scenario(_scenario("mig2"))
-    st.save_result(ResultRecord("mig2", "2026-08-01T00:00:00+00:00", {"n": 1},
-                               best_return=0.75, representative_candidate=_REP))
-    assert st.latest_summaries()["mig2"].representative_candidate == _REP
+    _save_current(st, ResultRecord("mig2", "2026-08-01T00:00:00+00:00", {"n": 1},
+                                   best_return=0.75, representative_candidate=_REP, owner_id=OWNER))
+    assert st.latest_summaries(owner=OWNER)["mig2"].representative_candidate == _REP
 
 
 def test_existing_results_table_gains_the_per_family_column():
@@ -1259,7 +2502,7 @@ def test_existing_results_table_gains_the_per_family_column():
     from api_app.storage import postgres as pg
 
     with psycopg.connect(TEST_DB_URL, autocommit=True) as conn:
-        conn.execute("TRUNCATE scenarios, results, snapshots, events, rate_cache, "
+        conn.execute("TRUNCATE scenarios, results, current_results, snapshots, events, rate_cache, "
                      "dividend_cache, treasury_year_cache, data_source_settings, "
                      "provider_credentials, provider_verifications, "
                      "iv_observations, iv_backfill_runs, contract_iv_history "
@@ -1277,10 +2520,10 @@ def test_existing_results_table_gains_the_per_family_column():
     st = pg.PostgresStorage(TEST_DB_URL)
 
     st.create_scenario(_scenario("mig3"))
-    st.save_result(ResultRecord("mig3", "2026-08-01T00:00:00+00:00", {"n": 1},
-                               best_return=0.75, representative_candidate=_REP,
-                               per_family=_PER_FAMILY))
-    assert st.latest_summaries()["mig3"].per_family == _PER_FAMILY
+    _save_current(st, ResultRecord("mig3", "2026-08-01T00:00:00+00:00", {"n": 1},
+                                   best_return=0.75, representative_candidate=_REP,
+                                   per_family=_PER_FAMILY, owner_id=OWNER))
+    assert st.latest_summaries(owner=OWNER)["mig3"].per_family == _PER_FAMILY
 
 
 def test_existing_results_table_gains_the_family_eligibility_column():
@@ -1295,7 +2538,7 @@ def test_existing_results_table_gains_the_family_eligibility_column():
     from api_app.storage import postgres as pg
 
     with psycopg.connect(TEST_DB_URL, autocommit=True) as conn:
-        conn.execute("TRUNCATE scenarios, results, snapshots, events, rate_cache, "
+        conn.execute("TRUNCATE scenarios, results, current_results, snapshots, events, rate_cache, "
                      "dividend_cache, treasury_year_cache, data_source_settings, "
                      "provider_credentials, provider_verifications, "
                      "iv_observations, iv_backfill_runs, contract_iv_history "
@@ -1313,10 +2556,10 @@ def test_existing_results_table_gains_the_family_eligibility_column():
     st = pg.PostgresStorage(TEST_DB_URL)
 
     st.create_scenario(_scenario("mig4"))
-    st.save_result(ResultRecord("mig4", "2026-08-01T00:00:00+00:00", {"n": 1},
-                               best_return=0.75, representative_candidate=_REP,
-                               family_eligibility=_FAMILY_ELIGIBILITY))
-    assert st.latest_summaries()["mig4"].family_eligibility == _FAMILY_ELIGIBILITY
+    _save_current(st, ResultRecord("mig4", "2026-08-01T00:00:00+00:00", {"n": 1},
+                                   best_return=0.75, representative_candidate=_REP,
+                                   family_eligibility=_FAMILY_ELIGIBILITY, owner_id=OWNER))
+    assert st.latest_summaries(owner=OWNER)["mig4"].family_eligibility == _FAMILY_ELIGIBILITY
 
 
 def test_migration_still_applies_when_table_creation_hits_a_race():
@@ -1333,7 +2576,7 @@ def test_migration_still_applies_when_table_creation_hits_a_race():
     from api_app.storage import postgres as pg
 
     with psycopg.connect(TEST_DB_URL, autocommit=True) as conn:
-        conn.execute("TRUNCATE scenarios, results, snapshots, events, rate_cache, "
+        conn.execute("TRUNCATE scenarios, results, current_results, snapshots, events, rate_cache, "
                      "dividend_cache, treasury_year_cache, data_source_settings, "
                      "provider_credentials, provider_verifications, "
                      "iv_observations, iv_backfill_runs, contract_iv_history "
@@ -1352,10 +2595,14 @@ def test_migration_still_applies_when_table_creation_hits_a_race():
     finally:
         pg._SCHEMA = original
 
-    # 建表批失敗了，遷移批仍要生效
+    # 建表批失敗了，遷移批仍要生效——包含 SCALE-16 新增的
+    # `CREATE TABLE IF NOT EXISTS current_results`（走 `_MIGRATIONS`
+    # 而非 `_SCHEMA`，這裡的 `_SCHEMA` 被整批替換成地雷，`current_
+    # results` 因此只能靠 `_MIGRATIONS` 建出來——這正是本測試要證明
+    # 的那條路徑）。
     st.create_scenario(_scenario("race"))
-    st.save_result(ResultRecord("race", "2026-08-01T00:00:00+00:00", {"n": 1}, 0.5))
-    assert st.latest_summaries()["race"].best_return == 0.5
+    _save_current(st, ResultRecord("race", "2026-08-01T00:00:00+00:00", {"n": 1}, 0.5, owner_id=OWNER))
+    assert st.latest_summaries(owner=OWNER)["race"].best_return == 0.5
 
 
 # ---------- Request-scoped 連線（PERF-01／#177，T02／#186 修形） ----------
@@ -1373,7 +2620,7 @@ def test_multiple_calls_within_a_request_scope_share_a_single_connection():
 
     st = pg.PostgresStorage(TEST_DB_URL)
     with psycopg.connect(TEST_DB_URL, autocommit=True) as conn:
-        conn.execute("TRUNCATE scenarios, results, snapshots, events, rate_cache, "
+        conn.execute("TRUNCATE scenarios, results, current_results, snapshots, events, rate_cache, "
                      "dividend_cache, treasury_year_cache, data_source_settings, "
                      "provider_credentials, provider_verifications, "
                      "iv_observations, iv_backfill_runs, contract_iv_history "
@@ -1397,7 +2644,7 @@ def test_multiple_calls_within_a_request_scope_share_a_single_connection():
             st.create_scenario(_scenario("scope1"))
             st.get_rate_cache()
             st.get_dividend_cache("TLT")
-            st.list_diagnostics()
+            st.list_diagnostics(owner=OWNER)
             # 抓住這個 scope 實際借用中的連線物件本身——下面要驗證的是
             # *這一條*連線確實被關閉，不是只驗證「離開後可以再開一條
             # 新的」（那樣即使舊連線從沒被關閉、只是被丟棄，斷言一樣會
@@ -1461,7 +2708,7 @@ def test_request_scope_reconnects_correctly_for_a_fresh_request_afterwards():
 
     st = pg.PostgresStorage(TEST_DB_URL)
     with psycopg.connect(TEST_DB_URL, autocommit=True) as conn:
-        conn.execute("TRUNCATE scenarios, results, snapshots, events, rate_cache, "
+        conn.execute("TRUNCATE scenarios, results, current_results, snapshots, events, rate_cache, "
                      "dividend_cache, treasury_year_cache, data_source_settings, "
                      "provider_credentials, provider_verifications, "
                      "iv_observations, iv_backfill_runs, contract_iv_history "
@@ -1471,7 +2718,7 @@ def test_request_scope_reconnects_correctly_for_a_fresh_request_afterwards():
         st.create_scenario(_scenario("scope2"))
     with st.request_scope():
         # 新的 scope、新的連線——這裡如果誤用了上一個已關閉的連線會直接炸掉。
-        assert st.get_scenario("scope2") is not None
+        assert st.get_scenario("scope2", owner=OWNER) is not None
 
 
 def test_a_failure_opening_the_shared_connection_falls_back_to_a_per_call_one():
@@ -1487,7 +2734,7 @@ def test_a_failure_opening_the_shared_connection_falls_back_to_a_per_call_one():
 
     st = pg.PostgresStorage(TEST_DB_URL)
     with psycopg.connect(TEST_DB_URL, autocommit=True) as conn:
-        conn.execute("TRUNCATE scenarios, results, snapshots, events, rate_cache, "
+        conn.execute("TRUNCATE scenarios, results, current_results, snapshots, events, rate_cache, "
                      "dividend_cache, treasury_year_cache, data_source_settings, "
                      "provider_credentials, provider_verifications, "
                      "iv_observations, iv_backfill_runs, contract_iv_history "

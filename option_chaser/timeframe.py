@@ -108,6 +108,16 @@ def ensure_month_open(month: TargetMonth, today: date) -> TargetMonth:
     return month
 
 
+def tradable_expiries(expiries: Iterable[str], today: date) -> set[str]:
+    """尚未到期（`expiry > today`，嚴格大於）的到期日子集合——T3
+    （#17）既有前提「已到期／當日到期的合約 T<=0，Greeks 無定義，
+    根本不是可分析的標的」的純日期版本。`service._scoped_to_
+    selected_expiries()` 與 `history_resolver.resolve_historical_
+    cost()` 共用同一個判準（SCALE-09／#261 code review 抽出，避免
+    兩處各自維護一份可能漂移的複本）。"""
+    return {e for e in expiries if date.fromisoformat(e) > today}
+
+
 def select_expiries(expiries: Iterable[str], anchor: date) -> ExpirySelection:
     """六點規則：錨點 → baseline → 前 2 後 2，至多五檔。
 

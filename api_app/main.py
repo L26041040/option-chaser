@@ -11,6 +11,7 @@ serverless 前提：全程不碰檔案系統（Vercel 唯讀），走
 from __future__ import annotations
 
 import dataclasses
+import os
 import time
 import uuid
 from datetime import date, timedelta
@@ -23,20 +24,23 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 from option_chaser import __version__, ivpipeline, service, store
 from option_chaser.data import treasury as treasury_data
 from option_chaser.data.snapshot import snapshot_from_dict, snapshot_to_csv
+from option_chaser.history_resolver import resolve_historical_cost
 from option_chaser.models import (AnalysisParams, ChainSnapshot, FAMILIES,
-                                  FetchError, ParamError, STRATEGIES,
-                                  normalize_families, subtypes_of)
+                                  FetchError, ParamError, RateLimitedError,
+                                  STRATEGIES, normalize_families, subtypes_of)
 from option_chaser.service import DividendLoader, RateCurveLoader
 from option_chaser.timeframe import (TargetMonth, calendar_anchor,
                                      ensure_month_open, month_is_over)
 
-from . import diagnostics, providers
+from . import chain_backoff, diagnostics, metrics, providers
 from .clock import now_utc_iso, ny_today
 from .dividend_cache import cached_loader as cached_dividend_loader
+from .identity import IdentityResolver, default_identity_resolver
 from .rate_cache import cached_loader
 from .storage import (ContractHistory, DataSourceSettings, IvBackfillRun,
-                      IvObservation, ProviderCredential, ProviderVerification,
-                      RateCacheEntry, ResultRecord, ResultSummary, Scenario,
+                      IvObservation, NarrowHistoryEntry, ProviderCredential,
+                      ProviderVerification, RateCacheEntry, ResultRecord,
+                      ResultSummary, Scenario,
                       ScenarioExists, Storage, UsageSetting)
 from .storage.factory import database_url_candidates, storage_from_env
 from .treasury_cache import cached_rate_curve_rows
@@ -442,15 +446,59 @@ def _summary_of(latest: ResultRecord | ResultSummary | None) -> dict:
                 latest.family_eligibility if latest else None}
 
 
-def _fail(stage: str, status: int, message: str) -> HTTPException:
+def _event_json(event: dict) -> dict:
+    """`Storage.list_events()` 的原始 dict 直接序列化前先過這裡。
+
+    SCALE-06（#256，Ownership A-1 Expand，`/code-review` Spec 軸抓到
+    的真缺口）：`owner_id` 是儲存層的資料 boundary 標記，不是 wire
+    contract 的一部分——AC-3「production 行為逐位元不變」要求本票
+    純加法欄位不能悄悄變成任何既有 HTTP 回應的一部分。過濾發生在
+    序列化邊界，不是在 `Storage.list_events()` 本身（那裡仍然如實
+    回傳完整資料，未來需要真的用到 owner_id 的呼叫端不受影響）。"""
+    return {k: v for k, v in event.items() if k != "owner_id"}
+
+
+def _diagnostic_json(event) -> dict:
+    """`DiagnosticEvent` 直接序列化前先過這裡——同一個理由、同一個
+    修法，見 `_event_json()`。"""
+    d = dataclasses.asdict(event)
+    d.pop("owner_id", None)
+    return d
+
+
+def _fail(stage: str, status: int, message: str, **extra: object) -> HTTPException:
     """失敗分層（V4／#52）。
 
     錯誤主體帶 `stage`，而不是只給一句話：「抓不到報價」與「分析失敗」
     使用者能做的處置不同（前者重試有意義、後者沒有），畫面要能分開講。
     `message` 仍是給人看的完整句子——舊的字串型 detail 客戶端照樣可讀。
+
+    `**extra`（SCALE-05／#260）：additive metadata，只有呼叫端明確
+    傳入時才會出現在 `detail` 裡——既有三個呼叫端（`params`／
+    `analyze`／`archived`）從未傳入，`detail` 因此逐位元不變（AC-1）。
     """
-    return HTTPException(status_code=status,
-                         detail={"stage": stage, "message": message})
+    detail: dict = {"stage": stage, "message": message}
+    detail.update(extra)
+    return HTTPException(status_code=status, detail=detail)
+
+
+def _classify_fetch_failure(storage: Storage, e: FetchError, symbol: str) -> HTTPException:
+    """抓鏈失敗的**唯一**分類點（SCALE-05／#260，AC-6）——`_analyze()`
+    （`refresh_scenario` 走這條）與 `refresh_run` 的 group-level 抓鏈
+    共用同一份判準：目前是不是正處於 Cboe 的 provider-global 限流
+    封鎖窗（`chain_backoff.status()`），不在兩處各自判斷一次、避免
+    兩個端點的分類邏輯漂移。
+
+    是＝`"rate_limited"`（429，附上 `chain_backoff.status()` 給的全部
+    結構化事實，AC-2）；否＝維持既有 `"fetch"`（502）分層，逐字不變。
+    `.detail` 是純 dict，`refresh_run` 直接拿去併進批次結果的一筆
+    失敗項，不必重新包一次 HTTPException。"""
+    rl = chain_backoff.status(storage, "cboe")
+    if rl is not None:
+        return _fail("rate_limited", 429,
+                     f"{symbol} 的報價來源目前受限流（Cboe），請稍後再試",
+                     **rl)
+    return _fail("fetch", 502, f"抓不到 {symbol} 的報價：{e}")
 
 
 def create_app(*, fetch: FetchChain = service.fetch_chain,
@@ -468,6 +516,12 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
                refresh_run_budget: timedelta = REFRESH_RUN_BUDGET,
                refresh_run_group_limit: int = REFRESH_RUN_GROUP_LIMIT,
                analysis_deadline_seconds: float | None = ANALYSIS_DEADLINE_SECONDS,
+               cboe_fetch: FetchChain | None = None,
+               chain_backoff_default: timedelta = chain_backoff.DEFAULT_BACKOFF,
+               identity_resolver: IdentityResolver = default_identity_resolver,
+               cron_secret: str | None = None,
+               ops_secret: str | None = None,
+               enable_metrics: bool = True,
                ) -> FastAPI:
     """`fetch`／`storage`／`rate_loader`／`dividend_loader` 皆可注入：
     測試傳入固定快照、記憶體假體與假來源，因此不打真網路、不碰真資料庫，
@@ -498,6 +552,77 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
     production 實測後的落地結果（`docs/research/dividend-yield-source-
     selection.md` §12.4）；真正對外生效的是 `_dividend_loader()` 包出來、
     疊了持久快取（per-symbol，90 天陳舊窗）的版本，見下方。
+
+    `cboe_fetch`（SCALE-04／#255）：Cboe 這一步本身的抓取函式，預設
+    `None`——**故意不直接把預設值定成 `cboe.fetch_chain`**：Python
+    的預設參數值只在函式定義當下算一次，若寫成
+    `cboe_fetch: FetchChain = cboe.fetch_chain`，之後任何
+    `monkeypatch.setattr(cboe, "fetch_chain", ...)` 都會被這個提早
+    綁死的參照繞過（既有大量測試正是這樣注入假體，不是透過這個新
+    DI 參數）。`None` 時 `_default_fetch()` 內部改用延遲的模組屬性
+    查找（`from option_chaser.data import cboe as cboe_module；
+    cboe_module.fetch_chain`），行為與 `service.fetch_chain()` 既有
+    的 lazy import 手法一致，monkeypatch 才吃得到。只在呼叫端沒有
+    覆寫 `fetch` 時才生效（見 `_default_fetch()`）：`fetch` 是完整
+    降級鏈（Cboe→yfinance）的複合入口，既有測試普遍直接整組覆寫它
+    注入固定快照，那些呼叫根本不會走到 Cboe，backoff 包裝也無從
+    套用，這是預期行為（測試決定性、零網路）。只有 production 預設
+    （`fetch is service.fetch_chain`，未被覆寫）才會把 Cboe 呼叫點
+    包上 provider-global backoff（`api_app.chain_backoff`）。
+
+    `chain_backoff_default`（SCALE-04／#255，AC-7）：Retry-After 缺席時
+    要封鎖多久的預設值，`create_app()` 的一般 DI 參數——與
+    `refresh_run_budget`／`analysis_deadline_seconds` 同一種「不可變值
+    當預設值」寫法，不受前面 `cboe_fetch` 那個 eager-binding 陷阱影響
+    （陷阱只發生在把「函式」綁進預設值；`timedelta` 是不可變值，綁死
+    在函式定義當下沒有問題）。這是 AC-7「可透過既有設定／DI 停用或設為
+    0，作 rollback」字面要求的落地：先前只是
+    `chain_backoff.backoff_aware_fetch()` 的私有參數，production 路徑
+    完全碰不到；改成 `create_app()` 的建構參數後，未來要停用 backoff
+    （例如懷疑它本身在搗亂）只需要用 `create_app(chain_backoff_default=
+    timedelta(0))` 重新建構 app，不必修改 `chain_backoff.py` 或
+    `main.py` 任何一行程式碼。
+
+    `identity_resolver`（SCALE-06／#256，Ownership A-1 Expand）：這次
+    request「屬於誰」——**只是 data boundary 標記，不是 authentication／
+    privacy**（那是 out-of-scope 的 A-2）。production 預設
+    `default_identity_resolver`，固定回傳單一 `SOLO_OWNER` 值；今天
+    唯一存在的呼叫端在解析出這個值後，把它寫進 5 張 row-scoped 表
+    （`scenarios`／`results`／`snapshots`／`events`／`diagnostics`）
+    新寫入的 `owner_id` 欄位——本票**不**在任何查詢路徑套用過濾，寫入
+    的值目前純粹是鋪路。這不是 `cboe_fetch` 那種每次呼叫都要吃一個
+    `symbol` 參數的抓取函式，是一個零參數、對整個 app 生命週期只需要
+    決定一次語意的函式，直接當一般函式值傳入即可，不受 `cboe_fetch`
+    那個 eager-binding 陷阱影響（沒有任何測試需要
+    monkeypatch `identity.default_identity_resolver` 這個模組屬性——
+    要換身分邏輯，直接透過這個 DI 參數傳一個不同的函式進來就是了，
+    這正是它存在的目的）。
+
+    `cron_secret`（SCALE-07／#257，Treasury Cron）：`GET /api/cron/
+    warm-rate-cache` 驗證 `Authorization: Bearer <cron_secret>` 用的
+    比對值。預設 `None`——production 由呼叫端（`api/index.py`）留白，
+    在函式本體裡才惰性讀 `os.environ.get("CRON_SECRET")`（比照
+    `database_url()` 既有「呼叫時讀環境變數，可用顯式值覆寫供測試」
+    的既有慣例，不是 `cboe_fetch` 那種函式參照的 eager-binding
+    陷阱——這裡只是一個設定字串，讀一次環境變數沒有 monkeypatch
+    失效的問題，但仍選擇惰性讀取以維持測試決定性：傳入顯式字串
+    （含空字串）時完全不去看真實環境變數）。這把 secret 缺失或不符
+    一律 401 fail-closed——不像 `provider_credentials` 那種使用者自己
+    設定的 token，這是 Vercel 平台層級的基礎設施密鑰，沒有對應的
+    Settings UI，本 app 只單純驗證有沒有對上。
+
+    `ops_secret`（SCALE-08／#258，S0 最小可觀測性）：`GET /api/ops/
+    metrics` 的授權比對值——與 `cron_secret` 同一套 fail-closed 設計，
+    但刻意是**獨立的**環境變數（`OPS_SECRET`），不是重用
+    `CRON_SECRET`：一個是「Vercel 排程系統呼叫這個 app」的信任邊界，
+    一個是「人類運維人員查詢這個 app」的信任邊界，威脅模型不同，
+    輪替其中一把不該連帶影響另一把。
+
+    `enable_metrics`（同票）：整組 S0 觀測的總開關（Rollback Point）。
+    關閉時全部七類指標的記錄呼叫直接是 no-op——AC-4 要求觀測 ON/OFF
+    對任何既有產品 API 回應的序列化 JSON **逐位元一致**，這個開關本身
+    就是那個宣稱的可驗證落地點：兩種狀態下跑同一組請求，除了新增的
+    `GET /api/ops/metrics` 端點本身，其餘回應必須無法分辨開關是開是關。
     """
     app = FastAPI(title="Option Chaser API", version=__version__)
 
@@ -513,6 +638,75 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         if "db" not in cached:
             cached["db"] = storage_from_env()
         return cached["db"]
+
+    # SCALE-04（#255）：production 預設抓鏈路徑——Cboe 呼叫點包上
+    # provider-global backoff，失敗（含 `RateLimitedError`）原樣退回
+    # 既有 yfinance 備援鏈，與 `service.fetch_chain` 逐一對齊，只是
+    # Cboe 那一步多了 backoff 檢查與記錄。用 `fetch is service.
+    # fetch_chain` 識別呼叫端有沒有覆寫整條複合鏈——覆寫時（幾乎全部
+    # 既有測試都這樣做，注入固定快照）直接沿用呼叫端給的 `fetch`，
+    # backoff 包裝無從套用也不需要套用。
+    def _metered_chain_fetch(fn: FetchChain, source: str) -> FetchChain:
+        """S0（SCALE-08／#258）指標 #1／#2：包住一個實際會打上游的抓鏈
+        函式，記錄「真的打了一次」與「這次是不是被 429 擋下來」。刻意
+        包在這一層、不是包在 `chain_backoff.backoff_aware_fetch()`
+        外面——backoff 短路（封鎖窗內、零上游呼叫）時 `fn` 根本不會被
+        呼叫到，指標因此天然只計真正發生過的上游請求，不會把「被我們
+        自己的 backoff 擋下來」誤算成一次 fetch。"""
+        def wrapped(symbol: str) -> ChainSnapshot:
+            try:
+                snap = fn(symbol)
+            except RateLimitedError:
+                _record_metric("chain_429_count", ny_today(),
+                               source=source, symbol=symbol)
+                _record_metric("chain_fetch_count", ny_today(),
+                               source=source, symbol=symbol)
+                raise
+            except Exception:
+                _record_metric("chain_fetch_count", ny_today(),
+                               source=source, symbol=symbol)
+                raise
+            _record_metric("chain_fetch_count", ny_today(),
+                           source=source, symbol=symbol)
+            return snap
+        return wrapped
+
+    def _default_fetch(symbol: str) -> ChainSnapshot:
+        from option_chaser.data import cboe as cboe_module
+
+        actual_cboe_fetch = _metered_chain_fetch(
+            cboe_fetch if cboe_fetch is not None else cboe_module.fetch_chain,
+            "cboe")
+        try:
+            return chain_backoff.backoff_aware_fetch(
+                _db(), "cboe", actual_cboe_fetch, symbol,
+                default_backoff=chain_backoff_default)
+        except FetchError:
+            from option_chaser.data import yf
+
+            return _metered_chain_fetch(yf.fetch_chain, "yfinance")(symbol)
+
+    _effective_fetch: FetchChain = (
+        _default_fetch if fetch is service.fetch_chain else fetch)
+
+    # SCALE-07（#257）：`None`＝呼叫端沒有覆寫，惰性讀真實環境變數；
+    # 顯式傳入（含空字串）時完全採用那個值，測試才有決定性。
+    _effective_cron_secret = (cron_secret if cron_secret is not None
+                              else os.environ.get("CRON_SECRET"))
+    # SCALE-08（#258）：同一套設計，獨立的環境變數。
+    _effective_ops_secret = (ops_secret if ops_secret is not None
+                             else os.environ.get("OPS_SECRET"))
+
+    def _record_metric(metric: str, today: date, *, source: str = "",
+                       symbol: str = "", count: int = 1,
+                       amount: float = 0.0) -> None:
+        """S0（SCALE-08／#258）的唯一記錄入口——`enable_metrics=False`
+        時整組觀測是 no-op（AC-4 的 rollback 開關），開啟時委派給
+        `api_app.metrics.record()`（本身已經是 fail-open，這裡不用
+        再包一層 try/except）。"""
+        if enable_metrics:
+            metrics.record(_db(), metric, today, source=source,
+                           symbol=symbol, count=count, amount=amount)
 
     # 合併 correlation id（DG-02／#145）與 storage 連線 scope
     # （PERF-01／#177，T02／#186 修形）成單一層 middleware——原本兩層
@@ -532,7 +726,8 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
     # 純驗證錯誤）因此不再付任何連線握手。
     @app.middleware("http")
     async def _request_scope_middleware(request: Request, call_next):
-        with diagnostics.correlation_scope() as cid:
+        with diagnostics.correlation_scope() as cid, \
+             diagnostics.owner_scope(identity_resolver()):
             try:
                 scope = getattr(_db(), "request_scope", None)
             except Exception:  # noqa: BLE001 — 拿不到 storage 就整個跳過，交給下游端點自己的錯誤處理
@@ -550,16 +745,31 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
     # 重不重建都不影響行為，這裡只是省一次函式呼叫）。
     cached_rate: dict[str, RateCurveLoader] = {}
 
+    def _metered_rate_loader(today: date) -> tuple:
+        """S0（SCALE-08／#258）指標 #4——包在 `rate_loader` 本身（不是
+        `cached_loader()` 外面），只在 `cached_loader()` 內部真的判定
+        「這是 cache miss，得問一次底層來源」時才會被呼叫到，因此
+        天然只計真正的冷抓取，不含快取命中。"""
+        _record_metric("cold_miss_count", ny_today(), source="treasury")
+        return rate_loader(today)
+
     def _rate_curve_loader() -> RateCurveLoader:
         if "loader" not in cached_rate:
-            cached_rate["loader"] = cached_loader(_db(), rate_loader)
+            cached_rate["loader"] = cached_loader(_db(), _metered_rate_loader)
         return cached_rate["loader"]
 
     cached_dividend: dict[str, DividendLoader] = {}
 
+    def _metered_dividend_loader(symbol: str, today: date) -> tuple:
+        """同上，per-symbol（S0 允許的維度）。"""
+        _record_metric("cold_miss_count", ny_today(),
+                       source="dividend", symbol=symbol)
+        return dividend_loader(symbol, today)
+
     def _dividend_loader() -> DividendLoader:
         if "loader" not in cached_dividend:
-            cached_dividend["loader"] = cached_dividend_loader(_db(), dividend_loader)
+            cached_dividend["loader"] = cached_dividend_loader(
+                _db(), _metered_dividend_loader)
         return cached_dividend["loader"]
 
     # PERF-03（#179）：同一個惰性建一次、重用閉包的模式，鍵是年份而非
@@ -575,39 +785,50 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         """依設定挑抓鏈路徑（Settings／#125）。
 
         Market Data 選「自訂」且該 Provider 有 credential 時先走自訂；
-        **失敗就退回預設來源**（`fetch`，即既有的 Cboe → yfinance 降級
-        鏈，本身不動），而且把失敗如實記成一次驗證失敗——設定頁的三態
+        **失敗就退回預設來源**（`_effective_fetch`，即既有的 Cboe →
+        yfinance 降級鏈，SCALE-04／#255 起 Cboe 那一步多了
+        provider-global backoff），而且把失敗如實記成一次驗證失敗——
+        設定頁的三態
         因此會自己變成「驗證失敗」並說出原因，不需要另一套「上次
         fallback 過」的機制，也不會出現靜默退回。
 
         自訂成功時同樣記一次成功：那是比任何測試連線都真實的證據。
         """
         db = _db()
-        stored = db.get_settings()
+        owner = identity_resolver()
+        stored = db.get_settings(owner=owner)
         md = stored.market_data if stored else None
         if md is None or md.mode != providers.MODE_CUSTOM or not md.provider:
-            return fetch(symbol)
+            return _effective_fetch(symbol)
 
-        cred = db.get_credential(md.provider)
+        cred = db.get_credential(md.provider, owner=owner)
         if cred is None:
             # 選了自訂卻沒有 token：不是錯誤，是還沒設定完——照常分析，
             # 設定頁那邊會顯示「尚未設定 token，改用預設來源」。
-            return fetch(symbol)
+            return _effective_fetch(symbol)
 
         try:
             snap = custom_fetch(md.provider, symbol, cred.token)
         except FetchError as e:
             db.save_verification(ProviderVerification(
                 provider=md.provider, ok=False, reason=str(e),
-                checked_at=now_utc_iso()))
-            return fetch(symbol)
+                checked_at=now_utc_iso(), owner_id=owner))
+            return _effective_fetch(symbol)
         db.save_verification(ProviderVerification(
             provider=md.provider, ok=True, reason=None,
-            checked_at=now_utc_iso()))
+            checked_at=now_utc_iso(), owner_id=owner))
         return snap
 
     def _require(scenario_id: str) -> Scenario:
-        sc = _db().get_scenario(scenario_id)
+        """SCALE-11（#262，Ownership A-1 Enforce）：這是幾乎全部
+        scenario-derived 端點共用的唯一 chokepoint——存在但屬於別的
+        owner 的劇本與根本不存在的劇本回應一致（皆 404），使呼叫端
+        無法從回應差異分辨兩者。凡是經過這裡授權過的 `Scenario`，
+        往後對同一個 scenario_id 的其餘查詢即使沒有再次帶 owner 過濾
+        也已在授權邊界內——但 Storage 層仍逐一要求 `owner` 參數，
+        提供第二層防禦（AC-2 的「不得新增任何不經 owner scope 的
+        scenario lookup shortcut」）。"""
+        sc = _db().get_scenario(scenario_id, owner=identity_resolver())
         if sc is None:
             raise HTTPException(status_code=404, detail=f"劇本不存在：{scenario_id}")
         return sc
@@ -661,7 +882,7 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
                 # 我們自己程式裡的 bug 會被貼上「抓不到報價、可稍後重試」的
                 # 標籤，正好是這張票要消滅的那種誤導。其他例外照樣往上走成
                 # 500——「不知道是哪一段」時說不知道，好過說一個錯的分層。
-                raise _fail("fetch", 502, f"抓不到 {symbol} 的報價：{e}") from e
+                raise _classify_fetch_failure(_db(), e, symbol) from e
         try:
             result = service.run_with_snapshot(
                 req, snap, rate_curve_loader=_rate_curve_loader(),
@@ -720,6 +941,69 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         return {"status": "ok", "engine_version": __version__,
                 "storage": kind, "path": request.url.path, "rate": rate}
 
+    # ---------- Treasury Cron 預熱（SCALE-07／#257） ----------
+
+    @app.get("/api/cron/warm-rate-cache")
+    def cron_warm_rate_cache(request: Request) -> dict:
+        """只做刷新、不服務使用者請求——Vercel Cron 每個市場日觸發一次，
+        把 shared `rate_cache` 填新，讓當天第一個真正的使用者不必自己
+        承擔 Treasury cold fetch。**只是預熱，不是 correctness 唯一
+        來源**：與 `_rate_curve_loader()` 是同一條 canonical live
+        loader/cache pipeline（`api_app/rate_cache.py::cached_loader()`
+        本已有的既有機制），不另外寫一套 Treasury 解析邏輯——同一市場日
+        內既有的 `market_day` 判準本身就讓重複呼叫 idempotent（第二次
+        直接命中快取、零 vendor 呼叫），非交易日／vendor 尚未發布時
+        loader 既有的 stale／failure 語意原樣適用，不在這裡另外偽造
+        「今天已經新鮮」。既有同步 refresh-on-miss＋7 日陳舊備援
+        （`api_app/rate_cache.py`）完全不受這個端點存在與否影響——
+        Cron 沒跑到或跑失敗，當天第一次真正的分析仍會自己觸發同一條
+        pipeline 補救。
+
+        授權失敗（secret 未設定或不符）**先驗證再呼叫 pipeline**——
+        不合法的請求零 vendor／cache mutation（AC-2）。
+        """
+        provided = request.headers.get("authorization")
+        if not _effective_cron_secret or provided != f"Bearer {_effective_cron_secret}":
+            raise HTTPException(status_code=401, detail="unauthorized")
+        curve, note = _rate_curve_loader()(ny_today())
+        return {"ok": curve is not None, "note": note}
+
+    # ---------- S0 最小可觀測性（SCALE-08／#258） ----------
+
+    @app.get("/api/ops/metrics")
+    def ops_metrics(request: Request) -> dict:
+        """七類指標的單一 operator 查詢入口（AC-1），逐一列出：
+
+        1. `chain_fetch_count`——上游抓鏈實際被呼叫的次數（`source`／
+           `symbol` 維度）
+        2. `chain_429_count`——其中被限流擋下的次數
+        3. `stale_serve_count`——這次分析實際用了陳舊利率／股利備援值
+           的次數
+        4. `cold_miss_count`——Treasury／Dividend 真正問過底層來源
+           （快取沒命中）的次數
+        5. `refresh_duration_ms`——一次刷新（抓鏈＋分析＋落盤）耗時，
+           `count`／`total`／`max_value` 供算平均與量級
+        6. `table_size`——`results`／`snapshots` 兩表即時查詢的列數、
+           大小、單列大小分布（query-time gauge，不在上面的桶裡）
+        7. `history_read_volume`——回答一次 `/history` 請求要撈幾筆
+           完整歷史 view（SCALE-14 切換 narrow 讀取路徑後的對照基準）
+
+        **operator-only**（AC-6）：與 cron 端點同一套 fail-closed 設計，
+        `OPS_SECRET` 未設定或不符一律 401；不對一般使用者開放，前端
+        不會呼叫這個端點。
+        """
+        provided = request.headers.get("authorization")
+        if not _effective_ops_secret or provided != f"Bearer {_effective_ops_secret}":
+            raise HTTPException(status_code=401, detail="unauthorized")
+
+        by_metric: dict[str, list[dict]] = {m: [] for m in metrics.PERSISTED_METRICS}
+        for e in _db().metric_summary():
+            by_metric.setdefault(e.metric, []).append(
+                {"bucket": e.bucket, "source": e.source or None,
+                 "symbol": e.symbol or None, "count": e.count,
+                 "total": e.total, "max_value": e.max_value})
+        return {**by_metric, "table_size": _db().table_size_metrics()}
+
     # ---------- Application diagnostics（DG-02／#145） ----------
 
     @app.get("/api/diagnostics")
@@ -728,13 +1012,15 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         `[1, diagnostics.RETENTION_LIMIT]`——查得到的最多就是留著的
         那些，沒有 pagination、沒有搜尋。"""
         clamped = max(1, min(limit, diagnostics.RETENTION_LIMIT))
-        return [dataclasses.asdict(e)
-               for e in _db().list_diagnostics(limit=clamped)]
+        return [_diagnostic_json(e)
+               for e in _db().list_diagnostics(limit=clamped,
+                                               owner=identity_resolver())]
 
     @app.delete("/api/diagnostics")
     def clear_diagnostics() -> dict:
-        """清空，回傳清掉的筆數。"""
-        return {"cleared": _db().clear_diagnostics()}
+        """清空這個 owner 名下的診斷事件，回傳清掉的筆數（SCALE-11：
+        過去無條件清空全部 owner 的資料）。"""
+        return {"cleared": _db().clear_diagnostics(owner=identity_resolver())}
 
     # ---------- 一次性分析（V1 遺留，前端改走劇本端點後可移除） ----------
 
@@ -767,13 +1053,15 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
                       target_month=req.target_month, notes=req.notes,
                       strategies=normalize_families(tuple(req.strategies)),
                       created_at=ts,
-                      best_price=req.best_price, worst_price=req.worst_price)
+                      best_price=req.best_price, worst_price=req.worst_price,
+                      owner_id=identity_resolver())
         try:
             _db().create_scenario(sc)
         except ScenarioExists as e:   # 48-bit 隨機 id，實務上碰不到；不留 500 的縫
             raise HTTPException(status_code=409, detail=str(e)) from e
         _db().append_event(ts=ts, scenario_id=sc.id,
-                           event="SCENARIO_CREATED", payload=_scenario_json(sc))
+                           event="SCENARIO_CREATED", payload=_scenario_json(sc),
+                           owner_id=identity_resolver())
         # 回傳與清單同一個形狀（含 timing、尚未分析故摘要欄位皆為 None），
         # 客戶端才不必為「剛建立的」與「列出來的」維護兩種型別。
         return _row_json(sc, ny_today(), analyzed_at=None, best_return=None,
@@ -824,15 +1112,18 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
             != (updated.target_price, updated.target_month,
                 updated.best_price, updated.worst_price, updated.strategies))
 
-        _db().update_scenario(updated)
+        owner = identity_resolver()
+        _db().update_scenario(updated, owner=owner)
         if thesis_changed:
-            _db().clear_results(scenario_id)
+            _db().clear_results(scenario_id, owner=owner)
         ts = now_utc_iso()
         _db().append_event(ts=ts, scenario_id=scenario_id,
                            event="SCENARIO_EDITED",
-                           payload=_scenario_json(updated))
+                           payload=_scenario_json(updated),
+                           owner_id=owner)
 
-        latest = None if thesis_changed else _db().latest_result(scenario_id)
+        latest = (None if thesis_changed
+                 else _db().latest_result(scenario_id, owner=owner))
         return _row_json(updated, ny_today(), **_summary_of(latest))
 
     @app.get("/api/scenarios")
@@ -840,17 +1131,18 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         # 卡片要的兩個數字跟著清單一起回（V3／#51）：否則前端得為每張卡
         # 各打一次 detail，而 detail 會拖回整份 view（十萬字元等級）。
         # 沒跑過的劇本兩欄皆 None ＝ 卡片顯示「—」，不是 0。
-        summaries = _db().latest_summaries()
+        owner = identity_resolver()
+        summaries = _db().latest_summaries(owner=owner)
         today = ny_today()          # 整份清單共用同一個「今天」
         rows = []
-        for s in _db().list_scenarios(include_archived=include_archived):
+        for s in _db().list_scenarios(owner=owner, include_archived=include_archived):
             rows.append(_row_json(s, today, **_summary_of(summaries.get(s.id))))
         return rows
 
     @app.get("/api/scenarios/{scenario_id}")
     def get_scenario(scenario_id: str) -> dict:
         sc = _require(scenario_id)
-        latest = _db().latest_result(scenario_id)
+        latest = _db().latest_result(scenario_id, owner=identity_resolver())
         # `best_return` 也要在——detail 少一個欄位的話，客戶端就沒辦法把
         # 同一個型別套用在清單列與詳細回應上（V5 的詳細頁會踩到）。
         # T13（#231，Initial V2）：回應走 `store.project_for_detail()`
@@ -863,12 +1155,14 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
     @app.post("/api/scenarios/{scenario_id}/archive")
     def archive_scenario(scenario_id: str) -> dict:
         _require(scenario_id)
+        owner = identity_resolver()
         ts = now_utc_iso()
         # 重複封存回 False——對呼叫端而言結果相同（已經封存了），因此
         # 視為冪等成功，不當成錯誤。
-        if _db().archive_scenario(scenario_id, ts=ts):
+        if _db().archive_scenario(scenario_id, owner=owner, ts=ts):
             _db().append_event(ts=ts, scenario_id=scenario_id,
-                               event="SCENARIO_ARCHIVED", payload={})
+                               event="SCENARIO_ARCHIVED", payload={},
+                               owner_id=owner)
         return {"archived": True}
 
     @app.post("/api/scenarios/{scenario_id}/restore")
@@ -883,10 +1177,12 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         scenario` 對重複封存的處理——不留一筆沒意義的事件。
         """
         _require(scenario_id)
+        owner = identity_resolver()
         ts = now_utc_iso()
-        if _db().restore_scenario(scenario_id, ts=ts):
+        if _db().restore_scenario(scenario_id, owner=owner, ts=ts):
             _db().append_event(ts=ts, scenario_id=scenario_id,
-                               event="SCENARIO_RESTORED", payload={})
+                               event="SCENARIO_RESTORED", payload={},
+                               owner_id=owner)
         return {"restored": True}
 
     @app.delete("/api/scenarios/{scenario_id}", status_code=204)
@@ -908,7 +1204,7 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
             raise HTTPException(
                 status_code=409,
                 detail=f"劇本尚未移入垃圾桶，無法永久刪除：{scenario_id}")
-        _db().delete_scenario(scenario_id)
+        _db().delete_scenario(scenario_id, owner=identity_resolver())
         return Response(status_code=204)
 
     def _refresh_and_save(sc: Scenario, today: date, *,
@@ -938,17 +1234,31 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         `message`）完全共用同一份，不重複定義。
         """
         if month_is_over(TargetMonth.from_key(sc.target_month), today):
-            latest = _db().latest_result(sc.id)
+            latest = _db().latest_result(sc.id, owner=identity_resolver())
             return _row_json(sc, today, **_summary_of(latest))
         # T06（#221）：`sc.strategies` 存的是 family 代碼（新資料）或
         # legacy subtype 字串（舊資料，無遷移）——這是**唯一**的展開點，
         # 把它換算成 `AnalysisRequest.strategies` 要的具體 subtype 清單。
         subtypes = subtypes_of(normalize_families(sc.strategies))
+        # S0（SCALE-08／#258）指標 #5：從真正開始做事（抓鏈＋分析＋
+        # 落盤，跳過上面 `month_is_over` 的無害短路）到全部寫完為止，
+        # 這是對「一次刷新要花多久」最有用的定義——短路那條路徑不算
+        # 一次真正的刷新，混進來只會讓平均值失真。
+        _refresh_started = time.monotonic()
         view, snapshot = _analyze(
             scenario_id=sc.id, symbol=sc.symbol, target_price=sc.target_price,
             target_month=sc.target_month, strategies=subtypes,
             best_price=sc.best_price, worst_price=sc.worst_price, snap=snap)
         analyzed_at = view["analyzed_at"]
+        # S0 指標 #3：這次分析實際用掉的是不是陳舊的利率／股利備援值
+        # ——直接讀 `view["params"]`（`dataclasses.asdict(AnalysisParams)`
+        # 的既有欄位，RC1／#87 與 #123 早已存在），不重新判斷一次。
+        params = view.get("params") or {}
+        if params.get("rate_curve_stale"):
+            _record_metric("stale_serve_count", today, source="treasury")
+        if params.get("q_stale"):
+            _record_metric("stale_serve_count", today, source="dividend",
+                           symbol=sc.symbol)
         # T07（#224，Initial V2）：per-family map 只走訪一次
         # （`representative_candidates_by_family`），scalar 冠軍改由它
         # 取 `max()` 導出而非各自獨立呼叫 `store.representative_
@@ -970,17 +1280,58 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         # `per_family` 同一個模式，不重算方向、不重呼叫 `family_
         # eligibility()`。
         family_elig = view["family_eligibility"]
-        _db().save_result(ResultRecord(
+        # SCALE-01（#252，Scaling Foundation Stage 1-0）：把這次分析的
+        # 完整 resolved params／請求的 subtype 清單／引擎與 view schema
+        # 版本／history replay 版本，獨立複製成 `ResultRecord` 的一等
+        # 公民欄位（唯一的計算邏輯在 `store.historical_fact_context()`，
+        # 這裡與既有資料 backfill 腳本共用同一份，不重寫第二次）。
+        # `view` 本身完全不變——這幾個欄位純粹是它的複本。
+        fact_context = store.historical_fact_context(view)
+        owner_id = identity_resolver()
+        rec = ResultRecord(
             scenario_id=sc.id, analyzed_at=analyzed_at, view=view,
             best_return=best_return,
             representative_candidate=representative_candidate,
             spot=store.spot(view), per_family=per_family or None,
-            family_eligibility=family_elig))
-        _db().save_snapshot(sc.id, analyzed_at, snapshot)
+            family_eligibility=family_elig, owner_id=owner_id, **fact_context)
+        # SCALE-16（#267，Stage 1-5）：分離 historical fact ledger 與
+        # current full-view materialization——同一個 `rec` 對象各自
+        # 供給兩次獨立的落盤呼叫。ledger（`save_result()`）從此不再
+        # 背負完整 `view`（AC-4：永久成長改由 fact＋narrow＋snapshot＋
+        # 極小 events 主導，不再是每次刷新都複製一份十萬字元級 payload）
+        # ——SCALE-01 的 6 個 fact context 欄位＋summary 欄位仍照常寫入，
+        # 「這個歷史時刻當時發生了什麼」的能力完整保留。current
+        # materialization（`save_current_result()`）拿到的才是完整
+        # `view`，供 current detail／heatmap／champion／ranking 等既有
+        # hot read path 使用（`latest_result()` 自本票起改讀這裡）。
+        # SCALE-17（#268，C1）：current materialization 落盤前先剝除
+        # `all_candidates`（`store.strip_persisted_all_candidates()`）
+        # ——這是 audit 實測佔 stored view 97.82%、且前端／current
+        # detail 投影從未消費的欄位；`POST /api/analyze` 的直接回應
+        # 用的是這裡的 `view`（未經剝除的原始物件），contract 因此不受
+        # 影響。narrow-history／fact-context／per_family／
+        # representative_candidate 全部已經在剝除之前算完，剝除動作
+        # 因此不影響任何既有計算或既有欄位。
+        _db().save_result(dataclasses.replace(rec, view=None))
+        _db().save_current_result(dataclasses.replace(
+            rec, view=store.strip_persisted_all_candidates(view)))
+        _db().save_snapshot(sc.id, analyzed_at, snapshot, owner_id=owner_id)
+        # SCALE-09（#261，Scaling Foundation Stage 1-1）：dual-write
+        # narrow history——只寫 visible candidate 的 non-null cost
+        # （`store.visible_candidate_costs()` 即 FR-2.2 定義的聯集），
+        # `results.view` 本身完全不受影響。SCALE-14（#265）：`GET
+        # /history` 現已切換到讀這張表＋candidate-specific resolver。
+        _db().save_narrow_history(
+            NarrowHistoryEntry(scenario_id=sc.id, analyzed_at=analyzed_at,
+                              candidate_key=key, cost=cost, owner_id=owner_id)
+            for key, cost in store.visible_candidate_costs(view).items())
         _db().append_event(ts=now_utc_iso(), scenario_id=sc.id,
                            event="ANALYSIS_COMPLETED",
                            payload={"analyzed_at": analyzed_at,
-                                    "snapshot_ref": view["snapshot_ref"]})
+                                    "snapshot_ref": view["snapshot_ref"]},
+                           owner_id=owner_id)
+        _record_metric("refresh_duration_ms", ny_today(),
+                       amount=(time.monotonic() - _refresh_started) * 1000)
         return _row_json(sc, today, analyzed_at=analyzed_at,
                          best_return=best_return,
                          representative_candidate=representative_candidate,
@@ -1062,12 +1413,19 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         天生分屬不同分組，各自那組一完成就先送出、不等其餘分組。
         """
         today = ny_today()
+        owner = identity_resolver()
+        # SCALE-11（#262）AC-3：目標集合不論走哪個分支都限定在這個
+        # owner 名下——省略 `scenario_ids` 時只列舉自己的未過期劇本；
+        # 帶了 id 時逐一以 owner 授權查找，猜到的別人 id 直接回
+        # `None` 被下面的 `if sc is not None` 篩掉，跟這個 id 根本
+        # 不存在時同一種結果（AC-2 的批次版本）。
         if body.scenario_ids is None:
-            targets = [sc for sc in _db().list_scenarios()
+            targets = [sc for sc in _db().list_scenarios(owner=owner)
                       if not month_is_over(TargetMonth.from_key(sc.target_month), today)]
         else:
             targets = [sc for sc in
-                      (_db().get_scenario(sid) for sid in body.scenario_ids)
+                      (_db().get_scenario(sid, owner=owner)
+                       for sid in body.scenario_ids)
                       if sc is not None]
 
         groups: dict[str, list[Scenario]] = {}
@@ -1106,9 +1464,12 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
                                     "message": f"劇本已在垃圾桶，不再刷新：{sc.id}"})
                 elif (fetch_error is not None and not month_is_over(
                         TargetMonth.from_key(sc.target_month), today)):
+                    # SCALE-05（#260，AC-6）：與 `_analyze()` 共用同一個
+                    # 分類點，不在這裡重新判斷一次「是不是限流」。
+                    detail = _classify_fetch_failure(
+                        _db(), fetch_error, symbol).detail
                     results.append({"scenario_id": sc.id, "ok": False,
-                                    "stage": "fetch",
-                                    "message": f"抓不到 {symbol} 的報價：{fetch_error}"})
+                                    **detail})
                 else:
                     try:
                         row = _refresh_and_save(sc, today, snap=snap)
@@ -1127,23 +1488,120 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
     @app.get("/api/scenarios/{scenario_id}/results")
     def list_results(scenario_id: str) -> list[dict]:
         """歷史索引：只回時間戳，不回整份 view（一份十萬字元等級）。
-        需要單次完整結果時走 detail／後續票的專屬端點。"""
+        需要單次完整結果時走 detail／後續票的專屬端點。
+
+        SCALE-02（#253）：索引來源改為 `Storage.result_timestamps()`
+        ——主要走 `snapshots` 的主鍵（比對舊版 `result_history()` 快
+        約 1.58×，後者連每一列的完整 `view` JSONB 都撈出來，Prototype
+        #065 實測那條路徑對未來 narrow 表做 `DISTINCT` 會慢 12.6×，
+        本票直接繞開這整條問題路徑），輔以 `results` 表窄查詢 UNION
+        補回任何缺 snapshot 的孤兒列（見該方法 docstring）。"""
         _require(scenario_id)
-        return [{"analyzed_at": r.analyzed_at}
-                for r in _db().result_history(scenario_id)]
+        return [{"analyzed_at": ts} for ts in
+               _db().result_timestamps(scenario_id, owner=identity_resolver())]
 
     @app.get("/api/scenarios/{scenario_id}/history")
     def get_spread_history(scenario_id: str, candidate_key: str) -> dict:
-        """V9（#57，T11／#25 既有語意）：跨這個劇本全部歷史結果，依
-        Spread 身份鍵（`candidate_key`）聚合成時間序列——唯讀，缺席快照
-        如實呈現為斷點（`store.spread_cost_history()`），不插值。
+        """SCALE-14（#265，Stage 1-3）：canonical read semantics——不再
+        整份讀取 `results.view`（AC-5）。時間軸來自
+        `result_spot_timestamps()`（只讀 `snapshots` JSONB 的 `spot`
+        純量欄位），逐 `analyzed_at` 依序：
 
-        `result_history()` 回傳的 `ResultRecord.view` 已經是完整 view
-        dict，不必額外重算——這條端點只是把既有引擎聚合邏輯接上 HTTP。
+        1. narrow row 存在且 `cost != None` → 直接用（hit）。
+        2. narrow row 存在且 `cost == None` → 已知 genuine gap，直接
+           用（negative cache，不重跑 resolver）。
+        3. narrow row 不存在（cache miss）→ 讀該天的 fact context＋原始
+           快照，呼叫 SCALE-09 `resolve_historical_cost()`；valid／
+           invalid 兩種結果**都** write-through 落盤（AC-3），下次同一
+           個 `(analyzed_at, candidate_key)` 就會落在分支 1／2，不必
+           重付 replay 成本（AC-2）。
+
+        `baseline_return`／`rank_in_expiry` 兩個既有回應欄位保留為
+        `null`——Audit 已證實前端零消費者（`tests/test_scale14_
+        history_read_path.py::test_frontend_never_reads_history_
+        baseline_return_or_rank_in_expiry` 有結構性測試鎖定），新
+        canonical path 不重算它們。
+
+        AC-7 fail-safe：`resolve_historical_cost()` 對
+        `history_replay_version` 不支援／`resolved_params` 缺
+        `target_price`／`target_month` 等既有必要欄位一律回傳
+        `reason="missing_fact_context"`／`"version_mismatch"` 的
+        genuine gap（`cost=None`），不猜測、不回錯值。`missing_
+        fact_context`**刻意不 write-through**——那代表 SCALE-01 metadata
+        backfill 尚未跑到這一列，日後補齊後應該能重新正確判定，永久
+        負向快取會讓這個 (analyzed_at, key) 卡死在 `None` 救不回來；
+        其餘 gap 原因（`version_mismatch`／`skipped_direction`／
+        `invalid_iv`／structural invalid 等）是那一天資料本身的穩定
+        事實，不會因為補跑 metadata backfill 而改變，正常 write-through
+        （AC-3）。同一道理，`fact context` 或原始快照本身完全缺席
+        （既有孤兒列，`save_result()`／`save_snapshot()` 兩次獨立呼叫
+        留下的邊界情況）也不 write-through：這是資料本身還不完整，不是
+        resolver 做出的判斷，不該假裝成一個已驗證的結果永久鎖住。
+
+        未在 legacy view 尚存在時提供 compatibility fallback（票面
+        「可走」，非必須；`HISTORY_REPLAY_VERSION` 目前恆為 1，沒有
+        任何存量資料觸發得到這條路徑，見 `Storage.result_spot_
+        timestamps()` docstring 的完整裁決記錄）。
         """
+        owner = identity_resolver()
         _require(scenario_id)
-        views = [r.view for r in _db().result_history(scenario_id)]
-        return {"entries": store.spread_cost_history(views, candidate_key)}
+        timestamps = _db().result_spot_timestamps(scenario_id, owner=owner)
+        all_dates = [at for at, _spot in timestamps]
+        spot_by_date = dict(timestamps)
+
+        narrow = _db().narrow_history_for_candidate(
+            scenario_id, candidate_key, all_dates, owner=owner)
+        miss_dates = [at for at in all_dates if at not in narrow]
+
+        cost_by_date: dict[str, float | None] = dict(narrow)
+        if miss_dates:
+            fact_contexts = _db().result_fact_contexts(
+                scenario_id, miss_dates, owner=owner)
+            snapshots = _db().snapshots_batch(
+                scenario_id, miss_dates, owner=owner)
+            to_write_through: list[NarrowHistoryEntry] = []
+            for at in miss_dates:
+                fact = fact_contexts.get(at)
+                snap_dict = snapshots.get(at)
+                if fact is None or snap_dict is None:
+                    # 前提資料本身不存在（既有孤兒列）——不是 resolver
+                    # 判定過的結果，不 write-through（見上方 docstring）。
+                    cost_by_date[at] = None
+                    continue
+                resolved = resolve_historical_cost(
+                    candidate_key,
+                    history_replay_version=fact.history_replay_version,
+                    requested_strategies=fact.requested_strategies,
+                    resolved_params=fact.resolved_params,
+                    snapshot=snapshot_from_dict(snap_dict))
+                cost_by_date[at] = resolved.cost
+                if not resolved.is_write_through_eligible():
+                    # SCALE-01 backfill 尚未跑到這一列——日後補齊後應該
+                    # 能重新正確判定，不永久快取（見上方 docstring 與
+                    # `ResolvedHistoricalCost.is_write_through_eligible()`
+                    # 自己的說明——caching policy 集中在那裡判斷，這裡
+                    # 不對 `reason` 字串本身做分支決策）。
+                    continue
+                to_write_through.append(NarrowHistoryEntry(
+                    scenario_id=scenario_id, analyzed_at=at,
+                    candidate_key=candidate_key, cost=resolved.cost,
+                    owner_id=owner))
+            if to_write_through:
+                _db().save_narrow_history(to_write_through)
+
+        # S0（SCALE-08／#258）指標 #7：`count` 語意沿用既有「累積撈了
+        # 幾筆歷史列（volume）」——SCALE-14 切換後，narrow hit／
+        # negative-cache 只查小欄位，真正的成本集中在 cache miss 才會
+        # 觸發的完整快照批次讀取，`len(miss_dates)` 才是這條新讀取路徑
+        # 對應舊指標「撈了幾筆完整 view」的誠實類比（兩者皆為「這次
+        # 呼叫付出了幾份大型 payload 的代價」）。
+        _record_metric("history_read_volume", ny_today(), count=len(miss_dates))
+
+        entries = [{"analyzed_at": at, "spot": spot_by_date.get(at),
+                   "cost": cost_by_date.get(at),
+                   "baseline_return": None, "rank_in_expiry": None}
+                  for at in all_dates]
+        return {"entries": entries}
 
     def _load_raw_snapshot(scenario_id: str) -> ChainSnapshot:
         """V8（#56）：原始資料（當次快照）——`refresh_scenario` 早就在
@@ -1152,11 +1610,12 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         取「最新一次結果」的 `analyzed_at`，不接受呼叫端指定：詳細頁
         只看得到最新一份分析，原始資料照理跟著它走，不需要另開一個
         「選歷史哪一版」的介面。"""
-        latest = _db().latest_result(scenario_id)
+        owner = identity_resolver()
+        latest = _db().latest_result(scenario_id, owner=owner)
         if latest is None:
             raise HTTPException(status_code=404,
                                 detail=f"劇本尚未分析，無原始資料：{scenario_id}")
-        data = _db().get_snapshot(scenario_id, latest.analyzed_at)
+        data = _db().get_snapshot(scenario_id, latest.analyzed_at, owner=owner)
         if data is None:
             raise HTTPException(status_code=404,
                                 detail=f"找不到原始快照：{scenario_id}")
@@ -1185,7 +1644,8 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
     @app.get("/api/scenarios/{scenario_id}/events")
     def list_events(scenario_id: str) -> list[dict]:
         _require(scenario_id)
-        return _db().list_events(scenario_id=scenario_id)
+        return [_event_json(e) for e in
+               _db().list_events(scenario_id=scenario_id, owner=identity_resolver())]
 
     # ---------- Historical IV：快取、漸進補齊、額度（#126／#130） ----------
 
@@ -1197,7 +1657,9 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         `None` 時的既有呼叫端（Settings 端點等）不受影響——那些端點本來
         就只呼叫一次，沒有重複讀取的問題，不必跟著改。"""
         db = _db()
-        return {p.id: db.get_credential(p.id) for p in providers.SUPPORTED_PROVIDERS}
+        owner = identity_resolver()
+        return {p.id: db.get_credential(p.id, owner=owner)
+               for p in providers.SUPPORTED_PROVIDERS}
 
     def _known_secrets(*, credentials: dict[str, ProviderCredential | None] | None = None
                        ) -> tuple[str, ...]:
@@ -1230,7 +1692,7 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         except Exception:  # noqa: BLE001 — 落盤失敗不影響這次回應
             pass
         return {"correlation_id": diagnostics.current_correlation_id(),
-               "events": [dataclasses.asdict(e) for e in kept]}
+               "events": [_diagnostic_json(e) for e in kept]}
 
     def _iv_diagnostics_emitters(
             diag: _CollectingDiagnostics, *,
@@ -1277,7 +1739,7 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
                 status_code=403,
                 detail="Historical IV 未啟用——請在設定頁選擇自訂資料源並通過測試連線")
 
-        rec = _db().latest_result(scenario_id)
+        rec = _db().latest_result(scenario_id, owner=identity_resolver())
         if rec is None:
             raise HTTPException(status_code=404, detail="這個劇本還沒有分析結果")
         cand = store.find_candidate(rec.view, candidate_key)
@@ -1452,7 +1914,8 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         問題，`_known_secrets()` 不需要驗證結果）。
         """
         db = _db()
-        stored = db.get_settings()
+        owner = identity_resolver()
+        stored = db.get_settings(owner=owner)
         usages = {
             providers.MARKET_DATA:
                 stored.market_data if stored else UsageSetting(mode=providers.MODE_DEFAULT),
@@ -1463,7 +1926,7 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         creds: dict[str, dict] = {}
         for p in providers.SUPPORTED_PROVIDERS:
             got = creds_map[p.id]
-            checked = db.get_verification(p.id)
+            checked = db.get_verification(p.id, owner=owner)
             creds[p.id] = {
                 "configured": got is not None,
                 "masked": providers.mask_token(got.token) if got else None,
@@ -1541,7 +2004,7 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
                                      provider=req.market_data.provider),
             historical_iv=UsageSetting(mode=req.historical_iv.mode,
                                        provider=req.historical_iv.provider),
-            updated_at=now_utc_iso()))
+            updated_at=now_utc_iso(), owner_id=identity_resolver()))
         # 刻意不寫事件紀錄：這條路徑上有 provider id 沒問題，但把設定變更
         # 寫進 append-only 紀錄會讓「token 絕不進事件紀錄」這條 AC 從
         # 「結構上不可能」退成「靠這裡沒寫錯」。設定是單一狀態、不是需要
@@ -1556,7 +2019,8 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
             raise HTTPException(status_code=400,
                                 detail=f"不支援的資料源：{provider}")
         _db().save_credential(ProviderCredential(
-            provider=provider, token=req.token, updated_at=now_utc_iso()))
+            provider=provider, token=req.token, updated_at=now_utc_iso(),
+            owner_id=identity_resolver()))
         return _settings_view()
 
     @app.post("/api/settings/credentials/{provider}/test")
@@ -1570,14 +2034,15 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         if not providers.is_supported(provider):
             raise HTTPException(status_code=400,
                                 detail=f"不支援的資料源：{provider}")
-        cred = _db().get_credential(provider)
+        owner = identity_resolver()
+        cred = _db().get_credential(provider, owner=owner)
         if cred is None:
             raise HTTPException(status_code=400,
                                 detail="尚未設定 token，無法測試連線")
         outcome = verify_provider(provider, cred.token)
         _db().save_verification(ProviderVerification(
             provider=provider, ok=outcome.ok, reason=outcome.reason,
-            checked_at=now_utc_iso()))
+            checked_at=now_utc_iso(), owner_id=owner))
         return _settings_view()
 
     @app.delete("/api/settings/credentials/{provider}")
@@ -1585,7 +2050,7 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         if not providers.is_supported(provider):
             raise HTTPException(status_code=400,
                                 detail=f"不支援的資料源：{provider}")
-        _db().delete_credential(provider)
+        _db().delete_credential(provider, owner=identity_resolver())
         # 不存在也回 200＋現況：呼叫端要的是「現在沒有這把 credential」，
         # 而那在兩種情況下都已經成立。
         return _settings_view()

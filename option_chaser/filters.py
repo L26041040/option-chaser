@@ -105,29 +105,64 @@ def monotonicity_violations(contracts: Iterable[OptionContract]) -> frozenset[st
     return frozenset(flagged)
 
 
+def quote_ok(c: OptionContract) -> bool:
+    """A 層「報價健全性」（T05／#226，Initial V2 spec #217）——缺失值／
+    非有限數值（`NaN`／`Infinity`）與買賣價倒掛（`bid>ask`）同屬「報價
+    本身不可信」。既有 `c.bid > 0`／`c.ask >= c.bid` 兩條件本身已隱含
+    攔住多數這類壞值（`NaN` 比較恆為 False、`Infinity` 的 ask 若 bid
+    有限會通過），這裡把「非有限數值」的判準寫成明確的檢查，不依賴
+    比較運算子的副作用當作判準。
+
+    SCALE-09（#261）：從 `apply_filters()` 內的私有 closure 抽成
+    module-level 公開函式——candidate-specific historical resolver
+    需要對「單一候選的單一腿」重跑這一項判準，不能透過重跑整個
+    `apply_filters()`（那要求傳入整條鏈、會退化成重跑候選全池，違反
+    AC-5）。兩個呼叫端共用同一份邏輯，不是各自維護一份可能漂移的
+    判準（AC-6 的精神延伸到這裡）。"""
+    return (c.bid is not None and c.ask is not None
+            and math.isfinite(c.bid) and math.isfinite(c.ask)
+            and c.bid > 0 and c.ask >= c.bid)
+
+
+def iv_ok(c: OptionContract) -> bool:
+    """B 層「IV 落在可解區間」（T05／#226）。同上，SCALE-09（#261）
+    抽成公開函式供 resolver 重用，`apply_filters()` 與 resolver 共用
+    同一份判準。"""
+    return (c.implied_volatility is not None
+            and math.isfinite(c.implied_volatility)
+            and 0.01 <= c.implied_volatility <= 5.0)
+
+
+def spread_structural_ok(long_leg: OptionContract, short_leg: OptionContract) -> bool:
+    """Vertical Spread 配對層級的結構合法性（`generate_spread_pairs()`
+    既有判準逐字抽出）：平均成本（`net_mid`）必須是真正的 debit，且
+    最差成交成本（`net_worst`）不得達到或超過價差寬度——否則這組履約價
+    湊不出一個有意義的 vertical spread（SCALE-09／#261，供 resolver
+    重用，不重複維護一份）。"""
+    width = abs(short_leg.strike - long_leg.strike)
+    net_mid = (long_leg.bid + long_leg.ask) / 2.0 - (short_leg.bid + short_leg.ask) / 2.0
+    net_worst = long_leg.ask - short_leg.bid
+    return not (net_mid <= 0 or net_worst >= width)
+
+
+def butterfly_structural_ok(
+    low_leg: OptionContract, mid_leg: OptionContract, high_leg: OptionContract,
+) -> bool:
+    """Butterfly 三腿組合層級的結構合法性（`generate_butterfly_
+    triples()` 既有判準逐字抽出）：平均成本必須是真正的 debit
+    （SCALE-09／#261，供 resolver 重用）。"""
+    net_mid = ((low_leg.bid + low_leg.ask) / 2.0
+              - 2.0 * (mid_leg.bid + mid_leg.ask) / 2.0
+              + (high_leg.bid + high_leg.ask) / 2.0)
+    return net_mid > 0
+
+
 def apply_filters(
     contracts: Iterable[OptionContract], p: AnalysisParams
 ) -> tuple[list[OptionContract], FilterReport]:
     side = leg_option_type(p.strategy)
     remaining = [c for c in contracts if c.option_type == side]
     total = len(remaining)
-
-    def quote_ok(c: OptionContract) -> bool:
-        # T05（#226，Initial V2 spec #217，A 層）：缺失值／非有限數值
-        # （`NaN`／`Infinity`）與買賣價倒掛（`bid>ask`）同屬「報價本身
-        # 不可信」——`math.isfinite()` 明確擋掉 `NaN`／`±Infinity`。
-        # 既有 `c.bid > 0`／`c.ask >= c.bid` 兩條件本身已隱含攔住多數
-        # 這類壞值（`NaN` 比較恆為 False、`Infinity` 的 ask 若 bid 有限
-        # 會通過），這裡把 A 層「非有限數值」的判準寫成明確的檢查，不
-        # 依賴比較運算子的副作用當作判準。
-        return (c.bid is not None and c.ask is not None
-                and math.isfinite(c.bid) and math.isfinite(c.ask)
-                and c.bid > 0 and c.ask >= c.bid)
-
-    def iv_ok(c: OptionContract) -> bool:
-        return (c.implied_volatility is not None
-                and math.isfinite(c.implied_volatility)
-                and 0.01 <= c.implied_volatility <= 5.0)
 
     stages = (
         ("A", "報價異常", quote_ok),
@@ -260,10 +295,7 @@ def generate_spread_pairs(
                 continue
             total += 1
             lng, sht = (a, b) if long_is_lower else (b, a)
-            width = abs(sht.strike - lng.strike)
-            net_mid = (lng.bid + lng.ask) / 2.0 - (sht.bid + sht.ask) / 2.0
-            net_worst = lng.ask - sht.bid
-            if net_mid <= 0 or net_worst >= width:
+            if not spread_structural_ok(lng, sht):
                 removed += 1
                 continue
             out.append((lng, sht))
@@ -338,10 +370,7 @@ def generate_butterfly_triples(
             if lo.strike == mid.strike or mid.strike == hi.strike:
                 continue
             total += 1
-            net_mid = ((lo.bid + lo.ask) / 2.0
-                      - 2.0 * (mid.bid + mid.ask) / 2.0
-                      + (hi.bid + hi.ask) / 2.0)
-            if net_mid <= 0:
+            if not butterfly_structural_ok(lo, mid, hi):
                 removed += 1
                 continue
             out.append((lo, mid, hi))

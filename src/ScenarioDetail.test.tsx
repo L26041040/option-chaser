@@ -482,6 +482,38 @@ describe("詳細頁刷新入口（#70）", () => {
     expect(screen.queryByText(/抓不到報價/)).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "重試" })).not.toBeInTheDocument();
   });
+
+  it("限流失敗（SCALE-05／#260）：結構化倒數取代 message 原文、視窗內" +
+     "重試鈕 disabled", async () => {
+    // 刻意不用假時鐘——`findByText` 的內部輪詢依賴真實計時器，跟
+    // `vi.useFakeTimers()` 混用會讓它永遠等不到（`setInterval` 被
+    // 攔截、fake timers 沒有手動推進就不會觸發），進而拖垮整個測試檔
+    // 案的其餘測試。改用相對真實「現在」的 `blocked_until`，容忍測試
+    // 執行耗時造成的一兩秒誤差（比照既有 `test_parse_retry_after_
+    // http_date` 的容忍窗手法）。
+    mockDetail(detail());
+    render(
+      <ScenarioDetail
+        id="s1"
+        failure={{
+          stage: "rate_limited", message: "XYZ 的報價來源目前受限流",
+          rateLimit: {
+            blocked_until: new Date(Date.now() + 60_000).toISOString(),
+            retry_after_seconds: 60, remaining_seconds: 60,
+            last_success_at: null, incident: false,
+          },
+        }}
+      />,
+    );
+
+    expect(await screen.findByText(/Cboe 資料來源目前限流中/))
+      .toBeInTheDocument();
+    expect(screen.getByText(/還要等約 (5[5-9]|60) 秒才能重試/))
+      .toBeInTheDocument();
+    expect(screen.queryByText(/XYZ 的報價來源目前受限流/))
+      .not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "重試" })).toBeDisabled();
+  });
 });
 
 describe("進階區隨新分析失效，不混用新舊 cache（#69）", () => {

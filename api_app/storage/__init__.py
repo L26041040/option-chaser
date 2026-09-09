@@ -10,7 +10,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from typing import Protocol
+from typing import Iterable, Protocol, Sequence
 
 from ..diagnostics import DiagnosticEvent
 
@@ -29,6 +29,14 @@ class Scenario:
     # V7（#55）劇本區間兩端，選填。既有劇本讀回來是 None，行為不變。
     best_price: float | None = None
     worst_price: float | None = None
+    # SCALE-06（#256，Scaling Foundation Ownership A-1 Expand）：資料
+    # boundary 用的 owner 標記——**不是** authentication／privacy
+    # （那是 out-of-scope 的 A-2）。今天固定解析成同一個 solo-owner
+    # 值（`api_app.identity.default_identity_resolver()`），純加法、
+    # nullable：既有部署的舊列讀回來是 `None`，
+    # `Storage.backfill_missing_owner_ids()` 負責補齊。本票**不**在任何
+    # 查詢路徑套用過濾（那是 SCALE-11 的範圍）。
+    owner_id: str | None = None
 
     def archived(self, ts: str) -> "Scenario":
         return replace(self, archived_at=ts)
@@ -41,7 +49,16 @@ class Scenario:
 class ResultRecord:
     scenario_id: str
     analyzed_at: str          # ISO 8601（＝快照的 fetched_at）
-    view: dict                # store.serialize_result 的完整 view dict
+    # store.serialize_result 的完整 view dict。SCALE-16（#267，Stage
+    # 1-5）起可為 `None`——這個型別現在同時服務兩種用途：historical
+    # fact ledger（`results` 表，append-only，`view` 永遠是 `None`，
+    # 完整 payload 不再永久累積）與 current full-view materialization
+    # （`current_results` 表，`view` 永遠是完整 dict，覆寫更新）。
+    # 呼叫端從欄位本身分不出這一列來自哪張表——分不出來是刻意的：
+    # `ResultRecord` 只是共用的列形狀，「這是哪一種」完全由呼叫的是
+    # `save_result()`（ledger）還是 `save_current_result()`（current）
+    # 決定，型別本身不記錄這個維度。
+    view: dict | None
     # baseline 期最高收益率（`store.best_return(view)`）。存成獨立欄位而
     # 不是每次從 view 現算：劇本清單只要這一個數字，卻得為此把整份 view
     # 撈回來。規則仍只有一份（引擎的純函式），這裡只是它的落盤結果。
@@ -75,6 +92,55 @@ class ResultRecord:
     # 讀取），差別是這個真的被本票的前端消費——編輯表單要顯示「這個
     # family 現在為什麼不可選」，不該為此把整份 view 撈回來。
     family_eligibility: dict | None = None
+    # SCALE-01（#252，Scaling Foundation Stage 1-0）：以下 6 個欄位是
+    # 這一列歷史 fact 「重建能力」真正所需、目前寄生在 `view` 內部的
+    # 估值輸入與 provenance，獨立持久化成一等公民欄位——`view` 本身
+    # 完全不變，這幾個欄位只是它們的**複本**（見
+    # `option_chaser.store.historical_fact_context()`，唯一算出這些
+    # 值的地方，新寫入與既有資料 backfill 共用同一份邏輯）。全部
+    # 先 nullable：既有部署的舊列讀回來是 `None`，backfill 腳本負責
+    # 把它們補齊，讀取端在 backfill 完成前必須容忍 `None`。
+    #
+    # 這些欄位存在的唯一理由是讓未來的 storage 瘦身（例如 SCALE-16
+    # 停止永久保存完整 `view`）不會把「回答這個歷史時刻當時發生了
+    # 什麼」的能力一併砍掉——它們本身**不是**給一般讀取路徑用的（那些
+    # 路徑今天仍然讀 `view`），而是給未來的 candidate-specific
+    # historical resolver（SCALE-09）當輸入。
+    resolved_params: dict | None = None
+    requested_strategies: tuple[str, ...] | None = None
+    engine_version: str | None = None
+    view_schema_version: int | None = None
+    history_replay_version: int | None = None
+    # `analyzed_at` 本身就是快照的 `fetched_at`（見上方欄位註解：
+    # 「＝快照的 fetched_at」），provenance 的「fetched_at」半邊因此
+    # 不需要另開欄位；`snapshot_source` 補上另外半邊（資料源，
+    # `"cboe"`／`"yfinance"`——`view["meta"]["source"]`），`/code-review`
+    # Spec 軸抓到的真缺口：原本 5 個欄位漏了這一項，provenance 只有
+    # rate/q 那一半（藏在 `resolved_params` 裡）、沒有快照本身的
+    # 資料源，仍得解析 `view` 才查得到，牴觸 AC-1。
+    snapshot_source: str | None = None
+    # SCALE-06（#256，Ownership A-1 Expand）：與 `Scenario.owner_id`
+    # 同一個模式——資料 boundary 標記，非 privacy，nullable，本票不
+    # 加任何查詢過濾。
+    owner_id: str | None = None
+
+
+@dataclass(frozen=True)
+class ResultFactContext:
+    """SCALE-01（#252）：`ResultRecord` 上述歷史 fact 欄位的**窄查詢
+    投影**——刻意不含 `view`（也不含 `best_return`／
+    `representative_candidate` 等其餘既有欄位），滿足 AC-1「用一個窄
+    查詢取得完整 resolved params、analysis context、provenance、
+    engine/schema/replay version，不解析 view」：Postgres adapter 的
+    對應 SQL 從一開始就不 SELECT `view` 欄位，不是「查了再丟棄」。"""
+    scenario_id: str
+    analyzed_at: str
+    resolved_params: dict | None
+    requested_strategies: tuple[str, ...] | None
+    engine_version: str | None
+    view_schema_version: int | None
+    history_replay_version: int | None
+    snapshot_source: str | None
 
 
 @dataclass(frozen=True)
@@ -188,6 +254,76 @@ class TreasuryYearCacheEntry:
 
 
 @dataclass(frozen=True)
+class ChainBackoffEntry:
+    """SCALE-04（#255，Scaling Foundation Cboe 429 韌性）：上游限流的
+    控制狀態——**provider-global 鍵**（`source` 單獨，不分 symbol，
+    見 `docs/spec/scaling-foundation.md` §8.4 2026-09-06 訂正：沒有
+    證據顯示 Cboe 限流是 per-symbol，安全預設是整個來源一起封鎖，
+    否則使用者換個 symbol 就能繞過封鎖窗）。
+
+    **RL-19（紅線）：這張表不得儲存任何 chain payload、任何市場報價、
+    任何合約資料**。它只回答「上游現在讓不讓我打」，欄位逐一都是
+    控制中繼資料，不是市場事實——這與 ADR-0001／OD-05 evidence gate
+    卡住的 chain shared cache（存市場資料本身）是不同的東西，未來
+    讀到這張表切勿誤讀成偷渡的 chain cache。
+
+    `source`：PK，例如 `"cboe"`。
+    `blocked_until`：封鎖窗結束時間（ISO 8601），`None`＝目前未封鎖。
+    `retry_after_seconds`：上游最近一次給的原始 `Retry-After` 值
+    （供揭露與診斷，`None`＝上游沒給或給的值解析不出來，這次改用
+    保守預設退避時間）。
+    `consecutive_failures`：目前連續幾次被限流，供 incident 判定
+    （FR-5.7）——只在遇到 429 時遞增，一次成功即歸零。
+    `observed_at`：最近一次觀測到限流的時間。
+    `last_success_at`：最近一次成功抓取的時間——獨立於
+    `blocked_until`／`consecutive_failures`，只在真正成功時前進。
+    """
+    source: str
+    blocked_until: str | None
+    retry_after_seconds: float | None
+    consecutive_failures: int
+    observed_at: str
+    last_success_at: str | None = None
+
+
+@dataclass(frozen=True)
+class NarrowHistoryEntry:
+    """SCALE-09（#261，Scaling Foundation Stage 1-1）：narrow history
+    表的一列——票面明訂的最小欄位集合。PK 是
+    `(scenario_id, analyzed_at, candidate_key)` 這三個 identity 欄，
+    **`cost` 不屬於 PK**（AC-2）。
+
+    三種快取狀態全部由這個型別加上「查不查得到列」共同表達，呼叫端
+    （`get_narrow_history_entry()`）用回傳值本身分辨：
+    - 回傳非 `None`、`cost` 非 `None` ＝已知有效歷史點。
+    - 回傳非 `None`、`cost` 為 `None` ＝已驗證的 genuine gap
+      （negative cache——resolver 已經判定過這個 candidate 當時不
+      eligible，不必每次查詢都重跑一次 resolver）。
+    - 回傳 `None`（沒有這一列）＝尚未 materialize／cache miss，
+      **不是** gap——SCALE-09 本票的 dual-write 只寫「已知有效」這一
+      種狀態（票面：「每次 refresh 只 dual-write visible candidate 的
+      non-null cost」），negative cache 的寫入是 resolver 實際被呼叫
+      之後（SCALE-12／14 的範圍）才會發生，這個型別本身兩種語意都能
+      承載，不需要因為未來加上 negative cache 而改 schema。
+
+    RL：narrow history **永久保存，暫不設 retention**（OD-07）——
+    這裡不像 `diagnostics`／`operational_metrics` 有 trim-on-write。
+
+    `owner_id`（SCALE-14／#265 補記）：SCALE-09 出貨時這張表遺漏了
+    `owner_id`——SCALE-06／SCALE-11 當初列舉的「5 張 row-scoped 表」
+    寫在 `narrow_history` 存在之前，這張新表因此漏接。SCALE-14 要把它
+    真正接進一個 owner-gated 的 production 端點（`GET /history`），
+    在那之前先補齊，與其餘 row-scoped 表同一個模式（nullable、本身
+    不查詢過濾，過濾邏輯在讀寫方法簽章的 `owner` 參數）——不是本票
+    順手做的無關 cleanup，是接線前必要的正確性前提。"""
+    scenario_id: str
+    analyzed_at: str
+    candidate_key: str
+    cost: float | None
+    owner_id: str | None = None
+
+
+@dataclass(frozen=True)
 class UsageSetting:
     """`Data / API` 其中一列的選擇（Settings／#124）。
 
@@ -206,15 +342,25 @@ class DataSourceSettings:
     **不含 token**：credential 是 per-Provider 的一把，存在
     `ProviderCredential`。兩列都選同一個 Provider 時因此天然共用同一把，
     不必也不該要求使用者輸入兩次（#124）。
-    """
+
+    `owner_id`（SCALE-13／#264）：新表 `owner_settings` 的 PK 本身就是
+    `owner_id`（一人一筆單一狀態，取代舊表 `data_source_settings` 的
+    `id=1` 單例）——這裡標 `str | None = None` 只是為了讓型別在讀取
+    舊表相容分支（尚未遷移過的資料）時也能構造這個物件，寫入新表的
+    正式路徑一律要求真值（`require_owner()` 守門，見
+    `Storage.save_settings()`）。"""
     market_data: UsageSetting
     historical_iv: UsageSetting
     updated_at: str
+    owner_id: str | None = None
 
 
 @dataclass(frozen=True)
 class ProviderCredential:
-    """某個 Provider 的一把 token。key ＝ provider id，不是資料用途。
+    """某個 Provider 的一把 token。key ＝ (owner_id, provider)——
+    SCALE-13／#264 之前是單純 `provider`（全站唯一一把），新表
+    `owner_credentials` 把它擴成複合鍵，兩個 owner 可以各自保存不同
+    token。`owner_id` 語意同 `DataSourceSettings`。
 
     `token` 是完整明文，**只活在後端**：API 回應一律只給
     `providers.mask_token()` 的遮罩形式（#124 硬性 AC）。
@@ -222,11 +368,14 @@ class ProviderCredential:
     provider: str
     token: str
     updated_at: str
+    owner_id: str | None = None
 
 
 @dataclass(frozen=True)
 class ProviderVerification:
-    """「測試連線」的結果（Settings／#125）。
+    """「測試連線」的結果（Settings／#125）。key ＝ (owner_id,
+    provider)——SCALE-13／#264 起與 `ProviderCredential` 同一種複合鍵
+    擴充，`owner_id` 語意相同。
 
     成功與失敗都存——設定頁重新載入時要看得到上次測的結果與時間，不必
     為了知道現況再打一次 vendor。`reason` 只在失敗時有值，而且是給人看
@@ -236,6 +385,7 @@ class ProviderVerification:
     ok: bool
     reason: str | None
     checked_at: str
+    owner_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -320,82 +470,237 @@ class ContractHistory:
     last_note: str | None = None
 
 
+def require_owner(owner: str | None) -> str:
+    """SCALE-11（#262）／`/code-review` 抓到的真缺口：`owner: str`
+    這個型別標註在 Python 執行期完全不強制——`memory.py`／
+    `postgres.py` 兩個後端過去各自用 `==`／`!=` 比對 `owner_id`，
+    若呼叫端不慎傳入 `owner=None`，`None` 會被當成一個合法的過濾值，
+    對尚未 backfill（同樣是 `owner_id=None`）的舊列悄悄「配對成功」
+    ——等於在型別系統看不到的地方重新開了一個不經 owner scope 的
+    旁路。兩個後端共用同一份守門實作（而非各自複製一份可能漂移的
+    檢查），讓凡是簽章寫著 `owner: str`（非 optional）的 15 個方法
+    之一，只要真的傳入 `None` 就會在執行期立刻拋錯，不會被 `==`／
+    `!=` 悄悄吃掉。**唯一例外**：`list_scenarios()`／
+    `result_history()` 的簽章本身是 `owner: str | None`，那是
+    `backfill_result_fact_context()` 僅有的合法跨 owner 遷移用途，
+    這兩個方法不呼叫本函式。"""
+    if owner is None:
+        raise TypeError(
+            "owner 不得為 None——只有 list_scenarios()/result_history() "
+            "允許 owner=None 代表跨 owner 的遷移用途")
+    return owner
+
+
 class Storage(Protocol):
     """API 層唯一的資料存取介面——不得繞過它直接碰 SQL 或檔案。"""
 
     def create_scenario(self, sc: Scenario) -> None:
         """id 已存在時拋 `ScenarioExists`。"""
 
-    def get_scenario(self, scenario_id: str) -> Scenario | None: ...
+    def get_scenario(self, scenario_id: str, *, owner: str) -> Scenario | None:
+        """SCALE-11（#262，Ownership A-1 Enforce）：`owner` 為必填
+        keyword-only 參數——存在但屬於別的 owner 的劇本，與根本不存在，
+        對呼叫端而言必須是同一種結果（`None`），這是 AC-2「猜到另一
+        owner 的 scenario_id 也不能讀到資料」成立的關鍵：不能讓
+        呼叫端從回應差異分辨出「這個 id 存在，只是不是你的」。"""
 
-    def list_scenarios(self, *, include_archived: bool = False) -> list[Scenario]:
-        """依 created_at 遞增排序；預設不含已封存者。"""
+    def list_scenarios(self, *, owner: str | None,
+                       include_archived: bool = False) -> list[Scenario]:
+        """依 created_at 遞增排序；預設不含已封存者。
 
-    def update_scenario(self, sc: Scenario) -> bool:
-        """就地更新一個既有劇本（#132）。回傳是否真的更新了（不存在回
-        `False`）。
+        `owner`：SCALE-11 必填 keyword-only（無預設值，逼呼叫端每次
+        明確做選擇）。production HTTP 路徑一律傳目前解析出的 owner
+        字串；`owner=None` 是唯一的例外——**只給
+        `api_app.storage.backfill.backfill_result_fact_context()`
+        這種跨全部 owner 的一次性遷移腳本使用**，代表「不過濾、列出
+        全部」，比照既有 `backfill_missing_owner_ids()` 的既有先例
+        （那個方法本身就是要看見全部資料才能修復它，不是一般查詢
+        路徑）。這不是預設值——沒有任何呼叫端能「不小心」漏帶 owner
+        就拿到全部資料，要拿到就得顯式寫 `owner=None`，grep 得到。"""
+
+    def update_scenario(self, sc: Scenario, *, owner: str) -> bool:
+        """就地更新一個既有劇本（#132）。回傳是否真的更新了（不存在、
+        或存在但屬於別的 owner，皆回 `False`）。
 
         **同一個 id，不是刪除＋重建**：重建會換掉身分，讓所有以
         scenario_id 為鍵的東西（結果、快照、事件）變成孤兒，而使用者只是
-        改了個目標價。`id` 與 `created_at` 由呼叫端負責原樣帶回。"""
+        改了個目標價。`id` 與 `created_at` 由呼叫端負責原樣帶回。
 
-    def clear_results(self, scenario_id: str) -> None:
+        SCALE-11：比對的是資料庫裡**既有那一列**的 `owner_id`，不是
+        `sc.owner_id`（`update_scenario()` 本來就刻意不寫入
+        `sc.owner_id`，見既有 `test_updating_a_scenario_does_not_
+        touch_its_owner_id`——`sc` 這個參數上的 `owner_id` 欄位值
+        本來就不代表任何權威，不能拿來做授權判斷）。"""
+
+    def clear_results(self, scenario_id: str, *, owner: str) -> None:
         """清掉該劇本的全部結果與原始快照，保留劇本本身與事件紀錄（#132）。
 
         用於 thesis 改變之後：目標價餵進 baseline_return、目標月決定選哪
         些到期日，兩者一改，舊結果的每個數字都是對著另一個問題算出來的。
-        留著它們就是拿舊結果冒充新的。事件不刪——那是不可變的事實。"""
+        留著它們就是拿舊結果冒充新的。事件不刪——那是不可變的事實。
 
-    def archive_scenario(self, scenario_id: str, *, ts: str) -> bool:
-        """回傳是否真的封存了（不存在或已封存回 False）。資料不刪除。"""
+        SCALE-16（#267）：一併清掉 `current_results` 那一份——否則
+        thesis 改變後，historical ledger 雖然清空了，`latest_result()`
+        （現在讀 `current_results`）仍會回傳改變前那份過期的完整
+        view，使用者會在詳細頁看到「對著舊問題算出來的答案」冒充新
+        結果，這正是本方法存在的目的所要防止的那種狀態。
 
-    def restore_scenario(self, scenario_id: str, *, ts: str) -> bool:
-        """回傳是否真的還原了（不存在或本來就未封存回 False）。清空
-        `archived_at`，results／snapshots／events 不受影響。`ts` 只為
-        跟 `archive_scenario` 同一種呼叫慣例（呼叫端算一次 timestamp，
-        同時餵給這裡與事件紀錄）保留，`Scenario` 沒有「還原於」欄位
-        需要落盤。"""
+        `owner` 不符時整個是 no-op（不清空別人的資料）。"""
 
-    def delete_scenario(self, scenario_id: str) -> bool:
+    def archive_scenario(self, scenario_id: str, *, owner: str, ts: str) -> bool:
+        """回傳是否真的封存了（不存在、已封存、或屬於別的 owner，皆回
+        False）。資料不刪除。"""
+
+    def restore_scenario(self, scenario_id: str, *, owner: str, ts: str) -> bool:
+        """回傳是否真的還原了（不存在、本來就未封存、或屬於別的
+        owner，皆回 False）。清空 `archived_at`，results／snapshots／
+        events 不受影響。`ts` 只為跟 `archive_scenario` 同一種呼叫慣例
+        （呼叫端算一次 timestamp，同時餵給這裡與事件紀錄）保留，
+        `Scenario` 沒有「還原於」欄位需要落盤。"""
+
+    def delete_scenario(self, scenario_id: str, *, owner: str) -> bool:
         """永久刪除（TR3／#90）。回傳是否真的刪了東西——**只允許刪除
-        已封存的劇本**：不存在或尚未封存（`archived_at is None`）皆回
-        `False`、資料原封不動，這是安全閘門，永久刪除必須先進垃圾桶。
+        已封存、且屬於這個 owner 的劇本**：不存在、尚未封存
+        （`archived_at is None`）、或屬於別的 owner，皆回 `False`、
+        資料原封不動，這是安全閘門，永久刪除必須先進垃圾桶。
         真的刪除時 cascade 清掉該 `scenario_id` 名下的
-        results／snapshots／events，不留任何痕跡（不是軟刪除）。"""
+        results／snapshots／events／**current_results**（SCALE-16／
+        #267 新增，同一種「劇本沒了、它的資料也不該留著」道理），不留
+        任何痕跡（不是軟刪除）。"""
 
     def save_result(self, rec: ResultRecord) -> None:
-        """同一 (scenario_id, analyzed_at) 重複寫入即覆蓋（冪等）。"""
+        """SCALE-16（#267，Stage 1-5）：寫進 historical fact ledger——
+        每次刷新恆定新增**一列**（PK 含 `analyzed_at`），append-only，
+        同一 `(scenario_id, analyzed_at)` 重複寫入才覆蓋（冪等）。
+        呼叫端自本票起一律傳入 `rec.view=None`（歷史列不再永久保存
+        完整 view payload），但 SCALE-01 的 6 個 fact context 欄位、
+        `best_return`／`representative_candidate`／`spot`／
+        `per_family`／`family_eligibility` 仍照常寫入——這一列存在的
+        目的正是永久保留「這個歷史時刻當時發生了什麼」的事實，只是不
+        再連帶背負它的完整衍生 payload。舊資料（本票之前寫入、`view`
+        非 `None` 的既有列）**原封不動**，本方法對它們的既有內容零
+        影響（不做任何 UPDATE／NULL 化）。"""
 
-    def latest_result(self, scenario_id: str) -> ResultRecord | None: ...
+    def save_current_result(self, rec: ResultRecord) -> None:
+        """SCALE-16（#267，Stage 1-5）：current full-view
+        materialization——每個 `scenario_id` 恆定**一份**，覆寫更新
+        （PK 是 `scenario_id` 本身，不含 `analyzed_at`）。`rec.view`
+        必須是完整、非 `None` 的 view dict——這張表存在的唯一理由就是
+        持有它，供 current detail／heatmap／champion／ranking／
+        `/iv-history` 等既有 hot read path 使用（`latest_result()` 自
+        本票起改讀這張表，不再讀 historical ledger）。與
+        `save_result()`（ledger，append-only）分開呼叫、分開寫入，
+        `main.py::_refresh_and_save()` 對同一次刷新算出的
+        `ResultRecord` 各呼叫一次，兩邊各自扮演自己的角色。"""
 
-    def latest_summaries(self) -> dict[str, ResultSummary]:
-        """每個劇本最新一次結果的摘要，key ＝ scenario_id。
+    def latest_result(self, scenario_id: str, *, owner: str) -> ResultRecord | None:
+        """SCALE-16（#267）：改讀 `current_results`（不再是 historical
+        ledger 裡 `analyzed_at` 最大的那一列）——語意對呼叫端沒有變化
+        （仍然是「這個劇本現在的完整結果」），只是來源換成一張恆定
+        一列、不需要 `ORDER BY ... LIMIT 1` 掃描歷史的表，且該列的
+        `view` 保證非 `None`（`save_current_result()` 的唯一寫入來源
+        本來就要求如此）。這個劇本從未成功刷新過（含 thesis 改變後
+        `clear_results()` 剛清空）時回 `None`。"""
+
+    def latest_summaries(self, *, owner: str) -> dict[str, ResultSummary]:
+        """每個劇本最新一次結果的摘要，key ＝ scenario_id，範圍限定
+        `owner` 名下的劇本。
 
         沒跑過的劇本不出現在結果裡（呼叫端據此顯示「—」，而不是拿一個
         假的零值當成真的收益率）。專屬查詢的理由見契約測試：清單頁
-        不該為了一個數字把每份 view（十萬字元等級）都搬一次。"""
+        不該為了一個數字把每份 view（十萬字元等級）都搬一次。
 
-    def result_history(self, scenario_id: str) -> list[ResultRecord]:
+        SCALE-16（#267）：改讀 `current_results`——每個劇本恆定一列，
+        不再需要對 historical ledger 做 `DISTINCT ON`／`ORDER BY`
+        才能挑出最新一筆（該表本身就是最新一筆，不含 view 欄位的
+        窄選取沿用既有慣例）。"""
+
+    def result_history(self, scenario_id: str, *, owner: str | None) -> list[ResultRecord]:
         """依 analyzed_at 遞增排序的完整歷史。
 
         排序依 `analyzed_at` 的字典序——所有產生端都輸出同一種格式的
-        ISO 字串（UTC offset、秒精度），字典序才等於時間序。"""
+        ISO 字串（UTC offset、秒精度），字典序才等於時間序。
+
+        `owner`：SCALE-11 必填 keyword-only。`owner=None` 比照
+        `list_scenarios()` 的同一種例外，只給
+        `backfill_result_fact_context()` 使用（該腳本已經從
+        `list_scenarios(owner=None)` 拿到跨全部 owner 的劇本清單，
+        對每一筆歷史結果一視同仁地補齊 fact context，不該再對它們的
+        owner 過濾一次）；production HTTP 路徑一律傳真實 owner 字串，
+        不符的劇本回空清單（與「這個劇本不存在」同一種行為）。"""
+
+    def result_timestamps(self, scenario_id: str, *, owner: str) -> list[str]:
+        """SCALE-02（#253，Scaling Foundation C2）：這個劇本歷史上有
+        哪幾次分析時間戳——依遞增排序，**不撈 `view`**。主要索引來源是
+        `snapshots` 的 `(scenario_id, analyzed_at)` 主鍵（Prototype #065
+        實測：對這張表做這個查詢比對 narrow 候選表做 `DISTINCT` 快
+        1.58×；對 narrow 候選表做 `DISTINCT` 反而慢 12.6×，**這個方法
+        本身不得走那條路**），輔以 `results` 表同一個主鍵的窄查詢
+        UNION 補回——理由：`api_app/main.py::_refresh_and_save()` 對
+        `save_result()`／`save_snapshot()` 是兩次獨立呼叫、未包在同一
+        個交易裡，兩者之間若中斷（逾時／崩潰），會留下一筆有 `results`
+        沒有 `snapshots` 的孤兒列；只讀 `snapshots` 會讓那次分析的
+        時間戳從歷史索引裡憑空消失。兩邊都只選 `analyzed_at`
+        （`results` 這邊的 SELECT 完全不觸碰 `view` 欄位），UNION 本身
+        會處理去重，不需要額外的 `DISTINCT`。
+
+        SCALE-11：`owner` 是繼 `scenario_id` 之後**第二個**（也是最後
+        一個）過濾參數——當年 SCALE-02 的 docstring 已預告「直接在這裡
+        的兩段 WHERE 子句上各加一個條件即可覆蓋，不構成繞過 owner
+        boundary 的旁路」，這裡就是那個承諾的兌現。劇本不屬於這個
+        owner 時回空清單，不拋錯（與「這個劇本不存在」同一種行為，
+        呼叫端在此之前已經過 `_require()` 授權，這裡是防禦性的第二
+        層，不是主要判斷點）。"""
+
+    def result_fact_context(self, scenario_id: str,
+                            analyzed_at: str) -> ResultFactContext | None:
+        """SCALE-01（#252）：單一 `(scenario_id, analyzed_at)` 的窄查詢
+        ——只回傳 `ResultFactContext` 的欄位，不觸碰／不解析 `view`
+        （Postgres 這條路徑的 SQL 一開始就不 SELECT `view`）。找不到
+        這個 fact row 時回 `None`；找得到但尚未 backfill（各欄位皆為
+        `None`）時回傳一個全欄位皆 `None` 的 `ResultFactContext`，
+        呼叫端據此分辨「這列還沒 backfill」與「這列根本不存在」。"""
 
     def save_snapshot(self, scenario_id: str, analyzed_at: str,
-                      snapshot: dict) -> None:
+                      snapshot: dict, *, owner_id: str | None = None) -> None:
         """原始選擇權鏈快照（`ChainSnapshot` 的 dict 形式）。
 
         與結果分開存：一份快照數百 KB（數千筆合約），歷史查詢
-        （`result_history`）不該每次把它一起撈出來。"""
+        （`result_history`）不該每次把它一起撈出來。
 
-    def get_snapshot(self, scenario_id: str, analyzed_at: str) -> dict | None:
-        ...
+        `owner_id`（SCALE-06／#256）：選填，預設 `None`——與
+        `Scenario.owner_id` 同一個資料 boundary 標記，本票不查詢
+        過濾。"""
+
+    def get_snapshot(self, scenario_id: str, analyzed_at: str, *,
+                     owner: str) -> dict | None:
+        """SCALE-11：`owner` 不符時回 `None`（與「這一列不存在」同一種
+        行為）。"""
+
+    def get_snapshot_owner(self, scenario_id: str,
+                           analyzed_at: str) -> str | None:
+        """SCALE-06（#256）：窄讀取，只回這一列的 `owner_id`，不解析／
+        回傳快照本身（那份是數百 KB 等級，`get_snapshot()` 已有的用途
+        不該為了讀一個欄位被迫多做一次）。找不到這一列與「這一列存在但
+        `owner_id` 尚未 backfill」都回 `None`——與 `get_snapshot()` 找不到
+        列時的既有語意一致（呼叫端本來就無法從 `None` 分辨這兩種情況，
+        `result_fact_context()` 才需要分辨「找不到」與「NULL」，那是
+        因為它回傳一整個具名物件；這裡只回一個值，`None` 天然涵蓋兩種
+        情況，不需要引入哨兵）。"""
 
     def append_event(self, *, ts: str, scenario_id: str | None,
-                     event: str, payload: dict) -> None: ...
+                     event: str, payload: dict,
+                     owner_id: str | None = None) -> None: ...
 
-    def list_events(self, *, scenario_id: str | None = None) -> list[dict]:
-        """依寫入順序（append-only）回傳。"""
+    def list_events(self, *, scenario_id: str | None = None,
+                    owner: str) -> list[dict]:
+        """依寫入順序（append-only）回傳。
+
+        SCALE-11：`owner` 必填 keyword-only——`scenario_id=None`
+        （既有的「不指定就回全部」語意）過去會回傳**每一個 owner**
+        的事件，是本票明文點名「不得漏 diagnostics」同一類別裡最寬
+        的既有開放面之一。加上 `owner` 之後，即使不指定
+        `scenario_id`，也只回落盤時記到這個 owner 名下的事件。"""
 
     def get_rate_cache(self) -> RateCacheEntry | None:
         """尚未有任何嘗試（成功或失敗）時回 `None`。"""
@@ -417,25 +722,59 @@ class Storage(Protocol):
     def save_treasury_year_cache(self, entry: TreasuryYearCacheEntry) -> None:
         """覆蓋該年份既有那一筆——per-year 單一狀態，不是歷史序列。"""
 
-    # ---------- 資料源設定與 credential（Settings／#124） ----------
+    # ---------- Chain 429 backoff（SCALE-04／#255，provider-global） ----------
 
-    def get_settings(self) -> DataSourceSettings | None:
-        """從未存過任何設定時回 `None`（呼叫端據此用兩列的預設值）。"""
+    def get_chain_backoff(self, source: str) -> ChainBackoffEntry | None:
+        """該來源尚未有任何觀測（成功或限流）時回 `None`。"""
+
+    def save_chain_backoff(self, entry: ChainBackoffEntry) -> None:
+        """覆蓋該來源既有那一筆——provider-global 單一狀態，不是歷史
+        序列，鍵是 `entry.source`（不分 symbol，見
+        `ChainBackoffEntry` docstring）。"""
+
+    # ---------- 資料源設定與 credential（Settings／#124，owner 化 SCALE-13／#264） ----------
+    #
+    # SCALE-13（#264）：這 3 個概念從「單例／provider-key」升級成
+    # per-owner。**不是原地改 PK**——那需要在同一個 migration 裡先
+    # backfill 舊列的 owner_id 才能安全套用新 PK 約束，風險與部署順序
+    # 依賴都比「另開一組新表」高。改成 additive-first：新表
+    # （`owner_settings`／`owner_credentials`／`owner_verifications`）
+    # 從第一天就是正確的 per-owner 形狀，舊表（`data_source_settings`／
+    # `provider_credentials`／`provider_verifications`）原樣保留、
+    # **停止寫入但仍可讀**——這就是票面「先 dual-read...再停止舊 shape
+    # 的 production read/write」的落地：write 全部只進新表；read 對
+    # 新表 miss 時 fall back 讀舊表（read-through），讀到就順手 write-
+    # through 進新表（下次直接命中新表），讓 AC-1「solo-owner 下行為
+    # 逐位元不變」不必依賴任何人先手動跑過 backfill 腳本才成立——正式
+    # 環境既有資料（若存在）在被讀到的當下就自動遷移完畢。`delete_
+    # credential()` 因此必須**同時清舊表與新表**：否則使用者明確刪除
+    # 後，下次讀取的 read-through 還是會把舊表裡沒被清掉的資料復活
+    # （唯一會被這條「殭屍復活」風險咬到的操作）。
+
+    def get_settings(self, *, owner: str) -> DataSourceSettings | None:
+        """這個 owner 從未存過任何設定、也沒有可 read-through 的舊資料
+        時回 `None`（呼叫端據此用兩列的預設值）。"""
 
     def save_settings(self, settings: DataSourceSettings) -> None:
-        """覆蓋既有那一筆——單一狀態，不是歷史序列。"""
+        """寫進新表 `owner_settings`，覆蓋既有那一筆——單一狀態，不是
+        歷史序列。`settings.owner_id` 必須非 `None`（`require_owner()`
+        守門）；舊表 `data_source_settings` 這個方法起不再寫入。"""
 
-    def get_credential(self, provider: str) -> ProviderCredential | None: ...
+    def get_credential(self, provider: str, *, owner: str) -> ProviderCredential | None: ...
 
     def save_credential(self, cred: ProviderCredential) -> None:
-        """同一 provider 重複寫入即覆蓋（換 token 就是這條路徑）。"""
+        """寫進新表 `owner_credentials`，同一個 (owner, provider) 重複
+        寫入即覆蓋（換 token 就是這條路徑）。`cred.owner_id` 必須非
+        `None`；舊表這個方法起不再寫入。"""
 
-    def delete_credential(self, provider: str) -> bool:
-        """回傳是否真的刪了東西（本來就沒存過回 `False`）。
+    def delete_credential(self, provider: str, *, owner: str) -> bool:
+        """回傳是否真的刪了東西（本來就沒存過回 `False`）——只看新表
+        `owner_credentials` 有沒有這一列決定回傳值，但**新舊兩張表都
+        會清**（見上方區塊說明的殭屍復活風險）。
 
-        一併清掉該 provider 的驗證結果——那筆結果講的是「**那把** token
-        能不能用」，token 沒了它就失去意義，留著會讓設定頁在沒有
-        credential 的情況下顯示「已連線」。"""
+        一併清掉該 (owner, provider) 的驗證結果——那筆結果講的是
+        「**那把** token 能不能用」，token 沒了它就失去意義，留著會讓
+        設定頁在沒有 credential 的情況下顯示「已連線」。"""
 
     # ---------- 歷史 IV 觀測快取（#129，per-symbol） ----------
 
@@ -457,11 +796,34 @@ class Storage(Protocol):
     def save_iv_backfill_run(self, run: IvBackfillRun) -> None:
         """覆蓋該 symbol 既有那一筆——單一狀態，不是歷史序列。"""
 
-    def get_verification(self, provider: str) -> ProviderVerification | None:
-        """從未測過時回 `None`（＝「未設定」或「尚未驗證」）。"""
+    def get_verification(self, provider: str, *, owner: str) -> ProviderVerification | None:
+        """從未測過、也沒有可 read-through 的舊資料時回 `None`
+        （＝「未設定」或「尚未驗證」）。"""
 
     def save_verification(self, v: ProviderVerification) -> None:
-        """覆蓋該 provider 既有那一筆——單一狀態，不是歷史序列。"""
+        """寫進新表 `owner_verifications`，覆蓋該 (owner, provider)
+        既有那一筆——單一狀態，不是歷史序列。`v.owner_id` 必須非
+        `None`；舊表這個方法起不再寫入。"""
+
+    def backfill_settings_to_owner(self, owner: str) -> dict[str, int]:
+        """SCALE-13（#264）：**明確、可重跑**的批次遷移（AC-3）——不是
+        只靠上面三個 read-through 方法「有人剛好去讀才順便搬」，而是
+        比照既有 `backfill_missing_owner_ids()` 給操作者一個可以主動
+        執行、結果可驗證的動作。
+
+        只搬「新表這個 owner 還沒有」的那一列／那幾列（settings 用
+        `owner` 本身查、credentials／verifications 用 `(owner,
+        provider)` 逐一查）——**永遠不覆蓋新表已經存在的資料**，不論
+        那份資料是先前跑過這個方法留下的，還是使用者在這之間透過
+        `save_*()` 自己存過的新值。這讓它天生冪等：重跑對「已經搬過」
+        的部分全部回 0，且不會用舊表的陳舊值蓋掉更新的新表資料
+        （AC-3「可重跑、可中斷續跑」）。
+
+        回傳 `{"settings": 0|1, "credentials": N, "verifications": M}`
+        ——與 `backfill_missing_owner_ids()` 同一種「表名 → 補了幾筆」
+        的計數形狀。舊表（`data_source_settings`／`provider_
+        credentials`／`provider_verifications`）本身**不受影響、不被
+        清空**——這是 additive-first 遷移的一部分，不是單向搬家。"""
 
     # ---------- Exact-contract 歷史 IV 快取（HIVT-02／#153） ----------
 
@@ -486,15 +848,237 @@ class Storage(Protocol):
         `diagnostics.RETENTION_LIMIT` 筆，跟逐筆呼叫單筆版比較，最終
         保留集合完全一致。空清單是合法的 no-op。"""
 
-    def list_diagnostics(self, *, limit: int = 50) -> list[DiagnosticEvent]:
-        """最新在最上（依寫入順序反排）。"""
+    def list_diagnostics(self, *, limit: int = 50,
+                         owner: str) -> list[DiagnosticEvent]:
+        """最新在最上（依寫入順序反排），只回落盤時記到這個 owner
+        名下的事件（SCALE-11，`owner` 必填 keyword-only）。"""
 
-    def clear_diagnostics(self) -> int:
-        """清空，回傳清掉的筆數。"""
+    def clear_diagnostics(self, *, owner: str) -> int:
+        """清空這個 owner 名下的診斷事件，回傳清掉的筆數
+        （SCALE-11——過去無條件清空全部 owner 的資料，是本票明文點名
+        「不得漏 diagnostics」的另一個既有開放面）。"""
+
+    # ---------- Ownership A-1 Expand（SCALE-06／#256） ----------
+
+    def backfill_missing_owner_ids(self, owner_id: str) -> dict[str, int]:
+        """對 6 張 row-scoped 表（`scenarios`／`results`／`snapshots`／
+        `events`／`diagnostics`——SCALE-06／#256 原始 5 張；
+        `narrow_history`——SCALE-14／#265 補上，SCALE-09 出貨時漏接
+        `owner_id`，見該方法 postgres/memory 實作的 docstring）
+        **既有** `owner_id IS NULL` 的列，整批補上 `owner_id`。回傳
+        `{table_name: 更新筆數}`。
+
+        冪等、可重跑：條件式的 `WHERE owner_id IS NULL` 讓重跑只影響
+        「還沒補過」的列，不會覆蓋已經有值（含未來若真的支援多重
+        owner）的既有資料，重跑第二次全部回 0。**這 6 張表以外的表
+        （3 張 singleton user tables、system-wide 市場事實表、
+        `chain_backoff`）本方法不觸碰**——見票面範圍界線。
+
+        ⚠ **SCALE-11（#262）部署順序（`/code-review` Spec 軸點名的
+        風險，記錄於此供部署前查核）**：一旦 SCALE-11 的 owner query
+        boundary 上線（`require_owner()` 等機制強制拒絕 `owner=None`，
+        `get_scenario()`／`archive_scenario()` 等改用逐字比對
+        `owner_id`），`owner_id IS NULL` 的舊列會對**任何**已解析出的
+        身分（含 `identity.SOLO_OWNER`＝`"solo"`）永遠比對失敗——不是
+        「讀不到」而已，是連 `_require()` 這個 chokepoint 都會回
+        404，等於那些劇本連編輯／封存／刷新都做不到。這是刻意的
+        fail-closed 設計，**不是遺漏**，但正式環境部署 SCALE-11 之前
+        必須先跑過 `scripts/backfill_owner_ids.py`（呼叫本方法）——
+        順序顛倒會讓既有存量資料看起來像全部憑空消失。"""
+
+    # ---------- Ownership A-1 Contract（SCALE-13／#264） ----------
+
+    def owner_id_null_counts(self) -> dict[str, int]:
+        """AC-5：對「5＋3 共 8 張 user tables」各自回報目前還有幾筆
+        `owner_id IS NULL`——結構性核對用，不是拿來觸發任何行為。
+
+        **5 張**＝SCALE-06 原始 row-scoped 表（`scenarios`／`results`／
+        `snapshots`／`events`／`diagnostics`，跟 `backfill_missing_
+        owner_ids()` 同一份清單，**不含** `narrow_history`——票面
+        （#264）明文只算「5＋3」，`narrow_history` 是 SCALE-09／14 才
+        出現、不在這張票枚舉的表列裡，本方法刻意不多加）。**3 張**＝
+        本票新增的 `owner_settings`／`owner_credentials`／
+        `owner_verifications`——它們的 `owner_id` 是 PK 的一部分，
+        Postgres／記憶體兩邊都結構上不可能存在 NULL（查詢它們只是
+        為了讓呼叫端用同一份 8 表清單一次核對完畢，不必另外記得
+        哪 3 張不必查），因此**恆為 0**，不是假設出來的。
+
+        本票**刻意不**把這 5 張既有表的 `owner_id` 收斂成 DB 層級
+        `NOT NULL`（`ALTER COLUMN ... SET NOT NULL`）——這 5 張表的
+        `owner_id IS NULL` 目前是被至少 14 處既有 storage 契約測試
+        （`tests/test_storage_contract.py`）刻意寫入、用來模擬「尚未
+        backfill 的舊列」以驗證 `backfill_missing_owner_ids()` 冪等性
+        與 SCALE-11 fail-closed 行為本身正確性的必要手段；對 Postgres
+        後端加上硬性 `NOT NULL` 會讓這些測試全數以
+        `NotNullViolation` 失敗，等於為了一個 AC-5 字面上沒有要求
+        （AC-1～AC-7 沒有任何一條要求 DB 層級約束）的額外保證，犧牲
+        既有、仍在使用中的回歸覆蓋。SCALE-11 的 `require_owner()`
+        fail-closed 讀取路徑已經達成同等的實務保證——任何
+        `owner_id IS NULL` 的舊列對任何身分都永久查不到，這正是
+        NOT NULL 想要的行為，只是強制點不同（應用層而非 schema
+        層）。這是刻意記錄的取捨，Owner 若仍要 DB 層級約束，需要先
+        另開一票把那些測試改成不依賴 dataclass 建構式寫入 NULL（例如
+        改用繞過型別驗證的原生 SQL helper），非本票能安全一併完成。"""
+
+    # ---------- S0 最小可觀測性（SCALE-08／#258） ----------
+
+    def record_metric(self, metric: str, bucket: str, *, source: str = "",
+                      symbol: str = "", count: int = 0,
+                      amount: float = 0.0) -> None:
+        """`api_app.metrics.record()` 唯一呼叫的寫入點——upsert 到
+        `(metric, bucket, source, symbol)` 這個桶：`count`／`total`
+        累加，`max_value` 取較大值。同時把同一個 `metric` 底下比
+        `api_app.metrics.retention_cutoff(bucket)` 更舊的桶清掉
+        （trim-on-write，比照既有 `diagnostics` 表的既有慣例，只是
+        這裡按天而非按總筆數裁，讓「回答昨天」這件事永遠可行）——
+        AC-3 要求 bounded，不得無限成長。"""
+
+    def metric_summary(self) -> list[MetricEntry]:
+        """目前還在 retention 窗內的全部桶——供 operator 端點彙整成
+        七類指標的答案。不分頁、不搜尋（AC-6：這是給運維人工核對用，
+        不是給一般使用者的 API）。"""
+
+    def table_size_metrics(self) -> dict:
+        """S0 第 6 項——`results`／`snapshots` 兩表的列數、總大小、
+        單列大小分布，**query-time gauge，不持久化**（每次呼叫即時
+        查詢，不寫進 `operational_metrics`）。回傳形狀：
+        `{"results": {"row_count", "total_bytes", "avg_row_bytes",
+        "max_row_bytes"}, "snapshots": {同上}}`——任一表沒有任何列時
+        對應的大小/分布欄位為 `None`（沒有東西可以算平均／最大值，
+        不是假裝成 0）。"""
+
+    # ---------- Narrow visible-candidate history（SCALE-09／#261） ----------
+
+    def save_narrow_history(self, entries: Iterable[NarrowHistoryEntry]) -> None:
+        """Upsert 一批 narrow history 列（PK 衝突即覆蓋——同一個
+        `(scenario_id, analyzed_at, candidate_key)` 重複寫入是合法的
+        冪等操作，不是錯誤）。SCALE-09 本票唯一呼叫端只會傳入
+        `cost` 全部非 `None` 的列（visible candidate 的 dual-write，
+        票面：「每次 refresh 只 dual-write visible candidate 的
+        non-null cost」）；`cost=None`（negative cache）是 SCALE-14
+        write-through 才會真正產生的資料——`resolve_historical_cost()`
+        判定 genuine gap 時也要落盤，避免下次同一個 (analyzed_at,
+        candidate_key) 又重跑一次 resolver。`entry.owner_id`（SCALE-14／
+        #265 補上）比照既有 `save_result()`／`save_snapshot()`：寫入
+        本身不強制非 `None`（SCALE-06 Expand 階段「寫入寬鬆、讀取才
+        強制」的既有慣例，讓 `backfill_missing_owner_ids()` 能處理既有
+        無 owner 的舊列）——production 呼叫端一律傳入解析過的真實
+        owner，讀取方法（`get_narrow_history_entry()`／
+        `narrow_history_for_candidate()`）才是真正強制 `owner` 非
+        `None` 的地方。"""
+
+    def get_narrow_history_entry(
+        self, scenario_id: str, analyzed_at: str, candidate_key: str,
+        *, owner: str,
+    ) -> NarrowHistoryEntry | None:
+        """單筆查詢——`None` ＝沒有這一列（尚未 materialize，不是
+        gap）；非 `None` 時 `.cost` 才是三態裡「已知有效」或「已驗證
+        gap」的分野。本票主要用途是儲存契約測試的 round-trip 驗證；
+        SCALE-14 的 batch 方法（`narrow_history_for_candidate()`）才是
+        `/history` 端點真正的消費端。"""
+
+    def narrow_history_for_candidate(
+        self, scenario_id: str, candidate_key: str, analyzed_ats: Sequence[str],
+        *, owner: str,
+    ) -> dict[str, float | None]:
+        """SCALE-14（#265）：`GET /history` 讀取路徑的核心批次查詢——
+        一次回答「這個 candidate_key 在這些日期裡，narrow 已經知道
+        什麼」，避免對 `analyzed_ats`（可能是整個劇本的完整歷史）逐一
+        呼叫 `get_narrow_history_entry()` 造成 N+1。
+
+        回傳 `{analyzed_at: cost}`：只包含**真的存在**的列（`cost`
+        本身可能是 `None`，代表已驗證的 genuine gap）；不在回傳 dict
+        裡的 `analyzed_at` ＝ narrow 尚未 materialize（cache miss，
+        需要呼叫端接著跑 resolver），呼叫端據此用
+        `analyzed_at in result` 分辨「查過但是 gap」與「還沒查過」，
+        不能用 `result.get(analyzed_at) is None` 混淆兩者。"""
+
+    def result_spot_timestamps(
+        self, scenario_id: str, *, owner: str,
+    ) -> list[tuple[str, float | None]]:
+        """SCALE-14（#265）：`GET /history` 需要的完整時間軸——`(analyzed_
+        at, spot)` 依 `analyzed_at` 升冪排列，`spot` 讀自 `snapshots`
+        表（JSONB 路徑取值，不整份解析），**不 SELECT `results.view`**
+        （AC-5 硬性紅線）。日期集合沿用 `result_timestamps()` 既有的
+        UNION 判準（`snapshots` 主鍵為主、`results` 補孤兒列）；只存在
+        於 `results`（缺對應 `snapshots` 列的孤兒）的日期，`spot` 誠實
+        回 `None`——這是既有孤兒列本來就是邊界情況（`save_result()`／
+        `save_snapshot()` 兩次獨立呼叫、未包交易）的自然延伸，不寫入
+        `results.view` 的代價。"""
+
+    def result_fact_contexts(
+        self, scenario_id: str, analyzed_ats: Sequence[str], *, owner: str,
+    ) -> dict[str, ResultFactContext]:
+        """SCALE-14（#265）：`result_fact_context()` 的批次版本——一次
+        取得多個 `analyzed_at` 各自的 fact context（供 narrow cache
+        miss 時餵給 `resolve_historical_cost()`），避免逐一呼叫造成
+        N+1。回傳只包含真的查得到的列；`view_schema_version` 全部
+        `None` 的舊列（尚未 backfill）呼叫端必須視為 AC-7 的 fail-safe
+        情境，不得假裝有 fact context 可用。"""
+
+    def snapshots_batch(
+        self, scenario_id: str, analyzed_ats: Sequence[str], *, owner: str,
+    ) -> dict[str, dict]:
+        """SCALE-14（#265）：`get_snapshot()` 的批次版本——resolver 對
+        每一個 narrow cache miss 都需要那一天的完整原始快照（`cost_
+        from_snapshot()`／`find_contract()` 要在整條鏈裡找合約，不能
+        只給單一候選的報價），一次把全部需要的日期批次取回，避免對
+        `analyzed_ats` 逐一查詢造成 N+1（每份快照數百 KB，是這整條
+        讀取路徑裡最貴的部分，批次拿的是「減少往返次數」，不是「減少
+        傳輸位元組」——後者無法避免，resolver 需要哪幾天的完整快照，
+        哪幾天就得整份傳輸）。回傳只包含真的查得到的列。
+
+        **AC-7 相容性回退的裁決（本票明文記錄，非遺漏）**：票面「在
+        legacy view 尚存在時可走明確 compatibility fallback」是「可」
+        （選用），不是「必須」——真正的硬性要求只有「replay version
+        不支援時 fail-safe，不猜測、不回錯值」，而
+        `resolve_historical_cost()` 本身（SCALE-09）在
+        `history_replay_version` 不匹配／`resolved_params`／
+        `requested_strategies` 缺席（尚未 backfill）時已經安全回傳
+        `cost=None, reason="version_mismatch"／"missing_fact_context"`
+        （genuine gap，write-through 落盤成 negative cache），不猜測、
+        不回錯值——硬性要求已滿足。**不額外建置讀取單一歷史列完整
+        `view` 的相容回退路徑**：`HISTORY_REPLAY_VERSION` 目前恆為
+        `1`（SCALE-01 才剛引入這個常數），沒有任何存量資料帶著不同的
+        版本號，這條回退路徑今天無法針對真實資料驗證；等未來真的調高
+        這個常數（版本不相容的既有歷史資料因此出現）才是這個決策真正
+        有輸入可以決定怎麼做的時間點，現在建置屬於沒有具體情境可驗證
+        的推測性程式碼。"""
 
     @property
     def kind(self) -> str:
         """"memory" | "postgres"——供 /api/health 如實回報實際用的是哪個。"""
+
+
+@dataclass(frozen=True)
+class MetricEntry:
+    """S0 最小可觀測性（SCALE-08／#258，見 `api_app/metrics.py`）：一個
+    `(metric, bucket, source, symbol)` 桶的目前聚合值。**只存這幾個
+    純量欄位**——不存 `scenario_id`／`owner_id`／任何報價或合約資料
+    （AC-7 紅線）。
+
+    `source`／`symbol` 未使用時為空字串 `""`、不是 `None`——複合主鍵裡
+    `NULL` 在 SQL 語意上不等於自己（`NULL != NULL`），會讓 Postgres 的
+    `ON CONFLICT` upsert 對「兩個維度都缺席」的列每次都當成新列插入，
+    而不是疊加到同一個桶；空字串沒有這個問題，兩個後端因此可以共用
+    同一套「缺席維度＝空字串」語意。
+
+    `count`：這個桶累積的事件次數。`total`：累積量值總和（供
+    `refresh_duration_ms` 這類需要平均值的指標；純計數型指標不傳
+    `amount`，維持 0）。`max_value`：這個桶目前看過的單筆最大值（供
+    概略回答「量級大概多大」，不是完整分位數）——這個欄位在
+    `MetricEntry` 直接建構時預設 `None` 只是型別上允許，實際透過
+    `Storage.record_metric()` 寫入的列一定會是浮點數（純計數型指標
+    `amount` 恆為 0.0，因此 `max_value` 也會穩定停在 0.0，不是
+    `None`——`None` 不代表任何特別語意，只是尚未寫過的列在型別系統
+    上的合法初值）。"""
+    metric: str
+    bucket: str            # 日粒度 "YYYY-MM-DD"
+    source: str = ""
+    symbol: str = ""
+    count: int = 0
+    total: float = 0.0
+    max_value: float | None = None
 
 
 class ScenarioExists(Exception):

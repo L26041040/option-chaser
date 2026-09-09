@@ -189,6 +189,14 @@ class DiagnosticEvent:
     user_facing: bool
     message: str
     context: dict = field(default_factory=dict)
+    # SCALE-06（#256，Ownership A-1 Expand）：資料 boundary 標記，與
+    # `Scenario.owner_id` 同一個模式——非 privacy，nullable。給預設值
+    # `None`（不比照 `user_facing` 的「不給預設、逼呼叫端顯式決定」
+    # 理由——這裡沒有依 severity 這類會漂移的規則，`None`＝「尚未
+    # backfill 或這筆事件沒有明確 owner 語境」是唯一、穩定的預設，
+    # 給預設值可以讓既有大量直接建構 `DiagnosticEvent(...)` 的測試
+    # call site 不必逐一補上這個新欄位）。"""
+    owner_id: str | None = None
 
 
 # ---------- correlation ID：每個 HTTP request 一個，emit() 自己讀 ----------
@@ -220,6 +228,34 @@ def correlation_scope(cid: str | None = None) -> Iterator[str]:
 
 def current_correlation_id() -> str | None:
     return _correlation_id.get()
+
+
+# ---------- owner id：SCALE-06（#256，Ownership A-1 Expand） ----------
+#
+# 與 correlation_id 同一種理由、同一種寫法：不從函式簽章往下傳，middleware
+# 在 request 開頭把 identity resolver 解出的 owner id 塞進這裡，`emit()`
+# 需要時自己讀。與 correlation_id 的差異只有一點——`None` 是合法、穩定的
+# 狀態（尚未接上 identity resolver 的呼叫端、或本來就沒有 owner 語境的
+# 診斷事件），不像 correlation_id 缺席時要生一個新的；因此沒有對應的
+# `new_owner_id()`，`owner_scope()` 的參數也沒有「省略就自動生成」這條路。
+
+_owner_id: ContextVar[str | None] = ContextVar("owner_id", default=None)
+
+
+@contextmanager
+def owner_scope(owner_id: str | None = None) -> Iterator[str | None]:
+    """整個 request 的生命週期內，`emit()` 讀到的 owner id 都是這一個
+    ——`main.py` 的 middleware 用它包住 `call_next()`，與
+    `correlation_scope()` 疊在一起、各自獨立的 ContextVar。"""
+    token = _owner_id.set(owner_id)
+    try:
+        yield owner_id
+    finally:
+        _owner_id.reset(token)
+
+
+def current_owner_id() -> str | None:
+    return _owner_id.get()
 
 
 # ---------- Redaction ----------
@@ -320,6 +356,7 @@ def emit(storage: DiagnosticsStorage, *, subsystem: str, stage: str,
             correlation_id=current_correlation_id() or new_correlation_id(),
             ts=ts, subsystem=subsystem, stage=stage, severity=severity,
             user_facing=resolved_user_facing,
+            owner_id=current_owner_id(),
             message=sanitize_string(_truncate(message, _MESSAGE_MAX_LEN),
                                     secrets=secrets),
             context=sanitize_context(context, secrets=secrets),

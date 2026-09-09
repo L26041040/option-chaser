@@ -135,12 +135,32 @@ def scenario_vector(val: ContractValuation | SpreadValuation, spot: float,
                           worst_return=worst)
 
 
+# SCALE-03（#254，Scaling Foundation S1-0b）：三個 canonical 成本算式
+# 抽成獨立的、只吃原始 bid/ask 數值（不吃估值物件）的小函式——
+# `natural_cost()` 與 `option_chaser.snapshot_replay.cost_from_snapshot()`
+# 共用同一份，運算式順序逐字不變，不允許出現第二份相似公式各自維護
+# 而日後漂移。三者刻意保持「只做算術、不做任何合法性判斷」——腿是否
+# 存在、報價是否有效，都是呼叫端的責任（`natural_cost()` 的呼叫端已經
+# 是通過完整 ranking/filter 流程的估值物件；`cost_from_snapshot()`
+# 呼叫前必須自行檢查缺腿／非有限值，見該函式）。
+def _single_leg_cost(ask: float) -> float:
+    return ask
+
+
+def _vertical_cost(long_ask: float, short_bid: float) -> float:
+    return long_ask - short_bid
+
+
+def _butterfly_cost(low_ask: float, mid_bid: float, high_ask: float) -> float:
+    return low_ask - 2.0 * mid_bid + high_ask
+
+
 def natural_cost(val: ContractValuation | SpreadValuation | ButterflyValuation) -> float:
     if isinstance(val, SpreadValuation):
-        return val.long_leg.ask - val.short_leg.bid
+        return _vertical_cost(val.long_leg.ask, val.short_leg.bid)
     if isinstance(val, ButterflyValuation):
-        return val.low_leg.ask - 2.0 * val.mid_leg.bid + val.high_leg.ask
-    return val.contract.ask
+        return _butterfly_cost(val.low_leg.ask, val.mid_leg.bid, val.high_leg.ask)
+    return _single_leg_cost(val.contract.ask)
 
 
 def _grid_price(spot: float, target: float, k: float) -> float:

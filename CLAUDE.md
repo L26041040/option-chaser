@@ -27,7 +27,7 @@ block 裡，不能切成好幾個 code block、也不能中間插普通文字把
 `［回報#001］spec #137 拆票完成`）。編號是**累計總數**，不因換
 session、換分支、換主題而歸零——目前最新編號記在這裡：
 
-> 目前次序：056（下一份回報用 057）
+> 目前次序：068（下一份回報用 069）
 
 每發一份回報就把上面這個數字改成剛剛用掉的那個，跟著那次改動一起
 commit（沒有其他改動要 commit 時，單獨為這一行開一個小 commit 也
@@ -38,9 +38,1245 @@ commit（沒有其他改動要 commit 時，單獨為這一行開一個小 commi
 
 ## 專案紀錄區
 
-> **現況總覽（2026-09-01，寫給接手的新 session 看，取代下面所有更舊
+### Scaling Foundation 施工中（OPTION-SCALING-IMPLEMENT-001，2026-09-06 起，Owner 授權全自主執行）
+
+Owner 明確裁示：依 #252–#269 dependency graph 自主完成，不逐票停下
+等待確認；只在 SCALE-15（#266，Production Evidence Gate）與 SCALE-18
+（#269，irreversible cleanup）兩個 hard stop 前停下回報。**票面內容
+已被 Owner 大幅修訂過**（比老弟原稿更嚴謹，尤其 narrow history／
+Ownership／Parity Proof 幾張）——施工一律以 GitHub issue 最新內容為
+準，不用舊稿印象。
+
+**已完成**：
+
+- **SCALE-01**［#252］Stage 1-0 拆 seed（commits `d68b6e9`＋跟進
+  `baec0e1`）：`ResultRecord` 新增 6 個歷史 fact 欄位——
+  `resolved_params`（＝`view["params"]`，完整 resolved
+  `AnalysisParams`）、`requested_strategies`（＝
+  `tuple(r["strategy"] for r in view["results"])`，這次分析實際
+  請求的 subtype 清單，可證明與 `AnalysisRequest.strategies` 一一
+  對應）、`engine_version`、`view_schema_version`、
+  `history_replay_version`（新常數 `store.HISTORY_REPLAY_VERSION=1`，
+  凍結未來 candidate-specific historical membership replay 語意，
+  供尚未建立的 SCALE-09 resolver 使用）、`snapshot_source`（＝
+  `view["meta"]["source"]`，`/code-review` Spec 軸抓到原本漏掉的
+  provenance 半邊——snapshot fetched_at 半邊不需要獨立欄位，
+  `analyzed_at` 本身就是它）。純函式
+  `option_chaser.store.historical_fact_context(view)` 是唯一計算
+  邏輯，新寫入（`_refresh_and_save()`）與既有資料 backfill
+  （`api_app/storage/backfill.py::backfill_result_fact_context()`＋
+  `scripts/backfill_result_fact_context.py`，冪等、可續跑、可安全
+  中斷）共用同一份。新增窄查詢 `Storage.result_fact_context()`
+  （新 `ResultFactContext` 型別，SQL 不 SELECT `view`）。`view` 本身
+  逐位元不變（結構性測試鎖住）。
+- **SCALE-02**［#253］C2 `/results` 改讀 snapshots PK（commit
+  `baec0e1`）：新增 `Storage.result_timestamps()`，主要索引來源是
+  `snapshots` 主鍵，UNION `results` 表窄查詢（只選 `analyzed_at`，
+  不觸碰 `view`）補回任何缺 snapshot 的孤兒列——`save_result()`／
+  `save_snapshot()` 是兩次獨立呼叫、未包交易，中途中斷會留下這種
+  孤兒，這是實測會發生的情況而非假想。`/api/scenarios/{id}/results`
+  改用它取代原本連整份 `view` JSONB 都撈出來的 `result_history()`。
+  結構性測試鎖住 SQL 不含 `view`、不對任何表做 `DISTINCT`。**AC-4
+  真實 Postgres 延遲量測**（`/code-review` Spec 軸抓到原本缺實測，
+  跟進 commit `ee18f73` 補上）：100 筆歷史列（每筆 view ~55KB）下
+  實測 median 7.2×、p95 8.1× 改善，寫成可長期守門的 pytest 斷言。
+- **SCALE-03**［#254］S1-0b `cost_from_snapshot()` 快照回填原語
+  （commits `ee18f73`＋跟進 `01f584b`）：`scenarios.natural_cost()`
+  抽出三個 canonical 算式 helper（`_single_leg_cost`／
+  `_vertical_cost`／`_butterfly_cost`，運算式順序逐字不變），新增
+  `option_chaser/snapshot_replay.py::cost_from_snapshot(snapshot,
+  candidate_key)` 與它們共用同一份，不複製第二份公式。只做查表＋
+  算術，**不判定 historical membership／eligibility**（那是
+  SCALE-09 的職責）——`bid==ask` 不被誤判成倒掛（現行 A 層合法
+  報價本就是 `ask>=bid`）。AC-1 用 production-scale fixture（600
+  張合約、六個 subtype、看漲＋看跌兩輪覆蓋全部方向）對整個
+  ranked pool 逐一比對，128,668+ 筆 0 mismatch，遠超 Prototype #065
+  的 4,626 筆基準。`/code-review` 抓到 AC-2／AC-3 原本漏測 butterfly
+  形狀的缺腿／非有限值／`bid==ask` 三種負向案例，已補齊。
+  純函式本身未接任何生產路徑（結構性 AST 隔離測試鎖住不 import
+  `ranking`／`filters`／`service`）。
+
+- **SCALE-04**［#255］Cboe 429 後端 `chain_backoff`（commits
+  `c34b28f`＋跟進 `f8a1df4`）：新增 `chain_backoff` Storage port＋
+  memory／postgres 雙後端，PK＝**`source` 單獨**（provider-global，
+  不分 symbol）。`RateLimitedError(FetchError)` 新例外子型別；
+  `cboe.py::parse_retry_after()` 支援 delta-seconds／HTTP-date 兩種
+  Retry-After 格式。`api_app/chain_backoff.py::backoff_aware_fetch()`：
+  封鎖窗內短路（零 vendor call）、成功清除狀態並更新
+  `last_success_at`、storage 讀寫失敗 fail-open。`/code-review` Spec
+  軸抓到真缺口：AC-7「可透過既有設定/DI 停用或設為 0」原本只是
+  `backoff_aware_fetch()` 的私有參數，production 路徑碰不到——已把
+  `chain_backoff_default` 升格為 `create_app()` 建構參數，並補上
+  兩條端到端 HTTP 整合測試證明 production 預設路徑真的接上 backoff、
+  rollback 開關真的可從外部操作。
+- **SCALE-06**［#256］Ownership A-1 Expand（commits `defeccd`＋跟進
+  `d9c46e5`）：5 張 row-scoped 表（`scenarios`／`results`／
+  `snapshots`／`events`／`diagnostics`）新增 nullable `owner_id`
+  （純加法，不查詢過濾）；3 張 singleton 表與 system-wide 表刻意
+  不動，留給 SCALE-13。新增 `api_app/identity.py`
+  （`IdentityResolver`＋`default_identity_resolver`，固定
+  `SOLO_OWNER`）；`create_app()` 新增 `identity_resolver` DI 參數，
+  middleware 用 `diagnostics.owner_scope()` 塞進 ContextVar（鏡射
+  既有 `correlation_scope()`）；8 個新寫入點皆帶上解析出的值；
+  `update_scenario()` 刻意不動 `owner_id`（編輯 thesis 不該連帶改變
+  資料 boundary）。`Storage.backfill_missing_owner_ids()` 兩後端皆
+  實作，`WHERE owner_id IS NULL` 條件式批次更新天然冪等；
+  `scripts/backfill_owner_ids.py` 供正式環境執行。`/code-review`
+  Spec 軸抓到真缺口：`GET /api/scenarios/{id}/events`／`GET
+  /api/diagnostics`／iv-history 診斷信封三處既有端點原本會把
+  `owner_id` 洩漏進回應，違反 AC-3「production 行為逐位元不變」——
+  新增 `_event_json()`／`_diagnostic_json()` 序列化邊界過濾修正。
+- **SCALE-07**［#257］Treasury Cron 預熱（commits `878222e`＋跟進
+  `a17cbf8`）：新增 `GET /api/cron/warm-rate-cache`，直接複用既有
+  `_rate_curve_loader()`（`api_app/rate_cache.py::cached_loader()`）
+  ——不另寫 Treasury 解析邏輯，不把 `treasury_year_cache` 當成功
+  判準。`Authorization: Bearer <CRON_SECRET>` 驗證失敗一律 401
+  fail-closed（含 secret 未設定），且先驗證再呼叫 pipeline（零
+  mutation）。同日重複呼叫 idempotent（複用既有 `market_day` 判準）。
+  `api_app/rate_cache.py` 本身零改動——既有同步 fallback 完全保留。
+  `create_app()` 新增 `cron_secret` DI 參數；`vercel.json` 新增
+  cron 設定；`docs/deploy-vercel.md` 補操作步驟。`/code-review`：
+  Spec 軸 7 條 AC 全數正確、零 scope creep；Standards 軸僅測試對
+  `CRON_SECRET` 環境變數的 hermeticity 微調。
+- **SCALE-08**［#258］S0 最小可觀測性，七項封頂（commits `381ee05`＋
+  跟進 `d1bb011`）：
+  新增 `api_app/metrics.py`（`METRIC_CATALOGUE` 恰好七類：
+  `chain_fetch_count`／`chain_429_count`／`stale_serve_count`／
+  `cold_miss_count`／`refresh_duration_ms`／`table_size`／
+  `history_read_volume`；前六類經 `record()` 寫進獨立、極小、
+  system-wide 的 `operational_metrics` 表，只存 `metric`／`bucket`
+  （日粒度）／`source`／`symbol` 四個維度＋`count`／`total`／
+  `max_value` 三個聚合，trim-on-write 讓每個 `metric` 各自 bounded
+  在 `RETENTION_DAYS=30` 內；`table_size` 是 query-time gauge，
+  `Storage.table_size_metrics()` 即時查 `results`／`snapshots`
+  兩表列數與大小，不持久化）。**刻意獨立於既有 `diagnostics`**——
+  後者 owner-scoped 且只留最新 200 筆事件，語意與 retention 都跟
+  這裡「不分 owner、天級聚合」衝突。七類指標的真實掛點：
+  `_metered_chain_fetch()` 包住 `_default_fetch()` 內的 cboe／
+  yfinance 呼叫（#1／#2，短路窗內零呼叫因此天然不誤計）；
+  `_metered_rate_loader`／`_metered_dividend_loader` 包住
+  `rate_loader`／`dividend_loader` 本身、只在 `cached_loader()`
+  真正判定 cache miss 時才會被呼叫到（#4）；`_refresh_and_save()`
+  讀 `view["params"]["rate_curve_stale"]`／`q_stale`（RC1／#87、
+  #123 既有欄位，不重新判斷一次）記 #3，計時 `_analyze()`＋落盤
+  全程記 #5；`get_spread_history()` 記 `len(result_history(...))`
+  當 #7（SCALE-14 切換 narrow 讀取路徑後的對照基準）。新增
+  `GET /api/ops/metrics` 單一 operator 端點一次回答全部七項，
+  `OPS_SECRET`（獨立於 `CRON_SECRET`，兩種不同信任邊界不共用一把）
+  fail-closed 401。`enable_metrics` DI 開關（預設 `True`）：關閉時
+  全部記錄呼叫為 no-op，AC-4 用兩個 client（開／關）跑同一組請求、
+  逐位元比對回應驗證；施工中發現並修正測試自身的兩個真陷阱——
+  `analyzed_at` 由快照 `fetched_at` 決定，兩個 client 各自產生新
+  快照會因時間戳不同而誤判成「metrics 造成差異」，改為共用同一個
+  快照物件；`created_at` 是真實 wall-clock 秒級時間戳，兩次
+  `POST /api/scenarios` 偶爾跨過同一秒邊界會讓比對假紅，已濾除。
+  `/code-review`（Standards＋Spec 兩軸，0 hard violation）：`table_
+  size_metrics()` 對空表兩後端行為不一致（memory.py 回 `total_bytes:
+  None`，Postgres 對空表回真實非零頁面開銷）已修正為兩後端一致回
+  「有答案」（memory.py 空表回 0）；`history_read_volume` 的
+  `count` 語意（量 volume 非 occurrence）與 `table_size_metrics()`
+  的 f-string 拼表名安全性各補一句說明性註解；`enable_metrics` 缺
+  獨立環境變數 rollback 開關（僅有建構參數）判斷為可接受、未修正
+  （避免無謂 scope creep）。
+
+- **SCALE-05**［#260］Cboe 429 使用者可見狀態（commits `dbba6f8`＋
+  跟進 `2f5ad55`）：新增 `chain_backoff.status()`（唯一 canonical
+  判斷點，回傳 `blocked_until`／`retry_after_seconds`／
+  `remaining_seconds`／`last_success_at`／`incident`）與
+  `is_sustained_incident()`（`INCIDENT_THRESHOLD_FAILURES=3` 唯一
+  門檻）；`_fail()` 新增 `**extra` additive metadata（既有三個呼叫端
+  未傳，`detail` 逐位元不變，AC-1）；新增 `_classify_fetch_failure()`
+  作為單一劇本刷新（`_analyze()`）與批次刷新（`refresh_run` 自己的
+  group-level 抓鏈）共用的唯一分類點（AC-6）。前端 `useCountdown.ts`
+  新增 `useCountdownSeconds()`（來源是固定絕對時間點 `blocked_until`，
+  rerender 不重設倒數，AC-3）；`scenarios.ts` 新增限流專屬文案與
+  `isRetryDisabledByRateLimit()`（backoff 視窗內不允許 retry storm）；
+  三個渲染點（`ScenarioList`／`CompactScenarioList`／`ScenarioDetail`）
+  接上結構化倒數與鎖定重試鈕，既有兩態機制（AC-4）不受影響。
+  `/code-review`（0 hard violation）：`chain_backoff.py` 抽出共用
+  `_is_blocked()` 謂詞消除重複判準；`CONTEXT.md` 新增 Rate-Limited
+  Stage／Sustained Incident／Backoff Countdown 三個詞條。
+
+- **SCALE-10**［#259］Regression Guard 修復（RL-33）（commit
+  `39de9b5`）：
+  `tests/test_selection_regression.py` 的 `per_expiry_order` 軸原本
+  由 `res["all_candidates"]` 構造——SCALE-17 移除該欄位後兩邊都會
+  變成 `{}` 而靜默恆真（RECONCILE-002 抓到的沉默陷阱）。`_view()`
+  改回傳 `(result, view)` tuple（原本只回 `view`，丟棄了引擎物件
+  本身）；`snapshot_identity()` 改讀
+  `result.results[0].expiry_ranked`（`service.valuation_key()` 對
+  三種估值型別一視同仁，產出字串與既有 `candidate_key` 逐位元
+  相同）。AC-1：新增 `test_per_expiry_order_from_expiry_ranked_
+  matches_all_candidates_for_every_scenario`，對全部 4 個既有場景
+  各自獨立重算兩種基準並比對，證明是換基準不是換答案——`all_
+  candidates` 今天仍存在（SCALE-17 尚未上線），這個對照組本身還沒
+  消失，之後失去對照能力時這條測試需要跟著調整（已在測試 docstring
+  記錄）。AC-2：新增 `test_per_expiry_order_axis_actually_detects_
+  a_reordering`（刻意調換某個到期日的候選順序，確認
+  `assert_identity_unchanged()` 真的因為這一項而失敗）與
+  `test_per_expiry_order_is_never_vacuously_empty_for_an_ok_
+  scenario`（直接鎖住正常情況下這一軸不是空的，正面防堵 RL-33 描述
+  的那種恆真路徑）。純測試基礎設施修改，`option_chaser/`／
+  `api_app/` 零改動。全套測試（34 條選取身份守門＋全套後端）綠燈。
+  `/code-review`（Standards＋Spec 兩軸，0 hard violation）：獨立
+  發現 `test_carry_calibration.py` 既有一條測試（非本票改動）用
+  硬編碼字面值把同一種「兩邊恆真」問題複製了一份，記錄供未來覆核，
+  非本票範圍；CLAUDE.md 先前誤記「35 條」，已修正為實測「34 條」
+  （即本段）。
+
+- **SCALE-09**［#261］Stage 1-1：narrow history 雙寫＋candidate-
+  specific historical resolver（commits `5c0533f`＋跟進 `5b03943`，
+  被 SCALE-01＋02＋03 擋，三者皆已完成故直接開工）：
+  **Part A**——新增 `store.visible_candidate_keys(view)`／
+  `visible_candidate_costs(view)`：從既有 serialized view 導出
+  「使用者實際看得到的候選」集合（`expiry_top10`＋`expiry_best`＋
+  baseline 期全部 rows 的聯集）與各自 `natural_cost`，**不改動
+  `results.view` 本身**（純加法額外寫入）。`Storage` Protocol 新增
+  `NarrowHistoryEntry`＋`save_narrow_history()`／
+  `get_narrow_history_entry()`（memory／postgres 兩後端皆實作，
+  postgres 新增 `narrow_history` 表，複合主鍵
+  `scenario_id`/`analyzed_at`/`candidate_key`，走 `_MIGRATIONS`
+  不動 `_SCHEMA`）；`main.py::_refresh_and_save()` 每次成功刷新後
+  dual-write，`/history` production read path（`get_spread_history()`）
+  結構性鎖住不受影響。**Part B**——新增
+  `option_chaser/history_resolver.py::resolve_historical_cost()`：
+  把「這份快照上算得出這個 candidate 的成本」（SCALE-03）與「這個
+  candidate 當時真的是 all_candidates 成員」（historical
+  membership）分開判斷，只用 O(1) per-candidate/per-leg 判準
+  （`quote_ok`／`iv_ok`／`spread_structural_ok`／
+  `butterfly_structural_ok`，從 `filters.py` 私有 closure 抽成公開
+  函式供這裡重用，不重複維護一份會漂移的複本），從不重新枚舉整條鏈
+  或重跑排名（AC-5，AST 結構性測試鎖住不 import
+  `apply_filters`／`generate_spread_pairs`／
+  `generate_butterfly_triples`／`evaluate_*`／`service`）。
+  `history_replay_version` 是唯一 canonical 版本判準，不匹配時誠實
+  回 `version_mismatch`，不臆測。**數學證明**：對合法報價（A 層
+  `bid<=ask` 通過），vertical／butterfly 的「結構檢查通過」與
+  「`cost_from_snapshot()` 算出 ≤0」互斥（`mid<=ask` 且 `bid<=mid`
+  逐步代入可推導），B 層安全網因此在真實資料上不可構造反例，改用
+  `monkeypatch` 直接證明這段程式碼邏輯本身正確、非死碼。只是
+  internal helper，**不接任何 HTTP 端點**（Stage boundary：本票不
+  切換 `/history` production read path，SCALE-14 才正式接線）。
+
+  `/code-review`（Standards＋Spec 兩軸）：Standards 軸零 hard
+  violation，3 個 judgement call，其中「`service.py::_scoped_to_
+  selected_expiries()` 與本模組重複的 tradable-expiries 過濾邏輯」
+  已抽成 `timeframe.tradable_expiries()` 共用（兩處本來就都 import
+  `timeframe.py`）；「三個鬆散參數取代具型別物件」是刻意記錄的取捨
+  （避免 import `api_app` 型別），維持現狀。**Spec 軸抓到真缺口並
+  已修正**：resolver 原本只檢查 `strategy in requested_strategies`
+  （scenario 設定上啟用的全部 subtype），沒有檢查 T08／#225 的
+  per-day direction eligibility——一個 subtype 若那天因方向不合被
+  `skipped_direction`（那天 `view["results"]` 該筆 `candidates` 是
+  空的），即使原始報價本身合法、能算出一個數字，也不曾是
+  `all_candidates` 的成員；resolver 因此可能誤判為 `"ok"`。已新增
+  `target_price` 讀取＋`derive_direction()`／`subtype_eligible()`
+  （`option_chaser.models` 純函式，未違反 AC-5 forbidden-import
+  清單）檢查，新 gap 原因 `skipped_direction`；新增 3 條測試涵蓋
+  bearish／flat 兩種方向誤判案例＋`target_price` 缺席案例。全套
+  後端測試（記憶體＋真實 Postgres 雙後端）：1934 passed，0 failed
+  （含本票新增 26 條測試）。純後端改動，未觸碰任何前端檔案。
+
+七張票（SCALE-01–08、SCALE-10，共八張，含 SCALE-05）全數跑過
+`/code-review`（Standards＋Spec 兩軸），發現的真缺口（SCALE-02 的
+AC-4 實測缺口、SCALE-04 的 rollback DI 參數與整合測試缺口、
+SCALE-06 的 owner_id 洩漏、SCALE-07 的測試 hermeticity、SCALE-08
+的空表跨後端不一致、SCALE-05 的 `_is_blocked()` 重複判準與 CONTEXT.md
+詞條缺漏）皆已修正並重新驗證通過；SCALE-10 review 0 hard violation、
+無需修正。SCALE-09 review 同上發現一項真缺口（direction-eligibility）
+並已修正。全套後端測試（記憶體＋真實 Postgres 雙後端）曾在某次全跑
+時出現 32 條非預期紅燈，追查後確認是這個 session 長壽命共用
+`octest` 資料庫累積的 schema 雜訊（非真回歸）——單獨重跑該測試檔與
+整份全套皆為 0 failure，已在乾淨資料庫上重新驗證確認。全套持續
+zero regression。
+
+- **SCALE-11**［#262］Ownership A-1 Enforce（commits `1f7aa6a`＋跟進
+  `966d826`，被 SCALE-06 擋，現已解除）：`Storage` Protocol 15 個
+  方法新增必填 keyword-only `owner`（`get_scenario`／`list_scenarios`
+  ／`update_scenario`／`clear_results`／`archive_scenario`／
+  `restore_scenario`／`delete_scenario`／`latest_result`／
+  `latest_summaries`／`result_history`／`result_timestamps`／
+  `get_snapshot`／`list_events`／`list_diagnostics`／
+  `clear_diagnostics`），`memory.py`／`postgres.py` 兩後端皆用**各表
+  自己的 `owner_id` 欄位**過濾（不 JOIN，兌現 SCALE-02 當年
+  `result_timestamps()` docstring 的承諾）。`list_scenarios`／
+  `result_history` 保留顯式 `owner=None` 作為唯一跨 owner 遷移逃生門
+  （僅供 `backfill_result_fact_context()` 使用，比照既有
+  `backfill_missing_owner_ids()` 先例）；其餘 13 個方法一律拒絕
+  `None`（新增共用 `require_owner()`，兩後端 import 同一份，執行期
+  真的拋錯，不只是型別標註）。`main.py::_require(scenario_id)`（幾乎
+  全部 scenario-derived 端點共用的唯一 chokepoint）改用
+  `owner=identity_resolver()` 授權，存在但屬於別的 owner 的劇本與
+  根本不存在回應完全一致（AC-2）；`refresh_run` 目標選取兩分支皆
+  owner-scoped（省略 id 只列自己的未過期劇本；帶明確 id 時猜到的
+  別人 id 靜默排除，AC-3）。新增 `tests/test_scale11_ownership_
+  enforce.py`（14 條，HTTP＋MemoryStorage 端到端，涵蓋 detail/edit/
+  archive/restore/delete/refresh/history/raw-data/results/events/
+  diagnostics/refresh-run）；`tests/test_scale06_ownership_expand.py`
+  一條測試（原假設「用另一身分編輯同一劇本仍會成功」）在 enforce 後
+  已不可達，拆成「同 owner 多次編輯不受影響」＋「跨 owner 編輯正確
+  被拒絕」兩條；另一條斷言整條翻轉成驗證真正隔離（其原 docstring
+  早已預告這個時刻）。`/code-review` Spec 軸抓到兩個真缺口並修正：
+  (1) `owner: str` 型別標註執行期不強制，底層 `==`/`!=` 比對會把
+  `owner=None` 當合法值悄悄配對到尚未 backfill 的舊列——新增
+  `require_owner()` 守門；(2) 部署順序風險——enforce 上線後
+  `owner_id IS NULL` 的舊列對任何身分（含 solo）永遠比對失敗，是
+  刻意 fail-closed、非遺漏，但先前沒有任何地方講清楚「必須先跑
+  `backfill_owner_ids.py` 才能部署」，已在 docstring 補上明確部署
+  前提；(3) Postgres 雙後端跨 owner 隔離證明覆蓋率缺口——新增
+  `test_storage_contract.py` 專屬區塊（9 個測試函式×2 後端＝18 條，
+  scenarios/results/snapshots/events 四張表插入兩個真實 owner 各自
+  一筆資料逐一驗證互相排除，已實測驗證過這批測試真的抓得住「SQL
+  AND 誤植成 OR」這類回歸）。全套後端測試（記憶體＋真實 Postgres
+  雙後端）：1969 passed，0 failed。純後端改動。
+
+- **SCALE-12**［#263］Stage 1-2 Parity Proof（commits `3e02c6a`＋跟進
+  `a292648`，被 SCALE-03＋09 擋，現已解除）：純驗證票，零 production
+  code 改動。現場建構一份小型合成鏈（3 到期日×15 履約價/側，不落
+  磁碟、不共用既有 fixture——**刻意不用**既有 600 張合約
+  production-scale fixture，那份是為單次刷新計算時間設計的，60
+  履約價/側在 Butterfly 家族會產生 `C(60,3)≈34220` 組合/到期日/權別，
+  `find_contract()` 線性掃描乘上去會讓窮舉掃描跑到數十分鐘等級——那是
+  在測 Python 迴圈開銷，不是在測 parity 語意），套用決定性合成隨機
+  漫步模擬 8 次刷新，對全部 6 個 subtype 跑真實 `service.
+  run_with_snapshot()`。以 legacy `all_candidates` 為 oracle，對
+  SCALE-09 narrow dual-write ＋ candidate-specific resolver 做逐點
+  A/B（票面明文：不存在已知可接受差異，任何不一致都是 FAIL）。
+  AC-1/AC-6：全面 parity sweep 0 mismatch，`assert not mismatches`
+  硬性失敗、無分類豁免；AC-2：bitwise（`!=`）比對，非近似；AC-3：
+  固定「bid/ask 可算但 IV invalid」adversarial 候選，naive
+  cost-only replay 算得出數字，membership resolver 正確保持 gap；
+  AC-4：production scale 下 backfill 分支自然大量觸發，正面驗證
+  resolver 補回原值而非新斷點；AC-5：resolver miss latency 0.049
+  ms/call（遠低於 10ms 門檻），AST 隔離已由 SCALE-09 既有測試鎖住。
+  其餘 mandatory adversarial cases（expiry 未進 selected expiries／
+  missing leg／invalid quote／pair/structural/B-layer invalid）已由
+  SCALE-09（#261）`tests/test_history_resolver.py` 逐一覆蓋，不重複
+  驗證個別分支邏輯。
+
+  `/code-review`（Standards＋Spec 兩軸）皆抓到真缺口並已修正：
+  (1) Standards——測試檔的 `_base_quote()` 與
+  `scripts/gen_butterfly_fixture.py::_quote()` 各自複製一份定價/
+  價差/IV 公式，抽成共用 `synthetic_bid_ask_iv()`，並重新產生
+  `xyz_v6`/`v7`/`v8` 三份既有 fixture 確認逐位元零漂移（純重構）；
+  (2) Spec——原本的全面 sweep 只迭代 `_ORACLE.items()`，但 oracle
+  dict 的建構方式（只在候選真的出現在 `all_candidates` 時才寫入）讓
+  「oracle 說這個候選是 gap」這個分支結構上不可能被走到，AC-1/AC-6
+  的「gap」類別因此只由兩個手挑的 adversarial case 驗證過、不是在
+  整個真實規模下被正面驗證。新增 `_full_structural_key_space()`：
+  獨立於 oracle/resolver，直接從快照原始履約價重新枚舉全部結構上
+  可能的 candidate_key（不套用任何過濾——不是重造一份 production
+  enumeration，AC-5 那條紅線管的是 resolver 本身），與 oracle/narrow
+  取聯集後才是完整的每日 key 全集，讓 gap 分支在真實規模下正面驗證
+  ——修正後 `hit=720 backfilled=9386 gap=17494`，gap 從結構性 0
+  變成真的被 17,494 個案例覆蓋；這個改法同時免費解掉 narrow→oracle
+  反向包含關係未被驗證的問題（narrow 有值但 oracle 沒有時，
+  `oracle_cost` 會是 `None`，`narrow_cost != None` 恆真，直接落進
+  既有 mismatch 分支）。全套後端測試（記憶體＋真實 Postgres 雙後端）
+  1977 passed，0 failed。
+
+- **SCALE-14**［#265］Stage 1-3 切換 `/history` 讀取路徑（commits
+  `0ad7f27`＋跟進 `e901df7`／`a785ad8`，被 SCALE-12 擋，現已解除）：
+  `GET /api/scenarios/{id}/history` 改為 canonical read semantics，
+  不再整份讀取 `results.view`（AC-5）。逐 `analyzed_at`：narrow row
+  存在且 `cost != None` → hit；存在且 `cost == None` → 已知 genuine
+  gap（negative cache，不重跑 resolver）；不存在（cache miss）→ 讀
+  該天 fact context＋原始快照呼叫 SCALE-09 `resolve_historical_cost()`，
+  valid／invalid 兩種結果都 write-through 落盤（AC-3）。新增 4 個
+  owner-scoped 批次查詢方法（`result_spot_timestamps`——spot 只讀
+  `snapshots` JSONB、不碰 `results.view`；`narrow_history_for_
+  candidate`；`result_fact_contexts`；`snapshots_batch`），Postgres
+  皆用 `ANY(%s)` 批次查詢避免 N+1。AC-4 真實 Postgres benchmark（100
+  個歷史點**全部 cache miss**，最貴情境）：舊路徑 median 640.99ms／
+  p95 840.92ms／19.77MB，新路徑 median 80.23ms／p95 101.68ms／
+  1.48MB——即使最貴情境仍快約 8×（median）／8.3×（p95）、bytes 少
+  約 13×。AC-7 fail-safe：`missing_fact_context`（暫時性，SCALE-01
+  backfill 尚未跑到）刻意不 write-through，其餘 gap 原因（含
+  `version_mismatch`）是穩定事實正常快取；未建置選用的 legacy view
+  compatibility fallback（`HISTORY_REPLAY_VERSION` 恆為 1，無存量
+  資料觸發得到，裁決記錄在 `Storage.result_spot_timestamps()`
+  docstring）。`store.spread_cost_history()` 刻意保留、非死碼——是
+  票面明訂 Rollback Point 本身。零前端程式碼改動（回應 JSON 形狀
+  不變，`baseline_return`／`rank_in_expiry` 恆為 `null`，Audit 證實
+  前端零消費者，結構性測試鎖定 `src/spreadHistory.ts` 不讀這兩個
+  欄位）；既有 `test_api_history.py` 5 條測試逐字未改全數通過；
+  Playwright e2e（Spread 相關 11 條，手機＋桌面）全綠。
+
+  `/code-review`（Standards＋Spec 兩軸）皆抓到真缺口並已修正：
+  (1) Standards——`main.py` 原本直接對 `resolved.reason` 字串做
+  分支決策，牴觸 `ResolvedHistoricalCost` 自己既有的文件契約
+  （SCALE-09：「呼叫端只該讀 cost，不該對 reason 字串做分支決策」）。
+  新增 `ResolvedHistoricalCost.is_write_through_eligible()`，caching
+  policy 封裝在 `history_resolver.py` 內部，`main.py` 改呼叫方法而非
+  比對字串；(2) Spec——`backfill_missing_owner_ids()` 沒有把
+  `narrow_history` 加進去（SCALE-09 出貨時漏接 `owner_id`，這張表
+  比 SCALE-06／SCALE-11 當初列舉的「5 張 row-scoped 表」晚出現），
+  正式環境既有 dual-write 舊列在 SCALE-14 上線後會對任何 owner 永久
+  查不到（resolver miss 會自動重算覆蓋，非靜默損毀，但仍是缺口）；
+  已補齊兩後端＋Protocol docstring，變成 6 張表。修正過程中發現並
+  修正自己的一個設計問題：`save_narrow_history()` 原本在寫入時就
+  強制 `owner_id` 非 `None`，與既有 `save_result()`／`save_
+  snapshot()`「寫入寬鬆、讀取才強制」慣例不一致，且會讓 backfill
+  情境結構上不可能發生——已改為只在讀取方法（`get_narrow_history_
+  entry()`／`narrow_history_for_candidate()`）強制。全套後端測試
+  1999 passed（記憶體＋真實 Postgres 雙後端），前端 typecheck／813
+  條 Vitest／build 全綠，零回歸。
+
+- **SCALE-13**［#264］Ownership A-1 Contract：3 張 settings/credential
+  表 per-owner 遷移（commits `831ce8e`＋`1d5d3bd`＋`276f39d`＋
+  `57e0c66`，被 SCALE-11 擋，現已解除）：`data_source_settings`／
+  `provider_credentials`／`provider_verifications` 三張過去是單例／
+  provider-key 形狀（無 owner 維度），不能像 SCALE-06 那樣單純加欄位
+  ＋WHERE 過濾——加一欄 `owner_id` 不會讓它們變成 per-owner，只會讓
+  不同 owner 的寫入互相覆寫同一列。改用 additive-first：新增 3 張
+  全新、從第一天就是正確 per-owner 形狀的表（`owner_settings`／
+  `owner_credentials`／`owner_verifications`，`owner_id` 是 PK 一
+  部分，天生 NOT NULL），舊表凍結但保留、仍可讀，**不做不可逆 DROP**
+  （Rollback Point 硬性紅線）。7 個既有 Storage Protocol 方法
+  （`get_settings`／`save_settings`／`get_credential`／
+  `save_credential`／`delete_credential`／`get_verification`／
+  `save_verification`）改為 owner-aware：新表 miss 時對 **solo owner**
+  read-through 讀舊表、順手 write-through 進新表（同一個
+  `with self._connect()` 交易內完成，AC-4「切換前後沒有任何窗口會讓
+  credential/settings 查不到或誤讀另一 owner」因此成立，不依賴任何人
+  先手動跑過 backfill）；`save_*()` 這個方法起**不再寫舊表**
+  （write-forward-only）；`delete_credential()` **新舊兩張表都清**——
+  防堵「使用者明確刪除後，下次讀取的 read-through 把舊表裡沒被清掉的
+  資料復活」這個殭屍復活風險。新增 `backfill_settings_to_owner()`
+  （比照既有 `backfill_missing_owner_ids()`：只搬「新表這個 owner 還
+  沒有」的部分，永不覆蓋新表已存在的資料，天生冪等可續跑，AC-3）＋
+  `scripts/backfill_settings_to_owner.py`（比照既有
+  `backfill_owner_ids.py` 慣例）；新增 `owner_id_null_counts()`
+  （AC-5，對 5 張原始 row-scoped 表＋3 張新表共 8 張各自回報還有
+  幾筆 `owner_id IS NULL`——3 張新表因 PK 恆為 0）。`main.py` 的
+  `_fetch_chain()`／`_credential_map()`／`_settings_view()` 與
+  5 個 HTTP 端點（`GET/PUT /api/settings`、`PUT/POST/DELETE
+  /api/settings/credentials/{provider}[/test]`）全數改用
+  `identity_resolver()` 傳入 owner；`/api/settings*` 契約形狀本身
+  逐位元不變（純內部儲存層改動，前端零檔案異動）。
+
+  **一項刻意記錄、未執行的取捨**（AC-5「收斂必要 NOT NULL/keys」）：
+  本票**不**對 5 張原始 row-scoped 表（`scenarios`／`results`／
+  `snapshots`／`events`／`diagnostics`）的 `owner_id` 加 DB 層級
+  `ALTER COLUMN ... SET NOT NULL`——AC-1～AC-7 沒有任何一條要求 DB
+  層級約束，且這 5 張表的 `owner_id IS NULL` 目前被至少 14 處既有
+  `tests/test_storage_contract.py` 契約測試刻意寫入、用來模擬「尚未
+  backfill 的舊列」以驗證 `backfill_missing_owner_ids()` 冪等性與
+  SCALE-11 fail-closed 行為本身正確性；加上 NOT NULL 會讓這些測試對
+  Postgres 後端全數以 `NotNullViolation` 失敗。SCALE-11 的
+  `require_owner()` fail-closed 讀取路徑已達成同等實務保證（`owner_id
+  IS NULL` 的舊列對任何身分都永久查不到），只是強制點在應用層而非
+  schema 層。已記錄在 `owner_id_null_counts()` docstring，Owner 若
+  仍要 DB 層級約束，需先另開一票把那些測試改成不依賴 dataclass
+  建構式寫入 NULL。**`/code-review` 兩軸（Standards＋Spec）皆確認這個
+  判斷合理、AC-5 字面（「均無 NULL owner」的結構性核對，非強制
+  schema 約束）成立**。
+
+  **一項 Spec 軸抓到、經評估判斷為可接受的既有揭露落差**：Rollback
+  Point 原文「讀寫可切回舊路徑」在字面上不完全成立——寫入是
+  write-forward-only（本票之後 `save_*()` 不再寫舊表），若真的把
+  程式碼回退到 SCALE-13 之前的版本，讀得到的是「遷移當下那一刻」的
+  值，不是回退前一刻的最新值（`memory.py`／`postgres.py` 對應方法
+  註解已明文記錄這個後果）。但 Rollback Point 段落自己的**硬性紅線**
+  「不得用破壞性 in-place migration 讓舊 singleton rollback 無路可
+  走」確實成立——舊表未被刪除，回退永遠有路可走，只是有資料新鮮度
+  代價、非資料遺失。判斷維持現行 write-forward-only 設計（不改為
+  dual-write），理由：本產品目前只有 solo 這一個 owner，改回退版本
+  是人工操作、非即時 failover；為一個「事後手動 downgrade」情境
+  維護兩套永久同步的寫入路徑，其複雜度與這個風險的實際發生機率不成
+  比例。此取捨已記錄於此，供 Owner 覆核。
+
+**下一步（本段已由 OPTION-SCALING-IMPLEMENT-002 取代，見下一節）**：
+SCALE-13 完成後 Hard Stop 曾正式達成，等待 Owner 完成 production
+validation 並給出 GO——**Owner 已於 2026-09-08 完成初步 production
+smoke 並明確給予 SCALE-15／#266 = GO**，見下一節 SCALE-16／SCALE-17
+完成報告。
+
+### OPTION-SCALING-IMPLEMENT-002——SCALE-16／SCALE-17（2026-09-08，Owner 授權自主施工至完成才回報）
+
+Owner 明確裁示：SCALE-15（#266）GO，依 dependency graph 繼續自主
+施工 SCALE-16（#267）／SCALE-17（#268），完成後停止；**Hard Stop
+不變**——SCALE-18（#269）明文不施工（不可逆 legacy cleanup，EG-2
+尚未裁示，先讓 Owner 實際使用完成後的新架構再決定）。#266 已記錄
+Owner GO 並 close。
+
+**已完成**：
+
+- **SCALE-16**［#267］Stage 1-5：分離 historical fact ledger 與
+  current full-view materialization（commits `bc73739`＋`e58a85c`＋
+  `69a888f`）：新增 `current_results` 表（PK=`scenario_id`，`view`
+  恆為完整 dict，`ON CONFLICT DO UPDATE` 覆寫）＋`Storage.save_
+  current_result()`，走 `_MIGRATIONS`（沿用 SCALE-09／SCALE-08 冷
+  啟動競爭安全慣例，非 `_SCHEMA`）；`latest_result()`／
+  `latest_summaries()` 改讀它，`clear_results()`／`delete_scenario()`
+  一併清。`results` 表（historical fact ledger）的 `view` 欄位鬆綁成
+  nullable，新寫入起恆為 `None`，SCALE-01 六個 fact context 欄位
+  照常每次寫入不受影響。`main.py::_refresh_and_save()` 對同一個
+  `ResultRecord` 用 `dataclasses.replace()` 分別衍生兩個寫入形狀，
+  一次分析只算一次、各自落盤各自的目的地。**真實 Postgres AC-5
+  benchmark**（600 張合約、4 個 debit subtype 全開的 production-scale
+  view）：悲觀情境（N 次連續覆寫、只在最後 VACUUM 一次）N=30 時
+  OLD 3,237,205 B/refresh → NEW 169,847 B/refresh（19.06×）、N=100
+  時 19.49×；穩態情境（每次覆寫都 VACUUM，對應 production 三個既有
+  觸發時機之間天然數十分鐘至數小時的間隔，遠超 autovacuum 預設 1
+  分鐘 naptime）N=100 時 **564.41×**——超過 Prototype 的 58.70×。
+  兩種情境的 40 倍差距經拆解驗證（`results`／`current_results` 分開
+  量測）證實完全來自 benchmark 方法本身（是否在寫入間隔中
+  VACUUM），不是形狀改變帶來的真實成本差異，AC-5「解釋與 Prototype
+  差距」的要求因此不是空話。**AC-6 dead-tuple 量測**：真實 350KB 級
+  view（貼近 SCALE-17 剝除後大小）50 次覆寫後 `n_dead_tup=49`，正常
+  （非 FULL）`VACUUM` 後歸零，第二輪 50 次覆寫＋VACUUM 後大小穩定
+  （385,024B vs 401,408B），未無界成長——不依賴人工 `VACUUM FULL`。
+  新增 `tests/test_scale16_ledger_split.py`（9 條，涵蓋 AC-1～AC-7）。
+  `/code-review`（Standards＋Spec 兩軸）：Standards 軸零 hard
+  violation；Spec 軸抓到兩個真缺口並已修正——(1) AC-5 benchmark 原本
+  只跑「連續覆寫、最後才 VACUUM」單一情境，量到的其實是 MVCC 冷
+  啟動膨脹而非 production 穩態足跡，改為同時量測兩種情境（悲觀情境
+  當及格線、穩態情境當 production 代表值，不是挑對自己有利的數字
+  通過）；(2) AC-2「current detail 與切換前 serialized parity」原本
+  只靠既有 HTTP 套件間接佐證，新增
+  `test_current_detail_response_has_serialized_parity_with_the_pre_
+  cutover_shape`（同一 client 打 `GET /api/scenarios/{id}` vs
+  `POST /api/analyze`＋`project_for_detail()`，逐位元比對，只正規化
+  兩端點本身既有就會不同的 `scenario_id`）。
+- **SCALE-17**［#268］C1：停止把 `all_candidates` 寫進 persisted
+  current/result materialization（commit `bc73739`＋`e58a85c` 內
+  含）：新增 `option_chaser/store.py::strip_persisted_all_
+  candidates()`，只在 `_refresh_and_save()` 寫進 `current_results.
+  view` 之前套用；`POST /api/analyze` 與全部引擎內部計算路徑繼續用
+  未剝除的原始 view（結構性保證，AST 掃描確認 handler 原始碼不含這個
+  函式名）。真實引擎量測（4 個 debit subtype 全開、600 張合約）：
+  `all_candidates` 佔 **98.31%**（Audit 原文 97.82%，量級吻合），
+  剝除後邏輯 JSON 縮減 59.25×，落盤欄位 `pg_column_size` 157,460B
+  （遠小於整份塞入的 20,950,398B）。新增
+  `tests/test_scale17_persisted_projection.py`（5 條，涵蓋 AC-1／
+  AC-3；AC-2 由 SCALE-16 新增測試涵蓋；AC-4 SCALE-10 守門結構上
+  未受影響，順手修正一句因 SCALE-17 上線而過期的 docstring；AC-5
+  `/history` 完全不依賴 `all_candidates`，SCALE-12/14 parity suite
+  全綠）。`/code-review`：Spec 軸兩項發現皆屬 SCALE-16 範圍，SCALE-17
+  自身零發現。
+
+**Write／read latency 追加量測**（commit `7ead12f`，票面 AC 未
+強制，但 Owner 結案回報明確要求，補成永久測試而非只在對話裡報一次
+數字）：同一份 production-scale view，真實 Postgres 30 輪 median/p95
+——**WRITE** OLD 723.58ms → NEW 35.54ms（20.36×）；**READ** OLD
+364.06ms → NEW 12.38ms（29.41×，結構性原因：`current_results` 是
+PK 直接查找，不需要 `ORDER BY analyzed_at DESC LIMIT 1`）。
+
+**全套測試（記憶體＋真實 Postgres 雙後端）2062 passed、0 failed**
+（施工過程中順手修復 6 個既有測試檔因 `latest_result()`／
+`latest_summaries()` 改讀 `current_results` 後失真的 fixture，另
+獨立發現並修復一組與本輪無關的環境依賴性 flake——`test_api_
+filters.py` 等因沙箱恰好連得到真實 `XYZ`／真實股票代號的網路而
+非 hermetic，見 `tests/test_scale01_historical_fact.py` 上方
+「容器倒退」記錄旁的教訓，已於本輪一併修正）。前端 typecheck
+乾淨（本輪零前端檔案改動）。功能差異：**無**——AC-2／AC-3 皆有
+逐位元比對測試背書。Branch HEAD：`7ead12f`。
+
+**Hard Stop 依裁示維持**：SCALE-18（#269）本輪全程未被觸碰
+（`git diff` 確認零命中），未自行嘗試繞過或代答。**最終狀態：
+READY_FOR_FINAL_PRODUCTION_VALIDATION**——等待 Owner 在真實部署
+完成最終驗證後指示下一步；依專案規則不主動開 PR。
+
+### OPTION-SCALING-TICKETS-REVISE-006 拆票（2026-09-06，歷史紀錄）
+
+> **現況總覽（2026-09-06 四度追加，OPTION-SCALING-TICKETS-REVISE-006
+> 拆票完成——取代下方 PROTOTYPE-004 段落「下一步：可進 `/to-tickets`」
+> 那句的指向，PROTOTYPE-004 段落其餘原文照舊）**：
+>
+> **背景**：需求方先發出 `OPTION-SCALING-TICKETS-005`（`/to-tickets`）
+> 拆出 17 張票草案，發現前正式建立 issue 前，需求方以
+> `OPTION-SCALING-TICKETS-REVISE-006` 下三點必修裁示——**不得先建票**：
+> (1) narrow 表缺格必須先嘗試用快照回填、只有快照本身也不可回填才算
+> genuine gap（不得把「narrow 沒有」直接等同「歷史斷點」）；(2) C10
+> lifecycle 的「停止未來永久累積寫入」必須獨立成一張新票，與「移除
+> `all_candidates` 欄位」分開、各自獨立 rollback 介面；(3)
+> `chain_backoff` 的鍵設計不得預設抄 `(source, symbol)`——沒有證據
+> 顯示 Cboe 限流是 per-symbol，安全預設改為 `source` 單獨
+> （provider-global），否則使用者換個 symbol 就能繞過封鎖窗。
+>
+> **修正後正式建立 18 張 GitHub sub-issue，SCALE-01～18＝
+> issue #252～#269，全數掛在 #251 底下**：
+>
+> | 票 | Issue | 標題 | Blocked by |
+> |---|---|---|---|
+> | SCALE-01 | #252 | Stage 1-0 拆 seed | 無（frontier） |
+> | SCALE-02 | #253 | C2 `/results` 讀 snapshots PK | 無（frontier） |
+> | SCALE-03 | #254 | S1-0b `cost_from_snapshot()` | 無（frontier） |
+> | SCALE-04 | #255 | Cboe 429 後端 `chain_backoff`（**鍵已訂正為 `source` 單獨**） | 無（frontier） |
+> | SCALE-05 | #260 | Cboe 429 使用者可見狀態 | #255 |
+> | SCALE-06 | #256 | Ownership A-1 Expand | 無（frontier） |
+> | SCALE-07 | #257 | Treasury Cron ＋ 保留同步 fallback | 無（frontier） |
+> | SCALE-08 | #258 | S0 最小可觀測性（七項封頂） | 無（frontier） |
+> | SCALE-09 | #261 | Stage 1-1 narrow history 雙寫（含三層回填分類） | #252＋#253＋#254 |
+> | SCALE-10 | #259 | Regression Guard 修復（RL-33） | 無（frontier） |
+> | SCALE-11 | #262 | Ownership A-1 Enforce | #256 |
+> | SCALE-12 | #263 | Stage 1-2 Parity Proof（三層分類＋倒掛邊界） | #254＋#261 |
+> | SCALE-13 | #264 | Ownership A-1 Contract（3 張 singleton 表遷移） | #262 |
+> | SCALE-14 | #265 | Stage 1-3 切換讀取路徑 | #263 |
+> | SCALE-15 | #266 | Stage 1-4 Production Validation Window（`needs-human-validation`） | #265＋#258 |
+> | SCALE-16 | #267 | **Stage 1-5 停止永久累積寫入**（新票，Fix 2） | #252＋#266 |
+> | SCALE-17 | #268 | C1 移除 `all_candidates` 欄位 | #265＋#259＋#267 |
+> | SCALE-18 | #269 | Stage 1-6 不可逆 cleanup（**Owner Decision EG-2 擋著，未標
+>   `ready-for-agent`，明確不施工**） | #267＋#268＋EG-2 |
+>
+> **Frontier（無 blocker，可立即開工）共 8 張**：#252／#253／#254／
+> #255／#256／#257／#258／#259。
+>
+> **09→02（SCALE-09 依賴 SCALE-02）依需求方要求評估後保留**：兩票
+> 皆需編輯 `api_app/storage/postgres.py` 內同一組 schema／查詢常數，
+> 平行施工有真實 merge collision 風險，非預設沿用既有慣例。
+>
+> **Prototype #065 七項 hard finding 全數保留、逐一對應到票**（詳見
+> #251 留言）：`/results` 效能陷阱→SCALE-02；narrow PK 效率不得卡關
+> →SCALE-09 AC-3；100 次刷新量測紀律→沿用既有方法論；
+> `cost_from_snapshot()` 運算式順序逐字保留→SCALE-03；JSON 文字比對
+> 非 Python 物件比對→寫入全部 A/B 比對票的 AC；latest-only 覆寫的
+> autovacuum 覆蓋→SCALE-16 AC-3；`test_selection_regression.py::
+> _view()` 需同時回傳引擎 result→SCALE-10。
+>
+> **EG-2（歷史 view 保留多久）本輪維持不裁示**，SCALE-18／#269 明確
+> 標註「Blocked by Owner Decision EG-2」而非純技術依賴，不得排進自動
+> 施工佇列。
+>
+> `docs/spec/scaling-foundation.md` §8.4 已同步訂正 `chain_backoff`
+> 鍵設計（保留原文＋新增 🛑 訂正標記，非靜默覆蓋）。
+>
+> **下一步**：等需求方指示開工，依 Frontier 8 張票任意順序
+> `/implement`；依專案規則全部票做完才開 PR、中途不主動開。
+
+> **現況總覽（2026-09-06 三度追加，OPTION-STORAGE-PROTOTYPE-004 完成——
+> 取代上一段「下一步：可進 `/to-tickets`」那句的指向，上一段其餘原文照舊）**：
+>
+> **背景**：需求方以 `/prototype` 指示建一次性、可丟棄的 prototype，驗證
+> Scaling Foundation 的 storage 核心假設（移除 `all_candidates` ＋
+> visible-only narrow history ＋ snapshot 回填 ＋ 歷史 view 停止累積 ＋
+> current detail 完整）。**不改 production architecture、不 migration、
+> 不拆票、不開 PR、不 merge**（`git diff HEAD` 對 `option_chaser/`／
+> `api_app/`／`src/`／`tests/`／`e2e/`／`contracts/`／`scripts/`／`api/`
+> 零差異）。
+>
+> **判定：PASS_WITH_CHANGES。實測 storage 改善 58.70×**（audit 預測 62×，
+> 差 5.3%）、**functional regressions 0**、**backfill 逐位元 parity 成立**
+> （4,626 次比對、0 mismatch、六個 subtype 全覆蓋）。
+>
+> **A/B 設定**：同一份 `xyz_v8_production_scale.json`（600 合約）、同一組
+> scenario、同一 seed（20260906）、六個 subtype 全開、**100 次刷新**，
+> 每次以固定 seed 施加合成隨機漫步讓排名 churn。每次刷新 `all_candidates`
+> 105,869 筆、visible 集合 120 筆（0.11%）。
+>
+> **五個關鍵實測**：
+> 1. **儲存**（VACUUM FULL 後）：A 2,664,038 B／次 → B 成長部分
+>    **45,384 B／次**，**邊際成長比 58.70×**；B 的 current 固定成本
+>    237,568 B（常數項非成長項）。⚠ N=1 時只有 7.04×（固定頁面配置主導），
+>    **必須量到 100 次才收斂**。
+> 2. **效能全面改善**：`save_result` 722.7→30.6 ms（23.60×）、current
+>    detail 讀取 275.9→9.2 ms（30.00×）、`/history` 常見情況
+>    51,875→1.17 ms（**44,261×**）、最壞情況（99/100 缺格全回填）
+>    192.4 ms（仍快 270×）。
+> 3. **唯一效能回歸已找到根因並驗證修法**：`/results` 若天真地
+>    `DISTINCT` over narrow 是 2.110 ms（**比 A 慢 12.6×**）——因為
+>    narrow 是 per-candidate 粒度。改讀 `snapshots` 的 PK 索引後
+>    **0.106 ms，比 A 還快 1.58×**。**未用 storage 收益掩蓋它。**
+> 4. **backfill 逐位元 parity**：`cost_from_snapshot()` 純函式（零 vendor、
+>    零 credential、不跑引擎，運算式順序逐字複製 `scenarios.py:138-143`）
+>    4,626 次比對全數逐位元一致、0 mismatch；六 subtype 全覆蓋；
+>    **1,179 個 narrow 缺格全部由 snapshot 正確補回**。
+> 5. **RL-33 guard 修復已證明**：引擎的 `expiry_ranked` 在 100/100 輪
+>    非空、且與 `all_candidates` 構造的結果完全相同 ⇒ 有非空的 canonical
+>    regression source，不必用空集合假通過。
+>
+> **五個被證偽的假設**（prototype 的真正價值）：narrow 表不能當
+> analyzed_at 索引用（慢 12.6×）／latest-only 覆寫的 MVCC 膨脹達真實
+> 尺寸 5.7 倍（VACUUM 前 1.35 MB vs 後 237,568 B）／narrow 表的三 TEXT
+> 主鍵佔全表 **46.8%**／N=1 量不出改善幅度／A-B view 不能用 Python 物件
+> 比對（json round-trip 把 tuple 變 list，假陽性，必須比 JSON 文字）。
+>
+> **正式施工必須調整的 7 項**（文件 §11）：`/results` 索引來源改
+> `snapshots`／回填必須 write-through（否則每次開圖重付 192 ms）／
+> `test_selection_regression.py::_view()` 需同時回傳引擎 result／narrow
+> 主鍵設計複審／確認 autovacuum 覆蓋 latest-only 覆寫／parity 測試比
+> JSON 文字／`cost_from_snapshot` 抽出時運算式順序必須逐字保留。
+>
+> **支持 audit 的 C1／C2／C3／C10 全部四項**（C2 附「索引來源要改」但書）。
+>
+> **產出**：`docs/prototypes/storage-foundation-validation.md`（288 行，
+> 12 節齊全）＋兩支丟棄式量測台 `docs/prototypes/PROTOTYPE_*.py`。
+> ⚠ **一處 skill 偏離需裁示**：`/prototype` 規定量測台應存 throwaway
+> branch，但本 session 硬規則是「未經許可不得 push 到指定分支以外」——
+> 老弟選擇遵守後者，量測台留在 `docs/prototypes/`、以 `PROTOTYPE_` 前綴
+> 標記、可一行 `git rm` 移除。
+>
+> **下一步**：可進 `/to-tickets`。**本輪依指示未自行拆票。**
+
+> **現況總覽（2026-09-06 再追加，OPTION-STORAGE-AUDIT-003 完成——
+> 取代上一段「下一步：可進 `/to-tickets`」那句的指向，上一段其餘原文
+> 照舊）**：
+>
+> **背景**：需求方指示對 storage 做窮舉最佳化稽核（H1 `all_candidates`／
+> H2 snapshot 去重／H3 minimal replay seed／H4 壓縮／H5 全 schema），
+> **硬約束是「功能不得退化、效能不得因省 storage 而惡化」**，且要求
+> 逐項以 production consumer ＋ **measured bytes ＋ measured latency**
+> 驗證、不得靠推論。本輪只 audit——不改 production code、不 migration、
+> 不拆票、不開 PR（`git status` 確認只有 `docs/` 與 `CLAUDE.md`）。
+>
+> **量測環境**：本機 PostgreSQL 16.13（`default_toast_compression=pglz`）、
+> repo 自身 schema／引擎、`xyz_v8_production_scale.json`（600 合約、
+> 6 subtype、真實非零 q）。產出 `docs/research/storage-optimization-audit.md`
+> （314 行，含完整 Storage Optimization Matrix）。
+>
+> **五個最重要的實測發現**：
+> 1. **`all_candidates` 佔 view 97.82%，移除它同時「改善」效能**——
+>    寫入 981→41 ms（24×）、單列讀取 380→10.4 ms（36.5×）、落盤
+>    3,171,586→203,010 B（−93.6%）。不是拿效能換空間，兩者同向。
+> 2. **今天真實落盤是 3.04 MiB／次，不是 12–20 MiB**——TOAST(pglz)
+>    已在壓，view 邏輯 21.1 MB → 落盤 3.17 MB（6.66×）。**既有研究與
+>    spec #251 引用的 12.18 MiB 是邏輯大小**，撞牆時間被低估約 6.7 倍
+>    （Neon Free 0.5 GB 實為 168 次，不是 42 次）。
+> 3. **RD-1 的「安全選項」是災難級假優化**——narrow 表存全部合格候選
+>    實測 **26.0 MB／次**，比今天糟 **8.2 倍**，走勢圖查詢 285 ms
+>    （visible-only 是 0.396 ms，快 720 倍）。根因：關聯表逐列有 header／
+>    索引開銷且**吃不到 TOAST**，JSONB blob 吃得到。⇒ **RD-1 已由量測
+>    回答，不再需要 Owner 裁示**：只有 (a) visible-only ＋ L0 回填合理。
+> 4. **snapshot 逐位元相同性成立**（`count(DISTINCT md5)=1/count(*)=3`），
+>    K=5 去重實測省 **80.0%**，讀取延遲 1.83→1.79 ms（**無代價**）。
+>    但列 VALIDATE_MORE——cascade／archive／GC 語意要重寫，且收益完全
+>    取決於 production 真實 K（無遙測，K=1 時零收益）。
+> 5. **H3 整案 REJECT**——`/raw-data` 面板逐欄渲染全部欄位（含引擎零
+>    消費的 `last`），CSV 匯出用 `fields(OptionContract)` **結構性輸出
+>    全部欄位**，刪任一欄都是功能退化。
+>
+> **H1 的消費端邊界以實證取得**：獨立 git worktree 把 `store.py:680`
+> stub 成 `[]` 跑全套後端測試，**只有 9 條失敗**——4 條契約樣本 drift、
+> 1 條 `/history`（唯一真產品消費端）、1 條「儲存全保真」設計斷言、
+> 3 條直接測該欄位本身。CLI golden fixtures 全數通過。
+>
+> ⚠ **抓到一個沉默陷阱（新紅線 RL-33）**：`test_selection_regression.py`
+> **沒有失敗，但它的 `per_expiry_order` 軸悄悄變成空斷言**——該軸由
+> `all_candidates` 構造（`:78-80`），比對是同一次執行內 before vs after
+> （`:175`），欄位變空時兩邊都是 `{}`、恆真。移除前必須把該軸重新定基
+> 到 `expiry_ranked` 或 narrow 表，否則真正的排序回歸會無聲通過。
+>
+> **明確 REJECT 的假優化**：narrow all-qualified（糟 8.2×）／TOAST 改
+> lz4（**反而變大 15.6%**，pglz 在本負載較優）／bytea+zlib（H1 之後只剩
+> 113 KiB／次，卻永久失去 JSONB 運算子）／snapshot 欄位瘦身／退役
+> `events`（0.006%，量測上等於零）。
+>
+> **修正後的理論下限**：今天 3,190,261 B／次 → 移除 `all_candidates`
+> ＋narrow(visible) 254,180 B（12.5×）→ **再加歷史 view 整份退役
+> 51,170 B（62.3×，Neon Free 可撐 10,494 次）** → 加 snapshot 去重
+> 36,372 B（87.7×）。**下限＝narrow 32,495＋snapshot 18,498＋events 177
+> ≈ 51 KiB／次**，OD-06 之下 snapshot 是不可壓縮的地板。
+>
+> **全 schema 窮舉（14 張表）**：具成長性只有四張——`results`
+> （accidentally unbounded）／`snapshots`（L0 seed，OD-06 永久）／
+> `events`（append-only、零前端消費端、量體可忽略）／以及不在刷新路徑
+> 上但無界的 `contract_iv_history` 與 `iv_observations`。其餘九張皆
+> bounded 或已有 retention（`diagnostics` 全域最新 200 筆）。
+>
+> **spec #251 已修正四處**（新增「第 0.5 部」）：A1 單位更正（邏輯 vs
+> 落盤）／A2 RD-1 由量測解決、(b)(c) 改列 REJECT／A3 移除
+> `all_candidates` 是效能改善非取捨／A4 新增 RL-33＋RL-34（紅線
+> 32 → **34**）；另新增候選 A5 snapshot 去重（VALIDATE_MORE）。
+>
+> **仍存在的 Owner Decision 只剩一題**：**RD-2**
+> `contract_iv_history`／`iv_observations` 的 retention／GC 政策
+> （RD-1 已由量測關閉）。不擋拆票。
+>
+> **誠實揭露**：fixture 是合成的（`volume`／`open_interest` 值單一），
+> 6.66× TOAST ratio 應視為**上界**；未在真實 Neon 上量測；production
+> 的 K 值未知；C1 的 stub 實證證明的是**消費端邊界**，不是施工完整性。
+>
+> **下一步**：可進 `/to-tickets`。**本輪依指示未自行拆票。**
+
+> **現況總覽（2026-09-06，Scaling Foundation Spec Reconciliation 完成，
+> 取代上一段「下一步：可進 `/to-tickets`」那句的指向——上一段其餘原文
+> 照舊，本段只記這一輪的結果）**：
+>
+> **背景**：需求方以 `OPTION-SCALING-SPEC-RECONCILE-002` 指示對 spec #251
+> 做 reconciliation，判斷是「為 Spread History 永久保存每次 Refresh 的完整
+> result／candidate history／raw chain snapshot 已是 superseded legacy
+> design，因為 Historical IV 系列已提供 exact OCC contract historical
+> quotes」。**本輪只修 canonical architecture**——不改 production code、
+> 不拆票、不開 PR、不做 migration（`git status` 確認只有
+> `docs/spec/`、`docs/wayfinder/`、`CLAUDE.md` 三處異動）。
+>
+> **稽核方式**：23 個並行 agent（6 路 consumer audit ＋ 15 路三 lens
+> 對抗驗證 ＋ 綜合），其中一路**實際啟動應用程式呼叫兩支端點**、一路
+> **用 repo 自己的引擎跑 30 次模擬刷新×4 seeds**。全部主張皆有 file:line。
+> ⚠ audit 期間工作目錄曾出現一次暫時性 production code 實驗改動
+> （`store.py:680` 被 stub 成 `[]`），已還原，收工時 `git diff HEAD` 對
+> `option_chaser/`／`api_app/`／`src/` 零差異——**未來若再用 workflow 做
+> 稽核，要記得收工前核對工作目錄**。
+>
+> **核心結論一句話**：**「該退役」的判斷成立，但委託指定的替代來源不成立，
+> 真正的替代來源是我們自己已經在存的 raw snapshot。**
+>
+> **委託前提被三條獨立反證推翻**（任一條即足以）：
+> (a) **預設組態下替代路徑完全不存在**——`/history` 無 credential gate、
+> 實測回 200 帶完整 cost；`/iv-history` 預設回 **403**（需 `MODE_CUSTOM`＋
+> provider＋credential `status=="ok"`，出廠是「無」），而取得該 token 正是
+> repo 記載至今未解的 blocker #111。
+> (b) **兩個功能的閘門「不相交」——Butterfly 完全落在替代路徑之外**：
+> SpreadHistory 是 `legs>=2`（含三腿）、IvHistory 是 `legs<=2`（排除三腿），
+> 交集只有兩腿 Vertical；後端 `leg_names=("buy","sell")` 再 `zip` 掉第三腿、
+> 中腿 `quantity=2` 權重無處表達。**且 SpreadHistory 只畫跨 family 冠軍，
+> 而 repo 自己的凍結多 family 基準冠軍正是 `call-fly`。**
+> (c) **即使在兩腿交集內也不是同一條序列**：不同 vendor、不同時刻、粒度
+> 塌縮成每日一點、365 天深度上限且只能向前補、`_num()` 把真實 `0.0` bid
+> 映成缺值；且今天圖表最新點與同頁「Net Worst」逐位元相同（實測 0.49），
+> 換來源會打破這個一致性。
+>
+> **本輪關鍵發現（比委託給的理由更硬）**：`cost` 就是
+> `natural_cost`——Spread `long.ask−short.bid`／Butterfly
+> `low.ask−2.0×mid.bid+high.ask`／單腿 `contract.ask`，**純算術**
+> （`scenarios.py:138-143`）。而 raw snapshot 存的正是未裁切完整鏈的
+> 逐筆 bid／ask，`candidate_key` 完整編碼 strategy＋全部履約價＋到期日
+> （`service.py:623-635`），`find_contract()` 已存在。⇒ **`cost` 逐位元
+> 可從 snapshot 重算，同一 vendor、同一瞬間、免 credential、任何腿數。**
+>
+> **因此推翻了 spec #251 §3.4 的 L2 例外論證**：96 秒是「重跑整份分析」
+> 的成本，走勢圖只要 `cost` 不需要引擎／r／q／IV 反解／校準。L2 仍值得做，
+> 但**理由改為 I/O 不是 CPU**。附帶：即使完全不 materialize、改為即時從
+> snapshot 重算，**也已比今天讀 30 份完整 view（365 MiB）好約 25 倍**。
+>
+> **修正後的分層**：`L0 raw snapshot（OD-06 永久，完整冷來源）→ L2 narrow
+> (scenario_id, analyzed_at, candidate_key, cost) 熱快取，缺格可回填 →
+> L3 歷史 results.view 整份退役`。**這解決了對抗驗證最嚴重的發現**——
+> OD-07 的 visible-only 窄化實測讓 Butterfly 30 點只剩 2–9 點、Vertical
+> 在 spot 跌 17% 的 seed 20 點只剩 2 點；原本這是不可挽回的可見退化，
+> **但 L0 仍在，缺格可回填**，因此降級為「可回補的快取覆蓋率選擇」。
+>
+> **OD-06 從成本負擔升格為地基**（理由升級，非改變決策）：它是歷史 net
+> cost 唯一的完整、免 credential、任何腿數、逐位元相同的來源。
+> **OD-07 語意重新定性**：narrow 表是快取不是真相，永久性保證來自 L0；
+> 且 **L0 回填路徑是 OD-07 的必要配套、不是可選項**。
+>
+> **確認為 superseded legacy 的**：歷史 `results.view` 完整內容／
+> `all_candidates` 的陣列形狀／**single-leg entries（零消費端，純寫入
+> 死重）**／`baseline_return`＋`rank_in_expiry`＋回應的 `spot`（wire 死重，
+> 前端只讀 `cost` 與 `analyzed_at`）／`GET /api/scenarios/{id}/results`
+> （零前端呼叫端，且它無條件 SELECT 含 view 整列只為投影時間戳）。
+> **確認為 canonical 的**：raw snapshots（L0）／Butterfly 的
+> `(analyzed_at, candidate_key, cost)` 事實（有 e2e 釘住、vendor 路徑做
+> 不到）／`option_chaser/cli.py` 重播的**本機檔案 snapshots（另一個
+> store，不可與 DB 表混談）**。
+>
+> **spec 修改**：紅線 27 → **32**（新增 RL-28 去重非刪除／RL-29 必須指明
+> 哪個 snapshot store／RL-30 不得以 vendor 路徑當退役理由／RL-31 不得把
+> view 設成 NULL／RL-32「每次刷新永久留下完整分析世界」不再是 canonical
+> requirement）；新增 **Stage S1-0b「L0 回填路徑」**（排 S1-0 後、S1-1 前）；
+> **EG-2 關閉**（答案是可以全退役，因為 L0 在）；S1-6 範圍擴大為整份歷史
+> view 可退役（三條永久禁令不變）。
+>
+> **修正後 growth model**：今天 ~12.66 MiB／次（view 12.18＋snapshot
+> 0.48 TLT）→ 建議態 **≈ snapshot ＋ KiB 量級**，成長從 O(derived) 降為
+> **O(seed)**。誠實殘餘不變：Neon Free 0.5 GB ⇒ TLT 約 1,000 次／SPY 約
+> 200 次仍會滿，**推後一個數量級、沒有消滅**。⚠ 新發現兩個原研究從未分析
+> 的無界 store：`contract_iv_history`（points append-only、只在讀取時裁
+> 365 天、到期不 GC）與 `iv_observations`（無 retention、`delete_scenario`
+> 不 cascade）——不在刷新路徑上，但在長期總量裡。
+>
+> **仍存在的 Owner Decision 只有兩題**（皆不擋 spec 與拆票）：**RD-1**
+> narrow 覆蓋率檔位（(a) visible-only ~2.7 KiB＋回填【建議】／(b) 全部
+> 合格候選 ~3.97 MiB 逐位元不變但仍無界／(c) 中間帶）；**RD-2**
+> `contract_iv_history`／`iv_observations` 的 retention／GC 政策。
+> 對抗驗證原本浮現的 credential／Butterfly／序列不同一三題，**已因改用
+> L0 而全部解掉**。
+>
+> **產出**：`docs/spec/scaling-foundation.md` 改為兩部式（第 0 部
+> RECONCILE-002 全文為準、第 1 部 SPEC-001 原文逐字保留，被取代處已就地
+> 標記）；`docs/wayfinder/scaling-foundation.md` 新增 §16 更正兩處結論；
+> GitHub issue #251 新增 reconciliation 留言（未覆蓋本文）。
+>
+> **下一步**：可進 `/to-tickets`。**本輪依指示未自行拆票。**
+
+> **現況總覽（2026-09-05 再追加，Scaling Foundation Spec 已發布，
+> 取代上一段「下一步：可進 `/to-spec`」那句的指向——上一段其餘原文
+> 照舊，本段只記這一輪的結果）**：
+>
+> **背景**：承接 `OPTION-SCALING-WAYFINDER-002` reconciliation
+> （標記 `READY_FOR_SCALING_SPEC`），需求方以 `OPTION-SCALING-SPEC-001`
+> 指示把地圖固化成正式 spec，並補下三條新的 Owner Decision——
+> **OD-06**（raw option-chain snapshot **永久保存**，Foundation 階段
+> 維持現有 storage location、不新增 object-storage dependency）、
+> **OD-07**（歷史走勢只 materialize **使用者實際點得到**的 candidate，
+> 最小四欄 `scenario_id`／`analyzed_at`／`candidate_key`／`cost`，
+> **永久保存暫不設 retention**）、**OD-08**（diagnostics 視為
+> **user-scoped operational data**，未來 ownership boundary 建立時必須
+> 依 owner 隔離）。**本輪只寫 spec**——不改 production code、不開票、
+> 不做 migration、不開 PR（`git status` 確認只有 `docs/spec/`
+> 新增檔案與 `CLAUDE.md` 兩處異動）。
+>
+> **產出**：**GitHub issue #251**（`ready-for-agent`），repo 內副本
+> `docs/spec/scaling-foundation.md`（905 行，20 節，涵蓋需求方指定的
+> 19 個必要章節），結尾標記 **`READY_FOR_SCALING_TICKETS`**。
+>
+> **兩個施工前接縫問題已由需求方拍板**（寫在 spec §13.1／§8.4）：
+> - **測試接縫＝沿用既有七個、零新增**（HTTP API／引擎純函式／
+>   Storage port 契約(memory＋真 Postgres)／契約樣本 drift／
+>   selection identity＋numeric guard／CLI golden fixtures／
+>   前端 Vitest＋Playwright）。唯一新增的是 `create_app()` 的第九個
+>   DI 注入參數（identity resolver），沿用既有 `fetch=`／
+>   `rate_loader=`／`refresh_run_budget=` 慣例，**不是新接縫**；
+>   Stage 1-2 的 parity proof 是**新測試、不是新接縫**。
+> - **429 backoff 狀態＝持久化進既有 Storage port**（新增極小的
+>   `chain_backoff` 表，鍵 `(source, symbol)`，只存 `blocked_until`／
+>   `retry_after_seconds`／`consecutive_failures`／`observed_at`／
+>   `last_success_at`）。**RL-19 明文紅線：不得儲存任何 chain
+>   payload／市場報價／合約資料**——它與 ADR-0001／OD-05 evidence
+>   gate 卡住的 chain shared cache 是不同的東西，這條界線必須同時
+>   寫進 schema 註解、dataclass docstring 與 commit 訊息（spec N8）。
+>   會需要持久化是因為 `REFRESH_RUN_GROUP_LIMIT = 1` 讓每個 symbol
+>   group 各自是一次獨立 invocation，行程內記憶體依地圖 §8.1 不能當
+>   correctness layer。
+>
+> **Canonical Storage Principle（spec 明文寫入）**：保存不可確定性
+> 重建的 seed ＋ provenance ＋ version；deterministic derived output
+> 原則上不永久保存，除非它位於高成本 read path、必須 materialize。
+> 資料分四層 **L0 Seed／L1 Provenance & Version／L2 Materialized
+> derived（必要例外）／L3 Pure derived**，spec §3.3 逐項列出各資料
+> 類型歸屬。
+>
+> **Storage Migration 硬性順序（不得跳步，spec §6 狀態機）**：
+> **1-0 拆 seed**（把寄生在 `results.view` 內的 r／q／provenance／
+> source／fetched & effective dates／stale state／`engine_version`／
+> `schema_version` 抽成獨立持久化欄位；**這一步完成前禁止移除
+> historical view**）→ **1-1 dual-write** → **1-2 parity proof** →
+> **1-3 切換 read path** → **1-4 production validation** →
+> **1-5 停止 obsolete writes** → **1-6 不可逆 cleanup**（唯一被
+> Owner 未決事項擋住的一步）。三條永久禁令：raw snapshots 不刪、
+> narrow visible-candidate history 不刪、current result view 不瘦身。
+>
+> **Regression Red Lines 共 27 條**（RL-01～RL-27，spec §14 分八組）。
+> 硬紅線一句話：**Performance / product behavior preservation >
+> storage savings**。守門機制**全部沿用既有的**（`test_selection_
+> regression.py` 身份＋數值雙軸、五份 CLI golden fixtures、契約樣本
+> drift、前端 Vitest／Playwright），只在既有 guard 真的不足時才補
+> 必要 guard、不改產品。
+>
+> **spec 施工分級**：**NOW 六項可平行開工**——S0 最小可觀測性
+> （建議最先，它是 EG-1 的唯一證據來源）／S1-0 拆 seed／S1-1～1-5
+> storage 遷移／S2 Cboe 429 韌性／S3 Ownership A-1／S4 Treasury
+> Cron 排程。**BLOCKED_ON_OWNER 只有 S1-6**。**不在本 spec**：
+> S6 chain 30 秒共用窗（受 ADR-0001 evidence gate 約束）、S7
+> authentication（A-2）。
+>
+> **三個 Remaining Evidence Gates**（spec §19）：**EG-1** chain 跨
+> request 共用（參數已定 30 秒、機制未定，需 S0 的量測＋含新增往返
+> 成本的比較；gate 時應一併評估 ADR-0001 從未評估過的 Vercel Edge
+> CDN 選項）／**EG-2** S1-6 要清理的「歷史 view 完整內容」保留多久
+> （**目前無 blocker**，OD-06／OD-07 已把 snapshot 與 narrow history
+> 定為永久；這題只擋施工尾端的不可逆那一步）／**EG-3** per-symbol
+> 觀測計數在 A-2 時的處置（登記在案，不擋任何一步）。
+>
+> **一項必須讓需求方知情、spec 已明文揭露的行為變化**：改成只
+> materialize visible top candidates 之後，一個**今天**在前十名、
+> 但**過去某次刷新**曾掉出前十名的候選，那一格會從「有值」變成
+> 「斷點」。這在 OD-07 字面之內，且既有「缺席即斷點、不插值」語意
+> 已優雅處理（圖上自然斷一格、不會壞掉），但它**確實是歷史圖表的
+> 可見行為變化**——spec 要求 Stage 1-2 parity proof 必須把這類 case
+> **分類計數並報告**，不得混進 pass／fail 兩邊任一側掩蓋掉。
+>
+> **另一項誠實算術**：OD-06 之後成長率降到約 1/25，但 seed 本身仍是
+> 每次刷新 0.48 MiB（TLT）／2.55 MiB（SPY）的硬成長——Neon Free
+> 0.5 GB ⇒ TLT 約 1,000 次／SPY 約 200 次刷新後仍會滿。**這把撞牆
+> 時間往後推了一個數量級，沒有消滅它。** 屆時依 OD-06 的解法是搬到
+> archival／object storage、不是刪 seed，而那明文屬本 spec Out of
+> Scope，需另開一線。
+>
+> **下一步**：可進 `/to-tickets`（依 spec §18 的 Stage Map 為骨架，
+> 三條硬前置寫在 §18.1）。**本輪依指示未自行拆票。**
+
+> **現況總覽（2026-09-05 追加，Scaling Foundation Reconciliation
+> 完成，取代上面兩段「下一步」的指向——上面兩段其餘原文照舊，本段
+> 只記這一輪的結果）**：
+>
+> **背景**：需求方對 Wayfinder 地圖下了五條 Owner Decision（OD-01
+> Treasury 排程／OD-02 Storage 核心原則／OD-03 Migration Safety／
+> OD-04 Ownership／OD-05 Chain freshness 與 429），以
+> `OPTION-SCALING-WAYFINDER-002` 開一輪 **reconciliation**——不是
+> 新地圖，是把既有地圖與這五條對齊、移除內部矛盾、重整 Storage
+> lifecycle、更新 dependency graph 與 Stage map、只留真正未決的
+> Owner Decision。**本輪只更新地圖**——不改 production code、不寫
+> spec、不開票、不做 migration、不開 PR、不碰 Cross-Scenario／
+> Position（`git status` 確認只有
+> `docs/wayfinder/scaling-foundation.md` 一個檔案異動）。
+>
+> **產出**：`docs/wayfinder/scaling-foundation.md` 全面改寫
+> （972 → 1,312 行，15 節），結尾標記從
+> `READY_FOR_SCALING_OWNER_DECISIONS` 改為 **`READY_FOR_SCALING_SPEC`**。
+>
+> **本輪最重要的技術發現（OD-02 要求「必須先證明 seed + version →
+> deterministic reconstruction」，這是證明的結果）**：
+> - **F4｜`today` 完全由 snapshot 決定、不吃 wall clock**
+>   （`service.py:1252` `today = snapshot_today(snap.fetched_at)`）。
+>   同一份 snapshot 在任何一天重放，`today` 都是同一個值——determinism
+>   最典型的殺手今天就已經不存在。
+> - **F5｜重建所需的估值輸入「寄生」在要被瘦身的 payload 裡**。
+>   `service._analyze()` 解出 r／q 後回寫 request（`service.py:1264`），
+>   `store.serialize_result()` 把**解析後**的 params 整包序列化
+>   （`store.py:766`）——所以 `rate_by_expiry`／`q_by_symbol`／全部
+>   provenance／`engine_version` 今天的物理位置就在 `results.view`
+>   內部。**先砍 view 再說「反正能重建」，會把重建能力本身一起砍掉。**
+>   由此推導出地圖新增的 **Stage 1-0「拆 seed」**——任何 storage
+>   瘦身的不可跳過前置。
+> - **F6｜`snapshots` 存的是未經裁切的完整鏈**（`main.py::_analyze()`
+>   回傳的是傳入的原始 snap，不是 service 內部 `_scoped_to_selected_
+>   expiries()` 裁切後的 local rebind），且 Cboe 無歷史端點、免 key
+>   路線已於 #111 窮舉確認不存在 ⇒ **snapshot 是不可重新取得的
+>   seed**。這**推翻了 001 版「只保留每個劇本最新一次快照」那個選項**。
+> - **OD-02 的必要例外（委託明文要求列出的那種）**：歷史走勢圖需要的
+>   `cost` 序列**理論上可從 seed 重建、實務上不行**——研究 M8 單次
+>   3.21s（且那是 q=0 快路徑，完整校準路徑既有量測是 7.543s／
+>   REPAIR-03），刷新 30 次的劇本重建整條線 ≥96 秒，放不進一個 GET
+>   request。**因此它必須 materialize**，但最小集合只有四欄
+>   `(scenario_id, analyzed_at, candidate_key, cost)`（F1 已證前端只讀
+>   `cost`，本輪重驗成立：`rank_in_expiry`／`baseline_return` 在 `src/`
+>   生產碼零讀取）。
+> - **determinism 的真實邊界**：`engine_version` 只是標籤、舊版引擎不在
+>   資料庫裡，所以「用今天的引擎重新評價當時資料」（re-analysis）可行，
+>   「逐位元重現當時使用者看到的畫面」（reproduction）**不可行**。
+>   T01 數值基準至今已有 9 次合法重產事件，證明這不是理論風險。
+>
+> **Storage 最終分層（四層，不是 OD-02 字面的兩層）**：L0 Seed
+> （使用者輸入／raw snapshot／估值輸入）＋L1 Provenance & Version
+> ＋**L2 Materialized derived（必要例外）**＋L3 Pure derived。
+> 一句話：**永久＝使用者輸入／raw snapshot／估值輸入+provenance+
+> version／events／走勢圖四欄窄事實；短期＝歷史 view 完整內容；
+> 不動＝current view 的一切（OD-03 紅線）。**
+>
+> **修正的八處內部矛盾**（地圖 §14.1 逐處列表，含 001 版原文與處置）：
+> 最關鍵三處——(C1) 001 版「A-1 解掉 correctness 與 **privacy**」違反
+> OD-04，已改為「A-1 建立的是 data boundary，privacy 只能來自 A-2」；
+> (C2) 「只保留最新一次快照」選項作廢；(C5) C-1（429 韌性）原本卡在
+> 「等 Owner 裁示使用者看到什麼」，**OD-05 第 3～7 條已回答完畢，
+> 阻擋解除**。
+>
+> **OD-05 的關鍵拆解**：七條裡**只有兩條**（30 秒窗、手動 Refresh 不
+> 繞過）需要跨 request 共用機制、留在 evidence gate 後面；**其餘五條
+> （顯示 fetched time／429 顯示上次成功＋stale／honor Retry-After／
+> 禁止立即重打／持續失敗揭露）不需要任何快取，可直接施工**。
+>
+> **可立即開工的項目從 001 版的四項增為五項**：Stage 0 最小量測／
+> Stage 1-0 拆 seed（新增）／Stage 1-1..1-5 storage 遷移／Stage 2
+> 429 韌性／Stage 4 Treasury 排程。**唯一被未決事項擋住的是 Stage
+> 1-6（不可逆 cleanup）**，而 OD-03 自己把它排在六步的最後一步——
+> 所以它擋施工尾端、不擋 spec。
+>
+> **剩餘 Owner Decisions 只有四題**（其餘八題已由 OD-01～05 與
+> runtime 研究解除，地圖 §9.0 有可追溯對照表）：Q1 seed retention
+> （**唯一不可逆的一題**）／Q2 走勢圖 materialize 範圍與時間窗
+> （範圍本輪給了建議值「畫面上點得到的每一個」，時間窗無法從 OD-02
+> 推導）／Q3 diagnostics 的 symbol 算不算需隔離（OD-04 未涵蓋）／
+> Q4 四項知情事項（不要求決定）。
+>
+> **下一步**：可進 `/to-spec`。三條硬前置寫在地圖 §14.3——Stage 1-0
+> 必須最先；Stage 1-6 在 Q1／Q2 有答案前不得執行；Stage 4 不得移除
+> 同步 refresh-on-miss 保底路徑。
+
+> **現況總覽（2026-09-04 再追加，Targeted Runtime Research 完成，
+> 取代上面「等需求方回答地圖 §9 的 Owner Decisions Q1–Q7」那句的
+> 下一步指向——上面 Wayfinder 那段其餘原文照舊，本段只補這一輪新查
+> 的兩個事實）**：
+>
+> **背景**：Wayfinder 地圖 §9 Q6 明列兩個「廉價、但會改變設計」的
+> 未查證事實（production 是否啟用 fluid compute、Python runtime
+> 有沒有 `waitUntil` 等價物），需求方指示以 `/research` 開一輪
+> **targeted**（非大型）研究專門查這兩題，不重寫既有結論。已完成，
+> 產出 `docs/research/runtime-targeted-scaling.md`（394 行）＋在
+> `market-data-lifecycle-scaling.md`／`scaling-foundation.md` 各補
+> 一句 pointer（純加法、零刪除，`git diff --stat` 已核對）。
+>
+> **Q1 Fluid Compute＝NOT_CONFIRMED**（不是「沒查」，是「查了查不到」）：
+> Vercel MCP 六種直接查詢路徑（`list_projects`／`get_project`／
+> `get_deployment`／`get_git_deployment_context`／
+> `get_project_deployment_protection`／`web_fetch_vercel_url`）對真實
+> production 專案 `option-chaser` 全數 404 或零可見度（`list_projects`
+> 回空陣列，連「這個團隊有哪些專案」都查不到）——比先前已知的
+> 「MCP 剛建立的臨時專案讀不回來」更明確，這次是**這個 MCP 授權
+> 對它宣稱擁有的團隊底下、任何專案（含真實長期存在的 production）
+> 都沒有讀取權**。用 `curl` 繞過 MCP 直打 production `/api/health`
+> 確認網站本身健康（`HTTP/2 200`），問題只在 MCP 對這個專案的可見度。
+> repo `vercel.json` 無顯式 `fluid` key，故狀態完全取決於 dashboard
+> 設定、本輪查不到。**Owner 可自行一分鐘查完**：Vercel dashboard →
+> `option-chaser` 專案 → Settings → Functions → Fluid Compute 開關。
+>
+> **Q2 Python Background Execution＝NOT_SUPPORTED（as officially
+> documented）**：四份官方文件一致否定——`@vercel/functions` 套件頁
+> `<title>` 本身寫死 `"(Node.js)"`；官方 Python SDK 參考頁
+> （`vercel-sdk-python`）六個章節窮舉列出，`waitUntil` 零命中；
+> Python runtime 主文件頁零命中；2024-05-10 官方 changelog 原文
+> 明講 `waitUntil` 首發範圍是「Node.js and Edge runtimes」。一則
+> dev.to 部落格聲稱 Python 也支援，與四份官方文件矛盾，已列為未仲裁
+> 殘留疑點、不採信為結論（見文件 §5）。
+>
+> **對 Wayfinder 既有結論的影響（地圖本身未改動，只加 pointer）**：
+> - §7.1「process-local cache 只能當 L1」——**結論方向不變、反而
+>   更站得住腳**：連「有沒有開 fluid compute」都確認不了，更沒有
+>   理由把任何正確性建立在它上面；"can" 不是 "will" 的官方原句
+>   本輪逐字覆核成立。
+> - §6.2 stale-while-revalidate——**從「不確定」變成「確定不可行
+>   （原始 fire-and-forget 形狀）」**，但 SWR 目標不必因此放棄：
+>   新文件 §2.3(d) 指出兩個不依賴背景執行 API 的替代觸發形狀——
+>   (a) 同步 refresh-on-miss（`treasury_cache.py`／`rate_cache.py`／
+>   `dividend_cache.py` 既有 PERF-03／#179 落地的形狀，本來就是這樣）
+>   (b) Vercel Cron 打專屬 refresh endpoint；兩者可疊加。
+>
+> **下一步**：地圖 §9 的 Owner Decisions 現況——Q6 已解答（本輪），
+> **Q1–Q5、Q7 仍待需求方回答**，才進 `/to-spec`。本輪依指示只查證、
+> 未修改 Wayfinder 任何既有決策內文。
+
+> **現況總覽（2026-09-04 追加，Scaling Foundation Wayfinder 完成，
+> 取代下面「等需求方審閱兩份研究文件」那句的下一步指向——其餘原文
+> 照舊）**：
+>
+> **背景**：承接 2026-09-03 完成的 market-data scaling 研究，需求方
+> 開了 `OPTION-SCALING-WAYFINDER-001`，指示以 `/wayfinder` 收斂出
+> Option Chaser 走到 ≥1,000 active users 前的**最小必要** Scaling
+> Foundation。**本輪只畫地圖**——不改 production code、不寫 spec、
+> 不開票、不做 migration、不開 PR、不自行回答 Owner Decision
+> （`git status` 確認只新增 `docs/wayfinder/` 一個目錄）。
+>
+> **產出**：`docs/wayfinder/scaling-foundation.md`（962 行，13 節：
+> Current State／Destination Criteria D1–D8／五個 Decision Cluster
+> A–E／Dependency Graph 推導＋Stage 0–7／Minimum Foundation vs
+> Deferred 分級表／Owner Decisions Q1–Q7／Correctness vs Optimization
+> ／Failure Domains／一頁 ASCII 總覽／誠實侷限），結尾標記
+> `READY_FOR_SCALING_OWNER_DECISIONS`。
+>
+> **核心結論**：
+> - **Scaling Foundation 實際只有四塊**——(1) results/snapshots
+>   retention 與 payload 瘦身、(2) user ownership boundary、(3)
+>   option chain 429 韌性、(4) 最小可觀測性。其餘全部可延後或
+>   evidence-gated。
+> - **最貴的兩個問題都不需要 cache／lock／scheduler**：storage
+>   retention 在 U=1 就會咬人（Neon Free 0.5 GB ÷ 12.18 MiB 單列
+>   ⇒ 42–402 次 refresh 就滿），user ownership 是把成本從 O(U²)
+>   壓回 O(U) 的唯一開關（既有 blocker #59）。兩者都是純資料層改動。
+> - **Option chain「共用」刻意延後、掛 evidence gate**：ADR-0001
+>   自己訂的重開條件（traffic shape 改變＋含新往返成本的量測）目前
+>   拿不出來，先建可觀測性再談；但 chain 的 **429 韌性必須現在做**
+>   ——`cboe.py` 裸 `except Exception` 加上 production 結構上不可達
+>   的 yfinance 備援，一旦被限流是全站中斷且無自動恢復。
+> - **本輪自行覆核新增三項發現（F1–F3，寫在地圖 §1.3）**：F1
+>   `all_candidates` 96.4% 的體積只服務 `SpreadHistory` 一條折線的
+>   y 值（`rank_in_expiry`／`baseline_return`／`spot` 在 `src/` 零
+>   讀取端）；F2 `spread_cost_history()` docstring 早已明訂缺席即
+>   斷點、不插值，大幅降低「縮減保存內容」的風險；F3
+>   `provider_credentials` 全站單一、無 user 欄位，同時是隱私、
+>   成本與設計限制問題——由此推導出 §4.4 的約束：共用 chain cache
+>   必須以 `(symbol, source)` 為鍵，且**不得**快取自訂來源
+>   （使用者自己 token）抓到的資料。
+> - **推導出一條不直觀的相依邊**：最小可觀測性（Stage 0）必須早於
+>   chain 共用的決策閘門（Stage 5）——沒有量測就無法依 ADR-0001
+>   自己的標準重開該決策。
+>
+> **下一步**：等需求方回答地圖 §9 的 Owner Decisions Q1–Q7（皆為
+> 白話具體情境題），才進 `/to-spec`。本輪依 Hard Rule 到此為止。
+
+> **現況總覽（2026-09-03 追加，Market Data Lifecycle & Scaling 研究
+> 完成，取代下面「等需求方下一輪指示」那句的下一步指向——其餘 master／
+> PR #250 現況原文照舊，這裡只補這一輪新開的獨立研究）**：
+>
+> **背景**：Initial V2 merge 之後，需求方開了一個與 Initial V2 無關的
+> 新獨立階段——`OPTION-MARKET-DATA-RESEARCH-001`，盤點 Option Chaser
+> 現有的 Treasury／Dividend／Option Chain 三條外部 market-data 資料流，
+> 研究 100／1,000／10,000 users 規模下的 scaling 風險。**本輪只研究、
+> 不施工、不寫 spec、不開票、不動 production code**（`git status` 確認
+> 只新增兩個檔案，零其他改動）。
+>
+> **產出兩份文件**：`docs/research/market-data-lifecycle-scaling.md`
+> （Executive Summary／Current-State Data Flow／Treasury／Dividend／
+> Option Chain／Vendor 與 Platform 限制／Scaling Model／Architecture
+> Patterns／P0-P1-P2 風險分級／Open Questions for Wayfinder／
+> Sources＋Evidence 十一節齊全，結尾標記
+> `READY_FOR_MARKET_DATA_WAYFINDER`）與
+> `docs/research/market-data-current-state-map.md`（三張 Mermaid 圖＋
+> 四張邊界表，全部標到 file:line）。全部外部限制引用皆為一手來源
+> （Treasury 官方頁、Vercel 官方文件、Neon 官方文件、Market Data App
+> 官方文件、實測 curl 觸及 cdn.cboe.com／query2.finance.yahoo.com／
+> api.nasdaq.com），已抽查點驗過幾項最關鍵主張（`chain_cache.py` 確實
+> 已被刪除、`REFRESH_RUN_GROUP_LIMIT=1`、`cboe.py` 確實是裸的
+> `except Exception`、rate/dividend cache 確實沒有 lock、
+> `all_candidates` 確實是無上限成長來源、`main.py` 確實零 user 隔離）
+> 皆與原始碼相符。
+>
+> **核心結論（完整版見上述兩份文件，回報全文見對話紀錄
+> ［回報#058］）**：
+> - **Treasury／Dividend 兩條線已經是 shared 架構**（Neon 全站快取，
+>   非 per-user／per-scenario），量體本身不是問題；真正的缺口是【沒有
+>   single-flight】——同一市場日第一次 cache miss 的短窗內，並發請求
+>   會各自重打一次 vendor。
+> - **Option Chain 完全沒有共用**——ADR-0001 當初刻意只做「同一次
+>   Refresh Run 內的 symbol 去重」，跨使用者、跨 invocation 一律各抓
+>   各的；且 `cdn.cboe.com` 本輪**實測會回 429**（帶
+>   `retry-after: 34`），而 `option_chaser/data/cboe.py` 目前是無腦
+>   `except Exception → FetchError`，備援 yfinance 在 production 因
+>   `pyproject.toml` 未裝該 extra 而【結構上不可達】——這條路徑一旦被
+>   限流，是全站核心功能中斷，不是效能問題。
+> - **1,000 users 最先撞到的不是 vendor quota，是自家 Neon**：
+>   `results.view` JSONB 單列已實測到 12.18 MiB（Initial V2 三個
+>   family 全開時，96.4% 是 `all_candidates` 這個目前唯一消費者
+>   `spread_cost_history()` 每次只查一個 key 的欄位），且**完全沒有
+>   retention**；疊加既有已知 blocker #59（多使用者隔離未定案，
+>   `main.py` 全檔零 `Depends`／零 user 過濾，任何人開站會刷新資料庫
+>   裡所有人的劇本）會讓成本呈 O(U²) 而非 O(U)。
+> - 研究過程中發現並記錄（**只記錄證據、未修**）CLAUDE.md／既有 ADR
+>   與現況有出入的 7 處（例如「60 秒硬性上限」其實是自設非 Vercel
+>   官方上限、`chain_cache.py` 早被刪除但 PERF-06/07 段落仍描述其存在、
+>   容器網路現況已與「## 環境」一節記載的舊限制不同——WebFetch／各
+>   vendor 網域本輪皆可直接觸及），細節見研究文件 §5／§10。
+> - 8 個問題明確**未裁定、留給 Owner／未來 `/wayfinder`**（最急：#59
+>   多使用者隔離定案是後續一切 scaling 設計的前提；results/snapshots
+>   retention 政策；要不要重開 ADR-0001）。
+>
+> **下一步**：等需求方審閱兩份研究文件，親自或另開 `/wayfinder` 决定
+> 方向；本輪依指示到此為止，未自行進入 `/wayfinder`。
+
+> **現況總覽（2026-09-03，寫給接手的新 session 看，取代下面所有更舊
 > 的「現況總覽」／「目前狀態」標頭——那些是歷史留存，內文本身依然
 > 正確，但「現在該做什麼」一律以這段為準）**：
+>
+> **master 現況：已合併，Initial V2＋Production Repair＋UI Closeout
+> 全數上線。** PR #250（涵蓋 spec #217 Initial V2 T01–T18、spec #237
+> Production Repair REPAIR-01–12、CLOSEOUT-001–004）已於 2026-09-03
+> 由需求方核准並 merge，**merge commit `864dd5c`**（普通 merge，非
+> squash／rebase）。已驗證：merge commit 兩個 parent 正確（舊 master
+> `c8dd87a`＋分支 head `52c4067`）、分支 head 是 master 祖先、
+> **master tree 與分支 tree 完全相同**（無任何檔案回退）。Production
+> （`option-chaser.vercel.app`）已由新 master 觸發重新部署並確認上線
+> ——`GET /api/scenarios` 實測回傳 Initial V2 專屬欄位（`direction`／
+> `family_eligibility`／`representative_candidate.legs[]`／真實
+> `call-fly` 三腳 champion），這些欄位合併前不存在，證明 production
+> 確實在跑新版本（Vercel MCP 工具本身讀回 API 一如既往 404，沿用既有
+> 「已知工具整合缺陷」記載，改用這個間接但決定性的證據）。
+>
+> **GitHub issue 現況**：#217（Initial V2 母票）／#237（Repair 母票）
+> ／#235（T18 最終驗收票，實質是「等需求方 acceptance」那張）三張
+> 已隨 merge 正式關閉（`completed`），子票 #218–#249 先前已全數關閉。
+> 全部三張的**留言**（非內文本身）都補上「PR #250 已 merge，Owner
+> 真機 acceptance 已完成」的簡短記錄。
+>
+> **⚠ 本次收尾過程中的一個操作事故，已修復、記錄供未來 session 留意**：
+> 關閉 #217／#235／#237 時，第一次呼叫 `issue_write` 的 `method:
+> "update"` 誤把 `body` 參數當成「加留言」使用——**該工具的 `body`
+> 其實是覆蓋 issue 本文**，不是留言。三張 issue 的完整 spec 內文因此
+> 一度被短短几句關閉說明整個蓋掉。發現後立即用 `add_issue_comment`
+> （正確的留言工具）逐字還原三份原文（從本次對話自己稍早讀取到的
+> 完整內容逐字複製回去，非重寫），並用 `issue_read` 逐份核對還原後
+> 內容與原文位元組級一致，才改用 `add_issue_comment` 補上關閉留言。
+> **教訓**：GitHub issue／PR 相關 MCP 工具若同時支援「編輯」與
+> 「留言」兩種語意，動手前務必先確認清楚哪個參數對應哪個動作，尤其
+> `issue_write`／`pull_request_review_write` 這類「一個工具多種
+> method」的介面——`update` 幾乎必然是覆蓋而非追加。
+>
+> **下一步**：Initial V2 這一整條主線（Wayfinder 地圖 #209 → spec
+> #217 → 拆票 #218–#235 → 真機驗收發現 P1–P4 → spec #237 → 拆票
+> #238–#249 → PR #250 merge gate review 兩輪 → merge）**已完整收工**。
+> `claude/implement-tfm9oa` 分支**暫不刪除**（依需求方指示，留待
+> production 最終確認後再決定）。等需求方下一輪指示——新功能、新一輪
+> `/qa`、或是否要刪除已合併完的工作分支。
 >
 > **master 現況**：master 仍停在 2026-08-26 那次 merge（PR #207，
 > merge commit `459fb4f`）。工作分支 `claude/implement-tfm9oa`

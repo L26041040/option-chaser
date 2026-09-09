@@ -983,6 +983,32 @@ test("刷新失敗說明是哪一段，重試就地重來（V4／#52）", async 
   await expect(page.getByText("抓不到報價（可稍後重試）")).toBeHidden();
 });
 
+test("限流失敗顯示結構化倒數與 Cboe 專屬文案，視窗內重試鈕停用" +
+  "（SCALE-05／#260）——手機版", async ({ page }) => {
+  await page.route("**/api/scenarios", (route) =>
+    route.fulfill({ json: [pendingRow] }));
+  // `blocked_until` 設在足夠遠的未來（+120s），確保整個測試執行期間
+  // 倒數維持正值，不必操弄真實時鐘也能穩定斷言。
+  const blockedUntil = new Date(Date.now() + 120_000).toISOString();
+  await page.route("**/api/scenarios/refresh-run", (route) =>
+    route.fulfill({ json: { results: [{ scenario_id: "s1", ok: false,
+      stage: "rate_limited", message: "TLT 的報價來源目前受限流",
+      blocked_until: blockedUntil, retry_after_seconds: 120,
+      remaining_seconds: 120, last_success_at: null, incident: false }],
+      remaining: [] } }));
+
+  await page.goto("/");
+
+  // AC-2：講的是結構化的「誰、還要等多久」，不是把 message 原文吐出來。
+  await expect(page.getByText("Cboe 資料來源目前限流中")).toBeVisible();
+  await expect(page.getByText(/還要等約 1(1[0-9]|20) 秒才能重試/)).toBeVisible();
+  await expect(page.getByText("TLT 的報價來源目前受限流")).toBeHidden();
+
+  // Regression Red Line：backoff 視窗內不允許 retry storm。
+  await expect(page.getByRole("button", { name: "重試 TLT 2028-05" }))
+    .toBeDisabled();
+});
+
 test("REPAIR-05／#242 A：曾成功過的劇本刷新失敗——卡片反灰、明講顯示的" +
   "是舊結果、仍可點入詳細頁看到最後一次成功結果——手機版", async ({ page }) => {
   const row = refreshedRow();   // best_return 已有值＝曾經至少成功過一次

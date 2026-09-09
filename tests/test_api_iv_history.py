@@ -381,11 +381,17 @@ def _long_call_candidate_key_and_view(client):
 def _attach_result(db, sid, view, *, analyzed_at="2026-08-12T00:00:00+00:00"):
     """把一份 view 直接存成該 Scenario 的最新結果——繞過 `/refresh`
     （那條路徑目前只跑 bull-call-spread），純粹是為了在端點層測試單腳
-    資料路徑，不代表產品裁示 Scenario 該支援 long-call。"""
+    資料路徑，不代表產品裁示 Scenario 該支援 long-call。
+
+    SCALE-16（#267）：「最新結果」自本票起讀的是 `current_results`
+    （`latest_result()`），不是 historical ledger（`save_result()`）
+    ——兩者都要寫，前者才是端點真正會讀到的那一份。"""
     from api_app.storage import ResultRecord
 
-    db.save_result(ResultRecord(scenario_id=sid, analyzed_at=analyzed_at,
-                                view=view))
+    rec = ResultRecord(scenario_id=sid, analyzed_at=analyzed_at,
+                       view=view, owner_id="solo")
+    db.save_result(dataclasses.replace(rec, view=None))
+    db.save_current_result(rec)
 
 
 def test_a_long_call_candidate_returns_200_not_the_old_blanket_none(db):
