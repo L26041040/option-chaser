@@ -1065,6 +1065,112 @@ describe("建立與刷新同時發生（V4／#52 檢視回饋）", () => {
   });
 });
 
+describe("Phase A2：建立成功後自動收合表單、捲動並聚焦到新卡片", () => {
+  const row = {
+    ...(sampleRow as unknown as Record<string, unknown>),
+    id: "s1", symbol: "TLT", target_price: 120, target_month: "2028-05",
+    latest_analyzed_at: "2026-08-04T09:30:00+00:00", best_return: 1.5,
+    target_anchor: "2028-05-19", days_to_anchor: 653,
+  };
+  const created = {
+    ...row, id: "s2", symbol: "SPY", target_price: 700, target_month: "2028-05",
+    latest_analyzed_at: null, best_return: null,
+  };
+
+  afterEach(() => { window.location.hash = ""; });
+
+  async function fillAndSubmit() {
+    await openCreateForm();
+    await userEvent.type(screen.getByLabelText("標的代號"), "spy");
+    await userEvent.type(screen.getByLabelText("目標價位"), "700");
+    await pickMonth(2028, 5);
+    await userEvent.click(screen.getByRole("checkbox", { name: "Call / Put" }));
+    await userEvent.click(screen.getByRole("button", { name: "建立" }));
+  }
+
+  it("手機版：建立成功後表單自動收合、新卡片被捲動並聚焦", async () => {
+    // jsdom 沒有真正的版面引擎，`scrollIntoView` 預設是無害的 no-op——
+    // 這裡改成可觀察的 spy，只驗證「有沒有被呼叫」，不驗證真實捲動量。
+    const scrollSpy = vi.spyOn(Element.prototype, "scrollIntoView")
+      .mockImplementation(() => {});
+    const spy = mockRoutes({ "/api/scenarios": { json: async () => [row] } });
+    spy.mockImplementation(withRefreshRunBridge(async (url, init) => {
+      if (url === "/api/scenarios" && init?.method === "POST") {
+        return { ok: true, status: 201, json: async () => created };
+      }
+      if (url.endsWith("/refresh")) {
+        return { ok: true, status: 200, json: async () => row };
+      }
+      return { ok: true, status: 200, json: async () => [row] };
+    }));
+    render(<App />);
+
+    await fillAndSubmit();
+
+    // 收合：入口按鈕字樣變回收合態，欄位不再看得到（不是清空 draft，
+    // 是送出成功後表單本來就會清空，見 `CreateForm.tsx` 的 `submit()`）。
+    expect(await screen.findByRole("button", { name: "＋ 新增劇本" })).toBeInTheDocument();
+    expect(screen.queryByLabelText("標的代號")).not.toBeVisible();
+
+    // 捲動＋聚焦：新卡片是一個真正的 `<a>`，聚焦它才會讓螢幕閱讀器唸出
+    // 它現在的狀態（更新中／已解鎖），不只是視覺上看得到。
+    const newCardLink = await screen.findByRole("link", { name: /SPY 2028-05/ });
+    await waitFor(() => expect(scrollSpy).toHaveBeenCalled());
+    expect(document.activeElement).toBe(newCardLink);
+  });
+
+  it("桌面版：建立成功後表單自動收合、新卡片被捲動並聚焦", async () => {
+    stubDesktopViewport();
+    const scrollSpy = vi.spyOn(Element.prototype, "scrollIntoView")
+      .mockImplementation(() => {});
+    const spy = mockRoutes({ "/api/scenarios": { json: async () => [row] } });
+    spy.mockImplementation(withRefreshRunBridge(async (url, init) => {
+      if (url === "/api/scenarios" && init?.method === "POST") {
+        return { ok: true, status: 201, json: async () => created };
+      }
+      if (url.endsWith("/refresh")) {
+        return { ok: true, status: 200, json: async () => row };
+      }
+      return { ok: true, status: 200, json: async () => [row] };
+    }));
+    render(<App />);
+
+    await fillAndSubmit();
+
+    expect(await screen.findByRole("button", { name: "＋ 建立劇本" })).toBeInTheDocument();
+    expect(screen.queryByLabelText("標的代號")).not.toBeVisible();
+
+    const newCardLink = await screen.findByRole("link", { name: /SPY 2028-05/ });
+    await waitFor(() => expect(scrollSpy).toHaveBeenCalled());
+    expect(document.activeElement).toBe(newCardLink);
+  });
+
+  it("建立失敗時表單不收合，draft 保留（draft-preservation 不因本輪退化）", async () => {
+    const scrollSpy = vi.spyOn(Element.prototype, "scrollIntoView")
+      .mockImplementation(() => {});
+    const spy = mockRoutes({ "/api/scenarios": { json: async () => [row] } });
+    spy.mockImplementation(withRefreshRunBridge(async (url, init) => {
+      if (url === "/api/scenarios" && init?.method === "POST") {
+        return { ok: false, status: 500, json: async () => ({ detail: "建立失敗" }) };
+      }
+      if (url.endsWith("/refresh")) {
+        return { ok: true, status: 200, json: async () => row };
+      }
+      return { ok: true, status: 200, json: async () => [row] };
+    }));
+    render(<App />);
+
+    await fillAndSubmit();
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("建立失敗");
+    // 表單仍展開、剛打的內容還在——失敗不是「第四種刷新」，也不該連帶
+    // 觸發本票新增的收合／捲動／聚焦。
+    expect(screen.getByLabelText("標的代號")).toBeVisible();
+    expect(screen.getByLabelText("標的代號")).toHaveValue("spy");
+    expect(scrollSpy).not.toHaveBeenCalled();
+  });
+});
+
 describe("詳細頁刷新入口與劇本庫共用同一條佇列（#70）", () => {
   const row = {
     ...(sampleRow as unknown as Record<string, unknown>),

@@ -553,6 +553,44 @@ test("劇本庫：建立 → 出現在清單 → 封存後消失（V3／#51）",
   await expect(page.getByText(/還沒有劇本/)).toBeVisible();
 });
 
+test("Phase A2：建立成功後表單自動收合、新卡片被捲入視窗並取得焦點（手機版）",
+     async ({ page }) => {
+  const created = {
+    ...sampleRow,
+    id: "s1", symbol: "TLT", target_price: 120, target_month: "2028-05",
+    latest_analyzed_at: null, best_return: null,
+    target_anchor: "2028-05-19", days_to_anchor: 653,
+  };
+  await page.route("**/api/scenarios", (route) =>
+    route.request().method() === "POST"
+      ? route.fulfill({ status: 201, json: created })
+      : route.fulfill({ json: [] }),
+  );
+
+  await page.goto("/");
+  await expect(page.getByText(/還沒有劇本/)).toBeVisible();
+
+  await page.getByRole("button", { name: "＋ 新增劇本" }).click();
+  await page.getByLabel("標的代號").fill("tlt");
+  await page.getByLabel("目標價位").fill("120");
+  await page.getByLabel("目標年月").click();
+  await page.getByLabel("年份").fill("2028");
+  await page.getByRole("button", { name: "5 月" }).click();
+  await page.getByRole("checkbox", { name: "Call / Put" }).check();
+  await page.getByRole("button", { name: "建立", exact: true }).click();
+
+  // 收合：入口按鈕字樣變回收合態、欄位不再看得到（不是第四種刷新
+  // 時機，只是「建立成功」這個既有時機順便多做的畫面收尾）。
+  await expect(page.getByRole("button", { name: "＋ 新增劇本" })).toBeVisible();
+  await expect(page.getByLabel("標的代號")).toBeHidden();
+
+  // 捲動＋聚焦：新卡片真的收到焦點（不只是視覺上出現在畫面上），
+  // 使用者不必自己往下找就能看到它已經進入更新中狀態。
+  const newCardLink = page.getByRole("link", { name: /TLT 2028-05/ });
+  await expect(newCardLink).toBeInViewport();
+  await expect(newCardLink).toBeFocused();
+});
+
 test("批次選取移入垃圾桶：勾兩個、確認後兩者都消失（TR6／#91）", async ({ page }) => {
   const rowA = libraryRow({ id: "s1", symbol: "TLT" });
   const rowB = libraryRow({ id: "s2", symbol: "SPY" });

@@ -1525,6 +1525,45 @@ test("桌面版：全選一次勾起三個 family，已全選時再點同一顆�
     ["single-leg", "vertical-spread", "butterfly"]);
 });
 
+test("Phase A2：建立成功後表單自動收合、新卡片被捲入視窗並取得焦點（桌面版）",
+     async ({ page }) => {
+  const created = {
+    ...sampleRow,
+    id: "s1", symbol: "TLT", target_price: 120, target_month: "2028-05",
+    latest_analyzed_at: null, best_return: null,
+    target_anchor: "2028-05-19", days_to_anchor: 653,
+  };
+  await page.route("**/api/scenarios", (route) =>
+    route.request().method() === "POST"
+      ? route.fulfill({ status: 201, json: created })
+      : route.fulfill({ json: [] }),
+  );
+  await page.route("**/api/scenarios/refresh-run", (route) =>
+    route.fulfill({ json: { results: [], remaining: [] } }));
+  await page.goto("/");
+
+  await page.getByRole("button", { name: "＋ 建立劇本" }).click();
+  await page.getByLabel("標的代號").fill("tlt");
+  await page.getByLabel("目標價位").fill("120");
+  await page.getByLabel("目標年月").click();
+  await page.getByLabel("年份").fill("2028");
+  await page.getByRole("button", { name: "5 月" }).click();
+  await page.getByRole("checkbox", { name: "Call / Put" }).check();
+  await page.getByRole("button", { name: "建立", exact: true }).click();
+
+  // 收合：頂部入口字樣變回收合態、欄位不再看得到——桌面版沿用工具列
+  // 那顆膠囊鈕，與手機版 `CreateEntry` 各自的入口一樣，成功後都收合。
+  await expect(page.getByRole("button", { name: "＋ 建立劇本" })).toBeVisible();
+  await expect(page.getByLabel("標的代號")).toBeHidden();
+
+  // 捲動＋聚焦：桌面版清單在自己的 `.library-scroll` 容器裡捲動，
+  // `Element.scrollIntoView()` 對巢狀捲動容器一樣有效，不必分平台
+  // 各寫一套邏輯。
+  const newCardLink = page.getByRole("link", { name: /TLT 2028-05/ });
+  await expect(newCardLink).toBeInViewport();
+  await expect(newCardLink).toBeFocused();
+});
+
 /* ---------- T11（#229）：Strategy Family 分頁 ---------- */
 
 /** 手造一份包含兩個 family 的 view——見 `smoke.spec.ts` 同名函式的

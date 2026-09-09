@@ -94,7 +94,9 @@ function CompactScenarioCard({
     // （master/detail 目前選中的劇本）是不同概念——compact row 沒有
     // 對應的常駐詳細頁高亮，選取狀態完全交給下面的 checkbox 外觀表達，
     // 不重用會撞名的 class。
-    <li className={cardClass}>
+    // A2：`id` 供 `App.tsx` 建立成功後查找、捲動並聚焦這張卡片——
+    // 只是一個 DOM 錨點，不影響任何既有渲染或排序邏輯。
+    <li className={cardClass} id={`scenario-row-${row.id}`}>
       {/* 封存鈕疊在「這一塊」（tap 區）的右下角，而不是整張 `<li>` 的
           右下角——code review 抓到的真實回歸：`.compact-notice`（刷新
           失敗時才出現）是接在 tap 區後面的正常流內容，會把卡片整體

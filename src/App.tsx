@@ -109,6 +109,12 @@ export default function App() {
   // 補 `aria-hidden`。`aria-controls` 沿用 `MonthPicker`（同檔案）
   // 既有的「展開鈕指向自己控制的面板」寫法，兩處手法一致。
   const createPanelId = useId();
+  // A2：剛建立成功、還沒被捲動／聚焦處理過的那個劇本 id——`create()`
+  // 成功時設定，下面的 effect 處理完（找到卡片、捲進畫面、聚焦）就把
+  // 它清空，避免同一個 id 在後續無關的重新渲染時重複觸發。只在「成功」
+  // 那一刻設定：`create()` 失敗時例外會在 `setRows` 之前就往上拋，不會
+  // 走到設定這個 state 的那一行，因此失敗不會誤觸發捲動／聚焦。
+  const [justCreatedId, setJustCreatedId] = useState<string | null>(null);
 
   const reload = useCallback(async (): Promise<ScenarioSummary[] | null> => {
     try {
@@ -326,6 +332,28 @@ export default function App() {
     return () => clearInterval(tick);
   }, []);
 
+  // A2：建立成功後把畫面帶到那張新卡片——使用者不必自己往下找就能立刻
+  // 看到它已經進入「更新中」狀態（`updatingIds` 與這裡在 `create()` 的
+  // 同一批 state 更新裡一起設定，見下方，因此卡片渲染出來時已經帶著
+  // 「更新中」徽章）。用 DOM `id` 查找（`scenario-row-${id}`，見
+  // `ScenarioList.tsx`／`CompactScenarioList.tsx`）而不是量測清單位置
+  // ——`sortScenarios()` 把新劇本排在清單的哪裡是排序邏輯的事，這裡不
+  // 需要知道也不該重算一次。手機／桌面兩份清單元件用同一個 id 命名
+  // 慣例、卡片內同一個 `.compact-card-tap` class，這段邏輯因此不必分
+  // 平台各寫一份。
+  useEffect(() => {
+    if (!justCreatedId) return;
+    const el = document.getElementById(`scenario-row-${justCreatedId}`);
+    if (el) {
+      el.scrollIntoView({ behavior: "smooth", block: "center" });
+      // 捲動只解決「看得到」，鍵盤與螢幕閱讀器使用者還需要焦點真的
+      // 移過去才會被唸出來——卡片本身就是一個 `<a>`，直接聚焦它，不必
+      // 另外做一個不可見的聚焦目標。
+      el.querySelector<HTMLAnchorElement>(".compact-card-tap")?.focus();
+    }
+    setJustCreatedId(null);
+  }, [justCreatedId]);
+
   async function create(draft: DraftScenario) {
     setBusy(true);
     let created: ScenarioSummary;
@@ -342,6 +370,14 @@ export default function App() {
     // 與 `archive()` 的回滾同一個道理，做法要一致。
     setRows((prev) => [...prev, created]);
     setError(null);
+    // A2：建立成功才收合表單、捲動並聚焦到新卡片——失敗時 `createScenario`
+    // 的例外會在這一行之前就往上拋出整個函式（見上面 `try/finally`），
+    // 不會走到這裡，表單因此留在原地（draft 由 `CreateForm` 自己的
+    // catch 保留，不受這裡影響）。收合沿用既有 `showCreateForm`，不是
+    // 第四種刷新時機——只是「建立成功後」這個既有時機順便多做的畫面
+    // 收尾，不牽動 Refresh Run。
+    setShowCreateForm(false);
+    setJustCreatedId(created.id);
     // 時機二：建立劇本後。刻意不 await——表單要立刻清空並可再輸入，
     // 不該被後面的刷新綁住。P4（2026-08-24 裁示，取代 QA1-07 時期的
     // 全量刷新）：只刷新新建立的這一個，既有劇本的資料與時間戳不受
