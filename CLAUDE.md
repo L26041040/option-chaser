@@ -27,7 +27,7 @@ block 裡，不能切成好幾個 code block、也不能中間插普通文字把
 `［回報#001］spec #137 拆票完成`）。編號是**累計總數**，不因換
 session、換分支、換主題而歸零——目前最新編號記在這裡：
 
-> 目前次序：068（下一份回報用 069）
+> 目前次序：069（下一份回報用 070）
 
 每發一份回報就把上面這個數字改成剛剛用掉的那個，跟著那次改動一起
 commit（沒有其他改動要 commit 時，單獨為這一行開一個小 commit 也
@@ -577,6 +577,16 @@ filters.py` 等因沙箱恰好連得到真實 `XYZ`／真實股票代號的網�
 （`git diff` 確認零命中），未自行嘗試繞過或代答。**最終狀態：
 READY_FOR_FINAL_PRODUCTION_VALIDATION**——等待 Owner 在真實部署
 完成最終驗證後指示下一步；依專案規則不主動開 PR。
+
+**已於 2026-09-09 依 Owner 明確指示合併回 master**（PR #270，merge
+commit `1a6d3e4`，base `864dd5c`＝PR #250 之後的 master 頭，57
+commits／79 檔案／+23,376 −704，`mergeable_state: clean` 零衝突）：
+涵蓋 SCALE-01～17 整條 Scaling Foundation（research／wayfinder／
+audit／prototype／spec／18 張 GitHub sub-issue 全部施工紀錄）。
+Production（`option-chaser.vercel.app`，對應 master）下次部署會拿到
+storage lifecycle 分離、Ownership A-1、Cboe 429 韌性、S0
+observability、`/history` canonical read path 全部成果。SCALE-18
+（#269）依裁示仍未觸碰，母票 #251 依慣例不主動關閉。
 
 ### OPTION-SCALING-TICKETS-REVISE-006 拆票（2026-09-06，歷史紀錄）
 
