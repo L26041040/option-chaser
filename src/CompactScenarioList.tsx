@@ -36,6 +36,7 @@ import {
   money,
   moneyOrDash,
   rateLimitDetailText,
+  scenarioRowDomId,
   scenarioSignal,
   signalLabel,
   sortScenarios,
@@ -96,7 +97,7 @@ function CompactScenarioCard({
     // 不重用會撞名的 class。
     // A2：`id` 供 `App.tsx` 建立成功後查找、捲動並聚焦這張卡片——
     // 只是一個 DOM 錨點，不影響任何既有渲染或排序邏輯。
-    <li className={cardClass} id={`scenario-row-${row.id}`}>
+    <li className={cardClass} id={scenarioRowDomId(row.id)}>
       {/* 封存鈕疊在「這一塊」（tap 區）的右下角，而不是整張 `<li>` 的
           右下角——code review 抓到的真實回歸：`.compact-notice`（刷新
           失敗時才出現）是接在 tap 區後面的正常流內容，會把卡片整體

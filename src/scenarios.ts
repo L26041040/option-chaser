@@ -378,3 +378,15 @@ export function isRetryDisabledByRateLimit(
 export function formatRunSummary(succeeded: number, failed: number): string {
   return failed > 0 ? `${succeeded} 成功／${failed} 失敗` : `${succeeded} 成功`;
 }
+
+/**
+ * A2：劇本卡片的 DOM `id`——`App.tsx` 建立成功後用它查找那張卡片
+ * 好捲動並聚焦（`document.getElementById`）；`ScenarioList.tsx`／
+ * `CompactScenarioList.tsx` 把它掛在各自的 `<li>` 上。三處共用同一個
+ * 函式而不是各自寫死同一段字串模板——`/code-review` Standards 軸抓到
+ * 的 judgement call，這是本專案第一次出現跨元件 DOM id 約定，值得跟
+ * 既有 `fetchCache.ts`／`route.ts` 一樣抽成單一事實來源，不必等到
+ * 出現第三個獨立寫法才回頭修。 */
+export function scenarioRowDomId(id: string): string {
+  return `scenario-row-${id}`;
+}

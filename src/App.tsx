@@ -70,7 +70,7 @@ import {
   settingsHash,
   trashHash,
 } from "./route";
-import { formatRunSummary } from "./scenarios";
+import { formatRunSummary, scenarioRowDomId } from "./scenarios";
 
 /**
  * 桌面版真正的 master/detail（#72）：桌面寬度下劇本庫常駐、詳細頁另開
@@ -335,15 +335,16 @@ export default function App() {
   // A2：建立成功後把畫面帶到那張新卡片——使用者不必自己往下找就能立刻
   // 看到它已經進入「更新中」狀態（`updatingIds` 與這裡在 `create()` 的
   // 同一批 state 更新裡一起設定，見下方，因此卡片渲染出來時已經帶著
-  // 「更新中」徽章）。用 DOM `id` 查找（`scenario-row-${id}`，見
-  // `ScenarioList.tsx`／`CompactScenarioList.tsx`）而不是量測清單位置
+  // 「更新中」徽章）。用 DOM `id` 查找（`scenarioRowDomId()`，見
+  // `./scenarios`，`ScenarioList.tsx`／`CompactScenarioList.tsx` 也用
+  // 同一個函式掛 id）而不是量測清單位置
   // ——`sortScenarios()` 把新劇本排在清單的哪裡是排序邏輯的事，這裡不
   // 需要知道也不該重算一次。手機／桌面兩份清單元件用同一個 id 命名
   // 慣例、卡片內同一個 `.compact-card-tap` class，這段邏輯因此不必分
   // 平台各寫一份。
   useEffect(() => {
     if (!justCreatedId) return;
-    const el = document.getElementById(`scenario-row-${justCreatedId}`);
+    const el = document.getElementById(scenarioRowDomId(justCreatedId));
     if (el) {
       el.scrollIntoView({ behavior: "smooth", block: "center" });
       // 捲動只解決「看得到」，鍵盤與螢幕閱讀器使用者還需要焦點真的
