@@ -3,36 +3,42 @@
  * ＋Δ4w：#140／spec #137；exact-contract 逐腿卡片：HIVT-02–05／
  * #153–156，spec #151）。
  *
- * 這個檔案現在服務**兩個並存、互不取代**的功能（spec #151 §0）：
+ * **現在的 canonical behavior（2026-09-09 起，取代 spec #151 §0 當年
+ * 「兩個並存、互不取代」的描述——那份描述已過期，Normalized Skew
+ * 已不是目前使用者可見的 Vertical 功能）**：
  *
- * 1. **Normalized Skew**（(tenor, delta) 逐日重錨定家族，`ivhistory.py`
- *    供應）——只在 Vertical Spread 候選出現，比較買賣兩腳「當下」結構
- *    是否偏斜。維持原樣，完全不受 HIVT 系列影響。
- * 2. **Historical IV Trend**（exact contract 家族，`ivtrend.py` 供應，
- *    `./IvTrend`）——每一隻腳（Long Call／Put 一張；Vertical Spread
- *    買／賣各一張）各自的市場 IV 走勢＋moving average／Bollinger／
- *    z-score／percentile／Δ4w，追蹤的是**這一張、且只有這一張** exact
- *    listed option contract，不是重錨定座標。
+ * - **Long Call／Long Put（單腿候選）**：Historical IV Trend 可見——
+ *   exact contract 家族（`ivtrend.py` 供應，`./IvTrend`），每一隻腳
+ *   一張卡，市場 IV 走勢＋moving average／Bollinger／z-score／
+ *   percentile／Δ4w，追蹤的是**這一張、且只有這一張** exact listed
+ *   option contract，不是重錨定座標。
+ * - **Vertical Spread／Butterfly（兩腿以上候選）**：整個 Valuation／
+ *   IV-relative-position UI **不渲染、不發任何 request**——不是空卡片、
+ *   不是「尚未啟用」提示，是請求層直接擋下（見下方 `supportsIvHistory`
+ *   註解，兩道理由各自獨立：Butterfly 是 T16／#232 的結構限制，
+ *   Vertical 是 2026-09-09 Owner 裁示的整塊退場）。
+ *
+ * **Normalized Skew（(tenor, delta) 逐日重錨定家族，`ivhistory.py`
+ * 供應）與 Spread IV Gap 兩個「貴不貴」頭條已於 2026-09-09 依 Owner
+ * 裁示整塊退場**（依據 `docs/research/spread-package-valuation-
+ * verdict.md` 的裁決 `NO RELIABLE PACKAGE VALUATION YET`——兩者被引擎
+ * 實測證偽，見下方 `supportsIvHistory` 註解的完整理由）。後端
+ * `/iv-history` 端點與回應契約（含 `spread_gap`／
+ * `normalized_skew_points`）本身**未動**——這是前端呈現層的退場，
+ * 不是拆後端管線，只是這個元件現在對這兩個欄位零消費端。
  *
  * 舊的買腿 IV／賣腿 IV／ATM IV 次要顯示（reanchored 家族）已在
- * HIVT-04（#155）從後端回應移除，被上面第 2 點的逐腿卡片取代
- * （spec #151 §0 的裁決：畫面不同時出現兩種方法論算出的「這隻腳的
+ * HIVT-04（#155）從後端回應移除，被上面 Long Call／Put 那條逐腿卡片
+ * 取代（spec #151 §0 的裁決：畫面不同時出現兩種方法論算出的「這隻腳的
  * IV」，沒有說明是哪一種）。
  *
  * **閘門（#126 AC）**：Historical IV 沒解鎖時，這支元件不輸出任何 DOM
  * 節點，也**不發任何 IV 請求**——不是空卡片、不是「尚未啟用」提示。
  * 解不解鎖讀後端算好的 `historical_iv_enabled`，前端不自己重推規則。
  *
- * **第二個閘門（T16／#232，Initial V2）**：候選腿數 > 2（Butterfly）
- * 同樣不輸出任何節點、不發請求，見下方 `supportsIvHistory` 註解——
- * 這塊功能的兩個家族結構上都只認得單腿與兩腿，本輪不新增第三腿的
- * 支援，畫面因此完全不出現，不是留個空狀態或說明文字硬撐版位。
- *
  * **backfill 狀態只是附加說明，不取代資料**：今天補不補得動（quota／
  * vendor）跟資料能不能看是兩件事——已經算出來的 percentile／Δ4w 不因為
  * 今天撞額度就被藏起來，只是額外多一行「今日額度已用完」之類的說明。
- * 兩個家族（Normalized Skew／逐腿 Historical IV Trend）的 backfill 狀態
- * 各自獨立（各自的 `status`／`note`），不是同一個旗標。
  *
  * **只陳述事實**：現值、百分位、觀測筆數、Δ4w、一年走勢圖。不寫「便宜」
  * 「貴」「好進場點」「推薦」——那些都是替使用者做判斷；**也不寫任何
