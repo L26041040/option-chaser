@@ -66,17 +66,13 @@ import {
   ivHistoryBackfill,
   type Candidate,
   type DiagnosticEvent,
-  type IvFieldMetric,
   type IvHistoryStatus,
   type IvHistoryView,
-  type NormalizedSkewPoint,
 } from "./api";
 import { CopyDiagnosticButton, DiagnosticEventFieldList } from "./DiagnosticDetail";
 import { getIvHistoryCached, getSettingsCached, invalidateIvHistoryCache } from "./fetchCache";
 import IvTrend, { zscoreCaption } from "./IvTrend";
-import { contiguousRuns, ivChartPoints, ivYAxisDomain, nearestIndexForClientX,
-        xAxisTicks, type ChartPoint } from "./ivHistoryChart";
-import SpreadSummary, { SpreadSummaryAdvanced } from "./SpreadSummary";
+import { nearestIndexForClientX, type ChartPoint } from "./ivHistoryChart";
 
 /**
  * 今天的 backfill 遇到什麼——一行附加說明，**不取代**下面的 percentile。
@@ -106,31 +102,6 @@ export function valueLabel(value: number | null, unit: TrendUnit): string {
   return unit === "vol-pts" ? num(value) : value.toFixed(2);
 }
 
-/** 帶正負號的 Δ4w，量自身單位——不是預測，只是「最新減基準」這件事實
- *  的呈報。`trend_4w` 為 `null`（基準窗內無觀測）時印 em dash，不外推、
- *  不假裝沒有變化（那會把「沒有基準可比」跟「比較完發現剛好沒變」
- *  混為一談，兩者是不同的事實）。 */
-function trendLabel(m: IvFieldMetric, unit: TrendUnit): string {
-  if (m.trend_4w === null) return "4週 —";
-  const sign = m.trend_4w >= 0 ? "+" : "-";
-  const magnitude = unit === "vol-pts"
-    ? `${Math.abs(m.trend_4w * 100).toFixed(1)} pts`
-    : Math.abs(m.trend_4w).toFixed(2);
-  return `4週 ${sign}${magnitude}`;
-}
-
-/**
- * 百分位＋觀測筆數＋Δ4w 的複合標籤——這是需求方要求的「揭露 percentile
- * 建立在多少筆觀測上」的具體呈現，跟著現值一起讀，不必另外點開什麼。
- * `count === 0`（唯一容許沒有百分位的情況）時誠實說沒有歷史資料，
- * **不是**判斷「資料不夠可信」——那個判斷留給使用者自己做。
- */
-function metricCaption(m: IvFieldMetric, unit: TrendUnit): string {
-  if (m.count === 0 || m.percentile === null) return "沒有歷史資料";
-  return `第 ${Math.round(m.percentile * 100)} 百分位・${m.count} 筆觀測・${
-    trendLabel(m, unit)}`;
-}
-
 /** `percentile`（0–1 小數）換成畫面上的整數百分位——`percentileCaption`／
  *  `metricCaption`（既有、本輪不動）與下面三個「白話說明句」函式共用
  *  同一個換算，兩處讀到的數字才保證一致。刻意只給這輪新增的三個說明
@@ -139,19 +110,6 @@ function metricCaption(m: IvFieldMetric, unit: TrendUnit): string {
  *  既有計算本身。 */
 export function roundPercentile(percentile: number): number {
   return Math.round(percentile * 100);
-}
-
-/** PC-01（#199，spec #198）；2026-08-26 真機驗收後改寫為白話句——跟
- *  `./IvTrend`／`./SpreadSummary` 的姊妹函式同一個目的、同一次改寫理由
- *  （直接把「第 N 百分位」翻譯成一句話、把 N 帶進句子裡，數字跟旁邊
- *  `metricCaption()` 顯示的保證一致）。Normalized Skew 沿用既有「偏斜」
- *  語彙、不硬套「IV」字樣（這個家族量的是買賣兩腳結構是否偏斜，不是
- *  單一 IV 水準）。 */
-export function skewPercentileExplanation(percentile: number | null): string {
-  if (percentile === null) return "目前沒有足夠的歷史觀測可以比較。";
-  const pct = roundPercentile(percentile);
-  return `現在的偏斜程度比過去一年大約 ${pct}% 的有效歷史觀測都高。`
-    + "單日數字可能隨市場報價波動。";
 }
 
 export const PAD_TOP = 12;
@@ -269,122 +227,6 @@ export function useChartScrubber(pointCount: number, viewBoxWidth: number) {
   };
 }
 
-/**
- * 一年走勢圖——取代原本 18px 的 sparkline，成為這一區塊的主要視覺
- * （#140／spec #137：percentile 給位置、圖給路徑、Δ4w 給最近速度，
- * 三者互補）。y 軸固定域不隨互動改變；x 軸日期刻度均勻取樣涵蓋頭尾；
- * 缺值斷線不插值；tooltip 桌面 hover／手機 tap 共用同一套狀態（沿用
- * Spread 淨成本走勢圖 #106 已驗證的手刻 SVG 作法，不引入圖表函式庫，
- * 不加 zoom／pan——y 軸固定的驗收標準因此無從被互動破壞）。
- *
- * `points` 全 `null`（`ivYAxisDomain` 回 `null`）時不畫任何東西——呼叫
- * 端的「沒有歷史資料」文案已經交代過這個狀態，不需要一個空白的圖表
- * 外框重複說一次同一件事。
- *
- * 只服務 Normalized Skew（單一序列）——`./IvTrend` 的四序列疊加圖是
- * 不同的幾何需求，另外實作，不硬套這個單序列版本。
- */
-function TrendChart({ label, unit, points, width, height }: {
-  label: string;
-  unit: TrendUnit;
-  points: { date: string; value: number | null }[];
-  width: number;
-  height: number;
-}) {
-  const values = points.map((p) => p.value);
-  const domain = ivYAxisDomain(values);
-  const chartPts = domain === null ? [] : ivChartPoints(
-    points.map((p) => p.date), values, domain);
-  const { svgRef, activeIndex, interactionProps } =
-    useChartScrubber(chartPts.length, width);
-  if (domain === null) return null;
-
-  const runs = contiguousRuns(chartPts);
-  const [lo, hi] = domain;
-  const yTicks: [number, number][] = [[0, hi], [0.5, (lo + hi) / 2], [1, lo]];
-  const xTicks = xAxisTicks(chartPts);
-  const active = activeIndex === null ? null : chartPts[activeIndex];
-  const activeValue = activeIndex === null ? null : values[activeIndex];
-
-  return (
-    <svg
-      ref={svgRef}
-      className="iv-trend-chart"
-      viewBox={`0 0 ${width} ${height}`}
-      role="img"
-      aria-label={`${label}走勢，近 1 年，可用滑鼠移動、觸控拖曳或方向鍵瀏覽逐日數值`}
-      {...interactionProps}
-    >
-      {/* Y 軸：三個刻度（低／中／高，固定範圍，不隨互動變動），單位隨
-          欄位而定，與現值同一套語言。 */}
-      {yTicks.map(([frac, value]) => {
-        const py = PAD_TOP + frac * (height - PAD_TOP - PAD_BOTTOM);
-        return (
-          <g key={frac}>
-            <line x1={PAD_LEFT - 3} y1={py} x2={PAD_LEFT} y2={py}
-                 className="chart-tick-mark" />
-            <text x={PAD_LEFT - 5} y={py + 3} textAnchor="end"
-                 className="chart-tick-label">
-              {tickLabel(value, unit)}
-            </text>
-          </g>
-        );
-      })}
-
-      {/* X 軸：日期刻度，均勻取樣（含首尾），不是每個資料點都印一個。 */}
-      {xTicks.map(({ index, label: dateLabel }) => {
-        const { px } = toPixel(chartPts[index], width, height);
-        const bottom = height - PAD_BOTTOM;
-        return (
-          <g key={index}>
-            <line x1={px} y1={bottom} x2={px} y2={bottom + 3}
-                 className="chart-tick-mark" />
-            <text x={px} y={height - 3} textAnchor="middle"
-                 className="chart-tick-label">
-              {dateLabel}
-            </text>
-          </g>
-        );
-      })}
-
-      {/* 每段各自一條折線——段與段之間刻意不連線，斷點如實顯示，不畫成
-          連續、也不畫成 0。折線本身不再帶任何逐點互動熱區——整張 SVG
-          就是互動介面（見上方 `useChartScrubber`），命中判定不必靠
-          每個資料點各自的圓點。 */}
-      {runs.map((run, i) => (
-        <polyline
-          key={i}
-          fill="none"
-          stroke="var(--tint)"
-          strokeWidth={1.5}
-          points={run.map((p) => {
-            const { px, py } = toPixel(p, width, height);
-            return `${px},${py}`;
-          }).join(" ")}
-        />
-      ))}
-
-      {active && activeValue !== null && (() => {
-        const { px, py } = toPixel(active, width, height);
-        return (
-          <>
-            {/* 貼著游標／觸點的垂直參考線——沿著它從資料點對回 X 軸日期
-                刻度，Firstrade 一類走勢圖 scrubber 的標準視覺。 */}
-            <line x1={px} y1={PAD_TOP} x2={px} y2={height - PAD_BOTTOM}
-                 className="chart-scrub-line" />
-            <circle cx={px} cy={py} r={4} className="chart-point chart-point-active" />
-          </>
-        );
-      })()}
-
-      {active && activeValue !== null && (
-        <ChartTooltip point={active} value={activeValue} unit={unit}
-                     width={width} height={height} />
-      )}
-    </svg>
-  );
-}
-
 /** 桌面 hover／手機 tap 共用的同一個 tooltip——固定含日期與這一項的值。
  *  位置貼著資料點，靠左右邊緣時往內收，不出界（沿用 Spread 淨成本走勢
  *  圖既有作法）。export 給 `./IvTrend` 的多序列走勢圖原樣複用。 */
@@ -411,46 +253,6 @@ export function ChartTooltip({ point, value, unit, width, height }: {
         {valueLabel(value, unit)}
       </text>
     </g>
-  );
-}
-
-function normalizedSkewSeries(
-  points: NormalizedSkewPoint[],
-): { date: string; value: number | null }[] {
-  return points.map((p) => ({ date: p.date, value: p.normalized_skew }));
-}
-
-/**
- * 一項指標的完整呈現：標籤＋現值＋百分位／筆數／Δ4w 複合標籤＋一年
- * 走勢圖。目前只有 Normalized Skew 這一項還在用（HIVT-04 後買／賣腿／
- * ATM 次要顯示已移除，改由 `./IvTrend` 供應）。
- */
-function Metric({ label, metric, points, unit, primary = false, explanation }: {
-  label: string;
-  metric: IvFieldMetric;
-  points: { date: string; value: number | null }[];
-  unit: TrendUnit;
-  primary?: boolean;
-  /** PC-01（#199）：常駐可見的百分位說明，掛在「這一項指標」旁邊——
-   *  目前只有 Normalized Skew 這一個呼叫端會傳，選填不影響其他潛在
-   *  呼叫端的既有行為（不傳就不渲染這一行，跟今天完全一樣）。 */
-  explanation?: string;
-}) {
-  const width = primary ? 300 : 200;
-  const height = primary ? 104 : 60;
-  return (
-    <div className={primary ? "iv-metric iv-primary" : "iv-metric"}>
-      <div className="iv-metric-head">
-        <span className="row-label">{label}</span>
-        <span className="caption">{metricCaption(metric, unit)}</span>
-      </div>
-      {explanation && <p className="caption">{explanation}</p>}
-      <span className={primary ? "iv-value-primary" : "iv-value"}>
-        {valueLabel(metric.value, unit)}
-      </span>
-      <TrendChart label={label} unit={unit} points={points}
-                 width={width} height={height} />
-    </div>
   );
 }
 
@@ -519,22 +321,22 @@ export function InlineDiagnostics({ correlationId, events, message, variant }: {
 /**
  * Loading 佔位骨架（QA 反饋，2026-08-16；HIVT-05／#156 一併 export，
  * 取代原本模組內私有的 `IvHistorySkeleton`）：版位形狀跟真正內容
- * 同構——Vertical Spread 有 Normalized Skew 頭條區塊＋兩張次層卡片
- * （買／賣腿）；Long Call／Put 單腳沒有頭條、只有一張——資料回來前後
- * 卡片高度不整個跳動。純視覺佔位，不讀秒數、不做進度預測，也不宣稱
- * 任何尚未確定的事。整張卡片（含逐腿卡片的版位）共用同一次 fetch、
- * 同一個 loading 狀態，`./IvTrend` 因此不需要、也沒有自己另一份骨架。
+ * 同構——資料回來前後卡片高度不整個跳動。純視覺佔位，不讀秒數、不做
+ * 進度預測，也不宣稱任何尚未確定的事。整張卡片（含逐腿卡片的版位）
+ * 共用同一次 fetch、同一個 loading 狀態，`./IvTrend` 因此不需要、也
+ * 沒有自己另一份骨架。
+ *
+ * 2026-09-09 Owner 裁示（Vertical「貴不貴」整塊退場）後，這塊卡片只
+ * 服務單腿候選，因此骨架固定是「無頭條＋單張次層卡片」——原本的
+ * `isSingleLeg` 參數（兩腿時多畫一個 Normalized Skew 頭條方塊＋第二張
+ * 次層卡片）連同它的兩腿分支一併移除，不留一個永遠傳同一個值的參數。
  */
-export function CardSkeleton({ isSingleLeg }: { isSingleLeg: boolean }) {
+export function CardSkeleton() {
   return (
     <div className="iv-skeleton" role="status" aria-live="polite">
       <span className="sr-only">Historical IV 載入中……</span>
-      {!isSingleLeg && (
-        <div className="iv-skeleton-block iv-skeleton-primary" aria-hidden="true" />
-      )}
-      <div className={isSingleLeg ? "iv-legs single" : "iv-legs"} aria-hidden="true">
+      <div className="iv-legs single" aria-hidden="true">
         <div className="iv-skeleton-block iv-skeleton-secondary" />
-        {!isSingleLeg && <div className="iv-skeleton-block iv-skeleton-secondary" />}
       </div>
     </div>
   );
@@ -571,19 +373,28 @@ export default function IvHistory({ scenarioId, candidate, analyzedAt = null }: 
   const backfillAttempted = useRef<Set<string>>(new Set());
 
   const key = candidate?.candidate_key ?? null;
-  // T16（#232，Initial V2）：後端 `ivpipeline.build_iv_history()` 的
-  // 既有 `leg_names = ("buy","sell") if len(legs)>=2 else ("buy",)`
-  // 對三腿以上的候選（Butterfly）會靜默丟掉第三隻腿、把中腿誤標成
-  // 「賣腿」——等同對使用者顯示錯誤的兩腿資料。這塊的方法論本來就只
-  // 服務單腿與兩腿結構（spec #151 §0：Normalized Skew 只在 Vertical
-  // Spread 出現）；#215 Owner Decision 明訂「Vertical／Butterfly 的
-  // 『貴不貴』區塊整塊不顯示」指的是尚未建置、本輪也不建置的 package
-  // percentile（三腿歷史重建可得率未量測，緩發），不是要藏起這裡描述
-  // 性的既有功能——但既有功能本身結構上只認得 <=2 腿，因此在請求層
-  // 直接擋下 Butterfly：不觸發任何 fetch，也不渲染任何 DOM（AC：「不
-  // 出現……不留空狀態、不留說明文字」）。修正管線本身讓它認得三腿是
-  // 另一張票的範圍，不在本票（前端呈現）動 `ivpipeline.py`。
-  const supportsIvHistory = (candidate?.legs.length ?? 0) <= 2;
+  // 這塊功能現在**只服務單腿候選**（Long Call／Long Put）。兩道各自
+  // 獨立的理由疊在一起，合成同一條 `=== 1` 判斷式：
+  //
+  // 1. **三腿以上（Butterfly）：結構上不支援**（T16／#232，Initial V2）。
+  //    後端 `ivpipeline.build_iv_history()` 的既有
+  //    `leg_names = ("buy","sell") if len(legs)>=2 else ("buy",)` 會靜默
+  //    丟掉第三隻腿、把中腿誤標成「賣腿」——等同顯示錯誤的兩腿資料。
+  // 2. **兩腿（Vertical Spread）：Owner 裁示整塊退場**（2026-09-09，依
+  //    `docs/research/spread-package-valuation-verdict.md` 的裁決
+  //    `NO RELIABLE PACKAGE VALUATION YET`）。Spread IV Gap percentile
+  //    與 Normalized Skew Ĝ percentile 兩個已出貨的「貴不貴」頭條被引擎
+  //    實測證偽——對純 vol-level 造成的真實成本變動，前者讀數完全不動
+  //    （Δ=0.0000）、後者方向相反。裁示明文不接受「用 Advanced 降級／
+  //    重新命名留下半套指標」，因此退場範圍是整張卡片，連逐腿
+  //    exact-contract IV 卡片也一併不顯示——只留兩張逐腿卡在畫面上，
+  //    就是那個被否決的半套。
+  //
+  // 兩種情況一律在**請求層**擋下：不觸發任何 fetch，也不渲染任何 DOM
+  // （不留空狀態、不留說明文字）。後端 `/iv-history` 端點與它的回應
+  // 契約（含 `spread_gap`／`normalized_skew_points`）本輪完全未動——
+  // 這是前端呈現層的退場，不是拆後端管線。
+  const supportsIvHistory = (candidate?.legs.length ?? 0) === 1;
 
   // 先問解不解鎖。鎖著就到此為止——**不發 IV 請求**。T03（#187）：走
   // 快取（settings 是單一全站狀態，鍵固定），跟 Settings 頁自己那次
@@ -672,9 +483,9 @@ export default function IvHistory({ scenarioId, candidate, analyzedAt = null }: 
     };
   }, [data, dataKey, key, scenarioId, analyzedAt]);
 
-  // 鎖著、還沒問完、這個候選根本沒有身份鍵、或這個候選是這塊功能結構上
-  // 不支援的三腿以上（Butterfly，T16／#232，見上方 `supportsIvHistory`
-  // 註解）→ 不輸出任何節點（#126 AC——這條紅線原封不動，跟下面「卡片
+  // 鎖著、還沒問完、這個候選根本沒有身份鍵、或這個候選不是單腿
+  // （Vertical／Butterfly，見上方 `supportsIvHistory` 註解）
+  // → 不輸出任何節點（#126 AC——這條紅線原封不動，跟下面「卡片
   // 固定版位」是兩件事：鎖著時連卡片外框都不該出現）。`!candidate` 這條
   // 分支實務上不會單獨發生（`key` 已經蘊含 `candidate` 存在），寫出來
   // 純粹是讓 TS 把下面的 `candidate.legs` 收窄成非 null。
@@ -685,7 +496,6 @@ export default function IvHistory({ scenarioId, candidate, analyzedAt = null }: 
   // 消失（QA 反饋，2026-08-16：避免 late layout shift）。「無資料」不是
   // 獨立分支：`count === 0` 由既有 `metricCaption()` 逐項顯示「沒有歷史
   // 資料」，資料物件本身照常存在、卡片照常渲染。
-  const isSingleLeg = candidate.legs.length < 2;
   // 只信任屬於「這個候選」的資料——`dataKey` 跟目前的 `key` 對得上才
   // 拿來畫，避免切換候選時畫面短暫誤用上一個候選留下來的舊資料。這個
   // 判斷跟下面「有 cache 就不整塊顯示錯誤」防的是兩件不同的事：這裡防
@@ -710,7 +520,6 @@ export default function IvHistory({ scenarioId, candidate, analyzedAt = null }: 
           )}
           <IvHistoryContent
             data={currentData}
-            isSingleLeg={isSingleLeg}
             backfillInFlight={backfillInFlight}
           />
         </>
@@ -728,7 +537,7 @@ export default function IvHistory({ scenarioId, candidate, analyzedAt = null }: 
           />
         </>
       ) : (
-        <CardSkeleton isSingleLeg={isSingleLeg} />
+        <CardSkeleton />
       )}
     </section>
   );
@@ -739,12 +548,19 @@ export default function IvHistory({ scenarioId, candidate, analyzedAt = null }: 
  * 內容含 z-score 文字說明（逐腿）、Normalized Skew 整組（原封不動搬過來，
  * 計算與呈現細節完全不變）、既有的 inline diagnostics 展開內容——三者
  * 原本散在 `IvHistoryContent` 各處，這裡只是搬 JSX 位置，不改任何一項
- * 的資料來源或算法。單腳候選（`isSingleLeg`）沒有 Normalized Skew，這裡
- * 跟搬移前一樣用同一個判斷式跳過；z-score 文字只讀 `legs`，單腳一樣有。
+ * 的資料來源或算法。
+ *
+ * **2026-09-09 Owner 裁示（Vertical Spread「貴不貴」整塊退場）**：原本
+ * 掛在這裡的 Normalized Skew 整組（頭條 Metric＋backfill 說明＋方法論
+ * 註記）與 Spread IV Gap 的次要文字（`SpreadSummaryAdvanced`）已一併
+ * 移除——兩者都只在 Vertical 候選出現，而 Vertical 現在根本走不到這支
+ * 元件（見 `IvHistory` 的 `supportsIvHistory` 註解）。**刻意不是**把它們
+ * 留在 Advanced 降級展示：裁示明文不接受「用 Advanced 降級／重新命名
+ * 留下半套指標」。剩下的 z-score 文字只讀 `legs`，是逐腿 exact-contract
+ * 家族自己的東西，不受影響。
  */
-function IvAdvanced({ data, isSingleLeg, notableEvents }: {
+function IvAdvanced({ data, notableEvents }: {
   data: IvHistoryView;
-  isSingleLeg: boolean;
   notableEvents: DiagnosticEvent[];
 }) {
   return (
@@ -758,40 +574,6 @@ function IvAdvanced({ data, isSingleLeg, notableEvents }: {
         <p className="caption">{`賣腿 ${zscoreCaption(data.legs.sell)}`}</p>
       )}
 
-      {/* Spread IV Gap 的次要文字（Δ4w guardrail ratio＋Spread Percentile
-          語意說明句，手機文字瘦身裁示搬出主畫面）——只在候選有賣腿
-          （`data.spread_gap` 存在）才有意義，跟 `IvHistoryContent` 掛載
-          `./SpreadSummary` 主卡片用同一個判斷式。 */}
-      {data.spread_gap && <SpreadSummaryAdvanced spreadGap={data.spread_gap} />}
-
-      {!isSingleLeg && (
-        <>
-          {/* Normalized Skew 這個家族自己的 backfill 狀態——單腳候選結構
-              上沒有 Normalized Skew，這行說明沒有意義，不顯示（逐腿卡片
-              有各自的狀態說明，見 `./IvTrend`）。 */}
-          {data.status !== "ok" && (
-            <p className="caption">{BACKFILL_NOTES[data.status]}</p>
-          )}
-          <Metric
-            primary
-            label="Normalized Skew"
-            unit="unitless"
-            metric={data.metrics.normalized_skew}
-            points={normalizedSkewSeries(data.normalized_skew_points)}
-            explanation={skewPercentileExplanation(data.metrics.normalized_skew.percentile)}
-          />
-          <p className="caption">
-            近 1 年 {data.observations} 個觀測，依候選的到期天數與 delta 座標
-            逐日重錨定
-          </p>
-          {/* 方法論註記（#140／spec #137 §7.5）：Δ4w 的定義＋等待進場的
-              誠實帳本，兩句事實，不下判斷、不預測。 */}
-          <p className="caption">
-            4週變化＝與約四週前（21–42 天窗內觀測中位數）之差；等待進場另有
-            已知的 theta 成本與標的價格風險，本區塊僅描述 volatility 結構。
-          </p>
-        </>
-      )}
 
       {notableEvents.length > 0 && (
         <InlineDiagnostics
@@ -807,13 +589,11 @@ function IvAdvanced({ data, isSingleLeg, notableEvents }: {
 /** 有資料時的卡片內容——從 `IvHistory` 拆出來純粹是讓上面那段「四種
  *  狀態同一個版位切換」的分支讀起來一眼看懂，不是新的分層原則。
  *
- *  三層順序（SIG-02／#173＋SIG-03／#174，spec #171）：Spread Summary
- *  （`./SpreadSummary`，只在 `spread_gap` 這個 key 存在時掛載）→
- *  Buy／Sell 逐腿卡片（`./IvTrend`）→ Advanced／Diagnostics 預設收合區
- *  （`IvAdvanced`）。 */
-function IvHistoryContent({ data, isSingleLeg, backfillInFlight }: {
+ *  兩層順序（SIG-02／#173＋SIG-03／#174，spec #171；2026-09-09 Owner
+ *  裁示移除原本排在最上面的 Spread Summary 那一層）：逐腿卡片
+ *  （`./IvTrend`）→ Advanced／Diagnostics 預設收合區（`IvAdvanced`）。 */
+function IvHistoryContent({ data, backfillInFlight }: {
   data: IvHistoryView;
-  isSingleLeg: boolean;
   /** T11（#194，兩段式補建 P3-a）：這個候選的 Legacy 家族今天觸發了一次
    *  補建、還沒跑完——卡片標一句話讓使用者知道資料還在補齊，不必猜為
    *  什麼 Normalized Skew 那半看起來還沒更新。 */
@@ -840,16 +620,12 @@ function IvHistoryContent({ data, isSingleLeg, backfillInFlight }: {
           歷史資料補建中……
         </p>
       )}
-      {/* 渲染條件是「回應裡有 spread_gap 這個 key」，不是「points 非
-          空」——單腳候選這個 key 整個不存在，`data.spread_gap &&`
-          天然只在有賣腿的候選才掛載；`points` 為空時 `SpreadSummary`
-          自己渲染 unavailable 狀態，不是在這裡就被擋掉（SIG-03／
-          #174）。 */}
-      {data.spread_gap && (
-        <SpreadSummary spreadGap={data.spread_gap} legs={data.legs} />
-      )}
+      {/* Spread IV Gap 主卡片（`./SpreadSummary`）已於 2026-09-09 依 Owner
+          裁示整塊退場——它只在 Vertical 候選出現，而 Vertical 已不再走到
+          這支元件。`data.spread_gap` 這個回應欄位本身沒有動（後端契約
+          不變），只是前端不再有任何消費端。 */}
       <IvTrend legs={data.legs} />
-      <IvAdvanced data={data} isSingleLeg={isSingleLeg} notableEvents={notableEvents} />
+      <IvAdvanced data={data} notableEvents={notableEvents} />
     </>
   );
 }

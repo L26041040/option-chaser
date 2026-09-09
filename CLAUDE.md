@@ -27,7 +27,7 @@ block 裡，不能切成好幾個 code block、也不能中間插普通文字把
 `［回報#001］spec #137 拆票完成`）。編號是**累計總數**，不因換
 session、換分支、換主題而歸零——目前最新編號記在這裡：
 
-> 目前次序：069（下一份回報用 070）
+> 目前次序：070（下一份回報用 071）
 
 每發一份回報就把上面這個數字改成剛剛用掉的那個，跟著那次改動一起
 commit（沒有其他改動要 commit 時，單獨為這一行開一個小 commit 也
@@ -587,6 +587,59 @@ Production（`option-chaser.vercel.app`，對應 master）下次部署會拿到
 storage lifecycle 分離、Ownership A-1、Cboe 429 韌性、S0
 observability、`/history` canonical read path 全部成果。SCALE-18
 （#269）依裁示仍未觸碰，母票 #251 依慣例不主動關閉。
+
+### Vertical Spread「貴不貴」整塊退場（2026-09-09，Owner 直接裁示，不開票）
+
+**依據**：`docs/research/spread-package-valuation-verdict.md`（本輪一併
+commit 進 repo）裁決 **`NO RELIABLE PACKAGE VALUATION YET`**——現行已
+出貨的兩個「貴不貴」頭條（Spread IV Gap percentile、Normalized Skew Ĝ
+percentile）已被引擎實測證偽：對純 vol-level 造成的真實成本變動
+（debit +8.5%～+73.9%），gap 讀數完全不動（Δ=0.0000）、Ĝ 方向相反
+（0.400→0.240，讀成「更便宜」）。這不是「不夠精確」，是「讀反了」。
+
+**Owner 裁示（AskUserQuestion 選定「整塊退場（推薦）」）**：Vertical
+Spread 候選**完全不渲染「IV 相對位置」卡片、也不發任何 `iv-history`
+請求**，與 Butterfly 一致。理由：裁示三個 family 並列，只有 Long
+Call／Put 寫「保留」；且在「**不得用 Advanced 降級／重新命名留下半套
+指標**」的精神下，留兩張逐腿卡就是半套。**Long Call／Put 完全不受
+影響。**
+
+**施工範圍（純前端，`option_chaser/`／`api_app/` 零改動——`git diff`
+確認）**：
+
+- `src/IvHistory.tsx` 的閘門從 `legs.length <= 2` 收成 `=== 1`，
+  兩道各自獨立的理由（Butterfly＝T16／#232 結構上不支援；Vertical＝
+  本次 Owner 裁示）合成同一條判斷式，在**請求層**擋下：不觸發任何
+  fetch、不渲染任何 DOM，不留空狀態、不留說明文字。
+- **刪除** `src/SpreadSummary.tsx`＋`SpreadSummary.test.tsx`（Spread
+  IV Gap 主卡片與它的 Advanced 次要文字）；`IvAdvanced` 的 Normalized
+  Skew 整組（頭條 `Metric`＋backfill 說明＋方法論註記）一併移除；隨之
+  無消費端的 `skewPercentileExplanation`／`normalizedSkewSeries`／
+  `Metric`／`TrendChart`／`metricCaption`／`trendLabel` 與 CSS
+  `.iv-metric*`／`.iv-value`／`.iv-spread-summary`／`.iv-skeleton-primary`
+  全部清掉，不留死碼。`CardSkeleton` 的 `isSingleLeg` 參數（永遠同一個
+  值）移除。
+- **刻意保留**：`IvTrend` 對 `legs.sell` 的選填渲染。判準寫死成一條可
+  陳述的規則——**只服務 Vertical 專屬指標（Spread IV Gap／Normalized
+  Skew）的東西刪掉；單純鏡射 `IvHistoryLegs` 契約形狀的選填渲染保留**
+  （後端 `/iv-history` 端點與回應契約本輪完全未動，兩腿候選直接呼叫
+  仍會拿到 `spread_gap`／`legs.sell`）。
+- 測試：`IvHistory.test.tsx` 新增三條退場守門（兩腿候選零 DOM／零
+  `iv-history` 請求／畫面上不出現 `Spread IV Gap|Normalized Skew|偏斜`
+  任何殘留，含展開 Advanced 之後）；6 個 Normalized-Skew-only describe
+  刪除（該家族倖存的等價保證由 `IvTrend.test.tsx` 既有測試涵蓋：逐腿
+  percentile／backfill 狀態／無資料／facts-only／scrubber）；
+  `percentileCopy.test.ts` 三家族收斂為一家族（另兩個函式已不存在）。
+  e2e：Historical IV 這組改用既有 `contracts/analysis_sample_long_call.json`
+  當詳細頁 `latest_result`（原本用兩腿的 `analysis_sample.json`，
+  champion 現在結構上不渲染這塊）；6 條「兩腿在真實 app 路徑上各自
+  獨立渲染」與 SIG-04 Spread-IV-Gap 紅線測試刪除——app 已不存在兩腿
+  路徑，元件層兩腿渲染仍由 `IvTrend.test.tsx` 的「Vertical Spread：
+  正好兩張卡」單元測試守門。
+
+**全套**：前端 typecheck 乾淨、Vitest **757 passed**、`vite build`
+成功、Playwright e2e **120 passed**（iPhone＋Desktop）。後端零改動故
+未重跑。
 
 ### OPTION-SCALING-TICKETS-REVISE-006 拆票（2026-09-06，歷史紀錄）
 

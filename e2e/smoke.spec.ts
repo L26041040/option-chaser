@@ -22,6 +22,16 @@ const sampleRow = JSON.parse(
  *  broken-wing 候選（買 100／賣 2×106／買 115，兩個損益兩平點、獲利
  *  區間，`max_loss_per_contract` 超過 `capital_per_contract`），不是
  *  手造合成資料。 */
+/** 單腿（Long Call）契約樣本——2026-09-09 Owner 裁示後「IV 相對位置」
+ *  只服務單腿候選，Historical IV 這組 e2e 因此改用它當詳細頁的
+ *  `latest_result`（原本用的 `analysis_sample.json` 是兩腿 Vertical
+ *  Spread，那個 champion 現在結構上不會渲染這塊）。 */
+const sampleLongCall: any = JSON.parse(
+  readFileSync(
+    fileURLToPath(
+      new URL("../contracts/analysis_sample_long_call.json", import.meta.url)),
+    "utf-8"));
+
 const sampleCallFly: any = JSON.parse(
   readFileSync(
     fileURLToPath(
@@ -111,10 +121,11 @@ const SPREAD_HISTORY = {
 };
 
 /** 詳細頁測試共用的路由：清單、單一劇本、刷新、原始資料、Spread 歷史。 */
-async function routeLibrary(page: import("@playwright/test").Page, row: unknown) {
+async function routeLibrary(page: import("@playwright/test").Page, row: unknown,
+                            detailView: unknown = sample) {
   await page.route("**/api/scenarios", (route) => route.fulfill({ json: [row] }));
   await page.route("**/api/scenarios/s1", (route) =>
-    route.fulfill({ json: { ...(row as object), latest_result: sample } }));
+    route.fulfill({ json: { ...(row as object), latest_result: detailView } }));
   // 開站與頂部刷新鈕打的是批次端點（Refresh Run，T08／#196）——
   // `"/refresh-run"` 不會被下面那條 `**/api/scenarios/*/refresh`
   // 比對到（Playwright 的 `*` 只吃一個路徑區段，`refresh-run` 沒有
@@ -1583,11 +1594,6 @@ function legHistoricalIv(overrides: Record<string, unknown> = {}) {
   };
 }
 
-/** 賣腿身份——固定跟買腿（履約價 118）不同一張合約（履約價 125），
- *  避免兩隻腳意外撞成同一份資料。 */
-const SELL_CONTRACT = { underlying: "XYZ", expiration: "2026-09-18", strike: 125,
-                        option_type: "call", contract_symbol: "XYZ260918C00125000" };
-
 /** 完全沒有歷史觀測的那隻腳——`points` 等序列全空、統計量全 `null`，
  *  誠實對應「沒有可比較觀測」這個狀態（不是把 `legHistoricalIv()` 的
  *  假資料留著只清掉統計量，那樣走勢圖還是畫得出來，測不到真正的
@@ -1601,8 +1607,11 @@ function emptyLegHistoricalIv(overrides: Record<string, unknown> = {}) {
   });
 }
 
-/** 一份「一切正常」的完整 Historical IV 回應——兩腿都有完整歷史，
- *  Normalized Skew 也有完整歷史。個別測試需要 diagnostics events／
+/** 一份「一切正常」的完整 Historical IV 回應。2026-09-09 Owner 裁示
+ *  （Vertical「貴不貴」整塊退場）後這塊卡片只服務單腿候選，因此預設
+ *  只有買腿；`normalized_skew_points`／`metrics` 是後端契約仍然回傳的
+ *  欄位（後端本輪未動），保留在這裡正好可以驗「就算回應帶了它，畫面
+ *  也不該冒出 Normalized Skew」。個別測試需要 diagnostics events／
  *  partial 資料時，直接展開這個物件覆寫要驗的欄位即可。 */
 function fullIvResponse(overrides: Record<string, unknown> = {}) {
   const skewPoints = normalizedSkewPoints();
@@ -1612,11 +1621,7 @@ function fullIvResponse(overrides: Record<string, unknown> = {}) {
     metrics: { normalized_skew: normalizedSkewMetric(skewPoints) },
     observations: skewPoints.length, note: null,
     diagnostics: { correlation_id: "cid-e2e", events: [] },
-    legs: {
-      buy: legHistoricalIv(),
-      sell: legHistoricalIv({ contract: SELL_CONTRACT, current_percentile: 0.55,
-                             delta_4w: -0.004 }),
-    },
+    legs: { buy: legHistoricalIv() },
     // T11（#194，兩段式補建 P3-a）：既有測試絕大多數不關心這個欄位，
     // 預設「今天已經補過」——不會意外觸發本輪新增的補建 POST。
     backfill_pending: false,
@@ -1626,7 +1631,7 @@ function fullIvResponse(overrides: Record<string, unknown> = {}) {
 
 async function routeDetailWithIv(page: import("@playwright/test").Page,
                                  enabled: boolean) {
-  await routeLibrary(page, libraryRow());
+  await routeLibrary(page, libraryRow(), sampleLongCall);
   const ivCalls: string[] = [];
   await page.route("**/api/settings", (route) =>
     route.fulfill({ json: { historical_iv_enabled: enabled } }));
@@ -1684,14 +1689,11 @@ async function routePartialHistory(
   page: import("@playwright/test").Page,
   buyLeg: ReturnType<typeof legHistoricalIv>,
 ) {
-  await routeLibrary(page, libraryRow());
+  await routeLibrary(page, libraryRow(), sampleLongCall);
   await page.route("**/api/settings", (route) =>
     route.fulfill({ json: { historical_iv_enabled: true } }));
   await page.route("**/api/scenarios/*/iv-history*", (route) =>
-    route.fulfill({ json: fullIvResponse({
-      legs: { buy: buyLeg,
-             sell: legHistoricalIv({ contract: SELL_CONTRACT }) },
-    }) }));
+    route.fulfill({ json: fullIvResponse({ legs: { buy: buyLeg } }) }));
 }
 
 test("Historical IV 未解鎖：分析頁完全沒有這個模組，也不發任何 IV 請求（#126）",
@@ -1707,38 +1709,29 @@ test("Historical IV 未解鎖：分析頁完全沒有這個模組，也不發任
   expect(ivCalls).toEqual([]);
 });
 
-test("Historical IV 解鎖：買／賣腿各自一張卡為主要內容，Normalized Skew 收進" +
-     "預設收合的 Advanced（#114／HIVT-05／SIG-02／#173）",
+test("Historical IV 解鎖：單腿候選一張逐腿卡為主要內容；Normalized Skew 已隨" +
+     "2026-09-09 Owner 裁示整塊退場，連 Advanced 裡都不再出現（#114／HIVT-05／" +
+     "SIG-02／#173）",
    async ({ page }) => {
   await routeDetailWithIv(page, true);
   await page.goto("/#/s/s1");
 
   const block = page.locator(".iv-history");
   await expect(block).toBeVisible();
-  // HIVT-04（#155）之後舊的「買腿 IV」／「賣腿 IV」次要顯示已移除，
-  // 改由 `IvTrend.tsx` 逐腿卡片供應，標籤簡化成「買腿」／「賣腿」——
-  // 這兩張卡是主要內容，不必展開任何東西就看得到。
-  await expect(block.getByText("買腿", { exact: true })).toBeVisible();
-  await expect(block.getByText("賣腿", { exact: true })).toBeVisible();
+  // 單腿候選只有一張逐腿卡（無「買腿」／「賣腿」標籤），是主要內容，
+  // 不必展開任何東西就看得到。
+  await expect(block.locator(".iv-trend-card")).toHaveCount(1);
+  await expect(block.getByText(/第 41 百分位/)).toBeVisible();
 
-  // Normalized Skew 整組（SIG-02／#173）搬進預設收合的 Advanced／
-  // Diagnostics 區塊——展開前不可見，展開後才看得到。
-  await expect(block.getByText("Normalized Skew")).not.toBeVisible();
+  // Normalized Skew／Spread IV Gap 整組已退場——展開 Advanced 之後同樣
+  // 一個字都不該出現（裁示明文不接受「用 Advanced 降級留下半套指標」）。
   await openAdvanced(block);
-  await expect(block.getByText("Normalized Skew")).toBeVisible();
-  await expect(block.getByText(/第 62 百分位/)).toBeVisible();
+  await expect(block).not.toContainText(/Normalized Skew|Spread IV Gap|偏斜/);
 
-  // HIVT-05（#156）之後，買／賣腿卡片（`.iv-trend-card`）不再是「次於
-  // Normalized Skew 頭條」的次層小字顯示——`IvTrend.tsx` 每隻腳都是
-  // 獨立正確的完整卡片，現值一律用 `.iv-value-primary`，舊版「頭條
-  // 字級大於次層」的階層（靠 `.iv-value`／`.iv-value-primary` 兩種
-  // class 區分）已經不在了。這裡改成驗證這個新事實：三個現值
-  // （Normalized Skew／買腿／賣腿）字級一致，不是驗證一個已經不存在
-  // 的大小差異。
+  // 現值一律用 `.iv-value-primary`——單腿候選只剩這一個。
   const primarySizes = await block.locator(".iv-value-primary").evaluateAll(
     (els) => els.map((el) => parseFloat(getComputedStyle(el).fontSize)));
-  expect(primarySizes).toHaveLength(3);
-  expect(new Set(primarySizes).size).toBe(1);
+  expect(primarySizes).toHaveLength(1);
 
   // #135 曾要求這一區「壓到合理最低」（門檻曾是 60% 視窗高）；本輪
   // （spec #137／#140）需求方明確改裁示「走勢圖為主體」，三張真正的
@@ -1780,11 +1773,10 @@ test("Historical IV：一年走勢圖在手機 viewport 完整可讀、寬度貼
   // 有實際高度可畫路徑——不是塌成一條線（走勢圖為主體的核心驗收）。
   expect(chartBox.height).toBeGreaterThan(30);
 
-  // 三張圖（Normalized Skew、買腿、賣腿）都各自有一張走勢圖，不是只有
-  // 頭條有——舊版買／賣腿共用一份 reanchored 資料只算一張圖，新版兩隻
-  // 腳各自 fetch 各自的 exact-contract 序列，因此仍然是 3 張（巧合
-  // 同數，不是同一套資料換皮）。
-  await expect(block.locator(".iv-trend-chart")).toHaveCount(3);
+  // 2026-09-09 Owner 裁示：Vertical Spread 的「IV 相對位置」整塊退場，這塊卡片只服務單腿候選，
+  // 因此整塊只剩逐腿卡片自己那一張走勢圖（原本是 Normalized Skew ＋
+  // 買／賣腿共三張）。
+  await expect(block.locator(".iv-trend-chart")).toHaveCount(1);
 });
 
 test("Historical IV：Δ4w 帶正負號與單位，跟 percentile／涵蓋時間同一套事實敘述（#140／HIVT-05）",
@@ -1793,13 +1785,12 @@ test("Historical IV：Δ4w 帶正負號與單位，跟 percentile／涵蓋時間
   await page.goto("/#/s/s1");
 
   const block = page.locator(".iv-history");
-  // 買腿：delta_4w = -0.012 → 「-1.2 pts」（主要區塊，不必展開 Advanced）
+  // 逐腿卡片：delta_4w = -0.012 → 「-1.2 pts」（主要區塊，不必展開 Advanced）
   await expect(block.getByText(/4週 -1\.2 pts/)).toBeVisible();
-  // Normalized Skew：trend_4w = 0.006 → 「+0.01」（無因次小數，不是
-  // pts）——SIG-02（#173）後這一項在 Advanced 裡，先展開才看得到。
+  // Normalized Skew 的無因次 Δ4w（「+0.01」）已隨它整組退場，展開
+  // Advanced 之後也不該出現。
   await openAdvanced(block);
-  await expect(block.getByText(/4週 \+0\.01/)).toBeVisible();
-  await expect(block.getByText(/4週 \+0\.6 pts/)).toHaveCount(0);
+  await expect(block.getByText(/4週 \+0\.01/)).toHaveCount(0);
 });
 
 test("Historical IV：手機點按圖表任意位置顯示 tooltip，位置落在走勢圖範圍內" +
@@ -1831,45 +1822,31 @@ test("Historical IV 今日額度用完：percentile／Δ4w 照樣顯示，只多
    async ({ page }) => {
   // 需求方 2026-08-12 二次修正：backfill 狀態（今天補不補得動）跟資料
   // 能不能看是兩件事——quota 不再讓整塊變成「不畫百分位」的短訊息卡，
-  // 已快取的觀測算出的 percentile／Δ4w 照常顯示。這裡只讓頂層 `status`
-  // （Normalized Skew 家族自己的 backfill 狀態）落在 quota；兩腿各自的
-  // `status` 維持 `ok`——HIVT-02（#153）之後兩個家族的 backfill 狀態
-  // 本來就各自獨立，不是同一顆旗標，這裡刻意只驗其中一個家族，符合
-  // 「只多一行附加說明」的原始斷言意圖。
-  await routeLibrary(page, libraryRow());
+  // 已快取的觀測算出的 percentile／Δ4w 照常顯示。2026-09-09 Owner 裁示
+  // 之後 Normalized Skew 家族整組退場，這條斷言因此改掛在逐腿
+  // exact-contract 家族自己的 `status` 上——同一個產品保證，換成它現在
+  // 唯一還在畫面上的載體。
+  await routeLibrary(page, libraryRow(), sampleLongCall);
   await page.route("**/api/settings", (route) =>
     route.fulfill({ json: { historical_iv_enabled: true } }));
-  await page.route("**/api/scenarios/*/iv-history*", (route) => {
-    const skewPoints = normalizedSkewPoints().slice(0, 12);   // 只補了一部分
-    return route.fulfill({ json: {
-      candidate_key: "k", status: "quota",
-      normalized_skew_points: skewPoints,
-      metrics: { normalized_skew: normalizedSkewMetric(skewPoints) },
-      observations: skewPoints.length,
-      note: "Market Data App 今日額度已用完",
-      diagnostics: { correlation_id: "cid-e2e", events: [] },
-      legs: { buy: legHistoricalIv(), sell: legHistoricalIv({
-        contract: SELL_CONTRACT, current_percentile: 0.55, delta_4w: -0.004 }) },
-    } });
-  });
+  await page.route("**/api/scenarios/*/iv-history*", (route) =>
+    route.fulfill({ json: fullIvResponse({
+      legs: { buy: legHistoricalIv({
+        status: "quota", note: "Market Data App 今日額度已用完" }) },
+    }) }));
 
   await page.goto("/#/s/s1");
 
   const block = page.locator(".iv-history");
   await expect(block).toBeVisible();
-  // 頂層 status（Normalized Skew 家族）的附加說明跟著它一起搬進
-  // Advanced（SIG-02／#173）——先展開才看得到。
-  await openAdvanced(block);
   await expect(block.getByText(/今日 API 額度已用完/)).toBeVisible();
 
-  // percentile 沒有被藏起來——鎖定 Normalized Skew 那一項精確的組合
-  // 文字，不會跟兩腿卡片各自的百分位撞在一起。
-  await expect(block.getByText("第 62 百分位・45 筆觀測")).toBeVisible();
-  // Δ4w 同樣不受 backfill 狀態影響——買腿卡片自己的 Δ4w 照樣顯示。
+  // percentile 沒有被藏起來。
+  await expect(block.getByText(/第 41 百分位/)).toBeVisible();
+  // Δ4w 同樣不受 backfill 狀態影響。
   await expect(block.getByText(/4週 -1\.2 pts/)).toBeVisible();
-  // 走勢圖也照樣畫得出來（Normalized Skew 只有 12 筆部分資料＋兩腿各自
-  // 完整的走勢圖，不是空白）。
-  await expect(block.locator(".iv-trend-chart")).toHaveCount(3);
+  // 走勢圖也照樣畫得出來，不是空白。
+  await expect(block.locator(".iv-trend-chart")).toHaveCount(1);
 
   // 主分析頁其餘部分照常
   await expect(page.getByText("劇本主圖")).toBeVisible();
@@ -1878,19 +1855,21 @@ test("Historical IV 今日額度用完：percentile／Δ4w 照樣顯示，只多
 test("Historical IV 兩段式補建（T11／#194，P3-a）：backfill_pending 觸發" +
      "補建端點，完成後自動重抓補全，卡片期間標「歷史資料補建中」",
    async ({ page }) => {
-  await routeLibrary(page, libraryRow());
+  await routeLibrary(page, libraryRow(), sampleLongCall);
   await page.route("**/api/settings", (route) =>
     route.fulfill({ json: { historical_iv_enabled: true } }));
 
   // 第一次 GET 帶著上一輪的舊資料＋`backfill_pending: true`；補建完成
-  // 後前端會重抓一次，這次回應換成補全後的新資料
-  // （`observations` 66→驗證畫面真的換新，不是原地不動）。
+  // 後前端會重抓一次，這次回應換成補全後的新資料（逐腿百分位 41→66，
+  // 驗證畫面真的換新，不是原地不動——原本用的 `observations` 屬於已經
+  // 退場的 Normalized Skew 家族，畫面上讀不到了）。
   let ivCallCount = 0;
   await page.route("**/api/scenarios/*/iv-history*", (route) => {
     ivCallCount += 1;
     return route.fulfill({ json: fullIvResponse({
       backfill_pending: ivCallCount === 1,
-      observations: ivCallCount === 1 ? 10 : 66,
+      legs: { buy: legHistoricalIv(
+        { current_percentile: ivCallCount === 1 ? 0.41 : 0.66 }) },
     }) });
   });
 
@@ -1916,53 +1895,37 @@ test("Historical IV 兩段式補建（T11／#194，P3-a）：backfill_pending �
 
   const block = page.locator(".iv-history");
   await expect(block).toBeVisible();
-  // 補建進行中：卡片上有一句話說明，且舊資料（10 個觀測）仍然完整可看
-  // ——不是整塊清空等新資料。
+  // 補建進行中：卡片上有一句話說明，且舊資料仍然完整可看——不是整塊
+  // 清空等新資料。
   await expect(block.getByText("歷史資料補建中……")).toBeVisible();
-  await openAdvanced(block);
-  await expect(block.getByText(/10 個觀測/).first()).toBeVisible();
+  await expect(block.getByText(/第 41 百分位/)).toBeVisible();
 
-  // 補建結束後自動重抓：說明文字消失，畫面換成新一輪回應（買／賣腿與
-  // Normalized Skew 三處都各自帶著這個新數字，`.first()` 只是取其一
-  // 確認畫面真的換新，不是特別要驗哪一處）。
+  // 補建結束後自動重抓：說明文字消失，畫面換成新一輪回應的數字。
   await expect(block.getByText("歷史資料補建中……")).toHaveCount(0);
-  await expect(block.getByText(/66 個觀測/).first()).toBeVisible();
+  await expect(block.getByText(/第 66 百分位/)).toBeVisible();
   expect(backfillCalls).toHaveLength(1);
   expect(backfillCalls[0]).toContain("/iv-history/backfill");
 });
 
 test("Historical IV 完全沒有可比較觀測：誠實顯示沒有歷史資料，不硬湊（#133／#140／HIVT-05）",
    async ({ page }) => {
-  // 兩個家族各自獨立 fetch（HIVT-02／#153），因此「完全沒有觀測」要
-  // 分開讓 Normalized Skew 與兩隻腳都落在各自的空資料狀態，才是真的
-  // 「整頁都沒有歷史資料」，不是只清空其中一個家族。
-  await routeLibrary(page, libraryRow());
+  // 2026-09-09 Owner 裁示後畫面上只剩逐腿 exact-contract 家族，「完全
+  // 沒有觀測」因此就是這隻腳沒有觀測。
+  await routeLibrary(page, libraryRow(), sampleLongCall);
   await page.route("**/api/settings", (route) =>
     route.fulfill({ json: { historical_iv_enabled: true } }));
-  await page.route("**/api/scenarios/*/iv-history*", (route) => {
-    const emptyMetric = { value: null, percentile: null, count: 0,
-                          trend_4w: null, trend_base_count: 0 };
-    return route.fulfill({ json: {
-      candidate_key: "k", status: "ok",
-      normalized_skew_points: [],
-      metrics: { normalized_skew: emptyMetric },
-      observations: 0, note: null,
-      diagnostics: { correlation_id: "cid-e2e", events: [] },
-      legs: { buy: emptyLegHistoricalIv(),
-             sell: emptyLegHistoricalIv({ contract: SELL_CONTRACT }) },
-    } });
-  });
+  await page.route("**/api/scenarios/*/iv-history*", (route) =>
+    route.fulfill({ json: fullIvResponse({
+      legs: { buy: emptyLegHistoricalIv() } }) }));
 
   await page.goto("/#/s/s1");
 
   const block = page.locator(".iv-history");
   await expect(block).toBeVisible();
   await expect(block.getByText("沒有歷史資料").first()).toBeVisible();
-  // 沒有觀測就沒有東西可畫——三張走勢圖（Normalized Skew＋買／賣腿）
-  // 都不畫，不是空白外框。
+  // 沒有觀測就沒有東西可畫——走勢圖不畫，不是空白外框。
   await expect(block.locator(".iv-trend-chart")).toHaveCount(0);
-  // Normalized Skew 沒有數字可秀（`metricCaption` 整句換成「沒有歷史
-  // 資料」）。兩腿卡片則是 HIVT-03（#154）明文要求的逐項 graceful
+  // 逐腿卡片是 HIVT-03（#154）明文要求的逐項 graceful
   // degradation——`IvTrend.tsx` 每一項（百分位／Z-score／Δ4w）各自
   // 印出「百分位：沒有歷史資料」「Z-score：觀測數不足」「4週 —」，
   // 字面上本來就會出現「百分位」「Z-score」「4週」這些詞——這不是舊版
@@ -1975,90 +1938,9 @@ test("Historical IV 完全沒有可比較觀測：誠實顯示沒有歷史資料
   await expect(page.getByText("劇本主圖")).toBeVisible();
 });
 
-test("Historical IV：兩腿各自獨立——買腿有完整歷史，賣腿完全沒有觀測，互不污染" +
-     "（#133／#140；HIVT-02／03：兩隻腳是各自獨立 fetch 的 exact contract，" +
-     "spec #151 §2／AC 明文「絕不合成一條 Spread IV」）",
-   async ({ page }) => {
-  await routeLibrary(page, libraryRow());
-  await page.route("**/api/settings", (route) =>
-    route.fulfill({ json: { historical_iv_enabled: true } }));
-  await page.route("**/api/scenarios/*/iv-history*", (route) => {
-    const skewPoints = normalizedSkewPoints();
-    return route.fulfill({ json: {
-      candidate_key: "k", status: "ok",
-      normalized_skew_points: skewPoints,
-      metrics: { normalized_skew: normalizedSkewMetric(skewPoints) },
-      observations: skewPoints.length, note: null,
-      diagnostics: { correlation_id: "cid-e2e", events: [] },
-      legs: { buy: legHistoricalIv(),
-             sell: emptyLegHistoricalIv({ contract: SELL_CONTRACT }) },
-    } });
-  });
-
-  await page.goto("/#/s/s1");
-
-  const block = page.locator(".iv-history");
-  await expect(block).toBeVisible();
-
-  const cards = block.locator(".iv-trend-card");
-  await expect(cards).toHaveCount(2);
-  // 賣腿：誠實說沒有資料，不畫圖
-  const sellCard = cards.filter({ hasText: "賣腿" });
-  await expect(sellCard.getByText(/沒有歷史資料/)).toBeVisible();
-  await expect(sellCard.locator(".iv-trend-chart")).toHaveCount(0);
-  // 買腿：完整資料照常顯示，不受賣腿沒資料影響
-  const buyCard = cards.filter({ hasText: "買腿" });
-  await expect(buyCard.getByText(/第 41 百分位/)).toBeVisible();
-  await expect(buyCard.locator(".iv-trend-chart")).toHaveCount(1);
-});
-
 /* ---------- HIVT-07（#158）全面回歸／E2E 最終驗收：補齊 spec #151
    34 項 User Stories／Implementation Decisions 裡，既有 75 條 E2E 尚未
    逐一肉眼可見驗證到的幾個缺口。 ---------- */
-
-test("Historical IV：買／賣腿讀到的是各自 exact contract 的真實觀測——現值與百分位" +
-     "在 DOM 上讀出兩個確實不同的數字，不是共用同一份序列複製兩份（HIVT-07／" +
-     "#158，story #1–#4：不跨 strike／不跨 expiration 替代，要看得見）",
-   async ({ page }) => {
-  await routeLibrary(page, libraryRow());
-  await page.route("**/api/settings", (route) =>
-    route.fulfill({ json: { historical_iv_enabled: true } }));
-  await page.route("**/api/scenarios/*/iv-history*", (route) =>
-    route.fulfill({ json: fullIvResponse({
-      legs: {
-        // 買／賣腿的原始 IV 序列本身就不同（不只覆寫 percentile／Δ4w
-        // 這些衍生統計量）——履約價 118 的買腿 vs 履約價 125 的賣腿，
-        // 兩張真正不同的合約本來就該有不同的市場報價。
-        buy: legHistoricalIv({ points: ivDates().map((date, i) =>
-          ({ date, iv: 0.20 + (i % 20) * 0.001 })) }),
-        sell: legHistoricalIv({ contract: SELL_CONTRACT,
-          points: ivDates().map((date, i) => ({ date, iv: 0.32 + (i % 20) * 0.001 })),
-          current_percentile: 0.55, delta_4w: -0.004 }),
-      },
-    }) }));
-
-  await page.goto("/#/s/s1");
-
-  const block = page.locator(".iv-history");
-  await expect(block).toBeVisible();
-  const cards = block.locator(".iv-trend-card");
-  const buyCard = cards.filter({ hasText: "買腿" });
-  const sellCard = cards.filter({ hasText: "賣腿" });
-
-  // 現值（`.iv-value-primary`）：買腿最後一筆 0.20+(65%20)*0.001=20.5%，
-  // 賣腿最後一筆 0.32+(65%20)*0.001=32.5%——實際從兩張卡各自讀出來的
-  // 兩個數字，不是只驗證兩張卡「存在」。
-  const buyValue = await buyCard.locator(".iv-value-primary").textContent();
-  const sellValue = await sellCard.locator(".iv-value-primary").textContent();
-  expect(buyValue).toBe("20.5%");
-  expect(sellValue).toBe("32.5%");
-  expect(buyValue).not.toBe(sellValue);
-
-  // 百分位同樣讀出兩個不同數字（41 vs 55），跟現值是各自獨立的兩條
-  // 驗證線，不是同一個斷言重複兩次。
-  await expect(buyCard.getByText(/第 41 百分位/)).toBeVisible();
-  await expect(sellCard.getByText(/第 55 百分位/)).toBeVisible();
-});
 
 test("Historical IV：掛牌僅約 3 週的合約，涵蓋時間如實顯示「近 3 週」，不是" +
      "「近 1 個月」也不是「近 1 年」（HIVT-07／#158，story #5／#6）",
@@ -2068,7 +1950,7 @@ test("Historical IV：掛牌僅約 3 週的合約，涵蓋時間如實顯示「�
   await page.goto("/#/s/s1");
 
   const block = page.locator(".iv-history");
-  const buyCard = block.locator(".iv-trend-card").filter({ hasText: "買腿" });
+  const buyCard = block.locator(".iv-trend-card");
   await expect(buyCard.getByText(
     new RegExp(`近 3 週・${leg.observation_count} 個觀測`))).toBeVisible();
   await expect(buyCard.getByText(/近 1 個月/)).toHaveCount(0);
@@ -2083,7 +1965,7 @@ test("Historical IV：掛牌約 5 個月的合約，涵蓋時間如實顯示「�
   await page.goto("/#/s/s1");
 
   const block = page.locator(".iv-history");
-  const buyCard = block.locator(".iv-trend-card").filter({ hasText: "買腿" });
+  const buyCard = block.locator(".iv-trend-card");
   await expect(buyCard.getByText(
     new RegExp(`近 5 個月・${leg.observation_count} 個觀測`))).toBeVisible();
   await expect(buyCard.getByText(/近 1 年/)).toHaveCount(0);
@@ -2098,7 +1980,7 @@ test("Historical IV：掛牌約 11 個月的合約，涵蓋時間如實顯示「
   await page.goto("/#/s/s1");
 
   const block = page.locator(".iv-history");
-  const buyCard = block.locator(".iv-trend-card").filter({ hasText: "買腿" });
+  const buyCard = block.locator(".iv-trend-card");
   await expect(buyCard.getByText(
     new RegExp(`近 11 個月・${leg.observation_count} 個觀測`))).toBeVisible();
   // 修正前的 bug：`spanLabel()` 對 >=300 天一律回「近 1 年」，330 天
@@ -2111,7 +1993,7 @@ test("Historical IV：z-score／moving average／Bollinger 帶三項統計量在
      "真的可見（geometry／caption 斷言），不只 Vitest 元件測試覆蓋過" +
      "（HIVT-07／#158，story #8／#9／#10／#11／#12）",
    async ({ page }) => {
-  await routeLibrary(page, libraryRow());
+  await routeLibrary(page, libraryRow(), sampleLongCall);
   await page.route("**/api/settings", (route) =>
     route.fulfill({ json: { historical_iv_enabled: true } }));
   const dates = ivDates();
@@ -2127,10 +2009,6 @@ test("Historical IV：z-score／moving average／Bollinger 帶三項統計量在
       legs: {
         buy: legHistoricalIv({ moving_average: slopedMa,
           bollinger_upper: slopedUpper, bollinger_lower: slopedLower }),
-        sell: legHistoricalIv({ contract: SELL_CONTRACT,
-          moving_average: slopedMa, bollinger_upper: slopedUpper,
-          bollinger_lower: slopedLower,
-          current_percentile: 0.55, delta_4w: -0.004 }),
       },
     }) }));
 
@@ -2138,7 +2016,7 @@ test("Historical IV：z-score／moving average／Bollinger 帶三項統計量在
 
   const block = page.locator(".iv-history");
   await expect(block).toBeVisible();
-  // z-score caption：買／賣腿預設 current_zscore 都是 0.3 → "+0.30"——
+  // z-score caption：逐腿卡片預設 current_zscore 是 0.3 → "+0.30"——
   // SIG-02（#173）後這一項搬進 Advanced，先展開才看得到。
   await openAdvanced(block);
   await expect(block.getByText(/Z-score \+0\.30/).first()).toBeVisible();
@@ -2162,50 +2040,11 @@ test("Historical IV：z-score／moving average／Bollinger 帶三項統計量在
   expect(await block.locator(".iv-trend-band").count()).toBeGreaterThan(0);
 });
 
-test("Historical IV：買／賣腿各自的 vendor／quota 狀態獨立顯示，不受 Normalized " +
-     "Skew 家族自己的 status 影響，也不擋住頁面其他部分（HIVT-07／#158，" +
-     "story #32；spec #151 §4「兩個家族的 backfill 狀態各自獨立」）",
-   async ({ page }) => {
-  await routeLibrary(page, libraryRow());
-  await page.route("**/api/settings", (route) =>
-    route.fulfill({ json: { historical_iv_enabled: true } }));
-  await page.route("**/api/scenarios/*/iv-history*", (route) =>
-    route.fulfill({ json: fullIvResponse({
-      status: "ok",   // 頂層（Normalized Skew 家族）維持 ok
-      legs: {
-        buy: legHistoricalIv({ status: "quota" }),
-        sell: legHistoricalIv({ contract: SELL_CONTRACT, status: "vendor",
-          current_percentile: 0.55, delta_4w: -0.004 }),
-      },
-    }) }));
-
-  await page.goto("/#/s/s1");
-
-  const block = page.locator(".iv-history");
-  await expect(block).toBeVisible();
-  const cards = block.locator(".iv-trend-card");
-  const buyCard = cards.filter({ hasText: "買腿" });
-  const sellCard = cards.filter({ hasText: "賣腿" });
-
-  await expect(buyCard.getByText("今日 API 額度已用完，將於後續使用時繼續補齊"))
-    .toBeVisible();
-  await expect(sellCard.getByText("資料源暫時無法連線，將於後續使用時繼續補齊"))
-    .toBeVisible();
-  // Normalized Skew 家族自己沒有落在非 ok 狀態，不該多印一行說明——這行
-  // 文字只會來自兩腿卡片各自的 status，不是被頂層 status 帶出來的。
-  await expect(block.getByText(/今日 API 額度已用完/)).toHaveCount(1);
-
-  // 已快取的統計量不因為今天 backfill 沒補到而被藏起來（既有 quota
-  // 慣例延伸到腿層級），走勢圖照常渲染，頁面其餘部分也不受影響。
-  await expect(block.locator(".iv-trend-chart")).toHaveCount(3);
-  await expect(page.getByText("劇本主圖")).toBeVisible();
-});
-
 /* ---------- Inline diagnostics（DG-05／#148） ---------- */
 
 test("Historical IV 請求失敗：頁面不 crash，精簡狀態列可見，可展開可收起（DG-05／#148）",
    async ({ page }) => {
-  await routeLibrary(page, libraryRow());
+  await routeLibrary(page, libraryRow(), sampleLongCall);
   await page.route("**/api/settings", (route) =>
     route.fulfill({ json: { historical_iv_enabled: true } }));
   await page.route("**/api/scenarios/*/iv-history*", (route) =>
@@ -2241,7 +2080,7 @@ test("Historical IV 請求失敗：頁面不 crash，精簡狀態列可見，可
 
 test("Historical IV 200 但帶 warning events：一樣觸發診斷區塊，資料照常渲染（DG-05／#148）",
    async ({ page }) => {
-  await routeLibrary(page, libraryRow());
+  await routeLibrary(page, libraryRow(), sampleLongCall);
   await page.route("**/api/settings", (route) =>
     route.fulfill({ json: { historical_iv_enabled: true } }));
   await page.route("**/api/scenarios/*/iv-history*", (route) =>
@@ -2253,25 +2092,24 @@ test("Historical IV 200 但帶 warning events：一樣觸發診斷區塊，資�
 
   const block = page.locator(".iv-history");
   await expect(block).toBeVisible();
-  // 主要區塊（買／賣腿卡片）不必展開任何東西就照常渲染——診斷區塊是
+  // 主要區塊（逐腿卡片）不必展開任何東西就照常渲染——診斷區塊是
   // additive，不是取代掉資料本身。
-  await expect(block.getByText("買腿", { exact: true })).toBeVisible();
+  await expect(block.locator(".iv-trend-card")).toHaveCount(1);
   // inline diagnostics 展開內容搬進 Advanced（SIG-02／#173），先展開
   // 才看得到。
   await openAdvanced(block);
   await expect(block.getByText("Historical IV 診斷資訊 · 查看詳情"))
     .toBeVisible();
-  // 主資料已成功（買／賣腿卡片照常渲染）——不能出現誤導使用者以為主圖
+  // 主資料已成功（逐腿卡片照常渲染）——不能出現誤導使用者以為主圖
   // 壞掉的「資料取得失敗」（需求方 2026-08-22 反饋）。
   await expect(block.getByText("Historical IV 資料取得失敗")).toHaveCount(0);
-  await expect(block.getByText("Normalized Skew")).toBeVisible();
 });
 
 /* ---------- 固定版位＋Inline Diagnostics Copy 按鈕（QA 反饋，2026-08-16） ---------- */
 
 test("手機版：Historical IV 卡片一開始就在，loading 時原位顯示骨架，資料回來後原位換成走勢圖" +
      "（不因 request 完成才決定要不要出現）", async ({ page }) => {
-  await routeLibrary(page, libraryRow());
+  await routeLibrary(page, libraryRow(), sampleLongCall);
   await page.route("**/api/settings", (route) =>
     route.fulfill({ json: { historical_iv_enabled: true } }));
 
@@ -2294,9 +2132,8 @@ test("手機版：Historical IV 卡片一開始就在，loading 時原位顯示�
   const cardCountDuringLoading = await page.locator(".card").count();
 
   releaseIv();
-  // 骨架換成真正的主要內容（買腿卡片，SIG-02／#173 後不必展開 Advanced
-  // 就看得到）——不是靠 Normalized Skew（現在收在 Advanced 裡）判斷。
-  await expect(block.getByText("買腿", { exact: true })).toBeVisible();
+  // 骨架換成真正的主要內容（逐腿卡片，不必展開 Advanced 就看得到）。
+  await expect(block.locator(".iv-trend-card")).toHaveCount(1);
   await expect(block.locator(".iv-skeleton")).toHaveCount(0);
   // 換成有資料的內容後，卡片總數沒有變化——不是骨架消失後又多長出一張。
   await expect(page.locator(".card")).toHaveCount(cardCountDuringLoading);
@@ -2305,7 +2142,7 @@ test("手機版：Historical IV 卡片一開始就在，loading 時原位顯示�
 test("手機版：Inline Diagnostics 的 Copy 按鈕——版面順序、複製內容、收合展開行為" +
      "（DG-05／#148 延伸，QA 反饋 2026-08-16）", async ({ page }) => {
   await page.context().grantPermissions(["clipboard-read", "clipboard-write"]);
-  await routeLibrary(page, libraryRow());
+  await routeLibrary(page, libraryRow(), sampleLongCall);
   await page.route("**/api/settings", (route) =>
     route.fulfill({ json: { historical_iv_enabled: true } }));
   await page.route("**/api/scenarios/*/iv-history*", (route) =>
@@ -2685,92 +2522,6 @@ test("手機版：不可選的 family 有分頁、點得進去看得到原因（
 
   await expect(page.getByText("這個策略家族目前還沒有任何已啟用的具體結構。"))
     .toBeVisible();
-});
-
-/* ---------- SIG-04（#175）：Mobile 紅線鎖定 ---------- */
-
-/** Spread IV Gap（SIG-01／#172）的完整回應區塊——跟 `legHistoricalIv()`
- *  同一套「貼近真實密度」的假資料哲學，各測試需要 unavailable 狀態時
- *  直接覆寫 `points`／統計量欄位。 */
-function spreadGapFixture(overrides: Record<string, unknown> = {}) {
-  const dates = ivDates();
-  const points = dates.map((date, i) => ({ date, gap: 0.05 + (i % 20) * 0.001 }));
-  return {
-    points,
-    moving_average: statSeries(dates, 0.06),
-    bollinger_upper: statSeries(dates, 0.09),
-    bollinger_lower: statSeries(dates, 0.03),
-    current_percentile: 0.6,
-    delta_4w: 0.02,
-    delta_4w_ratio: 0.4,
-    delta_4w_status: "ok",
-    observation_count: points.length,
-    shared_history_span_days: 365,
-    ...overrides,
-  };
-}
-
-test("SIG-04（#175）Mobile 紅線：IV Gap／買腿／賣腿三個走勢圖全部存在、可見、" +
-     "非空，沒有一個在收合的 Advanced 裡，也不是 sparkline",
-   async ({ page }) => {
-  await routeLibrary(page, libraryRow());
-  await page.route("**/api/settings", (route) =>
-    route.fulfill({ json: { historical_iv_enabled: true } }));
-  await page.route("**/api/scenarios/*/iv-history*", (route) =>
-    route.fulfill({ json: fullIvResponse({ spread_gap: spreadGapFixture() }) }));
-
-  await page.goto("/#/s/s1");
-
-  const block = page.locator(".iv-history");
-  await expect(block).toBeVisible();
-
-  // 三個圖表元素：Spread Summary（IV Gap）＋ 買／賣腿逐腿卡片，全部不必
-  // 展開任何東西就可見——`.iv-trend-legs` 底下正是買／賣兩張，跟
-  // Advanced 裡收合的 Normalized Skew 圖分屬不同容器。
-  const spreadChart = block.locator(".iv-spread-summary .iv-trend-chart");
-  const legCharts = block.locator(".iv-trend-legs .iv-trend-chart");
-  await expect(spreadChart).toBeVisible();
-  await expect(legCharts).toHaveCount(2);
-  await expect(legCharts.nth(0)).toBeVisible();
-  await expect(legCharts.nth(1)).toBeVisible();
-
-  // 三者都是完整走勢圖，不是縮成看不出路徑的 sparkline、也不是只剩
-  // 數字——各自有實際佔用的寬與高，以及至少一條真的畫出來的折線。
-  for (const chart of [spreadChart, legCharts.nth(0), legCharts.nth(1)]) {
-    const box = (await chart.boundingBox())!;
-    expect(box.width).toBeGreaterThan(100);
-    expect(box.height).toBeGreaterThan(30);
-    expect(await chart.locator("polyline").count()).toBeGreaterThan(0);
-  }
-
-  // 三者沒有一個在收合的 Advanced／Diagnostics 裡：全部走勢圖一共 4 張
-  // （IV Gap＋買＋賣＋Advanced 裡收合的 Normalized Skew），Advanced 容器
-  // 底下只有那 1 張——代表紅線點名的三張都在外面。
-  await expect(block.locator(".iv-trend-chart")).toHaveCount(4);
-  await expect(block.locator(".iv-advanced .iv-trend-chart")).toHaveCount(1);
-});
-
-/* ---------- SIG-04（#175）：既有隔離測試涵蓋確認 ---------- */
-
-test("SIG-04（#175）：Spread IV Gap 對齊只讀兩腿各自 reconstructed 的市場 IV，" +
-     "vendor_iv 完全不影響——迴歸鎖住 SIG-01（#172）新模組同一條紅線",
-   async ({ page }) => {
-  // 端到端層級不重新驗證後端反解本身（那是 tests/test_ivspread.py 的
-  // 範圍），這裡只確認前端把 spread_gap.points 原樣呈現，不夾帶任何
-  // 本地重算——現值直接是 points 最後一筆的 gap，不因為別的欄位而變。
-  await routeLibrary(page, libraryRow());
-  await page.route("**/api/settings", (route) =>
-    route.fulfill({ json: { historical_iv_enabled: true } }));
-  await page.route("**/api/scenarios/*/iv-history*", (route) =>
-    route.fulfill({ json: fullIvResponse({ spread_gap: spreadGapFixture({
-      points: [{ date: "2026-08-01", gap: 0.1234 }],
-      observation_count: 1, shared_history_span_days: 0,
-    }) }) }));
-
-  await page.goto("/#/s/s1");
-
-  const summary = page.locator(".iv-spread-summary");
-  await expect(summary.locator(".iv-value-primary")).toHaveText("12.3%");
 });
 
 /* ---------- T16（#232，Initial V2）：Butterfly 前端呈現，端到端 ---------- */

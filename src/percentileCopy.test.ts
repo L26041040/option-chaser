@@ -1,25 +1,30 @@
 /**
- * PC-01（#199，spec #198）：三個家族（買／賣腿 IV、Spread IV Gap、
- * Normalized Skew）的百分位說明文字——禁詞掃描＋兩項事實齊全的守門。
+ * PC-01（#199，spec #198）：百分位說明文字的禁詞掃描＋兩項事實齊全的
+ * 守門。
  *
- * 2026-08-26 真機驗收後改寫：三個常數升級為函式（`ivPercentileExplanation`／
- * `gapPercentileExplanation`／`skewPercentileExplanation`），直接把
- * 「第 N 百分位」翻譯成白話句、把 N 帶進句子裡（「現在的 IV 比過去一年
- * 大約 87% 的有效歷史觀測都高」），不再要求使用者自己把「百分位」這個
- * 統計學名詞換算成「比例」——這份測試同步改成呼叫函式而非讀靜態字串。
+ * 2026-08-26 真機驗收後改寫：說明常數升級為函式，直接把「第 N 百分位」
+ * 翻譯成白話句、把 N 帶進句子裡（「現在的 IV 比過去一年大約 87% 的有效
+ * 歷史觀測都高」），不再要求使用者自己把「百分位」這個統計學名詞換算成
+ * 「比例」——這份測試同步改成呼叫函式而非讀靜態字串。
+ *
+ * **2026-09-09 Owner 裁示（Vertical Spread「貴不貴」整塊退場）**：原本
+ * 涵蓋的三個家族只剩一個。`gapPercentileExplanation`（Spread IV Gap）
+ * 隨 `./SpreadSummary` 整個檔案刪除，`skewPercentileExplanation`
+ * （Normalized Skew）隨 `./IvHistory` 的 Normalized Skew 區塊一併移除
+ * ——兩者都只在 Vertical 候選出現，而 Vertical 已不再渲染這張卡片。
+ * 這裡跟著只留 `ivPercentileExplanation`（逐腿 exact-contract IV，
+ * 服務單腿 Long Call／Put，未受裁示影響），不是放寬守門範圍。
  *
  * 仿 `tests/test_redlines.py` 的禁詞掃描慣例，搬進前端獨立成一個檔案：
  * 那份 Python 測試的掃描範圍是 `option_chaser/`（引擎），本就不會碰到
  * `src/` 底下的 React／TypeScript 說明文字，這裡是它在前端的對應。
  *
- * 三個函式各自定義在自己家族的元件檔案裡（`./IvTrend`／`./SpreadSummary`／
- * `./IvHistory`），這裡只呼叫函式做內容檢查，不重新渲染元件——「這句話
- * 常駐可見」由各自的元件測試把關，這裡只管「這句話寫了什麼」。
+ * 函式定義在自己家族的元件檔案裡（`./IvTrend`），這裡只呼叫函式做內容
+ * 檢查，不重新渲染元件——「這句話常駐可見」由元件測試把關，這裡只管
+ * 「這句話寫了什麼」。
  */
 import { describe, expect, it } from "vitest";
 
-import { skewPercentileExplanation } from "./IvHistory";
-import { gapPercentileExplanation } from "./SpreadSummary";
 import { ivPercentileExplanation } from "./IvTrend";
 
 /** #199 AC 逐字列出的中文禁詞＋各自直接的英文對應。「貴」單獨列出時
@@ -38,8 +43,6 @@ const SAMPLE_PERCENTILE = 0.87;
 
 const FAMILIES: Record<string, (p: number | null) => string> = {
   "買／賣腿 IV": ivPercentileExplanation,
-  "Spread IV Gap": gapPercentileExplanation,
-  "Normalized Skew": skewPercentileExplanation,
 };
 
 describe("percentile 說明文字（PC-01／#199，2026-08-26 真機驗收後改寫為白話句）",
@@ -88,18 +91,8 @@ describe("percentile 說明文字（PC-01／#199，2026-08-26 真機驗收後改
     });
   }
 
-  it("買／賣腿 IV 與 Normalized Skew 用「過去一年」，Spread IV Gap 用" +
-     "「共同歷史期間」——兩者視窗定義不同（Gap 的比較窗是兩張合約共同" +
-     "存在的歷史，可能短於一年），措辭要如實反映各自真實的視窗", () => {
+  it("逐腿 IV 的比較窗是「過去一年」——措辭要如實反映真實的視窗", () => {
     expect(ivPercentileExplanation(SAMPLE_PERCENTILE)).toMatch(/過去一年/);
-    expect(skewPercentileExplanation(SAMPLE_PERCENTILE)).toMatch(/過去一年/);
-    expect(gapPercentileExplanation(SAMPLE_PERCENTILE)).toMatch(/共同歷史期間/);
-  });
-
-  it("Normalized Skew 沿用「偏斜」語彙，不硬套「IV」字樣", () => {
-    const text = skewPercentileExplanation(SAMPLE_PERCENTILE);
-    expect(text).toMatch(/偏斜/);
-    expect(text).not.toMatch(/IV/);
   });
 
   it("數字換算跟旁邊既有 percentileCaption／metricCaption 顯示的百分位" +
