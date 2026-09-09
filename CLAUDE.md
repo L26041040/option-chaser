@@ -27,7 +27,7 @@ block 裡，不能切成好幾個 code block、也不能中間插普通文字把
 `［回報#001］spec #137 拆票完成`）。編號是**累計總數**，不因換
 session、換分支、換主題而歸零——目前最新編號記在這裡：
 
-> 目前次序：070（下一份回報用 071）
+> 目前次序：071（下一份回報用 072）
 
 每發一份回報就把上面這個數字改成剛剛用掉的那個，跟著那次改動一起
 commit（沒有其他改動要 commit 時，單獨為這一行開一個小 commit 也
@@ -7810,6 +7810,90 @@ comparator_numbers` 的非空守門原本是空斷言（`worst > 0` 光靠單純
    相同——comparator 的 6 格各動了一個捨入網格。comparator 格值結構
    上從不顯示在畫面，且工單明文允許「保留壓縮的最小修法」，判斷在
    意圖之內。
+
+### OPTION-NEXT-PHASE-CONTINUE-002——A1 cleanup＋A2 建立流程優化＋
+Cross-Scenario Wayfinder 受阻（2026-09-09）
+
+需求方指示先補兩項 cleanup，再直接執行 Phase A2，最後執行
+`/wayfinder` 規劃 Cross-Scenario 第一版可出貨體驗。**只有前兩項完成，
+第三項因工具層硬性限制未能執行**，詳見下方。
+
+**Cleanup 1：`src/IvHistory.tsx` 檔頭過期描述**（commit `d1c0096`）——
+上一輪（Vertical「貴不貴」整塊退場）收工時檔案主體（`supportsIvHistory`
+／`CardSkeleton`／`IvAdvanced`／`IvHistoryContent`）的註解都已正確反映
+退場現況，唯獨檔頭那段大 docstring 還停在 spec #151 §0 時期「兩個並存、
+互不取代」的舊描述，繼續把 Normalized Skew 講成使用者可見的 Vertical
+功能。改寫為明確的 canonical behavior 陳述：Long Call／Put（單腿）
+Historical IV 可見；Vertical Spread／Butterfly（兩腿以上）整個
+Valuation／IV-relative-position UI 不渲染、不發 request。純文件修正，
+typecheck 乾淨。
+
+**Cleanup 2：分支與 master 對齊**（commit `9ecc28c`）——查證發現
+「已合併」的既有紀錄本身沒問題，問題出在**後續一輪工作是從 PR #250
+merge 前的舊分支頭 `52c4067` 續接，而非從 merge 後的 master 頭
+`864dd5c` 續接**，只在 CLAUDE.md 寫了一句「記錄 PR #250 merge」、
+沒有真的做 git merge／rebase。核對後確認 `864dd5c` 與 `52c4067`
+tree 逐位元相同（PR #250 本身零衝突、零檔案回退），因此**內容從未
+真正遺失，純粹是 git 家系（ancestry）缺陷**；且 master 目前頭
+（PR #270 merge commit `1a6d3e4`）已經把本分支（`24a2754`）納為其中
+一個 parent，代表本分支的舊有成果早已進了 master。修法：從分支尾端
+`git merge origin/master --no-edit` 一次乾淨、零衝突的 merge，`git
+merge-base --is-ancestor origin/master HEAD` 驗證通過，且四個本輪
+真正新增的 commit（`5231cb5`／`9550816`／`5e4208c`／`7908553`）逐一
+確認仍是新 HEAD 的祖先、未遺失。收工時 `origin/master...HEAD` 只剩
+本輪貨真價實的新增改動。
+
+**A2：建立劇本成功後自動收合表單、捲動並聚焦到新卡片**（commits
+`7093c50`＋跟進 `e65d364`）——使用者建立新劇本後，表單原本留在原地、
+新卡片可能落在螢幕外，得自己往下找才看得到它已進入更新中狀態。
+`App.tsx::create()` 成功時（且**只在成功時**——失敗會在 `setRows`
+之前就把例外往上拋，走不到這裡，`CreateForm.tsx` 自己的 `catch` 已
+保留 draft）收合建立表單（沿用既有 `showCreateForm`，不是第四種刷新
+時機），並記下新建立的 id 觸發一個 effect：用
+`scenarios.scenarioRowDomId(id)` 產生的 DOM `id` 找到那張卡片
+（`ScenarioList.tsx`／`CompactScenarioList.tsx` 的 `<li>` 補上這個
+純 DOM 錨點），`scrollIntoView()` 捲進畫面、卡片本身的 `<a>` 拿到真正
+的鍵盤／螢幕閱讀器焦點。手機／桌面共用同一套查找與捲動邏輯，不必分
+平台各寫一份。React 18 automatic batching 下，`updatingIds`（更新中
+徽章）與 `justCreatedId`（觸發捲動聚焦）在 `create()` 同一批次
+setState 裡一起生效，聚焦當下卡片已經顯示「更新中」，不是舊燈號。
+`Element.scrollIntoView` jsdom 完全沒有實作（連樁都沒有），比照既有
+`window.scrollTo` 先例補進 `test-setup.ts`。
+
+`/code-review`（Standards＋Spec 兩軸）：Spec 軸零缺漏、零 scope
+creep，六項 AC 逐一核對通過（含成功／失敗兩條路徑的收合語意、
+updatingIds 生效時序、Mobile／Desktop 各自的 Vitest＋Playwright
+覆蓋、既有 draft-preservation 測試逐位元未動）。Standards 軸零 hard
+violation，一項 judgement call——`scenario-row-${id}` 這段 DOM id
+字串同時寫死在三個檔案，本專案第一次出現跨元件 DOM id 協調、沒有
+既有慣例可比對，但比照 `fetchCache.ts`／`route.ts`／`family.ts`
+「共用邏輯抽出來」的一貫習慣值得套用——已抽成
+`scenarios.ts::scenarioRowDomId()`，三處呼叫端改用它；`.compact-
+card-tap` 這個 CSS class 選擇器經審查明確判斷不需要抽（兩處元件本就
+刻意獨立、不共用渲染路徑，只用兩次的 selector 常數換不到實質風險
+下降），維持原樣。
+
+測試：`App.test.tsx` 新增 3 條（手機／桌面成功後收合捲動聚焦、失敗
+不收合）、`scenarios.test.ts` 新增 1 條純函式測試；`smoke.spec.ts`／
+`desktop.spec.ts` 各新增 1 條端到端案例（`toBeInViewport()`／
+`toBeFocused()`）。全套：後端未觸碰；前端 typecheck 乾淨、Vitest
+761 條全綠、build 成功、Playwright e2e 122 條（iPhone 76＋Desktop 46）
+全綠。
+
+**Phase B（Cross-Scenario Wayfinder）未能執行——工具層硬性限制，非
+判斷失誤**：`.claude/skills/wayfinder/SKILL.md` 的 frontmatter 明訂
+`disable-model-invocation: true`；透過 Skill 工具嘗試呼叫時，工具直接
+拒絕並回覆「Ask the user to run /wayfinder themselves...Do not
+replicate this skill's workflow by other means — it is reserved for
+explicit user invocation」。這是 harness 層級的硬性擋點，不是可以
+自行判斷要不要繞過的東西——`wayfinder` 本身的設計就明文規定
+「grilling」票必須是與真人的即時往返（HITL），「a grilling agent
+that answers its own questions has broken this」，若自行手刻一份
+冒充 Wayfinder 地圖的文件，正是破壞這條紅線的行為。因此本輪**未**
+建立任何 `wayfinder:map` issue、未產出地圖文件、未自行裁定
+Destination／Frontier／first shippable slice——這些必須由需求方
+親自打 `/wayfinder` 才能合法產出。詳見本輪回報（回報#071）第 8 節
+的具體下一步建議。
 
 ### 施工依據
 
