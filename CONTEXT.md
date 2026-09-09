@@ -175,10 +175,22 @@ iv-history 請求裡：先立即回傳既有歷史把圖畫出來，補建由第
 觸發，完成後圖表自動補全，卡片期間標「歷史資料補建中」
 （2026-08-24 裁示 P3-a）。
 
-**Normalized Skew（標準化偏斜）** — 買賣腿 IV 相對關係的主資訊。
+**Normalized Skew（標準化偏斜）** — 買賣腿 IV 相對關係。⚠ **2026-09-09
+起不再是使用者可見資訊**，見下方「Vertical 貴不貴退場」。
 
 **Spread IV Gap（價差 IV 落差）** — 兩腿 IV 數列對齊後的差值數列。
-對齊與裁切的順序（align-then-trim）是正確性關鍵。
+對齊與裁切的順序（align-then-trim）是正確性關鍵。⚠ **2026-09-09 起
+不再是使用者可見資訊**，見下方「Vertical 貴不貴退場」。
+
+**Vertical 貴不貴退場（2026-09-09 Owner 裁示）** — Vertical Spread
+候選**完全不顯示「IV 相對位置」卡片、也不發 iv-history 請求**。依據是
+`docs/research/spread-package-valuation-verdict.md` 的裁決
+`NO RELIABLE PACKAGE VALUATION YET`：上面兩個指標對純 vol-level 造成
+的真實成本變動視而不見或方向相反，不是不夠精確，是讀反了。**這塊
+功能現在只服務單腿候選（Long Call／Put）的逐腿 exact-contract IV。**
+後端 `/iv-history` 端點與回應契約未動，兩個詞條描述的計算仍然存在，
+只是前端沒有消費端——不得用「搬進 Advanced」「改個名字」的方式讓
+任何一個半套指標回到畫面上。
 
 **Point-in-Time（PIT，時點）** — 回算歷史某一天時，利率 r 與股利
 率 q 必須取**那一天**的值，不能用今天的。違反此原則曾造成一次真實

@@ -83,23 +83,17 @@ export const BACKFILL_NOTES: Record<Exclude<IvHistoryStatus, "ok">, string> = {
   vendor: "資料源暫時無法連線，將於後續使用時繼續補齊",
 };
 
-/** 這個欄位的量該用什麼單位呈報——市場 IV／ATM IV 是 vol 點（百分比），
- *  Normalized Skew 無因次，現值與 Δ4w 都印小數（spec #137 §7.5 逐字
- *  範例：`Normalized Skew 0.50 ... 4週 +0.06`，不是 `50% ... +6.0%`）。 */
-export type TrendUnit = "vol-pts" | "unitless";
-
+/** 現值／刻度的呈現——vol 點（百分比），缺值印 em dash。
+ *
+ *  2026-09-09 Owner 裁示（Vertical「貴不貴」整塊退場）前這裡還有一個
+ *  `TrendUnit` 型別與 `"unitless"` 分支，只服務 Normalized Skew 的無
+ *  因次小數格式；那個家族退場後每個呼叫端都固定傳 `"vol-pts"`，於是
+ *  型別、參數，以及只剩「把 unit 分支掉」這一件事的 `valueLabel()`／
+ *  `tickLabel()` 兩個薄殼一併移除，直接用這個函式——跟同一輪對
+ *  `CardSkeleton` 的 `isSingleLeg` 一樣，不留一個永遠傳同一個值的參數。 */
 export function num(value: number | null | undefined, digits = 1): string {
   if (value === null || value === undefined) return "—";
   return `${(value * 100).toFixed(digits)}%`;
-}
-
-/** 現值的呈現——單位隨欄位而定（見 `TrendUnit`）。Normalized Skew 改用
- *  無因次小數而不是既有 `num()` 的百分比格式：跟同一欄位新增的 Δ4w
- *  用同一種語言，避免「現值 8.0% 但變化量 +0.06」這種同一個量卻兩套
- *  單位並列的困惑——這個混淆是新增 Δ4w 才會出現的，不是延續既有行為。 */
-export function valueLabel(value: number | null, unit: TrendUnit): string {
-  if (value === null) return "—";
-  return unit === "vol-pts" ? num(value) : value.toFixed(2);
 }
 
 /** `percentile`（0–1 小數）換成畫面上的整數百分位——`percentileCaption`／
@@ -126,12 +120,6 @@ export function toPixel(p: { x: number; y: number | null }, width: number,
   const plotHeight = height - PAD_TOP - PAD_BOTTOM;
   return { px: PAD_LEFT + p.x * plotWidth,
           py: PAD_TOP + (p.y ?? 0) * plotHeight };
-}
-
-/** 這個欄位一年走勢圖的 y 軸刻度怎麼寫成文字——沿用現值同一套單位，
- *  刻度與現值講同一種語言，不會讓人在同一張圖裡看到兩套不一致的數字。 */
-export function tickLabel(value: number, unit: TrendUnit): string {
-  return unit === "vol-pts" ? num(value) : value.toFixed(2);
 }
 
 /**
@@ -230,10 +218,9 @@ export function useChartScrubber(pointCount: number, viewBoxWidth: number) {
 /** 桌面 hover／手機 tap 共用的同一個 tooltip——固定含日期與這一項的值。
  *  位置貼著資料點，靠左右邊緣時往內收，不出界（沿用 Spread 淨成本走勢
  *  圖既有作法）。export 給 `./IvTrend` 的多序列走勢圖原樣複用。 */
-export function ChartTooltip({ point, value, unit, width, height }: {
+export function ChartTooltip({ point, value, width, height }: {
   point: ChartPoint;
   value: number;
-  unit: TrendUnit;
   width: number;
   height: number;
 }) {
@@ -250,7 +237,7 @@ export function ChartTooltip({ point, value, unit, width, height }: {
         {point.label}
       </text>
       <text x={x + boxWidth / 2} y={y + 24} textAnchor="middle">
-        {valueLabel(value, unit)}
+        {num(value)}
       </text>
     </g>
   );

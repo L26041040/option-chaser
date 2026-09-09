@@ -617,13 +617,26 @@ Call／Put 寫「保留」；且在「**不得用 Advanced 降級／重新命名
   無消費端的 `skewPercentileExplanation`／`normalizedSkewSeries`／
   `Metric`／`TrendChart`／`metricCaption`／`trendLabel` 與 CSS
   `.iv-metric*`／`.iv-value`／`.iv-spread-summary`／`.iv-skeleton-primary`
-  全部清掉，不留死碼。`CardSkeleton` 的 `isSingleLeg` 參數（永遠同一個
-  值）移除。
+  一併清掉。`CardSkeleton` 的 `isSingleLeg` 參數（永遠同一個值）移除；
+  `/code-review` Standards 軸抓到同一條原則還有一處沒套到——`TrendUnit`
+  的 `"unitless"` 分支只服務 Normalized Skew 的無因次格式，退場後每個
+  呼叫端都固定傳 `"vol-pts"`，於是型別、`unit` 參數，以及只剩「把 unit
+  分支掉」這一件事的 `valueLabel()`／`tickLabel()` 兩個薄殼一併移除，
+  三個呼叫端直接用 `num()`。
 - **刻意保留**：`IvTrend` 對 `legs.sell` 的選填渲染。判準寫死成一條可
   陳述的規則——**只服務 Vertical 專屬指標（Spread IV Gap／Normalized
   Skew）的東西刪掉；單純鏡射 `IvHistoryLegs` 契約形狀的選填渲染保留**
   （後端 `/iv-history` 端點與回應契約本輪完全未動，兩腿候選直接呼叫
-  仍會拿到 `spread_gap`／`legs.sell`）。
+  仍會拿到 `spread_gap`／`legs.sell`）。`src/api.ts` 的 `SpreadGap`／
+  `NormalizedSkewPoint`／`IvFieldMetric` 同理保留——它們是那份未動的
+  wire 契約本身，不是這一輪產生的死碼。**這條規則的代價要講清楚**：
+  `IvTrend` 的兩腿分支與 `IvTrend.test.tsx` 的「Vertical Spread：正好
+  兩張卡」在 app 路徑上已不可達，只剩元件層覆蓋，這是刻意接受的殘留，
+  不是「什麼都清乾淨了」。
+- `CONTEXT.md` 新增「Vertical 貴不貴退場」詞條，並在既有 Normalized
+  Skew／Spread IV Gap 兩條加註「不再是使用者可見資訊」——兩者描述的
+  後端計算仍然存在，只是前端沒有消費端（該檔自身規則：詞彙先進
+  CONTEXT.md；比照 Friction 退場的既有先例）。
 - 測試：`IvHistory.test.tsx` 新增三條退場守門（兩腿候選零 DOM／零
   `iv-history` 請求／畫面上不出現 `Spread IV Gap|Normalized Skew|偏斜`
   任何殘留，含展開 Advanced 之後）；6 個 Normalized-Skew-only describe
@@ -639,7 +652,16 @@ Call／Put 寫「保留」；且在「**不得用 Advanced 降級／重新命名
 
 **全套**：前端 typecheck 乾淨、Vitest **757 passed**、`vite build`
 成功、Playwright e2e **120 passed**（iPhone＋Desktop）。後端零改動故
-未重跑。
+未重跑（`git diff -- option_chaser/ api_app/ tests/ contracts/` 為空，
+兩軸 review 各自獨立核對過）。
+
+**`/code-review`（Standards＋Spec 兩軸）**：Standards 軸兩項真發現皆
+已修正（CONTEXT.md 未更新、`TrendUnit` 殘留死分支），另一項「回報編號
+068→070 跳號」查證為誤報——那是本地分支被容器重寫後 three-dot diff 的
+merge-base 落到更早一點造成的區間假象，實際上 069 由前一個 commit 用
+掉、本輪用 070。Spec 軸：零缺漏、零 scope creep、零實作錯誤，逐項獨立
+核對過「Long Call／Put 完全不受影響」與「被刪除的測試沒有帶走仍然存活
+的行為保證」。
 
 ### OPTION-SCALING-TICKETS-REVISE-006 拆票（2026-09-06，歷史紀錄）
 

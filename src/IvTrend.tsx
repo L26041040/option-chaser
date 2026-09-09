@@ -21,9 +21,8 @@
  * （`ChartTooltip`／`toPixel`／版面常數等），原樣複用、不重寫第二份。
  */
 import type { IvHistoryLegs, IvTrendStatPoint, LegHistoricalIv } from "./api";
-import { BACKFILL_NOTES, ChartTooltip, PAD_BOTTOM, PAD_LEFT,
-        PAD_TOP, roundPercentile, tickLabel, toPixel, useChartScrubber,
-        valueLabel } from "./IvHistory";
+import { BACKFILL_NOTES, ChartTooltip, num, PAD_BOTTOM, PAD_LEFT,
+        PAD_TOP, roundPercentile, toPixel, useChartScrubber } from "./IvHistory";
 import { contiguousRuns, ivChartPoints, ivYAxisDomain, projectOntoDomain,
         xAxisTicks, type ChartPoint } from "./ivHistoryChart";
 import { useIsDesktop } from "./useIsDesktop";
@@ -251,7 +250,7 @@ export function IvTrendChart({ leg, width, height, seriesLabel = "市場 IV" }: 
                  className="chart-tick-mark" />
             <text x={PAD_LEFT - 5} y={py + 3} textAnchor="end"
                  className="chart-tick-label">
-              {tickLabel(value, "vol-pts")}
+              {num(value)}
             </text>
           </g>
         );
@@ -319,8 +318,8 @@ export function IvTrendChart({ leg, width, height, seriesLabel = "市場 IV" }: 
       })()}
 
       {active && activeValue !== null && (
-        <ChartTooltip point={active} value={activeValue} unit="vol-pts"
-                     width={width} height={height} />
+        <ChartTooltip point={active} value={activeValue}
+                      width={width} height={height} />
       )}
     </svg>
   );
@@ -356,7 +355,7 @@ function IvTrendCard({ label, leg }: { label?: string; leg: LegHistoricalIv }) {
         <div className="iv-compact-head">
           {label && <span className="row-label iv-trend-card-label">{label}</span>}
           <span className="iv-value-primary">
-            {valueLabel(currentIv(leg), "vol-pts")}
+            {num(currentIv(leg))}
           </span>
         </div>
         <p className="caption iv-compact-stats">
@@ -381,7 +380,7 @@ function IvTrendCard({ label, leg }: { label?: string; leg: LegHistoricalIv }) {
     <div className="iv-trend-card">
       {label && <div className="row-label iv-trend-card-label">{label}</div>}
       <span className="iv-value-primary">
-        {valueLabel(currentIv(leg), "vol-pts")}
+        {num(currentIv(leg))}
       </span>
       <p className="caption">{percentileCaption(leg)}</p>
       <p className="caption">{delta4wCaption(leg)}</p>
