@@ -27,7 +27,7 @@ block 裡，不能切成好幾個 code block、也不能中間插普通文字把
 `［回報#001］spec #137 拆票完成`）。編號是**累計總數**，不因換
 session、換分支、換主題而歸零——目前最新編號記在這裡：
 
-> 目前次序：068（下一份回報用 069）
+> 目前次序：074（下一份回報用 075）
 
 每發一份回報就把上面這個數字改成剛剛用掉的那個，跟著那次改動一起
 commit（沒有其他改動要 commit 時，單獨為這一行開一個小 commit 也
@@ -577,6 +577,91 @@ filters.py` 等因沙箱恰好連得到真實 `XYZ`／真實股票代號的網�
 （`git diff` 確認零命中），未自行嘗試繞過或代答。**最終狀態：
 READY_FOR_FINAL_PRODUCTION_VALIDATION**——等待 Owner 在真實部署
 完成最終驗證後指示下一步；依專案規則不主動開 PR。
+
+**已於 2026-09-09 依 Owner 明確指示合併回 master**（PR #270，merge
+commit `1a6d3e4`，base `864dd5c`＝PR #250 之後的 master 頭，57
+commits／79 檔案／+23,376 −704，`mergeable_state: clean` 零衝突）：
+涵蓋 SCALE-01～17 整條 Scaling Foundation（research／wayfinder／
+audit／prototype／spec／18 張 GitHub sub-issue 全部施工紀錄）。
+Production（`option-chaser.vercel.app`，對應 master）下次部署會拿到
+storage lifecycle 分離、Ownership A-1、Cboe 429 韌性、S0
+observability、`/history` canonical read path 全部成果。SCALE-18
+（#269）依裁示仍未觸碰，母票 #251 依慣例不主動關閉。
+
+### Vertical Spread「貴不貴」整塊退場（2026-09-09，Owner 直接裁示，不開票）
+
+**依據**：`docs/research/spread-package-valuation-verdict.md`（本輪一併
+commit 進 repo）裁決 **`NO RELIABLE PACKAGE VALUATION YET`**——現行已
+出貨的兩個「貴不貴」頭條（Spread IV Gap percentile、Normalized Skew Ĝ
+percentile）已被引擎實測證偽：對純 vol-level 造成的真實成本變動
+（debit +8.5%～+73.9%），gap 讀數完全不動（Δ=0.0000）、Ĝ 方向相反
+（0.400→0.240，讀成「更便宜」）。這不是「不夠精確」，是「讀反了」。
+
+**Owner 裁示（AskUserQuestion 選定「整塊退場（推薦）」）**：Vertical
+Spread 候選**完全不渲染「IV 相對位置」卡片、也不發任何 `iv-history`
+請求**，與 Butterfly 一致。理由：裁示三個 family 並列，只有 Long
+Call／Put 寫「保留」；且在「**不得用 Advanced 降級／重新命名留下半套
+指標**」的精神下，留兩張逐腿卡就是半套。**Long Call／Put 完全不受
+影響。**
+
+**施工範圍（純前端，`option_chaser/`／`api_app/` 零改動——`git diff`
+確認）**：
+
+- `src/IvHistory.tsx` 的閘門從 `legs.length <= 2` 收成 `=== 1`，
+  兩道各自獨立的理由（Butterfly＝T16／#232 結構上不支援；Vertical＝
+  本次 Owner 裁示）合成同一條判斷式，在**請求層**擋下：不觸發任何
+  fetch、不渲染任何 DOM，不留空狀態、不留說明文字。
+- **刪除** `src/SpreadSummary.tsx`＋`SpreadSummary.test.tsx`（Spread
+  IV Gap 主卡片與它的 Advanced 次要文字）；`IvAdvanced` 的 Normalized
+  Skew 整組（頭條 `Metric`＋backfill 說明＋方法論註記）一併移除；隨之
+  無消費端的 `skewPercentileExplanation`／`normalizedSkewSeries`／
+  `Metric`／`TrendChart`／`metricCaption`／`trendLabel` 與 CSS
+  `.iv-metric*`／`.iv-value`／`.iv-spread-summary`／`.iv-skeleton-primary`
+  一併清掉。`CardSkeleton` 的 `isSingleLeg` 參數（永遠同一個值）移除；
+  `/code-review` Standards 軸抓到同一條原則還有一處沒套到——`TrendUnit`
+  的 `"unitless"` 分支只服務 Normalized Skew 的無因次格式，退場後每個
+  呼叫端都固定傳 `"vol-pts"`，於是型別、`unit` 參數，以及只剩「把 unit
+  分支掉」這一件事的 `valueLabel()`／`tickLabel()` 兩個薄殼一併移除，
+  三個呼叫端直接用 `num()`。
+- **刻意保留**：`IvTrend` 對 `legs.sell` 的選填渲染。判準寫死成一條可
+  陳述的規則——**只服務 Vertical 專屬指標（Spread IV Gap／Normalized
+  Skew）的東西刪掉；單純鏡射 `IvHistoryLegs` 契約形狀的選填渲染保留**
+  （後端 `/iv-history` 端點與回應契約本輪完全未動，兩腿候選直接呼叫
+  仍會拿到 `spread_gap`／`legs.sell`）。`src/api.ts` 的 `SpreadGap`／
+  `NormalizedSkewPoint`／`IvFieldMetric` 同理保留——它們是那份未動的
+  wire 契約本身，不是這一輪產生的死碼。**這條規則的代價要講清楚**：
+  `IvTrend` 的兩腿分支與 `IvTrend.test.tsx` 的「Vertical Spread：正好
+  兩張卡」在 app 路徑上已不可達，只剩元件層覆蓋，這是刻意接受的殘留，
+  不是「什麼都清乾淨了」。
+- `CONTEXT.md` 新增「Vertical 貴不貴退場」詞條，並在既有 Normalized
+  Skew／Spread IV Gap 兩條加註「不再是使用者可見資訊」——兩者描述的
+  後端計算仍然存在，只是前端沒有消費端（該檔自身規則：詞彙先進
+  CONTEXT.md；比照 Friction 退場的既有先例）。
+- 測試：`IvHistory.test.tsx` 新增三條退場守門（兩腿候選零 DOM／零
+  `iv-history` 請求／畫面上不出現 `Spread IV Gap|Normalized Skew|偏斜`
+  任何殘留，含展開 Advanced 之後）；6 個 Normalized-Skew-only describe
+  刪除（該家族倖存的等價保證由 `IvTrend.test.tsx` 既有測試涵蓋：逐腿
+  percentile／backfill 狀態／無資料／facts-only／scrubber）；
+  `percentileCopy.test.ts` 三家族收斂為一家族（另兩個函式已不存在）。
+  e2e：Historical IV 這組改用既有 `contracts/analysis_sample_long_call.json`
+  當詳細頁 `latest_result`（原本用兩腿的 `analysis_sample.json`，
+  champion 現在結構上不渲染這塊）；6 條「兩腿在真實 app 路徑上各自
+  獨立渲染」與 SIG-04 Spread-IV-Gap 紅線測試刪除——app 已不存在兩腿
+  路徑，元件層兩腿渲染仍由 `IvTrend.test.tsx` 的「Vertical Spread：
+  正好兩張卡」單元測試守門。
+
+**全套**：前端 typecheck 乾淨、Vitest **757 passed**、`vite build`
+成功、Playwright e2e **120 passed**（iPhone＋Desktop）。後端零改動故
+未重跑（`git diff -- option_chaser/ api_app/ tests/ contracts/` 為空，
+兩軸 review 各自獨立核對過）。
+
+**`/code-review`（Standards＋Spec 兩軸）**：Standards 軸兩項真發現皆
+已修正（CONTEXT.md 未更新、`TrendUnit` 殘留死分支），另一項「回報編號
+068→070 跳號」查證為誤報——那是本地分支被容器重寫後 three-dot diff 的
+merge-base 落到更早一點造成的區間假象，實際上 069 由前一個 commit 用
+掉、本輪用 070。Spec 軸：零缺漏、零 scope creep、零實作錯誤，逐項獨立
+核對過「Long Call／Put 完全不受影響」與「被刪除的測試沒有帶走仍然存活
+的行為保證」。
 
 ### OPTION-SCALING-TICKETS-REVISE-006 拆票（2026-09-06，歷史紀錄）
 
@@ -7725,6 +7810,217 @@ comparator_numbers` 的非空守門原本是空斷言（`worst > 0` 光靠單純
    相同——comparator 的 6 格各動了一個捨入網格。comparator 格值結構
    上從不顯示在畫面，且工單明文允許「保留壓縮的最小修法」，判斷在
    意圖之內。
+
+### OPTION-NEXT-PHASE-CONTINUE-002——A1 cleanup＋A2 建立流程優化＋
+Cross-Scenario Wayfinder 受阻（2026-09-09）
+
+需求方指示先補兩項 cleanup，再直接執行 Phase A2，最後執行
+`/wayfinder` 規劃 Cross-Scenario 第一版可出貨體驗。**只有前兩項完成，
+第三項因工具層硬性限制未能執行**，詳見下方。
+
+**Cleanup 1：`src/IvHistory.tsx` 檔頭過期描述**（commit `d1c0096`）——
+上一輪（Vertical「貴不貴」整塊退場）收工時檔案主體（`supportsIvHistory`
+／`CardSkeleton`／`IvAdvanced`／`IvHistoryContent`）的註解都已正確反映
+退場現況，唯獨檔頭那段大 docstring 還停在 spec #151 §0 時期「兩個並存、
+互不取代」的舊描述，繼續把 Normalized Skew 講成使用者可見的 Vertical
+功能。改寫為明確的 canonical behavior 陳述：Long Call／Put（單腿）
+Historical IV 可見；Vertical Spread／Butterfly（兩腿以上）整個
+Valuation／IV-relative-position UI 不渲染、不發 request。純文件修正，
+typecheck 乾淨。
+
+**Cleanup 2：分支與 master 對齊**（commit `9ecc28c`）——查證發現
+「已合併」的既有紀錄本身沒問題，問題出在**後續一輪工作是從 PR #250
+merge 前的舊分支頭 `52c4067` 續接，而非從 merge 後的 master 頭
+`864dd5c` 續接**，只在 CLAUDE.md 寫了一句「記錄 PR #250 merge」、
+沒有真的做 git merge／rebase。核對後確認 `864dd5c` 與 `52c4067`
+tree 逐位元相同（PR #250 本身零衝突、零檔案回退），因此**內容從未
+真正遺失，純粹是 git 家系（ancestry）缺陷**；且 master 目前頭
+（PR #270 merge commit `1a6d3e4`）已經把本分支（`24a2754`）納為其中
+一個 parent，代表本分支的舊有成果早已進了 master。修法：從分支尾端
+`git merge origin/master --no-edit` 一次乾淨、零衝突的 merge，`git
+merge-base --is-ancestor origin/master HEAD` 驗證通過，且四個本輪
+真正新增的 commit（`5231cb5`／`9550816`／`5e4208c`／`7908553`）逐一
+確認仍是新 HEAD 的祖先、未遺失。收工時 `origin/master...HEAD` 只剩
+本輪貨真價實的新增改動。
+
+**A2：建立劇本成功後自動收合表單、捲動並聚焦到新卡片**（commits
+`7093c50`＋跟進 `e65d364`）——使用者建立新劇本後，表單原本留在原地、
+新卡片可能落在螢幕外，得自己往下找才看得到它已進入更新中狀態。
+`App.tsx::create()` 成功時（且**只在成功時**——失敗會在 `setRows`
+之前就把例外往上拋，走不到這裡，`CreateForm.tsx` 自己的 `catch` 已
+保留 draft）收合建立表單（沿用既有 `showCreateForm`，不是第四種刷新
+時機），並記下新建立的 id 觸發一個 effect：用
+`scenarios.scenarioRowDomId(id)` 產生的 DOM `id` 找到那張卡片
+（`ScenarioList.tsx`／`CompactScenarioList.tsx` 的 `<li>` 補上這個
+純 DOM 錨點），`scrollIntoView()` 捲進畫面、卡片本身的 `<a>` 拿到真正
+的鍵盤／螢幕閱讀器焦點。手機／桌面共用同一套查找與捲動邏輯，不必分
+平台各寫一份。React 18 automatic batching 下，`updatingIds`（更新中
+徽章）與 `justCreatedId`（觸發捲動聚焦）在 `create()` 同一批次
+setState 裡一起生效，聚焦當下卡片已經顯示「更新中」，不是舊燈號。
+`Element.scrollIntoView` jsdom 完全沒有實作（連樁都沒有），比照既有
+`window.scrollTo` 先例補進 `test-setup.ts`。
+
+`/code-review`（Standards＋Spec 兩軸）：Spec 軸零缺漏、零 scope
+creep，六項 AC 逐一核對通過（含成功／失敗兩條路徑的收合語意、
+updatingIds 生效時序、Mobile／Desktop 各自的 Vitest＋Playwright
+覆蓋、既有 draft-preservation 測試逐位元未動）。Standards 軸零 hard
+violation，一項 judgement call——`scenario-row-${id}` 這段 DOM id
+字串同時寫死在三個檔案，本專案第一次出現跨元件 DOM id 協調、沒有
+既有慣例可比對，但比照 `fetchCache.ts`／`route.ts`／`family.ts`
+「共用邏輯抽出來」的一貫習慣值得套用——已抽成
+`scenarios.ts::scenarioRowDomId()`，三處呼叫端改用它；`.compact-
+card-tap` 這個 CSS class 選擇器經審查判斷不需要抽，維持原樣。
+⚠ **這個判斷的理由在 OPTION-CURRENT-CLOSEOUT-003 的 code review 被
+訂正過**：當時寫的是「只用兩次」，但 A2 讓它變成三處，且新增的
+`App.tsx:353` 正是**跨元件**消費端——也就是 `scenarioRowDomId()` 當初
+被抽出來的那一種情境。維持不抽的理由因此改為：它是一個
+**querySelector 用的 CSS class 字串**，與 `scenarioRowDomId()` 那種
+「同一個 id 要由三方各自組出來、組錯就靜默失效」的情況不同——class 名
+寫在 CSS 裡是單一事實來源，前端三處只是引用它；真的打錯字時 A2 的
+`?.focus()` 會靜默不聚焦，但既有 e2e（`toBeFocused()`，手機＋桌面各
+一條）會立刻紅燈。
+
+測試：`App.test.tsx` 新增 3 條（手機／桌面成功後收合捲動聚焦、失敗
+不收合）、`scenarios.test.ts` 新增 1 條純函式測試；`smoke.spec.ts`／
+`desktop.spec.ts` 各新增 1 條端到端案例（`toBeInViewport()`／
+`toBeFocused()`）。全套：後端未觸碰；前端 typecheck 乾淨、Vitest
+761 條全綠、build 成功、Playwright e2e 122 條（iPhone 76＋Desktop 46）
+全綠。
+
+**Phase B（Cross-Scenario Wayfinder）未能執行——工具層硬性限制，非
+判斷失誤**：`.claude/skills/wayfinder/SKILL.md` 的 frontmatter 明訂
+`disable-model-invocation: true`；透過 Skill 工具嘗試呼叫時，工具直接
+拒絕並回覆「Ask the user to run /wayfinder themselves...Do not
+replicate this skill's workflow by other means — it is reserved for
+explicit user invocation」。這是 harness 層級的硬性擋點，不是可以
+自行判斷要不要繞過的東西——`wayfinder` 本身的設計就明文規定
+「grilling」票必須是與真人的即時往返（HITL），「a grilling agent
+that answers its own questions has broken this」，若自行手刻一份
+冒充 Wayfinder 地圖的文件，正是破壞這條紅線的行為。因此本輪**未**
+建立任何 `wayfinder:map` issue、未產出地圖文件、未自行裁定
+Destination／Frontier／first shippable slice——這些必須由需求方
+親自打 `/wayfinder` 才能合法產出。詳見本輪回報（回報#071）第 8 節
+的具體下一步建議。
+
+### OPTION-CURRENT-CLOSEOUT-003——Product Polish 收尾＋Cross-Scenario
+Wayfinder 暫停（2026-09-11，Owner 直接裁示）
+
+**本輪正式完成範圍（Owner 逐條確認並固化）**：
+
+1. **Vertical Spread package Valuation UI 退場**（commits `5e4208c`＋
+   `7908553`，詳見上方「Vertical Spread『貴不貴』整塊退場」一節）。
+2. **`NO RELIABLE PACKAGE VALUATION YET` research verdict**
+   （`docs/research/spread-package-valuation-verdict.md`，684 行，
+   本輪一併 commit 進 repo）。
+3. **Long Call／Put Historical IV 保持原行為**——Vertical 退場的閘門
+   收在 `src/IvHistory.tsx` 的 `legs.length === 1`，單腿候選完全
+   不受影響。
+4. **Scenario 建立成功後的流程優化（A2）**（commits `7093c50`＋
+   `e65d364`）：Create form 自動收合、捲動到新 Scenario、focus 新
+   Scenario，且**使用既有 refresh trigger**（`runBatch([created.id])`
+   ——沒有新增第四種刷新時機）。
+5. **A1 cleanup**（commit `d1c0096`）：`src/IvHistory.tsx` 檔頭過期
+   描述修正，不再稱 Normalized Skew 為使用者可見的 Vertical 功能。
+   另含分支與 master 的 ancestry 對齊（commit `9ecc28c`，零衝突
+   merge，內容從未遺失，詳見上一節）。
+6. **已完成的 regression tests／code review 全部保留**，未放寬或
+   刪除任何仍然有效的既有斷言。
+
+**Cross-Scenario Wayfinder：暫停，非否決（Owner 2026-09-11 裁示）**
+
+Owner 明確裁示停止 Cross-Scenario product decisions，理由**不是放棄**，
+而是 Destination 已被新的 Owner discussion 重新 framing：
+
+- **Scenario Library 繼續代表「我正在追蹤的 thesis／劇本」。**
+- 首頁原本保留的 Dashboard 區域（#77／#81 的佔位區），**未來可能
+  優先成為真正的 Holdings／Portfolio layer**，而不是單純的
+  Cross-Scenario comparison table。
+- **真實 Position 與 Scenario 是不同的 domain object**：
+  - **Scenario** ＝ 我認為市場可能怎麼走。
+  - **Holding／Position** ＝ 我真的拿錢建立了什麼部位。
+
+因此 Cross-Scenario comparison **未被否決，只是暫停**，待
+Portfolio／Public Beta architecture 更清楚後重新評估。
+
+> ⚠ **OD-2～OD-13 全部不是 Owner Decision。**
+>
+> 本 session 在 `/wayfinder` 過程中，曾以「回報#072」「回報#073」
+> 兩份 code block 向 Owner 列出 Cross-Scenario 的待裁示選項
+> （workspace 定位、要比哪些 dimension、Entry Cost 定義、
+> normalization 界線、stale／failed 怎麼比、sorting／filtering
+> 界線、Pareto frontier、Mobile Dashboard 處置、規模上限、first
+> shippable slice 等），每一題都附了「老弟的看法」作為建議。
+>
+> **那些建議一律只是 Claude 的建議，Owner 從未裁示，不得被任何
+> 未來 session 誤記為 Owner Decision。** Owner 在本輪明文要求
+> 不再回答 OD-2～OD-13。
+>
+> **唯一真正被 Owner 回答過的是 OD-1**（「Scenario Return 可排序
+> 且是預設排序鍵」）——但它是在已被 reframe 掉的舊 Destination
+> 底下回答的，**同樣不得當成新階段的既定前提**，重啟時需重新確認。
+>
+> **本輪未建立任何 Cross-Scenario Wayfinder map issue**，也未替
+> Owner 補答任何問題——這是刻意的，不是遺漏。
+
+**下一階段**：由 Owner 另行啟動新的 Wayfinder，**重新從 Public
+Beta／anonymous-user architecture 開始**。本 session 依裁示不自行
+開始。
+
+**Closeout 驗證**：前端 `tsc --noEmit` 乾淨、Vitest **761 passed**、
+`vite build` 成功、Playwright e2e **123 passed**（iPhone 75＋
+Desktop 48，含本輪新增的桌面幾何守門）。後端**零檔案異動**
+（`git diff origin/master...HEAD --name-only` 對 `option_chaser/`／
+`api_app/`／`tests/`／`contracts/`／`scripts/`／`api/` 零命中），
+因此 **SCALE-18／#269 結構上不可能被碰到**，本輪全程未觸碰。
+**`/code-review`（Standards＋Spec 兩軸，narrow scope：只檢查本輪
+A1／A2／research 的遺漏、矛盾文件與 regression，不重開產品設計
+問題）**：
+
+- **Spec 軸零缺漏、零 scope creep**，四項硬檢查逐一驗過並通過——
+  **未新增第四種 refresh trigger**（`create()` 仍止於既有
+  `runBatch([created.id])`，A2 只加了 `setShowCreateForm(false)`／
+  `setJustCreatedId()` 與一個純 DOM 的 effect，零新增網路呼叫，
+  六個既有 refresh 呼叫點一行未動）、**Long Call／Put 未受影響**
+  （`IvTrend.test.tsx` 逐字未改，倖存守門全在）、**後端零檔案
+  異動**、**雙 viewport 皆覆蓋**、**無任何被放寬或靜默刪除的斷言**。
+- **Standards 軸零 hard violation**，但抓到 Vertical 退場那一輪
+  （`5e4208c`）留下的一批**真死碼與矛盾文件**，本輪一併修掉
+  （commit 見下）：
+  1. `IvTrend.tsx` 的 `SPREAD_CHART_HEIGHT_DESKTOP`／
+     `SPREAD_CHART_HEIGHT_MOBILE` 兩個常數唯一消費端是已刪除的
+     `SpreadSummary.tsx`，全站零引用——刪除。
+  2. `IvTrendChart` 的 `seriesLabel` 參數唯一會覆寫它的呼叫端也是
+     `SpreadSummary.tsx`，剩下的呼叫端永遠傳同一個值——**這正好
+     牴觸同一輪自己訂下的「不留一個永遠傳同一個值的參數」規則**
+     （`CardSkeleton.isSingleLeg`／`TrendUnit` 兩個既有先例），
+     一併移除。
+  3. 六處註解仍把已刪除的 `./SpreadSummary` 或已刪除的
+     `metricCaption()` 寫成現存消費端（`IvTrend.tsx` ×3、
+     `IvHistory.tsx` ×3、`styles.css` ×1、`percentileCopy.test.ts`
+     ×2）——這與 A1（`d1c0096`）修的是同一類缺陷，A1 當時只修了
+     `IvHistory.tsx` 的檔頭，其餘漏掉，本輪補齊。
+  4. `IvHistory.tsx` 的 `InlineDiagnostics` docstring 說「export
+     給 `./IvTrend` 原樣複用」，與**同一個檔案的檔頭**明說
+     「`./IvTrend` 本身不需要再各自 import 一份」互相矛盾——修正
+     docstring。
+  5. `spread-package-valuation-verdict.md` 寫「沿用本 repo 既有
+     **四**級慣例」卻列了五項——訂正為「四級慣例，另增列
+     【repo 實證】一級」。
+  6. 上一節 A2 紀錄寫 `.compact-card-tap`「只用兩次」——A2 自己
+     讓它變成三處、且新增的那處是跨元件消費端。已就地訂正該段
+     並補上「維持不抽」的真正理由。
+- **兩項判斷為不修、記錄供覆核**：(a) `CHART_WIDTH`／`spanLabel`／
+  `IvTrendChart`／`IvTrendChartSeries` 四個 `export` 關鍵字目前沒有
+  檔案外消費端，但那既非矛盾也非 regression，縮小可見性屬重構、
+  不在 closeout 範圍；(b) `App.test.tsx` 三段近似的
+  `withRefreshRunBridge(...)` route 假體可抽成共用 helper
+  （repo 有 `routeTwoScenarios()` 先例），屬 judgement call，
+  merge 前夕動測試基礎設施的風險不成比例。
+- **一項 Spec 軸指出的覆蓋缺口已補**：Vertical 退場刪掉的桌面測試
+  「兩腿卡片並排、走勢圖落在卡片邊界內」刪得正確（兩腿路徑已不可
+  達），但它「圖真的畫在卡片內、寬度貼齊卡片」那一半在桌面沒有
+  單腿接班人（手機 `smoke.spec.ts` 的對應測試一直都在）。已於
+  `desktop.spec.ts` 新增一條等價的單腿幾何守門。
 
 ### 施工依據
 

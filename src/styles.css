@@ -2204,7 +2204,8 @@ body {
 }
 
 /* 手機「標籤＋現值」「百分位＋Δ4w」合併同列（`./IvTrend` 的
-   `IvTrendCard`、`./SpreadSummary`　共用）：桌面維持原本各自一行的
+   `IvTrendCard`；原本與 `./SpreadSummary` 共用，該檔已隨 2026-09-09
+   Vertical 退場刪除，現在是單一消費端）：桌面維持原本各自一行的
    JSX，不會渲染這兩個 class，因此不需要額外的桌面覆寫。 */
 .iv-compact-head {
   display: flex;
@@ -2217,47 +2218,16 @@ body {
   white-space: nowrap;
 }
 
-/* 一年走勢圖為主體（#140／spec #137）：標籤＋百分位同一行，數值自己
-   一行，走勢圖佔滿整個寬度接在下面——不再是掛在數值右側的 18px
-   sparkline（#135 那版的壓平版型），圖需要寬度才讀得出路徑。 */
-.iv-metric {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.iv-metric-head {
-  grid-area: head;
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 8px;
-  min-width: 0;
-}
-
-.iv-metric-head .row-label {
-  white-space: nowrap;
-}
-
-.iv-metric-head .caption {
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-/* 頭條與次層的階層差在字級與粗細，不是靠顏色——顏色在這裡沒有語意
+/* 現值的字級與粗細（`./IvTrend` 的逐腿卡片）。2026-09-09 Owner 裁示
+   （Vertical「貴不貴」整塊退場）後 `.iv-metric*`／`.iv-value` 這組舊的
+   「頭條 vs 次層」階層樣式已無消費端，連同 Normalized Skew Metric 一併
+   移除；階層差本來就在字級與粗細，不是靠顏色——顏色在這裡沒有語意
    （既有 `.positive`／`.negative` 才有），拿它做階層會誤導。 */
 .iv-value-primary {
   font-size: 20px;
   font-weight: 700;
   font-variant-numeric: tabular-nums;
   letter-spacing: -0.2px;
-}
-
-.iv-value {
-  font-size: 14px;
-  font-weight: 600;
-  font-variant-numeric: tabular-nums;
 }
 
 /* 一年走勢圖本體（#140）：跟 `.spread-history-chart` 同一種尺寸規則
@@ -2352,9 +2322,11 @@ body {
   cursor: pointer;
 }
 
-/* Loading 佔位骨架（QA 反饋，2026-08-16）：形狀跟 `.iv-metric` 頭條／
-   次層同構，資料回來前後卡片高度不整個跳動。`.iv-legs`／`.iv-legs.single`
-   直接沿用既有次層排版類別，這裡只補頭條與每個次層方塊本身的佔位樣式。 */
+/* Loading 佔位骨架（QA 反饋，2026-08-16）：形狀跟真正的逐腿卡片同構，
+   資料回來前後卡片高度不整個跳動。`.iv-legs.single` 直接沿用既有排版
+   類別，這裡只補方塊本身的佔位樣式。2026-09-09 Owner 裁示後這塊卡片
+   只服務單腿候選，`.iv-skeleton-primary`（Normalized Skew 頭條方塊）
+   已無消費端、一併移除。 */
 .iv-skeleton {
   display: flex;
   flex-direction: column;
@@ -2367,10 +2339,6 @@ body {
     90deg, var(--fill) 25%, var(--bg-elevated) 37%, var(--fill) 63%);
   background-size: 400% 100%;
   animation: iv-skeleton-shimmer 1.4s ease infinite;
-}
-
-.iv-skeleton-primary {
-  aspect-ratio: 300 / 130;
 }
 
 .iv-skeleton-secondary {
@@ -2392,15 +2360,6 @@ body {
    垂直堆疊——內容比舊的次層 Metric 豐富（走勢圖＋四行 caption），改用
    跟主卡同寬的直向排列而不是 `.iv-legs` 的雙欄 grid，手機窄螢幕不會把
    圖擠得看不出路徑。 */
-/* Spread Summary（SIG-03／#174）：卡片頭條，在 Buy／Sell 層之上——
-   跟 `.iv-trend-card` 同一種直向排列，不加 `.card` 的背景／陰影／padding
-   （那會在既有 `.iv-history` 卡片裡再套一層卡片，變成「卡中卡」）。 */
-.iv-spread-summary {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
 .iv-trend-legs {
   display: flex;
   flex-direction: column;

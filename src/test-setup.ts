@@ -43,3 +43,11 @@ if (!window.matchMedia) {
 // 的樁——手機版返回劇本庫還原捲動位置（MVP-v2／#77、#83）會呼叫它。
 // 換成真的無副作用函式，雜訊才不會蓋掉測試輸出裡真正的錯誤。
 window.scrollTo = (() => {}) as typeof window.scrollTo;
+
+// jsdom 完全沒有實作 `Element.prototype.scrollIntoView`（不是樁、是根本
+// 不存在這個方法，呼叫會直接 `TypeError: ... is not a function`）——
+// Phase A2（建立劇本成功後捲動到新卡片，`App.tsx`）會呼叫它。補上一個
+// 無副作用的樁，供各測試用 `vi.spyOn` 覆寫來斷言「有沒有被呼叫」。
+if (!Element.prototype.scrollIntoView) {
+  Element.prototype.scrollIntoView = function scrollIntoView() {};
+}

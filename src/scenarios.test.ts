@@ -22,6 +22,7 @@ import {
   rateLimitDetailText,
   rateLimitHeadline,
   rateLimitRemainingSeconds,
+  scenarioRowDomId,
   scenarioSignal,
   signalLabel,
   sortScenarios,
@@ -456,5 +457,12 @@ describe("一輪刷新摘要（T08／#196 P2）", () => {
 
   it("全部失敗時仍講「0 成功」，不是省略成功那一半", () => {
     expect(formatRunSummary(0, 3)).toBe("0 成功／3 失敗");
+  });
+});
+
+describe("劇本卡片 DOM id（A2）", () => {
+  it("與 id 一一對應，供 App.tsx 捲動聚焦時查找", () => {
+    expect(scenarioRowDomId("s1")).toBe("scenario-row-s1");
+    expect(scenarioRowDomId("s2")).toBe("scenario-row-s2");
   });
 });
