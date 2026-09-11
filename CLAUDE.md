@@ -27,7 +27,7 @@ block 裡，不能切成好幾個 code block、也不能中間插普通文字把
 `［回報#001］spec #137 拆票完成`）。編號是**累計總數**，不因換
 session、換分支、換主題而歸零——目前最新編號記在這裡：
 
-> 目前次序：074（下一份回報用 075）
+> 目前次序：075（下一份回報用 076）
 
 每發一份回報就把上面這個數字改成剛剛用掉的那個，跟著那次改動一起
 commit（沒有其他改動要 commit 時，單獨為這一行開一個小 commit 也
@@ -8021,6 +8021,58 @@ A1／A2／research 的遺漏、矛盾文件與 regression，不重開產品設�
   達），但它「圖真的畫在卡片內、寬度貼齊卡片」那一半在桌面沒有
   單腿接班人（手機 `smoke.spec.ts` 的對應測試一直都在）。已於
   `desktop.spec.ts` 新增一條等價的單腿幾何守門。
+
+### OPTION-PUBLIC-BETA-WAYFINDER-001——Anonymous Public Beta 地圖已畫好
+（2026-09-11，`/wayfinder` charting session，回報#075；只畫圖、未施工、未跑 research）
+
+**Owner 指令**：從最新 master（`622acc9`）開始，回答「Option Chaser 要怎樣從
+Owner 自用變成陌生人打開就能安全使用的 Public Beta」。七塊：A 匿名身份／B 資料
+生命週期／C 濫用與成本控制／D Owner 儀表板／E Release Gate／F Safety·CI·營運／
+G 隱私·Cookie·廣告邊界。**本輪只做產品＋架構地圖**，不 implementation、不開
+PR、不 merge、不碰 #269；Owner 明令「到這裡停止，不要自行進 Research 或施工」，
+且 **research 一律用 sonnet 模型**（已寫進地圖 Notes 與每張 research 票）。
+
+**產出＝GitHub 地圖 issue #272**（label `wayfinder:map`）＋ 17 張 sub-issue：
+- Research（AFK，8 張，全部 frontier、彼此獨立、一律 sonnet）：#273 平台額度／
+  能力／vendor 條款事實查核（含 Cboe delayed quotes 對公眾提供的條款）、#274
+  免登入即用產品案例集、#275 匿名身份與 session 安全模式、#276 匿名資料保留與
+  清理模式、#277 濫用防護與限流模式、#278 小型 SaaS 儀表板與可觀測性、#279
+  cookie／analytics／廣告 consent 邊界、#280 零 CI 到最低可行把關。
+- Task（HITL，1 張，frontier）：#281 Owner 勾選 Vercel／Neon 方案與正式站現況
+  （repo 沒有 `wayfinder:task` label、MCP 工具建不了 label，該票未貼 label，
+  body 已註明類型）。
+- Grilling（HITL，8 張，全部被擋）：#282 匿名身份←#274/#275；#283 資料壽命
+  ←#274/#276/#281；#284 額度與保險絲←#273/#277/#281；#285 儀表板←#273/#278/
+  #281；#286 隱私邊界←#279；#287 上線安全網←#273/#280；#288 陌生人看到的產品面
+  ←#282/#283；#289 Release Gate 定案←#282–#288（地圖最後一張，走完即可
+  `/to-spec`）。Blocking 沿用 body 第一行 `Blocked by:` 慣例。
+
+**本輪 repo 實查抓到的關鍵事實（已寫進地圖「已知事實」）**：
+1. **production 網址今天就是公開可達的**（Standard Protection 不擋 production
+   網域），且所有請求都對到同一個 `"solo"` owner——任何找到網址的人現在看到、
+   改到、刪到的都是 Owner 自己的劇本。這是現況，不是未來風險。
+2. Ownership A-1 的注入點 `create_app(identity_resolver=)` 現成，但 resolver
+   簽章拿不到 request，cookie 版要走 middleware → ContextVar。
+3. **沒有「刪掉一個 owner 及其全部資料」的操作**；`delete_scenario()` 只清 5 張
+   表、`narrow_history` 留孤兒；`diagnostics`／`owner_settings`／
+   `owner_credentials`／`owner_verifications` 零清理路徑。
+4. 開站＝自動刷新全部未過期劇本、每次刷新落盤一份快照（OD-06 永久）——那是
+   Owner 一人的估算；陌生人一多，Neon Free 0.5 GB 是「幾天」等級就滿。
+5. 零 CI（無 `.github/`）；repo 是 **public**、GitHub Free。
+6. 「safetycheck」：老弟可見的 skill 清單沒有這個名字，最接近的是內建
+   `/security-review`；placement 歸 F 塊（#280→#287）。
+
+**回報#075 向 Owner 提出三題 OD**（皆為白話格式；三題都不擋 research 起跑）：
+OD-1 第一天怎麼公開（私下給少數人／公開張貼／分兩階段）——決定 Release Gate
+有幾條線；OD-2 Public Beta 期間每月願意花多少錢——決定限流／清理／log 能用哪些
+平台能力；OD-3 Owner 自己在正式站上的舊劇本怎麼處理（認領／清掉重建／另開管理者
+身份）。**尚未得到回答**。
+
+**下一步（等 Owner）**：(1) Owner 回覆 OD-1～3（或說晚點決定）；(2) Owner 放行
+後，對 #273–#280 逐張以 `/research`（**sonnet**）起跑，建議先 #275／#276／
+#277＋#273；(3) Owner 勾 #281；(4) research 回來後用 `/wayfinder 272` 一次一張
+走 grilling 票（#282 起）；(5) #289 定案 → `/to-spec`。本輪 branch 只動
+CLAUDE.md（本段＋回報編號），並把分支 rebase 到 master `622acc9` 之上。
 
 ### 施工依據
 
