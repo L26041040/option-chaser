@@ -27,7 +27,7 @@ block 裡，不能切成好幾個 code block、也不能中間插普通文字把
 `［回報#001］spec #137 拆票完成`）。編號是**累計總數**，不因換
 session、換分支、換主題而歸零——目前最新編號記在這裡：
 
-> 目前次序：071（下一份回報用 072）
+> 目前次序：074（下一份回報用 075）
 
 每發一份回報就把上面這個數字改成剛剛用掉的那個，跟著那次改動一起
 commit（沒有其他改動要 commit 時，單獨為這一行開一個小 commit 也
@@ -7894,6 +7894,79 @@ that answers its own questions has broken this」，若自行手刻一份
 Destination／Frontier／first shippable slice——這些必須由需求方
 親自打 `/wayfinder` 才能合法產出。詳見本輪回報（回報#071）第 8 節
 的具體下一步建議。
+
+### OPTION-CURRENT-CLOSEOUT-003——Product Polish 收尾＋Cross-Scenario
+Wayfinder 暫停（2026-09-11，Owner 直接裁示）
+
+**本輪正式完成範圍（Owner 逐條確認並固化）**：
+
+1. **Vertical Spread package Valuation UI 退場**（commits `5e4208c`＋
+   `7908553`，詳見上方「Vertical Spread『貴不貴』整塊退場」一節）。
+2. **`NO RELIABLE PACKAGE VALUATION YET` research verdict**
+   （`docs/research/spread-package-valuation-verdict.md`，684 行，
+   本輪一併 commit 進 repo）。
+3. **Long Call／Put Historical IV 保持原行為**——Vertical 退場的閘門
+   收在 `src/IvHistory.tsx` 的 `legs.length === 1`，單腿候選完全
+   不受影響。
+4. **Scenario 建立成功後的流程優化（A2）**（commits `7093c50`＋
+   `e65d364`）：Create form 自動收合、捲動到新 Scenario、focus 新
+   Scenario，且**使用既有 refresh trigger**（`runBatch([created.id])`
+   ——沒有新增第四種刷新時機）。
+5. **A1 cleanup**（commit `d1c0096`）：`src/IvHistory.tsx` 檔頭過期
+   描述修正，不再稱 Normalized Skew 為使用者可見的 Vertical 功能。
+   另含分支與 master 的 ancestry 對齊（commit `9ecc28c`，零衝突
+   merge，內容從未遺失，詳見上一節）。
+6. **已完成的 regression tests／code review 全部保留**，未放寬或
+   刪除任何仍然有效的既有斷言。
+
+**Cross-Scenario Wayfinder：暫停，非否決（Owner 2026-09-11 裁示）**
+
+Owner 明確裁示停止 Cross-Scenario product decisions，理由**不是放棄**，
+而是 Destination 已被新的 Owner discussion 重新 framing：
+
+- **Scenario Library 繼續代表「我正在追蹤的 thesis／劇本」。**
+- 首頁原本保留的 Dashboard 區域（#77／#81 的佔位區），**未來可能
+  優先成為真正的 Holdings／Portfolio layer**，而不是單純的
+  Cross-Scenario comparison table。
+- **真實 Position 與 Scenario 是不同的 domain object**：
+  - **Scenario** ＝ 我認為市場可能怎麼走。
+  - **Holding／Position** ＝ 我真的拿錢建立了什麼部位。
+
+因此 Cross-Scenario comparison **未被否決，只是暫停**，待
+Portfolio／Public Beta architecture 更清楚後重新評估。
+
+> ⚠ **OD-2～OD-13 全部不是 Owner Decision。**
+>
+> 本 session 在 `/wayfinder` 過程中，曾以「回報#072」「回報#073」
+> 兩份 code block 向 Owner 列出 Cross-Scenario 的待裁示選項
+> （workspace 定位、要比哪些 dimension、Entry Cost 定義、
+> normalization 界線、stale／failed 怎麼比、sorting／filtering
+> 界線、Pareto frontier、Mobile Dashboard 處置、規模上限、first
+> shippable slice 等），每一題都附了「老弟的看法」作為建議。
+>
+> **那些建議一律只是 Claude 的建議，Owner 從未裁示，不得被任何
+> 未來 session 誤記為 Owner Decision。** Owner 在本輪明文要求
+> 不再回答 OD-2～OD-13。
+>
+> **唯一真正被 Owner 回答過的是 OD-1**（「Scenario Return 可排序
+> 且是預設排序鍵」）——但它是在已被 reframe 掉的舊 Destination
+> 底下回答的，**同樣不得當成新階段的既定前提**，重啟時需重新確認。
+>
+> **本輪未建立任何 Cross-Scenario Wayfinder map issue**，也未替
+> Owner 補答任何問題——這是刻意的，不是遺漏。
+
+**下一階段**：由 Owner 另行啟動新的 Wayfinder，**重新從 Public
+Beta／anonymous-user architecture 開始**。本 session 依裁示不自行
+開始。
+
+**Closeout 驗證**：前端 `tsc --noEmit` 乾淨、Vitest **761 passed**、
+`vite build` 成功、Playwright e2e 全綠。後端**零檔案異動**
+（`git diff origin/master...HEAD --name-only` 對 `option_chaser/`／
+`api_app/`／`tests/`／`contracts/`／`scripts/`／`api/` 零命中），
+因此 **SCALE-18／#269 結構上不可能被碰到**，本輪全程未觸碰。
+`/code-review`（Standards＋Spec 兩軸，narrow scope：只檢查本輪
+A1／A2／research 的遺漏、矛盾文件與 regression，不重開產品設計
+問題）結果記錄於回報#074。
 
 ### 施工依據
 
