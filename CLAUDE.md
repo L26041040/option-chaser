@@ -27,7 +27,7 @@ block 裡，不能切成好幾個 code block、也不能中間插普通文字把
 `［回報#001］spec #137 拆票完成`）。編號是**累計總數**，不因換
 session、換分支、換主題而歸零——目前最新編號記在這裡：
 
-> 目前次序：076（下一份回報用 077）
+> 目前次序：077（下一份回報用 078）
 
 每發一份回報就把上面這個數字改成剛剛用掉的那個，跟著那次改動一起
 commit（沒有其他改動要 commit 時，單獨為這一行開一個小 commit 也
@@ -8179,6 +8179,143 @@ GitHub body 尚未同步 Admin 維度，下一次 work 這兩張票前先讀對�
 #282。**另有一項與本地圖無關、但需要 Owner 另行判斷的風險**：Cboe／Yahoo
 vendor terms 明文禁止本產品現行的自動抓取方式，此為既有狀態非本輪新增，
 本地圖不處理，需 Owner 自行決定要不要另開處理。
+
+### OPTION-PUBLIC-BETA-RESEARCH-003——Anonymous Public Beta Research Batch 2 ＋
+Market Data Source（2026-09-11，回報#077；五張 research ticket 完成，仍未進
+grilling／spec／施工）
+
+Owner 指令：`/mattpocock-skills:research` 完成 Batch 2 四張既有 research
+（#274／#278／#279／#280，皆一律 **Sonnet**），並**新開一張** research
+（`#290` Public-Beta-safe Options Market Data Source）——目標**不是**研究
+怎麼繞過 Cboe 限制，是找一個條款上允許公開展示給陌生人的資料源；候選不預設，
+研究成熟選項後再排序。五個背景 agent 平行執行，逐份寫檔、逐份 commit＋push
+（本輪一路照 stop hook 提示邊完成邊 commit，未累積到最後才一次推）。
+
+**五份研究產出**（皆 `docs/research/*.md`，一手來源＋出處＋查閱日期
+2026-09-11，皆已以 resolution comment 貼回對應 issue 並關閉，地圖 #272 已
+同步更新已知事實 #16–20／Decisions so far／尚未定案表格／Research 與
+Grilling frontier／Blocking relationships／Implementation frontier
+（新增 I10）／Not yet specified／Out of scope）：
+
+- **#274** `anonymous-first-product-patterns.md`（876 行）——12 個成熟免
+  登入產品（Excalidraw／tldraw／diagrams.net、Portfolio Visualizer／
+  OptionStrat／Options Profit Calculator、CodeSandbox／StackBlitz／
+  Replit、TypeScript Playground／CodePen／Pastebin）逐案回答 7 個固定
+  問題，全數以官方一手來源為準（`optionstrat.com` 等網域對 `WebFetch`
+  回 403、改用帶一般瀏覽器 User-Agent 的 `curl` 成功；`CodeSandbox`
+  官方頁面被 Cloudflare bot 挑戰擋下，改採搜尋引擎摘要並標註方法論限制）。
+  **最重要發現**：Replit、CodePen、CodeSandbox 三個獨立產品都曾放寬匿名
+  權限（不登入可執行程式碼／存檔／即時編輯），後來全部因濫用經濟學
+  （機器人、垃圾內容、暗網 DDoS 轉售）往回收緊——Replit 官方部落格明講
+  Google reCAPTCHA 漲價到超過當月營收才逼得他們收手。**12 個案例中沒有
+  任何一個現行仍在運作的產品，同時具備「伺服器端持久記住匿名使用者物件」
+  ＋「代替匿名使用者呼叫按量計費第三方 API」這兩個特徵**——這正是
+  Option Chaser 計畫中的設計形狀，找不到可以直接照抄限流數字的先例。
+  次要發現：多數工具其實不需要伺服器端記住匿名身份（URL 本身即救命繩，
+  或整個丟給瀏覽器 localStorage）；沒有任何官方文件承諾「清 cookie 前
+  主動警告」；三個提供帳號刪除窗的產品（Excalidraw+／StackBlitz／
+  Replit）獨立收斂到約 30 天量級，但未標明是法規要求。
+- **#278** `small-saas-ops-dashboard-observability.md`（678 行）——嚴格
+  區分 product usage／system health／security-abuse 三類指標，不假設
+  Superuser 預設能讀任一使用者私有資料。**最重要發現**：Neon Free 主控台
+  歷史圖表只留 1 天、無內建告警（Launch/Scale 才有）；Vercel Hobby
+  Runtime Logs 只留 1 小時、一般 Observability 只留 12 小時——證實本站
+  既有的 `operational_metrics`（SCALE-08）／`chain_backoff`（SCALE-04/05）
+  自建機制不是過度工程，是免費層唯一能看到「這週發生了什麼」的方式；
+  `chain_backoff.is_sustained_incident()` 與 `table_size` 已算好兩個
+  最有價值的告警條件，接通知只差一個 side effect。唯二建議引入的外部
+  工具：Sentry（免費層 5,000 筆/月，補「陌生人瀏覽器真實錯誤堆疊」這個
+  本站結構上做不到的能力）與 UptimeRobot／Better Stack（整站存活監控）。
+  明確不建議：完整產品分析平台（PostHog 雲端版等）、即時 HTML 儀表板、
+  只依賴 Vercel 免費 Observability 當唯一紀錄、Google Analytics 或任何
+  跨站追蹤工具。
+- **#279** `cookie-consent-analytics-ads-boundaries.md`（969 行）——嚴格
+  區分必要匿名身份 cookie／Analytics／Advertising 三件事，逐項引用官方
+  一手來源（WP29 Opinion 04/2012——本輪手刻 zlib-decompress＋PDF
+  text-operator 腳本逐字解析掃描字距異常的官方 PDF、GDPR Recital 30、
+  CJEU Breyer 判決、CNIL、ICO、台灣個資法官方英譯、CCPA 條文、Google
+  AdSense EU 政策、IAB TCF v2.2）。**最重要發現**：匿名身份 cookie
+  （隨機 id＋伺服器查表）明確落在 ePrivacy Art. 5(3)「strictly
+  necessary」豁免，法規風險極低。**推翻一項過時認知**：英國《Data
+  (Use and Access) Act 2025》已於 2026-02-05 生效，新增類似法國 CNIL
+  的「統計用途例外」，英國 ICO 也已於 2026-04-29 發布配套指引——英法
+  兩地 Analytics 免同意條件現已趨於一致，Vercel Web Analytics／
+  Plausible／Fathom／Umami 四家官方頁面皆自證符合。Advertising 建議
+  現在完全不做任何準備（Owner 已表態，本研究確認方向正確）。另發現既有
+  `disclaimer_text()`「非投資建議」免責文字只活在收合的 Advanced 區塊，
+  陌生人首次進站看不到，弱於同類金融工具（OptionStrat 用常駐頁尾）——
+  建議與必要 cookie 告知合併成一行網站全域頁尾文字，唯一建議現在做的
+  低成本動作。
+- **#280** `minimal-ci-deploy-ops-gate.md`（701 行）——repo 現況確認
+  `.github/` 不存在、零 CI，四套既有測試（後端雙後端約 2,000 條、
+  Vitest 761、Playwright 123、typecheck/build）僅靠 agent 手動跑完貼在
+  回報裡。**最重要發現**：Vercel 官方行為是 push master 一律直接觸發
+  部署，**沒有任何官方機制能讓 Vercel 等外部 CI 綠燈**（`Ignored Build
+  Step` 是同 repo 同步 git-diff 檢查，非外部 CI 狀態閘門，硬湊會有真實
+  race condition）；真正能擋的關卡是 GitHub 自己的 branch protection
+  「required status checks」（公開 repo 免費）——把關點在合併按鈕、不在
+  Vercel，代表 Owner 需要從「偶爾直接 push master」改成「開 PR → CI 過
+  → 手動合併」的習慣。另外兩項確認：**LINE Notify 已於 2025-03-31 正式
+  終止**（官方公告，非傳聞，不是還能用的選項）；Vercel Hobby Runtime
+  Logs 只留 1 小時，因此免費 Sentry 層（30 天保留）判定為 Beta-blocking
+  而非錦上添花。明確不推薦：用 Vercel「Ignored Build Step」hack 查詢
+  外部 CI 狀態、現階段套用完整 OWASP ASVS Level 2／3（建議 Level 1 為主
+  ＋憑證儲存相關少數 Level 2 控制項）。
+- **#290**（新開票）`public-beta-market-data-source-selection.md`
+  （650 行）——比較 13 個候選（Cboe DataShop／Databento／Intrinio／
+  EODHD／ORATS／Polygon／Alpha Vantage／MarketData.app／Twelve Data／
+  Finnhub／dxFeed／Schwab Trader API，外加現行 Cboe／Yahoo 刮取當
+  對照組），核心問題只有一個：官方條款是否明文允許把資料公開展示給
+  多使用者網站的陌生訪客。**結構性發現**：美股選擇權報價著作權屬
+  OPRA（交易所聯合報價機構），任何 vendor 本質上都是轉包 OPRA 授權；
+  OPRA 官方費用政策對「延遲 15 分鐘以上」資料**不收逐訂閱者費**，而
+  Option Chaser 現在本來就是延遲報價產品——代表選對 vendor，使用者數
+  增加不必然推高授權成本。**最推薦：Intrinio Silver Options**——官方
+  原話明文「企業可顯示給自己應用程式的終端使用者，不逐使用者收費，
+  無需額外交易所手續」，精準對應本產品用法；唯二保留是確切月費查不到
+  （藏在留資料表單後）、且明文禁止散裝下載原始資料（會影響既有 CSV
+  匯出功能，需調整或走更高階未知價格的授權層）。**次佳：Databento**
+  （真正官方自助簽約流程，若鎖定延遲資料理論上最透明，但本輪未實際
+  跑完問卷確認精確報價）。**明確不推薦**：繼續刮 Cboe／Yahoo（本票
+  存在的理由，`public-beta-platform-facts.md` 已逐字引用禁止條款）；
+  以及 Alpha Vantage／Polygon／MarketData.app 現有方案／Finnhub／
+  Twelve Data 的個人／免費層（全部明文禁止建立供他人使用的應用程式）。
+  現有 `api_app/providers.py` 白名單＋adapter 抽象在多數候選下可繼續
+  沿用，換源工程難度低，唯 EODHD 只有每日收盤快照（非盤中即時），
+  與「每次刷新抓一次當下鏈」的既有產品模型不同，需評估對 Refresh Run
+  語意的影響。誠實揭露：本輪未申請任何試用帳號、未實際呼叫任何 API，
+  全部查證基於官方公開頁面文字（ToS／pricing／docs），與既有
+  `option-chain-data-sources.md`（2026-08-02）同一套「文件查證優先於
+  實測」方法論與侷限；「約 $1,500/月 redistributor 固定費」這個數字
+  只從單一二手來源（有推銷自身產品動機的教育部落格）取得，是全文信心
+  等級最低的具體數字，動用真實預算前務必重新獨立查證。
+
+**地圖 #272 已同步更新**：已知事實新增第 16–20 點（對應五份新研究的
+最重要發現）；⚠ Cboe/Yahoo 既有風險段落補上後續說明——**資料源選型的
+研究部分已不再是本地圖 out of scope**，但「要不要真的換源」的決策本身
+仍未有任何票追蹤，不預設併入現有七塊任何一塊；Decisions so far 新增
+五筆；尚未定案表格全部研究欄位改為 ✅（以 `~~#N~~` 表示）；**Research
+frontier 現已清空**（Batch 1＋2 共 9 張全數完成）；Grilling frontier
+現況大幅改變——**#282（身份）／#286（隱私邊界）／#287（上線安全網）
+三張已無任何 blocker、技術上站上 frontier**，#283／#284／#285 三張則
+各自只剩 `#281`（Owner 一次性勾選清單）這一個 blocker；Blocking
+relationships ASCII 圖重畫反映此現況；Implementation frontier 新增
+I10（市場資料源切換，標明「尚無決策票追蹤」）；Not yet specified 新增
+一條「是否／如何切換現行 Cboe／Yahoo 資料源」的 fog 項目；Out of scope
+的 Cboe/Yahoo 條目補上「研究部分已完成、決策部分仍在範圍外」的更新。
+
+**依 Owner 指令，本輪明確未做**：未進 #282～#289 任何一張 grilling 票
+（即使部分已無 blocker，也未視為「可以開始 work」的訊號）；未
+implementation（`option_chaser/`／`api_app/`／`src/` 零改動，`git diff`
+確認）；未觸碰 #269／SCALE-18。
+
+**下一步（等 Owner）**：(1) Owner 勾 `#281`（唯一剩下的 Task 票，完成後
+`#283`／`#284`／`#285` 三張 grilling 票同時解鎖）；(2) `#282`／`#286`／
+`#287` 三張現在已無 blocker，Owner 若想直接開始也可以先走這三張；
+(3) 全部 grilling 票走完 → `#289` 定案 → `/to-spec`；(4) Cboe／Yahoo
+資料源合規風險——本輪已完成研究（`#290`），**是否要真的換源、開一輪
+獨立處理，是一個全新、目前沒有任何票追蹤的 Owner 決策**，不在本地圖
+既有七塊任何一塊的範圍內，需要 Owner 明確指示才會再往下動。
 
 ### 施工依據
 
