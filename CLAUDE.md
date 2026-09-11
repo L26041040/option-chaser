@@ -27,7 +27,7 @@ block 裡，不能切成好幾個 code block、也不能中間插普通文字把
 `［回報#001］spec #137 拆票完成`）。編號是**累計總數**，不因換
 session、換分支、換主題而歸零——目前最新編號記在這裡：
 
-> 目前次序：075（下一份回報用 076）
+> 目前次序：076（下一份回報用 077）
 
 每發一份回報就把上面這個數字改成剛剛用掉的那個，跟著那次改動一起
 commit（沒有其他改動要 commit 時，單獨為這一行開一個小 commit 也
@@ -8066,13 +8066,119 @@ PR、不 merge、不碰 #269；Owner 明令「到這裡停止，不要自行進 
 OD-1 第一天怎麼公開（私下給少數人／公開張貼／分兩階段）——決定 Release Gate
 有幾條線；OD-2 Public Beta 期間每月願意花多少錢——決定限流／清理／log 能用哪些
 平台能力；OD-3 Owner 自己在正式站上的舊劇本怎麼處理（認領／清掉重建／另開管理者
-身份）。**尚未得到回答**。
+身份）。**⚠ 下方 OPTION-PUBLIC-BETA-RESEARCH-002 一節已記錄 Owner 對 OD-1／
+OD-2 的方向性回覆（controlled beta → public beta；免費層優先但不犧牲架構）；
+OD-3 仍未定案，已知會走「認領進正式 Admin 身份」這個方向，細節留給 #282**。
 
-**下一步（等 Owner）**：(1) Owner 回覆 OD-1～3（或說晚點決定）；(2) Owner 放行
-後，對 #273–#280 逐張以 `/research`（**sonnet**）起跑，建議先 #275／#276／
-#277＋#273；(3) Owner 勾 #281；(4) research 回來後用 `/wayfinder 272` 一次一張
-走 grilling 票（#282 起）；(5) #289 定案 → `/to-spec`。本輪 branch 只動
-CLAUDE.md（本段＋回報編號），並把分支 rebase 到 master `622acc9` 之上。
+### OPTION-PUBLIC-BETA-RESEARCH-002——Anonymous Public Beta Research Batch 1
+（2026-09-11，回報#076；四張 research ticket 完成，仍未進 grilling／spec／施工）
+
+Owner 指令：只做 #273／#275／#276／#277 四張 research，一律用 **Sonnet** 模型
+（四個背景 agent 平行執行）；並追加四項裁示——(1) Beta 分兩階段：**controlled
+beta（含 synthetic users／bots 壓測 Scenario 建立／refresh／DB growth／
+vendor quota／rate limit，真人 UX validation 保留）→ public beta**；(2)
+成本原則：Public Beta 先以免費方案為目標，但不得為了零成本製造醜架構，現在
+不搬平台，#273 需研究未來擴充閾值；(3) **Superuser／Admin 是正式需求**——
+Normal user → anonymous owner、Owner／Admin → superuser／admin identity
+（正式獨立身份，不是 solo 復活），Admin 資料仍歸屬 Admin 自己，**不得恢復
+全站共用 solo 模型**——追加進 #275／#277 研究範圍；(4) production protection
+**現在不開**，已定案，不再列為待決策題（#281 對應題目已移除）。四張票開工前
+先按這四項裁示更新票面 body（含 #281）。
+
+**四份研究產出**（皆 `docs/research/*.md`，一手來源＋出處＋查閱日期
+2026-09-11，皆已以 resolution comment 貼回對應 issue 並關閉，地圖 #272 已
+同步更新已知事實／Owner 已定案／Decisions so far）：
+
+- **#273** `public-beta-platform-facts.md`（719 行）——**最重要發現**：
+  **Cboe 官方網頁條款逐字明文「禁止自動抓取程式下載延遲報價，違者將封鎖
+  IP，只能手動輸入代號查」**（`cboe.com/delayed_quotes/API/quote_table/`，
+  2026-09-11 直接抓取原始 HTML 確認逐字存在），Yahoo Finance 條款亦明文
+  禁止類似自動化擷取＋「建立競品資料源」。**這是今天就存在的既有風險，與
+  Public Beta 無關**（哪怕只有 Owner 一人在用，理論上已在條款範圍外），
+  Beta 只是提高被偵測、全站被封鎖的機率。**本輪不處理、不建議任何做法**，
+  記錄供 Owner 另行判斷（維持現狀 vs 換有官方授權付費資料源），已明確標記
+  為與本地圖 Destination 正交、不進地圖任何票追蹤。其他發現：`vercel.json`
+  的 `maxDuration: 60` 是自設值非平台上限（Hobby 官方預設／上限即 300 秒，
+  推翻 CLAUDE.md 舊記載）；Hobby「非商業個人用途」限制依官方定義本產品不算
+  商業使用（不收費不放廣告），現在維持免費方案無虞；WAF Rate Limiting
+  Hobby 免費可用（1 條規則）；`pg_cron` on Neon Free 因 autosuspend 不能關
+  形同虛設；Runtime Logs Hobby 只留 1 小時（本站既有 Diagnostics／
+  `/api/ops/metrics` 已獨立解決）；**未來擴充一節明確結論現在不建議搬平台**
+  ——Neon storage 與 Cboe 429 是真正的兩道牆，換去 Fly.io／Render 這類常駐
+  主機不會讓兩道牆變寬，只會多出自營維運複雜度（引 Choose Boring
+  Technology／YAGNI）。
+- **#275** `anonymous-identity-session-patterns.md`（410 行）——cookie 形狀
+  建議傾向隨機無意義 id＋伺服器查表（唯一能立即單方作廢的形狀，本站 8 張
+  表早就在查 owner，成本幾乎零，優於簽章 token／JWT）；三個瀏覽器安全屬性
+  在同源 SPA 架構下零實務阻力；Chrome 400 天 `Max-Age` 上限需要續命機制；
+  Vercel production 與各分支 preview 是不同 host（公開頂級域名清單），
+  cookie 天生互不污染；**cookie 被偷的影響半徑已涵蓋使用者自訂第三方
+  provider token**（`owner_credentials`）；`identity_resolver()` 是無參數
+  callable、27 處直接呼叫，換裝 cookie **低破壞性**（沿用既有
+  `correlation_scope()`／`owner_scope()` ContextVar 慣例，型別不必變）。
+  **Admin 一節**（Owner 追加範圍）：一旦疊上 Admin，cookie 被偷的嚴重程度
+  跳級（賭注從「一人劇本」變「全站數據或後台控制權」）；建議 Admin 用
+  **獨立專屬 secret**（比照本站已用兩次的 `CRON_SECRET`／`OPS_SECRET`
+  慣例）而非共用一般 cookie 多一個 role，理由是攻擊面徹底分離、改動量
+  最小；Admin 判斷應集中一處，不得散落各 endpoint 自行判斷魔術字串。附
+  10 題 OD 白話選項（含要不要 recovery code、Admin 能否查看他人資料、
+  Admin Dashboard 第一版範圍）供未來 #282 引用。
+- **#276** `anonymous-data-retention-patterns.md`（822 行）——30 天其實是
+  業界最常見的單一數字（Firebase／Supabase／StackBlitz 各自獨立落在這個
+  值），完整範圍從幾小時到 14 個月都有真實案例，**未替 Owner 定天數**；
+  三段式（軟過期→緩衝期→硬刪除）是主流，連 Vercel 自己的部署清理都這樣
+  做；緩衝期不是免費的（GCS／Neon 對可還原資料照全額計費）；PostgreSQL
+  官方明文警告不要用 `ctid` 做批次刪除識別鍵；Neon 把 Storage 與 History
+  （WAL）分開計費，刪列不會馬上反映省錢；**`pg_cron` 在 Neon scale-to-zero
+  時會靜默不觸發、不報錯**（比 Vercel 60 秒上限更危險，無痕跡）；Vercel
+  Cron Hobby 每天只能一次。**真正的硬缺口（比訂多少天更急迫）**：本站
+  完全沒有「刪掉一個 owner 全部資料」的操作（`delete_scenario()` 只清單一
+  劇本、漏 `narrow_history`；`owner_settings`／`owner_credentials`／
+  `owner_verifications`／`diagnostics` 零清理路徑），且 `owner_credentials`
+  存第三方 token，閒置 owner 的 token 永遠有效留在 DB 是安全曝險，
+  **建議獨立於一般 retention 裁示、優先處理**（文件 OD-R4）。附 7 題
+  OD-R1～R7（含 controlled beta 的 synthetic 資料建議現在就加標記欄位
+  方便事後整批清空）供未來 #283 引用。
+- **#277** `anonymous-abuse-rate-limit-patterns.md`（1,323 行）——
+  cookie-only 業界一致認為不夠但非沒用：IP／裝置指紋完全無法表達「這個
+  帳號已有幾個劇本」這種帳號形狀的額度，cookie／owner-id 是唯一能算的
+  鍵；IP 限流有 RFC 6598 明文記載的誤傷（企業共用 NAT），但 Vercel 的
+  `x-forwarded-for` 有防偽造覆寫、可信；裝置指紋有結構性軍備競賽（瀏覽器
+  廠商主動削弱指紋穩定性），但 Vercel 免費提供 JA3/JA4 TLS fingerprint
+  可用；**本站已在 production 跑過兩次「純 Postgres 無 Redis」計數器模式**
+  （`chain_backoff.py`／`metrics.py`），且正是 Neon 官方限流指南推薦模式，
+  新增 per-owner 額度是第三次套用已驗證模式非新技術；既有 Cboe 429 倒數／
+  鎖定重試鈕欄位形狀可直接複用給新 429。**Admin 一節結構性發現**：Cboe
+  circuit breaker 刻意 provider-global（SCALE-04，防換 symbol 繞過）——
+  admin／synthetic 壓測流量若真的打 Cboe，**架構上無法被排除在全站封鎖窗
+  之外**；Stripe 官方文件本身建議不要拿 sandbox 做壓測（限流反而更嚴），
+  建議 controlled beta 壓測走本站既有 DI 注入點（`fetch=`／`rate_loader=`
+  ／`dividend_loader=`）用 mock vendor，完全避開真實 Cboe 額度消耗；另
+  標出既有 Refresh Run Continuation 迴圈若未特別處理，撞到新 per-owner
+  429 可能自我造成 retry storm。附 12 題 OD（**明確分成 6 題「第一天就
+  該有」／6 題「看到 abuse 再做」**，第一天優先項標出「Refresh Trigger
+  加最短間隔判斷」成本最低槓桿最高）供未來 #284 引用。
+
+**地圖 #272 已同步更新**：Decisions so far 新增四筆；已知事實擴充至 15 條
+（含上述結構性發現）＋一段獨立記錄 Cboe／Yahoo vendor terms 風險（明確
+標記與本地圖 Destination 正交、不由本地圖任何票處理）；Owner 已定案新增
+四項（controlled beta 分階段、成本原則、Admin 正式需求、production
+protection 不開）；Research frontier 收斂為剩下 #274／#278／#279／#280
+四張；Grilling frontier 的 blocking 現況更新（#284 只剩 #281、#287 只剩
+#280，其餘不變）；Implementation frontier 新增 I9（Admin 專屬 secret）
+並在 I2／I3／I4／I5 補上研究給的具體技術建議；已附提醒：**#282／#284 的
+GitHub body 尚未同步 Admin 維度，下一次 work 這兩張票前先讀對應研究檔案**
+（依 Owner 指示本輪不進入 #282～#289，故意保留原樣未動）。
+
+**下一步（等 Owner）**：(1) 剩下四張 research（#274／#278／#279／#280）
+仍待 Owner 放行以 `/research`（**sonnet**）起跑；(2) Owner 勾 #281（已依
+裁示移除 Deployment Protection 那題，剩七題）；(3) 全部 research／task 到位
+後用 `/wayfinder 272` 一次一張走 grilling 票（#282 起，記得先補 Admin 維度
+再問）；(4) #289 定案 → `/to-spec`。**OD-3（Owner 自己在正式站上的舊劇本
+怎麼處理）仍未定案**，已知方向是「認領進正式 Admin 身份」，具體機制留給
+#282。**另有一項與本地圖無關、但需要 Owner 另行判斷的風險**：Cboe／Yahoo
+vendor terms 明文禁止本產品現行的自動抓取方式，此為既有狀態非本輪新增，
+本地圖不處理，需 Owner 自行決定要不要另開處理。
 
 ### 施工依據
 
