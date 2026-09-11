@@ -7869,9 +7869,16 @@ violation，一項 judgement call——`scenario-row-${id}` 這段 DOM id
 既有慣例可比對，但比照 `fetchCache.ts`／`route.ts`／`family.ts`
 「共用邏輯抽出來」的一貫習慣值得套用——已抽成
 `scenarios.ts::scenarioRowDomId()`，三處呼叫端改用它；`.compact-
-card-tap` 這個 CSS class 選擇器經審查明確判斷不需要抽（兩處元件本就
-刻意獨立、不共用渲染路徑，只用兩次的 selector 常數換不到實質風險
-下降），維持原樣。
+card-tap` 這個 CSS class 選擇器經審查判斷不需要抽，維持原樣。
+⚠ **這個判斷的理由在 OPTION-CURRENT-CLOSEOUT-003 的 code review 被
+訂正過**：當時寫的是「只用兩次」，但 A2 讓它變成三處，且新增的
+`App.tsx:353` 正是**跨元件**消費端——也就是 `scenarioRowDomId()` 當初
+被抽出來的那一種情境。維持不抽的理由因此改為：它是一個
+**querySelector 用的 CSS class 字串**，與 `scenarioRowDomId()` 那種
+「同一個 id 要由三方各自組出來、組錯就靜默失效」的情況不同——class 名
+寫在 CSS 裡是單一事實來源，前端三處只是引用它；真的打錯字時 A2 的
+`?.focus()` 會靜默不聚焦，但既有 e2e（`toBeFocused()`，手機＋桌面各
+一條）會立刻紅燈。
 
 測試：`App.test.tsx` 新增 3 條（手機／桌面成功後收合捲動聚焦、失敗
 不收合）、`scenarios.test.ts` 新增 1 條純函式測試；`smoke.spec.ts`／
@@ -7960,13 +7967,60 @@ Beta／anonymous-user architecture 開始**。本 session 依裁示不自行
 開始。
 
 **Closeout 驗證**：前端 `tsc --noEmit` 乾淨、Vitest **761 passed**、
-`vite build` 成功、Playwright e2e 全綠。後端**零檔案異動**
+`vite build` 成功、Playwright e2e **123 passed**（iPhone 75＋
+Desktop 48，含本輪新增的桌面幾何守門）。後端**零檔案異動**
 （`git diff origin/master...HEAD --name-only` 對 `option_chaser/`／
 `api_app/`／`tests/`／`contracts/`／`scripts/`／`api/` 零命中），
 因此 **SCALE-18／#269 結構上不可能被碰到**，本輪全程未觸碰。
-`/code-review`（Standards＋Spec 兩軸，narrow scope：只檢查本輪
+**`/code-review`（Standards＋Spec 兩軸，narrow scope：只檢查本輪
 A1／A2／research 的遺漏、矛盾文件與 regression，不重開產品設計
-問題）結果記錄於回報#074。
+問題）**：
+
+- **Spec 軸零缺漏、零 scope creep**，四項硬檢查逐一驗過並通過——
+  **未新增第四種 refresh trigger**（`create()` 仍止於既有
+  `runBatch([created.id])`，A2 只加了 `setShowCreateForm(false)`／
+  `setJustCreatedId()` 與一個純 DOM 的 effect，零新增網路呼叫，
+  六個既有 refresh 呼叫點一行未動）、**Long Call／Put 未受影響**
+  （`IvTrend.test.tsx` 逐字未改，倖存守門全在）、**後端零檔案
+  異動**、**雙 viewport 皆覆蓋**、**無任何被放寬或靜默刪除的斷言**。
+- **Standards 軸零 hard violation**，但抓到 Vertical 退場那一輪
+  （`5e4208c`）留下的一批**真死碼與矛盾文件**，本輪一併修掉
+  （commit 見下）：
+  1. `IvTrend.tsx` 的 `SPREAD_CHART_HEIGHT_DESKTOP`／
+     `SPREAD_CHART_HEIGHT_MOBILE` 兩個常數唯一消費端是已刪除的
+     `SpreadSummary.tsx`，全站零引用——刪除。
+  2. `IvTrendChart` 的 `seriesLabel` 參數唯一會覆寫它的呼叫端也是
+     `SpreadSummary.tsx`，剩下的呼叫端永遠傳同一個值——**這正好
+     牴觸同一輪自己訂下的「不留一個永遠傳同一個值的參數」規則**
+     （`CardSkeleton.isSingleLeg`／`TrendUnit` 兩個既有先例），
+     一併移除。
+  3. 六處註解仍把已刪除的 `./SpreadSummary` 或已刪除的
+     `metricCaption()` 寫成現存消費端（`IvTrend.tsx` ×3、
+     `IvHistory.tsx` ×3、`styles.css` ×1、`percentileCopy.test.ts`
+     ×2）——這與 A1（`d1c0096`）修的是同一類缺陷，A1 當時只修了
+     `IvHistory.tsx` 的檔頭，其餘漏掉，本輪補齊。
+  4. `IvHistory.tsx` 的 `InlineDiagnostics` docstring 說「export
+     給 `./IvTrend` 原樣複用」，與**同一個檔案的檔頭**明說
+     「`./IvTrend` 本身不需要再各自 import 一份」互相矛盾——修正
+     docstring。
+  5. `spread-package-valuation-verdict.md` 寫「沿用本 repo 既有
+     **四**級慣例」卻列了五項——訂正為「四級慣例，另增列
+     【repo 實證】一級」。
+  6. 上一節 A2 紀錄寫 `.compact-card-tap`「只用兩次」——A2 自己
+     讓它變成三處、且新增的那處是跨元件消費端。已就地訂正該段
+     並補上「維持不抽」的真正理由。
+- **兩項判斷為不修、記錄供覆核**：(a) `CHART_WIDTH`／`spanLabel`／
+  `IvTrendChart`／`IvTrendChartSeries` 四個 `export` 關鍵字目前沒有
+  檔案外消費端，但那既非矛盾也非 regression，縮小可見性屬重構、
+  不在 closeout 範圍；(b) `App.test.tsx` 三段近似的
+  `withRefreshRunBridge(...)` route 假體可抽成共用 helper
+  （repo 有 `routeTwoScenarios()` 先例），屬 judgement call，
+  merge 前夕動測試基礎設施的風險不成比例。
+- **一項 Spec 軸指出的覆蓋缺口已補**：Vertical 退場刪掉的桌面測試
+  「兩腿卡片並排、走勢圖落在卡片邊界內」刪得正確（兩腿路徑已不可
+  達），但它「圖真的畫在卡片內、寬度貼齊卡片」那一半在桌面沒有
+  單腿接班人（手機 `smoke.spec.ts` 的對應測試一直都在）。已於
+  `desktop.spec.ts` 新增一條等價的單腿幾何守門。
 
 ### 施工依據
 

@@ -61,9 +61,9 @@ describe("percentile 說明文字（PC-01／#199，2026-08-26 真機驗收後改
         // 需求方原文例句：「現在的 IV 比過去一年大約 87% 的有效歷史
         // 資料都高。」——同一個百分位（0.87）要能在句子裡看到 87 這個
         // 數字，且用「都高」這種直接比較句型，不再出現「百分位」這種
-        // 需要額外解釋的統計學名詞（旁邊既有的 `percentileCaption`／
-        // `metricCaption` 仍然顯示「第 87 百分位」，這句話負責把它
-        // 翻成白話，不是取代它）。
+        // 需要額外解釋的統計學名詞（旁邊既有的 `percentileCaption`
+        // 仍然顯示「第 87 百分位」，這句話負責把它翻成白話，不是
+        // 取代它）。
         expect(text).toContain("87%");
         expect(text).toMatch(/都高/);
         expect(text).not.toMatch(/百分位/);
@@ -95,7 +95,7 @@ describe("percentile 說明文字（PC-01／#199，2026-08-26 真機驗收後改
     expect(ivPercentileExplanation(SAMPLE_PERCENTILE)).toMatch(/過去一年/);
   });
 
-  it("數字換算跟旁邊既有 percentileCaption／metricCaption 顯示的百分位" +
+  it("數字換算跟旁邊既有 percentileCaption 顯示的百分位" +
      "一致——同樣用 Math.round(percentile*100)，不會出現兩個數字對不上" +
      "的情況（0.5 的邊界四捨五入方向也一致）", () => {
     expect(ivPercentileExplanation(0.874)).toContain("87%");

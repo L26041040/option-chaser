@@ -31,16 +31,13 @@ import { useIsDesktop } from "./useIsDesktop";
  *  縮放）。手機版高度明顯壓低（Firstrade 風格的瘦長折線圖，不是肥大的
  *  正方形圖表），桌面維持原本的高度不變——手機優先的瘦身不該連帶改動
  *  桌面既有外觀。`useIsDesktop`（跟 `App.tsx` 的 20/80 版面判斷同一個
- *  斷點）由呼叫端（`IvTrendCard`／`./SpreadSummary`）決定要哪一組高度，
+ *  斷點）由呼叫端（`IvTrendCard`）決定要哪一組高度，
  *  這裡的繪圖幾何本身不關心斷點，純粹照傳入的 `height` 畫圖。 */
 export const CHART_WIDTH = 300;
 export const LEG_CHART_HEIGHT_DESKTOP = 110;
 // 手機再瘦身一輪（需求方 2026-08-22 反饋：整張卡片仍然太高）：68 → 54，
 // 落在裁示範圍（約 50–56px）內。桌面常數不動。
 export const LEG_CHART_HEIGHT_MOBILE = 54;
-export const SPREAD_CHART_HEIGHT_DESKTOP = 130;
-// 同上，Spread Gap 圖落在裁示範圍（約 60–64px）內。
-export const SPREAD_CHART_HEIGHT_MOBILE = 62;
 
 /** spec #151 §6 逐字原文——固定文案，不是每張卡各自改寫一次。 */
 const IV_TREND_CAPTION =
@@ -54,8 +51,9 @@ const IV_TREND_CAPTION =
  *  使用者自己在腦中做「百分位＝多少比例」這一步轉換，並保留單日讀數
  *  會隨市場報價波動的提醒，避免被誤讀成系統算錯或「這張合約很貴」。
  *  演算法／裁窗／exact-contract 身份規則本身完全不受影響，純文字改寫。
- *  `./SpreadSummary`、`./IvHistory` 各自有語彙微調過的姊妹函式，三者
- *  事實一致、措辭各自貼合家族語言。 */
+ *  2026-09-09 Vertical「貴不貴」整塊退場後，`./SpreadSummary` 與
+ *  `./IvHistory` 的兩個姊妹函式（Spread IV Gap／Normalized Skew 語彙）
+ *  都已隨各自的消費端刪除，這裡是唯一倖存的一個。 */
 export function ivPercentileExplanation(percentile: number | null): string {
   if (percentile === null) return "目前沒有足夠的歷史觀測可以比較。";
   const pct = roundPercentile(percentile);
@@ -102,8 +100,9 @@ function delta4wCaption(leg: LegHistoricalIv): string {
 
 /** 這張合約實際涵蓋多長時間——掛牌不滿一年就照實際天數換算，不是永遠
  *  講「近 1 年」（story #5／#6：掛牌 3 週／5 個月／11 個月都要如實
- *  呈現，不是補齊或隱藏）。export 給 `./SpreadSummary`（SIG-03／#174）
- *  的涵蓋揭露小字複用同一套天數→文字換算，不重寫第二份。 */
+ *  呈現，不是補齊或隱藏）。原本 export 給 `./SpreadSummary`（SIG-03／
+ *  #174）複用，該檔已隨 2026-09-09 Vertical 退場刪除，現在只有本檔
+ *  自己的兩個呼叫端在用。 */
 export function spanLabel(days: number): string {
   if (days <= 0) return "";
   // 週／月的分界用天數本身（< 30 天），不是先湊出月數再看月數是否
@@ -190,15 +189,16 @@ export interface IvTrendChartSeries {
  * `raw` 全 `null`（`ivYAxisDomain` 回 `null`）時不畫任何東西——跟既有
  * `TrendChart` 同一種「沒有資料就不畫空框」的處置。
  *
- * `seriesLabel`：aria-label 裡「這是什麼量」的字眼——逐腿卡片講「市場
- * IV」，Spread Summary（SIG-03／#174）講「Spread IV Gap」，圖本身完全
- * 是同一份繪圖邏輯，只有這一個字串不同。
+ * aria-label 裡「這是什麼量」的字眼固定是「市場 IV」。原本有一個
+ * `seriesLabel` 參數讓 Spread Summary（SIG-03／#174）覆寫成「Spread IV
+ * Gap」，該檔已隨 2026-09-09 Vertical 退場刪除，唯一剩下的呼叫端永遠
+ * 傳同一個值——依同一輪訂下的「不留一個永遠傳同一個值的參數」規則
+ * （見 `CardSkeleton.isSingleLeg`／`TrendUnit` 兩個既有先例）一併移除。
  */
-export function IvTrendChart({ leg, width, height, seriesLabel = "市場 IV" }: {
+export function IvTrendChart({ leg, width, height }: {
   leg: IvTrendChartSeries;
   width: number;
   height: number;
-  seriesLabel?: string;
 }) {
   const dates = leg.points.map((p) => p.date);
   const raw = leg.points.map((p) => p.iv);
@@ -238,7 +238,7 @@ export function IvTrendChart({ leg, width, height, seriesLabel = "市場 IV" }: 
       className="iv-trend-chart"
       viewBox={`0 0 ${width} ${height}`}
       role="img"
-      aria-label={`${seriesLabel} 走勢，含移動平均與 Bollinger 帶，${spanText}，` +
+      aria-label={`市場 IV 走勢，含移動平均與 Bollinger 帶，${spanText}，` +
         "可用滑鼠移動、觸控拖曳或方向鍵瀏覽逐日數值"}
       {...interactionProps}
     >

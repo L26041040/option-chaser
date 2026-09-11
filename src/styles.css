@@ -2204,7 +2204,8 @@ body {
 }
 
 /* 手機「標籤＋現值」「百分位＋Δ4w」合併同列（`./IvTrend` 的
-   `IvTrendCard`、`./SpreadSummary`　共用）：桌面維持原本各自一行的
+   `IvTrendCard`；原本與 `./SpreadSummary` 共用，該檔已隨 2026-09-09
+   Vertical 退場刪除，現在是單一消費端）：桌面維持原本各自一行的
    JSX，不會渲染這兩個 class，因此不需要額外的桌面覆寫。 */
 .iv-compact-head {
   display: flex;

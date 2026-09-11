@@ -102,12 +102,12 @@ export function num(value: number | null | undefined, digits = 1): string {
   return `${(value * 100).toFixed(digits)}%`;
 }
 
-/** `percentile`（0–1 小數）換成畫面上的整數百分位——`percentileCaption`／
- *  `metricCaption`（既有、本輪不動）與下面三個「白話說明句」函式共用
- *  同一個換算，兩處讀到的數字才保證一致。刻意只給這輪新增的三個說明
- *  函式共用（code review 建議延伸到既有 caption 函式，但那三個屬於
- *  「不動任何 percentile 計算」的既有程式碼，本輪不觸碰），不是重構
- *  既有計算本身。 */
+/** `percentile`（0–1 小數）換成畫面上的整數百分位。原本由三個「白話
+ *  說明句」函式共用，2026-09-09 Vertical 退場後只剩 `./IvTrend` 的
+ *  `ivPercentileExplanation()` 一個消費端；它與同檔私有的
+ *  `percentileCaption()` 必須讀到同一個數字，換算因此仍只有這一份。
+ *  （`metricCaption()` 是 Normalized Skew 家族的既有 caption，已隨該
+ *  家族一併刪除。）刻意不重構既有 percentile 計算本身。 */
 export function roundPercentile(percentile: number): number {
   return Math.round(percentile * 100);
 }
@@ -259,8 +259,9 @@ export function ChartTooltip({ point, value, width, height }: {
  * sanitize 過的字串，這裡只做格式化與呈現，不判斷「這個欄位該不該
  * 顯示」——`context` 裡沒有的 key 本來就不會出現在這裡（DG-02 的
  * redaction 在產生時就把 `None` 拿掉了），天然滿足「只顯示實際存在的
- * 欄位」，不需要前端另外過濾。export 給 `./IvTrend` 原樣複用
- * （HIVT-05／#156，spec #151 §6 明文要求）。
+ * 欄位」，不需要前端另外過濾。掛在「整張卡片」這個版位上（見檔頭
+ * 「共用建置塊」段落：`./IvTrend` 不需要各自 import 一份），目前的
+ * 消費端都在本檔內部。
  */
 export function InlineDiagnostics({ correlationId, events, message, variant }: {
   correlationId: string | null;
@@ -487,8 +488,9 @@ export default function IvHistory({ scenarioId, candidate, analyzedAt = null }: 
   // 從這裡開始卡片本身固定存在——loading／error／有資料（含「資料是空
   // 的」）三種狀態都在同一個版位裡切換，不再因為請求還沒回來就整塊
   // 消失（QA 反饋，2026-08-16：避免 late layout shift）。「無資料」不是
-  // 獨立分支：`count === 0` 由既有 `metricCaption()` 逐項顯示「沒有歷史
-  // 資料」，資料物件本身照常存在、卡片照常渲染。
+  // 獨立分支：percentile 為 null 時由 `./IvTrend` 的
+  // `percentileCaption()` 顯示「百分位：沒有歷史資料」，資料物件本身
+  // 照常存在、卡片照常渲染。
   // 只信任屬於「這個候選」的資料——`dataKey` 跟目前的 `key` 對得上才
   // 拿來畫，避免切換候選時畫面短暫誤用上一個候選留下來的舊資料。這個
   // 判斷跟下面「有 cache 就不整塊顯示錯誤」防的是兩件不同的事：這裡防

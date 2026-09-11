@@ -352,6 +352,12 @@ export default function App() {
       // 另外做一個不可見的聚焦目標。
       el.querySelector<HTMLAnchorElement>(".compact-card-tap")?.focus();
     }
+    // 找不到就靜默跳過、不重試——`create()` 是在同一批 setState 裡同時
+    // 設好 `rows` 與 `justCreatedId` 的（React 18 automatic batching），
+    // effect 跑到這裡時那一列必定已經渲染完成，所以「找不到」只可能是
+    // DOM id 或 class 名被改壞，那屬於既有 e2e（`toBeInViewport()`／
+    // `toBeFocused()`，手機＋桌面各一條）該抓的回歸，不是這裡該用重試
+    // 掩蓋的執行期狀況。
     setJustCreatedId(null);
   }, [justCreatedId]);
 

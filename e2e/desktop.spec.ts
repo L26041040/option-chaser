@@ -340,6 +340,38 @@ test("桌面版：Inline Diagnostics 的 Copy 按鈕——版面順序、複製�
 /* ---------- HIVT-07（#158）桌面 viewport 對等補齊：smoke.spec.ts 已有
    對應的手機版斷言，這裡補桌面版，兩邊各自獨立驗證同一批事實。 ---------- */
 
+test("桌面版 Historical IV：單腿走勢圖真的畫在卡片內、寬度貼齊卡片" +
+  "（OPTION-CURRENT-CLOSEOUT-003：Vertical 退場刪掉的兩腿並排測試，" +
+  "其『圖落在卡片邊界內』那一半在桌面沒有單腿接班人；手機版 " +
+  "smoke.spec.ts 的對應測試一直都在，這裡把桌面補齊）",
+  async ({ page }) => {
+  // 單腿候選＋開啟 Historical IV，與同檔既有 IV 測試同一套設定——
+  // 兩腿候選結構上不渲染這塊，用錯樣本會變成在測「卡片不存在」。
+  await routeTwoScenarios(page, sampleLongCall);
+  await page.route("**/api/settings", (route) =>
+    route.fulfill({ json: { historical_iv_enabled: true } }));
+  await page.route("**/api/scenarios/*/iv-history*", (route) =>
+    route.fulfill({ json: fullIvResponse() }));
+  await page.goto("/#/s/s1");
+
+  const block = page.locator(".iv-history");
+  await expect(block).toBeVisible();
+
+  // 幾何驗證，不是文字存在性或 isVisible()（QA-FIX-1／QA-FIX-4 教訓）。
+  const chart = block.locator(".iv-trend-chart").first();
+  await expect(chart).toBeVisible();
+  const chartBox = (await chart.boundingBox())!;
+  const cardBox = (await block.boundingBox())!;
+  expect(chartBox.width).toBeGreaterThan(cardBox.width * 0.8);
+  expect(chartBox.x).toBeGreaterThanOrEqual(cardBox.x - 1);
+  expect(chartBox.x + chartBox.width).toBeLessThanOrEqual(cardBox.x + cardBox.width + 1);
+  // 有實際高度可畫路徑——不是塌成一條線。
+  expect(chartBox.height).toBeGreaterThan(30);
+
+  // 2026-09-09 Owner 裁示：兩腿以上候選整塊不渲染，所以只會有一張圖。
+  await expect(block.locator(".iv-trend-chart")).toHaveCount(1);
+});
+
 test("桌面版 Historical IV：z-score／moving average／Bollinger 帶三項統計量在頁面上" +
      "真的可見（geometry／caption 斷言），寬版面下線段一樣量得出實際寬高" +
      "（HIVT-07／#158，story #8／#9／#10／#11／#12）",
