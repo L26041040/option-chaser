@@ -27,7 +27,7 @@ block 裡，不能切成好幾個 code block、也不能中間插普通文字把
 `［回報#001］spec #137 拆票完成`）。編號是**累計總數**，不因換
 session、換分支、換主題而歸零——目前最新編號記在這裡：
 
-> 目前次序：077（下一份回報用 078）
+> 目前次序：078（下一份回報用 079）
 
 每發一份回報就把上面這個數字改成剛剛用掉的那個，跟著那次改動一起
 commit（沒有其他改動要 commit 時，單獨為這一行開一個小 commit 也
@@ -8316,6 +8316,74 @@ implementation（`option_chaser/`／`api_app/`／`src/` 零改動，`git diff`
 資料源合規風險——本輪已完成研究（`#290`），**是否要真的換源、開一輪
 獨立處理，是一個全新、目前沒有任何票追蹤的 Owner 決策**，不在本地圖
 既有七塊任何一塊的範圍內，需要 Owner 明確指示才會再往下動。
+
+### OPTION-PUBLIC-BETA-GRILL-004——Final Owner Decision Packet（2026-09-12，
+回報#078；只出問題包，Owner 尚未回答任何一題，未施工、未 spec、未拆票）
+
+Owner 指令：Research 階段正式完成後，用 `/grill-with-docs` 把 Anonymous
+Public Beta 進 `/to-spec` 前**所有真正需要 Owner 親自拍板的決策**一次整理成
+完整問題包；不施工、不重新 research、不建 spec、不進 `/to-tickets`；#281
+不視為 Owner 前置作業，能自查的一律自查；只問 Owner Decision、合併重複題、
+安全／法規唯一合理答案直接列硬限制；理想 8～12 題。`/grill-with-docs`
+本身標 `disable-model-invocation`，本輪改直接載入它指向的 `/grilling`＋
+`/domain-modeling`，並依 Owner 明文要求採「一次整包」而非一次一題。
+
+**產出**：`docs/wayfinder/public-beta-owner-decision-packet.md`（全文與
+回報#078 同內容，檔頭明標「全部 OD 尚未回答、Fable 建議不是 Owner
+Decision」）。**9 題 OD**：OD-1 cookie 掉了資料命運（接受／救命碼／email）、
+OD-2 Owner 舊 solo 劇本（認領／放掉／凍結）、OD-3 匿名者第三方 token 與
+Historical IV 開放程度、OD-4 匿名 owner 壽命形狀＋天數＋快照是否隨 owner
+刪（OD-06 重新確認）＋自助刪光鈕、OD-5 額度起手數字（劇本上限／刷新最短
+間隔／全站 vendor 預算）＋「開站節流不是第四個 Refresh Trigger」請點頭、
+OD-6 Admin 第一版權限邊界＋通知管道、OD-7 陌生人首次進站說明／隱私頁／
+回報入口、OD-8 Release line（controlled 找誰、public 怎麼公開、CI 硬閘改
+習慣）、OD-9 市場資料源換不換＋何時＋每月預算＋CSV 匯出衝突。**14 條硬
+限制**（H1 cookie 形狀＝隨機 id＋查表＋全屬性拉滿＋續命；H3 Admin＝獨立
+第三把 secret＋集中判斷點；H4 Admin 不繞過限流、壓測預設 mock vendor；
+H5 owner 級刪除原語先於一切；H6 清理走 Vercel Cron 不用 pg_cron；H7 頁尾
+一行；H8 Beta 無 Analytics／廣告；H9 CI＝Actions＋branch protection＋
+health smoke＋Sentry；H10 security-review pre-PR＋兩次 pre-release；
+H11 市場資料語意修正版——延遲資料不收即時 subscriber 類逐人費，但 external
+redistribution 仍需 vendor／redistribution licensing，Intrinio Silver 優勢
+來自其 Business Display licensing arrangement；H12 平台不搬；H13／H14 既有
+裁示與封印不動）。Fable 推薦組合：OD-1 A／OD-2 A／OD-3 A／OD-4 A（30＋7
+天）／OD-5 B→A／OD-6 A＋email／OD-7 A／OD-8 A／OD-9 C（≤ US$300/月）。
+
+**#281 七題本輪全部自查完畢（Task 票可直接 close，#283／#284／#285 的
+唯一 blocker 解除）**：Vercel 方案＝**Hobby**（Vercel MCP `list_teams`
+這次讀得到帳號層級 `plan: hobby`；專案層級 `get_project`／
+`list_deployments` 仍 404／403，沿用既有「已知工具整合缺陷」記載）；
+Fluid Compute UNVERIFIED 但作廢（Scaling Foundation 已裁不得當 correctness
+dependency）；Vercel 用量差數個數量級；Cron 是否每日生效 UNVERIFIED
+（`/api/health` rate `fetched_at 2026-09-11T14:37Z` 晚於排程 11:00Z，外部
+分不出成因，既有同步 refresh-on-miss 保底會補，不擋決策）；Neon＝Free
+（Marketplace）、storage 推估個位數 MB；`pg_cron` 作廢；正式站 4 個
+active 劇本（TLT 2028-12／ORCL 2028-01／TSLA 2028-12／NVDA 2028-12）、
+0 垃圾桶、結果列 19；`owner_credentials` 有 Market Data App token 一把
+（status ok，2026-08-12）。
+
+**本輪不帶身份實測到的現況暴露**（地圖已知事實 #1 的活證據）：
+`GET /api/scenarios`／`/api/settings`／`/api/diagnostics` 對陌生人皆 200；
+`DELETE /api/diagnostics`、`DELETE /api/settings/credentials/{provider}`、
+`DELETE /api/scenarios/{id}`（封存後）皆不驗身份——任何知道網址的人今天
+就能清掉 Owner 的診斷與 token 紀錄。
+
+**Release line（照推薦走）**：Line 1 Controlled Beta 前＝I2 cookie→I9
+Admin secret＋I3 認領→H5 刪除原語＋synthetic 標記→I4 額度三件套→OD-3 A
+隱藏 token→H7 頁尾＋首頁 Beta 說明→I1 CI＋branch protection＋smoke→
+edge WAF 1 條→mock-vendor 壓測 harness→security-review #1；Line 2 Public
+Beta 前＝I5 清理 cron→I6 Sentry／每日摘要／兩條告警／DB 趨勢→隱私頁＋
+回報入口→OD-9 換源＋CSV 處置→放寬額度→security-review #2→只給連結。
+測試接縫沿用既有七個、零新增。
+
+**下一步（等 Owner）**：Owner 回 9 題（字母＋改數字即可）→ 老弟把答案
+逐票貼進 #282～#288 resolution comment 並 close、#289 寫 Release Gate
+定稿、#281 close、地圖 #272 Destination 標記達成、CONTEXT.md 新增詞條
+（Anonymous Owner／Browser Identity／Admin Identity／Abandoned Owner／
+Grace Period／Hard Delete／Quota／Global Fuse／Controlled Beta／Public
+Beta／Release Gate）→ 才進 `/to-spec`。三項 UNVERIFIED（Intrinio 月費、
+Databento 問卷、cron 生效）不擋 spec，只擋 OD-9 最終選 vendor。本輪未動
+GitHub 任何票（#281～#289 原樣保留），未觸碰 #269。
 
 ### 施工依據
 
