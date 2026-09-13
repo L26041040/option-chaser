@@ -198,6 +198,89 @@ iv-history 請求裡：先立即回傳既有歷史把圖畫出來，補建由第
 
 ---
 
+## Anonymous Public Beta（匿名身份與公開測試，2026-09-13 Owner 裁示，
+spec OPTION-PUBLIC-BETA-SPEC-005）
+
+**Anonymous Owner（匿名擁有者）** — 沒有登入任何帳號、單純由瀏覽器
+一顆 cookie 識別出來的 owner。與既有 Ownership A-1 的 `owner_id`
+概念是同一個型別、同一套 storage 層 fail-closed 過濾，差別只在
+`identity_resolver()` 現在讀 cookie 而非永遠回傳固定 `"solo"`。
+
+**Browser Identity（瀏覽器身份）** — 那顆識別匿名擁有者的 cookie
+本身：**隨機無意義 id＋伺服器端查表**（不是帶簽章的 token——這樣
+才能被伺服器單方立即作廢）。`HttpOnly`／`Secure`／`SameSite`（技術
+條件允許時採 `__Host-` 前綴）；長效期，每次來訪續命。清掉 cookie、
+換瀏覽器、或用無痕結束＝這個匿名擁有者的資料永久找不回來（Owner
+Decision，Beta 階段接受，不做找回碼／email／帳號系統）——但 owner
+identity 的 schema 設計本身不得阻礙未來加上這類機制。
+
+**Admin／Superuser Identity（管理者身份）** — 與 Anonymous Owner
+完全獨立的信任邊界：由一把獨立的 secret（沿用既有 `CRON_SECRET`／
+`OPS_SECRET` 先例）辨識，**不是**匿名 cookie 上加的一個 role，也
+不是舊有 `"solo"` 復活。Admin 使用產品本身（建立自己的劇本等）時，
+走的是自己一份**正常的** owner identity——只是這個 owner 記錄被
+標記為結構性豁免 Abandoned Owner 生命週期政策。Owner 既有的 `solo`
+資料一次性遷移到這個身份後，`solo` 這個特殊值退出正常產品語意。
+第一版 Admin 的 operational capability 限於：匿名 owner 數／
+scenario 數／vendor usage／429／DB 成長／cleanup volume 等統計，
+**明確不含**任意瀏覽個別使用者資料、impersonate、刪除他人資料、
+查看他人第三方 secrets。
+
+**Abandoned Owner（閒置擁有者）** — 匿名擁有者連續 **30 天**沒有
+任何**真人明確操作**（建立／編輯／手動刷新／封存等主動動作；純粹
+因為使用者剛好開著瀏覽器觸發的既有「開站自動刷新」**不算**）。
+天數必須 config 化，不得寫死常數。
+
+**Grace Period（緩衝期）** — 進入 Abandoned Owner 狀態後的 **7 天**
+緩衝——這段期間內使用者只要回來做一次明確操作即完全解除倒數，
+過了緩衝期才真正 Hard Delete。天數同樣必須 config 化。
+
+**Hard Delete（永久清除）** — 對一個匿名擁有者執行的 **owner-wide
+deletion primitive**：必須完整處理 `scenarios`／`results`／
+`snapshots`／`events`／`current_results`（既有 5 張，但要接上真正
+owner-wide 呼叫）＋`narrow_history`（既有 `delete_scenario()` 遺漏
+的孤兒表）＋`diagnostics`／`owner_settings`／`owner_credentials`／
+`owner_verifications`。**Shared market facts 不跟著任何 owner 刪**
+——`rate_cache`／`treasury_year_cache`／`dividend_cache`／
+`chain_backoff`／`operational_metrics`／`contract_iv_history`／
+`iv_observations`／`iv_backfill_runs` 這些 system-wide 表與單一
+owner 無關，是既有 Ownership A-1（SCALE-06/11）分類的直接延伸，
+不新增例外。使用者也能自助觸發（「立刻刪除我的資料」入口），
+跳過緩衝期立即執行。
+
+**Quota（額度）** — 每個匿名擁有者的用量上限：最多 10 個 active
+scenario（垃圾桶內不計入）、同一 scenario 30 分鐘內不重新取得
+fresh chain（既有 **Refresh Trigger** 三時機之一的**節流閘門，不是
+第四種觸發時機**）。這是 Controlled Beta 的**起始值**，非永久規格，
+必須 config 化、依實際數據調整。
+
+**Global Fuse（全站保險絲）** — 全站每日 vendor 呼叫量的軟性上限，
+沿用既有 `chain_backoff`（provider-global 429 backoff）與
+`operational_metrics` 機制延伸；觸發時全站進入既有 Backoff
+Countdown 那一套「只給舊資料＋倒數」降級模式，**優先 graceful
+degradation，不回 500**。
+
+**Controlled Beta（受控測試）** — Public Beta 前的階段：真人 UX
+validation 之外，主要靠 synthetic load test（走既有 DI 注入點
+`fetch=`／`rate_loader=`／`dividend_loader=`，mock 掉真實 vendor，
+不得規避 vendor rate limit 或偵測）驗證 Scenario 建立／刷新／DB
+成長／額度觸發等行為。**用 Exit Criteria 判斷是否可進 Public
+Beta**（ownership isolation／quota 與 fuse 確實被測到／graceful
+degradation／cleanup lifecycle 可驗證／CI 正常／storage 成長可
+接受／無 sustained critical incident／真人可完成核心流程），
+**不是固定觀察兩週這種時間門檻**。
+
+**Public Beta（公開測試）** — 分兩階段：第一階段只把連結交給外部
+使用者、不主動大規模社群曝光；第二階段是否進一步公開推廣，依第一
+階段實際數據另行決定，本輪不預先設定觸發條件。
+
+**Release Gate（發布關卡）** — 判準固定為四類硬 blocker：資料
+外洩／成本失控／網站不可用／使用者基本無法理解產品。只有真的會
+造成這四類之一的事才排進 Public Beta 前必做，其餘一律排入之後——
+不得把 nice-to-have 偷偷升格成 blocker。
+
+---
+
 ## 資料源
 
 **Cboe** — 延遲報價，chain 的主資料源。盤外報價凍結而非歸零。

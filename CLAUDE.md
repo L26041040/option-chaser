@@ -27,7 +27,7 @@ block 裡，不能切成好幾個 code block、也不能中間插普通文字把
 `［回報#001］spec #137 拆票完成`）。編號是**累計總數**，不因換
 session、換分支、換主題而歸零——目前最新編號記在這裡：
 
-> 目前次序：078（下一份回報用 079）
+> 目前次序：079（下一份回報用 080）
 
 每發一份回報就把上面這個數字改成剛剛用掉的那個，跟著那次改動一起
 commit（沒有其他改動要 commit 時，單獨為這一行開一個小 commit 也
@@ -8384,6 +8384,116 @@ Grace Period／Hard Delete／Quota／Global Fuse／Controlled Beta／Public
 Beta／Release Gate）→ 才進 `/to-spec`。三項 UNVERIFIED（Intrinio 月費、
 Databento 問卷、cron 生效）不擋 spec，只擋 OD-9 最終選 vendor。本輪未動
 GitHub 任何票（#281～#289 原樣保留），未觸碰 #269。
+
+### OPTION-PUBLIC-BETA-SPEC-005——Anonymous Public Beta Canonical Spec
+（2026-09-13，`/to-spec`，回報#079；Wayfinder 收尾完成、spec 已發佈，
+仍未拆票、未施工）
+
+Owner 對 #078 決策包（回報#078）的 9 題 OD-1～OD-9 給出**最終裁示**
+（這是 Public Beta 專屬的裁示編號，**與 Scaling Foundation 既有的
+OD-01～OD-08 是兩套完全獨立的決策集合，不得混用或重新編號**），
+本輪依裁示逐一固化：
+
+**Wayfinder 收尾（依序完成）**：#281（Task）依既有自查事實 close；
+#282～#288（八張 grilling）逐一貼上對應 Owner Decision 的 resolution
+comment 後 close；#289（Release Gate）貼上四類 blocker 判準下的
+Line 1／Exit Criteria／Line 2／兩階段 Public Beta／Public Beta 後
+清單定稿後 close；地圖 #272 更新為 Destination 已達成、Decisions so
+far 補齊九筆、Not yet specified 清空、Out of scope 維持。CONTEXT.md
+新增「Anonymous Public Beta」一節（Anonymous Owner／Browser
+Identity／Admin／Superuser Identity／Abandoned Owner／Grace
+Period／Hard Delete／Quota／Global Fuse／Controlled Beta／Public
+Beta／Release Gate 十二個詞條）。
+
+**九題最終裁示要點**（完整內容見各 ticket resolution comment 與
+spec #291 對應章節）：
+- **OD-1（找回機制）選 A**：接受 cookie 清除/換瀏覽器/無痕結束後
+  資料無法找回，現在不做找回碼/email/帳號系統，但 schema 不得阻礙
+  未來新增。
+- **OD-2（Owner 舊 solo 資料）選 A**：一次性認領到 Admin 新身份，
+  不丟棄歷史、不建雙 ownership model，遷移完成後 solo 退出正常
+  產品語意。
+- **OD-3（匿名第三方 token）選 A**：Anonymous Owner 不提供自訂
+  provider token 功能，Historical IV 自訂路線結構性不可達；
+  Owner/Admin 自己的測試能力保留但與匿名產品面隔離。
+- **OD-4（Anonymous owner lifecycle）選 A**：真人明確操作才算
+  activity（開站自動 refresh 不算）；30 天無活動→soft-expired；
+  再 7 天→hard delete；owner-wide deletion primitive 必須完整
+  處理（含既有 `narrow_history` 孤兒缺口）；shared market facts
+  不跟著刪；Owner/Admin 資料結構性豁免；提供自助刪除入口；
+  OD-06（Scaling Foundation 既有「快照永久保留」裁示）**限
+  Anonymous Owner 範圍明確修訂**為隨 lifecycle 一起清。
+- **OD-5（Quota/Refresh）選 B 為 controlled-beta 起始值**：匿名
+  owner 最多 10 個 active scenario；同一 scenario 30 分鐘節流
+  （既有 Refresh Trigger 的節流閘門，非第四種觸發時機）；global
+  vendor fuse 必須存在；超額 graceful degradation 非 500；
+  controlled load test 走既有 DI 注入點 mock vendor，不得規避
+  真實 vendor 偵測。
+- **OD-6（Admin/Superuser）選 A + email notification**：獨立第三把
+  secret 邊界（比照 CRON_SECRET/OPS_SECRET），非匿名 cookie 的
+  role、非 solo；Admin 使用產品本身仍走自己正常的 owner identity；
+  第一版 operational capability 明確排除任意瀏覽/impersonate/刪除
+  他人資料/查看第三方 secrets；不做 HTML Dashboard，延伸既有
+  `/api/ops/metrics`+daily email digest+Sentry alert。
+- **OD-7（First-use/Privacy）選 A**：第一版中文即可；首頁 Beta
+  說明+頁尾一行+極簡隱私頁+刪除方法+回報入口；現在不做英文版/
+  consent banner/Analytics/廣告/CMP；必要 identity cookie 走
+  strictly-necessary。
+- **OD-8（Release Strategy）基本選 A 但修改**：Controlled Beta 用
+  synthetic load tests（mock vendor）+ 少量真人 UX validation；
+  **不寫死固定觀察天數，改用 8 項 Exit Criteria**；Public Beta
+  第一階段連結優先、不主動大規模社群曝光，第二階段依實際數據另
+  決定；CI 改採 branch→PR→required checks→Owner merge→deploy，
+  不再把直接 push master 當正常流程。
+- **OD-9（成本與 Market Data）——關鍵修正**：**前一輪 Fable 建議的
+  $300/月上限 Owner 從未同意，正式作廢**。核心原則＝**FREE-FIRST**
+  ——固定成本盡量維持 0，現在不因預期流量提前買 paid vendor/
+  Vercel Pro/Neon 付費層。Market Data 不列為 Public Beta blocker，
+  繼續免費來源優先；區分類型 A（non-commercial 條款，可能適用但
+  不得直接等同能用）與類型 B（明文禁止 automated scraping/
+  redistribution，Cboe 已逐字確認存在，須標示風險但 Owner 接受
+  Beta 階段承擔）；明確不做偽裝 UA/rotating IP/circumvent
+  blocking 等規避手段；provider abstraction 必須保留供未來換源；
+  CSV 匯出若未來被 license 逼迫可移除、保留 derived export。
+
+**Spec 已發佈——issue #291**（`ready-for-agent`），22 節齊全
+（Problem/Destination、Non-goals、Canonical domain model、
+Anonymous identity lifecycle、Owner migration、Admin identity/
+authorization boundary、Data lifecycle+deletion semantics、
+Quota/refresh/global fuse、Controlled-beta load-test architecture、
+Operations/observability、Privacy/first-use UX、CI/deployment
+workflow、Market-data FREE-FIRST policy、Failure/graceful
+degradation、Controlled Beta exit criteria、Public Beta Release
+Gate、Configuration surface、Migration/backfill requirements、
+Security requirements、Test strategy、Explicit deferred scope、
+Acceptance criteria）。全部 Owner 可調數字集中於 §17 Configuration
+surface（`ANONYMOUS_ABANDONED_AFTER_DAYS=30`／
+`ANONYMOUS_GRACE_PERIOD_DAYS=7`／
+`ANONYMOUS_MAX_ACTIVE_SCENARIOS=10`／
+`ANONYMOUS_REFRESH_MIN_INTERVAL_MINUTES=30`／`GLOBAL_VENDOR_DAILY_
+BUDGET`／`ADMIN_SECRET`／`ANONYMOUS_CLEANUP_BATCH_SIZE`／
+`ANONYMOUS_CLEANUP_CRON_SCHEDULE`）。**測試接縫沿用既有七個、零
+新增**（HTTP API／引擎純函式／Storage port 契約 memory+真
+Postgres／契約樣本 drift／選取身份守門／CLI golden fixtures／
+前端 Vitest+Playwright），本輪不涉及引擎計算變更
+（`ranking.py`/`filters.py`/`valuation.py` 逐位元不變為硬性
+Acceptance Criteria）。
+
+**未發現任何無法調和的矛盾**：Owner Decision 之間、與既有 Ownership
+A-1（SCALE-06/11）、與 Scaling Foundation 既有 OD-06（快照永久
+保留）之間的唯一交會點（匿名擁有者快照是否永久保留）已在 §7 明確
+記錄為「限 Anonymous Owner 範圍的修訂，Admin Owner 不受影響」，非
+默默覆蓋。
+
+**建議 `/to-tickets` 切法**（六段，風險遞增）：A 身份基礎（cookie
+middleware＋owner-scoping）→ B Owner 資料遷移（一次性 migration
+script）→ C owner-wide deletion primitive（含 narrow_history 缺口
+修補）→ D Quota／Fuse（節流閘門＋graceful degradation）→ E
+Cleanup 排程（Vercel Cron＋lifecycle 判斷）→ F Admin 邊界＋
+儀表板＋CI／Sentry／隱私 UX（可與 D／E 部分並行）。
+
+**READY_FOR_TICKETS。** 依 Owner 指示本輪不施工、不進 `/to-tickets`，
+等待下一輪指示。
 
 ### 施工依據
 
