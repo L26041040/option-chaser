@@ -27,7 +27,7 @@ block 裡，不能切成好幾個 code block、也不能中間插普通文字把
 `［回報#001］spec #137 拆票完成`）。編號是**累計總數**，不因換
 session、換分支、換主題而歸零——目前最新編號記在這裡：
 
-> 目前次序：079（下一份回報用 080）
+> 目前次序：080（下一份回報用 081）
 
 每發一份回報就把上面這個數字改成剛剛用掉的那個，跟著那次改動一起
 commit（沒有其他改動要 commit 時，單獨為這一行開一個小 commit 也
@@ -8410,9 +8410,12 @@ spec #291 對應章節）：
 - **OD-1（找回機制）選 A**：接受 cookie 清除/換瀏覽器/無痕結束後
   資料無法找回，現在不做找回碼/email/帳號系統，但 schema 不得阻礙
   未來新增。
-- **OD-2（Owner 舊 solo 資料）選 A**：一次性認領到 Admin 新身份，
-  不丟棄歷史、不建雙 ownership model，遷移完成後 solo 退出正常
-  產品語意。
+- **OD-2（Owner 舊 solo 資料）選 A**：一次性認領，不丟棄歷史、不建
+  雙 ownership model，遷移完成後 solo 退出正常產品語意。**⚠ 這條
+  原文「認領到 Admin 新身份」的措辭已於 2026-09-13
+  OPTION-PUBLIC-BETA-SPEC-REVIEW-006 修正——遷移目標是 Owner 自己
+  透過正常 Browser Identity（軸一）取得的 owner_id，不是由
+  `ADMIN_SECRET` 產生的另一種身份型態，詳見下方修正章節。**
 - **OD-3（匿名第三方 token）選 A**：Anonymous Owner 不提供自訂
   provider token 功能，Historical IV 自訂路線結構性不可達；
   Owner/Admin 自己的測試能力保留但與匿名產品面隔離。
@@ -8434,7 +8437,12 @@ spec #291 對應章節）：
   role、非 solo；Admin 使用產品本身仍走自己正常的 owner identity；
   第一版 operational capability 明確排除任意瀏覽/impersonate/刪除
   他人資料/查看第三方 secrets；不做 HTML Dashboard，延伸既有
-  `/api/ops/metrics`+daily email digest+Sentry alert。
+  `/api/ops/metrics`+daily email digest+Sentry alert。**⚠ 「獨立
+  第三把 secret 邊界」與「正常 owner identity」這兩句原意仍然
+  正確，但 v1 spec 曾把兩者寫成同一個機制（secret 建立一種
+  `owner_kind="admin"`）——這個耦合已於 2026-09-13
+  OPTION-PUBLIC-BETA-SPEC-REVIEW-006 修正為兩條正交軸，詳見下方
+  修正章節。**
 - **OD-7（First-use/Privacy）選 A**：第一版中文即可；首頁 Beta
   說明+頁尾一行+極簡隱私頁+刪除方法+回報入口；現在不做英文版/
   consent banner/Analytics/廣告/CMP；必要 identity cookie 走
@@ -8494,6 +8502,86 @@ Cleanup 排程（Vercel Cron＋lifecycle 判斷）→ F Admin 邊界＋
 
 **READY_FOR_TICKETS。** 依 Owner 指示本輪不施工、不進 `/to-tickets`，
 等待下一輪指示。
+
+### OPTION-PUBLIC-BETA-SPEC-REVIEW-006——Canonical Spec Final
+Correction（2026-09-13，只修正 spec #291 一致性、不重新
+research／grill／to-tickets／施工）
+
+Owner 對 spec #291（v1）指出兩處與最終裁示不符的耦合／過寬描述，
+指示只做「最後一次一致性修正」——不重開任何一題 OD-1～OD-9、不動
+#269、不增加 scope。已完成，spec #291 已就地更新（v2）。
+
+**FIX-1——Admin capability 與 Owner identity 必須正交**：v1 版把
+兩者寫成同一個機制（一個由 `ADMIN_SECRET` 建立的特殊
+`owner_kind="admin"`），與 Owner 最終裁示——「Owner 使用產品走正常
+Browser Identity → owner_id；`ADMIN_SECRET` 只授予額外
+operational/admin capability；不得用來解析、建立或決定產品
+owner_id；不得讓 admin authentication 取代 browser identity」——
+不符。**修正後的最終模型是兩條正交軸**：
+
+```
+軸一（所有人共用，含 Owner 自己）：
+  Browser Identity（cookie）→ Owner identity（owner_id）→ product data
+
+軸二（獨立於軸一）：
+  ADMIN_SECRET → Admin capability → protected operational endpoints
+```
+
+Owner 使用產品本身，走的是自己**透過軸一**取得的一個正常 owner_id
+——與任何訪客走完全相同的路徑，沒有第二種身份建立路徑、沒有
+`owner_kind` 這種由建立方式決定身份型態的欄位。Owner 既有的 `solo`
+資料一次性遷移到**這個透過軸一取得的 owner_id**（不是「由
+`ADMIN_SECRET` 產生的 owner」）。若要讓 Owner 資料豁免 anonymous
+cleanup，做法是一個**受 `ADMIN_SECRET` 保護的動作**，把這個既有
+owner_id 標記為 `protected`／exempt（一個布林／清單成員資格）——
+這只是設定既有身份上的一個 lifecycle 旗標，**不是**由 secret
+在請求當下生出一個新身份；標記的動作需要軸二的權限，標記的對象
+是軸一已經存在的 owner_id，兩件事分開。兩軸的判斷邏輯（「這個
+請求是不是 admin」vs「這個請求屬於哪個 owner」）是兩段獨立、不
+共用同一個判斷點的程式碼。修正涉及 spec §3／§5／§6／§7／§9／
+§18／§22（新增 AC13：有測試證明 `ADMIN_SECRET` 存在與否不影響
+`identity_resolver()` 解析出的 owner_id）。
+
+**FIX-2——不得對所有 request 自動建立 Anonymous Owner**：v1 版
+「任何沒有 cookie 的 request 都建立 owner」過寬，會讓 bot／uptime
+監控／cron 自動觸發洗出大量永遠不會再用到的 Abandoned Owner。
+**改為 lazy creation**——只有請求真正進入需要 owner-scoped
+product state 的 user-facing flow（例如讀寫 scenario／settings／
+diagnostics 等既有 owner-scoped 端點）時，若沒有帶合法既有
+cookie，middleware 才建立新 owner＋簽發新 cookie。明確排除清單：
+`GET /api/health`、cron endpoints（`CRON_SECRET` 保護）、ops／admin
+endpoints（`ADMIN_SECRET` 保護）、靜態資源、公開／系統層級中繼
+資料、監控探測（UptimeRobot／Sentry 之類）、其他不需要 user
+ownership 的請求。「這個 endpoint 需不需要 owner」的判斷集中在
+一處（例如 middleware 的路由分類白名單），不得散落各處各自判斷。
+修正涉及 spec §4（新增 AC14：有測試證明明列端點類型在缺少 cookie
+時不建立新 owner）。
+
+**Final audit（依 Owner 要求逐項核對，全數通過）**：
+- ✅ spec 全文（22 節）無任何地方把 `ADMIN_SECRET` 當 owner
+  identity resolver——逐節搜尋「`ADMIN_SECRET`」出現處，全部只
+  連到 operational endpoint 保護與 protected 旗標的設定動作，
+  無一處用來解析／建立／決定 owner_id。
+- ✅ 無任何地方要求所有 request 都建立 owner——§4 明文列出七類
+  排除。
+- ✅ FREE-FIRST（OD-9，§13）逐字未動。
+- ✅ OD-1、OD-4、OD-5、OD-7、OD-8、OD-9 內容未變；OD-2／OD-3／
+  OD-6 只有措辭層修正（遷移目標、Admin 邊界描述），Owner 原始
+  選項（皆選 A）與決策方向本身不變。
+- ✅ #269／SCALE-18 全程未提及、未觸碰，Non-goals（§2）沿用 v1
+  原文。
+- ✅ 未增加新 scope——§2 Non-goals 新增一句是**禁止項**（不建立
+  第二種 owner 身份建立路徑），是收斂而非擴張；其餘全部修正皆為
+  既有章節內的表述訂正，無新增功能面向、無新增 Owner Decision。
+
+同步修正 `CONTEXT.md`「Anonymous Public Beta」一節的
+「Admin／Superuser Identity」條目（改寫為「Admin Capability」條目，
+明文區分軸一／軸二）與「Browser Identity」條目（補上 lazy-creation
+說明）；本節上方 OD-2／OD-6 兩處摘要已加註指向本節的修正說明。
+
+**無殘留 contradiction。READY_FOR_TICKETS（v2）。** 依 Owner 明確
+指示：完成後停止，不重新 research、不重新 grill、不進
+`/to-tickets`、不施工。
 
 ### 施工依據
 

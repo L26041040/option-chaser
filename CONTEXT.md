@@ -212,19 +212,36 @@ spec OPTION-PUBLIC-BETA-SPEC-005）
 條件允許時採 `__Host-` 前綴）；長效期，每次來訪續命。清掉 cookie、
 換瀏覽器、或用無痕結束＝這個匿名擁有者的資料永久找不回來（Owner
 Decision，Beta 階段接受，不做找回碼／email／帳號系統）——但 owner
-identity 的 schema 設計本身不得阻礙未來加上這類機制。
+identity 的 schema 設計本身不得阻礙未來加上這類機制。**建立時機是
+惰性的（lazy creation）**——不是任何沒帶 cookie 的請求都會建立新
+owner，只有真正進入需要 owner-scoped product state 的
+user-facing flow 才建立；`/api/health`／cron／ops-admin 端點／
+靜態資源／監控探測（uptime／Sentry 之類）等不得因缺 cookie 觸發
+建立，避免 bot／排程流量洗出大量永遠不會再用到的 Abandoned Owner。
 
-**Admin／Superuser Identity（管理者身份）** — 與 Anonymous Owner
-完全獨立的信任邊界：由一把獨立的 secret（沿用既有 `CRON_SECRET`／
-`OPS_SECRET` 先例）辨識，**不是**匿名 cookie 上加的一個 role，也
-不是舊有 `"solo"` 復活。Admin 使用產品本身（建立自己的劇本等）時，
-走的是自己一份**正常的** owner identity——只是這個 owner 記錄被
-標記為結構性豁免 Abandoned Owner 生命週期政策。Owner 既有的 `solo`
-資料一次性遷移到這個身份後，`solo` 這個特殊值退出正常產品語意。
-第一版 Admin 的 operational capability 限於：匿名 owner 數／
-scenario 數／vendor usage／429／DB 成長／cleanup volume 等統計，
-**明確不含**任意瀏覽個別使用者資料、impersonate、刪除他人資料、
-查看他人第三方 secrets。
+**Admin Capability（管理能力）**（⚠ 2026-09-13
+OPTION-PUBLIC-BETA-SPEC-REVIEW-006 修正：與下方原「Admin／Superuser
+Identity」條目描述的耦合模型已撤回，本條為訂正版）——**與 Owner
+identity 是兩條正交的軸，不得耦合**：
+- **軸一（Owner identity）**：所有人（含 Owner 自己）一律透過
+  Browser Identity（cookie）解析出 owner_id，沒有第二種身份建立
+  路徑，沒有由建立方式決定型態的 `owner_kind` 欄位。
+- **軸二（Admin capability）**：一把獨立的 secret（`ADMIN_SECRET`，
+  沿用既有 `CRON_SECRET`／`OPS_SECRET` 先例）只解鎖 operational
+  endpoint（例如 `/api/ops/metrics`），**不得用來解析、建立、或
+  決定任何產品 owner_id**——不存在「帶對這把 secret 就變成或建立
+  某個 owner」這種程式路徑。
+- Owner 使用產品本身時走的是自己**透過軸一取得的正常 owner_id**；
+  這個 owner_id 之後可以被一個**受 `ADMIN_SECRET` 保護的動作**
+  標記為 protected／exempt，使其結構性豁免 Abandoned Owner
+  生命週期政策——**這只是設定既有 owner_id 上的一個旗標，不是由
+  secret 建立新身份**。Owner 既有的 `solo` 資料一次性遷移到這個
+  （軸一取得、軸二標記為 protected 的）owner_id 後，`solo` 這個
+  特殊值退出正常產品語意。
+- 第一版 operational capability 限於：匿名 owner 數／scenario 數／
+  vendor usage／429／DB 成長／cleanup volume 等統計，**明確不含**
+  任意瀏覽個別使用者資料、impersonate、刪除他人資料、查看他人第
+  三方 secrets。
 
 **Abandoned Owner（閒置擁有者）** — 匿名擁有者連續 **30 天**沒有
 任何**真人明確操作**（建立／編輯／手動刷新／封存等主動動作；純粹
