@@ -36,6 +36,20 @@ commit（沒有其他改動要 commit 時，單獨為這一行開一個小 commi
 
 只有這七條。
 
+## Agent skills
+
+### Issue tracker
+
+Issues live as GitHub Issues in `L26041040/option-chaser`, managed via the `gh` CLI. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Default five canonical labels (`needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`). See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: `CONTEXT.md` + `docs/adr/` at the repo root. See `docs/agents/domain.md`.
+
 ## 專案紀錄區
 
 ### Scaling Foundation 施工中（OPTION-SCALING-IMPLEMENT-001，2026-09-06 起，Owner 授權全自主執行）
