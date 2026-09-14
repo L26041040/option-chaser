@@ -1,7 +1,4 @@
 {
-  "env": {
-    "RICE_SESSION_ARCHIVE": "1"
-  },
   "hooks": {
     "SessionEnd": [
       {
@@ -17,37 +14,5 @@
       }
     ]
   },
-  "outputStyle": "老弟伺候大哥",
-  "permissions": {
-    "deny": [
-      "Bash(git push --force*)",
-      "Bash(git push * --force*)",
-      "Bash(git push -f*)",
-      "Bash(git push * -f)",
-      "Bash(git push * -f *)",
-      "Bash(git push +*)",
-      "Bash(git push * +*)",
-      "Bash(git push --delete *)",
-      "Bash(git push * --delete *)",
-      "Bash(git push -d *)",
-      "Bash(git push * -d *)",
-      "Bash(git reset --hard*)",
-      "Bash(git rebase*)",
-      "Bash(git commit --amend*)",
-      "Bash(git filter-branch*)",
-      "Bash(git filter-repo*)",
-      "Bash(git reflog expire*)",
-      "Bash(git clean -f*)",
-      "Bash(git branch *)",
-      "Bash(git checkout -b *)",
-      "Bash(git checkout -B *)",
-      "Bash(git checkout --orphan *)",
-      "Bash(git switch -c *)",
-      "Bash(git switch -C *)",
-      "Bash(git switch --create *)",
-      "Bash(git worktree add *)",
-      "Bash(git stash branch *)",
-      "mcp__github__create_branch"
-    ]
-  }
+  "outputStyle": "老弟伺候大哥"
 }
