@@ -8107,3 +8107,5 @@ A1／A2／research 的遺漏、矛盾文件與 regression，不重開產品設�
 - 全套測試現為全綠（後端 667 條、前端 288 條 Vitest、Desktop＋iPhone
   共 22 條 Playwright；舊紀錄提到的 5 個 streamlit 版本漂移失敗已隨
   T2 改寫消失）。MVP-v2（M1a–M6）起的最新數字。
+
+@.claude/rice.md
