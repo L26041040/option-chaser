@@ -826,6 +826,96 @@ def test_identity_resolver_still_returns_solo_after_pb01(storage):
     assert default_identity_resolver() == SOLO_OWNER == "solo"
 
 
+# ---------- solo → Owner 一次性遷移（PB-03／#295，Anonymous Public
+# Beta） ----------
+
+
+def _seed_all_ten_tables_under(storage, owner_id: str) -> None:
+    """PB-03（#295）測試共用：在 `migrate_owner()` 涵蓋的全部 10 張表
+    各自寫入至少一筆掛在 `owner_id` 名下的資料。"""
+    sc = Scenario(id=f"pb03-{owner_id}", symbol="TLT", direction="bullish",
+                 target_price=120.0, target_month="2028-05", notes="",
+                 strategies=("bull-call-spread",),
+                 created_at="2026-09-14T00:00:00+00:00", owner_id=owner_id)
+    storage.create_scenario(sc)
+
+    rec = ResultRecord(scenario_id=sc.id, analyzed_at="2026-09-14T01:00:00+00:00",
+                       view=None, owner_id=owner_id)
+    storage.save_result(rec)
+    storage.save_current_result(replace(rec, view={"meta": {"symbol": "TLT"}}))
+
+    storage.save_snapshot(sc.id, rec.analyzed_at, {"meta": {"symbol": "TLT"}},
+                          owner_id=owner_id)
+    storage.append_event(ts=sc.created_at, scenario_id=sc.id,
+                         event="SCENARIO_CREATED", payload={}, owner_id=owner_id)
+    storage.append_diagnostic(DiagnosticEvent(
+        event_id="e1", correlation_id="c1", ts=sc.created_at,
+        subsystem="historical_iv", stage="cache", severity="info",
+        message="seed", context={}, user_facing=False, owner_id=owner_id))
+    storage.save_narrow_history([NarrowHistoryEntry(
+        scenario_id=sc.id, analyzed_at=rec.analyzed_at,
+        candidate_key="bull-call-spread|100|110|2026-11-20", cost=1.5,
+        owner_id=owner_id)])
+    storage.save_settings(DataSourceSettings(
+        market_data=UsageSetting(mode="default"),
+        historical_iv=UsageSetting(mode="default"),
+        updated_at=sc.created_at, owner_id=owner_id))
+    storage.save_credential(ProviderCredential(
+        provider="marketdata_app", token="tok-abc", updated_at=sc.created_at,
+        owner_id=owner_id))
+    storage.save_verification(ProviderVerification(
+        provider="marketdata_app", ok=True, reason=None,
+        checked_at=sc.created_at, owner_id=owner_id))
+
+
+def test_migrate_owner_moves_every_one_of_the_ten_tables(storage):
+    _seed_all_ten_tables_under(storage, "solo")
+
+    counts = storage.migrate_owner(from_owner="solo", to_owner="anon-migrated")
+
+    assert set(counts) == {
+        "scenarios", "results", "snapshots", "events", "diagnostics",
+        "narrow_history", "current_results", "owner_settings",
+        "owner_credentials", "owner_verifications"}
+    assert all(n >= 1 for n in counts.values()), counts
+
+    assert storage.get_scenario("pb03-solo", owner="anon-migrated") is not None
+    assert storage.get_scenario("pb03-solo", owner="solo") is None
+    assert storage.latest_result("pb03-solo", owner="anon-migrated") is not None
+    assert storage.get_snapshot_owner("pb03-solo", "2026-09-14T01:00:00+00:00") == "anon-migrated"
+    events = storage.list_events(scenario_id="pb03-solo", owner="anon-migrated")
+    assert len(events) == 1
+    diag = storage.list_diagnostics(owner="anon-migrated")
+    assert len(diag) == 1
+    assert storage.get_narrow_history_entry(
+        "pb03-solo", "2026-09-14T01:00:00+00:00",
+        "bull-call-spread|100|110|2026-11-20", owner="anon-migrated") is not None
+    assert storage.get_settings(owner="anon-migrated") is not None
+    assert storage.get_credential("marketdata_app", owner="anon-migrated") is not None
+    assert storage.get_verification("marketdata_app", owner="anon-migrated") is not None
+
+
+def test_migrate_owner_is_idempotent_a_second_run_is_a_no_op(storage):
+    _seed_all_ten_tables_under(storage, "solo")
+    storage.migrate_owner(from_owner="solo", to_owner="anon-migrated")
+
+    counts_second_run = storage.migrate_owner(from_owner="solo", to_owner="anon-migrated")
+
+    assert all(n == 0 for n in counts_second_run.values()), counts_second_run
+
+
+def test_migrate_owner_does_not_touch_a_third_owners_data(storage):
+    _seed_all_ten_tables_under(storage, "solo")
+    _seed_all_ten_tables_under(storage, "carol")
+
+    storage.migrate_owner(from_owner="solo", to_owner="anon-migrated")
+
+    # carol 的資料完全不受影響——用不同的 scenario id（seed helper 用
+    # owner_id 組 id）避免跟 solo 那份混淆。
+    assert storage.get_scenario("pb03-carol", owner="carol") is not None
+    assert storage.get_credential("marketdata_app", owner="carol") is not None
+
+
 # ---------- Narrow visible-candidate history（SCALE-09／#261） ----------
 
 def test_narrow_history_starts_with_no_row(storage):

@@ -969,6 +969,36 @@ class Storage(Protocol):
         另開一票把那些測試改成不依賴 dataclass 建構式寫入 NULL（例如
         改用繞過型別驗證的原生 SQL helper），非本票能安全一併完成。"""
 
+    # ---------- solo → Owner 一次性遷移（PB-03／#295，Anonymous
+    # Public Beta） ----------
+
+    def migrate_owner(self, *, from_owner: str, to_owner: str) -> dict[str, int]:
+        """把 `from_owner` 名下全部資料搬到 `to_owner`——逐表
+        `UPDATE ... SET owner_id = to_owner WHERE owner_id = from_owner`。
+        **冪等**：搬過一次後 `from_owner` 底下已無列，重跑對已搬過的表
+        全部回 0（PB-03 AC「腳本重跑第二次為 no-op」）。
+
+        涵蓋**這 10 張表**（本方法自己的清單，PB-03／#295 §6 明文要求
+        不得沿用既有任一份既有清單——見下方差異說明）：
+        `scenarios`／`results`／`snapshots`／`events`／`diagnostics`／
+        `narrow_history`／`current_results`／`owner_settings`／
+        `owner_credentials`／`owner_verifications`。
+
+        **與既有兩份清單的差異**（PB-03 施工前 repo 現況已確認兩份
+        既有清單互相不一致，此處記錄避免未來誤以為可以照抄）：
+        - `backfill_missing_owner_ids()` 只有 6 張（同上少
+          `current_results`／`owner_settings`／`owner_credentials`／
+          `owner_verifications`）——它服務的是「把 `NULL` 補成某個
+          值」（`WHERE owner_id IS NULL`），本方法服務的是「把某個
+          既有值換成另一個值」（`WHERE owner_id = from_owner`），
+          目的不同、範圍也因此不同，不能互相替代。
+        - `owner_id_null_counts()` 涵蓋另外 8 張（5 張 row-scoped ＋
+          3 張 `owner_*`）——**不含 `narrow_history`**（SCALE-09 出貨
+          時漏接 `owner_id`，SCALE-14／#265 才補上，比那份清單當初
+          列舉的表晚出現）。
+
+        回傳 `{table_name: 受影響列數}`。"""
+
     # ---------- Owner registry ＋ Browser Identity（PB-01／#292，
     # Anonymous Public Beta，expand，零行為變更） ----------
 

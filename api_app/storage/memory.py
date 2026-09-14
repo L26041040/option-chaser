@@ -285,6 +285,94 @@ class MemoryStorage:
     def save_chain_backoff(self, entry: ChainBackoffEntry) -> None:
         self._chain_backoff[entry.source] = entry
 
+    # ---------- solo → Owner 一次性遷移（PB-03／#295） ----------
+
+    def migrate_owner(self, *, from_owner: str, to_owner: str) -> dict[str, int]:
+        counts: dict[str, int] = {}
+
+        n = 0
+        for sid, sc in list(self._scenarios.items()):
+            if sc.owner_id == from_owner:
+                self._scenarios[sid] = dataclasses.replace(sc, owner_id=to_owner)
+                n += 1
+        counts["scenarios"] = n
+
+        n = 0
+        for by_ts in self._results.values():
+            for ts, rec in list(by_ts.items()):
+                if rec.owner_id == from_owner:
+                    by_ts[ts] = dataclasses.replace(rec, owner_id=to_owner)
+                    n += 1
+        counts["results"] = n
+
+        n = 0
+        for key, (snap, owner_id) in list(self._snapshots.items()):
+            if owner_id == from_owner:
+                self._snapshots[key] = (snap, to_owner)
+                n += 1
+        counts["snapshots"] = n
+
+        n = 0
+        for event in self._events:
+            if event.get("owner_id") == from_owner:
+                event["owner_id"] = to_owner
+                n += 1
+        counts["events"] = n
+
+        n = 0
+        migrated_diag = deque(maxlen=self._diagnostics.maxlen)
+        for ev in self._diagnostics:
+            if ev.owner_id == from_owner:
+                ev = dataclasses.replace(ev, owner_id=to_owner)
+                n += 1
+            migrated_diag.append(ev)
+        self._diagnostics = migrated_diag
+        counts["diagnostics"] = n
+
+        n = 0
+        for key, entry in list(self._narrow_history.items()):
+            if entry.owner_id == from_owner:
+                self._narrow_history[key] = dataclasses.replace(entry, owner_id=to_owner)
+                n += 1
+        counts["narrow_history"] = n
+
+        n = 0
+        for sid, rec in list(self._current_results.items()):
+            if rec.owner_id == from_owner:
+                self._current_results[sid] = dataclasses.replace(rec, owner_id=to_owner)
+                n += 1
+        counts["current_results"] = n
+
+        n = 0
+        if from_owner in self._owner_settings:
+            settings = self._owner_settings.pop(from_owner)
+            self._owner_settings[to_owner] = dataclasses.replace(
+                settings, owner_id=to_owner)
+            n = 1
+        counts["owner_settings"] = n
+
+        n = 0
+        for key in list(self._owner_credentials):
+            owner_id, provider = key
+            if owner_id == from_owner:
+                cred = self._owner_credentials.pop(key)
+                self._owner_credentials[(to_owner, provider)] = dataclasses.replace(
+                    cred, owner_id=to_owner)
+                n += 1
+        counts["owner_credentials"] = n
+
+        n = 0
+        for key in list(self._owner_verifications):
+            owner_id, provider = key
+            if owner_id == from_owner:
+                ver = self._owner_verifications.pop(key)
+                self._owner_verifications[(to_owner, provider)] = dataclasses.replace(
+                    ver, owner_id=to_owner)
+                n += 1
+        counts["owner_verifications"] = n
+
+        return counts
+
     # ---------- Owner registry ＋ Browser Identity（PB-01／#292） ----------
 
     def get_owner(self, owner_id: str) -> Owner | None:

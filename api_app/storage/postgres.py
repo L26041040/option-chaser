@@ -1196,6 +1196,24 @@ class PostgresStorage:
                  entry.consecutive_failures, entry.observed_at,
                  entry.last_success_at))
 
+    # ---------- solo → Owner 一次性遷移（PB-03／#295） ----------
+
+    _MIGRATE_OWNER_TABLES = (
+        "scenarios", "results", "snapshots", "events", "diagnostics",
+        "narrow_history", "current_results", "owner_settings",
+        "owner_credentials", "owner_verifications",
+    )
+
+    def migrate_owner(self, *, from_owner: str, to_owner: str) -> dict[str, int]:
+        counts: dict[str, int] = {}
+        with self._connect() as conn:
+            for table in self._MIGRATE_OWNER_TABLES:
+                cur = conn.execute(
+                    f"UPDATE {table} SET owner_id = %s WHERE owner_id = %s",
+                    (to_owner, from_owner))
+                counts[table] = cur.rowcount
+        return counts
+
     # ---------- Owner registry ＋ Browser Identity（PB-01／#292） ----------
 
     def get_owner(self, owner_id: str) -> Owner | None:

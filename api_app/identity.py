@@ -31,6 +31,12 @@ IdentityResolver = Callable[[], str]
 
 # SCALE-06（#256）遺留：固定值，不做任何驗證。PB-02（#294）起不再是
 # production 預設，保留供顯式選用（見檔頭說明）。
+#
+# ⚠ legacy（PB-03／#295）：production 的 `solo` 名下資料已一次性遷移
+# 到 Owner 自己透過正常 Browser Identity 取得的 owner_id（見
+# `scripts/migrate_solo_to_owner.py`）——遷移完成後，這個字串只作為
+# 該腳本的查詢條件出現一次，不再有任何程式路徑產生或依賴它（spec
+# §18：本輪不要求刪除這個常數本身，只標記為不再代表任何真實使用者）。
 SOLO_OWNER = "solo"
 
 
