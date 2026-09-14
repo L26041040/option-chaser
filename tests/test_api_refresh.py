@@ -704,7 +704,9 @@ def test_refresh_run_a_realistic_batch_now_completes_progressively_not_in_one_ca
     Continuation 迴圈因此會逐組（在這份資料裡等於逐張，因為 12 個劇本
     分屬 3 個不同 symbol、每組 4 個）取得結果並立即解鎖，不必等其餘
     兩組。"""
-    c = _client()   # 預設 REFRESH_RUN_BUDGET，不注入任何人為延遲
+    # PB-05（#297）：這裡要建 12 個劇本測 Continuation／分組行為，跟
+    # per-owner 額度（預設 10）是兩件無關的事——顯式停用額度檢查。
+    c = _client(anonymous_max_active_scenarios=0)   # 預設 REFRESH_RUN_BUDGET，不注入任何人為延遲
     symbols = ["XYZ", "SPY", "QQQ"]
     ids = [_create(c, symbol=symbols[i % len(symbols)])["id"] for i in range(12)]
 

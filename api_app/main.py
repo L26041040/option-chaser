@@ -15,7 +15,7 @@ import os
 import secrets
 import time
 import uuid
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import Callable, Literal
 
 from fastapi import FastAPI, HTTPException, Request
@@ -126,6 +126,67 @@ REFRESH_RUN_GROUP_LIMIT = 1
 # 解決）。沿用 `service.ANALYSIS_SOFT_DEADLINE` 同一個數值與推導理由。
 # 可注入（既有 DI 慣例），測試用小數值逼出 soft deadline 真的生效。
 ANALYSIS_DEADLINE_SECONDS = service.ANALYSIS_SOFT_DEADLINE.total_seconds()
+
+# PB-05（#297，Anonymous Public Beta）：per-owner 成本煞車，兩個數值
+# 皆可經 `create_app()` DI 或同名環境變數覆寫（見 `_env_int()`），
+# `<=0` 為停用語意（spec §17：兩者皆可調整與停用）。
+ANONYMOUS_MAX_ACTIVE_SCENARIOS = 10
+ANONYMOUS_REFRESH_MIN_INTERVAL_MINUTES = 30
+
+
+def _env_int(name: str, default: int) -> int:
+    """比照 `cron_secret`／`ops_secret` 既有「呼叫時才讀環境變數」的
+    惰性讀取慣例，但這裡讀的是數字而非密鑰字串——供 `create_app()` 的
+    `anonymous_max_active_scenarios`／`anonymous_refresh_min_interval_
+    minutes` 兩個 DI 參數在未被顯式覆寫（`None`）時的預設值來源。
+    讀不到或解析不出數字時退回程式碼內建預設值，不讓一個打錯字的
+    環境變數把整個 app 弄壞。"""
+    raw = os.environ.get(name)
+    if not raw:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        return default
+
+
+def _last_fetch_age(analyzed_at: str | None) -> timedelta | None:
+    """`analyzed_at`（＝快照的 `fetched_at`，見 `store.py` 的
+    `"analyzed_at": m.fetched_at`）距現在多久——PB-05 節流唯一需要的
+    輸入。缺席（從未成功分析過）或讀不懂時回 `None`：比照全站既有
+    「讀不懂的時間戳當舊」慣例（`api_app/rate_cache.py::_age()`），
+    套在這裡等於視同從未成功抓過，不該因此擋住第一次／修復性的刷新。
+    """
+    if not analyzed_at:
+        return None
+    try:
+        ts = datetime.fromisoformat(analyzed_at)
+    except ValueError:
+        return None
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=timezone.utc)
+    return datetime.now(timezone.utc) - ts
+
+
+def _refresh_throttled(analyzed_at: str | None, minutes: int) -> bool:
+    """PB-05（#297）：同一 scenario 是否還在節流窗內，該短路沿用既有
+    資料、不發起新的 vendor fetch。
+
+    ⚠ 這個函式**不是**第四種 Refresh Trigger——它只回答「這次呼叫
+    該不該真的去抓」，真正發起呼叫的入口仍是既有三種（開站／頂部
+    按鈕／建立劇本，皆走 `refresh_run()`／`refresh_scenario()`）。
+    呼叫點只有兩處：`_refresh_and_save()` 本身（單一劇本刷新路徑，
+    也是 refresh-run 每個劇本最終落地前的最後一道守門）與
+    `refresh_run()` 的 `needs_chain` 分組判準（避免整組劇本皆被節流
+    時還白白打一次上游）——兩處吃的是同一份 `analyzed_at` 事實
+    （分別來自單筆 `latest_result()` 與批次 `latest_summaries()`），
+    判斷邏輯集中在這裡，不各自重寫一份時間數學。
+    """
+    if minutes <= 0:
+        return False
+    age = _last_fetch_age(analyzed_at)
+    return age is not None and age < timedelta(minutes=minutes)
+
 
 # MVP 範圍（沿用既有 Streamlit 版與 spec #47 的三欄表單）：方向是固定值，
 # 不由前端送。需要看空時再由對應的票加上（`direction` 欄位是 legacy
@@ -558,6 +619,8 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
                cron_secret: str | None = None,
                ops_secret: str | None = None,
                enable_metrics: bool = True,
+               anonymous_max_active_scenarios: int | None = None,
+               anonymous_refresh_min_interval_minutes: int | None = None,
                ) -> FastAPI:
     """`fetch`／`storage`／`rate_loader`／`dividend_loader` 皆可注入：
     測試傳入固定快照、記憶體假體與假來源，因此不打真網路、不碰真資料庫，
@@ -669,7 +732,25 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
     對任何既有產品 API 回應的序列化 JSON **逐位元一致**，這個開關本身
     就是那個宣稱的可驗證落地點：兩種狀態下跑同一組請求，除了新增的
     `GET /api/ops/metrics` 端點本身，其餘回應必須無法分辨開關是開是關。
-    """
+
+    `anonymous_max_active_scenarios`／`anonymous_refresh_min_interval_
+    minutes`（PB-05／#297，Anonymous Public Beta §8）：per-owner 成本
+    煞車——前者限制單一 owner 的**未封存**劇本數（`create_scenario()`
+    拒絕第 N+1 個，409，非 500；封存的劇本結構上不計入，`list_
+    scenarios()` 的 `include_archived` 預設就是 `False`）；後者是
+    同一 scenario 兩次「真正抓一份新鏈」之間至少要間隔幾分鐘（比照
+    `ANONYMOUS_MAX_ACTIVE_SCENARIOS`／`ANONYMOUS_REFRESH_MIN_INTERVAL_
+    MINUTES` 兩個同名環境變數，`_env_int()` 讀取）。
+
+    **這不是第四種 Refresh Trigger**——節流只是既有三種 Trigger
+    （開站／頂部按鈕／建立劇本）各自既有呼叫路徑上的一道閘門，判斷
+    在 `_refresh_throttled()`，短路時原樣沿用既有資料（`_row_json`
+    與 `month_is_over` 短路分支同形狀），對 `refresh_run()` 的呼叫端
+    （前端 `runBatch()`）而言與一次正常成功刷新無法區分——不新增
+    `stage`、不回失敗，因此結構上不會觸發任何既有的失敗重試機制
+    （研究 #277 點名的 retry storm 風險，見 `_refresh_throttled()`
+    docstring）。兩個參數皆 `None` 時讀環境變數或落回上方常數；顯式
+    傳入 `0`（或負數）停用該項煞車，供測試與 rollback 使用。"""
     app = FastAPI(title="Option Chaser API", version=__version__)
 
     # 延遲建構：Postgres adapter 建構本身不再連線（T02／#186——schema
@@ -742,6 +823,18 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
     # SCALE-08（#258）：同一套設計，獨立的環境變數。
     _effective_ops_secret = (ops_secret if ops_secret is not None
                              else os.environ.get("OPS_SECRET"))
+    # PB-05（#297）：同一套「`None`＝讀環境變數或落回常數」慣例，但這裡
+    # 讀的是數字而非密鑰——`_env_int()` 內建自己的落回邏輯。`<=0` 由
+    # `_refresh_throttled()`／額度檢查各自判讀為停用，不在這裡另外轉換。
+    _effective_max_active_scenarios = (
+        anonymous_max_active_scenarios if anonymous_max_active_scenarios is not None
+        else _env_int("ANONYMOUS_MAX_ACTIVE_SCENARIOS",
+                      ANONYMOUS_MAX_ACTIVE_SCENARIOS))
+    _effective_refresh_min_interval_minutes = (
+        anonymous_refresh_min_interval_minutes
+        if anonymous_refresh_min_interval_minutes is not None
+        else _env_int("ANONYMOUS_REFRESH_MIN_INTERVAL_MINUTES",
+                      ANONYMOUS_REFRESH_MIN_INTERVAL_MINUTES))
 
     def _record_metric(metric: str, today: date, *, source: str = "",
                        symbol: str = "", count: int = 1,
@@ -1184,6 +1277,23 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         except ParamError as e:
             raise HTTPException(status_code=400, detail=str(e)) from e
 
+        # PB-05（#297）：per-owner 額度——只算**未封存**劇本（`list_
+        # scenarios()` 預設 `include_archived=False`，封存本就是使用者
+        # 主動整理，不該倒扣額度）。`<=0` 是停用語意，直接跳過整段檢查
+        # 不必為此多查一次 storage。事實陳述、非評價字眼（facts-only），
+        # 沿用既有 `ScenarioExists` 409＋純字串 detail 的既有慣例，不是
+        # 刷新失敗那種 `{stage, message}` 分層格式——這裡是建立失敗，
+        # 不是刷新失敗。
+        owner = identity_resolver()
+        if _effective_max_active_scenarios > 0:
+            active_count = len(_db().list_scenarios(owner=owner))
+            if active_count >= _effective_max_active_scenarios:
+                raise HTTPException(
+                    status_code=409,
+                    detail=(f"目前有 {active_count} 個進行中劇本，已達上限"
+                            f"（{_effective_max_active_scenarios} 個）。"
+                            "請先封存或刪除既有劇本後再建立新的。"))
+
         ts = now_utc_iso()
         # T10（#227，Initial V2 spec #217）：使用者第一次可以自己決定
         # 要看哪幾類策略——`_MVP_STRATEGIES` 這個寫死的預設值退場，
@@ -1195,14 +1305,14 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
                       strategies=normalize_families(tuple(req.strategies)),
                       created_at=ts,
                       best_price=req.best_price, worst_price=req.worst_price,
-                      owner_id=identity_resolver())
+                      owner_id=owner)
         try:
             _db().create_scenario(sc)
         except ScenarioExists as e:   # 48-bit 隨機 id，實務上碰不到；不留 500 的縫
             raise HTTPException(status_code=409, detail=str(e)) from e
         _db().append_event(ts=ts, scenario_id=sc.id,
                            event="SCENARIO_CREATED", payload=_scenario_json(sc),
-                           owner_id=identity_resolver())
+                           owner_id=owner)
         # 回傳與清單同一個形狀（含 timing、尚未分析故摘要欄位皆為 None），
         # 客戶端才不必為「剛建立的」與「列出來的」維護兩種型別。
         return _row_json(sc, ny_today(), analyzed_at=None, best_return=None,
@@ -1373,10 +1483,23 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         `refresh_scenario` 讓它變成一次 HTTP 錯誤回應，`refresh_run`
         接住它轉成批次結果裡的一筆失敗項，兩邊的失敗語意（`stage`／
         `message`）完全共用同一份，不重複定義。
+
+        PB-05（#297）節流是第二道、與 `month_is_over` **同形狀**的短路：
+        還在 30 分鐘窗內（`_refresh_throttled()`）一律沿用既有資料，
+        **不論 `snap` 是不是 `None`**——即使呼叫端（`refresh_run` 的
+        symbol 分組）已經為了同組的其他劇本白白抓好一份 Chain，這個
+        scenario 仍然完全不使用它，保證「這個 scenario 在窗內不會被
+        新抓到的資料更新」是無條件成立的事實，不會因為它剛好與哪個
+        劇本共用 symbol 而變得不可預期。
         """
         if month_is_over(TargetMonth.from_key(sc.target_month), today):
             latest = _db().latest_result(sc.id, owner=identity_resolver())
             return _row_json(sc, today, **_summary_of(latest))
+        latest_for_throttle = _db().latest_result(sc.id, owner=identity_resolver())
+        if _refresh_throttled(
+                latest_for_throttle.analyzed_at if latest_for_throttle else None,
+                _effective_refresh_min_interval_minutes):
+            return _row_json(sc, today, **_summary_of(latest_for_throttle))
         # T06（#221）：`sc.strategies` 存的是 family 代碼（新資料）或
         # legacy subtype 字串（舊資料，無遷移）——這是**唯一**的展開點，
         # 把它換算成 `AnalysisRequest.strategies` 要的具體 subtype 清單。
@@ -1552,9 +1675,30 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         symbol 底下的多個劇本因此仍會一起送達（它們本來就共用同一次
         抓取，同時就緒是誠實的結果，不是退步）；不同 symbol 的劇本則
         天生分屬不同分組，各自那組一完成就先送出、不等其餘分組。
+
+        **PB-05（#297）節流**：`needs_chain` 額外排除節流中的劇本
+        （`_sc_throttled()`）——若一組裡每個劇本都被節流（或垃圾桶／
+        過期），這組完全不打上游；若組內有非節流的手足，仍會抓（為了
+        手足），但節流中的劇本本身不消費這份 Chain（`_refresh_and_
+        save()` 自己的守門），結果永遠是沿用既有資料的成功項，從不是
+        失敗——對這個端點的呼叫端（`runBatch()`）而言與一次正常刷新
+        無法區分，因此結構上不會觸發任何既有的失敗重試路徑。
         """
         today = ny_today()
         owner = identity_resolver()
+        # PB-05（#297）：一次查完這個 owner 全部劇本的「上次成功抓鏈
+        # 時間」，下面兩處節流判斷（group 級 `needs_chain`／per-scenario
+        # 的 fetch 失敗分支）共用同一份查詢結果，不必為每個 scenario
+        # 各自再打一次 storage。從未分析過的 scenario 不在這份 dict
+        # 裡，`_refresh_throttled(None, ...)` 天生判為「不節流」。
+        summaries = _db().latest_summaries(owner=owner)
+
+        def _sc_throttled(sc: Scenario) -> bool:
+            s = summaries.get(sc.id)
+            return _refresh_throttled(
+                s.analyzed_at if s is not None else None,
+                _effective_refresh_min_interval_minutes)
+
         # SCALE-11（#262）AC-3：目標集合不論走哪個分支都限定在這個
         # owner 名下——省略 `scenario_ids` 時只列舉自己的未過期劇本；
         # 帶了 id 時逐一以 owner 授權查找，猜到的別人 id 直接回
@@ -1582,11 +1726,17 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
             if budget_exhausted or groups_completed >= refresh_run_group_limit:
                 remaining.extend(sc.id for sc in scenarios)
                 continue
-            # 這一組裡有沒有任何劇本真的需要一份 Chain——垃圾桶與過期的
-            # 都不需要，全組都不需要時就不必為這個 symbol 打一趟網路。
+            # 這一組裡有沒有任何劇本真的需要一份 Chain——垃圾桶、過期、
+            # PB-05 節流窗內的都不需要，全組都不需要時就不必為這個
+            # symbol 打一趟網路（節流最常見的情況：單一 scenario 自己
+            # 獨佔一個 symbol group，且它自己就在窗內）。窗內但有非
+            # 節流的同組手足時仍會抓（那份 Chain 是為了手足才抓的），
+            # 但 `_refresh_and_save()` 自己的第二道守門保證節流中的
+            # scenario 依然完全不會使用到它，見該函式 docstring。
             needs_chain = any(
                 sc.archived_at is None
                 and not month_is_over(TargetMonth.from_key(sc.target_month), today)
+                and not _sc_throttled(sc)
                 for sc in scenarios)
             snap: ChainSnapshot | None = None
             fetch_error: FetchError | None = None
@@ -1604,7 +1754,12 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
                                     "stage": "archived",
                                     "message": f"劇本已在垃圾桶，不再刷新：{sc.id}"})
                 elif (fetch_error is not None and not month_is_over(
-                        TargetMonth.from_key(sc.target_month), today)):
+                        TargetMonth.from_key(sc.target_month), today)
+                        and not _sc_throttled(sc)):
+                    # PB-05：這一組的 fetch 失敗是為了「組內其他非節流
+                    # 手足」而發起的——`sc` 本身若正處於節流窗內，這次
+                    # 失敗與它無關（它從頭到尾就不會用到這份 Chain），
+                    # 不該讓它平白背上一筆「抓不到報價」的失敗紀錄。
                     # SCALE-05（#260，AC-6）：與 `_analyze()` 共用同一個
                     # 分類點，不在這裡重新判斷一次「是不是限流」。
                     detail = _classify_fetch_failure(
