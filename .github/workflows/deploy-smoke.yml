@@ -1,0 +1,39 @@
+name: Deploy smoke
+
+# PB-13（#293）：部署後自動打 `/api/health`，失敗會被看見（GitHub
+# Actions run 失敗＋（Owner 設定後）email 通知）。
+#
+# Vercel 的官方 GitHub 整合在每次 production／preview 部署完成後會
+# 發出 `deployment_status` 事件、附上真實可達的 `target_url`——不需要
+# 額外設定 webhook 或 secret，這個整合本來就隨 Vercel×GitHub 連動存在。
+# 只在 `state == "success"` 時打，避免對正在建置或失敗的部署做無意義
+# 的探測。
+#
+# `/api/health` 是 spec #291 §4 明列「不得因缺 cookie 而建立 owner」
+# 的端點——用它當 smoke target 本身就是這條規則的一個持續驗證點。
+
+on:
+  deployment_status:
+
+jobs:
+  smoke:
+    if: github.event.deployment_status.state == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Curl /api/health on the freshly deployed URL
+        env:
+          TARGET: ${{ github.event.deployment_status.target_url }}
+        run: |
+          url="${TARGET%/}/api/health"
+          echo "Probing $url"
+          for attempt in 1 2 3 4 5; do
+            if body=$(curl -sf --max-time 15 "$url"); then
+              echo "$body"
+              echo "$body" | grep -q '"storage"' || { echo "::error::/api/health response missing expected 'storage' field"; exit 1; }
+              exit 0
+            fi
+            echo "Attempt $attempt failed, retrying in 5s..."
+            sleep 5
+          done
+          echo "::error::/api/health did not respond successfully after 5 attempts"
+          exit 1

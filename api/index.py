@@ -18,5 +18,12 @@ if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
 from api_app.main import create_app  # noqa: E402
+from api_app.observability import init_sentry  # noqa: E402
+
+# PB-13（#293，Anonymous Public Beta）：只在這個唯一的 production
+# 進入點呼叫，不放進 `create_app()`——後者是被上千條測試直接呼叫的
+# app factory，不該背著一個全域 SDK 初始化的副作用。未設定
+# `SENTRY_DSN` 時這一行是 no-op（見 `init_sentry()` docstring）。
+init_sentry()
 
 app = create_app()   # 直接賦值：進入點偵測認的是這個，不是匯入再轉出

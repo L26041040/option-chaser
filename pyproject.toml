@@ -12,6 +12,11 @@ dependencies = [
   "fastapi>=0.117.1",
   "psycopg[binary]>=3.2",
   "tzdata; platform_system == 'Windows'",
+  # PB-13（#293，Anonymous Public Beta）：錯誤堆疊上報（免費層，
+  # FREE-FIRST）。純 Python、輕量，`api_app/observability.py` 只在
+  # `SENTRY_DSN` 環境變數存在時才真的呼叫 `sentry_sdk.init()`——未設
+  # 定時整個模組是 no-op，不改變既有行為。
+  "sentry-sdk>=2.0",
 ]
 
 [project.scripts]

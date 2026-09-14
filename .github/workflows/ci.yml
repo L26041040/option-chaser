@@ -1,0 +1,99 @@
+name: CI
+
+# PB-13（#293，Anonymous Public Beta）：第一版最小可行 CI——本 repo在
+# 這之前完全沒有 `.github/`（已於施工前確認）。目標不是完整覆蓋，是
+# 讓「紅燈真的擋得住 merge」成立（GitHub branch protection 需另外由
+# Owner 在 repo 設定裡把下面三個 job 設成 required status checks——
+# 那是 admin 權限操作，agent 做不到，見 PB-13 票面 §4）。
+#
+# 對 fork PR 刻意保守：`pull_request` 事件預設不會把 repo secrets
+# 傳給 fork 送出的 PR（GitHub 內建行為），這個 workflow 也沒有引用
+# 任何 secret（Postgres 是本地 service container、免密），因此無論
+# 是不是 fork PR 都能完整跑完。
+
+on:
+  pull_request:
+  push:
+    branches: [master]
+
+jobs:
+  backend:
+    name: Backend (memory + Postgres)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_HOST_AUTH_METHOD: trust
+          POSTGRES_DB: octest
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      OC_TEST_DATABASE_URL: postgresql://postgres@localhost:5432/octest
+      PYTHONPATH: .
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install backend dependencies
+        run: pip install -e ".[api,yf]" pytest
+      - name: Run backend test suite (memory + real Postgres)
+        run: python -m pytest
+      - name: Assert the Postgres half of the storage contract actually ran
+        # 既有教訓（CLAUDE.md 環境一節）：沒有 OC_TEST_DATABASE_URL
+        # 時，Storage 契約測試的 Postgres 那一半會靜默跳過、全套仍然
+        # 是綠的，卻少驗一個實作。CI 必須有明確斷言證明它真的執行過，
+        # 不能只看「整體綠燈」。
+        run: |
+          count=$(python -m pytest tests/test_storage_contract.py --collect-only 2>&1 | grep -c '\[postgres\]')
+          echo "Postgres-backed storage contract cases collected: $count"
+          if [ "$count" -lt 1 ]; then
+            echo "::error::Postgres half of the storage contract did not run — check OC_TEST_DATABASE_URL"
+            exit 1
+          fi
+
+  frontend:
+    name: Frontend (typecheck / vitest / build)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+
+  e2e-smoke:
+    name: Playwright smoke subset
+    # spec #291 §12 明文只要求第一版跑核心 smoke 子集；全套 Playwright
+    # 接入 CI 屬 §21 deferred scope，本票不做。
+    runs-on: ubuntu-latest
+    needs: [frontend]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - name: Run smoke E2E (mobile project only)
+        run: npx playwright test e2e/smoke.spec.ts --project=iPhone
+        env:
+          CI: "true"
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright-report
+          path: playwright-report/
+          retention-days: 7
