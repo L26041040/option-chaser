@@ -1365,6 +1365,38 @@ test("桌面版：Settings 的 Diagnostics 區塊可讀可操作（DG-06／#149�
   await expect(section.getByText("目前沒有紀錄")).toBeVisible();
 });
 
+test("桌面版：設定頁「刪除我的所有資料」需二次確認，確認後回到空的劇本庫（PB-04／#296）",
+   async ({ page }) => {
+  await routeSettings(page);
+  let deleted = false;
+  await page.route("**/api/me", (route) => {
+    if (route.request().method() === "DELETE") {
+      deleted = true;
+      return route.fulfill({ status: 204, body: "" });
+    }
+    return route.continue();
+  });
+  await page.goto("/#/settings");
+
+  const section = page.getByRole("region", { name: "刪除我的資料" });
+  await expect(section).toBeVisible();
+
+  await section.getByRole("button", { name: "立刻刪除我的所有資料" }).click();
+  const dialog = page.getByRole("alertdialog");
+  await expect(dialog).toBeVisible();
+  expect(deleted).toBe(false);
+
+  await dialog.getByRole("button", { name: "取消" }).click();
+  await expect(dialog).toHaveCount(0);
+  expect(deleted).toBe(false);
+
+  await section.getByRole("button", { name: "立刻刪除我的所有資料" }).click();
+  await page.getByRole("alertdialog").getByRole("button", { name: "確定刪除" }).click();
+
+  await expect(page).toHaveURL(/#\/$/);
+  expect(deleted).toBe(true);
+});
+
 test("桌面版：編輯劇本沿用工作區上方的既有表單，取消隨時可按（#132）",
    async ({ page }) => {
   let current: any = libraryRow({ id: "s1", symbol: "TLT", target_price: 105,

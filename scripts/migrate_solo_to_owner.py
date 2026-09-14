@@ -57,7 +57,7 @@ def _count_solo_rows(db: PostgresStorage) -> dict[str, int]:
     可能漂移的複本。"""
     counts: dict[str, int] = {}
     with db._connect() as conn:  # noqa: SLF001 — 一次性遷移腳本，讀計數不值得為此開一個新的 public 方法
-        for table in db._MIGRATE_OWNER_TABLES:  # noqa: SLF001
+        for table in db._OWNER_SCOPED_TABLES:  # noqa: SLF001
             cur = conn.execute(
                 f"SELECT count(*) FROM {table} WHERE owner_id = %s", (SOLO_OWNER,))
             counts[table] = cur.fetchone()[0]

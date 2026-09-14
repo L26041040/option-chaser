@@ -1137,6 +1137,32 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         過去無條件清空全部 owner 的資料）。"""
         return {"cleared": _db().clear_diagnostics(owner=identity_resolver())}
 
+    # ---------- 自助刪除（PB-04／#296，Anonymous Public Beta） ----------
+
+    @app.delete("/api/me", status_code=204)
+    def delete_my_data() -> None:
+        """Normal User 對**自己**的操作——立即執行，跳過 PB-08
+        （閒置清理排程）的 Abandoned／Grace Period 判斷：那套語意服務
+        「使用者忘記了、系統代為清理」，這裡是使用者主動明確要求刪除，
+        不需要緩衝期。
+
+        `owner_id` 完全來自 `identity_resolver()`（middleware 已對
+        這次 request 解析出的身份），**不接受任何呼叫端傳入的
+        owner_id 參數**——硬性安全邊界：這個端點如果接受任意 owner_id，
+        就會變成任何人都能刪除別人資料的漏洞（PB-04 §10）。
+
+        刪除後這次 request 自己的回應仍會被 `_request_scope_
+        middleware` 重新蓋上原本那顆 cookie（`_call_within_owner_
+        scope()` 在 `call_next()` 之後才 `set_cookie()`，值是這次
+        request 一開始解析出的那個 token）——刻意選擇的較簡單設計：
+        不在這裡搶在 middleware 之前另外簽發一個新身份寫回應標頭。
+        那顆舊 cookie 雖然還留在瀏覽器裡，但它現在指向的
+        `browser_identities` 列已經被 `delete_owner()` 清空；**下一次**
+        帶著它的請求會被 `resolve_owner_by_token()` 判定為查無此
+        token，自然走 PB-02（#294）既有的「新訪客」lazy-creation
+        路徑拿到一個全新身份，不需要另外寫一套「立即重新簽發」邏輯。"""
+        _db().delete_owner(identity_resolver())
+
     # ---------- 一次性分析（V1 遺留，前端改走劇本端點後可移除） ----------
 
     @app.post("/api/analyze")

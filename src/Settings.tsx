@@ -27,6 +27,7 @@ import {
   type SettingsView,
   type UsageChoice,
 } from "./api";
+import DeleteMyData from "./DeleteMyData";
 import Diagnostics from "./Diagnostics";
 import { getSettingsCached, setSettingsCache } from "./fetchCache";
 
@@ -196,6 +197,8 @@ export default function Settings() {
       )}
 
       <Diagnostics />
+
+      <DeleteMyData />
     </div>
   );
 }

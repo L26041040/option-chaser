@@ -1547,6 +1547,44 @@ test("手機版：Settings 的 Diagnostics 區塊可讀可操作（DG-06／#149�
   await expect(section.getByText("目前沒有紀錄")).toBeVisible();
 });
 
+/* ---------- 自助刪除（PB-04／#296，Anonymous Public Beta） ---------- */
+
+test("手機版：設定頁「刪除我的所有資料」需二次確認，確認後回到空的劇本庫（PB-04／#296）",
+   async ({ page }) => {
+  await routeSettingsMobile(page);
+  let deleted = false;
+  await page.route("**/api/me", (route) => {
+    if (route.request().method() === "DELETE") {
+      deleted = true;
+      return route.fulfill({ status: 204, body: "" });
+    }
+    return route.continue();
+  });
+  await page.goto("/#/settings");
+
+  const section = page.getByRole("region", { name: "刪除我的資料" });
+  await expect(section).toBeVisible();
+
+  // 點下去只出現確認畫面，還沒真的呼叫 API
+  await section.getByRole("button", { name: "立刻刪除我的所有資料" }).click();
+  const dialog = page.getByRole("alertdialog");
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByText("無法復原")).toBeVisible();
+  expect(deleted).toBe(false);
+
+  // 取消不會呼叫 API、對話框消失
+  await dialog.getByRole("button", { name: "取消" }).click();
+  await expect(dialog).toHaveCount(0);
+  expect(deleted).toBe(false);
+
+  // 重新點開、這次真的確認
+  await section.getByRole("button", { name: "立刻刪除我的所有資料" }).click();
+  await page.getByRole("alertdialog").getByRole("button", { name: "確定刪除" }).click();
+
+  await expect(page).toHaveURL(/#\/$/);
+  expect(deleted).toBe(true);
+});
+
 /* ---------- Historical IV Position 與閘門（#114／#126／一年走勢圖＋
    Δ4w：#140，缺資料狀態全景 E2E：#141；exact-contract 逐腿卡片：
    HIVT-02–05／#153–156，spec #151） ----------

@@ -373,6 +373,89 @@ class MemoryStorage:
 
         return counts
 
+    # ---------- Owner-wide 刪除原語（PB-04／#296） ----------
+
+    def delete_owner(self, owner_id: str) -> dict[str, int]:
+        counts: dict[str, int] = {}
+
+        removed = [sid for sid, sc in self._scenarios.items()
+                  if sc.owner_id == owner_id]
+        for sid in removed:
+            del self._scenarios[sid]
+        counts["scenarios"] = len(removed)
+
+        n = 0
+        for sid in list(self._results):
+            by_ts = self._results[sid]
+            for ts in list(by_ts):
+                if by_ts[ts].owner_id == owner_id:
+                    del by_ts[ts]
+                    n += 1
+            if not by_ts:
+                del self._results[sid]
+        counts["results"] = n
+
+        n = 0
+        for key in list(self._snapshots):
+            _, snap_owner = self._snapshots[key]
+            if snap_owner == owner_id:
+                del self._snapshots[key]
+                n += 1
+        counts["snapshots"] = n
+
+        before = len(self._events)
+        self._events = [e for e in self._events if e.get("owner_id") != owner_id]
+        counts["events"] = before - len(self._events)
+
+        before = len(self._diagnostics)
+        remaining_diag = deque(
+            (e for e in self._diagnostics if e.owner_id != owner_id),
+            maxlen=self._diagnostics.maxlen)
+        counts["diagnostics"] = before - len(remaining_diag)
+        self._diagnostics = remaining_diag
+
+        n = 0
+        for key in list(self._narrow_history):
+            if self._narrow_history[key].owner_id == owner_id:
+                del self._narrow_history[key]
+                n += 1
+        counts["narrow_history"] = n
+
+        removed_cur = [sid for sid, rec in self._current_results.items()
+                      if rec.owner_id == owner_id]
+        for sid in removed_cur:
+            del self._current_results[sid]
+        counts["current_results"] = len(removed_cur)
+
+        n = 1 if self._owner_settings.pop(owner_id, None) is not None else 0
+        counts["owner_settings"] = n
+
+        n = 0
+        for key in list(self._owner_credentials):
+            if key[0] == owner_id:
+                del self._owner_credentials[key]
+                n += 1
+        counts["owner_credentials"] = n
+
+        n = 0
+        for key in list(self._owner_verifications):
+            if key[0] == owner_id:
+                del self._owner_verifications[key]
+                n += 1
+        counts["owner_verifications"] = n
+
+        n = 0
+        for token in list(self._browser_identities):
+            if self._browser_identities[token].owner_id == owner_id:
+                del self._browser_identities[token]
+                n += 1
+        counts["browser_identities"] = n
+
+        n = 1 if self._owners.pop(owner_id, None) is not None else 0
+        counts["owners"] = n
+
+        return counts
+
     # ---------- Owner registry ＋ Browser Identity（PB-01／#292） ----------
 
     def get_owner(self, owner_id: str) -> Owner | None:

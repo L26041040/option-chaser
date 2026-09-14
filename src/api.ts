@@ -962,6 +962,16 @@ export function deleteScenario(id: string): Promise<void> {
     { method: "DELETE" });
 }
 
+/**
+ * PB-04（#296，Anonymous Public Beta）：自助刪除——立即、不可逆地
+ * 清除呼叫者自己（cookie 解析出的身份）名下的全部資料。後端不接受
+ * 也不需要任何識別參數，安全邊界完全在伺服器端；呼叫端在此之前一定
+ * 要先經過明確的二次確認畫面（見 `src/DeleteMyData.tsx`）。
+ */
+export function deleteMyData(): Promise<void> {
+  return request<void>("/api/me", { method: "DELETE" });
+}
+
 /** V8（#56）：原始資料表（當次快照）的合約列——逐筆合約完整原樣，
  *  不是候選腿的精簡子集，欄位跟 CSV 下載一致。 */
 export interface RawContract {

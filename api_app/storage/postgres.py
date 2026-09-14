@@ -1196,22 +1196,80 @@ class PostgresStorage:
                  entry.consecutive_failures, entry.observed_at,
                  entry.last_success_at))
 
-    # ---------- solo → Owner 一次性遷移（PB-03／#295） ----------
-
-    _MIGRATE_OWNER_TABLES = (
+    # ---------- Owner-scoped 表清單（PB-03／#295 ＋ PB-04／#296 共用） ----------
+    #
+    # PB-04（#296）Implementation constraint 明文要求：「任何未來新增的
+    # owner-scoped 表都必須同步納入這個原語」——單一常數驅動
+    # `migrate_owner()`（PB-03）與 `delete_owner()`（PB-04）兩個方法，
+    # 遺漏在閱讀這一份清單時就看得出來，不是散在兩處、十幾行各自獨立
+    # 維護、容易漂移的 DELETE／UPDATE。
+    #
+    # 與既有兩份更早的清單的差異（PB-03 施工前 repo 現況已確認兩份既有
+    # 清單互相不一致，記錄於此避免未來誤以為可以照抄）：
+    # - `backfill_missing_owner_ids()` 只有 6 張（同上少
+    #   `current_results`／`owner_settings`／`owner_credentials`／
+    #   `owner_verifications`）——它服務的是「把 NULL 補成某個值」，
+    #   這裡服務的是「換值」／「刪除」，目的不同、範圍也因此不同。
+    # - `owner_id_null_counts()` 涵蓋另外 8 張（5 張 row-scoped ＋
+    #   3 張 `owner_*`）——不含 `narrow_history`（SCALE-09 出貨時漏接，
+    #   SCALE-14 才補上，比那份清單當初列舉的表晚出現）。
+    _OWNER_SCOPED_TABLES = (
         "scenarios", "results", "snapshots", "events", "diagnostics",
         "narrow_history", "current_results", "owner_settings",
         "owner_credentials", "owner_verifications",
     )
 
+    # ---------- solo → Owner 一次性遷移（PB-03／#295） ----------
+
     def migrate_owner(self, *, from_owner: str, to_owner: str) -> dict[str, int]:
         counts: dict[str, int] = {}
         with self._connect() as conn:
-            for table in self._MIGRATE_OWNER_TABLES:
+            for table in self._OWNER_SCOPED_TABLES:
                 cur = conn.execute(
                     f"UPDATE {table} SET owner_id = %s WHERE owner_id = %s",
                     (to_owner, from_owner))
                 counts[table] = cur.rowcount
+        return counts
+
+    # ---------- Owner-wide 刪除原語（PB-04／#296） ----------
+
+    def delete_owner(self, owner_id: str) -> dict[str, int]:
+        """完整清除這個 owner 名下全部資料，含 owner registry
+        （`owners`）與 browser identity 對照（`browser_identities`）
+        本身——**單一交易內完成**（`conn.transaction()`，postgres 這些
+        表沒有 FK cascade，既有既定設計，全部手動 DELETE，避免任一張
+        表刪到一半就中斷留下半刪狀態）。
+
+        **明確不觸碰**的 shared market facts 表（system-wide，與任何
+        單一 owner 無關）：`rate_cache`／`treasury_year_cache`／
+        `dividend_cache`／`chain_backoff`／`operational_metrics`／
+        `contract_iv_history`／`iv_observations`／`iv_backfill_runs`
+        ——這些表結構上就沒有 `owner_id` 欄位，本方法從不觸碰它們。
+
+        刪除 `browser_identities`／`owners` 的理由（PB-04 §7
+        Implementation constraint：「不得留下一個指向已刪除 owner 的
+        cookie」）：自助刪除後，下一次帶著那顆舊 cookie 的請求在
+        `resolve_owner_by_token()` 會查不到（token 的列已被刪掉），
+        直接走 PB-02（#294）既有的「token 查不到＝新訪客」lazy-
+        creation 路徑自動拿到一個全新身份——不需要另外寫一套「重新
+        簽發」邏輯，重用既有機制。
+
+        回傳 `{table_name: 受影響列數}`，含 `owners`／
+        `browser_identities` 兩張（共 12 個鍵）。"""
+        counts: dict[str, int] = {}
+        with self._connect() as conn:
+            with conn.transaction():
+                for table in self._OWNER_SCOPED_TABLES:
+                    cur = conn.execute(
+                        f"DELETE FROM {table} WHERE owner_id = %s", (owner_id,))
+                    counts[table] = cur.rowcount
+                cur = conn.execute(
+                    "DELETE FROM browser_identities WHERE owner_id = %s",
+                    (owner_id,))
+                counts["browser_identities"] = cur.rowcount
+                cur = conn.execute(
+                    "DELETE FROM owners WHERE owner_id = %s", (owner_id,))
+                counts["owners"] = cur.rowcount
         return counts
 
     # ---------- Owner registry ＋ Browser Identity（PB-01／#292） ----------

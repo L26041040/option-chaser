@@ -978,8 +978,10 @@ class Storage(Protocol):
         **冪等**：搬過一次後 `from_owner` 底下已無列，重跑對已搬過的表
         全部回 0（PB-03 AC「腳本重跑第二次為 no-op」）。
 
-        涵蓋**這 10 張表**（本方法自己的清單，PB-03／#295 §6 明文要求
-        不得沿用既有任一份既有清單——見下方差異說明）：
+        涵蓋**這 10 張表**（PB-03／#295 §6 明文要求不得沿用既有任一份
+        既有清單——見下方差異說明；PB-04／#296 的 `delete_owner()`
+        共用同一份清單，兩者是本站僅有的兩個「owner-scoped 表」全量
+        操作）：
         `scenarios`／`results`／`snapshots`／`events`／`diagnostics`／
         `narrow_history`／`current_results`／`owner_settings`／
         `owner_credentials`／`owner_verifications`。
@@ -998,6 +1000,40 @@ class Storage(Protocol):
           列舉的表晚出現）。
 
         回傳 `{table_name: 受影響列數}`。"""
+
+    # ---------- Owner-wide 刪除原語（PB-04／#296，Anonymous Public
+    # Beta） ----------
+
+    def delete_owner(self, owner_id: str) -> dict[str, int]:
+        """把 `owner_id` 名下全部資料徹底清除——沿用
+        `migrate_owner()` 那份 10 張表清單（本站目前**唯一**「owner-
+        scoped 表清單」，兩個方法共用，見兩後端實作裡的
+        `_OWNER_SCOPED_TABLES` 常數／等義結構），**外加**
+        `browser_identities`／`owners` 兩張身份基礎表本身——本方法是
+        本站第一個、也是目前唯一一個「刪掉一個 owner」的原語，
+        PB-08（閒置清理排程）與 PB-10（Super User 刪除他人資料）都
+        直接呼叫它，不是各自重寫一份可能漂移的複本。
+
+        **明確不觸碰**的 shared market facts 表（system-wide，與任何
+        單一 owner 無關）：`rate_cache`／`treasury_year_cache`／
+        `dividend_cache`／`chain_backoff`／`operational_metrics`／
+        `contract_iv_history`／`iv_observations`／`iv_backfill_runs`
+        ——這些表結構上沒有 `owner_id` 欄位。
+
+        **單一交易內完成**（postgres 無 FK cascade，全部手動
+        DELETE，避免任一張表刪到一半中斷留下半刪狀態）。
+
+        刪掉 `browser_identities`／`owners` 是刻意的：自助刪除
+        （PB-04）之後不得留下一顆指向已刪除 owner 的 cookie——下一次
+        帶著那顆舊 cookie 的請求在 `resolve_owner_by_token()` 會查
+        不到，直接走 PB-02（#294）既有的「token 查不到＝新訪客」
+        lazy-creation 路徑自動拿到一個全新身份，不需要另外設計一套
+        「重新簽發」邏輯。
+
+        回傳 `{table_name: 受影響列數}`，含 `owners`／
+        `browser_identities` 兩張（共 12 個鍵）。這個 owner_id 本來就
+        不存在時，全部鍵值皆為 0（不拋錯——「刪除一個不存在的東西」
+        視同已經達成目標狀態，冪等）。"""
 
     # ---------- Owner registry ＋ Browser Identity（PB-01／#292，
     # Anonymous Public Beta，expand，零行為變更） ----------

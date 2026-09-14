@@ -916,6 +916,116 @@ def test_migrate_owner_does_not_touch_a_third_owners_data(storage):
     assert storage.get_credential("marketdata_app", owner="carol") is not None
 
 
+# ---------- Owner-wide 刪除原語（PB-04／#296，Anonymous Public Beta） ----------
+
+
+def _register_owner(storage, owner_id: str, token: str) -> None:
+    storage.create_owner_with_token(
+        Owner(owner_id=owner_id, created_at="2026-09-14T00:00:00+00:00"),
+        BrowserIdentity(token=token, owner_id=owner_id,
+                        issued_at="2026-09-14T00:00:00+00:00",
+                        last_seen_at="2026-09-14T00:00:00+00:00"))
+
+
+def test_delete_owner_clears_every_one_of_the_ten_data_tables(storage):
+    _seed_all_ten_tables_under(storage, "doomed")
+    _register_owner(storage, "doomed", "tok-doomed")
+
+    counts = storage.delete_owner("doomed")
+
+    for table in ("scenarios", "results", "snapshots", "events", "diagnostics",
+                 "narrow_history", "current_results", "owner_settings",
+                 "owner_credentials", "owner_verifications"):
+        assert counts[table] >= 1, f"{table} 沒有被清空：{counts}"
+
+    assert storage.get_scenario("pb03-doomed", owner="doomed") is None
+    assert storage.latest_result("pb03-doomed", owner="doomed") is None
+    assert storage.get_snapshot("pb03-doomed", "2026-09-14T01:00:00+00:00",
+                                owner="doomed") is None
+    assert storage.list_events(scenario_id="pb03-doomed", owner="doomed") == []
+    assert storage.list_diagnostics(owner="doomed") == []
+    assert storage.get_narrow_history_entry(
+        "pb03-doomed", "2026-09-14T01:00:00+00:00",
+        "bull-call-spread|100|110|2026-11-20", owner="doomed") is None
+    assert storage.get_settings(owner="doomed") is None
+    assert storage.get_credential("marketdata_app", owner="doomed") is None
+    assert storage.get_verification("marketdata_app", owner="doomed") is None
+
+
+def test_delete_owner_also_clears_the_identity_tables_themselves(storage):
+    """PB-04 §7 constraint：不得留下一顆指向已刪除 owner 的 cookie
+    ——`owners` 與 `browser_identities` 兩張身份基礎表本身也要清空，
+    讓下一次帶著舊 cookie 的請求走 PB-02 既有的『token 查不到』
+    lazy-creation 路徑，不需要另外設計重新簽發邏輯。"""
+    _register_owner(storage, "doomed", "tok-doomed")
+
+    counts = storage.delete_owner("doomed")
+
+    assert counts["owners"] == 1
+    assert counts["browser_identities"] == 1
+    assert storage.get_owner("doomed") is None
+    assert storage.resolve_owner_by_token("tok-doomed") is None
+
+
+def test_delete_owner_is_idempotent_deleting_a_nonexistent_owner_is_a_noop(storage):
+    counts = storage.delete_owner("never-existed")
+    assert all(n == 0 for n in counts.values()), counts
+
+
+def test_delete_owner_does_not_touch_another_owners_data(storage):
+    _seed_all_ten_tables_under(storage, "doomed")
+    _register_owner(storage, "doomed", "tok-doomed")
+    _seed_all_ten_tables_under(storage, "survivor")
+    _register_owner(storage, "survivor", "tok-survivor")
+
+    storage.delete_owner("doomed")
+
+    assert storage.get_scenario("pb03-survivor", owner="survivor") is not None
+    assert storage.get_credential("marketdata_app", owner="survivor") is not None
+    assert storage.get_owner("survivor") is not None
+    assert storage.resolve_owner_by_token("tok-survivor") == "survivor"
+
+
+def test_delete_owner_does_not_touch_shared_market_facts_tables(storage):
+    """8 張 shared／system-wide 表與任何單一 owner 無關，本方法從不
+    觸碰——逐張建立資料、刪除某個 owner 之後逐張確認仍在。"""
+    _seed_all_ten_tables_under(storage, "doomed")
+    _register_owner(storage, "doomed", "tok-doomed")
+
+    storage.save_rate_cache(RateCacheEntry(
+        fetched_at="2026-09-14T00:00:00+00:00", curve=None, note="seed"))
+    storage.save_treasury_year_cache(TreasuryYearCacheEntry(
+        year=2026, fetched_at="2026-09-14T00:00:00+00:00", rows=None, note="seed"))
+    storage.save_dividend_cache(DividendCacheEntry(
+        symbol="TLT", fetched_at="2026-09-14T00:00:00+00:00",
+        history=None, note="seed"))
+    storage.save_chain_backoff(ChainBackoffEntry(
+        source="cboe", blocked_until=None, retry_after_seconds=None,
+        consecutive_failures=0, observed_at="2026-09-14T00:00:00+00:00"))
+    storage.record_metric("chain_fetch_count", "2026-09-14", source="cboe",
+                          symbol="TLT", count=1)
+    storage.save_contract_history(ContractHistory(
+        contract_symbol="TLT281215C00094000", points=(),
+        fetched_through=None, last_attempt_on=None, last_status="ok",
+        last_note=None))
+    storage.save_iv_observation(IvObservation(
+        symbol="TLT", observed_on="2026-09-14", surface={},
+        fetched_at="2026-09-14T00:00:00+00:00"))
+    storage.save_iv_backfill_run(IvBackfillRun(
+        symbol="TLT", ran_on="2026-09-14", outcome="ok", note=None))
+
+    storage.delete_owner("doomed")
+
+    assert storage.get_rate_cache() is not None
+    assert storage.get_treasury_year_cache(2026) is not None
+    assert storage.get_dividend_cache("TLT") is not None
+    assert storage.get_chain_backoff("cboe") is not None
+    assert storage.metric_summary() != []
+    assert storage.get_contract_history("TLT281215C00094000") is not None
+    assert storage.iv_observations("TLT") != []
+    assert storage.get_iv_backfill_run("TLT") is not None
+
+
 # ---------- Narrow visible-candidate history（SCALE-09／#261） ----------
 
 def test_narrow_history_starts_with_no_row(storage):
