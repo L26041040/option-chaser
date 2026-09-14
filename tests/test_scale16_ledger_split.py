@@ -34,7 +34,7 @@ FIX = "tests/fixtures/xyz_v7_butterfly_moderate.json"
 
 def _client(*, storage=None):
     snap = load_snapshot(FIX)
-    return TestClient(create_app(fetch=lambda symbol: snap,
+    return TestClient(create_app(identity_resolver=lambda: "solo", fetch=lambda symbol: snap,
                                  storage=storage or MemoryStorage()))
 
 
@@ -52,7 +52,7 @@ def _client_with_advancing_snapshot(*, storage=None):
         ts = f"2026-07-{(counter['n'] % 28) + 1:02d}T21:30:00-04:00"
         return dataclasses.replace(base, fetched_at=ts)
 
-    return TestClient(create_app(fetch=fetch,
+    return TestClient(create_app(identity_resolver=lambda: "solo", fetch=fetch,
                                  storage=storage or MemoryStorage()))
 
 

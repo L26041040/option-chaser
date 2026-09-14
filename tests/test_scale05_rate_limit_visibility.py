@@ -177,7 +177,7 @@ def _client(storage=None, **overrides) -> TestClient:
     """刻意不傳 `fetch=`——`_default_fetch()` 才會真的接上
     `chain_backoff`，比照 SCALE-04 既有 `_client_without_fetch_
     override()` 手法。"""
-    return TestClient(create_app(storage=storage or MemoryStorage(), **overrides))
+    return TestClient(create_app(identity_resolver=lambda: "solo", storage=storage or MemoryStorage(), **overrides))
 
 
 def _create_scenario(client: TestClient, symbol: str = "TLT") -> dict:

@@ -11,11 +11,13 @@ round-trip、backfill 冪等性由 `tests/test_storage_contract.py` 的
 ## AC 對照
 
 - AC-1／AC-2：見 `test_storage_contract.py`
-- AC-3：`test_default_identity_resolver_is_solo_owner_end_to_end`／
-  `test_owner_id_never_appears_in_any_http_response_body`（後者是
-  「production 行為逐位元不變」字面意義的落地——今天任何 HTTP 回應
-  都不含 `owner_id`，這一票加了欄位不代表這一票也改了任何一個回應
-  形狀）
+- AC-3：`test_default_identity_resolver_is_now_cookie_based_not_solo`
+  （⚠ PB-02／#294 起：這條測試已從「驗證預設是固定 solo」改為「驗證
+  預設是 cookie-based、不再是 solo」——SCALE-06 當年的前提本身已被
+  PB-02 推翻，見該測試 docstring）／
+  `test_owner_id_never_appears_in_any_http_response_body`（「production
+  行為逐位元不變」字面意義的落地——今天任何 HTTP 回應都不含
+  `owner_id`，不論解析出的值是什麼）
 - AC-4（原字面）：⚠ **本檔案已隨 SCALE-11（#262）跟進更新**——當年
   `test_scenarios_created_under_different_identities_are_all_visible_
   in_the_unfiltered_list` 的斷言字面預告「query boundary 是
@@ -48,8 +50,16 @@ def _client(*, identity_resolver=None, storage=None):
     kwargs = {}
     if identity_resolver is not None:
         kwargs["identity_resolver"] = identity_resolver
+    # PB-02（#294）：`base_url="https://testserver"`——production 唯一
+    # 預設（不覆寫 `identity_resolver`）現在會簽發 `Secure`／`__Host-`
+    # cookie；httpx 的 cookie jar 只在 scheme 是 https 時才會把它
+    # 存回、下一次請求帶上（與真實瀏覽器行為一致，已實測驗證：`http`
+    # scheme 下 Secure cookie 完全不會被送回）。不覆寫
+    # `identity_resolver` 的測試（本檔案僅兩條）必須跨請求維持同一個
+    # cookie-derived owner，否則第二次請求會被判定成一個全新訪客。
     return TestClient(create_app(fetch=lambda symbol: snap,
-                                 storage=storage or MemoryStorage(), **kwargs))
+                                 storage=storage or MemoryStorage(), **kwargs),
+                      base_url="https://testserver")
 
 
 def _create(client, **overrides):
@@ -58,22 +68,38 @@ def _create(client, **overrides):
     return r.json()
 
 
-def test_default_identity_resolver_is_solo_owner_end_to_end():
-    """production 預設（未覆寫 `identity_resolver`）下，一個劇本從建立
-    到刷新，全部 5 張表的新寫入都標成同一個固定 `"solo"`。"""
+def test_default_identity_resolver_is_now_cookie_based_not_solo():
+    """PB-02（#294，Anonymous Public Beta）AC：`identity_resolver()`
+    不再對任何真實請求回傳 `"solo"`——production 預設（未覆寫
+    `identity_resolver`）改為 cookie-based。這條測試取代 SCALE-06
+    時期的 `test_default_identity_resolver_is_solo_owner_end_to_end`
+    （該測試的前提本身已被本票推翻，不是斷言被放寬——`owner_id`
+    今天一律是隨機值，不再是任何固定字串）。
+
+    同一個 client（同一顆 cookie）跨兩次請求（建立→刷新）解析出**同
+    一個** owner_id，且那個值不是 `"solo"`；5 張表的新寫入全部一致
+    ——這正是舊測試想驗證的「全部寫入標成同一個身分」，只是那個身分
+    現在來自 cookie 而非常數。"""
     storage = MemoryStorage()
     c = _client(storage=storage)
     sc = _create(c)
+
     r = c.post(f"/api/scenarios/{sc['id']}/refresh")
     assert r.status_code == 200, r.text
     analyzed_at = r.json()["latest_analyzed_at"]
 
-    assert storage.get_scenario(sc["id"], owner="solo").owner_id == "solo"
-    assert storage.latest_result(sc["id"], owner="solo").owner_id == "solo"
-    assert storage.get_snapshot_owner(sc["id"], analyzed_at) == "solo"
-    events = storage.list_events(scenario_id=sc["id"], owner="solo")
+    # 這顆 cookie 真正解析出的 owner_id 是隨機值——用 `list_owners()`
+    # 找出它，而不是憑空猜一個；`create_scenario()`＋`refresh` 共用
+    # 同一個 client（同一顆 cookie），全程只該建出唯一一個 owner。
+    [owner_id] = [o.owner_id for o in storage.list_owners()]
+    assert owner_id != "solo"
+
+    assert storage.get_scenario(sc["id"], owner=owner_id).owner_id == owner_id
+    assert storage.latest_result(sc["id"], owner=owner_id).owner_id == owner_id
+    assert storage.get_snapshot_owner(sc["id"], analyzed_at) == owner_id
+    events = storage.list_events(scenario_id=sc["id"], owner=owner_id)
     assert len(events) >= 2   # SCENARIO_CREATED + ANALYSIS_COMPLETED
-    assert all(e["owner_id"] == "solo" for e in events)
+    assert all(e["owner_id"] == owner_id for e in events)
 
 
 def test_identity_resolver_is_injectable_and_new_writes_carry_it():

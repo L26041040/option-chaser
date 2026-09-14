@@ -25,7 +25,7 @@ def db():
 
 @pytest.fixture
 def client(db):
-    return TestClient(create_app(storage=db))
+    return TestClient(create_app(identity_resolver=lambda: "solo", storage=db))
 
 
 def _custom(provider=PROVIDER):

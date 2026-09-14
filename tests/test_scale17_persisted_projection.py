@@ -145,7 +145,7 @@ def test_persisted_current_results_row_physical_size_reflects_the_stripped_view(
 
 def _client(*, storage=None):
     snap = load_snapshot(FIX)
-    return TestClient(create_app(fetch=lambda symbol: snap,
+    return TestClient(create_app(identity_resolver=lambda: "solo", fetch=lambda symbol: snap,
                                  storage=storage or MemoryStorage()))
 
 

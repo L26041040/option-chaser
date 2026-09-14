@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import dataclasses
 import os
+import secrets
 import time
 import uuid
 from datetime import date, timedelta
@@ -35,12 +36,13 @@ from option_chaser.timeframe import (TargetMonth, calendar_anchor,
 from . import chain_backoff, diagnostics, metrics, providers
 from .clock import now_utc_iso, ny_today
 from .dividend_cache import cached_loader as cached_dividend_loader
-from .identity import IdentityResolver, default_identity_resolver
+from .identity import (IdentityResolver, cookie_identity_resolver,
+                       default_identity_resolver, resolved_owner_scope)
 from .rate_cache import cached_loader
-from .storage import (ContractHistory, DataSourceSettings, IvBackfillRun,
-                      IvObservation, NarrowHistoryEntry, ProviderCredential,
-                      ProviderVerification, RateCacheEntry, ResultRecord,
-                      ResultSummary, Scenario,
+from .storage import (BrowserIdentity, ContractHistory, DataSourceSettings,
+                      IvBackfillRun, IvObservation, NarrowHistoryEntry,
+                      Owner, ProviderCredential, ProviderVerification,
+                      RateCacheEntry, ResultRecord, ResultSummary, Scenario,
                       ScenarioExists, Storage, UsageSetting)
 from .storage.factory import database_url_candidates, storage_from_env
 from .treasury_cache import cached_rate_curve_rows
@@ -61,6 +63,40 @@ ContractHistoryFetch = Callable[..., list]
 # 的 `ratecurve.curve_asof` 吃這個形狀），跟上面 `RateCurveLoader`（只回
 # 「今天」單一曲線，live 分析路徑專用）是不同的資料語意，不共用注入點。
 RateCurveRowsFetch = Callable[[date, date], tuple]
+
+# ---------- PB-02（#294，Anonymous Public Beta）：cookie-based owner
+# 解析的常數與路由分類 ----------
+#
+# `__Host-` 前綴要求 Secure＋Path=/＋不得設 Domain——三者在
+# `_call_within_owner_scope()` 的 `set_cookie()` 呼叫裡逐一滿足
+# （不設 `domain` 參數＝預設不帶）。
+_OWNER_COOKIE_NAME = "__Host-oc_owner"
+# 瀏覽器允許的上限量級（spec §4：「目前 Chrome 約 400 天」），每次
+# 成功請求都重新 `set_cookie()` 續命（滑動窗，不是固定到期）。
+_OWNER_COOKIE_MAX_AGE_SECONDS = 400 * 24 * 60 * 60
+
+# spec §4 的路由白名單——缺 cookie 時**不得**建立新 owner 的端點。
+# 白名單而非黑名單：未來新增的 owner-scoped 端點預設不豁免，漏列
+# 新端點不會意外洩漏成「缺 cookie 也能用」。
+_OWNER_EXEMPT_EXACT = ("/api/health",)
+_OWNER_EXEMPT_PREFIXES = ("/api/cron/", "/api/ops/")
+
+
+def _is_owner_exempt_route(path: str) -> bool:
+    """PB-02 spec §4 的**唯一路由判斷點**——集中在這一處，不得散落
+    各端點各自判斷。
+
+    - `/api/health`：PB-13 的部署後 smoke／uptime 監控持續探測的目標。
+    - `/api/cron/*`：Vercel Cron 每個交易日觸發一次，若建立 owner 會
+      洗出大量永遠不會再被使用的 Abandoned Owner，浪費 owner 表與
+      PB-08 的清理排程。
+    - `/api/ops/*`：operator-only 端點，`OPS_SECRET` 另外把關，與
+      使用者身份無關。
+    """
+    if path in _OWNER_EXEMPT_EXACT:
+        return True
+    return any(path.startswith(prefix) for prefix in _OWNER_EXEMPT_PREFIXES)
+
 
 # 一輪刷新（T07／#193）的 server 端時間預算——明顯小於 serverless 函式
 # 的硬性時間上限（CONTEXT.md：60 秒），留出寫回與回應序列化的餘裕。
@@ -518,7 +554,7 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
                analysis_deadline_seconds: float | None = ANALYSIS_DEADLINE_SECONDS,
                cboe_fetch: FetchChain | None = None,
                chain_backoff_default: timedelta = chain_backoff.DEFAULT_BACKOFF,
-               identity_resolver: IdentityResolver = default_identity_resolver,
+               identity_resolver: IdentityResolver = cookie_identity_resolver,
                cron_secret: str | None = None,
                ops_secret: str | None = None,
                enable_metrics: bool = True,
@@ -583,20 +619,30 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
     timedelta(0))` 重新建構 app，不必修改 `chain_backoff.py` 或
     `main.py` 任何一行程式碼。
 
-    `identity_resolver`（SCALE-06／#256，Ownership A-1 Expand）：這次
+    `identity_resolver`（SCALE-06／#256 Ownership A-1 Expand；PB-02／
+    #294 Anonymous Public Beta 起切換為 production enforce）：這次
     request「屬於誰」——**只是 data boundary 標記，不是 authentication／
-    privacy**（那是 out-of-scope 的 A-2）。production 預設
-    `default_identity_resolver`，固定回傳單一 `SOLO_OWNER` 值；今天
-    唯一存在的呼叫端在解析出這個值後，把它寫進 5 張 row-scoped 表
-    （`scenarios`／`results`／`snapshots`／`events`／`diagnostics`）
-    新寫入的 `owner_id` 欄位——本票**不**在任何查詢路徑套用過濾，寫入
-    的值目前純粹是鋪路。這不是 `cboe_fetch` 那種每次呼叫都要吃一個
-    `symbol` 參數的抓取函式，是一個零參數、對整個 app 生命週期只需要
-    決定一次語意的函式，直接當一般函式值傳入即可，不受 `cboe_fetch`
-    那個 eager-binding 陷阱影響（沒有任何測試需要
-    monkeypatch `identity.default_identity_resolver` 這個模組屬性——
-    要換身分邏輯，直接透過這個 DI 參數傳一個不同的函式進來就是了，
-    這正是它存在的目的）。
+    privacy**（那是軸二 Super User，PB-09）。
+
+    **production 預設 `cookie_identity_resolver`**：讀取
+    `identity.resolved_owner_scope()` 設定的 ContextVar，真正的解析／
+    建立邏輯在 `_request_scope_middleware`（見下方，唯一判斷點）——
+    未被覆寫時，任何真實請求都不再回傳 `SOLO_OWNER`。既有 27 處呼叫端
+    不變：這仍是一個零參數、對整個 app 生命週期只需要讀一次的函式，
+    直接當一般函式值傳入即可，不受 `cboe_fetch` 那個 eager-binding
+    陷阱影響。
+
+    **測試／未來需要固定身份的呼叫端**：顯式傳入
+    `identity_resolver=default_identity_resolver`（或等價的
+    `lambda: "solo"`／`lambda: "alice"`）即可完全繞開 cookie／storage
+    owner 解析——`_request_scope_middleware` 用
+    `identity_resolver is cookie_identity_resolver` 判斷是否要跑 cookie
+    邏輯，只在**沒有被覆寫**（production 唯一路徑）時才觸發；一旦被
+    覆寫，行為與 PB-02 之前逐位元相同（不讀 cookie、不寫 owner 表、不
+    簽發 `Set-Cookie`）。這不是「一部分 production 請求走 solo」的雙軌
+    設計——production 永遠只有一條路徑（cookie），這條分支只服務主動
+    選擇繞過它的呼叫端（既有 `test_scale06`／`test_scale11` 大量依賴
+    這個 DI 注入點做多身份隔離測試）。
 
     `cron_secret`（SCALE-07／#257，Treasury Cron）：`GET /api/cron/
     warm-rate-cache` 驗證 `Authorization: Bearer <cron_secret>` 用的
@@ -711,32 +757,101 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
     # 合併 correlation id（DG-02／#145）與 storage 連線 scope
     # （PERF-01／#177，T02／#186 修形）成單一層 middleware——原本兩層
     # 各自的 `call_next()` 轉送對大 payload（`/iv-history` 十萬字元級）
-    # 是多餘的額外一趟。
+    # 是多餘的額外一趟。PB-02（#294）在同一層加上 cookie-based owner
+    # 解析／建立（spec §4／§22 AC1／AC15），理由同上：不新增第二個
+    # middleware。
     #
     # `_db()` 本身現在是零連線的物件建構（見上），呼叫它拿
-    # `request_scope` 不再是「進 scope 前先偷跑一條連線」；`memory.py`
-    # 沒有 `request_scope()` 這個方法（`Storage` Protocol 也沒有這個
-    # 方法，兩者皆零改動），用 `getattr` 拿不到就直接跳過，行為完全
-    # 比照今天。`_db()` 本身可能丟出例外（例如環境變數沒設好）——這裡
-    # 也要容忍，不然會連 `/api/health` 這種本來就設計成容忍連不上的
-    # 端點都被這層擋在前面。
+    # `request_scope` 不再是「進 scope 前先偷跑一條連線」——`memory.py`
+    # 確實實作了這個方法（`request_scope`，純 no-op contextmanager，
+    # 只是為了讓記憶體假體走跟 production 同一條控制流，見該方法
+    # docstring），`getattr` 因此在兩個後端都拿得到；保留 `getattr`
+    # 純粹是防禦性寫法（未來若有第三個 `Storage` 實作忘記補這個方法，
+    # 這裡仍能優雅退回逐次開連線，而不是整個 app 起不來）。`_db()`
+    # 本身可能丟出例外（例如環境變數沒設好）——這裡也要容忍，不然會連
+    # `/api/health` 這種本來就設計成容忍連不上的端點都被這層擋在前面。
     #
     # `request_scope()` 現在是**惰性**的（進入不主動開連線，第一次
     # 真正用到 storage 才開）——完全不碰 storage 的 request（例如某些
     # 純驗證錯誤）因此不再付任何連線握手。
+    _uses_cookie_identity = identity_resolver is cookie_identity_resolver
+
+    def _resolve_owner_for_request(request: Request) -> tuple[str | None, str | None]:
+        """PB-02（#294）spec §4 的**唯一路由判斷點**——回傳
+        `(owner_id, cookie_token_to_set)`。`owner_id` 為 `None` 代表這個
+        路由被排除在 owner-scoped 流程之外（不得建立新 owner，見
+        `_OWNER_EXEMPT_*`）；`cookie_token_to_set` 非 `None` 時，呼叫端
+        要在回應上 `set_cookie()`（新建或續命皆要重設，讓 Max-Age
+        變成滑動窗）。
+
+        只在**沒有被 DI 覆寫**（`_uses_cookie_identity`，production
+        唯一路徑）時才會做任何 cookie／storage owner 動作——顯式注入
+        別的 `identity_resolver`（既有 `test_scale06`／`test_scale11`
+        大量依賴的既有做法）時，這個函式直接回 `(None, None)`，呼叫端
+        改用 `identity_resolver()` 本身，行為與 PB-02 之前逐位元相同。
+        """
+        if not _uses_cookie_identity:
+            return None, None
+        if _is_owner_exempt_route(request.url.path):
+            return None, None
+
+        token = request.cookies.get(_OWNER_COOKIE_NAME)
+        owner_id = _db().resolve_owner_by_token(token) if token else None
+
+        now = now_utc_iso()
+        if owner_id is not None:
+            # 續命：token 已知有效，只更新 last_seen_at，不重新建立。
+            _db().touch_browser_identity(token, now=now)
+        else:
+            # 缺 cookie，或帶著的 token 查不到（已被伺服器單方作廢、
+            # 或從未存在過）——一律視為新訪客，建立新 owner＋新 token。
+            # 兩個值各自獨立產生（PB-01 既有不變量：token 不是 owner_id）。
+            owner_id = secrets.token_urlsafe(32)
+            token = secrets.token_urlsafe(32)
+            _db().create_owner_with_token(
+                Owner(owner_id=owner_id, created_at=now),
+                BrowserIdentity(token=token, owner_id=owner_id,
+                                issued_at=now, last_seen_at=now))
+        return owner_id, token
+
+    async def _call_within_owner_scope(request: Request, call_next) -> Response:
+        owner_id, cookie_token = _resolve_owner_for_request(request)
+        effective_owner = owner_id if _uses_cookie_identity else identity_resolver()
+        with diagnostics.owner_scope(effective_owner), \
+             resolved_owner_scope(owner_id):
+            response = await call_next(request)
+        if cookie_token is not None:
+            # `SameSite=Lax`：同源 SPA，沒有跨站表單提交或第三方
+            # iframe 內嵌的需求，`Lax` 已足夠擋掉 CSRF 常見手法
+            # （跨站 GET 導覽仍會帶上，但本站沒有靠 GET 產生副作用的
+            # 端點）。`__Host-` 前綴要求 `Secure`＋`Path=/`＋不得設
+            # `Domain`——production（Vercel）恆為 HTTPS，三個條件本身
+            # 就自然成立；本地若以純 HTTP 手動起 Python 後端（非透過
+            # 前端 mock 的 E2E／pytest TestClient，兩者皆已改用
+            # `https://testserver` 分別見 `docs/pb02-cookie-testing-
+            # notes.md`），瀏覽器會拒收這顆 cookie——這是明確記錄的
+            # 已知限制，不是靜默降級：程式碼不會偵測「是不是 HTTPS」
+            # 然後悄悄拿掉 `Secure`／`__Host-`，那樣才是真正的靜默
+            # 降級（會讓 production 與非 HTTPS 環境的 cookie 屬性不
+            # 一致、難以察覺）。
+            response.set_cookie(
+                _OWNER_COOKIE_NAME, cookie_token,
+                max_age=_OWNER_COOKIE_MAX_AGE_SECONDS,
+                httponly=True, secure=True, samesite="lax", path="/")
+        return response
+
     @app.middleware("http")
     async def _request_scope_middleware(request: Request, call_next):
-        with diagnostics.correlation_scope() as cid, \
-             diagnostics.owner_scope(identity_resolver()):
+        with diagnostics.correlation_scope() as cid:
             try:
                 scope = getattr(_db(), "request_scope", None)
             except Exception:  # noqa: BLE001 — 拿不到 storage 就整個跳過，交給下游端點自己的錯誤處理
                 scope = None
             if scope is None:
-                response = await call_next(request)
+                response = await _call_within_owner_scope(request, call_next)
             else:
                 with scope():
-                    response = await call_next(request)
+                    response = await _call_within_owner_scope(request, call_next)
             response.headers["X-Correlation-Id"] = cid
         return response
 

@@ -87,7 +87,7 @@ def test_resolved_params_is_bit_identical_to_view_params_as_json_text():
 
 def _client(*, storage=None):
     snap = load_snapshot(FIX)
-    return TestClient(create_app(fetch=lambda symbol: snap,
+    return TestClient(create_app(identity_resolver=lambda: "solo", fetch=lambda symbol: snap,
                                  storage=storage or MemoryStorage()))
 
 

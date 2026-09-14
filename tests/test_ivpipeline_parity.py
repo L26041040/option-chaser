@@ -162,7 +162,7 @@ class FakeIvStorage:
 
 
 def _client(db, *, contract_history):
-    return TestClient(create_app(
+    return TestClient(create_app(identity_resolver=lambda: "solo", 
         storage=db, fetch=lambda s: _snap(), rate_loader=_rate_loader,
         dividend_loader=_dividend_loader,
         verify_provider=lambda p, t: providers.VerifyOutcome(True),

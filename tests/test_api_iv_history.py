@@ -169,7 +169,7 @@ def _contract_history_empty(provider, occ_symbol, from_date, to_date, token,
 
 def _client(db, *, surface=_surface_never_called,
            contract_history=_contract_history_empty):
-    return TestClient(create_app(
+    return TestClient(create_app(identity_resolver=lambda: "solo", 
         storage=db, fetch=lambda s: _snap(), rate_loader=_rate_loader,
         dividend_loader=_dividend_loader,
         verify_provider=lambda p, t: providers.VerifyOutcome(True),
@@ -261,7 +261,7 @@ def test_custom_with_an_unverified_credential_stays_locked(db):
 
 
 def test_a_failed_verification_keeps_the_module_locked(db):
-    client = TestClient(create_app(
+    client = TestClient(create_app(identity_resolver=lambda: "solo", 
         storage=db, fetch=lambda s: _snap(), rate_loader=_rate_loader,
         dividend_loader=_dividend_loader,
         verify_provider=lambda p, t: providers.VerifyOutcome(False, "認證被拒"),

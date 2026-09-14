@@ -64,7 +64,7 @@ def _client(db, *, verify=_ok, custom_fetch=None, fetch=None):
         kwargs["custom_fetch"] = custom_fetch
     if fetch is not None:
         kwargs["fetch"] = fetch
-    return TestClient(create_app(**kwargs))
+    return TestClient(create_app(identity_resolver=lambda: "solo", **kwargs))
 
 
 def _configure(client, *, market="custom", iv="default"):

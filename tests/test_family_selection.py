@@ -27,7 +27,7 @@ def _offline_dividend_loader(symbol, today):
 
 def _client(storage=None):
     snap = load_snapshot(FIX)
-    return TestClient(create_app(fetch=lambda symbol: snap,
+    return TestClient(create_app(identity_resolver=lambda: "solo", fetch=lambda symbol: snap,
                                  storage=storage or MemoryStorage(),
                                  rate_loader=_offline_rate_loader,
                                  dividend_loader=_offline_dividend_loader))
@@ -250,7 +250,7 @@ def test_flat_scenario_creates_analyses_and_refreshes_without_being_rejected():
     確認過這個限制、專門為此另建了這份 fixture。"""
     client = _client()
     snap = load_snapshot("tests/fixtures/xyz_v7_butterfly_moderate.json")
-    client = TestClient(create_app(
+    client = TestClient(create_app(identity_resolver=lambda: "solo", 
         fetch=lambda symbol: snap, storage=MemoryStorage(),
         rate_loader=_offline_rate_loader, dividend_loader=_offline_dividend_loader))
     sid = _create(client, target_price=100.0,

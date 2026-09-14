@@ -59,7 +59,7 @@ def _client(monkeypatch, *, storage=None, ops_secret="ops-secret",
 
     snap = snap if snap is not None else _fresh_snapshot()
     monkeypatch.setattr(cboe, "fetch_chain", lambda symbol: snap)
-    return TestClient(create_app(storage=storage or MemoryStorage(),
+    return TestClient(create_app(identity_resolver=lambda: "solo", storage=storage or MemoryStorage(),
                                  ops_secret=ops_secret, **overrides))
 
 
@@ -161,7 +161,7 @@ def test_chain_429_is_recorded_separately_from_a_plain_fetch_failure():
         raise RateLimitedError("429", retry_after_seconds=60.0)
 
     fallback = dataclasses.replace(_fresh_snapshot(), source="yfinance")
-    c = TestClient(create_app(storage=storage, ops_secret="ops-secret"))
+    c = TestClient(create_app(identity_resolver=lambda: "solo", storage=storage, ops_secret="ops-secret"))
     import unittest.mock as mock
     with mock.patch.object(cboe, "fetch_chain", side_effect=rate_limited), \
          mock.patch.object(yf, "fetch_chain", return_value=fallback):

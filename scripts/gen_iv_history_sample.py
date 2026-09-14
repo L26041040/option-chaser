@@ -116,7 +116,7 @@ def _leg_history(*, option_type, strike, expiration, spot):
 def main() -> None:
     snap = load_snapshot(FIXTURE)
     db = MemoryStorage()
-    client = TestClient(create_app(
+    client = TestClient(create_app(identity_resolver=lambda: "solo", 
         storage=db, fetch=lambda s: snap,
         rate_loader=_rate_loader, dividend_loader=_dividend_loader,
         verify_provider=lambda p, t: providers.VerifyOutcome(True),
@@ -154,7 +154,7 @@ def main() -> None:
                           observer=None):
         return points_by_symbol.get(occ_symbol, [])
 
-    client_with_legs = TestClient(create_app(
+    client_with_legs = TestClient(create_app(identity_resolver=lambda: "solo", 
         storage=db, fetch=lambda s: snap,
         rate_loader=_rate_loader, dividend_loader=_dividend_loader,
         verify_provider=lambda p, t: providers.VerifyOutcome(True),

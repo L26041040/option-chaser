@@ -58,7 +58,7 @@ def _fake_dividend_loader(symbol, today):
 
 def _client():
     snap = load_snapshot(FIX)
-    return TestClient(create_app(fetch=lambda symbol: snap,
+    return TestClient(create_app(identity_resolver=lambda: "solo", fetch=lambda symbol: snap,
                                  rate_loader=_fake_rate_loader,
                                  dividend_loader=_fake_dividend_loader))
 

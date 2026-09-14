@@ -18,7 +18,7 @@ NEW = {"symbol": "XYZ", "target_price": 130.0, "target_month": "2026-09",
 
 def _client(storage=None):
     snap = load_snapshot(FIX)
-    return TestClient(create_app(fetch=lambda symbol: snap,
+    return TestClient(create_app(identity_resolver=lambda: "solo", fetch=lambda symbol: snap,
                                  storage=storage or MemoryStorage()))
 
 
@@ -325,7 +325,7 @@ def test_reanalysis_updates_the_card_to_the_newer_numbers():
         calls["n"] += 1
         return snap
 
-    client = TestClient(create_app(fetch=fetch, storage=MemoryStorage()))
+    client = TestClient(create_app(identity_resolver=lambda: "solo", fetch=fetch, storage=MemoryStorage()))
     sc = _create(client)
 
     client.post(f"/api/scenarios/{sc['id']}/refresh").raise_for_status()

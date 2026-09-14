@@ -108,7 +108,7 @@ def test_visible_candidate_costs_reads_from_the_candidate_pool():
 # ---------- AC-8：refresh 端到端 dual-write，results.view 不變 ----------
 
 def _client_without_fetch_override(storage, **overrides) -> TestClient:
-    return TestClient(create_app(storage=storage, **overrides))
+    return TestClient(create_app(identity_resolver=lambda: "solo", storage=storage, **overrides))
 
 
 def test_refresh_dual_writes_narrow_history_without_changing_the_stored_view(

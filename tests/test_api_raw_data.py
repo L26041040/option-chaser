@@ -18,7 +18,7 @@ NEW = {"symbol": "XYZ", "target_price": 130.0, "target_month": "2026-09",
 
 def _client(*, storage=None, **overrides):
     snap = load_snapshot(FIX)
-    return TestClient(create_app(fetch=lambda symbol: snap,
+    return TestClient(create_app(identity_resolver=lambda: "solo", fetch=lambda symbol: snap,
                                  storage=storage or MemoryStorage(), **overrides))
 
 
@@ -119,7 +119,7 @@ def test_raw_data_follows_the_latest_refresh_not_a_stale_one():
     c.post(f"/api/scenarios/{sc['id']}/refresh").raise_for_status()
 
     newer = dataclasses.replace(load_snapshot(FIX), fetched_at="2026-07-16T09:30:00-04:00")
-    c2 = TestClient(create_app(fetch=lambda symbol: newer, storage=storage))
+    c2 = TestClient(create_app(identity_resolver=lambda: "solo", fetch=lambda symbol: newer, storage=storage))
     c2.post(f"/api/scenarios/{sc['id']}/refresh").raise_for_status()
 
     raw = c2.get(f"/api/scenarios/{sc['id']}/raw-data").json()

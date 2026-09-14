@@ -20,7 +20,7 @@ CURVE = RateCurve(curve_date="2026-07-15", nodes=((0.5, 0.04), (2.0, 0.042)))
 
 def _client(*, rate_loader, storage=None):
     snap = load_snapshot(FIX)
-    return TestClient(create_app(fetch=lambda symbol: snap,
+    return TestClient(create_app(identity_resolver=lambda: "solo", fetch=lambda symbol: snap,
                                  storage=storage or MemoryStorage(),
                                  rate_loader=rate_loader))
 
