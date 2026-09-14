@@ -254,6 +254,55 @@ class TreasuryYearCacheEntry:
 
 
 @dataclass(frozen=True)
+class Owner:
+    """PB-01（#292，Anonymous Public Beta）：匿名／已知使用者的資料
+    boundary 本身——`owner_id` 沿用既有 SCALE-06 的 owner_id 概念
+    （5+1 張 row-scoped 表既有的那個值），這張表替它掛上 lifecycle
+    中繼資料，供 PB-08 判斷 abandoned／cleanup 使用。
+
+    **本票是純 expand**：新建的 owner 列不會被任何既有查詢路徑讀到，
+    `identity_resolver()` 仍固定回傳 `SOLO_OWNER`（切換是 PB-02 的
+    範圍）。
+
+    `protected`：純布林旗標，**不是** `owner_kind`——spec #291 §18
+    明文禁止用「怎麼建立」決定「是什麼身份型態」這種設計。它只標記
+    「這個 owner 的資料不受匿名 lifecycle cleanup 影響」（PB-03 會
+    用它保護 Owner 自己遷移過去的資料），與這個 owner 最初怎麼被建立
+    出來無關——任何 owner_id 理論上都可能被標記／解除標記。
+
+    `last_activity_at`：「哪些動作算 activity」的語意判斷屬 PB-08，
+    本票只建立欄位與讀寫方法（`touch_owner_activity()`），不先寫死
+    任何判準。`None`＝這個 owner 還沒被記過任何一次 activity。
+    """
+    owner_id: str
+    created_at: str
+    last_activity_at: str | None = None
+    protected: bool = False
+
+
+@dataclass(frozen=True)
+class BrowserIdentity:
+    """PB-01：cookie 帶的不透明 token → `owner_id` 的映射。
+
+    **`token` 與 `owner_id` 刻意是兩個不同的值**——`tests/
+    test_scale06_ownership_expand.py` 既有斷言 `owner_id` 永不出現
+    在任何 HTTP 回應 body；cookie 本身就是回應的一部分，若 cookie
+    值直接等於 `owner_id`，這條既有不變量在 cookie 簽發的那一刻就
+    被打破。分開儲存同時讓 token 可被伺服器單方作廢（例如未來的
+    找回機制）而不必變動 `owner_id`（研究 #275 的核心建議）。
+
+    `issued_at`：這個 token 第一次被簽發的時間。`last_seen_at`：最近
+    一次帶著這個 token 的請求時間——本票只建立欄位與續命方法
+    （`touch_browser_identity()`），「多久沒見就算失效」屬 PB-02
+    範圍。
+    """
+    token: str
+    owner_id: str
+    issued_at: str
+    last_seen_at: str
+
+
+@dataclass(frozen=True)
 class ChainBackoffEntry:
     """SCALE-04（#255，Scaling Foundation Cboe 429 韌性）：上游限流的
     控制狀態——**provider-global 鍵**（`source` 單獨，不分 symbol，
@@ -919,6 +968,50 @@ class Storage(Protocol):
         層）。這是刻意記錄的取捨，Owner 若仍要 DB 層級約束，需要先
         另開一票把那些測試改成不依賴 dataclass 建構式寫入 NULL（例如
         改用繞過型別驗證的原生 SQL helper），非本票能安全一併完成。"""
+
+    # ---------- Owner registry ＋ Browser Identity（PB-01／#292，
+    # Anonymous Public Beta，expand，零行為變更） ----------
+
+    def get_owner(self, owner_id: str) -> Owner | None:
+        """這個 owner_id 尚未在 `owners` 表建立過列時回 `None`——既有
+        `SOLO_OWNER`（`"solo"`）在本票之前從未寫進這張新表，因此本票
+        上線當下對它呼叫這個方法也會回 `None`（純粹反映這張表是全新
+        的，不代表 solo owner 不存在——它仍然活在既有 5+1 張表裡）。"""
+
+    def resolve_owner_by_token(self, token: str) -> str | None: ...
+
+    def create_owner_with_token(self, owner: Owner,
+                                identity: BrowserIdentity) -> None:
+        """依 cookie token 建立新 owner＋token（spec §3／§4 的唯一建立
+        路徑）——兩筆寫入視為同一次邏輯操作的兩半，呼叫端（PB-02）保證
+        `identity.owner_id == owner.owner_id`。`token`／`owner_id`
+        皆須事先確定不存在（呼叫端用密碼學安全隨機來源產生，衝突機率
+        可忽略），本方法**不**檢查衝突後靜默覆寫——衝突時兩後端各自
+        按資料庫既有的 PK 違反行為處理（不吞掉、不假裝成功）。"""
+
+    def touch_browser_identity(self, token: str, *, now: str) -> bool:
+        """續命 `last_seen_at`。回傳是否真的更新到東西（token 不存在
+        時回 `False`，呼叫端據此判斷這把 cookie 已失效，需要走建立新
+        owner 的路徑）。"""
+
+    def touch_owner_activity(self, owner_id: str, *, now: str) -> None:
+        """更新 `last_activity_at`。owner 不存在時安靜地什麼都不做
+        （不拋錯）——「哪些動作算 activity」與「activity 發生時 owner
+        是否保證已存在」都是 PB-02／PB-08 的範圍，本方法只負責寫入這
+        個值，不對呼叫時機做任何假設。"""
+
+    def set_owner_protected(self, owner_id: str, protected: bool) -> None:
+        """讀寫 `protected` 旗標的寫入半邊；讀取走 `get_owner()`。owner
+        不存在時安靜地什麼都不做（不拋錯，理由同 `touch_owner_
+        activity()`）。"""
+
+    def list_owners(self) -> list[Owner]:
+        """跨 owner 的列舉逃生門——供 PB-08 依 lifecycle 條件（例如
+        `last_activity_at` 早於某個截止日、且 `protected` 為否）掃描
+        待清理的 owner。本方法本身**不套用任何 lifecycle 判準**，只是
+        原樣回傳全部 owner 列；篩選邏輯留給 PB-08（沿用既有
+        `list_scenarios(owner=None)`／`result_history(owner=None)`
+        「刻意的跨 owner 逃生門，語意由呼叫端決定」先例）。"""
 
     # ---------- S0 最小可觀測性（SCALE-08／#258） ----------
 

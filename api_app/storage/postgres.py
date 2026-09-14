@@ -22,11 +22,12 @@ from contextlib import contextmanager
 import psycopg
 from psycopg.types.json import Jsonb
 
-from . import (ChainBackoffEntry, ContractHistory, DataSourceSettings,
-               DividendCacheEntry, IvBackfillRun, IvObservation, MetricEntry,
-               NarrowHistoryEntry, ProviderCredential, ProviderVerification,
-               RateCacheEntry, ResultFactContext, ResultRecord, ResultSummary,
-               Scenario, ScenarioExists, TreasuryYearCacheEntry, UsageSetting,
+from . import (BrowserIdentity, ChainBackoffEntry, ContractHistory,
+               DataSourceSettings, DividendCacheEntry, IvBackfillRun,
+               IvObservation, MetricEntry, NarrowHistoryEntry, Owner,
+               ProviderCredential, ProviderVerification, RateCacheEntry,
+               ResultFactContext, ResultRecord, ResultSummary, Scenario,
+               ScenarioExists, TreasuryYearCacheEntry, UsageSetting,
                require_owner)
 from ..diagnostics import RETENTION_LIMIT, DiagnosticEvent
 from ..identity import SOLO_OWNER
@@ -409,6 +410,28 @@ CREATE TABLE IF NOT EXISTS current_results (
     owner_id                TEXT
 );
 CREATE INDEX IF NOT EXISTS current_results_owner_idx ON current_results (owner_id);
+-- PB-01（#292，Anonymous Public Beta，expand，零行為變更）：owner
+-- registry——lifecycle 中繼資料的來源，獨立於既有 6 張表上單純當
+-- 資料 boundary 用的 `owner_id` TEXT 欄位。`protected` 是純布林
+-- 旗標，**不是** `owner_kind`（spec #291 §18 明文禁止用建立方式
+-- 決定身份型態）。
+CREATE TABLE IF NOT EXISTS owners (
+    owner_id          TEXT PRIMARY KEY,
+    created_at        TEXT NOT NULL,
+    last_activity_at  TEXT,
+    protected         BOOLEAN NOT NULL DEFAULT FALSE
+);
+-- Browser Identity：cookie 帶的不透明 token → owner_id 映射。
+-- **token 與 owner_id 是兩個不同的值**（`tests/
+-- test_scale06_ownership_expand.py` 既有斷言 owner_id 永不出現在
+-- 任何 HTTP 回應 body，cookie 本身就是回應的一部分）。
+CREATE TABLE IF NOT EXISTS browser_identities (
+    token          TEXT PRIMARY KEY,
+    owner_id       TEXT NOT NULL,
+    issued_at      TEXT NOT NULL,
+    last_seen_at   TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS browser_identities_owner_idx ON browser_identities (owner_id);
 """
 
 # 冷啟動競爭下的良性錯誤：別人已經建好／加好了。
@@ -1172,6 +1195,66 @@ class PostgresStorage:
                 (entry.source, entry.blocked_until, entry.retry_after_seconds,
                  entry.consecutive_failures, entry.observed_at,
                  entry.last_success_at))
+
+    # ---------- Owner registry ＋ Browser Identity（PB-01／#292） ----------
+
+    def get_owner(self, owner_id: str) -> Owner | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT owner_id, created_at, last_activity_at, protected "
+                "FROM owners WHERE owner_id = %s", (owner_id,)).fetchone()
+        return (Owner(owner_id=row[0], created_at=row[1],
+                      last_activity_at=row[2], protected=row[3])
+                if row else None)
+
+    def resolve_owner_by_token(self, token: str) -> str | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT owner_id FROM browser_identities WHERE token = %s",
+                (token,)).fetchone()
+        return row[0] if row else None
+
+    def create_owner_with_token(self, owner: Owner,
+                                identity: BrowserIdentity) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO owners (owner_id, created_at, "
+                "last_activity_at, protected) VALUES (%s, %s, %s, %s)",
+                (owner.owner_id, owner.created_at, owner.last_activity_at,
+                 owner.protected))
+            conn.execute(
+                "INSERT INTO browser_identities "
+                "(token, owner_id, issued_at, last_seen_at) "
+                "VALUES (%s, %s, %s, %s)",
+                (identity.token, identity.owner_id, identity.issued_at,
+                 identity.last_seen_at))
+
+    def touch_browser_identity(self, token: str, *, now: str) -> bool:
+        with self._connect() as conn:
+            cur = conn.execute(
+                "UPDATE browser_identities SET last_seen_at = %s "
+                "WHERE token = %s", (now, token))
+            return cur.rowcount > 0
+
+    def touch_owner_activity(self, owner_id: str, *, now: str) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE owners SET last_activity_at = %s WHERE owner_id = %s",
+                (now, owner_id))
+
+    def set_owner_protected(self, owner_id: str, protected: bool) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE owners SET protected = %s WHERE owner_id = %s",
+                (protected, owner_id))
+
+    def list_owners(self) -> list[Owner]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT owner_id, created_at, last_activity_at, protected "
+                "FROM owners ORDER BY created_at, owner_id").fetchall()
+        return [Owner(owner_id=r[0], created_at=r[1], last_activity_at=r[2],
+                      protected=r[3]) for r in rows]
 
     # ---------- 資料源設定與 credential（Settings／#124，owner 化 SCALE-13／#264） ----------
 

@@ -16,13 +16,13 @@ import pytest
 from dataclasses import replace
 
 from api_app.diagnostics import RETENTION_LIMIT, DiagnosticEvent
-from api_app.storage import (ChainBackoffEntry, ContractHistory,
-                             DataSourceSettings, DividendCacheEntry,
-                             IvBackfillRun, IvObservation, NarrowHistoryEntry,
-                             ProviderCredential, ProviderVerification,
-                             RateCacheEntry, ResultRecord, Scenario,
-                             ScenarioExists, TreasuryYearCacheEntry,
-                             UsageSetting)
+from api_app.storage import (BrowserIdentity, ChainBackoffEntry,
+                             ContractHistory, DataSourceSettings,
+                             DividendCacheEntry, IvBackfillRun, IvObservation,
+                             NarrowHistoryEntry, Owner, ProviderCredential,
+                             ProviderVerification, RateCacheEntry,
+                             ResultRecord, Scenario, ScenarioExists,
+                             TreasuryYearCacheEntry, UsageSetting)
 from api_app.storage.memory import MemoryStorage
 
 TEST_DB_URL = os.environ.get("OC_TEST_DATABASE_URL")
@@ -84,7 +84,8 @@ def storage(request):
                      "provider_credentials, provider_verifications, "
                      "owner_settings, owner_credentials, owner_verifications, "
                      "iv_observations, iv_backfill_runs, contract_iv_history, "
-                     "diagnostics, operational_metrics, narrow_history "
+                     "diagnostics, operational_metrics, narrow_history, "
+                     "owners, browser_identities "
                      "RESTART IDENTITY")
     yield st
 
@@ -699,6 +700,130 @@ def test_chain_backoff_does_not_leak_across_sources(storage):
         observed_at="2026-09-06T12:00:00+00:00", last_success_at=None))
 
     assert storage.get_chain_backoff("yfinance") is None
+
+
+# ---------- Owner registry ＋ Browser Identity（PB-01／#292，
+# Anonymous Public Beta，expand，零行為變更） ----------
+
+
+def test_get_owner_is_none_before_it_is_created(storage):
+    assert storage.get_owner("anon-1") is None
+
+
+def test_resolve_owner_by_token_is_none_for_an_unknown_token(storage):
+    assert storage.resolve_owner_by_token("tok-unknown") is None
+
+
+def test_create_owner_with_token_round_trips_both_halves(storage):
+    owner = Owner(owner_id="anon-1", created_at="2026-09-14T00:00:00+00:00")
+    identity = BrowserIdentity(token="tok-1", owner_id="anon-1",
+                               issued_at="2026-09-14T00:00:00+00:00",
+                               last_seen_at="2026-09-14T00:00:00+00:00")
+    storage.create_owner_with_token(owner, identity)
+
+    assert storage.get_owner("anon-1") == owner
+    assert storage.resolve_owner_by_token("tok-1") == "anon-1"
+
+
+def test_token_is_not_the_owner_id(storage):
+    """PB-01 constraint：cookie token 與 owner_id 是兩個分開儲存的值
+    ——不是同一個欄位的兩種讀法。刻意用不同字串建立，兩者互不相等，
+    `resolve_owner_by_token()` 回傳的是 owner_id 而不是 token 本身。"""
+    owner = Owner(owner_id="owner-xyz", created_at="2026-09-14T00:00:00+00:00")
+    identity = BrowserIdentity(token="totally-different-opaque-token",
+                               owner_id="owner-xyz",
+                               issued_at="2026-09-14T00:00:00+00:00",
+                               last_seen_at="2026-09-14T00:00:00+00:00")
+    storage.create_owner_with_token(owner, identity)
+
+    resolved = storage.resolve_owner_by_token("totally-different-opaque-token")
+    assert resolved == "owner-xyz"
+    assert resolved != "totally-different-opaque-token"
+
+
+def test_touch_browser_identity_updates_last_seen_at(storage):
+    owner = Owner(owner_id="anon-2", created_at="2026-09-14T00:00:00+00:00")
+    identity = BrowserIdentity(token="tok-2", owner_id="anon-2",
+                               issued_at="2026-09-14T00:00:00+00:00",
+                               last_seen_at="2026-09-14T00:00:00+00:00")
+    storage.create_owner_with_token(owner, identity)
+
+    changed = storage.touch_browser_identity(
+        "tok-2", now="2026-09-15T00:00:00+00:00")
+
+    assert changed is True
+
+
+def test_touch_browser_identity_returns_false_for_an_unknown_token(storage):
+    assert storage.touch_browser_identity(
+        "tok-nope", now="2026-09-15T00:00:00+00:00") is False
+
+
+def test_touch_owner_activity_sets_last_activity_at(storage):
+    owner = Owner(owner_id="anon-3", created_at="2026-09-14T00:00:00+00:00")
+    identity = BrowserIdentity(token="tok-3", owner_id="anon-3",
+                               issued_at="2026-09-14T00:00:00+00:00",
+                               last_seen_at="2026-09-14T00:00:00+00:00")
+    storage.create_owner_with_token(owner, identity)
+    assert storage.get_owner("anon-3").last_activity_at is None
+
+    storage.touch_owner_activity("anon-3", now="2026-09-15T00:00:00+00:00")
+
+    assert storage.get_owner("anon-3").last_activity_at == "2026-09-15T00:00:00+00:00"
+
+
+def test_touch_owner_activity_on_an_unknown_owner_does_nothing(storage):
+    storage.touch_owner_activity("ghost", now="2026-09-15T00:00:00+00:00")
+    assert storage.get_owner("ghost") is None
+
+
+def test_set_owner_protected_round_trips(storage):
+    owner = Owner(owner_id="anon-4", created_at="2026-09-14T00:00:00+00:00")
+    identity = BrowserIdentity(token="tok-4", owner_id="anon-4",
+                               issued_at="2026-09-14T00:00:00+00:00",
+                               last_seen_at="2026-09-14T00:00:00+00:00")
+    storage.create_owner_with_token(owner, identity)
+    assert storage.get_owner("anon-4").protected is False
+
+    storage.set_owner_protected("anon-4", True)
+
+    assert storage.get_owner("anon-4").protected is True
+
+
+def test_set_owner_protected_on_an_unknown_owner_does_nothing(storage):
+    storage.set_owner_protected("ghost", True)
+    assert storage.get_owner("ghost") is None
+
+
+def test_list_owners_returns_every_owner(storage):
+    for i in range(3):
+        oid = f"anon-list-{i}"
+        storage.create_owner_with_token(
+            Owner(owner_id=oid, created_at="2026-09-14T00:00:00+00:00"),
+            BrowserIdentity(token=f"tok-list-{i}", owner_id=oid,
+                            issued_at="2026-09-14T00:00:00+00:00",
+                            last_seen_at="2026-09-14T00:00:00+00:00"))
+
+    ids = {o.owner_id for o in storage.list_owners()}
+    assert {"anon-list-0", "anon-list-1", "anon-list-2"} <= ids
+
+
+def test_identity_resolver_still_returns_solo_after_pb01(storage):
+    """AC：本票是純 expand，不改變任何請求的 owner——`identity_
+    resolver()` 這個獨立於 storage 之外的 callable 完全不讀這張新表，
+    因此不論 storage 裡有沒有任何 owner 列，它永遠回傳既有的
+    `SOLO_OWNER`。這條測試釘住「本票沒有偷偷把切換邏輯接上去」。"""
+    from api_app.identity import SOLO_OWNER, default_identity_resolver
+
+    storage.create_owner_with_token(
+        Owner(owner_id="anon-should-not-matter",
+              created_at="2026-09-14T00:00:00+00:00"),
+        BrowserIdentity(token="tok-should-not-matter",
+                        owner_id="anon-should-not-matter",
+                        issued_at="2026-09-14T00:00:00+00:00",
+                        last_seen_at="2026-09-14T00:00:00+00:00"))
+
+    assert default_identity_resolver() == SOLO_OWNER == "solo"
 
 
 # ---------- Narrow visible-candidate history（SCALE-09／#261） ----------

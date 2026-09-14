@@ -11,11 +11,12 @@ import json
 from collections import deque
 from contextlib import contextmanager
 
-from . import (ChainBackoffEntry, ContractHistory, DataSourceSettings,
-               DividendCacheEntry, IvBackfillRun, IvObservation, MetricEntry,
-               NarrowHistoryEntry, ProviderCredential, ProviderVerification,
-               RateCacheEntry, ResultFactContext, ResultRecord, ResultSummary,
-               Scenario, ScenarioExists, TreasuryYearCacheEntry, require_owner)
+from . import (BrowserIdentity, ChainBackoffEntry, ContractHistory,
+               DataSourceSettings, DividendCacheEntry, IvBackfillRun,
+               IvObservation, MetricEntry, NarrowHistoryEntry, Owner,
+               ProviderCredential, ProviderVerification, RateCacheEntry,
+               ResultFactContext, ResultRecord, ResultSummary, Scenario,
+               ScenarioExists, TreasuryYearCacheEntry, require_owner)
 from ..diagnostics import RETENTION_LIMIT, DiagnosticEvent
 from ..identity import SOLO_OWNER
 from ..metrics import retention_cutoff
@@ -42,6 +43,12 @@ class MemoryStorage:
         self._dividend_cache: dict[str, DividendCacheEntry] = {}
         self._treasury_year_cache: dict[int, TreasuryYearCacheEntry] = {}
         self._chain_backoff: dict[str, ChainBackoffEntry] = {}
+        # PB-01（#292，Anonymous Public Beta）：owner registry ＋
+        # browser identity——鍵分別是 `owner_id`／`token`，兩張表
+        # 各自獨立，token 與 owner_id 刻意不是同一個值（見
+        # `BrowserIdentity` docstring）。
+        self._owners: dict[str, Owner] = {}
+        self._browser_identities: dict[str, BrowserIdentity] = {}
         # SCALE-09（#261）：鍵是三個 identity 欄組成的 tuple，逐字對應
         # PK `(scenario_id, analyzed_at, candidate_key)`。
         self._narrow_history: dict[tuple[str, str, str], NarrowHistoryEntry] = {}
@@ -277,6 +284,45 @@ class MemoryStorage:
 
     def save_chain_backoff(self, entry: ChainBackoffEntry) -> None:
         self._chain_backoff[entry.source] = entry
+
+    # ---------- Owner registry ＋ Browser Identity（PB-01／#292） ----------
+
+    def get_owner(self, owner_id: str) -> Owner | None:
+        return self._owners.get(owner_id)
+
+    def resolve_owner_by_token(self, token: str) -> str | None:
+        identity = self._browser_identities.get(token)
+        return identity.owner_id if identity else None
+
+    def create_owner_with_token(self, owner: Owner,
+                                identity: BrowserIdentity) -> None:
+        self._owners[owner.owner_id] = owner
+        self._browser_identities[identity.token] = identity
+
+    def touch_browser_identity(self, token: str, *, now: str) -> bool:
+        identity = self._browser_identities.get(token)
+        if identity is None:
+            return False
+        self._browser_identities[token] = dataclasses.replace(
+            identity, last_seen_at=now)
+        return True
+
+    def touch_owner_activity(self, owner_id: str, *, now: str) -> None:
+        owner = self._owners.get(owner_id)
+        if owner is None:
+            return
+        self._owners[owner_id] = dataclasses.replace(
+            owner, last_activity_at=now)
+
+    def set_owner_protected(self, owner_id: str, protected: bool) -> None:
+        owner = self._owners.get(owner_id)
+        if owner is None:
+            return
+        self._owners[owner_id] = dataclasses.replace(
+            owner, protected=protected)
+
+    def list_owners(self) -> list[Owner]:
+        return list(self._owners.values())
 
     # ---------- Narrow visible-candidate history（SCALE-09／#261） ----------
 
