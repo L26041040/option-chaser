@@ -27,7 +27,7 @@ block 裡，不能切成好幾個 code block、也不能中間插普通文字把
 `［回報#001］spec #137 拆票完成`）。編號是**累計總數**，不因換
 session、換分支、換主題而歸零——目前最新編號記在這裡：
 
-> 目前次序：081（下一份回報用 082）
+> 目前次序：082（下一份回報用 083）
 
 每發一份回報就把上面這個數字改成剛剛用掉的那個，跟著那次改動一起
 commit（沒有其他改動要 commit 時，單獨為這一行開一個小 commit 也
@@ -8678,6 +8678,130 @@ contradiction）**：
 
 **無殘留 contradiction。READY_FOR_TICKETS（v3）。** 依 Owner 明確
 指示：完成後停止，不進 `/to-tickets`、不施工。
+
+### OPTION-PUBLIC-BETA-TICKETS-008——Anonymous Public Beta 拆票完成
+（2026-09-14，`/to-tickets`，回報#082；14 張 implementation ticket
+已發佈，未施工、未寫 production code）
+
+Owner 指令：把 canonical spec #291（v3）拆成可逐張施工、逐張驗收的
+implementation tickets；**不施工、不寫 production code、不重新
+research、不重新 grill Owner、不修改 Owner Decisions、不碰 #269／
+SCALE-18**；以 dependency 為主而非照 spec 章節切；每張票必須含 11 個
+固定段落（目的／scope／non-goals／dependencies／受影響檔案模組／
+implementation constraints／acceptance criteria／tests／security
+considerations／是否需要 `/security-review`／completion evidence）；
+預期 10～16 張，依真實 dependency 決定不硬湊。
+
+**拆票前先做了一輪 repo 實查**（背景 Explore agent），以確保每張票
+「受影響檔案／模組」只寫得出 repo 真的確認過的路徑與行號，不寫臆測。
+查證中抓到四個會直接影響施工正確性的既有事實，全部寫進對應票面：
+
+1. **`delete_scenario()`（`postgres.py` L669–693）漏掉
+   `narrow_history`**——spec §7 已點名，實查確認屬實。
+2. **`backfill_missing_owner_ids()`（L1518–1538，6 張表，缺
+   `current_results`）與 `owner_id_null_counts()`（L1542，8 張表，
+   缺 `narrow_history`）兩份表清單互相不一致**——這是既有狀態，
+   PB-04 的 owner-wide deletion primitive 必須以「自己列一份完整
+   清單」為準，不得直接沿用任一份。
+3. **`memory.py` 的 `request_scope()` 其實存在（L78–84）**，但
+   `main.py` L717–719 的註解仍寫著它不存在——過期註解，PB-01／PB-02
+   施工時會碰到，票面已註明不要被誤導。
+4. **既有測試 `tests/test_scale06_ownership_expand.py` 斷言
+   「`owner_id` 永遠不出現在任何 HTTP 回應 body」**——這條直接決定
+   cookie 值**不能**等於 `owner_id`（cookie 是回應的一部分），必須是
+   獨立的不透明 token＋伺服器查表，寫進 PB-01／PB-02 的 constraint。
+
+另查證確認：`.github/` 不存在（零 CI）；`src/` 沒有任何頁尾與隱私頁；
+`vercel.json` 只有一條 cron；`api_app/metrics.py` 的 `METRIC_CATALOGUE`
+恰好七項且有結構性守門測試（`tests/test_scale08_observability.py`）；
+`chain_backoff` 的 PK 是 `source` 單獨（provider-global）。
+
+**14 張票（#292–#305）＝ PB-01～PB-14**，全數為 #291 的 GitHub native
+sub-issue、全數標 `ready-for-agent`；依 dependency 拓撲順序建立，因此
+每張票的「Blocked by」引用的都是真實 issue 編號：
+
+| 票 | Issue | 一句話用途 | Blocked by |
+|---|---|---|---|
+| PB-01 | #292 | Owner registry ＋ Browser Identity storage port（expand，零行為變更） | 無 |
+| PB-13 | #293 | CI ＋ branch protection ＋ 部署後 smoke ＋ uptime ＋ Sentry | 無 |
+| PB-02 | #294 | Cookie middleware ＋ lazy creation ＋ `identity_resolver` 切換（enforce） | #292 |
+| PB-03 | #295 | `solo` → Owner 正常 owner_id 一次性遷移 ＋ protected 標記 | #294 |
+| PB-04 | #296 | owner-wide deletion primitive ＋ 自助刪除入口 | #294 |
+| PB-05 | #297 | Per-owner Quota（10 scenario／30 分鐘節流）＋ graceful degradation | #294 |
+| PB-09 | #298 | User Level：Super User 單一驗證 ＋ 兩軸正交 ＋ 第三方 token 閘門 | #294 |
+| PB-06 | #299 | Global vendor fuse（每日預算）＋ 降級 | #297 |
+| PB-08 | #300 | `last_activity_at` 語意 ＋ 30+7 天 ＋ Vercel Cron 清理 | #295, #296 |
+| PB-10 | #301 | Super User 跨 owner 檢視／管理 ＋ 二次確認 ＋ audit trail | #296, #298 |
+| PB-12 | #302 | Beta 首頁說明 ＋ 全站頁尾 ＋ 隱私頁 ＋ 回報入口 | #294, #296 |
+| PB-11 | #303 | Ops metrics 擴充 ＋ daily email digest | #298, #300 |
+| PB-07 | #304 | Synthetic load-test harness（mock vendor）＋ `is_synthetic` | #294, #297, #299, #300 |
+| PB-14 | #305 | Controlled Beta Exit Criteria 驗證 ＋ Release Gate 收尾（純驗證） | 以上全部 13 張 |
+
+**三個拆票決策，皆有 repo 既有先例**：
+
+1. **PB-01／PB-02 拆成 expand→enforce 兩張**（比照 SCALE-06 Expand →
+   SCALE-11 Enforce、T05 建模組 → T10 切換的既有慣例）：PB-01 只加
+   `owners` 表與 storage port 方法、**零行為變更**（驗收就是全套既有
+   測試原樣通過）；PB-02 才是真正把 `identity_resolver()` 從固定
+   `"solo"` 換成 cookie 解析、把 lazy-creation 白名單接上。整輪風險
+   最高的一刀因此被隔離成一張可獨立驗證的票。
+2. **PB-03 的 `protected` 標記由遷移腳本直接寫入，不等 PB-10**——
+   spec §6 原文是「受 Super User 權限保護的動作」，但 Super User 的
+   runtime endpoint 在 PB-10（Phase F），若照字面等它就會出現
+   **循環依賴**（PB-08 清理排程需要 protected 才安全，PB-08 排在
+   PB-10 之前）。解法採 spec §6 自己提供的替代路徑「一次性
+   bootstrap 呼叫」：PB-03 的遷移腳本直接設旗標，runtime 的
+   protect／unprotect endpoint 歸 PB-10。
+3. **PB-08 硬性 blocked by PB-03**——這是**資料安全依賴、不是
+   工程順序偏好**：清理排程若在 Owner 的 `solo` 資料遷移並標記
+   protected 之前上線，排程會把 Owner 自己的資料當成 Abandoned Owner
+   刪掉。票面已明文寫死這條理由。
+
+**兩個施工時必須當場決定、票面已明寫的取捨點**：
+
+- **PB-10 的 audit trail 不得複用既有 `diagnostics` 或 `events`**——
+  前者 owner-scoped 且 trim-on-write 只留最新 200 筆（跨 owner 的
+  管理操作紀錄會被自己洗掉），後者是 scenario-scoped 的領域事實。
+  PB-10 必須開一個獨立的 audit 面，票面已記錄這個判斷與理由。
+- **PB-11 的指標分兩類，票面要求明確選邊**：匿名 owner 數／scenario
+  數屬 query-time gauge（比照既有 `table_size_metrics()`，不進
+  `METRIC_CATALOGUE`、不動既有七項結構性守門測試）；cleanup volume
+  若要持久化就必須把 catalogue 從 7 改成 8，那會讓
+  `tests/test_scale08_observability.py` 的結構性守門紅燈——**這是
+  需要有意識更新的既有守門，不是順手改掉的雜訊**。
+
+**Controlled Beta 前必做 = 全部 13 張施工票**（PB-01～PB-13）——
+逐一對照過 spec §16 Line 1 的 16 個項目，沒有任何一項可以延後；
+PB-14 是它們全部完成後的驗證與判定票。**Public Beta 前額外只有兩
+件事**：§15 的 8 項 Exit Criteria 實際達標（需要 Owner 真的跑過一段
+Controlled Beta），以及 PB-14 裡的第二次 release-level
+`/security-review`。
+
+**可平行施工**：PB-13（CI）零 production code 依賴，第一天就能與
+PB-01 同時開工；PB-02 完成後，PB-03／PB-04／PB-05／PB-09 四張同時
+解鎖、彼此不互擋（分別動遷移腳本、deletion primitive、quota 閘門、
+User Level 判斷，檔案交集小）。**建議第一張＝PB-01**（風險最低、
+零行為變更、是後面 11 張的共同地基）。
+
+**紅線遵守情況**：14 張票逐一檢查過——無任何一張把 Intrinio／
+Databento／Vercel Pro／Neon 付費層寫成 completion requirement 或
+release blocker（FREE-FIRST）；無第三種 human role（只有 Normal
+User／Super User，且 Super User 明文為完整超集合）；owner_id（軸一）
+與 User Level（軸二）在每張相關票都寫成兩段獨立、不共用判斷點的
+程式碼；service credential 明文不得成為人類登入方式；**無任何一張
+票會執行或準備 SCALE-18 irreversible cleanup**（#269 全程未觸碰，
+且 `SOLO_OWNER`／`default_identity_resolver()` 依 spec §18 只標記為
+legacy、本輪不要求刪除）。
+
+**Owner Decision blocker：無。** OD-1～OD-9 九題全部已定案並固化進
+spec v3，14 張票沒有任何一張需要新的 Owner 裁示才能開工。唯一有
+「待實測校準」標記的是 `GLOBAL_VENDOR_DAILY_BUDGET` 的起始值
+（spec §17 明訂「待 Controlled Beta 實測校準」），PB-06 已把它寫成
+config 參數＋保守預設值＋可調整，不擋施工。
+
+**READY_FOR_IMPLEMENTATION。** 依 Owner 指示本輪未施工、未寫任何
+production code（`git diff` 對 `option_chaser/`／`api_app/`／`src/`
+零命中），完成後停止。
 
 ### 施工依據
 
