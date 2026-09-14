@@ -8803,6 +8803,242 @@ config 參數＋保守預設值＋可調整，不擋施工。
 production code（`git diff` 對 `option_chaser/`／`api_app/`／`src/`
 零命中），完成後停止。
 
+### OPTION-PUBLIC-BETA-IMPLEMENT-009——Anonymous Public Beta 施工中
+（2026-09-14 起，Owner 授權全自主執行至全部完成才一次回報）
+
+Owner 明確裁示：依 PB-01～PB-14（#292–#305）dependency graph 自主
+施工，不逐票停下等待確認，全部完成才一次回報。逐票仍維持既有紀律：
+TDD、`/code-review` 兩軸診斷、AC 全過才視為完成、獨立 commit、
+CLAUDE.md 隨手更新。
+
+**已完成**：
+
+- **PB-01**［#292］owner registry ＋ Browser Identity storage port
+  （expand，零行為變更，commit `5971557`）：`Storage` 新增
+  `owners`／`browser_identities` 兩張表（走 `_MIGRATIONS`，不動
+  `_SCHEMA`，沿用 SCALE-09／SCALE-08 冷啟動競爭安全慣例）＋對應
+  Protocol 方法（`get_owner`／`resolve_owner_by_token`／
+  `create_owner_with_token`／`touch_browser_identity`／
+  `touch_owner_activity`／`set_owner_protected`／`list_owners`），
+  memory／postgres 兩後端皆實作，雙後端契約測試覆蓋。純加法——
+  `identity_resolver()` 仍無條件回傳 `SOLO_OWNER`，cookie token 與
+  owner_id 分開儲存（承接既有「owner_id 永不出現在任何 HTTP 回應
+  body」不變量，token 本身不是 owner_id）。切到真正讀 cookie 是
+  PB-02 的範圍，本票結構上不可能改變任何既有行為。
+- **PB-13**［#293］CI ＋ 部署後 smoke ＋ Sentry（commit `276ff4c`）：
+  新增 `.github/workflows/ci.yml`（後端 pytest 雙後端——真實
+  Postgres 走 service container，並斷言 Postgres 那一半真的有跑，
+  不是靜默跳過；前端 typecheck／vitest／build；Playwright smoke
+  子集 iPhone project，PR／push 皆觸發）與
+  `.github/workflows/deploy-smoke.yml`（每次 Vercel 部署成功後探
+  `GET /api/health`）。新增 `api_app/observability.py`＋
+  `src/observability.ts`：Sentry 接線，**未設 `SENTRY_DSN`／
+  `VITE_SENTRY_DSN` 時嚴格 no-op**，`before_send`／`beforeSend`
+  沿用既有 diagnostics 遮蔽白名單（cookie／auth header／query
+  string／bearer token／connection string），**只接在單一
+  production 進入點**（`api/index.py`＋`src/main.tsx`），不接進
+  `create_app()`——數千條測試直接呼叫它，接進去會讓每次測試啟動都
+  多一層無關的初始化。新增 `docs/pb13-owner-setup-checklist.md`
+  列出五項需要 repo-admin／第三方帳號權限的 HITL 步驟（branch
+  protection required checks、Sentry 帳號與 DSN、UptimeRobot、
+  確認 Vercel→GitHub `deployment_status` webhook、第一次真實 PR）。
+  全程 FREE-FIRST——沒有任何一項 AC 要求付費層。
+- **PB-02**［#294］Cookie middleware ＋ lazy creation ＋
+  `identity_resolver` 切換（enforce，commit `8cc1179`）：
+  `api_app/identity.py` 保留既有 `default_identity_resolver()`／
+  `SOLO_OWNER`（legacy，需顯式指定），新增
+  `cookie_identity_resolver()`＋`ContextVar` 支撐的
+  `resolved_owner_scope()`——production 新預設，唯讀，若 middleware
+  尚未替這次請求解析出 owner 就呼叫會拋 `RuntimeError`。
+  `IdentityResolver` 無參數 callable 簽章不變，`main.py` 內 27 處
+  `identity_resolver()` 呼叫點一行未動。`create_app()` 的
+  `identity_resolver` 預設值從 `default_identity_resolver` 改成
+  `cookie_identity_resolver`；既有單一 `_request_scope_middleware`
+  現在同時負責替這次請求解析／建立 owner
+  （`_resolve_owner_for_request()`，唯一的路由分類點
+  `_is_owner_exempt_route()`：`/api/health`／`/api/cron/*`／
+  `/api/ops/*` 即使沒帶 cookie 也一律不建立 owner）。cookie／
+  storage 這條路徑只在 `identity_resolver is cookie_identity_
+  resolver` 時才會跑——顯式 DI 覆寫（`test_scale06`／`test_scale11`
+  既有模式）完全繞過 cookie，行為與 PB-02 之前逐位元相同。Cookie
+  形狀：`__Host-oc_owner`，`HttpOnly`／`Secure`／`SameSite=Lax`，
+  約 400 天滑動 `Max-Age`（每次成功請求續命），值**不是** owner_id
+  （PB-01 既有分離不變量延伸）。**測試連帶修正**（35 個檔案，全部
+  既有斷言零放寬）：28 個測試檔＋2 支 fixture 產生腳本原本依賴
+  「預設值＝solo」，改為顯式注入 `identity_resolver=lambda:
+  "solo"`，行為逐位元不變；`test_scale06_ownership_expand.py` 原本
+  驗證「預設是 solo」的兩條測試改寫成驗證新事實（預設是 cookie-
+  based，非 solo），`base_url="https://testserver"` 讓 httpx cookie
+  jar 像真實瀏覽器一樣正確 round-trip Secure cookie（已用最小重現
+  腳本驗證：`http` scheme 下 Secure cookie完全不會被送回）。新增
+  `tests/test_pb02_cookie_identity.py`（173 行）涵蓋 lazy
+  creation、兩瀏覽器隔離、完整排除清單、DI bypass、
+  `cookie_identity_resolver()` 的守門。
+- **PB-03**［#295］`solo` → Owner 正常 owner_id 一次性遷移 ＋
+  protected 標記（commit `72d75f6`）：`Storage.migrate_owner
+  (from_owner, to_owner)`——對 10 張 owner-scoped 表
+  （scenarios／results／snapshots／events／diagnostics／
+  narrow_history／current_results／owner_settings／
+  owner_credentials／owner_verifications）各自
+  `UPDATE ... SET owner_id WHERE owner_id = from_owner`。**刻意
+  自成一份表清單**，不沿用既有 `backfill_missing_owner_ids()`
+  （6 張表、NULL-backfill 語意）或 `owner_id_null_counts()`
+  （8 張表、漏 `narrow_history`）——兩者本輪施工前已確認互相不
+  一致（見上方 #209 地圖 repo 實查記錄）。天生冪等（重跑對已搬過的
+  表全部回 0 rows），memory／postgres 皆實作。新增
+  `scripts/migrate_solo_to_owner.py`：必填 `--target-owner-id`
+  （不猜預設值），且目標 owner 必須已存在於 `owners` 表（＝Owner
+  已透過 PB-02 cookie 流程造訪過一次正式站）才允許執行；預設
+  dry-run（印出每張表遷移前後列數），`--confirm` 才真的寫入；
+  同一次執行順手把目標 owner 標成 `protected=True`。永不印出
+  credential token 值。`api_app/identity.py` 的 `SOLO_OWNER` 標註
+  為遷移後 legacy（依 spec §18 刻意不刪除常數本身，只是遷移完成後
+  它不再代表任何真實使用者）。新增
+  `tests/test_pb03_migrate_owner_script.py`（131 行）。
+- **PB-04**［#296］owner-wide deletion primitive ＋ 自助刪除入口
+  （commit `6a894d1`）：`Storage.delete_owner(owner_id)`——完整清除
+  一個 owner 的全部資料，共用 PB-03 的同一份表清單
+  （`_MIGRATE_OWNER_TABLES` 更名 `_OWNER_SCOPED_TABLES`，未來新增
+  owner-scoped 表只需要改一處）。Postgres 把 10 個 DELETE 加上
+  `browser_identities`／`owners` 兩表的清除全部包在單一
+  `conn.transaction()` 內（這個 schema 沒有 FK cascade，避免半刪除
+  狀態）。**絕不觸碰** 8 張共用市場事實表（結構上沒有
+  `owner_id` 欄位）。同時清掉該 owner 的 `browser_identities` 列與
+  `owners` 註冊表本身列——舊 cookie 因此自然落進 PB-02 既有「查不到
+  token→視為新訪客」的 lazy-creation 路徑，不需要另外設計一套重新
+  簽發機制。新增 `DELETE /api/me`：自助、只能刪自己
+  （`identity_resolver()`，請求裡任何呼叫端提供的 owner_id 皆不
+  接受），立即執行、跳過 PB-08 的 Abandoned／Grace Period 緩衝——
+  這是明確的使用者主動請求，不是排程清理。新增
+  `src/DeleteMyData.tsx`：Settings 頁「刪除我的全部資料」入口，
+  仿 `TrashView.tsx` 既有的 `ConfirmDeleteOne`／`ConfirmDeleteBatch`
+  二次確認 modal 模式；成功後重新整理頁面，下一次請求自動拿到全新
+  身份。
+- **PB-05**［#297］Per-owner Quota（10 active scenario）＋ 30 分鐘
+  刷新節流 ＋ graceful degradation（commit `a444501`）：**Quota**——
+  `create_scenario()` 對第 11 個 active（未封存）劇本回 409＋事實性
+  訊息，絕不 500；計數用既有 `list_scenarios(owner=...)`（既有預設
+  排除已封存），不新增帳本表；封存騰出名額；嚴格限定伺服器解析出的
+  owner_id，呼叫端在請求 body 塞假 `owner_id` 或
+  `anonymous_max_active_scenarios` 一律被 pydantic 預設的 extra-
+  field 處理靜默忽略（已補回歸測試鎖住）。**節流**——同一劇本
+  30 分鐘內重複抓新鏈**不是第四種 Refresh Trigger**，是加在既有三
+  個（開站／頂部按鈕／建立劇本）上的閘門，三者皆匯流進
+  `_refresh_and_save()`／`refresh_run()`。`_refresh_throttled()`
+  讀 `analyzed_at`（＝chain snapshot 自己的 `fetched_at`）無條件
+  短路回既有資料——即使同 symbol 的手足劇本剛好已經抓到新鏈，被
+  節流的劇本也絕不會被那次抓取的資料更新。`refresh_run()` 的
+  `needs_chain` 同步排除被節流的劇本，整組皆被節流時零 vendor
+  呼叫；被節流的劇本也不會被手足的抓取失敗連坐。兩個端點對「被
+  節流」與「正常成功」回傳**逐位元相同**的回應形狀（`ok: true`、
+  無 `stage`）——從呼叫端（`runBatch()`）視角結構上無法分辨，因此
+  不存在需要另外防範的 retry-storm 風險，那個風險從未被引入。兩個
+  旋鈕（`ANONYMOUS_MAX_ACTIVE_SCENARIOS`／`ANONYMOUS_REFRESH_MIN_
+  INTERVAL_MINUTES`）皆為 `create_app()` DI 參數，`None`→讀同名
+  環境變數→預設 10／30；`<=0` 各自獨立停用（依 spec）。新增
+  `tests/test_pb05_quota_and_throttle.py`（348 行，20 條 HTTP-seam
+  測試：跨 owner 額度隔離、封存騰出名額、節流窗口算術含可調窗口
+  驗證、混合分組邊界情況、失敗隔離、環境變數＋DI 覆寫、結構性「仍
+  恰好只有既有兩條 refresh 路由」檢查）＋前端 1 條（確認額度拒絕
+  訊息透過既有 `CreateForm` 通用錯誤路徑呈現，零新增前端程式碼）。
+  施工中修正的兩個測試陷阱：(1) 一條既有測試建立 12 個劇本撞上新
+  額度上限，補 `anonymous_max_active_scenarios=0` 停用額度（與該
+  測試本身要驗證的事無關，已記錄）；(2) 節流測試的假 `_fetch`
+  closure 原本每次呼叫回傳同一份帶著陳舊固定 fixture 時間戳的
+  snapshot 物件，導致節流窗口算術永遠算出巨大 elapsed time（方向
+  完全算反）——改為每次呼叫回傳
+  `dataclasses.replace(base_snap, fetched_at=now_utc_iso())`，
+  對齊 production `cboe.py` 在真正抓取當下才蓋「現在」時間戳的
+  行為。全套雙後端測試（記憶體＋真實 Postgres，2155 條）在乾淨
+  重置過的資料庫上全綠。
+- **PB-09**［#298］User Level（Super User）單一驗證 ＋ 兩軸正交 ＋
+  第三方 token 閘門（commit `00063df`）：新增 `api_app/superuser.py`
+  （`is_superuser()`／`require_superuser()`，`secrets.compare_
+  digest()` 常數時間比對——沿用既有 `CRON_SECRET`／`OPS_SECRET`
+  的 `Authorization: Bearer <secret>` fail-closed 401 慣例，但因為
+  這裡服務的是人類 Owner 而非 machine-to-machine，值得比既有兩把
+  service credential 多一分防護）。`is_superuser()` 簽章裡**沒有**
+  `owner_id` 參數，結構上不可能讀取或參與 owner 解析——spec §19
+  明文要求的「兩段程式碼互不共用函式或中間結果」在這裡是物理事實
+  而非約定。`create_app()` 新增 `admin_secret` 參數，取代舊有
+  `ops_secret`（**OPS_SECRET 全面退役，非降級保留**——它唯一的
+  呼叫點本來就要遷移到 Super User 保護，維護兩套永久並存的機制對
+  這個風險的實際發生機率不成比例；`api_app/observability.py` 的
+  redaction 白名單仍保留 `OPS_SECRET` 這個名字，屬無害的雙重保險，
+  非活躍配置）。`_OWNER_EXEMPT_PREFIXES` 新增 `/api/superuser/`，
+  新端點 `GET /api/superuser/status`（永遠 200，只回一個布林值，
+  不因為驗證失敗就 401——查「自己現在算不算 Super User」不該需要
+  先證明自己是 Super User 才查得到答案，這是雞生蛋問題的正確
+  解法）。`GET /api/ops/metrics`（原 `OPS_SECRET` 保護）與三個
+  `owner_credentials` 寫入端點（`PUT`／`POST .../test`／`DELETE
+  /api/settings/credentials/{provider}`）全數改呼叫
+  `superuser.require_superuser()`——delete／test 與 put 一視同仁
+  gate 住，不依賴「Normal User 反正沒有 credential 可測／可刪」這
+  個間接推論當防線。`_known_secrets()` 新增 `_effective_admin_
+  secret`，diagnostics redaction 最後一道防線同步涵蓋。前端新增
+  `src/superuser.ts`（`getAdminSecret`／`setAdminSecret`／
+  `adminAuthHeaders`，密鑰存 `sessionStorage`——分頁關閉即清除，
+  刻意不用 `localStorage`；伺服器對每一次受保護請求都重新獨立驗證
+  密鑰本身，前端存放方式改變不了「密鑰對不對」這件事，因此這個
+  選擇是降低曝險窗、不是防線本身）與 `src/SuperUserUnlock.tsx`
+  （掛在 `Settings.tsx` 頂端，解鎖／鎖回、開頁若已記著密鑰自動
+  查一次現況）。`Settings.tsx` 的 `UsageSection`：token 輸入框
+  三態分流（共用既有 credential 顯示「與上方共用」／非 Super User
+  顯示「需要 Super User 身份才能設定 API Token」／Super User 顯示
+  真正的輸入框），「測試連線」「清除 token」兩顆按鈕額外掛
+  `isSuperUser` 判斷，「儲存」（純模式選擇，不碰 credential）不受
+  影響。新增專屬後端測試
+  `tests/test_pb09_superuser.py`（15 條，HTTP seam＋結構性守門
+  雙軌）：單一驗證機制（同一把 `ADMIN_SECRET` 解鎖全部四個受保護
+  端點）、裸請求／錯密鑰／未設定密鑰在每個端點皆 401、
+  `/api/superuser/status` 不信任任何 client 可操縱欄位（query
+  string／自訂標頭）、該端點永遠 200 且不建立 owner、軸一
+  owner_id 不受軸二密鑰存在與否影響（同一 cookie jar 三種
+  Authorization 狀態下 owner registry 恰好只有一筆）、
+  `CRON_SECRET`／`ADMIN_SECRET` 互相隔離（各自打不開對方的端點、
+  各自對自己的端點正常運作）、AST 結構掃描證明 `superuser.py`
+  程式碼裡不出現 `identity`／`owner_id`／`identity_resolver` 等
+  軸一詞彙、`inspect.signature()` 直接核對 `is_superuser()` 沒有
+  `owner_id`／`owner` 參數（不只信任 docstring 的宣稱）。既有測試
+  連帶修正：`tests/test_scale08_observability.py`
+  （`OPS_AUTH`→`ADMIN_AUTH`，三條測試更名並改用新參數名）、
+  `tests/test_api_settings.py`／`test_api_settings_verify.py`／
+  `test_api_iv_history.py`／`test_ivpipeline_parity.py`（四個檔案
+  的 `client`／`_client()` fixture 補上 `admin_secret=` 與對應
+  `Authorization` 標頭，讓這些原本測 credential 端點行為本身、
+  不是測授權閘門的檔案在 PB-09 上線後繼續打得進去）；
+  `tests/test_pb02_cookie_identity.py` 補一條
+  `test_superuser_status_endpoint_does_not_create_an_owner`。前端
+  `Settings.test.tsx`：`mockApi()` 新增 `superuser` 選項獨立攔截
+  `/api/superuser/status`、全域 `beforeEach` 預設記住一把測試密鑰、
+  `ready()` 新增 `expectSuperUser` 等待旗標消除非同步競態；新增
+  6 條 Super User 閘門專屬測試（未解鎖看不到輸入框、未解鎖看不到
+  測試／清除按鈕、正確密鑰解鎖後輸入框出現且請求帶著這把密鑰、
+  密鑰錯誤顯示錯誤且不留著錯的密鑰、鎖回後輸入框重新消失、儲存
+  token 請求帶著記住的密鑰）。同步更新
+  `docs/deploy-vercel.md`（S0 章節改為 `ADMIN_SECRET`，附註
+  `OPS_SECRET` 已退役、留著舊環境變數無害可直接刪除）與
+  `scripts/migrate_solo_to_owner.py` docstring 的過期提及。
+
+  **E2E 連帶修正**（`e2e/smoke.spec.ts`／`e2e/desktop.spec.ts` 共
+  3 條既有測試因 credential 讀寫路徑上新增的閘門而斷）：這些測試
+  測的是設定頁本身的資料流（切自訂／存 token／三段式驗證狀態機），
+  不是 Super User 解鎖流程，修法是在各自的 route 設置階段用
+  `page.addInitScript()` 預先寫入 `sessionStorage`、並 mock
+  `GET /api/superuser/status` 回 `{is_superuser: true}`，模擬「已
+  解鎖」讓既有斷言原樣成立——不是放寬任何斷言。另補一條**新增**的
+  手機版 e2e（`未解鎖 Super User 時看不到 API Token 輸入框，模式
+  選項仍可正常切換`），刻意不沿用共用 helper（那個 helper 為了服務
+  上述既有測試已預設模擬解鎖），在真實瀏覽器層級（而非只在 Vitest
+  jsdom 層）證明未解鎖時真的看不到輸入框、但模式切換本身不受影響；
+  比照 HIVT-07 既有裁示（純邏輯、viewport-agnostic 的閘門只在
+  mobile 驗證一次，desktop 重複驗證邊際價值低），未另外在桌面複製
+  一份。後端專屬測試新增 `tests/test_pb09_superuser.py`（15 條，
+  HTTP-seam＋結構性 AST 掃描雙軌，逐條對應 spec §6 五項硬性需求）。
+  全套：後端雙後端（記憶體＋真實 Postgres，於乾淨重置過的資料庫上）
+  2171 條全綠；前端 typecheck 乾淨、Vitest 777 條全綠、build 成功；
+  Playwright 126 條（iPhone＋Desktop）連續兩輪穩定全綠。
+
 ### 施工依據
 
 - 需求與決策紀錄：`docs/modifyRequestV1.md`（附錄 A1–A12）
