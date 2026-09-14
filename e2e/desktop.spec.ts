@@ -1186,6 +1186,14 @@ const settingsSaved = {
 };
 
 async function routeSettings(page: import("@playwright/test").Page) {
+  // PB-09（#298）：同 `smoke.spec.ts::routeSettingsMobile` 的理由——
+  // 模擬「已解鎖」讓這些既有測試繼續測它們本來要測的東西（設定頁
+  // 資料流），不是 Super User 解鎖流程本身。
+  await page.addInitScript(() => {
+    window.sessionStorage.setItem("oc_admin_secret", "e2e-test-secret");
+  });
+  await page.route("**/api/superuser/status",
+    (route) => route.fulfill({ json: { is_superuser: true } }));
   await routeTwoScenarios(page);
   let saved = false;
   await page.route("**/api/settings", (route) => {
@@ -1241,6 +1249,13 @@ test("桌面版：切到自訂、存 token，畫面只顯示遮罩", async ({ pa
 
 test("桌面版：測試連線走完未設定 → 尚未驗證 → 已連線（Settings／#125）",
    async ({ page }) => {
+  // PB-09（#298）：同 `routeSettings` 的理由——這條測的是三段式驗證
+  // 狀態機，不是 Super User 解鎖流程，先模擬已解鎖。
+  await page.addInitScript(() => {
+    window.sessionStorage.setItem("oc_admin_secret", "e2e-test-secret");
+  });
+  await page.route("**/api/superuser/status",
+    (route) => route.fulfill({ json: { is_superuser: true } }));
   await routeTwoScenarios(page);
   const base = {
     supported_providers: [{ id: "marketdata-app", label: "Market Data App" }],

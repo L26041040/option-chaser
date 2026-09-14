@@ -31,7 +31,7 @@ from option_chaser.models import RateLimitedError
 FIX = "tests/fixtures/xyz_v4_six_expiries.json"
 NEW = {"symbol": "XYZ", "target_price": 130.0, "target_month": "2026-09",
        "strategies": ["vertical-spread"]}
-OPS_AUTH = {"Authorization": "Bearer ops-secret"}
+ADMIN_AUTH = {"Authorization": "Bearer admin-secret"}
 
 
 def _fresh_snapshot():
@@ -40,7 +40,7 @@ def _fresh_snapshot():
         snap, fetched_at=datetime.now(timezone.utc).isoformat(timespec="seconds"))
 
 
-def _client(monkeypatch, *, storage=None, ops_secret="ops-secret",
+def _client(monkeypatch, *, storage=None, admin_secret="admin-secret",
            snap=None, **overrides):
     """刻意**不**覆寫 `fetch=`——`create_app()` 只有在 `fetch is
     service.fetch_chain`（未被覆寫）時才會走 `_default_fetch()`，而
@@ -60,7 +60,7 @@ def _client(monkeypatch, *, storage=None, ops_secret="ops-secret",
     snap = snap if snap is not None else _fresh_snapshot()
     monkeypatch.setattr(cboe, "fetch_chain", lambda symbol: snap)
     return TestClient(create_app(identity_resolver=lambda: "solo", storage=storage or MemoryStorage(),
-                                 ops_secret=ops_secret, **overrides))
+                                 admin_secret=admin_secret, **overrides))
 
 
 def _create_and_refresh(client, symbol="XYZ"):
@@ -106,7 +106,7 @@ def test_ops_metrics_endpoint_answers_all_seven_categories(monkeypatch):
     c = _client(monkeypatch, storage=storage)
     _create_and_refresh(c)
 
-    r = c.get("/api/ops/metrics", headers=OPS_AUTH)
+    r = c.get("/api/ops/metrics", headers=ADMIN_AUTH)
     assert r.status_code == 200, r.text
     body = r.json()
     assert set(body) == set(METRIC_CATALOGUE)
@@ -161,7 +161,7 @@ def test_chain_429_is_recorded_separately_from_a_plain_fetch_failure():
         raise RateLimitedError("429", retry_after_seconds=60.0)
 
     fallback = dataclasses.replace(_fresh_snapshot(), source="yfinance")
-    c = TestClient(create_app(identity_resolver=lambda: "solo", storage=storage, ops_secret="ops-secret"))
+    c = TestClient(create_app(identity_resolver=lambda: "solo", storage=storage, admin_secret="admin-secret"))
     import unittest.mock as mock
     with mock.patch.object(cboe, "fetch_chain", side_effect=rate_limited), \
          mock.patch.object(yf, "fetch_chain", return_value=fallback):
@@ -174,7 +174,7 @@ def test_chain_429_is_recorded_separately_from_a_plain_fetch_failure():
     assert entries.get(("chain_fetch_count", "yfinance")) == 1
 
 
-# ---------- AC-6：operator-only ----------
+# ---------- AC-6：Super User-only（PB-09／#298 起取代 OPS_SECRET） ----------
 
 def test_ops_metrics_endpoint_requires_authorization(monkeypatch):
     storage = MemoryStorage()
@@ -186,23 +186,24 @@ def test_ops_metrics_endpoint_requires_authorization(monkeypatch):
                  headers={"Authorization": "Bearer wrong"}).status_code == 401
 
 
-def test_ops_secret_not_configured_fails_closed(monkeypatch):
-    monkeypatch.delenv("OPS_SECRET", raising=False)
-    c = _client(monkeypatch, ops_secret=None)
+def test_admin_secret_not_configured_fails_closed(monkeypatch):
+    monkeypatch.delenv("ADMIN_SECRET", raising=False)
+    c = _client(monkeypatch, admin_secret=None)
     r = c.get("/api/ops/metrics", headers={"Authorization": "Bearer Anything"})
     assert r.status_code == 401
 
 
-def test_ops_secret_is_independent_from_cron_secret(monkeypatch):
-    """不同的信任邊界，不共用同一把——cron 的 secret 對 ops 端點無效，
-    反之亦然。"""
-    c = _client(monkeypatch, ops_secret="ops-only-secret",
+def test_admin_secret_is_independent_from_cron_secret(monkeypatch):
+    """不同的信任邊界，不共用同一把——cron 的 secret 對 Super User 端點
+    無效，反之亦然（PB-09／#298：`ops_secret` 已退役，這裡改測
+    `admin_secret`）。"""
+    c = _client(monkeypatch, admin_secret="admin-only-secret",
                cron_secret="cron-only-secret")
     assert c.get("/api/ops/metrics",
                  headers={"Authorization": "Bearer cron-only-secret"}
                  ).status_code == 401
     assert c.get("/api/cron/warm-rate-cache",
-                 headers={"Authorization": "Bearer ops-only-secret"}
+                 headers={"Authorization": "Bearer admin-only-secret"}
                  ).status_code == 401
 
 

@@ -107,18 +107,29 @@ rollout 前後比較與未來 chain 共用決策（EG-1）取證用，**不對�
 使用者開放**。要讓這個端點真的驗證授權：
 
 1. 專案 → **Settings** → **Environment Variables**
-2. 新增 `OPS_SECRET`，值設一個隨機字串（跟 `CRON_SECRET` 用不同的
+2. 新增 `ADMIN_SECRET`，值設一個隨機字串（跟 `CRON_SECRET` 用不同的
    值——兩者是不同的信任邊界，一個是 Vercel 排程系統，一個是人類
-   運維，輪替其中一把不該連帶影響另一把），三個 Environment 都勾
+   Super User，輪替其中一把不該連帶影響另一把），三個 Environment
+   都勾
 3. 重新部署一次
 
-查詢方式：`curl -H "Authorization: Bearer <OPS_SECRET>"
-https://<部署網址>/api/ops/metrics`。`OPS_SECRET` 沒設時這個端點
+查詢方式：`curl -H "Authorization: Bearer <ADMIN_SECRET>"
+https://<部署網址>/api/ops/metrics`。`ADMIN_SECRET` 沒設時這個端點
 對任何請求一律回 401（fail-closed）。
+
+⚠ **`OPS_SECRET` 已於 PB-09（#298，Anonymous Public Beta）退役**，
+由 `ADMIN_SECRET` 取代——後者是全站唯一的 Super User 驗證機制（軸
+二，與 owner cookie 的軸一完全獨立），同一把密鑰**同時**解鎖這個
+metrics 端點與 Settings 頁的自訂 provider token 設定（PUT／測試
+連線／清除，見下方）。若專案上還留著舊的 `OPS_SECRET` 環境變數，
+可以直接刪除——它已經沒有任何程式碼在讀取，留著不會造成安全問題，
+純粹是死配置。
 
 停用／回退：把 `enable_metrics=False` 傳進 `create_app()`（`api/
 index.py`）即可，整組觀測記錄變成 no-op；已經寫進 `operational_
-metrics` 表的資料不影響任何產品資料，可保留或清空。
+metrics` 表的資料不影響任何產品資料，可保留或清空。這個開關與
+`ADMIN_SECRET` 是否設定無關——即使停用觀測記錄，`ADMIN_SECRET`
+仍然守著自訂 provider token 的讀寫路徑。
 
 ## 部署後的第一件事：確認 Cboe 可達性
 

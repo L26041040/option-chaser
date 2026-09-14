@@ -58,6 +58,11 @@ def _frozen_clock(monkeypatch):
                         lambda: FROZEN_TODAY)
 PROVIDER = providers.MARKETDATA_APP.id
 TOKEN = "mdapp_live_SECRET1234abcd"
+# PB-09（#298）：credential 三個寫入端點（`_unlock()` 會呼叫其中兩個）
+# gate 在 Super User——本檔案測的是 Historical IV 閘門本身，不是軸二
+# 守門，固定帶一把有效 `ADMIN_SECRET`（同 `test_api_settings.py` 的
+# 理由）。
+ADMIN_SECRET = "test-admin-secret"
 
 _RATE = RateCurve(curve_date="2026-07-31",
                   nodes=((0.5, 0.041), (1.0, 0.042), (2.0, 0.043), (3.0, 0.044)))
@@ -169,12 +174,13 @@ def _contract_history_empty(provider, occ_symbol, from_date, to_date, token,
 
 def _client(db, *, surface=_surface_never_called,
            contract_history=_contract_history_empty):
-    return TestClient(create_app(identity_resolver=lambda: "solo", 
+    return TestClient(create_app(identity_resolver=lambda: "solo",
         storage=db, fetch=lambda s: _snap(), rate_loader=_rate_loader,
         dividend_loader=_dividend_loader,
         verify_provider=lambda p, t: providers.VerifyOutcome(True),
         historical_surface=surface, contract_history=contract_history,
-        rate_curve_rows=_rate_curve_rows))
+        rate_curve_rows=_rate_curve_rows, admin_secret=ADMIN_SECRET),
+        headers={"Authorization": f"Bearer {ADMIN_SECRET}"})
 
 
 @pytest.fixture
@@ -261,11 +267,12 @@ def test_custom_with_an_unverified_credential_stays_locked(db):
 
 
 def test_a_failed_verification_keeps_the_module_locked(db):
-    client = TestClient(create_app(identity_resolver=lambda: "solo", 
+    client = TestClient(create_app(identity_resolver=lambda: "solo",
         storage=db, fetch=lambda s: _snap(), rate_loader=_rate_loader,
         dividend_loader=_dividend_loader,
         verify_provider=lambda p, t: providers.VerifyOutcome(False, "認證被拒"),
-        historical_surface=_surface_never_called))
+        historical_surface=_surface_never_called, admin_secret=ADMIN_SECRET),
+        headers={"Authorization": f"Bearer {ADMIN_SECRET}"})
     _unlock(client, verified=True)
     assert client.get("/api/settings").json()["historical_iv_enabled"] is False
 

@@ -125,7 +125,21 @@ def test_cron_endpoint_does_not_create_an_owner_even_when_unauthorized():
 
 def test_ops_endpoint_does_not_create_an_owner_even_when_unauthorized():
     c, storage = _client()
-    c.get("/api/ops/metrics")   # 401（無 OPS_SECRET）也不建立
+    # PB-09（#298）起這個端點改由 Super User capability（`ADMIN_SECRET`，
+    # 軸二）把關，取代原本的 `OPS_SECRET`——測試本身不變：沒帶憑證一律
+    # 401，重點是「連 401 之前也不該先幫它建一個 owner」。
+    c.get("/api/ops/metrics")
+    assert storage.list_owners() == []
+
+
+def test_superuser_status_endpoint_does_not_create_an_owner():
+    """PB-09（#298）新增端點——即使它本身永遠 200（查自己是不是 Super
+    User 不該需要先被判定為 Super User），也不該幫沒有 cookie 的呼叫端
+    先建立一個 owner。"""
+    c, storage = _client()
+    r = c.get("/api/superuser/status")
+    assert r.status_code == 200
+    assert r.json() == {"is_superuser": False}
     assert storage.list_owners() == []
 
 

@@ -33,7 +33,7 @@ from option_chaser.service import DividendLoader, RateCurveLoader
 from option_chaser.timeframe import (TargetMonth, calendar_anchor,
                                      ensure_month_open, month_is_over)
 
-from . import chain_backoff, diagnostics, metrics, providers
+from . import chain_backoff, diagnostics, metrics, providers, superuser
 from .clock import now_utc_iso, ny_today
 from .dividend_cache import cached_loader as cached_dividend_loader
 from .identity import (IdentityResolver, cookie_identity_resolver,
@@ -79,7 +79,7 @@ _OWNER_COOKIE_MAX_AGE_SECONDS = 400 * 24 * 60 * 60
 # 白名單而非黑名單：未來新增的 owner-scoped 端點預設不豁免，漏列
 # 新端點不會意外洩漏成「缺 cookie 也能用」。
 _OWNER_EXEMPT_EXACT = ("/api/health",)
-_OWNER_EXEMPT_PREFIXES = ("/api/cron/", "/api/ops/")
+_OWNER_EXEMPT_PREFIXES = ("/api/cron/", "/api/ops/", "/api/superuser/")
 
 
 def _is_owner_exempt_route(path: str) -> bool:
@@ -90,8 +90,11 @@ def _is_owner_exempt_route(path: str) -> bool:
     - `/api/cron/*`：Vercel Cron 每個交易日觸發一次，若建立 owner 會
       洗出大量永遠不會再被使用的 Abandoned Owner，浪費 owner 表與
       PB-08 的清理排程。
-    - `/api/ops/*`：operator-only 端點，`OPS_SECRET` 另外把關，與
-      使用者身份無關。
+    - `/api/ops/*`：operator-only 端點，PB-09（#298）起由 Super User
+      capability（`ADMIN_SECRET`，軸二）另外把關，與使用者身份無關。
+    - `/api/superuser/*`：PB-09 新增，軸二自己的驗證／狀態查詢端點，
+      同樣與 owner-scoped 資料無關——查自己是不是 Super User 這件事
+      本身不該先幫你建一個 owner。
     """
     if path in _OWNER_EXEMPT_EXACT:
         return True
@@ -617,7 +620,7 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
                chain_backoff_default: timedelta = chain_backoff.DEFAULT_BACKOFF,
                identity_resolver: IdentityResolver = cookie_identity_resolver,
                cron_secret: str | None = None,
-               ops_secret: str | None = None,
+               admin_secret: str | None = None,
                enable_metrics: bool = True,
                anonymous_max_active_scenarios: int | None = None,
                anonymous_refresh_min_interval_minutes: int | None = None,
@@ -720,12 +723,25 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
     設定的 token，這是 Vercel 平台層級的基礎設施密鑰，沒有對應的
     Settings UI，本 app 只單純驗證有沒有對上。
 
-    `ops_secret`（SCALE-08／#258，S0 最小可觀測性）：`GET /api/ops/
-    metrics` 的授權比對值——與 `cron_secret` 同一套 fail-closed 設計，
-    但刻意是**獨立的**環境變數（`OPS_SECRET`），不是重用
-    `CRON_SECRET`：一個是「Vercel 排程系統呼叫這個 app」的信任邊界，
-    一個是「人類運維人員查詢這個 app」的信任邊界，威脅模型不同，
-    輪替其中一把不該連帶影響另一把。
+    `admin_secret`（PB-09／#298，Anonymous Public Beta，取代 SCALE-08
+    當初的 `ops_secret`）：**軸二（User Level）**唯一的驗證機制——
+    `api_app/superuser.py::is_superuser()`／`require_superuser()` 拿
+    去跟請求的 `Authorization` 標頭比對，成功即代表這次請求具備
+    Super User capability，可使用全部受保護的介面（目前只有 `GET
+    /api/ops/metrics` 與 `owner_credentials` 三個寫入端點，PB-10／
+    PB-11 會再接上更多）。**單一驗證機制**：全站只有這一把，不因為
+    功能不同而要求重新輸入——與 `cron_secret` 用途正交（那是
+    machine-to-machine，這把服務的是人類 Owner）、與軸一的 owner
+    cookie 也正交（`is_superuser()` 完全不讀 `identity_resolver()`
+    或任何 owner_id，見 `superuser.py` 檔頭）。同一套「`None`＝呼叫時
+    才讀環境變數」既有慣例（`ADMIN_SECRET`）。
+
+    ⚠ `ops_secret` 已於本票**正式退役**（非降格）：它唯一的用途
+    （`GET /api/ops/metrics`）已改走這裡，留著一把沒有任何呼叫端會
+    比對的舊 secret 只會製造「這是不是還有效」的疑惑，不符合「單一
+    驗證機制」的精神。`OPS_SECRET` 環境變數本身即使還留在部署環境裡
+    也不再被任何程式碼讀取；`CRON_SECRET` 完全不受影響，繼續服務
+    Vercel Cron 既有的機器對機器呼叫。
 
     `enable_metrics`（同票）：整組 S0 觀測的總開關（Rollback Point）。
     關閉時全部七類指標的記錄呼叫直接是 no-op——AC-4 要求觀測 ON/OFF
@@ -820,9 +836,10 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
     # 顯式傳入（含空字串）時完全採用那個值，測試才有決定性。
     _effective_cron_secret = (cron_secret if cron_secret is not None
                               else os.environ.get("CRON_SECRET"))
-    # SCALE-08（#258）：同一套設計，獨立的環境變數。
-    _effective_ops_secret = (ops_secret if ops_secret is not None
-                             else os.environ.get("OPS_SECRET"))
+    # PB-09（#298）：軸二唯一的驗證機制，取代 SCALE-08 當初的
+    # `ops_secret`（見 `create_app()` docstring 的退役說明）。
+    _effective_admin_secret = (admin_secret if admin_secret is not None
+                               else os.environ.get("ADMIN_SECRET"))
     # PB-05（#297）：同一套「`None`＝讀環境變數或落回常數」慣例，但這裡
     # 讀的是數字而非密鑰——`_env_int()` 內建自己的落回邏輯。`<=0` 由
     # `_refresh_throttled()`／額度檢查各自判讀為停用，不在這裡另外轉換。
@@ -1196,13 +1213,12 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         7. `history_read_volume`——回答一次 `/history` 請求要撈幾筆
            完整歷史 view（SCALE-14 切換 narrow 讀取路徑後的對照基準）
 
-        **operator-only**（AC-6）：與 cron 端點同一套 fail-closed 設計，
-        `OPS_SECRET` 未設定或不符一律 401；不對一般使用者開放，前端
-        不會呼叫這個端點。
+        **Super User-only**（AC-6，PB-09／#298 起改由軸二守門，取代
+        原本的 `OPS_SECRET`）：`require_superuser()` fail-closed，未帶
+        有效 `ADMIN_SECRET` 一律 401；不對一般使用者開放，前端一般
+        瀏覽路徑不會呼叫這個端點。
         """
-        provided = request.headers.get("authorization")
-        if not _effective_ops_secret or provided != f"Bearer {_effective_ops_secret}":
-            raise HTTPException(status_code=401, detail="unauthorized")
+        superuser.require_superuser(request, admin_secret=_effective_admin_secret)
 
         by_metric: dict[str, list[dict]] = {m: [] for m in metrics.PERSISTED_METRICS}
         for e in _db().metric_summary():
@@ -1211,6 +1227,25 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
                  "symbol": e.symbol or None, "count": e.count,
                  "total": e.total, "max_value": e.max_value})
         return {**by_metric, "table_size": _db().table_size_metrics()}
+
+    # ---------- User Level（軸二，PB-09／#298） ----------
+
+    @app.get("/api/superuser/status")
+    def superuser_status(request: Request) -> dict:
+        """讓前端知道「目前這個 Authorization 標頭是不是有效的 Super
+        User 憑證」，好決定要不要顯示需要 Super User 才用得到的介面
+        （目前只有 Settings 頁的自訂 provider token 輸入，PB-10／
+        PB-11 上線後會有更多消費端）。
+
+        **這個端點本身永遠 200**，不因為驗證失敗就 401——查自己現在
+        算不算 Super User，不該需要先證明自己是 Super User 才查得到
+        答案（那會是雞生蛋問題）。回應只有一個布林值，不洩漏任何
+        其他資訊；`_is_owner_exempt_route()` 已把整個 `/api/
+        superuser/*` 前綴排除在 lazy owner creation 之外，呼叫這個
+        端點不會意外幫呼叫端建立一個新 owner。
+        """
+        return {"is_superuser": superuser.is_superuser(
+            request, admin_secret=_effective_admin_secret)}
 
     # ---------- Application diagnostics（DG-02／#145） ----------
 
@@ -1959,16 +1994,19 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
 
     def _known_secrets(*, credentials: dict[str, ProviderCredential | None] | None = None
                        ) -> tuple[str, ...]:
-        """目前現行的祕密值——provider token 與 `DATABASE_URL` 家族環境
-        變數的值（DG-03／#146）。這是 redaction 白名單以外的最後一道
-        防線：即使某個字串意外落在白名單欄位裡，只要逐字等於這裡的
-        任何一個值，一樣會被換成 `[redacted]`。
+        """目前現行的祕密值——provider token、`DATABASE_URL` 家族環境
+        變數的值（DG-03／#146），以及 PB-09（#298）新增的 `_effective_
+        admin_secret`。這是 redaction 白名單以外的最後一道防線：即使
+        某個字串意外落在白名單欄位裡，只要逐字等於這裡的任何一個值，
+        一樣會被換成 `[redacted]`——安全考量明文要求這把新憑證也涵蓋
+        在內（不得進 log／diagnostic／回應 body）。
 
         `credentials` 可選——傳入時直接使用（PERF-01／#177，呼叫端已經
         算過一次），不傳時照舊自己查一次，行為不變。"""
         creds = credentials if credentials is not None else _credential_map()
         tokens = tuple(cred.token for cred in creds.values() if cred is not None)
-        return tokens + database_url_candidates()
+        admin = (_effective_admin_secret,) if _effective_admin_secret else ()
+        return tokens + admin + database_url_candidates()
 
     def _flush_diagnostics(diag: _CollectingDiagnostics) -> dict:
         """這次 request 收集到的 events 依優先序選出 `kept`（per-request
@@ -2308,7 +2346,16 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         return _settings_view()
 
     @app.put("/api/settings/credentials/{provider}")
-    def put_credential(provider: str, req: CredentialRequest) -> dict:
+    def put_credential(provider: str, req: CredentialRequest,
+                       request: Request) -> dict:
+        """PB-09（#298）第一個 User Level 授權規則：`owner_credentials`
+        的寫入路徑 gate 在 Super User——Normal User 的 Anonymous Owner
+        結構性寫不進任何第三方 token（OD-3）。**先驗證軸二、再驗證
+        provider 白名單、才碰 storage**：沒有有效 `ADMIN_SECRET` 的
+        請求連白名單檢查的副作用（若日後那段變重）都不該享有。owner_id
+        （軸一）維持不變——寫進去的仍是目前解析出的那個 owner，Super
+        User 不會因為這個動作而變成別人。"""
+        superuser.require_superuser(request, admin_secret=_effective_admin_secret)
         if not providers.is_supported(provider):
             # 自訂不等於任意資料源：不在白名單就是不支援，不接受任何
             # 「先存起來再說」的 provider id。
@@ -2320,13 +2367,20 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         return _settings_view()
 
     @app.post("/api/settings/credentials/{provider}/test")
-    def test_credential(provider: str) -> dict:
+    def test_credential(provider: str, request: Request) -> dict:
         """測試連線：用已儲存的 token 對該 Provider 做一次真實驗證。
 
         結果存起來（設定頁重載不必重測）。驗證失敗**不是** HTTP 錯誤——
         「這把 token 不能用」是這個端點的正常答案之一，回 200 帶狀態，
         呼叫端才不必為了讀一個預期內的結果去 catch。
+
+        PB-09（#298）：同一組 gate——即使這個 provider 剛好已經有
+        credential（例如 Super User 稍早已設好），沒帶有效 `ADMIN_
+        SECRET` 的請求一樣拿不到「拿別人已存好的 token 去打一次外部
+        API」這個能力，不能只靠「Normal User 反正沒有 credential 可測」
+        這個間接後果當防線。
         """
+        superuser.require_superuser(request, admin_secret=_effective_admin_secret)
         if not providers.is_supported(provider):
             raise HTTPException(status_code=400,
                                 detail=f"不支援的資料源：{provider}")
@@ -2342,7 +2396,11 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         return _settings_view()
 
     @app.delete("/api/settings/credentials/{provider}")
-    def delete_credential(provider: str) -> dict:
+    def delete_credential(provider: str, request: Request) -> dict:
+        """PB-09（#298）：刪除也是對 `owner_credentials` 的寫入，同一套
+        gate——一致性優先於「反正 Normal User 也刪不到自己沒有的東西」
+        這個間接推論。"""
+        superuser.require_superuser(request, admin_secret=_effective_admin_secret)
         if not providers.is_supported(provider):
             raise HTTPException(status_code=400,
                                 detail=f"不支援的資料源：{provider}")

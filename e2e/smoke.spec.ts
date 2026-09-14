@@ -1439,6 +1439,15 @@ const SETTINGS_SAVED = {
 };
 
 async function routeSettingsMobile(page: import("@playwright/test").Page) {
+  // PB-09（#298）：credential 讀寫路徑掛在 Super User 閘門後——這裡
+  // 既有測試檔測的是設定頁本身的資料流，不是 Super User 解鎖流程
+  // 本身，所以直接模擬「已解鎖」讓既有斷言照舊成立；解鎖流程自己的
+  // 行為由 `Settings.test.tsx`（Vitest 元件層）專屬覆蓋。
+  await page.addInitScript(() => {
+    window.sessionStorage.setItem("oc_admin_secret", "e2e-test-secret");
+  });
+  await page.route("**/api/superuser/status",
+    (route) => route.fulfill({ json: { is_superuser: true } }));
   await page.route("**/api/scenarios", (route) => route.fulfill({ json: [] }));
   let saved = false;
   await page.route("**/api/settings", (route) => {
@@ -1496,6 +1505,29 @@ test("手機版：Historical IV 切自訂、存 token，只看得到遮罩（Set
 
   await expect(iv.getByText("已儲存 ••••••••abcd")).toBeVisible();
   await expect(page.locator("body")).not.toContainText("tok-secret-abcd");
+});
+
+test("手機版：未解鎖 Super User 時看不到 API Token 輸入框，模式選項仍可正常切換（PB-09／#298）", async ({ page }) => {
+  // 刻意不用 `routeSettingsMobile`——那個 helper 為了讓其餘既有測試
+  // 繼續測「設定頁資料流」而非「Super User 解鎖流程」，預設模擬已
+  // 解鎖；這裡就是要驗證真正的預設（未解鎖）狀態，在真實瀏覽器層級
+  // 而非只在 Vitest jsdom 層。
+  await page.route("**/api/scenarios", (route) => route.fulfill({ json: [] }));
+  await page.route("**/api/settings",
+    (route) => route.fulfill({ json: SETTINGS_VIEW }));
+  await page.route("**/api/superuser/status",
+    (route) => route.fulfill({ json: { is_superuser: false } }));
+  await page.route("**/api/diagnostics*", (route) => route.fulfill({ json: [] }));
+
+  await page.goto("/#/settings");
+
+  const md = page.getByRole("region", { name: "Market Data" });
+  await md.getByRole("radio", { name: "自訂" }).click();
+  await expect(md.getByRole("radio", { name: "自訂" })).toBeChecked();
+  await expect(md.getByLabel("API Token")).toHaveCount(0);
+  await expect(
+    md.getByText("需要 Super User 身份才能設定 API Token"),
+  ).toBeVisible();
 });
 
 /* ---------- Diagnostics / 報錯紀錄（DG-06／#149） ---------- */

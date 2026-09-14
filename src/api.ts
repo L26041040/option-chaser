@@ -8,6 +8,7 @@
  *
  * 本層與整個前端都不做金融計算：每個顯示數字都已由引擎算好。
  */
+import { adminAuthHeaders } from "./superuser";
 
 export interface AnalysisMeta {
   symbol: string;
@@ -1143,6 +1144,9 @@ export function saveSettings(body: {
   });
 }
 
+// PB-09（#298）：三個 credential 寫入端點在後端 gate 在 Super
+// User——沿用軸二的 `adminAuthHeaders()`（沒記住密鑰時回空物件，
+// 讓伺服器像平常一樣 401，不是前端自己先擋）。
 export function saveCredential(
   provider: string,
   token: string,
@@ -1151,7 +1155,7 @@ export function saveCredential(
     `/api/settings/credentials/${encodeURIComponent(provider)}`,
     {
       method: "PUT",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...adminAuthHeaders() },
       body: JSON.stringify({ token }),
     },
   );
@@ -1162,15 +1166,23 @@ export function saveCredential(
 export function testCredential(provider: string): Promise<SettingsView> {
   return request<SettingsView>(
     `/api/settings/credentials/${encodeURIComponent(provider)}/test`,
-    { method: "POST" },
+    { method: "POST", headers: adminAuthHeaders() },
   );
 }
 
 export function clearCredential(provider: string): Promise<SettingsView> {
   return request<SettingsView>(
     `/api/settings/credentials/${encodeURIComponent(provider)}`,
-    { method: "DELETE" },
+    { method: "DELETE", headers: adminAuthHeaders() },
   );
+}
+
+/** Super User 狀態查詢（PB-09／#298）——這個端點本身永遠 200，回應
+ *  只有一個布林值：目前記住的密鑰（若有）是否有效。 */
+export function getSuperUserStatus(): Promise<{ is_superuser: boolean }> {
+  return request<{ is_superuser: boolean }>("/api/superuser/status", {
+    headers: adminAuthHeaders(),
+  });
 }
 
 // ---------- Historical IV 歷史序列（#126／#114，HIVT-02–04／#153–155） ----------

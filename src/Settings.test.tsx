@@ -7,10 +7,11 @@
  */
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import Settings from "./Settings";
 import type { SettingsView } from "./api";
+import { setAdminSecret } from "./superuser";
 
 const PROVIDER = "marketdata-app";
 
@@ -49,12 +50,22 @@ const CONFIGURED = {
  * `Settings` 現在也掛著 `<Diagnostics />`（DG-06／#149），它自己會打
  * `/api/diagnostics`——那條路徑分流成固定回空清單，不吃掉這裡的 view
  * 序列（否則每個既有測試的 view 對應關係都會被這個額外的請求打亂）。
+ *
+ * PB-09（#298）：`<SuperUserUnlock />` 也會自己打
+ * `/api/superuser/status`——同一個理由分流成獨立回應，`isSuperUser`
+ * 由 `superuser` 參數決定（預設 `true`，本檔案大多數測試關心的是
+ * credential CRUD 業務邏輯本身，不是軸二守門機制，後者由本檔案末尾
+ * 專屬的 describe block 負責，那裡會用 `false` 覆寫）。
  */
-function mockApi(views: SettingsView[]) {
+function mockApi(views: SettingsView[], { superuser = true } = {}) {
   let i = 0;
   const spy = vi.fn(async (url: string, _init?: RequestInit) => {
     if (String(url).startsWith("/api/diagnostics")) {
       return { ok: true, status: 200, json: async () => [] } as Response;
+    }
+    if (String(url).startsWith("/api/superuser/status")) {
+      return { ok: true, status: 200,
+               json: async () => ({ is_superuser: superuser }) } as Response;
     }
     const body = views[Math.min(i, views.length - 1)];
     i += 1;
@@ -69,13 +80,34 @@ function section(name: string) {
   return screen.getByRole("region", { name }) as HTMLElement;
 }
 
-async function ready(name = "Market Data") {
+/**
+ * PB-09（#298）：`<SuperUserUnlock />` 的解鎖狀態是跟 view 載入各自
+ * 獨立完成的另一個非同步 effect——只等 `section(name)` 出現，不保證
+ * 呼叫端接下來的斷言看到的是「已解鎖」這個穩定狀態，而不是介於兩者
+ * 之間的中繼畫面。`expectSuperUser` 預設 `true`（配合 `beforeEach`
+ * 擺好的「已解鎖」前置條件），本檔案末尾專屬測試「未解鎖」情境時
+ * 傳 `false`，改自己等它要等的狀態。
+ */
+async function ready(name = "Market Data", { expectSuperUser = true } = {}) {
   await waitFor(() => expect(section(name)).toBeInTheDocument());
+  if (expectSuperUser) {
+    await waitFor(() => expect(screen.getByText("目前已解鎖。")).toBeInTheDocument());
+  }
 }
+
+beforeEach(() => {
+  // PB-09（#298）：多數既有測試關心的是 credential CRUD 業務邏輯本身
+  // ——不是軸二解鎖流程，先幫它們把「已解鎖」這個前置條件擺好（搭配
+  // `mockApi()` 預設 `superuser: true`）。軸二自己的解鎖流程測試在
+  // 檔案末尾專屬的 describe block 裡，會先 `setAdminSecret(null)`
+  // 清掉這裡擺好的東西再各自測。
+  setAdminSecret("test-secret");
+});
 
 afterEach(() => {
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
+  setAdminSecret(null);
 });
 
 describe("兩列與預設值", () => {
@@ -522,5 +554,102 @@ describe("fallback 誠實顯示", () => {
     expect(
       within(section("Historical IV")).queryByText(/目前使用/),
     ).not.toBeInTheDocument();
+  });
+});
+
+/* ---------- PB-09（#298）：Super User 閘門 ---------- */
+
+describe("Super User 閘門（PB-09／#298）", () => {
+  it("預設（未解鎖）看不到 API Token 輸入框，但模式選項照常可用", async () => {
+    setAdminSecret(null);   // 覆寫 beforeEach 擺好的前置條件
+    mockApi([view()], { superuser: false });
+    render(<Settings />);
+    await ready("Market Data", { expectSuperUser: false });
+    const md = within(section("Market Data"));
+    await userEvent.click(md.getByRole("radio", { name: "自訂" }));
+    expect(md.queryByLabelText("API Token")).not.toBeInTheDocument();
+    expect(
+      md.getByText("需要 Super User 身份才能設定 API Token"),
+    ).toBeInTheDocument();
+    // 模式選擇本身不是 credential 寫入路徑——不該因此一起被擋。
+    expect(md.getByRole("radio", { name: "自訂" })).toBeChecked();
+  });
+
+  it("測試連線／清除 token 按鈕在未解鎖時不呈現", async () => {
+    setAdminSecret(null);
+    mockApi([view({ ...CUSTOM_MD, credentials: cred({ status: "ok" }) })],
+           { superuser: false });
+    render(<Settings />);
+    await ready("Market Data", { expectSuperUser: false });
+    const md = within(section("Market Data"));
+    expect(md.queryByRole("button", { name: "測試連線" })).not.toBeInTheDocument();
+    expect(md.queryByRole("button", { name: "清除 token" })).not.toBeInTheDocument();
+  });
+
+  it("輸入正確密鑰後解鎖，Token 輸入框出現，且請求帶著這把密鑰", async () => {
+    setAdminSecret(null);
+    const spy = mockApi([view()], { superuser: true });
+    render(<Settings />);
+    await ready("Market Data", { expectSuperUser: false });
+
+    await userEvent.type(screen.getByLabelText("密鑰"), "correct-secret");
+    await userEvent.click(screen.getByRole("button", { name: "解鎖" }));
+
+    await waitFor(() =>
+      expect(screen.getByText("目前已解鎖。")).toBeInTheDocument());
+    const md = within(section("Market Data"));
+    await userEvent.click(md.getByRole("radio", { name: "自訂" }));
+    expect(md.getByLabelText("API Token")).toBeInTheDocument();
+
+    const statusCall = spy.mock.calls.find(
+      ([url]) => url === "/api/superuser/status");
+    expect(statusCall).toBeTruthy();
+    const headers = statusCall![1]?.headers as Record<string, string>;
+    expect(headers.Authorization).toBe("Bearer correct-secret");
+  });
+
+  it("密鑰錯誤時顯示錯誤、不會誤解鎖，且不留著這把錯的密鑰", async () => {
+    setAdminSecret(null);
+    mockApi([view()], { superuser: false });
+    render(<Settings />);
+    await ready("Market Data", { expectSuperUser: false });
+
+    await userEvent.type(screen.getByLabelText("密鑰"), "wrong-secret");
+    await userEvent.click(screen.getByRole("button", { name: "解鎖" }));
+
+    await waitFor(() =>
+      expect(screen.getByText("密鑰不正確")).toBeInTheDocument());
+    expect(screen.queryByText("目前已解鎖。")).not.toBeInTheDocument();
+  });
+
+  it("鎖回 Normal User 後 Token 輸入框重新消失", async () => {
+    mockApi([view()]);   // beforeEach 已擺好「已解鎖」前置條件
+    render(<Settings />);
+    await ready();
+
+    await userEvent.click(
+      screen.getByRole("button", { name: "鎖回 Normal User" }));
+
+    const md = within(section("Market Data"));
+    await userEvent.click(md.getByRole("radio", { name: "自訂" }));
+    expect(md.queryByLabelText("API Token")).not.toBeInTheDocument();
+  });
+
+  it("儲存 token 時，credential 端點的請求帶著目前記住的密鑰", async () => {
+    const spy = mockApi([view()]);   // beforeEach 已擺好 "test-secret"
+    render(<Settings />);
+    await ready();
+    const md = within(section("Market Data"));
+    await userEvent.click(md.getByRole("radio", { name: "自訂" }));
+    await userEvent.type(md.getByLabelText("API Token"), "tok-secret-1234");
+    await userEvent.click(md.getByRole("button", { name: "儲存" }));
+
+    await waitFor(() => {
+      const credCall = spy.mock.calls.find(
+        ([url]) => url === `/api/settings/credentials/${PROVIDER}`);
+      expect(credCall).toBeTruthy();
+      const headers = credCall![1]?.headers as Record<string, string>;
+      expect(headers.Authorization).toBe("Bearer test-secret");
+    });
   });
 });

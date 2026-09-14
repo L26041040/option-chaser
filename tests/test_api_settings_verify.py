@@ -42,6 +42,10 @@ def chain_snapshot(*, source):
 
 TOKEN = "mdapp_live_SECRET1234abcd"
 PROVIDER = providers.MARKETDATA_APP.id
+# PB-09（#298）：credential 三個寫入端點 gate 在 Super User——本檔案測
+# 的是驗證三態／custom fetch 路徑選擇本身，不是軸二守門，固定帶一把
+# 有效 `ADMIN_SECRET`（同 `test_api_settings.py` 的理由）。
+ADMIN_SECRET = "test-admin-secret"
 
 
 def _ok(_provider, _token):
@@ -59,12 +63,14 @@ def db():
 
 def _client(db, *, verify=_ok, custom_fetch=None, fetch=None):
     kwargs = {"storage": db, "verify_provider": verify,
-              "rate_loader": _rate_loader, "dividend_loader": _dividend_loader}
+              "rate_loader": _rate_loader, "dividend_loader": _dividend_loader,
+              "admin_secret": ADMIN_SECRET}
     if custom_fetch is not None:
         kwargs["custom_fetch"] = custom_fetch
     if fetch is not None:
         kwargs["fetch"] = fetch
-    return TestClient(create_app(identity_resolver=lambda: "solo", **kwargs))
+    return TestClient(create_app(identity_resolver=lambda: "solo", **kwargs),
+                      headers={"Authorization": f"Bearer {ADMIN_SECRET}"})
 
 
 def _configure(client, *, market="custom", iv="default"):
