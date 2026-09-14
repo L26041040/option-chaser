@@ -219,29 +219,54 @@ user-facing flow 才建立；`/api/health`／cron／ops-admin 端點／
 靜態資源／監控探測（uptime／Sentry 之類）等不得因缺 cookie 觸發
 建立，避免 bot／排程流量洗出大量永遠不會再用到的 Abandoned Owner。
 
-**Admin Capability（管理能力）**（⚠ 2026-09-13
-OPTION-PUBLIC-BETA-SPEC-REVIEW-006 修正：與下方原「Admin／Superuser
-Identity」條目描述的耦合模型已撤回，本條為訂正版）——**與 Owner
-identity 是兩條正交的軸，不得耦合**：
-- **軸一（Owner identity）**：所有人（含 Owner 自己）一律透過
-  Browser Identity（cookie）解析出 owner_id，沒有第二種身份建立
-  路徑，沒有由建立方式決定型態的 `owner_kind` 欄位。
-- **軸二（Admin capability）**：一把獨立的 secret（`ADMIN_SECRET`，
-  沿用既有 `CRON_SECRET`／`OPS_SECRET` 先例）只解鎖 operational
-  endpoint（例如 `/api/ops/metrics`），**不得用來解析、建立、或
-  決定任何產品 owner_id**——不存在「帶對這把 secret 就變成或建立
-  某個 owner」這種程式路徑。
+**Normal User（一般使用者）**（⚠ 2026-09-14
+OPTION-PUBLIC-BETA-SUPERUSER-007 修正：本條與下面 Super User／
+Service Credential 三條，取代本節原本的「Admin Capability」條目——
+2026-09-13 SPEC-REVIEW-006 訂正的軸一／軸二正交概念保留並沿用，但
+「Admin capability 只能做什麼」這個範圍本身被本輪裁示全面覆蓋、
+正式改為 Normal User／Super User 兩層權限模型，詳見下）——只能
+操作自己的資料與公開功能：使用公開提供的產品功能；查看與操作自己
+owner-scoped 的資料；建立／編輯／刷新／刪除自己的 Scenario。不能
+查看其他 owner 的資料、使用 system／admin operations、查看全站
+營運數據、管理其他使用者、執行系統級管理操作。
+
+**Super User（超級使用者）** — Normal User 的**完整權限超集合**：
+可使用全部 Normal User 功能＋查看全站 operational metrics＋查看
+所有使用者與 owner 資訊＋查看其他 owner 的資料＋執行系統管理功能＋
+管理／刪除使用者資料＋執行 protected／exempt 等 lifecycle 管理＋
+使用全部產品與 system／admin capabilities＋使用未對 Normal User
+開放的測試／診斷能力。**刪除他人全部資料、批次刪除、修改系統級
+設定、lifecycle protected／exempt 變更等高風險操作仍需二次確認＋
+audit log／event**——這是操作安全護欄，不是權限限制。
+
+**Service Credential（服務憑證）** — 例如 `CRON_SECRET`、legacy
+`OPS_SECRET`——僅供服務與服務之間驗證（machine-to-machine，例如
+供 Vercel Cron 自動呼叫），**不代表 human user level**，不是 Owner
+要記住或分別輸入的第二套／第三套帳密；Owner 登入 Super User 一次後
+即可使用全部 Super User 介面與操作，不得因為換頁面就要求重新輸入
+不同 secret。
+
+**Owner Identity（資料歸屬）** 與 **User Level（權限範圍）** 是
+兩條正交的軸，不得耦合：
+- **軸一（Owner Identity，資料是誰的）**：所有人（含 Owner 自己）
+  一律透過 Browser Identity（cookie）解析出 owner_id，沒有第二種
+  身份建立路徑，沒有由建立方式決定型態的 `owner_kind` 欄位。
+- **軸二（User Level，這個人有多少權限）**：Authenticated User →
+  User Level（`normal` | `superuser`）→ capability。單一驗證機制
+  （名稱與 session／token 細節留 `/to-tickets` 決定），驗證成功後
+  建立 server-side 可判斷的 Super User capability——**不得**寫進
+  可由 client 任意修改的 cookie／localStorage、**不得**讓知道
+  owner_id 本身等於取得 Super User、Normal User **永遠不得**自行
+  升級成 Super User。
 - Owner 使用產品本身時走的是自己**透過軸一取得的正常 owner_id**；
-  這個 owner_id 之後可以被一個**受 `ADMIN_SECRET` 保護的動作**
+  這個 owner_id 之後可以被一個**受 Super User 權限保護的動作**
   標記為 protected／exempt，使其結構性豁免 Abandoned Owner
   生命週期政策——**這只是設定既有 owner_id 上的一個旗標，不是由
-  secret 建立新身份**。Owner 既有的 `solo` 資料一次性遷移到這個
-  （軸一取得、軸二標記為 protected 的）owner_id 後，`solo` 這個
-  特殊值退出正常產品語意。
-- 第一版 operational capability 限於：匿名 owner 數／scenario 數／
-  vendor usage／429／DB 成長／cleanup volume 等統計，**明確不含**
-  任意瀏覽個別使用者資料、impersonate、刪除他人資料、查看他人第
-  三方 secrets。
+  Super User 權限建立新身份**。Owner 既有的 `solo` 資料一次性遷移
+  到這個（軸一取得、軸二標記為 protected 的）owner_id 後，`solo`
+  這個特殊值退出正常產品語意。
+- **不存在第三種 human permission level**——`CRON_SECRET`／
+  `OPS_SECRET`（若保留）等 service credential 不得升格為人類角色。
 
 **Abandoned Owner（閒置擁有者）** — 匿名擁有者連續 **30 天**沒有
 任何**真人明確操作**（建立／編輯／手動刷新／封存等主動動作；純粹

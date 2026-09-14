@@ -27,7 +27,7 @@ block 裡，不能切成好幾個 code block、也不能中間插普通文字把
 `［回報#001］spec #137 拆票完成`）。編號是**累計總數**，不因換
 session、換分支、換主題而歸零——目前最新編號記在這裡：
 
-> 目前次序：080（下一份回報用 081）
+> 目前次序：081（下一份回報用 082）
 
 每發一份回報就把上面這個數字改成剛剛用掉的那個，跟著那次改動一起
 commit（沒有其他改動要 commit 時，單獨為這一行開一個小 commit 也
@@ -8442,7 +8442,13 @@ spec #291 對應章節）：
   正確，但 v1 spec 曾把兩者寫成同一個機制（secret 建立一種
   `owner_kind="admin"`）——這個耦合已於 2026-09-13
   OPTION-PUBLIC-BETA-SPEC-REVIEW-006 修正為兩條正交軸，詳見下方
-  修正章節。**
+  修正章節。** **⚠ 進一步更正（2026-09-14
+  OPTION-PUBLIC-BETA-SUPERUSER-007）：本條「第一版 operational
+  capability 明確排除任意瀏覽/impersonate/刪除他人資料/查看第三方
+  secrets」這句已被 Owner 最新裁示正式 supersede——產品改為
+  Normal User／Super User 兩層權限模型，Super User 明確**可以**
+  瀏覽／管理其他 owner 的資料（高風險操作改用二次確認＋audit log
+  當護欄，非直接禁止），詳見下方 SUPERUSER-007 章節。**
 - **OD-7（First-use/Privacy）選 A**：第一版中文即可；首頁 Beta
   說明+頁尾一行+極簡隱私頁+刪除方法+回報入口；現在不做英文版/
   consent banner/Analytics/廣告/CMP；必要 identity cookie 走
@@ -8582,6 +8588,96 @@ ownership 的請求。「這個 endpoint 需不需要 owner」的判斷集中在
 **無殘留 contradiction。READY_FOR_TICKETS（v2）。** 依 Owner 明確
 指示：完成後停止，不重新 research、不重新 grill、不進
 `/to-tickets`、不施工。
+
+### OPTION-PUBLIC-BETA-SUPERUSER-007——Finalize Two-Level User
+Permission Model（2026-09-14，只修正 canonical spec／decision
+records，不 research／grill／to-tickets／施工）
+
+Owner 發出新裁示，**正式覆蓋 Public Beta OD-6 中與 Admin 權限範圍
+衝突的舊內容**：v1／v2 spec 把 Admin 第一版寫成「明確不得瀏覽個別
+使用者資料、不得 impersonate、不得刪除他人資料、不得查看他人第三方
+secrets」的窄權限角色；Owner 裁示產品應該只有**兩種 human 權限
+層級**，且 Owner（Super User）不必為了看 metrics／做 admin 操作／
+換頁面而分別輸入三套不同 secret。本輪只修正 canonical
+spec／decision records 本身，不重開 OD-1～OD-9 任一題、不動 #269、
+不增加帳號系統／找回碼／email login 的 scope。
+
+**最終 Normal User／Super User 模型**：
+- **Normal User**（一般使用者，預設）——能：使用公開產品功能；查看
+  與操作自己 owner-scoped 的資料；建立／編輯／刷新／刪除自己的
+  Scenario。不能：查看其他 owner 的資料、使用 system／admin
+  operations、查看全站營運數據、管理其他使用者、執行系統級管理
+  操作。
+- **Super User**——**Normal User 的完整權限超集合**：可用全部
+  Normal User 功能＋查看自己正常 Scenario／product data＋查看全站
+  operational metrics＋查看所有使用者與 owner 資訊＋**查看其他
+  owner 的資料**（v2 明文禁止，本輪撤回這條禁令）＋執行系統管理
+  功能＋管理／刪除使用者資料＋執行 protected／exempt 等 lifecycle
+  管理＋使用全部 Admin／Operations 功能＋使用未對 Normal User 開放
+  的測試／診斷能力。**不存在第三種 human permission level**——
+  `CRON_SECRET`／legacy `OPS_SECRET` 是 machine-to-machine service
+  credential，不是人類角色，不得升格。
+
+**Super User authentication 與 service secrets 如何區分**：兩軸
+維持正交（SPEC-REVIEW-006 已修好、本輪沿用不變）——**軸一（Owner
+identity）**＝Browser Identity（cookie）→ owner_id → product
+data，Owner 使用產品本身仍走這條正常路徑，不因為是 Super User而有
+第二種身份建立管道；**軸二（User Level）**＝Authenticated User →
+User Level（`normal`｜`superuser`）→ capability，本輪的核心改動
+全在這一軸的**權限範圍**，機制本身固定五點但不在本輪發明複雜帳號
+系統：(1) 單一 authentication mechanism；(2) 驗證成功後建立
+server-side 可判斷的 Super User capability；(3) 不得寫進可由
+client 任意修改的 cookie／localStorage；(4) 不得讓知道 owner_id
+本身等於取得 Super User；(5) Normal User 永遠不得自行升級成 Super
+User。具體 session／token 實作與命名（例如沿用 `ADMIN_SECRET` 或
+另訂新名）留 `/to-tickets` 決定。`CRON_SECRET`／`OPS_SECRET`（若
+保留）明確不是這個機制、不是第二套或第三套 Owner 登入方式，只服務
+各自既有的 service-to-service 用途（Cron 自動呼叫等）。高風險操作
+（刪除其他 owner 全部資料、批次刪除、修改系統級設定、lifecycle
+protected／exempt 變更、其他不可逆操作）仍需明確二次確認＋
+audit event／log——這是操作安全護欄，不是權限限制，Super User
+「什麼都能做」這件事本身不變。
+
+**哪些舊 OD-6 敘述被 supersede**：OD-6 原文「Admin 第一版 operational
+capability 明確排除任意瀏覽個別使用者資料／impersonate／刪除他人
+資料／查看第三方 secrets」這句**正式部分覆蓋**——「獨立第三把
+secret 邊界」與「Admin 使用產品走正常 owner identity」這兩句原意
+仍然正確、不受影響；被覆蓋的只有「範圍限縮」那句本身，改為 Super
+User 可以做這些事、只是高風險項目需要二次確認＋audit。原始
+OD-6 grilling ticket（GitHub issue #285）已補上 resolution
+amendment comment（未刪除原留言，保留可追溯性），spec #291 已改寫
+為 v3（§3／§6／§10／§16／§17／§19／§20／§21／§22 全面更新，
+§6 整節重寫並更名為「Super User identity / authorization
+boundary」，明確標記 v2 舊限制為「正式撤回」）。
+
+**Final audit（依 Owner 要求逐項核對，全數通過，無殘留
+contradiction）**：
+- ✅ 全產品只有 Normal User／Super User 兩個 human permission
+  levels，spec 全文（22 節，v3）與 CONTEXT.md 皆未出現第三種角色。
+- ✅ Super User＝Normal User 的完整超集合（§6 逐一列出能力清單，
+  含新增的「查看個別使用者／owner 資料、管理刪除他人資料、lifecycle
+  protected／exempt 變更、其他 support／debug 系統管理」）。
+- ✅ Owner 不需要三套後台密碼——§6／§17 明確固定單一 Super User
+  authentication mechanism，`CRON_SECRET`／`OPS_SECRET` 改標為
+  service credential、不算登入方式。
+- ✅ service secrets ≠ human authentication；owner identity ≠
+  permission level——兩軸判斷邏輯集中且分離的要求已寫進 §6／§19。
+- ✅ FREE-FIRST（OD-9，§13）、anonymous lifecycle（OD-4，§7）、
+  quota（OD-5，§8）三者逐字未動，本輪未觸碰其數字或政策。
+- ✅ #269／SCALE-18 全程未提及、未觸碰。
+- ✅ 未增加 account／recovery／email login scope——OD-1（cookie
+  掉了資料命運選 A）未重開，spec §2 Non-goals 新增的是**禁止項**
+  （不新增第三種 human role），非新功能面向。
+- ✅ 8 項必要測試（Normal User 互相隔離、Normal User 用不了 Super
+  User endpoint、Super User 能做 Normal User 全部功能、Super User
+  能用 system／admin operations、Super User capability 不改變
+  Owner 自己的 owner_id、service secret 不會讓 request 自動變成
+  某個 product owner、Normal User 無法自行升級、destructive Super
+  User action 有 confirmation＋audit trail）已逐字寫進 spec §20，
+  測試接縫沿用既有七個、零新增。
+
+**無殘留 contradiction。READY_FOR_TICKETS（v3）。** 依 Owner 明確
+指示：完成後停止，不進 `/to-tickets`、不施工。
 
 ### 施工依據
 
