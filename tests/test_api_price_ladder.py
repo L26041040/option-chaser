@@ -18,7 +18,7 @@ NEW = {"symbol": "XYZ", "target_price": 130.0, "target_month": "2026-09",
 
 def _client(storage=None):
     snap = load_snapshot(FIX)
-    return TestClient(create_app(fetch=lambda symbol: snap,
+    return TestClient(create_app(identity_resolver=lambda: "solo", fetch=lambda symbol: snap,
                                  storage=storage or MemoryStorage()))
 
 

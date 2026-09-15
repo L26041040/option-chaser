@@ -23,9 +23,20 @@ def db():
     return MemoryStorage()
 
 
+ADMIN_SECRET = "test-admin-secret"
+
+
 @pytest.fixture
 def client(db):
-    return TestClient(create_app(storage=db))
+    # PB-09（#298）起 credential 三個寫入端點 gate 在 Super User——這份
+    # 檔案測的是設定／credential 的業務邏輯本身（模式儲存、token 遮罩、
+    # provider 白名單），不是軸二守門機制本身（那由
+    # `tests/test_pb09_superuser.py` 專責），所以固定帶一把有效的
+    # `ADMIN_SECRET`，讓既有斷言不必為了一個不相干的新前置條件逐一
+    # 補頭。
+    return TestClient(create_app(identity_resolver=lambda: "solo", storage=db,
+                                 admin_secret=ADMIN_SECRET),
+                      headers={"Authorization": f"Bearer {ADMIN_SECRET}"})
 
 
 def _custom(provider=PROVIDER):

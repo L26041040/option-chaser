@@ -115,6 +115,26 @@ describe("建立表單的畫面", () => {
     // 失敗不清空——連 checkbox 的勾選狀態也保留，使用者不必重選一次。
     expect(screen.getByRole("checkbox", { name: "Call / Put" })).toBeChecked();
   });
+
+  it("PB-05（#297）額度已滿時，後端的事實陳述照既有錯誤機制原樣顯示", async () => {
+    // 額度拒絕不需要任何新的前端邏輯——`ApiError.message` 直接變成
+    // `err.message`，走的是跟上面「目標月已經過完了」完全同一條既有
+    // 路徑（`onCreate` 丟出、`CreateForm` 接住、`role="alert"` 顯示），
+    // 本測試只是把這條路徑釘在 PB-05 這個新的呼叫情境上，不是新機制。
+    const onCreate = vi.fn().mockRejectedValue(
+      new Error("目前有 10 個進行中劇本，已達上限（10 個）。請先封存或刪除既有劇本後再建立新的。"));
+    render(<CreateForm onCreate={onCreate} />);
+
+    await userEvent.type(screen.getByLabelText("標的代號"), "TLT");
+    await userEvent.type(screen.getByLabelText("目標價位"), "120");
+    await pickMonth(2028, 5);
+    await userEvent.click(screen.getByRole("checkbox", { name: "Call / Put" }));
+    await userEvent.click(screen.getByRole("button", { name: "建立" }));
+
+    const alert = screen.getByRole("alert");
+    expect(alert).toHaveTextContent("已達上限");
+    expect(alert).toHaveTextContent("封存或刪除既有劇本");
+  });
 });
 
 describe("建立表單驗證的邊界（V3／#51 檢視回饋）", () => {

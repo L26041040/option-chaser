@@ -10,7 +10,8 @@
 ## AC 對照
 
 - AC-1：`test_ops_metrics_endpoint_answers_all_seven_categories`
-- AC-2：`test_metric_catalogue_is_exactly_seven`
+- AC-2：`test_metric_catalogue_is_exactly_eight`（PB-08／#300 有意識
+  擴充後的新名稱，見該測試上方註解）
 - AC-3：見 `test_storage_contract.py`
 - AC-4：`test_metrics_on_or_off_produces_byte_identical_product_api_responses`
 - AC-5：`test_a_broken_metrics_backend_does_not_break_the_refresh_flow`
@@ -31,7 +32,7 @@ from option_chaser.models import RateLimitedError
 FIX = "tests/fixtures/xyz_v4_six_expiries.json"
 NEW = {"symbol": "XYZ", "target_price": 130.0, "target_month": "2026-09",
        "strategies": ["vertical-spread"]}
-OPS_AUTH = {"Authorization": "Bearer ops-secret"}
+ADMIN_AUTH = {"Authorization": "Bearer admin-secret"}
 
 
 def _fresh_snapshot():
@@ -40,7 +41,7 @@ def _fresh_snapshot():
         snap, fetched_at=datetime.now(timezone.utc).isoformat(timespec="seconds"))
 
 
-def _client(monkeypatch, *, storage=None, ops_secret="ops-secret",
+def _client(monkeypatch, *, storage=None, admin_secret="admin-secret",
            snap=None, **overrides):
     """刻意**不**覆寫 `fetch=`——`create_app()` 只有在 `fetch is
     service.fetch_chain`（未被覆寫）時才會走 `_default_fetch()`，而
@@ -59,8 +60,8 @@ def _client(monkeypatch, *, storage=None, ops_secret="ops-secret",
 
     snap = snap if snap is not None else _fresh_snapshot()
     monkeypatch.setattr(cboe, "fetch_chain", lambda symbol: snap)
-    return TestClient(create_app(storage=storage or MemoryStorage(),
-                                 ops_secret=ops_secret, **overrides))
+    return TestClient(create_app(identity_resolver=lambda: "solo", storage=storage or MemoryStorage(),
+                                 admin_secret=admin_secret, **overrides))
 
 
 def _create_and_refresh(client, symbol="XYZ"):
@@ -70,21 +71,25 @@ def _create_and_refresh(client, symbol="XYZ"):
     return sid
 
 
-# ---------- AC-2：catalogue 恰好七類 ----------
+# ---------- AC-2：catalogue 曾經恰好七類，PB-08（#300）有意識擴為
+# 八類（見 `api_app/metrics.py` 檔頭說明）——結構性守門本身不變，
+# 只是鎖住的數字與清單需要跟著這次有意識的擴充一起改，證明不是隨意
+# 鬆綁。 ----------
 
-def test_metric_catalogue_is_exactly_seven():
-    assert len(METRIC_CATALOGUE) == 7
+def test_metric_catalogue_is_exactly_eight():
+    assert len(METRIC_CATALOGUE) == 8
     assert set(METRIC_CATALOGUE) == {
         "chain_fetch_count", "chain_429_count", "stale_serve_count",
         "cold_miss_count", "refresh_duration_ms", "table_size",
-        "history_read_volume"}
+        "history_read_volume", "abandoned_owner_cleanup_count"}
 
 
 def test_table_size_is_the_only_non_persisted_metric():
-    """`table_size` 是 query-time gauge，不經過 `record()`；其餘六個
-    才是真的寫進 `operational_metrics` 表的。"""
+    """`table_size` 是 query-time gauge，不經過 `record()`；其餘七個
+    （含 PB-08／#300 新增的 `abandoned_owner_cleanup_count`）才是真的
+    寫進 `operational_metrics` 表的。"""
     assert set(METRIC_CATALOGUE) - set(PERSISTED_METRICS) == {"table_size"}
-    assert len(PERSISTED_METRICS) == 6
+    assert len(PERSISTED_METRICS) == 7
 
 
 def test_recording_an_unknown_metric_name_is_rejected():
@@ -102,14 +107,23 @@ def test_recording_an_unknown_metric_name_is_rejected():
 # ---------- AC-1：operator 端點一次回答全部七項 ----------
 
 def test_ops_metrics_endpoint_answers_all_seven_categories(monkeypatch):
+    """AC-1——**這條斷言的形狀已隨 PB-11（#303）有意識調整**：回應鍵
+    集合不再要求與 `METRIC_CATALOGUE` 完全相等（`==`），因為 PB-11
+    新增了三個額外的頂層鍵（`anonymous_owners`／`scenarios`／
+    `alerts`，query-time gauge／衍生 alert 判準，見該票 AC8）——這是
+    有意的擴充，不是巡邏漏掉的鬆綁。AC-1 本身要求的「一次回答得出
+    全部類別」改用子集合關係驗證（`METRIC_CATALOGUE` 逐一都還在），
+    PB-11 新增鍵各自的數值正確性由 `tests/test_pb11_ops_digest.py`
+    專屬覆蓋，這裡只確認它們存在。"""
     storage = MemoryStorage()
     c = _client(monkeypatch, storage=storage)
     _create_and_refresh(c)
 
-    r = c.get("/api/ops/metrics", headers=OPS_AUTH)
+    r = c.get("/api/ops/metrics", headers=ADMIN_AUTH)
     assert r.status_code == 200, r.text
     body = r.json()
-    assert set(body) == set(METRIC_CATALOGUE)
+    assert set(METRIC_CATALOGUE) <= set(body)
+    assert {"anonymous_owners", "scenarios", "alerts"} <= set(body)
     # 一次刷新至少會產生一筆 chain_fetch_count（真的抓過鏈）與一筆
     # refresh_duration_ms（真的完整跑完一次刷新）。
     assert body["chain_fetch_count"], "應該至少有一筆抓鏈紀錄"
@@ -161,7 +175,7 @@ def test_chain_429_is_recorded_separately_from_a_plain_fetch_failure():
         raise RateLimitedError("429", retry_after_seconds=60.0)
 
     fallback = dataclasses.replace(_fresh_snapshot(), source="yfinance")
-    c = TestClient(create_app(storage=storage, ops_secret="ops-secret"))
+    c = TestClient(create_app(identity_resolver=lambda: "solo", storage=storage, admin_secret="admin-secret"))
     import unittest.mock as mock
     with mock.patch.object(cboe, "fetch_chain", side_effect=rate_limited), \
          mock.patch.object(yf, "fetch_chain", return_value=fallback):
@@ -174,7 +188,7 @@ def test_chain_429_is_recorded_separately_from_a_plain_fetch_failure():
     assert entries.get(("chain_fetch_count", "yfinance")) == 1
 
 
-# ---------- AC-6：operator-only ----------
+# ---------- AC-6：Super User-only（PB-09／#298 起取代 OPS_SECRET） ----------
 
 def test_ops_metrics_endpoint_requires_authorization(monkeypatch):
     storage = MemoryStorage()
@@ -186,23 +200,24 @@ def test_ops_metrics_endpoint_requires_authorization(monkeypatch):
                  headers={"Authorization": "Bearer wrong"}).status_code == 401
 
 
-def test_ops_secret_not_configured_fails_closed(monkeypatch):
-    monkeypatch.delenv("OPS_SECRET", raising=False)
-    c = _client(monkeypatch, ops_secret=None)
+def test_admin_secret_not_configured_fails_closed(monkeypatch):
+    monkeypatch.delenv("ADMIN_SECRET", raising=False)
+    c = _client(monkeypatch, admin_secret=None)
     r = c.get("/api/ops/metrics", headers={"Authorization": "Bearer Anything"})
     assert r.status_code == 401
 
 
-def test_ops_secret_is_independent_from_cron_secret(monkeypatch):
-    """不同的信任邊界，不共用同一把——cron 的 secret 對 ops 端點無效，
-    反之亦然。"""
-    c = _client(monkeypatch, ops_secret="ops-only-secret",
+def test_admin_secret_is_independent_from_cron_secret(monkeypatch):
+    """不同的信任邊界，不共用同一把——cron 的 secret 對 Super User 端點
+    無效，反之亦然（PB-09／#298：`ops_secret` 已退役，這裡改測
+    `admin_secret`）。"""
+    c = _client(monkeypatch, admin_secret="admin-only-secret",
                cron_secret="cron-only-secret")
     assert c.get("/api/ops/metrics",
                  headers={"Authorization": "Bearer cron-only-secret"}
                  ).status_code == 401
     assert c.get("/api/cron/warm-rate-cache",
-                 headers={"Authorization": "Bearer ops-only-secret"}
+                 headers={"Authorization": "Bearer admin-only-secret"}
                  ).status_code == 401
 
 

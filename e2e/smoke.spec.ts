@@ -1017,7 +1017,13 @@ test("刷新失敗說明是哪一段，重試就地重來（V4／#52）", async 
     route.fulfill({ json: { results: [{ scenario_id: "s1", ok: false,
       stage: "fetch", message: "抓不到 TLT 的報價：來源無回應" }],
       remaining: [] } }));
-  await page.route("**/api/scenarios/*/refresh", (route) =>
+  // PB-08（#300）在真人主動點擊重試（`manual=true`）時，`refreshScenario()`
+  // 會在網址加上 `?manual=true`（`src/api.ts:906`）；這條路由字尾沒有 `*`
+  // 因此接不住那段查詢字串，Playwright 的 glob 比對整個不算「符合」，
+  // 這次請求會直接落到真實網路、拿到 dev server 的 404——跟本檔案其餘
+  // 幾處既有的「路由字尾缺 `*`」陷阱（`iv-history*`／`diagnostics*`）是
+  // 同一個成因（OPTION-PUBLIC-BETA-CI-REPAIR-010 診斷，PR #306）。
+  await page.route("**/api/scenarios/*/refresh*", (route) =>
     route.fulfill({ json: refreshedRow() }));
 
   await page.goto("/");
@@ -1439,6 +1445,15 @@ const SETTINGS_SAVED = {
 };
 
 async function routeSettingsMobile(page: import("@playwright/test").Page) {
+  // PB-09（#298）：credential 讀寫路徑掛在 Super User 閘門後——這裡
+  // 既有測試檔測的是設定頁本身的資料流，不是 Super User 解鎖流程
+  // 本身，所以直接模擬「已解鎖」讓既有斷言照舊成立；解鎖流程自己的
+  // 行為由 `Settings.test.tsx`（Vitest 元件層）專屬覆蓋。
+  await page.addInitScript(() => {
+    window.sessionStorage.setItem("oc_admin_secret", "e2e-test-secret");
+  });
+  await page.route("**/api/superuser/status",
+    (route) => route.fulfill({ json: { is_superuser: true } }));
   await page.route("**/api/scenarios", (route) => route.fulfill({ json: [] }));
   let saved = false;
   await page.route("**/api/settings", (route) => {
@@ -1498,6 +1513,29 @@ test("手機版：Historical IV 切自訂、存 token，只看得到遮罩（Set
   await expect(page.locator("body")).not.toContainText("tok-secret-abcd");
 });
 
+test("手機版：未解鎖 Super User 時看不到 API Token 輸入框，模式選項仍可正常切換（PB-09／#298）", async ({ page }) => {
+  // 刻意不用 `routeSettingsMobile`——那個 helper 為了讓其餘既有測試
+  // 繼續測「設定頁資料流」而非「Super User 解鎖流程」，預設模擬已
+  // 解鎖；這裡就是要驗證真正的預設（未解鎖）狀態，在真實瀏覽器層級
+  // 而非只在 Vitest jsdom 層。
+  await page.route("**/api/scenarios", (route) => route.fulfill({ json: [] }));
+  await page.route("**/api/settings",
+    (route) => route.fulfill({ json: SETTINGS_VIEW }));
+  await page.route("**/api/superuser/status",
+    (route) => route.fulfill({ json: { is_superuser: false } }));
+  await page.route("**/api/diagnostics*", (route) => route.fulfill({ json: [] }));
+
+  await page.goto("/#/settings");
+
+  const md = page.getByRole("region", { name: "Market Data" });
+  await md.getByRole("radio", { name: "自訂" }).click();
+  await expect(md.getByRole("radio", { name: "自訂" })).toBeChecked();
+  await expect(md.getByLabel("API Token")).toHaveCount(0);
+  await expect(
+    md.getByText("需要 Super User 身份才能設定 API Token"),
+  ).toBeVisible();
+});
+
 /* ---------- Diagnostics / 報錯紀錄（DG-06／#149） ---------- */
 
 const DIAG_EVENT_E2E = {
@@ -1545,6 +1583,44 @@ test("手機版：Settings 的 Diagnostics 區塊可讀可操作（DG-06／#149�
   await section.getByRole("button", { name: "Clear diagnostics" }).click();
   await section.getByRole("button", { name: "確定清除" }).click();
   await expect(section.getByText("目前沒有紀錄")).toBeVisible();
+});
+
+/* ---------- 自助刪除（PB-04／#296，Anonymous Public Beta） ---------- */
+
+test("手機版：設定頁「刪除我的所有資料」需二次確認，確認後回到空的劇本庫（PB-04／#296）",
+   async ({ page }) => {
+  await routeSettingsMobile(page);
+  let deleted = false;
+  await page.route("**/api/me", (route) => {
+    if (route.request().method() === "DELETE") {
+      deleted = true;
+      return route.fulfill({ status: 204, body: "" });
+    }
+    return route.continue();
+  });
+  await page.goto("/#/settings");
+
+  const section = page.getByRole("region", { name: "刪除我的資料" });
+  await expect(section).toBeVisible();
+
+  // 點下去只出現確認畫面，還沒真的呼叫 API
+  await section.getByRole("button", { name: "立刻刪除我的所有資料" }).click();
+  const dialog = page.getByRole("alertdialog");
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByText("無法復原")).toBeVisible();
+  expect(deleted).toBe(false);
+
+  // 取消不會呼叫 API、對話框消失
+  await dialog.getByRole("button", { name: "取消" }).click();
+  await expect(dialog).toHaveCount(0);
+  expect(deleted).toBe(false);
+
+  // 重新點開、這次真的確認
+  await section.getByRole("button", { name: "立刻刪除我的所有資料" }).click();
+  await page.getByRole("alertdialog").getByRole("button", { name: "確定刪除" }).click();
+
+  await expect(page).toHaveURL(/#\/$/);
+  expect(deleted).toBe(true);
 });
 
 /* ---------- Historical IV Position 與閘門（#114／#126／一年走勢圖＋
@@ -2922,4 +2998,50 @@ test("T18（#235）紅線 12：展開一般 Vertical Spread 候選（非 Butterf
 
   await expect(page.locator(".candidate").first().locator("table")).toBeVisible();
   expect(requestUrls).toEqual([]);
+});
+
+/* ---------- PB-12（#302，Anonymous Public Beta）：首頁 Beta 說明＋
+   全站頁尾＋隱私頁 ---------- */
+
+test("手機版：首頁 Beta 說明常駐可見，頁尾在每個畫面都在，隱私頁可達",
+   async ({ page }) => {
+  await page.route("**/api/scenarios", (route) =>
+    route.fulfill({ json: [] }));
+  await page.goto("/");
+
+  // 首頁 Beta 說明：四項事實齊全，常駐可見（非彈窗）。
+  const notice = page.locator(".beta-notice");
+  await expect(notice).toBeVisible();
+  await expect(notice).toContainText("Beta");
+  await expect(notice).toContainText("cookie");
+  await expect(notice).toContainText("30");
+  await expect(notice).toContainText("7");
+  await expect(notice).toContainText("非投資建議");
+  // 不是彈窗——沒有可以關掉它的按鈕。
+  await expect(notice.getByRole("button")).toHaveCount(0);
+
+  // 頁尾常駐，且看得到兩個連結。
+  const footer = page.locator("footer.site-footer");
+  await expect(footer).toBeVisible();
+  await expect(footer).toContainText("非投資建議");
+  await expect(footer.getByRole("link", { name: "隱私與資料政策" }))
+    .toBeVisible();
+  await expect(footer.getByRole("link", { name: "回報問題" }))
+    .toHaveAttribute("target", "_blank");
+
+  // 點進隱私頁，六項內容齊全，頁尾在這裡也還在。
+  await footer.getByRole("link", { name: "隱私與資料政策" }).click();
+  await expect(page).toHaveURL(/#\/privacy$/);
+  await expect(page.getByRole("heading", { name: "隱私與資料政策" }))
+    .toBeVisible();
+  for (const title of ["存了什麼", "留多久", "怎麼刪",
+                        "清除瀏覽器 cookie 的後果", "不是投資建議",
+                        "Beta 狀態"]) {
+    await expect(page.getByRole("heading", { name: title })).toBeVisible();
+  }
+  await expect(page.locator("footer.site-footer")).toBeVisible();
+
+  // 「怎麼刪」的連結真的可以點到設定頁（PB-04 自助刪除入口所在）。
+  await page.getByRole("link", { name: "設定頁" }).click();
+  await expect(page).toHaveURL(/#\/settings$/);
 });

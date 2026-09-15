@@ -51,3 +51,15 @@ window.scrollTo = (() => {}) as typeof window.scrollTo;
 if (!Element.prototype.scrollIntoView) {
   Element.prototype.scrollIntoView = function scrollIntoView() {};
 }
+
+// jsdom 的 `window.location.reload()` 是未實作的導覽動作，呼叫會在
+// stderr 噴 "Not implemented: navigation" 警告——PB-04（#296）自助
+// 刪除成功後（`src/DeleteMyData.tsx`）會呼叫它強制整頁重載。換成真的
+// 無副作用函式，供測試用 `vi.spyOn` 覆寫來斷言「有沒有被呼叫」，不必
+// 每個測試各自重新定義一次。
+try {
+  window.location.reload = (() => {}) as typeof window.location.reload;
+} catch {
+  // 某些 jsdom 版本的 `location.reload` 是唯讀存取器，設不了就算了
+  // ——那種情況下呼叫它本來就只會印警告，不會真的讓測試炸掉。
+}

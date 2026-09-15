@@ -11,11 +11,13 @@ import json
 from collections import deque
 from contextlib import contextmanager
 
-from . import (ChainBackoffEntry, ContractHistory, DataSourceSettings,
-               DividendCacheEntry, IvBackfillRun, IvObservation, MetricEntry,
-               NarrowHistoryEntry, ProviderCredential, ProviderVerification,
-               RateCacheEntry, ResultFactContext, ResultRecord, ResultSummary,
-               Scenario, ScenarioExists, TreasuryYearCacheEntry, require_owner)
+from . import (BrowserIdentity, ChainBackoffEntry, ContractHistory,
+               DataSourceSettings, DividendCacheEntry, IvBackfillRun,
+               IvObservation, MetricEntry, NarrowHistoryEntry, Owner,
+               ProviderCredential, ProviderVerification, RateCacheEntry,
+               ResultFactContext, ResultRecord, ResultSummary, Scenario,
+               ScenarioExists, SuperUserAuditEvent, TreasuryYearCacheEntry,
+               require_owner)
 from ..diagnostics import RETENTION_LIMIT, DiagnosticEvent
 from ..identity import SOLO_OWNER
 from ..metrics import retention_cutoff
@@ -42,6 +44,16 @@ class MemoryStorage:
         self._dividend_cache: dict[str, DividendCacheEntry] = {}
         self._treasury_year_cache: dict[int, TreasuryYearCacheEntry] = {}
         self._chain_backoff: dict[str, ChainBackoffEntry] = {}
+        # PB-01（#292，Anonymous Public Beta）：owner registry ＋
+        # browser identity——鍵分別是 `owner_id`／`token`，兩張表
+        # 各自獨立，token 與 owner_id 刻意不是同一個值（見
+        # `BrowserIdentity` docstring）。
+        self._owners: dict[str, Owner] = {}
+        self._browser_identities: dict[str, BrowserIdentity] = {}
+        # PB-10（#301）：append-only、**無** `maxlen`——與
+        # `self._diagnostics` 刻意不同的保留政策，見
+        # `SuperUserAuditEvent` docstring。
+        self._audit_log: list[SuperUserAuditEvent] = []
         # SCALE-09（#261）：鍵是三個 identity 欄組成的 tuple，逐字對應
         # PK `(scenario_id, analyzed_at, candidate_key)`。
         self._narrow_history: dict[tuple[str, str, str], NarrowHistoryEntry] = {}
@@ -277,6 +289,224 @@ class MemoryStorage:
 
     def save_chain_backoff(self, entry: ChainBackoffEntry) -> None:
         self._chain_backoff[entry.source] = entry
+
+    # ---------- solo → Owner 一次性遷移（PB-03／#295） ----------
+
+    def migrate_owner(self, *, from_owner: str, to_owner: str) -> dict[str, int]:
+        counts: dict[str, int] = {}
+
+        n = 0
+        for sid, sc in list(self._scenarios.items()):
+            if sc.owner_id == from_owner:
+                self._scenarios[sid] = dataclasses.replace(sc, owner_id=to_owner)
+                n += 1
+        counts["scenarios"] = n
+
+        n = 0
+        for by_ts in self._results.values():
+            for ts, rec in list(by_ts.items()):
+                if rec.owner_id == from_owner:
+                    by_ts[ts] = dataclasses.replace(rec, owner_id=to_owner)
+                    n += 1
+        counts["results"] = n
+
+        n = 0
+        for key, (snap, owner_id) in list(self._snapshots.items()):
+            if owner_id == from_owner:
+                self._snapshots[key] = (snap, to_owner)
+                n += 1
+        counts["snapshots"] = n
+
+        n = 0
+        for event in self._events:
+            if event.get("owner_id") == from_owner:
+                event["owner_id"] = to_owner
+                n += 1
+        counts["events"] = n
+
+        n = 0
+        migrated_diag = deque(maxlen=self._diagnostics.maxlen)
+        for ev in self._diagnostics:
+            if ev.owner_id == from_owner:
+                ev = dataclasses.replace(ev, owner_id=to_owner)
+                n += 1
+            migrated_diag.append(ev)
+        self._diagnostics = migrated_diag
+        counts["diagnostics"] = n
+
+        n = 0
+        for key, entry in list(self._narrow_history.items()):
+            if entry.owner_id == from_owner:
+                self._narrow_history[key] = dataclasses.replace(entry, owner_id=to_owner)
+                n += 1
+        counts["narrow_history"] = n
+
+        n = 0
+        for sid, rec in list(self._current_results.items()):
+            if rec.owner_id == from_owner:
+                self._current_results[sid] = dataclasses.replace(rec, owner_id=to_owner)
+                n += 1
+        counts["current_results"] = n
+
+        n = 0
+        if from_owner in self._owner_settings:
+            settings = self._owner_settings.pop(from_owner)
+            self._owner_settings[to_owner] = dataclasses.replace(
+                settings, owner_id=to_owner)
+            n = 1
+        counts["owner_settings"] = n
+
+        n = 0
+        for key in list(self._owner_credentials):
+            owner_id, provider = key
+            if owner_id == from_owner:
+                cred = self._owner_credentials.pop(key)
+                self._owner_credentials[(to_owner, provider)] = dataclasses.replace(
+                    cred, owner_id=to_owner)
+                n += 1
+        counts["owner_credentials"] = n
+
+        n = 0
+        for key in list(self._owner_verifications):
+            owner_id, provider = key
+            if owner_id == from_owner:
+                ver = self._owner_verifications.pop(key)
+                self._owner_verifications[(to_owner, provider)] = dataclasses.replace(
+                    ver, owner_id=to_owner)
+                n += 1
+        counts["owner_verifications"] = n
+
+        return counts
+
+    # ---------- Owner-wide 刪除原語（PB-04／#296） ----------
+
+    def delete_owner(self, owner_id: str) -> dict[str, int]:
+        counts: dict[str, int] = {}
+
+        removed = [sid for sid, sc in self._scenarios.items()
+                  if sc.owner_id == owner_id]
+        for sid in removed:
+            del self._scenarios[sid]
+        counts["scenarios"] = len(removed)
+
+        n = 0
+        for sid in list(self._results):
+            by_ts = self._results[sid]
+            for ts in list(by_ts):
+                if by_ts[ts].owner_id == owner_id:
+                    del by_ts[ts]
+                    n += 1
+            if not by_ts:
+                del self._results[sid]
+        counts["results"] = n
+
+        n = 0
+        for key in list(self._snapshots):
+            _, snap_owner = self._snapshots[key]
+            if snap_owner == owner_id:
+                del self._snapshots[key]
+                n += 1
+        counts["snapshots"] = n
+
+        before = len(self._events)
+        self._events = [e for e in self._events if e.get("owner_id") != owner_id]
+        counts["events"] = before - len(self._events)
+
+        before = len(self._diagnostics)
+        remaining_diag = deque(
+            (e for e in self._diagnostics if e.owner_id != owner_id),
+            maxlen=self._diagnostics.maxlen)
+        counts["diagnostics"] = before - len(remaining_diag)
+        self._diagnostics = remaining_diag
+
+        n = 0
+        for key in list(self._narrow_history):
+            if self._narrow_history[key].owner_id == owner_id:
+                del self._narrow_history[key]
+                n += 1
+        counts["narrow_history"] = n
+
+        removed_cur = [sid for sid, rec in self._current_results.items()
+                      if rec.owner_id == owner_id]
+        for sid in removed_cur:
+            del self._current_results[sid]
+        counts["current_results"] = len(removed_cur)
+
+        n = 1 if self._owner_settings.pop(owner_id, None) is not None else 0
+        counts["owner_settings"] = n
+
+        n = 0
+        for key in list(self._owner_credentials):
+            if key[0] == owner_id:
+                del self._owner_credentials[key]
+                n += 1
+        counts["owner_credentials"] = n
+
+        n = 0
+        for key in list(self._owner_verifications):
+            if key[0] == owner_id:
+                del self._owner_verifications[key]
+                n += 1
+        counts["owner_verifications"] = n
+
+        n = 0
+        for token in list(self._browser_identities):
+            if self._browser_identities[token].owner_id == owner_id:
+                del self._browser_identities[token]
+                n += 1
+        counts["browser_identities"] = n
+
+        n = 1 if self._owners.pop(owner_id, None) is not None else 0
+        counts["owners"] = n
+
+        return counts
+
+    # ---------- Owner registry ＋ Browser Identity（PB-01／#292） ----------
+
+    def get_owner(self, owner_id: str) -> Owner | None:
+        return self._owners.get(owner_id)
+
+    def resolve_owner_by_token(self, token: str) -> str | None:
+        identity = self._browser_identities.get(token)
+        return identity.owner_id if identity else None
+
+    def create_owner_with_token(self, owner: Owner,
+                                identity: BrowserIdentity) -> None:
+        self._owners[owner.owner_id] = owner
+        self._browser_identities[identity.token] = identity
+
+    def touch_browser_identity(self, token: str, *, now: str) -> bool:
+        identity = self._browser_identities.get(token)
+        if identity is None:
+            return False
+        self._browser_identities[token] = dataclasses.replace(
+            identity, last_seen_at=now)
+        return True
+
+    def touch_owner_activity(self, owner_id: str, *, now: str) -> None:
+        owner = self._owners.get(owner_id)
+        if owner is None:
+            return
+        self._owners[owner_id] = dataclasses.replace(
+            owner, last_activity_at=now)
+
+    def set_owner_protected(self, owner_id: str, protected: bool) -> None:
+        owner = self._owners.get(owner_id)
+        if owner is None:
+            return
+        self._owners[owner_id] = dataclasses.replace(
+            owner, protected=protected)
+
+    def list_owners(self) -> list[Owner]:
+        return list(self._owners.values())
+
+    # ---------- Super User audit trail（PB-10／#301） ----------
+
+    def append_audit_event(self, event: SuperUserAuditEvent) -> None:
+        self._audit_log.append(event)
+
+    def list_audit_events(self, *, limit: int = 200) -> list[SuperUserAuditEvent]:
+        return list(reversed(self._audit_log))[:limit]
 
     # ---------- Narrow visible-candidate history（SCALE-09／#261） ----------
 
@@ -593,6 +823,10 @@ class MemoryStorage:
     def metric_summary(self) -> list[MetricEntry]:
         return list(self._metrics.values())
 
+    def metric_total(self, metric: str, bucket: str) -> int:
+        return sum(e.count for e in self._metrics.values()
+                  if e.metric == metric and e.bucket == bucket)
+
     def table_size_metrics(self) -> dict:
         def _stats(records: list[dict]) -> dict:
             if not records:
@@ -621,3 +855,6 @@ class MemoryStorage:
         snapshot_dicts = [snap for (snap, _owner) in self._snapshots.values()]
         return {"results": _stats(result_views),
                "snapshots": _stats(snapshot_dicts)}
+
+    def scenario_count_total(self) -> int:
+        return len(self._scenarios)

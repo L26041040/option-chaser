@@ -254,6 +254,104 @@ class TreasuryYearCacheEntry:
 
 
 @dataclass(frozen=True)
+class Owner:
+    """PB-01（#292，Anonymous Public Beta）：匿名／已知使用者的資料
+    boundary 本身——`owner_id` 沿用既有 SCALE-06 的 owner_id 概念
+    （5+1 張 row-scoped 表既有的那個值），這張表替它掛上 lifecycle
+    中繼資料，供 PB-08 判斷 abandoned／cleanup 使用。
+
+    **本票是純 expand**：新建的 owner 列不會被任何既有查詢路徑讀到，
+    `identity_resolver()` 仍固定回傳 `SOLO_OWNER`（切換是 PB-02 的
+    範圍）。
+
+    `protected`：純布林旗標，**不是** `owner_kind`——spec #291 §18
+    明文禁止用「怎麼建立」決定「是什麼身份型態」這種設計。它只標記
+    「這個 owner 的資料不受匿名 lifecycle cleanup 影響」（PB-03 會
+    用它保護 Owner 自己遷移過去的資料），與這個 owner 最初怎麼被建立
+    出來無關——任何 owner_id 理論上都可能被標記／解除標記。
+
+    `last_activity_at`：「哪些動作算 activity」的語意判斷屬 PB-08，
+    本票只建立欄位與讀寫方法（`touch_owner_activity()`），不先寫死
+    任何判準。`None`＝這個 owner 還沒被記過任何一次 activity。
+
+    `is_synthetic`（PB-07／#304，Anonymous Public Beta）：Controlled
+    Beta 合成壓測 harness 產生的 owner 標記——**唯一的生產面作用是
+    清理排程分開處理**（票面 §7 明文：不得擴散成別的行為差異）。
+    PB-01 當時刻意**沒有**預先加這個欄位（避免數週內沒有消費端的
+    欄位躺在 production），本票才是它真正的消費端。harness 產生的
+    owner 由呼叫端在建構 `Owner` 物件時直接設 `True`——不經過任何
+    HTTP 端點（一般使用者的 lazy-creation 路徑，`PB-02`，永遠產生
+    `is_synthetic=False` 的 owner；沒有任何請求能讓自己被標記成
+    synthetic，這不是一個可以透過網路操縱的旗標）。"""
+    owner_id: str
+    created_at: str
+    last_activity_at: str | None = None
+    protected: bool = False
+    is_synthetic: bool = False
+
+
+@dataclass(frozen=True)
+class BrowserIdentity:
+    """PB-01：cookie 帶的不透明 token → `owner_id` 的映射。
+
+    **`token` 與 `owner_id` 刻意是兩個不同的值**——`tests/
+    test_scale06_ownership_expand.py` 既有斷言 `owner_id` 永不出現
+    在任何 HTTP 回應 body；cookie 本身就是回應的一部分，若 cookie
+    值直接等於 `owner_id`，這條既有不變量在 cookie 簽發的那一刻就
+    被打破。分開儲存同時讓 token 可被伺服器單方作廢（例如未來的
+    找回機制）而不必變動 `owner_id`（研究 #275 的核心建議）。
+
+    `issued_at`：這個 token 第一次被簽發的時間。`last_seen_at`：最近
+    一次帶著這個 token 的請求時間——本票只建立欄位與續命方法
+    （`touch_browser_identity()`），「多久沒見就算失效」屬 PB-02
+    範圍。
+    """
+    token: str
+    owner_id: str
+    issued_at: str
+    last_seen_at: str
+
+
+@dataclass(frozen=True)
+class SuperUserAuditEvent:
+    """PB-10（#301，Anonymous Public Beta）：Super User 高風險跨 owner
+    操作的 audit trail。
+
+    **刻意不是 `diagnostics` 或 `events`**（票面 §4 硬性約束，repo 現況
+    已確認兩者語意衝突）：`diagnostics`（`api_app/diagnostics.py`）是
+    owner-scoped 且 trim-on-write 只留全域最新 200 筆——正常診斷事件
+    洪流會把 audit 記錄沖掉，那就不是 audit trail；`events` 是
+    scenario-scoped 的領域事實（`SCENARIO_CREATED` 等），語意上不承載
+    「誰對誰做了管理操作」。這張表是獨立、system-wide、**不設保留
+    上限**的記錄面——高風險操作量體遠低於一般診斷事件（一次 Super
+    User 動作才一筆，不是每個 request 都發），截斷它等於讓最需要
+    留存的紀錄先消失，違背它存在的目的。
+
+    `actor`：PB-09 目前只有單一共用 `ADMIN_SECRET`、沒有多重 Super
+    User 身份機制（spec 明文禁止為此新增識別系統）——固定為
+    `"superuser"`，誠實反映現況，不是假裝有更細緻的身份可查。
+
+    `target_owner_id`：這次操作影響的 owner；純瀏覽（無明確目標，
+    例如列出全部 owner 這種不針對單一 owner 的動作）時可為 `None`。
+
+    `detail`：操作內容的結構化描述（例如
+    `{"deleted_rows": {"scenarios": 3, ...}}`）——**絕不含第三方
+    token 明文**，呼叫端（`api_app/main.py`）只放進安全欄位（列數、
+    布林值等），從不把 `ProviderCredential.token` 這類欄位塞進來。
+
+    **`delete_owner()`（PB-04）刻意不清除這張表**——它不在
+    `_OWNER_SCOPED_TABLES` 清單裡：audit trail 的目的正是留存「這個
+    owner 曾經存在、曾經被刪除」這件事本身，若隨著被刪 owner 一起
+    清空，等於刪除操作抹去了自己的證據。"""
+    event_id: str
+    ts: str
+    actor: str
+    action: str
+    target_owner_id: str | None
+    detail: dict
+
+
+@dataclass(frozen=True)
 class ChainBackoffEntry:
     """SCALE-04（#255，Scaling Foundation Cboe 429 韌性）：上游限流的
     控制狀態——**provider-global 鍵**（`source` 單獨，不分 symbol，
@@ -920,6 +1018,129 @@ class Storage(Protocol):
         另開一票把那些測試改成不依賴 dataclass 建構式寫入 NULL（例如
         改用繞過型別驗證的原生 SQL helper），非本票能安全一併完成。"""
 
+    # ---------- solo → Owner 一次性遷移（PB-03／#295，Anonymous
+    # Public Beta） ----------
+
+    def migrate_owner(self, *, from_owner: str, to_owner: str) -> dict[str, int]:
+        """把 `from_owner` 名下全部資料搬到 `to_owner`——逐表
+        `UPDATE ... SET owner_id = to_owner WHERE owner_id = from_owner`。
+        **冪等**：搬過一次後 `from_owner` 底下已無列，重跑對已搬過的表
+        全部回 0（PB-03 AC「腳本重跑第二次為 no-op」）。
+
+        涵蓋**這 10 張表**（PB-03／#295 §6 明文要求不得沿用既有任一份
+        既有清單——見下方差異說明；PB-04／#296 的 `delete_owner()`
+        共用同一份清單，兩者是本站僅有的兩個「owner-scoped 表」全量
+        操作）：
+        `scenarios`／`results`／`snapshots`／`events`／`diagnostics`／
+        `narrow_history`／`current_results`／`owner_settings`／
+        `owner_credentials`／`owner_verifications`。
+
+        **與既有兩份清單的差異**（PB-03 施工前 repo 現況已確認兩份
+        既有清單互相不一致，此處記錄避免未來誤以為可以照抄）：
+        - `backfill_missing_owner_ids()` 只有 6 張（同上少
+          `current_results`／`owner_settings`／`owner_credentials`／
+          `owner_verifications`）——它服務的是「把 `NULL` 補成某個
+          值」（`WHERE owner_id IS NULL`），本方法服務的是「把某個
+          既有值換成另一個值」（`WHERE owner_id = from_owner`），
+          目的不同、範圍也因此不同，不能互相替代。
+        - `owner_id_null_counts()` 涵蓋另外 8 張（5 張 row-scoped ＋
+          3 張 `owner_*`）——**不含 `narrow_history`**（SCALE-09 出貨
+          時漏接 `owner_id`，SCALE-14／#265 才補上，比那份清單當初
+          列舉的表晚出現）。
+
+        回傳 `{table_name: 受影響列數}`。"""
+
+    # ---------- Owner-wide 刪除原語（PB-04／#296，Anonymous Public
+    # Beta） ----------
+
+    def delete_owner(self, owner_id: str) -> dict[str, int]:
+        """把 `owner_id` 名下全部資料徹底清除——沿用
+        `migrate_owner()` 那份 10 張表清單（本站目前**唯一**「owner-
+        scoped 表清單」，兩個方法共用，見兩後端實作裡的
+        `_OWNER_SCOPED_TABLES` 常數／等義結構），**外加**
+        `browser_identities`／`owners` 兩張身份基礎表本身——本方法是
+        本站第一個、也是目前唯一一個「刪掉一個 owner」的原語，
+        PB-08（閒置清理排程）與 PB-10（Super User 刪除他人資料）都
+        直接呼叫它，不是各自重寫一份可能漂移的複本。
+
+        **明確不觸碰**的 shared market facts 表（system-wide，與任何
+        單一 owner 無關）：`rate_cache`／`treasury_year_cache`／
+        `dividend_cache`／`chain_backoff`／`operational_metrics`／
+        `contract_iv_history`／`iv_observations`／`iv_backfill_runs`
+        ——這些表結構上沒有 `owner_id` 欄位。
+
+        **單一交易內完成**（postgres 無 FK cascade，全部手動
+        DELETE，避免任一張表刪到一半中斷留下半刪狀態）。
+
+        刪掉 `browser_identities`／`owners` 是刻意的：自助刪除
+        （PB-04）之後不得留下一顆指向已刪除 owner 的 cookie——下一次
+        帶著那顆舊 cookie 的請求在 `resolve_owner_by_token()` 會查
+        不到，直接走 PB-02（#294）既有的「token 查不到＝新訪客」
+        lazy-creation 路徑自動拿到一個全新身份，不需要另外設計一套
+        「重新簽發」邏輯。
+
+        回傳 `{table_name: 受影響列數}`，含 `owners`／
+        `browser_identities` 兩張（共 12 個鍵）。這個 owner_id 本來就
+        不存在時，全部鍵值皆為 0（不拋錯——「刪除一個不存在的東西」
+        視同已經達成目標狀態，冪等）。"""
+
+    # ---------- Owner registry ＋ Browser Identity（PB-01／#292，
+    # Anonymous Public Beta，expand，零行為變更） ----------
+
+    def get_owner(self, owner_id: str) -> Owner | None:
+        """這個 owner_id 尚未在 `owners` 表建立過列時回 `None`——既有
+        `SOLO_OWNER`（`"solo"`）在本票之前從未寫進這張新表，因此本票
+        上線當下對它呼叫這個方法也會回 `None`（純粹反映這張表是全新
+        的，不代表 solo owner 不存在——它仍然活在既有 5+1 張表裡）。"""
+
+    def resolve_owner_by_token(self, token: str) -> str | None: ...
+
+    def create_owner_with_token(self, owner: Owner,
+                                identity: BrowserIdentity) -> None:
+        """依 cookie token 建立新 owner＋token（spec §3／§4 的唯一建立
+        路徑）——兩筆寫入視為同一次邏輯操作的兩半，呼叫端（PB-02）保證
+        `identity.owner_id == owner.owner_id`。`token`／`owner_id`
+        皆須事先確定不存在（呼叫端用密碼學安全隨機來源產生，衝突機率
+        可忽略），本方法**不**檢查衝突後靜默覆寫——衝突時兩後端各自
+        按資料庫既有的 PK 違反行為處理（不吞掉、不假裝成功）。"""
+
+    def touch_browser_identity(self, token: str, *, now: str) -> bool:
+        """續命 `last_seen_at`。回傳是否真的更新到東西（token 不存在
+        時回 `False`，呼叫端據此判斷這把 cookie 已失效，需要走建立新
+        owner 的路徑）。"""
+
+    def touch_owner_activity(self, owner_id: str, *, now: str) -> None:
+        """更新 `last_activity_at`。owner 不存在時安靜地什麼都不做
+        （不拋錯）——「哪些動作算 activity」與「activity 發生時 owner
+        是否保證已存在」都是 PB-02／PB-08 的範圍，本方法只負責寫入這
+        個值，不對呼叫時機做任何假設。"""
+
+    def set_owner_protected(self, owner_id: str, protected: bool) -> None:
+        """讀寫 `protected` 旗標的寫入半邊；讀取走 `get_owner()`。owner
+        不存在時安靜地什麼都不做（不拋錯，理由同 `touch_owner_
+        activity()`）。"""
+
+    def list_owners(self) -> list[Owner]:
+        """跨 owner 的列舉逃生門——供 PB-08 依 lifecycle 條件（例如
+        `last_activity_at` 早於某個截止日、且 `protected` 為否）掃描
+        待清理的 owner。本方法本身**不套用任何 lifecycle 判準**，只是
+        原樣回傳全部 owner 列；篩選邏輯留給 PB-08（沿用既有
+        `list_scenarios(owner=None)`／`result_history(owner=None)`
+        「刻意的跨 owner 逃生門，語意由呼叫端決定」先例）。"""
+
+    # ---------- Super User audit trail（PB-10／#301） ----------
+
+    def append_audit_event(self, event: SuperUserAuditEvent) -> None:
+        """寫入一筆 Super User 高風險操作紀錄——append-only，**無保留
+        上限**（見 `SuperUserAuditEvent` docstring，這是它與
+        `diagnostics`／`operational_metrics` 兩者刻意不同之處）。"""
+
+    def list_audit_events(self, *, limit: int = 200) -> list[SuperUserAuditEvent]:
+        """最新在最上，供 Super User 自己查閱／稽核使用。`limit`
+        只決定這次查詢回幾筆，不是保留政策本身——底層紀錄不會因為
+        沒被查詢就消失（與 `list_diagnostics(limit=...)` 的
+        `RETENTION_LIMIT` 語意不同，那裡的上限是真的物理刪除）。"""
+
     # ---------- S0 最小可觀測性（SCALE-08／#258） ----------
 
     def record_metric(self, metric: str, bucket: str, *, source: str = "",
@@ -935,8 +1156,18 @@ class Storage(Protocol):
 
     def metric_summary(self) -> list[MetricEntry]:
         """目前還在 retention 窗內的全部桶——供 operator 端點彙整成
-        七類指標的答案。不分頁、不搜尋（AC-6：這是給運維人工核對用，
+        `METRIC_CATALOGUE` 全部類別（SCALE-08 當時七類，PB-08／#300
+        起八類）的答案。不分頁、不搜尋（AC-6：這是給運維人工核對用，
         不是給一般使用者的 API）。"""
+
+    def metric_total(self, metric: str, bucket: str) -> int:
+        """PB-06（#299，Anonymous Public Beta）：`(metric, bucket)`
+        這個切片下、跨全部 `source`／`symbol` 的 `count` 總和——
+        `Global Vendor Fuse`（`api_app.vendor_fuse`）每次抓鏈前都要
+        查一次，因此需要比 `metric_summary()`（撈出整個 30 天視窗
+        全部桶）便宜的 targeted 查詢，同一張表、同一個既有欄位，不是
+        新的計數維度。查無資料時回 `0`，不是 `None`——「今天還沒有
+        任何一次抓取」是合法的、不特殊的初始狀態。"""
 
     def table_size_metrics(self) -> dict:
         """S0 第 6 項——`results`／`snapshots` 兩表的列數、總大小、
@@ -946,6 +1177,16 @@ class Storage(Protocol):
         "max_row_bytes"}, "snapshots": {同上}}`——任一表沒有任何列時
         對應的大小/分布欄位為 `None`（沒有東西可以算平均／最大值，
         不是假裝成 0）。"""
+
+    def scenario_count_total(self) -> int:
+        """PB-11（#303，Anonymous Public Beta）：site-wide 劇本總數
+        （跨全部 owner，含已封存）——**query-time gauge，不持久化**，
+        與 `table_size_metrics()` 同一種形狀（單純 `COUNT(*)`，不是
+        撈出每一列再數）。供 `/api/ops/metrics` 算「每個 owner 平均
+        幾個劇本」使用；本方法不接受 `owner` 參數、不做任何過濾——
+        這正是它跟既有 `list_scenarios(owner=...)` 不同的地方，也是
+        SCALE-08 AC-7 紅線（`operational_metrics` 無 `owner_id`）
+        自然成立的原因之一：這裡連 `operational_metrics` 表都不碰。"""
 
     # ---------- Narrow visible-candidate history（SCALE-09／#261） ----------
 

@@ -132,7 +132,7 @@ def _client(storage=None):
     它自己的預設（真的 Treasury／Yahoo 網路 loader），兩條路徑的利率／
     股利輸入來源不同，會製造出與 T06 家族展開完全無關的假性數值差異。"""
     snap = load_snapshot(FIX)
-    return TestClient(create_app(fetch=lambda symbol: snap,
+    return TestClient(create_app(identity_resolver=lambda: "solo", fetch=lambda symbol: snap,
                                  storage=storage or MemoryStorage(),
                                  rate_loader=_offline_rate_loader,
                                  dividend_loader=_offline_dividend_loader))

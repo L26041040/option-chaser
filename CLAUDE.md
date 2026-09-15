@@ -27,7 +27,7 @@ block 裡，不能切成好幾個 code block、也不能中間插普通文字把
 `［回報#001］spec #137 拆票完成`）。編號是**累計總數**，不因換
 session、換分支、換主題而歸零——目前最新編號記在這裡：
 
-> 目前次序：082（下一份回報用 083）
+> 目前次序：083（下一份回報用 084）
 
 每發一份回報就把上面這個數字改成剛剛用掉的那個，跟著那次改動一起
 commit（沒有其他改動要 commit 時，單獨為這一行開一個小 commit 也
@@ -8802,6 +8802,940 @@ config 參數＋保守預設值＋可調整，不擋施工。
 **READY_FOR_IMPLEMENTATION。** 依 Owner 指示本輪未施工、未寫任何
 production code（`git diff` 對 `option_chaser/`／`api_app/`／`src/`
 零命中），完成後停止。
+
+### OPTION-PUBLIC-BETA-IMPLEMENT-009——Anonymous Public Beta 施工中
+（2026-09-14 起，Owner 授權全自主執行至全部完成才一次回報）
+
+Owner 明確裁示：依 PB-01～PB-14（#292–#305）dependency graph 自主
+施工，不逐票停下等待確認，全部完成才一次回報。逐票仍維持既有紀律：
+TDD、`/code-review` 兩軸診斷、AC 全過才視為完成、獨立 commit、
+CLAUDE.md 隨手更新。
+
+**已完成**：
+
+- **PB-01**［#292］owner registry ＋ Browser Identity storage port
+  （expand，零行為變更，commit `5971557`）：`Storage` 新增
+  `owners`／`browser_identities` 兩張表（走 `_MIGRATIONS`，不動
+  `_SCHEMA`，沿用 SCALE-09／SCALE-08 冷啟動競爭安全慣例）＋對應
+  Protocol 方法（`get_owner`／`resolve_owner_by_token`／
+  `create_owner_with_token`／`touch_browser_identity`／
+  `touch_owner_activity`／`set_owner_protected`／`list_owners`），
+  memory／postgres 兩後端皆實作，雙後端契約測試覆蓋。純加法——
+  `identity_resolver()` 仍無條件回傳 `SOLO_OWNER`，cookie token 與
+  owner_id 分開儲存（承接既有「owner_id 永不出現在任何 HTTP 回應
+  body」不變量，token 本身不是 owner_id）。切到真正讀 cookie 是
+  PB-02 的範圍，本票結構上不可能改變任何既有行為。
+- **PB-13**［#293］CI ＋ 部署後 smoke ＋ Sentry（commit `276ff4c`）：
+  新增 `.github/workflows/ci.yml`（後端 pytest 雙後端——真實
+  Postgres 走 service container，並斷言 Postgres 那一半真的有跑，
+  不是靜默跳過；前端 typecheck／vitest／build；Playwright smoke
+  子集 iPhone project，PR／push 皆觸發）與
+  `.github/workflows/deploy-smoke.yml`（每次 Vercel 部署成功後探
+  `GET /api/health`）。新增 `api_app/observability.py`＋
+  `src/observability.ts`：Sentry 接線，**未設 `SENTRY_DSN`／
+  `VITE_SENTRY_DSN` 時嚴格 no-op**，`before_send`／`beforeSend`
+  沿用既有 diagnostics 遮蔽白名單（cookie／auth header／query
+  string／bearer token／connection string），**只接在單一
+  production 進入點**（`api/index.py`＋`src/main.tsx`），不接進
+  `create_app()`——數千條測試直接呼叫它，接進去會讓每次測試啟動都
+  多一層無關的初始化。新增 `docs/pb13-owner-setup-checklist.md`
+  列出五項需要 repo-admin／第三方帳號權限的 HITL 步驟（branch
+  protection required checks、Sentry 帳號與 DSN、UptimeRobot、
+  確認 Vercel→GitHub `deployment_status` webhook、第一次真實 PR）。
+  全程 FREE-FIRST——沒有任何一項 AC 要求付費層。
+- **PB-02**［#294］Cookie middleware ＋ lazy creation ＋
+  `identity_resolver` 切換（enforce，commit `8cc1179`）：
+  `api_app/identity.py` 保留既有 `default_identity_resolver()`／
+  `SOLO_OWNER`（legacy，需顯式指定），新增
+  `cookie_identity_resolver()`＋`ContextVar` 支撐的
+  `resolved_owner_scope()`——production 新預設，唯讀，若 middleware
+  尚未替這次請求解析出 owner 就呼叫會拋 `RuntimeError`。
+  `IdentityResolver` 無參數 callable 簽章不變，`main.py` 內 27 處
+  `identity_resolver()` 呼叫點一行未動。`create_app()` 的
+  `identity_resolver` 預設值從 `default_identity_resolver` 改成
+  `cookie_identity_resolver`；既有單一 `_request_scope_middleware`
+  現在同時負責替這次請求解析／建立 owner
+  （`_resolve_owner_for_request()`，唯一的路由分類點
+  `_is_owner_exempt_route()`：`/api/health`／`/api/cron/*`／
+  `/api/ops/*` 即使沒帶 cookie 也一律不建立 owner）。cookie／
+  storage 這條路徑只在 `identity_resolver is cookie_identity_
+  resolver` 時才會跑——顯式 DI 覆寫（`test_scale06`／`test_scale11`
+  既有模式）完全繞過 cookie，行為與 PB-02 之前逐位元相同。Cookie
+  形狀：`__Host-oc_owner`，`HttpOnly`／`Secure`／`SameSite=Lax`，
+  約 400 天滑動 `Max-Age`（每次成功請求續命），值**不是** owner_id
+  （PB-01 既有分離不變量延伸）。**測試連帶修正**（35 個檔案，全部
+  既有斷言零放寬）：28 個測試檔＋2 支 fixture 產生腳本原本依賴
+  「預設值＝solo」，改為顯式注入 `identity_resolver=lambda:
+  "solo"`，行為逐位元不變；`test_scale06_ownership_expand.py` 原本
+  驗證「預設是 solo」的兩條測試改寫成驗證新事實（預設是 cookie-
+  based，非 solo），`base_url="https://testserver"` 讓 httpx cookie
+  jar 像真實瀏覽器一樣正確 round-trip Secure cookie（已用最小重現
+  腳本驗證：`http` scheme 下 Secure cookie完全不會被送回）。新增
+  `tests/test_pb02_cookie_identity.py`（173 行）涵蓋 lazy
+  creation、兩瀏覽器隔離、完整排除清單、DI bypass、
+  `cookie_identity_resolver()` 的守門。
+- **PB-03**［#295］`solo` → Owner 正常 owner_id 一次性遷移 ＋
+  protected 標記（commit `72d75f6`）：`Storage.migrate_owner
+  (from_owner, to_owner)`——對 10 張 owner-scoped 表
+  （scenarios／results／snapshots／events／diagnostics／
+  narrow_history／current_results／owner_settings／
+  owner_credentials／owner_verifications）各自
+  `UPDATE ... SET owner_id WHERE owner_id = from_owner`。**刻意
+  自成一份表清單**，不沿用既有 `backfill_missing_owner_ids()`
+  （6 張表、NULL-backfill 語意）或 `owner_id_null_counts()`
+  （8 張表、漏 `narrow_history`）——兩者本輪施工前已確認互相不
+  一致（見上方 #209 地圖 repo 實查記錄）。天生冪等（重跑對已搬過的
+  表全部回 0 rows），memory／postgres 皆實作。新增
+  `scripts/migrate_solo_to_owner.py`：必填 `--target-owner-id`
+  （不猜預設值），且目標 owner 必須已存在於 `owners` 表（＝Owner
+  已透過 PB-02 cookie 流程造訪過一次正式站）才允許執行；預設
+  dry-run（印出每張表遷移前後列數），`--confirm` 才真的寫入；
+  同一次執行順手把目標 owner 標成 `protected=True`。永不印出
+  credential token 值。`api_app/identity.py` 的 `SOLO_OWNER` 標註
+  為遷移後 legacy（依 spec §18 刻意不刪除常數本身，只是遷移完成後
+  它不再代表任何真實使用者）。新增
+  `tests/test_pb03_migrate_owner_script.py`（131 行）。
+- **PB-04**［#296］owner-wide deletion primitive ＋ 自助刪除入口
+  （commit `6a894d1`）：`Storage.delete_owner(owner_id)`——完整清除
+  一個 owner 的全部資料，共用 PB-03 的同一份表清單
+  （`_MIGRATE_OWNER_TABLES` 更名 `_OWNER_SCOPED_TABLES`，未來新增
+  owner-scoped 表只需要改一處）。Postgres 把 10 個 DELETE 加上
+  `browser_identities`／`owners` 兩表的清除全部包在單一
+  `conn.transaction()` 內（這個 schema 沒有 FK cascade，避免半刪除
+  狀態）。**絕不觸碰** 8 張共用市場事實表（結構上沒有
+  `owner_id` 欄位）。同時清掉該 owner 的 `browser_identities` 列與
+  `owners` 註冊表本身列——舊 cookie 因此自然落進 PB-02 既有「查不到
+  token→視為新訪客」的 lazy-creation 路徑，不需要另外設計一套重新
+  簽發機制。新增 `DELETE /api/me`：自助、只能刪自己
+  （`identity_resolver()`，請求裡任何呼叫端提供的 owner_id 皆不
+  接受），立即執行、跳過 PB-08 的 Abandoned／Grace Period 緩衝——
+  這是明確的使用者主動請求，不是排程清理。新增
+  `src/DeleteMyData.tsx`：Settings 頁「刪除我的全部資料」入口，
+  仿 `TrashView.tsx` 既有的 `ConfirmDeleteOne`／`ConfirmDeleteBatch`
+  二次確認 modal 模式；成功後重新整理頁面，下一次請求自動拿到全新
+  身份。
+- **PB-05**［#297］Per-owner Quota（10 active scenario）＋ 30 分鐘
+  刷新節流 ＋ graceful degradation（commit `a444501`）：**Quota**——
+  `create_scenario()` 對第 11 個 active（未封存）劇本回 409＋事實性
+  訊息，絕不 500；計數用既有 `list_scenarios(owner=...)`（既有預設
+  排除已封存），不新增帳本表；封存騰出名額；嚴格限定伺服器解析出的
+  owner_id，呼叫端在請求 body 塞假 `owner_id` 或
+  `anonymous_max_active_scenarios` 一律被 pydantic 預設的 extra-
+  field 處理靜默忽略（已補回歸測試鎖住）。**節流**——同一劇本
+  30 分鐘內重複抓新鏈**不是第四種 Refresh Trigger**，是加在既有三
+  個（開站／頂部按鈕／建立劇本）上的閘門，三者皆匯流進
+  `_refresh_and_save()`／`refresh_run()`。`_refresh_throttled()`
+  讀 `analyzed_at`（＝chain snapshot 自己的 `fetched_at`）無條件
+  短路回既有資料——即使同 symbol 的手足劇本剛好已經抓到新鏈，被
+  節流的劇本也絕不會被那次抓取的資料更新。`refresh_run()` 的
+  `needs_chain` 同步排除被節流的劇本，整組皆被節流時零 vendor
+  呼叫；被節流的劇本也不會被手足的抓取失敗連坐。兩個端點對「被
+  節流」與「正常成功」回傳**逐位元相同**的回應形狀（`ok: true`、
+  無 `stage`）——從呼叫端（`runBatch()`）視角結構上無法分辨，因此
+  不存在需要另外防範的 retry-storm 風險，那個風險從未被引入。兩個
+  旋鈕（`ANONYMOUS_MAX_ACTIVE_SCENARIOS`／`ANONYMOUS_REFRESH_MIN_
+  INTERVAL_MINUTES`）皆為 `create_app()` DI 參數，`None`→讀同名
+  環境變數→預設 10／30；`<=0` 各自獨立停用（依 spec）。新增
+  `tests/test_pb05_quota_and_throttle.py`（348 行，20 條 HTTP-seam
+  測試：跨 owner 額度隔離、封存騰出名額、節流窗口算術含可調窗口
+  驗證、混合分組邊界情況、失敗隔離、環境變數＋DI 覆寫、結構性「仍
+  恰好只有既有兩條 refresh 路由」檢查）＋前端 1 條（確認額度拒絕
+  訊息透過既有 `CreateForm` 通用錯誤路徑呈現，零新增前端程式碼）。
+  施工中修正的兩個測試陷阱：(1) 一條既有測試建立 12 個劇本撞上新
+  額度上限，補 `anonymous_max_active_scenarios=0` 停用額度（與該
+  測試本身要驗證的事無關，已記錄）；(2) 節流測試的假 `_fetch`
+  closure 原本每次呼叫回傳同一份帶著陳舊固定 fixture 時間戳的
+  snapshot 物件，導致節流窗口算術永遠算出巨大 elapsed time（方向
+  完全算反）——改為每次呼叫回傳
+  `dataclasses.replace(base_snap, fetched_at=now_utc_iso())`，
+  對齊 production `cboe.py` 在真正抓取當下才蓋「現在」時間戳的
+  行為。全套雙後端測試（記憶體＋真實 Postgres，2155 條）在乾淨
+  重置過的資料庫上全綠。
+- **PB-09**［#298］User Level（Super User）單一驗證 ＋ 兩軸正交 ＋
+  第三方 token 閘門（commit `00063df`）：新增 `api_app/superuser.py`
+  （`is_superuser()`／`require_superuser()`，`secrets.compare_
+  digest()` 常數時間比對——沿用既有 `CRON_SECRET`／`OPS_SECRET`
+  的 `Authorization: Bearer <secret>` fail-closed 401 慣例，但因為
+  這裡服務的是人類 Owner 而非 machine-to-machine，值得比既有兩把
+  service credential 多一分防護）。`is_superuser()` 簽章裡**沒有**
+  `owner_id` 參數，結構上不可能讀取或參與 owner 解析——spec §19
+  明文要求的「兩段程式碼互不共用函式或中間結果」在這裡是物理事實
+  而非約定。`create_app()` 新增 `admin_secret` 參數，取代舊有
+  `ops_secret`（**OPS_SECRET 全面退役，非降級保留**——它唯一的
+  呼叫點本來就要遷移到 Super User 保護，維護兩套永久並存的機制對
+  這個風險的實際發生機率不成比例；`api_app/observability.py` 的
+  redaction 白名單仍保留 `OPS_SECRET` 這個名字，屬無害的雙重保險，
+  非活躍配置）。`_OWNER_EXEMPT_PREFIXES` 新增 `/api/superuser/`，
+  新端點 `GET /api/superuser/status`（永遠 200，只回一個布林值，
+  不因為驗證失敗就 401——查「自己現在算不算 Super User」不該需要
+  先證明自己是 Super User 才查得到答案，這是雞生蛋問題的正確
+  解法）。`GET /api/ops/metrics`（原 `OPS_SECRET` 保護）與三個
+  `owner_credentials` 寫入端點（`PUT`／`POST .../test`／`DELETE
+  /api/settings/credentials/{provider}`）全數改呼叫
+  `superuser.require_superuser()`——delete／test 與 put 一視同仁
+  gate 住，不依賴「Normal User 反正沒有 credential 可測／可刪」這
+  個間接推論當防線。`_known_secrets()` 新增 `_effective_admin_
+  secret`，diagnostics redaction 最後一道防線同步涵蓋。前端新增
+  `src/superuser.ts`（`getAdminSecret`／`setAdminSecret`／
+  `adminAuthHeaders`，密鑰存 `sessionStorage`——分頁關閉即清除，
+  刻意不用 `localStorage`；伺服器對每一次受保護請求都重新獨立驗證
+  密鑰本身，前端存放方式改變不了「密鑰對不對」這件事，因此這個
+  選擇是降低曝險窗、不是防線本身）與 `src/SuperUserUnlock.tsx`
+  （掛在 `Settings.tsx` 頂端，解鎖／鎖回、開頁若已記著密鑰自動
+  查一次現況）。`Settings.tsx` 的 `UsageSection`：token 輸入框
+  三態分流（共用既有 credential 顯示「與上方共用」／非 Super User
+  顯示「需要 Super User 身份才能設定 API Token」／Super User 顯示
+  真正的輸入框），「測試連線」「清除 token」兩顆按鈕額外掛
+  `isSuperUser` 判斷，「儲存」（純模式選擇，不碰 credential）不受
+  影響。新增專屬後端測試
+  `tests/test_pb09_superuser.py`（15 條，HTTP seam＋結構性守門
+  雙軌）：單一驗證機制（同一把 `ADMIN_SECRET` 解鎖全部四個受保護
+  端點）、裸請求／錯密鑰／未設定密鑰在每個端點皆 401、
+  `/api/superuser/status` 不信任任何 client 可操縱欄位（query
+  string／自訂標頭）、該端點永遠 200 且不建立 owner、軸一
+  owner_id 不受軸二密鑰存在與否影響（同一 cookie jar 三種
+  Authorization 狀態下 owner registry 恰好只有一筆）、
+  `CRON_SECRET`／`ADMIN_SECRET` 互相隔離（各自打不開對方的端點、
+  各自對自己的端點正常運作）、AST 結構掃描證明 `superuser.py`
+  程式碼裡不出現 `identity`／`owner_id`／`identity_resolver` 等
+  軸一詞彙、`inspect.signature()` 直接核對 `is_superuser()` 沒有
+  `owner_id`／`owner` 參數（不只信任 docstring 的宣稱）。既有測試
+  連帶修正：`tests/test_scale08_observability.py`
+  （`OPS_AUTH`→`ADMIN_AUTH`，三條測試更名並改用新參數名）、
+  `tests/test_api_settings.py`／`test_api_settings_verify.py`／
+  `test_api_iv_history.py`／`test_ivpipeline_parity.py`（四個檔案
+  的 `client`／`_client()` fixture 補上 `admin_secret=` 與對應
+  `Authorization` 標頭，讓這些原本測 credential 端點行為本身、
+  不是測授權閘門的檔案在 PB-09 上線後繼續打得進去）；
+  `tests/test_pb02_cookie_identity.py` 補一條
+  `test_superuser_status_endpoint_does_not_create_an_owner`。前端
+  `Settings.test.tsx`：`mockApi()` 新增 `superuser` 選項獨立攔截
+  `/api/superuser/status`、全域 `beforeEach` 預設記住一把測試密鑰、
+  `ready()` 新增 `expectSuperUser` 等待旗標消除非同步競態；新增
+  6 條 Super User 閘門專屬測試（未解鎖看不到輸入框、未解鎖看不到
+  測試／清除按鈕、正確密鑰解鎖後輸入框出現且請求帶著這把密鑰、
+  密鑰錯誤顯示錯誤且不留著錯的密鑰、鎖回後輸入框重新消失、儲存
+  token 請求帶著記住的密鑰）。同步更新
+  `docs/deploy-vercel.md`（S0 章節改為 `ADMIN_SECRET`，附註
+  `OPS_SECRET` 已退役、留著舊環境變數無害可直接刪除）與
+  `scripts/migrate_solo_to_owner.py` docstring 的過期提及。
+
+  **E2E 連帶修正**（`e2e/smoke.spec.ts`／`e2e/desktop.spec.ts` 共
+  3 條既有測試因 credential 讀寫路徑上新增的閘門而斷）：這些測試
+  測的是設定頁本身的資料流（切自訂／存 token／三段式驗證狀態機），
+  不是 Super User 解鎖流程，修法是在各自的 route 設置階段用
+  `page.addInitScript()` 預先寫入 `sessionStorage`、並 mock
+  `GET /api/superuser/status` 回 `{is_superuser: true}`，模擬「已
+  解鎖」讓既有斷言原樣成立——不是放寬任何斷言。另補一條**新增**的
+  手機版 e2e（`未解鎖 Super User 時看不到 API Token 輸入框，模式
+  選項仍可正常切換`），刻意不沿用共用 helper（那個 helper 為了服務
+  上述既有測試已預設模擬解鎖），在真實瀏覽器層級（而非只在 Vitest
+  jsdom 層）證明未解鎖時真的看不到輸入框、但模式切換本身不受影響；
+  比照 HIVT-07 既有裁示（純邏輯、viewport-agnostic 的閘門只在
+  mobile 驗證一次，desktop 重複驗證邊際價值低），未另外在桌面複製
+  一份。後端專屬測試新增 `tests/test_pb09_superuser.py`（15 條，
+  HTTP-seam＋結構性 AST 掃描雙軌，逐條對應 spec §6 五項硬性需求）。
+  全套：後端雙後端（記憶體＋真實 Postgres，於乾淨重置過的資料庫上）
+  2171 條全綠；前端 typecheck 乾淨、Vitest 777 條全綠、build 成功；
+  Playwright 126 條（iPhone＋Desktop）連續兩輪穩定全綠。
+- **PB-06**［#299］Global Vendor Fuse——system-wide 每日 vendor 呼叫
+  預算 ＋ 降級（commit `e2ac5cf`）：新增獨立小模組
+  `api_app/vendor_fuse.py`（比照既有 `chain_backoff.py` 同層級，
+  票面明文要求兩者不得合併成一個狀態機）——`GlobalVendorFuseTripped`
+  （`FetchError` 子類，沿用 `RateLimitedError`／`QuotaExhausted` 既有
+  「子類讓在乎的呼叫端分得出差異，其餘呼叫端行為不變」的設計哲學）與
+  `tripped(storage, today, budget)`（`budget<=0` 停用；查詢本身失敗
+  fail-open，成本控制機制不是安全邊界，不得讓觀測失敗拖垮被保護的
+  主功能）。**計數來源沿用既有機制、不新建平行計數**——新增
+  `Storage.metric_total(metric, bucket)`（memory／postgres 皆實作，
+  對既有 `operational_metrics` 表做 targeted SUM，取代呼叫端每次抓鏈
+  前都要撈出 `metric_summary()` 整個 30 天視窗再自己過濾加總）。
+
+  **唯一的檢查點**：`api_app/main.py::_fetch_chain()` 函式最上方——
+  這是全站唯一真正會打上游的入口（自訂 provider 與預設 Cboe→yfinance
+  降級鏈皆經過這裡），fuse 因此擋在任何其他判斷之前，滿足 AC-9「沒有
+  任何路徑可以繞過」；`refresh_scenario()`／`refresh_run()` 的
+  symbol-group 抓鏈／一次性 `POST /api/analyze` 三條路徑共用同一個
+  進入點，零程式碼重複。`_classify_fetch_failure()`（SCALE-05 既有
+  唯一分類點）擴充第三種結果：`isinstance(e, GlobalVendorFuseTripped)`
+  時回 `stage="vendor_budget_exhausted"`（429，非 5xx——spec §14
+  硬性要求；facts-only 訊息）；判斷順序刻意把這個檢查放在
+  `chain_backoff.status()` 之前——fuse 短路發生在任何真正呼叫
+  `chain_backoff.backoff_aware_fetch()` 之前，這個例外類別因此保證
+  代表這次失敗的真正原因，不需要（也不該）回頭猜測是不是 Cboe 限流。
+  兩者刻意是**互不覆寫**的獨立判準：fuse 觸發時 `chain_backoff` 自己
+  既有的持久狀態完全未被這次失敗碰觸；反過來若 fuse 未觸發、單純
+  Cboe 真的在限流，既有 `rate_limited` 分類原樣生效，PB-06 沒有動它
+  一行。**Super User 不豁免**（spec §8 v3）：`_fetch_chain()` 的檢查
+  在 `identity_resolver()`／`superuser.is_superuser()` 判斷之前，
+  結構上不可能繞過。「沿用既有資料＋清楚告知」不需要為 PB-06 另外
+  發明呈現機制——一次失敗的刷新從不覆寫 `latest_result()`，既有兩態
+  失敗卡片（REPAIR-05／#242：曾成功過→舊資料＋失敗徽章；從未成功過
+  →「尚無可用結果」）天然涵蓋這個情境。`create_app()` 新增
+  `global_vendor_daily_budget` DI 參數，`None`→讀
+  `GLOBAL_VENDOR_DAILY_BUDGET` 環境變數→預設常數 2000（spec §17
+  明文「待 Controlled Beta 實測校準」，非最終數字）。前端
+  `src/api.ts` 的 `STAGES`／`FailureStage` 與 `src/scenarios.ts` 的
+  `failureLabel()` 各補上這個新分層（`test_frontend_contract.py`
+  既有漂移防線強制要求，AST 掃描 `_fail(...)` 呼叫自動抓出未同步的
+  新 stage）。
+
+  新增 `tests/test_pb06_global_vendor_fuse.py`（17 條，HTTP-seam＋
+  純函式雙軌，逐條對應票面 AC：預算用盡進入降級且非 5xx／舊資料
+  原封不動／`refresh_run` 批次結果夾帶非 5xx 失敗項／從未成功過誠實
+  回報／預算可經 DI 或環境變數調整停用／fuse 與 chain_backoff 互不
+  覆寫且各自獨立生效／Super User 不豁免／自訂 provider 與一次性
+  `/api/analyze` 亦無法繞過／純函式層 fail-open 與門檻邊界）；
+  `tests/test_storage_contract.py` 既有「S0 最小可觀測性」區塊新增
+  `metric_total()` 契約測試（memory＋真 Postgres 雙後端，比照全站
+  既有慣例集中一處，不散落在各票各自的檔案）；`src/scenarios.test.ts`
+  補一條 `failureLabel("vendor_budget_exhausted")` 有自己說法的測試。
+  施工中發現並修正三個測試設計陷阱（皆為測試本身、非 production 邏輯
+  問題）：(1) 同一劇本緊接著刷新兩次會先撞上 PB-05 既有 30 分鐘節流
+  短路，根本走不到 `_fetch_chain()`——改用
+  `anonymous_refresh_min_interval_minutes=0` 停用節流才測得到 fuse；
+  (2) `create_app()` 的 `fetch=` DI 覆寫會讓 `_effective_fetch` 直接
+  變成注入的函式，完整繞過只包在 `_default_fetch()` 內部的
+  `_metered_chain_fetch()`——凡是要驗證「真的計數」的測試改用
+  `monkeypatch.setattr(cboe, "fetch_chain", ...)`（比照
+  `test_scale08_observability.py` 既有 `_client()` helper 手法）且
+  不覆寫 `fetch=`；(3) `POST /api/analyze` 的 `AnalyzeRequest.
+  strategies` 認的是具體 subtype 白名單（`STRATEGIES`），跟
+  `CreateScenarioRequest` 認的 family 白名單（`FAMILIES`）是兩個不同
+  層次的詞彙，沿用 `NEW` 常數（family 字串）會撞 422 而非測到 429。
+  全套：後端雙後端（記憶體＋真實 Postgres）2194 條全綠（含本票新增
+  23 條，17 條 HTTP-seam／純函式＋6 條 storage 契約）；前端 typecheck
+  乾淨、Vitest 777 條全綠、build 成功；Playwright 126 條（iPhone＋
+  Desktop）全綠，與 PB-09 收工時完全相同的數字（本票未新增任何
+  e2e 案例，既有失敗卡片視覺呈現機制原封不動）。
+- **PB-08**［#300］Anonymous owner lifecycle：`last_activity_at`
+  語意 ＋ 30+7 天三段式生命週期 ＋ Vercel Cron 清理（commit
+  `d5afb39`）：新增獨立純函式模組 `api_app/anonymous_lifecycle.py`
+  （`classify()`：Active →（`abandoned_after_days`）Abandoned →
+  （再 `grace_period_days`）`eligible_for_hard_delete`，衍生狀態、
+  不落盤——比照既有 Direction 衍生三態設計原則，`owners` 表只存
+  `last_activity_at` 這個原始事實，「現在算不算 abandoned」永遠
+  即時算出來；`last_activity_at` 為 `None` 時退回 `created_at`；
+  時間戳讀不懂時保守回 `"active"`，分類失敗的後果不該是誤刪）。
+
+  **`manual: boolean` 旗標——票面自己點名「整張票最容易做錯的地方」**：
+  開站自動刷新全部未過期劇本與真人主動點擊在 HTTP 層是同一種請求
+  形狀，結構上無從分辨，改由呼叫端明確告知。新增 `RefreshRunRequest.
+  manual`（預設 `False`）與 `refresh_scenario(scenario_id, manual:
+  bool = False)` 查詢參數；`_touch_activity(owner)` 只在六類真人
+  操作（建立／編輯／封存／還原／永久刪除／`manual=True` 的刷新）
+  各自呼叫一次，`refresh_run()` 一次呼叫只記一次（整個 Run 屬於
+  同一個 owner）。**預設值刻意選 `False` 而非 `True`**——風險方向是
+  誤把自動刷新算成活動，不是反過來。前端整條刷新呼叫鏈（`src/
+  api.ts` 的 `refreshScenario()`／`refreshRun()`、`src/App.tsx` 的
+  `refreshOne()`／`runBatch()`／`reloadAndRefresh()`）新增
+  `manual` 參數並貫穿七個既有呼叫點：頂部刷新鈕／詳細頁刷新鈕／
+  卡片重試（三處，皆傳 `true`）、開站自動刷新／建立劇本後自動重跑／
+  編輯後自動重新分析（三處，維持隱性 `false`——建立與編輯本身已經
+  在後端算過一次活動，這些是它們的自動後續，不是獨立的第二次真人
+  操作）。
+
+  **`GET /api/cron/cleanup-abandoned-owners`**：Vercel Cron 每日
+  觸發一次（Hobby 方案上限，研究 #276），`Authorization: Bearer
+  <CRON_SECRET>` fail-closed 401（比照既有 `cron_warm_rate_cache()`
+  同一套寫法）。**`protected` 的 owner（PB-03 遷移過去的 Owner 自己）
+  在進入分類判斷之前就已經被 `[o for o in list_owners() if not
+  o.protected]` 濾掉**——不是分類結果剛好回 `"active"`，把關點只有
+  這一處、不依賴 `classify()` 內部再判斷一次。批次上限
+  （`ANONYMOUS_CLEANUP_BATCH_SIZE`）**不是** Continuation（Hobby
+  cron 同一天無法再被觸發一次）——是時間預算保護，處理不完的候選
+  留給明天那次 cron，`list_owners()` 沒有穩定排序保證但不影響
+  正確性（每個 owner 遲早會被處理到）。三個數值
+  （`ANONYMOUS_ABANDONED_AFTER_DAYS=30`／`ANONYMOUS_GRACE_PERIOD_
+  DAYS=7`／`ANONYMOUS_CLEANUP_BATCH_SIZE=200`）皆可經 `create_app()`
+  DI 或同名環境變數覆寫。`vercel.json` 新增第二筆 cron
+  （`0 12 * * *`，每日一次）。**明確不用 `pg_cron`**（#281 既有
+  確認 Neon Free autosuspend 會讓它靜默不觸發、無錯誤訊息，比
+  Vercel 的時間上限更危險）。
+
+  **cleanup volume 被記錄（spec §7／§22 AC5），不是只回在這次 HTTP
+  回應裡就算數**：`api_app.metrics.METRIC_CATALOGUE` 有意識擴為
+  八類，新增 `abandoned_owner_cleanup_count`（`count`＝這次批次
+  hard-delete 的 owner 數，`amount`＝加總刪掉的資料列數）——這是
+  SCALE-08「七類封頂」結構性守門第一次、也是目前唯一一次被打破，
+  `tests/test_scale08_observability.py` 的
+  `test_metric_catalogue_is_exactly_seven` 隨之改名為 `..._eight`
+  並更新斷言數字與清單，`test_table_size_is_the_only_non_
+  persisted_metric` 的 `len(PERSISTED_METRICS)` 6→7；`/api/ops/
+  metrics`（PB-09 起 Super User-only）透過既有 `PERSISTED_METRICS`
+  迭代自動涵蓋新類別，零額外接線。每次執行都記一筆（含 0）——
+  「今天 cron 有沒有真的跑過」本身也是有價值的訊號，供 PB-11 的
+  每日摘要信引用。
+
+  測試：新增 `tests/test_pb08_anonymous_lifecycle.py`（24 條）——
+  純函式 `classify()` 六個邊界（近期活動／恰好在門檻／grace 期內／
+  超過完整窗口／`last_activity_at` 為 `None` 退回 `created_at`／
+  無法解析的時間戳保守回 active）、六類真人操作各自 touch
+  activity、**票面最強調的風險**兩條專屬測試（單一劇本刷新省略
+  `manual` 不算活動／`refresh-run` 省略 `manual` 不算活動）、
+  protected owner 在遠遠超過門檻時仍存活（正面測試，不是只測「一般
+  owner 會被刪」）、完整三段式生命週期透過 cron 端點本身走過一輪
+  （用極短天數 1+1 真正觸發三個階段的轉換，不是直接呼叫純函式模擬）、
+  真人操作把 Abandoned 狀態重新拉回 Active、cron 端點 fail-closed
+  （缺 secret／錯 secret）、缺 cookie 呼叫該端點不建立新 owner、
+  cleanup volume 確實寫進 `operational_metrics`（含零值執行）、
+  批次上限跨多次 cron 呼叫正確處理完全部候選不遺漏不重複。前端
+  `src/App.test.tsx` 新增獨立區塊「PB-08（#300）：manual 旗標——
+  真人操作與自動觸發分流」（4 條：開站自動 `manual=false`／頂部
+  按鈕 `manual=true`／建立後自動 `manual=false`／編輯後自動不帶
+  `?manual=true`），既有兩條測試（卡片重試、詳細頁刷新）因新增
+  `?manual=true` 查詢字串而更新 URL 比對（`===` → `startsWith`／
+  `includes`），斷言意圖未變、只是配合新增的查詢字串。全套：後端
+  雙後端（記憶體＋真實 Postgres，於乾淨重置過的資料庫上）
+  2218 條全綠；前端 typecheck 乾淨、Vitest 782 條全綠、
+  build 成功。
+
+- **PB-10**［#301］Super User system/admin operations：跨 owner 檢視
+  與管理 ＋ 高風險操作二次確認 ＋ audit trail（commit `242d9a4`）：
+  正式執行 SUPERUSER-007 對舊 OD-6 的 supersede——Super User 是 Normal
+  User 完整權限超集合，v2 版「不得任意瀏覽個別使用者資料／不得刪除
+  他人資料」的限制正式撤回。新增 7 個 `/api/superuser/*` 端點：
+  `GET /owners`（列出全部 owner，**全站唯一讓 `owner_id` 出現在 HTTP
+  回應 body 的地方**，明確標示、獨立於一般使用者路徑）、
+  `GET /owners/{id}/scenarios`／`GET /owners/{id}/scenarios/{sid}`
+  （跨 owner 檢視，**明確傳入目標 owner_id**——不走 `identity_
+  resolver()`、不走 `_require()` 這個 owner-scoped chokepoint，票面
+  §8 明文要求不得靠傳 `None` 繞過 `require_owner()`）、
+  `POST /owners/{id}/delete`（呼叫 PB-04 既有 `delete_owner()` 原語）、
+  `POST /owners/batch-delete`（確認清單與目標清單集合比對，不接受
+  部分確認）、`PUT /owners/{id}/protected`（runtime 設定／取消
+  lifecycle 旗標）、`GET /audit-log`（查閱 audit trail 本身）。
+
+  **伺服器端可驗證的二次確認**（票面 §8：「不能只靠前端 modal」）：
+  `confirm_owner_id`／`confirm_owner_ids` 必須逐字（或逐集合）等於
+  目標，不符即 400——前端 `ConfirmHighRiskAction` modal 只是 UX，
+  略過它直接打 API 但帶錯確認值一樣會被拒絕。三個新請求模型
+  （`SuperUserDeleteOwnerRequest`／`SuperUserBatchDeleteOwnersRequest`／
+  `SuperUserSetProtectedRequest`）**刻意定義在模組層級**（比照既有
+  `RefreshRunRequest`）——施工中曾誤把它們定義在 `create_app()`
+  內部，導致 FastAPI 認不出巢狀 Pydantic model、把請求體錯判成
+  query 參數（422 `loc: ["query","body"]`），修正後才正確識別為
+  request body。
+
+  **新增獨立 audit trail**（`SuperUserAuditEvent`，`superuser_
+  audit_log` 表，走 `_MIGRATIONS`）——票面 §4 硬性約束：**刻意不是
+  `diagnostics`**（owner-scoped 且 trim-on-write 只留全域最新 200
+  筆，正常診斷事件洪流會把 audit 記錄沖掉）也**不是 `events`**
+  （scenario-scoped 領域事實，語意上不承載「誰對誰做了管理操作」）。
+  append-only、**不設保留上限**、**不在 `_OWNER_SCOPED_TABLES` 清單
+  裡**——`delete_owner()` 刪除一個 owner 時不會連帶清掉「這個 owner
+  曾經存在、曾經被刪除」這件事本身的紀錄。`actor` 固定為
+  `"superuser"`（PB-09 只有單一共用 `ADMIN_SECRET`，誠實反映現況，
+  不假裝有更細緻的身份可查）；`detail` 只放列數／布林值等安全欄位，
+  結構性不可能夾帶 `ProviderCredential.token` 明文。純瀏覽（列出
+  owner／劇本清單／劇本內容／查閱 audit log 本身）刻意**不**記
+  audit——票面 §3「純瀏覽不強制」的明確選擇，逐次記錄只會製造噪音、
+  不提升可稽核性。
+
+  前端 `src/SuperUserAdmin.tsx`（新檔案，**刻意不做豪華
+  Dashboard**——票面 §5 Non-goals）：單一可捲動表格＋就地展開的劇本
+  清單／劇本內容（`<pre>{JSON.stringify(...)}</pre>`，不重刻一份
+  `ScenarioDetail` 渲染管線）＋二次確認 modal（比照 `TrashView.tsx`
+  既有 `ConfirmDeleteOne`／`ConfirmDeleteBatch` 慣例）。只在
+  `Settings.tsx` 判定 `isSuperUser` 為真時掛載，不會對未解鎖使用者
+  打任何 `/api/superuser/owners*` 請求（伺服器端 401 是第二道防線，
+  不是唯一防線）。
+
+  測試：`tests/test_pb10_superuser_admin.py`（15 條 HTTP-seam，涵蓋
+  跨 owner 檢視／Normal User 全數被拒／二次確認真的生效——略過前端
+  直接打 API 但帶錯或缺少確認值皆被拒絕／批次確認集合比對／audit
+  記錄誰對誰做了什麼／audit 不含 token 明文／純瀏覽不記 audit）＋
+  `tests/test_storage_contract.py` 新增 7 條 audit trail 契約測試
+  （memory＋真 Postgres 雙後端，含「audit 記錄在 diagnostics 洪流
+  下存活」與「`delete_owner()` 不清除自己的刪除紀錄」兩條票面明文
+  AC）。施工中發現並修正 `tests/test_storage_contract.py` 既有
+  Postgres 清庫 `TRUNCATE` 清單漏掉新表 `superuser_audit_log`
+  （造成測試間資料互相污染，4 條測試假陽性失敗）。前端
+  `src/SuperUserAdmin.test.tsx`（13 條元件測試）；`Settings.test.tsx`
+  的 `mockApi()` 補上 `/api/superuser/owners*`／`/api/superuser/
+  audit-log` 分流（不然解鎖 Super User 後新掛載的 `SuperUserAdmin`
+  會在既有測試裡打到未分流的假回應而炸掉）。
+
+  `/security-review`（票面 §12：「必須，且本票是全輪最需要的一張」）
+  已執行——逐一驗證 8 項硬性安全屬性（每個新端點的 fail-closed
+  排序、跨 owner 讀寫明確傳入 owner_id 從不落回 `None`／
+  `identity_resolver()`、二次確認真的擋在任何破壞性呼叫之前、
+  audit 不外洩 token、新 Postgres 查詢皆為參數化無 SQL injection、
+  批次確認集合比對無法被利用、`GET .../scenarios/{sid}` 真的核對
+  owner＋scenario 兩者相符而非只驗證存在性、沒有其他未受保護的端點
+  能間接觸發跨 owner 邏輯），**零高信度可利用漏洞**。全套：後端雙
+  後端（記憶體＋真實 Postgres）2247 條全綠（+29）；前端 typecheck
+  乾淨、Vitest 795 條全綠（+13）、build 成功。
+
+- **PB-11**［#303］Ops metrics 擴充（匿名 owner／cleanup volume）＋
+  daily email digest（commit `e4e74f8`）：**純後端票**（票面 §4
+  Non-goals 明文「不做豪華 HTML Dashboard、不做即時互動式頁面」，
+  第一版載體就是「protected JSON endpoint ＋ daily email digest」，
+  本票因此**未觸碰任何前端檔案**，前端測試數字逐位元不變）。
+
+  **Query-time gauge，不進 `METRIC_CATALOGUE`**（票面 §3 明訂兩條
+  路線擇一並寫明理由，選這一條）：新增
+  `Storage.scenario_count_total()`（site-wide 劇本總數，含已封存，
+  單純 `COUNT(*)`，不接受 `owner` 參數）與 `main.py::
+  _anonymous_owner_distribution()`（直接重用 PB-08 既有的
+  `anonymous_lifecycle.classify()` 逐一分類 `list_owners()`，不另外
+  寫一份可能漂移的 SQL 版本）——兩者與既有 `table_size_metrics()`
+  同一種「現在去數一次就有答案，不落盤」形狀，**`METRIC_CATALOGUE`
+  維持 PB-08 收工時的 8 項不變**。Cleanup volume（票面 §3 的另一
+  半）**已在 PB-08 完成**（`abandoned_owner_cleanup_count` 第 8 項），
+  `/api/ops/metrics` 透過既有 `PERSISTED_METRICS` 迭代自動涵蓋，
+  本票零額外接線。
+
+  `/api/ops/metrics` 純加法擴充三個頂層鍵：`anonymous_owners`
+  （active／abandoned／eligible_for_hard_delete／protected／total）、
+  `scenarios`（site-wide 總數＋per-owner 平均）、`alerts`（四條判準
+  目前結果）——回應**只含聚合數字**，不與 PB-10 的跨 owner 個別檢視
+  端點混在同一份回應裡（票面 §10）。
+
+  **四條 alert 判準**（新模組 `api_app/ops_alerts.py`，純函式、零
+  I/O，`evaluate_alerts()`）：① 429 持續性事故——直接查
+  `chain_backoff.status(storage, source)` 對已知來源
+  （`"cboe"`／`"yfinance"`）逐一詢問，沿用既有 `is_sustained_
+  incident()` 門檻，不重新發明一個；② 清理排程連續 N 天沒有執行
+  紀錄——**判準是「`abandoned_owner_cleanup_count` 這個 bucket 是否
+  存在」，不是看 `count` 數值**（PB-08 設計是即使清了 0 個 owner
+  也留一筆 count=0 的紀錄，兩者語意不同，混為一談會把「排程跑了、
+  剛好沒東西可清」誤判成「排程沒跑」）；③ 儲存用量超過設定比例
+  （預設 80%，對照 `results`＋`snapshots` 兩表 `total_bytes` 加總／
+  一個可設定上限，預設對齊研究 #273／#276 記載的 Neon Free 約
+  512 MiB）；④ vendor 抓取錯誤率（`chain_429_count` / `chain_fetch_
+  count`，近 7 天窗口，預設門檻 10%）——**刻意不重造一套本地版的
+  「backend error rate」**：一般性錯誤率追蹤已由 PB-13 的 Sentry
+  承接，這裡只用本站唯一已經持久化、且直接對應使用者體感失敗頻率
+  的既有指標對，避免與 Sentry 維護兩套互相可能兜不起來的真相來源。
+
+  **Daily email digest**（新模組 `api_app/digest.py`，`build_
+  digest_text()` 純格式化與 `send_digest_email()` 寄送分開，後者
+  任一必要 SMTP 設定缺席即嚴格 no-op、回傳 `False`——比照 PB-13
+  Sentry 接線同一套「未設定就什麼都不做」哲學，讓內容組裝在完全
+  沒有信箱設定的環境（本地開發、CI）也能被單獨測試）：五類指標
+  分開陳列（product usage／system health／vendor usage-quota／
+  storage growth／security-abuse，票面 §7 明文要求不得混成一個
+  總分），觸發中的 alert 額外顯示在信件頂端的「⚠ 需要留意」區塊。
+  用 Python 標準庫 `smtplib`／`email`——FREE-FIRST（spec §13），
+  不引入任何新套件或付費服務，任何提供免費 SMTP relay 的信箱（例如
+  Gmail App Password）皆可設定。新增
+  `docs/pb11-owner-setup-checklist.md`（比照既有 PB-13 HITL 清單
+  慣例）列出唯一需要 Owner 親自操作的步驟——申請免費 SMTP 帳號、
+  設定六個 `DIGEST_*` 環境變數。
+
+  新端點 `GET /api/cron/daily-digest`——`CRON_SECRET` 保護（比照
+  既有 `cron_warm_rate_cache()`／`cron_cleanup_abandoned_owners()`
+  同一套 fail-closed 慣例），與 `/api/ops/metrics` **共用同一份
+  `_ops_snapshot()` 計算**（兩處若各自重算，遲早會算出兜不起來的
+  兩個答案，沿用既有 `chain_backoff.status()`「唯一判斷點」慣例）。
+  `vercel.json` 新增第三筆 cron（`0 13 * * *`，晚清理排程一小時，
+  digest 才能報出「今天」的清理量體）——**推翻票面 §7 原本擔心的
+  「Vercel Hobby 每天只能一次」限制範圍**：實測查證（研究文件
+  `docs/research/public-beta-platform-facts.md` §1.3，官方文件
+  「每專案上限 100 個 cron job」）確認該限制是**逐一 cron job 各自
+  最短間隔一天**，不是「整個專案只能有一個 cron job」——PB-08 已經
+  示範過同一份 `vercel.json` 可以有兩個獨立 cron 條目，本票直接加
+  第三個，不需要合併成同一個 handler。
+
+  測試：`tests/test_pb11_ops_digest.py`（21 條，純函式層 11 條
+  ——四條 alert 判準各自的邊界值、`build_digest_text()` 五類分開
+  陳列與 alert 橫幅只在觸發時出現、`send_digest_email()` 缺任一
+  設定的 no-op 與（monkeypatch `smtplib.SMTP`）真的寄送兩條路徑
+  ——HTTP-seam 層 10 條，含建構已知 owner／scenario 狀態逐一核對
+  分佈數字的正確性（不只信任「有回傳欄位」）、聚合回應不含個別
+  owner_id 或標的代號、與「兩個端點共用同一份計算」的一致性測試
+  （用 monkeypatch 攔截寄出的信件內文、比對 `/api/ops/metrics` 的
+  JSON 數字確實出現在信件裡）＋ `tests/test_storage_contract.py`
+  新增 2 條 `scenario_count_total()` 契約測試（memory＋真 Postgres
+  雙後端）。施工中發現既有 `tests/test_scale08_observability.py`
+  的 `test_ops_metrics_endpoint_answers_all_seven_categories` 斷言
+  回應鍵集合與 `METRIC_CATALOGUE` **完全相等**——這是 PB-11 純加法
+  擴充三個頂層鍵後結構上必然會打破的既有斷言，已有意識修正為子
+  集合關係（`METRIC_CATALOGUE` 逐一仍在，加上明確斷言三個新鍵存
+  在），非靜默放寬（commit 訊息與測試自身 docstring 皆記錄理由）。
+
+  `/security-review`：票面 §11 列為「建議跑」（非 PB-10 那種
+  「必須」），評估後判斷本票的安全面向已由設計本身與既有測試
+  覆蓋——`DigestSnapshot` 結構上不含任何 owner_id／劇本內容／
+  credential 欄位（無法夾帶，不是靠審查抓出來的）、收件信箱走
+  env/secret（`docs/pb11-owner-setup-checklist.md` 明文要求，
+  repo 內零硬編碼）——故未另外派遣完整安全審查子代理，改為對照
+  票面 §10 三項安全考量逐一自我核對，皆已由對應測試覆蓋。全套：
+  後端雙後端（記憶體＋真實 Postgres）2272 條全綠（+25）；前端
+  typecheck 乾淨、Vitest 795 條全綠（零異動，未觸碰任何前端
+  檔案）、build 成功。
+
+- **PB-07**［#304］Synthetic load-test harness：mock vendor（既有
+  DI 注入點）＋ `is_synthetic` 標記——本輪 blocker 最多的一張驗證票
+  （被 PB-02／PB-05／PB-06／PB-08 四張擋，因此排在最後一批），要驗
+  的四個機制在它開工前必須全數已存在。**純後端票**（票面 Scope
+  明文：合成壓測 harness 只走既有 DI 注入點與 HTTP／Storage 兩個
+  既有 seam，不新增 seam），未觸碰任何前端檔案。
+
+  **絕對紅線（票面 §3 逐字）——不得打真實 vendor**：Owner 明文禁止
+  「用技術手段規避 vendor rate limit 或偵測」，且既有研究 #277 已
+  確認 `chain_backoff` 的 PK 是 `source` 單獨（provider-global，
+  SCALE-04 刻意設計成這樣防換 symbol 繞過封鎖窗）——任何真實壓測
+  流量若打到真實 Cboe，架構上無法被排除在全站封鎖窗之外，一旦被
+  限流是全站中斷。harness 因此全程用 `create_app(cboe_fetch=...)`
+  （既有 DI 注入點）接管，這個注入點刻意選在 `_default_fetch()`
+  內部——**仍會走既有 `_metered_chain_fetch()` 包裝**，`chain_
+  fetch_count` 因此真的被 synthetic 流量推進，quota／fuse 的觸發是
+  真實機制在真實負載下運作，不是預先灌值模擬出來的劇本，但從未碰到
+  `cboe.fetch_chain`／`yf.fetch_chain` 本身。
+
+  **`is_synthetic` 標記（storage 層，`api_app/storage/__init__.py`
+  的 `Owner` dataclass 新增第五個欄位，預設 `False`）**：唯一的生產
+  面作用是「清理排程分開處理，方便測試結束後整批清空」（票面 §7
+  明文：不得擴散成別的行為差異）——`memory.py` 完全零改動（既有
+  `create_owner_with_token()` 整包儲存傳入的 `Owner` 物件，新欄位
+  自動流過去）；`postgres.py` 走 `_MIGRATIONS` 新增
+  `ALTER TABLE owners ADD COLUMN IF NOT EXISTS is_synthetic BOOLEAN
+  NOT NULL DEFAULT FALSE`（PB-01 當時刻意沒有預先加這個欄位，避免
+  數週內沒有消費端的欄位躺在 production），`get_owner()`／`create_
+  owner_with_token()`／`list_owners()` 三處 SQL 同步補上。
+
+  **「preset cookie」技術（本票新引入，`main.py` 零 production code
+  改動——票面 §7 明文要求 harness 不得讓 production 出現只為壓測而
+  存在的分支）**：`_make_synthetic_owner()` 直接呼叫既有 `Storage.
+  create_owner_with_token()`＋`is_synthetic=True`，把生成的 token
+  預先塞進 `TestClient` 的 cookie jar 才發出第一個請求——PB-02 的
+  lazy-creation 路徑因此完全走不到，synthetic owner 從第一個位元組
+  起與正常使用者路徑無法分辨，除了它自己的 `is_synthetic` 旗標。
+  這個技巧先用一支獨立腳本手動驗證過（單一 synthetic owner 建立
+  一筆劇本後，`storage.list_owners()` 恰好一筆、`is_synthetic=
+  True`，證明不會意外多生出一個 owner），才寫進正式測試檔。
+
+  `tests/test_pb07_synthetic_load.py`（8 條）逐一對應 spec §15 Exit
+  Criteria：**第 1 項**（互不污染，5 個 synthetic owner 各自只看得
+  到自己的劇本，看不到別人的——回應與不存在時完全一致）；**第 2
+  項**（quota 與 fuse 真的被觸發，quota=3 時 5 次建立恰好 3×201＋
+  2×409，fuse budget=3 時 6 次刷新恰好觸發 `429 vendor_budget_
+  exhausted`）；**第 3 項**（graceful degradation，4 個 owner×
+  quota=2×budget=5 混合壓測，逐一斷言全程無 500，且 409／429 確實
+  各自被觸發過）；**第 4 項**（cleanup lifecycle 完整跑通，四個
+  synthetic owner 同時處於 active／abandoned／eligible_for_hard_
+  delete／protected 四種狀態，單一次 cron 呼叫正確分流，`protected`
+  owner 存活與 PB-08 既有斷言互為交叉驗證）；**第 6 項**（DB 成長
+  速率外推，`@pytest.mark.skipif(not TEST_DB_URL)`，僅在真實
+  Postgres 上跑——沿用 SCALE-16／REPAIR-10 既有教訓，用
+  `PRODUCTION_SCALE_FIXTURE`（600 張合約）而非六到期日小樣本；
+  量測涵蓋全部 8 張 owner-scoped 表＋`owners`／`browser_identities`
+  本身，VACUUM FULL 後才量——先跑 N=5 量到 163,840 B/owner，改跑
+  N=20 得 136,397 B/owner，兩者同一個數量級但尚未完全收斂，已在
+  測試 docstring 誠實記錄；以 N=20 為最終採用值，外推對照 PB-11 的
+  `DEFAULT_STORAGE_CAP_BYTES`（512 MiB）約 **3,936 個匿名 owner**
+  才會碰到儲存 alert 門檻）。
+
+  另兩條獨立測試：`test_zero_real_vendor_calls_across_the_whole_
+  harness`——把票面 AC「全程零真實 vendor 呼叫」從結構保證（`cboe_
+  fetch=` DI 覆寫）升格為計數斷言，monkeypatch 真實 `cboe.fetch_
+  chain`／`yf.fetch_chain` 為引爆就報錯＋計數的地雷，完整跑一輪多
+  owner／quota／fuse／cleanup 的合成流量後斷言地雷從未被引爆（同時
+  斷言 mock 本身確實被呼叫過，證明流量真的發生、不是整段被跳過）；
+  `test_synthetic_data_can_be_cleared_in_one_batch`——混一個非
+  synthetic 的真人 owner 進去，用 `is_synthetic` 篩出全部 4 個
+  synthetic owner 逐一呼叫既有 PB-04 `Storage.delete_owner()`，
+  證明真人 owner 不會被誤刪。`is_synthetic` 欄位本身的 Storage port
+  契約（round-trip、預設值）另外新增在
+  `tests/test_storage_contract.py::test_is_synthetic_defaults_to_
+  false_and_round_trips_true`（memory＋真 Postgres 雙後端）。
+
+  `/security-review`：票面 §11 明文「不需要單獨跑——本票不新增
+  授權邊界、不改 production 行為」，其驗證結果留給 PB-14 的
+  release-level 審查一併覆核。全套：後端雙後端（記憶體＋真實
+  Postgres，於乾淨重置過的資料庫上）**2282 條全綠**（+9，`--junitxml`
+  確認 `errors="0" failures="0" skipped="0"`，Exit #6 真實跑過非
+  skip）；本票未觸碰任何前端檔案，typecheck／Vitest／build 無需
+  重跑（`git diff --stat -- src/` 為空）。
+
+- **PB-12**［#302］Beta first-use UX：首頁 Beta 說明 ＋ 全站頁尾 ＋
+  極簡隱私頁 ＋ 回報問題入口——**純前端票**（`option_chaser/`／
+  `api_app/` 僅新增一支跨層一致性測試，零 production 程式碼改動）。
+
+  新增三個元件：`src/BetaNotice.tsx`（首頁 Beta 說明，固定可見、非
+  彈窗，匯出 `ANONYMOUS_ABANDONED_AFTER_DAYS=30`／`ANONYMOUS_GRACE_
+  PERIOD_DAYS=7` 兩個具名常數）、`src/Footer.tsx`（全站常駐頁尾，
+  「非投資建議」＋隱私頁連結＋回報問題外部連結）、`src/PrivacyPage.tsx`
+  （六項內容齊全：存了什麼／留多久／怎麼刪／清除瀏覽器 cookie 的
+  後果／不是投資建議／Beta 狀態；「怎麼刪」連到 PB-04 既有的
+  `DeleteMyData` 所在的設定頁，不重複渲染那個元件本身）。
+  `src/route.ts` 新增第四對 hash helper（`privacyHash()`／
+  `isPrivacyHash()`），`App.tsx` 把隱私頁當成**不分裝置寬度**的
+  最優先 early return（排在 `isDesktop` 判斷之前）——隱私頁不屬於
+  任何工作區脈絡，手機與桌面共用同一個渲染路徑。`Footer` 掛在全部
+  既有渲染分支（手機設定／垃圾桶／詳細頁／首頁、桌面 workspace）與
+  `PrivacyPage` 自己，逐一用 `<>...<Footer/></>` 包起來。
+
+  **天數不漂移的保證**：前端沒有任何 API 可以即時查詢 `ANONYMOUS_
+  ABANDONED_AFTER_DAYS`／`ANONYMOUS_GRACE_PERIOD_DAYS`（本票
+  Dependencies 只有 PB-02／PB-04，未要求新增這樣的端點），改用新增
+  的 `tests/test_pb12_beta_copy.py`（2 條）直接用正規表示式讀取
+  `src/BetaNotice.tsx` 原始碼裡的常數字面值，與 `api_app.main` 的
+  同名常數逐一比對——任一邊改了另一邊沒跟著改，這條測試會紅。
+
+  **禁詞掃描的真正難點**：票面 §7 明文「不得出現『推薦』『建議』
+  『應該』」，但既有 `option_chaser/report.py::disclaimer_text()`／
+  `_DISCLAIMER_LINE` 本身就寫著「不構成投資建議」「不提供個人化投資
+  建議」——這正是 §7 要求的那句話本身，若對「建議」整個字串一律禁止
+  會連 production 既有的必要免責聲明都通不過。新增
+  `src/betaCopy.test.tsx`：「推薦」「應該」整字串禁止（本票新增文案
+  完全用不到），「建議」則允許出現在既有免責聲明的否定句型裡（比照
+  `disclaimer_text()` 的「不構成」「不應被視為」，加上本票自己新增
+  的「不是」「非」兩種說法），逐一比對每次出現都落在核准的否定句型
+  範圍內，不是靠整字串一刀切。
+
+  **一個真實密度回歸，施工中發現並修正**：`<BetaNotice/>` 一開始
+  以完整段落＋卡片視覺（背景／陰影／圓角／左側色條）呈現，直接撞上
+  MVP-v2（#77、#82）既有硬性密度要求「手機一屏至少看得到 4 個劇本
+  不必先捲動」與 #108「桌面左側欄視窗看到的劇本數比舊版大卡片多」
+  ——兩條既有 e2e 一度雙雙紅燈（分別量到 2/4、4/5）。修法分三層：
+  (1) 文案從完整四句壓縮成一行極簡陳述（「Beta，非投資建議。資料
+  存在瀏覽器 cookie，遺失不可復原；閒置 30+7 天後清除。」，完整的
+  兩段式緩衝期解釋與換瀏覽器後果留給 `PrivacyPage.tsx` 對應章節，
+  不在這個摘要裡重複）；(2) 移除卡片視覺裝飾，只留 10px 純文字；
+  (3) 手機版與 `Dashboard` 包在同一個 flex wrapper（`.beta-notice-
+  and-dashboard`）並用負 `margin-bottom` 精確吃掉 `.screen` 自己的
+  `--gap`（16px）——這比讓 `BetaNotice` 自成一個 `.screen` 直接子
+  元素（會整份多付一個 gap 單位）省下更多空間。過程中曾一度只差
+  0.6px 未達標，已加大安全餘裕後穩定通過兩輪重跑。修法全程**未
+  觸碰** `Dashboard.tsx` 本身（另一張、不相關的既有票的元件，只在
+  `styles.css` 用 scoped 選擇器 `.beta-notice-and-dashboard
+  .dashboard-placeholder` 微調它在這個 wrapper 情境下的內距，不影響
+  其他任何使用 `.dashboard-placeholder` 的地方）。
+
+  **一個既有、與本輪無關的 e2e 失敗，已查證非本票造成**：`smoke.
+  spec.ts::刷新失敗說明是哪一段，重試就地重來（V4／#52）` 在
+  `git stash` 掉本輪全部改動後、於乾淨的 pre-PB-12 狀態上以
+  `--workers=1` 單獨重跑仍然逐字相同失敗（`getByText("250.0%")`
+  逾時），確認是既有、與 PB-12 無關的缺陷，未在本票範圍內修正。
+  ⚠ **這則判斷本身已被推翻，記錄於此供未來 session 留意**：
+  「既有缺陷、暫不修正」低估了這件事——真因後來在
+  OPTION-PUBLIC-BETA-CI-REPAIR-010（PR #306 CI 修復輪）查出並修好，
+  詳見該節；此段原文保留不刪，僅供追溯「當時只驗證了『不是本票造成』
+  就停下，沒有再往下挖」這個過程本身。
+
+  空狀態不自動建立示範劇本：既有 `ScenarioList.tsx`／
+  `CompactScenarioList.tsx` 本來就只顯示引導文字（「還沒有劇本，
+  用……建立」），全站 `grep` 確認零示範劇本自動建立邏輯——本票新增
+  一條 App.test.tsx 迴歸測試正面鎖住這件事（空清單時開站流程只呼叫
+  `GET /api/scenarios`，沒有任何一次呼叫是 `POST`）。
+
+  測試：新增 `src/BetaNotice.test.tsx`（5 條）、`src/Footer.test.tsx`
+  （3 條）、`src/PrivacyPage.test.tsx`（6 條）、`src/betaCopy.test.tsx`
+  （7 條）、`src/route.test.ts` 新增 3 條（隱私頁 hash 不與其餘三個
+  既有畫面混淆）、`src/App.test.tsx` 新增 7 條（頁尾在手機首頁／桌面
+  首頁／手機垃圾桶／手機詳細頁／設定畫面五處皆渲染、隱私頁路由可達
+  且內容齊全、空清單不自動建立示範劇本）、`tests/test_pb12_beta_
+  copy.py`（2 條，天數跨層一致性）；`e2e/smoke.spec.ts`／`e2e/
+  desktop.spec.ts` 各新增一條完整首次進站流程（Beta 說明常駐可見→
+  頁尾兩個連結→點進隱私頁六項內容齊全→點「設定頁」連結驗證真的可達
+  PB-04 自助刪除入口）。
+
+  `/security-review`：票面 §11 明文「不需要單獨跑——純前端呈現、
+  無新增授權邊界」，隱私頁文案與實際行為的一致性留給 PB-14 的
+  release-level 審查一併覆核。全套：後端雙後端（記憶體＋真實
+  Postgres，於乾淨重置過的資料庫上）**2284 條全綠**（+2，
+  `--junitxml` 確認 `errors="0" failures="0" skipped="0"`）；前端
+  typecheck 乾淨、Vitest **826 條全綠**（+31）、build 成功；
+  Playwright **127 條全綠**（iPhone＋Desktop，唯一的 1 條失敗是上述
+  已查證的既有缺陷，非本票回歸）。
+
+- **PB-14**［#305］Controlled Beta Exit Criteria 驗證 ＋ Release Gate
+  收尾（本輪最後一張票，純驗證＋一項真缺陷修正，commits
+  `ea06626`＋跟進 docs commit）：
+
+  **Release-level `/security-review`（Controlled Beta 開始前，
+  §12／§16 硬性要求）已執行，涵蓋 PB-01～PB-13 累積全部 diff**
+  （`git diff origin/master...HEAD`，99 個檔案、約 1 萬行新增；先
+  `git remote set-head origin master` 讓 skill 自己的 `git diff
+  origin/HEAD...` 算得出完整範圍，而非只算單張票）。**抓到一個真
+  High-severity 缺陷並已修正**：
+
+  - **發現**：`api_app/observability.py::init_sentry()`（PB-13）未
+    設定 `include_local_variables=False`，Sentry Python SDK 2.x
+    預設會把每層 stack frame 的區域變數整個 `repr()` 後上傳；
+    `_fetch_chain()`／`put_credential()`／`test_credential()`
+    （`api_app/main.py`）三處在拿到第三方 provider token 明文
+    （`cred.token`／`req.token`）之後仍有後續呼叫（`db.save_
+    verification()` 等）可能拋出無關例外（例如 Neon 連線瞬斷），
+    那個當下 token 仍是活著的區域變數——既有 `_scrub_event()` 只清
+    `event["request"]`／例外訊息字串，不會走到
+    `stacktrace.frames[].vars` 這一層，token 因此會明文外洩到
+    Sentry 帳號。`_fetch_chain()` 尤其吃重，任何啟用自訂 provider 的
+    owner 每次正常刷新都會經過這條路徑，不是只有 admin 操作才會踩到。
+  - **修正**：`sentry_sdk.init(...)` 新增 `include_local_variables=
+    False`——一行關掉整個 local-variable 擷取功能，本站 error
+    triage 從一開始就只依賴例外型別／訊息與既有 Diagnostics／
+    `/api/ops/metrics` 這條完全獨立的自建帳本，不依賴 Sentry 顯示
+    區域變數值，關掉它零損失。新增
+    `tests/test_observability.py::test_init_sentry_disables_local_
+    variable_capture` 釘死這個旗標真的被傳進 `sentry_sdk.init()`。
+  - 其餘 11 項 spec §6／§19 明文要求逐一在 diff 上核對，皆確認安全：
+    cookie 屬性拉滿（`__Host-oc_owner`，`httponly`／`secure`／
+    `samesite=lax`，全站唯一一處 `set_cookie()`）；軸一／軸二完全
+    正交（`superuser.py` 不 import `api_app.identity`，函式簽章無
+    `owner_id` 參數，`_effective_admin_secret` 與
+    `_effective_cron_secret` 呼叫點零重疊）；`owner_id` 從不進回應
+    body（既有 SCALE-06 不變量延伸到 PB-10 新端點，`_event_json`／
+    `_diagnostic_json` 明確 `pop`）；確認二次確認機制真的擋在
+    `delete_owner()`／`set_owner_protected()` 之前（非事後補檢查）；
+    新增的 10 個 Postgres 方法全數用 `%s` 佔位符，唯一 f-string
+    組表名只吃寫死的模組層級 tuple、非請求輸入；
+    `migrate_solo_to_owner.py` 永不印 token 值；PB-07 harness 結構性
+    走 mock（`cboe_fetch=`／`is_synthetic` 不參與任何授權判斷）；
+    CI workflows 無 `pull_request_target`、無 secret 注入、
+    `deploy-smoke.yml` 的外部輸入走安全的 `env:` 綁定而非直接內嵌進
+    shell 指令；PB-12 前端零 `dangerouslySetInnerHTML`、Super User
+    密鑰只走 `Authorization` header。
+
+  **§20 八項必要測試——逐條對到具體、可執行的測試函式**（PB-14
+  Implementation Constraints 明文要求「找不到守門測試就是 ❌，不是
+  ✅」，逐一 grep 驗證非只憑印象）：
+
+  | # | 要求 | 覆蓋測試 |
+  |---|---|---|
+  | 1 | Normal User A 讀不到 B | `test_pb02_cookie_identity.py::test_two_different_browsers_see_completely_isolated_data` |
+  | 2 | Normal User 用不了 Super User endpoint | `test_pb09_superuser.py::test_a_bare_client_with_no_authorization_header_is_rejected_everywhere`／`test_a_wrong_secret_is_rejected_everywhere_not_just_missing` |
+  | 3 | Super User 可執行 Normal User 全部功能 | `test_pb09_superuser.py::test_superuser_credentials_can_still_do_every_normal_user_thing`（本票新增，發現真缺口） |
+  | 4 | Super User 可用 system／admin operations | `test_pb10_superuser_admin.py::test_superuser_can_list_every_owner_across_the_site`／`test_superuser_can_view_another_owners_scenario_list_and_detail`／`test_superuser_can_delete_another_owners_data_with_correct_confirmation` |
+  | 5 | Super User capability 不改變 owner_id（軸二不干擾軸一） | `test_pb09_superuser.py::test_admin_secret_presence_does_not_change_which_owner_a_cookie_resolves_to` |
+  | 6 | service credential 不自動變成某個 owner | `test_pb02_cookie_identity.py::test_cron_endpoint_does_not_create_an_owner_even_when_unauthorized`／`test_pb09_superuser.py::test_the_cron_secret_does_not_unlock_any_superuser_endpoint` |
+  | 7 | Normal User 無法自行升級 | `test_pb09_superuser.py::test_normal_user_cannot_self_elevate_to_superuser_through_any_product_endpoint`（本票新增，發現真缺口） |
+  | 8 | 破壞性操作二次確認＋audit trail | `test_pb10_superuser_admin.py::test_delete_without_matching_confirmation_is_rejected_and_deletes_nothing`／`test_batch_delete_requires_the_confirmation_set_to_match_exactly`／`test_audit_log_records_who_what_target_and_when_for_high_risk_actions` |
+
+  **兩項本票新增測試補的是真缺口、非重複驗證**——逐一 grep 過
+  `test_pb09_superuser.py` 既有 17 條測試（施工前 15 條），確認第
+  3、7 項先前只有「四個受保護端點各自 401／單一密鑰解鎖全部端點」
+  這類間接證據，沒有一條直接證明「Super User 拿著密鑰時，自己的
+  正常 owner-scoped 操作（建立／編輯 Scenario）不受影響」與「Normal
+  User 用不對的密鑰、或用自己 owner_id 當參數，換不到 Super User
+  能力」——已補齊。
+
+  **§16 Line 1（Controlled Beta 開始前必做）16 項逐一核對到施工票與
+  守門測試**：
+
+  | # | 項目 | 施工票 | 守門測試（節錄） |
+  |---|---|---|---|
+  | 1 | 匿名 cookie 身份（隨機 id＋伺服器查表＋lazy creation） | PB-01／PB-02 | `test_pb02_cookie_identity.py`（14 條） |
+  | 2 | Super User 單一 authentication mechanism | PB-09 | `test_the_same_admin_secret_unlocks_every_protected_endpoint` |
+  | 3 | Owner solo 資料一次性遷移到自己正常 owner identity | PB-03 | `test_pb03_migrate_owner_script.py`（4 條） |
+  | 4 | owner-wide deletion primitive（含 narrow_history） | PB-04／PB-10 | `test_pb04_self_delete.py`（6 條）＋`test_superuser_can_delete_another_owners_data_with_correct_confirmation` |
+  | 5 | 匿名者不得存第三方 token | PB-09 | `test_a_bare_client_with_no_authorization_header_is_rejected_everywhere`（涵蓋三個 credential 端點） |
+  | 6 | Super User 高風險操作二次確認＋audit log | PB-10 | `test_delete_without_matching_confirmation_is_rejected_and_deletes_nothing`等 4 條＋`test_audit_log_records_who_what_target_and_when_for_high_risk_actions` |
+  | 7 | Quota 三件套（10 scenario／30 分鐘節流／global fuse） | PB-05／PB-06 | `test_pb05_quota_and_throttle.py`（18 條）＋`test_pb06_global_vendor_fuse.py`（17 條） |
+  | 8 | Graceful degradation（quota／fuse 不 500） | PB-05／PB-06 | `test_the_eleventh_active_scenario_is_rejected_not_500`／`test_refresh_run_reports_the_fuse_as_a_non_5xx_batch_failure_item` |
+  | 9 | Synthetic load test harness（mock vendor） | PB-07 | `test_pb07_synthetic_load.py`（8 條，含零真實 vendor 呼叫地雷測試） |
+  | 10 | 頁尾＋首頁 Beta 說明＋隱私頁＋刪除入口 | PB-12／PB-04 | `test_pb12_beta_copy.py`＋`BetaNotice/Footer/PrivacyPage/DeleteMyData.test.tsx` |
+  | 11 | CI（Actions＋branch protection required checks） | PB-13 | `.github/workflows/ci.yml`（Owner 需自行設定 required checks，見下） |
+  | 12 | 部署後 smoke＋UptimeRobot（不觸發 owner 建立） | PB-13 | `deploy-smoke.yml`＋`test_health_does_not_create_an_owner` |
+  | 13 | Sentry 免費層＋email alert | PB-13 | `test_observability.py`（本票追加 `include_local_variables` 修正） |
+  | 14 | `/security-review` 跑一次（Controlled Beta 開始前） | **本票（PB-14）** | 本輪即是這一次，見上方修正記錄 |
+  | 15 | Super User 最小維運能力 | PB-10／PB-11 | `test_pb10_superuser_admin.py`（15 條）＋`test_pb11_ops_digest.py`（21 條） |
+  | 16 | 清理排程接上 Vercel Cron | PB-08 | `test_pb08_anonymous_lifecycle.py`（24 條，含完整三段式生命週期端到端） |
+
+  **§15 Controlled Beta Exit Criteria（8 項）——驗證機制對照**：
+
+  | # | 項目 | 驗證機制 |
+  |---|---|---|
+  | 1 | Ownership isolation 正常 | PB-07 harness 多 synthetic owner 隔離測試＋PB-02 兩瀏覽器隔離測試 |
+  | 2 | Quota／Fuse 確實被 synthetic load test 測到並觸發 | PB-07 `test_pb07_synthetic_load.py` 直接使用 PB-05／PB-06 的閘門跑合成多 owner 負載 |
+  | 3 | Graceful degradation 全部驗證、無 500 | 見上方 §16 第 8 項 |
+  | 4 | Cleanup lifecycle 完整跑通一次（soft-expired→grace→hard delete） | `test_full_lifecycle_active_then_abandoned_then_hard_deleted` |
+  | 5 | 至少一次真實 release 走完整 branch→PR→CI→merge→deploy | ⚠ **尚未達標**——機制（`ci.yml`＋branch protection）已就緒，但「開 PR」本身依專案規則需等需求方 cue，本票不主動觸發（見下方交付方式），這是進 **Public Beta** 前才需要達標的項目、不擋 Controlled Beta 啟動 |
+  | 6 | Storage 成長速度在 Neon Free 下可接受 | PB-07 `_total_db_bytes()` 系列測試（真實 Postgres-only，`skipif` 無 DB 時跳過）外推成長速率 |
+  | 7 | 無 sustained critical incident（Controlled Beta 期間） | 這是**時間性**判準，需 Owner 在實際 Controlled Beta 執行期間觀察，agent 無法代為驗證 |
+  | 8 | 少量真人 UX validation | ⚠ 需 Owner 親自完成，`docs/anonymous-public-beta-acceptance-checklist.md` 已備妥逐條清單 |
+
+  **§14 Failure / graceful degradation 四項情境——逐一對到測試**：
+
+  | 情境 | 測試 |
+  |---|---|
+  | Quota／Fuse 超額不回 500，沿用既有資料＋清楚告知 | `test_the_eleventh_active_scenario_is_rejected_not_500`／`test_an_already_successful_scenario_keeps_its_last_known_data_when_the_budget_is_spent`／`test_refresh_run_reports_the_fuse_as_a_non_5xx_batch_failure_item` |
+  | Cleanup 排程失敗不影響使用者可見行為，但觸發 alert | `test_cleanup_volume_is_recorded_as_a_metric_not_only_in_the_response`（PB-08）＋`test_cleanup_missed_triggers_at_threshold_not_below`（PB-11 alert 閘門） |
+  | Vendor 資料源被封鎖，沿用既有 429 Backoff／Sustained Incident | `test_chain_sustained_incident_triggers_and_names_the_sources`（PB-11，延伸既有 SCALE-04／05 機制，未新增獨立狀態機） |
+  | Cookie 遺失／新訪客——正常路徑非失敗 | `test_a_request_carrying_an_unknown_token_gets_a_brand_new_owner` |
+
+  **spec #291 §22 全部 19 項 Acceptance Criteria 逐一核對**：1–6、
+  9、10、13–15、17–19 皆有上方各表對應的具體測試或本票 git-diff 證明
+  直接支持；第 7 項（產品全站只有 Normal／Super User 兩層，Super
+  User 為完整超集合）由 PB-09／PB-10 全套測試與本票 security review
+  逐一核對通過；第 8 項（`/api/ops/metrics` 新增匿名指標＋daily
+  digest＋Sentry alert 皆接通）由 PB-11／PB-13 覆蓋；第 11 項
+  （`/security-review` 至少一次）由本票兌現；第 12 項（8 項 Exit
+  Criteria 全數達標）——**第 7 項（無 sustained incident）與 8 項
+  （真人 UX）依性質必須由 Owner 在真實 Controlled Beta 執行期間才能
+  確認，本票只能證明「機制已就緒、可被驗證」，不能代替 Owner 本人
+  的真機觀察**，已誠實記在 `docs/anonymous-public-beta-acceptance-
+  checklist.md`。第 16 項（本票不放寬任何既有斷言）——見下方逐項證明。
+
+  **紅線核對（git-diff 逐字證明，非憑印象宣稱）**：
+
+  - `git diff 5971557~1..HEAD -- option_chaser/ranking.py
+    option_chaser/filters.py option_chaser/valuation.py` **輸出
+    0 行**——PB-01 到本票，整個 Anonymous Public Beta 十四張票，
+    三個引擎核心檔案逐位元未動。
+  - `git diff 5971557~1..HEAD` 全範圍對 `269`／`SCALE18`／`SCALE-18`
+    等字樣 **零命中**——#269／SCALE-18 全程未觸碰。
+  - 全部 12 張已完成票（PB-01～PB-06、PB-08～PB-13）逐一 `git show`
+    核對其觸及測試檔案的 diff：**零裸刪除既有斷言、零運算子放寬
+    （`==`→`>=`/`<=`）、零新增 `skip`／`xfail`**；唯一被移除的測試
+    函式（見 PB-05 節「兩個測試設計陷阱」）在同一 diff 被改名替換且
+    新增了斷言，非減少。
+
+  **全套回歸（含本票的 Sentry 修正，連續兩輪穩定）**：
+  - 後端 pytest（記憶體＋真實 Postgres 雙後端）：`2290`
+    條，0 failed／0 error／0 skipped（於乾淨重置過的資料庫上跑，
+    非累積殘留狀態）。
+  - 前端 `tsc --noEmit` 乾淨、Vitest **826 條**全綠、`vite build`
+    成功。
+  - Playwright（iPhone＋Desktop）：127 條全綠，含一條**已知、與本輪
+    及 PB-12 皆無關的既有 flake**（`smoke.spec.ts::刷新失敗說明是
+    哪一段，重試就地重來（V4／#52）`）——用 `git stash` 對照
+    PB-12 開工前的乾淨基準點重跑同一條測試，**同樣失敗**，證明是
+    施工前既有、非本輪新增的環境依賴性問題，未嘗試修正（不在
+    spec #291 範圍）。
+
+  **交付方式——維持專案既有規則，不因 spec §15 Exit Criterion 5 而
+  破例**：CLAUDE.md 專案規則「全部 ticket 做完才開 PR、merge 回
+  master，中途不要主動開」是貫穿整個 repo 歷史、需求方逐輪重申的
+  紅線——即使全部票做完，開 PR 的動作本身仍要等需求方明確 cue，不是
+  「做完就自動觸發」。本票依此規則只 commit＋push 到
+  `claude/implement-tfm9oa`（跟前 12 張票完全一致），**不主動開
+  PR**。**因此必須誠實記錄一個尚未達標的項目**：§15 Exit Criterion
+  5「至少一次真實 release 走過完整 branch→PR→CI→merge→deploy 流程」
+  這件事的動作主體是「開 PR」，而這個動作依專案規則屬於需求方的
+  決定權，不是 agent 可以為了湊滿 Exit Criteria 而自行觸發的——本票
+  只能確保 `ci.yml`／branch protection 等**機制**已就緒（見 §16
+  第 11 項），但「真的走過一次」這件事要等需求方主動開那個 PR 才算
+  數，尚未發生。這個落差已寫進下方最終判定，不視為缺陷、不代表
+  Controlled Beta 不能開始（Exit Criterion 5 本來就是進 **Public
+  Beta** 前才需要達標的項目，不擋 Controlled Beta 啟動）。
+
+  **產出**：`docs/anonymous-public-beta-acceptance-checklist.md`
+  （26 項，比照既有 `docs/v10-acceptance-checklist.md`／
+  `docs/initial-v2-acceptance-checklist.md` 慣例，✅／⚠ 圖例區分
+  自動化已覆蓋與需要 Owner 真機確認的項目，末尾列出 Line 2（Public
+  Beta 之後）明確排除範圍）。
+
+  **最終判定**：Controlled Beta 的技術基礎設施（PB-01～PB-13 全部
+  16 項 Line 1 要求）已就緒且全數有測試背書，release-level
+  `/security-review` 發現的唯一 High-severity 缺陷已修正並補上
+  回歸測試。**§15 Exit Criteria 的 8 項中，5 項可由自動化證明已就緒
+  （1／2／3／4／6），1 項（5：走過一次 PR→CI→merge）機制已就緒但
+  「開 PR」動作依專案規則需等需求方主動 cue、尚未發生，2 項（7 無
+  sustained incident、8 真人 UX）依性質必須由 Owner 在實際執行
+  Controlled Beta 期間親自驗證**——**Controlled Beta 可以開始**，
+  Public Beta 則需等需求方主動開那個 PR 讓 CI 真的跑過一次、完成
+  上述兩項真機驗證，並跑第二次 release-level `/security-review`
+  （§16 Line 2）後才能進入。
+
+**Anonymous Public Beta（spec #291，PB-01～PB-14，issues
+#292–#305）全部 14 張子票已完成。** 依專案既有規則不主動開 PR、
+不 merge master，commit＋push 到 `claude/implement-tfm9oa` 為止，
+等需求方 cue 才開 PR（開 PR 本身即是 §15 Exit Criterion 5「走過一次
+真實 release 流程」的動作，留給需求方主動觸發）。
 
 ### 施工依據
 

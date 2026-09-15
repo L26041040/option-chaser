@@ -311,7 +311,7 @@ def _client_without_fetch_override(storage, **overrides):
 
     from api_app.main import create_app
 
-    return TestClient(create_app(storage=storage, **overrides))
+    return TestClient(create_app(identity_resolver=lambda: "solo", storage=storage, **overrides))
 
 
 def _create_scenario(client, symbol: str) -> dict:

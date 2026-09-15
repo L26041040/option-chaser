@@ -33,7 +33,7 @@ def _snapshot_with_bid(bid_118, bid_122, fetched_at):
 
 
 def _client(fetch, storage=None, **overrides):
-    return TestClient(create_app(fetch=fetch, storage=storage or MemoryStorage(),
+    return TestClient(create_app(identity_resolver=lambda: "solo", fetch=fetch, storage=storage or MemoryStorage(),
                                  **overrides))
 
 

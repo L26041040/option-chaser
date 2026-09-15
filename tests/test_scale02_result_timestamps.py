@@ -31,7 +31,7 @@ FIX = "tests/fixtures/xyz_v4_six_expiries.json"
 
 def _client(*, storage=None):
     snap = load_snapshot(FIX)
-    return TestClient(create_app(fetch=lambda symbol: snap,
+    return TestClient(create_app(identity_resolver=lambda: "solo", fetch=lambda symbol: snap,
                                  storage=storage or MemoryStorage()))
 
 

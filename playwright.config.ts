@@ -58,9 +58,27 @@ export default defineConfig({
     },
   ],
   webServer: {
-    command: "npm run dev -- --port 5173 --strictPort",
+    // 真因（PR #306 第二輪 CI，stdout 接出來後才看見）：不加 `--host`
+    // 時 Vite 只綁定 `localhost` 這個名字實際解析到的那一個位址；在
+    // GitHub Actions 的 `ubuntu-latest` runner 上 Node 把 `localhost`
+    // 解成 IPv6 `::1`，Vite 因此只聽 IPv6，而下面 `url` 與整份測試
+    // 套件共用的 `use.baseURL` 都是純 IPv4 的 `127.0.0.1`——健康檢查
+    // 連的是完全沒有人在聽的介面，不管等多久都連不上（log 證實 Vite
+    // 自己 188ms 就回報「ready」，卡住的是 Playwright 那一端的連線
+    // 探測，不是啟動慢）。本機沙箱這次沒踩到是因為這裡 `localhost`
+    // 剛好解到 IPv4。明確加 `--host 127.0.0.1` 讓它必定聽在測試套件
+    // 實際會打的那個位址上，不依賴任何環境的 DNS 解析順序。
+    command: "npm run dev -- --host 127.0.0.1 --port 5173 --strictPort",
     url: "http://127.0.0.1:5173",
     reuseExistingServer: !process.env.CI,
-    timeout: 60_000,
+    // 上面這個位址問題修好之後，本機／CI 兩邊啟動都應該在一秒內完成，
+    // 但保留 CI 下較寬裕的上限當防禦性餘裕（例如 runner 一時吃緊），
+    // 不依賴這個數字本身當唯一防線。
+    timeout: process.env.CI ? 120_000 : 60_000,
+    // 逾時或啟動失敗時，Playwright 預設不會把 webServer 的 stdout／
+    // stderr 印進 job log——這正是本輪能找到上面那個真因的原因，繼續
+    // 保留供未來診斷用，不影響任何測試斷言本身。
+    stdout: process.env.CI ? "pipe" : "ignore",
+    stderr: "pipe",
   },
 });

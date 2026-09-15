@@ -16,12 +16,13 @@ import pytest
 from dataclasses import replace
 
 from api_app.diagnostics import RETENTION_LIMIT, DiagnosticEvent
-from api_app.storage import (ChainBackoffEntry, ContractHistory,
-                             DataSourceSettings, DividendCacheEntry,
-                             IvBackfillRun, IvObservation, NarrowHistoryEntry,
-                             ProviderCredential, ProviderVerification,
-                             RateCacheEntry, ResultRecord, Scenario,
-                             ScenarioExists, TreasuryYearCacheEntry,
+from api_app.storage import (BrowserIdentity, ChainBackoffEntry,
+                             ContractHistory, DataSourceSettings,
+                             DividendCacheEntry, IvBackfillRun, IvObservation,
+                             NarrowHistoryEntry, Owner, ProviderCredential,
+                             ProviderVerification, RateCacheEntry,
+                             ResultRecord, Scenario, ScenarioExists,
+                             SuperUserAuditEvent, TreasuryYearCacheEntry,
                              UsageSetting)
 from api_app.storage.memory import MemoryStorage
 
@@ -84,7 +85,8 @@ def storage(request):
                      "provider_credentials, provider_verifications, "
                      "owner_settings, owner_credentials, owner_verifications, "
                      "iv_observations, iv_backfill_runs, contract_iv_history, "
-                     "diagnostics, operational_metrics, narrow_history "
+                     "diagnostics, operational_metrics, narrow_history, "
+                     "owners, browser_identities, superuser_audit_log "
                      "RESTART IDENTITY")
     yield st
 
@@ -699,6 +701,439 @@ def test_chain_backoff_does_not_leak_across_sources(storage):
         observed_at="2026-09-06T12:00:00+00:00", last_success_at=None))
 
     assert storage.get_chain_backoff("yfinance") is None
+
+
+# ---------- Owner registry ＋ Browser Identity（PB-01／#292，
+# Anonymous Public Beta，expand，零行為變更） ----------
+
+
+def test_get_owner_is_none_before_it_is_created(storage):
+    assert storage.get_owner("anon-1") is None
+
+
+def test_resolve_owner_by_token_is_none_for_an_unknown_token(storage):
+    assert storage.resolve_owner_by_token("tok-unknown") is None
+
+
+def test_create_owner_with_token_round_trips_both_halves(storage):
+    owner = Owner(owner_id="anon-1", created_at="2026-09-14T00:00:00+00:00")
+    identity = BrowserIdentity(token="tok-1", owner_id="anon-1",
+                               issued_at="2026-09-14T00:00:00+00:00",
+                               last_seen_at="2026-09-14T00:00:00+00:00")
+    storage.create_owner_with_token(owner, identity)
+
+    assert storage.get_owner("anon-1") == owner
+    assert storage.resolve_owner_by_token("tok-1") == "anon-1"
+
+
+def test_token_is_not_the_owner_id(storage):
+    """PB-01 constraint：cookie token 與 owner_id 是兩個分開儲存的值
+    ——不是同一個欄位的兩種讀法。刻意用不同字串建立，兩者互不相等，
+    `resolve_owner_by_token()` 回傳的是 owner_id 而不是 token 本身。"""
+    owner = Owner(owner_id="owner-xyz", created_at="2026-09-14T00:00:00+00:00")
+    identity = BrowserIdentity(token="totally-different-opaque-token",
+                               owner_id="owner-xyz",
+                               issued_at="2026-09-14T00:00:00+00:00",
+                               last_seen_at="2026-09-14T00:00:00+00:00")
+    storage.create_owner_with_token(owner, identity)
+
+    resolved = storage.resolve_owner_by_token("totally-different-opaque-token")
+    assert resolved == "owner-xyz"
+    assert resolved != "totally-different-opaque-token"
+
+
+def test_touch_browser_identity_updates_last_seen_at(storage):
+    owner = Owner(owner_id="anon-2", created_at="2026-09-14T00:00:00+00:00")
+    identity = BrowserIdentity(token="tok-2", owner_id="anon-2",
+                               issued_at="2026-09-14T00:00:00+00:00",
+                               last_seen_at="2026-09-14T00:00:00+00:00")
+    storage.create_owner_with_token(owner, identity)
+
+    changed = storage.touch_browser_identity(
+        "tok-2", now="2026-09-15T00:00:00+00:00")
+
+    assert changed is True
+
+
+def test_touch_browser_identity_returns_false_for_an_unknown_token(storage):
+    assert storage.touch_browser_identity(
+        "tok-nope", now="2026-09-15T00:00:00+00:00") is False
+
+
+def test_touch_owner_activity_sets_last_activity_at(storage):
+    owner = Owner(owner_id="anon-3", created_at="2026-09-14T00:00:00+00:00")
+    identity = BrowserIdentity(token="tok-3", owner_id="anon-3",
+                               issued_at="2026-09-14T00:00:00+00:00",
+                               last_seen_at="2026-09-14T00:00:00+00:00")
+    storage.create_owner_with_token(owner, identity)
+    assert storage.get_owner("anon-3").last_activity_at is None
+
+    storage.touch_owner_activity("anon-3", now="2026-09-15T00:00:00+00:00")
+
+    assert storage.get_owner("anon-3").last_activity_at == "2026-09-15T00:00:00+00:00"
+
+
+def test_touch_owner_activity_on_an_unknown_owner_does_nothing(storage):
+    storage.touch_owner_activity("ghost", now="2026-09-15T00:00:00+00:00")
+    assert storage.get_owner("ghost") is None
+
+
+def test_set_owner_protected_round_trips(storage):
+    owner = Owner(owner_id="anon-4", created_at="2026-09-14T00:00:00+00:00")
+    identity = BrowserIdentity(token="tok-4", owner_id="anon-4",
+                               issued_at="2026-09-14T00:00:00+00:00",
+                               last_seen_at="2026-09-14T00:00:00+00:00")
+    storage.create_owner_with_token(owner, identity)
+    assert storage.get_owner("anon-4").protected is False
+
+    storage.set_owner_protected("anon-4", True)
+
+    assert storage.get_owner("anon-4").protected is True
+
+
+def test_set_owner_protected_on_an_unknown_owner_does_nothing(storage):
+    storage.set_owner_protected("ghost", True)
+    assert storage.get_owner("ghost") is None
+
+
+def test_list_owners_returns_every_owner(storage):
+    for i in range(3):
+        oid = f"anon-list-{i}"
+        storage.create_owner_with_token(
+            Owner(owner_id=oid, created_at="2026-09-14T00:00:00+00:00"),
+            BrowserIdentity(token=f"tok-list-{i}", owner_id=oid,
+                            issued_at="2026-09-14T00:00:00+00:00",
+                            last_seen_at="2026-09-14T00:00:00+00:00"))
+
+    ids = {o.owner_id for o in storage.list_owners()}
+    assert {"anon-list-0", "anon-list-1", "anon-list-2"} <= ids
+
+
+def test_is_synthetic_defaults_to_false_and_round_trips_true(storage):
+    """PB-07（#304，Anonymous Public Beta）：`is_synthetic` 純加法欄位
+    ——既有（未顯式設定）的 owner 建構天然是 `False`，harness 建構時
+    顯式設 `True` 也要能存活過 round-trip（雙後端）。"""
+    storage.create_owner_with_token(
+        Owner(owner_id="real-1", created_at="2026-09-14T00:00:00+00:00"),
+        BrowserIdentity(token="tok-real-1", owner_id="real-1",
+                        issued_at="2026-09-14T00:00:00+00:00",
+                        last_seen_at="2026-09-14T00:00:00+00:00"))
+    storage.create_owner_with_token(
+        Owner(owner_id="synth-1", created_at="2026-09-14T00:00:00+00:00",
+             is_synthetic=True),
+        BrowserIdentity(token="tok-synth-1", owner_id="synth-1",
+                        issued_at="2026-09-14T00:00:00+00:00",
+                        last_seen_at="2026-09-14T00:00:00+00:00"))
+
+    assert storage.get_owner("real-1").is_synthetic is False
+    assert storage.get_owner("synth-1").is_synthetic is True
+    by_id = {o.owner_id: o.is_synthetic for o in storage.list_owners()}
+    assert by_id["real-1"] is False
+    assert by_id["synth-1"] is True
+
+
+def test_identity_resolver_still_returns_solo_after_pb01(storage):
+    """AC：本票是純 expand，不改變任何請求的 owner——`identity_
+    resolver()` 這個獨立於 storage 之外的 callable 完全不讀這張新表，
+    因此不論 storage 裡有沒有任何 owner 列，它永遠回傳既有的
+    `SOLO_OWNER`。這條測試釘住「本票沒有偷偷把切換邏輯接上去」。"""
+    from api_app.identity import SOLO_OWNER, default_identity_resolver
+
+    storage.create_owner_with_token(
+        Owner(owner_id="anon-should-not-matter",
+              created_at="2026-09-14T00:00:00+00:00"),
+        BrowserIdentity(token="tok-should-not-matter",
+                        owner_id="anon-should-not-matter",
+                        issued_at="2026-09-14T00:00:00+00:00",
+                        last_seen_at="2026-09-14T00:00:00+00:00"))
+
+    assert default_identity_resolver() == SOLO_OWNER == "solo"
+
+
+# ---------- solo → Owner 一次性遷移（PB-03／#295，Anonymous Public
+# Beta） ----------
+
+
+def _seed_all_ten_tables_under(storage, owner_id: str) -> None:
+    """PB-03（#295）測試共用：在 `migrate_owner()` 涵蓋的全部 10 張表
+    各自寫入至少一筆掛在 `owner_id` 名下的資料。"""
+    sc = Scenario(id=f"pb03-{owner_id}", symbol="TLT", direction="bullish",
+                 target_price=120.0, target_month="2028-05", notes="",
+                 strategies=("bull-call-spread",),
+                 created_at="2026-09-14T00:00:00+00:00", owner_id=owner_id)
+    storage.create_scenario(sc)
+
+    rec = ResultRecord(scenario_id=sc.id, analyzed_at="2026-09-14T01:00:00+00:00",
+                       view=None, owner_id=owner_id)
+    storage.save_result(rec)
+    storage.save_current_result(replace(rec, view={"meta": {"symbol": "TLT"}}))
+
+    storage.save_snapshot(sc.id, rec.analyzed_at, {"meta": {"symbol": "TLT"}},
+                          owner_id=owner_id)
+    storage.append_event(ts=sc.created_at, scenario_id=sc.id,
+                         event="SCENARIO_CREATED", payload={}, owner_id=owner_id)
+    storage.append_diagnostic(DiagnosticEvent(
+        event_id="e1", correlation_id="c1", ts=sc.created_at,
+        subsystem="historical_iv", stage="cache", severity="info",
+        message="seed", context={}, user_facing=False, owner_id=owner_id))
+    storage.save_narrow_history([NarrowHistoryEntry(
+        scenario_id=sc.id, analyzed_at=rec.analyzed_at,
+        candidate_key="bull-call-spread|100|110|2026-11-20", cost=1.5,
+        owner_id=owner_id)])
+    storage.save_settings(DataSourceSettings(
+        market_data=UsageSetting(mode="default"),
+        historical_iv=UsageSetting(mode="default"),
+        updated_at=sc.created_at, owner_id=owner_id))
+    storage.save_credential(ProviderCredential(
+        provider="marketdata_app", token="tok-abc", updated_at=sc.created_at,
+        owner_id=owner_id))
+    storage.save_verification(ProviderVerification(
+        provider="marketdata_app", ok=True, reason=None,
+        checked_at=sc.created_at, owner_id=owner_id))
+
+
+def test_migrate_owner_moves_every_one_of_the_ten_tables(storage):
+    _seed_all_ten_tables_under(storage, "solo")
+
+    counts = storage.migrate_owner(from_owner="solo", to_owner="anon-migrated")
+
+    assert set(counts) == {
+        "scenarios", "results", "snapshots", "events", "diagnostics",
+        "narrow_history", "current_results", "owner_settings",
+        "owner_credentials", "owner_verifications"}
+    assert all(n >= 1 for n in counts.values()), counts
+
+    assert storage.get_scenario("pb03-solo", owner="anon-migrated") is not None
+    assert storage.get_scenario("pb03-solo", owner="solo") is None
+    assert storage.latest_result("pb03-solo", owner="anon-migrated") is not None
+    assert storage.get_snapshot_owner("pb03-solo", "2026-09-14T01:00:00+00:00") == "anon-migrated"
+    events = storage.list_events(scenario_id="pb03-solo", owner="anon-migrated")
+    assert len(events) == 1
+    diag = storage.list_diagnostics(owner="anon-migrated")
+    assert len(diag) == 1
+    assert storage.get_narrow_history_entry(
+        "pb03-solo", "2026-09-14T01:00:00+00:00",
+        "bull-call-spread|100|110|2026-11-20", owner="anon-migrated") is not None
+    assert storage.get_settings(owner="anon-migrated") is not None
+    assert storage.get_credential("marketdata_app", owner="anon-migrated") is not None
+    assert storage.get_verification("marketdata_app", owner="anon-migrated") is not None
+
+
+def test_migrate_owner_is_idempotent_a_second_run_is_a_no_op(storage):
+    _seed_all_ten_tables_under(storage, "solo")
+    storage.migrate_owner(from_owner="solo", to_owner="anon-migrated")
+
+    counts_second_run = storage.migrate_owner(from_owner="solo", to_owner="anon-migrated")
+
+    assert all(n == 0 for n in counts_second_run.values()), counts_second_run
+
+
+def test_migrate_owner_does_not_touch_a_third_owners_data(storage):
+    _seed_all_ten_tables_under(storage, "solo")
+    _seed_all_ten_tables_under(storage, "carol")
+
+    storage.migrate_owner(from_owner="solo", to_owner="anon-migrated")
+
+    # carol 的資料完全不受影響——用不同的 scenario id（seed helper 用
+    # owner_id 組 id）避免跟 solo 那份混淆。
+    assert storage.get_scenario("pb03-carol", owner="carol") is not None
+    assert storage.get_credential("marketdata_app", owner="carol") is not None
+
+
+# ---------- Owner-wide 刪除原語（PB-04／#296，Anonymous Public Beta） ----------
+
+
+def _register_owner(storage, owner_id: str, token: str) -> None:
+    storage.create_owner_with_token(
+        Owner(owner_id=owner_id, created_at="2026-09-14T00:00:00+00:00"),
+        BrowserIdentity(token=token, owner_id=owner_id,
+                        issued_at="2026-09-14T00:00:00+00:00",
+                        last_seen_at="2026-09-14T00:00:00+00:00"))
+
+
+def test_delete_owner_clears_every_one_of_the_ten_data_tables(storage):
+    _seed_all_ten_tables_under(storage, "doomed")
+    _register_owner(storage, "doomed", "tok-doomed")
+
+    counts = storage.delete_owner("doomed")
+
+    for table in ("scenarios", "results", "snapshots", "events", "diagnostics",
+                 "narrow_history", "current_results", "owner_settings",
+                 "owner_credentials", "owner_verifications"):
+        assert counts[table] >= 1, f"{table} 沒有被清空：{counts}"
+
+    assert storage.get_scenario("pb03-doomed", owner="doomed") is None
+    assert storage.latest_result("pb03-doomed", owner="doomed") is None
+    assert storage.get_snapshot("pb03-doomed", "2026-09-14T01:00:00+00:00",
+                                owner="doomed") is None
+    assert storage.list_events(scenario_id="pb03-doomed", owner="doomed") == []
+    assert storage.list_diagnostics(owner="doomed") == []
+    assert storage.get_narrow_history_entry(
+        "pb03-doomed", "2026-09-14T01:00:00+00:00",
+        "bull-call-spread|100|110|2026-11-20", owner="doomed") is None
+    assert storage.get_settings(owner="doomed") is None
+    assert storage.get_credential("marketdata_app", owner="doomed") is None
+    assert storage.get_verification("marketdata_app", owner="doomed") is None
+
+
+def test_delete_owner_also_clears_the_identity_tables_themselves(storage):
+    """PB-04 §7 constraint：不得留下一顆指向已刪除 owner 的 cookie
+    ——`owners` 與 `browser_identities` 兩張身份基礎表本身也要清空，
+    讓下一次帶著舊 cookie 的請求走 PB-02 既有的『token 查不到』
+    lazy-creation 路徑，不需要另外設計重新簽發邏輯。"""
+    _register_owner(storage, "doomed", "tok-doomed")
+
+    counts = storage.delete_owner("doomed")
+
+    assert counts["owners"] == 1
+    assert counts["browser_identities"] == 1
+    assert storage.get_owner("doomed") is None
+    assert storage.resolve_owner_by_token("tok-doomed") is None
+
+
+def test_delete_owner_is_idempotent_deleting_a_nonexistent_owner_is_a_noop(storage):
+    counts = storage.delete_owner("never-existed")
+    assert all(n == 0 for n in counts.values()), counts
+
+
+def test_delete_owner_does_not_touch_another_owners_data(storage):
+    _seed_all_ten_tables_under(storage, "doomed")
+    _register_owner(storage, "doomed", "tok-doomed")
+    _seed_all_ten_tables_under(storage, "survivor")
+    _register_owner(storage, "survivor", "tok-survivor")
+
+    storage.delete_owner("doomed")
+
+    assert storage.get_scenario("pb03-survivor", owner="survivor") is not None
+    assert storage.get_credential("marketdata_app", owner="survivor") is not None
+    assert storage.get_owner("survivor") is not None
+    assert storage.resolve_owner_by_token("tok-survivor") == "survivor"
+
+
+def test_delete_owner_does_not_touch_shared_market_facts_tables(storage):
+    """8 張 shared／system-wide 表與任何單一 owner 無關，本方法從不
+    觸碰——逐張建立資料、刪除某個 owner 之後逐張確認仍在。"""
+    _seed_all_ten_tables_under(storage, "doomed")
+    _register_owner(storage, "doomed", "tok-doomed")
+
+    storage.save_rate_cache(RateCacheEntry(
+        fetched_at="2026-09-14T00:00:00+00:00", curve=None, note="seed"))
+    storage.save_treasury_year_cache(TreasuryYearCacheEntry(
+        year=2026, fetched_at="2026-09-14T00:00:00+00:00", rows=None, note="seed"))
+    storage.save_dividend_cache(DividendCacheEntry(
+        symbol="TLT", fetched_at="2026-09-14T00:00:00+00:00",
+        history=None, note="seed"))
+    storage.save_chain_backoff(ChainBackoffEntry(
+        source="cboe", blocked_until=None, retry_after_seconds=None,
+        consecutive_failures=0, observed_at="2026-09-14T00:00:00+00:00"))
+    storage.record_metric("chain_fetch_count", "2026-09-14", source="cboe",
+                          symbol="TLT", count=1)
+    storage.save_contract_history(ContractHistory(
+        contract_symbol="TLT281215C00094000", points=(),
+        fetched_through=None, last_attempt_on=None, last_status="ok",
+        last_note=None))
+    storage.save_iv_observation(IvObservation(
+        symbol="TLT", observed_on="2026-09-14", surface={},
+        fetched_at="2026-09-14T00:00:00+00:00"))
+    storage.save_iv_backfill_run(IvBackfillRun(
+        symbol="TLT", ran_on="2026-09-14", outcome="ok", note=None))
+
+    storage.delete_owner("doomed")
+
+    assert storage.get_rate_cache() is not None
+    assert storage.get_treasury_year_cache(2026) is not None
+    assert storage.get_dividend_cache("TLT") is not None
+    assert storage.get_chain_backoff("cboe") is not None
+    assert storage.metric_summary() != []
+    assert storage.get_contract_history("TLT281215C00094000") is not None
+    assert storage.iv_observations("TLT") != []
+    assert storage.get_iv_backfill_run("TLT") is not None
+
+
+# ---------- Super User audit trail（PB-10／#301，Anonymous Public Beta） ----------
+
+def _audit(*, event_id="a1", ts="2026-09-14T00:00:00+00:00", actor="superuser",
+          action="delete_owner", target_owner_id="doomed", detail=None):
+    return SuperUserAuditEvent(event_id=event_id, ts=ts, actor=actor,
+                               action=action, target_owner_id=target_owner_id,
+                               detail=detail if detail is not None else {})
+
+
+def test_audit_log_starts_out_empty(storage):
+    assert storage.list_audit_events() == []
+
+
+def test_appended_audit_event_reads_back_identically(storage):
+    storage.append_audit_event(_audit(detail={"deleted_rows": {"scenarios": 3}}))
+    (got,) = storage.list_audit_events()
+    assert got == _audit(detail={"deleted_rows": {"scenarios": 3}})
+
+
+def test_audit_log_is_newest_first(storage):
+    storage.append_audit_event(_audit(event_id="a1", ts="2026-09-14T00:00:00+00:00"))
+    storage.append_audit_event(_audit(event_id="a2", ts="2026-09-14T00:01:00+00:00"))
+    storage.append_audit_event(_audit(event_id="a3", ts="2026-09-14T00:02:00+00:00"))
+    ids = [e.event_id for e in storage.list_audit_events()]
+    assert ids == ["a3", "a2", "a1"]
+
+
+def test_audit_log_limit_caps_how_many_are_returned_not_what_is_stored(storage):
+    """`limit` 只是這次查詢回幾筆，不是保留政策——底層紀錄不會因為
+    這次只查一筆而消失，見 `Storage.list_audit_events()` docstring。"""
+    for i in range(5):
+        storage.append_audit_event(_audit(event_id=f"a{i}"))
+    assert len(storage.list_audit_events(limit=2)) == 2
+    assert len(storage.list_audit_events(limit=200)) == 5
+
+
+def test_audit_log_survives_a_flood_of_diagnostic_events(storage):
+    """PB-10 AC：audit 記錄不會被 `diagnostics` 的 200 筆保留上限沖掉
+    ——兩者刻意是完全獨立的記錄面（見 `SuperUserAuditEvent`
+    docstring）。灌入遠超 `RETENTION_LIMIT` 的診斷事件，audit 記錄
+    仍然完整存在。"""
+    storage.append_audit_event(_audit(event_id="the-one-audit-entry"))
+    for i in range(RETENTION_LIMIT * 2):
+        storage.append_diagnostic(_diag(event_id=f"flood-{i}", owner_id=OWNER))
+
+    assert len(storage.list_diagnostics(owner=OWNER)) <= RETENTION_LIMIT
+    events = storage.list_audit_events()
+    assert len(events) == 1
+    assert events[0].event_id == "the-one-audit-entry"
+
+
+def test_deleting_an_owner_does_not_erase_the_audit_record_of_its_own_deletion(storage):
+    """`delete_owner()`（PB-04）刻意不清除這張表——audit trail 的目的
+    正是留存「這個 owner 曾經存在、曾經被刪除」這件事本身，見
+    `SuperUserAuditEvent` docstring 與 postgres.py 的
+    `_OWNER_SCOPED_TABLES` 註解。"""
+    _seed_all_ten_tables_under(storage, "doomed")
+    _register_owner(storage, "doomed", "tok-doomed")
+    storage.append_audit_event(_audit(target_owner_id="doomed",
+                                      detail={"deleted_rows": {}}))
+
+    storage.delete_owner("doomed")
+
+    events = storage.list_audit_events()
+    assert len(events) == 1
+    assert events[0].target_owner_id == "doomed"
+
+
+def test_audit_detail_never_needs_to_contain_a_credential_token(storage):
+    """audit 記錄不含第三方 token 明文——這是結構性成立的（呼叫端
+    `_record_audit()` 的 `detail` 只放列數／布林值），這條測試直接
+    證明：即使 `delete_owner()` 刪除的資料裡含有真實 credential
+    token，回傳的計數字典本身也只有數字，不含任何 token 字串，
+    `detail` 因此不可能意外夾帶明文。"""
+    storage.save_credential(ProviderCredential(
+        provider="marketdata_app", token="super-secret-token-value",
+        updated_at="2026-09-14T00:00:00+00:00", owner_id="solo-owner"))
+    counts = storage.delete_owner("solo-owner")
+    detail = {"deleted_rows": counts}
+    storage.append_audit_event(_audit(target_owner_id="solo-owner", detail=detail))
+
+    import json
+    serialized = json.dumps(detail)
+    assert "super-secret-token-value" not in serialized
 
 
 # ---------- Narrow visible-candidate history（SCALE-09／#261） ----------
@@ -2367,6 +2802,46 @@ def test_trimming_one_metric_does_not_touch_another_metrics_buckets(storage):
     assert ("chain_fetch_count", "2026-09-06") in remaining
 
 
+# ---------- `metric_total()`（PB-06／#299，Anonymous Public Beta：
+# Global Vendor Fuse 每次抓鏈前查詢用的 targeted SUM，見
+# `api_app/vendor_fuse.py`）----------
+
+def test_metric_total_sums_across_source_and_symbol_for_the_same_bucket(storage):
+    bucket = "2026-09-14"
+    storage.record_metric("chain_fetch_count", bucket, source="cboe",
+                          symbol="AAA", count=3)
+    storage.record_metric("chain_fetch_count", bucket, source="cboe",
+                          symbol="BBB", count=4)
+    storage.record_metric("chain_fetch_count", bucket, source="yfinance",
+                          symbol="AAA", count=2)
+    assert storage.metric_total("chain_fetch_count", bucket) == 9
+
+
+def test_metric_total_is_zero_for_an_untouched_bucket_or_metric(storage):
+    storage.record_metric("chain_fetch_count", "2026-09-14", count=5)
+    assert storage.metric_total("chain_fetch_count", "2026-09-15") == 0
+    assert storage.metric_total("chain_429_count", "2026-09-14") == 0
+    assert storage.metric_total("never_written_metric", "2026-09-14") == 0
+
+
+def test_metric_total_matches_the_sum_derived_from_metric_summary(storage):
+    """獨立於 `metric_total()` 自己的實作，用既有 `metric_summary()`
+    手動加總對照——證明兩者是同一份資料的兩種讀法，不是各自維護的
+    平行狀態（PB-06 票面「計數來源沿用既有機制，不新建平行計數」的
+    直接證明）。"""
+    bucket = "2026-09-14"
+    storage.record_metric("chain_fetch_count", bucket, source="cboe",
+                          symbol="X", count=7)
+    storage.record_metric("chain_fetch_count", bucket, source="yfinance",
+                          symbol="Y", count=2)
+    storage.record_metric("chain_429_count", bucket, source="cboe",
+                          symbol="X", count=1)
+
+    manual_total = sum(e.count for e in storage.metric_summary()
+                       if e.metric == "chain_fetch_count" and e.bucket == bucket)
+    assert storage.metric_total("chain_fetch_count", bucket) == manual_total == 9
+
+
 def test_table_size_metrics_on_empty_tables_reports_zero_rows_and_no_size(storage):
     """`total_bytes`（這張表現在佔多少實體空間）對空表兩個後端都是
     良好定義、非 `None` 的答案——`memory.py` 回 0（沒有真正頁面可算，
@@ -2397,6 +2872,24 @@ def test_table_size_metrics_reflects_actual_row_count(storage):
     assert stats["results"]["avg_row_bytes"] > 0
     assert stats["snapshots"]["row_count"] == 1
     assert stats["snapshots"]["avg_row_bytes"] > 0
+
+
+# ---------- Site-wide scenario count（PB-11／#303） ----------
+
+def test_scenario_count_total_is_zero_before_any_scenario_exists(storage):
+    assert storage.scenario_count_total() == 0
+
+
+def test_scenario_count_total_counts_across_every_owner_including_archived(storage):
+    """query-time gauge——不接受 `owner` 參數，跨全部 owner 加總，且
+    含已封存（`list_scenarios()` 預設排除封存的行為不適用於這裡：
+    這是 site-wide 總量，不是給任何一個 owner 看的清單）。"""
+    storage.create_scenario(_scenario("s1", owner_id="alice"))
+    storage.create_scenario(_scenario("s2", owner_id="bob"))
+    storage.create_scenario(_scenario("s3", owner_id="alice"))
+    storage.archive_scenario("s3", owner="alice", ts="2026-09-14T00:00:00+00:00")
+
+    assert storage.scenario_count_total() == 3
 
 
 def test_metric_entry_has_no_disallowed_fields():

@@ -46,7 +46,7 @@ def _client(*, cron_secret="test-secret", rate_loader=None, storage=None):
     kwargs = {}
     if rate_loader is not None:
         kwargs["rate_loader"] = rate_loader
-    return TestClient(create_app(fetch=lambda symbol: snap,
+    return TestClient(create_app(identity_resolver=lambda: "solo", fetch=lambda symbol: snap,
                                  storage=storage or MemoryStorage(),
                                  cron_secret=cron_secret, **kwargs))
 

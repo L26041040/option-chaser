@@ -22,12 +22,13 @@ from contextlib import contextmanager
 import psycopg
 from psycopg.types.json import Jsonb
 
-from . import (ChainBackoffEntry, ContractHistory, DataSourceSettings,
-               DividendCacheEntry, IvBackfillRun, IvObservation, MetricEntry,
-               NarrowHistoryEntry, ProviderCredential, ProviderVerification,
-               RateCacheEntry, ResultFactContext, ResultRecord, ResultSummary,
-               Scenario, ScenarioExists, TreasuryYearCacheEntry, UsageSetting,
-               require_owner)
+from . import (BrowserIdentity, ChainBackoffEntry, ContractHistory,
+               DataSourceSettings, DividendCacheEntry, IvBackfillRun,
+               IvObservation, MetricEntry, NarrowHistoryEntry, Owner,
+               ProviderCredential, ProviderVerification, RateCacheEntry,
+               ResultFactContext, ResultRecord, ResultSummary, Scenario,
+               ScenarioExists, SuperUserAuditEvent, TreasuryYearCacheEntry,
+               UsageSetting, require_owner)
 from ..diagnostics import RETENTION_LIMIT, DiagnosticEvent
 from ..identity import SOLO_OWNER
 from ..metrics import retention_cutoff
@@ -409,6 +410,49 @@ CREATE TABLE IF NOT EXISTS current_results (
     owner_id                TEXT
 );
 CREATE INDEX IF NOT EXISTS current_results_owner_idx ON current_results (owner_id);
+-- PB-01（#292，Anonymous Public Beta，expand，零行為變更）：owner
+-- registry——lifecycle 中繼資料的來源，獨立於既有 6 張表上單純當
+-- 資料 boundary 用的 `owner_id` TEXT 欄位。`protected` 是純布林
+-- 旗標，**不是** `owner_kind`（spec #291 §18 明文禁止用建立方式
+-- 決定身份型態）。
+CREATE TABLE IF NOT EXISTS owners (
+    owner_id          TEXT PRIMARY KEY,
+    created_at        TEXT NOT NULL,
+    last_activity_at  TEXT,
+    protected         BOOLEAN NOT NULL DEFAULT FALSE
+);
+-- Browser Identity：cookie 帶的不透明 token → owner_id 映射。
+-- **token 與 owner_id 是兩個不同的值**（`tests/
+-- test_scale06_ownership_expand.py` 既有斷言 owner_id 永不出現在
+-- 任何 HTTP 回應 body，cookie 本身就是回應的一部分）。
+CREATE TABLE IF NOT EXISTS browser_identities (
+    token          TEXT PRIMARY KEY,
+    owner_id       TEXT NOT NULL,
+    issued_at      TEXT NOT NULL,
+    last_seen_at   TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS browser_identities_owner_idx ON browser_identities (owner_id);
+-- PB-07（#304，Anonymous Public Beta）：Controlled Beta 合成壓測
+-- harness 的清理標記——PB-01 當時刻意未預先加這個欄位（避免數週內
+-- 沒有消費端的欄位躺在 production），本票才是它真正的消費端。純
+-- 加法、`DEFAULT FALSE` 讓既有列讀回時天然是「不是 synthetic」，
+-- 不需要資料回填。
+ALTER TABLE owners ADD COLUMN IF NOT EXISTS is_synthetic BOOLEAN NOT NULL DEFAULT FALSE;
+-- PB-10（#301，Anonymous Public Beta）：Super User 高風險操作 audit
+-- trail——刻意獨立於 `diagnostics`（owner-scoped、trim-on-write 只留
+-- 全域最新 200 筆）與 `events`（scenario-scoped 領域事實）。這張表
+-- **不設保留上限**、**不在 `_OWNER_SCOPED_TABLES` 清單裡**——
+-- `delete_owner()` 刪除一個 owner 時不會連帶清掉它被刪除這件事本身
+-- 的紀錄（見 `SuperUserAuditEvent` docstring）。
+CREATE TABLE IF NOT EXISTS superuser_audit_log (
+    seq              BIGSERIAL PRIMARY KEY,
+    event_id         TEXT NOT NULL,
+    ts               TEXT NOT NULL,
+    actor            TEXT NOT NULL,
+    action           TEXT NOT NULL,
+    target_owner_id  TEXT,
+    detail           JSONB NOT NULL
+);
 """
 
 # 冷啟動競爭下的良性錯誤：別人已經建好／加好了。
@@ -1173,6 +1217,167 @@ class PostgresStorage:
                  entry.consecutive_failures, entry.observed_at,
                  entry.last_success_at))
 
+    # ---------- Owner-scoped 表清單（PB-03／#295 ＋ PB-04／#296 共用） ----------
+    #
+    # PB-04（#296）Implementation constraint 明文要求：「任何未來新增的
+    # owner-scoped 表都必須同步納入這個原語」——單一常數驅動
+    # `migrate_owner()`（PB-03）與 `delete_owner()`（PB-04）兩個方法，
+    # 遺漏在閱讀這一份清單時就看得出來，不是散在兩處、十幾行各自獨立
+    # 維護、容易漂移的 DELETE／UPDATE。
+    #
+    # 與既有兩份更早的清單的差異（PB-03 施工前 repo 現況已確認兩份既有
+    # 清單互相不一致，記錄於此避免未來誤以為可以照抄）：
+    # - `backfill_missing_owner_ids()` 只有 6 張（同上少
+    #   `current_results`／`owner_settings`／`owner_credentials`／
+    #   `owner_verifications`）——它服務的是「把 NULL 補成某個值」，
+    #   這裡服務的是「換值」／「刪除」，目的不同、範圍也因此不同。
+    # - `owner_id_null_counts()` 涵蓋另外 8 張（5 張 row-scoped ＋
+    #   3 張 `owner_*`）——不含 `narrow_history`（SCALE-09 出貨時漏接，
+    #   SCALE-14 才補上，比那份清單當初列舉的表晚出現）。
+    _OWNER_SCOPED_TABLES = (
+        "scenarios", "results", "snapshots", "events", "diagnostics",
+        "narrow_history", "current_results", "owner_settings",
+        "owner_credentials", "owner_verifications",
+    )
+
+    # ---------- solo → Owner 一次性遷移（PB-03／#295） ----------
+
+    def migrate_owner(self, *, from_owner: str, to_owner: str) -> dict[str, int]:
+        counts: dict[str, int] = {}
+        with self._connect() as conn:
+            for table in self._OWNER_SCOPED_TABLES:
+                cur = conn.execute(
+                    f"UPDATE {table} SET owner_id = %s WHERE owner_id = %s",
+                    (to_owner, from_owner))
+                counts[table] = cur.rowcount
+        return counts
+
+    # ---------- Owner-wide 刪除原語（PB-04／#296） ----------
+
+    def delete_owner(self, owner_id: str) -> dict[str, int]:
+        """完整清除這個 owner 名下全部資料，含 owner registry
+        （`owners`）與 browser identity 對照（`browser_identities`）
+        本身——**單一交易內完成**（`conn.transaction()`，postgres 這些
+        表沒有 FK cascade，既有既定設計，全部手動 DELETE，避免任一張
+        表刪到一半就中斷留下半刪狀態）。
+
+        **明確不觸碰**的 shared market facts 表（system-wide，與任何
+        單一 owner 無關）：`rate_cache`／`treasury_year_cache`／
+        `dividend_cache`／`chain_backoff`／`operational_metrics`／
+        `contract_iv_history`／`iv_observations`／`iv_backfill_runs`
+        ——這些表結構上就沒有 `owner_id` 欄位，本方法從不觸碰它們。
+
+        刪除 `browser_identities`／`owners` 的理由（PB-04 §7
+        Implementation constraint：「不得留下一個指向已刪除 owner 的
+        cookie」）：自助刪除後，下一次帶著那顆舊 cookie 的請求在
+        `resolve_owner_by_token()` 會查不到（token 的列已被刪掉），
+        直接走 PB-02（#294）既有的「token 查不到＝新訪客」lazy-
+        creation 路徑自動拿到一個全新身份——不需要另外寫一套「重新
+        簽發」邏輯，重用既有機制。
+
+        回傳 `{table_name: 受影響列數}`，含 `owners`／
+        `browser_identities` 兩張（共 12 個鍵）。"""
+        counts: dict[str, int] = {}
+        with self._connect() as conn:
+            with conn.transaction():
+                for table in self._OWNER_SCOPED_TABLES:
+                    cur = conn.execute(
+                        f"DELETE FROM {table} WHERE owner_id = %s", (owner_id,))
+                    counts[table] = cur.rowcount
+                cur = conn.execute(
+                    "DELETE FROM browser_identities WHERE owner_id = %s",
+                    (owner_id,))
+                counts["browser_identities"] = cur.rowcount
+                cur = conn.execute(
+                    "DELETE FROM owners WHERE owner_id = %s", (owner_id,))
+                counts["owners"] = cur.rowcount
+        return counts
+
+    # ---------- Owner registry ＋ Browser Identity（PB-01／#292） ----------
+
+    def get_owner(self, owner_id: str) -> Owner | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT owner_id, created_at, last_activity_at, protected, "
+                "is_synthetic FROM owners WHERE owner_id = %s",
+                (owner_id,)).fetchone()
+        return (Owner(owner_id=row[0], created_at=row[1],
+                      last_activity_at=row[2], protected=row[3],
+                      is_synthetic=row[4])
+                if row else None)
+
+    def resolve_owner_by_token(self, token: str) -> str | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT owner_id FROM browser_identities WHERE token = %s",
+                (token,)).fetchone()
+        return row[0] if row else None
+
+    def create_owner_with_token(self, owner: Owner,
+                                identity: BrowserIdentity) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO owners (owner_id, created_at, "
+                "last_activity_at, protected, is_synthetic) "
+                "VALUES (%s, %s, %s, %s, %s)",
+                (owner.owner_id, owner.created_at, owner.last_activity_at,
+                 owner.protected, owner.is_synthetic))
+            conn.execute(
+                "INSERT INTO browser_identities "
+                "(token, owner_id, issued_at, last_seen_at) "
+                "VALUES (%s, %s, %s, %s)",
+                (identity.token, identity.owner_id, identity.issued_at,
+                 identity.last_seen_at))
+
+    def touch_browser_identity(self, token: str, *, now: str) -> bool:
+        with self._connect() as conn:
+            cur = conn.execute(
+                "UPDATE browser_identities SET last_seen_at = %s "
+                "WHERE token = %s", (now, token))
+            return cur.rowcount > 0
+
+    def touch_owner_activity(self, owner_id: str, *, now: str) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE owners SET last_activity_at = %s WHERE owner_id = %s",
+                (now, owner_id))
+
+    def set_owner_protected(self, owner_id: str, protected: bool) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE owners SET protected = %s WHERE owner_id = %s",
+                (protected, owner_id))
+
+    def list_owners(self) -> list[Owner]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT owner_id, created_at, last_activity_at, protected, "
+                "is_synthetic FROM owners "
+                "ORDER BY created_at, owner_id").fetchall()
+        return [Owner(owner_id=r[0], created_at=r[1], last_activity_at=r[2],
+                      protected=r[3], is_synthetic=r[4]) for r in rows]
+
+    # ---------- Super User audit trail（PB-10／#301） ----------
+
+    def append_audit_event(self, event: SuperUserAuditEvent) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO superuser_audit_log "
+                "(event_id, ts, actor, action, target_owner_id, detail) "
+                "VALUES (%s, %s, %s, %s, %s, %s)",
+                (event.event_id, event.ts, event.actor, event.action,
+                 event.target_owner_id, Jsonb(event.detail)))
+
+    def list_audit_events(self, *, limit: int = 200) -> list[SuperUserAuditEvent]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT event_id, ts, actor, action, target_owner_id, detail "
+                "FROM superuser_audit_log ORDER BY seq DESC LIMIT %s",
+                (limit,)).fetchall()
+        return [SuperUserAuditEvent(event_id=r[0], ts=r[1], actor=r[2],
+                                    action=r[3], target_owner_id=r[4],
+                                    detail=r[5]) for r in rows]
+
     # ---------- 資料源設定與 credential（Settings／#124，owner 化 SCALE-13／#264） ----------
 
     def get_settings(self, *, owner: str) -> DataSourceSettings | None:
@@ -1586,6 +1791,14 @@ class PostgresStorage:
                 "max_value FROM operational_metrics").fetchall()
         return [MetricEntry(*r) for r in rows]
 
+    def metric_total(self, metric: str, bucket: str) -> int:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT COALESCE(SUM(count), 0) FROM operational_metrics "
+                "WHERE metric = %s AND bucket = %s",
+                (metric, bucket)).fetchone()
+        return int(row[0]) if row is not None else 0
+
     def table_size_metrics(self) -> dict:
         # `table`／`size_col` 只會是下面 `_stats()` 兩次呼叫寫死的字面
         # 值（`"results"`／`"view"`、`"snapshots"`／`"snapshot"`）——不是
@@ -1606,3 +1819,8 @@ class PostgresStorage:
 
         return {"results": _stats("results", "view"),
                "snapshots": _stats("snapshots", "snapshot")}
+
+    def scenario_count_total(self) -> int:
+        with self._connect() as conn:
+            row = conn.execute("SELECT COUNT(*) FROM scenarios").fetchone()
+        return row[0]

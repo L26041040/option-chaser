@@ -604,10 +604,19 @@ describe("就地展開的診斷詳情（DG-05／#148）", () => {
       <IvHistory scenarioId="s1" candidate={longCallCandidate()} />);
     await waitFor(() =>
       expect(screen.getByText("IV 相對位置")).toBeInTheDocument());
-    // 卡片本身仍在（不是整段被錯誤訊息取代掉）。
+    // 卡片本身仍在（不是整段被錯誤訊息取代掉）——這個標題無論載入中／
+    // 失敗都在，不是這條測試真正要等的狀態轉移，故上面的 waitFor 不夠。
     expect(container.querySelectorAll(".card")).toHaveLength(1);
 
-    const summary = screen.getByText("Historical IV 資料取得失敗 · 查看詳情");
+    // 真正要等的狀態轉移：元件內部是兩層 useEffect 串接（settings
+    // fetch 定案 enabled → 再觸發 iv-history fetch），至少兩趟真實
+    // async round-trip 才會落到失敗文案。用 findByText（內部即
+    // waitFor 輪詢）等它真的出現，而不是同步 getByText 賭它已經到位
+    // ——舊寫法在 CI 上量到過提前於狀態轉移完成前斷言而紅燈（PR #306，
+    // OPTION-PUBLIC-BETA-CI-REPAIR-010），緊接著下一條測試本來就用
+    // findByText 從未紅過，此處改成同一種寫法。
+    const summary = await screen.findByText(
+      "Historical IV 資料取得失敗 · 查看詳情");
     expect(summary).toBeInTheDocument();
     const details = container.querySelector(".iv-diagnostics") as HTMLDetailsElement;
     expect(details.open).toBe(false);

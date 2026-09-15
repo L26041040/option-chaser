@@ -8,6 +8,7 @@
  *
  * 本層與整個前端都不做金融計算：每個顯示數字都已由引擎算好。
  */
+import { adminAuthHeaders } from "./superuser";
 
 export interface AnalysisMeta {
   symbol: string;
@@ -541,11 +542,17 @@ export function resolveCandidate(
  * 限流封鎖窗，見下方 `RateLimitInfo`——這個 stage 恆帶著 additive
  * metadata，重試有沒有意義完全取決於倒數是否歸零，不是「稍後可以
  * 重試」這種模糊說法。
+ * `"vendor_budget_exhausted"`（PB-06／#299）：與 `rate_limited` 刻意
+ * 不同——那是 vendor 真的回我們限流，這是我們自己決定今天打夠了。
+ * 不帶 `RateLimitInfo`（那個結構化事實是 Cboe backoff 專屬的，這裡
+ * 沒有對應的倒數時間點可揭露）。
  */
 export type FailureStage =
-  | "fetch" | "analyze" | "params" | "archived" | "rate_limited" | null;
+  | "fetch" | "analyze" | "params" | "archived" | "rate_limited"
+  | "vendor_budget_exhausted" | null;
 
-const STAGES = ["fetch", "analyze", "params", "archived", "rate_limited"] as const;
+const STAGES = ["fetch", "analyze", "params", "archived", "rate_limited",
+                "vendor_budget_exhausted"] as const;
 
 /**
  * SCALE-05（#260）：`stage === "rate_limited"` 時，後端額外揭露的
@@ -885,10 +892,20 @@ export function createScenario(
 /**
  * 刷新單一劇本（V4／#52）：後端抓鏈→分析→入庫，回傳的是**卡片列**，
  * 與清單同一形狀，所以拿到就能直接換掉清單裡那一列。
+ *
+ * `manual`（PB-08／#300）：這個端點同時服務真人主動點擊（單卡重試／
+ * 詳細頁刷新鈕）與系統自動觸發的後續刷新（建立劇本／編輯劇本後的
+ * 立即重跑、`runBatch()` 內部的失敗隔離 fallback）——後端據此決定
+ * 這次呼叫算不算一次「真人明確操作」（`last_activity_at`）。預設
+ * `false`：呼叫端必須明確在真正的使用者點擊入口傳 `true`，其餘維持
+ * 系統觸發的既有語意不變。
  */
-export function refreshScenario(id: string): Promise<ScenarioSummary> {
+export function refreshScenario(
+  id: string, manual = false,
+): Promise<ScenarioSummary> {
+  const q = manual ? "?manual=true" : "";
   return request<ScenarioSummary>(
-    `/api/scenarios/${encodeURIComponent(id)}/refresh`,
+    `/api/scenarios/${encodeURIComponent(id)}/refresh${q}`,
     { method: "POST" },
   );
 }
@@ -917,11 +934,11 @@ export interface RefreshRunResponse {
 }
 
 export function refreshRun(
-  scenarioIds: string[] | null,
+  scenarioIds: string[] | null, manual = false,
 ): Promise<RefreshRunResponse> {
   return request<RefreshRunResponse>(
     "/api/scenarios/refresh-run",
-    POST_JSON({ scenario_ids: scenarioIds }),
+    POST_JSON({ scenario_ids: scenarioIds, manual }),
   );
 }
 
@@ -960,6 +977,16 @@ export function restoreScenario(id: string): Promise<{ restored: boolean }> {
 export function deleteScenario(id: string): Promise<void> {
   return request<void>(`/api/scenarios/${encodeURIComponent(id)}`,
     { method: "DELETE" });
+}
+
+/**
+ * PB-04（#296，Anonymous Public Beta）：自助刪除——立即、不可逆地
+ * 清除呼叫者自己（cookie 解析出的身份）名下的全部資料。後端不接受
+ * 也不需要任何識別參數，安全邊界完全在伺服器端；呼叫端在此之前一定
+ * 要先經過明確的二次確認畫面（見 `src/DeleteMyData.tsx`）。
+ */
+export function deleteMyData(): Promise<void> {
+  return request<void>("/api/me", { method: "DELETE" });
 }
 
 /** V8（#56）：原始資料表（當次快照）的合約列——逐筆合約完整原樣，
@@ -1133,6 +1160,9 @@ export function saveSettings(body: {
   });
 }
 
+// PB-09（#298）：三個 credential 寫入端點在後端 gate 在 Super
+// User——沿用軸二的 `adminAuthHeaders()`（沒記住密鑰時回空物件，
+// 讓伺服器像平常一樣 401，不是前端自己先擋）。
 export function saveCredential(
   provider: string,
   token: string,
@@ -1141,7 +1171,7 @@ export function saveCredential(
     `/api/settings/credentials/${encodeURIComponent(provider)}`,
     {
       method: "PUT",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...adminAuthHeaders() },
       body: JSON.stringify({ token }),
     },
   );
@@ -1152,15 +1182,127 @@ export function saveCredential(
 export function testCredential(provider: string): Promise<SettingsView> {
   return request<SettingsView>(
     `/api/settings/credentials/${encodeURIComponent(provider)}/test`,
-    { method: "POST" },
+    { method: "POST", headers: adminAuthHeaders() },
   );
 }
 
 export function clearCredential(provider: string): Promise<SettingsView> {
   return request<SettingsView>(
     `/api/settings/credentials/${encodeURIComponent(provider)}`,
-    { method: "DELETE" },
+    { method: "DELETE", headers: adminAuthHeaders() },
   );
+}
+
+/** Super User 狀態查詢（PB-09／#298）——這個端點本身永遠 200，回應
+ *  只有一個布林值：目前記住的密鑰（若有）是否有效。 */
+export function getSuperUserStatus(): Promise<{ is_superuser: boolean }> {
+  return request<{ is_superuser: boolean }>("/api/superuser/status", {
+    headers: adminAuthHeaders(),
+  });
+}
+
+// ---------- Super User system/admin operations（PB-10／#301） ----------
+
+/** 跨 owner 檢視第一步：全站 owner 清單。`owner_id` 在這裡刻意出現
+ *  ——這是全站唯一讓它進入 HTTP 回應 body 的地方，見後端 `main.py`
+ *  對應端點的 docstring。 */
+export interface SuperUserOwnerInfo {
+  owner_id: string;
+  created_at: string;
+  last_activity_at: string | null;
+  protected: boolean;
+}
+
+export interface SuperUserAuditEntry {
+  event_id: string;
+  ts: string;
+  actor: string;
+  action: string;
+  target_owner_id: string | null;
+  detail: Record<string, unknown>;
+}
+
+export function superuserListOwners(): Promise<SuperUserOwnerInfo[]> {
+  return request<SuperUserOwnerInfo[]>("/api/superuser/owners", {
+    headers: adminAuthHeaders(),
+  });
+}
+
+export function superuserListOwnerScenarios(
+  ownerId: string,
+): Promise<ScenarioSummary[]> {
+  return request<ScenarioSummary[]>(
+    `/api/superuser/owners/${encodeURIComponent(ownerId)}/scenarios`,
+    { headers: adminAuthHeaders() },
+  );
+}
+
+/** 單一劇本完整內容——與該 owner 自己看到的 `GET /api/scenarios/{id}`
+ *  同一份投影，故沿用同一個型別（見 `getScenario()`）。 */
+export function superuserGetOwnerScenario(
+  ownerId: string,
+  scenarioId: string,
+): Promise<ScenarioDetail> {
+  return request<ScenarioDetail>(
+    `/api/superuser/owners/${encodeURIComponent(ownerId)}/scenarios/` +
+      `${encodeURIComponent(scenarioId)}`,
+    { headers: adminAuthHeaders() },
+  );
+}
+
+/** 高風險：刪除一個 owner 的全部資料。`confirmOwnerId` 是伺服器端
+ *  真正驗證的二次確認（不是前端 modal 裝飾）——呼叫端必須明確重複
+ *  一次目標 owner_id，跟路徑不符時後端回 400。 */
+export function superuserDeleteOwner(
+  ownerId: string,
+  confirmOwnerId: string,
+): Promise<{ deleted: boolean; counts: Record<string, number> }> {
+  return request(
+    `/api/superuser/owners/${encodeURIComponent(ownerId)}/delete`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...adminAuthHeaders() },
+      body: JSON.stringify({ confirm_owner_id: confirmOwnerId }),
+    },
+  );
+}
+
+export function superuserBatchDeleteOwners(
+  ownerIds: string[],
+): Promise<{ deleted: string[]; counts: Record<string, Record<string, number>> }> {
+  return request("/api/superuser/owners/batch-delete", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...adminAuthHeaders() },
+    body: JSON.stringify({
+      owner_ids: ownerIds,
+      confirm_owner_ids: ownerIds,
+    }),
+  });
+}
+
+/** 高風險：runtime 設定／取消 `protected` lifecycle 旗標，同一套
+ *  二次確認紀律。 */
+export function superuserSetOwnerProtected(
+  ownerId: string,
+  protectedValue: boolean,
+): Promise<{ owner_id: string; protected: boolean }> {
+  return request(
+    `/api/superuser/owners/${encodeURIComponent(ownerId)}/protected`,
+    {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", ...adminAuthHeaders() },
+      body: JSON.stringify({
+        protected: protectedValue,
+        confirm_owner_id: ownerId,
+      }),
+    },
+  );
+}
+
+export function superuserGetAuditLog(): Promise<SuperUserAuditEntry[]> {
+  return request<SuperUserAuditEntry[]>("/api/superuser/audit-log", {
+    headers: adminAuthHeaders(),
+  });
 }
 
 // ---------- Historical IV 歷史序列（#126／#114，HIVT-02–04／#153–155） ----------

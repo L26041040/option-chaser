@@ -1186,6 +1186,14 @@ const settingsSaved = {
 };
 
 async function routeSettings(page: import("@playwright/test").Page) {
+  // PB-09（#298）：同 `smoke.spec.ts::routeSettingsMobile` 的理由——
+  // 模擬「已解鎖」讓這些既有測試繼續測它們本來要測的東西（設定頁
+  // 資料流），不是 Super User 解鎖流程本身。
+  await page.addInitScript(() => {
+    window.sessionStorage.setItem("oc_admin_secret", "e2e-test-secret");
+  });
+  await page.route("**/api/superuser/status",
+    (route) => route.fulfill({ json: { is_superuser: true } }));
   await routeTwoScenarios(page);
   let saved = false;
   await page.route("**/api/settings", (route) => {
@@ -1241,6 +1249,13 @@ test("桌面版：切到自訂、存 token，畫面只顯示遮罩", async ({ pa
 
 test("桌面版：測試連線走完未設定 → 尚未驗證 → 已連線（Settings／#125）",
    async ({ page }) => {
+  // PB-09（#298）：同 `routeSettings` 的理由——這條測的是三段式驗證
+  // 狀態機，不是 Super User 解鎖流程，先模擬已解鎖。
+  await page.addInitScript(() => {
+    window.sessionStorage.setItem("oc_admin_secret", "e2e-test-secret");
+  });
+  await page.route("**/api/superuser/status",
+    (route) => route.fulfill({ json: { is_superuser: true } }));
   await routeTwoScenarios(page);
   const base = {
     supported_providers: [{ id: "marketdata-app", label: "Market Data App" }],
@@ -1363,6 +1378,38 @@ test("桌面版：Settings 的 Diagnostics 區塊可讀可操作（DG-06／#149�
   await section.getByRole("button", { name: "Clear diagnostics" }).click();
   await section.getByRole("button", { name: "確定清除" }).click();
   await expect(section.getByText("目前沒有紀錄")).toBeVisible();
+});
+
+test("桌面版：設定頁「刪除我的所有資料」需二次確認，確認後回到空的劇本庫（PB-04／#296）",
+   async ({ page }) => {
+  await routeSettings(page);
+  let deleted = false;
+  await page.route("**/api/me", (route) => {
+    if (route.request().method() === "DELETE") {
+      deleted = true;
+      return route.fulfill({ status: 204, body: "" });
+    }
+    return route.continue();
+  });
+  await page.goto("/#/settings");
+
+  const section = page.getByRole("region", { name: "刪除我的資料" });
+  await expect(section).toBeVisible();
+
+  await section.getByRole("button", { name: "立刻刪除我的所有資料" }).click();
+  const dialog = page.getByRole("alertdialog");
+  await expect(dialog).toBeVisible();
+  expect(deleted).toBe(false);
+
+  await dialog.getByRole("button", { name: "取消" }).click();
+  await expect(dialog).toHaveCount(0);
+  expect(deleted).toBe(false);
+
+  await section.getByRole("button", { name: "立刻刪除我的所有資料" }).click();
+  await page.getByRole("alertdialog").getByRole("button", { name: "確定刪除" }).click();
+
+  await expect(page).toHaveURL(/#\/$/);
+  expect(deleted).toBe(true);
 });
 
 test("桌面版：編輯劇本沿用工作區上方的既有表單，取消隨時可按（#132）",
@@ -1907,4 +1954,37 @@ test("T18（#235）紅線 12：桌面版展開一般 Vertical Spread 候選（�
   await detail.locator(".candidate summary").first().click();
   await expect(detail.locator(".candidate").first().locator("table")).toBeVisible();
   expect(requestUrls).toEqual([]);
+});
+
+/* ---------- PB-12（#302，Anonymous Public Beta）：首頁 Beta 說明＋
+   全站頁尾＋隱私頁，桌面 viewport ---------- */
+
+test("桌面版：首頁 Beta 說明常駐在 library-pane，頁尾在整個 workspace 之下，" +
+     "隱私頁可達（與手機版 smoke.spec.ts 同一條首次進站流程）",
+   async ({ page }) => {
+  await page.route("**/api/scenarios", (route) =>
+    route.fulfill({ json: [] }));
+  await page.goto("/");
+
+  const notice = page.locator(".library-pane .beta-notice");
+  await expect(notice).toBeVisible();
+  await expect(notice).toContainText("Beta");
+  await expect(notice).toContainText("cookie");
+  await expect(notice).toContainText("非投資建議");
+
+  const footer = page.locator("footer.site-footer");
+  await expect(footer).toBeVisible();
+  await expect(footer).toContainText("非投資建議");
+
+  await footer.getByRole("link", { name: "隱私與資料政策" }).click();
+  await expect(page).toHaveURL(/#\/privacy$/);
+  for (const title of ["存了什麼", "留多久", "怎麼刪",
+                        "清除瀏覽器 cookie 的後果", "不是投資建議",
+                        "Beta 狀態"]) {
+    await expect(page.getByRole("heading", { name: title })).toBeVisible();
+  }
+  await expect(page.locator("footer.site-footer")).toBeVisible();
+
+  await page.getByRole("link", { name: "設定頁" }).click();
+  await expect(page).toHaveURL(/#\/settings$/);
 });

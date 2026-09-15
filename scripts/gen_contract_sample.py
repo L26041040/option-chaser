@@ -113,7 +113,7 @@ def freeze_row(row: dict) -> dict:
 
 def main() -> None:
     snap = load_snapshot(FIXTURE)
-    client = TestClient(create_app(fetch=lambda symbol: snap,
+    client = TestClient(create_app(identity_resolver=lambda: "solo", fetch=lambda symbol: snap,
                                    rate_loader=_sample_rate_loader,
                                    dividend_loader=_sample_dividend_loader))
     resp = client.post("/api/analyze", json=REQUEST)
@@ -126,7 +126,7 @@ def main() -> None:
     # 劇本清單列：建立一個劇本並跑一次分析，取清單的第一列當樣本。
     # 時間相關欄位（created_at／latest_analyzed_at／days_to_anchor）會隨
     # 執行時間變動，換成固定值——樣本要釘住的是**形狀**，不是當下的鐘。
-    row_client = TestClient(create_app(fetch=lambda symbol: snap,
+    row_client = TestClient(create_app(identity_resolver=lambda: "solo", fetch=lambda symbol: snap,
                                        storage=MemoryStorage(),
                                        rate_loader=_sample_rate_loader,
                                        dividend_loader=_sample_dividend_loader))
@@ -139,7 +139,7 @@ def main() -> None:
 
     # #115：獨立的 put-comparator 樣本，見上方 PUT_FIXTURE 註解。
     put_snap = load_snapshot(PUT_FIXTURE)
-    put_client = TestClient(create_app(fetch=lambda symbol: put_snap,
+    put_client = TestClient(create_app(identity_resolver=lambda: "solo", fetch=lambda symbol: put_snap,
                                        rate_loader=_sample_rate_loader,
                                        dividend_loader=_sample_dividend_loader))
     put_resp = put_client.post("/api/analyze", json=PUT_REQUEST)
@@ -158,7 +158,7 @@ def main() -> None:
 
     # T15（#230）：獨立的 Butterfly 樣本，見上方 BUTTERFLY_OUT 註解。
     butterfly_snap = load_snapshot(BUTTERFLY_FIXTURE)
-    butterfly_client = TestClient(create_app(fetch=lambda symbol: butterfly_snap,
+    butterfly_client = TestClient(create_app(identity_resolver=lambda: "solo", fetch=lambda symbol: butterfly_snap,
                                              rate_loader=_sample_rate_loader,
                                              dividend_loader=_sample_dividend_loader))
     bf_resp = butterfly_client.post("/api/analyze", json=BUTTERFLY_REQUEST)

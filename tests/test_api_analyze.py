@@ -52,7 +52,7 @@ def _sample_dividend_loader(symbol, today):
 
 def _client(fetch=None):
     snap = load_snapshot(FIX)
-    return TestClient(create_app(fetch=fetch or (lambda symbol: snap),
+    return TestClient(create_app(identity_resolver=lambda: "solo", fetch=fetch or (lambda symbol: snap),
                                  rate_loader=_sample_rate_loader,
                                  dividend_loader=_sample_dividend_loader))
 

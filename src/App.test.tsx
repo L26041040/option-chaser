@@ -620,7 +620,8 @@ describe("刷新與進度（T08／#196，接上 Refresh Run）", () => {
           remaining: [],
         }) };
       }
-      if (url === "/api/scenarios/s1/refresh") {
+      // 卡片重試是真人明確操作（PB-08／#300），帶 `?manual=true`。
+      if (url.startsWith("/api/scenarios/s1/refresh")) {
         return { ok: true, status: 200,
                  json: async () => card("s1", "TLT", { best_return: 1.1,
                    latest_analyzed_at: "2026-08-04T09:30:00+00:00" }) };
@@ -637,8 +638,10 @@ describe("刷新與進度（T08／#196，接上 Refresh Run）", () => {
     expect(await screen.findByText("110.0%")).toBeInTheDocument();
     expect(screen.queryByText(/抓不到報價/)).not.toBeInTheDocument();
     // 重試打的是單一劇本端點，不是又發一次批次請求
-    const retryCalls = spy.mock.calls.filter(([u]) => u === "/api/scenarios/s1/refresh");
+    const retryCalls = spy.mock.calls.filter(
+      ([u]) => u.startsWith("/api/scenarios/s1/refresh"));
     expect(retryCalls).toHaveLength(1);
+    expect(retryCalls[0][0]).toBe("/api/scenarios/s1/refresh?manual=true");
     const runCalls = spy.mock.calls.filter(([u, i]) =>
       u === "/api/scenarios/refresh-run" && (i as RequestInit)?.method === "POST");
     expect(runCalls).toHaveLength(1);   // 只有開站那一次，重試沒有另外打批次端點
@@ -1204,7 +1207,8 @@ describe("詳細頁刷新入口與劇本庫共用同一條佇列（#70）", () =
                  json: async () => ({ results: [{ scenario_id: "s1", ok: true, row }],
                                       remaining: [] }) };
       }
-      if (url.endsWith("/s1/refresh")) {
+      // 詳細頁按鈕是真人明確操作（PB-08／#300），帶 `?manual=true`。
+      if (url.includes("/s1/refresh")) {
         refreshCalls.push(url);
         return { ok: true, status: 200, json: async () => ({
           ...row, best_return: 9.9, latest_analyzed_at: "2026-08-04T10:00:00+00:00" }) };
@@ -1252,6 +1256,157 @@ describe("詳細頁刷新入口與劇本庫共用同一條佇列（#70）", () =
     releaseRefresh!();
     // 讓那一趟真的跑完再結束測試，不留一個未 act 包裹的狀態更新在後頭
     expect(await screen.findByRole("button", { name: "重新整理" })).toBeEnabled();
+  });
+});
+
+/**
+ * PB-08（#300）：`manual` 旗標決定這次刷新算不算「真人明確操作」，
+ * 直接影響 `last_activity_at` 要不要往前推——票面自己點名這是整張票
+ * 最容易做錯的地方（誤把自動觸發的刷新算成活動），因此獨立成一組
+ * 測試，涵蓋四個入口：開站自動／頂部按鈕／建立後自動／單卡重試與
+ * 詳細頁按鈕（後兩者已在各自既有的 describe block 裡斷言過
+ * `?manual=true`，這裡不重複）。
+ */
+describe("PB-08（#300）：manual 旗標——真人操作與自動觸發分流", () => {
+  const base = sampleRow as unknown as Record<string, unknown>;
+  const card = (id: string, symbol: string, extra: Record<string, unknown> = {}) => ({
+    ...base, id, symbol, target_price: 120, target_month: "2028-05",
+    target_anchor: "2028-05-19", days_to_anchor: 653,
+    latest_analyzed_at: null, best_return: null, ...extra,
+  });
+
+  function runManualFlags(spy: ReturnType<typeof vi.fn>): boolean[] {
+    return spy.mock.calls
+      .filter(([url, init]) =>
+        url === "/api/scenarios/refresh-run" && (init as RequestInit)?.method === "POST")
+      .map(([, init]) =>
+        JSON.parse(String((init as RequestInit).body ?? "{}")).manual as boolean);
+  }
+
+  it("開站自動觸發的整輪刷新，manual 為 false", async () => {
+    const spy = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url === "/api/scenarios") {
+        return { ok: true, status: 200, json: async () => [card("s1", "TLT")] };
+      }
+      if (url === "/api/scenarios/refresh-run" && init?.method === "POST") {
+        return { ok: true, status: 200, json: async () => ({
+          results: [{ scenario_id: "s1", ok: true,
+                     row: card("s1", "TLT", { best_return: 1.0,
+                       latest_analyzed_at: new Date().toISOString() }) }],
+          remaining: [],
+        }) };
+      }
+      throw new Error(`測試沒有為 ${url} 準備回應`);
+    });
+    vi.stubGlobal("fetch", spy);
+    render(<App />);
+
+    expect(await screen.findByText("100.0%")).toBeInTheDocument();
+    expect(runManualFlags(spy)).toEqual([false]);
+  });
+
+  it("點頂部「重新整理」，manual 為 true——這是唯一會把整輪刷新標成" +
+     "真人操作的入口", async () => {
+    const spy = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url === "/api/scenarios") {
+        return { ok: true, status: 200, json: async () => [card("s1", "TLT")] };
+      }
+      if (url === "/api/scenarios/refresh-run" && init?.method === "POST") {
+        return { ok: true, status: 200, json: async () => ({
+          results: [{ scenario_id: "s1", ok: true,
+                     row: card("s1", "TLT", { best_return: 1.0,
+                       latest_analyzed_at: new Date().toISOString() }) }],
+          remaining: [],
+        }) };
+      }
+      throw new Error(`測試沒有為 ${url} 準備回應`);
+    });
+    vi.stubGlobal("fetch", spy);
+    render(<App />);
+
+    await screen.findByRole("button", { name: "重新整理" });
+    await userEvent.click(screen.getByRole("button", { name: "重新整理" }));
+
+    await waitFor(() => expect(runManualFlags(spy)).toEqual([false, true]));
+  });
+
+  it("建立劇本後自動觸發的那一輪刷新，manual 為 false——建立本身已經" +
+     "在後端算過一次活動，不是第二次真人操作", async () => {
+    const created = card("s2", "SPY", { latest_analyzed_at: null, best_return: null });
+    const spy = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url === "/api/scenarios" && init?.method === "POST") {
+        return { ok: true, status: 201, json: async () => created };
+      }
+      if (url === "/api/scenarios") {
+        return { ok: true, status: 200, json: async () => [] };
+      }
+      if (url === "/api/scenarios/refresh-run" && init?.method === "POST") {
+        const body = JSON.parse(String(init.body ?? "{}")) as { scenario_ids?: string[] };
+        const ids = body.scenario_ids ?? [];
+        return { ok: true, status: 200, json: async () => ({
+          results: ids.map((id) => ({ scenario_id: id, ok: true, row: created })),
+          remaining: [],
+        }) };
+      }
+      throw new Error(`測試沒有為 ${url} 準備回應`);
+    });
+    vi.stubGlobal("fetch", spy);
+    render(<App />);
+
+    await openCreateForm();
+    await userEvent.type(screen.getByLabelText("標的代號"), "spy");
+    await userEvent.type(screen.getByLabelText("目標價位"), "700");
+    await pickMonth(2028, 5);
+    await userEvent.click(screen.getByRole("checkbox", { name: "Call / Put" }));
+    await userEvent.click(screen.getByRole("button", { name: "建立" }));
+
+    expect(await screen.findByText("SPY")).toBeInTheDocument();
+    // 開站那輪清單是空的，沒有劇本可刷新、不會打 refresh-run（既有
+    // 「沒有任何劇本時不跑刷新」規則）——因此只有建立後那一輪，且
+    // manual 為 false：建立本身已經在後端算過一次活動，不是真人在
+    // 既有劇本上主動點刷新。
+    expect(runManualFlags(spy)).toEqual([false]);
+  });
+
+  it("編輯劇本儲存後自動觸發的重新分析，不帶 `?manual=true`——編輯本身" +
+     "已經在後端算過一次活動", async () => {
+    const original = card("s1", "TLT", { latest_analyzed_at: "2026-08-04T09:30:00+00:00",
+                                          best_return: 1.5, strategies: ["vertical-spread"],
+                                          family_eligibility: {
+                                            "single-leg": { eligible: true, reason: null },
+                                            "vertical-spread": { eligible: true, reason: null },
+                                            "butterfly": { eligible: true, reason: null },
+                                          } });
+    const refreshCalls: string[] = [];
+    const spy = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url === "/api/scenarios") {
+        return { ok: true, status: 200, json: async () => [original] };
+      }
+      if (url === "/api/scenarios/refresh-run" && init?.method === "POST") {
+        return { ok: true, status: 200, json: async () => ({
+          results: [{ scenario_id: "s1", ok: true, row: original }], remaining: [] }) };
+      }
+      if (url === "/api/scenarios/s1" && init?.method === "PATCH") {
+        return { ok: true, status: 200,
+                 json: async () => ({ ...original, best_price: 130 }) };
+      }
+      if (url.startsWith("/api/scenarios/s1/refresh")) {
+        refreshCalls.push(url);
+        return { ok: true, status: 200, json: async () => ({
+          ...original, best_return: 2.0,
+          latest_analyzed_at: "2026-08-04T10:00:00+00:00" }) };
+      }
+      throw new Error(`測試沒有為 ${url} 準備回應`);
+    });
+    vi.stubGlobal("fetch", spy);
+    render(<App />);
+
+    await screen.findByText("TLT");
+    await userEvent.click(screen.getByRole("button", { name: "編輯 TLT 2028-05" }));
+    await userEvent.click(screen.getByRole("button", { name: "儲存變更" }));
+
+    await waitFor(() => expect(refreshCalls).toHaveLength(1));
+    expect(refreshCalls[0]).toBe("/api/scenarios/s1/refresh");   // 沒有 `?manual=true`
   });
 });
 
@@ -1677,5 +1832,144 @@ describe("桌面版：主要操作入口收攏到工作區上方（#75，MVP-v2�
     await openCreateForm();
     expect(toolbar.compareDocumentPosition(list))
       .toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+  });
+});
+
+describe("PB-12（#302）：全站常駐頁尾＋首頁 Beta 說明＋隱私頁路由", () => {
+  const row = {
+    ...(sampleRow as unknown as Record<string, unknown>),
+    id: "s1", symbol: "TLT", target_price: 120, target_month: "2028-05",
+    latest_analyzed_at: "2026-08-04T09:30:00+00:00", best_return: 1.5,
+    target_anchor: "2028-05-19", days_to_anchor: 653,
+  };
+
+  afterEach(() => { window.location.hash = ""; });
+
+  it("手機首頁：Beta 說明＋頁尾皆常駐可見", async () => {
+    mockRoutes({
+      "/api/scenarios": { json: async () => [row] },
+      "/api/scenarios/": { json: async () => row },
+    });
+    const { container } = render(<App />);
+
+    await screen.findByText("TLT");
+    const notice = container.querySelector(".beta-notice");
+    expect(notice).toBeInTheDocument();
+    expect(notice).toHaveTextContent(/Beta/);
+    const footer = container.querySelector("footer.site-footer");
+    expect(footer).toBeInTheDocument();
+    expect(footer).toHaveTextContent(/非投資建議/);
+  });
+
+  it("桌面首頁：Beta 說明常駐在 library-pane、頁尾在整個 workspace 之下",
+    async () => {
+    stubDesktopViewport();
+    mockRoutes({
+      "/api/scenarios": { json: async () => [row] },
+      "/api/scenarios/": { json: async () => row },
+    });
+    const { container } = render(<App />);
+
+    await screen.findByText("TLT");
+    expect(container.querySelector(".library-pane .beta-notice"))
+      .toBeInTheDocument();
+    expect(container.querySelector("footer.site-footer")).toBeInTheDocument();
+  });
+
+  it("手機版垃圾桶畫面也看得到頁尾", async () => {
+    mockRoutes({
+      "/api/scenarios": { json: async () => [row] },
+      "/api/scenarios?include_archived=true": { json: async () => [] },
+      "/api/scenarios/": { json: async () => row },
+    });
+    const { container } = render(<App />);
+    await screen.findByText("TLT");
+
+    await userEvent.click(await screen.findByRole("button", { name: "垃圾桶" }));
+    await screen.findByRole("heading", { name: "垃圾桶" });
+
+    expect(container.querySelector("footer.site-footer")).toBeInTheDocument();
+  });
+
+  it("手機版詳細頁也看得到頁尾", async () => {
+    mockRoutes({
+      "/api/scenarios": { json: async () => [row] },
+      "/api/scenarios/": { json: async () => row },
+    });
+    const { container } = render(<App />);
+    await userEvent.click(await screen.findByText("TLT"));
+
+    expect(container.querySelector("footer.site-footer")).toBeInTheDocument();
+  });
+
+  it("設定畫面（手機／桌面皆是）也看得到頁尾，隱私頁連結指向真的路由",
+    async () => {
+    // Settings 掛載時會另外打幾個既有端點——依 URL 分流成最小可行回應，
+    // 這裡只關心「頁尾有沒有渲染」，不重新測 Settings 本身的業務邏輯
+    // （那由 `Settings.test.tsx` 專屬覆蓋）。
+    const spy = vi.fn(async (url: string) => {
+      if (String(url).startsWith("/api/diagnostics")) {
+        return { ok: true, status: 200, json: async () => [] };
+      }
+      if (String(url).startsWith("/api/superuser/")) {
+        return { ok: true, status: 200,
+                 json: async () => (url.includes("status")
+                   ? { is_superuser: false } : []) };
+      }
+      if (String(url).startsWith("/api/settings")) {
+        return {
+          ok: true, status: 200,
+          json: async () => ({
+            supported_providers: [],
+            market_data: { mode: "default", provider: null, default_label: "Cboe" },
+            historical_iv: { mode: "default", provider: null, default_label: "無" },
+            credentials: {},
+            market_data_effective: { source: "Cboe", fallback: false, reason: null },
+            historical_iv_enabled: false,
+            updated_at: null,
+          }),
+        };
+      }
+      if (url === "/api/scenarios/refresh-run") {
+        return { ok: true, status: 200,
+                 json: async () => ({ results: [], remaining: [] }) };
+      }
+      // 手機／桌面 master-detail 都需要一份劇本清單才能渲染出設定
+      // 入口，但這裡不需要真的有劇本——空清單就不會觸發任何刷新。
+      return { ok: true, status: 200, json: async () => [] };
+    });
+    vi.stubGlobal("fetch", spy);
+    window.location.hash = "#/settings";
+    const { container } = render(<App />);
+
+    await screen.findByText("Market Data");
+    expect(container.querySelector("footer.site-footer")).toBeInTheDocument();
+    expect(container.querySelector(`a[href="${"#/privacy"}"]`)).toBeInTheDocument();
+  });
+
+  it("隱私頁路由可達，內容齊全，頁尾也在——不分裝置寬度", async () => {
+    mockRoutes({ "/api/scenarios": { json: async () => [] } });
+    window.location.hash = "#/privacy";
+    const { container } = render(<App />);
+
+    expect(await screen.findByRole("heading", { name: "隱私與資料政策" }))
+      .toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "怎麼刪" })).toBeInTheDocument();
+    // 「怎麼刪」連到真的可用的自助刪除入口（設定頁的 `DeleteMyData`）。
+    expect(container.querySelector(`a[href="${"#/settings"}"]`))
+      .toBeInTheDocument();
+    expect(container.querySelector("footer.site-footer")).toBeInTheDocument();
+  });
+
+  it("空清單顯示引導文字，不自動建立示範劇本", async () => {
+    const spy = mockRoutes({ "/api/scenarios": { json: async () => [] } });
+    render(<App />);
+
+    expect(await screen.findByText(/還沒有劇本/)).toBeInTheDocument();
+    // 開站流程只呼叫 `GET /api/scenarios`（空清單就沒有劇本可刷新）——
+    // 沒有任何一次呼叫是建立劇本的 `POST /api/scenarios`。
+    const posted = spy.mock.calls.some(
+      ([, init]) => (init as RequestInit | undefined)?.method === "POST");
+    expect(posted).toBe(false);
   });
 });

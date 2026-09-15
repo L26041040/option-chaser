@@ -29,7 +29,7 @@ def db():
 @pytest.fixture
 def client(db):
     snap = dataclasses.replace(load_snapshot(FIX), source="cboe")
-    return TestClient(create_app(
+    return TestClient(create_app(identity_resolver=lambda: "solo", 
         storage=db, fetch=lambda s: snap,
         rate_loader=lambda today: (_RATE, "假曲線"),
         dividend_loader=lambda symbol, today: (_DIV, "假配息")))

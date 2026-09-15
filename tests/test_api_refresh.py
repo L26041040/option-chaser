@@ -30,7 +30,7 @@ NEW = {"symbol": "XYZ", "target_price": 130.0, "target_month": "2026-09",
 
 def _client(*, fetch=None, storage=None, **overrides):
     snap = load_snapshot(FIX)
-    return TestClient(create_app(fetch=fetch or (lambda symbol: snap),
+    return TestClient(create_app(identity_resolver=lambda: "solo", fetch=fetch or (lambda symbol: snap),
                                  storage=storage or MemoryStorage(), **overrides))
 
 
@@ -120,7 +120,7 @@ def test_refresh_falls_back_to_yfinance_and_records_that_it_did(monkeypatch):
     monkeypatch.setattr(yf, "fetch_chain", lambda symbol: fallback)
 
     storage = MemoryStorage()
-    c = TestClient(create_app(storage=storage))     # fetch 用預設的降級鏈
+    c = TestClient(create_app(identity_resolver=lambda: "solo", storage=storage))     # fetch 用預設的降級鏈
     sc = _create(c)
 
     row = c.post(f"/api/scenarios/{sc['id']}/refresh").json()
@@ -143,7 +143,7 @@ def test_both_sources_down_is_a_fetch_failure_through_the_real_chain(monkeypatch
     monkeypatch.setattr(cboe, "fetch_chain", down)
     monkeypatch.setattr(yf, "fetch_chain", down)
 
-    c = TestClient(create_app(storage=MemoryStorage()))
+    c = TestClient(create_app(identity_resolver=lambda: "solo", storage=MemoryStorage()))
     sc = _create(c)
 
     resp = c.post(f"/api/scenarios/{sc['id']}/refresh")
@@ -160,7 +160,7 @@ def test_an_internal_bug_is_not_dressed_up_as_a_data_source_outage(monkeypatch):
 
     # `raise_server_exceptions=False`：讓 TestClient 表現得跟正式部署一樣
     # （回 500），而不是把例外原地丟給測試。
-    c = TestClient(create_app(fetch=bug, storage=MemoryStorage()),
+    c = TestClient(create_app(identity_resolver=lambda: "solo", fetch=bug, storage=MemoryStorage()),
                    raise_server_exceptions=False)
     sc = _create(c)
 
@@ -275,7 +275,7 @@ def test_refresh_on_an_expired_scenario_does_not_touch_the_data_source():
     def boom(symbol):
         raise AssertionError("過期劇本不該抓鏈")
 
-    c = TestClient(create_app(fetch=boom, storage=storage))
+    c = TestClient(create_app(identity_resolver=lambda: "solo", fetch=boom, storage=storage))
     row = c.post("/api/scenarios/expired-1/refresh").json()
 
     assert row["expired"] is True
@@ -300,7 +300,7 @@ def test_refresh_on_an_expired_scenario_does_not_touch_prior_results():
     def boom(symbol):
         raise AssertionError("過期劇本不該抓鏈")
 
-    c = TestClient(create_app(fetch=boom, storage=storage))
+    c = TestClient(create_app(identity_resolver=lambda: "solo", fetch=boom, storage=storage))
     row = c.post("/api/scenarios/expired-1/refresh").json()
 
     assert row["latest_analyzed_at"] == "2019-12-01T00:00:00+00:00"
@@ -316,7 +316,7 @@ def test_refresh_on_an_expired_scenario_leaves_no_new_event():
     def boom(symbol):
         raise AssertionError("過期劇本不該抓鏈")
 
-    c = TestClient(create_app(fetch=boom, storage=storage))
+    c = TestClient(create_app(identity_resolver=lambda: "solo", fetch=boom, storage=storage))
     c.post("/api/scenarios/expired-1/refresh")
 
     events = [e["event"] for e in c.get("/api/scenarios/expired-1/events").json()]
@@ -325,7 +325,7 @@ def test_refresh_on_an_expired_scenario_leaves_no_new_event():
 
 def test_refresh_on_an_expired_scenario_still_404s_when_unknown():
     """過期劇本的擋點不能蓋掉既有的「劇本不存在」規則。"""
-    c = TestClient(create_app(storage=MemoryStorage()))
+    c = TestClient(create_app(identity_resolver=lambda: "solo", storage=MemoryStorage()))
     assert c.post("/api/scenarios/nope/refresh").status_code == 404
 
 
@@ -358,14 +358,14 @@ def test_refresh_on_an_archived_scenario_never_reaches_fetch():
     not_touch_the_data_source`）：注入一個一被呼叫就讓測試失敗的假
     `fetch`，證明擋點在抓鏈之前，不是抓完才發現分析失敗。"""
     storage = MemoryStorage()
-    c = TestClient(create_app(storage=storage))
+    c = TestClient(create_app(identity_resolver=lambda: "solo", storage=storage))
     sc = _create(c)
     c.post(f"/api/scenarios/{sc['id']}/archive").raise_for_status()
 
     def boom(symbol):
         raise AssertionError("垃圾桶劇本不該抓鏈")
 
-    blocked_client = TestClient(create_app(fetch=boom, storage=storage))
+    blocked_client = TestClient(create_app(identity_resolver=lambda: "solo", fetch=boom, storage=storage))
     resp = blocked_client.post(f"/api/scenarios/{sc['id']}/refresh")
 
     assert resp.status_code == 409
@@ -498,14 +498,14 @@ def test_refresh_run_partial_success_one_symbol_failing_does_not_block_another()
 def test_refresh_run_failed_scenario_keeps_its_prior_result():
     """P2：失敗的劇本保留上一輪的舊資料，不是被清空。"""
     storage = MemoryStorage()
-    c = TestClient(create_app(fetch=lambda symbol: load_snapshot(FIX), storage=storage))
+    c = TestClient(create_app(identity_resolver=lambda: "solo", fetch=lambda symbol: load_snapshot(FIX), storage=storage))
     sc = _create(c, symbol="XYZ")
     c.post(f"/api/scenarios/{sc['id']}/refresh").raise_for_status()
     first = c.get(f"/api/scenarios/{sc['id']}").json()["latest_analyzed_at"]
 
     def boom(symbol):
         raise FetchError("這次抓不到")
-    c2 = TestClient(create_app(fetch=boom, storage=storage))
+    c2 = TestClient(create_app(identity_resolver=lambda: "solo", fetch=boom, storage=storage))
 
     out = _run(c2, scenario_ids=[sc["id"]])
 
@@ -548,7 +548,7 @@ def test_refresh_run_short_circuits_expired_scenarios_without_fetching():
 
     def boom(symbol):
         raise AssertionError("過期劇本不該抓鏈")
-    c = TestClient(create_app(fetch=boom, storage=storage))
+    c = TestClient(create_app(identity_resolver=lambda: "solo", fetch=boom, storage=storage))
 
     out = _run(c, scenario_ids=[expired.id])
 
@@ -562,7 +562,7 @@ def test_refresh_run_with_omitted_ids_excludes_expired_scenarios():
     Trigger 定義）——過期劇本根本不排進這一輪，不是排進去了才短路。"""
     storage = MemoryStorage()
     expired = _expired_scenario(storage)
-    c = TestClient(create_app(fetch=lambda symbol: load_snapshot(FIX), storage=storage))
+    c = TestClient(create_app(identity_resolver=lambda: "solo", fetch=lambda symbol: load_snapshot(FIX), storage=storage))
     live = _create(c, symbol="XYZ")
 
     out = _run(c)
@@ -580,7 +580,7 @@ def test_refresh_run_a_symbol_group_of_only_expired_scenarios_never_fetches():
 
     def boom(symbol):
         raise AssertionError("這組全過期，不該抓鏈")
-    c = TestClient(create_app(fetch=boom, storage=storage))
+    c = TestClient(create_app(identity_resolver=lambda: "solo", fetch=boom, storage=storage))
 
     out = _run(c, scenario_ids=[expired.id])
     assert _by_id(out, expired.id)["ok"] is True
@@ -704,7 +704,9 @@ def test_refresh_run_a_realistic_batch_now_completes_progressively_not_in_one_ca
     Continuation 迴圈因此會逐組（在這份資料裡等於逐張，因為 12 個劇本
     分屬 3 個不同 symbol、每組 4 個）取得結果並立即解鎖，不必等其餘
     兩組。"""
-    c = _client()   # 預設 REFRESH_RUN_BUDGET，不注入任何人為延遲
+    # PB-05（#297）：這裡要建 12 個劇本測 Continuation／分組行為，跟
+    # per-owner 額度（預設 10）是兩件無關的事——顯式停用額度檢查。
+    c = _client(anonymous_max_active_scenarios=0)   # 預設 REFRESH_RUN_BUDGET，不注入任何人為延遲
     symbols = ["XYZ", "SPY", "QQQ"]
     ids = [_create(c, symbol=symbols[i % len(symbols)])["id"] for i in range(12)]
 

@@ -720,6 +720,31 @@ body {
 
 /* ---------- 手機首頁：Dashboard 佔位＋新增劇本入口（MVP-v2／#77、#81） ---------- */
 
+/* PB-12（#302）：BetaNotice 與 Dashboard 包在同一個 flex 子項裡，只
+   多付一份 6px 的內部間距，不是 `.screen` 自己整份 `--gap`（16px）
+   ——見 `App.tsx` 對這個 wrapper 的註解，理由是手機一屏至少要看到
+   4 個劇本這條既有硬性密度要求（MVP-v2／#77、#82）。 */
+.beta-notice-and-dashboard {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  /* 這個 wrapper 本身仍是 `.screen` 的一個 flex 子項，會吃到它自己的
+     `--gap`（16px）——這裡用負的 `margin-bottom` 把那份間距收窄到
+     視覺上還算舒適的最小值，把手機一屏能塞進的劇本卡片數字從擠不進
+     第 4 張救回來（MVP-v2／#77、#82 既有硬性密度要求），視覺上跟
+     原本「Dashboard 到下一個區塊」的既有間距差異在可接受範圍內。 */
+  margin-bottom: -16px;
+}
+
+/* 這個 wrapper 情境下 `.dashboard-placeholder` 的垂直內距額外收緊
+   （只在這裡、不影響其他任何用到 `.dashboard-placeholder` 的地方，
+   目前也只有這一處）——多出來的高度預算全部讓給上方的 `.beta-notice`，
+   維持同一套「密度優先」的既有精神（MVP-v2／#82）。 */
+.beta-notice-and-dashboard .dashboard-placeholder {
+  padding-top: 4px;
+  padding-bottom: 4px;
+}
+
 /* 低調但可見——版面位置先保留，內容待跨劇本比較功能確定後才填。跟
    `.card` 同一套視覺語言（同樣是卡片底色＋圓角），但用次要文字色調
    （`--label-secondary`），避免在還沒有內容之前搶了劇本清單的視覺重量。 */
@@ -2461,4 +2486,99 @@ body {
 .input:disabled {
   color: var(--label-secondary);
   background: var(--fill);
+}
+
+/* Super User 管理面板（PB-10／#301）——刻意不做豪華 Dashboard，沿用
+   既有卡片／文字鈕慣例，只加最小必要的版面規則。 */
+.superuser-owner-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.superuser-owner-row {
+  border: 1px solid var(--separator);
+  border-radius: 10px;
+  padding: 10px 12px;
+}
+
+.superuser-owner-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.superuser-owner-id {
+  font-size: 12px;
+  word-break: break-all;
+}
+
+.superuser-scenario-list,
+.superuser-audit-list {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.superuser-scenario-detail {
+  max-height: 240px;
+  overflow: auto;
+  font-size: 11px;
+  background: var(--fill);
+  border-radius: 8px;
+  padding: 8px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* ---------- 首頁 Beta 說明（PB-12／#302，Anonymous Public Beta） ---------- */
+
+/* 固定可見、常駐，但刻意壓到最低高度、不用卡片裝飾（無背景／陰影／
+   邊框）——這一區塊會佔用 `.screen` 的 flex gap 預算，手機一屏至少
+   看得到 4 張劇本卡片（MVP-v2／#77、#82 既有硬性密度要求）不因本票
+   新增區塊而退步；實測一度只差 0.6px 就會退步，才把視覺裝飾整個
+   拿掉、只留純文字（見 `.beta-notice-and-dashboard` 與 `App.tsx` 的
+   wrapper 註解）。次要文字色調（`--label-secondary`），與
+   `.dashboard-placeholder` 同一套色階但不共用卡片外觀。 */
+.beta-notice {
+  padding: 2px 0 4px;
+  color: var(--label-secondary);
+  font-size: 10px;
+  line-height: 1.25;
+}
+
+.beta-notice .caption {
+  margin: 0;
+  color: inherit;
+}
+
+/* ---------- 全站常駐頁尾（PB-12／#302） ---------- */
+
+.site-footer {
+  margin-top: 16px;
+  padding: 10px var(--gap) calc(10px + env(safe-area-inset-bottom, 0px));
+  border-top: 1px solid var(--separator);
+  text-align: center;
+}
+
+.site-footer .caption {
+  margin: 0;
+  /* 用 secondary 不用 tertiary——這行文字承載法遵／功能性資訊（非
+     投資建議、Beta 資料生命週期），QA-FIX-2（2026-08-09）記錄過
+     tertiary 在深色模式對比未達 WCAG AA，不該讓真正重要的文字沿用
+     那個已知缺口。 */
+  color: var(--label-secondary);
+  font-size: 11px;
+  line-height: 1.6;
+}
+
+.site-footer a {
+  color: inherit;
+  text-decoration: underline;
 }

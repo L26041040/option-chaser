@@ -54,7 +54,7 @@ _SKIPPED_SUBTYPES = ("long-put", "bear-put-spread", "put-fly")
 
 def _client():
     snap = load_snapshot(FIX)
-    return TestClient(create_app(fetch=lambda symbol: snap,
+    return TestClient(create_app(identity_resolver=lambda: "solo", fetch=lambda symbol: snap,
                                  storage=MemoryStorage(),
                                  rate_loader=offline_rate_loader,
                                  dividend_loader=real_dividend_loader))

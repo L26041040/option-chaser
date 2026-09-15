@@ -18,7 +18,7 @@ NEW = {"symbol": "XYZ", "target_price": 130.0, "target_month": "2026-09",
 
 def _client(storage=None):
     snap = load_snapshot(FIX)
-    return TestClient(create_app(fetch=lambda symbol: snap,
+    return TestClient(create_app(identity_resolver=lambda: "solo", fetch=lambda symbol: snap,
                                  storage=storage or MemoryStorage()))
 
 
@@ -325,7 +325,7 @@ def test_reanalysis_updates_the_card_to_the_newer_numbers():
         calls["n"] += 1
         return snap
 
-    client = TestClient(create_app(fetch=fetch, storage=MemoryStorage()))
+    client = TestClient(create_app(identity_resolver=lambda: "solo", fetch=fetch, storage=MemoryStorage()))
     sc = _create(client)
 
     client.post(f"/api/scenarios/{sc['id']}/refresh").raise_for_status()
@@ -438,3 +438,31 @@ def test_scenario_row_sample_matches_the_live_list_response():
     assert set(row) == set(sample), (
         "清單列的欄位與契約樣本不一致——請跑 scripts/gen_contract_sample.py "
         "重產，並確認前端 fixture 跟著更新")
+
+
+def test_pb01_owner_registry_rows_do_not_change_existing_endpoint_behavior():
+    """PB-01（#292）AC：owner registry／Browser Identity 是純 expand，
+    `GET /api/scenarios` 這類既有端點的行為在這張新表裡有沒有列、
+    有幾筆列都必須逐位元不變——它們今天完全不被任何請求路徑讀取
+    （切換發生在 PB-02）。"""
+    from api_app.storage import BrowserIdentity, Owner
+
+    storage = MemoryStorage()
+    client = _client(storage=storage)
+    sc = _create(client)
+
+    storage.create_owner_with_token(
+        Owner(owner_id="anon-noise-1", created_at="2026-09-14T00:00:00+00:00"),
+        BrowserIdentity(token="tok-noise-1", owner_id="anon-noise-1",
+                        issued_at="2026-09-14T00:00:00+00:00",
+                        last_seen_at="2026-09-14T00:00:00+00:00"))
+    storage.touch_owner_activity("anon-noise-1", now="2026-09-14T01:00:00+00:00")
+    storage.set_owner_protected("anon-noise-1", True)
+
+    detail = client.get(f"/api/scenarios/{sc['id']}").json()
+    listed = client.get("/api/scenarios").json()
+
+    assert detail["id"] == sc["id"]
+    assert "owner_id" not in detail
+    assert [r["id"] for r in listed] == [sc["id"]]
+    assert "owner_id" not in listed[0]
