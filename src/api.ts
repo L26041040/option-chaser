@@ -892,10 +892,20 @@ export function createScenario(
 /**
  * 刷新單一劇本（V4／#52）：後端抓鏈→分析→入庫，回傳的是**卡片列**，
  * 與清單同一形狀，所以拿到就能直接換掉清單裡那一列。
+ *
+ * `manual`（PB-08／#300）：這個端點同時服務真人主動點擊（單卡重試／
+ * 詳細頁刷新鈕）與系統自動觸發的後續刷新（建立劇本／編輯劇本後的
+ * 立即重跑、`runBatch()` 內部的失敗隔離 fallback）——後端據此決定
+ * 這次呼叫算不算一次「真人明確操作」（`last_activity_at`）。預設
+ * `false`：呼叫端必須明確在真正的使用者點擊入口傳 `true`，其餘維持
+ * 系統觸發的既有語意不變。
  */
-export function refreshScenario(id: string): Promise<ScenarioSummary> {
+export function refreshScenario(
+  id: string, manual = false,
+): Promise<ScenarioSummary> {
+  const q = manual ? "?manual=true" : "";
   return request<ScenarioSummary>(
-    `/api/scenarios/${encodeURIComponent(id)}/refresh`,
+    `/api/scenarios/${encodeURIComponent(id)}/refresh${q}`,
     { method: "POST" },
   );
 }
@@ -924,11 +934,11 @@ export interface RefreshRunResponse {
 }
 
 export function refreshRun(
-  scenarioIds: string[] | null,
+  scenarioIds: string[] | null, manual = false,
 ): Promise<RefreshRunResponse> {
   return request<RefreshRunResponse>(
     "/api/scenarios/refresh-run",
-    POST_JSON({ scenario_ids: scenarioIds }),
+    POST_JSON({ scenario_ids: scenarioIds, manual }),
   );
 }
 

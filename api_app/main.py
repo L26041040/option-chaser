@@ -33,8 +33,8 @@ from option_chaser.service import DividendLoader, RateCurveLoader
 from option_chaser.timeframe import (TargetMonth, calendar_anchor,
                                      ensure_month_open, month_is_over)
 
-from . import (chain_backoff, diagnostics, metrics, providers, superuser,
-              vendor_fuse)
+from . import (anonymous_lifecycle, chain_backoff, diagnostics, metrics,
+              providers, superuser, vendor_fuse)
 from .clock import now_utc_iso, ny_today
 from .dividend_cache import cached_loader as cached_dividend_loader
 from .identity import (IdentityResolver, cookie_identity_resolver,
@@ -143,6 +143,17 @@ ANONYMOUS_REFRESH_MIN_INTERVAL_MINUTES = 30
 # 明文標注這個起始值「待 Controlled Beta 實測校準」，不是最終數字；
 # 同樣可經 `create_app()` DI 或同名環境變數覆寫，`<=0` 為停用語意。
 GLOBAL_VENDOR_DAILY_BUDGET = 2000
+
+# PB-08（#300，Anonymous Public Beta）：匿名擁有者三段式生命週期
+# （spec §7）。三個數值皆可經 `create_app()` DI 或同名環境變數覆寫。
+ANONYMOUS_ABANDONED_AFTER_DAYS = 30
+ANONYMOUS_GRACE_PERIOD_DAYS = 7
+# 每次 cron 執行最多處理幾個 owner——Vercel Cron 在 Hobby 方案每天
+# 只能觸發一次（研究 #276），這裡的上限因此不是「今天處理不完明天
+# 續跑」的 Continuation（那需要同一天能再被觸發一次，Hobby 做不到），
+# 是單純的時間預算保護：處理不完的部分留給**明天**那次 cron 觸發，
+# 不強行在一次執行內塞爆、撞上 `vercel.json` 的 `maxDuration: 60`。
+ANONYMOUS_CLEANUP_BATCH_SIZE = 200
 
 
 def _env_int(name: str, default: int) -> int:
@@ -294,8 +305,16 @@ class EditScenarioRequest(BaseModel):
 class RefreshRunRequest(BaseModel):
     """一輪刷新（T06／#190）的請求體。`scenario_ids` 省略或 `null` ＝
     範圍是全部未過期劇本（開站／頂部刷新鈕）；帶一組 id ＝只刷新這幾個
-    （建立新劇本，P4）。"""
+    （建立新劇本，P4）。
+
+    `manual`（PB-08／#300）：這個端點同時服務開站自動刷新（不算
+    activity）與頂部刷新鈕（真人主動點擊，算 activity）——兩者在
+    HTTP 層是同一種請求形狀，結構上無從分辨，改由呼叫端明確告知。
+    預設 `False`（理由同 `refresh_scenario()` 的 `manual` 參數
+    docstring：spec §7 警告的風險方向是誤把自動刷新算成 activity，
+    不是反過來）。"""
     scenario_ids: list[str] | None = None
+    manual: bool = False
 
 
 class UsageRequest(BaseModel):
@@ -654,6 +673,9 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
                anonymous_max_active_scenarios: int | None = None,
                anonymous_refresh_min_interval_minutes: int | None = None,
                global_vendor_daily_budget: int | None = None,
+               anonymous_abandoned_after_days: int | None = None,
+               anonymous_grace_period_days: int | None = None,
+               anonymous_cleanup_batch_size: int | None = None,
                ) -> FastAPI:
     """`fetch`／`storage`／`rate_loader`／`dividend_loader` 皆可注入：
     測試傳入固定快照、記憶體假體與假來源，因此不打真網路、不碰真資料庫，
@@ -774,7 +796,9 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
     Vercel Cron 既有的機器對機器呼叫。
 
     `enable_metrics`（同票）：整組 S0 觀測的總開關（Rollback Point）。
-    關閉時全部七類指標的記錄呼叫直接是 no-op——AC-4 要求觀測 ON/OFF
+    關閉時全部指標（SCALE-08 當時七類＋PB-08 新增的
+    `abandoned_owner_cleanup_count`）的記錄呼叫直接是 no-op——AC-4
+    要求觀測 ON/OFF
     對任何既有產品 API 回應的序列化 JSON **逐位元一致**，這個開關本身
     就是那個宣稱的可驗證落地點：兩種狀態下跑同一組請求，除了新增的
     `GET /api/ops/metrics` 端點本身，其餘回應必須無法分辨開關是開是關。
@@ -811,7 +835,18 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
     代表「我們自己決定今天打夠了」，語意不同、觸發條件也彼此獨立
     （見 `api_app/vendor_fuse.py` 檔頭）。`None` 時讀 `GLOBAL_VENDOR_
     DAILY_BUDGET` 環境變數或落回上方常數；`<=0` 停用（今天的行為，
-    供 rollback／測試）。"""
+    供 rollback／測試）。
+
+    `anonymous_abandoned_after_days`／`anonymous_grace_period_days`／
+    `anonymous_cleanup_batch_size`（PB-08／#300，Anonymous Public
+    Beta §7）：匿名擁有者三段式生命週期——`last_activity_at`（PB-01
+    既有欄位）距今超過前者天數＝Abandoned，再超過後者天數＝Eligible
+    for hard delete（`api_app.anonymous_lifecycle.classify()`，純
+    函式、不持久化這個分類結果本身）。`GET /api/cron/cleanup-
+    abandoned-owners`（下方）逐批掃描並清除，`protected` 的 owner
+    （Owner 自己遷移過去的那個，PB-03）在進入分類判斷**之前**就已經
+    被濾掉，不是分類結果剛好回 active。三者皆可經 DI 或同名環境變數
+    覆寫，`None` 時落回同名常數。"""
     app = FastAPI(title="Option Chaser API", version=__version__)
 
     # 延遲建構：Postgres adapter 建構本身不再連線（T02／#186——schema
@@ -902,6 +937,34 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
     _effective_global_vendor_daily_budget = (
         global_vendor_daily_budget if global_vendor_daily_budget is not None
         else _env_int("GLOBAL_VENDOR_DAILY_BUDGET", GLOBAL_VENDOR_DAILY_BUDGET))
+    # PB-08（#300）：同一套慣例。
+    _effective_abandoned_after_days = (
+        anonymous_abandoned_after_days if anonymous_abandoned_after_days is not None
+        else _env_int("ANONYMOUS_ABANDONED_AFTER_DAYS",
+                      ANONYMOUS_ABANDONED_AFTER_DAYS))
+    _effective_grace_period_days = (
+        anonymous_grace_period_days if anonymous_grace_period_days is not None
+        else _env_int("ANONYMOUS_GRACE_PERIOD_DAYS", ANONYMOUS_GRACE_PERIOD_DAYS))
+    _effective_cleanup_batch_size = (
+        anonymous_cleanup_batch_size if anonymous_cleanup_batch_size is not None
+        else _env_int("ANONYMOUS_CLEANUP_BATCH_SIZE",
+                      ANONYMOUS_CLEANUP_BATCH_SIZE))
+
+    def _touch_activity(owner: str) -> None:
+        """PB-08（#300）：標記這是一次真人明確操作——只在下方明列的
+        六類端點各自呼叫一次（建立／編輯／手動刷新／封存／還原／
+        永久刪除）。**開站自動刷新刻意不呼叫這裡**（`refresh_
+        scenario`／`refresh_run` 只在 `manual=True` 時才呼叫）——
+        spec §7 逐字警告這是整張票最容易做錯的地方：若開站自動刷新
+        也算 activity，任何被背景分頁或搜尋引擎打開過的 owner 都會
+        永遠不過期，清理機制形同虛設。
+
+        `identity_resolver` 被 DI 覆寫（非 production cookie 路徑）時
+        `owner` 可能是測試用的固定字串（例如 `"solo"`）——`touch_
+        owner_activity()` 對不存在的 owner_id 安靜地什麼都不做（既有
+        設計，見該方法 docstring），這裡因此不需要額外判斷「這個
+        owner 是否真的存在於 `owners` 表」。"""
+        _db().touch_owner_activity(owner, now=now_utc_iso())
 
     def _record_metric(metric: str, today: date, *, source: str = "",
                        symbol: str = "", count: int = 1,
@@ -1253,11 +1316,89 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         curve, note = _rate_curve_loader()(ny_today())
         return {"ok": curve is not None, "note": note}
 
+    # ---------- 匿名擁有者生命週期清理（PB-08／#300） ----------
+
+    @app.get("/api/cron/cleanup-abandoned-owners")
+    def cron_cleanup_abandoned_owners(request: Request) -> dict:
+        """Vercel Cron 每日觸發一次（Hobby 方案上限，研究 #276），
+        對匿名擁有者執行三段式生命週期判定（`anonymous_lifecycle.
+        classify()`）並清除逾期者——這是 spec §16 Line 1 擋「成本
+        失控」的 blocker。
+
+        **`protected` 的 owner（Owner 自己遷移過去的那個，PB-03）在
+        進入分類判斷之前就已經被濾掉**——不是分類結果剛好回
+        `"active"`。這是「結構性排除在清理查詢之外」（spec §7）的
+        字面落地：把關點只有這一處，不依賴 `classify()` 內部再判斷
+        一次（分散成好幾個各自都要做對的判斷，比集中一處更容易出錯）。
+
+        `abandoned`（30 天無真人活動）本身**不觸發任何寫入**——它是
+        衍生狀態，不持久化（比照既有 Direction 衍生三態的既有設計
+        原則），這裡只是計數供本端點回應引用。真正的動作只有一種：
+        `eligible_for_hard_delete`（再加 `ANONYMOUS_GRACE_PERIOD_DAYS`
+        天）呼叫 PB-04 既有的 `delete_owner()` 原語——本票不重寫一份
+        可能漂移的複本。
+
+        **cleanup volume 被記錄**（spec §7／§22 AC5，非僅回在這次 HTTP
+        回應裡）：`_record_metric("abandoned_owner_cleanup_count", ...)`
+        寫進 S0 既有的 `operational_metrics` 表——`api_app.metrics.
+        METRIC_CATALOGUE` 因此從 SCALE-08 當時的七類擴為八類，這是有
+        意識的擴充（見該模組 docstring），不是隨意破例。`/api/ops/
+        metrics`（PB-09 起 Super User-only）自動涵蓋這個新類別，供
+        PB-11 的每日摘要信引用，不需要額外接線。
+
+        **批次上限**（`ANONYMOUS_CLEANUP_BATCH_SIZE`）**不是**
+        Continuation（那需要同一天能再被觸發一次，Hobby 方案的
+        cron 做不到）——單純是時間預算保護：處理不完的候選留給
+        **明天**那次 cron 觸發，不強行在一次執行內塞爆、撞上
+        `vercel.json` 的 `maxDuration: 60`。`list_owners()` 本身
+        沒有穩定排序保證，這代表候選清單超過批次上限時，哪些 owner
+        今天被處理、哪些留到明天並非決定性的——可接受：不影響正確性
+        （每個 owner 遲早都會被處理到），只影響處理順序。
+
+        清理**失敗不得影響任何使用者可見行為**（spec §14）——這個
+        端點本身不服務任何使用者請求（`/api/cron/*` 已在 PB-02 的
+        `_OWNER_EXEMPT_PREFIXES` 排除清單內，缺 cookie 不建立
+        owner），失敗只會讓這次批次少清幾個、下次 cron 再試，不會讓
+        任何一般端點跟著出錯。
+
+        授權失敗先驗證再動作，比照既有 `cron_warm_rate_cache()`
+        同一套 fail-closed 寫法（secret 未設定時一律視同不符）。
+        """
+        provided = request.headers.get("authorization")
+        if not _effective_cron_secret or provided != f"Bearer {_effective_cron_secret}":
+            raise HTTPException(status_code=401, detail="unauthorized")
+
+        now = datetime.now(timezone.utc)
+        candidates = [o for o in _db().list_owners() if not o.protected]
+        batch = candidates[:_effective_cleanup_batch_size]
+        abandoned = 0
+        hard_deleted = 0
+        rows_deleted = 0
+        for o in batch:
+            state = anonymous_lifecycle.classify(
+                last_activity_at=o.last_activity_at, created_at=o.created_at,
+                now=now, abandoned_after_days=_effective_abandoned_after_days,
+                grace_period_days=_effective_grace_period_days)
+            if state == "abandoned":
+                abandoned += 1
+            elif state == "eligible_for_hard_delete":
+                counts = _db().delete_owner(o.owner_id)
+                hard_deleted += 1
+                rows_deleted += sum(counts.values())
+        # 每次執行都記一筆（含 0），不只在真的刪到東西時才記——「今天
+        # cron 有沒有真的跑過」本身也是有價值的訊號（PB-11）。
+        _record_metric("abandoned_owner_cleanup_count", ny_today(),
+                       count=hard_deleted, amount=rows_deleted)
+        return {"owners_checked": len(candidates), "batch_size": len(batch),
+               "abandoned": abandoned, "hard_deleted": hard_deleted,
+               "rows_deleted": rows_deleted}
+
     # ---------- S0 最小可觀測性（SCALE-08／#258） ----------
 
     @app.get("/api/ops/metrics")
     def ops_metrics(request: Request) -> dict:
-        """七類指標的單一 operator 查詢入口（AC-1），逐一列出：
+        """指標的單一 operator 查詢入口（AC-1，SCALE-08 當時七類、
+        PB-08／#300 擴為八類），逐一列出：
 
         1. `chain_fetch_count`——上游抓鏈實際被呼叫的次數（`source`／
            `symbol` 維度）
@@ -1272,6 +1413,9 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
            大小、單列大小分布（query-time gauge，不在上面的桶裡）
         7. `history_read_volume`——回答一次 `/history` 請求要撈幾筆
            完整歷史 view（SCALE-14 切換 narrow 讀取路徑後的對照基準）
+        8. `abandoned_owner_cleanup_count`（PB-08／#300）——匿名擁有者
+           清理排程每次執行 hard-delete 掉幾個 owner（`count`）、加總
+           刪掉幾列資料（`amount`），供 PB-11 的每日摘要信引用
 
         **Super User-only**（AC-6，PB-09／#298 起改由軸二守門，取代
         原本的 `OPS_SECRET`）：`require_superuser()` fail-closed，未帶
@@ -1408,6 +1552,7 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         _db().append_event(ts=ts, scenario_id=sc.id,
                            event="SCENARIO_CREATED", payload=_scenario_json(sc),
                            owner_id=owner)
+        _touch_activity(owner)  # PB-08（#300）：建立劇本＝真人明確操作
         # 回傳與清單同一個形狀（含 timing、尚未分析故摘要欄位皆為 None），
         # 客戶端才不必為「剛建立的」與「列出來的」維護兩種型別。
         return _row_json(sc, ny_today(), analyzed_at=None, best_return=None,
@@ -1467,6 +1612,7 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
                            event="SCENARIO_EDITED",
                            payload=_scenario_json(updated),
                            owner_id=owner)
+        _touch_activity(owner)  # PB-08（#300）：編輯劇本＝真人明確操作
 
         latest = (None if thesis_changed
                  else _db().latest_result(scenario_id, owner=owner))
@@ -1509,6 +1655,9 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
             _db().append_event(ts=ts, scenario_id=scenario_id,
                                event="SCENARIO_ARCHIVED", payload={},
                                owner_id=owner)
+        # PB-08（#300）：封存＝真人明確操作——不論這次是否真的改變了
+        # 儲存狀態（重複點擊也是使用者主動的動作，不是背景行為）。
+        _touch_activity(owner)
         return {"archived": True}
 
     @app.post("/api/scenarios/{scenario_id}/restore")
@@ -1529,6 +1678,7 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
             _db().append_event(ts=ts, scenario_id=scenario_id,
                                event="SCENARIO_RESTORED", payload={},
                                owner_id=owner)
+        _touch_activity(owner)  # PB-08（#300）：還原＝真人明確操作
         return {"restored": True}
 
     @app.delete("/api/scenarios/{scenario_id}", status_code=204)
@@ -1550,7 +1700,9 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
             raise HTTPException(
                 status_code=409,
                 detail=f"劇本尚未移入垃圾桶，無法永久刪除：{scenario_id}")
-        _db().delete_scenario(scenario_id, owner=identity_resolver())
+        owner = identity_resolver()
+        _db().delete_scenario(scenario_id, owner=owner)
+        _touch_activity(owner)  # PB-08（#300）：刪除＝真人明確操作
         return Response(status_code=204)
 
     def _refresh_and_save(sc: Scenario, today: date, *,
@@ -1697,7 +1849,7 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
                          spot=store.spot(view), family_eligibility=family_elig)
 
     @app.post("/api/scenarios/{scenario_id}/refresh")
-    def refresh_scenario(scenario_id: str) -> dict:
+    def refresh_scenario(scenario_id: str, manual: bool = False) -> dict:
         """單劇本刷新（V4／#52）：抓鏈→分析→結果與原始快照入庫。
 
         回傳的是**卡片列**而非整份 view：客戶端要依序刷新 N 個劇本、
@@ -1706,7 +1858,17 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
 
         過期短路與落地邏輯見 `_refresh_and_save()`；這裡只負責垃圾桶
         擋點（下方）與把結果包成單一 HTTP 回應。
-        """
+
+        `manual`（PB-08／#300）：這個端點同時服務兩種語意完全不同的
+        呼叫端——單卡重試／詳細頁刷新鈕（真人主動點擊，算 activity）
+        與 `App.tsx::runBatch()` 內部的失敗隔離 fallback（可能是開站
+        自動刷新的一部分，**不算** activity）。兩者在 HTTP 層是同一種
+        請求形狀，結構上無從分辨，因此改由呼叫端明確告知：前端在每個
+        真正的「使用者按下去」入口帶上 `manual=true`，其餘（含開站、
+        建立劇本後的自動重跑、編輯後的自動重新分析）維持預設 `False`。
+        **預設值刻意選 `False` 而非 `True`**——spec §7 明確警告的風險
+        方向是「不小心把自動刷新算成 activity」，不是反過來，預設
+        偏保守才不會不小心把清理機制形同虛設。"""
         sc = _require(scenario_id)
         # TR1（#88）：垃圾桶劇本硬擋——跟過期擋點（下面）刻意不同，過期
         # 是「還是能看，只是不再花資源更新」的靜默短路（回既有卡片列，
@@ -1716,6 +1878,8 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         # 之前——不抓鏈、不跑引擎、不入庫、不留事件。
         if sc.archived_at is not None:
             raise _fail("archived", 409, f"劇本已在垃圾桶，不再刷新：{scenario_id}")
+        if manual:
+            _touch_activity(identity_resolver())
         return _refresh_and_save(sc, ny_today(), snap=None)
 
     @app.post("/api/scenarios/refresh-run")
@@ -1781,6 +1945,11 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         """
         today = ny_today()
         owner = identity_resolver()
+        if body.manual:
+            # PB-08（#300）：整個 Run 只屬於這一個 owner（下方全部
+            # scenario 查詢皆限定在同一個 `owner`），因此一次呼叫只
+            # 需要記一次 activity，不必逐 scenario 各記一次。
+            _touch_activity(owner)
         # PB-05（#297）：一次查完這個 owner 全部劇本的「上次成功抓鏈
         # 時間」，下面兩處節流判斷（group 級 `needs_chain`／per-scenario
         # 的 fetch 失敗分支）共用同一份查詢結果，不必為每個 scenario

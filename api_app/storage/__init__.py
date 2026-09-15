@@ -1094,7 +1094,8 @@ class Storage(Protocol):
 
     def metric_summary(self) -> list[MetricEntry]:
         """目前還在 retention 窗內的全部桶——供 operator 端點彙整成
-        七類指標的答案。不分頁、不搜尋（AC-6：這是給運維人工核對用，
+        `METRIC_CATALOGUE` 全部類別（SCALE-08 當時七類，PB-08／#300
+        起八類）的答案。不分頁、不搜尋（AC-6：這是給運維人工核對用，
         不是給一般使用者的 API）。"""
 
     def metric_total(self, metric: str, bucket: str) -> int:

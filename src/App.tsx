@@ -155,11 +155,19 @@ export default function App() {
    * 隔離 fallback 需要逐一計入「N 成功／M 失敗」摘要，既有四個呼叫端
    * （卡片重試、詳細頁刷新、編輯後重新分析）沿用既有 `void refreshOne
    * (id)` 寫法、不讀回傳值，行為不受影響。
+   *
+   * `manual`（PB-08／#300）：卡片重試／詳細頁刷新是真人主動點擊，
+   * 算 activity；編輯後的自動重新分析不是（編輯本身已經算過一次），
+   * `runBatch()` 內部的失敗隔離 fallback 則原樣沿用那一輪 Refresh
+   * 本來的 `manual` 值——它不是獨立的新動作，只是同一輪刷新在傳輸
+   * 層失敗後改用單一端點逐一重試。預設 `false`，呼叫端在真正的使用者
+   * 點擊入口明確傳 `true`。
    */
-  const refreshOne = useCallback(async (id: string): Promise<boolean> => {
+  const refreshOne = useCallback(async (id: string, manual = false):
+      Promise<boolean> => {
     markUpdating([id]);
     try {
-      const row = await refreshScenario(id);
+      const row = await refreshScenario(id, manual);
       setRows((prev) => prev.map((r) => (r.id === id ? row : r)));
       setFailures((prev) => {
         if (!(id in prev)) return prev;
@@ -191,8 +199,14 @@ export default function App() {
    * 刷新還沒跑完，使用者已經建立了新劇本）不會互相打架，也不需要像
    * 舊版 `enqueue` 那樣共用一條序列佇列：Refresh Run 端點本身已經把
    * 「一次處理一批」這件事收進後端，前端不必再自己排隊。
+   *
+   * `manual`（PB-08／#300）：三個 Refresh Trigger 裡只有頂部刷新鈕
+   * 是真人主動點擊、算 activity；開站與建立劇本後的自動重跑不算。
+   * 呼叫端各自明確傳入，預設 `false`。Continuation 每一段
+   * （`response.remaining` 非空時再打一次）與失敗隔離 fallback 都是
+   * 同一輪 Run 的延續，沿用這一次呼叫進來的 `manual` 值，不重新判斷。
    */
-  const runBatch = useCallback(async (ids: string[]) => {
+  const runBatch = useCallback(async (ids: string[], manual = false) => {
     if (ids.length === 0) return;
     markUpdating(ids);
     setRunSummary(null);
@@ -203,7 +217,7 @@ export default function App() {
       for (;;) {
         let response;
         try {
-          response = await refreshRun(pendingIds);
+          response = await refreshRun(pendingIds, manual);
         } catch {
           // 整趟 HTTP 呼叫本身失敗（504／timeout／其他 transport
           // failure，不是個別劇本的 partial failure——後者由下面
@@ -228,7 +242,7 @@ export default function App() {
           // retry 是刻意的，個別劇本仍可由使用者透過既有的卡片「重試」
           // 再次呼叫這同一支 `refreshOne()`。
           const outcomes = await Promise.allSettled(
-            pendingIds.map((id) => refreshOne(id)));
+            pendingIds.map((id) => refreshOne(id, manual)));
           for (const outcome of outcomes) {
             if (outcome.status === "fulfilled" && outcome.value) succeeded += 1;
             else failed += 1;
@@ -269,20 +283,27 @@ export default function App() {
    * 目標月已過完的劇本（#68）不排進去——後端 Refresh Run 端點本身也會
    * 對顯式帶進去的過期劇本短路處理，這裡先篩掉純粹是不浪費一趟網路
    * 往返，讓送出去的批次從一開始就是對的範圍。
+   *
+   * `manual`（PB-08／#300）：時機一（開站）與時機三（頂部刷新鈕）在
+   * 這裡分岔——前者是頁面打開就自動觸發的背景行為，不算 activity；
+   * 後者是真人按下去的，算。兩個呼叫端因此各自明確傳入，不共用預設值。
    */
-  const reloadAndRefresh = useCallback(async () => {
+  const reloadAndRefresh = useCallback(async (manual: boolean) => {
     const fresh = await reload();
-    if (fresh) await runBatch(fresh.filter((r) => !r.expired).map((r) => r.id));
+    if (fresh) {
+      await runBatch(fresh.filter((r) => !r.expired).map((r) => r.id), manual);
+    }
   }, [reload, runBatch]);
 
   // 時機一：開站。只跑一次——`StrictMode` 在開發模式下會把 effect 跑
   // 兩遍，沒有這道閘的話每個劇本開站就被分析兩次（各一趟抓鏈＋一次引擎
-  // 計算），而且畫面會出現兩輪進度。
+  // 計算），而且畫面會出現兩輪進度。純粹因為頁面打開而觸發，不算
+  // activity（PB-08／#300：`manual=false`）。
   const started = useRef(false);
   useEffect(() => {
     if (started.current) return;
     started.current = true;
-    void reloadAndRefresh();
+    void reloadAndRefresh(false);
   }, [reloadAndRefresh]);
 
   // 網址 hash ＝ 目前在哪一頁（見 `./route`）。監聽 hashchange 而不是
@@ -388,7 +409,10 @@ export default function App() {
     // 時機二：建立劇本後。刻意不 await——表單要立刻清空並可再輸入，
     // 不該被後面的刷新綁住。P4（2026-08-24 裁示，取代 QA1-07 時期的
     // 全量刷新）：只刷新新建立的這一個，既有劇本的資料與時間戳不受
-    // 影響——不再把整份清單一起併進這一輪。
+    // 影響——不再把整份清單一起併進這一輪。PB-08（#300）：不傳
+    // `manual=true`——建立這個動作本身已經在後端算過一次 activity
+    // （`create_scenario()`），這裡只是它的自動後續，不是獨立的
+    // 第二次真人操作。
     void runBatch([created.id]);
   }
 
@@ -429,6 +453,8 @@ export default function App() {
     setError(null);
     // thesis 改了的話後端已經清掉舊結果（#132），這裡把它重新分析一次
     // ——走單一劇本刷新端點，不是第四種刷新管道，也不是 Refresh Run。
+    // PB-08（#300）：不傳 `manual=true`——編輯本身已經在後端算過一次
+    // activity（`edit_scenario()`），理由同上方 `create()` 的後續刷新。
     void refreshOne(id);
   }
 
@@ -540,10 +566,11 @@ export default function App() {
     refreshedAt: rows.find((r) => r.id === detailId)?.latest_analyzed_at ?? null,
     // #70：詳細頁的刷新走既有的單一劇本刷新端點（`refreshOne`）——
     // `busy` 沿用 `Toolbar` 同一個判準（任何刷新進行中都算，含 Refresh
-    // Run 與單一劇本刷新，見 `refreshBusy`）。
+    // Run 與單一劇本刷新，見 `refreshBusy`）。PB-08（#300）：真人按下
+    // 這顆按鈕，算 activity。
     busy: refreshBusy,
     failure: failures[detailId],
-    onRefresh: () => void refreshOne(detailId),
+    onRefresh: () => void refreshOne(detailId, true),
     // 桌面 master/detail 常駐：右側開著的劇本若本輪還沒刷新完，內容
     // 不能看起來像已經是最新結果（P1 更新中徽章）。手機版此時本來就
     // 整頁替換成詳細頁、不會跟清單同時看到，傳了也無害。
@@ -592,7 +619,7 @@ export default function App() {
           runSummary={runSummary}
           showCreateButton={false}
           // 時機三：功能列刷新鈕
-          onRefresh={() => void reloadAndRefresh()}
+          onRefresh={() => void reloadAndRefresh(true)}
           onOpenTrash={() => { window.location.hash = trashHash(); }}
           // #124：手機版的設定入口＝工作區右上角的齒輪。桌面版不傳這個
           // 回呼，它的入口在 sidebar 最下方。
@@ -635,7 +662,7 @@ export default function App() {
           onEdit={startEdit}
           // 重試不是第四種刷新時機——它重跑的就是那一次失敗的刷新，走
           // 單一劇本刷新端點，不牽動 Refresh Run。
-          onRetry={(id) => void refreshOne(id)}
+          onRetry={(id) => void refreshOne(id, true)}
           selectMode={selectMode}
           selectedIds={selectedIds}
           onToggleSelect={toggleSelected}
@@ -663,7 +690,7 @@ export default function App() {
         createPanelId={createPanelId}
         onToggleCreate={() => setShowCreateForm((v) => !v)}
         // 時機三：功能列刷新鈕
-        onRefresh={() => void reloadAndRefresh()}
+        onRefresh={() => void reloadAndRefresh(true)}
         onOpenTrash={() => { window.location.hash = trashHash(); }}
       />
 
@@ -697,7 +724,7 @@ export default function App() {
         onEdit={startEdit}
         // 重試不是第四種刷新時機——它重跑的就是那一次失敗的刷新，走
         // 單一劇本刷新端點，不牽動 Refresh Run。
-        onRetry={(id) => void refreshOne(id)}
+        onRetry={(id) => void refreshOne(id, true)}
         // #72：桌面版清單裡標出目前選中的劇本；手機版此時本來就不會
         // 渲染這份清單（上面已整頁替換掉），傳了也無害。
         selectedId={detailId}

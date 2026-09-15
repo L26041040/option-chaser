@@ -1,13 +1,17 @@
 """S0 最小可觀測性（SCALE-08／#258，Scaling Foundation）。
 
-**只有這七類，封頂**——AC-2 要求一條結構性測試鎖住這個清單「恰好七類」，
-新增第八類必須明確改這裡（`tests/test_scale08_observability.py` 會紅）。
-七類分兩種形狀：
+**SCALE-08 當時只有七類、封頂**——AC-2 要求一條結構性測試鎖住這個清單，
+新增類別必須明確改這裡（`tests/test_scale08_observability.py` 會紅）。
+**PB-08（#300，Anonymous Public Beta）刻意打破這個封頂、新增第八類**
+——`abandoned_owner_cleanup_count`，見下方 `METRIC_CATALOGUE` 定義處
+的說明；這是這個清單第一次、也是目前唯一一次擴充，非隨意鬆綁。
+既有七類分兩種形狀：
 
 - **持久化計數／量級**（`record()` 寫進獨立、極小的 `operational_metrics`
   表，`Storage.record_metric()`／`metric_summary()`）：
   `chain_fetch_count`、`chain_429_count`、`stale_serve_count`、
-  `cold_miss_count`、`refresh_duration_ms`、`history_read_volume`。
+  `cold_miss_count`、`refresh_duration_ms`、`history_read_volume`、
+  以及新增的 `abandoned_owner_cleanup_count`。
 - **query-time gauge**（不持久化，`Storage.table_size_metrics()` 即時
   查詢 `results`／`snapshots` 兩表大小、列數、單列大小分布）：`table_size`。
 
@@ -38,6 +42,13 @@ METRIC_CATALOGUE = (
     "refresh_duration_ms",
     "table_size",
     "history_read_volume",
+    # PB-08（#300，Anonymous Public Beta §7／§22 AC5）：唯一一次刻意
+    # 打破「七類封頂」的新增——票面明文要求 cleanup volume（清了幾個
+    # owner、多少列）必須被「記錄」，不是只回在單次 HTTP 回應裡就算
+    # 數。`count`＝這次批次真正 hard delete 的 owner 數，`amount`＝
+    # 這批 owner 加總刪掉的資料列數（`delete_owner()` 回傳的
+    # `dict[str,int]` 逐表計數加總）。
+    "abandoned_owner_cleanup_count",
 )
 
 # `table_size` 是 query-time gauge，不經過 `record()`／`operational_
