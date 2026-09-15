@@ -1834,3 +1834,142 @@ describe("桌面版：主要操作入口收攏到工作區上方（#75，MVP-v2�
       .toBe(Node.DOCUMENT_POSITION_FOLLOWING);
   });
 });
+
+describe("PB-12（#302）：全站常駐頁尾＋首頁 Beta 說明＋隱私頁路由", () => {
+  const row = {
+    ...(sampleRow as unknown as Record<string, unknown>),
+    id: "s1", symbol: "TLT", target_price: 120, target_month: "2028-05",
+    latest_analyzed_at: "2026-08-04T09:30:00+00:00", best_return: 1.5,
+    target_anchor: "2028-05-19", days_to_anchor: 653,
+  };
+
+  afterEach(() => { window.location.hash = ""; });
+
+  it("手機首頁：Beta 說明＋頁尾皆常駐可見", async () => {
+    mockRoutes({
+      "/api/scenarios": { json: async () => [row] },
+      "/api/scenarios/": { json: async () => row },
+    });
+    const { container } = render(<App />);
+
+    await screen.findByText("TLT");
+    const notice = container.querySelector(".beta-notice");
+    expect(notice).toBeInTheDocument();
+    expect(notice).toHaveTextContent(/Beta/);
+    const footer = container.querySelector("footer.site-footer");
+    expect(footer).toBeInTheDocument();
+    expect(footer).toHaveTextContent(/非投資建議/);
+  });
+
+  it("桌面首頁：Beta 說明常駐在 library-pane、頁尾在整個 workspace 之下",
+    async () => {
+    stubDesktopViewport();
+    mockRoutes({
+      "/api/scenarios": { json: async () => [row] },
+      "/api/scenarios/": { json: async () => row },
+    });
+    const { container } = render(<App />);
+
+    await screen.findByText("TLT");
+    expect(container.querySelector(".library-pane .beta-notice"))
+      .toBeInTheDocument();
+    expect(container.querySelector("footer.site-footer")).toBeInTheDocument();
+  });
+
+  it("手機版垃圾桶畫面也看得到頁尾", async () => {
+    mockRoutes({
+      "/api/scenarios": { json: async () => [row] },
+      "/api/scenarios?include_archived=true": { json: async () => [] },
+      "/api/scenarios/": { json: async () => row },
+    });
+    const { container } = render(<App />);
+    await screen.findByText("TLT");
+
+    await userEvent.click(await screen.findByRole("button", { name: "垃圾桶" }));
+    await screen.findByRole("heading", { name: "垃圾桶" });
+
+    expect(container.querySelector("footer.site-footer")).toBeInTheDocument();
+  });
+
+  it("手機版詳細頁也看得到頁尾", async () => {
+    mockRoutes({
+      "/api/scenarios": { json: async () => [row] },
+      "/api/scenarios/": { json: async () => row },
+    });
+    const { container } = render(<App />);
+    await userEvent.click(await screen.findByText("TLT"));
+
+    expect(container.querySelector("footer.site-footer")).toBeInTheDocument();
+  });
+
+  it("設定畫面（手機／桌面皆是）也看得到頁尾，隱私頁連結指向真的路由",
+    async () => {
+    // Settings 掛載時會另外打幾個既有端點——依 URL 分流成最小可行回應，
+    // 這裡只關心「頁尾有沒有渲染」，不重新測 Settings 本身的業務邏輯
+    // （那由 `Settings.test.tsx` 專屬覆蓋）。
+    const spy = vi.fn(async (url: string) => {
+      if (String(url).startsWith("/api/diagnostics")) {
+        return { ok: true, status: 200, json: async () => [] };
+      }
+      if (String(url).startsWith("/api/superuser/")) {
+        return { ok: true, status: 200,
+                 json: async () => (url.includes("status")
+                   ? { is_superuser: false } : []) };
+      }
+      if (String(url).startsWith("/api/settings")) {
+        return {
+          ok: true, status: 200,
+          json: async () => ({
+            supported_providers: [],
+            market_data: { mode: "default", provider: null, default_label: "Cboe" },
+            historical_iv: { mode: "default", provider: null, default_label: "無" },
+            credentials: {},
+            market_data_effective: { source: "Cboe", fallback: false, reason: null },
+            historical_iv_enabled: false,
+            updated_at: null,
+          }),
+        };
+      }
+      if (url === "/api/scenarios/refresh-run") {
+        return { ok: true, status: 200,
+                 json: async () => ({ results: [], remaining: [] }) };
+      }
+      // 手機／桌面 master-detail 都需要一份劇本清單才能渲染出設定
+      // 入口，但這裡不需要真的有劇本——空清單就不會觸發任何刷新。
+      return { ok: true, status: 200, json: async () => [] };
+    });
+    vi.stubGlobal("fetch", spy);
+    window.location.hash = "#/settings";
+    const { container } = render(<App />);
+
+    await screen.findByText("Market Data");
+    expect(container.querySelector("footer.site-footer")).toBeInTheDocument();
+    expect(container.querySelector(`a[href="${"#/privacy"}"]`)).toBeInTheDocument();
+  });
+
+  it("隱私頁路由可達，內容齊全，頁尾也在——不分裝置寬度", async () => {
+    mockRoutes({ "/api/scenarios": { json: async () => [] } });
+    window.location.hash = "#/privacy";
+    const { container } = render(<App />);
+
+    expect(await screen.findByRole("heading", { name: "隱私與資料政策" }))
+      .toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "怎麼刪" })).toBeInTheDocument();
+    // 「怎麼刪」連到真的可用的自助刪除入口（設定頁的 `DeleteMyData`）。
+    expect(container.querySelector(`a[href="${"#/settings"}"]`))
+      .toBeInTheDocument();
+    expect(container.querySelector("footer.site-footer")).toBeInTheDocument();
+  });
+
+  it("空清單顯示引導文字，不自動建立示範劇本", async () => {
+    const spy = mockRoutes({ "/api/scenarios": { json: async () => [] } });
+    render(<App />);
+
+    expect(await screen.findByText(/還沒有劇本/)).toBeInTheDocument();
+    // 開站流程只呼叫 `GET /api/scenarios`（空清單就沒有劇本可刷新）——
+    // 沒有任何一次呼叫是建立劇本的 `POST /api/scenarios`。
+    const posted = spy.mock.calls.some(
+      ([, init]) => (init as RequestInit | undefined)?.method === "POST");
+    expect(posted).toBe(false);
+  });
+});

@@ -40,3 +40,17 @@ export function settingsHash(): string {
 export function isSettingsHash(hash: string): boolean {
   return hash === settingsHash();
 }
+
+/** 隱私頁的 hash（PB-12／#302，Anonymous Public Beta）。跟其餘三對
+ *  同一套慣例——它是全站頁尾／首頁 Beta 說明的連結目標，不屬於
+ *  任何裝置寬度專屬的版面（手機／桌面共用同一個渲染路徑，見
+ *  `App.tsx` 對 `showPrivacy` 的處理），因此獨立於 `isSettingsHash`
+ *  等既有分支之外。 */
+export function privacyHash(): string {
+  return "#/privacy";
+}
+
+/** 目前是不是在隱私頁。 */
+export function isPrivacyHash(hash: string): boolean {
+  return hash === privacyHash();
+}

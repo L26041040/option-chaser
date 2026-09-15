@@ -37,6 +37,7 @@ import {
   useState,
 } from "react";
 
+import BetaNotice from "./BetaNotice";
 import CompactScenarioList from "./CompactScenarioList";
 import CreateEntry from "./CreateEntry";
 import CreateForm, {
@@ -44,6 +45,8 @@ import CreateForm, {
   type EditTarget,
 } from "./CreateForm";
 import Dashboard from "./Dashboard";
+import Footer from "./Footer";
+import PrivacyPage from "./PrivacyPage";
 import ScenarioDetail from "./ScenarioDetail";
 import ScenarioList from "./ScenarioList";
 import Settings from "./Settings";
@@ -64,6 +67,7 @@ import {
   type ScenarioSummary,
 } from "./api";
 import {
+  isPrivacyHash,
   isSettingsHash,
   isTrashHash,
   scenarioIdFromHash,
@@ -319,6 +323,10 @@ export default function App() {
   const showTrash = isTrashHash(hash);
   // Settings（#124）：同一套 hash 慣例。
   const showSettings = isSettingsHash(hash);
+  // 隱私頁（PB-12／#302）：同一套 hash 慣例，但**不分裝置寬度**——
+  // 隱私頁不屬於任何工作區脈絡，手機與桌面共用同一個渲染路徑（見下方
+  // 最優先的 early return，排在 `isDesktop` 判斷之前）。
+  const showPrivacy = isPrivacyHash(hash);
   const isDesktop = useIsDesktop();
 
   // 手機版返回劇本庫要停在原本的捲動位置（MVP-v2／#77、#83）：手機版
@@ -589,18 +597,46 @@ export default function App() {
     </div>
   );
 
+  // 隱私頁（PB-12／#302）：最優先判斷、排在裝置寬度分支之前——它不屬於
+  // 任何工作區脈絡，手機與桌面共用同一個渲染路徑。全站頁尾（`Footer`）
+  // 在這裡也要有，隱私頁自己不例外（票面 §7：頁尾必須「含……隱私頁
+  // 自己」）。
+  if (showPrivacy) {
+    return (
+      <>
+        <PrivacyPage />
+        <Footer />
+      </>
+    );
+  }
+
   // 手機版：設定是整頁替換（跟垃圾桶、詳細頁同樣的既有模式）。排在
   // 垃圾桶之前只是順序，兩個 hash 互斥。
   if (!isDesktop && showSettings) {
-    return <Settings />;
+    return (
+      <>
+        <Settings />
+        <Footer />
+      </>
+    );
   }
 
   if (!isDesktop && showTrash) {
-    return <TrashView onRestore={restoreFromTrash} />;
+    return (
+      <>
+        <TrashView onRestore={restoreFromTrash} />
+        <Footer />
+      </>
+    );
   }
 
   if (!isDesktop && detailProps) {
-    return <ScenarioDetail {...detailProps} />;
+    return (
+      <>
+        <ScenarioDetail {...detailProps} />
+        <Footer />
+      </>
+    );
   }
 
   if (!isDesktop) {
@@ -633,7 +669,18 @@ export default function App() {
         )}
         {batchArchiveErrorNotice}
 
-        <Dashboard />
+        {/* PB-12（#302）：首頁 Beta 說明——固定可見，非彈窗，排在
+            Dashboard 之前，是使用者最先看到的內容（Toolbar／錯誤提示
+            之後）。與 `Dashboard` 包在同一個 flex 容器、用比 `.screen`
+            自己更小的內距——`BetaNotice` 若自成一個 `.screen` 直接
+            子元素，會多佔一整份既有的 `--gap`（16px），在手機一屏
+            至少要看到 4 個劇本這條硬性密度要求（MVP-v2／#77、#82）下
+            划不來；包成一組只多付一份小得多的內距，不影響 `Dashboard`
+            自己的既有樣式。 */}
+        <div className="beta-notice-and-dashboard">
+          <BetaNotice />
+          <Dashboard />
+        </div>
 
         {/* #81：手機版專屬的建立入口，位置固定在 Dashboard 下方、劇本庫
             上方——不是桌面版工具列膠囊鈕的重複，是同一個 `showCreateForm`
@@ -670,6 +717,9 @@ export default function App() {
           onCancelSelectMode={cancelSelectMode}
           onConfirmBatchArchive={() => void confirmBatchArchive()}
         />
+
+        {/* PB-12（#302）：全站常駐頁尾——手機首頁也不例外。 */}
+        <Footer />
       </div>
     );
   }
@@ -745,27 +795,36 @@ export default function App() {
   // 劇本清單的底部。設定內容顯示在右側工作區（`.detail-pane`），與
   // 「選劇本切換右側」是同一個機制。
   return (
-    <div className="workspace">
-      <div className="library-pane">
-        <div className="library-scroll">{library}</div>
-        <a
-          className={`sidebar-settings${showSettings ? " active" : ""}`}
-          href={settingsHash()}
-        >
-          <GearIcon /> 設定
-        </a>
+    <>
+      <div className="workspace">
+        <div className="library-pane">
+          {/* PB-12（#302）：首頁 Beta 說明——桌面版沒有獨立的「首頁」，
+              library-pane 本身在任何選中狀態下都常駐可見，是這個
+              裝置寬度下的對應位置。放在捲動區域之外（比照下方
+              「設定」連結同一個道理），不會被清單捲走。 */}
+          <BetaNotice />
+          <div className="library-scroll">{library}</div>
+          <a
+            className={`sidebar-settings${showSettings ? " active" : ""}`}
+            href={settingsHash()}
+          >
+            <GearIcon /> 設定
+          </a>
+        </div>
+        <div className="detail-pane">
+          {showSettings ? (
+            <Settings />
+          ) : detailProps ? (
+            <ScenarioDetail {...detailProps} />
+          ) : (
+            <div className="screen">
+              <p className="caption">選擇左側的劇本查看詳細內容。</p>
+            </div>
+          )}
+        </div>
       </div>
-      <div className="detail-pane">
-        {showSettings ? (
-          <Settings />
-        ) : detailProps ? (
-          <ScenarioDetail {...detailProps} />
-        ) : (
-          <div className="screen">
-            <p className="caption">選擇左側的劇本查看詳細內容。</p>
-          </div>
-        )}
-      </div>
-    </div>
+      {/* PB-12（#302）：全站常駐頁尾——桌面版排在整個 workspace 之下。 */}
+      <Footer />
+    </>
   );
 }

@@ -2,8 +2,10 @@ import { describe, expect, it } from "vitest";
 
 import {
   detailHash,
+  isPrivacyHash,
   isSettingsHash,
   isTrashHash,
+  privacyHash,
   scenarioIdFromHash,
   settingsHash,
   trashHash,
@@ -61,5 +63,25 @@ describe("設定畫面路由（Settings／#124）", () => {
   it("設定 hash 不會被誤判成垃圾桶或詳細頁", () => {
     expect(isTrashHash(settingsHash())).toBe(false);
     expect(scenarioIdFromHash(settingsHash())).toBeNull();
+  });
+});
+
+describe("隱私頁路由（PB-12／#302，Anonymous Public Beta）", () => {
+  it("隱私頁的 hash 認得出自己", () => {
+    expect(isPrivacyHash(privacyHash())).toBe(true);
+  });
+
+  it("劇本庫、詳細頁、垃圾桶、設定的 hash 都不是隱私頁", () => {
+    expect(isPrivacyHash("")).toBe(false);
+    expect(isPrivacyHash("#/")).toBe(false);
+    expect(isPrivacyHash(detailHash("abc123"))).toBe(false);
+    expect(isPrivacyHash(trashHash())).toBe(false);
+    expect(isPrivacyHash(settingsHash())).toBe(false);
+  });
+
+  it("隱私頁 hash 不會被誤判成其他任何一個既有畫面", () => {
+    expect(isTrashHash(privacyHash())).toBe(false);
+    expect(isSettingsHash(privacyHash())).toBe(false);
+    expect(scenarioIdFromHash(privacyHash())).toBeNull();
   });
 });

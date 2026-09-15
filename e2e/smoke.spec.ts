@@ -2993,3 +2993,49 @@ test("T18（#235）紅線 12：展開一般 Vertical Spread 候選（非 Butterf
   await expect(page.locator(".candidate").first().locator("table")).toBeVisible();
   expect(requestUrls).toEqual([]);
 });
+
+/* ---------- PB-12（#302，Anonymous Public Beta）：首頁 Beta 說明＋
+   全站頁尾＋隱私頁 ---------- */
+
+test("手機版：首頁 Beta 說明常駐可見，頁尾在每個畫面都在，隱私頁可達",
+   async ({ page }) => {
+  await page.route("**/api/scenarios", (route) =>
+    route.fulfill({ json: [] }));
+  await page.goto("/");
+
+  // 首頁 Beta 說明：四項事實齊全，常駐可見（非彈窗）。
+  const notice = page.locator(".beta-notice");
+  await expect(notice).toBeVisible();
+  await expect(notice).toContainText("Beta");
+  await expect(notice).toContainText("cookie");
+  await expect(notice).toContainText("30");
+  await expect(notice).toContainText("7");
+  await expect(notice).toContainText("非投資建議");
+  // 不是彈窗——沒有可以關掉它的按鈕。
+  await expect(notice.getByRole("button")).toHaveCount(0);
+
+  // 頁尾常駐，且看得到兩個連結。
+  const footer = page.locator("footer.site-footer");
+  await expect(footer).toBeVisible();
+  await expect(footer).toContainText("非投資建議");
+  await expect(footer.getByRole("link", { name: "隱私與資料政策" }))
+    .toBeVisible();
+  await expect(footer.getByRole("link", { name: "回報問題" }))
+    .toHaveAttribute("target", "_blank");
+
+  // 點進隱私頁，六項內容齊全，頁尾在這裡也還在。
+  await footer.getByRole("link", { name: "隱私與資料政策" }).click();
+  await expect(page).toHaveURL(/#\/privacy$/);
+  await expect(page.getByRole("heading", { name: "隱私與資料政策" }))
+    .toBeVisible();
+  for (const title of ["存了什麼", "留多久", "怎麼刪",
+                        "清除瀏覽器 cookie 的後果", "不是投資建議",
+                        "Beta 狀態"]) {
+    await expect(page.getByRole("heading", { name: title })).toBeVisible();
+  }
+  await expect(page.locator("footer.site-footer")).toBeVisible();
+
+  // 「怎麼刪」的連結真的可以點到設定頁（PB-04 自助刪除入口所在）。
+  await page.getByRole("link", { name: "設定頁" }).click();
+  await expect(page).toHaveURL(/#\/settings$/);
+});

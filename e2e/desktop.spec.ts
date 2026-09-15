@@ -1955,3 +1955,36 @@ test("T18（#235）紅線 12：桌面版展開一般 Vertical Spread 候選（�
   await expect(detail.locator(".candidate").first().locator("table")).toBeVisible();
   expect(requestUrls).toEqual([]);
 });
+
+/* ---------- PB-12（#302，Anonymous Public Beta）：首頁 Beta 說明＋
+   全站頁尾＋隱私頁，桌面 viewport ---------- */
+
+test("桌面版：首頁 Beta 說明常駐在 library-pane，頁尾在整個 workspace 之下，" +
+     "隱私頁可達（與手機版 smoke.spec.ts 同一條首次進站流程）",
+   async ({ page }) => {
+  await page.route("**/api/scenarios", (route) =>
+    route.fulfill({ json: [] }));
+  await page.goto("/");
+
+  const notice = page.locator(".library-pane .beta-notice");
+  await expect(notice).toBeVisible();
+  await expect(notice).toContainText("Beta");
+  await expect(notice).toContainText("cookie");
+  await expect(notice).toContainText("非投資建議");
+
+  const footer = page.locator("footer.site-footer");
+  await expect(footer).toBeVisible();
+  await expect(footer).toContainText("非投資建議");
+
+  await footer.getByRole("link", { name: "隱私與資料政策" }).click();
+  await expect(page).toHaveURL(/#\/privacy$/);
+  for (const title of ["存了什麼", "留多久", "怎麼刪",
+                        "清除瀏覽器 cookie 的後果", "不是投資建議",
+                        "Beta 狀態"]) {
+    await expect(page.getByRole("heading", { name: title })).toBeVisible();
+  }
+  await expect(page.locator("footer.site-footer")).toBeVisible();
+
+  await page.getByRole("link", { name: "設定頁" }).click();
+  await expect(page).toHaveURL(/#\/settings$/);
+});
