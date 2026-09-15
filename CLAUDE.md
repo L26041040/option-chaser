@@ -9366,6 +9366,90 @@ CLAUDE.md 隨手更新。
   typecheck 乾淨、Vitest 795 條全綠（零異動，未觸碰任何前端
   檔案）、build 成功。
 
+- **PB-07**［#304］Synthetic load-test harness：mock vendor（既有
+  DI 注入點）＋ `is_synthetic` 標記——本輪 blocker 最多的一張驗證票
+  （被 PB-02／PB-05／PB-06／PB-08 四張擋，因此排在最後一批），要驗
+  的四個機制在它開工前必須全數已存在。**純後端票**（票面 Scope
+  明文：合成壓測 harness 只走既有 DI 注入點與 HTTP／Storage 兩個
+  既有 seam，不新增 seam），未觸碰任何前端檔案。
+
+  **絕對紅線（票面 §3 逐字）——不得打真實 vendor**：Owner 明文禁止
+  「用技術手段規避 vendor rate limit 或偵測」，且既有研究 #277 已
+  確認 `chain_backoff` 的 PK 是 `source` 單獨（provider-global，
+  SCALE-04 刻意設計成這樣防換 symbol 繞過封鎖窗）——任何真實壓測
+  流量若打到真實 Cboe，架構上無法被排除在全站封鎖窗之外，一旦被
+  限流是全站中斷。harness 因此全程用 `create_app(cboe_fetch=...)`
+  （既有 DI 注入點）接管，這個注入點刻意選在 `_default_fetch()`
+  內部——**仍會走既有 `_metered_chain_fetch()` 包裝**，`chain_
+  fetch_count` 因此真的被 synthetic 流量推進，quota／fuse 的觸發是
+  真實機制在真實負載下運作，不是預先灌值模擬出來的劇本，但從未碰到
+  `cboe.fetch_chain`／`yf.fetch_chain` 本身。
+
+  **`is_synthetic` 標記（storage 層，`api_app/storage/__init__.py`
+  的 `Owner` dataclass 新增第五個欄位，預設 `False`）**：唯一的生產
+  面作用是「清理排程分開處理，方便測試結束後整批清空」（票面 §7
+  明文：不得擴散成別的行為差異）——`memory.py` 完全零改動（既有
+  `create_owner_with_token()` 整包儲存傳入的 `Owner` 物件，新欄位
+  自動流過去）；`postgres.py` 走 `_MIGRATIONS` 新增
+  `ALTER TABLE owners ADD COLUMN IF NOT EXISTS is_synthetic BOOLEAN
+  NOT NULL DEFAULT FALSE`（PB-01 當時刻意沒有預先加這個欄位，避免
+  數週內沒有消費端的欄位躺在 production），`get_owner()`／`create_
+  owner_with_token()`／`list_owners()` 三處 SQL 同步補上。
+
+  **「preset cookie」技術（本票新引入，`main.py` 零 production code
+  改動——票面 §7 明文要求 harness 不得讓 production 出現只為壓測而
+  存在的分支）**：`_make_synthetic_owner()` 直接呼叫既有 `Storage.
+  create_owner_with_token()`＋`is_synthetic=True`，把生成的 token
+  預先塞進 `TestClient` 的 cookie jar 才發出第一個請求——PB-02 的
+  lazy-creation 路徑因此完全走不到，synthetic owner 從第一個位元組
+  起與正常使用者路徑無法分辨，除了它自己的 `is_synthetic` 旗標。
+  這個技巧先用一支獨立腳本手動驗證過（單一 synthetic owner 建立
+  一筆劇本後，`storage.list_owners()` 恰好一筆、`is_synthetic=
+  True`，證明不會意外多生出一個 owner），才寫進正式測試檔。
+
+  `tests/test_pb07_synthetic_load.py`（8 條）逐一對應 spec §15 Exit
+  Criteria：**第 1 項**（互不污染，5 個 synthetic owner 各自只看得
+  到自己的劇本，看不到別人的——回應與不存在時完全一致）；**第 2
+  項**（quota 與 fuse 真的被觸發，quota=3 時 5 次建立恰好 3×201＋
+  2×409，fuse budget=3 時 6 次刷新恰好觸發 `429 vendor_budget_
+  exhausted`）；**第 3 項**（graceful degradation，4 個 owner×
+  quota=2×budget=5 混合壓測，逐一斷言全程無 500，且 409／429 確實
+  各自被觸發過）；**第 4 項**（cleanup lifecycle 完整跑通，四個
+  synthetic owner 同時處於 active／abandoned／eligible_for_hard_
+  delete／protected 四種狀態，單一次 cron 呼叫正確分流，`protected`
+  owner 存活與 PB-08 既有斷言互為交叉驗證）；**第 6 項**（DB 成長
+  速率外推，`@pytest.mark.skipif(not TEST_DB_URL)`，僅在真實
+  Postgres 上跑——沿用 SCALE-16／REPAIR-10 既有教訓，用
+  `PRODUCTION_SCALE_FIXTURE`（600 張合約）而非六到期日小樣本；
+  量測涵蓋全部 8 張 owner-scoped 表＋`owners`／`browser_identities`
+  本身，VACUUM FULL 後才量——先跑 N=5 量到 163,840 B/owner，改跑
+  N=20 得 136,397 B/owner，兩者同一個數量級但尚未完全收斂，已在
+  測試 docstring 誠實記錄；以 N=20 為最終採用值，外推對照 PB-11 的
+  `DEFAULT_STORAGE_CAP_BYTES`（512 MiB）約 **3,936 個匿名 owner**
+  才會碰到儲存 alert 門檻）。
+
+  另兩條獨立測試：`test_zero_real_vendor_calls_across_the_whole_
+  harness`——把票面 AC「全程零真實 vendor 呼叫」從結構保證（`cboe_
+  fetch=` DI 覆寫）升格為計數斷言，monkeypatch 真實 `cboe.fetch_
+  chain`／`yf.fetch_chain` 為引爆就報錯＋計數的地雷，完整跑一輪多
+  owner／quota／fuse／cleanup 的合成流量後斷言地雷從未被引爆（同時
+  斷言 mock 本身確實被呼叫過，證明流量真的發生、不是整段被跳過）；
+  `test_synthetic_data_can_be_cleared_in_one_batch`——混一個非
+  synthetic 的真人 owner 進去，用 `is_synthetic` 篩出全部 4 個
+  synthetic owner 逐一呼叫既有 PB-04 `Storage.delete_owner()`，
+  證明真人 owner 不會被誤刪。`is_synthetic` 欄位本身的 Storage port
+  契約（round-trip、預設值）另外新增在
+  `tests/test_storage_contract.py::test_is_synthetic_defaults_to_
+  false_and_round_trips_true`（memory＋真 Postgres 雙後端）。
+
+  `/security-review`：票面 §11 明文「不需要單獨跑——本票不新增
+  授權邊界、不改 production 行為」，其驗證結果留給 PB-14 的
+  release-level 審查一併覆核。全套：後端雙後端（記憶體＋真實
+  Postgres，於乾淨重置過的資料庫上）**2282 條全綠**（+9，`--junitxml`
+  確認 `errors="0" failures="0" skipped="0"`，Exit #6 真實跑過非
+  skip）；本票未觸碰任何前端檔案，typecheck／Vitest／build 無需
+  重跑（`git diff --stat -- src/` 為空）。
+
 ### 施工依據
 
 - 需求與決策紀錄：`docs/modifyRequestV1.md`（附錄 A1–A12）
