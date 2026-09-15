@@ -1017,7 +1017,13 @@ test("刷新失敗說明是哪一段，重試就地重來（V4／#52）", async 
     route.fulfill({ json: { results: [{ scenario_id: "s1", ok: false,
       stage: "fetch", message: "抓不到 TLT 的報價：來源無回應" }],
       remaining: [] } }));
-  await page.route("**/api/scenarios/*/refresh", (route) =>
+  // PB-08（#300）在真人主動點擊重試（`manual=true`）時，`refreshScenario()`
+  // 會在網址加上 `?manual=true`（`src/api.ts:906`）；這條路由字尾沒有 `*`
+  // 因此接不住那段查詢字串，Playwright 的 glob 比對整個不算「符合」，
+  // 這次請求會直接落到真實網路、拿到 dev server 的 404——跟本檔案其餘
+  // 幾處既有的「路由字尾缺 `*`」陷阱（`iv-history*`／`diagnostics*`）是
+  // 同一個成因（OPTION-PUBLIC-BETA-CI-REPAIR-010 診斷，PR #306）。
+  await page.route("**/api/scenarios/*/refresh*", (route) =>
     route.fulfill({ json: refreshedRow() }));
 
   await page.goto("/");
