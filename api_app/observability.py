@@ -10,6 +10,21 @@ headers（`Cookie`／`Authorization`）整個丟棄，並對事件裡的訊息�
 文字套用既有 `diagnostics.sanitize_string()` 同一套「已知祕密值逐字
 比對 → 樣式遮蔽」規則——匿名身份 cookie token 與第三方 provider
 token（`owner_credentials`）都不該隨錯誤堆疊上傳到 Sentry。
+
+**`include_local_variables=False`（release-level `/security-review`
+發現並修正，PB-14／#305）**：Sentry Python SDK 預設會把每一層
+stack frame 的區域變數整個 `repr()` 後上傳。`_fetch_chain()`／
+`put_credential()`／`test_credential()`（`api_app/main.py`）在成功
+拿到第三方 provider token 明文（`cred.token`／`req.token`）之後，
+還有後續呼叫（`db.save_verification()` 等）可能拋出無關的例外
+（例如 Neon 連線瞬斷）——那個當下 token 仍是活著的區域變數，若
+Sentry 照預設把它連同 stack frame 一起送出，`_scrub_event()` 目前
+只清 `event["exception"]["values"][].value`（例外訊息字串）與
+`request` 區塊，並不會走到 `stacktrace.frames[].vars` 這一層，
+token 因此會明文外洩到 Sentry 帳號。停用整個 local-variable 擷取
+功能是最直接的封堵——本站的 error triage 從一開始就只依賴例外
+型別／訊息與既有 Diagnostics／`/api/ops/metrics` 這條完全獨立的
+自建帳本，不依賴 Sentry 顯示區域變數值，關掉它零損失。
 """
 from __future__ import annotations
 
@@ -78,6 +93,7 @@ def init_sentry() -> bool:
         # performance tracing——那會用掉遠更多配額且本票不需要。
         traces_sample_rate=0.0,
         send_default_pii=False,
+        include_local_variables=False,
         before_send=before_send,
     )
     return True

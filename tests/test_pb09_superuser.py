@@ -269,3 +269,62 @@ def test_is_superuser_signature_has_no_owner_parameter():
     params = set(inspect.signature(superuser.is_superuser).parameters)
     assert "owner_id" not in params
     assert "owner" not in params
+
+
+# ---------- PB-14（#305）§20 補測：spec §20 八項必要測試逐一核對時
+# 發現的兩個真缺口，本輪一併補齊，不留給下一輪 ----------
+
+NEW = {"symbol": "XYZ", "target_price": 130.0, "target_month": "2026-09",
+       "strategies": ["vertical-spread"]}
+
+
+def test_superuser_credentials_can_still_do_every_normal_user_thing():
+    """§20 必要測試第 3 項：『Super User 可以執行 Normal User 的所有
+    功能』。既有 `test_admin_secret_presence_does_not_change_which_
+    owner_a_cookie_resolves_to` 只驗證 owner 身份不變，沒有真的驗證
+    一次完整的 Normal User 寫入操作（建立劇本）在同時帶著有效
+    `ADMIN_SECRET` 的情況下依然成功——這裡補上這條，用真實 201 狀態
+    碼與後續讀取確認，不是只看 owner 沒有分裂。"""
+    c = _client(headers=ADMIN_AUTH)
+
+    created = c.post("/api/scenarios", json=NEW)
+    assert created.status_code == 201, created.text
+
+    listing = c.get("/api/scenarios")
+    assert listing.status_code == 200
+    assert [row["id"] for row in listing.json()] == [created.json()["id"]]
+
+    edited = c.patch(f"/api/scenarios/{created.json()['id']}", json={
+        **NEW, "notes": "仍是一般 Normal User 操作"})
+    assert edited.status_code == 200, edited.text
+
+    archived = c.post(f"/api/scenarios/{created.json()['id']}/archive")
+    assert archived.status_code == 200, archived.text
+
+
+def test_normal_user_cannot_self_elevate_to_superuser_through_any_product_endpoint():
+    """§20 必要測試第 7 項：『Normal User 無法透過任何操作自行升級為
+    Super User』。本站沒有任何『升級』端點，這個安全性質的正確測法
+    是反面證明：即使在一般使用者可控的請求內容（body／query string／
+    自訂標頭）裡塞進看起來像是要素取 Super User 的欄位，`/api/
+    superuser/status` 事後查詢的結果依然是 `False`——沒有任何一條
+    Normal User 路徑會讓伺服器把這些欄位讀成 Super User 授權判準
+    （`is_superuser()` 的唯一輸入是 `Authorization` 標頭本身，見
+    `test_status_endpoint_never_trusts_client_supplied_hints`；這裡
+    從「建立劇本」這個具體的 Normal User 寫入端點角度重新驗證一次）。
+    """
+    c = _client()  # 沒有 ADMIN_AUTH，純粹的 Normal User
+
+    # 嘗試在 body／query string 塞進各種看起來像是要素取權限的欄位。
+    r = c.post("/api/scenarios?is_superuser=true&admin_secret=" + ADMIN_SECRET,
+              json={**NEW, "is_superuser": True, "role": "superuser",
+                   "admin_secret": ADMIN_SECRET})
+    assert r.status_code == 201, r.text  # 額外欄位被忽略，建立仍正常成功
+
+    status = c.get("/api/superuser/status")
+    assert status.status_code == 200
+    assert status.json()["is_superuser"] is False
+
+    # 之後這個 owner 對受保護端點依然是 Normal User，進不去。
+    protected = c.get("/api/ops/metrics")
+    assert protected.status_code == 401

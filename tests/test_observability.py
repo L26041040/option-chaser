@@ -44,6 +44,31 @@ def test_init_sentry_initializes_when_dsn_is_set(monkeypatch):
     assert calls[0]["send_default_pii"] is False
 
 
+def test_init_sentry_disables_local_variable_capture(monkeypatch):
+    """release-level `/security-review`（PB-14／#305）發現：Sentry
+    預設會把每層 stack frame 的區域變數 `repr()` 後上傳；
+    `_fetch_chain()`／`put_credential()`／`test_credential()` 拿到
+    第三方 provider token 明文後若中途拋出無關例外，token 仍是活著
+    的區域變數，`_scrub_event()` 目前不掃 `stacktrace.frames[].vars`
+    這一層。停用整個功能是修法，這條測試釘死 `sentry_sdk.init()`
+    真的帶著這個旗標——若未來有人為了看區域變數而拿掉它，這裡會紅。
+    """
+    calls = []
+
+    class FakeSentrySdk:
+        @staticmethod
+        def init(**kwargs):
+            calls.append(kwargs)
+
+    import sys
+    monkeypatch.setitem(sys.modules, "sentry_sdk", FakeSentrySdk)
+    monkeypatch.setenv("SENTRY_DSN", "https://example@sentry.io/1")
+
+    observability.init_sentry()
+
+    assert calls[0]["include_local_variables"] is False
+
+
 def test_known_env_secrets_picks_up_configured_secrets(monkeypatch):
     monkeypatch.setenv("CRON_SECRET", "cron-secret-value")
     monkeypatch.setenv("OPS_SECRET", "ops-secret-value")
