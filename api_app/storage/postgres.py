@@ -432,6 +432,12 @@ CREATE TABLE IF NOT EXISTS browser_identities (
     last_seen_at   TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS browser_identities_owner_idx ON browser_identities (owner_id);
+-- PB-07（#304，Anonymous Public Beta）：Controlled Beta 合成壓測
+-- harness 的清理標記——PB-01 當時刻意未預先加這個欄位（避免數週內
+-- 沒有消費端的欄位躺在 production），本票才是它真正的消費端。純
+-- 加法、`DEFAULT FALSE` 讓既有列讀回時天然是「不是 synthetic」，
+-- 不需要資料回填。
+ALTER TABLE owners ADD COLUMN IF NOT EXISTS is_synthetic BOOLEAN NOT NULL DEFAULT FALSE;
 -- PB-10（#301，Anonymous Public Beta）：Super User 高風險操作 audit
 -- trail——刻意獨立於 `diagnostics`（owner-scoped、trim-on-write 只留
 -- 全域最新 200 筆）與 `events`（scenario-scoped 領域事實）。這張表
@@ -1292,10 +1298,12 @@ class PostgresStorage:
     def get_owner(self, owner_id: str) -> Owner | None:
         with self._connect() as conn:
             row = conn.execute(
-                "SELECT owner_id, created_at, last_activity_at, protected "
-                "FROM owners WHERE owner_id = %s", (owner_id,)).fetchone()
+                "SELECT owner_id, created_at, last_activity_at, protected, "
+                "is_synthetic FROM owners WHERE owner_id = %s",
+                (owner_id,)).fetchone()
         return (Owner(owner_id=row[0], created_at=row[1],
-                      last_activity_at=row[2], protected=row[3])
+                      last_activity_at=row[2], protected=row[3],
+                      is_synthetic=row[4])
                 if row else None)
 
     def resolve_owner_by_token(self, token: str) -> str | None:
@@ -1310,9 +1318,10 @@ class PostgresStorage:
         with self._connect() as conn:
             conn.execute(
                 "INSERT INTO owners (owner_id, created_at, "
-                "last_activity_at, protected) VALUES (%s, %s, %s, %s)",
+                "last_activity_at, protected, is_synthetic) "
+                "VALUES (%s, %s, %s, %s, %s)",
                 (owner.owner_id, owner.created_at, owner.last_activity_at,
-                 owner.protected))
+                 owner.protected, owner.is_synthetic))
             conn.execute(
                 "INSERT INTO browser_identities "
                 "(token, owner_id, issued_at, last_seen_at) "
@@ -1342,10 +1351,11 @@ class PostgresStorage:
     def list_owners(self) -> list[Owner]:
         with self._connect() as conn:
             rows = conn.execute(
-                "SELECT owner_id, created_at, last_activity_at, protected "
-                "FROM owners ORDER BY created_at, owner_id").fetchall()
+                "SELECT owner_id, created_at, last_activity_at, protected, "
+                "is_synthetic FROM owners "
+                "ORDER BY created_at, owner_id").fetchall()
         return [Owner(owner_id=r[0], created_at=r[1], last_activity_at=r[2],
-                      protected=r[3]) for r in rows]
+                      protected=r[3], is_synthetic=r[4]) for r in rows]
 
     # ---------- Super User audit trail（PB-10／#301） ----------
 

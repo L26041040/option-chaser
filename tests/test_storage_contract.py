@@ -809,6 +809,29 @@ def test_list_owners_returns_every_owner(storage):
     assert {"anon-list-0", "anon-list-1", "anon-list-2"} <= ids
 
 
+def test_is_synthetic_defaults_to_false_and_round_trips_true(storage):
+    """PB-07（#304，Anonymous Public Beta）：`is_synthetic` 純加法欄位
+    ——既有（未顯式設定）的 owner 建構天然是 `False`，harness 建構時
+    顯式設 `True` 也要能存活過 round-trip（雙後端）。"""
+    storage.create_owner_with_token(
+        Owner(owner_id="real-1", created_at="2026-09-14T00:00:00+00:00"),
+        BrowserIdentity(token="tok-real-1", owner_id="real-1",
+                        issued_at="2026-09-14T00:00:00+00:00",
+                        last_seen_at="2026-09-14T00:00:00+00:00"))
+    storage.create_owner_with_token(
+        Owner(owner_id="synth-1", created_at="2026-09-14T00:00:00+00:00",
+             is_synthetic=True),
+        BrowserIdentity(token="tok-synth-1", owner_id="synth-1",
+                        issued_at="2026-09-14T00:00:00+00:00",
+                        last_seen_at="2026-09-14T00:00:00+00:00"))
+
+    assert storage.get_owner("real-1").is_synthetic is False
+    assert storage.get_owner("synth-1").is_synthetic is True
+    by_id = {o.owner_id: o.is_synthetic for o in storage.list_owners()}
+    assert by_id["real-1"] is False
+    assert by_id["synth-1"] is True
+
+
 def test_identity_resolver_still_returns_solo_after_pb01(storage):
     """AC：本票是純 expand，不改變任何請求的 owner——`identity_
     resolver()` 這個獨立於 storage 之外的 callable 完全不讀這張新表，

@@ -273,11 +273,21 @@ class Owner:
     `last_activity_at`：「哪些動作算 activity」的語意判斷屬 PB-08，
     本票只建立欄位與讀寫方法（`touch_owner_activity()`），不先寫死
     任何判準。`None`＝這個 owner 還沒被記過任何一次 activity。
-    """
+
+    `is_synthetic`（PB-07／#304，Anonymous Public Beta）：Controlled
+    Beta 合成壓測 harness 產生的 owner 標記——**唯一的生產面作用是
+    清理排程分開處理**（票面 §7 明文：不得擴散成別的行為差異）。
+    PB-01 當時刻意**沒有**預先加這個欄位（避免數週內沒有消費端的
+    欄位躺在 production），本票才是它真正的消費端。harness 產生的
+    owner 由呼叫端在建構 `Owner` 物件時直接設 `True`——不經過任何
+    HTTP 端點（一般使用者的 lazy-creation 路徑，`PB-02`，永遠產生
+    `is_synthetic=False` 的 owner；沒有任何請求能讓自己被標記成
+    synthetic，這不是一個可以透過網路操縱的旗標）。"""
     owner_id: str
     created_at: str
     last_activity_at: str | None = None
     protected: bool = False
+    is_synthetic: bool = False
 
 
 @dataclass(frozen=True)
