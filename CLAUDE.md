@@ -9108,6 +9108,87 @@ CLAUDE.md 隨手更新。
   乾淨、Vitest 777 條全綠、build 成功；Playwright 126 條（iPhone＋
   Desktop）全綠，與 PB-09 收工時完全相同的數字（本票未新增任何
   e2e 案例，既有失敗卡片視覺呈現機制原封不動）。
+- **PB-08**［#300］Anonymous owner lifecycle：`last_activity_at`
+  語意 ＋ 30+7 天三段式生命週期 ＋ Vercel Cron 清理（commit
+  `d5afb39`）：新增獨立純函式模組 `api_app/anonymous_lifecycle.py`
+  （`classify()`：Active →（`abandoned_after_days`）Abandoned →
+  （再 `grace_period_days`）`eligible_for_hard_delete`，衍生狀態、
+  不落盤——比照既有 Direction 衍生三態設計原則，`owners` 表只存
+  `last_activity_at` 這個原始事實，「現在算不算 abandoned」永遠
+  即時算出來；`last_activity_at` 為 `None` 時退回 `created_at`；
+  時間戳讀不懂時保守回 `"active"`，分類失敗的後果不該是誤刪）。
+
+  **`manual: boolean` 旗標——票面自己點名「整張票最容易做錯的地方」**：
+  開站自動刷新全部未過期劇本與真人主動點擊在 HTTP 層是同一種請求
+  形狀，結構上無從分辨，改由呼叫端明確告知。新增 `RefreshRunRequest.
+  manual`（預設 `False`）與 `refresh_scenario(scenario_id, manual:
+  bool = False)` 查詢參數；`_touch_activity(owner)` 只在六類真人
+  操作（建立／編輯／封存／還原／永久刪除／`manual=True` 的刷新）
+  各自呼叫一次，`refresh_run()` 一次呼叫只記一次（整個 Run 屬於
+  同一個 owner）。**預設值刻意選 `False` 而非 `True`**——風險方向是
+  誤把自動刷新算成活動，不是反過來。前端整條刷新呼叫鏈（`src/
+  api.ts` 的 `refreshScenario()`／`refreshRun()`、`src/App.tsx` 的
+  `refreshOne()`／`runBatch()`／`reloadAndRefresh()`）新增
+  `manual` 參數並貫穿七個既有呼叫點：頂部刷新鈕／詳細頁刷新鈕／
+  卡片重試（三處，皆傳 `true`）、開站自動刷新／建立劇本後自動重跑／
+  編輯後自動重新分析（三處，維持隱性 `false`——建立與編輯本身已經
+  在後端算過一次活動，這些是它們的自動後續，不是獨立的第二次真人
+  操作）。
+
+  **`GET /api/cron/cleanup-abandoned-owners`**：Vercel Cron 每日
+  觸發一次（Hobby 方案上限，研究 #276），`Authorization: Bearer
+  <CRON_SECRET>` fail-closed 401（比照既有 `cron_warm_rate_cache()`
+  同一套寫法）。**`protected` 的 owner（PB-03 遷移過去的 Owner 自己）
+  在進入分類判斷之前就已經被 `[o for o in list_owners() if not
+  o.protected]` 濾掉**——不是分類結果剛好回 `"active"`，把關點只有
+  這一處、不依賴 `classify()` 內部再判斷一次。批次上限
+  （`ANONYMOUS_CLEANUP_BATCH_SIZE`）**不是** Continuation（Hobby
+  cron 同一天無法再被觸發一次）——是時間預算保護，處理不完的候選
+  留給明天那次 cron，`list_owners()` 沒有穩定排序保證但不影響
+  正確性（每個 owner 遲早會被處理到）。三個數值
+  （`ANONYMOUS_ABANDONED_AFTER_DAYS=30`／`ANONYMOUS_GRACE_PERIOD_
+  DAYS=7`／`ANONYMOUS_CLEANUP_BATCH_SIZE=200`）皆可經 `create_app()`
+  DI 或同名環境變數覆寫。`vercel.json` 新增第二筆 cron
+  （`0 12 * * *`，每日一次）。**明確不用 `pg_cron`**（#281 既有
+  確認 Neon Free autosuspend 會讓它靜默不觸發、無錯誤訊息，比
+  Vercel 的時間上限更危險）。
+
+  **cleanup volume 被記錄（spec §7／§22 AC5），不是只回在這次 HTTP
+  回應裡就算數**：`api_app.metrics.METRIC_CATALOGUE` 有意識擴為
+  八類，新增 `abandoned_owner_cleanup_count`（`count`＝這次批次
+  hard-delete 的 owner 數，`amount`＝加總刪掉的資料列數）——這是
+  SCALE-08「七類封頂」結構性守門第一次、也是目前唯一一次被打破，
+  `tests/test_scale08_observability.py` 的
+  `test_metric_catalogue_is_exactly_seven` 隨之改名為 `..._eight`
+  並更新斷言數字與清單，`test_table_size_is_the_only_non_
+  persisted_metric` 的 `len(PERSISTED_METRICS)` 6→7；`/api/ops/
+  metrics`（PB-09 起 Super User-only）透過既有 `PERSISTED_METRICS`
+  迭代自動涵蓋新類別，零額外接線。每次執行都記一筆（含 0）——
+  「今天 cron 有沒有真的跑過」本身也是有價值的訊號，供 PB-11 的
+  每日摘要信引用。
+
+  測試：新增 `tests/test_pb08_anonymous_lifecycle.py`（24 條）——
+  純函式 `classify()` 六個邊界（近期活動／恰好在門檻／grace 期內／
+  超過完整窗口／`last_activity_at` 為 `None` 退回 `created_at`／
+  無法解析的時間戳保守回 active）、六類真人操作各自 touch
+  activity、**票面最強調的風險**兩條專屬測試（單一劇本刷新省略
+  `manual` 不算活動／`refresh-run` 省略 `manual` 不算活動）、
+  protected owner 在遠遠超過門檻時仍存活（正面測試，不是只測「一般
+  owner 會被刪」）、完整三段式生命週期透過 cron 端點本身走過一輪
+  （用極短天數 1+1 真正觸發三個階段的轉換，不是直接呼叫純函式模擬）、
+  真人操作把 Abandoned 狀態重新拉回 Active、cron 端點 fail-closed
+  （缺 secret／錯 secret）、缺 cookie 呼叫該端點不建立新 owner、
+  cleanup volume 確實寫進 `operational_metrics`（含零值執行）、
+  批次上限跨多次 cron 呼叫正確處理完全部候選不遺漏不重複。前端
+  `src/App.test.tsx` 新增獨立區塊「PB-08（#300）：manual 旗標——
+  真人操作與自動觸發分流」（4 條：開站自動 `manual=false`／頂部
+  按鈕 `manual=true`／建立後自動 `manual=false`／編輯後自動不帶
+  `?manual=true`），既有兩條測試（卡片重試、詳細頁刷新）因新增
+  `?manual=true` 查詢字串而更新 URL 比對（`===` → `startsWith`／
+  `includes`），斷言意圖未變、只是配合新增的查詢字串。全套：後端
+  雙後端（記憶體＋真實 Postgres，於乾淨重置過的資料庫上）
+  2218 條全綠；前端 typecheck 乾淨、Vitest 782 條全綠、
+  build 成功。
 
 ### 施工依據
 
