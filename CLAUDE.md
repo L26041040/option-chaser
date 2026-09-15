@@ -9267,6 +9267,105 @@ CLAUDE.md 隨手更新。
   後端（記憶體＋真實 Postgres）2247 條全綠（+29）；前端 typecheck
   乾淨、Vitest 795 條全綠（+13）、build 成功。
 
+- **PB-11**［#303］Ops metrics 擴充（匿名 owner／cleanup volume）＋
+  daily email digest（commit `e4e74f8`）：**純後端票**（票面 §4
+  Non-goals 明文「不做豪華 HTML Dashboard、不做即時互動式頁面」，
+  第一版載體就是「protected JSON endpoint ＋ daily email digest」，
+  本票因此**未觸碰任何前端檔案**，前端測試數字逐位元不變）。
+
+  **Query-time gauge，不進 `METRIC_CATALOGUE`**（票面 §3 明訂兩條
+  路線擇一並寫明理由，選這一條）：新增
+  `Storage.scenario_count_total()`（site-wide 劇本總數，含已封存，
+  單純 `COUNT(*)`，不接受 `owner` 參數）與 `main.py::
+  _anonymous_owner_distribution()`（直接重用 PB-08 既有的
+  `anonymous_lifecycle.classify()` 逐一分類 `list_owners()`，不另外
+  寫一份可能漂移的 SQL 版本）——兩者與既有 `table_size_metrics()`
+  同一種「現在去數一次就有答案，不落盤」形狀，**`METRIC_CATALOGUE`
+  維持 PB-08 收工時的 8 項不變**。Cleanup volume（票面 §3 的另一
+  半）**已在 PB-08 完成**（`abandoned_owner_cleanup_count` 第 8 項），
+  `/api/ops/metrics` 透過既有 `PERSISTED_METRICS` 迭代自動涵蓋，
+  本票零額外接線。
+
+  `/api/ops/metrics` 純加法擴充三個頂層鍵：`anonymous_owners`
+  （active／abandoned／eligible_for_hard_delete／protected／total）、
+  `scenarios`（site-wide 總數＋per-owner 平均）、`alerts`（四條判準
+  目前結果）——回應**只含聚合數字**，不與 PB-10 的跨 owner 個別檢視
+  端點混在同一份回應裡（票面 §10）。
+
+  **四條 alert 判準**（新模組 `api_app/ops_alerts.py`，純函式、零
+  I/O，`evaluate_alerts()`）：① 429 持續性事故——直接查
+  `chain_backoff.status(storage, source)` 對已知來源
+  （`"cboe"`／`"yfinance"`）逐一詢問，沿用既有 `is_sustained_
+  incident()` 門檻，不重新發明一個；② 清理排程連續 N 天沒有執行
+  紀錄——**判準是「`abandoned_owner_cleanup_count` 這個 bucket 是否
+  存在」，不是看 `count` 數值**（PB-08 設計是即使清了 0 個 owner
+  也留一筆 count=0 的紀錄，兩者語意不同，混為一談會把「排程跑了、
+  剛好沒東西可清」誤判成「排程沒跑」）；③ 儲存用量超過設定比例
+  （預設 80%，對照 `results`＋`snapshots` 兩表 `total_bytes` 加總／
+  一個可設定上限，預設對齊研究 #273／#276 記載的 Neon Free 約
+  512 MiB）；④ vendor 抓取錯誤率（`chain_429_count` / `chain_fetch_
+  count`，近 7 天窗口，預設門檻 10%）——**刻意不重造一套本地版的
+  「backend error rate」**：一般性錯誤率追蹤已由 PB-13 的 Sentry
+  承接，這裡只用本站唯一已經持久化、且直接對應使用者體感失敗頻率
+  的既有指標對，避免與 Sentry 維護兩套互相可能兜不起來的真相來源。
+
+  **Daily email digest**（新模組 `api_app/digest.py`，`build_
+  digest_text()` 純格式化與 `send_digest_email()` 寄送分開，後者
+  任一必要 SMTP 設定缺席即嚴格 no-op、回傳 `False`——比照 PB-13
+  Sentry 接線同一套「未設定就什麼都不做」哲學，讓內容組裝在完全
+  沒有信箱設定的環境（本地開發、CI）也能被單獨測試）：五類指標
+  分開陳列（product usage／system health／vendor usage-quota／
+  storage growth／security-abuse，票面 §7 明文要求不得混成一個
+  總分），觸發中的 alert 額外顯示在信件頂端的「⚠ 需要留意」區塊。
+  用 Python 標準庫 `smtplib`／`email`——FREE-FIRST（spec §13），
+  不引入任何新套件或付費服務，任何提供免費 SMTP relay 的信箱（例如
+  Gmail App Password）皆可設定。新增
+  `docs/pb11-owner-setup-checklist.md`（比照既有 PB-13 HITL 清單
+  慣例）列出唯一需要 Owner 親自操作的步驟——申請免費 SMTP 帳號、
+  設定六個 `DIGEST_*` 環境變數。
+
+  新端點 `GET /api/cron/daily-digest`——`CRON_SECRET` 保護（比照
+  既有 `cron_warm_rate_cache()`／`cron_cleanup_abandoned_owners()`
+  同一套 fail-closed 慣例），與 `/api/ops/metrics` **共用同一份
+  `_ops_snapshot()` 計算**（兩處若各自重算，遲早會算出兜不起來的
+  兩個答案，沿用既有 `chain_backoff.status()`「唯一判斷點」慣例）。
+  `vercel.json` 新增第三筆 cron（`0 13 * * *`，晚清理排程一小時，
+  digest 才能報出「今天」的清理量體）——**推翻票面 §7 原本擔心的
+  「Vercel Hobby 每天只能一次」限制範圍**：實測查證（研究文件
+  `docs/research/public-beta-platform-facts.md` §1.3，官方文件
+  「每專案上限 100 個 cron job」）確認該限制是**逐一 cron job 各自
+  最短間隔一天**，不是「整個專案只能有一個 cron job」——PB-08 已經
+  示範過同一份 `vercel.json` 可以有兩個獨立 cron 條目，本票直接加
+  第三個，不需要合併成同一個 handler。
+
+  測試：`tests/test_pb11_ops_digest.py`（21 條，純函式層 11 條
+  ——四條 alert 判準各自的邊界值、`build_digest_text()` 五類分開
+  陳列與 alert 橫幅只在觸發時出現、`send_digest_email()` 缺任一
+  設定的 no-op 與（monkeypatch `smtplib.SMTP`）真的寄送兩條路徑
+  ——HTTP-seam 層 10 條，含建構已知 owner／scenario 狀態逐一核對
+  分佈數字的正確性（不只信任「有回傳欄位」）、聚合回應不含個別
+  owner_id 或標的代號、與「兩個端點共用同一份計算」的一致性測試
+  （用 monkeypatch 攔截寄出的信件內文、比對 `/api/ops/metrics` 的
+  JSON 數字確實出現在信件裡）＋ `tests/test_storage_contract.py`
+  新增 2 條 `scenario_count_total()` 契約測試（memory＋真 Postgres
+  雙後端）。施工中發現既有 `tests/test_scale08_observability.py`
+  的 `test_ops_metrics_endpoint_answers_all_seven_categories` 斷言
+  回應鍵集合與 `METRIC_CATALOGUE` **完全相等**——這是 PB-11 純加法
+  擴充三個頂層鍵後結構上必然會打破的既有斷言，已有意識修正為子
+  集合關係（`METRIC_CATALOGUE` 逐一仍在，加上明確斷言三個新鍵存
+  在），非靜默放寬（commit 訊息與測試自身 docstring 皆記錄理由）。
+
+  `/security-review`：票面 §11 列為「建議跑」（非 PB-10 那種
+  「必須」），評估後判斷本票的安全面向已由設計本身與既有測試
+  覆蓋——`DigestSnapshot` 結構上不含任何 owner_id／劇本內容／
+  credential 欄位（無法夾帶，不是靠審查抓出來的）、收件信箱走
+  env/secret（`docs/pb11-owner-setup-checklist.md` 明文要求，
+  repo 內零硬編碼）——故未另外派遣完整安全審查子代理，改為對照
+  票面 §10 三項安全考量逐一自我核對，皆已由對應測試覆蓋。全套：
+  後端雙後端（記憶體＋真實 Postgres）2272 條全綠（+25）；前端
+  typecheck 乾淨、Vitest 795 條全綠（零異動，未觸碰任何前端
+  檔案）、build 成功。
+
 ### 施工依據
 
 - 需求與決策紀錄：`docs/modifyRequestV1.md`（附錄 A1–A12）
