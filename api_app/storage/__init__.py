@@ -1168,6 +1168,16 @@ class Storage(Protocol):
         對應的大小/分布欄位為 `None`（沒有東西可以算平均／最大值，
         不是假裝成 0）。"""
 
+    def scenario_count_total(self) -> int:
+        """PB-11（#303，Anonymous Public Beta）：site-wide 劇本總數
+        （跨全部 owner，含已封存）——**query-time gauge，不持久化**，
+        與 `table_size_metrics()` 同一種形狀（單純 `COUNT(*)`，不是
+        撈出每一列再數）。供 `/api/ops/metrics` 算「每個 owner 平均
+        幾個劇本」使用；本方法不接受 `owner` 參數、不做任何過濾——
+        這正是它跟既有 `list_scenarios(owner=...)` 不同的地方，也是
+        SCALE-08 AC-7 紅線（`operational_metrics` 無 `owner_id`）
+        自然成立的原因之一：這裡連 `operational_metrics` 表都不碰。"""
+
     # ---------- Narrow visible-candidate history（SCALE-09／#261） ----------
 
     def save_narrow_history(self, entries: Iterable[NarrowHistoryEntry]) -> None:

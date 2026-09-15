@@ -855,3 +855,6 @@ class MemoryStorage:
         snapshot_dicts = [snap for (snap, _owner) in self._snapshots.values()]
         return {"results": _stats(result_views),
                "snapshots": _stats(snapshot_dicts)}
+
+    def scenario_count_total(self) -> int:
+        return len(self._scenarios)

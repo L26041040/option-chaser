@@ -2851,6 +2851,24 @@ def test_table_size_metrics_reflects_actual_row_count(storage):
     assert stats["snapshots"]["avg_row_bytes"] > 0
 
 
+# ---------- Site-wide scenario count（PB-11／#303） ----------
+
+def test_scenario_count_total_is_zero_before_any_scenario_exists(storage):
+    assert storage.scenario_count_total() == 0
+
+
+def test_scenario_count_total_counts_across_every_owner_including_archived(storage):
+    """query-time gauge——不接受 `owner` 參數，跨全部 owner 加總，且
+    含已封存（`list_scenarios()` 預設排除封存的行為不適用於這裡：
+    這是 site-wide 總量，不是給任何一個 owner 看的清單）。"""
+    storage.create_scenario(_scenario("s1", owner_id="alice"))
+    storage.create_scenario(_scenario("s2", owner_id="bob"))
+    storage.create_scenario(_scenario("s3", owner_id="alice"))
+    storage.archive_scenario("s3", owner="alice", ts="2026-09-14T00:00:00+00:00")
+
+    assert storage.scenario_count_total() == 3
+
+
 def test_metric_entry_has_no_disallowed_fields():
     """AC-7：只允許 `source`／`symbol` 兩個維度——不得有 `scenario_id`／
     `owner_id`／任何報價或合約欄位。"""

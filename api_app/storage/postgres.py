@@ -1809,3 +1809,8 @@ class PostgresStorage:
 
         return {"results": _stats("results", "view"),
                "snapshots": _stats("snapshots", "snapshot")}
+
+    def scenario_count_total(self) -> int:
+        with self._connect() as conn:
+            row = conn.execute("SELECT COUNT(*) FROM scenarios").fetchone()
+        return row[0]

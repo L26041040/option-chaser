@@ -34,8 +34,9 @@ from option_chaser.timeframe import (TargetMonth, calendar_anchor,
                                      ensure_month_open, month_is_over)
 
 from . import (anonymous_lifecycle, chain_backoff, diagnostics, metrics,
-              providers, superuser, vendor_fuse)
+              ops_alerts, providers, superuser, vendor_fuse)
 from .clock import now_utc_iso, ny_today
+from .digest import DigestSnapshot, build_digest_text, send_digest_email
 from .dividend_cache import cached_loader as cached_dividend_loader
 from .identity import (IdentityResolver, cookie_identity_resolver,
                        default_identity_resolver, resolved_owner_scope)
@@ -169,6 +170,19 @@ def _env_int(name: str, default: int) -> int:
         return default
     try:
         return int(raw)
+    except ValueError:
+        return default
+
+
+def _env_float(name: str, default: float) -> float:
+    """`_env_int()` 的浮點數版本（PB-11／#303，`chain_error_rate_
+    threshold` 是比例而非整數）——同一套惰性讀取＋解析失敗落回預設值
+    的慣例。"""
+    raw = os.environ.get(name)
+    if not raw:
+        return default
+    try:
+        return float(raw)
     except ValueError:
         return default
 
@@ -699,6 +713,15 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
                anonymous_abandoned_after_days: int | None = None,
                anonymous_grace_period_days: int | None = None,
                anonymous_cleanup_batch_size: int | None = None,
+               digest_smtp_host: str | None = None,
+               digest_smtp_port: int | None = None,
+               digest_smtp_user: str | None = None,
+               digest_smtp_password: str | None = None,
+               digest_email_from: str | None = None,
+               digest_email_to: str | None = None,
+               storage_alert_cap_bytes: int | None = None,
+               cleanup_missed_days_threshold: int | None = None,
+               chain_error_rate_threshold: float | None = None,
                ) -> FastAPI:
     """`fetch`／`storage`／`rate_loader`／`dividend_loader` 皆可注入：
     測試傳入固定快照、記憶體假體與假來源，因此不打真網路、不碰真資料庫，
@@ -869,7 +892,26 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
     abandoned-owners`（下方）逐批掃描並清除，`protected` 的 owner
     （Owner 自己遷移過去的那個，PB-03）在進入分類判斷**之前**就已經
     被濾掉，不是分類結果剛好回 active。三者皆可經 DI 或同名環境變數
-    覆寫，`None` 時落回同名常數。"""
+    覆寫，`None` 時落回同名常數。
+
+    `digest_smtp_host`／`digest_smtp_port`／`digest_smtp_user`／
+    `digest_smtp_password`／`digest_email_from`／`digest_email_to`
+    （PB-11／#303）：每日摘要信的 SMTP 設定（`api_app/digest.py`），
+    對應同名環境變數（`DIGEST_SMTP_HOST` 等）。**任一項缺席，
+    `GET /api/cron/daily-digest` 一樣會算完整份快照＋回傳，只是不會
+    真的寄信**——比照 PB-13 的 Sentry 接線「未設定即嚴格 no-op」，
+    digest 端點本身在完全沒有信箱設定的環境（例如本地開發、測試）
+    仍可被驗證。FREE-FIRST（spec §13）：任何提供免費 SMTP relay 的
+    信箱皆可設定，程式碼不綁死特定 vendor。
+
+    `storage_alert_cap_bytes`／`cleanup_missed_days_threshold`／
+    `chain_error_rate_threshold`（PB-11／#303）：daily digest 四條
+    alert 判準（`api_app/ops_alerts.py`）裡三條可調的數值門檻——
+    `None` 時讀對應環境變數（`STORAGE_ALERT_CAP_BYTES`／
+    `CLEANUP_MISSED_DAYS_THRESHOLD`／`CHAIN_ERROR_RATE_THRESHOLD`）
+    或落回該模組自己的保守預設值。第四條（429 持續性事故）沿用既有
+    `chain_backoff.INCIDENT_THRESHOLD_FAILURES`，不在這裡重複設定
+    一次。"""
     app = FastAPI(title="Option Chaser API", version=__version__)
 
     # 延遲建構：Postgres adapter 建構本身不再連線（T02／#186——schema
@@ -972,6 +1014,45 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         anonymous_cleanup_batch_size if anonymous_cleanup_batch_size is not None
         else _env_int("ANONYMOUS_CLEANUP_BATCH_SIZE",
                       ANONYMOUS_CLEANUP_BATCH_SIZE))
+    # PB-11（#303）：SMTP 設定沿用 `_effective_cron_secret`／
+    # `_effective_admin_secret` 同一套「顯式傳入（含空字串）完全採用，
+    # `None` 才讀環境變數」慣例——`digest_smtp_port` 是唯一的數字欄位，
+    # 讀到字串環境變數時轉型失敗即視為未設定（no-op，不讓打錯字的埠號
+    # 讓寄信半途噴例外）。
+    def _env_str(name: str) -> str | None:
+        return os.environ.get(name)
+
+    _effective_digest_smtp_host = (digest_smtp_host if digest_smtp_host is not None
+                                   else _env_str("DIGEST_SMTP_HOST"))
+    if digest_smtp_port is not None:
+        _effective_digest_smtp_port: int | None = digest_smtp_port
+    else:
+        _raw_port = _env_str("DIGEST_SMTP_PORT")
+        try:
+            _effective_digest_smtp_port = int(_raw_port) if _raw_port else None
+        except ValueError:
+            _effective_digest_smtp_port = None
+    _effective_digest_smtp_user = (digest_smtp_user if digest_smtp_user is not None
+                                   else _env_str("DIGEST_SMTP_USER"))
+    _effective_digest_smtp_password = (
+        digest_smtp_password if digest_smtp_password is not None
+        else _env_str("DIGEST_SMTP_PASSWORD"))
+    _effective_digest_email_from = (
+        digest_email_from if digest_email_from is not None
+        else _env_str("DIGEST_EMAIL_FROM"))
+    _effective_digest_email_to = (digest_email_to if digest_email_to is not None
+                                  else _env_str("DIGEST_EMAIL_TO"))
+    _effective_storage_alert_cap_bytes = (
+        storage_alert_cap_bytes if storage_alert_cap_bytes is not None
+        else _env_int("STORAGE_ALERT_CAP_BYTES", ops_alerts.DEFAULT_STORAGE_CAP_BYTES))
+    _effective_cleanup_missed_days_threshold = (
+        cleanup_missed_days_threshold if cleanup_missed_days_threshold is not None
+        else _env_int("CLEANUP_MISSED_DAYS_THRESHOLD",
+                      ops_alerts.CLEANUP_MISSED_DAYS_THRESHOLD))
+    _effective_chain_error_rate_threshold = (
+        chain_error_rate_threshold if chain_error_rate_threshold is not None
+        else _env_float("CHAIN_ERROR_RATE_THRESHOLD",
+                        ops_alerts.CHAIN_ERROR_RATE_THRESHOLD))
 
     def _touch_activity(owner: str) -> None:
         """PB-08（#300）：標記這是一次真人明確操作——只在下方明列的
@@ -1429,6 +1510,97 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
                "abandoned": abandoned, "hard_deleted": hard_deleted,
                "rows_deleted": rows_deleted}
 
+    def _anonymous_owner_distribution(today: date) -> dict:
+        """PB-11（#303）：query-time gauge——現在去數一次 `list_
+        owners()` 就有答案的東西，不持久化、不進 `METRIC_CATALOGUE`
+        （與既有 `table_size_metrics()` 同一種形狀）。分類邏輯直接
+        重用 PB-08 的 `anonymous_lifecycle.classify()`，不在這裡另外
+        寫一份可能漂移的 SQL 版本。"""
+        now = datetime.combine(today, datetime.min.time(), tzinfo=timezone.utc)
+        active = abandoned = eligible = protected = 0
+        for o in _db().list_owners():
+            if o.protected:
+                protected += 1
+            state = anonymous_lifecycle.classify(
+                last_activity_at=o.last_activity_at, created_at=o.created_at,
+                now=now, abandoned_after_days=_effective_abandoned_after_days,
+                grace_period_days=_effective_grace_period_days)
+            if state == "active":
+                active += 1
+            elif state == "abandoned":
+                abandoned += 1
+            else:
+                eligible += 1
+        total = active + abandoned + eligible
+        return {"active": active, "abandoned": abandoned,
+               "eligible_for_hard_delete": eligible, "protected": protected,
+               "total": total}
+
+    def _cleanup_missed_days(today: date) -> int:
+        """PB-11（#303）：`abandoned_owner_cleanup_count` **這個 bucket
+        是否存在**（不是看 `count` 數值——PB-08 設計是「即使清了 0 個
+        owner 也留一筆 count=0 的紀錄」，`count=0` 代表排程跑了、剛好
+        沒東西可清；查無這個桶才代表排程根本沒跑到）連續缺席幾天，
+        從今天往回數。"""
+        buckets = {e.bucket for e in _db().metric_summary()
+                  if e.metric == "abandoned_owner_cleanup_count"}
+        missed = 0
+        day = today
+        while str(day) not in buckets:
+            missed += 1
+            day = day - timedelta(days=1)
+            if missed > metrics.RETENTION_DAYS:
+                break  # 超過保留窗仍找不到，不再往更早的日子猜
+        return missed
+
+    def _ops_snapshot(today: date) -> DigestSnapshot:
+        """PB-11（#303）：`/api/ops/metrics`（互動式 JSON）與
+        `GET /api/cron/daily-digest`（每日摘要信）共用同一份計算——
+        兩處要是各自重算，遲早會算出兜不起來的兩個答案（沿用既有
+        `_classify_fetch_failure()`／`chain_backoff.status()`「唯一
+        判斷點」慣例）。"""
+        owners = _anonymous_owner_distribution(today)
+        scenarios_total = _db().scenario_count_total()
+        avg_per_owner = (scenarios_total / owners["total"]
+                         if owners["total"] > 0 else 0.0)
+        cleanup_today = int(_db().metric_total(
+            "abandoned_owner_cleanup_count", str(today)))
+        cleanup_rows_today = 0
+        for e in _db().metric_summary():
+            if e.metric == "abandoned_owner_cleanup_count" and e.bucket == str(today):
+                cleanup_rows_today += e.total
+
+        incident_sources = tuple(
+            src for src in ("cboe", "yfinance")
+            if (chain_backoff.status(_db(), src) or {}).get("incident"))
+        table_stats = _db().table_size_metrics()
+        storage_bytes = sum(
+            (t.get("total_bytes") or 0) for t in table_stats.values())
+        chain_429 = sum(int(_db().metric_total("chain_429_count", str(today - timedelta(days=i))))
+                        for i in range(7))
+        chain_fetch = sum(int(_db().metric_total("chain_fetch_count", str(today - timedelta(days=i))))
+                          for i in range(7))
+        alerts = ops_alerts.evaluate_alerts(
+            sustained_incident_sources=incident_sources,
+            cleanup_missed_days=_cleanup_missed_days(today),
+            storage_bytes=storage_bytes,
+            chain_429_count=chain_429,
+            chain_fetch_count=chain_fetch,
+            cleanup_missed_days_threshold=_effective_cleanup_missed_days_threshold,
+            storage_cap_bytes=_effective_storage_alert_cap_bytes,
+            chain_error_rate_threshold=_effective_chain_error_rate_threshold,
+        )
+        return DigestSnapshot(
+            date=str(today),
+            owners_active=owners["active"], owners_abandoned=owners["abandoned"],
+            owners_eligible_for_hard_delete=owners["eligible_for_hard_delete"],
+            owners_protected=owners["protected"], owners_total=owners["total"],
+            scenarios_total=scenarios_total,
+            scenarios_average_per_owner=avg_per_owner,
+            cleanup_owners_deleted_today=cleanup_today,
+            cleanup_rows_deleted_today=int(cleanup_rows_today),
+            alerts=alerts)
+
     # ---------- S0 最小可觀測性（SCALE-08／#258） ----------
 
     @app.get("/api/ops/metrics")
@@ -1453,6 +1625,14 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
            清理排程每次執行 hard-delete 掉幾個 owner（`count`）、加總
            刪掉幾列資料（`amount`），供 PB-11 的每日摘要信引用
 
+        **PB-11（#303）純加法擴充**（AC8）：`anonymous_owners`（三態
+        分佈＋protected 數＋總數）／`scenarios`（site-wide 總數與
+        per-owner 平均）皆為 query-time gauge，不進上面的 8 個桶；
+        `alerts` 是四條 alert 判準的目前結果（`api_app/ops_alerts.
+        py::evaluate_alerts()`）。回應**只含聚合數字**——個別 owner
+        的可識別內容或第三方 token 屬 PB-10 獨立端點的職責，兩者不
+        混在同一個回應裡（票面 §10 安全考量）。
+
         **Super User-only**（AC-6，PB-09／#298 起改由軸二守門，取代
         原本的 `OPS_SECRET`）：`require_superuser()` fail-closed，未帶
         有效 `ADMIN_SECRET` 一律 401；不對一般使用者開放，前端一般
@@ -1466,7 +1646,55 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
                 {"bucket": e.bucket, "source": e.source or None,
                  "symbol": e.symbol or None, "count": e.count,
                  "total": e.total, "max_value": e.max_value})
-        return {**by_metric, "table_size": _db().table_size_metrics()}
+        snapshot = _ops_snapshot(ny_today())
+        return {**by_metric, "table_size": _db().table_size_metrics(),
+               "anonymous_owners": {
+                   "active": snapshot.owners_active,
+                   "abandoned": snapshot.owners_abandoned,
+                   "eligible_for_hard_delete":
+                       snapshot.owners_eligible_for_hard_delete,
+                   "protected": snapshot.owners_protected,
+                   "total": snapshot.owners_total},
+               "scenarios": {"total": snapshot.scenarios_total,
+                            "average_per_owner":
+                                snapshot.scenarios_average_per_owner},
+               "alerts": [{"key": a.key, "triggered": a.triggered,
+                          "message": a.message} for a in snapshot.alerts]}
+
+    # ---------- PB-11（#303）：daily email digest ----------
+
+    @app.get("/api/cron/daily-digest")
+    def cron_daily_digest(request: Request) -> dict:
+        """每日彙整信——`CRON_SECRET` 保護（比照既有
+        `cron_warm_rate_cache()`／`cron_cleanup_abandoned_owners()`
+        同一套 fail-closed 慣例），由 Vercel Cron 從外部觸發，不是
+        給一般使用者互動用的端點（`/api/cron/*` 前綴早已在
+        `_OWNER_EXEMPT_PREFIXES`，本端點缺 cookie 不會建立 owner）。
+
+        內容與 `/api/ops/metrics` 共用同一份 `_ops_snapshot()`，只是
+        多做兩件事：組成人類可讀的純文字（`build_digest_text()`）、
+        真的寄出去（`send_digest_email()`，SMTP 設定不完整時是嚴格
+        no-op，回應的 `sent` 欄位誠實回報有沒有真的寄出，不假裝
+        成功）。回應同樣只含聚合數字與 alert key，不回傳信件全文
+        （信件全文只會出現在真正寄出的那封信裡）。"""
+        provided = request.headers.get("authorization")
+        if not _effective_cron_secret or provided != f"Bearer {_effective_cron_secret}":
+            raise HTTPException(status_code=401, detail="unauthorized")
+
+        today = ny_today()
+        snapshot = _ops_snapshot(today)
+        text = build_digest_text(snapshot)
+        sent = send_digest_email(
+            text,
+            smtp_host=_effective_digest_smtp_host,
+            smtp_port=_effective_digest_smtp_port,
+            smtp_user=_effective_digest_smtp_user,
+            smtp_password=_effective_digest_smtp_password,
+            mail_from=_effective_digest_email_from,
+            mail_to=_effective_digest_email_to,
+            subject=f"Option Chaser 每日摘要 — {today}")
+        return {"sent": sent, "date": str(today),
+               "alerts_triggered": [a.key for a in snapshot.alerts if a.triggered]}
 
     # ---------- User Level（軸二，PB-09／#298） ----------
 

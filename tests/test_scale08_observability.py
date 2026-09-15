@@ -107,6 +107,14 @@ def test_recording_an_unknown_metric_name_is_rejected():
 # ---------- AC-1：operator 端點一次回答全部七項 ----------
 
 def test_ops_metrics_endpoint_answers_all_seven_categories(monkeypatch):
+    """AC-1——**這條斷言的形狀已隨 PB-11（#303）有意識調整**：回應鍵
+    集合不再要求與 `METRIC_CATALOGUE` 完全相等（`==`），因為 PB-11
+    新增了三個額外的頂層鍵（`anonymous_owners`／`scenarios`／
+    `alerts`，query-time gauge／衍生 alert 判準，見該票 AC8）——這是
+    有意的擴充，不是巡邏漏掉的鬆綁。AC-1 本身要求的「一次回答得出
+    全部類別」改用子集合關係驗證（`METRIC_CATALOGUE` 逐一都還在），
+    PB-11 新增鍵各自的數值正確性由 `tests/test_pb11_ops_digest.py`
+    專屬覆蓋，這裡只確認它們存在。"""
     storage = MemoryStorage()
     c = _client(monkeypatch, storage=storage)
     _create_and_refresh(c)
@@ -114,7 +122,8 @@ def test_ops_metrics_endpoint_answers_all_seven_categories(monkeypatch):
     r = c.get("/api/ops/metrics", headers=ADMIN_AUTH)
     assert r.status_code == 200, r.text
     body = r.json()
-    assert set(body) == set(METRIC_CATALOGUE)
+    assert set(METRIC_CATALOGUE) <= set(body)
+    assert {"anonymous_owners", "scenarios", "alerts"} <= set(body)
     # 一次刷新至少會產生一筆 chain_fetch_count（真的抓過鏈）與一筆
     # refresh_duration_ms（真的完整跑完一次刷新）。
     assert body["chain_fetch_count"], "應該至少有一筆抓鏈紀錄"
