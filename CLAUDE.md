@@ -9190,6 +9190,83 @@ CLAUDE.md 隨手更新。
   2218 條全綠；前端 typecheck 乾淨、Vitest 782 條全綠、
   build 成功。
 
+- **PB-10**［#301］Super User system/admin operations：跨 owner 檢視
+  與管理 ＋ 高風險操作二次確認 ＋ audit trail（commit `242d9a4`）：
+  正式執行 SUPERUSER-007 對舊 OD-6 的 supersede——Super User 是 Normal
+  User 完整權限超集合，v2 版「不得任意瀏覽個別使用者資料／不得刪除
+  他人資料」的限制正式撤回。新增 7 個 `/api/superuser/*` 端點：
+  `GET /owners`（列出全部 owner，**全站唯一讓 `owner_id` 出現在 HTTP
+  回應 body 的地方**，明確標示、獨立於一般使用者路徑）、
+  `GET /owners/{id}/scenarios`／`GET /owners/{id}/scenarios/{sid}`
+  （跨 owner 檢視，**明確傳入目標 owner_id**——不走 `identity_
+  resolver()`、不走 `_require()` 這個 owner-scoped chokepoint，票面
+  §8 明文要求不得靠傳 `None` 繞過 `require_owner()`）、
+  `POST /owners/{id}/delete`（呼叫 PB-04 既有 `delete_owner()` 原語）、
+  `POST /owners/batch-delete`（確認清單與目標清單集合比對，不接受
+  部分確認）、`PUT /owners/{id}/protected`（runtime 設定／取消
+  lifecycle 旗標）、`GET /audit-log`（查閱 audit trail 本身）。
+
+  **伺服器端可驗證的二次確認**（票面 §8：「不能只靠前端 modal」）：
+  `confirm_owner_id`／`confirm_owner_ids` 必須逐字（或逐集合）等於
+  目標，不符即 400——前端 `ConfirmHighRiskAction` modal 只是 UX，
+  略過它直接打 API 但帶錯確認值一樣會被拒絕。三個新請求模型
+  （`SuperUserDeleteOwnerRequest`／`SuperUserBatchDeleteOwnersRequest`／
+  `SuperUserSetProtectedRequest`）**刻意定義在模組層級**（比照既有
+  `RefreshRunRequest`）——施工中曾誤把它們定義在 `create_app()`
+  內部，導致 FastAPI 認不出巢狀 Pydantic model、把請求體錯判成
+  query 參數（422 `loc: ["query","body"]`），修正後才正確識別為
+  request body。
+
+  **新增獨立 audit trail**（`SuperUserAuditEvent`，`superuser_
+  audit_log` 表，走 `_MIGRATIONS`）——票面 §4 硬性約束：**刻意不是
+  `diagnostics`**（owner-scoped 且 trim-on-write 只留全域最新 200
+  筆，正常診斷事件洪流會把 audit 記錄沖掉）也**不是 `events`**
+  （scenario-scoped 領域事實，語意上不承載「誰對誰做了管理操作」）。
+  append-only、**不設保留上限**、**不在 `_OWNER_SCOPED_TABLES` 清單
+  裡**——`delete_owner()` 刪除一個 owner 時不會連帶清掉「這個 owner
+  曾經存在、曾經被刪除」這件事本身的紀錄。`actor` 固定為
+  `"superuser"`（PB-09 只有單一共用 `ADMIN_SECRET`，誠實反映現況，
+  不假裝有更細緻的身份可查）；`detail` 只放列數／布林值等安全欄位，
+  結構性不可能夾帶 `ProviderCredential.token` 明文。純瀏覽（列出
+  owner／劇本清單／劇本內容／查閱 audit log 本身）刻意**不**記
+  audit——票面 §3「純瀏覽不強制」的明確選擇，逐次記錄只會製造噪音、
+  不提升可稽核性。
+
+  前端 `src/SuperUserAdmin.tsx`（新檔案，**刻意不做豪華
+  Dashboard**——票面 §5 Non-goals）：單一可捲動表格＋就地展開的劇本
+  清單／劇本內容（`<pre>{JSON.stringify(...)}</pre>`，不重刻一份
+  `ScenarioDetail` 渲染管線）＋二次確認 modal（比照 `TrashView.tsx`
+  既有 `ConfirmDeleteOne`／`ConfirmDeleteBatch` 慣例）。只在
+  `Settings.tsx` 判定 `isSuperUser` 為真時掛載，不會對未解鎖使用者
+  打任何 `/api/superuser/owners*` 請求（伺服器端 401 是第二道防線，
+  不是唯一防線）。
+
+  測試：`tests/test_pb10_superuser_admin.py`（15 條 HTTP-seam，涵蓋
+  跨 owner 檢視／Normal User 全數被拒／二次確認真的生效——略過前端
+  直接打 API 但帶錯或缺少確認值皆被拒絕／批次確認集合比對／audit
+  記錄誰對誰做了什麼／audit 不含 token 明文／純瀏覽不記 audit）＋
+  `tests/test_storage_contract.py` 新增 7 條 audit trail 契約測試
+  （memory＋真 Postgres 雙後端，含「audit 記錄在 diagnostics 洪流
+  下存活」與「`delete_owner()` 不清除自己的刪除紀錄」兩條票面明文
+  AC）。施工中發現並修正 `tests/test_storage_contract.py` 既有
+  Postgres 清庫 `TRUNCATE` 清單漏掉新表 `superuser_audit_log`
+  （造成測試間資料互相污染，4 條測試假陽性失敗）。前端
+  `src/SuperUserAdmin.test.tsx`（13 條元件測試）；`Settings.test.tsx`
+  的 `mockApi()` 補上 `/api/superuser/owners*`／`/api/superuser/
+  audit-log` 分流（不然解鎖 Super User 後新掛載的 `SuperUserAdmin`
+  會在既有測試裡打到未分流的假回應而炸掉）。
+
+  `/security-review`（票面 §12：「必須，且本票是全輪最需要的一張」）
+  已執行——逐一驗證 8 項硬性安全屬性（每個新端點的 fail-closed
+  排序、跨 owner 讀寫明確傳入 owner_id 從不落回 `None`／
+  `identity_resolver()`、二次確認真的擋在任何破壞性呼叫之前、
+  audit 不外洩 token、新 Postgres 查詢皆為參數化無 SQL injection、
+  批次確認集合比對無法被利用、`GET .../scenarios/{sid}` 真的核對
+  owner＋scenario 兩者相符而非只驗證存在性、沒有其他未受保護的端點
+  能間接觸發跨 owner 邏輯），**零高信度可利用漏洞**。全套：後端雙
+  後端（記憶體＋真實 Postgres）2247 條全綠（+29）；前端 typecheck
+  乾淨、Vitest 795 條全綠（+13）、build 成功。
+
 ### 施工依據
 
 - 需求與決策紀錄：`docs/modifyRequestV1.md`（附錄 A1–A12）
