@@ -61,6 +61,17 @@ export default defineConfig({
     command: "npm run dev -- --port 5173 --strictPort",
     url: "http://127.0.0.1:5173",
     reuseExistingServer: !process.env.CI,
-    timeout: 60_000,
+    // PB-13（#293）新增的 GitHub Actions job（`.github/workflows/
+    // ci.yml`）是這份設定第一次真正在冷開機的 CI runner 上跑—沙箱
+    // 裡量到的 60 秒對熱機環境夠用，但沒有任何證據證明對冷開機的
+    // ubuntu-latest runner 也夠。改為 CI 下給更寬裕的上限，本機／
+    // 沙箱維持原值不變。
+    timeout: process.env.CI ? 120_000 : 60_000,
+    // 逾時或啟動失敗時，Playwright 預設不會把 webServer 的 stdout／
+    // stderr 印進 job log——上一次真正卡住時完全看不出 Vite 死在
+    // 哪一步。CI 下把兩者都接出來，純粹是可觀測性，不影響任何測試
+    // 斷言本身。
+    stdout: process.env.CI ? "pipe" : "ignore",
+    stderr: "pipe",
   },
 });
