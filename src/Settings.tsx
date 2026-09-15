@@ -30,6 +30,7 @@ import {
 import DeleteMyData from "./DeleteMyData";
 import Diagnostics from "./Diagnostics";
 import { getSettingsCached, setSettingsCache } from "./fetchCache";
+import SuperUserAdmin from "./SuperUserAdmin";
 import SuperUserUnlock from "./SuperUserUnlock";
 
 /** 兩列的識別鍵——與後端 `api_app/providers.py` 的 `USAGES` 同名。 */
@@ -176,6 +177,11 @@ export default function Settings() {
       )}
 
       <SuperUserUnlock isSuperUser={isSuperUser} onChange={setIsSuperUser} />
+
+      {/* PB-10（#301）：跨 owner 檢視／管理僅在解鎖 Super User 後才
+         掛載——未解鎖時不打任何 `/api/superuser/owners*` 請求，伺服器
+         端 401 只是第二道防線，不是唯一防線。 */}
+      {isSuperUser && <SuperUserAdmin />}
 
       <h2 className="section-title">Data / API</h2>
 

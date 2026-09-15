@@ -303,6 +303,45 @@ class BrowserIdentity:
 
 
 @dataclass(frozen=True)
+class SuperUserAuditEvent:
+    """PB-10（#301，Anonymous Public Beta）：Super User 高風險跨 owner
+    操作的 audit trail。
+
+    **刻意不是 `diagnostics` 或 `events`**（票面 §4 硬性約束，repo 現況
+    已確認兩者語意衝突）：`diagnostics`（`api_app/diagnostics.py`）是
+    owner-scoped 且 trim-on-write 只留全域最新 200 筆——正常診斷事件
+    洪流會把 audit 記錄沖掉，那就不是 audit trail；`events` 是
+    scenario-scoped 的領域事實（`SCENARIO_CREATED` 等），語意上不承載
+    「誰對誰做了管理操作」。這張表是獨立、system-wide、**不設保留
+    上限**的記錄面——高風險操作量體遠低於一般診斷事件（一次 Super
+    User 動作才一筆，不是每個 request 都發），截斷它等於讓最需要
+    留存的紀錄先消失，違背它存在的目的。
+
+    `actor`：PB-09 目前只有單一共用 `ADMIN_SECRET`、沒有多重 Super
+    User 身份機制（spec 明文禁止為此新增識別系統）——固定為
+    `"superuser"`，誠實反映現況，不是假裝有更細緻的身份可查。
+
+    `target_owner_id`：這次操作影響的 owner；純瀏覽（無明確目標，
+    例如列出全部 owner 這種不針對單一 owner 的動作）時可為 `None`。
+
+    `detail`：操作內容的結構化描述（例如
+    `{"deleted_rows": {"scenarios": 3, ...}}`）——**絕不含第三方
+    token 明文**，呼叫端（`api_app/main.py`）只放進安全欄位（列數、
+    布林值等），從不把 `ProviderCredential.token` 這類欄位塞進來。
+
+    **`delete_owner()`（PB-04）刻意不清除這張表**——它不在
+    `_OWNER_SCOPED_TABLES` 清單裡：audit trail 的目的正是留存「這個
+    owner 曾經存在、曾經被刪除」這件事本身，若隨著被刪 owner 一起
+    清空，等於刪除操作抹去了自己的證據。"""
+    event_id: str
+    ts: str
+    actor: str
+    action: str
+    target_owner_id: str | None
+    detail: dict
+
+
+@dataclass(frozen=True)
 class ChainBackoffEntry:
     """SCALE-04（#255，Scaling Foundation Cboe 429 韌性）：上游限流的
     控制狀態——**provider-global 鍵**（`source` 單獨，不分 symbol，
@@ -1078,6 +1117,19 @@ class Storage(Protocol):
         原樣回傳全部 owner 列；篩選邏輯留給 PB-08（沿用既有
         `list_scenarios(owner=None)`／`result_history(owner=None)`
         「刻意的跨 owner 逃生門，語意由呼叫端決定」先例）。"""
+
+    # ---------- Super User audit trail（PB-10／#301） ----------
+
+    def append_audit_event(self, event: SuperUserAuditEvent) -> None:
+        """寫入一筆 Super User 高風險操作紀錄——append-only，**無保留
+        上限**（見 `SuperUserAuditEvent` docstring，這是它與
+        `diagnostics`／`operational_metrics` 兩者刻意不同之處）。"""
+
+    def list_audit_events(self, *, limit: int = 200) -> list[SuperUserAuditEvent]:
+        """最新在最上，供 Super User 自己查閱／稽核使用。`limit`
+        只決定這次查詢回幾筆，不是保留政策本身——底層紀錄不會因為
+        沒被查詢就消失（與 `list_diagnostics(limit=...)` 的
+        `RETENTION_LIMIT` 語意不同，那裡的上限是真的物理刪除）。"""
 
     # ---------- S0 最小可觀測性（SCALE-08／#258） ----------
 

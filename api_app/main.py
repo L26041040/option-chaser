@@ -44,7 +44,8 @@ from .storage import (BrowserIdentity, ContractHistory, DataSourceSettings,
                       IvBackfillRun, IvObservation, NarrowHistoryEntry,
                       Owner, ProviderCredential, ProviderVerification,
                       RateCacheEntry, ResultRecord, ResultSummary, Scenario,
-                      ScenarioExists, Storage, UsageSetting)
+                      ScenarioExists, Storage, SuperUserAuditEvent,
+                      UsageSetting)
 from .storage.factory import database_url_candidates, storage_from_env
 from .treasury_cache import cached_rate_curve_rows
 
@@ -315,6 +316,28 @@ class RefreshRunRequest(BaseModel):
     不是反過來）。"""
     scenario_ids: list[str] | None = None
     manual: bool = False
+
+
+class SuperUserDeleteOwnerRequest(BaseModel):
+    """PB-10（#301）：伺服器端可驗證的二次確認（票面 §8：「不能只靠
+    前端 modal」）——呼叫端必須明確重複一次目標 owner_id，跟路徑參數
+    不符就整個拒絕。前端 modal 只是 UX：略過它、直接打這個端點但不帶
+    對的 `confirm_owner_id`，一樣會被拒絕。"""
+    confirm_owner_id: str
+
+
+class SuperUserBatchDeleteOwnersRequest(BaseModel):
+    """批次版——`confirm_owner_ids` 必須與 `owner_ids` 集合相同（不分
+    順序），不接受「確認了其中幾個就放行全部」這種部分確認。"""
+    owner_ids: list[str] = Field(min_length=1)
+    confirm_owner_ids: list[str]
+
+
+class SuperUserSetProtectedRequest(BaseModel):
+    """runtime 設定／取消 `protected` lifecycle 旗標，同一套二次確認
+    紀律。"""
+    protected: bool
+    confirm_owner_id: str
 
 
 class UsageRequest(BaseModel):
@@ -977,6 +1000,19 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
             metrics.record(_db(), metric, today, source=source,
                            symbol=symbol, count=count, amount=amount)
 
+    def _record_audit(action: str, *, target_owner_id: str | None,
+                      detail: dict) -> None:
+        """PB-10（#301）的唯一寫入入口——每個高風險 Super User 操作
+        （刪除 owner、批次刪除、變更 protected 旗標）各呼叫一次，紀錄
+        「誰（固定 `"superuser"`，PB-09 只有單一共用密鑰，見
+        `SuperUserAuditEvent` docstring）／對誰／做了什麼／何時」。
+        `detail` 只放安全欄位（列數、布林值）——呼叫端負責絕不把
+        `ProviderCredential.token` 這類欄位塞進來，這裡不做內容檢查
+        （信任呼叫端，這個函式本身只有本檔案内極少數幾個呼叫點）。"""
+        _db().append_audit_event(SuperUserAuditEvent(
+            event_id=str(uuid.uuid4()), ts=now_utc_iso(), actor="superuser",
+            action=action, target_owner_id=target_owner_id, detail=detail))
+
     # 合併 correlation id（DG-02／#145）與 storage 連線 scope
     # （PERF-01／#177，T02／#186 修形）成單一層 middleware——原本兩層
     # 各自的 `call_next()` 轉送對大 payload（`/iv-history` 十萬字元級）
@@ -1450,6 +1486,138 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         """
         return {"is_superuser": superuser.is_superuser(
             request, admin_secret=_effective_admin_secret)}
+
+    # ---------- Super User system/admin operations（PB-10／#301） ----------
+    #
+    # PB-09（#298）v3 correction 正式落地：Super User 是 Normal User
+    # 完整權限超集合，v2 版「不得任意瀏覽個別使用者資料／不得刪除他人
+    # 資料」的限制已被 Owner 裁示撤回（見票面 §1）。這裡是全站唯一
+    # 一組讓 `owner_id` 出現在 HTTP 回應 body 裡的端點——刻意、明確、
+    # 獨立於一般使用者路徑（`_require()` chokepoint 完全不參與這裡的
+    # 任何一個 handler，跨 owner 讀寫一律明確傳入目標 `owner_id`，
+    # 見票面 §8 constraint）。
+
+    def _require_owner_confirmation(confirm: str, target: str) -> None:
+        if confirm != target:
+            raise HTTPException(
+                status_code=400,
+                detail="二次確認不符：confirm_owner_id 必須等於目標 "
+                       "owner_id，操作已取消")
+
+    @app.get("/api/superuser/owners")
+    def superuser_list_owners(request: Request) -> list[dict]:
+        """跨 owner 檢視第一步：列出全部使用者／owner 資訊。既有
+        `test_scale06_ownership_expand.py::test_owner_id_never_
+        appears_in_any_http_response_body` 只涵蓋一般使用者路徑
+        （清單／詳細頁／建立／events／diagnostics）——這裡是新增、
+        獨立、被軸二守門的例外，不與那條既有斷言衝突。
+
+        純瀏覽，不強制二次確認、不記 audit（票面 §3「純瀏覽不強制」
+        條款下的明確選擇：列出全部 owner 是最低風險的瀏覽動作，
+        逐次記錄只會製造噪音、不會提升任何實質可稽核性）。"""
+        superuser.require_superuser(request, admin_secret=_effective_admin_secret)
+        return [dataclasses.asdict(o) for o in _db().list_owners()]
+
+    @app.get("/api/superuser/owners/{owner_id}/scenarios")
+    def superuser_list_owner_scenarios(
+            owner_id: str, request: Request,
+            include_archived: bool = False) -> list[dict]:
+        """跨 owner 檢視第二步：某個 owner 名下的劇本清單。**明確傳入
+        目標 `owner_id`**（票面 §8：不得靠傳 `None` 繞過 `require_
+        owner()` 的 fail-closed 行為）——這不是走 `identity_
+        resolver()`，Super User 檢視的是別人的資料，不是自己的。"""
+        superuser.require_superuser(request, admin_secret=_effective_admin_secret)
+        summaries = _db().latest_summaries(owner=owner_id)
+        today = ny_today()
+        return [_row_json(sc, today, **_summary_of(summaries.get(sc.id)))
+                for sc in _db().list_scenarios(
+                    owner=owner_id, include_archived=include_archived)]
+
+    @app.get("/api/superuser/owners/{owner_id}/scenarios/{scenario_id}")
+    def superuser_get_owner_scenario(
+            owner_id: str, scenario_id: str, request: Request) -> dict:
+        """跨 owner 檢視第三步：單一劇本的完整內容——與一般使用者
+        `GET /api/scenarios/{id}` 同一份投影（`store.project_for_
+        detail()`），刻意重用同一個序列化函式：Super User 看到的形狀
+        與該 owner 自己看到的一致，不是另外發明一種精簡格式。"""
+        superuser.require_superuser(request, admin_secret=_effective_admin_secret)
+        sc = _db().get_scenario(scenario_id, owner=owner_id)
+        if sc is None:
+            raise HTTPException(status_code=404,
+                                detail=f"劇本不存在：{scenario_id}")
+        latest = _db().latest_result(scenario_id, owner=owner_id)
+        return {**_row_json(sc, ny_today(), **_summary_of(latest)),
+                "latest_result": (store.project_for_detail(latest.view)
+                                  if latest else None)}
+
+    @app.post("/api/superuser/owners/{owner_id}/delete")
+    def superuser_delete_owner(owner_id: str,
+                               body: SuperUserDeleteOwnerRequest,
+                               request: Request) -> dict:
+        """高風險操作：刪除單一 owner 全部資料（票面 §3 第一項）。
+        呼叫 PB-04（#296）既有的 `delete_owner()` 原語——不重寫第二份
+        可能漂移的清除邏輯。二次確認＋audit trail 兩者皆為硬性要求。
+        """
+        superuser.require_superuser(request, admin_secret=_effective_admin_secret)
+        _require_owner_confirmation(body.confirm_owner_id, owner_id)
+        counts = _db().delete_owner(owner_id)
+        _record_audit("delete_owner", target_owner_id=owner_id,
+                      detail={"deleted_rows": counts})
+        return {"deleted": True, "counts": counts}
+
+    @app.post("/api/superuser/owners/batch-delete")
+    def superuser_batch_delete_owners(
+            body: SuperUserBatchDeleteOwnersRequest, request: Request) -> dict:
+        """高風險操作：批次刪除（票面 §3 第二項，與單筆刪除分開列出的
+        獨立高風險項）。確認清單必須與目標清單**逐一相同**（集合
+        比對，不要求順序一致）——不接受「確認了其中幾個就放行全部」
+        這種部分確認。每個 owner 各自呼叫一次 `delete_owner()`、各自
+        留一筆 audit 紀錄（保持「一筆紀錄對應一個目標」的既有粒度，
+        不因為是批次操作就把多個目標塞進同一筆看不出各自結果的
+        紀錄）。"""
+        superuser.require_superuser(request, admin_secret=_effective_admin_secret)
+        if set(body.confirm_owner_ids) != set(body.owner_ids):
+            raise HTTPException(
+                status_code=400,
+                detail="二次確認不符：confirm_owner_ids 必須等於 "
+                       "owner_ids，操作已取消")
+        results: dict[str, dict[str, int]] = {}
+        for oid in body.owner_ids:
+            counts = _db().delete_owner(oid)
+            results[oid] = counts
+            _record_audit("batch_delete_owner", target_owner_id=oid,
+                          detail={"deleted_rows": counts})
+        return {"deleted": list(body.owner_ids), "counts": results}
+
+    @app.put("/api/superuser/owners/{owner_id}/protected")
+    def superuser_set_protected(owner_id: str,
+                                body: SuperUserSetProtectedRequest,
+                                request: Request) -> dict:
+        """高風險操作：runtime 設定／取消 `protected` 旗標（票面 §3
+        第四項）。owner 不存在時回 404——與 `set_owner_protected()`
+        本身「不存在就安靜地什麼都不做」的既有寫入端行為不同，這裡是
+        Super User 主動操作的端點，應該誠實回報「你要改的東西不存在」
+        而不是假裝成功。"""
+        superuser.require_superuser(request, admin_secret=_effective_admin_secret)
+        _require_owner_confirmation(body.confirm_owner_id, owner_id)
+        if _db().get_owner(owner_id) is None:
+            raise HTTPException(status_code=404,
+                                detail=f"owner 不存在：{owner_id}")
+        _db().set_owner_protected(owner_id, body.protected)
+        _record_audit("set_owner_protected", target_owner_id=owner_id,
+                      detail={"protected": body.protected})
+        return {"owner_id": owner_id, "protected": body.protected}
+
+    @app.get("/api/superuser/audit-log")
+    def superuser_get_audit_log(request: Request, limit: int = 200) -> list[dict]:
+        """audit trail 本身的查閱端點，Super User 專用。純瀏覽，
+        不另外對「查閱 audit log」這件事本身再記一筆 audit——避免
+        自我指涉的無限累積；查閱行為本身風險極低，記錄它不會提升
+        任何實質可稽核性（票面 §3「純瀏覽不強制」條款下的另一個明確
+        選擇）。"""
+        superuser.require_superuser(request, admin_secret=_effective_admin_secret)
+        return [dataclasses.asdict(e)
+                for e in _db().list_audit_events(limit=limit)]
 
     # ---------- Application diagnostics（DG-02／#145） ----------
 

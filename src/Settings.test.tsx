@@ -67,6 +67,16 @@ function mockApi(views: SettingsView[], { superuser = true } = {}) {
       return { ok: true, status: 200,
                json: async () => ({ is_superuser: superuser }) } as Response;
     }
+    // PB-10（#301）：`<SuperUserAdmin />` 解鎖後會立刻打
+    // `/api/superuser/owners`——同一個理由分流成固定的空清單／空紀錄，
+    // 這個檔案的既有測試關心的是 credential CRUD，不是管理面板本身
+    // （那由 `SuperUserAdmin.test.tsx` 專屬覆蓋）。
+    if (String(url).startsWith("/api/superuser/owners")) {
+      return { ok: true, status: 200, json: async () => [] } as Response;
+    }
+    if (String(url).startsWith("/api/superuser/audit-log")) {
+      return { ok: true, status: 200, json: async () => [] } as Response;
+    }
     const body = views[Math.min(i, views.length - 1)];
     i += 1;
     return { ok: true, status: 200, json: async () => body } as Response;

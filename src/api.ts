@@ -1201,6 +1201,110 @@ export function getSuperUserStatus(): Promise<{ is_superuser: boolean }> {
   });
 }
 
+// ---------- Super User system/admin operations（PB-10／#301） ----------
+
+/** 跨 owner 檢視第一步：全站 owner 清單。`owner_id` 在這裡刻意出現
+ *  ——這是全站唯一讓它進入 HTTP 回應 body 的地方，見後端 `main.py`
+ *  對應端點的 docstring。 */
+export interface SuperUserOwnerInfo {
+  owner_id: string;
+  created_at: string;
+  last_activity_at: string | null;
+  protected: boolean;
+}
+
+export interface SuperUserAuditEntry {
+  event_id: string;
+  ts: string;
+  actor: string;
+  action: string;
+  target_owner_id: string | null;
+  detail: Record<string, unknown>;
+}
+
+export function superuserListOwners(): Promise<SuperUserOwnerInfo[]> {
+  return request<SuperUserOwnerInfo[]>("/api/superuser/owners", {
+    headers: adminAuthHeaders(),
+  });
+}
+
+export function superuserListOwnerScenarios(
+  ownerId: string,
+): Promise<ScenarioSummary[]> {
+  return request<ScenarioSummary[]>(
+    `/api/superuser/owners/${encodeURIComponent(ownerId)}/scenarios`,
+    { headers: adminAuthHeaders() },
+  );
+}
+
+/** 單一劇本完整內容——與該 owner 自己看到的 `GET /api/scenarios/{id}`
+ *  同一份投影，故沿用同一個型別（見 `getScenario()`）。 */
+export function superuserGetOwnerScenario(
+  ownerId: string,
+  scenarioId: string,
+): Promise<ScenarioDetail> {
+  return request<ScenarioDetail>(
+    `/api/superuser/owners/${encodeURIComponent(ownerId)}/scenarios/` +
+      `${encodeURIComponent(scenarioId)}`,
+    { headers: adminAuthHeaders() },
+  );
+}
+
+/** 高風險：刪除一個 owner 的全部資料。`confirmOwnerId` 是伺服器端
+ *  真正驗證的二次確認（不是前端 modal 裝飾）——呼叫端必須明確重複
+ *  一次目標 owner_id，跟路徑不符時後端回 400。 */
+export function superuserDeleteOwner(
+  ownerId: string,
+  confirmOwnerId: string,
+): Promise<{ deleted: boolean; counts: Record<string, number> }> {
+  return request(
+    `/api/superuser/owners/${encodeURIComponent(ownerId)}/delete`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...adminAuthHeaders() },
+      body: JSON.stringify({ confirm_owner_id: confirmOwnerId }),
+    },
+  );
+}
+
+export function superuserBatchDeleteOwners(
+  ownerIds: string[],
+): Promise<{ deleted: string[]; counts: Record<string, Record<string, number>> }> {
+  return request("/api/superuser/owners/batch-delete", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...adminAuthHeaders() },
+    body: JSON.stringify({
+      owner_ids: ownerIds,
+      confirm_owner_ids: ownerIds,
+    }),
+  });
+}
+
+/** 高風險：runtime 設定／取消 `protected` lifecycle 旗標，同一套
+ *  二次確認紀律。 */
+export function superuserSetOwnerProtected(
+  ownerId: string,
+  protectedValue: boolean,
+): Promise<{ owner_id: string; protected: boolean }> {
+  return request(
+    `/api/superuser/owners/${encodeURIComponent(ownerId)}/protected`,
+    {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", ...adminAuthHeaders() },
+      body: JSON.stringify({
+        protected: protectedValue,
+        confirm_owner_id: ownerId,
+      }),
+    },
+  );
+}
+
+export function superuserGetAuditLog(): Promise<SuperUserAuditEntry[]> {
+  return request<SuperUserAuditEntry[]>("/api/superuser/audit-log", {
+    headers: adminAuthHeaders(),
+  });
+}
+
 // ---------- Historical IV 歷史序列（#126／#114，HIVT-02–04／#153–155） ----------
 
 /** Normalized Skew 自己一年走勢圖的一天（HIVT-04／#155：舊 `points` 的

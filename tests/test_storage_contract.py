@@ -22,7 +22,8 @@ from api_app.storage import (BrowserIdentity, ChainBackoffEntry,
                              NarrowHistoryEntry, Owner, ProviderCredential,
                              ProviderVerification, RateCacheEntry,
                              ResultRecord, Scenario, ScenarioExists,
-                             TreasuryYearCacheEntry, UsageSetting)
+                             SuperUserAuditEvent, TreasuryYearCacheEntry,
+                             UsageSetting)
 from api_app.storage.memory import MemoryStorage
 
 TEST_DB_URL = os.environ.get("OC_TEST_DATABASE_URL")
@@ -85,7 +86,7 @@ def storage(request):
                      "owner_settings, owner_credentials, owner_verifications, "
                      "iv_observations, iv_backfill_runs, contract_iv_history, "
                      "diagnostics, operational_metrics, narrow_history, "
-                     "owners, browser_identities "
+                     "owners, browser_identities, superuser_audit_log "
                      "RESTART IDENTITY")
     yield st
 
@@ -1024,6 +1025,92 @@ def test_delete_owner_does_not_touch_shared_market_facts_tables(storage):
     assert storage.get_contract_history("TLT281215C00094000") is not None
     assert storage.iv_observations("TLT") != []
     assert storage.get_iv_backfill_run("TLT") is not None
+
+
+# ---------- Super User audit trail（PB-10／#301，Anonymous Public Beta） ----------
+
+def _audit(*, event_id="a1", ts="2026-09-14T00:00:00+00:00", actor="superuser",
+          action="delete_owner", target_owner_id="doomed", detail=None):
+    return SuperUserAuditEvent(event_id=event_id, ts=ts, actor=actor,
+                               action=action, target_owner_id=target_owner_id,
+                               detail=detail if detail is not None else {})
+
+
+def test_audit_log_starts_out_empty(storage):
+    assert storage.list_audit_events() == []
+
+
+def test_appended_audit_event_reads_back_identically(storage):
+    storage.append_audit_event(_audit(detail={"deleted_rows": {"scenarios": 3}}))
+    (got,) = storage.list_audit_events()
+    assert got == _audit(detail={"deleted_rows": {"scenarios": 3}})
+
+
+def test_audit_log_is_newest_first(storage):
+    storage.append_audit_event(_audit(event_id="a1", ts="2026-09-14T00:00:00+00:00"))
+    storage.append_audit_event(_audit(event_id="a2", ts="2026-09-14T00:01:00+00:00"))
+    storage.append_audit_event(_audit(event_id="a3", ts="2026-09-14T00:02:00+00:00"))
+    ids = [e.event_id for e in storage.list_audit_events()]
+    assert ids == ["a3", "a2", "a1"]
+
+
+def test_audit_log_limit_caps_how_many_are_returned_not_what_is_stored(storage):
+    """`limit` 只是這次查詢回幾筆，不是保留政策——底層紀錄不會因為
+    這次只查一筆而消失，見 `Storage.list_audit_events()` docstring。"""
+    for i in range(5):
+        storage.append_audit_event(_audit(event_id=f"a{i}"))
+    assert len(storage.list_audit_events(limit=2)) == 2
+    assert len(storage.list_audit_events(limit=200)) == 5
+
+
+def test_audit_log_survives_a_flood_of_diagnostic_events(storage):
+    """PB-10 AC：audit 記錄不會被 `diagnostics` 的 200 筆保留上限沖掉
+    ——兩者刻意是完全獨立的記錄面（見 `SuperUserAuditEvent`
+    docstring）。灌入遠超 `RETENTION_LIMIT` 的診斷事件，audit 記錄
+    仍然完整存在。"""
+    storage.append_audit_event(_audit(event_id="the-one-audit-entry"))
+    for i in range(RETENTION_LIMIT * 2):
+        storage.append_diagnostic(_diag(event_id=f"flood-{i}", owner_id=OWNER))
+
+    assert len(storage.list_diagnostics(owner=OWNER)) <= RETENTION_LIMIT
+    events = storage.list_audit_events()
+    assert len(events) == 1
+    assert events[0].event_id == "the-one-audit-entry"
+
+
+def test_deleting_an_owner_does_not_erase_the_audit_record_of_its_own_deletion(storage):
+    """`delete_owner()`（PB-04）刻意不清除這張表——audit trail 的目的
+    正是留存「這個 owner 曾經存在、曾經被刪除」這件事本身，見
+    `SuperUserAuditEvent` docstring 與 postgres.py 的
+    `_OWNER_SCOPED_TABLES` 註解。"""
+    _seed_all_ten_tables_under(storage, "doomed")
+    _register_owner(storage, "doomed", "tok-doomed")
+    storage.append_audit_event(_audit(target_owner_id="doomed",
+                                      detail={"deleted_rows": {}}))
+
+    storage.delete_owner("doomed")
+
+    events = storage.list_audit_events()
+    assert len(events) == 1
+    assert events[0].target_owner_id == "doomed"
+
+
+def test_audit_detail_never_needs_to_contain_a_credential_token(storage):
+    """audit 記錄不含第三方 token 明文——這是結構性成立的（呼叫端
+    `_record_audit()` 的 `detail` 只放列數／布林值），這條測試直接
+    證明：即使 `delete_owner()` 刪除的資料裡含有真實 credential
+    token，回傳的計數字典本身也只有數字，不含任何 token 字串，
+    `detail` 因此不可能意外夾帶明文。"""
+    storage.save_credential(ProviderCredential(
+        provider="marketdata_app", token="super-secret-token-value",
+        updated_at="2026-09-14T00:00:00+00:00", owner_id="solo-owner"))
+    counts = storage.delete_owner("solo-owner")
+    detail = {"deleted_rows": counts}
+    storage.append_audit_event(_audit(target_owner_id="solo-owner", detail=detail))
+
+    import json
+    serialized = json.dumps(detail)
+    assert "super-secret-token-value" not in serialized
 
 
 # ---------- Narrow visible-candidate history（SCALE-09／#261） ----------

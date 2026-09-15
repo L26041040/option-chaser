@@ -16,7 +16,8 @@ from . import (BrowserIdentity, ChainBackoffEntry, ContractHistory,
                IvObservation, MetricEntry, NarrowHistoryEntry, Owner,
                ProviderCredential, ProviderVerification, RateCacheEntry,
                ResultFactContext, ResultRecord, ResultSummary, Scenario,
-               ScenarioExists, TreasuryYearCacheEntry, require_owner)
+               ScenarioExists, SuperUserAuditEvent, TreasuryYearCacheEntry,
+               require_owner)
 from ..diagnostics import RETENTION_LIMIT, DiagnosticEvent
 from ..identity import SOLO_OWNER
 from ..metrics import retention_cutoff
@@ -49,6 +50,10 @@ class MemoryStorage:
         # `BrowserIdentity` docstring）。
         self._owners: dict[str, Owner] = {}
         self._browser_identities: dict[str, BrowserIdentity] = {}
+        # PB-10（#301）：append-only、**無** `maxlen`——與
+        # `self._diagnostics` 刻意不同的保留政策，見
+        # `SuperUserAuditEvent` docstring。
+        self._audit_log: list[SuperUserAuditEvent] = []
         # SCALE-09（#261）：鍵是三個 identity 欄組成的 tuple，逐字對應
         # PK `(scenario_id, analyzed_at, candidate_key)`。
         self._narrow_history: dict[tuple[str, str, str], NarrowHistoryEntry] = {}
@@ -494,6 +499,14 @@ class MemoryStorage:
 
     def list_owners(self) -> list[Owner]:
         return list(self._owners.values())
+
+    # ---------- Super User audit trail（PB-10／#301） ----------
+
+    def append_audit_event(self, event: SuperUserAuditEvent) -> None:
+        self._audit_log.append(event)
+
+    def list_audit_events(self, *, limit: int = 200) -> list[SuperUserAuditEvent]:
+        return list(reversed(self._audit_log))[:limit]
 
     # ---------- Narrow visible-candidate history（SCALE-09／#261） ----------
 

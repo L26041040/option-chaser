@@ -27,8 +27,8 @@ from . import (BrowserIdentity, ChainBackoffEntry, ContractHistory,
                IvObservation, MetricEntry, NarrowHistoryEntry, Owner,
                ProviderCredential, ProviderVerification, RateCacheEntry,
                ResultFactContext, ResultRecord, ResultSummary, Scenario,
-               ScenarioExists, TreasuryYearCacheEntry, UsageSetting,
-               require_owner)
+               ScenarioExists, SuperUserAuditEvent, TreasuryYearCacheEntry,
+               UsageSetting, require_owner)
 from ..diagnostics import RETENTION_LIMIT, DiagnosticEvent
 from ..identity import SOLO_OWNER
 from ..metrics import retention_cutoff
@@ -432,6 +432,21 @@ CREATE TABLE IF NOT EXISTS browser_identities (
     last_seen_at   TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS browser_identities_owner_idx ON browser_identities (owner_id);
+-- PB-10（#301，Anonymous Public Beta）：Super User 高風險操作 audit
+-- trail——刻意獨立於 `diagnostics`（owner-scoped、trim-on-write 只留
+-- 全域最新 200 筆）與 `events`（scenario-scoped 領域事實）。這張表
+-- **不設保留上限**、**不在 `_OWNER_SCOPED_TABLES` 清單裡**——
+-- `delete_owner()` 刪除一個 owner 時不會連帶清掉它被刪除這件事本身
+-- 的紀錄（見 `SuperUserAuditEvent` docstring）。
+CREATE TABLE IF NOT EXISTS superuser_audit_log (
+    seq              BIGSERIAL PRIMARY KEY,
+    event_id         TEXT NOT NULL,
+    ts               TEXT NOT NULL,
+    actor            TEXT NOT NULL,
+    action           TEXT NOT NULL,
+    target_owner_id  TEXT,
+    detail           JSONB NOT NULL
+);
 """
 
 # 冷啟動競爭下的良性錯誤：別人已經建好／加好了。
@@ -1331,6 +1346,27 @@ class PostgresStorage:
                 "FROM owners ORDER BY created_at, owner_id").fetchall()
         return [Owner(owner_id=r[0], created_at=r[1], last_activity_at=r[2],
                       protected=r[3]) for r in rows]
+
+    # ---------- Super User audit trail（PB-10／#301） ----------
+
+    def append_audit_event(self, event: SuperUserAuditEvent) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO superuser_audit_log "
+                "(event_id, ts, actor, action, target_owner_id, detail) "
+                "VALUES (%s, %s, %s, %s, %s, %s)",
+                (event.event_id, event.ts, event.actor, event.action,
+                 event.target_owner_id, Jsonb(event.detail)))
+
+    def list_audit_events(self, *, limit: int = 200) -> list[SuperUserAuditEvent]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT event_id, ts, actor, action, target_owner_id, detail "
+                "FROM superuser_audit_log ORDER BY seq DESC LIMIT %s",
+                (limit,)).fetchall()
+        return [SuperUserAuditEvent(event_id=r[0], ts=r[1], actor=r[2],
+                                    action=r[3], target_owner_id=r[4],
+                                    detail=r[5]) for r in rows]
 
     # ---------- 資料源設定與 credential（Settings／#124，owner 化 SCALE-13／#264） ----------
 
