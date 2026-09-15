@@ -9038,6 +9038,76 @@ CLAUDE.md 隨手更新。
   全套：後端雙後端（記憶體＋真實 Postgres，於乾淨重置過的資料庫上）
   2171 條全綠；前端 typecheck 乾淨、Vitest 777 條全綠、build 成功；
   Playwright 126 條（iPhone＋Desktop）連續兩輪穩定全綠。
+- **PB-06**［#299］Global Vendor Fuse——system-wide 每日 vendor 呼叫
+  預算 ＋ 降級（commit `e2ac5cf`）：新增獨立小模組
+  `api_app/vendor_fuse.py`（比照既有 `chain_backoff.py` 同層級，
+  票面明文要求兩者不得合併成一個狀態機）——`GlobalVendorFuseTripped`
+  （`FetchError` 子類，沿用 `RateLimitedError`／`QuotaExhausted` 既有
+  「子類讓在乎的呼叫端分得出差異，其餘呼叫端行為不變」的設計哲學）與
+  `tripped(storage, today, budget)`（`budget<=0` 停用；查詢本身失敗
+  fail-open，成本控制機制不是安全邊界，不得讓觀測失敗拖垮被保護的
+  主功能）。**計數來源沿用既有機制、不新建平行計數**——新增
+  `Storage.metric_total(metric, bucket)`（memory／postgres 皆實作，
+  對既有 `operational_metrics` 表做 targeted SUM，取代呼叫端每次抓鏈
+  前都要撈出 `metric_summary()` 整個 30 天視窗再自己過濾加總）。
+
+  **唯一的檢查點**：`api_app/main.py::_fetch_chain()` 函式最上方——
+  這是全站唯一真正會打上游的入口（自訂 provider 與預設 Cboe→yfinance
+  降級鏈皆經過這裡），fuse 因此擋在任何其他判斷之前，滿足 AC-9「沒有
+  任何路徑可以繞過」；`refresh_scenario()`／`refresh_run()` 的
+  symbol-group 抓鏈／一次性 `POST /api/analyze` 三條路徑共用同一個
+  進入點，零程式碼重複。`_classify_fetch_failure()`（SCALE-05 既有
+  唯一分類點）擴充第三種結果：`isinstance(e, GlobalVendorFuseTripped)`
+  時回 `stage="vendor_budget_exhausted"`（429，非 5xx——spec §14
+  硬性要求；facts-only 訊息）；判斷順序刻意把這個檢查放在
+  `chain_backoff.status()` 之前——fuse 短路發生在任何真正呼叫
+  `chain_backoff.backoff_aware_fetch()` 之前，這個例外類別因此保證
+  代表這次失敗的真正原因，不需要（也不該）回頭猜測是不是 Cboe 限流。
+  兩者刻意是**互不覆寫**的獨立判準：fuse 觸發時 `chain_backoff` 自己
+  既有的持久狀態完全未被這次失敗碰觸；反過來若 fuse 未觸發、單純
+  Cboe 真的在限流，既有 `rate_limited` 分類原樣生效，PB-06 沒有動它
+  一行。**Super User 不豁免**（spec §8 v3）：`_fetch_chain()` 的檢查
+  在 `identity_resolver()`／`superuser.is_superuser()` 判斷之前，
+  結構上不可能繞過。「沿用既有資料＋清楚告知」不需要為 PB-06 另外
+  發明呈現機制——一次失敗的刷新從不覆寫 `latest_result()`，既有兩態
+  失敗卡片（REPAIR-05／#242：曾成功過→舊資料＋失敗徽章；從未成功過
+  →「尚無可用結果」）天然涵蓋這個情境。`create_app()` 新增
+  `global_vendor_daily_budget` DI 參數，`None`→讀
+  `GLOBAL_VENDOR_DAILY_BUDGET` 環境變數→預設常數 2000（spec §17
+  明文「待 Controlled Beta 實測校準」，非最終數字）。前端
+  `src/api.ts` 的 `STAGES`／`FailureStage` 與 `src/scenarios.ts` 的
+  `failureLabel()` 各補上這個新分層（`test_frontend_contract.py`
+  既有漂移防線強制要求，AST 掃描 `_fail(...)` 呼叫自動抓出未同步的
+  新 stage）。
+
+  新增 `tests/test_pb06_global_vendor_fuse.py`（17 條，HTTP-seam＋
+  純函式雙軌，逐條對應票面 AC：預算用盡進入降級且非 5xx／舊資料
+  原封不動／`refresh_run` 批次結果夾帶非 5xx 失敗項／從未成功過誠實
+  回報／預算可經 DI 或環境變數調整停用／fuse 與 chain_backoff 互不
+  覆寫且各自獨立生效／Super User 不豁免／自訂 provider 與一次性
+  `/api/analyze` 亦無法繞過／純函式層 fail-open 與門檻邊界）；
+  `tests/test_storage_contract.py` 既有「S0 最小可觀測性」區塊新增
+  `metric_total()` 契約測試（memory＋真 Postgres 雙後端，比照全站
+  既有慣例集中一處，不散落在各票各自的檔案）；`src/scenarios.test.ts`
+  補一條 `failureLabel("vendor_budget_exhausted")` 有自己說法的測試。
+  施工中發現並修正三個測試設計陷阱（皆為測試本身、非 production 邏輯
+  問題）：(1) 同一劇本緊接著刷新兩次會先撞上 PB-05 既有 30 分鐘節流
+  短路，根本走不到 `_fetch_chain()`——改用
+  `anonymous_refresh_min_interval_minutes=0` 停用節流才測得到 fuse；
+  (2) `create_app()` 的 `fetch=` DI 覆寫會讓 `_effective_fetch` 直接
+  變成注入的函式，完整繞過只包在 `_default_fetch()` 內部的
+  `_metered_chain_fetch()`——凡是要驗證「真的計數」的測試改用
+  `monkeypatch.setattr(cboe, "fetch_chain", ...)`（比照
+  `test_scale08_observability.py` 既有 `_client()` helper 手法）且
+  不覆寫 `fetch=`；(3) `POST /api/analyze` 的 `AnalyzeRequest.
+  strategies` 認的是具體 subtype 白名單（`STRATEGIES`），跟
+  `CreateScenarioRequest` 認的 family 白名單（`FAMILIES`）是兩個不同
+  層次的詞彙，沿用 `NEW` 常數（family 字串）會撞 422 而非測到 429。
+  全套：後端雙後端（記憶體＋真實 Postgres）2194 條全綠（含本票新增
+  23 條，17 條 HTTP-seam／純函式＋6 條 storage 契約）；前端 typecheck
+  乾淨、Vitest 777 條全綠、build 成功；Playwright 126 條（iPhone＋
+  Desktop）全綠，與 PB-09 收工時完全相同的數字（本票未新增任何
+  e2e 案例，既有失敗卡片視覺呈現機制原封不動）。
 
 ### 施工依據
 
