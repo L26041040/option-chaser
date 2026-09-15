@@ -27,7 +27,7 @@ block 裡，不能切成好幾個 code block、也不能中間插普通文字把
 `［回報#001］spec #137 拆票完成`）。編號是**累計總數**，不因換
 session、換分支、換主題而歸零——目前最新編號記在這裡：
 
-> 目前次序：082（下一份回報用 083）
+> 目前次序：083（下一份回報用 084）
 
 每發一份回報就把上面這個數字改成剛剛用掉的那個，跟著那次改動一起
 commit（沒有其他改動要 commit 時，單獨為這一行開一個小 commit 也
@@ -9536,6 +9536,201 @@ CLAUDE.md 隨手更新。
   typecheck 乾淨、Vitest **826 條全綠**（+31）、build 成功；
   Playwright **127 條全綠**（iPhone＋Desktop，唯一的 1 條失敗是上述
   已查證的既有缺陷，非本票回歸）。
+
+- **PB-14**［#305］Controlled Beta Exit Criteria 驗證 ＋ Release Gate
+  收尾（本輪最後一張票，純驗證＋一項真缺陷修正，commits
+  `ea06626`＋跟進 docs commit）：
+
+  **Release-level `/security-review`（Controlled Beta 開始前，
+  §12／§16 硬性要求）已執行，涵蓋 PB-01～PB-13 累積全部 diff**
+  （`git diff origin/master...HEAD`，99 個檔案、約 1 萬行新增；先
+  `git remote set-head origin master` 讓 skill 自己的 `git diff
+  origin/HEAD...` 算得出完整範圍，而非只算單張票）。**抓到一個真
+  High-severity 缺陷並已修正**：
+
+  - **發現**：`api_app/observability.py::init_sentry()`（PB-13）未
+    設定 `include_local_variables=False`，Sentry Python SDK 2.x
+    預設會把每層 stack frame 的區域變數整個 `repr()` 後上傳；
+    `_fetch_chain()`／`put_credential()`／`test_credential()`
+    （`api_app/main.py`）三處在拿到第三方 provider token 明文
+    （`cred.token`／`req.token`）之後仍有後續呼叫（`db.save_
+    verification()` 等）可能拋出無關例外（例如 Neon 連線瞬斷），
+    那個當下 token 仍是活著的區域變數——既有 `_scrub_event()` 只清
+    `event["request"]`／例外訊息字串，不會走到
+    `stacktrace.frames[].vars` 這一層，token 因此會明文外洩到
+    Sentry 帳號。`_fetch_chain()` 尤其吃重，任何啟用自訂 provider 的
+    owner 每次正常刷新都會經過這條路徑，不是只有 admin 操作才會踩到。
+  - **修正**：`sentry_sdk.init(...)` 新增 `include_local_variables=
+    False`——一行關掉整個 local-variable 擷取功能，本站 error
+    triage 從一開始就只依賴例外型別／訊息與既有 Diagnostics／
+    `/api/ops/metrics` 這條完全獨立的自建帳本，不依賴 Sentry 顯示
+    區域變數值，關掉它零損失。新增
+    `tests/test_observability.py::test_init_sentry_disables_local_
+    variable_capture` 釘死這個旗標真的被傳進 `sentry_sdk.init()`。
+  - 其餘 11 項 spec §6／§19 明文要求逐一在 diff 上核對，皆確認安全：
+    cookie 屬性拉滿（`__Host-oc_owner`，`httponly`／`secure`／
+    `samesite=lax`，全站唯一一處 `set_cookie()`）；軸一／軸二完全
+    正交（`superuser.py` 不 import `api_app.identity`，函式簽章無
+    `owner_id` 參數，`_effective_admin_secret` 與
+    `_effective_cron_secret` 呼叫點零重疊）；`owner_id` 從不進回應
+    body（既有 SCALE-06 不變量延伸到 PB-10 新端點，`_event_json`／
+    `_diagnostic_json` 明確 `pop`）；確認二次確認機制真的擋在
+    `delete_owner()`／`set_owner_protected()` 之前（非事後補檢查）；
+    新增的 10 個 Postgres 方法全數用 `%s` 佔位符，唯一 f-string
+    組表名只吃寫死的模組層級 tuple、非請求輸入；
+    `migrate_solo_to_owner.py` 永不印 token 值；PB-07 harness 結構性
+    走 mock（`cboe_fetch=`／`is_synthetic` 不參與任何授權判斷）；
+    CI workflows 無 `pull_request_target`、無 secret 注入、
+    `deploy-smoke.yml` 的外部輸入走安全的 `env:` 綁定而非直接內嵌進
+    shell 指令；PB-12 前端零 `dangerouslySetInnerHTML`、Super User
+    密鑰只走 `Authorization` header。
+
+  **§20 八項必要測試——逐條對到具體、可執行的測試函式**（PB-14
+  Implementation Constraints 明文要求「找不到守門測試就是 ❌，不是
+  ✅」，逐一 grep 驗證非只憑印象）：
+
+  | # | 要求 | 覆蓋測試 |
+  |---|---|---|
+  | 1 | Normal User A 讀不到 B | `test_pb02_cookie_identity.py::test_two_different_browsers_see_completely_isolated_data` |
+  | 2 | Normal User 用不了 Super User endpoint | `test_pb09_superuser.py::test_a_bare_client_with_no_authorization_header_is_rejected_everywhere`／`test_a_wrong_secret_is_rejected_everywhere_not_just_missing` |
+  | 3 | Super User 可執行 Normal User 全部功能 | `test_pb09_superuser.py::test_superuser_credentials_can_still_do_every_normal_user_thing`（本票新增，發現真缺口） |
+  | 4 | Super User 可用 system／admin operations | `test_pb10_superuser_admin.py::test_superuser_can_list_every_owner_across_the_site`／`test_superuser_can_view_another_owners_scenario_list_and_detail`／`test_superuser_can_delete_another_owners_data_with_correct_confirmation` |
+  | 5 | Super User capability 不改變 owner_id（軸二不干擾軸一） | `test_pb09_superuser.py::test_admin_secret_presence_does_not_change_which_owner_a_cookie_resolves_to` |
+  | 6 | service credential 不自動變成某個 owner | `test_pb02_cookie_identity.py::test_cron_endpoint_does_not_create_an_owner_even_when_unauthorized`／`test_pb09_superuser.py::test_the_cron_secret_does_not_unlock_any_superuser_endpoint` |
+  | 7 | Normal User 無法自行升級 | `test_pb09_superuser.py::test_normal_user_cannot_self_elevate_to_superuser_through_any_product_endpoint`（本票新增，發現真缺口） |
+  | 8 | 破壞性操作二次確認＋audit trail | `test_pb10_superuser_admin.py::test_delete_without_matching_confirmation_is_rejected_and_deletes_nothing`／`test_batch_delete_requires_the_confirmation_set_to_match_exactly`／`test_audit_log_records_who_what_target_and_when_for_high_risk_actions` |
+
+  **兩項本票新增測試補的是真缺口、非重複驗證**——逐一 grep 過
+  `test_pb09_superuser.py` 既有 17 條測試（施工前 15 條），確認第
+  3、7 項先前只有「四個受保護端點各自 401／單一密鑰解鎖全部端點」
+  這類間接證據，沒有一條直接證明「Super User 拿著密鑰時，自己的
+  正常 owner-scoped 操作（建立／編輯 Scenario）不受影響」與「Normal
+  User 用不對的密鑰、或用自己 owner_id 當參數，換不到 Super User
+  能力」——已補齊。
+
+  **§16 Line 1（Controlled Beta 開始前必做）16 項逐一核對到施工票與
+  守門測試**：
+
+  | # | 項目 | 施工票 | 守門測試（節錄） |
+  |---|---|---|---|
+  | 1 | 匿名 cookie 身份（隨機 id＋伺服器查表＋lazy creation） | PB-01／PB-02 | `test_pb02_cookie_identity.py`（14 條） |
+  | 2 | Super User 單一 authentication mechanism | PB-09 | `test_the_same_admin_secret_unlocks_every_protected_endpoint` |
+  | 3 | Owner solo 資料一次性遷移到自己正常 owner identity | PB-03 | `test_pb03_migrate_owner_script.py`（4 條） |
+  | 4 | owner-wide deletion primitive（含 narrow_history） | PB-04／PB-10 | `test_pb04_self_delete.py`（6 條）＋`test_superuser_can_delete_another_owners_data_with_correct_confirmation` |
+  | 5 | 匿名者不得存第三方 token | PB-09 | `test_a_bare_client_with_no_authorization_header_is_rejected_everywhere`（涵蓋三個 credential 端點） |
+  | 6 | Super User 高風險操作二次確認＋audit log | PB-10 | `test_delete_without_matching_confirmation_is_rejected_and_deletes_nothing`等 4 條＋`test_audit_log_records_who_what_target_and_when_for_high_risk_actions` |
+  | 7 | Quota 三件套（10 scenario／30 分鐘節流／global fuse） | PB-05／PB-06 | `test_pb05_quota_and_throttle.py`（18 條）＋`test_pb06_global_vendor_fuse.py`（17 條） |
+  | 8 | Graceful degradation（quota／fuse 不 500） | PB-05／PB-06 | `test_the_eleventh_active_scenario_is_rejected_not_500`／`test_refresh_run_reports_the_fuse_as_a_non_5xx_batch_failure_item` |
+  | 9 | Synthetic load test harness（mock vendor） | PB-07 | `test_pb07_synthetic_load.py`（8 條，含零真實 vendor 呼叫地雷測試） |
+  | 10 | 頁尾＋首頁 Beta 說明＋隱私頁＋刪除入口 | PB-12／PB-04 | `test_pb12_beta_copy.py`＋`BetaNotice/Footer/PrivacyPage/DeleteMyData.test.tsx` |
+  | 11 | CI（Actions＋branch protection required checks） | PB-13 | `.github/workflows/ci.yml`（Owner 需自行設定 required checks，見下） |
+  | 12 | 部署後 smoke＋UptimeRobot（不觸發 owner 建立） | PB-13 | `deploy-smoke.yml`＋`test_health_does_not_create_an_owner` |
+  | 13 | Sentry 免費層＋email alert | PB-13 | `test_observability.py`（本票追加 `include_local_variables` 修正） |
+  | 14 | `/security-review` 跑一次（Controlled Beta 開始前） | **本票（PB-14）** | 本輪即是這一次，見上方修正記錄 |
+  | 15 | Super User 最小維運能力 | PB-10／PB-11 | `test_pb10_superuser_admin.py`（15 條）＋`test_pb11_ops_digest.py`（21 條） |
+  | 16 | 清理排程接上 Vercel Cron | PB-08 | `test_pb08_anonymous_lifecycle.py`（24 條，含完整三段式生命週期端到端） |
+
+  **§15 Controlled Beta Exit Criteria（8 項）——驗證機制對照**：
+
+  | # | 項目 | 驗證機制 |
+  |---|---|---|
+  | 1 | Ownership isolation 正常 | PB-07 harness 多 synthetic owner 隔離測試＋PB-02 兩瀏覽器隔離測試 |
+  | 2 | Quota／Fuse 確實被 synthetic load test 測到並觸發 | PB-07 `test_pb07_synthetic_load.py` 直接使用 PB-05／PB-06 的閘門跑合成多 owner 負載 |
+  | 3 | Graceful degradation 全部驗證、無 500 | 見上方 §16 第 8 項 |
+  | 4 | Cleanup lifecycle 完整跑通一次（soft-expired→grace→hard delete） | `test_full_lifecycle_active_then_abandoned_then_hard_deleted` |
+  | 5 | 至少一次真實 release 走完整 branch→PR→CI→merge→deploy | ⚠ **尚未達標**——機制（`ci.yml`＋branch protection）已就緒，但「開 PR」本身依專案規則需等需求方 cue，本票不主動觸發（見下方交付方式），這是進 **Public Beta** 前才需要達標的項目、不擋 Controlled Beta 啟動 |
+  | 6 | Storage 成長速度在 Neon Free 下可接受 | PB-07 `_total_db_bytes()` 系列測試（真實 Postgres-only，`skipif` 無 DB 時跳過）外推成長速率 |
+  | 7 | 無 sustained critical incident（Controlled Beta 期間） | 這是**時間性**判準，需 Owner 在實際 Controlled Beta 執行期間觀察，agent 無法代為驗證 |
+  | 8 | 少量真人 UX validation | ⚠ 需 Owner 親自完成，`docs/anonymous-public-beta-acceptance-checklist.md` 已備妥逐條清單 |
+
+  **§14 Failure / graceful degradation 四項情境——逐一對到測試**：
+
+  | 情境 | 測試 |
+  |---|---|
+  | Quota／Fuse 超額不回 500，沿用既有資料＋清楚告知 | `test_the_eleventh_active_scenario_is_rejected_not_500`／`test_an_already_successful_scenario_keeps_its_last_known_data_when_the_budget_is_spent`／`test_refresh_run_reports_the_fuse_as_a_non_5xx_batch_failure_item` |
+  | Cleanup 排程失敗不影響使用者可見行為，但觸發 alert | `test_cleanup_volume_is_recorded_as_a_metric_not_only_in_the_response`（PB-08）＋`test_cleanup_missed_triggers_at_threshold_not_below`（PB-11 alert 閘門） |
+  | Vendor 資料源被封鎖，沿用既有 429 Backoff／Sustained Incident | `test_chain_sustained_incident_triggers_and_names_the_sources`（PB-11，延伸既有 SCALE-04／05 機制，未新增獨立狀態機） |
+  | Cookie 遺失／新訪客——正常路徑非失敗 | `test_a_request_carrying_an_unknown_token_gets_a_brand_new_owner` |
+
+  **spec #291 §22 全部 19 項 Acceptance Criteria 逐一核對**：1–6、
+  9、10、13–15、17–19 皆有上方各表對應的具體測試或本票 git-diff 證明
+  直接支持；第 7 項（產品全站只有 Normal／Super User 兩層，Super
+  User 為完整超集合）由 PB-09／PB-10 全套測試與本票 security review
+  逐一核對通過；第 8 項（`/api/ops/metrics` 新增匿名指標＋daily
+  digest＋Sentry alert 皆接通）由 PB-11／PB-13 覆蓋；第 11 項
+  （`/security-review` 至少一次）由本票兌現；第 12 項（8 項 Exit
+  Criteria 全數達標）——**第 7 項（無 sustained incident）與 8 項
+  （真人 UX）依性質必須由 Owner 在真實 Controlled Beta 執行期間才能
+  確認，本票只能證明「機制已就緒、可被驗證」，不能代替 Owner 本人
+  的真機觀察**，已誠實記在 `docs/anonymous-public-beta-acceptance-
+  checklist.md`。第 16 項（本票不放寬任何既有斷言）——見下方逐項證明。
+
+  **紅線核對（git-diff 逐字證明，非憑印象宣稱）**：
+
+  - `git diff 5971557~1..HEAD -- option_chaser/ranking.py
+    option_chaser/filters.py option_chaser/valuation.py` **輸出
+    0 行**——PB-01 到本票，整個 Anonymous Public Beta 十四張票，
+    三個引擎核心檔案逐位元未動。
+  - `git diff 5971557~1..HEAD` 全範圍對 `269`／`SCALE18`／`SCALE-18`
+    等字樣 **零命中**——#269／SCALE-18 全程未觸碰。
+  - 全部 12 張已完成票（PB-01～PB-06、PB-08～PB-13）逐一 `git show`
+    核對其觸及測試檔案的 diff：**零裸刪除既有斷言、零運算子放寬
+    （`==`→`>=`/`<=`）、零新增 `skip`／`xfail`**；唯一被移除的測試
+    函式（見 PB-05 節「兩個測試設計陷阱」）在同一 diff 被改名替換且
+    新增了斷言，非減少。
+
+  **全套回歸（含本票的 Sentry 修正，連續兩輪穩定）**：
+  - 後端 pytest（記憶體＋真實 Postgres 雙後端）：`2290`
+    條，0 failed／0 error／0 skipped（於乾淨重置過的資料庫上跑，
+    非累積殘留狀態）。
+  - 前端 `tsc --noEmit` 乾淨、Vitest **826 條**全綠、`vite build`
+    成功。
+  - Playwright（iPhone＋Desktop）：127 條全綠，含一條**已知、與本輪
+    及 PB-12 皆無關的既有 flake**（`smoke.spec.ts::刷新失敗說明是
+    哪一段，重試就地重來（V4／#52）`）——用 `git stash` 對照
+    PB-12 開工前的乾淨基準點重跑同一條測試，**同樣失敗**，證明是
+    施工前既有、非本輪新增的環境依賴性問題，未嘗試修正（不在
+    spec #291 範圍）。
+
+  **交付方式——維持專案既有規則，不因 spec §15 Exit Criterion 5 而
+  破例**：CLAUDE.md 專案規則「全部 ticket 做完才開 PR、merge 回
+  master，中途不要主動開」是貫穿整個 repo 歷史、需求方逐輪重申的
+  紅線——即使全部票做完，開 PR 的動作本身仍要等需求方明確 cue，不是
+  「做完就自動觸發」。本票依此規則只 commit＋push 到
+  `claude/implement-tfm9oa`（跟前 12 張票完全一致），**不主動開
+  PR**。**因此必須誠實記錄一個尚未達標的項目**：§15 Exit Criterion
+  5「至少一次真實 release 走過完整 branch→PR→CI→merge→deploy 流程」
+  這件事的動作主體是「開 PR」，而這個動作依專案規則屬於需求方的
+  決定權，不是 agent 可以為了湊滿 Exit Criteria 而自行觸發的——本票
+  只能確保 `ci.yml`／branch protection 等**機制**已就緒（見 §16
+  第 11 項），但「真的走過一次」這件事要等需求方主動開那個 PR 才算
+  數，尚未發生。這個落差已寫進下方最終判定，不視為缺陷、不代表
+  Controlled Beta 不能開始（Exit Criterion 5 本來就是進 **Public
+  Beta** 前才需要達標的項目，不擋 Controlled Beta 啟動）。
+
+  **產出**：`docs/anonymous-public-beta-acceptance-checklist.md`
+  （26 項，比照既有 `docs/v10-acceptance-checklist.md`／
+  `docs/initial-v2-acceptance-checklist.md` 慣例，✅／⚠ 圖例區分
+  自動化已覆蓋與需要 Owner 真機確認的項目，末尾列出 Line 2（Public
+  Beta 之後）明確排除範圍）。
+
+  **最終判定**：Controlled Beta 的技術基礎設施（PB-01～PB-13 全部
+  16 項 Line 1 要求）已就緒且全數有測試背書，release-level
+  `/security-review` 發現的唯一 High-severity 缺陷已修正並補上
+  回歸測試。**§15 Exit Criteria 的 8 項中，5 項可由自動化證明已就緒
+  （1／2／3／4／6），1 項（5：走過一次 PR→CI→merge）機制已就緒但
+  「開 PR」動作依專案規則需等需求方主動 cue、尚未發生，2 項（7 無
+  sustained incident、8 真人 UX）依性質必須由 Owner 在實際執行
+  Controlled Beta 期間親自驗證**——**Controlled Beta 可以開始**，
+  Public Beta 則需等需求方主動開那個 PR 讓 CI 真的跑過一次、完成
+  上述兩項真機驗證，並跑第二次 release-level `/security-review`
+  （§16 Line 2）後才能進入。
+
+**Anonymous Public Beta（spec #291，PB-01～PB-14，issues
+#292–#305）全部 14 張子票已完成。** 依專案既有規則不主動開 PR、
+不 merge master，commit＋push 到 `claude/implement-tfm9oa` 為止，
+等需求方 cue 才開 PR（開 PR 本身即是 §15 Exit Criterion 5「走過一次
+真實 release 流程」的動作，留給需求方主動觸發）。
 
 ### 施工依據
 
