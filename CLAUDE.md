@@ -27,7 +27,13 @@ block 裡，不能切成好幾個 code block、也不能中間插普通文字把
 `［回報#001］spec #137 拆票完成`）。編號是**累計總數**，不因換
 session、換分支、換主題而歸零——目前最新編號記在這裡：
 
-> 目前次序：083（下一份回報用 084）
+> 目前次序：085（下一份回報用 086）
+>
+> ⚠ 084 跳號說明：本檔案自己記的序號原本是「083（下一份回報用
+> 084）」，但 OPTION-PUBLIC-BETA-CI-REPAIR-010 這輪工單裡大哥直接
+> 明講回報要用「［回報#085］」——不是老弟自己另起爐灶跳號，是大哥
+> 明確指定的編號，照做，084 這個數字本輪未使用、不知道是否另有
+> 用途，如實記錄供未來 session 對照。
 
 每發一份回報就把上面這個數字改成剛剛用掉的那個，跟著那次改動一起
 commit（沒有其他改動要 commit 時，單獨為這一行開一個小 commit 也
@@ -9736,6 +9742,104 @@ CLAUDE.md 隨手更新。
 不 merge master，commit＋push 到 `claude/implement-tfm9oa` 為止，
 等需求方 cue 才開 PR（開 PR 本身即是 §15 Exit Criterion 5「走過一次
 真實 release 流程」的動作，留給需求方主動觸發）。
+
+### OPTION-PUBLIC-BETA-RELEASE-009 ＋ CI-REPAIR-010——PR #306 開啟、
+CI 修復、merge、production 部署（2026-09-15，Owner 明確指示開 PR，
+禁止 spawn sub-agent／模擬使用者測試／新增功能／碰 #269）
+
+Owner 指示把 `claude/implement-tfm9oa`（PB-01～PB-14 全部成果）安全
+發布到 production。**開 PR 本身依這次明確指示執行，不是 agent 自行
+決定**——這是專案「全部票做完才開 PR」規則本輪真正被觸發的那一刻。
+
+**PR #306**（`claude/implement-tfm9oa` → `master`）已開，涵蓋 PB-01
+～PB-14 全部 22 個 commit。首輪 CI 三度紅燈，皆非 flake，逐一查出
+真因並修正（Owner 另外追加 OPTION-PUBLIC-BETA-CI-REPAIR-010 指示：
+「不得先假設是 flake，必須從實際 component state transition／
+mock fetch timing／React render 行為與 CI log 找 root cause」）：
+
+- **紅燈 1／2——Playwright `webServer` 逾時**：`.github/workflows/
+  ci.yml` 的 `e2e-smoke` job 是 PB-13 新增後**第一次真正在
+  GitHub Actions 真實 runner 上跑**（沙箱裡量到的數字從未在真實
+  runner 上驗證過）。第一輪逾時（60 秒）先加大 CI 下的逾時
+  （120 秒）＋把 `webServer.stdout`／`stderr` 接出來（純可觀測性，
+  commit `c89df1a`）；接出來之後第二輪才看到**真因**：Vite 印出
+  `ready in 188 ms`，代表根本沒有啟動慢的問題——GitHub Actions
+  runner 把 `localhost` 解析成 IPv6 `::1`，Vite 沒加 `--host` 時只
+  綁那個位址，而 Playwright 的健康檢查與整套測試的 `baseURL` 都是
+  純 IPv4 的 `127.0.0.1`，兩邊南轅北轍、等多久都連不上。加上
+  `--host 127.0.0.1` 明確釘死位址解決（commit `cf1c733`）。本地
+  沙箱從未踩到是因為這裡 `localhost` 剛好解到 IPv4。
+- **紅燈 3——`src/IvHistory.test.tsx` 一條測試**：「請求失敗時卡片
+  本身仍在，多一條精簡狀態列，預設收合」。真因是測試本身的 async
+  race，不是 production bug——`IvHistory.tsx` 內部兩層 `useEffect`
+  串接（settings fetch 定案 `enabled` → 再觸發 iv-history fetch），
+  至少兩趟真實 async round-trip 才會落到失敗文案；測試只用
+  `waitFor` 等到卡片標題（loading skeleton 階段就已經在畫面上）就
+  同步用 `getByText` 讀失敗文字，等於在狀態轉移真正完成前就斷言。
+  舊版本本地單獨壓測 **20/20 全掛**（不是偶發，是隔離掉其他測試
+  提供的事件迴圈交錯後結構性必掛）；改成 `await screen.findByText`
+  （緊接著下一條測試本來就是這樣寫）後壓測 **20/20 全過**。
+  production code（`IvHistory.tsx`）一行未動（commit `bea2253`）。
+- **紅燈 4——`e2e/smoke.spec.ts` 一條測試**：「刷新失敗說明是哪一段，
+  重試就地重來（V4／#52）」。真因用 `page.on("request"/"response")`
+  直接觀察瀏覽器真實網路流量查出：點擊重試按鈕會呼叫
+  `refreshOne(id, true)`，PB-08（#300）讓 `refreshScenario()` 在
+  `manual=true` 時於網址加上 `?manual=true`（`src/api.ts:906`）——
+  真人主動點擊一律 `manual=true`，這是既有設計；但這條測試的 route
+  pattern `**/api/scenarios/*/refresh` 字尾沒有 `*`，接不住這段
+  查詢字串，Playwright 判定不符、請求直接落到真實網路拿到 dev
+  server 的 404。跟 CLAUDE.md 記過好幾次的同一類「路由字尾缺 `*`」
+  陷阱（`iv-history*`／`diagnostics*`）成因相同，這次是 PB-08 新增
+  查詢參數時沒同步顧到這條 e2e 路由。加上尾端 `*` 解決（commit
+  `3d9b0fd`）；**這是確定性的 glob 比對錯誤，不是計時性 race**——
+  舊版本本地單獨壓測 **20/20 與 8/8（兩輪各自）全掛**、CI 上也
+  100% 重現。順手訂正 PB-12 章節一則過期筆記（該筆記當時只驗證
+  「不是 PB-12 造成」就停下，沒有再往下查真因，`commit 9063b61`）。
+
+**第五輪 CI（commit `9063b61`，run `35031637880`）全綠**：Backend
+（真實 Postgres 雙後端）／Frontend（typecheck／Vitest 826／build）／
+Playwright smoke（78/78）三個必要 job 全數 success；獨立的 Vercel
+部署狀態 check（"Deployment has completed"）亦 success。PR 的
+`mergeable_state` 為 `unstable`（非 `blocked`，確認無真正 merge
+blocker）——**唯一非綠的是另一個獨立 workflow `deploy-smoke.yml`
+的 preview 專屬 smoke check**：它打的是 Vercel 自動配的**獨立部署
+網址**（`...-<hash>-...vercel.app`），這個網址本身在既有的 Vercel
+Authentication（SSO，`prod_deployment_urls_and_all_previews`）保護
+範圍內，curl 打過去只會拿到 SSO 導轉頁、不是真正的 `/api/health`
+JSON——**這是既有、結構性的限制，不是這輪程式碼造成的缺陷**，且不在
+Owner 明列的必要關卡（Backend／Postgres／Frontend typecheck／
+Vitest／build／Playwright smoke／Vercel Preview）之列，未嘗試修正
+（修這個要嘛動 Vercel Deployment Protection 設定、要嘛改
+`deploy-smoke.yml` 改打 production alias 網域，兩者皆屬本輪明令
+禁止的「新增功能或順手重構」範圍）。⚠ **記錄供未來處理**：這個
+workflow 目前對**任何** `deployment_status` 事件（含未來每一次
+production 部署）都會用同一種方式失敗，因為 Vercel webhook 給的
+`target_url` 恆為獨立部署網址、從不是乾淨的 alias 網域——這不是
+「這次剛好沒中」，是設計上永久失敗，值得另開一票調整（改打
+`option-chaser.vercel.app` 這個固定網域，或關閉 SSO 對這個獨立網址
+的保護），但本輪範圍不含這項。
+
+**PR #306 已 merge 進 master**，merge commit
+**`a91d5d25af893c6cb1a4fea520fd8ed4f81fb5af`**（標準 merge，非
+squash／rebase，比照 master 既有 `#271`／`#270`／`#250`／`#207`
+merge 慣例）。**Production 部署已確認**：`Deploy smoke` workflow
+第 14 次執行的 `head_sha` 正是這個 merge commit、`head_branch:
+master`，且它的觸發條件本身就是 Vercel 回報 `state=="success"`——
+代表 Vercel 建置這個 commit 成功；獨立直接 `curl https://option-
+chaser.vercel.app/api/health`（production 對外 alias 網域，無 SSO
+保護）回應正常（`status:"ok"`／`storage:"postgres"`），`age: 0`
+表示零快取、是即時產生的回應。`/api/health` 確認在
+`_OWNER_EXEMPT_EXACT` 白名單內，健康檢查不會建立匿名 owner。
+
+**PB-03 Owner solo migration——卡在 HITL gate，符合預期**：
+`scripts/migrate_solo_to_owner.py` 需要一個**已經存在於 production
+`owners` 表**的目標 owner_id，這代表 Owner 必須先親自用真實瀏覽器
+造訪一次 `https://option-chaser.vercel.app`（觸發 PB-02 的 lazy
+creation，拿到一個新的 Browser Identity）。本輪沙箱環境沒有
+production 的 `DATABASE_URL`、沒有 `ADMIN_SECRET`，結構上沒有任何
+管道能自己查到或驗證 Owner 的 owner_id——**依指示不得猜測、不得
+虛構、不得用測試身份代替**，本輪到此為止，等 Owner 提供資訊後才
+執行 migration。
 
 ### 施工依據
 
