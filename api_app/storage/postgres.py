@@ -1745,6 +1745,14 @@ class PostgresStorage:
                 "max_value FROM operational_metrics").fetchall()
         return [MetricEntry(*r) for r in rows]
 
+    def metric_total(self, metric: str, bucket: str) -> int:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT COALESCE(SUM(count), 0) FROM operational_metrics "
+                "WHERE metric = %s AND bucket = %s",
+                (metric, bucket)).fetchone()
+        return int(row[0]) if row is not None else 0
+
     def table_size_metrics(self) -> dict:
         # `table`／`size_col` 只會是下面 `_stats()` 兩次呼叫寫死的字面
         # 值（`"results"`／`"view"`、`"snapshots"`／`"snapshot"`）——不是

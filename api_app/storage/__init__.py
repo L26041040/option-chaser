@@ -1097,6 +1097,15 @@ class Storage(Protocol):
         七類指標的答案。不分頁、不搜尋（AC-6：這是給運維人工核對用，
         不是給一般使用者的 API）。"""
 
+    def metric_total(self, metric: str, bucket: str) -> int:
+        """PB-06（#299，Anonymous Public Beta）：`(metric, bucket)`
+        這個切片下、跨全部 `source`／`symbol` 的 `count` 總和——
+        `Global Vendor Fuse`（`api_app.vendor_fuse`）每次抓鏈前都要
+        查一次，因此需要比 `metric_summary()`（撈出整個 30 天視窗
+        全部桶）便宜的 targeted 查詢，同一張表、同一個既有欄位，不是
+        新的計數維度。查無資料時回 `0`，不是 `None`——「今天還沒有
+        任何一次抓取」是合法的、不特殊的初始狀態。"""
+
     def table_size_metrics(self) -> dict:
         """S0 第 6 項——`results`／`snapshots` 兩表的列數、總大小、
         單列大小分布，**query-time gauge，不持久化**（每次呼叫即時

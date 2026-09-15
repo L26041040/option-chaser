@@ -810,6 +810,10 @@ class MemoryStorage:
     def metric_summary(self) -> list[MetricEntry]:
         return list(self._metrics.values())
 
+    def metric_total(self, metric: str, bucket: str) -> int:
+        return sum(e.count for e in self._metrics.values()
+                  if e.metric == metric and e.bucket == bucket)
+
     def table_size_metrics(self) -> dict:
         def _stats(records: list[dict]) -> dict:
             if not records:

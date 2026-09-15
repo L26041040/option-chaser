@@ -33,7 +33,8 @@ from option_chaser.service import DividendLoader, RateCurveLoader
 from option_chaser.timeframe import (TargetMonth, calendar_anchor,
                                      ensure_month_open, month_is_over)
 
-from . import chain_backoff, diagnostics, metrics, providers, superuser
+from . import (chain_backoff, diagnostics, metrics, providers, superuser,
+              vendor_fuse)
 from .clock import now_utc_iso, ny_today
 from .dividend_cache import cached_loader as cached_dividend_loader
 from .identity import (IdentityResolver, cookie_identity_resolver,
@@ -135,6 +136,13 @@ ANALYSIS_DEADLINE_SECONDS = service.ANALYSIS_SOFT_DEADLINE.total_seconds()
 # `<=0` 為停用語意（spec §17：兩者皆可調整與停用）。
 ANONYMOUS_MAX_ACTIVE_SCENARIOS = 10
 ANONYMOUS_REFRESH_MIN_INTERVAL_MINUTES = 30
+
+# PB-06（#299，Anonymous Public Beta）：system-wide 成本煞車，per-owner
+# 額度（上方）之上再加一道——擋的是「很多使用者各自都在額度內、加總
+# 卻燒光 vendor 額度」這個 per-owner 機制結構上擋不到的情況。spec §17
+# 明文標注這個起始值「待 Controlled Beta 實測校準」，不是最終數字；
+# 同樣可經 `create_app()` DI 或同名環境變數覆寫，`<=0` 為停用語意。
+GLOBAL_VENDOR_DAILY_BUDGET = 2000
 
 
 def _env_int(name: str, default: int) -> int:
@@ -583,16 +591,37 @@ def _fail(stage: str, status: int, message: str, **extra: object) -> HTTPExcepti
 
 
 def _classify_fetch_failure(storage: Storage, e: FetchError, symbol: str) -> HTTPException:
-    """抓鏈失敗的**唯一**分類點（SCALE-05／#260，AC-6）——`_analyze()`
-    （`refresh_scenario` 走這條）與 `refresh_run` 的 group-level 抓鏈
-    共用同一份判準：目前是不是正處於 Cboe 的 provider-global 限流
-    封鎖窗（`chain_backoff.status()`），不在兩處各自判斷一次、避免
-    兩個端點的分類邏輯漂移。
+    """抓鏈失敗的**唯一**分類點（SCALE-05／#260，AC-6；PB-06／#299
+    擴充）——`_analyze()`（`refresh_scenario` 走這條）與 `refresh_run`
+    的 group-level 抓鏈共用同一份判準，不在兩處各自判斷一次、避免
+    分類邏輯漂移。
 
-    是＝`"rate_limited"`（429，附上 `chain_backoff.status()` 給的全部
-    結構化事實，AC-2）；否＝維持既有 `"fetch"`（502）分層，逐字不變。
+    三種結果，依序判斷：
+
+    1. `e` 是 `vendor_fuse.GlobalVendorFuseTripped`（PB-06）——全站今日
+       vendor 預算已用完，我們自己選擇不打，與 vendor 有沒有抱怨無關。
+       這個判斷刻意放在最前面：`_fetch_chain()` 的 fuse 檢查發生在
+       任何真正的上游呼叫之前，這個例外類別因此**保證**代表這次失敗
+       的真正原因——不需要（也不該）回頭再問一次 `chain_backoff.
+       status()` 來猜測，那樣反而可能把「我們自己的預算」誤植成
+       「vendor 剛剛回應限流」，讓使用者看到不實的理由。`"vendor_
+       budget_exhausted"`（429，非 5xx——spec §14 明文要求；facts-only，
+       不帶評價字眼）。
+    2. 目前正處於 Cboe 的 provider-global 限流封鎖窗
+       （`chain_backoff.status()`）——`"rate_limited"`（429，附上
+       `chain_backoff.status()` 給的全部結構化事實，AC-2）。這與上面
+       第 1 點是**兩個獨立、互不覆寫的判準**（PB-06 票面明文要求）：
+       即使 fuse 沒有觸發、單純是 Cboe 真的在限流，這條分支照舊生效；
+       兩者同時為真時，這次失敗究竟走哪一條完全由「這次呼叫到底有沒有
+       真的碰到上游」決定，不是猜測，UI 因此不會出現自相矛盾的訊息。
+    3. 其餘——維持既有 `"fetch"`（502）分層，逐字不變。
+
     `.detail` 是純 dict，`refresh_run` 直接拿去併進批次結果的一筆
     失敗項，不必重新包一次 HTTPException。"""
+    if isinstance(e, vendor_fuse.GlobalVendorFuseTripped):
+        return _fail("vendor_budget_exhausted", 429,
+                     "今日全站報價查詢預算已用完，畫面沿用既有資料，"
+                     "請稍後或明天再試")
     rl = chain_backoff.status(storage, "cboe")
     if rl is not None:
         return _fail("rate_limited", 429,
@@ -624,6 +653,7 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
                enable_metrics: bool = True,
                anonymous_max_active_scenarios: int | None = None,
                anonymous_refresh_min_interval_minutes: int | None = None,
+               global_vendor_daily_budget: int | None = None,
                ) -> FastAPI:
     """`fetch`／`storage`／`rate_loader`／`dividend_loader` 皆可注入：
     測試傳入固定快照、記憶體假體與假來源，因此不打真網路、不碰真資料庫，
@@ -766,7 +796,22 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
     `stage`、不回失敗，因此結構上不會觸發任何既有的失敗重試機制
     （研究 #277 點名的 retry storm 風險，見 `_refresh_throttled()`
     docstring）。兩個參數皆 `None` 時讀環境變數或落回上方常數；顯式
-    傳入 `0`（或負數）停用該項煞車，供測試與 rollback 使用。"""
+    傳入 `0`（或負數）停用該項煞車，供測試與 rollback 使用。
+
+    `global_vendor_daily_budget`（PB-06／#299，Anonymous Public Beta
+    §8）：per-owner 額度（上方）之上再加一道 system-wide 保險絲——
+    全站今天累計真正打了幾次上游（`api_app.metrics` 既有
+    `chain_fetch_count` 指標，見 `_metered_chain_fetch()`）達到這個
+    數字後，**任何**新的抓鏈嘗試（不分 owner、不分是否為 Super User，
+    spec §8 v3 明文「不豁免」）一律短路成
+    `vendor_fuse.GlobalVendorFuseTripped`（見 `_fetch_chain()`），由
+    `_classify_fetch_failure()` 分類成 429＋`stage="vendor_budget_
+    exhausted"`——與既有 `rate_limited`（真實 Cboe 429，被動反應）是
+    兩個獨立分類，刻意不合併：那個代表「vendor 剛剛回我們沒有」，這個
+    代表「我們自己決定今天打夠了」，語意不同、觸發條件也彼此獨立
+    （見 `api_app/vendor_fuse.py` 檔頭）。`None` 時讀 `GLOBAL_VENDOR_
+    DAILY_BUDGET` 環境變數或落回上方常數；`<=0` 停用（今天的行為，
+    供 rollback／測試）。"""
     app = FastAPI(title="Option Chaser API", version=__version__)
 
     # 延遲建構：Postgres adapter 建構本身不再連線（T02／#186——schema
@@ -852,6 +897,11 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         if anonymous_refresh_min_interval_minutes is not None
         else _env_int("ANONYMOUS_REFRESH_MIN_INTERVAL_MINUTES",
                       ANONYMOUS_REFRESH_MIN_INTERVAL_MINUTES))
+    # PB-06（#299）：同一套慣例，`<=0` 由 `vendor_fuse.tripped()` 判讀
+    # 為停用。
+    _effective_global_vendor_daily_budget = (
+        global_vendor_daily_budget if global_vendor_daily_budget is not None
+        else _env_int("GLOBAL_VENDOR_DAILY_BUDGET", GLOBAL_VENDOR_DAILY_BUDGET))
 
     def _record_metric(metric: str, today: date, *, source: str = "",
                        symbol: str = "", count: int = 1,
@@ -1018,7 +1068,17 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         fallback 過」的機制，也不會出現靜默退回。
 
         自訂成功時同樣記一次成功：那是比任何測試連線都真實的證據。
+
+        PB-06（#299）：**這是全站唯一會真正打上游的入口**——不論走
+        自訂還是預設路徑，都得先經過這裡。Global Vendor Fuse 因此
+        擋在函式最上方、任何其他判斷之前，確保沒有任何路徑可以繞過
+        它（AC-9 安全考量）；Super User 使用產品本身（即使切了自訂
+        provider）同樣受這道煞車約束，不豁免（spec §8 v3）。
         """
+        if vendor_fuse.tripped(_db(), ny_today(),
+                               _effective_global_vendor_daily_budget):
+            raise vendor_fuse.GlobalVendorFuseTripped(
+                f"全站今日 vendor 呼叫預算已用完，暫停 {symbol} 的新抓鏈")
         db = _db()
         owner = identity_resolver()
         stored = db.get_settings(owner=owner)

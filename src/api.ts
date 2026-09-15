@@ -542,11 +542,17 @@ export function resolveCandidate(
  * 限流封鎖窗，見下方 `RateLimitInfo`——這個 stage 恆帶著 additive
  * metadata，重試有沒有意義完全取決於倒數是否歸零，不是「稍後可以
  * 重試」這種模糊說法。
+ * `"vendor_budget_exhausted"`（PB-06／#299）：與 `rate_limited` 刻意
+ * 不同——那是 vendor 真的回我們限流，這是我們自己決定今天打夠了。
+ * 不帶 `RateLimitInfo`（那個結構化事實是 Cboe backoff 專屬的，這裡
+ * 沒有對應的倒數時間點可揭露）。
  */
 export type FailureStage =
-  | "fetch" | "analyze" | "params" | "archived" | "rate_limited" | null;
+  | "fetch" | "analyze" | "params" | "archived" | "rate_limited"
+  | "vendor_budget_exhausted" | null;
 
-const STAGES = ["fetch", "analyze", "params", "archived", "rate_limited"] as const;
+const STAGES = ["fetch", "analyze", "params", "archived", "rate_limited",
+                "vendor_budget_exhausted"] as const;
 
 /**
  * SCALE-05（#260）：`stage === "rate_limited"` 時，後端額外揭露的

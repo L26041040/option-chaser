@@ -2692,6 +2692,46 @@ def test_trimming_one_metric_does_not_touch_another_metrics_buckets(storage):
     assert ("chain_fetch_count", "2026-09-06") in remaining
 
 
+# ---------- `metric_total()`（PB-06／#299，Anonymous Public Beta：
+# Global Vendor Fuse 每次抓鏈前查詢用的 targeted SUM，見
+# `api_app/vendor_fuse.py`）----------
+
+def test_metric_total_sums_across_source_and_symbol_for_the_same_bucket(storage):
+    bucket = "2026-09-14"
+    storage.record_metric("chain_fetch_count", bucket, source="cboe",
+                          symbol="AAA", count=3)
+    storage.record_metric("chain_fetch_count", bucket, source="cboe",
+                          symbol="BBB", count=4)
+    storage.record_metric("chain_fetch_count", bucket, source="yfinance",
+                          symbol="AAA", count=2)
+    assert storage.metric_total("chain_fetch_count", bucket) == 9
+
+
+def test_metric_total_is_zero_for_an_untouched_bucket_or_metric(storage):
+    storage.record_metric("chain_fetch_count", "2026-09-14", count=5)
+    assert storage.metric_total("chain_fetch_count", "2026-09-15") == 0
+    assert storage.metric_total("chain_429_count", "2026-09-14") == 0
+    assert storage.metric_total("never_written_metric", "2026-09-14") == 0
+
+
+def test_metric_total_matches_the_sum_derived_from_metric_summary(storage):
+    """獨立於 `metric_total()` 自己的實作，用既有 `metric_summary()`
+    手動加總對照——證明兩者是同一份資料的兩種讀法，不是各自維護的
+    平行狀態（PB-06 票面「計數來源沿用既有機制，不新建平行計數」的
+    直接證明）。"""
+    bucket = "2026-09-14"
+    storage.record_metric("chain_fetch_count", bucket, source="cboe",
+                          symbol="X", count=7)
+    storage.record_metric("chain_fetch_count", bucket, source="yfinance",
+                          symbol="Y", count=2)
+    storage.record_metric("chain_429_count", bucket, source="cboe",
+                          symbol="X", count=1)
+
+    manual_total = sum(e.count for e in storage.metric_summary()
+                       if e.metric == "chain_fetch_count" and e.bucket == bucket)
+    assert storage.metric_total("chain_fetch_count", bucket) == manual_total == 9
+
+
 def test_table_size_metrics_on_empty_tables_reports_zero_rows_and_no_size(storage):
     """`total_bytes`（這張表現在佔多少實體空間）對空表兩個後端都是
     良好定義、非 `None` 的答案——`memory.py` 回 0（沒有真正頁面可算，

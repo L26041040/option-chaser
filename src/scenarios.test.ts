@@ -290,6 +290,12 @@ describe("刷新失敗分層（V4／#52）", () => {
     expect(failureLabel("rate_limited")).not.toBe(failureLabel(null));
     expect(failureLabel("rate_limited")).toContain("限流");
   });
+
+  it("全站預算用盡有自己的說法（PB-06／#299），且與限流不是同一句話", () => {
+    expect(failureLabel("vendor_budget_exhausted")).not.toBe(failureLabel(null));
+    expect(failureLabel("vendor_budget_exhausted")).not.toBe(
+      failureLabel("rate_limited"));
+  });
 });
 
 describe("限流可見度（SCALE-05／#260）", () => {

@@ -305,6 +305,8 @@ export function failureLabel(stage: FailureStage): string {
       return "劇本已在垃圾桶，不再刷新";
     case "rate_limited":
       return "資料來源目前限流中";
+    case "vendor_budget_exhausted":
+      return "今日查詢預算已用完，稍後或明天再試";
     default:
       return "刷新失敗";
   }
