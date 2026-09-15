@@ -9450,6 +9450,93 @@ CLAUDE.md 隨手更新。
   skip）；本票未觸碰任何前端檔案，typecheck／Vitest／build 無需
   重跑（`git diff --stat -- src/` 為空）。
 
+- **PB-12**［#302］Beta first-use UX：首頁 Beta 說明 ＋ 全站頁尾 ＋
+  極簡隱私頁 ＋ 回報問題入口——**純前端票**（`option_chaser/`／
+  `api_app/` 僅新增一支跨層一致性測試，零 production 程式碼改動）。
+
+  新增三個元件：`src/BetaNotice.tsx`（首頁 Beta 說明，固定可見、非
+  彈窗，匯出 `ANONYMOUS_ABANDONED_AFTER_DAYS=30`／`ANONYMOUS_GRACE_
+  PERIOD_DAYS=7` 兩個具名常數）、`src/Footer.tsx`（全站常駐頁尾，
+  「非投資建議」＋隱私頁連結＋回報問題外部連結）、`src/PrivacyPage.tsx`
+  （六項內容齊全：存了什麼／留多久／怎麼刪／清除瀏覽器 cookie 的
+  後果／不是投資建議／Beta 狀態；「怎麼刪」連到 PB-04 既有的
+  `DeleteMyData` 所在的設定頁，不重複渲染那個元件本身）。
+  `src/route.ts` 新增第四對 hash helper（`privacyHash()`／
+  `isPrivacyHash()`），`App.tsx` 把隱私頁當成**不分裝置寬度**的
+  最優先 early return（排在 `isDesktop` 判斷之前）——隱私頁不屬於
+  任何工作區脈絡，手機與桌面共用同一個渲染路徑。`Footer` 掛在全部
+  既有渲染分支（手機設定／垃圾桶／詳細頁／首頁、桌面 workspace）與
+  `PrivacyPage` 自己，逐一用 `<>...<Footer/></>` 包起來。
+
+  **天數不漂移的保證**：前端沒有任何 API 可以即時查詢 `ANONYMOUS_
+  ABANDONED_AFTER_DAYS`／`ANONYMOUS_GRACE_PERIOD_DAYS`（本票
+  Dependencies 只有 PB-02／PB-04，未要求新增這樣的端點），改用新增
+  的 `tests/test_pb12_beta_copy.py`（2 條）直接用正規表示式讀取
+  `src/BetaNotice.tsx` 原始碼裡的常數字面值，與 `api_app.main` 的
+  同名常數逐一比對——任一邊改了另一邊沒跟著改，這條測試會紅。
+
+  **禁詞掃描的真正難點**：票面 §7 明文「不得出現『推薦』『建議』
+  『應該』」，但既有 `option_chaser/report.py::disclaimer_text()`／
+  `_DISCLAIMER_LINE` 本身就寫著「不構成投資建議」「不提供個人化投資
+  建議」——這正是 §7 要求的那句話本身，若對「建議」整個字串一律禁止
+  會連 production 既有的必要免責聲明都通不過。新增
+  `src/betaCopy.test.tsx`：「推薦」「應該」整字串禁止（本票新增文案
+  完全用不到），「建議」則允許出現在既有免責聲明的否定句型裡（比照
+  `disclaimer_text()` 的「不構成」「不應被視為」，加上本票自己新增
+  的「不是」「非」兩種說法），逐一比對每次出現都落在核准的否定句型
+  範圍內，不是靠整字串一刀切。
+
+  **一個真實密度回歸，施工中發現並修正**：`<BetaNotice/>` 一開始
+  以完整段落＋卡片視覺（背景／陰影／圓角／左側色條）呈現，直接撞上
+  MVP-v2（#77、#82）既有硬性密度要求「手機一屏至少看得到 4 個劇本
+  不必先捲動」與 #108「桌面左側欄視窗看到的劇本數比舊版大卡片多」
+  ——兩條既有 e2e 一度雙雙紅燈（分別量到 2/4、4/5）。修法分三層：
+  (1) 文案從完整四句壓縮成一行極簡陳述（「Beta，非投資建議。資料
+  存在瀏覽器 cookie，遺失不可復原；閒置 30+7 天後清除。」，完整的
+  兩段式緩衝期解釋與換瀏覽器後果留給 `PrivacyPage.tsx` 對應章節，
+  不在這個摘要裡重複）；(2) 移除卡片視覺裝飾，只留 10px 純文字；
+  (3) 手機版與 `Dashboard` 包在同一個 flex wrapper（`.beta-notice-
+  and-dashboard`）並用負 `margin-bottom` 精確吃掉 `.screen` 自己的
+  `--gap`（16px）——這比讓 `BetaNotice` 自成一個 `.screen` 直接子
+  元素（會整份多付一個 gap 單位）省下更多空間。過程中曾一度只差
+  0.6px 未達標，已加大安全餘裕後穩定通過兩輪重跑。修法全程**未
+  觸碰** `Dashboard.tsx` 本身（另一張、不相關的既有票的元件，只在
+  `styles.css` 用 scoped 選擇器 `.beta-notice-and-dashboard
+  .dashboard-placeholder` 微調它在這個 wrapper 情境下的內距，不影響
+  其他任何使用 `.dashboard-placeholder` 的地方）。
+
+  **一個既有、與本輪無關的 e2e 失敗，已查證非本票造成**：`smoke.
+  spec.ts::刷新失敗說明是哪一段，重試就地重來（V4／#52）` 在
+  `git stash` 掉本輪全部改動後、於乾淨的 pre-PB-12 狀態上以
+  `--workers=1` 單獨重跑仍然逐字相同失敗（`getByText("250.0%")`
+  逾時），確認是既有、與 PB-12 無關的缺陷，未在本票範圍內修正。
+
+  空狀態不自動建立示範劇本：既有 `ScenarioList.tsx`／
+  `CompactScenarioList.tsx` 本來就只顯示引導文字（「還沒有劇本，
+  用……建立」），全站 `grep` 確認零示範劇本自動建立邏輯——本票新增
+  一條 App.test.tsx 迴歸測試正面鎖住這件事（空清單時開站流程只呼叫
+  `GET /api/scenarios`，沒有任何一次呼叫是 `POST`）。
+
+  測試：新增 `src/BetaNotice.test.tsx`（5 條）、`src/Footer.test.tsx`
+  （3 條）、`src/PrivacyPage.test.tsx`（6 條）、`src/betaCopy.test.tsx`
+  （7 條）、`src/route.test.ts` 新增 3 條（隱私頁 hash 不與其餘三個
+  既有畫面混淆）、`src/App.test.tsx` 新增 7 條（頁尾在手機首頁／桌面
+  首頁／手機垃圾桶／手機詳細頁／設定畫面五處皆渲染、隱私頁路由可達
+  且內容齊全、空清單不自動建立示範劇本）、`tests/test_pb12_beta_
+  copy.py`（2 條，天數跨層一致性）；`e2e/smoke.spec.ts`／`e2e/
+  desktop.spec.ts` 各新增一條完整首次進站流程（Beta 說明常駐可見→
+  頁尾兩個連結→點進隱私頁六項內容齊全→點「設定頁」連結驗證真的可達
+  PB-04 自助刪除入口）。
+
+  `/security-review`：票面 §11 明文「不需要單獨跑——純前端呈現、
+  無新增授權邊界」，隱私頁文案與實際行為的一致性留給 PB-14 的
+  release-level 審查一併覆核。全套：後端雙後端（記憶體＋真實
+  Postgres，於乾淨重置過的資料庫上）**2284 條全綠**（+2，
+  `--junitxml` 確認 `errors="0" failures="0" skipped="0"`）；前端
+  typecheck 乾淨、Vitest **826 條全綠**（+31）、build 成功；
+  Playwright **127 條全綠**（iPhone＋Desktop，唯一的 1 條失敗是上述
+  已查證的既有缺陷，非本票回歸）。
+
 ### 施工依據
 
 - 需求與決策紀錄：`docs/modifyRequestV1.md`（附錄 A1–A12）
