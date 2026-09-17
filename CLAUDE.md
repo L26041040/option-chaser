@@ -9841,6 +9841,75 @@ production 的 `DATABASE_URL`、沒有 `ADMIN_SECRET`，結構上沒有任何
 虛構、不得用測試身份代替**，本輪到此為止，等 Owner 提供資訊後才
 執行 migration。
 
+### #086–#087 鑑識報告（read-only forensic audit，2026-09-16，
+不施工、不寫程式碼）
+
+需求方兩輪指示對 production 上觀察到的行為差異做純唯讀鑑識：
+**#086** 追查 Super User 登入／API token 消失／新 Super User 輸入框／
+Historical IV（Call＋Spread）四項觀察，**#087** 專追查「Owner
+MarketData token 全站共用＋Normal User BYOK」這個構想是否曾被明確
+決定過。兩份完整報告已交付需求方（單一 code block 格式），核心結論：
+四項觀察全部收斂回同一組已知根因（`ADMIN_SECRET` 待設定、PB-03
+遷移待執行），backend 零 regression、零被靜默拿掉的功能；shared-
+default-token 構想從未被正式決定過，反而查到 MarketData.app 現行
+方案 ToS 明文禁止多使用者應用（H11，見 Anonymous Public Beta 相關
+研究）。兩輪皆未動 production code、未動 GitHub 任何票、未觸碰
+#269/SCALE-18。
+
+### OPTION-AUTH-ROLE-MODEL-SPEC（#088，2026-09-16 `/to-spec`＋
+`/to-tickets`；#089，2026-09-17 兩項 Owner 修正＋AUTH-01 施工）
+
+**背景**：#086 鑑識報告點出 Historical IV 對 Public Beta 匿名使用者
+結構性不可達（OD-3 A 已封死自帶 token），需求方裁示把權限模型從
+既有二值（Normal／Super User）擴為三值：**Normal User ＜ Super
+User ＜ Super Admin**（Super Admin 是 Super User 完整超集）。今天
+的「Super User」（`ADMIN_SECRET`、跨 owner 管理、metrics、憑證 CRUD）
+整組對應到新模型的 **Super Admin**；新增一個更窄的 **Super User**
+（日常滿功能，含借用 Owner 已設定的 MarketData token 使用
+Historical IV，但看不到後台）。
+
+**Spec＝issue #307**（`ready-for-agent`），31 條 User Stories，
+拆成 7 張 sub-issue（**#308 AUTH-01** storage expand、**#309
+AUTH-02** 角色判斷＋登入/登出/狀態端點、**#310 AUTH-03** 既有管理
+端點升級為 Super Admin gate＋退役 `ADMIN_SECRET`、**#311 AUTH-04**
+Historical IV 借用 protected owner 憑證、**#312 AUTH-05** quota/
+throttle 角色豁免、**#313 AUTH-06** 前端登入 UI、**#314 AUTH-07**
+PB-03 migration 執行＋全面驗證收尾）。測試接縫沿用既有七個、零
+新增。
+
+**Owner 2026-09-17 兩項最終修正**（已同步進 #307／#308／#309／
+#312／#314）：
+
+1. **Global vendor fuse 永遠不因角色而豁免**——Super User／Super
+   Admin 只豁免 Scenario quota（PB-05）與 refresh throttle（PB-05），
+   全站每日 vendor 呼叫預算（PB-06 既有機制）對三層角色一視同仁。
+   ⚠ 先前版本一度誤記為「本輪明確推翻 PB-06」，已訂正為「PB-06 該條
+   決策維持不變、未被推翻」。
+2. **取消 password rotation／password fingerprint 設計**——Owner
+   不需要換密碼體驗，`RoleSession` 因此只有四欄
+   （`token`／`role`／`issued_at`／`revoked_at`），session 只透過
+   登出／server-side 撤銷失效，換密碼不影響既有 session。
+
+**AUTH-01（#308）已完成**（commit `5132b27`）：新增 `RoleSession`
+dataclass，結構鏡射既有 `BrowserIdentity`（token → owner_id）但刻意
+獨立成第三張表——不與 `Owner`／`BrowserIdentity`／`identity_
+resolver()` 共用任何函式或資料列，維持軸一／軸二正交。`Storage`
+Protocol 新增 `create_role_session`／`resolve_role_session`／
+`revoke_role_session`（token 由呼叫端生成，比照 `create_owner_
+with_token()` 既有分工），memory／postgres 兩後端皆實作（Postgres
+走 `_MIGRATIONS`，新表 `role_sessions`）。純 expand：不接 HTTP、不讀
+`SUPERUSER_PASSWORD`／`SUPERADMIN_PASSWORD`、不動 `identity.py`／
+`superuser.py`／`main.py` 一行。新增 12 條 Storage 契約測試（memory＋
+真實 Postgres 雙後端，涵蓋建立兩種角色／查詢／撤銷／重複撤銷／
+兩種角色互不干擾／軸一軸二互不污染）。全套後端測試（記憶體＋真實
+Postgres）**2315 passed，0 failed，0 errors**（29 skipped／2 xfailed
+為既有、與本票無關）。`git diff` 僅命中 `api_app/storage/__init__.py`／
+`memory.py`／`postgres.py`／`tests/test_storage_contract.py` 四個
+檔案，未觸碰 `identity.py`／`superuser.py`／#269／SCALE-18。
+
+**下一步**：AUTH-02（#309）——依需求方指示本輪**未**開始施工，等待
+下一輪指示。
+
 ### 施工依據
 
 - 需求與決策紀錄：`docs/modifyRequestV1.md`（附錄 A1–A12）
