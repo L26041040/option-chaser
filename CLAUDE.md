@@ -9907,8 +9907,76 @@ Postgres）**2315 passed，0 failed，0 errors**（29 skipped／2 xfailed
 `memory.py`／`postgres.py`／`tests/test_storage_contract.py` 四個
 檔案，未觸碰 `identity.py`／`superuser.py`／#269／SCALE-18。
 
-**下一步**：AUTH-02（#309）——依需求方指示本輪**未**開始施工，等待
-下一輪指示。
+**AUTH-02（#309）已完成**：三層角色的單一判斷點＋登入／登出／狀態
+查詢端點＋持久 role-session cookie。`api_app/superuser.py` 新增
+`Role`（`str, enum.Enum`，`normal < superuser < superadmin`，四個
+比較運算子**全部手寫、不用** `functools.total_ordering`——施工中
+踩到一個真陷阱：`Role` 繼承 `str`，`str` 本身早就有 `__le__`／
+`__gt__`／`__ge__`，`total_ordering` 判定「這三個已經定義過」而
+完全不覆寫，讓 `Role.SUPERADMIN >= Role.SUPERUSER` 用字典序算出
+`False`（`"superadmin" < "superuser"`，因為 `a < u`）而非等級排序，
+沒有任何錯誤或警告——手動定義全部四個運算子解決。`resolve_role()`／
+`require_role()` 只接受 `resolve_session`（呼叫端傳入 `Storage.
+resolve_role_session` 本身的 bound method，不是整個 `Storage` 型別），
+維持與 `is_superuser()` 同一種正交保證（無 `owner_id` 參數、不
+import `identity.py`）。**本票刻意一行不動既有 `is_superuser()`／
+`require_superuser()`／`ADMIN_SECRET`**——PB-09 舊機制與 AUTH-02 新
+機制本輪同時有效，退役 `ADMIN_SECRET`、把既有 `/api/superuser/*`
+等端點換成 `require_role()` 留給 AUTH-03（#310）。
+
+`api_app/main.py` 新增三個端點，走獨立的 `/api/auth/` 前綴（已加進
+`_OWNER_EXEMPT_PREFIXES`，缺 cookie 呼叫不會建立 owner）：`POST
+/api/auth/login`（依序比對 `SUPERADMIN_PASSWORD` → `SUPERUSER_
+PASSWORD`，`secrets.compare_digest` 常數時間比對，命中建立 AUTH-01
+的 role session＋簽發 cookie，兩者不中一律 401 且不透露是哪個環節
+錯）、`POST /api/auth/logout`（伺服器端 `revoke_role_session()`＋
+清除 cookie，重複登出優雅回 200）、`GET /api/auth/status`（無條件
+200，回傳 `normal`／`superuser`／`superadmin`，不建立 owner）。新
+cookie `__Host-oc_role`：`HttpOnly`／`Secure`／`SameSite=Lax`／
+`__Host-` 前綴，Max-Age 沿用既有 owner cookie 的 400 天量級
+（`_ROLE_COOKIE_MAX_AGE_SECONDS = _OWNER_COOKIE_MAX_AGE_SECONDS`）。
+**刻意不做滑動窗續命**——owner cookie 的續命邏輯活在共用 middleware
+`_call_within_owner_scope()` 裡，若讓 role cookie 也在那裡續命，
+middleware 就要認識軸二的 cookie 名字與 session 查詢，違反 spec §19
+「兩段程式碼不得共用同一個函式或中間結果」；改為只在登入當下設一次
+固定到期，AC「重開瀏覽器仍登入」照樣成立，且共用 middleware 一行
+未動。兩把新密碼（`SUPERUSER_PASSWORD`／`SUPERADMIN_PASSWORD`）
+`create_app()` DI 參數比照 `admin_secret` 同一套慣例，並補進
+`_known_secrets()` redaction 白名單以外的最後一道防線。**沒有任何
+密碼變更偵測／指紋／session versioning**（Owner 明確裁示）——新增
+專屬測試正面驗證換掉環境變數重新部署後既有、尚未登出的 session
+依然有效。
+
+新增 `tests/test_auth02_login_role.py`（33 條，HTTP-seam）涵蓋：
+登入（正確／錯誤／空／缺密碼欄位、env 未設定 fail-closed、回應
+不洩漏 token 或密碼）、角色解析（無 cookie／有效 SU／SA／未知
+token／已撤銷 token）、持久 cookie（旗標齊全、非 session-only、
+`TestClient` 模擬「重開瀏覽器」後仍解析正確）、登出（伺服器端撤銷、
+清除 cookie、重放舊 cookie 回 normal、重複登出優雅）、正交性
+（登入／登出／狀態查詢皆不建立或牽動 owner，owner cookie 全程不變，
+同一瀏覽器登入前後劇本歸屬不變，AST 掃描延伸既有 PB-09 手法確認
+`superuser.py` 不 import `identity.py`、`resolve_role`／`require_
+role` 簽章無 owner 參數）、無密碼輪替（`RoleSession` 恰好四欄的
+程式碼審查可執行版本、`resolve_role()` 原始碼不含密碼比對相關識別
+字、換密碼不影響既有 session 的正面驗證）。全套後端測試（記憶體＋
+真實 Postgres 雙後端）：**2336 passed，0 failed，0 errors，0
+skipped**（`--collect-only` 逐檔加總 2336，與通過數逐位元相符；
+`grep -c '\[postgres\]'` 確認 233 個真實 Postgres 參數化案例確實
+收集執行，非靜默跳過）。`git diff` 僅命中
+`api_app/main.py`／`api_app/superuser.py`＋新測試檔，未觸碰
+`identity.py`／`memory.py`／`postgres.py`／#269／SCALE-18、無前端
+異動。`/security-review` 範圍限定 AUTH-01＋AUTH-02（登入、role-
+session cookie、登出／撤銷、密碼與 token 處理、軸一／軸二正交）：
+逐項核對密碼比對常數時間、cookie 屬性齊全、token 密碼學安全隨機、
+回應零洩漏、伺服器端撤銷、fail-closed、無提權路徑、Postgres SQL
+全部參數化、無注入風險——**零真實漏洞**，設計取捨（無密碼輪替、
+role cookie 無滑動窗續命、密碼欄位無長度上限——後者屬 DoS 類別、
+依審查排除規則不列為發現）皆為明文記錄的 Owner 決策或既有慣例延伸，
+非待補漏洞。
+
+**下一步**：AUTH-03（#310，退役 `ADMIN_SECRET`、既有 `/api/
+superuser/*` 等端點改用 `require_role()`）——依需求方指示本輪
+**未**開始施工，等待下一輪指示。
 
 ### 施工依據
 

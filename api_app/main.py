@@ -44,9 +44,9 @@ from .rate_cache import cached_loader
 from .storage import (BrowserIdentity, ContractHistory, DataSourceSettings,
                       IvBackfillRun, IvObservation, NarrowHistoryEntry,
                       Owner, ProviderCredential, ProviderVerification,
-                      RateCacheEntry, ResultRecord, ResultSummary, Scenario,
-                      ScenarioExists, Storage, SuperUserAuditEvent,
-                      UsageSetting)
+                      RateCacheEntry, ResultRecord, ResultSummary,
+                      RoleSession, Scenario, ScenarioExists, Storage,
+                      SuperUserAuditEvent, UsageSetting)
 from .storage.factory import database_url_candidates, storage_from_env
 from .treasury_cache import cached_rate_curve_rows
 
@@ -78,11 +78,24 @@ _OWNER_COOKIE_NAME = "__Host-oc_owner"
 # 成功請求都重新 `set_cookie()` 續命（滑動窗，不是固定到期）。
 _OWNER_COOKIE_MAX_AGE_SECONDS = 400 * 24 * 60 * 60
 
+# AUTH-02（#309）：role-session cookie（軸二）沿用同一個持久 TTL 量級
+# ——票面明文「比照既有 owner cookie 的既有持久 TTL/Max-Age 慣例」。
+# **刻意不做滑動窗續命**：owner cookie 的續命邏輯活在
+# `_call_within_owner_scope()` 這個共用 middleware 裡，若要讓 role
+# cookie 也在每次請求後續命，middleware 就必須認識軸二的 cookie 名字
+# 與 session 查詢——那正是 spec §19 明令禁止的「兩段程式碼共用同一個
+# 函式或中間結果」。改為只在登入當下設一次固定到期（下方三個
+# `/api/auth/*` 端點），瀏覽器重開後仍登入的 AC 因此仍然成立（票面
+# 沒有要求「越常用越不會過期」），且完全不需要動這個既有共用
+# middleware 一行。
+_ROLE_COOKIE_MAX_AGE_SECONDS = _OWNER_COOKIE_MAX_AGE_SECONDS
+
 # spec §4 的路由白名單——缺 cookie 時**不得**建立新 owner 的端點。
 # 白名單而非黑名單：未來新增的 owner-scoped 端點預設不豁免，漏列
 # 新端點不會意外洩漏成「缺 cookie 也能用」。
 _OWNER_EXEMPT_EXACT = ("/api/health",)
-_OWNER_EXEMPT_PREFIXES = ("/api/cron/", "/api/ops/", "/api/superuser/")
+_OWNER_EXEMPT_PREFIXES = ("/api/cron/", "/api/ops/", "/api/superuser/",
+                         "/api/auth/")
 
 
 def _is_owner_exempt_route(path: str) -> bool:
@@ -98,6 +111,9 @@ def _is_owner_exempt_route(path: str) -> bool:
     - `/api/superuser/*`：PB-09 新增，軸二自己的驗證／狀態查詢端點，
       同樣與 owner-scoped 資料無關——查自己是不是 Super User 這件事
       本身不該先幫你建一個 owner。
+    - `/api/auth/*`：AUTH-02（#309）新增，三層角色的登入／登出／狀態
+      查詢端點——同樣與 owner-scoped 資料無關，登入這個動作本身不該
+      附帶幫你建一個匿名 owner 的副作用。
     """
     if path in _OWNER_EXEMPT_EXACT:
         return True
@@ -352,6 +368,14 @@ class SuperUserSetProtectedRequest(BaseModel):
     紀律。"""
     protected: bool
     confirm_owner_id: str
+
+
+class AuthLoginRequest(BaseModel):
+    """AUTH-02（#309）：三層角色模型的登入請求體——**只有一個密碼
+    欄位**，沒有 username／email／角色選單／account／OAuth。同一份
+    表單依密碼命中哪一把（`SUPERADMIN_PASSWORD` 或 `SUPERUSER_
+    PASSWORD`）決定角色，不由呼叫端指定。"""
+    password: str
 
 
 class UsageRequest(BaseModel):
@@ -706,6 +730,8 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
                identity_resolver: IdentityResolver = cookie_identity_resolver,
                cron_secret: str | None = None,
                admin_secret: str | None = None,
+               superuser_password: str | None = None,
+               superadmin_password: str | None = None,
                enable_metrics: bool = True,
                anonymous_max_active_scenarios: int | None = None,
                anonymous_refresh_min_interval_minutes: int | None = None,
@@ -840,6 +866,22 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
     驗證機制」的精神。`OPS_SECRET` 環境變數本身即使還留在部署環境裡
     也不再被任何程式碼讀取；`CRON_SECRET` 完全不受影響，繼續服務
     Vercel Cron 既有的機器對機器呼叫。
+
+    `superuser_password`／`superadmin_password`（AUTH-02／#309，spec
+    #307 三層角色模型）：`POST /api/auth/login` 依序比對
+    `superadmin_password` → `superuser_password`（先比更高權限那把，
+    兩把密碼不會重疊，順序本身不影響正確性，但讓程式碼讀起來與
+    `Role` 的等級順序一致）；命中即簽發對應角色的 role session
+    （AUTH-01）。**本票刻意不動 `ADMIN_SECRET`／`is_superuser()`／
+    `require_superuser()`**——舊機制（PB-09）與新機制（AUTH-02）本輪
+    同時有效，退役 `ADMIN_SECRET`、把既有 `/api/superuser/*` 等端點
+    換成 `require_role()` 是 AUTH-03（#310）的範圍，避免切換窗口內
+    任一邊突然失效。同一套「`None`＝呼叫時才讀環境變數」既有慣例
+    （`SUPERUSER_PASSWORD`／`SUPERADMIN_PASSWORD`）；兩把密碼皆為
+    人類自訂字串（非隨機 secret），預期長期不換——**沒有任何密碼
+    輪替／變更偵測機制**：換掉環境變數重新部署，既有、尚未登出的
+    role session 依然有效（Owner 明確裁示取消 password rotation，
+    見 #307 Further Notes、#309 2026-09-17 修正）。
 
     `enable_metrics`（同票）：整組 S0 觀測的總開關（Rollback Point）。
     關閉時全部指標（SCALE-08 當時七類＋PB-08 新增的
@@ -985,6 +1027,13 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
     # `ops_secret`（見 `create_app()` docstring 的退役說明）。
     _effective_admin_secret = (admin_secret if admin_secret is not None
                                else os.environ.get("ADMIN_SECRET"))
+    # AUTH-02（#309）：三層角色模型的登入密碼，同一套慣例。
+    _effective_superuser_password = (
+        superuser_password if superuser_password is not None
+        else os.environ.get("SUPERUSER_PASSWORD"))
+    _effective_superadmin_password = (
+        superadmin_password if superadmin_password is not None
+        else os.environ.get("SUPERADMIN_PASSWORD"))
     # PB-05（#297）：同一套「`None`＝讀環境變數或落回常數」慣例，但這裡
     # 讀的是數字而非密鑰——`_env_int()` 內建自己的落回邏輯。`<=0` 由
     # `_refresh_throttled()`／額度檢查各自判讀為停用，不在這裡另外轉換。
@@ -1695,6 +1744,76 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
             subject=f"Option Chaser 每日摘要 — {today}")
         return {"sent": sent, "date": str(today),
                "alerts_triggered": [a.key for a in snapshot.alerts if a.triggered]}
+
+    # ---------- 三層角色模型（軸二，AUTH-02／#309）：登入／登出／
+    # 狀態查詢 ----------
+    #
+    # 與下面既有的 `/api/superuser/status`（PB-09，二值 `is_superuser`
+    # 布林）刻意分開、互不取代——本票 non-goals 明訂不改任何既有
+    # `/api/superuser/*` 端點的授權判準，那是把它們換成 `require_
+    # role()` 並退役 `ADMIN_SECRET` 的 AUTH-03（#310）的範圍。這三個
+    # 是三層角色模型自己的新端點，走獨立的 `/api/auth/` 前綴（已加進
+    # `_OWNER_EXEMPT_PREFIXES`，缺 cookie 呼叫這三個端點不會建立
+    # owner）。
+
+    @app.post("/api/auth/login")
+    def auth_login(body: AuthLoginRequest, response: Response) -> dict:
+        """依序比對 `SUPERADMIN_PASSWORD` → `SUPERUSER_PASSWORD`
+        （`secrets.compare_digest`，常數時間，避免時序側信道洩漏
+        比對結果），命中即建立 AUTH-01 的 role session＋簽發 cookie；
+        兩者都不中一律 401——回應本身不透露密碼欄位是空的、缺席、
+        還是純粹打錯，也不透露環境變數有沒有設定，三種情況對外
+        觀察不到差異（fail-closed，同既有 `require_superuser()`
+        精神）。回應只有角色名稱，**絕不回傳 token 本身或密碼**。"""
+        role: superuser.Role | None = None
+        if _effective_superadmin_password and secrets.compare_digest(
+                body.password, _effective_superadmin_password):
+            role = superuser.Role.SUPERADMIN
+        elif _effective_superuser_password and secrets.compare_digest(
+                body.password, _effective_superuser_password):
+            role = superuser.Role.SUPERUSER
+        if role is None:
+            raise HTTPException(status_code=401, detail="unauthorized")
+
+        token = secrets.token_urlsafe(32)
+        _db().create_role_session(RoleSession(
+            token=token, role=role.value, issued_at=now_utc_iso()))
+        # 旗標比照既有 owner cookie；**這裡是唯一設這顆 cookie 的
+        # 地方**——不像 owner cookie 靠共用 middleware 每次請求續命
+        # （見 `_ROLE_COOKIE_MAX_AGE_SECONDS` 檔頭說明，為維持軸一／
+        # 軸二正交，刻意不做滑動窗）。
+        response.set_cookie(
+            superuser.ROLE_COOKIE_NAME, token,
+            max_age=_ROLE_COOKIE_MAX_AGE_SECONDS,
+            httponly=True, secure=True, samesite="lax", path="/")
+        return {"role": role.value}
+
+    @app.post("/api/auth/logout")
+    def auth_logout(request: Request, response: Response) -> dict:
+        """伺服器端撤銷（AUTH-01 的 `revoke_role_session()`）＋清除
+        cookie——不是只在瀏覽器端清掉了事：即使呼叫端之後重放同一顆
+        舊 cookie，`resolve_role()` 查到的 session 已經 `revoked_at`
+        非空，一律回 `normal`。沒有 cookie，或 cookie 早已撤銷過，
+        `revoke_role_session()` 回 `False`，這裡不視為錯誤——重複
+        登出必須優雅，一律回 200。**不清除 owner cookie**、不刪除
+        owner、不動任何 Product Core 資料（軸一／軸二正交）。"""
+        token = request.cookies.get(superuser.ROLE_COOKIE_NAME)
+        if token:
+            _db().revoke_role_session(token, now=now_utc_iso())
+        response.delete_cookie(
+            superuser.ROLE_COOKIE_NAME, path="/",
+            httponly=True, secure=True, samesite="lax")
+        return {"role": superuser.Role.NORMAL.value}
+
+    @app.get("/api/auth/status")
+    def auth_status(request: Request) -> dict:
+        """無條件 200——查自己現在算 normal／superuser／superadmin
+        不該需要先證明自己是誰（比照既有 `/api/superuser/status`
+        的同一個理由，雞生蛋問題）。已在 `_OWNER_EXEMPT_PREFIXES`，
+        呼叫這個端點不會建立 owner；回應只有角色名稱，不洩漏
+        session token 或任何密碼資訊。"""
+        return {"role": superuser.resolve_role(
+            request, resolve_session=_db().resolve_role_session).value}
 
     # ---------- User Level（軸二，PB-09／#298） ----------
 
@@ -2620,18 +2739,22 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
     def _known_secrets(*, credentials: dict[str, ProviderCredential | None] | None = None
                        ) -> tuple[str, ...]:
         """目前現行的祕密值——provider token、`DATABASE_URL` 家族環境
-        變數的值（DG-03／#146），以及 PB-09（#298）新增的 `_effective_
-        admin_secret`。這是 redaction 白名單以外的最後一道防線：即使
-        某個字串意外落在白名單欄位裡，只要逐字等於這裡的任何一個值，
-        一樣會被換成 `[redacted]`——安全考量明文要求這把新憑證也涵蓋
-        在內（不得進 log／diagnostic／回應 body）。
+        變數的值（DG-03／#146），PB-09（#298）新增的 `_effective_
+        admin_secret`，以及 AUTH-02（#309）新增的兩把角色密碼。這是
+        redaction 白名單以外的最後一道防線：即使某個字串意外落在白
+        名單欄位裡，只要逐字等於這裡的任何一個值，一樣會被換成
+        `[redacted]`——安全考量明文要求這兩把新密碼也涵蓋在內（不得
+        進 log／diagnostic／回應 body）。
 
         `credentials` 可選——傳入時直接使用（PERF-01／#177，呼叫端已經
         算過一次），不傳時照舊自己查一次，行為不變。"""
         creds = credentials if credentials is not None else _credential_map()
         tokens = tuple(cred.token for cred in creds.values() if cred is not None)
         admin = (_effective_admin_secret,) if _effective_admin_secret else ()
-        return tokens + admin + database_url_candidates()
+        role_passwords = tuple(
+            p for p in (_effective_superuser_password, _effective_superadmin_password)
+            if p)
+        return tokens + admin + role_passwords + database_url_candidates()
 
     def _flush_diagnostics(diag: _CollectingDiagnostics) -> dict:
         """這次 request 收集到的 events 依優先序選出 `kept`（per-request
