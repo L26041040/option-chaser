@@ -313,6 +313,36 @@ class BrowserIdentity:
 
 
 @dataclass(frozen=True)
+class RoleSession:
+    """AUTH-01（#308，三層角色模型 spec #307）：cookie 帶的不透明
+    token → 角色（`"superuser" | "superadmin"`）的映射。
+
+    刻意鏡射 `BrowserIdentity`（token → owner_id）的既有形狀，但是
+    **獨立**的表／方法組——不與 `BrowserIdentity`／`Owner` 共用任何
+    函式或資料列，這是軸一（Owner Identity）／軸二（User Level）維持
+    正交的既有硬性約束（SUPERUSER-007）延伸到三層角色版本的具體落地。
+
+    `token` 與 `role` 分開儲存的理由與 `BrowserIdentity` 完全相同：
+    token 本身不含角色明文、不可反推，角色只能透過伺服器端查表得知，
+    且 token 可被伺服器單方作廢（登出）而不需要變動任何其他狀態。
+
+    **本票（AUTH-01）刻意只有四個欄位**——spec #307 2026-09-17 修正
+    明確排除 password rotation／password fingerprint 設計，因此這裡
+    沒有任何密碼雜湊、指紋或版本號欄位。`revoked_at` 為 `None` 代表
+    仍然有效；一旦寫入非 `None` 值即視為永久失效，不會被清空重新
+    啟用（要恢復存取需要重新登入產生新的 token）。
+
+    `issued_at`：這個 token 第一次被簽發的時間，供未來除錯／稽核
+    使用；本身不參與任何有效性判斷（AUTH-01 不設過期時間，是否要
+    加過期時間屬未來範圍，非本票決定）。
+    """
+    token: str
+    role: str
+    issued_at: str
+    revoked_at: str | None = None
+
+
+@dataclass(frozen=True)
 class SuperUserAuditEvent:
     """PB-10（#301，Anonymous Public Beta）：Super User 高風險跨 owner
     操作的 audit trail。
@@ -1127,6 +1157,35 @@ class Storage(Protocol):
         原樣回傳全部 owner 列；篩選邏輯留給 PB-08（沿用既有
         `list_scenarios(owner=None)`／`result_history(owner=None)`
         「刻意的跨 owner 逃生門，語意由呼叫端決定」先例）。"""
+
+    # ---------- Role session（AUTH-01／#308，三層角色模型） ----------
+    #
+    # 本區塊是 spec #307 的儲存層地基，**純 expand**——不接任何 HTTP
+    # 端點、不讀任何環境變數、不修改 `identity_resolver()` 或既有
+    # `is_superuser()` 行為。呼叫端（AUTH-02）負責產生 token（沿用
+    # 既有 `secrets.token_urlsafe(32)` 慣例，比照 `create_owner_
+    # with_token()` 的既有分工：token 由呼叫端生成，Storage 只負責
+    # 存取）與比對密碼，這裡只回答「這個 token 現在算哪個角色、還
+    # 有沒有效」。
+
+    def create_role_session(self, session: RoleSession) -> None:
+        """寫入一筆全新的 role session（呼叫端已生成 token、決定好
+        `role`）。token 須事先確定不存在（呼叫端用密碼學安全隨機來源
+        產生，衝突機率可忽略）——本方法不檢查衝突後靜默覆寫，衝突時
+        兩後端各自按資料庫既有的 PK 違反行為處理。"""
+
+    def resolve_role_session(self, token: str) -> RoleSession | None:
+        """依 token 查詢。找不到，或找到但 `revoked_at` 非 `None`
+        （已撤銷），皆回 `None`——呼叫端不需要另外檢查 `revoked_at`
+        欄位，這個方法已經把「還算不算有效」這個判斷做完了。"""
+
+    def revoke_role_session(self, token: str, *, now: str) -> bool:
+        """登出：把這個 token 標記為已撤銷（`revoked_at = now`）。
+        `now` 由呼叫端傳入（`api_app.clock.now_utc_iso()`），比照既有
+        `touch_browser_identity()`／`touch_owner_activity()` 的既有
+        分工——Storage 層不自己讀時鐘。回傳是否真的更新到東西（token
+        不存在或早已撤銷過時回 `False`），讓呼叫端能分辨「這個 token
+        本來就是無效的」與「這次操作真的生效了」。"""
 
     # ---------- Super User audit trail（PB-10／#301） ----------
 

@@ -26,9 +26,9 @@ from . import (BrowserIdentity, ChainBackoffEntry, ContractHistory,
                DataSourceSettings, DividendCacheEntry, IvBackfillRun,
                IvObservation, MetricEntry, NarrowHistoryEntry, Owner,
                ProviderCredential, ProviderVerification, RateCacheEntry,
-               ResultFactContext, ResultRecord, ResultSummary, Scenario,
-               ScenarioExists, SuperUserAuditEvent, TreasuryYearCacheEntry,
-               UsageSetting, require_owner)
+               ResultFactContext, ResultRecord, ResultSummary, RoleSession,
+               Scenario, ScenarioExists, SuperUserAuditEvent,
+               TreasuryYearCacheEntry, UsageSetting, require_owner)
 from ..diagnostics import RETENTION_LIMIT, DiagnosticEvent
 from ..identity import SOLO_OWNER
 from ..metrics import retention_cutoff
@@ -452,6 +452,18 @@ CREATE TABLE IF NOT EXISTS superuser_audit_log (
     action           TEXT NOT NULL,
     target_owner_id  TEXT,
     detail           JSONB NOT NULL
+);
+-- AUTH-01（#308，三層角色模型 spec #307）：role-session——cookie 帶的
+-- 不透明 token → 角色（"superuser" | "superadmin"）映射。刻意獨立於
+-- `owners`／`browser_identities`（軸一／軸二正交，spec #307 §「授權
+-- 判斷點」明文要求）。2026-09-17 修正：不含任何密碼雜湊／指紋／
+-- 版本欄位——password rotation 明確不在本輪 scope（見 spec #307
+-- Further Notes 第 7 條），因此本表只有四欄。
+CREATE TABLE IF NOT EXISTS role_sessions (
+    token       TEXT PRIMARY KEY,
+    role        TEXT NOT NULL,
+    issued_at   TEXT NOT NULL,
+    revoked_at  TEXT
 );
 """
 
@@ -1356,6 +1368,33 @@ class PostgresStorage:
                 "ORDER BY created_at, owner_id").fetchall()
         return [Owner(owner_id=r[0], created_at=r[1], last_activity_at=r[2],
                       protected=r[3], is_synthetic=r[4]) for r in rows]
+
+    # ---------- Role session（AUTH-01／#308，三層角色模型） ----------
+
+    def create_role_session(self, session: RoleSession) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO role_sessions (token, role, issued_at, "
+                "revoked_at) VALUES (%s, %s, %s, %s)",
+                (session.token, session.role, session.issued_at,
+                 session.revoked_at))
+
+    def resolve_role_session(self, token: str) -> RoleSession | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT token, role, issued_at, revoked_at "
+                "FROM role_sessions WHERE token = %s", (token,)).fetchone()
+        if row is None or row[3] is not None:
+            return None
+        return RoleSession(token=row[0], role=row[1], issued_at=row[2],
+                           revoked_at=row[3])
+
+    def revoke_role_session(self, token: str, *, now: str) -> bool:
+        with self._connect() as conn:
+            cur = conn.execute(
+                "UPDATE role_sessions SET revoked_at = %s "
+                "WHERE token = %s AND revoked_at IS NULL", (now, token))
+            return cur.rowcount > 0
 
     # ---------- Super User audit trail（PB-10／#301） ----------
 

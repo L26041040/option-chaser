@@ -21,9 +21,9 @@ from api_app.storage import (BrowserIdentity, ChainBackoffEntry,
                              DividendCacheEntry, IvBackfillRun, IvObservation,
                              NarrowHistoryEntry, Owner, ProviderCredential,
                              ProviderVerification, RateCacheEntry,
-                             ResultRecord, Scenario, ScenarioExists,
-                             SuperUserAuditEvent, TreasuryYearCacheEntry,
-                             UsageSetting)
+                             ResultRecord, RoleSession, Scenario,
+                             ScenarioExists, SuperUserAuditEvent,
+                             TreasuryYearCacheEntry, UsageSetting)
 from api_app.storage.memory import MemoryStorage
 
 TEST_DB_URL = os.environ.get("OC_TEST_DATABASE_URL")
@@ -86,7 +86,8 @@ def storage(request):
                      "owner_settings, owner_credentials, owner_verifications, "
                      "iv_observations, iv_backfill_runs, contract_iv_history, "
                      "diagnostics, operational_metrics, narrow_history, "
-                     "owners, browser_identities, superuser_audit_log "
+                     "owners, browser_identities, superuser_audit_log, "
+                     "role_sessions "
                      "RESTART IDENTITY")
     yield st
 
@@ -848,6 +849,106 @@ def test_identity_resolver_still_returns_solo_after_pb01(storage):
                         last_seen_at="2026-09-14T00:00:00+00:00"))
 
     assert default_identity_resolver() == SOLO_OWNER == "solo"
+
+
+# ---------- Role session（AUTH-01／#308，三層角色模型 spec #307，
+# expand，零行為變更） ----------
+
+
+def test_resolve_role_session_is_none_for_an_unknown_token(storage):
+    assert storage.resolve_role_session("role-tok-unknown") is None
+
+
+def test_create_superuser_session_round_trips(storage):
+    session = RoleSession(token="role-tok-su-1", role="superuser",
+                          issued_at="2026-09-17T00:00:00+00:00")
+    storage.create_role_session(session)
+
+    resolved = storage.resolve_role_session("role-tok-su-1")
+    assert resolved.role == "superuser"
+    assert resolved.revoked_at is None
+
+
+def test_create_superadmin_session_round_trips(storage):
+    session = RoleSession(token="role-tok-sa-1", role="superadmin",
+                          issued_at="2026-09-17T00:00:00+00:00")
+    storage.create_role_session(session)
+
+    resolved = storage.resolve_role_session("role-tok-sa-1")
+    assert resolved.role == "superadmin"
+    assert resolved.revoked_at is None
+
+
+def test_two_role_sessions_do_not_interfere_with_each_other(storage):
+    """一個瀏覽器的 Super User session 與另一個瀏覽器的 Super Admin
+    session 各自獨立存在、各自查得到自己的角色，互不覆寫、互不混淆
+    ——不是「系統裡只有一個目前角色」這種全域狀態。"""
+    storage.create_role_session(RoleSession(
+        token="role-tok-mix-su", role="superuser",
+        issued_at="2026-09-17T00:00:00+00:00"))
+    storage.create_role_session(RoleSession(
+        token="role-tok-mix-sa", role="superadmin",
+        issued_at="2026-09-17T00:00:00+00:00"))
+
+    assert storage.resolve_role_session("role-tok-mix-su").role == "superuser"
+    assert storage.resolve_role_session("role-tok-mix-sa").role == "superadmin"
+
+
+def test_revoke_role_session_makes_it_resolve_to_none(storage):
+    """登出：撤銷後即使 token 本身還留著（呼叫端仍會重放這顆 cookie），
+    查詢也必須立刻回 `None`——不是只清前端 cookie 這種表面動作。"""
+    storage.create_role_session(RoleSession(
+        token="role-tok-logout", role="superuser",
+        issued_at="2026-09-17T00:00:00+00:00"))
+
+    changed = storage.revoke_role_session(
+        "role-tok-logout", now="2026-09-17T01:00:00+00:00")
+
+    assert changed is True
+    assert storage.resolve_role_session("role-tok-logout") is None
+
+
+def test_revoke_role_session_returns_false_for_an_unknown_token(storage):
+    assert storage.revoke_role_session(
+        "role-tok-nope", now="2026-09-17T01:00:00+00:00") is False
+
+
+def test_revoke_role_session_returns_false_when_already_revoked(storage):
+    """撤銷一個已經撤銷過的 session 不是新的一次成功撤銷——呼叫端據此
+    分辨「這次操作真的生效了」與「這個 token 本來就已經沒用了」。"""
+    storage.create_role_session(RoleSession(
+        token="role-tok-double-logout", role="superadmin",
+        issued_at="2026-09-17T00:00:00+00:00"))
+    storage.revoke_role_session(
+        "role-tok-double-logout", now="2026-09-17T01:00:00+00:00")
+
+    second = storage.revoke_role_session(
+        "role-tok-double-logout", now="2026-09-17T02:00:00+00:00")
+
+    assert second is False
+
+
+def test_role_session_is_independent_of_owner_registry(storage):
+    """軸一（Owner Identity）／軸二（User Level）正交——role session
+    的建立、查詢、撤銷完全不觸碰 `owners`／`browser_identities` 任何
+    一列，反之亦然。這條測試直接證明兩邊互不影響，不只是靠程式碼
+    審查／AST 掃描（那是 AUTH-02 的範圍，這裡先在儲存層釘住最基本的
+    事實：兩張表各自獨立存在資料，互不覆寫）。"""
+    storage.create_owner_with_token(
+        Owner(owner_id="axis1-owner", created_at="2026-09-17T00:00:00+00:00"),
+        BrowserIdentity(token="axis1-token", owner_id="axis1-owner",
+                        issued_at="2026-09-17T00:00:00+00:00",
+                        last_seen_at="2026-09-17T00:00:00+00:00"))
+    storage.create_role_session(RoleSession(
+        token="axis2-token", role="superuser",
+        issued_at="2026-09-17T00:00:00+00:00"))
+
+    # 用同一個字串當 role-session token 與 owner-identity token 也不會
+    # 互相污染——兩張表的 PK 命名空間互不相干。
+    assert storage.resolve_owner_by_token("axis2-token") is None
+    assert storage.resolve_role_session("axis1-token") is None
+    assert storage.get_owner("axis1-owner").owner_id == "axis1-owner"
+    assert storage.resolve_role_session("axis2-token").role == "superuser"
 
 
 # ---------- solo → Owner 一次性遷移（PB-03／#295，Anonymous Public
