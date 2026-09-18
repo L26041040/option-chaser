@@ -10,8 +10,9 @@
  * 字串（不是 URL、不是渲染時機）。不引入任何外部套件（react-query／
  * SWR 之類）——維持前端目前只依賴 react／react-dom 的現狀。
  */
-import { getScenario, getSettings, ivHistory,
-        type IvHistoryView, type ScenarioDetail, type SettingsView } from "./api";
+import { getAuthStatus, getScenario, getSettings, ivHistory,
+        type AuthStatus, type IvHistoryView, type ScenarioDetail,
+        type SettingsView } from "./api";
 
 interface Entry<T> {
   promise: Promise<T>;
@@ -146,6 +147,26 @@ export function getSettingsCached(): CachedFetch<SettingsView> {
  *  拿它更新快取，不必讓下一個讀者重新打一次 `GET /api/settings`。 */
 export function setSettingsCache(view: SettingsView): void {
   setCached(SETTINGS_KEY, view);
+}
+
+const AUTH_STATUS_KEY = "auth-status";
+
+/** 三層角色狀態（AUTH-06／#313）——單一全站狀態，鍵是固定字串，跟
+ *  `getSettingsCached()` 同一種模式：登入表單、`IvHistory`、`Settings`
+ *  頁的管理面板各自 mount 時呼叫，只有第一個真的發請求。
+ *
+ *  不需要跨已掛載元件的即時推播同步——`Settings`（登入表單所在）與
+ *  掛著 `IvHistory` 的 `ScenarioDetail` 在這個 app 的路由結構下互斥
+ *  （`App.tsx` 手機／桌面兩種版面皆是，切設定頁必定先卸載詳細頁），
+ *  不會同時掛載在畫面上，「下一次 mount 才拿到新角色」因此已經足夠。 */
+export function getAuthStatusCached(): CachedFetch<AuthStatus> {
+  return cachedFetch(AUTH_STATUS_KEY, (signal) => getAuthStatus(signal));
+}
+
+/** 登入／登出端點都會回傳最新的 `AuthStatus`——直接拿它更新快取，
+ *  同一次瀏覽器分頁內下一個讀者不必重新打一次 `GET /api/auth/status`。 */
+export function setAuthStatusCache(status: AuthStatus): void {
+  setCached(AUTH_STATUS_KEY, status);
 }
 
 const ivHistoryKey = (scenarioId: string, candidateKey: string, analyzedAt: string | null) =>

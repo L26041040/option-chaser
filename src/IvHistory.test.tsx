@@ -20,6 +20,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import IvHistory, { PAD_LEFT, PAD_RIGHT } from "./IvHistory";
 import type { Candidate, ContractIdentity, DiagnosticEvent, IvFieldMetric,
              IvHistoryView, LegHistoricalIv, Leg, NormalizedSkewPoint } from "./api";
+import type { Role } from "./superuser";
 
 /** 單腿候選的身份鍵——`ivView()` 與 `longCallCandidate()` 共用，兩者
  *  對得上，`dataKey === key` 這條判斷式才會成立。 */
@@ -182,11 +183,19 @@ function diagEvent(over: Partial<DiagnosticEvent> = {}): DiagnosticEvent {
   };
 }
 
-/** 記錄每一個被打到的 URL，讓「鎖著時零 IV 請求」變成可斷言的事實。 */
-function mockApi({ enabled, iv }: { enabled: boolean; iv?: IvHistoryView }) {
+/** 記錄每一個被打到的 URL，讓「鎖著時零 IV 請求」變成可斷言的事實。
+ *
+ * `role`（AUTH-06／#313）：預設 `"superuser"`——這個檔案絕大多數測試
+ * 關心的是既有 `enabled`／`supportsIvHistory` 兩道閘門本身，不是軸二
+ * 角色守門（那批新測試獨立在檔案末尾專屬的 describe block）。 */
+function mockApi({ enabled, iv, role = "superuser" }:
+    { enabled: boolean; iv?: IvHistoryView; role?: Role }) {
   const urls: string[] = [];
   const spy = vi.fn(async (url: string) => {
     urls.push(url);
+    if (url.startsWith("/api/auth/status")) {
+      return { ok: true, status: 200, json: async () => ({ role }) } as Response;
+    }
     if (url.startsWith("/api/settings")) {
       return { ok: true, status: 200,
                json: async () => ({ historical_iv_enabled: enabled }) } as Response;
@@ -299,6 +308,64 @@ describe("閘門（#126）", () => {
   });
 });
 
+describe("第三道閘門：角色（AUTH-06／#313）——疊加在 #126 既有兩道之上", () => {
+  it("Normal User 即使 historical_iv_enabled 為真，也不輸出任何 DOM 節點", async () => {
+    const urls = mockApi({ enabled: true, role: "normal" });
+    const { container } = render(
+      <IvHistory scenarioId="s1" candidate={longCallCandidate()} />);
+    await waitFor(() => expect(urls.some((u) => u.startsWith("/api/auth/status")))
+      .toBe(true));
+    expect(container).toBeEmptyDOMElement();
+  });
+
+  it("Normal User 一個 IV 請求都不發", async () => {
+    const urls = mockApi({ enabled: true, role: "normal" });
+    render(<IvHistory scenarioId="s1" candidate={longCallCandidate()} />);
+    await waitFor(() => expect(urls.some((u) => u.startsWith("/api/auth/status")))
+      .toBe(true));
+    expect(ivCalls(urls)).toEqual([]);
+  });
+
+  it("Super User 角色可以看到卡片並發出 IV 請求", async () => {
+    const urls = mockApi({ enabled: true, role: "superuser" });
+    render(<IvHistory scenarioId="s1" candidate={longCallCandidate()} />);
+    await waitFor(() => expect(ivCalls(urls)).toHaveLength(1));
+  });
+
+  it("Super Admin 角色（完整超集合）同樣可以看到卡片並發出 IV 請求", async () => {
+    const urls = mockApi({ enabled: true, role: "superadmin" });
+    render(<IvHistory scenarioId="s1" candidate={longCallCandidate()} />);
+    await waitFor(() => expect(ivCalls(urls)).toHaveLength(1));
+  });
+
+  it("角色查詢失敗時當成鎖著，不對 vendor 試手氣——跟 enabled 讀不到同一種保守預設", async () => {
+    const urls: string[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+      urls.push(url);
+      if (url.startsWith("/api/auth/status")) {
+        return { ok: false, status: 500,
+                 json: async () => ({ detail: "掛了" }) } as Response;
+      }
+      return { ok: true, status: 200,
+               json: async () => ({ historical_iv_enabled: true }) } as Response;
+    }));
+    const { container } = render(
+      <IvHistory scenarioId="s1" candidate={longCallCandidate()} />);
+    await waitFor(() => expect(container).toBeEmptyDOMElement());
+    expect(ivCalls(urls)).toEqual([]);
+  });
+
+  it("兩張卡片同時掛載，auth status 只真的問一次——跟 settings 同一套快取模式", async () => {
+    const urls = mockApi({ enabled: true, role: "superuser" });
+    render(<IvHistory scenarioId="s1" candidate={longCallCandidate()} />);
+    render(<IvHistory scenarioId="s2" candidate={longCallCandidate()} />);
+    await waitFor(() => expect(ivCalls(urls)).toHaveLength(2));
+
+    const authCalls = urls.filter((u) => u.startsWith("/api/auth/status"));
+    expect(authCalls).toHaveLength(1);
+  });
+});
+
 describe("第二個閘門：只服務單腿候選（Butterfly＝T16／#232 結構上不支援；" +
         "Vertical Spread＝2026-09-09 Owner 裁示整塊退場）", () => {
   it("即使已解鎖，三腿候選也不輸出任何 DOM 節點", async () => {
@@ -366,6 +433,10 @@ describe("第二個閘門：只服務單腿候選（Butterfly＝T16／#232 結�
 describe("vendor 失敗", () => {
   it("說明原因，而且不拖垮頁面其餘部分", async () => {
     vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+      if (url.startsWith("/api/auth/status")) {
+        return { ok: true, status: 200,
+                 json: async () => ({ role: "superuser" }) } as Response;
+      }
       if (url.startsWith("/api/settings")) {
         return { ok: true, status: 200,
                  json: async () => ({ historical_iv_enabled: true }) } as Response;
@@ -386,6 +457,10 @@ describe("已有可用 cache 時，重新嘗試失敗只降級成非阻斷警示
      "不是整塊阻斷錯誤", async () => {
     let call = 0;
     vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+      if (url.startsWith("/api/auth/status")) {
+        return { ok: true, status: 200,
+                 json: async () => ({ role: "superuser" }) } as Response;
+      }
       if (url.startsWith("/api/settings")) {
         return { ok: true, status: 200,
                  json: async () => ({ historical_iv_enabled: true }) } as Response;
@@ -417,6 +492,10 @@ describe("已有可用 cache 時，重新嘗試失敗只降級成非阻斷警示
   it("這個候選從未成功取得任何資料時，失敗仍然是整塊阻斷錯誤（沒有 cache 可退回，" +
      "維持既有行為）", async () => {
     vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+      if (url.startsWith("/api/auth/status")) {
+        return { ok: true, status: 200,
+                 json: async () => ({ role: "superuser" }) } as Response;
+      }
       if (url.startsWith("/api/settings")) {
         return { ok: true, status: 200,
                  json: async () => ({ historical_iv_enabled: true }) } as Response;
@@ -440,6 +519,10 @@ describe("切換候選時不會誤用上一個候選的資料（dataKey 隔離�
     });
     let call = 0;
     vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+      if (url.startsWith("/api/auth/status")) {
+        return { ok: true, status: 200,
+                 json: async () => ({ role: "superuser" }) } as Response;
+      }
       if (url.startsWith("/api/settings")) {
         return { ok: true, status: 200,
                  json: async () => ({ historical_iv_enabled: true }) } as Response;
@@ -592,6 +675,10 @@ describe("走勢圖：scrubber tooltip（整張圖是單一 pointer 互動介面
 describe("就地展開的診斷詳情（DG-05／#148）", () => {
   it("請求失敗時卡片本身仍在，多一條精簡狀態列，預設收合", async () => {
     vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+      if (url.startsWith("/api/auth/status")) {
+        return { ok: true, status: 200,
+                 json: async () => ({ role: "superuser" }) } as Response;
+      }
       if (url.startsWith("/api/settings")) {
         return { ok: true, status: 200,
                  json: async () => ({ historical_iv_enabled: true }) } as Response;
@@ -624,6 +711,10 @@ describe("就地展開的診斷詳情（DG-05／#148）", () => {
 
   it("點「查看詳情」展開，看得到 correlation ID；再點一次收起", async () => {
     vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+      if (url.startsWith("/api/auth/status")) {
+        return { ok: true, status: 200,
+                 json: async () => ({ role: "superuser" }) } as Response;
+      }
       if (url.startsWith("/api/settings")) {
         return { ok: true, status: 200,
                  json: async () => ({ historical_iv_enabled: true }) } as Response;
@@ -773,6 +864,10 @@ describe("固定版位，不因 request 完成才決定要不要出現（QA 反�
     let resolveIv!: (r: Response) => void;
     const ivPromise = new Promise<Response>((resolve) => { resolveIv = resolve; });
     vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+      if (url.startsWith("/api/auth/status")) {
+        return { ok: true, status: 200,
+                 json: async () => ({ role: "superuser" }) } as Response;
+      }
       if (url.startsWith("/api/settings")) {
         return { ok: true, status: 200,
                  json: async () => ({ historical_iv_enabled: true }) } as Response;
@@ -819,6 +914,10 @@ describe("固定版位，不因 request 完成才決定要不要出現（QA 反�
 
   it("error 狀態沿用同一個版位——卡片沒有先消失再重新出現", async () => {
     vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+      if (url.startsWith("/api/auth/status")) {
+        return { ok: true, status: 200,
+                 json: async () => ({ role: "superuser" }) } as Response;
+      }
       if (url.startsWith("/api/settings")) {
         return { ok: true, status: 200,
                  json: async () => ({ historical_iv_enabled: true }) } as Response;
@@ -887,6 +986,10 @@ describe("Inline Diagnostics 的 Copy 按鈕（QA 反饋，2026-08-16）", () =>
     const writeText = vi.fn().mockResolvedValue(undefined);
     Object.assign(navigator, { clipboard: { writeText } });
     vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+      if (url.startsWith("/api/auth/status")) {
+        return { ok: true, status: 200,
+                 json: async () => ({ role: "superuser" }) } as Response;
+      }
       if (url.startsWith("/api/settings")) {
         return { ok: true, status: 200,
                  json: async () => ({ historical_iv_enabled: true }) } as Response;
@@ -1013,6 +1116,10 @@ describe("兩段式補建（T11／#194，P3-a）——Legacy 家族冷 backfill 
     let resolveBackfill!: () => void;
     const backfillGate = new Promise<void>((r) => { resolveBackfill = r; });
     vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
+      if (url.startsWith("/api/auth/status")) {
+        return { ok: true, status: 200,
+                 json: async () => ({ role: "superuser" }) } as Response;
+      }
       if (url.startsWith("/api/settings")) {
         return { ok: true, status: 200,
                  json: async () => ({ historical_iv_enabled: true }) } as Response;
@@ -1105,6 +1212,10 @@ describe("兩段式補建（T11／#194，P3-a）——Legacy 家族冷 backfill 
      async () => {
     let getCalls = 0;
     vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+      if (url.startsWith("/api/auth/status")) {
+        return { ok: true, status: 200,
+                 json: async () => ({ role: "superuser" }) } as Response;
+      }
       if (url.startsWith("/api/settings")) {
         return { ok: true, status: 200,
                  json: async () => ({ historical_iv_enabled: true }) } as Response;

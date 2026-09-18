@@ -8,7 +8,7 @@
  *
  * 本層與整個前端都不做金融計算：每個顯示數字都已由引擎算好。
  */
-import { adminAuthHeaders } from "./superuser";
+import type { Role } from "./superuser";
 
 export interface AnalysisMeta {
   symbol: string;
@@ -1160,9 +1160,11 @@ export function saveSettings(body: {
   });
 }
 
-// PB-09（#298）：三個 credential 寫入端點在後端 gate 在 Super
-// User——沿用軸二的 `adminAuthHeaders()`（沒記住密鑰時回空物件，
-// 讓伺服器像平常一樣 401，不是前端自己先擋）。
+// AUTH-03（#310）：三個 credential 寫入端點在後端改用
+// `require_role(minimum=SUPERADMIN)`——授權完全靠 `__Host-oc_role`
+// cookie（`HttpOnly`，同源請求自動帶上），前端不必也不能再自己組
+// `Authorization` 標頭；沒有有效角色 cookie 時伺服器一樣 401，不是
+// 前端自己先擋。
 export function saveCredential(
   provider: string,
   token: string,
@@ -1171,7 +1173,7 @@ export function saveCredential(
     `/api/settings/credentials/${encodeURIComponent(provider)}`,
     {
       method: "PUT",
-      headers: { "Content-Type": "application/json", ...adminAuthHeaders() },
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ token }),
     },
   );
@@ -1182,26 +1184,48 @@ export function saveCredential(
 export function testCredential(provider: string): Promise<SettingsView> {
   return request<SettingsView>(
     `/api/settings/credentials/${encodeURIComponent(provider)}/test`,
-    { method: "POST", headers: adminAuthHeaders() },
+    { method: "POST" },
   );
 }
 
 export function clearCredential(provider: string): Promise<SettingsView> {
   return request<SettingsView>(
     `/api/settings/credentials/${encodeURIComponent(provider)}`,
-    { method: "DELETE", headers: adminAuthHeaders() },
+    { method: "DELETE" },
   );
 }
 
-/** Super User 狀態查詢（PB-09／#298）——這個端點本身永遠 200，回應
- *  只有一個布林值：目前記住的密鑰（若有）是否有效。 */
-export function getSuperUserStatus(): Promise<{ is_superuser: boolean }> {
-  return request<{ is_superuser: boolean }>("/api/superuser/status", {
-    headers: adminAuthHeaders(),
+// ---------- 三層角色模型：登入／登出／狀態查詢（AUTH-02／#309，
+// AUTH-06／#313） ----------
+
+export interface AuthStatus {
+  role: Role;
+}
+
+/** 角色狀態查詢——這個端點本身永遠 200，回應只有角色名稱，是前端判斷
+ *  要不要顯示 Super User／Super Admin 專屬介面的唯一真相來源。 */
+export function getAuthStatus(signal?: AbortSignal): Promise<AuthStatus> {
+  return request<AuthStatus>("/api/auth/status", { signal });
+}
+
+/** 單一密碼登入——沒有 username、沒有角色選單，由伺服器依密碼命中
+ *  哪一把（`SUPERADMIN_PASSWORD` 或 `SUPERUSER_PASSWORD`）決定角色。
+ *  回應只有角色名稱，絕不回傳密碼或 session token 本身。 */
+export function login(password: string): Promise<AuthStatus> {
+  return request<AuthStatus>("/api/auth/login", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ password }),
   });
 }
 
-// ---------- Super User system/admin operations（PB-10／#301） ----------
+/** 伺服器端撤銷 role session＋清除 cookie；重複登出優雅回
+ *  `{role: "normal"}`，不是錯誤。 */
+export function logout(): Promise<AuthStatus> {
+  return request<AuthStatus>("/api/auth/logout", { method: "POST" });
+}
+
+// ---------- Super Admin system/admin operations（PB-10／#301） ----------
 
 /** 跨 owner 檢視第一步：全站 owner 清單。`owner_id` 在這裡刻意出現
  *  ——這是全站唯一讓它進入 HTTP 回應 body 的地方，見後端 `main.py`
@@ -1222,10 +1246,12 @@ export interface SuperUserAuditEntry {
   detail: Record<string, unknown>;
 }
 
+// AUTH-03（#310）：這一整組端點在後端 gate 在
+// `require_role(minimum=SUPERADMIN)`——同上，授權靠 cookie 自動帶上，
+// 不需要（也不能）自己組 `Authorization` 標頭。
+
 export function superuserListOwners(): Promise<SuperUserOwnerInfo[]> {
-  return request<SuperUserOwnerInfo[]>("/api/superuser/owners", {
-    headers: adminAuthHeaders(),
-  });
+  return request<SuperUserOwnerInfo[]>("/api/superuser/owners");
 }
 
 export function superuserListOwnerScenarios(
@@ -1233,7 +1259,6 @@ export function superuserListOwnerScenarios(
 ): Promise<ScenarioSummary[]> {
   return request<ScenarioSummary[]>(
     `/api/superuser/owners/${encodeURIComponent(ownerId)}/scenarios`,
-    { headers: adminAuthHeaders() },
   );
 }
 
@@ -1246,7 +1271,6 @@ export function superuserGetOwnerScenario(
   return request<ScenarioDetail>(
     `/api/superuser/owners/${encodeURIComponent(ownerId)}/scenarios/` +
       `${encodeURIComponent(scenarioId)}`,
-    { headers: adminAuthHeaders() },
   );
 }
 
@@ -1261,7 +1285,7 @@ export function superuserDeleteOwner(
     `/api/superuser/owners/${encodeURIComponent(ownerId)}/delete`,
     {
       method: "POST",
-      headers: { "Content-Type": "application/json", ...adminAuthHeaders() },
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ confirm_owner_id: confirmOwnerId }),
     },
   );
@@ -1272,7 +1296,7 @@ export function superuserBatchDeleteOwners(
 ): Promise<{ deleted: string[]; counts: Record<string, Record<string, number>> }> {
   return request("/api/superuser/owners/batch-delete", {
     method: "POST",
-    headers: { "Content-Type": "application/json", ...adminAuthHeaders() },
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       owner_ids: ownerIds,
       confirm_owner_ids: ownerIds,
@@ -1290,7 +1314,7 @@ export function superuserSetOwnerProtected(
     `/api/superuser/owners/${encodeURIComponent(ownerId)}/protected`,
     {
       method: "PUT",
-      headers: { "Content-Type": "application/json", ...adminAuthHeaders() },
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         protected: protectedValue,
         confirm_owner_id: ownerId,
@@ -1300,9 +1324,7 @@ export function superuserSetOwnerProtected(
 }
 
 export function superuserGetAuditLog(): Promise<SuperUserAuditEntry[]> {
-  return request<SuperUserAuditEntry[]>("/api/superuser/audit-log", {
-    headers: adminAuthHeaders(),
-  });
+  return request<SuperUserAuditEntry[]>("/api/superuser/audit-log");
 }
 
 // ---------- Historical IV 歷史序列（#126／#114，HIVT-02–04／#153–155） ----------

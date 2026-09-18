@@ -7,11 +7,12 @@
  */
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import Settings from "./Settings";
 import type { SettingsView } from "./api";
-import { setAdminSecret } from "./superuser";
+import { _resetCacheForTests } from "./fetchCache";
+import type { Role } from "./superuser";
 
 const PROVIDER = "marketdata-app";
 
@@ -51,26 +52,26 @@ const CONFIGURED = {
  * `/api/diagnostics`——那條路徑分流成固定回空清單，不吃掉這裡的 view
  * 序列（否則每個既有測試的 view 對應關係都會被這個額外的請求打亂）。
  *
- * PB-09（#298）：`<SuperUserUnlock />` 也會自己打
- * `/api/superuser/status`——同一個理由分流成獨立回應，`isSuperUser`
- * 由 `superuser` 參數決定（預設 `true`，本檔案大多數測試關心的是
- * credential CRUD 業務邏輯本身，不是軸二守門機制，後者由本檔案末尾
- * 專屬的 describe block 負責，那裡會用 `false` 覆寫）。
+ * AUTH-06（#313）：`<RoleLogin />` 也會自己打 `GET /api/auth/status`
+ * ——同一個理由分流成獨立回應，目前角色由 `role` 參數決定（預設
+ * `"superadmin"`：credential CRUD 自 AUTH-03 起 gate 在 Super Admin，
+ * 本檔案大多數測試關心的是 credential CRUD 業務邏輯本身，不是軸二
+ * 守門機制，後者由本檔案末尾專屬的 describe block 負責，那裡會用
+ * `"normal"` 覆寫）。
  */
-function mockApi(views: SettingsView[], { superuser = true } = {}) {
+function mockApi(views: SettingsView[], { role = "superadmin" as Role } = {}) {
   let i = 0;
   const spy = vi.fn(async (url: string, _init?: RequestInit) => {
     if (String(url).startsWith("/api/diagnostics")) {
       return { ok: true, status: 200, json: async () => [] } as Response;
     }
-    if (String(url).startsWith("/api/superuser/status")) {
-      return { ok: true, status: 200,
-               json: async () => ({ is_superuser: superuser }) } as Response;
+    if (String(url).startsWith("/api/auth/status")) {
+      return { ok: true, status: 200, json: async () => ({ role }) } as Response;
     }
-    // PB-10（#301）：`<SuperUserAdmin />` 解鎖後會立刻打
-    // `/api/superuser/owners`——同一個理由分流成固定的空清單／空紀錄，
-    // 這個檔案的既有測試關心的是 credential CRUD，不是管理面板本身
-    // （那由 `SuperUserAdmin.test.tsx` 專屬覆蓋）。
+    // PB-10（#301）：`<SuperUserAdmin />` 在角色達到 Super Admin 後
+    // 立刻打 `/api/superuser/owners`——同一個理由分流成固定的空清單／
+    // 空紀錄，這個檔案的既有測試關心的是 credential CRUD，不是管理
+    // 面板本身（那由 `SuperUserAdmin.test.tsx` 專屬覆蓋）。
     if (String(url).startsWith("/api/superuser/owners")) {
       return { ok: true, status: 200, json: async () => [] } as Response;
     }
@@ -90,34 +91,34 @@ function section(name: string) {
   return screen.getByRole("region", { name }) as HTMLElement;
 }
 
+const ROLE_LABEL: Record<Role, string> = {
+  normal: "Normal User", superuser: "Super User", superadmin: "Super Admin",
+};
+
 /**
- * PB-09（#298）：`<SuperUserUnlock />` 的解鎖狀態是跟 view 載入各自
- * 獨立完成的另一個非同步 effect——只等 `section(name)` 出現，不保證
- * 呼叫端接下來的斷言看到的是「已解鎖」這個穩定狀態，而不是介於兩者
- * 之間的中繼畫面。`expectSuperUser` 預設 `true`（配合 `beforeEach`
- * 擺好的「已解鎖」前置條件），本檔案末尾專屬測試「未解鎖」情境時
- * 傳 `false`，改自己等它要等的狀態。
+ * AUTH-06（#313）：`<RoleLogin />` 的角色狀態是跟 view 載入各自獨立
+ * 完成的另一個非同步 effect——只等 `section(name)` 出現，不保證呼叫
+ * 端接下來的斷言看到的是角色已經到位這個穩定狀態，而不是介於兩者
+ * 之間的中繼畫面。`expectRole` 預設 `"superadmin"`（配合 `mockApi()`
+ * 同一個預設值）；`"normal"` 時等的是登入表單本身（`RoleLogin` 在
+ * 這個角色下不會顯示「目前身分」那句話，見該元件），其餘角色等對應
+ * 的身分文字。
  */
-async function ready(name = "Market Data", { expectSuperUser = true } = {}) {
+async function ready(name = "Market Data",
+    { expectRole = "superadmin" as Role } = {}) {
   await waitFor(() => expect(section(name)).toBeInTheDocument());
-  if (expectSuperUser) {
-    await waitFor(() => expect(screen.getByText("目前已解鎖。")).toBeInTheDocument());
+  if (expectRole === "normal") {
+    await waitFor(() => expect(screen.getByLabelText("密碼")).toBeInTheDocument());
+  } else {
+    await waitFor(() =>
+      expect(screen.getByText(`目前身分：${ROLE_LABEL[expectRole]}。`))
+        .toBeInTheDocument());
   }
 }
-
-beforeEach(() => {
-  // PB-09（#298）：多數既有測試關心的是 credential CRUD 業務邏輯本身
-  // ——不是軸二解鎖流程，先幫它們把「已解鎖」這個前置條件擺好（搭配
-  // `mockApi()` 預設 `superuser: true`）。軸二自己的解鎖流程測試在
-  // 檔案末尾專屬的 describe block 裡，會先 `setAdminSecret(null)`
-  // 清掉這裡擺好的東西再各自測。
-  setAdminSecret("test-secret");
-});
 
 afterEach(() => {
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
-  setAdminSecret(null);
 });
 
 describe("兩列與預設值", () => {
@@ -567,99 +568,182 @@ describe("fallback 誠實顯示", () => {
   });
 });
 
-/* ---------- PB-09（#298）：Super User 閘門 ---------- */
+/* ---------- AUTH-06（#313）：三層角色登入 ---------- */
 
-describe("Super User 閘門（PB-09／#298）", () => {
-  it("預設（未解鎖）看不到 API Token 輸入框，但模式選項照常可用", async () => {
-    setAdminSecret(null);   // 覆寫 beforeEach 擺好的前置條件
-    mockApi([view()], { superuser: false });
+const SUPERUSER_PASSWORD = "correct-superuser-secret";
+const SUPERADMIN_PASSWORD = "correct-superadmin-secret";
+
+/**
+ * 登入／登出流程專屬的假體——`role` 是可變狀態（模擬伺服器端的
+ * `RoleSession`），`POST /api/auth/login` 依密碼命中哪一把改變它，
+ * `POST /api/auth/logout` 把它撥回 `normal`，`GET /api/auth/status`
+ * 永遠回目前狀態——跟真實後端「單一真相來源」的語意一致。不透過
+ * `Authorization` 標頭傳遞任何東西：`__Host-oc_role` 是 `HttpOnly`
+ * cookie，前端 JS 讀不到也不需要讀到它，這個假體因此也不必（也不能）
+ * 模擬 cookie 本身，只需要讓 `role` 這個伺服器端狀態正確反映請求
+ * 順序即可。
+ */
+function mockApiWithLogin(views: SettingsView[],
+    { initialRole = "normal" as Role } = {}) {
+  let role: Role = initialRole;
+  let i = 0;
+  const spy = vi.fn(async (url: string, init?: RequestInit) => {
+    if (String(url).startsWith("/api/diagnostics")) {
+      return { ok: true, status: 200, json: async () => [] } as Response;
+    }
+    if (String(url) === "/api/auth/login") {
+      const body = JSON.parse(String(init?.body ?? "{}")) as { password: string };
+      if (body.password === SUPERADMIN_PASSWORD) role = "superadmin";
+      else if (body.password === SUPERUSER_PASSWORD) role = "superuser";
+      else {
+        return { ok: false, status: 401,
+                 json: async () => ({ detail: "unauthorized" }) } as Response;
+      }
+      return { ok: true, status: 200, json: async () => ({ role }) } as Response;
+    }
+    if (String(url) === "/api/auth/logout") {
+      role = "normal";
+      return { ok: true, status: 200, json: async () => ({ role }) } as Response;
+    }
+    if (String(url).startsWith("/api/auth/status")) {
+      return { ok: true, status: 200, json: async () => ({ role }) } as Response;
+    }
+    if (String(url).startsWith("/api/superuser/owners")) {
+      return { ok: true, status: 200, json: async () => [] } as Response;
+    }
+    if (String(url).startsWith("/api/superuser/audit-log")) {
+      return { ok: true, status: 200, json: async () => [] } as Response;
+    }
+    const body = views[Math.min(i, views.length - 1)];
+    i += 1;
+    return { ok: true, status: 200, json: async () => body } as Response;
+  });
+  vi.stubGlobal("fetch", spy);
+  return spy;
+}
+
+describe("三層角色登入（AUTH-06／#313）", () => {
+  it("預設（未登入）看不到 API Token 輸入框，但模式選項照常可用", async () => {
+    mockApiWithLogin([view()]);
     render(<Settings />);
-    await ready("Market Data", { expectSuperUser: false });
+    await ready("Market Data", { expectRole: "normal" });
     const md = within(section("Market Data"));
     await userEvent.click(md.getByRole("radio", { name: "自訂" }));
     expect(md.queryByLabelText("API Token")).not.toBeInTheDocument();
     expect(
-      md.getByText("需要 Super User 身份才能設定 API Token"),
+      md.getByText("需要 Super Admin 身份才能設定 API Token"),
     ).toBeInTheDocument();
     // 模式選擇本身不是 credential 寫入路徑——不該因此一起被擋。
     expect(md.getByRole("radio", { name: "自訂" })).toBeChecked();
   });
 
-  it("測試連線／清除 token 按鈕在未解鎖時不呈現", async () => {
-    setAdminSecret(null);
-    mockApi([view({ ...CUSTOM_MD, credentials: cred({ status: "ok" }) })],
-           { superuser: false });
+  it("測試連線／清除 token 按鈕在未登入時不呈現", async () => {
+    mockApiWithLogin(
+      [view({ ...CUSTOM_MD, credentials: cred({ status: "ok" }) })]);
     render(<Settings />);
-    await ready("Market Data", { expectSuperUser: false });
+    await ready("Market Data", { expectRole: "normal" });
     const md = within(section("Market Data"));
     expect(md.queryByRole("button", { name: "測試連線" })).not.toBeInTheDocument();
     expect(md.queryByRole("button", { name: "清除 token" })).not.toBeInTheDocument();
   });
 
-  it("輸入正確密鑰後解鎖，Token 輸入框出現，且請求帶著這把密鑰", async () => {
-    setAdminSecret(null);
-    const spy = mockApi([view()], { superuser: true });
+  it("Super User 密碼登入後看得到身分，但仍看不到 credential CRUD", async () => {
+    // AUTH-03 起 credential CRUD 收斂為 Super-Admin-only——Super User
+    // 這一層的正確行為是「看得見自己已登入」但輸入框依然不出現。
+    mockApiWithLogin([view()]);
     render(<Settings />);
-    await ready("Market Data", { expectSuperUser: false });
+    await ready("Market Data", { expectRole: "normal" });
 
-    await userEvent.type(screen.getByLabelText("密鑰"), "correct-secret");
-    await userEvent.click(screen.getByRole("button", { name: "解鎖" }));
+    await userEvent.type(screen.getByLabelText("密碼"), SUPERUSER_PASSWORD);
+    await userEvent.click(screen.getByRole("button", { name: "登入" }));
 
     await waitFor(() =>
-      expect(screen.getByText("目前已解鎖。")).toBeInTheDocument());
+      expect(screen.getByText("目前身分：Super User。")).toBeInTheDocument());
+    const md = within(section("Market Data"));
+    await userEvent.click(md.getByRole("radio", { name: "自訂" }));
+    expect(md.queryByLabelText("API Token")).not.toBeInTheDocument();
+    expect(
+      md.getByText("需要 Super Admin 身份才能設定 API Token"),
+    ).toBeInTheDocument();
+  });
+
+  it("Super Admin 密碼登入後，Token 輸入框出現", async () => {
+    mockApiWithLogin([view()]);
+    render(<Settings />);
+    await ready("Market Data", { expectRole: "normal" });
+
+    await userEvent.type(screen.getByLabelText("密碼"), SUPERADMIN_PASSWORD);
+    await userEvent.click(screen.getByRole("button", { name: "登入" }));
+
+    await waitFor(() =>
+      expect(screen.getByText("目前身分：Super Admin。")).toBeInTheDocument());
     const md = within(section("Market Data"));
     await userEvent.click(md.getByRole("radio", { name: "自訂" }));
     expect(md.getByLabelText("API Token")).toBeInTheDocument();
-
-    const statusCall = spy.mock.calls.find(
-      ([url]) => url === "/api/superuser/status");
-    expect(statusCall).toBeTruthy();
-    const headers = statusCall![1]?.headers as Record<string, string>;
-    expect(headers.Authorization).toBe("Bearer correct-secret");
   });
 
-  it("密鑰錯誤時顯示錯誤、不會誤解鎖，且不留著這把錯的密鑰", async () => {
-    setAdminSecret(null);
-    mockApi([view()], { superuser: false });
+  it("密碼錯誤時顯示錯誤、不會誤登入", async () => {
+    mockApiWithLogin([view()]);
     render(<Settings />);
-    await ready("Market Data", { expectSuperUser: false });
+    await ready("Market Data", { expectRole: "normal" });
 
-    await userEvent.type(screen.getByLabelText("密鑰"), "wrong-secret");
-    await userEvent.click(screen.getByRole("button", { name: "解鎖" }));
+    await userEvent.type(screen.getByLabelText("密碼"), "wrong-password");
+    await userEvent.click(screen.getByRole("button", { name: "登入" }));
 
-    await waitFor(() =>
-      expect(screen.getByText("密鑰不正確")).toBeInTheDocument());
-    expect(screen.queryByText("目前已解鎖。")).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.getByRole("alert")).toBeInTheDocument());
+    expect(screen.queryByText(/目前身分：/)).not.toBeInTheDocument();
   });
 
-  it("鎖回 Normal User 後 Token 輸入框重新消失", async () => {
-    mockApi([view()]);   // beforeEach 已擺好「已解鎖」前置條件
+  it("登出後回到 Normal User，Token 輸入框重新消失", async () => {
+    mockApiWithLogin([view()], { initialRole: "superadmin" });
     render(<Settings />);
     await ready();
 
-    await userEvent.click(
-      screen.getByRole("button", { name: "鎖回 Normal User" }));
+    await userEvent.click(screen.getByRole("button", { name: "登出" }));
 
+    await waitFor(() => expect(screen.getByLabelText("密碼")).toBeInTheDocument());
     const md = within(section("Market Data"));
     await userEvent.click(md.getByRole("radio", { name: "自訂" }));
     expect(md.queryByLabelText("API Token")).not.toBeInTheDocument();
   });
 
-  it("儲存 token 時，credential 端點的請求帶著目前記住的密鑰", async () => {
-    const spy = mockApi([view()]);   // beforeEach 已擺好 "test-secret"
+  it("重新整理頁面（模擬瀏覽器重啟）仍保持登入狀態", async () => {
+    // 持久登入的唯一機制是伺服器簽發的 cookie（`__Host-oc_role`）——
+    // 真正的重新整理會把整個 JS 執行環境（含 `fetchCache` 模組層級
+    // 快取）一起清空，只有伺服器端的 cookie 存活。這裡卸載＋
+    // `_resetCacheForTests()`（清掉快取，模擬「JS 狀態歸零」）＋
+    // 重新掛載，但**保留** `mockApiWithLogin()` 假體本身的 `role`
+    // 狀態（模擬「cookie 沒被清掉」）——第二次掛載必須真的重新打一次
+    // `GET /api/auth/status`、且答案仍是已登入，不需要使用者重新
+    // 輸入密碼。
+    mockApiWithLogin([view(), view()], { initialRole: "superadmin" });
+    const { unmount } = render(<Settings />);
+    await ready();
+    unmount();
+    _resetCacheForTests();
+
     render(<Settings />);
     await ready();
-    const md = within(section("Market Data"));
-    await userEvent.click(md.getByRole("radio", { name: "自訂" }));
-    await userEvent.type(md.getByLabelText("API Token"), "tok-secret-1234");
-    await userEvent.click(md.getByRole("button", { name: "儲存" }));
+  });
 
-    await waitFor(() => {
-      const credCall = spy.mock.calls.find(
-        ([url]) => url === `/api/settings/credentials/${PROVIDER}`);
-      expect(credCall).toBeTruthy();
-      const headers = credCall![1]?.headers as Record<string, string>;
-      expect(headers.Authorization).toBe("Bearer test-secret");
-    });
+  it("密碼絕不寫進 sessionStorage／localStorage（Security considerations）",
+     async () => {
+    mockApiWithLogin([view()]);
+    render(<Settings />);
+    await ready("Market Data", { expectRole: "normal" });
+
+    await userEvent.type(screen.getByLabelText("密碼"), SUPERADMIN_PASSWORD);
+    await userEvent.click(screen.getByRole("button", { name: "登入" }));
+    await waitFor(() =>
+      expect(screen.getByText("目前身分：Super Admin。")).toBeInTheDocument());
+
+    for (let idx = 0; idx < sessionStorage.length; idx += 1) {
+      const key = sessionStorage.key(idx)!;
+      expect(sessionStorage.getItem(key)).not.toContain(SUPERADMIN_PASSWORD);
+    }
+    for (let idx = 0; idx < localStorage.length; idx += 1) {
+      const key = localStorage.key(idx)!;
+      expect(localStorage.getItem(key)).not.toContain(SUPERADMIN_PASSWORD);
+    }
   });
 });
