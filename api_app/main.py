@@ -121,6 +121,22 @@ def _is_owner_exempt_route(path: str) -> bool:
     return any(path.startswith(prefix) for prefix in _OWNER_EXEMPT_PREFIXES)
 
 
+def _the_protected_owner_id(all_owners: list[Owner]) -> str | None:
+    """AUTH-04（#311）「找 protected owner」的**唯一**判斷點——票面
+    Implementation constraints 明文要求不得在多處各自重寫一份判準。
+
+    Fail-closed on ambiguity：0 個或多於 1 個標記 `protected=True` 的
+    owner 一律回 `None`（Historical IV 視為不可用），絕不猜測、絕不
+    挑第一個。PB-03（#295）遷移完成後，正常情況下恰好只有 Owner 自己
+    這一個 protected owner；遷移尚未執行、或未來因某種原因同時存在
+    多個 protected owner（例如手動用 PB-10 的 runtime 旗標又標記了
+    另一個），本函式都誠實回報「不存在單一可信來源」而非挑一個將就。
+    純函式、零 I/O——呼叫端負責提供 `Storage.list_owners()` 的結果，
+    方便獨立單元測試不必真的起一個 app。"""
+    protected = [o.owner_id for o in all_owners if o.protected]
+    return protected[0] if len(protected) == 1 else None
+
+
 # 一輪刷新（T07／#193）的 server 端時間預算——明顯小於 serverless 函式
 # 的硬性時間上限（CONTEXT.md：60 秒），留出寫回與回應序列化的餘裕。
 # 可注入（`create_app()` 既有 DI 慣例）：測試要逼真模擬「預算耗盡→
@@ -2710,16 +2726,21 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
 
     # ---------- Historical IV：快取、漸進補齊、額度（#126／#130） ----------
 
-    def _credential_map() -> dict[str, ProviderCredential | None]:
+    def _credential_map(*, owner: str | None = None
+                        ) -> dict[str, ProviderCredential | None]:
         """一次拿齊全部 Provider 的 credential（PERF-01／#177）——
         `_settings_view()`／`_known_secrets()`／iv-history 端點裡挑選中
         Provider 的 token 取得，原本三處各自對 storage 重新查一次同一批
-        資料，這裡改成算一次、往下傳給需要的地方使用。兩個參數皆為
-        `None` 時的既有呼叫端（Settings 端點等）不受影響——那些端點本來
-        就只呼叫一次，沒有重複讀取的問題，不必跟著改。"""
+        資料，這裡改成算一次、往下傳給需要的地方使用。
+
+        `owner`（AUTH-04／#311）：省略時沿用既有行為（查
+        `identity_resolver()` 解出的這次請求自己的 owner——Settings
+        端點等既有呼叫端不受影響）；`_iv_history_gate()` 是唯一會顯式
+        傳入 protected owner id 的呼叫端，向它借用已驗證的 Historical
+        IV credential。"""
         db = _db()
-        owner = identity_resolver()
-        return {p.id: db.get_credential(p.id, owner=owner)
+        resolved_owner = owner if owner is not None else identity_resolver()
+        return {p.id: db.get_credential(p.id, owner=resolved_owner)
                for p in providers.SUPPORTED_PROVIDERS}
 
     def _known_secrets(*, credentials: dict[str, ProviderCredential | None] | None = None
@@ -2768,7 +2789,15 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         """建立 exact-contract／legacy 兩個 subsystem 各自的 emit closure
         （HIVR-03／#162 既有的兩線分離）。T11（#194）從 `iv_history()`
         內嵌的 `_make_emit` 抽出，供新增的 `/iv-history/backfill` 端點
-        共用同一套 redaction 邏輯，不必各自重寫一份。"""
+        共用同一套 redaction 邏輯，不必各自重寫一份。
+
+        `credentials`（AUTH-04／#311 起）：呼叫端必須傳入**實際流向
+        vendor 呼叫的那份 credential map**——`_iv_history_gate()` 通過
+        角色與 protected owner 檢查後借用的是 protected owner 的
+        token，不是這次請求自己（可能沒有任何 credential）的 owner，
+        redaction 白名單因此也必須基於同一份 map，否則借來的 token
+        萬一意外出現在例外訊息裡（例如 vendor 連線瞬斷）將不會被
+        遮蔽——這是本票 Security considerations 的直接落地。"""
         secrets = _known_secrets(credentials=credentials)
 
         def _make_emit(subsystem: str):
@@ -2784,27 +2813,60 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         return (_make_emit(diagnostics.SUBSYSTEM_EXACT_CONTRACT),
                _make_emit(diagnostics.SUBSYSTEM_LEGACY_REANCHOR))
 
+    # 未達 Super User，或找不到唯一 protected owner，或該 owner 的
+    # Historical IV 尚未啟用——三種情況對外必須逐位元相同（AUTH-04／
+    # #311 AC：Normal User 行為不變、且不得洩漏「哪一種原因」），故
+    # 共用同一句既有訊息，不新增第二種措辭。
+    _HISTORICAL_IV_DISABLED_DETAIL = (
+        "Historical IV 未啟用——請在設定頁選擇自訂資料源並通過測試連線")
+
     def _iv_history_gate(
-            scenario_id: str, candidate_key: str, *,
-            diag: _CollectingDiagnostics, emit_exact: Callable,
-            credentials: dict[str, ProviderCredential | None] | None = None,
+            scenario_id: str, candidate_key: str, *, request: Request,
+            diag: _CollectingDiagnostics,
     ) -> tuple:
         """iv-history 相關端點共用的權限 gate＋candidate 查找（T11／#194
         從 `iv_history()` 抽出，供新增的 `/iv-history/backfill` 端點
         共用——兩個端點面對同一個 scenario_id／candidate_key 因此不會
         給出不一致的答案）。
 
+        AUTH-04（#311）：這個劇本／候選本身仍是**這次請求自己的
+        owner**（`identity_resolver()`）名下的——只有 Historical IV
+        credential／settings 的讀取來源改成借用 protected owner。
+        `_require(scenario_id)` 必須排在角色檢查**之前**，維持既有
+        404（劇本不存在／不屬於自己）優先於 403 的既有順序，Normal
+        User 對不存在的 scenario_id 因此依然先拿到 404，不會因為新增
+        的角色檢查而變成 403。
+
+        角色檢查通過**之前**不觸碰 `list_owners()`／任何 owner 的
+        credential——即使只是「有沒有 protected owner 存在」這種
+        存在性資訊，也不該讓 Normal User 的請求觸發查詢（票面
+        Security considerations）。
+
         candidate 找不到時已經把 diagnostics flush 進 storage 才拋
         404（呼叫端不需要再處理這件事）。回傳
-        `(sc, rec, cand, provider, token, known_expiries)`。
+        `(sc, rec, cand, provider, token, known_expiries, emit_exact,
+        emit_legacy)`。
         """
         sc = _require(scenario_id)
-        creds = credentials if credentials is not None else _credential_map()
-        settings_view = _settings_view(credentials=creds)
+
+        role = superuser.resolve_role(request,
+                                      resolve_session=_db().resolve_role_session)
+        if role < superuser.Role.SUPERUSER:
+            raise HTTPException(status_code=403,
+                                detail=_HISTORICAL_IV_DISABLED_DETAIL)
+
+        protected_owner = _the_protected_owner_id(_db().list_owners())
+        if protected_owner is None:
+            raise HTTPException(status_code=403,
+                                detail=_HISTORICAL_IV_DISABLED_DETAIL)
+
+        creds = _credential_map(owner=protected_owner)
+        emit_exact, emit_legacy = _iv_diagnostics_emitters(
+            diag, credentials=creds)
+        settings_view = _settings_view(credentials=creds, owner=protected_owner)
         if not settings_view["historical_iv_enabled"]:
-            raise HTTPException(
-                status_code=403,
-                detail="Historical IV 未啟用——請在設定頁選擇自訂資料源並通過測試連線")
+            raise HTTPException(status_code=403,
+                                detail=_HISTORICAL_IV_DISABLED_DETAIL)
 
         rec = _db().latest_result(scenario_id, owner=identity_resolver())
         if rec is None:
@@ -2831,7 +2893,8 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
             e for r in rec.view.get("results") or []
             for e, _ in r.get("expiry_counts") or []
         })
-        return sc, rec, cand, provider, token, known_expiries
+        return (sc, rec, cand, provider, token, known_expiries,
+               emit_exact, emit_legacy)
 
     def _iv_pipeline_ports() -> tuple:
         """`ivpipeline` 認得的 Vendor／Storage port 組裝（T11／#194 從
@@ -2868,7 +2931,7 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         return vendor, storage_ports
 
     @app.get("/api/scenarios/{scenario_id}/iv-history")
-    def iv_history(scenario_id: str, candidate_key: str) -> dict:
+    def iv_history(scenario_id: str, candidate_key: str, request: Request) -> dict:
         """候選的 Historical IV 完整回應（Exact-Contract Series 逐腿＋
         Legacy (tenor, delta) Re-anchor Series）。
 
@@ -2883,7 +2946,12 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         共用同一份 Legacy 家族歷史，各自只是投影到自己的座標；
         Exact-Contract 家族則是逐張合約各自快取（HIVT-02／#153）。
 
-        **閘門**：Historical IV 未解鎖時直接 403，一個 vendor 請求都不發。
+        **閘門**（AUTH-04／#311 起）：角色必須至少 Super User，且存在
+        唯一一個 protected owner 且該 owner 的 Historical IV 已啟用，
+        缺一不可；三種未通過的情況一律回同一句既有 403（
+        `_iv_history_gate()`），一個 vendor 請求都不發。這個劇本／
+        候選本身仍是這次請求自己的 owner 名下——只有 credential 來源
+        改為借用 protected owner，見 `_iv_history_gate()` docstring。
 
         T11（#194，兩段式補建 P3-a）：**Legacy 家族的冷 backfill 不再
         同步夾在這個請求裡**——這裡只讀「今天跑過了嗎」（`backfill_
@@ -2901,17 +2969,10 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         的，詳情不夾在回應裡的話，前端得先猜這次的 correlation id 是
         什麼才查得到。
         """
-        # PERF-01（#177）：這個 request 內 credential 只查一次，往下傳給
-        # `_iv_diagnostics_emitters()`／`_iv_history_gate()` 共用——原本
-        # 各自重新查一次同一批資料。
-        credentials = _credential_map()
         diag = _CollectingDiagnostics()
-        emit_exact, emit_legacy = _iv_diagnostics_emitters(
-            diag, credentials=credentials)
         gate = _iv_history_gate(scenario_id, candidate_key,
-                                diag=diag, emit_exact=emit_exact,
-                                credentials=credentials)
-        sc, rec, cand, provider, token, known_expiries = gate
+                                request=request, diag=diag)
+        sc, rec, cand, provider, token, known_expiries, emit_exact, emit_legacy = gate
 
         vendor, storage_ports = _iv_pipeline_ports()
         payload = ivpipeline.build_iv_history(
@@ -2925,7 +2986,8 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         return {**payload, "diagnostics": diag_payload}
 
     @app.post("/api/scenarios/{scenario_id}/iv-history/backfill")
-    def iv_history_backfill(scenario_id: str, candidate_key: str) -> dict:
+    def iv_history_backfill(scenario_id: str, candidate_key: str,
+                            request: Request) -> dict:
         """T11（#194，兩段式補建 P3-a）：Legacy (tenor, delta) 家族的
         獨立補建進入點——`GET .../iv-history` 不再同步觸發這件事（見
         該端點回應裡的 `backfill_pending`），前端在收到 `backfill_
@@ -2939,17 +3001,15 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         vendor 額度，這個保證在引擎層、不是靠這裡另外擋一次。
 
         閘門與 candidate 查找跟主端點共用同一套規則（`_iv_history_
-        gate()`）——未解鎖一樣 403、候選找不到一樣 404，兩個端點面對
-        同一個 scenario_id／candidate_key 不會給出不一致的答案。
+        gate()`）——AUTH-04（#311）起同樣要求角色至少 Super User＋
+        存在唯一 protected owner 且已啟用，未過一樣 403、候選找不到
+        一樣 404，兩個端點面對同一個 scenario_id／candidate_key 不會
+        給出不一致的答案。
         """
-        credentials = _credential_map()
         diag = _CollectingDiagnostics()
-        emit_exact, emit_legacy = _iv_diagnostics_emitters(
-            diag, credentials=credentials)
         gate = _iv_history_gate(scenario_id, candidate_key,
-                                diag=diag, emit_exact=emit_exact,
-                                credentials=credentials)
-        sc, rec, cand, provider, token, known_expiries = gate
+                                request=request, diag=diag)
+        sc, rec, cand, provider, token, known_expiries, emit_exact, emit_legacy = gate
 
         vendor, storage_ports = _iv_pipeline_ports()
         target_expirations = ivpipeline.legacy_target_expirations(
@@ -2964,8 +3024,8 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
 
     # ---------- 設定：資料源與 Provider credential（Settings／#124） ----------
 
-    def _settings_view(*, credentials: dict[str, ProviderCredential | None] | None = None
-                       ) -> dict:
+    def _settings_view(*, credentials: dict[str, ProviderCredential | None] | None = None,
+                       owner: str | None = None) -> dict:
         """設定頁的完整 view dict。
 
         **這裡是 token 的邊界**：回應只帶 `providers.mask_token()` 的遮罩
@@ -2979,21 +3039,25 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         （`_credential_map()`），行為不變——只有 `credential` 這批資料
         會被重用，`get_verification()` 仍然照舊逐一查（沒有重複讀取的
         問題，`_known_secrets()` 不需要驗證結果）。
-        """
+
+        `owner`（AUTH-04／#311）：同 `_credential_map()`——省略時查
+        `identity_resolver()`，`_iv_history_gate()` 才會顯式傳入
+        protected owner id。"""
         db = _db()
-        owner = identity_resolver()
-        stored = db.get_settings(owner=owner)
+        resolved_owner = owner if owner is not None else identity_resolver()
+        stored = db.get_settings(owner=resolved_owner)
         usages = {
             providers.MARKET_DATA:
                 stored.market_data if stored else UsageSetting(mode=providers.MODE_DEFAULT),
             providers.HISTORICAL_IV:
                 stored.historical_iv if stored else UsageSetting(mode=providers.MODE_DEFAULT),
         }
-        creds_map = credentials if credentials is not None else _credential_map()
+        creds_map = (credentials if credentials is not None
+                    else _credential_map(owner=resolved_owner))
         creds: dict[str, dict] = {}
         for p in providers.SUPPORTED_PROVIDERS:
             got = creds_map[p.id]
-            checked = db.get_verification(p.id, owner=owner)
+            checked = db.get_verification(p.id, owner=resolved_owner)
             creds[p.id] = {
                 "configured": got is not None,
                 "masked": providers.mask_token(got.token) if got else None,

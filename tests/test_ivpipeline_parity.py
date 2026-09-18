@@ -25,6 +25,7 @@ from option_chaser.dividends import DividendHistory, DividendRecord
 from option_chaser.ivhistory import SurfacePoint
 from option_chaser.ratecurve import RateCurve
 from option_chaser.valuation import DAYS_PER_YEAR, american_price, days_between
+from tests._protected_owner import ensure_protected_owner
 from tests._role_session import superadmin_cookies
 
 FIX = "tests/fixtures/xyz_v4_six_expiries.json"
@@ -166,6 +167,12 @@ class FakeIvStorage:
 
 
 def _client(db, *, contract_history):
+    # AUTH-04（#311）：見 `test_api_iv_history.py::_client()` 同一句
+    # 註解——這裡固定用 "solo" 覆寫身份解析，直接把它標記成唯一的
+    # protected owner，讓 iv-history 端點在這份 parity 測試裡維持
+    # 原本「能正常回傳資料」的既有前提，不受角色／protected-owner
+    # 這道新閘門影響。
+    ensure_protected_owner(db, "solo")
     return TestClient(create_app(identity_resolver=lambda: "solo",
         storage=db, fetch=lambda s: _snap(), rate_loader=_rate_loader,
         dividend_loader=_dividend_loader,
