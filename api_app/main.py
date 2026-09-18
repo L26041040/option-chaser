@@ -2025,7 +2025,7 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
     # ---------- 劇本 ----------
 
     @app.post("/api/scenarios", status_code=201)
-    def create_scenario(req: CreateScenarioRequest) -> dict:
+    def create_scenario(req: CreateScenarioRequest, request: Request) -> dict:
         try:
             # 月級驗證（既有規則）：目標月已過完就拒絕——生下來就過期的
             # 劇本不該存在；當月仍允許。
@@ -2040,8 +2040,15 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         # 沿用既有 `ScenarioExists` 409＋純字串 detail 的既有慣例，不是
         # 刷新失敗那種 `{stage, message}` 分層格式——這裡是建立失敗，
         # 不是刷新失敗。
+        #
+        # AUTH-05（#312）：Super User／Super Admin 豁免這道額度——判斷點
+        # 就緊鄰這個既有檢查本身，不與任何其他角色豁免共用判斷式或工具
+        # 函式（票面明確警告：絕不得意外波及 `vendor_fuse.tripped()`，
+        # 那條檢查對三層角色一視同仁，PB-06 既有決策維持不變）。
         owner = identity_resolver()
-        if _effective_max_active_scenarios > 0:
+        role = superuser.resolve_role(request,
+                                      resolve_session=_db().resolve_role_session)
+        if role < superuser.Role.SUPERUSER and _effective_max_active_scenarios > 0:
             active_count = len(_db().list_scenarios(owner=owner))
             if active_count >= _effective_max_active_scenarios:
                 raise HTTPException(
@@ -2223,7 +2230,8 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         return Response(status_code=204)
 
     def _refresh_and_save(sc: Scenario, today: date, *,
-                          snap: ChainSnapshot | None) -> dict:
+                          snap: ChainSnapshot | None,
+                          role: superuser.Role = superuser.Role.NORMAL) -> dict:
         """一個劇本的刷新→入庫，`refresh_scenario`／`refresh_run`
         共用的核心（T06／#190 從前者抽出，理由是批次端點需要同一套
         過期短路與落地邏輯，不能各寫一份）。
@@ -2255,12 +2263,24 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         scenario 仍然完全不使用它，保證「這個 scenario 在窗內不會被
         新抓到的資料更新」是無條件成立的事實，不會因為它剛好與哪個
         劇本共用 symbol 而變得不可預期。
+
+        `role`（AUTH-05／#312）：Super User／Super Admin 豁免這道節流
+        ——判斷點就緊鄰下面這個既有檢查本身，**這裡是本站唯一的節流
+        豁免判斷點**（`refresh_run` 用來決定要不要為整組先抓一份共用
+        Chain 的 `_sc_throttled()` 刻意不接觸角色：那只是一個「值不值得
+        先抓」的效率預判，即使它誤判某個被豁免的劇本仍「像是」在窗內、
+        因此沒有先抓共用 Chain，這裡的 `_analyze(snap=None)` 依然會
+        替它獨立補抓一次——效率上略有損耗，正確性不受影響）。**絕不得
+        與 `vendor_fuse.tripped()`（`_fetch_chain()` 內，對三層角色
+        一視同仁）共用任何判斷點或工具函式**——PB-06 那條決策本票不動。
+        預設 `Role.NORMAL`：忘記傳 `role` 的呼叫端得到既有（未豁免）
+        行為，不會意外把新增的呼叫端也豁免掉。
         """
         if month_is_over(TargetMonth.from_key(sc.target_month), today):
             latest = _db().latest_result(sc.id, owner=identity_resolver())
             return _row_json(sc, today, **_summary_of(latest))
         latest_for_throttle = _db().latest_result(sc.id, owner=identity_resolver())
-        if _refresh_throttled(
+        if role < superuser.Role.SUPERUSER and _refresh_throttled(
                 latest_for_throttle.analyzed_at if latest_for_throttle else None,
                 _effective_refresh_min_interval_minutes):
             return _row_json(sc, today, **_summary_of(latest_for_throttle))
@@ -2366,7 +2386,8 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
                          spot=store.spot(view), family_eligibility=family_elig)
 
     @app.post("/api/scenarios/{scenario_id}/refresh")
-    def refresh_scenario(scenario_id: str, manual: bool = False) -> dict:
+    def refresh_scenario(scenario_id: str, request: Request,
+                         manual: bool = False) -> dict:
         """單劇本刷新（V4／#52）：抓鏈→分析→結果與原始快照入庫。
 
         回傳的是**卡片列**而非整份 view：客戶端要依序刷新 N 個劇本、
@@ -2397,10 +2418,12 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
             raise _fail("archived", 409, f"劇本已在垃圾桶，不再刷新：{scenario_id}")
         if manual:
             _touch_activity(identity_resolver())
-        return _refresh_and_save(sc, ny_today(), snap=None)
+        role = superuser.resolve_role(request,
+                                      resolve_session=_db().resolve_role_session)
+        return _refresh_and_save(sc, ny_today(), snap=None, role=role)
 
     @app.post("/api/scenarios/refresh-run")
-    def refresh_run(body: RefreshRunRequest) -> dict:
+    def refresh_run(body: RefreshRunRequest, request: Request) -> dict:
         """一輪刷新（E1／#190，T06；Continuation／T07／#193）：批次版的
         `refresh_scenario`。
 
@@ -2462,6 +2485,12 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         """
         today = ny_today()
         owner = identity_resolver()
+        # AUTH-05（#312）：整個 Run 只屬於這一個發請求者，角色因此也
+        # 只需要解析一次，往下傳給每一個 `_refresh_and_save()` 呼叫
+        # （不在迴圈裡逐劇本重新解析——避免每個劇本各自查一次 role
+        # session，同一次請求內角色不會變）。
+        role = superuser.resolve_role(request,
+                                      resolve_session=_db().resolve_role_session)
         if body.manual:
             # PB-08（#300）：整個 Run 只屬於這一個 owner（下方全部
             # scenario 查詢皆限定在同一個 `owner`），因此一次呼叫只
@@ -2549,7 +2578,7 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
                                     **detail})
                 else:
                     try:
-                        row = _refresh_and_save(sc, today, snap=snap)
+                        row = _refresh_and_save(sc, today, snap=snap, role=role)
                     except HTTPException as e:
                         detail = e.detail if isinstance(e.detail, dict) else {}
                         results.append({"scenario_id": sc.id, "ok": False,
