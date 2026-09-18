@@ -11,14 +11,15 @@ PB-02 的 cookie middleware 會自動幫他建立一個新 owner 並簽發 cooki
 既有不變量：cookie token 與 owner_id 是分開儲存的兩個值），要換成
 owner_id 有兩種方式：
 
-1. 呼叫 `GET /api/ops/metrics`（帶 `ADMIN_SECRET`，PB-09／#298 起取代
-   舊的 `OPS_SECRET`）目前不回報 per-owner id；最直接的方式是在有
-   資料庫連線的環境跑
+1. 呼叫 `GET /api/ops/metrics`（帶有效的 Super Admin role session
+   ——`POST /api/auth/login` 用 `SUPERADMIN_PASSWORD` 登入，
+   AUTH-03／#310 起取代已退役的 `ADMIN_SECRET`）目前不回報
+   per-owner id；最直接的方式是在有資料庫連線的環境跑
    `python -c "from api_app.storage.postgres import PostgresStorage;
    import os; db = PostgresStorage(os.environ['DATABASE_URL']);
    print(db.resolve_owner_by_token('<剛剛複製的 cookie 值>'))"`。
-2. 或由 PB-10（Super User 管理面）上線後，透過那個介面直接查表列出
-   最近建立的 owner。本票之前只能走方式 1。
+2. 或由 PB-10（Super Admin 管理面）上線後，透過那個介面直接查表列出
+   最近建立的 owner。
 
 拿到 owner_id 之後才能執行這支腳本。
 

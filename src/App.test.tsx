@@ -1911,10 +1911,11 @@ describe("PB-12（#302）：全站常駐頁尾＋首頁 Beta 說明＋隱私頁�
       if (String(url).startsWith("/api/diagnostics")) {
         return { ok: true, status: 200, json: async () => [] };
       }
+      if (String(url).startsWith("/api/auth/status")) {
+        return { ok: true, status: 200, json: async () => ({ role: "normal" }) };
+      }
       if (String(url).startsWith("/api/superuser/")) {
-        return { ok: true, status: 200,
-                 json: async () => (url.includes("status")
-                   ? { is_superuser: false } : []) };
+        return { ok: true, status: 200, json: async () => [] };
       }
       if (String(url).startsWith("/api/settings")) {
         return {

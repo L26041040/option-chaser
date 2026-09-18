@@ -28,6 +28,8 @@ from option_chaser.valuation import (DAYS_PER_YEAR, american_price,
                                      days_between)
 from api_app.clock import ny_today
 from api_app import main as api_main
+from tests._protected_owner import ensure_protected_owner
+from tests._role_session import superadmin_cookies
 
 FIX = "tests/fixtures/xyz_v4_six_expiries.json"
 
@@ -58,11 +60,10 @@ def _frozen_clock(monkeypatch):
                         lambda: FROZEN_TODAY)
 PROVIDER = providers.MARKETDATA_APP.id
 TOKEN = "mdapp_live_SECRET1234abcd"
-# PB-09（#298）：credential 三個寫入端點（`_unlock()` 會呼叫其中兩個）
-# gate 在 Super User——本檔案測的是 Historical IV 閘門本身，不是軸二
-# 守門，固定帶一把有效 `ADMIN_SECRET`（同 `test_api_settings.py` 的
-# 理由）。
-ADMIN_SECRET = "test-admin-secret"
+# PB-09／AUTH-03（#298／#310）：credential 三個寫入端點（`_unlock()`
+# 會呼叫其中兩個）gate 在 Super Admin——本檔案測的是 Historical IV
+# 閘門本身，不是軸二守門，固定帶一顆有效的 Super Admin role session
+# cookie（同 `test_api_settings.py` 的理由）。
 
 _RATE = RateCurve(curve_date="2026-07-31",
                   nodes=((0.5, 0.041), (1.0, 0.042), (2.0, 0.043), (3.0, 0.044)))
@@ -174,13 +175,23 @@ def _contract_history_empty(provider, occ_symbol, from_date, to_date, token,
 
 def _client(db, *, surface=_surface_never_called,
            contract_history=_contract_history_empty):
+    # AUTH-04（#311）：`_iv_history_gate()` 起，Historical IV 的
+    # credential／settings 來源改成借用唯一的 protected owner——這個
+    # 檔案固定用 `identity_resolver=lambda: "solo"` 繞過 PB-02 的
+    # cookie／owner 表建立流程，`owners` 表原本一列都沒有。這裡的
+    # 全部既有測試測的是 iv-history 端點本身的行為（快取、backfill、
+    # 診斷、閘門的既有三態），與 AUTH-04 的角色／protected-owner 邊界
+    # 情況無關（那批新測試獨立在 `test_auth04_historical_iv_gate.py`），
+    # 因此把 "solo" 直接標記成 protected owner，維持既有斷言的意圖不變
+    # ——同一個 owner 既是發請求者、也是被借用 credential 的那個。
+    ensure_protected_owner(db, "solo")
     return TestClient(create_app(identity_resolver=lambda: "solo",
         storage=db, fetch=lambda s: _snap(), rate_loader=_rate_loader,
         dividend_loader=_dividend_loader,
         verify_provider=lambda p, t: providers.VerifyOutcome(True),
         historical_surface=surface, contract_history=contract_history,
-        rate_curve_rows=_rate_curve_rows, admin_secret=ADMIN_SECRET),
-        headers={"Authorization": f"Bearer {ADMIN_SECRET}"})
+        rate_curve_rows=_rate_curve_rows),
+        cookies=superadmin_cookies(db))
 
 
 @pytest.fixture
@@ -271,8 +282,8 @@ def test_a_failed_verification_keeps_the_module_locked(db):
         storage=db, fetch=lambda s: _snap(), rate_loader=_rate_loader,
         dividend_loader=_dividend_loader,
         verify_provider=lambda p, t: providers.VerifyOutcome(False, "認證被拒"),
-        historical_surface=_surface_never_called, admin_secret=ADMIN_SECRET),
-        headers={"Authorization": f"Bearer {ADMIN_SECRET}"})
+        historical_surface=_surface_never_called),
+        cookies=superadmin_cookies(db))
     _unlock(client, verified=True)
     assert client.get("/api/settings").json()["historical_iv_enabled"] is False
 

@@ -25,14 +25,15 @@ from option_chaser.dividends import DividendHistory, DividendRecord
 from option_chaser.ivhistory import SurfacePoint
 from option_chaser.ratecurve import RateCurve
 from option_chaser.valuation import DAYS_PER_YEAR, american_price, days_between
+from tests._protected_owner import ensure_protected_owner
+from tests._role_session import superadmin_cookies
 
 FIX = "tests/fixtures/xyz_v4_six_expiries.json"
 PROVIDER = providers.MARKETDATA_APP.id
 TOKEN = "mdapp_live_SECRET1234abcd"
-# PB-09（#298）：credential 寫入端點 gate 在 Super User（`_unlock()`
-# 會呼叫）——本檔案測的是 parity，不是軸二守門，固定帶一把有效
-# `ADMIN_SECRET`。
-ADMIN_SECRET = "test-admin-secret"
+# PB-09／AUTH-03（#298／#310）：credential 寫入端點 gate 在 Super
+# Admin（`_unlock()` 會呼叫）——本檔案測的是 parity，不是軸二守門，
+# 固定帶一顆有效的 Super Admin role session cookie。
 
 _RATE = RateCurve(curve_date="2026-07-31",
                   nodes=((0.5, 0.041), (1.0, 0.042), (2.0, 0.043), (3.0, 0.044)))
@@ -166,13 +167,19 @@ class FakeIvStorage:
 
 
 def _client(db, *, contract_history):
+    # AUTH-04（#311）：見 `test_api_iv_history.py::_client()` 同一句
+    # 註解——這裡固定用 "solo" 覆寫身份解析，直接把它標記成唯一的
+    # protected owner，讓 iv-history 端點在這份 parity 測試裡維持
+    # 原本「能正常回傳資料」的既有前提，不受角色／protected-owner
+    # 這道新閘門影響。
+    ensure_protected_owner(db, "solo")
     return TestClient(create_app(identity_resolver=lambda: "solo",
         storage=db, fetch=lambda s: _snap(), rate_loader=_rate_loader,
         dividend_loader=_dividend_loader,
         verify_provider=lambda p, t: providers.VerifyOutcome(True),
         historical_surface=_rich_surface, contract_history=contract_history,
-        rate_curve_rows=_rate_curve_rows_2arg, admin_secret=ADMIN_SECRET),
-        headers={"Authorization": f"Bearer {ADMIN_SECRET}"})
+        rate_curve_rows=_rate_curve_rows_2arg),
+        cookies=superadmin_cookies(db))
 
 
 def _unlock(client):

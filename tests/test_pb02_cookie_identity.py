@@ -125,21 +125,24 @@ def test_cron_endpoint_does_not_create_an_owner_even_when_unauthorized():
 
 def test_ops_endpoint_does_not_create_an_owner_even_when_unauthorized():
     c, storage = _client()
-    # PB-09（#298）起這個端點改由 Super User capability（`ADMIN_SECRET`，
-    # 軸二）把關，取代原本的 `OPS_SECRET`——測試本身不變：沒帶憑證一律
-    # 401，重點是「連 401 之前也不該先幫它建一個 owner」。
+    # 這個端點由 Super Admin capability（軸二，AUTH-03／#310 起
+    # `require_role(minimum=SUPERADMIN)`，取代已退役的
+    # `ADMIN_SECRET`／更早的 `OPS_SECRET`）把關——測試本身不變：沒帶
+    # 憑證一律 401，重點是「連 401 之前也不該先幫它建一個 owner」。
     c.get("/api/ops/metrics")
     assert storage.list_owners() == []
 
 
-def test_superuser_status_endpoint_does_not_create_an_owner():
-    """PB-09（#298）新增端點——即使它本身永遠 200（查自己是不是 Super
-    User 不該需要先被判定為 Super User），也不該幫沒有 cookie 的呼叫端
-    先建立一個 owner。"""
+def test_auth_status_endpoint_does_not_create_an_owner():
+    """AUTH-02（#309）新增端點，AUTH-03（#310）起是查詢角色的唯一
+    正式管道（舊 `GET /api/superuser/status` 已隨 `ADMIN_SECRET`
+    整組退役）——即使它本身永遠 200（查自己現在算 normal／superuser／
+    superadmin 不該需要先被判定為某個角色），也不該幫沒有 cookie 的
+    呼叫端先建立一個 owner。"""
     c, storage = _client()
-    r = c.get("/api/superuser/status")
+    r = c.get("/api/auth/status")
     assert r.status_code == 200
-    assert r.json() == {"is_superuser": False}
+    assert r.json() == {"role": "normal"}
     assert storage.list_owners() == []
 
 

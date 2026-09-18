@@ -15,9 +15,9 @@ from . import (BrowserIdentity, ChainBackoffEntry, ContractHistory,
                DataSourceSettings, DividendCacheEntry, IvBackfillRun,
                IvObservation, MetricEntry, NarrowHistoryEntry, Owner,
                ProviderCredential, ProviderVerification, RateCacheEntry,
-               ResultFactContext, ResultRecord, ResultSummary, Scenario,
-               ScenarioExists, SuperUserAuditEvent, TreasuryYearCacheEntry,
-               require_owner)
+               ResultFactContext, ResultRecord, ResultSummary, RoleSession,
+               Scenario, ScenarioExists, SuperUserAuditEvent,
+               TreasuryYearCacheEntry, require_owner)
 from ..diagnostics import RETENTION_LIMIT, DiagnosticEvent
 from ..identity import SOLO_OWNER
 from ..metrics import retention_cutoff
@@ -50,6 +50,10 @@ class MemoryStorage:
         # `BrowserIdentity` docstring）。
         self._owners: dict[str, Owner] = {}
         self._browser_identities: dict[str, BrowserIdentity] = {}
+        # AUTH-01（#308，三層角色模型）：與 owner registry／browser
+        # identity 刻意獨立的第三張表——鍵是 role-session token，值不含
+        # 任何 owner_id 關聯（軸一／軸二正交）。
+        self._role_sessions: dict[str, RoleSession] = {}
         # PB-10（#301）：append-only、**無** `maxlen`——與
         # `self._diagnostics` 刻意不同的保留政策，見
         # `SuperUserAuditEvent` docstring。
@@ -499,6 +503,25 @@ class MemoryStorage:
 
     def list_owners(self) -> list[Owner]:
         return list(self._owners.values())
+
+    # ---------- Role session（AUTH-01／#308，三層角色模型） ----------
+
+    def create_role_session(self, session: RoleSession) -> None:
+        self._role_sessions[session.token] = session
+
+    def resolve_role_session(self, token: str) -> RoleSession | None:
+        session = self._role_sessions.get(token)
+        if session is None or session.revoked_at is not None:
+            return None
+        return session
+
+    def revoke_role_session(self, token: str, *, now: str) -> bool:
+        session = self._role_sessions.get(token)
+        if session is None or session.revoked_at is not None:
+            return False
+        self._role_sessions[token] = dataclasses.replace(
+            session, revoked_at=now)
+        return True
 
     # ---------- Super User audit trail（PB-10／#301） ----------
 

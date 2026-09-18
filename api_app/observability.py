@@ -38,9 +38,13 @@ _STRIPPED_HEADERS = frozenset({"cookie", "authorization"})
 # 已知固定 secret 的環境變數名稱——與 `main.py::_known_secrets()`
 # （診斷用途，含目前設定的 provider token，request-scoped）刻意分開：
 # 這裡沒有 request 可讀，只掃得到 process 環境變數層級的固定值。
-# `ADMIN_SECRET` 尚未在本輪其餘票之前存在，先列進來不影響行為（讀不到
-# 就是空字串，被下面的 `if v` 濾掉）。
-_SECRET_ENV_VARS = ("CRON_SECRET", "OPS_SECRET", "ADMIN_SECRET")
+# `OPS_SECRET`／`ADMIN_SECRET` 已隨舊機制退役（PB-09→AUTH-03），不再
+# 被任何程式碼讀取，但仍留在這裡當防禦性冗餘——Owner 若還沒清掉這兩個
+# 環境變數，一旦它們的值意外出現在例外文字裡照樣會被遮蔽（讀不到就是
+# 空字串，被下面的 `if v` 濾掉，不影響行為）。`SUPERUSER_PASSWORD`／
+# `SUPERADMIN_PASSWORD`（AUTH-02／#309）才是現行真正在用的軸二密碼。
+_SECRET_ENV_VARS = ("CRON_SECRET", "OPS_SECRET", "ADMIN_SECRET",
+                   "SUPERUSER_PASSWORD", "SUPERADMIN_PASSWORD")
 
 
 def known_env_secrets() -> tuple[str, ...]:

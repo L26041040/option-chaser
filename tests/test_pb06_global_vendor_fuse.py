@@ -29,16 +29,16 @@ from api_app.storage import (DataSourceSettings, ProviderCredential,
 from api_app.storage.memory import MemoryStorage
 from option_chaser.data.snapshot import load_snapshot
 from option_chaser.models import FetchError
+from tests._role_session import role_cookies
 
 FIX = "tests/fixtures/xyz_v4_six_expiries.json"
 NEW = {"symbol": "XYZ", "target_price": 130.0, "target_month": "2026-09",
        "strategies": ["vertical-spread"]}
-ADMIN_SECRET = "test-admin-secret"
-ADMIN_AUTH = {"Authorization": f"Bearer {ADMIN_SECRET}"}
 
 
 def _client(*, storage=None, global_vendor_daily_budget=None,
-           headers=None, **overrides):
+           role=None, **overrides):
+    storage = storage or MemoryStorage()
     base_snap = load_snapshot(FIX)
 
     def _fetch(symbol: str):
@@ -47,12 +47,13 @@ def _client(*, storage=None, global_vendor_daily_budget=None,
         # 雖然不測節流，但沿用同一份 helper 慣例維持一致性。
         return dataclasses.replace(base_snap, fetched_at=now_utc_iso())
 
+    cookies = role_cookies(storage, role) if role else None
     return TestClient(create_app(
         identity_resolver=lambda: "solo", fetch=_fetch,
-        storage=storage or MemoryStorage(), admin_secret=ADMIN_SECRET,
+        storage=storage,
         global_vendor_daily_budget=global_vendor_daily_budget,
         **overrides),
-        headers=headers or {})
+        cookies=cookies)
 
 
 def _create(client, **overrides):
@@ -205,11 +206,9 @@ def test_operational_metrics_still_has_no_owner_dimension(monkeypatch):
 
     storage = MemoryStorage()
     c1_app = create_app(identity_resolver=lambda: "owner-a",
-                        storage=storage, admin_secret=ADMIN_SECRET,
-                        global_vendor_daily_budget=0)
+                        storage=storage, global_vendor_daily_budget=0)
     c2_app = create_app(identity_resolver=lambda: "owner-b",
-                        storage=storage, admin_secret=ADMIN_SECRET,
-                        global_vendor_daily_budget=0)
+                        storage=storage, global_vendor_daily_budget=0)
     ca, cb = TestClient(c1_app), TestClient(c2_app)
     sc_a = _create(ca, symbol="ABC")
     sc_b = _create(cb, symbol="DEF")
@@ -269,24 +268,30 @@ def test_when_only_chain_backoff_is_tripped_and_the_fuse_is_not_the_existing_cla
 
     c = TestClient(create_app(
         identity_resolver=lambda: "solo", fetch=_raise_fetch_error,
-        storage=storage, admin_secret=ADMIN_SECRET,
-        global_vendor_daily_budget=0))
+        storage=storage, global_vendor_daily_budget=0))
     sc = _create(c)
     r = c.post(f"/api/scenarios/{sc['id']}/refresh")
     assert r.status_code == 429
     assert r.json()["detail"]["stage"] == "rate_limited"
 
 
-# ---------- 5. Super User 不豁免 ----------
+# ---------- 5. Super Admin 不豁免 ----------
 
 
-def test_super_user_is_not_exempt_from_the_fuse_when_using_the_product():
+def test_super_admin_is_not_exempt_from_the_fuse_when_using_the_product():
+    """PB-06 原文測的是當時唯一的「elevated tier」（PB-09 的 Super
+    User）——三層角色模型上線後，那一層在字面上對應到今天的 Super
+    Admin（`ADMIN_SECRET` 唯一的正式後繼者），機制換成 role session
+    cookie，斷言意圖不變：Global Vendor Fuse 對這一層依然套用。
+    Super User 層級的豁免範圍（Scenario quota／refresh 節流）與這裡
+    無關，屬 AUTH-05（#312）的範圍，不在本票補測。"""
     storage = MemoryStorage()
     _seed_today_count(storage, 10)
     c = _client(storage=storage, global_vendor_daily_budget=10,
-               headers=ADMIN_AUTH)
-    # 先確認這個 client 真的是 Super User——不是誤用一把打不開的密鑰。
-    assert c.get("/api/superuser/status").json() == {"is_superuser": True}
+               role="superadmin")
+    # 先確認這個 client 真的是 Super Admin——不是誤用一把打不開的
+    # session。
+    assert c.get("/api/auth/status").json() == {"role": "superadmin"}
 
     sc = _create(c)
     r = c.post(f"/api/scenarios/{sc['id']}/refresh")
@@ -318,7 +323,7 @@ def test_the_fuse_blocks_even_a_configured_custom_provider_before_it_is_ever_cal
         identity_resolver=lambda: "solo",
         fetch=lambda symbol: load_snapshot(FIX),
         custom_fetch=_custom_fetch, storage=storage,
-        admin_secret=ADMIN_SECRET, global_vendor_daily_budget=10))
+        global_vendor_daily_budget=10))
     sc = _create(c)
     r = c.post(f"/api/scenarios/{sc['id']}/refresh")
     assert r.status_code == 429

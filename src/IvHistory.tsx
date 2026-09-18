@@ -76,9 +76,11 @@ import {
   type IvHistoryView,
 } from "./api";
 import { CopyDiagnosticButton, DiagnosticEventFieldList } from "./DiagnosticDetail";
-import { getIvHistoryCached, getSettingsCached, invalidateIvHistoryCache } from "./fetchCache";
+import { getAuthStatusCached, getIvHistoryCached, getSettingsCached,
+        invalidateIvHistoryCache } from "./fetchCache";
 import IvTrend, { zscoreCaption } from "./IvTrend";
 import { nearestIndexForClientX, type ChartPoint } from "./ivHistoryChart";
+import { roleAtLeast, type Role } from "./superuser";
 
 /**
  * 今天的 backfill 遇到什麼——一行附加說明，**不取代**下面的 percentile。
@@ -349,6 +351,12 @@ export default function IvHistory({ scenarioId, candidate, analyzedAt = null }: 
   analyzedAt?: string | null;
 }) {
   const [enabled, setEnabled] = useState<boolean | null>(null);
+  // AUTH-06（#313）：角色 >= Super User 才顯示這塊——疊加在既有
+  // `enabled`（後端 `historical_iv_enabled`）／`supportsIvHistory`
+  // 兩道既有閘門之上，三者都要通過才會發請求或渲染卡片，見下方兩處
+  // 早退判斷。`null`＝還沒查完，跟 `enabled` 的預設值同一種語意
+  // （查完之前一律當成沒過）。
+  const [role, setRole] = useState<Role | null>(null);
   const [data, setData] = useState<IvHistoryView | null>(null);
   // 這份 `data` 是哪一個候選的——切候選時 `key` 立刻變了，但新結果要
   // 等 fetch 回來才會覆蓋，這段空窗期 `dataKey !== key`，畫面據此知道
@@ -407,8 +415,27 @@ export default function IvHistory({ scenarioId, candidate, analyzedAt = null }: 
     };
   }, []);
 
+  // AUTH-06（#313）：獨立於上面 `enabled` 效果之外——角色與後端
+  // `historical_iv_enabled` 是兩件互不相關的事（前者是軸二，後者是
+  // AUTH-04 的 protected-owner credential 借用），各自查各自的、不
+  // 合併成同一個判斷式。同一套快取模式，跟 `RoleLogin` 共用同一份
+  // 結果，不各自 mount 各抓一次。
   useEffect(() => {
-    if (enabled !== true || !key || !supportsIvHistory) return;
+    let alive = true;
+    const { promise, release } = getAuthStatusCached();
+    promise
+      .then((s) => alive && setRole(s.role))
+      .catch(() => alive && setRole("normal"));
+    return () => {
+      alive = false;
+      release();
+    };
+  }, []);
+
+  const roleReady = role !== null && roleAtLeast(role, "superuser");
+
+  useEffect(() => {
+    if (enabled !== true || !roleReady || !key || !supportsIvHistory) return;
     let alive = true;
     // 每次重新嘗試（換候選、或新分析完成後同一個候選要跟著問一次）都
     // 先清掉上一輪的錯誤——這次嘗試還沒有結論，不該讓使用者看到跟這次
@@ -435,7 +462,7 @@ export default function IvHistory({ scenarioId, candidate, analyzedAt = null }: 
     // `backfillTick` 刻意列進相依陣列：補建完成後靠它讓這個 effect 重新
     // 跑一次，拿到補建後的新資料（配合下面那個 effect 先 invalidate 掉
     // 舊快取，這裡才會真的重抓而不是繼續吃快取裡那份 `backfill_pending`）。
-  }, [enabled, key, scenarioId, analyzedAt, backfillTick]);
+  }, [enabled, roleReady, key, scenarioId, analyzedAt, backfillTick]);
 
   // T11（#194，兩段式補建 P3-a）：`GET .../iv-history` 回的
   // `backfill_pending` 說「Legacy 家族今天還沒補過一批」——這裡另外
@@ -477,13 +504,15 @@ export default function IvHistory({ scenarioId, candidate, analyzedAt = null }: 
     };
   }, [data, dataKey, key, scenarioId, analyzedAt]);
 
-  // 鎖著、還沒問完、這個候選根本沒有身份鍵、或這個候選不是單腿
+  // 鎖著、還沒問完、角色未達 Super User（AUTH-06／#313，疊加在既有
+  // 閘門之上）、這個候選根本沒有身份鍵、或這個候選不是單腿
   // （Vertical／Butterfly，見上方 `supportsIvHistory` 註解）
   // → 不輸出任何節點（#126 AC——這條紅線原封不動，跟下面「卡片
   // 固定版位」是兩件事：鎖著時連卡片外框都不該出現）。`!candidate` 這條
   // 分支實務上不會單獨發生（`key` 已經蘊含 `candidate` 存在），寫出來
   // 純粹是讓 TS 把下面的 `candidate.legs` 收窄成非 null。
-  if (enabled !== true || !key || !candidate || !supportsIvHistory) return null;
+  if (enabled !== true || !roleReady || !key || !candidate || !supportsIvHistory)
+    return null;
 
   // 從這裡開始卡片本身固定存在——loading／error／有資料（含「資料是空
   // 的」）三種狀態都在同一個版位裡切換，不再因為請求還沒回來就整塊

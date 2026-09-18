@@ -13,6 +13,7 @@ from fastapi.testclient import TestClient
 from api_app import providers
 from api_app.main import create_app
 from api_app.storage.memory import MemoryStorage
+from tests._role_session import superadmin_cookies
 
 TOKEN = "mdapp_live_SECRET1234abcd"
 PROVIDER = providers.MARKETDATA_APP.id
@@ -23,20 +24,16 @@ def db():
     return MemoryStorage()
 
 
-ADMIN_SECRET = "test-admin-secret"
-
-
 @pytest.fixture
 def client(db):
-    # PB-09（#298）起 credential 三個寫入端點 gate 在 Super User——這份
-    # 檔案測的是設定／credential 的業務邏輯本身（模式儲存、token 遮罩、
-    # provider 白名單），不是軸二守門機制本身（那由
-    # `tests/test_pb09_superuser.py` 專責），所以固定帶一把有效的
-    # `ADMIN_SECRET`，讓既有斷言不必為了一個不相干的新前置條件逐一
-    # 補頭。
-    return TestClient(create_app(identity_resolver=lambda: "solo", storage=db,
-                                 admin_secret=ADMIN_SECRET),
-                      headers={"Authorization": f"Bearer {ADMIN_SECRET}"})
+    # PB-09／AUTH-03（#298／#310）起 credential 三個寫入端點 gate 在
+    # Super Admin——這份檔案測的是設定／credential 的業務邏輯本身
+    # （模式儲存、token 遮罩、provider 白名單），不是軸二守門機制本身
+    # （那由 `tests/test_pb09_superuser.py` 專責），所以固定帶一顆
+    # 有效的 Super Admin role session cookie，讓既有斷言不必為了一個
+    # 不相干的新前置條件逐一補頭。
+    return TestClient(create_app(identity_resolver=lambda: "solo", storage=db),
+                      cookies=superadmin_cookies(db))
 
 
 def _custom(provider=PROVIDER):

@@ -30,8 +30,9 @@ import {
 import DeleteMyData from "./DeleteMyData";
 import Diagnostics from "./Diagnostics";
 import { getSettingsCached, setSettingsCache } from "./fetchCache";
+import RoleLogin from "./RoleLogin";
 import SuperUserAdmin from "./SuperUserAdmin";
-import SuperUserUnlock from "./SuperUserUnlock";
+import { roleAtLeast, type Role } from "./superuser";
 
 /** 兩列的識別鍵——與後端 `api_app/providers.py` 的 `USAGES` 同名。 */
 type UsageKey = "market_data" | "historical_iv";
@@ -77,8 +78,10 @@ export default function Settings() {
   const [testing, setTesting] = useState<UsageKey | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState<UsageKey | null>(null);
-  // PB-09（#298）：軸二狀態，決定要不要顯示自訂 provider token 輸入。
-  const [isSuperUser, setIsSuperUser] = useState(false);
+  // AUTH-06（#313）：軸二狀態——三層角色，決定要不要顯示自訂 provider
+  // token 輸入（>= superadmin，AUTH-03 起 credential CRUD 收斂為
+  // Super-Admin-only）與跨 owner 管理面板（== superadmin）。
+  const [role, setRole] = useState<Role>("normal");
 
   // T03（#187）：走快取——與 `IvHistory` 自己那次讀取共用同一份
   // settings 結果，不各自 mount 各抓一次。
@@ -176,12 +179,13 @@ export default function Settings() {
         </div>
       )}
 
-      <SuperUserUnlock isSuperUser={isSuperUser} onChange={setIsSuperUser} />
+      <RoleLogin role={role} onChange={setRole} />
 
-      {/* PB-10（#301）：跨 owner 檢視／管理僅在解鎖 Super User 後才
-         掛載——未解鎖時不打任何 `/api/superuser/owners*` 請求，伺服器
-         端 401 只是第二道防線，不是唯一防線。 */}
-      {isSuperUser && <SuperUserAdmin />}
+      {/* PB-10（#301）／AUTH-06（#313）：跨 owner 檢視／管理僅在角色
+         達到 Super Admin 才掛載——未達門檻時不打任何
+         `/api/superuser/owners*` 請求，伺服器端 401 只是第二道防線，
+         不是唯一防線。 */}
+      {roleAtLeast(role, "superadmin") && <SuperUserAdmin />}
 
       <h2 className="section-title">Data / API</h2>
 
@@ -198,7 +202,7 @@ export default function Settings() {
             busy={busy === usage}
             testing={testing === usage}
             justSaved={saved === usage}
-            isSuperUser={isSuperUser}
+            canManageCredential={roleAtLeast(role, "superadmin")}
             onChoose={(choice) => choose(usage, choice)}
             onToken={(v) => setTokens((prev) => ({ ...prev, [usage]: v }))}
             onSave={() => void save(usage)}
@@ -223,7 +227,7 @@ function UsageSection({
   busy,
   testing,
   justSaved,
-  isSuperUser,
+  canManageCredential,
   onChoose,
   onToken,
   onSave,
@@ -237,11 +241,13 @@ function UsageSection({
   busy: boolean;
   testing: boolean;
   justSaved: boolean;
-  /** PB-09（#298）：`owner_credentials` 的寫入路徑（設定／測試／清除
-   *  token）gate 在 Super User——Normal User 看得到「自訂」這個選項
-   *  本身（純偏好設定，不涉及 credential），但看不到 token 輸入框，
-   *  見下方渲染區塊。 */
-  isSuperUser: boolean;
+  /** AUTH-03（#310）：`owner_credentials` 的寫入路徑（設定／測試／
+   *  清除 token）gate 在 Super Admin——Normal／Super User 看得到
+   *  「自訂」這個選項本身（純偏好設定，不涉及 credential），但看不到
+   *  token 輸入框，見下方渲染區塊。呼叫端已經算好
+   *  `roleAtLeast(role, "superadmin")`，這裡只消費結果，不自己判斷
+   *  角色高低（票面 Implementation constraints）。 */
+  canManageCredential: boolean;
   onChoose: (choice: UsageChoice) => void;
   onToken: (value: string) => void;
   onSave: () => void;
@@ -335,12 +341,13 @@ function UsageSection({
             // token 打兩次沒有意義，而「還沒設定所以再給你一個輸入框」
             // 正是需求方要收掉的那條路徑（#127）。
             <p className="caption settings-shared">與上方共用 credential</p>
-          ) : !isSuperUser ? (
-            // PB-09（#298）：`owner_credentials` 寫入路徑 gate 在 Super
-            // User（OD-3：匿名者不得存第三方 token）——輸入框直接不
-            // 呈現，不是呈現後靠後端 401 擋，事實陳述、非評價字眼。
+          ) : !canManageCredential ? (
+            // AUTH-03（#310）：`owner_credentials` 寫入路徑 gate 在
+            // Super Admin（OD-3：匿名者不得存第三方 token）——輸入框
+            // 直接不呈現，不是呈現後靠後端 401 擋，事實陳述、非評價
+            // 字眼。
             <p className="caption settings-shared">
-              需要 Super User 身份才能設定 API Token
+              需要 Super Admin 身份才能設定 API Token
             </p>
           ) : (
             <label className="settings-field">
@@ -372,7 +379,7 @@ function UsageSection({
               共用列重複一份，按下去做的是同一件事，只會讓人以為有兩把。
               「儲存」兩列都要有：模式選擇是各列自己的狀態，得存得起來。 */}
           <div className="settings-actions">
-            {ownsCredential && isSuperUser && (
+            {ownsCredential && canManageCredential && (
               <button className="pill" onClick={onTest}
                      disabled={testing || !configured}>
                 {testing ? "測試中……" : "測試連線"}
@@ -381,7 +388,7 @@ function UsageSection({
             <button className="pill" onClick={onSave} disabled={busy}>
               {busy ? "儲存中……" : "儲存"}
             </button>
-            {ownsCredential && isSuperUser && configured && provider && (
+            {ownsCredential && canManageCredential && configured && provider && (
               <button
                 className="text-button danger"
                 onClick={() => onClear(provider)}

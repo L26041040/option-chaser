@@ -44,9 +44,9 @@ from .rate_cache import cached_loader
 from .storage import (BrowserIdentity, ContractHistory, DataSourceSettings,
                       IvBackfillRun, IvObservation, NarrowHistoryEntry,
                       Owner, ProviderCredential, ProviderVerification,
-                      RateCacheEntry, ResultRecord, ResultSummary, Scenario,
-                      ScenarioExists, Storage, SuperUserAuditEvent,
-                      UsageSetting)
+                      RateCacheEntry, ResultRecord, ResultSummary,
+                      RoleSession, Scenario, ScenarioExists, Storage,
+                      SuperUserAuditEvent, UsageSetting)
 from .storage.factory import database_url_candidates, storage_from_env
 from .treasury_cache import cached_rate_curve_rows
 
@@ -78,11 +78,24 @@ _OWNER_COOKIE_NAME = "__Host-oc_owner"
 # 成功請求都重新 `set_cookie()` 續命（滑動窗，不是固定到期）。
 _OWNER_COOKIE_MAX_AGE_SECONDS = 400 * 24 * 60 * 60
 
+# AUTH-02（#309）：role-session cookie（軸二）沿用同一個持久 TTL 量級
+# ——票面明文「比照既有 owner cookie 的既有持久 TTL/Max-Age 慣例」。
+# **刻意不做滑動窗續命**：owner cookie 的續命邏輯活在
+# `_call_within_owner_scope()` 這個共用 middleware 裡，若要讓 role
+# cookie 也在每次請求後續命，middleware 就必須認識軸二的 cookie 名字
+# 與 session 查詢——那正是 spec §19 明令禁止的「兩段程式碼共用同一個
+# 函式或中間結果」。改為只在登入當下設一次固定到期（下方三個
+# `/api/auth/*` 端點），瀏覽器重開後仍登入的 AC 因此仍然成立（票面
+# 沒有要求「越常用越不會過期」），且完全不需要動這個既有共用
+# middleware 一行。
+_ROLE_COOKIE_MAX_AGE_SECONDS = _OWNER_COOKIE_MAX_AGE_SECONDS
+
 # spec §4 的路由白名單——缺 cookie 時**不得**建立新 owner 的端點。
 # 白名單而非黑名單：未來新增的 owner-scoped 端點預設不豁免，漏列
 # 新端點不會意外洩漏成「缺 cookie 也能用」。
 _OWNER_EXEMPT_EXACT = ("/api/health",)
-_OWNER_EXEMPT_PREFIXES = ("/api/cron/", "/api/ops/", "/api/superuser/")
+_OWNER_EXEMPT_PREFIXES = ("/api/cron/", "/api/ops/", "/api/superuser/",
+                         "/api/auth/")
 
 
 def _is_owner_exempt_route(path: str) -> bool:
@@ -93,15 +106,35 @@ def _is_owner_exempt_route(path: str) -> bool:
     - `/api/cron/*`：Vercel Cron 每個交易日觸發一次，若建立 owner 會
       洗出大量永遠不會再被使用的 Abandoned Owner，浪費 owner 表與
       PB-08 的清理排程。
-    - `/api/ops/*`：operator-only 端點，PB-09（#298）起由 Super User
-      capability（`ADMIN_SECRET`，軸二）另外把關，與使用者身份無關。
-    - `/api/superuser/*`：PB-09 新增，軸二自己的驗證／狀態查詢端點，
-      同樣與 owner-scoped 資料無關——查自己是不是 Super User 這件事
-      本身不該先幫你建一個 owner。
+    - `/api/ops/*`：operator-only 端點，由 Super Admin capability
+      （AUTH-03／#310 起 `require_role(minimum=SUPERADMIN)`，軸二）
+      另外把關，與使用者身份無關。
+    - `/api/superuser/*`：PB-10 新增，跨 owner 管理端點，同樣與
+      owner-scoped 資料無關——這裡本來就是刻意讓 Super Admin 讀寫
+      別人資料的例外通道，不該先幫呼叫端建一個自己的 owner。
+    - `/api/auth/*`：AUTH-02（#309）新增，三層角色的登入／登出／狀態
+      查詢端點——同樣與 owner-scoped 資料無關，登入這個動作本身不該
+      附帶幫你建一個匿名 owner 的副作用。
     """
     if path in _OWNER_EXEMPT_EXACT:
         return True
     return any(path.startswith(prefix) for prefix in _OWNER_EXEMPT_PREFIXES)
+
+
+def _the_protected_owner_id(all_owners: list[Owner]) -> str | None:
+    """AUTH-04（#311）「找 protected owner」的**唯一**判斷點——票面
+    Implementation constraints 明文要求不得在多處各自重寫一份判準。
+
+    Fail-closed on ambiguity：0 個或多於 1 個標記 `protected=True` 的
+    owner 一律回 `None`（Historical IV 視為不可用），絕不猜測、絕不
+    挑第一個。PB-03（#295）遷移完成後，正常情況下恰好只有 Owner 自己
+    這一個 protected owner；遷移尚未執行、或未來因某種原因同時存在
+    多個 protected owner（例如手動用 PB-10 的 runtime 旗標又標記了
+    另一個），本函式都誠實回報「不存在單一可信來源」而非挑一個將就。
+    純函式、零 I/O——呼叫端負責提供 `Storage.list_owners()` 的結果，
+    方便獨立單元測試不必真的起一個 app。"""
+    protected = [o.owner_id for o in all_owners if o.protected]
+    return protected[0] if len(protected) == 1 else None
 
 
 # 一輪刷新（T07／#193）的 server 端時間預算——明顯小於 serverless 函式
@@ -352,6 +385,14 @@ class SuperUserSetProtectedRequest(BaseModel):
     紀律。"""
     protected: bool
     confirm_owner_id: str
+
+
+class AuthLoginRequest(BaseModel):
+    """AUTH-02（#309）：三層角色模型的登入請求體——**只有一個密碼
+    欄位**，沒有 username／email／角色選單／account／OAuth。同一份
+    表單依密碼命中哪一把（`SUPERADMIN_PASSWORD` 或 `SUPERUSER_
+    PASSWORD`）決定角色，不由呼叫端指定。"""
+    password: str
 
 
 class UsageRequest(BaseModel):
@@ -705,7 +746,8 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
                chain_backoff_default: timedelta = chain_backoff.DEFAULT_BACKOFF,
                identity_resolver: IdentityResolver = cookie_identity_resolver,
                cron_secret: str | None = None,
-               admin_secret: str | None = None,
+               superuser_password: str | None = None,
+               superadmin_password: str | None = None,
                enable_metrics: bool = True,
                anonymous_max_active_scenarios: int | None = None,
                anonymous_refresh_min_interval_minutes: int | None = None,
@@ -821,25 +863,33 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
     設定的 token，這是 Vercel 平台層級的基礎設施密鑰，沒有對應的
     Settings UI，本 app 只單純驗證有沒有對上。
 
-    `admin_secret`（PB-09／#298，Anonymous Public Beta，取代 SCALE-08
-    當初的 `ops_secret`）：**軸二（User Level）**唯一的驗證機制——
-    `api_app/superuser.py::is_superuser()`／`require_superuser()` 拿
-    去跟請求的 `Authorization` 標頭比對，成功即代表這次請求具備
-    Super User capability，可使用全部受保護的介面（目前只有 `GET
-    /api/ops/metrics` 與 `owner_credentials` 三個寫入端點，PB-10／
-    PB-11 會再接上更多）。**單一驗證機制**：全站只有這一把，不因為
-    功能不同而要求重新輸入——與 `cron_secret` 用途正交（那是
-    machine-to-machine，這把服務的是人類 Owner）、與軸一的 owner
-    cookie 也正交（`is_superuser()` 完全不讀 `identity_resolver()`
-    或任何 owner_id，見 `superuser.py` 檔頭）。同一套「`None`＝呼叫時
-    才讀環境變數」既有慣例（`ADMIN_SECRET`）。
+    `superuser_password`／`superadmin_password`（AUTH-02／#309，
+    正式接線於 AUTH-03／#310，spec #307 三層角色模型）：`POST
+    /api/auth/login` 依序比對 `superadmin_password` → `superuser_
+    password`（先比更高權限那把，兩把密碼不會重疊，順序本身不影響
+    正確性，但讓程式碼讀起來與 `Role` 的等級順序一致）；命中即簽發
+    對應角色的 role session（AUTH-01）。**軸二（User Level）唯一的
+    驗證機制**——`api_app/superuser.py::require_role()` 是全站唯一
+    的授權判斷點，全部受保護介面（`GET /api/ops/metrics`、
+    `owner_credentials` 三個寫入端點、PB-10 的跨 owner 管理端點）皆
+    要求 `minimum=Role.SUPERADMIN`，與軸一的 owner cookie 正交
+    （`require_role()` 完全不讀 `identity_resolver()` 或任何
+    owner_id，見 `superuser.py` 檔頭）。同一套「`None`＝呼叫時才讀
+    環境變數」既有慣例（`SUPERUSER_PASSWORD`／`SUPERADMIN_
+    PASSWORD`）；兩把密碼皆為人類自訂字串（非隨機 secret），預期
+    長期不換——**沒有任何密碼輪替／變更偵測機制**：換掉環境變數
+    重新部署，既有、尚未登出的 role session 依然有效（Owner 明確
+    裁示取消 password rotation，見 #307 Further Notes、#309
+    2026-09-17 修正）。
 
-    ⚠ `ops_secret` 已於本票**正式退役**（非降格）：它唯一的用途
-    （`GET /api/ops/metrics`）已改走這裡，留著一把沒有任何呼叫端會
-    比對的舊 secret 只會製造「這是不是還有效」的疑惑，不符合「單一
-    驗證機制」的精神。`OPS_SECRET` 環境變數本身即使還留在部署環境裡
-    也不再被任何程式碼讀取；`CRON_SECRET` 完全不受影響，繼續服務
-    Vercel Cron 既有的機器對機器呼叫。
+    ⚠ `admin_secret`（PB-09／#298）與它取代的更早的 `ops_secret`
+    （SCALE-08）已於 AUTH-03（#310）**正式退役**（非降格）：舊
+    `is_superuser()`／`require_superuser()`／`ADMIN_SECRET` 整組
+    移除，全部原本受它們保護的端點改用上面的 `require_role()`。
+    `ADMIN_SECRET`／`OPS_SECRET` 兩個環境變數即使還留在部署環境裡
+    也不再被任何程式碼讀取（純死配置，Owner 可安全移除）；
+    `CRON_SECRET` 完全不受影響，繼續服務 Vercel Cron 既有的機器對
+    機器呼叫。
 
     `enable_metrics`（同票）：整組 S0 觀測的總開關（Rollback Point）。
     關閉時全部指標（SCALE-08 當時七類＋PB-08 新增的
@@ -981,10 +1031,16 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
     # 顯式傳入（含空字串）時完全採用那個值，測試才有決定性。
     _effective_cron_secret = (cron_secret if cron_secret is not None
                               else os.environ.get("CRON_SECRET"))
-    # PB-09（#298）：軸二唯一的驗證機制，取代 SCALE-08 當初的
-    # `ops_secret`（見 `create_app()` docstring 的退役說明）。
-    _effective_admin_secret = (admin_secret if admin_secret is not None
-                               else os.environ.get("ADMIN_SECRET"))
+    # AUTH-02／AUTH-03（#309／#310）：三層角色模型的登入密碼，軸二
+    # 唯一的驗證機制，取代 PB-09 的 `admin_secret`（已整組退役，見
+    # `create_app()` docstring）。同一套「`None`＝呼叫時才讀環境
+    # 變數」慣例。
+    _effective_superuser_password = (
+        superuser_password if superuser_password is not None
+        else os.environ.get("SUPERUSER_PASSWORD"))
+    _effective_superadmin_password = (
+        superadmin_password if superadmin_password is not None
+        else os.environ.get("SUPERADMIN_PASSWORD"))
     # PB-05（#297）：同一套「`None`＝讀環境變數或落回常數」慣例，但這裡
     # 讀的是數字而非密鑰——`_env_int()` 內建自己的落回邏輯。`<=0` 由
     # `_refresh_throttled()`／額度檢查各自判讀為停用，不在這裡另外轉換。
@@ -1015,8 +1071,9 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         else _env_int("ANONYMOUS_CLEANUP_BATCH_SIZE",
                       ANONYMOUS_CLEANUP_BATCH_SIZE))
     # PB-11（#303）：SMTP 設定沿用 `_effective_cron_secret`／
-    # `_effective_admin_secret` 同一套「顯式傳入（含空字串）完全採用，
-    # `None` 才讀環境變數」慣例——`digest_smtp_port` 是唯一的數字欄位，
+    # `_effective_superadmin_password` 同一套「顯式傳入（含空字串）
+    # 完全採用，`None` 才讀環境變數」慣例——`digest_smtp_port` 是唯一
+    # 的數字欄位，
     # 讀到字串環境變數時轉型失敗即視為未設定（no-op，不讓打錯字的埠號
     # 讓寄信半途噴例外）。
     def _env_str(name: str) -> str | None:
@@ -1083,15 +1140,16 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
 
     def _record_audit(action: str, *, target_owner_id: str | None,
                       detail: dict) -> None:
-        """PB-10（#301）的唯一寫入入口——每個高風險 Super User 操作
+        """PB-10（#301）的唯一寫入入口——每個高風險 Super Admin 操作
         （刪除 owner、批次刪除、變更 protected 旗標）各呼叫一次，紀錄
-        「誰（固定 `"superuser"`，PB-09 只有單一共用密鑰，見
+        「誰（固定 `"superadmin"`——AUTH-03／#310 起這些端點的授權
+        門檻是 `minimum=SUPERADMIN`，只有這一層碰得到，見
         `SuperUserAuditEvent` docstring）／對誰／做了什麼／何時」。
         `detail` 只放安全欄位（列數、布林值）——呼叫端負責絕不把
         `ProviderCredential.token` 這類欄位塞進來，這裡不做內容檢查
         （信任呼叫端，這個函式本身只有本檔案内極少數幾個呼叫點）。"""
         _db().append_audit_event(SuperUserAuditEvent(
-            event_id=str(uuid.uuid4()), ts=now_utc_iso(), actor="superuser",
+            event_id=str(uuid.uuid4()), ts=now_utc_iso(), actor="superadmin",
             action=action, target_owner_id=target_owner_id, detail=detail))
 
     # 合併 correlation id（DG-02／#145）與 storage 連線 scope
@@ -1633,12 +1691,14 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         的可識別內容或第三方 token 屬 PB-10 獨立端點的職責，兩者不
         混在同一個回應裡（票面 §10 安全考量）。
 
-        **Super User-only**（AC-6，PB-09／#298 起改由軸二守門，取代
-        原本的 `OPS_SECRET`）：`require_superuser()` fail-closed，未帶
-        有效 `ADMIN_SECRET` 一律 401；不對一般使用者開放，前端一般
-        瀏覽路徑不會呼叫這個端點。
+        **Super Admin-only**（AC-6，PB-09／#298 起由軸二守門，
+        AUTH-03／#310 起改用三層角色的 `require_role(minimum=
+        SUPERADMIN)`，取代已退役的 `ADMIN_SECRET`）：fail-closed，
+        未帶有效 Super Admin role session 一律 401；不對一般使用者
+        或 Super User 開放，前端一般瀏覽路徑不會呼叫這個端點。
         """
-        superuser.require_superuser(request, admin_secret=_effective_admin_secret)
+        superuser.require_role(request, superuser.Role.SUPERADMIN,
+                               resolve_session=_db().resolve_role_session)
 
         by_metric: dict[str, list[dict]] = {m: [] for m in metrics.PERSISTED_METRICS}
         for e in _db().metric_summary():
@@ -1696,29 +1756,83 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         return {"sent": sent, "date": str(today),
                "alerts_triggered": [a.key for a in snapshot.alerts if a.triggered]}
 
-    # ---------- User Level（軸二，PB-09／#298） ----------
-
-    @app.get("/api/superuser/status")
-    def superuser_status(request: Request) -> dict:
-        """讓前端知道「目前這個 Authorization 標頭是不是有效的 Super
-        User 憑證」，好決定要不要顯示需要 Super User 才用得到的介面
-        （目前只有 Settings 頁的自訂 provider token 輸入，PB-10／
-        PB-11 上線後會有更多消費端）。
-
-        **這個端點本身永遠 200**，不因為驗證失敗就 401——查自己現在
-        算不算 Super User，不該需要先證明自己是 Super User 才查得到
-        答案（那會是雞生蛋問題）。回應只有一個布林值，不洩漏任何
-        其他資訊；`_is_owner_exempt_route()` 已把整個 `/api/
-        superuser/*` 前綴排除在 lazy owner creation 之外，呼叫這個
-        端點不會意外幫呼叫端建立一個新 owner。
-        """
-        return {"is_superuser": superuser.is_superuser(
-            request, admin_secret=_effective_admin_secret)}
-
-    # ---------- Super User system/admin operations（PB-10／#301） ----------
+    # ---------- 三層角色模型（軸二，AUTH-02／#309）：登入／登出／
+    # 狀態查詢 ----------
     #
-    # PB-09（#298）v3 correction 正式落地：Super User 是 Normal User
-    # 完整權限超集合，v2 版「不得任意瀏覽個別使用者資料／不得刪除他人
+    # 走獨立的 `/api/auth/` 前綴（已加進 `_OWNER_EXEMPT_PREFIXES`，
+    # 缺 cookie 呼叫這三個端點不會建立 owner）。AUTH-03（#310）已將
+    # 舊的 `GET /api/superuser/status`（PB-09，二值 `is_superuser`
+    # 布林，讀 `Authorization` 標頭比對 `ADMIN_SECRET`）整個移除——
+    # 這裡的 `/api/auth/status` 是它唯一、完全涵蓋其功能的正式後繼者
+    # （回傳完整三層角色而非二值布林），維持兩套並存只會製造哪個才是
+    # 現行真相的疑惑。
+
+    @app.post("/api/auth/login")
+    def auth_login(body: AuthLoginRequest, response: Response) -> dict:
+        """依序比對 `SUPERADMIN_PASSWORD` → `SUPERUSER_PASSWORD`
+        （`secrets.compare_digest`，常數時間，避免時序側信道洩漏
+        比對結果），命中即建立 AUTH-01 的 role session＋簽發 cookie；
+        兩者都不中一律 401——回應本身不透露密碼欄位是空的、缺席、
+        還是純粹打錯，也不透露環境變數有沒有設定，三種情況對外
+        觀察不到差異（fail-closed，同 `require_role()` 精神）。
+        回應只有角色名稱，**絕不回傳 token 本身或密碼**。"""
+        role: superuser.Role | None = None
+        if _effective_superadmin_password and secrets.compare_digest(
+                body.password, _effective_superadmin_password):
+            role = superuser.Role.SUPERADMIN
+        elif _effective_superuser_password and secrets.compare_digest(
+                body.password, _effective_superuser_password):
+            role = superuser.Role.SUPERUSER
+        if role is None:
+            raise HTTPException(status_code=401, detail="unauthorized")
+
+        token = secrets.token_urlsafe(32)
+        _db().create_role_session(RoleSession(
+            token=token, role=role.value, issued_at=now_utc_iso()))
+        # 旗標比照既有 owner cookie；**這裡是唯一設這顆 cookie 的
+        # 地方**——不像 owner cookie 靠共用 middleware 每次請求續命
+        # （見 `_ROLE_COOKIE_MAX_AGE_SECONDS` 檔頭說明，為維持軸一／
+        # 軸二正交，刻意不做滑動窗）。
+        response.set_cookie(
+            superuser.ROLE_COOKIE_NAME, token,
+            max_age=_ROLE_COOKIE_MAX_AGE_SECONDS,
+            httponly=True, secure=True, samesite="lax", path="/")
+        return {"role": role.value}
+
+    @app.post("/api/auth/logout")
+    def auth_logout(request: Request, response: Response) -> dict:
+        """伺服器端撤銷（AUTH-01 的 `revoke_role_session()`）＋清除
+        cookie——不是只在瀏覽器端清掉了事：即使呼叫端之後重放同一顆
+        舊 cookie，`resolve_role()` 查到的 session 已經 `revoked_at`
+        非空，一律回 `normal`。沒有 cookie，或 cookie 早已撤銷過，
+        `revoke_role_session()` 回 `False`，這裡不視為錯誤——重複
+        登出必須優雅，一律回 200。**不清除 owner cookie**、不刪除
+        owner、不動任何 Product Core 資料（軸一／軸二正交）。"""
+        token = request.cookies.get(superuser.ROLE_COOKIE_NAME)
+        if token:
+            _db().revoke_role_session(token, now=now_utc_iso())
+        response.delete_cookie(
+            superuser.ROLE_COOKIE_NAME, path="/",
+            httponly=True, secure=True, samesite="lax")
+        return {"role": superuser.Role.NORMAL.value}
+
+    @app.get("/api/auth/status")
+    def auth_status(request: Request) -> dict:
+        """無條件 200——查自己現在算 normal／superuser／superadmin
+        不該需要先證明自己是誰（雞生蛋問題）。已在 `_OWNER_EXEMPT_
+        PREFIXES`，呼叫這個端點不會建立 owner；回應只有角色名稱，
+        不洩漏 session token 或任何密碼資訊。前端判斷要不要顯示
+        Super User／Super Admin 專屬介面（Settings 頁自訂 provider
+        token 輸入、PB-10 跨 owner 管理面板等）的唯一真相來源。"""
+        return {"role": superuser.resolve_role(
+            request, resolve_session=_db().resolve_role_session).value}
+
+    # ---------- Super Admin system/admin operations（PB-10／#301，
+    # AUTH-03／#310 起改由 `require_role(minimum=SUPERADMIN)` 守門，
+    # 取代已退役的 `ADMIN_SECRET`） ----------
+    #
+    # PB-09（#298）v3 correction 正式落地：這一層是 Normal User 完整
+    # 權限超集合，v2 版「不得任意瀏覽個別使用者資料／不得刪除他人
     # 資料」的限制已被 Owner 裁示撤回（見票面 §1）。這裡是全站唯一
     # 一組讓 `owner_id` 出現在 HTTP 回應 body 裡的端點——刻意、明確、
     # 獨立於一般使用者路徑（`_require()` chokepoint 完全不參與這裡的
@@ -1743,7 +1857,8 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         純瀏覽，不強制二次確認、不記 audit（票面 §3「純瀏覽不強制」
         條款下的明確選擇：列出全部 owner 是最低風險的瀏覽動作，
         逐次記錄只會製造噪音、不會提升任何實質可稽核性）。"""
-        superuser.require_superuser(request, admin_secret=_effective_admin_secret)
+        superuser.require_role(request, superuser.Role.SUPERADMIN,
+                               resolve_session=_db().resolve_role_session)
         return [dataclasses.asdict(o) for o in _db().list_owners()]
 
     @app.get("/api/superuser/owners/{owner_id}/scenarios")
@@ -1753,8 +1868,9 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         """跨 owner 檢視第二步：某個 owner 名下的劇本清單。**明確傳入
         目標 `owner_id`**（票面 §8：不得靠傳 `None` 繞過 `require_
         owner()` 的 fail-closed 行為）——這不是走 `identity_
-        resolver()`，Super User 檢視的是別人的資料，不是自己的。"""
-        superuser.require_superuser(request, admin_secret=_effective_admin_secret)
+        resolver()`，Super Admin 檢視的是別人的資料，不是自己的。"""
+        superuser.require_role(request, superuser.Role.SUPERADMIN,
+                               resolve_session=_db().resolve_role_session)
         summaries = _db().latest_summaries(owner=owner_id)
         today = ny_today()
         return [_row_json(sc, today, **_summary_of(summaries.get(sc.id)))
@@ -1766,9 +1882,10 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
             owner_id: str, scenario_id: str, request: Request) -> dict:
         """跨 owner 檢視第三步：單一劇本的完整內容——與一般使用者
         `GET /api/scenarios/{id}` 同一份投影（`store.project_for_
-        detail()`），刻意重用同一個序列化函式：Super User 看到的形狀
+        detail()`），刻意重用同一個序列化函式：Super Admin 看到的形狀
         與該 owner 自己看到的一致，不是另外發明一種精簡格式。"""
-        superuser.require_superuser(request, admin_secret=_effective_admin_secret)
+        superuser.require_role(request, superuser.Role.SUPERADMIN,
+                               resolve_session=_db().resolve_role_session)
         sc = _db().get_scenario(scenario_id, owner=owner_id)
         if sc is None:
             raise HTTPException(status_code=404,
@@ -1786,7 +1903,8 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         呼叫 PB-04（#296）既有的 `delete_owner()` 原語——不重寫第二份
         可能漂移的清除邏輯。二次確認＋audit trail 兩者皆為硬性要求。
         """
-        superuser.require_superuser(request, admin_secret=_effective_admin_secret)
+        superuser.require_role(request, superuser.Role.SUPERADMIN,
+                               resolve_session=_db().resolve_role_session)
         _require_owner_confirmation(body.confirm_owner_id, owner_id)
         counts = _db().delete_owner(owner_id)
         _record_audit("delete_owner", target_owner_id=owner_id,
@@ -1803,7 +1921,8 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         留一筆 audit 紀錄（保持「一筆紀錄對應一個目標」的既有粒度，
         不因為是批次操作就把多個目標塞進同一筆看不出各自結果的
         紀錄）。"""
-        superuser.require_superuser(request, admin_secret=_effective_admin_secret)
+        superuser.require_role(request, superuser.Role.SUPERADMIN,
+                               resolve_session=_db().resolve_role_session)
         if set(body.confirm_owner_ids) != set(body.owner_ids):
             raise HTTPException(
                 status_code=400,
@@ -1824,9 +1943,10 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         """高風險操作：runtime 設定／取消 `protected` 旗標（票面 §3
         第四項）。owner 不存在時回 404——與 `set_owner_protected()`
         本身「不存在就安靜地什麼都不做」的既有寫入端行為不同，這裡是
-        Super User 主動操作的端點，應該誠實回報「你要改的東西不存在」
+        Super Admin 主動操作的端點，應該誠實回報「你要改的東西不存在」
         而不是假裝成功。"""
-        superuser.require_superuser(request, admin_secret=_effective_admin_secret)
+        superuser.require_role(request, superuser.Role.SUPERADMIN,
+                               resolve_session=_db().resolve_role_session)
         _require_owner_confirmation(body.confirm_owner_id, owner_id)
         if _db().get_owner(owner_id) is None:
             raise HTTPException(status_code=404,
@@ -1838,12 +1958,13 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
 
     @app.get("/api/superuser/audit-log")
     def superuser_get_audit_log(request: Request, limit: int = 200) -> list[dict]:
-        """audit trail 本身的查閱端點，Super User 專用。純瀏覽，
+        """audit trail 本身的查閱端點，Super Admin 專用。純瀏覽，
         不另外對「查閱 audit log」這件事本身再記一筆 audit——避免
         自我指涉的無限累積；查閱行為本身風險極低，記錄它不會提升
         任何實質可稽核性（票面 §3「純瀏覽不強制」條款下的另一個明確
         選擇）。"""
-        superuser.require_superuser(request, admin_secret=_effective_admin_secret)
+        superuser.require_role(request, superuser.Role.SUPERADMIN,
+                               resolve_session=_db().resolve_role_session)
         return [dataclasses.asdict(e)
                 for e in _db().list_audit_events(limit=limit)]
 
@@ -1904,7 +2025,7 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
     # ---------- 劇本 ----------
 
     @app.post("/api/scenarios", status_code=201)
-    def create_scenario(req: CreateScenarioRequest) -> dict:
+    def create_scenario(req: CreateScenarioRequest, request: Request) -> dict:
         try:
             # 月級驗證（既有規則）：目標月已過完就拒絕——生下來就過期的
             # 劇本不該存在；當月仍允許。
@@ -1919,8 +2040,15 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         # 沿用既有 `ScenarioExists` 409＋純字串 detail 的既有慣例，不是
         # 刷新失敗那種 `{stage, message}` 分層格式——這裡是建立失敗，
         # 不是刷新失敗。
+        #
+        # AUTH-05（#312）：Super User／Super Admin 豁免這道額度——判斷點
+        # 就緊鄰這個既有檢查本身，不與任何其他角色豁免共用判斷式或工具
+        # 函式（票面明確警告：絕不得意外波及 `vendor_fuse.tripped()`，
+        # 那條檢查對三層角色一視同仁，PB-06 既有決策維持不變）。
         owner = identity_resolver()
-        if _effective_max_active_scenarios > 0:
+        role = superuser.resolve_role(request,
+                                      resolve_session=_db().resolve_role_session)
+        if role < superuser.Role.SUPERUSER and _effective_max_active_scenarios > 0:
             active_count = len(_db().list_scenarios(owner=owner))
             if active_count >= _effective_max_active_scenarios:
                 raise HTTPException(
@@ -2102,7 +2230,8 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         return Response(status_code=204)
 
     def _refresh_and_save(sc: Scenario, today: date, *,
-                          snap: ChainSnapshot | None) -> dict:
+                          snap: ChainSnapshot | None,
+                          role: superuser.Role = superuser.Role.NORMAL) -> dict:
         """一個劇本的刷新→入庫，`refresh_scenario`／`refresh_run`
         共用的核心（T06／#190 從前者抽出，理由是批次端點需要同一套
         過期短路與落地邏輯，不能各寫一份）。
@@ -2134,12 +2263,24 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         scenario 仍然完全不使用它，保證「這個 scenario 在窗內不會被
         新抓到的資料更新」是無條件成立的事實，不會因為它剛好與哪個
         劇本共用 symbol 而變得不可預期。
+
+        `role`（AUTH-05／#312）：Super User／Super Admin 豁免這道節流
+        ——判斷點就緊鄰下面這個既有檢查本身，**這裡是本站唯一的節流
+        豁免判斷點**（`refresh_run` 用來決定要不要為整組先抓一份共用
+        Chain 的 `_sc_throttled()` 刻意不接觸角色：那只是一個「值不值得
+        先抓」的效率預判，即使它誤判某個被豁免的劇本仍「像是」在窗內、
+        因此沒有先抓共用 Chain，這裡的 `_analyze(snap=None)` 依然會
+        替它獨立補抓一次——效率上略有損耗，正確性不受影響）。**絕不得
+        與 `vendor_fuse.tripped()`（`_fetch_chain()` 內，對三層角色
+        一視同仁）共用任何判斷點或工具函式**——PB-06 那條決策本票不動。
+        預設 `Role.NORMAL`：忘記傳 `role` 的呼叫端得到既有（未豁免）
+        行為，不會意外把新增的呼叫端也豁免掉。
         """
         if month_is_over(TargetMonth.from_key(sc.target_month), today):
             latest = _db().latest_result(sc.id, owner=identity_resolver())
             return _row_json(sc, today, **_summary_of(latest))
         latest_for_throttle = _db().latest_result(sc.id, owner=identity_resolver())
-        if _refresh_throttled(
+        if role < superuser.Role.SUPERUSER and _refresh_throttled(
                 latest_for_throttle.analyzed_at if latest_for_throttle else None,
                 _effective_refresh_min_interval_minutes):
             return _row_json(sc, today, **_summary_of(latest_for_throttle))
@@ -2245,7 +2386,8 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
                          spot=store.spot(view), family_eligibility=family_elig)
 
     @app.post("/api/scenarios/{scenario_id}/refresh")
-    def refresh_scenario(scenario_id: str, manual: bool = False) -> dict:
+    def refresh_scenario(scenario_id: str, request: Request,
+                         manual: bool = False) -> dict:
         """單劇本刷新（V4／#52）：抓鏈→分析→結果與原始快照入庫。
 
         回傳的是**卡片列**而非整份 view：客戶端要依序刷新 N 個劇本、
@@ -2276,10 +2418,12 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
             raise _fail("archived", 409, f"劇本已在垃圾桶，不再刷新：{scenario_id}")
         if manual:
             _touch_activity(identity_resolver())
-        return _refresh_and_save(sc, ny_today(), snap=None)
+        role = superuser.resolve_role(request,
+                                      resolve_session=_db().resolve_role_session)
+        return _refresh_and_save(sc, ny_today(), snap=None, role=role)
 
     @app.post("/api/scenarios/refresh-run")
-    def refresh_run(body: RefreshRunRequest) -> dict:
+    def refresh_run(body: RefreshRunRequest, request: Request) -> dict:
         """一輪刷新（E1／#190，T06；Continuation／T07／#193）：批次版的
         `refresh_scenario`。
 
@@ -2341,6 +2485,12 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         """
         today = ny_today()
         owner = identity_resolver()
+        # AUTH-05（#312）：整個 Run 只屬於這一個發請求者，角色因此也
+        # 只需要解析一次，往下傳給每一個 `_refresh_and_save()` 呼叫
+        # （不在迴圈裡逐劇本重新解析——避免每個劇本各自查一次 role
+        # session，同一次請求內角色不會變）。
+        role = superuser.resolve_role(request,
+                                      resolve_session=_db().resolve_role_session)
         if body.manual:
             # PB-08（#300）：整個 Run 只屬於這一個 owner（下方全部
             # scenario 查詢皆限定在同一個 `owner`），因此一次呼叫只
@@ -2428,7 +2578,7 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
                                     **detail})
                 else:
                     try:
-                        row = _refresh_and_save(sc, today, snap=snap)
+                        row = _refresh_and_save(sc, today, snap=snap, role=role)
                     except HTTPException as e:
                         detail = e.detail if isinstance(e.detail, dict) else {}
                         results.append({"scenario_id": sc.id, "ok": False,
@@ -2605,33 +2755,41 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
 
     # ---------- Historical IV：快取、漸進補齊、額度（#126／#130） ----------
 
-    def _credential_map() -> dict[str, ProviderCredential | None]:
+    def _credential_map(*, owner: str | None = None
+                        ) -> dict[str, ProviderCredential | None]:
         """一次拿齊全部 Provider 的 credential（PERF-01／#177）——
         `_settings_view()`／`_known_secrets()`／iv-history 端點裡挑選中
         Provider 的 token 取得，原本三處各自對 storage 重新查一次同一批
-        資料，這裡改成算一次、往下傳給需要的地方使用。兩個參數皆為
-        `None` 時的既有呼叫端（Settings 端點等）不受影響——那些端點本來
-        就只呼叫一次，沒有重複讀取的問題，不必跟著改。"""
+        資料，這裡改成算一次、往下傳給需要的地方使用。
+
+        `owner`（AUTH-04／#311）：省略時沿用既有行為（查
+        `identity_resolver()` 解出的這次請求自己的 owner——Settings
+        端點等既有呼叫端不受影響）；`_iv_history_gate()` 是唯一會顯式
+        傳入 protected owner id 的呼叫端，向它借用已驗證的 Historical
+        IV credential。"""
         db = _db()
-        owner = identity_resolver()
-        return {p.id: db.get_credential(p.id, owner=owner)
+        resolved_owner = owner if owner is not None else identity_resolver()
+        return {p.id: db.get_credential(p.id, owner=resolved_owner)
                for p in providers.SUPPORTED_PROVIDERS}
 
     def _known_secrets(*, credentials: dict[str, ProviderCredential | None] | None = None
                        ) -> tuple[str, ...]:
         """目前現行的祕密值——provider token、`DATABASE_URL` 家族環境
-        變數的值（DG-03／#146），以及 PB-09（#298）新增的 `_effective_
-        admin_secret`。這是 redaction 白名單以外的最後一道防線：即使
+        變數的值（DG-03／#146），以及 AUTH-02／AUTH-03（#309／#310）
+        的兩把角色密碼（`ADMIN_SECRET` 已隨舊機制整組退役，不再是
+        現行祕密值）。這是 redaction 白名單以外的最後一道防線：即使
         某個字串意外落在白名單欄位裡，只要逐字等於這裡的任何一個值，
-        一樣會被換成 `[redacted]`——安全考量明文要求這把新憑證也涵蓋
-        在內（不得進 log／diagnostic／回應 body）。
+        一樣會被換成 `[redacted]`——安全考量明文要求這兩把密碼也
+        涵蓋在內（不得進 log／diagnostic／回應 body）。
 
         `credentials` 可選——傳入時直接使用（PERF-01／#177，呼叫端已經
         算過一次），不傳時照舊自己查一次，行為不變。"""
         creds = credentials if credentials is not None else _credential_map()
         tokens = tuple(cred.token for cred in creds.values() if cred is not None)
-        admin = (_effective_admin_secret,) if _effective_admin_secret else ()
-        return tokens + admin + database_url_candidates()
+        role_passwords = tuple(
+            p for p in (_effective_superuser_password, _effective_superadmin_password)
+            if p)
+        return tokens + role_passwords + database_url_candidates()
 
     def _flush_diagnostics(diag: _CollectingDiagnostics) -> dict:
         """這次 request 收集到的 events 依優先序選出 `kept`（per-request
@@ -2660,7 +2818,15 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         """建立 exact-contract／legacy 兩個 subsystem 各自的 emit closure
         （HIVR-03／#162 既有的兩線分離）。T11（#194）從 `iv_history()`
         內嵌的 `_make_emit` 抽出，供新增的 `/iv-history/backfill` 端點
-        共用同一套 redaction 邏輯，不必各自重寫一份。"""
+        共用同一套 redaction 邏輯，不必各自重寫一份。
+
+        `credentials`（AUTH-04／#311 起）：呼叫端必須傳入**實際流向
+        vendor 呼叫的那份 credential map**——`_iv_history_gate()` 通過
+        角色與 protected owner 檢查後借用的是 protected owner 的
+        token，不是這次請求自己（可能沒有任何 credential）的 owner，
+        redaction 白名單因此也必須基於同一份 map，否則借來的 token
+        萬一意外出現在例外訊息裡（例如 vendor 連線瞬斷）將不會被
+        遮蔽——這是本票 Security considerations 的直接落地。"""
         secrets = _known_secrets(credentials=credentials)
 
         def _make_emit(subsystem: str):
@@ -2676,27 +2842,60 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         return (_make_emit(diagnostics.SUBSYSTEM_EXACT_CONTRACT),
                _make_emit(diagnostics.SUBSYSTEM_LEGACY_REANCHOR))
 
+    # 未達 Super User，或找不到唯一 protected owner，或該 owner 的
+    # Historical IV 尚未啟用——三種情況對外必須逐位元相同（AUTH-04／
+    # #311 AC：Normal User 行為不變、且不得洩漏「哪一種原因」），故
+    # 共用同一句既有訊息，不新增第二種措辭。
+    _HISTORICAL_IV_DISABLED_DETAIL = (
+        "Historical IV 未啟用——請在設定頁選擇自訂資料源並通過測試連線")
+
     def _iv_history_gate(
-            scenario_id: str, candidate_key: str, *,
-            diag: _CollectingDiagnostics, emit_exact: Callable,
-            credentials: dict[str, ProviderCredential | None] | None = None,
+            scenario_id: str, candidate_key: str, *, request: Request,
+            diag: _CollectingDiagnostics,
     ) -> tuple:
         """iv-history 相關端點共用的權限 gate＋candidate 查找（T11／#194
         從 `iv_history()` 抽出，供新增的 `/iv-history/backfill` 端點
         共用——兩個端點面對同一個 scenario_id／candidate_key 因此不會
         給出不一致的答案）。
 
+        AUTH-04（#311）：這個劇本／候選本身仍是**這次請求自己的
+        owner**（`identity_resolver()`）名下的——只有 Historical IV
+        credential／settings 的讀取來源改成借用 protected owner。
+        `_require(scenario_id)` 必須排在角色檢查**之前**，維持既有
+        404（劇本不存在／不屬於自己）優先於 403 的既有順序，Normal
+        User 對不存在的 scenario_id 因此依然先拿到 404，不會因為新增
+        的角色檢查而變成 403。
+
+        角色檢查通過**之前**不觸碰 `list_owners()`／任何 owner 的
+        credential——即使只是「有沒有 protected owner 存在」這種
+        存在性資訊，也不該讓 Normal User 的請求觸發查詢（票面
+        Security considerations）。
+
         candidate 找不到時已經把 diagnostics flush 進 storage 才拋
         404（呼叫端不需要再處理這件事）。回傳
-        `(sc, rec, cand, provider, token, known_expiries)`。
+        `(sc, rec, cand, provider, token, known_expiries, emit_exact,
+        emit_legacy)`。
         """
         sc = _require(scenario_id)
-        creds = credentials if credentials is not None else _credential_map()
-        settings_view = _settings_view(credentials=creds)
+
+        role = superuser.resolve_role(request,
+                                      resolve_session=_db().resolve_role_session)
+        if role < superuser.Role.SUPERUSER:
+            raise HTTPException(status_code=403,
+                                detail=_HISTORICAL_IV_DISABLED_DETAIL)
+
+        protected_owner = _the_protected_owner_id(_db().list_owners())
+        if protected_owner is None:
+            raise HTTPException(status_code=403,
+                                detail=_HISTORICAL_IV_DISABLED_DETAIL)
+
+        creds = _credential_map(owner=protected_owner)
+        emit_exact, emit_legacy = _iv_diagnostics_emitters(
+            diag, credentials=creds)
+        settings_view = _settings_view(credentials=creds, owner=protected_owner)
         if not settings_view["historical_iv_enabled"]:
-            raise HTTPException(
-                status_code=403,
-                detail="Historical IV 未啟用——請在設定頁選擇自訂資料源並通過測試連線")
+            raise HTTPException(status_code=403,
+                                detail=_HISTORICAL_IV_DISABLED_DETAIL)
 
         rec = _db().latest_result(scenario_id, owner=identity_resolver())
         if rec is None:
@@ -2723,7 +2922,8 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
             e for r in rec.view.get("results") or []
             for e, _ in r.get("expiry_counts") or []
         })
-        return sc, rec, cand, provider, token, known_expiries
+        return (sc, rec, cand, provider, token, known_expiries,
+               emit_exact, emit_legacy)
 
     def _iv_pipeline_ports() -> tuple:
         """`ivpipeline` 認得的 Vendor／Storage port 組裝（T11／#194 從
@@ -2760,7 +2960,7 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         return vendor, storage_ports
 
     @app.get("/api/scenarios/{scenario_id}/iv-history")
-    def iv_history(scenario_id: str, candidate_key: str) -> dict:
+    def iv_history(scenario_id: str, candidate_key: str, request: Request) -> dict:
         """候選的 Historical IV 完整回應（Exact-Contract Series 逐腿＋
         Legacy (tenor, delta) Re-anchor Series）。
 
@@ -2775,7 +2975,12 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         共用同一份 Legacy 家族歷史，各自只是投影到自己的座標；
         Exact-Contract 家族則是逐張合約各自快取（HIVT-02／#153）。
 
-        **閘門**：Historical IV 未解鎖時直接 403，一個 vendor 請求都不發。
+        **閘門**（AUTH-04／#311 起）：角色必須至少 Super User，且存在
+        唯一一個 protected owner 且該 owner 的 Historical IV 已啟用，
+        缺一不可；三種未通過的情況一律回同一句既有 403（
+        `_iv_history_gate()`），一個 vendor 請求都不發。這個劇本／
+        候選本身仍是這次請求自己的 owner 名下——只有 credential 來源
+        改為借用 protected owner，見 `_iv_history_gate()` docstring。
 
         T11（#194，兩段式補建 P3-a）：**Legacy 家族的冷 backfill 不再
         同步夾在這個請求裡**——這裡只讀「今天跑過了嗎」（`backfill_
@@ -2793,17 +2998,10 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         的，詳情不夾在回應裡的話，前端得先猜這次的 correlation id 是
         什麼才查得到。
         """
-        # PERF-01（#177）：這個 request 內 credential 只查一次，往下傳給
-        # `_iv_diagnostics_emitters()`／`_iv_history_gate()` 共用——原本
-        # 各自重新查一次同一批資料。
-        credentials = _credential_map()
         diag = _CollectingDiagnostics()
-        emit_exact, emit_legacy = _iv_diagnostics_emitters(
-            diag, credentials=credentials)
         gate = _iv_history_gate(scenario_id, candidate_key,
-                                diag=diag, emit_exact=emit_exact,
-                                credentials=credentials)
-        sc, rec, cand, provider, token, known_expiries = gate
+                                request=request, diag=diag)
+        sc, rec, cand, provider, token, known_expiries, emit_exact, emit_legacy = gate
 
         vendor, storage_ports = _iv_pipeline_ports()
         payload = ivpipeline.build_iv_history(
@@ -2817,7 +3015,8 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         return {**payload, "diagnostics": diag_payload}
 
     @app.post("/api/scenarios/{scenario_id}/iv-history/backfill")
-    def iv_history_backfill(scenario_id: str, candidate_key: str) -> dict:
+    def iv_history_backfill(scenario_id: str, candidate_key: str,
+                            request: Request) -> dict:
         """T11（#194，兩段式補建 P3-a）：Legacy (tenor, delta) 家族的
         獨立補建進入點——`GET .../iv-history` 不再同步觸發這件事（見
         該端點回應裡的 `backfill_pending`），前端在收到 `backfill_
@@ -2831,17 +3030,15 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         vendor 額度，這個保證在引擎層、不是靠這裡另外擋一次。
 
         閘門與 candidate 查找跟主端點共用同一套規則（`_iv_history_
-        gate()`）——未解鎖一樣 403、候選找不到一樣 404，兩個端點面對
-        同一個 scenario_id／candidate_key 不會給出不一致的答案。
+        gate()`）——AUTH-04（#311）起同樣要求角色至少 Super User＋
+        存在唯一 protected owner 且已啟用，未過一樣 403、候選找不到
+        一樣 404，兩個端點面對同一個 scenario_id／candidate_key 不會
+        給出不一致的答案。
         """
-        credentials = _credential_map()
         diag = _CollectingDiagnostics()
-        emit_exact, emit_legacy = _iv_diagnostics_emitters(
-            diag, credentials=credentials)
         gate = _iv_history_gate(scenario_id, candidate_key,
-                                diag=diag, emit_exact=emit_exact,
-                                credentials=credentials)
-        sc, rec, cand, provider, token, known_expiries = gate
+                                request=request, diag=diag)
+        sc, rec, cand, provider, token, known_expiries, emit_exact, emit_legacy = gate
 
         vendor, storage_ports = _iv_pipeline_ports()
         target_expirations = ivpipeline.legacy_target_expirations(
@@ -2856,8 +3053,8 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
 
     # ---------- 設定：資料源與 Provider credential（Settings／#124） ----------
 
-    def _settings_view(*, credentials: dict[str, ProviderCredential | None] | None = None
-                       ) -> dict:
+    def _settings_view(*, credentials: dict[str, ProviderCredential | None] | None = None,
+                       owner: str | None = None) -> dict:
         """設定頁的完整 view dict。
 
         **這裡是 token 的邊界**：回應只帶 `providers.mask_token()` 的遮罩
@@ -2871,21 +3068,25 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         （`_credential_map()`），行為不變——只有 `credential` 這批資料
         會被重用，`get_verification()` 仍然照舊逐一查（沒有重複讀取的
         問題，`_known_secrets()` 不需要驗證結果）。
-        """
+
+        `owner`（AUTH-04／#311）：同 `_credential_map()`——省略時查
+        `identity_resolver()`，`_iv_history_gate()` 才會顯式傳入
+        protected owner id。"""
         db = _db()
-        owner = identity_resolver()
-        stored = db.get_settings(owner=owner)
+        resolved_owner = owner if owner is not None else identity_resolver()
+        stored = db.get_settings(owner=resolved_owner)
         usages = {
             providers.MARKET_DATA:
                 stored.market_data if stored else UsageSetting(mode=providers.MODE_DEFAULT),
             providers.HISTORICAL_IV:
                 stored.historical_iv if stored else UsageSetting(mode=providers.MODE_DEFAULT),
         }
-        creds_map = credentials if credentials is not None else _credential_map()
+        creds_map = (credentials if credentials is not None
+                    else _credential_map(owner=resolved_owner))
         creds: dict[str, dict] = {}
         for p in providers.SUPPORTED_PROVIDERS:
             got = creds_map[p.id]
-            checked = db.get_verification(p.id, owner=owner)
+            checked = db.get_verification(p.id, owner=resolved_owner)
             creds[p.id] = {
                 "configured": got is not None,
                 "masked": providers.mask_token(got.token) if got else None,
@@ -2973,14 +3174,16 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
     @app.put("/api/settings/credentials/{provider}")
     def put_credential(provider: str, req: CredentialRequest,
                        request: Request) -> dict:
-        """PB-09（#298）第一個 User Level 授權規則：`owner_credentials`
-        的寫入路徑 gate 在 Super User——Normal User 的 Anonymous Owner
-        結構性寫不進任何第三方 token（OD-3）。**先驗證軸二、再驗證
-        provider 白名單、才碰 storage**：沒有有效 `ADMIN_SECRET` 的
-        請求連白名單檢查的副作用（若日後那段變重）都不該享有。owner_id
-        （軸一）維持不變——寫進去的仍是目前解析出的那個 owner，Super
-        User 不會因為這個動作而變成別人。"""
-        superuser.require_superuser(request, admin_secret=_effective_admin_secret)
+        """PB-09（#298）第一個 User Level 授權規則、AUTH-03（#310）
+        起改用三層角色：`owner_credentials` 的寫入路徑 gate 在 Super
+        Admin——Normal User 的 Anonymous Owner 結構性寫不進任何第三方
+        token（OD-3）。**先驗證軸二、再驗證 provider 白名單、才碰
+        storage**：沒有有效 Super Admin role session 的請求連白名單
+        檢查的副作用（若日後那段變重）都不該享有。owner_id（軸一）
+        維持不變——寫進去的仍是目前解析出的那個 owner，Super Admin
+        不會因為這個動作而變成別人。"""
+        superuser.require_role(request, superuser.Role.SUPERADMIN,
+                               resolve_session=_db().resolve_role_session)
         if not providers.is_supported(provider):
             # 自訂不等於任意資料源：不在白名單就是不支援，不接受任何
             # 「先存起來再說」的 provider id。
@@ -2999,13 +3202,14 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         「這把 token 不能用」是這個端點的正常答案之一，回 200 帶狀態，
         呼叫端才不必為了讀一個預期內的結果去 catch。
 
-        PB-09（#298）：同一組 gate——即使這個 provider 剛好已經有
-        credential（例如 Super User 稍早已設好），沒帶有效 `ADMIN_
-        SECRET` 的請求一樣拿不到「拿別人已存好的 token 去打一次外部
-        API」這個能力，不能只靠「Normal User 反正沒有 credential 可測」
-        這個間接後果當防線。
+        PB-09（#298）／AUTH-03（#310）：同一組 gate——即使這個
+        provider 剛好已經有 credential（例如 Super Admin 稍早已設
+        好），沒帶有效 Super Admin role session 的請求一樣拿不到
+        「拿別人已存好的 token 去打一次外部 API」這個能力，不能只靠
+        「Normal User 反正沒有 credential 可測」這個間接後果當防線。
         """
-        superuser.require_superuser(request, admin_secret=_effective_admin_secret)
+        superuser.require_role(request, superuser.Role.SUPERADMIN,
+                               resolve_session=_db().resolve_role_session)
         if not providers.is_supported(provider):
             raise HTTPException(status_code=400,
                                 detail=f"不支援的資料源：{provider}")
@@ -3022,10 +3226,11 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
 
     @app.delete("/api/settings/credentials/{provider}")
     def delete_credential(provider: str, request: Request) -> dict:
-        """PB-09（#298）：刪除也是對 `owner_credentials` 的寫入，同一套
-        gate——一致性優先於「反正 Normal User 也刪不到自己沒有的東西」
-        這個間接推論。"""
-        superuser.require_superuser(request, admin_secret=_effective_admin_secret)
+        """PB-09（#298）／AUTH-03（#310）：刪除也是對
+        `owner_credentials` 的寫入，同一套 gate——一致性優先於
+        「反正 Normal User 也刪不到自己沒有的東西」這個間接推論。"""
+        superuser.require_role(request, superuser.Role.SUPERADMIN,
+                               resolve_session=_db().resolve_role_session)
         if not providers.is_supported(provider):
             raise HTTPException(status_code=400,
                                 detail=f"不支援的資料源：{provider}")

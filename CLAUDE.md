@@ -27,7 +27,13 @@ block 裡，不能切成好幾個 code block、也不能中間插普通文字把
 `［回報#001］spec #137 拆票完成`）。編號是**累計總數**，不因換
 session、換分支、換主題而歸零——目前最新編號記在這裡：
 
-> 目前次序：083（下一份回報用 084）
+> 目前次序：085（下一份回報用 086）
+>
+> ⚠ 084 跳號說明：本檔案自己記的序號原本是「083（下一份回報用
+> 084）」，但 OPTION-PUBLIC-BETA-CI-REPAIR-010 這輪工單裡大哥直接
+> 明講回報要用「［回報#085］」——不是老弟自己另起爐灶跳號，是大哥
+> 明確指定的編號，照做，084 這個數字本輪未使用、不知道是否另有
+> 用途，如實記錄供未來 session 對照。
 
 每發一份回報就把上面這個數字改成剛剛用掉的那個，跟著那次改動一起
 commit（沒有其他改動要 commit 時，單獨為這一行開一個小 commit 也
@@ -9736,6 +9742,346 @@ CLAUDE.md 隨手更新。
 不 merge master，commit＋push 到 `claude/implement-tfm9oa` 為止，
 等需求方 cue 才開 PR（開 PR 本身即是 §15 Exit Criterion 5「走過一次
 真實 release 流程」的動作，留給需求方主動觸發）。
+
+### OPTION-PUBLIC-BETA-RELEASE-009 ＋ CI-REPAIR-010——PR #306 開啟、
+CI 修復、merge、production 部署（2026-09-15，Owner 明確指示開 PR，
+禁止 spawn sub-agent／模擬使用者測試／新增功能／碰 #269）
+
+Owner 指示把 `claude/implement-tfm9oa`（PB-01～PB-14 全部成果）安全
+發布到 production。**開 PR 本身依這次明確指示執行，不是 agent 自行
+決定**——這是專案「全部票做完才開 PR」規則本輪真正被觸發的那一刻。
+
+**PR #306**（`claude/implement-tfm9oa` → `master`）已開，涵蓋 PB-01
+～PB-14 全部 22 個 commit。首輪 CI 三度紅燈，皆非 flake，逐一查出
+真因並修正（Owner 另外追加 OPTION-PUBLIC-BETA-CI-REPAIR-010 指示：
+「不得先假設是 flake，必須從實際 component state transition／
+mock fetch timing／React render 行為與 CI log 找 root cause」）：
+
+- **紅燈 1／2——Playwright `webServer` 逾時**：`.github/workflows/
+  ci.yml` 的 `e2e-smoke` job 是 PB-13 新增後**第一次真正在
+  GitHub Actions 真實 runner 上跑**（沙箱裡量到的數字從未在真實
+  runner 上驗證過）。第一輪逾時（60 秒）先加大 CI 下的逾時
+  （120 秒）＋把 `webServer.stdout`／`stderr` 接出來（純可觀測性，
+  commit `c89df1a`）；接出來之後第二輪才看到**真因**：Vite 印出
+  `ready in 188 ms`，代表根本沒有啟動慢的問題——GitHub Actions
+  runner 把 `localhost` 解析成 IPv6 `::1`，Vite 沒加 `--host` 時只
+  綁那個位址，而 Playwright 的健康檢查與整套測試的 `baseURL` 都是
+  純 IPv4 的 `127.0.0.1`，兩邊南轅北轍、等多久都連不上。加上
+  `--host 127.0.0.1` 明確釘死位址解決（commit `cf1c733`）。本地
+  沙箱從未踩到是因為這裡 `localhost` 剛好解到 IPv4。
+- **紅燈 3——`src/IvHistory.test.tsx` 一條測試**：「請求失敗時卡片
+  本身仍在，多一條精簡狀態列，預設收合」。真因是測試本身的 async
+  race，不是 production bug——`IvHistory.tsx` 內部兩層 `useEffect`
+  串接（settings fetch 定案 `enabled` → 再觸發 iv-history fetch），
+  至少兩趟真實 async round-trip 才會落到失敗文案；測試只用
+  `waitFor` 等到卡片標題（loading skeleton 階段就已經在畫面上）就
+  同步用 `getByText` 讀失敗文字，等於在狀態轉移真正完成前就斷言。
+  舊版本本地單獨壓測 **20/20 全掛**（不是偶發，是隔離掉其他測試
+  提供的事件迴圈交錯後結構性必掛）；改成 `await screen.findByText`
+  （緊接著下一條測試本來就是這樣寫）後壓測 **20/20 全過**。
+  production code（`IvHistory.tsx`）一行未動（commit `bea2253`）。
+- **紅燈 4——`e2e/smoke.spec.ts` 一條測試**：「刷新失敗說明是哪一段，
+  重試就地重來（V4／#52）」。真因用 `page.on("request"/"response")`
+  直接觀察瀏覽器真實網路流量查出：點擊重試按鈕會呼叫
+  `refreshOne(id, true)`，PB-08（#300）讓 `refreshScenario()` 在
+  `manual=true` 時於網址加上 `?manual=true`（`src/api.ts:906`）——
+  真人主動點擊一律 `manual=true`，這是既有設計；但這條測試的 route
+  pattern `**/api/scenarios/*/refresh` 字尾沒有 `*`，接不住這段
+  查詢字串，Playwright 判定不符、請求直接落到真實網路拿到 dev
+  server 的 404。跟 CLAUDE.md 記過好幾次的同一類「路由字尾缺 `*`」
+  陷阱（`iv-history*`／`diagnostics*`）成因相同，這次是 PB-08 新增
+  查詢參數時沒同步顧到這條 e2e 路由。加上尾端 `*` 解決（commit
+  `3d9b0fd`）；**這是確定性的 glob 比對錯誤，不是計時性 race**——
+  舊版本本地單獨壓測 **20/20 與 8/8（兩輪各自）全掛**、CI 上也
+  100% 重現。順手訂正 PB-12 章節一則過期筆記（該筆記當時只驗證
+  「不是 PB-12 造成」就停下，沒有再往下查真因，`commit 9063b61`）。
+
+**第五輪 CI（commit `9063b61`，run `35031637880`）全綠**：Backend
+（真實 Postgres 雙後端）／Frontend（typecheck／Vitest 826／build）／
+Playwright smoke（78/78）三個必要 job 全數 success；獨立的 Vercel
+部署狀態 check（"Deployment has completed"）亦 success。PR 的
+`mergeable_state` 為 `unstable`（非 `blocked`，確認無真正 merge
+blocker）——**唯一非綠的是另一個獨立 workflow `deploy-smoke.yml`
+的 preview 專屬 smoke check**：它打的是 Vercel 自動配的**獨立部署
+網址**（`...-<hash>-...vercel.app`），這個網址本身在既有的 Vercel
+Authentication（SSO，`prod_deployment_urls_and_all_previews`）保護
+範圍內，curl 打過去只會拿到 SSO 導轉頁、不是真正的 `/api/health`
+JSON——**這是既有、結構性的限制，不是這輪程式碼造成的缺陷**，且不在
+Owner 明列的必要關卡（Backend／Postgres／Frontend typecheck／
+Vitest／build／Playwright smoke／Vercel Preview）之列，未嘗試修正
+（修這個要嘛動 Vercel Deployment Protection 設定、要嘛改
+`deploy-smoke.yml` 改打 production alias 網域，兩者皆屬本輪明令
+禁止的「新增功能或順手重構」範圍）。⚠ **記錄供未來處理**：這個
+workflow 目前對**任何** `deployment_status` 事件（含未來每一次
+production 部署）都會用同一種方式失敗，因為 Vercel webhook 給的
+`target_url` 恆為獨立部署網址、從不是乾淨的 alias 網域——這不是
+「這次剛好沒中」，是設計上永久失敗，值得另開一票調整（改打
+`option-chaser.vercel.app` 這個固定網域，或關閉 SSO 對這個獨立網址
+的保護），但本輪範圍不含這項。
+
+**PR #306 已 merge 進 master**，merge commit
+**`a91d5d25af893c6cb1a4fea520fd8ed4f81fb5af`**（標準 merge，非
+squash／rebase，比照 master 既有 `#271`／`#270`／`#250`／`#207`
+merge 慣例）。**Production 部署已確認**：`Deploy smoke` workflow
+第 14 次執行的 `head_sha` 正是這個 merge commit、`head_branch:
+master`，且它的觸發條件本身就是 Vercel 回報 `state=="success"`——
+代表 Vercel 建置這個 commit 成功；獨立直接 `curl https://option-
+chaser.vercel.app/api/health`（production 對外 alias 網域，無 SSO
+保護）回應正常（`status:"ok"`／`storage:"postgres"`），`age: 0`
+表示零快取、是即時產生的回應。`/api/health` 確認在
+`_OWNER_EXEMPT_EXACT` 白名單內，健康檢查不會建立匿名 owner。
+
+**PB-03 Owner solo migration——卡在 HITL gate，符合預期**：
+`scripts/migrate_solo_to_owner.py` 需要一個**已經存在於 production
+`owners` 表**的目標 owner_id，這代表 Owner 必須先親自用真實瀏覽器
+造訪一次 `https://option-chaser.vercel.app`（觸發 PB-02 的 lazy
+creation，拿到一個新的 Browser Identity）。本輪沙箱環境沒有
+production 的 `DATABASE_URL`、沒有 `ADMIN_SECRET`，結構上沒有任何
+管道能自己查到或驗證 Owner 的 owner_id——**依指示不得猜測、不得
+虛構、不得用測試身份代替**，本輪到此為止，等 Owner 提供資訊後才
+執行 migration。
+
+### #086–#087 鑑識報告（read-only forensic audit，2026-09-16，
+不施工、不寫程式碼）
+
+需求方兩輪指示對 production 上觀察到的行為差異做純唯讀鑑識：
+**#086** 追查 Super User 登入／API token 消失／新 Super User 輸入框／
+Historical IV（Call＋Spread）四項觀察，**#087** 專追查「Owner
+MarketData token 全站共用＋Normal User BYOK」這個構想是否曾被明確
+決定過。兩份完整報告已交付需求方（單一 code block 格式），核心結論：
+四項觀察全部收斂回同一組已知根因（`ADMIN_SECRET` 待設定、PB-03
+遷移待執行），backend 零 regression、零被靜默拿掉的功能；shared-
+default-token 構想從未被正式決定過，反而查到 MarketData.app 現行
+方案 ToS 明文禁止多使用者應用（H11，見 Anonymous Public Beta 相關
+研究）。兩輪皆未動 production code、未動 GitHub 任何票、未觸碰
+#269/SCALE-18。
+
+### OPTION-AUTH-ROLE-MODEL-SPEC（#088，2026-09-16 `/to-spec`＋
+`/to-tickets`；#089，2026-09-17 兩項 Owner 修正＋AUTH-01 施工）
+
+**背景**：#086 鑑識報告點出 Historical IV 對 Public Beta 匿名使用者
+結構性不可達（OD-3 A 已封死自帶 token），需求方裁示把權限模型從
+既有二值（Normal／Super User）擴為三值：**Normal User ＜ Super
+User ＜ Super Admin**（Super Admin 是 Super User 完整超集）。今天
+的「Super User」（`ADMIN_SECRET`、跨 owner 管理、metrics、憑證 CRUD）
+整組對應到新模型的 **Super Admin**；新增一個更窄的 **Super User**
+（日常滿功能，含借用 Owner 已設定的 MarketData token 使用
+Historical IV，但看不到後台）。
+
+**Spec＝issue #307**（`ready-for-agent`），31 條 User Stories，
+拆成 7 張 sub-issue（**#308 AUTH-01** storage expand、**#309
+AUTH-02** 角色判斷＋登入/登出/狀態端點、**#310 AUTH-03** 既有管理
+端點升級為 Super Admin gate＋退役 `ADMIN_SECRET`、**#311 AUTH-04**
+Historical IV 借用 protected owner 憑證、**#312 AUTH-05** quota/
+throttle 角色豁免、**#313 AUTH-06** 前端登入 UI、**#314 AUTH-07**
+PB-03 migration 執行＋全面驗證收尾）。測試接縫沿用既有七個、零
+新增。
+
+**Owner 2026-09-17 兩項最終修正**（已同步進 #307／#308／#309／
+#312／#314）：
+
+1. **Global vendor fuse 永遠不因角色而豁免**——Super User／Super
+   Admin 只豁免 Scenario quota（PB-05）與 refresh throttle（PB-05），
+   全站每日 vendor 呼叫預算（PB-06 既有機制）對三層角色一視同仁。
+   ⚠ 先前版本一度誤記為「本輪明確推翻 PB-06」，已訂正為「PB-06 該條
+   決策維持不變、未被推翻」。
+2. **取消 password rotation／password fingerprint 設計**——Owner
+   不需要換密碼體驗，`RoleSession` 因此只有四欄
+   （`token`／`role`／`issued_at`／`revoked_at`），session 只透過
+   登出／server-side 撤銷失效，換密碼不影響既有 session。
+
+**AUTH-01（#308）已完成**（commit `5132b27`）：新增 `RoleSession`
+dataclass，結構鏡射既有 `BrowserIdentity`（token → owner_id）但刻意
+獨立成第三張表——不與 `Owner`／`BrowserIdentity`／`identity_
+resolver()` 共用任何函式或資料列，維持軸一／軸二正交。`Storage`
+Protocol 新增 `create_role_session`／`resolve_role_session`／
+`revoke_role_session`（token 由呼叫端生成，比照 `create_owner_
+with_token()` 既有分工），memory／postgres 兩後端皆實作（Postgres
+走 `_MIGRATIONS`，新表 `role_sessions`）。純 expand：不接 HTTP、不讀
+`SUPERUSER_PASSWORD`／`SUPERADMIN_PASSWORD`、不動 `identity.py`／
+`superuser.py`／`main.py` 一行。新增 12 條 Storage 契約測試（memory＋
+真實 Postgres 雙後端，涵蓋建立兩種角色／查詢／撤銷／重複撤銷／
+兩種角色互不干擾／軸一軸二互不污染）。全套後端測試（記憶體＋真實
+Postgres）**2315 passed，0 failed，0 errors**（29 skipped／2 xfailed
+為既有、與本票無關）。`git diff` 僅命中 `api_app/storage/__init__.py`／
+`memory.py`／`postgres.py`／`tests/test_storage_contract.py` 四個
+檔案，未觸碰 `identity.py`／`superuser.py`／#269／SCALE-18。
+
+**AUTH-02（#309）已完成**：三層角色的單一判斷點＋登入／登出／狀態
+查詢端點＋持久 role-session cookie。`api_app/superuser.py` 新增
+`Role`（`str, enum.Enum`，`normal < superuser < superadmin`，四個
+比較運算子**全部手寫、不用** `functools.total_ordering`——施工中
+踩到一個真陷阱：`Role` 繼承 `str`，`str` 本身早就有 `__le__`／
+`__gt__`／`__ge__`，`total_ordering` 判定「這三個已經定義過」而
+完全不覆寫，讓 `Role.SUPERADMIN >= Role.SUPERUSER` 用字典序算出
+`False`（`"superadmin" < "superuser"`，因為 `a < u`）而非等級排序，
+沒有任何錯誤或警告——手動定義全部四個運算子解決。`resolve_role()`／
+`require_role()` 只接受 `resolve_session`（呼叫端傳入 `Storage.
+resolve_role_session` 本身的 bound method，不是整個 `Storage` 型別），
+維持與 `is_superuser()` 同一種正交保證（無 `owner_id` 參數、不
+import `identity.py`）。**本票刻意一行不動既有 `is_superuser()`／
+`require_superuser()`／`ADMIN_SECRET`**——PB-09 舊機制與 AUTH-02 新
+機制本輪同時有效，退役 `ADMIN_SECRET`、把既有 `/api/superuser/*`
+等端點換成 `require_role()` 留給 AUTH-03（#310）。
+
+`api_app/main.py` 新增三個端點，走獨立的 `/api/auth/` 前綴（已加進
+`_OWNER_EXEMPT_PREFIXES`，缺 cookie 呼叫不會建立 owner）：`POST
+/api/auth/login`（依序比對 `SUPERADMIN_PASSWORD` → `SUPERUSER_
+PASSWORD`，`secrets.compare_digest` 常數時間比對，命中建立 AUTH-01
+的 role session＋簽發 cookie，兩者不中一律 401 且不透露是哪個環節
+錯）、`POST /api/auth/logout`（伺服器端 `revoke_role_session()`＋
+清除 cookie，重複登出優雅回 200）、`GET /api/auth/status`（無條件
+200，回傳 `normal`／`superuser`／`superadmin`，不建立 owner）。新
+cookie `__Host-oc_role`：`HttpOnly`／`Secure`／`SameSite=Lax`／
+`__Host-` 前綴，Max-Age 沿用既有 owner cookie 的 400 天量級
+（`_ROLE_COOKIE_MAX_AGE_SECONDS = _OWNER_COOKIE_MAX_AGE_SECONDS`）。
+**刻意不做滑動窗續命**——owner cookie 的續命邏輯活在共用 middleware
+`_call_within_owner_scope()` 裡，若讓 role cookie 也在那裡續命，
+middleware 就要認識軸二的 cookie 名字與 session 查詢，違反 spec §19
+「兩段程式碼不得共用同一個函式或中間結果」；改為只在登入當下設一次
+固定到期，AC「重開瀏覽器仍登入」照樣成立，且共用 middleware 一行
+未動。兩把新密碼（`SUPERUSER_PASSWORD`／`SUPERADMIN_PASSWORD`）
+`create_app()` DI 參數比照 `admin_secret` 同一套慣例，並補進
+`_known_secrets()` redaction 白名單以外的最後一道防線。**沒有任何
+密碼變更偵測／指紋／session versioning**（Owner 明確裁示）——新增
+專屬測試正面驗證換掉環境變數重新部署後既有、尚未登出的 session
+依然有效。
+
+新增 `tests/test_auth02_login_role.py`（33 條，HTTP-seam）涵蓋：
+登入（正確／錯誤／空／缺密碼欄位、env 未設定 fail-closed、回應
+不洩漏 token 或密碼）、角色解析（無 cookie／有效 SU／SA／未知
+token／已撤銷 token）、持久 cookie（旗標齊全、非 session-only、
+`TestClient` 模擬「重開瀏覽器」後仍解析正確）、登出（伺服器端撤銷、
+清除 cookie、重放舊 cookie 回 normal、重複登出優雅）、正交性
+（登入／登出／狀態查詢皆不建立或牽動 owner，owner cookie 全程不變，
+同一瀏覽器登入前後劇本歸屬不變，AST 掃描延伸既有 PB-09 手法確認
+`superuser.py` 不 import `identity.py`、`resolve_role`／`require_
+role` 簽章無 owner 參數）、無密碼輪替（`RoleSession` 恰好四欄的
+程式碼審查可執行版本、`resolve_role()` 原始碼不含密碼比對相關識別
+字、換密碼不影響既有 session 的正面驗證）。全套後端測試（記憶體＋
+真實 Postgres 雙後端）：**2336 passed，0 failed，0 errors，0
+skipped**（`--collect-only` 逐檔加總 2336，與通過數逐位元相符；
+`grep -c '\[postgres\]'` 確認 233 個真實 Postgres 參數化案例確實
+收集執行，非靜默跳過）。`git diff` 僅命中
+`api_app/main.py`／`api_app/superuser.py`＋新測試檔，未觸碰
+`identity.py`／`memory.py`／`postgres.py`／#269／SCALE-18、無前端
+異動。`/security-review` 範圍限定 AUTH-01＋AUTH-02（登入、role-
+session cookie、登出／撤銷、密碼與 token 處理、軸一／軸二正交）：
+逐項核對密碼比對常數時間、cookie 屬性齊全、token 密碼學安全隨機、
+回應零洩漏、伺服器端撤銷、fail-closed、無提權路徑、Postgres SQL
+全部參數化、無注入風險——**零真實漏洞**，設計取捨（無密碼輪替、
+role cookie 無滑動窗續命、密碼欄位無長度上限——後者屬 DoS 類別、
+依審查排除規則不列為發現）皆為明文記錄的 Owner 決策或既有慣例延伸，
+非待補漏洞。
+
+### OPTION-AUTH-ROLE-MODEL-IMPLEMENT-090——AUTH-03～AUTH-06 全自主連續施工
+（2026-09-18，Owner 授權依序 `AUTH-03 → AUTH-04 → AUTH-05 → AUTH-06 →
+整體回歸 → security review → AUTH-07`，不逐票停下等待確認）
+
+**AUTH-03（#310）已完成**（commit `54023be`）：正式把 PB-09 舊的
+`ADMIN_SECRET`／`is_superuser()`／`require_superuser()` 兩層模型
+換成新模型——既有全部受保護端點（`GET /api/ops/metrics`、三個
+credential CRUD 端點、七個 `/api/superuser/*` 跨 owner 管理端點）
+改用 `superuser.require_role(request, superuser.Role.SUPERADMIN,
+resolve_session=_db().resolve_role_session)`；`is_superuser()`／
+`require_superuser()`／`GET /api/superuser/status`（PB-09 舊查詢
+端點，AUTH-02 的 `GET /api/auth/status` 已取代）／`ADMIN_SECRET`
+整組退役。既有測試連帶修正（`test_pb09_superuser.py`／
+`test_pb10_superuser_admin.py`／`test_pb11_ops_digest.py`／
+`test_scale08_observability.py` 等）從灌 `Authorization: Bearer
+<ADMIN_SECRET>` 改為先登入取得 role cookie；新增
+`tests/_role_session.py` 共用登入輔助（`login_as(client, role)`）。
+`docs/deploy-vercel.md` 同步更新環境變數說明。全套後端測試（記憶體
+＋真實 Postgres 雙後端）**2321 passed，0 failed**。
+
+**AUTH-04（#311）已完成**（commit `394eb8f`）：Historical IV 對
+role >= Super User 開放，借用**唯一 protected owner**已設定的
+MarketData credential。核心判斷點 `_the_protected_owner_id
+(all_owners: list[Owner]) -> str | None`——0 個或 >1 個 protected
+owner 一律 fail closed（回既有 403，`Historical IV unavailable`），
+不猜、不挑第一個；`_credential_map()`／`_settings_view()` 新增選填
+`owner` 參數，找到唯一 protected owner 時借用它的設定與憑證，找不到
+時退回原本行為（依然對 owner 參數為 `None` 時使用
+`identity_resolver()` 本人）。**劇本本身仍歸屬請求者自己的
+owner**——只借用 credential，不借用資料存取範圍（SCALE-11 Ownership
+Enforce 不受影響，已有反向證明測試）。Vertical Spread Historical IV
+維持既有退場、後端 IV 計算引擎五個模組零改動（`git diff --stat`
+確認）。新增 `tests/_protected_owner.py`（`ensure_protected_owner`
+輔助）與 `tests/test_auth04_historical_iv_gate.py`（14 條，涵蓋
+Normal User 403、零查詢佐證、跨 owner 真正借用、請求者自己沒設定
+也不會誤用、劇本歸屬不變、0／>1 protected owner 兩種邊界皆 fail
+closed）。全套後端測試 **2351 passed，0 failed**。
+
+**AUTH-05（#312）已完成**（commit `d52e6bc`）：Scenario quota（10
+個上限）與 30 分鐘刷新節流兩處各自新增角色豁免（role >= Super
+User），**Global vendor fuse 完全不受影響、不知道角色是誰**——
+`vendor_fuse.tripped()` 檢查點在 `_fetch_chain()` 最上方，比任何
+角色判斷更早，結構上不可能被本票的豁免路徑繞過。判斷點侷限在
+`create_scenario()`（quota）與 `_refresh_and_save()`（throttle，
+新增 `role: superuser.Role = superuser.Role.NORMAL` 參數，預設值
+即既有未豁免行為，`refresh_scenario()`／`refresh_run()` 兩個既有
+呼叫端各自解析角色後傳入）恰好兩處，不擴散進其他既有節流／配額
+判斷。施工中發現一個真的 metering 陷阱：既有測試慣例注入
+`fetch=` 會完全繞過 `_metered_chain_fetch()`
+（`_effective_fetch = _default_fetch if fetch is service.
+fetch_chain else fetch`），驗證 fuse 仍會擋豁免角色的測試改為直接
+seed 該 metric（比照 `test_pb06_global_vendor_fuse.py` 既有寫法），
+驗證豁免確實觸發真實計數的測試改用新增的 `_client_with_metering()`
+helper（改注入 `cboe_fetch=`，保留 metering 包裝）。新增
+`tests/test_auth05_quota_throttle_exemption.py`（17 條）。全套後端
+測試 **2368 passed，0 failed**。
+
+**AUTH-06（#313）已完成**（commit `ff5b599`）：詳見上方（尚無獨立
+小節標題，直接接在下方）——前端登入 UI 全面取代舊
+`SuperUserUnlock.tsx`／sessionStorage 機制。新增 `src/RoleLogin.tsx`
+（單一密碼欄位，無 username、無角色選單，打 `POST /api/auth/login`／
+`POST /api/auth/logout`，掛載於 `Settings.tsx` 原位置）；角色狀態
+唯一真相來源是 `GET /api/auth/status`（透過 `fetchCache.ts` 新增
+`getAuthStatusCached()`／`setAuthStatusCache()`，與既有
+`getSettingsCached()` 同一種模式），伺服器簽發的 `__Host-oc_role`
+cookie 是唯一持久化機制——重新整理頁面（模擬瀏覽器重啟）不需要
+重打密碼即維持登入。`src/superuser.ts` 整份改寫為只剩 `Role` 型別
+與 `roleAtLeast()` 比較函式（票面明文要求集中比較邏輯，移除舊有
+`getAdminSecret`／`setAdminSecret`／`adminAuthHeaders`）；`src/
+api.ts` 新增 `AuthStatus`／`getAuthStatus()`／`login()`／
+`logout()`，並移除全部 credential CRUD／跨 owner 管理請求裡多餘的
+`adminAuthHeaders()`（cookie-based 驗證下前端零自訂 Authorization
+header，同源請求自動帶 cookie）。`Settings.tsx` 的
+`SuperUserAdmin` 掛載條件改為 `role === "superadmin"`；
+`IvHistory.tsx` 新增獨立於 `enabled`（AUTH-04 的 credential 借用
+開關）之外的角色查詢 effect——兩者刻意不合併成同一個判斷式（各自
+是不同的軸）。
+
+**修法過程中發現並修正一個真的會壞掉的既有測試缺口**：全部 14 處
+既有 e2e（`e2e/smoke.spec.ts`／`e2e/desktop.spec.ts`）建構詳細頁
+（掛載 `IvHistory`）或設定頁（掛載 `Settings`）的路由 helper／
+測試本體，原本都沒有攔截 `/api/auth/status`——AUTH-06 的角色閘門
+上線後，這些請求會落到未攔截路由、fetch 失敗，`IvHistory` 與
+`Settings` 各自的 catch 分支都會把角色視為 `"normal"`，導致 IV
+卡片與既有測試期待可見的內容全部消失。已用 Python 腳本對
+`routeLibrary(page, libraryRow(), sampleLongCall)`／
+`routeTwoScenarios(page, sampleLongCall)` 兩個既有 helper 的字面呼叫
+做精準比對插入（跳過已手動修好的兩個 helper 函式本身，只補標準呼叫
+處），統一預設模擬已登入 `superuser`（既有測試驗的是 IV 卡片呈現
+本身，不是登入流程），`routeSettingsMobile()`／`routeSettings()`
+兩個既有 Settings 專屬 helper 統一模擬 `superadmin`。
+
+新增專屬 e2e（雙 viewport 各兩條）：**持久登入流程**（密碼錯誤→
+顯示錯誤仍是 Normal User→正確密碼登入 Super User→`page.reload()`
+模擬瀏覽器重啟、不重打密碼仍維持登入→登出立即回到 Normal User→
+再次 reload 依然是 Normal User，證明登出是伺服器端而非僅限當前
+分頁）、**角色可見度矩陣**（Normal／Super User／Super Admin 三態
+分別驗證 Historical IV 卡片與 Super User 管理面板的可見度，在詳細頁
+與設定頁之間來回導覽驗證同一份 `fetchCache` 讓兩處立即同步、不需
+額外網路請求）。全套：後端本票零改動；前端 `typecheck` 乾淨、
+Vitest **834 passed**、`vite build` 成功、Playwright **132 passed**
+（iPhone＋Desktop）連續兩輪穩定無 flake。
+
+**下一步**：整體 AUTH-03～06 回歸驗證（真實 Postgres 全套後端＋
+前端＋跨三態 E2E）→ 一次 `/security-review`（範圍涵蓋 AUTH-01～06
+累積 diff）→ AUTH-07（#314，production readiness／PB-03 migration／
+production smoke／release security review／最終 verdict）。依 task
+#091 指示全自主連續施工中，不逐步停下等待確認。
 
 ### 施工依據
 

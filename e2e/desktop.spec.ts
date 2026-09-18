@@ -232,6 +232,11 @@ async function openAdvanced(block: import("@playwright/test").Locator) {
 test("Historical IV 一年走勢圖：桌面滑鼠移動時顯示 tooltip（#140；整張圖是單一" +
      "scrubber 介面，需求方 2026-08-22 反饋——不再靠逐點命中）", async ({ page }) => {
   await routeTwoScenarios(page, sampleLongCall);
+  // AUTH-06（#313）：`IvHistory.tsx` 疊了角色閘門，這裡模擬已登入
+  // Super User——這批既有測試驗的是 IV 卡片本身的呈現，不是登入
+  // 流程，角色只要 >= superuser 即可。
+  await page.route("**/api/auth/status",
+    (route) => route.fulfill({ json: { role: "superuser" } }));
   await page.route("**/api/settings", (route) =>
     route.fulfill({ json: { historical_iv_enabled: true } }));
   await page.route("**/api/scenarios/*/iv-history*", (route) =>
@@ -259,6 +264,11 @@ test("Historical IV 一年走勢圖：桌面滑鼠移動時顯示 tooltip（#140
 test("桌面版：Historical IV 卡片一開始就在，loading 時原位顯示骨架，資料回來後原位換成走勢圖" +
      "（不因 request 完成才決定要不要出現）", async ({ page }) => {
   await routeTwoScenarios(page, sampleLongCall);
+  // AUTH-06（#313）：`IvHistory.tsx` 疊了角色閘門，這裡模擬已登入
+  // Super User——這批既有測試驗的是 IV 卡片本身的呈現，不是登入
+  // 流程，角色只要 >= superuser 即可。
+  await page.route("**/api/auth/status",
+    (route) => route.fulfill({ json: { role: "superuser" } }));
   await page.route("**/api/settings", (route) =>
     route.fulfill({ json: { historical_iv_enabled: true } }));
 
@@ -286,6 +296,11 @@ test("桌面版：Inline Diagnostics 的 Copy 按鈕——版面順序、複製�
      "（DG-05／#148 延伸，QA 反饋 2026-08-16）", async ({ page }) => {
   await page.context().grantPermissions(["clipboard-read", "clipboard-write"]);
   await routeTwoScenarios(page, sampleLongCall);
+  // AUTH-06（#313）：`IvHistory.tsx` 疊了角色閘門，這裡模擬已登入
+  // Super User——這批既有測試驗的是 IV 卡片本身的呈現，不是登入
+  // 流程，角色只要 >= superuser 即可。
+  await page.route("**/api/auth/status",
+    (route) => route.fulfill({ json: { role: "superuser" } }));
   await page.route("**/api/settings", (route) =>
     route.fulfill({ json: { historical_iv_enabled: true } }));
   const diagEvent = {
@@ -348,6 +363,11 @@ test("桌面版 Historical IV：單腿走勢圖真的畫在卡片內、寬度貼
   // 單腿候選＋開啟 Historical IV，與同檔既有 IV 測試同一套設定——
   // 兩腿候選結構上不渲染這塊，用錯樣本會變成在測「卡片不存在」。
   await routeTwoScenarios(page, sampleLongCall);
+  // AUTH-06（#313）：`IvHistory.tsx` 疊了角色閘門，這裡模擬已登入
+  // Super User——這批既有測試驗的是 IV 卡片本身的呈現，不是登入
+  // 流程，角色只要 >= superuser 即可。
+  await page.route("**/api/auth/status",
+    (route) => route.fulfill({ json: { role: "superuser" } }));
   await page.route("**/api/settings", (route) =>
     route.fulfill({ json: { historical_iv_enabled: true } }));
   await page.route("**/api/scenarios/*/iv-history*", (route) =>
@@ -377,6 +397,11 @@ test("桌面版 Historical IV：z-score／moving average／Bollinger 帶三項�
      "（HIVT-07／#158，story #8／#9／#10／#11／#12）",
    async ({ page }) => {
   await routeTwoScenarios(page, sampleLongCall);
+  // AUTH-06（#313）：`IvHistory.tsx` 疊了角色閘門，這裡模擬已登入
+  // Super User——這批既有測試驗的是 IV 卡片本身的呈現，不是登入
+  // 流程，角色只要 >= superuser 即可。
+  await page.route("**/api/auth/status",
+    (route) => route.fulfill({ json: { role: "superuser" } }));
   await page.route("**/api/settings", (route) =>
     route.fulfill({ json: { historical_iv_enabled: true } }));
   const dates = ivDates();
@@ -1186,14 +1211,12 @@ const settingsSaved = {
 };
 
 async function routeSettings(page: import("@playwright/test").Page) {
-  // PB-09（#298）：同 `smoke.spec.ts::routeSettingsMobile` 的理由——
-  // 模擬「已解鎖」讓這些既有測試繼續測它們本來要測的東西（設定頁
-  // 資料流），不是 Super User 解鎖流程本身。
-  await page.addInitScript(() => {
-    window.sessionStorage.setItem("oc_admin_secret", "e2e-test-secret");
-  });
-  await page.route("**/api/superuser/status",
-    (route) => route.fulfill({ json: { is_superuser: true } }));
+  // AUTH-06（#313）：同 `smoke.spec.ts::routeSettingsMobile` 的理由——
+  // 模擬「已登入 Super Admin」讓這些既有測試繼續測它們本來要測的東西
+  // （設定頁資料流），不是登入流程本身。持久登入靠 `HttpOnly` cookie，
+  // 前端不再需要（也不能）自己往 sessionStorage 塞任何東西。
+  await page.route("**/api/auth/status",
+    (route) => route.fulfill({ json: { role: "superadmin" } }));
   await routeTwoScenarios(page);
   let saved = false;
   await page.route("**/api/settings", (route) => {
@@ -1249,13 +1272,10 @@ test("桌面版：切到自訂、存 token，畫面只顯示遮罩", async ({ pa
 
 test("桌面版：測試連線走完未設定 → 尚未驗證 → 已連線（Settings／#125）",
    async ({ page }) => {
-  // PB-09（#298）：同 `routeSettings` 的理由——這條測的是三段式驗證
-  // 狀態機，不是 Super User 解鎖流程，先模擬已解鎖。
-  await page.addInitScript(() => {
-    window.sessionStorage.setItem("oc_admin_secret", "e2e-test-secret");
-  });
-  await page.route("**/api/superuser/status",
-    (route) => route.fulfill({ json: { is_superuser: true } }));
+  // AUTH-06（#313）：同 `routeSettings` 的理由——這條測的是三段式驗證
+  // 狀態機，不是登入流程，先模擬已登入 Super Admin。
+  await page.route("**/api/auth/status",
+    (route) => route.fulfill({ json: { role: "superadmin" } }));
   await routeTwoScenarios(page);
   const base = {
     supported_providers: [{ id: "marketdata-app", label: "Market Data App" }],
@@ -1410,6 +1430,133 @@ test("桌面版：設定頁「刪除我的所有資料」需二次確認，確�
 
   await expect(page).toHaveURL(/#\/$/);
   expect(deleted).toBe(true);
+});
+
+/* ---------- 三層角色持久登入（AUTH-06／#313） ---------- */
+
+const ROLE_SUPERUSER_PASSWORD = "correct-superuser-secret";
+const ROLE_SUPERADMIN_PASSWORD = "correct-superadmin-secret";
+
+/** 桌面版對應 `smoke.spec.ts::routeRoleJourney`——詳細頁（Historical
+ *  IV）與設定頁（登入表單／跨 owner 管理面板）共用同一份角色狀態，
+ *  才測得出「在設定頁登入一次，詳細頁也立刻看得到效果」這種跨頁面的
+ *  持久性。`historical_iv_enabled` 固定 `true`，這裡只在乎角色這一道
+ *  閘門，「是否啟用」那道既有閘門有專屬測試覆蓋，不重複驗證。 */
+async function routeRoleJourney(page: import("@playwright/test").Page) {
+  let role: "normal" | "superuser" | "superadmin" = "normal";
+
+  await routeTwoScenarios(page, sampleLongCall);
+  await page.route("**/api/settings", (route) =>
+    route.fulfill({ json: { ...settingsView, historical_iv_enabled: true } }));
+  await page.route("**/api/scenarios/*/iv-history*", (route) =>
+    route.fulfill({ json: fullIvResponse() }));
+  await page.route("**/api/superuser/owners*", (route) => route.fulfill({ json: [] }));
+  await page.route("**/api/superuser/audit-log*", (route) => route.fulfill({ json: [] }));
+  await page.route("**/api/diagnostics*", (route) => route.fulfill({ json: [] }));
+
+  await page.route("**/api/auth/login", async (route) => {
+    const body = JSON.parse(route.request().postData() ?? "{}") as
+      { password?: string };
+    if (body.password === ROLE_SUPERADMIN_PASSWORD) role = "superadmin";
+    else if (body.password === ROLE_SUPERUSER_PASSWORD) role = "superuser";
+    else {
+      await route.fulfill({ status: 401, json: { detail: "密碼錯誤" } });
+      return;
+    }
+    await route.fulfill({ json: { role } });
+  });
+  await page.route("**/api/auth/logout", async (route) => {
+    role = "normal";
+    await route.fulfill({ json: { role } });
+  });
+  await page.route("**/api/auth/status", (route) =>
+    route.fulfill({ json: { role } }));
+}
+
+test("桌面版：持久登入——登入後重新整理仍維持身分，不必重打密碼；登出後" +
+     "回到 Normal User（AUTH-06／#313）", async ({ page }) => {
+  await routeRoleJourney(page);
+  await page.goto("/#/settings");
+
+  const login = page.getByRole("region", { name: "登入" });
+  await expect(login.getByLabel("密碼")).toBeVisible();
+
+  // 密碼錯誤：顯示錯誤，仍是 Normal User（表單仍在）
+  await login.getByLabel("密碼").fill("wrong-password");
+  await login.getByRole("button", { name: "登入" }).click();
+  await expect(login.getByRole("alert")).toBeVisible();
+  await expect(login.getByLabel("密碼")).toBeVisible();
+
+  // 正確密碼登入 Super User
+  await login.getByLabel("密碼").fill(ROLE_SUPERUSER_PASSWORD);
+  await login.getByRole("button", { name: "登入" }).click();
+  await expect(login.getByText(/目前身分：Super User/)).toBeVisible();
+
+  // 模擬瀏覽器重啟：整頁重新整理讓前端全部 JS 狀態（含 fetchCache）
+  // 歸零；角色真相只可能來自伺服器（這裡的 mock 把它活在
+  // `page.route()` closure 裡，模擬真正的 `HttpOnly` cookie），重整後
+  // 不必重打密碼就該維持登入。
+  await page.reload();
+  await expect(page.getByRole("region", { name: "登入" })
+    .getByText(/目前身分：Super User/)).toBeVisible();
+  await expect(page.getByLabel("密碼")).toHaveCount(0);
+
+  // 登出：立刻回到 Normal User，密碼輸入框重新出現
+  await page.getByRole("button", { name: "登出" }).click();
+  await expect(page.getByLabel("密碼")).toBeVisible();
+  await expect(page.getByText(/目前身分：/)).toHaveCount(0);
+
+  // 登出後再重新整理依然是 Normal User——不是「登出只在這次分頁生效」
+  await page.reload();
+  await expect(page.getByLabel("密碼")).toBeVisible();
+  await expect(page.getByText(/目前身分：/)).toHaveCount(0);
+});
+
+test("桌面版：角色可見度矩陣——Normal／Super User／Super Admin 三態下" +
+     "Historical IV 卡片與管理面板各自的可見度不同（AUTH-06／#313）",
+   async ({ page }) => {
+  await routeRoleJourney(page);
+
+  // Normal User：詳細頁看不到 Historical IV，設定頁看不到管理面板
+  await page.goto("/#/s/s1");
+  await expect(page.locator(".iv-history")).toHaveCount(0);
+  await page.goto("/#/settings");
+  await expect(
+    page.getByRole("region", { name: "Super User 管理面板" }),
+  ).toHaveCount(0);
+
+  // 登入 Super User：Historical IV 可見，管理面板仍不可見
+  await page.getByLabel("密碼").fill(ROLE_SUPERUSER_PASSWORD);
+  await page.getByRole("button", { name: "登入" }).click();
+  await expect(page.getByText(/目前身分：Super User/)).toBeVisible();
+  await expect(
+    page.getByRole("region", { name: "Super User 管理面板" }),
+  ).toHaveCount(0);
+  await page.goto("/#/s/s1");
+  await expect(page.locator(".iv-history")).toBeVisible();
+
+  // 換成 Super Admin：得先登出（單一 cookie 一次只代表一個角色，不是
+  // 「已登入時再打一次不同密碼」）——Historical IV 依然可見，管理面板
+  // 也跟著出現。
+  await page.goto("/#/settings");
+  await page.getByRole("button", { name: "登出" }).click();
+  await page.getByLabel("密碼").fill(ROLE_SUPERADMIN_PASSWORD);
+  await page.getByRole("button", { name: "登入" }).click();
+  await expect(page.getByText(/目前身分：Super Admin/)).toBeVisible();
+  await expect(
+    page.getByRole("region", { name: "Super User 管理面板" }),
+  ).toBeVisible();
+  await page.goto("/#/s/s1");
+  await expect(page.locator(".iv-history")).toBeVisible();
+
+  // 登出：兩者都不再可見
+  await page.goto("/#/settings");
+  await page.getByRole("button", { name: "登出" }).click();
+  await expect(
+    page.getByRole("region", { name: "Super User 管理面板" }),
+  ).toHaveCount(0);
+  await page.goto("/#/s/s1");
+  await expect(page.locator(".iv-history")).toHaveCount(0);
 });
 
 test("桌面版：編輯劇本沿用工作區上方的既有表單，取消隨時可按（#132）",
@@ -1755,7 +1902,10 @@ async function routeButterflyDetailDesktop(page: import("@playwright/test").Page
     route.fulfill({ json: rowCallFlyDesktop }));
   const ivCalls: string[] = [];
   // 明確解鎖——證明的是「三腿候選結構上不支援」，不是「反正沒設定所以
-  // 看不到」那種偽陽性（跟 smoke.spec.ts 同一個理由）。
+  // 看不到」那種偽陽性（跟 smoke.spec.ts 同一個理由）。角色也明確解鎖
+  // 到 Super User，避免對未攔截的路由發出真實網路請求（AUTH-06／#313）。
+  await page.route("**/api/auth/status",
+    (route) => route.fulfill({ json: { role: "superuser" } }));
   await page.route("**/api/settings", (route) =>
     route.fulfill({ json: { historical_iv_enabled: true } }));
   await page.route("**/api/scenarios/*/iv-history*", (route) => {
