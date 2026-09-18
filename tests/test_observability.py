@@ -80,10 +80,25 @@ def test_known_env_secrets_picks_up_configured_secrets(monkeypatch):
     assert "ops-secret-value" in secrets
 
 
+def test_known_env_secrets_picks_up_the_two_role_passwords(monkeypatch):
+    """AUTH-03（#310）：`ADMIN_SECRET` 已退役，`SUPERUSER_PASSWORD`／
+    `SUPERADMIN_PASSWORD`（AUTH-02／#309）才是現行真正在用的軸二
+    密碼，防禦性 redaction 也要涵蓋它們。"""
+    monkeypatch.setenv("SUPERUSER_PASSWORD", "superuser-password-value")
+    monkeypatch.setenv("SUPERADMIN_PASSWORD", "superadmin-password-value")
+
+    secrets = observability.known_env_secrets()
+
+    assert "superuser-password-value" in secrets
+    assert "superadmin-password-value" in secrets
+
+
 def test_known_env_secrets_skips_unset_names(monkeypatch):
     monkeypatch.delenv("CRON_SECRET", raising=False)
     monkeypatch.delenv("OPS_SECRET", raising=False)
     monkeypatch.delenv("ADMIN_SECRET", raising=False)
+    monkeypatch.delenv("SUPERUSER_PASSWORD", raising=False)
+    monkeypatch.delenv("SUPERADMIN_PASSWORD", raising=False)
     monkeypatch.delenv("DATABASE_URL", raising=False)
 
     assert observability.known_env_secrets() == ()

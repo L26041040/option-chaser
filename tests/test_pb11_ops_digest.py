@@ -20,13 +20,12 @@ from api_app.digest import DigestSnapshot, build_digest_text, send_digest_email
 from api_app.main import create_app
 from api_app.storage.memory import MemoryStorage
 from option_chaser.data.snapshot import load_snapshot
+from tests._role_session import superadmin_cookies
 
 FIX = "tests/fixtures/xyz_v4_six_expiries.json"
 NEW = {"symbol": "XYZ", "target_price": 130.0, "target_month": "2026-09",
        "strategies": ["vertical-spread"]}
-ADMIN_SECRET = "the-real-admin-secret"
 CRON_SECRET = "the-real-cron-secret"
-ADMIN_AUTH = {"Authorization": f"Bearer {ADMIN_SECRET}"}
 CRON_AUTH = {"Authorization": f"Bearer {CRON_SECRET}"}
 
 
@@ -35,10 +34,17 @@ def _client(*, storage=None, **kwargs):
     storage = storage or MemoryStorage()
     return TestClient(
         create_app(fetch=lambda symbol: snap, storage=storage,
-                  admin_secret=ADMIN_SECRET, cron_secret=CRON_SECRET,
+                  cron_secret=CRON_SECRET,
                   cleanup_missed_days_threshold=999,  # 大多數測試不想被這條噪音干擾
                   **kwargs),
         base_url="https://testserver"), storage
+
+
+def _admin_cookies(storage):
+    """PB-09／AUTH-03（#298／#310）：`/api/ops/metrics` gate 在 Super
+    Admin——這裡直接寫入一顆有效的 role session cookie，取代舊版的
+    `ADMIN_AUTH` header 常數。"""
+    return superadmin_cookies(storage)
 
 
 # ---------- 純函式：`ops_alerts.evaluate_alerts()` ----------
@@ -235,7 +241,7 @@ def test_ops_metrics_reports_correct_anonymous_owner_distribution():
     storage.touch_owner_activity(owner_ids[1], now=old)
     storage.set_owner_protected(owner_ids[0], True)
 
-    r = c.get("/api/ops/metrics", headers=ADMIN_AUTH)
+    r = c.get("/api/ops/metrics", cookies=_admin_cookies(storage))
     assert r.status_code == 200
     dist = r.json()["anonymous_owners"]
     assert dist["total"] == 2
@@ -251,18 +257,18 @@ def test_ops_metrics_reports_scenario_totals_and_average():
     c2, _ = _client(storage=storage)
     c2.post("/api/scenarios", json=NEW).raise_for_status()
 
-    r = c.get("/api/ops/metrics", headers=ADMIN_AUTH)
+    r = c.get("/api/ops/metrics", cookies=_admin_cookies(storage))
     body = r.json()["scenarios"]
     assert body["total"] == 3
     assert body["average_per_owner"] == pytest.approx(1.5)
 
 
-def test_ops_metrics_includes_alerts_and_still_requires_superuser():
-    c, _ = _client()
+def test_ops_metrics_includes_alerts_and_still_requires_authorization():
+    c, storage = _client()
     unauthorized = c.get("/api/ops/metrics")
     assert unauthorized.status_code == 401
 
-    r = c.get("/api/ops/metrics", headers=ADMIN_AUTH)
+    r = c.get("/api/ops/metrics", cookies=_admin_cookies(storage))
     assert "alerts" in r.json()
     assert len(r.json()["alerts"]) == 4
 
@@ -274,7 +280,7 @@ def test_ops_metrics_response_carries_no_individual_owner_or_scenario_content():
     c.post("/api/scenarios", json=NEW).raise_for_status()
     owner_id = storage.list_owners()[0].owner_id
 
-    r = c.get("/api/ops/metrics", headers=ADMIN_AUTH)
+    r = c.get("/api/ops/metrics", cookies=_admin_cookies(storage))
     assert owner_id not in r.text
     assert "XYZ" not in r.text
 
@@ -373,7 +379,7 @@ def test_ops_metrics_and_daily_digest_agree_on_the_same_numbers(monkeypatch):
     c.post("/api/scenarios", json=NEW).raise_for_status()
     c.post("/api/scenarios", json={**NEW, "symbol": "AAA"}).raise_for_status()
 
-    metrics_body = c.get("/api/ops/metrics", headers=ADMIN_AUTH).json()
+    metrics_body = c.get("/api/ops/metrics", cookies=_admin_cookies(storage)).json()
     c.get("/api/cron/daily-digest", headers=CRON_AUTH)
 
     assert str(metrics_body["scenarios"]["total"]) in captured["msg"]

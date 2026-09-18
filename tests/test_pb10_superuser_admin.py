@@ -1,8 +1,8 @@
-"""PB-10（#301，Anonymous Public Beta）：Super User system/admin
+"""PB-10（#301，Anonymous Public Beta）：Super Admin system/admin
 operations——跨 owner 檢視與管理 ＋ 高風險操作二次確認 ＋ audit trail。
 
 正式執行 SUPERUSER-007 對舊 OD-6 的 supersede（spec #291 v3 §6）：
-Super User 是 Normal User 完整權限超集合，本票落地的能力包括查看其他
+這一層是 Normal User 完整權限超集合，本票落地的能力包括查看其他
 owner 的資料、刪除他人資料（含批次）、runtime 設定／取消 `protected`
 lifecycle 旗標。每一項高風險操作皆有伺服器端可驗證的二次確認
 （`confirm_owner_id`／`confirm_owner_ids` 必須逐字等於目標，前端 modal
@@ -10,6 +10,13 @@ lifecycle 旗標。每一項高風險操作皆有伺服器端可驗證的二次�
 `tests/test_storage_contract.py` 已涵蓋其儲存層契約——不被 200 筆
 diagnostics 上限沖掉、`delete_owner()` 不清除自己的紀錄——本檔案只驗證
 HTTP 邊界＋接線）。
+
+**AUTH-03（#310）機制置換**：這些端點原本由 PB-09 的 `ADMIN_SECRET`
+（`Authorization` 標頭）把關，現改用三層角色模型的
+`require_role(minimum=Role.SUPERADMIN)`（role session cookie）——
+本檔案的 `_admin_client()` 因此改為直接把一筆有效的 Super Admin role
+session 寫進 storage 並取回 cookie（`tests/_role_session.py`），
+斷言意圖逐一保留不變。
 
 走既有第 1 個接縫（HTTP API）。`base_url="https://testserver"` 比照
 `test_pb02_cookie_identity.py`／`test_pb09_superuser.py` 既有慣例，
@@ -20,38 +27,37 @@ from fastapi.testclient import TestClient
 from api_app.main import create_app
 from api_app.storage import ProviderCredential
 from api_app.storage.memory import MemoryStorage
+from api_app.superuser import ROLE_COOKIE_NAME
 from option_chaser.data.snapshot import load_snapshot
+from tests._role_session import superadmin_cookies
 
 FIX = "tests/fixtures/xyz_v4_six_expiries.json"
 NEW = {"symbol": "XYZ", "target_price": 130.0, "target_month": "2026-09",
        "strategies": ["vertical-spread"]}
-ADMIN_SECRET = "the-real-admin-secret"
-ADMIN_AUTH = {"Authorization": f"Bearer {ADMIN_SECRET}"}
 
 
-def _client(*, storage=None, headers=None):
+def _client(*, storage=None, cookies=None):
     snap = load_snapshot(FIX)
     storage = storage or MemoryStorage()
     return TestClient(
-        create_app(fetch=lambda symbol: snap, storage=storage,
-                  admin_secret=ADMIN_SECRET),
-        base_url="https://testserver", headers=headers or {}), storage
+        create_app(fetch=lambda symbol: snap, storage=storage),
+        base_url="https://testserver", cookies=cookies or {}), storage
 
 
 def _owner_client(storage):
-    """建立一個走正常 cookie 流程的一般使用者 client——不帶
-    `ADMIN_SECRET`，第一次打任何 owner-scoped 端點就會 lazy-create
-    一個新 owner。"""
+    """建立一個走正常 cookie 流程的一般使用者 client——不帶任何角色
+    session，第一次打任何 owner-scoped 端點就會 lazy-create 一個新
+    owner。"""
     c, _ = _client(storage=storage)
     return c
 
 
 def _admin_client(storage):
-    """建立一個帶著有效 `ADMIN_SECRET` 的 Super User client——刻意
+    """建立一個帶著有效 Super Admin role session 的 client——刻意
     不覆寫 `identity_resolver`（走真實 cookie 流程），驗證軸二不影響
     軸一：這個 client 自己也會有一個 owner_id，但它操作的是**其他人**
     的 owner_id（透過路徑參數傳入），不是自己的。"""
-    c, _ = _client(storage=storage, headers=ADMIN_AUTH)
+    c, _ = _client(storage=storage, cookies=superadmin_cookies(storage))
     return c
 
 
@@ -161,8 +167,8 @@ def test_normal_user_is_rejected_from_every_new_superuser_endpoint():
         assert r.status_code == 401, f"{method} {path}: {r.status_code} {r.text}"
 
 
-def test_a_wrong_secret_is_rejected_from_every_new_superuser_endpoint_too():
-    c, _ = _client(headers={"Authorization": "Bearer definitely-not-it"})
+def test_an_unresolvable_role_cookie_is_rejected_from_every_new_superuser_endpoint_too():
+    c, _ = _client(cookies={ROLE_COOKIE_NAME: "definitely-not-a-real-token"})
     for method, path in _CROSS_OWNER_ROUTES:
         r = _call(c, method, path)
         assert r.status_code == 401, f"{method} {path}: {r.status_code}"
@@ -307,7 +313,10 @@ def test_audit_log_records_who_what_target_and_when_for_high_risk_actions():
     assert len(audit) == 2
     # 最新在最上：delete 是後做的，應排在前面。
     assert audit[0]["action"] == "delete_owner"
-    assert audit[0]["actor"] == "superuser"
+    # AUTH-03（#310）：這些端點的門檻升級為 Super Admin，`actor` 因此
+    # 從舊機制唯一一層的 `"superuser"` 改記 `"superadmin"`——誠實反映
+    # 只有這一層碰得到這裡（見 `SuperUserAuditEvent.actor` docstring）。
+    assert audit[0]["actor"] == "superadmin"
     assert audit[0]["target_owner_id"] == b_id
     assert audit[0]["ts"]
     assert audit[1]["action"] == "set_owner_protected"

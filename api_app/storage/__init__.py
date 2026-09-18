@@ -344,8 +344,8 @@ class RoleSession:
 
 @dataclass(frozen=True)
 class SuperUserAuditEvent:
-    """PB-10（#301，Anonymous Public Beta）：Super User 高風險跨 owner
-    操作的 audit trail。
+    """PB-10（#301，Anonymous Public Beta）：Super Admin 高風險跨
+    owner 操作的 audit trail。
 
     **刻意不是 `diagnostics` 或 `events`**（票面 §4 硬性約束，repo 現況
     已確認兩者語意衝突）：`diagnostics`（`api_app/diagnostics.py`）是
@@ -354,12 +354,13 @@ class SuperUserAuditEvent:
     scenario-scoped 的領域事實（`SCENARIO_CREATED` 等），語意上不承載
     「誰對誰做了管理操作」。這張表是獨立、system-wide、**不設保留
     上限**的記錄面——高風險操作量體遠低於一般診斷事件（一次 Super
-    User 動作才一筆，不是每個 request 都發），截斷它等於讓最需要
+    Admin 動作才一筆，不是每個 request 都發），截斷它等於讓最需要
     留存的紀錄先消失，違背它存在的目的。
 
-    `actor`：PB-09 目前只有單一共用 `ADMIN_SECRET`、沒有多重 Super
-    User 身份機制（spec 明文禁止為此新增識別系統）——固定為
-    `"superuser"`，誠實反映現況，不是假裝有更細緻的身份可查。
+    `actor`：AUTH-03（#310）起這些高風險端點的授權門檻是三層角色的
+    `minimum=SUPERADMIN`（取代 PB-09 當時單一共用的 `ADMIN_SECRET`），
+    仍舊沒有多重身份機制（spec 明文禁止為此新增識別系統）——固定為
+    `"superadmin"`，誠實反映現況，不是假裝有更細緻的身份可查。
 
     `target_owner_id`：這次操作影響的 owner；純瀏覽（無明確目標，
     例如列出全部 owner 這種不針對單一 owner 的動作）時可為 `None`。

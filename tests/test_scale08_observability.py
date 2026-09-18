@@ -26,13 +26,14 @@ from fastapi.testclient import TestClient
 from api_app.main import create_app
 from api_app.metrics import METRIC_CATALOGUE, PERSISTED_METRICS
 from api_app.storage.memory import MemoryStorage
+from api_app.superuser import ROLE_COOKIE_NAME
 from option_chaser.data.snapshot import load_snapshot
 from option_chaser.models import RateLimitedError
+from tests._role_session import role_cookies
 
 FIX = "tests/fixtures/xyz_v4_six_expiries.json"
 NEW = {"symbol": "XYZ", "target_price": 130.0, "target_month": "2026-09",
        "strategies": ["vertical-spread"]}
-ADMIN_AUTH = {"Authorization": "Bearer admin-secret"}
 
 
 def _fresh_snapshot():
@@ -41,8 +42,8 @@ def _fresh_snapshot():
         snap, fetched_at=datetime.now(timezone.utc).isoformat(timespec="seconds"))
 
 
-def _client(monkeypatch, *, storage=None, admin_secret="admin-secret",
-           snap=None, **overrides):
+def _client(monkeypatch, *, storage=None, superadmin_password="admin-secret",
+           snap=None, role=None, **overrides):
     """刻意**不**覆寫 `fetch=`——`create_app()` 只有在 `fetch is
     service.fetch_chain`（未被覆寫）時才會走 `_default_fetch()`，而
     指標 #1／#2（chain fetch／429 count）只包在 `_default_fetch()`
@@ -55,13 +56,21 @@ def _client(monkeypatch, *, storage=None, admin_secret="admin-secret",
     共用**同一個**快照物件——否則各自呼叫 `_fresh_snapshot()` 會各自
     取到不同的 `fetched_at`，而 `analyzed_at` 直接就是快照的
     `fetched_at`（既有既定語意），兩個 client 的回應會因為這個與
-    metrics 開關完全無關的理由而不同，讓比對失去意義。"""
+    metrics 開關完全無關的理由而不同，讓比對失去意義。
+
+    `role`：選填（AUTH-03／#310 起 `/api/ops/metrics` 改由三層角色
+    的 Super Admin 把關）——給定時直接寫入一顆對應角色的 role session
+    cookie，取代舊版每次請求各自附帶 `Authorization` 標頭的做法。"""
     from option_chaser.data import cboe
 
+    storage = storage or MemoryStorage()
     snap = snap if snap is not None else _fresh_snapshot()
     monkeypatch.setattr(cboe, "fetch_chain", lambda symbol: snap)
-    return TestClient(create_app(identity_resolver=lambda: "solo", storage=storage or MemoryStorage(),
-                                 admin_secret=admin_secret, **overrides))
+    cookies = role_cookies(storage, role) if role else None
+    return TestClient(create_app(
+        identity_resolver=lambda: "solo", storage=storage,
+        superadmin_password=superadmin_password, **overrides),
+        cookies=cookies)
 
 
 def _create_and_refresh(client, symbol="XYZ"):
@@ -116,10 +125,10 @@ def test_ops_metrics_endpoint_answers_all_seven_categories(monkeypatch):
     PB-11 新增鍵各自的數值正確性由 `tests/test_pb11_ops_digest.py`
     專屬覆蓋，這裡只確認它們存在。"""
     storage = MemoryStorage()
-    c = _client(monkeypatch, storage=storage)
+    c = _client(monkeypatch, storage=storage, role="superadmin")
     _create_and_refresh(c)
 
-    r = c.get("/api/ops/metrics", headers=ADMIN_AUTH)
+    r = c.get("/api/ops/metrics")
     assert r.status_code == 200, r.text
     body = r.json()
     assert set(METRIC_CATALOGUE) <= set(body)
@@ -175,7 +184,7 @@ def test_chain_429_is_recorded_separately_from_a_plain_fetch_failure():
         raise RateLimitedError("429", retry_after_seconds=60.0)
 
     fallback = dataclasses.replace(_fresh_snapshot(), source="yfinance")
-    c = TestClient(create_app(identity_resolver=lambda: "solo", storage=storage, admin_secret="admin-secret"))
+    c = TestClient(create_app(identity_resolver=lambda: "solo", storage=storage))
     import unittest.mock as mock
     with mock.patch.object(cboe, "fetch_chain", side_effect=rate_limited), \
          mock.patch.object(yf, "fetch_chain", return_value=fallback):
@@ -188,7 +197,9 @@ def test_chain_429_is_recorded_separately_from_a_plain_fetch_failure():
     assert entries.get(("chain_fetch_count", "yfinance")) == 1
 
 
-# ---------- AC-6：Super User-only（PB-09／#298 起取代 OPS_SECRET） ----------
+# ---------- AC-6：Super Admin-only（PB-09／#298 起取代 OPS_SECRET，
+# AUTH-03／#310 起改用三層角色的 `require_role(minimum=SUPERADMIN)`，
+# 取代已退役的 `ADMIN_SECRET`） ----------
 
 def test_ops_metrics_endpoint_requires_authorization(monkeypatch):
     storage = MemoryStorage()
@@ -196,28 +207,29 @@ def test_ops_metrics_endpoint_requires_authorization(monkeypatch):
     _create_and_refresh(c)
 
     assert c.get("/api/ops/metrics").status_code == 401
+    # 401 不是只有「沒帶 cookie」才會發生——帶了一個查不到任何 session
+    # 的 token，一樣是 401（`require_role()` 明文要求：兩者對外一致）。
+    # `test_admin_secret_not_configured_fails_closed`（舊斷言：沒設定
+    # `ADMIN_SECRET` 就一律 401）已隨舊機制退役——role session 一旦
+    # 簽發即持久有效、不受密碼是否配置影響（AUTH-01／AUTH-02 明確裁示，
+    # 見 `superuser.py` 檔頭），這條舊斷言在新模型下已不成立，其核心
+    # 關切（沒有任何憑證就進不去 `/api/ops/metrics`）已被上面那一行
+    # 完整涵蓋，此處不再重複驗證。
     assert c.get("/api/ops/metrics",
-                 headers={"Authorization": "Bearer wrong"}).status_code == 401
+                 cookies={ROLE_COOKIE_NAME: "wrong"}).status_code == 401
 
 
-def test_admin_secret_not_configured_fails_closed(monkeypatch):
-    monkeypatch.delenv("ADMIN_SECRET", raising=False)
-    c = _client(monkeypatch, admin_secret=None)
-    r = c.get("/api/ops/metrics", headers={"Authorization": "Bearer Anything"})
-    assert r.status_code == 401
-
-
-def test_admin_secret_is_independent_from_cron_secret(monkeypatch):
-    """不同的信任邊界，不共用同一把——cron 的 secret 對 Super User 端點
-    無效，反之亦然（PB-09／#298：`ops_secret` 已退役，這裡改測
-    `admin_secret`）。"""
-    c = _client(monkeypatch, admin_secret="admin-only-secret",
-               cron_secret="cron-only-secret")
+def test_a_superadmin_session_is_independent_from_cron_secret(monkeypatch):
+    """不同的信任邊界，不共用同一把——cron 的 secret 對 Super Admin
+    端點無效，反之亦然（PB-09／#298：`ops_secret` 已退役；AUTH-03／
+    #310：`admin_secret` 也已退役，這裡改測角色 session cookie）。"""
+    storage = MemoryStorage()
+    c = _client(monkeypatch, storage=storage, cron_secret="cron-only-secret")
     assert c.get("/api/ops/metrics",
                  headers={"Authorization": "Bearer cron-only-secret"}
                  ).status_code == 401
     assert c.get("/api/cron/warm-rate-cache",
-                 headers={"Authorization": "Bearer admin-only-secret"}
+                 cookies=role_cookies(storage, "superadmin")
                  ).status_code == 401
 
 
