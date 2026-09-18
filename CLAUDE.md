@@ -27,7 +27,7 @@ block 裡，不能切成好幾個 code block、也不能中間插普通文字把
 `［回報#001］spec #137 拆票完成`）。編號是**累計總數**，不因換
 session、換分支、換主題而歸零——目前最新編號記在這裡：
 
-> 目前次序：086（下一份回報用 087）
+> 目前次序：087（下一份回報用 088）
 >
 > ⚠ 084 跳號說明：本檔案自己記的序號原本是「083（下一份回報用
 > 084）」，但 OPTION-PUBLIC-BETA-CI-REPAIR-010 這輪工單裡大哥直接
@@ -10169,6 +10169,64 @@ Criteria 的「三層角色各自能力邊界皆有實際驗證證據」。
 真實密碼登入驗證），全部本輪已完成的工程與自動化驗證面（AUTH-01～06
 程式碼、雙輪回歸、security review、release 流程、production 部署
 確認、無密碼安全 smoke）皆已就緒，不構成任何一項待修正的缺陷。
+
+### OPTION-CHASER-UI-REDESIGN-EXPLORATION（#092，2026-09-18，`/design`，
+回報#087；純設計探索，production UI 零改動）
+
+Owner 指令：整體美術品質不足以像成熟 commercial 金融產品，要求以
+**Binance 現行 Web 產品**為主要視覺 reference 重新設計整體 UI（不改
+功能、不改核心 workflow、不改 Normal／Super User／Super Admin 權限
+語意），並要求每支標的顯示**真實品牌 Logo**（找不到就不顯示，不接受
+monogram／首字母／generic icon 等 fallback）。**本輪不得直接改
+production UI**，先交可實際觀看的設計成果，Owner review 後才決定是否
+實作。
+
+**產出＝Design canvas artifact**（`https://claude.ai/artifact/
+CzB6YJqGAKyKveYNuqJNbp`，私有，Owner 本人可開），11 張 artboard：
+Foundations（色彩／字體／間距／元件）、Stock identity（真 Logo 三種
+狀態＋尺寸＋淺色）、Desktop 劇本庫＋劇本詳細（NVDA，三個 Family、
+冠軍 Call Butterfly、Family tabs、排名表、候選池、分析報告、淨成本
+走勢、原始資料）、Desktop Long Call 劇本（TSLA，含 IV 相對位置卡，
+Super User）、Desktop 建立劇本抽屜（含 Logo 即時預覽）、Desktop
+設定＋Super User 管理面板（Super Admin，含 audit trail／Data API／
+Diagnostics）、Desktop 淺色模式、Mobile 劇本庫、Mobile 劇本詳細、
+Mobile 設定與登入（Normal User）、Mobile 劇本庫淺色。設計稿檔案只在
+scratchpad（未進 repo）；`git diff` 對 `src/`／`option_chaser/`／
+`api_app/` 零命中。
+
+**設計系統決策（「Graphite & Amber」）**：深色優先、藍黑中性色階
+四階（bg／panel／panel-2／panel-3）＋兩級髮絲線、單一品牌琥珀
+`#F3B63F`（刻意與 Binance 檸檬黃 `#FCD535` 拉開）只用在可動作元素
+與品牌、綠紅只留給數值方向、IBM Plex Sans（開源，Binance 早期
+BinancePlex 的血緣）＋ tabular-nums、字重以 500 為工作字重、控制項
+r4／面板 r8／抽屜 r12、表格列 44px。Crossover 分界線因琥珀改為品牌色
+而改用青色 `#4FC3F7`（純色彩重新分配，語意不變）。導覽改為頂欄＋
+桌面 360px 常駐劇本庫、手機底部四個 tab，建立劇本改抽屜——皆為呈現
+層改動，Refresh Trigger 三時機、候選排名、Family tab「主圖不隨分頁
+改變」、兩態失敗卡片、Super Admin gate 等既有語意全部照舊。
+
+**研究（兩個 Sonnet 背景 agent，一手來源）**：(1) Binance 2026 現行
+production CSS 實證 token（`--color-BasicBg #181A20`／`TradeBg
+#0B0E11`／`CardBg #202630`／`Line #333B47`／`PrimaryText #EAECEF`／
+`BtnBg #FCD535`／`Buy #2EBD85`／`Sell #F6465D`、字體 BinanceNova、
+64px 頂欄、髮絲線多於陰影、dark 為預設），網路上流傳的舊色票
+（`#1E2329`／`#0ECB81`）已與現況不符；(2) Logo API——**Logo.dev
+`img.logo.dev/ticker/{SYM}?token=pk_…&fallback=404` 有白紙黑字的
+「真 404、絕不回 monogram」契約**（免費 500k 次/月，商業用途需頁尾
+attribution，publishable key 可放前端，明文支援 ETF），Brandfetch
+`cdn.brandfetch.io/ticker/{SYM}/fallback/404` 為對等備選（1M 次/月、
+免 attribution，但條款禁止 server-side 程式化抓取）；FMP
+`images.financialmodelingprep.com/symbol/{SYM}.png` 免 key 且實測
+從不偽造（但 undocumented legacy endpoint）；**Google／DuckDuckGo
+favicon 實測對不存在網域仍回 200 假圖，出局**；Clearbit 已於
+2025-12-08 關閉。設計稿裡的 Logo 全部取自 Wikimedia Commons／Wikidata
+P154 的真實品牌向量（NVIDIA eye／Tesla T／Oracle O／Apple／Microsoft／
+iShares），只供設計稿使用，production 實作走 Logo.dev。
+
+**下一步**：等 Owner 看 artifact 後裁示（哪些喜歡／不要／是否直接採用
+／是否要第二版）；確認方向後才進 implementation（預期拆票：token 與
+CSS 基礎、identity chip＋Logo.dev 接線、桌面工作區、手機版、設定與
+管理面板）。本輪未開 PR、未動 #269。
 
 ### 施工依據
 
