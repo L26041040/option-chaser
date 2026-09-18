@@ -27,7 +27,7 @@ block 裡，不能切成好幾個 code block、也不能中間插普通文字把
 `［回報#001］spec #137 拆票完成`）。編號是**累計總數**，不因換
 session、換分支、換主題而歸零——目前最新編號記在這裡：
 
-> 目前次序：088（下一份回報用 089）
+> 目前次序：089（下一份回報用 090）
 >
 > ⚠ 084 跳號說明：本檔案自己記的序號原本是「083（下一份回報用
 > 084）」，但 OPTION-PUBLIC-BETA-CI-REPAIR-010 這輪工單裡大哥直接
@@ -10227,6 +10227,41 @@ iShares），只供設計稿使用，production 實作走 Logo.dev。
 ／是否要第二版）；確認方向後才進 implementation（預期拆票：token 與
 CSS 基礎、identity chip＋Logo.dev 接線、桌面工作區、手機版、設定與
 管理面板）。本輪未開 PR、未動 #269。
+
+### OPTION-CHASER-UI-TYPOGRAPHY-REFINEMENT（#094，2026-09-18，`/design`
+typography-only，回報#089；純設計探索，production UI 零改動）
+
+Owner 對 #092 整體視覺方向滿意，只要求優化 typography、尤其繁中——
+既有 Artifact 的中文有明顯「新細明體／明體 fallback」氣質。**根因**：
+#092 的 `--font` 只以網頁字型載入 IBM Plex Sans，中文靠
+`PingFang TC`／`Noto Sans TC`／`Microsoft JhengHei` 系統字 fallback，
+機器上缺對應字型時瀏覽器就退到明體。**修法**：Noto Sans TC 以 Google
+Fonts 網頁字型載入（400／500／600／700），堆疊改為
+`"IBM Plex Sans","Noto Sans TC","PingFang TC","Microsoft JhengHei",
+sans-serif`——Plex 排前面吃拉丁／數字／半形標點，Noto Sans TC 接漢字與
+全形標點，渲染不再依賴使用者機器。Latin 維持 Plex（Binance 早期
+BinancePlex 血緣，#092 既定）。
+
+**只調 typography 的細部**（11 張 artboard 共用同一段 helmet CSS，
+一次套用）：body 行高 1.45→1.5、表格 13px 1.4→1.5、caption 1.35→1.45、
+11px 1.3→1.4（漢字無 x-height，行距需多一點）；`.t5`／`.t6` 中文標題
+字距 −.01em→0，負字距只留給 `.num`／Display 數字；按鈕 600→500
+（primary 留 600，Noto 600 在 12–13px 會糊）、區段標題 600→500＋字距
+.04em、面板標題加 .01em；手機底部 tab 10→11px；body 補
+`text-rendering:optimizeLegibility`／`font-kerning`／`"tnum"`。尺寸
+架構、layout、色彩、元件結構、間距皆未動（`git diff` 對 `src/`／
+`option_chaser/`／`api_app/` 零命中）。
+
+**產出**：同一份 Design canvas（`https://claude.ai/artifact/
+CzB6YJqGAKyKveYNuqJNbp`，Version 3）全部 11 張既有 artboard 直接
+升級為 typography v2；新增第 12 張 **Typography 板**（x=2460，與
+Foundations／Identity 同列）：上一版（系統字 fallback 堆疊）vs 這一版
+並排同一組樣本（Ticker／標題／混排段落／排名表／按鈕標籤）、「要避開的
+氣質」明體對照條、9 級字級表（Display／Ticker／Title／Heading／Body／
+Table／Button／Caption／Micro 各附字重、行高、字距）、中英字重對照、
+數字欄對齊、六條混排規則。Foundations 板字體說明同步改寫。設計稿檔案
+只在 scratchpad、未進 repo。**下一步**：等 Owner 看成品裁示是否採用；
+採用才進 implementation（`src/styles.css` token 與 Google Fonts 載入）。
 
 ### 施工依據
 
