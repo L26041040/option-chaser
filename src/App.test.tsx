@@ -152,7 +152,11 @@ describe("劇本庫（V3／#51）", () => {
 
     expect(await screen.findByText("TLT")).toBeInTheDocument();
     expect(screen.getByText("150.0%")).toBeInTheDocument();
-    expect(screen.getByText("劇本庫")).toBeInTheDocument();
+    // UI-IMPL-002（#092）：`BottomNav`／`TopBar` 新增的導覽也用「劇本庫」
+    // 這個字，純文字查詢因此不再唯一——改鎖定既有頁面標題本身
+    // （`<h1 className="toolbar-title">`），跟下面既有的
+    // `findByRole("heading", ...)` 用法一致。
+    expect(screen.getByRole("heading", { name: "劇本庫" })).toBeInTheDocument();
   });
 
   it("清單載不動時說明原因，不是空白的「還沒有劇本」", async () => {
@@ -297,7 +301,10 @@ describe("垃圾桶（TR6／#91）", () => {
       .toBeInTheDocument();
 
     await userEvent.click(screen.getByText("‹ 劇本庫"));
-    expect(await screen.findByText("劇本庫")).toBeInTheDocument();
+    // UI-IMPL-002（#092）：同上，改鎖頁面標題本身，不受 `BottomNav` 也用
+    // 「劇本庫」這個字影響。
+    expect(await screen.findByRole("heading", { name: "劇本庫" }))
+      .toBeInTheDocument();
   });
 
   it("垃圾桶還原後回到劇本庫，那個劇本重新出現在主清單（TR4／#92）", async () => {
@@ -1442,7 +1449,7 @@ describe("清單 → 詳細頁（V5／#53）", () => {
     render(<App />);
 
     // 詳細頁在畫面上（返回入口＋該劇本的標的），建立表單不在
-    expect(await screen.findByRole("link", { name: /劇本庫/ })).toBeInTheDocument();
+    expect(await screen.findByRole("link", { name: "‹ 劇本庫" })).toBeInTheDocument();
     expect(screen.queryByLabelText("標的代號")).not.toBeInTheDocument();
   });
 
@@ -1453,7 +1460,7 @@ describe("清單 → 詳細頁（V5／#53）", () => {
       "/api/scenarios/s1": { json: async () => ({ ...row, latest_result: null }) },
     });
     render(<App />);
-    await screen.findByRole("link", { name: /劇本庫/ });
+    await screen.findByRole("link", { name: "‹ 劇本庫" });
 
     window.location.hash = "#/";
     // jsdom 的 hashchange 是非同步派送的，等畫面自己跟上
@@ -1489,7 +1496,7 @@ describe("手機返回劇本庫還原捲動位置（MVP-v2／#77、#83）", () =
     window.dispatchEvent(new Event("scroll"));
 
     window.location.hash = "#/s/s1";
-    await screen.findByRole("link", { name: /劇本庫/ });
+    await screen.findByRole("link", { name: "‹ 劇本庫" });
 
     scrollToSpy.mockClear();
     window.location.hash = "";
@@ -1532,7 +1539,7 @@ describe("手機返回劇本庫還原捲動位置（MVP-v2／#77、#83）", () =
     expect(screen.getByLabelText("標的代號")).toBeVisible();
 
     window.location.hash = "#/s/s1";
-    await screen.findByRole("link", { name: /劇本庫/ });
+    await screen.findByRole("link", { name: "‹ 劇本庫" });
     window.location.hash = "";
     await screen.findByText("TLT");
 
@@ -1574,7 +1581,7 @@ describe("桌面版真正的 master/detail（#72）", () => {
 
     // 詳細頁內容（返回入口＋標的名）與劇本庫（清單卡片＋建立劇本入口）
     // 同時在畫面上——不是手機版的整頁替換。
-    expect(await screen.findByRole("link", { name: /劇本庫/ })).toBeInTheDocument();
+    expect(await screen.findByRole("link", { name: "‹ 劇本庫" })).toBeInTheDocument();
     expect(await screen.findByText("尚未分析")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: /TLT 2028-05/ })).toBeInTheDocument();
     // #75：建立劇本收攏成頂部入口，選中劇本時它也還在、按得下去——

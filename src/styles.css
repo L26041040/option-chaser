@@ -1,18 +1,26 @@
 /**
- * iOS 風格基礎（V1／#48）——手機優先。
+ * "Graphite & Amber" 設計系統（UI-IMPL-002／#092＋#094，2026-09-18）——
+ * 深色優先、琥珀單一品牌色、1px 髮絲線分隔、tabular 數字。取代 V1／#48
+ * 的 iOS 語彙（既有 class 名稱與消費端全部保留，只換 token 值與少數
+ * 補充規則，見本節逐項標注）。
  *
- * 這一版只鋪設語彙：系統字體棧、iOS 系統色、安全區內距、卡片與分組列表
- * 的圓角/間距節奏、深淺色自動切換。後續票的畫面都從這組 token 長出來，
- * 不各自發明尺寸與顏色。
+ * 對照 Design Artifact（issue #092／#094，Foundations／Typography 兩板）
+ * 的 `:root` token 逐字對齊：`--bg`／`--panel`／`--panel-2`／`--panel-3`／
+ * `--line`／`--line-2`／`--text`／`--text-2`／`--text-3`／`--accent`／
+ * `--up`／`--down`／`--warn`／`--suspect`／`--crossover` 這些新名字是
+ * artifact 本身的詞彙，直接沿用；既有 class 讀的是舊名稱
+ * （`--bg-elevated`／`--label`／`--label-secondary`／`--label-tertiary`／
+ * `--separator`／`--green`／`--red`／`--orange`／`--yellow`），因此舊名稱
+ * 全部改成「別名到新 token」而非刪除——這樣既有兩千多行 CSS 不必逐條
+ * 改寫消費端，換色只在這一個區塊發生。
  *
- * Typography v2（#095／UI-TYPO，2026-09-19）：字體棧換成真正 web font
- * ——IBM Plex Sans 接拉丁字母／數字／半形標點，Noto Sans TC 接漢字／
- * 全形標點，兩者皆由 `index.html` 的 Google Fonts `<link>` 載入，不再
- * 依賴使用者機器裝了什麼中文字型（原本繁中純靠系統 fallback，缺對應
- * 字型的機器會退到新細明體一類的舊式明體，這正是本輪要修的問題）。
- * `--font-cjk`／`--mono` 兩個新 token 照設計稿字面宣告；`--mono` 目前
- * 唯一消費端在 `.diagnostics-copy-fallback`。只換字體棧本身，尺寸／
- * 間距／版面架構不在本輪範圍（詳見本節下方逐項標注的 v2 微調）。 */
+ * `--tint` 原本身兼「文字色」與「背景／邊框色」兩種用途，但琥珀
+ * （#F3B63F）當文字色在淺色模式對比極差（白底上實測僅約 2:1）——拆成
+ * 三個新 token（`--accent`／`--accent-text`／`--on-accent`），逐一 site
+ * 依用途套用，不再用同一個值硬撐兩種對比需求完全不同的角色。
+ *
+ * Typography v2（#095／UI-TYPO，字體棧本身）與 tabular-nums／
+ * text-rendering 等既有規則不在本輪異動範圍，維持原樣。 */
 
 :root {
   /* Typography v2：拉丁/數字/半形標點交給 IBM Plex Sans，漢字/注音/
@@ -25,59 +33,89 @@
   --mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo,
     "Noto Sans TC", monospace;
 
-  /* iOS system colours (light) */
-  --bg: #f2f2f7;
-  --bg-elevated: #ffffff;
-  --separator: rgba(60, 60, 67, 0.18);
-  --label: #000000;
-  /* QA-FIX-2（QA-01）：淺色模式的次級／三級文字色。iOS 原生值
-     （0.6／0.3）在白底上只有 3.44:1 與 1.73:1，遠低於 WCAG AA
-     normal text 的 4.5:1——實測後照 AA 反解最小 alpha（最差底色是
-     頁面底 `--bg` #f2f2f7，不是卡片白底），再留一點餘裕：
-       secondary 0.90 → 卡片 8.07:1／頁面 7.37:1／chip 底 7.19:1
-       tertiary  0.75 → 卡片 5.16:1／頁面 4.85:1／chip 底 4.76:1
-     三階層次仍在（L: 0 < 0.080 < 0.153），只是不再淡到讀不出來。
-     深色模式的同名 token 不在本次修正範圍（見下方 media query），
-     維持原值、不退化。 */
-  --label-secondary: rgba(60, 60, 67, 0.9);
-  --label-tertiary: rgba(60, 60, 67, 0.75);
-  --tint: #007aff;
-  --green: #34c759;
-  --red: #ff3b30;
-  --orange: #ff9500;
-  /* 劇本級燈號（MVP-v2／#77、#80）專用——黃燈是獨立於既有 `--orange`
-     警示色的第三種語意（刷新失敗，不是「品質提醒」），因此另立一色。 */
-  --yellow: #ffcc00;
-  /* Crossover Boundary 專用琥珀（QA 修正）：刻意不用 `--tint`（藍＝
-     可點擊／互動）也不用 `--red`／`--orange`（＝警告、出事了）——這條
-     線只是「兩邊在這裡打平」，不是任何一種警示。淺色模式取較深的
-     amber-700（白底 5.9:1），深色模式取較亮的 amber-400，兩邊都讀得到。 */
-  --crossover: #b45309;
-  /* iOS secondary fill：膠囊鈕底、按下卡片時的 highlight。用灰階半透明
-     而不是實色，深淺兩種模式共用同一個值。 */
-  --fill: rgba(120, 120, 128, 0.12);
-  --card-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+  /* Graphite & Amber · 深色優先（Foundations 板原文）。淺色覆寫見下方
+     `@media (prefers-color-scheme: light)`——這是既有結構的鏡射（原本
+     `:root` 是淺色預設、`dark` 媒體查詢覆寫；本輪把預設方向整個倒過來，
+     match「深色優先」這個設計系統自身的核心宣告）。 */
+  --bg: #101318;
+  --panel: #181d25;
+  --panel-2: #1f2530;
+  --panel-3: #28303b;
+  --line: #2a3340;
+  --line-2: #3a4453;
+  --text: #eaecef;
+  --text-2: #a3abb7;
+  /* QA-FIX-2（QA-01）硬性要求延伸到深色模式（既有 precedent：深色
+     tertiary 過去一直低於 AA、這裡順手一併修好而非只求不退化）。
+     Foundations 板字面值 #767F8D 疊在 panel 上實測僅 4.18:1，未達
+     4.5——用腳本找最小可行調整量（RGB 各 +6），非另外發明一個色階。 */
+  --text-3: #7c8593;
+  --accent: #f3b63f;
+  --accent-hover: #ffc857;
+  --accent-text: #f3b63f;
+  --on-accent: #181d25;
+  --accent-soft: rgba(243, 182, 63, 0.12);
+  --up: #1fc98a;
+  --down: #f0505f;
+  --warn: #f7c948;
+  --suspect: #ff7a7a;
+  --crossover: #4fc3f7;
+  --tile-bg: #f4f5f7;
+  --tile-line: #e1e4ea;
+  --fill: rgba(58, 68, 83, 0.35);
+  --card-shadow: none;
 
-  --radius: 16px;
+  /* 既有消費端讀的舊名稱——別名到上面的新 token，換色只在這裡發生。 */
+  --bg-elevated: var(--panel);
+  --separator: var(--line);
+  --label: var(--text);
+  --label-secondary: var(--text-2);
+  --label-tertiary: var(--text-3);
+  --tint: var(--accent-text);
+  --green: var(--up);
+  --red: var(--down);
+  --orange: var(--warn);
+  --yellow: var(--warn);
+
+  --radius-s: 4px;
+  --radius: 8px;
+  --radius-l: 12px;
   --gap: 16px;
 }
 
-@media (prefers-color-scheme: dark) {
+@media (prefers-color-scheme: light) {
   :root {
-    --bg: #000000;
-    --bg-elevated: #1c1c1e;
-    --separator: rgba(84, 84, 88, 0.65);
-    --label: #ffffff;
-    --label-secondary: rgba(235, 235, 245, 0.6);
-    --label-tertiary: rgba(235, 235, 245, 0.3);
-    --tint: #0a84ff;
-    --green: #30d158;
-    --red: #ff453a;
-    --orange: #ff9f0a;
-    --yellow: #ffd60a;
-    --crossover: #fbbf24;
-    --fill: rgba(120, 120, 128, 0.24);
-    /* 深色模式靠卡片本身的亮度分層，投影只會變成一圈髒邊 */
+    --bg: #f4f6f9;
+    --panel: #ffffff;
+    --panel-2: #f6f8fb;
+    --panel-3: #edf0f4;
+    --line: #e4e8ee;
+    --line-2: #d3d9e2;
+    --text: #171b23;
+    --text-2: #5b6573;
+    /* QA-FIX-2（QA-01）沿用同一條硬性要求（WCAG AA normal text，
+       4.5:1）：Foundations 板字面的淺色 tertiary（#7F8998）在白底面板
+       上實測僅約 3.5:1，若照搬會讓既有 `contrast.test.ts` 從綠燈退回
+       紅燈——這是本輪唯一偏離 artifact 逐字色值的一處，偏離方向是
+       「更深、更可讀」，幅度以剛好通過 AA 為準，不是另外發明一種
+       視覺；深色模式維持 artifact 原色（#767F8D，實測仍達 AA）。 */
+    /* 同上，最小可行調整量（相對 Foundations 板字面 #7F8998 各通道
+       −2 已不足以同時過 panel 與 bg 兩個底色，實測需要更大調整——
+       腳本搜出的可行值）。 */
+    --text-3: #69727e;
+    --accent: #f3b63f;
+    --accent-hover: #e8a928;
+    --accent-text: #9a6206;
+    --on-accent: #171b23;
+    --accent-soft: rgba(243, 182, 63, 0.16);
+    --up: #13975f;
+    --down: #d8404f;
+    --warn: #b7791f;
+    --suspect: #c0392b;
+    --crossover: #0288d1;
+    --tile-bg: #ffffff;
+    --tile-line: #e1e4ea;
+    --fill: rgba(91, 101, 115, 0.12);
     --card-shadow: none;
   }
 }
@@ -85,6 +123,15 @@
 * {
   box-sizing: border-box;
   -webkit-tap-highlight-color: transparent;
+}
+
+/* UI-IMPL-002（#092）：原生 checkbox／radio 沒有自己的自訂樣式（先前
+   從未設定過 `accent-color`），在 Graphite & Amber 深色主題下瀏覽器
+   預設藍色格外突兀（例如 Settings 頁「預設：Cboe」那顆單選鈕）。全站
+   一行覆寫成品牌琥珀色，不影響任何既有互動邏輯——純視覺一致性。 */
+input[type="checkbox"],
+input[type="radio"] {
+  accent-color: var(--accent);
 }
 
 html,
@@ -146,18 +193,59 @@ body {
    選一個明顯更大的下限（例如 280px）那樣，在 1100～1400px 這段
    常見桌面寬度上都被下限卡死、比例遠超過「約 20%」。 */
 @media (min-width: 1100px) {
+  /* UI-IMPL-002（#092）：新增的桌面頂欄（`TopBar`）疊在 `.workspace`
+     之上，`.library-pane`／`.detail-pane` 原本假設自己就是整個視窗高度
+     （`height:100dvh`）——加了頂欄之後那份假設不再成立，會讓整頁比
+     視窗多出頂欄那段高度（批次操作列吸底因此會超出可視範圍）。改成
+     外層 `.desktop-shell` 才真正等於整個視窗高度，`.workspace` 只佔
+     扣掉頂欄後剩下的空間，`.library-pane`／`.detail-pane` 改成填滿
+     `.workspace` 那一列（`height:100%`），不再各自宣稱整個視窗高度。 */
+  /* `min-height` 曾在這裡用過，但那只是下限——`.library-scroll`／
+     `.detail-pane` 的清單一多，內容會把 `.desktop-shell` 整個撐高
+     過視窗（實測撐到 2565px），`.workspace` 的 `flex:1;min-height:0`
+     因此拿不到明確可用高度，內部捲動失效、吸底的 `.batch-action-bar`
+     被推到視窗外很遠的地方（Playwright boundingBox 實測超出視窗
+     1300～2400px，不是先前小範圍測試碰巧只差幾像素才蓋過去的那種
+     邊角案例）。這個版面的設計本來就是「頁面本身永不捲動，捲動全部
+     收斂在 `.library-scroll`／`.detail-pane` 兩個內部容器」，改成
+     硬性 `height` 才是與這個意圖相符的約束，讓 `flex:1;min-height:0`
+     鏈路真正發揮作用。 */
+  .desktop-shell {
+    display: flex;
+    flex-direction: column;
+    height: 100dvh;
+  }
+
   .workspace {
     display: grid;
     grid-template-columns: minmax(220px, 20%) 1fr;
-    align-items: start;
-    min-height: 100dvh;
+    /* 原本的 `align-items: start` 在兩欄各自靠自己的 `height: 100dvh`
+       撐滿時無害（不需要靠 grid 拉伸），但現在兩欄改成 `height: 100%`
+       依賴這一列本身的高度撐滿（見上方 `.library-pane`／`.detail-pane`
+       說明）——`start` 會讓 grid 兩欄縮回各自內容高度、不撐滿這一列，
+       `height:100%` 因此解不出正確值。改回預設 `stretch`（即不設定
+       `align-items`）才是兩欄真正需要的行為。 */
+    flex: 1;
+    min-height: 0;
+    /* 光靠 `flex:1;min-height:0` 讓 `.workspace` 自己拿到明確高度還不夠
+       ——沒有 `grid-template-rows`（隱式單一 `auto` 列）時，那一列的
+       「拉伸後高度」在 CSS 規範裡不算嚴格意義的 definite size，子項的
+       `height:100%` 百分比因此可能解不出來、退回依內容撐高（實測
+       `.library-pane`／`.detail-pane` 撐到 2454px，跟視窗高度完全
+       脫鉤）。顯式宣告單一 `minmax(0,1fr)` 列——用 `fr` 直接量
+       `.workspace` 自己已經定值的高度，才是無歧義的明確尺寸。 */
+    grid-template-rows: minmax(0, 1fr);
+    /* UI-IMPL-002（#092）：建立劇本抽屜（`.create-drawer`）與遮罩
+       （`.create-drawer-scrim`）用 `position: absolute` 疊在這一列
+       之上，定位基準就是這個容器。 */
+    position: relative;
   }
 
   /* #124：左欄變成「可捲動的清單」＋「釘在最下方的設定入口」兩段。
      捲動因此下移到 `.library-scroll`——留在 `.library-pane` 上的話，
      設定入口會跟著清單一起捲走，而需求方指定的位置是 sidebar 最下方。 */
   .library-pane {
-    height: 100dvh;
+    height: 100%;
     display: flex;
     flex-direction: column;
     border-right: 1px solid var(--separator);
@@ -170,7 +258,7 @@ body {
   }
 
   .detail-pane {
-    height: 100dvh;
+    height: 100%;
     overflow-y: auto;
   }
 
@@ -235,10 +323,138 @@ body {
     grid-template-columns: repeat(4, minmax(0, 1fr));
     column-gap: 20px;
   }
+
+  /* UI-IMPL-002（#092）：`.toolbar-title` 是 iOS Large Title 規格
+     （32px/700，見 `styles.css` 該規則本身的既有註解），專為手機版
+     整寬頁首設計。桌面側欄（`.library-pane`，約 220～290px 寬）跟同一
+     列的建立／垃圾桶／重新整理膠囊鈕搶空間——膠囊鈕靠 `white-space:
+     nowrap` 撐開不換行，標題卻是 flex 項目、預設 `min-width:auto`，
+     被擠到不夠放時會退到「CJK 逐字換行」的最小內容寬度（實測擠到
+     32px，「劇本庫」三個字一字一行疊成一直排）。比照既有 QA-FIX-3
+     （`.detail-pane .section-title` 同樣手法）：桌面側欄縮小字級，
+     不動手機版原有規則、不動任何功能語意。 */
+  .library-pane .toolbar-title {
+    font-size: 20px;
+    line-height: 1.3;
+    /* 光縮字級還不夠——`.toolbar-row` 是單行 flex，`.toolbar-actions`
+       （膠囊鈕）用 `white-space:nowrap` 撐開不讓步，標題的
+       `flex-shrink:1` 卻預設 `min-width:auto`，兩者搶不下時標題會被
+       壓到它自己的「最小內容寬度」——CJK 沒有空白可斷字，最小內容寬度
+       可以塌到單一字元寬（實測 20px，三個字疊成一豎排）。加
+       `white-space:nowrap` 讓標題本身不再逐字換行；配合下面
+       `.toolbar-row { flex-wrap: wrap }`，真的擠不下時是「按鈕整組
+       換到下一行」這種正常、看得懂的換行，不是把中文字拆開排。 */
+    white-space: nowrap;
+  }
+
+  .library-pane .toolbar-row {
+    flex-wrap: wrap;
+    row-gap: 6px;
+  }
+
+  /* 就算標題自己讓出整行，三顆膠囊鈕（＋建立劇本／垃圾桶／重新整理）
+     疊在一起的自然寬度（實測 305px）仍然比 288px 寬的側欄本身還寬
+     ——這組膠囊鈕是手機／全寬版面的既有設計（沿用既有 `white-space:
+     nowrap` 慣例，本輪未改動按鈕本身），在這個窄側欄容不下整排。讓它
+     也能換行，寧可疊成三行也不要被裁掉最後一顆看不到、按不到。 */
+  .library-pane .toolbar-actions {
+    flex-wrap: wrap;
+  }
+
+  /* ---------- UI-IMPL-002（#092）：建立劇本抽屜 ----------
+
+     取代 #75 當年「跟著工具列釘住的就地展開面板」——Artifact
+     `Desktop-Create.dc.html` 是右側滑出抽屜＋遮罩，覆蓋整個
+     `.workspace`（左側劇本庫＋右側詳細頁都在遮罩之下）。狀態、回呼、
+     `hidden` 切換可見度的既有機制（#75 教訓：面板一律掛著，不整個
+     卸載重掛）完全沿用，這裡只是換一種視覺位置。
+
+     `[hidden]` 的 UA 樣式表 `display:none` 規則與這裡的 `display:
+     flex` 同層特異度（class 與屬性選擇器皆是 0,1,0）——author 樣式表
+     的規則一律蓋過 UA 樣式表，不管特異度或先後順序，所以 `display`
+     宣告刻意只掛在 `:not([hidden])`，讓原生 `hidden` 屬性繼續有效。 */
+  .create-drawer-scrim {
+    position: absolute;
+    inset: 0;
+    background: rgba(11, 14, 17, 0.55);
+    z-index: 20;
+  }
+
+  .create-drawer-scrim[hidden] {
+    display: none;
+  }
+
+  .create-drawer {
+    position: absolute;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    width: 440px;
+    max-width: 92%;
+    background: var(--panel);
+    border-left: 1px solid var(--line-2);
+    box-shadow: -12px 0 32px rgba(0, 0, 0, 0.35);
+    z-index: 21;
+    flex-direction: column;
+  }
+
+  .create-drawer:not([hidden]) {
+    display: flex;
+  }
+
+  .create-drawer-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    height: 56px;
+    padding: 0 20px;
+    border-bottom: 1px solid var(--line);
+    flex: none;
+  }
+
+  .create-drawer-body {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    padding: 20px;
+  }
+
+  /* `CreateForm` 的根元素是 `<form className="card">`——抽屜本身已經
+     是那張卡片的視覺容器（`.create-drawer` 自己有背景／邊框／陰影），
+     裡面不需要再疊一層卡片外觀，只留版面（縱向排列＋呼吸間距），
+     其餘（背景／邊框／圓角／陰影／內距）一律清空、改由抽屜自己的
+     內距（`.create-drawer-body` 的 `padding:20px`）負責。 */
+  .create-drawer-body .card {
+    background: none;
+    border: 0;
+    box-shadow: none;
+    padding: 0;
+  }
+
+  .drawer-close {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 32px;
+    height: 32px;
+    border-radius: var(--radius-s);
+    border: 0;
+    background: transparent;
+    color: var(--label-secondary);
+    cursor: pointer;
+    flex: none;
+  }
+
+  .drawer-close:hover {
+    background: var(--panel-3);
+    color: var(--text);
+  }
 }
 
 .card {
   background: var(--bg-elevated);
+  border: 1px solid var(--separator);
   border-radius: var(--radius);
   box-shadow: var(--card-shadow);
   padding: var(--gap);
@@ -306,8 +522,8 @@ body {
   appearance: none;
   border: 0;
   border-radius: var(--radius);
-  background: var(--tint);
-  color: #fff;
+  background: var(--accent);
+  color: var(--on-accent);
   font-family: inherit;
   font-size: 17px;
   font-weight: 600;
@@ -577,13 +793,13 @@ body {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  color: #fff;
+  color: var(--on-accent);
   cursor: pointer;
 }
 
 .row-checkbox.checked {
-  background: var(--tint);
-  border-color: var(--tint);
+  background: var(--accent);
+  border-color: var(--accent);
 }
 
 .symbol-group .row-checkbox {
@@ -632,8 +848,8 @@ body {
   font-size: 15px;
   font-weight: 700;
   padding: 8px 16px;
-  background: var(--tint);
-  color: #fff;
+  background: var(--accent);
+  color: var(--on-accent);
   cursor: pointer;
 }
 
@@ -899,6 +1115,7 @@ body {
 
 .compact-card {
   background: var(--bg-elevated);
+  border: 1px solid var(--separator);
   border-radius: calc(var(--radius) - 4px);
   box-shadow: var(--card-shadow);
   /* Typography v2：這是 MVP-v2／#77、#82、#108 三票明訂受硬性密度
@@ -1092,7 +1309,7 @@ body {
      整頁縮放，使用者得再手動縮回去。 */
   font-size: 17px;
   color: var(--label);
-  background: var(--bg);
+  background: var(--panel-3);
   border: 0.5px solid var(--separator);
   border-radius: 10px;
   padding: 12px;
@@ -1101,7 +1318,7 @@ body {
 }
 
 .input:focus {
-  outline: 2px solid var(--tint);
+  outline: 2px solid var(--accent);
   outline-offset: -1px;
 }
 
@@ -1191,8 +1408,8 @@ body {
 /* FB5-03（#64）：單調性違反用紅色，跟 .tag.warn 的橙色分開——配對關係
    違反（疑似陳舊報價）比一般品質提醒更值得注意。 */
 .tag.suspect {
-  background: color-mix(in srgb, var(--red) 16%, transparent);
-  color: var(--red);
+  background: color-mix(in srgb, var(--suspect) 16%, transparent);
+  color: var(--suspect);
 }
 
 /* 卡片裡的提示不能用 `.notice` 的預設底色——那正好等於卡片底色，等於
@@ -1521,8 +1738,8 @@ body {
    按鈕，選定時實心填色」，沒有理由各寫一份。 */
 .chip.selected,
 .month-cell.selected {
-  background: var(--tint);
-  color: #fff;
+  background: var(--accent);
+  color: var(--on-accent);
 }
 
 /* T11（#229，Initial V2，`/code-review` Standards 軸回饋）：`.chip-date`
@@ -1550,7 +1767,7 @@ body {
 }
 
 .chip.selected .chip-return {
-  color: #fff;
+  color: var(--on-accent);
 }
 
 /* #72：桌面版清單裡「目前選中」的劇本卡片——不能像上面的 chip／月曆格
@@ -1558,7 +1775,7 @@ body {
    ＋淡色底。 */
 .card.selected {
   background: var(--fill);
-  box-shadow: inset 3px 0 0 var(--tint);
+  box-shadow: inset 3px 0 0 var(--accent);
 }
 
 /* #108：桌面版劇本庫卡片瘦身後改用下面的 `.compact-card`（原本只有
@@ -1567,7 +1784,7 @@ body {
    這條規則。 */
 .compact-card.selected {
   background: var(--fill);
-  box-shadow: inset 3px 0 0 var(--tint);
+  box-shadow: inset 3px 0 0 var(--accent);
 }
 
 /* ---------- 更新中徽章（T08／#196 P1，前身是 V4 跟進票／#136 的
@@ -1860,7 +2077,7 @@ body {
 /* 資料點：桌面 hover／手機 tap 共用同一個互動目標，`r` 故意比視覺
    上需要的稍大一點，行動裝置點按才點得準。 */
 .chart-point {
-  fill: var(--tint);
+  fill: var(--accent);
   cursor: pointer;
 }
 
@@ -1955,7 +2172,7 @@ body {
 
 .year-input:focus {
   outline: none;
-  border-bottom-color: var(--tint);
+  border-bottom-color: var(--accent);
 }
 
 .month-picker-grid {
@@ -1988,7 +2205,7 @@ body {
    的細邊框上不夠醒目，加粗到 1.5px 才看得出跟一般月份不一樣。 */
 .month-cell[aria-current="date"] {
   border-width: 1.5px;
-  border-color: var(--tint);
+  border-color: var(--accent);
   font-weight: 700;
 }
 
@@ -2510,7 +2727,7 @@ body {
    Advanced／Diagnostics），圖上的帶狀區域因此更該退成背景層次，raw IV
    主線維持圖上最主要的線。既有走勢圖繪製邏輯不動，這裡純粹是 CSS 調整。 */
 .iv-trend-band {
-  fill: var(--tint);
+  fill: var(--accent);
   opacity: 0.08;
   stroke: none;
 }
@@ -2659,4 +2876,226 @@ body {
 .site-footer a {
   color: inherit;
   text-decoration: underline;
+}
+
+/* ---------- 股票識別方塊：真 Logo（UI-IMPL-002／#092，Identity 板） ---------- */
+
+/* 白底方塊——深色介面下黑色 Logo（Apple／Tesla）仍靠白底維持可辨識，
+   淺色模式改用髮絲線與頁面區隔（`--tile-line`），Logo 本身不變。 */
+.tile {
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  background: var(--tile-bg);
+  border: 1px solid var(--tile-line);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  overflow: hidden;
+}
+
+.tile img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  padding: 4px;
+  box-sizing: border-box;
+  display: block;
+}
+
+.tile.s {
+  width: 20px;
+  height: 20px;
+  border-radius: 4px;
+}
+.tile.s img {
+  padding: 3px;
+}
+
+.tile.l {
+  width: 40px;
+  height: 40px;
+  border-radius: 8px;
+}
+.tile.l img {
+  padding: 6px;
+}
+
+.tile.xl {
+  width: 56px;
+  height: 56px;
+  border-radius: 10px;
+}
+.tile.xl img {
+  padding: 8px;
+}
+
+/* 橫式字標（ETF 發行商）不硬塞進正方形——`StockLogo.tsx` 依圖片真實
+   寬高比自動判斷是否加這個修飾 class。 */
+.tile.wide {
+  width: auto;
+  max-width: 64px;
+  padding: 0 5px;
+}
+.tile.wide img {
+  padding: 5px 0;
+}
+.tile.l.wide {
+  max-width: 96px;
+  padding: 0 8px;
+}
+.tile.l.wide img {
+  padding: 8px 0;
+}
+
+/* 找不到真實 Logo（`fallback=404`）或載入中：整個消失，不留佔位圖形，
+   只剩呼叫端自己畫的代號文字。 */
+.tile.none {
+  background: transparent;
+  border-color: transparent;
+}
+
+/* 標的識別列——Logo ＋ 代號（＋選填公司名）。 */
+.id {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+/* ---------- 桌面版頂欄：品牌／導覽／角色徽章（UI-IMPL-002／#092） ---------- */
+
+@media (min-width: 1100px) {
+  .topbar {
+    height: 56px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 0 20px;
+    background: var(--panel);
+    border-bottom: 1px solid var(--separator);
+  }
+
+  .topbar .brand {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-weight: 700;
+    font-size: 15px;
+    letter-spacing: 0.01em;
+    margin-right: 16px;
+    color: var(--label);
+  }
+
+  .topbar .brand-mark {
+    color: var(--accent);
+  }
+
+  .topbar .nav {
+    display: flex;
+    gap: 4px;
+    height: 100%;
+  }
+
+  .topbar .nav a {
+    display: flex;
+    align-items: center;
+    height: 56px;
+    padding: 0 12px;
+    font-size: 14px;
+    font-weight: 500;
+    color: var(--label-secondary);
+    border-bottom: 2px solid transparent;
+    text-decoration: none;
+  }
+
+  .topbar .nav a.on {
+    color: var(--label);
+    border-bottom-color: var(--accent);
+  }
+
+  .topbar .spacer {
+    flex: 1;
+  }
+}
+
+/* 手機沒有 `.topbar`（`TopBar.tsx` 只在桌面寬度掛載），這裡不需要
+   額外一組 `max-width` 隱藏規則。 */
+
+/* ---------- 角色徽章（UI-IMPL-002／#092） ---------- */
+
+.role {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 10px;
+  border-radius: var(--radius-s);
+  border: 1px solid var(--line-2);
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--label-secondary);
+  white-space: nowrap;
+}
+
+.role .dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--label-tertiary);
+}
+
+.role-superuser .dot {
+  background: var(--up);
+}
+
+.role-superadmin {
+  border-color: var(--accent-soft);
+  color: var(--label);
+}
+.role-superadmin .dot {
+  background: var(--accent);
+}
+
+/* ---------- 手機版底部導覽（UI-IMPL-002／#092，Mobile 板 `.mtabs`） ---------- */
+
+.mtabs {
+  position: sticky;
+  bottom: 0;
+  z-index: 6;
+  display: flex;
+  height: 56px;
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+  background: var(--panel);
+  border-top: 1px solid var(--separator);
+}
+
+.mtab {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  font-size: 11px;
+  color: var(--label-tertiary);
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  text-decoration: none;
+}
+
+.mtab.on {
+  color: var(--accent-text);
+}
+
+.mtab:active {
+  opacity: 0.6;
+}
+
+/* 桌面寬度不顯示底部導覽——桌面版導覽在 `TopBar` 的 `.nav`。 */
+@media (min-width: 1100px) {
+  .mtabs {
+    display: none;
+  }
 }

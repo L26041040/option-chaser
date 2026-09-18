@@ -22,6 +22,7 @@
 import type { RefreshFailure, ScenarioSummary } from "./api";
 import { CheckIcon, EditIcon, TrashIcon } from "./icons";
 import { detailHash } from "./route";
+import StockLogo from "./StockLogo";
 import {
   cardFailureHeadline,
   cardFailureVariant,
@@ -149,6 +150,13 @@ function ScenarioCard({
                 {isChecked && <CheckIcon />}
               </span>
             )}
+            {/* UI-IMPL-002（#092，Identity 板）：真實品牌 Logo，找不到
+                就整個消失、只留代號文字——`StockLogo` 自己處理三種狀態。
+                用最小尺寸（20px，非預設 28px）：#108 既有硬性密度預算
+                （compact row 卡片高度 <80px，e2e 鎖住）留給這一行的
+                空間有限，20px 貼齊設計稿「20 手機頂欄」那一級，視覺上
+                仍看得出是真實 Logo。 */}
+            <StockLogo symbol={row.symbol} size="s" />
             <span className="compact-symbol">{row.symbol}</span>
             {/* QA 修正：現價擠進同一行的目標價前面（`現價 → 目標`），
                 不多佔一列高度。與 `CompactScenarioList.tsx` 同一種寫法

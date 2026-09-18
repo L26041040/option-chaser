@@ -1068,7 +1068,12 @@ test("劇本庫卡片瘦身：固定左側欄視窗一次看到的劇本數比�
     }
   }
 
-  expect(visibleWithoutScrolling).toBeGreaterThanOrEqual(5);
+  // UI-IMPL-002（#092）：桌面新增的常駐頂欄（TopBar，56px）疊在
+  // `.library-pane` 之上，讓它自己的可用高度比加頂欄之前少了一截
+  // ——這是核准設計的一部分，不是密度退化。門檻從 5 降到 4，仍然
+  // 遠優於舊版大卡片一屏通常只放得下 2～3 張，決策 K 本身要驗證的
+  // 「compact row 比舊卡片密」這件事依然成立。
+  expect(visibleWithoutScrolling).toBeGreaterThanOrEqual(4);
 });
 
 test("詳細頁密度：桌面一屏能看到的比例明顯提高（QA-FIX-3／QA-01）",
@@ -1236,7 +1241,10 @@ test("桌面版的設定入口固定在 sidebar 最下方，內容開在右側�
   await routeSettings(page);
   await page.goto("/");
 
-  const entry = page.getByRole("link", { name: "設定" });
+  // UI-IMPL-002（#092）：桌面頂欄新增的 `.nav` 也有一個「設定」連結，
+  // 純文字查詢因此不再唯一——這支測試真正要驗的是 sidebar 最下方那個
+  // 入口本身，改用它專屬的 class 精確鎖定。
+  const entry = page.locator("a.sidebar-settings");
   await expect(entry).toBeVisible();
 
   // 「最下方」：入口的位置在左欄劇本清單之下。

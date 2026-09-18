@@ -100,3 +100,64 @@ export function EditIcon({ size = 16 }: { size?: number }) {
     </svg>
   );
 }
+
+/** 首頁／劇本庫圖示——手機版底部導覽（UI-IMPL-002／#092）。 */
+export function HomeIcon({ size = 20 }: { size?: number }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      width={size}
+      height={size}
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={2}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+      className="icon-glyph"
+    >
+      <path d="M4 5h16M4 12h16M4 19h10" />
+    </svg>
+  );
+}
+
+/** 建立圖示——手機版底部導覽的「建立」分頁（UI-IMPL-002／#092）。 */
+export function CreateIcon({ size = 20 }: { size?: number }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      width={size}
+      height={size}
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={2}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+      className="icon-glyph"
+    >
+      <path d="M12 5v14M5 12h14" />
+    </svg>
+  );
+}
+
+/** 關閉圖示——桌面版建立劇本抽屜的關閉鈕（UI-IMPL-002／#092，比照
+ *  Artifact `Desktop-Create.dc.html` 的抽屜關閉鈕）。 */
+export function CloseIcon({ size = 16 }: { size?: number }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      width={size}
+      height={size}
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={2}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+      className="icon-glyph"
+    >
+      <path d="M6 6l12 12M18 6 6 18" />
+    </svg>
+  );
+}

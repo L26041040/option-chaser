@@ -30,6 +30,7 @@ import IvHistory from "./IvHistory";
 import Heatmap from "./Heatmap";
 import RawData from "./RawData";
 import SpreadHistory from "./SpreadHistory";
+import StockLogo from "./StockLogo";
 import {
   type AnalysisView,
   type Candidate,
@@ -381,7 +382,12 @@ export default function ScenarioDetail({
           </a>
         </div>
         <div className="toolbar-row">
-          <h1 className="toolbar-title">{detail?.symbol ?? "劇本"}</h1>
+          <span className="id">
+            {/* UI-IMPL-002（#092，Identity 板）：真實品牌 Logo，找不到
+                就整個消失、只留標題文字——`StockLogo` 自己處理三種狀態。 */}
+            {detail?.symbol && <StockLogo symbol={detail.symbol} size="l" />}
+            <h1 className="toolbar-title">{detail?.symbol ?? "劇本"}</h1>
+          </span>
           {/* #70：與劇本庫功能列同一個視覺語言（標題列右側膠囊鈕），
               走既有的單一劇本刷新端點——不是第四種獨立管道。已過期
               （#68）沿用清單卡片同一句文案並停用——後端會把它當無害

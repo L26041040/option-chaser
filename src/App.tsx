@@ -38,6 +38,7 @@ import {
 } from "react";
 
 import BetaNotice from "./BetaNotice";
+import BottomNav from "./BottomNav";
 import CompactScenarioList from "./CompactScenarioList";
 import CreateEntry from "./CreateEntry";
 import CreateForm, {
@@ -51,9 +52,10 @@ import ScenarioDetail from "./ScenarioDetail";
 import ScenarioList from "./ScenarioList";
 import Settings from "./Settings";
 import Toolbar from "./Toolbar";
+import TopBar from "./TopBar";
 import TrashView from "./TrashView";
 import { useIsDesktop } from "./useIsDesktop";
-import { GearIcon } from "./icons";
+import { GearIcon, CloseIcon } from "./icons";
 import {
   archiveScenario,
   createScenario,
@@ -610,6 +612,16 @@ export default function App() {
     );
   }
 
+  // UI-IMPL-002（#092）：手機版底部導覽的「建立」分頁——先回劇本庫首頁
+  // （清空 hash），同一批 setState 裡順帶展開建立表單。hash 變化觸發
+  // `hashchange` 監聽器更新 `hash` state、下一次渲染落到下面的手機首頁
+  // 分支時，`showCreateForm` 已經是 true，表單因此立刻可見，不需要
+  // 額外的跨畫面狀態管線。
+  const openCreateFromAnywhere = () => {
+    window.location.hash = "";
+    setShowCreateForm(true);
+  };
+
   // 手機版：設定是整頁替換（跟垃圾桶、詳細頁同樣的既有模式）。排在
   // 垃圾桶之前只是順序，兩個 hash 互斥。
   if (!isDesktop && showSettings) {
@@ -617,6 +629,7 @@ export default function App() {
       <>
         <Settings />
         <Footer />
+        <BottomNav active="settings" onOpenCreate={openCreateFromAnywhere} />
       </>
     );
   }
@@ -626,6 +639,7 @@ export default function App() {
       <>
         <TrashView onRestore={restoreFromTrash} />
         <Footer />
+        <BottomNav active="trash" onOpenCreate={openCreateFromAnywhere} />
       </>
     );
   }
@@ -635,6 +649,9 @@ export default function App() {
       <>
         <ScenarioDetail {...detailProps} />
         <Footer />
+        {/* 貼齊設計稿（Mobile-Detail 板）：看著某個劇本的詳細頁仍視為
+            「在劇本庫這個大分類底下」，「劇本庫」分頁維持標記 active。 */}
+        <BottomNav active="library" onOpenCreate={openCreateFromAnywhere} />
       </>
     );
   }
@@ -720,6 +737,10 @@ export default function App() {
 
         {/* PB-12（#302）：全站常駐頁尾——手機首頁也不例外。 */}
         <Footer />
+        <BottomNav
+          active={showCreateForm ? "create" : "library"}
+          onOpenCreate={openCreateFromAnywhere}
+        />
       </div>
     );
   }
@@ -751,20 +772,6 @@ export default function App() {
       )}
       {batchArchiveErrorNotice}
 
-      {/* #75：建立劇本收攏成工作區正上方的入口——跟著工具列一起釘住，
-          不再是掛在全部劇本卡片下面、永遠展開、得捲過整份清單才看得到
-          的表單。一律掛著、用 `hidden` 切換可見度（見上方 `createPanelId`
-          註解），因此永遠排在 `ScenarioList` 之前，不會因為開／關而
-          改變它在畫面結構上「在清單上方」這件事。年月選擇器（#71）的
-          「今年」／「本月」跟全站同一個時鐘——不讓它自己另外算一次
-          `new Date()`，那樣會跟 `ScenarioList` 的新鮮度判斷用著兩個
-          不同步的「現在」。 */}
-      <div id={createPanelId} hidden={!showCreateForm}>
-        <CreateForm onCreate={create} onSaveEdit={saveEdit}
-                    onCancelEdit={cancelEdit} editing={editing}
-                    busy={busy} today={now} />
-      </div>
-
       <ScenarioList
         rows={rows}
         failures={failures}
@@ -795,7 +802,14 @@ export default function App() {
   // 劇本清單的底部。設定內容顯示在右側工作區（`.detail-pane`），與
   // 「選劇本切換右側」是同一個機制。
   return (
-    <>
+    <div className="desktop-shell">
+      {/* UI-IMPL-002（#092）：桌面版頂欄——品牌／導覽／角色徽章，桌面
+          專屬 chrome（見 `TopBar.tsx` 檔頭說明），疊在既有 `Toolbar`
+          （左側 `library-pane` 裡的「＋ 建立劇本／重新整理」那一條）
+          之上，不取代它。`.desktop-shell` 才是真正等於整個視窗高度的
+          那一層（見 `styles.css` 對應說明），`.workspace` 只佔扣掉
+          頂欄後剩下的空間。 */}
+      <TopBar active={showSettings ? "settings" : showTrash ? "trash" : "library"} />
       <div className="workspace">
         <div className="library-pane">
           {/* PB-12（#302）：首頁 Beta 說明——桌面版沒有獨立的「首頁」，
@@ -822,9 +836,64 @@ export default function App() {
             </div>
           )}
         </div>
+
+        {/* UI-IMPL-002（#092）：桌面版建立劇本改為右側抽屜＋遮罩（Artifact
+            `Desktop-Create.dc.html`），取代 #75 當年「跟著工具列釘住的
+            就地展開面板」那個版式——本身仍是同一個 `showCreateForm`
+            狀態、同一組 `onCreate`／`onSaveEdit`／`onCancelEdit` 回呼，
+            只是視覺位置換成覆蓋在 `.workspace` 之上的浮層，不再佔用
+            `.library-scroll` 裡的清單空間。手機版（上方 `CreateEntry`
+            分支）完全不受影響——那是結構上獨立的另一段 JSX。
+
+            沿用 #75 的既有教訓：面板一律掛著、用 `hidden` 屬性切換
+            可見度，不是條件渲染整個卸載重掛，收合再展開時使用者已經
+            打的內容才不會被清空（見下方「收合建立表單不會清空使用者
+            已經打的內容」既有測試）。遮罩點擊關閉是抽屜這個版式新增的
+            關閉手段，呼叫的是既有 `setShowCreateForm(false)`——跟
+            Toolbar 上「收合建立表單」按鈕呼叫的是同一個狀態轉換，
+            不是新發明的語意。 */}
+        <div
+          className="create-drawer-scrim"
+          hidden={!showCreateForm}
+          onClick={() => setShowCreateForm(false)}
+          aria-hidden="true"
+        />
+        <aside
+          id={createPanelId}
+          className="create-drawer"
+          hidden={!showCreateForm}
+          aria-label={editing ? "編輯劇本" : "建立劇本"}
+        >
+          <div className="create-drawer-head">
+            {/* `<CreateForm>` 自己內部已有 `<h2>建立劇本／編輯劇本</h2>`
+                （既有標題，未改動）——這裡只補一句副標，不重複掛一個
+                標題。 */}
+            <span className="caption">
+              {editing ? "標的不可改" : "三欄必填・無預設值"}
+            </span>
+            {/* 這裡刻意不叫「收合建立表單」——Toolbar 上原本那顆展開鈕
+                在 `createOpen` 為真時本身就會變成同名文字按鈕（見
+                `Toolbar.tsx`），兩者同時掛著會讓 `getByRole("button",
+                { name: "收合建立表單" })` 找到兩個相符元素而炸掉。這顆
+                是抽屜自己的關閉鈕，同一個狀態轉換、不同的可及名稱。 */}
+            <button
+              type="button"
+              className="drawer-close"
+              aria-label="關閉建立表單抽屜"
+              onClick={() => setShowCreateForm(false)}
+            >
+              <CloseIcon />
+            </button>
+          </div>
+          <div className="create-drawer-body">
+            <CreateForm onCreate={create} onSaveEdit={saveEdit}
+                        onCancelEdit={cancelEdit} editing={editing}
+                        busy={busy} today={now} />
+          </div>
+        </aside>
       </div>
       {/* PB-12（#302）：全站常駐頁尾——桌面版排在整個 workspace 之下。 */}
       <Footer />
-    </>
+    </div>
   );
 }
