@@ -27,7 +27,7 @@ block 裡，不能切成好幾個 code block、也不能中間插普通文字把
 `［回報#001］spec #137 拆票完成`）。編號是**累計總數**，不因換
 session、換分支、換主題而歸零——目前最新編號記在這裡：
 
-> 目前次序：085（下一份回報用 086）
+> 目前次序：086（下一份回報用 087）
 >
 > ⚠ 084 跳號說明：本檔案自己記的序號原本是「083（下一份回報用
 > 084）」，但 OPTION-PUBLIC-BETA-CI-REPAIR-010 這輪工單裡大哥直接
@@ -10077,11 +10077,98 @@ header，同源請求自動帶 cookie）。`Settings.tsx` 的
 Vitest **834 passed**、`vite build` 成功、Playwright **132 passed**
 （iPhone＋Desktop）連續兩輪穩定無 flake。
 
-**下一步**：整體 AUTH-03～06 回歸驗證（真實 Postgres 全套後端＋
-前端＋跨三態 E2E）→ 一次 `/security-review`（範圍涵蓋 AUTH-01～06
-累積 diff）→ AUTH-07（#314，production readiness／PB-03 migration／
-production smoke／release security review／最終 verdict）。依 task
-#091 指示全自主連續施工中，不逐步停下等待確認。
+**整體 AUTH-03～06 回歸驗證（2026-09-18）**：全套後端測試（記憶體＋
+真實 Postgres 雙後端，於乾淨重置過的資料庫上、`--collect-only`
+確認 233 個真實 `[postgres]` 參數化案例真的收集執行）**2368
+passed，0 failed**；前端 `typecheck` 乾淨、Vitest **834 passed**、
+`vite build` 成功；Playwright **132 passed**（iPhone＋Desktop）
+連續三輪穩定無 flake。針對 AUTH-01～06 累積 diff（`88ecb34..HEAD`）
+跑了一次 `/security-review`：獨立 sub-agent 逐一核對密碼常數時間
+比對、cookie 屬性、軸一／軸二正交（`resolve_role()`／`require_role()`
+無 `owner_id` 參數、與 `identity.py` 零 import 交集）、AUTH-04 借用
+credential 不外洩、AUTH-03 全部 11 個端點在任何副作用前就先擋、
+AUTH-05 quota/throttle 豁免與 vendor fuse 完全獨立、Postgres SQL
+全參數化——**零真實漏洞**，未進入第二階段假陽性過濾（第一輪即無
+候選項需要過濾）。
+
+### AUTH-07（#314）——production release／migration／verification 收尾
+
+**Step 1（env 確認）**：`SUPERUSER_PASSWORD`／`SUPERADMIN_PASSWORD`
+是否已在 Vercel 設定——沙箱 Vercel MCP 工具對這個專案 `list_
+projects`／`get_project` 皆查不到（既有已知工具整合缺陷，CLAUDE.md
+歷史多次記錄；`list_teams` 能拿到真實 team id
+`team_SyK6VaGTHE1dU8oTppOX0hRc`，但 `list_projects` 用這個 team id
+仍回空陣列，`get_project` 直接查 slug 回 404），**無法獨立驗證**。
+Owner 已在工單開頭明確表示兩者皆已設定完成，本輪以此為前提繼續
+施工，未要求、未讀取、未印出密碼明文，兩把密碼全程沒有以任何形式
+進過這個 session。
+
+**Step 2（release 流程）已完成**：開 **PR #315**（`claude/implement-
+tfm9oa` → `master`，涵蓋 AUTH-01～06 全部 11 個 commit）。CI 三個
+必要 job（`Backend (memory + Postgres)`／`Frontend (typecheck /
+vitest / build)`／`Playwright smoke subset`）全綠（Backend 耗時
+約 7 分鐘、與本地量測一致）後，以標準 merge（非 squash／rebase，
+比照既有 `#271`／`#270`／`#250`／`#207`／`a91d5d2` 慣例）合併——
+**merge commit `74b7a1f88d245cbd9001d237e722829893c79a01`**。未
+force push、未繞過任何 branch protection、未跳過 CI（`ci.yml`
+自 PB-13／#293 起已存在，本輪首次真正在一張新 PR 上跑過三個
+job）。`.github/workflows/deploy-smoke.yml` 的既有已知限制
+（SSO 保護的獨立 preview 網址，非本輪造成）依舊出現一次紅燈，
+判斷與程式碼正確性無關，未處理（CLAUDE.md 既有記錄）。
+
+**Production 部署已確認**（合併後 ~30 秒內生效）：
+
+```
+合併前：GET /api/auth/status → 404（路由不存在）
+合併後：GET /api/auth/status → 200 {"role":"normal"}
+
+POST /api/auth/login（刻意打錯密碼）→ 401 {"detail":"unauthorized"}
+POST /api/auth/logout（無 cookie）→ 200 {"role":"normal"}
+GET /api/ops/metrics（無授權）→ 401 {"detail":"unauthorized"}
+GET /api/health → {"status":"ok","engine_version":"0.5.0","storage":"postgres",...}
+GET /api/scenarios（既有匿名流程）→ 200 []
+```
+
+五項回應形狀與後端測試套件對這些端點的既有斷言逐一吻合，證明
+production 執行的確實是新合併的程式碼，不是巧合。`ADMIN_SECRET`
+確認可安全從 Vercel 移除——`git grep` 全站只剩
+`api_app/observability.py` 裡當 Sentry redaction 防禦性冗餘的字串
+比對，沒有任何程式碼讀它做授權判斷（AUTH-03 commit 已完整退役）。
+
+**AUTH-01～06（issues #308–313）已逐一附上完工留言（含各自 commit
+hash 與 production 驗證片段）並關閉**；母票 #307 依既有慣例不主動
+關閉。
+
+**Step 2（PB-03 migration）與 Step 4／5（Super User／Super Admin
+正式站能力驗證）——真正的 HITL，本輪在此停下**：
+
+1. **沒有 production `DATABASE_URL`**——本沙箱環境完全沒有這個
+   環境變數（`env | grep -i database_url` 空白），`scripts/
+   migrate_solo_to_owner.py` 需要它才能連上正式 Neon，agent 結構上
+   連嘗試執行都做不到。
+2. **沒有 Owner 的真實 production owner_id**——這個值只能由 Owner
+   本人用真實瀏覽器造訪正式站取得（PB-02 lazy creation），agent 不
+   得猜測、不得代填。
+3. **Super User／Super Admin 正式站登入驗證需要真實密碼**——依本輪
+   SECURITY HARD RULE，agent 永遠不得要求、讀取、使用這兩組密碼
+   明文，這是結構性、永久性的限制，不是等資訊補齊就能解除的暫時
+   卡點；已改用「刻意打錯密碼觸發 401」的方式驗證端點本身接線正確、
+   不洩漏資訊，但無法驗證真實密碼登入成功後的完整能力邊界。
+
+**已在 issue #314 留言記錄 Owner 需要親自執行的三個步驟**（用瀏覽器
+造訪正式站建立 owner → 登入 Super Admin 用管理面板 `created_at`
+找出剛建立的那個 owner_id → 在有 production `DATABASE_URL` 的環境
+先不帶 `--confirm` 跑一次核對列數、確認無誤後加 `--confirm` 真正
+執行；並提醒 vendor fuse 驗證不建議故意打爆正式站預算，應走既有
+DI 注入點在測試環境模擬）。#314 本身**維持 open、未關閉**——PB-03
+migration 與密碼相依的能力驗證尚未完成，不符合它自己 Acceptance
+Criteria 的「三層角色各自能力邊界皆有實際驗證證據」。
+
+**最終判定：`BLOCKED_FOR_AGENT_USER_TEST`**——唯一剩餘 blocker 是
+上述三項真正的 HITL（production DB 連線、Owner 真實 owner_id、
+真實密碼登入驗證），全部本輪已完成的工程與自動化驗證面（AUTH-01～06
+程式碼、雙輪回歸、security review、release 流程、production 部署
+確認、無密碼安全 smoke）皆已就緒，不構成任何一項待修正的缺陷。
 
 ### 施工依據
 
