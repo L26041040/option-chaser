@@ -4,12 +4,26 @@
  * 這一版只鋪設語彙：系統字體棧、iOS 系統色、安全區內距、卡片與分組列表
  * 的圓角/間距節奏、深淺色自動切換。後續票的畫面都從這組 token 長出來，
  * 不各自發明尺寸與顏色。
- */
+ *
+ * Typography v2（#095／UI-TYPO，2026-09-19）：字體棧換成真正 web font
+ * ——IBM Plex Sans 接拉丁字母／數字／半形標點，Noto Sans TC 接漢字／
+ * 全形標點，兩者皆由 `index.html` 的 Google Fonts `<link>` 載入，不再
+ * 依賴使用者機器裝了什麼中文字型（原本繁中純靠系統 fallback，缺對應
+ * 字型的機器會退到新細明體一類的舊式明體，這正是本輪要修的問題）。
+ * `--font-cjk`／`--mono` 兩個新 token 照設計稿字面宣告；`--mono` 目前
+ * 唯一消費端在 `.diagnostics-copy-fallback`。只換字體棧本身，尺寸／
+ * 間距／版面架構不在本輪範圍（詳見本節下方逐項標注的 v2 微調）。 */
 
 :root {
-  /* iOS system font stack */
-  --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto,
-    "Helvetica Neue", "PingFang TC", "Noto Sans TC", sans-serif;
+  /* Typography v2：拉丁/數字/半形標點交給 IBM Plex Sans，漢字/注音/
+     全形標點交給 Noto Sans TC，兩者皆為 web font（見 index.html）。
+     PingFang TC／Microsoft JhengHei 僅作字型尚未載入前那個瞬間的
+     系統字 fallback，正常情況下不會被使用者實際看到。 */
+  --font: "IBM Plex Sans", "Noto Sans TC", "PingFang TC", "Microsoft JhengHei",
+    sans-serif;
+  --font-cjk: "Noto Sans TC", "PingFang TC", "Microsoft JhengHei", sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo,
+    "Noto Sans TC", monospace;
 
   /* iOS system colours (light) */
   --bg: #f2f2f7;
@@ -84,8 +98,21 @@ body {
   background: var(--bg);
   color: var(--label);
   font-size: 17px; /* iOS body */
-  line-height: 1.45;
+  /* Typography v2：1.45→1.5。漢字沒有 x-height，行距要比純拉丁多一點
+     才透氣；沒有另外設定行高的子元素會自動吃到這個新比例（CSS 行高
+     用無單位數字宣告時，子孫元素各自用自己的字級乘這個比例，不是
+     直接繼承一個固定 px 值）。 */
+  line-height: 1.5;
   -webkit-font-smoothing: antialiased;
+  /* Typography v2：兩個安全、不影響任何版面尺寸的全域文字渲染提示，
+     中英文皆受益。不加 `font-feature-settings: "tnum"`——全站已有
+     二十餘處針對財務數字各自宣告 `font-variant-numeric: tabular-nums`
+     （現代瀏覽器支援已足夠，兩者同時設等於冗餘），若在 body 全域加
+     `"tnum"` 會讓原本刻意不用等寬數字的內文（例如段落裡夾雜的年月）
+     也一併變成等寬數字——那是本票沒有被要求、也不該順手做的行為
+     變動，既有 tabular-nums 使用範圍原封不動維持。 */
+  text-rendering: optimizeLegibility;
+  font-kerning: normal;
 }
 
 #root {
@@ -248,7 +275,10 @@ body {
   font-size: 28px;
   font-weight: 700;
   font-variant-numeric: tabular-nums;
-  letter-spacing: -0.3px;
+  /* Typography v2：全站最顯眼的數字（冠軍劇本報酬率）歸類為 Display
+     numeric，字距 -0.02em（原 -0.3px 在 28px 下約 -0.011em，微調到
+     設計稿明訂的比率）。 */
+  letter-spacing: -0.02em;
 }
 
 .positive {
@@ -267,6 +297,9 @@ body {
 .caption {
   color: var(--label-secondary);
   font-size: 13px;
+  /* Typography v2：Caption 級距行高 1.45，刻意比 body 新的 1.5 略緊
+     一點——顯式宣告，不讓它被動吃到 body 的新比例。 */
+  line-height: 1.45;
 }
 
 .button {
@@ -299,11 +332,16 @@ body {
   border-left-color: var(--red);
 }
 
-/* FB4-01（#60）：候選池診斷用的次級列與區塊標題 */
+/* FB4-01（#60）：候選池診斷用的次級列與區塊標題
+   Typography v2：這是全站最常見的中文標題類別（候選池／到期日／分析
+   報告／登入／設定…）。中文標題字距一律歸零——中文字距本身已是
+   滿框，負字距在 Noto Sans TC 上會讓字黏在一起；字重 600→500，
+   Noto Sans TC 的 600 在這個字級（20px）以下容易糊成一塊，只有主
+   按鈕與 Ticker 保留較重的字重。 */
 .section-title {
   font-size: 20px;
-  font-weight: 600;
-  letter-spacing: -0.2px;
+  font-weight: 500;
+  letter-spacing: 0;
   margin: 0;
 }
 
@@ -370,12 +408,16 @@ body {
   gap: 8px;
 }
 
-/* iOS Large Title：34pt/bold、負字距。手機上這是「我在哪一頁」的
-   唯一線索，所以它得夠大。 */
+/* iOS Large Title：34pt/bold。手機上這是「我在哪一頁」的唯一線索，
+   所以它得夠大。內容多數是中文頁名（劇本庫／垃圾桶／設定），偶爾是
+   詳細頁的標的代號（Ticker）；Typography v2 的「中文標題字距歸零」
+   規則套用在這裡——原本的負字距在短的拉丁 Ticker 上不明顯，但在
+   「劇本庫」這類中文頁名上會讓字擠在一起。字重（700）與行高（1.15，
+   跟 `.toolbar` 既有的釘選版面高度連動）不在本輪範圍內，維持原樣。 */
 .toolbar-title {
   font-size: 32px;
   font-weight: 700;
-  letter-spacing: -0.6px;
+  letter-spacing: 0;
   line-height: 1.15;
   margin: 0;
 }
@@ -413,7 +455,9 @@ body {
   color: var(--tint);
   font-family: inherit;
   font-size: 15px;
-  font-weight: 600;
+  /* Typography v2：一般（非主要）按鈕字重 500，只有 `.button`（填色
+     主要 CTA）留 600。 */
+  font-weight: 500;
   padding: 7px 14px;
   min-height: 34px;
   white-space: nowrap;
@@ -437,7 +481,8 @@ body {
   color: var(--tint);
   font-family: inherit;
   font-size: 15px;
-  font-weight: 600;
+  /* Typography v2：一般（非主要）按鈕字重 500。 */
+  font-weight: 500;
   padding: 8px 4px;
   min-height: 36px;
   cursor: pointer;
@@ -764,6 +809,11 @@ body {
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.4px;
+  /* Typography v2：這一區塊緊貼在手機首頁「至少看得到 4 個劇本」
+     密度預算正上方（PB-12／#302 施工時記錄過一度只差 0.6px 就會
+     退步），不留顯式行高的話會被動吃到 body 新調的 1.5、把整串卡片
+     再往下推 0.65px——鎖回舊比例，不吃掉這個已經很薄的安全餘裕。 */
+  line-height: 1.45;
 }
 
 /* 收合態是一列 compact 的膠囊鈕，跟桌面版工具列的「＋ 建立劇本」
@@ -851,6 +901,16 @@ body {
   background: var(--bg-elevated);
   border-radius: calc(var(--radius) - 4px);
   box-shadow: var(--card-shadow);
+  /* Typography v2：這是 MVP-v2／#77、#82、#108 三票明訂受硬性密度
+     預算保護的組件（手機一屏至少 4 張、桌面左側欄一次看到更多卡片，
+     皆由 e2e 幾何斷言鎖住）——`.compact-tier1/2/3`／`.compact-symbol`／
+     `.compact-target`／`.compact-strategy` 等子元素都沒有自己的
+     line-height，會被動吃到上面 body 新調的 1.5，讓卡片自然高度
+     撐大、直接把既有兩條密度守門測試（手機「至少看得到 4 個劇本」、
+     桌面 Butterfly champion 卡片「高度 < 80px」）推到邊界外——實測
+     跑過 Playwright 才抓到，不是紙上猜測。這裡把整個子樹的行高就地
+     凍結回 v2 施工前的舊比例，不影響其餘畫面吃到的新 1.5。 */
+  line-height: 1.45;
 }
 
 /* code review 跟進：封存鈕原本相對整張 `.compact-card` 定位，刷新失敗
@@ -1239,7 +1299,9 @@ body {
 
 .stat-label {
   font-size: 12px;
-  line-height: 1.2;
+  /* Typography v2：與 `.caption` 同一個級距（12px），行高比照拉到
+     1.45——原本 1.2 對中文字距太緊。 */
+  line-height: 1.45;
   color: var(--label-tertiary);
 }
 
@@ -1470,7 +1532,9 @@ body {
 .chip-date,
 .chip-label {
   font-size: 13px;
-  font-weight: 600;
+  /* Typography v2：這是按鈕（`.chip`）上的標籤文字，套一般按鈕字重
+     500——數字本身（`.chip-return`）不算按鈕標籤，字重不動。 */
+  font-weight: 500;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
@@ -1735,7 +1799,8 @@ body {
 }
 
 .raw-data-detail summary {
-  font-weight: 600;
+  /* Typography v2：展開／收合切換鈕，套一般按鈕字重 500。 */
+  font-weight: 500;
   cursor: pointer;
 }
 
@@ -1906,7 +1971,10 @@ body {
   color: var(--label);
   font-family: inherit;
   font-size: 15px;
-  font-weight: 600;
+  /* Typography v2：月份選擇按鈕，套一般按鈕字重 500——`[aria-current=
+     "date"]` 標記「今天」用的 700 加粗維持不動，那是刻意的強調記號，
+     不是按鈕的預設字重。 */
+  font-weight: 500;
   padding: 10px 0;
   border-radius: 8px;
   min-height: 44px;
@@ -2182,7 +2250,9 @@ body {
   width: 100%;
   margin-top: 8px;
   padding: 8px;
-  font-family: ui-monospace, monospace;
+  /* Typography v2：全站唯一的等寬字內容（診斷 JSON 複製備援），改用
+     真正載入的 IBM Plex Mono，而非只靠系統等寬字。 */
+  font-family: var(--mono);
   font-size: 12px;
   color: var(--label);
   background: var(--bg-elevated);
@@ -2252,7 +2322,9 @@ body {
   font-size: 20px;
   font-weight: 700;
   font-variant-numeric: tabular-nums;
-  letter-spacing: -0.2px;
+  /* Typography v2：一般財務數字字距 -0.01em（原 -0.2px 在 20px 下
+     恰好就是 -0.01em，這裡只是改成 em 單位，數值不變）。 */
+  letter-spacing: -0.01em;
 }
 
 /* 一年走勢圖本體（#140）：跟 `.spread-history-chart` 同一種尺寸規則
@@ -2556,6 +2628,12 @@ body {
 .beta-notice .caption {
   margin: 0;
   color: inherit;
+  /* Typography v2：`.caption` 現在自己宣告了 line-height:1.45，直接
+     規則會蓋過從 `.beta-notice` 繼承來的 1.25（跟特異性無關，直接
+     規則永遠贏過繼承值）——`.beta-notice` 那個 1.25 是 PB-12／#302
+     為了不讓這塊說明文字撐爆「手機一屏至少 4 張卡片」密度預算才刻意
+     壓的（見該規則旁的既有註解），這裡明講沿用外層，不被動吃新值。 */
+  line-height: inherit;
 }
 
 /* ---------- 全站常駐頁尾（PB-12／#302） ---------- */
