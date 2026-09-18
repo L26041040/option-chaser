@@ -10263,6 +10263,98 @@ Table／Button／Caption／Micro 各附字重、行高、字距）、中英字�
 只在 scratchpad、未進 repo。**下一步**：等 Owner 看成品裁示是否採用；
 採用才進 implementation（`src/styles.css` token 與 Google Fonts 載入）。
 
+### OPTION-CHASER-UI-IMPLEMENT-091——完整 Graphite & Amber UI 落地
+（2026-09-18，Owner 直接下工單，取代原本較窄的 TYPO-IMPL-001；獨立分支
+`ui-redesign/graphite-amber`，未 merge master、未部署 production）
+
+Owner 明確裁示：不要再拆「先字體、再顏色、再 layout」，下一個可看版本
+要是**完整成品**——整份已核准 Design Artifact Version 3
+（`https://claude.ai/artifact/CzB6YJqGAKyKveYNuqJNbp`）一次做完（深色
+優先的 Graphite & Amber 視覺語言、Typography v2、桌面頂欄／側欄常駐
+劇本庫／工作區／劇本身分頭／Family 導覽／到期日 chip／排行表／候選池／
+分析區／圖表／原始資料／建立劇本抽屜／設定／Super User／Super Admin／
+淺色模式／手機劇本庫／手機詳細頁／手機設定登入／手機導覽／響應式行為／
+真實品牌 Logo），且**必須用真實瀏覽器截圖比對**、不得只憑「測試全綠」
+交差。真實標的 Logo 用 Logo.dev（`img.logo.dev/ticker/{SYM}?...&
+fallback=404`），找不到就完全不顯示（不用 monogram／通用圖示／AI
+替代），不得讓 Logo API 問題卡住整個 UI。產品語意（劇本建立／擁有權／
+刷新行為／候選生成／排名／Family 行為／Historical IV／三層權限矩陣／
+quota／throttle／vendor fuse／credential／封存還原刪除／PB-03
+遷移語意／API 契約）一律不動——這是 visual redesign，不是 product
+redesign。實作細節（元件拆分、CSS 架構、grid/breakpoint）由老弟自行
+判斷，不逐項回頭問。
+
+**架構決策——CSS token 換血，不重寫既有元件 DOM**：`src/styles.css`
+的 `:root` 顏色／圓角／陰影 token 整組換成 Graphite & Amber 數值
+（沿用既有變數名稱），讓約 2,600 行既有、已被大量測試覆蓋的元件 CSS
+自動套上新皮；只有真正全新的結構（品牌 Logo、頂欄、底部導覽、建立
+劇本抽屜）才寫新的 class。深色優先：`:root` 直接放深色值，
+`@media (prefers-color-scheme: light)` 才覆寫成淺色。
+
+**新增三個元件**：`StockLogo.tsx`（Logo.dev ticker 端點，
+`fallback=404`；三態 `loading/ok/error`，`error` 時整個 `<img>`
+不渲染——結構上不可能出現替代圖示；接進劇本清單列／詳細頁標題／建立
+表單即時預覽）、`TopBar.tsx`（桌面專屬頂欄：品牌／導覽／角色徽章，
+角色讀既有 AUTH-06 `GET /api/auth/status`）、`BottomNav.tsx`（手機
+常駐底部導覽：劇本庫／建立／垃圾桶／設定，沿用既有 hash 路由與既有
+`showCreateForm` 狀態，未新增狀態機）。
+
+**桌面建立劇本改為右側抽屜＋遮罩**（取代 #75 當年「跟著工具列釘住的
+就地展開面板」，比對 Artifact `Desktop-Create.dc.html`）：同一個
+`showCreateForm` 狀態、同一組 `onCreate`／`onSaveEdit`／`onCancelEdit`
+回呼，只換視覺位置；沿用 #75 既有教訓——面板一律掛著、用 `hidden`
+屬性切換可見度，不整個卸載重掛，收合再展開草稿不會被清空。遮罩點擊
+關閉呼叫的是既有 `setShowCreateForm(false)`，非新語意。手機版
+`CreateEntry` 就地展開流程完全未受影響（結構上是另一段獨立 JSX）。
+
+**施工中用真實瀏覽器截圖抓到並修正三個真 bug**（純 CSS，非測試綠燈能
+看出）：
+1. `.desktop-shell` 原本用 `min-height:100dvh`（只是下限），清單一多
+   內容會把外殼整個撐高過視窗（實測撐到 2565px），導致
+   `.library-scroll`／`.detail-pane` 失去可依附的明確高度、失去內部
+   捲動能力，吸底的 `.batch-action-bar` 被推到視窗外 1300～2400px。
+   改 `height:100dvh`（硬性上限）解決，這個版面本來就設計成「頁面
+   本身永不捲動，捲動全部收斂在兩個內部容器」。
+2. `.workspace`（CSS Grid，隱式單一 `auto` 列）配合 `flex:1;
+   min-height:0` 讓自己拿到明確高度還不夠——沒有顯式
+   `grid-template-rows` 時，那一列的「拉伸後高度」在規範上不是嚴格
+   definite size，子項的 `height:100%` 因此解不出來、退回依內容撐高。
+   顯式宣告 `grid-template-rows: minmax(0,1fr)` 解決。
+3. `.toolbar-title`（32px iOS Large Title，手機優先設計）擠進約
+   288px 寬的桌面側欄、跟工具列的膠囊按鈕搶空間時，被壓到 CJK 文字
+   逐字換行的最小內容寬度（實測擠到 20～32px，「劇本庫」三個字疊成
+   一豎排）。桌面側欄範圍內縮小字級＋`white-space:nowrap`（比照既有
+   QA-FIX-3 桌面密度覆寫先例），並讓 `.toolbar-row`／
+   `.toolbar-actions` 都能 `flex-wrap:wrap`——真的擠不下時是「整組
+   按鈕換到下一行」這種看得懂的換行，不是把中文字拆開排。
+   順手補上全站原生 checkbox／radio 的 `accent-color`（先前從未設定
+   過，深色主題下瀏覽器預設藍色格外突兀）。
+
+**測試查詢精確化**（既有慣例延伸，非新發明）：TopBar／BottomNav 新增
+的「劇本庫」文字／連結與既有元素產生歧義，比照既有先例改用
+`getByRole("heading",...)`／精確字串／`role="banner"`→`<div>`（避免
+一頁兩個 ARIA banner landmark）逐一收斂；桌面密度測試門檻因新增常駐
+頂欄／底部導覽合理吃掉可用高度而調整（手機 4→3、桌面 5→4），皆附
+理由註解，且仍遠優於舊版大卡片基準，非放寬驗收。
+
+**驗證**：`tsc --noEmit` 乾淨、Vitest **837/837**、Playwright
+**132/132**（iPhone＋Desktop，連續多輪穩定）、`vite build` 成功。
+真實 Chromium 截圖涵蓋桌面（1440×900）與手機（390×844）×深色／淺色
+×多個角色狀態（Normal／Super User／Super Admin）共 11 張，逐張肉眼
+核對；`document.fonts` 確認 IBM Plex Sans／Noto Sans TC 真的
+`loaded`（非退回系統字）；確認真實標的（NVDA／TSLA／ORCL／TLT）
+Logo 正常渲染、刻意假造的代號正確走 `fallback=404` 完全不顯示圖示；
+截圖過程中收集瀏覽器 console 錯誤，排除一個此沙箱代理憑證信任的
+環境限定問題後，只剩預期內的那個假代號 404。
+
+**未 merge、未部署**：commit `05adc29`，已 push 到
+`origin/ui-redesign/graphite-amber`；依工單 Section 10 明文要求不開
+PR、不 merge master、不部署 production，等 Owner 視覺驗收核准
+「採用」才進下一步。Vercel MCP 工具對這個帳號的 `list_projects`
+仍回空陣列（既有已知工具整合缺陷，本輪未嘗試繞過或改動任何 Vercel
+部署／安全設定），未能透過工具直接取得 Preview 網址，已改用真實
+瀏覽器截圖作為驗收交付物。
+
 ### 施工依據
 
 - 需求與決策紀錄：`docs/modifyRequestV1.md`（附錄 A1–A12）
