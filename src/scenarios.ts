@@ -112,6 +112,27 @@ export function deriveDirectionTag(
   return "flat";
 }
 
+/**
+ * 目標價所需漲跌幅（OG-03／#320 跟進，OG-ALL-001 核准）：純呈現用的
+ * 比例計算 `(target - spot) / spot`——跟 `deriveDirectionTag` 同一種
+ * 性質，清單列本來就顯示 `spot`／`target_price` 這兩個數字，這裡只是
+ * 把兩者換算成一個百分比給人看，不產生新的財務結論、不影響
+ * valuation／ranking／候選挑選（那些仍然完全由引擎決定，這裡不碰）。
+ * 與 `ScenarioDetail.tsx` 的 `view.meta.target_move`（引擎算好、放進
+ * 分析結果 view 的欄位，只存在於 detail view）刻意分開來源：清單列
+ * 用的 `ScenarioSummary` 從未帶過 `target_move`，這裡不冒充那個欄位、
+ * 只是拿兩個已知顯示數字做最單純的百分比呈現運算。`spot` 為 `null`
+ * （尚未分析）或 `0`（理論上不會發生，防呆用，避免除以零）時無法算，
+ * 回傳 `null`，呼叫端不畫這段小字——與 `deriveDirectionTag` 遇到同樣
+ * 情況時的既有慣例一致。
+ */
+export function requiredMovePct(
+  spot: number | null, target: number,
+): number | null {
+  if (spot === null || spot === 0) return null;
+  return (target - spot) / spot;
+}
+
 /** 方向標籤的中文字＋對應既有 `.tag` 色彩修飾類（OG-01 既有
  *  primitives：`.tag.up`／`.tag.down`／`.tag.flat`，跟詳細頁摘要卡
  *  同一套視覺語言）。字彙本身直接重用 `./detail.ts::directionLabel()`

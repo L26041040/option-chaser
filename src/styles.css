@@ -1364,6 +1364,15 @@ body {
   gap: 4px;
 }
 
+/* 目標價＋所需漲跌幅小字（OG-ALL-001 跟進 OG-03）：跟 `.lib-cell-expiry`
+   同一種「主數字在上、輔助小字在下」版式，只是靠右對齊（`.r` 既有
+   `justify-content: flex-end` 對齊水平位置，這裡另外處理垂直堆疊）。 */
+.lib-cell-target {
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 1px;
+}
+
 .lib-cell-champion .compact-strategy {
   /* `.compact-strategy` 既有規則已保證單行截斷（見上方定義），這裡
      只補冠軍策略欄要用到的最大寬度，避免長字串把欄位撐爆 grid。 */
@@ -1399,6 +1408,47 @@ body {
 
 .bar i.r {
   background: var(--down);
+}
+
+/* =========================================================================
+   OG-ALL-001 跟進 OG-03（#320）：垃圾桶頁同款 Markets 式表格換皮
+   ========================================================================= */
+
+/* 垃圾桶列不是導覽入口（見 `TrashView.tsx` 檔頭：這個畫面本來就沒有
+   「點下去進詳細頁」這件事），因此不套用 `ScenarioList.tsx` 那組鎖定
+   `<a>` 的 `.compact-card-tap.lib-row-tap` 複合選擇器，改用專屬的
+   `.trash-row-grid` 供頭列與資料列共用同一份欄位版式，沿用既有
+   `.lib-table`／`.lib-thead`／`.lib-cell`／`.cell-sub` primitives 是
+   「同款表格換皮」字面要求的具體做法。欄位組成跟主劇本庫表格不同——
+   垃圾桶裡的劇本不再刷新，沒有方向／冠軍策略／劇本報酬比例條／狀態
+   燈號這些只對「還活著」的劇本有意義的欄位，改成：checkbox／標的／
+   目標／封存於／最後收益率／操作。 */
+.trash-table {
+  --lib-cols: 28px minmax(90px, 1fr) minmax(120px, .9fr)
+    minmax(130px, 1fr) minmax(90px, .7fr) minmax(160px, 1.1fr);
+}
+
+.trash-row-grid {
+  display: grid;
+  grid-template-columns: var(--lib-cols);
+  align-items: center;
+  column-gap: 8px;
+}
+
+.trash-row {
+  padding: 8px 12px;
+  min-height: 48px;
+}
+
+.lib-cell-symbol {
+  overflow: visible;
+}
+
+.lib-cell-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  overflow: visible;
 }
 
 .compact-archive {

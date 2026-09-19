@@ -26,6 +26,7 @@ import {
   rateLimitDetailText,
   rateLimitHeadline,
   rateLimitRemainingSeconds,
+  requiredMovePct,
   returnBarWidthPct,
   scenarioRowDomId,
   scenarioSignal,
@@ -508,6 +509,24 @@ describe("方向衍生標籤（OG-09／#319，鏡射後端 derive_direction() �
     expect(directionTagClass("bullish")).toBe("up");
     expect(directionTagClass("bearish")).toBe("down");
     expect(directionTagClass("flat")).toBe("flat");
+  });
+});
+
+describe("目標價所需漲跌幅（OG-ALL-001 跟進 OG-03／#320，純呈現用比例計算）", () => {
+  it("目標價高於現價回傳正比例", () => {
+    expect(requiredMovePct(100, 120)).toBeCloseTo(0.2);
+  });
+
+  it("目標價低於現價回傳負比例", () => {
+    expect(requiredMovePct(100, 90)).toBeCloseTo(-0.1);
+  });
+
+  it("spot 為 null（尚未分析過）回傳 null，不猜一個比例", () => {
+    expect(requiredMovePct(null, 120)).toBeNull();
+  });
+
+  it("spot 為 0（防呆，理論上不會發生）回傳 null，不除以零", () => {
+    expect(requiredMovePct(0, 120)).toBeNull();
   });
 });
 

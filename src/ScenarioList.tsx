@@ -14,17 +14,17 @@
  * 兩組純前端篩選 chip（方向／狀態，`./scenarios::filterScenarios()`），
  * 不打任何新請求、後端與 API 契約零改動。
  *
- * **兩處票面字面與現有契約不符，記錄於此、依既有欄位落地**：(1) 票面
+ * **一處票面字面與現有契約不符，記錄於此、依既有欄位落地**：票面
  * 「方向 tag（衍生三態，讀既有 `direction` 欄位）」——`ScenarioSummary`
  * 上沒有這個欄位（OG-09／#319 code review 的 Spec 軸已查證過同一件
  * 事），沿用 OG-09 已建好的 `deriveDirectionTag(spot, target_price)`
- * 純前端衍生，語意相同、只是計算方式不同；(2) 票面「目標價（含所需
- * 漲跌幅小字）」——所需漲幅是後端算好的 `target_move`（見
- * `ScenarioDetail.tsx` 既有註解：「不是這裡拿兩個價格相減」），但這個
- * 欄位只在 detail view 的 `meta` 裡，`ScenarioSummary`（清單列）從未
- * 帶過它；為了不違反「不假裝有引擎能力、不做金融計算」的既有紅線，
- * 這裡刻意**不**在前端用 `(target-spot)/spot` 算一份，目標價欄只顯示
- * 價格與目標年月，省略小字。
+ * 純前端衍生，語意相同、只是計算方式不同。
+ *
+ * 目標價「所需漲跌幅小字」（OG-ALL-001 對 OG-03 code review 的跟進）：
+ * `ScenarioSummary`（清單列）沒有 detail view 才有的 `target_move`
+ * 欄位，但 `spot`／`target_price` 兩個顯示數字本來就都在，因此改用
+ * `./scenarios::requiredMovePct()` 做單純呈現用的比例計算（不是新增
+ * 引擎能力，見該函式 docstring），而不是像先前一版那樣整欄省略。
  *
  * 表格內部的 CSS Grid 版面（`.lib-row-tap`）刻意用複合選擇器
  * `.compact-card-tap.lib-row-tap` 而非取代既有 `.compact-card-tap`
@@ -41,6 +41,7 @@
 import { useState } from "react";
 import type { RefreshFailure, ScenarioSummary } from "./api";
 import { CheckIcon, EditIcon, TrashIcon } from "./icons";
+import { formatMove } from "./detail";
 import { detailHash } from "./route";
 import StockLogo from "./StockLogo";
 import {
@@ -63,6 +64,7 @@ import {
   money,
   moneyOrDash,
   rateLimitDetailText,
+  requiredMovePct,
   returnBarWidthPct,
   scenarioRowDomId,
   scenarioSignal,
@@ -127,6 +129,9 @@ function ScenarioCard({
   const rep = row.representative_candidate;
   // OG-09（#319）：純顯示衍生方向，spot 為 null（尚未分析）時不畫。
   const direction = deriveDirectionTag(row.spot, row.target_price);
+  // OG-ALL-001 跟進 OG-03：所需漲跌幅小字，spot 為 null 時同樣不畫
+  // （見 `requiredMovePct()` docstring）。
+  const requiredMove = requiredMovePct(row.spot, row.target_price);
   // REPAIR-05（#242，OD-03）：刷新失敗的兩態——`updating` 與 `failure`
   // 是兩個獨立 state，`cardFailureVariant` 已經把兩者互斥的判準收進
   // 純函式，這裡只讀結果決定要不要反灰、顯示哪一句頭條。
@@ -194,7 +199,10 @@ function ScenarioCard({
           </span>
 
           <span className="lib-cell lib-cell-target r">
-            {money(row.target_price)}　{row.target_month}
+            <span>{money(row.target_price)}　{row.target_month}</span>
+            {requiredMove !== null && (
+              <span className="cell-sub">{formatMove(requiredMove)}</span>
+            )}
           </span>
 
           <span className="lib-cell lib-cell-champion">

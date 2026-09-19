@@ -783,6 +783,25 @@ describe("方向與狀態篩選 chip（OG-03／#320）：純前端過濾，不�
   });
 });
 
+describe("目標價所需漲跌幅小字（OG-ALL-001 跟進 OG-03／#320）", () => {
+  it("spot 存在時，目標價欄下方顯示所需漲跌幅（正負號＋一位小數百分比）", () => {
+    list([row({ id: "a", symbol: "AAA", spot: 100, target_price: 120 })]);
+    expect(screen.getByText("+20.0%")).toBeInTheDocument();
+  });
+
+  it("目標價低於現價時顯示負號", () => {
+    list([row({ id: "a", symbol: "AAA", spot: 100, target_price: 90 })]);
+    expect(screen.getByText("-10.0%")).toBeInTheDocument();
+  });
+
+  it("尚未分析（spot 為 null）時不顯示所需漲跌幅小字，只顯示價格與目標年月", () => {
+    list([row({ id: "a", symbol: "AAA", spot: null, target_price: 120 })]);
+    const targetCell = screen.getByText(/\$120\.00/).parentElement!;
+    expect(targetCell).toHaveTextContent("2028-05");
+    expect(targetCell).not.toHaveTextContent("%");
+  });
+});
+
 describe("頁首刷新入口（OG-03／#320，併入原本 Toolbar.tsx 的三個 prop）", () => {
   it("busy 時按鈕停用並顯示「刷新中……」，點擊呼叫 onRefresh", async () => {
     const onRefresh = vi.fn();
