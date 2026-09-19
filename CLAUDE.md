@@ -10593,8 +10593,91 @@ spec，不重新設計、不重新拆票；不碰 #269／SCALE-18；不改票面
   零命中，未觸碰 #269／SCALE-18。GitHub issue #318 已關閉
   （`state_reason: completed`，完整驗收留言見 issue）。
 
-**下一步**：OG-09（#319，手機劇本庫＋52px 頂欄＋64px 底部四 tab，
-`Blocked by #317` 已滿足），依 OG-CONTINUE-002 自主連續施工。
+- **OG-09**［#319］手機劇本庫：52px 頂欄＋64px 底部四 tab（commits
+  `e2703b0`＋跟進 `a846312`）：新增 `src/MobileTopBar.tsx`——取代手機
+  首頁原本沿用的 `Toolbar`（iOS Large Title 版式），改成 artifact
+  規定的 52px `.mnav` 精簡頂欄：品牌＋`BrandMark`（新抽出
+  `src/BrandMark.tsx`，`TopBar.tsx`／`MobileTopBar.tsx` 共用同一份
+  SVG，原本內嵌在 `TopBar.tsx` 的品牌圖示）、`sr-only` 的
+  `<h1>劇本庫</h1>`（純可及性／測試用，視覺上不重複顯示品牌文字已經
+  有的字）、角色 chip（新抽出 `src/useAuthRole.ts`，`TopBar.tsx`／
+  `MobileTopBar.tsx` 共用同一個 `useAuthRole()` hook）、
+  `.mnav-refresh` 按鈕（文字「重新整理」／「刷新中……」，刻意不做
+  icon-only 以維持既有測試查詢方式），下方 `.mnav-status-row` 沿用
+  舊 `Toolbar` 第二列一模一樣的計數 caption＋`role="status"` 進度
+  span（busy／runSummary 互斥）。垃圾桶／設定入口**不再重複**——已在
+  `BottomNav`（UI-IMPL-002／#092 既有元件）各有一份連結，`Toolbar`
+  隨之移除死碼 `onOpenTrash`／`onOpenSettings` 兩個 prop（桌面從
+  OG-02 起本來就沒傳，純粹清掉沒有呼叫端的介面）。`App.tsx` 把手機
+  首頁的 `<Toolbar .../>` 換成 `<MobileTopBar .../>`，順手移除因此
+  不再需要的 `settingsHash`／`trashHash` 匯入。
+
+  **劇本清單方向標籤與腿位徽章**：新增 `src/scenarios.ts::
+  deriveDirectionTag()`（鏡射後端 `derive_direction()`，T08／#225
+  既有語意——目標價相對現價、無容忍帶，`spot` 為 `null` 時回 `null`
+  不畫標籤）與 `directionTagLabel()`／`directionTagClass()`；
+  `CompactScenarioList.tsx` 的 tier1 在 ticker 與目標價之間插入方向
+  `.tag`（`.up`／`.down`／`.flat`）。tier2 策略摘要**刻意不重構成
+  逐腿彩色 pill**（避免打壞既有精確文字斷言與 CLOSEOUT-002「Butterfly
+  champion 緊湊格式、卡片尺寸不得變」的既有裁示），只在既有
+  `.compact-strategy` span 旁加一個純加法 CSS class
+  `.compact-strategy-pill`（背景色藥丸外框，文字內容
+  `formatRepresentativeSummary()` 逐字不動）。
+
+  新增 `src/icons.tsx::RefreshIcon()`（比照既有圖示慣例：`viewBox`／
+  `stroke` 屬性／`aria-hidden="true"`／`className="icon-glyph"`）。
+  `styles.css` 補齊本來是 OG-01 空樁的 `.mnav` 區塊（sticky 定位＋
+  安全區內距）、`.mnav .brand`／`.spacer`／`.mnav-refresh`／
+  `.mnav-status-row`，以及桌面 `@media (min-width: 1100px)` 隱藏
+  規則（一比一對應既有 `.mtabs` 桌面隱藏寫法）；`.compact-strategy`
+  規則旁新增 `.compact-strategy-pill`。
+
+  **測試連帶修正**（`Toolbar` 從手機退場的必然結果，皆附理由
+  註解、非靜默刪除）：`App.test.tsx` 三處垃圾桶導覽測試改用
+  `getByRole("link", {name:"垃圾桶"})`（原本是 `"button"`，導覽已
+  搬進 `BottomNav` 的 `<a>` 元素）；新增描述區塊驗證 `.mnav` 只有
+  品牌與刷新鈕、垃圾桶／設定入口確實只在 `BottomNav` 一份；
+  `e2e/smoke.spec.ts` 5 處垃圾桶按鈕定位改 `"link"`、齒輪測試改成
+  驗證設定連結落在畫面下半部（`BottomNav` 位置）、「功能列捲動仍
+  釘頂部」測試改查 `.mnav`（取代已退場的 `header.toolbar`）。新增
+  `src/CompactScenarioList.test.tsx` 兩個描述區塊（方向標籤 4 條、
+  Logo 404 留白的 row 層級覆蓋 1 條）與 `src/scenarios.test.ts` 一個
+  描述區塊（`deriveDirectionTag`／`directionTagLabel`／
+  `directionTagClass` 7 條）。
+
+  `/code-review`（Standards＋Spec 兩軸平行）：**Standards 軸**——
+  1 hard violation：`styles.css` OG-01 primitives 對照表仍寫「頂部
+  mnav 尚無消費端」，`MobileTopBar.tsx` 已消費 `.mnav`，過期敘述
+  已修正；1 judgement call：`scenarios.ts::directionTagLabel()` 原本
+  自己複製一份「看漲／看跌／持平」中文字串，與 `detail.ts::
+  DIRECTION_LABELS`（後端 `DIRECTION_LABELS` 同一份、有漂移測試
+  把關的既有字彙）重複——已改為直接呼叫 `detail.ts::
+  directionLabel()`，衍生「算不算看漲」本身（`deriveDirectionTag`）
+  維持獨立不合併，只收斂字彙本身成單一來源。**Spec 軸**——AC「底部
+  四 tab 各自導向正確 hash，當前 tab 有金色指示」的機制
+  （`.mtab.on`／`aria-current`）早在 `BottomNav.tsx`（UI-IMPL-002／
+  #092）就正確存在，但全站零測試涵蓋——新增
+  `src/BottomNav.test.tsx`（6 條）直接測這個既有小型元件，逐一驗證
+  四個 tab 各自 active 時的金色 class 與 `aria-current`，並補上
+  `href`／`onOpenCreate` 行為與 `aria-label` 的覆蓋缺口；scope
+  creep 檢查零缺失（`deriveDirectionTag()` 純顯示衍生不進排序
+  選取，`onRefresh` 沿用既有 `reloadAndRefresh(true)` 非新刷新
+  時機，`option_chaser/`／`api_app/` 零改動）。**一項記錄、非本票
+  造成的落差**：ticket 文字「手機一屏至少看得到 4 個劇本」與實際
+  e2e 門檻（現行 `>=3`，OG-02／#092 之前的既有調整）不一致，本輪
+  未進一步放寬也未觸碰該門檻，記錄於 issue #319 結案留言供未來
+  參考。
+
+  全套驗證：`tsc --noEmit` 乾淨；Vitest **932 passed**（+6 新增，
+  BottomNav.test.tsx）；`vite build` 成功；Playwright 連兩輪皆
+  **131 passed**（iPhone 83＋Desktop 48，穩定無 flake）。
+  `option_chaser/`／`api_app/` 零改動，未觸碰 #269／SCALE-18。
+  GitHub issue #319 已關閉（`state_reason: completed`，完整驗收
+  留言見 issue）。
+
+**下一步**：依 OG-CONTINUE-002 自主連續施工，接續解鎖的 OG-03
+（#320）／OG-06（#321）／OG-11（#322）三張（唯一 blocker #317／
+#318 皆已 close）。
 
 ### 施工依據
 
