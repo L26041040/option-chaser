@@ -27,7 +27,7 @@ block 裡，不能切成好幾個 code block、也不能中間插普通文字把
 `［回報#001］spec #137 拆票完成`）。編號是**累計總數**，不因換
 session、換分支、換主題而歸零——目前最新編號記在這裡：
 
-> 目前次序：090（下一份回報用 091）
+> 目前次序：091（下一份回報用 092）
 >
 > ⚠ 084 跳號說明：本檔案自己記的序號原本是「083（下一份回報用
 > 084）」，但 OPTION-PUBLIC-BETA-CI-REPAIR-010 這輪工單裡大哥直接
@@ -10354,6 +10354,41 @@ PR、不 merge master、不部署 production，等 Owner 視覺驗收核准
 仍回空陣列（既有已知工具整合缺陷，本輪未嘗試繞過或改動任何 Vercel
 部署／安全設定），未能透過工具直接取得 Preview 網址，已改用真實
 瀏覽器截圖作為驗收交付物。
+
+### UI-DESIGN-003——Binance-inspired Visual Exploration v2「Obsidian Gold」
+（2026-09-19，`/design`，回報#091；純設計探索，production UI 零改動、未開 PR、未 implement）
+
+Owner 對上一輪（#092／#094 Graphite & Amber、UI-IMPLEMENT-091 落地版）
+指示重新來過：以 Binance 現行 Web 產品為主要視覺 reference，重新設計
+Option Chaser 整體美術風格，不得只做小幅 reskin。**產出＝全新 Design
+canvas artifact**（`https://claude.ai/artifact/28tqiXF2o9UyQK6vDUXf5q`，
+私有，Owner 本人可開），10 張 artboard：Foundations、Desktop 劇本庫
+（Markets 式總表）、Desktop 劇本詳細（三欄 trade-page 版面：Family／
+到期日／排名 ｜ Heatmap ｜ 進場／Payoff／Greeks，底部淨成本走勢）、
+Desktop TSLA Long Call＋Historical IV（Super User）、Desktop 設定／Super
+Admin（含二次確認 modal 與 audit）、Desktop 淺色劇本庫、Mobile 劇本庫、
+Mobile 劇本詳細（整頁捲動）、Mobile 設定／登入（Normal User）、Mobile
+淺色劇本庫。設計稿檔案只在 scratchpad（產生器 `common.py`／
+`boards_desktop.py`／`boards_more.py`／`build.py`），未進 repo。
+
+**與 Graphite & Amber 的最大差異**：(1) 資訊架構改成 Binance 的兩種
+頁型——劇本庫從「側欄卡片」變成全寬 Markets 式資料表（Logo＋標的、
+方向、現價、目標、冠軍策略腿位、劇本報酬、淨成本 sparkline、到期、
+狀態、更新），詳細頁從「單欄卡片堆疊」變成 trade 頁三欄＋底部 tab
+面板；(2) 中性底改為 Binance 實證的近黑四階（`#0B0E11`／`#181A20`／
+`#1E2329`／`#2B3139`），髮絲線取代陰影，密度大幅提高（row 40–56px、
+table 13px）；(3) 字體從 IBM Plex Sans 換 Geist（Latin／數字）＋Noto
+Sans TC；(4) 金色 `#F2C12E` 只給可動作元素與冠軍標記，綠紅只給數值
+方向；(5) 排名列內嵌報酬比例條（order-book 風格）。Logo 全部取自
+FMP `images.financialmodelingprep.com/symbol/{SYM}.png` 真實品牌圖
+（NVIDIA 眼睛／Tesla T／Oracle O／iShares／SPDR 等），找不到的標的
+留白，production 實作仍建議走 Logo.dev `fallback=404` 契約。
+
+**誠實揭露**：`binance.com` 對本沙箱回 bot 挑戰（HTTP 202 空回應），
+本輪無法再次抓取現行 CSS，色彩 token 沿用 #092 那輪已一手驗證過的
+production CSS 值，版面結構（64px 頂欄、Markets 表、trade 三欄、
+手機底部 tab）依老弟對 Binance 現行產品的理解重建。**下一步**：等
+Owner 看 artifact 裁示方向；本輪未 implementation、未動 #269。
 
 ### 施工依據
 
