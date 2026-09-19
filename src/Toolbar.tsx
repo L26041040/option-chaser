@@ -52,11 +52,13 @@ export default function Toolbar({
    *  指定位置是 sidebar 最下方（見 `App.tsx`），兩邊各放一個會變成同一
    *  個入口出現兩次。 */
   onOpenSettings?: () => void;
-  /** TR6（#91）：垃圾桶畫面入口，貼齊「劇本庫」標題的工具列——需求方
-   *  核准版面：桌面順序「＋ 建立劇本 → 🗑 垃圾桶 → 重新整理」，手機版
+  /** TR6（#91）：垃圾桶畫面入口，貼齊「劇本庫」標題的工具列——手機版
    *  沒有建立鈕（入口在 Dashboard 下方），順序自然是「🗑 垃圾桶 →
-   *  重新整理」，兩種寬度共用同一段 JSX，不必分支。 */
-  onOpenTrash: () => void;
+   *  重新整理」，一律傳。OG-02（#318）起**選填**：桌面版垃圾桶／建立
+   *  劇本入口已搬進常駐的 `TopBar` 導覽，這裡再放一份同樣的入口只是
+   *  重複，桌面呼叫端因此不再傳這個 prop——手機呼叫端維持原樣不動，
+   *  型別放寬不改變手機版任何既有行為。 */
+  onOpenTrash?: () => void;
 } & CreateButtonProps) {
   return (
     <header className="toolbar">
@@ -76,9 +78,11 @@ export default function Toolbar({
               {createProps.createOpen ? "收合建立表單" : "＋ 建立劇本"}
             </button>
           )}
-          <button className="pill pill-trash" onClick={onOpenTrash}>
-            <TrashIcon /> 垃圾桶
-          </button>
+          {onOpenTrash && (
+            <button className="pill pill-trash" onClick={onOpenTrash}>
+              <TrashIcon /> 垃圾桶
+            </button>
+          )}
           <button className="pill" onClick={onRefresh} disabled={busy}>
             {busy ? "刷新中……" : "重新整理"}
           </button>

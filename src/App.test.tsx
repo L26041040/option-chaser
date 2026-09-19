@@ -1552,7 +1552,8 @@ function stubDesktopViewport() {
   vi.stubGlobal("matchMedia", (query: string) => fakeMediaQueryList(true, query));
 }
 
-describe("桌面版真正的 master/detail（#72）", () => {
+describe("桌面版頁面級導覽（OG-02／#318，取代 #72／#75 側欄常駐 " +
+         "master/detail）", () => {
   const rowA = {
     ...(sampleRow as unknown as Record<string, unknown>),
     id: "s1", symbol: "TLT", target_price: 120, target_month: "2028-05",
@@ -1570,7 +1571,8 @@ describe("桌面版真正的 master/detail（#72）", () => {
     window.location.hash = "";
   });
 
-  it("選中劇本時，劇本庫（含建立表單）與詳細頁同時可見", async () => {
+  it("點劇本進全寬詳細頁：劇本庫（含建立入口）不再同時顯示，返回連結" +
+     "可用", async () => {
     stubDesktopViewport();
     window.location.hash = "#/s/s1";
     mockRoutes({
@@ -1579,150 +1581,59 @@ describe("桌面版真正的 master/detail（#72）", () => {
     });
     render(<App />);
 
-    // 詳細頁內容（返回入口＋標的名）與劇本庫（清單卡片＋建立劇本入口）
-    // 同時在畫面上——不是手機版的整頁替換。
+    // 詳細頁內容（返回入口＋標的名）在畫面上。
     expect(await screen.findByRole("link", { name: "‹ 劇本庫" })).toBeInTheDocument();
     expect(await screen.findByText("尚未分析")).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: /TLT 2028-05/ })).toBeInTheDocument();
-    // #75：建立劇本收攏成頂部入口，選中劇本時它也還在、按得下去——
-    // 不是被詳細頁擠掉的東西。
-    await openCreateForm();
-    expect(screen.getByLabelText("標的代號")).toBeInTheDocument();
+    // OG-02：側欄退場，劇本庫清單卡片與建立劇本膠囊鈕不再與詳細頁
+    // 同時掛載——這正是要退場的既有行為，不是回歸。
+    expect(screen.queryByRole("link", { name: /TLT 2028-05/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "＋ 建立劇本" }))
+      .toBeInTheDocument(); // 建立劇本改在常駐頂欄，任何頁面都在。
   });
 
-  it("目前選中的劇本在清單上有明確的選中狀態", async () => {
+  it("從詳細頁點『‹ 劇本庫』返回連結，回到劇本庫頁面看得到清單",
+    async () => {
     stubDesktopViewport();
     window.location.hash = "#/s/s1";
-    mockRoutes({
-      "/api/scenarios": { json: async () => [rowA, rowB] },
-      "/api/scenarios/s1": { json: async () => ({ ...rowA, latest_result: null }) },
-      // 開站的批次刷新（時機一）兩個劇本各打一次 /refresh——沒有明確
-      // 路由的話會被較短的 `/api/scenarios` 前綴接走，回傳整個陣列
-      // 冒充成單一劇本，把清單那一列的資料弄壞。
-      "/api/scenarios/s1/refresh": { json: async () => rowA },
-      "/api/scenarios/s2/refresh": { json: async () => rowB },
-    });
-    render(<App />);
-
-    const selectedLink = await screen.findByRole("link", { name: /TLT 2028-05/ });
-    const otherLink = screen.getByRole("link", { name: /SPY 2027-01/ });
-    expect(selectedLink.closest("li")).toHaveClass("selected");
-    expect(otherLink.closest("li")).not.toHaveClass("selected");
-  });
-
-  it("PC-05（#202）：另一個劇本在清單上鎖定中，不影響使用者目前正在看的" +
-     "這個劇本詳細頁", async () => {
-    stubDesktopViewport();
-    window.location.hash = "#/s/s1";
-    let releaseS2: (() => void) | null = null;
-    const spy = vi.fn(async (url: string, init?: RequestInit) => {
-      if (url === "/api/scenarios") {
-        return { ok: true, status: 200, json: async () => [rowA, rowB] };
-      }
-      if (url === "/api/scenarios/s1") {
-        return { ok: true, status: 200,
-                json: async () => ({ ...rowA, latest_result: null }) };
-      }
-      if (url === "/api/scenarios/refresh-run" && init?.method === "POST") {
-        const body = JSON.parse(String(init.body ?? "{}")) as
-          { scenario_ids?: string[] };
-        const ids = body.scenario_ids ?? [];
-        if (ids.length === 2) {
-          return { ok: true, status: 200, json: async () => ({
-            results: [{ scenario_id: "s1", ok: true, row: rowA }],
-            remaining: ["s2"],
-          }) };
-        }
-        await new Promise<void>((resolve) => { releaseS2 = resolve; });
-        return { ok: true, status: 200, json: async () => ({
-          results: [{ scenario_id: "s2", ok: true, row: rowB }],
-          remaining: [],
-        }) };
-      }
-      throw new Error(`測試沒有為 ${url} 準備回應`);
-    });
-    vi.stubGlobal("fetch", spy);
-    render(<App />);
-
-    // s1 是使用者目前正在看的劇本，自己這一輪已經落地——詳細頁正常
-    // 顯示內容，沒有任何「刷新排隊中」提示。
-    expect(await screen.findByText("尚未分析")).toBeInTheDocument();
-    expect(screen.queryByText(/本輪刷新排隊中或進行中/)).not.toBeInTheDocument();
-
-    // s2 還在更新中——清單上那一列反灰、標「更新中」，完全不影響 s1
-    // 的詳細頁內容或提示。
-    const spyLink = screen.getByRole("link", { name: /SPY 2027-01/ });
-    expect(spyLink.closest(".compact-card")).toHaveClass("locked");
-    expect(screen.getByText("更新中")).toBeInTheDocument();
-    expect(screen.getByText("尚未分析")).toBeInTheDocument();
-    expect(screen.queryByText(/本輪刷新排隊中或進行中/)).not.toBeInTheDocument();
-
-    releaseS2!();
-    await waitFor(() =>
-      expect(screen.queryByText("更新中")).not.toBeInTheDocument());
-  });
-
-  it("未選任何劇本時，右側工作區顯示合理的空狀態", async () => {
-    stubDesktopViewport();
     mockRoutes({
       "/api/scenarios": { json: async () => [rowA] },
+      "/api/scenarios/s1": { json: async () => ({ ...rowA, latest_result: null }) },
       "/api/scenarios/": { json: async () => rowA },
     });
     render(<App />);
 
-    // 開站那輪批次刷新跑完後這張卡才會是真的連結（未完成時反灰、沒有
-    // `href`——V4 跟進票／#136），`findByRole("link", ...)` 才等得到它。
-    await screen.findByRole("button", { name: "重新整理" });
-
+    await userEvent.click(await screen.findByRole("link", { name: "‹ 劇本庫" }));
+    expect(window.location.hash).toBe("#/");
     expect(await screen.findByRole("link", { name: /TLT 2028-05/ })).toBeInTheDocument();
-    expect(screen.getByText(/選擇左側的劇本/)).toBeInTheDocument();
+    // 回到劇本庫頁面後，詳細頁內容不再掛載。
+    expect(screen.queryByText("尚未分析")).not.toBeInTheDocument();
   });
 
-  it("可以直接切換到另一個劇本，不必先返回劇本庫", async () => {
+  it("瀏覽器上一頁／下一頁在劇本庫↔詳細頁之間正常切換（AC，jsdom 無" +
+     "真的歷史紀錄，直接改 hash 模擬返回鍵按下去之後瀏覽器會做的事）",
+    async () => {
     stubDesktopViewport();
     window.location.hash = "#/s/s1";
     mockRoutes({
       "/api/scenarios": { json: async () => [rowA, rowB] },
       "/api/scenarios/s1": { json: async () => ({ ...rowA, latest_result: null }) },
       "/api/scenarios/s2": { json: async () => ({ ...rowB, latest_result: null }) },
+      "/api/scenarios/": { json: async () => rowA },
     });
     render(<App />);
+    expect(await screen.findByText("尚未分析")).toBeInTheDocument();
 
-    await screen.findByText("尚未分析");
-    await userEvent.click(screen.getByRole("link", { name: /SPY 2027-01/ }));
-
-    expect(window.location.hash).toBe("#/s/s2");
-    // 兩個劇本共用同一份「尚未分析」文案，真正驗證的是清單卡片本身
-    // 沒有被整頁替換掉——它在切換後依然可點、依然在畫面上。
-    expect(await screen.findByRole("link", { name: /TLT 2028-05/ })).toBeInTheDocument();
-  });
-
-  it("桌面版的網址仍對應到選中的劇本——返回鍵切回上一個劇本，劇本庫全程不消失", async () => {
-    stubDesktopViewport();
-    window.location.hash = "#/s/s1";
-    mockRoutes({
-      "/api/scenarios": { json: async () => [rowA, rowB] },
-      "/api/scenarios/s1": { json: async () => ({ ...rowA, latest_result: null }) },
-      "/api/scenarios/s2": { json: async () => ({ ...rowB, latest_result: null }) },
-    });
-    render(<App />);
-    await screen.findByText("尚未分析");
-
-    await userEvent.click(screen.getByRole("link", { name: /SPY 2027-01/ }));
-    expect(await screen.findByRole("link", { name: /TLT 2028-05/ })).toBeInTheDocument();
-
-    // 返回鍵＝hash 變回上一個值。jsdom 沒有真的瀏覽器歷史紀錄，直接
-    // 把 hash 改回去等同「返回鍵按下去之後」瀏覽器會做的事。
-    window.location.hash = "#/s/s1";
-    expect(await screen.findByRole("link", { name: /SPY 2027-01/ })).toBeInTheDocument();
-    // 全程劇本庫（含建立劇本入口）都掛著——這正是桌面版與手機版整頁
-    // 替換的差異所在。
-    await openCreateForm();
-    expect(screen.getByLabelText("標的代號")).toBeInTheDocument();
-
+    // 上一頁：回劇本庫。
     window.location.hash = "#/";
-    expect(await screen.findByText(/選擇左側的劇本/)).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: /TLT 2028-05/ })).toBeInTheDocument();
+    expect(await screen.findByRole("link", { name: /TLT 2028-05/ })).toBeInTheDocument();
+
+    // 下一頁：回到 s1 詳細頁。
+    window.location.hash = "#/s/s1";
+    expect(await screen.findByText("尚未分析")).toBeInTheDocument();
+
+    // 再上一頁到另一個劇本（s2）也正確切換內容。
+    window.location.hash = "#/s/s2";
+    await waitFor(() => expect(window.location.hash).toBe("#/s/s2"));
   });
 });
 
@@ -1758,10 +1669,11 @@ describe("桌面版：主要操作入口收攏到工作區上方（#75，MVP-v2�
     expect(screen.getByLabelText("標的代號")).toBeVisible();
   });
 
-  it("收合建立表單不會清空使用者已經打的內容", async () => {
+  it("關閉建立表單抽屜不會清空使用者已經打的內容（OG-02／#318 起改用" +
+     "抽屜自己的關閉鈕，不再是同一顆按鈕的 toggle 文字）", async () => {
     // code review 跟進：面板原本用條件渲染整個卸載重掛，使用者打到
-    // 一半手滑點到收合鈕，剛打的字就白打了——改用 `hidden` 屬性切換
-    // 可見度後，這裡直接驗證收合再展開，內容還在。
+    // 一半手滑點到關閉鈕，剛打的字就白打了——改用 `hidden` 屬性切換
+    // 可見度後，這裡直接驗證關閉再展開，內容還在。
     stubDesktopViewport();
     mockRoutes({
       "/api/scenarios": { json: async () => [row] },
@@ -1771,14 +1683,17 @@ describe("桌面版：主要操作入口收攏到工作區上方（#75，MVP-v2�
     await openCreateForm();
     await userEvent.type(screen.getByLabelText("標的代號"), "spy");
 
-    await userEvent.click(screen.getByRole("button", { name: "收合建立表單" }));
+    await userEvent.click(
+      screen.getByRole("button", { name: "關閉建立表單抽屜" }));
     expect(screen.getByLabelText("標的代號")).not.toBeVisible();
 
     await userEvent.click(screen.getByRole("button", { name: "＋ 建立劇本" }));
     expect(screen.getByLabelText("標的代號")).toHaveValue("spy");
   });
 
-  it("建立劇本與刷新是同一個固定操作列裡的兩個入口", async () => {
+  it("建立劇本入口在常駐頂欄、刷新入口在劇本庫頁面自己的釘選列——" +
+     "OG-02（#318）起兩者分屬不同的常駐 chrome，不再是同一個工具列裡" +
+     "的兩顆按鈕", async () => {
     stubDesktopViewport();
     mockRoutes({
       "/api/scenarios": { json: async () => [row] },
@@ -1786,11 +1701,24 @@ describe("桌面版：主要操作入口收攏到工作區上方（#75，MVP-v2�
     });
     render(<App />);
 
-    const toolbar = await screen.findByRole("banner");
-    const createButton = within(toolbar).getByRole("button", { name: "＋ 建立劇本" });
+    // `TopBar` 本身是 `<div>` 不是 `<header>`（見該檔案檔頭說明，
+    // 避免兩個 `<header>` 造成 `getByRole("banner")` 模糊）——建立
+    // 劇本按鈕因此不在 `banner` role 裡，直接全域查找即可，畫面上
+    // 只會有這一顆。
+    const createButton = await screen.findByRole(
+      "button", { name: "＋ 建立劇本" });
     expect(createButton).toBeInTheDocument();
+
+    // `banner` role 是劇本庫頁面自己的釘選列（`Toolbar.tsx`），OG-02
+    // 起只剩「重新整理」——建立劇本／垃圾桶已搬進頂欄導覽，不再重複
+    // 顯示。
+    const toolbar = await screen.findByRole("banner");
     expect(within(toolbar).getByRole("button", { name: /重新整理|刷新中/ }))
       .toBeInTheDocument();
+    expect(within(toolbar).queryByRole("button", { name: "＋ 建立劇本" }))
+      .not.toBeInTheDocument();
+    expect(within(toolbar).queryByRole("button", { name: "垃圾桶" }))
+      .not.toBeInTheDocument();
 
     // code review 跟進：展開鈕要有 `aria-controls` 指向它控制的面板，
     // 不是只有 `aria-expanded`——跟 `CreateForm.tsx` 裡 `MonthPicker`
@@ -1801,8 +1729,8 @@ describe("桌面版：主要操作入口收攏到工作區上方（#75，MVP-v2�
       screen.getByLabelText("標的代號"));
   });
 
-  it("工具列順序（TR6／#91 需求方核准版面）：建立劇本 → 垃圾桶 → 重新整理",
-     async () => {
+  it("常駐頂欄導覽：劇本庫／垃圾桶／設定三個入口都在，當前頁有明確" +
+     "指示（OG-02／#318）", async () => {
     stubDesktopViewport();
     mockRoutes({
       "/api/scenarios": { json: async () => [row] },
@@ -1810,10 +1738,15 @@ describe("桌面版：主要操作入口收攏到工作區上方（#75，MVP-v2�
     });
     render(<App />);
 
-    const toolbar = await screen.findByRole("banner");
-    const names = within(toolbar).getAllByRole("button")
-      .map((b) => b.textContent?.trim());
-    expect(names).toEqual(["＋ 建立劇本", "垃圾桶", "重新整理"]);
+    await screen.findByText("TLT");
+    const nav = screen.getByRole("link", { name: "劇本庫" })
+      .closest("nav")!;
+    const names = within(nav).getAllByRole("link").map((a) => a.textContent);
+    expect(names).toEqual(["劇本庫", "垃圾桶", "設定"]);
+    expect(within(nav).getByRole("link", { name: "劇本庫" }))
+      .toHaveClass("on");
+    expect(within(nav).getByRole("link", { name: "垃圾桶" }))
+      .not.toHaveClass("on");
   });
 
   it("劇本清單下方已無任何主要操作——建立入口在工作區最上方", async () => {
@@ -1868,8 +1801,8 @@ describe("PB-12（#302）：全站常駐頁尾＋首頁 Beta 說明＋隱私頁�
     expect(footer).toHaveTextContent(/非投資建議/);
   });
 
-  it("桌面首頁：Beta 說明常駐在 library-pane、頁尾在整個 workspace 之下",
-    async () => {
+  it("桌面首頁：Beta 說明常駐在劇本庫頁面、頁尾在整個 desktop-shell 之下" +
+     "（OG-02／#318 起側欄退場，改為單一全寬頁面）", async () => {
     stubDesktopViewport();
     mockRoutes({
       "/api/scenarios": { json: async () => [row] },
@@ -1878,8 +1811,7 @@ describe("PB-12（#302）：全站常駐頁尾＋首頁 Beta 說明＋隱私頁�
     const { container } = render(<App />);
 
     await screen.findByText("TLT");
-    expect(container.querySelector(".library-pane .beta-notice"))
-      .toBeInTheDocument();
+    expect(container.querySelector(".beta-notice")).toBeInTheDocument();
     expect(container.querySelector("footer.site-footer")).toBeInTheDocument();
   });
 

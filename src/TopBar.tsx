@@ -46,7 +46,29 @@ function BrandMark() {
   );
 }
 
-export default function TopBar({ active }: { active: "library" | "trash" | "settings" }) {
+export default function TopBar({
+  active,
+  onOpenCreate,
+  createOpen,
+  createPanelId,
+}: {
+  active: "library" | "trash" | "settings";
+  /** OG-02（#318）：頂欄「建立劇本」primary 按鈕——開既有右側抽屜
+   *  （`App.tsx` 的 `showCreateForm`），不是 toggle：抽屜自己的
+   *  `.drawer-close` 與遮罩點擊已經是既有的關閉手段，這裡只負責開。
+   *  選填是為了讓既有沒有建立語意的呼叫端（若有）不必被迫補一個
+   *  no-op；目前唯一呼叫端（`App.tsx` 桌面分支）一律會傳，連同下面
+   *  兩個 `aria-*` 用的欄位。 */
+  onOpenCreate?: () => void;
+  /** 抽屜目前是否展開——供 `aria-expanded` 使用。按鈕本身文字不隨這個
+   *  值改變（不是 toggle，見上），但輔助科技仍該知道它控制的區域現在
+   *  是否展開，沿用既有 `MonthPicker`（`CreateForm.tsx`）同一套
+   *  `aria-expanded`＋`aria-controls` 寫法。 */
+  createOpen?: boolean;
+  /** 抽屜的 DOM id（`App.tsx` 的 `createPanelId`），供 `aria-controls`
+   *  指向它。 */
+  createPanelId?: string;
+}) {
   const [role, setRole] = useState<Role>("normal");
 
   useEffect(() => {
@@ -82,10 +104,26 @@ export default function TopBar({ active }: { active: "library" | "trash" | "sett
         </a>
       </nav>
       <span className="spacer" />
-      <span className={`role role-${role}`}>
-        <span className="dot" aria-hidden="true" />
-        {ROLE_LABELS[role]}
-      </span>
+      {/* OG-02（#318）：Normal User 不顯示角色徽章——一般使用者不需要
+          被提醒「你現在是 Normal」，這個徽章只在有實際提升權限時才是
+          有意義的資訊。Super User／Super Admin 兩態才顯示。 */}
+      {role !== "normal" && (
+        <span className={`role role-${role}`}>
+          <span className="dot" aria-hidden="true" />
+          {ROLE_LABELS[role]}
+        </span>
+      )}
+      {onOpenCreate && (
+        <button
+          type="button"
+          className="btn"
+          onClick={onOpenCreate}
+          aria-expanded={createOpen}
+          aria-controls={createPanelId}
+        >
+          ＋ 建立劇本
+        </button>
+      )}
     </div>
   );
 }

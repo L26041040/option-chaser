@@ -50,7 +50,6 @@ function ScenarioCard({
   row,
   failure,
   now,
-  selected,
   updating,
   onArchive,
   onEdit,
@@ -62,7 +61,6 @@ function ScenarioCard({
   row: ScenarioSummary;
   failure: RefreshFailure | undefined;
   now: Date;
-  selected: boolean;
   /** 這個劇本正在被刷新（PC-05／#202，spec #198：恢復 T08／#196 P1
    *  當時拿掉的鎖定——反灰＋不可點入，避免使用者在更新過程中點進去
    *  看到一份即將被取代的舊資料卻不知道畫面正在改變）：標「更新中」
@@ -95,7 +93,7 @@ function ScenarioCard({
     failure?.rateLimit?.blocked_until ?? null);
 
   const cardClass = [
-    "compact-card", selected && "selected",
+    "compact-card",
     updating && "locked", failureVariant && "failed",
   ].filter(Boolean).join(" ");
 
@@ -119,20 +117,20 @@ function ScenarioCard({
         {/* 不掛 `aria-label`：那會**取代**連結內容當成可及名稱，螢幕閱讀器
             就只聽得到「TLT 2028-05 詳細」，收益率／目標／到期日／資料
             時間全部被吃掉。改在結尾補一段只有輔助技術讀得到的字。 */}
-        {/* #72：桌面版左側清單常駐，`aria-current` 讓螢幕閱讀器也認得
-            「目前選中的是哪一個」，不只是視覺上的高亮（手機版
-            `CompactScenarioCard` 沒有這個常駐 detail pane，不需要這個
-            屬性）。
-            TR6（#91）：批次選取模式時整張卡攔截點擊改成切換選取，不導向
+        {/* TR6（#91）：批次選取模式時整張卡攔截點擊改成切換選取，不導向
             詳細頁——`preventDefault` 而不是換成 `<button>`，內容結構完全
             不用重寫一份。
             PC-05（#202）：`updating` 時同樣攔截點擊、不導向詳細頁——但
             `selectMode` 優先判斷（AC：既有批次選取互動不受這張票影響，
             更新中的卡片一樣勾得起來）。`href` 仍然保留（跟 `selectMode`
             同一種手法：CSS 用 `opacity` 反灰，不是 `pointer-events:
-            none`，Playwright 一般點擊才驗證得出「按下去沒有導航」）。 */}
+            none`，Playwright 一般點擊才驗證得出「按下去沒有導航」）。
+            OG-02（#318）：`aria-current` 原本服務桌面版左側清單常駐
+            （#72，「目前選中的是哪一個」）——側欄退場後這張清單只會在
+            劇本庫頁面本身渲染、結構上不可能與詳細頁同時掛載，已隨
+            `selectedId` 一併移除，不留一個永遠算不出 truthy 值的
+            屬性。 */}
         <a className="compact-card-tap" href={detailHash(row.id)}
-           aria-current={selected ? "page" : undefined}
            onClick={(e) => {
              if (selectMode) {
                e.preventDefault();
@@ -310,7 +308,6 @@ export default function ScenarioList({
   failures,
   updatingIds,
   now,
-  selectedId = null,
   onArchive,
   onEdit,
   onRetry,
@@ -327,8 +324,6 @@ export default function ScenarioList({
    *  （成功或失敗）立刻從這裡移除。 */
   updatingIds: ReadonlySet<string>;
   now: Date;
-  /** 桌面版 master/detail（#72）目前選中的劇本；手機版不傳，恆不標記。 */
-  selectedId?: string | null;
   onArchive: (id: string) => void;
   onEdit: (id: string) => void;
   onRetry: (id: string) => void;
@@ -387,7 +382,6 @@ export default function ScenarioList({
             row={row}
             failure={failures[row.id]}
             now={now}
-            selected={row.id === selectedId}
             updating={updatingIds.has(row.id)}
             onArchive={onArchive}
             onEdit={onEdit}

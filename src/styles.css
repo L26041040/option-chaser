@@ -212,90 +212,56 @@ body {
   gap: var(--gap);
 }
 
-/* 桌面版真正的 master/detail（#72）：左側劇本庫常駐、右側工作區顯示
-   詳細內容，約 20/80。斷點與 `App.tsx` 的 `DESKTOP_QUERY`
-   （`window.matchMedia`）用同一個數字——那邊決定「掛載哪些元件」，
-   這裡只是視覺排版，兩者必須一致，否則會出現「兩欄同時看得到」但
-   實際上其中一欄根本沒掛載內容的錯位。
-
-   斷點選 1100px、下限選 220px 不是各自獨立取的整數：220 恰好是
-   1100 的 20%——`minmax(220px, 20%)` 在斷點這一端「下限」與「20%」
-   算出來的值相等，下限形同虛設，只在極端情況（例如使用者用瀏覽器
-   縮放把可視寬度誤判在斷點邊界附近）當一個不會生效的保險，不會像
-   選一個明顯更大的下限（例如 280px）那樣，在 1100～1400px 這段
-   常見桌面寬度上都被下限卡死、比例遠超過「約 20%」。 */
+/* 桌面版頁面級導覽（OG-02／#318）：64px 頂欄（`TopBar`）常駐＋單一
+   全寬頁面（劇本庫／垃圾桶／詳細頁／設定依 hash 切換），取代 #72／
+   #75 那套「側欄劇本庫常駐＋右側詳細頁」的 master/detail（已退場，
+   `.library-pane`／`.detail-pane`／`.workspace` 三個 class 結構性
+   移除，不再有任何選擇器參照它們）。斷點與 `App.tsx` 的
+   `useIsDesktop`（`window.matchMedia`）用同一個數字——那邊決定
+   「掛載哪個裝置寬度的分支」，這裡只是視覺排版，兩者必須一致。 */
 @media (min-width: 1100px) {
-  /* UI-IMPL-002（#092）：新增的桌面頂欄（`TopBar`）疊在 `.workspace`
-     之上，`.library-pane`／`.detail-pane` 原本假設自己就是整個視窗高度
-     （`height:100dvh`）——加了頂欄之後那份假設不再成立，會讓整頁比
-     視窗多出頂欄那段高度（批次操作列吸底因此會超出可視範圍）。改成
-     外層 `.desktop-shell` 才真正等於整個視窗高度，`.workspace` 只佔
-     扣掉頂欄後剩下的空間，`.library-pane`／`.detail-pane` 改成填滿
-     `.workspace` 那一列（`height:100%`），不再各自宣稱整個視窗高度。 */
-  /* `min-height` 曾在這裡用過，但那只是下限——`.library-scroll`／
-     `.detail-pane` 的清單一多，內容會把 `.desktop-shell` 整個撐高
-     過視窗（實測撐到 2565px），`.workspace` 的 `flex:1;min-height:0`
-     因此拿不到明確可用高度，內部捲動失效、吸底的 `.batch-action-bar`
-     被推到視窗外很遠的地方（Playwright boundingBox 實測超出視窗
-     1300～2400px，不是先前小範圍測試碰巧只差幾像素才蓋過去的那種
-     邊角案例）。這個版面的設計本來就是「頁面本身永不捲動，捲動全部
-     收斂在 `.library-scroll`／`.detail-pane` 兩個內部容器」，改成
-     硬性 `height` 才是與這個意圖相符的約束，讓 `flex:1;min-height:0`
-     鏈路真正發揮作用。 */
+  /* 頁面本身可以自然捲動（不再是「頁面永不捲動，`.library-scroll`／
+     `.detail-pane` 兩個內部容器各自捲」那一套）：`.desktop-shell`
+     只保證內容不足一屏時 `Footer` 仍貼在視窗底部（`min-height:
+     100dvh` ＋下方 `.page` 的 `flex:1`），內容超過一屏時交給瀏覽器
+     整頁（body）往下捲，`TopBar` 靠自己的 `position:sticky` 保持
+     常駐（見 `.topbar` 規則），不需要外層額外的高度約束或
+     `overflow` 限制。 */
   .desktop-shell {
     display: flex;
     flex-direction: column;
-    height: 100dvh;
+    min-height: 100dvh;
   }
 
-  .workspace {
-    display: grid;
-    grid-template-columns: minmax(220px, 20%) 1fr;
-    /* 原本的 `align-items: start` 在兩欄各自靠自己的 `height: 100dvh`
-       撐滿時無害（不需要靠 grid 拉伸），但現在兩欄改成 `height: 100%`
-       依賴這一列本身的高度撐滿（見上方 `.library-pane`／`.detail-pane`
-       說明）——`start` 會讓 grid 兩欄縮回各自內容高度、不撐滿這一列，
-       `height:100%` 因此解不出正確值。改回預設 `stretch`（即不設定
-       `align-items`）才是兩欄真正需要的行為。 */
+  .page {
     flex: 1;
-    min-height: 0;
-    /* 光靠 `flex:1;min-height:0` 讓 `.workspace` 自己拿到明確高度還不夠
-       ——沒有 `grid-template-rows`（隱式單一 `auto` 列）時，那一列的
-       「拉伸後高度」在 CSS 規範裡不算嚴格意義的 definite size，子項的
-       `height:100%` 百分比因此可能解不出來、退回依內容撐高（實測
-       `.library-pane`／`.detail-pane` 撐到 2454px，跟視窗高度完全
-       脫鉤）。顯式宣告單一 `minmax(0,1fr)` 列——用 `fr` 直接量
-       `.workspace` 自己已經定值的高度，才是無歧義的明確尺寸。 */
-    grid-template-rows: minmax(0, 1fr);
-    /* UI-IMPL-002（#092）：建立劇本抽屜（`.create-drawer`）與遮罩
-       （`.create-drawer-scrim`）用 `position: absolute` 疊在這一列
-       之上，定位基準就是這個容器。 */
-    position: relative;
   }
 
-  /* #124：左欄變成「可捲動的清單」＋「釘在最下方的設定入口」兩段。
-     捲動因此下移到 `.library-scroll`——留在 `.library-pane` 上的話，
-     設定入口會跟著清單一起捲走，而需求方指定的位置是 sidebar 最下方。 */
-  .library-pane {
-    height: 100%;
-    display: flex;
-    flex-direction: column;
-    border-right: 1px solid var(--separator);
+  /* 桌面各頁的 `.screen` 根容器（`ScenarioList`／`TrashView`／
+     `Settings` 皆用這個既有 class）比手機優先的 640px 寬鬆得多，
+     全寬頁面上才不會顯得空蕩。詳細頁另有專屬 900px 覆寫（見下方
+     `.detail-page`，特異度相同、寫在後面故優先）；其餘頁面
+     （劇本庫／垃圾桶／設定）本票先給一個合理的過渡值——OG-03（全寬
+     Markets 表）與 Settings 換皮會再依各自內容重新設計，不是逐像素
+     對照 artifact 的最終版面。 */
+  .page .screen {
+    max-width: 1200px;
   }
 
-  .library-scroll {
-    flex: 1;
-    min-height: 0;   /* flex 子項預設 min-height:auto，不加這行不會內縮捲動 */
-    overflow-y: auto;
+  /* 桌面版的釘選功能列／導覽 header（`.toolbar`，`ScenarioDetail`／
+     `Toolbar`／`TrashView` 皆用）原本手機版 `top:0` 貼齊視窗頂端；
+     桌面下方常駐頂欄（`.topbar`）已經佔掉最上面 64px，改成貼在頂欄
+     正下方，否則兩層 sticky 會疊在同一個 y:0 互相蓋住。 */
+  .toolbar {
+    top: 64px;
   }
 
-  .detail-pane {
-    height: 100%;
-    overflow-y: auto;
-  }
+  /* ---------- 桌面詳細頁（前身 `.detail-pane`，OG-02 起改用專屬
+     wrapper `.detail-page`——側欄退場，但詳細頁自己的版面與密度
+     調校跟側欄結構無關，逐字沿用，只是換了掛載點）---------- */
 
-  /* 詳細頁內容仍維持可讀寬度，不會因為右欄變寬就被硬拉成整行文字。 */
-  .detail-pane .screen {
+  /* 詳細頁內容仍維持可讀寬度，不會因為全寬頁面就被硬拉成整行文字。 */
+  .detail-page .screen {
     max-width: 900px;
   }
 
@@ -307,107 +273,75 @@ body {
      （摘要 50%、進場成本 47%、候選池 42%、基準候選 37%），而劇本主圖
      只有 8%——那張是真內容（Heatmap 本體），不動。
 
-     全部規則都掛在 `.detail-pane` 底下：那是桌面專屬的 DOM（見
-     `App.tsx`，手機分支在 `<div className="workspace">` 之前就 return
+     全部規則都掛在 `.detail-page` 底下：那是桌面詳細頁專屬的 DOM
+     （見 `App.tsx`，手機分支在裝置寬度判斷的最上面就已經 return
      了），手機版**結構上不可能**吃到這裡的任何一條。外面再包一層
      桌面 media query 是雙保險，不是必要條件。
 
      壓的是留白與字級，不刪任何一項資訊。 */
-  .detail-pane .screen {
+  .detail-page .screen {
     padding: 12px;
     gap: 12px;
   }
 
-  .detail-pane .card {
+  .detail-page .card {
     padding: 12px;
     gap: 8px;
   }
 
-  .detail-pane .section-title {
+  .detail-page .section-title {
     font-size: 17px;
   }
 
-  .detail-pane .row + .row {
+  .detail-page .row + .row {
     padding-top: 8px;
   }
 
   /* 這兩個靠負邊距捲到卡片邊緣的區塊，邊距是綁 `--gap`（16px）算的；
      卡片內距改成 12px 後要跟著改，否則會突出卡片 4px。 */
-  .detail-pane .heatmap-scroll {
+  .detail-page .heatmap-scroll {
     margin: 0 -12px;
     padding: 0 12px;
   }
 
-  .detail-pane .chip-strip {
+  .detail-page .chip-strip {
     margin: 0 -12px;
     padding: 2px 12px;
   }
 
-  /* 頂部摘要卡：桌面 detail-pane 有 ~870px 寬，兩欄還是留了大片空白
-     ——排四欄剛好把九項壓成三行。卡片內距也比一般卡片再緊一級：這張
-     卡整張都是短標籤＋短數字，不需要一般卡片那圈呼吸空間。 */
-  .detail-pane .summary-card {
+  /* 頂部摘要卡：桌面詳細頁固定寬度 900px，兩欄還是留了大片空白——排
+     四欄剛好把九項壓成三行。卡片內距也比一般卡片再緊一級：這張卡
+     整張都是短標籤＋短數字，不需要一般卡片那圈呼吸空間。 */
+  .detail-page .summary-card {
     padding: 10px 12px;
     gap: 8px;
   }
 
-  .detail-pane .summary-grid {
+  .detail-page .summary-grid {
     grid-template-columns: repeat(4, minmax(0, 1fr));
     column-gap: 20px;
-  }
-
-  /* UI-IMPL-002（#092）：`.toolbar-title` 是 iOS Large Title 規格
-     （32px/700，見 `styles.css` 該規則本身的既有註解），專為手機版
-     整寬頁首設計。桌面側欄（`.library-pane`，約 220～290px 寬）跟同一
-     列的建立／垃圾桶／重新整理膠囊鈕搶空間——膠囊鈕靠 `white-space:
-     nowrap` 撐開不換行，標題卻是 flex 項目、預設 `min-width:auto`，
-     被擠到不夠放時會退到「CJK 逐字換行」的最小內容寬度（實測擠到
-     32px，「劇本庫」三個字一字一行疊成一直排）。比照既有 QA-FIX-3
-     （`.detail-pane .section-title` 同樣手法）：桌面側欄縮小字級，
-     不動手機版原有規則、不動任何功能語意。 */
-  .library-pane .toolbar-title {
-    font-size: 20px;
-    line-height: 1.3;
-    /* 光縮字級還不夠——`.toolbar-row` 是單行 flex，`.toolbar-actions`
-       （膠囊鈕）用 `white-space:nowrap` 撐開不讓步，標題的
-       `flex-shrink:1` 卻預設 `min-width:auto`，兩者搶不下時標題會被
-       壓到它自己的「最小內容寬度」——CJK 沒有空白可斷字，最小內容寬度
-       可以塌到單一字元寬（實測 20px，三個字疊成一豎排）。加
-       `white-space:nowrap` 讓標題本身不再逐字換行；配合下面
-       `.toolbar-row { flex-wrap: wrap }`，真的擠不下時是「按鈕整組
-       換到下一行」這種正常、看得懂的換行，不是把中文字拆開排。 */
-    white-space: nowrap;
-  }
-
-  .library-pane .toolbar-row {
-    flex-wrap: wrap;
-    row-gap: 6px;
-  }
-
-  /* 就算標題自己讓出整行，三顆膠囊鈕（＋建立劇本／垃圾桶／重新整理）
-     疊在一起的自然寬度（實測 305px）仍然比 288px 寬的側欄本身還寬
-     ——這組膠囊鈕是手機／全寬版面的既有設計（沿用既有 `white-space:
-     nowrap` 慣例，本輪未改動按鈕本身），在這個窄側欄容不下整排。讓它
-     也能換行，寧可疊成三行也不要被裁掉最後一顆看不到、按不到。 */
-  .library-pane .toolbar-actions {
-    flex-wrap: wrap;
   }
 
   /* ---------- UI-IMPL-002（#092）：建立劇本抽屜 ----------
 
      取代 #75 當年「跟著工具列釘住的就地展開面板」——Artifact
-     `Desktop-Create.dc.html` 是右側滑出抽屜＋遮罩，覆蓋整個
-     `.workspace`（左側劇本庫＋右側詳細頁都在遮罩之下）。狀態、回呼、
+     `Desktop-Create.dc.html` 是右側滑出抽屜＋遮罩。狀態、回呼、
      `hidden` 切換可見度的既有機制（#75 教訓：面板一律掛著，不整個
-     卸載重掛）完全沿用，這裡只是換一種視覺位置。
+     卸載重掛）完全沿用。OG-02 起改用 `position: fixed`（已退場的
+     `.workspace` 不再存在，不能當定位基準）——蓋住頂欄以下整個視窗
+     （`top: 64px`，扣掉常駐頂欄的高度），不蓋住 `TopBar` 本身，使用者
+     開著抽屜仍看得到品牌與導覽，隨時可以切走。
 
      `[hidden]` 的 UA 樣式表 `display:none` 規則與這裡的 `display:
      flex` 同層特異度（class 與屬性選擇器皆是 0,1,0）——author 樣式表
      的規則一律蓋過 UA 樣式表，不管特異度或先後順序，所以 `display`
      宣告刻意只掛在 `:not([hidden])`，讓原生 `hidden` 屬性繼續有效。 */
   .create-drawer-scrim {
-    position: absolute;
-    inset: 0;
+    position: fixed;
+    top: 64px;
+    right: 0;
+    bottom: 0;
+    left: 0;
     background: rgba(11, 14, 17, 0.55);
     z-index: 20;
   }
@@ -417,8 +351,8 @@ body {
   }
 
   .create-drawer {
-    position: absolute;
-    top: 0;
+    position: fixed;
+    top: 64px;
     right: 0;
     bottom: 0;
     width: 440px;
@@ -1834,22 +1768,11 @@ body {
   color: var(--on-accent);
 }
 
-/* #72：桌面版清單裡「目前選中」的劇本卡片——不能像上面的 chip／月曆格
-   那樣整片實心（卡片內還有好幾行文字要維持可讀），改用左側強調色條
-   ＋淡色底。 */
-.card.selected {
-  background: var(--fill);
-  box-shadow: inset 3px 0 0 var(--accent);
-}
-
-/* #108：桌面版劇本庫卡片瘦身後改用下面的 `.compact-card`（原本只有
-   手機版 `CompactScenarioList.tsx` 在用）。選中態沿用上面同一組宣告，
-   不是重新設計一套視覺。手機版 compact row 不傳 `selected`，用不到
-   這條規則。 */
-.compact-card.selected {
-  background: var(--fill);
-  box-shadow: inset 3px 0 0 var(--accent);
-}
+/* OG-02（#318）：`.card.selected`／`.compact-card.selected`（#72
+   桌面版清單常駐時「目前選中」的高亮、#108 沿用同一組宣告）原服務
+   已退場的側欄 master/detail——側欄退場後這份清單只在劇本庫頁面
+   本身渲染、結構上不可能同時存在「選中」狀態，`selectedId` 已隨之
+   從 `ScenarioList.tsx` 移除，兩條規則一併清除，不留死碼。 */
 
 /* ---------- 更新中徽章（T08／#196 P1，前身是 V4 跟進票／#136 的
    整段灰化鎖定） ---------- */
@@ -3028,11 +2951,19 @@ body {
   min-width: 0;
 }
 
-/* ---------- 桌面版頂欄：品牌／導覽／角色徽章（UI-IMPL-002／#092） ---------- */
+/* ---------- 桌面版頂欄：品牌／導覽／角色徽章／建立劇本（UI-IMPL-002／
+   #092；OG-02／#318 起常駐＋加建立劇本按鈕） ---------- */
 
 @media (min-width: 1100px) {
+  /* `position: sticky` 讓頂欄在整頁（body）自然捲動時仍貼在視窗頂端
+     ——OG-02（#318）起頁面本身不再各自內捲，這是桌面版唯一常駐的
+     chrome。64px（AC 明訂）比原本 56px 高一級，讓 primary 按鈕
+     （`.btn`，36px）與角色徽章（28px）都留有呼吸空間。 */
   .topbar {
-    height: 56px;
+    position: sticky;
+    top: 0;
+    z-index: 30;
+    height: 64px;
     display: flex;
     align-items: center;
     gap: 8px;
