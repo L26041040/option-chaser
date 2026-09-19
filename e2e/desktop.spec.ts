@@ -77,6 +77,14 @@ async function routeTwoScenarios(page: import("@playwright/test").Page,
     route.fulfill({ json: rowB }));
 }
 
+/** OG-02（#318）：桌面版常駐頂欄的導覽 `<nav>`——多處測試都要 scope
+ *  回它，因為 `getByRole("link", { name: "劇本庫" })` 這類子字串查詢
+ *  會跟 `ScenarioDetail.tsx`／`TrashView.tsx`／`Settings.tsx` 各自
+ *  的「‹ 劇本庫」返回連結撞名。 */
+function topbarNav(page: import("@playwright/test").Page) {
+  return page.locator(".topbar").locator("nav");
+}
+
 test("OG-02（#318）：點劇本進全寬詳細頁，劇本庫清單不再同時顯示——" +
      "建立劇本改走常駐頂欄，任何頁面都按得到", async ({ page }) => {
   await routeTwoScenarios(page);
@@ -889,7 +897,7 @@ test("OG-02（#318）：建立劇本／垃圾桶／設定入口在常駐頂欄�
 
   // 常駐頂欄：劇本庫 → 垃圾桶 → 設定（導覽順序），角色 chip（Normal
   // User 不顯示，見 `TopBar.tsx`）＋「建立劇本」primary 按鈕殿後。
-  const nav = page.locator(".topbar").locator("nav");
+  const nav = topbarNav(page);
   const navLinks = await nav.getByRole("link").allTextContents();
   expect(navLinks).toEqual(["劇本庫", "垃圾桶", "設定"]);
   await expect(page.getByRole("button", { name: "＋ 建立劇本" }))
@@ -917,7 +925,7 @@ test("OG-02（#318）：垃圾桶是獨立全寬頁面，不再是側欄切換�
   await expect(page.getByRole("heading", { name: "垃圾桶" })).toBeVisible();
   await expect(page.getByRole("link", { name: /XYZ/ })).not.toBeVisible();
   // 頂欄導覽「垃圾桶」項目本身有金色底線指示當前頁。
-  const nav = page.locator(".topbar").locator("nav");
+  const nav = topbarNav(page);
   await expect(nav.getByRole("link", { name: "垃圾桶", exact: true }))
     .toHaveClass("on");
 
@@ -1243,7 +1251,7 @@ test("OG-02（#318）：設定入口在常駐頂欄導覽，任何頁面都按�
 
   // Settings 頁面自己也有一個「‹ 劇本庫」返回連結（子字串會跟頂欄的
   // 「劇本庫」撞名），這裡明確 scope 回頂欄導覽。
-  const nav = page.locator(".topbar").locator("nav");
+  const nav = topbarNav(page);
   const entry = nav.getByRole("link", { name: "設定" });
   await expect(entry).toBeVisible();
   await entry.click();

@@ -1815,6 +1815,23 @@ describe("PB-12（#302）：全站常駐頁尾＋首頁 Beta 說明＋隱私頁�
     expect(container.querySelector("footer.site-footer")).toBeInTheDocument();
   });
 
+  it("桌面版切到垃圾桶頁面，Beta 說明不重複顯示——比照手機版只在真正的" +
+     "首頁出現一次（OG-02／#318）", async () => {
+    stubDesktopViewport();
+    mockRoutes({
+      "/api/scenarios": { json: async () => [row] },
+      "/api/scenarios?include_archived=true": { json: async () => [] },
+      "/api/scenarios/": { json: async () => row },
+    });
+    const { container } = render(<App />);
+    await screen.findByText("TLT");
+
+    window.location.hash = "#/trash";
+    await screen.findByRole("heading", { name: "垃圾桶" });
+    expect(container.querySelector(".beta-notice")).not.toBeInTheDocument();
+    expect(container.querySelector("footer.site-footer")).toBeInTheDocument();
+  });
+
   it("手機版垃圾桶畫面也看得到頁尾", async () => {
     mockRoutes({
       "/api/scenarios": { json: async () => [row] },

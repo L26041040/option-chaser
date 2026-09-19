@@ -782,11 +782,14 @@ body {
    批次列在 y=1696px，得再往下捲 971px 才點得到「還原已選／永久
    刪除已選」，等於全選完看不到能對它做什麼。
 
-   桌面吸底不會跟左欄捲動或功能列打架：`.library-pane` 是
-   `height:100dvh; overflow-y:auto` 的獨立捲動容器，sticky 會相對
-   **它**吸底；`.toolbar` 是 sticky top（z-index 10），一個吸頂一個
-   吸底，同一容器裡不互斥。z-index 5 夾在內容與功能列之間，確保捲過
-   去的卡片陰影不會蓋住它，也不會反過來蓋住功能列或確認視窗（100）。 */
+   OG-02（#318）起桌面版不再有專屬的側欄捲動容器（`.library-pane` 已
+   退場）——`.batch-action-bar` 的 `sticky bottom:0` 改為相對整頁
+   （body）捲動吸底，跟手機版本來就是同一種機制，桌面／手機因此真的
+   共用同一組規則、不是「各自吸底但原理不同」。`.toolbar` 是 sticky
+   top（z-index 10，桌面下還要再讓給常駐頂欄的 z-index 30，見
+   `.topbar` 規則），一個吸頂一個吸底，不互斥。z-index 5 夾在內容與
+   功能列之間，確保捲過去的卡片陰影不會蓋住它，也不會反過來蓋住功能列
+   或確認視窗（100）。 */
 .batch-action-bar {
   position: sticky;
   bottom: 0;
@@ -1624,7 +1627,7 @@ body {
    完整／短格式兩個 span 都畫進 DOM（AC 明文不得整段省略、不得靠
    tooltip／長按才看得到），手機優先預設顯示短格式，跨過桌面斷點
    （與 `App.tsx` 的 `DESKTOP_QUERY`／版面切換同一個 1100px）才換成
-   完整格式——這裡有的是桌面 detail-pane 的寬版面，不用省字。 */
+   完整格式——這裡有的是桌面 `.detail-page` 的寬版面，不用省字。 */
 .heatmap-table .heatmap-move-pct,
 .heatmap-table .heatmap-move-head {
   position: sticky;
@@ -2227,24 +2230,9 @@ body {
 
 /* ---------- 設定頁（Settings／#124） ---------- */
 
-/* 桌面版 sidebar 最下方的設定入口。`margin-top:auto` 不需要——它已經是
-   flex 容器裡 `flex:1` 的捲動區之後的最後一項，自然被推到底。 */
-.sidebar-settings {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 14px var(--gap);
-  border-top: 0.5px solid var(--separator);
-  color: var(--label);
-  text-decoration: none;
-  font-size: 15px;
-  background: var(--bg-elevated);
-}
-
-.sidebar-settings:active,
-.sidebar-settings.active {
-  background: var(--fill);
-}
+/* OG-02（#318）：`.sidebar-settings`（桌面版 sidebar 最下方的設定
+   入口）隨已退場的側欄一併移除——設定入口現在是常駐 `TopBar` 導覽裡
+   的「設定」連結（見 `.topbar .nav a`），不再需要這個孤兒規則。 */
 
 .settings-head {
   display: flex;
@@ -2489,7 +2477,7 @@ body {
 }
 
 /* 手機「IV 相對位置」標題降級（需求方 2026-08-22 裁示範圍約 16–17px）
-   ——跟桌面既有的 `.detail-pane .section-title`（17px，QA-FIX-3）恰好
+   ——跟桌面既有的 `.detail-page .section-title`（17px，QA-FIX-3）恰好
    同一個數字，這裡不必再另外包一層桌面 media query 復原。 */
 .iv-history .section-title {
   font-size: 17px;

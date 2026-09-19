@@ -667,15 +667,15 @@ export default function App() {
     // `library`）是兩個獨立的 JSX 分支，不共用同一段標記——這樣手機版
     // 的版面決定不會意外牽動桌面版現狀（#72／#75，spec #77 硬紅線一）。
     //
-    // 工具列不重複顯示建立入口（`showCreateButton={false}`）：入口已經
-    // 在下面的 `CreateEntry`，兩個地方各放一次只會讓人不確定該點哪個。
+    // 工具列不顯示建立入口：入口已經在下面的 `CreateEntry`，兩個地方
+    // 各放一次只會讓人不確定該點哪個（OG-02／#318 起 `Toolbar` 已無
+    // 建立按鈕可傳，這件事現在是結構性保證，不再需要一個 prop 來關）。
     return (
       <div className="screen">
         <Toolbar
           count={rows.length}
           busy={refreshBusy}
           runSummary={runSummary}
-          showCreateButton={false}
           // 時機三：功能列刷新鈕
           onRefresh={() => void reloadAndRefresh(true)}
           onOpenTrash={() => { window.location.hash = trashHash(); }}
@@ -776,7 +776,6 @@ export default function App() {
         count={rows.length}
         busy={refreshBusy}
         runSummary={runSummary}
-        showCreateButton={false}
         // 時機三：功能列刷新鈕
         onRefresh={() => void reloadAndRefresh(true)}
       />

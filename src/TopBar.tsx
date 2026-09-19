@@ -1,16 +1,15 @@
 /**
  * 桌面版頂欄（UI-IMPL-002／#092，Main 板 `.topbar`）：品牌標記＋頂層
- * 導覽（劇本庫／垃圾桶／設定）＋目前角色徽章。**桌面專屬**——手機版
- * 對應的導覽是畫面底部的 `BottomNav`，兩者是設計稿本來就分開的兩種
- * chrome（`.topbar` vs `.mtop`＋`.mtabs`），不是同一個元件的兩種顯示
- * 模式。
+ * 導覽（劇本庫／垃圾桶／設定）＋目前角色徽章＋建立劇本入口。**桌面
+ * 專屬**——手機版對應的導覽是畫面底部的 `BottomNav`，兩者是設計稿
+ * 本來就分開的兩種 chrome（`.topbar` vs `.mtop`＋`.mtabs`），不是同一個
+ * 元件的兩種顯示模式。
  *
- * 這是本輪新增的**視覺**導覽列，疊在既有 `Toolbar`（劇本庫頂端「＋
- * 建立劇本／重新整理」那一條，桌面／手機共用）之上——不取代它，既有
- * 的建立／刷新語意、`aria-expanded`／`aria-controls` 等既有測試鎖住
- * 的行為完全不動。角色徽章讀的是既有 `getAuthStatusCached()`（
- * `RoleLogin.tsx` 同一份快取），這裡純粹是多一個顯示消費端，不改變
- * 角色判斷或登入流程本身。
+ * OG-02（#318）起是桌面版**唯一**的導覽與建立劇本入口——原本疊在下面
+ * 的 `Toolbar`（劇本庫頁面自己的釘選列）已不再重複顯示垃圾桶／建立
+ * 按鈕（見 `Toolbar.tsx`），只剩重新整理（擺位由 OG-03 決定）。角色
+ * 徽章讀的是既有 `getAuthStatusCached()`（`RoleLogin.tsx` 同一份快取），
+ * 這裡純粹是多一個顯示消費端，不改變角色判斷或登入流程本身。
  */
 import { useEffect, useState } from "react";
 
@@ -56,18 +55,17 @@ export default function TopBar({
   /** OG-02（#318）：頂欄「建立劇本」primary 按鈕——開既有右側抽屜
    *  （`App.tsx` 的 `showCreateForm`），不是 toggle：抽屜自己的
    *  `.drawer-close` 與遮罩點擊已經是既有的關閉手段，這裡只負責開。
-   *  選填是為了讓既有沒有建立語意的呼叫端（若有）不必被迫補一個
-   *  no-op；目前唯一呼叫端（`App.tsx` 桌面分支）一律會傳，連同下面
-   *  兩個 `aria-*` 用的欄位。 */
-  onOpenCreate?: () => void;
+   *  必填——`TopBar` 目前只有桌面分支這一個呼叫端，一律會傳，連同下面
+   *  兩個 `aria-*` 用的欄位；沒有理由留一個永遠不會缺席的可選欄位。 */
+  onOpenCreate: () => void;
   /** 抽屜目前是否展開——供 `aria-expanded` 使用。按鈕本身文字不隨這個
    *  值改變（不是 toggle，見上），但輔助科技仍該知道它控制的區域現在
    *  是否展開，沿用既有 `MonthPicker`（`CreateForm.tsx`）同一套
    *  `aria-expanded`＋`aria-controls` 寫法。 */
-  createOpen?: boolean;
+  createOpen: boolean;
   /** 抽屜的 DOM id（`App.tsx` 的 `createPanelId`），供 `aria-controls`
    *  指向它。 */
-  createPanelId?: string;
+  createPanelId: string;
 }) {
   const [role, setRole] = useState<Role>("normal");
 
@@ -113,17 +111,15 @@ export default function TopBar({
           {ROLE_LABELS[role]}
         </span>
       )}
-      {onOpenCreate && (
-        <button
-          type="button"
-          className="btn"
-          onClick={onOpenCreate}
-          aria-expanded={createOpen}
-          aria-controls={createPanelId}
-        >
-          ＋ 建立劇本
-        </button>
-      )}
+      <button
+        type="button"
+        className="btn"
+        onClick={onOpenCreate}
+        aria-expanded={createOpen}
+        aria-controls={createPanelId}
+      >
+        ＋ 建立劇本
+      </button>
     </div>
   );
 }

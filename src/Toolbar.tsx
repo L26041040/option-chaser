@@ -10,24 +10,6 @@
  */
 import { GearIcon, TrashIcon } from "./icons";
 
-/**
- * `showCreateButton` 與其餘建立相關欄位綁在一起（判別聯合）：桌面版
- * （#75 現狀）傳 `true` 並帶齊三個欄位；手機版（#81）傳 `false`——
- * 建立入口已經在 `Dashboard` 下方的 `CreateEntry`，工具列不重複顯示，
- * 型別上直接讓「傳 false 卻還帶著 createOpen」變成編譯錯誤。
- */
-type CreateButtonProps =
-  | {
-      showCreateButton: true;
-      /** 建立劇本表單目前是否展開（#75）。 */
-      createOpen: boolean;
-      /** 展開鈕控制的面板 id（#75 code review 跟進），與 `CreateForm.tsx`
-       *  裡 `MonthPicker` 的 `aria-expanded`＋`aria-controls` 同一套寫法。 */
-      createPanelId: string;
-      onToggleCreate: () => void;
-    }
-  | { showCreateButton: false };
-
 export default function Toolbar({
   count,
   busy,
@@ -35,7 +17,6 @@ export default function Toolbar({
   onRefresh,
   onOpenTrash,
   onOpenSettings,
-  ...createProps
 }: {
   count: number;
   /** 有任何刷新（Refresh Run 或單一劇本刷新）進行中——沿用既有「一條
@@ -48,9 +29,9 @@ export default function Toolbar({
   runSummary: string | null;
   onRefresh: () => void;
   /** 設定入口（Settings／#124）。**只有手機版傳**——需求方指定的位置是
-   *  「主要工作區右上角」，而這個工具列正在那裡。桌面版不傳：那邊的
-   *  指定位置是 sidebar 最下方（見 `App.tsx`），兩邊各放一個會變成同一
-   *  個入口出現兩次。 */
+   *  「主要工作區右上角」，而這個工具列正在那裡。桌面版不傳：OG-02
+   *  （#318）起設定入口在常駐 `TopBar` 導覽（見 `App.tsx`），兩邊各放
+   *  一個會變成同一個入口出現兩次。 */
   onOpenSettings?: () => void;
   /** TR6（#91）：垃圾桶畫面入口，貼齊「劇本庫」標題的工具列——手機版
    *  沒有建立鈕（入口在 Dashboard 下方），順序自然是「🗑 垃圾桶 →
@@ -59,25 +40,17 @@ export default function Toolbar({
    *  重複，桌面呼叫端因此不再傳這個 prop——手機呼叫端維持原樣不動，
    *  型別放寬不改變手機版任何既有行為。 */
   onOpenTrash?: () => void;
-} & CreateButtonProps) {
+}) {
   return (
     <header className="toolbar">
       <div className="toolbar-row">
         <h1 className="toolbar-title">劇本庫</h1>
         {/* 動作放在標題列右側的膠囊鈕（iOS 導覽列慣例），不是自成一列的
             整寬按鈕——功能列是釘住的，每多一列就少一列看得到卡片。
-            #75：建立劇本原本是掛在全部劇本卡片下面、永遠展開的表單，
-            捲過長長的清單才看得到；改成跟刷新同一列的膠囊鈕，兩個主要
-            入口位置一致、且跟著這個 `<header>` 一起常駐釘住。這是桌面版
-            現狀，手機版（#81）建立入口移到 Dashboard 下方，不重複。 */}
+            OG-02（#318）起：建立劇本入口已不在這裡（手機版在 Dashboard
+            下方的 `CreateEntry`，桌面版在常駐 `TopBar`），這個工具列
+            只剩垃圾桶（選填，見 `onOpenTrash` 說明）與重新整理。 */}
         <div className="toolbar-actions">
-          {createProps.showCreateButton && (
-            <button className="pill" onClick={createProps.onToggleCreate}
-                   aria-expanded={createProps.createOpen}
-                   aria-controls={createProps.createPanelId}>
-              {createProps.createOpen ? "收合建立表單" : "＋ 建立劇本"}
-            </button>
-          )}
           {onOpenTrash && (
             <button className="pill pill-trash" onClick={onOpenTrash}>
               <TrashIcon /> 垃圾桶
