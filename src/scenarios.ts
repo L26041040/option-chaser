@@ -13,7 +13,7 @@ import {
   type RepresentativeCandidate,
   type ScenarioSummary,
 } from "./api";
-import { strategyLabel } from "./detail";
+import { directionLabel, strategyLabel } from "./detail";
 import { FAMILY_LABELS, familyOf } from "./family";
 
 /**
@@ -114,9 +114,14 @@ export function deriveDirectionTag(
 
 /** 方向標籤的中文字＋對應既有 `.tag` 色彩修飾類（OG-01 既有
  *  primitives：`.tag.up`／`.tag.down`／`.tag.flat`，跟詳細頁摘要卡
- *  同一套視覺語言）。 */
+ *  同一套視覺語言）。字彙本身直接重用 `./detail.ts::directionLabel()`
+ *  （後端 `DIRECTION_LABELS` 同一份、有漂移測試把關的既有字彙）——
+ *  這裡衍生的是「算不算看漲」這件事本身（無容忍帶純比較，
+ *  `deriveDirectionTag` 見上），不是「看漲要顯示成什麼字」，兩者不該
+ *  各自維護一份中文字串（code review／OG-09 跟進，避免第二份
+ *  「看漲／看跌／持平」拷貝跟原本那份字彙漂移）。 */
 export function directionTagLabel(tag: DirectionTag): string {
-  return tag === "bullish" ? "看漲" : tag === "bearish" ? "看跌" : "持平";
+  return directionLabel(tag);
 }
 
 export function directionTagClass(tag: DirectionTag): string {

@@ -3109,8 +3109,8 @@ body {
    - stat 方塊     → `.stat`（＋`.stat-label`／`.stat-value`）
    - 頂欄 nav      → `.topbar`（＋`.topbar .nav`／`.brand`）
    - 手機 nav／
-     bottom tab    → `.mtabs`／`.mtab`（頂部 mnav 尚無消費端，見下方
-                       `.mnav` 新增）
+     bottom tab    → `.mtabs`／`.mtab`（頂部 `.mnav` 已由 OG-09／#319
+                       的 `MobileTopBar.tsx` 消費，見下方 `.mnav` 定義）
    - kv 列表       → `.row`（＋`.row-label`／`.row-value`，
                        `.row + .row` 的上邊框對應 artifact `.kv` 的
                        `border-bottom`，方向相反但視覺角色相同）
