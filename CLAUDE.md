@@ -27,7 +27,7 @@ block 裡，不能切成好幾個 code block、也不能中間插普通文字把
 `［回報#001］spec #137 拆票完成`）。編號是**累計總數**，不因換
 session、換分支、換主題而歸零——目前最新編號記在這裡：
 
-> 目前次序：093（下一份回報用 094）
+> 目前次序：094（下一份回報用 095）
 >
 > ⚠ 084 跳號說明：本檔案自己記的序號原本是「083（下一份回報用
 > 084）」，但 OPTION-PUBLIC-BETA-CI-REPAIR-010 這輪工單裡大哥直接
@@ -10435,6 +10435,82 @@ valuation／ranking、不要密碼明文。測試接縫沿用既有七個。全�
 **下一步**：等 Owner cue `/implement`，從 #317 起。本輪未寫任何
 production code（`git diff` 對 `src/`／`option_chaser/`／`api_app/`
 零命中）。
+
+### OG-01（#317）已完成——Obsidian Gold Foundations
+（2026-09-19，`/implement`，commits `d870b48`＋跟進 `818765e`；
+Owner 指示逐票施工、每票做完各自彙報，非批次自主執行到底）
+
+**Token 換血**：`src/styles.css` 的 `:root`／淺色媒體查詢整組換成
+Obsidian Gold 數值，沿用既有變數名（`--bg`／`--panel`／`--panel-2`／
+`--panel-3`／`--line`／`--line-2`／`--text`／`--text-2`／`--text-3`／
+`--accent`／`--up`／`--down`／`--warn`／`--suspect`／`--crossover`），
+既有兩千多行元件 CSS 未動一行、自動套新色。新增兩階（`--panel-4`／
+`--text-4`，artifact 有定義但既有系統只有三階，先建好供未來消費）與
+新角色 `--info`（資訊藍），既有 Crossover 分界線改用它
+（`--crossover: var(--info)`，純色彩重新分配）。兩處延續上一輪
+Graphite & Amber 已建立、本輪重新量測仍然成立的 WCAG AA 判斷
+（documented in 檔頭）：淺色 `--text-3` 從 artifact 原文 `#707A8A`
+（3.98:1／4.34:1，未達 4.5）加深到 `#636C7A`（4.87/5.31）；淺色
+`--accent-text` 沿用既有值 `#9a6206`（金色當背景填色用的
+`--accent`＝`#E3B11E` 在白底上當文字只有 1.99:1，兩者角色本來就該
+分開）。
+
+**字體**：`--font`／`--mono` 從 IBM Plex Sans／Mono 換成 Geist／
+Geist Mono（Google Fonts 皆可直接載入），Noto Sans TC 維持不動；
+`index.html` 的字型連結與 `theme-color` 同步更新。
+
+**共用 primitives**：淨新增（目前無消費端、供 OG-02 起各票直接拿來
+用）：`.btn`（primary＝預設金色／`.secondary`＝髮絲線框／`.danger`／
+`.ghost`／`.sm`／`.xs`）、`.iconbtn`、`.panel`＋`.panel-h`、`.tabs`、
+`.seg`、`.tbl`（40–56px 列高）、`.sym`（Logo＋ticker 身分組，Logo
+本身沿用既有 `StockLogo`／`.tile`，不重造）、`.legs`、`.inp`＋
+`label.lb`、`.mnav`、`.hm`、`.bar`、`.dot`；並在既有 `.tag` 上新增
+加法色彩修飾 `.up`／`.down`／`.gold`／`.flat`／`.info`／`.fam`
+（`.flat`／`.fam` 規則體重複，已合併成單一逗號選擇器）。Foundations
+板詞彙裡已有對應既有 class 的（角色 chip→`.role`、tag→`.tag`、
+chip→`.chip`、stat→`.stat`、頂欄 nav→`.topbar`、手機 bottom tab→
+`.mtabs`／`.mtab`、kv 列表→`.row`）刻意不重造第二份，檔內留有對照表。
+
+**StockLogo 尺寸**：`/code-review` Spec 軸抓到真缺口——ticket 明確
+點名的角色化像素（表格 24px／詳細頁 40px／建立表單預覽 32px）與
+`StockLogo.tsx` 既有的 `s=20/m=28/l=40/xl=56` 沒有對齊、也沒有留下
+「刻意延後」的裁決記錄。查證四個既有消費端（`ScenarioList.tsx`／
+`CompactScenarioList.tsx` 傳 `size="s"`＝清單列；`ScenarioDetail.tsx`
+傳 `size="l"`＝詳細頁，本來就是 40；`CreateForm.tsx` 不傳、吃預設
+`size="m"`＝建立表單預覽）後，把 `s`／`m` 改成 24／32，四個既有
+呼叫端一行不用改（仍是傳同一個尺寸字母），像素值卻對齊了規格。
+
+**測試**：`src/obsidianGold.test.ts`（69 條，讀 `styles.css` 原始碼
+文字，同 `contrast.test.ts` 既有手法）鎖住深淺色 hex 值、字體堆疊、
+primitives 存在＋套用預期 token、且用範圍限定的靜態掃描證明本票
+新增 CSS 裡金色只出現在可動作元素／冠軍標記、紅綠只用於數值方向
+（含合成輸入的迴歸測試，證明拆分邏輯真的抓得住逗號合併選擇器裡的
+違規者，不是形同虛設）；`src/StockLogo.test.tsx`（10 條，`fireEvent`
+觸發 `onError`／`onLoad`）鎖住 `fallback=404` 契約與「失敗即整個
+`<img>` 消失、不留任何替代圖示」；`e2e/foundations.spec.ts`（3 條，
+真瀏覽器 `document.fonts` 驗證——jsdom 不會真的下載字體）。後者在
+本沙箱需要 `test.use()` 局部加 `--proxy-server`（只在這個檔案、只在
+`HTTPS_PROXY` 環境變數存在時，`playwright.config.ts` 本身未動，真實
+CI 沒有這個環境變數會直接跳過）才連得到 Google Fonts CDN。
+
+`/code-review`（Standards＋Spec 兩軸平行子代理）：**零 hard
+violation**。Spec 軸另抓到一處過期註解（Crossover 分界線舊註解仍寫
+「琥珀」，已更正為「資訊藍」）已修正；Standards 軸兩個 judgement
+call（`.btn.ghost`／`.sm`／`.xs` 屬預先鋪路、既有裁決維持不變；
+`obsidianGold.test.ts` 的 CSS 規則解析器對多選擇器逗號合併會靜默漏
+抓——已加 `selectorBranches()` 拆分修正並補上會紅的合成輸入迴歸
+測試）。
+
+**全套驗證**（含跟進修正後重跑）：`tsc --noEmit` 乾淨；Vitest
+916/916；Playwright iPhone 83/83（含新增 3 條）＋Desktop 52/52，
+既有密度守門（手機一屏至少 4 個劇本／桌面可見劇本數）皆未紅燈；
+`vite build` 成功。`git diff` 確認僅命中 `index.html`／`src/styles.css`
+／`src/StockLogo.tsx` 三個既有檔案＋三個新測試檔，`option_chaser/`／
+`api_app/` 零命中，未觸碰 #269／SCALE-18。
+
+**下一步**：OG-02（#318，桌面 chrome：64px 頂欄、全寬頁面、側欄
+退場、建立抽屜）。依 Owner 指示逐票施工、每票做完各自回報，
+非批次自主執行。
 
 ### 施工依據
 
