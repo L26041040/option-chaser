@@ -260,9 +260,14 @@ body {
      wrapper `.detail-page`——側欄退場，但詳細頁自己的版面與密度
      調校跟側欄結構無關，逐字沿用，只是換了掛載點）---------- */
 
-  /* 詳細頁內容仍維持可讀寬度，不會因為全寬頁面就被硬拉成整行文字。 */
+  /* 詳細頁內容仍維持可讀寬度，不會因為全寬頁面就被硬拉成整行文字。
+     OG-06（#321）：900px 是 OG-02 起單欄版面的既有上限，三欄 trade
+     版面（`.detail-shell`，見下方 OG-06 專屬區塊）需要更寬的畫布才擺
+     得下左／中／右三欄，這裡放寬到 1400px——`ScenarioContext`／
+     `Summary`／`IvHistory` 等既有單欄卡片不受影響，仍讀得舒服（四欄
+     `.summary-grid` 在更寬的容器下純粹是留白變多，不是文字被拉長）。 */
   .detail-page .screen {
-    max-width: 900px;
+    max-width: 1400px;
   }
 
   /* ---------- QA-FIX-3（QA-01）：桌面詳細頁密度 ----------
@@ -3780,4 +3785,123 @@ label.lb {
   height: 100%;
   background: var(--accent);
   font-style: normal;
+}
+
+/* =========================================================================
+   OG-06（#321）：桌面劇本詳細頁三欄 trade 版面
+   ========================================================================= */
+
+/* 三欄外殼（`DesktopDetail.tsx`）：左欄較窄（family tabs／到期日 chip／
+   排名表），中央欄最寬（常駐 Heatmap＋三價位階梯），右欄先留空容器
+   （OG-07／#325 填）。這個元件本身只在桌面 `useIsDesktop()` 為真時
+   掛載，不需要再包一層 `@media` 判斷（DOM 結構上手機不可能吃到），
+   跟 `ScenarioList.tsx` 的 `.lib-table` 系規則不加 media query 是同一種
+   「JS 層已經二次守門」的既有慣例。 */
+.detail-shell {
+  display: grid;
+  grid-template-columns: minmax(260px, 0.9fr) minmax(420px, 1.6fr) minmax(220px, 0.7fr);
+  gap: 12px;
+  align-items: start;
+}
+
+.detail-col-left,
+.detail-col-center {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+/* 右欄本票不渲染任何內容（OG-07 填），保留欄寬讓外殼比例先對齊
+   artifact，避免 OG-07 一落地就得重新調整左／中欄寬度。 */
+.detail-col-right {
+  min-height: 1px;
+}
+
+.detail-tabs-placeholder {
+  min-height: 1px;
+}
+
+/* 排名表一列：從手機版的 `<details><summary>` 換成一顆可點的按鈕
+   （見 `DesktopDetail.tsx` 檔頭說明——語意從「展開看這一組的圖」變成
+   「把中央 Heatmap 換成這一組」）。`.chip.selected` 既有的選取視覺
+   語言（金色邊框／底色）在這裡沿用，不是重新設計一套「這一列被選中」
+   要長什麼樣。 */
+.detail-rank-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid transparent;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+  color: inherit;
+  font: inherit;
+}
+
+.detail-rank-row:hover {
+  background: var(--fill);
+}
+
+.detail-rank-row.selected {
+  border-color: var(--accent);
+  background: var(--fill);
+}
+
+.detail-rank-return {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+  margin-left: auto;
+}
+
+.detail-rank-return .bar {
+  width: 56px;
+}
+
+.heatmap-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* 三價位階梯（`PriceLadder.tsx`）：三列，標籤／價格／報酬各自靠齊，
+   跟 `.summary-grid` 的 `Stat` 走不同版式——這裡是「一組候選」的完整
+   價位對照，讀起來更像一張小表格而不是散落的統計格。 */
+.price-ladder {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 4px;
+}
+
+.price-ladder-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+}
+
+.price-ladder-label {
+  width: 40px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-3);
+}
+
+.price-ladder-price {
+  flex: 1;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 身分列第二行（`/code-review` Spec 軸跟進）：現價／目標價（含所需
+   漲跌幅）／目標年月／資料時間／資料來源，五段小字橫向排開，讀不完
+   會自然換行——這一行本來就是精簡摘要，`Summary` 卡才是完整版本。 */
+.detail-identity-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
 }

@@ -35,10 +35,17 @@ import {
   familyOf, mergedExpiryTop10, resultsByFamily,
 } from "./family";
 
-/** 目前該顯示哪個 family：使用者選的那個若還在（換了一次分析後可能
- *  消失）就用它；否則退回冠軍所屬 family，再不然第一個——與
- *  `expiry.ts::resolveExpiry` 同一種「使用者選擇優先、退回預設」寫法。 */
-function resolveFamily(
+/**
+ * 目前該顯示哪個 family：使用者選的那個若還在（換了一次分析後可能
+ * 消失）就用它；否則退回冠軍所屬 family，再不然第一個——與
+ * `expiry.ts::resolveExpiry` 同一種「使用者選擇優先、退回預設」寫法。
+ *
+ * OG-06（#321）：加 `export`——桌面版三欄外殼（`DesktopDetail.tsx`）
+ * 需要自己持有「目前選中哪個 family」的 state 才能同時驅動左欄排名表
+ * 與中央 Heatmap 的選取，不能像這裡一樣把它整個包在元件內部；這個
+ * 純函式本身的規則不該因此被複製一份，兩處共用同一個判斷。
+ */
+export function resolveFamily(
   families: string[], picked: string | null, championFamily: string | null,
 ): string | null {
   if (picked !== null && families.includes(picked)) return picked;
@@ -48,10 +55,15 @@ function resolveFamily(
   return families[0] ?? null;
 }
 
-/** 這個 family 底下、真的產生候選的 subtype 一個都沒有時的說明——優先
- *  用非 `skipped_direction` 的那個（它的訊息才是真正解釋「為什麼零
- *  候選」的那句，例如過濾器砍光了），沒有的話才退回任何一個既有訊息。 */
-function emptyFamilyMessage(group: StrategyResult[]): string {
+/**
+ * 這個 family 底下、真的產生候選的 subtype 一個都沒有時的說明——優先
+ * 用非 `skipped_direction` 的那個（它的訊息才是真正解釋「為什麼零
+ * 候選」的那句，例如過濾器砍光了），沒有的話才退回任何一個既有訊息。
+ *
+ * OG-06（#321）：加 `export`，理由同上面的 `resolveFamily`——桌面版
+ * 三欄外殼要顯示同一句空狀態說明，不重寫第二份。
+ */
+export function emptyFamilyMessage(group: StrategyResult[]): string {
   const preferred = group.find((r) => r.status !== "skipped_direction");
   const message = (preferred ?? group[0])?.message;
   return message || "這個策略沒有產生結果。";

@@ -591,6 +591,11 @@ export default function App() {
     // 不能看起來像已經是最新結果（P1 更新中徽章）。手機版此時本來就
     // 整頁替換成詳細頁、不會跟清單同時看到，傳了也無害。
     updating: updatingIds.has(detailId),
+    // OG-06（#321）：桌面身分列的「編輯」入口，走既有的 `startEdit`
+    // ——跟劇本庫卡片編輯鈕開的是同一個抽屜、同一份 `editing` state。
+    // 手機／桌面共用同一份 `detailProps`，`ScenarioDetail.tsx` 自己
+    // 用 `isDesktop` 二次守門，手機拿到這個 callback 但不會渲染按鈕。
+    onEdit: () => startEdit(detailId),
   } : null;
 
   // TR6（#91）：批次移入垃圾桶時個別失敗的說明——列在「哪個劇本、

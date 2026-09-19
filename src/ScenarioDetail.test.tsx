@@ -1,10 +1,12 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import ScenarioDetail from "./ScenarioDetail";
 import sample from "../contracts/analysis_sample.json";
 import sampleRow from "../contracts/scenario_row_sample.json";
+import { candidate, result, view as buildView } from "./family.fixtures";
+import { fakeMediaQueryList } from "./test-setup";
 import {
   baselineTopCandidate,
   type AnalysisView, type CandidateLegs, type Leg,
@@ -806,5 +808,85 @@ describe("多 family 並存（T11／#229）", () => {
     // 頭條（摘要卡）依然是 Bull Call Spread 冠軍，不隨分頁切換而改變
     expect(summarySection().getByText("Bull Call Spread")).toBeInTheDocument();
     expect(summarySection().getByText("90.0%")).toBeInTheDocument();
+  });
+});
+
+describe("OG-06（#321）：桌面詳細頁身分列——方向 tag／編輯入口／Logo 404", () => {
+  function desktopMultiFamilyDetail() {
+    const champ = candidate("champ", "bull-call-spread", 0.9);
+    const lc = candidate("lc", "long-call", 0.4);
+    const v = buildView(
+      [result("bull-call-spread", "ok", { "2026-09-18": ["champ"] }),
+       result("long-call", "ok", { "2026-09-18": ["lc"] })],
+      { champ, lc },
+      { direction: "bullish" },
+    );
+    return detail({ strategies: ["single-leg", "vertical-spread"], latest_result: v });
+  }
+
+  /** 身分列本身——桌面新增的方向 tag／編輯鈕只加在這裡，跟
+   *  `ScenarioContext`（劇本設定卡）自己那份「方向」`Stat` 是兩個獨立
+   *  位置，會顯示同一個字（"看漲"），查詢一律縮小到這個容器，避免
+   *  跟劇本設定卡那份撞出「找到多個」的假失敗。 */
+  function header(container: HTMLElement) {
+    return container.querySelector(".toolbar") as HTMLElement;
+  }
+
+  it("桌面：身分列顯示方向 tag，點編輯入口呼叫 onEdit，切換 family 分頁" +
+     "不影響頭條（跟頭條固定顯示冠軍是同一條既有原則，本票延伸到桌面" +
+     "新的三欄外殼）", async () => {
+    vi.stubGlobal("matchMedia", (q: string) => fakeMediaQueryList(true, q));
+    const onEdit = vi.fn();
+    mockDetail(desktopMultiFamilyDetail());
+    const { container } = render(<ScenarioDetail id="s1" onEdit={onEdit} />);
+    await screen.findByText(/劇本主圖/);
+
+    expect(within(header(container)).getByText("看漲")).toBeInTheDocument();
+    // `/code-review` Spec 軸跟進：身分列票面明文要求的五項——現價／
+    // 目標價（含所需漲跌幅）／目標年月／資料時間／資料來源——都要在
+    // 這一列，不能只留在下方的 `Summary` 卡。
+    // 假體預設值（`family.fixtures.ts::view()`）：spot 100／target_price
+    // 110／target_move 0／target_month "2026-09"／source "cboe"。
+    expect(within(header(container)).getByText(/現價 \$100\.00/)).toBeInTheDocument();
+    expect(within(header(container)).getByText(/目標 \$110\.00（\+0\.0%）/))
+      .toBeInTheDocument();
+    expect(within(header(container)).getByText("2026-09")).toBeInTheDocument();
+    expect(within(header(container)).getByText("cboe")).toBeInTheDocument();
+
+    await userEvent.click(within(header(container))
+      .getByRole("button", { name: "編輯" }));
+    expect(onEdit).toHaveBeenCalledTimes(1);
+
+    const tabs = screen.getByRole("group", { name: "策略家族" });
+    await userEvent.click(within(tabs).getByRole("button", { name: "Call / Put" }));
+
+    expect(summarySection().getByText("Bull Call Spread")).toBeInTheDocument();
+    expect(summarySection().getByText("90.0%")).toBeInTheDocument();
+  });
+
+  it("桌面：Logo.dev 對假造代號回 404 後，身分列的 <img> 整個從 DOM 消失" +
+     "（UI-IMPL-002／#092 既有契約，延伸到身分列這個新位置）", async () => {
+    vi.stubGlobal("matchMedia", (q: string) => fakeMediaQueryList(true, q));
+    mockDetail(desktopMultiFamilyDetail());
+    const { container } = render(<ScenarioDetail id="s1" />);
+    await screen.findByText(/劇本主圖/);
+
+    const img = header(container).querySelector("img")!;
+    expect(img).not.toBeNull();
+    fireEvent.error(img);
+
+    expect(header(container).querySelector("img")).toBeNull();
+  });
+
+  it("手機版（預設 matchMedia）：身分列不出現方向 tag 與編輯入口——這兩項" +
+     "是桌面限定的加法，不是手機版本來就有的東西（手機版零改動）", async () => {
+    const onEdit = vi.fn();
+    mockDetail(desktopMultiFamilyDetail());
+    const { container } = render(<ScenarioDetail id="s1" onEdit={onEdit} />);
+    await screen.findByText(/劇本主圖/);
+
+    expect(within(header(container)).queryByText("看漲")).not.toBeInTheDocument();
+    expect(within(header(container))
+      .queryByRole("button", { name: "編輯" })).not.toBeInTheDocument();
   });
 });

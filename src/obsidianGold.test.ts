@@ -262,6 +262,9 @@ describe("OG-01：金色只用於可動作元素／冠軍標記，紅綠只用�
     ".bar i",
     ".tag.gold",
     ".mnav .brand-mark",
+    // OG-06（#321）：桌面詳細頁排名表目前選取的那一列——跟 `.inp.focus`
+    // 同一種「使用者目前互動焦點」語意，金色標示可動作元素合理。
+    ".detail-rank-row.selected",
   ];
 
   const DIRECTION_TOKENS = /var\(--(up|down)(-soft)?\)/;

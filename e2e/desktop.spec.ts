@@ -550,8 +550,15 @@ test("Heatmap 密度（#121）：去掉 +／% 縮小 padding 後，固定容器�
      "看得到的日期欄數真的變多", async ({ page }) => {
   // 實測基準（本票施工時量到，git stash 對照修正前後）：容器
   // clientWidth 876px 不變，平均欄寬 60.92px→45.65px，可見欄數
-  // 14→19。門檻抓 17（介於兩者之間留餘裕，避免慢速機器像素微差
+  // 14→19。門檻原訂 17（介於兩者之間留餘裕，避免慢速機器像素微差
   // 誤判），能通過就代表密度確實提升，不是感覺上變窄。
+  //
+  // OG-06（#321）跟進：劇本主圖搬進桌面三欄 trade 版面的中央欄
+  // （`DesktopDetail.tsx`），在固定 1280px 桌面 viewport 下，中央欄
+  // 天生比改版前的單欄版面窄（876px → 614px 實測，git stash 對照
+  // 修正前後）——這是三欄外殼本身的直接幾何後果，不是這裡的密度
+  // 修正失效。門檻依同一套「量出來取中間值」方法論在新容器寬度下
+  // 重新校準：614px 容器下實測可見欄數 15，門檻改抓 13（留餘裕）。
   await routeTwoScenarios(page);
   await page.goto("/#/s/s1");
 
@@ -569,7 +576,7 @@ test("Heatmap 密度（#121）：去掉 +／% 縮小 padding 後，固定容器�
     .evaluate((el) => (el as HTMLElement).clientWidth);
 
   const columnsVisible = Math.floor(containerWidth / avgCellWidth);
-  expect(columnsVisible).toBeGreaterThanOrEqual(17);
+  expect(columnsVisible).toBeGreaterThanOrEqual(13);
 
   // 每一格文字本身確實不再帶 +／%（否認式：格式沒改回去，密度提升
   // 不是靠別的手法湊出來的）。
@@ -1960,6 +1967,54 @@ test("桌面版：多 family 並存——分頁列出、預設打開冠軍所屬
   await expect(summary.getByText("Bull Call Spread")).toBeVisible();
 });
 
+test("OG-06（#321）：桌面詳細頁三欄外殼與身分列——左欄 family tabs／到期日" +
+     "chip／排名表、中央欄 Heatmap＋三價位階梯、右欄先留空容器；身分列有" +
+     "方向 tag 與編輯入口", async ({ page }) => {
+  const row = { ...libraryRow({ id: "s1", symbol: "XYZ" }),
+               strategies: ["single-leg", "vertical-spread"] };
+  const multi = multiFamilyView();
+  await page.route("**/api/scenarios", (route) => route.fulfill({ json: [row] }));
+  await page.route("**/api/scenarios/s1", (route) =>
+    route.fulfill({ json: { ...row, latest_result: multi } }));
+  await page.route("**/api/scenarios/refresh-run", (route) =>
+    route.fulfill({ json: { results: [{ scenario_id: "s1", ok: true, row }],
+                            remaining: [] } }));
+  await page.goto("/#/s/s1");
+
+  const detail = page.locator(".detail-page");
+  await expect(detail.getByText(/劇本主圖/)).toBeVisible();
+
+  // 三欄外殼：左／中／右三個容器都在，右欄本票先留空（OG-07／#325 填）。
+  const shell = detail.locator(".detail-shell");
+  await expect(shell.locator(".detail-col-left")).toBeVisible();
+  await expect(shell.locator(".detail-col-center")).toBeVisible();
+  await expect(shell.locator(".detail-col-right")).toBeAttached();
+  await expect(shell.locator(".detail-col-right")).toBeEmpty();
+
+  // 左欄：family tabs（已由上一條測試驗過切換行為，這裡只驗結構齊全）
+  // ／到期日 chip／排名表。
+  await expect(shell.locator(".detail-col-left")
+    .getByRole("group", { name: "策略家族" })).toBeVisible();
+  await expect(shell.locator(".detail-col-left")
+    .getByRole("group", { name: "到期日" })).toBeVisible();
+  await expect(shell.locator(".detail-rank-row").first()).toBeVisible();
+
+  // 中央欄：常駐 Heatmap（不用先展開，本票取代手機版的逐列 <details>）。
+  await expect(shell.locator(".detail-col-center table.heatmap-table"))
+    .toBeVisible();
+
+  // 身分列：方向 tag（真實契約樣本 target_price > spot，衍生看漲）與
+  // 編輯入口都在頂部工具列，不是摘要卡那份「方向」Stat 的重複。
+  const header = page.locator("header.toolbar");
+  await expect(header.getByText("看漲")).toBeVisible();
+  await expect(header.getByRole("button", { name: "編輯" })).toBeVisible();
+  // `/code-review` Spec 軸跟進：身分列票面明文要求的現價／目標價（含
+  // 所需漲跌幅）／目標年月／資料時間／資料來源都要在這一列，不能只
+  // 留在下方的劇本摘要卡（真實契約樣本：spot 100、target_price 130）。
+  await expect(header.getByText(/現價 \$100\.00/)).toBeVisible();
+  await expect(header.getByText(/目標 \$130\.00（\+30\.0%）/)).toBeVisible();
+});
+
 /* ---------- T16（#232，Initial V2）：Butterfly 前端呈現，桌面 viewport ---------- */
 
 const butterflyKeyDesktop = sampleCallFly.results[0].candidates[0];
@@ -2034,15 +2089,19 @@ test("T16（#232）：桌面版 Butterfly 三隻腿完整顯示、兩個損益�
   await expect(regionRow).toContainText(
     `$${butterflyCandDesktop.profit_region[0].toFixed(2)}`);
 
-  // Dev server（React StrictMode）會把初次掛載的 effect 重複觸發一次
-  // ——`/api/settings` 等頁面載入本身就會發的請求可能還沒真的落定。
-  // 等網路真的靜下來才歸零計數器（同 smoke.spec.ts 同一條測試的既有
-  // 教訓），避免「展開」動作本身有沒有多發請求的量測被頁面載入尾聲
-  // 的既有請求汙染成偽陽性。
+  // OG-06（#321）：桌面版把「每一列各自展開自己的 Heatmap」換成中央
+  // 常駐一張 Heatmap、跟著排名表目前選取的那一列（`DesktopDetail.tsx`）
+  // ——不用像手機版 `<details>` 先展開才看得到，預設就已經顯示冠軍
+  // 候選（這裡整個劇本只有一個 family、一組候選，冠軍＝排名表唯一
+  // 一列）。Dev server（React StrictMode）會把初次掛載的 effect 重複
+  // 觸發一次——`/api/settings` 等頁面載入本身就會發的請求可能還沒真的
+  // 落定，等網路真的靜下來才歸零計數器（同 smoke.spec.ts 同一條測試的
+  // 既有教訓），避免「切換排名列選取」這個動作本身有沒有多發請求的
+  // 量測被頁面載入尾聲的既有請求汙染成偽陽性。
+  await expect(detail.locator(".heatmap-panel table.heatmap-table")).toBeVisible();
   await page.waitForLoadState("networkidle");
   requestUrls.length = 0;
-  await detail.locator(".candidate summary").first().click();
-  await expect(detail.locator(".candidate").first().locator("table")).toBeVisible();
+  await detail.locator(".detail-rank-row").first().click();
   expect(requestUrls).toEqual([]);
 
   await expect(detail.getByText("IV 相對位置")).toHaveCount(0);
@@ -2192,16 +2251,22 @@ test("T18（#235）紅線 12：桌面版展開一般 Vertical Spread 候選（�
 
   const detail = page.locator(".detail-page");
   await expect(detail.getByText("劇本主圖")).toBeVisible();
-  // Dev server（React StrictMode）會把初次掛載的 effect 重複觸發一次
+  // OG-06（#321）：桌面版把「每一列各自展開自己的 Heatmap」換成中央
+  // 常駐一張 Heatmap、跟著排名表目前選取的那一列（`DesktopDetail.tsx`）
+  // ——預設就已經顯示，不用先「展開」；這裡改成驗證「切換排名表選取」
+  // 這個新的桌面互動本身零額外請求，語意與手機版的「展開零請求」等價
+  // （都是操作已經在記憶體裡的候選池，不重新抓取任何資料）。Dev
+  // server（React StrictMode）會把初次掛載的 effect 重複觸發一次
   // ——`/api/settings` 等頁面載入本身就會發的請求可能還沒真的落定。
-  // 等網路真的靜下來才歸零計數器，這樣「展開」這個動作本身有沒有多發
-  // 請求的量測才不會被頁面載入尾聲的既有請求汙染成偽陽性（同一份
-  // 教訓，T16／#232 的桌面版 Butterfly 測試已示範過一次）。
+  // 等網路真的靜下來才歸零計數器，這樣量測才不會被頁面載入尾聲的既有
+  // 請求汙染成偽陽性（同一份教訓，T16／#232 的桌面版 Butterfly 測試
+  // 已示範過一次）。
+  await expect(detail.locator(".heatmap-panel table.heatmap-table")).toBeVisible();
   await page.waitForLoadState("networkidle");
 
   requestUrls.length = 0;
-  await detail.locator(".candidate summary").first().click();
-  await expect(detail.locator(".candidate").first().locator("table")).toBeVisible();
+  await detail.locator(".detail-rank-row").last().click();
+  await expect(detail.locator(".heatmap-panel table.heatmap-table")).toBeVisible();
   expect(requestUrls).toEqual([]);
 });
 

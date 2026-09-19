@@ -25,6 +25,7 @@
  */
 import { useEffect, useState } from "react";
 
+import DesktopDetailBody from "./DesktopDetail";
 import FamilyTabs from "./FamilyTabs";
 import IvHistory from "./IvHistory";
 import Heatmap from "./Heatmap";
@@ -44,10 +45,27 @@ import { isThinPool, legPrices, validPairsForExpiry } from "./expiry";
 import { heatmapProps } from "./heatmap";
 import { getScenarioCached } from "./fetchCache";
 import {
-  failureLabel, formatAnalyzedAt, formatReturn, isRetryDisabledByRateLimit,
-  money, moneyOrDash, rateLimitCountdownText, rateLimitHeadline,
+  directionTagClass, failureLabel, formatAnalyzedAt, formatReturn,
+  isRetryDisabledByRateLimit, money, moneyOrDash, rateLimitCountdownText,
+  rateLimitHeadline, type DirectionTag,
 } from "./scenarios";
 import { useCountdownSeconds } from "./useCountdown";
+import { useIsDesktop } from "./useIsDesktop";
+
+/**
+ * OG-06（#321）身分列方向 tag：`view.direction` 是後端算好的既有欄位
+ * （`option_chaser/store.py::serialize_result()`，字面值與
+ * `scenarios.ts::DirectionTag` 三態相同），這裡窄化型別才能重用既有
+ * `directionTagClass()`（`.tag.up`／`.down`／`.flat`），不新增第二份
+ * 「看漲／看跌／持平對應什麼顏色」規則——跟 `ScenarioList.tsx` 的
+ * `deriveDirectionTag()` 是不同的事：那裡是清單列沒有這個欄位、只能
+ * 前端衍生；這裡是引擎已經給了值，只是型別是寬鬆的 `string`，需要
+ * 窄化成 `DirectionTag` 才能餵給共用的顏色對照函式。未知代碼（理論上
+ * 不會發生）與 `undefined`（尚未分析）一律當「持平」處理，不猜方向。
+ */
+function narrowDirectionTag(direction: string | undefined): DirectionTag {
+  return direction === "bullish" || direction === "bearish" ? direction : "flat";
+}
 
 /**
  * 摘要格線裡的一格：標籤在上、數字在下。跟站上其他地方的 `.row`
@@ -245,6 +263,7 @@ function DetailBody({ scenarioId, view, analyzedAt, strategies }: {
   analyzedAt: string | null;
   strategies: readonly string[];
 }) {
+  const isDesktop = useIsDesktop();
   const candidate = championCandidate(view);
   const result = candidate ? resultForStrategy(view, candidate.strategy) : null;
   return (
@@ -259,11 +278,24 @@ function DetailBody({ scenarioId, view, analyzedAt, strategies }: {
           baseline 候選。 */}
       <Summary view={view} candidate={candidate} result={result} analyzedAt={analyzedAt} />
       <IvHistory scenarioId={scenarioId} candidate={candidate} analyzedAt={analyzedAt} />
-      <Chart view={view} candidate={candidate} />
-      {/* Strategy Family 分頁（T11／#229）：到期日結構／候選池／分析
-          報告依目前選中的 family 各自呈現，單一 family 時完全不畫分頁
-          列（視覺上與 T11 之前逐位元相同）。 */}
-      <FamilyTabs view={view} strategies={strategies} />
+      {/* OG-06（#321）：桌面版把「劇本主圖＋Strategy Family 分頁」換成
+          Binance trade page 式的三欄外殼（`DesktopDetail.tsx`）——左欄
+          family tabs／到期日 chip／排名表，中央欄常駐 Heatmap 跟著
+          排名表目前選取的那一列。手機版走的仍是原本這兩個元件，逐
+          位元組不變（`DesktopDetailBody` 只在 `isDesktop` 為真時掛載，
+          兩條渲染路徑完全不相交，跟 `ScenarioList.tsx`／
+          `CompactScenarioList.tsx` 刻意分開是同一種策略）。 */}
+      {isDesktop ? (
+        <DesktopDetailBody view={view} strategies={strategies} champion={candidate} />
+      ) : (
+        <>
+          <Chart view={view} candidate={candidate} />
+          {/* Strategy Family 分頁（T11／#229）：到期日結構／候選池／
+              分析報告依目前選中的 family 各自呈現，單一 family 時完全
+              不畫分頁列（視覺上與 T11 之前逐位元相同）。 */}
+          <FamilyTabs view={view} strategies={strategies} />
+        </>
+      )}
       {/* #69：`key` 綁定這次分析的身分——新分析一到，React 直接卸載重掛
           這兩個元件，內部 state（已抓到的資料、`<details open>`）連同
           歸零，不會在畫面上混用新舊 cache。刷新後收合、下次展開重新
@@ -320,6 +352,7 @@ export default function ScenarioDetail({
   failure,
   onRefresh = () => {},
   updating = false,
+  onEdit,
 }: {
   id: string;
   /**
@@ -347,7 +380,18 @@ export default function ScenarioDetail({
    * 純資訊性提示，不影響頁面其餘內容是否可瀏覽。
    */
   updating?: boolean;
+  /**
+   * OG-06（#321）：桌面身分列的「編輯」入口——桌面走 OG-02 既有抽屜
+   * （`App.tsx::startEdit`，跟劇本庫卡片編輯鈕開的是同一個表單、同一份
+   * `editing` state）。手機版沒有這個按鈕（既有編輯入口在
+   * `CompactScenarioList.tsx` 的卡片上，這裡不重複一份）——因此下面
+   * render 時額外用 `isDesktop` 二次守門，不只靠「呼叫端傳不傳這個
+   * prop」決定手機要不要出現：`App.tsx` 的 `detailProps` 手機／桌面
+   * 共用同一份，兩邊都會拿到這個 callback，傳了也無害。
+   */
+  onEdit?: () => void;
 }) {
+  const isDesktop = useIsDesktop();
   const [detail, setDetail] = useState<Detail | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -384,19 +428,67 @@ export default function ScenarioDetail({
         <div className="toolbar-row">
           <span className="id">
             {/* UI-IMPL-002（#092，Identity 板）：真實品牌 Logo，找不到
-                就整個消失、只留標題文字——`StockLogo` 自己處理三種狀態。 */}
+                就整個消失、只留標題文字——`StockLogo` 自己處理三種狀態。
+                桌面 40px（`size="l"`），身分列 Logo 尺寸 AC 明文要求
+                （OG-06／#321）與這裡既有的 `size="l"` 本來就是同一個
+                數字，不必另外調整。 */}
             {detail?.symbol && <StockLogo symbol={detail.symbol} size="l" />}
             <h1 className="toolbar-title">{detail?.symbol ?? "劇本"}</h1>
+            {/* OG-06（#321）身分列方向 tag，桌面限定。`detail.latest_
+                result` 尚未載入（載入中／尚未分析）時沒有 `direction`
+                可讀，不畫。 */}
+            {isDesktop && detail?.latest_result && (
+              <span className={`tag ${directionTagClass(
+                narrowDirectionTag(detail.latest_result.direction))}`}>
+                {directionLabel(detail.latest_result.direction)}
+              </span>
+            )}
           </span>
-          {/* #70：與劇本庫功能列同一個視覺語言（標題列右側膠囊鈕），
-              走既有的單一劇本刷新端點——不是第四種獨立管道。已過期
-              （#68）沿用清單卡片同一句文案並停用——後端會把它當無害
-              no-op，按了等於沒按，不該讓它看起來還有用。 */}
-          <button className="pill" onClick={onRefresh}
-                 disabled={busy || detail?.expired}>
-            {detail?.expired ? "已過期，不再刷新" : busy ? "刷新中……" : "重新整理"}
-          </button>
+          <span className="toolbar-actions">
+            {/* OG-06（#321）：身分列的「編輯」入口，桌面限定——桌面走
+                OG-02 既有抽屜（`onEdit` 即 `App.tsx::startEdit`）。手機
+                版編輯入口在劇本庫卡片上，這裡不重複一份。 */}
+            {isDesktop && onEdit && (
+              <button className="pill secondary" onClick={onEdit}>
+                編輯
+              </button>
+            )}
+            {/* #70：與劇本庫功能列同一個視覺語言（標題列右側膠囊鈕），
+                走既有的單一劇本刷新端點——不是第四種獨立管道。已過期
+                （#68）沿用清單卡片同一句文案並停用——後端會把它當無害
+                no-op，按了等於沒按，不該讓它看起來還有用。 */}
+            <button className="pill" onClick={onRefresh}
+                   disabled={busy || detail?.expired}>
+              {detail?.expired ? "已過期，不再刷新" : busy ? "刷新中……" : "重新整理"}
+            </button>
+          </span>
         </div>
+
+        {/* OG-06（#321）`/code-review` Spec 軸跟進：身分列票面明文要求
+            現價／目標價（含所需漲跌幅）／目標年月／資料時間／資料來源
+            都在同一列——先前一版只加了 Logo／方向 tag／編輯鈕，把這五
+            項留在下方 `Summary` 卡裡就當作滿足了，Spec 審查抓到這是
+            未揭露的落地縮水，這裡補齊。跟 `Summary` 顯示同樣的數字是
+            刻意的重複，不是資料來源分裂：兩處都直接讀 `view.meta`／
+            `view.params`，同一份既有欄位、同一套既有格式化函式
+            （`money`／`formatMove`／`formatAnalyzedAt`），只是身分列這裡
+            用更精簡的一行、`Summary` 保留完整統計格線（買賣腿價格等身分
+            列裝不下的細節）。桌面限定——手機版沒有這一行，資訊仍只在
+            `Summary`（既有位置，逐位元組不變）。 */}
+        {isDesktop && detail?.latest_result && (
+          <div className="toolbar-row detail-identity-meta">
+            <span className="cell-sub">
+              現價 {moneyOrDash(detail.latest_result.meta.spot)}
+            </span>
+            <span className="cell-sub">
+              目標 {money(detail.latest_result.params.target_price)}
+              （{formatMove(detail.latest_result.meta.target_move)}）
+            </span>
+            <span className="cell-sub">{detail.latest_result.params.target_month}</span>
+            <span className="cell-sub">{formatAnalyzedAt(detail.latest_analyzed_at)}</span>
+            <span className="cell-sub">{detail.latest_result.meta.source}</span>
+          </div>
+        )}
       </header>
 
       {/* T08／#196 P1：正在被刷新（Refresh Run 或單一劇本刷新）——桌面
