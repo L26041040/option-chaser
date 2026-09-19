@@ -887,7 +887,10 @@ test("瀏覽器上一頁／下一頁在劇本庫↔詳細頁之間正常切換�
 });
 
 test("OG-02（#318）：建立劇本／垃圾桶／設定入口在常駐頂欄，劇本庫頁面" +
-     "自己的釘選列只剩重新整理", async ({ page }) => {
+     "自己的頁首不重複顯示——OG-03（#320）起這個頁首本身併入" +
+     "`ScenarioList.tsx`（`.lib-header`），除了既有的「重新整理」" +
+     "外新增批次選取入口與篩選 chip，但仍不重複「建立劇本」／" +
+     "「垃圾桶」這兩個已經在頂欄的動作", async ({ page }) => {
   await routeTwoScenarios(page);
   await page.goto("/");
   // 等開站那輪批次刷新跑完，避免撞上「刷新中……」互斥文字的瞬間。
@@ -903,10 +906,92 @@ test("OG-02（#318）：建立劇本／垃圾桶／設定入口在常駐頂欄�
   await expect(page.getByRole("button", { name: "＋ 建立劇本" }))
     .toBeVisible();
 
-  // 劇本庫頁面自己的釘選列（`Toolbar.tsx`）不再重複顯示建立／垃圾桶
-  // ——OG-03 決定「重新整理」最終擺位，本票先只剩它。
-  const buttons = await page.locator("header.toolbar button").allTextContents();
-  expect(buttons.map((t) => t.trim())).toEqual(["重新整理"]);
+  // 劇本庫頁面自己的頁首（`ScenarioList.tsx` 的 `.lib-header`）不重複
+  // 顯示建立／垃圾桶——`.lib-header` 裡只有批次選取入口（圖示鈕，
+  // aria-label「選取要移入垃圾桶的劇本」，跟頂欄那顆有獨立命名連結
+  // 「垃圾桶」的導覽項目是不同的兩件事：一個是進垃圾桶頁面，一個是
+  // 在劇本庫原地進入批次選取模式）與「重新整理」，找不到任何一顆
+  // 名稱是「＋ 建立劇本」或精確等於「垃圾桶」的按鈕。
+  const header = page.locator(".lib-header");
+  await expect(header.getByRole("button", { name: "重新整理" })).toBeVisible();
+  await expect(header.getByRole("button",
+    { name: "選取要移入垃圾桶的劇本" })).toBeVisible();
+  await expect(header.getByRole("button", { name: "＋ 建立劇本" }))
+    .toHaveCount(0);
+  await expect(header.getByRole("button", { name: "垃圾桶", exact: true }))
+    .toHaveCount(0);
+});
+
+/* ---------- OG-03（#320）：桌面劇本庫 Markets 式資料表 ---------- */
+
+test("OG-03（#320）：表格欄位齊全（標的／方向／現價／目標價／冠軍策略／" +
+     "劇本報酬／淨成本走勢佔位／到期／狀態／更新時間），且每一列仍是" +
+     "可點進詳細頁的完整連結", async ({ page }) => {
+  await routeTwoScenarios(page);
+  await page.goto("/");
+
+  const head = page.locator(".lib-thead");
+  await expect(head).toContainText("標的");
+  await expect(head).toContainText("方向");
+  await expect(head).toContainText("現價");
+  await expect(head).toContainText("目標價");
+  await expect(head).toContainText("冠軍策略");
+  await expect(head).toContainText("劇本報酬");
+  await expect(head).toContainText("淨成本走勢");
+  await expect(head).toContainText("到期");
+  await expect(head).toContainText("狀態");
+  await expect(head).toContainText("更新時間");
+
+  const xyzRow = page.locator(".compact-card").filter({ hasText: "XYZ" });
+  // OG-04（#323）接上真實序列前，淨成本走勢欄先誠實顯示佔位符。
+  await expect(xyzRow).toContainText("—");
+  await expect(xyzRow.getByRole("link", { name: /XYZ/ })).toHaveAttribute(
+    "href", "#/s/s1");
+});
+
+test("OG-03（#320）：方向與狀態篩選 chip 純前端過濾，不打任何新請求" +
+     "（AC：篩選純前端、不改後端）", async ({ page }) => {
+  const bearish = libraryRow({ id: "s3", symbol: "DEF", target_price: 80 });
+  await page.route("**/api/scenarios", (route) =>
+    route.fulfill({ json: [rowA, rowB, bearish] }));
+  await page.route("**/api/scenarios/refresh-run", (route) =>
+    route.fulfill({ json: {
+      results: [
+        { scenario_id: "s1", ok: true, row: rowA },
+        { scenario_id: "s2", ok: true, row: rowB },
+        { scenario_id: "s3", ok: true, row: bearish },
+      ],
+      remaining: [],
+    } }));
+
+  // 只追蹤打向後端的請求——篩選收合／展開某一列會讓它的 `<img>`
+  // Logo.dev 標的圖示跟著卸載／重新掛載，重新觸發圖片請求是瀏覽器
+  // 正常的渲染副作用，不是這條 AC 要擋的東西；AC 字面「不改後端」
+  // 真正要驗證的是 `/api/*` 這一半。
+  const apiRequestUrls: string[] = [];
+  page.on("request", (req) => {
+    if (req.url().includes("/api/")) apiRequestUrls.push(req.url());
+  });
+  await page.goto("/");
+  await expect(page.getByRole("link", { name: /DEF/ })).toBeVisible();
+  // 同一套「等網路真的靜下來才歸零計數器」教訓，見上方 T18 紅線 12。
+  await page.waitForLoadState("networkidle");
+  apiRequestUrls.length = 0;
+
+  // rowA／rowB 承接 `sampleRow` 預設的 spot=100／target=130，是看漲；
+  // 額外建的 `bearish` 是看跌。
+  await page.getByRole("group", { name: "依方向篩選" })
+    .getByRole("button", { name: "看跌" }).click();
+
+  await expect(page.getByRole("link", { name: /DEF/ })).toBeVisible();
+  await expect(page.getByRole("link", { name: /XYZ/ })).not.toBeVisible();
+  await expect(page.getByRole("link", { name: /ABC/ })).not.toBeVisible();
+  expect(apiRequestUrls).toEqual([]);
+
+  await page.getByRole("group", { name: "依方向篩選" })
+    .getByRole("button", { name: "全部" }).click();
+  await expect(page.getByRole("link", { name: /XYZ/ })).toBeVisible();
+  expect(apiRequestUrls).toEqual([]);
 });
 
 test("OG-02（#318）：垃圾桶是獨立全寬頁面，不再是側欄切換右側工作區" +

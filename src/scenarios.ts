@@ -129,6 +129,67 @@ export function directionTagClass(tag: DirectionTag): string {
 }
 
 /**
+ * 狀態四分類（OG-03／#320，桌面劇本庫表格「狀態」篩選 chip 用）：
+ * 與劇本級燈號（`scenarioSignal`）同一組輸入、但拆得更細——燈號只分
+ * 紅／黃／綠三色，這裡把綠燈再依「舊資料」拆成正常／舊資料兩種，因為
+ * 篩選列上使用者想單獨挑出「有跑過、但很久沒刷新」這種狀態，跟純粹
+ * 「剛跑完、一切正常」是不同的篩選意圖。四類互斥、涵蓋全部劇本：
+ * 優先序沿用既有「紅燈優先於黃燈」（#68）＋失敗優先於單純舊資料。
+ */
+export type ScenarioStatusCategory = "expired" | "failed" | "stale" | "normal";
+
+export function scenarioStatusCategory(
+  row: { expired: boolean; latest_analyzed_at: string | null },
+  failure: RefreshFailure | undefined,
+  now: Date,
+): ScenarioStatusCategory {
+  if (row.expired) return "expired";
+  if (failure) return "failed";
+  if (isStale(row.latest_analyzed_at, now)) return "stale";
+  return "normal";
+}
+
+/** 篩選 chip 的可能值——`"all"` 是兩組篩選各自的預設值（不篩）。 */
+export type DirectionFilter = "all" | DirectionTag;
+export type StatusFilter = "all" | ScenarioStatusCategory;
+
+/**
+ * 純前端篩選（OG-03／#320 AC：「篩選 chip 純前端過濾、不發請求」）——
+ * 兩組篩選以 AND 合併，各自預設 `"all"` 時不參與過濾。不改變傳入陣列
+ * 的順序，呼叫端仍需自行套用 `sortScenarios()`。
+ */
+export function filterScenarios(
+  rows: ScenarioSummary[],
+  failures: Record<string, RefreshFailure>,
+  now: Date,
+  direction: DirectionFilter,
+  status: StatusFilter,
+): ScenarioSummary[] {
+  return rows.filter((r) => {
+    if (direction !== "all" &&
+        deriveDirectionTag(r.spot, r.target_price) !== direction) {
+      return false;
+    }
+    if (status !== "all" &&
+        scenarioStatusCategory(r, failures[r.id], now) !== status) {
+      return false;
+    }
+    return true;
+  });
+}
+
+/**
+ * 劇本報酬旁的 inline 比例條寬度（OG-03／#320，artifact 桌面劇本庫表格
+ * 「劇本報酬」欄）——純視覺標示、不是新的財務指標，只是把已經算好的
+ * `best_return` 數值映成 0–100 的長度，讓報酬率在表格裡多一個一眼掃過
+ * 的視覺線索（沿用既有 `.bar` primitive，OG-01）。100% 上限單純是視覺
+ * 裁切，不是任何門檻或警示。
+ */
+export function returnBarWidthPct(value: number): number {
+  return Math.min(100, Math.abs(value) * 100);
+}
+
+/**
  * 距目標月到期日還有幾天。已經過了就說過期幾天——這種劇本還留在清單上
  * 是有意義的資訊，顯示成「0 天」會讓它看起來還有救。
  */

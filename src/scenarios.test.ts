@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import sampleRow from "../contracts/scenario_row_sample.json";
-import type { RateLimitInfo, ScenarioSummary } from "./api";
+import type { RateLimitInfo, RefreshFailure, ScenarioSummary } from "./api";
 import {
   STALE_AFTER_HOURS,
   cardFailureHeadline,
@@ -10,6 +10,7 @@ import {
   directionTagClass,
   directionTagLabel,
   failureLabel,
+  filterScenarios,
   formatDaysLeft,
   formatRepresentativeExpiry,
   formatRepresentativeLegs,
@@ -25,8 +26,10 @@ import {
   rateLimitDetailText,
   rateLimitHeadline,
   rateLimitRemainingSeconds,
+  returnBarWidthPct,
   scenarioRowDomId,
   scenarioSignal,
+  scenarioStatusCategory,
   signalLabel,
   sortScenarios,
 } from "./scenarios";
@@ -505,5 +508,133 @@ describe("方向衍生標籤（OG-09／#319，鏡射後端 derive_direction() �
     expect(directionTagClass("bullish")).toBe("up");
     expect(directionTagClass("bearish")).toBe("down");
     expect(directionTagClass("flat")).toBe("flat");
+  });
+});
+
+describe("狀態四分類（OG-03／#320，桌面劇本庫表格「狀態」篩選 chip）", () => {
+  const NOW = new Date("2026-08-04T10:00:00+00:00");
+  const fetchFailure: RefreshFailure = { stage: "fetch", message: "抓不到" };
+
+  it("已過期優先於一切——即使同時帶著失敗紀錄與舊資料", () => {
+    const r = row("1", 9.9);
+    expect(scenarioStatusCategory(
+      { ...r, expired: true, latest_analyzed_at: "2020-01-01T00:00:00+00:00" },
+      fetchFailure, NOW,
+    )).toBe("expired");
+  });
+
+  it("失敗優先於單純舊資料——未過期時才看失敗", () => {
+    const r = row("1", 9.9);
+    expect(scenarioStatusCategory(
+      { ...r, expired: false, latest_analyzed_at: "2020-01-01T00:00:00+00:00" },
+      fetchFailure, NOW,
+    )).toBe("failed");
+  });
+
+  it("沒失敗、沒過期、但久沒刷新——舊資料", () => {
+    const r = row("1", 9.9);
+    expect(scenarioStatusCategory(
+      { ...r, expired: false, latest_analyzed_at: "2020-01-01T00:00:00+00:00" },
+      undefined, NOW,
+    )).toBe("stale");
+  });
+
+  it("其餘情況——正常", () => {
+    const r = row("1", 9.9);
+    expect(scenarioStatusCategory(
+      { ...r, expired: false, latest_analyzed_at: "2026-08-04T09:30:00+00:00" },
+      undefined, NOW,
+    )).toBe("normal");
+  });
+
+  it("四類互斥、涵蓋全部劇本——任何一筆恰好落在一類", () => {
+    const cases: [boolean, RefreshFailure | undefined, string][] = [
+      [true, fetchFailure, "2026-08-04T09:30:00+00:00"],
+      [false, fetchFailure, "2026-08-04T09:30:00+00:00"],
+      [false, undefined, "2020-01-01T00:00:00+00:00"],
+      [false, undefined, "2026-08-04T09:30:00+00:00"],
+    ];
+    const categories = cases.map(([expired, failure, latest_analyzed_at]) =>
+      scenarioStatusCategory(
+        { ...row("1", 1), expired, latest_analyzed_at }, failure, NOW));
+    expect(new Set(categories)).toEqual(
+      new Set(["expired", "failed", "stale", "normal"]));
+  });
+});
+
+describe("純前端篩選（OG-03／#320，AC：不打任何新請求，只在已載入的" +
+        "rows 上再篩一層）", () => {
+  const NOW = new Date("2026-08-04T10:00:00+00:00");
+
+  function withDirection(id: string, spot: number, target: number): ScenarioSummary {
+    return { ...row(id, 1), spot, target_price: target };
+  }
+
+  it("方向篩選：只保留符合的劇本，不影響其他劇本的相對順序", () => {
+    const rows = [
+      withDirection("a", 100, 110), // bullish
+      withDirection("b", 100, 90),  // bearish
+      withDirection("c", 100, 100), // flat
+    ];
+    expect(filterScenarios(rows, {}, NOW, "bullish", "all").map((r) => r.id))
+      .toEqual(["a"]);
+    expect(filterScenarios(rows, {}, NOW, "bearish", "all").map((r) => r.id))
+      .toEqual(["b"]);
+    expect(filterScenarios(rows, {}, NOW, "flat", "all").map((r) => r.id))
+      .toEqual(["c"]);
+  });
+
+  it("方向篩選「全部」不過濾任何劇本", () => {
+    const rows = [
+      withDirection("a", 100, 110), withDirection("b", 100, 90),
+    ];
+    expect(filterScenarios(rows, {}, NOW, "all", "all").map((r) => r.id))
+      .toEqual(["a", "b"]);
+  });
+
+  it("狀態篩選：只保留符合的劇本", () => {
+    const rows = [
+      { ...row("a", 1), expired: true },
+      { ...row("b", 1), expired: false,
+        latest_analyzed_at: "2026-08-04T09:30:00+00:00" },
+    ];
+    expect(filterScenarios(rows, {}, NOW, "all", "expired").map((r) => r.id))
+      .toEqual(["a"]);
+    expect(filterScenarios(rows, {}, NOW, "all", "normal").map((r) => r.id))
+      .toEqual(["b"]);
+  });
+
+  it("兩組篩選以 AND 合併", () => {
+    const rows = [
+      // 看漲＋已過期
+      { ...withDirection("a", 100, 110), expired: true },
+      // 看漲＋未過期（正常）
+      { ...withDirection("b", 100, 110), expired: false,
+        latest_analyzed_at: "2026-08-04T09:30:00+00:00" },
+      // 看跌＋已過期
+      { ...withDirection("c", 100, 90), expired: true },
+    ];
+    expect(filterScenarios(rows, {}, NOW, "bullish", "expired").map((r) => r.id))
+      .toEqual(["a"]);
+  });
+
+  it("不就地改動傳入的陣列", () => {
+    const rows = [withDirection("a", 100, 110)];
+    filterScenarios(rows, {}, NOW, "bearish", "all");
+    expect(rows.map((r) => r.id)).toEqual(["a"]);
+  });
+});
+
+describe("劇本報酬 inline 比例條寬度（OG-03／#320）", () => {
+  it("0% 到 100% 線性對應，帶正負號皆取絕對值", () => {
+    expect(returnBarWidthPct(0)).toBe(0);
+    expect(returnBarWidthPct(0.5)).toBe(50);
+    expect(returnBarWidthPct(-0.5)).toBe(50);
+    expect(returnBarWidthPct(1)).toBe(100);
+  });
+
+  it("超過 100% 的報酬率視覺裁切在 100，不是門檻或警示", () => {
+    expect(returnBarWidthPct(5.67)).toBe(100);
+    expect(returnBarWidthPct(-5.67)).toBe(100);
   });
 });

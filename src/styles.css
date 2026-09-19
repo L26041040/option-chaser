@@ -1231,6 +1231,176 @@ body {
   gap: 8px;
 }
 
+/* =========================================================================
+   OG-03（#320）：桌面劇本庫 Markets 式資料表
+   ========================================================================= */
+
+/* `.compact-card`／`.compact-card-tap`／`.compact-symbol`／
+   `.compact-spot`／`.compact-strategy`／`.compact-range`／
+   `.compact-notice`／`.compact-actions` 等既有 class 全部沿用（見
+   `ScenarioList.tsx` 檔頭說明）——手機版 `CompactScenarioList.tsx`
+   共用這些 class 名稱，本區塊的規則因此一律用複合選擇器（額外掛
+   `.lib-row`／`.lib-row-tap`／`.lib-row-actions`）鎖定只在桌面表格
+   生效，不動手機版一個像素。
+
+   欄位順序與寬度（對齊 artifact 桌面劇本庫板）：checkbox／標的／
+   方向／現價／目標價／冠軍策略／劇本報酬／淨成本走勢／到期／狀態／
+   更新時間。`--lib-cols` 定義在 `.lib-table` 上、被頭列與每一列的
+   `.lib-row-tap` 共用（CSS 自訂屬性沿 DOM 樹向下繼承，不需要在兩處
+   各自重複那一長串寬度值）。 */
+
+.lib-page {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.lib-header {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-bottom: 4px;
+}
+
+.lib-header-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.lib-title {
+  font-size: 22px;
+  font-weight: 700;
+  margin: 0;
+}
+
+.lib-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.lib-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.lib-table {
+  --lib-cols: 28px minmax(90px, 1fr) 60px minmax(64px, .55fr)
+    minmax(96px, .8fr) minmax(160px, 1.6fr) minmax(78px, .65fr)
+    minmax(64px, .5fr) minmax(110px, .9fr) minmax(90px, .75fr)
+    minmax(80px, .65fr);
+}
+
+.lib-thead {
+  display: grid;
+  grid-template-columns: var(--lib-cols);
+  align-items: center;
+  column-gap: 8px;
+  padding: 0 12px;
+  height: 32px;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-3);
+}
+
+.lib-thead .r {
+  text-align: right;
+}
+
+/* 複合選擇器——只在額外掛了 `.lib-row-tap` 時才把既有 `.compact-
+   card-tap`（手機也在用的 flex-column 版式）換成表格欄位版式，具體
+   數值見上方 `--lib-cols`。既有右側預留給封存鈕的 `padding-right`
+   在這裡不再需要——動作鈕搬到 `.compact-card-tap-area` 的另一個
+   手足元素，不再疊在文字上面（見 `.lib-row .compact-card-tap-area`／
+   `.lib-row-actions` 兩條）。 */
+.compact-card-tap.lib-row-tap {
+  display: grid;
+  grid-template-columns: var(--lib-cols);
+  align-items: center;
+  column-gap: 8px;
+  padding: 8px 12px;
+  min-height: 48px;
+}
+
+/* 最高／最低那一行（`.lib-cell-range`）權重低、不占固定欄位寬度，
+   讓它跨滿整列排在下一行——沿用 CSS Grid `grid-column: 1 / -1` 天生
+   支援子項目跨越全部欄位，不必額外包一層 wrapper。 */
+.lib-cell-range {
+  grid-column: 1 / -1;
+}
+
+.lib-row .compact-card-tap-area {
+  display: flex;
+  align-items: stretch;
+}
+
+.lib-row-actions {
+  position: static;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 0 8px;
+}
+
+.lib-cell {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.lib-cell.r {
+  justify-content: flex-end;
+  text-align: right;
+}
+
+.lib-cell-direction,
+.lib-cell-status {
+  gap: 4px;
+}
+
+.lib-cell-champion .compact-strategy {
+  /* `.compact-strategy` 既有規則已保證單行截斷（見上方定義），這裡
+     只補冠軍策略欄要用到的最大寬度，避免長字串把欄位撐爆 grid。 */
+  max-width: 100%;
+}
+
+.lib-cell-return {
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+}
+
+.lib-cell-return .bar {
+  width: 48px;
+}
+
+.lib-cell-expiry {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+}
+
+.cell-sub {
+  font-size: 11px;
+  color: var(--text-3);
+}
+
+/* 報酬比例條的漲跌色（OG-01 既有 `.bar i` 預設金色，這裡疊上跟
+   `.dot.g`／`.dot.r` 一致的漲跌命名慣例）。 */
+.bar i.g {
+  background: var(--up);
+}
+
+.bar i.r {
+  background: var(--down);
+}
+
 .compact-archive {
   position: absolute;
   right: 8px;

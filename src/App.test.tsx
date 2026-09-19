@@ -1694,9 +1694,11 @@ describe("桌面版：主要操作入口收攏到工作區上方（#75，MVP-v2�
     expect(screen.getByLabelText("標的代號")).toHaveValue("spy");
   });
 
-  it("建立劇本入口在常駐頂欄、刷新入口在劇本庫頁面自己的釘選列——" +
-     "OG-02（#318）起兩者分屬不同的常駐 chrome，不再是同一個工具列裡" +
-     "的兩顆按鈕", async () => {
+  it("建立劇本入口在常駐頂欄、刷新入口在劇本庫頁面自己的頁首——OG-02" +
+     "（#318）起兩者分屬不同的常駐 chrome，不再是同一個工具列裡的兩顆" +
+     "按鈕；OG-03（#320）起頁首本身已從獨立的 Toolbar.tsx（帶 header " +
+     "banner landmark）併入 ScenarioList.tsx 的 .lib-header（純 div，" +
+     "本身不是地標元素）", async () => {
     stubDesktopViewport();
     mockRoutes({
       "/api/scenarios": { json: async () => [row] },
@@ -1704,23 +1706,23 @@ describe("桌面版：主要操作入口收攏到工作區上方（#75，MVP-v2�
     });
     render(<App />);
 
-    // `TopBar` 本身是 `<div>` 不是 `<header>`（見該檔案檔頭說明，
-    // 避免兩個 `<header>` 造成 `getByRole("banner")` 模糊）——建立
-    // 劇本按鈕因此不在 `banner` role 裡，直接全域查找即可，畫面上
-    // 只會有這一顆。
+    // `TopBar` 本身是 `<div>` 不是 `<header>`（見該檔案檔頭說明）——
+    // 建立劇本按鈕因此直接全域查找即可，畫面上只會有這一顆。
     const createButton = await screen.findByRole(
       "button", { name: "＋ 建立劇本" });
     expect(createButton).toBeInTheDocument();
 
-    // `banner` role 是劇本庫頁面自己的釘選列（`Toolbar.tsx`），OG-02
-    // 起只剩「重新整理」——建立劇本／垃圾桶已搬進頂欄導覽，不再重複
-    // 顯示。
-    const toolbar = await screen.findByRole("banner");
-    expect(within(toolbar).getByRole("button", { name: /重新整理|刷新中/ }))
+    // 劇本庫頁面自己的頁首（`ScenarioList.tsx` 的 `.lib-header`，
+    // OG-03 併入 `Toolbar.tsx` 原本的職責）用它自己的 `<h1>劇本庫</h1>`
+    // 當唯一錨點找回整個頁首容器——OG-02 起只剩「重新整理」，建立劇本
+    // ／垃圾桶已搬進頂欄導覽，不再重複顯示。
+    const heading = await screen.findByRole("heading", { name: "劇本庫" });
+    const header = heading.closest(".lib-header") as HTMLElement;
+    expect(within(header).getByRole("button", { name: /重新整理|刷新中/ }))
       .toBeInTheDocument();
-    expect(within(toolbar).queryByRole("button", { name: "＋ 建立劇本" }))
+    expect(within(header).queryByRole("button", { name: "＋ 建立劇本" }))
       .not.toBeInTheDocument();
-    expect(within(toolbar).queryByRole("button", { name: "垃圾桶" }))
+    expect(within(header).queryByRole("button", { name: "垃圾桶" }))
       .not.toBeInTheDocument();
 
     // code review 跟進：展開鈕要有 `aria-controls` 指向它控制的面板，
@@ -1761,19 +1763,21 @@ describe("桌面版：主要操作入口收攏到工作區上方（#75，MVP-v2�
     const { container } = render(<App />);
 
     await screen.findByText("TLT");
-    const toolbar = container.querySelector("header.toolbar")!;
+    // OG-03（#320）：`Toolbar.tsx`（`header.toolbar`）已刪除，頁首
+    // 併入 `ScenarioList.tsx` 的 `.lib-header`（純 `<div>`）。
+    const header = container.querySelector(".lib-header")!;
     // #108：桌面版劇本庫卡片瘦身後改沿用 `.compact-list`（原本只有
     // 手機版在用），不再是 `ul.list`。
     const list = container.querySelector("ul.compact-list")!;
-    // `DOCUMENT_POSITION_FOLLOWING`：toolbar 出現在 list 之前，不是
-    // 掛在清單卡片全部跑完之後才看得到的東西。展開表單前後都要成立
+    // `DOCUMENT_POSITION_FOLLOWING`：頁首出現在清單之前，不是掛在
+    // 清單卡片全部跑完之後才看得到的東西。展開表單前後都要成立
     // ——面板一律掛著（`hidden` 屬性切換可見度），不會因為展開就被
     // 插到清單後面。
-    expect(toolbar.compareDocumentPosition(list))
+    expect(header.compareDocumentPosition(list))
       .toBe(Node.DOCUMENT_POSITION_FOLLOWING);
 
     await openCreateForm();
-    expect(toolbar.compareDocumentPosition(list))
+    expect(header.compareDocumentPosition(list))
       .toBe(Node.DOCUMENT_POSITION_FOLLOWING);
   });
 });

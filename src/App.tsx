@@ -58,7 +58,6 @@ import PrivacyPage from "./PrivacyPage";
 import ScenarioDetail from "./ScenarioDetail";
 import ScenarioList from "./ScenarioList";
 import Settings from "./Settings";
-import Toolbar from "./Toolbar";
 import TopBar from "./TopBar";
 import TrashView from "./TrashView";
 import { useIsDesktop } from "./useIsDesktop";
@@ -754,9 +753,13 @@ export default function App() {
   // 跟手機版整頁替換是同一種導覽模型，只是斷點與頂欄不同。頁面本身
   // 隨內容自然增長並捲動（不再是「頁面永不捲動，`.library-scroll`／
   // `.detail-pane` 兩個內部容器各自捲」那一套，見 `styles.css` 對應
-  // 說明）。建立入口與垃圾桶／設定導覽都收進常駐的 `TopBar`，劇本庫
-  // 頁面內的 `Toolbar` 因此不再重複顯示這兩顆按鈕（「重新整理」先留在
-  // 這裡，OG-03 決定最終擺位）。
+  // 說明）。建立入口與垃圾桶／設定導覽都收進常駐的 `TopBar`。
+  //
+  // OG-03（#318 起沿用、#320 收尾）：劇本庫頁面自己的頁首（標題／
+  // 劇本數／篩選／刷新）已經整組收進 `ScenarioList.tsx`（artifact
+  // 桌面劇本庫板本來就是同一個區塊）——原本獨立的 `Toolbar.tsx`
+  // 因此零呼叫端、已刪除，`<ScenarioList>` 直接接手 `busy`／
+  // `runSummary`／`onRefresh` 三個 prop。
   const page = showTrash ? (
     <TrashView onRestore={restoreFromTrash} />
   ) : showSettings ? (
@@ -770,14 +773,6 @@ export default function App() {
     </div>
   ) : (
     <div className="screen">
-      <Toolbar
-        count={rows.length}
-        busy={refreshBusy}
-        runSummary={runSummary}
-        // 時機三：功能列刷新鈕
-        onRefresh={() => void reloadAndRefresh(true)}
-      />
-
       {error && (
         <div className="notice error" role="alert">
           {error}
@@ -790,6 +785,10 @@ export default function App() {
         failures={failures}
         updatingIds={updatingIds}
         now={now}
+        busy={refreshBusy}
+        runSummary={runSummary}
+        // 時機三：頁首刷新鈕
+        onRefresh={() => void reloadAndRefresh(true)}
         onArchive={archive}
         onEdit={startEdit}
         // 重試不是第四種刷新時機——它重跑的就是那一次失敗的刷新，走

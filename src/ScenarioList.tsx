@@ -1,24 +1,44 @@
 /**
- * 劇本清單（V3／#51；V4／#52 加上新鮮度與失敗分層）。
+ * 桌面劇本庫（V3／#51；V4／#52 加上新鮮度與失敗分層；決策 K／#108
+ * 卡片瘦身；OG-03／#320 起改為 Binance Markets 式全寬資料表）。
  *
- * 每張卡片顯示標的／目標價／目標年月／最新收益率／代表候選的策略與買賣
- * 履約價／實際到期日／距到期天數／資料時間（MVP-v2／#77、#78 補上策略／
- * 履約價／實際到期日三項——沒有它們，卡片上的報酬率無法被判讀出自哪一個
- * option combination），並有封存入口（軟刪除：清單消失、資料與紀錄保留）。
+ * 每一列顯示標的／方向／現價／目標價／冠軍策略與買賣履約價／劇本
+ * 報酬／淨成本走勢（本票先放「—」佔位，OG-04／#323 接上真實序列）／
+ * 到期／狀態／更新時間，並有封存入口（軟刪除：清單消失、資料與紀錄
+ * 保留）。
  *
- * V4 的兩個新東西都貼在卡片上，而不是全域一顆燈：資料太舊標「舊資料」，
- * 刷新失敗說明是哪一段失敗、旁邊就是重試入口——失敗是**單一劇本**的事，
- * 訊息離它愈近愈好。
+ * OG-03（#320）把原本分屬 `Toolbar.tsx`（標題／劇本數／刷新）與這裡
+ * （收益率口徑說明／批次選取入口）兩處的頁首資訊收斂成同一個
+ * `.lib-header`——artifact 的桌面劇本庫板頁首本來就是同一個區塊；
+ * `Toolbar.tsx` 隨之零呼叫端、已刪除（見 `App.tsx` 對應說明）。新增
+ * 兩組純前端篩選 chip（方向／狀態，`./scenarios::filterScenarios()`），
+ * 不打任何新請求、後端與 API 契約零改動。
  *
- * 排序與格式化都在 `./scenarios` 的純函式裡，這裡只負責畫。
+ * **兩處票面字面與現有契約不符，記錄於此、依既有欄位落地**：(1) 票面
+ * 「方向 tag（衍生三態，讀既有 `direction` 欄位）」——`ScenarioSummary`
+ * 上沒有這個欄位（OG-09／#319 code review 的 Spec 軸已查證過同一件
+ * 事），沿用 OG-09 已建好的 `deriveDirectionTag(spot, target_price)`
+ * 純前端衍生，語意相同、只是計算方式不同；(2) 票面「目標價（含所需
+ * 漲跌幅小字）」——所需漲幅是後端算好的 `target_move`（見
+ * `ScenarioDetail.tsx` 既有註解：「不是這裡拿兩個價格相減」），但這個
+ * 欄位只在 detail view 的 `meta` 裡，`ScenarioSummary`（清單列）從未
+ * 帶過它；為了不違反「不假裝有引擎能力、不做金融計算」的既有紅線，
+ * 這裡刻意**不**在前端用 `(target-spot)/spot` 算一份，目標價欄只顯示
+ * 價格與目標年月，省略小字。
  *
- * 決策 K（#108）：卡片版式改沿用 `CompactScenarioList.tsx` 那組三層
- * compact row class（`.compact-card`／`.compact-tier1/2/3` 等）壓縮留白、
- * 重複 label 與過大字級——七項決策資訊一項不少，只是不再各自佔一整列。
- * 桌面／手機仍是兩個獨立元件、各自的檔案（原因見 `App.tsx` 說明），這裡
- * 只共用 CSS class 命名與視覺密度，不共用渲染路徑，手機版改動不會結構性
- * 牽動這個檔案。
+ * 表格內部的 CSS Grid 版面（`.lib-row-tap`）刻意用複合選擇器
+ * `.compact-card-tap.lib-row-tap` 而非取代既有 `.compact-card-tap`
+ * 規則——`CompactScenarioList.tsx`（手機版）沿用同一個基底 class 名，
+ * 必須維持零改動；本票新增的欄位化排版只在多了 `lib-row-tap` 這個
+ * 額外 class 時才生效（見 `styles.css` 對應區塊）。`.compact-card`／
+ * `.compact-card-tap`／`.compact-symbol`／`.compact-spot`／
+ * `.compact-range`／`.compact-strategy`／`.signal-dot`／`.compact-
+ * notice` 等既有 class 逐一保留在原本代表的那塊內容上，既有 Desktop
+ * e2e／`ScenarioList.test.tsx` 因此絕大多數零改動即可通過——只有少數
+ * 直接依賴「三層堆疊」DOM 形狀本身（而非文字／class 存在性）的測試
+ * 需要跟著改寫，改寫處皆附理由註解。
  */
+import { useState } from "react";
 import type { RefreshFailure, ScenarioSummary } from "./api";
 import { CheckIcon, EditIcon, TrashIcon } from "./icons";
 import { detailHash } from "./route";
@@ -26,7 +46,11 @@ import StockLogo from "./StockLogo";
 import {
   cardFailureHeadline,
   cardFailureVariant,
+  directionTagClass,
+  directionTagLabel,
+  deriveDirectionTag,
   failureLabel,
+  filterScenarios,
   formatAnalyzedAt,
   formatDaysLeft,
   formatRepresentativeExpiry,
@@ -39,12 +63,30 @@ import {
   money,
   moneyOrDash,
   rateLimitDetailText,
+  returnBarWidthPct,
   scenarioRowDomId,
   scenarioSignal,
   signalLabel,
   sortScenarios,
+  type DirectionFilter,
+  type StatusFilter,
 } from "./scenarios";
 import { useCountdownSeconds } from "./useCountdown";
+
+const DIRECTION_FILTER_OPTIONS: { value: DirectionFilter; label: string }[] = [
+  { value: "all", label: "全部" },
+  { value: "bullish", label: "看漲" },
+  { value: "bearish", label: "看跌" },
+  { value: "flat", label: "持平" },
+];
+
+const STATUS_FILTER_OPTIONS: { value: StatusFilter; label: string }[] = [
+  { value: "all", label: "全部" },
+  { value: "normal", label: "正常" },
+  { value: "stale", label: "舊資料" },
+  { value: "expired", label: "已過期" },
+  { value: "failed", label: "失敗" },
+];
 
 function ScenarioCard({
   row,
@@ -83,6 +125,8 @@ function ScenarioCard({
   // MVP-v2（#77、#80）：劇本級燈號，紅＞黃＞綠、一張卡只有一個燈。
   const signal = scenarioSignal(row, failure);
   const rep = row.representative_candidate;
+  // OG-09（#319）：純顯示衍生方向，spot 為 null（尚未分析）時不畫。
+  const direction = deriveDirectionTag(row.spot, row.target_price);
   // REPAIR-05（#242，OD-03）：刷新失敗的兩態——`updating` 與 `failure`
   // 是兩個獨立 state，`cardFailureVariant` 已經把兩者互斥的判準收進
   // 純函式，這裡只讀結果決定要不要反灰、顯示哪一句頭條。
@@ -91,9 +135,10 @@ function ScenarioCard({
   // 不變就不會啟動計時器（見 `useCountdownSeconds`）。
   const rateLimitRemaining = useCountdownSeconds(
     failure?.rateLimit?.blocked_until ?? null);
+  const barWidth = ran ? returnBarWidthPct(row.best_return!) : 0;
 
   const cardClass = [
-    "compact-card",
+    "compact-card", "lib-row",
     updating && "locked", failureVariant && "failed",
   ].filter(Boolean).join(" ");
 
@@ -101,36 +146,15 @@ function ScenarioCard({
     // A2：`id` 供 `App.tsx` 建立成功後查找、捲動並聚焦這張卡片——
     // 只是一個 DOM 錨點，不影響任何既有渲染或排序邏輯。
     <li className={cardClass} id={scenarioRowDomId(row.id)}>
-      {/* 封存鈕疊在「這一塊」（tap 區）的右下角，而不是整張 `<li>` 的
-          右下角——沿用 `CompactScenarioList.tsx` 既有教訓：`.compact-notice`
-          （刷新失敗時才出現）是接在 tap 區後面的正常流內容，會把卡片
-          整體撐高，封存鈕若相對整張卡片定位就會飄到 notice 右下角、疊在
-          「重試」鈕上。`position: relative` 收在這層 wrapper，封存鈕的
-          錨點永遠是 tap 區本身的高度，跟 notice 在不在無關。 */}
       <div className="compact-card-tap-area">
-        {/* 整張卡就是進詳細頁的入口。用真的 `<a>` 而不是掛 onClick 的
-            div：長按可以複製連結、返回手勢可用、鍵盤與螢幕閱讀器也認得。
-            封存鈕留在連結外面——按鈕不能包在連結裡。
-            PC-05（#202）：更新中的卡片仍然給 `href`（結構不變），但
-            `onClick` 會 `preventDefault()`——點下去不導向詳細頁，見
-            下方 `onClick` 實作與 `.compact-card.locked` CSS。 */}
-        {/* 不掛 `aria-label`：那會**取代**連結內容當成可及名稱，螢幕閱讀器
-            就只聽得到「TLT 2028-05 詳細」，收益率／目標／到期日／資料
-            時間全部被吃掉。改在結尾補一段只有輔助技術讀得到的字。 */}
-        {/* TR6（#91）：批次選取模式時整張卡攔截點擊改成切換選取，不導向
-            詳細頁——`preventDefault` 而不是換成 `<button>`，內容結構完全
-            不用重寫一份。
-            PC-05（#202）：`updating` 時同樣攔截點擊、不導向詳細頁——但
-            `selectMode` 優先判斷（AC：既有批次選取互動不受這張票影響，
-            更新中的卡片一樣勾得起來）。`href` 仍然保留（跟 `selectMode`
-            同一種手法：CSS 用 `opacity` 反灰，不是 `pointer-events:
-            none`，Playwright 一般點擊才驗證得出「按下去沒有導航」）。
-            OG-02（#318）：`aria-current` 原本服務桌面版左側清單常駐
-            （#72，「目前選中的是哪一個」）——側欄退場後這張清單只會在
-            劇本庫頁面本身渲染、結構上不可能與詳細頁同時掛載，已隨
-            `selectedId` 一併移除，不留一個永遠算不出 truthy 值的
-            屬性。 */}
-        <a className="compact-card-tap" href={detailHash(row.id)}
+        {/* 整列就是進詳細頁的入口。用真的 `<a>` 而不是掛 onClick 的
+            div：長按可以複製連結、返回手勢可用、鍵盤與螢幕閱讀器也
+            認得。封存／編輯鈕留在連結外面——按鈕不能包在連結裡，這也
+            是 `.compact-actions` 維持是 `.compact-card-tap-area` 的
+            手足而非子元素的理由，OG-03 的欄位化排版沒有改變這個結構。
+            不掛 `aria-label`：那會**取代**連結內容當成可及名稱，改在
+            結尾補一段只有輔助技術讀得到的字。 */}
+        <a className="compact-card-tap lib-row-tap" href={detailHash(row.id)}
            onClick={(e) => {
              if (selectMode) {
                e.preventDefault();
@@ -139,7 +163,7 @@ function ScenarioCard({
                e.preventDefault();
              }
            }}>
-          <div className="compact-tier1">
+          <span className="lib-cell lib-cell-check">
             {selectMode && (
               <span
                 className={isChecked ? "row-checkbox checked" : "row-checkbox"}
@@ -148,27 +172,74 @@ function ScenarioCard({
                 {isChecked && <CheckIcon />}
               </span>
             )}
-            {/* UI-IMPL-002（#092，Identity 板）：真實品牌 Logo，找不到
-                就整個消失、只留代號文字——`StockLogo` 自己處理三種狀態。
-                用最小尺寸（20px，非預設 28px）：#108 既有硬性密度預算
-                （compact row 卡片高度 <80px，e2e 鎖住）留給這一行的
-                空間有限，20px 貼齊設計稿「20 手機頂欄」那一級，視覺上
-                仍看得出是真實 Logo。 */}
+          </span>
+
+          {/* 標的：真實品牌 Logo，找不到就整個消失、只留代號文字
+              （UI-IMPL-002／#092，Logo.dev `fallback=404` 契約）。 */}
+          <span className="lib-cell lib-cell-symbol">
             <StockLogo symbol={row.symbol} size="s" />
             <span className="compact-symbol">{row.symbol}</span>
-            {/* QA 修正：現價擠進同一行的目標價前面（`現價 → 目標`），
-                不多佔一列高度。與 `CompactScenarioList.tsx` 同一種寫法
-                ——兩份清單是同一個東西的兩種版面。 */}
-            <span className="compact-target">
-              <span className="compact-spot">{moneyOrDash(row.spot)}</span>
-              {" → "}
-              {money(row.target_price)}　{row.target_month}
+          </span>
+
+          <span className="lib-cell lib-cell-direction">
+            {direction && (
+              <span className={`tag ${directionTagClass(direction)}`}>
+                {directionTagLabel(direction)}
+              </span>
+            )}
+          </span>
+
+          <span className="lib-cell lib-cell-spot r">
+            <span className="compact-spot">{moneyOrDash(row.spot)}</span>
+          </span>
+
+          <span className="lib-cell lib-cell-target r">
+            {money(row.target_price)}　{row.target_month}
+          </span>
+
+          <span className="lib-cell lib-cell-champion">
+            <span className="compact-strategy compact-strategy-pill">
+              {formatRepresentativeSummary(rep)}
             </span>
-            {/* T08／#196 P1：更新中時燈號位置換成「更新中」徽章——這一刻
-                的燈號（紅／黃／綠）講的是上一輪的結果，這一輪還沒有
-                結論，繼續顯示舊燈號會誤導成「這是這次的狀態」。PC-05
-                （#202）起卡片本身反灰＋不可點入（見 `cardClass`／
-                `onClick`），徽章維持不變（AC 明文：徽章本身不變）。 */}
+          </span>
+
+          {/* 劇本報酬＋inline 比例條（OG-03／#320，artifact「劇本報酬」
+              欄：綠紅＋比例條，純視覺標示，見 `returnBarWidthPct()`
+              docstring）。 */}
+          <span className="lib-cell lib-cell-return r">
+            <span
+              className={
+                ran ? `metric compact-metric ${row.best_return! >= 0 ? "positive" : "negative"}`
+                    : "metric compact-metric muted"
+              }
+            >
+              {formatReturn(row.best_return)}
+            </span>
+            {ran && (
+              <span className="bar" aria-hidden="true">
+                <i className={row.best_return! >= 0 ? "g" : "r"}
+                   style={{ width: `${barWidth}%` }} />
+              </span>
+            )}
+          </span>
+
+          {/* 淨成本走勢：本票先放佔位，OG-04（#323）接上真實序列
+              （narrow history 對冠軍 candidate key 的純加法摘要）。 */}
+          <span className="lib-cell lib-cell-sparkline muted">—</span>
+
+          <span className="lib-cell lib-cell-expiry">
+            <span>Exp {formatRepresentativeExpiry(rep)}</span>
+            <span className="cell-sub">{formatDaysLeft(row.days_to_anchor)}</span>
+          </span>
+
+          {/* 狀態：燈號＋舊資料／已過期／更新中 tag（失敗兩態的完整
+              說明另外在下方 `.compact-notice` 區塊，這裡只給狀態本身
+              一個一致的位置，不重複那段文字）。T08／#196 P1：更新中時
+              燈號位置換成「更新中」徽章——這一刻的燈號講的是上一輪的
+              結果，這一輪還沒有結論，繼續顯示舊燈號會誤導成「這是這次
+              的狀態」。PC-05（#202）起卡片本身反灰＋不可點入（見
+              `cardClass`／`onClick`），徽章維持不變。 */}
+          <span className="lib-cell lib-cell-status">
             {updating ? (
               <span className="tag updating-tag">更新中</span>
             ) : (
@@ -181,36 +252,6 @@ function ScenarioCard({
                 aria-hidden="true"
               />
             )}
-          </div>
-
-          {/* 第二層是全卡最醒目的資訊：報酬率＋策略＋買賣履約價
-              （MVP-v2／#77、#78：沒有策略／履約價，報酬率無法被判讀出自
-              哪一個 option combination）。`null` 代表尚未分析或該期零
-              合格候選，說「—」而不是編一組假的候選。 */}
-          <div className="compact-tier2">
-            <span
-              className={
-                ran ? `metric compact-metric ${row.best_return! >= 0 ? "positive" : "negative"}`
-                    : "metric compact-metric muted"
-              }
-            >
-              {formatReturn(row.best_return)}
-            </span>
-            <span className="compact-strategy">
-              {formatRepresentativeSummary(rep)}
-            </span>
-          </div>
-
-          {/* 第三層：低權重資訊合併一行——實際到期日／距到期天數／資料
-              時間，不再各自佔一整列。每個格式化值各自一個 span、分隔號
-              是獨立文字節點，`formatAnalyzedAt("尚未分析")` 之類的完整
-              字串不會被分隔號黏成一段查不到精確文字的字串。 */}
-          <div className="compact-tier3">
-            <span>Exp {formatRepresentativeExpiry(rep)}</span>
-            {" · "}
-            <span>{formatDaysLeft(row.days_to_anchor)}</span>
-            {" · "}
-            <span>{formatAnalyzedAt(row.latest_analyzed_at)}</span>
             {/* 久未刷新明講「舊資料」：數字還是上一次算出來的真數字，
                 只是不能當成現在的。 */}
             {stale && <span className="tag warn">舊資料</span>}
@@ -218,15 +259,18 @@ function ScenarioCard({
                 「不是刷新失敗、也不是還沒分析過」，是第三種、刻意的
                 狀態——見下面失敗提示的互斥處理。 */}
             {row.expired && <span className="tag">已過期，不再刷新</span>}
-          </div>
+          </span>
 
-          {/* 最高／最低只在使用者真的填了才畫，兩端都空就不多佔一列。 */}
+          <span className="lib-cell lib-cell-updated">
+            {formatAnalyzedAt(row.latest_analyzed_at)}
+          </span>
+
+          {/* 最高／最低只在使用者真的填了才畫，附在整列下方——這個
+              資訊權重低於任何一個主欄位，不佔用固定欄位寬度。 */}
           {hasPriceRange(row) && (
-            <div className="compact-range">
-              <span>最低 {moneyOrDash(row.worst_price)}</span>
-              {" · "}
-              <span>最高 {moneyOrDash(row.best_price)}</span>
-            </div>
+            <span className="lib-cell lib-cell-range compact-range">
+              最低 {moneyOrDash(row.worst_price)} · 最高 {moneyOrDash(row.best_price)}
+            </span>
           )}
 
           <span className="sr-only">
@@ -240,7 +284,7 @@ function ScenarioCard({
         {/* #132：編輯入口排在垃圾桶旁。桌面帶 `title` 當 tooltip，
             視覺層級與封存同級——都不該高於劇本本身。 */}
         {!selectMode && (
-          <div className="compact-actions">
+          <div className="compact-actions lib-row-actions">
             <button
               className="icon-button"
               onClick={() => onEdit(row.id)}
@@ -303,11 +347,37 @@ function ScenarioCard({
   );
 }
 
+/** 表格頭列——欄位順序與資料列的 `.lib-cell-*` 一一對應（見
+ *  `styles.css` 的共用 `grid-template-columns`）。純顯示、`aria-hidden`
+ *  ——欄位標籤本身不是操作，畫面上的真正資訊在每一列各自的內容裡，
+ *  螢幕閱讀器逐列讀取即可理解每格代表什麼（沿用既有 `.compact-*`
+ *  卡片一路的作法：不強加一層 ARIA table 語意）。 */
+function LibTableHead() {
+  return (
+    <div className="lib-thead lib-row-tap" aria-hidden="true">
+      <span className="lib-cell lib-cell-check" />
+      <span className="lib-cell">標的</span>
+      <span className="lib-cell">方向</span>
+      <span className="lib-cell r">現價</span>
+      <span className="lib-cell r">目標價</span>
+      <span className="lib-cell">冠軍策略</span>
+      <span className="lib-cell r">劇本報酬</span>
+      <span className="lib-cell">淨成本走勢</span>
+      <span className="lib-cell">到期</span>
+      <span className="lib-cell">狀態</span>
+      <span className="lib-cell">更新時間</span>
+    </div>
+  );
+}
+
 export default function ScenarioList({
   rows,
   failures,
   updatingIds,
   now,
+  busy,
+  runSummary,
+  onRefresh,
   onArchive,
   onEdit,
   onRetry,
@@ -324,6 +394,12 @@ export default function ScenarioList({
    *  （成功或失敗）立刻從這裡移除。 */
   updatingIds: ReadonlySet<string>;
   now: Date;
+  /** OG-03（#320）：原本 `Toolbar.tsx` 的三個 prop 併入這裡——桌面
+   *  劇本庫頁首（標題／劇本數／篩選／刷新）現在是單一元件，不再是
+   *  兩個各自獨立渲染、各自維護一部分狀態的 chrome。 */
+  busy: boolean;
+  runSummary: string | null;
+  onRefresh: () => void;
   onArchive: (id: string) => void;
   onEdit: (id: string) => void;
   onRetry: (id: string) => void;
@@ -337,32 +413,84 @@ export default function ScenarioList({
   onCancelSelectMode: () => void;
   onConfirmBatchArchive: () => void;
 }) {
-  if (rows.length === 0) {
-    return <p className="caption">還沒有劇本，用下面的表單建立。</p>;
-  }
+  // OG-03（#320）：純前端篩選狀態，不打任何請求——`filterScenarios()`
+  // 只是在已載入的 `rows` 上再篩一層，`sortScenarios()` 既有排序邏輯
+  // 完全不受影響（篩選在排序之後套用，順序仍由收益率＋紅燈沉底決定）。
+  const [directionFilter, setDirectionFilter] = useState<DirectionFilter>("all");
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
+
   // T08／#196 P1：正在更新的劇本照樣參與排序（用它上一輪的
   // `best_return`），不再像舊版 `partitionByLock`（V4 跟進票／#136，
   // 已隨本票移除）那樣獨立排在後面——見 `./scenarios` 的
   // `sortScenarios` 說明。
   const sorted = sortScenarios(rows);
+  const filtered = filterScenarios(
+    sorted, failures, now, directionFilter, statusFilter);
+
   return (
-    <>
-      {/* 收益率口徑就寫在數字旁邊（V4／#52）。放進說明頁等於沒寫——
-          看數字的人不會為了一個百分比先去翻說明。TR6（#91）：批次選取
-          入口貼在同一列右側——需求方核准版面的位置。 */}
-      <div className="yield-note-row">
+    <div className="lib-page">
+      <div className="lib-header">
+        <div className="lib-header-row">
+          <h1 className="lib-title">劇本庫</h1>
+          <span className="caption">{rows.length} 個劇本</span>
+          <div className="lib-header-actions">
+            {!selectMode && (
+              <button
+                className="icon-button"
+                onClick={onEnterSelectMode}
+                title="選取要移入垃圾桶的劇本"
+                aria-label="選取要移入垃圾桶的劇本"
+              >
+                <TrashIcon />
+              </button>
+            )}
+            <button className="btn secondary" onClick={onRefresh} disabled={busy}>
+              {busy ? "刷新中……" : "重新整理"}
+            </button>
+          </div>
+        </div>
+
+        {rows.length > 0 && (
+          <div className="lib-filters">
+            <div className="seg" role="group" aria-label="依方向篩選">
+              {DIRECTION_FILTER_OPTIONS.map((opt) => (
+                <button
+                  key={opt.value}
+                  className={directionFilter === opt.value ? "on" : ""}
+                  onClick={() => setDirectionFilter(opt.value)}
+                >
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+            <div className="seg" role="group" aria-label="依狀態篩選">
+              {STATUS_FILTER_OPTIONS.map((opt) => (
+                <button
+                  key={opt.value}
+                  className={statusFilter === opt.value ? "on" : ""}
+                  onClick={() => setStatusFilter(opt.value)}
+                >
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* 收益率口徑就寫在數字旁邊（V4／#52）。放進說明頁等於沒寫——
+            看數字的人不會為了一個百分比先去翻說明。 */}
         <p className="caption">
           收益率以最差成交價計算（買腿 Ask − 賣腿 Bid）
         </p>
-        {!selectMode && (
-          <button
-            className="icon-button"
-            onClick={onEnterSelectMode}
-            title="選取要移入垃圾桶的劇本"
-            aria-label="選取要移入垃圾桶的劇本"
-          >
-            <TrashIcon />
-          </button>
+
+        {/* role="status"：螢幕閱讀器會唸出變化，而不是讓使用者自己不斷
+            回頭看畫面。進行中優先顯示「更新中」（不論是 Refresh Run 或
+            單一劇本刷新），跑完才換成上一輪的「N 成功／M 失敗」摘要——
+            兩者互斥，不會同時出現造成「這句話是現在還是剛才」的混淆。 */}
+        {busy ? (
+          <span className="caption progress" role="status">更新中……</span>
+        ) : runSummary && (
+          <span className="caption progress" role="status">{runSummary}</span>
         )}
       </div>
 
@@ -375,23 +503,30 @@ export default function ScenarioList({
         </div>
       )}
 
-      <ul className="compact-list">
-        {sorted.map((row) => (
-          <ScenarioCard
-            key={row.id}
-            row={row}
-            failure={failures[row.id]}
-            now={now}
-            updating={updatingIds.has(row.id)}
-            onArchive={onArchive}
-            onEdit={onEdit}
-            onRetry={onRetry}
-            selectMode={selectMode}
-            isChecked={selectedIds.has(row.id)}
-            onToggleSelect={onToggleSelect}
-          />
-        ))}
-      </ul>
+      {rows.length === 0 ? (
+        <p className="caption">還沒有劇本，用下面的表單建立。</p>
+      ) : (
+        <div className="lib-table">
+          <LibTableHead />
+          <ul className="compact-list lib-tbody">
+            {filtered.map((row) => (
+              <ScenarioCard
+                key={row.id}
+                row={row}
+                failure={failures[row.id]}
+                now={now}
+                updating={updatingIds.has(row.id)}
+                onArchive={onArchive}
+                onEdit={onEdit}
+                onRetry={onRetry}
+                selectMode={selectMode}
+                isChecked={selectedIds.has(row.id)}
+                onToggleSelect={onToggleSelect}
+              />
+            ))}
+          </ul>
+        </div>
+      )}
 
       {selectMode && (
         <div className="batch-action-bar">
@@ -405,6 +540,6 @@ export default function ScenarioList({
           </button>
         </div>
       )}
-    </>
+    </div>
   );
 }

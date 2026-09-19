@@ -1,4 +1,4 @@
-import { render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -29,6 +29,12 @@ function list(
     onEdit?: (id: string) => void;
     onRetry?: (id: string) => void;
     now?: Date;
+    // OG-03（#320）：`Toolbar.tsx` 已刪除，這三個 prop 併進
+    // `ScenarioList` 本身——頁首（標題／劇本數／篩選／刷新）不再是
+    // 兩個各自獨立元件。
+    busy?: boolean;
+    runSummary?: string | null;
+    onRefresh?: () => void;
     selectMode?: boolean;
     selectedIds?: ReadonlySet<string>;
     onToggleSelect?: (id: string) => void;
@@ -46,6 +52,9 @@ function list(
       onEdit={props.onEdit ?? vi.fn()}
       onRetry={props.onRetry ?? vi.fn()}
       now={props.now ?? NOW}
+      busy={props.busy ?? false}
+      runSummary={props.runSummary ?? null}
+      onRefresh={props.onRefresh ?? vi.fn()}
       selectMode={props.selectMode ?? false}
       selectedIds={props.selectedIds ?? new Set()}
       onToggleSelect={props.onToggleSelect ?? vi.fn()}
@@ -76,10 +85,15 @@ describe("劇本清單", () => {
       row({ id: "c", symbol: "CCC", best_return: 2.0 }),
     ]);
 
-    const symbols = screen.getAllByRole("listitem")
-      .map((li) => li.querySelector(".compact-symbol")!.textContent);
+    const items = screen.getAllByRole("listitem");
+    const symbols = items.map((li) => li.querySelector(".compact-symbol")!.textContent);
     expect(symbols).toEqual(["CCC", "AAA", "BBB"]);
-    expect(screen.getByText("—")).toBeInTheDocument();
+    // OG-03（#320）：「淨成本走勢」欄本票起固定顯示「—」佔位
+    // （OG-04／#323 才接上真實序列），每一列都會有這個字，
+    // `getByText` 因此不再唯一，範圍限定回沒跑過的那張卡（BBB）。
+    const bbb = items.find(
+      (li) => li.querySelector(".compact-symbol")!.textContent === "BBB")!;
+    expect(within(bbb).getAllByText("—").length).toBeGreaterThanOrEqual(1);
   });
 
   it("沒跑過時資料時間說「尚未分析」，不留白也不顯示舊時間", () => {
@@ -386,19 +400,26 @@ describe("收益率口徑（V4／#52）", () => {
 });
 
 describe("資料新鮮度提示（V4／#52）", () => {
+  // OG-03（#320）：篩選列新增一顆文字同為「舊資料」的狀態 chip
+  // （`STATUS_FILTER_OPTIONS`），`screen.getByText("舊資料")` 現在會
+  // 連篩選 chip 一起撈到而不唯一，這裡的斷言範圍限定回卡片本身——
+  // 每個測試只渲染一張卡，`getByRole("listitem")` 精準指到它。
   it("久未刷新的卡片標出來，不讓舊數字看起來像現在的", () => {
     list([row({ latest_analyzed_at: "2026-08-01T09:30:00+00:00" })]);
-    expect(screen.getByText("舊資料")).toBeInTheDocument();
+    expect(within(screen.getByRole("listitem")).getByText("舊資料"))
+      .toBeInTheDocument();
   });
 
   it("剛刷新過的卡片沒有提示", () => {
     list([row({ latest_analyzed_at: "2026-08-04T09:30:00+00:00" })]);
-    expect(screen.queryByText("舊資料")).not.toBeInTheDocument();
+    expect(within(screen.getByRole("listitem")).queryByText("舊資料"))
+      .not.toBeInTheDocument();
   });
 
   it("尚未分析不標「舊資料」——卡片已經說了尚未分析", () => {
     list([row({ latest_analyzed_at: null, best_return: null })]);
-    expect(screen.queryByText("舊資料")).not.toBeInTheDocument();
+    expect(within(screen.getByRole("listitem")).queryByText("舊資料"))
+      .not.toBeInTheDocument();
   });
 });
 
@@ -473,9 +494,11 @@ describe("刷新失敗的分層與重試入口（V4／#52）", () => {
     });
 
     // 失敗不該讓已經算出來的東西消失——那是使用者目前唯一有的資訊，
-    // 只要旁邊誠實標明它是舊的。
+    // 只要旁邊誠實標明它是舊的。範圍限定回卡片本身，理由同上（狀態
+    // 篩選 chip 也叫「舊資料」）。
     expect(screen.getByText("123.4%")).toBeInTheDocument();
-    expect(screen.getByText("舊資料")).toBeInTheDocument();
+    expect(within(screen.getByRole("listitem")).getByText("舊資料"))
+      .toBeInTheDocument();
   });
 });
 
@@ -673,5 +696,118 @@ describe("劇本庫的概覽欄位（QA 修正，桌面版與手機版同一套�
     list([row({ best_price: null, worst_price: null })]);
     expect(screen.getByRole("listitem").querySelector(".compact-range"))
       .toBeNull();
+  });
+});
+
+describe("Logo 404 留白（OG-03／#320，row 層級覆蓋——與手機版 " +
+        "CompactScenarioList 同一套 Logo.dev fallback=404 契約，" +
+        "StockLogo.test.tsx 只驗過元件本身孤立情境，AC 要求桌面表格列" +
+        "上也要覆蓋到）", () => {
+  it("Logo.dev 404 後 <img> 整個從列上消失，只留代號文字，不畫任何" +
+     "替代圖形", () => {
+    const { container } = list([row()]);
+    const card = screen.getByRole("listitem");
+    const img = container.querySelector("img")!;
+    expect(img).toBeInTheDocument();
+
+    fireEvent.error(img);
+
+    expect(container.querySelector("img")).not.toBeInTheDocument();
+    expect(within(card).getByText("TLT")).toBeInTheDocument();
+  });
+});
+
+describe("方向與狀態篩選 chip（OG-03／#320）：純前端過濾，不打任何請求" +
+        "——本檔案沒有任何 fetch 假體可注入，元件仍然渲染成功這件事" +
+        "本身就證明篩選不依賴任何網路請求", () => {
+  it("預設『全部』顯示全部劇本", () => {
+    list([row({ id: "a", symbol: "AAA" }), row({ id: "b", symbol: "BBB" })]);
+    expect(screen.getAllByRole("listitem")).toHaveLength(2);
+  });
+
+  it("點方向 chip 只留下符合的劇本，且沒有任何劇本符合時給明確指引", async () => {
+    list([
+      row({ id: "a", symbol: "AAA", spot: 100, target_price: 110 }), // 看漲
+      row({ id: "b", symbol: "BBB", spot: 100, target_price: 90 }),  // 看跌
+    ]);
+
+    await userEvent.click(
+      within(screen.getByRole("group", { name: "依方向篩選" }))
+        .getByRole("button", { name: "看漲" }));
+
+    expect(screen.getByText("AAA")).toBeInTheDocument();
+    expect(screen.queryByText("BBB")).not.toBeInTheDocument();
+  });
+
+  it("點狀態 chip 只留下符合的劇本", async () => {
+    list([
+      row({ id: "a", symbol: "AAA", expired: true }),
+      row({ id: "b", symbol: "BBB", expired: false,
+            latest_analyzed_at: "2026-08-04T09:30:00+00:00" }),
+    ]);
+
+    await userEvent.click(
+      within(screen.getByRole("group", { name: "依狀態篩選" }))
+        .getByRole("button", { name: "已過期" }));
+
+    expect(screen.getByText("AAA")).toBeInTheDocument();
+    expect(screen.queryByText("BBB")).not.toBeInTheDocument();
+  });
+
+  it("兩組篩選各自獨立、不互相清空對方目前選中的值", async () => {
+    list([row({ id: "a", symbol: "AAA", spot: 100, target_price: 110 })]);
+
+    const directionGroup = screen.getByRole("group", { name: "依方向篩選" });
+    const statusGroup = screen.getByRole("group", { name: "依狀態篩選" });
+
+    await userEvent.click(
+      within(directionGroup).getByRole("button", { name: "看漲" }));
+    await userEvent.click(
+      within(statusGroup).getByRole("button", { name: "正常" }));
+
+    expect(within(directionGroup).getByRole("button", { name: "看漲" }))
+      .toHaveClass("on");
+    expect(within(statusGroup).getByRole("button", { name: "正常" }))
+      .toHaveClass("on");
+  });
+
+  it("篩選導致清單為空時仍看得到劇本庫頁首（不是整頁消失）", async () => {
+    list([row({ id: "a", symbol: "AAA", spot: 100, target_price: 110 })]);
+
+    await userEvent.click(
+      within(screen.getByRole("group", { name: "依方向篩選" }))
+        .getByRole("button", { name: "看跌" }));
+
+    expect(screen.queryByRole("listitem")).not.toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "劇本庫" })).toBeInTheDocument();
+  });
+});
+
+describe("頁首刷新入口（OG-03／#320，併入原本 Toolbar.tsx 的三個 prop）", () => {
+  it("busy 時按鈕停用並顯示「刷新中……」，點擊呼叫 onRefresh", async () => {
+    const onRefresh = vi.fn();
+    list([row()], { busy: true, onRefresh });
+
+    const btn = screen.getByRole("button", { name: "刷新中……" });
+    expect(btn).toBeDisabled();
+  });
+
+  it("非 busy 時顯示「重新整理」且可點擊", async () => {
+    const onRefresh = vi.fn();
+    list([row()], { onRefresh });
+
+    await userEvent.click(screen.getByRole("button", { name: "重新整理" }));
+    expect(onRefresh).toHaveBeenCalledTimes(1);
+  });
+
+  it("runSummary 存在且非 busy 時顯示上一輪摘要", () => {
+    list([row()], { runSummary: "2 成功／1 失敗" });
+    expect(screen.getByText("2 成功／1 失敗")).toBeInTheDocument();
+  });
+
+  it("busy 時就算有 runSummary 也優先顯示「更新中……」，不會兩句同時出現", () => {
+    list([row()], { busy: true, runSummary: "2 成功／1 失敗" });
+    expect(screen.getByText("更新中……")).toBeInTheDocument();
+    expect(screen.queryByText("2 成功／1 失敗")).not.toBeInTheDocument();
   });
 });
