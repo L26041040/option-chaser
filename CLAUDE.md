@@ -27,7 +27,7 @@ block 裡，不能切成好幾個 code block、也不能中間插普通文字把
 `［回報#001］spec #137 拆票完成`）。編號是**累計總數**，不因換
 session、換分支、換主題而歸零——目前最新編號記在這裡：
 
-> 目前次序：092（下一份回報用 093）
+> 目前次序：093（下一份回報用 094）
 >
 > ⚠ 084 跳號說明：本檔案自己記的序號原本是「083（下一份回報用
 > 084）」，但 OPTION-PUBLIC-BETA-CI-REPAIR-010 這輪工單裡大哥直接
@@ -10389,6 +10389,52 @@ FMP `images.financialmodelingprep.com/symbol/{SYM}.png` 真實品牌圖
 production CSS 值，版面結構（64px 頂欄、Markets 表、trade 三欄、
 手機底部 tab）依老弟對 Binance 現行產品的理解重建。**下一步**：等
 Owner 看 artifact 裁示方向；本輪未 implementation、未動 #269。
+
+### OPTION-CHASER-UI-TICKETS-OG——Obsidian Gold 拆票完成
+（2026-09-19，`/to-tickets`，回報#093；13 張 issue 已發佈，未施工、未開 PR）
+
+Owner 對 UI-DESIGN-003「Obsidian Gold」artifact
+（`https://claude.ai/artifact/28tqiXF2o9UyQK6vDUXf5q`）明確表示滿意，
+指示直接開成施工票。拆票前 AskUserQuestion 一輪定案四題：設計基準＝
+**Obsidian Gold**（非 Graphite & Amber）；整合分支＝**續用
+`ui-redesign/graphite-amber`**（複用 StockLogo／TopBar／BottomNav 與
+desktop-shell 高度修法，token／字體／版面整組換掉）；**建母票**＋
+native sub-issue；產品語意題 Q3–Q9 全部照老弟建議——桌面側欄
+master/detail 退場改頁面級導覽（hash 路由不變）、詳細頁中央 Heatmap
+跟隨排名選取列（預設冠軍）而 headline 固定冠軍、`%／$` 切換本輪不做、
+只顯示 ticker 不顯示公司全名、允許兩項純加法 backend（劇本清單淨成本
+sparkline 摘要欄位；唯讀使用量摘要端點）、12 張粒度與 blocking edges
+維持。
+
+**母票＝#316**，12 張 sub-issue 全數 `ready-for-agent`：
+
+| 票 | Issue | 一句話 | Blocked by |
+|---|---|---|---|
+| OG-01 | #317 | Foundations：token 深＋淺、Geist／Noto Sans TC、共用 primitives、StockLogo 404 留白 | 無（frontier） |
+| OG-02 | #318 | 桌面 chrome：64px 頂欄、全寬頁面、側欄退場、建立抽屜 | #317 |
+| OG-09 | #319 | 手機劇本庫＋52px 頂欄＋64px 底部四 tab | #317 |
+| OG-03 | #320 | 桌面劇本庫 Markets 表＋篩選＋批次＋垃圾桶換皮（sparkline 欄先「—」） | #318 |
+| OG-06 | #321 | 桌面詳細頁（一）：三欄外殼、身分列、左欄 Family／到期日／排名、中央 Heatmap 跟隨選取列＋三價位 | #318 |
+| OG-11 | #322 | 設定頁 subnav／手機設定登入／Super Admin 後台（stats、owners 表、audit、輸入 owner id 確認） | #318, #319 |
+| OG-04 | #323 | 淨成本 sparkline 欄（narrow history 對冠軍 key 的純加法摘要） | #320 |
+| OG-05 | #324 | 使用量摘要唯讀端點＋stats strip（Super Admin 專屬 vendor 預算／事故方塊） | #320 |
+| OG-07 | #325 | 桌面詳細頁（二）：右欄四 tab＋底部四 tab | #321 |
+| OG-08 | #326 | Long Call／Put＋Historical IV 面板（role ≥ Super User、單腿） | #321 |
+| OG-10 | #327 | 手機詳細頁整頁捲動 | #321, #319 |
+| OG-12 | #328 | 淺色＋響應式＋artifact 全面視覺比對＋全套回歸＋真機驗收清單 | 全部 11 張 |
+
+Frontier：OG-01 唯一起點 → OG-02／OG-09 平行 → OG-03／OG-06／OG-11
+平行。每張票 body 皆含共同紅線：visual redesign 不改產品語意（劇本
+建立／擁有權／三個 refresh trigger／候選生成排名／Family 行為／
+Historical IV 引擎與退場範圍／三層權限矩陣／quota・throttle・fuse／
+credential／封存還原刪除／PB-03／API 契約）、Logo 只走 Logo.dev
+`fallback=404` 不用任何替代圖示、不觸碰 #269／SCALE-18、不動
+valuation／ranking、不要密碼明文。測試接縫沿用既有七個。全部子票做完
+才開 PR（`ui-redesign/graphite-amber` → `master`）。
+
+**下一步**：等 Owner cue `/implement`，從 #317 起。本輪未寫任何
+production code（`git diff` 對 `src/`／`option_chaser/`／`api_app/`
+零命中）。
 
 ### 施工依據
 
