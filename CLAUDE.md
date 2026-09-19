@@ -10508,9 +10508,93 @@ call（`.btn.ghost`／`.sm`／`.xs` 屬預先鋪路、既有裁決維持不變�
 ／`src/StockLogo.tsx` 三個既有檔案＋三個新測試檔，`option_chaser/`／
 `api_app/` 零命中，未觸碰 #269／SCALE-18。
 
-**下一步**：OG-02（#318，桌面 chrome：64px 頂欄、全寬頁面、側欄
-退場、建立抽屜）。依 Owner 指示逐票施工、每票做完各自回報，
-非批次自主執行。
+**下一步（本段已由下方 OG-CONTINUE-002 取代，見下一節）**：原定
+OG-02 逐票各自回報的模式，已由 Owner 新裁示的全自主批次執行取代。
+
+### OG-CONTINUE-002——Obsidian Gold 剩餘子票自主施工中
+（2026-09-19 起，Owner 明確裁示：從 OG-02／#318 起，依 GitHub issue
+真實依賴前沿自主完成剩餘全部子票直到 OG-12／#328，**不需要每張票
+完成後等待 Owner 裁示**，取代 OG-01 收尾時「逐票施工、每票做完各自
+回報」的舊模式。硬性要求：每張票獨立完成→tests→`/code-review`→
+修正→commit→push→更新 issue／CLAUDE.md，才進下一張；`https://
+claude.ai/artifact/28tqiXF2o9UyQK6vDUXf5q` 為 canonical visual
+spec，不重新設計、不重新拆票；不碰 #269／SCALE-18；不改票面禁止
+變更的產品語意；OG-10／#327 須等 OG-07／#325 與 OG-08／#326 都完成
+才可施工；只在真正 HITL blocker 才停；全部完成才一次回報，不逐票
+發回報）。
+
+**已完成**：
+
+- **OG-02**［#318］桌面 chrome：64px 頂欄、全寬頁面外殼、側欄
+  master/detail 退場、建立劇本抽屜保留（commits `ab786ec`＋跟進
+  `bd393a4`）：退役 #72／#75 建立的桌面固定兩欄側欄（`.desktop-
+  shell > .workspace > (.library-pane | .detail-pane)` CSS Grid，
+  各自內捲、`height:100dvh`），改成 Binance 式 page-level 導覽——
+  單一自然捲動的全寬頁面掛在 `position:sticky` 的 64px `TopBar` 之下。
+  新增 `src/TopBar.tsx`：品牌區塊、`nav`（劇本庫／垃圾桶／設定三個
+  連結，沿用既有 `trashHash()`／`settingsHash()`，URL 形狀逐位元不變）
+  、角色指示（讀 `getAuthStatusCached()`，非 Normal User 才顯示）、
+  「＋ 建立劇本」按鈕（`aria-expanded`／`aria-controls` 接抽屜）。
+  `App.tsx` 依 hash 分派出單一 `page` 變數（垃圾桶／設定／詳細頁／
+  劇本庫四選一），建立劇本抽屜（`.create-drawer`＋遮罩）獨立於
+  `page` 之外、疊在整個殼上，不因切換頁面而跟著卸載——維持 #75「面板
+  一律掛著、只切換可見度」的既有裁示，只是從「掛在側欄旁」改成
+  「掛在整個殼上」。手機（<1100px）路徑結構上零改動、後端／API 契約
+  零改動（`git diff --stat -- option_chaser/ api_app/` 全程為空）。
+
+  **連帶死碼清理**（`Toolbar.tsx`／`ScenarioList.tsx`）：`Toolbar` 的
+  `showCreateButton` 判別聯合型別（#75 為桌面工具列建的變體）兩個呼叫
+  端從此永遠傳 `false`，整組（含 `onToggleCreate`／`createOpen`／
+  `createPanelId` 三個相關 prop）已無存在理由，`/code-review` 抓到後
+  移除；`ScenarioList` 的 `selectedId`／`selected`／`aria-current`
+  （#72 側欄同時顯示清單與詳細頁時的「目前選中」高亮，side-by-side
+  顯示退場後結構上不可能再有意義）一併移除。
+
+  **測試**：~30 條既有測試（10 Vitest＋21 Playwright，含重疊）因結構
+  性改版而斷，逐一分類為「純換 selector」（機械修正）或「整個行為
+  前提被本票退役」（比照專案既有紀律，移除並附理由註解、不靜默削弱
+  覆蓋率，例如 `App.test.tsx` 的側欄同時選取高亮測試——側欄本身不在
+  了）。`App.test.tsx` 新增三條覆蓋新 page-nav 模型的核心測試（全頁
+  導覽點擊流、返回連結導覽、線性瀏覽器上一頁／下一頁）。施工中抓到
+  一個真的 Playwright 陷阱並修正：`goBack()` 後緊接著導覽到新網址會
+  截斷 forward-history stack，讓後續 `goForward()` 回不到原本該回去
+  的那個 entry——測試改寫成嚴格線性（不在打算之後 `goForward()` 的
+  entry 上再導覽新網址），避免假性失敗。另抓到 `Locator` 沒有 DOM 的
+  `.closest()` 方法（誤用 jQuery 直覺），改建明確 scoped locator
+  （`page.locator(".topbar").locator("nav")`，`/code-review` 後
+  抽成共用 `topbarNav()` helper 消除三處重複）；以及一個 strict-mode
+  違規（`getByRole("link",{name:"劇本庫"})` 同時命中 TopBar 導覽連結
+  與 `ScenarioDetail`／`Settings`／`TrashView` 各自的返回連結「‹ 劇本庫」
+  子字串），改為 scope 進 nav locator。
+
+  `/code-review`（Standards＋Spec 兩軸平行子代理）：Spec 軸零缺漏、
+  零 scope creep，全部 AC 達成；Standards 軸皆為 judgement call、無
+  hard violation，已全數採納修正——上述 `showCreateButton`／
+  `selectedId` 死碼清除；`TopBar` 三個建立相關 prop（`onOpenCreate`／
+  `createOpen`／`createPanelId`）從選填收緊為必填（唯一呼叫端永遠
+  三個一起傳，比照 HIVT-05／`CardSkeleton` 既有先例）；孤兒 CSS
+  `.sidebar-settings`（~16 行，側欄退場後死碼）清除；`BetaNotice.tsx`
+  ／`TrashView.tsx`／`styles.css` 內三處提及已退役側欄機制的過期
+  註解修正；上述三處重複的 locator pattern 抽成共用 helper。修正
+  `BetaNotice.tsx` 過期註解時，額外發現並修正一個文件與行為不一致
+  的既有落差——舊註解聲稱 Beta 說明「常駐，不隨選中劇本／設定／垃圾桶
+  切換而消失」，但本票實作本身早已是條件式顯示（`!showTrash &&
+  !showSettings && !detailProps`，比照手機版「只在真正的首頁畫面
+  出現一次」的既有裁示）；已改寫註解並新增一條負向可見度測試正式鎖定
+  這個先前無測試覆蓋的既有意圖。
+
+  **全套驗證**（後續 re-run 於本輪整理 CLAUDE.md 時再次確認）：
+  `tsc --noEmit` 乾淨；Vitest **914 passed**；`vite build` 成功；
+  Playwright 連兩輪皆 **131 passed**（iPhone 83＋Desktop 48，穩定
+  無 flake）。`git diff --stat` 確認 OG-02 兩個 commit 只命中
+  `App.tsx`／`TopBar.tsx`／`Toolbar.tsx`／`ScenarioList.tsx`／
+  `BetaNotice.tsx`／`TrashView.tsx`／`styles.css`／`App.test.tsx`／
+  `e2e/desktop.spec.ts` 九個既有檔案，`option_chaser/`／`api_app/`
+  零命中，未觸碰 #269／SCALE-18。GitHub issue #318 已關閉
+  （`state_reason: completed`，完整驗收留言見 issue）。
+
+**下一步**：OG-09（#319，手機劇本庫＋52px 頂欄＋64px 底部四 tab，
+`Blocked by #317` 已滿足），依 OG-CONTINUE-002 自主連續施工。
 
 ### 施工依據
 
