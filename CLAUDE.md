@@ -9,7 +9,7 @@
 5. Do not expose, request, log, copy, or test real plaintext passwords/secrets.
 6. Do not take or paste screenshots unless the Owner explicitly asks. Browser verification is allowed when required by a ticket, but keep screenshot-heavy work to explicit visual-acceptance stages.
 7. Session reports: Traditional Chinese with English technical terms kept in English. Put substantive report content in one complete code block. Number reports as `［回報#NNN］`.
-8. Current report sequence: **095 used; next report is 096**.
+8. Current report sequence: **096 used; next report is 097**.
 9. **Do not append detailed ticket history to this file.** Keep this file short. After a ticket, update only the active checkpoint below in 1–2 lines. Detailed evidence belongs in GitHub issues, commits, and code review comments.
 10. `CLAUDE_HISTORY.md` is the archived legacy project journal. **Do not read it by default.** Read it only when a specific historical question cannot be answered from the current issue/commit/docs.
 
@@ -30,10 +30,10 @@ Implement the approved **Obsidian Gold** Binance-inspired visual design without 
 - **OG-01 #317** — Foundations: Obsidian Gold tokens, Geist + Noto Sans TC, shared primitives, StockLogo contract.
 - **OG-02 #318** — Desktop chrome: 64px top bar, page-level navigation, full-width desktop shell.
 - **OG-09 #319** — Mobile scenario library: 52px mobile top bar, dense rows, persistent bottom navigation.
+- **OG-03 #320** — Desktop Markets-style scenario table + trash-page table skin (code-review follow-up) + required-move sub-text.
 
 ### Current frontier
 These are unblocked and may be implemented in dependency order:
-- **OG-03 #320** — Desktop Markets-style scenario table.
 - **OG-06 #321** — Desktop detail page part I: 3-column shell, identity row, family/expiry/ranking, Heatmap selection.
 - **OG-11 #322** — Settings / login / Super Admin UI.
 
