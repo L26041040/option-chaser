@@ -24,6 +24,9 @@ import StockLogo from "./StockLogo";
 import {
   cardFailureHeadline,
   cardFailureVariant,
+  deriveDirectionTag,
+  directionTagClass,
+  directionTagLabel,
   failureLabel,
   formatAnalyzedAt,
   formatDaysLeft,
@@ -80,6 +83,9 @@ function CompactScenarioCard({
   const who = `${row.symbol} ${row.target_month}`;
   const signal = scenarioSignal(row, failure);
   const rep = row.representative_candidate;
+  // OG-09（#319）：方向標籤——只是把既有 T08／#225 衍生方向語意畫出來，
+  // 尚未分析過（`spot === null`）時回傳 `null`、不畫任何標籤。
+  const direction = deriveDirectionTag(row.spot, row.target_price);
   // REPAIR-05（#242，OD-03）：刷新失敗的兩態——`updating` 與 `failure`
   // 是兩個獨立 state，`cardFailureVariant` 已經把兩者互斥的判準收進
   // 純函式，這裡只讀結果決定要不要反灰、顯示哪一句頭條。
@@ -144,6 +150,14 @@ function CompactScenarioCard({
                 「20 手機頂欄」那一級，視覺上仍看得出是真實 Logo。 */}
             <StockLogo symbol={row.symbol} size="s" />
             <span className="compact-symbol">{row.symbol}</span>
+            {/* OG-09（#319）：方向標籤——貼齊 artifact Mobile-Library
+                板第一行「ticker＋方向 tag」的順序，沿用既有 `.tag.up`／
+                `.tag.down`／`.tag.flat`（OG-01 primitives）。 */}
+            {direction && (
+              <span className={`tag ${directionTagClass(direction)}`}>
+                {directionTagLabel(direction)}
+              </span>
+            )}
             {/* QA 修正：現價擠進同一行的目標價前面（`現價 → 目標`），
                 不多佔一列高度——沒有現價當基準，一排目標價只是孤立
                 數字，劇本庫就失去概覽的作用。 */}
@@ -174,7 +188,13 @@ function CompactScenarioCard({
             >
               {formatReturn(row.best_return)}
             </span>
-            <span className="compact-strategy">
+            {/* OG-09（#319）：視覺上比照 artifact 的「腿位 pill」
+                語彙（`.legs` 底色＋圓角），文字內容逐字沿用既有
+                `formatRepresentativeSummary()`——不拆成逐腿分色
+                `<span>`：CLOSEOUT-002 已明文「卡片寬高與版面不得
+                變動」，逐腿拆分需要換一套不同的自動換行風險評估，
+                留給未來若真有需要再開票，這裡只做安全的視覺加法。 */}
+            <span className="compact-strategy compact-strategy-pill">
               {formatRepresentativeSummary(rep)}
             </span>
           </div>

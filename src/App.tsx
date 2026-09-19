@@ -9,9 +9,12 @@
  *   master/detail 版面（已退場，`.library-pane`／`.detail-pane`
  *   結構性移除）。劇本庫頁面用 `ScenarioList`（#108 起改用與手機版
  *   同一套 compact row 密度）。
- * - 手機（#81／#82）：Dashboard 佔位 → 就地展開的新增劇本入口 → 高密度
- *   劇本清單（`CompactScenarioList`，三層 compact row，依最新收益率
- *   排序、紅燈沉底），點卡片整頁替換成詳細頁。
+ * - 手機（#81／#82；頂欄 OG-09／#319 起換裝）：52px 頂欄
+ *   （`MobileTopBar`：品牌＋角色徽章＋刷新）→ Beta 說明 → Dashboard
+ *   佔位 → 就地展開的新增劇本入口 → 高密度劇本清單
+ *   （`CompactScenarioList`，三層 compact row，依最新收益率排序、
+ *   紅燈沉底），點卡片整頁替換成詳細頁。垃圾桶／設定的導覽入口只在
+ *   底部 `BottomNav`（既有），`MobileTopBar` 不重複放一份。
  *
  * 兩套清單元件刻意分開、不共用同一個渲染路徑：`ScenarioList.tsx`
  * 只服務桌面、`CompactScenarioList.tsx` 只服務手機——這樣手機版的密度
@@ -50,6 +53,7 @@ import CreateForm, {
 } from "./CreateForm";
 import Dashboard from "./Dashboard";
 import Footer from "./Footer";
+import MobileTopBar from "./MobileTopBar";
 import PrivacyPage from "./PrivacyPage";
 import ScenarioDetail from "./ScenarioDetail";
 import ScenarioList from "./ScenarioList";
@@ -76,8 +80,6 @@ import {
   isSettingsHash,
   isTrashHash,
   scenarioIdFromHash,
-  settingsHash,
-  trashHash,
 } from "./route";
 import { formatRunSummary, scenarioRowDomId } from "./scenarios";
 
@@ -667,21 +669,17 @@ export default function App() {
     // `library`）是兩個獨立的 JSX 分支，不共用同一段標記——這樣手機版
     // 的版面決定不會意外牽動桌面版現狀（#72／#75，spec #77 硬紅線一）。
     //
-    // 工具列不顯示建立入口：入口已經在下面的 `CreateEntry`，兩個地方
-    // 各放一次只會讓人不確定該點哪個（OG-02／#318 起 `Toolbar` 已無
-    // 建立按鈕可傳，這件事現在是結構性保證，不再需要一個 prop 來關）。
+    // OG-09（#319）：手機頂欄換成 52px `MobileTopBar`——垃圾桶／設定
+    // 入口不再重複顯示在這裡，兩者都已經在下面的 `BottomNav` 有一份
+    // （UI-IMPL-002／#092 既有），建立入口同樣已經在下面的
+    // `CreateEntry`。這裡只剩品牌、角色徽章、刷新（時機三）。
     return (
       <div className="screen">
-        <Toolbar
+        <MobileTopBar
           count={rows.length}
           busy={refreshBusy}
           runSummary={runSummary}
-          // 時機三：功能列刷新鈕
           onRefresh={() => void reloadAndRefresh(true)}
-          onOpenTrash={() => { window.location.hash = trashHash(); }}
-          // #124：手機版的設定入口＝工作區右上角的齒輪。桌面版不傳這個
-          // 回呼，它的入口在 sidebar 最下方。
-          onOpenSettings={() => { window.location.hash = settingsHash(); }}
         />
 
         {error && (

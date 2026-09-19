@@ -93,6 +93,37 @@ export function formatReturn(value: number | null): string {
 }
 
 /**
+ * 劇本方向衍生標籤（OG-09／#319）：純顯示用途，鏡射後端
+ * `derive_direction()`（`option_chaser/models.py`，T08／#225 既有
+ * 語意——目標價相對現價、無容忍帶）同一條規則，不落盤、不回寫、不
+ * 參與任何排序或選取邏輯，只是把「這個劇本現在算看漲還是看跌」畫在
+ * 清單卡片上。`spot`（`ScenarioSummary.spot`）為 `null`（劇本尚未
+ * 成功分析過）時方向無從判斷，回傳 `null`——呼叫端不畫任何標籤，跟
+ * 卡片其餘欄位「尚未分析顯示『—』或整行不畫」的既有慣例一致。
+ */
+export type DirectionTag = "bullish" | "bearish" | "flat";
+
+export function deriveDirectionTag(
+  spot: number | null, target: number,
+): DirectionTag | null {
+  if (spot === null) return null;
+  if (target > spot) return "bullish";
+  if (target < spot) return "bearish";
+  return "flat";
+}
+
+/** 方向標籤的中文字＋對應既有 `.tag` 色彩修飾類（OG-01 既有
+ *  primitives：`.tag.up`／`.tag.down`／`.tag.flat`，跟詳細頁摘要卡
+ *  同一套視覺語言）。 */
+export function directionTagLabel(tag: DirectionTag): string {
+  return tag === "bullish" ? "看漲" : tag === "bearish" ? "看跌" : "持平";
+}
+
+export function directionTagClass(tag: DirectionTag): string {
+  return tag === "bullish" ? "up" : tag === "bearish" ? "down" : "flat";
+}
+
+/**
  * 距目標月到期日還有幾天。已經過了就說過期幾天——這種劇本還留在清單上
  * 是有意義的資訊，顯示成「0 天」會讓它看起來還有救。
  */

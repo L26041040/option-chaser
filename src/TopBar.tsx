@@ -1,9 +1,11 @@
 /**
  * 桌面版頂欄（UI-IMPL-002／#092，Main 板 `.topbar`）：品牌標記＋頂層
  * 導覽（劇本庫／垃圾桶／設定）＋目前角色徽章＋建立劇本入口。**桌面
- * 專屬**——手機版對應的導覽是畫面底部的 `BottomNav`，兩者是設計稿
- * 本來就分開的兩種 chrome（`.topbar` vs `.mtop`＋`.mtabs`），不是同一個
- * 元件的兩種顯示模式。
+ * 專屬**——手機版對應的導覽是 52px `MobileTopBar`＋畫面底部的
+ * `BottomNav`（OG-09／#319），兩者是設計稿本來就分開的兩種 chrome
+ * （`.topbar` vs `.mnav`＋`.mtabs`），不是同一個元件的兩種顯示模式；
+ * `BrandMark`（`./BrandMark`）與角色查詢（`./useAuthRole`）是兩者
+ * 共用的部分，已抽成獨立檔案。
  *
  * OG-02（#318）起是桌面版**唯一**的導覽與建立劇本入口——原本疊在下面
  * 的 `Toolbar`（劇本庫頁面自己的釘選列）已不再重複顯示垃圾桶／建立
@@ -11,39 +13,9 @@
  * 徽章讀的是既有 `getAuthStatusCached()`（`RoleLogin.tsx` 同一份快取），
  * 這裡純粹是多一個顯示消費端，不改變角色判斷或登入流程本身。
  */
-import { useEffect, useState } from "react";
-
-import { getAuthStatusCached } from "./fetchCache";
+import BrandMark from "./BrandMark";
 import { settingsHash, trashHash } from "./route";
-import { type Role } from "./superuser";
-
-const ROLE_LABELS: Record<Role, string> = {
-  normal: "Normal User",
-  superuser: "Super User",
-  superadmin: "Super Admin",
-};
-
-function BrandMark() {
-  return (
-    <svg
-      className="brand-mark"
-      width="22"
-      height="22"
-      viewBox="0 0 24 24"
-      fill="none"
-      aria-hidden="true"
-    >
-      <circle cx="12" cy="12" r="8.5" stroke="currentColor" strokeWidth="2" />
-      <circle cx="12" cy="12" r="2.6" fill="currentColor" />
-      <path
-        d="M12 2.5v3M21.5 12h-3M12 21.5v-3M2.5 12h3"
-        stroke="currentColor"
-        strokeWidth="2"
-        strokeLinecap="round"
-      />
-    </svg>
-  );
-}
+import { ROLE_LABELS, useAuthRole } from "./useAuthRole";
 
 export default function TopBar({
   active,
@@ -67,17 +39,7 @@ export default function TopBar({
    *  指向它。 */
   createPanelId: string;
 }) {
-  const [role, setRole] = useState<Role>("normal");
-
-  useEffect(() => {
-    let alive = true;
-    const { promise, release } = getAuthStatusCached();
-    promise.then((s) => alive && setRole(s.role)).catch(() => {});
-    return () => {
-      alive = false;
-      release();
-    };
-  }, []);
+  const role = useAuthRole();
 
   // 用 `<div>` 不用 `<header>`：既有 `Toolbar` 本身就是這個頁面唯一的
   // `<header>`（ARIA banner landmark），這裡是疊加的次要 chrome，不是

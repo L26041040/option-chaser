@@ -1173,6 +1173,15 @@ body {
   text-overflow: ellipsis;
 }
 
+/* OG-09（#319）：純視覺加法——貼近 artifact 的「腿位 pill」底色語彙，
+   文字內容與截斷行為完全沿用上面 `.compact-strategy` 既有規則，不動
+   卡片寬高（CLOSEOUT-002 明文紅線）。 */
+.compact-strategy-pill {
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--fill);
+}
+
 /* #108：跟 `.compact-target` 同一個理由——桌面版窄欄位下，「Exp 到期日
    ／距到期／資料時間」三段合併一行的原始字串常常裝不下，沒有這三條
    就會整段換行、把卡片撐高。裁成一行＋刪節號，比默默換行更符合「第三
@@ -3425,18 +3434,96 @@ label.lb {
   margin-bottom: 6px;
 }
 
-/* ---------- 手機頂欄（`.mnav`，52px）——與桌面 `.topbar`（64px）、
-   底部 `.mtabs`（既有）是三個並列但互斥的導覽 chrome，這裡先建好
-   類名供 OG-09 接線。 ---------- */
+/* ---------- 手機頂欄（`.mnav`，52px，OG-09／#319 接線）——與桌面
+   `.topbar`（64px）、底部 `.mtabs`（既有）是三個並列但互斥的導覽
+   chrome。`position: sticky` 沿用退場前 `.toolbar` 既有的「釘在頂端」
+   行為，不必額外補等高 padding（sticky 留在文件流裡）。 ---------- */
 
 .mnav {
+  position: sticky;
+  top: 0;
+  z-index: 10;
   height: 52px;
+  padding-top: env(safe-area-inset-top, 0px);
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 0 16px;
+  padding-left: 16px;
+  padding-right: 16px;
   background: var(--panel);
   border-bottom: 1px solid var(--line);
+}
+
+.mnav .brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+  font-size: 15px;
+  letter-spacing: 0.01em;
+  color: var(--label);
+  white-space: nowrap;
+}
+
+.mnav .brand-mark {
+  color: var(--accent);
+}
+
+.mnav .spacer {
+  flex: 1;
+}
+
+/* 刷新按鈕——`.iconbtn`（36×36 純圖示）放不下「重新整理」／「刷新
+   中……」這種需要保留可及文字的按鈕（既有 e2e／Vitest 直接鎖住這兩句
+   精確文字，見 `MobileTopBar.tsx`），改用貼近 `.pill` 但更緊湊的
+   尺寸，貼齊 52px 頂欄的高度預算。 */
+.mnav-refresh {
+  appearance: none;
+  border: 0;
+  border-radius: var(--radius-s);
+  background: var(--fill);
+  color: var(--label);
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 30px;
+  padding: 0 10px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.mnav-refresh:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.mnav-refresh:active:not(:disabled) {
+  opacity: 0.6;
+}
+
+/* 「N 個劇本」＋刷新狀態（`role="status"`）——退場前的 `.toolbar`
+   第二列同一份標記與語意，只是不再套在 iOS Large Title 版式的
+   `.toolbar` 容器裡，改成緊接在 `.mnav` 下方的細狀態列。 */
+.mnav-status-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 24px;
+  padding: 4px 16px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--line);
+}
+
+/* 桌面寬度不顯示手機頂欄——桌面版導覽在 `TopBar`。 */
+@media (min-width: 1100px) {
+  .mnav,
+  .mnav-status-row {
+    display: none;
+  }
 }
 
 /* ---------- heatmap 格 ---------- */

@@ -1,4 +1,4 @@
-import { act, render, screen, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -582,5 +582,56 @@ describe("劇本庫的概覽欄位（QA 修正）", () => {
     list([row({ best_price: null, worst_price: null })]);
     expect(screen.getByRole("listitem").querySelector(".compact-range"))
       .toBeNull();
+  });
+});
+
+describe("方向標籤（OG-09／#319）", () => {
+  it("目標價高於現價顯示「看漲」，套用 up 修飾類", () => {
+    list([row({ spot: 100, target_price: 120 })]);
+    const card = screen.getByRole("listitem");
+    const tag = within(card).getByText("看漲");
+    expect(tag).toHaveClass("tag", "up");
+  });
+
+  it("目標價低於現價顯示「看跌」，套用 down 修飾類", () => {
+    list([row({ spot: 100, target_price: 80 })]);
+    const card = screen.getByRole("listitem");
+    const tag = within(card).getByText("看跌");
+    expect(tag).toHaveClass("tag", "down");
+  });
+
+  it("目標價恰好等於現價顯示「持平」，套用 flat 修飾類（T17／#234 既有" +
+     "持平劇本語意，無容忍帶）", () => {
+    list([row({ spot: 100, target_price: 100 })]);
+    const card = screen.getByRole("listitem");
+    const tag = within(card).getByText("持平");
+    expect(tag).toHaveClass("tag", "flat");
+  });
+
+  it("尚未成功分析過（spot 為 null）不畫任何方向標籤——不是猜一個假的" +
+     "方向", () => {
+    list([row({ spot: null, latest_analyzed_at: null, best_return: null,
+                representative_candidate: null })]);
+    const card = screen.getByRole("listitem");
+    expect(within(card).queryByText("看漲")).not.toBeInTheDocument();
+    expect(within(card).queryByText("看跌")).not.toBeInTheDocument();
+    expect(within(card).queryByText("持平")).not.toBeInTheDocument();
+  });
+});
+
+describe("Logo 404 留白（OG-09／#319，row 層級覆蓋——`StockLogo.test.tsx`" +
+        "只驗過元件本身孤立情境，AC 要求手機列上也要覆蓋到）", () => {
+  it("Logo.dev 404 後 <img> 整個從列項消失，只留代號文字，不畫任何" +
+     "替代圖形", () => {
+    const { container } = list([row()]);
+    const card = screen.getByRole("listitem");
+    const img = container.querySelector("img")!;
+    expect(img).toBeInTheDocument();
+
+    fireEvent.error(img);
+
+    expect(container.querySelector("img")).not.toBeInTheDocument();
+    // 代號文字仍在，卡片其餘內容不受影響。
+    expect(within(card).getByText("TLT")).toBeInTheDocument();
   });
 });

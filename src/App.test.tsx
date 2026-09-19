@@ -295,7 +295,10 @@ describe("垃圾桶（TR6／#91）", () => {
     render(<App />);
     await screen.findByText("TLT");
 
-    await userEvent.click(await screen.findByRole("button", { name: "垃圾桶" }));
+    // OG-09（#319）：手機首頁的垃圾桶入口從 `Toolbar` 的 pill 按鈕
+    // 改成 `BottomNav` 既有的 `<a>` 連結（`MobileTopBar` 不再重複一份）
+    // ——導覽能力沒變，只是換了元素型別，查詢跟著改。
+    await userEvent.click(await screen.findByRole("link", { name: "垃圾桶" }));
 
     expect(await screen.findByRole("heading", { name: "垃圾桶" }))
       .toBeInTheDocument();
@@ -328,7 +331,7 @@ describe("垃圾桶（TR6／#91）", () => {
     await screen.findByText("TLT");
 
     await userEvent.click(
-      await screen.findByRole("button", { name: "垃圾桶" }));
+      await screen.findByRole("link", { name: "垃圾桶" }));
     await screen.findByText("SPY");
 
     await userEvent.click(
@@ -1775,6 +1778,45 @@ describe("桌面版：主要操作入口收攏到工作區上方（#75，MVP-v2�
   });
 });
 
+describe("手機版頂欄（OG-09／#319，取代 iOS Large Title 版式的 " +
+        "`Toolbar`）：不重複顯示垃圾桶／設定入口——兩者已經在下方的 " +
+        "`BottomNav` 各有一份", () => {
+  const row = {
+    ...(sampleRow as unknown as Record<string, unknown>),
+    id: "s1", symbol: "TLT", target_price: 120, target_month: "2028-05",
+    latest_analyzed_at: "2026-08-04T09:30:00+00:00", best_return: 1.5,
+    target_anchor: "2028-05-19", days_to_anchor: 653,
+  };
+
+  it("頂欄只有品牌、（角色，若非 Normal User）、重新整理——沒有垃圾桶／" +
+     "設定按鈕；底部導覽四個分頁都在，且能各自導向正確 hash", async () => {
+    mockRoutes({
+      "/api/scenarios": { json: async () => [row] },
+      "/api/scenarios/": { json: async () => row },
+    });
+    render(<App />);
+    await screen.findByText("TLT");
+
+    const mnav = document.querySelector(".mnav")!;
+    expect(within(mnav as HTMLElement).getByText("Option Chaser"))
+      .toBeInTheDocument();
+    expect(within(mnav as HTMLElement)
+      .getByRole("button", { name: /重新整理|刷新中/ })).toBeInTheDocument();
+    expect(within(mnav as HTMLElement).queryByRole("link", { name: "垃圾桶" }))
+      .not.toBeInTheDocument();
+    expect(within(mnav as HTMLElement).queryByRole("button", { name: "設定" }))
+      .not.toBeInTheDocument();
+
+    // 底部導覽：四個分頁、各自的 hash——垃圾桶／設定的導覽能力在這裡，
+    // 不在頂欄。
+    const bottomNav = screen.getByRole("navigation", { name: "主要導覽" });
+    expect(within(bottomNav).getByRole("link", { name: /垃圾桶/ }))
+      .toHaveAttribute("href", "#/trash");
+    expect(within(bottomNav).getByRole("link", { name: /設定/ }))
+      .toHaveAttribute("href", "#/settings");
+  });
+});
+
 describe("PB-12（#302）：全站常駐頁尾＋首頁 Beta 說明＋隱私頁路由", () => {
   const row = {
     ...(sampleRow as unknown as Record<string, unknown>),
@@ -1841,7 +1883,9 @@ describe("PB-12（#302）：全站常駐頁尾＋首頁 Beta 說明＋隱私頁�
     const { container } = render(<App />);
     await screen.findByText("TLT");
 
-    await userEvent.click(await screen.findByRole("button", { name: "垃圾桶" }));
+    // OG-09（#319）：見上方「點垃圾桶入口進到垃圾桶畫面」測試的同一句
+    // 說明——垃圾桶入口在手機版現在是 `BottomNav` 的連結。
+    await userEvent.click(await screen.findByRole("link", { name: "垃圾桶" }));
     await screen.findByRole("heading", { name: "垃圾桶" });
 
     expect(container.querySelector("footer.site-footer")).toBeInTheDocument();

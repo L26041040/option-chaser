@@ -6,6 +6,9 @@ import {
   STALE_AFTER_HOURS,
   cardFailureHeadline,
   cardFailureVariant,
+  deriveDirectionTag,
+  directionTagClass,
+  directionTagLabel,
   failureLabel,
   formatDaysLeft,
   formatRepresentativeExpiry,
@@ -470,5 +473,37 @@ describe("劇本卡片 DOM id（A2）", () => {
   it("與 id 一一對應，供 App.tsx 捲動聚焦時查找", () => {
     expect(scenarioRowDomId("s1")).toBe("scenario-row-s1");
     expect(scenarioRowDomId("s2")).toBe("scenario-row-s2");
+  });
+});
+
+describe("方向衍生標籤（OG-09／#319，鏡射後端 derive_direction() 語意）", () => {
+  it("目標價高於現價＝看漲", () => {
+    expect(deriveDirectionTag(100, 120)).toBe("bullish");
+  });
+
+  it("目標價低於現價＝看跌", () => {
+    expect(deriveDirectionTag(100, 80)).toBe("bearish");
+  });
+
+  it("目標價恰好等於現價＝持平，無容忍帶（T08／#225 既有語意）", () => {
+    expect(deriveDirectionTag(100, 100)).toBe("flat");
+  });
+
+  it("極接近但不等於現價仍是方向性劇本，不是持平", () => {
+    expect(deriveDirectionTag(100, 100.01)).toBe("bullish");
+    expect(deriveDirectionTag(100, 99.99)).toBe("bearish");
+  });
+
+  it("spot 為 null（尚未分析過）回傳 null，不猜一個方向", () => {
+    expect(deriveDirectionTag(null, 120)).toBeNull();
+  });
+
+  it("三態各自的中文字與 .tag 修飾類", () => {
+    expect(directionTagLabel("bullish")).toBe("看漲");
+    expect(directionTagLabel("bearish")).toBe("看跌");
+    expect(directionTagLabel("flat")).toBe("持平");
+    expect(directionTagClass("bullish")).toBe("up");
+    expect(directionTagClass("bearish")).toBe("down");
+    expect(directionTagClass("flat")).toBe("flat");
   });
 });

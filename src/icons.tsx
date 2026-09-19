@@ -141,6 +141,29 @@ export function CreateIcon({ size = 20 }: { size?: number }) {
   );
 }
 
+/** 重新整理圖示（OG-09／#319，手機頂欄 `MobileTopBar` 的刷新按鈕；
+ *  比照 artifact `Mobile-Library.dc.html` `.mnav` 圖示——弧形箭頭＋
+ *  右上小箭頭）。按鈕本身的可及名稱來自忙碌／閒置文字（「重新整理」／
+ *  「刷新中……」），這裡跟其餘圖示一樣 `aria-hidden`。 */
+export function RefreshIcon({ size = 16 }: { size?: number }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      width={size}
+      height={size}
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={2}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+      className="icon-glyph"
+    >
+      <path d="M21 12a9 9 0 1 1-2.6-6.4M21 3v6h-6" />
+    </svg>
+  );
+}
+
 /** 關閉圖示——桌面版建立劇本抽屜的關閉鈕（UI-IMPL-002／#092，比照
  *  Artifact `Desktop-Create.dc.html` 的抽屜關閉鈕）。 */
 export function CloseIcon({ size = 16 }: { size?: number }) {

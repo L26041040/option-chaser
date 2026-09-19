@@ -628,7 +628,10 @@ test("垃圾桶入口可以點進去，返回鍵回到劇本庫（TR6／#91）",
   await page.goto("/");
   await expect(page.getByText("TLT", { exact: true })).toBeVisible();
 
-  await page.getByRole("button", { name: "垃圾桶", exact: true }).click();
+  // OG-09（#319）：垃圾桶入口從手機頂欄（曾是 `Toolbar` 的 pill 按鈕）
+  // 改成 `BottomNav` 既有的 `<a>` 連結——`MobileTopBar` 換裝後不再重複
+  // 顯示一份，這裡與本檔其餘幾處同一個入口的測試一併改成 `link`。
+  await page.getByRole("link", { name: "垃圾桶", exact: true }).click();
   await expect(page.getByRole("heading", { name: "垃圾桶" })).toBeVisible();
   await expect(page.getByText("垃圾桶是空的。")).toBeVisible();
 
@@ -660,7 +663,7 @@ test("垃圾桶：還原一個、永久刪除另一個（TR4／#92）", async ({
 
   await page.goto("/");
   await expect(page.getByText(/還沒有劇本/)).toBeVisible();
-  await page.getByRole("button", { name: "垃圾桶", exact: true }).click();
+  await page.getByRole("link", { name: "垃圾桶", exact: true }).click();
   await expect(page.getByText("TLT", { exact: true })).toBeVisible();
   await expect(page.getByText("SPY", { exact: true })).toBeVisible();
 
@@ -671,7 +674,7 @@ test("垃圾桶：還原一個、永久刪除另一個（TR4／#92）", async ({
   await expect(page.getByText("TLT", { exact: true })).toBeVisible();
 
   // 永久刪除 SPY：需要二次確認，確認畫面列出具體 ticker 與 target month
-  await page.getByRole("button", { name: "垃圾桶", exact: true }).click();
+  await page.getByRole("link", { name: "垃圾桶", exact: true }).click();
   await expect(page.getByText("SPY", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: "永久刪除 SPY 2028-06" }).click();
   const sheet = page.getByRole("alertdialog");
@@ -707,7 +710,7 @@ test("垃圾桶批次操作：全選後批次永久刪除，確認畫面列出�
   });
 
   await page.goto("/");
-  await page.getByRole("button", { name: "垃圾桶", exact: true }).click();
+  await page.getByRole("link", { name: "垃圾桶", exact: true }).click();
   await expect(page.getByText("TLT", { exact: true })).toBeVisible();
   await expect(page.getByText("SPY", { exact: true })).toBeVisible();
 
@@ -750,7 +753,7 @@ test("垃圾桶批次操作：全選後批次還原，兩者都回到劇本庫�
   });
 
   await page.goto("/");
-  await page.getByRole("button", { name: "垃圾桶", exact: true }).click();
+  await page.getByRole("link", { name: "垃圾桶", exact: true }).click();
   await expect(page.getByText("TLT", { exact: true })).toBeVisible();
   await expect(page.getByText("SPY", { exact: true })).toBeVisible();
 
@@ -793,19 +796,20 @@ test("功能列捲動時仍釘在頂部、而且按得到（V3／#51 驗收第 1
   });
 
   await page.goto("/");
-  const toolbar = page.getByRole("heading", { name: "劇本庫" });
-  await expect(toolbar).toBeVisible();
+  // OG-09（#319）：手機頂欄從 `<header class="toolbar">`（iOS Large
+  // Title 版式）換成 `.mnav`（52px、`position: sticky`）——量釘住的
+  // 元素本身改成它。
+  const mnav = page.locator(".mnav");
+  await expect(mnav).toBeVisible();
 
   await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
 
   // 先確認頁面真的捲動了——頁面短到不需要捲時，`toBeInViewport()` 恆真，
   // 這條測試就會在功能列根本沒釘住的情況下照樣綠。
   expect(await page.evaluate(() => window.scrollY)).toBeGreaterThan(0);
-  // 量釘住的那個元素本身（`<header>`），不是裡面的標題——標題的 y 還含
-  // 功能列自己的上內距（安全區），量它會得到一個不為 0 的正常值。
-  const box = (await page.locator("header.toolbar").boundingBox())!;
+  const box = (await mnav.boundingBox())!;
   expect(box.y).toBeLessThan(2);
-  await expect(toolbar).toBeInViewport();
+  await expect(mnav).toBeInViewport();
 
   // 釘住還不夠——捲到底時按下去要真的送出請求，功能列才算能用。
   // 手機版（MVP-v2／#77、#81）工具列上只剩刷新這一個入口——建立劇本
@@ -1473,20 +1477,22 @@ async function routeSettingsMobile(page: import("@playwright/test").Page) {
   await page.route("**/api/diagnostics*", (route) => route.fulfill({ json: [] }));
 }
 
-test("手機版：工作區右上角的齒輪進得去設定，返回回得來（Settings／#124）", async ({ page }) => {
+test("手機版：底部導覽的「設定」進得去設定，返回回得來（Settings／#124；" +
+     "OG-09／#319 起入口從頂欄齒輪改到底部導覽，原本工作區右上角的齒輪" +
+     "已隨 `Toolbar` 退場，`BottomNav` 這個入口本來就在、不是新功能）",
+     async ({ page }) => {
   await routeSettingsMobile(page);
   await page.goto("/");
 
-  const gear = page.getByRole("button", { name: "設定" });
-  await expect(gear).toBeVisible();
+  const settingsTab = page.getByRole("link", { name: "設定", exact: true });
+  await expect(settingsTab).toBeVisible();
 
-  // 「右上角」：齒輪落在視窗右半邊、且在頂部功能列內。
-  const box = (await gear.boundingBox())!;
+  // 底部導覽：連結落在視窗下半部（取代原本「右上角」的齒輪位置斷言）。
+  const box = (await settingsTab.boundingBox())!;
   const viewport = page.viewportSize()!;
-  expect(box.x).toBeGreaterThan(viewport.width / 2);
-  expect(box.y).toBeLessThan(120);
+  expect(box.y).toBeGreaterThan(viewport.height / 2);
 
-  await gear.click();
+  await settingsTab.click();
   await expect(page.getByText("Data / API")).toBeVisible();
   // 設定是整頁替換：劇本庫的功能列此時不在畫面上
   await expect(page.getByRole("button", { name: "重新整理" })).toHaveCount(0);

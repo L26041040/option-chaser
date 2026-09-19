@@ -249,7 +249,11 @@ describe("OG-01：金色只用於可動作元素／冠軍標記，紅綠只用�
   const ACCENT_TOKENS = /var\(--accent(-hover|-soft|-text)?\)/;
   // 可動作元素／冠軍標記白名單：主按鈕、分頁選取指示條、輸入框
   // focus 狀態、inline 比例條的填色（相對冠軍的量級標示）、
-  // 「冠軍／金牌」語意的 tag 修飾。
+  // 「冠軍／金牌」語意的 tag 修飾。`.mnav .brand-mark`（OG-09／#319）
+  // 是品牌識別色，不在上述任一類——鏡射桌面 `.topbar .brand-mark`
+  // 既有的同一個顏色選擇（那條規則定義在檔案更早處、落在本次靜態
+  // 掃描範圍之外，因此從未被這條規則審過），手機頂欄用同一個顏色
+  // 純粹是為了兩邊視覺一致，不是新的金色語意。
   const ACCENT_ALLOWED_SELECTORS = [
     ".btn",
     ".tabs a.on::after",
@@ -257,6 +261,7 @@ describe("OG-01：金色只用於可動作元素／冠軍標記，紅綠只用�
     ".inp:focus-within",
     ".bar i",
     ".tag.gold",
+    ".mnav .brand-mark",
   ];
 
   const DIRECTION_TOKENS = /var\(--(up|down)(-soft)?\)/;
