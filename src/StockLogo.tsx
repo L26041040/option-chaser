@@ -30,8 +30,11 @@ import { useEffect, useState } from "react";
 
 const DEMO_TOKEN = "pk_X-1ZO13GSgeOoUrIuJ6GMQ";
 
-/** 尺寸級距對照設計稿：20 手機頂欄 · 28 清單列與表格 · 40 詳細頁標頭
- *  · 56 保留給未來 Holdings 卡片。 */
+/** 尺寸級距對照 OG-01（#317）Foundations 板：24 表格／清單列
+ *  （`ScenarioList.tsx`／`CompactScenarioList.tsx` 皆傳 `size="s"`）
+ *  · 32 建立表單預覽（`CreateForm.tsx` 不傳 `size`，吃這個預設值）
+ *  · 40 詳細頁標頭（`ScenarioDetail.tsx` 傳 `size="l"`）· 56 保留給
+ *  未來 Holdings 卡片，目前無消費端。 */
 const SIZE_CLASS: Record<StockLogoSize, string> = {
   s: "tile s",
   m: "tile",
@@ -39,7 +42,7 @@ const SIZE_CLASS: Record<StockLogoSize, string> = {
   xl: "tile xl",
 };
 
-const SIZE_PX: Record<StockLogoSize, number> = { s: 20, m: 28, l: 40, xl: 56 };
+const SIZE_PX: Record<StockLogoSize, number> = { s: 24, m: 32, l: 40, xl: 56 };
 
 export type StockLogoSize = "s" | "m" | "l" | "xl";
 

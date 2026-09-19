@@ -253,7 +253,8 @@ describe("OG-01：金色只用於可動作元素／冠軍標記，紅綠只用�
   const ACCENT_ALLOWED_SELECTORS = [
     ".btn",
     ".tabs a.on::after",
-    ".inp.focus, .inp:focus-within",
+    ".inp.focus",
+    ".inp:focus-within",
     ".bar i",
     ".tag.gold",
   ];
@@ -272,24 +273,48 @@ describe("OG-01：金色只用於可動作元素／冠軍標記，紅綠只用�
     ".btn.danger",
   ];
 
+  /** 逗號分隔的多選擇器規則（如 `.a, .b { ... }`）拆成各自獨立的
+   *  選擇器再比對白名單——只比對整串合併字串會漏放：假設日後有人把
+   *  兩條規則合併成 `.tag.up, .tag.down { ... }`，若比對的是整串，
+   *  白名單裡分開列的 `.tag.up`／`.tag.down` 兩條都對不上，這筆規則
+   *  會被誤判成「找不到規則、略過」而不是「兩邊都要查」，等於這筆
+   *  掃描完全失效卻不會有任何提示。拆開後每個分支各自查白名單，
+   *  才不會被「規則怎麼寫」這種與色彩使用無關的重構動搖。 */
+  function selectorBranches(selector: string): string[] {
+    return selector.split(",").map((s) => s.trim());
+  }
+
   it("本輪新增 CSS 裡，套用金色 token 的規則都在白名單內", () => {
-    const offenders = scanned.filter(
-      (r) => ACCENT_TOKENS.test(r.body) && !ACCENT_ALLOWED_SELECTORS.includes(r.selector),
-    );
-    expect(offenders.map((r) => r.selector)).toEqual([]);
+    const offenders = scanned
+      .filter((r) => ACCENT_TOKENS.test(r.body))
+      .flatMap((r) => selectorBranches(r.selector))
+      .filter((s) => !ACCENT_ALLOWED_SELECTORS.includes(s));
+    expect(offenders).toEqual([]);
   });
 
   it("本輪新增 CSS 裡，套用紅／綠方向 token 的規則都在白名單內", () => {
-    const offenders = scanned.filter(
-      (r) => DIRECTION_TOKENS.test(r.body) && !DIRECTION_ALLOWED_SELECTORS.includes(r.selector),
-    );
-    expect(offenders.map((r) => r.selector)).toEqual([]);
+    const offenders = scanned
+      .filter((r) => DIRECTION_TOKENS.test(r.body))
+      .flatMap((r) => selectorBranches(r.selector))
+      .filter((s) => !DIRECTION_ALLOWED_SELECTORS.includes(s));
+    expect(offenders).toEqual([]);
   });
 
   it("白名單本身沒有過期條目（每一條都真的在掃描範圍內出現過）", () => {
-    const selectors = new Set(scanned.map((r) => r.selector));
+    const branches = new Set(scanned.flatMap((r) => selectorBranches(r.selector)));
     for (const s of [...ACCENT_ALLOWED_SELECTORS, ...DIRECTION_ALLOWED_SELECTORS]) {
-      expect(selectors.has(s)).toBe(true);
+      expect(branches.has(s)).toBe(true);
     }
+  });
+
+  it("拆分邏輯真的抓得住逗號合併規則裡未經允許的那一支——不是形同虛設的檢查", () => {
+    // 合成一條刻意違規的規則：`.foo` 沒在任何白名單裡，卻跟一個
+    // 允許的選擇器合併成一條規則。整串比對會誤判「找不到，略過」；
+    // 拆開後 `.foo` 這一支必須被抓到。
+    const synthetic = rules(".foo, .btn { background: var(--accent); }");
+    const offenders = synthetic
+      .flatMap((r) => selectorBranches(r.selector))
+      .filter((s) => !ACCENT_ALLOWED_SELECTORS.includes(s));
+    expect(offenders).toEqual([".foo"]);
   });
 });

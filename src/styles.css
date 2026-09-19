@@ -1462,17 +1462,17 @@ body {
   background: var(--accent-soft);
   color: var(--accent-text);
 }
-.tag.flat {
+/* .flat（持平方向）／.fam（family 標籤）視覺意圖不同，但今天剛好是
+   同一種「中性、不強調」處理——合成一條規則，不維護兩份逐字相同的
+   規則體；語意各自獨立，日後其中一個要換顏色時再拆開即可。 */
+.tag.flat,
+.tag.fam {
   background: var(--panel-3);
   color: var(--text-2);
 }
 .tag.info {
   background: color-mix(in srgb, var(--info) 14%, transparent);
   color: var(--info);
-}
-.tag.fam {
-  background: var(--panel-3);
-  color: var(--text-2);
 }
 
 /* 卡片裡的提示不能用 `.notice` 的預設底色——那正好等於卡片底色，等於
@@ -1734,7 +1734,8 @@ body {
  *
  * QA 修正把原本的「整格四邊粗框」改成單邊細線：粗框在密集的表格上
  * 讀起來像一堆被選中的格子，而不是一條分界；細線才看得出走向。顏色
- * 走 `--crossover`（琥珀），深淺模式各自取對比足夠的一端。
+ * 走 `--crossover`——OG-01（#317）之後這個 token 別名到 `--info`
+ * （資訊藍），不再是舊系統時期的琥珀，深淺模式各自取對比足夠的一端。
  */
 .crossover-legend {
   display: flex;

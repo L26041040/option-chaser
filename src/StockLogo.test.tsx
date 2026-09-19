@@ -83,8 +83,8 @@ describe("StockLogo（OG-01／#317）", () => {
   });
 
   it.each([
-    ["s", 20],
-    ["m", 28],
+    ["s", 24],
+    ["m", 32],
     ["l", 40],
     ["xl", 56],
   ] as const)("size=%s 對應 Logo.dev 請求尺寸 %ipx（含高密度螢幕 2x）", (size, px) => {
