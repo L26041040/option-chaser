@@ -31,16 +31,16 @@ Implement the approved **Obsidian Gold** Binance-inspired visual design without 
 - **OG-02 #318** — Desktop chrome: 64px top bar, page-level navigation, full-width desktop shell.
 - **OG-09 #319** — Mobile scenario library: 52px mobile top bar, dense rows, persistent bottom navigation.
 - **OG-03 #320** — Desktop Markets-style scenario table + trash-page table skin (code-review follow-up) + required-move sub-text.
+- **OG-06 #321** — Desktop detail page part I: 3-column shell, identity row, family/expiry/ranking table, Heatmap-follows-selection, PriceLadder. Right column + bottom tabs left as empty containers for OG-07.
 
 ### Current frontier
 These are unblocked and may be implemented in dependency order:
-- **OG-06 #321** — Desktop detail page part I: 3-column shell, identity row, family/expiry/ranking, Heatmap selection.
 - **OG-11 #322** — Settings / login / Super Admin UI.
+- **OG-07 #325** — desktop detail part II (right-column candidate panel + bottom 4 tabs). Unblocked now that #321 is done.
 
 Then continue strictly by GitHub dependencies:
 - **OG-04 #323** — scenario-list cost sparkline, additive backend only.
 - **OG-05 #324** — read-only usage-summary endpoint + stats strip, additive backend only.
-- **OG-07 #325** — desktop detail part II.
 - **OG-08 #326** — Long Call/Put + Historical IV panel.
 - **OG-10 #327** — mobile detail. Must wait for **#319 + #321 + #325 + #326**.
 - **OG-12 #328** — final light/responsive/artifact parity/regression acceptance.
