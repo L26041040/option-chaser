@@ -1,68 +1,100 @@
 /**
- * "Graphite & Amber" 設計系統（UI-IMPL-002／#092＋#094，2026-09-18）——
- * 深色優先、琥珀單一品牌色、1px 髮絲線分隔、tabular 數字。取代 V1／#48
- * 的 iOS 語彙（既有 class 名稱與消費端全部保留，只換 token 值與少數
- * 補充規則，見本節逐項標注）。
+ * "Obsidian Gold" 設計系統（OG-01／#317，2026-09-19）——取代
+ * "Graphite & Amber"（UI-IMPL-002／#092＋#094），Binance 現行 Web
+ * 產品實證的近黑四階中性底＋單一品牌金色＋髮絲線分隔＋tabular 數字。
+ * 沿用同一套換血策略（既有 class 名稱與消費端盡量不動，只換 token
+ * 值），這次連 token 的變數名本身都不必再改一次——上一輪已經把
+ * `--bg`／`--panel`／`--panel-2`／`--panel-3`／`--line`／`--line-2`／
+ * `--text`／`--text-2`／`--text-3`／`--accent`／`--up`／`--down`／
+ * `--warn`／`--suspect`／`--crossover` 這組名字定下來，這裡只是把
+ * 值換成新設計系統的顏色。
  *
- * 對照 Design Artifact（issue #092／#094，Foundations／Typography 兩板）
- * 的 `:root` token 逐字對齊：`--bg`／`--panel`／`--panel-2`／`--panel-3`／
- * `--line`／`--line-2`／`--text`／`--text-2`／`--text-3`／`--accent`／
- * `--up`／`--down`／`--warn`／`--suspect`／`--crossover` 這些新名字是
- * artifact 本身的詞彙，直接沿用；既有 class 讀的是舊名稱
- * （`--bg-elevated`／`--label`／`--label-secondary`／`--label-tertiary`／
- * `--separator`／`--green`／`--red`／`--orange`／`--yellow`），因此舊名稱
- * 全部改成「別名到新 token」而非刪除——這樣既有兩千多行 CSS 不必逐條
- * 改寫消費端，換色只在這一個區塊發生。
+ * 對照 Design canvas artifact（issue #316／#317，
+ * `https://claude.ai/artifact/28tqiXF2o9UyQK6vDUXf5q`，Main 板
+ * ＝Foundations）：artifact 原始 token 名稱是 `--bg0`～`--bg4`／
+ * `--t1`～`--t4`／`--gold`／`--gold-hi`／`--on-gold`／`--gold-dim`／
+ * `--up`／`--down`／`--info`／`--warn`，逐一對映到本檔既有變數名
+ * （`--bg`＝bg0、`--panel`＝bg1、`--panel-2`＝bg2、`--panel-3`＝bg3、
+ * `--accent`＝gold、`--accent-hover`＝gold-hi、`--on-accent`＝on-gold、
+ * `--accent-soft`＝gold-dim）。`--panel-4`／`--text-4`（對應 bg4／t4）
+ * 是本輪新增——artifact 定義了但既有系統只有 3 階 panel／3 階
+ * text，先建好給後續票用，目前尚無消費端。`--info`（新，資訊藍）
+ * 取代舊系統獨立的 crossover 藍——既有 Crossover 分界線改用
+ * `--crossover: var(--info)`（純色彩重新分配，語意不變，見 artifact
+ * 原文「既有的 Crossover 分界線改用資訊色」）。`--up-soft`／
+ * `--down-soft`（新）供本票新增的 `.tag.up`／`.tag.down` 之類的
+ * 淺色調用途，既有系統沒有這兩個角色。
  *
- * `--tint` 原本身兼「文字色」與「背景／邊框色」兩種用途，但琥珀
- * （#F3B63F）當文字色在淺色模式對比極差（白底上實測僅約 2:1）——拆成
- * 三個新 token（`--accent`／`--accent-text`／`--on-accent`），逐一 site
- * 依用途套用，不再用同一個值硬撐兩種對比需求完全不同的角色。
+ * `--warn`：artifact 的 `.root.light` 沒有覆寫這個 token（沿用深色
+ * 值 `#F0B90B`），照實移植，不臆測一個 artifact 沒給的淺色警示值。
+ * `--suspect`（單調性違反的資料品質旗標，FB5-03／#64）不屬於這套
+ * 設計系統的詞彙，維持上一輪既有值不動。
  *
- * Typography v2（#095／UI-TYPO，字體棧本身）與 tabular-nums／
- * text-rendering 等既有規則不在本輪異動範圍，維持原樣。 */
+ * `--text-3`（淺色）與 `--accent-text`（淺色）兩處延續上一輪已經
+ * 確立、且本輪重新量測仍然成立的判斷——WCAG AA normal text（4.5:1）
+ * 是既有 `contrast.test.ts` 的硬性門檻，artifact 逐字值在這兩處量
+ * 不到：
+ *   - `--text-3` 淺色：artifact 原文 `#707A8A` 疊在 `--bg`（#F5F5F5）
+ *     上實測僅 3.98:1、疊在 `--panel`（#FFFFFF）上 4.34:1，皆未達
+ *     4.5。調成 `#636C7A`（同一色相稍微加深）後兩者分別為 4.87／
+ *     5.31，兩階文字仍明顯有落差（三階次序測試同步核對過）。
+ *   - `--accent-text`：金色在淺色模式當「文字」用時（`.gold`
+ *     utility／連結色一類用途）不能直接沿用背景填色用的
+ *     `--accent`（#E3B11E 在白底上只有 1.99:1）——這正是上一輪已經
+ *     拆出獨立 `--accent-text` token 的原因，本輪維持同一個既有值
+ *     `#9a6206`（白底 5.09:1／`--bg` 底 4.67:1，兩者皆達標），不必
+ *     另外發明新值。深色模式的金色本身已足夠亮（`--accent` 疊
+ *     `--panel` 達 10.31:1），`--accent-text` 直接等於 `--accent`。
+ *
+ * Typography：拉丁字與數字改用 Geist（Vercel 開源字體，Google Fonts
+ * 可直接載入），取代上一輪的 IBM Plex Sans；中文維持 Noto Sans TC
+ * 不變。`--mono` 比照同一個判斷同步换成 Geist Mono。既有 tabular-nums／
+ * text-rendering 規則與中文行高／字距既有調整（Typography v2）不在
+ * 本輪異動範圍，維持原樣。 */
 
 :root {
-  /* Typography v2：拉丁/數字/半形標點交給 IBM Plex Sans，漢字/注音/
-     全形標點交給 Noto Sans TC，兩者皆為 web font（見 index.html）。
-     PingFang TC／Microsoft JhengHei 僅作字型尚未載入前那個瞬間的
-     系統字 fallback，正常情況下不會被使用者實際看到。 */
-  --font: "IBM Plex Sans", "Noto Sans TC", "PingFang TC", "Microsoft JhengHei",
+  /* 拉丁/數字/半形標點交給 Geist，漢字/注音/全形標點交給 Noto Sans
+     TC，兩者皆為 web font（見 index.html）。PingFang TC／Microsoft
+     JhengHei 僅作字型尚未載入前那個瞬間的系統字 fallback，正常情況
+     下不會被使用者實際看到。 */
+  --font: "Geist", "Noto Sans TC", "PingFang TC", "Microsoft JhengHei",
     sans-serif;
   --font-cjk: "Noto Sans TC", "PingFang TC", "Microsoft JhengHei", sans-serif;
-  --mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo,
-    "Noto Sans TC", monospace;
+  --mono: "Geist Mono", "Noto Sans TC", ui-monospace, SFMono-Regular, Menlo,
+    monospace;
 
-  /* Graphite & Amber · 深色優先（Foundations 板原文）。淺色覆寫見下方
-     `@media (prefers-color-scheme: light)`——這是既有結構的鏡射（原本
-     `:root` 是淺色預設、`dark` 媒體查詢覆寫；本輪把預設方向整個倒過來，
-     match「深色優先」這個設計系統自身的核心宣告）。 */
-  --bg: #101318;
-  --panel: #181d25;
-  --panel-2: #1f2530;
-  --panel-3: #28303b;
-  --line: #2a3340;
-  --line-2: #3a4453;
+  /* Obsidian Gold · 深色優先（Foundations 板原文）。淺色覆寫見下方
+     `@media (prefers-color-scheme: light)`。 */
+  --bg: #0b0e11;
+  --panel: #181a20;
+  --panel-2: #1e2329;
+  --panel-3: #2b3139;
+  --panel-4: #363d47;
+  --line: #252b33;
+  --line-2: #2f3640;
   --text: #eaecef;
-  --text-2: #a3abb7;
-  /* QA-FIX-2（QA-01）硬性要求延伸到深色模式（既有 precedent：深色
-     tertiary 過去一直低於 AA、這裡順手一併修好而非只求不退化）。
-     Foundations 板字面值 #767F8D 疊在 panel 上實測僅 4.18:1，未達
-     4.5——用腳本找最小可行調整量（RGB 各 +6），非另外發明一個色階。 */
-  --text-3: #7c8593;
-  --accent: #f3b63f;
-  --accent-hover: #ffc857;
-  --accent-text: #f3b63f;
-  --on-accent: #181d25;
-  --accent-soft: rgba(243, 182, 63, 0.12);
-  --up: #1fc98a;
-  --down: #f0505f;
-  --warn: #f7c948;
+  --text-2: #b7bdc6;
+  --text-3: #848e9c;
+  --text-4: #5e6673;
+  --accent: #f2c12e;
+  --accent-hover: #ffd75a;
+  --accent-text: var(--accent);
+  --on-accent: #181a20;
+  --accent-soft: rgba(242, 193, 46, 0.14);
+  --up: #2ebd85;
+  --down: #f6465d;
+  --up-soft: rgba(46, 189, 133, 0.14);
+  --down-soft: rgba(246, 70, 93, 0.14);
+  --info: #5ac8fa;
+  --warn: #f0b90b;
   --suspect: #ff7a7a;
-  --crossover: #4fc3f7;
-  --tile-bg: #f4f5f7;
+  --crossover: var(--info);
+  --tile-bg: #ffffff;
   --tile-line: #e1e4ea;
-  --fill: rgba(58, 68, 83, 0.35);
+  /* 骨架載入動畫的移動高光——artifact 沒有定義這個角色（純工程需求，
+     非視覺系統詞彙），沿用「取 panel-4 的半透明版本」這個既有做法，
+     只是換算成新色階。 */
+  --fill: rgba(54, 61, 71, 0.5);
   --card-shadow: none;
 
   /* 既有消費端讀的舊名稱——別名到上面的新 token，換色只在這裡發生。 */
@@ -85,37 +117,37 @@
 
 @media (prefers-color-scheme: light) {
   :root {
-    --bg: #f4f6f9;
+    --bg: #f5f5f5;
     --panel: #ffffff;
-    --panel-2: #f6f8fb;
-    --panel-3: #edf0f4;
-    --line: #e4e8ee;
-    --line-2: #d3d9e2;
-    --text: #171b23;
-    --text-2: #5b6573;
-    /* QA-FIX-2（QA-01）沿用同一條硬性要求（WCAG AA normal text，
-       4.5:1）：Foundations 板字面的淺色 tertiary（#7F8998）在白底面板
-       上實測僅約 3.5:1，若照搬會讓既有 `contrast.test.ts` 從綠燈退回
-       紅燈——這是本輪唯一偏離 artifact 逐字色值的一處，偏離方向是
-       「更深、更可讀」，幅度以剛好通過 AA 為準，不是另外發明一種
-       視覺；深色模式維持 artifact 原色（#767F8D，實測仍達 AA）。 */
-    /* 同上，最小可行調整量（相對 Foundations 板字面 #7F8998 各通道
-       −2 已不足以同時過 panel 與 bg 兩個底色，實測需要更大調整——
-       腳本搜出的可行值）。 */
-    --text-3: #69727e;
-    --accent: #f3b63f;
-    --accent-hover: #e8a928;
+    --panel-2: #ffffff;
+    --panel-3: #f1f2f4;
+    --panel-4: #e6e8ea;
+    --line: #e9ebee;
+    --line-2: #dcdfe3;
+    --text: #1e2329;
+    --text-2: #474d57;
+    /* 見檔頭說明：artifact 原文 #707A8A 未達 AA，調成 #636C7A。 */
+    --text-3: #636c7a;
+    --text-4: #9aa3ae;
+    --accent: #e3b11e;
+    --accent-hover: #f2c12e;
+    /* 見檔頭說明：金色當文字用時獨立算過的既有值，非 artifact 的
+       `--gold`（那是給按鈕背景這類填色場景用的）。 */
     --accent-text: #9a6206;
-    --on-accent: #171b23;
-    --accent-soft: rgba(243, 182, 63, 0.16);
-    --up: #13975f;
-    --down: #d8404f;
-    --warn: #b7791f;
+    --on-accent: #1e2329;
+    --accent-soft: rgba(227, 177, 30, 0.14);
+    --up: #0fa37f;
+    --down: #e0374f;
+    --up-soft: rgba(15, 163, 127, 0.12);
+    --down-soft: rgba(224, 55, 79, 0.12);
+    --info: #1e88e5;
+    /* artifact 的 `.root.light` 沒有覆寫 warn，沿用深色值。 */
+    --warn: #f0b90b;
     --suspect: #c0392b;
-    --crossover: #0288d1;
+    --crossover: var(--info);
     --tile-bg: #ffffff;
     --tile-line: #e1e4ea;
-    --fill: rgba(91, 101, 115, 0.12);
+    --fill: rgba(230, 232, 234, 0.8);
     --card-shadow: none;
   }
 }
@@ -1412,6 +1444,37 @@ body {
   color: var(--suspect);
 }
 
+/* OG-01（#317）：Foundations 板的 `.tag.up`／`.down`／`.gold`／
+   `.flat`／`.info`／`.fam` 六個色彩修飾——沿用既有 `.tag` 的形狀
+   （pill、12px、600 字重），只新增這批目前尚無消費端、供後續看板
+   重排票（OG-03／OG-06／OG-07 等）直接拿來標示方向／冠軍／中性
+   資訊用的顏色變體。`.warn`／`.suspect` 兩個既有變體維持不動、不
+   重複定義。 */
+.tag.up {
+  background: var(--up-soft);
+  color: var(--up);
+}
+.tag.down {
+  background: var(--down-soft);
+  color: var(--down);
+}
+.tag.gold {
+  background: var(--accent-soft);
+  color: var(--accent-text);
+}
+.tag.flat {
+  background: var(--panel-3);
+  color: var(--text-2);
+}
+.tag.info {
+  background: color-mix(in srgb, var(--info) 14%, transparent);
+  color: var(--info);
+}
+.tag.fam {
+  background: var(--panel-3);
+  color: var(--text-2);
+}
+
 /* 卡片裡的提示不能用 `.notice` 的預設底色——那正好等於卡片底色，等於
    沒有框；改用色調淡底，一眼看得出是這張卡的事。底色寫在
    `.card .notice.error`／`.card .notice.warn`（0,3,0），特異性高過
@@ -2468,7 +2531,7 @@ body {
   margin-top: 8px;
   padding: 8px;
   /* Typography v2：全站唯一的等寬字內容（診斷 JSON 複製備援），改用
-     真正載入的 IBM Plex Mono，而非只靠系統等寬字。 */
+     真正載入的 Geist Mono（OG-01／#317），而非只靠系統等寬字。 */
   font-family: var(--mono);
   font-size: 12px;
   color: var(--label);
@@ -3098,4 +3161,396 @@ body {
   .mtabs {
     display: none;
   }
+}
+
+/* =========================================================================
+   OG-01（#317）：Obsidian Gold 共用 primitives
+   ========================================================================= */
+
+/* 既有 primitives 對照表——下列 Foundations 板詞彙已經有語意相同的
+   既有 class，這裡刻意不重造一份平行的同義詞（沿用檔頭「既有變數名以
+   免既有元件 CSS 全部改寫」同一個判斷邏輯，從 token 命名延伸到
+   primitive 類名）。後續看板重排的票要用到這些概念時，直接沿用左欄：
+
+   - 角色 chip     → `.role`（＋`.role-superuser`／`.role-superadmin`）
+   - tag           → `.tag`（＋本檔新增的 `.up`／`.down`／`.gold`／
+                       `.flat`／`.info`／`.fam`，`.warn`／`.suspect` 既有）
+   - chip（選取式）→ `.chip`（＋`.chip.selected` 對應 artifact 的
+                       `.chip.on`）
+   - stat 方塊     → `.stat`（＋`.stat-label`／`.stat-value`）
+   - 頂欄 nav      → `.topbar`（＋`.topbar .nav`／`.brand`）
+   - 手機 nav／
+     bottom tab    → `.mtabs`／`.mtab`（頂部 mnav 尚無消費端，見下方
+                       `.mnav` 新增）
+   - kv 列表       → `.row`（＋`.row-label`／`.row-value`，
+                       `.row + .row` 的上邊框對應 artifact `.kv` 的
+                       `border-bottom`，方向相反但視覺角色相同）
+
+   下面才是目前完全沒有既有等價物、本票淨新增、供後續票直接拿來用的
+   primitives（逐字對齊 artifact Main 板）。 */
+
+/* ---------- 按鈕：primary（金色）／secondary（髮絲線框）／danger ---------- */
+
+.btn {
+  height: 36px;
+  padding: 0 16px;
+  border-radius: var(--radius-s);
+  border: 1px solid transparent;
+  font: inherit;
+  font-size: 14px;
+  font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  white-space: nowrap;
+  /* 未指定變體＝primary，跟 artifact 的 `.btn` 預設就是金色一致。 */
+  background: var(--accent);
+  color: var(--on-accent);
+}
+
+.btn.secondary {
+  background: transparent;
+  color: var(--text);
+  border-color: var(--line-2);
+  font-weight: 500;
+}
+
+.btn.danger {
+  background: transparent;
+  color: var(--down);
+  border-color: var(--down);
+  font-weight: 500;
+}
+
+.btn.ghost {
+  background: var(--panel-3);
+  color: var(--text);
+  font-weight: 500;
+}
+
+.btn.sm {
+  height: 32px;
+  padding: 0 12px;
+  font-size: 13px;
+}
+
+.btn.xs {
+  height: 28px;
+  padding: 0 10px;
+  font-size: 12px;
+}
+
+.btn.dis,
+.btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.iconbtn {
+  width: 36px;
+  height: 36px;
+  border-radius: var(--radius-s);
+  border: 0;
+  background: transparent;
+  color: var(--text-2);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+
+/* ---------- panel：面板＋面板頭 ---------- */
+
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+.panel-h {
+  height: 44px;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 0 16px;
+  border-bottom: 1px solid var(--line);
+}
+
+/* ---------- tabs：頁面層級橫向分頁（區別於既有 `.chip-strip` 那種
+   可橫向滑動的到期日選單，這是固定幾個分頁的樣式） ---------- */
+
+.tabs {
+  display: flex;
+  gap: 0;
+  align-items: stretch;
+  height: 100%;
+}
+
+.tabs a {
+  color: var(--text-3);
+  font-size: 14px;
+  font-weight: 500;
+  padding: 0 14px;
+  display: flex;
+  align-items: center;
+  position: relative;
+  white-space: nowrap;
+  text-decoration: none;
+}
+
+.tabs a.on {
+  color: var(--text);
+}
+
+.tabs a.on::after {
+  content: "";
+  position: absolute;
+  left: 14px;
+  right: 14px;
+  bottom: -1px;
+  height: 2px;
+  background: var(--accent);
+}
+
+/* ---------- seg：分段控制項（例如日／週／月切換，與既有
+   `.segmented` 是同一種概念的新命名版本，供新版面使用） ---------- */
+
+.seg {
+  display: inline-flex;
+  background: var(--panel-3);
+  border-radius: var(--radius-s);
+  padding: 2px;
+  gap: 2px;
+}
+
+.seg a,
+.seg button {
+  padding: 0 10px;
+  height: 26px;
+  display: flex;
+  align-items: center;
+  border-radius: 3px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-3);
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  font: inherit;
+}
+
+.seg a.on,
+.seg button.on {
+  background: var(--panel);
+  color: var(--text);
+}
+
+/* ---------- 通用狀態圓點（獨立於 `.role .dot`／`.signal-dot`／
+   `.settings-dot` 這三個既有、各自限定情境的圓點——這個是任何情境
+   都能用的版本，g/y/r/n 對應綠／黃／紅／中性四態） ---------- */
+
+.dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  display: inline-block;
+  flex: none;
+}
+
+.dot.g {
+  background: var(--up);
+}
+.dot.y {
+  background: var(--warn);
+}
+.dot.r {
+  background: var(--down);
+}
+.dot.n {
+  background: var(--text-4);
+}
+
+/* ---------- 表格：`.tbl`——40–56px 列高、13px、數字右對齊 ---------- */
+
+.tbl {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.tbl th {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-3);
+  text-align: left;
+  padding: 0 12px;
+  height: 36px;
+  border-bottom: 1px solid var(--line);
+  white-space: nowrap;
+}
+
+.tbl td {
+  padding: 0 12px;
+  height: 56px;
+  border-bottom: 1px solid var(--line);
+  vertical-align: middle;
+  white-space: nowrap;
+}
+
+.tbl tr:last-child td {
+  border-bottom: 0;
+}
+
+.tbl .r {
+  text-align: right;
+}
+
+.tbl tr.hov td {
+  background: var(--panel-2);
+}
+
+.tbl tr.dim td {
+  opacity: 0.55;
+}
+
+/* ---------- sym：Logo＋ticker 身分組。Logo 本身沿用既有 `StockLogo`
+   元件（`.tile`，Logo.dev `fallback=404` 契約），這裡只提供外層的
+   排版容器與代號／名稱兩層文字，不重造一份與 `.tile` 競爭的 logo
+   class。 ---------- */
+
+.sym {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.sym .tk {
+  font-weight: 600;
+  font-size: 14px;
+  line-height: 1.2;
+}
+
+.sym .nm {
+  font-size: 12px;
+  color: var(--text-3);
+  line-height: 1.2;
+}
+
+/* ---------- legs：腿位 pill（例如「買106 · 賣110」），b＝買腿綠、
+   s＝賣腿紅（既有「綠紅只表達數值方向」原則的延伸——這裡的方向是
+   買／賣部位，不是漲跌，但沿用同一組 token 是刻意的：買腿之於帳戶是
+   多頭部位、賣腿是空頭部位，跟 `--up`/`--down` 本來要表達的「對帳戶
+   有利／不利的方向」是同一個語意軸，不是另外借用跟方向無關的顏色） ---------- */
+
+.legs {
+  display: inline-flex;
+  gap: 4px;
+  align-items: center;
+  font-size: 12px;
+}
+
+.legs b {
+  font-weight: 600;
+  color: var(--text);
+}
+
+.legs .b {
+  color: var(--up);
+}
+
+.legs .s {
+  color: var(--down);
+}
+
+/* ---------- 表單輸入框 ---------- */
+
+.inp {
+  height: 36px;
+  border-radius: var(--radius-s);
+  border: 1px solid var(--line-2);
+  background: var(--panel-2);
+  color: var(--text);
+  padding: 0 12px;
+  font: inherit;
+  font-size: 14px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+}
+
+.inp.focus,
+.inp:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-soft);
+}
+
+.inp input {
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  outline: none;
+  width: 100%;
+  padding: 0;
+}
+
+label.lb {
+  font-size: 12px;
+  color: var(--text-3);
+  display: block;
+  margin-bottom: 6px;
+}
+
+/* ---------- 手機頂欄（`.mnav`，52px）——與桌面 `.topbar`（64px）、
+   底部 `.mtabs`（既有）是三個並列但互斥的導覽 chrome，這裡先建好
+   類名供 OG-09 接線。 ---------- */
+
+.mnav {
+  height: 52px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 16px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--line);
+}
+
+/* ---------- heatmap 格 ---------- */
+
+.hm td {
+  height: 26px;
+  padding: 0;
+  text-align: center;
+  font-size: 11px;
+  font-weight: 500;
+  border: 1px solid var(--bg);
+}
+
+.hm th {
+  height: 26px;
+  padding: 0 8px;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-3);
+  text-align: center;
+}
+
+/* ---------- inline 比例條（例如排名列內嵌的報酬比例） ---------- */
+
+.bar {
+  height: 3px;
+  border-radius: 2px;
+  background: var(--panel-3);
+  overflow: hidden;
+}
+
+.bar i {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+  font-style: normal;
 }
