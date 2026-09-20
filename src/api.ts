@@ -1235,6 +1235,13 @@ export interface SuperUserOwnerInfo {
   created_at: string;
   last_activity_at: string | null;
   protected: boolean;
+  /** OG-11（#322）跟進：後端 `Owner` dataclass（PB-07／#304）早就有
+   *  這個欄位、`superuser_list_owners()` 用 `dataclasses.asdict()`
+   *  逐字回傳，前端只是直到本票才第一次宣告型別、開始讀它——不是
+   *  新增後端欄位。Controlled Beta 合成壓測 harness 產生的 owner
+   *  標記，唯一生產面用途是清理排程分開處理，這裡純顯示（synthetic
+   *  tag），不參與任何篩選以外的邏輯。 */
+  is_synthetic: boolean;
 }
 
 export interface SuperUserAuditEntry {
@@ -1325,6 +1332,59 @@ export function superuserSetOwnerProtected(
 
 export function superuserGetAuditLog(): Promise<SuperUserAuditEntry[]> {
   return request<SuperUserAuditEntry[]>("/api/superuser/audit-log");
+}
+
+/**
+ * OG-11（#322）：`GET /api/ops/metrics`（既有端點，S0／SCALE-08／#258
+ * 起就在，Super Admin-only，PB-11／#303 純加法擴充過一次）——前端
+ * 直到本票才第一次包一份 client，不是新增後端端點。回應**只含聚合
+ * 數字**，個別 owner 的可識別內容不在這裡（後端 docstring 明文的
+ * 安全考量）。
+ *
+ * 型別只宣告桌面 Super Admin 後台 stats 方塊要用到的欄位——回應本身
+ * 還有每個 `PERSISTED_METRICS` 桶各自完整的逐 bucket／source／symbol
+ * 明細陣列（`chain_fetch_count`／`chain_429_count`／`stale_serve_
+ * count`／`cold_miss_count`／`refresh_duration_ms`／`history_read_
+ * volume`／`abandoned_owner_cleanup_count`），這裡先只取「近 7 天
+ * 加總」這一層彙整值，逐 bucket 的時序細節本票不呈現（票面「刻意不做
+ * 豪華 Dashboard，沒有圖表」的既有裁示延伸）。
+ */
+export interface OpsMetricBucket {
+  bucket: string;
+  source: string | null;
+  symbol: string | null;
+  count: number;
+  total: number;
+  max_value: number | null;
+}
+
+export interface OpsMetrics {
+  chain_fetch_count: OpsMetricBucket[];
+  chain_429_count: OpsMetricBucket[];
+  stale_serve_count: OpsMetricBucket[];
+  cold_miss_count: OpsMetricBucket[];
+  refresh_duration_ms: OpsMetricBucket[];
+  history_read_volume: OpsMetricBucket[];
+  abandoned_owner_cleanup_count: OpsMetricBucket[];
+  table_size: Record<string, {
+    row_count: number;
+    total_bytes: number | null;
+    avg_row_bytes: number | null;
+    max_row_bytes: number | null;
+  }>;
+  anonymous_owners: {
+    active: number;
+    abandoned: number;
+    eligible_for_hard_delete: number;
+    protected: number;
+    total: number;
+  };
+  scenarios: { total: number; average_per_owner: number };
+  alerts: { key: string; triggered: boolean; message: string }[];
+}
+
+export function getOpsMetrics(): Promise<OpsMetrics> {
+  return request<OpsMetrics>("/api/ops/metrics");
 }
 
 // ---------- Historical IV 歷史序列（#126／#114，HIVT-02–04／#153–155） ----------

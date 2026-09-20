@@ -1475,6 +1475,20 @@ async function routeSettingsMobile(page: import("@playwright/test").Page) {
   // `/api/diagnostics`——這裡預設回空清單，個別測試需要非空清單時
   // 自己再覆蓋這個 route。
   await page.route("**/api/diagnostics*", (route) => route.fulfill({ json: [] }));
+  // OG-11（#322）：role 固定模擬 Super Admin，`<SuperUserAdmin />` 與
+  // 它掛著的 `OpsStats`／owners 清單一律會掛載並發請求。
+  await page.route("**/api/superuser/owners*", (route) => route.fulfill({ json: [] }));
+  await page.route("**/api/superuser/audit-log*", (route) => route.fulfill({ json: [] }));
+  await page.route("**/api/ops/metrics", (route) => route.fulfill({ json: {
+    chain_fetch_count: [], chain_429_count: [], stale_serve_count: [],
+    cold_miss_count: [], refresh_duration_ms: [], history_read_volume: [],
+    abandoned_owner_cleanup_count: [],
+    table_size: {},
+    anonymous_owners: { active: 0, abandoned: 0, eligible_for_hard_delete: 0,
+                       protected: 0, total: 0 },
+    scenarios: { total: 0, average_per_owner: 0 },
+    alerts: [],
+  } }));
 }
 
 test("手機版：底部導覽的「設定」進得去設定，返回回得來（Settings／#124；" +
@@ -1569,6 +1583,19 @@ async function routeRoleJourney(page: import("@playwright/test").Page) {
   await page.route("**/api/superuser/owners*", (route) => route.fulfill({ json: [] }));
   await page.route("**/api/superuser/audit-log*", (route) => route.fulfill({ json: [] }));
   await page.route("**/api/diagnostics*", (route) => route.fulfill({ json: [] }));
+  // OG-11（#322）：`<SuperUserAdmin />` 掛載時連帶掛的 `OpsStats` 一律
+  // 打這個端點——手機版沒有桌面 subnav 的分頁守門，Super Admin 一登入
+  // 就立刻掛載，不攔截這條路由這個測試會掛在未攔截請求上。
+  await page.route("**/api/ops/metrics", (route) => route.fulfill({ json: {
+    chain_fetch_count: [], chain_429_count: [], stale_serve_count: [],
+    cold_miss_count: [], refresh_duration_ms: [], history_read_volume: [],
+    abandoned_owner_cleanup_count: [],
+    table_size: {},
+    anonymous_owners: { active: 0, abandoned: 0, eligible_for_hard_delete: 0,
+                       protected: 0, total: 0 },
+    scenarios: { total: 0, average_per_owner: 0 },
+    alerts: [],
+  } }));
 
   await page.route("**/api/auth/login", async (route) => {
     const body = JSON.parse(route.request().postData() ?? "{}") as

@@ -33,6 +33,25 @@ import { getSettingsCached, setSettingsCache } from "./fetchCache";
 import RoleLogin from "./RoleLogin";
 import SuperUserAdmin from "./SuperUserAdmin";
 import { roleAtLeast, type Role } from "./superuser";
+import { useIsDesktop } from "./useIsDesktop";
+
+/**
+ * OG-11（#322）：桌面設定頁左側 subnav 的分頁鍵——內容跟手機版單欄
+ * 堆疊逐字相同，只是桌面版把它們拆成「一次只顯示一塊」的分頁，不是
+ * 重新設計每一塊各自的內容。「管理後台」只在達到 Super Admin 才出現
+ * 在 subnav 清單裡（跟手機版 `roleAtLeast(role, "superadmin") &&
+ * &lt;SuperUserAdmin /&gt;` 同一個守門條件，只是手機版是「有沒有這一塊」，
+ * 桌面版多一步「這一塊在不在分頁清單裡」）。
+ */
+type SettingsSection = "general" | "datasource" | "diagnostics" | "delete" | "admin";
+
+const SECTION_LABELS: Record<SettingsSection, string> = {
+  general: "一般",
+  datasource: "資料來源",
+  diagnostics: "診斷",
+  delete: "刪除我的資料",
+  admin: "管理後台",
+};
 
 /** 兩列的識別鍵——與後端 `api_app/providers.py` 的 `USAGES` 同名。 */
 type UsageKey = "market_data" | "historical_iv";
@@ -82,6 +101,10 @@ export default function Settings() {
   // token 輸入（>= superadmin，AUTH-03 起 credential CRUD 收斂為
   // Super-Admin-only）與跨 owner 管理面板（== superadmin）。
   const [role, setRole] = useState<Role>("normal");
+  const isDesktop = useIsDesktop();
+  // OG-11（#322）：桌面版 subnav 目前選中哪一塊——手機版不需要這個
+  // state（單欄堆疊全部一次顯示），只在 `isDesktop` 分支使用。
+  const [activeSection, setActiveSection] = useState<SettingsSection>("general");
 
   // T03（#187）：走快取——與 `IvHistory` 自己那次讀取共用同一份
   // settings 結果，不各自 mount 各抓一次。
@@ -164,31 +187,12 @@ export default function Settings() {
     }
   }
 
-  return (
-    <div className="screen">
-      <div className="settings-head">
-        <a className="nav-back" href="#/">
-          ‹ 劇本庫
-        </a>
-        <h1 className="toolbar-title">設定</h1>
-      </div>
-
-      {error && (
-        <div className="notice error" role="alert">
-          {error}
-        </div>
-      )}
-
-      <RoleLogin role={role} onChange={setRole} />
-
-      {/* PB-10（#301）／AUTH-06（#313）：跨 owner 檢視／管理僅在角色
-         達到 Super Admin 才掛載——未達門檻時不打任何
-         `/api/superuser/owners*` 請求，伺服器端 401 只是第二道防線，
-         不是唯一防線。 */}
-      {roleAtLeast(role, "superadmin") && <SuperUserAdmin />}
-
+  // 「Data / API」這一塊的內容手機／桌面逐字相同，抽成一個變數只是
+  // 避免兩個分支各自貼一份一模一樣的 JSX（純提取，不改變任何條件式
+  // 或渲染結果——手機分支拿到的還是原本那份 `USAGE_ORDER.map(...)`）。
+  const datasourcePanel = (
+    <>
       <h2 className="section-title">Data / API</h2>
-
       {!view || !draft ? (
         <p className="caption">載入中……</p>
       ) : (
@@ -211,10 +215,82 @@ export default function Settings() {
           />
         ))
       )}
+    </>
+  );
 
-      <Diagnostics />
+  // OG-11（#322）：桌面 subnav 的分頁清單——「管理後台」只在達到
+  // Super Admin 時出現，跟手機版 `roleAtLeast(role, "superadmin") &&
+  // <SuperUserAdmin />` 同一個守門條件。角色降級（例如登出）導致目前
+  // 選中的分頁不再存在時，退回第一個可用分頁——與 `FamilyTabs.tsx::
+  // resolveFamily()` 同一種「使用者選擇優先、退回預設」寫法。
+  const availableSections: SettingsSection[] = roleAtLeast(role, "superadmin")
+    ? ["general", "datasource", "diagnostics", "delete", "admin"]
+    : ["general", "datasource", "diagnostics", "delete"];
+  const currentSection = availableSections.includes(activeSection)
+    ? activeSection : availableSections[0];
 
-      <DeleteMyData />
+  return (
+    <div className="screen">
+      <div className="settings-head">
+        <a className="nav-back" href="#/">
+          ‹ 劇本庫
+        </a>
+        <h1 className="toolbar-title">設定</h1>
+      </div>
+
+      {error && (
+        <div className="notice error" role="alert">
+          {error}
+        </div>
+      )}
+
+      {isDesktop ? (
+        <div className="settings-shell">
+          <nav className="settings-subnav" role="tablist" aria-label="設定">
+            {availableSections.map((key) => (
+              <button
+                key={key}
+                role="tab"
+                aria-selected={currentSection === key}
+                className={currentSection === key ? "chip selected" : "chip"}
+                onClick={() => setActiveSection(key)}
+              >
+                {SECTION_LABELS[key]}
+              </button>
+            ))}
+          </nav>
+          <div className="settings-panel">
+            {currentSection === "general" && (
+              <RoleLogin role={role} onChange={setRole} />
+            )}
+            {/* PB-10（#301）／AUTH-06（#313）：跨 owner 檢視／管理僅在
+                角色達到 Super Admin 才掛載——未達門檻時這塊分頁根本不在
+                `availableSections` 裡，不會被選中、也不會掛載，不打任何
+                `/api/superuser/owners*` 請求。伺服器端 401 只是第二道
+                防線，不是唯一防線。 */}
+            {currentSection === "admin" && <SuperUserAdmin />}
+            {currentSection === "datasource" && datasourcePanel}
+            {currentSection === "diagnostics" && <Diagnostics />}
+            {currentSection === "delete" && <DeleteMyData />}
+          </div>
+        </div>
+      ) : (
+        <>
+          <RoleLogin role={role} onChange={setRole} />
+
+          {/* PB-10（#301）／AUTH-06（#313）：跨 owner 檢視／管理僅在角色
+             達到 Super Admin 才掛載——未達門檻時不打任何
+             `/api/superuser/owners*` 請求，伺服器端 401 只是第二道防線，
+             不是唯一防線。 */}
+          {roleAtLeast(role, "superadmin") && <SuperUserAdmin />}
+
+          {datasourcePanel}
+
+          <Diagnostics />
+
+          <DeleteMyData />
+        </>
+      )}
     </div>
   );
 }

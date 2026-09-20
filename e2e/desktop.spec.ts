@@ -1333,6 +1333,34 @@ async function routeSettings(page: import("@playwright/test").Page) {
   // Settings 現在也掛著 Diagnostics 區塊（DG-06／#149）——預設回空
   // 清單，需要非空清單的測試自己再覆蓋這個 route。
   await page.route("**/api/diagnostics*", (route) => route.fulfill({ json: [] }));
+  // OG-11（#322）：`<SuperUserAdmin />`（管理後台分頁）掛載時打
+  // `/api/superuser/owners`／`/api/ops/metrics`——這裡的既有測試多數
+  // 不關心管理後台本身（那由角色可見度矩陣測試與
+  // `SuperUserAdmin.test.tsx` 專屬覆蓋），預設回空清單／最小假體，
+  // 讓切到「管理後台」分頁不會因為這兩個新請求沒攔截而掛掉。
+  await page.route("**/api/superuser/owners*",
+    (route) => route.fulfill({ json: [] }));
+  await page.route("**/api/superuser/audit-log",
+    (route) => route.fulfill({ json: [] }));
+  await page.route("**/api/ops/metrics", (route) => route.fulfill({ json: {
+    chain_fetch_count: [], chain_429_count: [], stale_serve_count: [],
+    cold_miss_count: [], refresh_duration_ms: [], history_read_volume: [],
+    abandoned_owner_cleanup_count: [],
+    table_size: {},
+    anonymous_owners: { active: 0, abandoned: 0, eligible_for_hard_delete: 0,
+                       protected: 0, total: 0 },
+    scenarios: { total: 0, average_per_owner: 0 },
+    alerts: [],
+  } }));
+}
+
+/** OG-11（#322）：桌面設定頁左側 subnav 切分頁——內容收進分頁後，既有
+ *  測試得先點對應分頁才看得到自己要測的區塊（改版前是單欄堆疊，一次
+ *  全部可見）。 */
+async function openSettingsTab(
+  page: import("@playwright/test").Page, label: string,
+) {
+  await page.getByRole("tab", { name: label }).click();
 }
 
 test("OG-02（#318）：設定入口在常駐頂欄導覽，任何頁面都按得到；內容" +
@@ -1347,6 +1375,9 @@ test("OG-02（#318）：設定入口在常駐頂欄導覽，任何頁面都按�
   const entry = nav.getByRole("link", { name: "設定" });
   await expect(entry).toBeVisible();
   await entry.click();
+  // OG-11（#322）：「Data / API」收進「資料來源」分頁，不是預設分頁
+  // （預設「一般」）。
+  await openSettingsTab(page, "資料來源");
   await expect(page.getByText("Data / API")).toBeVisible();
   // 全寬頁面：劇本庫清單不再同時顯示。
   await expect(page.getByRole("link", { name: /ABC/ })).not.toBeVisible();
@@ -1359,6 +1390,7 @@ test("OG-02（#318）：設定入口在常駐頂欄導覽，任何頁面都按�
 test("桌面版：切到自訂、存 token，畫面只顯示遮罩", async ({ page }) => {
   await routeSettings(page);
   await page.goto("/#/settings");
+  await openSettingsTab(page, "資料來源");
 
   const md = page.getByRole("region", { name: "Market Data" });
   await expect(md.getByText("預設：Cboe")).toBeVisible();
@@ -1449,6 +1481,7 @@ test("桌面版：測試連線走完未設定 → 尚未驗證 → 已連線（S
   await page.route("**/api/diagnostics*", (route) => route.fulfill({ json: [] }));
 
   await page.goto("/#/settings");
+  await openSettingsTab(page, "資料來源");
   const md = page.getByRole("region", { name: "Market Data" });
 
   // 狀態列鎖定 `.settings-status`：fallback 提示裡也有「尚未設定 token」
@@ -1489,6 +1522,7 @@ test("桌面版：Settings 的 Diagnostics 區塊可讀可操作（DG-06／#149�
   });
 
   await page.goto("/#/settings");
+  await openSettingsTab(page, "診斷");
 
   const section = page.getByRole("region", { name: "Diagnostics" });
   await expect(section).toBeVisible();
@@ -1517,6 +1551,7 @@ test("桌面版：設定頁「刪除我的所有資料」需二次確認，確�
     return route.continue();
   });
   await page.goto("/#/settings");
+  await openSettingsTab(page, "刪除我的資料");
 
   const section = page.getByRole("region", { name: "刪除我的資料" });
   await expect(section).toBeVisible();
@@ -1558,6 +1593,18 @@ async function routeRoleJourney(page: import("@playwright/test").Page) {
   await page.route("**/api/superuser/owners*", (route) => route.fulfill({ json: [] }));
   await page.route("**/api/superuser/audit-log*", (route) => route.fulfill({ json: [] }));
   await page.route("**/api/diagnostics*", (route) => route.fulfill({ json: [] }));
+  // OG-11（#322）：「管理後台」分頁掛載 `<SuperUserAdmin />` 時連帶
+  // 掛的 `OpsStats` 一律打這個端點。
+  await page.route("**/api/ops/metrics", (route) => route.fulfill({ json: {
+    chain_fetch_count: [], chain_429_count: [], stale_serve_count: [],
+    cold_miss_count: [], refresh_duration_ms: [], history_read_volume: [],
+    abandoned_owner_cleanup_count: [],
+    table_size: {},
+    anonymous_owners: { active: 0, abandoned: 0, eligible_for_hard_delete: 0,
+                       protected: 0, total: 0 },
+    scenarios: { total: 0, average_per_owner: 0 },
+    alerts: [],
+  } }));
 
   await page.route("**/api/auth/login", async (route) => {
     const body = JSON.parse(route.request().postData() ?? "{}") as
@@ -1648,6 +1695,9 @@ test("桌面版：角色可見度矩陣——Normal／Super User／Super Admin �
   await page.getByLabel("密碼").fill(ROLE_SUPERADMIN_PASSWORD);
   await page.getByRole("button", { name: "登入" }).click();
   await expect(page.getByText(/目前身分：Super Admin/)).toBeVisible();
+  // OG-11（#322）：管理後台收進桌面 subnav 的「管理後台」分頁，不再
+  // 隨頁面一次全部可見，登入成功後得先點分頁才看得到。
+  await openSettingsTab(page, "管理後台");
   await expect(
     page.getByRole("region", { name: "Super User 管理面板" }),
   ).toBeVisible();
@@ -1657,6 +1707,12 @@ test("桌面版：角色可見度矩陣——Normal／Super User／Super Admin �
   // 登出：兩者都不再可見
   await page.goto("/#/settings");
   await page.getByRole("button", { name: "登出" }).click();
+  // 明確等到畫面真的换回登入表單（Normal User 狀態已經真的落地），
+  // 才離開設定頁——避免詳細頁在 `getAuthStatusCached()` 的快取值真正
+  // 換成 "normal" 之前就搶先掛載、讀到還沒更新完的舊角色（OG-11／
+  // #322 跟進：管理後台收進 subnav 分頁後，這個流程比改版前多轉一手
+  // tab 切換，光靠「管理面板消失」這個斷言不足以保證快取已經寫定）。
+  await expect(page.getByLabel("密碼")).toBeVisible();
   await expect(
     page.getByRole("region", { name: "Super User 管理面板" }),
   ).toHaveCount(0);

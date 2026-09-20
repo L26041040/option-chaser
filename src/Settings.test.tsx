@@ -13,6 +13,7 @@ import Settings from "./Settings";
 import type { SettingsView } from "./api";
 import { _resetCacheForTests } from "./fetchCache";
 import type { Role } from "./superuser";
+import { fakeMediaQueryList } from "./test-setup";
 
 const PROVIDER = "marketdata-app";
 
@@ -59,6 +60,21 @@ const CONFIGURED = {
  * 守門機制，後者由本檔案末尾專屬的 describe block 負責，那裡會用
  * `"normal"` 覆寫）。
  */
+/** OG-11（#322）：`<SuperUserAdmin />` 掛載時連帶掛的 `OpsStats` 一律
+ *  打 `/api/ops/metrics`——這個檔案的既有測試不關心系統指標方塊本身
+ *  （那由 `SuperUserAdmin.test.tsx` 專屬覆蓋），只需要一份全部欄位
+ *  都存在的最小假體，讓這個新的非同步 effect 不會拋錯打斷其他斷言。 */
+const EMPTY_OPS_METRICS = {
+  chain_fetch_count: [], chain_429_count: [], stale_serve_count: [],
+  cold_miss_count: [], refresh_duration_ms: [], history_read_volume: [],
+  abandoned_owner_cleanup_count: [],
+  table_size: {},
+  anonymous_owners: { active: 0, abandoned: 0, eligible_for_hard_delete: 0,
+                     protected: 0, total: 0 },
+  scenarios: { total: 0, average_per_owner: 0 },
+  alerts: [],
+};
+
 function mockApi(views: SettingsView[], { role = "superadmin" as Role } = {}) {
   let i = 0;
   const spy = vi.fn(async (url: string, _init?: RequestInit) => {
@@ -77,6 +93,9 @@ function mockApi(views: SettingsView[], { role = "superadmin" as Role } = {}) {
     }
     if (String(url).startsWith("/api/superuser/audit-log")) {
       return { ok: true, status: 200, json: async () => [] } as Response;
+    }
+    if (String(url).startsWith("/api/ops/metrics")) {
+      return { ok: true, status: 200, json: async () => EMPTY_OPS_METRICS } as Response;
     }
     const body = views[Math.min(i, views.length - 1)];
     i += 1;
@@ -614,6 +633,9 @@ function mockApiWithLogin(views: SettingsView[],
     if (String(url).startsWith("/api/superuser/audit-log")) {
       return { ok: true, status: 200, json: async () => [] } as Response;
     }
+    if (String(url).startsWith("/api/ops/metrics")) {
+      return { ok: true, status: 200, json: async () => EMPTY_OPS_METRICS } as Response;
+    }
     const body = views[Math.min(i, views.length - 1)];
     i += 1;
     return { ok: true, status: 200, json: async () => body } as Response;
@@ -745,5 +767,77 @@ describe("三層角色登入（AUTH-06／#313）", () => {
       const key = localStorage.key(idx)!;
       expect(localStorage.getItem(key)).not.toContain(SUPERADMIN_PASSWORD);
     }
+  });
+});
+
+describe("OG-11（#322）：桌面版左側 subnav（手機版單欄堆疊零改動）", () => {
+  function goDesktop() {
+    vi.stubGlobal("matchMedia", (q: string) => fakeMediaQueryList(true, q));
+  }
+
+  /** 桌面版預設分頁是「一般」，`ready()`（等 Market Data 出現）在這裡
+   *  永遠等不到——「資料來源」分頁沒點開之前 Market Data 根本不在
+   *  DOM 裡。改成等 subnav 本身（`role="tablist"`）出現，這才是桌面
+   *  版無論停在哪個分頁都一定存在的東西。 */
+  async function readyDesktop() {
+    await waitFor(() => expect(screen.getByRole("tablist")).toBeInTheDocument());
+  }
+
+  it("桌面：預設分頁是「一般」，顯示登入區塊；「Data / API」收在" +
+     "「資料來源」分頁，預設不可見", async () => {
+    goDesktop();
+    mockApi([view()]);
+    render(<Settings />);
+    await readyDesktop();
+
+    expect(screen.getByRole("tab", { name: "一般" }))
+      .toHaveAttribute("aria-selected", "true");
+    expect(screen.queryByText("Data / API")).not.toBeInTheDocument();
+  });
+
+  it("桌面：點「資料來源」分頁換成顯示 Data / API，登入區塊跟著隱藏", async () => {
+    goDesktop();
+    mockApi([view()]);
+    render(<Settings />);
+    await readyDesktop();
+
+    await userEvent.click(screen.getByRole("tab", { name: "資料來源" }));
+
+    await waitFor(() => expect(screen.getByText("Data / API")).toBeInTheDocument());
+    expect(screen.queryByText(/目前身分：/)).not.toBeInTheDocument();
+  });
+
+  it("桌面：Super Admin 才看得到「管理後台」分頁，點下去顯示管理面板", async () => {
+    goDesktop();
+    mockApi([view()], { role: "superadmin" });
+    render(<Settings />);
+    await readyDesktop();
+    await waitFor(() =>
+      expect(screen.getByRole("tab", { name: "管理後台" })).toBeInTheDocument());
+
+    await userEvent.click(screen.getByRole("tab", { name: "管理後台" }));
+    expect(await screen.findByText("Super User 管理面板")).toBeInTheDocument();
+  });
+
+  it("桌面：Normal User 看不到「管理後台」分頁——不是隱藏起來，是根本" +
+     "不在 subnav 清單裡", async () => {
+    goDesktop();
+    mockApi([view()], { role: "normal" });
+    render(<Settings />);
+    await readyDesktop();
+    await waitFor(() => expect(screen.getByLabelText("密碼")).toBeInTheDocument());
+
+    expect(screen.queryByRole("tab", { name: "管理後台" })).not.toBeInTheDocument();
+  });
+
+  it("手機（預設 matchMedia）：不出現 subnav，全部區塊一次堆疊顯示" +
+     "——手機版零改動", async () => {
+    mockApi([view()], { role: "superadmin" });
+    render(<Settings />);
+    await ready();
+
+    expect(screen.queryByRole("tablist")).not.toBeInTheDocument();
+    expect(screen.getByText("Data / API")).toBeInTheDocument();
+    expect(screen.getByText("Super User 管理面板")).toBeInTheDocument();
   });
 });
