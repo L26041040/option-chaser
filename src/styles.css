@@ -289,6 +289,18 @@ body {
     gap: 12px;
   }
 
+  /* OG-12（#328）真機驗收發現：`.toolbar` 的滿版負邊距沿用整站共用的
+     `var(--gap)`（16px），這裡卻把 `.screen` 的 padding 壓到 12px——
+     兩個數字自 QA-FIX-3 起就對不上，負邊距蓋過頭 4px／邊，寬度不夠寬
+     時（例如 1100–1280px 這段中間寬度）會讓 `header.toolbar` 的
+     `getBoundingClientRect()` 略微超出視窗，整頁被撐出一條看不明顯但
+     測得到的水平捲軸。改成跟這裡的 12px 對齊，不改變任何看得見的間距
+     ——`.toolbar` 本來就是為了跟 `.screen` 的邊界對齊才用負邊距，這裡
+     只是讓兩個數字回到一致，不是重新設計版面。 */
+  .detail-page .toolbar {
+    margin: -12px -12px 4px;
+  }
+
   .detail-page .card {
     padding: 12px;
     gap: 8px;

@@ -1,5 +1,14 @@
 import { expect, test } from "@playwright/test";
 
+/** Obsidian Gold 頁面底色／主文字色的 `rgb(...)` 字面值——深色與淺色各
+ *  一組，`--bg`／`--text` 兩個 token（`src/styles.css`）的計算值。兩條
+ *  既有測試（字型換血驗證那條、下面 OG-12 新增的淺色驗證）都要拿同一組
+ *  數字比對，抽成具名常數只寫一次，不是巧合各自敲對同一串數字
+ *  （`/code-review` Standards 軸跟進）。 */
+const OBSIDIAN_GOLD_DARK_BG = "rgb(11, 14, 17)";
+const OBSIDIAN_GOLD_LIGHT_BG = "rgb(245, 245, 245)";
+const OBSIDIAN_GOLD_LIGHT_TEXT = "rgb(30, 35, 41)";
+
 /**
  * OG-01（#317）AC：「Geist＋Noto Sans TC 以網頁字型載入；用瀏覽器
  * `document.fonts` 可驗證兩者皆 loaded」——jsdom（Vitest）不會真的
@@ -98,9 +107,33 @@ test("body 實際套用的背景色是 Obsidian Gold 的頁面底色（token 換
   const bg = await page.evaluate(
     () => getComputedStyle(document.body).backgroundColor,
   );
-  // 深色優先：#0B0E11 = rgb(11, 14, 17)。系統若在真無頭瀏覽器強制
-  // 淺色，這裡就會是 #F5F5F5 = rgb(245, 245, 245)——兩者都是本輪
-  // Obsidian Gold token，任一個都證明換血生效；舊系統的
-  // #101318／#F4F6F9 兩者皆不應出現。
-  expect(["rgb(11, 14, 17)", "rgb(245, 245, 245)"]).toContain(bg);
+  // 深色優先：#0B0E11。系統若在真無頭瀏覽器強制淺色，這裡就會是
+  // #F5F5F5——兩者都是本輪 Obsidian Gold token，任一個都證明換血
+  // 生效；舊系統的 #101318／#F4F6F9 兩者皆不應出現。
+  expect([OBSIDIAN_GOLD_DARK_BG, OBSIDIAN_GOLD_LIGHT_BG]).toContain(bg);
+});
+
+/* ---------- OG-12（#328）：淺色模式明確驗證，不靠無頭瀏覽器剛好強制
+   淺色才測得到 ---------- */
+
+test("OG-12（#328）：`prefers-color-scheme: light` 下真的套用淺色 token" +
+     "（背景／文字色跟深色版不同，不是媒體查詢沒生效），桌面與手機" +
+     "兩種 chrome 皆同一份 token 表", async ({ page }) => {
+  await page.emulateMedia({ colorScheme: "light" });
+  await page.route("**/api/scenarios", (route) => route.fulfill({ json: [] }));
+  await page.route("**/api/auth/status",
+    (route) => route.fulfill({ json: { role: "normal" } }));
+
+  await page.goto("/");
+  await page.waitForSelector(".screen");
+
+  const tokens = await page.evaluate(() => {
+    const cs = getComputedStyle(document.body);
+    return { bg: cs.backgroundColor, color: cs.color };
+  });
+  // artifact `.root.light` token：`--bg0: #F5F5F5`（背景）／
+  // `--t1: #1E2329`（主文字）——跟深色版 `#0B0E11`／`#EAECEF` 明顯不同，
+  // 不是同一組數字剛好在兩種 color-scheme 下都適用。
+  expect(tokens.bg).toBe(OBSIDIAN_GOLD_LIGHT_BG);
+  expect(tokens.color).toBe(OBSIDIAN_GOLD_LIGHT_TEXT);
 });

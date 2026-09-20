@@ -3335,3 +3335,27 @@ test("手機版：首頁 Beta 說明常駐可見，頁尾在每個畫面都在�
   await page.getByRole("link", { name: "設定頁" }).click();
   await expect(page).toHaveURL(/#\/settings$/);
 });
+
+/* ---------- OG-12（#328）：375px 整頁不橫捲（page-level 一般性守門，
+   不只是既有 Heatmap／到期日 chip 這些個別功能各自的橫捲測試） ---------- */
+
+test("OG-12（#328）：375px（比既有 iPhone 專案預設 390px 更窄的手機寬度）" +
+     "下，劇本庫與詳細頁整頁都不出現水平捲軸——既有 Heatmap／到期日 chip" +
+     "橫捲測試各自只驗自己那個功能的水平捲動容器，這裡額外驗證整個" +
+     "`<html>` 本身在更窄的寬度下也不會被撐寬", async ({ page }) => {
+  await page.setViewportSize({ width: 375, height: 812 });
+  const row = libraryRow({ id: "s1", symbol: "NVDA" });
+  await routeLibrary(page, row, sampleCallFly);
+
+  await page.goto("/");
+  await expect(page.getByRole("heading", { name: "劇本庫" })).toBeVisible();
+  const libraryOverflowX = await page.evaluate(
+    () => document.documentElement.scrollWidth > window.innerWidth);
+  expect(libraryOverflowX).toBe(false);
+
+  await page.getByRole("link", { name: /NVDA/ }).click();
+  await expect(page.getByText(/劇本主圖/)).toBeVisible();
+  const detailOverflowX = await page.evaluate(
+    () => document.documentElement.scrollWidth > window.innerWidth);
+  expect(detailOverflowX).toBe(false);
+});

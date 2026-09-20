@@ -2485,3 +2485,57 @@ test("桌面版：首頁 Beta 說明常駐在劇本庫頁面，頁尾在整個 d
   await page.getByRole("link", { name: "設定頁" }).click();
   await expect(page).toHaveURL(/#\/settings$/);
 });
+
+/* ---------- OG-12（#328）：1100px 斷點與中間寬度 ---------- */
+
+test("OG-12（#328）：1100px 斷點兩側切換乾淨——寬度未達 1100px 是手機" +
+     "底部導覽，達到 1100px 是桌面頂欄，兩者不會同時出現", async ({ page }) => {
+  await routeTwoScenarios(page);
+  // 斷點以下一格：跟 `useIsDesktop()`／`styles.css` 共用的
+  // `(min-width: 1100px)` 媒體查詢字面一致，1099px 必須落在「未達」
+  // 那一側。
+  await page.setViewportSize({ width: 1099, height: 800 });
+  await page.goto("/");
+
+  await expect(page.locator(".mtabs")).toBeVisible();
+  await expect(page.locator(".topbar")).toHaveCount(0);
+
+  // `useIsDesktop()` 用 `matchMedia` 的 `change` 事件即時反應，不必
+  // 重新整理頁面——這裡直接動態調整視窗，驗證的是同一份 React state
+  // 真的會跟著斷點即時切換，不是只有整頁重新載入才生效。
+  await page.setViewportSize({ width: 1100, height: 800 });
+  await expect(page.locator(".topbar")).toBeVisible();
+  await expect(page.locator(".mtabs")).toHaveCount(0);
+
+  // 切回手機寬度，兩種 chrome 仍然乾淨互斥（不是單向轉換）。
+  await page.setViewportSize({ width: 1099, height: 800 });
+  await expect(page.locator(".mtabs")).toBeVisible();
+  await expect(page.locator(".topbar")).toHaveCount(0);
+});
+
+test("OG-12（#328）：1100–1280px 中間寬度——劇本庫表格與詳細頁三欄外殼" +
+     "都不溢出，整頁不橫向捲動", async ({ page }) => {
+  await routeTwoScenarios(page, sampleLongCall);
+  // 斷點剛過、比既有 Desktop 專案固定的 1280px 更窄的中間寬度——三欄
+  // 外殼 `grid-template-columns: minmax(260px,.9fr) minmax(420px,1.6fr)
+  // minmax(220px,.7fr)` 三個下限加兩道 12px gap 共 924px，在 1150px
+  // 這個寬度下仍應該放得下，不必等到 1280px 那個既有 Desktop 專案
+  // 固定寬度才驗得到。
+  await page.setViewportSize({ width: 1150, height: 800 });
+
+  await page.goto("/");
+  await expect(page.locator(".topbar")).toBeVisible();
+  const libraryOverflowX = await page.evaluate(
+    () => document.documentElement.scrollWidth > window.innerWidth);
+  expect(libraryOverflowX).toBe(false);
+  await expect(page.locator(".lib-thead")).toBeVisible();
+
+  await page.goto("/#/s/s1");
+  const shell = page.locator(".detail-shell");
+  await expect(shell.locator(".detail-col-left")).toBeVisible();
+  await expect(shell.locator(".detail-col-center")).toBeVisible();
+  await expect(shell.locator(".detail-col-right")).toBeVisible();
+  const detailOverflowX = await page.evaluate(
+    () => document.documentElement.scrollWidth > window.innerWidth);
+  expect(detailOverflowX).toBe(false);
+});
