@@ -2136,6 +2136,63 @@ test("OG-06／OG-07（#321／#325）：桌面詳細頁三欄外殼與身分列�
   await expect(header.getByText(/目標 \$130\.00（\+30\.0%）/)).toBeVisible();
 });
 
+/* ---------- OG-08（#326）：右欄 Historical IV 面板版位 ---------- */
+
+test("OG-08（#326）：桌面單腿詳細頁，角色 ≥ Super User 且已解鎖時，右欄" +
+     "整個是 Historical IV 面板（跟 artifact「Desktop TSLA Long Call＋" +
+     "Historical IV」板一致的版位），不再是進場／Payoff／Greeks／報告那組" +
+     "候選面板 tab；左欄排名表／中央 Heatmap 不受影響", async ({ page }) => {
+  await routeTwoScenarios(page, sampleLongCall);
+  await page.route("**/api/auth/status",
+    (route) => route.fulfill({ json: { role: "superuser" } }));
+  await page.route("**/api/settings", (route) =>
+    route.fulfill({ json: { historical_iv_enabled: true } }));
+  await page.route("**/api/scenarios/*/iv-history*", (route) =>
+    route.fulfill({ json: fullIvResponse() }));
+
+  await page.goto("/#/s/s1");
+
+  const shell = page.locator(".detail-shell");
+  const rightPanel = shell.locator(".detail-col-right");
+  await expect(rightPanel.locator(".iv-history")).toBeVisible();
+  await expect(rightPanel.getByRole("tab", { name: "進場" })).toHaveCount(0);
+  await expect(rightPanel.getByRole("tab", { name: "Payoff" })).toHaveCount(0);
+  await expect(rightPanel.getByRole("tab", { name: "Greeks" })).toHaveCount(0);
+
+  // 左欄／中央欄是既有 OG-06 版面，不受右欄換皮影響——`rowA.strategies`
+  // 沿用泛用的 `sampleRow`（既有跨測試共用假體，不是 Long Call 專屬），
+  // 跟 `sampleLongCall` 這份 `latest_result` 的 family 對不上是既有的
+  // fixture 落差（其餘既有測試也用同一組組合，只是從沒斷言過左欄内容），
+  // 不是本票要修的東西；這裡只確認左／中欄容器仍在、劇本主圖標題仍照舊
+  // 渲染，不對排名列內容做斷言。
+  await expect(shell.locator(".detail-col-left")).toBeVisible();
+  await expect(shell.locator(".detail-col-center").getByText("劇本主圖"))
+    .toBeVisible();
+});
+
+test("OG-08（#326）：同一個單腿劇本，Normal User 看不到 Historical IV，" +
+     "右欄仍是既有候選面板（進場 tab 預設可見）——換皮只影響 Super User" +
+     "以上才看得到的那個分支", async ({ page }) => {
+  await routeTwoScenarios(page, sampleLongCall);
+  await page.route("**/api/auth/status",
+    (route) => route.fulfill({ json: { role: "normal" } }));
+  await page.route("**/api/settings", (route) =>
+    route.fulfill({ json: { historical_iv_enabled: true } }));
+  const ivCalls: string[] = [];
+  await page.route("**/api/scenarios/*/iv-history*", (route) => {
+    ivCalls.push(route.request().url());
+    return route.fulfill({ json: fullIvResponse() });
+  });
+
+  await page.goto("/#/s/s1");
+
+  const rightPanel = page.locator(".detail-shell").locator(".detail-col-right");
+  await expect(rightPanel.getByRole("tab", { name: "進場" })).toHaveAttribute(
+    "aria-selected", "true");
+  await expect(rightPanel.locator(".iv-history")).toHaveCount(0);
+  expect(ivCalls).toEqual([]);
+});
+
 /* ---------- T16（#232，Initial V2）：Butterfly 前端呈現，桌面 viewport ---------- */
 
 const butterflyKeyDesktop = sampleCallFly.results[0].candidates[0];

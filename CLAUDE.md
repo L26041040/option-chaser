@@ -36,13 +36,11 @@ Implement the approved **Obsidian Gold** Binance-inspired visual design without 
 - **OG-07 #325** — desktop detail part II: right-column candidate panel (Entry/Payoff/Greeks/Report tabs, follows ranking-row selection) + bottom 4 tabs (cost history/pool diagnostics/analysis report/raw data). AnalysisReport renders exactly once (bottom tab, test-locked); right "Report" tab is a teaser + disclaimer + jump link. Desktop-only single-leg cost-history support added (frontend-only relaxation).
 - **OG-04 #323** — scenario-list cost sparkline (the approved additive backend field). New `Storage.cost_sparklines()` batched query (VALUES+LATERAL, memory+Postgres contract tests, structural "no results.view" test, 100-row latency benchmark proving no N+1). `representative_candidate` projection gained a `candidate_key` field (needed to look up narrow history at list-time). Desktop-only `CostSparkline.tsx` hand-rolled SVG, green/red by direction, gap-broken. Mobile untouched.
 - **OG-05 #324** — read-only `GET /api/me/usage-summary` (active scenarios/quota/AUTH-05 exemption/last activity/throttle interval, sourced from the same closure variables the create/refresh gates use, never touches `last_activity_at`) + desktop-only stats strip in `ScenarioList.tsx` (`UsageStatsStrip`, role via `useAuthRole()`). Super-Admin-only extra blocks (`OpsSuperAdminStats`) read the existing `/api/ops/metrics`, which gained one additive `vendor_fuse: {used, budget}` field; conditionally mounted so non-Super-Admin issues zero ops-metrics requests. Mobile untouched.
+- **OG-08 #326** — desktop right column shows `<IvHistory>` (unmodified, self-gating, existing content) instead of `<CandidatePanel>` when the ranking table's *selected* candidate (not the cross-family champion — deliberate, documented, test-locked interpretation for internal consistency with OG-07's "right column follows selection" convention) is single-leg + role ≥ Super User + feature enabled. Gate logic (`useIvHistoryAccess()`/`supportsIvHistory()`/`isSuperUserRole()`) extracted from `IvHistory.tsx` as named exports so both consumers share one source of truth. Old global full-width mount now `!isDesktop`-gated (mobile-only); mobile behavior unchanged. Zero backend/API changes.
 
 ### Current frontier
-These are unblocked and may be implemented in any order (all blocked only by #321, already done):
-- **OG-08 #326** — Long Call/Put + Historical IV panel.
-
-Then, once #326 lands:
-- **OG-10 #327** — mobile detail. Must wait for **#319 + #321 + #325 + #326**.
+Unblocked next (OG-08 done; #319/#321/#325/#326 all complete):
+- **OG-10 #327** — mobile detail. Then:
 - **OG-12 #328** — final light/responsive/artifact parity/regression acceptance.
 
 Do not redesign the approved artifact. Implementation questions should be resolved from the artifact + current issue body unless a true HITL decision is required.

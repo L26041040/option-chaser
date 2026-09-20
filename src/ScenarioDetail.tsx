@@ -277,7 +277,15 @@ function DetailBody({ scenarioId, view, analyzedAt, strategies }: {
           插槽〕→ Payoff Heatmap，全部圍繞同一組
           baseline 候選。 */}
       <Summary view={view} candidate={candidate} result={result} analyzedAt={analyzedAt} />
-      <IvHistory scenarioId={scenarioId} candidate={candidate} analyzedAt={analyzedAt} />
+      {/* OG-08（#326）：桌面版的 Historical IV 改掛進 `DesktopDetailBody`
+          右欄（跟著排名表選取列，不是這裡的跨 family 冠軍）——這裡這份
+          全域掛載點只留給手機版（手機版的擺位歸 OG-10／#327，本票不動
+          手機任何東西，逐位元組不變）。桌面若兩邊都掛，同一份 Historical
+          IV 資料會在畫面上出現兩次（一次在這裡的全寬位置、一次在右欄），
+          不是本票要的「多一塊」。 */}
+      {!isDesktop && (
+        <IvHistory scenarioId={scenarioId} candidate={candidate} analyzedAt={analyzedAt} />
+      )}
       {/* OG-06（#321）：桌面版把「劇本主圖＋Strategy Family 分頁」換成
           Binance trade page 式的三欄外殼（`DesktopDetail.tsx`）——左欄
           family tabs／到期日 chip／排名表，中央欄常駐 Heatmap 跟著

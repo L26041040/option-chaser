@@ -4,13 +4,14 @@
  * Heatmap 跟著選取——不重覆測 `FamilyTabs.tsx`／`ExpiryStructure.tsx`
  * 既有的手機版行為（那兩份測試檔已經覆蓋，本檔零改動它們）。
  */
-import { act, render, screen, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import DesktopDetailBody from "./DesktopDetail";
 import { candidate, result, view } from "./family.fixtures";
 import type { Candidate } from "./api";
+import type { Role } from "./superuser";
 
 // OG-07（#325）：`DesktopDetailBody` 現在常駐掛載底部「淨成本走勢」
 // tab（`DesktopSpreadHistory`），一掛載就打 `getSpreadHistory()`——
@@ -54,6 +55,49 @@ function rankingList() {
  *  中央 Heatmap 現在顯示的是哪一組候選——不需要真的模擬完整報酬矩陣，
  *  `formatCell()` 只是把比例轉成整數百分比文字（`heatmap.test.ts`
  *  既有覆蓋），這裡借用同一個轉換當「這是候選 A 還是候選 B」的指紋。 */
+/** 兩腿候選——`family.fixtures.ts::candidate()` 預設只給 1 隻腿（那份
+ *  fixture 本來就不在乎 `legs.length`，服務的是排名表／Heatmap 這些
+ *  跟腿數無關的既有測試），OG-08 起「這個候選是不是單腿」變成右欄要
+ *  問的真問題，因此這裡另外覆寫一份 2 腿版本，不能沿用預設值假裝是
+ *  Vertical Spread。 */
+function twoLegged(c: Candidate): Candidate {
+  return {
+    ...c,
+    legs: [
+      { strike: 100, option_type: "call", expiry: "2026-09-18",
+       ask: 1, bid: 1, iv: 0.2, volume: 1, open_interest: 1,
+       side: "buy", quantity: 1 },
+      { strike: 106, option_type: "call", expiry: "2026-09-18",
+       ask: 1, bid: 1, iv: 0.2, volume: 1, open_interest: 1,
+       side: "sell", quantity: 1 },
+    ],
+  };
+}
+
+/** OG-08（#326）：右欄「這次要畫哪一種面板」問的是 `useIvHistoryAccess()`
+ *  ——跟 `IvHistory.test.tsx::mockApi()` 同一套路由風格，`/iv-history`
+ *  本身故意回傳一個永遠不 resolve 的 promise：這裡只關心「掛的是
+ *  `<IvHistory>` 還是 `<CandidatePanel>`」這個外層決定，不需要真的把
+ *  完整資料餵給 `IvHistoryContent`（那是 `IvHistory.test.tsx` 自己的
+ *  職責），停在 `CardSkeleton` 狀態就足夠斷言。 */
+function routeIvAccess({ enabled, role }: { enabled: boolean; role: Role }) {
+  const spy = vi.fn(async (url: string) => {
+    if (url.startsWith("/api/auth/status")) {
+      return { ok: true, status: 200, json: async () => ({ role }) };
+    }
+    if (url.startsWith("/api/settings")) {
+      return { ok: true, status: 200,
+               json: async () => ({ historical_iv_enabled: enabled }) };
+    }
+    if (url.includes("iv-history")) {
+      return new Promise(() => {}); // 故意不 resolve，停在 skeleton
+    }
+    return { ok: true, status: 200, json: async () => ({ entries: [] }) };
+  });
+  vi.stubGlobal("fetch", spy);
+  return spy;
+}
+
 function withMatrix(c: Candidate, cellValue: number): Candidate {
   return {
     ...c,
@@ -407,5 +451,118 @@ describe("DesktopDetailBody：底部四個 tab（OG-07／#325）", () => {
     // tab，DOM 裡永遠只有一個 `📄 分析報告`（右欄「報告」tab 只放
     // 精簡摘要，不是第二份完整元件）。
     expect(screen.getAllByText("📄 分析報告")).toHaveLength(1);
+  });
+});
+
+describe("DesktopDetailBody：右欄 Historical IV 面板（OG-08／#326）", () => {
+  it("角色 ≥ Super User 且已解鎖且選取列是單腿候選：右欄整個換成 " +
+     "<IvHistory>，不再是 <CandidatePanel>（進場／Payoff／Greeks／" +
+     "報告那組 tab 消失）", async () => {
+    routeIvAccess({ enabled: true, role: "superuser" });
+    const cand = withMatrix(candidate("k1", "long-call", 0.2), 0.1);
+    const v = view(
+      [result("long-call", "ok", { "2026-09-18": ["k1"] })],
+      { k1: cand },
+    );
+    render(<DesktopDetailBody view={v} strategies={["single-leg"]} champion={cand}
+                              scenarioId="s1" analyzedAt={null} />);
+
+    const rightPanel = () => within(
+      document.querySelector(".detail-col-right") as HTMLElement);
+    await waitFor(() => expect(
+      rightPanel().getByRole("heading", { name: "IV 相對位置" })).toBeInTheDocument());
+    expect(rightPanel().queryByRole("tab", { name: "進場" })).not.toBeInTheDocument();
+  });
+
+  it("Normal User：即使選取列是單腿候選，右欄仍是既有 <CandidatePanel>，" +
+     "不打 iv-history 請求（自我閘門，跟 IvHistory.tsx 同一套規則）", async () => {
+    const spy = routeIvAccess({ enabled: true, role: "normal" });
+    const cand = withMatrix(candidate("k1", "long-call", 0.2), 0.1);
+    const v = view(
+      [result("long-call", "ok", { "2026-09-18": ["k1"] })],
+      { k1: cand },
+    );
+    render(<DesktopDetailBody view={v} strategies={["single-leg"]} champion={cand}
+                              scenarioId="s1" analyzedAt={null} />);
+
+    const rightPanel = () => within(
+      document.querySelector(".detail-col-right") as HTMLElement);
+    await waitFor(() => expect(
+      rightPanel().getByRole("tab", { name: "進場" })).toBeInTheDocument());
+    expect(rightPanel().queryByRole("heading", { name: "IV 相對位置" }))
+      .not.toBeInTheDocument();
+    expect(spy.mock.calls.map((c) => c[0]).some((u: string) => u.includes("iv-history")))
+      .toBe(false);
+  });
+
+  it("角色達標且已解鎖，但選取列是兩腿以上候選（Vertical／Butterfly）：" +
+     "右欄仍是既有 <CandidatePanel>——既有退場裁示延伸到右欄面板選擇", async () => {
+    routeIvAccess({ enabled: true, role: "superuser" });
+    const cand = twoLegged(withMatrix(candidate("v1", "bull-call-spread", 0.4), 0.4));
+    const v = view(
+      [result("bull-call-spread", "ok", { "2026-09-18": ["v1"] })],
+      { v1: cand },
+    );
+    render(<DesktopDetailBody view={v} strategies={["vertical-spread"]} champion={cand}
+                              scenarioId="s1" analyzedAt={null} />);
+
+    const rightPanel = () => within(
+      document.querySelector(".detail-col-right") as HTMLElement);
+    await waitFor(() => expect(
+      rightPanel().getByRole("tab", { name: "進場" })).toBeInTheDocument());
+    expect(rightPanel().queryByRole("heading", { name: "IV 相對位置" }))
+      .not.toBeInTheDocument();
+  });
+
+  it("Historical IV 未解鎖（`historical_iv_enabled: false`）：即使角色達標" +
+     "且候選單腿，右欄仍是既有 <CandidatePanel>", async () => {
+    routeIvAccess({ enabled: false, role: "superuser" });
+    const cand = withMatrix(candidate("k1", "long-call", 0.2), 0.1);
+    const v = view(
+      [result("long-call", "ok", { "2026-09-18": ["k1"] })],
+      { k1: cand },
+    );
+    render(<DesktopDetailBody view={v} strategies={["single-leg"]} champion={cand}
+                              scenarioId="s1" analyzedAt={null} />);
+
+    const rightPanel = () => within(
+      document.querySelector(".detail-col-right") as HTMLElement);
+    await waitFor(() => expect(
+      rightPanel().getByRole("tab", { name: "進場" })).toBeInTheDocument());
+    expect(rightPanel().queryByRole("heading", { name: "IV 相對位置" }))
+      .not.toBeInTheDocument();
+  });
+
+  it("跟著排名表選取列切換，不是固定看冠軍：多 family 劇本切到單腿分頁" +
+     "才出現 <IvHistory>，冠軍是 Vertical 時預設分頁仍是 <CandidatePanel>",
+   async () => {
+    routeIvAccess({ enabled: true, role: "superuser" });
+    const champ = twoLegged(withMatrix(candidate("v1", "bull-call-spread", 0.4), 0.4));
+    const singleLeg = withMatrix(candidate("s1", "long-call", 0.1), 0.1);
+    const v = view(
+      [
+        result("bull-call-spread", "ok", { "2026-09-18": ["v1"] }),
+        result("long-call", "ok", { "2026-09-18": ["s1"] }),
+      ],
+      { v1: champ, s1: singleLeg },
+    );
+    render(<DesktopDetailBody view={v}
+                              strategies={["single-leg", "vertical-spread"]}
+                              champion={champ}
+                              scenarioId="s1" analyzedAt={null} />);
+
+    // 預設分頁＝冠軍所屬的 Vertical Spread（2 腿）——右欄仍是
+    // `CandidatePanel`，等這件事先穩定下來，避免 `useIvHistoryAccess()`
+    // 兩道非同步閘門還沒解完就搶著斷言造成偽陰性。
+    await waitFor(() => expect(
+      screen.getByRole("tab", { name: "進場" })).toBeInTheDocument());
+    expect(screen.queryByRole("heading", { name: "IV 相對位置" }))
+      .not.toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "Call / Put" }));
+
+    await waitFor(() => expect(
+      screen.getByRole("heading", { name: "IV 相對位置" })).toBeInTheDocument());
+    expect(screen.queryByRole("tab", { name: "進場" })).not.toBeInTheDocument();
   });
 });

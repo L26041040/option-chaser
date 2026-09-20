@@ -91,6 +91,74 @@ export const BACKFILL_NOTES: Record<Exclude<IvHistoryStatus, "ok">, string> = {
   vendor: "資料源暫時無法連線，將於後續使用時繼續補齊",
 };
 
+/**
+ * OG-08（#326）：桌面版右欄需要在掛載 `<IvHistory>` 之前先知道「這個
+ * 候選這次會不會顯示」，才能決定右欄要放 `IvHistory` 還是既有
+ * `CandidatePanel`（`DesktopDetail.tsx`）——這個判斷本來只活在下面
+ * `IvHistory` 元件內部（自我閘門，呼叫端不需要知道），現在多了第二個
+ * 呼叫端要問同一個問題，抽成這兩個 export，`IvHistory` 自己也改叫這兩個
+ * function，不是兩份平行邏輯。
+ *
+ * `useIvHistoryAccess()` 只回傳兩道**閘門各自的原始狀態**（`enabled`／
+ * `role`），刻意不在這裡先合併成一個布林值——AUTH-04／AUTH-06 既有裁示
+ * 「credential 借用」與「角色查 auth status」兩個判斷各自獨立、不合併成
+ * 共用判斷式（#326 票面明文重申），呼叫端各自用 `&&` 組出自己那次的
+ * 判斷，不是共用一個掩蓋兩個理由的旗標。兩邊都走既有 `getSettingsCached`
+ * ／`getAuthStatusCached`（單一全站快取鍵），這裡多一個呼叫端不會多打
+ * 一次請求。
+ */
+export function useIvHistoryAccess(): { enabled: boolean | null; role: Role | null } {
+  const [enabled, setEnabled] = useState<boolean | null>(null);
+  const [role, setRole] = useState<Role | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    const { promise, release } = getSettingsCached();
+    promise
+      .then((s) => alive && setEnabled(s.historical_iv_enabled))
+      .catch(() => alive && setEnabled(false));
+    return () => {
+      alive = false;
+      release();
+    };
+  }, []);
+
+  useEffect(() => {
+    let alive = true;
+    const { promise, release } = getAuthStatusCached();
+    promise
+      .then((s) => alive && setRole(s.role))
+      .catch(() => alive && setRole("normal"));
+    return () => {
+      alive = false;
+      release();
+    };
+  }, []);
+
+  return { enabled, role };
+}
+
+/** `role !== null && roleAtLeast(role, "superuser")`——`IvHistory` 自己
+ *  與 `DesktopDetail.tsx` 的右欄面板選擇都要問這句（`/code-review`
+ *  Standards 軸抓到：原本兩邊各自重複這三個 token 的推導），抽成這個
+ *  export 跟上面 `useIvHistoryAccess()`／下面 `supportsIvHistory()`
+ *  同一個理由——兩個呼叫端問的是同一個問題，不是兩份平行邏輯。`null`
+ *  （角色還沒查完）跟查完但角色不足一樣視為未達標，不是另一種狀態。 */
+export function isSuperUserRole(role: Role | null): boolean {
+  return role !== null && roleAtLeast(role, "superuser");
+}
+
+/** 這個候選是不是單腿（Long Call／Long Put）——Historical IV 現在**只
+ *  服務單腿候選**的既有判準（見下方 `IvHistory` 內 `candidateSupportsIvHistory`
+ *  那段完整理由：三腿以上結構上不支援、兩腿已依 Owner 裁示整塊退場）。
+ *  抽成具名 export 純粹是為了讓 `DesktopDetail.tsx` 的右欄面板選擇邏輯
+ *  問同一個問題，不是要統一全站另外 3 個既有、各自獨立判斷「這是不是
+ *  單腿候選」的地方（那些各自服務不同功能、已是揭露過的既知不一致，
+ *  本票不在範圍內處理）。 */
+export function supportsIvHistory(candidate: Candidate | null): boolean {
+  return (candidate?.legs.length ?? 0) === 1;
+}
+
 /** 現值／刻度的呈現——vol 點（百分比），缺值印 em dash。
  *
  *  2026-09-09 Owner 裁示（Vertical「貴不貴」整塊退場）前這裡還有一個
@@ -350,13 +418,15 @@ export default function IvHistory({ scenarioId, candidate, analyzedAt = null }: 
    *  顯示（見下方 `currentData` 與 `error` 的優先序）。 */
   analyzedAt?: string | null;
 }) {
-  const [enabled, setEnabled] = useState<boolean | null>(null);
+  // OG-08（#326）：`enabled`／`role` 兩道閘門的取值邏輯搬進
+  // `useIvHistoryAccess()`（見上方 export 的完整理由）——`DesktopDetail.tsx`
+  // 的右欄面板選擇需要問同一個問題，這裡不再各自重複一份 state／effect。
   // AUTH-06（#313）：角色 >= Super User 才顯示這塊——疊加在既有
   // `enabled`（後端 `historical_iv_enabled`）／`supportsIvHistory`
   // 兩道既有閘門之上，三者都要通過才會發請求或渲染卡片，見下方兩處
   // 早退判斷。`null`＝還沒查完，跟 `enabled` 的預設值同一種語意
   // （查完之前一律當成沒過）。
-  const [role, setRole] = useState<Role | null>(null);
+  const { enabled, role } = useIvHistoryAccess();
   const [data, setData] = useState<IvHistoryView | null>(null);
   // 這份 `data` 是哪一個候選的——切候選時 `key` 立刻變了，但新結果要
   // 等 fetch 回來才會覆蓋，這段空窗期 `dataKey !== key`，畫面據此知道
@@ -395,47 +465,17 @@ export default function IvHistory({ scenarioId, candidate, analyzedAt = null }: 
   // 兩種情況一律在**請求層**擋下：不觸發任何 fetch，也不渲染任何 DOM
   // （不留空狀態、不留說明文字）。後端 `/iv-history` 端點與它的回應
   // 契約（含 `spread_gap`／`normalized_skew_points`）本輪完全未動——
-  // 這是前端呈現層的退場，不是拆後端管線。
-  const supportsIvHistory = (candidate?.legs.length ?? 0) === 1;
+  // 這是前端呈現層的退場，不是拆後端管線。OG-08（#326）起改叫上方
+  // export 的 `supportsIvHistory()`，判準本身逐字不變。
+  const candidateSupportsIvHistory = supportsIvHistory(candidate);
 
-  // 先問解不解鎖。鎖著就到此為止——**不發 IV 請求**。T03（#187）：走
-  // 快取（settings 是單一全站狀態，鍵固定），跟 Settings 頁自己那次
-  // 讀取共用同一份結果，不各自 mount 各抓一次。
-  useEffect(() => {
-    let alive = true;
-    const { promise, release } = getSettingsCached();
-    promise
-      .then((s) => alive && setEnabled(s.historical_iv_enabled))
-      // 設定讀不到時當成鎖著：寧可少顯示一塊 enrichment，也不要在狀態
-      // 不明時對 vendor 發請求。
-      .catch(() => alive && setEnabled(false));
-    return () => {
-      alive = false;
-      release();
-    };
-  }, []);
-
-  // AUTH-06（#313）：獨立於上面 `enabled` 效果之外——角色與後端
-  // `historical_iv_enabled` 是兩件互不相關的事（前者是軸二，後者是
-  // AUTH-04 的 protected-owner credential 借用），各自查各自的、不
-  // 合併成同一個判斷式。同一套快取模式，跟 `RoleLogin` 共用同一份
-  // 結果，不各自 mount 各抓一次。
-  useEffect(() => {
-    let alive = true;
-    const { promise, release } = getAuthStatusCached();
-    promise
-      .then((s) => alive && setRole(s.role))
-      .catch(() => alive && setRole("normal"));
-    return () => {
-      alive = false;
-      release();
-    };
-  }, []);
-
-  const roleReady = role !== null && roleAtLeast(role, "superuser");
+  // 解不解鎖／角色是否達標的取值已搬進 `useIvHistoryAccess()`（見上方
+  // export）——鎖著或角色不足就到此為止，**不發 IV 請求**，兩道判準
+  // 依然各自獨立（`enabled`／`roleReady` 兩個變數，不合併）。
+  const roleReady = isSuperUserRole(role);
 
   useEffect(() => {
-    if (enabled !== true || !roleReady || !key || !supportsIvHistory) return;
+    if (enabled !== true || !roleReady || !key || !candidateSupportsIvHistory) return;
     let alive = true;
     // 每次重新嘗試（換候選、或新分析完成後同一個候選要跟著問一次）都
     // 先清掉上一輪的錯誤——這次嘗試還沒有結論，不該讓使用者看到跟這次
@@ -511,7 +551,7 @@ export default function IvHistory({ scenarioId, candidate, analyzedAt = null }: 
   // 固定版位」是兩件事：鎖著時連卡片外框都不該出現）。`!candidate` 這條
   // 分支實務上不會單獨發生（`key` 已經蘊含 `candidate` 存在），寫出來
   // 純粹是讓 TS 把下面的 `candidate.legs` 收窄成非 null。
-  if (enabled !== true || !roleReady || !key || !candidate || !supportsIvHistory)
+  if (enabled !== true || !roleReady || !key || !candidate || !candidateSupportsIvHistory)
     return null;
 
   // 從這裡開始卡片本身固定存在——loading／error／有資料（含「資料是空

@@ -48,6 +48,31 @@
  *    `familyCandidate`——右欄四個 tab 既然都跟著選取列，底部這份唯一
  *    的完整報告沒有理由講另一個候選的故事），右欄「報告」tab 只放
  *    精簡摘要＋一個跳到底部分頁的連結，不掛第二份 `<AnalysisReport>`。
+ *
+ * OG-08（#326）第三個判斷：右欄在「這一列選取的候選是單腿（Long
+ * Call／Long Put）且角色 ≥ Super User 且 Historical IV 已解鎖」時，
+ * 整個換成 `<IvHistory>`（既有元件、既有 class／內容不動，只是掛載
+ * 位置搬進這個 grid slot），取代 `<CandidatePanel>`——不是兩者並列
+ * （artifact「Desktop TSLA Long Call＋Historical IV」板：右欄 360px
+ * 整塊就是 Historical IV，沒有 Entry／Payoff／Greeks／Report 那組
+ * tab），也不是額外多開第四欄（右欄仍是同一個 grid slot，`.detail-shell`
+ * 的三欄結構不變）。這個決定跟著**選取列**（`selectedCandidate`），
+ * 不是跨 family 冠軍（`champion`）——右欄從 OG-07 起本來就是「跟著排名表
+ * 目前選取的那一列」這個既有慣例（見上面點 1），使用者切到別的 family／
+ * 到期日、選取列換成非單腿候選時，右欄理當跟著換回 `CandidatePanel`，
+ * 不能讓右欄卡在一個跟中央 Heatmap／左欄排名表已經不同步的候選上；跟
+ * 底部「淨成本走勢」固定跟著冠軍（QA1-06 頭條原則）是不同的既有慣例，
+ * 這裡刻意選右欄自己的既有慣例，不是套錯規則。票面「單腿冠軍」四字是
+ * 描述這張票服務的典型情境（單一 family 劇本的冠軍恆等於排名表唯一
+ * 候選，兩者天然重合），不是要求改成冠軍鎖定——多 family 劇本才會讓
+ * 這兩個既有維度出現差異，此時沿用右欄自己的既有選取慣例才是內部
+ * 一致的答案。
+ *
+ * 是否顯示 `<IvHistory>` 由 `IvHistory.tsx` export 的
+ * `useIvHistoryAccess()`／`supportsIvHistory()` 決定——跟 `<IvHistory>`
+ * 元件自己內部用的是同一套函式，不是另外重新推一次規則；`enabled`／
+ * `roleReady` 兩個閘門變數在這裡仍各自獨立比對（AUTH-04／AUTH-06 既有
+ * 裁示：不合併成共用判斷式），只是恰好都要通過才決定「畫哪一種右欄」。
  */
 import { useState } from "react";
 
@@ -57,6 +82,9 @@ import AnalysisReport, {
 import CandidatePool from "./CandidatePool";
 import DesktopSpreadHistory from "./DesktopSpreadHistory";
 import Heatmap from "./Heatmap";
+import IvHistory, {
+  isSuperUserRole, supportsIvHistory, useIvHistoryAccess,
+} from "./IvHistory";
 import PriceLadder from "./PriceLadder";
 import RawData from "./RawData";
 import {
@@ -385,6 +413,11 @@ export default function DesktopDetailBody({
   const [pickedExpiry, setPickedExpiry] = useState<string | null>(null);
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [bottomTab, setBottomTab] = useState<BottomTab>("history");
+  // OG-08（#326）：Hooks 規則——這支 hook 必須排在下面
+  // `families.length === 0` 提前 return 之前呼叫，跟其餘 `useState` 放
+  // 在一起，即使目前這個分支理論上不會真的觸發那個提前 return。判斷式
+  // 本身（`showIvPanel`）留在下面 `selectedCandidate` 算完之後才組出來。
+  const { enabled: ivEnabled, role: ivRole } = useIvHistoryAccess();
 
   const families = enabledFamilies(strategies, view);
   // 單一 family 時完全不畫分頁列——跟 `FamilyTabs.tsx` 同一條 AC
@@ -427,6 +460,15 @@ export default function DesktopDetailBody({
   const selectExpiry = selectingResetsRanking(setPickedExpiry);
 
   const diagnosticsResult = okResults[0] ?? null;
+
+  // OG-08（#326）：右欄「這次要畫哪一種面板」——見檔頭第三個判斷的完整
+  // 理由。`enabled`／`roleReady` 兩道閘門刻意各自保留成獨立變數才做
+  // `&&`，不是先合併成一個共用旗標（AUTH-04／AUTH-06 既有裁示）；跟
+  // `<IvHistory>` 元件自己內部用的是同一份 `useIvHistoryAccess()`／
+  // `supportsIvHistory()`，不是重新推一次規則。
+  const ivRoleReady = isSuperUserRole(ivRole);
+  const showIvPanel =
+    ivEnabled === true && ivRoleReady && supportsIvHistory(selectedCandidate);
 
   return (
     <>
@@ -524,15 +566,34 @@ export default function DesktopDetailBody({
         </section>
       </div>
 
-      {/* OG-07（#325）：右欄「候選面板」，跟著上面排名表的選取列。 */}
-      <CandidatePanel
-        candidate={selectedCandidate}
-        view={view}
-        scenarioId={scenarioId}
-        analyzedAt={analyzedAt}
-        disclaimerText={diagnosticsResult?.disclaimer_text ?? ""}
-        onJumpToFullReport={() => setBottomTab("report")}
-      />
+      {/* OG-07（#325）：右欄「候選面板」，跟著上面排名表的選取列。
+          OG-08（#326）：選取列是單腿候選且角色 ≥ Super User 且 Historical
+          IV 已解鎖時，整個換成 `<IvHistory>`（見檔頭第三個判斷）——同一個
+          grid slot 只會有其中一個，不會兩者疊加。`<IvHistory>` 自己內部
+          仍有一套完全相同的閘門（`enabled`／`roleReady`／
+          `supportsIvHistory`），這裡的 `showIvPanel` 只決定「這個 slot
+          要不要嘗試掛載它」，真正的顯示／隱藏語意仍由元件自己負責，跟
+          `CandidatePanel` 分支互斥、不重複判斷同一件事兩次的方式不同：
+          這裡是「選哪個元件掛」，`<IvHistory>` 内部是「掛了以後要不要
+          畫東西」。 */}
+      {showIvPanel ? (
+        <div className="detail-col-right">
+          <IvHistory
+            scenarioId={scenarioId}
+            candidate={selectedCandidate}
+            analyzedAt={analyzedAt}
+          />
+        </div>
+      ) : (
+        <CandidatePanel
+          candidate={selectedCandidate}
+          view={view}
+          scenarioId={scenarioId}
+          analyzedAt={analyzedAt}
+          disclaimerText={diagnosticsResult?.disclaimer_text ?? ""}
+          onJumpToFullReport={() => setBottomTab("report")}
+        />
+      )}
     </div>
 
     {/* OG-07（#325）：底部四個 tab——淨成本走勢（跟著冠軍，QA1-06）／
