@@ -565,6 +565,22 @@ class MemoryStorage:
                 if sid == scenario_id and key == candidate_key
                 and at in wanted and entry.owner_id == owner}
 
+    def cost_sparklines(
+        self, pairs, *, owner: str, limit: int,
+    ) -> dict[str, list[tuple[str, float | None]]]:
+        owner = require_owner(owner)
+        out: dict[str, list[tuple[str, float | None]]] = {}
+        for scenario_id, candidate_key in pairs:
+            matches = sorted(
+                ((at, entry.cost)
+                 for (sid, at, key), entry in self._narrow_history.items()
+                 if sid == scenario_id and key == candidate_key
+                 and entry.owner_id == owner),
+                key=lambda pair: pair[0], reverse=True)
+            if matches:
+                out[scenario_id] = list(reversed(matches[:limit]))
+        return out
+
     def result_spot_timestamps(
         self, scenario_id: str, *, owner: str,
     ) -> list[tuple[str, float | None]]:

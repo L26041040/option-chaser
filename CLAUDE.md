@@ -34,10 +34,10 @@ Implement the approved **Obsidian Gold** Binance-inspired visual design without 
 - **OG-06 #321** — Desktop detail page part I: 3-column shell, identity row, family/expiry/ranking table, Heatmap-follows-selection, PriceLadder. Right column + bottom tabs left as empty containers for OG-07.
 - **OG-11 #322** — Settings subnav (desktop) / Super Admin backdoor (ops-metrics stats, owner status filter, type-to-confirm delete modals).
 - **OG-07 #325** — desktop detail part II: right-column candidate panel (Entry/Payoff/Greeks/Report tabs, follows ranking-row selection) + bottom 4 tabs (cost history/pool diagnostics/analysis report/raw data). AnalysisReport renders exactly once (bottom tab, test-locked); right "Report" tab is a teaser + disclaimer + jump link. Desktop-only single-leg cost-history support added (frontend-only relaxation).
+- **OG-04 #323** — scenario-list cost sparkline (the approved additive backend field). New `Storage.cost_sparklines()` batched query (VALUES+LATERAL, memory+Postgres contract tests, structural "no results.view" test, 100-row latency benchmark proving no N+1). `representative_candidate` projection gained a `candidate_key` field (needed to look up narrow history at list-time). Desktop-only `CostSparkline.tsx` hand-rolled SVG, green/red by direction, gap-broken. Mobile untouched.
 
 ### Current frontier
 These are unblocked and may be implemented in any order (all blocked only by #321, already done):
-- **OG-04 #323** — scenario-list cost sparkline, additive backend only.
 - **OG-05 #324** — read-only usage-summary endpoint + stats strip, additive backend only.
 - **OG-08 #326** — Long Call/Put + Historical IV panel.
 

@@ -80,17 +80,22 @@ describe("劇本清單", () => {
   it("依收益率降序，沒跑過的排最後並顯示「—」", () => {
     list([
       row({ id: "a", symbol: "AAA", best_return: 0.2 }),
+      // OG-04（#323）：真的沒跑過的劇本 `cost_sparkline` 也該是 `null`
+      // （跟 `best_return`／`latest_analyzed_at` 同步，後端同一次
+      // `_summary_of()` 決定），不是繼承 `sampleRow` 預設值裡那筆
+      // 假的既有序列——不然這張卡片會變成「沒分析過卻有走勢圖」的
+      // 不實際組合。
       row({ id: "b", symbol: "BBB", best_return: null,
-            latest_analyzed_at: null }),
+            latest_analyzed_at: null, cost_sparkline: null }),
       row({ id: "c", symbol: "CCC", best_return: 2.0 }),
     ]);
 
     const items = screen.getAllByRole("listitem");
     const symbols = items.map((li) => li.querySelector(".compact-symbol")!.textContent);
     expect(symbols).toEqual(["CCC", "AAA", "BBB"]);
-    // OG-03（#320）：「淨成本走勢」欄本票起固定顯示「—」佔位
-    // （OG-04／#323 才接上真實序列），每一列都會有這個字，
-    // `getByText` 因此不再唯一，範圍限定回沒跑過的那張卡（BBB）。
+    // 「—」在畫面上不只一處（劇本報酬／淨成本走勢等多個欄位沒資料時
+    // 都顯示它），`getByText` 因此不唯一，範圍限定回沒跑過的那張卡
+    // （BBB）。
     const bbb = items.find(
       (li) => li.querySelector(".compact-symbol")!.textContent === "BBB")!;
     expect(within(bbb).getAllByText("—").length).toBeGreaterThanOrEqual(1);

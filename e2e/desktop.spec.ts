@@ -935,7 +935,7 @@ test("OG-02（#318）：建立劇本／垃圾桶／設定入口在常駐頂欄�
 /* ---------- OG-03（#320）：桌面劇本庫 Markets 式資料表 ---------- */
 
 test("OG-03（#320）：表格欄位齊全（標的／方向／現價／目標價／冠軍策略／" +
-     "劇本報酬／淨成本走勢佔位／到期／狀態／更新時間），且每一列仍是" +
+     "劇本報酬／淨成本走勢／到期／狀態／更新時間），且每一列仍是" +
      "可點進詳細頁的完整連結", async ({ page }) => {
   await routeTwoScenarios(page);
   await page.goto("/");
@@ -953,10 +953,31 @@ test("OG-03（#320）：表格欄位齊全（標的／方向／現價／目標�
   await expect(head).toContainText("更新時間");
 
   const xyzRow = page.locator(".compact-card").filter({ hasText: "XYZ" });
-  // OG-04（#323）接上真實序列前，淨成本走勢欄先誠實顯示佔位符。
-  await expect(xyzRow).toContainText("—");
+  // OG-04（#323）：`sampleRow` 契約樣本本身帶著一筆真的 narrow history
+  // 點，`libraryRow()` 沒有覆寫 `cost_sparkline`——這一列因此看得到
+  // 真的 sparkline（`CostSparkline.tsx` 的 `<svg role="img">`），不是
+  // 佔位符「—」。細部行為（顏色、斷點、`null` 顯示「—」）由
+  // `CostSparkline.test.tsx`／`sparkline.test.ts` 覆蓋，這裡只證明
+  // 它真的畫在頁面上（AC：「Playwright 至少一條看得到 sparkline」）。
+  await expect(xyzRow.getByRole("img", { name: /淨成本走勢/ })).toBeVisible();
   await expect(xyzRow.getByRole("link", { name: /XYZ/ })).toHaveAttribute(
     "href", "#/s/s1");
+});
+
+test("OG-04（#323）：沒有 narrow history 序列的劇本，淨成本走勢欄" +
+     "誠實顯示「—」，不是硬畫一條假線", async ({ page }) => {
+  await page.route("**/api/scenarios", (route) =>
+    route.fulfill({ json: [libraryRow({ id: "s1", symbol: "XYZ",
+                                        cost_sparkline: null })] }));
+  await page.route("**/api/scenarios/s1", (route) =>
+    route.fulfill({ json: { ...libraryRow({ id: "s1", symbol: "XYZ",
+                                            cost_sparkline: null }),
+                            latest_result: sample } }));
+  await page.goto("/");
+
+  const xyzRow = page.locator(".compact-card").filter({ hasText: "XYZ" });
+  await expect(xyzRow.locator(".lib-cell-sparkline")).toHaveText("—");
+  await expect(xyzRow.getByRole("img", { name: /淨成本走勢/ })).toHaveCount(0);
 });
 
 test("OG-03（#320）：方向與狀態篩選 chip 純前端過濾，不打任何新請求" +

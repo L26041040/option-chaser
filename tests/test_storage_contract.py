@@ -1381,6 +1381,104 @@ def test_narrow_history_for_candidate_batches_across_many_dates(storage):
     assert "2026-09-05T00:00:00+00:00" not in result   # 尚未 materialize
 
 
+# ---------- cost_sparklines：OG-04（#323）劇本清單 sparkline 批次查詢 ----------
+
+def test_cost_sparklines_empty_pairs_is_a_no_op(storage):
+    assert storage.cost_sparklines([], owner=OWNER, limit=20) == {}
+
+
+def test_cost_sparklines_returns_ascending_and_truncated_to_limit(storage):
+    """跟 `narrow_history_for_candidate()`／`/history` 端點同一個升冪
+    順序慣例；`limit` 在資料庫端截尾（`ORDER BY ... DESC LIMIT`），不是
+    撈全部回來前端再切——這裡用 5 筆、limit=3 驗證只留最新 3 筆且順序
+    正確（不是巧合地前 3 筆恰好也對）。"""
+    storage.save_narrow_history([
+        NarrowHistoryEntry("s1", f"2026-09-0{i}T00:00:00+00:00", "k",
+                           float(i), OWNER)
+        for i in range(1, 6)
+    ])
+    result = storage.cost_sparklines([("s1", "k")], owner=OWNER, limit=3)
+    assert result == {"s1": [
+        ("2026-09-03T00:00:00+00:00", 3.0),
+        ("2026-09-04T00:00:00+00:00", 4.0),
+        ("2026-09-05T00:00:00+00:00", 5.0),
+    ]}
+
+
+def test_cost_sparklines_preserves_explicit_gaps(storage):
+    """`cost=None`（已驗證 gap）跟 `narrow_history_for_candidate()`
+    同樣照實回傳，不是被截尾邏輯或排序意外濾掉。"""
+    storage.save_narrow_history([
+        NarrowHistoryEntry("s1", "2026-09-01T00:00:00+00:00", "k", 1.0, OWNER),
+        NarrowHistoryEntry("s1", "2026-09-02T00:00:00+00:00", "k", None, OWNER),
+    ])
+    result = storage.cost_sparklines([("s1", "k")], owner=OWNER, limit=20)
+    assert result == {"s1": [
+        ("2026-09-01T00:00:00+00:00", 1.0),
+        ("2026-09-02T00:00:00+00:00", None),
+    ]}
+
+
+def test_cost_sparklines_batches_multiple_scenarios_in_one_call(storage):
+    """一次查多個 (scenario_id, candidate_key) 配對——這是清單端點的
+    核心用法，不是對每個劇本各自呼叫一次（AC「不得退化成 N+1」）。"""
+    storage.save_narrow_history([
+        NarrowHistoryEntry("s1", "2026-09-01T00:00:00+00:00", "k1", 1.0, OWNER),
+        NarrowHistoryEntry("s2", "2026-09-01T00:00:00+00:00", "k2", 2.0, OWNER),
+        # 不同 candidate_key，不該混進 s1 的結果
+        NarrowHistoryEntry("s1", "2026-09-01T00:00:00+00:00", "other", 99.0, OWNER),
+    ])
+    result = storage.cost_sparklines(
+        [("s1", "k1"), ("s2", "k2")], owner=OWNER, limit=20)
+    assert result == {
+        "s1": [("2026-09-01T00:00:00+00:00", 1.0)],
+        "s2": [("2026-09-01T00:00:00+00:00", 2.0)],
+    }
+
+
+def test_cost_sparklines_omits_scenarios_with_no_narrow_history(storage):
+    """沒有任何 narrow history 列的配對（從未成功、或這個 candidate_key
+    還沒被寫過）——鍵不出現在回傳 dict 裡，不是空陣列（`main.py` 據此
+    用 `.get()` 分辨「沒東西可畫」，不需要多一層三態判斷）。"""
+    result = storage.cost_sparklines([("s1", "missing")], owner=OWNER, limit=20)
+    assert result == {}
+
+
+def test_cost_sparklines_requires_a_real_owner(storage):
+    storage.save_narrow_history([
+        NarrowHistoryEntry("s1", "2026-09-01T00:00:00+00:00", "k", 1.0, OWNER),
+    ])
+    with pytest.raises(TypeError):
+        storage.cost_sparklines([("s1", "k")], owner=None, limit=20)
+
+
+def test_cost_sparklines_excludes_another_owners_rows(storage):
+    storage.save_narrow_history([
+        NarrowHistoryEntry("s1", "2026-09-01T00:00:00+00:00", "k", 1.0, "alice"),
+    ])
+    assert storage.cost_sparklines(
+        [("s1", "k")], owner="bob", limit=20) == {}
+    assert storage.cost_sparklines(
+        [("s1", "k")], owner="alice", limit=20) == {
+        "s1": [("2026-09-01T00:00:00+00:00", 1.0)]}
+
+
+def test_cost_sparklines_sql_never_references_results_view(storage):
+    """票面硬性要求：不 SELECT `results.view`／不觸碰 `all_candidates`
+    ——結構性鎖住 Postgres adapter 實際送出的 SQL 文字，不是只靠人工
+    審查記得遵守。Memory 後端沒有 SQL 可檢查，這條對它是無害的
+    no-op（`storage` fixture 兩種實作都跑，這裡用 `getattr` 分辨）。"""
+    if not hasattr(storage, "_connect"):
+        return   # MemoryStorage：沒有 SQL，這條斷言對它不適用
+    import inspect
+    from api_app.storage import postgres as postgres_module
+
+    source = inspect.getsource(postgres_module.PostgresStorage.cost_sparklines)
+    assert "view" not in source.lower()
+    assert "all_candidates" not in source.lower()
+    assert "narrow_history" in source
+
+
 # ---------- SCALE-14（#265）：/history canonical 讀取路徑的批次查詢 ----------
 
 def test_result_spot_timestamps_reads_spot_from_snapshots_not_view(storage):

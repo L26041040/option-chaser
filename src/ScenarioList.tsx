@@ -3,9 +3,9 @@
  * 卡片瘦身；OG-03／#320 起改為 Binance Markets 式全寬資料表）。
  *
  * 每一列顯示標的／方向／現價／目標價／冠軍策略與買賣履約價／劇本
- * 報酬／淨成本走勢（本票先放「—」佔位，OG-04／#323 接上真實序列）／
- * 到期／狀態／更新時間，並有封存入口（軟刪除：清單消失、資料與紀錄
- * 保留）。
+ * 報酬／淨成本走勢（OG-04／#323：`CostSparkline.tsx` 手刻 SVG 縮圖，
+ * 綠紅依首尾方向、缺點斷線，`null` 顯示「—」）／到期／狀態／更新
+ * 時間，並有封存入口（軟刪除：清單消失、資料與紀錄保留）。
  *
  * OG-03（#320）把原本分屬 `Toolbar.tsx`（標題／劇本數／刷新）與這裡
  * （收益率口徑說明／批次選取入口）兩處的頁首資訊收斂成同一個
@@ -40,6 +40,7 @@
  */
 import { useState } from "react";
 import type { RefreshFailure, ScenarioSummary } from "./api";
+import CostSparkline from "./CostSparkline";
 import { CheckIcon, EditIcon, TrashIcon } from "./icons";
 import { formatMove } from "./detail";
 import { detailHash } from "./route";
@@ -231,9 +232,9 @@ function ScenarioCard({
             )}
           </span>
 
-          {/* 淨成本走勢：本票先放佔位，OG-04（#323）接上真實序列
-              （narrow history 對冠軍 candidate key 的純加法摘要）。 */}
-          <span className="lib-cell lib-cell-sparkline muted">—</span>
+          {/* 淨成本走勢（OG-04／#323）：冠軍候選最近幾次刷新的淨成本
+              序列，後端已批次查好、截尾——這裡純渲染，零計算。 */}
+          <CostSparkline points={row.cost_sparkline} />
 
           <span className="lib-cell lib-cell-expiry">
             <span>Exp {formatRepresentativeExpiry(rep)}</span>

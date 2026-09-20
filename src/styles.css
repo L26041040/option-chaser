@@ -1394,6 +1394,25 @@ body {
   width: 48px;
 }
 
+/* OG-04（#323）：淨成本走勢 sparkline——手刻 SVG 縮圖，線色依
+   `CostSparkline.tsx` 算出的首尾方向上色，跟既有 `.positive`／
+   `.negative`（劇本報酬欄）同一組色階，不是另外發明一套語意。 */
+.lib-cell-sparkline {
+  justify-content: center;
+}
+
+.sparkline polyline {
+  stroke: var(--text-3);
+}
+
+.sparkline-up polyline {
+  stroke: var(--up);
+}
+
+.sparkline-down polyline {
+  stroke: var(--down);
+}
+
 .lib-cell-expiry {
   flex-direction: column;
   align-items: flex-start;

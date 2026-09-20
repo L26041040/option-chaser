@@ -1294,6 +1294,39 @@ class Storage(Protocol):
         `analyzed_at in result` 分辨「查過但是 gap」與「還沒查過」，
         不能用 `result.get(analyzed_at) is None` 混淆兩者。"""
 
+    def cost_sparklines(
+        self, pairs: Sequence[tuple[str, str]], *, owner: str, limit: int,
+    ) -> dict[str, list[tuple[str, float | None]]]:
+        """OG-04（#323）：劇本清單「淨成本走勢」sparkline 欄——一次批次
+        查詢**多個劇本**各自冠軍候選最近 `limit` 筆 narrow history，這是
+        `narrow_history_for_candidate()`（單一劇本、呼叫端指定確切
+        `analyzed_ats`）辦不到的查詢形狀：清單頁事先不知道每個劇本各自
+        「最近幾次刷新」落在哪些日期，需要的是「這個 (scenario_id,
+        candidate_key) 配對最近 N 筆是什麼」，不是「這幾個確切日期查得
+        到什麼」——因此不是同一個方法加參數就能重用，是真的不同的查詢
+        形狀（批次維度從「同一劇本的多個日期」換成「多個劇本各自一個
+        候選」）。
+
+        `pairs`：`[(scenario_id, candidate_key), ...]`——呼叫端（清單
+        端點）已經從 `latest_summaries()` 拿到每個劇本的
+        `representative_candidate["candidate_key"]`，這裡只負責批次撈
+        對應的 cost 序列，不重新判斷誰是冠軍。
+
+        回傳 `{scenario_id: [(analyzed_at, cost), ...]}`，依 `analyzed_at`
+        **升冪**排列（跟 `narrow_history_for_candidate()`／`/history`
+        端點同一個順序慣例），每個劇本最多 `limit` 筆（截尾邏輯在資料庫
+        端用 `ORDER BY analyzed_at DESC LIMIT` 做，不是撈全部回來前端
+        再切）。`pairs` 裡沒有任何 narrow_history 列的劇本，或
+        `candidate_key` 為空字串／`None`（呼叫端自行濾掉，不傳進來），
+        不會出現在回傳 dict 的鍵裡——呼叫端用 `.get(scenario_id)` 取，
+        缺席即 `None`，前端據此顯示「—」，跟「這個劇本沒有 narrow
+        history」是同一件事，不需要額外的三態判斷。
+
+        **不 SELECT `results.view`／不觸碰 `all_candidates`**（票面硬性
+        要求）——只讀 `narrow_history` 這張表，跟
+        `narrow_history_for_candidate()` 同一份資料來源，只是換一種
+        批次維度。"""
+
     def result_spot_timestamps(
         self, scenario_id: str, *, owner: str,
     ) -> list[tuple[str, float | None]]:
