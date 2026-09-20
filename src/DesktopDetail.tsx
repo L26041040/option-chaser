@@ -627,7 +627,8 @@ export default function DesktopDetailBody({
           不會讓它變得更早發送請求。 */}
       <div className="detail-bottom-tab-body">
         <div hidden={bottomTab !== "history"}>
-          <DesktopSpreadHistory scenarioId={scenarioId} candidate={champion} />
+          <DesktopSpreadHistory scenarioId={scenarioId} candidate={champion}
+                                analyzedAt={analyzedAt} />
         </div>
         <div hidden={bottomTab !== "pool"}>
           <CandidatePool view={view} result={diagnosticsResult} />

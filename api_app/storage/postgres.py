@@ -1158,7 +1158,17 @@ class PostgresStorage:
             "  AND nh.candidate_key = p.candidate_key "
             "  AND nh.owner_id = %s "
             "  ORDER BY nh.analyzed_at DESC LIMIT %s"
-            ") h")
+            ") h "
+            # 外部審查（PR #329）跟進：原本外層查詢沒有 `ORDER BY`——
+            # LATERAL 子查詢的 `DESC` 只保證每組 (scenario_id,
+            # candidate_key) **各自**內部的抓取順序，PostgreSQL 並不保證
+            # 不同外層列之間、或掃描計畫改變時的整體回傳順序；下面
+            # `.reverse()` 假設同一個 scenario_id 的列在累積時已經是
+            # 「最近到最舊」這個順序，缺了外層 `ORDER BY` 這個假設並不
+            # 可靠（換一個查詢計畫就可能打亂）。這裡明確依
+            # `(scenario_id, analyzed_at DESC)` 排序，讓 `.reverse()`
+            # 之後確實是既有升冪慣例。
+            "ORDER BY p.scenario_id, h.analyzed_at DESC")
         with self._connect() as conn:
             rows = conn.execute(sql, params).fetchall()
         out: dict[str, list[tuple[str, float | None]]] = {}

@@ -432,10 +432,20 @@ export default function App() {
     void runBatch([created.id]);
   }
 
-  /** 點卡片上的編輯：把原資料交給既有表單並展開它。 */
+  /** 點卡片上的編輯：把原資料交給既有表單並展開它。
+   *
+   * 外部審查（PR #329）跟進：桌面直接開詳細頁網址（deep link）時，
+   * 詳細頁本身的資料走 `getScenarioCached()` 獨立抓取，跟這裡的
+   * `rows`（劇本庫清單）是兩條不同的 fetch——清單還沒回來前按「編輯」，
+   * 舊行為是靜靜地什麼事都不做，使用者以為按鈕壞了。這裡改成清楚地
+   * 說明原因，而不是繼續無聲失敗；`rows` 一到位使用者再按一次就會
+   * 正常開啟，不需要額外重新整理。 */
   function startEdit(id: string) {
     const row = rows.find((r) => r.id === id);
-    if (!row) return;
+    if (!row) {
+      setError("劇本資料還在載入，請稍候再按一次編輯");
+      return;
+    }
     setEditing({
       id: row.id, symbol: row.symbol, target_price: row.target_price,
       target_month: row.target_month, best_price: row.best_price,

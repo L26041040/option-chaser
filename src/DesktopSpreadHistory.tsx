@@ -24,6 +24,15 @@
  * `DesktopDetailBody` 的 CSS 決定，元件不會因為使用者切到別的 tab 而
  * 卸載），因此改成掛載／候選换人時就抓一次，不是等一個不存在的展開
  * 事件。
+ *
+ * 外部審查（PR #329）跟進：只依 `candidate_key` 重抓不夠——冠軍刷新後
+ * 若仍是同一組候選（常見情況：同一組繼續是第 1 名），`candidate_key`
+ * 不變，這個 effect 因此不會重新觸發，畫面會停在刷新前那份走勢圖，
+ * 漏看剛寫入的最新一筆快照。手機版 `SpreadHistory.tsx` 靠
+ * `ScenarioDetail.tsx` 既有的 `key={`spread-history-${analyzedAt}`}`
+ * 強制整個卸載重掛解決同一個問題；這裡改成把 `analyzedAt` 一併收進
+ * 依賴陣列（不用 remount，因為這個常駐面板還想保留使用者選的時間
+ * 粒度，不像手機版那個 `<details>` 展開狀態本來就預期隨新分析收合）。
  */
 import { useEffect, useState } from "react";
 
@@ -35,9 +44,12 @@ import {
   downsampleHistory, historySummaryStats, type Granularity,
 } from "./spreadHistory";
 
-export default function DesktopSpreadHistory({ scenarioId, candidate }: {
+export default function DesktopSpreadHistory({ scenarioId, candidate, analyzedAt = null }: {
   scenarioId: string;
   candidate: Candidate | null;
+  /** 這個劇本最新一次分析完成的時間戳——只當觸發訊號，不進畫面（跟
+   *  `IvHistory.tsx` 的同名 prop 同一種用法）。 */
+  analyzedAt?: string | null;
 }) {
   const [entries, setEntries] = useState<HistoryEntry[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -57,9 +69,11 @@ export default function DesktopSpreadHistory({ scenarioId, candidate }: {
       .finally(() => { if (alive) setLoading(false); });
     return () => { alive = false; };
     // 候選換人（切了冠軍——理論上不會在同一份 view 裡發生，但保守起見
-    // 依 candidate_key 而非物件參照重抓）或劇本換人都要重抓一次。
+    // 依 candidate_key 而非物件參照重抓）或劇本換人都要重抓一次；
+    // `analyzedAt` 一併列入——同一組候選繼續當冠軍時 `candidate_key`
+    // 不變，只有這個時間戳會告訴我們「有新快照了，該重抓」。
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [scenarioId, candidate?.candidate_key]);
+  }, [scenarioId, candidate?.candidate_key, analyzedAt]);
 
   if (!candidate) {
     return <p className="caption">無合格候選</p>;
