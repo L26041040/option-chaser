@@ -1767,6 +1767,16 @@ body {
   min-width: 0;
 }
 
+/* OG-05（#324）：劇本庫頁首 stats strip——重用既有 `.stat` 方塊，
+   橫向排列、自動換行（桌面窄一點的視窗，或 Super Admin 多兩個方塊時
+   不擠爆一行）。 */
+.lib-stats-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 20px;
+  padding: 10px 0;
+}
+
 .stat-label {
   font-size: 12px;
   /* Typography v2：與 `.caption` 同一個級距（12px），行高比照拉到

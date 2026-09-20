@@ -980,6 +980,35 @@ test("OG-04（#323）：沒有 narrow history 序列的劇本，淨成本走勢�
   await expect(xyzRow.getByRole("img", { name: /淨成本走勢/ })).toHaveCount(0);
 });
 
+test("OG-05（#324）：劇本庫頁首 stats strip 顯示唯讀使用量摘要，Normal" +
+     "User 看不到 Super Admin 專屬方塊也不打 ops metrics 請求",
+   async ({ page }) => {
+  const opsCalls: string[] = [];
+  await routeTwoScenarios(page);
+  await page.route("**/api/me/usage-summary", (route) =>
+    route.fulfill({ json: {
+      active_scenarios: 2, max_active_scenarios: 10,
+      quota_exempt: false, refresh_min_interval_minutes: 30,
+      throttle_exempt: false, last_activity_at: "2026-08-04T09:30:00+00:00",
+    } }));
+  await page.route("**/api/ops/metrics", (route) => {
+    opsCalls.push(route.request().url());
+    return route.fulfill({ json: {
+      vendor_fuse: { used: 5, budget: 2000 }, alerts: [] } });
+  });
+  await page.goto("/");
+
+  const strip = page.locator(".lib-stats-strip");
+  await expect(strip.getByText("2 / 10")).toBeVisible();
+  await expect(strip.getByText("進行中劇本")).toBeVisible();
+  await expect(strip.getByText("刷新節流間隔")).toBeVisible();
+  await expect(strip.getByText("30 分鐘")).toBeVisible();
+  // Normal User（既有 mock 角色，未特別解鎖）：看不到 Super Admin 兩格，
+  // 也真的沒發出 `/api/ops/metrics` 請求（AC 明文）。
+  await expect(strip.getByText("Vendor 每日預算")).toHaveCount(0);
+  expect(opsCalls).toEqual([]);
+});
+
 test("OG-03（#320）：方向與狀態篩選 chip 純前端過濾，不打任何新請求" +
      "（AC：篩選純前端、不改後端）", async ({ page }) => {
   const bearish = libraryRow({ id: "s3", symbol: "DEF", target_price: 80 });

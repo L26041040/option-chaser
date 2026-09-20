@@ -7,6 +7,26 @@ import sampleRow from "../contracts/scenario_row_sample.json";
 import type { RefreshFailure, ScenarioSummary } from "./api";
 import { formatAnalyzedAt } from "./scenarios";
 
+// OG-05（#324）：`ScenarioList` 現在掛載就打 `GET /api/me/usage-
+// summary`（`UsageStatsStrip`）與（Super Admin 才會掛載的）`GET
+// /api/ops/metrics`——這個檔案原本沒有任何測試需要 mock 網路請求
+// （OG-04／#323 之前 `CostSparkline` 都是純 prop 渲染），全域 stub
+// 一次，讓既有測試對這個新 side effect 得到一個確定、不依賴真實網路
+// 的回應，而不是讓每個既有測試各自撞一次無法預期的 fetch 失敗。
+function mockFetch() {
+  vi.stubGlobal("fetch", vi.fn(async () => ({
+    ok: true, status: 200, json: async () => ({}),
+  })));
+}
+
+beforeEach(() => {
+  mockFetch();
+});
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
+
 /** 卡片上的「資料時間」都以這個時刻為基準判斷新鮮度。 */
 const NOW = new Date("2026-08-04T10:00:00+00:00");
 
@@ -833,5 +853,107 @@ describe("頁首刷新入口（OG-03／#320，併入原本 Toolbar.tsx 的三個
     list([row()], { busy: true, runSummary: "2 成功／1 失敗" });
     expect(screen.getByText("更新中……")).toBeInTheDocument();
     expect(screen.queryByText("2 成功／1 失敗")).not.toBeInTheDocument();
+  });
+});
+
+describe("OG-05（#324）：劇本庫 stats strip", () => {
+  /** URL 感知的 fetch mock——`/api/auth/status` 決定 `useAuthRole()`
+   *  查到的角色，`/api/me/usage-summary`／`/api/ops/metrics` 各自回
+   *  對應的 body；記錄每個 URL 被打了幾次，供「非 Super Admin 零 ops
+   *  metrics 請求」這條 AC 直接斷言呼叫次數。 */
+  function routeFetch(role: "normal" | "superuser" | "superadmin" = "normal") {
+    const usage = {
+      active_scenarios: 3, max_active_scenarios: 10,
+      quota_exempt: role !== "normal", refresh_min_interval_minutes: 30,
+      throttle_exempt: role !== "normal", last_activity_at: "2026-08-04T09:30:00+00:00",
+    };
+    const opsMetrics = {
+      vendor_fuse: { used: 400, budget: 2000 },
+      alerts: [{ key: "chain_sustained_incident", triggered: true, message: "x" }],
+    };
+    const calls: string[] = [];
+    const spy = vi.fn(async (url: string) => {
+      calls.push(url);
+      if (url.includes("/api/auth/status")) {
+        return { ok: true, status: 200, json: async () => ({ role }) };
+      }
+      if (url.includes("/api/me/usage-summary")) {
+        return { ok: true, status: 200, json: async () => usage };
+      }
+      if (url.includes("/api/ops/metrics")) {
+        return { ok: true, status: 200, json: async () => opsMetrics };
+      }
+      return { ok: true, status: 200, json: async () => ({}) };
+    });
+    vi.stubGlobal("fetch", spy);
+    return calls;
+  }
+
+  it("Normal User：看得到自己的用量三格，看不到 Super Admin 兩格", async () => {
+    routeFetch("normal");
+    list([row()]);
+
+    expect(await screen.findByText("3 / 10")).toBeInTheDocument();
+    expect(screen.getByText("進行中劇本")).toBeInTheDocument();
+    expect(screen.getByText("最近活動")).toBeInTheDocument();
+    expect(screen.getByText("30 分鐘")).toBeInTheDocument();
+    expect(screen.queryByText("Vendor 每日預算")).not.toBeInTheDocument();
+    expect(screen.queryByText("429 事故")).not.toBeInTheDocument();
+  });
+
+  it("豁免角色（Super User）：進行中劇本／節流間隔顯示「豁免」", async () => {
+    routeFetch("superuser");
+    list([row()]);
+
+    await screen.findByText("最近活動");
+    const strip = document.querySelector(".lib-stats-strip") as HTMLElement;
+    expect(within(strip).getAllByText("豁免")).toHaveLength(2);
+  });
+
+  it("Super Admin：額外看到 Vendor 每日預算與 429 事故兩格", async () => {
+    routeFetch("superadmin");
+    list([row()]);
+
+    expect(await screen.findByText("400 / 2000")).toBeInTheDocument();
+    expect(screen.getByText("Vendor 每日預算")).toBeInTheDocument();
+    expect(screen.getByText("429 事故")).toBeInTheDocument();
+    expect(screen.getByText("進行中")).toBeInTheDocument();   // 事故 triggered=true
+  });
+
+  it("非 Super Admin：零 /api/ops/metrics 請求（AC 明文）", async () => {
+    const calls = routeFetch("normal");
+    list([row()]);
+
+    await screen.findByText("3 / 10");   // 等 usage-summary 落地，確定第一輪 effect 都跑過
+    expect(calls.some((u) => u.includes("/api/ops/metrics"))).toBe(false);
+  });
+
+  it("Super Admin：確實發出 /api/ops/metrics 請求", async () => {
+    const calls = routeFetch("superadmin");
+    list([row()]);
+
+    await screen.findByText("Vendor 每日預算");
+    expect(calls.some((u) => u.includes("/api/ops/metrics"))).toBe(true);
+  });
+
+  it("last_activity_at 為 null 時顯示「尚無紀錄」，不是「尚未分析」", async () => {
+    const spy = vi.fn(async (url: string) => {
+      if (url.includes("/api/auth/status")) {
+        return { ok: true, status: 200, json: async () => ({ role: "normal" }) };
+      }
+      if (url.includes("/api/me/usage-summary")) {
+        return { ok: true, status: 200, json: async () => ({
+          active_scenarios: 0, max_active_scenarios: null,
+          quota_exempt: false, refresh_min_interval_minutes: null,
+          throttle_exempt: false, last_activity_at: null,
+        }) };
+      }
+      return { ok: true, status: 200, json: async () => ({}) };
+    });
+    vi.stubGlobal("fetch", spy);
+    list([row()]);
+
+    expect(await screen.findByText("尚無紀錄")).toBeInTheDocument();
+    expect(screen.queryByText("尚未分析")).not.toBeInTheDocument();
   });
 });

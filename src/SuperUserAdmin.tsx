@@ -177,7 +177,10 @@ function avgRefreshDurationMs(buckets: OpsMetricBucket[]): number | null {
   return total / count;
 }
 
-function Stat({ label, children }: { label: string; children: React.ReactNode }) {
+/** OG-05（#324）：改 `export`——劇本庫 stats strip（`ScenarioList.tsx`）
+ *  的 Super Admin-only 方塊重用同一份「一格標籤＋數字」markup，不是
+ *  另刻一份一模一樣的 `.stat`／`.stat-label`／`.stat-value` 結構。 */
+export function Stat({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div className="stat">
       <span className="stat-label">{label}</span>
@@ -204,6 +207,14 @@ function OpsStats() {
   }, []);
 
   if (error) {
+    // `role="alert"` 在這裡沒問題——這個元件只在 Super Admin 主動點進
+    // 這個後台介面時才掛載，頁面上沒有其他表單驗證會用到同一個 ARIA
+    // 角色。OG-05（#324）新增的 `ScenarioList.tsx::UsageStatsStrip`／
+    // `OpsSuperAdminStats` 刻意不用這個角色——那兩個元件掛在劇本庫
+    // 頁面上，跟「建立劇本」表單驗證錯誤共用同一個頁面，用
+    // `role="alert"` 會讓一個背景 stats 讀取失敗跟真正需要打斷螢幕
+    // 閱讀器的表單錯誤搶同一個語意頻道；這裡維持原樣是刻意的，不是
+    // 忘記同步。
     return (
       <p className="notice error" role="alert">{error}</p>
     );

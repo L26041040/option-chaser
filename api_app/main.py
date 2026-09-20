@@ -1748,6 +1748,10 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         的可識別內容或第三方 token 屬 PB-10 獨立端點的職責，兩者不
         混在同一個回應裡（票面 §10 安全考量）。
 
+        **OG-05（#324）純加法**：`vendor_fuse`（今天全站 chain fetch
+        用量對照 `GLOBAL_VENDOR_DAILY_BUDGET`，`budget<=0` 時為
+        `None`）——供劇本庫 stats strip 的 Super Admin-only 方塊使用。
+
         **Super Admin-only**（AC-6，PB-09／#298 起由軸二守門，
         AUTH-03／#310 起改用三層角色的 `require_role(minimum=
         SUPERADMIN)`，取代已退役的 `ADMIN_SECRET`）：fail-closed，
@@ -1775,6 +1779,20 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
                "scenarios": {"total": snapshot.scenarios_total,
                             "average_per_owner":
                                 snapshot.scenarios_average_per_owner},
+               # OG-05（#324）純加法：劇本庫 stats strip 的 Super
+               # Admin-only「全站 vendor 每日預算用量」方塊要對照
+               # `GLOBAL_VENDOR_DAILY_BUDGET`，但這個常數本身過去從沒
+               # 序列化到任何回應——這裡補上，讀的是
+               # `vendor_fuse.today_chain_fetch_count()`，跟真正決定
+               # 要不要觸發 `GlobalVendorFuseTripped` 的**同一個**函式
+               # （見上方 `_fetch_chain()` 呼叫 `vendor_fuse.tripped()`
+               # 那段），不是自己另外對 `by_metric["chain_fetch_count"]`
+               # 的 30 天視窗桶重新加總算出可能兜不起來的第二個「今天」
+               # 定義。`budget <= 0`＝停用，誠實回 `None`。
+               "vendor_fuse": {
+                   "used": vendor_fuse.today_chain_fetch_count(_db(), ny_today()),
+                   "budget": (_effective_global_vendor_daily_budget
+                             if _effective_global_vendor_daily_budget > 0 else None)},
                "alerts": [{"key": a.key, "triggered": a.triggered,
                           "message": a.message} for a in snapshot.alerts]}
 
@@ -2076,6 +2094,61 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         token，自然走 PB-02（#294）既有的「新訪客」lazy-creation
         路徑拿到一個全新身份，不需要另外寫一套「立即重新簽發」邏輯。"""
         _db().delete_owner(identity_resolver())
+
+    # ---------- OG-05（#324）：唯讀使用量摘要 ----------
+
+    @app.get("/api/me/usage-summary")
+    def my_usage_summary(request: Request) -> dict:
+        """劇本庫頁首 stats strip 要的「我自己」用量摘要——數字全部由
+        後端一次給、前端零推算（票面明文）。
+
+        `owner_id` 一律來自 `identity_resolver()`，跟上面刪除自己資料
+        那個既有端點（`/api/me`）同一條安全邊界（不接受呼叫端傳入的
+        owner_id）；這是一般
+        owner-scoped 端點（不在 `_OWNER_EXEMPT_PREFIXES`／`_OWNER_
+        EXEMPT_EXACT` 清單裡），缺 cookie 時走既有 PB-02 lazy-creation
+        規則，不需要特殊處理。**純讀取，不呼叫 `_touch_activity()`**——
+        查看自己的用量不算真人操作，不得推進 `last_activity_at`（票面
+        AC 明文、測試鎖住）；`Storage.get_owner()` 本身也是純讀取
+        （見其 docstring），這裡沒有任何寫入路徑。
+
+        `active_scenarios`：跟 `create_scenario()` 額度檢查同一個算法
+        （`len(_db().list_scenarios(owner=owner))`，預設排除已封存）
+        ——不是另外發明一個「什麼算 active」的定義。
+
+        `max_active_scenarios`／`refresh_min_interval_minutes`：直接讀
+        `_effective_max_active_scenarios`／`_effective_refresh_min_
+        interval_minutes` 這兩個既有 closure 變數——跟 `create_
+        scenario()`／`_refresh_and_save()` 實際用來擋人的**同一份**
+        數字（票面 AC：「端點對 quota／throttle 設定值的來源與既有
+        create／refresh 閘門是同一份」），不是自己重讀一次環境變數
+        算出可能兜不起來的第二份答案。`<=0`＝停用，誠實回 `None`
+        （不是一個沒有意義的 0 或負數）。
+
+        `quota_exempt`／`throttle_exempt`：AUTH-05（#312）豁免規則
+        `role >= Role.SUPERUSER` 目前對兩者剛好是同一個門檻，但**故意
+        寫成兩個獨立判斷式**，不合併成一個共用的 `exempt` 旗標或工具
+        函式——沿用 `create_scenario()`／`_refresh_and_save()` 兩處
+        既有豁免檢查本身「不與任何其他角色豁免共用判斷式或工具函式」
+        的既有紀律（`create_scenario()` 附近的既有註解原話），這裡是
+        兩個檢查各自的**回報**，不是把兩個獨立的判斷點事後合併成一個。
+        """
+        owner = identity_resolver()
+        role = superuser.resolve_role(request,
+                                      resolve_session=_db().resolve_role_session)
+        owner_row = _db().get_owner(owner)
+        return {
+            "active_scenarios": len(_db().list_scenarios(owner=owner)),
+            "max_active_scenarios": (
+                _effective_max_active_scenarios
+                if _effective_max_active_scenarios > 0 else None),
+            "quota_exempt": role >= superuser.Role.SUPERUSER,
+            "refresh_min_interval_minutes": (
+                _effective_refresh_min_interval_minutes
+                if _effective_refresh_min_interval_minutes > 0 else None),
+            "throttle_exempt": role >= superuser.Role.SUPERUSER,
+            "last_activity_at": owner_row.last_activity_at if owner_row else None,
+        }
 
     # ---------- 一次性分析（V1 遺留，前端改走劇本端點後可移除） ----------
 

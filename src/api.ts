@@ -1396,11 +1396,34 @@ export interface OpsMetrics {
     total: number;
   };
   scenarios: { total: number; average_per_owner: number };
+  /**
+   * OG-05（#324）純加法：今天全站 chain fetch 用量對照
+   * `GLOBAL_VENDOR_DAILY_BUDGET`——`budget` 為 `null` 時代表這道煞車
+   * 停用（後端 `<=0` 即停用的既有慣例）。
+   */
+  vendor_fuse: { used: number; budget: number | null };
   alerts: { key: string; triggered: boolean; message: string }[];
 }
 
 export function getOpsMetrics(): Promise<OpsMetrics> {
   return request<OpsMetrics>("/api/ops/metrics");
+}
+
+// ---------- OG-05（#324）：劇本庫 stats strip 唯讀使用量摘要 ----------
+
+export interface UsageSummary {
+  active_scenarios: number;
+  /** `null`＝quota 停用（後端 `<=0` 即停用），不是「上限是 0」。 */
+  max_active_scenarios: number | null;
+  quota_exempt: boolean;
+  /** `null`＝節流停用。 */
+  refresh_min_interval_minutes: number | null;
+  throttle_exempt: boolean;
+  last_activity_at: string | null;
+}
+
+export function getUsageSummary(): Promise<UsageSummary> {
+  return request<UsageSummary>("/api/me/usage-summary");
 }
 
 // ---------- Historical IV 歷史序列（#126／#114，HIVT-02–04／#153–155） ----------

@@ -38,13 +38,18 @@
  * 直接依賴「三層堆疊」DOM 形狀本身（而非文字／class 存在性）的測試
  * 需要跟著改寫，改寫處皆附理由註解。
  */
-import { useState } from "react";
-import type { RefreshFailure, ScenarioSummary } from "./api";
+import { useEffect, useState } from "react";
+import { getOpsMetrics, getUsageSummary,
+        type OpsMetrics, type RefreshFailure, type ScenarioSummary,
+        type UsageSummary } from "./api";
 import CostSparkline from "./CostSparkline";
 import { CheckIcon, EditIcon, TrashIcon } from "./icons";
 import { formatMove } from "./detail";
 import { detailHash } from "./route";
 import StockLogo from "./StockLogo";
+import { Stat } from "./SuperUserAdmin";
+import { roleAtLeast } from "./superuser";
+import { useAuthRole } from "./useAuthRole";
 import {
   cardFailureHeadline,
   cardFailureVariant,
@@ -361,6 +366,111 @@ function ScenarioCard({
  *  ——欄位標籤本身不是操作，畫面上的真正資訊在每一列各自的內容裡，
  *  螢幕閱讀器逐列讀取即可理解每格代表什麼（沿用既有 `.compact-*`
  *  卡片一路的作法：不強加一層 ARIA table 語意）。 */
+/**
+ * OG-05（#324）：劇本庫頁首 stats strip——「我自己」的使用量，數字
+ * 全部由 `GET /api/me/usage-summary` 一次給、前端零推算（票面明文）。
+ * 掛載即抓、不快取（跟 `SuperUserAdmin.tsx::OpsStats()` 同一套簡單
+ * 慣例——這是操作性統計，不是需要跨頁面共用或需要失效機制的資料）。
+ *
+ * 三個方塊三層角色都看得到；Super Admin 額外的兩個方塊是獨立子元件
+ * `OpsSuperAdminStats`，只在 `roleAtLeast(role, "superadmin")` 為真
+ * 時才**掛載**——AC「非 Super Admin 零 ops metrics 請求」靠的是這個
+ * 條件掛載本身，不是 `OpsMiniStats`／`getOpsMetrics()` 內部自己再擋
+ * 一次（跟 `OpsStats()` 檔頭註解說的「這個元件只在...才 mount」
+ * 同一種既有紀律，不新發明第二種角色守門方式）。
+ */
+function UsageStatsStrip() {
+  const role = useAuthRole();
+  const [usage, setUsage] = useState<UsageSummary | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    getUsageSummary()
+      .then((u) => alive && setUsage(u))
+      .catch((e) => alive && setError(e instanceof Error ? e.message : String(e)));
+    return () => { alive = false; };
+  }, []);
+
+  if (error) {
+    // 刻意不用 `role="alert"`——這是一個背景 stats 方塊讀取失敗，不是
+    // 需要立刻打斷螢幕閱讀器的緊急狀態，也不該跟頁面上真正的表單驗證
+    // 警示（例如建立劇本沒勾任何 family）搶同一個 ARIA 語意角色，讓
+    // `getByRole("alert")` 之類的查詢誤判成兩個警示同時存在。
+    return <p className="notice error">{error}</p>;
+  }
+  if (!usage) {
+    return <p className="caption">用量摘要載入中……</p>;
+  }
+
+  return (
+    <div className="lib-stats-strip">
+      <Stat label="進行中劇本">
+        {usage.quota_exempt
+          ? "豁免"
+          : usage.max_active_scenarios === null
+          ? `${usage.active_scenarios}`
+          : `${usage.active_scenarios} / ${usage.max_active_scenarios}`}
+      </Stat>
+      <Stat label="最近活動">
+        {/* `formatAnalyzedAt(null)` 講的是「尚未分析」，跟「從未有過
+            活動」是不同的事——這裡自己判斷 `null`，不借用那個文案。 */}
+        {usage.last_activity_at === null
+          ? "尚無紀錄" : formatAnalyzedAt(usage.last_activity_at)}
+      </Stat>
+      <Stat label="刷新節流間隔">
+        {usage.throttle_exempt
+          ? "豁免"
+          : usage.refresh_min_interval_minutes === null
+          ? "停用"
+          : `${usage.refresh_min_interval_minutes} 分鐘`}
+      </Stat>
+      {roleAtLeast(role, "superadmin") && <OpsSuperAdminStats />}
+    </div>
+  );
+}
+
+/** Super Admin-only 兩個方塊：全站 vendor 每日預算用量、429 事故狀態
+ *  ——都讀既有 `GET /api/ops/metrics`（S0／SCALE-08 起就在，OG-11／
+ *  #322 起前端已經有這條 client），不新增第二個 Super Admin 專屬讀取
+ *  路徑。事故狀態沿用既有 `chain_sustained_incident` alert 判準
+ *  （`api_app/ops_alerts.py::evaluate_alerts()`），不重新發明一套。 */
+function OpsSuperAdminStats() {
+  const [metrics, setMetrics] = useState<OpsMetrics | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    getOpsMetrics()
+      .then((m) => alive && setMetrics(m))
+      .catch((e) => alive && setError(e instanceof Error ? e.message : String(e)));
+    return () => { alive = false; };
+  }, []);
+
+  if (error) {
+    // 同上一個元件的理由：不搶頁面既有 `role="alert"` 的語意角色。
+    return <p className="notice error">{error}</p>;
+  }
+  if (!metrics) {
+    return <p className="caption">系統指標載入中……</p>;
+  }
+
+  const incident = metrics.alerts.find((a) => a.key === "chain_sustained_incident");
+
+  return (
+    <>
+      <Stat label="Vendor 每日預算">
+        {metrics.vendor_fuse.budget === null
+          ? "停用"
+          : `${metrics.vendor_fuse.used} / ${metrics.vendor_fuse.budget}`}
+      </Stat>
+      <Stat label="429 事故">
+        {incident?.triggered ? "進行中" : "正常"}
+      </Stat>
+    </>
+  );
+}
+
 function LibTableHead() {
   return (
     <div className="lib-thead lib-row-tap" aria-hidden="true">
@@ -458,6 +568,10 @@ export default function ScenarioList({
             </button>
           </div>
         </div>
+
+        {/* OG-05（#324）：stats strip——放在標題列之後、篩選 chip 之前，
+            讀的是「這個頁面的身分／用量」，不是列表篩選的一部分。 */}
+        <UsageStatsStrip />
 
         {rows.length > 0 && (
           <div className="lib-filters">
