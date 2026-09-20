@@ -244,6 +244,77 @@ describe("詳細頁主圖（Payoff Heatmap）", () => {
   });
 });
 
+describe("OG-10（#327）：手機版三價位階梯／進場面板（artifact「Mobile 劇本" +
+         "詳細」板，桌面 OG-06／OG-07 之前一直沒有的兩塊手機內容）", () => {
+  it("劇本主圖卡片內緊接著三價位階梯（最差／目標／最好），同一組冠軍候選",
+     async () => {
+    const ladder = [
+      { label: "worst" as const, price: 90, return: -1 },
+      { label: "target" as const, price: 130, return: 5.667 },
+      { label: "best" as const, price: 150, return: 8.2 },
+    ];
+    mockDetail(detail({ latest_result: withTopCandidate({ price_ladder: ladder }) }));
+    render(<ScenarioDetail id="s1" />);
+    await screen.findByText(/劇本主圖/);
+
+    const priceLadder = within(screen.getByLabelText("劇本區間三價位"));
+    expect(priceLadder.getByText("最差")).toBeInTheDocument();
+    expect(priceLadder.getByText("目標")).toBeInTheDocument();
+    expect(priceLadder.getByText("最好")).toBeInTheDocument();
+    expect(priceLadder.getByText("$150.00")).toBeInTheDocument();
+  });
+
+  it("`price_ladder` 是空陣列時三價位階梯不輸出任何節點——不是空表格",
+     async () => {
+    mockDetail(detail({ latest_result: withTopCandidate({ price_ladder: [] }) }));
+    render(<ScenarioDetail id="s1" />);
+    await screen.findByText(/劇本主圖/);
+
+    expect(screen.queryByLabelText("劇本區間三價位")).not.toBeInTheDocument();
+  });
+
+  it("進場面板：逐腿最差成交價、淨成本，跟桌面 EntryTab 同一句格式化" +
+     "（`${legSide} ${legQuantityPrefix}${strike}`）", async () => {
+    mockDetail(detail());
+    render(<ScenarioDetail id="s1" />);
+    await screen.findByText(/劇本主圖/);
+
+    const entryPanel = within(
+      screen.getByRole("heading", { name: "進場 · 最差成交口徑" }).closest("section")!);
+    const champion = baselineTopCandidate(view)!;
+    for (const leg of champion.legs) {
+      expect(entryPanel.getByText(new RegExp(`^(買|賣).*${leg.strike}$`)))
+        .toBeInTheDocument();
+    }
+    expect(entryPanel.getByText("淨成本 / 股")).toBeInTheDocument();
+  });
+
+  it("進場面板重用既有 `RiskPayoff`／`PositionSensitivity`——Max Loss／" +
+     "Net Delta 這兩項既有內容都在，不是只有逐腿價格", async () => {
+    mockDetail(detail());
+    render(<ScenarioDetail id="s1" />);
+    await screen.findByText(/劇本主圖/);
+
+    const entryPanel = within(
+      screen.getByRole("heading", { name: "進場 · 最差成交口徑" }).closest("section")!);
+    expect(entryPanel.getByText("Max Loss")).toBeInTheDocument();
+    expect(entryPanel.getByText("Net Delta")).toBeInTheDocument();
+  });
+
+  it("沒有合格候選（冠軍為 null）時，進場面板不輸出任何節點", async () => {
+    const empty: AnalysisView = {
+      ...view,
+      results: view.results.map((r) => ({ ...r, status: "empty" as const,
+                                          expiry_top10: [], expiry_counts: [] })),
+    };
+    mockDetail(detail({ latest_result: empty }));
+    render(<ScenarioDetail id="s1" />);
+    await screen.findByText("無合格候選");
+
+    expect(screen.queryByText("進場 · 最差成交口徑")).not.toBeInTheDocument();
+  });
+});
+
 describe("追平價格區塊已移除（spec 決策 E／#103）", () => {
   it("不再渲染追平價格卡片，任何相關文案都不出現", async () => {
     mockDetail(detail());
@@ -258,7 +329,8 @@ describe("追平價格區塊已移除（spec 決策 E／#103）", () => {
 });
 
 describe("區塊順序（spec #102 決策 A／#103）", () => {
-  it("依決策 A 定義的順序渲染；IV History 插槽尚未上線，不輸出任何內容", async () => {
+  it("OG-10（#327）起依 artifact「Mobile 劇本詳細」板重排的順序渲染；" +
+     "Historical IV 未解鎖時不輸出任何內容", async () => {
     const ladder = [
       { label: "worst", price: 110, return: -1 },
       { label: "target", price: 130, return: 5.667 },
@@ -275,17 +347,24 @@ describe("區塊順序（spec #102 決策 A／#103）", () => {
       .map((card) => card.querySelector(".section-title")?.textContent ?? null)
       .filter((t): t is string => t !== null);
 
+    // OG-10（#327）：Family tabs／到期日／排名表（`FamilyTabs` 內部，
+    // 含既有候選池／分析報告）排在「劇本主圖」常駐 Heatmap 之前，
+    // 新增的「進場」面板緊接在主圖之後，Historical IV（此測試未解鎖，
+    // 不輸出節點）與底部兩張收合卡排在最後——這是本票明文要求的順序
+    // 變動，不是既有測試被弱化，舊順序（主圖在最前）本身就是這次要
+    // 修正的地方。
     expect(titles).toEqual([
-      "劇本主圖", "到期日",
-      "候選池", "📄 分析報告", "Spread 淨成本走勢", "原始資料（當次快照）",
+      "到期日", "候選池", "📄 分析報告",
+      "劇本主圖", "進場 · 最差成交口徑",
+      "Spread 淨成本走勢", "原始資料（當次快照）",
     ]);
 
     // IV History 插槽本身不輸出任何 DOM 節點——不是一張空卡片，直接就
-    // 不存在於 DOM 裡。卡片總數固定為上面 6 張加上摘要卡與劇本設定卡
+    // 不存在於 DOM 裡。卡片總數固定為上面 7 張加上摘要卡與劇本設定卡
     // （OPTION-CHASER-CLOSEOUT-001，兩張都無 section-title，改用
     // aria-label），插槽若渲染出任何東西（哪怕只是空卡），這裡就會
     // 多一張。
-    expect(container.querySelectorAll(".card")).toHaveLength(8);
+    expect(container.querySelectorAll(".card")).toHaveLength(9);
     expect(screen.queryByText(/Historical IV|IV Position/)).not.toBeInTheDocument();
   });
 
@@ -802,9 +881,15 @@ describe("多 family 並存（T11／#229）", () => {
 
     await userEvent.click(screen.getByRole("button", { name: "Call / Put" }));
 
-    // 分頁內容換成 long-call 自己的候選（精確比對——champion 的標題是
-    // 「買 100 / 賣 105」，含 regex 會誤中同一個子字串）
-    expect(screen.getByText("買 100")).toBeInTheDocument();
+    // 分頁內容換成 long-call 自己的候選——縮小到「到期日」排名表本身
+    // （OG-10／#327 起頁面上新增的進場面板固定顯示冠軍，逐腿列也會印出
+    // 「買 100」這個買腿 strike 標籤，含 regex 或不縮小範圍的
+    // `screen.getByText` 會連帶命中那裡，變成「找到多個」的假失敗，
+    // 這裡改成 `within` 只找排名表自己的候選列，不是同一句文字剛好
+    // 撞名）。
+    const expiryStructure = screen.getByRole("heading", { name: "到期日" })
+      .closest("section") as HTMLElement;
+    expect(within(expiryStructure).getByText("買 100")).toBeInTheDocument();
     // 頭條（摘要卡）依然是 Bull Call Spread 冠軍，不隨分頁切換而改變
     expect(summarySection().getByText("Bull Call Spread")).toBeInTheDocument();
     expect(summarySection().getByText("90.0%")).toBeInTheDocument();

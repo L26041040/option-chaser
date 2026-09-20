@@ -2833,6 +2833,65 @@ test("手機版：多 family 並存——分頁列出、預設打開冠軍所屬
   await expect(summary.getByText("Bull Call Spread")).toBeVisible();
 });
 
+test("OG-10（#327）：手機詳細頁整頁順序依 artifact「Mobile 劇本詳細」板" +
+     "重排——Family tabs／排名表在劇本主圖之前，三價位階梯／進場面板緊接" +
+     "在主圖之後，Historical IV 在進場面板之後；進場面板固定顯示冠軍，" +
+     "切換 family 分頁零額外請求、頭條與進場面板都不變", async ({ page }) => {
+  const row = { ...libraryRow(), strategies: ["single-leg", "vertical-spread"] };
+  const multi = multiFamilyView();
+  await routeLibrary(page, row);
+  await page.route("**/api/scenarios/s1", (route) =>
+    route.fulfill({ json: { ...row, latest_result: multi } }));
+  await page.route("**/api/auth/status",
+    (route) => route.fulfill({ json: { role: "superuser" } }));
+  await page.route("**/api/settings", (route) =>
+    route.fulfill({ json: { historical_iv_enabled: true } }));
+  const ivCalls: string[] = [];
+  await page.route("**/api/scenarios/*/iv-history*", (route) => {
+    ivCalls.push(route.request().url());
+    return route.fulfill({ json: { candidate_key: "none" } });
+  });
+
+  await page.goto("/");
+  await page.getByRole("link", { name: /XYZ/ }).click();
+  await expect(page.getByText(/劇本主圖/)).toBeVisible();
+
+  // 區塊順序：Family tabs（排名表所在）在劇本主圖之前，進場面板緊接在
+  // 主圖之後——冠軍是 Vertical Spread（兩腿），Historical IV 因此不
+  // 渲染（既有單腿限定守門，跟本票的位置重排是兩件事），順序驗證改用
+  // 「淨成本走勢」這張底部收合卡確認排在進場面板之後即可。
+  const tabsY = (await page.getByRole("group", { name: "策略家族" })
+    .boundingBox())!.y;
+  const chartY = (await page.getByText("劇本主圖").boundingBox())!.y;
+  const entryPanelY = (await page.getByText("進場 · 最差成交口徑")
+    .boundingBox())!.y;
+  const historyRowY = (await page.getByText("Spread 淨成本走勢")
+    .boundingBox())!.y;
+  expect(tabsY).toBeLessThan(chartY);
+  expect(chartY).toBeLessThan(entryPanelY);
+  expect(entryPanelY).toBeLessThan(historyRowY);
+
+  // 進場面板固定顯示冠軍（真實契約樣本的 baseline 第 1 名候選，這裡
+  // 動態取它的賣腿履約價，不手造假設值）——切到 Call / Put 分頁（Long
+  // Call 單腿候選）後，進場面板逐字不變，跟頭條摘要卡同一條 QA1-06
+  // 既有原則延伸到這個新面板；且分頁切換本身不打任何新請求（純記憶體
+  // 內的既有候選池切換）。
+  const champKey = view.results[0].expiry_top10![0].candidate_keys[0];
+  const sellStrike = candOf(view, champKey).legs.find((l) => l.side === "sell")!.strike;
+  const entryPanel = page.getByRole("heading", { name: "進場 · 最差成交口徑" })
+    .locator("xpath=..");
+  await expect(entryPanel.getByText(new RegExp(`賣.*${sellStrike}`))).toBeVisible();
+
+  const requestUrls: string[] = [];
+  page.on("request", (req) => requestUrls.push(req.url()));
+  await page.waitForLoadState("networkidle");
+  requestUrls.length = 0;
+  await page.getByRole("button", { name: "Call / Put" }).click();
+  expect(requestUrls).toEqual([]);
+  await expect(entryPanel.getByText(new RegExp(`賣.*${sellStrike}`))).toBeVisible();
+  expect(ivCalls).toEqual([]);
+});
+
 test("手機版：不可選的 family 有分頁、點得進去看得到原因（T11／#229，facts-only）",
    async ({ page }) => {
   const row = { ...libraryRow(),
@@ -2939,19 +2998,27 @@ test("T16（#232）：Butterfly 兩個損益兩平點與獲利區間都在分析
   await page.goto("/#/s/s1");
 
   await page.getByText("📄 分析報告").click();
-  const breakevenRow = page.getByText("Breakeven", { exact: true }).locator("xpath=..");
+  // OG-10（#327）起手機版新增的「進場」面板固定顯示同一組冠軍候選，
+  // 也重用同一份 `RiskPayoff`（跟這裡的分析報告卡是同一份純函式、同一
+  // 組候選，逐字印出同樣的 Breakeven／獲利區間／Max Loss 文字）——
+  // 不縮小範圍的 `page.getByText` 會連帶命中那張卡，變成「找到多個」
+  // 的假失敗。這裡縮小到「📄 分析報告」這張卡本身，跟桌面版既有測試
+  // （`rightPanel.getByText`／`bottomTabs.getByText` 等）同一套「先
+  // scope 到卡片再查」慣例，不是弱化斷言範圍。
+  const reportCard = page.locator(".card").filter({ hasText: "📄 分析報告" }).first();
+  const breakevenRow = reportCard.getByText("Breakeven", { exact: true }).locator("xpath=..");
   await expect(breakevenRow).toContainText(
     `$${butterflyCand.breakeven_points[0].toFixed(2)}`);
   await expect(breakevenRow).toContainText(
     `$${butterflyCand.breakeven_points[1].toFixed(2)}`);
-  const regionRow = page.getByText("獲利區間", { exact: true }).locator("xpath=..");
+  const regionRow = reportCard.getByText("獲利區間", { exact: true }).locator("xpath=..");
   await expect(regionRow).toContainText(
     `$${butterflyCand.profit_region[0].toFixed(2)}`);
   await expect(regionRow).toContainText(
     `$${butterflyCand.profit_region[1].toFixed(2)}`);
 
   // AC 明文性質：broken-wing 的 Max Loss 超過已付權利金，兩者不相等。
-  const maxLossRow = page.getByText("Max Loss", { exact: true }).locator("xpath=..");
+  const maxLossRow = reportCard.getByText("Max Loss", { exact: true }).locator("xpath=..");
   await expect(maxLossRow).toContainText(
     `$${(butterflyCand.max_loss_per_contract / 100).toFixed(2)}`);
   await expect(maxLossRow).not.toContainText(
@@ -2991,7 +3058,11 @@ test("CLOSEOUT-004（Finding 1）：獲利區間在上方沒有界的 Butterfly�
   await page.goto("/#/s/s1");
 
   await page.getByText("📄 分析報告").click();
-  const regionRow = page.getByText("獲利區間", { exact: true }).locator("xpath=..");
+  // OG-10（#327）：同一個理由，縮小到「📄 分析報告」卡本身，避開手機版
+  // 新增「進場」面板也重用同一份 `RiskPayoff` 造成的文字重複（見上一條
+  // 測試同樣的註解）。
+  const reportCard = page.locator(".card").filter({ hasText: "📄 分析報告" }).first();
+  const regionRow = reportCard.getByText("獲利區間", { exact: true }).locator("xpath=..");
   await expect(regionRow).toContainText(
     `$${UNBOUNDED_REGION.profit_region[0]!.toFixed(2)} 以上`);
   await expect(regionRow).toContainText("更高的標的價到期時一樣獲利");

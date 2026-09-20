@@ -1,11 +1,21 @@
 /**
- * 劇本詳細頁（MVP V3／#103，資訊階層依 spec #102 決策 A 重整）：
- * 劇本設定（OPTION-CHASER-CLOSEOUT-001：使用者原本建立的 context——
- * 標的／目標價／目標年月／方向／啟用的 family）→ 摘要（含基準候選與
- * 進場成本，QA 修正後三卡合一）→〔Historical IV Position 插槽〕→
- * Payoff Heatmap → Strategy Family 分頁（依到期日分組的 Expiry
- * Structure／候選池／分析報告，見 `FamilyTabs`）→ Spread 歷史／
- * 原始資料。
+ * 劇本詳細頁（MVP V3／#103，資訊階層依 spec #102 決策 A 重整；OG-10／
+ * #327 起手機版整頁順序依 artifact「Mobile 劇本詳細」板重排，桌面版
+ * 這份順序描述與 `DesktopDetailBody` 自己的檔頭各自獨立維護）：
+ *
+ * **共用（`isDesktop` 分流之前，兩邊都渲染）**：劇本設定
+ * （OPTION-CHASER-CLOSEOUT-001：使用者原本建立的 context——標的／目標
+ * 價／目標年月／方向／啟用的 family）→ 摘要（含基準候選與進場成本，
+ * QA 修正後三卡合一）。
+ *
+ * **手機分支**（OG-10／#327）：Family tabs／到期日 chip／排名表
+ * （`FamilyTabs`，含既有「就地展開候選看 Heatmap」native `<details>`
+ * 機制不動）→ 劇本主圖（常駐 Heatmap＋三價位階梯，跨 family 冠軍）→
+ * 進場面板（逐腿最差價＋Payoff／Greeks 摘要，同一組冠軍）→ Historical
+ * IV → Spread 淨成本走勢／原始資料（兩張收合卡）。
+ *
+ * **桌面分支**：`DesktopDetailBody`（OG-06／#321 起的三欄外殼），順序
+ * 見該檔案自己的檔頭。
  *
  * 資料只從 `GET /api/scenarios/{id}` 來，畫面上每個數字都是引擎算好的：
  * 現價與所需漲幅在 `meta`、目標在 `params`、報酬矩陣在候選的 `matrix`。
@@ -25,14 +35,17 @@
  */
 import { useEffect, useState } from "react";
 
+import { PositionSensitivity, RiskPayoff, Row } from "./AnalysisReport";
 import DesktopDetailBody from "./DesktopDetail";
 import FamilyTabs from "./FamilyTabs";
 import IvHistory from "./IvHistory";
 import Heatmap from "./Heatmap";
+import PriceLadder from "./PriceLadder";
 import RawData from "./RawData";
 import SpreadHistory from "./SpreadHistory";
 import StockLogo from "./StockLogo";
 import {
+  legQuantityPrefix, legSide,
   type AnalysisView,
   type Candidate,
   type RefreshFailure,
@@ -111,6 +124,56 @@ function Chart({ view, candidate }: { view: AnalysisView; candidate: Candidate |
           Crossover 概念）刻意不傳這個 prop，讓 `Heatmap` 完全不渲染
           相關區塊，不是渲染成「缺席」。 */}
       <Heatmap {...heatmapProps(view, candidate)} />
+      {/* OG-10（#327）：手機版之前一直沒有渲染三價位階梯（桌面
+          OG-06／#321 起才第一次真的畫出這個既有欄位）——同一張卡、
+          Heatmap 正下方，跟桌面中央欄 Heatmap＋PriceLadder 同一個
+          相對位置，不是另外開一張卡。 */}
+      <PriceLadder points={candidate.price_ladder ?? []} />
+    </section>
+  );
+}
+
+/**
+ * 進場面板（OG-10／#327，artifact「進場 · 最差成交口徑」卡）：手機版
+ * 沒有桌面 OG-07 那種右欄分頁介面（進場／Payoff／Greeks／報告四個
+ * tab），把 Entry／Payoff／Greeks 三塊內容攤平成同一張連續捲動的卡片
+ * ——逐腿最差成交價的格式化沿用桌面 `DesktopDetail.tsx::EntryTab` 同一句
+ * `${legSide(leg)} ${legQuantityPrefix(leg)}${leg.strike}`（順序也對齊：
+ * 逐腿列在前、淨成本在後），Payoff／Greeks 兩段直接重用
+ * `AnalysisReport.tsx` 既有 export 的 `RiskPayoff`／`PositionSensitivity`
+ * （跟桌面 `PayoffTab`／`GreeksTab` 同一份純函式），不重新發明第二套
+ * 格式化規則或另外算一次 Max Profit／Breakeven／Greeks（那些既有的
+ * 策略分支——例如 Butterfly 不對稱獲利區間、CLOSEOUT-004 的「$X 以上」
+ * 寫法——只有一份實作，這裡繼續共用）。
+ *
+ * `/code-review` Standards 軸跟進：這裡只印「最差成交會用到的那一邊」
+ * 一個數字，不像 `EntryTab` 逐腿雙邊 Bid／Ask／IV／過寬與陳舊報價警示
+ * 都印——跟 artifact「進場 · 最差成交口徑」卡本身的版位一致（也只有
+ * 單邊價格），這兩項警示在同一頁上方 `FamilyTabs` 的排名列本來就會顯示
+ * （`ExpiryStructure.tsx::CandidateRow` 既有的 ⚠／🚩 tag），刻意不在
+ * 這裡重複第二份，不是漏掉。「最差成交要用哪一邊」這句
+ * `leg.side === "buy" ? leg.ask : leg.bid` 三元運算式跟 `expiry.ts::
+ * legPrices()`／`legPriceEntries()`、`EntryTab` 的 CSS class 選邊，
+ * 已是第三個各自獨立的既有寫法（跟 OG-08 檔頭記錄過的「單腿候選判準
+ * 散落 4 處」同一種既知不一致，本票不在範圍內統一，避免動到桌面既有
+ * 呈現）。
+ *
+ * 固定顯示**跨 family 冠軍**（跟 `Summary`／`Chart` 同一組候選，QA1-06
+ * 既有原則：主圖／進場面板不隨下方 `FamilyTabs` 切換的分頁而改變）。
+ */
+function EntryPanel({ candidate }: { candidate: Candidate | null }) {
+  if (!candidate) return null;
+  return (
+    <section className="card">
+      <h2 className="section-title">進場 · 最差成交口徑</h2>
+      {candidate.legs.map((leg, i) => (
+        <Row key={i} label={`${legSide(leg)} ${legQuantityPrefix(leg)}${leg.strike}`}>
+          {money(leg.side === "buy" ? leg.ask : leg.bid)}
+        </Row>
+      ))}
+      <Row label="淨成本 / 股">{money(candidate.natural_cost)}</Row>
+      <RiskPayoff candidate={candidate} />
+      <PositionSensitivity candidate={candidate} />
     </section>
   );
 }
@@ -277,22 +340,14 @@ function DetailBody({ scenarioId, view, analyzedAt, strategies }: {
           插槽〕→ Payoff Heatmap，全部圍繞同一組
           baseline 候選。 */}
       <Summary view={view} candidate={candidate} result={result} analyzedAt={analyzedAt} />
-      {/* OG-08（#326）：桌面版的 Historical IV 改掛進 `DesktopDetailBody`
-          右欄（跟著排名表選取列，不是這裡的跨 family 冠軍）——這裡這份
-          全域掛載點只留給手機版（手機版的擺位歸 OG-10／#327，本票不動
-          手機任何東西，逐位元組不變）。桌面若兩邊都掛，同一份 Historical
-          IV 資料會在畫面上出現兩次（一次在這裡的全寬位置、一次在右欄），
-          不是本票要的「多一塊」。 */}
-      {!isDesktop && (
-        <IvHistory scenarioId={scenarioId} candidate={candidate} analyzedAt={analyzedAt} />
-      )}
       {/* OG-06（#321）：桌面版把「劇本主圖＋Strategy Family 分頁」換成
           Binance trade page 式的三欄外殼（`DesktopDetail.tsx`）——左欄
           family tabs／到期日 chip／排名表，中央欄常駐 Heatmap 跟著
-          排名表目前選取的那一列。手機版走的仍是原本這兩個元件，逐
-          位元組不變（`DesktopDetailBody` 只在 `isDesktop` 為真時掛載，
-          兩條渲染路徑完全不相交，跟 `ScenarioList.tsx`／
-          `CompactScenarioList.tsx` 刻意分開是同一種策略）。 */}
+          排名表目前選取的那一列。手機版走的是完全不同的一條渲染路徑
+          （`DesktopDetailBody` 只在 `isDesktop` 為真時掛載，兩條路徑
+          完全不相交，跟 `ScenarioList.tsx`／`CompactScenarioList.tsx`
+          刻意分開是同一種策略），本票（OG-10／#327）只重排手機分支
+          內部的順序，桌面這個分支逐位元組不變。 */}
       {isDesktop ? (
         // OG-07（#325）：桌面版的 Spread 淨成本走勢／原始資料搬進
         // `DesktopDetailBody` 底部 tab（`scenarioId`／`analyzedAt` 因此
@@ -301,11 +356,31 @@ function DetailBody({ scenarioId, view, analyzedAt, strategies }: {
                             scenarioId={scenarioId} analyzedAt={analyzedAt} />
       ) : (
         <>
-          <Chart view={view} candidate={candidate} />
-          {/* Strategy Family 分頁（T11／#229）：到期日結構／候選池／
-              分析報告依目前選中的 family 各自呈現，單一 family 時完全
-              不畫分頁列（視覺上與 T11 之前逐位元相同）。 */}
+          {/* OG-10（#327）：手機整頁順序依 artifact「Mobile 劇本詳細」
+              板重排——Family tabs／到期日 chip／排名表（`FamilyTabs`
+              內部，含既有「就地展開候選看 Heatmap」native `<details>`
+              機制，逐位元組不動：AC 明文「候選展開零請求」既有斷言不得
+              刪減弱化）排在「劇本主圖」常駐 Heatmap／三價位階梯／進場
+              面板之前，Historical IV 排在進場面板之後、兩個底部收合卡
+              （淨成本走勢／原始資料）之前。跟票面「三個收合列」的唯一
+              揭露落差：候選池診斷／分析報告依然留在 `FamilyTabs` 內部
+              （T11／#229 既有的「跟著目前選中的 family」語意，不是
+              跟著整頁固定不變）——沒有硬拉出來跟淨成本走勢／原始資料
+              湊成三個位置相鄰的列，因為那兩塊本來就是 family-scoped
+              資料，跟著整頁固定的淨成本走勢／原始資料語意上是兩件事，
+              強行拉平成同一組「三列」會混淆這個既有區分（見 issue #327
+              收尾留言的完整說明）。 */}
           <FamilyTabs view={view} strategies={strategies} />
+          <Chart view={view} candidate={candidate} />
+          <EntryPanel candidate={candidate} />
+          {/* OG-08（#326）：桌面版的 Historical IV 改掛進
+              `DesktopDetailBody` 右欄（跟著排名表選取列，不是這裡的跨
+              family 冠軍）——這份全域掛載點只留給手機版。OG-10（#327）
+              把它從「劇本主圖之前」移到「進場面板之後」，對齊 artifact
+              的手機版順序；既有 17 條 Historical IV e2e 全部只用
+              `.iv-history` 定位、不斷言跟其他區塊的相對順序，位置搬動
+              不影響任何既有斷言。 */}
+          <IvHistory scenarioId={scenarioId} candidate={candidate} analyzedAt={analyzedAt} />
           {/* #69：`key` 綁定這次分析的身分——新分析一到，React 直接卸載
               重掛這兩個元件，內部 state（已抓到的資料、`<details
               open>`）連同歸零，不會在畫面上混用新舊 cache。刷新後收合、
@@ -315,9 +390,7 @@ function DetailBody({ scenarioId, view, analyzedAt, strategies }: {
               穩定佔位字串應付型別。兩個 key 各自加前綴——這兩個元件是
               同一層的相鄰手足，若共用同一個 key 字串，React 會把它們
               當成同一組鍵而發出「key 重複」警告，重掛的保證也就不可靠
-              了。OG-07（#325）：這兩行只搬進手機分支、位置與既有輸出
-              順序不變（先前也是緊接在 `Chart`／`FamilyTabs` 之後），
-              手機畫面逐位元組不變。 */}
+              了。 */}
           <SpreadHistory key={`spread-history-${analyzedAt ?? "none"}`}
                          scenarioId={scenarioId} candidate={candidate} />
           <RawData key={`raw-data-${analyzedAt ?? "none"}`}
