@@ -136,9 +136,12 @@ test("Spread 淨成本走勢：桌面 hover 資料點顯示 tooltip（MVP V3／#
   await page.route("**/api/scenarios/*/history*", (route) =>
     route.fulfill({ json: history }));
 
+  // OG-07（#325）：桌面版「Spread 淨成本走勢」不再是要展開的
+  // `<details>`（那是手機版 `SpreadHistory.tsx` 保留的既有行為）——
+  // 桌面換成底部「淨成本走勢」tab（`DesktopSpreadHistory.tsx`），
+  // 預設就是啟用中的分頁，圖表掛載就直接看得到，不用先點開任何東西。
   await page.goto("/#/s/s1");
-  const chart = page.locator(".card").filter({ hasText: "Spread 淨成本走勢" }).first();
-  await chart.getByText("Spread 淨成本走勢").click();
+  const chart = page.locator(".spread-history-panel");
   const point = chart.getByRole("button", { name: /2026-07-01/ });
   await expect(point).toBeVisible();
 
@@ -2023,9 +2026,10 @@ test("桌面版：多 family 並存——分頁列出、預設打開冠軍所屬
   await expect(summary.getByText("Bull Call Spread")).toBeVisible();
 });
 
-test("OG-06（#321）：桌面詳細頁三欄外殼與身分列——左欄 family tabs／到期日" +
-     "chip／排名表、中央欄 Heatmap＋三價位階梯、右欄先留空容器；身分列有" +
-     "方向 tag 與編輯入口", async ({ page }) => {
+test("OG-06／OG-07（#321／#325）：桌面詳細頁三欄外殼與身分列——左欄 family" +
+     " tabs／到期日chip／排名表、中央欄 Heatmap＋三價位階梯、右欄候選面板" +
+     "（進場／Payoff／Greeks／報告）＋底部四個 tab；身分列有方向 tag" +
+     "與編輯入口", async ({ page }) => {
   const row = { ...libraryRow({ id: "s1", symbol: "XYZ" }),
                strategies: ["single-leg", "vertical-spread"] };
   const multi = multiFamilyView();
@@ -2040,12 +2044,23 @@ test("OG-06（#321）：桌面詳細頁三欄外殼與身分列——左欄 fami
   const detail = page.locator(".detail-page");
   await expect(detail.getByText(/劇本主圖/)).toBeVisible();
 
-  // 三欄外殼：左／中／右三個容器都在，右欄本票先留空（OG-07／#325 填）。
+  // 三欄外殼：左／中／右三個容器都在，右欄（OG-07／#325）是候選面板
+  // ——預設「進場」tab，跟著左欄排名表目前選取的那一列（預設＝冠軍）。
   const shell = detail.locator(".detail-shell");
   await expect(shell.locator(".detail-col-left")).toBeVisible();
   await expect(shell.locator(".detail-col-center")).toBeVisible();
-  await expect(shell.locator(".detail-col-right")).toBeAttached();
-  await expect(shell.locator(".detail-col-right")).toBeEmpty();
+  const rightPanel = shell.locator(".detail-col-right");
+  await expect(rightPanel).toBeVisible();
+  await expect(rightPanel.getByRole("tab", { name: "進場" }))
+    .toHaveAttribute("aria-selected", "true");
+  await expect(rightPanel.getByText("淨成本 / 股")).toBeVisible();
+
+  // 底部四個 tab（淨成本走勢／候選池診斷／分析報告／原始資料），預設
+  // 停在「淨成本走勢」——圖表掛載就直接看得到，不用先點開。
+  const bottomTabs = detail.locator(".detail-bottom-tabs");
+  await expect(bottomTabs.getByRole("tab", { name: "淨成本走勢" }))
+    .toHaveAttribute("aria-selected", "true");
+  await expect(bottomTabs.locator(".spread-history-panel")).toBeVisible();
 
   // 左欄：family tabs（已由上一條測試驗過切換行為，這裡只驗結構齊全）
   // ／到期日 chip／排名表。
@@ -2135,6 +2150,10 @@ test("T16（#232）：桌面版 Butterfly 三隻腿完整顯示、兩個損益�
   const detail = page.locator(".detail-page");
   await expect(detail.getByText("買 100 / 賣 2×106 / 買 115").first()).toBeVisible();
 
+  // OG-07（#325）：`AnalysisReport` 搬進底部「分析報告」tab，先切分頁
+  // 才看得到它自己的 `<details>`（元件本身的收合行為沒變，只是掛載
+  // 位置跟可見度多了一層 tab 閘門）。
+  await detail.getByRole("tab", { name: "分析報告" }).click();
   await detail.getByText("📄 分析報告").click();
   const breakevenRow = detail.getByText("Breakeven", { exact: true }).locator("xpath=..");
   await expect(breakevenRow).toContainText(

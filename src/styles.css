@@ -3811,14 +3811,72 @@ label.lb {
   gap: 12px;
 }
 
-/* 右欄本票不渲染任何內容（OG-07 填），保留欄寬讓外殼比例先對齊
-   artifact，避免 OG-07 一落地就得重新調整左／中欄寬度。 */
+/* OG-07（#325）：右欄「候選面板」——跟左／中欄一樣是一個獨立面板
+   （`.panel`），內部 `.panel-h` 放 tab 列（沿用 OG-11 `.chip` 慣例），
+   下面 `.candidate-panel-body` 放目前選中 tab 的內容。 */
 .detail-col-right {
+  display: flex;
+  flex-direction: column;
   min-height: 1px;
 }
 
-.detail-tabs-placeholder {
-  min-height: 1px;
+.candidate-panel-body {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 12px 14px;
+  overflow: auto;
+}
+
+.candidate-panel-section {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.candidate-panel-warnings {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+/* 最差成交口徑表——買腿 Ask／賣腿 Bid 那一格加粗，標出「這隻腿最差
+   成交實際會用到的那一邊」，跟 artifact 一致。 */
+.entry-leg-table {
+  margin-bottom: 4px;
+}
+
+.entry-leg-worst {
+  font-weight: 600;
+  color: var(--text);
+}
+
+/* OG-07（#325）：底部四個 tab（淨成本走勢／候選池診斷／分析報告／
+   原始資料）——跟右欄同一套 `.panel`／`.panel-h`／`.chip` 慣例，橫跨
+   三欄外殼下方整個寬度。 */
+.detail-bottom-tabs {
+  margin-top: 12px;
+}
+
+.detail-bottom-tab-body {
+  padding: 12px 14px;
+}
+
+/* 淨成本走勢桌面版（`DesktopSpreadHistory.tsx`）：圖表欄＋右側統計欄，
+   對齊 artifact 的「minmax(0,1fr) 280px」兩欄比例。 */
+.spread-history-panel {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 280px;
+  gap: 16px;
+  align-items: start;
+}
+
+.spread-history-panel-stats {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-left: 16px;
+  border-left: 1px solid var(--line);
 }
 
 /* 排名表一列：從手機版的 `<details><summary>` 換成一顆可點的按鈕

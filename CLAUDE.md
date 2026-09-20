@@ -33,15 +33,15 @@ Implement the approved **Obsidian Gold** Binance-inspired visual design without 
 - **OG-03 #320** — Desktop Markets-style scenario table + trash-page table skin (code-review follow-up) + required-move sub-text.
 - **OG-06 #321** — Desktop detail page part I: 3-column shell, identity row, family/expiry/ranking table, Heatmap-follows-selection, PriceLadder. Right column + bottom tabs left as empty containers for OG-07.
 - **OG-11 #322** — Settings subnav (desktop) / Super Admin backdoor (ops-metrics stats, owner status filter, type-to-confirm delete modals).
+- **OG-07 #325** — desktop detail part II: right-column candidate panel (Entry/Payoff/Greeks/Report tabs, follows ranking-row selection) + bottom 4 tabs (cost history/pool diagnostics/analysis report/raw data). AnalysisReport renders exactly once (bottom tab, test-locked); right "Report" tab is a teaser + disclaimer + jump link. Desktop-only single-leg cost-history support added (frontend-only relaxation).
 
 ### Current frontier
-These are unblocked and may be implemented in dependency order:
-- **OG-07 #325** — desktop detail part II (right-column candidate panel + bottom 4 tabs). Unblocked now that #321 is done.
-
-Then continue strictly by GitHub dependencies:
+These are unblocked and may be implemented in any order (all blocked only by #321, already done):
 - **OG-04 #323** — scenario-list cost sparkline, additive backend only.
 - **OG-05 #324** — read-only usage-summary endpoint + stats strip, additive backend only.
 - **OG-08 #326** — Long Call/Put + Historical IV panel.
+
+Then, once #326 lands:
 - **OG-10 #327** — mobile detail. Must wait for **#319 + #321 + #325 + #326**.
 - **OG-12 #328** — final light/responsive/artifact parity/regression acceptance.
 

@@ -29,11 +29,17 @@
  *
  * 零金融計算：每個數字都是引擎已經算好的既有欄位，這裡只做重排與
  * 格式化，不重算任何一個數字。
+ *
+ * OG-07（#325）：`Row`／`RiskPayoff`／`PositionSensitivity`／`RateRow`／
+ * `QRow` 改 `export`，供 `DesktopDetail.tsx` 右欄 Payoff／Greeks tab
+ * 直接重用同一份措辭與三態判斷（Breakeven／獲利區間／利率／q），不是
+ * 另外刻一份可能字句對不上的複本。四區塊組裝方式（完整 `AnalysisReport`
+ * 本身）不變，右欄只借用其中兩塊。
  */
 import type { AnalysisView, Candidate, Leg, StrategyResult } from "./api";
 import { formatReturn, money } from "./scenarios";
 
-function Row({ label, children }: { label: string; children: React.ReactNode }) {
+export function Row({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div className="row">
       <span className="row-label">{label}</span>
@@ -60,7 +66,7 @@ function Row({ label, children }: { label: string; children: React.ReactNode }) 
  *   STALE）；明示利率显示「CLI 明示」、Curve date 留白；其餘 fallback
  *   显示常數來源與原因，同樣不掛任何市場資料日期。
  */
-function RateRow({ candidate, params }: {
+export function RateRow({ candidate, params }: {
   candidate: Candidate; params: AnalysisView["params"];
 }) {
   const source = params.rate_curve_used
@@ -107,7 +113,7 @@ function RateRow({ candidate, params }: {
  * `params`，不需要 `candidate`——這裡沒有 `RateRow` 那種「不同候選
  * 可能查到不同利率」的問題。
  */
-function QRow({ params }: { params: AnalysisView["params"] }) {
+export function QRow({ params }: { params: AnalysisView["params"] }) {
   const noQ = params.q_by_symbol === null;
   return (
     <>
@@ -203,7 +209,7 @@ function BreakevenRow({ candidate }: { candidate: Candidate }) {
 /** Risk / Payoff：Breakeven／Max Profit／Max Loss。
  * T04（#220，#217 決策 D）：Execution Friction 這一列已隨 friction
  * 自 canonical model 退場移除，不新增任何替代指標。 */
-function RiskPayoff({ candidate }: { candidate: Candidate }) {
+export function RiskPayoff({ candidate }: { candidate: Candidate }) {
   return (
     <>
       <BreakevenRow candidate={candidate} />
@@ -226,7 +232,7 @@ function RiskPayoff({ candidate }: { candidate: Candidate }) {
 }
 
 /** Position Sensitivity：淨部位對現價／時間／IV 的敏感度四項。 */
-function PositionSensitivity({ candidate }: { candidate: Candidate }) {
+export function PositionSensitivity({ candidate }: { candidate: Candidate }) {
   return (
     <>
       <Row label="Net Delta">{candidate.net_delta.toFixed(2)}</Row>

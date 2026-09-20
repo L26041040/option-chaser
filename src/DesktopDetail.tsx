@@ -1,7 +1,7 @@
 /**
- * 桌面詳細頁三欄外殼的左欄與中央欄（OG-06／#321，artifact 的 Desktop
- * 劇本詳細板：trade page 三欄版面）。右欄與底部 tab 區本票只留空容器
- * （OG-07／#325 填）。
+ * 桌面詳細頁三欄外殼（OG-06／#321 起，右欄與底部 tab 由 OG-07／#325
+ * 補齊）：artifact 的 Desktop 劇本詳細板：trade page 三欄版面＋底部
+ * 走勢／診斷／報告／原始資料四個 tab。
  *
  * 這個元件只在桌面 viewport 掛載（`ScenarioDetail.tsx` 的 `DetailBody`
  * 用 `useIsDesktop()` 分流，手機仍走既有 `FamilyTabs`／`ExpiryStructure`
@@ -27,27 +27,49 @@
  * Family tabs／空狀態文案／到期日 chip／候選池過少警語的組成邏輯直接
  * 重用 `FamilyTabs.tsx`（`resolveFamily`／`emptyFamilyMessage`，本票
  * 起兩者 `export`）與 `family.ts`／`expiry.ts` 既有純函式，不重寫一份
- * 規則；候選池診斷（`CandidatePool`）與分析報告（`AnalysisReport`）
- * 暫時維持在 `ScenarioDetail.tsx` 原本的相對位置渲染（緊接在這個元件
- * 之後），不因為外殼改版而消失——它們何時真正搬進 OG-07 的右欄／底部
- * tab，留給那張票決定。
+ * 規則。
+ *
+ * OG-07（#325）右欄／底部 tab 的兩個關鍵語意決定：
+ *
+ * 1. 右欄候選面板（進場／Payoff／Greeks／報告）跟著**排名表目前選取的
+ *    那一列**（`selectedCandidate`，跟中央 Heatmap 同一個資料來源）；
+ *    底部「淨成本走勢」跟 OG-06 之前一樣固定跟著**冠軍候選**
+ *    （`champion`，走 `ScenarioDetail.tsx` 既有 QA1-06「主圖／走勢圖
+ *    不隨選取改變」原則），底部「候選池診斷」跟著**目前 family／到期日**
+ *    （`diagnosticsResult`，跟 OG-06 之前的相對位置同一份資料），底部
+ *    「原始資料」是整份劇本層級的當次快照，不分候選。四個 tab 各自
+ *    跟著哪個維度，逐一對齊 artifact 與票面文字，不是全部劃一改成
+ *    「跟著選取列」。
+ *
+ * 2. 「報告」在 artifact 上同時是右欄一個 tab、也是底部一個 tab，但
+ *    票面明文「同一份資料，桌面只在底部完整展開一次即可——擇一擺位，
+ *    避免同頁重複兩份」；`AnalysisReport` 因此只在底部 tab 完整渲染
+ *    一份（且改跟 `selectedCandidate`，不是 OG-06 之前暫時綁的
+ *    `familyCandidate`——右欄四個 tab 既然都跟著選取列，底部這份唯一
+ *    的完整報告沒有理由講另一個候選的故事），右欄「報告」tab 只放
+ *    精簡摘要＋一個跳到底部分頁的連結，不掛第二份 `<AnalysisReport>`。
  */
 import { useState } from "react";
 
-import AnalysisReport from "./AnalysisReport";
+import AnalysisReport, {
+  PositionSensitivity, QRow, RateRow, Row, RiskPayoff,
+} from "./AnalysisReport";
 import CandidatePool from "./CandidatePool";
+import DesktopSpreadHistory from "./DesktopSpreadHistory";
 import Heatmap from "./Heatmap";
 import PriceLadder from "./PriceLadder";
-import type { AnalysisView, Candidate } from "./api";
+import RawData from "./RawData";
+import {
+  legQuantityPrefix, legSide, rawDataCsvUrl, type AnalysisView, type Candidate,
+} from "./api";
 import { candidateTitle, strategyLabel } from "./detail";
 import { emptyFamilyMessage, resolveFamily } from "./FamilyTabs";
 import {
-  FAMILY_LABELS, enabledFamilies, familyBaselineTopCandidate, familyOf,
-  mergedExpiryTop10, resultsByFamily,
+  FAMILY_LABELS, enabledFamilies, familyOf, mergedExpiryTop10, resultsByFamily,
 } from "./family";
 import { expiryOptions, isThinPool, resolveExpiry } from "./expiry";
 import { heatmapProps } from "./heatmap";
-import { formatReturn, returnBarWidthPct } from "./scenarios";
+import { formatReturn, money, returnBarWidthPct } from "./scenarios";
 
 /**
  * 排名表的一列（artifact：名次、subtype 標籤、腿位 pill ×1·2·1、劇本
@@ -60,7 +82,7 @@ import { formatReturn, returnBarWidthPct } from "./scenarios";
  * OG-03（#320）的檔頭已記錄過同一個判斷：詳細頁（不像清單卡片）版面
  * 夠寬，不需要 Butterfly 專屬的緊湊縮寫分支。
  *
- * 整列是一顆按鈕而不是 `<details>`——點擊語意從「展開看這一組的圖」
+ * 整列是一顆按鈕而不是 `<details>`，點擊語意從「展開看這一組的圖」
  * 變成「把中央 Heatmap 換成這一組」，`aria-pressed` 標示目前選取的
  * 是哪一列（單選語意，跟既有 `.chip`／`role="group"` 的 `aria-pressed`
  * 用法一致，不新發明一種可及性模式）。
@@ -117,20 +139,252 @@ function DesktopCandidateRow({
   );
 }
 
+type RightTab = "entry" | "payoff" | "greeks" | "report";
+
+const RIGHT_TABS: { key: RightTab; label: string }[] = [
+  { key: "entry", label: "進場" },
+  { key: "payoff", label: "Payoff" },
+  { key: "greeks", label: "Greeks" },
+  { key: "report", label: "報告" },
+];
+
+/**
+ * 進場 tab（artifact：最差成交口徑表——逐腿 Bid／Ask／IV，最差成交會
+ * 用到的那一邊字重加粗；淨成本／資本或最大損失；Bid/Ask 過寬與單調性
+ * 警示）。逐腿方向與口數標示重用 `legSide()`／`legQuantityPrefix()`
+ * （`./api`），跟排名列的 `candidateTitle()`、`AnalysisReport.tsx` 的
+ * `ExecutionSection` 同一套規則，不是第三份格式。
+ */
+function EntryTab({ candidate }: { candidate: Candidate }) {
+  return (
+    <div className="candidate-panel-section">
+      {(candidate.wide_spread_warning || candidate.monotonicity_warning) && (
+        <div className="candidate-panel-warnings">
+          {candidate.wide_spread_warning && (
+            <span className="tag warn" title="Bid/Ask 過寬">⚠ Bid/Ask 過寬</span>
+          )}
+          {candidate.monotonicity_warning && (
+            <span className="tag suspect"
+                  title="報價與鄰近履約價不一致，疑似陳舊報價">
+              🚩 疑似陳舊報價
+            </span>
+          )}
+        </div>
+      )}
+      <h3 className="h3">最差成交口徑（買 Ask · 賣 Bid）</h3>
+      <table className="tbl entry-leg-table">
+        <thead>
+          <tr>
+            <th scope="col">腿</th>
+            <th scope="col" className="r">Bid</th>
+            <th scope="col" className="r">Ask</th>
+            <th scope="col" className="r">IV</th>
+          </tr>
+        </thead>
+        <tbody>
+          {candidate.legs.map((leg, i) => (
+            <tr key={i}>
+              <td>{legSide(leg)} {legQuantityPrefix(leg)}{leg.strike}</td>
+              <td className={leg.side === "sell" ? "r num entry-leg-worst" : "r num"}>
+                {money(leg.bid)}
+              </td>
+              <td className={leg.side === "buy" ? "r num entry-leg-worst" : "r num"}>
+                {money(leg.ask)}
+              </td>
+              <td className="r num">
+                {leg.iv === null ? "—" : `${(leg.iv * 100).toFixed(0)}%`}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <Row label="淨成本 / 股">{money(candidate.natural_cost)}</Row>
+      {/* 資本／最大損失獨立一列、不是「淨成本」的別名：既有四策略兩者
+          恆相等，Butterfly（broken-wing）可能不相等——`RiskPayoff` 的
+          Max Loss 同一套讀法（`max_loss_per_contract`，每口＝÷100）。 */}
+      <Row label="資本／最大損失（每口）">{money(candidate.max_loss_per_contract / 100)}</Row>
+    </div>
+  );
+}
+
+/**
+ * 完成度門檻／獲利區間互斥呈現（artifact；票面「完成度門檻（單調
+ * family）／獲利區間（Butterfly）互斥呈現」）。判準用 `familyOf()`，
+ * 不是 `profit_region !== null`——Butterfly 峰值連成本都賺不回來時
+ * `profit_region` 本身也是 `null`（`service.py` 既有語意：這不代表
+ * 它變成單調家族），這裡要問的是「這組候選屬於哪個 family」，不是
+ * 「這個欄位這次剛好有沒有值」。獲利區間本身已經在 `RiskPayoff`
+ * （沿用 `AnalysisReport.tsx::BreakevenRow`）渲染過，這裡只補單調
+ * family 專屬的完成度門檻——兩者不會同時出現。
+ *
+ * 文案逐字對齊既有 CLI `report.py::_resilience_lines()` 的既有三態
+ * （`k is None`／`k <= 0`／其餘），不是另外發明一套說法；CLI 版多印的
+ * 「錨點日保本價 $X」在 `Candidate` 契約裡沒有對應欄位可讀，這裡誠實
+ * 省略，不憑空編一個數字。
+ */
+function CompletionThresholdRow({ candidate }: { candidate: Candidate }) {
+  if (familyOf(candidate.strategy) === "butterfly") return null;
+  const k = candidate.completion_threshold;
+  return (
+    <Row label="完成度門檻">
+      {k === null
+        ? <span className="down">— ⚠ 劇本全成仍不保本</span>
+        : k <= 0
+        ? "0%（已保本）"
+        : `完成 ${(k * 100).toFixed(0)}%（保本）`}
+    </Row>
+  );
+}
+
+function PayoffTab({ candidate }: { candidate: Candidate }) {
+  return (
+    <div className="candidate-panel-section">
+      <h3 className="h3">Payoff（到期）</h3>
+      <RiskPayoff candidate={candidate} />
+      <CompletionThresholdRow candidate={candidate} />
+      <Row label="距到期">{candidate.days_to_expiry} 天</Row>
+    </div>
+  );
+}
+
+function GreeksTab({ candidate, view }: { candidate: Candidate; view: AnalysisView }) {
+  return (
+    <div className="candidate-panel-section">
+      <h3 className="h3">Greeks（比率）</h3>
+      <PositionSensitivity candidate={candidate} />
+      <RateRow candidate={candidate} params={view.params} />
+      <QRow params={view.params} />
+    </div>
+  );
+}
+
+/**
+ * 報告 tab：只放精簡摘要＋一個切到底部「分析報告」分頁的連結，不掛
+ * 第二份 `<AnalysisReport>`（見檔頭「報告只完整渲染一份」的裁示）。
+ *
+ * `/code-review` Spec 軸抓到：這裡原本只有註解說「免責聲明沿用
+ * `result.disclaimer_text`」，實際上沒有把它傳進來、畫面上也真的沒有
+ * ——票面「報告」bullet 明文「免責聲明獨立不折疊」是這個 tab 的一部分
+ * 要求，不是只有底部那份才要顯示。免責聲明本身只是一段合規文字（讀
+ * `result.disclaimer_text` 這個既有欄位兩次，不是把整個 `<AnalysisReport>`
+ * 元件掛兩次），跟「分析報告只完整渲染一份」的裁示不衝突。
+ */
+function ReportTab({
+  disclaimerText, onJumpToFullReport,
+}: {
+  disclaimerText: string;
+  onJumpToFullReport: () => void;
+}) {
+  return (
+    <div className="candidate-panel-section">
+      <p className="caption">
+        完整的 Risk / Payoff、Position Sensitivity、Execution 與 Model &amp;
+        Assumptions 明細，收在底部「分析報告」分頁——同一份資料只在那裡
+        完整展開一次。
+      </p>
+      <button type="button" className="text-button" onClick={onJumpToFullReport}>
+        查看完整分析報告 ↓
+      </button>
+      {disclaimerText && (
+        <p className="caption report-disclaimer">{disclaimerText}</p>
+      )}
+    </div>
+  );
+}
+
+/** 右欄「候選面板」：跟著左欄排名表目前選取的那一列。
+ *
+ * CSV 下載連結（票面「報告」bullet 明文、artifact 畫成不分頁一律
+ * 常駐的頁尾按鈕）獨立於四個 tab 切換之外——不是「報告」tab 專屬內容，
+ * 沿用既有 `rawDataCsvUrl()`（`RawData.tsx` 同一個 helper，同一套
+ * `analyzedAt` 快取破壞參數），不是另外發明一條下載路徑。 */
+function CandidatePanel({
+  candidate, view, scenarioId, analyzedAt, disclaimerText, onJumpToFullReport,
+}: {
+  candidate: Candidate | null;
+  view: AnalysisView;
+  scenarioId: string;
+  analyzedAt: string | null;
+  /** 底部「分析報告」tab 那份 `StrategyResult.disclaimer_text`——「報告」
+   *  tab 的精簡摘要仍要顯示這句合規文字，不是只有完整版才有。 */
+  disclaimerText: string;
+  onJumpToFullReport: () => void;
+}) {
+  const [tab, setTab] = useState<RightTab>("entry");
+  return (
+    <div className="detail-col-right panel">
+      <div className="panel-h">
+        {/* 沿用 OG-11（#322）`Settings.tsx` 桌面 subnav 已經立下的既有
+            慣例——`role="tab"`／`.chip`／`.chip selected`，不是另外
+            發明一套 tab 樣式（本檔案裡另一組 `.tabs`／`.tabs a` CSS
+            規則是 OG-03 換皮時從 artifact 原樣抄進來、目前沒有任何
+            TSX 元件真的在用的死規則，不該再多一個真正的消費端延續它）。 */}
+        <nav className="chip-strip" role="tablist" aria-label="候選面板">
+          {RIGHT_TABS.map((t) => (
+            <button
+              key={t.key}
+              type="button"
+              role="tab"
+              aria-selected={tab === t.key}
+              className={tab === t.key ? "chip selected" : "chip"}
+              onClick={() => setTab(t.key)}
+            >
+              {t.label}
+            </button>
+          ))}
+        </nav>
+      </div>
+      <div className="candidate-panel-body">
+        {candidate === null ? (
+          <p className="caption">無合格候選</p>
+        ) : (
+          <>
+            {tab === "entry" && <EntryTab candidate={candidate} />}
+            {tab === "payoff" && <PayoffTab candidate={candidate} />}
+            {tab === "greeks" && <GreeksTab candidate={candidate} view={view} />}
+            {tab === "report" && (
+              <ReportTab disclaimerText={disclaimerText}
+                        onJumpToFullReport={onJumpToFullReport} />
+            )}
+            <a className="button raw-data-download"
+              href={rawDataCsvUrl(scenarioId, analyzedAt)} download>
+              下載原始資料 CSV
+            </a>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+type BottomTab = "history" | "pool" | "report" | "raw";
+
+const BOTTOM_TABS: { key: BottomTab; label: string }[] = [
+  { key: "history", label: "淨成本走勢" },
+  { key: "pool", label: "候選池診斷" },
+  { key: "report", label: "分析報告" },
+  { key: "raw", label: "原始資料" },
+];
+
 export default function DesktopDetailBody({
-  view, strategies, champion,
+  view, strategies, champion, scenarioId, analyzedAt,
 }: {
   view: AnalysisView;
   strategies: readonly string[];
   /** 跨 family 冠軍（`family.ts::championCandidate`）——只用來算
-   *  「目前 family 沒切過時該預設選誰」與「這個 family 一組候選都沒有
-   *  時，中央 Heatmap 還能不能顯示點什麼」，不是這個元件自己重新選一
-   *  次冠軍。 */
+   *  「目前 family 沒切過時該預設選誰」、「這個 family 一組候選都沒有
+   *  時，中央 Heatmap 還能不能顯示點什麼」，以及底部「淨成本走勢」
+   *  固定跟著哪一組（QA1-06），不是這個元件自己重新選一次冠軍。 */
   champion: Candidate | null;
+  /** OG-07（#325）：底部「淨成本走勢」／「原始資料」需要，取代
+   *  `ScenarioDetail.tsx` 先前直接全域掛載這兩個元件的位置。 */
+  scenarioId: string;
+  analyzedAt: string | null;
 }) {
   const [pickedFamily, setPickedFamily] = useState<string | null>(null);
   const [pickedExpiry, setPickedExpiry] = useState<string | null>(null);
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
+  const [bottomTab, setBottomTab] = useState<BottomTab>("history");
 
   const families = enabledFamilies(strategies, view);
   // 單一 family 時完全不畫分頁列——跟 `FamilyTabs.tsx` 同一條 AC
@@ -149,11 +403,11 @@ export default function DesktopDetailBody({
   const currentExpiry = resolveExpiry(options, pickedExpiry, view.baseline_expiry);
   const shown = options.find((o) => o.expiry === currentExpiry) ?? null;
 
-  // 中央 Heatmap 跟著目前選取的那一列：選中的 key 若還在目前這份清單
-  // 裡就用它；否則（剛切了 family／到期日，或初始狀態根本還沒選過）
-  // 退回這份清單的第 1 名；清單本身是空的（這個 family／到期日沒有
-  // 任何合格候選）才退回冠軍——保證中央欄永遠有東西可畫，不會因為
-  // 使用者正在瀏覽一個空的 family 分頁就跟著開天窗。
+  // 中央 Heatmap／右欄候選面板跟著目前選取的那一列：選中的 key 若還在
+  // 目前這份清單裡就用它；否則（剛切了 family／到期日，或初始狀態根本
+  // 還沒選過）退回這份清單的第 1 名；清單本身是空的（這個 family／
+  // 到期日沒有任何合格候選）才退回冠軍——保證中央欄與右欄永遠有東西
+  // 可畫，不會因為使用者正在瀏覽一個空的 family 分頁就跟著開天窗。
   const selectedCandidate =
     shown?.candidates.find((c) => c.candidate_key === selectedKey)
     ?? shown?.candidates[0]
@@ -173,7 +427,6 @@ export default function DesktopDetailBody({
   const selectExpiry = selectingResetsRanking(setPickedExpiry);
 
   const diagnosticsResult = okResults[0] ?? null;
-  const familyCandidate = merged ? familyBaselineTopCandidate(view, merged) : null;
 
   return (
     <>
@@ -271,26 +524,68 @@ export default function DesktopDetailBody({
         </section>
       </div>
 
-      {/* OG-07（#325）填：右欄先留空容器，本票不渲染任何內容。 */}
-      <div className="detail-col-right" aria-hidden="true" />
+      {/* OG-07（#325）：右欄「候選面板」，跟著上面排名表的選取列。 */}
+      <CandidatePanel
+        candidate={selectedCandidate}
+        view={view}
+        scenarioId={scenarioId}
+        analyzedAt={analyzedAt}
+        disclaimerText={diagnosticsResult?.disclaimer_text ?? ""}
+        onJumpToFullReport={() => setBottomTab("report")}
+      />
     </div>
 
-    {/* 候選池診斷／分析報告：暫時維持在外殼改版前的相對位置（緊接在
-        三欄外殼之後），資料來源與 `FamilyTabs.tsx` 完全相同——同一個
-        `currentFamily`、同一份 `okResults[0]`、同一個
-        `familyBaselineTopCandidate()`。這兩塊的內容與既有 Desktop
-        e2e／Vitest 斷言（分析報告 Breakeven／獲利區間等）因此不受
-        外殼改版影響；它們何時真正搬進 OG-07（#325）的右欄／底部 tab，
-        留給那張票決定，本票只先留一個空的底部 tab 容器佔位。 */}
-    {diagnosticsResult && (
-      <>
-        <CandidatePool view={view} result={diagnosticsResult} />
-        <AnalysisReport view={view} result={diagnosticsResult} candidate={familyCandidate} />
-      </>
-    )}
-
-    {/* OG-07（#325）填：底部 tab 區先留空容器。 */}
-    <div className="detail-tabs-placeholder" aria-hidden="true" />
+    {/* OG-07（#325）：底部四個 tab——淨成本走勢（跟著冠軍，QA1-06）／
+        候選池診斷（跟著目前 family／到期日，OG-06 之前的相對位置同一份
+        資料）／分析報告（跟著選取列，唯一一份完整渲染）／原始資料
+        （劇本層級當次快照，不分候選）。 */}
+    <section className="panel detail-bottom-tabs">
+      <div className="panel-h">
+        <nav className="chip-strip" role="tablist" aria-label="劇本詳細底部資訊">
+          {BOTTOM_TABS.map((t) => (
+            <button
+              key={t.key}
+              type="button"
+              role="tab"
+              aria-selected={bottomTab === t.key}
+              className={bottomTab === t.key ? "chip selected" : "chip"}
+              onClick={() => setBottomTab(t.key)}
+            >
+              {t.label}
+            </button>
+          ))}
+        </nav>
+      </div>
+      {/* 四個分頁全部常駐掛載，用 `hidden` 切換可見度，不是切一次卸載
+          重掛一次——`DesktopSpreadHistory` 掛載就抓資料（artifact：
+          預設分頁就看得到圖，不是要使用者再展開一次），若改成條件式
+          卸載重掛，使用者每切一次分頁就會重新打一次 API，白白浪費流量
+          也違背「切換零網路請求」的既有精神（AC 原文只講右欄，但同一個
+          原則沒有理由不適用底部）。`RawData` 自己內層仍是使用者要點開
+          才抓（它自己的 `<details onToggle>` 不受這裡影響），常駐掛載
+          不會讓它變得更早發送請求。 */}
+      <div className="detail-bottom-tab-body">
+        <div hidden={bottomTab !== "history"}>
+          <DesktopSpreadHistory scenarioId={scenarioId} candidate={champion} />
+        </div>
+        <div hidden={bottomTab !== "pool"}>
+          <CandidatePool view={view} result={diagnosticsResult} />
+        </div>
+        {diagnosticsResult && (
+          <div hidden={bottomTab !== "report"}>
+            <AnalysisReport view={view} result={diagnosticsResult} candidate={selectedCandidate} />
+          </div>
+        )}
+        {/* #69：`key` 綁定這次分析的身分——新分析一到，React 直接卸載
+            重掛，內部 state（已抓到的資料、`<details open>`）連同歸零，
+            跟 `ScenarioDetail.tsx` 先前對這個元件的既有保證一致，只是
+            掛載位置搬進了這個 tab。 */}
+        <div hidden={bottomTab !== "raw"}>
+          <RawData key={`raw-data-${analyzedAt ?? "none"}`}
+                   scenarioId={scenarioId} analyzedAt={analyzedAt} />
+        </div>
+      </div>
+    </section>
     </>
   );
 }

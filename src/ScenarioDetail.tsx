@@ -286,7 +286,11 @@ function DetailBody({ scenarioId, view, analyzedAt, strategies }: {
           兩條渲染路徑完全不相交，跟 `ScenarioList.tsx`／
           `CompactScenarioList.tsx` 刻意分開是同一種策略）。 */}
       {isDesktop ? (
-        <DesktopDetailBody view={view} strategies={strategies} champion={candidate} />
+        // OG-07（#325）：桌面版的 Spread 淨成本走勢／原始資料搬進
+        // `DesktopDetailBody` 底部 tab（`scenarioId`／`analyzedAt` 因此
+        // 改由這裡往下傳），不再跟手機版共用這裡全域掛載的那兩份。
+        <DesktopDetailBody view={view} strategies={strategies} champion={candidate}
+                            scenarioId={scenarioId} analyzedAt={analyzedAt} />
       ) : (
         <>
           <Chart view={view} candidate={candidate} />
@@ -294,21 +298,24 @@ function DetailBody({ scenarioId, view, analyzedAt, strategies }: {
               分析報告依目前選中的 family 各自呈現，單一 family 時完全
               不畫分頁列（視覺上與 T11 之前逐位元相同）。 */}
           <FamilyTabs view={view} strategies={strategies} />
+          {/* #69：`key` 綁定這次分析的身分——新分析一到，React 直接卸載
+              重掛這兩個元件，內部 state（已抓到的資料、`<details
+              open>`）連同歸零，不會在畫面上混用新舊 cache。刷新後收合、
+              下次展開重新取得（需求方裁示接受，資料正確性優先）。
+              `analyzedAt` 為 null 的情況實務上不會發生於此（本區塊只在
+              `latest_result` 非 null 時渲染，兩者恆同時有值），仍給個
+              穩定佔位字串應付型別。兩個 key 各自加前綴——這兩個元件是
+              同一層的相鄰手足，若共用同一個 key 字串，React 會把它們
+              當成同一組鍵而發出「key 重複」警告，重掛的保證也就不可靠
+              了。OG-07（#325）：這兩行只搬進手機分支、位置與既有輸出
+              順序不變（先前也是緊接在 `Chart`／`FamilyTabs` 之後），
+              手機畫面逐位元組不變。 */}
+          <SpreadHistory key={`spread-history-${analyzedAt ?? "none"}`}
+                         scenarioId={scenarioId} candidate={candidate} />
+          <RawData key={`raw-data-${analyzedAt ?? "none"}`}
+                   scenarioId={scenarioId} analyzedAt={analyzedAt} />
         </>
       )}
-      {/* #69：`key` 綁定這次分析的身分——新分析一到，React 直接卸載重掛
-          這兩個元件，內部 state（已抓到的資料、`<details open>`）連同
-          歸零，不會在畫面上混用新舊 cache。刷新後收合、下次展開重新
-          取得（需求方裁示接受，資料正確性優先）。`analyzedAt` 為 null
-          的情況實務上不會發生於此（本區塊只在 `latest_result` 非 null
-          時渲染，兩者恆同時有值），仍給個穩定佔位字串應付型別。兩個
-          key 各自加前綴——這兩個元件是同一層的相鄰手足，若共用同一個
-          key 字串，React 會把它們當成同一組鍵而發出「key 重複」警告，
-          重掛的保證也就不可靠了。 */}
-      <SpreadHistory key={`spread-history-${analyzedAt ?? "none"}`}
-                     scenarioId={scenarioId} candidate={candidate} />
-      <RawData key={`raw-data-${analyzedAt ?? "none"}`}
-               scenarioId={scenarioId} analyzedAt={analyzedAt} />
     </>
   );
 }
