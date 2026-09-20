@@ -8,6 +8,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import sampleRow from "../contracts/scenario_row_sample.json";
 import TrashView from "./TrashView";
 import type { ScenarioSummary } from "./api";
+import { fakeMediaQueryList } from "./test-setup";
 
 function row(overrides: Partial<ScenarioSummary> = {}): ScenarioSummary {
   return {
@@ -42,6 +43,32 @@ describe("垃圾桶清單（TR6／#91）", () => {
     expect(await screen.findByText("TLT")).toBeInTheDocument();
     expect(screen.getByText(/2028-05/)).toBeInTheDocument();
     expect(screen.getByText("123.4%")).toBeInTheDocument();
+  });
+
+  it("OG-ALL-001 跟進 OG-03（#320）：桌面版同款 Markets 式表格骨架，" +
+     "欄位標籤齊全（標的／目標／封存於／最後收益率／操作）", async () => {
+    vi.stubGlobal("matchMedia", (q: string) => fakeMediaQueryList(true, q));
+    mockFetch(async () => [row()]);
+    const { container } = render(<TrashView onRestore={vi.fn()} />);
+    await screen.findByText("TLT");
+
+    expect(container.querySelector(".lib-table.trash-table")).toBeTruthy();
+    const head = container.querySelector(".lib-thead");
+    expect(head).toHaveTextContent("標的");
+    expect(head).toHaveTextContent("目標");
+    expect(head).toHaveTextContent("封存於");
+    expect(head).toHaveTextContent("最後收益率");
+    expect(head).toHaveTextContent("操作");
+  });
+
+  it("手機版（預設 matchMedia，OG-ALL-001）：仍是改版前的卡片標記，" +
+     "沒有桌面表格 class——手機版零改動", async () => {
+    mockFetch(async () => [row()]);
+    const { container } = render(<TrashView onRestore={vi.fn()} />);
+    await screen.findByText("TLT");
+
+    expect(container.querySelector(".lib-table.trash-table")).toBeNull();
+    expect(container.querySelector(".card")).toBeTruthy();
   });
 
   it("垃圾桶是空的時給明確指引", async () => {

@@ -115,6 +115,17 @@ def _project_representative_row(view: dict, group: dict, row: dict) -> dict:
     candidate = _candidate_of(view, row)
     return {
         "strategy": row["strategy"],
+        # OG-04（#323）：純加法——`candidate` 這份完整投影本來就帶著
+        # `candidate_key`（`_candidate()` 既有序列化欄位，`store.py:518`
+        # 一直都有），只是這個輕量投影過去沒有把它往上帶。清單頁的
+        # 「淨成本走勢」sparkline 需要用它去查 narrow history（見
+        # `api_app/main.py::list_scenarios()`），不新增任何計算——這裡
+        # 只是把既有欄位多投影一層。`.get()` 而非 `[...]`：相容舊 schema
+        # 分支（`_candidate_of()` docstring 提到的 `row["candidate"]`
+        # 直接內嵌路徑，理論上恆有這個欄位，但不假設每一種手造測試
+        # fixture 都補齊）——沒有就是 `None`，前端據此不畫 sparkline，
+        # 不是憑空生一個假的 key。
+        "candidate_key": candidate.get("candidate_key"),
         # T12（#228，Initial V2）：`side` 一併投影進這個輕量代表候選——
         # 前端 `formatRepresentativeLegs()` 過去靠陣列位置（[0]=買、
         # [1]=賣）猜方向，現在改讀這個顯式欄位。`leg.get("side", ...)`

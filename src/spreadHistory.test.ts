@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import type { HistoryEntry } from "./api";
 import { bucketKey, chartPoints, contiguousRuns, downsampleHistory,
-        xAxisTicks, yAxisDomain, type ChartPoint } from "./spreadHistory";
+        historySummaryStats, xAxisTicks, yAxisDomain, type ChartPoint } from "./spreadHistory";
 
 function entry(overrides: Partial<HistoryEntry> = {}): HistoryEntry {
   return { analyzed_at: "2026-07-15T21:30:00-04:00", spot: 100.0,
@@ -177,5 +177,44 @@ describe("contiguousRuns：依斷點切段，段間不連線", () => {
 
   it("全部都是斷點時回傳空陣列", () => {
     expect(contiguousRuns([{ x: 0, y: null, label: "g" }])).toEqual([]);
+  });
+});
+
+// OG-07（#325）：桌面底部「淨成本走勢」tab 右側統計面板。
+describe("historySummaryStats", () => {
+  it("空序列——四項全部誠實回 null／0，不是硬湊一個假數字", () => {
+    expect(historySummaryStats([])).toEqual({
+      latest: null, range: null, gapCount: 0, firstSeen: null, count: 0,
+    });
+  });
+
+  it("正常序列：今日＝最後一筆、範圍＝非缺席最小最大、首次出現＝第一筆", () => {
+    const entries = [
+      entry({ analyzed_at: "2026-07-01T21:30:00-04:00", cost: 5.0 }),
+      entry({ analyzed_at: "2026-07-08T21:30:00-04:00", cost: 6.0 }),
+      entry({ analyzed_at: "2026-07-15T21:30:00-04:00", cost: 4.5 }),
+    ];
+    expect(historySummaryStats(entries)).toEqual({
+      latest: 4.5, range: [4.5, 6.0],
+      gapCount: 0, firstSeen: "2026-07-01T21:30:00-04:00", count: 3,
+    });
+  });
+
+  it("最後一筆恰好是缺席快照——今日誠實回 null，不回退去找前一筆有值的", () => {
+    const entries = [
+      entry({ analyzed_at: "2026-07-01T21:30:00-04:00", cost: 5.0 }),
+      entry({ analyzed_at: "2026-07-08T21:30:00-04:00", cost: null }),
+    ];
+    const stats = historySummaryStats(entries);
+    expect(stats.latest).toBeNull();
+    expect(stats.gapCount).toBe(1);
+    expect(stats.range).toEqual([5.0, 5.0]);
+  });
+
+  it("全部缺席——range 誠實回 null，不是 [0,0]", () => {
+    const entries = [entry({ cost: null }), entry({ cost: null })];
+    const stats = historySummaryStats(entries);
+    expect(stats.range).toBeNull();
+    expect(stats.gapCount).toBe(2);
   });
 });

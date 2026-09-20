@@ -77,18 +77,28 @@ async function routeTwoScenarios(page: import("@playwright/test").Page,
     route.fulfill({ json: rowB }));
 }
 
-test("選中劇本時，左側劇本庫（含建立劇本入口）與右側詳細頁同時可見", async ({ page }) => {
+/** OG-02（#318）：桌面版常駐頂欄的導覽 `<nav>`——多處測試都要 scope
+ *  回它，因為 `getByRole("link", { name: "劇本庫" })` 這類子字串查詢
+ *  會跟 `ScenarioDetail.tsx`／`TrashView.tsx`／`Settings.tsx` 各自
+ *  的「‹ 劇本庫」返回連結撞名。 */
+function topbarNav(page: import("@playwright/test").Page) {
+  return page.locator(".topbar").locator("nav");
+}
+
+test("OG-02（#318）：點劇本進全寬詳細頁，劇本庫清單不再同時顯示——" +
+     "建立劇本改走常駐頂欄，任何頁面都按得到", async ({ page }) => {
   await routeTwoScenarios(page);
   await page.goto("/#/s/s1");
 
-  // 右側詳細頁的內容
+  // 詳細頁的內容
   // QA 修正後劇本庫卡片也印現價，同一個數字在左欄每張卡上都有一份
-  // ——要驗的是右側詳細頁那個，locator 必須 scope 回 detail-pane。
-  await expect(page.locator(".detail-pane")
+  // ——要驗的是詳細頁那個，locator 必須 scope 回 detail-page。
+  await expect(page.locator(".detail-page")
     .getByText(`$${sample.meta.spot.toFixed(2)}`).first()).toBeVisible();
-  // 左側劇本庫：另一個劇本的卡片、以及建立劇本入口都還在——不是整頁
-  // 替換。建立劇本表單本身收合（#75），要按過頂部入口才看得到欄位。
-  await expect(page.getByRole("link", { name: /ABC/ })).toBeVisible();
+  // OG-02：側欄退場，另一個劇本的卡片不再與詳細頁同時掛載——這正是
+  // 要退場的既有行為，不是回歸。
+  await expect(page.getByRole("link", { name: /ABC/ })).not.toBeVisible();
+  // 建立劇本改在常駐頂欄，詳細頁看著時也按得到。
   await page.getByRole("button", { name: "＋ 建立劇本" }).click();
   await expect(page.getByLabel("標的代號")).toBeVisible();
 });
@@ -99,7 +109,7 @@ test("OPTION-CHASER-CLOSEOUT-001：桌面版劇本設定卡在劇本摘要卡之
   await routeTwoScenarios(page);
   await page.goto("/#/s/s1");
 
-  const detail = page.locator(".detail-pane");
+  const detail = page.locator(".detail-page");
   const context = detail.getByRole("region", { name: "劇本設定" });
   await expect(context).toContainText("XYZ");
   await expect(context).toContainText(`$${sample.params.target_price.toFixed(2)}`);
@@ -126,9 +136,12 @@ test("Spread 淨成本走勢：桌面 hover 資料點顯示 tooltip（MVP V3／#
   await page.route("**/api/scenarios/*/history*", (route) =>
     route.fulfill({ json: history }));
 
+  // OG-07（#325）：桌面版「Spread 淨成本走勢」不再是要展開的
+  // `<details>`（那是手機版 `SpreadHistory.tsx` 保留的既有行為）——
+  // 桌面換成底部「淨成本走勢」tab（`DesktopSpreadHistory.tsx`），
+  // 預設就是啟用中的分頁，圖表掛載就直接看得到，不用先點開任何東西。
   await page.goto("/#/s/s1");
-  const chart = page.locator(".card").filter({ hasText: "Spread 淨成本走勢" }).first();
-  await chart.getByText("Spread 淨成本走勢").click();
+  const chart = page.locator(".spread-history-panel");
   const point = chart.getByRole("button", { name: /2026-07-01/ });
   await expect(point).toBeVisible();
 
@@ -540,8 +553,15 @@ test("Heatmap 密度（#121）：去掉 +／% 縮小 padding 後，固定容器�
      "看得到的日期欄數真的變多", async ({ page }) => {
   // 實測基準（本票施工時量到，git stash 對照修正前後）：容器
   // clientWidth 876px 不變，平均欄寬 60.92px→45.65px，可見欄數
-  // 14→19。門檻抓 17（介於兩者之間留餘裕，避免慢速機器像素微差
+  // 14→19。門檻原訂 17（介於兩者之間留餘裕，避免慢速機器像素微差
   // 誤判），能通過就代表密度確實提升，不是感覺上變窄。
+  //
+  // OG-06（#321）跟進：劇本主圖搬進桌面三欄 trade 版面的中央欄
+  // （`DesktopDetail.tsx`），在固定 1280px 桌面 viewport 下，中央欄
+  // 天生比改版前的單欄版面窄（876px → 614px 實測，git stash 對照
+  // 修正前後）——這是三欄外殼本身的直接幾何後果，不是這裡的密度
+  // 修正失效。門檻依同一套「量出來取中間值」方法論在新容器寬度下
+  // 重新校準：614px 容器下實測可見欄數 15，門檻改抓 13（留餘裕）。
   await routeTwoScenarios(page);
   await page.goto("/#/s/s1");
 
@@ -559,7 +579,7 @@ test("Heatmap 密度（#121）：去掉 +／% 縮小 padding 後，固定容器�
     .evaluate((el) => (el as HTMLElement).clientWidth);
 
   const columnsVisible = Math.floor(containerWidth / avgCellWidth);
-  expect(columnsVisible).toBeGreaterThanOrEqual(17);
+  expect(columnsVisible).toBeGreaterThanOrEqual(13);
 
   // 每一格文字本身確實不再帶 +／%（否認式：格式沒改回去，密度提升
   // 不是靠別的手法湊出來的）。
@@ -594,40 +614,17 @@ test("Heatmap 橫向捲到底時，左側價格與最右 ±% 都還釘在畫面�
   }
 });
 
-test("目前選中的劇本在左側清單有明確的選中狀態", async ({ page }) => {
-  await routeTwoScenarios(page);
-  await page.goto("/#/s/s1");
-
-  const selected = page.getByRole("link", { name: /XYZ/ });
-  const other = page.getByRole("link", { name: /ABC/ });
-  await expect(selected).toHaveAttribute("aria-current", "page");
-  await expect(other).not.toHaveAttribute("aria-current", "page");
-});
-
-test("未選任何劇本時，右側工作區顯示空狀態；左側清單仍可操作", async ({ page }) => {
-  await routeTwoScenarios(page);
-  await page.goto("/");
-
-  await expect(page.getByText(/選擇左側的劇本/)).toBeVisible();
-  await expect(page.getByRole("link", { name: /XYZ/ })).toBeVisible();
-});
-
-test("可以直接點另一個劇本切換，不必先返回劇本庫", async ({ page }) => {
-  await routeTwoScenarios(page);
-  await page.goto("/#/s/s1");
-  // QA 修正後劇本庫卡片也印現價，同一個數字在左欄每張卡上都有一份
-  // ——要驗的是右側詳細頁那個，locator 必須 scope 回 detail-pane。
-  await expect(page.locator(".detail-pane")
-    .getByText(`$${sample.meta.spot.toFixed(2)}`).first()).toBeVisible();
-
-  await page.getByRole("link", { name: /ABC/ }).click();
-
-  await expect(page).toHaveURL(/#\/s\/s2$/);
-  // 切換後左側清單依然完整（沒有被整頁替換掉），且選中狀態換了一個
-  await expect(page.getByRole("link", { name: /XYZ/ })).toBeVisible();
-  await expect(page.getByRole("link", { name: /ABC/ }))
-    .toHaveAttribute("aria-current", "page");
-});
+// OG-02（#318）：以下三條既有測試的前提是「側欄劇本庫常駐＋右側詳細頁
+// 同時可見」（#72 master/detail），該版面已明確退場、不是本輪弱化——
+// 「目前選中的劇本在左側清單有明確的選中狀態」（`aria-current`／
+// `.selected` 隨 `selectedId` prop 一併從 `ScenarioList.tsx` 移除，見
+// 該檔案 code review 說明）、「未選任何劇本時右側顯示空狀態」（劇本庫
+// 頁面本身就是這個裝置寬度下唯一對應「未選中」的畫面，不再需要一個
+// 額外的 placeholder 文案）、「可以直接點另一個劇本切換不必先返回」
+// （沒有同時顯示的清單可點，這個 UX 特性本身就是 ticket 裁定要退場的
+// 東西）三者在新架構下結構上不可能發生，故無等價替代——瀏覽器上一頁／
+// 下一頁的等價覆蓋見下方「瀏覽器上一頁／下一頁在桌面版仍然正確切換
+// 劇本」與 `src/App.test.tsx` 同名 describe block。
 
 test("PC-05（#202）：鎖定卡片點下去路由不變——桌面版", async ({ page }) => {
   await page.route("**/api/scenarios", (route) =>
@@ -656,9 +653,9 @@ test("PC-05（#202）：鎖定卡片點下去路由不變——桌面版", async
   const before = page.url();
   await abcLink.click();
 
-  // 沒有導向詳細頁：網址沒變，右側工作區也還是空狀態，不是 s2 的內容。
+  // 沒有導向詳細頁：網址沒變，仍在劇本庫頁面（清單本身還在）。
   expect(page.url()).toBe(before);
-  await expect(page.getByText(/選擇左側的劇本/)).toBeVisible();
+  await expect(page.getByRole("link", { name: /XYZ/ })).toBeVisible();
 
   // 這一輪跑完後解鎖、正常可點——確認上面攔截到的是真的鎖定，不是這個
   // 候選本身結構上就到不了詳細頁。
@@ -822,7 +819,7 @@ test("REPAIR-05／#242 B：從未成功過的劇本刷新失敗——卡片反�
   await expect(page).toHaveURL(/#\/s\/s1/);
   // 桌面 master/detail：左側卡片自己的「尚未分析」（第三層資料時間）
   // 與右側詳細頁的空狀態文字會同時出現同一個字串，scope 回右側面板。
-  await expect(page.locator(".detail-pane").getByText("尚未分析")).toBeVisible();
+  await expect(page.locator(".detail-page").getByText("尚未分析")).toBeVisible();
 });
 
 test("限流失敗顯示結構化倒數與 Cboe 專屬文案，視窗內重試鈕停用" +
@@ -854,52 +851,56 @@ test("限流失敗顯示結構化倒數與 Cboe 專屬文案，視窗內重試�
   await expect(page.getByRole("button", { name: /重試/ })).toBeDisabled();
 });
 
-test("左右比例約 20/80，不是置中的窄直欄", async ({ page }) => {
+// OG-02（#318）：「左右比例約 20/80」原本驗證的是已退場的 #72 側欄
+// 版面本身（`.library-pane`／`.detail-page` 兩欄並存的寬度比例）——
+// 頁面級導覽下畫面上永遠只有一個全寬頁面，這個比例不再有意義，無等價
+// 替代。
+
+test("瀏覽器上一頁／下一頁在劇本庫↔詳細頁之間正常切換（OG-02／#318）",
+   async ({ page }) => {
   await routeTwoScenarios(page);
   await page.goto("/");
-
-  const library = await page.locator(".library-pane").boundingBox();
-  const detail = await page.locator(".detail-pane").boundingBox();
-  if (!library || !detail) throw new Error("版面沒有渲染出兩欄");
-
-  // 「約」20/80——不要求精確到小數點，但要跟置中窄直欄（原本兩側大片
-  // 空白、內容欄遠小於 20%）明顯不同，也不該被 CSS 下限卡死成遠超過
-  // 20% 的固定寬度（回歸測試：#72 code review 抓到的原始寫法在 900～
-  // 1400px 這段桌面寬度會被 280px 下限卡到超過 30%）。
-  const ratio = library.width / (library.width + detail.width);
-  expect(ratio).toBeGreaterThan(0.15);
-  expect(ratio).toBeLessThan(0.28);
-});
-
-test("瀏覽器上一頁／下一頁在桌面版仍然正確切換劇本", async ({ page }) => {
-  await routeTwoScenarios(page);
-  await page.goto("/");
-  await expect(page.getByText(/選擇左側的劇本/)).toBeVisible();
+  await expect(page.getByRole("link", { name: /XYZ/ })).toBeVisible();
 
   await page.getByRole("link", { name: /XYZ/ }).click();
   await expect(page).toHaveURL(/#\/s\/s1$/);
-  await page.getByRole("link", { name: /ABC/ }).click();
-  await expect(page).toHaveURL(/#\/s\/s2$/);
-
-  await page.goBack();
-  await expect(page).toHaveURL(/#\/s\/s1$/);
-  await expect(page.getByRole("link", { name: /XYZ/ }))
-    .toHaveAttribute("aria-current", "page");
-
+  // OG-02：側欄退場後劇本庫清單不再與詳細頁同時掛載，得先返回劇本庫
+  // 才點得到 ABC 的連結——這正是 AC 要求的「桌面瀏覽器上一頁／下一頁
+  // 在劇本庫↔詳細頁之間正常」，不是「兩個詳細頁之間直接互跳」。
+  //
+  // 歷史序列刻意線性推進，不在 `goBack()` 之後又導航到新網址——那會
+  // 截斷瀏覽器的 forward history，讓後面的 `goForward()` 斷言失真，
+  // 不是這條測試要驗的東西。
   await page.goBack();
   await expect(page).not.toHaveURL(/#\/s\//);
-  await expect(page.getByText(/選擇左側的劇本/)).toBeVisible();
+  await expect(page.getByRole("link", { name: /XYZ/ })).toBeVisible();
 
   await page.goForward();
   await expect(page).toHaveURL(/#\/s\/s1$/);
   // QA 修正後劇本庫卡片也印現價，同一個數字在左欄每張卡上都有一份
-  // ——要驗的是右側詳細頁那個，locator 必須 scope 回 detail-pane。
-  await expect(page.locator(".detail-pane")
+  // ——要驗的是詳細頁那個，locator 必須 scope 回 detail-page。
+  await expect(page.locator(".detail-page")
     .getByText(`$${sample.meta.spot.toFixed(2)}`).first()).toBeVisible();
+
+  // 再驗一組不同劇本：回劇本庫→點 ABC→上一頁回劇本庫→下一頁回 ABC。
+  await page.goBack();
+  await expect(page.getByRole("link", { name: /ABC/ })).toBeVisible();
+  await page.getByRole("link", { name: /ABC/ }).click();
+  await expect(page).toHaveURL(/#\/s\/s2$/);
+
+  await page.goBack();
+  await expect(page).not.toHaveURL(/#\/s\//);
+  await expect(page.getByRole("link", { name: /ABC/ })).toBeVisible();
+
+  await page.goForward();
+  await expect(page).toHaveURL(/#\/s\/s2$/);
 });
 
-test("工具列順序：建立劇本 → 垃圾桶 → 重新整理（TR6／#91 需求方核准版面）",
-   async ({ page }) => {
+test("OG-02（#318）：建立劇本／垃圾桶／設定入口在常駐頂欄，劇本庫頁面" +
+     "自己的頁首不重複顯示——OG-03（#320）起這個頁首本身併入" +
+     "`ScenarioList.tsx`（`.lib-header`），除了既有的「重新整理」" +
+     "外新增批次選取入口與篩選 chip，但仍不重複「建立劇本」／" +
+     "「垃圾桶」這兩個已經在頂欄的動作", async ({ page }) => {
   await routeTwoScenarios(page);
   await page.goto("/");
   // 等開站那輪批次刷新跑完，避免撞上「刷新中……」互斥文字的瞬間。
@@ -907,26 +908,171 @@ test("工具列順序：建立劇本 → 垃圾桶 → 重新整理（TR6／#91 
   await expect(page.getByRole("button", { name: /重新整理|刷新中/ }))
     .toHaveText("重新整理");
 
-  const buttons = await page.locator("header.toolbar button").allTextContents();
-  expect(buttons.map((t) => t.trim())).toEqual(["＋ 建立劇本", "垃圾桶", "重新整理"]);
+  // 常駐頂欄：劇本庫 → 垃圾桶 → 設定（導覽順序），角色 chip（Normal
+  // User 不顯示，見 `TopBar.tsx`）＋「建立劇本」primary 按鈕殿後。
+  const nav = topbarNav(page);
+  const navLinks = await nav.getByRole("link").allTextContents();
+  expect(navLinks).toEqual(["劇本庫", "垃圾桶", "設定"]);
+  await expect(page.getByRole("button", { name: "＋ 建立劇本" }))
+    .toBeVisible();
+
+  // 劇本庫頁面自己的頁首（`ScenarioList.tsx` 的 `.lib-header`）不重複
+  // 顯示建立／垃圾桶——`.lib-header` 裡只有批次選取入口（圖示鈕，
+  // aria-label「選取要移入垃圾桶的劇本」，跟頂欄那顆有獨立命名連結
+  // 「垃圾桶」的導覽項目是不同的兩件事：一個是進垃圾桶頁面，一個是
+  // 在劇本庫原地進入批次選取模式）與「重新整理」，找不到任何一顆
+  // 名稱是「＋ 建立劇本」或精確等於「垃圾桶」的按鈕。
+  const header = page.locator(".lib-header");
+  await expect(header.getByRole("button", { name: "重新整理" })).toBeVisible();
+  await expect(header.getByRole("button",
+    { name: "選取要移入垃圾桶的劇本" })).toBeVisible();
+  await expect(header.getByRole("button", { name: "＋ 建立劇本" }))
+    .toHaveCount(0);
+  await expect(header.getByRole("button", { name: "垃圾桶", exact: true }))
+    .toHaveCount(0);
 });
 
-test("垃圾桶：左側面板整個換成垃圾桶清單（TR6／#91）", async ({ page }) => {
+/* ---------- OG-03（#320）：桌面劇本庫 Markets 式資料表 ---------- */
+
+test("OG-03（#320）：表格欄位齊全（標的／方向／現價／目標價／冠軍策略／" +
+     "劇本報酬／淨成本走勢／到期／狀態／更新時間），且每一列仍是" +
+     "可點進詳細頁的完整連結", async ({ page }) => {
+  await routeTwoScenarios(page);
+  await page.goto("/");
+
+  const head = page.locator(".lib-thead");
+  await expect(head).toContainText("標的");
+  await expect(head).toContainText("方向");
+  await expect(head).toContainText("現價");
+  await expect(head).toContainText("目標價");
+  await expect(head).toContainText("冠軍策略");
+  await expect(head).toContainText("劇本報酬");
+  await expect(head).toContainText("淨成本走勢");
+  await expect(head).toContainText("到期");
+  await expect(head).toContainText("狀態");
+  await expect(head).toContainText("更新時間");
+
+  const xyzRow = page.locator(".compact-card").filter({ hasText: "XYZ" });
+  // OG-04（#323）：`sampleRow` 契約樣本本身帶著一筆真的 narrow history
+  // 點，`libraryRow()` 沒有覆寫 `cost_sparkline`——這一列因此看得到
+  // 真的 sparkline（`CostSparkline.tsx` 的 `<svg role="img">`），不是
+  // 佔位符「—」。細部行為（顏色、斷點、`null` 顯示「—」）由
+  // `CostSparkline.test.tsx`／`sparkline.test.ts` 覆蓋，這裡只證明
+  // 它真的畫在頁面上（AC：「Playwright 至少一條看得到 sparkline」）。
+  await expect(xyzRow.getByRole("img", { name: /淨成本走勢/ })).toBeVisible();
+  await expect(xyzRow.getByRole("link", { name: /XYZ/ })).toHaveAttribute(
+    "href", "#/s/s1");
+});
+
+test("OG-04（#323）：沒有 narrow history 序列的劇本，淨成本走勢欄" +
+     "誠實顯示「—」，不是硬畫一條假線", async ({ page }) => {
+  await page.route("**/api/scenarios", (route) =>
+    route.fulfill({ json: [libraryRow({ id: "s1", symbol: "XYZ",
+                                        cost_sparkline: null })] }));
+  await page.route("**/api/scenarios/s1", (route) =>
+    route.fulfill({ json: { ...libraryRow({ id: "s1", symbol: "XYZ",
+                                            cost_sparkline: null }),
+                            latest_result: sample } }));
+  await page.goto("/");
+
+  const xyzRow = page.locator(".compact-card").filter({ hasText: "XYZ" });
+  await expect(xyzRow.locator(".lib-cell-sparkline")).toHaveText("—");
+  await expect(xyzRow.getByRole("img", { name: /淨成本走勢/ })).toHaveCount(0);
+});
+
+test("OG-05（#324）：劇本庫頁首 stats strip 顯示唯讀使用量摘要，Normal" +
+     "User 看不到 Super Admin 專屬方塊也不打 ops metrics 請求",
+   async ({ page }) => {
+  const opsCalls: string[] = [];
+  await routeTwoScenarios(page);
+  await page.route("**/api/me/usage-summary", (route) =>
+    route.fulfill({ json: {
+      active_scenarios: 2, max_active_scenarios: 10,
+      quota_exempt: false, refresh_min_interval_minutes: 30,
+      throttle_exempt: false, last_activity_at: "2026-08-04T09:30:00+00:00",
+    } }));
+  await page.route("**/api/ops/metrics", (route) => {
+    opsCalls.push(route.request().url());
+    return route.fulfill({ json: {
+      vendor_fuse: { used: 5, budget: 2000 }, alerts: [] } });
+  });
+  await page.goto("/");
+
+  const strip = page.locator(".lib-stats-strip");
+  await expect(strip.getByText("2 / 10")).toBeVisible();
+  await expect(strip.getByText("進行中劇本")).toBeVisible();
+  await expect(strip.getByText("刷新節流間隔")).toBeVisible();
+  await expect(strip.getByText("30 分鐘")).toBeVisible();
+  // Normal User（既有 mock 角色，未特別解鎖）：看不到 Super Admin 兩格，
+  // 也真的沒發出 `/api/ops/metrics` 請求（AC 明文）。
+  await expect(strip.getByText("Vendor 每日預算")).toHaveCount(0);
+  expect(opsCalls).toEqual([]);
+});
+
+test("OG-03（#320）：方向與狀態篩選 chip 純前端過濾，不打任何新請求" +
+     "（AC：篩選純前端、不改後端）", async ({ page }) => {
+  const bearish = libraryRow({ id: "s3", symbol: "DEF", target_price: 80 });
+  await page.route("**/api/scenarios", (route) =>
+    route.fulfill({ json: [rowA, rowB, bearish] }));
+  await page.route("**/api/scenarios/refresh-run", (route) =>
+    route.fulfill({ json: {
+      results: [
+        { scenario_id: "s1", ok: true, row: rowA },
+        { scenario_id: "s2", ok: true, row: rowB },
+        { scenario_id: "s3", ok: true, row: bearish },
+      ],
+      remaining: [],
+    } }));
+
+  // 只追蹤打向後端的請求——篩選收合／展開某一列會讓它的 `<img>`
+  // Logo.dev 標的圖示跟著卸載／重新掛載，重新觸發圖片請求是瀏覽器
+  // 正常的渲染副作用，不是這條 AC 要擋的東西；AC 字面「不改後端」
+  // 真正要驗證的是 `/api/*` 這一半。
+  const apiRequestUrls: string[] = [];
+  page.on("request", (req) => {
+    if (req.url().includes("/api/")) apiRequestUrls.push(req.url());
+  });
+  await page.goto("/");
+  await expect(page.getByRole("link", { name: /DEF/ })).toBeVisible();
+  // 同一套「等網路真的靜下來才歸零計數器」教訓，見上方 T18 紅線 12。
+  await page.waitForLoadState("networkidle");
+  apiRequestUrls.length = 0;
+
+  // rowA／rowB 承接 `sampleRow` 預設的 spot=100／target=130，是看漲；
+  // 額外建的 `bearish` 是看跌。
+  await page.getByRole("group", { name: "依方向篩選" })
+    .getByRole("button", { name: "看跌" }).click();
+
+  await expect(page.getByRole("link", { name: /DEF/ })).toBeVisible();
+  await expect(page.getByRole("link", { name: /XYZ/ })).not.toBeVisible();
+  await expect(page.getByRole("link", { name: /ABC/ })).not.toBeVisible();
+  expect(apiRequestUrls).toEqual([]);
+
+  await page.getByRole("group", { name: "依方向篩選" })
+    .getByRole("button", { name: "全部" }).click();
+  await expect(page.getByRole("link", { name: /XYZ/ })).toBeVisible();
+  expect(apiRequestUrls).toEqual([]);
+});
+
+test("OG-02（#318）：垃圾桶是獨立全寬頁面，不再是側欄切換右側工作區" +
+     "（取代 TR6／#91 原本「左側面板整個換成垃圾桶清單」的描述）",
+   async ({ page }) => {
   await routeTwoScenarios(page);
   await page.route("**/api/scenarios?include_archived=true", (route) =>
     route.fulfill({ json: [] }));
   await page.goto("/");
   await expect(page.getByRole("link", { name: /XYZ/ })).toBeVisible();
 
-  await page.getByRole("button", { name: "垃圾桶", exact: true }).click();
+  await page.getByRole("link", { name: "垃圾桶", exact: true }).click();
 
-  // 左側面板整個換成垃圾桶清單——不是彈出新視窗或新分頁。
-  await expect(page.locator(".library-pane").getByRole("heading", { name: "垃圾桶" }))
-    .toBeVisible();
+  // 整頁換成垃圾桶——不是彈出新視窗或新分頁，也不是切換右側工作區
+  // （側欄已退場）；劇本庫清單同時不再顯示。
+  await expect(page.getByRole("heading", { name: "垃圾桶" })).toBeVisible();
   await expect(page.getByRole("link", { name: /XYZ/ })).not.toBeVisible();
-  // 右側工作區沿用既有「有沒有選中劇本」的邏輯——垃圾桶本身不是劇本，
-  // 網址不再指向任何劇本 id，右側自然落回既有空狀態，不是被特別接管。
-  await expect(page.getByText(/選擇左側的劇本/)).toBeVisible();
+  // 頂欄導覽「垃圾桶」項目本身有金色底線指示當前頁。
+  const nav = topbarNav(page);
+  await expect(nav.getByRole("link", { name: "垃圾桶", exact: true }))
+    .toHaveClass("on");
 
   await page.getByText("‹ 劇本庫").click();
   await expect(page.getByRole("link", { name: /XYZ/ })).toBeVisible();
@@ -975,24 +1121,26 @@ test("桌面版垃圾桶：還原一個、永久刪除另一個（TR4／#92）",
 
   await page.goto("/");
   await expect(page.getByText(/還沒有劇本/)).toBeVisible();
-  await page.getByRole("button", { name: "垃圾桶", exact: true }).click();
-  const library = page.locator(".library-pane");
-  await expect(library.getByText("XYZ", { exact: true })).toBeVisible();
-  await expect(library.getByText("ABC", { exact: true })).toBeVisible();
+  await page.getByRole("link", { name: "垃圾桶", exact: true }).click();
+  // OG-02（#318）：垃圾桶是獨立全寬頁面，不再是側欄裡的「左側面板」
+  // ——`page` 本身即可，不需要額外 scope 消歧義。
+  const trash = page;
+  await expect(trash.getByText("XYZ", { exact: true })).toBeVisible();
+  await expect(trash.getByText("ABC", { exact: true })).toBeVisible();
 
   await page.getByRole("button", { name: "還原 XYZ 2028-05" }).click();
-  await expect(library.getByText("XYZ", { exact: true })).not.toBeVisible();
+  await expect(trash.getByText("XYZ", { exact: true })).not.toBeVisible();
   await page.getByText("‹ 劇本庫").click();
   await expect(page.getByRole("link", { name: /XYZ/ })).toBeVisible();
 
-  await page.getByRole("button", { name: "垃圾桶", exact: true }).click();
+  await page.getByRole("link", { name: "垃圾桶", exact: true }).click();
   await page.getByRole("button", { name: "永久刪除 ABC 2028-06" }).click();
   const sheet = page.getByRole("alertdialog");
   await expect(sheet).toContainText("ABC");
   await expect(sheet).toContainText("2028-06");
   await sheet.getByRole("button", { name: "永久刪除" }).click();
 
-  await expect(library.getByText("垃圾桶是空的。")).toBeVisible();
+  await expect(trash.getByText("垃圾桶是空的。")).toBeVisible();
 });
 
 test("桌面版垃圾桶批次操作：全選後批次還原（TR5／#93）", async ({ page }) => {
@@ -1018,30 +1166,32 @@ test("桌面版垃圾桶批次操作：全選後批次還原（TR5／#93）", as
   });
 
   await page.goto("/");
-  await page.getByRole("button", { name: "垃圾桶", exact: true }).click();
-  const library = page.locator(".library-pane");
-  await expect(library.getByText("XYZ", { exact: true })).toBeVisible();
-  await expect(library.getByText("ABC", { exact: true })).toBeVisible();
+  await page.getByRole("link", { name: "垃圾桶", exact: true }).click();
+  // OG-02（#318）：垃圾桶是獨立全寬頁面，`page` 本身即可，不需要額外
+  // scope 消歧義。
+  const trash = page;
+  await expect(trash.getByText("XYZ", { exact: true })).toBeVisible();
+  await expect(trash.getByText("ABC", { exact: true })).toBeVisible();
 
   await page.getByRole("button", { name: "全選" }).click();
   await expect(page.getByText("已選 2 個")).toBeVisible();
   await page.getByRole("button", { name: "還原已選" }).click();
 
-  await expect(library.getByText("垃圾桶是空的。")).toBeVisible();
+  await expect(trash.getByText("垃圾桶是空的。")).toBeVisible();
   await page.getByText("‹ 劇本庫").click();
   await expect(page.getByRole("link", { name: /XYZ/ })).toBeVisible();
   await expect(page.getByRole("link", { name: /ABC/ })).toBeVisible();
 });
 
-test("劇本庫卡片瘦身：固定左側欄視窗一次看到的劇本數比舊版大卡片多" +
-     "（決策 K／#108）", async ({ page }) => {
-  // 只驗結構性密度（能不能在左側欄一屏塞進更多列），不驗任何像素間距
+test("劇本庫卡片瘦身：固定視窗高度一次看到的劇本數比舊版大卡片多" +
+     "（決策 K／#108，OG-02／#318 起量測基準從側欄改成整個 viewport）",
+   async ({ page }) => {
+  // 只驗結構性密度（打開頁面、不捲動能塞進幾列），不驗任何像素間距
   // 數值——跟手機版 smoke.spec.ts「Compact row 的密度」那條案例同一套
   // 測試哲學（spec #77〈Testing Decisions〉）。舊版 `.card`（padding
-  // 16px、六列各自 12px 分隔線）在這個 20% 左側欄寬度、800px 高的桌面
-  // 視窗下，一屏通常只放得下 2～3 張；決策 K 改用跟手機版一樣的三層
-  // compact row 後應該明顯更多，門檻取一個舊版無論如何都到不了、但
-  // 留有安全餘裕的數字。
+  // 16px、六列各自 12px 分隔線）一屏通常只放得下 2～3 張；決策 K 改用
+  // 跟手機版一樣的三層 compact row 後應該明顯更多，門檻取一個舊版無論
+  // 如何都到不了、但留有安全餘裕的數字。
   const rows = Array.from({ length: 12 }, (_, i) =>
     libraryRow({ id: `s${i}`, symbol: `SYM${i}`,
                  latest_analyzed_at: null, best_return: null }));
@@ -1057,25 +1207,31 @@ test("劇本庫卡片瘦身：固定左側欄視窗一次看到的劇本數比�
   await page.goto("/");
   await expect(page.getByRole("listitem").first()).toBeVisible();
 
-  const library = (await page.locator(".library-pane").boundingBox())!;
+  // OG-02：劇本庫不再受限於側欄寬度／高度，是整個全寬頁面（頂欄常駐
+  // ＋頁面本身自然捲動）——`boundingBox()` 是 viewport 相對座標，初始
+  // 捲動位置（scrollY=0）下直接跟 viewport 高度比較，就是「打開頁面
+  // 當下不捲動看得到幾張卡」。
+  const viewportHeight = page.viewportSize()!.height;
   const cards = await page.locator("li.compact-card").all();
   let visibleWithoutScrolling = 0;
   for (const card of cards) {
     const box = await card.boundingBox();
-    if (box && box.y >= library.y
-        && box.y + box.height <= library.y + library.height) {
+    if (box && box.y >= 0 && box.y + box.height <= viewportHeight) {
       visibleWithoutScrolling += 1;
     }
   }
 
-  expect(visibleWithoutScrolling).toBeGreaterThanOrEqual(5);
+  // 門檻沿用既有數字（先前為常駐頂欄扣掉可用高度所降到的 4）——全寬
+  // 頁面理論上只會更寬鬆，不刻意調高冒進，這條測試的目的是防止密度
+  // 被無聲吃回去，不是逐像素校準版面。
+  expect(visibleWithoutScrolling).toBeGreaterThanOrEqual(4);
 });
 
 test("詳細頁密度：桌面一屏能看到的比例明顯提高（QA-FIX-3／QA-01）",
      async ({ page }) => {
   await routeTwoScenarios(page);
   await page.goto("/#/s/s1");
-  await expect(page.locator(".detail-pane .card").first()).toBeVisible();
+  await expect(page.locator(".detail-page .card").first()).toBeVisible();
 
   // 只驗結構性密度，不驗任何像素間距數值——跟 #108 劇本庫瘦身、
   // #82 手機 compact row 同一套測試哲學。
@@ -1084,7 +1240,7 @@ test("詳細頁密度：桌面一屏能看到的比例明顯提高（QA-FIX-3／
   // 2402px→1989px ＝ 2.49 螢幕，門檻跟著收到 2.70（介於兩者之間留
   // 餘裕），把這一輪的改善釘住、不讓它日後被無聲吃回去。
   const vh = page.viewportSize()!.height;
-  const total = await page.locator(".detail-pane .screen")
+  const total = await page.locator(".detail-page .screen")
     .evaluate((el) => el.scrollHeight);
   expect(total / vh).toBeLessThan(2.70);
 
@@ -1093,7 +1249,7 @@ test("詳細頁密度：桌面一屏能看到的比例明顯提高（QA-FIX-3／
   // OPTION-CHASER-CLOSEOUT-001 新增的「劇本設定」卡排在它前面、也
   // 共用 `.summary-card` 密度樣式，`.first()` 現在會撈到那張而非這裡
   // 要驗的基準候選摘要卡——改用 `aria-label` scope 回正確的那一張。
-  const summary = page.locator(".detail-pane")
+  const summary = page.locator(".detail-page")
     .getByRole("region", { name: "劇本摘要" });
   for (const label of ["策略", "現價", "目標價", "目標年月",
                       "買腿 Ask", "賣腿 Bid", "淨成本",
@@ -1115,7 +1271,7 @@ test("詳細頁密度：桌面一屏能看到的比例明顯提高（QA-FIX-3／
   // Heatmap 格子字級：QA 修正明文要求「格子再縮小、降低 padding」，
   // 13px→12px 是那一輪刻意調的值，不是被密度壓縮波及的副作用。12px
   // 同時是這張表的可讀性下限——再小就不該無聲往下調。
-  await expect(page.locator(".detail-pane .heatmap-table td").first())
+  await expect(page.locator(".detail-page .heatmap-table td").first())
     .toHaveCSS("font-size", "12px");
 });
 
@@ -1230,30 +1386,64 @@ async function routeSettings(page: import("@playwright/test").Page) {
   // Settings 現在也掛著 Diagnostics 區塊（DG-06／#149）——預設回空
   // 清單，需要非空清單的測試自己再覆蓋這個 route。
   await page.route("**/api/diagnostics*", (route) => route.fulfill({ json: [] }));
+  // OG-11（#322）：`<SuperUserAdmin />`（管理後台分頁）掛載時打
+  // `/api/superuser/owners`／`/api/ops/metrics`——這裡的既有測試多數
+  // 不關心管理後台本身（那由角色可見度矩陣測試與
+  // `SuperUserAdmin.test.tsx` 專屬覆蓋），預設回空清單／最小假體，
+  // 讓切到「管理後台」分頁不會因為這兩個新請求沒攔截而掛掉。
+  await page.route("**/api/superuser/owners*",
+    (route) => route.fulfill({ json: [] }));
+  await page.route("**/api/superuser/audit-log",
+    (route) => route.fulfill({ json: [] }));
+  await page.route("**/api/ops/metrics", (route) => route.fulfill({ json: {
+    chain_fetch_count: [], chain_429_count: [], stale_serve_count: [],
+    cold_miss_count: [], refresh_duration_ms: [], history_read_volume: [],
+    abandoned_owner_cleanup_count: [],
+    table_size: {},
+    anonymous_owners: { active: 0, abandoned: 0, eligible_for_hard_delete: 0,
+                       protected: 0, total: 0 },
+    scenarios: { total: 0, average_per_owner: 0 },
+    alerts: [],
+  } }));
 }
 
-test("桌面版的設定入口固定在 sidebar 最下方，內容開在右側工作區", async ({ page }) => {
+/** OG-11（#322）：桌面設定頁左側 subnav 切分頁——內容收進分頁後，既有
+ *  測試得先點對應分頁才看得到自己要測的區塊（改版前是單欄堆疊，一次
+ *  全部可見）。 */
+async function openSettingsTab(
+  page: import("@playwright/test").Page, label: string,
+) {
+  await page.getByRole("tab", { name: label }).click();
+}
+
+test("OG-02（#318）：設定入口在常駐頂欄導覽，任何頁面都按得到；內容" +
+     "是獨立全寬頁面（取代 #124「固定在 sidebar 最下方」已退場的側欄" +
+     "版本）", async ({ page }) => {
   await routeSettings(page);
   await page.goto("/");
 
-  const entry = page.getByRole("link", { name: "設定" });
+  // Settings 頁面自己也有一個「‹ 劇本庫」返回連結（子字串會跟頂欄的
+  // 「劇本庫」撞名），這裡明確 scope 回頂欄導覽。
+  const nav = topbarNav(page);
+  const entry = nav.getByRole("link", { name: "設定" });
   await expect(entry).toBeVisible();
-
-  // 「最下方」：入口的位置在左欄劇本清單之下。
-  const list = page.locator(".library-scroll");
-  const entryBox = (await entry.boundingBox())!;
-  const listBox = (await list.boundingBox())!;
-  expect(entryBox.y).toBeGreaterThanOrEqual(listBox.y + listBox.height - 1);
-
   await entry.click();
+  // OG-11（#322）：「Data / API」收進「資料來源」分頁，不是預設分頁
+  // （預設「一般」）。
+  await openSettingsTab(page, "資料來源");
   await expect(page.getByText("Data / API")).toBeVisible();
-  // 左欄劇本庫仍在（右側工作區才是被替換的那一邊）
+  // 全寬頁面：劇本庫清單不再同時顯示。
+  await expect(page.getByRole("link", { name: /ABC/ })).not.toBeVisible();
+
+  // 常駐：從設定頁本身也看得到、按得到頂欄「劇本庫」連結。
+  await nav.getByRole("link", { name: "劇本庫", exact: true }).click();
   await expect(page.getByRole("link", { name: /ABC/ })).toBeVisible();
 });
 
 test("桌面版：切到自訂、存 token，畫面只顯示遮罩", async ({ page }) => {
   await routeSettings(page);
   await page.goto("/#/settings");
+  await openSettingsTab(page, "資料來源");
 
   const md = page.getByRole("region", { name: "Market Data" });
   await expect(md.getByText("預設：Cboe")).toBeVisible();
@@ -1344,6 +1534,7 @@ test("桌面版：測試連線走完未設定 → 尚未驗證 → 已連線（S
   await page.route("**/api/diagnostics*", (route) => route.fulfill({ json: [] }));
 
   await page.goto("/#/settings");
+  await openSettingsTab(page, "資料來源");
   const md = page.getByRole("region", { name: "Market Data" });
 
   // 狀態列鎖定 `.settings-status`：fallback 提示裡也有「尚未設定 token」
@@ -1384,6 +1575,7 @@ test("桌面版：Settings 的 Diagnostics 區塊可讀可操作（DG-06／#149�
   });
 
   await page.goto("/#/settings");
+  await openSettingsTab(page, "診斷");
 
   const section = page.getByRole("region", { name: "Diagnostics" });
   await expect(section).toBeVisible();
@@ -1412,6 +1604,7 @@ test("桌面版：設定頁「刪除我的所有資料」需二次確認，確�
     return route.continue();
   });
   await page.goto("/#/settings");
+  await openSettingsTab(page, "刪除我的資料");
 
   const section = page.getByRole("region", { name: "刪除我的資料" });
   await expect(section).toBeVisible();
@@ -1453,6 +1646,18 @@ async function routeRoleJourney(page: import("@playwright/test").Page) {
   await page.route("**/api/superuser/owners*", (route) => route.fulfill({ json: [] }));
   await page.route("**/api/superuser/audit-log*", (route) => route.fulfill({ json: [] }));
   await page.route("**/api/diagnostics*", (route) => route.fulfill({ json: [] }));
+  // OG-11（#322）：「管理後台」分頁掛載 `<SuperUserAdmin />` 時連帶
+  // 掛的 `OpsStats` 一律打這個端點。
+  await page.route("**/api/ops/metrics", (route) => route.fulfill({ json: {
+    chain_fetch_count: [], chain_429_count: [], stale_serve_count: [],
+    cold_miss_count: [], refresh_duration_ms: [], history_read_volume: [],
+    abandoned_owner_cleanup_count: [],
+    table_size: {},
+    anonymous_owners: { active: 0, abandoned: 0, eligible_for_hard_delete: 0,
+                       protected: 0, total: 0 },
+    scenarios: { total: 0, average_per_owner: 0 },
+    alerts: [],
+  } }));
 
   await page.route("**/api/auth/login", async (route) => {
     const body = JSON.parse(route.request().postData() ?? "{}") as
@@ -1543,6 +1748,9 @@ test("桌面版：角色可見度矩陣——Normal／Super User／Super Admin �
   await page.getByLabel("密碼").fill(ROLE_SUPERADMIN_PASSWORD);
   await page.getByRole("button", { name: "登入" }).click();
   await expect(page.getByText(/目前身分：Super Admin/)).toBeVisible();
+  // OG-11（#322）：管理後台收進桌面 subnav 的「管理後台」分頁，不再
+  // 隨頁面一次全部可見，登入成功後得先點分頁才看得到。
+  await openSettingsTab(page, "管理後台");
   await expect(
     page.getByRole("region", { name: "Super User 管理面板" }),
   ).toBeVisible();
@@ -1552,6 +1760,12 @@ test("桌面版：角色可見度矩陣——Normal／Super User／Super Admin �
   // 登出：兩者都不再可見
   await page.goto("/#/settings");
   await page.getByRole("button", { name: "登出" }).click();
+  // 明確等到畫面真的换回登入表單（Normal User 狀態已經真的落地），
+  // 才離開設定頁——避免詳細頁在 `getAuthStatusCached()` 的快取值真正
+  // 換成 "normal" 之前就搶先掛載、讀到還沒更新完的舊角色（OG-11／
+  // #322 跟進：管理後台收進 subnav 分頁後，這個流程比改版前多轉一手
+  // tab 切換，光靠「管理面板消失」這個斷言不足以保證快取已經寫定）。
+  await expect(page.getByLabel("密碼")).toBeVisible();
   await expect(
     page.getByRole("region", { name: "Super User 管理面板" }),
   ).toHaveCount(0);
@@ -1782,9 +1996,10 @@ test("Phase A2：建立成功後表單自動收合、新卡片被捲入視窗並
   await expect(page.getByRole("button", { name: "＋ 建立劇本" })).toBeVisible();
   await expect(page.getByLabel("標的代號")).toBeHidden();
 
-  // 捲動＋聚焦：桌面版清單在自己的 `.library-scroll` 容器裡捲動，
-  // `Element.scrollIntoView()` 對巢狀捲動容器一樣有效，不必分平台
-  // 各寫一套邏輯。
+  // 捲動＋聚焦：OG-02（#318）起桌面版清單跟著整頁（body）一起自然
+  // 捲動（不再是側欄自己的 `.library-scroll` 內部容器），
+  // `Element.scrollIntoView()` 對整頁捲動與巢狀捲動容器一樣有效，
+  // 不必分平台各寫一套邏輯。
   const newCardLink = page.getByRole("link", { name: /TLT 2028-05/ });
   await expect(newCardLink).toBeInViewport();
   await expect(newCardLink).toBeFocused();
@@ -1841,7 +2056,7 @@ test("桌面版：多 family 並存——分頁列出、預設打開冠軍所屬
                             remaining: [] } }));
   await page.goto("/#/s/s1");
 
-  const detail = page.locator(".detail-pane");
+  const detail = page.locator(".detail-page");
   await expect(detail.getByText(/劇本主圖/)).toBeVisible();
 
   const tabs = detail.getByRole("group", { name: "策略家族" });
@@ -1859,6 +2074,123 @@ test("桌面版：多 family 並存——分頁列出、預設打開冠軍所屬
 
   // 分頁切走了，頭條依然是冠軍，不隨分頁切換而改變。
   await expect(summary.getByText("Bull Call Spread")).toBeVisible();
+});
+
+test("OG-06／OG-07（#321／#325）：桌面詳細頁三欄外殼與身分列——左欄 family" +
+     " tabs／到期日chip／排名表、中央欄 Heatmap＋三價位階梯、右欄候選面板" +
+     "（進場／Payoff／Greeks／報告）＋底部四個 tab；身分列有方向 tag" +
+     "與編輯入口", async ({ page }) => {
+  const row = { ...libraryRow({ id: "s1", symbol: "XYZ" }),
+               strategies: ["single-leg", "vertical-spread"] };
+  const multi = multiFamilyView();
+  await page.route("**/api/scenarios", (route) => route.fulfill({ json: [row] }));
+  await page.route("**/api/scenarios/s1", (route) =>
+    route.fulfill({ json: { ...row, latest_result: multi } }));
+  await page.route("**/api/scenarios/refresh-run", (route) =>
+    route.fulfill({ json: { results: [{ scenario_id: "s1", ok: true, row }],
+                            remaining: [] } }));
+  await page.goto("/#/s/s1");
+
+  const detail = page.locator(".detail-page");
+  await expect(detail.getByText(/劇本主圖/)).toBeVisible();
+
+  // 三欄外殼：左／中／右三個容器都在，右欄（OG-07／#325）是候選面板
+  // ——預設「進場」tab，跟著左欄排名表目前選取的那一列（預設＝冠軍）。
+  const shell = detail.locator(".detail-shell");
+  await expect(shell.locator(".detail-col-left")).toBeVisible();
+  await expect(shell.locator(".detail-col-center")).toBeVisible();
+  const rightPanel = shell.locator(".detail-col-right");
+  await expect(rightPanel).toBeVisible();
+  await expect(rightPanel.getByRole("tab", { name: "進場" }))
+    .toHaveAttribute("aria-selected", "true");
+  await expect(rightPanel.getByText("淨成本 / 股")).toBeVisible();
+
+  // 底部四個 tab（淨成本走勢／候選池診斷／分析報告／原始資料），預設
+  // 停在「淨成本走勢」——圖表掛載就直接看得到，不用先點開。
+  const bottomTabs = detail.locator(".detail-bottom-tabs");
+  await expect(bottomTabs.getByRole("tab", { name: "淨成本走勢" }))
+    .toHaveAttribute("aria-selected", "true");
+  await expect(bottomTabs.locator(".spread-history-panel")).toBeVisible();
+
+  // 左欄：family tabs（已由上一條測試驗過切換行為，這裡只驗結構齊全）
+  // ／到期日 chip／排名表。
+  await expect(shell.locator(".detail-col-left")
+    .getByRole("group", { name: "策略家族" })).toBeVisible();
+  await expect(shell.locator(".detail-col-left")
+    .getByRole("group", { name: "到期日" })).toBeVisible();
+  await expect(shell.locator(".detail-rank-row").first()).toBeVisible();
+
+  // 中央欄：常駐 Heatmap（不用先展開，本票取代手機版的逐列 <details>）。
+  await expect(shell.locator(".detail-col-center table.heatmap-table"))
+    .toBeVisible();
+
+  // 身分列：方向 tag（真實契約樣本 target_price > spot，衍生看漲）與
+  // 編輯入口都在頂部工具列，不是摘要卡那份「方向」Stat 的重複。
+  const header = page.locator("header.toolbar");
+  await expect(header.getByText("看漲")).toBeVisible();
+  await expect(header.getByRole("button", { name: "編輯" })).toBeVisible();
+  // `/code-review` Spec 軸跟進：身分列票面明文要求的現價／目標價（含
+  // 所需漲跌幅）／目標年月／資料時間／資料來源都要在這一列，不能只
+  // 留在下方的劇本摘要卡（真實契約樣本：spot 100、target_price 130）。
+  await expect(header.getByText(/現價 \$100\.00/)).toBeVisible();
+  await expect(header.getByText(/目標 \$130\.00（\+30\.0%）/)).toBeVisible();
+});
+
+/* ---------- OG-08（#326）：右欄 Historical IV 面板版位 ---------- */
+
+test("OG-08（#326）：桌面單腿詳細頁，角色 ≥ Super User 且已解鎖時，右欄" +
+     "整個是 Historical IV 面板（跟 artifact「Desktop TSLA Long Call＋" +
+     "Historical IV」板一致的版位），不再是進場／Payoff／Greeks／報告那組" +
+     "候選面板 tab；左欄排名表／中央 Heatmap 不受影響", async ({ page }) => {
+  await routeTwoScenarios(page, sampleLongCall);
+  await page.route("**/api/auth/status",
+    (route) => route.fulfill({ json: { role: "superuser" } }));
+  await page.route("**/api/settings", (route) =>
+    route.fulfill({ json: { historical_iv_enabled: true } }));
+  await page.route("**/api/scenarios/*/iv-history*", (route) =>
+    route.fulfill({ json: fullIvResponse() }));
+
+  await page.goto("/#/s/s1");
+
+  const shell = page.locator(".detail-shell");
+  const rightPanel = shell.locator(".detail-col-right");
+  await expect(rightPanel.locator(".iv-history")).toBeVisible();
+  await expect(rightPanel.getByRole("tab", { name: "進場" })).toHaveCount(0);
+  await expect(rightPanel.getByRole("tab", { name: "Payoff" })).toHaveCount(0);
+  await expect(rightPanel.getByRole("tab", { name: "Greeks" })).toHaveCount(0);
+
+  // 左欄／中央欄是既有 OG-06 版面，不受右欄換皮影響——`rowA.strategies`
+  // 沿用泛用的 `sampleRow`（既有跨測試共用假體，不是 Long Call 專屬），
+  // 跟 `sampleLongCall` 這份 `latest_result` 的 family 對不上是既有的
+  // fixture 落差（其餘既有測試也用同一組組合，只是從沒斷言過左欄内容），
+  // 不是本票要修的東西；這裡只確認左／中欄容器仍在、劇本主圖標題仍照舊
+  // 渲染，不對排名列內容做斷言。
+  await expect(shell.locator(".detail-col-left")).toBeVisible();
+  await expect(shell.locator(".detail-col-center").getByText("劇本主圖"))
+    .toBeVisible();
+});
+
+test("OG-08（#326）：同一個單腿劇本，Normal User 看不到 Historical IV，" +
+     "右欄仍是既有候選面板（進場 tab 預設可見）——換皮只影響 Super User" +
+     "以上才看得到的那個分支", async ({ page }) => {
+  await routeTwoScenarios(page, sampleLongCall);
+  await page.route("**/api/auth/status",
+    (route) => route.fulfill({ json: { role: "normal" } }));
+  await page.route("**/api/settings", (route) =>
+    route.fulfill({ json: { historical_iv_enabled: true } }));
+  const ivCalls: string[] = [];
+  await page.route("**/api/scenarios/*/iv-history*", (route) => {
+    ivCalls.push(route.request().url());
+    return route.fulfill({ json: fullIvResponse() });
+  });
+
+  await page.goto("/#/s/s1");
+
+  const rightPanel = page.locator(".detail-shell").locator(".detail-col-right");
+  await expect(rightPanel.getByRole("tab", { name: "進場" })).toHaveAttribute(
+    "aria-selected", "true");
+  await expect(rightPanel.locator(".iv-history")).toHaveCount(0);
+  expect(ivCalls).toEqual([]);
 });
 
 /* ---------- T16（#232，Initial V2）：Butterfly 前端呈現，桌面 viewport ---------- */
@@ -1922,9 +2254,13 @@ test("T16（#232）：桌面版 Butterfly 三隻腿完整顯示、兩個損益�
   const ivCalls = await routeButterflyDetailDesktop(page);
   await page.goto("/#/s/s1");
 
-  const detail = page.locator(".detail-pane");
+  const detail = page.locator(".detail-page");
   await expect(detail.getByText("買 100 / 賣 2×106 / 買 115").first()).toBeVisible();
 
+  // OG-07（#325）：`AnalysisReport` 搬進底部「分析報告」tab，先切分頁
+  // 才看得到它自己的 `<details>`（元件本身的收合行為沒變，只是掛載
+  // 位置跟可見度多了一層 tab 閘門）。
+  await detail.getByRole("tab", { name: "分析報告" }).click();
   await detail.getByText("📄 分析報告").click();
   const breakevenRow = detail.getByText("Breakeven", { exact: true }).locator("xpath=..");
   await expect(breakevenRow).toContainText(
@@ -1935,15 +2271,19 @@ test("T16（#232）：桌面版 Butterfly 三隻腿完整顯示、兩個損益�
   await expect(regionRow).toContainText(
     `$${butterflyCandDesktop.profit_region[0].toFixed(2)}`);
 
-  // Dev server（React StrictMode）會把初次掛載的 effect 重複觸發一次
-  // ——`/api/settings` 等頁面載入本身就會發的請求可能還沒真的落定。
-  // 等網路真的靜下來才歸零計數器（同 smoke.spec.ts 同一條測試的既有
-  // 教訓），避免「展開」動作本身有沒有多發請求的量測被頁面載入尾聲
-  // 的既有請求汙染成偽陽性。
+  // OG-06（#321）：桌面版把「每一列各自展開自己的 Heatmap」換成中央
+  // 常駐一張 Heatmap、跟著排名表目前選取的那一列（`DesktopDetail.tsx`）
+  // ——不用像手機版 `<details>` 先展開才看得到，預設就已經顯示冠軍
+  // 候選（這裡整個劇本只有一個 family、一組候選，冠軍＝排名表唯一
+  // 一列）。Dev server（React StrictMode）會把初次掛載的 effect 重複
+  // 觸發一次——`/api/settings` 等頁面載入本身就會發的請求可能還沒真的
+  // 落定，等網路真的靜下來才歸零計數器（同 smoke.spec.ts 同一條測試的
+  // 既有教訓），避免「切換排名列選取」這個動作本身有沒有多發請求的
+  // 量測被頁面載入尾聲的既有請求汙染成偽陽性。
+  await expect(detail.locator(".heatmap-panel table.heatmap-table")).toBeVisible();
   await page.waitForLoadState("networkidle");
   requestUrls.length = 0;
-  await detail.locator(".candidate summary").first().click();
-  await expect(detail.locator(".candidate").first().locator("table")).toBeVisible();
+  await detail.locator(".detail-rank-row").first().click();
   expect(requestUrls).toEqual([]);
 
   await expect(detail.getByText("IV 相對位置")).toHaveCount(0);
@@ -2063,7 +2403,7 @@ test("T17（#234）：桌面版建立持平劇本（目標價＝現價）全程�
   // 那張新卡片才會在右側工作區打開詳細頁。
   await page.getByRole("link", { name: /XYZ/ }).click();
 
-  const detail = page.locator(".detail-pane");
+  const detail = page.locator(".detail-page");
   await expect(detail.getByText(/劇本主圖/)).toBeVisible();
   await expect(detail.getByText("買 100 / 賣 2×106 / 買 115").first())
     .toBeVisible();
@@ -2091,32 +2431,39 @@ test("T18（#235）紅線 12：桌面版展開一般 Vertical Spread 候選（�
   await routeTwoScenarios(page);
   await page.goto("/#/s/s1");
 
-  const detail = page.locator(".detail-pane");
+  const detail = page.locator(".detail-page");
   await expect(detail.getByText("劇本主圖")).toBeVisible();
-  // Dev server（React StrictMode）會把初次掛載的 effect 重複觸發一次
+  // OG-06（#321）：桌面版把「每一列各自展開自己的 Heatmap」換成中央
+  // 常駐一張 Heatmap、跟著排名表目前選取的那一列（`DesktopDetail.tsx`）
+  // ——預設就已經顯示，不用先「展開」；這裡改成驗證「切換排名表選取」
+  // 這個新的桌面互動本身零額外請求，語意與手機版的「展開零請求」等價
+  // （都是操作已經在記憶體裡的候選池，不重新抓取任何資料）。Dev
+  // server（React StrictMode）會把初次掛載的 effect 重複觸發一次
   // ——`/api/settings` 等頁面載入本身就會發的請求可能還沒真的落定。
-  // 等網路真的靜下來才歸零計數器，這樣「展開」這個動作本身有沒有多發
-  // 請求的量測才不會被頁面載入尾聲的既有請求汙染成偽陽性（同一份
-  // 教訓，T16／#232 的桌面版 Butterfly 測試已示範過一次）。
+  // 等網路真的靜下來才歸零計數器，這樣量測才不會被頁面載入尾聲的既有
+  // 請求汙染成偽陽性（同一份教訓，T16／#232 的桌面版 Butterfly 測試
+  // 已示範過一次）。
+  await expect(detail.locator(".heatmap-panel table.heatmap-table")).toBeVisible();
   await page.waitForLoadState("networkidle");
 
   requestUrls.length = 0;
-  await detail.locator(".candidate summary").first().click();
-  await expect(detail.locator(".candidate").first().locator("table")).toBeVisible();
+  await detail.locator(".detail-rank-row").last().click();
+  await expect(detail.locator(".heatmap-panel table.heatmap-table")).toBeVisible();
   expect(requestUrls).toEqual([]);
 });
 
 /* ---------- PB-12（#302，Anonymous Public Beta）：首頁 Beta 說明＋
    全站頁尾＋隱私頁，桌面 viewport ---------- */
 
-test("桌面版：首頁 Beta 說明常駐在 library-pane，頁尾在整個 workspace 之下，" +
-     "隱私頁可達（與手機版 smoke.spec.ts 同一條首次進站流程）",
+test("桌面版：首頁 Beta 說明常駐在劇本庫頁面，頁尾在整個 desktop-shell" +
+     "之下，隱私頁可達（與手機版 smoke.spec.ts 同一條首次進站流程，" +
+     "OG-02／#318 起側欄退場，改為單一全寬頁面）",
    async ({ page }) => {
   await page.route("**/api/scenarios", (route) =>
     route.fulfill({ json: [] }));
   await page.goto("/");
 
-  const notice = page.locator(".library-pane .beta-notice");
+  const notice = page.locator(".beta-notice");
   await expect(notice).toBeVisible();
   await expect(notice).toContainText("Beta");
   await expect(notice).toContainText("cookie");
@@ -2137,4 +2484,58 @@ test("桌面版：首頁 Beta 說明常駐在 library-pane，頁尾在整個 wor
 
   await page.getByRole("link", { name: "設定頁" }).click();
   await expect(page).toHaveURL(/#\/settings$/);
+});
+
+/* ---------- OG-12（#328）：1100px 斷點與中間寬度 ---------- */
+
+test("OG-12（#328）：1100px 斷點兩側切換乾淨——寬度未達 1100px 是手機" +
+     "底部導覽，達到 1100px 是桌面頂欄，兩者不會同時出現", async ({ page }) => {
+  await routeTwoScenarios(page);
+  // 斷點以下一格：跟 `useIsDesktop()`／`styles.css` 共用的
+  // `(min-width: 1100px)` 媒體查詢字面一致，1099px 必須落在「未達」
+  // 那一側。
+  await page.setViewportSize({ width: 1099, height: 800 });
+  await page.goto("/");
+
+  await expect(page.locator(".mtabs")).toBeVisible();
+  await expect(page.locator(".topbar")).toHaveCount(0);
+
+  // `useIsDesktop()` 用 `matchMedia` 的 `change` 事件即時反應，不必
+  // 重新整理頁面——這裡直接動態調整視窗，驗證的是同一份 React state
+  // 真的會跟著斷點即時切換，不是只有整頁重新載入才生效。
+  await page.setViewportSize({ width: 1100, height: 800 });
+  await expect(page.locator(".topbar")).toBeVisible();
+  await expect(page.locator(".mtabs")).toHaveCount(0);
+
+  // 切回手機寬度，兩種 chrome 仍然乾淨互斥（不是單向轉換）。
+  await page.setViewportSize({ width: 1099, height: 800 });
+  await expect(page.locator(".mtabs")).toBeVisible();
+  await expect(page.locator(".topbar")).toHaveCount(0);
+});
+
+test("OG-12（#328）：1100–1280px 中間寬度——劇本庫表格與詳細頁三欄外殼" +
+     "都不溢出，整頁不橫向捲動", async ({ page }) => {
+  await routeTwoScenarios(page, sampleLongCall);
+  // 斷點剛過、比既有 Desktop 專案固定的 1280px 更窄的中間寬度——三欄
+  // 外殼 `grid-template-columns: minmax(260px,.9fr) minmax(420px,1.6fr)
+  // minmax(220px,.7fr)` 三個下限加兩道 12px gap 共 924px，在 1150px
+  // 這個寬度下仍應該放得下，不必等到 1280px 那個既有 Desktop 專案
+  // 固定寬度才驗得到。
+  await page.setViewportSize({ width: 1150, height: 800 });
+
+  await page.goto("/");
+  await expect(page.locator(".topbar")).toBeVisible();
+  const libraryOverflowX = await page.evaluate(
+    () => document.documentElement.scrollWidth > window.innerWidth);
+  expect(libraryOverflowX).toBe(false);
+  await expect(page.locator(".lib-thead")).toBeVisible();
+
+  await page.goto("/#/s/s1");
+  const shell = page.locator(".detail-shell");
+  await expect(shell.locator(".detail-col-left")).toBeVisible();
+  await expect(shell.locator(".detail-col-center")).toBeVisible();
+  await expect(shell.locator(".detail-col-right")).toBeVisible();
+  const detailOverflowX = await page.evaluate(
+    () => document.documentElement.scrollWidth > window.innerWidth);
+  expect(detailOverflowX).toBe(false);
 });

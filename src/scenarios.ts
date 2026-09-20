@@ -13,7 +13,7 @@ import {
   type RepresentativeCandidate,
   type ScenarioSummary,
 } from "./api";
-import { strategyLabel } from "./detail";
+import { directionLabel, strategyLabel } from "./detail";
 import { FAMILY_LABELS, familyOf } from "./family";
 
 /**
@@ -90,6 +90,124 @@ export function signalLabel(signal: Signal): string {
 /** 收益率；沒跑過就是「—」，不是 0%。 */
 export function formatReturn(value: number | null): string {
   return value === null ? "—" : `${(value * 100).toFixed(1)}%`;
+}
+
+/**
+ * 劇本方向衍生標籤（OG-09／#319）：純顯示用途，鏡射後端
+ * `derive_direction()`（`option_chaser/models.py`，T08／#225 既有
+ * 語意——目標價相對現價、無容忍帶）同一條規則，不落盤、不回寫、不
+ * 參與任何排序或選取邏輯，只是把「這個劇本現在算看漲還是看跌」畫在
+ * 清單卡片上。`spot`（`ScenarioSummary.spot`）為 `null`（劇本尚未
+ * 成功分析過）時方向無從判斷，回傳 `null`——呼叫端不畫任何標籤，跟
+ * 卡片其餘欄位「尚未分析顯示『—』或整行不畫」的既有慣例一致。
+ */
+export type DirectionTag = "bullish" | "bearish" | "flat";
+
+export function deriveDirectionTag(
+  spot: number | null, target: number,
+): DirectionTag | null {
+  if (spot === null) return null;
+  if (target > spot) return "bullish";
+  if (target < spot) return "bearish";
+  return "flat";
+}
+
+/**
+ * 目標價所需漲跌幅（OG-03／#320 跟進，OG-ALL-001 核准）：純呈現用的
+ * 比例計算 `(target - spot) / spot`——跟 `deriveDirectionTag` 同一種
+ * 性質，清單列本來就顯示 `spot`／`target_price` 這兩個數字，這裡只是
+ * 把兩者換算成一個百分比給人看，不產生新的財務結論、不影響
+ * valuation／ranking／候選挑選（那些仍然完全由引擎決定，這裡不碰）。
+ * 與 `ScenarioDetail.tsx` 的 `view.meta.target_move`（引擎算好、放進
+ * 分析結果 view 的欄位，只存在於 detail view）刻意分開來源：清單列
+ * 用的 `ScenarioSummary` 從未帶過 `target_move`，這裡不冒充那個欄位、
+ * 只是拿兩個已知顯示數字做最單純的百分比呈現運算。`spot` 為 `null`
+ * （尚未分析）或 `0`（理論上不會發生，防呆用，避免除以零）時無法算，
+ * 回傳 `null`，呼叫端不畫這段小字——與 `deriveDirectionTag` 遇到同樣
+ * 情況時的既有慣例一致。
+ */
+export function requiredMovePct(
+  spot: number | null, target: number,
+): number | null {
+  if (spot === null || spot === 0) return null;
+  return (target - spot) / spot;
+}
+
+/** 方向標籤的中文字＋對應既有 `.tag` 色彩修飾類（OG-01 既有
+ *  primitives：`.tag.up`／`.tag.down`／`.tag.flat`，跟詳細頁摘要卡
+ *  同一套視覺語言）。字彙本身直接重用 `./detail.ts::directionLabel()`
+ *  （後端 `DIRECTION_LABELS` 同一份、有漂移測試把關的既有字彙）——
+ *  這裡衍生的是「算不算看漲」這件事本身（無容忍帶純比較，
+ *  `deriveDirectionTag` 見上），不是「看漲要顯示成什麼字」，兩者不該
+ *  各自維護一份中文字串（code review／OG-09 跟進，避免第二份
+ *  「看漲／看跌／持平」拷貝跟原本那份字彙漂移）。 */
+export function directionTagLabel(tag: DirectionTag): string {
+  return directionLabel(tag);
+}
+
+export function directionTagClass(tag: DirectionTag): string {
+  return tag === "bullish" ? "up" : tag === "bearish" ? "down" : "flat";
+}
+
+/**
+ * 狀態四分類（OG-03／#320，桌面劇本庫表格「狀態」篩選 chip 用）：
+ * 與劇本級燈號（`scenarioSignal`）同一組輸入、但拆得更細——燈號只分
+ * 紅／黃／綠三色，這裡把綠燈再依「舊資料」拆成正常／舊資料兩種，因為
+ * 篩選列上使用者想單獨挑出「有跑過、但很久沒刷新」這種狀態，跟純粹
+ * 「剛跑完、一切正常」是不同的篩選意圖。四類互斥、涵蓋全部劇本：
+ * 優先序沿用既有「紅燈優先於黃燈」（#68）＋失敗優先於單純舊資料。
+ */
+export type ScenarioStatusCategory = "expired" | "failed" | "stale" | "normal";
+
+export function scenarioStatusCategory(
+  row: { expired: boolean; latest_analyzed_at: string | null },
+  failure: RefreshFailure | undefined,
+  now: Date,
+): ScenarioStatusCategory {
+  if (row.expired) return "expired";
+  if (failure) return "failed";
+  if (isStale(row.latest_analyzed_at, now)) return "stale";
+  return "normal";
+}
+
+/** 篩選 chip 的可能值——`"all"` 是兩組篩選各自的預設值（不篩）。 */
+export type DirectionFilter = "all" | DirectionTag;
+export type StatusFilter = "all" | ScenarioStatusCategory;
+
+/**
+ * 純前端篩選（OG-03／#320 AC：「篩選 chip 純前端過濾、不發請求」）——
+ * 兩組篩選以 AND 合併，各自預設 `"all"` 時不參與過濾。不改變傳入陣列
+ * 的順序，呼叫端仍需自行套用 `sortScenarios()`。
+ */
+export function filterScenarios(
+  rows: ScenarioSummary[],
+  failures: Record<string, RefreshFailure>,
+  now: Date,
+  direction: DirectionFilter,
+  status: StatusFilter,
+): ScenarioSummary[] {
+  return rows.filter((r) => {
+    if (direction !== "all" &&
+        deriveDirectionTag(r.spot, r.target_price) !== direction) {
+      return false;
+    }
+    if (status !== "all" &&
+        scenarioStatusCategory(r, failures[r.id], now) !== status) {
+      return false;
+    }
+    return true;
+  });
+}
+
+/**
+ * 劇本報酬旁的 inline 比例條寬度（OG-03／#320，artifact 桌面劇本庫表格
+ * 「劇本報酬」欄）——純視覺標示、不是新的財務指標，只是把已經算好的
+ * `best_return` 數值映成 0–100 的長度，讓報酬率在表格裡多一個一眼掃過
+ * 的視覺線索（沿用既有 `.bar` primitive，OG-01）。100% 上限單純是視覺
+ * 裁切，不是任何門檻或警示。
+ */
+export function returnBarWidthPct(value: number): number {
+  return Math.min(100, Math.abs(value) * 100);
 }
 
 /**

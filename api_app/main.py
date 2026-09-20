@@ -190,6 +190,13 @@ ANONYMOUS_GRACE_PERIOD_DAYS = 7
 # 不強行在一次執行內塞爆、撞上 `vercel.json` 的 `maxDuration: 60`。
 ANONYMOUS_CLEANUP_BATCH_SIZE = 200
 
+# OG-04（#323）：劇本清單「淨成本走勢」sparkline 欄的最近幾筆——票面
+# 「N 有上限、由後端截尾」交由本票決定，20 筆貼近清單頁一顆小格子的
+# 可視解析度（前端 SVG 寬度有限，塞更多點肉眼也分不出差異），比詳細頁
+# 底部完整走勢圖（不截尾、可切日／週／月）刻意小得多——那是不同用途、
+# 不同版位的兩件事，sparkline 只是「大致方向」的縮圖。
+_COST_SPARKLINE_POINTS = 20
+
 
 def _env_int(name: str, default: int) -> int:
     """比照 `cron_secret`／`ops_secret` 既有「呼叫時才讀環境變數」的
@@ -611,7 +618,8 @@ def _row_json(sc: Scenario, today: date, *, analyzed_at: str | None,
               best_return: float | None,
               representative_candidate: dict | None,
               spot: float | None = None,
-              family_eligibility: dict | None = None) -> dict:
+              family_eligibility: dict | None = None,
+              cost_sparkline: list[list] | None = None) -> dict:
     """劇本在清單上的那一列。建立、列出、刷新三處共用同一個組裝函式——
     形狀只要差一個欄位，客戶端就得為同一個東西維護兩種型別。
 
@@ -628,11 +636,23 @@ def _row_json(sc: Scenario, today: date, *, analyzed_at: str | None,
     的輸出，鍵是 family 代碼）——編輯表單需要它才能顯示「這個 family
     現在為什麼不可選」，不該為此把整份 view 撈回來，與
     `representative_candidate`／`best_return` 同一個模式。尚未分析過
-    時為 `None`（沒有可顯示的 verdict，不是假造一份「全部可選」）。"""
+    時為 `None`（沒有可顯示的 verdict，不是假造一份「全部可選」）。
+
+    `cost_sparkline`（OG-04／#323）：**只有 `list_scenarios()` 會填這個
+    欄位**——`get_scenario()`（detail）與刷新端點不需要它，也不批次
+    查（一次只處理一個劇本，批次查詢的效益不存在），沿用預設 `None`
+    即可，不是每個呼叫端都得自己記得傳一次「不需要」。`[[analyzed_at,
+    cost], ...]`（JSON 不支援 tuple，序列化成兩元素陣列）依 `analyzed_at`
+    升冪排列，最多 `_COST_SPARKLINE_POINTS` 筆；沒有任何 narrow history
+    可查時為 `None`，前端顯示「—」，不是空陣列（空陣列前端還得多判斷
+    一次「查過但真的沒有」跟「根本沒查」的差異，這裡在序列化邊界就
+    決定好只用 `None` 一種「沒東西可畫」的訊號）。"""
     return {**_scenario_json(sc), **_timing_json(sc, today),
             "latest_analyzed_at": analyzed_at, "best_return": best_return,
             "representative_candidate": representative_candidate,
-            "spot": spot, "family_eligibility": family_eligibility}
+            "spot": spot, "family_eligibility": family_eligibility,
+            "cost_sparkline": ([[at, cost] for at, cost in cost_sparkline]
+                               if cost_sparkline else None)}
 
 
 def _summary_of(latest: ResultRecord | ResultSummary | None) -> dict:
@@ -649,6 +669,43 @@ def _summary_of(latest: ResultRecord | ResultSummary | None) -> dict:
             "spot": latest.spot if latest else None,
             "family_eligibility":
                 latest.family_eligibility if latest else None}
+
+
+def _cost_sparkline_pairs(scenarios, summaries: dict) -> list[tuple[str, str]]:
+    """OG-04（#323）：從一批劇本的 `ResultSummary` 收集「有冠軍候選、
+    且冠軍候選有 `candidate_key`」的 `(scenario_id, candidate_key)`
+    配對，交給 `Storage.cost_sparklines()` 一次批次查完（供
+    `list_scenarios()`／`superuser_list_owner_scenarios()` 共用，避免
+    兩處各自重複同一段過濾邏輯）。舊資料（本票落地前最後一次成功分析）
+    的 `representative_candidate` 沒有 `candidate_key`——`.get()` 誠實
+    跳過，不是假造一把不存在的 key 去查 narrow history，這種劇本要等
+    下一次刷新才會有 sparkline。"""
+    return [
+        (s.id, key)
+        for s in scenarios
+        if (summary := summaries.get(s.id)) is not None
+        and (cand := summary.representative_candidate) is not None
+        and (key := cand.get("candidate_key")) is not None
+    ]
+
+
+def _cost_sparkline_for(db, owner: str, scenario_id: str,
+                        representative_candidate: dict | None) -> list[tuple] | None:
+    """OG-04（#323）：單一劇本版本的 `_cost_sparkline_pairs()`——編輯／
+    單一劇本刷新（含過期／節流兩條短路）都要回跟清單同一個形狀（`_row_
+    json()` 檔頭「形狀只要差一個欄位，客戶端就得為同一個東西維護兩種
+    型別」既有紀律的直接延伸；`test_api_refresh.py::test_refresh_row_
+    has_the_same_shape_as_a_list_row` 既有測試鎖住這個不變量）。單一
+    配對呼叫 `cost_sparklines()`，不是為了效率另開一條路徑——這幾個
+    端點本來就只處理一個劇本，批次查詢的效益在這裡不存在，重用同一個
+    Storage 方法只是不新增第二套查詢邏輯。"""
+    if representative_candidate is None:
+        return None
+    key = representative_candidate.get("candidate_key")
+    if key is None:
+        return None
+    return db.cost_sparklines([(scenario_id, key)], owner=owner,
+                              limit=_COST_SPARKLINE_POINTS).get(scenario_id)
 
 
 def _event_json(event: dict) -> dict:
@@ -1691,6 +1748,10 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         的可識別內容或第三方 token 屬 PB-10 獨立端點的職責，兩者不
         混在同一個回應裡（票面 §10 安全考量）。
 
+        **OG-05（#324）純加法**：`vendor_fuse`（今天全站 chain fetch
+        用量對照 `GLOBAL_VENDOR_DAILY_BUDGET`，`budget<=0` 時為
+        `None`）——供劇本庫 stats strip 的 Super Admin-only 方塊使用。
+
         **Super Admin-only**（AC-6，PB-09／#298 起由軸二守門，
         AUTH-03／#310 起改用三層角色的 `require_role(minimum=
         SUPERADMIN)`，取代已退役的 `ADMIN_SECRET`）：fail-closed，
@@ -1718,6 +1779,20 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
                "scenarios": {"total": snapshot.scenarios_total,
                             "average_per_owner":
                                 snapshot.scenarios_average_per_owner},
+               # OG-05（#324）純加法：劇本庫 stats strip 的 Super
+               # Admin-only「全站 vendor 每日預算用量」方塊要對照
+               # `GLOBAL_VENDOR_DAILY_BUDGET`，但這個常數本身過去從沒
+               # 序列化到任何回應——這裡補上，讀的是
+               # `vendor_fuse.today_chain_fetch_count()`，跟真正決定
+               # 要不要觸發 `GlobalVendorFuseTripped` 的**同一個**函式
+               # （見上方 `_fetch_chain()` 呼叫 `vendor_fuse.tripped()`
+               # 那段），不是自己另外對 `by_metric["chain_fetch_count"]`
+               # 的 30 天視窗桶重新加總算出可能兜不起來的第二個「今天」
+               # 定義。`budget <= 0`＝停用，誠實回 `None`。
+               "vendor_fuse": {
+                   "used": vendor_fuse.today_chain_fetch_count(_db(), ny_today()),
+                   "budget": (_effective_global_vendor_daily_budget
+                             if _effective_global_vendor_daily_budget > 0 else None)},
                "alerts": [{"key": a.key, "triggered": a.triggered,
                           "message": a.message} for a in snapshot.alerts]}
 
@@ -1873,9 +1948,17 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
                                resolve_session=_db().resolve_role_session)
         summaries = _db().latest_summaries(owner=owner_id)
         today = ny_today()
-        return [_row_json(sc, today, **_summary_of(summaries.get(sc.id)))
-                for sc in _db().list_scenarios(
-                    owner=owner_id, include_archived=include_archived)]
+        scenarios = _db().list_scenarios(
+            owner=owner_id, include_archived=include_archived)
+        # OG-04（#323）：跟 `list_scenarios()` 同一個形狀（`_row_json()`
+        # 檔頭紀律），這裡是 Super Admin 跨 owner 版本，同樣批次查詢。
+        pairs = _cost_sparkline_pairs(scenarios, summaries)
+        sparklines = (_db().cost_sparklines(pairs, owner=owner_id,
+                                            limit=_COST_SPARKLINE_POINTS)
+                     if pairs else {})
+        return [_row_json(sc, today, **_summary_of(summaries.get(sc.id)),
+                          cost_sparkline=sparklines.get(sc.id))
+                for sc in scenarios]
 
     @app.get("/api/superuser/owners/{owner_id}/scenarios/{scenario_id}")
     def superuser_get_owner_scenario(
@@ -2012,6 +2095,61 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         路徑拿到一個全新身份，不需要另外寫一套「立即重新簽發」邏輯。"""
         _db().delete_owner(identity_resolver())
 
+    # ---------- OG-05（#324）：唯讀使用量摘要 ----------
+
+    @app.get("/api/me/usage-summary")
+    def my_usage_summary(request: Request) -> dict:
+        """劇本庫頁首 stats strip 要的「我自己」用量摘要——數字全部由
+        後端一次給、前端零推算（票面明文）。
+
+        `owner_id` 一律來自 `identity_resolver()`，跟上面刪除自己資料
+        那個既有端點（`/api/me`）同一條安全邊界（不接受呼叫端傳入的
+        owner_id）；這是一般
+        owner-scoped 端點（不在 `_OWNER_EXEMPT_PREFIXES`／`_OWNER_
+        EXEMPT_EXACT` 清單裡），缺 cookie 時走既有 PB-02 lazy-creation
+        規則，不需要特殊處理。**純讀取，不呼叫 `_touch_activity()`**——
+        查看自己的用量不算真人操作，不得推進 `last_activity_at`（票面
+        AC 明文、測試鎖住）；`Storage.get_owner()` 本身也是純讀取
+        （見其 docstring），這裡沒有任何寫入路徑。
+
+        `active_scenarios`：跟 `create_scenario()` 額度檢查同一個算法
+        （`len(_db().list_scenarios(owner=owner))`，預設排除已封存）
+        ——不是另外發明一個「什麼算 active」的定義。
+
+        `max_active_scenarios`／`refresh_min_interval_minutes`：直接讀
+        `_effective_max_active_scenarios`／`_effective_refresh_min_
+        interval_minutes` 這兩個既有 closure 變數——跟 `create_
+        scenario()`／`_refresh_and_save()` 實際用來擋人的**同一份**
+        數字（票面 AC：「端點對 quota／throttle 設定值的來源與既有
+        create／refresh 閘門是同一份」），不是自己重讀一次環境變數
+        算出可能兜不起來的第二份答案。`<=0`＝停用，誠實回 `None`
+        （不是一個沒有意義的 0 或負數）。
+
+        `quota_exempt`／`throttle_exempt`：AUTH-05（#312）豁免規則
+        `role >= Role.SUPERUSER` 目前對兩者剛好是同一個門檻，但**故意
+        寫成兩個獨立判斷式**，不合併成一個共用的 `exempt` 旗標或工具
+        函式——沿用 `create_scenario()`／`_refresh_and_save()` 兩處
+        既有豁免檢查本身「不與任何其他角色豁免共用判斷式或工具函式」
+        的既有紀律（`create_scenario()` 附近的既有註解原話），這裡是
+        兩個檢查各自的**回報**，不是把兩個獨立的判斷點事後合併成一個。
+        """
+        owner = identity_resolver()
+        role = superuser.resolve_role(request,
+                                      resolve_session=_db().resolve_role_session)
+        owner_row = _db().get_owner(owner)
+        return {
+            "active_scenarios": len(_db().list_scenarios(owner=owner)),
+            "max_active_scenarios": (
+                _effective_max_active_scenarios
+                if _effective_max_active_scenarios > 0 else None),
+            "quota_exempt": role >= superuser.Role.SUPERUSER,
+            "refresh_min_interval_minutes": (
+                _effective_refresh_min_interval_minutes
+                if _effective_refresh_min_interval_minutes > 0 else None),
+            "throttle_exempt": role >= superuser.Role.SUPERUSER,
+            "last_activity_at": owner_row.last_activity_at if owner_row else None,
+        }
+
     # ---------- 一次性分析（V1 遺留，前端改走劇本端點後可移除） ----------
 
     @app.post("/api/analyze")
@@ -2140,7 +2278,11 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
 
         latest = (None if thesis_changed
                  else _db().latest_result(scenario_id, owner=owner))
-        return _row_json(updated, ny_today(), **_summary_of(latest))
+        return _row_json(
+            updated, ny_today(), **_summary_of(latest),
+            cost_sparkline=_cost_sparkline_for(
+                _db(), owner, scenario_id,
+                latest.representative_candidate if latest else None))
 
     @app.get("/api/scenarios")
     def list_scenarios(include_archived: bool = False) -> list[dict]:
@@ -2150,9 +2292,17 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         owner = identity_resolver()
         summaries = _db().latest_summaries(owner=owner)
         today = ny_today()          # 整份清單共用同一個「今天」
+        scenarios = _db().list_scenarios(owner=owner, include_archived=include_archived)
+        # OG-04（#323）：批次撈「淨成本走勢」sparkline——一次查完全部
+        # 劇本，不對每個劇本各自查一次（AC「不得退化成 N+1」）。
+        pairs = _cost_sparkline_pairs(scenarios, summaries)
+        sparklines = (_db().cost_sparklines(pairs, owner=owner,
+                                            limit=_COST_SPARKLINE_POINTS)
+                     if pairs else {})
         rows = []
-        for s in _db().list_scenarios(owner=owner, include_archived=include_archived):
-            rows.append(_row_json(s, today, **_summary_of(summaries.get(s.id))))
+        for s in scenarios:
+            rows.append(_row_json(s, today, **_summary_of(summaries.get(s.id)),
+                                  cost_sparkline=sparklines.get(s.id)))
         return rows
 
     @app.get("/api/scenarios/{scenario_id}")
@@ -2277,13 +2427,24 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         行為，不會意外把新增的呼叫端也豁免掉。
         """
         if month_is_over(TargetMonth.from_key(sc.target_month), today):
-            latest = _db().latest_result(sc.id, owner=identity_resolver())
-            return _row_json(sc, today, **_summary_of(latest))
-        latest_for_throttle = _db().latest_result(sc.id, owner=identity_resolver())
+            owner = identity_resolver()
+            latest = _db().latest_result(sc.id, owner=owner)
+            return _row_json(
+                sc, today, **_summary_of(latest),
+                cost_sparkline=_cost_sparkline_for(
+                    _db(), owner, sc.id,
+                    latest.representative_candidate if latest else None))
+        owner = identity_resolver()
+        latest_for_throttle = _db().latest_result(sc.id, owner=owner)
         if role < superuser.Role.SUPERUSER and _refresh_throttled(
                 latest_for_throttle.analyzed_at if latest_for_throttle else None,
                 _effective_refresh_min_interval_minutes):
-            return _row_json(sc, today, **_summary_of(latest_for_throttle))
+            return _row_json(
+                sc, today, **_summary_of(latest_for_throttle),
+                cost_sparkline=_cost_sparkline_for(
+                    _db(), owner, sc.id,
+                    latest_for_throttle.representative_candidate
+                    if latest_for_throttle else None))
         # T06（#221）：`sc.strategies` 存的是 family 代碼（新資料）或
         # legacy subtype 字串（舊資料，無遷移）——這是**唯一**的展開點，
         # 把它換算成 `AnalysisRequest.strategies` 要的具體 subtype 清單。
@@ -2380,10 +2541,18 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
                            owner_id=owner_id)
         _record_metric("refresh_duration_ms", ny_today(),
                        amount=(time.monotonic() - _refresh_started) * 1000)
-        return _row_json(sc, today, analyzed_at=analyzed_at,
-                         best_return=best_return,
-                         representative_candidate=representative_candidate,
-                         spot=store.spot(view), family_eligibility=family_elig)
+        return _row_json(
+            sc, today, analyzed_at=analyzed_at,
+            best_return=best_return,
+            representative_candidate=representative_candidate,
+            spot=store.spot(view), family_eligibility=family_elig,
+            # OG-04（#323）：這次剛寫入的 narrow history（上面
+            # `save_narrow_history()`）就在同一個請求裡讀得到——跟
+            # 既有「刷新完直接把回傳值換掉清單裡那一列」的既有慣例
+            # 一致，不必等下一次 `GET /api/scenarios` 才看得到新
+            # sparkline 多的這一點。
+            cost_sparkline=_cost_sparkline_for(
+                _db(), owner_id, sc.id, representative_candidate))
 
     @app.post("/api/scenarios/{scenario_id}/refresh")
     def refresh_scenario(scenario_id: str, request: Request,

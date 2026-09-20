@@ -155,18 +155,42 @@ const AUTH_STATUS_KEY = "auth-status";
  *  `getSettingsCached()` 同一種模式：登入表單、`IvHistory`、`Settings`
  *  頁的管理面板各自 mount 時呼叫，只有第一個真的發請求。
  *
- *  不需要跨已掛載元件的即時推播同步——`Settings`（登入表單所在）與
- *  掛著 `IvHistory` 的 `ScenarioDetail` 在這個 app 的路由結構下互斥
- *  （`App.tsx` 手機／桌面兩種版面皆是，切設定頁必定先卸載詳細頁），
- *  不會同時掛載在畫面上，「下一次 mount 才拿到新角色」因此已經足夠。 */
+ *  **OG-02（#318）起這裡多了一個訂閱機制**——這段檔頭原本（AUTH-06／
+ *  #313 當時）的裁示是「不需要跨已掛載元件的即時推播同步，`Settings`
+ *  與掛著 `IvHistory` 的 `ScenarioDetail` 路由互斥、不會同時掛載，
+ *  下一次 mount 才拿到新角色已經足夠」——這個假設在 OG-02 引入**常駐**
+ *  桌面頂欄／手機頂欄（`TopBar.tsx`／`MobileTopBar.tsx`，透過
+ *  `useAuthRole()`）之後不再成立：這兩個 chrome 元件跨越所有頁面
+ *  （含 Settings 自己）常駐不卸載，在 Settings 頁登入／登出時它們並不
+ *  會重新 mount，若只更新快取值、不通知已掛載的讀者，角色徽章會停在
+ *  登入前的舊值直到使用者手動整頁重新整理（`/code-review` 收到的外部
+ *  審查回饋抓到這個既有假設被新增的常駐 chrome 打破）。`subscribe
+ *  AuthRole()` 因此補上一個最小的訂閱者清單，只服務這一個 key——不是
+ *  把整個快取模組換成通用 pub-sub，其餘既有 key（settings／iv-history／
+ *  scenario）沒有這個跨掛載即時同步的需求，維持原樣。 */
 export function getAuthStatusCached(): CachedFetch<AuthStatus> {
   return cachedFetch(AUTH_STATUS_KEY, (signal) => getAuthStatus(signal));
 }
 
+const authStatusListeners = new Set<(status: AuthStatus) => void>();
+
+/** `useAuthRole()`（`./useAuthRole`）用這個訂閱「角色改變了」——回傳的
+ *  取消訂閱函式在呼叫端自己的 `useEffect` 清理時呼叫，避免卸載後的
+ *  元件還被通知。 */
+export function subscribeAuthStatus(listener: (status: AuthStatus) => void): () => void {
+  authStatusListeners.add(listener);
+  return () => {
+    authStatusListeners.delete(listener);
+  };
+}
+
 /** 登入／登出端點都會回傳最新的 `AuthStatus`——直接拿它更新快取，
- *  同一次瀏覽器分頁內下一個讀者不必重新打一次 `GET /api/auth/status`。 */
+ *  同一次瀏覽器分頁內下一個讀者不必重新打一次 `GET /api/auth/status`；
+ *  同時廣播給所有已訂閱的常駐元件（見上方檔頭），讓它們不必等下一次
+ *  重新 mount 才反映新角色。 */
 export function setAuthStatusCache(status: AuthStatus): void {
   setCached(AUTH_STATUS_KEY, status);
+  authStatusListeners.forEach((listener) => listener(status));
 }
 
 const ivHistoryKey = (scenarioId: string, candidateKey: string, analyzedAt: string | null) =>

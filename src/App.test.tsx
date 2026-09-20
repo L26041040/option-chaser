@@ -152,7 +152,11 @@ describe("劇本庫（V3／#51）", () => {
 
     expect(await screen.findByText("TLT")).toBeInTheDocument();
     expect(screen.getByText("150.0%")).toBeInTheDocument();
-    expect(screen.getByText("劇本庫")).toBeInTheDocument();
+    // UI-IMPL-002（#092）：`BottomNav`／`TopBar` 新增的導覽也用「劇本庫」
+    // 這個字，純文字查詢因此不再唯一——改鎖定既有頁面標題本身
+    // （`<h1 className="toolbar-title">`），跟下面既有的
+    // `findByRole("heading", ...)` 用法一致。
+    expect(screen.getByRole("heading", { name: "劇本庫" })).toBeInTheDocument();
   });
 
   it("清單載不動時說明原因，不是空白的「還沒有劇本」", async () => {
@@ -291,13 +295,19 @@ describe("垃圾桶（TR6／#91）", () => {
     render(<App />);
     await screen.findByText("TLT");
 
-    await userEvent.click(await screen.findByRole("button", { name: "垃圾桶" }));
+    // OG-09（#319）：手機首頁的垃圾桶入口從 `Toolbar` 的 pill 按鈕
+    // 改成 `BottomNav` 既有的 `<a>` 連結（`MobileTopBar` 不再重複一份）
+    // ——導覽能力沒變，只是換了元素型別，查詢跟著改。
+    await userEvent.click(await screen.findByRole("link", { name: "垃圾桶" }));
 
     expect(await screen.findByRole("heading", { name: "垃圾桶" }))
       .toBeInTheDocument();
 
     await userEvent.click(screen.getByText("‹ 劇本庫"));
-    expect(await screen.findByText("劇本庫")).toBeInTheDocument();
+    // UI-IMPL-002（#092）：同上，改鎖頁面標題本身，不受 `BottomNav` 也用
+    // 「劇本庫」這個字影響。
+    expect(await screen.findByRole("heading", { name: "劇本庫" }))
+      .toBeInTheDocument();
   });
 
   it("垃圾桶還原後回到劇本庫，那個劇本重新出現在主清單（TR4／#92）", async () => {
@@ -321,7 +331,7 @@ describe("垃圾桶（TR6／#91）", () => {
     await screen.findByText("TLT");
 
     await userEvent.click(
-      await screen.findByRole("button", { name: "垃圾桶" }));
+      await screen.findByRole("link", { name: "垃圾桶" }));
     await screen.findByText("SPY");
 
     await userEvent.click(
@@ -1442,7 +1452,7 @@ describe("清單 → 詳細頁（V5／#53）", () => {
     render(<App />);
 
     // 詳細頁在畫面上（返回入口＋該劇本的標的），建立表單不在
-    expect(await screen.findByRole("link", { name: /劇本庫/ })).toBeInTheDocument();
+    expect(await screen.findByRole("link", { name: "‹ 劇本庫" })).toBeInTheDocument();
     expect(screen.queryByLabelText("標的代號")).not.toBeInTheDocument();
   });
 
@@ -1453,7 +1463,7 @@ describe("清單 → 詳細頁（V5／#53）", () => {
       "/api/scenarios/s1": { json: async () => ({ ...row, latest_result: null }) },
     });
     render(<App />);
-    await screen.findByRole("link", { name: /劇本庫/ });
+    await screen.findByRole("link", { name: "‹ 劇本庫" });
 
     window.location.hash = "#/";
     // jsdom 的 hashchange 是非同步派送的，等畫面自己跟上
@@ -1489,7 +1499,7 @@ describe("手機返回劇本庫還原捲動位置（MVP-v2／#77、#83）", () =
     window.dispatchEvent(new Event("scroll"));
 
     window.location.hash = "#/s/s1";
-    await screen.findByRole("link", { name: /劇本庫/ });
+    await screen.findByRole("link", { name: "‹ 劇本庫" });
 
     scrollToSpy.mockClear();
     window.location.hash = "";
@@ -1532,7 +1542,7 @@ describe("手機返回劇本庫還原捲動位置（MVP-v2／#77、#83）", () =
     expect(screen.getByLabelText("標的代號")).toBeVisible();
 
     window.location.hash = "#/s/s1";
-    await screen.findByRole("link", { name: /劇本庫/ });
+    await screen.findByRole("link", { name: "‹ 劇本庫" });
     window.location.hash = "";
     await screen.findByText("TLT");
 
@@ -1545,7 +1555,8 @@ function stubDesktopViewport() {
   vi.stubGlobal("matchMedia", (query: string) => fakeMediaQueryList(true, query));
 }
 
-describe("桌面版真正的 master/detail（#72）", () => {
+describe("桌面版頁面級導覽（OG-02／#318，取代 #72／#75 側欄常駐 " +
+         "master/detail）", () => {
   const rowA = {
     ...(sampleRow as unknown as Record<string, unknown>),
     id: "s1", symbol: "TLT", target_price: 120, target_month: "2028-05",
@@ -1563,7 +1574,8 @@ describe("桌面版真正的 master/detail（#72）", () => {
     window.location.hash = "";
   });
 
-  it("選中劇本時，劇本庫（含建立表單）與詳細頁同時可見", async () => {
+  it("點劇本進全寬詳細頁：劇本庫（含建立入口）不再同時顯示，返回連結" +
+     "可用", async () => {
     stubDesktopViewport();
     window.location.hash = "#/s/s1";
     mockRoutes({
@@ -1572,150 +1584,59 @@ describe("桌面版真正的 master/detail（#72）", () => {
     });
     render(<App />);
 
-    // 詳細頁內容（返回入口＋標的名）與劇本庫（清單卡片＋建立劇本入口）
-    // 同時在畫面上——不是手機版的整頁替換。
-    expect(await screen.findByRole("link", { name: /劇本庫/ })).toBeInTheDocument();
+    // 詳細頁內容（返回入口＋標的名）在畫面上。
+    expect(await screen.findByRole("link", { name: "‹ 劇本庫" })).toBeInTheDocument();
     expect(await screen.findByText("尚未分析")).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: /TLT 2028-05/ })).toBeInTheDocument();
-    // #75：建立劇本收攏成頂部入口，選中劇本時它也還在、按得下去——
-    // 不是被詳細頁擠掉的東西。
-    await openCreateForm();
-    expect(screen.getByLabelText("標的代號")).toBeInTheDocument();
+    // OG-02：側欄退場，劇本庫清單卡片與建立劇本膠囊鈕不再與詳細頁
+    // 同時掛載——這正是要退場的既有行為，不是回歸。
+    expect(screen.queryByRole("link", { name: /TLT 2028-05/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "＋ 建立劇本" }))
+      .toBeInTheDocument(); // 建立劇本改在常駐頂欄，任何頁面都在。
   });
 
-  it("目前選中的劇本在清單上有明確的選中狀態", async () => {
+  it("從詳細頁點『‹ 劇本庫』返回連結，回到劇本庫頁面看得到清單",
+    async () => {
     stubDesktopViewport();
     window.location.hash = "#/s/s1";
-    mockRoutes({
-      "/api/scenarios": { json: async () => [rowA, rowB] },
-      "/api/scenarios/s1": { json: async () => ({ ...rowA, latest_result: null }) },
-      // 開站的批次刷新（時機一）兩個劇本各打一次 /refresh——沒有明確
-      // 路由的話會被較短的 `/api/scenarios` 前綴接走，回傳整個陣列
-      // 冒充成單一劇本，把清單那一列的資料弄壞。
-      "/api/scenarios/s1/refresh": { json: async () => rowA },
-      "/api/scenarios/s2/refresh": { json: async () => rowB },
-    });
-    render(<App />);
-
-    const selectedLink = await screen.findByRole("link", { name: /TLT 2028-05/ });
-    const otherLink = screen.getByRole("link", { name: /SPY 2027-01/ });
-    expect(selectedLink.closest("li")).toHaveClass("selected");
-    expect(otherLink.closest("li")).not.toHaveClass("selected");
-  });
-
-  it("PC-05（#202）：另一個劇本在清單上鎖定中，不影響使用者目前正在看的" +
-     "這個劇本詳細頁", async () => {
-    stubDesktopViewport();
-    window.location.hash = "#/s/s1";
-    let releaseS2: (() => void) | null = null;
-    const spy = vi.fn(async (url: string, init?: RequestInit) => {
-      if (url === "/api/scenarios") {
-        return { ok: true, status: 200, json: async () => [rowA, rowB] };
-      }
-      if (url === "/api/scenarios/s1") {
-        return { ok: true, status: 200,
-                json: async () => ({ ...rowA, latest_result: null }) };
-      }
-      if (url === "/api/scenarios/refresh-run" && init?.method === "POST") {
-        const body = JSON.parse(String(init.body ?? "{}")) as
-          { scenario_ids?: string[] };
-        const ids = body.scenario_ids ?? [];
-        if (ids.length === 2) {
-          return { ok: true, status: 200, json: async () => ({
-            results: [{ scenario_id: "s1", ok: true, row: rowA }],
-            remaining: ["s2"],
-          }) };
-        }
-        await new Promise<void>((resolve) => { releaseS2 = resolve; });
-        return { ok: true, status: 200, json: async () => ({
-          results: [{ scenario_id: "s2", ok: true, row: rowB }],
-          remaining: [],
-        }) };
-      }
-      throw new Error(`測試沒有為 ${url} 準備回應`);
-    });
-    vi.stubGlobal("fetch", spy);
-    render(<App />);
-
-    // s1 是使用者目前正在看的劇本，自己這一輪已經落地——詳細頁正常
-    // 顯示內容，沒有任何「刷新排隊中」提示。
-    expect(await screen.findByText("尚未分析")).toBeInTheDocument();
-    expect(screen.queryByText(/本輪刷新排隊中或進行中/)).not.toBeInTheDocument();
-
-    // s2 還在更新中——清單上那一列反灰、標「更新中」，完全不影響 s1
-    // 的詳細頁內容或提示。
-    const spyLink = screen.getByRole("link", { name: /SPY 2027-01/ });
-    expect(spyLink.closest(".compact-card")).toHaveClass("locked");
-    expect(screen.getByText("更新中")).toBeInTheDocument();
-    expect(screen.getByText("尚未分析")).toBeInTheDocument();
-    expect(screen.queryByText(/本輪刷新排隊中或進行中/)).not.toBeInTheDocument();
-
-    releaseS2!();
-    await waitFor(() =>
-      expect(screen.queryByText("更新中")).not.toBeInTheDocument());
-  });
-
-  it("未選任何劇本時，右側工作區顯示合理的空狀態", async () => {
-    stubDesktopViewport();
     mockRoutes({
       "/api/scenarios": { json: async () => [rowA] },
+      "/api/scenarios/s1": { json: async () => ({ ...rowA, latest_result: null }) },
       "/api/scenarios/": { json: async () => rowA },
     });
     render(<App />);
 
-    // 開站那輪批次刷新跑完後這張卡才會是真的連結（未完成時反灰、沒有
-    // `href`——V4 跟進票／#136），`findByRole("link", ...)` 才等得到它。
-    await screen.findByRole("button", { name: "重新整理" });
-
+    await userEvent.click(await screen.findByRole("link", { name: "‹ 劇本庫" }));
+    expect(window.location.hash).toBe("#/");
     expect(await screen.findByRole("link", { name: /TLT 2028-05/ })).toBeInTheDocument();
-    expect(screen.getByText(/選擇左側的劇本/)).toBeInTheDocument();
+    // 回到劇本庫頁面後，詳細頁內容不再掛載。
+    expect(screen.queryByText("尚未分析")).not.toBeInTheDocument();
   });
 
-  it("可以直接切換到另一個劇本，不必先返回劇本庫", async () => {
+  it("瀏覽器上一頁／下一頁在劇本庫↔詳細頁之間正常切換（AC，jsdom 無" +
+     "真的歷史紀錄，直接改 hash 模擬返回鍵按下去之後瀏覽器會做的事）",
+    async () => {
     stubDesktopViewport();
     window.location.hash = "#/s/s1";
     mockRoutes({
       "/api/scenarios": { json: async () => [rowA, rowB] },
       "/api/scenarios/s1": { json: async () => ({ ...rowA, latest_result: null }) },
       "/api/scenarios/s2": { json: async () => ({ ...rowB, latest_result: null }) },
+      "/api/scenarios/": { json: async () => rowA },
     });
     render(<App />);
+    expect(await screen.findByText("尚未分析")).toBeInTheDocument();
 
-    await screen.findByText("尚未分析");
-    await userEvent.click(screen.getByRole("link", { name: /SPY 2027-01/ }));
-
-    expect(window.location.hash).toBe("#/s/s2");
-    // 兩個劇本共用同一份「尚未分析」文案，真正驗證的是清單卡片本身
-    // 沒有被整頁替換掉——它在切換後依然可點、依然在畫面上。
-    expect(await screen.findByRole("link", { name: /TLT 2028-05/ })).toBeInTheDocument();
-  });
-
-  it("桌面版的網址仍對應到選中的劇本——返回鍵切回上一個劇本，劇本庫全程不消失", async () => {
-    stubDesktopViewport();
-    window.location.hash = "#/s/s1";
-    mockRoutes({
-      "/api/scenarios": { json: async () => [rowA, rowB] },
-      "/api/scenarios/s1": { json: async () => ({ ...rowA, latest_result: null }) },
-      "/api/scenarios/s2": { json: async () => ({ ...rowB, latest_result: null }) },
-    });
-    render(<App />);
-    await screen.findByText("尚未分析");
-
-    await userEvent.click(screen.getByRole("link", { name: /SPY 2027-01/ }));
-    expect(await screen.findByRole("link", { name: /TLT 2028-05/ })).toBeInTheDocument();
-
-    // 返回鍵＝hash 變回上一個值。jsdom 沒有真的瀏覽器歷史紀錄，直接
-    // 把 hash 改回去等同「返回鍵按下去之後」瀏覽器會做的事。
-    window.location.hash = "#/s/s1";
-    expect(await screen.findByRole("link", { name: /SPY 2027-01/ })).toBeInTheDocument();
-    // 全程劇本庫（含建立劇本入口）都掛著——這正是桌面版與手機版整頁
-    // 替換的差異所在。
-    await openCreateForm();
-    expect(screen.getByLabelText("標的代號")).toBeInTheDocument();
-
+    // 上一頁：回劇本庫。
     window.location.hash = "#/";
-    expect(await screen.findByText(/選擇左側的劇本/)).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: /TLT 2028-05/ })).toBeInTheDocument();
+    expect(await screen.findByRole("link", { name: /TLT 2028-05/ })).toBeInTheDocument();
+
+    // 下一頁：回到 s1 詳細頁。
+    window.location.hash = "#/s/s1";
+    expect(await screen.findByText("尚未分析")).toBeInTheDocument();
+
+    // 再上一頁到另一個劇本（s2）也正確切換內容。
+    window.location.hash = "#/s/s2";
+    await waitFor(() => expect(window.location.hash).toBe("#/s/s2"));
   });
 });
 
@@ -1751,10 +1672,11 @@ describe("桌面版：主要操作入口收攏到工作區上方（#75，MVP-v2�
     expect(screen.getByLabelText("標的代號")).toBeVisible();
   });
 
-  it("收合建立表單不會清空使用者已經打的內容", async () => {
+  it("關閉建立表單抽屜不會清空使用者已經打的內容（OG-02／#318 起改用" +
+     "抽屜自己的關閉鈕，不再是同一顆按鈕的 toggle 文字）", async () => {
     // code review 跟進：面板原本用條件渲染整個卸載重掛，使用者打到
-    // 一半手滑點到收合鈕，剛打的字就白打了——改用 `hidden` 屬性切換
-    // 可見度後，這裡直接驗證收合再展開，內容還在。
+    // 一半手滑點到關閉鈕，剛打的字就白打了——改用 `hidden` 屬性切換
+    // 可見度後，這裡直接驗證關閉再展開，內容還在。
     stubDesktopViewport();
     mockRoutes({
       "/api/scenarios": { json: async () => [row] },
@@ -1764,14 +1686,19 @@ describe("桌面版：主要操作入口收攏到工作區上方（#75，MVP-v2�
     await openCreateForm();
     await userEvent.type(screen.getByLabelText("標的代號"), "spy");
 
-    await userEvent.click(screen.getByRole("button", { name: "收合建立表單" }));
+    await userEvent.click(
+      screen.getByRole("button", { name: "關閉建立表單抽屜" }));
     expect(screen.getByLabelText("標的代號")).not.toBeVisible();
 
     await userEvent.click(screen.getByRole("button", { name: "＋ 建立劇本" }));
     expect(screen.getByLabelText("標的代號")).toHaveValue("spy");
   });
 
-  it("建立劇本與刷新是同一個固定操作列裡的兩個入口", async () => {
+  it("建立劇本入口在常駐頂欄、刷新入口在劇本庫頁面自己的頁首——OG-02" +
+     "（#318）起兩者分屬不同的常駐 chrome，不再是同一個工具列裡的兩顆" +
+     "按鈕；OG-03（#320）起頁首本身已從獨立的 Toolbar.tsx（帶 header " +
+     "banner landmark）併入 ScenarioList.tsx 的 .lib-header（純 div，" +
+     "本身不是地標元素）", async () => {
     stubDesktopViewport();
     mockRoutes({
       "/api/scenarios": { json: async () => [row] },
@@ -1779,11 +1706,24 @@ describe("桌面版：主要操作入口收攏到工作區上方（#75，MVP-v2�
     });
     render(<App />);
 
-    const toolbar = await screen.findByRole("banner");
-    const createButton = within(toolbar).getByRole("button", { name: "＋ 建立劇本" });
+    // `TopBar` 本身是 `<div>` 不是 `<header>`（見該檔案檔頭說明）——
+    // 建立劇本按鈕因此直接全域查找即可，畫面上只會有這一顆。
+    const createButton = await screen.findByRole(
+      "button", { name: "＋ 建立劇本" });
     expect(createButton).toBeInTheDocument();
-    expect(within(toolbar).getByRole("button", { name: /重新整理|刷新中/ }))
+
+    // 劇本庫頁面自己的頁首（`ScenarioList.tsx` 的 `.lib-header`，
+    // OG-03 併入 `Toolbar.tsx` 原本的職責）用它自己的 `<h1>劇本庫</h1>`
+    // 當唯一錨點找回整個頁首容器——OG-02 起只剩「重新整理」，建立劇本
+    // ／垃圾桶已搬進頂欄導覽，不再重複顯示。
+    const heading = await screen.findByRole("heading", { name: "劇本庫" });
+    const header = heading.closest(".lib-header") as HTMLElement;
+    expect(within(header).getByRole("button", { name: /重新整理|刷新中/ }))
       .toBeInTheDocument();
+    expect(within(header).queryByRole("button", { name: "＋ 建立劇本" }))
+      .not.toBeInTheDocument();
+    expect(within(header).queryByRole("button", { name: "垃圾桶" }))
+      .not.toBeInTheDocument();
 
     // code review 跟進：展開鈕要有 `aria-controls` 指向它控制的面板，
     // 不是只有 `aria-expanded`——跟 `CreateForm.tsx` 裡 `MonthPicker`
@@ -1794,8 +1734,8 @@ describe("桌面版：主要操作入口收攏到工作區上方（#75，MVP-v2�
       screen.getByLabelText("標的代號"));
   });
 
-  it("工具列順序（TR6／#91 需求方核准版面）：建立劇本 → 垃圾桶 → 重新整理",
-     async () => {
+  it("常駐頂欄導覽：劇本庫／垃圾桶／設定三個入口都在，當前頁有明確" +
+     "指示（OG-02／#318）", async () => {
     stubDesktopViewport();
     mockRoutes({
       "/api/scenarios": { json: async () => [row] },
@@ -1803,10 +1743,15 @@ describe("桌面版：主要操作入口收攏到工作區上方（#75，MVP-v2�
     });
     render(<App />);
 
-    const toolbar = await screen.findByRole("banner");
-    const names = within(toolbar).getAllByRole("button")
-      .map((b) => b.textContent?.trim());
-    expect(names).toEqual(["＋ 建立劇本", "垃圾桶", "重新整理"]);
+    await screen.findByText("TLT");
+    const nav = screen.getByRole("link", { name: "劇本庫" })
+      .closest("nav")!;
+    const names = within(nav).getAllByRole("link").map((a) => a.textContent);
+    expect(names).toEqual(["劇本庫", "垃圾桶", "設定"]);
+    expect(within(nav).getByRole("link", { name: "劇本庫" }))
+      .toHaveClass("on");
+    expect(within(nav).getByRole("link", { name: "垃圾桶" }))
+      .not.toHaveClass("on");
   });
 
   it("劇本清單下方已無任何主要操作——建立入口在工作區最上方", async () => {
@@ -1818,20 +1763,61 @@ describe("桌面版：主要操作入口收攏到工作區上方（#75，MVP-v2�
     const { container } = render(<App />);
 
     await screen.findByText("TLT");
-    const toolbar = container.querySelector("header.toolbar")!;
+    // OG-03（#320）：`Toolbar.tsx`（`header.toolbar`）已刪除，頁首
+    // 併入 `ScenarioList.tsx` 的 `.lib-header`（純 `<div>`）。
+    const header = container.querySelector(".lib-header")!;
     // #108：桌面版劇本庫卡片瘦身後改沿用 `.compact-list`（原本只有
     // 手機版在用），不再是 `ul.list`。
     const list = container.querySelector("ul.compact-list")!;
-    // `DOCUMENT_POSITION_FOLLOWING`：toolbar 出現在 list 之前，不是
-    // 掛在清單卡片全部跑完之後才看得到的東西。展開表單前後都要成立
+    // `DOCUMENT_POSITION_FOLLOWING`：頁首出現在清單之前，不是掛在
+    // 清單卡片全部跑完之後才看得到的東西。展開表單前後都要成立
     // ——面板一律掛著（`hidden` 屬性切換可見度），不會因為展開就被
     // 插到清單後面。
-    expect(toolbar.compareDocumentPosition(list))
+    expect(header.compareDocumentPosition(list))
       .toBe(Node.DOCUMENT_POSITION_FOLLOWING);
 
     await openCreateForm();
-    expect(toolbar.compareDocumentPosition(list))
+    expect(header.compareDocumentPosition(list))
       .toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+  });
+});
+
+describe("手機版頂欄（OG-09／#319，取代 iOS Large Title 版式的 " +
+        "`Toolbar`）：不重複顯示垃圾桶／設定入口——兩者已經在下方的 " +
+        "`BottomNav` 各有一份", () => {
+  const row = {
+    ...(sampleRow as unknown as Record<string, unknown>),
+    id: "s1", symbol: "TLT", target_price: 120, target_month: "2028-05",
+    latest_analyzed_at: "2026-08-04T09:30:00+00:00", best_return: 1.5,
+    target_anchor: "2028-05-19", days_to_anchor: 653,
+  };
+
+  it("頂欄只有品牌、（角色，若非 Normal User）、重新整理——沒有垃圾桶／" +
+     "設定按鈕；底部導覽四個分頁都在，且能各自導向正確 hash", async () => {
+    mockRoutes({
+      "/api/scenarios": { json: async () => [row] },
+      "/api/scenarios/": { json: async () => row },
+    });
+    render(<App />);
+    await screen.findByText("TLT");
+
+    const mnav = document.querySelector(".mnav")!;
+    expect(within(mnav as HTMLElement).getByText("Option Chaser"))
+      .toBeInTheDocument();
+    expect(within(mnav as HTMLElement)
+      .getByRole("button", { name: /重新整理|刷新中/ })).toBeInTheDocument();
+    expect(within(mnav as HTMLElement).queryByRole("link", { name: "垃圾桶" }))
+      .not.toBeInTheDocument();
+    expect(within(mnav as HTMLElement).queryByRole("button", { name: "設定" }))
+      .not.toBeInTheDocument();
+
+    // 底部導覽：四個分頁、各自的 hash——垃圾桶／設定的導覽能力在這裡，
+    // 不在頂欄。
+    const bottomNav = screen.getByRole("navigation", { name: "主要導覽" });
+    expect(within(bottomNav).getByRole("link", { name: /垃圾桶/ }))
+      .toHaveAttribute("href", "#/trash");
+    expect(within(bottomNav).getByRole("link", { name: /設定/ }))
+      .toHaveAttribute("href", "#/settings");
   });
 });
 
@@ -1861,8 +1847,8 @@ describe("PB-12（#302）：全站常駐頁尾＋首頁 Beta 說明＋隱私頁�
     expect(footer).toHaveTextContent(/非投資建議/);
   });
 
-  it("桌面首頁：Beta 說明常駐在 library-pane、頁尾在整個 workspace 之下",
-    async () => {
+  it("桌面首頁：Beta 說明常駐在劇本庫頁面、頁尾在整個 desktop-shell 之下" +
+     "（OG-02／#318 起側欄退場，改為單一全寬頁面）", async () => {
     stubDesktopViewport();
     mockRoutes({
       "/api/scenarios": { json: async () => [row] },
@@ -1871,8 +1857,24 @@ describe("PB-12（#302）：全站常駐頁尾＋首頁 Beta 說明＋隱私頁�
     const { container } = render(<App />);
 
     await screen.findByText("TLT");
-    expect(container.querySelector(".library-pane .beta-notice"))
-      .toBeInTheDocument();
+    expect(container.querySelector(".beta-notice")).toBeInTheDocument();
+    expect(container.querySelector("footer.site-footer")).toBeInTheDocument();
+  });
+
+  it("桌面版切到垃圾桶頁面，Beta 說明不重複顯示——比照手機版只在真正的" +
+     "首頁出現一次（OG-02／#318）", async () => {
+    stubDesktopViewport();
+    mockRoutes({
+      "/api/scenarios": { json: async () => [row] },
+      "/api/scenarios?include_archived=true": { json: async () => [] },
+      "/api/scenarios/": { json: async () => row },
+    });
+    const { container } = render(<App />);
+    await screen.findByText("TLT");
+
+    window.location.hash = "#/trash";
+    await screen.findByRole("heading", { name: "垃圾桶" });
+    expect(container.querySelector(".beta-notice")).not.toBeInTheDocument();
     expect(container.querySelector("footer.site-footer")).toBeInTheDocument();
   });
 
@@ -1885,7 +1887,9 @@ describe("PB-12（#302）：全站常駐頁尾＋首頁 Beta 說明＋隱私頁�
     const { container } = render(<App />);
     await screen.findByText("TLT");
 
-    await userEvent.click(await screen.findByRole("button", { name: "垃圾桶" }));
+    // OG-09（#319）：見上方「點垃圾桶入口進到垃圾桶畫面」測試的同一句
+    // 說明——垃圾桶入口在手機版現在是 `BottomNav` 的連結。
+    await userEvent.click(await screen.findByRole("link", { name: "垃圾桶" }));
     await screen.findByRole("heading", { name: "垃圾桶" });
 
     expect(container.querySelector("footer.site-footer")).toBeInTheDocument();

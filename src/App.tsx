@@ -3,12 +3,18 @@
  *
  * 桌面與手機是兩套 responsive layout（MVP-v2／#77 §8），共用同一份資料
  * 與狀態、各自的版面結構：
- * - 桌面（#72／#75）：頂部釘選功能列（含建立入口）→ 建立表單 →
- *   劇本卡片清單（`ScenarioList`，#108 起改用與手機版同一套 compact
- *   row 密度），左側常駐、右側是詳細頁。
- * - 手機（#81／#82）：Dashboard 佔位 → 就地展開的新增劇本入口 → 高密度
- *   劇本清單（`CompactScenarioList`，三層 compact row，依最新收益率
- *   排序、紅燈沉底），點卡片整頁替換成詳細頁。
+ * - 桌面（OG-02／#318 起）：64px 頂欄（`TopBar`）常駐＋單一全寬頁面
+ *   （劇本庫／詳細頁／垃圾桶／設定依 hash 切換），Binance 式頁面級
+ *   導覽——取代 #72／#75 那套「側欄劇本庫常駐＋右側詳細頁」的
+ *   master/detail 版面（已退場，`.library-pane`／`.detail-pane`
+ *   結構性移除）。劇本庫頁面用 `ScenarioList`（#108 起改用與手機版
+ *   同一套 compact row 密度）。
+ * - 手機（#81／#82；頂欄 OG-09／#319 起換裝）：52px 頂欄
+ *   （`MobileTopBar`：品牌＋角色徽章＋刷新）→ Beta 說明 → Dashboard
+ *   佔位 → 就地展開的新增劇本入口 → 高密度劇本清單
+ *   （`CompactScenarioList`，三層 compact row，依最新收益率排序、
+ *   紅燈沉底），點卡片整頁替換成詳細頁。垃圾桶／設定的導覽入口只在
+ *   底部 `BottomNav`（既有），`MobileTopBar` 不重複放一份。
  *
  * 兩套清單元件刻意分開、不共用同一個渲染路徑：`ScenarioList.tsx`
  * 只服務桌面、`CompactScenarioList.tsx` 只服務手機——這樣手機版的密度
@@ -38,6 +44,7 @@ import {
 } from "react";
 
 import BetaNotice from "./BetaNotice";
+import BottomNav from "./BottomNav";
 import CompactScenarioList from "./CompactScenarioList";
 import CreateEntry from "./CreateEntry";
 import CreateForm, {
@@ -46,14 +53,15 @@ import CreateForm, {
 } from "./CreateForm";
 import Dashboard from "./Dashboard";
 import Footer from "./Footer";
+import MobileTopBar from "./MobileTopBar";
 import PrivacyPage from "./PrivacyPage";
 import ScenarioDetail from "./ScenarioDetail";
 import ScenarioList from "./ScenarioList";
 import Settings from "./Settings";
-import Toolbar from "./Toolbar";
+import TopBar from "./TopBar";
 import TrashView from "./TrashView";
 import { useIsDesktop } from "./useIsDesktop";
-import { GearIcon } from "./icons";
+import { CloseIcon } from "./icons";
 import {
   archiveScenario,
   createScenario,
@@ -71,16 +79,16 @@ import {
   isSettingsHash,
   isTrashHash,
   scenarioIdFromHash,
-  settingsHash,
-  trashHash,
 } from "./route";
 import { formatRunSummary, scenarioRowDomId } from "./scenarios";
 
 /**
- * 桌面版真正的 master/detail（#72）：桌面寬度下劇本庫常駐、詳細頁另開
- * 一欄；手機寬度維持既有的整頁替換。用 `matchMedia` 而不是只用 CSS
- * 隱藏——手機版「選了劇本後建立表單／劇本庫不在畫面上」是既有行為
- * 的一部分，CSS `display:none` 只藏視覺，元件仍會掛載並佔用資源。
+ * 桌面／手機兩套 responsive layout 的斷點判斷（#72 引入，OG-02／#318
+ * 起桌面版面本身已改為頁面級導覽，見上方檔頭說明，但斷點與判斷方式
+ * 不變）：桌面寬度下走 `TopBar`＋全寬頁面，手機寬度維持既有的整頁
+ * 替換。用 `matchMedia` 而不是只用 CSS 隱藏——手機版「選了劇本後
+ * 建立表單／劇本庫不在畫面上」是既有行為的一部分，CSS `display:none`
+ * 只藏視覺，元件仍會掛載並佔用資源。
  *
  * 斷點常數與 hook 本身已搬到 `./useIsDesktop`（Historical IV 手機圖表
  * 瘦身需要同一個判斷，不重寫第二份），這裡改成直接複用。
@@ -424,10 +432,20 @@ export default function App() {
     void runBatch([created.id]);
   }
 
-  /** 點卡片上的編輯：把原資料交給既有表單並展開它。 */
+  /** 點卡片上的編輯：把原資料交給既有表單並展開它。
+   *
+   * 外部審查（PR #329）跟進：桌面直接開詳細頁網址（deep link）時，
+   * 詳細頁本身的資料走 `getScenarioCached()` 獨立抓取，跟這裡的
+   * `rows`（劇本庫清單）是兩條不同的 fetch——清單還沒回來前按「編輯」，
+   * 舊行為是靜靜地什麼事都不做，使用者以為按鈕壞了。這裡改成清楚地
+   * 說明原因，而不是繼續無聲失敗；`rows` 一到位使用者再按一次就會
+   * 正常開啟，不需要額外重新整理。 */
   function startEdit(id: string) {
     const row = rows.find((r) => r.id === id);
-    if (!row) return;
+    if (!row) {
+      setError("劇本資料還在載入，請稍候再按一次編輯");
+      return;
+    }
     setEditing({
       id: row.id, symbol: row.symbol, target_price: row.target_price,
       target_month: row.target_month, best_price: row.best_price,
@@ -583,6 +601,11 @@ export default function App() {
     // 不能看起來像已經是最新結果（P1 更新中徽章）。手機版此時本來就
     // 整頁替換成詳細頁、不會跟清單同時看到，傳了也無害。
     updating: updatingIds.has(detailId),
+    // OG-06（#321）：桌面身分列的「編輯」入口，走既有的 `startEdit`
+    // ——跟劇本庫卡片編輯鈕開的是同一個抽屜、同一份 `editing` state。
+    // 手機／桌面共用同一份 `detailProps`，`ScenarioDetail.tsx` 自己
+    // 用 `isDesktop` 二次守門，手機拿到這個 callback 但不會渲染按鈕。
+    onEdit: () => startEdit(detailId),
   } : null;
 
   // TR6（#91）：批次移入垃圾桶時個別失敗的說明——列在「哪個劇本、
@@ -610,6 +633,16 @@ export default function App() {
     );
   }
 
+  // UI-IMPL-002（#092）：手機版底部導覽的「建立」分頁——先回劇本庫首頁
+  // （清空 hash），同一批 setState 裡順帶展開建立表單。hash 變化觸發
+  // `hashchange` 監聽器更新 `hash` state、下一次渲染落到下面的手機首頁
+  // 分支時，`showCreateForm` 已經是 true，表單因此立刻可見，不需要
+  // 額外的跨畫面狀態管線。
+  const openCreateFromAnywhere = () => {
+    window.location.hash = "";
+    setShowCreateForm(true);
+  };
+
   // 手機版：設定是整頁替換（跟垃圾桶、詳細頁同樣的既有模式）。排在
   // 垃圾桶之前只是順序，兩個 hash 互斥。
   if (!isDesktop && showSettings) {
@@ -617,6 +650,7 @@ export default function App() {
       <>
         <Settings />
         <Footer />
+        <BottomNav active="settings" onOpenCreate={openCreateFromAnywhere} />
       </>
     );
   }
@@ -626,6 +660,7 @@ export default function App() {
       <>
         <TrashView onRestore={restoreFromTrash} />
         <Footer />
+        <BottomNav active="trash" onOpenCreate={openCreateFromAnywhere} />
       </>
     );
   }
@@ -635,6 +670,9 @@ export default function App() {
       <>
         <ScenarioDetail {...detailProps} />
         <Footer />
+        {/* 貼齊設計稿（Mobile-Detail 板）：看著某個劇本的詳細頁仍視為
+            「在劇本庫這個大分類底下」，「劇本庫」分頁維持標記 active。 */}
+        <BottomNav active="library" onOpenCreate={openCreateFromAnywhere} />
       </>
     );
   }
@@ -645,21 +683,17 @@ export default function App() {
     // `library`）是兩個獨立的 JSX 分支，不共用同一段標記——這樣手機版
     // 的版面決定不會意外牽動桌面版現狀（#72／#75，spec #77 硬紅線一）。
     //
-    // 工具列不重複顯示建立入口（`showCreateButton={false}`）：入口已經
-    // 在下面的 `CreateEntry`，兩個地方各放一次只會讓人不確定該點哪個。
+    // OG-09（#319）：手機頂欄換成 52px `MobileTopBar`——垃圾桶／設定
+    // 入口不再重複顯示在這裡，兩者都已經在下面的 `BottomNav` 有一份
+    // （UI-IMPL-002／#092 既有），建立入口同樣已經在下面的
+    // `CreateEntry`。這裡只剩品牌、角色徽章、刷新（時機三）。
     return (
       <div className="screen">
-        <Toolbar
+        <MobileTopBar
           count={rows.length}
           busy={refreshBusy}
           runSummary={runSummary}
-          showCreateButton={false}
-          // 時機三：功能列刷新鈕
           onRefresh={() => void reloadAndRefresh(true)}
-          onOpenTrash={() => { window.location.hash = trashHash(); }}
-          // #124：手機版的設定入口＝工作區右上角的齒輪。桌面版不傳這個
-          // 回呼，它的入口在 sidebar 最下方。
-          onOpenSettings={() => { window.location.hash = settingsHash(); }}
         />
 
         {error && (
@@ -720,30 +754,40 @@ export default function App() {
 
         {/* PB-12（#302）：全站常駐頁尾——手機首頁也不例外。 */}
         <Footer />
+        <BottomNav
+          active={showCreateForm ? "create" : "library"}
+          onOpenCreate={openCreateFromAnywhere}
+        />
       </div>
     );
   }
 
-  // 桌面版（#72／#75 現狀，MVP-v2／#77 手機施工不動它）：頂部釘選功能列
-  // （含建立入口）→ 建立表單 → 劇本卡片清單。
-  // TR6（#91）：垃圾桶開著時，左側面板內容整個換成 `TrashView`（需求方
-  // 核准版面 D2），右側 `detail-pane` 邏輯完全不動——跟現有「選劇本
-  // 切換右側」的機制平行、不衝突。
-  const library = showTrash ? <TrashView onRestore={restoreFromTrash} /> : (
+  // 桌面版（OG-02／#318 起）：Binance 式頁面級導覽，取代 #72／#75 的
+  // 側欄常駐 master/detail——64px 頂欄（`TopBar`）常駐在最上方，下方是
+  // 單一全寬頁面，依 hash 切換內容（劇本庫／垃圾桶／詳細頁／設定），
+  // 跟手機版整頁替換是同一種導覽模型，只是斷點與頂欄不同。頁面本身
+  // 隨內容自然增長並捲動（不再是「頁面永不捲動，`.library-scroll`／
+  // `.detail-pane` 兩個內部容器各自捲」那一套，見 `styles.css` 對應
+  // 說明）。建立入口與垃圾桶／設定導覽都收進常駐的 `TopBar`。
+  //
+  // OG-03（#318 起沿用、#320 收尾）：劇本庫頁面自己的頁首（標題／
+  // 劇本數／篩選／刷新）已經整組收進 `ScenarioList.tsx`（artifact
+  // 桌面劇本庫板本來就是同一個區塊）——原本獨立的 `Toolbar.tsx`
+  // 因此零呼叫端、已刪除，`<ScenarioList>` 直接接手 `busy`／
+  // `runSummary`／`onRefresh` 三個 prop。
+  const page = showTrash ? (
+    <TrashView onRestore={restoreFromTrash} />
+  ) : showSettings ? (
+    <Settings />
+  ) : detailProps ? (
+    // `.detail-page`：桌面詳細頁專屬 wrapper（見 `styles.css` 對應
+    // 說明），前身是已退場的 `.detail-pane`——QA-FIX-3 那批密度調校
+    // 逐字沿用，只是掛載點從側欄容器換成這裡。
+    <div className="detail-page">
+      <ScenarioDetail {...detailProps} />
+    </div>
+  ) : (
     <div className="screen">
-      <Toolbar
-        count={rows.length}
-        busy={refreshBusy}
-        runSummary={runSummary}
-        showCreateButton
-        createOpen={showCreateForm}
-        createPanelId={createPanelId}
-        onToggleCreate={() => setShowCreateForm((v) => !v)}
-        // 時機三：功能列刷新鈕
-        onRefresh={() => void reloadAndRefresh(true)}
-        onOpenTrash={() => { window.location.hash = trashHash(); }}
-      />
-
       {error && (
         <div className="notice error" role="alert">
           {error}
@@ -751,33 +795,20 @@ export default function App() {
       )}
       {batchArchiveErrorNotice}
 
-      {/* #75：建立劇本收攏成工作區正上方的入口——跟著工具列一起釘住，
-          不再是掛在全部劇本卡片下面、永遠展開、得捲過整份清單才看得到
-          的表單。一律掛著、用 `hidden` 切換可見度（見上方 `createPanelId`
-          註解），因此永遠排在 `ScenarioList` 之前，不會因為開／關而
-          改變它在畫面結構上「在清單上方」這件事。年月選擇器（#71）的
-          「今年」／「本月」跟全站同一個時鐘——不讓它自己另外算一次
-          `new Date()`，那樣會跟 `ScenarioList` 的新鮮度判斷用著兩個
-          不同步的「現在」。 */}
-      <div id={createPanelId} hidden={!showCreateForm}>
-        <CreateForm onCreate={create} onSaveEdit={saveEdit}
-                    onCancelEdit={cancelEdit} editing={editing}
-                    busy={busy} today={now} />
-      </div>
-
       <ScenarioList
         rows={rows}
         failures={failures}
         updatingIds={updatingIds}
         now={now}
+        busy={refreshBusy}
+        runSummary={runSummary}
+        // 時機三：頁首刷新鈕
+        onRefresh={() => void reloadAndRefresh(true)}
         onArchive={archive}
         onEdit={startEdit}
         // 重試不是第四種刷新時機——它重跑的就是那一次失敗的刷新，走
         // 單一劇本刷新端點，不牽動 Refresh Run。
         onRetry={(id) => void refreshOne(id, true)}
-        // #72：桌面版清單裡標出目前選中的劇本；手機版此時本來就不會
-        // 渲染這份清單（上面已整頁替換掉），傳了也無害。
-        selectedId={detailId}
         selectMode={selectMode}
         selectedIds={selectedIds}
         onToggleSelect={toggleSelected}
@@ -788,43 +819,75 @@ export default function App() {
     </div>
   );
 
-  // #72：桌面版真正的 master/detail——左側劇本庫常駐，右側是詳細頁；
-  // 沒選劇本時右側顯示空狀態，而不是留白或報錯。
-  // #124：桌面版的設定入口固定在 sidebar **最下方**——清單本身在
-  // `.library-scroll` 裡自己捲動，這個連結因此永遠看得到，不必先捲到
-  // 劇本清單的底部。設定內容顯示在右側工作區（`.detail-pane`），與
-  // 「選劇本切換右側」是同一個機制。
   return (
-    <>
-      <div className="workspace">
-        <div className="library-pane">
-          {/* PB-12（#302）：首頁 Beta 說明——桌面版沒有獨立的「首頁」，
-              library-pane 本身在任何選中狀態下都常駐可見，是這個
-              裝置寬度下的對應位置。放在捲動區域之外（比照下方
-              「設定」連結同一個道理），不會被清單捲走。 */}
-          <BetaNotice />
-          <div className="library-scroll">{library}</div>
-          <a
-            className={`sidebar-settings${showSettings ? " active" : ""}`}
-            href={settingsHash()}
+    <div className="desktop-shell">
+      <TopBar
+        active={showSettings ? "settings" : showTrash ? "trash" : "library"}
+        onOpenCreate={() => setShowCreateForm(true)}
+        createOpen={showCreateForm}
+        createPanelId={createPanelId}
+      />
+      {/* PB-12（#302）：首頁 Beta 說明——桌面版沒有獨立的「首頁」，劇本庫
+          頁面（未選中詳細頁、未開垃圾桶／設定）是這個裝置寬度下唯一
+          對應「首頁」的畫面，比照手機版只在那個分支顯示、不在其餘頁面
+          重複。 */}
+      {!showTrash && !showSettings && !detailProps && <BetaNotice />}
+      <div className="page">{page}</div>
+
+      {/* UI-IMPL-002（#092）：桌面版建立劇本走右側抽屜＋遮罩（Artifact
+          `Desktop-Create.dc.html`）——本身仍是同一個 `showCreateForm`
+          狀態、同一組 `onCreate`／`onSaveEdit`／`onCancelEdit` 回呼，
+          只是 OG-02 起改為 `position: fixed` 疊在整個 `.page` 之上
+          （不含 `TopBar`——使用者開著抽屜仍看得到品牌與導覽，隨時可以
+          切走），不再依賴已退場的 `.workspace` 當定位基準。手機版
+          （上方 `CreateEntry` 分支）完全不受影響——那是結構上獨立的
+          另一段 JSX。
+
+          沿用 #75 的既有教訓：面板一律掛著、用 `hidden` 屬性切換
+          可見度，不是條件渲染整個卸載重掛，收合再展開時使用者已經
+          打的內容才不會被清空（見下方「收合建立表單不會清空使用者
+          已經打的內容」既有測試）。遮罩點擊關閉是抽屜這個版式新增的
+          關閉手段，呼叫的是既有 `setShowCreateForm(false)`——跟
+          `TopBar` 上「＋ 建立劇本」按鈕呼叫的是同一個狀態轉換，不是
+          新發明的語意。 */}
+      <div
+        className="create-drawer-scrim"
+        hidden={!showCreateForm}
+        onClick={() => setShowCreateForm(false)}
+        aria-hidden="true"
+      />
+      <aside
+        id={createPanelId}
+        className="create-drawer"
+        hidden={!showCreateForm}
+        aria-label={editing ? "編輯劇本" : "建立劇本"}
+      >
+        <div className="create-drawer-head">
+          {/* `<CreateForm>` 自己內部已有 `<h2>建立劇本／編輯劇本</h2>`
+              （既有標題，未改動）——這裡只補一句副標，不重複掛一個
+              標題。 */}
+          <span className="caption">
+            {editing ? "標的不可改" : "三欄必填・無預設值"}
+          </span>
+          <button
+            type="button"
+            className="drawer-close"
+            aria-label="關閉建立表單抽屜"
+            onClick={() => setShowCreateForm(false)}
           >
-            <GearIcon /> 設定
-          </a>
+            <CloseIcon />
+          </button>
         </div>
-        <div className="detail-pane">
-          {showSettings ? (
-            <Settings />
-          ) : detailProps ? (
-            <ScenarioDetail {...detailProps} />
-          ) : (
-            <div className="screen">
-              <p className="caption">選擇左側的劇本查看詳細內容。</p>
-            </div>
-          )}
+        <div className="create-drawer-body">
+          <CreateForm onCreate={create} onSaveEdit={saveEdit}
+                      onCancelEdit={cancelEdit} editing={editing}
+                      busy={busy} today={now} />
         </div>
-      </div>
-      {/* PB-12（#302）：全站常駐頁尾——桌面版排在整個 workspace 之下。 */}
+      </aside>
+      {/* PB-12（#302）：全站常駐頁尾——桌面版排在頁面內容之下，跟著
+          `.page` 一起在自然文件流裡，捲到底才看得到（跟手機版同一個
+          相對位置語意）。 */}
       <Footer />
-    </>
+    </div>
   );
 }

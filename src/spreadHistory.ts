@@ -130,3 +130,36 @@ export function xAxisTicks(points: ChartPoint[]): AxisTick[] {
   const unique = [...new Set(indices)];
   return unique.map((i) => ({ index: i, label: points[i].label }));
 }
+
+export interface HistorySummary {
+  /** 最後一筆的成本——`null` 代表最後一次就是缺席快照，如實回報，
+   *  不回退去找前一筆有值的（那是另一件事，呼叫端沒問這個）。 */
+  latest: number | null;
+  /** 非缺席成本的最小／最大值；一筆有效資料都沒有時整個是 null。 */
+  range: [number, number] | null;
+  /** 缺席快照（`cost === null`）筆數——跟圖上斷點如實顯示同一份判準。 */
+  gapCount: number;
+  /** 序列第一筆的日期（entries 依 `analyzed_at` 升冪排列，既有保證）。 */
+  firstSeen: string | null;
+  /** 序列總筆數（artifact「N 次刷新區間」的 N）。 */
+  count: number;
+}
+
+/**
+ * OG-07（#325）：桌面底部「淨成本走勢」tab 右側統計面板（artifact：
+ * 今日／N 次刷新區間／缺席快照／首次出現）——純粹對已經抓回來的
+ * `entries` 做彙總，不是新的金融計算，跟這個檔案其餘函式同一個定位。
+ * 吃**未降採樣**的原始 `entries`（呼叫端傳 `getSpreadHistory()` 的原始
+ * 回應，不是 `downsampleHistory()` 之後的版本）——「缺席快照」與「N 次
+ * 刷新」講的是實際發生過幾次刷新，降採樣後的分組數會低估這兩個數字。
+ */
+export function historySummaryStats(entries: HistoryEntry[]): HistorySummary {
+  const costs = entries.map((e) => e.cost).filter((c): c is number => c !== null);
+  return {
+    latest: entries.length > 0 ? entries[entries.length - 1].cost : null,
+    range: costs.length > 0 ? [Math.min(...costs), Math.max(...costs)] : null,
+    gapCount: entries.filter((e) => e.cost === null).length,
+    firstSeen: entries.length > 0 ? entries[0].analyzed_at : null,
+    count: entries.length,
+  };
+}

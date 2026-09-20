@@ -1,4 +1,4 @@
-import { render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -6,6 +6,26 @@ import ScenarioList from "./ScenarioList";
 import sampleRow from "../contracts/scenario_row_sample.json";
 import type { RefreshFailure, ScenarioSummary } from "./api";
 import { formatAnalyzedAt } from "./scenarios";
+
+// OG-05（#324）：`ScenarioList` 現在掛載就打 `GET /api/me/usage-
+// summary`（`UsageStatsStrip`）與（Super Admin 才會掛載的）`GET
+// /api/ops/metrics`——這個檔案原本沒有任何測試需要 mock 網路請求
+// （OG-04／#323 之前 `CostSparkline` 都是純 prop 渲染），全域 stub
+// 一次，讓既有測試對這個新 side effect 得到一個確定、不依賴真實網路
+// 的回應，而不是讓每個既有測試各自撞一次無法預期的 fetch 失敗。
+function mockFetch() {
+  vi.stubGlobal("fetch", vi.fn(async () => ({
+    ok: true, status: 200, json: async () => ({}),
+  })));
+}
+
+beforeEach(() => {
+  mockFetch();
+});
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
 
 /** 卡片上的「資料時間」都以這個時刻為基準判斷新鮮度。 */
 const NOW = new Date("2026-08-04T10:00:00+00:00");
@@ -29,6 +49,12 @@ function list(
     onEdit?: (id: string) => void;
     onRetry?: (id: string) => void;
     now?: Date;
+    // OG-03（#320）：`Toolbar.tsx` 已刪除，這三個 prop 併進
+    // `ScenarioList` 本身——頁首（標題／劇本數／篩選／刷新）不再是
+    // 兩個各自獨立元件。
+    busy?: boolean;
+    runSummary?: string | null;
+    onRefresh?: () => void;
     selectMode?: boolean;
     selectedIds?: ReadonlySet<string>;
     onToggleSelect?: (id: string) => void;
@@ -46,6 +72,9 @@ function list(
       onEdit={props.onEdit ?? vi.fn()}
       onRetry={props.onRetry ?? vi.fn()}
       now={props.now ?? NOW}
+      busy={props.busy ?? false}
+      runSummary={props.runSummary ?? null}
+      onRefresh={props.onRefresh ?? vi.fn()}
       selectMode={props.selectMode ?? false}
       selectedIds={props.selectedIds ?? new Set()}
       onToggleSelect={props.onToggleSelect ?? vi.fn()}
@@ -71,15 +100,25 @@ describe("劇本清單", () => {
   it("依收益率降序，沒跑過的排最後並顯示「—」", () => {
     list([
       row({ id: "a", symbol: "AAA", best_return: 0.2 }),
+      // OG-04（#323）：真的沒跑過的劇本 `cost_sparkline` 也該是 `null`
+      // （跟 `best_return`／`latest_analyzed_at` 同步，後端同一次
+      // `_summary_of()` 決定），不是繼承 `sampleRow` 預設值裡那筆
+      // 假的既有序列——不然這張卡片會變成「沒分析過卻有走勢圖」的
+      // 不實際組合。
       row({ id: "b", symbol: "BBB", best_return: null,
-            latest_analyzed_at: null }),
+            latest_analyzed_at: null, cost_sparkline: null }),
       row({ id: "c", symbol: "CCC", best_return: 2.0 }),
     ]);
 
-    const symbols = screen.getAllByRole("listitem")
-      .map((li) => li.querySelector(".compact-symbol")!.textContent);
+    const items = screen.getAllByRole("listitem");
+    const symbols = items.map((li) => li.querySelector(".compact-symbol")!.textContent);
     expect(symbols).toEqual(["CCC", "AAA", "BBB"]);
-    expect(screen.getByText("—")).toBeInTheDocument();
+    // 「—」在畫面上不只一處（劇本報酬／淨成本走勢等多個欄位沒資料時
+    // 都顯示它），`getByText` 因此不唯一，範圍限定回沒跑過的那張卡
+    // （BBB）。
+    const bbb = items.find(
+      (li) => li.querySelector(".compact-symbol")!.textContent === "BBB")!;
+    expect(within(bbb).getAllByText("—").length).toBeGreaterThanOrEqual(1);
   });
 
   it("沒跑過時資料時間說「尚未分析」，不留白也不顯示舊時間", () => {
@@ -386,19 +425,26 @@ describe("收益率口徑（V4／#52）", () => {
 });
 
 describe("資料新鮮度提示（V4／#52）", () => {
+  // OG-03（#320）：篩選列新增一顆文字同為「舊資料」的狀態 chip
+  // （`STATUS_FILTER_OPTIONS`），`screen.getByText("舊資料")` 現在會
+  // 連篩選 chip 一起撈到而不唯一，這裡的斷言範圍限定回卡片本身——
+  // 每個測試只渲染一張卡，`getByRole("listitem")` 精準指到它。
   it("久未刷新的卡片標出來，不讓舊數字看起來像現在的", () => {
     list([row({ latest_analyzed_at: "2026-08-01T09:30:00+00:00" })]);
-    expect(screen.getByText("舊資料")).toBeInTheDocument();
+    expect(within(screen.getByRole("listitem")).getByText("舊資料"))
+      .toBeInTheDocument();
   });
 
   it("剛刷新過的卡片沒有提示", () => {
     list([row({ latest_analyzed_at: "2026-08-04T09:30:00+00:00" })]);
-    expect(screen.queryByText("舊資料")).not.toBeInTheDocument();
+    expect(within(screen.getByRole("listitem")).queryByText("舊資料"))
+      .not.toBeInTheDocument();
   });
 
   it("尚未分析不標「舊資料」——卡片已經說了尚未分析", () => {
     list([row({ latest_analyzed_at: null, best_return: null })]);
-    expect(screen.queryByText("舊資料")).not.toBeInTheDocument();
+    expect(within(screen.getByRole("listitem")).queryByText("舊資料"))
+      .not.toBeInTheDocument();
   });
 });
 
@@ -473,9 +519,11 @@ describe("刷新失敗的分層與重試入口（V4／#52）", () => {
     });
 
     // 失敗不該讓已經算出來的東西消失——那是使用者目前唯一有的資訊，
-    // 只要旁邊誠實標明它是舊的。
+    // 只要旁邊誠實標明它是舊的。範圍限定回卡片本身，理由同上（狀態
+    // 篩選 chip 也叫「舊資料」）。
     expect(screen.getByText("123.4%")).toBeInTheDocument();
-    expect(screen.getByText("舊資料")).toBeInTheDocument();
+    expect(within(screen.getByRole("listitem")).getByText("舊資料"))
+      .toBeInTheDocument();
   });
 });
 
@@ -673,5 +721,239 @@ describe("劇本庫的概覽欄位（QA 修正，桌面版與手機版同一套�
     list([row({ best_price: null, worst_price: null })]);
     expect(screen.getByRole("listitem").querySelector(".compact-range"))
       .toBeNull();
+  });
+});
+
+describe("Logo 404 留白（OG-03／#320，row 層級覆蓋——與手機版 " +
+        "CompactScenarioList 同一套 Logo.dev fallback=404 契約，" +
+        "StockLogo.test.tsx 只驗過元件本身孤立情境，AC 要求桌面表格列" +
+        "上也要覆蓋到）", () => {
+  it("Logo.dev 404 後 <img> 整個從列上消失，只留代號文字，不畫任何" +
+     "替代圖形", () => {
+    const { container } = list([row()]);
+    const card = screen.getByRole("listitem");
+    const img = container.querySelector("img")!;
+    expect(img).toBeInTheDocument();
+
+    fireEvent.error(img);
+
+    expect(container.querySelector("img")).not.toBeInTheDocument();
+    expect(within(card).getByText("TLT")).toBeInTheDocument();
+  });
+});
+
+describe("方向與狀態篩選 chip（OG-03／#320）：純前端過濾，不打任何請求" +
+        "——本檔案沒有任何 fetch 假體可注入，元件仍然渲染成功這件事" +
+        "本身就證明篩選不依賴任何網路請求", () => {
+  it("預設『全部』顯示全部劇本", () => {
+    list([row({ id: "a", symbol: "AAA" }), row({ id: "b", symbol: "BBB" })]);
+    expect(screen.getAllByRole("listitem")).toHaveLength(2);
+  });
+
+  it("點方向 chip 只留下符合的劇本，且沒有任何劇本符合時給明確指引", async () => {
+    list([
+      row({ id: "a", symbol: "AAA", spot: 100, target_price: 110 }), // 看漲
+      row({ id: "b", symbol: "BBB", spot: 100, target_price: 90 }),  // 看跌
+    ]);
+
+    await userEvent.click(
+      within(screen.getByRole("group", { name: "依方向篩選" }))
+        .getByRole("button", { name: "看漲" }));
+
+    expect(screen.getByText("AAA")).toBeInTheDocument();
+    expect(screen.queryByText("BBB")).not.toBeInTheDocument();
+  });
+
+  it("點狀態 chip 只留下符合的劇本", async () => {
+    list([
+      row({ id: "a", symbol: "AAA", expired: true }),
+      row({ id: "b", symbol: "BBB", expired: false,
+            latest_analyzed_at: "2026-08-04T09:30:00+00:00" }),
+    ]);
+
+    await userEvent.click(
+      within(screen.getByRole("group", { name: "依狀態篩選" }))
+        .getByRole("button", { name: "已過期" }));
+
+    expect(screen.getByText("AAA")).toBeInTheDocument();
+    expect(screen.queryByText("BBB")).not.toBeInTheDocument();
+  });
+
+  it("兩組篩選各自獨立、不互相清空對方目前選中的值", async () => {
+    list([row({ id: "a", symbol: "AAA", spot: 100, target_price: 110 })]);
+
+    const directionGroup = screen.getByRole("group", { name: "依方向篩選" });
+    const statusGroup = screen.getByRole("group", { name: "依狀態篩選" });
+
+    await userEvent.click(
+      within(directionGroup).getByRole("button", { name: "看漲" }));
+    await userEvent.click(
+      within(statusGroup).getByRole("button", { name: "正常" }));
+
+    expect(within(directionGroup).getByRole("button", { name: "看漲" }))
+      .toHaveClass("on");
+    expect(within(statusGroup).getByRole("button", { name: "正常" }))
+      .toHaveClass("on");
+  });
+
+  it("篩選導致清單為空時仍看得到劇本庫頁首（不是整頁消失）", async () => {
+    list([row({ id: "a", symbol: "AAA", spot: 100, target_price: 110 })]);
+
+    await userEvent.click(
+      within(screen.getByRole("group", { name: "依方向篩選" }))
+        .getByRole("button", { name: "看跌" }));
+
+    expect(screen.queryByRole("listitem")).not.toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "劇本庫" })).toBeInTheDocument();
+  });
+});
+
+describe("目標價所需漲跌幅小字（OG-ALL-001 跟進 OG-03／#320）", () => {
+  it("spot 存在時，目標價欄下方顯示所需漲跌幅（正負號＋一位小數百分比）", () => {
+    list([row({ id: "a", symbol: "AAA", spot: 100, target_price: 120 })]);
+    expect(screen.getByText("+20.0%")).toBeInTheDocument();
+  });
+
+  it("目標價低於現價時顯示負號", () => {
+    list([row({ id: "a", symbol: "AAA", spot: 100, target_price: 90 })]);
+    expect(screen.getByText("-10.0%")).toBeInTheDocument();
+  });
+
+  it("尚未分析（spot 為 null）時不顯示所需漲跌幅小字，只顯示價格與目標年月", () => {
+    list([row({ id: "a", symbol: "AAA", spot: null, target_price: 120 })]);
+    const targetCell = screen.getByText(/\$120\.00/).parentElement!;
+    expect(targetCell).toHaveTextContent("2028-05");
+    expect(targetCell).not.toHaveTextContent("%");
+  });
+});
+
+describe("頁首刷新入口（OG-03／#320，併入原本 Toolbar.tsx 的三個 prop）", () => {
+  it("busy 時按鈕停用並顯示「刷新中……」，點擊呼叫 onRefresh", async () => {
+    const onRefresh = vi.fn();
+    list([row()], { busy: true, onRefresh });
+
+    const btn = screen.getByRole("button", { name: "刷新中……" });
+    expect(btn).toBeDisabled();
+  });
+
+  it("非 busy 時顯示「重新整理」且可點擊", async () => {
+    const onRefresh = vi.fn();
+    list([row()], { onRefresh });
+
+    await userEvent.click(screen.getByRole("button", { name: "重新整理" }));
+    expect(onRefresh).toHaveBeenCalledTimes(1);
+  });
+
+  it("runSummary 存在且非 busy 時顯示上一輪摘要", () => {
+    list([row()], { runSummary: "2 成功／1 失敗" });
+    expect(screen.getByText("2 成功／1 失敗")).toBeInTheDocument();
+  });
+
+  it("busy 時就算有 runSummary 也優先顯示「更新中……」，不會兩句同時出現", () => {
+    list([row()], { busy: true, runSummary: "2 成功／1 失敗" });
+    expect(screen.getByText("更新中……")).toBeInTheDocument();
+    expect(screen.queryByText("2 成功／1 失敗")).not.toBeInTheDocument();
+  });
+});
+
+describe("OG-05（#324）：劇本庫 stats strip", () => {
+  /** URL 感知的 fetch mock——`/api/auth/status` 決定 `useAuthRole()`
+   *  查到的角色，`/api/me/usage-summary`／`/api/ops/metrics` 各自回
+   *  對應的 body；記錄每個 URL 被打了幾次，供「非 Super Admin 零 ops
+   *  metrics 請求」這條 AC 直接斷言呼叫次數。 */
+  function routeFetch(role: "normal" | "superuser" | "superadmin" = "normal") {
+    const usage = {
+      active_scenarios: 3, max_active_scenarios: 10,
+      quota_exempt: role !== "normal", refresh_min_interval_minutes: 30,
+      throttle_exempt: role !== "normal", last_activity_at: "2026-08-04T09:30:00+00:00",
+    };
+    const opsMetrics = {
+      vendor_fuse: { used: 400, budget: 2000 },
+      alerts: [{ key: "chain_sustained_incident", triggered: true, message: "x" }],
+    };
+    const calls: string[] = [];
+    const spy = vi.fn(async (url: string) => {
+      calls.push(url);
+      if (url.includes("/api/auth/status")) {
+        return { ok: true, status: 200, json: async () => ({ role }) };
+      }
+      if (url.includes("/api/me/usage-summary")) {
+        return { ok: true, status: 200, json: async () => usage };
+      }
+      if (url.includes("/api/ops/metrics")) {
+        return { ok: true, status: 200, json: async () => opsMetrics };
+      }
+      return { ok: true, status: 200, json: async () => ({}) };
+    });
+    vi.stubGlobal("fetch", spy);
+    return calls;
+  }
+
+  it("Normal User：看得到自己的用量三格，看不到 Super Admin 兩格", async () => {
+    routeFetch("normal");
+    list([row()]);
+
+    expect(await screen.findByText("3 / 10")).toBeInTheDocument();
+    expect(screen.getByText("進行中劇本")).toBeInTheDocument();
+    expect(screen.getByText("最近活動")).toBeInTheDocument();
+    expect(screen.getByText("30 分鐘")).toBeInTheDocument();
+    expect(screen.queryByText("Vendor 每日預算")).not.toBeInTheDocument();
+    expect(screen.queryByText("429 事故")).not.toBeInTheDocument();
+  });
+
+  it("豁免角色（Super User）：進行中劇本／節流間隔顯示「豁免」", async () => {
+    routeFetch("superuser");
+    list([row()]);
+
+    await screen.findByText("最近活動");
+    const strip = document.querySelector(".lib-stats-strip") as HTMLElement;
+    expect(within(strip).getAllByText("豁免")).toHaveLength(2);
+  });
+
+  it("Super Admin：額外看到 Vendor 每日預算與 429 事故兩格", async () => {
+    routeFetch("superadmin");
+    list([row()]);
+
+    expect(await screen.findByText("400 / 2000")).toBeInTheDocument();
+    expect(screen.getByText("Vendor 每日預算")).toBeInTheDocument();
+    expect(screen.getByText("429 事故")).toBeInTheDocument();
+    expect(screen.getByText("進行中")).toBeInTheDocument();   // 事故 triggered=true
+  });
+
+  it("非 Super Admin：零 /api/ops/metrics 請求（AC 明文）", async () => {
+    const calls = routeFetch("normal");
+    list([row()]);
+
+    await screen.findByText("3 / 10");   // 等 usage-summary 落地，確定第一輪 effect 都跑過
+    expect(calls.some((u) => u.includes("/api/ops/metrics"))).toBe(false);
+  });
+
+  it("Super Admin：確實發出 /api/ops/metrics 請求", async () => {
+    const calls = routeFetch("superadmin");
+    list([row()]);
+
+    await screen.findByText("Vendor 每日預算");
+    expect(calls.some((u) => u.includes("/api/ops/metrics"))).toBe(true);
+  });
+
+  it("last_activity_at 為 null 時顯示「尚無紀錄」，不是「尚未分析」", async () => {
+    const spy = vi.fn(async (url: string) => {
+      if (url.includes("/api/auth/status")) {
+        return { ok: true, status: 200, json: async () => ({ role: "normal" }) };
+      }
+      if (url.includes("/api/me/usage-summary")) {
+        return { ok: true, status: 200, json: async () => ({
+          active_scenarios: 0, max_active_scenarios: null,
+          quota_exempt: false, refresh_min_interval_minutes: null,
+          throttle_exempt: false, last_activity_at: null,
+        }) };
+      }
+      return { ok: true, status: 200, json: async () => ({}) };
+    });
+    vi.stubGlobal("fetch", spy);
+    list([row()]);
+
+    expect(await screen.findByText("尚無紀錄")).toBeInTheDocument();
+    expect(screen.queryByText("尚未分析")).not.toBeInTheDocument();
   });
 });

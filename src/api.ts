@@ -131,6 +131,13 @@ export interface RepresentativeCandidate {
   legs: RepresentativeCandidateLeg[];
   expiry: string;
   baseline_return: number;
+  /**
+   * OG-04（#323）：這組候選的 `candidate_key`——後端用它批次查詢
+   * narrow history 組出 `ScenarioSummary.cost_sparkline`，前端目前
+   * 不需要直接讀它。可選：本票落地前最後一次成功分析留下的舊資料
+   * 沒有這個欄位（`.get()` 誠實省略，不是每一筆都補齊）。
+   */
+  candidate_key?: string;
 }
 
 /**
@@ -728,6 +735,15 @@ export interface ScenarioSummary {
    * （不是假造一份「全部可選」）。
    */
   family_eligibility: Record<string, FamilyEligibility> | null;
+  /**
+   * OG-04（#323）：桌面劇本庫「淨成本走勢」欄——冠軍候選最近幾次
+   * 刷新的淨成本序列，`[analyzed_at, cost|null]`，依時間升冪排列，
+   * 後端已截尾（見 `api_app/main.py::_COST_SPARKLINE_POINTS`）。
+   * `null` ＝ 沒有可畫的序列（從未成功分析、單腿以外沒有 narrow
+   * row、或冠軍本身為 `null`），前端顯示「—」，不是空陣列。手機列
+   * 不顯示這欄（`CompactScenarioList.tsx` 不讀這個欄位）。
+   */
+  cost_sparkline: [string, number | null][] | null;
 }
 
 /**
@@ -1235,6 +1251,13 @@ export interface SuperUserOwnerInfo {
   created_at: string;
   last_activity_at: string | null;
   protected: boolean;
+  /** OG-11（#322）跟進：後端 `Owner` dataclass（PB-07／#304）早就有
+   *  這個欄位、`superuser_list_owners()` 用 `dataclasses.asdict()`
+   *  逐字回傳，前端只是直到本票才第一次宣告型別、開始讀它——不是
+   *  新增後端欄位。Controlled Beta 合成壓測 harness 產生的 owner
+   *  標記，唯一生產面用途是清理排程分開處理，這裡純顯示（synthetic
+   *  tag），不參與任何篩選以外的邏輯。 */
+  is_synthetic: boolean;
 }
 
 export interface SuperUserAuditEntry {
@@ -1325,6 +1348,82 @@ export function superuserSetOwnerProtected(
 
 export function superuserGetAuditLog(): Promise<SuperUserAuditEntry[]> {
   return request<SuperUserAuditEntry[]>("/api/superuser/audit-log");
+}
+
+/**
+ * OG-11（#322）：`GET /api/ops/metrics`（既有端點，S0／SCALE-08／#258
+ * 起就在，Super Admin-only，PB-11／#303 純加法擴充過一次）——前端
+ * 直到本票才第一次包一份 client，不是新增後端端點。回應**只含聚合
+ * 數字**，個別 owner 的可識別內容不在這裡（後端 docstring 明文的
+ * 安全考量）。
+ *
+ * 型別只宣告桌面 Super Admin 後台 stats 方塊要用到的欄位——回應本身
+ * 還有每個 `PERSISTED_METRICS` 桶各自完整的逐 bucket／source／symbol
+ * 明細陣列（`chain_fetch_count`／`chain_429_count`／`stale_serve_
+ * count`／`cold_miss_count`／`refresh_duration_ms`／`history_read_
+ * volume`／`abandoned_owner_cleanup_count`），這裡先只取「近 7 天
+ * 加總」這一層彙整值，逐 bucket 的時序細節本票不呈現（票面「刻意不做
+ * 豪華 Dashboard，沒有圖表」的既有裁示延伸）。
+ */
+export interface OpsMetricBucket {
+  bucket: string;
+  source: string | null;
+  symbol: string | null;
+  count: number;
+  total: number;
+  max_value: number | null;
+}
+
+export interface OpsMetrics {
+  chain_fetch_count: OpsMetricBucket[];
+  chain_429_count: OpsMetricBucket[];
+  stale_serve_count: OpsMetricBucket[];
+  cold_miss_count: OpsMetricBucket[];
+  refresh_duration_ms: OpsMetricBucket[];
+  history_read_volume: OpsMetricBucket[];
+  abandoned_owner_cleanup_count: OpsMetricBucket[];
+  table_size: Record<string, {
+    row_count: number;
+    total_bytes: number | null;
+    avg_row_bytes: number | null;
+    max_row_bytes: number | null;
+  }>;
+  anonymous_owners: {
+    active: number;
+    abandoned: number;
+    eligible_for_hard_delete: number;
+    protected: number;
+    total: number;
+  };
+  scenarios: { total: number; average_per_owner: number };
+  /**
+   * OG-05（#324）純加法：今天全站 chain fetch 用量對照
+   * `GLOBAL_VENDOR_DAILY_BUDGET`——`budget` 為 `null` 時代表這道煞車
+   * 停用（後端 `<=0` 即停用的既有慣例）。
+   */
+  vendor_fuse: { used: number; budget: number | null };
+  alerts: { key: string; triggered: boolean; message: string }[];
+}
+
+export function getOpsMetrics(): Promise<OpsMetrics> {
+  return request<OpsMetrics>("/api/ops/metrics");
+}
+
+// ---------- OG-05（#324）：劇本庫 stats strip 唯讀使用量摘要 ----------
+
+export interface UsageSummary {
+  active_scenarios: number;
+  /** `null`＝quota 停用（後端 `<=0` 即停用），不是「上限是 0」。 */
+  max_active_scenarios: number | null;
+  quota_exempt: boolean;
+  /** `null`＝節流停用。 */
+  refresh_min_interval_minutes: number | null;
+  throttle_exempt: boolean;
+  last_activity_at: string | null;
+}
+
+export function getUsageSummary(): Promise<UsageSummary> {
+  return request<UsageSummary>("/api/me/usage-summary");
 }
 
 // ---------- Historical IV 歷史序列（#126／#114，HIVT-02–04／#153–155） ----------

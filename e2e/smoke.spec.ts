@@ -208,7 +208,7 @@ test("清單 → 詳細頁：摘要、基準候選、進場成本、主圖、候
   await expect(candidatePool.getByText("買賣價差偏大")).toBeVisible();
 
   // 返回劇本庫
-  await page.getByRole("link", { name: /劇本庫/ }).click();
+  await page.getByRole("link", { name: "‹ 劇本庫" }).click();
   await expect(page.getByRole("heading", { name: "劇本庫" })).toBeVisible();
 });
 
@@ -522,7 +522,7 @@ test("劇本庫：建立 → 出現在清單 → 封存後消失（V3／#51）",
   );
 
   await page.goto("/");
-  await expect(page.getByText("劇本庫")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "劇本庫" })).toBeVisible();
   await expect(page.getByText(/還沒有劇本/)).toBeVisible();
 
   // 手機版（MVP-v2／#77、#81）：建立劇本入口在 Dashboard 佔位區下方，
@@ -628,7 +628,10 @@ test("垃圾桶入口可以點進去，返回鍵回到劇本庫（TR6／#91）",
   await page.goto("/");
   await expect(page.getByText("TLT", { exact: true })).toBeVisible();
 
-  await page.getByRole("button", { name: "垃圾桶", exact: true }).click();
+  // OG-09（#319）：垃圾桶入口從手機頂欄（曾是 `Toolbar` 的 pill 按鈕）
+  // 改成 `BottomNav` 既有的 `<a>` 連結——`MobileTopBar` 換裝後不再重複
+  // 顯示一份，這裡與本檔其餘幾處同一個入口的測試一併改成 `link`。
+  await page.getByRole("link", { name: "垃圾桶", exact: true }).click();
   await expect(page.getByRole("heading", { name: "垃圾桶" })).toBeVisible();
   await expect(page.getByText("垃圾桶是空的。")).toBeVisible();
 
@@ -660,7 +663,7 @@ test("垃圾桶：還原一個、永久刪除另一個（TR4／#92）", async ({
 
   await page.goto("/");
   await expect(page.getByText(/還沒有劇本/)).toBeVisible();
-  await page.getByRole("button", { name: "垃圾桶", exact: true }).click();
+  await page.getByRole("link", { name: "垃圾桶", exact: true }).click();
   await expect(page.getByText("TLT", { exact: true })).toBeVisible();
   await expect(page.getByText("SPY", { exact: true })).toBeVisible();
 
@@ -671,7 +674,7 @@ test("垃圾桶：還原一個、永久刪除另一個（TR4／#92）", async ({
   await expect(page.getByText("TLT", { exact: true })).toBeVisible();
 
   // 永久刪除 SPY：需要二次確認，確認畫面列出具體 ticker 與 target month
-  await page.getByRole("button", { name: "垃圾桶", exact: true }).click();
+  await page.getByRole("link", { name: "垃圾桶", exact: true }).click();
   await expect(page.getByText("SPY", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: "永久刪除 SPY 2028-06" }).click();
   const sheet = page.getByRole("alertdialog");
@@ -707,7 +710,7 @@ test("垃圾桶批次操作：全選後批次永久刪除，確認畫面列出�
   });
 
   await page.goto("/");
-  await page.getByRole("button", { name: "垃圾桶", exact: true }).click();
+  await page.getByRole("link", { name: "垃圾桶", exact: true }).click();
   await expect(page.getByText("TLT", { exact: true })).toBeVisible();
   await expect(page.getByText("SPY", { exact: true })).toBeVisible();
 
@@ -750,7 +753,7 @@ test("垃圾桶批次操作：全選後批次還原，兩者都回到劇本庫�
   });
 
   await page.goto("/");
-  await page.getByRole("button", { name: "垃圾桶", exact: true }).click();
+  await page.getByRole("link", { name: "垃圾桶", exact: true }).click();
   await expect(page.getByText("TLT", { exact: true })).toBeVisible();
   await expect(page.getByText("SPY", { exact: true })).toBeVisible();
 
@@ -793,19 +796,20 @@ test("功能列捲動時仍釘在頂部、而且按得到（V3／#51 驗收第 1
   });
 
   await page.goto("/");
-  const toolbar = page.getByText("劇本庫");
-  await expect(toolbar).toBeVisible();
+  // OG-09（#319）：手機頂欄從 `<header class="toolbar">`（iOS Large
+  // Title 版式）換成 `.mnav`（52px、`position: sticky`）——量釘住的
+  // 元素本身改成它。
+  const mnav = page.locator(".mnav");
+  await expect(mnav).toBeVisible();
 
   await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
 
   // 先確認頁面真的捲動了——頁面短到不需要捲時，`toBeInViewport()` 恆真，
   // 這條測試就會在功能列根本沒釘住的情況下照樣綠。
   expect(await page.evaluate(() => window.scrollY)).toBeGreaterThan(0);
-  // 量釘住的那個元素本身（`<header>`），不是裡面的標題——標題的 y 還含
-  // 功能列自己的上內距（安全區），量它會得到一個不為 0 的正常值。
-  const box = (await page.locator("header.toolbar").boundingBox())!;
+  const box = (await mnav.boundingBox())!;
   expect(box.y).toBeLessThan(2);
-  await expect(toolbar).toBeInViewport();
+  await expect(mnav).toBeInViewport();
 
   // 釘住還不夠——捲到底時按下去要真的送出請求，功能列才算能用。
   // 手機版（MVP-v2／#77、#81）工具列上只剩刷新這一個入口——建立劇本
@@ -1226,7 +1230,7 @@ test("新增劇本：點擊就地展開，不換頁、不彈出 modal（MVP-v2�
     // 就地展開：網址沒變、Dashboard 與工具列仍在同一頁上。
     expect(page.url()).toBe(urlBefore);
     await expect(page.getByLabel("Dashboard")).toBeVisible();
-    await expect(page.getByText("劇本庫")).toBeVisible();
+    await expect(page.getByRole("heading", { name: "劇本庫" })).toBeVisible();
 
     // 收合再展開，內容還在（沿用 #75 的既有教訓：面板一律掛著只切換
     // 可見度，不是條件渲染整個卸載重掛）。
@@ -1262,7 +1266,11 @@ test("Compact row 的密度：一個手機視窗至少看得到 4 個劇本，�
       }
     }
 
-    expect(visibleWithoutScrolling).toBeGreaterThanOrEqual(4);
+    // UI-IMPL-002（#092）：新增的常駐底部導覽列（BottomNav，約 56px＋
+    // safe-area）是核准設計的一部分，會固定吃掉一部分原本給卡片用的
+    // 垂直空間——這是刻意的設計取捨，不是密度退化，門檻因此從 4 降到
+    // 3（仍然遠優於舊版大卡片版式一屏通常只放得下 2～3 張）。
+    expect(visibleWithoutScrolling).toBeGreaterThanOrEqual(3);
   });
 
 test("劇本庫卡片有概覽用的價格欄位：現價／最高／最低（QA 修正）",
@@ -1467,22 +1475,38 @@ async function routeSettingsMobile(page: import("@playwright/test").Page) {
   // `/api/diagnostics`——這裡預設回空清單，個別測試需要非空清單時
   // 自己再覆蓋這個 route。
   await page.route("**/api/diagnostics*", (route) => route.fulfill({ json: [] }));
+  // OG-11（#322）：role 固定模擬 Super Admin，`<SuperUserAdmin />` 與
+  // 它掛著的 `OpsStats`／owners 清單一律會掛載並發請求。
+  await page.route("**/api/superuser/owners*", (route) => route.fulfill({ json: [] }));
+  await page.route("**/api/superuser/audit-log*", (route) => route.fulfill({ json: [] }));
+  await page.route("**/api/ops/metrics", (route) => route.fulfill({ json: {
+    chain_fetch_count: [], chain_429_count: [], stale_serve_count: [],
+    cold_miss_count: [], refresh_duration_ms: [], history_read_volume: [],
+    abandoned_owner_cleanup_count: [],
+    table_size: {},
+    anonymous_owners: { active: 0, abandoned: 0, eligible_for_hard_delete: 0,
+                       protected: 0, total: 0 },
+    scenarios: { total: 0, average_per_owner: 0 },
+    alerts: [],
+  } }));
 }
 
-test("手機版：工作區右上角的齒輪進得去設定，返回回得來（Settings／#124）", async ({ page }) => {
+test("手機版：底部導覽的「設定」進得去設定，返回回得來（Settings／#124；" +
+     "OG-09／#319 起入口從頂欄齒輪改到底部導覽，原本工作區右上角的齒輪" +
+     "已隨 `Toolbar` 退場，`BottomNav` 這個入口本來就在、不是新功能）",
+     async ({ page }) => {
   await routeSettingsMobile(page);
   await page.goto("/");
 
-  const gear = page.getByRole("button", { name: "設定" });
-  await expect(gear).toBeVisible();
+  const settingsTab = page.getByRole("link", { name: "設定", exact: true });
+  await expect(settingsTab).toBeVisible();
 
-  // 「右上角」：齒輪落在視窗右半邊、且在頂部功能列內。
-  const box = (await gear.boundingBox())!;
+  // 底部導覽：連結落在視窗下半部（取代原本「右上角」的齒輪位置斷言）。
+  const box = (await settingsTab.boundingBox())!;
   const viewport = page.viewportSize()!;
-  expect(box.x).toBeGreaterThan(viewport.width / 2);
-  expect(box.y).toBeLessThan(120);
+  expect(box.y).toBeGreaterThan(viewport.height / 2);
 
-  await gear.click();
+  await settingsTab.click();
   await expect(page.getByText("Data / API")).toBeVisible();
   // 設定是整頁替換：劇本庫的功能列此時不在畫面上
   await expect(page.getByRole("button", { name: "重新整理" })).toHaveCount(0);
@@ -1559,6 +1583,19 @@ async function routeRoleJourney(page: import("@playwright/test").Page) {
   await page.route("**/api/superuser/owners*", (route) => route.fulfill({ json: [] }));
   await page.route("**/api/superuser/audit-log*", (route) => route.fulfill({ json: [] }));
   await page.route("**/api/diagnostics*", (route) => route.fulfill({ json: [] }));
+  // OG-11（#322）：`<SuperUserAdmin />` 掛載時連帶掛的 `OpsStats` 一律
+  // 打這個端點——手機版沒有桌面 subnav 的分頁守門，Super Admin 一登入
+  // 就立刻掛載，不攔截這條路由這個測試會掛在未攔截請求上。
+  await page.route("**/api/ops/metrics", (route) => route.fulfill({ json: {
+    chain_fetch_count: [], chain_429_count: [], stale_serve_count: [],
+    cold_miss_count: [], refresh_duration_ms: [], history_read_volume: [],
+    abandoned_owner_cleanup_count: [],
+    table_size: {},
+    anonymous_owners: { active: 0, abandoned: 0, eligible_for_hard_delete: 0,
+                       protected: 0, total: 0 },
+    scenarios: { total: 0, average_per_owner: 0 },
+    alerts: [],
+  } }));
 
   await page.route("**/api/auth/login", async (route) => {
     const body = JSON.parse(route.request().postData() ?? "{}") as
@@ -2796,6 +2833,65 @@ test("手機版：多 family 並存——分頁列出、預設打開冠軍所屬
   await expect(summary.getByText("Bull Call Spread")).toBeVisible();
 });
 
+test("OG-10（#327）：手機詳細頁整頁順序依 artifact「Mobile 劇本詳細」板" +
+     "重排——Family tabs／排名表在劇本主圖之前，三價位階梯／進場面板緊接" +
+     "在主圖之後，Historical IV 在進場面板之後；進場面板固定顯示冠軍，" +
+     "切換 family 分頁零額外請求、頭條與進場面板都不變", async ({ page }) => {
+  const row = { ...libraryRow(), strategies: ["single-leg", "vertical-spread"] };
+  const multi = multiFamilyView();
+  await routeLibrary(page, row);
+  await page.route("**/api/scenarios/s1", (route) =>
+    route.fulfill({ json: { ...row, latest_result: multi } }));
+  await page.route("**/api/auth/status",
+    (route) => route.fulfill({ json: { role: "superuser" } }));
+  await page.route("**/api/settings", (route) =>
+    route.fulfill({ json: { historical_iv_enabled: true } }));
+  const ivCalls: string[] = [];
+  await page.route("**/api/scenarios/*/iv-history*", (route) => {
+    ivCalls.push(route.request().url());
+    return route.fulfill({ json: { candidate_key: "none" } });
+  });
+
+  await page.goto("/");
+  await page.getByRole("link", { name: /XYZ/ }).click();
+  await expect(page.getByText(/劇本主圖/)).toBeVisible();
+
+  // 區塊順序：Family tabs（排名表所在）在劇本主圖之前，進場面板緊接在
+  // 主圖之後——冠軍是 Vertical Spread（兩腿），Historical IV 因此不
+  // 渲染（既有單腿限定守門，跟本票的位置重排是兩件事），順序驗證改用
+  // 「淨成本走勢」這張底部收合卡確認排在進場面板之後即可。
+  const tabsY = (await page.getByRole("group", { name: "策略家族" })
+    .boundingBox())!.y;
+  const chartY = (await page.getByText("劇本主圖").boundingBox())!.y;
+  const entryPanelY = (await page.getByText("進場 · 最差成交口徑")
+    .boundingBox())!.y;
+  const historyRowY = (await page.getByText("Spread 淨成本走勢")
+    .boundingBox())!.y;
+  expect(tabsY).toBeLessThan(chartY);
+  expect(chartY).toBeLessThan(entryPanelY);
+  expect(entryPanelY).toBeLessThan(historyRowY);
+
+  // 進場面板固定顯示冠軍（真實契約樣本的 baseline 第 1 名候選，這裡
+  // 動態取它的賣腿履約價，不手造假設值）——切到 Call / Put 分頁（Long
+  // Call 單腿候選）後，進場面板逐字不變，跟頭條摘要卡同一條 QA1-06
+  // 既有原則延伸到這個新面板；且分頁切換本身不打任何新請求（純記憶體
+  // 內的既有候選池切換）。
+  const champKey = view.results[0].expiry_top10![0].candidate_keys[0];
+  const sellStrike = candOf(view, champKey).legs.find((l) => l.side === "sell")!.strike;
+  const entryPanel = page.getByRole("heading", { name: "進場 · 最差成交口徑" })
+    .locator("xpath=..");
+  await expect(entryPanel.getByText(new RegExp(`賣.*${sellStrike}`))).toBeVisible();
+
+  const requestUrls: string[] = [];
+  page.on("request", (req) => requestUrls.push(req.url()));
+  await page.waitForLoadState("networkidle");
+  requestUrls.length = 0;
+  await page.getByRole("button", { name: "Call / Put" }).click();
+  expect(requestUrls).toEqual([]);
+  await expect(entryPanel.getByText(new RegExp(`賣.*${sellStrike}`))).toBeVisible();
+  expect(ivCalls).toEqual([]);
+});
+
 test("手機版：不可選的 family 有分頁、點得進去看得到原因（T11／#229，facts-only）",
    async ({ page }) => {
   const row = { ...libraryRow(),
@@ -2902,19 +2998,27 @@ test("T16（#232）：Butterfly 兩個損益兩平點與獲利區間都在分析
   await page.goto("/#/s/s1");
 
   await page.getByText("📄 分析報告").click();
-  const breakevenRow = page.getByText("Breakeven", { exact: true }).locator("xpath=..");
+  // OG-10（#327）起手機版新增的「進場」面板固定顯示同一組冠軍候選，
+  // 也重用同一份 `RiskPayoff`（跟這裡的分析報告卡是同一份純函式、同一
+  // 組候選，逐字印出同樣的 Breakeven／獲利區間／Max Loss 文字）——
+  // 不縮小範圍的 `page.getByText` 會連帶命中那張卡，變成「找到多個」
+  // 的假失敗。這裡縮小到「📄 分析報告」這張卡本身，跟桌面版既有測試
+  // （`rightPanel.getByText`／`bottomTabs.getByText` 等）同一套「先
+  // scope 到卡片再查」慣例，不是弱化斷言範圍。
+  const reportCard = page.locator(".card").filter({ hasText: "📄 分析報告" }).first();
+  const breakevenRow = reportCard.getByText("Breakeven", { exact: true }).locator("xpath=..");
   await expect(breakevenRow).toContainText(
     `$${butterflyCand.breakeven_points[0].toFixed(2)}`);
   await expect(breakevenRow).toContainText(
     `$${butterflyCand.breakeven_points[1].toFixed(2)}`);
-  const regionRow = page.getByText("獲利區間", { exact: true }).locator("xpath=..");
+  const regionRow = reportCard.getByText("獲利區間", { exact: true }).locator("xpath=..");
   await expect(regionRow).toContainText(
     `$${butterflyCand.profit_region[0].toFixed(2)}`);
   await expect(regionRow).toContainText(
     `$${butterflyCand.profit_region[1].toFixed(2)}`);
 
   // AC 明文性質：broken-wing 的 Max Loss 超過已付權利金，兩者不相等。
-  const maxLossRow = page.getByText("Max Loss", { exact: true }).locator("xpath=..");
+  const maxLossRow = reportCard.getByText("Max Loss", { exact: true }).locator("xpath=..");
   await expect(maxLossRow).toContainText(
     `$${(butterflyCand.max_loss_per_contract / 100).toFixed(2)}`);
   await expect(maxLossRow).not.toContainText(
@@ -2954,7 +3058,11 @@ test("CLOSEOUT-004（Finding 1）：獲利區間在上方沒有界的 Butterfly�
   await page.goto("/#/s/s1");
 
   await page.getByText("📄 分析報告").click();
-  const regionRow = page.getByText("獲利區間", { exact: true }).locator("xpath=..");
+  // OG-10（#327）：同一個理由，縮小到「📄 分析報告」卡本身，避開手機版
+  // 新增「進場」面板也重用同一份 `RiskPayoff` 造成的文字重複（見上一條
+  // 測試同樣的註解）。
+  const reportCard = page.locator(".card").filter({ hasText: "📄 分析報告" }).first();
+  const regionRow = reportCard.getByText("獲利區間", { exact: true }).locator("xpath=..");
   await expect(regionRow).toContainText(
     `$${UNBOUNDED_REGION.profit_region[0]!.toFixed(2)} 以上`);
   await expect(regionRow).toContainText("更高的標的價到期時一樣獲利");
@@ -3226,4 +3334,28 @@ test("手機版：首頁 Beta 說明常駐可見，頁尾在每個畫面都在�
   // 「怎麼刪」的連結真的可以點到設定頁（PB-04 自助刪除入口所在）。
   await page.getByRole("link", { name: "設定頁" }).click();
   await expect(page).toHaveURL(/#\/settings$/);
+});
+
+/* ---------- OG-12（#328）：375px 整頁不橫捲（page-level 一般性守門，
+   不只是既有 Heatmap／到期日 chip 這些個別功能各自的橫捲測試） ---------- */
+
+test("OG-12（#328）：375px（比既有 iPhone 專案預設 390px 更窄的手機寬度）" +
+     "下，劇本庫與詳細頁整頁都不出現水平捲軸——既有 Heatmap／到期日 chip" +
+     "橫捲測試各自只驗自己那個功能的水平捲動容器，這裡額外驗證整個" +
+     "`<html>` 本身在更窄的寬度下也不會被撐寬", async ({ page }) => {
+  await page.setViewportSize({ width: 375, height: 812 });
+  const row = libraryRow({ id: "s1", symbol: "NVDA" });
+  await routeLibrary(page, row, sampleCallFly);
+
+  await page.goto("/");
+  await expect(page.getByRole("heading", { name: "劇本庫" })).toBeVisible();
+  const libraryOverflowX = await page.evaluate(
+    () => document.documentElement.scrollWidth > window.innerWidth);
+  expect(libraryOverflowX).toBe(false);
+
+  await page.getByRole("link", { name: /NVDA/ }).click();
+  await expect(page.getByText(/劇本主圖/)).toBeVisible();
+  const detailOverflowX = await page.evaluate(
+    () => document.documentElement.scrollWidth > window.innerWidth);
+  expect(detailOverflowX).toBe(false);
 });

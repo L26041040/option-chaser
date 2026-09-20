@@ -7,9 +7,21 @@
       content="width=device-width, initial-scale=1, viewport-fit=cover"
     />
     <meta name="apple-mobile-web-app-capable" content="yes" />
-    <meta name="theme-color" content="#f2f2f7" media="(prefers-color-scheme: light)" />
-    <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)" />
+    <!-- Obsidian Gold（OG-01／#317）：深色優先，淺色覆寫。 -->
+    <meta name="theme-color" content="#0B0E11" media="(prefers-color-scheme: dark)" />
+    <meta name="theme-color" content="#F5F5F5" media="(prefers-color-scheme: light)" />
     <title>Option Chaser</title>
+    <!-- OG-01（#317）：Geist（拉丁／數字）× Geist Mono × Noto Sans TC
+         （繁中）皆為真正 web font，不依賴使用者系統字型 fallback（那
+         正是「新細明體」問題的根因）。preconnect 兩個 Google Fonts
+         網域省掉一次 DNS+TLS 往返，`display=swap` 讓文字先用 fallback
+         字體顯示、字型到位後才換上，不會讓使用者等一片空白。 -->
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&family=Noto+Sans+TC:wght@400;500;600;700&display=swap"
+    />
   </head>
   <body>
     <div id="root"></div>

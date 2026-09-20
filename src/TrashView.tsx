@@ -3,9 +3,11 @@
  * 永久刪除；TR5／#93 補上批次操作）。
  *
  * 手機／桌面共用同一個元件、同一份標記——差別只在誰把它放在哪裡：
- * 手機整頁替換（`App.tsx` 的 `!isDesktop && showTrash` 分支），桌面
- * 替換左側 `library-pane` 的內容、右側 `detail-pane` 維持既有邏輯
- * 不動（需求方核准版面 D2：左側面板整個切換，不是彈出新視窗）。
+ * 手機整頁替換（`App.tsx` 的 `!isDesktop && showTrash` 分支）；桌面
+ * （OG-02／#318 起）同樣是整頁替換，跟劇本庫／詳細頁／設定共用同一個
+ * 全寬頁面容器（`.page`），不再是「左側面板整個切換、右側維持不動」
+ * 的側欄語意（需求方核准版面 D2 的精神——整塊切換、不是彈出新視窗
+ * ——在頁面級導覽下依然成立，只是「整塊」現在是整個頁面）。
  *
  * 列表本身用既有 `GET /api/scenarios?include_archived=true` 篩出已
  * 封存者（`api.ts` 的 `listArchivedScenarios()`），不新增後端端點。
@@ -15,6 +17,23 @@
  * 得先點圖示才進批次選取——這裡每列的 checkbox 與單筆「還原」「永久
  * 刪除」鈕本來就同時存在，不必切換模式：反正這個畫面裡的列本來就沒有
  * 「點下去進詳細頁」這件事，checkbox 不會跟其他手勢搶戲。
+ *
+ * OG-ALL-001 跟進 OG-03（#320）：桌面版清單改成 Markets 式全寬資料表
+ * 後，票面「垃圾桶頁同款表格換皮」這條 AC 原本漏做（`/code-review`
+ * Spec 軸抓到）——這裡補上，但這個元件本來就是手機／桌面共用同一份
+ * 標記（見上），不能像 `ScenarioList.tsx`／`CompactScenarioList.tsx`
+ * 那樣「兩個檔案本來就分開、互不影響」，所以改用既有的
+ * `useIsDesktop()`（`IvTrend.tsx` 等處已在用的同一個斷點判斷）在渲染
+ * 層直接分流：`isDesktop` 時走新的 `TrashRowTable`（沿用
+ * `ScenarioList.tsx` 已建立的 `.lib-table`／`.lib-thead`／`.lib-cell`
+ * primitives，欄位為 checkbox／標的／目標／封存於／最後收益率／
+ * 操作——跟主清單不同，沒有方向／冠軍策略／劇本報酬這些只有「還活著」
+ * 的劇本才有意義的欄位）；`!isDesktop` 時維持 `TrashRowCard`，跟改版
+ * 前逐位元組相同的卡片標記，確保手機版零改動（`e2e/smoke.spec.ts`
+ * 既有垃圾桶測試把關）。兩者共用同一組 state／還原／刪除／批次函式，
+ * 只有「怎麼畫一列」這件事分成兩份；二次確認 modal
+ * （`ConfirmDeleteOne`／`ConfirmDeleteBatch`）與批次動作列在兩個平台
+ * 逐字共用，不重複。
  */
 import { useEffect, useState } from "react";
 
@@ -26,6 +45,8 @@ import {
 } from "./api";
 import { CheckIcon } from "./icons";
 import { formatArchivedAt, formatReturn, money } from "./scenarios";
+import StockLogo from "./StockLogo";
+import { useIsDesktop } from "./useIsDesktop";
 
 /**
  * 永久刪除二次確認畫面：單筆時明確列出該劇本的 ticker＋target month
@@ -105,6 +126,155 @@ function ConfirmDeleteBatch({
   );
 }
 
+interface TrashRowProps {
+  row: ScenarioSummary;
+  busy: boolean;
+  checked: boolean;
+  onToggleSelected: (id: string) => void;
+  onRestore: (row: ScenarioSummary) => void;
+  onRequestDelete: (id: string) => void;
+}
+
+/** 手機版列——跟 OG-ALL-001 之前逐位元組相同的卡片標記，確保手機版
+ *  零改動（見檔頭說明）。 */
+function TrashRowCard({
+  row, busy, checked, onToggleSelected, onRestore, onRequestDelete,
+}: TrashRowProps) {
+  const who = `${row.symbol} ${row.target_month}`;
+  return (
+    <li className="card">
+      <div className="row">
+        <span className="symbol-group">
+          <button
+            type="button"
+            className={checked ? "row-checkbox checked" : "row-checkbox"}
+            onClick={() => onToggleSelected(row.id)}
+            aria-pressed={checked}
+            aria-label={`選取 ${who}`}
+          >
+            {checked && <CheckIcon />}
+          </button>
+          <span className="row-value big">{row.symbol}</span>
+        </span>
+        <span className="tag">垃圾桶</span>
+      </div>
+      <div className="row">
+        <span className="row-label">目標</span>
+        <span className="row-value">
+          {money(row.target_price)}　{row.target_month}
+        </span>
+      </div>
+      <div className="row">
+        <span className="row-label">封存於</span>
+        <span className="row-value">
+          {formatArchivedAt(row.archived_at!)}
+        </span>
+      </div>
+      <div className="row">
+        <span className="row-label">最後收益率</span>
+        <span className="row-value">{formatReturn(row.best_return)}</span>
+      </div>
+      <div className="card-actions trash-row-actions">
+        <button
+          className="text-button"
+          onClick={() => void onRestore(row)}
+          disabled={busy}
+          aria-label={`還原 ${who}`}
+        >
+          還原
+        </button>
+        <button
+          className="text-button danger"
+          onClick={() => onRequestDelete(row.id)}
+          disabled={busy}
+          aria-label={`永久刪除 ${who}`}
+        >
+          永久刪除
+        </button>
+      </div>
+    </li>
+  );
+}
+
+/** 桌面版頭列——純顯示、`aria-hidden`，與 `ScenarioList.tsx` 的
+ *  `LibTableHead()` 同一種既有慣例（欄位標籤不是操作）。 */
+function TrashTableHead() {
+  return (
+    <div className="lib-thead trash-row-grid" aria-hidden="true">
+      <span className="lib-cell lib-cell-check" />
+      <span className="lib-cell">標的</span>
+      <span className="lib-cell r">目標</span>
+      <span className="lib-cell">封存於</span>
+      <span className="lib-cell r">最後收益率</span>
+      <span className="lib-cell">操作</span>
+    </div>
+  );
+}
+
+/**
+ * 桌面版列（OG-ALL-001 跟進 OG-03／#320）：沿用 `ScenarioList.tsx`
+ * 已建立的 `.lib-cell` 系表格 primitives，欄位組成見檔頭說明。這個
+ * 畫面裡的列從來就不是導覽入口（見檔頭），因此不套用主清單那組鎖定
+ * `<a>` 的 `.compact-card-tap.lib-row-tap` 複合選擇器，改用專屬的
+ * `.trash-row`／`.trash-row-grid`（見 `styles.css`）。
+ */
+function TrashRowTable({
+  row, busy, checked, onToggleSelected, onRestore, onRequestDelete,
+}: TrashRowProps) {
+  const who = `${row.symbol} ${row.target_month}`;
+  return (
+    <li className="trash-row trash-row-grid">
+      <span className="lib-cell lib-cell-check">
+        <button
+          type="button"
+          className={checked ? "row-checkbox checked" : "row-checkbox"}
+          onClick={() => onToggleSelected(row.id)}
+          aria-pressed={checked}
+          aria-label={`選取 ${who}`}
+        >
+          {checked && <CheckIcon />}
+        </button>
+      </span>
+
+      {/* 標的：跟主清單一樣真實品牌 Logo，找不到就整個消失
+          （UI-IMPL-002／#092，Logo.dev `fallback=404` 契約——「同款
+          表格換皮」既然連 Logo 24px 都是主表格的視覺語言之一，這裡
+          不該另外長出一份「只有文字」的特例）。 */}
+      <span className="lib-cell lib-cell-symbol">
+        <StockLogo symbol={row.symbol} size="s" />
+        <span className="compact-symbol">{row.symbol}</span>
+      </span>
+
+      <span className="lib-cell lib-cell-target r">
+        <span>{money(row.target_price)}　{row.target_month}</span>
+      </span>
+
+      <span className="lib-cell">{formatArchivedAt(row.archived_at!)}</span>
+
+      <span className="lib-cell r">{formatReturn(row.best_return)}</span>
+
+      <span className="lib-cell lib-cell-actions">
+        <button
+          className="text-button"
+          onClick={() => void onRestore(row)}
+          disabled={busy}
+          aria-label={`還原 ${who}`}
+        >
+          還原
+        </button>
+        <button
+          className="text-button danger"
+          onClick={() => onRequestDelete(row.id)}
+          disabled={busy}
+          aria-label={`永久刪除 ${who}`}
+        >
+          永久刪除
+        </button>
+      </span>
+    </li>
+  );
+}
+
 export default function TrashView({
   onRestore,
 }: {
@@ -114,6 +284,7 @@ export default function TrashView({
    *  完整資料的既有慣例，不必為此另打一次清單查詢）。 */
   onRestore: (row: ScenarioSummary) => void;
 }) {
+  const isDesktop = useIsDesktop();
   const [rows, setRows] = useState<ScenarioSummary[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
@@ -269,66 +440,38 @@ export default function TrashView({
       )}
 
       {rows !== null && rows.length > 0 && (
-        <ul className="list">
-          {rows.map((row) => {
-            const who = `${row.symbol} ${row.target_month}`;
-            const busy = busyId === row.id;
-            const checked = selectedIds.has(row.id);
-            return (
-              <li key={row.id} className="card">
-                <div className="row">
-                  <span className="symbol-group">
-                    <button
-                      type="button"
-                      className={checked ? "row-checkbox checked" : "row-checkbox"}
-                      onClick={() => toggleSelected(row.id)}
-                      aria-pressed={checked}
-                      aria-label={`選取 ${who}`}
-                    >
-                      {checked && <CheckIcon />}
-                    </button>
-                    <span className="row-value big">{row.symbol}</span>
-                  </span>
-                  <span className="tag">垃圾桶</span>
-                </div>
-                <div className="row">
-                  <span className="row-label">目標</span>
-                  <span className="row-value">
-                    {money(row.target_price)}　{row.target_month}
-                  </span>
-                </div>
-                <div className="row">
-                  <span className="row-label">封存於</span>
-                  <span className="row-value">
-                    {formatArchivedAt(row.archived_at!)}
-                  </span>
-                </div>
-                <div className="row">
-                  <span className="row-label">最後收益率</span>
-                  <span className="row-value">{formatReturn(row.best_return)}</span>
-                </div>
-                <div className="card-actions trash-row-actions">
-                  <button
-                    className="text-button"
-                    onClick={() => void restore(row)}
-                    disabled={busy}
-                    aria-label={`還原 ${who}`}
-                  >
-                    還原
-                  </button>
-                  <button
-                    className="text-button danger"
-                    onClick={() => setConfirmDeleteId(row.id)}
-                    disabled={busy}
-                    aria-label={`永久刪除 ${who}`}
-                  >
-                    永久刪除
-                  </button>
-                </div>
-              </li>
-            );
-          })}
-        </ul>
+        isDesktop ? (
+          <div className="lib-table trash-table">
+            <TrashTableHead />
+            <ul className="compact-list lib-tbody">
+              {rows.map((row) => (
+                <TrashRowTable
+                  key={row.id}
+                  row={row}
+                  busy={busyId === row.id}
+                  checked={selectedIds.has(row.id)}
+                  onToggleSelected={toggleSelected}
+                  onRestore={restore}
+                  onRequestDelete={setConfirmDeleteId}
+                />
+              ))}
+            </ul>
+          </div>
+        ) : (
+          <ul className="list">
+            {rows.map((row) => (
+              <TrashRowCard
+                key={row.id}
+                row={row}
+                busy={busyId === row.id}
+                checked={selectedIds.has(row.id)}
+                onToggleSelected={toggleSelected}
+                onRestore={restore}
+                onRequestDelete={setConfirmDeleteId}
+              />
+            ))}
+          </ul>
+        )
       )}
 
       {rows !== null && rows.length > 0 && (

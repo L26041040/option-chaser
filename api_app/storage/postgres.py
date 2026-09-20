@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import contextvars
 from contextlib import contextmanager
+from typing import Sequence
 
 import psycopg
 from psycopg.types.json import Jsonb
@@ -1130,6 +1131,55 @@ class PostgresStorage:
                 (scenario_id, candidate_key, owner,
                  list(analyzed_ats))).fetchall()
         return {r[0]: r[1] for r in rows}
+
+    def cost_sparklines(
+        self, pairs: Sequence[tuple[str, str]], *, owner: str, limit: int,
+    ) -> dict[str, list[tuple[str, float | None]]]:
+        owner = require_owner(owner)
+        pairs = list(pairs)
+        if not pairs:
+            return {}
+        # `VALUES (%s,%s), (%s,%s), ...` 這個佔位符數量本身跟著 `pairs`
+        # 長度動態產生——不是字串插值實際資料（每個值仍走參數化），跟
+        # 既有 `ANY(%s)` 批次查詢同樣安全，只是這裡批次的維度是「多組
+        # (scenario_id, candidate_key)」而不是「同一劇本的多個日期」，
+        # `ANY(%s)` 表達不出「每一列各自比對兩個欄位」，改用
+        # `VALUES` 建一張暫時的參數表 `p`，`CROSS JOIN LATERAL` 對每一組
+        # 配對各自查「最近 limit 筆」——單一往返一次查完所有劇本，不是
+        # 對每個劇本各自查一次（AC「不得退化成 N+1」）。
+        values_sql = ", ".join(["(%s, %s)"] * len(pairs))
+        params: list = [x for pair in pairs for x in pair] + [owner, limit]
+        sql = (
+            "SELECT p.scenario_id, h.analyzed_at, h.cost "
+            f"FROM (VALUES {values_sql}) AS p(scenario_id, candidate_key) "
+            "CROSS JOIN LATERAL ("
+            "  SELECT analyzed_at, cost FROM narrow_history nh "
+            "  WHERE nh.scenario_id = p.scenario_id "
+            "  AND nh.candidate_key = p.candidate_key "
+            "  AND nh.owner_id = %s "
+            "  ORDER BY nh.analyzed_at DESC LIMIT %s"
+            ") h "
+            # 外部審查（PR #329）跟進：原本外層查詢沒有 `ORDER BY`——
+            # LATERAL 子查詢的 `DESC` 只保證每組 (scenario_id,
+            # candidate_key) **各自**內部的抓取順序，PostgreSQL 並不保證
+            # 不同外層列之間、或掃描計畫改變時的整體回傳順序；下面
+            # `.reverse()` 假設同一個 scenario_id 的列在累積時已經是
+            # 「最近到最舊」這個順序，缺了外層 `ORDER BY` 這個假設並不
+            # 可靠（換一個查詢計畫就可能打亂）。這裡明確依
+            # `(scenario_id, analyzed_at DESC)` 排序，讓 `.reverse()`
+            # 之後確實是既有升冪慣例。
+            "ORDER BY p.scenario_id, h.analyzed_at DESC")
+        with self._connect() as conn:
+            rows = conn.execute(sql, params).fetchall()
+        out: dict[str, list[tuple[str, float | None]]] = {}
+        for scenario_id, analyzed_at, cost in rows:
+            out.setdefault(scenario_id, []).append((analyzed_at, cost))
+        # LATERAL 子查詢內部是 DESC（撈「最近」），回傳前依既有升冪慣例
+        # （`narrow_history_for_candidate()`／`/history` 端點同一個順序）
+        # 反轉一次。
+        for scenario_id in out:
+            out[scenario_id].reverse()
+        return out
 
     def result_spot_timestamps(
         self, scenario_id: str, *, owner: str,

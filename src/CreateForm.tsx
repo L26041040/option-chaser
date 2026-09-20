@@ -17,6 +17,7 @@
 import { useEffect, useId, useRef, useState } from "react";
 
 import type { FamilyEligibility } from "./api";
+import StockLogo from "./StockLogo";
 
 export interface DraftScenario {
   symbol: string;
@@ -414,6 +415,14 @@ export default function CreateForm({
           autoCorrect="off"
           spellCheck={false}
         />
+        {/* UI-IMPL-002（#092，Desktop-Create 板）：打字當下即時預覽真實
+            品牌 Logo——找不到就自然不顯示任何東西（`StockLogo` 內建
+            行為），不需要在這裡另外判斷載入狀態。 */}
+        {symbol.trim() && (
+          <span className="id" style={{ marginTop: 4 }}>
+            <StockLogo symbol={symbol.trim().toUpperCase()} />
+          </span>
+        )}
       </label>
 
       <label className="field">

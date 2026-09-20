@@ -14,6 +14,15 @@
  * 頁面（模擬瀏覽器重啟）仍維持登入狀態，不需要使用者重新輸入密碼。
  * 密碼本身絕不寫進 `localStorage`／`sessionStorage`，只活在這次
  * `submit` 呼叫的請求 body 裡。
+ *
+ * **OG-11（#322，`/code-review` Spec 軸跟進）已知偏離**：票面要求把
+ * 這個表單「換成 artifact 的樣式」，本票只把既有的 `.settings-section`
+ * ／`.settings-field`／`.pill` 這組既有 primitives 原樣放進桌面新的
+ * subnav「一般」分頁容器裡，元件本身沒有另外重新刻一份符合 artifact
+ * 視覺稿的樣式（單一密碼欄／無 username／無角色選單的既有結構與行為
+ * 完全不變，這裡沒有偏離）。純視覺的像素級對齊留給 OG-12（#328，
+ * 明文的最終 light／responsive／artifact parity 驗收階段）一次處理，
+ * 不在這裡先斬後奏地各自對一次、之後又要在 OG-12 重對一次。
  */
 import { useEffect, useState } from "react";
 

@@ -21,6 +21,13 @@
  * 資料點桌面 `onMouseEnter`／手機 `onClick`（觸控裝置點按會合成 click
  * 事件，不必分別處理 touch）都能觸發同一個 tooltip，內容固定含日期與
  * 淨成本——兩種輸入方式共用同一份狀態與呈現，不是兩套邏輯。
+ *
+ * OG-07（#325）：`Chart`／`GRANULARITIES` 改 `export`，供桌面版
+ * `DesktopSpreadHistory.tsx`（底部「淨成本走勢」tab，換皮成常駐面板、
+ * 不再是 `<details>` 收合）直接重用同一份 SVG 繪圖與粒度切換選項，不是
+ * 另刻一份可能跟這裡走鐘的複本。這個元件本身（`SpreadHistory` 預設
+ * 匯出，含 `<details>` 收合、fetch-on-toggle、單腿排除）逐位元組不變，
+ * 手機版渲染路徑完全沒受影響。
  */
 import { useState } from "react";
 
@@ -29,7 +36,7 @@ import { money } from "./scenarios";
 import { chartPoints, contiguousRuns, xAxisTicks, yAxisDomain,
         downsampleHistory, type ChartPoint, type Granularity } from "./spreadHistory";
 
-const GRANULARITIES: { key: Granularity; label: string }[] = [
+export const GRANULARITIES: { key: Granularity; label: string }[] = [
   { key: "day", label: "日" },
   { key: "week", label: "週" },
   { key: "month", label: "月" },
@@ -48,7 +55,7 @@ function toPixel(p: { x: number; y: number }) {
   return { px: PAD_LEFT + p.x * PLOT_WIDTH, py: PAD_TOP + p.y * PLOT_HEIGHT };
 }
 
-function Chart({ entries }: { entries: HistoryEntry[] }) {
+export function Chart({ entries }: { entries: HistoryEntry[] }) {
   const [activeIndex, setActiveIndex] = useState<number | null>(null);
   const domain = yAxisDomain(entries);
   if (domain === null) {
