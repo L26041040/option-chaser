@@ -78,20 +78,34 @@ export const NEUTRAL_BAND = 0.05;
 /** 顏色濃度到此封頂：±100% 以上一律最濃。 */
 export const COLOR_CAP = 1.0;
 
-// iOS 系統綠／紅（`styles.css` 的 --green／--red 淺色值）。
-const GAIN = [52, 199, 89];
-const LOSS = [255, 59, 48];
+// SW-08（#338）：改讀 Seed Warm 的 `--up`／`--down`（`styles.css`
+// `#1e8a5a`／`#c93b4a`），不再是舊系統遺留的 iOS 系統綠／紅字面值——
+// 這裡仍是硬編的 RGB 三元組（不是 `var(--up)`），因為 `rgba()` alpha
+// 混色是在 JS 端算好字串直接塞進 inline `style`，CSS 自訂屬性沒辦法
+// 在這裡被瀏覽器解析出數值再拿來做 alpha 插值；兩個常數改成跟
+// token 完全同色，就不是「重複一份可能漂移的顏色」，只要 `--up`／
+// `--down` 未來改色，這裡也要跟著手動同步（跟既有 CSS token 沒有
+// 自動連動這件事本質相同，`styles.css` 裡任何一個沒被消費端讀 var()
+// 的硬編色也是同樣的既知取捨）。
+const GAIN = [30, 138, 90];
+const LOSS = [201, 59, 74];
 
 /**
- * 格子底色。刻意回傳**半透明**色而不是實色：實色要嘛在淺色模式好看、
- * 要嘛在深色模式好看，不可能兩者兼顧（舊版是往白色混，深色底下會變成
- * 一片刺眼的亮塊）。半透明疊在卡片底色上，兩種模式都成立。
- */
+ * 格子底色。刻意回傳**半透明**色而不是實色——alpha 隨 |報酬率| 從 0
+ * 爬到封頂值，視覺上就是「淡（接近 up-soft／down-soft 那種淺色調）
+ * 到濃（接近 up／down 飽和色）」的漸層，不必真的插值兩個十六進位色，
+ * 疊在卡片白底上自然產生同一種效果。
+ *
+ * SW-08（#338）：封頂 alpha 從 0.8 調到 0.72——`contrast.test.ts` 新增
+ * 的「最深負格上 `--text` 仍達 WCAG AA 4.5:1」測試在 0.8 時以
+ * 4.4975（差 0.0025）沒過，`--down`（#c93b4a）比 `--up` 深、混色後
+ * 剩的可讀空間比較窄；0.72 是實測能兩色都穩定通過的最小調整，不是
+ * 隨便挑的數字。 */
 export function cellColor(ret: number): string {
   if (Math.abs(ret) < NEUTRAL_BAND) return "transparent";
   const t = Math.min(Math.abs(ret), COLOR_CAP);
   const [r, g, b] = ret > 0 ? GAIN : LOSS;
-  return `rgba(${r}, ${g}, ${b}, ${(t * 0.8).toFixed(3)})`;
+  return `rgba(${r}, ${g}, ${b}, ${(t * 0.72).toFixed(3)})`;
 }
 
 /**

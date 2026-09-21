@@ -16,6 +16,8 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
+import { cellColor, COLOR_CAP } from "./heatmap";
+
 const CSS = readFileSync(resolve(process.cwd(), "src/styles.css"), "utf-8");
 
 type RGB = [number, number, number];
@@ -84,5 +86,36 @@ describe("Seed Warm 淺色模式文字對比", () => {
     // 淺色：文字比背景暗，text-2 應該比 text-3 更暗（更接近主文字）。
     expect(lSec).toBeLessThan(lTer);
     expect(Math.abs(lSec - lTer)).toBeGreaterThan(0.03); // 差得看得出來
+  });
+
+  /** `cellColor()` 回傳 `rgba(r, g, b, a)`，`--label`（`--ink`）字疊在
+   *  半透明色塊上——實際顯示的底色是「這個色塊疊在 `--panel` 卡片
+   *  白底上」混出來的那個顏色，不是色塊自己的 RGB（alpha < 1）。 */
+  function parseRgba(css: string): RGB & { a: number } {
+    const m = /rgba\((\d+),\s*(\d+),\s*(\d+),\s*([\d.]+)\)/.exec(css);
+    if (!m) throw new Error(`不是 rgba() 字串：${css}`);
+    return [Number(m[1]), Number(m[2]), Number(m[3])] as RGB & { a: number };
+  }
+
+  function blendOverPanel(css: string): RGB {
+    const [r, g, b] = parseRgba(css);
+    const a = Number(/,\s*([\d.]+)\)$/.exec(css)![1]);
+    const [pr, pg, pb] = readHexToken("--panel");
+    return [
+      Math.round(a * r + (1 - a) * pr),
+      Math.round(a * g + (1 - a) * pg),
+      Math.round(a * b + (1 - a) * pb),
+    ];
+  }
+
+  describe("SW-08（#338）：Heatmap 最深正／負格上的文字對比", () => {
+    for (const [label, ret] of [["正（漲）", COLOR_CAP], ["負（跌）", -COLOR_CAP]] as const) {
+      it(`${label}格最濃時（|報酬| ≥ ${COLOR_CAP * 100}%），--label 文字仍達 WCAG AA`, () => {
+        const cellBg = blendOverPanel(cellColor(ret));
+        const text = readHexToken("--text");
+        const ratio = contrast(text, cellBg);
+        expect(ratio).toBeGreaterThanOrEqual(AA_NORMAL);
+      });
+    }
   });
 });

@@ -83,7 +83,12 @@
   --warn: #b7791f;
   --warn-text: #9b661a;
   --warn-soft: #fbf0dc;
-  --suspect: #c0392b;
+  /* SW-08（#338）：陳舊報價／單調性違反旗標維持既有語意（比一般
+     `.tag.warn` 更值得注意，跟 FB5-03／#64 既有裁示一致），但換成
+     warm 色系——原本是偏冷、幾乎純紅的 `#c0392b`，跟整套 Seed Warm
+     暖色語彙不搭；換成偏棕紅的暖色調，仍比 `--warn`（金棕）更深、
+     更醒目，兩者不會撞色混淆。 */
+  --suspect: #9c3b1f;
   --crossover: var(--info);
   --tile-bg: #ffffff;
   --tile-line: #ebe3d6;
@@ -1427,8 +1432,11 @@ body {
   justify-content: center;
 }
 
+/* SW-08（#338）：缺點斷線那一截沿用 `--mute`（暖灰，舊名稱
+   `--text-3`），語意不變——首尾方向決定綠／紅的規則見 `.sparkline-up`／
+   `.sparkline-down`。 */
 .sparkline polyline {
-  stroke: var(--text-3);
+  stroke: var(--mute);
 }
 
 .sparkline-up polyline {
@@ -1869,7 +1877,7 @@ body {
 
 .heatmap-table th {
   font-weight: 600;
-  color: var(--label-secondary);
+  color: var(--ink-2);
   font-size: 11px;
   white-space: nowrap;
   /* #121：日期欄水平留白縮小——格子文字同一票改成純數字（`128`／
@@ -1897,13 +1905,25 @@ body {
   left: 0;
   z-index: 1;
   text-align: left;
-  background: var(--bg-elevated);
+  background: var(--card);
   padding-right: 12px;
 }
 
 .heatmap-table tr.anchor .heatmap-price {
-  color: var(--label);
+  color: var(--ink);
   font-weight: 700;
+}
+
+/* SW-08（#338）：目標列高亮 terracotta、現價列高亮暖灰——一列可能
+   同時是目標又是現價（使用者的目標價恰好等於現價），兩個 class 可以
+   同時掛在同一個 `<tr>` 上，terracotta 文字色寫在後面、特異度相同時
+   贏過暖灰底色，不會互相蓋掉重要的那一半資訊。 */
+.heatmap-table tr.anchor-spot .heatmap-price {
+  background: var(--soft);
+}
+
+.heatmap-table tr.anchor-target .heatmap-price {
+  color: var(--acc-text);
 }
 
 .heatmap-table .tag {
@@ -1932,8 +1952,8 @@ body {
   z-index: 1;
   text-align: right;
   /* 不透明底：`border-spacing: 2px` 的縫隙會讓底下捲過去的格子透出來。 */
-  background: var(--bg-elevated);
-  color: var(--label-tertiary);
+  background: var(--card);
+  color: var(--mute);
   font-weight: 400;
   white-space: nowrap;
   padding-left: 12px;
@@ -2369,25 +2389,34 @@ body {
 
 /* Y 軸單位標籤（MVP V3／#106）：viewBox 座標系內的固定文字，字級刻意
    小於刻度數字——它是一次性的軸說明，不是需要反覆讀的數字。 */
+/* SW-08（#338）：圖表座標軸／刻度／資料點改讀 Seed Warm 詞彙（`--mute`／
+   `--line`／`--ink-2`／`--acc`），不再是舊系統的 `--label-tertiary`／
+   `--separator`／`--label-secondary`／`--accent` 名稱——數值本身沒變
+   （這些舊名稱本來就別名到同一組色，只是換掉引用的名字）。 */
+/* SW-08（#338）：圖表內文字全部走 tabular-nums——SVG `<text>` 不在
+   HTML 表格內、吃不到 `.heatmap-table` 那條靠繼承生效的既有規則，
+   這裡三個 class 各自明講一次。 */
 .chart-axis-unit {
   font-size: 7px;
-  fill: var(--label-tertiary);
+  fill: var(--mute);
+  font-variant-numeric: tabular-nums;
 }
 
 .chart-tick-mark {
-  stroke: var(--separator);
+  stroke: var(--line);
   stroke-width: 1;
 }
 
 .chart-tick-label {
   font-size: 8px;
-  fill: var(--label-secondary);
+  fill: var(--ink-2);
+  font-variant-numeric: tabular-nums;
 }
 
 /* 資料點：桌面 hover／手機 tap 共用同一個互動目標，`r` 故意比視覺
    上需要的稍大一點，行動裝置點按才點得準。 */
 .chart-point {
-  fill: var(--accent);
+  fill: var(--acc);
   cursor: pointer;
 }
 
@@ -2405,27 +2434,29 @@ body {
 /* 貼著游標／觸點的垂直參考線，Firstrade 一類走勢圖 scrubber 的標準
    視覺——幫助對回 X 軸日期刻度，同樣只在互動中才存在於 DOM 裡。 */
 .iv-history .chart-scrub-line {
-  stroke: var(--separator);
+  stroke: var(--line);
   stroke-width: 1;
 }
 
 /* 重新嘗試失敗但已有可用 cache 時的非阻斷警示（C／需求方 2026-08-21
    反饋）：不是紅色的阻斷式錯誤（`.iv-diagnostics-summary` 那種），只是
-   一行提醒「這是舊資料」，圖表本身照常在上面畫出來。 */
+   一行提醒「這是舊資料」，圖表本身照常在上面畫出來。SW-08（#338）：
+   `--orange` 是舊名稱，改讀 `--warn`（同一個值）。 */
 .iv-history-stale-warning {
-  color: var(--orange);
+  color: var(--warn);
 }
 
 .chart-tooltip rect {
-  fill: var(--bg-elevated);
-  stroke: var(--separator);
+  fill: var(--card);
+  stroke: var(--line);
   stroke-width: 1;
   filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.15));
 }
 
 .chart-tooltip text {
   font-size: 9px;
-  fill: var(--label);
+  fill: var(--ink);
+  font-variant-numeric: tabular-nums;
 }
 
 /* 自製年月選擇器（#71）：切換鈕沿用 `.input` 的尺寸與邊框，視覺上跟其他
@@ -3047,7 +3078,7 @@ body {
   flex-direction: column;
   gap: 8px;
   padding-top: 6px;
-  border-top: 0.5px solid var(--separator);
+  border-top: 0.5px solid var(--line);
 }
 
 .iv-trend-card {
@@ -3095,19 +3126,26 @@ body {
    Advanced／Diagnostics），圖上的帶狀區域因此更該退成背景層次，raw IV
    主線維持圖上最主要的線。既有走勢圖繪製邏輯不動，這裡純粹是 CSS 調整。 */
 .iv-trend-band {
-  fill: var(--accent);
+  fill: var(--acc);
   opacity: 0.08;
   stroke: none;
 }
 
-/* Moving average——比 raw 線細、用既有分隔線色系而非 `--tint`，跟主線
+/* Moving average——比 raw 線細、用既有分隔線色系而非 `--acc-text`，跟主線
    有明顯的視覺階層但不搶戲。SIG-02（#173）：疊加 opacity 進一步淡化，
    理由同上面 `.iv-trend-band`。 */
 .iv-trend-ma-line {
-  stroke: var(--label-secondary);
+  stroke: var(--ink-2);
   stroke-width: 1;
   stroke-dasharray: 3 2;
   opacity: 0.7;
+}
+
+/* SW-08（#338）：百分位標籤（桌面版獨立一行，`IvTrend.tsx`）改
+   terracotta 文字安全變體，跟主線／Spread 走勢圖同一個強調色語言。 */
+.iv-percentile-caption {
+  color: var(--acc-text);
+  font-weight: 600;
 }
 
 /* 卡片右下角的動作組（#132：編輯 ＋ 封存）。沿用 `.compact-archive` 原本
@@ -4082,16 +4120,25 @@ label.lb {
   padding: 4px 0;
 }
 
+/* SW-08（#338）：刻度改讀 `--mute`（暖灰，舊名稱 `--text-3`）。 */
 .price-ladder-label {
   width: 40px;
   font-size: 12px;
   font-weight: 600;
-  color: var(--text-3);
+  color: var(--mute);
 }
 
 .price-ladder-price {
   flex: 1;
   font-variant-numeric: tabular-nums;
+}
+
+/* SW-08（#338）：目標列標記 terracotta，跟 Heatmap 目標列高亮同一個
+   視覺語言（`--acc-text`，小字文字安全變體，非填色 `--acc`）。 */
+.price-ladder-row.target .price-ladder-label,
+.price-ladder-row.target .price-ladder-price {
+  color: var(--acc-text);
+  font-weight: 700;
 }
 
 /* 身分列第二行（`/code-review` Spec 軸跟進）：現價／目標價（含所需

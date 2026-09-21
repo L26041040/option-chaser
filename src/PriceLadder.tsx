@@ -24,7 +24,18 @@ export default function PriceLadder({ points }: { points: PricePoint[] }) {
   return (
     <ul className="price-ladder" aria-label="劇本區間三價位">
       {points.map((point) => (
-        <li key={point.label} className="price-ladder-row">
+        <li
+          key={point.label}
+          className={
+            point.label === "target" ? "price-ladder-row target" : "price-ladder-row"
+          }
+        >
+          {/* SW-08（#338）：「目標／現價標記改 terracotta／ink」——這個
+              元件本身只有 worst／target／best 三列（沒有現價這個第四個
+              資料點，`PricePoint["label"]` 型別本來就只有這三種），這裡
+              把「目標」列標成 terracotta 跟 Heatmap 目標列高亮同一個
+              視覺語言對齊；「最差」／「最好」兩列維持一般 `--ink` 文字
+              色，不額外上色。 */}
           <span className="price-ladder-label">{LADDER_LABELS[point.label]}</span>
           <span className="price-ladder-price">{money(point.price)}</span>
           <span className={point.return >= 0 ? "metric positive" : "metric negative"}>

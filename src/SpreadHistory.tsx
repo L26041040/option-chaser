@@ -110,7 +110,7 @@ export function Chart({ entries }: { entries: HistoryEntry[] }) {
           {/* 每段各自一條折線——段與段之間刻意不連線，斷點如實顯示。 */}
           <polyline
             fill="none"
-            stroke="var(--tint)"
+            stroke="var(--acc-text)"
             strokeWidth={2}
             points={run.map((p) => {
               const { px, py } = toPixel(p as { x: number; y: number });

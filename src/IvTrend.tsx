@@ -297,7 +297,7 @@ export function IvTrendChart({ leg, width, height }: {
         <polyline
           key={i}
           fill="none"
-          stroke="var(--tint)"
+          stroke="var(--acc-text)"
           strokeWidth={1.5}
           points={run.map((p) => {
             const { px, py } = toPixel(p, width, height);
@@ -382,7 +382,10 @@ function IvTrendCard({ label, leg }: { label?: string; leg: LegHistoricalIv }) {
       <span className="iv-value-primary">
         {num(currentIv(leg))}
       </span>
-      <p className="caption">{percentileCaption(leg)}</p>
+      {/* SW-08（#338）：百分位標籤改 terracotta（`--acc-text`）——桌面版
+          這裡是獨立的 `<p>`，不像手機版跟 Δ4w 合併成同一句，可以單獨
+          上色不必拆句子。 */}
+      <p className="caption iv-percentile-caption">{percentileCaption(leg)}</p>
       <p className="caption">{delta4wCaption(leg)}</p>
       <p className="caption">{ivPercentileExplanation(leg.current_percentile)}</p>
       {chart}

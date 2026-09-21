@@ -151,8 +151,17 @@ export default function Heatmap({ matrix, comparator }: {
             {order.map((i) => {
               const [price, label, movePct] = prices[i];
               const tags = priceTags(label);
+              // SW-08（#338）：目標列高亮 terracotta、現價列高亮暖灰
+              // ——兩個既有標籤字串各自對到一個 class，同一列可能兩個
+              // tag 都有（使用者的目標價恰好等於現價），classList 直接
+              // 都掛上去，CSS 決定疊色順序（見 styles.css 同名 class）。
+              const rowClass = [
+                tags.length > 0 && "anchor",
+                tags.includes("目標") && "anchor-target",
+                tags.includes("現價") && "anchor-spot",
+              ].filter(Boolean).join(" ") || undefined;
               return (
-                <tr key={price} className={tags.length ? "anchor" : undefined}>
+                <tr key={price} className={rowClass}>
                   <th scope="row" className="heatmap-price">
                     {price.toFixed(2)}
                     {tags.map((t) => (
