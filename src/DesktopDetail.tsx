@@ -101,7 +101,9 @@ import { formatReturn, money, returnBarWidthPct } from "./scenarios";
 
 /**
  * 排名表的一列（artifact：名次、subtype 標籤、腿位 pill ×1·2·1、劇本
- * 報酬＋inline 比例條、Bid/Ask 過寬 tag、⚑ 單調性警示）。
+ * 報酬＋inline 比例條）。SW-10（#340）起 Bid/Ask 過寬／單調性警示不再
+ * 常駐在這一列（見下方 `wide_spread_warning`／`monotonicity_warning`
+ * 判斷式旁的說明），選取後在右欄「進場」tab 才顯示完整文案。
  *
  * 「腿位 pill」直接重用 `detail.ts::candidateTitle()`——跟手機版
  * `ExpiryStructure.tsx` 的 `<span className="candidate-title">` 是
@@ -140,18 +142,11 @@ function DesktopCandidateRow({
       >
         <span className="rank">#{rank}</span>
         <span className="candidate-subtype">{strategyLabel(candidate.strategy)}</span>
-        {/* 兩個徽章與 `title` 文案逐字沿用手機版 `ExpiryStructure.tsx`
-            的 `CandidateRow`——同一組資料、同一句解釋，桌面版只是換了
-            容器（按鈕而非 `<details><summary>`），語意不變。 */}
-        {candidate.wide_spread_warning && (
-          <span className="tag warn" title="Bid/Ask 過寬">⚠</span>
-        )}
-        {candidate.monotonicity_warning && (
-          <span className="tag suspect"
-                title="報價與鄰近履約價不一致，疑似陳舊報價">
-            🚩
-          </span>
-        )}
+        {/* SW-10（#340，Owner 真機驗收）：⚠／🚩 徽章原本常駐在這一列
+            （幾乎每筆候選都會觸發，Owner 點名「已失去資訊價值，只剩
+            視覺噪音」），移除——完整文案（含 `title`）改到右欄「進場」
+            tab（`EntryTab`，OG-07／#325 既有行為，選取這一列就會顯示）
+            才看得到，不是整個拿掉，只是不再每一列都重複刷存在感。 */}
         <span className="candidate-title compact-strategy-pill">
           {candidateTitle(candidate)}
         </span>

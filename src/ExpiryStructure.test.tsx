@@ -122,22 +122,26 @@ describe("候選窄列", () => {
     expect(row).toHaveTextContent(`淨成本 $${prices.net.toFixed(2)}`);
   });
 
-  it("Bid/Ask 過寬的候選帶 ⚠ 徽章，文案明確寫「Bid/Ask 過寬」（MVP V3／#104）", () => {
+  it("Bid/Ask 過寬的候選收合列不再帶徽章，展開後顯示完整警示文案（MVP V3／#104；" +
+     "SW-10／#340 起移到展開內容，理由：幾乎每筆都有，收合列常駐已失去資訊價值）", () => {
     const expiry = view.baseline_expiry!;
     const { resultOverrides, poolPatch } = withCandidates(expiry, 2,
       (c, i) => ({ ...c, wide_spread_warning: i === 0 }));
     show(resultOverrides, poolPatch);
 
     const rows = screen.getAllByRole("listitem");
-    expect(within(rows[0]).getByText("⚠")).toBeInTheDocument();
+    // 收合就看得到的排名列（summary）不再有徽章——只有展開後的
+    // `.candidate-panel-warnings` 才有，`<details>` 關閉狀態下內容仍在
+    // DOM 裡（原生 `<details>` 語意，不是被拿掉），查詢照樣找得到。
+    expect(within(rows[0]).getByText("⚠ Bid/Ask 過寬")).toBeInTheDocument();
     expect(within(rows[0]).getByTitle("Bid/Ask 過寬")).toBeInTheDocument();
-    expect(within(rows[1]).queryByText("⚠")).not.toBeInTheDocument();
+    expect(within(rows[1]).queryByText(/Bid\/Ask 過寬/)).not.toBeInTheDocument();
     // 舊泛稱字串不得復發（MVP V3／#104 AC：新舊字串皆需明文檢查封鎖）。
     expect(screen.queryByText(/報價品質有疑慮/)).not.toBeInTheDocument();
     expect(screen.queryByText(/報價非最新/)).not.toBeInTheDocument();
   });
 
-  it("零成交量的候選不再帶 ⚠ 徽章（MVP V3／#104：LEAPS／冷門履約價零成交是常態）", () => {
+  it("零成交量的候選不再帶 Bid/Ask 過寬警示（MVP V3／#104：LEAPS／冷門履約價零成交是常態）", () => {
     const expiry = view.baseline_expiry!;
     const { resultOverrides, poolPatch } = withCandidates(expiry, 2,
       (c) => ({ ...c, wide_spread_warning: false }));
@@ -145,14 +149,14 @@ describe("候選窄列", () => {
 
     const rows = screen.getAllByRole("listitem");
     for (const row of rows) {
-      expect(within(row).queryByText("⚠")).not.toBeInTheDocument();
+      expect(within(row).queryByText(/Bid\/Ask 過寬/)).not.toBeInTheDocument();
     }
   });
 
-  it("單調性違反的候選帶獨立徽章，不跟 Bid/Ask 過寬的 ⚠ 混在一起", () => {
+  it("單調性違反的候選展開後顯示獨立警示，不跟 Bid/Ask 過寬混在一起", () => {
     // FB5-03（#64）：`monotonicity_warning` 是獨立欄位，成因與嚴重性都
     // 跟 `wide_spread_warning` 不同（配對關係違反 vs 單一數值超標），
-    // 徽章要分得開，不能共用同一個符號，否則使用者無法分辨兩種警示。
+    // 警示要分得開，不能共用同一句文案，否則使用者無法分辨兩種警示。
     const expiry = view.baseline_expiry!;
     const { resultOverrides, poolPatch } = withCandidates(expiry, 2, (c, i) => ({
       ...c, wide_spread_warning: false, monotonicity_warning: i === 0,
@@ -160,9 +164,9 @@ describe("候選窄列", () => {
     show(resultOverrides, poolPatch);
 
     const rows = screen.getAllByRole("listitem");
-    expect(within(rows[0]).getByText("🚩")).toBeInTheDocument();
-    expect(within(rows[0]).queryByText("⚠")).not.toBeInTheDocument();
-    expect(within(rows[1]).queryByText("🚩")).not.toBeInTheDocument();
+    expect(within(rows[0]).getByText("🚩 疑似陳舊報價")).toBeInTheDocument();
+    expect(within(rows[0]).queryByText(/Bid\/Ask 過寬/)).not.toBeInTheDocument();
+    expect(within(rows[1]).queryByText(/疑似陳舊報價/)).not.toBeInTheDocument();
   });
 
   it("引擎給幾筆就畫幾筆、名次照它排好的順序，前端不自己截斷", () => {

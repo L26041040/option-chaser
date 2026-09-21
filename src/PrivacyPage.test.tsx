@@ -11,7 +11,7 @@ import PrivacyPage from "./PrivacyPage";
 import {
   ANONYMOUS_ABANDONED_AFTER_DAYS,
   ANONYMOUS_GRACE_PERIOD_DAYS,
-} from "./BetaNotice";
+} from "./DisclaimerSection";
 
 const SECTIONS = [
   "存了什麼", "留多久", "怎麼刪", "清除瀏覽器 cookie 的後果",
@@ -33,7 +33,7 @@ describe("PrivacyPage（PB-12／#302）", () => {
     expect(links[0]).toHaveAttribute("href", "#/settings");
   });
 
-  it("留多久的天數與 BetaNotice 共用同一份具名常數", () => {
+  it("留多久的天數與 DisclaimerSection 共用同一份具名常數", () => {
     render(<PrivacyPage />);
     const text = screen.getByRole("heading", { name: "留多久" })
       .closest("section")!.textContent!;

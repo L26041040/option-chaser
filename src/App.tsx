@@ -43,7 +43,6 @@ import {
   useState,
 } from "react";
 
-import BetaNotice from "./BetaNotice";
 import BottomNav from "./BottomNav";
 import CompactScenarioList from "./CompactScenarioList";
 import CreateForm, {
@@ -735,12 +734,14 @@ export default function App() {
             </button>
           </div>
 
-          {/* PB-12（#302，spec §11／AC9）：首頁 Beta 說明——固定可見、非
-              彈窗、非需要互動才看得到的 tooltip，這是既有硬性要求，
-              SW-04 施工時確認過與「文案降級」的 redesign 精神有衝突，
-              維持常駐可見不動（見 `styles.css` 的 `.beta-notice`
-              說明）。 */}
-          <BetaNotice />
+          {/* SW-10（#340，Owner 真機驗收）：首頁常駐 Beta／cookie／非
+              投資建議說明已移除——PB-12（#302）當時的 AC9 要求「固定
+              可見」，SW-04 施工時也確認過這跟「文案降級」精神有衝突，
+              但選擇維持不動；這是 Owner 直接看過真機後的裁示：主流程
+              不該塞這類解釋式文案，整段搬進「設定 → 免責聲明」
+              （`DisclaimerSection.tsx`），取代這裡原本的 `<BetaNotice
+              />`。全站頁尾（`Footer.tsx`）仍保留最精簡的一行連結，
+              沒有讓這件事在主流程上完全不可得。 */}
 
           {/* 面板一律掛著、用 `hidden` 屬性切換可見度，不是條件渲染整個
               卸載重掛——沿用 #75 的既有教訓。 */}
@@ -848,11 +849,6 @@ export default function App() {
         createOpen={showCreateForm}
         createPanelId={createPanelId}
       />
-      {/* PB-12（#302）：首頁 Beta 說明——桌面版沒有獨立的「首頁」，劇本庫
-          頁面（未選中詳細頁、未開垃圾桶／設定）是這個裝置寬度下唯一
-          對應「首頁」的畫面，比照手機版只在那個分支顯示、不在其餘頁面
-          重複。 */}
-      {!showTrash && !showSettings && !detailProps && <BetaNotice />}
       <div className="page">{page}</div>
 
       {/* UI-IMPL-002（#092）：桌面版建立劇本走右側抽屜＋遮罩（Artifact

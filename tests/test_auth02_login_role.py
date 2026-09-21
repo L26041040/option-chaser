@@ -104,6 +104,40 @@ def test_successful_login_response_never_contains_the_token_or_a_password():
     assert SA_PASSWORD not in r.text
 
 
+def test_a_trailing_newline_on_the_submitted_password_still_logs_in():
+    """SW-10（#340，Owner 真機驗收）：真機回報 Super User／Super Admin
+    密碼皆顯示 unauthorized——程式碼審閱（不觸碰任何真實密碼明文，
+    CLAUDE.md 規則 5）找到的其中一個可能成因：使用者從密碼管理工具
+    複製貼上時，剪貼簿內容經常帶著看不見的頭尾空白或換行，
+    `secrets.compare_digest()` 逐位元組精確比對，多一個字元就整把
+    失敗。這裡驗證登入表單這一側送出的密碼即使多帶換行／空白，也
+    不會被這個原因誤擋。"""
+    r = _client().post("/api/auth/login", json={"password": f"  {SU_PASSWORD}\n"})
+    assert r.status_code == 200
+    assert r.json() == {"role": "superuser"}
+
+
+def test_a_trailing_newline_on_the_configured_password_still_logs_in():
+    """同一個成因的另一半：部署平台的環境變數設定介面（透過 CLI／CI
+    腳本寫入，或從別處複製貼上）也很容易在值的尾端多帶一個換行字元
+    ——這裡用 DI 模擬「設定值本身帶換行」，驗證使用者送出乾淨密碼時
+    仍然登入得進去，不會因為平台那一側的隱形字元被誤擋。"""
+    r = _client(superuser_password=f"{SU_PASSWORD}\n",
+               superadmin_password=f"{SA_PASSWORD}\n").post(
+        "/api/auth/login", json={"password": SU_PASSWORD})
+    assert r.status_code == 200
+    assert r.json() == {"role": "superuser"}
+
+
+def test_stripping_does_not_let_a_merely_similar_password_through():
+    """`.strip()` 只處理頭尾空白，不是模糊比對——中間多一個空格、或
+    整串密碼只是恰好共用前綴／後綴，仍然必須整串精確相符才能登入，
+    不能因為新增了 `.strip()` 就意外放寬成部分比對。"""
+    r = _client().post("/api/auth/login",
+                       json={"password": SU_PASSWORD.replace("-", " ", 1)})
+    assert r.status_code == 401
+
+
 # ---------- 2. 角色解析 ----------
 
 

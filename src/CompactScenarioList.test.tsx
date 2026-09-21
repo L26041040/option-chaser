@@ -72,8 +72,11 @@ describe("Compact 劇本列（MVP-v2／#77、#82）", () => {
       // class 鎖定畫面上那個節點，不靠文字比對消歧義。
       expect(within(card).getByText("TLT")).toBeInTheDocument();
       // QA 修正：現價擠進同一行的目標價前面（`現價 → 目標`）。
+      // SW-10（#340，Owner 真機驗收）：補回「還需 +xx%」（Artifact A
+      // 首頁劇本卡的既有欄位），跟桌面版 `ScenarioList.tsx` 用同一個
+      // `requiredMovePct()`／`formatMove()`。
       expect(card.querySelector(".compact-target")!.textContent)
-        .toBe("$100.00 → $120.00　2028-05");
+        .toBe("$100.00 → $120.00　2028-05 · 還需 +20.0%");
       expect(within(card).getByTitle("狀態：正常")).toBeInTheDocument();
 
       // 第二層
@@ -149,9 +152,12 @@ describe("Compact 劇本列（MVP-v2／#77、#82）", () => {
     list([row({ days_to_anchor: -3 })]);
     const card = screen.getByRole("listitem");
     expect(within(card).getByText("已過期 3 天")).toBeInTheDocument();
-    // 三層仍是三個區塊，不是四個——沒有第四個獨立的「距到期」區塊。
+    // SW-10（#340）：`.compact-tier1`／`.compact-tier2` 合併成單一
+    // `.compact-main-row`（見 `styles.css` 同名選擇器說明）後，主要
+    // 資訊列＋第三層是兩個區塊，不是三個——沒有第三個獨立的「距到期」
+    // 區塊。
     expect(card.querySelectorAll(
-      ".compact-tier1, .compact-tier2, .compact-tier3").length).toBe(3);
+      ".compact-main-row, .compact-tier3").length).toBe(2);
   });
 
   it("整列是真正的連結，可及名稱不被 aria-label 取代掉列上內容", () => {
@@ -207,11 +213,10 @@ describe("Compact 劇本列（MVP-v2／#77、#82）", () => {
     expect(screen.getByText(/建立劇本/)).toBeInTheDocument();
   });
 
-  it("畫面上寫明收益率的口徑（V4／#52 既有裁示，compact 版沿用）", () => {
+  it("SW-10（#340，Owner 真機驗收）：畫面上不再印計算口徑說明——完整" +
+     "說法收進設定→免責聲明", () => {
     list([row()]);
-    const note = screen.getByText(/最差成交價/);
-    expect(note).toHaveTextContent(/買腿 Ask/);
-    expect(note).toHaveTextContent(/賣腿 Bid/);
+    expect(screen.queryByText(/最差成交價/)).not.toBeInTheDocument();
   });
 });
 

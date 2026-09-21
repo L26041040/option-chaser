@@ -29,6 +29,7 @@ import {
 } from "./api";
 import DeleteMyData from "./DeleteMyData";
 import Diagnostics from "./Diagnostics";
+import DisclaimerSection from "./DisclaimerSection";
 import { getSettingsCached, setSettingsCache } from "./fetchCache";
 import RoleLogin from "./RoleLogin";
 import SuperUserAdmin from "./SuperUserAdmin";
@@ -43,13 +44,15 @@ import { useIsDesktop } from "./useIsDesktop";
  * &lt;SuperUserAdmin /&gt;` 同一個守門條件，只是手機版是「有沒有這一塊」，
  * 桌面版多一步「這一塊在不在分頁清單裡」）。
  */
-type SettingsSection = "general" | "datasource" | "diagnostics" | "delete" | "admin";
+type SettingsSection =
+  | "general" | "datasource" | "diagnostics" | "delete" | "disclaimer" | "admin";
 
 const SECTION_LABELS: Record<SettingsSection, string> = {
   general: "一般",
   datasource: "資料來源",
   diagnostics: "診斷",
   delete: "刪除我的資料",
+  disclaimer: "免責聲明",
   admin: "管理後台",
 };
 
@@ -224,8 +227,8 @@ export default function Settings() {
   // 選中的分頁不再存在時，退回第一個可用分頁——與 `FamilyTabs.tsx::
   // resolveFamily()` 同一種「使用者選擇優先、退回預設」寫法。
   const availableSections: SettingsSection[] = roleAtLeast(role, "superadmin")
-    ? ["general", "datasource", "diagnostics", "delete", "admin"]
-    : ["general", "datasource", "diagnostics", "delete"];
+    ? ["general", "datasource", "diagnostics", "delete", "disclaimer", "admin"]
+    : ["general", "datasource", "diagnostics", "delete", "disclaimer"];
   const currentSection = availableSections.includes(activeSection)
     ? activeSection : availableSections[0];
 
@@ -272,6 +275,7 @@ export default function Settings() {
             {currentSection === "datasource" && datasourcePanel}
             {currentSection === "diagnostics" && <Diagnostics />}
             {currentSection === "delete" && <DeleteMyData />}
+            {currentSection === "disclaimer" && <DisclaimerSection />}
           </div>
         </div>
       ) : (
@@ -289,6 +293,8 @@ export default function Settings() {
           <Diagnostics />
 
           <DeleteMyData />
+
+          <DisclaimerSection />
         </>
       )}
     </div>

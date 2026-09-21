@@ -44,7 +44,7 @@ import { getUsageSummary,
         type UsageSummary } from "./api";
 import CostSparkline from "./CostSparkline";
 import { CheckIcon, EditIcon, TrashIcon } from "./icons";
-import { formatMove } from "./detail";
+import { formatMove, strategyLabel } from "./detail";
 import { detailHash } from "./route";
 import StockLogo from "./StockLogo";
 import {
@@ -430,23 +430,23 @@ function UsageStatsStrip() {
         </span>
       </div>
       <div className="pstat">
-        <span className="pstat-k">最近活動</span>
-        <span className="pstat-v">
-          {/* `formatAnalyzedAt(null)` 講的是「尚未分析」，跟「從未有過
-              活動」是不同的事——這裡自己判斷 `null`，不借用那個文案。 */}
-          {usage.last_activity_at === null
-            ? "尚無紀錄" : formatAnalyzedAt(usage.last_activity_at)}
-        </span>
-      </div>
-      <div className="pstat">
-        <span className="pstat-k">刷新節流間隔</span>
-        <span className="pstat-v">
-          {usage.throttle_exempt
-            ? "豁免"
-            : usage.refresh_min_interval_minutes === null
-            ? "停用"
-            : `${usage.refresh_min_interval_minutes} 分鐘`}
-        </span>
+        <span className="pstat-k">最佳劇本報酬</span>
+        {usage.best_return === null ? (
+          <span className="pstat-v muted">—</span>
+        ) : (
+          <>
+            <span className={`pstat-v ${usage.best_return >= 0 ? "up" : "down"}`}>
+              {formatReturn(usage.best_return)}
+            </span>
+            <span className="pstat-d">
+              {usage.best_return_symbol}
+              {usage.best_return_strategy &&
+                ` · ${strategyLabel(usage.best_return_strategy)}`}
+              {usage.best_return_target_month &&
+                ` · ${usage.best_return_target_month}`}
+            </span>
+          </>
+        )}
       </div>
     </div>
   );
@@ -603,11 +603,9 @@ export default function ScenarioList({
           </div>
         )}
 
-        {/* 收益率口徑就寫在數字旁邊（V4／#52）。放進說明頁等於沒寫——
-            看數字的人不會為了一個百分比先去翻說明。 */}
-        <p className="caption">
-          收益率以最差成交價計算（買腿 Ask − 賣腿 Bid）
-        </p>
+        {/* SW-10（#340，Owner 真機驗收）：這句計算口徑說明（V4／#52
+            既有裁示）移除——主流程不塞解釋式文案，完整說法收進設定→
+            免責聲明（`DisclaimerSection.tsx`）。 */}
 
         {/* role="status"：螢幕閱讀器會唸出變化，而不是讓使用者自己不斷
             回頭看畫面。進行中優先顯示「更新中」（不論是 Refresh Run 或

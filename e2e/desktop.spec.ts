@@ -103,24 +103,26 @@ test("OG-02（#318）：點劇本進全寬詳細頁，劇本庫清單不再同�
   await expect(page.getByLabel("標的代號")).toBeVisible();
 });
 
-test("OPTION-CHASER-CLOSEOUT-001：桌面版劇本設定卡在劇本摘要卡之前，呈現" +
-     "使用者原本建立的劇本 context（標的／目標價／目標年月／方向／" +
-     "啟用的策略）", async ({ page }) => {
+test("SW-10（#340，Owner 真機驗收）：桌面版身分列呈現使用者原本建立的" +
+     "劇本 context（標的／目標價／目標年月／方向／啟用的策略）——" +
+     "`ScenarioContext`（劇本設定卡）／`Summary`（劇本摘要卡）已整段" +
+     "刪除，這些欄位跟身分列其餘欄位（現價／還需／距目標／來源）合併" +
+     "成同一個 `.toolbar` 身分列，不再是排在前面的兩張獨立卡片" +
+     "（OPTION-CHASER-CLOSEOUT-001 原始 AC 的「先後順序」訴求，隨兩張" +
+     "卡本身一起被『同一個位置、不再重複』取代）", async ({ page }) => {
   await routeTwoScenarios(page);
   await page.goto("/#/s/s1");
 
-  const detail = page.locator(".detail-page");
-  const context = detail.getByRole("region", { name: "劇本設定" });
-  await expect(context).toContainText("XYZ");
-  await expect(context).toContainText(`$${sample.params.target_price.toFixed(2)}`);
-  await expect(context).toContainText(sample.params.target_month);
-  await expect(context).toContainText("看漲");
-  await expect(context).toContainText("Vertical Spread");
+  const header = page.locator(".detail-page .toolbar");
+  await expect(header).toContainText("XYZ");
+  await expect(header.getByText(new RegExp(
+    `目標 \\$${sample.params.target_price.toFixed(2)} · ${sample.params.target_month}`)))
+    .toBeVisible();
+  await expect(header).toContainText("看漲");
+  await expect(header).toContainText("啟用的策略類型：Vertical Spread");
 
-  const summary = detail.getByRole("region", { name: "劇本摘要" });
-  const contextBox = await context.boundingBox();
-  const summaryBox = await summary.boundingBox();
-  expect(contextBox!.y).toBeLessThan(summaryBox!.y);
+  await expect(page.getByRole("region", { name: "劇本設定" })).toHaveCount(0);
+  await expect(page.getByRole("region", { name: "劇本摘要" })).toHaveCount(0);
 });
 
 test("Spread 淨成本走勢：桌面 hover 資料點顯示 tooltip（MVP V3／#106）", async ({ page }) => {
@@ -980,15 +982,18 @@ test("OG-04（#323）：沒有 narrow history 序列的劇本，淨成本走勢�
 });
 
 test("OG-05（#324）：劇本庫頁首 stats strip 顯示唯讀使用量摘要，Normal" +
-     "User 看不到 Super Admin 專屬方塊也不打 ops metrics 請求",
+     "User 看不到 Super Admin 專屬方塊也不打 ops metrics 請求；SW-10" +
+     "（#340，Owner 真機驗收）起「最近活動」／「刷新節流間隔」兩格" +
+     "已整段移除，改為「進行中劇本」／「最佳劇本報酬」兩格",
    async ({ page }) => {
   const opsCalls: string[] = [];
   await routeTwoScenarios(page);
   await page.route("**/api/me/usage-summary", (route) =>
     route.fulfill({ json: {
       active_scenarios: 2, max_active_scenarios: 10,
-      quota_exempt: false, refresh_min_interval_minutes: 30,
-      throttle_exempt: false, last_activity_at: "2026-08-04T09:30:00+00:00",
+      quota_exempt: false, last_activity_at: "2026-08-04T09:30:00+00:00",
+      best_return: 0.855, best_return_symbol: "XYZ",
+      best_return_strategy: "bull-call-spread", best_return_target_month: "2026-09",
     } }));
   await page.route("**/api/ops/metrics", (route) => {
     opsCalls.push(route.request().url());
@@ -1000,8 +1005,10 @@ test("OG-05（#324）：劇本庫頁首 stats strip 顯示唯讀使用量摘要�
   const strip = page.locator(".lib-stats-strip");
   await expect(strip.getByText("2 / 10")).toBeVisible();
   await expect(strip.getByText("進行中劇本")).toBeVisible();
-  await expect(strip.getByText("刷新節流間隔")).toBeVisible();
-  await expect(strip.getByText("30 分鐘")).toBeVisible();
+  await expect(strip.getByText("最佳劇本報酬")).toBeVisible();
+  await expect(strip.getByText("85.5%")).toBeVisible();
+  await expect(strip.getByText("最近活動")).toHaveCount(0);
+  await expect(strip.getByText("刷新節流間隔")).toHaveCount(0);
   // Normal User（既有 mock 角色，未特別解鎖）：看不到 Super Admin 兩格，
   // 也真的沒發出 `/api/ops/metrics` 請求（AC 明文）。
   await expect(strip.getByText("Vendor 每日預算")).toHaveCount(0);
@@ -1244,29 +1251,25 @@ test("詳細頁密度：桌面一屏能看到的比例明顯提高（QA-FIX-3／
     .evaluate((el) => el.scrollHeight);
   expect(total / vh).toBeLessThan(2.70);
 
-  // 資訊一項不減少：QA 修正把「劇本摘要／基準候選／進場成本」三張卡
-  // 合成一張，十一項全部都要還在——合併是為了壓高度，不是砍資訊。
-  // OPTION-CHASER-CLOSEOUT-001 新增的「劇本設定」卡排在它前面、也
-  // 共用 `.summary-card` 密度樣式，`.first()` 現在會撈到那張而非這裡
-  // 要驗的基準候選摘要卡——改用 `aria-label` scope 回正確的那一張。
-  const summary = page.locator(".detail-page")
-    .getByRole("region", { name: "劇本摘要" });
-  for (const label of ["策略", "現價", "目標價", "目標年月",
-                      "買腿 Ask", "賣腿 Bid", "淨成本",
-                      "資料時間", "資料來源"]) {
-    await expect(summary.getByText(label, { exact: true })).toBeVisible();
+  // 資訊一項不減少：SW-10（#340，Owner 真機驗收）起「劇本設定」／
+  // 「劇本摘要」兩張卡已整段刪除（逐項比對後跟身分列／進場面板全部
+  // 重複），這裡改成驗證這些欄位確實還在新的位置，不是隨兩張卡一起
+  // 無聲消失。
+  const header = page.locator(".detail-page .toolbar");
+  for (const label of ["現價", "還需", "距目標"]) {
+    await expect(header.getByText(new RegExp(label))).toBeVisible();
   }
-  // 候選身分與名次在標頭那一行，跟著一起搬過來了。`exact` 是必要的：
-  // 候選池過少的警語同一張卡裡也提到「第 1 名」。
-  await expect(summary.getByText("第 1 名", { exact: true })).toBeVisible();
-  await expect(summary.locator(".summary-title")).toBeVisible();
 
-  // 真的排成多欄（同一視覺列的兩格 y 相同、x 不同），不是只是變窄。
-  const stats = summary.locator(".stat");
-  const a = (await stats.nth(0).boundingBox())!;
-  const b = (await stats.nth(1).boundingBox())!;
-  expect(Math.abs(a.y - b.y)).toBeLessThan(2);
-  expect(b.x).toBeGreaterThan(a.x);
+  const entryPanel = page.locator(".detail-page .candidate-panel-body");
+  await expect(entryPanel.getByText("淨成本 / 股")).toBeVisible();
+  await expect(entryPanel.locator("th", { hasText: "Bid" })).toBeVisible();
+  await expect(entryPanel.locator("th", { hasText: "Ask" })).toBeVisible();
+
+  await expect(page.locator(".detail-page .detail-rank-list").getByText("#1"))
+    .toBeVisible();
+
+  await expect(page.getByRole("region", { name: "劇本設定" })).toHaveCount(0);
+  await expect(page.getByRole("region", { name: "劇本摘要" })).toHaveCount(0);
 
   // Heatmap 格子字級：QA 修正明文要求「格子再縮小、降低 padding」，
   // 13px→12px 是那一輪刻意調的值，不是被密度壓縮波及的副作用。12px
@@ -2066,8 +2069,11 @@ test("桌面版：多 family 並存——分頁列出、預設打開冠軍所屬
   await expect(tabs.getByRole("button", { name: "Vertical Spread" }))
     .toHaveAttribute("aria-pressed", "true");
 
-  const summary = detail.getByRole("region", { name: "劇本摘要" });
-  await expect(summary.getByText("Bull Call Spread")).toBeVisible();
+  // SW-10（#340）起頭條在身分列（`Summary` 摘要卡已整段刪除），顯示的
+  // 是冠軍所屬 family（「Vertical Spread」），不是確切策略子類——那個
+  // 仍在左欄排名表裡（下面切分頁後另外驗證）。
+  const header = detail.locator(".toolbar");
+  await expect(header.getByText(/劇本報酬 · Vertical Spread/)).toBeVisible();
 
   await tabs.getByRole("button", { name: "Call / Put" }).click();
   await expect(tabs.getByRole("button", { name: "Call / Put" }))
@@ -2075,7 +2081,7 @@ test("桌面版：多 family 並存——分頁列出、預設打開冠軍所屬
   await expect(detail.getByText("Long Call").first()).toBeVisible();
 
   // 分頁切走了，頭條依然是冠軍，不隨分頁切換而改變。
-  await expect(summary.getByText("Bull Call Spread")).toBeVisible();
+  await expect(header.getByText(/劇本報酬 · Vertical Spread/)).toBeVisible();
 });
 
 test("OG-06／OG-07（#321／#325）：桌面詳細頁三欄外殼與身分列——左欄 family" +
@@ -2462,22 +2468,20 @@ test("T18（#235）紅線 12：桌面版展開一般 Vertical Spread 候選（�
   expect(requestUrls).toEqual([]);
 });
 
-/* ---------- PB-12（#302，Anonymous Public Beta）：首頁 Beta 說明＋
-   全站頁尾＋隱私頁，桌面 viewport ---------- */
+/* ---------- SW-10（#340）／PB-12（#302，Anonymous Public Beta）：首頁
+   常駐頁尾＋隱私頁，桌面 viewport；Beta／cookie 說明已從首頁移入
+   設定→免責聲明 ---------- */
 
-test("桌面版：首頁 Beta 說明常駐在劇本庫頁面，頁尾在整個 desktop-shell" +
-     "之下，隱私頁可達（與手機版 smoke.spec.ts 同一條首次進站流程，" +
-     "OG-02／#318 起側欄退場，改為單一全寬頁面）",
+test("桌面版：首頁不再常駐 Beta 說明，頁尾在整個 desktop-shell 之下，" +
+     "隱私頁與設定→免責聲明皆可達（與手機版 smoke.spec.ts 同一條首次" +
+     "進站流程，OG-02／#318 起側欄退場，改為單一全寬頁面）",
    async ({ page }) => {
   await page.route("**/api/scenarios", (route) =>
     route.fulfill({ json: [] }));
   await page.goto("/");
 
-  const notice = page.locator(".beta-notice");
-  await expect(notice).toBeVisible();
-  await expect(notice).toContainText("Beta");
-  await expect(notice).toContainText("cookie");
-  await expect(notice).toContainText("非投資建議");
+  // SW-10（#340）：首頁不再有這個常駐區塊——完整說法收進設定頁。
+  await expect(page.locator(".beta-notice")).toHaveCount(0);
 
   const footer = page.locator("footer.site-footer");
   await expect(footer).toBeVisible();
@@ -2494,6 +2498,13 @@ test("桌面版：首頁 Beta 說明常駐在劇本庫頁面，頁尾在整個 d
 
   await page.getByRole("link", { name: "設定頁" }).click();
   await expect(page).toHaveURL(/#\/settings$/);
+
+  // 桌面版設定頁是 subnav 分頁，得先點「免責聲明」才看得到內容。
+  await page.getByRole("tab", { name: "免責聲明" }).click();
+  const disclaimer = page.getByRole("region", { name: "免責聲明" });
+  await expect(disclaimer).toContainText("Beta");
+  await expect(disclaimer).toContainText("cookie");
+  await expect(disclaimer).toContainText("非投資建議");
 });
 
 /* ---------- OG-12（#328）：1100px 斷點與中間寬度 ---------- */

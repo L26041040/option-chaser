@@ -140,7 +140,9 @@ describe("DesktopDetailBody：單一 family（OG-06／#321）", () => {
     expect(within(row).getByText("20.0%")).toBeInTheDocument();
   });
 
-  it("Bid/Ask 過寬與單調性警示 tag 沿用手機版同一套 title 文案", async () => {
+  it("Bid/Ask 過寬與單調性警示不再常駐排名列，右欄「進場」tab 顯示完整文案" +
+     "（SW-10／#340，Owner 真機驗收：幾乎每筆都有，排名列常駐已失去資訊價值）",
+     async () => {
     const cand = withMatrix(
       { ...candidate("k1", "long-call", 0.2), wide_spread_warning: true,
         monotonicity_warning: true },
@@ -154,12 +156,15 @@ describe("DesktopDetailBody：單一 family（OG-06／#321）", () => {
                               scenarioId="s1" analyzedAt={null} />);
     await flush();
 
-    // OG-07（#325）起，右欄「進場」tab 預設顯示、也重複這兩句警示文案
-    // （票面 AC 明文要求）——跟排名列同一份判準、不同容器，這裡照
-    // 這個檔案自己的既有慣例（`rankingList()`）縮小到排名列本身，
-    // 避免「找到多個」的假失敗。
-    expect(rankingList().getByTitle("Bid/Ask 過寬")).toBeInTheDocument();
-    expect(rankingList().getByTitle("報價與鄰近履約價不一致，疑似陳舊報價"))
+    // 排名列本身不再帶這兩個 title——徽章已經整個移除。
+    expect(rankingList().queryByTitle("Bid/Ask 過寬")).not.toBeInTheDocument();
+    expect(rankingList().queryByTitle("報價與鄰近履約價不一致，疑似陳舊報價"))
+      .not.toBeInTheDocument();
+    // OG-07（#325）起，右欄「進場」tab 預設顯示、選取這一列就會顯示
+    // 完整警示文案（票面 AC 明文要求）——移除排名列徽章後，這裡是
+    // 唯一還看得到這兩句警示的地方，不再是「同一份判準、兩處都印」。
+    expect(screen.getByTitle("Bid/Ask 過寬")).toBeInTheDocument();
+    expect(screen.getByTitle("報價與鄰近履約價不一致，疑似陳舊報價"))
       .toBeInTheDocument();
   });
 

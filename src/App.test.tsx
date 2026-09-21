@@ -1837,8 +1837,9 @@ describe("SW-04（#333，Seed Warm）：手機首頁只有一個建立入口，D
       "/api/scenarios/": { json: async () => row },
       "/api/me/usage-summary": { json: async () => ({
         active_scenarios: 1, max_active_scenarios: 10, quota_exempt: false,
-        refresh_min_interval_minutes: 30, throttle_exempt: false,
         last_activity_at: null,
+        best_return: null, best_return_symbol: null,
+        best_return_strategy: null, best_return_target_month: null,
       }) },
     });
     render(<App />);
@@ -1847,12 +1848,6 @@ describe("SW-04（#333，Seed Warm）：手機首頁只有一個建立入口，D
     expect(screen.getAllByRole("button", { name: /建立劇本/ })).toHaveLength(1);
     expect(screen.queryByLabelText("Dashboard")).not.toBeInTheDocument();
     expect(screen.queryByText(/跨劇本指標規劃中/)).not.toBeInTheDocument();
-
-    // Beta 說明（PB-12／#302 AC9）：固定可見、不是需要 hover／focus
-    // 才展開的 tooltip——SW-04 的「文案降級」範圍明確不含這一段。
-    const betaNotice = document.querySelector(".beta-notice") as HTMLElement;
-    expect(betaNotice).toBeVisible();
-    expect(betaNotice).toHaveTextContent("Beta");
 
     // 底部導覽三格，沒有第二個建立入口。
     const bottomNav = screen.getByRole("navigation", { name: "主要導覽" });
@@ -1877,7 +1872,8 @@ describe("SW-04（#333，Seed Warm）：手機首頁只有一個建立入口，D
   });
 });
 
-describe("PB-12（#302）：全站常駐頁尾＋首頁 Beta 說明＋隱私頁路由", () => {
+describe("SW-10（#340）／PB-12（#302）：全站常駐頁尾；首頁 Beta 說明已移入" +
+         "設定→免責聲明，不再常駐主流程", () => {
   const row = {
     ...(sampleRow as unknown as Record<string, unknown>),
     id: "s1", symbol: "TLT", target_price: 120, target_month: "2028-05",
@@ -1887,7 +1883,7 @@ describe("PB-12（#302）：全站常駐頁尾＋首頁 Beta 說明＋隱私頁�
 
   afterEach(() => { window.location.hash = ""; });
 
-  it("手機首頁：Beta 說明＋頁尾皆常駐可見", async () => {
+  it("手機首頁：頁尾常駐可見，`.beta-notice` 常駐區塊已不存在", async () => {
     mockRoutes({
       "/api/scenarios": { json: async () => [row] },
       "/api/scenarios/": { json: async () => row },
@@ -1895,16 +1891,14 @@ describe("PB-12（#302）：全站常駐頁尾＋首頁 Beta 說明＋隱私頁�
     const { container } = render(<App />);
 
     await screen.findByText("TLT");
-    const notice = container.querySelector(".beta-notice");
-    expect(notice).toBeInTheDocument();
-    expect(notice).toHaveTextContent(/Beta/);
+    expect(container.querySelector(".beta-notice")).not.toBeInTheDocument();
     const footer = container.querySelector("footer.site-footer");
     expect(footer).toBeInTheDocument();
     expect(footer).toHaveTextContent(/非投資建議/);
   });
 
-  it("桌面首頁：Beta 說明常駐在劇本庫頁面、頁尾在整個 desktop-shell 之下" +
-     "（OG-02／#318 起側欄退場，改為單一全寬頁面）", async () => {
+  it("桌面首頁：頁尾在整個 desktop-shell 之下常駐（OG-02／#318 起側欄退場，" +
+     "改為單一全寬頁面），`.beta-notice` 常駐區塊已不存在", async () => {
     stubDesktopViewport();
     mockRoutes({
       "/api/scenarios": { json: async () => [row] },
@@ -1913,12 +1907,12 @@ describe("PB-12（#302）：全站常駐頁尾＋首頁 Beta 說明＋隱私頁�
     const { container } = render(<App />);
 
     await screen.findByText("TLT");
-    expect(container.querySelector(".beta-notice")).toBeInTheDocument();
+    expect(container.querySelector(".beta-notice")).not.toBeInTheDocument();
     expect(container.querySelector("footer.site-footer")).toBeInTheDocument();
   });
 
-  it("桌面版切到垃圾桶頁面，Beta 說明不重複顯示——比照手機版只在真正的" +
-     "首頁出現一次（OG-02／#318）", async () => {
+  it("桌面版切到垃圾桶頁面，頁尾依然常駐，`.beta-notice` 兩個頁面都不存在" +
+     "（不是「只在首頁顯示」，是整個常駐區塊已經整組移除）", async () => {
     stubDesktopViewport();
     mockRoutes({
       "/api/scenarios": { json: async () => [row] },
@@ -1927,6 +1921,7 @@ describe("PB-12（#302）：全站常駐頁尾＋首頁 Beta 說明＋隱私頁�
     });
     const { container } = render(<App />);
     await screen.findByText("TLT");
+    expect(container.querySelector(".beta-notice")).not.toBeInTheDocument();
 
     window.location.hash = "#/trash";
     await screen.findByRole("heading", { name: "垃圾桶" });

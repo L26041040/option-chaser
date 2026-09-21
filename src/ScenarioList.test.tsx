@@ -417,12 +417,10 @@ describe("劇本級燈號（MVP-v2／#77、#80）", () => {
   });
 });
 
-describe("收益率口徑（V4／#52）", () => {
-  it("畫面上寫明收益率怎麼算的——最差成交價", () => {
+describe("SW-10（#340，Owner 真機驗收）：收益率口徑說明已移出主流程", () => {
+  it("畫面上不再印計算口徑說明——完整說法收進設定→免責聲明", () => {
     list([row()]);
-    const note = screen.getByText(/最差成交價/);
-    expect(note).toHaveTextContent(/買腿 Ask/);
-    expect(note).toHaveTextContent(/賣腿 Bid/);
+    expect(screen.queryByText(/最差成交價/)).not.toBeInTheDocument();
   });
 });
 
@@ -868,8 +866,10 @@ describe("OG-05（#324）：劇本庫 stats strip；SW-03（#334）起 Super Adm
   function routeFetch(role: "normal" | "superuser" | "superadmin" = "normal") {
     const usage = {
       active_scenarios: 3, max_active_scenarios: 10,
-      quota_exempt: role !== "normal", refresh_min_interval_minutes: 30,
-      throttle_exempt: role !== "normal", last_activity_at: "2026-08-04T09:30:00+00:00",
+      quota_exempt: role !== "normal",
+      last_activity_at: "2026-08-04T09:30:00+00:00",
+      best_return: 0.42, best_return_symbol: "XYZ",
+      best_return_strategy: "bull-call-spread", best_return_target_month: "2026-09",
     };
     const calls: string[] = [];
     const spy = vi.fn(async (url: string) => {
@@ -886,25 +886,28 @@ describe("OG-05（#324）：劇本庫 stats strip；SW-03（#334）起 Super Adm
     return calls;
   }
 
-  it("看得到自己的用量三格，Vendor 每日預算／429 事故兩格已經不在這個頁面上", async () => {
+  it("看得到自己的用量兩格（進行中劇本／最佳劇本報酬）；最近活動／刷新節流間隔已整段移除（SW-10／#340）", async () => {
     routeFetch("normal");
     list([row()]);
 
     expect(await screen.findByText("3 / 10")).toBeInTheDocument();
     expect(screen.getByText("進行中劇本")).toBeInTheDocument();
-    expect(screen.getByText("最近活動")).toBeInTheDocument();
-    expect(screen.getByText("30 分鐘")).toBeInTheDocument();
+    expect(screen.getByText("最佳劇本報酬")).toBeInTheDocument();
+    expect(screen.getByText("42.0%")).toBeInTheDocument();
+    expect(screen.queryByText("最近活動")).not.toBeInTheDocument();
+    expect(screen.queryByText("刷新節流間隔")).not.toBeInTheDocument();
+    expect(screen.queryByText("30 分鐘")).not.toBeInTheDocument();
     expect(screen.queryByText("Vendor 每日預算")).not.toBeInTheDocument();
     expect(screen.queryByText("429 事故")).not.toBeInTheDocument();
   });
 
-  it("豁免角色（Super User）：進行中劇本／節流間隔顯示「豁免」", async () => {
+  it("豁免角色（Super User）：進行中劇本顯示「豁免」", async () => {
     routeFetch("superuser");
     list([row()]);
 
-    await screen.findByText("最近活動");
+    await screen.findByText("最佳劇本報酬");
     const strip = document.querySelector(".lib-stats-strip") as HTMLElement;
-    expect(within(strip).getAllByText("豁免")).toHaveLength(2);
+    expect(within(strip).getByText("豁免")).toBeInTheDocument();
   });
 
   it("劇本庫頁面零 /api/ops/metrics 請求——即使角色是 Super Admin（SW-03／#334 AC）", async () => {
@@ -915,7 +918,7 @@ describe("OG-05（#324）：劇本庫 stats strip；SW-03（#334）起 Super Adm
     expect(calls.some((u) => u.includes("/api/ops/metrics"))).toBe(false);
   });
 
-  it("last_activity_at 為 null 時顯示「尚無紀錄」，不是「尚未分析」", async () => {
+  it("best_return 為 null 時第二格顯示「—」，不假造一筆報酬（SW-10／#340：last_activity_at 顯示已整段移出這個元件，改由 Super Admin 後台的 SuperUserAdmin 負責）", async () => {
     const spy = vi.fn(async (url: string) => {
       if (url.includes("/api/auth/status")) {
         return { ok: true, status: 200, json: async () => ({ role: "normal" }) };
@@ -923,8 +926,9 @@ describe("OG-05（#324）：劇本庫 stats strip；SW-03（#334）起 Super Adm
       if (url.includes("/api/me/usage-summary")) {
         return { ok: true, status: 200, json: async () => ({
           active_scenarios: 0, max_active_scenarios: null,
-          quota_exempt: false, refresh_min_interval_minutes: null,
-          throttle_exempt: false, last_activity_at: null,
+          quota_exempt: false, last_activity_at: null,
+          best_return: null, best_return_symbol: null,
+          best_return_strategy: null, best_return_target_month: null,
         }) };
       }
       return { ok: true, status: 200, json: async () => ({}) };
@@ -932,8 +936,9 @@ describe("OG-05（#324）：劇本庫 stats strip；SW-03（#334）起 Super Adm
     vi.stubGlobal("fetch", spy);
     list([row()]);
 
-    expect(await screen.findByText("尚無紀錄")).toBeInTheDocument();
-    expect(screen.queryByText("尚未分析")).not.toBeInTheDocument();
+    await screen.findByText("最佳劇本報酬");
+    const strip = document.querySelector(".lib-stats-strip") as HTMLElement;
+    expect(within(strip).getByText("—")).toBeInTheDocument();
   });
 });
 

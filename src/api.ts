@@ -1416,10 +1416,16 @@ export interface UsageSummary {
   /** `null`＝quota 停用（後端 `<=0` 即停用），不是「上限是 0」。 */
   max_active_scenarios: number | null;
   quota_exempt: boolean;
-  /** `null`＝節流停用。 */
-  refresh_min_interval_minutes: number | null;
-  throttle_exempt: boolean;
   last_activity_at: string | null;
+  // SW-10（#340，Owner 真機驗收）：`refresh_min_interval_minutes`／
+  // `throttle_exempt` 兩個欄位已隨後端節流機制整段移除——不再有
+  // 「按了要等」這件事，這兩個欄位不再有意義。以下四個 `best_return*`
+  // 欄位取而代之（Artifact A 首頁 stats 板第二格「最佳劇本報酬」），
+  // 全部由後端一次算好；從未成功分析過任何劇本時皆為 `null`。
+  best_return: number | null;
+  best_return_symbol: string | null;
+  best_return_strategy: string | null;
+  best_return_target_month: string | null;
 }
 
 export function getUsageSummary(): Promise<UsageSummary> {

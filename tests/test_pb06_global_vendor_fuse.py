@@ -96,12 +96,10 @@ def test_an_already_successful_scenario_keeps_its_last_known_data_when_the_budge
     兩態失敗卡片（REPAIR-05／#242）因此天然能呈現「更新失敗，目前
     顯示上一次成功結果」，不需要為 PB-06 另外發明一套呈現機制。"""
     storage = MemoryStorage()
-    # PB-05（#297）節流窗預設 30 分鐘——同一個 scenario 緊接著再刷新
-    # 一次，若不停用節流窗，第二次呼叫會被節流短路（沿用既有資料、
-    # 200），根本不會走到 `_fetch_chain()`，測不出 fuse 本身。這裡
-    # 停用節流，讓兩次呼叫都真正嘗試抓鏈，只受 fuse 這一道煞車管。
-    c = _client(storage=storage,
-               anonymous_refresh_min_interval_minutes=0)
+    # SW-10（#340，Owner 真機驗收）節流整段移除後，刷新一律真的再抓
+    # ——不必再像 PB-05 時代那樣特地停用節流窗，兩次呼叫本來就都會
+    # 真正嘗試抓鏈，只受 fuse 這一道煞車管。
+    c = _client(storage=storage)
     sc = _create(c)
     ok = c.post(f"/api/scenarios/{sc['id']}/refresh")
     assert ok.status_code == 200
@@ -110,8 +108,7 @@ def test_an_already_successful_scenario_keeps_its_last_known_data_when_the_budge
 
     # 現在把預算灌爆，再刷新一次應該失敗、且不動既有資料。
     _seed_today_count(storage, 999)
-    c2 = _client(storage=storage, global_vendor_daily_budget=999,
-                anonymous_refresh_min_interval_minutes=0)
+    c2 = _client(storage=storage, global_vendor_daily_budget=999)
     r = c2.post(f"/api/scenarios/{sc['id']}/refresh")
     assert r.status_code == 429
 

@@ -56,8 +56,9 @@ test.beforeEach(async ({ page }) => {
   await page.route("**/api/me/usage-summary", (route) =>
     route.fulfill({ json: {
       active_scenarios: 0, max_active_scenarios: 10, quota_exempt: false,
-      refresh_min_interval_minutes: 30, throttle_exempt: false,
       last_activity_at: null,
+      best_return: null, best_return_symbol: null,
+      best_return_strategy: null, best_return_target_month: null,
     } }));
 });
 

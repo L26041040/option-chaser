@@ -3,16 +3,27 @@
  * #327 起手機版整頁順序依 artifact「Mobile 劇本詳細」板重排，桌面版
  * 這份順序描述與 `DesktopDetailBody` 自己的檔頭各自獨立維護）：
  *
- * **共用（`isDesktop` 分流之前，兩邊都渲染）**：劇本設定
- * （OPTION-CHASER-CLOSEOUT-001：使用者原本建立的 context——標的／目標
- * 價／目標年月／方向／啟用的 family）→ 摘要（含基準候選與進場成本，
- * QA 修正後三卡合一）。
+ * SW-10（#340，Owner 真機驗收）跟進：原本「共用、`isDesktop` 分流之前
+ * 兩邊都渲染」的 `ScenarioContext`（劇本設定卡）與 `Summary`（摘要卡）
+ * 已整段刪除——這兩張卡跟手機版 `MobileHero`／桌面版 `<header
+ * className="toolbar">` 身分列（OG-06／#321、SW-05／#337）逐項比對後
+ * 全部重複：標的／方向／目標價／目標年月／候選身分／劇本報酬／現價／
+ * 資料時間／資料來源兩處都讀同一份既有欄位、同一套格式化函式，過去
+ * 稱之為「刻意的重複呈現，不是資料來源分裂」——Owner 真機驗收後裁示
+ * 這種重複本身就是問題，不要同一批資料在頁面上出現兩次。兩張卡僅有
+ * 的獨有欄位（啟用的策略類型；最高／最低）已分別搬進 `MobileHero`
+ * 與桌面身分列的 `detail-identity-meta`；候選池過少警語在查看 baseline
+ * 到期日時本來就會被下面 `FamilyTabs`／`ExpiryStructure` 自己的同一句
+ * 提示覆蓋，不需要另外保留一份。
  *
- * **手機分支**（OG-10／#327）：Family tabs／到期日 chip／排名表
- * （`FamilyTabs`，含既有「就地展開候選看 Heatmap」native `<details>`
- * 機制不動）→ 劇本主圖（常駐 Heatmap＋三價位階梯，跨 family 冠軍）→
- * 進場面板（逐腿最差價＋Payoff／Greeks 摘要，同一組冠軍）→ Historical
- * IV → Spread 淨成本走勢／原始資料（兩張收合卡）。
+ * **手機分支**（OG-10／#327 引入，SW-10／#340 調整順序）：劇本主圖
+ * （常駐 Heatmap＋三價位階梯，跨 family 冠軍）→ Family tabs／到期日
+ * chip／排名表（`FamilyTabs`，含既有「就地展開候選看 Heatmap」native
+ * `<details>` 機制不動）→ 進場面板（逐腿最差價＋Payoff／Greeks 摘要，
+ * 同一組冠軍）→ Historical IV → Spread 淨成本走勢／原始資料（兩張
+ * 收合卡）。SW-10 把劇本主圖移回排名表之前——OG-10 當時的順序依據
+ * 是已退休的 Obsidian Gold artifact，不是 Seed Warm Direction A，
+ * Owner 真機驗收後裁示手機第二眼就該看到 Heatmap，不是排名列表。
  *
  * **桌面分支**：`DesktopDetailBody`（OG-06／#321 起的三欄外殼），順序
  * 見該檔案自己的檔頭。
@@ -50,16 +61,14 @@ import {
   type Candidate,
   type RefreshFailure,
   type ScenarioDetail as Detail,
-  type StrategyResult,
 } from "./api";
-import { candidateTitle, directionLabel, formatMove, strategyLabel } from "./detail";
-import { championCandidate, FAMILY_LABELS, familyOf, resultForStrategy } from "./family";
-import { isThinPool, legPrices, validPairsForExpiry } from "./expiry";
+import { directionLabel, formatMove } from "./detail";
+import { championCandidate, FAMILY_LABELS, familyOf } from "./family";
 import { heatmapProps } from "./heatmap";
 import { getScenarioCached } from "./fetchCache";
 import {
   directionTagClass, failureLabel, formatAnalyzedAt, formatDaysLeft, formatReturn,
-  isRetryDisabledByRateLimit, money, moneyOrDash, rateLimitCountdownText,
+  hasPriceRange, isRetryDisabledByRateLimit, money, moneyOrDash, rateLimitCountdownText,
   rateLimitHeadline, type DirectionTag,
 } from "./scenarios";
 import { useCountdownSeconds } from "./useCountdown";
@@ -162,9 +171,12 @@ function Chart({ view, candidate }: { view: AnalysisView; candidate: Candidate |
  * `/code-review` Standards 軸跟進：這裡只印「最差成交會用到的那一邊」
  * 一個數字，不像 `EntryTab` 逐腿雙邊 Bid／Ask／IV／過寬與陳舊報價警示
  * 都印——跟 artifact「進場 · 最差成交口徑」卡本身的版位一致（也只有
- * 單邊價格），這兩項警示在同一頁上方 `FamilyTabs` 的排名列本來就會顯示
- * （`ExpiryStructure.tsx::CandidateRow` 既有的 ⚠／🚩 tag），刻意不在
- * 這裡重複第二份，不是漏掉。「最差成交要用哪一邊」這句
+ * 單邊價格）。SW-10（#340，Owner 真機驗收）跟進：這兩項警示原本在
+ * 收合就看得到的排名列上以 ⚠／🚩 徽章常駐顯示，Owner 點名「幾乎每筆
+ * 都有，已失去資訊價值」後移除，改成展開 `ExpiryStructure.tsx::
+ * CandidateRow` 的 `<details>` 才看得到完整文案——這裡仍然刻意不重複
+ * 第二份，不是漏掉，只是「本來就會看到」的前提從「收合列常駐」變成
+ * 「展開該候選才看得到」。「最差成交要用哪一邊」這句
  * `leg.side === "buy" ? leg.ask : leg.bid` 三元運算式跟 `expiry.ts::
  * legPrices()`／`legPriceEntries()`、`EntryTab` 的 CSS class 選邊，
  * 已是第三個各自獨立的既有寫法（跟 OG-08 檔頭記錄過的「單腿候選判準
@@ -197,16 +209,23 @@ function EntryPanel({ candidate }: { candidate: Candidate | null }) {
 /**
  * SW-06（#335）手機詳細頁 Hero 白卡：artifact「手機劇本詳細」板頂部
  * ——logo＋代號＋方向 pill＋「目標 X · 目標月」，右側冠軍報酬大字＋
- * 「劇本報酬 · family」副標，下方四格關鍵指標（現價／還需／距目標／
- * 來源＋時間）。
+ * 「劇本報酬 · family」副標，下方關鍵指標（現價／還需／距目標／
+ * 來源＋時間，條件式再加最高／最低）。
  *
- * 刻意獨立於下面既有的 `ScenarioContext`／`Summary` 兩張卡，不是把
- * 它們拆掉重組：那兩張卡承載的完整資訊（買腿 Ask／賣腿 Bid／淨成本／
- * 最高／最低……）與既有測試斷言都逐位元不變（跟 OG-06 桌面身分列同一
- * 個既有前例——`view.meta`／`candidate.baseline_return` 在畫面上出現
- * 兩次是刻意的重複呈現，不是資料來源分裂：兩處都讀同一份既有欄位）。
- * 只在手機分支渲染（呼叫端已經在 `!isDesktop` 底下），桌面身分列維持
- * OG-06 原樣不受影響。
+ * SW-10（#340，Owner 真機驗收）跟進：原本刻意獨立於下面 `ScenarioContext`
+ * （劇本設定卡）／`Summary`（摘要卡）——那兩張卡現在已經整段刪除
+ * （見檔頭說明：逐項比對後全部重複，不是「刻意的重複呈現」可以一直
+ * 維持下去的理由）。兩張卡僅有的獨有欄位搬進來這裡：`strategies`
+ * （原 `ScenarioContext`「啟用的策略類型」）與條件式的最高／最低
+ * （原 `Summary`，`hasPriceRange()` 判斷式沿用 `ScenarioList.tsx`／
+ * `CompactScenarioList.tsx` 既有的「沒填就整個不畫，不是顯示假的
+ * 破折號」慣例——這裡的「沒填」跟卡片清單上的「沒填」是同一件事，
+ * 沒有理由這裡换一種呈現）。買腿 Ask／賣腿 Bid／淨成本不跟著搬——那是
+ * 下面 `EntryPanel` 已經在顯示的既有內容，不是這張 Hero 卡遺漏的
+ * 唯一之處。候選池過少警語也不跟著搬——查看 baseline 到期日（這張卡
+ * 固定顯示的冠軍就來自 baseline）時，下面 `FamilyTabs`／
+ * `ExpiryStructure` 自己那句「該期僅 N 組候選通過品質過濾」本來就會
+ * 出現，是同一件事的同一句話，不是兩個獨立的警語來源。
  *
  * 「距目標」讀 `days_to_anchor`（既有欄位，`ScenarioSummary` 契約，
  * `ScenarioList`／`CompactScenarioList` 已經在用同一個
@@ -219,11 +238,12 @@ function EntryPanel({ candidate }: { candidate: Candidate | null }) {
  * 欄位——沒有這一格就等於編造文字，違反 Logo 政策「找不到就不顯示，
  * 絕不替代」延伸到文字的精神，這裡刻意只留代號本身。
  */
-function MobileHero({ view, candidate, analyzedAt, daysToAnchor }: {
+function MobileHero({ view, candidate, analyzedAt, daysToAnchor, strategies }: {
   view: AnalysisView;
   candidate: Candidate | null;
   analyzedAt: string | null;
   daysToAnchor: number;
+  strategies: readonly string[];
 }) {
   if (!candidate) return null;
   const family = familyOf(candidate.strategy);
@@ -251,6 +271,14 @@ function MobileHero({ view, candidate, analyzedAt, daysToAnchor }: {
       <p className="cell-sub mobile-hero-target">
         目標 {money(view.params.target_price)} · {view.params.target_month}
       </p>
+      {/* 原 `ScenarioContext`（劇本設定卡）唯一的獨有欄位——標的／目標
+          價／目標年月／方向都已經在上面畫過，只有這一項沒有。 */}
+      <p className="cell-sub">
+        啟用的策略類型：
+        {strategies.length > 0
+          ? strategies.map((code) => FAMILY_LABELS[code] ?? code).join("、")
+          : "—"}
+      </p>
       <div className="mobile-hero-stats">
         <Stat label="現價">{money(view.meta.spot)}</Stat>
         <Stat label="還需">{formatMove(view.meta.target_move)}</Stat>
@@ -261,135 +289,13 @@ function MobileHero({ view, candidate, analyzedAt, daysToAnchor }: {
             <span className="row-note">{formatAnalyzedAt(analyzedAt)}</span>
           </span>
         </Stat>
-      </div>
-    </section>
-  );
-}
-
-/**
- * 頂部摘要（QA 修正：三卡合一）。
- *
- * 原本是「劇本摘要／基準候選／進場成本」三張各自獨立的卡片，光是三圈
- * 卡片內距、兩道卡片間距與每張卡內部的 `.row` 分隔線就吃掉頂部大半
- * 高度，真正的數字反而被推到第一屏之外。這裡合成一張：候選身分與劇本
- * 報酬當標頭，其餘全部進統計格線（手機兩欄、桌面四欄）。
- *
- * **數字一項沒少**——現價、目標價（含所需漲幅）、目標年月、策略、
- * 到期日、名次、買腿 Ask、賣腿 Bid、淨成本、資料時間、資料來源，連
- * 候選池過少的警語都跟著搬過來。壓掉的是留白，不是資訊。
- *
- * T11（#229，Initial V2）：`candidate`／`result` 改由呼叫端傳入跨
- * family 冠軍（`family.ts::championCandidate`）與冠軍自己的
- * `StrategyResult`——這是 AC 明文要求的「口徑升級」本身（詳見
- * CONTEXT.md「Per-family Representative」／「Family Tab」兩節）：
- * 「策略」這一格與候選池過少警語現在說的是冠軍所屬的那個 subtype，
- * 不再是 `results[0]`（多 family 之後只是「第一個被展開的 subtype」，
- * 不保證是冠軍）。既有單一 family 劇本的 `championCandidate` 恆等於
- * 舊版 `primaryResult` 的候選，數字逐位元不變。
- */
-/**
- * 劇本設定（OPTION-CHASER-CLOSEOUT-001，項目 2）：使用者原本建立這個
- * 劇本時填的東西——標的、目標價、目標年月、系統依此推導出的方向、
- * 以及使用者勾選啟用的 Strategy Family。放在 `Summary`（哪一組候選
- * 表現最好）之前，讓使用者先確認「我現在看的劇本是什麼」，再看這個
- * 劇本下的最佳策略——兩件事分屬不同的卡片，不要混在同一張裡。
- *
- * 零金融計算：`direction` 是後端 `derive_direction()` 算好、與
- * `family_eligibility` 同一個判準的既有欄位（見 `option_chaser/
- * store.py::serialize_result()`），這裡只格式化顯示；`strategies`
- * 是使用者建立／編輯劇本時勾選的既有欄位（`ScenarioDetail.strategies`，
- * `FamilyTabs` 也讀同一個 prop），不是重新計算出來的。
- */
-function ScenarioContext({ view, strategies }: {
-  view: AnalysisView;
-  strategies: readonly string[];
-}) {
-  return (
-    <section className="card summary-card" aria-label="劇本設定">
-      <div className="summary-grid">
-        <Stat label="標的">{view.meta.symbol}</Stat>
-        <Stat label="目標價">{money(view.params.target_price)}</Stat>
-        <Stat label="目標年月">{view.params.target_month}</Stat>
-        <Stat label="方向">{directionLabel(view.direction)}</Stat>
-        <Stat label="啟用的策略類型">
-          {strategies.length > 0
-            ? strategies.map((code) => FAMILY_LABELS[code] ?? code).join("、")
-            : "—"}
-        </Stat>
-      </div>
-    </section>
-  );
-}
-
-function Summary({ view, candidate, result, analyzedAt }: {
-  view: AnalysisView;
-  candidate: Candidate | null;
-  result: StrategyResult | null;
-  analyzedAt: string | null;
-}) {
-  const strategy = candidate?.strategy ?? view.params.strategy;
-  const pool = result ? validPairsForExpiry(result, view.baseline_expiry) : null;
-  const prices = candidate ? legPrices(candidate) : null;
-  return (
-    <section className="card summary-card" aria-label="劇本摘要">
-      {/* 標頭：這一頁在講哪一組候選、它的劇本報酬是多少。候選池過少的
-          警語跟著這裡走，不掛在下面會切換到期日的清單上——使用者切到
-          別期，這一區仍是 baseline 那組，警語得跟著它。 */}
-      {candidate && (
-        <div className="summary-hero">
-          <span className="summary-id">
-            <span className="summary-title">{candidateTitle(candidate)}</span>
-            <span className="summary-meta">
-              <span>{view.baseline_expiry}</span>
-              <span>第 1 名</span>
-            </span>
-          </span>
-          <span
-            className={`metric ${candidate.baseline_return >= 0 ? "positive" : "negative"}`}
-          >
-            {formatReturn(candidate.baseline_return)}
-          </span>
-        </div>
-      )}
-
-      <div className="summary-grid">
-        <Stat label="策略">{strategyLabel(strategy)}</Stat>
-        <Stat label="現價">{money(view.meta.spot)}</Stat>
-        <Stat label="目標價">
-          {money(view.params.target_price)}
-          {/* 所需漲幅是引擎給的 `target_move`，不是這裡拿兩個價格相減 */}
-          <span className="row-note">（{formatMove(view.meta.target_move)}）</span>
-        </Stat>
-        <Stat label="目標年月">{view.params.target_month}</Stat>
-        {/* QA 修正：最高／最低就是 Heatmap 價格軸上下限的來源，也是
-            圖上那兩個錨點標記的數字——不放在這裡，使用者對不上。
-            沒填就顯示「—」，不是把整格藏起來（藏起來會讓人以為這個
-            劇本沒有這個概念）。 */}
-        <Stat label="最高">{moneyOrDash(view.params.best_price)}</Stat>
-        <Stat label="最低">{moneyOrDash(view.params.worst_price)}</Stat>
-        {/* 進場成本三項與到期日結構清單裡每一列候選同一口徑（`legPrices`） */}
-        {prices && (
-          <Stat label="買腿 Ask">
-            {prices.buyAsk === null ? "—" : money(prices.buyAsk)}
-          </Stat>
+        {hasPriceRange(view.params) && (
+          <>
+            <Stat label="最高">{moneyOrDash(view.params.best_price)}</Stat>
+            <Stat label="最低">{moneyOrDash(view.params.worst_price)}</Stat>
+          </>
         )}
-        {prices && (
-          <Stat label="賣腿 Bid">
-            {prices.sellBid === null ? "—" : money(prices.sellBid)}
-          </Stat>
-        )}
-        {prices && <Stat label="淨成本">{money(prices.net)}</Stat>}
-        <Stat label="資料時間">{formatAnalyzedAt(analyzedAt)}</Stat>
-        {/* 資料來源不是裝飾：`cboe` ＝ 打得到主源、`yfinance` ＝ 走了備援。 */}
-        <Stat label="資料來源">{view.meta.source}</Stat>
       </div>
-
-      {candidate && isThinPool(pool) && (
-        <p className="notice warn">
-          <span aria-hidden="true">⚠ </span>
-          這一期只有 {pool} 組候選通過品質過濾，第 1 名參考價值有限。
-        </p>
-      )}
     </section>
   );
 }
@@ -417,18 +323,8 @@ function DetailBody({ scenarioId, view, analyzedAt, strategies, daysToAnchor }: 
 }) {
   const isDesktop = useIsDesktop();
   const candidate = championCandidate(view);
-  const result = candidate ? resultForStrategy(view, candidate.strategy) : null;
   return (
     <>
-      {/* OPTION-CHASER-CLOSEOUT-001：劇本設定（使用者原本建立的
-          context）排在最佳策略內容之前——先知道「這是什麼劇本」，
-          再看「這個劇本下最好的候選」。 */}
-      <ScenarioContext view={view} strategies={strategies} />
-      {/* spec #102 決策 A 的資訊階層不變，只是前三格（劇本摘要／基準
-          候選／進場成本）合併成同一張高密度卡：摘要 →〔IV History
-          插槽〕→ Payoff Heatmap，全部圍繞同一組
-          baseline 候選。 */}
-      <Summary view={view} candidate={candidate} result={result} analyzedAt={analyzedAt} />
       {/* OG-06（#321）：桌面版把「劇本主圖＋Strategy Family 分頁」換成
           Binance trade page 式的三欄外殼（`DesktopDetail.tsx`）——左欄
           family tabs／到期日 chip／排名表，中央欄常駐 Heatmap 跟著
@@ -445,36 +341,35 @@ function DetailBody({ scenarioId, view, analyzedAt, strategies, daysToAnchor }: 
                             scenarioId={scenarioId} analyzedAt={analyzedAt} />
       ) : (
         <>
-          {/* SW-06（#335）：Hero 白卡放在手機分支最前面，OG-10 既有
-              「FamilyTabs → Chart → PriceLadder → EntryPanel → IvHistory
-              → 後續連結」這段順序完全不動，Hero 只是加在它們之前，不是
-              插進中間或取代任何一段。 */}
+          {/* SW-06（#335）：Hero 白卡放在手機分支最前面。 */}
           <MobileHero view={view} candidate={candidate} analyzedAt={analyzedAt}
-                      daysToAnchor={daysToAnchor} />
-          {/* OG-10（#327）：手機整頁順序依 artifact「Mobile 劇本詳細」
-              板重排——Family tabs／到期日 chip／排名表（`FamilyTabs`
-              內部，含既有「就地展開候選看 Heatmap」native `<details>`
-              機制，逐位元組不動：AC 明文「候選展開零請求」既有斷言不得
-              刪減弱化）排在「劇本主圖」常駐 Heatmap／三價位階梯／進場
-              面板之前，Historical IV 排在進場面板之後、兩個底部收合卡
-              （淨成本走勢／原始資料）之前。跟票面「三個收合列」的唯一
-              揭露落差：候選池診斷／分析報告依然留在 `FamilyTabs` 內部
-              （T11／#229 既有的「跟著目前選中的 family」語意，不是
-              跟著整頁固定不變）——沒有硬拉出來跟淨成本走勢／原始資料
-              湊成三個位置相鄰的列，因為那兩塊本來就是 family-scoped
-              資料，跟著整頁固定的淨成本走勢／原始資料語意上是兩件事，
-              強行拉平成同一組「三列」會混淆這個既有區分（見 issue #327
-              收尾留言的完整說明）。 */}
-          <FamilyTabs view={view} strategies={strategies} />
+                      daysToAnchor={daysToAnchor} strategies={strategies} />
+          {/* SW-10（#340，Owner 真機驗收）：OG-10（#327）當時把
+              `FamilyTabs` 搬到 `Chart`（劇本主圖，跨 family 冠軍的常駐
+              Heatmap）之前，理由是「依 artifact『Mobile 劇本詳細』板
+              重排」——查證後那個 artifact 是 issue #327 的 parent
+              #316（Obsidian Gold tracking），不是現在的 source of
+              truth Seed Warm Direction A（Direction A 從未做過手機
+              詳細頁的板，見 `ScenarioDetail.tsx` 檔頭）。Owner 真機
+              驗收明文指出「第二區原本應該有最佳劇本熱力圖，目前不見
+              ……這是內容缺失，不是單純 styling」——手機第二眼看到的
+              是候選排名列表，Heatmap 本身要點開某個候選的 `<details>`
+              才看得到，這正是「熱力圖不見了」的真正原因，不是排序無關
+              痛癢的小事。這裡把 `Chart` 移回 `FamilyTabs` 之前，恢復
+              成 OG-10 之前、Heatmap 是第二眼就看得到內容的順序——
+              `FamilyTabs` 內部「就地展開候選看 Heatmap」的 native
+              `<details>` 機制本身不動（AC 明文「候選展開零請求」既有
+              斷言不得刪減弱化），這裡只調整 `FamilyTabs`／`Chart` 兩個
+              區塊本身的先後順序，不動兩者各自內部的實作。 */}
           <Chart view={view} candidate={candidate} />
+          <FamilyTabs view={view} strategies={strategies} />
           <EntryPanel candidate={candidate} />
           {/* OG-08（#326）：桌面版的 Historical IV 改掛進
               `DesktopDetailBody` 右欄（跟著排名表選取列，不是這裡的跨
-              family 冠軍）——這份全域掛載點只留給手機版。OG-10（#327）
-              把它從「劇本主圖之前」移到「進場面板之後」，對齊 artifact
-              的手機版順序；既有 17 條 Historical IV e2e 全部只用
-              `.iv-history` 定位、不斷言跟其他區塊的相對順序，位置搬動
-              不影響任何既有斷言。 */}
+              family 冠軍）——這份全域掛載點只留給手機版，排在進場面板
+              之後；既有 17 條 Historical IV e2e 全部只用 `.iv-history`
+              定位、不斷言跟其他區塊的相對順序，SW-10 這輪
+              `FamilyTabs`／`Chart` 對調不影響這裡任何既有斷言。 */}
           <IvHistory scenarioId={scenarioId} candidate={candidate} analyzedAt={analyzedAt} />
           {/* #69：`key` 綁定這次分析的身分——新分析一到，React 直接卸載
               重掛這兩個元件，內部 state（已抓到的資料、`<details
@@ -675,14 +570,16 @@ export default function ScenarioDetail({
           {/* OG-06（#321）`/code-review` Spec 軸跟進：身分列票面明文要求
               現價／目標價（含所需漲跌幅）／目標年月／資料時間／資料來源
               都在同一列——先前一版只加了 Logo／方向 tag／編輯鈕，把這五
-              項留在下方 `Summary` 卡裡就當作滿足了，Spec 審查抓到這是
-              未揭露的落地縮水，這裡補齊。SW-05（#337）起收成跟手機版
-              `MobileHero` 同一組四格（現價／還需／距目標／來源＋時間）
-              ——「目標年月」搬進上面新增的那一行（跟目標價同一句），
-              不再獨立佔一格；跟 `Summary` 顯示同樣的數字是刻意的重複，
-              不是資料來源分裂：兩處都直接讀 `view.meta`／`view.params`／
-              既有 `days_to_anchor` 欄位，同一套既有格式化函式（`money`／
-              `formatMove`／`formatAnalyzedAt`／`formatDaysLeft`）。 */}
+              項留在下方摘要卡裡就當作滿足了，Spec 審查抓到這是未揭露的
+              落地縮水，這裡補齊。SW-05（#337）起收成跟手機版 `MobileHero`
+              同一組四格（現價／還需／距目標／來源＋時間）——「目標年月」
+              搬進上面新增的那一行（跟目標價同一句），不再獨立佔一格。
+              SW-10（#340，Owner 真機驗收）：原本這裡跟已刪除的
+              `ScenarioContext`／`Summary` 兩張卡顯示同樣的數字是刻意的
+              重複，不是資料來源分裂——那兩張卡整段刪除後，這裡改成
+              兩張卡僅有的獨有欄位（啟用的策略類型；最高／最低，條件式，
+              沿用 `hasPriceRange()` 既有「沒填就整個不畫」慣例）的唯一
+              落點，不再是重複的第二份。 */}
           {detail?.latest_result && (
             <div className="toolbar-row detail-identity-meta">
               <span className="cell-sub">
@@ -697,6 +594,19 @@ export default function ScenarioDetail({
               <span className="cell-sub">
                 {detail.latest_result.meta.source}
                 {" · "}{formatAnalyzedAt(detail.latest_analyzed_at)}
+              </span>
+              {hasPriceRange(detail.latest_result.params) && (
+                <span className="cell-sub">
+                  最高 {moneyOrDash(detail.latest_result.params.best_price)}
+                  {" · "}
+                  最低 {moneyOrDash(detail.latest_result.params.worst_price)}
+                </span>
+              )}
+              <span className="cell-sub">
+                啟用的策略類型：
+                {detail.strategies.length > 0
+                  ? detail.strategies.map((code) => FAMILY_LABELS[code] ?? code).join("、")
+                  : "—"}
               </span>
             </div>
           )}

@@ -180,7 +180,6 @@ def test_exit_2_global_vendor_fuse_is_actually_triggered_under_synthetic_load():
     storage = MemoryStorage()
     app = create_app(cboe_fetch=mock, storage=storage, cron_secret=CRON_SECRET,
                      global_vendor_daily_budget=3,
-                     anonymous_refresh_min_interval_minutes=0,
                      anonymous_max_active_scenarios=0)
     _owner_id, token = _make_synthetic_owner(storage)
     c = _client_for(app, token)
@@ -207,8 +206,7 @@ def test_exit_3_no_500_across_every_degradation_path():
     storage = MemoryStorage()
     app = create_app(cboe_fetch=mock, storage=storage, cron_secret=CRON_SECRET,
                      global_vendor_daily_budget=5,
-                     anonymous_max_active_scenarios=2,
-                     anonymous_refresh_min_interval_minutes=0)
+                     anonymous_max_active_scenarios=2)
 
     all_statuses: list[int] = []
     for _ in range(4):
@@ -309,7 +307,6 @@ def test_zero_real_vendor_calls_across_the_whole_harness(monkeypatch):
     storage = MemoryStorage()
     app = create_app(cboe_fetch=mock, storage=storage, cron_secret=CRON_SECRET,
                      global_vendor_daily_budget=2, anonymous_max_active_scenarios=2,
-                     anonymous_refresh_min_interval_minutes=0,
                      anonymous_abandoned_after_days=1, anonymous_grace_period_days=1)
 
     last_token = None
@@ -412,8 +409,7 @@ def test_exit_6_db_growth_rate_extrapolates_to_a_concrete_neon_free_owner_count(
     app = create_app(cboe_fetch=mock, storage=storage, cron_secret=CRON_SECRET,
                      rate_loader=offline_rate_loader,
                      dividend_loader=real_dividend_loader,
-                     anonymous_max_active_scenarios=0,
-                     anonymous_refresh_min_interval_minutes=0)
+                     anonymous_max_active_scenarios=0)
 
     with psycopg.connect(TEST_DB_URL, autocommit=True) as conn:  # type: ignore[arg-type]
         for table in _GROWTH_TABLES:

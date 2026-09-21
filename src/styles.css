@@ -229,9 +229,8 @@ body {
   /* 詳細頁內容仍維持可讀寬度，不會因為全寬頁面就被硬拉成整行文字。
      OG-06（#321）：900px 是 OG-02 起單欄版面的既有上限，三欄 trade
      版面（`.detail-shell`，見下方 OG-06 專屬區塊）需要更寬的畫布才擺
-     得下左／中／右三欄，這裡放寬到 1400px——`ScenarioContext`／
-     `Summary`／`IvHistory` 等既有單欄卡片不受影響，仍讀得舒服（四欄
-     `.summary-grid` 在更寬的容器下純粹是留白變多，不是文字被拉長）。 */
+     得下左／中／右三欄，這裡放寬到 1400px——`IvHistory` 等既有單欄
+     卡片不受影響，仍讀得舒服。 */
   .detail-page .screen {
     max-width: 1400px;
   }
@@ -290,19 +289,6 @@ body {
   .detail-page .chip-strip {
     margin: 0 -12px;
     padding: 2px 12px;
-  }
-
-  /* 頂部摘要卡：桌面詳細頁固定寬度 900px，兩欄還是留了大片空白——排
-     四欄剛好把九項壓成三行。卡片內距也比一般卡片再緊一級：這張卡
-     整張都是短標籤＋短數字，不需要一般卡片那圈呼吸空間。 */
-  .detail-page .summary-card {
-    padding: 10px 12px;
-    gap: 8px;
-  }
-
-  .detail-page .summary-grid {
-    grid-template-columns: repeat(4, minmax(0, 1fr));
-    column-gap: 20px;
   }
 
   /* ---------- UI-IMPL-002（#092）：建立劇本抽屜 ----------
@@ -692,10 +678,13 @@ body {
 
 /* 清單上方「收益率口徑」說明文字那一列，垃圾桶批次選取入口貼在
    右側——需求方核准版面的位置。 */
+/* SW-10（#340）：原本 `space-between` 是為了讓口徑說明文字靠左、批次
+   選取鈕靠右——那句說明文字已經移除（見 `CompactScenarioList.tsx`），
+   現在這裡唯一剩下的內容就是那顆鈕，直接靠右對齊。 */
 .yield-note-row {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-end;
   gap: 8px;
 }
 
@@ -955,9 +944,11 @@ body {
    空間預算由 `smoke.spec.ts`「一屏至少看得到 N 個劇本」既有硬性密度
    測試鎖住（MVP-v2／#77、#82），單行＋`.pstat`（SW-01／#331
    primitive）字級縮一號才塞得下。 */
+/* SW-10（#340，Owner 真機驗收）：拿掉「最近活動」「刷新節流間隔」
+   後只剩兩格（進行中劇本／最佳報酬），欄數改成 2。 */
 .mobile-stats-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 6px;
 }
 
@@ -973,8 +964,18 @@ body {
   text-overflow: ellipsis;
 }
 
-.mobile-stats-grid .pstat-v {
-  font-size: 16px;
+/* SW-10（#340）真機驗收抓到的真實 bug：這裡本來就想把手機版數字縮到
+   16px，但選擇器 `.mobile-stats-grid .pstat-v`（2 個 class，specificity
+   0,0,2,0）跟後面 `.pstat .pstat-v`（同樣 0,0,2,0）specificity 打平，
+   CSS 層疊比的是後者「誰的原始碼順序在後面」——`.pstat .pstat-v`
+   宣告在檔案更後面，實際套用的是它的 30px，不是這裡看起來寫的 16px。
+   數字在真機上「看起來過大」不是錯覺，是這個 selector 從來沒真的贏過
+   ——改成三層 `.mobile-stats-grid .pstat .pstat-v`（specificity
+   0,0,3,0）確保這份規則穩定勝出，不必依賴原始碼順序這種脆弱的巧合。
+   字級順手依 Artifact A 手機板（20px／11px）重新校準，不是原樣延用
+   那個從未真的生效過的 16px。 */
+.mobile-stats-grid .pstat .pstat-v {
+  font-size: 19px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -982,6 +983,16 @@ body {
 
 .pstat-v.up {
   color: var(--up);
+}
+
+/* SW-10（#340）：「最佳報酬」格新增，負報酬與從未分析過兩態同一套
+   既有色彩慣例（`--down` 負值、`--mute` 缺席）。 */
+.pstat-v.down {
+  color: var(--down);
+}
+
+.pstat-v.muted {
+  color: var(--mute);
 }
 
 /* ---------- 卡片內容 ---------- */
@@ -1066,7 +1077,35 @@ body {
   background: var(--fill);
 }
 
-.compact-tier1 {
+/* SW-10（#340，Owner 真機驗收）：Artifact A（`A-Mobile-Library.dc.html`）
+   的手機劇本列其實是「左側身分＋右側報酬」雙欄式一行卡片，不是原本
+   `.compact-tier1`／`.compact-tier2` 各自獨立、上下堆疊的兩列——原本
+   兩層各自 `display:flex` 橫向排列，但彼此之間仍是垂直堆疊，跟 artifact
+   實際的「一行內左右分欄」差距明顯，Owner 驗收明文點名不能再用既有
+   component 限制當理由。`.compact-tier1`／`.compact-tier2` 兩個類別
+   （連同純視覺容器用途）已被下面 `.compact-main-row`／`.compact-info`／
+   `.compact-headline`／`.compact-right` 取代；`.compact-symbol`／
+   `.compact-target`／`.compact-spot`／`.compact-strategy`／
+   `.compact-strategy-pill`／`.compact-metric`（含桌面版 `ScenarioList.tsx`
+   共用的那份，見上方檔頭說明）本身的規則不變，只是換了父層容器。 */
+.compact-main-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+}
+
+/* 左欄：身分（代號＋方向／狀態）＋現價目標價，兩者永遠各自一行、
+   `min-width:0` 讓長文字寧可被下面既有 `.compact-target` 的
+   `text-overflow:ellipsis` 裁掉，也不撐開整行高度。 */
+.compact-info {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.compact-headline {
   display: flex;
   align-items: center;
   gap: 6px;
@@ -1080,22 +1119,28 @@ body {
 .compact-target {
   font-size: 12px;
   color: var(--ink-2);
-  /* 目標價／目標年月頂到燈號前面，中間吃掉多餘空間——燈號永遠貼右。 */
-  margin-right: auto;
   /* #108：桌面版左側欄（約 220px）比手機版窄很多，這個 flex item 被
      擠壓時若沒有 `overflow: hidden`，文字會在原地換成兩行、把整張卡
-     撐高，而不是裁成一行——三層 compact row 的密度前提就是「每層只有
-     一行」。`overflow` 設非 `visible` 同時讓 flex item 的自動最小寬度
-     變成 0（flexbox 規範既有行為），該縮的時候才縮得下去。 */
+     撐高，而不是裁成一行——密度前提是「每層只有一行」。`overflow`
+     設非 `visible` 同時讓 flex item 的自動最小寬度變成 0（flexbox
+     規範既有行為），該縮的時候才縮得下去。 */
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
-.compact-tier2 {
+/* 右欄：報酬率＋策略腿位，貼齊 artifact 卡片右側「數字優先、貼右對齊」
+   的版式；`flex-basis` 給一個上限，長策略字串（英文全名＋買賣履約價）
+   不會把左欄身分資訊擠到看不見——兩欄都靠既有 `overflow:hidden` 規則
+   各自裁一行，不是其中一欄無限吃掉版面。 */
+.compact-right {
   display: flex;
-  align-items: baseline;
-  gap: 8px;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 1px;
+  text-align: right;
+  flex: 0 1 42%;
+  min-width: 0;
 }
 
 /* 第二層是全卡最醒目的資訊（報酬率＋策略＋履約價）——比桌面版 `.metric`
@@ -1626,71 +1671,16 @@ body {
   font-weight: 600;
 }
 
-/* ---------- 頂部摘要：三卡合一的高密度版（QA 修正） ---------- */
-/*
- * 原本「劇本摘要／基準候選／進場成本」三張卡，等於三圈 16px 卡片內距
- * ＋兩道 16px 卡片間距＋每張卡內部的整行 `.row` 分隔線。合併之後只剩
- * 一圈內距，而且所有 label／value 從「左右對開佔滿一行」改成「上下疊
- * 放進格線」，手機一行放兩項、桌面一行放四項。資訊一項沒少。
- */
-.summary-card {
-  padding: 12px;
-  gap: 10px;
-}
-
-.summary-hero {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.summary-id {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  min-width: 0;
-}
-
-.summary-title {
-  font-size: 17px;
-  font-weight: 700;
-  line-height: 1.25;
-}
-
-/* 到期日與名次跟在候選身分底下當附註——它們是「這組是誰」的一部分，
-   不值得各佔一整格。 */
-.summary-meta {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 2px 12px;
-  font-size: 12px;
-  color: var(--ink-2);
-}
-
-/* 標頭數字比一般 `.metric`（28px）小一級：這張卡現在還要裝下九格
-   統計，28px 會把整張卡撐回合併前的高度。 */
-.summary-hero .metric {
-  font-size: 24px;
-  line-height: 1.15;
-  white-space: nowrap;
-}
-
-.summary-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  column-gap: 12px;
-  row-gap: 8px;
-  border-top: 0.5px solid var(--line);
-  padding-top: 10px;
-}
-
-/* 標頭不存在時（無合格候選）不要留一條孤立的上緣線 */
-.summary-card > .summary-grid:first-child {
-  border-top: 0;
-  padding-top: 0;
-}
-
+/* SW-10（#340，Owner 真機驗收）：原本這裡是「頂部摘要：三卡合一的
+   高密度版」——`ScenarioContext`（劇本設定卡）／`Summary`（摘要卡）
+   已整段刪除（見 `ScenarioDetail.tsx` 檔頭說明：兩張卡跟手機版
+   `MobileHero`／桌面版身分列逐項比對後全部重複），`.summary-card`／
+   `.summary-hero`／`.summary-id`／`.summary-title`／`.summary-meta`／
+   `.summary-hero .metric`／`.summary-grid`／`.summary-card .notice`
+   等專屬於那兩張卡的規則因此一併整段移除——不留一組沒有消費端的
+   死 CSS。`.stat`／`.stat-label`／`.stat-value` 三個更底層的既有
+   primitive 不受影響，`MobileHero`／`PriceLadder` 等其餘既有消費端
+   繼續使用。 */
 .stat {
   display: flex;
   flex-direction: column;
@@ -1702,9 +1692,12 @@ body {
    改成三張等寬 `.pstat`（SW-01／#331 primitive）白卡——Super Admin
    專屬的兩格已搬到 Super Admin 後台（見 `UsageStatsStrip` 說明），
    固定三欄，不必再為了容納更多格子保留自動換行。 */
+/* SW-10（#340，Owner 真機驗收）：拿掉「最近活動」「刷新節流間隔」
+   後只剩兩格（進行中劇本／最佳劇本報酬），欄數改成 2——寧可誠實
+   少一格，不要為了湊滿 3 欄硬塞一個沒有產品價值的數字。 */
 .lib-stats-strip {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 16px;
 }
 
@@ -1737,13 +1730,6 @@ body {
 .stat-value .row-note {
   font-size: 12px;
   font-weight: 400;
-}
-
-/* 摘要卡裡的警語比獨立卡片上的窄一號——它現在是卡片內的一列，
-   不是自己一張卡。 */
-.summary-card .notice {
-  padding: 8px 10px;
-  font-size: 13px;
 }
 
 /* ---------- 主圖 Heatmap（V5／#53） ---------- */
@@ -1815,13 +1801,24 @@ body {
 /* SW-08（#338）：目標列高亮 terracotta、現價列高亮暖灰——一列可能
    同時是目標又是現價（使用者的目標價恰好等於現價），兩個 class 可以
    同時掛在同一個 `<tr>` 上，terracotta 文字色寫在後面、特異度相同時
-   贏過暖灰底色，不會互相蓋掉重要的那一半資訊。 */
+   贏過暖灰底色，不會互相蓋掉重要的那一半資訊。
+   SW-10（#340，Owner 真機驗收）：原本現價列只有一塊淺色底、目標列
+   只換文字顏色，兩者在滿版都是報酬率格子的表格裡都太安靜，長時間
+   掃視價格軸容易錯過。這裡各自加一條左側色條（`border-left`，沿用
+   既有語意色，不是新發明的顏色）＋目標列補上既有 `--acc-soft` 底色
+   （跟文字色同一組 terracotta 語彙，不是又一個新色階）——兩條線索
+   （色條＋底色／文字）比單一線索更容易在快速掃視時抓到，但都只是
+   既有色彩用得更完整，不是換成高飽和度的警示色，不會變成刺眼的
+   terminal 風。 */
 .heatmap-table tr.anchor-spot .heatmap-price {
   background: var(--soft);
+  border-left: 3px solid var(--ink-2);
 }
 
 .heatmap-table tr.anchor-target .heatmap-price {
   color: var(--acc-text);
+  background: var(--acc-soft);
+  border-left: 3px solid var(--acc);
 }
 
 .heatmap-table .tag {
@@ -1966,11 +1963,20 @@ body {
 }
 
 /* `.month-cell.selected`（#71）共用同一組選定態填色——兩者都是「一顆
-   按鈕，選定時實心填色」，沒有理由各寫一份。 */
+   按鈕，選定時實心填色」，沒有理由各寫一份。
+   SW-10（#340，Owner 真機驗收）：這裡原本錯填成 `--acc`（橘色）——
+   實際核對 Artifact A 原始 CSS（`A-Mobile-Library.dc.html`）才發現
+   `.chip.on` 真正的定義是 `background:var(--ink);color:#fff`，從來
+   不是橘色；橘色是實作階段的漂移，不是刻意的設計決定。這條漂移正是
+   Owner 點名「冠軍 badge 是橘色、被選取的格子也是橘色，兩者語意打架」
+   的一半原因——現在改回 artifact 原本就是的 ink-solid＋白字，橘色
+   還給真正的 CTA 專用。`--card`（`#ffffff`）在這裡當「on-ink 的文字
+   色」用，數值上等同 artifact 的 `#fff`，不新增一個只為這裡存在的
+   token。 */
 .chip.selected,
 .month-cell.selected {
-  background: var(--acc);
-  color: var(--on-acc);
+  background: var(--ink);
+  color: var(--card);
 }
 
 /* T11（#229，Initial V2，`/code-review` Standards 軸回饋）：`.chip-date`
@@ -1998,7 +2004,7 @@ body {
 }
 
 .chip.selected .chip-return {
-  color: var(--on-acc);
+  color: var(--card);
 }
 
 /* OG-02（#318）：`.card.selected`／`.compact-card.selected`（#72
@@ -2121,10 +2127,30 @@ body {
   opacity: 0.6;
 }
 
+/* SW-10（#340，Owner 真機驗收）：兩層結構取代原本單一橫向列——上排
+   （`.candidate-head-top`）rank／subtype／return 三個短字串，下排
+   `.candidate-title`（legs 描述，通常是這一列最長的文字）獨立一整行，
+   不再互相搶寬度。見 `ExpiryStructure.tsx::CandidateRow` 的完整
+   說明。 */
 .candidate-head {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.candidate-head-top {
   display: flex;
   align-items: baseline;
   gap: 8px;
+}
+
+/* `.candidate-title` 不再跟 rank／subtype 共用一行，右側因此不再需要
+   它用 `flex:1` 撐開把 return 推到最右——改由 return 自己的
+   `margin-left:auto` 負責，只在這個新的上排容器裡生效，不影響桌面版
+   `DesktopDetail.tsx::DesktopCandidateRow`（那裡的 `.candidate-return`
+   包在自己的 `.detail-rank-return` 裡，用的是另一套既有定位）。 */
+.candidate-head-top .candidate-return {
+  margin-left: auto;
 }
 
 .rank {
@@ -2779,7 +2805,7 @@ body {
 /* ---------- Historical IV Position（#114／#135 壓平） ---------- */
 
 /* 整塊壓到最低：這是掛在候選分析流程裡的 enrichment，不是第二張大卡片
-   ——內距比一般卡片再緊一級（比照 `.summary-card` 既有的密度覆寫）。
+   ——內距比一般卡片再緊一級。
    手機再瘦身一輪（需求方 2026-08-22 反饋：整張卡片仍然太高）：
    padding／gap 再收一級，桌面在下方 `@media (min-width: 1100px)` 恢復
    成瘦身前的 12px／8px（跟其餘卡片同一個密度基準，不因這輪手機瘦身
@@ -3798,9 +3824,9 @@ body {
 
 /* 排名表一列：從手機版的 `<details><summary>` 換成一顆可點的按鈕
    （見 `DesktopDetail.tsx` 檔頭說明——語意從「展開看這一組的圖」變成
-   「把中央 Heatmap 換成這一組」）。`.chip.selected` 既有的選取視覺
-   語言（金色邊框／底色）在這裡沿用，不是重新設計一套「這一列被選中」
-   要長什麼樣。 */
+   「把中央 Heatmap 換成這一組」）。選取態視覺見下面 `.detail-rank-
+   row.selected`（SW-10／#340 起改用中性底色，不再跟 `.chip.selected`
+   共用同一種橘色）。 */
 .detail-rank-row {
   display: flex;
   align-items: center;
@@ -3820,14 +3846,20 @@ body {
   background: var(--fill);
 }
 
-/* SW-05（#337）：選取列改成暖色淺底（artifact 明文），沿用既有
-   `--acc-soft` token（SW-09／#339 之後舊名 `--accent-soft` 已整段移除；
-   跟 `.chip.selected` 同一種 terracotta 淺底慣例——`.pchip.on` 曾經是
-   另一個平行同義詞，SW-09 已把從未被消費的 `.pchip` 整組刪除），不是
-   通用的 `--fill` 灰底。 */
+/* SW-10（#340，Owner 真機驗收）：原本跟 `.chip.selected` 共用
+   terracotta 橘色淺底（`--acc-soft`）——Owner 點名這一格（「被選取的
+   格子」）跟冠軍 badge 語意打架後重新核對，`.chip.selected` 本身已經
+   改正為 artifact 真正的 ink-solid（見上）；這一列若也跟著改 ink-solid
+   則太重（整列橫向塞了名次／subtype／腿位／報酬＋比例條好幾種既有
+   語意色，實心深底會把 `.candidate-return.positive/.negative` 的紅綠
+   吃掉對比）。Direction A 沒有排名列這種元件可以直接照抄，改採
+   artifact 另一組既有的中性語彙——`.pills a.on` 的淺色中性底
+   （`--soft`／數值上等同 artifact 的 `#F1E9DC`），列內每個子元素
+   繼續各自的既有語意色，只有這一列本身的框線／底色換成不跟 CTA／
+   冠軍搶戲的中性色。 */
 .detail-rank-row.selected {
-  border-color: var(--acc);
-  background: var(--acc-soft);
+  border-color: var(--line-2);
+  background: var(--soft);
 }
 
 .detail-rank-return {
@@ -3849,8 +3881,9 @@ body {
 }
 
 /* 三價位階梯（`PriceLadder.tsx`）：三列，標籤／價格／報酬各自靠齊，
-   跟 `.summary-grid` 的 `Stat` 走不同版式——這裡是「一組候選」的完整
-   價位對照，讀起來更像一張小表格而不是散落的統計格。 */
+   跟 `MobileHero`／`.mobile-hero-stats` 的 `Stat` 走不同版式——這裡是
+   「一組候選」的完整價位對照，讀起來更像一張小表格而不是散落的
+   統計格。 */
 .price-ladder {
   display: flex;
   flex-direction: column;
@@ -4073,10 +4106,18 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
-/* SW-09（#339）contract 階段刪除 `.pstat .pstat-d`（原意是給
-   `.pstat` 補一列輔助說明文字）——`.pstat-k`／`.pstat-v` 兩個同組
-   primitive 都在用（見 `MobileStatsStrip.tsx`／`SuperUserAdmin.tsx`
-   的 `OpsStats()`），唯獨這個第三列從未被任何消費端掛過。 */
+/* SW-09（#339）當時刪除過 `.pstat .pstat-d`（原意是給 `.pstat` 補一列
+   輔助說明文字），因為那時真的沒有任何消費端掛它。SW-10（#340，Owner
+   真機驗收）重新加回來：`MobileStatsStrip.tsx` 的「最佳報酬」格需要
+   在報酬率大字下方再印一行「標的 · 策略」小字——同一類需求又出現了，
+   不是走回頭路，是死程式碼判定本來就該隨消費端存在與否而變動。 */
+.pstat .pstat-d {
+  font-size: 11px;
+  color: var(--mute);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 
 /* Input primitive（新表單/搜尋框，圓角 10）。 */
 .pinp {
@@ -4267,14 +4308,25 @@ body {
   gap: 2px;
 }
 
+/* SW-10（#340，Owner 真機驗收）：原本跟 CTA 共用 `--acc` 實心橘——
+   `.chip.selected`（見上，已改回 artifact 原本的 ink-solid）此後才是
+   真正跟這個徽章疊在同一顆 chip 上的元素（冠軍 family 剛好也是目前
+   選中的分頁時），兩個橘色實心疊在一起正是 Owner 點名的「語意打架」。
+   Artifact A 的 Library 板沒有「冠軍徽章」這個元素可以直接照抄（Direction
+   A 從未做過需要它的畫面），這裡改用 artifact 自己另一組既有的中性
+   語彙——`.pills a.on` 的 `#F1E9DC`／`var(--ink)`（跟我們的
+   `--soft`／`--ink` 數值相同）：一個安靜的中性標記色，不是又一個實心
+   填色狀態，論它疊在哪一種 chip 背景上都不會被誤讀成「這也是選取」或
+   「這也是可以按的 CTA」。 */
 .chip-champion-badge {
   position: absolute;
   top: 4px;
   right: 6px;
   font-size: 9px;
   font-weight: 700;
-  color: var(--on-acc);
-  background: var(--acc);
+  color: var(--ink);
+  background: var(--soft);
+  border: 1px solid var(--line-2);
   border-radius: var(--radius-pill);
   padding: 1px 5px;
   line-height: 1.4;
