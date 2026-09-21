@@ -11,6 +11,7 @@ vi.mock("./api", () => ({
   deleteMyData: (...args: unknown[]) => deleteMyDataMock(...args),
 }));
 
+import { BANNED_JARGON } from "./bannedCopy";
 import DeleteMyData from "./DeleteMyData";
 
 describe("DeleteMyData", () => {
@@ -77,5 +78,16 @@ describe("DeleteMyData", () => {
       expect(screen.getByRole("alert")).toHaveTextContent("刪除失敗"),
     );
     expect(screen.getByRole("alertdialog")).toBeInTheDocument();
+  });
+
+  it("文案去術語（SW-09／#339 全站掃描）：含確認對話框在內，文字不含開發者詞彙", async () => {
+    const user = userEvent.setup();
+    render(<DeleteMyData />);
+    await user.click(screen.getByRole("button", { name: "立刻刪除我的所有資料" }));
+
+    const text = document.body.textContent ?? "";
+    for (const banned of BANNED_JARGON) {
+      expect(text).not.toContain(banned);
+    }
   });
 });

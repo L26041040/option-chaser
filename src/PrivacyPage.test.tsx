@@ -6,6 +6,7 @@
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 
+import { BANNED_JARGON } from "./bannedCopy";
 import PrivacyPage from "./PrivacyPage";
 import {
   ANONYMOUS_ABANDONED_AFTER_DAYS,
@@ -61,10 +62,10 @@ describe("PrivacyPage（PB-12／#302）", () => {
     expect(screen.getByText(/不要在裡面貼出/)).toBeInTheDocument();
   });
 
-  it("SW-07（#336）：文字不含「vendor」「候選池」「口徑」「限流事故」", () => {
+  it("文字不含開發者詞彙（SW-09／#339 收斂成共用清單 BANNED_JARGON）", () => {
     const { container } = render(<PrivacyPage />);
     const text = container.textContent ?? "";
-    for (const banned of ["候選池", "口徑", "vendor", "Vendor", "限流事故"]) {
+    for (const banned of BANNED_JARGON) {
       expect(text).not.toContain(banned);
     }
   });

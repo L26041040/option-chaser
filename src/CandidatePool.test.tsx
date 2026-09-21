@@ -11,6 +11,7 @@
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 
+import { BANNED_JARGON } from "./bannedCopy";
 import CandidatePool from "./CandidatePool";
 import type {
   AnalysisView,
@@ -251,5 +252,15 @@ describe("品質標示（FB5-04／#65，spec #61）", () => {
     // 舊字串（新舊字串皆需明文檢查封鎖，AC 原文）不得復發。
     expect(screen.queryByText(/報價非最新/)).not.toBeInTheDocument();
     expect(screen.queryByText(/報價品質有疑慮/)).not.toBeInTheDocument();
+  });
+});
+
+describe("文案去術語（SW-09／#339 全站掃描）", () => {
+  it("面板文字不含開發者詞彙", () => {
+    const { container } = renderPool();
+    const text = container.textContent ?? "";
+    for (const banned of BANNED_JARGON) {
+      expect(text).not.toContain(banned);
+    }
   });
 });

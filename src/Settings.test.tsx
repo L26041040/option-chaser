@@ -9,6 +9,7 @@ import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { BANNED_JARGON } from "./bannedCopy";
 import Settings from "./Settings";
 import type { SettingsView } from "./api";
 import { _resetCacheForTests } from "./fetchCache";
@@ -847,8 +848,8 @@ describe("OG-11（#322）：桌面版左側 subnav（手機版單欄堆疊零改
 });
 
 describe("SW-07（#336，Seed Warm）：一般使用者可見文案不含開發者詞彙", () => {
-  it("Normal User（登入表單／資料來源／刪除我的資料）文字不含" +
-     "「vendor」「候選池」「口徑」「限流事故」——Vendor 相關字樣只在" +
+  it("Normal User（登入表單／資料來源／刪除我的資料）文字不含開發者詞彙" +
+     "（SW-09／#339 收斂成共用清單 BANNED_JARGON）——Vendor 相關字樣只在" +
      "Super Admin 後台出現，Normal User 這裡連 `<SuperUserAdmin>` 都" +
      "沒有掛載", async () => {
     mockApi([view()], { role: "normal" });
@@ -857,7 +858,7 @@ describe("SW-07（#336，Seed Warm）：一般使用者可見文案不含開發�
 
     expect(screen.queryByText("Super User 管理面板")).not.toBeInTheDocument();
     const text = container.textContent ?? "";
-    for (const banned of ["候選池", "口徑", "vendor", "Vendor", "限流事故"]) {
+    for (const banned of BANNED_JARGON) {
       expect(text).not.toContain(banned);
     }
   });

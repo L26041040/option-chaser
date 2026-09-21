@@ -32,22 +32,25 @@ describe("SW-01：Seed Warm 淺色唯一", () => {
   });
 });
 
-describe("SW-01：Seed Warm token 值（Direction A artifact，#330）", () => {
+describe("SW-01→SW-09：Seed Warm token 值（Direction A artifact，#330）", () => {
+  // SW-09（#339）contract 階段：`:root` 已經把「新名字 alias 回舊名字」
+  // 的雙層結構收成單層——這裡直接檢查新名稱本身宣告的色值，不再檢查
+  // 一個指向另一個的 alias 關係（舊名稱已經整段從 `:root` 移除，見下面
+  // 「SW-09：contract 階段」那組測試）。
   const expected: Record<string, string> = {
-    "--bg": "#fbf7f0",
-    "--panel": "#ffffff",
-    "--panel-2": "#fdfbf7",
-    "--panel-3": "#f1e9dc",
-    "--panel-4": "#e0d6c6",
+    "--paper": "#fbf7f0",
+    "--card": "#ffffff",
+    "--card-hover": "#fdfbf7",
+    "--soft": "#f1e9dc",
     "--line": "#ebe3d6",
     "--line-2": "#e0d6c6",
-    "--text": "#231f1b",
-    "--text-2": "#5c554e",
-    "--text-3": "#766e66",
-    "--accent": "#c9501f",
-    "--accent-hover": "#a8420f",
-    "--accent-text": "#be4c1d",
-    "--on-accent": "#ffffff",
+    "--ink": "#231f1b",
+    "--ink-2": "#5c554e",
+    "--mute": "#766e66",
+    "--acc": "#c9501f",
+    "--acc-hover": "#a8420f",
+    "--acc-text": "#be4c1d",
+    "--on-acc": "#ffffff",
     "--up": "#1e8a5a",
     "--up-text": "#1b7c51",
     "--down": "#c93b4a",
@@ -60,19 +63,27 @@ describe("SW-01：Seed Warm token 值（Direction A artifact，#330）", () => {
       expect(readHexToken(name)).toBe(hex);
     });
   }
+});
 
-  it("Seed Warm 詞彙別名（--paper／--card／--ink／--mute／--acc）都指回同一組 var()，不是第二套顏色", () => {
-    for (const [alias, target] of [
-      ["--paper", "var(--bg)"],
-      ["--card", "var(--panel)"],
-      ["--ink", "var(--text)"],
-      ["--mute", "var(--text-3)"],
-      ["--acc", "var(--accent)"],
-    ]) {
-      const hit = new RegExp(`${alias}:\\s*${target.replace(/[()]/g, "\\$&")}`).exec(CSS);
-      expect(hit, `${alias} 應該是 ${target} 的別名`).not.toBeNull();
-    }
-  });
+describe("SW-09（#339）：contract 階段——OG 時代舊 token 名整段移除", () => {
+  const OLD_NAMES = [
+    "--bg", "--panel", "--panel-2", "--panel-3", "--panel-4",
+    "--text", "--text-2", "--text-3",
+    "--accent", "--accent-hover", "--accent-text", "--on-accent", "--accent-soft",
+    "--card-shadow", "--bg-elevated", "--separator",
+    "--label", "--label-secondary", "--label-tertiary",
+    "--tint", "--green", "--red", "--orange", "--yellow",
+  ];
+
+  for (const name of OLD_NAMES) {
+    it(`styles.css 不再宣告 ${name}`, () => {
+      expect(CSS).not.toMatch(new RegExp(`^\\s*${name}:`, "m"));
+    });
+
+    it(`styles.css 不再有任何 var(${name}) 消費端`, () => {
+      expect(CSS).not.toContain(`var(${name})`);
+    });
+  }
 });
 
 describe("SW-01：字體換血（Plus Jakarta Sans + Noto Sans TC）", () => {

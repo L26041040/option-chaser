@@ -3393,3 +3393,21 @@ test("SW-07（#336）：手機設定頁／隱私頁在 375px 無水平捲動", a
     () => document.documentElement.scrollWidth > window.innerWidth);
   expect(privacyOverflowX).toBe(false);
 });
+
+test("SW-09（#339）：手機垃圾桶在 375px 無水平捲動（之前四個一般畫面裡" +
+     "唯一沒測過水平捲動的一個）", async ({ page }) => {
+  await page.setViewportSize({ width: 375, height: 812 });
+  const trashed = Array.from({ length: 6 }, (_, i) => libraryRow({
+    id: `s${i}`, symbol: `SYM${i}`, target_month: "2028-05",
+    archived_at: "2026-08-05T00:00:00+00:00" }));
+  await page.route("**/api/scenarios", (route) => route.fulfill({ json: [] }));
+  await page.route("**/api/scenarios?include_archived=true", (route) =>
+    route.fulfill({ json: trashed }));
+
+  await page.goto("/#/trash");
+  await expect(page.getByRole("heading", { name: "垃圾桶" })).toBeVisible();
+  await expect(page.getByText("SYM0")).toBeVisible();
+  const trashOverflowX = await page.evaluate(
+    () => document.documentElement.scrollWidth > window.innerWidth);
+  expect(trashOverflowX).toBe(false);
+});

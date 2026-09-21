@@ -8,6 +8,7 @@ import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { BANNED_JARGON } from "./bannedCopy";
 import DesktopDetailBody from "./DesktopDetail";
 import { candidate, result, view } from "./family.fixtures";
 import type { Candidate } from "./api";
@@ -567,5 +568,28 @@ describe("DesktopDetailBody：右欄 Historical IV 面板（OG-08／#326）", ()
     await waitFor(() => expect(
       screen.getByRole("heading", { name: "IV 相對位置" })).toBeInTheDocument());
     expect(screen.queryByRole("tab", { name: "進場" })).not.toBeInTheDocument();
+  });
+});
+
+describe("DesktopDetailBody：文案去術語（SW-09／#339 全站掃描）", () => {
+  it("多 family＋底部候選策略常駐掛載時，全頁文字不含開發者詞彙", async () => {
+    const champ = withMatrix(candidate("v1", "bull-call-spread", 0.4), 0.4);
+    const singleLeg = withMatrix(candidate("s1", "long-call", 0.1), 0.1);
+    const v = view(
+      [
+        result("bull-call-spread", "ok", { "2026-09-18": ["v1"] }),
+        result("long-call", "ok", { "2026-09-18": ["s1"] }),
+      ],
+      { v1: champ, s1: singleLeg },
+    );
+    const { container } = render(
+      <DesktopDetailBody view={v} strategies={["single-leg", "vertical-spread"]}
+                          champion={champ} scenarioId="s1" analyzedAt={null} />);
+    await flush();
+
+    const text = container.textContent ?? "";
+    for (const banned of BANNED_JARGON) {
+      expect(text).not.toContain(banned);
+    }
   });
 });

@@ -2,6 +2,7 @@ import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { BANNED_JARGON } from "./bannedCopy";
 import CompactScenarioList from "./CompactScenarioList";
 import sampleRow from "../contracts/scenario_row_sample.json";
 import type { RefreshFailure, ScenarioSummary } from "./api";
@@ -633,5 +634,15 @@ describe("Logo 404 留白（OG-09／#319，row 層級覆蓋——`StockLogo.test
     expect(container.querySelector("img")).not.toBeInTheDocument();
     // 代號文字仍在，卡片其餘內容不受影響。
     expect(within(card).getByText("TLT")).toBeInTheDocument();
+  });
+});
+
+describe("文案去術語（SW-09／#339 全站掃描，手機劇本庫）", () => {
+  it("清單文字不含開發者詞彙", () => {
+    const { container } = list([row()]);
+    const text = container.textContent ?? "";
+    for (const banned of BANNED_JARGON) {
+      expect(text).not.toContain(banned);
+    }
   });
 });

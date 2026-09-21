@@ -81,8 +81,8 @@ export default function DeleteMyData() {
 
   return (
     // SW-07（#336）：destructive 區塊——artifact 明文要求紅描邊，跟卡片
-    // 上「危險文字鈕」用同一個紅色慣例（`--red`／`--down` 同一份既有
-    // token），不是新發明一種警示色。
+    // 上「危險文字鈕」用同一個紅色慣例（`--down` 這份既有 token，SW-09
+    // 之後舊名 `--red` 已整段移除），不是新發明一種警示色。
     <section className="card settings-section danger-zone" aria-label="刪除我的資料">
       <h2 className="section-title">刪除我的資料</h2>
       <p className="caption">

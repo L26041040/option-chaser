@@ -2,6 +2,7 @@ import { fireEvent, render, screen, waitFor, within } from "@testing-library/rea
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { BANNED_JARGON } from "./bannedCopy";
 import ScenarioDetail from "./ScenarioDetail";
 import sample from "../contracts/analysis_sample.json";
 import sampleRow from "../contracts/scenario_row_sample.json";
@@ -1046,14 +1047,15 @@ describe("SW-06（#335，Seed Warm）：手機詳細頁 60px header／Hero 白�
     expect(screen.queryByRole("region", { name: "劇本頭條" })).not.toBeInTheDocument();
   });
 
-  it("文案去術語：手機詳細頁全頁文字不含「口徑」「候選池」「pool」" +
-     "「vendor」字樣（AC 明文；全站掃描留給 SW-09 擴大範圍）", async () => {
+  it("文案去術語：手機詳細頁全頁文字不含開發者詞彙" +
+     "（SW-09／#339 收斂成共用清單 BANNED_JARGON，取代原本各票自帶的" +
+     "小清單）", async () => {
     mockDetail(detail({ strategies: ["single-leg", "vertical-spread", "butterfly"] }));
     const { container } = render(<ScenarioDetail id="s1" />);
     await screen.findByText(/劇本主圖/);
 
     const text = container.textContent ?? "";
-    for (const banned of ["口徑", "候選池", "pool", "vendor", "Pool", "Vendor"]) {
+    for (const banned of BANNED_JARGON) {
       expect(text).not.toContain(banned);
     }
   });

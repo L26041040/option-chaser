@@ -2,6 +2,7 @@ import { fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { BANNED_JARGON } from "./bannedCopy";
 import ScenarioList from "./ScenarioList";
 import sampleRow from "../contracts/scenario_row_sample.json";
 import type { RefreshFailure, ScenarioSummary } from "./api";
@@ -933,5 +934,15 @@ describe("OG-05（#324）：劇本庫 stats strip；SW-03（#334）起 Super Adm
 
     expect(await screen.findByText("尚無紀錄")).toBeInTheDocument();
     expect(screen.queryByText("尚未分析")).not.toBeInTheDocument();
+  });
+});
+
+describe("文案去術語（SW-09／#339 全站掃描，桌面劇本庫）", () => {
+  it("清單文字不含開發者詞彙", () => {
+    const { container } = list([row()]);
+    const text = container.textContent ?? "";
+    for (const banned of BANNED_JARGON) {
+      expect(text).not.toContain(banned);
+    }
   });
 });

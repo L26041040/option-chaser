@@ -2608,3 +2608,48 @@ test("SW-07（#336）：桌面設定頁／隱私頁在 1440px 無水平捲動", 
     () => document.documentElement.scrollWidth > window.innerWidth);
   expect(privacyOverflowX).toBe(false);
 });
+
+/* ---------- SW-09（#339）：四寬度 responsive 缺口補齊——垃圾桶之前
+   從未在任何寬度測過水平捲動，設定／隱私也只測過 1440px 一個桌面
+   寬度，這裡補齊 1100px 斷點／1100–1280px 中間寬度兩格。 ---------- */
+
+test("SW-09（#339）：桌面垃圾桶在 1100px／1150px／1440px 三個寬度下皆無" +
+     "水平捲動", async ({ page }) => {
+  const trashed = Array.from({ length: 6 }, (_, i) => libraryRow({
+    id: `s${i}`, symbol: `SYM${i}`, target_month: "2028-05",
+    archived_at: "2026-08-05T00:00:00+00:00" }));
+  await page.route("**/api/scenarios", (route) => route.fulfill({ json: [] }));
+  await page.route("**/api/scenarios?include_archived=true", (route) =>
+    route.fulfill({ json: trashed }));
+
+  for (const width of [1100, 1150, 1440]) {
+    await page.setViewportSize({ width, height: 900 });
+    await page.goto("/#/trash");
+    await expect(page.getByRole("heading", { name: "垃圾桶" })).toBeVisible();
+    await expect(page.getByText("SYM0")).toBeVisible();
+    const overflowX = await page.evaluate(
+      () => document.documentElement.scrollWidth > window.innerWidth);
+    expect(overflowX).toBe(false);
+  }
+});
+
+test("SW-09（#339）：桌面設定頁／隱私頁在 1100px 斷點與 1100–1280px 中間" +
+     "寬度也無水平捲動（1440px 已由 SW-07 既有測試覆蓋）", async ({ page }) => {
+  await routeSettings(page);
+
+  for (const width of [1100, 1150]) {
+    await page.setViewportSize({ width, height: 900 });
+
+    await page.goto("/#/settings");
+    await expect(page.getByRole("heading", { name: "設定" })).toBeVisible();
+    const settingsOverflowX = await page.evaluate(
+      () => document.documentElement.scrollWidth > window.innerWidth);
+    expect(settingsOverflowX).toBe(false);
+
+    await page.goto("/#/privacy");
+    await expect(page.getByRole("heading", { name: "隱私與資料政策" })).toBeVisible();
+    const privacyOverflowX = await page.evaluate(
+      () => document.documentElement.scrollWidth > window.innerWidth);
+    expect(privacyOverflowX).toBe(false);
+  }
+});

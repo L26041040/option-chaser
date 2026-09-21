@@ -6,8 +6,8 @@
  * 本輪只做淺色（SEED-WARM-SPEC-001／#330 Out of Scope），不再需要
  * 依媒體查詢字串分區讀兩份 token，直接讀同一個 `:root`。
  *
- * 同時把 Direction A 的「填色 token」（`--accent`／`--up`／`--warn`）
- * 與「文字安全 token」（`--accent-text`／`--up-text`／`--warn-text`）
+ * 同時把 Direction A 的「填色 token」（`--acc`／`--up`／`--warn`）
+ * 與「文字安全 token」（`--acc-text`／`--up-text`／`--warn-text`）
  * 分開驗證——填色 token 在小字上量不到 4.5:1 是已知、有意的取捨（見
  * `styles.css` 檔頭說明），只對真的拿來當小字文字色用的那一組
  * token 套用 AA normal text 門檻。
@@ -48,11 +48,11 @@ const AA_NORMAL = 4.5;
 
 describe("Seed Warm 淺色模式文字對比", () => {
   const backgrounds: [string, RGB][] = [
-    ["--panel（卡片底）", readHexToken("--panel")],
-    ["--bg（頁面底）", readHexToken("--bg")],
+    ["--card（卡片底）", readHexToken("--card")],
+    ["--paper（頁面底）", readHexToken("--paper")],
   ];
 
-  for (const token of ["--text-2", "--text-3"]) {
+  for (const token of ["--ink-2", "--mute"]) {
     for (const [bgName, bg] of backgrounds) {
       it(`${token} 疊在 ${bgName} 上達到 WCAG AA normal text`, () => {
         const fg = readHexToken(token);
@@ -63,11 +63,11 @@ describe("Seed Warm 淺色模式文字對比", () => {
   }
 
   // 「文字安全」變體——這三個在小字（badge 文字、inline 百分比）上
-  // 使用，必須達 AA normal text；對應的填色 token（--accent／--up／
+  // 使用，必須達 AA normal text；對應的填色 token（--acc／--up／
   // --warn）本身不在此列，那組是給按鈕背景、大報酬數字、sparkline
   // 這類「填色或大字」場景，只需要 3:1（WCAG large text），不是本測
   // 試的斷言範圍。
-  for (const token of ["--accent-text", "--up-text", "--warn-text", "--down"]) {
+  for (const token of ["--acc-text", "--up-text", "--warn-text", "--down"]) {
     for (const [bgName, bg] of backgrounds) {
       it(`${token}（文字安全變體）疊在 ${bgName} 上達到 WCAG AA normal text`, () => {
         const fg = readHexToken(token);
@@ -77,20 +77,20 @@ describe("Seed Warm 淺色模式文字對比", () => {
     }
   }
 
-  it("三階文字層次仍然存在——text-2 比 text-3 明顯更重，不是為了過門檻把兩者壓成同一個顏色", () => {
-    const sec = readHexToken("--text-2");
-    const ter = readHexToken("--text-3");
+  it("三階文字層次仍然存在——ink-2 比 mute 明顯更重，不是為了過門檻把兩者壓成同一個顏色", () => {
+    const sec = readHexToken("--ink-2");
+    const ter = readHexToken("--mute");
     const lSec = luminance(sec);
     const lTer = luminance(ter);
 
-    // 淺色：文字比背景暗，text-2 應該比 text-3 更暗（更接近主文字）。
+    // 淺色：文字比背景暗，ink-2 應該比 mute 更暗（更接近主文字）。
     expect(lSec).toBeLessThan(lTer);
     expect(Math.abs(lSec - lTer)).toBeGreaterThan(0.03); // 差得看得出來
   });
 
-  /** `cellColor()` 回傳 `rgba(r, g, b, a)`，`--label`（`--ink`）字疊在
-   *  半透明色塊上——實際顯示的底色是「這個色塊疊在 `--panel` 卡片
-   *  白底上」混出來的那個顏色，不是色塊自己的 RGB（alpha < 1）。 */
+  /** `cellColor()` 回傳 `rgba(r, g, b, a)`，`--ink` 字疊在半透明色塊
+   *  上——實際顯示的底色是「這個色塊疊在 `--card` 卡片白底上」混出來
+   *  的那個顏色，不是色塊自己的 RGB（alpha < 1）。 */
   function parseRgba(css: string): RGB & { a: number } {
     const m = /rgba\((\d+),\s*(\d+),\s*(\d+),\s*([\d.]+)\)/.exec(css);
     if (!m) throw new Error(`不是 rgba() 字串：${css}`);
@@ -100,7 +100,7 @@ describe("Seed Warm 淺色模式文字對比", () => {
   function blendOverPanel(css: string): RGB {
     const [r, g, b] = parseRgba(css);
     const a = Number(/,\s*([\d.]+)\)$/.exec(css)![1]);
-    const [pr, pg, pb] = readHexToken("--panel");
+    const [pr, pg, pb] = readHexToken("--card");
     return [
       Math.round(a * r + (1 - a) * pr),
       Math.round(a * g + (1 - a) * pg),
@@ -110,9 +110,9 @@ describe("Seed Warm 淺色模式文字對比", () => {
 
   describe("SW-08（#338）：Heatmap 最深正／負格上的文字對比", () => {
     for (const [label, ret] of [["正（漲）", COLOR_CAP], ["負（跌）", -COLOR_CAP]] as const) {
-      it(`${label}格最濃時（|報酬| ≥ ${COLOR_CAP * 100}%），--label 文字仍達 WCAG AA`, () => {
+      it(`${label}格最濃時（|報酬| ≥ ${COLOR_CAP * 100}%），--ink 文字仍達 WCAG AA`, () => {
         const cellBg = blendOverPanel(cellColor(ret));
-        const text = readHexToken("--text");
+        const text = readHexToken("--ink");
         const ratio = contrast(text, cellBg);
         expect(ratio).toBeGreaterThanOrEqual(AA_NORMAL);
       });

@@ -2,6 +2,7 @@ import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
+import { BANNED_JARGON } from "./bannedCopy";
 import CreateForm, { validateDraft } from "./CreateForm";
 
 /** 走完整個選擇器互動：展開 → 直接輸入四碼年份 → 點月份鈕（收合）。 */
@@ -656,10 +657,10 @@ describe("自製年月選擇器（#71）", () => {
 });
 
 describe("SW-07（#336，Seed Warm）：文案不含開發者詞彙", () => {
-  it("表單文字不含「vendor」「候選池」「口徑」「限流事故」", () => {
+  it("表單文字不含開發者詞彙（SW-09／#339 收斂成共用清單 BANNED_JARGON）", () => {
     const { container } = render(<CreateForm onCreate={vi.fn()} />);
     const text = container.textContent ?? "";
-    for (const banned of ["候選池", "口徑", "vendor", "Vendor", "限流事故"]) {
+    for (const banned of BANNED_JARGON) {
       expect(text).not.toContain(banned);
     }
   });

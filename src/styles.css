@@ -1,18 +1,21 @@
 /**
- * "Seed Warm" 設計系統（SW-01／#331，2026-09-21）——取代「Obsidian
- * Gold」（#317～#328），Direction A（VISUAL-IDENTITY-001）Owner 拍板
- * 版本：暖米色頁面底＋白卡＋terracotta 單一品牌色＋pill 形狀語言，
- * **淺色唯一**（不再有 `prefers-color-scheme` 分支——SEED-WARM-
- * SPEC-001／#330 Out of Scope 明文：dark mode 另開後續 spec）。
+ * "Seed Warm" 設計系統（SW-01／#331 起，SW-09／#339 完成 contract 階段，
+ * 2026-09-21）——取代「Obsidian Gold」（#317～#328），Direction A
+ * （VISUAL-IDENTITY-001）Owner 拍板版本：暖米色頁面底＋白卡＋
+ * terracotta 單一品牌色＋pill 形狀語言，**淺色唯一**（不再有
+ * `prefers-color-scheme` 分支——SEED-WARM-SPEC-001／#330 Out of Scope
+ * 明文：dark mode 另開後續 spec）。
  *
- * 換血策略沿用上一輪：既有 token 變數名（`--bg`／`--panel`／
- * `--text`／`--accent`／`--up`／`--down`／`--warn`…）與所有既有
- * class 消費端本票都不動，只把值換成 Direction A 的顏色，因此還沒
- * 被後續 SW-02～SW-08 個別重構的畫面（layout／圓角／pill 化）暫時
- * 維持舊版面，但顏色與字體立即變成 Seed Warm（expand 階段——見
- * #331 AC）。新增的 `--paper`／`--card`／`--ink`／`--mute`／`--acc`
- * 這組是給後續票新寫的 primitives 用的「藝術家詞彙」別名，全部指回
- * 上面同一份實際色值，不是第二套獨立顏色。
+ * Expand–contract 換血策略（母票 #330 Implementation Decisions）：
+ * SW-01 先把值換成 Direction A 的顏色，同時沿用當時既有的 OG 時代
+ * token 變數名（`--bg`／`--panel`／`--text`／`--accent`…）不動，讓
+ * 還沒輪到重構的畫面不必立刻全部跟著改字串——這是 expand 階段。
+ * SW-02～SW-08 逐票把各自的畫面／CSS 消費端切到下面這組「藝術家
+ * 詞彙」新名稱（`--paper`／`--card`／`--ink`／`--mute`／`--acc`…）。
+ * 本票（SW-09）是 contract 階段：全站零殘留消費端後，把 OG 時代的
+ * 舊名稱從 `:root` 整段刪掉，新名稱直接承接色值宣告本身，不再是
+ * 「新名字指回舊名字」的雙層別名——這份檔頭註解本身也跟著改寫，不再
+ * 描述已經結束的 expand 階段。
  *
  * 對照 Design canvas artifact（#330，
  * `https://claude.ai/artifact/TS2KZEjtYPkzGuYDTFd4HA`，Direction A
@@ -57,23 +60,31 @@
   --font-cjk: "Noto Sans TC", "PingFang TC", "Microsoft JhengHei", sans-serif;
   --mono: ui-monospace, SFMono-Regular, Menlo, monospace, "Noto Sans TC";
 
-  /* Seed Warm · 淺色唯一（Direction A 原文，見檔頭）。 */
-  --bg: #fbf7f0;
-  --panel: #ffffff;
-  --panel-2: #fdfbf7;
-  --panel-3: #f1e9dc;
-  --panel-4: #e0d6c6;
+  /* Seed Warm · 淺色唯一（Direction A 原文，見檔頭）。SW-09（#339）
+     contract 階段：這裡直接宣告新名稱本身，不再是「新名字 alias 回
+     舊名字」的雙層結構——舊名稱（`--bg`／`--panel`／`--panel-2`／
+     `--panel-3`／`--text`／`--text-2`／`--text-3`／`--accent`／
+     `--accent-hover`／`--accent-text`／`--on-accent`／`--accent-soft`／
+     `--card-shadow`／`--bg-elevated`／`--separator`／`--label`／
+     `--label-secondary`／`--label-tertiary`／`--tint`／`--green`／
+     `--red`／`--orange`／`--yellow`）已確認全站零消費端，整段移除。
+     `--panel-4`（0 個消費端）一併移除；`--text-4`（唯一 1 個消費端、
+     從未有過新詞彙別名）維持原樣，不在這輪改名範圍內。 */
+  --paper: #fbf7f0;
+  --card: #ffffff;
+  --card-hover: #fdfbf7;
+  --soft: #f1e9dc;
   --line: #ebe3d6;
   --line-2: #e0d6c6;
-  --text: #231f1b;
-  --text-2: #5c554e;
-  --text-3: #766e66;
+  --ink: #231f1b;
+  --ink-2: #5c554e;
+  --mute: #766e66;
   --text-4: #a69c8e;
-  --accent: #c9501f;
-  --accent-hover: #a8420f;
-  --accent-text: #be4c1d;
-  --on-accent: #ffffff;
-  --accent-soft: #fbe9e0;
+  --acc: #c9501f;
+  --acc-hover: #a8420f;
+  --acc-text: #be4c1d;
+  --on-acc: #ffffff;
+  --acc-soft: #fbe9e0;
   --up: #1e8a5a;
   --up-text: #1b7c51;
   --down: #c93b4a;
@@ -92,46 +103,18 @@
   --crossover: var(--info);
   --tile-bg: #ffffff;
   --tile-line: #ebe3d6;
-  /* 骨架載入動畫的移動高光——沿用「取 panel-3 的半透明版本」既有
-     做法，只是換算成新色階。 */
+  /* 骨架載入動畫的移動高光——沿用「取 soft 的半透明版本」既有做法，
+     只是換算成新色階。 */
   --fill: rgba(241, 233, 220, 0.6);
-  --card-shadow:
+  --shadow:
     0 1px 2px rgba(60, 40, 20, 0.04),
     0 8px 20px rgba(60, 40, 20, 0.06);
-
-  /* 既有消費端讀的舊名稱——別名到上面的新 token，換色只在這裡發生。 */
-  --bg-elevated: var(--panel);
-  --separator: var(--line);
-  --label: var(--text);
-  --label-secondary: var(--text-2);
-  --label-tertiary: var(--text-3);
-  --tint: var(--accent-text);
-  --green: var(--up);
-  --red: var(--down);
-  --orange: var(--warn);
-  --yellow: var(--warn);
 
   --radius-s: 4px;
   --radius: 8px;
   --radius-l: 12px;
   --radius-pill: 999px;
   --gap: 16px;
-
-  /* Seed Warm 詞彙別名——新 primitives（SW-01 起）與後續票新寫的
-     screen CSS 用這組名字，全部指回上面同一份色值，不是第二套顏色。 */
-  --paper: var(--bg);
-  --card: var(--panel);
-  --card-hover: var(--panel-2);
-  --soft: var(--panel-3);
-  --ink: var(--text);
-  --ink-2: var(--text-2);
-  --mute: var(--text-3);
-  --acc: var(--accent);
-  --acc-hover: var(--accent-hover);
-  --acc-text: var(--accent-text);
-  --acc-soft: var(--accent-soft);
-  --on-acc: var(--on-accent);
-  --shadow: var(--card-shadow);
 }
 
 * {
@@ -145,7 +128,7 @@
    一行覆寫成品牌琥珀色，不影響任何既有互動邏輯——純視覺一致性。 */
 input[type="checkbox"],
 input[type="radio"] {
-  accent-color: var(--accent);
+  accent-color: var(--acc);
 }
 
 html,
@@ -156,8 +139,8 @@ body {
 
 body {
   font-family: var(--font);
-  background: var(--bg);
-  color: var(--label);
+  background: var(--paper);
+  color: var(--ink);
   font-size: 17px; /* iOS body */
   /* Typography v2：1.45→1.5。漢字沒有 x-height，行距要比純拉丁多一點
      才透氣；沒有另外設定行高的子元素會自動吃到這個新比例（CSS 行高
@@ -358,7 +341,7 @@ body {
     bottom: 0;
     width: 440px;
     max-width: 92%;
-    background: var(--panel);
+    background: var(--card);
     border-left: 1px solid var(--line-2);
     box-shadow: -12px 0 32px rgba(0, 0, 0, 0.35);
     z-index: 21;
@@ -408,22 +391,22 @@ body {
     border-radius: var(--radius-s);
     border: 0;
     background: transparent;
-    color: var(--label-secondary);
+    color: var(--ink-2);
     cursor: pointer;
     flex: none;
   }
 
   .drawer-close:hover {
-    background: var(--panel-3);
-    color: var(--text);
+    background: var(--soft);
+    color: var(--ink);
   }
 }
 
 .card {
-  background: var(--bg-elevated);
-  border: 1px solid var(--separator);
+  background: var(--card);
+  border: 1px solid var(--line);
   border-radius: var(--radius);
-  box-shadow: var(--card-shadow);
+  box-shadow: var(--shadow);
   padding: var(--gap);
   display: flex;
   flex-direction: column;
@@ -438,13 +421,13 @@ body {
 }
 
 .row + .row {
-  border-top: 0.5px solid var(--separator);
+  border-top: 0.5px solid var(--line);
   padding-top: 12px;
 }
 
 
 .row-label {
-  color: var(--label-secondary);
+  color: var(--ink-2);
   font-size: 15px;
 }
 
@@ -465,20 +448,20 @@ body {
 }
 
 .positive {
-  color: var(--green);
+  color: var(--up);
 }
 .negative {
-  color: var(--red);
+  color: var(--down);
 }
 
 /* FB5-04（#65，spec #61）：C 類品質標示的計數——橙色，跟排除用的
    `.negative`（紅色）刻意不同，這些候選一筆都沒被刪掉。 */
 .flagged {
-  color: var(--orange);
+  color: var(--warn);
 }
 
 .caption {
-  color: var(--label-secondary);
+  color: var(--ink-2);
   font-size: 13px;
   /* Typography v2：Caption 級距行高 1.45，刻意比 body 新的 1.5 略緊
      一點——顯式宣告，不讓它被動吃到 body 的新比例。 */
@@ -489,8 +472,8 @@ body {
   appearance: none;
   border: 0;
   border-radius: var(--radius);
-  background: var(--accent);
-  color: var(--on-accent);
+  background: var(--acc);
+  color: var(--on-acc);
   font-family: inherit;
   font-size: 17px;
   font-weight: 600;
@@ -507,12 +490,12 @@ body {
   border-radius: var(--radius);
   padding: 12px var(--gap);
   font-size: 15px;
-  background: var(--bg-elevated);
-  border-left: 3px solid var(--orange);
+  background: var(--card);
+  border-left: 3px solid var(--warn);
 }
 
 .notice.error {
-  border-left-color: var(--red);
+  border-left-color: var(--down);
 }
 
 /* FB4-01（#60）：候選池診斷用的次級列與區塊標題
@@ -555,13 +538,13 @@ body {
   z-index: 10;
   margin: calc(var(--gap) * -1) calc(var(--gap) * -1) 4px;
   padding: max(env(safe-area-inset-top), 10px) var(--gap) 10px;
-  background: color-mix(in srgb, var(--bg) 82%, transparent);
+  background: color-mix(in srgb, var(--paper) 82%, transparent);
   /* iOS Safari 要到 18 才支援去前綴的 backdrop-filter。少了 -webkit-
      的話，16／17 上功能列只剩半透明底、沒有模糊，捲動時底下的文字會
      透出來疊在標題上。 */
   -webkit-backdrop-filter: saturate(180%) blur(20px);
   backdrop-filter: saturate(180%) blur(20px);
-  border-bottom: 0.5px solid var(--separator);
+  border-bottom: 0.5px solid var(--line);
   display: flex;
   flex-direction: column;
   gap: 2px;
@@ -572,7 +555,7 @@ body {
   (backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))
 ) {
   .toolbar {
-    background: var(--bg);
+    background: var(--paper);
   }
 }
 
@@ -607,7 +590,7 @@ body {
 
 /* 返回：iOS 導覽列的 tint 色文字＋左角括號，不是一顆按鈕。 */
 .nav-back {
-  color: var(--tint);
+  color: var(--acc-text);
   text-decoration: none;
   font-size: 17px;
   font-weight: 500;
@@ -623,7 +606,7 @@ body {
    誰寫在後面決勝，重排規則就會翻掉。 */
 .caption.progress {
   font-variant-numeric: tabular-nums;
-  color: var(--tint);
+  color: var(--acc-text);
 }
 
 /* ---------- 動作：膠囊鈕、文字鈕 ---------- */
@@ -635,7 +618,7 @@ body {
   border: 0;
   border-radius: 999px;
   background: var(--fill);
-  color: var(--tint);
+  color: var(--acc-text);
   font-family: inherit;
   font-size: 15px;
   /* Typography v2：一般（非主要）按鈕字重 500，只有 `.button`（填色
@@ -661,7 +644,7 @@ body {
   appearance: none;
   border: 0;
   background: none;
-  color: var(--tint);
+  color: var(--acc-text);
   font-family: inherit;
   font-size: 15px;
   /* Typography v2：一般（非主要）按鈕字重 500。 */
@@ -691,7 +674,7 @@ body {
   appearance: none;
   border: 0;
   background: none;
-  color: var(--label-secondary);
+  color: var(--ink-2);
   padding: 6px;
   min-height: 32px;
   min-width: 32px;
@@ -704,28 +687,7 @@ body {
 
 .icon-button:active {
   background: var(--fill);
-  color: var(--red);
-}
-
-/* 桌面版卡片的單筆刪除鈕沿用 `.card-actions` 既有位置（連結外面的
-   底部動作列），只是換成圖示鈕；手機版 compact row 的疊放位置沿用
-   既有 `.compact-archive` 定位規則，見下方。 */
-.compact-archive.icon-button {
-  position: absolute;
-  right: 8px;
-  bottom: 8px;
-  min-height: 0;
-  padding: 4px;
-}
-
-/* 工具列的垃圾桶入口：跟「＋ 建立劇本」同一種膠囊鈕，但用警示色調
-   （紅）跟「這是危險/垃圾桶相關操作」的既有色彩慣例（`--red` 用於
-   負值報酬、警示分隔線）一致，不需要另外發明新顏色。 */
-.pill-trash {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  color: var(--red);
+  color: var(--down);
 }
 
 /* 清單上方「收益率口徑」說明文字那一列，垃圾桶批次選取入口貼在
@@ -753,20 +715,20 @@ body {
   width: 20px;
   height: 20px;
   border-radius: 6px;
-  border: 1.5px solid var(--label-tertiary);
+  border: 1.5px solid var(--mute);
   background: none;
   padding: 0;
   flex-shrink: 0;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  color: var(--on-accent);
+  color: var(--on-acc);
   cursor: pointer;
 }
 
 .row-checkbox.checked {
-  background: var(--accent);
-  border-color: var(--accent);
+  background: var(--acc);
+  border-color: var(--acc);
 }
 
 .symbol-group .row-checkbox {
@@ -800,8 +762,8 @@ body {
   justify-content: space-between;
   gap: 8px;
   padding: 10px var(--gap);
-  background: color-mix(in srgb, var(--bg) 88%, transparent);
-  border-top: 0.5px solid var(--separator);
+  background: color-mix(in srgb, var(--paper) 88%, transparent);
+  border-top: 0.5px solid var(--line);
 }
 
 @media (max-width: 1099px) {
@@ -818,8 +780,8 @@ body {
   font-size: 15px;
   font-weight: 700;
   padding: 8px 16px;
-  background: var(--accent);
-  color: var(--on-accent);
+  background: var(--acc);
+  color: var(--on-acc);
   cursor: pointer;
 }
 
@@ -828,7 +790,7 @@ body {
    動作放在同一列時顏色本身就能分辨輕重（TR5／#93：「還原已選」／
    「永久刪除已選」並排時尤其需要這個區分）。 */
 .batch-pill.danger {
-  background: var(--red);
+  background: var(--down);
 }
 
 .batch-pill:active {
@@ -842,7 +804,7 @@ body {
 /* 危險動作用紅字，跟卡片上負收益率同一個色彩慣例——不需要另外發明
    一種「警示」色。 */
 .text-button.danger {
-  color: var(--red);
+  color: var(--down);
 }
 
 /* 垃圾桶清單每列的還原／永久刪除，貼齊既有 `.card-actions` 底部動作列
@@ -896,7 +858,7 @@ body {
 }
 
 .confirm-sheet {
-  background: var(--bg-elevated);
+  background: var(--card);
   border-radius: var(--radius);
   box-shadow: 0 20px 40px -12px rgba(0, 0, 0, 0.35);
   padding: var(--gap);
@@ -907,19 +869,19 @@ body {
   max-width: 420px;
   /* 頂部一條紅色細線——不需要另外畫一顆警示圖示，跟危險文字鈕同一個
      色彩語彙就足夠標出「這是破壞性操作」。 */
-  border-top: 3px solid var(--red);
+  border-top: 3px solid var(--down);
 }
 
 .confirm-sheet h2 {
   font-size: 17px;
   font-weight: 700;
   margin: 0;
-  color: var(--red);
+  color: var(--down);
 }
 
 .confirm-sheet p {
   font-size: 14px;
-  color: var(--label-secondary);
+  color: var(--ink-2);
   margin: 0;
   line-height: 1.5;
 }
@@ -1033,37 +995,6 @@ body {
   gap: 12px;
 }
 
-/* 整張卡是進詳細頁的連結：撐滿卡片、不帶底線、繼承顏色，按下去整張
-   卡有回饋（iOS 的 highlight 行為）。 */
-.card-tap {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  color: inherit;
-  text-decoration: none;
-  border-radius: calc(var(--radius) - 2px);
-  margin: -4px;
-  padding: 4px;
-  transition: background-color 0.15s ease;
-}
-
-.card-tap:active {
-  background: var(--fill);
-}
-
-.metric-group {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.chevron {
-  color: var(--label-tertiary);
-  font-size: 22px;
-  line-height: 1;
-  font-weight: 600;
-}
-
 /* ---------- 高密度 Compact Row（MVP-v2／#77、#82；桌面沿用見 #108） ---------- */
 
 /* 原本是取代大卡片 `.card` 的手機專用版式；#108 起桌面版劇本庫卡片
@@ -1148,7 +1079,7 @@ body {
 
 .compact-target {
   font-size: 12px;
-  color: var(--label-secondary);
+  color: var(--ink-2);
   /* 目標價／目標年月頂到燈號前面，中間吃掉多餘空間——燈號永遠貼右。 */
   margin-right: auto;
   /* #108：桌面版左側欄（約 220px）比手機版窄很多，這個 flex item 被
@@ -1176,7 +1107,7 @@ body {
 
 .compact-strategy {
   font-size: 13px;
-  color: var(--label-secondary);
+  color: var(--ink-2);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1200,7 +1131,7 @@ body {
   /* QA-FIX-2（QA-01）：11px → 12px。第三層是全卡最小的字，配上最低
      對比的 tertiary 色本來就最難讀；字級與色兩邊各讓一步。 */
   font-size: 12px;
-  color: var(--label-tertiary);
+  color: var(--mute);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1216,7 +1147,7 @@ body {
 /* 現價擠在目標價前面（QA 修正）：比目標價低一階，讓「現在 → 目標」
    一眼讀得出方向與距離，但不搶目標價的視覺重量。 */
 .compact-spot {
-  color: var(--label-secondary);
+  color: var(--ink-2);
   font-weight: 500;
 }
 
@@ -1224,7 +1155,7 @@ body {
    權重比第三層再輕一點——它是背景資訊，不是要先讀的數字。 */
 .compact-range {
   font-size: 12px;
-  color: var(--label-tertiary);
+  color: var(--mute);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1316,7 +1247,7 @@ body {
   height: 32px;
   font-size: 11px;
   font-weight: 500;
-  color: var(--text-3);
+  color: var(--mute);
 }
 
 .lib-thead .r {
@@ -1405,7 +1336,7 @@ body {
 }
 
 .lib-cell-price .price-arrow {
-  color: var(--text-3);
+  color: var(--mute);
   font-weight: 500;
 }
 
@@ -1455,7 +1386,7 @@ body {
 
 .cell-sub {
   font-size: 11px;
-  color: var(--text-3);
+  color: var(--mute);
 }
 
 /* 報酬比例條的漲跌色（OG-01 既有 `.bar i` 預設金色，這裡疊上跟
@@ -1509,15 +1440,6 @@ body {
   overflow: visible;
 }
 
-.compact-archive {
-  position: absolute;
-  right: 8px;
-  bottom: 8px;
-  font-size: 12px;
-  padding: 4px 6px;
-  min-height: 0;
-}
-
 .row-value.big {
   font-size: 22px;
   font-weight: 700;
@@ -1526,16 +1448,16 @@ body {
 
 /* 沒跑過分析的「—」：不上漲跌色，因為它不是一個收益率。 */
 .metric.muted {
-  color: var(--label-tertiary);
+  color: var(--mute);
 }
 
 .muted {
-  color: var(--label-tertiary);
+  color: var(--mute);
 }
 
 /* 主數字旁的附註（漲幅、與目標的差距）：跟著數字走，但不搶它。 */
 .row-note {
-  color: var(--label-secondary);
+  color: var(--ink-2);
   font-size: 14px;
   font-weight: 400;
   margin-left: 2px;
@@ -1545,7 +1467,7 @@ body {
 .card-actions {
   display: flex;
   justify-content: flex-end;
-  border-top: 0.5px solid var(--separator);
+  border-top: 0.5px solid var(--line);
   margin: 0 calc(var(--gap) * -1) calc(var(--gap) * -1);
   padding: 0 12px;
 }
@@ -1564,9 +1486,9 @@ body {
   /* 16px 是 iOS Safari 不自動放大頁面的下限——小一點就會在聚焦時
      整頁縮放，使用者得再手動縮回去。 */
   font-size: 17px;
-  color: var(--label);
-  background: var(--panel-3);
-  border: 0.5px solid var(--separator);
+  color: var(--ink);
+  background: var(--soft);
+  border: 0.5px solid var(--line);
   border-radius: 10px;
   padding: 12px;
   min-height: 48px;
@@ -1574,17 +1496,12 @@ body {
 }
 
 .input:focus {
-  outline: 2px solid var(--accent);
+  outline: 2px solid var(--acc);
   outline-offset: -1px;
 }
 
 .button:active:not(:disabled) {
   opacity: 0.75;
-}
-
-.button.subtle {
-  background: var(--fill);
-  color: var(--tint);
 }
 
 /* 只給輔助技術讀的字：不能用 display:none／visibility:hidden，那會連
@@ -1599,14 +1516,6 @@ body {
   clip-path: inset(50%);
   white-space: nowrap;
   border: 0;
-}
-
-.screen-section {
-  display: flex;
-  flex-direction: column;
-  gap: var(--gap);
-  padding-top: var(--gap);
-  border-top: 0.5px solid var(--separator);
 }
 
 /* ---------- 劇本級燈號（MVP-v2／#77、#80） ---------- */
@@ -1629,15 +1538,15 @@ body {
 }
 
 .signal-dot.signal-green {
-  background: var(--green);
+  background: var(--up);
 }
 
 .signal-dot.signal-yellow {
-  background: var(--yellow);
+  background: var(--warn);
 }
 
 .signal-dot.signal-red {
-  background: var(--red);
+  background: var(--down);
 }
 
 /* ---------- 新鮮度標記與卡片內的失敗指引（V4／#52） ---------- */
@@ -1652,12 +1561,12 @@ body {
   letter-spacing: 0;
   vertical-align: 2px;
   background: var(--fill);
-  color: var(--label-secondary);
+  color: var(--ink-2);
 }
 
 .tag.warn {
-  background: color-mix(in srgb, var(--orange) 16%, transparent);
-  color: var(--orange);
+  background: color-mix(in srgb, var(--warn) 16%, transparent);
+  color: var(--warn);
 }
 
 /* FB5-03（#64）：單調性違反用紅色，跟 .tag.warn 的橙色分開——配對關係
@@ -1667,12 +1576,13 @@ body {
   color: var(--suspect);
 }
 
-/* OG-01（#317）：Foundations 板的 `.tag.up`／`.down`／`.gold`／
-   `.flat`／`.info`／`.fam` 六個色彩修飾——沿用既有 `.tag` 的形狀
-   （pill、12px、600 字重），只新增這批目前尚無消費端、供後續看板
-   重排票（OG-03／OG-06／OG-07 等）直接拿來標示方向／冠軍／中性
-   資訊用的顏色變體。`.warn`／`.suspect` 兩個既有變體維持不動、不
-   重複定義。 */
+/* OG-01（#317）：Foundations 板的 `.tag.up`／`.down`／`.flat` 方向色彩
+   修飾——沿用既有 `.tag` 的形狀（pill、12px、600 字重）。SW-09（#339）
+   contract 階段移除了同一批當時一起加的 `.gold`／`.info`／`.fam`
+   三個變體：OG-01 落地後從未真的被任何元件消費過（`directionTagClass()`
+   只吐得出 up／down／flat 三種字串），是 Obsidian Gold 規劃階段的
+   死 CSS，不是仍在用的顏色語意。`.warn`／`.suspect` 兩個既有變體
+   維持不動、不重複定義。 */
 .tag.up {
   background: var(--up-soft);
   color: var(--up);
@@ -1681,21 +1591,9 @@ body {
   background: var(--down-soft);
   color: var(--down);
 }
-.tag.gold {
-  background: var(--accent-soft);
-  color: var(--accent-text);
-}
-/* .flat（持平方向）／.fam（family 標籤）視覺意圖不同，但今天剛好是
-   同一種「中性、不強調」處理——合成一條規則，不維護兩份逐字相同的
-   規則體；語意各自獨立，日後其中一個要換顏色時再拆開即可。 */
-.tag.flat,
-.tag.fam {
-  background: var(--panel-3);
-  color: var(--text-2);
-}
-.tag.info {
-  background: color-mix(in srgb, var(--info) 14%, transparent);
-  color: var(--info);
+.tag.flat {
+  background: var(--soft);
+  color: var(--ink-2);
 }
 
 /* 卡片裡的提示不能用 `.notice` 的預設底色——那正好等於卡片底色，等於
@@ -1717,14 +1615,14 @@ body {
 }
 
 .card .notice.error {
-  background: color-mix(in srgb, var(--red) 9%, transparent);
+  background: color-mix(in srgb, var(--down) 9%, transparent);
 }
 
 /* 「Long Call 已經勝過此 Spread」用警示橘而非成功綠：對使用者而言這是
    「你這組價差被更簡單的東西比下去了」，不是好消息。 */
 .card .notice.warn {
-  background: color-mix(in srgb, var(--orange) 14%, transparent);
-  color: var(--label);
+  background: color-mix(in srgb, var(--warn) 14%, transparent);
+  color: var(--ink);
   font-weight: 600;
 }
 
@@ -1767,7 +1665,7 @@ body {
   flex-wrap: wrap;
   gap: 2px 12px;
   font-size: 12px;
-  color: var(--label-secondary);
+  color: var(--ink-2);
 }
 
 /* 標頭數字比一般 `.metric`（28px）小一級：這張卡現在還要裝下九格
@@ -1783,7 +1681,7 @@ body {
   grid-template-columns: repeat(2, minmax(0, 1fr));
   column-gap: 12px;
   row-gap: 8px;
-  border-top: 0.5px solid var(--separator);
+  border-top: 0.5px solid var(--line);
   padding-top: 10px;
 }
 
@@ -1824,7 +1722,7 @@ body {
   /* Typography v2：與 `.caption` 同一個級距（12px），行高比照拉到
      1.45——原本 1.2 對中文字距太緊。 */
   line-height: 1.45;
-  color: var(--label-tertiary);
+  color: var(--mute);
 }
 
 .stat-value {
@@ -1893,7 +1791,7 @@ body {
   text-align: right;
   border-radius: 4px;
   white-space: nowrap;
-  color: var(--label);
+  color: var(--ink);
 }
 
 /* 價格欄釘在左邊：橫向捲到最後一欄時，還要知道自己在看哪一列。 */
@@ -1962,7 +1860,7 @@ body {
 /* 錨點列的 ±% 跟著價格一起升為主色，兩端讀起來才是同一列
    （沿用 `.heatmap-table tr.anchor .heatmap-price` 既有語意）。 */
 .heatmap-table tr.anchor .heatmap-move-pct {
-  color: var(--label);
+  color: var(--ink);
   font-weight: 600;
 }
 
@@ -2008,12 +1906,12 @@ body {
 
 /* 兩側各是誰較高的那一句：這是圖例裡最該被讀到的一行，給它主色。 */
 .crossover-sides {
-  color: var(--label);
+  color: var(--ink);
   font-weight: 600;
 }
 
 .crossover-absent {
-  color: var(--label-tertiary);
+  color: var(--mute);
 }
 
 /* ---------- 到期日結構（V6／#54） ---------- */
@@ -2056,7 +1954,7 @@ body {
   border-radius: var(--radius-pill);
   position: relative;
   background: var(--fill);
-  color: var(--label);
+  color: var(--ink);
   font-family: inherit;
   padding: 8px 14px;
   min-height: 52px;
@@ -2071,8 +1969,8 @@ body {
    按鈕，選定時實心填色」，沒有理由各寫一份。 */
 .chip.selected,
 .month-cell.selected {
-  background: var(--accent);
-  color: var(--on-accent);
+  background: var(--acc);
+  color: var(--on-acc);
 }
 
 /* T11（#229，Initial V2，`/code-review` Standards 軸回饋）：`.chip-date`
@@ -2096,11 +1994,11 @@ body {
 }
 
 .chip .chip-return {
-  color: var(--label-secondary);
+  color: var(--ink-2);
 }
 
 .chip.selected .chip-return {
-  color: var(--on-accent);
+  color: var(--on-acc);
 }
 
 /* OG-02（#318）：`.card.selected`／`.compact-card.selected`（#72
@@ -2165,7 +2063,7 @@ body {
 }
 
 .compact-notice-detail {
-  color: var(--label-secondary);
+  color: var(--ink-2);
   font-size: 12px;
 }
 
@@ -2183,7 +2081,7 @@ body {
 }
 
 .candidate-list > li + li {
-  border-top: 0.5px solid var(--separator);
+  border-top: 0.5px solid var(--line);
 }
 
 /* 原生 `<details>`：展開是純瀏覽器行為，不重繪、不跳動頁面位置，
@@ -2208,7 +2106,7 @@ body {
    狀態自己說得出來。 */
 .candidate-head::after {
   content: "›";
-  color: var(--label-tertiary);
+  color: var(--mute);
   font-size: 20px;
   font-weight: 600;
   line-height: 1;
@@ -2232,7 +2130,7 @@ body {
 .rank {
   font-size: 13px;
   font-weight: 700;
-  color: var(--label-tertiary);
+  color: var(--mute);
   font-variant-numeric: tabular-nums;
   min-width: 26px;
 }
@@ -2248,7 +2146,7 @@ body {
 .candidate-subtype {
   font-size: 12px;
   font-weight: 600;
-  color: var(--label-tertiary);
+  color: var(--mute);
   white-space: nowrap;
 }
 
@@ -2259,11 +2157,11 @@ body {
 }
 
 .candidate-return.positive {
-  color: var(--green);
+  color: var(--up);
 }
 
 .candidate-return.negative {
-  color: var(--red);
+  color: var(--down);
 }
 
 /* 三個價格：收合狀態就看得到，比較幾組候選時不必逐一展開。 */
@@ -2272,7 +2170,7 @@ body {
   gap: 12px;
   padding-left: 34px;
   font-size: 13px;
-  color: var(--label-secondary);
+  color: var(--ink-2);
   font-variant-numeric: tabular-nums;
 }
 
@@ -2304,7 +2202,7 @@ body {
 .report-table td {
   padding: 6px 4px;
   text-align: left;
-  border-bottom: 0.5px solid var(--separator);
+  border-bottom: 0.5px solid var(--line);
 }
 
 /* Model & Assumptions：折疊，預設收起——R1 §4.2 C「全文常駐」降級為
@@ -2317,7 +2215,7 @@ body {
 /* 免責聲明：獨立、不折疊——不能讓它看起來像 Model & Assumptions 的
    延伸段落。 */
 .report-disclaimer {
-  border-top: 0.5px solid var(--separator);
+  border-top: 0.5px solid var(--line);
   padding-top: 12px;
 }
 
@@ -2367,7 +2265,7 @@ body {
   border: 0;
   flex: 1;
   background: transparent;
-  color: var(--label);
+  color: var(--ink);
   font-family: inherit;
   font-size: 14px;
   font-weight: 600;
@@ -2377,8 +2275,8 @@ body {
 }
 
 .segmented-option.selected {
-  background: var(--bg-elevated);
-  box-shadow: var(--card-shadow);
+  background: var(--card);
+  box-shadow: var(--shadow);
 }
 
 .spread-history-chart {
@@ -2487,8 +2385,8 @@ body {
 .month-picker-step {
   appearance: none;
   border: 0;
-  background: var(--bg-elevated);
-  color: var(--tint);
+  background: var(--card);
+  color: var(--acc-text);
   font-size: 20px;
   font-weight: 600;
   width: 36px;
@@ -2503,17 +2401,17 @@ body {
   font-size: 20px;
   font-weight: 700;
   text-align: center;
-  color: var(--label);
+  color: var(--ink);
   background: transparent;
   border: 0;
-  border-bottom: 1.5px solid var(--separator);
+  border-bottom: 1.5px solid var(--line);
   width: 4.5ch;
   padding: 2px 0;
 }
 
 .year-input:focus {
   outline: none;
-  border-bottom-color: var(--accent);
+  border-bottom-color: var(--acc);
 }
 
 .month-picker-grid {
@@ -2525,8 +2423,8 @@ body {
 .month-cell {
   appearance: none;
   border: 0.5px solid transparent;
-  background: var(--bg-elevated);
-  color: var(--label);
+  background: var(--card);
+  color: var(--ink);
   font-family: inherit;
   font-size: 15px;
   /* Typography v2：月份選擇按鈕，套一般按鈕字重 500——`[aria-current=
@@ -2550,7 +2448,7 @@ body {
    的細邊框上不夠醒目，加粗到 1.5px 才看得出跟一般月份不一樣。 */
 .month-cell[aria-current="date"] {
   border-width: 1.5px;
-  border-color: var(--accent);
+  border-color: var(--acc);
   font-weight: 700;
 }
 
@@ -2569,7 +2467,7 @@ body {
   align-items: center;
   gap: 8px;
   font-size: 17px;
-  color: var(--label);
+  color: var(--ink);
   /* SW-07（#336）：pill chip 外觀（artifact「family 勾選 chips」）
      ——checkbox 仍是真正的互動元件（見下方，不隱藏、不做假 UI），這裡
      只是把整個 `<label>` 包成一顆可勾選的膠囊，勾選狀態疊淺色底。 */
@@ -2580,9 +2478,9 @@ body {
 }
 
 .family-option.selected {
-  border-color: var(--accent);
-  background: var(--accent-soft);
-  color: var(--accent-text);
+  border-color: var(--acc);
+  background: var(--acc-soft);
+  color: var(--acc-text);
 }
 
 .family-option input[type="checkbox"] {
@@ -2593,7 +2491,7 @@ body {
 .family-ineligible-reason {
   flex-basis: 100%;
   font-size: 13px;
-  color: var(--label-secondary);
+  color: var(--ink-2);
 }
 
 /* ---------- 設定頁（Settings／#124） ---------- */
@@ -2662,11 +2560,12 @@ body {
 }
 
 /* SW-07（#336）：destructive 區塊紅描邊——「刪除我的資料」（`DeleteMyData.
-   tsx`）與 Super Admin 刪除相關卡片共用，跟既有 `--red`／`.batch-pill.
-   danger`／`.text-button.danger` 同一個紅色慣例，只是這裡疊在整張卡的
-   邊框上，讓危險動作在還沒點進去之前就先醒目一眼可辨。 */
+   tsx`）與 Super Admin 刪除相關卡片共用，跟既有 `--down`（SW-09／#339
+   之後舊名 `--red` 已整段移除）／`.batch-pill.danger`／
+   `.text-button.danger` 同一個紅色慣例，只是這裡疊在整張卡的邊框上，
+   讓危險動作在還沒點進去之前就先醒目一眼可辨。 */
 .danger-zone {
-  border-color: var(--red);
+  border-color: var(--down);
 }
 
 .settings-usage-title {
@@ -2687,7 +2586,7 @@ body {
 .settings-custom {
   margin-top: 10px;
   padding-top: 12px;
-  border-top: 1px solid var(--separator);
+  border-top: 1px solid var(--line);
 }
 
 .settings-field {
@@ -2703,9 +2602,9 @@ body {
   padding: 10px 12px;
   font-size: 16px;   /* iOS Safari 在 <16px 的輸入框上會自動放大整頁 */
   font-family: inherit;
-  color: var(--label);
-  background: var(--bg-elevated);
-  border: 0.5px solid var(--separator);
+  color: var(--ink);
+  background: var(--card);
+  border: 0.5px solid var(--line);
   border-radius: 10px;
 }
 
@@ -2729,25 +2628,25 @@ body {
   height: 8px;
   margin-right: 8px;
   border-radius: 50%;
-  background: var(--label-tertiary);
+  background: var(--mute);
   vertical-align: middle;
 }
 
 .settings-dot.state-ok {
-  background: var(--green);
+  background: var(--up);
 }
 
 .settings-dot.state-failed {
-  background: var(--red);
+  background: var(--down);
 }
 
 .settings-dot.state-unverified {
-  background: var(--orange);
+  background: var(--warn);
 }
 
 .settings-reason {
   margin-top: 4px;
-  color: var(--red);
+  color: var(--down);
 }
 
 .settings-fallback {
@@ -2763,7 +2662,7 @@ body {
 }
 
 .diagnostics-row + .diagnostics-row {
-  border-top: 0.5px solid var(--separator);
+  border-top: 0.5px solid var(--line);
 }
 
 /* 整列可點（跟 `.settings-choice` 同一種手感）：手指落點是整行，不是
@@ -2798,14 +2697,14 @@ body {
 
 .diagnostics-row-ts {
   font-variant-numeric: tabular-nums;
-  color: var(--label-secondary);
+  color: var(--ink-2);
   font-size: 13px;
 }
 
 .diagnostics-row-subsystem,
 .diagnostics-row-stage {
   font-size: 13px;
-  color: var(--label-secondary);
+  color: var(--ink-2);
 }
 
 .diagnostics-row-severity {
@@ -2814,15 +2713,15 @@ body {
 }
 
 .diagnostics-row-severity.severity-error {
-  color: var(--red);
+  color: var(--down);
 }
 
 .diagnostics-row-severity.severity-warning {
-  color: var(--orange);
+  color: var(--warn);
 }
 
 .diagnostics-row-severity.severity-info {
-  color: var(--label-secondary);
+  color: var(--ink-2);
 }
 
 .diagnostics-row-message {
@@ -2870,9 +2769,9 @@ body {
      真正載入的 Geist Mono（OG-01／#317），而非只靠系統等寬字。 */
   font-family: var(--mono);
   font-size: 12px;
-  color: var(--label);
-  background: var(--bg-elevated);
-  border: 0.5px solid var(--separator);
+  color: var(--ink);
+  background: var(--card);
+  border: 0.5px solid var(--line);
   border-radius: 8px;
   resize: vertical;
 }
@@ -2970,7 +2869,7 @@ body {
   grid-template-columns: 1fr 1fr;
   gap: 12px;
   padding-top: 8px;
-  border-top: 0.5px solid var(--separator);
+  border-top: 0.5px solid var(--line);
 }
 
 .iv-legs.single {
@@ -2983,7 +2882,7 @@ body {
 .iv-diagnostics {
   margin-top: 6px;
   padding-top: 6px;
-  border-top: 0.5px solid var(--separator);
+  border-top: 0.5px solid var(--line);
 }
 
 @media (min-width: 1100px) {
@@ -2996,7 +2895,7 @@ body {
 .iv-diagnostics-summary {
   font-weight: 600;
   cursor: pointer;
-  color: var(--red);
+  color: var(--down);
 }
 
 /* 主 Historical IV 已經成功、只是附帶 vendor／legacy 診斷事件時的中性
@@ -3005,7 +2904,7 @@ body {
    這裡只是「有更多細節可以看」，用跟 `.iv-advanced summary` 同一種
    中性文字色，不製造使用者誤以為主圖壞掉的視覺急迫感。 */
 .iv-diagnostics-summary-info {
-  color: var(--label);
+  color: var(--ink);
 }
 
 .iv-diagnostics-correlation {
@@ -3020,7 +2919,7 @@ body {
 .iv-advanced {
   margin-top: 6px;
   padding-top: 6px;
-  border-top: 0.5px solid var(--separator);
+  border-top: 0.5px solid var(--line);
 }
 
 @media (min-width: 1100px) {
@@ -3049,7 +2948,7 @@ body {
 .iv-skeleton-block {
   border-radius: 8px;
   background: linear-gradient(
-    90deg, var(--fill) 25%, var(--bg-elevated) 37%, var(--fill) 63%);
+    90deg, var(--fill) 25%, var(--card) 37%, var(--fill) 63%);
   background-size: 400% 100%;
   animation: iv-skeleton-shimmer 1.4s ease infinite;
 }
@@ -3179,7 +3078,7 @@ body {
 
 /* 反灰的標的欄位：看得出來是「原值，不可改」而不是壞掉。 */
 .input:disabled {
-  color: var(--label-secondary);
+  color: var(--ink-2);
   background: var(--fill);
 }
 
@@ -3195,7 +3094,7 @@ body {
 }
 
 .superuser-owner-row {
-  border: 1px solid var(--separator);
+  border: 1px solid var(--line);
   border-radius: 10px;
   padding: 10px 12px;
 }
@@ -3242,7 +3141,7 @@ body {
    要求）不因本票新增區塊而退步。次要文字色調（`--label-secondary`）。 */
 .beta-notice {
   padding: 2px 0 4px;
-  color: var(--label-secondary);
+  color: var(--ink-2);
   font-size: 10px;
   line-height: 1.25;
 }
@@ -3263,7 +3162,7 @@ body {
 .site-footer {
   margin-top: 16px;
   padding: 10px var(--gap) calc(10px + env(safe-area-inset-bottom, 0px));
-  border-top: 1px solid var(--separator);
+  border-top: 1px solid var(--line);
   text-align: center;
 }
 
@@ -3273,7 +3172,7 @@ body {
      投資建議、Beta 資料生命週期），QA-FIX-2（2026-08-09）記錄過
      tertiary 在深色模式對比未達 WCAG AA，不該讓真正重要的文字沿用
      那個已知缺口。 */
-  color: var(--label-secondary);
+  color: var(--ink-2);
   font-size: 11px;
   line-height: 1.6;
 }
@@ -3388,8 +3287,8 @@ body {
     align-items: center;
     gap: 8px;
     padding: 0 20px;
-    background: var(--panel);
-    border-bottom: 1px solid var(--separator);
+    background: var(--card);
+    border-bottom: 1px solid var(--line);
   }
 
   .topbar .brand {
@@ -3400,7 +3299,7 @@ body {
     font-size: 16px;
     letter-spacing: -0.01em;
     margin-right: 16px;
-    color: var(--label);
+    color: var(--ink);
   }
 
   .topbar .spacer {
@@ -3423,7 +3322,7 @@ body {
   border: 1px solid var(--line-2);
   font-size: 12px;
   font-weight: 600;
-  color: var(--label-secondary);
+  color: var(--ink-2);
   white-space: nowrap;
 }
 
@@ -3431,7 +3330,7 @@ body {
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background: var(--label-tertiary);
+  background: var(--mute);
 }
 
 .role-superuser .dot {
@@ -3456,8 +3355,8 @@ body {
   display: flex;
   height: 56px;
   padding-bottom: env(safe-area-inset-bottom, 0px);
-  background: var(--panel);
-  border-top: 1px solid var(--separator);
+  background: var(--card);
+  border-top: 1px solid var(--line);
 }
 
 .mtab {
@@ -3468,14 +3367,14 @@ body {
   justify-content: center;
   gap: 3px;
   font-size: 11px;
-  color: var(--label-tertiary);
+  color: var(--mute);
   font-weight: 500;
   letter-spacing: 0.02em;
   text-decoration: none;
 }
 
 .mtab.on {
-  color: var(--accent-text);
+  color: var(--acc-text);
 }
 
 .mtab:active {
@@ -3499,8 +3398,8 @@ body {
    primitive 類名）。後續看板重排的票要用到這些概念時，直接沿用左欄：
 
    - 角色 chip     → `.role`（＋`.role-superuser`／`.role-superadmin`）
-   - tag           → `.tag`（＋本檔新增的 `.up`／`.down`／`.gold`／
-                       `.flat`／`.info`／`.fam`，`.warn`／`.suspect` 既有）
+   - tag           → `.tag`（＋本檔新增的 `.up`／`.down`／`.flat`，
+                       `.warn`／`.suspect` 既有）
    - chip（選取式）→ `.chip`（＋`.chip.selected` 對應 artifact 的
                        `.chip.on`）
    - stat 方塊     → `.stat`（＋`.stat-label`／`.stat-value`）
@@ -3512,84 +3411,17 @@ body {
                        `.row + .row` 的上邊框對應 artifact `.kv` 的
                        `border-bottom`，方向相反但視覺角色相同）
 
-   下面才是目前完全沒有既有等價物、本票淨新增、供後續票直接拿來用的
-   primitives（逐字對齊 artifact Main 板）。 */
-
-/* ---------- 按鈕：primary（金色）／secondary（髮絲線框）／danger ---------- */
-
-.btn {
-  height: 36px;
-  padding: 0 16px;
-  border-radius: var(--radius-s);
-  border: 1px solid transparent;
-  font: inherit;
-  font-size: 14px;
-  font-weight: 600;
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  cursor: pointer;
-  white-space: nowrap;
-  /* 未指定變體＝primary，跟 artifact 的 `.btn` 預設就是金色一致。 */
-  background: var(--accent);
-  color: var(--on-accent);
-}
-
-.btn.secondary {
-  background: transparent;
-  color: var(--text);
-  border-color: var(--line-2);
-  font-weight: 500;
-}
-
-.btn.danger {
-  background: transparent;
-  color: var(--down);
-  border-color: var(--down);
-  font-weight: 500;
-}
-
-.btn.ghost {
-  background: var(--panel-3);
-  color: var(--text);
-  font-weight: 500;
-}
-
-.btn.sm {
-  height: 32px;
-  padding: 0 12px;
-  font-size: 13px;
-}
-
-.btn.xs {
-  height: 28px;
-  padding: 0 10px;
-  font-size: 12px;
-}
-
-.btn.dis,
-.btn:disabled {
-  opacity: 0.45;
-  cursor: not-allowed;
-}
-
-.iconbtn {
-  width: 36px;
-  height: 36px;
-  border-radius: var(--radius-s);
-  border: 0;
-  background: transparent;
-  color: var(--text-2);
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  cursor: pointer;
-}
+   SW-09（#339）contract 階段整段刪除：本節原本這裡還有一組
+   `.btn`／`.btn.secondary`／`.btn.danger`／`.btn.ghost`／`.btn.sm`／
+   `.btn.xs`／`.btn.dis`／`.iconbtn`——OG-01 落地時新增，但 SW-01 起
+   全站按鈕一律直接改用 `.pbtn` 家族（見本檔案 Seed Warm primitives
+   區塊），這組 `.btn` 系列從頭到尾沒有任何元件真正掛過，是純粹的死
+   CSS，不是仍在服務中的規則。 */
 
 /* ---------- panel：面板＋面板頭 ---------- */
 
 .panel {
-  background: var(--panel);
+  background: var(--card);
   border: 1px solid var(--line);
   border-radius: var(--radius);
   overflow: hidden;
@@ -3615,7 +3447,7 @@ body {
 }
 
 .tabs a {
-  color: var(--text-3);
+  color: var(--mute);
   font-size: 14px;
   font-weight: 500;
   padding: 0 14px;
@@ -3627,7 +3459,7 @@ body {
 }
 
 .tabs a.on {
-  color: var(--text);
+  color: var(--ink);
 }
 
 .tabs a.on::after {
@@ -3637,7 +3469,7 @@ body {
   right: 14px;
   bottom: -1px;
   height: 2px;
-  background: var(--accent);
+  background: var(--acc);
 }
 
 /* ---------- seg：分段控制項（例如日／週／月切換，與既有
@@ -3650,7 +3482,7 @@ body {
 
 .seg {
   display: inline-flex;
-  background: var(--panel-3);
+  background: var(--soft);
   border-radius: var(--radius-pill);
   padding: 2px;
   gap: 2px;
@@ -3665,7 +3497,7 @@ body {
   border-radius: var(--radius-pill);
   font-size: 12px;
   font-weight: 500;
-  color: var(--text-3);
+  color: var(--mute);
   border: 0;
   background: transparent;
   cursor: pointer;
@@ -3674,8 +3506,8 @@ body {
 
 .seg a.on,
 .seg button.on {
-  background: var(--panel);
-  color: var(--text);
+  background: var(--card);
+  color: var(--ink);
 }
 
 /* ---------- 通用狀態圓點（獨立於 `.role .dot`／`.signal-dot`／
@@ -3714,7 +3546,7 @@ body {
 .tbl th {
   font-size: 12px;
   font-weight: 500;
-  color: var(--text-3);
+  color: var(--mute);
   text-align: left;
   padding: 0 12px;
   height: 36px;
@@ -3738,103 +3570,14 @@ body {
   text-align: right;
 }
 
-.tbl tr.hov td {
-  background: var(--panel-2);
-}
-
-.tbl tr.dim td {
-  opacity: 0.55;
-}
-
-/* ---------- sym：Logo＋ticker 身分組。Logo 本身沿用既有 `StockLogo`
-   元件（`.tile`，Logo.dev `fallback=404` 契約），這裡只提供外層的
-   排版容器與代號／名稱兩層文字，不重造一份與 `.tile` 競爭的 logo
-   class。 ---------- */
-
-.sym {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  min-width: 0;
-}
-
-.sym .tk {
-  font-weight: 600;
-  font-size: 14px;
-  line-height: 1.2;
-}
-
-.sym .nm {
-  font-size: 12px;
-  color: var(--text-3);
-  line-height: 1.2;
-}
-
-/* ---------- legs：腿位 pill（例如「買106 · 賣110」），b＝買腿綠、
-   s＝賣腿紅（既有「綠紅只表達數值方向」原則的延伸——這裡的方向是
-   買／賣部位，不是漲跌，但沿用同一組 token 是刻意的：買腿之於帳戶是
-   多頭部位、賣腿是空頭部位，跟 `--up`/`--down` 本來要表達的「對帳戶
-   有利／不利的方向」是同一個語意軸，不是另外借用跟方向無關的顏色） ---------- */
-
-.legs {
-  display: inline-flex;
-  gap: 4px;
-  align-items: center;
-  font-size: 12px;
-}
-
-.legs b {
-  font-weight: 600;
-  color: var(--text);
-}
-
-.legs .b {
-  color: var(--up);
-}
-
-.legs .s {
-  color: var(--down);
-}
-
-/* ---------- 表單輸入框 ---------- */
-
-.inp {
-  height: 36px;
-  border-radius: var(--radius-s);
-  border: 1px solid var(--line-2);
-  background: var(--panel-2);
-  color: var(--text);
-  padding: 0 12px;
-  font: inherit;
-  font-size: 14px;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  width: 100%;
-}
-
-.inp.focus,
-.inp:focus-within {
-  border-color: var(--accent);
-  box-shadow: 0 0 0 2px var(--accent-soft);
-}
-
-.inp input {
-  border: 0;
-  background: transparent;
-  color: inherit;
-  font: inherit;
-  outline: none;
-  width: 100%;
-  padding: 0;
-}
-
-label.lb {
-  font-size: 12px;
-  color: var(--text-3);
-  display: block;
-  margin-bottom: 6px;
-}
+/* SW-09（#339）contract 階段整段刪除：`.tbl tr.hov`／`.tbl tr.dim`
+   （`.tbl` 本身仍在用，見上方，唯獨這兩個列狀態修飾從沒被
+   `DesktopDetail.tsx` 的 `entry-leg-table` 掛過）；以及整組
+   `.sym`（Logo＋ticker 身分組）／`.legs`（腿位 pill）／`.inp`（表單
+   輸入框）／`label.lb`——OG-01 落地時新增，但站上的身分列一律沿用
+   既有 `StockLogo` 的 `.tile`、逐腿顯示改用 `.iv-legs`／`IvTrend.tsx`
+   自己的結構、輸入框一律 `.settings-input`／`.pinp`，這四組從頭到尾
+   沒有任何元件掛過，同樣是死 CSS。 */
 
 /* ---------- 手機頂欄（`.mnav`，60px，OG-09／#319 接線；SW-04／#333
    起 52px→60px 貼齊 Direction A artifact）——與桌面 `.topbar`
@@ -3853,7 +3596,7 @@ label.lb {
   gap: 10px;
   padding-left: 16px;
   padding-right: 16px;
-  background: var(--panel);
+  background: var(--card);
   border-bottom: 1px solid var(--line);
 }
 
@@ -3864,7 +3607,7 @@ label.lb {
   font-weight: 700;
   font-size: 16px;
   letter-spacing: -0.01em;
-  color: var(--label);
+  color: var(--ink);
   white-space: nowrap;
 }
 
@@ -3881,7 +3624,7 @@ label.lb {
   border: 0;
   border-radius: var(--radius-s);
   background: var(--fill);
-  color: var(--label);
+  color: var(--ink);
   font-family: inherit;
   font-size: 12px;
   font-weight: 500;
@@ -3913,7 +3656,7 @@ label.lb {
   gap: 12px;
   min-height: 24px;
   padding: 4px 16px;
-  background: var(--panel);
+  background: var(--card);
   border-bottom: 1px solid var(--line);
 }
 
@@ -3933,7 +3676,7 @@ label.lb {
   text-align: center;
   font-size: 11px;
   font-weight: 500;
-  border: 1px solid var(--bg);
+  border: 1px solid var(--paper);
 }
 
 .hm th {
@@ -3941,7 +3684,7 @@ label.lb {
   padding: 0 8px;
   font-size: 11px;
   font-weight: 500;
-  color: var(--text-3);
+  color: var(--mute);
   text-align: center;
 }
 
@@ -3950,14 +3693,14 @@ label.lb {
 .bar {
   height: 3px;
   border-radius: 2px;
-  background: var(--panel-3);
+  background: var(--soft);
   overflow: hidden;
 }
 
 .bar i {
   display: block;
   height: 100%;
-  background: var(--accent);
+  background: var(--acc);
   font-style: normal;
 }
 
@@ -4022,7 +3765,7 @@ label.lb {
 
 .entry-leg-worst {
   font-weight: 600;
-  color: var(--text);
+  color: var(--ink);
 }
 
 /* OG-07（#325）：底部四個 tab（淨成本走勢／候選池診斷／分析報告／
@@ -4078,11 +3821,13 @@ label.lb {
 }
 
 /* SW-05（#337）：選取列改成暖色淺底（artifact 明文），沿用既有
-   `--accent-soft` token（跟 `.chip.selected`／`.pchip.on` 同一種
-   terracotta 淺底慣例），不是通用的 `--fill` 灰底。 */
+   `--acc-soft` token（SW-09／#339 之後舊名 `--accent-soft` 已整段移除；
+   跟 `.chip.selected` 同一種 terracotta 淺底慣例——`.pchip.on` 曾經是
+   另一個平行同義詞，SW-09 已把從未被消費的 `.pchip` 整組刪除），不是
+   通用的 `--fill` 灰底。 */
 .detail-rank-row.selected {
-  border-color: var(--accent);
-  background: var(--accent-soft);
+  border-color: var(--acc);
+  background: var(--acc-soft);
 }
 
 .detail-rank-return {
@@ -4285,101 +4030,13 @@ label.lb {
   color: var(--ink);
 }
 
-/* Pill segment（篩選群組）：容器本身是 `role="group"`（消費端加），
-   選中項黑底白字。 */
-.pseg {
-  display: inline-flex;
-  gap: 2px;
-  background: var(--soft);
-  border-radius: var(--radius-pill);
-  padding: 3px;
-}
-
-.pseg a,
-.pseg button {
-  height: 30px;
-  padding: 0 14px;
-  border: 0;
-  border-radius: var(--radius-pill);
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font: inherit;
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--ink-2);
-  background: transparent;
-  cursor: pointer;
-}
-
-.pseg a[aria-current="true"],
-.pseg button[aria-current="true"],
-.pseg a.on,
-.pseg button.on {
-  background: var(--ink);
-  color: var(--card);
-}
-
-/* Chip（可橫向捲動的次要篩選／到期月份）。 */
-.pchip {
-  height: 32px;
-  padding: 0 12px;
-  border-radius: var(--radius-pill);
-  border: 1px solid var(--line-2);
-  background: var(--card);
-  color: var(--ink-2);
-  font-size: 12px;
-  font-weight: 600;
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  white-space: nowrap;
-}
-
-.pchip.on {
-  border-color: var(--acc);
-  color: var(--acc-text);
-  background: var(--acc-soft);
-}
-
-/* Tag（狀態徽章：up／down／flat／warn／fam）。 */
-.ptag {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  height: 24px;
-  padding: 0 9px;
-  border-radius: var(--radius-pill);
-  font-size: 12px;
-  font-weight: 700;
-  white-space: nowrap;
-}
-
-.ptag.up {
-  background: var(--up-soft);
-  color: var(--up-text);
-}
-
-.ptag.down {
-  background: var(--down-soft);
-  color: var(--down);
-}
-
-.ptag.flat {
-  background: var(--soft);
-  color: var(--ink-2);
-}
-
-.ptag.warn {
-  background: var(--warn-soft);
-  color: var(--warn-text);
-}
-
-.ptag.fam {
-  background: var(--panel-3);
-  color: var(--ink-2);
-  font-weight: 600;
-}
+/* SW-09（#339）contract 階段整段刪除：SW-01（#331）當時的檔頭說明
+   點名「`.pseg`／`.pchip`／`.ptag` 尚無專屬消費元件，後續 SW-02～SW-05
+   各票會在真實畫面裡用它們」——但實際落地時，方向 segment／到期月份
+   chip／方向徽章這三個位置，SW-02～SW-08 全部沿用「既有 primitives
+   對照表」（見本檔前段 OG-01 說明）指名的既有 `.seg`／`.chip`／
+   `.tag.up`／`.down`／`.flat`，沒有一個真實畫面換成這三個新 class。
+   保留至今只是三組從未被消費過的死 CSS，不是仍待接線的半成品。 */
 
 /* Card：白卡＋暖影，取代舊系統髮絲線密表的視覺基座。 */
 .pcard {
@@ -4416,10 +4073,10 @@ label.lb {
   font-variant-numeric: tabular-nums;
 }
 
-.pstat .pstat-d {
-  font-size: 12px;
-  color: var(--mute);
-}
+/* SW-09（#339）contract 階段刪除 `.pstat .pstat-d`（原意是給
+   `.pstat` 補一列輔助說明文字）——`.pstat-k`／`.pstat-v` 兩個同組
+   primitive 都在用（見 `MobileStatsStrip.tsx`／`SuperUserAdmin.tsx`
+   的 `OpsStats()`），唯獨這個第三列從未被任何消費端掛過。 */
 
 /* Input primitive（新表單/搜尋框，圓角 10）。 */
 .pinp {
@@ -4451,46 +4108,11 @@ label.lb {
   box-shadow: 0 0 0 2px var(--acc-soft);
 }
 
-/* 色點狀態（表格「狀態」欄）。 */
-.pdot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  display: inline-block;
-  flex: none;
-}
-
-.pdot.up {
-  background: var(--up);
-}
-
-.pdot.down {
-  background: var(--down);
-}
-
-.pdot.warn {
-  background: var(--warn);
-}
-
-.pdot.flat {
-  background: var(--mute);
-}
-
-/* Inline 比例條（劇本報酬相對最佳報酬）。容器 `role="progressbar"`
-   ＋`aria-valuenow`（消費端加），`i` 的寬度是視覺呈現。 */
-.pbar {
-  height: 4px;
-  border-radius: 2px;
-  background: var(--panel-3);
-  overflow: hidden;
-}
-
-.pbar i {
-  display: block;
-  height: 100%;
-  background: var(--up);
-  border-radius: 2px;
-}
+/* SW-09（#339）contract 階段整段刪除 `.pdot`（表格「狀態」欄色點，
+   桌面劇本庫最後改用 `.lib-cell-status` 自己的結構＋`.tag`，見
+   `ScenarioList.tsx`）與 `.pbar`（劇本報酬相對最佳報酬的 inline 比例
+   條，AC 原本設想但最終沒有任何畫面採用這個呈現方式）——同一批
+   SW-01 落地時新增、SW-02～SW-08 全程沒有真實消費端的 primitives。 */
 
 /* Info tooltip affordance：一顆可 focus 的圖示按鈕＋`aria-describedby`
    指向的浮動說明卡，鍵盤 focus／hover 皆可觸發（`:focus-within` 涵蓋
@@ -4651,8 +4273,8 @@ label.lb {
   right: 6px;
   font-size: 9px;
   font-weight: 700;
-  color: var(--on-accent);
-  background: var(--accent);
+  color: var(--on-acc);
+  background: var(--acc);
   border-radius: var(--radius-pill);
   padding: 1px 5px;
   line-height: 1.4;
