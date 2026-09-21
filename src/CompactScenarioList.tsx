@@ -326,7 +326,7 @@ export default function CompactScenarioList({
   onConfirmBatchArchive: () => void;
 }) {
   if (rows.length === 0) {
-    return <p className="caption">還沒有劇本，用上面的「＋ 新增劇本」建立。</p>;
+    return <p className="caption">還沒有劇本，按上面的「＋ 建立劇本」開始。</p>;
   }
   // T08／#196 P1：正在更新的劇本照樣參與排序（用它上一輪的
   // `best_return`），不再像舊版 `partitionByLock`（V4 跟進票／#136，
@@ -363,7 +363,7 @@ export default function CompactScenarioList({
         </div>
       )}
 
-      <ul className="compact-list">
+      <ul className="compact-list pcard">
         {sorted.map((row) => (
           <CompactScenarioCard
             key={row.id}

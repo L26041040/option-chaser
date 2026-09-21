@@ -203,7 +203,7 @@ describe("Compact 劇本列（MVP-v2／#77、#82）", () => {
   it("一個劇本都沒有時指引使用者往上面的新增入口，不是空白畫面", () => {
     list([]);
     expect(screen.getByText(/還沒有劇本/)).toBeInTheDocument();
-    expect(screen.getByText(/新增劇本/)).toBeInTheDocument();
+    expect(screen.getByText(/建立劇本/)).toBeInTheDocument();
   });
 
   it("畫面上寫明收益率的口徑（V4／#52 既有裁示，compact 版沿用）", () => {

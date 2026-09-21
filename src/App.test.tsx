@@ -32,7 +32,7 @@ async function pickMonth(year: number, month: number) {
 /**
  * 建立劇本表單預設收合，得先展開入口才看得到欄位。入口位置依裝置寬度
  * 而不同（MVP-v2／#77、#81）：桌面（#75 現狀）在工具列的「＋ 建立劇本」，
- * 手機在 Dashboard 下方的「＋ 新增劇本」（`CreateEntry`）——這裡不管
+ * 手機在標題列的「＋ 建立劇本」（SW-04／#333 起，唯一入口）——這裡不管
  * 呼叫端跑在哪個視窗寬度，找得到哪個按鈕就點哪個。真的要測特定入口的
  * 精確文字與位置時，各自的測試會直接斷言，不靠這個共用小工具。
  *
@@ -1122,7 +1122,7 @@ describe("Phase A2：建立成功後自動收合表單、捲動並聚焦到新�
 
     // 收合：入口按鈕字樣變回收合態，欄位不再看得到（不是清空 draft，
     // 是送出成功後表單本來就會清空，見 `CreateForm.tsx` 的 `submit()`）。
-    expect(await screen.findByRole("button", { name: "＋ 新增劇本" })).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "＋ 建立劇本" })).toBeInTheDocument();
     expect(screen.queryByLabelText("標的代號")).not.toBeVisible();
 
     // 捲動＋聚焦：新卡片是一個真正的 `<a>`，聚焦它才會讓螢幕閱讀器唸出
@@ -1641,10 +1641,10 @@ describe("桌面版頁面級導覽（OG-02／#318，取代 #72／#75 側欄常�
 });
 
 describe("桌面版：主要操作入口收攏到工作區上方（#75，MVP-v2／#77 起僅桌面）", () => {
-  // #75 原本涵蓋所有寬度；MVP-v2（#77、#81）裁示手機改走 Dashboard 下方
-  // 的獨立入口（見「手機版：新增劇本入口」），#75 的工具列頂部入口自此
-  // 縮限成桌面現狀——這裡的每個案例都先切到桌面寬度，斷言才對得上現在
-  // 實際覆蓋的範圍。
+  // #75 原本涵蓋所有寬度；MVP-v2（#77、#81）裁示手機改走標題列的獨立
+  // 入口（SW-04／#333 起見 `App.tsx` 手機首頁分支），#75 的工具列頂部
+  // 入口自此縮限成桌面現狀——這裡的每個案例都先切到桌面寬度，斷言才
+  // 對得上現在實際覆蓋的範圍。
   const row = {
     ...(sampleRow as unknown as Record<string, unknown>),
     id: "s1", symbol: "TLT", target_price: 120, target_month: "2028-05",
@@ -1794,7 +1794,8 @@ describe("手機版頂欄（OG-09／#319，取代 iOS Large Title 版式的 " +
   };
 
   it("頂欄只有品牌、（角色，若非 Normal User）、重新整理——沒有垃圾桶／" +
-     "設定按鈕；底部導覽四個分頁都在，且能各自導向正確 hash", async () => {
+     "設定按鈕；底部導覽三個分頁都在，且能各自導向正確 hash（SW-04／" +
+     "#333 起無建立分頁）", async () => {
     mockRoutes({
       "/api/scenarios": { json: async () => [row] },
       "/api/scenarios/": { json: async () => row },
@@ -1819,6 +1820,60 @@ describe("手機版頂欄（OG-09／#319，取代 iOS Large Title 版式的 " +
       .toHaveAttribute("href", "#/trash");
     expect(within(bottomNav).getByRole("link", { name: /設定/ }))
       .toHaveAttribute("href", "#/settings");
+  });
+});
+
+describe("SW-04（#333，Seed Warm）：手機首頁只有一個建立入口，Dashboard 佔位整個移除", () => {
+  const row = {
+    ...(sampleRow as unknown as Record<string, unknown>),
+    id: "s1", symbol: "TLT", target_price: 120, target_month: "2028-05",
+    latest_analyzed_at: "2026-08-04T09:30:00+00:00", best_return: 1.5,
+    target_anchor: "2028-05-19", days_to_anchor: 653,
+  };
+
+  it("整個手機首頁只有一顆「建立劇本」按鈕，標題列與底部導覽都不重複", async () => {
+    mockRoutes({
+      "/api/scenarios": { json: async () => [row] },
+      "/api/scenarios/": { json: async () => row },
+      "/api/me/usage-summary": { json: async () => ({
+        active_scenarios: 1, max_active_scenarios: 10, quota_exempt: false,
+        refresh_min_interval_minutes: 30, throttle_exempt: false,
+        last_activity_at: null,
+      }) },
+    });
+    render(<App />);
+    await screen.findByText("TLT");
+
+    expect(screen.getAllByRole("button", { name: /建立劇本/ })).toHaveLength(1);
+    expect(screen.queryByLabelText("Dashboard")).not.toBeInTheDocument();
+    expect(screen.queryByText(/跨劇本指標規劃中/)).not.toBeInTheDocument();
+
+    // Beta 說明（PB-12／#302 AC9）：固定可見、不是需要 hover／focus
+    // 才展開的 tooltip——SW-04 的「文案降級」範圍明確不含這一段。
+    const betaNotice = document.querySelector(".beta-notice") as HTMLElement;
+    expect(betaNotice).toBeVisible();
+    expect(betaNotice).toHaveTextContent("Beta");
+
+    // 底部導覽三格，沒有第二個建立入口。
+    const bottomNav = screen.getByRole("navigation", { name: "主要導覽" });
+    expect(within(bottomNav).getAllByRole("link")).toHaveLength(3);
+    expect(within(bottomNav).queryByRole("link", { name: /建立/ }))
+      .not.toBeInTheDocument();
+  });
+
+  it("標題列的建立入口點下去，原位展開既有建立表單（不換頁）", async () => {
+    mockRoutes({
+      "/api/scenarios": { json: async () => [row] },
+      "/api/scenarios/": { json: async () => row },
+    });
+    render(<App />);
+    await screen.findByText("TLT");
+
+    expect(screen.queryByLabelText("標的代號")).not.toBeVisible();
+    await userEvent.click(screen.getByRole("button", { name: "＋ 建立劇本" }));
+    expect(screen.getByLabelText("標的代號")).toBeVisible();
+    expect(screen.getByRole("button", { name: "收合建立表單" }))
+      .toHaveAttribute("aria-expanded", "true");
   });
 });
 

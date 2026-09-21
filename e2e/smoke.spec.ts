@@ -82,6 +82,16 @@ test.beforeEach(async ({ page }) => {
   // 註冊的路由優先），拿到有意義的回應。
   await page.route("**/api/scenarios/refresh-run", (route) =>
     route.fulfill({ json: { results: [], remaining: [] } }));
+  // SW-04（#333）：手機首頁新增的 `MobileStatsStrip` 掛載即打這條——
+  // 同上一條的既有理由，先給一個安全的預設回應，不必讓每一條原本不
+  // 關心這個 stat 條的既有測試都各自覆寫一次；真的要驗證用量數字的
+  // 測試（`MobileStatsStrip.test.tsx` 走 Vitest 元件層）自己會覆寫。
+  await page.route("**/api/me/usage-summary", (route) =>
+    route.fulfill({ json: {
+      active_scenarios: 0, max_active_scenarios: 10, quota_exempt: false,
+      refresh_min_interval_minutes: 30, throttle_exempt: false,
+      last_activity_at: null,
+    } }));
 });
 
 /** 劇本清單列：形狀取自前後端共用的契約樣本，只覆寫測試在意的欄位。 */
@@ -525,9 +535,9 @@ test("劇本庫：建立 → 出現在清單 → 封存後消失（V3／#51）",
   await expect(page.getByRole("heading", { name: "劇本庫" })).toBeVisible();
   await expect(page.getByText(/還沒有劇本/)).toBeVisible();
 
-  // 手機版（MVP-v2／#77、#81）：建立劇本入口在 Dashboard 佔位區下方，
-  // 不在工具列——#75 的工具列頂部入口自此縮限成桌面現狀。預設收合。
-  await page.getByRole("button", { name: "＋ 新增劇本" }).click();
+  // 手機版（MVP-v2／#77、#81；SW-04／#333 起入口搬到標題列）：建立
+  // 劇本入口是畫面上唯一一顆，預設收合。
+  await page.getByRole("button", { name: "＋ 建立劇本" }).click();
   await page.getByLabel("標的代號").fill("tlt");
   await page.getByLabel("目標價位").fill("120");
   // 年月選擇器（#71）不是原生 input：點欄位就地展開，輸入四碼年份，
@@ -570,7 +580,7 @@ test("Phase A2：建立成功後表單自動收合、新卡片被捲入視窗並
   await page.goto("/");
   await expect(page.getByText(/還沒有劇本/)).toBeVisible();
 
-  await page.getByRole("button", { name: "＋ 新增劇本" }).click();
+  await page.getByRole("button", { name: "＋ 建立劇本" }).click();
   await page.getByLabel("標的代號").fill("tlt");
   await page.getByLabel("目標價位").fill("120");
   await page.getByLabel("目標年月").click();
@@ -581,7 +591,7 @@ test("Phase A2：建立成功後表單自動收合、新卡片被捲入視窗並
 
   // 收合：入口按鈕字樣變回收合態、欄位不再看得到（不是第四種刷新
   // 時機，只是「建立成功」這個既有時機順便多做的畫面收尾）。
-  await expect(page.getByRole("button", { name: "＋ 新增劇本" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "＋ 建立劇本" })).toBeVisible();
   await expect(page.getByLabel("標的代號")).toBeHidden();
 
   // 捲動＋聚焦：新卡片真的收到焦點（不只是視覺上出現在畫面上），
@@ -1183,40 +1193,43 @@ test("久未刷新的資料標成舊資料（V4／#52）", async ({ page }) => {
   await expect(page.locator(".tag.warn", { hasText: "舊資料" })).toBeVisible();
 });
 
-test("手機首頁版面順序：Dashboard 佔位 → 新增劇本入口 → 劇本庫（MVP-v2／#77、#81）",
-  async ({ page }) => {
+test("手機首頁版面順序：標題列（唯一建立入口）→ 劇本庫（SW-04／#333，" +
+     "取代已移除的 Dashboard 佔位——MVP-v2／#77、#81 的版位裁示本輪由" +
+     "標題列取代）", async ({ page }) => {
     await routeLibrary(page, libraryRow());
 
     await page.goto("/");
     await expect(page.getByRole("listitem")).toBeVisible();
 
-    const dashboard = page.getByLabel("Dashboard");
-    const createToggle = page.getByRole("button", { name: "＋ 新增劇本" });
+    // Dashboard 佔位整個移除，不是換了個名字——找不到才是正確狀態。
+    await expect(page.getByLabel("Dashboard")).toHaveCount(0);
+
+    const heading = page.getByRole("heading", { name: "劇本庫" });
+    const createToggle = page.getByRole("button", { name: "＋ 建立劇本" });
     // 手機版清單用 compact 版式的容器（`.compact-list`，MVP-v2／#77、
     // #82）。#108 起桌面版 `ScenarioList.tsx` 也沿用同一組 class，但
     // 這個測試檔固定跑在手機 viewport 專案（見 `playwright.config.ts`
     // 的 `testIgnore: /desktop\.spec\.ts$/`），不會抓到桌面版那份。
     const list = page.locator("ul.compact-list");
 
-    await expect(dashboard).toBeVisible();
+    await expect(heading).toBeVisible();
     await expect(createToggle).toBeVisible();
     await expect(list).toBeVisible();
 
-    // 三段由上而下的順序——不是同時存在就好，順序本身是規格的一部分。
-    expect(await dashboard.evaluate((el, other) =>
+    // 標題列（標題＋唯一建立入口）在劇本庫清單之前——順序本身是規格
+    // 的一部分，不是同時存在就好。
+    expect(await heading.evaluate((el, other) =>
       !!(el.compareDocumentPosition(other as Node) &
          Node.DOCUMENT_POSITION_FOLLOWING),
-      await createToggle.elementHandle())).toBe(true);
+      await list.elementHandle())).toBe(true);
     expect(await createToggle.evaluate((el, other) =>
       !!(el.compareDocumentPosition(other as Node) &
          Node.DOCUMENT_POSITION_FOLLOWING),
       await list.elementHandle())).toBe(true);
-
-    // Dashboard 佔位區不放任何數字（需求方裁示：不要自行發明 KPI）。
-    await expect(dashboard).not.toContainText(/\d/);
   });
 
-test("新增劇本：點擊就地展開，不換頁、不彈出 modal（MVP-v2／#77、#81）",
+test("建立劇本：點擊就地展開，不換頁、不彈出 modal（MVP-v2／#77、#81；" +
+     "SW-04／#333 起入口在標題列，不再是 Dashboard 下方）",
   async ({ page }) => {
     await page.route("**/api/scenarios", (route) => route.fulfill({ json: [] }));
 
@@ -1224,12 +1237,11 @@ test("新增劇本：點擊就地展開，不換頁、不彈出 modal（MVP-v2�
     const urlBefore = page.url();
 
     await expect(page.getByLabel("標的代號")).not.toBeVisible();
-    await page.getByRole("button", { name: "＋ 新增劇本" }).click();
+    await page.getByRole("button", { name: "＋ 建立劇本" }).click();
     await expect(page.getByLabel("標的代號")).toBeVisible();
 
-    // 就地展開：網址沒變、Dashboard 與工具列仍在同一頁上。
+    // 就地展開：網址沒變、標題與工具列仍在同一頁上。
     expect(page.url()).toBe(urlBefore);
-    await expect(page.getByLabel("Dashboard")).toBeVisible();
     await expect(page.getByRole("heading", { name: "劇本庫" })).toBeVisible();
 
     // 收合再展開，內容還在（沿用 #75 的既有教訓：面板一律掛著只切換
@@ -1237,7 +1249,7 @@ test("新增劇本：點擊就地展開，不換頁、不彈出 modal（MVP-v2�
     await page.getByLabel("標的代號").fill("tlt");
     await page.getByRole("button", { name: "收合建立表單" }).click();
     await expect(page.getByLabel("標的代號")).not.toBeVisible();
-    await page.getByRole("button", { name: "＋ 新增劇本" }).click();
+    await page.getByRole("button", { name: "＋ 建立劇本" }).click();
     await expect(page.getByLabel("標的代號")).toHaveValue("tlt");
   });
 
@@ -2617,7 +2629,7 @@ test("手機版：建立劇本一個 family 都沒勾就送出，擋在前端並
   await page.goto("/");
   await expect(page.getByText(/還沒有劇本/)).toBeVisible();
 
-  await page.getByRole("button", { name: "＋ 新增劇本" }).click();
+  await page.getByRole("button", { name: "＋ 建立劇本" }).click();
   await page.getByLabel("標的代號").fill("tlt");
   await page.getByLabel("目標價位").fill("120");
   await page.getByLabel("目標年月").click();
@@ -2726,7 +2738,7 @@ test("手機版：全選一次勾起三個 family，已全選時再點同一顆�
     route.fulfill({ json: { results: [], remaining: [] } }));
   await page.goto("/");
 
-  await page.getByRole("button", { name: "＋ 新增劇本" }).click();
+  await page.getByRole("button", { name: "＋ 建立劇本" }).click();
   // 開啟時仍是「全選」文案——沒有任何 checkbox 被系統預先勾起。
   // `exact: true`：Playwright 對按鈕名稱是子字串比對，「全選」是
   // 「取消全選」的子字串，不指定 exact 會連後者一起比對到。
@@ -3220,7 +3232,7 @@ test("T17（#234）：建立持平劇本（目標價＝現價）全程不被拒�
     route.fulfill({ json: { ...created, latest_result: flatView } }));
 
   await page.goto("/");
-  await page.getByRole("button", { name: "＋ 新增劇本" }).click();
+  await page.getByRole("button", { name: "＋ 建立劇本" }).click();
   await page.getByLabel("標的代號").fill("xyz");
   // AC 明文：不為持平劇本新增任何使用者輸入欄位——目標價位就是
   // 現價本身，走既有的純數字輸入欄位，沒有任何專屬互動。

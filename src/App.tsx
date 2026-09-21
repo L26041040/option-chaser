@@ -46,13 +46,12 @@ import {
 import BetaNotice from "./BetaNotice";
 import BottomNav from "./BottomNav";
 import CompactScenarioList from "./CompactScenarioList";
-import CreateEntry from "./CreateEntry";
 import CreateForm, {
   type DraftScenario,
   type EditTarget,
 } from "./CreateForm";
-import Dashboard from "./Dashboard";
 import Footer from "./Footer";
+import MobileStatsStrip from "./MobileStatsStrip";
 import MobileTopBar from "./MobileTopBar";
 import PrivacyPage from "./PrivacyPage";
 import ScenarioDetail from "./ScenarioDetail";
@@ -80,7 +79,7 @@ import {
   isTrashHash,
   scenarioIdFromHash,
 } from "./route";
-import { formatRunSummary, scenarioRowDomId } from "./scenarios";
+import { formatAnalyzedAt, formatRunSummary, scenarioRowDomId } from "./scenarios";
 
 /**
  * 桌面／手機兩套 responsive layout 的斷點判斷（#72 引入，OG-02／#318
@@ -633,24 +632,17 @@ export default function App() {
     );
   }
 
-  // UI-IMPL-002（#092）：手機版底部導覽的「建立」分頁——先回劇本庫首頁
-  // （清空 hash），同一批 setState 裡順帶展開建立表單。hash 變化觸發
-  // `hashchange` 監聽器更新 `hash` state、下一次渲染落到下面的手機首頁
-  // 分支時，`showCreateForm` 已經是 true，表單因此立刻可見，不需要
-  // 額外的跨畫面狀態管線。
-  const openCreateFromAnywhere = () => {
-    window.location.hash = "";
-    setShowCreateForm(true);
-  };
-
   // 手機版：設定是整頁替換（跟垃圾桶、詳細頁同樣的既有模式）。排在
-  // 垃圾桶之前只是順序，兩個 hash 互斥。
+  // 垃圾桶之前只是順序，兩個 hash 互斥。SW-04（#333）起 `BottomNav`
+  // 只剩三格、不再帶建立入口（見 `BottomNav.tsx` 檔頭說明）——想從
+  // 這幾個畫面建立劇本，先點「劇本庫」分頁回首頁，再按標題列的唯一
+  // 入口，不再有第二條捷徑。
   if (!isDesktop && showSettings) {
     return (
       <>
         <Settings />
         <Footer />
-        <BottomNav active="settings" onOpenCreate={openCreateFromAnywhere} />
+        <BottomNav active="settings" />
       </>
     );
   }
@@ -660,7 +652,7 @@ export default function App() {
       <>
         <TrashView onRestore={restoreFromTrash} />
         <Footer />
-        <BottomNav active="trash" onOpenCreate={openCreateFromAnywhere} />
+        <BottomNav active="trash" />
       </>
     );
   }
@@ -672,21 +664,34 @@ export default function App() {
         <Footer />
         {/* 貼齊設計稿（Mobile-Detail 板）：看著某個劇本的詳細頁仍視為
             「在劇本庫這個大分類底下」，「劇本庫」分頁維持標記 active。 */}
-        <BottomNav active="library" onOpenCreate={openCreateFromAnywhere} />
+        <BottomNav active="library" />
       </>
     );
   }
 
   if (!isDesktop) {
-    // 手機首頁（MVP-v2／#77、#81、#82）：Dashboard 佔位 → 就地展開的
-    // 新增劇本入口 → 高密度劇本庫，由上而下三段。與桌面版（下方
-    // `library`）是兩個獨立的 JSX 分支，不共用同一段標記——這樣手機版
-    // 的版面決定不會意外牽動桌面版現狀（#72／#75，spec #77 硬紅線一）。
+    // 手機首頁（MVP-v2／#77、#81、#82；SW-04／#333 起版面重排）：
+    // 標題列（標題＋唯一建立入口）→ stat 卡 → 高密度劇本庫，由上而下
+    // 三段。與桌面版（下方 `library`）是兩個獨立的 JSX 分支，不共用
+    // 同一段標記——這樣手機版的版面決定不會意外牽動桌面版現狀
+    // （#72／#75，spec #77 硬紅線一）。
     //
-    // OG-09（#319）：手機頂欄換成 52px `MobileTopBar`——垃圾桶／設定
-    // 入口不再重複顯示在這裡，兩者都已經在下面的 `BottomNav` 有一份
-    // （UI-IMPL-002／#092 既有），建立入口同樣已經在下面的
-    // `CreateEntry`。這裡只剩品牌、角色徽章、刷新（時機三）。
+    // SW-04（#333）：原本的 Dashboard 佔位（「跨劇本指標規劃中」）與
+    // 手機版專屬的第二個建立入口（`CreateEntry`）整個移除——
+    // VISUAL-IDENTITY-001／SEED-WARM-SPEC-001（#330）Owner 明確裁示
+    // 「不要同時存在兩個主要建立入口」；`showCreateForm`／
+    // `createPanelId` 這組既有狀態原封不動，只是面板的掛載點換成這裡
+    // 的標題列 CTA＋原位展開面板，`hidden` 屬性切換可見度的既有教訓
+    // （#75：使用者打到一半不小心點到收合鈕，剛打的字不會被清空）
+    // 不變。
+    const lastAnalyzedAt = rows.reduce<string | null>((latest, row) => {
+      if (row.latest_analyzed_at === null) return latest;
+      if (latest === null || row.latest_analyzed_at > latest) {
+        return row.latest_analyzed_at;
+      }
+      return latest;
+    }, null);
+
     return (
       <div className="screen">
         <MobileTopBar
@@ -703,31 +708,50 @@ export default function App() {
         )}
         {batchArchiveErrorNotice}
 
-        {/* PB-12（#302）：首頁 Beta 說明——固定可見，非彈窗，排在
-            Dashboard 之前，是使用者最先看到的內容（Toolbar／錯誤提示
-            之後）。與 `Dashboard` 包在同一個 flex 容器、用比 `.screen`
-            自己更小的內距——`BetaNotice` 若自成一個 `.screen` 直接
-            子元素，會多佔一整份既有的 `--gap`（16px），在手機一屏
-            至少要看到 4 個劇本這條硬性密度要求（MVP-v2／#77、#82）下
-            划不來；包成一組只多付一份小得多的內距，不影響 `Dashboard`
-            自己的既有樣式。 */}
-        <div className="beta-notice-and-dashboard">
-          <BetaNotice />
-          <Dashboard />
-        </div>
+        {/* MVP-v2／#77、#82 既有硬性密度要求（手機一屏至少看得到 N 個
+            劇本，`smoke.spec.ts` 鎖住）：標題列／Beta 說明／建立面板／
+            stat 卡包成一個 wrapper，只吃一份 `.screen` 的 `--gap`
+            （16px），內部自己用更窄的間距——沿用已退場的
+            `.beta-notice-and-dashboard` 同一種「必要新增區塊，但density
+            預算不能因此被吃光」的既有手法，只是這次包的區塊變多了。 */}
+        <div className="mobile-home-intro">
+          <div className="mobile-home-head">
+            <div>
+              <h1 className="mobile-home-title">劇本庫</h1>
+              <p className="mobile-home-sub caption">
+                {rows.length} 個劇本
+                {lastAnalyzedAt !== null &&
+                  ` · 上次更新 ${formatAnalyzedAt(lastAnalyzedAt)}`}
+              </p>
+            </div>
+            <button
+              type="button"
+              className="pbtn"
+              onClick={() => setShowCreateForm((v) => !v)}
+              aria-expanded={showCreateForm}
+              aria-controls={createPanelId}
+            >
+              {showCreateForm ? "收合建立表單" : "＋ 建立劇本"}
+            </button>
+          </div>
 
-        {/* #81：手機版專屬的建立入口，位置固定在 Dashboard 下方、劇本庫
-            上方——不是桌面版工具列膠囊鈕的重複，是同一個 `showCreateForm`
-            狀態的另一個進入點（切換裝置寬度時開合狀態不會跟著重置）。 */}
-        <CreateEntry
-          open={showCreateForm}
-          panelId={createPanelId}
-          onToggle={() => setShowCreateForm((v) => !v)}
-        >
-          <CreateForm onCreate={create} onSaveEdit={saveEdit}
-                    onCancelEdit={cancelEdit} editing={editing}
-                    busy={busy} today={now} />
-        </CreateEntry>
+          {/* PB-12（#302，spec §11／AC9）：首頁 Beta 說明——固定可見、非
+              彈窗、非需要互動才看得到的 tooltip，這是既有硬性要求，
+              SW-04 施工時確認過與「文案降級」的 redesign 精神有衝突，
+              維持常駐可見不動（見 `styles.css` 的 `.beta-notice`
+              說明）。 */}
+          <BetaNotice />
+
+          {/* 面板一律掛著、用 `hidden` 屬性切換可見度，不是條件渲染整個
+              卸載重掛——沿用 #75 的既有教訓。 */}
+          <div id={createPanelId} hidden={!showCreateForm}>
+            <CreateForm onCreate={create} onSaveEdit={saveEdit}
+                      onCancelEdit={cancelEdit} editing={editing}
+                      busy={busy} today={now} />
+          </div>
+
+          <MobileStatsStrip />
+        </div>
 
         {/* #82：券商 App 式的高密度三層 compact row，取代大卡片——一個
             手機螢幕能掃過多個劇本。下方 `library` 的 `ScenarioList` 是
@@ -754,10 +778,7 @@ export default function App() {
 
         {/* PB-12（#302）：全站常駐頁尾——手機首頁也不例外。 */}
         <Footer />
-        <BottomNav
-          active={showCreateForm ? "create" : "library"}
-          onOpenCreate={openCreateFromAnywhere}
-        />
+        <BottomNav active="library" />
       </div>
     );
   }

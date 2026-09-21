@@ -52,6 +52,13 @@ test.beforeEach(async ({ page }) => {
     route.fulfill({ json: { results: [], remaining: [] } }));
   await page.route("**/api/auth/status", (route) =>
     route.fulfill({ json: { role: "normal" } }));
+  // SW-04（#333）：手機首頁的 `MobileStatsStrip` 掛載即打這條。
+  await page.route("**/api/me/usage-summary", (route) =>
+    route.fulfill({ json: {
+      active_scenarios: 0, max_active_scenarios: 10, quota_exempt: false,
+      refresh_min_interval_minutes: 30, throttle_exempt: false,
+      last_activity_at: null,
+    } }));
 });
 
 test("Plus Jakarta Sans 與 Noto Sans TC 兩個 web font 真的 loaded（不是退回系統字）", async ({

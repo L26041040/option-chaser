@@ -145,7 +145,7 @@ describe("取消隨時可按", () => {
     await userEvent.type(screen.getByLabelText("目標價位"), "999");
     await userEvent.click(screen.getByRole("button", { name: "取消" }));
 
-    await userEvent.click(screen.getByRole("button", { name: /新增劇本/ }));
+    await userEvent.click(screen.getByRole("button", { name: /建立劇本/ }));
     await screen.findByText("建立劇本");
     expect(screen.getByLabelText("目標價位")).toHaveValue("");
     expect(screen.getByLabelText("標的代號")).toBeEnabled();

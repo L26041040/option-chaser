@@ -946,79 +946,75 @@ body {
 
 /* ---------- 手機首頁：Dashboard 佔位＋新增劇本入口（MVP-v2／#77、#81） ---------- */
 
-/* PB-12（#302）：BetaNotice 與 Dashboard 包在同一個 flex 子項裡，只
-   多付一份 6px 的內部間距，不是 `.screen` 自己整份 `--gap`（16px）
-   ——見 `App.tsx` 對這個 wrapper 的註解，理由是手機一屏至少要看到
-   4 個劇本這條既有硬性密度要求（MVP-v2／#77、#82）。 */
-.beta-notice-and-dashboard {
+/* SW-04（#333）：手機首頁「標題列／Beta 說明／建立面板／stat 卡」
+   wrapper——只吃一份 `.screen` 的 `--gap`（16px），內部四塊用更窄的
+   6px 間距，`margin-bottom` 負值把跟下一個劇本庫清單的間距也一併
+   收緊，救回 MVP-v2／#77、#82 既有硬性密度預算（見 `App.tsx` 的
+   `.mobile-home-intro` 使用處說明）。 */
+.mobile-home-intro {
   display: flex;
   flex-direction: column;
-  gap: 0;
-  /* 這個 wrapper 本身仍是 `.screen` 的一個 flex 子項，會吃到它自己的
-     `--gap`（16px）——這裡用負的 `margin-bottom` 把那份間距收窄到
-     視覺上還算舒適的最小值，把手機一屏能塞進的劇本卡片數字從擠不進
-     第 4 張救回來（MVP-v2／#77、#82 既有硬性密度要求），視覺上跟
-     原本「Dashboard 到下一個區塊」的既有間距差異在可接受範圍內。 */
-  margin-bottom: -16px;
+  gap: 6px;
+  margin-bottom: -10px;
 }
 
-/* 這個 wrapper 情境下 `.dashboard-placeholder` 的垂直內距額外收緊
-   （只在這裡、不影響其他任何用到 `.dashboard-placeholder` 的地方，
-   目前也只有這一處）——多出來的高度預算全部讓給上方的 `.beta-notice`，
-   維持同一套「密度優先」的既有精神（MVP-v2／#82）。 */
-.beta-notice-and-dashboard .dashboard-placeholder {
-  padding-top: 4px;
-  padding-bottom: 4px;
+/* SW-04（#333，Seed Warm）：手機首頁標題列——取代已移除的 Dashboard
+   佔位＋獨立 `.create-entry-toggle` 兩塊（見 `App.tsx`／`Dashboard.tsx`
+   刪除紀錄），「劇本庫」標題與唯一的建立入口現在同一列。 */
+.mobile-home-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 12px;
 }
 
-/* 低調但可見——版面位置先保留，內容待跨劇本比較功能確定後才填。跟
-   `.card` 同一套視覺語言（同樣是卡片底色＋圓角），但用次要文字色調
-   （`--label-secondary`），避免在還沒有內容之前搶了劇本清單的視覺重量。 */
-.dashboard-placeholder {
-  background: var(--bg-elevated);
-  border-radius: var(--radius);
-  box-shadow: var(--card-shadow);
-  /* 低調的定義不只是文字色調，也是空間——這塊還沒有內容，不該佔比
-     劇本清單更醒目的留白（MVP-v2／#82：手機首頁整體要往密度走）。 */
-  padding: 10px var(--gap);
-  color: var(--label-secondary);
+.mobile-home-title {
+  margin: 0;
+  font-size: 28px;
+  font-weight: 800;
+  letter-spacing: -0.03em;
+  line-height: 1.1;
 }
 
-.dashboard-title {
-  margin: 0 0 2px;
+.mobile-home-sub {
+  margin: 2px 0 0;
   font-size: 13px;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.4px;
-  /* Typography v2：這一區塊緊貼在手機首頁「至少看得到 4 個劇本」
-     密度預算正上方（PB-12／#302 施工時記錄過一度只差 0.6px 就會
-     退步），不留顯式行高的話會被動吃到 body 新調的 1.5、把整串卡片
-     再往下推 0.65px——鎖回舊比例，不吃掉這個已經很薄的安全餘裕。 */
-  line-height: 1.45;
+  font-weight: 500;
+  color: var(--mute);
 }
 
-/* 收合態是一列 compact 的膠囊鈕，跟桌面版工具列的「＋ 建立劇本」
-   （`.pill`）同一套視覺語言，只是換了位置——手機版把它挪到 Dashboard
-   下方、劇本庫上方，不是工具列的重複。展開後的表單（`CreateForm`）
-   維持它原本在 `.card` 裡的樣式，這裡不額外包一層框。 */
-.create-entry-toggle {
-  appearance: none;
-  border: 0;
-  border-radius: var(--radius);
-  background: var(--bg-elevated);
-  box-shadow: var(--card-shadow);
-  color: var(--tint);
-  font-family: inherit;
-  font-size: 17px;
-  font-weight: 600;
-  width: 100%;
-  padding: 10px var(--gap);
-  text-align: left;
-  cursor: pointer;
+/* SW-04（#333）：`MobileStatsStrip` 單行三欄（進行中劇本／最近活動／
+   刷新節流間隔，跟桌面版 OG-05 既有三項同名同義）——手機首頁的垂直
+   空間預算由 `smoke.spec.ts`「一屏至少看得到 N 個劇本」既有硬性密度
+   測試鎖住（MVP-v2／#77、#82），單行＋`.pstat`（SW-01／#331
+   primitive）字級縮一號才塞得下。 */
+.mobile-stats-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
 }
 
-.create-entry-toggle:active {
-  opacity: 0.6;
+.mobile-stats-grid .pstat {
+  padding: 8px 8px;
+  gap: 2px;
+}
+
+.mobile-stats-grid .pstat-k {
+  font-size: 10.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.mobile-stats-grid .pstat-v {
+  font-size: 16px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.pstat-v.up {
+  color: var(--up);
 }
 
 /* ---------- 卡片內容 ---------- */
@@ -1078,11 +1074,23 @@ body {
   gap: 4px;
 }
 
+/* SW-04（#333，Seed Warm）：手機劇本庫改成「一張白卡、列與列用髮絲線
+   分隔」（artifact A-Mobile-Library 板），取代原本一張一張各自帶邊框
+   ／陰影的獨立小卡；`.compact-card`（本檔唯一消費端，見檔頭說明）
+   不再自帶外框，外觀由外層 `.compact-list.pcard`（SW-01／#331
+   primitive）統一提供。桌面版是完全獨立的 `ScenarioList.tsx`，不受
+   影響（見 SW-03／#334）。 */
+.compact-list.pcard {
+  gap: 0;
+  overflow: hidden;
+}
+
+.compact-list.pcard > li + li .compact-card {
+  border-top: 1px solid var(--line);
+}
+
 .compact-card {
-  background: var(--bg-elevated);
-  border: 1px solid var(--separator);
-  border-radius: calc(var(--radius) - 4px);
-  box-shadow: var(--card-shadow);
+  background: transparent;
   /* Typography v2：這是 MVP-v2／#77、#82、#108 三票明訂受硬性密度
      預算保護的組件（手機一屏至少 4 張、桌面左側欄一次看到更多卡片，
      皆由 e2e 幾何斷言鎖住）——`.compact-tier1/2/3`／`.compact-symbol`／
@@ -3097,13 +3105,12 @@ body {
 
 /* ---------- 首頁 Beta 說明（PB-12／#302，Anonymous Public Beta） ---------- */
 
-/* 固定可見、常駐，但刻意壓到最低高度、不用卡片裝飾（無背景／陰影／
-   邊框）——這一區塊會佔用 `.screen` 的 flex gap 預算，手機一屏至少
-   看得到 4 張劇本卡片（MVP-v2／#77、#82 既有硬性密度要求）不因本票
-   新增區塊而退步；實測一度只差 0.6px 就會退步，才把視覺裝飾整個
-   拿掉、只留純文字（見 `.beta-notice-and-dashboard` 與 `App.tsx` 的
-   wrapper 註解）。次要文字色調（`--label-secondary`），與
-   `.dashboard-placeholder` 同一套色階但不共用卡片外觀。 */
+/* 固定可見、常駐（PB-12／#302 spec §11／AC9 硬性要求：不得做成一次性
+   彈窗或需要互動才看得到的 tooltip——SW-04／#333 施工時確認過這一點
+   與「文案降級」的 redesign 精神有衝突，維持常駐可見不動，只降視覺
+   份量），刻意壓到最低高度、不用卡片裝飾（無背景／陰影／邊框），
+   手機一屏至少看得到 4 張劇本卡片（MVP-v2／#77、#82 既有硬性密度
+   要求）不因本票新增區塊而退步。次要文字色調（`--label-secondary`）。 */
 .beta-notice {
   padding: 2px 0 4px;
   color: var(--label-secondary);
@@ -3695,16 +3702,17 @@ label.lb {
   margin-bottom: 6px;
 }
 
-/* ---------- 手機頂欄（`.mnav`，52px，OG-09／#319 接線）——與桌面
-   `.topbar`（64px）、底部 `.mtabs`（既有）是三個並列但互斥的導覽
-   chrome。`position: sticky` 沿用退場前 `.toolbar` 既有的「釘在頂端」
-   行為，不必額外補等高 padding（sticky 留在文件流裡）。 ---------- */
+/* ---------- 手機頂欄（`.mnav`，60px，OG-09／#319 接線；SW-04／#333
+   起 52px→60px 貼齊 Direction A artifact）——與桌面 `.topbar`
+   （68px）、底部 `.mtabs`（既有）是三個並列但互斥的導覽 chrome。
+   `position: sticky` 沿用退場前 `.toolbar` 既有的「釘在頂端」行為，
+   不必額外補等高 padding（sticky 留在文件流裡）。 ---------- */
 
 .mnav {
   position: sticky;
   top: 0;
   z-index: 10;
-  height: 52px;
+  height: 60px;
   padding-top: env(safe-area-inset-top, 0px);
   display: flex;
   align-items: center;
@@ -3719,9 +3727,9 @@ label.lb {
   display: flex;
   align-items: center;
   gap: 8px;
-  font-weight: 600;
-  font-size: 15px;
-  letter-spacing: 0.01em;
+  font-weight: 700;
+  font-size: 16px;
+  letter-spacing: -0.01em;
   color: var(--label);
   white-space: nowrap;
 }
@@ -3733,7 +3741,7 @@ label.lb {
 /* 刷新按鈕——`.iconbtn`（36×36 純圖示）放不下「重新整理」／「刷新
    中……」這種需要保留可及文字的按鈕（既有 e2e／Vitest 直接鎖住這兩句
    精確文字，見 `MobileTopBar.tsx`），改用貼近 `.pill` 但更緊湊的
-   尺寸，貼齊 52px 頂欄的高度預算。 */
+   尺寸，貼齊 60px 頂欄的高度預算。 */
 .mnav-refresh {
   appearance: none;
   border: 0;
