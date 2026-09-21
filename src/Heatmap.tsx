@@ -38,6 +38,7 @@ import {
   formatMovePctShort, priceTags,
   type CrossoverSide, type CrossoverSides, type ResolvedComparator,
 } from "./heatmap";
+import InfoTooltip from "./InfoTooltip";
 import { money } from "./scenarios";
 
 /** 「Long Call」／「Long Put」——直接讀 `option_type`，不從 strategy
@@ -79,6 +80,13 @@ function sidesSentence(sides: CrossoverSides, kind: string): string {
     : `越接近到期 Spread 較高，較早的日期 ${kind} 較高。`;
 }
 
+/**
+ * SW-11（#341，Owner 真機驗收）：主畫面只留「琥珀線是分界」這句最
+ * 短的看圖方式；comparator 是誰、成本多少、兩側各是誰較高、邊界落在
+ * 圖外時該怎麼讀——這些都是「進階說明」，Owner 明講「若仍需要，移入
+ * ⓘ／secondary explanation」，收進 `InfoTooltip`（既有元件，SW-01／
+ * #331 就做好但一直沒有消費端，見該檔案），不是刪掉這些金融資訊。
+ */
 function CrossoverLegend({ comparator, edges, favoredSide, sides }: {
   comparator: ResolvedComparator;
   edges: ReturnType<typeof crossoverEdges>;
@@ -89,21 +97,24 @@ function CrossoverLegend({ comparator, edges, favoredSide, sides }: {
   return (
     <p className="caption crossover-legend">
       <span className="crossover-swatch" aria-hidden="true" />
-      <span>
-        格子是 Spread 報酬率。琥珀線＝與直接買{" "}
-        <strong>{comparatorLabel(comparator)}</strong>（成本{" "}
-        {money(comparator.cost)}）報酬相等的分界。
-      </span>
-      {sides && <span className="crossover-sides">{sidesSentence(sides, kind)}</span>}
-      {edges.length === 0 && (
+      <span>琥珀線是兩種操作報酬相等的分界。</span>
+      <InfoTooltip label="分界怎麼算">
         <span>
-          {favoredSide === "spread"
-            ? "此圖範圍內沒有分界：整張都是 Spread 較高。"
-            : favoredSide === "comparator"
-            ? `此圖範圍內沒有分界：整張都是 ${kind} 較高。`
-            : "資料不足以判定哪一側較高。"}
+          格子是 Spread 報酬率。琥珀線＝與直接買{" "}
+          <strong>{comparatorLabel(comparator)}</strong>（成本{" "}
+          {money(comparator.cost)}）報酬相等的分界。
         </span>
-      )}
+        {sides && <span className="crossover-sides">{sidesSentence(sides, kind)}</span>}
+        {edges.length === 0 && (
+          <span>
+            {favoredSide === "spread"
+              ? "此圖範圍內沒有分界：整張都是 Spread 較高。"
+              : favoredSide === "comparator"
+              ? `此圖範圍內沒有分界：整張都是 ${kind} 較高。`
+              : "資料不足以判定哪一側較高。"}
+          </span>
+        )}
+      </InfoTooltip>
     </p>
   );
 }
@@ -201,9 +212,17 @@ export default function Heatmap({ matrix, comparator }: {
           </tbody>
         </table>
       </div>
-      <p className="caption">
-        以最差成交價（買付 Ask、賣收 Bid）進場的報酬率（%）；標記列是錨點
-        價格，其餘為內插。
+      {/* SW-11（#341，Owner 真機驗收）：主畫面只留使用者真正需要知道的
+          看圖方式——格子是什麼、顏色深淺代表什麼、標記列是什麼；Ask／
+          Bid 進場口徑與內插這種「怎麼算出來的」細節屬於進階說明，移入
+          ⓘ（`InfoTooltip`），不是刪掉，滑鼠移過去／鍵盤 focus 到還是
+          看得到完整口徑。 */}
+      <p className="caption heatmap-caption">
+        <span>格子為報酬率；顏色越深代表幅度越大；標記列為錨點價格。</span>
+        <InfoTooltip label="報酬率怎麼算">
+          以最差成交價（買付 Ask、賣收 Bid）進場的報酬率（%）；除錨點列
+          （現價／目標價等）本身是引擎給的實際值外，其餘格子為內插。
+        </InfoTooltip>
       </p>
       {/* `comparator === undefined`（呼叫端根本沒傳，見 `ScenarioDetail.tsx`／
           `ExpiryStructure.tsx`——單腿候選不傳這個 prop）＝這個候選沒有

@@ -1893,6 +1893,16 @@ body {
   gap: 4px 8px;
 }
 
+/* SW-11（#341，Owner 真機驗收）：Heatmap 主畫面說明精簡——短句＋
+   `InfoTooltip`（ⓘ）並排同一行，跟 `.crossover-legend` 同一種
+   「一句話＋旁邊一顆可展開細節」的版式，不另外發明第二套。 */
+.heatmap-caption {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+}
+
 /* 圖例上的樣本就畫成一條線——跟圖上真正看到的東西一致，不是一個色塊。 */
 .crossover-swatch {
   display: inline-block;
@@ -3374,8 +3384,20 @@ body {
 
 /* ---------- 手機版底部導覽（UI-IMPL-002／#092，Mobile 板 `.mtabs`） ---------- */
 
+/* SW-11（#341）：`position: fixed`（見 `BottomNav.tsx` 檔頭說明的
+   root cause）之後，`.mtabs` 脫離文件流，`.mtabs-spacer`（`BottomNav`
+   自己一併渲染）補回原本 sticky 版本佔用的等高版面空間，高度必須跟
+   `.mtabs` 本身（含 safe-area）算法一致，否則版面會多一截空白或蓋到
+   `Footer` 最後一行。 */
+.mtabs-spacer {
+  height: calc(56px + env(safe-area-inset-bottom, 0px));
+  flex: none;
+}
+
 .mtabs {
-  position: sticky;
+  position: fixed;
+  left: 0;
+  right: 0;
   bottom: 0;
   z-index: 6;
   display: flex;
@@ -3409,7 +3431,8 @@ body {
 
 /* 桌面寬度不顯示底部導覽——桌面版導覽在 `TopBar` 的 `.nav`。 */
 @media (min-width: 1100px) {
-  .mtabs {
+  .mtabs,
+  .mtabs-spacer {
     display: none;
   }
 }
@@ -4330,4 +4353,60 @@ body {
   border-radius: var(--radius-pill);
   padding: 1px 5px;
   line-height: 1.4;
+}
+
+/* SW-11（#341，Owner 真機驗收）：FamilyTabs 專屬樣式，只吃
+   `aria-label="策略家族"` 這個 `.chip-strip`（`FamilyTabs.tsx` 手機版
+   與 `DesktopDetail.tsx` 桌面版兩處同構 markup 皆有這個 aria-label，
+   `ExpiryStructure.tsx` 的到期日 chip-strip 是 `aria-label="到期日"`、
+   `DesktopDetail.tsx` 另外兩個 chip-strip 是 `候選面板`／`劇本詳細
+   底部資訊`——四者 aria-label 互斥，這個選擇器不會滲進去，不需要動
+   共用的 `.chip`／`.chip-champion-badge` 基礎定義）。
+   問題一（文字偏上）：base `.chip` 是 `flex-direction:column;
+   align-items:flex-start`——這是到期日 chip 用來上下堆疊
+   `.chip-date`／`.chip-return` 兩行的既有版面，FamilyTabs 只有單行
+   `.chip-label`，套同一組排列就會貼在 52px 高的盒子頂端、靠左，
+   而不是置中。這裡改回真正的水平＋垂直置中。
+   問題二（冠軍 badge 遮字）：原本 `.chip-champion-badge` 用
+   `position:absolute` 疊在右上角——pill 寬度是 `flex:0 0 auto` 貼合
+   文字內容，文字越長（例如「Vertical Spread」）越容易被同一個角落的
+   徽章蓋到。改成隨文字排在同一行的一般 flex 子項（`position:static`），
+   徽章與文字並排、彼此讓開，不論文字多長都不會重疊，比只調
+   `top`／`right` 座標更徹底。 */
+.chip-strip[aria-label="策略家族"] .chip {
+  flex-direction: row;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+
+.chip-strip[aria-label="策略家族"] .chip-champion-badge {
+  position: static;
+  flex: none;
+}
+
+/* SW-11（#341，Owner 真機驗收）：首頁劇本卡「Strategy 欄位」（`Bull Call
+   Spread　買265 / 賣345` 那顆 pill）降級為次要資訊層級——只鎖定手機版
+   `CompactScenarioList.tsx`（`.compact-right` 內）與桌面版
+   `ScenarioList.tsx`（`.lib-cell-champion` 內）兩個「首頁劇本卡」consumer，
+   不動 `DesktopDetail.tsx` 候選列表那顆同樣掛 `.compact-strategy-pill`
+   的 `.candidate-title`（那是 SW-10／#340 才重排過的候選列表，不在這輪
+   範圍內，且它不在 `.compact-right`／`.lib-cell-champion` 底下，這個
+   選擇器天生碰不到）。
+   真正 root cause：`.compact-right` 是 `align-items: flex-end`（子項
+   靠內容縮寬、不 stretch 撐滿欄寬），這顆 `<span>` 因此從來沒有一個
+   「定寬」可以讓既有 `.compact-strategy` 的 `overflow:hidden；
+   text-overflow:ellipsis` 真正生效——策略文字多長、pill 的底色背景就
+   跟著多寬，這才是 Owner 說「pill 太大、橫跨大片卡片」的實際成因，
+   不是純粹嫌它視覺樣式不夠淡。這裡補上 `display:inline-block`（讓
+   `max-width` 對這個原本是 inline 的 `<span>` 生效）＋明確的
+   `max-width`，ellipsis 才真的裁得下去；同時縮小字級／內距，讓它在
+   視覺權重上明顯讓位給右欄真正的主視覺——報酬率（`.compact-metric`／
+   `.metric`，20px／28px，未動）。 */
+.compact-right .compact-strategy-pill,
+.lib-cell-champion .compact-strategy-pill {
+  display: inline-block;
+  max-width: 104px;
+  font-size: 11px;
+  padding: 1px 6px;
 }

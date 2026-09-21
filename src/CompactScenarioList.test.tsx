@@ -77,7 +77,10 @@ describe("Compact 劇本列（MVP-v2／#77、#82）", () => {
       // `requiredMovePct()`／`formatMove()`。
       expect(card.querySelector(".compact-target")!.textContent)
         .toBe("$100.00 → $120.00　2028-05 · 還需 +20.0%");
-      expect(within(card).getByTitle("狀態：正常")).toBeInTheDocument();
+      // SW-11（#341，Owner 真機驗收）：正常成功狀態不再畫綠點——幾乎
+      // 每張卡平常都是這個狀態，額外的 icon 只剩視覺噪音，見下方
+      // 「只在需要注意的狀態才顯示 signal-dot」那條測試。
+      expect(within(card).queryByTitle("狀態：正常")).not.toBeInTheDocument();
 
       // 第二層
       expect(within(card).getByText("123.4%")).toBeInTheDocument();
@@ -200,11 +203,21 @@ describe("Compact 劇本列（MVP-v2／#77、#82）", () => {
     expect(screen.queryByRole("button", { name: /重試/ })).not.toBeInTheDocument();
   });
 
-  it("久未刷新標「舊資料」，跟燈號並存、不互相取代", () => {
+  it("久未刷新標「舊資料」，正常燈號不畫（SW-11／#341）", () => {
     list([row({ latest_analyzed_at: "2026-08-01T09:30:00+00:00" })]);
     const card = screen.getByRole("listitem");
     expect(within(card).getByText("舊資料")).toBeInTheDocument();
-    expect(within(card).getByTitle("狀態：正常")).toBeInTheDocument();
+    expect(within(card).queryByTitle("狀態：正常")).not.toBeInTheDocument();
+  });
+
+  it("SW-11（#341，Owner 真機驗收）：signal-dot 只在真正需要注意的狀態顯示——刷新失敗畫黃點、已過期畫紅點，正常成功不畫", () => {
+    list(
+      [row({ id: "a", expired: false }), row({ id: "b", expired: true })],
+      { failures: { a: { stage: "fetch", message: "抓不到 TLT 的報價" } } },
+    );
+    const cards = screen.getAllByRole("listitem");
+    expect(within(cards[0]).getByTitle("狀態：刷新失敗")).toBeInTheDocument();
+    expect(within(cards[1]).getByTitle("狀態：已過期")).toBeInTheDocument();
   });
 
   it("一個劇本都沒有時指引使用者往上面的新增入口，不是空白畫面", () => {

@@ -67,7 +67,13 @@ describe("到期日按鈕", () => {
   it("每個到期日一顆，並附該期最高收益", () => {
     show();
 
-    const chips = screen.getAllByRole("button");
+    // SW-11（#341，Owner 真機驗收）：`Heatmap`（本元件內部渲染）新增了
+    // `InfoTooltip` 的 ⓘ 按鈕（見該檔），全頁 `getAllByRole("button")`
+    // 因此不再只有到期日 chips——改用 `aria-label="到期日"` 的
+    // chip-strip 範圍查詢，只鎖定這裡真正要驗證的按鈕。
+    const chips = within(
+      screen.getByRole("group", { name: "到期日" }),
+    ).getAllByRole("button");
     expect(chips).toHaveLength(groups.length);
     for (const [i, group] of groups.entries()) {
       const top = firstCandidate(view, group.expiry);

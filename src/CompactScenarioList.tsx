@@ -223,8 +223,15 @@ function CompactScenarioCard({
             </div>
             {/* T08／#196 P1：燈號講的是上一輪的結果，更新中時已經在上面
                 身分那一行換成「更新中」徽章，這裡就不重複畫，避免同一
-                件事被兩個圖示各講一次。 */}
-            {!updating && (
+                件事被兩個圖示各講一次。
+                SW-11（#341，Owner 真機驗收）：`signal === "green"`（一切
+                正常、上一輪成功）額外多加 `signal !== "green"` 這道門檻
+                ——正常成功不需要額外 icon 提醒，幾乎每張卡都是綠燈時
+                （多數劇本平常就是正常狀態）反而變成純視覺噪音；只在真的
+                需要使用者注意的狀態（`scenarioSignal()` 的 `"yellow"`＝
+                刷新失敗、`"red"`＝已過期）才畫這顆點。`updating` 分支
+                （已經有獨立徽章）不受影響。 */}
+            {!updating && signal !== "green" && (
               <span
                 className={`signal-dot signal-${signal}`}
                 title={signalLabel(signal)}
