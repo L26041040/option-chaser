@@ -1802,6 +1802,15 @@ body {
   gap: 16px;
 }
 
+/* SW-07（#336）：Super Admin 系統指標——同一批 `.pstat` 白卡，但欄數
+   不固定（近 20 格指標，`.lib-stats-strip` 的固定 3 欄放不下），改用
+   自動換行的 auto-fill 版本。 */
+.pstat-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 12px;
+}
+
 .stat-label {
   font-size: 12px;
   /* Typography v2：與 `.caption` 同一個級距（12px），行高比照拉到
@@ -2479,7 +2488,11 @@ body {
      不是按鈕的預設字重。 */
   font-weight: 500;
   padding: 10px 0;
-  border-radius: 8px;
+  /* SW-07（#336）：跟整套 Seed Warm「圓角 12–16」形狀語言對齊（原本
+     8px 是舊系統的既有值）——`.month-picker-step`（上一年／下一年箭頭）
+     本來就已經是 999px 圓形，這裡只是把月份格子本身也調到同一個圓角
+     量級，不影響版面、顏色或任何互動邏輯。 */
+  border-radius: 12px;
   min-height: 44px;
   cursor: pointer;
 }
@@ -2511,6 +2524,19 @@ body {
   gap: 8px;
   font-size: 17px;
   color: var(--label);
+  /* SW-07（#336）：pill chip 外觀（artifact「family 勾選 chips」）
+     ——checkbox 仍是真正的互動元件（見下方，不隱藏、不做假 UI），這裡
+     只是把整個 `<label>` 包成一顆可勾選的膠囊，勾選狀態疊淺色底。 */
+  padding: 10px 14px;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--line-2);
+  background: var(--card);
+}
+
+.family-option.selected {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent-text);
 }
 
 .family-option input[type="checkbox"] {
@@ -2579,6 +2605,14 @@ body {
 
 .settings-section + .settings-section {
   margin-top: var(--gap);
+}
+
+/* SW-07（#336）：destructive 區塊紅描邊——「刪除我的資料」（`DeleteMyData.
+   tsx`）與 Super Admin 刪除相關卡片共用，跟既有 `--red`／`.batch-pill.
+   danger`／`.text-button.danger` 同一個紅色慣例，只是這裡疊在整張卡的
+   邊框上，讓危險動作在還沒點進去之前就先醒目一眼可辨。 */
+.danger-zone {
+  border-color: var(--red);
 }
 
 .settings-usage-title {

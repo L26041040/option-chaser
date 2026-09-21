@@ -2557,3 +2557,20 @@ test("OG-12（#328）：1100–1280px 中間寬度——劇本庫表格與詳細
     () => document.documentElement.scrollWidth > window.innerWidth);
   expect(detailOverflowX).toBe(false);
 });
+
+test("SW-07（#336）：桌面設定頁／隱私頁在 1440px 無水平捲動", async ({ page }) => {
+  await routeSettings(page);
+  await page.setViewportSize({ width: 1440, height: 900 });
+
+  await page.goto("/#/settings");
+  await expect(page.getByRole("heading", { name: "設定" })).toBeVisible();
+  const settingsOverflowX = await page.evaluate(
+    () => document.documentElement.scrollWidth > window.innerWidth);
+  expect(settingsOverflowX).toBe(false);
+
+  await page.goto("/#/privacy");
+  await expect(page.getByRole("heading", { name: "隱私與資料政策" })).toBeVisible();
+  const privacyOverflowX = await page.evaluate(
+    () => document.documentElement.scrollWidth > window.innerWidth);
+  expect(privacyOverflowX).toBe(false);
+});

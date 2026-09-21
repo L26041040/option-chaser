@@ -60,4 +60,12 @@ describe("PrivacyPage（PB-12／#302）", () => {
       "href", "https://github.com/L26041040/option-chaser/issues");
     expect(screen.getByText(/不要在裡面貼出/)).toBeInTheDocument();
   });
+
+  it("SW-07（#336）：文字不含「vendor」「候選池」「口徑」「限流事故」", () => {
+    const { container } = render(<PrivacyPage />);
+    const text = container.textContent ?? "";
+    for (const banned of ["候選池", "口徑", "vendor", "Vendor", "限流事故"]) {
+      expect(text).not.toContain(banned);
+    }
+  });
 });

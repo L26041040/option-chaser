@@ -15,14 +15,11 @@
  * 密碼本身絕不寫進 `localStorage`／`sessionStorage`，只活在這次
  * `submit` 呼叫的請求 body 裡。
  *
- * **OG-11（#322，`/code-review` Spec 軸跟進）已知偏離**：票面要求把
- * 這個表單「換成 artifact 的樣式」，本票只把既有的 `.settings-section`
- * ／`.settings-field`／`.pill` 這組既有 primitives 原樣放進桌面新的
- * subnav「一般」分頁容器裡，元件本身沒有另外重新刻一份符合 artifact
- * 視覺稿的樣式（單一密碼欄／無 username／無角色選單的既有結構與行為
- * 完全不變，這裡沒有偏離）。純視覺的像素級對齊留給 OG-12（#328，
- * 明文的最終 light／responsive／artifact parity 驗收階段）一次處理，
- * 不在這裡先斬後奏地各自對一次、之後又要在 OG-12 重對一次。
+ * OG-11（#322）當時把像素級樣式對齊留到後續驗收票處理——SW-07（#336，
+ * Seed Warm）就是那張票：登入按鈕換成 `.pbtn`，其餘結構（單一密碼欄／
+ * 無 username／無角色選單、`.settings-section`／`.settings-field` 版面）
+ * 逐位元組不變，密碼欄位行為（不記錄、不回顯、只活在這次 submit 的
+ * request body 裡）同樣不變。
  */
 import { useEffect, useState } from "react";
 
@@ -115,6 +112,10 @@ export default function RoleLogin({
         <form onSubmit={(ev) => void submit(ev)}>
           <label className="settings-field">
             <span className="caption">密碼</span>
+            {/* `.pinp` primitive 刻意不套在這裡——理由同 `CreateForm.tsx`
+                頭部同一句說明：`.settings-input` 既有的 16px 字級是 iOS
+                Safari 防止整頁縮放的既有保護，兩者顏色／圓角本來就一致
+                （都讀 Seed Warm token），不是漏改。 */}
             <input
               className="settings-input"
               type="password"
@@ -129,7 +130,7 @@ export default function RoleLogin({
             </p>
           )}
           <div className="settings-actions">
-            <button className="pill" type="submit" disabled={busy || !password.trim()}>
+            <button className="pbtn" type="submit" disabled={busy || !password.trim()}>
               {busy ? "登入中……" : "登入"}
             </button>
           </div>

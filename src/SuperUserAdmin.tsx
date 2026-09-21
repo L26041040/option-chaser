@@ -182,9 +182,9 @@ function avgRefreshDurationMs(buckets: OpsMetricBucket[]): number | null {
  *  另刻一份一模一樣的 `.stat`／`.stat-label`／`.stat-value` 結構。 */
 export function Stat({ label, children }: { label: string; children: React.ReactNode }) {
   return (
-    <div className="stat">
-      <span className="stat-label">{label}</span>
-      <span className="stat-value">{children}</span>
+    <div className="pstat">
+      <span className="pstat-k">{label}</span>
+      <span className="pstat-v">{children}</span>
     </div>
   );
 }
@@ -229,7 +229,13 @@ function OpsStats() {
   return (
     <section className="card settings-section" aria-label="系統指標">
       <h3 className="settings-usage-title">系統指標</h3>
-      <div className="summary-grid">
+      {/* `/code-review` Spec 軸跟進（SW-07／#336）：劇本庫頁首的
+          `UsageStatsStrip`（同一批 SW-03／#334 施工）已經改用 `.pstat`
+          白卡呈現這種「一格標籤＋數字」的統計方塊，這裡是同一個視覺
+          概念（票面明文「ops-metrics stats 卡」），之前漏了同步套用，
+          這裡補上——`.pstat-grid` 是新增的自動換行版本（`UsageStatsStrip`
+          固定 3 欄的 `.lib-stats-strip` 裝不下這裡近 20 格指標）。 */}
+      <div className="pstat-grid">
         <Stat label="Chain Fetch（累計）">
           {sumMetricCount(metrics.chain_fetch_count)}
         </Stat>

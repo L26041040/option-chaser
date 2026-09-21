@@ -361,7 +361,7 @@ describe("OG-11（#322）：系統指標方塊（既有 GET /api/ops/metrics，�
 
     // Chain Fetch 累計＝3+2=5；刷新耗時平均＝400/2=200ms。
     const chainFetchStat =
-      screen.getByText("Chain Fetch（累計）").closest(".stat") as HTMLElement;
+      screen.getByText("Chain Fetch（累計）").closest(".pstat") as HTMLElement;
     expect(within(chainFetchStat).getByText("5")).toBeInTheDocument();
     expect(screen.getByText("200 ms")).toBeInTheDocument();
     expect(screen.getByText("42 列")).toBeInTheDocument();

@@ -654,3 +654,13 @@ describe("自製年月選擇器（#71）", () => {
       expect.objectContaining({ target_month: "2020-01" }));
   });
 });
+
+describe("SW-07（#336，Seed Warm）：文案不含開發者詞彙", () => {
+  it("表單文字不含「vendor」「候選池」「口徑」「限流事故」", () => {
+    const { container } = render(<CreateForm onCreate={vi.fn()} />);
+    const text = container.textContent ?? "";
+    for (const banned of ["候選池", "口徑", "vendor", "Vendor", "限流事故"]) {
+      expect(text).not.toContain(banned);
+    }
+  });
+});

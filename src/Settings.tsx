@@ -456,12 +456,12 @@ function UsageSection({
               「儲存」兩列都要有：模式選擇是各列自己的狀態，得存得起來。 */}
           <div className="settings-actions">
             {ownsCredential && canManageCredential && (
-              <button className="pill" onClick={onTest}
+              <button className="pbtn line sm" onClick={onTest}
                      disabled={testing || !configured}>
                 {testing ? "測試中……" : "測試連線"}
               </button>
             )}
-            <button className="pill" onClick={onSave} disabled={busy}>
+            <button className="pbtn sm" onClick={onSave} disabled={busy}>
               {busy ? "儲存中……" : "儲存"}
             </button>
             {ownsCredential && canManageCredential && configured && provider && (
@@ -490,7 +490,7 @@ function UsageSection({
 
       {!custom && (
         <div className="settings-actions">
-          <button className="pill" onClick={onSave} disabled={busy}>
+          <button className="pbtn sm" onClick={onSave} disabled={busy}>
             {busy ? "儲存中……" : "儲存"}
           </button>
         </div>

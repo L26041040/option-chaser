@@ -845,3 +845,20 @@ describe("OG-11（#322）：桌面版左側 subnav（手機版單欄堆疊零改
     expect(screen.getByText("Super User 管理面板")).toBeInTheDocument();
   });
 });
+
+describe("SW-07（#336，Seed Warm）：一般使用者可見文案不含開發者詞彙", () => {
+  it("Normal User（登入表單／資料來源／刪除我的資料）文字不含" +
+     "「vendor」「候選池」「口徑」「限流事故」——Vendor 相關字樣只在" +
+     "Super Admin 後台出現，Normal User 這裡連 `<SuperUserAdmin>` 都" +
+     "沒有掛載", async () => {
+    mockApi([view()], { role: "normal" });
+    const { container } = render(<Settings />);
+    await ready("Market Data", { expectRole: "normal" });
+
+    expect(screen.queryByText("Super User 管理面板")).not.toBeInTheDocument();
+    const text = container.textContent ?? "";
+    for (const banned of ["候選池", "口徑", "vendor", "Vendor", "限流事故"]) {
+      expect(text).not.toContain(banned);
+    }
+  });
+});
