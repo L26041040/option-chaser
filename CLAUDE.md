@@ -13,35 +13,24 @@
 9. **Do not append detailed ticket history to this file.** Keep this file short. After a ticket, update only the active checkpoint below in 1–2 lines. Detailed evidence belongs in GitHub issues, commits, and code review comments.
 10. `CLAUDE_HISTORY.md` is the archived legacy project journal. **Do not read it by default.** Read it only when a specific historical question cannot be answered from the current issue/commit/docs.
 
-## 2. Current active project — Obsidian Gold UI
+## 2. Current active project — Seed Warm UI
 
-Mother issue: **#316**
+Mother issue: **#330** (SEED-WARM-SPEC-001)
 
-Canonical visual spec:
-`https://claude.ai/artifact/28tqiXF2o9UyQK6vDUXf5q`
+Canonical visual spec (Direction A · Seed Warm evolved):
+`https://claude.ai/artifact/TS2KZEjtYPkzGuYDTFd4HA`
 
 Working branch:
-`ui-redesign/graphite-amber`
+`ui-redesign/seed-warm`
 
 Goal:
-Implement the approved **Obsidian Gold** Binance-inspired visual design without changing product semantics.
+Fully re-implement Option Chaser's visual language as Direction A ("Seed Warm evolved": warm paper background, white cards, single terracotta accent, pill shape language, Plus Jakarta Sans + Noto Sans TC) — a full reproduction, not a token-only reskin of Obsidian Gold. Light mode only (dark mode out of scope, see #330). Product semantics, permissions, and backend behavior unchanged; `#269 / SCALE-18` untouched.
+
+Tickets (sub-issues of #330, expand→contract order): SW-01 #331 (Foundations) → SW-02 #332 (desktop chrome) ∥ SW-04 #333 (mobile library) → SW-03 #334 (desktop library) ∥ SW-06 #335 (mobile detail) ∥ SW-07 #336 (forms/settings/privacy/login/Super Admin) → SW-05 #337 (desktop detail) → SW-08 #338 (charts) → SW-09 #339 (contract + acceptance).
 
 ### Completed
-- **OG-01 #317** — Foundations: Obsidian Gold tokens, Geist + Noto Sans TC, shared primitives, StockLogo contract.
-- **OG-02 #318** — Desktop chrome: 64px top bar, page-level navigation, full-width desktop shell.
-- **OG-09 #319** — Mobile scenario library: 52px mobile top bar, dense rows, persistent bottom navigation.
-- **OG-03 #320** — Desktop Markets-style scenario table + trash-page table skin (code-review follow-up) + required-move sub-text.
-- **OG-06 #321** — Desktop detail page part I: 3-column shell, identity row, family/expiry/ranking table, Heatmap-follows-selection, PriceLadder. Right column + bottom tabs left as empty containers for OG-07.
-- **OG-11 #322** — Settings subnav (desktop) / Super Admin backdoor (ops-metrics stats, owner status filter, type-to-confirm delete modals).
-- **OG-07 #325** — desktop detail part II: right-column candidate panel (Entry/Payoff/Greeks/Report tabs, follows ranking-row selection) + bottom 4 tabs (cost history/pool diagnostics/analysis report/raw data). AnalysisReport renders exactly once (bottom tab, test-locked); right "Report" tab is a teaser + disclaimer + jump link. Desktop-only single-leg cost-history support added (frontend-only relaxation).
-- **OG-04 #323** — scenario-list cost sparkline (the approved additive backend field). New `Storage.cost_sparklines()` batched query (VALUES+LATERAL, memory+Postgres contract tests, structural "no results.view" test, 100-row latency benchmark proving no N+1). `representative_candidate` projection gained a `candidate_key` field (needed to look up narrow history at list-time). Desktop-only `CostSparkline.tsx` hand-rolled SVG, green/red by direction, gap-broken. Mobile untouched.
-- **OG-05 #324** — read-only `GET /api/me/usage-summary` (active scenarios/quota/AUTH-05 exemption/last activity/throttle interval, sourced from the same closure variables the create/refresh gates use, never touches `last_activity_at`) + desktop-only stats strip in `ScenarioList.tsx` (`UsageStatsStrip`, role via `useAuthRole()`). Super-Admin-only extra blocks (`OpsSuperAdminStats`) read the existing `/api/ops/metrics`, which gained one additive `vendor_fuse: {used, budget}` field; conditionally mounted so non-Super-Admin issues zero ops-metrics requests. Mobile untouched.
-- **OG-08 #326** — desktop right column shows `<IvHistory>` (unmodified, self-gating, existing content) instead of `<CandidatePanel>` when the ranking table's *selected* candidate (not the cross-family champion — deliberate, documented, test-locked interpretation for internal consistency with OG-07's "right column follows selection" convention) is single-leg + role ≥ Super User + feature enabled. Gate logic (`useIvHistoryAccess()`/`supportsIvHistory()`/`isSuperUserRole()`) extracted from `IvHistory.tsx` as named exports so both consumers share one source of truth. Old global full-width mount now `!isDesktop`-gated (mobile-only); mobile behavior unchanged. Zero backend/API changes.
-- **OG-10 #327** — mobile detail page reordered to artifact order: `FamilyTabs` (ranking table, unchanged native-`<details>`-per-row-expand mechanism — deliberately NOT switched to desktop's single-selection model, since the AC itself names "candidate-expand zero-request" as an existing, must-survive test) now renders before the main "劇本主圖" `Chart`; two previously mobile-absent blocks added — `PriceLadder` (reused verbatim from OG-06) and a new `EntryPanel` (leg worst-price rows + reused `RiskPayoff`/`PositionSensitivity` from `AnalysisReport.tsx`, both champion-anchored per QA1-06) — right after `Chart`; `IvHistory` moved to after `EntryPanel`. Disclosed scope-limiting call: `CandidatePool`/`AnalysisReport` stay family-scoped inside `FamilyTabs` (pre-existing T11/#229 architecture) rather than being pulled out to join `SpreadHistory`/`RawData` as a literal "3 adjacent rows" — both `/code-review` axes independently confirmed this defensible. Desktop DOM byte-for-byte unchanged (zero diff to `DesktopDetail.tsx`). Zero backend/API changes.
-- **OG-12 #328** — final acceptance sweep, no new features. Added missing responsive geometry e2e (1100px breakpoint transition, 1100–1280px mid-width no-overflow, 375px mobile no-horizontal-scroll) and a forced-light-mode token e2e; the mid-width test caught and fixed one real pre-existing CSS drift (`.toolbar`'s full-bleed negative margin vs. `.detail-page .screen`'s QA-FIX-3 padding override, 8px overflow at 1100–1280px). Verified and documented: zero backend/engine semantic drift since before OG-01 (only OG-04/OG-05's approved additive files touched), contract-sample diff scope, Logo.dev-only static scan, full regression (typecheck/1041 Vitest/build/143 Playwright ×2 stable runs/full real-Postgres backend suite). Produced `docs/obsidian-gold-acceptance-checklist.md` for the Owner, including 3 disclosed (not fixed) artifact-vs-implementation gaps: no manual dark/light toggle, desktop library missing the artifact's fuller stats/Family-filter/search (out of OG-03/04/05's own approved scope), mobile settings page structured differently than its artifact board.
-
-### Obsidian Gold: complete
-All of OG-01 through OG-12 (#317–#328) are done. See `docs/obsidian-gold-acceptance-checklist.md` for the Owner's real-device acceptance pass. No PR opened yet per project rule — waiting for Owner cue after that review.
+- **OG-01–OG-12 (#317–#328)** — Obsidian Gold, fully superseded by Seed Warm. Archived detail: `CLAUDE_HISTORY.md` / closed issues.
+- **SW-01 #331** — Foundations: Seed Warm token set (paper/card/ink/mute/accent/up/down/warn + text-safe `-text` variants, WCAG-checked), light-only (`prefers-color-scheme` branch removed, `color-scheme: light`), Plus Jakarta Sans + Noto Sans TC web fonts, new `.pbtn`/`.pnav`/`.pseg`/`.pchip`/`.ptag`/`.pcard`/`.pstat`/`.pinp`/`.pdot`/`.pbar`/`.pinfo` primitives, `InfoTooltip` shared component, terracotta `BrandMark`. Expand phase: old OG token *names* kept (repointed to Seed Warm values) so untouched screens don't break; structural/layout migration is SW-02 onward.
 
 Do not redesign the approved artifact. Implementation questions should be resolved from the artifact + current issue body unless a true HITL decision is required.
 

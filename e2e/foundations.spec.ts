@@ -1,28 +1,24 @@
 import { expect, test } from "@playwright/test";
 
-/** Obsidian Gold 頁面底色／主文字色的 `rgb(...)` 字面值——深色與淺色各
- *  一組，`--bg`／`--text` 兩個 token（`src/styles.css`）的計算值。兩條
- *  既有測試（字型換血驗證那條、下面 OG-12 新增的淺色驗證）都要拿同一組
- *  數字比對，抽成具名常數只寫一次，不是巧合各自敲對同一串數字
- *  （`/code-review` Standards 軸跟進）。 */
-const OBSIDIAN_GOLD_DARK_BG = "rgb(11, 14, 17)";
-const OBSIDIAN_GOLD_LIGHT_BG = "rgb(245, 245, 245)";
-const OBSIDIAN_GOLD_LIGHT_TEXT = "rgb(30, 35, 41)";
+/** Seed Warm 頁面底色／主文字色的 `rgb(...)` 字面值——`--bg`／
+ *  `--text` 兩個 token（`src/styles.css`）的計算值，#FBF7F0／#231F1B
+ *  換算而來。淺色唯一，不再有深色一組數字。 */
+const SEED_WARM_BG = "rgb(251, 247, 240)";
+const SEED_WARM_TEXT = "rgb(35, 31, 27)";
 
 /**
- * OG-01（#317）AC：「Geist＋Noto Sans TC 以網頁字型載入；用瀏覽器
- * `document.fonts` 可驗證兩者皆 loaded」——jsdom（Vitest）不會真的
- * 下載／套用 web font，這條驗收只能在真瀏覽器裡做，因此獨立成一個
- * e2e 檔案而非塞進元件測試。只需驗證一次、與 viewport 無關（純字型
- * 載入行為，不是版面），比照既有慣例（HIVT-07）不在 Desktop 專案
- * 重複驗證。
+ * SW-01（#331）AC：「document.fonts 載入 Plus Jakarta Sans 與 Noto
+ * Sans TC」——jsdom（Vitest）不會真的下載／套用 web font，這條驗收
+ * 只能在真瀏覽器裡做，因此獨立成一個 e2e 檔案而非塞進元件測試。只需
+ * 驗證一次、與 viewport 無關（純字型載入行為，不是版面），比照既有
+ * 慣例（HIVT-07）不在 Desktop 專案重複驗證。
  *
  * `--proxy-server`：只在這個檔案（`test.use()`，不動全站共用的
  * `playwright.config.ts`）、只在 `HTTPS_PROXY` 這個環境變數存在時
  * 才加上——Chromium 不像 curl／shell 工具會自動讀 `HTTPS_PROXY`，
  * 這個沙箱本身對 Google Fonts CDN 的網路政策就是要走這個代理才通；
  * 真實 CI（GitHub Actions runner）沒有這個環境變數，這裡的條件式
- * 判斷會直接跳過、拿到跟其餘 131 條既有 e2e 完全相同的預設直連行為
+ * 判斷會直接跳過、拿到跟其餘既有 e2e 完全相同的預設直連行為
  * ——不影響任何既有測試。 */
 test.use({
   launchOptions: {
@@ -58,7 +54,7 @@ test.beforeEach(async ({ page }) => {
     route.fulfill({ json: { role: "normal" } }));
 });
 
-test("Geist 與 Noto Sans TC 兩個 web font 真的 loaded（不是退回系統字）", async ({
+test("Plus Jakarta Sans 與 Noto Sans TC 兩個 web font 真的 loaded（不是退回系統字）", async ({
   page,
 }) => {
   await page.goto("/");
@@ -67,25 +63,25 @@ test("Geist 與 Noto Sans TC 兩個 web font 真的 loaded（不是退回系統�
   const statuses = await page.evaluate(async () => {
     // 主動 `load()` 兩個字重（400 拉丁、400 中文）比被動等頁面自然
     // 渲染觸發更確定——不必猜這個瞬間畫面上到底有沒有出現對應字元。
-    const [geist, noto] = await Promise.all([
-      document.fonts.load('400 16px "Geist"'),
+    const [jakarta, noto] = await Promise.all([
+      document.fonts.load('400 16px "Plus Jakarta Sans"'),
       document.fonts.load('400 16px "Noto Sans TC"'),
     ]);
     return {
-      geistLoadedAny: geist.length > 0,
+      jakartaLoadedAny: jakarta.length > 0,
       notoLoadedAny: noto.length > 0,
-      geist: document.fonts.check('400 16px "Geist"'),
+      jakarta: document.fonts.check('400 16px "Plus Jakarta Sans"'),
       noto: document.fonts.check('400 16px "Noto Sans TC"'),
     };
   });
 
-  expect(statuses.geistLoadedAny).toBe(true);
+  expect(statuses.jakartaLoadedAny).toBe(true);
   expect(statuses.notoLoadedAny).toBe(true);
-  expect(statuses.geist).toBe(true);
+  expect(statuses.jakarta).toBe(true);
   expect(statuses.noto).toBe(true);
 });
 
-test("body 實際套用的字型堆疊以 Geist 開頭，不是舊的 IBM Plex Sans", async ({
+test("body 實際套用的字型堆疊以 Plus Jakarta Sans 開頭，不是舊的 Geist", async ({
   page,
 }) => {
   await page.goto("/");
@@ -94,36 +90,32 @@ test("body 實際套用的字型堆疊以 Geist 開頭，不是舊的 IBM Plex S
   const bodyFontFamily = await page.evaluate(
     () => getComputedStyle(document.body).fontFamily,
   );
-  expect(bodyFontFamily).toContain("Geist");
-  expect(bodyFontFamily).not.toContain("IBM Plex");
+  expect(bodyFontFamily).toContain("Plus Jakarta Sans");
+  expect(bodyFontFamily).not.toContain("Geist");
 });
 
-test("body 實際套用的背景色是 Obsidian Gold 的頁面底色（token 換血生效）", async ({
+test("body 實際套用的背景色與文字色是 Seed Warm token（token 換血生效）", async ({
   page,
 }) => {
   await page.goto("/");
   await page.waitForSelector(".toolbar-title, .screen");
 
-  const bg = await page.evaluate(
-    () => getComputedStyle(document.body).backgroundColor,
-  );
-  // 深色優先：#0B0E11。系統若在真無頭瀏覽器強制淺色，這裡就會是
-  // #F5F5F5——兩者都是本輪 Obsidian Gold token，任一個都證明換血
-  // 生效；舊系統的 #101318／#F4F6F9 兩者皆不應出現。
-  expect([OBSIDIAN_GOLD_DARK_BG, OBSIDIAN_GOLD_LIGHT_BG]).toContain(bg);
+  const tokens = await page.evaluate(() => {
+    const cs = getComputedStyle(document.body);
+    return { bg: cs.backgroundColor, color: cs.color };
+  });
+  expect(tokens.bg).toBe(SEED_WARM_BG);
+  expect(tokens.color).toBe(SEED_WARM_TEXT);
 });
 
-/* ---------- OG-12（#328）：淺色模式明確驗證，不靠無頭瀏覽器剛好強制
-   淺色才測得到 ---------- */
+/* ---------- SW-01（#331）：淺色唯一，`prefers-color-scheme: dark`
+   模擬下仍然是同一組暖色 token，證明不是靠無頭瀏覽器剛好強制淺色才
+   測得到 ---------- */
 
-test("OG-12（#328）：`prefers-color-scheme: light` 下真的套用淺色 token" +
-     "（背景／文字色跟深色版不同，不是媒體查詢沒生效），桌面與手機" +
-     "兩種 chrome 皆同一份 token 表", async ({ page }) => {
-  await page.emulateMedia({ colorScheme: "light" });
-  await page.route("**/api/scenarios", (route) => route.fulfill({ json: [] }));
-  await page.route("**/api/auth/status",
-    (route) => route.fulfill({ json: { role: "normal" } }));
-
+test("SW-01（#331）：`prefers-color-scheme: dark` 下仍然套用 Seed Warm 的唯一一份淺色 token", async ({
+  page,
+}) => {
+  await page.emulateMedia({ colorScheme: "dark" });
   await page.goto("/");
   await page.waitForSelector(".screen");
 
@@ -131,9 +123,6 @@ test("OG-12（#328）：`prefers-color-scheme: light` 下真的套用淺色 toke
     const cs = getComputedStyle(document.body);
     return { bg: cs.backgroundColor, color: cs.color };
   });
-  // artifact `.root.light` token：`--bg0: #F5F5F5`（背景）／
-  // `--t1: #1E2329`（主文字）——跟深色版 `#0B0E11`／`#EAECEF` 明顯不同，
-  // 不是同一組數字剛好在兩種 color-scheme 下都適用。
-  expect(tokens.bg).toBe(OBSIDIAN_GOLD_LIGHT_BG);
-  expect(tokens.color).toBe(OBSIDIAN_GOLD_LIGHT_TEXT);
+  expect(tokens.bg).toBe(SEED_WARM_BG);
+  expect(tokens.color).toBe(SEED_WARM_TEXT);
 });

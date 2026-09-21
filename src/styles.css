@@ -1,101 +1,98 @@
 /**
- * "Obsidian Gold" 設計系統（OG-01／#317，2026-09-19）——取代
- * "Graphite & Amber"（UI-IMPL-002／#092＋#094），Binance 現行 Web
- * 產品實證的近黑四階中性底＋單一品牌金色＋髮絲線分隔＋tabular 數字。
- * 沿用同一套換血策略（既有 class 名稱與消費端盡量不動，只換 token
- * 值），這次連 token 的變數名本身都不必再改一次——上一輪已經把
- * `--bg`／`--panel`／`--panel-2`／`--panel-3`／`--line`／`--line-2`／
- * `--text`／`--text-2`／`--text-3`／`--accent`／`--up`／`--down`／
- * `--warn`／`--suspect`／`--crossover` 這組名字定下來，這裡只是把
- * 值換成新設計系統的顏色。
+ * "Seed Warm" 設計系統（SW-01／#331，2026-09-21）——取代「Obsidian
+ * Gold」（#317～#328），Direction A（VISUAL-IDENTITY-001）Owner 拍板
+ * 版本：暖米色頁面底＋白卡＋terracotta 單一品牌色＋pill 形狀語言，
+ * **淺色唯一**（不再有 `prefers-color-scheme` 分支——SEED-WARM-
+ * SPEC-001／#330 Out of Scope 明文：dark mode 另開後續 spec）。
  *
- * 對照 Design canvas artifact（issue #316／#317，
- * `https://claude.ai/artifact/28tqiXF2o9UyQK6vDUXf5q`，Main 板
- * ＝Foundations）：artifact 原始 token 名稱是 `--bg0`～`--bg4`／
- * `--t1`～`--t4`／`--gold`／`--gold-hi`／`--on-gold`／`--gold-dim`／
- * `--up`／`--down`／`--info`／`--warn`，逐一對映到本檔既有變數名
- * （`--bg`＝bg0、`--panel`＝bg1、`--panel-2`＝bg2、`--panel-3`＝bg3、
- * `--accent`＝gold、`--accent-hover`＝gold-hi、`--on-accent`＝on-gold、
- * `--accent-soft`＝gold-dim）。`--panel-4`／`--text-4`（對應 bg4／t4）
- * 是本輪新增——artifact 定義了但既有系統只有 3 階 panel／3 階
- * text，先建好給後續票用，目前尚無消費端。`--info`（新，資訊藍）
- * 取代舊系統獨立的 crossover 藍——既有 Crossover 分界線改用
- * `--crossover: var(--info)`（純色彩重新分配，語意不變，見 artifact
- * 原文「既有的 Crossover 分界線改用資訊色」）。`--up-soft`／
- * `--down-soft`（新）供本票新增的 `.tag.up`／`.tag.down` 之類的
- * 淺色調用途，既有系統沒有這兩個角色。
+ * 換血策略沿用上一輪：既有 token 變數名（`--bg`／`--panel`／
+ * `--text`／`--accent`／`--up`／`--down`／`--warn`…）與所有既有
+ * class 消費端本票都不動，只把值換成 Direction A 的顏色，因此還沒
+ * 被後續 SW-02～SW-08 個別重構的畫面（layout／圓角／pill 化）暫時
+ * 維持舊版面，但顏色與字體立即變成 Seed Warm（expand 階段——見
+ * #331 AC）。新增的 `--paper`／`--card`／`--ink`／`--mute`／`--acc`
+ * 這組是給後續票新寫的 primitives 用的「藝術家詞彙」別名，全部指回
+ * 上面同一份實際色值，不是第二套獨立顏色。
  *
- * `--warn`：artifact 的 `.root.light` 沒有覆寫這個 token（沿用深色
- * 值 `#F0B90B`），照實移植，不臆測一個 artifact 沒給的淺色警示值。
- * `--suspect`（單調性違反的資料品質旗標，FB5-03／#64）不屬於這套
- * 設計系統的詞彙，維持上一輪既有值不動。
+ * 對照 Design canvas artifact（#330，
+ * `https://claude.ai/artifact/TS2KZEjtYPkzGuYDTFd4HA`，Direction A
+ * 板 `.root` 變數）：`--paper`＝artifact `--paper`、`--card`＝
+ * `--card`、`--ink`＝`--ink`、`--ink2`＝`--ink2`、`--mute`＝
+ * `--mute`、`--line`／`--line2` 同名、`--acc`＝`--acc`、`--acc-soft`
+ * ＝`--acc-soft`、`--up`／`--up-soft`／`--down`／`--down-soft` 同名。
+ * artifact 沒有畫 warn／info／suspect（B／C 方向才用到警示與資訊
+ * 色，A 板的「更新中」用暖橘變體）；warn 沿用既有 amber 色相往
+ * terracotta 家族微調、info 選一個與暖色紙面相容、通過 AA 的藍。
  *
- * `--text-3`（淺色）與 `--accent-text`（淺色）兩處延續上一輪已經
- * 確立、且本輪重新量測仍然成立的判斷——WCAG AA normal text（4.5:1）
- * 是既有 `contrast.test.ts` 的硬性門檻，artifact 逐字值在這兩處量
- * 不到：
- *   - `--text-3` 淺色：artifact 原文 `#707A8A` 疊在 `--bg`（#F5F5F5）
- *     上實測僅 3.98:1、疊在 `--panel`（#FFFFFF）上 4.34:1，皆未達
- *     4.5。調成 `#636C7A`（同一色相稍微加深）後兩者分別為 4.87／
- *     5.31，兩階文字仍明顯有落差（三階次序測試同步核對過）。
- *   - `--accent-text`：金色在淺色模式當「文字」用時（`.gold`
- *     utility／連結色一類用途）不能直接沿用背景填色用的
- *     `--accent`（#E3B11E 在白底上只有 1.99:1）——這正是上一輪已經
- *     拆出獨立 `--accent-text` token 的原因，本輪維持同一個既有值
- *     `#9a6206`（白底 5.09:1／`--bg` 底 4.67:1，兩者皆達標），不必
- *     另外發明新值。深色模式的金色本身已足夠亮（`--accent` 疊
- *     `--panel` 達 10.31:1），`--accent-text` 直接等於 `--accent`。
+ * WCAG AA normal text（4.5:1，`contrast.test.ts` 硬性門檻）逐一量過
+ * ——大部分 artifact 原色本身就過（`--ink`／`--ink2`／`--mute` 疊
+ * `--paper`／`--card` 皆 ≥4.5），但 `--acc`／`--up`／`--warn` 這三個
+ * 「填色用」的飽和色直接當『小字文字色』用時量不到 4.5（`--acc`
+ * 4.23、`--up` 4.06、`--warn` 3.41，皆只夠 WCAG 的「大字」3:1 門
+ * 檻——大報酬數字／badge／sparkline 這類大字或非文字用途沒問題）：
+ * 沿用上一輪已經有的「填色 token／文字安全 token」拆分手法（
+ * `--accent` vs `--accent-text`），比照加了 `--up-text`（#1B7C51，
+ * 疊 `--bg` 4.86／疊 `--panel` 5.19）、`--warn-text`（#9B661A，
+ * 4.56／4.87）兩個新角色；`--down`（#C93B4A）本身已達 4.67／4.99，
+ * 不需要另外的文字安全變體。
  *
- * Typography：拉丁字與數字改用 Geist（Vercel 開源字體，Google Fonts
- * 可直接載入），取代上一輪的 IBM Plex Sans；中文維持 Noto Sans TC
- * 不變。`--mono` 比照同一個判斷同步换成 Geist Mono。既有 tabular-nums／
- * text-rendering 規則與中文行高／字距既有調整（Typography v2）不在
- * 本輪異動範圍，維持原樣。 */
+ * Typography：拉丁字與數字改用 Plus Jakarta Sans（Owner 於
+ * VISUAL-IDENTITY-001 拍板；LINE Seed 不在 Google Fonts，artifact
+ * 本身也是用 Plus Jakarta Sans 頂替），取代 Geist；中文維持 Noto
+ * Sans TC 不變。`--mono`（Raw Data／Diagnostics 等既有消費端）拿掉
+ * Geist Mono、改用純系統等寬字堆疊——Seed Warm 沒有品牌等寬字，沒
+ * 必要為了字重一致額外載入一個 artifact 沒定義過的角色。既有
+ * tabular-nums／text-rendering 規則與中文行高／字距既有調整
+ * （Typography v2）不在本輪異動範圍，維持原樣。 */
 
 :root {
-  /* 拉丁/數字/半形標點交給 Geist，漢字/注音/全形標點交給 Noto Sans
-     TC，兩者皆為 web font（見 index.html）。PingFang TC／Microsoft
-     JhengHei 僅作字型尚未載入前那個瞬間的系統字 fallback，正常情況
-     下不會被使用者實際看到。 */
-  --font: "Geist", "Noto Sans TC", "PingFang TC", "Microsoft JhengHei",
-    sans-serif;
-  --font-cjk: "Noto Sans TC", "PingFang TC", "Microsoft JhengHei", sans-serif;
-  --mono: "Geist Mono", "Noto Sans TC", ui-monospace, SFMono-Regular, Menlo,
-    monospace;
+  color-scheme: light;
 
-  /* Obsidian Gold · 深色優先（Foundations 板原文）。淺色覆寫見下方
-     `@media (prefers-color-scheme: light)`。 */
-  --bg: #0b0e11;
-  --panel: #181a20;
-  --panel-2: #1e2329;
-  --panel-3: #2b3139;
-  --panel-4: #363d47;
-  --line: #252b33;
-  --line-2: #2f3640;
-  --text: #eaecef;
-  --text-2: #b7bdc6;
-  --text-3: #848e9c;
-  --text-4: #5e6673;
-  --accent: #f2c12e;
-  --accent-hover: #ffd75a;
-  --accent-text: var(--accent);
-  --on-accent: #181a20;
-  --accent-soft: rgba(242, 193, 46, 0.14);
-  --up: #2ebd85;
-  --down: #f6465d;
-  --up-soft: rgba(46, 189, 133, 0.14);
-  --down-soft: rgba(246, 70, 93, 0.14);
-  --info: #5ac8fa;
-  --warn: #f0b90b;
-  --suspect: #ff7a7a;
+  /* 拉丁/數字/半形標點交給 Plus Jakarta Sans，漢字/注音/全形標點交給
+     Noto Sans TC，兩者皆為 web font（見 index.html）。PingFang TC／
+     Microsoft JhengHei 僅作字型尚未載入前那個瞬間的系統字 fallback，
+     正常情況下不會被使用者實際看到。 */
+  --font: "Plus Jakarta Sans", "Noto Sans TC", "PingFang TC",
+    "Microsoft JhengHei", sans-serif;
+  --font-cjk: "Noto Sans TC", "PingFang TC", "Microsoft JhengHei", sans-serif;
+  --mono: ui-monospace, SFMono-Regular, Menlo, monospace, "Noto Sans TC";
+
+  /* Seed Warm · 淺色唯一（Direction A 原文，見檔頭）。 */
+  --bg: #fbf7f0;
+  --panel: #ffffff;
+  --panel-2: #fdfbf7;
+  --panel-3: #f1e9dc;
+  --panel-4: #e0d6c6;
+  --line: #ebe3d6;
+  --line-2: #e0d6c6;
+  --text: #231f1b;
+  --text-2: #5c554e;
+  --text-3: #766e66;
+  --text-4: #a69c8e;
+  --accent: #c9501f;
+  --accent-hover: #a8420f;
+  --accent-text: #be4c1d;
+  --on-accent: #ffffff;
+  --accent-soft: #fbe9e0;
+  --up: #1e8a5a;
+  --up-text: #1b7c51;
+  --down: #c93b4a;
+  --up-soft: #e3f3ea;
+  --down-soft: #fbe6e8;
+  --info: #3d6e99;
+  --warn: #b7791f;
+  --warn-text: #9b661a;
+  --warn-soft: #fbf0dc;
+  --suspect: #c0392b;
   --crossover: var(--info);
   --tile-bg: #ffffff;
-  --tile-line: #e1e4ea;
-  /* 骨架載入動畫的移動高光——artifact 沒有定義這個角色（純工程需求，
-     非視覺系統詞彙），沿用「取 panel-4 的半透明版本」這個既有做法，
-     只是換算成新色階。 */
-  --fill: rgba(54, 61, 71, 0.5);
-  --card-shadow: none;
+  --tile-line: #ebe3d6;
+  /* 骨架載入動畫的移動高光——沿用「取 panel-3 的半透明版本」既有
+     做法，只是換算成新色階。 */
+  --fill: rgba(241, 233, 220, 0.6);
+  --card-shadow:
+    0 1px 2px rgba(60, 40, 20, 0.04),
+    0 8px 20px rgba(60, 40, 20, 0.06);
 
   /* 既有消費端讀的舊名稱——別名到上面的新 token，換色只在這裡發生。 */
   --bg-elevated: var(--panel);
@@ -112,44 +109,24 @@
   --radius-s: 4px;
   --radius: 8px;
   --radius-l: 12px;
+  --radius-pill: 999px;
   --gap: 16px;
-}
 
-@media (prefers-color-scheme: light) {
-  :root {
-    --bg: #f5f5f5;
-    --panel: #ffffff;
-    --panel-2: #ffffff;
-    --panel-3: #f1f2f4;
-    --panel-4: #e6e8ea;
-    --line: #e9ebee;
-    --line-2: #dcdfe3;
-    --text: #1e2329;
-    --text-2: #474d57;
-    /* 見檔頭說明：artifact 原文 #707A8A 未達 AA，調成 #636C7A。 */
-    --text-3: #636c7a;
-    --text-4: #9aa3ae;
-    --accent: #e3b11e;
-    --accent-hover: #f2c12e;
-    /* 見檔頭說明：金色當文字用時獨立算過的既有值，非 artifact 的
-       `--gold`（那是給按鈕背景這類填色場景用的）。 */
-    --accent-text: #9a6206;
-    --on-accent: #1e2329;
-    --accent-soft: rgba(227, 177, 30, 0.14);
-    --up: #0fa37f;
-    --down: #e0374f;
-    --up-soft: rgba(15, 163, 127, 0.12);
-    --down-soft: rgba(224, 55, 79, 0.12);
-    --info: #1e88e5;
-    /* artifact 的 `.root.light` 沒有覆寫 warn，沿用深色值。 */
-    --warn: #f0b90b;
-    --suspect: #c0392b;
-    --crossover: var(--info);
-    --tile-bg: #ffffff;
-    --tile-line: #e1e4ea;
-    --fill: rgba(230, 232, 234, 0.8);
-    --card-shadow: none;
-  }
+  /* Seed Warm 詞彙別名——新 primitives（SW-01 起）與後續票新寫的
+     screen CSS 用這組名字，全部指回上面同一份色值，不是第二套顏色。 */
+  --paper: var(--bg);
+  --card: var(--panel);
+  --card-hover: var(--panel-2);
+  --soft: var(--panel-3);
+  --ink: var(--text);
+  --ink-2: var(--text-2);
+  --mute: var(--text-3);
+  --acc: var(--accent);
+  --acc-hover: var(--accent-hover);
+  --acc-text: var(--accent-text);
+  --acc-soft: var(--accent-soft);
+  --on-acc: var(--on-accent);
+  --shadow: var(--card-shadow);
 }
 
 * {
@@ -3246,10 +3223,6 @@ body {
     color: var(--label);
   }
 
-  .topbar .brand-mark {
-    color: var(--accent);
-  }
-
   .topbar .nav {
     display: flex;
     gap: 4px;
@@ -3731,10 +3704,6 @@ label.lb {
   white-space: nowrap;
 }
 
-.mnav .brand-mark {
-  color: var(--accent);
-}
-
 .mnav .spacer {
   flex: 1;
 }
@@ -4003,4 +3972,366 @@ label.lb {
   display: flex;
   flex-wrap: wrap;
   gap: 4px 16px;
+}
+
+/* ---------- Seed Warm primitives（SW-01／#331） ----------
+ * 給後續 SW-02～SW-08 各畫面票消費的新形狀語言：pill 導覽／pill
+ * segment／chip／tag／card／stat／info tooltip／品牌徽章。本票只
+ * 建立這些 class，尚無任何畫面實際套用（那是後續逐票的工作）——
+ * 每個 primitive 至少有一個獨立的可渲染/ARIA 測試（見
+ * `SeedWarmPrimitives.test.tsx`），不依賴消費端存在才能驗證。 */
+
+.brand-mark {
+  width: 26px;
+  height: 26px;
+  border-radius: 7px;
+  background: var(--acc);
+  color: var(--on-acc);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+}
+
+/* Pill 按鈕：實心 terracotta（預設）／line 描邊／sm 尺寸／disabled。
+   既有 `.btn`（`.btn.primary`／`.btn.secondary`）本票不動，這是
+   新增的第二套、圓角更大（999px）的按鈕語彙，供 SW-02 起的新 chrome
+   使用；兩套暫時並存到各自消費端全部遷移完（SW-09 contract 階段
+   收斂）。 */
+.pbtn {
+  height: 40px;
+  padding: 0 18px;
+  border-radius: var(--radius-pill);
+  border: 1px solid transparent;
+  background: var(--acc);
+  color: var(--on-acc);
+  font: inherit;
+  font-size: 14px;
+  font-weight: 700;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.pbtn:hover {
+  background: var(--acc-hover);
+}
+
+.pbtn.line {
+  background: var(--card);
+  color: var(--ink);
+  border-color: var(--line-2);
+  font-weight: 600;
+}
+
+.pbtn.line:hover {
+  background: var(--soft);
+}
+
+.pbtn.sm {
+  height: 34px;
+  padding: 0 14px;
+  font-size: 13px;
+}
+
+.pbtn:disabled,
+.pbtn.dis {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.pbtn:disabled:hover,
+.pbtn.dis:hover {
+  background: var(--acc);
+}
+
+.pbtn.line:disabled:hover,
+.pbtn.line.dis:hover {
+  background: var(--card);
+}
+
+/* Pill 導覽（頂欄／設定子導覽）：目前頁用 `aria-current="page"` 標示
+   （由消費端加），視覺上是淺填色。 */
+.pnav {
+  display: inline-flex;
+  gap: 4px;
+}
+
+.pnav a {
+  height: 36px;
+  padding: 0 14px;
+  border-radius: var(--radius-pill);
+  display: inline-flex;
+  align-items: center;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ink-2);
+  text-decoration: none;
+}
+
+.pnav a[aria-current="page"] {
+  background: var(--soft);
+  color: var(--ink);
+}
+
+/* Pill segment（篩選群組）：容器本身是 `role="group"`（消費端加），
+   選中項黑底白字。 */
+.pseg {
+  display: inline-flex;
+  gap: 2px;
+  background: var(--soft);
+  border-radius: var(--radius-pill);
+  padding: 3px;
+}
+
+.pseg a,
+.pseg button {
+  height: 30px;
+  padding: 0 14px;
+  border: 0;
+  border-radius: var(--radius-pill);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink-2);
+  background: transparent;
+  cursor: pointer;
+}
+
+.pseg a[aria-current="true"],
+.pseg button[aria-current="true"],
+.pseg a.on,
+.pseg button.on {
+  background: var(--ink);
+  color: var(--card);
+}
+
+/* Chip（可橫向捲動的次要篩選／到期月份）。 */
+.pchip {
+  height: 32px;
+  padding: 0 12px;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--line-2);
+  background: var(--card);
+  color: var(--ink-2);
+  font-size: 12px;
+  font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.pchip.on {
+  border-color: var(--acc);
+  color: var(--acc-text);
+  background: var(--acc-soft);
+}
+
+/* Tag（狀態徽章：up／down／flat／warn／fam）。 */
+.ptag {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 24px;
+  padding: 0 9px;
+  border-radius: var(--radius-pill);
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.ptag.up {
+  background: var(--up-soft);
+  color: var(--up-text);
+}
+
+.ptag.down {
+  background: var(--down-soft);
+  color: var(--down);
+}
+
+.ptag.flat {
+  background: var(--soft);
+  color: var(--ink-2);
+}
+
+.ptag.warn {
+  background: var(--warn-soft);
+  color: var(--warn-text);
+}
+
+.ptag.fam {
+  background: var(--panel-3);
+  color: var(--ink-2);
+  font-weight: 600;
+}
+
+/* Card：白卡＋暖影，取代舊系統髮絲線密表的視覺基座。 */
+.pcard {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-l);
+  box-shadow: var(--shadow);
+}
+
+/* Stat 卡：三張一組（進行中劇本／最佳劇本報酬／今日刷新）。 */
+.pstat {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-l);
+  box-shadow: var(--shadow);
+  padding: 18px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.pstat .pstat-k {
+  font-size: 13px;
+  color: var(--mute);
+  font-weight: 600;
+}
+
+.pstat .pstat-v {
+  font-size: 30px;
+  font-weight: 800;
+  letter-spacing: -0.03em;
+  line-height: 1.05;
+  font-variant-numeric: tabular-nums;
+}
+
+.pstat .pstat-d {
+  font-size: 12px;
+  color: var(--mute);
+}
+
+/* Input primitive（新表單/搜尋框，圓角 10）。 */
+.pinp {
+  height: 36px;
+  border-radius: 10px;
+  border: 1px solid var(--line-2);
+  background: var(--card);
+  color: var(--ink);
+  padding: 0 12px;
+  font: inherit;
+  font-size: 13px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.pinp input {
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  outline: none;
+  width: 100%;
+  padding: 0;
+}
+
+.pinp:focus-within {
+  border-color: var(--acc);
+  box-shadow: 0 0 0 2px var(--acc-soft);
+}
+
+/* 色點狀態（表格「狀態」欄）。 */
+.pdot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  display: inline-block;
+  flex: none;
+}
+
+.pdot.up {
+  background: var(--up);
+}
+
+.pdot.down {
+  background: var(--down);
+}
+
+.pdot.warn {
+  background: var(--warn);
+}
+
+.pdot.flat {
+  background: var(--mute);
+}
+
+/* Inline 比例條（劇本報酬相對最佳報酬）。容器 `role="progressbar"`
+   ＋`aria-valuenow`（消費端加），`i` 的寬度是視覺呈現。 */
+.pbar {
+  height: 4px;
+  border-radius: 2px;
+  background: var(--panel-3);
+  overflow: hidden;
+}
+
+.pbar i {
+  display: block;
+  height: 100%;
+  background: var(--up);
+  border-radius: 2px;
+}
+
+/* Info tooltip affordance：一顆可 focus 的圖示按鈕＋`aria-describedby`
+   指向的浮動說明卡，鍵盤 focus／hover 皆可觸發（`:focus-within` 涵蓋
+   鍵盤 focus 該按鈕的情境；`role="tooltip"` 的內容本身不接收
+   focus）。消費端用法：
+   `<button className="pinfo-btn" aria-describedby="foo">…</button>
+   <div id="foo" role="tooltip" className="pinfo-panel">…</div>`，兩者
+   包在 `.pinfo` 容器內，用 CSS 相鄰選擇器控制顯示，不需要額外的 JS
+   開關狀態。 */
+.pinfo {
+  position: relative;
+  display: inline-flex;
+}
+
+.pinfo-btn {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  border: 0;
+  background: transparent;
+  color: var(--mute);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  padding: 0;
+}
+
+.pinfo-panel {
+  position: absolute;
+  z-index: 20;
+  top: calc(100% + 8px);
+  left: 0;
+  width: 280px;
+  background: var(--ink);
+  color: var(--paper);
+  border-radius: 10px;
+  padding: 12px 14px;
+  font-size: 12px;
+  line-height: 1.6;
+  box-shadow: var(--shadow);
+  visibility: hidden;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.12s ease;
+}
+
+.pinfo:hover .pinfo-panel,
+.pinfo:focus-within .pinfo-panel {
+  visibility: visible;
+  opacity: 1;
+  pointer-events: auto;
 }
