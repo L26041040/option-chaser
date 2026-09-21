@@ -35,7 +35,7 @@
  *    那一列**（`selectedCandidate`，跟中央 Heatmap 同一個資料來源）；
  *    底部「淨成本走勢」跟 OG-06 之前一樣固定跟著**冠軍候選**
  *    （`champion`，走 `ScenarioDetail.tsx` 既有 QA1-06「主圖／走勢圖
- *    不隨選取改變」原則），底部「候選池診斷」跟著**目前 family／到期日**
+ *    不隨選取改變」原則），底部「候選策略（原候選池診斷）」跟著**目前 family／到期日**
  *    （`diagnosticsResult`，跟 OG-06 之前的相對位置同一份資料），底部
  *    「原始資料」是整份劇本層級的當次快照，不分候選。四個 tab 各自
  *    跟著哪個維度，逐一對齊 artifact 與票面文字，不是全部劃一改成
@@ -114,6 +114,13 @@ import { formatReturn, money, returnBarWidthPct } from "./scenarios";
  * 變成「把中央 Heatmap 換成這一組」，`aria-pressed` 標示目前選取的
  * 是哪一列（單選語意，跟既有 `.chip`／`role="group"` 的 `aria-pressed`
  * 用法一致，不新發明一種可及性模式）。
+ *
+ * SW-05（#337）票面寫的是「aria-selected」，這裡刻意維持既有的
+ * `aria-pressed`——`aria-selected` 只在 `option`／`row`／`tab` 這類
+ * 角色上才是合法屬性，套在純 `<button>` 上是無效 ARIA（`DesktopDetail.
+ * test.tsx` 既有斷言也鎖的是 `aria-pressed`）。這一列本質就是「可切換
+ * 選取狀態的按鈕」，`aria-pressed` 才是正確語意，不是漏做，是不把
+ * 票面字面值套到不合法的地方。
  */
 function DesktopCandidateRow({
   candidate, rank, selected, onSelect,
@@ -199,7 +206,11 @@ function EntryTab({ candidate }: { candidate: Candidate }) {
           )}
         </div>
       )}
-      <h3 className="h3">最差成交口徑（買 Ask · 賣 Bid）</h3>
+      {/* SW-05（#337）文案去術語：「口徑」是內部工程詞彙，語意不變
+          （仍是「以最差成交價假設」這件事），換個看得懂的講法——跟
+          手機版 `ScenarioDetail.tsx::EntryPanel`（SW-06／#335）同一句
+          文案。 */}
+      <h3 className="h3">以最差成交價計算（買 Ask · 賣 Bid）</h3>
       <table className="tbl entry-leg-table">
         <thead>
           <tr>
@@ -389,7 +400,9 @@ type BottomTab = "history" | "pool" | "report" | "raw";
 
 const BOTTOM_TABS: { key: BottomTab; label: string }[] = [
   { key: "history", label: "淨成本走勢" },
-  { key: "pool", label: "候選池診斷" },
+  // SW-05（#337）文案去術語：「候選池診斷」→「候選策略」，跟
+  // `CandidatePool.tsx` 共用元件自己的標題（SW-06／#335 已改）對齊。
+  { key: "pool", label: "候選策略" },
   { key: "report", label: "分析報告" },
   { key: "raw", label: "原始資料" },
 ];
@@ -484,6 +497,17 @@ export default function DesktopDetailBody({
                 onClick={() => selectFamily(family)}
               >
                 <span className="chip-label">{FAMILY_LABELS[family] ?? family}</span>
+                {/* `/code-review` Spec 軸跟進（SW-05／#337）：冠軍所屬
+                    family 加 terracotta 小標——跟手機版 `FamilyTabs.tsx`
+                    （SW-06／#335）同一份既有視覺與同一個 `aria-hidden`
+                    理由（純視覺提示，不進 accessible name，避免撞壞這裡
+                    既有的 `getByRole("button", {name})` 斷言）；桌面這裡
+                    是獨立的 family-tab JSX（不重用 `FamilyTabs.tsx` 的
+                    render，只重用它 export 的純函式），先前這張票只補了
+                    冠軍報酬大字，漏了同一份小標，這裡補齊。 */}
+                {family === championFamily && (
+                  <span className="chip-champion-badge" aria-hidden="true">冠軍</span>
+                )}
               </button>
             ))}
           </div>
@@ -597,7 +621,7 @@ export default function DesktopDetailBody({
     </div>
 
     {/* OG-07（#325）：底部四個 tab——淨成本走勢（跟著冠軍，QA1-06）／
-        候選池診斷（跟著目前 family／到期日，OG-06 之前的相對位置同一份
+        候選策略（原候選池診斷）（跟著目前 family／到期日，OG-06 之前的相對位置同一份
         資料）／分析報告（跟著選取列，唯一一份完整渲染）／原始資料
         （劇本層級當次快照，不分候選）。 */}
     <section className="panel detail-bottom-tabs">

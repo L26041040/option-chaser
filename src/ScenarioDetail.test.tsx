@@ -934,16 +934,22 @@ describe("OG-06（#321）：桌面詳細頁身分列——方向 tag／編輯入
     await screen.findByText(/劇本主圖/);
 
     expect(within(header(container)).getByText("看漲")).toBeInTheDocument();
-    // `/code-review` Spec 軸跟進：身分列票面明文要求的五項——現價／
-    // 目標價（含所需漲跌幅）／目標年月／資料時間／資料來源——都要在
-    // 這一列，不能只留在下方的 `Summary` 卡。
+    // `/code-review` Spec 軸跟進（OG-06）＋ SW-05（#337）收成跟手機版
+    // `MobileHero` 同一組四格：身分列票面明文要求的現價／目標價（含所需
+    // 漲跌幅）／目標年月／資料時間／資料來源都要在這一列，不能只留在
+    // 下方的 `Summary` 卡；SW-05 起額外要求冠軍報酬大字＋family 副標。
     // 假體預設值（`family.fixtures.ts::view()`）：spot 100／target_price
-    // 110／target_move 0／target_month "2026-09"／source "cboe"。
-    expect(within(header(container)).getByText(/現價 \$100\.00/)).toBeInTheDocument();
-    expect(within(header(container)).getByText(/目標 \$110\.00（\+0\.0%）/))
+    // 110／target_move 0／target_month "2026-09"／source "cboe"／
+    // days_to_anchor 653（`scenario_row_sample.json`）。
+    expect(within(header(container)).getByText(/目標 \$110\.00 · 2026-09/))
       .toBeInTheDocument();
-    expect(within(header(container)).getByText("2026-09")).toBeInTheDocument();
-    expect(within(header(container)).getByText("cboe")).toBeInTheDocument();
+    expect(within(header(container)).getByText("90.0%")).toBeInTheDocument();
+    expect(within(header(container)).getByText(/劇本報酬 · Vertical Spread/))
+      .toBeInTheDocument();
+    expect(within(header(container)).getByText(/現價 \$100\.00/)).toBeInTheDocument();
+    expect(within(header(container)).getByText(/還需 \+0\.0%/)).toBeInTheDocument();
+    expect(within(header(container)).getByText("距目標 653 天")).toBeInTheDocument();
+    expect(within(header(container)).getByText(/cboe/)).toBeInTheDocument();
 
     await userEvent.click(within(header(container))
       .getByRole("button", { name: "編輯" }));

@@ -644,28 +644,60 @@ export default function ScenarioDetail({
             </span>
           </div>
 
+          {/* SW-05（#337）：identity row 補上冠軍報酬大字＋family 副標
+              （artifact「右側冠軍報酬 800 大字」），跟手機版 `MobileHero`
+              同一組既有欄位、同一套格式化函式——這裡刻意重複渲染同一個
+              `championCandidate(view)`，不是另外重新選一次冠軍。 */}
+          {detail?.latest_result && (() => {
+            const champion = championCandidate(detail.latest_result);
+            if (!champion) return null;
+            const family = familyOf(champion.strategy);
+            return (
+              <div className="toolbar-row detail-identity-return-row">
+                <span className="cell-sub">
+                  目標 {money(detail.latest_result.params.target_price)}
+                  {" · "}{detail.latest_result.params.target_month}
+                </span>
+                <span className="detail-identity-return-block">
+                  <span className={`detail-identity-return ${
+                    champion.baseline_return >= 0 ? "positive" : "negative"
+                  }`}>
+                    {formatReturn(champion.baseline_return)}
+                  </span>
+                  <span className="caption">
+                    劇本報酬 · {FAMILY_LABELS[family] ?? family}
+                  </span>
+                </span>
+              </div>
+            );
+          })()}
+
           {/* OG-06（#321）`/code-review` Spec 軸跟進：身分列票面明文要求
               現價／目標價（含所需漲跌幅）／目標年月／資料時間／資料來源
               都在同一列——先前一版只加了 Logo／方向 tag／編輯鈕，把這五
               項留在下方 `Summary` 卡裡就當作滿足了，Spec 審查抓到這是
-              未揭露的落地縮水，這裡補齊。跟 `Summary` 顯示同樣的數字是
-              刻意的重複，不是資料來源分裂：兩處都直接讀 `view.meta`／
-              `view.params`，同一份既有欄位、同一套既有格式化函式
-              （`money`／`formatMove`／`formatAnalyzedAt`），只是身分列這裡
-              用更精簡的一行、`Summary` 保留完整統計格線（買賣腿價格等身分
-              列裝不下的細節）。 */}
+              未揭露的落地縮水，這裡補齊。SW-05（#337）起收成跟手機版
+              `MobileHero` 同一組四格（現價／還需／距目標／來源＋時間）
+              ——「目標年月」搬進上面新增的那一行（跟目標價同一句），
+              不再獨立佔一格；跟 `Summary` 顯示同樣的數字是刻意的重複，
+              不是資料來源分裂：兩處都直接讀 `view.meta`／`view.params`／
+              既有 `days_to_anchor` 欄位，同一套既有格式化函式（`money`／
+              `formatMove`／`formatAnalyzedAt`／`formatDaysLeft`）。 */}
           {detail?.latest_result && (
             <div className="toolbar-row detail-identity-meta">
               <span className="cell-sub">
                 現價 {moneyOrDash(detail.latest_result.meta.spot)}
               </span>
               <span className="cell-sub">
-                目標 {money(detail.latest_result.params.target_price)}
-                （{formatMove(detail.latest_result.meta.target_move)}）
+                還需 {formatMove(detail.latest_result.meta.target_move)}
               </span>
-              <span className="cell-sub">{detail.latest_result.params.target_month}</span>
-              <span className="cell-sub">{formatAnalyzedAt(detail.latest_analyzed_at)}</span>
-              <span className="cell-sub">{detail.latest_result.meta.source}</span>
+              <span className="cell-sub">
+                距目標 {formatDaysLeft(detail.days_to_anchor)}
+              </span>
+              <span className="cell-sub">
+                {detail.latest_result.meta.source}
+                {" · "}{formatAnalyzedAt(detail.latest_analyzed_at)}
+              </span>
             </div>
           )}
         </header>

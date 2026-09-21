@@ -2131,11 +2131,19 @@ test("OG-06／OG-07（#321／#325）：桌面詳細頁三欄外殼與身分列�
   const header = page.locator("header.toolbar");
   await expect(header.getByText("看漲")).toBeVisible();
   await expect(header.getByRole("button", { name: "編輯" })).toBeVisible();
-  // `/code-review` Spec 軸跟進：身分列票面明文要求的現價／目標價（含
-  // 所需漲跌幅）／目標年月／資料時間／資料來源都要在這一列，不能只
-  // 留在下方的劇本摘要卡（真實契約樣本：spot 100、target_price 130）。
+  // `/code-review` Spec 軸跟進（OG-06）＋ SW-05（#337）收成跟手機版
+  // `MobileHero` 同一組四格：身分列票面明文要求的現價／目標價（含所需
+  // 漲跌幅）／目標年月／資料時間／資料來源都要在這一列，不能只留在
+  // 下方的劇本摘要卡（真實契約樣本：spot 100、target_price 130、
+  // days_to_anchor 45），SW-05 起額外要求冠軍報酬大字＋family 副標
+  // （契約樣本冠軍：Bull Call Spread／300.0%／family Vertical Spread）。
+  await expect(header.getByText(/目標 \$130\.00 · 2026-09/)).toBeVisible();
+  await expect(header.getByText("300.0%")).toBeVisible();
+  await expect(header.getByText(/劇本報酬 · Vertical Spread/)).toBeVisible();
   await expect(header.getByText(/現價 \$100\.00/)).toBeVisible();
-  await expect(header.getByText(/目標 \$130\.00（\+30\.0%）/)).toBeVisible();
+  await expect(header.getByText(/還需 \+30\.0%/)).toBeVisible();
+  await expect(header.getByText("距目標 45 天")).toBeVisible();
+  await expect(header.getByText(/test/)).toBeVisible();
 });
 
 /* ---------- OG-08（#326）：右欄 Historical IV 面板版位 ---------- */
@@ -2556,6 +2564,32 @@ test("OG-12（#328）：1100–1280px 中間寬度——劇本庫表格與詳細
   const detailOverflowX = await page.evaluate(
     () => document.documentElement.scrollWidth > window.innerWidth);
   expect(detailOverflowX).toBe(false);
+});
+
+test("SW-05（#337）：桌面詳細頁三欄外殼在 1440px 無水平捲動，分頁切換可見",
+   async ({ page }) => {
+  await routeTwoScenarios(page);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto("/#/s/s1");
+
+  const shell = page.locator(".detail-shell");
+  await expect(shell.locator(".detail-col-left")).toBeVisible();
+  await expect(shell.locator(".detail-col-center")).toBeVisible();
+  await expect(shell.locator(".detail-col-right")).toBeVisible();
+  const detailOverflowX = await page.evaluate(
+    () => document.documentElement.scrollWidth > window.innerWidth);
+  expect(detailOverflowX).toBe(false);
+
+  // AC「分頁切換可見」：底部四分頁切換後內容真的看得到（不是切了但
+  // 還藏在 hidden 裡）。
+  const bottomTabs = page.locator(".detail-bottom-tabs");
+  await bottomTabs.getByRole("tab", { name: "候選策略" }).click();
+  await expect(bottomTabs.getByRole("tab", { name: "候選策略" }))
+    .toHaveAttribute("aria-selected", "true");
+  // scope 到分頁本體（不是分頁按鈕列）——`CandidatePool.tsx` 的標題
+  // 跟 tab 按鈕本身字面上同一句「候選策略」，避免撞出「找到多個」。
+  await expect(bottomTabs.locator(".detail-bottom-tab-body")
+    .getByText("候選策略")).toBeVisible();
 });
 
 test("SW-07（#336）：桌面設定頁／隱私頁在 1440px 無水平捲動", async ({ page }) => {

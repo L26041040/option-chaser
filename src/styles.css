@@ -2019,11 +2019,26 @@ body {
   flex-direction: column;
   align-items: flex-start;
   gap: 2px;
-  border-radius: 12px;
+  /* SW-05／SW-06（#337／#335）：family 分頁／到期日 chips 改成 pill
+     形狀（artifact 明文要求，桌面與手機皆是），沿用既有 `--radius-pill`
+     token；`position: relative` 是 `.chip-champion-badge`（SW-06）疊在
+     角落的定位錨點，其他不帶徽章的消費端（`DesktopDetail.tsx`／
+     `ExpiryStructure.tsx`）多這個屬性無害。原本這兩項只在 `@media
+     (max-width: 1099px)` 下生效（SW-06 施工時 SW-05 尚未開工，範圍
+     刻意縮小），SW-05 完工後兩張票的消費端都要 pill，收回成無條件
+     套用——`Settings.tsx` 的 `.chip`（設定子導覽）另有 `.settings-
+     subnav .chip` 更高特異度的既有 override（SW-02），`border-radius`／
+     `background`／顏色都已經被那份 override 重新宣告過、不受這裡影響；
+     `padding` 原本不在那份 override 的宣告清單裡，會被這裡的新值悄悄
+     蓋過去，`/code-review` Standards 軸抓到後已經在 `.settings-subnav
+     .chip` 補上明確釘住的 `padding: 8px 12px`（見該規則），這裡改動
+     因此對 Settings 子導覽逐位元組無影響，不是巧合。 */
+  border-radius: var(--radius-pill);
+  position: relative;
   background: var(--fill);
   color: var(--label);
   font-family: inherit;
-  padding: 8px 12px;
+  padding: 8px 14px;
   min-height: 52px;
   cursor: pointer;
 }
@@ -2589,6 +2604,14 @@ body {
   color: var(--ink-2);
   font-weight: 600;
   font-size: 14px;
+  /* `/code-review` Standards 軸跟進（SW-05／#337）：base `.chip` 的
+     `padding` 這一輪從 8px 12px 改成 8px 14px（SW-05／SW-06 兩張票的
+     消費端要更寬的觸控間距），這個既有的 subnav override 沒有重新
+     宣告 `padding`，等於也跟著多吃了 2px——這裡明確釘住原本的
+     8px 12px，維持 Settings 子導覽逐位元組不變（SW-02／#332 既有
+     裁示：這個 override 是給 Settings 專用的固定樣式，不隨共用
+     primitive 調整）。 */
+  padding: 8px 12px;
 }
 
 .settings-subnav .chip.selected {
@@ -4016,9 +4039,12 @@ label.lb {
   background: var(--fill);
 }
 
+/* SW-05（#337）：選取列改成暖色淺底（artifact 明文），沿用既有
+   `--accent-soft` token（跟 `.chip.selected`／`.pchip.on` 同一種
+   terracotta 淺底慣例），不是通用的 `--fill` 灰底。 */
 .detail-rank-row.selected {
   border-color: var(--accent);
-  background: var(--fill);
+  background: var(--accent-soft);
 }
 
 .detail-rank-return {
@@ -4075,6 +4101,39 @@ label.lb {
   display: flex;
   flex-wrap: wrap;
   gap: 4px 16px;
+}
+
+/* SW-05（#337）：identity row 的冠軍報酬列——目標＋目標月在左，冠軍
+   報酬大字＋family 副標靠右對齊，跟手機版 `.mobile-hero-top` 同一個
+   視覺概念（大字 800、up／down 色）。 */
+.detail-identity-return-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  gap: 12px;
+}
+
+.detail-identity-return-block {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+}
+
+.detail-identity-return {
+  font-size: 22px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+}
+
+.detail-identity-return.positive {
+  color: var(--up-text, var(--up));
+}
+
+.detail-identity-return.negative {
+  color: var(--down);
 }
 
 /* ---------- Seed Warm primitives（SW-01／#331） ----------
@@ -4537,24 +4596,6 @@ label.lb {
   display: flex;
   flex-direction: column;
   gap: 2px;
-}
-
-/* `/code-review` Spec 軸跟進：`.chip` 是共用 class（`FamilyTabs.tsx`／
-   `ExpiryStructure.tsx`／`DesktopDetail.tsx`／`Settings.tsx` 都在用，
-   後三個都不是本票範圍），直接改共用規則的形狀／`position` 會連桌面
-   詳細頁與 Settings 的 chip 都一起變，等於 SW-06 搶跑了 SW-05／SW-07
-   還沒做的事——跟 SW-02（#332）自己記錄過的既有裁示「共用 `.chip` 不動、
-   只加範圍限定的 override」矛盾。這裡改成跟 `useIsDesktop()` 同一個
-   斷點（`(max-width: 1099px)`）+ `.detail-page` 雙重限定：只有手機版
-   `ScenarioDetail`（`DesktopDetailBody` 只在 ≥1100px 掛載，這個寬度下
-   結構上根本不存在）吃得到 pill 形狀與冠軍小標的定位錨點，桌面詳細頁
-   與 Settings 的 `.chip` 逐位元組不變。 */
-@media (max-width: 1099px) {
-  .detail-page .chip {
-    border-radius: var(--radius-pill);
-    padding: 8px 14px;
-    position: relative;
-  }
 }
 
 .chip-champion-badge {
