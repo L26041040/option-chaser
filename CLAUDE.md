@@ -9,19 +9,24 @@
 5. Do not expose, request, log, copy, or test real plaintext passwords/secrets.
 6. Do not take or paste screenshots unless the Owner explicitly asks. Browser verification is allowed when required by a ticket, but keep screenshot-heavy work to explicit visual-acceptance stages.
 7. Session reports: Traditional Chinese with English technical terms kept in English. Put substantive report content in one complete code block. Number reports as `［回報#NNN］`.
-8. Current report sequence: **098 used; next report is 099**.
+8. Current report sequence: **099 used; next report is 100**.
 9. **Do not append detailed ticket history to this file.** Keep this file short. After a ticket, update only the active checkpoint below in 1–2 lines. Detailed evidence belongs in GitHub issues, commits, and code review comments.
 10. `CLAUDE_HISTORY.md` is the archived legacy project journal. **Do not read it by default.** Read it only when a specific historical question cannot be answered from the current issue/commit/docs.
 
 ## 2. Current active project — Seed Warm UI
 
-**Status: complete.** All nine tickets (SW-01 #331 through SW-09 #339,
-mother issue **#330** SEED-WARM-SPEC-001) implemented, tested,
-code-reviewed, committed and pushed to `ui-redesign/seed-warm`. Full
-detail (per-ticket decisions, disclosed artifact-vs-implementation gaps,
-regression numbers): `docs/seed-warm-acceptance-checklist.md` and closed
-issues #331-#339. Per rule 3, **no PR opened** — waiting on Owner
-real-device acceptance per the checklist before cue to open one.
+**Status: complete, including the SW-10 real-device acceptance fix
+round.** SW-01–SW-09 (#331–#339, mother issue **#330**
+SEED-WARM-SPEC-001) plus SW-10 (#340, Owner real-device acceptance
+fixes covering homepage copy/stats, throttle removal, card/color/
+heatmap/candidate-list rework, and a login `.strip()` fix) all
+implemented, tested, code-reviewed, committed (`ab5e27c`) and pushed to
+`ui-redesign/seed-warm`. Full detail: closed issues #331-#340. Per
+rule 3, **no PR opened** — waiting on Owner real-device acceptance
+before cue to open one. One open item from SW-10 #340 needs Owner
+action outside this repo: confirm `SUPERUSER_PASSWORD`/
+`SUPERADMIN_PASSWORD` are scoped to the Preview environment in Vercel's
+project settings (see `docs/deploy-vercel.md`), not just Production.
 
 No new project queued as of this checkpoint.
 
