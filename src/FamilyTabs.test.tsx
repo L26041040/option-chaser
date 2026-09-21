@@ -20,7 +20,8 @@ describe("單一 family——不出現多餘 UI（AC 明文）", () => {
 
     expect(screen.queryByRole("group", { name: "策略家族" })).not.toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "到期日" })).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "候選池" })).toBeInTheDocument();
+    // SW-06（#335）文案去術語：「候選池」→「候選策略」，語意不變
+    expect(screen.getByRole("heading", { name: "候選策略" })).toBeInTheDocument();
   });
 });
 
@@ -103,7 +104,7 @@ describe("多 family——分頁切換", () => {
     expect(screen.getByText("這個策略家族目前還沒有任何已啟用的具體結構。"))
       .toBeInTheDocument();
     // 不可選分頁不渲染排名內容
-    expect(screen.queryByRole("heading", { name: "候選池" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "候選策略" })).not.toBeInTheDocument();
   });
 });
 

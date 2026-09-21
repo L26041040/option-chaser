@@ -154,7 +154,7 @@ async function routeLibrary(page: import("@playwright/test").Page, row: unknown,
     route.fulfill({ json: SPREAD_HISTORY }));
 }
 
-test("清單 → 詳細頁：摘要、基準候選、進場成本、主圖、候選池（MVP V3／#103 資訊階層重整）",
+test("清單 → 詳細頁：摘要、基準候選、進場成本、主圖、候選策略（MVP V3／#103 資訊階層重整）",
    async ({ page }) => {
   const row = libraryRow();
   await routeLibrary(page, row);
@@ -163,15 +163,19 @@ test("清單 → 詳細頁：摘要、基準候選、進場成本、主圖、候
   await page.getByRole("link", { name: /XYZ/ }).click();
 
   // 摘要：現價與目標（含所需漲幅）、資料來源——最後這行就是雲端
-  // 對 Cboe 可達性的驗證方式
-  await expect(page.getByText(`$${view.meta.spot.toFixed(2)}`)).toBeVisible();
+  // 對 Cboe 可達性的驗證方式。SW-06（#335）起「劇本頭條」Hero 白卡
+  // 也會顯示同一個現價，這裡刻意縮小到摘要卡本身，避免跟 Hero 卡撞出
+  // 「找到多個」的假失敗（跟 OG-06 桌面身分列同一份數字重複呈現的
+  // 既有前例一樣）。
+  const summary = page.getByRole("region", { name: "劇本摘要" });
+  await expect(summary.getByText(`$${view.meta.spot.toFixed(2)}`)).toBeVisible();
   // 決策 M（#109）之後，「+30.0%」這個字串在頁面上不再唯一——每一張
   // Heatmap（劇本主圖＋到期日結構裡各候選收合著的那些）的「目標」列
   // 右側標註都會是同一個數字（同一組 spot／target）。摘要那一句用
   // `.row-note` scope 回去，不是隨便挑一個「+30.0%」。
   await expect(page.locator(".row-note").filter({ hasText: "+30.0%" }))
     .toBeVisible();
-  await expect(page.getByText(view.meta.source, { exact: true })).toBeVisible();
+  await expect(summary.getByText(view.meta.source, { exact: true })).toBeVisible();
 
   // QA 修正：基準候選與進場成本不再是兩張獨立卡片，跟劇本摘要合成
   // 同一張高密度卡。數字一項沒少，只是換了位置。
@@ -179,7 +183,6 @@ test("清單 → 詳細頁：摘要、基準候選、進場成本、主圖、候
     .expiry_top10!.find((g) => g.expiry === view.baseline_expiry)!.candidate_keys[0];
   const top = candOf(view, topKey);
   const [buy, sell] = top.legs;
-  const summary = page.getByRole("region", { name: "劇本摘要" });
   await expect(summary).toContainText(`買 ${buy.strike} / 賣 ${sell.strike}`);
   await expect(summary).toContainText("第 1 名");
   await expect(summary).toContainText(`${(top.baseline_return * 100).toFixed(1)}%`);
@@ -207,13 +210,13 @@ test("清單 → 詳細頁：摘要、基準候選、進場成本、主圖、候
   await expect(page.getByText(/即勝過此 Spread/)).toHaveCount(0);
 
   // 候選池診斷跟著搬進詳細頁（FB4-01／#60）
-  await expect(page.getByText("候選池")).toBeVisible();
+  await expect(page.getByText("候選策略")).toBeVisible();
   await expect(page.getByRole("status")).toContainText("參考價值有限");
 
   // FB5-04（#65，spec #61）：C 類品質標示——契約樣本本身帶著一筆「買賣
   // 價差偏大」，整條流程（後端契約 → API → 詳細頁）走一次就看得到。
   // 鎖定候選池那張卡以求穩定，不依賴全頁只有一個元素帶這段文字。
-  const candidatePool = page.locator(".card").filter({ hasText: "候選池" }).first();
+  const candidatePool = page.locator(".card").filter({ hasText: "候選策略" }).first();
   await expect(candidatePool.getByText("品質標示（不影響入選）")).toBeVisible();
   await expect(candidatePool.getByText("買賣價差偏大")).toBeVisible();
 
@@ -2877,7 +2880,7 @@ test("OG-10（#327）：手機詳細頁整頁順序依 artifact「Mobile 劇本�
   const tabsY = (await page.getByRole("group", { name: "策略家族" })
     .boundingBox())!.y;
   const chartY = (await page.getByText("劇本主圖").boundingBox())!.y;
-  const entryPanelY = (await page.getByText("進場 · 最差成交口徑")
+  const entryPanelY = (await page.getByText("進場 · 以最差成交價計算")
     .boundingBox())!.y;
   const historyRowY = (await page.getByText("Spread 淨成本走勢")
     .boundingBox())!.y;
@@ -2892,7 +2895,7 @@ test("OG-10（#327）：手機詳細頁整頁順序依 artifact「Mobile 劇本�
   // 內的既有候選池切換）。
   const champKey = view.results[0].expiry_top10![0].candidate_keys[0];
   const sellStrike = candOf(view, champKey).legs.find((l) => l.side === "sell")!.strike;
-  const entryPanel = page.getByRole("heading", { name: "進場 · 最差成交口徑" })
+  const entryPanel = page.getByRole("heading", { name: "進場 · 以最差成交價計算" })
     .locator("xpath=..");
   await expect(entryPanel.getByText(new RegExp(`賣.*${sellStrike}`))).toBeVisible();
 
@@ -3274,7 +3277,7 @@ test("T17（#234）：建立持平劇本（目標價＝現價）全程不被拒�
   await tabs.getByRole("button", { name: "Vertical Spread" }).click();
   await expect(page.getByText(/持平/)).toBeVisible();
   // 兩個不可選分頁都不渲染排名內容（facts-only，既有裁示）。
-  await expect(page.getByRole("heading", { name: "候選池" })).toHaveCount(0);
+  await expect(page.getByRole("heading", { name: "候選策略" })).toHaveCount(0);
 });
 
 /* ---------- T18（#235，Initial V2）：最終回歸與驗收 ---------- */

@@ -4404,3 +4404,134 @@ label.lb {
   opacity: 1;
   pointer-events: auto;
 }
+
+/* ---------- SW-06（#335，Seed Warm）：手機劇本詳細頁 ---------- */
+
+/* 60px 手機詳細頁 header——跟 `.mnav`（`MobileTopBar.tsx`，劇本庫頁）
+   同一套「60px、sticky、單列 flex、safe-area 頂部內距」既有視覺語言，
+   不是另外發明一個高度數字。只在 `!isDesktop` 分支渲染，桌面版
+   `.toolbar` 完全不受影響（沒有共用任何 class）。 */
+.detail-bar {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  height: 60px;
+  padding-top: env(safe-area-inset-top, 0px);
+  margin: calc(var(--gap) * -1) calc(var(--gap) * -1) var(--gap);
+  padding-left: var(--gap);
+  padding-right: var(--gap);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: var(--card);
+  border-bottom: 1px solid var(--line);
+}
+
+.detail-bar-title {
+  font-weight: 700;
+  font-size: 17px;
+  color: var(--ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.detail-bar-spacer {
+  flex: 1;
+}
+
+/* Hero 白卡（artifact「手機劇本詳細」板頂部）：logo＋代號＋方向 pill
+   在左，冠軍報酬大字＋family 副標在右；下方「目標 X · 目標月」與
+   四格關鍵指標。 */
+.mobile-hero-top {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.mobile-hero-id {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.mobile-hero-symbol {
+  font-size: 20px;
+  font-weight: 800;
+  letter-spacing: -0.01em;
+  color: var(--ink);
+}
+
+.mobile-hero-return-block {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+  text-align: right;
+}
+
+.mobile-hero-return {
+  font-size: 22px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+}
+
+.mobile-hero-return.positive {
+  color: var(--up-text, var(--up));
+}
+
+.mobile-hero-return.negative {
+  color: var(--down);
+}
+
+.mobile-hero-target {
+  margin: 6px 0 0;
+}
+
+.mobile-hero-stats {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 10px 16px;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+}
+
+.mobile-hero-source {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+/* `/code-review` Spec 軸跟進：`.chip` 是共用 class（`FamilyTabs.tsx`／
+   `ExpiryStructure.tsx`／`DesktopDetail.tsx`／`Settings.tsx` 都在用，
+   後三個都不是本票範圍），直接改共用規則的形狀／`position` 會連桌面
+   詳細頁與 Settings 的 chip 都一起變，等於 SW-06 搶跑了 SW-05／SW-07
+   還沒做的事——跟 SW-02（#332）自己記錄過的既有裁示「共用 `.chip` 不動、
+   只加範圍限定的 override」矛盾。這裡改成跟 `useIsDesktop()` 同一個
+   斷點（`(max-width: 1099px)`）+ `.detail-page` 雙重限定：只有手機版
+   `ScenarioDetail`（`DesktopDetailBody` 只在 ≥1100px 掛載，這個寬度下
+   結構上根本不存在）吃得到 pill 形狀與冠軍小標的定位錨點，桌面詳細頁
+   與 Settings 的 `.chip` 逐位元組不變。 */
+@media (max-width: 1099px) {
+  .detail-page .chip {
+    border-radius: var(--radius-pill);
+    padding: 8px 14px;
+    position: relative;
+  }
+}
+
+.chip-champion-badge {
+  position: absolute;
+  top: 4px;
+  right: 6px;
+  font-size: 9px;
+  font-weight: 700;
+  color: var(--on-accent);
+  background: var(--accent);
+  border-radius: var(--radius-pill);
+  padding: 1px 5px;
+  line-height: 1.4;
+}

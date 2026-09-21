@@ -53,12 +53,12 @@ import {
   type StrategyResult,
 } from "./api";
 import { candidateTitle, directionLabel, formatMove, strategyLabel } from "./detail";
-import { championCandidate, FAMILY_LABELS, resultForStrategy } from "./family";
+import { championCandidate, FAMILY_LABELS, familyOf, resultForStrategy } from "./family";
 import { isThinPool, legPrices, validPairsForExpiry } from "./expiry";
 import { heatmapProps } from "./heatmap";
 import { getScenarioCached } from "./fetchCache";
 import {
-  directionTagClass, failureLabel, formatAnalyzedAt, formatReturn,
+  directionTagClass, failureLabel, formatAnalyzedAt, formatDaysLeft, formatReturn,
   isRetryDisabledByRateLimit, money, moneyOrDash, rateLimitCountdownText,
   rateLimitHeadline, type DirectionTag,
 } from "./scenarios";
@@ -78,6 +78,19 @@ import { useIsDesktop } from "./useIsDesktop";
  */
 function narrowDirectionTag(direction: string | undefined): DirectionTag {
   return direction === "bullish" || direction === "bearish" ? direction : "flat";
+}
+
+/**
+ * `/code-review` Standards 軸跟進：桌面身分列（OG-06／#321）與 SW-06
+ * 新增的手機 `MobileHero` 各自組出同一顆方向 pill，`className`／子節點
+ * 完全同一句拼法——抽成這個小元件讓兩處只有一份渲染邏輯，不是兩份
+ * 各自維護、以後改一邊漏了另一邊。 */
+function DirectionTag({ direction }: { direction: string | undefined }) {
+  return (
+    <span className={`tag ${directionTagClass(narrowDirectionTag(direction))}`}>
+      {directionLabel(direction)}
+    </span>
+  );
 }
 
 /**
@@ -165,7 +178,10 @@ function EntryPanel({ candidate }: { candidate: Candidate | null }) {
   if (!candidate) return null;
   return (
     <section className="card">
-      <h2 className="section-title">進場 · 最差成交口徑</h2>
+      {/* SW-06（#335）文案去術語：「口徑」是內部工程詞彙，一般使用者
+          不需要懂——語意不變（仍是「以最差成交價假設」這件事），只是
+          换成看得懂的講法。 */}
+      <h2 className="section-title">進場 · 以最差成交價計算</h2>
       {candidate.legs.map((leg, i) => (
         <Row key={i} label={`${legSide(leg)} ${legQuantityPrefix(leg)}${leg.strike}`}>
           {money(leg.side === "buy" ? leg.ask : leg.bid)}
@@ -174,6 +190,78 @@ function EntryPanel({ candidate }: { candidate: Candidate | null }) {
       <Row label="淨成本 / 股">{money(candidate.natural_cost)}</Row>
       <RiskPayoff candidate={candidate} />
       <PositionSensitivity candidate={candidate} />
+    </section>
+  );
+}
+
+/**
+ * SW-06（#335）手機詳細頁 Hero 白卡：artifact「手機劇本詳細」板頂部
+ * ——logo＋代號＋方向 pill＋「目標 X · 目標月」，右側冠軍報酬大字＋
+ * 「劇本報酬 · family」副標，下方四格關鍵指標（現價／還需／距目標／
+ * 來源＋時間）。
+ *
+ * 刻意獨立於下面既有的 `ScenarioContext`／`Summary` 兩張卡，不是把
+ * 它們拆掉重組：那兩張卡承載的完整資訊（買腿 Ask／賣腿 Bid／淨成本／
+ * 最高／最低……）與既有測試斷言都逐位元不變（跟 OG-06 桌面身分列同一
+ * 個既有前例——`view.meta`／`candidate.baseline_return` 在畫面上出現
+ * 兩次是刻意的重複呈現，不是資料來源分裂：兩處都讀同一份既有欄位）。
+ * 只在手機分支渲染（呼叫端已經在 `!isDesktop` 底下），桌面身分列維持
+ * OG-06 原樣不受影響。
+ *
+ * 「距目標」讀 `days_to_anchor`（既有欄位，`ScenarioSummary` 契約，
+ * `ScenarioList`／`CompactScenarioList` 已經在用同一個
+ * `formatDaysLeft()`），不是這裡重新算日期——後端已經用「目標月第三個
+ * 星期五」這個既有錨點算好，前端不重算第二份。
+ *
+ * 揭露的落差：artifact 這裡還畫了「代號旁的公司名」，但站上目前唯一的
+ * 標的識別資料源（Logo.dev ticker endpoint，`StockLogo.tsx`）只回傳
+ * 圖片、沒有公司全名這個欄位，後端 `ScenarioSummary` 契約也沒有這個
+ * 欄位——沒有這一格就等於編造文字，違反 Logo 政策「找不到就不顯示，
+ * 絕不替代」延伸到文字的精神，這裡刻意只留代號本身。
+ */
+function MobileHero({ view, candidate, analyzedAt, daysToAnchor }: {
+  view: AnalysisView;
+  candidate: Candidate | null;
+  analyzedAt: string | null;
+  daysToAnchor: number;
+}) {
+  if (!candidate) return null;
+  const family = familyOf(candidate.strategy);
+  return (
+    <section className="card mobile-hero" aria-label="劇本頭條">
+      <div className="mobile-hero-top">
+        <span className="mobile-hero-id">
+          <StockLogo symbol={view.meta.symbol} size="l" />
+          <span className="mobile-hero-symbol">{view.meta.symbol}</span>
+          <DirectionTag direction={view.direction} />
+        </span>
+        <span className="mobile-hero-return-block">
+          <span
+            className={`mobile-hero-return ${
+              candidate.baseline_return >= 0 ? "positive" : "negative"
+            }`}
+          >
+            {formatReturn(candidate.baseline_return)}
+          </span>
+          <span className="caption">
+            劇本報酬 · {FAMILY_LABELS[family] ?? family}
+          </span>
+        </span>
+      </div>
+      <p className="cell-sub mobile-hero-target">
+        目標 {money(view.params.target_price)} · {view.params.target_month}
+      </p>
+      <div className="mobile-hero-stats">
+        <Stat label="現價">{money(view.meta.spot)}</Stat>
+        <Stat label="還需">{formatMove(view.meta.target_move)}</Stat>
+        <Stat label="距目標">{formatDaysLeft(daysToAnchor)}</Stat>
+        <Stat label="來源">
+          <span className="mobile-hero-source">
+            <span>{view.meta.source}</span>
+            <span className="row-note">{formatAnalyzedAt(analyzedAt)}</span>
+          </span>
+        </Stat>
+      </div>
     </section>
   );
 }
@@ -320,11 +408,12 @@ function Summary({ view, candidate, result, analyzedAt }: {
  * 全域固定於冠軍所屬的那個 family——這樣使用者切到別的分頁才看得到
  * *那個* family 自己的候選，不是冠軍的候選重複顯示三次。
  */
-function DetailBody({ scenarioId, view, analyzedAt, strategies }: {
+function DetailBody({ scenarioId, view, analyzedAt, strategies, daysToAnchor }: {
   scenarioId: string;
   view: AnalysisView;
   analyzedAt: string | null;
   strategies: readonly string[];
+  daysToAnchor: number;
 }) {
   const isDesktop = useIsDesktop();
   const candidate = championCandidate(view);
@@ -356,6 +445,12 @@ function DetailBody({ scenarioId, view, analyzedAt, strategies }: {
                             scenarioId={scenarioId} analyzedAt={analyzedAt} />
       ) : (
         <>
+          {/* SW-06（#335）：Hero 白卡放在手機分支最前面，OG-10 既有
+              「FamilyTabs → Chart → PriceLadder → EntryPanel → IvHistory
+              → 後續連結」這段順序完全不動，Hero 只是加在它們之前，不是
+              插進中間或取代任何一段。 */}
+          <MobileHero view={view} candidate={candidate} analyzedAt={analyzedAt}
+                      daysToAnchor={daysToAnchor} />
           {/* OG-10（#327）：手機整頁順序依 artifact「Mobile 劇本詳細」
               板重排——Family tabs／到期日 chip／排名表（`FamilyTabs`
               內部，含既有「就地展開候選看 Heatmap」native `<details>`
@@ -507,77 +602,97 @@ export default function ScenarioDetail({
 
   return (
     <div className="screen">
-      <header className="toolbar">
-        <div className="toolbar-row">
+      {isDesktop ? (
+        <header className="toolbar">
+          <div className="toolbar-row">
+            <a className="nav-back" href="#/">
+              ‹ 劇本庫
+            </a>
+          </div>
+          <div className="toolbar-row">
+            <span className="id">
+              {/* UI-IMPL-002（#092，Identity 板）：真實品牌 Logo，找不到
+                  就整個消失、只留標題文字——`StockLogo` 自己處理三種狀態。
+                  桌面 40px（`size="l"`），身分列 Logo 尺寸 AC 明文要求
+                  （OG-06／#321）與這裡既有的 `size="l"` 本來就是同一個
+                  數字，不必另外調整。 */}
+              {detail?.symbol && <StockLogo symbol={detail.symbol} size="l" />}
+              <h1 className="toolbar-title">{detail?.symbol ?? "劇本"}</h1>
+              {/* OG-06（#321）身分列方向 tag。`detail.latest_result` 尚未
+                  載入（載入中／尚未分析）時沒有 `direction` 可讀，不畫。 */}
+              {detail?.latest_result && (
+                <DirectionTag direction={detail.latest_result.direction} />
+              )}
+            </span>
+            <span className="toolbar-actions">
+              {/* OG-06（#321）：身分列的「編輯」入口——桌面走 OG-02 既有
+                  抽屜（`onEdit` 即 `App.tsx::startEdit`）。手機版編輯入口
+                  在劇本庫卡片上，這裡（桌面分支）不重複一份。 */}
+              {onEdit && (
+                <button className="pill secondary" onClick={onEdit}>
+                  編輯
+                </button>
+              )}
+              {/* #70：與劇本庫功能列同一個視覺語言（標題列右側膠囊鈕），
+                  走既有的單一劇本刷新端點——不是第四種獨立管道。已過期
+                  （#68）沿用清單卡片同一句文案並停用——後端會把它當無害
+                  no-op，按了等於沒按，不該讓它看起來還有用。 */}
+              <button className="pill" onClick={onRefresh}
+                     disabled={busy || detail?.expired}>
+                {detail?.expired ? "已過期，不再刷新" : busy ? "刷新中……" : "重新整理"}
+              </button>
+            </span>
+          </div>
+
+          {/* OG-06（#321）`/code-review` Spec 軸跟進：身分列票面明文要求
+              現價／目標價（含所需漲跌幅）／目標年月／資料時間／資料來源
+              都在同一列——先前一版只加了 Logo／方向 tag／編輯鈕，把這五
+              項留在下方 `Summary` 卡裡就當作滿足了，Spec 審查抓到這是
+              未揭露的落地縮水，這裡補齊。跟 `Summary` 顯示同樣的數字是
+              刻意的重複，不是資料來源分裂：兩處都直接讀 `view.meta`／
+              `view.params`，同一份既有欄位、同一套既有格式化函式
+              （`money`／`formatMove`／`formatAnalyzedAt`），只是身分列這裡
+              用更精簡的一行、`Summary` 保留完整統計格線（買賣腿價格等身分
+              列裝不下的細節）。 */}
+          {detail?.latest_result && (
+            <div className="toolbar-row detail-identity-meta">
+              <span className="cell-sub">
+                現價 {moneyOrDash(detail.latest_result.meta.spot)}
+              </span>
+              <span className="cell-sub">
+                目標 {money(detail.latest_result.params.target_price)}
+                （{formatMove(detail.latest_result.meta.target_move)}）
+              </span>
+              <span className="cell-sub">{detail.latest_result.params.target_month}</span>
+              <span className="cell-sub">{formatAnalyzedAt(detail.latest_analyzed_at)}</span>
+              <span className="cell-sub">{detail.latest_result.meta.source}</span>
+            </div>
+          )}
+        </header>
+      ) : (
+        /**
+         * SW-06（#335）：60px 手機詳細頁 header——返回、代號、刷新，
+         * 沿用 `.mnav`（`MobileTopBar.tsx`）同一套「60px、sticky、單列
+         * flex」既有視覺語言，不是重新發明一個新高度。
+         *
+         * 揭露的落差：artifact 這一列還有「公司名」與「更多」——公司名
+         * 沒有資料源（見 `MobileHero` 檔頭同一句說明）；「更多」在
+         * artifact 上沒有指定要放哪些動作，站上目前也沒有任何一個
+         * 「還沒地方放」的手機詳細頁級動作（編輯入口本來就在劇本庫卡片
+         * 上、垃圾桶動作也不在這頁），無中生有一顆空選單只會是誤導使用
+         * 者的裝飾按鈕，這裡刻意不畫。 */
+        <header className="detail-bar">
           <a className="nav-back" href="#/">
             ‹ 劇本庫
           </a>
-        </div>
-        <div className="toolbar-row">
-          <span className="id">
-            {/* UI-IMPL-002（#092，Identity 板）：真實品牌 Logo，找不到
-                就整個消失、只留標題文字——`StockLogo` 自己處理三種狀態。
-                桌面 40px（`size="l"`），身分列 Logo 尺寸 AC 明文要求
-                （OG-06／#321）與這裡既有的 `size="l"` 本來就是同一個
-                數字，不必另外調整。 */}
-            {detail?.symbol && <StockLogo symbol={detail.symbol} size="l" />}
-            <h1 className="toolbar-title">{detail?.symbol ?? "劇本"}</h1>
-            {/* OG-06（#321）身分列方向 tag，桌面限定。`detail.latest_
-                result` 尚未載入（載入中／尚未分析）時沒有 `direction`
-                可讀，不畫。 */}
-            {isDesktop && detail?.latest_result && (
-              <span className={`tag ${directionTagClass(
-                narrowDirectionTag(detail.latest_result.direction))}`}>
-                {directionLabel(detail.latest_result.direction)}
-              </span>
-            )}
-          </span>
-          <span className="toolbar-actions">
-            {/* OG-06（#321）：身分列的「編輯」入口，桌面限定——桌面走
-                OG-02 既有抽屜（`onEdit` 即 `App.tsx::startEdit`）。手機
-                版編輯入口在劇本庫卡片上，這裡不重複一份。 */}
-            {isDesktop && onEdit && (
-              <button className="pill secondary" onClick={onEdit}>
-                編輯
-              </button>
-            )}
-            {/* #70：與劇本庫功能列同一個視覺語言（標題列右側膠囊鈕），
-                走既有的單一劇本刷新端點——不是第四種獨立管道。已過期
-                （#68）沿用清單卡片同一句文案並停用——後端會把它當無害
-                no-op，按了等於沒按，不該讓它看起來還有用。 */}
-            <button className="pill" onClick={onRefresh}
-                   disabled={busy || detail?.expired}>
-              {detail?.expired ? "已過期，不再刷新" : busy ? "刷新中……" : "重新整理"}
-            </button>
-          </span>
-        </div>
-
-        {/* OG-06（#321）`/code-review` Spec 軸跟進：身分列票面明文要求
-            現價／目標價（含所需漲跌幅）／目標年月／資料時間／資料來源
-            都在同一列——先前一版只加了 Logo／方向 tag／編輯鈕，把這五
-            項留在下方 `Summary` 卡裡就當作滿足了，Spec 審查抓到這是
-            未揭露的落地縮水，這裡補齊。跟 `Summary` 顯示同樣的數字是
-            刻意的重複，不是資料來源分裂：兩處都直接讀 `view.meta`／
-            `view.params`，同一份既有欄位、同一套既有格式化函式
-            （`money`／`formatMove`／`formatAnalyzedAt`），只是身分列這裡
-            用更精簡的一行、`Summary` 保留完整統計格線（買賣腿價格等身分
-            列裝不下的細節）。桌面限定——手機版沒有這一行，資訊仍只在
-            `Summary`（既有位置，逐位元組不變）。 */}
-        {isDesktop && detail?.latest_result && (
-          <div className="toolbar-row detail-identity-meta">
-            <span className="cell-sub">
-              現價 {moneyOrDash(detail.latest_result.meta.spot)}
-            </span>
-            <span className="cell-sub">
-              目標 {money(detail.latest_result.params.target_price)}
-              （{formatMove(detail.latest_result.meta.target_move)}）
-            </span>
-            <span className="cell-sub">{detail.latest_result.params.target_month}</span>
-            <span className="cell-sub">{formatAnalyzedAt(detail.latest_analyzed_at)}</span>
-            <span className="cell-sub">{detail.latest_result.meta.source}</span>
-          </div>
-        )}
-      </header>
+          <span className="detail-bar-title">{detail?.symbol ?? "劇本"}</span>
+          <span className="detail-bar-spacer" />
+          <button className="pbtn line sm" onClick={onRefresh}
+                 disabled={busy || detail?.expired}>
+            {detail?.expired ? "已過期，不再刷新" : busy ? "刷新中……" : "重新整理"}
+          </button>
+        </header>
+      )}
 
       {/* T08／#196 P1：正在被刷新（Refresh Run 或單一劇本刷新）——桌面
           右側常駐面板最容易讓使用者誤以為畫面已經更新完，所以放在最
@@ -617,7 +732,8 @@ export default function ScenarioDetail({
       {detail && detail.latest_result && (
         <DetailBody scenarioId={id} view={detail.latest_result}
                     analyzedAt={detail.latest_analyzed_at}
-                    strategies={detail.strategies} />
+                    strategies={detail.strategies}
+                    daysToAnchor={detail.days_to_anchor} />
       )}
     </div>
   );

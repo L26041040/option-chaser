@@ -130,9 +130,13 @@ describe("詳細頁摘要（QA 修正：劇本摘要／基準候選／進場成�
   it("顯示現價、目標價與所需漲幅、目標年月、策略", async () => {
     mockDetail(detail());
     render(<ScenarioDetail id="s1" />);
+    await screen.findByText(/劇本主圖/);
 
-    expect(await screen.findByText(`$${view.meta.spot.toFixed(2)}`)).toBeInTheDocument();
+    // SW-06（#335）起 Hero 白卡也會顯示現價，這裡刻意縮小到摘要卡本身
+    // ——跟 OG-06 桌面身分列同一份數字重複呈現的既有前例一樣，查詢要
+    // 縮小到「這一張卡」才不會跟 Hero 卡撞出「找到多個」的假失敗。
     const summary = summarySection();
+    expect(summary.getByText(`$${view.meta.spot.toFixed(2)}`)).toBeInTheDocument();
     expect(summary.getByText(`$${view.params.target_price.toFixed(2)}`)).toBeInTheDocument();
     // 所需漲幅寫在目標價旁的括號裡，所以用子字串比對
     expect(summary.getByText(`+${(view.meta.target_move * 100).toFixed(1)}%`,
@@ -280,7 +284,7 @@ describe("OG-10（#327）：手機版三價位階梯／進場面板（artifact�
     await screen.findByText(/劇本主圖/);
 
     const entryPanel = within(
-      screen.getByRole("heading", { name: "進場 · 最差成交口徑" }).closest("section")!);
+      screen.getByRole("heading", { name: "進場 · 以最差成交價計算" }).closest("section")!);
     const champion = baselineTopCandidate(view)!;
     for (const leg of champion.legs) {
       expect(entryPanel.getByText(new RegExp(`^(買|賣).*${leg.strike}$`)))
@@ -296,7 +300,7 @@ describe("OG-10（#327）：手機版三價位階梯／進場面板（artifact�
     await screen.findByText(/劇本主圖/);
 
     const entryPanel = within(
-      screen.getByRole("heading", { name: "進場 · 最差成交口徑" }).closest("section")!);
+      screen.getByRole("heading", { name: "進場 · 以最差成交價計算" }).closest("section")!);
     expect(entryPanel.getByText("Max Loss")).toBeInTheDocument();
     expect(entryPanel.getByText("Net Delta")).toBeInTheDocument();
   });
@@ -311,7 +315,7 @@ describe("OG-10（#327）：手機版三價位階梯／進場面板（artifact�
     render(<ScenarioDetail id="s1" />);
     await screen.findByText("無合格候選");
 
-    expect(screen.queryByText("進場 · 最差成交口徑")).not.toBeInTheDocument();
+    expect(screen.queryByText("進場 · 以最差成交價計算")).not.toBeInTheDocument();
   });
 });
 
@@ -354,17 +358,20 @@ describe("區塊順序（spec #102 決策 A／#103）", () => {
     // 變動，不是既有測試被弱化，舊順序（主圖在最前）本身就是這次要
     // 修正的地方。
     expect(titles).toEqual([
-      "到期日", "候選池", "📄 分析報告",
-      "劇本主圖", "進場 · 最差成交口徑",
+      // SW-06（#335）文案去術語：「候選池」→「候選策略」、「最差成交
+      // 口徑」→「以最差成交價計算」，語意不變，僅順序本身鎖定的既有
+      // 斷言跟著新文案更新。
+      "到期日", "候選策略", "📄 分析報告",
+      "劇本主圖", "進場 · 以最差成交價計算",
       "Spread 淨成本走勢", "原始資料（當次快照）",
     ]);
 
     // IV History 插槽本身不輸出任何 DOM 節點——不是一張空卡片，直接就
-    // 不存在於 DOM 裡。卡片總數固定為上面 7 張加上摘要卡與劇本設定卡
-    // （OPTION-CHASER-CLOSEOUT-001，兩張都無 section-title，改用
+    // 不存在於 DOM 裡。卡片總數固定為上面 7 張加上摘要卡、劇本設定卡
+    // 與 SW-06（#335）新增的 Hero 白卡（三張都無 section-title，改用
     // aria-label），插槽若渲染出任何東西（哪怕只是空卡），這裡就會
     // 多一張。
-    expect(container.querySelectorAll(".card")).toHaveLength(9);
+    expect(container.querySelectorAll(".card")).toHaveLength(10);
     expect(screen.queryByText(/Historical IV|IV Position/)).not.toBeInTheDocument();
   });
 
@@ -964,14 +971,84 @@ describe("OG-06（#321）：桌面詳細頁身分列——方向 tag／編輯入
   });
 
   it("手機版（預設 matchMedia）：身分列不出現方向 tag 與編輯入口——這兩項" +
-     "是桌面限定的加法，不是手機版本來就有的東西（手機版零改動）", async () => {
+     "是桌面限定的加法，不是手機版本來就有的東西（手機版零改動）。" +
+     "SW-06（#335）起手機版連 `.toolbar` 本身都不存在——換成獨立的" +
+     "60px `.detail-bar`，兩者結構上互斥，不是同一個 header 藏了不同" +
+     "內容", async () => {
     const onEdit = vi.fn();
     mockDetail(desktopMultiFamilyDetail());
     const { container } = render(<ScenarioDetail id="s1" onEdit={onEdit} />);
     await screen.findByText(/劇本主圖/);
 
-    expect(within(header(container)).queryByText("看漲")).not.toBeInTheDocument();
-    expect(within(header(container))
-      .queryByRole("button", { name: "編輯" })).not.toBeInTheDocument();
+    expect(container.querySelector(".toolbar")).not.toBeInTheDocument();
+    const mobileBar = within(container.querySelector(".detail-bar") as HTMLElement);
+    expect(mobileBar.queryByText("看漲")).not.toBeInTheDocument();
+    expect(mobileBar.queryByRole("button", { name: "編輯" })).not.toBeInTheDocument();
+  });
+});
+
+describe("SW-06（#335，Seed Warm）：手機詳細頁 60px header／Hero 白卡", () => {
+  it("60px header：回劇本庫、代號、刷新——桌面 `.toolbar` 完全不掛載", async () => {
+    mockDetail(detail());
+    const { container } = render(<ScenarioDetail id="s1" />);
+    await screen.findByText(/劇本主圖/);
+
+    const bar = container.querySelector(".detail-bar") as HTMLElement;
+    expect(bar).toBeInTheDocument();
+    expect(container.querySelector(".toolbar")).not.toBeInTheDocument();
+    expect(within(bar).getByRole("link", { name: /劇本庫/ }))
+      .toHaveAttribute("href", "#/");
+    expect(within(bar).getByText("XYZ")).toBeInTheDocument();
+    expect(within(bar).getByRole("button", { name: "重新整理" })).toBeInTheDocument();
+  });
+
+  it("Hero 白卡：logo＋代號＋方向 pill、冠軍報酬與 family 副標、" +
+     "目標價＋目標月、四格關鍵指標（現價／還需／距目標／來源＋時間）", async () => {
+    mockDetail(detail());
+    render(<ScenarioDetail id="s1" />);
+    await screen.findByText(/劇本主圖/);
+
+    const hero = within(screen.getByRole("region", { name: "劇本頭條" }));
+    const top = baselineTopCandidate(view)!;
+    expect(hero.getByText(view.meta.symbol)).toBeInTheDocument();
+    expect(hero.getByText("看漲")).toBeInTheDocument();
+    expect(hero.getByText(`${(top.baseline_return * 100).toFixed(1)}%`))
+      .toBeInTheDocument();
+    expect(hero.getByText(/劇本報酬 · Vertical Spread/)).toBeInTheDocument();
+    expect(hero.getByText(new RegExp(
+      `目標 \\$${view.params.target_price.toFixed(2)} · ${view.params.target_month}`,
+    ))).toBeInTheDocument();
+    expect(hero.getByText("現價")).toBeInTheDocument();
+    expect(hero.getByText("還需")).toBeInTheDocument();
+    expect(hero.getByText("距目標")).toBeInTheDocument();
+    // 契約樣本 `scenario_row_sample.json`：days_to_anchor = 653
+    expect(hero.getByText("653 天")).toBeInTheDocument();
+    expect(hero.getByText("來源")).toBeInTheDocument();
+    expect(hero.getByText(view.meta.source)).toBeInTheDocument();
+  });
+
+  it("沒有合格候選（冠軍為 null）時，Hero 白卡不輸出任何節點", async () => {
+    const empty: AnalysisView = {
+      ...view,
+      results: view.results.map((r) => ({ ...r, status: "empty" as const,
+                                          expiry_top10: [], expiry_counts: [] })),
+    };
+    mockDetail(detail({ latest_result: empty }));
+    render(<ScenarioDetail id="s1" />);
+    await screen.findByText("無合格候選");
+
+    expect(screen.queryByRole("region", { name: "劇本頭條" })).not.toBeInTheDocument();
+  });
+
+  it("文案去術語：手機詳細頁全頁文字不含「口徑」「候選池」「pool」" +
+     "「vendor」字樣（AC 明文；全站掃描留給 SW-09 擴大範圍）", async () => {
+    mockDetail(detail({ strategies: ["single-leg", "vertical-spread", "butterfly"] }));
+    const { container } = render(<ScenarioDetail id="s1" />);
+    await screen.findByText(/劇本主圖/);
+
+    const text = container.textContent ?? "";
+    for (const banned of ["口徑", "候選池", "pool", "vendor", "Pool", "Vendor"]) {
+      expect(text).not.toContain(banned);
+    }
   });
 });

@@ -2419,7 +2419,7 @@ test("T17（#234）：桌面版建立持平劇本（目標價＝現價）全程�
   await expect(detail.getByText(/持平/)).toBeVisible();
   await tabs.getByRole("button", { name: "Vertical Spread" }).click();
   await expect(detail.getByText(/持平/)).toBeVisible();
-  await expect(detail.getByRole("heading", { name: "候選池" })).toHaveCount(0);
+  await expect(detail.getByRole("heading", { name: "候選策略" })).toHaveCount(0);
 });
 
 /* ---------- T18（#235，Initial V2）：最終回歸與驗收，桌面 viewport ---------- */

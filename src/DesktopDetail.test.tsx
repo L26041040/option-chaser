@@ -428,7 +428,11 @@ describe("DesktopDetailBody：底部四個 tab（OG-07／#325）", () => {
     expect(panels.getByRole("tab", { name: "淨成本走勢" })).toHaveAttribute(
       "aria-selected", "true");
     // 候選池診斷這個時候已經在 DOM 裡（常駐掛載），只是 hidden。
-    const poolHeading = panels.getByText("候選池");
+    // SW-06（#335）文案去術語：`CandidatePool.tsx` 共用元件自己的標題
+    // 已改成「候選策略」（跟手機版同一份元件、同一個標題）——底部 tab
+    // 自己的名稱「候選池診斷」是 `DesktopDetail.tsx` 另一份獨立字串，
+    // 留給 SW-05（#337）改，這裡只跟著元件內部標題的既有事實更新。
+    const poolHeading = panels.getByText("候選策略");
     expect(poolHeading.closest("[hidden]")).not.toBeNull();
   });
 
@@ -445,7 +449,7 @@ describe("DesktopDetailBody：底部四個 tab（OG-07／#325）", () => {
     const bottom = document.querySelector(".detail-bottom-tabs") as HTMLElement;
     const panels = within(bottom);
     await userEvent.click(panels.getByRole("tab", { name: "候選池診斷" }));
-    expect(panels.getByText("候選池").closest("[hidden]")).toBeNull();
+    expect(panels.getByText("候選策略").closest("[hidden]")).toBeNull();
 
     // AC：「分析報告在同一頁只完整渲染一份」——不論目前在哪個底部
     // tab，DOM 裡永遠只有一個 `📄 分析報告`（右欄「報告」tab 只放
