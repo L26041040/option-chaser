@@ -227,10 +227,11 @@ body {
 
   /* 桌面版的釘選功能列／導覽 header（`.toolbar`，`ScenarioDetail`／
      `Toolbar`／`TrashView` 皆用）原本手機版 `top:0` 貼齊視窗頂端；
-     桌面下方常駐頂欄（`.topbar`）已經佔掉最上面 64px，改成貼在頂欄
-     正下方，否則兩層 sticky 會疊在同一個 y:0 互相蓋住。 */
+     桌面下方常駐頂欄（`.topbar`）已經佔掉最上面 68px（SW-02／#332
+     起，原 OG 64px），改成貼在頂欄正下方，否則兩層 sticky 會疊在同一個
+     y:0 互相蓋住。 */
   .toolbar {
-    top: 64px;
+    top: 68px;
   }
 
   /* ---------- 桌面詳細頁（前身 `.detail-pane`，OG-02 起改用專屬
@@ -323,8 +324,9 @@ body {
      `hidden` 切換可見度的既有機制（#75 教訓：面板一律掛著，不整個
      卸載重掛）完全沿用。OG-02 起改用 `position: fixed`（已退場的
      `.workspace` 不再存在，不能當定位基準）——蓋住頂欄以下整個視窗
-     （`top: 64px`，扣掉常駐頂欄的高度），不蓋住 `TopBar` 本身，使用者
-     開著抽屜仍看得到品牌與導覽，隨時可以切走。
+     （`top: 68px`，扣掉常駐頂欄的高度，SW-02／#332 起隨頂欄增高
+     同步調整），不蓋住 `TopBar` 本身，使用者開著抽屜仍看得到品牌與
+     導覽，隨時可以切走。
 
      `[hidden]` 的 UA 樣式表 `display:none` 規則與這裡的 `display:
      flex` 同層特異度（class 與屬性選擇器皆是 0,1,0）——author 樣式表
@@ -332,7 +334,7 @@ body {
      宣告刻意只掛在 `:not([hidden])`，讓原生 `hidden` 屬性繼續有效。 */
   .create-drawer-scrim {
     position: fixed;
-    top: 64px;
+    top: 68px;
     right: 0;
     bottom: 0;
     left: 0;
@@ -346,7 +348,7 @@ body {
 
   .create-drawer {
     position: fixed;
-    top: 64px;
+    top: 68px;
     right: 0;
     bottom: 0;
     width: 440px;
@@ -2484,7 +2486,47 @@ body {
 
 /* OG-02（#318）：`.sidebar-settings`（桌面版 sidebar 最下方的設定
    入口）隨已退場的側欄一併移除——設定入口現在是常駐 `TopBar` 導覽裡
-   的「設定」連結（見 `.topbar .nav a`），不再需要這個孤兒規則。 */
+   的「設定」連結（SW-02／#332 起是 `.topbar .pnav a`），不再需要這個
+   孤兒規則。 */
+
+/* SW-02（#332）：桌面設定子導覽（`Settings.tsx` 的 `.settings-subnav`，
+   OG-11／#322 起存在但从未拿到過專屬版面 CSS，只靠共用的 `.chip`
+   ——這裡補上排列本身，並把 `.chip`／`.chip.selected` 在這個情境下
+   收成 pill 分頁，不動 `.chip` 的共用定義（到期日／family 分頁等其他
+   消費端在各自的票裡再換）。 */
+.settings-shell {
+  display: flex;
+  gap: 24px;
+  align-items: flex-start;
+}
+
+.settings-subnav {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex: 0 0 200px;
+}
+
+.settings-panel {
+  flex: 1;
+  min-width: 0;
+}
+
+.settings-subnav .chip {
+  flex-direction: row;
+  align-items: center;
+  min-height: 40px;
+  border-radius: var(--radius-pill);
+  background: transparent;
+  color: var(--ink-2);
+  font-weight: 600;
+  font-size: 14px;
+}
+
+.settings-subnav .chip.selected {
+  background: var(--soft);
+  color: var(--ink);
+}
 
 .settings-head {
   display: flex;
@@ -3192,18 +3234,20 @@ body {
 }
 
 /* ---------- 桌面版頂欄：品牌／導覽／角色徽章／建立劇本（UI-IMPL-002／
-   #092；OG-02／#318 起常駐＋加建立劇本按鈕） ---------- */
+   #092；OG-02／#318 起常駐＋加建立劇本按鈕；SW-02／#332 起 Seed Warm
+   68px 暖米色頂列＋pill 導覽） ---------- */
 
 @media (min-width: 1100px) {
   /* `position: sticky` 讓頂欄在整頁（body）自然捲動時仍貼在視窗頂端
      ——OG-02（#318）起頁面本身不再各自內捲，這是桌面版唯一常駐的
-     chrome。64px（AC 明訂）比原本 56px 高一級，讓 primary 按鈕
-     （`.btn`，36px）與角色徽章（28px）都留有呼吸空間。 */
+     chrome。68px（SW-02／#332 AC）比 OG 的 64px 再高一點，靠色差
+     （`--panel` 卡白疊在 `--bg` 暖米色頁面上）分層，不需要額外畫
+     底線。 */
   .topbar {
     position: sticky;
     top: 0;
     z-index: 30;
-    height: 64px;
+    height: 68px;
     display: flex;
     align-items: center;
     gap: 8px;
@@ -3216,34 +3260,11 @@ body {
     display: flex;
     align-items: center;
     gap: 10px;
-    font-weight: 700;
-    font-size: 15px;
-    letter-spacing: 0.01em;
+    font-weight: 800;
+    font-size: 16px;
+    letter-spacing: -0.01em;
     margin-right: 16px;
     color: var(--label);
-  }
-
-  .topbar .nav {
-    display: flex;
-    gap: 4px;
-    height: 100%;
-  }
-
-  .topbar .nav a {
-    display: flex;
-    align-items: center;
-    height: 56px;
-    padding: 0 12px;
-    font-size: 14px;
-    font-weight: 500;
-    color: var(--label-secondary);
-    border-bottom: 2px solid transparent;
-    text-decoration: none;
-  }
-
-  .topbar .nav a.on {
-    color: var(--label);
-    border-bottom-color: var(--accent);
   }
 
   .topbar .spacer {
@@ -3254,7 +3275,7 @@ body {
 /* 手機沒有 `.topbar`（`TopBar.tsx` 只在桌面寬度掛載），這裡不需要
    額外一組 `max-width` 隱藏規則。 */
 
-/* ---------- 角色徽章（UI-IMPL-002／#092） ---------- */
+/* ---------- 角色徽章（UI-IMPL-002／#092；SW-02／#332 起 pill 化） ---------- */
 
 .role {
   display: inline-flex;
@@ -3262,10 +3283,10 @@ body {
   gap: 6px;
   height: 28px;
   padding: 0 10px;
-  border-radius: var(--radius-s);
+  border-radius: var(--radius-pill);
   border: 1px solid var(--line-2);
   font-size: 12px;
-  font-weight: 500;
+  font-weight: 600;
   color: var(--label-secondary);
   white-space: nowrap;
 }
@@ -3282,11 +3303,12 @@ body {
 }
 
 .role-superadmin {
-  border-color: var(--accent-soft);
-  color: var(--label);
+  border-color: var(--acc);
+  color: var(--acc-text);
+  background: var(--acc-soft);
 }
 .role-superadmin .dot {
-  background: var(--accent);
+  background: var(--acc);
 }
 
 /* ---------- 手機版底部導覽（UI-IMPL-002／#092，Mobile 板 `.mtabs`） ---------- */

@@ -1069,10 +1069,11 @@ test("OG-02（#318）：垃圾桶是獨立全寬頁面，不再是側欄切換�
   // （側欄已退場）；劇本庫清單同時不再顯示。
   await expect(page.getByRole("heading", { name: "垃圾桶" })).toBeVisible();
   await expect(page.getByRole("link", { name: /XYZ/ })).not.toBeVisible();
-  // 頂欄導覽「垃圾桶」項目本身有金色底線指示當前頁。
+  // 頂欄導覽「垃圾桶」項目本身用 aria-current="page" 指示當前頁
+  // （SW-02／#332 起：pill 導覽淺填色靠這個屬性驅動，不是 class）。
   const nav = topbarNav(page);
   await expect(nav.getByRole("link", { name: "垃圾桶", exact: true }))
-    .toHaveClass("on");
+    .toHaveAttribute("aria-current", "page");
 
   await page.getByText("‹ 劇本庫").click();
   await expect(page.getByRole("link", { name: /XYZ/ })).toBeVisible();
@@ -2511,6 +2512,22 @@ test("OG-12（#328）：1100px 斷點兩側切換乾淨——寬度未達 1100px
   await page.setViewportSize({ width: 1099, height: 800 });
   await expect(page.locator(".mtabs")).toBeVisible();
   await expect(page.locator(".topbar")).toHaveCount(0);
+});
+
+test("SW-02（#332）：桌面頂欄在 1440px 是 68px 高、暖米色頂列，且整頁不" +
+     "橫向捲動", async ({ page }) => {
+  await routeTwoScenarios(page);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto("/");
+  await page.waitForSelector(".topbar");
+
+  const box = await page.locator(".topbar").boundingBox();
+  expect(box?.height).toBe(68);
+
+  const hasHorizontalScroll = await page.evaluate(
+    () => document.documentElement.scrollWidth > document.documentElement.clientWidth,
+  );
+  expect(hasHorizontalScroll).toBe(false);
 });
 
 test("OG-12（#328）：1100–1280px 中間寬度——劇本庫表格與詳細頁三欄外殼" +

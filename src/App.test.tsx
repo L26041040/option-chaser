@@ -1735,7 +1735,8 @@ describe("桌面版：主要操作入口收攏到工作區上方（#75，MVP-v2�
   });
 
   it("常駐頂欄導覽：劇本庫／垃圾桶／設定三個入口都在，當前頁有明確" +
-     "指示（OG-02／#318）", async () => {
+     "指示（OG-02／#318；SW-02／#332 起用 aria-current=page，不是 " +
+     "class）", async () => {
     stubDesktopViewport();
     mockRoutes({
       "/api/scenarios": { json: async () => [row] },
@@ -1749,9 +1750,9 @@ describe("桌面版：主要操作入口收攏到工作區上方（#75，MVP-v2�
     const names = within(nav).getAllByRole("link").map((a) => a.textContent);
     expect(names).toEqual(["劇本庫", "垃圾桶", "設定"]);
     expect(within(nav).getByRole("link", { name: "劇本庫" }))
-      .toHaveClass("on");
+      .toHaveAttribute("aria-current", "page");
     expect(within(nav).getByRole("link", { name: "垃圾桶" }))
-      .not.toHaveClass("on");
+      .not.toHaveAttribute("aria-current");
   });
 
   it("劇本清單下方已無任何主要操作——建立入口在工作區最上方", async () => {

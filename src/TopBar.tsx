@@ -12,6 +12,12 @@
  * 按鈕（見 `Toolbar.tsx`），只剩重新整理（擺位由 OG-03 決定）。角色
  * 徽章讀的是既有 `getAuthStatusCached()`（`RoleLogin.tsx` 同一份快取），
  * 這裡純粹是多一個顯示消費端，不改變角色判斷或登入流程本身。
+ *
+ * SW-02（#332，Seed Warm）：68px 暖米色頂列、pill 導覽（`.pnav`，
+ * SW-01／#331 primitive）＋`aria-current="page"` 標示目前頁、CTA 改
+ * `.pbtn`（terracotta pill）。導覽與建立劇本的*行為*（連結目標、
+ * `onOpenCreate`/`aria-expanded`/`aria-controls` 語意）完全不動，只換
+ * 形狀語言。
  */
 import BrandMark from "./BrandMark";
 import { settingsHash, trashHash } from "./route";
@@ -52,14 +58,23 @@ export default function TopBar({
         <BrandMark />
         Option Chaser
       </span>
-      <nav className="nav">
-        <a className={active === "library" ? "on" : undefined} href="#">
+      <nav className="pnav" aria-label="主導覽">
+        <a
+          aria-current={active === "library" ? "page" : undefined}
+          href="#"
+        >
           劇本庫
         </a>
-        <a className={active === "trash" ? "on" : undefined} href={trashHash()}>
+        <a
+          aria-current={active === "trash" ? "page" : undefined}
+          href={trashHash()}
+        >
           垃圾桶
         </a>
-        <a className={active === "settings" ? "on" : undefined} href={settingsHash()}>
+        <a
+          aria-current={active === "settings" ? "page" : undefined}
+          href={settingsHash()}
+        >
           設定
         </a>
       </nav>
@@ -75,7 +90,7 @@ export default function TopBar({
       )}
       <button
         type="button"
-        className="btn"
+        className="pbtn"
         onClick={onOpenCreate}
         aria-expanded={createOpen}
         aria-controls={createPanelId}
