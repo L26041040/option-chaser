@@ -52,4 +52,20 @@ describe("BottomNav：三格、當前 tab 指示（OG-09／#319；SW-04／#333 �
     render(<BottomNav active="library" />);
     expect(screen.getByRole("navigation", { name: "主要導覽" })).toBeInTheDocument();
   });
+
+  it("SW-11（#341，Owner 真機驗收）：`.mtabs` 改用 fixed 定位（root cause 見" +
+     "檔頭說明）後，元件多渲染一個 `.mtabs-spacer` 補回原本 sticky 版本" +
+     "佔用的版面空間——兩者是手足關係，spacer 排在 nav 前面", () => {
+    const { container } = render(<BottomNav active="library" />);
+    const spacer = container.querySelector(".mtabs-spacer");
+    const nav = screen.getByRole("navigation", { name: "主要導覽" });
+
+    expect(spacer).toBeInTheDocument();
+    expect(spacer).toHaveAttribute("aria-hidden", "true");
+    // Spacer 在文件順序上排在 nav 之前——CSS `height` 才補得回原本
+    // sticky 版本留在文件流裡的那份空間，順序顛倒就沒有意義。
+    expect(
+      spacer!.compareDocumentPosition(nav) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
 });

@@ -1329,7 +1329,12 @@ test("Compact row 逐項齊全：spec §5 必要欄位一個都沒少（MVP-v2�
 
     // 標的／目標價／目標年月／燈號
     await expect(card).toContainText("XYZ");
-    await expect(card.locator(".signal-dot")).toBeAttached();
+    // SW-11（#341，Owner 真機驗收）：`libraryRow()` 預設是正常成功狀態
+    // （非過期、無刷新失敗）——這個狀態不再畫 `.signal-dot`，見
+    // `CompactScenarioList.tsx` 與其單元測試「只在真正需要注意的狀態
+    // 顯示」；「燈號」這個欄位本身沒有消失，只是正常態不需要額外 icon，
+    // 黃／紅燈仍會畫（`CompactScenarioList.test.tsx` 已覆蓋）。
+    await expect(card.locator(".signal-dot")).not.toBeAttached();
     // 報酬率／策略／買賣履約價
     await expect(card).toContainText("567.0%");
     // 實際到期日／距到期天數／最後更新時間

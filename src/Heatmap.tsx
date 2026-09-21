@@ -81,11 +81,16 @@ function sidesSentence(sides: CrossoverSides, kind: string): string {
 }
 
 /**
- * SW-11（#341，Owner 真機驗收）：主畫面只留「琥珀線是分界」這句最
- * 短的看圖方式；comparator 是誰、成本多少、兩側各是誰較高、邊界落在
- * 圖外時該怎麼讀——這些都是「進階說明」，Owner 明講「若仍需要，移入
- * ⓘ／secondary explanation」，收進 `InfoTooltip`（既有元件，SW-01／
- * #331 就做好但一直沒有消費端，見該檔案），不是刪掉這些金融資訊。
+ * SW-11（#341，Owner 真機驗收）：這裡**刻意不動**——最初打算把整段
+ * 說明收進 `InfoTooltip`，但 Crossover Boundary（#116，spec #117 §4）
+ * 有既有硬性 AC「手機／桌面 viewport 不需要額外互動就看得到圖例與
+ * 邊界標示」（`e2e/smoke.spec.ts`／`e2e/desktop.spec.ts` 同名測試），
+ * 塞進預設收合的 ⓘ 面板會直接打破這條既有驗收，而且它不在 SW-11
+ * issue #341 點名的六項範圍內；Owner 原文對 crossover 說明也只是
+ * 「**若仍需要**，移入 ⓘ」的伸縮用詞，不是像其他五項那樣的硬性指令。
+ * 這裡選擇保留既有行為（不刪、不搬），只有主圖下方的通用 caption（見
+ * `Heatmap` 本體）套用「移進 ⓘ」——那句話沒有任何既有 AC 鎖住立即
+ * 可見性，才是真正安全可以精簡的目標。
  */
 function CrossoverLegend({ comparator, edges, favoredSide, sides }: {
   comparator: ResolvedComparator;
@@ -97,24 +102,21 @@ function CrossoverLegend({ comparator, edges, favoredSide, sides }: {
   return (
     <p className="caption crossover-legend">
       <span className="crossover-swatch" aria-hidden="true" />
-      <span>琥珀線是兩種操作報酬相等的分界。</span>
-      <InfoTooltip label="分界怎麼算">
+      <span>
+        格子是 Spread 報酬率。琥珀線＝與直接買{" "}
+        <strong>{comparatorLabel(comparator)}</strong>（成本{" "}
+        {money(comparator.cost)}）報酬相等的分界。
+      </span>
+      {sides && <span className="crossover-sides">{sidesSentence(sides, kind)}</span>}
+      {edges.length === 0 && (
         <span>
-          格子是 Spread 報酬率。琥珀線＝與直接買{" "}
-          <strong>{comparatorLabel(comparator)}</strong>（成本{" "}
-          {money(comparator.cost)}）報酬相等的分界。
+          {favoredSide === "spread"
+            ? "此圖範圍內沒有分界：整張都是 Spread 較高。"
+            : favoredSide === "comparator"
+            ? `此圖範圍內沒有分界：整張都是 ${kind} 較高。`
+            : "資料不足以判定哪一側較高。"}
         </span>
-        {sides && <span className="crossover-sides">{sidesSentence(sides, kind)}</span>}
-        {edges.length === 0 && (
-          <span>
-            {favoredSide === "spread"
-              ? "此圖範圍內沒有分界：整張都是 Spread 較高。"
-              : favoredSide === "comparator"
-              ? `此圖範圍內沒有分界：整張都是 ${kind} 較高。`
-              : "資料不足以判定哪一側較高。"}
-          </span>
-        )}
-      </InfoTooltip>
+      )}
     </p>
   );
 }

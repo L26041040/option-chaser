@@ -268,13 +268,8 @@ describe("Crossover Boundary overlay（#116，spec #117 §4）", () => {
     const marked = container.querySelectorAll(".heatmap-crossover-cell");
     expect(marked.length).toBeGreaterThan(0);
 
-    // SW-11（#341，Owner 真機驗收）：主畫面只留一句「琥珀線是分界」，
-    // 「格子是 Spread 報酬率」＋comparator 身分／成本這些進階細節移進
-    // ⓘ（`InfoTooltip`）——內容仍在 DOM 裡（`getByText` 找得到，只是
-    // 預設視覺上收合），不是被刪掉，「報酬相等的分界」這句短版與 ⓘ
-    // 完整版都含這幾個字，改用 `getAllByText` 斷言至少出現一次。
-    expect(screen.getAllByText(/報酬相等的分界/).length).toBeGreaterThan(0);
     expect(screen.getByText(/格子是 Spread 報酬率/)).toBeInTheDocument();
+    expect(screen.getByText(/報酬相等的分界/)).toBeInTheDocument();
     expect(screen.getByText(/08\/07 118 Long Call/)).toBeInTheDocument();
     expect(screen.getByText(/\$1\.10/)).toBeInTheDocument();
   });
