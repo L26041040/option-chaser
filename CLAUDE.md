@@ -9,24 +9,31 @@
 5. Do not expose, request, log, copy, or test real plaintext passwords/secrets.
 6. Do not take or paste screenshots unless the Owner explicitly asks. Browser verification is allowed when required by a ticket, but keep screenshot-heavy work to explicit visual-acceptance stages.
 7. Session reports: Traditional Chinese with English technical terms kept in English. Put substantive report content in one complete code block. Number reports as `［回報#NNN］`.
-8. Current report sequence: **099 used; next report is 100**.
+8. Current report sequence: **100 used; next report is 101**.
 9. **Do not append detailed ticket history to this file.** Keep this file short. After a ticket, update only the active checkpoint below in 1–2 lines. Detailed evidence belongs in GitHub issues, commits, and code review comments.
 10. `CLAUDE_HISTORY.md` is the archived legacy project journal. **Do not read it by default.** Read it only when a specific historical question cannot be answered from the current issue/commit/docs.
 
 ## 2. Current active project — Seed Warm UI
 
-**Status: complete, including the SW-10 real-device acceptance fix
-round.** SW-01–SW-09 (#331–#339, mother issue **#330**
-SEED-WARM-SPEC-001) plus SW-10 (#340, Owner real-device acceptance
-fixes covering homepage copy/stats, throttle removal, card/color/
-heatmap/candidate-list rework, and a login `.strip()` fix) all
-implemented, tested, code-reviewed, committed (`ab5e27c`) and pushed to
-`ui-redesign/seed-warm`. Full detail: closed issues #331-#340. Per
+**Status: complete, including SW-10 and SW-11 real-device acceptance
+fix rounds.** SW-01–SW-09 (#331–#339, mother issue **#330**
+SEED-WARM-SPEC-001), SW-10 (#340), and SW-11 (#341, Owner real-device
+polish: bottom-nav sticky→fixed root-cause fix for iOS Safari dynamic
+chrome, FamilyTabs pill centering/badge reposition, home-card strategy
+pill demoted to secondary tier, Heatmap main caption simplified into
+InfoTooltip, normal-state signal-dot removed) all implemented, tested,
+code-reviewed, committed (`edd26e2`, `07abb41`) and pushed to
+`ui-redesign/seed-warm`. Full detail: closed issues #331-#341. Per
 rule 3, **no PR opened** — waiting on Owner real-device acceptance
-before cue to open one. One open item from SW-10 #340 needs Owner
-action outside this repo: confirm `SUPERUSER_PASSWORD`/
+before cue to open one. Two open items need Owner action outside this
+repo: (1) from SW-10 #340, confirm `SUPERUSER_PASSWORD`/
 `SUPERADMIN_PASSWORD` are scoped to the Preview environment in Vercel's
-project settings (see `docs/deploy-vercel.md`), not just Production.
+project settings (see `docs/deploy-vercel.md`), not just Production;
+(2) from SW-11 #341, decide whether item 5 (remove normal-state
+signal-dot) should also apply to the desktop `ScenarioList.tsx` status
+column — this round only touched the mobile home card's corner dot per
+the ticket's own "首頁卡片右上" wording, desktop's dot sits in a
+labelled status cell instead.
 
 No new project queued as of this checkpoint.
 
