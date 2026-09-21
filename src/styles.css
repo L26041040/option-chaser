@@ -1272,9 +1272,11 @@ body {
   gap: 12px;
 }
 
+/* SW-03（#334，Seed Warm）：32px／800，貼齊 artifact 桌面劇本庫標題。 */
 .lib-title {
-  font-size: 22px;
-  font-weight: 700;
+  font-size: 32px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
   margin: 0;
 }
 
@@ -1291,11 +1293,13 @@ body {
   gap: 8px;
 }
 
+/* SW-03（#334，Seed Warm）：11 欄收成 9 欄——「現價」／「目標價」
+   合併成一欄（見 `.lib-cell-price`），「更新時間」併入「狀態」欄
+   （見 `.lib-cell-status`），兩欄因此都比原本單欄寬一些。 */
 .lib-table {
-  --lib-cols: 28px minmax(90px, 1fr) 60px minmax(64px, .55fr)
-    minmax(96px, .8fr) minmax(160px, 1.6fr) minmax(78px, .65fr)
-    minmax(64px, .5fr) minmax(110px, .9fr) minmax(90px, .75fr)
-    minmax(80px, .65fr);
+  --lib-cols: 28px minmax(90px, 1fr) 60px minmax(140px, 1.1fr)
+    minmax(160px, 1.6fr) minmax(78px, .65fr)
+    minmax(64px, .5fr) minmax(110px, .9fr) minmax(130px, 1fr);
 }
 
 .lib-thead {
@@ -1363,18 +1367,41 @@ body {
   text-align: right;
 }
 
-.lib-cell-direction,
-.lib-cell-status {
+.lib-cell-direction {
   gap: 4px;
 }
 
-/* 目標價＋所需漲跌幅小字（OG-ALL-001 跟進 OG-03）：跟 `.lib-cell-expiry`
-   同一種「主數字在上、輔助小字在下」版式，只是靠右對齊（`.r` 既有
-   `justify-content: flex-end` 對齊水平位置，這裡另外處理垂直堆疊）。 */
-.lib-cell-target {
+/* SW-03（#334）：狀態欄併入更新時間後改成多行堆疊（色點＋文字一行、
+   舊資料／已過期 tag 各自一行），不再是單行 flex row。 */
+.lib-cell-status {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  white-space: normal;
+}
+
+.lib-status-line {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+/* 目標價＋所需漲跌幅小字（OG-ALL-001 跟進 OG-03；SW-03／#334 起
+   `ScenarioList.tsx` 改用 `.lib-cell-price`，`TrashView.tsx` 的
+   `.lib-cell-target` 是不同畫面的獨立欄位，兩者共用同一份版式）：
+   跟 `.lib-cell-expiry` 同一種「主數字在上、輔助小字在下」版式，
+   只是靠右對齊（`.r` 既有 `justify-content: flex-end` 對齊水平
+   位置，這裡另外處理垂直堆疊）。 */
+.lib-cell-target,
+.lib-cell-price {
   flex-direction: column;
   align-items: flex-end;
   gap: 1px;
+}
+
+.lib-cell-price .price-arrow {
+  color: var(--text-3);
+  font-weight: 500;
 }
 
 .lib-cell-champion .compact-strategy {
@@ -1589,7 +1616,6 @@ body {
   display: inline-block;
   width: 8px;
   height: 8px;
-  margin-right: 8px;
   border-radius: 50%;
   flex-shrink: 0;
 }
@@ -1766,14 +1792,14 @@ body {
   min-width: 0;
 }
 
-/* OG-05（#324）：劇本庫頁首 stats strip——重用既有 `.stat` 方塊，
-   橫向排列、自動換行（桌面窄一點的視窗，或 Super Admin 多兩個方塊時
-   不擠爆一行）。 */
+/* OG-05（#324）：劇本庫頁首 stats strip；SW-03（#334，Seed Warm）起
+   改成三張等寬 `.pstat`（SW-01／#331 primitive）白卡——Super Admin
+   專屬的兩格已搬到 Super Admin 後台（見 `UsageStatsStrip` 說明），
+   固定三欄，不必再為了容納更多格子保留自動換行。 */
 .lib-stats-strip {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 20px;
-  padding: 10px 0;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 16px;
 }
 
 .stat-label {
@@ -2073,6 +2099,14 @@ body {
    （`cardFailureVariant` 在 `updating` 為真時一律回傳 `null`）。 */
 .compact-card.failed {
   opacity: 0.6;
+}
+
+/* SW-03（#334，Seed Warm）：已過期整列淡化——比 `.failed` 再淡一點
+   （這是月份過完、不再花資源刷新的正常狀態，不是需要使用者注意的
+   異常，見 `ScenarioCard` 的 `cardClass` 說明），桌面劇本庫專屬
+   （`TrashView.tsx` 的列不套用這個 class）。 */
+.compact-card.expired {
+  opacity: 0.5;
 }
 
 .compact-notice-text {
@@ -3512,12 +3546,17 @@ body {
 }
 
 /* ---------- seg：分段控制項（例如日／週／月切換，與既有
-   `.segmented` 是同一種概念的新命名版本，供新版面使用） ---------- */
+   `.segmented` 是同一種概念的新命名版本，供新版面使用）——SW-03
+   （#334，Seed Warm）起改成 pill 形狀（`var(--radius-pill)`，SW-01／
+   #331 primitive 同一個 token），純圓角改動、不動 DOM／文字／ARIA，
+   四個既有消費端（`ScenarioList`／`SuperUserAdmin`／
+   `DesktopSpreadHistory`／`SpreadHistory`）一起受益，不必逐一開票
+   個別重複同一個視覺升級。 ---------- */
 
 .seg {
   display: inline-flex;
   background: var(--panel-3);
-  border-radius: var(--radius-s);
+  border-radius: var(--radius-pill);
   padding: 2px;
   gap: 2px;
 }
@@ -3528,7 +3567,7 @@ body {
   height: 26px;
   display: flex;
   align-items: center;
-  border-radius: 3px;
+  border-radius: var(--radius-pill);
   font-size: 12px;
   font-weight: 500;
   color: var(--text-3);

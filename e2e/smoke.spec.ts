@@ -1500,6 +1500,7 @@ async function routeSettingsMobile(page: import("@playwright/test").Page) {
                        protected: 0, total: 0 },
     scenarios: { total: 0, average_per_owner: 0 },
     alerts: [],
+    vendor_fuse: { used: 0, budget: null },
   } }));
 }
 
@@ -1607,6 +1608,7 @@ async function routeRoleJourney(page: import("@playwright/test").Page) {
                        protected: 0, total: 0 },
     scenarios: { total: 0, average_per_owner: 0 },
     alerts: [],
+    vendor_fuse: { used: 0, budget: null },
   } }));
 
   await page.route("**/api/auth/login", async (route) => {

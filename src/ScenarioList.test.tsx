@@ -8,11 +8,12 @@ import type { RefreshFailure, ScenarioSummary } from "./api";
 import { formatAnalyzedAt } from "./scenarios";
 
 // OG-05（#324）：`ScenarioList` 現在掛載就打 `GET /api/me/usage-
-// summary`（`UsageStatsStrip`）與（Super Admin 才會掛載的）`GET
-// /api/ops/metrics`——這個檔案原本沒有任何測試需要 mock 網路請求
-// （OG-04／#323 之前 `CostSparkline` 都是純 prop 渲染），全域 stub
-// 一次，讓既有測試對這個新 side effect 得到一個確定、不依賴真實網路
-// 的回應，而不是讓每個既有測試各自撞一次無法預期的 fetch 失敗。
+// summary`（`UsageStatsStrip`）——這個檔案原本沒有任何測試需要 mock
+// 網路請求（OG-04／#323 之前 `CostSparkline` 都是純 prop 渲染），
+// 全域 stub 一次，讓既有測試對這個新 side effect 得到一個確定、不
+// 依賴真實網路的回應，而不是讓每個既有測試各自撞一次無法預期的
+// fetch 失敗。SW-03（#334）起 `/api/ops/metrics` 那兩格已經整個搬到
+// Super Admin 後台，這個檔案不再需要為它 mock 任何東西。
 function mockFetch() {
   vi.stubGlobal("fetch", vi.fn(async () => ({
     ok: true, status: 200, json: async () => ({}),
@@ -809,14 +810,14 @@ describe("方向與狀態篩選 chip（OG-03／#320）：純前端過濾，不�
 });
 
 describe("目標價所需漲跌幅小字（OG-ALL-001 跟進 OG-03／#320）", () => {
-  it("spot 存在時，目標價欄下方顯示所需漲跌幅（正負號＋一位小數百分比）", () => {
+  it("spot 存在時，目標價欄下方顯示所需漲跌幅（正負號＋一位小數百分比；SW-03／#334 起前面帶「還需」）", () => {
     list([row({ id: "a", symbol: "AAA", spot: 100, target_price: 120 })]);
-    expect(screen.getByText("+20.0%")).toBeInTheDocument();
+    expect(screen.getByText("還需 +20.0%")).toBeInTheDocument();
   });
 
   it("目標價低於現價時顯示負號", () => {
     list([row({ id: "a", symbol: "AAA", spot: 100, target_price: 90 })]);
-    expect(screen.getByText("-10.0%")).toBeInTheDocument();
+    expect(screen.getByText("還需 -10.0%")).toBeInTheDocument();
   });
 
   it("尚未分析（spot 為 null）時不顯示所需漲跌幅小字，只顯示價格與目標年月", () => {
@@ -856,20 +857,18 @@ describe("頁首刷新入口（OG-03／#320，併入原本 Toolbar.tsx 的三個
   });
 });
 
-describe("OG-05（#324）：劇本庫 stats strip", () => {
+describe("OG-05（#324）：劇本庫 stats strip；SW-03（#334）起 Super Admin 專屬兩格已搬到 Super Admin 後台", () => {
   /** URL 感知的 fetch mock——`/api/auth/status` 決定 `useAuthRole()`
-   *  查到的角色，`/api/me/usage-summary`／`/api/ops/metrics` 各自回
-   *  對應的 body；記錄每個 URL 被打了幾次，供「非 Super Admin 零 ops
-   *  metrics 請求」這條 AC 直接斷言呼叫次數。 */
+   *  查到的角色，`/api/me/usage-summary` 回對應的 body；記錄每個 URL
+   *  被打了幾次，供「劇本庫頁面零 /api/ops/metrics 請求」這條 AC
+   *  直接斷言呼叫次數（SW-03 起這條件不再依角色而定——那兩格已經
+   *  整個搬到 Super Admin 後台，劇本庫頁面對任何角色都不再打這條
+   *  端點）。 */
   function routeFetch(role: "normal" | "superuser" | "superadmin" = "normal") {
     const usage = {
       active_scenarios: 3, max_active_scenarios: 10,
       quota_exempt: role !== "normal", refresh_min_interval_minutes: 30,
       throttle_exempt: role !== "normal", last_activity_at: "2026-08-04T09:30:00+00:00",
-    };
-    const opsMetrics = {
-      vendor_fuse: { used: 400, budget: 2000 },
-      alerts: [{ key: "chain_sustained_incident", triggered: true, message: "x" }],
     };
     const calls: string[] = [];
     const spy = vi.fn(async (url: string) => {
@@ -880,16 +879,13 @@ describe("OG-05（#324）：劇本庫 stats strip", () => {
       if (url.includes("/api/me/usage-summary")) {
         return { ok: true, status: 200, json: async () => usage };
       }
-      if (url.includes("/api/ops/metrics")) {
-        return { ok: true, status: 200, json: async () => opsMetrics };
-      }
       return { ok: true, status: 200, json: async () => ({}) };
     });
     vi.stubGlobal("fetch", spy);
     return calls;
   }
 
-  it("Normal User：看得到自己的用量三格，看不到 Super Admin 兩格", async () => {
+  it("看得到自己的用量三格，Vendor 每日預算／429 事故兩格已經不在這個頁面上", async () => {
     routeFetch("normal");
     list([row()]);
 
@@ -910,30 +906,12 @@ describe("OG-05（#324）：劇本庫 stats strip", () => {
     expect(within(strip).getAllByText("豁免")).toHaveLength(2);
   });
 
-  it("Super Admin：額外看到 Vendor 每日預算與 429 事故兩格", async () => {
-    routeFetch("superadmin");
-    list([row()]);
-
-    expect(await screen.findByText("400 / 2000")).toBeInTheDocument();
-    expect(screen.getByText("Vendor 每日預算")).toBeInTheDocument();
-    expect(screen.getByText("429 事故")).toBeInTheDocument();
-    expect(screen.getByText("進行中")).toBeInTheDocument();   // 事故 triggered=true
-  });
-
-  it("非 Super Admin：零 /api/ops/metrics 請求（AC 明文）", async () => {
-    const calls = routeFetch("normal");
-    list([row()]);
-
-    await screen.findByText("3 / 10");   // 等 usage-summary 落地，確定第一輪 effect 都跑過
-    expect(calls.some((u) => u.includes("/api/ops/metrics"))).toBe(false);
-  });
-
-  it("Super Admin：確實發出 /api/ops/metrics 請求", async () => {
+  it("劇本庫頁面零 /api/ops/metrics 請求——即使角色是 Super Admin（SW-03／#334 AC）", async () => {
     const calls = routeFetch("superadmin");
     list([row()]);
 
-    await screen.findByText("Vendor 每日預算");
-    expect(calls.some((u) => u.includes("/api/ops/metrics"))).toBe(true);
+    await screen.findByText("進行中劇本");   // 等 usage-summary 落地，確定第一輪 effect 都跑過
+    expect(calls.some((u) => u.includes("/api/ops/metrics"))).toBe(false);
   });
 
   it("last_activity_at 為 null 時顯示「尚無紀錄」，不是「尚未分析」", async () => {

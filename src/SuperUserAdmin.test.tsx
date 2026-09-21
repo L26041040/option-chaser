@@ -57,6 +57,9 @@ const EMPTY_OPS_METRICS = {
                      protected: 0, total: 0 },
   scenarios: { total: 0, average_per_owner: 0 },
   alerts: [],
+  // SW-03（#334，Seed Warm）：`OpsStats` 新增讀取這個既有欄位（原本
+  // 只有劇本庫頁首的 `OpsSuperAdminStats` 讀，現在搬來這裡）。
+  vendor_fuse: { used: 0, budget: null },
 };
 
 describe("SuperUserAdmin", () => {

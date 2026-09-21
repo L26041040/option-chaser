@@ -236,6 +236,17 @@ function OpsStats() {
         <Stat label="429 限流（累計）">
           {sumMetricCount(metrics.chain_429_count)}
         </Stat>
+        {/* SW-03（#334，Seed Warm）：原本在劇本庫頁首（`ScenarioList.tsx
+            ::OpsSuperAdminStats`）給 Super Admin 看的「Vendor 每日
+            預算」搬過來——同一份既有 `metrics`，零新增請求，只是換了
+            掛載的畫面。429 事故本身已經由下面既有的 `triggeredAlerts`
+            警示列涵蓋（`chain_sustained_incident` 觸發時會出現在那
+            裡），不重複做一個恆常顯示「正常／進行中」的方塊。 */}
+        <Stat label="Vendor 每日預算">
+          {metrics.vendor_fuse.budget === null
+            ? "停用"
+            : `${metrics.vendor_fuse.used} / ${metrics.vendor_fuse.budget}`}
+        </Stat>
         <Stat label="陳舊備援（累計）">
           {sumMetricCount(metrics.stale_serve_count)}
         </Stat>

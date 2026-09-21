@@ -934,23 +934,22 @@ test("OG-02（#318）：建立劇本／垃圾桶／設定入口在常駐頂欄�
 
 /* ---------- OG-03（#320）：桌面劇本庫 Markets 式資料表 ---------- */
 
-test("OG-03（#320）：表格欄位齊全（標的／方向／現價／目標價／冠軍策略／" +
-     "劇本報酬／淨成本走勢／到期／狀態／更新時間），且每一列仍是" +
-     "可點進詳細頁的完整連結", async ({ page }) => {
+test("OG-03（#320）；SW-03（#334）起 9 欄：表格欄位齊全（標的／方向／" +
+     "現價 → 目標價／冠軍策略／劇本報酬／淨成本走勢／到期／狀態，" +
+     "「更新時間」併入「狀態」欄），且每一列仍是可點進詳細頁的完整" +
+     "連結", async ({ page }) => {
   await routeTwoScenarios(page);
   await page.goto("/");
 
   const head = page.locator(".lib-thead");
   await expect(head).toContainText("標的");
   await expect(head).toContainText("方向");
-  await expect(head).toContainText("現價");
-  await expect(head).toContainText("目標價");
+  await expect(head).toContainText("現價 → 目標價");
   await expect(head).toContainText("冠軍策略");
   await expect(head).toContainText("劇本報酬");
   await expect(head).toContainText("淨成本走勢");
   await expect(head).toContainText("到期");
   await expect(head).toContainText("狀態");
-  await expect(head).toContainText("更新時間");
 
   const xyzRow = page.locator(".compact-card").filter({ hasText: "XYZ" });
   // OG-04（#323）：`sampleRow` 契約樣本本身帶著一筆真的 narrow history
@@ -1405,6 +1404,7 @@ async function routeSettings(page: import("@playwright/test").Page) {
                        protected: 0, total: 0 },
     scenarios: { total: 0, average_per_owner: 0 },
     alerts: [],
+    vendor_fuse: { used: 0, budget: null },
   } }));
 }
 
@@ -1658,6 +1658,7 @@ async function routeRoleJourney(page: import("@playwright/test").Page) {
                        protected: 0, total: 0 },
     scenarios: { total: 0, average_per_owner: 0 },
     alerts: [],
+    vendor_fuse: { used: 0, budget: null },
   } }));
 
   await page.route("**/api/auth/login", async (route) => {

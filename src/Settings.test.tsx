@@ -73,6 +73,10 @@ const EMPTY_OPS_METRICS = {
                      protected: 0, total: 0 },
   scenarios: { total: 0, average_per_owner: 0 },
   alerts: [],
+  // SW-03（#334，Seed Warm）：`SuperUserAdmin.tsx::OpsStats` 新增讀取
+  // 這個既有欄位（原本只有劇本庫頁首的 `OpsSuperAdminStats` 讀，現在
+  // 搬來這裡）。
+  vendor_fuse: { used: 0, budget: null },
 };
 
 function mockApi(views: SettingsView[], { role = "superadmin" as Role } = {}) {

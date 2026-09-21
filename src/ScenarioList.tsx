@@ -39,17 +39,14 @@
  * 需要跟著改寫，改寫處皆附理由註解。
  */
 import { useEffect, useState } from "react";
-import { getOpsMetrics, getUsageSummary,
-        type OpsMetrics, type RefreshFailure, type ScenarioSummary,
+import { getUsageSummary,
+        type RefreshFailure, type ScenarioSummary,
         type UsageSummary } from "./api";
 import CostSparkline from "./CostSparkline";
 import { CheckIcon, EditIcon, TrashIcon } from "./icons";
 import { formatMove } from "./detail";
 import { detailHash } from "./route";
 import StockLogo from "./StockLogo";
-import { Stat } from "./SuperUserAdmin";
-import { roleAtLeast } from "./superuser";
-import { useAuthRole } from "./useAuthRole";
 import {
   cardFailureHeadline,
   cardFailureVariant,
@@ -151,6 +148,11 @@ function ScenarioCard({
   const cardClass = [
     "compact-card", "lib-row",
     updating && "locked", failureVariant && "failed",
+    // SW-03（#334）：已過期整列淡化——沿用 #68「已過期優先於刷新
+    // 失敗」的既有判斷，`row.expired` 為真時 `failureVariant` 結構上
+    // 不會同時成立（見 `cardFailureVariant` docstring），三個修飾
+    // class 因此互斥，不會疊加成更暗的 opacity。
+    row.expired && "expired",
   ].filter(Boolean).join(" ");
 
   return (
@@ -200,14 +202,18 @@ function ScenarioCard({
             )}
           </span>
 
-          <span className="lib-cell lib-cell-spot r">
-            <span className="compact-spot">{moneyOrDash(row.spot)}</span>
-          </span>
-
-          <span className="lib-cell lib-cell-target r">
-            <span>{money(row.target_price)}　{row.target_month}</span>
+          {/* SW-03（#334，Seed Warm）：現價／目標價合併一欄——「現價
+              → 目標價」＋下方一行「還需 ±x% · 目標月」，取代原本兩個
+              各自獨立的欄位。`.compact-spot` class 沿用（既有測試
+              `ScenarioList.test.tsx` 直接查這個 class 讀現價文字）。 */}
+          <span className="lib-cell lib-cell-price r">
+            <span>
+              <span className="compact-spot">{moneyOrDash(row.spot)}</span>
+              <span className="price-arrow" aria-hidden="true"> → </span>
+              {money(row.target_price)}　{row.target_month}
+            </span>
             {requiredMove !== null && (
-              <span className="cell-sub">{formatMove(requiredMove)}</span>
+              <span className="cell-sub">還需 {formatMove(requiredMove)}</span>
             )}
           </span>
 
@@ -246,25 +252,37 @@ function ScenarioCard({
             <span className="cell-sub">{formatDaysLeft(row.days_to_anchor)}</span>
           </span>
 
-          {/* 狀態：燈號＋舊資料／已過期／更新中 tag（失敗兩態的完整
-              說明另外在下方 `.compact-notice` 區塊，這裡只給狀態本身
-              一個一致的位置，不重複那段文字）。T08／#196 P1：更新中時
-              燈號位置換成「更新中」徽章——這一刻的燈號講的是上一輪的
-              結果，這一輪還沒有結論，繼續顯示舊燈號會誤導成「這是這次
-              的狀態」。PC-05（#202）起卡片本身反灰＋不可點入（見
+          {/* 狀態：燈號＋文字＋更新時間，三者合併一欄（SW-03／#334
+              起「更新時間」不再是獨立欄位）。失敗兩態的完整說明另外
+              在下方 `.compact-notice` 區塊，這裡只給狀態本身一個一致
+              的位置，不重複那段文字。T08／#196 P1：更新中時燈號位置
+              換成「更新中」徽章——這一刻的燈號講的是上一輪的結果，
+              這一輪還沒有結論，繼續顯示舊燈號會誤導成「這是這次的
+              狀態」。PC-05（#202）起卡片本身反灰＋不可點入（見
               `cardClass`／`onClick`），徽章維持不變。 */}
           <span className="lib-cell lib-cell-status">
-            {updating ? (
-              <span className="tag updating-tag">更新中</span>
-            ) : (
-              // 顏色不是唯一的資訊管道：`title` 給滑鼠停留時看得到的
-              // 文字、圓點本身 `aria-hidden`，可及名稱另外交給 sr-only
-              // 那段字。
-              <span
-                className={`signal-dot signal-${signal}`}
-                title={signalLabel(signal)}
-                aria-hidden="true"
-              />
+            <span className="lib-status-line">
+              {updating ? (
+                <span className="tag updating-tag">更新中</span>
+              ) : (
+                // 顏色不是唯一的資訊管道：`title` 給滑鼠停留時看得到
+                // 的文字、圓點本身 `aria-hidden`，可及名稱另外交給
+                // sr-only 那段字；`signalLabel` 本身就是可讀文字，
+                // SW-03 起直接印在畫面上，不再只靠 title tooltip。
+                <>
+                  <span
+                    className={`signal-dot signal-${signal}`}
+                    title={signalLabel(signal)}
+                    aria-hidden="true"
+                  />
+                  <span className="cell-sub">{signalLabel(signal)}</span>
+                </>
+              )}
+            </span>
+            {!updating && (
+              <span className="cell-sub">
+                {formatAnalyzedAt(row.latest_analyzed_at)}
+              </span>
             )}
             {/* 久未刷新明講「舊資料」：數字還是上一次算出來的真數字，
                 只是不能當成現在的。 */}
@@ -273,10 +291,6 @@ function ScenarioCard({
                 「不是刷新失敗、也不是還沒分析過」，是第三種、刻意的
                 狀態——見下面失敗提示的互斥處理。 */}
             {row.expired && <span className="tag">已過期，不再刷新</span>}
-          </span>
-
-          <span className="lib-cell lib-cell-updated">
-            {formatAnalyzedAt(row.latest_analyzed_at)}
           </span>
 
           {/* 最高／最低只在使用者真的填了才畫，附在整列下方——這個
@@ -372,15 +386,15 @@ function ScenarioCard({
  * 掛載即抓、不快取（跟 `SuperUserAdmin.tsx::OpsStats()` 同一套簡單
  * 慣例——這是操作性統計，不是需要跨頁面共用或需要失效機制的資料）。
  *
- * 三個方塊三層角色都看得到；Super Admin 額外的兩個方塊是獨立子元件
- * `OpsSuperAdminStats`，只在 `roleAtLeast(role, "superadmin")` 為真
- * 時才**掛載**——AC「非 Super Admin 零 ops metrics 請求」靠的是這個
- * 條件掛載本身，不是 `OpsMiniStats`／`getOpsMetrics()` 內部自己再擋
- * 一次（跟 `OpsStats()` 檔頭註解說的「這個元件只在...才 mount」
- * 同一種既有紀律，不新發明第二種角色守門方式）。
+ * SW-03（#334，Seed Warm）：原本 Super Admin 額外看到的「Vendor 每日
+ * 預算」／「429 事故」兩格（`OpsSuperAdminStats`）整個搬到 Super
+ * Admin 後台（`SuperUserAdmin.tsx::OpsStats()`，SW-07／#336 落地）
+ * ——SEED-WARM-SPEC-001（#330）「劇本庫只留真正跟這個使用者有關的
+ * 數字」的裁示。三格改用 SW-01（#331）`.pstat` primitive，不再借用
+ * `SuperUserAdmin.tsx` 的 `Stat`（那是 Super Admin 後台自己的視覺
+ * 語彙，兩邊各自換皮、互不牽動）。
  */
 function UsageStatsStrip() {
-  const role = useAuthRole();
   const [usage, setUsage] = useState<UsageSummary | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -405,86 +419,57 @@ function UsageStatsStrip() {
 
   return (
     <div className="lib-stats-strip">
-      <Stat label="進行中劇本">
-        {usage.quota_exempt
-          ? "豁免"
-          : usage.max_active_scenarios === null
-          ? `${usage.active_scenarios}`
-          : `${usage.active_scenarios} / ${usage.max_active_scenarios}`}
-      </Stat>
-      <Stat label="最近活動">
-        {/* `formatAnalyzedAt(null)` 講的是「尚未分析」，跟「從未有過
-            活動」是不同的事——這裡自己判斷 `null`，不借用那個文案。 */}
-        {usage.last_activity_at === null
-          ? "尚無紀錄" : formatAnalyzedAt(usage.last_activity_at)}
-      </Stat>
-      <Stat label="刷新節流間隔">
-        {usage.throttle_exempt
-          ? "豁免"
-          : usage.refresh_min_interval_minutes === null
-          ? "停用"
-          : `${usage.refresh_min_interval_minutes} 分鐘`}
-      </Stat>
-      {roleAtLeast(role, "superadmin") && <OpsSuperAdminStats />}
+      <div className="pstat">
+        <span className="pstat-k">進行中劇本</span>
+        <span className="pstat-v">
+          {usage.quota_exempt
+            ? "豁免"
+            : usage.max_active_scenarios === null
+            ? `${usage.active_scenarios}`
+            : `${usage.active_scenarios} / ${usage.max_active_scenarios}`}
+        </span>
+      </div>
+      <div className="pstat">
+        <span className="pstat-k">最近活動</span>
+        <span className="pstat-v">
+          {/* `formatAnalyzedAt(null)` 講的是「尚未分析」，跟「從未有過
+              活動」是不同的事——這裡自己判斷 `null`，不借用那個文案。 */}
+          {usage.last_activity_at === null
+            ? "尚無紀錄" : formatAnalyzedAt(usage.last_activity_at)}
+        </span>
+      </div>
+      <div className="pstat">
+        <span className="pstat-k">刷新節流間隔</span>
+        <span className="pstat-v">
+          {usage.throttle_exempt
+            ? "豁免"
+            : usage.refresh_min_interval_minutes === null
+            ? "停用"
+            : `${usage.refresh_min_interval_minutes} 分鐘`}
+        </span>
+      </div>
     </div>
   );
 }
 
-/** Super Admin-only 兩個方塊：全站 vendor 每日預算用量、429 事故狀態
- *  ——都讀既有 `GET /api/ops/metrics`（S0／SCALE-08 起就在，OG-11／
- *  #322 起前端已經有這條 client），不新增第二個 Super Admin 專屬讀取
- *  路徑。事故狀態沿用既有 `chain_sustained_incident` alert 判準
- *  （`api_app/ops_alerts.py::evaluate_alerts()`），不重新發明一套。 */
-function OpsSuperAdminStats() {
-  const [metrics, setMetrics] = useState<OpsMetrics | null>(null);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    let alive = true;
-    getOpsMetrics()
-      .then((m) => alive && setMetrics(m))
-      .catch((e) => alive && setError(e instanceof Error ? e.message : String(e)));
-    return () => { alive = false; };
-  }, []);
-
-  if (error) {
-    // 同上一個元件的理由：不搶頁面既有 `role="alert"` 的語意角色。
-    return <p className="notice error">{error}</p>;
-  }
-  if (!metrics) {
-    return <p className="caption">系統指標載入中……</p>;
-  }
-
-  const incident = metrics.alerts.find((a) => a.key === "chain_sustained_incident");
-
-  return (
-    <>
-      <Stat label="Vendor 每日預算">
-        {metrics.vendor_fuse.budget === null
-          ? "停用"
-          : `${metrics.vendor_fuse.used} / ${metrics.vendor_fuse.budget}`}
-      </Stat>
-      <Stat label="429 事故">
-        {incident?.triggered ? "進行中" : "正常"}
-      </Stat>
-    </>
-  );
-}
-
+/**
+ * SW-03（#334，Seed Warm）：欄位從 11 欄收成 9 欄——「現價」／
+ * 「目標價」合併成「現價 → 目標價」一欄（見 `ScenarioCard` 的
+ * `.lib-cell-price`），「更新時間」併入「狀態」欄（狀態欄本身已經是
+ * 色點＋文字，多帶一段時間戳不需要獨立欄位寬度）。
+ */
 function LibTableHead() {
   return (
     <div className="lib-thead lib-row-tap" aria-hidden="true">
       <span className="lib-cell lib-cell-check" />
       <span className="lib-cell">標的</span>
       <span className="lib-cell">方向</span>
-      <span className="lib-cell r">現價</span>
-      <span className="lib-cell r">目標價</span>
+      <span className="lib-cell r">現價 → 目標價</span>
       <span className="lib-cell">冠軍策略</span>
       <span className="lib-cell r">劇本報酬</span>
       <span className="lib-cell">淨成本走勢</span>
       <span className="lib-cell">到期</span>
       <span className="lib-cell">狀態</span>
-      <span className="lib-cell">更新時間</span>
     </div>
   );
 }
@@ -546,12 +531,30 @@ export default function ScenarioList({
   const filtered = filterScenarios(
     sorted, failures, now, directionFilter, statusFilter);
 
+  // SW-03（#334）：標題列副標「上次整批更新 HH:MM」——純前端從已經
+  // 拿到手的 `rows` 算 max，跟 SW-04（#333）手機首頁同一個判斷，零
+  // 新增請求。
+  const lastAnalyzedAt = rows.reduce<string | null>((latest, row) => {
+    if (row.latest_analyzed_at === null) return latest;
+    if (latest === null || row.latest_analyzed_at > latest) {
+      return row.latest_analyzed_at;
+    }
+    return latest;
+  }, null);
+
   return (
     <div className="lib-page">
       <div className="lib-header">
         <div className="lib-header-row">
-          <h1 className="lib-title">劇本庫</h1>
-          <span className="caption">{rows.length} 個劇本</span>
+          <div>
+            <h1 className="lib-title">劇本庫</h1>
+            <span className="caption">
+              {rows.length} 個劇本
+              {lastAnalyzedAt !== null &&
+                ` · 上次整批更新 ${formatAnalyzedAt(lastAnalyzedAt)}`}
+              {runSummary && ` · ${runSummary}`}
+            </span>
+          </div>
           <div className="lib-header-actions">
             {!selectMode && (
               <button
@@ -563,7 +566,7 @@ export default function ScenarioList({
                 <TrashIcon />
               </button>
             )}
-            <button className="btn secondary" onClick={onRefresh} disabled={busy}>
+            <button className="pbtn line sm" onClick={onRefresh} disabled={busy}>
               {busy ? "刷新中……" : "重新整理"}
             </button>
           </div>
@@ -627,7 +630,7 @@ export default function ScenarioList({
       )}
 
       {rows.length === 0 ? (
-        <p className="caption">還沒有劇本，用下面的表單建立。</p>
+        <p className="caption">還沒有劇本，按右上角「＋ 建立劇本」開始。</p>
       ) : (
         <div className="lib-table">
           <LibTableHead />
