@@ -95,28 +95,14 @@ function CandidateRow({ view, candidate, rank }: {
             <span>淨成本 {money(prices.net)}</span>
           </span>
         </summary>
-        {/* SW-10（#340，Owner 真機驗收）：⚠／🚩 徽章原本掛在上面收合就
-            看得到的排名列，Owner 真機驗收明文點名「現在幾乎每筆都有，
-            已失去資訊價值，只剩視覺噪音」——移除收合列上的徽章，改成
-            展開候選細節時才看得到的完整說明，跟桌面版 `DesktopDetail.
-            tsx::EntryTab`（OG-07／#325）同一份文案、同一個
-            `.candidate-panel-warnings` 容器，只是換了觸發方式（桌面
-            點選排名列＝選取；手機展開這個 `<details>`）。不是單純藏
-            起來就不管：真的要下單前，資訊仍然找得到，只是不再對「幾乎
-            每一列」都重複刷存在感。 */}
-        {(candidate.wide_spread_warning || candidate.monotonicity_warning) && (
-          <div className="candidate-panel-warnings">
-            {candidate.wide_spread_warning && (
-              <span className="tag warn" title="Bid/Ask 過寬">⚠ Bid/Ask 過寬</span>
-            )}
-            {candidate.monotonicity_warning && (
-              <span className="tag suspect"
-                    title="報價與鄰近履約價不一致，疑似陳舊報價">
-                🚩 疑似陳舊報價
-              </span>
-            )}
-          </div>
-        )}
+        {/* SW-12（#342，Owner 真機驗收）：⚠／🚩 徽章整個退出使用者 UI
+            ——SW-10（#340）當時只是把它從收合排名列搬到展開候選細節，
+            Owner 這次明講「不是搬，是不再屬於產品 UI」，收合／展開／
+            候選卡／詳細頁都不要再顯示。`wide_spread_warning`／
+            `monotonicity_warning` 這兩個欄位本身（`./api` 的
+            `Candidate` 型別）與底層 eligibility／ranking 計算原封不動
+            ——只拿掉這裡的渲染，不改資料或金融語意，也不換成別的
+            warning icon。 */}
         {/* Crossover Boundary（#116）：同 `ScenarioDetail.tsx` 的判準
             ——單腿候選不傳 `comparator`，不是渲染成「缺席」。 */}
         <Heatmap {...heatmapProps(view, candidate)} />

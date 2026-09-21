@@ -81,16 +81,16 @@ function sidesSentence(sides: CrossoverSides, kind: string): string {
 }
 
 /**
- * SW-11（#341，Owner 真機驗收）：這裡**刻意不動**——最初打算把整段
- * 說明收進 `InfoTooltip`，但 Crossover Boundary（#116，spec #117 §4）
- * 有既有硬性 AC「手機／桌面 viewport 不需要額外互動就看得到圖例與
- * 邊界標示」（`e2e/smoke.spec.ts`／`e2e/desktop.spec.ts` 同名測試），
- * 塞進預設收合的 ⓘ 面板會直接打破這條既有驗收，而且它不在 SW-11
- * issue #341 點名的六項範圍內；Owner 原文對 crossover 說明也只是
- * 「**若仍需要**，移入 ⓘ」的伸縮用詞，不是像其他五項那樣的硬性指令。
- * 這裡選擇保留既有行為（不刪、不搬），只有主圖下方的通用 caption（見
- * `Heatmap` 本體）套用「移進 ⓘ」——那句話沒有任何既有 AC 鎖住立即
- * 可見性，才是真正安全可以精簡的目標。
+ * SW-12（#342，Owner 真機驗收）：SW-11（#341）當時保留了這整段常駐
+ * 說明——理由是既有 #116 硬性 AC「不需要額外互動就看得到圖例與邊界
+ * 標示」，且 Owner 當時對 crossover 只用「若仍需要」的伸縮用詞。這輪
+ * Owner 明講「主畫面最多保留一句，其餘（成本／comparator／兩側較優
+ * 區域細節）收進 ⓘ」，並明文裁示「若舊測試或舊 issue AC（含 #116）
+ * 要求完整說明常駐可見，這次修測試，不要為舊 AC 保留冗長 UI」——
+ * 因此這裡改把 #116 那份既有 e2e AC 一併更新（見 `e2e/smoke.spec.ts`／
+ * `e2e/desktop.spec.ts` 對應測試），不是繼續讓舊 AC 擋住這次精簡。
+ * comparator 身分／成本／兩側各自較優的完整說明搬進 `InfoTooltip`
+ * （跟主 caption 同一個既有元件），不是刪掉這些金融資訊。
  */
 function CrossoverLegend({ comparator, edges, favoredSide, sides }: {
   comparator: ResolvedComparator;
@@ -103,20 +103,26 @@ function CrossoverLegend({ comparator, edges, favoredSide, sides }: {
     <p className="caption crossover-legend">
       <span className="crossover-swatch" aria-hidden="true" />
       <span>
-        格子是 Spread 報酬率。琥珀線＝與直接買{" "}
-        <strong>{comparatorLabel(comparator)}</strong>（成本{" "}
-        {money(comparator.cost)}）報酬相等的分界。
+        琥珀線為 Spread 與 {kind} 報酬相同的分界；線兩側表示各自較有利
+        的區域。
       </span>
-      {sides && <span className="crossover-sides">{sidesSentence(sides, kind)}</span>}
-      {edges.length === 0 && (
+      <InfoTooltip label="分界怎麼算">
         <span>
-          {favoredSide === "spread"
-            ? "此圖範圍內沒有分界：整張都是 Spread 較高。"
-            : favoredSide === "comparator"
-            ? `此圖範圍內沒有分界：整張都是 ${kind} 較高。`
-            : "資料不足以判定哪一側較高。"}
+          格子是 Spread 報酬率。琥珀線＝與直接買{" "}
+          <strong>{comparatorLabel(comparator)}</strong>（成本{" "}
+          {money(comparator.cost)}）報酬相等的分界。
         </span>
-      )}
+        {sides && <span className="crossover-sides">{sidesSentence(sides, kind)}</span>}
+        {edges.length === 0 && (
+          <span>
+            {favoredSide === "spread"
+              ? "此圖範圍內沒有分界：整張都是 Spread 較高。"
+              : favoredSide === "comparator"
+              ? `此圖範圍內沒有分界：整張都是 ${kind} 較高。`
+              : "資料不足以判定哪一側較高。"}
+          </span>
+        )}
+      </InfoTooltip>
     </p>
   );
 }

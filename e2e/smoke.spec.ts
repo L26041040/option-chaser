@@ -119,19 +119,9 @@ const RAW_DATA = {
                implied_volatility: 0.38 }],
 };
 
-/** V9（#57）：Spread 淨成本走勢——三筆假歷史，中間一筆缺席（斷點）。 */
-const SPREAD_HISTORY = {
-  entries: [
-    { analyzed_at: "2026-07-01T21:30:00-04:00", spot: 100.0, cost: 5.0,
-     baseline_return: 0.3, rank_in_expiry: 2 },
-    { analyzed_at: "2026-07-08T21:30:00-04:00", spot: 101.0, cost: null,
-     baseline_return: null, rank_in_expiry: null },
-    { analyzed_at: "2026-07-15T21:30:00-04:00", spot: 99.0, cost: 5.5,
-     baseline_return: 0.5, rank_in_expiry: 1 },
-  ],
-};
-
-/** 詳細頁測試共用的路由：清單、單一劇本、刷新、原始資料、Spread 歷史。 */
+/** 詳細頁測試共用的路由：清單、單一劇本、刷新、原始資料。SW-12（#342）：
+ *  原本這裡還有 Spread 淨成本走勢的 `/history*` 路由與假歷史 fixture，
+ *  隨該功能整個退休一併移除——前端已不再打這個端點。 */
 async function routeLibrary(page: import("@playwright/test").Page, row: unknown,
                             detailView: unknown = sample) {
   await page.route("**/api/scenarios", (route) => route.fulfill({ json: [row] }));
@@ -151,8 +141,6 @@ async function routeLibrary(page: import("@playwright/test").Page, row: unknown,
     route.fulfill({ json: row }));
   await page.route("**/api/scenarios/*/raw-data", (route) =>
     route.fulfill({ json: RAW_DATA }));
-  await page.route("**/api/scenarios/*/history*", (route) =>
-    route.fulfill({ json: SPREAD_HISTORY }));
 }
 
 test("清單 → 詳細頁：頭條 Hero 卡、進場面板、主圖、候選策略（MVP V3／#103" +
@@ -300,48 +288,6 @@ test("進階區：分析報告與原始資料展開才載入（V8／#56，MVP V3
   await expect(rawData.getByText("XYZ261016C00110000")).toBeVisible();
 });
 
-test("Spread 淨成本走勢：展開才抓，日／週／月可切換（V9／#57，MVP V3／#106 補刻度）",
-   async ({ page }) => {
-  await routeLibrary(page, libraryRow());
-  await page.goto("/#/s/s1");
-
-  const history = page.locator(".card").filter({ hasText: "Spread 淨成本走勢" }).first();
-  await expect(history.locator("svg")).toHaveCount(0);
-
-  await history.getByText("Spread 淨成本走勢").click();
-
-  // 三筆歷史裡一筆缺席（斷點）——只有兩個資料點畫得出來，折線在缺席
-  // 那裡斷開成兩段，不連過去、不畫成 0。
-  const chart = history.locator("svg");
-  await expect(chart).toBeVisible();
-  await expect(chart.locator("circle")).toHaveCount(2);
-  await expect(chart.locator("polyline")).toHaveCount(2);
-
-  // Y 軸單位與刻度、X 軸日期刻度都在（#106 AC）。
-  await expect(chart.getByText("Net Cost ($/share)")).toBeVisible();
-  await expect(chart.getByText("2026-07-01")).toBeVisible();
-  await expect(chart.getByText("2026-07-15")).toBeVisible();
-
-  // 手機 tap 資料點：顯示含日期與淨成本的 tooltip（#106 AC，手機
-  // viewport）。這個專案（`iPhone`）本身就是觸控裝置模擬，點擊觸發的
-  // 是與真機點按同一條 `onClick` 路徑——不用 `.tap()`（需要額外的
-  // `hasTouch` 事件鏈，本專案觸控裝置上點擊本來就走 click，不特別
-  // 區分手勢來源）。
-  await expect(chart.getByText(/日期 2026-07-01/)).not.toBeVisible();
-  await chart.getByRole("button", { name: /2026-07-01/ }).click();
-  await expect(chart.getByText(/日期 2026-07-01/)).toBeVisible();
-  await expect(chart.getByText(/淨成本 \$5\.00/)).toBeVisible();
-
-  // 日／週／月切換：預設「日」，點「月」後樣式跟著換，且不重新打 API
-  // （sinceRequests 只在展開當下打過一次）。
-  const day = history.getByRole("button", { name: "日" });
-  const month = history.getByRole("button", { name: "月" });
-  await expect(day).toHaveAttribute("aria-pressed", "true");
-  await month.click();
-  await expect(month).toHaveAttribute("aria-pressed", "true");
-  await expect(day).toHaveAttribute("aria-pressed", "false");
-});
-
 test("到期日結構：切換到期日 → 就地展開候選（V6／#54）", async ({ page }) => {
   await routeLibrary(page, libraryRow());
   await page.goto("/#/s/s1");
@@ -487,7 +433,8 @@ test("Heatmap 價格列右側 ±% 標註：手機 viewport 不需額外互動就
   expect(moveBox.x).toBeGreaterThan(priceBox.x);
 });
 
-test("Crossover Boundary（#116）：手機 viewport 不需額外互動就看得到圖例與邊界標示，" +
+test("Crossover Boundary（#116；SW-12／#342 起主畫面精簡）：手機 viewport 一句話" +
+     "＋格子邊界標示不需互動即可見，comparator 身分／成本／兩側較優細節收進 ⓘ，" +
      "既有橫向捲動不受影響", async ({ page }) => {
   await routeLibrary(page, libraryRow());
 
@@ -497,7 +444,16 @@ test("Crossover Boundary（#116）：手機 viewport 不需額外互動就看得
   await expect(table).toBeVisible();
 
   // 不點、不長按——契約樣本 baseline 候選是 Spread，`comparator` 非 null，
-  // 圖例與邊界標示直接渲染，不需要任何互動觸發。
+  // 主畫面一句話與格子邊界標示直接渲染，不需要任何互動觸發。
+  await expect(mainChart.getByText(/琥珀線為 Spread 與 (Long Call|Long Put) 報酬相同的分界/))
+    .toBeVisible();
+  await expect(table.locator("td.heatmap-crossover-cell").first()).toBeVisible();
+
+  // SW-12（#342）：comparator 身分／成本／兩側各自較優的完整說明收進
+  // ⓘ——預設不可見，focus 到 `InfoTooltip` 按鈕才看得到，不是常駐 UI。
+  const infoButton = mainChart.getByRole("button", { name: "分界怎麼算" });
+  await expect(mainChart.getByText(/報酬相等的分界/)).not.toBeVisible();
+  await infoButton.focus();
   await expect(mainChart.getByText(/格子是 Spread 報酬率/)).toBeVisible();
   await expect(mainChart.getByText(/報酬相等的分界/)).toBeVisible();
   await expect(mainChart.getByText(/Long Call|Long Put/).first()).toBeVisible();
@@ -506,7 +462,6 @@ test("Crossover Boundary（#116）：手機 viewport 不需額外互動就看得
   await expect(mainChart.locator(".crossover-sides")).toBeVisible();
   await expect(mainChart.locator(".crossover-sides"))
     .toHaveText(/Spread 較高，.*(Long Call|Long Put) 較高/);
-  await expect(table.locator("td.heatmap-crossover-cell").first()).toBeVisible();
 
   // 疊加邊界標示不能破壞既有的橫向捲動與兩端 sticky 欄位行為
   // （同上一個測試「詳細頁的 Heatmap 可橫向滑動」）。
@@ -2893,18 +2848,19 @@ test("SW-10（#340，Owner 真機驗收）：手機詳細頁整頁順序——�
   // 區塊順序：劇本主圖（Heatmap）在 Family tabs（排名表所在）之前，
   // 進場面板緊接在排名表之後——冠軍是 Vertical Spread（兩腿），
   // Historical IV 因此不渲染（既有單腿限定守門，跟本票的位置重排是
-  // 兩件事），順序驗證改用「淨成本走勢」這張底部收合卡確認排在進場
-  // 面板之後即可。
+  // 兩件事），順序驗證改用「原始資料（當次快照）」這張最後一張卡確認
+  // 排在進場面板之後即可（原本這裡用的「Spread 淨成本走勢」隨該功能
+  // 整個退休移除）。
   const chartY = (await page.getByText("劇本主圖").boundingBox())!.y;
   const tabsY = (await page.getByRole("group", { name: "策略家族" })
     .boundingBox())!.y;
   const entryPanelY = (await page.getByText("進場 · 以最差成交價計算")
     .boundingBox())!.y;
-  const historyRowY = (await page.getByText("Spread 淨成本走勢")
+  const rawDataRowY = (await page.getByText("原始資料（當次快照）")
     .boundingBox())!.y;
   expect(chartY).toBeLessThan(tabsY);
   expect(tabsY).toBeLessThan(entryPanelY);
-  expect(entryPanelY).toBeLessThan(historyRowY);
+  expect(entryPanelY).toBeLessThan(rawDataRowY);
 
   // 進場面板固定顯示冠軍（真實契約樣本的 baseline 第 1 名候選，這裡
   // 動態取它的賣腿履約價，不手造假設值）——切到 Call / Put 分頁（Long
@@ -2975,16 +2931,6 @@ const rowCallFly = {
   },
 };
 
-const BUTTERFLY_SPREAD_HISTORY = {
-  entries: [
-    { analyzed_at: "2026-07-01T21:30:00-04:00", spot: 100.0, cost: 0.55,
-     baseline_return: 9.0, rank_in_expiry: 2 },
-    { analyzed_at: "2026-07-15T21:30:00-04:00", spot: 100.0,
-     cost: butterflyCand.natural_cost,
-     baseline_return: butterflyCand.baseline_return, rank_in_expiry: 1 },
-  ],
-};
-
 async function routeButterflyDetail(page: import("@playwright/test").Page) {
   await page.route("**/api/scenarios", (route) => route.fulfill({ json: [rowCallFly] }));
   await page.route("**/api/scenarios/s1", (route) =>
@@ -2995,8 +2941,6 @@ async function routeButterflyDetail(page: import("@playwright/test").Page) {
     } }));
   await page.route("**/api/scenarios/*/refresh", (route) =>
     route.fulfill({ json: rowCallFly }));
-  await page.route("**/api/scenarios/*/history*", (route) =>
-    route.fulfill({ json: BUTTERFLY_SPREAD_HISTORY }));
   // Historical IV **明確解鎖**（不是靠設定讀取失敗才鎖著）——這裡要
   // 證明的是「三腿候選結構上不支援，即使解鎖也不出現」，不是「反正
   // 沒設定所以看不到」那種偽陽性。角色也明確解鎖到 Super User——
@@ -3135,15 +3079,6 @@ test("T16（#232）：Butterfly 詳細頁不出現「IV 相對位置」——即
   await expect(page.getByText("劇本主圖")).toBeVisible();   // 頁面其餘部分照常
   await expect(page.getByText("IV 相對位置")).toHaveCount(0);
   expect(ivCalls).toEqual([]);
-});
-
-test("T16（#232）：Butterfly 候選有淨成本走勢圖——既有元件的身份鍵泛化即可支援",
-   async ({ page }) => {
-  await routeButterflyDetail(page);
-  await page.goto("/#/s/s1");
-
-  await page.getByText("Spread 淨成本走勢").click();
-  await expect(page.locator(".spread-history-chart")).toBeVisible();
 });
 
 test("OPTION-CHASER-CLOSEOUT-001：劇本庫卡片上 Butterfly champion 三腿" +

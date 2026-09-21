@@ -125,38 +125,6 @@ test("SW-10（#340，Owner 真機驗收）：桌面版身分列呈現使用者�
   await expect(page.getByRole("region", { name: "劇本摘要" })).toHaveCount(0);
 });
 
-test("Spread 淨成本走勢：桌面 hover 資料點顯示 tooltip（MVP V3／#106）", async ({ page }) => {
-  await routeTwoScenarios(page);
-  const history = {
-    entries: [
-      { analyzed_at: "2026-07-01T21:30:00-04:00", spot: 100.0, cost: 5.0,
-       baseline_return: 0.3, rank_in_expiry: 2 },
-      { analyzed_at: "2026-07-15T21:30:00-04:00", spot: 99.0, cost: 5.5,
-       baseline_return: 0.5, rank_in_expiry: 1 },
-    ],
-  };
-  await page.route("**/api/scenarios/*/history*", (route) =>
-    route.fulfill({ json: history }));
-
-  // OG-07（#325）：桌面版「Spread 淨成本走勢」不再是要展開的
-  // `<details>`（那是手機版 `SpreadHistory.tsx` 保留的既有行為）——
-  // 桌面換成底部「淨成本走勢」tab（`DesktopSpreadHistory.tsx`），
-  // 預設就是啟用中的分頁，圖表掛載就直接看得到，不用先點開任何東西。
-  await page.goto("/#/s/s1");
-  const chart = page.locator(".spread-history-panel");
-  const point = chart.getByRole("button", { name: /2026-07-01/ });
-  await expect(point).toBeVisible();
-
-  // 桌面滑鼠移到資料點上（hover，非點擊）就該看到 tooltip；移開後消失。
-  await expect(chart.getByText(/日期 2026-07-01/)).not.toBeVisible();
-  await point.hover();
-  await expect(chart.getByText(/日期 2026-07-01/)).toBeVisible();
-  await expect(chart.getByText(/淨成本 \$5\.00/)).toBeVisible();
-
-  await page.mouse.move(0, 0);
-  await expect(chart.getByText(/日期 2026-07-01/)).not.toBeVisible();
-});
-
 /* ---------- Historical IV 一年走勢圖：桌面版（#140／#141；exact-contract
    逐腿卡片：HIVT-02–05／#153–156，spec #151） ---------- */
 
@@ -514,8 +482,9 @@ test("Heatmap ±% 在最右欄：桌面 viewport 每一列都看得到完整格�
   }
 });
 
-test("Crossover Boundary（#116）：桌面 viewport 圖例與邊界標示可見，" +
-     "既有 ±% 欄與橫向捲動不受影響", async ({ page }) => {
+test("Crossover Boundary（#116；SW-12／#342 起主畫面精簡）：桌面 viewport 一句話" +
+     "＋邊界標示可見，comparator 細節收進 ⓘ，既有 ±% 欄與橫向捲動不受影響",
+     async ({ page }) => {
   await routeTwoScenarios(page);
   await page.goto("/#/s/s1");
 
@@ -523,7 +492,20 @@ test("Crossover Boundary（#116）：桌面 viewport 圖例與邊界標示可見
   const table = mainChart.locator("table.heatmap-table");
   await expect(table).toBeVisible();
 
-  // 圖例：格子仍是 Spread 報酬、邊界是兩者相等處、comparator 標籤與成本。
+  // 主畫面一句話：格子仍是 Spread 報酬、邊界是兩者相等處——不需互動。
+  await expect(mainChart.getByText(/琥珀線為 Spread 與 (Long Call|Long Put) 報酬相同的分界/))
+    .toBeVisible();
+
+  // 邊界確實畫在網格上（契約樣本的 baseline 候選有真實交叉）——不是
+  // 每次都落在「網格外」那個分支。
+  const marked = table.locator("td.heatmap-crossover-cell");
+  await expect(marked.first()).toBeVisible();
+
+  // SW-12（#342）：comparator 身分／成本／兩側各自較優的完整說明收進
+  // ⓘ——預設不可見，focus 到 `InfoTooltip` 按鈕才看得到。
+  const infoButton = mainChart.getByRole("button", { name: "分界怎麼算" });
+  await expect(mainChart.getByText(/報酬相等的分界/)).not.toBeVisible();
+  await infoButton.focus();
   await expect(mainChart.getByText(/格子是 Spread 報酬率/)).toBeVisible();
   await expect(mainChart.getByText(/報酬相等的分界/)).toBeVisible();
   await expect(mainChart.getByText(/Long Call|Long Put/).first()).toBeVisible();
@@ -532,11 +514,6 @@ test("Crossover Boundary（#116）：桌面 viewport 圖例與邊界標示可見
   await expect(mainChart.locator(".crossover-sides")).toBeVisible();
   await expect(mainChart.locator(".crossover-sides"))
     .toHaveText(/Spread 較高，.*(Long Call|Long Put) 較高/);
-
-  // 邊界確實畫在網格上（契約樣本的 baseline 候選有真實交叉）——不是
-  // 每次都落在「網格外」那個分支。
-  const marked = table.locator("td.heatmap-crossover-cell");
-  await expect(marked.first()).toBeVisible();
 
   // #109／QA-FIX-1 的 ±% 欄仍在、仍是每列最右邊——overlay 沒有蓋掉它。
   await expect(table.locator("th.heatmap-move-head")).toHaveText("vs 現價");
@@ -936,10 +913,10 @@ test("OG-02（#318）：建立劇本／垃圾桶／設定入口在常駐頂欄�
 
 /* ---------- OG-03（#320）：桌面劇本庫 Markets 式資料表 ---------- */
 
-test("OG-03（#320）；SW-03（#334）起 9 欄：表格欄位齊全（標的／方向／" +
-     "現價 → 目標價／冠軍策略／劇本報酬／淨成本走勢／到期／狀態，" +
+test("OG-03（#320）；SW-03（#334）起 8 欄：表格欄位齊全（標的／方向／" +
+     "現價 → 目標價／冠軍策略／劇本報酬／到期／狀態，" +
      "「更新時間」併入「狀態」欄），且每一列仍是可點進詳細頁的完整" +
-     "連結", async ({ page }) => {
+     "連結。SW-12（#342）：淨成本走勢欄隨該功能整個退休一併移除", async ({ page }) => {
   await routeTwoScenarios(page);
   await page.goto("/");
 
@@ -949,36 +926,12 @@ test("OG-03（#320）；SW-03（#334）起 9 欄：表格欄位齊全（標的�
   await expect(head).toContainText("現價 → 目標價");
   await expect(head).toContainText("冠軍策略");
   await expect(head).toContainText("劇本報酬");
-  await expect(head).toContainText("淨成本走勢");
   await expect(head).toContainText("到期");
   await expect(head).toContainText("狀態");
 
   const xyzRow = page.locator(".compact-card").filter({ hasText: "XYZ" });
-  // OG-04（#323）：`sampleRow` 契約樣本本身帶著一筆真的 narrow history
-  // 點，`libraryRow()` 沒有覆寫 `cost_sparkline`——這一列因此看得到
-  // 真的 sparkline（`CostSparkline.tsx` 的 `<svg role="img">`），不是
-  // 佔位符「—」。細部行為（顏色、斷點、`null` 顯示「—」）由
-  // `CostSparkline.test.tsx`／`sparkline.test.ts` 覆蓋，這裡只證明
-  // 它真的畫在頁面上（AC：「Playwright 至少一條看得到 sparkline」）。
-  await expect(xyzRow.getByRole("img", { name: /淨成本走勢/ })).toBeVisible();
   await expect(xyzRow.getByRole("link", { name: /XYZ/ })).toHaveAttribute(
     "href", "#/s/s1");
-});
-
-test("OG-04（#323）：沒有 narrow history 序列的劇本，淨成本走勢欄" +
-     "誠實顯示「—」，不是硬畫一條假線", async ({ page }) => {
-  await page.route("**/api/scenarios", (route) =>
-    route.fulfill({ json: [libraryRow({ id: "s1", symbol: "XYZ",
-                                        cost_sparkline: null })] }));
-  await page.route("**/api/scenarios/s1", (route) =>
-    route.fulfill({ json: { ...libraryRow({ id: "s1", symbol: "XYZ",
-                                            cost_sparkline: null }),
-                            latest_result: sample } }));
-  await page.goto("/");
-
-  const xyzRow = page.locator(".compact-card").filter({ hasText: "XYZ" });
-  await expect(xyzRow.locator(".lib-cell-sparkline")).toHaveText("—");
-  await expect(xyzRow.getByRole("img", { name: /淨成本走勢/ })).toHaveCount(0);
 });
 
 test("OG-05（#324）：劇本庫頁首 stats strip 顯示唯讀使用量摘要，Normal" +
@@ -2113,12 +2066,14 @@ test("OG-06／OG-07（#321／#325）：桌面詳細頁三欄外殼與身分列�
     .toHaveAttribute("aria-selected", "true");
   await expect(rightPanel.getByText("淨成本 / 股")).toBeVisible();
 
-  // 底部四個 tab（淨成本走勢／候選池診斷／分析報告／原始資料），預設
-  // 停在「淨成本走勢」——圖表掛載就直接看得到，不用先點開。
+  // 底部三個 tab（候選策略／分析報告／原始資料），預設停在「候選
+  // 策略」——SW-12（#342）：原本第一個「淨成本走勢」tab 隨該功能
+  // 整個退休移除，「候選策略」變成預設分頁。
   const bottomTabs = detail.locator(".detail-bottom-tabs");
-  await expect(bottomTabs.getByRole("tab", { name: "淨成本走勢" }))
+  await expect(bottomTabs.getByRole("tab", { name: "候選策略" }))
     .toHaveAttribute("aria-selected", "true");
-  await expect(bottomTabs.locator(".spread-history-panel")).toBeVisible();
+  await expect(bottomTabs.getByRole("heading", { name: "候選策略" }))
+    .toBeVisible();
 
   // 左欄：family tabs（已由上一條測試驗過切換行為，這裡只驗結構齊全）
   // ／到期日 chip／排名表。

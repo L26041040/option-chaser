@@ -367,7 +367,7 @@ def test_synthetic_data_can_be_cleared_in_one_batch():
 # ---------- Exit 第 6 項：DB 成長速率外推（僅真實 Postgres） ----------
 
 _GROWTH_TABLES = ("scenarios", "results", "current_results", "snapshots",
-                  "events", "narrow_history", "owners", "browser_identities")
+                  "events", "owners", "browser_identities")
 
 
 def _total_db_bytes(conn) -> int:
@@ -387,11 +387,12 @@ def _total_db_bytes(conn) -> int:
 def test_exit_6_db_growth_rate_extrapolates_to_a_concrete_neon_free_owner_count():
     """production-scale fixture（600 張合約，`PRODUCTION_SCALE_FIXTURE`）
     ——沿用 SCALE-16／REPAIR-10 既有教訓：小 fixture（六到期日、
-    數十張合約）量不出真實比例，必須量到收斂才能外推。量測涵蓋全部
-    8 張 owner-scoped 表（`_GROWTH_TABLES`，與 PB-04 `_OWNER_SCOPED_
+    數十張合約）量不出真實比例，必須量到收斂才能外推。量測涵蓋
+    7 張 owner-scoped 表（`_GROWTH_TABLES`，與 PB-04 `_OWNER_SCOPED_
     TABLES` 同一份清單邏輯，這裡額外加 `owners`／`browser_identities`
-    本身），VACUUM FULL 後才量——否則量到的是 MVCC 冷啟動膨脹，不是
-    production 穩態足跡（SCALE-16 既有教訓）。"""
+    本身；SW-12／#342 起原本第 8 張 `narrow_history` 隨 Spread 淨成本
+    走勢功能整個退休一併移除），VACUUM FULL 後才量——否則量到的是
+    MVCC 冷啟動膨脹，不是 production 穩態足跡（SCALE-16 既有教訓）。"""
     import psycopg
 
     from api_app.storage import postgres as pg
@@ -400,7 +401,7 @@ def test_exit_6_db_growth_rate_extrapolates_to_a_concrete_neon_free_owner_count(
     with psycopg.connect(TEST_DB_URL, autocommit=True) as conn:  # type: ignore[arg-type]
         conn.execute(
             "TRUNCATE scenarios, results, current_results, snapshots, events, "
-            "narrow_history, owners, browser_identities RESTART IDENTITY")
+            "owners, browser_identities RESTART IDENTITY")
 
     pg._schema_ready.discard(TEST_DB_URL)  # 這個程序只建一次 schema 的快取
     storage = PostgresStorage(TEST_DB_URL)  # type: ignore[arg-type]

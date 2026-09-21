@@ -331,23 +331,25 @@ describe("區塊順序（spec #102 決策 A／#103）", () => {
     // 檔頭說明），不是現在的 source of truth；Owner 真機驗收明文指出
     // 「第二區原本應該有最佳劇本熱力圖，目前不見」，這裡把它排回來。
     // 「進場」面板緊接在排名表之後，Historical IV（此測試未解鎖，不
-    // 輸出節點）與底部兩張收合卡排在最後不變。
+    // 輸出節點）與底部收合卡排在最後不變。SW-12（#342）：原本排在
+    // 「原始資料」之前的「Spread 淨成本走勢」隨該功能整個退休移除。
     expect(titles).toEqual([
       // SW-06（#335）文案去術語：「候選池」→「候選策略」、「最差成交
       // 口徑」→「以最差成交價計算」，語意不變，僅順序本身鎖定的既有
       // 斷言跟著新文案更新。
       "劇本主圖", "到期日", "候選策略", "📄 分析報告",
       "進場 · 以最差成交價計算",
-      "Spread 淨成本走勢", "原始資料（當次快照）",
+      "原始資料（當次快照）",
     ]);
 
     // IV History 插槽本身不輸出任何 DOM 節點——不是一張空卡片，直接就
-    // 不存在於 DOM 裡。卡片總數固定為上面 7 張加上 SW-06（#335）新增的
+    // 不存在於 DOM 裡。卡片總數固定為上面 6 張加上 SW-06（#335）新增的
     // Hero 白卡（無 section-title，改用 aria-label）——SW-10（#340，
     // Owner 真機驗收）起原本另外兩張無 title 的卡（`ScenarioContext`
-    // 劇本設定卡／`Summary` 摘要卡）已整段刪除，總數因此從 10 降到 8，
+    // 劇本設定卡／`Summary` 摘要卡）已整段刪除；SW-12（#342）起
+    // 「Spread 淨成本走勢」卡也整個退休移除，總數因此從 8 降到 7，
     // 插槽若渲染出任何東西（哪怕只是空卡），這裡就會多一張。
-    expect(container.querySelectorAll(".card")).toHaveLength(8);
+    expect(container.querySelectorAll(".card")).toHaveLength(7);
     expect(screen.queryByText(/Historical IV|IV Position/)).not.toBeInTheDocument();
   });
 });
@@ -568,10 +570,11 @@ describe("詳細頁刷新入口（#70）", () => {
 });
 
 describe("進階區隨新分析失效，不混用新舊 cache（#69）", () => {
-  const HISTORY = { entries: [
-    { analyzed_at: "2026-08-01T00:00:00+00:00", spot: 100.0, cost: 5.0,
-     baseline_return: 0.3, rank_in_expiry: 1 },
-  ] };
+  // SW-12（#342）：這個 describe 原本同時覆蓋「Spread 淨成本走勢」
+  // 與「原始資料」兩個展開才抓取的區塊——前者隨該功能整個退休移除，
+  // `HISTORY` fixture／`historyCalls` 追蹤／`/history` 路由分支一併
+  // 拿掉，只留「原始資料」半邊既有覆蓋。AC2（歷史走勢跟著候選換）
+  // 專屬於已刪除的功能，整條測試一併移除，不是弱化斷言範圍。
   const RAW = {
     meta: { symbol: "XYZ", spot: 100.0, fetched_at: "2026-08-04T09:00:00+00:00",
            source: "cboe", contract_count: 1 },
@@ -584,13 +587,8 @@ describe("進階區隨新分析失效，不混用新舊 cache（#69）", () => {
   function mockDetailSequence(first: unknown, second: unknown) {
     let scenarioCalls = 0;
     let resolveSecond: (() => void) | null = null;
-    const historyCalls: string[] = [];
     const rawDataCalls: string[] = [];
     const spy = vi.fn(async (url: string) => {
-      if (url.startsWith("/api/scenarios/s1/history")) {
-        historyCalls.push(url);
-        return { ok: true, status: 200, json: async () => HISTORY };
-      }
       if (url.startsWith("/api/scenarios/s1/raw-data")) {
         rawDataCalls.push(url);
         return { ok: true, status: 200, json: async () => RAW };
@@ -608,10 +606,10 @@ describe("進階區隨新分析失效，不混用新舊 cache（#69）", () => {
       throw new Error(`測試沒有為 ${url} 準備回應`);
     });
     vi.stubGlobal("fetch", spy);
-    return { historyCalls, rawDataCalls, resolveSecond: () => resolveSecond!() };
+    return { rawDataCalls, resolveSecond: () => resolveSecond!() };
   }
 
-  it("刷新後，先前展開過的兩區都收合，不再顯示上一輪的內容", async () => {
+  it("刷新後，先前展開過的原始資料區收合，不再顯示上一輪的內容", async () => {
     const first = detail({ latest_analyzed_at: "2026-08-04T09:00:00+00:00" });
     const second = detail({ latest_analyzed_at: "2026-08-04T10:00:00+00:00" });
     const { resolveSecond } = mockDetailSequence(first, second);
@@ -619,8 +617,6 @@ describe("進階區隨新分析失效，不混用新舊 cache（#69）", () => {
     const { rerender } = render(<ScenarioDetail id="s1" refreshedAt={null} />);
     await screen.findByText(/劇本主圖/);
 
-    await userEvent.click(screen.getByText("Spread 淨成本走勢"));
-    await screen.findByRole("img");
     await userEvent.click(screen.getByText("原始資料（當次快照）"));
     await screen.findByText("XYZ261016C00110000");
 
@@ -628,42 +624,36 @@ describe("進階區隨新分析失效，不混用新舊 cache（#69）", () => {
 
     // 新一輪還沒回來之前，既有規則「刷新造成的重取不清空」仍成立——
     // 先前展開的內容不該憑空消失。
-    expect(screen.getByRole("img")).toBeInTheDocument();
     expect(screen.getByText("XYZ261016C00110000")).toBeInTheDocument();
 
     resolveSecond();
 
-    // 新一輪真的落地之後，兩區才收合、內部狀態一起重置。
-    await waitFor(() => expect(screen.queryByRole("img")).not.toBeInTheDocument());
-    expect(screen.queryByText("XYZ261016C00110000")).not.toBeInTheDocument();
+    // 新一輪真的落地之後才收合、內部狀態重置。
+    await waitFor(() =>
+      expect(screen.queryByText("XYZ261016C00110000")).not.toBeInTheDocument());
   });
 
   it("收合後再展開，是真的重新取得，不是沿用上一輪的舊資料", async () => {
     const first = detail({ latest_analyzed_at: "2026-08-04T09:00:00+00:00" });
     const second = detail({ latest_analyzed_at: "2026-08-04T10:00:00+00:00" });
-    const { historyCalls, rawDataCalls, resolveSecond } =
+    const { rawDataCalls, resolveSecond } =
       mockDetailSequence(first, second);
 
     const { rerender } = render(<ScenarioDetail id="s1" refreshedAt={null} />);
     await screen.findByText(/劇本主圖/);
-    await userEvent.click(screen.getByText("Spread 淨成本走勢"));
-    await screen.findByRole("img");
     await userEvent.click(screen.getByText("原始資料（當次快照）"));
     await screen.findByText("XYZ261016C00110000");
-    expect(historyCalls).toHaveLength(1);
     expect(rawDataCalls).toHaveLength(1);
 
     rerender(<ScenarioDetail id="s1" refreshedAt="2026-08-04T10:00:00+00:00" />);
     resolveSecond();
-    await waitFor(() => expect(screen.queryByRole("img")).not.toBeInTheDocument());
+    await waitFor(() =>
+      expect(screen.queryByText("XYZ261016C00110000")).not.toBeInTheDocument());
 
-    await userEvent.click(screen.getByText("Spread 淨成本走勢"));
-    await screen.findByRole("img");
     await userEvent.click(screen.getByText("原始資料（當次快照）"));
     await screen.findByText("XYZ261016C00110000");
 
-    // 各自又多打了一次——不是沿用元件裡「已經抓過」的舊旗標。
-    expect(historyCalls).toHaveLength(2);
+    // 又多打了一次——不是沿用元件裡「已經抓過」的舊旗標。
     expect(rawDataCalls).toHaveLength(2);
   });
 
@@ -687,35 +677,6 @@ describe("進階區隨新分析失效，不混用新舊 cache（#69）", () => {
       .getAttribute("href");
 
     expect(after).not.toBe(before);
-  });
-
-  it("主圖候選因新分析換掉時，歷史走勢跟著換成新候選的序列（AC2）", async () => {
-    const originalKey = baselineTopCandidate(view)!.candidate_key;
-    const first = detail({ latest_analyzed_at: "2026-08-04T09:00:00+00:00" });
-    const second = detail({
-      latest_analyzed_at: "2026-08-04T10:00:00+00:00",
-      latest_result: withTopCandidate({ candidate_key: "different-candidate" }),
-    });
-    const { historyCalls, resolveSecond } = mockDetailSequence(first, second);
-
-    const { rerender } = render(<ScenarioDetail id="s1" refreshedAt={null} />);
-    await screen.findByText(/劇本主圖/);
-    await userEvent.click(screen.getByText("Spread 淨成本走勢"));
-    await screen.findByRole("img");
-    expect(historyCalls[0]).toContain(
-      `candidate_key=${encodeURIComponent(originalKey)}`);
-
-    rerender(<ScenarioDetail id="s1" refreshedAt="2026-08-04T10:00:00+00:00" />);
-    resolveSecond();
-    await waitFor(() => expect(screen.queryByRole("img")).not.toBeInTheDocument());
-
-    await userEvent.click(screen.getByText("Spread 淨成本走勢"));
-    await screen.findByRole("img");
-
-    // 換一輪之後再展開，帶的是新候選自己的身份鍵，不是沿用第一輪那個。
-    expect(historyCalls).toHaveLength(2);
-    expect(historyCalls[1]).toContain(
-      `candidate_key=${encodeURIComponent("different-candidate")}`);
   });
 });
 

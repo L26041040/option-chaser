@@ -1,22 +1,70 @@
 /**
  * IV 相對位置一年走勢圖的純函式（#140／spec #137）。
  *
- * y 軸／x 軸座標換算與缺值斷點——沿用 Spread 淨成本走勢圖
- * （`./spreadHistory`）建立的既有模式：手刻 SVG、缺值斷線不插值、y 軸
- * 固定不隨互動改變。`contiguousRuns`／`xAxisTicks` 兩個純幾何函式只吃
- * 通用的 `{x, y, label}` 形狀、跟資料語意無關，直接沿用那邊的實作，
- * 不重寫第二份。
+ * y 軸／x 軸座標換算與缺值斷點：手刻 SVG、缺值斷線不插值、y 軸固定
+ * 不隨互動改變。`contiguousRuns`／`xAxisTicks` 兩個純幾何函式只吃
+ * 通用的 `{x, y, label}` 形狀、跟資料語意無關——SW-12（#342）前原本
+ * 沿用 Spread 淨成本走勢圖（`./spreadHistory`）的既有實作，該功能
+ * 整個退休、那個檔案已刪除後，兩個函式與 `AxisTick`／`ChartPoint`
+ * 兩個型別直接搬進這裡（現在唯一的消費端），不是重寫第二份。
  *
  * 與 Spread 淨成本走勢圖的差異：這裡的量（vol 點、無因次 skew）不是
  * 價格，固定 ±15% 沒有意義——改用序列自身的 min／max 各留 10% 邊界；
  * 全同值時給一個以該值為中心的小範圍，避免除以零把圖畫成一條無意義
  * 的水平線貼著邊界。
  */
-import { contiguousRuns, xAxisTicks, type AxisTick,
-        type ChartPoint } from "./spreadHistory";
 
-export { contiguousRuns, xAxisTicks };
-export type { AxisTick, ChartPoint };
+export interface ChartPoint {
+  /** 0（最左）～1（最右），沿 x 軸等距分布——分組後的序列本來就已經是
+   *  「一組一個點」，不需要照時間長度比例分布。 */
+  x: number;
+  /** 0（頂／y 軸上限）～1（底／y 軸下限）；null＝這一點是斷點，不畫。 */
+  y: number | null;
+  label: string;
+}
+
+/**
+ * 把一串點依斷點切成連續片段——每段各自畫一條折線，段與段之間不連線
+ * （票上驗收標準：斷點如實顯示，不連線、不畫成 0）。單點片段也保留
+ * （畫一個點，不是被當成無法連線而丟棄）。
+ */
+export function contiguousRuns(points: ChartPoint[]): ChartPoint[][] {
+  const runs: ChartPoint[][] = [];
+  let current: ChartPoint[] = [];
+  for (const p of points) {
+    if (p.y === null) {
+      if (current.length) runs.push(current);
+      current = [];
+    } else {
+      current.push(p);
+    }
+  }
+  if (current.length) runs.push(current);
+  return runs;
+}
+
+export interface AxisTick {
+  /** 對應 `points` 陣列本身的位置——呼叫端據此讀取該點的畫布座標。 */
+  index: number;
+  label: string;
+}
+
+/**
+ * X 軸日期刻度（V9補刻度／#106）：均勻取樣至多 4 個點、含首尾，不是
+ * 每個資料點都印一個日期——資料點一多（例如切到「日」粒度、序列長達
+ * 數十筆）擠成一團會什麼都讀不出來。
+ */
+export function xAxisTicks(points: ChartPoint[]): AxisTick[] {
+  if (points.length === 0) return [];
+  const tickCount = Math.min(4, points.length);
+  const indices = tickCount === 1
+    ? [0]
+    : Array.from({ length: tickCount }, (_, i) =>
+        Math.round((i * (points.length - 1)) / (tickCount - 1)));
+  // 點數卡在邊界時四捨五入可能撞出重複 index，去重但保持原本的先後順序。
+  const unique = [...new Set(indices)];
+  return unique.map((i) => ({ index: i, label: points[i].label }));
+}
 
 /**
  * y 軸固定範圍：序列非空值的 min／max 各留 10% 邊界。全同值時範圍會

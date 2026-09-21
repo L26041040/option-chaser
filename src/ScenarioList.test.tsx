@@ -102,22 +102,16 @@ describe("劇本清單", () => {
   it("依收益率降序，沒跑過的排最後並顯示「—」", () => {
     list([
       row({ id: "a", symbol: "AAA", best_return: 0.2 }),
-      // OG-04（#323）：真的沒跑過的劇本 `cost_sparkline` 也該是 `null`
-      // （跟 `best_return`／`latest_analyzed_at` 同步，後端同一次
-      // `_summary_of()` 決定），不是繼承 `sampleRow` 預設值裡那筆
-      // 假的既有序列——不然這張卡片會變成「沒分析過卻有走勢圖」的
-      // 不實際組合。
       row({ id: "b", symbol: "BBB", best_return: null,
-            latest_analyzed_at: null, cost_sparkline: null }),
+            latest_analyzed_at: null }),
       row({ id: "c", symbol: "CCC", best_return: 2.0 }),
     ]);
 
     const items = screen.getAllByRole("listitem");
     const symbols = items.map((li) => li.querySelector(".compact-symbol")!.textContent);
     expect(symbols).toEqual(["CCC", "AAA", "BBB"]);
-    // 「—」在畫面上不只一處（劇本報酬／淨成本走勢等多個欄位沒資料時
-    // 都顯示它），`getByText` 因此不唯一，範圍限定回沒跑過的那張卡
-    // （BBB）。
+    // 「—」在畫面上不只一處（劇本報酬等多個欄位沒資料時都顯示它），
+    // `getByText` 因此不唯一，範圍限定回沒跑過的那張卡（BBB）。
     const bbb = items.find(
       (li) => li.querySelector(".compact-symbol")!.textContent === "BBB")!;
     expect(within(bbb).getAllByText("—").length).toBeGreaterThanOrEqual(1);
@@ -184,8 +178,11 @@ describe("決策 K（#108）：桌面卡片瘦身後七項決策資訊一項不�
     expect(within(card).getByText(/買 118 \/ 賣 122/)).toBeInTheDocument();
     // 5. 實際到期日
     expect(within(card).getByText(/2026-09-18/)).toBeInTheDocument();
-    // 6. 燈號（顏色不是唯一管道，但圓點本身要在）
-    expect(card.querySelector(".signal-dot")).toBeTruthy();
+    // 6. 燈號——SW-12（#342，Owner 真機驗收）起，這筆 fixture 是正常
+    //    成功狀態，正常態不再畫 `.signal-dot`（見下方「劇本級燈號」
+    //    一節），「燈號」這個決策資訊本身沒有消失，只是預設狀態不需要
+    //    額外 icon，黃／紅燈仍會畫。
+    expect(card.querySelector(".signal-dot")).toBeNull();
     // 7. 最後更新（資料時間）——直接拿純函式算預期字串，不在測試裡
     //    另外硬編一個跟時區綁死的字串。`toLocaleString` 在日期與時間
     //    之間塞的是 U+2009 THIN SPACE 不是普通空白，Testing Library
@@ -376,10 +373,13 @@ describe("代表候選（MVP-v2／#77、#78）", () => {
 });
 
 describe("劇本級燈號（MVP-v2／#77、#80）", () => {
-  it("正常劇本是綠燈", () => {
+  it("SW-12（#342，Owner 真機驗收）：正常劇本（綠燈）不畫 signal-dot 也不印" +
+     "「● 正常」文字——正常態是預設狀態，不需要反覆佔據每一列；`scenarioSignal()`" +
+     "仍會算出 \"green\"（sr-only 摘要仍讀得到，見下方可及性測試），只是這裡" +
+     "刻意不視覺化", () => {
     list([row({ expired: false })]);
-    expect(screen.getByTitle("狀態：正常")).toBeInTheDocument();
-    expect(document.querySelector(".signal-dot.signal-green")).toBeTruthy();
+    expect(screen.queryByTitle("狀態：正常")).not.toBeInTheDocument();
+    expect(document.querySelector(".signal-dot.signal-green")).toBeNull();
   });
 
   it("目標月已過完是紅燈，即使同時帶著刷新失敗紀錄", () => {

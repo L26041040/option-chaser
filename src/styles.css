@@ -94,12 +94,6 @@
   --warn: #b7791f;
   --warn-text: #9b661a;
   --warn-soft: #fbf0dc;
-  /* SW-08（#338）：陳舊報價／單調性違反旗標維持既有語意（比一般
-     `.tag.warn` 更值得注意，跟 FB5-03／#64 既有裁示一致），但換成
-     warm 色系——原本是偏冷、幾乎純紅的 `#c0392b`，跟整套 Seed Warm
-     暖色語彙不搭；換成偏棕紅的暖色調，仍比 `--warn`（金棕）更深、
-     更醒目，兩者不會撞色混淆。 */
-  --suspect: #9c3b1f;
   --crossover: var(--info);
   --tile-bg: #ffffff;
   --tile-line: #ebe3d6;
@@ -1229,8 +1223,9 @@ body {
    生效，不動手機版一個像素。
 
    欄位順序與寬度（對齊 artifact 桌面劇本庫板）：checkbox／標的／
-   方向／現價／目標價／冠軍策略／劇本報酬／淨成本走勢／到期／狀態／
-   更新時間。`--lib-cols` 定義在 `.lib-table` 上、被頭列與每一列的
+   方向／現價／目標價／冠軍策略／劇本報酬／到期／狀態／更新時間
+   （SW-12／#342：原本「淨成本走勢」一欄隨該功能整個退休移除）。
+   `--lib-cols` 定義在 `.lib-table` 上、被頭列與每一列的
    `.lib-row-tap` 共用（CSS 自訂屬性沿 DOM 樹向下繼承，不需要在兩處
    各自重複那一長串寬度值）。 */
 
@@ -1276,11 +1271,13 @@ body {
 
 /* SW-03（#334，Seed Warm）：11 欄收成 9 欄——「現價」／「目標價」
    合併成一欄（見 `.lib-cell-price`），「更新時間」併入「狀態」欄
-   （見 `.lib-cell-status`），兩欄因此都比原本單欄寬一些。 */
+   （見 `.lib-cell-status`），兩欄因此都比原本單欄寬一些。SW-12
+   （#342）：「淨成本走勢」欄（原本 `minmax(64px, .5fr)`）隨該功能
+   整個退休移除，現為 8 欄。 */
 .lib-table {
   --lib-cols: 28px minmax(90px, 1fr) 60px minmax(140px, 1.1fr)
     minmax(160px, 1.6fr) minmax(78px, .65fr)
-    minmax(64px, .5fr) minmax(110px, .9fr) minmax(130px, 1fr);
+    minmax(110px, .9fr) minmax(130px, 1fr);
 }
 
 .lib-thead {
@@ -1399,28 +1396,6 @@ body {
 
 .lib-cell-return .bar {
   width: 48px;
-}
-
-/* OG-04（#323）：淨成本走勢 sparkline——手刻 SVG 縮圖，線色依
-   `CostSparkline.tsx` 算出的首尾方向上色，跟既有 `.positive`／
-   `.negative`（劇本報酬欄）同一組色階，不是另外發明一套語意。 */
-.lib-cell-sparkline {
-  justify-content: center;
-}
-
-/* SW-08（#338）：缺點斷線那一截沿用 `--mute`（暖灰，舊名稱
-   `--text-3`），語意不變——首尾方向決定綠／紅的規則見 `.sparkline-up`／
-   `.sparkline-down`。 */
-.sparkline polyline {
-  stroke: var(--mute);
-}
-
-.sparkline-up polyline {
-  stroke: var(--up);
-}
-
-.sparkline-down polyline {
-  stroke: var(--down);
 }
 
 .lib-cell-expiry {
@@ -1614,20 +1589,15 @@ body {
   color: var(--warn);
 }
 
-/* FB5-03（#64）：單調性違反用紅色，跟 .tag.warn 的橙色分開——配對關係
-   違反（疑似陳舊報價）比一般品質提醒更值得注意。 */
-.tag.suspect {
-  background: color-mix(in srgb, var(--suspect) 16%, transparent);
-  color: var(--suspect);
-}
-
 /* OG-01（#317）：Foundations 板的 `.tag.up`／`.down`／`.flat` 方向色彩
    修飾——沿用既有 `.tag` 的形狀（pill、12px、600 字重）。SW-09（#339）
    contract 階段移除了同一批當時一起加的 `.gold`／`.info`／`.fam`
    三個變體：OG-01 落地後從未真的被任何元件消費過（`directionTagClass()`
    只吐得出 up／down／flat 三種字串），是 Obsidian Gold 規劃階段的
-   死 CSS，不是仍在用的顏色語意。`.warn`／`.suspect` 兩個既有變體
-   維持不動、不重複定義。 */
+   死 CSS，不是仍在用的顏色語意。`.warn` 這個既有變體維持不動、不重複
+   定義——`.suspect`（陳舊報價 🚩 徽章專用色，`--suspect` token）已
+   隨 SW-12（#342）該徽章整個退出使用者 UI 一併移除，唯一消費端沒了，
+   不是還在用卻順手砍掉。 */
 .tag.up {
   background: var(--up-soft);
   color: var(--up);
@@ -2285,44 +2255,13 @@ body {
   cursor: pointer;
 }
 
-/* Spread 淨成本走勢（V9／#57）。日／週／月是固定三選一，不像到期日
-   chip 那樣數量不定要橫向捲動——用 iOS 風格的分段控制項，不是 `.chip`
-   （那是給「多顆、可能捲動、兩行內容」的到期日按鈕設計的，形狀不合）。 */
-.segmented {
-  display: flex;
-  background: var(--fill);
-  border-radius: 10px;
-  padding: 2px;
-  gap: 2px;
-}
-
-.segmented-option {
-  appearance: none;
-  border: 0;
-  flex: 1;
-  background: transparent;
-  color: var(--ink);
-  font-family: inherit;
-  font-size: 14px;
-  font-weight: 600;
-  padding: 6px 0;
-  border-radius: 8px;
-  cursor: pointer;
-}
-
-.segmented-option.selected {
-  background: var(--card);
-  box-shadow: var(--shadow);
-}
-
-.spread-history-chart {
-  width: 100%;
-  height: auto;
-  margin-top: 8px;
-}
-
-/* Y 軸單位標籤（MVP V3／#106）：viewBox 座標系內的固定文字，字級刻意
-   小於刻度數字——它是一次性的軸說明，不是需要反覆讀的數字。 */
+/* SW-12（#342）：Spread 淨成本走勢（V9／#57）整個退休——這裡原本的
+   iOS 風格分段控制項（`.segmented`／`.segmented-option`，日／週／月
+   三選一）與 `.spread-history-chart`／`.chart-axis-unit` 兩個該功能
+   專屬的圖表樣式一併移除。下面 `.chart-tick-mark`／`.chart-tick-
+   label`／`.chart-point` 三個仍在用（`IvTrend.tsx`／`IvHistory.tsx`
+   Historical IV 走勢圖共用同一套座標軸／資料點視覺語彙），刻意保留
+   不動。 */
 /* SW-08（#338）：圖表座標軸／刻度／資料點改讀 Seed Warm 詞彙（`--mute`／
    `--line`／`--ink-2`／`--acc`），不再是舊系統的 `--label-tertiary`／
    `--separator`／`--label-secondary`／`--accent` 名稱——數值本身沒變
@@ -2330,12 +2269,6 @@ body {
 /* SW-08（#338）：圖表內文字全部走 tabular-nums——SVG `<text>` 不在
    HTML 表格內、吃不到 `.heatmap-table` 那條靠繼承生效的既有規則，
    這裡三個 class 各自明講一次。 */
-.chart-axis-unit {
-  font-size: 7px;
-  fill: var(--mute);
-  font-variant-numeric: tabular-nums;
-}
-
 .chart-tick-mark {
   stroke: var(--line);
   stroke-width: 1;
@@ -2359,8 +2292,10 @@ body {
    的 `useChartScrubber`）：不再有逐點命中圓點，`.chart-point-active` 這
    顆 marker 只在使用者正在 hover／拖曳／鍵盤瀏覽的那個位置才存在於
    DOM 裡（條件渲染，不是靠 CSS opacity 切換一顆常駐但隱形的圓點）。
-   刻意只 scope 在 `.iv-history` 卡片內——`SpreadHistory.tsx`（Spread
-   淨成本走勢圖）沿用既有逐點命中作法，不在這次改版範圍內。 */
+   刻意只 scope 在 `.iv-history` 卡片內。SW-12（#342）：原本另一個
+   沿用逐點命中作法、不在這次改版範圍內的消費端（`SpreadHistory.tsx`
+   ／Spread 淨成本走勢圖）已隨該功能整個退休移除，scope 限制本身
+   維持不變。 */
 .iv-history .chart-point-active {
   opacity: 1;
 }
@@ -2878,9 +2813,9 @@ body {
   letter-spacing: -0.01em;
 }
 
-/* 一年走勢圖本體（#140）：跟 `.spread-history-chart` 同一種尺寸規則
-   （viewBox 決定長寬比，實際寬度隨容器縮放），數值旁不再是裝飾性的
-   sparkline，是真的要讀出路徑的圖，因此需要滿版寬度。 */
+/* 一年走勢圖本體（#140）：viewBox 決定長寬比，實際寬度隨容器縮放，
+   數值旁不是裝飾性的 sparkline，是真的要讀出路徑的圖，因此需要滿版
+   寬度。 */
 .iv-trend-chart {
   width: 100%;
   height: auto;
@@ -3521,13 +3456,13 @@ body {
   background: var(--acc);
 }
 
-/* ---------- seg：分段控制項（例如日／週／月切換，與既有
-   `.segmented` 是同一種概念的新命名版本，供新版面使用）——SW-03
+/* ---------- seg：分段控制項（例如篩選條件切換）——SW-03
    （#334，Seed Warm）起改成 pill 形狀（`var(--radius-pill)`，SW-01／
-   #331 primitive 同一個 token），純圓角改動、不動 DOM／文字／ARIA，
-   四個既有消費端（`ScenarioList`／`SuperUserAdmin`／
-   `DesktopSpreadHistory`／`SpreadHistory`）一起受益，不必逐一開票
-   個別重複同一個視覺升級。 ---------- */
+   #331 primitive 同一個 token），純圓角改動、不動 DOM／文字／ARIA。
+   `ScenarioList`／`SuperUserAdmin` 兩個既有消費端一起受益，不必逐一
+   開票個別重複同一個視覺升級。SW-12（#342）：原本還有
+   `DesktopSpreadHistory`／`SpreadHistory` 兩個消費端（Spread 淨成本
+   走勢日／週／月切換），隨該功能整個退休移除。 ---------- */
 
 .seg {
   display: inline-flex;
@@ -3800,12 +3735,6 @@ body {
   gap: 4px;
 }
 
-.candidate-panel-warnings {
-  display: flex;
-  gap: 6px;
-  flex-wrap: wrap;
-}
-
 /* 最差成交口徑表——買腿 Ask／賣腿 Bid 那一格加粗，標出「這隻腿最差
    成交實際會用到的那一邊」，跟 artifact 一致。 */
 .entry-leg-table {
@@ -3826,23 +3755,6 @@ body {
 
 .detail-bottom-tab-body {
   padding: 12px 14px;
-}
-
-/* 淨成本走勢桌面版（`DesktopSpreadHistory.tsx`）：圖表欄＋右側統計欄，
-   對齊 artifact 的「minmax(0,1fr) 280px」兩欄比例。 */
-.spread-history-panel {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 280px;
-  gap: 16px;
-  align-items: start;
-}
-
-.spread-history-panel-stats {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  padding-left: 16px;
-  border-left: 1px solid var(--line);
 }
 
 /* 排名表一列：從手機版的 `<details><summary>` 換成一顆可點的按鈕

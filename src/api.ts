@@ -131,13 +131,6 @@ export interface RepresentativeCandidate {
   legs: RepresentativeCandidateLeg[];
   expiry: string;
   baseline_return: number;
-  /**
-   * OG-04（#323）：這組候選的 `candidate_key`——後端用它批次查詢
-   * narrow history 組出 `ScenarioSummary.cost_sparkline`，前端目前
-   * 不需要直接讀它。可選：本票落地前最後一次成功分析留下的舊資料
-   * 沒有這個欄位（`.get()` 誠實省略，不是每一筆都補齊）。
-   */
-  candidate_key?: string;
 }
 
 /**
@@ -735,15 +728,6 @@ export interface ScenarioSummary {
    * （不是假造一份「全部可選」）。
    */
   family_eligibility: Record<string, FamilyEligibility> | null;
-  /**
-   * OG-04（#323）：桌面劇本庫「淨成本走勢」欄——冠軍候選最近幾次
-   * 刷新的淨成本序列，`[analyzed_at, cost|null]`，依時間升冪排列，
-   * 後端已截尾（見 `api_app/main.py::_COST_SPARKLINE_POINTS`）。
-   * `null` ＝ 沒有可畫的序列（從未成功分析、單腿以外沒有 narrow
-   * row、或冠軍本身為 `null`），前端顯示「—」，不是空陣列。手機列
-   * 不顯示這欄（`CompactScenarioList.tsx` 不讀這個欄位）。
-   */
-  cost_sparkline: [string, number | null][] | null;
 }
 
 /**
@@ -1052,27 +1036,6 @@ export function getRawData(id: string): Promise<RawSnapshot> {
 export function rawDataCsvUrl(id: string, analyzedAt?: string | null): string {
   const base = `/api/scenarios/${encodeURIComponent(id)}/raw-data.csv`;
   return analyzedAt ? `${base}?t=${encodeURIComponent(analyzedAt)}` : base;
-}
-
-/**
- * V9（#57，T11／#25 既有語意）：一個 Spread 身份鍵（`candidate_key`）
- * 跨這個劇本全部歷史結果的淨成本時間序列。缺席快照如實回傳斷點
- * （`cost` 等三欄為 null），不插值、不跳過。
- */
-export interface HistoryEntry {
-  analyzed_at: string;
-  spot: number;
-  cost: number | null;
-  baseline_return: number | null;
-  rank_in_expiry: number | null;
-}
-
-export function getSpreadHistory(
-  id: string, candidateKey: string,
-): Promise<{ entries: HistoryEntry[] }> {
-  return request<{ entries: HistoryEntry[] }>(
-    `/api/scenarios/${encodeURIComponent(id)}/history` +
-    `?candidate_key=${encodeURIComponent(candidateKey)}`);
 }
 
 /**

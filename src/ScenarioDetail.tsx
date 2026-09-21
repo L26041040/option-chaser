@@ -53,7 +53,6 @@ import IvHistory from "./IvHistory";
 import Heatmap from "./Heatmap";
 import PriceLadder from "./PriceLadder";
 import RawData from "./RawData";
-import SpreadHistory from "./SpreadHistory";
 import StockLogo from "./StockLogo";
 import {
   legQuantityPrefix, legSide,
@@ -306,9 +305,10 @@ function MobileHero({ view, candidate, analyzedAt, daysToAnchor, strategies }: {
  * T11（#229，Initial V2）：`candidate`／`result` 只取一次、全域共用
  * ——但取的是**跨 family 冠軍**（`championCandidate`），不是舊版的
  * `baselineTopCandidate`／`primaryResult`。摘要（Summary）、Historical
- * IV、主圖（Chart）、Spread 淨成本走勢（SpreadHistory）四塊固定顯示
- * 冠軍，不隨下方 `FamilyTabs` 的分頁切換而改變——沿用 QA1-06「主圖就是
- * 主圖，不跟著別處的互動改變」的既有原則，延伸到 family 這個新維度。
+ * IV、主圖（Chart）固定顯示冠軍，不隨下方 `FamilyTabs` 的分頁切換而
+ * 改變——沿用 QA1-06「主圖就是主圖，不跟著別處的互動改變」的既有
+ * 原則，延伸到 family 這個新維度。SW-12（#342）：原本第四塊 Spread
+ * 淨成本走勢（SpreadHistory）隨該功能整個退休移除。
  * 「依到期日分組」的排名內容（`ExpiryStructure`／`CandidatePool`／
  * `AnalysisReport`）改由 `FamilyTabs` 依目前選中的分頁各自決定，不再
  * 全域固定於冠軍所屬的那個 family——這樣使用者切到別的分頁才看得到
@@ -334,9 +334,10 @@ function DetailBody({ scenarioId, view, analyzedAt, strategies, daysToAnchor }: 
           刻意分開是同一種策略），本票（OG-10／#327）只重排手機分支
           內部的順序，桌面這個分支逐位元組不變。 */}
       {isDesktop ? (
-        // OG-07（#325）：桌面版的 Spread 淨成本走勢／原始資料搬進
-        // `DesktopDetailBody` 底部 tab（`scenarioId`／`analyzedAt` 因此
-        // 改由這裡往下傳），不再跟手機版共用這裡全域掛載的那兩份。
+        // OG-07（#325）：桌面版的原始資料搬進 `DesktopDetailBody` 底部
+        // tab（`scenarioId`／`analyzedAt` 因此改由這裡往下傳），不再
+        // 跟手機版共用這裡全域掛載的那份。SW-12（#342）：原本一併搬
+        // 進去的 Spread 淨成本走勢已隨該功能整個退休移除。
         <DesktopDetailBody view={view} strategies={strategies} champion={candidate}
                             scenarioId={scenarioId} analyzedAt={analyzedAt} />
       ) : (
@@ -372,17 +373,16 @@ function DetailBody({ scenarioId, view, analyzedAt, strategies, daysToAnchor }: 
               `FamilyTabs`／`Chart` 對調不影響這裡任何既有斷言。 */}
           <IvHistory scenarioId={scenarioId} candidate={candidate} analyzedAt={analyzedAt} />
           {/* #69：`key` 綁定這次分析的身分——新分析一到，React 直接卸載
-              重掛這兩個元件，內部 state（已抓到的資料、`<details
-              open>`）連同歸零，不會在畫面上混用新舊 cache。刷新後收合、
-              下次展開重新取得（需求方裁示接受，資料正確性優先）。
+              重掛這個元件，內部 state（已抓到的資料、`<details open>`）
+              連同歸零，不會在畫面上混用新舊 cache。刷新後收合、下次
+              展開重新取得（需求方裁示接受，資料正確性優先）。
               `analyzedAt` 為 null 的情況實務上不會發生於此（本區塊只在
               `latest_result` 非 null 時渲染，兩者恆同時有值），仍給個
-              穩定佔位字串應付型別。兩個 key 各自加前綴——這兩個元件是
-              同一層的相鄰手足，若共用同一個 key 字串，React 會把它們
-              當成同一組鍵而發出「key 重複」警告，重掛的保證也就不可靠
-              了。 */}
-          <SpreadHistory key={`spread-history-${analyzedAt ?? "none"}`}
-                         scenarioId={scenarioId} candidate={candidate} />
+              穩定佔位字串應付型別。SW-12（#342）：這裡原本還有一個
+              相鄰手足 `SpreadHistory`（V9／#57 Spread 淨成本走勢），
+              隨該功能整個退休移除，`key` 前綴的既有理由（避免跟手足
+              共用同一組鍵）不再需要，但保留前綴本身不影響正確性，
+              不特地拿掉。 */}
           <RawData key={`raw-data-${analyzedAt ?? "none"}`}
                    scenarioId={scenarioId} analyzedAt={analyzedAt} />
         </>

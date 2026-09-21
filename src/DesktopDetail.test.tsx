@@ -14,12 +14,13 @@ import { candidate, result, view } from "./family.fixtures";
 import type { Candidate } from "./api";
 import type { Role } from "./superuser";
 
-// OG-07（#325）：`DesktopDetailBody` 現在常駐掛載底部「淨成本走勢」
+// OG-07（#325）：`DesktopDetailBody` 曾經常駐掛載底部「淨成本走勢」
 // tab（`DesktopSpreadHistory`），一掛載就打 `getSpreadHistory()`——
-// 跟 `SpreadHistory.test.tsx` 同一套做法直接 stub 全域 `fetch`，不是
-// 讓測試環境真的打一次網路（jsdom 沒有真的伺服器可打，行為不可預期）。
-// 這個檔案原本零筆測試需要 mock 任何東西，OG-06 落地時 `CandidatePool`／
-// `AnalysisReport` 都是純 prop 渲染，這是本票唯一新增的 side effect。
+// 當時直接 stub 全域 `fetch`，不是讓測試環境真的打一次網路（jsdom
+// 沒有真的伺服器可打，行為不可預期）。SW-12（#342）：該 tab 隨 Spread
+// 淨成本走勢功能整個退休移除，但這裡的全域 `fetch` stub 保留——
+// `showIvPanel` 分支掛載的 `<IvHistory>` 仍可能觸發網路呼叫，拿掉
+// stub 有殘留風險，不因為原始理由消失就順手一併移除。
 function mockFetch(body: unknown = { entries: [] }) {
   const spy = vi.fn(async () => ({ ok: true, status: 200, json: async () => body }));
   vi.stubGlobal("fetch", spy);
@@ -30,11 +31,10 @@ beforeEach(() => {
   mockFetch();
 });
 
-/** 掛載後讓 `DesktopSpreadHistory` 的 `getSpreadHistory()` 這次 mock
- *  fetch 有機會 resolve 完——不然它在測試本體結束後才 resolve，state
- *  更新落在 `act()` 邊界外，React 會噴 `not wrapped in act` 警告
- *  （不影響斷言結果，但吵）。這個檔案本身不斷言走勢圖 tab 的內容
- *  （那是 `DesktopSpreadHistory.test.tsx` 的職責），這裡只是把它排乾淨。 */
+/** 讓掛載後任何非同步 state 更新（含尚未確認是否還存在的 fetch 副
+ *  作用）有機會在測試本體結束前 resolve 完——不然它在測試本體結束後
+ *  才 resolve，state 更新落在 `act()` 邊界外，React 會噴 `not wrapped
+ *  in act` 警告（不影響斷言結果，但吵）。 */
 async function flush() {
   await act(async () => {});
 }
@@ -140,9 +140,10 @@ describe("DesktopDetailBody：單一 family（OG-06／#321）", () => {
     expect(within(row).getByText("20.0%")).toBeInTheDocument();
   });
 
-  it("Bid/Ask 過寬與單調性警示不再常駐排名列，右欄「進場」tab 顯示完整文案" +
-     "（SW-10／#340，Owner 真機驗收：幾乎每筆都有，排名列常駐已失去資訊價值）",
-     async () => {
+  it("SW-12（#342，Owner 真機驗收）：Bid/Ask 過寬與單調性旗標即使皆為真，⚠／🚩" +
+     "徽章在排名列與右欄「進場」tab 都完全不顯示——不是 SW-10／#340 那種" +
+     "「移到進場 tab」，是整個退出使用者 UI；底層兩個欄位與 eligibility 計算" +
+     "不受影響", async () => {
     const cand = withMatrix(
       { ...candidate("k1", "long-call", 0.2), wide_spread_warning: true,
         monotonicity_warning: true },
@@ -156,16 +157,14 @@ describe("DesktopDetailBody：單一 family（OG-06／#321）", () => {
                               scenarioId="s1" analyzedAt={null} />);
     await flush();
 
-    // 排名列本身不再帶這兩個 title——徽章已經整個移除。
     expect(rankingList().queryByTitle("Bid/Ask 過寬")).not.toBeInTheDocument();
     expect(rankingList().queryByTitle("報價與鄰近履約價不一致，疑似陳舊報價"))
       .not.toBeInTheDocument();
-    // OG-07（#325）起，右欄「進場」tab 預設顯示、選取這一列就會顯示
-    // 完整警示文案（票面 AC 明文要求）——移除排名列徽章後，這裡是
-    // 唯一還看得到這兩句警示的地方，不再是「同一份判準、兩處都印」。
-    expect(screen.getByTitle("Bid/Ask 過寬")).toBeInTheDocument();
-    expect(screen.getByTitle("報價與鄰近履約價不一致，疑似陳舊報價"))
-      .toBeInTheDocument();
+    // OG-07（#325）起右欄「進場」tab 預設顯示、選取這一列即可見——這裡
+    // 曾經是徽章唯一還看得到的地方（SW-10／#340），SW-12 起也不畫了。
+    expect(screen.queryByTitle("Bid/Ask 過寬")).not.toBeInTheDocument();
+    expect(screen.queryByTitle("報價與鄰近履約價不一致，疑似陳舊報價"))
+      .not.toBeInTheDocument();
   });
 
   it("中央 Heatmap 預設顯示這組唯一候選（不用先展開）", async () => {
@@ -418,8 +417,9 @@ describe("DesktopDetailBody：右欄候選面板（OG-07／#325）", () => {
   });
 });
 
-describe("DesktopDetailBody：底部四個 tab（OG-07／#325）", () => {
-  it("預設「淨成本走勢」，其餘三個 tab 內容常駐掛載但 hidden", async () => {
+describe("DesktopDetailBody：底部三個 tab（OG-07／#325；SW-12／#342 起" +
+        "原第四個「淨成本走勢」tab 隨該功能整個退休移除）", () => {
+  it("預設「候選策略」，其餘兩個 tab 內容常駐掛載但 hidden", async () => {
     const cand = withMatrix(candidate("k1", "long-call", 0.2), 0.1);
     const v = view(
       [result("long-call", "ok", { "2026-09-18": ["k1"] })],
@@ -431,14 +431,16 @@ describe("DesktopDetailBody：底部四個 tab（OG-07／#325）", () => {
 
     const bottom = document.querySelector(".detail-bottom-tabs") as HTMLElement;
     const panels = within(bottom);
-    expect(panels.getByRole("tab", { name: "淨成本走勢" })).toHaveAttribute(
+    // SW-05（#337）文案去術語：底部 tab 名稱與 `CandidatePool.tsx`
+    // 共用元件自己的標題（SW-06／#335 已改）現在是同一句「候選策略」，
+    // 不再是兩個獨立字串。
+    expect(panels.getByRole("tab", { name: "候選策略" })).toHaveAttribute(
       "aria-selected", "true");
-    // 候選策略（原候選池診斷）這個時候已經在 DOM 裡（常駐掛載），只是
-    // hidden。SW-05（#337）文案去術語：底部 tab 名稱與
-    // `CandidatePool.tsx` 共用元件自己的標題（SW-06／#335 已改）現在
-    // 是同一句「候選策略」，不再是兩個獨立字串。
     const poolHeading = panels.getByText("候選策略", { selector: "h2" });
-    expect(poolHeading.closest("[hidden]")).not.toBeNull();
+    expect(poolHeading.closest("[hidden]")).toBeNull();
+    // 「分析報告」這個時候已經在 DOM 裡（常駐掛載），只是 hidden。
+    const reportTab = panels.getByRole("tab", { name: "分析報告" });
+    expect(reportTab).toHaveAttribute("aria-selected", "false");
   });
 
   it("切到候選策略 tab：內容從 hidden 變成可見，分析報告只有這一份", async () => {

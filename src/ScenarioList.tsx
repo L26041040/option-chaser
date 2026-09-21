@@ -3,9 +3,10 @@
  * 卡片瘦身；OG-03／#320 起改為 Binance Markets 式全寬資料表）。
  *
  * 每一列顯示標的／方向／現價／目標價／冠軍策略與買賣履約價／劇本
- * 報酬／淨成本走勢（OG-04／#323：`CostSparkline.tsx` 手刻 SVG 縮圖，
- * 綠紅依首尾方向、缺點斷線，`null` 顯示「—」）／到期／狀態／更新
- * 時間，並有封存入口（軟刪除：清單消失、資料與紀錄保留）。
+ * 報酬／到期／狀態／更新時間，並有封存入口（軟刪除：清單消失、
+ * 資料與紀錄保留）。SW-12（#342）：原本這裡還有一欄 OG-04（#323）
+ * 淨成本走勢 sparkline（`CostSparkline.tsx`），隨該功能整個退休
+ * 一併移除。
  *
  * OG-03（#320）把原本分屬 `Toolbar.tsx`（標題／劇本數／刷新）與這裡
  * （收益率口徑說明／批次選取入口）兩處的頁首資訊收斂成同一個
@@ -42,7 +43,6 @@ import { useEffect, useState } from "react";
 import { getUsageSummary,
         type RefreshFailure, type ScenarioSummary,
         type UsageSummary } from "./api";
-import CostSparkline from "./CostSparkline";
 import { CheckIcon, EditIcon, TrashIcon } from "./icons";
 import { formatMove, strategyLabel } from "./detail";
 import { detailHash } from "./route";
@@ -243,10 +243,6 @@ function ScenarioCard({
             )}
           </span>
 
-          {/* 淨成本走勢（OG-04／#323）：冠軍候選最近幾次刷新的淨成本
-              序列，後端已批次查好、截尾——這裡純渲染，零計算。 */}
-          <CostSparkline points={row.cost_sparkline} />
-
           <span className="lib-cell lib-cell-expiry">
             <span>Exp {formatRepresentativeExpiry(rep)}</span>
             <span className="cell-sub">{formatDaysLeft(row.days_to_anchor)}</span>
@@ -264,11 +260,18 @@ function ScenarioCard({
             <span className="lib-status-line">
               {updating ? (
                 <span className="tag updating-tag">更新中</span>
-              ) : (
+              ) : signal !== "green" ? (
                 // 顏色不是唯一的資訊管道：`title` 給滑鼠停留時看得到
                 // 的文字、圓點本身 `aria-hidden`，可及名稱另外交給
                 // sr-only 那段字；`signalLabel` 本身就是可讀文字，
                 // SW-03 起直接印在畫面上，不再只靠 title tooltip。
+                //
+                // SW-12（#342，Owner 真機驗收）：`signal === "green"`
+                // （正常成功）這裡多加一道門檻——正常態是預設狀態，不
+                // 需要綠點也不需要「● 正常」文字反覆佔據每一列，跟
+                // mobile（SW-11／#341，`CompactScenarioList.tsx`）同一
+                // 原則。只在真正需要注意的狀態（黃＝刷新失敗、紅＝
+                // 已過期）才畫這一組燈號＋文字。
                 <>
                   <span
                     className={`signal-dot signal-${signal}`}
@@ -277,7 +280,7 @@ function ScenarioCard({
                   />
                   <span className="cell-sub">{signalLabel(signal)}</span>
                 </>
-              )}
+              ) : null}
             </span>
             {!updating && (
               <span className="cell-sub">
@@ -456,7 +459,8 @@ function UsageStatsStrip() {
  * SW-03（#334，Seed Warm）：欄位從 11 欄收成 9 欄——「現價」／
  * 「目標價」合併成「現價 → 目標價」一欄（見 `ScenarioCard` 的
  * `.lib-cell-price`），「更新時間」併入「狀態」欄（狀態欄本身已經是
- * 色點＋文字，多帶一段時間戳不需要獨立欄位寬度）。
+ * 色點＋文字，多帶一段時間戳不需要獨立欄位寬度）。SW-12（#342）：
+ * 「淨成本走勢」欄隨該功能整個退休移除，現為 8 欄。
  */
 function LibTableHead() {
   return (
@@ -467,7 +471,6 @@ function LibTableHead() {
       <span className="lib-cell r">現價 → 目標價</span>
       <span className="lib-cell">冠軍策略</span>
       <span className="lib-cell r">劇本報酬</span>
-      <span className="lib-cell">淨成本走勢</span>
       <span className="lib-cell">到期</span>
       <span className="lib-cell">狀態</span>
     </div>

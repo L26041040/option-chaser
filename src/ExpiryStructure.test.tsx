@@ -128,20 +128,18 @@ describe("候選窄列", () => {
     expect(row).toHaveTextContent(`淨成本 $${prices.net.toFixed(2)}`);
   });
 
-  it("Bid/Ask 過寬的候選收合列不再帶徽章，展開後顯示完整警示文案（MVP V3／#104；" +
-     "SW-10／#340 起移到展開內容，理由：幾乎每筆都有，收合列常駐已失去資訊價值）", () => {
+  it("SW-12（#342，Owner 真機驗收）：Bid/Ask 過寬旗標即使為真，⚠ 徽章也完全不" +
+     "顯示——收合、展開皆然（不是 SW-10／#340 那種「移到展開內容」，是整個退出" +
+     "使用者 UI；底層 `wide_spread_warning` 欄位本身不受影響，只是不再渲染）", () => {
     const expiry = view.baseline_expiry!;
     const { resultOverrides, poolPatch } = withCandidates(expiry, 2,
       (c, i) => ({ ...c, wide_spread_warning: i === 0 }));
     show(resultOverrides, poolPatch);
 
     const rows = screen.getAllByRole("listitem");
-    // 收合就看得到的排名列（summary）不再有徽章——只有展開後的
-    // `.candidate-panel-warnings` 才有，`<details>` 關閉狀態下內容仍在
-    // DOM 裡（原生 `<details>` 語意，不是被拿掉），查詢照樣找得到。
-    expect(within(rows[0]).getByText("⚠ Bid/Ask 過寬")).toBeInTheDocument();
-    expect(within(rows[0]).getByTitle("Bid/Ask 過寬")).toBeInTheDocument();
-    expect(within(rows[1]).queryByText(/Bid\/Ask 過寬/)).not.toBeInTheDocument();
+    expect(within(rows[0]).queryByText(/⚠/)).not.toBeInTheDocument();
+    expect(within(rows[0]).queryByText(/Bid\/Ask 過寬/)).not.toBeInTheDocument();
+    expect(within(rows[0]).queryByTitle("Bid/Ask 過寬")).not.toBeInTheDocument();
     // 舊泛稱字串不得復發（MVP V3／#104 AC：新舊字串皆需明文檢查封鎖）。
     expect(screen.queryByText(/報價品質有疑慮/)).not.toBeInTheDocument();
     expect(screen.queryByText(/報價非最新/)).not.toBeInTheDocument();
@@ -159,10 +157,8 @@ describe("候選窄列", () => {
     }
   });
 
-  it("單調性違反的候選展開後顯示獨立警示，不跟 Bid/Ask 過寬混在一起", () => {
-    // FB5-03（#64）：`monotonicity_warning` 是獨立欄位，成因與嚴重性都
-    // 跟 `wide_spread_warning` 不同（配對關係違反 vs 單一數值超標），
-    // 警示要分得開，不能共用同一句文案，否則使用者無法分辨兩種警示。
+  it("SW-12（#342，Owner 真機驗收）：單調性違反旗標即使為真，🚩 徽章也完全不顯示" +
+     "——同一原則，底層 `monotonicity_warning` 欄位與 eligibility 計算不受影響", () => {
     const expiry = view.baseline_expiry!;
     const { resultOverrides, poolPatch } = withCandidates(expiry, 2, (c, i) => ({
       ...c, wide_spread_warning: false, monotonicity_warning: i === 0,
@@ -170,8 +166,8 @@ describe("候選窄列", () => {
     show(resultOverrides, poolPatch);
 
     const rows = screen.getAllByRole("listitem");
-    expect(within(rows[0]).getByText("🚩 疑似陳舊報價")).toBeInTheDocument();
-    expect(within(rows[0]).queryByText(/Bid\/Ask 過寬/)).not.toBeInTheDocument();
+    expect(within(rows[0]).queryByText(/🚩/)).not.toBeInTheDocument();
+    expect(within(rows[0]).queryByText(/疑似陳舊報價/)).not.toBeInTheDocument();
     expect(within(rows[1]).queryByText(/疑似陳舊報價/)).not.toBeInTheDocument();
   });
 

@@ -12,11 +12,12 @@ import { describe, expect, it } from "vitest";
 
 /** SW-08 票面點名的圖表／資料視覺元件；純函式檔案（`heatmap.ts` 等）
  *  一併掃，色彩邏輯常常寫在那裡而不是渲染元件本身。 */
+// SW-12（#342）：`CostSparkline.tsx`／`sparkline.ts`／`SpreadHistory.tsx`／
+// `DesktopSpreadHistory.tsx`／`spreadHistory.ts` 五個檔案隨 Spread 淨
+// 成本走勢功能整個退休移除，已從這份清單移除。
 const CHART_FILES = [
   "src/Heatmap.tsx", "src/heatmap.ts",
   "src/PriceLadder.tsx",
-  "src/CostSparkline.tsx", "src/sparkline.ts",
-  "src/SpreadHistory.tsx", "src/DesktopSpreadHistory.tsx", "src/spreadHistory.ts",
   "src/IvHistory.tsx", "src/IvTrend.tsx", "src/ivHistoryChart.ts",
   "src/CandidatePool.tsx",
   "src/RawData.tsx",

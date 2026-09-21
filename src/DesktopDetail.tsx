@@ -1,7 +1,8 @@
 /**
  * 桌面詳細頁三欄外殼（OG-06／#321 起，右欄與底部 tab 由 OG-07／#325
  * 補齊）：artifact 的 Desktop 劇本詳細板：trade page 三欄版面＋底部
- * 走勢／診斷／報告／原始資料四個 tab。
+ * 診斷／報告／原始資料三個 tab（SW-12／#342 起；原本還有第四個「淨
+ * 成本走勢」tab，隨該功能整個退休移除）。
  *
  * 這個元件只在桌面 viewport 掛載（`ScenarioDetail.tsx` 的 `DetailBody`
  * 用 `useIsDesktop()` 分流，手機仍走既有 `FamilyTabs`／`ExpiryStructure`
@@ -33,13 +34,13 @@
  *
  * 1. 右欄候選面板（進場／Payoff／Greeks／報告）跟著**排名表目前選取的
  *    那一列**（`selectedCandidate`，跟中央 Heatmap 同一個資料來源）；
- *    底部「淨成本走勢」跟 OG-06 之前一樣固定跟著**冠軍候選**
- *    （`champion`，走 `ScenarioDetail.tsx` 既有 QA1-06「主圖／走勢圖
- *    不隨選取改變」原則），底部「候選策略（原候選池診斷）」跟著**目前 family／到期日**
+ *    底部「候選策略（原候選池診斷）」跟著**目前 family／到期日**
  *    （`diagnosticsResult`，跟 OG-06 之前的相對位置同一份資料），底部
- *    「原始資料」是整份劇本層級的當次快照，不分候選。四個 tab 各自
+ *    「原始資料」是整份劇本層級的當次快照，不分候選。三個 tab 各自
  *    跟著哪個維度，逐一對齊 artifact 與票面文字，不是全部劃一改成
- *    「跟著選取列」。
+ *    「跟著選取列」。SW-12（#342）：原本第四個底部 tab「淨成本走勢」
+ *    固定跟著跨 family 冠軍（`champion`，走 QA1-06「主圖／走勢圖不隨
+ *    選取改變」原則）隨該功能整個退休移除。
  *
  * 2. 「報告」在 artifact 上同時是右欄一個 tab、也是底部一個 tab，但
  *    票面明文「同一份資料，桌面只在底部完整展開一次即可——擇一擺位，
@@ -60,9 +61,10 @@
  * 不是跨 family 冠軍（`champion`）——右欄從 OG-07 起本來就是「跟著排名表
  * 目前選取的那一列」這個既有慣例（見上面點 1），使用者切到別的 family／
  * 到期日、選取列換成非單腿候選時，右欄理當跟著換回 `CandidatePanel`，
- * 不能讓右欄卡在一個跟中央 Heatmap／左欄排名表已經不同步的候選上；跟
- * 底部「淨成本走勢」固定跟著冠軍（QA1-06 頭條原則）是不同的既有慣例，
- * 這裡刻意選右欄自己的既有慣例，不是套錯規則。票面「單腿冠軍」四字是
+ * 不能讓右欄卡在一個跟中央 Heatmap／左欄排名表已經不同步的候選上——
+ * 這跟頭條固定跟著冠軍（QA1-06 頭條原則，SW-12／#342 前底部「淨成本
+ * 走勢」tab 也是同一個既有慣例）是不同的既有慣例，這裡刻意選右欄
+ * 自己的既有慣例，不是套錯規則。票面「單腿冠軍」四字是
  * 描述這張票服務的典型情境（單一 family 劇本的冠軍恆等於排名表唯一
  * 候選，兩者天然重合），不是要求改成冠軍鎖定——多 family 劇本才會讓
  * 這兩個既有維度出現差異，此時沿用右欄自己的既有選取慣例才是內部
@@ -80,7 +82,6 @@ import AnalysisReport, {
   PositionSensitivity, QRow, RateRow, Row, RiskPayoff,
 } from "./AnalysisReport";
 import CandidatePool from "./CandidatePool";
-import DesktopSpreadHistory from "./DesktopSpreadHistory";
 import Heatmap from "./Heatmap";
 import IvHistory, {
   isSuperUserRole, supportsIvHistory, useIvHistoryAccess,
@@ -101,9 +102,10 @@ import { formatReturn, money, returnBarWidthPct } from "./scenarios";
 
 /**
  * 排名表的一列（artifact：名次、subtype 標籤、腿位 pill ×1·2·1、劇本
- * 報酬＋inline 比例條）。SW-10（#340）起 Bid/Ask 過寬／單調性警示不再
- * 常駐在這一列（見下方 `wide_spread_warning`／`monotonicity_warning`
- * 判斷式旁的說明），選取後在右欄「進場」tab 才顯示完整文案。
+ * 報酬＋inline 比例條）。SW-12（#342）起 Bid/Ask 過寬／單調性警示（⚠／
+ * 🚩）整個退出使用者 UI（見 `EntryTab` 的說明）——不只是不常駐在這
+ * 一列，右欄「進場」tab 選取後也不再顯示；`wide_spread_warning`／
+ * `monotonicity_warning` 兩個欄位本身與底層計算不受影響。
  *
  * 「腿位 pill」直接重用 `detail.ts::candidateTitle()`——跟手機版
  * `ExpiryStructure.tsx` 的 `<span className="candidate-title">` 是
@@ -142,11 +144,9 @@ function DesktopCandidateRow({
       >
         <span className="rank">#{rank}</span>
         <span className="candidate-subtype">{strategyLabel(candidate.strategy)}</span>
-        {/* SW-10（#340，Owner 真機驗收）：⚠／🚩 徽章原本常駐在這一列
-            （幾乎每筆候選都會觸發，Owner 點名「已失去資訊價值，只剩
-            視覺噪音」），移除——完整文案（含 `title`）改到右欄「進場」
-            tab（`EntryTab`，OG-07／#325 既有行為，選取這一列就會顯示）
-            才看得到，不是整個拿掉，只是不再每一列都重複刷存在感。 */}
+        {/* SW-10（#340）當時把 ⚠／🚩 徽章從這一列移到右欄「進場」tab；
+            SW-12（#342）起那份徽章本身也整個退出使用者 UI（見
+            `EntryTab` 說明），這一列從頭到尾沒有它，維持原樣。 */}
         <span className="candidate-title compact-strategy-pill">
           {candidateTitle(candidate)}
         </span>
@@ -188,19 +188,11 @@ const RIGHT_TABS: { key: RightTab; label: string }[] = [
 function EntryTab({ candidate }: { candidate: Candidate }) {
   return (
     <div className="candidate-panel-section">
-      {(candidate.wide_spread_warning || candidate.monotonicity_warning) && (
-        <div className="candidate-panel-warnings">
-          {candidate.wide_spread_warning && (
-            <span className="tag warn" title="Bid/Ask 過寬">⚠ Bid/Ask 過寬</span>
-          )}
-          {candidate.monotonicity_warning && (
-            <span className="tag suspect"
-                  title="報價與鄰近履約價不一致，疑似陳舊報價">
-              🚩 疑似陳舊報價
-            </span>
-          )}
-        </div>
-      )}
+      {/* SW-12（#342，Owner 真機驗收）：⚠／🚩 徽章整個退出使用者 UI——
+          SW-10（#340）當時只是把它從排名列搬到這裡，Owner 這次明講
+          「不是搬，是不再屬於產品 UI」。`wide_spread_warning`／
+          `monotonicity_warning`（`./api` 的 `Candidate` 型別）與底層
+          eligibility／ranking 計算原封不動，只拿掉渲染。 */}
       {/* SW-05（#337）文案去術語：「口徑」是內部工程詞彙，語意不變
           （仍是「以最差成交價假設」這件事），換個看得懂的講法——跟
           手機版 `ScenarioDetail.tsx::EntryPanel`（SW-06／#335）同一句
@@ -391,10 +383,9 @@ function CandidatePanel({
   );
 }
 
-type BottomTab = "history" | "pool" | "report" | "raw";
+type BottomTab = "pool" | "report" | "raw";
 
 const BOTTOM_TABS: { key: BottomTab; label: string }[] = [
-  { key: "history", label: "淨成本走勢" },
   // SW-05（#337）文案去術語：「候選池診斷」→「候選策略」，跟
   // `CandidatePool.tsx` 共用元件自己的標題（SW-06／#335 已改）對齊。
   { key: "pool", label: "候選策略" },
@@ -420,7 +411,7 @@ export default function DesktopDetailBody({
   const [pickedFamily, setPickedFamily] = useState<string | null>(null);
   const [pickedExpiry, setPickedExpiry] = useState<string | null>(null);
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
-  const [bottomTab, setBottomTab] = useState<BottomTab>("history");
+  const [bottomTab, setBottomTab] = useState<BottomTab>("pool");
   // OG-08（#326）：Hooks 規則——這支 hook 必須排在下面
   // `families.length === 0` 提前 return 之前呼叫，跟其餘 `useState` 放
   // 在一起，即使目前這個分支理論上不會真的觸發那個提前 return。判斷式
@@ -615,10 +606,12 @@ export default function DesktopDetailBody({
       )}
     </div>
 
-    {/* OG-07（#325）：底部四個 tab——淨成本走勢（跟著冠軍，QA1-06）／
-        候選策略（原候選池診斷）（跟著目前 family／到期日，OG-06 之前的相對位置同一份
-        資料）／分析報告（跟著選取列，唯一一份完整渲染）／原始資料
-        （劇本層級當次快照，不分候選）。 */}
+    {/* OG-07（#325）：底部三個 tab——候選策略（原候選池診斷）（跟著
+        目前 family／到期日，OG-06 之前的相對位置同一份資料）／分析
+        報告（跟著選取列，唯一一份完整渲染）／原始資料（劇本層級當次
+        快照，不分候選）。SW-12（#342）：原本第一個「淨成本走勢」tab
+        （跟著冠軍，QA1-06）隨該功能整個退休移除，「候選策略」變成
+        預設分頁。 */}
     <section className="panel detail-bottom-tabs">
       <div className="panel-h">
         <nav className="chip-strip" role="tablist" aria-label="劇本詳細底部資訊">
@@ -636,19 +629,12 @@ export default function DesktopDetailBody({
           ))}
         </nav>
       </div>
-      {/* 四個分頁全部常駐掛載，用 `hidden` 切換可見度，不是切一次卸載
-          重掛一次——`DesktopSpreadHistory` 掛載就抓資料（artifact：
-          預設分頁就看得到圖，不是要使用者再展開一次），若改成條件式
-          卸載重掛，使用者每切一次分頁就會重新打一次 API，白白浪費流量
-          也違背「切換零網路請求」的既有精神（AC 原文只講右欄，但同一個
+      {/* 三個分頁全部常駐掛載，用 `hidden` 切換可見度，不是切一次卸載
+          重掛一次——切換零網路請求的既有精神（AC 原文只講右欄，但同一個
           原則沒有理由不適用底部）。`RawData` 自己內層仍是使用者要點開
           才抓（它自己的 `<details onToggle>` 不受這裡影響），常駐掛載
           不會讓它變得更早發送請求。 */}
       <div className="detail-bottom-tab-body">
-        <div hidden={bottomTab !== "history"}>
-          <DesktopSpreadHistory scenarioId={scenarioId} candidate={champion}
-                                analyzedAt={analyzedAt} />
-        </div>
         <div hidden={bottomTab !== "pool"}>
           <CandidatePool view={view} result={diagnosticsResult} />
         </div>

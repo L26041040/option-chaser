@@ -25,7 +25,6 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 from option_chaser import __version__, ivpipeline, service, store
 from option_chaser.data import treasury as treasury_data
 from option_chaser.data.snapshot import snapshot_from_dict, snapshot_to_csv
-from option_chaser.history_resolver import resolve_historical_cost
 from option_chaser.models import (AnalysisParams, ChainSnapshot, FAMILIES,
                                   FetchError, ParamError, RateLimitedError,
                                   STRATEGIES, normalize_families, subtypes_of)
@@ -42,7 +41,7 @@ from .identity import (IdentityResolver, cookie_identity_resolver,
                        default_identity_resolver, resolved_owner_scope)
 from .rate_cache import cached_loader
 from .storage import (BrowserIdentity, ContractHistory, DataSourceSettings,
-                      IvBackfillRun, IvObservation, NarrowHistoryEntry,
+                      IvBackfillRun, IvObservation,
                       Owner, ProviderCredential, ProviderVerification,
                       RateCacheEntry, ResultRecord, ResultSummary,
                       RoleSession, Scenario, ScenarioExists, Storage,
@@ -199,13 +198,6 @@ ANONYMOUS_GRACE_PERIOD_DAYS = 7
 # 是單純的時間預算保護：處理不完的部分留給**明天**那次 cron 觸發，
 # 不強行在一次執行內塞爆、撞上 `vercel.json` 的 `maxDuration: 60`。
 ANONYMOUS_CLEANUP_BATCH_SIZE = 200
-
-# OG-04（#323）：劇本清單「淨成本走勢」sparkline 欄的最近幾筆——票面
-# 「N 有上限、由後端截尾」交由本票決定，20 筆貼近清單頁一顆小格子的
-# 可視解析度（前端 SVG 寬度有限，塞更多點肉眼也分不出差異），比詳細頁
-# 底部完整走勢圖（不截尾、可切日／週／月）刻意小得多——那是不同用途、
-# 不同版位的兩件事，sparkline 只是「大致方向」的縮圖。
-_COST_SPARKLINE_POINTS = 20
 
 
 def _env_int(name: str, default: int) -> int:
@@ -590,8 +582,7 @@ def _row_json(sc: Scenario, today: date, *, analyzed_at: str | None,
               best_return: float | None,
               representative_candidate: dict | None,
               spot: float | None = None,
-              family_eligibility: dict | None = None,
-              cost_sparkline: list[list] | None = None) -> dict:
+              family_eligibility: dict | None = None) -> dict:
     """劇本在清單上的那一列。建立、列出、刷新三處共用同一個組裝函式——
     形狀只要差一個欄位，客戶端就得為同一個東西維護兩種型別。
 
@@ -610,21 +601,12 @@ def _row_json(sc: Scenario, today: date, *, analyzed_at: str | None,
     `representative_candidate`／`best_return` 同一個模式。尚未分析過
     時為 `None`（沒有可顯示的 verdict，不是假造一份「全部可選」）。
 
-    `cost_sparkline`（OG-04／#323）：**只有 `list_scenarios()` 會填這個
-    欄位**——`get_scenario()`（detail）與刷新端點不需要它，也不批次
-    查（一次只處理一個劇本，批次查詢的效益不存在），沿用預設 `None`
-    即可，不是每個呼叫端都得自己記得傳一次「不需要」。`[[analyzed_at,
-    cost], ...]`（JSON 不支援 tuple，序列化成兩元素陣列）依 `analyzed_at`
-    升冪排列，最多 `_COST_SPARKLINE_POINTS` 筆；沒有任何 narrow history
-    可查時為 `None`，前端顯示「—」，不是空陣列（空陣列前端還得多判斷
-    一次「查過但真的沒有」跟「根本沒查」的差異，這裡在序列化邊界就
-    決定好只用 `None` 一種「沒東西可畫」的訊號）。"""
+    SW-12（#342）：`cost_sparkline`（OG-04／#323，Spread 淨成本走勢
+    清單頁 sparkline 欄）隨該功能整個退休，已從回應形狀移除。"""
     return {**_scenario_json(sc), **_timing_json(sc, today),
             "latest_analyzed_at": analyzed_at, "best_return": best_return,
             "representative_candidate": representative_candidate,
-            "spot": spot, "family_eligibility": family_eligibility,
-            "cost_sparkline": ([[at, cost] for at, cost in cost_sparkline]
-                               if cost_sparkline else None)}
+            "spot": spot, "family_eligibility": family_eligibility}
 
 
 def _summary_of(latest: ResultRecord | ResultSummary | None) -> dict:
@@ -641,43 +623,6 @@ def _summary_of(latest: ResultRecord | ResultSummary | None) -> dict:
             "spot": latest.spot if latest else None,
             "family_eligibility":
                 latest.family_eligibility if latest else None}
-
-
-def _cost_sparkline_pairs(scenarios, summaries: dict) -> list[tuple[str, str]]:
-    """OG-04（#323）：從一批劇本的 `ResultSummary` 收集「有冠軍候選、
-    且冠軍候選有 `candidate_key`」的 `(scenario_id, candidate_key)`
-    配對，交給 `Storage.cost_sparklines()` 一次批次查完（供
-    `list_scenarios()`／`superuser_list_owner_scenarios()` 共用，避免
-    兩處各自重複同一段過濾邏輯）。舊資料（本票落地前最後一次成功分析）
-    的 `representative_candidate` 沒有 `candidate_key`——`.get()` 誠實
-    跳過，不是假造一把不存在的 key 去查 narrow history，這種劇本要等
-    下一次刷新才會有 sparkline。"""
-    return [
-        (s.id, key)
-        for s in scenarios
-        if (summary := summaries.get(s.id)) is not None
-        and (cand := summary.representative_candidate) is not None
-        and (key := cand.get("candidate_key")) is not None
-    ]
-
-
-def _cost_sparkline_for(db, owner: str, scenario_id: str,
-                        representative_candidate: dict | None) -> list[tuple] | None:
-    """OG-04（#323）：單一劇本版本的 `_cost_sparkline_pairs()`——編輯／
-    單一劇本刷新（含過期／節流兩條短路）都要回跟清單同一個形狀（`_row_
-    json()` 檔頭「形狀只要差一個欄位，客戶端就得為同一個東西維護兩種
-    型別」既有紀律的直接延伸；`test_api_refresh.py::test_refresh_row_
-    has_the_same_shape_as_a_list_row` 既有測試鎖住這個不變量）。單一
-    配對呼叫 `cost_sparklines()`，不是為了效率另開一條路徑——這幾個
-    端點本來就只處理一個劇本，批次查詢的效益在這裡不存在，重用同一個
-    Storage 方法只是不新增第二套查詢邏輯。"""
-    if representative_candidate is None:
-        return None
-    key = representative_candidate.get("candidate_key")
-    if key is None:
-        return None
-    return db.cost_sparklines([(scenario_id, key)], owner=owner,
-                              limit=_COST_SPARKLINE_POINTS).get(scenario_id)
 
 
 def _event_json(event: dict) -> dict:
@@ -1683,7 +1628,8 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
     @app.get("/api/ops/metrics")
     def ops_metrics(request: Request) -> dict:
         """指標的單一 operator 查詢入口（AC-1，SCALE-08 當時七類、
-        PB-08／#300 擴為八類），逐一列出：
+        PB-08／#300 擴為八類，SW-12／#342 隨 Spread 淨成本走勢退休移除
+        `history_read_volume` 後現有七類），逐一列出：
 
         1. `chain_fetch_count`——上游抓鏈實際被呼叫的次數（`source`／
            `symbol` 維度）
@@ -1696,15 +1642,13 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
            `count`／`total`／`max_value` 供算平均與量級
         6. `table_size`——`results`／`snapshots` 兩表即時查詢的列數、
            大小、單列大小分布（query-time gauge，不在上面的桶裡）
-        7. `history_read_volume`——回答一次 `/history` 請求要撈幾筆
-           完整歷史 view（SCALE-14 切換 narrow 讀取路徑後的對照基準）
-        8. `abandoned_owner_cleanup_count`（PB-08／#300）——匿名擁有者
+        7. `abandoned_owner_cleanup_count`（PB-08／#300）——匿名擁有者
            清理排程每次執行 hard-delete 掉幾個 owner（`count`）、加總
            刪掉幾列資料（`amount`），供 PB-11 的每日摘要信引用
 
         **PB-11（#303）純加法擴充**（AC8）：`anonymous_owners`（三態
         分佈＋protected 數＋總數）／`scenarios`（site-wide 總數與
-        per-owner 平均）皆為 query-time gauge，不進上面的 8 個桶；
+        per-owner 平均）皆為 query-time gauge，不進上面的 7 個桶；
         `alerts` 是四條 alert 判準的目前結果（`api_app/ops_alerts.
         py::evaluate_alerts()`）。回應**只含聚合數字**——個別 owner
         的可識別內容或第三方 token 屬 PB-10 獨立端點的職責，兩者不
@@ -1930,14 +1874,7 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         today = ny_today()
         scenarios = _db().list_scenarios(
             owner=owner_id, include_archived=include_archived)
-        # OG-04（#323）：跟 `list_scenarios()` 同一個形狀（`_row_json()`
-        # 檔頭紀律），這裡是 Super Admin 跨 owner 版本，同樣批次查詢。
-        pairs = _cost_sparkline_pairs(scenarios, summaries)
-        sparklines = (_db().cost_sparklines(pairs, owner=owner_id,
-                                            limit=_COST_SPARKLINE_POINTS)
-                     if pairs else {})
-        return [_row_json(sc, today, **_summary_of(summaries.get(sc.id)),
-                          cost_sparkline=sparklines.get(sc.id))
+        return [_row_json(sc, today, **_summary_of(summaries.get(sc.id)))
                 for sc in scenarios]
 
     @app.get("/api/superuser/owners/{owner_id}/scenarios/{scenario_id}")
@@ -2280,11 +2217,7 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
 
         latest = (None if thesis_changed
                  else _db().latest_result(scenario_id, owner=owner))
-        return _row_json(
-            updated, ny_today(), **_summary_of(latest),
-            cost_sparkline=_cost_sparkline_for(
-                _db(), owner, scenario_id,
-                latest.representative_candidate if latest else None))
+        return _row_json(updated, ny_today(), **_summary_of(latest))
 
     @app.get("/api/scenarios")
     def list_scenarios(include_archived: bool = False) -> list[dict]:
@@ -2295,16 +2228,9 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         summaries = _db().latest_summaries(owner=owner)
         today = ny_today()          # 整份清單共用同一個「今天」
         scenarios = _db().list_scenarios(owner=owner, include_archived=include_archived)
-        # OG-04（#323）：批次撈「淨成本走勢」sparkline——一次查完全部
-        # 劇本，不對每個劇本各自查一次（AC「不得退化成 N+1」）。
-        pairs = _cost_sparkline_pairs(scenarios, summaries)
-        sparklines = (_db().cost_sparklines(pairs, owner=owner,
-                                            limit=_COST_SPARKLINE_POINTS)
-                     if pairs else {})
         rows = []
         for s in scenarios:
-            rows.append(_row_json(s, today, **_summary_of(summaries.get(s.id)),
-                                  cost_sparkline=sparklines.get(s.id)))
+            rows.append(_row_json(s, today, **_summary_of(summaries.get(s.id))))
         return rows
 
     @app.get("/api/scenarios/{scenario_id}")
@@ -2420,11 +2346,7 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         if month_is_over(TargetMonth.from_key(sc.target_month), today):
             owner = identity_resolver()
             latest = _db().latest_result(sc.id, owner=owner)
-            return _row_json(
-                sc, today, **_summary_of(latest),
-                cost_sparkline=_cost_sparkline_for(
-                    _db(), owner, sc.id,
-                    latest.representative_candidate if latest else None))
+            return _row_json(sc, today, **_summary_of(latest))
         # T06（#221）：`sc.strategies` 存的是 family 代碼（新資料）或
         # legacy subtype 字串（舊資料，無遷移）——這是**唯一**的展開點，
         # 把它換算成 `AnalysisRequest.strategies` 要的具體 subtype 清單。
@@ -2505,15 +2427,12 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         _db().save_current_result(dataclasses.replace(
             rec, view=store.strip_persisted_all_candidates(view)))
         _db().save_snapshot(sc.id, analyzed_at, snapshot, owner_id=owner_id)
-        # SCALE-09（#261，Scaling Foundation Stage 1-1）：dual-write
-        # narrow history——只寫 visible candidate 的 non-null cost
-        # （`store.visible_candidate_costs()` 即 FR-2.2 定義的聯集），
-        # `results.view` 本身完全不受影響。SCALE-14（#265）：`GET
-        # /history` 現已切換到讀這張表＋candidate-specific resolver。
-        _db().save_narrow_history(
-            NarrowHistoryEntry(scenario_id=sc.id, analyzed_at=analyzed_at,
-                              candidate_key=key, cost=cost, owner_id=owner_id)
-            for key, cost in store.visible_candidate_costs(view).items())
+        # SW-12（#342）：Spread 淨成本走勢（narrow history dual-write，
+        # SCALE-09／#261）整個退休——這裡原本每次刷新都會為每個 visible
+        # candidate 寫一筆 `narrow_history` 列，永久累積、無 retention；
+        # Owner 明講「停止未來繼續累積這類歷史資料」，這裡就是那個累積
+        # 點，已停止呼叫。`results.view`／`save_current_result()` 等其餘
+        # 落盤路徑不受影響。
         _db().append_event(ts=now_utc_iso(), scenario_id=sc.id,
                            event="ANALYSIS_COMPLETED",
                            payload={"analyzed_at": analyzed_at,
@@ -2525,14 +2444,7 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
             sc, today, analyzed_at=analyzed_at,
             best_return=best_return,
             representative_candidate=representative_candidate,
-            spot=store.spot(view), family_eligibility=family_elig,
-            # OG-04（#323）：這次剛寫入的 narrow history（上面
-            # `save_narrow_history()`）就在同一個請求裡讀得到——跟
-            # 既有「刷新完直接把回傳值換掉清單裡那一列」的既有慣例
-            # 一致，不必等下一次 `GET /api/scenarios` 才看得到新
-            # sparkline 多的這一點。
-            cost_sparkline=_cost_sparkline_for(
-                _db(), owner_id, sc.id, representative_candidate))
+            spot=store.spot(view), family_eligibility=family_elig)
 
     @app.post("/api/scenarios/{scenario_id}/refresh")
     def refresh_scenario(scenario_id: str, manual: bool = False) -> dict:
@@ -2722,109 +2634,6 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         _require(scenario_id)
         return [{"analyzed_at": ts} for ts in
                _db().result_timestamps(scenario_id, owner=identity_resolver())]
-
-    @app.get("/api/scenarios/{scenario_id}/history")
-    def get_spread_history(scenario_id: str, candidate_key: str) -> dict:
-        """SCALE-14（#265，Stage 1-3）：canonical read semantics——不再
-        整份讀取 `results.view`（AC-5）。時間軸來自
-        `result_spot_timestamps()`（只讀 `snapshots` JSONB 的 `spot`
-        純量欄位），逐 `analyzed_at` 依序：
-
-        1. narrow row 存在且 `cost != None` → 直接用（hit）。
-        2. narrow row 存在且 `cost == None` → 已知 genuine gap，直接
-           用（negative cache，不重跑 resolver）。
-        3. narrow row 不存在（cache miss）→ 讀該天的 fact context＋原始
-           快照，呼叫 SCALE-09 `resolve_historical_cost()`；valid／
-           invalid 兩種結果**都** write-through 落盤（AC-3），下次同一
-           個 `(analyzed_at, candidate_key)` 就會落在分支 1／2，不必
-           重付 replay 成本（AC-2）。
-
-        `baseline_return`／`rank_in_expiry` 兩個既有回應欄位保留為
-        `null`——Audit 已證實前端零消費者（`tests/test_scale14_
-        history_read_path.py::test_frontend_never_reads_history_
-        baseline_return_or_rank_in_expiry` 有結構性測試鎖定），新
-        canonical path 不重算它們。
-
-        AC-7 fail-safe：`resolve_historical_cost()` 對
-        `history_replay_version` 不支援／`resolved_params` 缺
-        `target_price`／`target_month` 等既有必要欄位一律回傳
-        `reason="missing_fact_context"`／`"version_mismatch"` 的
-        genuine gap（`cost=None`），不猜測、不回錯值。`missing_
-        fact_context`**刻意不 write-through**——那代表 SCALE-01 metadata
-        backfill 尚未跑到這一列，日後補齊後應該能重新正確判定，永久
-        負向快取會讓這個 (analyzed_at, key) 卡死在 `None` 救不回來；
-        其餘 gap 原因（`version_mismatch`／`skipped_direction`／
-        `invalid_iv`／structural invalid 等）是那一天資料本身的穩定
-        事實，不會因為補跑 metadata backfill 而改變，正常 write-through
-        （AC-3）。同一道理，`fact context` 或原始快照本身完全缺席
-        （既有孤兒列，`save_result()`／`save_snapshot()` 兩次獨立呼叫
-        留下的邊界情況）也不 write-through：這是資料本身還不完整，不是
-        resolver 做出的判斷，不該假裝成一個已驗證的結果永久鎖住。
-
-        未在 legacy view 尚存在時提供 compatibility fallback（票面
-        「可走」，非必須；`HISTORY_REPLAY_VERSION` 目前恆為 1，沒有
-        任何存量資料觸發得到這條路徑，見 `Storage.result_spot_
-        timestamps()` docstring 的完整裁決記錄）。
-        """
-        owner = identity_resolver()
-        _require(scenario_id)
-        timestamps = _db().result_spot_timestamps(scenario_id, owner=owner)
-        all_dates = [at for at, _spot in timestamps]
-        spot_by_date = dict(timestamps)
-
-        narrow = _db().narrow_history_for_candidate(
-            scenario_id, candidate_key, all_dates, owner=owner)
-        miss_dates = [at for at in all_dates if at not in narrow]
-
-        cost_by_date: dict[str, float | None] = dict(narrow)
-        if miss_dates:
-            fact_contexts = _db().result_fact_contexts(
-                scenario_id, miss_dates, owner=owner)
-            snapshots = _db().snapshots_batch(
-                scenario_id, miss_dates, owner=owner)
-            to_write_through: list[NarrowHistoryEntry] = []
-            for at in miss_dates:
-                fact = fact_contexts.get(at)
-                snap_dict = snapshots.get(at)
-                if fact is None or snap_dict is None:
-                    # 前提資料本身不存在（既有孤兒列）——不是 resolver
-                    # 判定過的結果，不 write-through（見上方 docstring）。
-                    cost_by_date[at] = None
-                    continue
-                resolved = resolve_historical_cost(
-                    candidate_key,
-                    history_replay_version=fact.history_replay_version,
-                    requested_strategies=fact.requested_strategies,
-                    resolved_params=fact.resolved_params,
-                    snapshot=snapshot_from_dict(snap_dict))
-                cost_by_date[at] = resolved.cost
-                if not resolved.is_write_through_eligible():
-                    # SCALE-01 backfill 尚未跑到這一列——日後補齊後應該
-                    # 能重新正確判定，不永久快取（見上方 docstring 與
-                    # `ResolvedHistoricalCost.is_write_through_eligible()`
-                    # 自己的說明——caching policy 集中在那裡判斷，這裡
-                    # 不對 `reason` 字串本身做分支決策）。
-                    continue
-                to_write_through.append(NarrowHistoryEntry(
-                    scenario_id=scenario_id, analyzed_at=at,
-                    candidate_key=candidate_key, cost=resolved.cost,
-                    owner_id=owner))
-            if to_write_through:
-                _db().save_narrow_history(to_write_through)
-
-        # S0（SCALE-08／#258）指標 #7：`count` 語意沿用既有「累積撈了
-        # 幾筆歷史列（volume）」——SCALE-14 切換後，narrow hit／
-        # negative-cache 只查小欄位，真正的成本集中在 cache miss 才會
-        # 觸發的完整快照批次讀取，`len(miss_dates)` 才是這條新讀取路徑
-        # 對應舊指標「撈了幾筆完整 view」的誠實類比（兩者皆為「這次
-        # 呼叫付出了幾份大型 payload 的代價」）。
-        _record_metric("history_read_volume", ny_today(), count=len(miss_dates))
-
-        entries = [{"analyzed_at": at, "spot": spot_by_date.get(at),
-                   "cost": cost_by_date.get(at),
-                   "baseline_return": None, "rank_in_expiry": None}
-                  for at in all_dates]
-        return {"entries": entries}
 
     def _load_raw_snapshot(scenario_id: str) -> ChainSnapshot:
         """V8（#56）：原始資料（當次快照）——`refresh_scenario` 早就在
