@@ -9,6 +9,7 @@
 """
 from __future__ import annotations
 
+from contextlib import AbstractContextManager
 from dataclasses import dataclass, replace
 from typing import Protocol, Sequence
 
@@ -1214,6 +1215,21 @@ class Storage(Protocol):
     @property
     def kind(self) -> str:
         """"memory" | "postgres"——供 /api/health 如實回報實際用的是哪個。"""
+
+    def request_scope(self) -> AbstractContextManager[None]:
+        """一次 HTTP request 期間的資源 scope——由 `main.py` 的
+        `_request_scope_middleware` 在每個 request 最外層 `with` 起來。
+
+        ARCH-REVIEW-001（#343）：兩個後端本來就都實作了這個方法
+        （`postgres.py` 共用同一條惰性連線；`memory.py` 是純 no-op，
+        它的 docstring 明說「存在的唯一理由是讓 middleware 走跟
+        production 同一條分支」），唯獨 Protocol 沒宣告，於是 middleware
+        只能 `getattr(_db(), "request_scope", None)` 去猜——抽象在這裡
+        是漏的：契約沒講的東西，呼叫端卻依賴它存在。補進契約後
+        middleware 直接呼叫，契約測試也涵蓋得到。
+
+        對沒有連線概念的後端，實作成 no-op contextmanager 即可，不是
+        選配。"""
 
 
 @dataclass(frozen=True)

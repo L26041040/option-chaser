@@ -20,18 +20,18 @@ from .valuation import (ButterflyValuation, ContractValuation, SpreadValuation,
                         spread_guidance_judgments)
 
 
-SCENARIO_SCHEMA_VERSION = 2   # v2: target_date（YYYY-MM-DD）→ target_month（YYYY-MM）
-
 # SCALE-01（#252，Scaling Foundation Stage 1-0）：凍結「candidate-specific
 # historical membership replay」語意的版本號——不是 `view["schema_version"]`
 # （那個描述 view *形狀*）也不是 `engine_version`（描述引擎程式碼版本），
 # 是描述「這一列歷史 fact 的 eligibility／filter／pair-validity 語意」。
-# 目前唯一的消費者是尚未建立的 SCALE-09 candidate-specific resolver：
-# 未來若 eligibility 規則改變（例如過濾門檻、pair validity 判準），
-# resolver 必須依這個版本號決定怎麼重放舊資料，不得對所有既有列直接
-# 套用新規則重新解讀（那會讓「當時到底發生了什麼」這個歷史事實跟著
-# 現在的程式碼改變）。今天只有版本 1；SCALE-01 把它寫進每一列
-# （新寫入與 backfill 皆同），版本本身尚未被任何邏輯讀取或分派。
+#
+# ARCH-REVIEW-001（#343）：原註解寫「目前唯一的消費者是尚未建立的
+# SCALE-09 candidate-specific resolver」——那個 resolver（`history_
+# resolver.py`）已隨 SW-12（#342）Spread 淨成本走勢整個退休而刪除，
+# 所以現在沒有、也不預期會有讀取端。這個欄位仍然值得繼續寫進每一列：
+# 它記錄的是「這列資料是用哪一版 eligibility 語意算出來的」這個歷史
+# 事實，將來任何要重放舊列的東西都需要它，而事後補不回來。寫入但不
+# 讀取在這裡是刻意的，不是待辦。
 HISTORY_REPLAY_VERSION = 1
 
 

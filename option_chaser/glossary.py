@@ -1,5 +1,12 @@
 # option_chaser/glossary.py
-"""v4 spec §4.6: single-source glossary feeding tooltips and the help page."""
+"""v4 spec §4.6 的名詞定義表。
+
+ARCH-REVIEW-001（#343）：原本這行寫「single-source glossary feeding
+tooltips and the help page」——那個角色現在沒有任何 runtime 路徑成立
+（前端的 tooltip 文案自己帶在元件裡）。它今天實際的角色是
+`tests/test_redlines.py` 的**文案漂移錨點**：紅線措辭改了，那條測試
+會紅。留著是為了這個，不是為了被 import 進產品。
+"""
 GLOSSARY: dict[str, str] = {
     "劇本報酬": "劇本完整成立（目標日到達目標價）時的模型報酬率，"
                "最差進場（買付 Ask、賣收 Bid）——保守成交假設，非理論下限。",

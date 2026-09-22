@@ -15,6 +15,21 @@ membership／eligibility**——candidate 當時是否真的通過完整過濾
 零 vendor 呼叫、零 credential、不跑 ranking／valuation 引擎——純粹是
 `option_chaser.data.snapshot.find_contract()` 查表 ＋
 `option_chaser.scenarios` 的三個 canonical 算式。
+
+## 現狀：沒有生產呼叫端，而且不會再有（ARCH-REVIEW-001／#343）
+
+上面提到的「更高層 resolver（SCALE-09）」就是 `history_resolver.py`，
+它已隨 SW-12（#342）Spread 淨成本走勢整個退休而刪除。本模組因此從
+「尚未接上的原語」變成「永久沒有生產呼叫端的原語」——這是狀態改變，
+不是待辦事項。
+
+**仍然刻意保留**，理由不是捨不得刪：`tests/test_scale03_snapshot_
+replay.py` 用它對 production-scale fixture 的**整個 ranked pool** 做
+`cost_from_snapshot()` ↔ `natural_cost()` 逐位元比對，而那正是
+SW-12 刪掉的 `test_scale12_parity_proof.py` 留下來的那一半覆蓋的
+接班人。刪掉本模組就會連帶刪掉那條比對，真的會失去一個仍然有效的
+不變量。它今天的角色是「`natural_cost()` 的獨立第二實作」，價值在
+交叉驗證，不在被產品呼叫。
 """
 from __future__ import annotations
 

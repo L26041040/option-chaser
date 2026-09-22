@@ -60,6 +60,7 @@ import TopBar from "./TopBar";
 import TrashView from "./TrashView";
 import { useIsDesktop } from "./useIsDesktop";
 import { CloseIcon } from "./icons";
+import { invalidateScenarioCache } from "./fetchCache";
 import {
   archiveScenario,
   createScenario,
@@ -470,6 +471,14 @@ export default function App() {
     } finally {
       setBusy(false);
     }
+    // ARCH-REVIEW-001（#343）：thesis 改了的話後端已經 `clear_results()`，
+    // 手上那份詳細頁快取講的是一組已經不存在的結果。這裡主動作廢它，
+    // 不靠 `getScenarioCached()` 的 `hintAnalyzedAt` 推斷——編輯後的
+    // hint 正好是 `null`，而 `null` 在那邊的語意是「還不知道版本，沿用
+    // 快取」，推斷不出「後端剛清空」，見 `fetchCache.invalidateScenario
+    // Cache()` 檔內說明。下面的 `refreshOne(id)` 成功時會把新結果帶回
+    // 來，但它失敗（quota／rate limit／vendor fuse）時就是這一行在擋。
+    invalidateScenarioCache(id);
     // 函式式更新：編輯這段期間刷新佇列很可能正在跑並且已經 setRows 過。
     setRows((prev) => prev.map((r) => (r.id === id ? updated : r)));
     setEditing(null);

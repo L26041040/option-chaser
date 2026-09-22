@@ -57,7 +57,6 @@
      正常情況下不會被使用者實際看到。 */
   --font: "Plus Jakarta Sans", "Noto Sans TC", "PingFang TC",
     "Microsoft JhengHei", sans-serif;
-  --font-cjk: "Noto Sans TC", "PingFang TC", "Microsoft JhengHei", sans-serif;
   --mono: ui-monospace, SFMono-Regular, Menlo, monospace, "Noto Sans TC";
 
   /* Seed Warm · 淺色唯一（Direction A 原文，見檔頭）。SW-09（#339）
@@ -93,7 +92,6 @@
   --info: #3d6e99;
   --warn: #b7791f;
   --warn-text: #9b661a;
-  --warn-soft: #fbf0dc;
   --crossover: var(--info);
   --tile-bg: #ffffff;
   --tile-line: #ebe3d6;

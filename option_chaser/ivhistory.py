@@ -148,23 +148,6 @@ def leg_coordinate(*, option_type: str, strike: float, iv: float | None,
     return Coordinate(tenor_days=days_to_expiry, delta=abs(delta))
 
 
-def trading_days_back(today, window_days: int) -> list[str]:
-    """從今天往回數 `window_days` 個曆日，濾掉週末，回 ISO 日期（由舊到新）。
-
-    只濾週末、不處理美股假日：多打幾天假日的代價是那幾天回空（呼叫端
-    當斷點處理），比內建一份會過期的假日表可靠。**今天不含**——當日的
-    EOD 資料通常還沒結算，拿到的會是半天的東西。
-    """
-    from datetime import timedelta
-
-    out = []
-    for back in range(window_days, 0, -1):
-        day = today - timedelta(days=back)
-        if day.weekday() < 5:
-            out.append(day.isoformat())
-    return out
-
-
 def spread_coordinates(candidate: dict, *, spot: float) -> dict | None:
     """候選腿的 (tenor, delta) 座標——一腿（Long Call／Long Put）或兩腿
     （Spread）都走這一條路徑，不長第二套平行實作（#139）。
@@ -291,21 +274,6 @@ def reanchor_spread(surface: dict, coords: dict) -> dict:
     return {"buy_iv": buy_iv, "sell_iv": sell_iv, "atm_iv": atm,
             "normalized_skew": normalized_skew(sell_iv=sell_iv, buy_iv=buy_iv,
                                                atm_iv=atm)}
-
-
-def percentiles_of(points: list[dict]) -> dict:
-    """序列最後一筆在整段歷史裡的百分位，逐項算。
-
-    出界（`None`）的日子不進母體——把它們當成某個數值會污染分位數；
-    整段都出界時該項回 `None`（＝「超出可比網格」，呼叫端據此留白）。
-    """
-    out: dict[str, float | None] = {}
-    for field in ("normalized_skew", "buy_iv", "sell_iv", "atm_iv"):
-        series = [p[field] for p in points if p.get(field) is not None]
-        latest = next((p[field] for p in reversed(points)
-                       if p.get(field) is not None), None)
-        out[field] = percentile(series, latest) if latest is not None else None
-    return out
 
 
 # ---------- 抽樣排程與時間加權（#128） ----------

@@ -457,6 +457,19 @@ def test_kind_reports_the_actual_backend(storage, request):
     assert storage.kind == request.node.callspec.params["storage"]
 
 
+def test_request_scope_is_a_usable_context_manager_on_both_backends(storage):
+    """ARCH-REVIEW-001（#343）：`request_scope` 現在在 Protocol 上，所以
+    上面那條「兩邊都實作」會自動涵蓋它——但「有這個方法」不等於「真的
+    能當 scope 用」。這裡驗證實質：進得去、出得來，而且 scope 裡的一般
+    呼叫照常運作（Postgres 是共用同一條連線，memory 是 no-op，兩者
+    對呼叫端必須無差別）。"""
+    with storage.request_scope():
+        storage.create_scenario(_scenario("sc-scope"))
+        assert storage.get_scenario("sc-scope", owner=OWNER) is not None
+    # scope 結束後資料仍在——scope 是連線生命週期，不是交易邊界
+    assert storage.get_scenario("sc-scope", owner=OWNER) is not None
+
+
 def test_both_implementations_expose_the_whole_port(storage):
     """Protocol 在執行期不強制實作——少一個方法或打錯名字要靠這裡抓，
     否則只有「剛好被測到」才會發現。"""
@@ -3136,3 +3149,109 @@ def test_a_failure_opening_the_shared_connection_falls_back_to_a_per_call_one():
 
     # scope 結束後，正常呼叫（連線已恢復）不受影響。
     assert st.get_rate_cache() is None
+
+
+# ---------- 表清單漂移防護（ARCH-REVIEW-001／#343） ----------
+#
+# SW-12（#342）真的被這件事咬過一次：Spread 淨成本走勢退休時，
+# `narrow_history` 的 `CREATE TABLE` 從 `_SCHEMA` 拿掉了，但
+# `_OWNER_SCOPED_TABLES` 裡那一行留著——結果是**全新部署**上
+# `migrate_owner()`／`delete_owner()` 會對一張從來沒被建立的表下
+# `UPDATE`，執行期直接炸。那次是靠人工 review 抓到的，不是測試。
+#
+# 根因是「這個系統有哪些表」在程式碼裡有好幾份獨立的清單（DDL、
+# owner-scoped 清單、backfill 清單、null-count 稽核清單，還有測試裡
+# 的 TRUNCATE），彼此沒有任何強制一致的機制。把四份清單收斂成單一
+# registry 是更徹底的解法，但那會動到 `delete_owner()`／
+# `migrate_owner()` 這種資料正確性關鍵路徑，在 Production 尚未驗證
+# 的當下風險報酬不划算。
+#
+# 這兩條測試處理的是那次事故真正的危害——**沒有人發現**。清單仍然
+# 是多份，但任何一份漂掉都會在這裡立刻變紅。
+
+def _live_tables(conn) -> set[str]:
+    return {r[0] for r in conn.execute(
+        "SELECT table_name FROM information_schema.tables "
+        "WHERE table_schema = 'public'").fetchall()}
+
+
+def test_every_owner_scoped_table_actually_exists_in_the_schema():
+    """正向：`_OWNER_SCOPED_TABLES` 只能列真的建得出來的表。
+
+    這正是 SW-12 那個 bug 的形狀——清單裡留著一張 DDL 已經不建的表。
+    """
+    if not TEST_DB_URL:
+        pytest.skip("需要 OC_TEST_DATABASE_URL（一個跑著的 Postgres）")
+    import psycopg
+
+    from api_app.storage import postgres as pg
+
+    pg.PostgresStorage(TEST_DB_URL)          # 建 schema（建構子會跑 DDL）
+    with psycopg.connect(TEST_DB_URL, autocommit=True) as conn:
+        live = _live_tables(conn)
+
+    phantom = [t for t in pg.PostgresStorage._OWNER_SCOPED_TABLES if t not in live]
+    assert not phantom, (
+        f"`_OWNER_SCOPED_TABLES` 列了這些不存在的表：{phantom}。"
+        "全新部署上 migrate_owner()／delete_owner() 會對它們下 SQL 而炸掉。")
+
+
+def test_no_table_with_an_owner_id_column_is_silently_left_out_of_the_lifecycle():
+    """反向：帶 `owner_id` 欄位的表，不能默默不在 owner lifecycle 清單裡。
+
+    漏在清單外的後果是這張表的資料 `delete_owner()` 刪不掉、
+    `migrate_owner()` 搬不走——使用者刪除帳號後仍留著他的資料，是
+    PB-04（#296）「刪除我的所有資料」講的那件事。
+
+    例外必須明文列舉在下面，讓「刻意不 owner-scope」是一個需要表態的
+    決定，而不是忘記加清單的預設結果。
+    """
+    if not TEST_DB_URL:
+        pytest.skip("需要 OC_TEST_DATABASE_URL（一個跑著的 Postgres）")
+    import psycopg
+
+    from api_app.storage import postgres as pg
+
+    # `owners` 是 owner registry 本身（PB-01／#292）——它的主鍵就是
+    # owner，由 `delete_owner()` 最後單獨處理，不是被它掃過的資料表。
+    # `browser_identities`／`role_sessions` 是 AUTH 身分層，生命週期
+    # 綁在 session 而非 owner 資料（AUTH-06／#313）。
+    # `superuser_audit_log` 是稽核軌跡：依設計**不得**隨被稽核的 owner
+    # 一起消失，否則稽核就失去意義（PB-09／#301）。
+    EXPECTED_EXCEPTIONS = {
+        "owners", "browser_identities", "role_sessions", "superuser_audit_log",
+    }
+    # ⚠ `narrow_history` 不是設計決定，是一個**待 Owner 裁示的已知問題**
+    # （ARCH-REVIEW-001／#343 發現，由這條測試抓到）：
+    #
+    # SW-12（#342）讓 Spread 淨成本走勢整個退休時，把這張表的 DDL 與所有
+    # 讀寫路徑都移除了，也從 `_OWNER_SCOPED_TABLES` 拿掉（留著會讓全新
+    # 部署炸）。Owner 當時明示「舊資料可暫留資料庫，不做高風險 migration」。
+    #
+    # 副作用當時沒有被看見：**既有部署**（含 Production）裡這張表還在，
+    # 而且帶 `owner_id`。它現在既不在 lifecycle 清單、也沒有任何程式碼
+    # 碰它，所以使用者按「刪除我的所有資料」（PB-04／#296）時，他存在
+    # 這張表裡的舊列不會被刪掉。
+    #
+    # 三個處置方向（選哪個是 Owner 的決定，不是這條測試的）：
+    #   (a) 在既有部署 `DROP TABLE narrow_history`——徹底，但是不可逆操作；
+    #   (b) 加回清單並讓 lifecycle 操作容忍「表不存在」，新舊部署都安全；
+    #   (c) 明確接受這批 orphan 資料留著。
+    # 在 Owner 裁示前，這裡列為例外以免整套測試紅著——但註解必須留著，
+    # 讓它是一個看得見的未決事項，而不是被靜音的問題。
+    EXPECTED_EXCEPTIONS.add("narrow_history")
+
+    pg.PostgresStorage(TEST_DB_URL)
+    with psycopg.connect(TEST_DB_URL, autocommit=True) as conn:
+        with_owner_col = {r[0] for r in conn.execute(
+            "SELECT table_name FROM information_schema.columns "
+            "WHERE table_schema = 'public' AND column_name = 'owner_id'"
+        ).fetchall()}
+
+    unaccounted = (with_owner_col
+                   - set(pg.PostgresStorage._OWNER_SCOPED_TABLES)
+                   - EXPECTED_EXCEPTIONS)
+    assert not unaccounted, (
+        f"這些表有 owner_id 欄位但不在 owner lifecycle 清單也不在例外清單："
+        f"{sorted(unaccounted)}。請加進 `_OWNER_SCOPED_TABLES`，或在本測試的"
+        "`EXPECTED_EXCEPTIONS` 明文說明為什麼刻意不跟著 owner 生命週期走。")

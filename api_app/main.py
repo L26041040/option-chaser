@@ -1206,7 +1206,12 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
     async def _request_scope_middleware(request: Request, call_next):
         with diagnostics.correlation_scope() as cid:
             try:
-                scope = getattr(_db(), "request_scope", None)
+                # ARCH-REVIEW-001（#343）：`request_scope` 現在是 `Storage`
+                # 契約的一部分（兩個後端本來就都實作了），不再 `getattr`
+                # 去猜它在不在。外層的 try 保留——它防的是**另一件事**：
+                # `_db()` 本身是惰性的，設定壞掉時這一行就會炸，那時整段
+                # scope 跳過、交給下游端點自己的錯誤處理，是既有行為。
+                scope = _db().request_scope
             except Exception:  # noqa: BLE001 — 拿不到 storage 就整個跳過，交給下游端點自己的錯誤處理
                 scope = None
             if scope is None:
@@ -2173,6 +2178,18 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         可能只是打開表單又存了一次。
         """
         sc = _require(scenario_id)
+        # ARCH-REVIEW-001（#343）：垃圾桶劇本硬擋，跟 `refresh_scenario()`
+        # 同一條理由——「使用者主動丟掉的，任何背景動作都不該再發生」。
+        # 在這之前這個端點是這條規則唯一的缺口：`refresh` 擋（409）、
+        # `delete` 要求必須已在垃圾桶，只有 `edit` 不看 `archived_at`，
+        # 而它在 thesis 改變時會 `clear_results()` 並寫一筆
+        # `SCENARIO_EDITED`——等於對一個已丟棄的劇本改狀態、留紀錄。
+        # 現行前端走不到這條路（`TrashView` 沒有編輯入口），所以這是
+        # 補一個 API 層的一致性缺口，不是修一個使用者看得到的行為。
+        # 沿用 `refresh_scenario()` 的 `_fail("archived", 409, ...)` 分層
+        # 形狀而非純字串，讓前端能用既有的 `failureLabel` 分辨原因。
+        if sc.archived_at is not None:
+            raise _fail("archived", 409, f"劇本已在垃圾桶，無法編輯：{scenario_id}")
         try:
             ensure_month_open(TargetMonth.from_key(req.target_month), ny_today())
         except ParamError as e:
