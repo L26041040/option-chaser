@@ -9,7 +9,7 @@
 5. Do not expose, request, log, copy, or test real plaintext passwords/secrets.
 6. Do not take or paste screenshots unless the Owner explicitly asks. Browser verification is allowed when required by a ticket, but keep screenshot-heavy work to explicit visual-acceptance stages.
 7. Session reports: Traditional Chinese with English technical terms kept in English. Put substantive report content in one complete code block. Number reports as `［回報#NNN］`.
-8. Current report sequence: **101 used; next report is 102**.
+8. Current report sequence: **102 used; next report is 103**.
 9. **Do not append detailed ticket history to this file.** Keep this file short. After a ticket, update only the active checkpoint below in 1–2 lines. Detailed evidence belongs in GitHub issues, commits, and code review comments.
 10. `CLAUDE_HISTORY.md` is the archived legacy project journal. **Do not read it by default.** Read it only when a specific historical question cannot be answered from the current issue/commit/docs.
 
@@ -31,6 +31,17 @@ environment in Vercel's project settings (see `docs/deploy-vercel.md`),
 not just Production; (2) from SW-11 #341, desktop `ScenarioList.tsx`'s
 normal-state signal-dot has since also been removed in SW-12 #342, so
 this item is now resolved.
+
+ARCH-REVIEW-001 (#343) followed: a five-track architecture health check
+of the finished branch. Three tracks returned "no material finding" and
+were left alone; fixed only a stale-detail-cache bug after edit, an
+archived-edit lifecycle gap, a `request_scope` Protocol leak, table-list
+drift guards, and dead symbols/docs (commit `a039a85`). **One item needs
+an Owner decision** (see #343): `narrow_history` still exists in
+deployed databases with an `owner_id` column but was removed from
+`_OWNER_SCOPED_TABLES` in SW-12, so "delete all my data" (PB-04 #296)
+no longer reaches those rows — drop the table, re-add it with a
+tolerant lifecycle, or accept the orphan rows.
 
 No new project queued as of this checkpoint.
 
