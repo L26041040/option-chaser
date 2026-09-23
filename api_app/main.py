@@ -1781,11 +1781,21 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         這裡假裝修好。"""
         role: superuser.Role | None = None
         submitted = body.password.strip()
-        if _effective_superadmin_password and secrets.compare_digest(
-                submitted, _effective_superadmin_password.strip()):
+        # AUTH-P1-FIX-001（PR #344 Codex review P1）：設定值先 normalize、
+        # 再判斷有沒有設定。舊寫法的 truthy 檢查做在 strip 之前——設定值
+        # 整串只有空白（例如不小心存成一個換行字元）時檢查會過，strip 後
+        # 卻是空字串，配上同樣 strip 成空字串的空密碼提交，
+        # `compare_digest("", "")` 為真，直接拿到該角色。normalize 後為
+        # 空字串一律視同「未設定」，不參與比對，跟兩把都沒設定時的
+        # fail-closed 行為一致。只在這裡 normalize，不改寫
+        # `_effective_*_password` 本身（secret redaction 清單另外在用）。
+        superadmin_secret = (_effective_superadmin_password or "").strip()
+        superuser_secret = (_effective_superuser_password or "").strip()
+        if superadmin_secret and secrets.compare_digest(
+                submitted, superadmin_secret):
             role = superuser.Role.SUPERADMIN
-        elif _effective_superuser_password and secrets.compare_digest(
-                submitted, _effective_superuser_password.strip()):
+        elif superuser_secret and secrets.compare_digest(
+                submitted, superuser_secret):
             role = superuser.Role.SUPERUSER
         if role is None:
             raise HTTPException(status_code=401, detail="unauthorized")
