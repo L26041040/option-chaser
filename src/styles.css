@@ -3334,7 +3334,15 @@ body {
   bottom: 0;
   z-index: 6;
   display: flex;
-  height: 56px;
+  /* PR #344 review（Codex）：全站 `* { box-sizing: border-box }` 之下，
+     舊寫法（`height: 56px` ＋ `padding-bottom: env(...)`）讓 safe-area
+     內縮從固定的 56px 裡面扣，視覺高度沒有變成 `.mtabs-spacer` 算的
+     `56px + inset`——結果是 spacer 多留的那一截空間沒人補，帶
+     home-indicator 的 iPhone 會看到底部導覽上方多一條空白帶，分頁
+     內容也被擠進只剩 `56px - inset` 的高度。這裡改成跟 spacer 同一條
+     算式，`padding-bottom` 繼續負責把 tab 內容往上推、不被 safe-area
+     蓋住，`height` 才是兩邊真正要對齊的那個數字。 */
+  height: calc(56px + env(safe-area-inset-bottom, 0px));
   padding-bottom: env(safe-area-inset-bottom, 0px);
   background: var(--card);
   border-top: 1px solid var(--line);

@@ -50,7 +50,7 @@ const OWNER_B = {
  *  這個新元件的內容，只需要它不 throw、不讓 effect 掛掉。 */
 const EMPTY_OPS_METRICS = {
   chain_fetch_count: [], chain_429_count: [], stale_serve_count: [],
-  cold_miss_count: [], refresh_duration_ms: [], history_read_volume: [],
+  cold_miss_count: [], refresh_duration_ms: [],
   abandoned_owner_cleanup_count: [],
   table_size: {},
   anonymous_owners: { active: 0, abandoned: 0, eligible_for_hard_delete: 0,

@@ -262,9 +262,14 @@ function OpsStats() {
         <Stat label="刷新耗時（平均）">
           {avgRefresh === null ? "—" : `${Math.round(avgRefresh)} ms`}
         </Stat>
-        <Stat label="History 讀取量（累計）">
-          {sumMetricCount(metrics.history_read_volume)}
-        </Stat>
+        {/* PR #344 review（Codex）：這裡原本還有一格「History 讀取量
+            （累計）」讀 `metrics.history_read_volume`——SW-12（#342）
+            退休 Spread 淨成本走勢時，後端 `METRIC_CATALOGUE` 已經拿掉
+            這個 metric（`api_app/metrics.py`），`/api/ops/metrics` 在
+            沒有歷史殘留列的乾淨資料庫上根本不會回這個欄位，導致
+            `sumMetricCount(undefined)` 直接讓整個系統指標面板炸掉。
+            退休一個功能卻漏拔它在後台的觀測格，是 SW-12 的疏漏，這裡
+            整格拿掉（不是加防呆），跟 SW-12「完整移除」的精神一致。 */}
         <Stat label="Results 資料表">
           {(metrics.table_size.results?.row_count ?? "—")} 列
         </Stat>

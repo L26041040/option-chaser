@@ -1343,7 +1343,6 @@ export interface OpsMetrics {
   stale_serve_count: OpsMetricBucket[];
   cold_miss_count: OpsMetricBucket[];
   refresh_duration_ms: OpsMetricBucket[];
-  history_read_volume: OpsMetricBucket[];
   abandoned_owner_cleanup_count: OpsMetricBucket[];
   table_size: Record<string, {
     row_count: number;

@@ -67,7 +67,7 @@ const CONFIGURED = {
  *  都存在的最小假體，讓這個新的非同步 effect 不會拋錯打斷其他斷言。 */
 const EMPTY_OPS_METRICS = {
   chain_fetch_count: [], chain_429_count: [], stale_serve_count: [],
-  cold_miss_count: [], refresh_duration_ms: [], history_read_volume: [],
+  cold_miss_count: [], refresh_duration_ms: [],
   abandoned_owner_cleanup_count: [],
   table_size: {},
   anonymous_owners: { active: 0, abandoned: 0, eligible_for_hard_delete: 0,

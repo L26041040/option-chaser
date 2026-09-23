@@ -1462,7 +1462,7 @@ async function routeSettingsMobile(page: import("@playwright/test").Page) {
   await page.route("**/api/superuser/audit-log*", (route) => route.fulfill({ json: [] }));
   await page.route("**/api/ops/metrics", (route) => route.fulfill({ json: {
     chain_fetch_count: [], chain_429_count: [], stale_serve_count: [],
-    cold_miss_count: [], refresh_duration_ms: [], history_read_volume: [],
+    cold_miss_count: [], refresh_duration_ms: [],
     abandoned_owner_cleanup_count: [],
     table_size: {},
     anonymous_owners: { active: 0, abandoned: 0, eligible_for_hard_delete: 0,
@@ -1570,7 +1570,7 @@ async function routeRoleJourney(page: import("@playwright/test").Page) {
   // 就立刻掛載，不攔截這條路由這個測試會掛在未攔截請求上。
   await page.route("**/api/ops/metrics", (route) => route.fulfill({ json: {
     chain_fetch_count: [], chain_429_count: [], stale_serve_count: [],
-    cold_miss_count: [], refresh_duration_ms: [], history_read_volume: [],
+    cold_miss_count: [], refresh_duration_ms: [],
     abandoned_owner_cleanup_count: [],
     table_size: {},
     anonymous_owners: { active: 0, abandoned: 0, eligible_for_hard_delete: 0,
