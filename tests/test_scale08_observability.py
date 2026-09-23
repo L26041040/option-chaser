@@ -81,24 +81,25 @@ def _create_and_refresh(client, symbol="XYZ"):
 
 
 # ---------- AC-2：catalogue 曾經恰好七類，PB-08（#300）有意識擴為
-# 八類（見 `api_app/metrics.py` 檔頭說明）——結構性守門本身不變，
-# 只是鎖住的數字與清單需要跟著這次有意識的擴充一起改，證明不是隨意
-# 鬆綁。 ----------
+# 八類，SW-12（#342）隨 Spread 淨成本走勢退休移除 `history_read_
+# volume` 後現有七類（見 `api_app/metrics.py` 檔頭說明）——結構性
+# 守門本身不變，只是鎖住的數字與清單需要跟著這次有意識的變動一起改，
+# 證明不是隨意鬆綁。 ----------
 
-def test_metric_catalogue_is_exactly_eight():
-    assert len(METRIC_CATALOGUE) == 8
+def test_metric_catalogue_is_exactly_seven():
+    assert len(METRIC_CATALOGUE) == 7
     assert set(METRIC_CATALOGUE) == {
         "chain_fetch_count", "chain_429_count", "stale_serve_count",
         "cold_miss_count", "refresh_duration_ms", "table_size",
-        "history_read_volume", "abandoned_owner_cleanup_count"}
+        "abandoned_owner_cleanup_count"}
 
 
 def test_table_size_is_the_only_non_persisted_metric():
-    """`table_size` 是 query-time gauge，不經過 `record()`；其餘七個
+    """`table_size` 是 query-time gauge，不經過 `record()`；其餘六個
     （含 PB-08／#300 新增的 `abandoned_owner_cleanup_count`）才是真的
     寫進 `operational_metrics` 表的。"""
     assert set(METRIC_CATALOGUE) - set(PERSISTED_METRICS) == {"table_size"}
-    assert len(PERSISTED_METRICS) == 7
+    assert len(PERSISTED_METRICS) == 6
 
 
 def test_recording_an_unknown_metric_name_is_rejected():
@@ -140,24 +141,19 @@ def test_ops_metrics_endpoint_answers_all_seven_categories(monkeypatch):
     assert body["table_size"]["results"]["row_count"] >= 1
 
 
-def test_chain_fetch_and_history_read_volume_are_recorded_end_to_end(monkeypatch):
+def test_chain_fetch_is_recorded_end_to_end(monkeypatch):
+    # SW-12（#342）：這條原本還接著走一次 `/history` 驗證
+    # `history_read_volume`——該端點隨 Spread 淨成本走勢功能整個退休，
+    # 已刪除；`chain_fetch_count` 半邊的既有覆蓋原封不動保留。
     storage = MemoryStorage()
     c = _client(monkeypatch, storage=storage)
-    sid = _create_and_refresh(c)
+    _create_and_refresh(c)
 
     entries = storage.metric_summary()
     fetch_entries = [e for e in entries if e.metric == "chain_fetch_count"]
     assert fetch_entries
     assert fetch_entries[0].symbol == "XYZ"
     assert fetch_entries[0].source   # cboe 或 custom，視預設路徑而定
-
-    # 走一次 /history，觸發 history_read_volume。
-    c.get(f"/api/scenarios/{sid}/history",
-         params={"candidate_key": "bull-call-spread|100|110|2026-08-07"})
-    history_entries = [e for e in storage.metric_summary()
-                       if e.metric == "history_read_volume"]
-    assert history_entries
-    assert history_entries[0].count >= 1
 
 
 def test_refresh_duration_tracks_count_and_amount(monkeypatch):
@@ -305,10 +301,11 @@ def test_a_broken_metrics_backend_does_not_break_the_refresh_flow(monkeypatch):
     assert refresh.status_code == 200, refresh.text
 
 
-def test_a_broken_metrics_backend_does_not_break_history_or_chain_fetch_paths(monkeypatch):
-    """AC-5 明列的其餘主流程（history、429、Treasury 路徑本身）同樣
-    不受記錄失敗影響——`refresh` 已在上一條測試驗證過，這裡補
-    `/history` 與一次帶 429 的刷新。"""
+def test_a_broken_metrics_backend_does_not_break_chain_fetch_paths(monkeypatch):
+    """AC-5 明列的其餘主流程（429、Treasury 路徑本身）同樣不受記錄
+    失敗影響——`refresh` 已在上一條測試驗證過，這裡補一次帶 429 的
+    刷新。SW-12（#342）：Spread 淨成本走勢的 `/history` 端點已整個
+    退休，原本這裡驗證它也不受影響的那段一併移除。"""
     from option_chaser.data import cboe
 
     class _BrokenMetricsStorage(MemoryStorage):
@@ -317,12 +314,7 @@ def test_a_broken_metrics_backend_does_not_break_history_or_chain_fetch_paths(mo
 
     storage = _BrokenMetricsStorage()
     c = _client(monkeypatch, storage=storage)
-    sid = _create_and_refresh(c)
-
-    history = c.get(f"/api/scenarios/{sid}/history",
-                    params={"candidate_key":
-                           "bull-call-spread|100|110|2026-08-07"})
-    assert history.status_code == 200, history.text
+    _create_and_refresh(c)
 
     def rate_limited(symbol):
         raise RateLimitedError("429", retry_after_seconds=60.0)

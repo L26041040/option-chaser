@@ -18,14 +18,13 @@ from __future__ import annotations
 
 import contextvars
 from contextlib import contextmanager
-from typing import Sequence
 
 import psycopg
 from psycopg.types.json import Jsonb
 
 from . import (BrowserIdentity, ChainBackoffEntry, ContractHistory,
                DataSourceSettings, DividendCacheEntry, IvBackfillRun,
-               IvObservation, MetricEntry, NarrowHistoryEntry, Owner,
+               IvObservation, MetricEntry, Owner,
                ProviderCredential, ProviderVerification, RateCacheEntry,
                ResultFactContext, ResultRecord, ResultSummary, RoleSession,
                Scenario, ScenarioExists, SuperUserAuditEvent,
@@ -329,27 +328,11 @@ CREATE TABLE IF NOT EXISTS operational_metrics (
     max_value   DOUBLE PRECISION,
     PRIMARY KEY (metric, bucket, source, symbol)
 );
--- SCALE-09（#261，Scaling Foundation Stage 1-1）：narrow visible-
--- candidate history——熱快取，不是真相（見 option_chaser/history_
--- resolver.py 檔頭）。PK 是三個 identity 欄，`cost` 不屬於 PK 且
--- nullable：非 NULL＝已知有效歷史點，NULL＝已驗證的 genuine gap
--- （negative cache，SCALE-12／14 才會真的寫入這一種），沒有這一列＝
--- 尚未 materialize。本票（dual-write）只會寫入 `cost` 非 NULL 的列。
--- 永久保存、暫不設 retention（OD-07）——不像 `diagnostics`／
--- `operational_metrics` 有 trim-on-write。
-CREATE TABLE IF NOT EXISTS narrow_history (
-    scenario_id     TEXT NOT NULL,
-    analyzed_at     TEXT NOT NULL,
-    candidate_key   TEXT NOT NULL,
-    cost            DOUBLE PRECISION,
-    PRIMARY KEY (scenario_id, analyzed_at, candidate_key)
-);
--- SCALE-14（#265）：`narrow_history` 出貨時（SCALE-09）漏接了
--- `owner_id`——SCALE-06／SCALE-11 當初列舉的「5 張 row-scoped 表」
--- 寫在這張表存在之前。本票要把它真正接進一個 owner-gated 的
--- production 端點（`GET /history`），接線前先補齊，與其餘 row-scoped
--- 表同一個模式（nullable，本身不查詢過濾，過濾邏輯在方法簽章）。
-ALTER TABLE narrow_history ADD COLUMN IF NOT EXISTS owner_id TEXT;
+-- SW-12（#342）：`narrow_history`（SCALE-09／#261 引入的 Spread 淨
+-- 成本走勢熱快取）隨該功能整個退休——不再 `CREATE TABLE IF NOT
+-- EXISTS`／`ALTER TABLE`，程式碼也不再讀寫這張表。Production 上的
+-- 實體表已由 Owner 在 dependency audit 後正式 DROP（LEGACY-CLEANUP-003），
+-- 不存在任何仍帶著這張表的部署需要相容。
 -- SCALE-13（#264，Scaling Foundation Ownership A-1 Contract）：3 張
 -- singleton／provider-key 表（`data_source_settings`／
 -- `provider_credentials`／`provider_verifications`）不能用「加欄位再
@@ -1079,175 +1062,6 @@ class PostgresStorage:
                  entry.note, entry.last_success_at, entry.market_day,
                  entry.attempted_day))
 
-    # ---------- Narrow visible-candidate history（SCALE-09／#261） ----------
-
-    def save_narrow_history(self, entries) -> None:
-        # 比照既有 `save_result()`／`save_snapshot()`：寫入本身不強制
-        # `owner_id` 非 None（沿用 SCALE-06 Expand 階段「寫入寬鬆、
-        # 讀取才強制」的既有慣例，見 memory.py 同名方法的完整說明）。
-        entries = list(entries)
-        if not entries:
-            return
-        values_sql = ", ".join(["(%s, %s, %s, %s, %s)"] * len(entries))
-        params: list = []
-        for entry in entries:
-            params.extend([entry.scenario_id, entry.analyzed_at,
-                          entry.candidate_key, entry.cost, entry.owner_id])
-        with self._connect() as conn:
-            conn.execute(
-                "INSERT INTO narrow_history "
-                "(scenario_id, analyzed_at, candidate_key, cost, owner_id) "
-                f"VALUES {values_sql} "
-                "ON CONFLICT (scenario_id, analyzed_at, candidate_key) "
-                "DO UPDATE SET cost = EXCLUDED.cost, "
-                "owner_id = EXCLUDED.owner_id", params)
-
-    def get_narrow_history_entry(
-        self, scenario_id: str, analyzed_at: str, candidate_key: str,
-        *, owner: str,
-    ) -> NarrowHistoryEntry | None:
-        owner = require_owner(owner)
-        with self._connect() as conn:
-            row = conn.execute(
-                "SELECT scenario_id, analyzed_at, candidate_key, cost, "
-                "owner_id FROM narrow_history "
-                "WHERE scenario_id = %s AND analyzed_at = %s "
-                "AND candidate_key = %s AND owner_id = %s",
-                (scenario_id, analyzed_at, candidate_key, owner)).fetchone()
-        return (NarrowHistoryEntry(scenario_id=row[0], analyzed_at=row[1],
-                                   candidate_key=row[2], cost=row[3],
-                                   owner_id=row[4])
-                if row else None)
-
-    def narrow_history_for_candidate(
-        self, scenario_id: str, candidate_key: str, analyzed_ats, *, owner: str,
-    ) -> dict[str, float | None]:
-        owner = require_owner(owner)
-        with self._connect() as conn:
-            rows = conn.execute(
-                "SELECT analyzed_at, cost FROM narrow_history "
-                "WHERE scenario_id = %s AND candidate_key = %s "
-                "AND owner_id = %s AND analyzed_at = ANY(%s)",
-                (scenario_id, candidate_key, owner,
-                 list(analyzed_ats))).fetchall()
-        return {r[0]: r[1] for r in rows}
-
-    def cost_sparklines(
-        self, pairs: Sequence[tuple[str, str]], *, owner: str, limit: int,
-    ) -> dict[str, list[tuple[str, float | None]]]:
-        owner = require_owner(owner)
-        pairs = list(pairs)
-        if not pairs:
-            return {}
-        # `VALUES (%s,%s), (%s,%s), ...` 這個佔位符數量本身跟著 `pairs`
-        # 長度動態產生——不是字串插值實際資料（每個值仍走參數化），跟
-        # 既有 `ANY(%s)` 批次查詢同樣安全，只是這裡批次的維度是「多組
-        # (scenario_id, candidate_key)」而不是「同一劇本的多個日期」，
-        # `ANY(%s)` 表達不出「每一列各自比對兩個欄位」，改用
-        # `VALUES` 建一張暫時的參數表 `p`，`CROSS JOIN LATERAL` 對每一組
-        # 配對各自查「最近 limit 筆」——單一往返一次查完所有劇本，不是
-        # 對每個劇本各自查一次（AC「不得退化成 N+1」）。
-        values_sql = ", ".join(["(%s, %s)"] * len(pairs))
-        params: list = [x for pair in pairs for x in pair] + [owner, limit]
-        sql = (
-            "SELECT p.scenario_id, h.analyzed_at, h.cost "
-            f"FROM (VALUES {values_sql}) AS p(scenario_id, candidate_key) "
-            "CROSS JOIN LATERAL ("
-            "  SELECT analyzed_at, cost FROM narrow_history nh "
-            "  WHERE nh.scenario_id = p.scenario_id "
-            "  AND nh.candidate_key = p.candidate_key "
-            "  AND nh.owner_id = %s "
-            "  ORDER BY nh.analyzed_at DESC LIMIT %s"
-            ") h "
-            # 外部審查（PR #329）跟進：原本外層查詢沒有 `ORDER BY`——
-            # LATERAL 子查詢的 `DESC` 只保證每組 (scenario_id,
-            # candidate_key) **各自**內部的抓取順序，PostgreSQL 並不保證
-            # 不同外層列之間、或掃描計畫改變時的整體回傳順序；下面
-            # `.reverse()` 假設同一個 scenario_id 的列在累積時已經是
-            # 「最近到最舊」這個順序，缺了外層 `ORDER BY` 這個假設並不
-            # 可靠（換一個查詢計畫就可能打亂）。這裡明確依
-            # `(scenario_id, analyzed_at DESC)` 排序，讓 `.reverse()`
-            # 之後確實是既有升冪慣例。
-            "ORDER BY p.scenario_id, h.analyzed_at DESC")
-        with self._connect() as conn:
-            rows = conn.execute(sql, params).fetchall()
-        out: dict[str, list[tuple[str, float | None]]] = {}
-        for scenario_id, analyzed_at, cost in rows:
-            out.setdefault(scenario_id, []).append((analyzed_at, cost))
-        # LATERAL 子查詢內部是 DESC（撈「最近」），回傳前依既有升冪慣例
-        # （`narrow_history_for_candidate()`／`/history` 端點同一個順序）
-        # 反轉一次。
-        for scenario_id in out:
-            out[scenario_id].reverse()
-        return out
-
-    def result_spot_timestamps(
-        self, scenario_id: str, *, owner: str,
-    ) -> list[tuple[str, float | None]]:
-        # 日期集合沿用 `result_timestamps()` 既有 UNION 判準；`spot`
-        # 只從 `snapshots.snapshot` 用 JSONB 路徑取一個純量欄位
-        # （`->>`），**不觸碰 `results.view`**（AC-5）。只存在於
-        # `results`（缺對應 `snapshots` 列的孤兒）的日期沒有 LEFT JOIN
-        # 對象，`spot` 自然是 `NULL`——誠實反映「這個孤兒列沒有原始
-        # 快照可查」，不是額外去 `results.view` 撈一次來湊。
-        owner = require_owner(owner)
-        with self._connect() as conn:
-            rows = conn.execute(
-                "SELECT ts.analyzed_at, "
-                "(s.snapshot->>'spot')::double precision AS spot "
-                "FROM ("
-                "  SELECT analyzed_at FROM snapshots "
-                "  WHERE scenario_id = %s AND owner_id = %s"
-                "  UNION"
-                "  SELECT analyzed_at FROM results "
-                "  WHERE scenario_id = %s AND owner_id = %s"
-                ") AS ts "
-                "LEFT JOIN snapshots s "
-                "  ON s.scenario_id = %s AND s.analyzed_at = ts.analyzed_at "
-                "  AND s.owner_id = %s "
-                "ORDER BY ts.analyzed_at",
-                (scenario_id, owner, scenario_id, owner,
-                 scenario_id, owner)).fetchall()
-        return [(r[0], r[1]) for r in rows]
-
-    def result_fact_contexts(
-        self, scenario_id: str, analyzed_ats, *, owner: str,
-    ) -> dict[str, ResultFactContext]:
-        owner = require_owner(owner)
-        with self._connect() as conn:
-            rows = conn.execute(
-                f"SELECT analyzed_at, {_RESULT_FACT_COLS} FROM results "
-                "WHERE scenario_id = %s AND owner_id = %s "
-                "AND analyzed_at = ANY(%s)",
-                (scenario_id, owner, list(analyzed_ats))).fetchall()
-        out: dict[str, ResultFactContext] = {}
-        for (at, resolved_params, requested_strategies, engine_version,
-             view_schema_version, history_replay_version,
-             snapshot_source) in rows:
-            out[at] = ResultFactContext(
-                scenario_id=scenario_id, analyzed_at=at,
-                resolved_params=resolved_params,
-                requested_strategies=(tuple(requested_strategies)
-                                      if requested_strategies is not None
-                                      else None),
-                engine_version=engine_version,
-                view_schema_version=view_schema_version,
-                history_replay_version=history_replay_version,
-                snapshot_source=snapshot_source)
-        return out
-
-    def snapshots_batch(
-        self, scenario_id: str, analyzed_ats, *, owner: str,
-    ) -> dict[str, dict]:
-        owner = require_owner(owner)
-        with self._connect() as conn:
-            rows = conn.execute(
-                "SELECT analyzed_at, snapshot FROM snapshots "
-                "WHERE scenario_id = %s AND owner_id = %s "
-                "AND analyzed_at = ANY(%s)",
-                (scenario_id, owner, list(analyzed_ats))).fetchall()
-        return {r[0]: r[1] for r in rows}
-
     # ---------- Chain 429 backoff（SCALE-04／#255，provider-global） ----------
 
     def get_chain_backoff(self, source: str) -> ChainBackoffEntry | None:
@@ -1289,16 +1103,20 @@ class PostgresStorage:
     #
     # 與既有兩份更早的清單的差異（PB-03 施工前 repo 現況已確認兩份既有
     # 清單互相不一致，記錄於此避免未來誤以為可以照抄）：
-    # - `backfill_missing_owner_ids()` 只有 6 張（同上少
+    # - `backfill_missing_owner_ids()` 只有 5 張（同上少
     #   `current_results`／`owner_settings`／`owner_credentials`／
     #   `owner_verifications`）——它服務的是「把 NULL 補成某個值」，
     #   這裡服務的是「換值」／「刪除」，目的不同、範圍也因此不同。
     # - `owner_id_null_counts()` 涵蓋另外 8 張（5 張 row-scoped ＋
-    #   3 張 `owner_*`）——不含 `narrow_history`（SCALE-09 出貨時漏接，
-    #   SCALE-14 才補上，比那份清單當初列舉的表晚出現）。
+    #   3 張 `owner_*`）。
+    # SW-12（#342）：`narrow_history`（SCALE-09／#261 引入，SCALE-14／
+    # #265 補上 owner_id）隨 Spread 淨成本走勢功能整個退休，已從這份
+    # 清單移除——任何部署都不再建立這張表（Production 的實體表也已由
+    # Owner 正式 DROP，LEGACY-CLEANUP-003），留在清單裡只會讓
+    # `migrate_owner()`／`delete_owner()` 對不存在的表下 SQL 而炸掉。
     _OWNER_SCOPED_TABLES = (
         "scenarios", "results", "snapshots", "events", "diagnostics",
-        "narrow_history", "current_results", "owner_settings",
+        "current_results", "owner_settings",
         "owner_credentials", "owner_verifications",
     )
 
@@ -1810,18 +1628,13 @@ class PostgresStorage:
     # ---------- Ownership A-1 Expand（SCALE-06／#256） ----------
 
     def backfill_missing_owner_ids(self, owner_id: str) -> dict[str, int]:
-        """6 張 row-scoped 表各自一條 `UPDATE ... WHERE owner_id IS
+        """5 張 row-scoped 表各自一條 `UPDATE ... WHERE owner_id IS
         NULL`——條件式 WHERE 讓重跑天然冪等（第二次呼叫全部回 0），
         `cur.rowcount` 直接就是「這次真的補了幾筆」，不需要另外
-        SELECT COUNT 再 UPDATE 兩趟。`narrow_history`（SCALE-14／#265
-        補上，`/code-review` Spec 軸抓到的真缺口）：SCALE-09 出貨時
-        漏接 `owner_id`，這張表本身沒有其他遷移欄位可以順手帶上這個
-        backfill，需要獨立列出來，否則既有部署裡 SCALE-09 dual-write
-        留下的舊列會在 SCALE-14 上線後對任何 owner 永久查不到（只是
-        會被 resolver miss 自動重新算出並覆蓋寫回，不是靜默資料
-        損毀，但仍是本應由這支腳本負責的既有缺口）。"""
+        SELECT COUNT 再 UPDATE 兩趟。SW-12（#342）：原本第 6 張表
+        `narrow_history` 隨 Spread 淨成本走勢功能整個退休一併移除。"""
         tables = ("scenarios", "results", "snapshots", "events",
-                 "diagnostics", "narrow_history")
+                 "diagnostics")
         counts: dict[str, int] = {}
         with self._connect() as conn:
             for table in tables:

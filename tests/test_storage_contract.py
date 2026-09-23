@@ -19,7 +19,7 @@ from api_app.diagnostics import RETENTION_LIMIT, DiagnosticEvent
 from api_app.storage import (BrowserIdentity, ChainBackoffEntry,
                              ContractHistory, DataSourceSettings,
                              DividendCacheEntry, IvBackfillRun, IvObservation,
-                             NarrowHistoryEntry, Owner, ProviderCredential,
+                             Owner, ProviderCredential,
                              ProviderVerification, RateCacheEntry,
                              ResultRecord, RoleSession, Scenario,
                              ScenarioExists, SuperUserAuditEvent,
@@ -85,7 +85,7 @@ def storage(request):
                      "provider_credentials, provider_verifications, "
                      "owner_settings, owner_credentials, owner_verifications, "
                      "iv_observations, iv_backfill_runs, contract_iv_history, "
-                     "diagnostics, operational_metrics, narrow_history, "
+                     "diagnostics, operational_metrics, "
                      "owners, browser_identities, superuser_audit_log, "
                      "role_sessions "
                      "RESTART IDENTITY")
@@ -455,6 +455,19 @@ def test_events_can_be_filtered_by_scenario(storage):
 
 def test_kind_reports_the_actual_backend(storage, request):
     assert storage.kind == request.node.callspec.params["storage"]
+
+
+def test_request_scope_is_a_usable_context_manager_on_both_backends(storage):
+    """ARCH-REVIEW-001（#343）：`request_scope` 現在在 Protocol 上，所以
+    上面那條「兩邊都實作」會自動涵蓋它——但「有這個方法」不等於「真的
+    能當 scope 用」。這裡驗證實質：進得去、出得來，而且 scope 裡的一般
+    呼叫照常運作（Postgres 是共用同一條連線，memory 是 no-op，兩者
+    對呼叫端必須無差別）。"""
+    with storage.request_scope():
+        storage.create_scenario(_scenario("sc-scope"))
+        assert storage.get_scenario("sc-scope", owner=OWNER) is not None
+    # scope 結束後資料仍在——scope 是連線生命週期，不是交易邊界
+    assert storage.get_scenario("sc-scope", owner=OWNER) is not None
 
 
 def test_both_implementations_expose_the_whole_port(storage):
@@ -955,9 +968,11 @@ def test_role_session_is_independent_of_owner_registry(storage):
 # Beta） ----------
 
 
-def _seed_all_ten_tables_under(storage, owner_id: str) -> None:
-    """PB-03（#295）測試共用：在 `migrate_owner()` 涵蓋的全部 10 張表
-    各自寫入至少一筆掛在 `owner_id` 名下的資料。"""
+def _seed_all_nine_tables_under(storage, owner_id: str) -> None:
+    """PB-03（#295）測試共用：在 `migrate_owner()` 涵蓋的全部 9 張表
+    各自寫入至少一筆掛在 `owner_id` 名下的資料。SW-12（#342）：原本
+    第 10 張表 `narrow_history` 隨 Spread 淨成本走勢功能整個退休一併
+    移除，這裡不再種它的資料。"""
     sc = Scenario(id=f"pb03-{owner_id}", symbol="TLT", direction="bullish",
                  target_price=120.0, target_month="2028-05", notes="",
                  strategies=("bull-call-spread",),
@@ -977,10 +992,6 @@ def _seed_all_ten_tables_under(storage, owner_id: str) -> None:
         event_id="e1", correlation_id="c1", ts=sc.created_at,
         subsystem="historical_iv", stage="cache", severity="info",
         message="seed", context={}, user_facing=False, owner_id=owner_id))
-    storage.save_narrow_history([NarrowHistoryEntry(
-        scenario_id=sc.id, analyzed_at=rec.analyzed_at,
-        candidate_key="bull-call-spread|100|110|2026-11-20", cost=1.5,
-        owner_id=owner_id)])
     storage.save_settings(DataSourceSettings(
         market_data=UsageSetting(mode="default"),
         historical_iv=UsageSetting(mode="default"),
@@ -993,14 +1004,14 @@ def _seed_all_ten_tables_under(storage, owner_id: str) -> None:
         checked_at=sc.created_at, owner_id=owner_id))
 
 
-def test_migrate_owner_moves_every_one_of_the_ten_tables(storage):
-    _seed_all_ten_tables_under(storage, "solo")
+def test_migrate_owner_moves_every_one_of_the_nine_tables(storage):
+    _seed_all_nine_tables_under(storage, "solo")
 
     counts = storage.migrate_owner(from_owner="solo", to_owner="anon-migrated")
 
     assert set(counts) == {
         "scenarios", "results", "snapshots", "events", "diagnostics",
-        "narrow_history", "current_results", "owner_settings",
+        "current_results", "owner_settings",
         "owner_credentials", "owner_verifications"}
     assert all(n >= 1 for n in counts.values()), counts
 
@@ -1012,16 +1023,13 @@ def test_migrate_owner_moves_every_one_of_the_ten_tables(storage):
     assert len(events) == 1
     diag = storage.list_diagnostics(owner="anon-migrated")
     assert len(diag) == 1
-    assert storage.get_narrow_history_entry(
-        "pb03-solo", "2026-09-14T01:00:00+00:00",
-        "bull-call-spread|100|110|2026-11-20", owner="anon-migrated") is not None
     assert storage.get_settings(owner="anon-migrated") is not None
     assert storage.get_credential("marketdata_app", owner="anon-migrated") is not None
     assert storage.get_verification("marketdata_app", owner="anon-migrated") is not None
 
 
 def test_migrate_owner_is_idempotent_a_second_run_is_a_no_op(storage):
-    _seed_all_ten_tables_under(storage, "solo")
+    _seed_all_nine_tables_under(storage, "solo")
     storage.migrate_owner(from_owner="solo", to_owner="anon-migrated")
 
     counts_second_run = storage.migrate_owner(from_owner="solo", to_owner="anon-migrated")
@@ -1030,8 +1038,8 @@ def test_migrate_owner_is_idempotent_a_second_run_is_a_no_op(storage):
 
 
 def test_migrate_owner_does_not_touch_a_third_owners_data(storage):
-    _seed_all_ten_tables_under(storage, "solo")
-    _seed_all_ten_tables_under(storage, "carol")
+    _seed_all_nine_tables_under(storage, "solo")
+    _seed_all_nine_tables_under(storage, "carol")
 
     storage.migrate_owner(from_owner="solo", to_owner="anon-migrated")
 
@@ -1052,14 +1060,14 @@ def _register_owner(storage, owner_id: str, token: str) -> None:
                         last_seen_at="2026-09-14T00:00:00+00:00"))
 
 
-def test_delete_owner_clears_every_one_of_the_ten_data_tables(storage):
-    _seed_all_ten_tables_under(storage, "doomed")
+def test_delete_owner_clears_every_one_of_the_nine_data_tables(storage):
+    _seed_all_nine_tables_under(storage, "doomed")
     _register_owner(storage, "doomed", "tok-doomed")
 
     counts = storage.delete_owner("doomed")
 
     for table in ("scenarios", "results", "snapshots", "events", "diagnostics",
-                 "narrow_history", "current_results", "owner_settings",
+                 "current_results", "owner_settings",
                  "owner_credentials", "owner_verifications"):
         assert counts[table] >= 1, f"{table} 沒有被清空：{counts}"
 
@@ -1069,9 +1077,6 @@ def test_delete_owner_clears_every_one_of_the_ten_data_tables(storage):
                                 owner="doomed") is None
     assert storage.list_events(scenario_id="pb03-doomed", owner="doomed") == []
     assert storage.list_diagnostics(owner="doomed") == []
-    assert storage.get_narrow_history_entry(
-        "pb03-doomed", "2026-09-14T01:00:00+00:00",
-        "bull-call-spread|100|110|2026-11-20", owner="doomed") is None
     assert storage.get_settings(owner="doomed") is None
     assert storage.get_credential("marketdata_app", owner="doomed") is None
     assert storage.get_verification("marketdata_app", owner="doomed") is None
@@ -1098,9 +1103,9 @@ def test_delete_owner_is_idempotent_deleting_a_nonexistent_owner_is_a_noop(stora
 
 
 def test_delete_owner_does_not_touch_another_owners_data(storage):
-    _seed_all_ten_tables_under(storage, "doomed")
+    _seed_all_nine_tables_under(storage, "doomed")
     _register_owner(storage, "doomed", "tok-doomed")
-    _seed_all_ten_tables_under(storage, "survivor")
+    _seed_all_nine_tables_under(storage, "survivor")
     _register_owner(storage, "survivor", "tok-survivor")
 
     storage.delete_owner("doomed")
@@ -1114,7 +1119,7 @@ def test_delete_owner_does_not_touch_another_owners_data(storage):
 def test_delete_owner_does_not_touch_shared_market_facts_tables(storage):
     """8 張 shared／system-wide 表與任何單一 owner 無關，本方法從不
     觸碰——逐張建立資料、刪除某個 owner 之後逐張確認仍在。"""
-    _seed_all_ten_tables_under(storage, "doomed")
+    _seed_all_nine_tables_under(storage, "doomed")
     _register_owner(storage, "doomed", "tok-doomed")
 
     storage.save_rate_cache(RateCacheEntry(
@@ -1207,7 +1212,7 @@ def test_deleting_an_owner_does_not_erase_the_audit_record_of_its_own_deletion(s
     正是留存「這個 owner 曾經存在、曾經被刪除」這件事本身，見
     `SuperUserAuditEvent` docstring 與 postgres.py 的
     `_OWNER_SCOPED_TABLES` 註解。"""
-    _seed_all_ten_tables_under(storage, "doomed")
+    _seed_all_nine_tables_under(storage, "doomed")
     _register_owner(storage, "doomed", "tok-doomed")
     storage.append_audit_event(_audit(target_owner_id="doomed",
                                       detail={"deleted_rows": {}}))
@@ -1235,312 +1240,6 @@ def test_audit_detail_never_needs_to_contain_a_credential_token(storage):
     import json
     serialized = json.dumps(detail)
     assert "super-secret-token-value" not in serialized
-
-
-# ---------- Narrow visible-candidate history（SCALE-09／#261） ----------
-
-def test_narrow_history_starts_with_no_row(storage):
-    """AC-2：沒有這一列＝尚未 materialize／cache miss，不是 gap——
-    呼叫端必須自己分辨「沒有列」與「有列但 cost 是 None」。"""
-    assert storage.get_narrow_history_entry(
-        "s1", "2026-09-06T00:00:00+00:00",
-        "bull-call-spread|100|110|2026-09-18", owner=OWNER) is None
-
-
-def test_narrow_history_roundtrips_a_known_valid_point(storage):
-    entry = NarrowHistoryEntry(
-        scenario_id="s1", analyzed_at="2026-09-06T00:00:00+00:00",
-        candidate_key="bull-call-spread|100|110|2026-09-18", cost=3.25,
-        owner_id=OWNER)
-    storage.save_narrow_history([entry])
-    assert storage.get_narrow_history_entry(
-        "s1", "2026-09-06T00:00:00+00:00",
-        "bull-call-spread|100|110|2026-09-18", owner=OWNER) == entry
-
-
-def test_narrow_history_roundtrips_an_explicit_gap(storage):
-    """AC-2：`cost` nullable 且可存 explicit gap——這是 negative cache
-    的落盤形狀（SCALE-12／14 才會真的寫入，這裡先證明型別／schema
-    支援得住，`cost=None` 不會被 Postgres 誤存成 0 或整列消失）。"""
-    entry = NarrowHistoryEntry(
-        scenario_id="s1", analyzed_at="2026-09-06T00:00:00+00:00",
-        candidate_key="bull-call-spread|100|110|2026-09-18", cost=None,
-        owner_id=OWNER)
-    storage.save_narrow_history([entry])
-    got = storage.get_narrow_history_entry(
-        "s1", "2026-09-06T00:00:00+00:00",
-        "bull-call-spread|100|110|2026-09-18", owner=OWNER)
-    assert got is not None
-    assert got.cost is None
-
-
-def test_narrow_history_pk_is_exactly_the_three_identity_columns(storage):
-    """AC-2：PK 只有三個 identity 欄——同一組 (scenario_id, analyzed_at,
-    candidate_key) 重複寫入是 upsert（覆蓋），不是插入第二列／報衝突。"""
-    storage.save_narrow_history([NarrowHistoryEntry(
-        scenario_id="s1", analyzed_at="2026-09-06T00:00:00+00:00",
-        candidate_key="k", cost=1.0, owner_id=OWNER)])
-    storage.save_narrow_history([NarrowHistoryEntry(
-        scenario_id="s1", analyzed_at="2026-09-06T00:00:00+00:00",
-        candidate_key="k", cost=2.0, owner_id=OWNER)])
-    got = storage.get_narrow_history_entry(
-        "s1", "2026-09-06T00:00:00+00:00", "k", owner=OWNER)
-    assert got.cost == 2.0
-
-
-def test_narrow_history_distinguishes_different_analyzed_at_and_scenarios(storage):
-    """不同 `analyzed_at`（同一劇本的不同刷新）與不同 `scenario_id`
-    各自獨立——這是 PK 真的涵蓋這三個維度的直接證明，不只是「存得進去
-    讀得回來」。"""
-    storage.save_narrow_history([
-        NarrowHistoryEntry("s1", "2026-09-06T00:00:00+00:00", "k", 1.0, OWNER),
-        NarrowHistoryEntry("s1", "2026-09-07T00:00:00+00:00", "k", 2.0, OWNER),
-        NarrowHistoryEntry("s2", "2026-09-06T00:00:00+00:00", "k", 3.0, OWNER),
-    ])
-    assert storage.get_narrow_history_entry(
-        "s1", "2026-09-06T00:00:00+00:00", "k", owner=OWNER).cost == 1.0
-    assert storage.get_narrow_history_entry(
-        "s1", "2026-09-07T00:00:00+00:00", "k", owner=OWNER).cost == 2.0
-    assert storage.get_narrow_history_entry(
-        "s2", "2026-09-06T00:00:00+00:00", "k", owner=OWNER).cost == 3.0
-
-
-def test_narrow_history_batch_write_handles_multiple_candidates_at_once(storage):
-    """一次 refresh 通常會 dual-write多個 visible candidate——批次寫入
-    要真的把每一筆都存進去，不是只存最後一筆。"""
-    entries = [
-        NarrowHistoryEntry("s1", "2026-09-06T00:00:00+00:00", f"k{i}",
-                           float(i), OWNER)
-        for i in range(5)
-    ]
-    storage.save_narrow_history(entries)
-    for i in range(5):
-        got = storage.get_narrow_history_entry(
-            "s1", "2026-09-06T00:00:00+00:00", f"k{i}", owner=OWNER)
-        assert got is not None and got.cost == float(i)
-
-
-def test_narrow_history_empty_batch_is_a_no_op(storage):
-    storage.save_narrow_history([])   # 不得拋錯
-    assert storage.get_narrow_history_entry(
-        "s1", "2026-09-06T00:00:00+00:00", "k", owner=OWNER) is None
-
-
-def test_narrow_history_get_requires_a_real_owner(storage):
-    """SCALE-14（#265）：`narrow_history` 出貨時（SCALE-09）漏接
-    `owner_id`，本票補齊——比照既有 `save_result()`／`save_snapshot()`
-    的「寫入寬鬆、讀取才強制」慣例，寫入允許 `owner_id=None`（給
-    `backfill_missing_owner_ids()` 模擬既有無 owner 舊列用），但讀取
-    方法一律拒絕 `owner=None`，不是型別標註說說而已。"""
-    storage.save_narrow_history([NarrowHistoryEntry(
-        scenario_id="s1", analyzed_at="2026-09-06T00:00:00+00:00",
-        candidate_key="k", cost=1.0, owner_id=None)])   # 寫入不拋錯
-    with pytest.raises(TypeError):
-        storage.get_narrow_history_entry(
-            "s1", "2026-09-06T00:00:00+00:00", "k", owner=None)
-    with pytest.raises(TypeError):
-        storage.narrow_history_for_candidate(
-            "s1", "k", ["2026-09-06T00:00:00+00:00"], owner=None)
-
-
-def test_narrow_history_get_excludes_another_owners_row(storage):
-    storage.save_narrow_history([NarrowHistoryEntry(
-        scenario_id="s1", analyzed_at="2026-09-06T00:00:00+00:00",
-        candidate_key="k", cost=1.0, owner_id="alice")])
-    assert storage.get_narrow_history_entry(
-        "s1", "2026-09-06T00:00:00+00:00", "k", owner="bob") is None
-    assert storage.get_narrow_history_entry(
-        "s1", "2026-09-06T00:00:00+00:00", "k", owner="alice").cost == 1.0
-
-
-def test_narrow_history_for_candidate_batches_across_many_dates(storage):
-    """SCALE-14（#265）：`/history` 讀取路徑的核心批次查詢——一次回答
-    多個 `analyzed_at` 的 narrow 狀態，不必逐一呼叫 `get_narrow_
-    history_entry()`（那會是 N+1）。回傳只包含真的存在的列（`cost`
-    本身可能是 `None`＝已驗證 gap），缺席的日期＝尚未 materialize。"""
-    storage.save_narrow_history([
-        NarrowHistoryEntry("s1", "2026-09-01T00:00:00+00:00", "k", 1.0, OWNER),
-        NarrowHistoryEntry("s1", "2026-09-02T00:00:00+00:00", "k", None, OWNER),
-        NarrowHistoryEntry("s1", "2026-09-03T00:00:00+00:00", "k", 3.0, OWNER),
-        # 不同 candidate_key，不該混進來
-        NarrowHistoryEntry("s1", "2026-09-01T00:00:00+00:00", "other", 99.0, OWNER),
-        # 不同 owner，不該混進來
-        NarrowHistoryEntry("s1", "2026-09-04T00:00:00+00:00", "k", 4.0, "bob"),
-    ])
-    result = storage.narrow_history_for_candidate(
-        "s1", "k", ["2026-09-01T00:00:00+00:00", "2026-09-02T00:00:00+00:00",
-                    "2026-09-03T00:00:00+00:00", "2026-09-04T00:00:00+00:00",
-                    "2026-09-05T00:00:00+00:00"],
-        owner=OWNER)
-    assert result == {
-        "2026-09-01T00:00:00+00:00": 1.0,
-        "2026-09-02T00:00:00+00:00": None,
-        "2026-09-03T00:00:00+00:00": 3.0,
-    }
-    assert "2026-09-04T00:00:00+00:00" not in result   # 別的 owner
-    assert "2026-09-05T00:00:00+00:00" not in result   # 尚未 materialize
-
-
-# ---------- cost_sparklines：OG-04（#323）劇本清單 sparkline 批次查詢 ----------
-
-def test_cost_sparklines_empty_pairs_is_a_no_op(storage):
-    assert storage.cost_sparklines([], owner=OWNER, limit=20) == {}
-
-
-def test_cost_sparklines_returns_ascending_and_truncated_to_limit(storage):
-    """跟 `narrow_history_for_candidate()`／`/history` 端點同一個升冪
-    順序慣例；`limit` 在資料庫端截尾（`ORDER BY ... DESC LIMIT`），不是
-    撈全部回來前端再切——這裡用 5 筆、limit=3 驗證只留最新 3 筆且順序
-    正確（不是巧合地前 3 筆恰好也對）。"""
-    storage.save_narrow_history([
-        NarrowHistoryEntry("s1", f"2026-09-0{i}T00:00:00+00:00", "k",
-                           float(i), OWNER)
-        for i in range(1, 6)
-    ])
-    result = storage.cost_sparklines([("s1", "k")], owner=OWNER, limit=3)
-    assert result == {"s1": [
-        ("2026-09-03T00:00:00+00:00", 3.0),
-        ("2026-09-04T00:00:00+00:00", 4.0),
-        ("2026-09-05T00:00:00+00:00", 5.0),
-    ]}
-
-
-def test_cost_sparklines_preserves_explicit_gaps(storage):
-    """`cost=None`（已驗證 gap）跟 `narrow_history_for_candidate()`
-    同樣照實回傳，不是被截尾邏輯或排序意外濾掉。"""
-    storage.save_narrow_history([
-        NarrowHistoryEntry("s1", "2026-09-01T00:00:00+00:00", "k", 1.0, OWNER),
-        NarrowHistoryEntry("s1", "2026-09-02T00:00:00+00:00", "k", None, OWNER),
-    ])
-    result = storage.cost_sparklines([("s1", "k")], owner=OWNER, limit=20)
-    assert result == {"s1": [
-        ("2026-09-01T00:00:00+00:00", 1.0),
-        ("2026-09-02T00:00:00+00:00", None),
-    ]}
-
-
-def test_cost_sparklines_batches_multiple_scenarios_in_one_call(storage):
-    """一次查多個 (scenario_id, candidate_key) 配對——這是清單端點的
-    核心用法，不是對每個劇本各自呼叫一次（AC「不得退化成 N+1」）。"""
-    storage.save_narrow_history([
-        NarrowHistoryEntry("s1", "2026-09-01T00:00:00+00:00", "k1", 1.0, OWNER),
-        NarrowHistoryEntry("s2", "2026-09-01T00:00:00+00:00", "k2", 2.0, OWNER),
-        # 不同 candidate_key，不該混進 s1 的結果
-        NarrowHistoryEntry("s1", "2026-09-01T00:00:00+00:00", "other", 99.0, OWNER),
-    ])
-    result = storage.cost_sparklines(
-        [("s1", "k1"), ("s2", "k2")], owner=OWNER, limit=20)
-    assert result == {
-        "s1": [("2026-09-01T00:00:00+00:00", 1.0)],
-        "s2": [("2026-09-01T00:00:00+00:00", 2.0)],
-    }
-
-
-def test_cost_sparklines_omits_scenarios_with_no_narrow_history(storage):
-    """沒有任何 narrow history 列的配對（從未成功、或這個 candidate_key
-    還沒被寫過）——鍵不出現在回傳 dict 裡，不是空陣列（`main.py` 據此
-    用 `.get()` 分辨「沒東西可畫」，不需要多一層三態判斷）。"""
-    result = storage.cost_sparklines([("s1", "missing")], owner=OWNER, limit=20)
-    assert result == {}
-
-
-def test_cost_sparklines_requires_a_real_owner(storage):
-    storage.save_narrow_history([
-        NarrowHistoryEntry("s1", "2026-09-01T00:00:00+00:00", "k", 1.0, OWNER),
-    ])
-    with pytest.raises(TypeError):
-        storage.cost_sparklines([("s1", "k")], owner=None, limit=20)
-
-
-def test_cost_sparklines_excludes_another_owners_rows(storage):
-    storage.save_narrow_history([
-        NarrowHistoryEntry("s1", "2026-09-01T00:00:00+00:00", "k", 1.0, "alice"),
-    ])
-    assert storage.cost_sparklines(
-        [("s1", "k")], owner="bob", limit=20) == {}
-    assert storage.cost_sparklines(
-        [("s1", "k")], owner="alice", limit=20) == {
-        "s1": [("2026-09-01T00:00:00+00:00", 1.0)]}
-
-
-def test_cost_sparklines_sql_never_references_results_view(storage):
-    """票面硬性要求：不 SELECT `results.view`／不觸碰 `all_candidates`
-    ——結構性鎖住 Postgres adapter 實際送出的 SQL 文字，不是只靠人工
-    審查記得遵守。Memory 後端沒有 SQL 可檢查，這條對它是無害的
-    no-op（`storage` fixture 兩種實作都跑，這裡用 `getattr` 分辨）。"""
-    if not hasattr(storage, "_connect"):
-        return   # MemoryStorage：沒有 SQL，這條斷言對它不適用
-    import inspect
-    from api_app.storage import postgres as postgres_module
-
-    source = inspect.getsource(postgres_module.PostgresStorage.cost_sparklines)
-    assert "view" not in source.lower()
-    assert "all_candidates" not in source.lower()
-    assert "narrow_history" in source
-
-
-# ---------- SCALE-14（#265）：/history canonical 讀取路徑的批次查詢 ----------
-
-def test_result_spot_timestamps_reads_spot_from_snapshots_not_view(storage):
-    """AC-5：`spot` 只從 `snapshots` 表取得，日期集合與
-    `result_timestamps()` 完全一致——本測試直接構造一個沒有配對
-    `snapshots` 列的孤兒 `results` 列，證明它仍出現在日期清單裡，
-    只是 `spot` 誠實回 `None`。"""
-    storage.create_scenario(_scenario("s1", owner_id=OWNER))
-    storage.save_snapshot("s1", "2026-09-01T00:00:00+00:00",
-                          {"spot": 101.5, "symbol": "XYZ"}, owner_id=OWNER)
-    storage.save_result(ResultRecord(
-        "s1", "2026-09-01T00:00:00+00:00", {}, owner_id=OWNER))
-    # 孤兒列：只有 results，沒有對應的 snapshots。
-    storage.save_result(ResultRecord(
-        "s1", "2026-09-02T00:00:00+00:00", {}, owner_id=OWNER))
-
-    got = storage.result_spot_timestamps("s1", owner=OWNER)
-    assert got == [("2026-09-01T00:00:00+00:00", 101.5),
-                  ("2026-09-02T00:00:00+00:00", None)]
-
-
-def test_result_spot_timestamps_excludes_another_owners_rows(storage):
-    storage.create_scenario(_scenario("s1", owner_id="alice"))
-    storage.save_snapshot("s1", "2026-09-01T00:00:00+00:00",
-                          {"spot": 100.0, "symbol": "XYZ"}, owner_id="alice")
-    assert storage.result_spot_timestamps("s1", owner="bob") == []
-    assert storage.result_spot_timestamps("s1", owner="alice") == [
-        ("2026-09-01T00:00:00+00:00", 100.0)]
-
-
-def test_result_fact_contexts_batches_and_excludes_another_owner(storage):
-    storage.create_scenario(_scenario("s1", owner_id=OWNER))
-    storage.save_result(ResultRecord(
-        "s1", "2026-09-01T00:00:00+00:00", {}, owner_id=OWNER,
-        resolved_params={"target_price": 100.0}, requested_strategies=("k",),
-        engine_version="v1", view_schema_version=7,
-        history_replay_version=1, snapshot_source="cboe"))
-    storage.save_result(ResultRecord(
-        "s1", "2026-09-02T00:00:00+00:00", {}, owner_id="bob"))
-
-    got = storage.result_fact_contexts(
-        "s1", ["2026-09-01T00:00:00+00:00", "2026-09-02T00:00:00+00:00",
-              "2026-09-03T00:00:00+00:00"], owner=OWNER)
-    assert set(got) == {"2026-09-01T00:00:00+00:00"}
-    ctx = got["2026-09-01T00:00:00+00:00"]
-    assert ctx.resolved_params == {"target_price": 100.0}
-    assert ctx.history_replay_version == 1
-
-
-def test_snapshots_batch_returns_only_requested_dates_and_owner(storage):
-    storage.save_snapshot("s1", "2026-09-01T00:00:00+00:00",
-                          {"spot": 1.0}, owner_id=OWNER)
-    storage.save_snapshot("s1", "2026-09-02T00:00:00+00:00",
-                          {"spot": 2.0}, owner_id=OWNER)
-    storage.save_snapshot("s1", "2026-09-03T00:00:00+00:00",
-                          {"spot": 3.0}, owner_id="bob")
-
-    got = storage.snapshots_batch(
-        "s1", ["2026-09-01T00:00:00+00:00", "2026-09-03T00:00:00+00:00",
-              "2026-09-09T00:00:00+00:00"], owner=OWNER)
-    assert set(got) == {"2026-09-01T00:00:00+00:00"}
-    assert got["2026-09-01T00:00:00+00:00"]["spot"] == 1.0
 
 
 # ---------- 清單摘要（V3／#51） ----------
@@ -2780,9 +2479,10 @@ def test_list_events_excludes_another_owners_rows(storage):
 
 
 def test_backfill_missing_owner_ids_sets_solo_owner_on_every_legacy_row(storage):
-    """AC-1／AC-2：6 張表（SCALE-06 原始 5 張＋SCALE-14 補上的
-    `narrow_history`）各留一筆沒有 owner 的舊列，一次 backfill 全部
-    補齊，回傳的計數逐表對得上。
+    """AC-1／AC-2：5 張表（SCALE-06 原始既有 row-scoped 表；SW-12／
+    #342 前還多一張 SCALE-14 補上的 `narrow_history`，該表隨 Spread
+    淨成本走勢功能整個退休一併移除）各留一筆沒有 owner 的舊列，一次
+    backfill 全部補齊，回傳的計數逐表對得上。
 
     SCALE-11 跟進：`_scenario()` 這份契約測試檔的預設值已改成
     `OWNER`——這裡刻意覆寫成 `None`，才是這張票真正要留的「沒有
@@ -2797,26 +2497,20 @@ def test_backfill_missing_owner_ids_sets_solo_owner_on_every_legacy_row(storage)
     storage.append_event(ts="2026-08-01T00:00:00+00:00", scenario_id="s1",
                          event="SCENARIO_CREATED", payload={})
     storage.append_diagnostic(_diag(event_id="d1"))
-    storage.save_narrow_history([NarrowHistoryEntry(
-        scenario_id="s1", analyzed_at="2026-08-01T00:00:00+00:00",
-        candidate_key="k", cost=1.0, owner_id=None)])
 
     counts = storage.backfill_missing_owner_ids("solo")
     assert counts == {"scenarios": 1, "results": 1, "snapshots": 1,
-                      "events": 1, "diagnostics": 1, "narrow_history": 1}
+                      "events": 1, "diagnostics": 1}
 
     assert storage.get_scenario("s1", owner="solo").owner_id == "solo"
-    # `backfill_missing_owner_ids()` 只補 6 張既有 row-scoped 表
-    # （SCALE-06 原始 5 張＋`narrow_history`）——`current_results`
-    # 是 SCALE-16 才新增、全新形狀的表，沒有這類舊資料需要回填，
-    # 這裡改查 ledger（`result_history()`）驗證回填確實發生在正確
-    # 的表上。
+    # `backfill_missing_owner_ids()` 只補 5 張既有 row-scoped 表——
+    # `current_results` 是 SCALE-16 才新增、全新形狀的表，沒有這類
+    # 舊資料需要回填，這裡改查 ledger（`result_history()`）驗證回填
+    # 確實發生在正確的表上。
     assert storage.result_history("s1", owner="solo")[0].owner_id == "solo"
     assert storage.get_snapshot_owner("s1", "2026-08-01T00:00:00+00:00") == "solo"
     assert storage.list_events(owner="solo")[0]["owner_id"] == "solo"
     assert storage.list_diagnostics(owner="solo")[0].owner_id == "solo"
-    assert storage.get_narrow_history_entry(
-        "s1", "2026-08-01T00:00:00+00:00", "k", owner="solo").owner_id == "solo"
 
 
 def test_backfill_missing_owner_ids_is_idempotent_on_rerun(storage):
@@ -2828,16 +2522,13 @@ def test_backfill_missing_owner_ids_is_idempotent_on_rerun(storage):
     storage.append_event(ts="2026-08-01T00:00:00+00:00", scenario_id="s1",
                          event="SCENARIO_CREATED", payload={})
     storage.append_diagnostic(_diag(event_id="d1"))
-    storage.save_narrow_history([NarrowHistoryEntry(
-        scenario_id="s1", analyzed_at="2026-08-01T00:00:00+00:00",
-        candidate_key="k", cost=1.0, owner_id=None)])
 
     first = storage.backfill_missing_owner_ids("solo")
     assert all(v == 1 for v in first.values())
 
     second = storage.backfill_missing_owner_ids("solo")
     assert second == {"scenarios": 0, "results": 0, "snapshots": 0,
-                      "events": 0, "diagnostics": 0, "narrow_history": 0}
+                      "events": 0, "diagnostics": 0}
 
     # 結果不變——不是「回 0 但其實悄悄改了值」。
     assert storage.get_scenario("s1", owner="solo").owner_id == "solo"
@@ -2857,7 +2548,7 @@ def test_backfill_does_not_overwrite_a_row_that_already_has_an_owner(storage):
 def test_backfill_on_an_empty_store_reports_zero_for_every_table(storage):
     counts = storage.backfill_missing_owner_ids("solo")
     assert counts == {"scenarios": 0, "results": 0, "snapshots": 0,
-                      "events": 0, "diagnostics": 0, "narrow_history": 0}
+                      "events": 0, "diagnostics": 0}
 
 
 # ---------- AC-5：結構性——3 張 singleton 表與 system-wide 表零 owner ----------
@@ -3458,3 +3149,117 @@ def test_a_failure_opening_the_shared_connection_falls_back_to_a_per_call_one():
 
     # scope 結束後，正常呼叫（連線已恢復）不受影響。
     assert st.get_rate_cache() is None
+
+
+# ---------- 表清單漂移防護（ARCH-REVIEW-001／#343） ----------
+#
+# SW-12（#342）真的被這件事咬過一次：Spread 淨成本走勢退休時，
+# `narrow_history` 的 `CREATE TABLE` 從 `_SCHEMA` 拿掉了，但
+# `_OWNER_SCOPED_TABLES` 裡那一行留著——結果是**全新部署**上
+# `migrate_owner()`／`delete_owner()` 會對一張從來沒被建立的表下
+# `UPDATE`，執行期直接炸。那次是靠人工 review 抓到的，不是測試。
+#
+# 根因是「這個系統有哪些表」在程式碼裡有好幾份獨立的清單（DDL、
+# owner-scoped 清單、backfill 清單、null-count 稽核清單，還有測試裡
+# 的 TRUNCATE），彼此沒有任何強制一致的機制。把四份清單收斂成單一
+# registry 是更徹底的解法，但那會動到 `delete_owner()`／
+# `migrate_owner()` 這種資料正確性關鍵路徑，在 Production 尚未驗證
+# 的當下風險報酬不划算。
+#
+# 這兩條測試處理的是那次事故真正的危害——**沒有人發現**。清單仍然
+# 是多份，但任何一份漂掉都會在這裡立刻變紅。
+
+def _live_tables(conn) -> set[str]:
+    return {r[0] for r in conn.execute(
+        "SELECT table_name FROM information_schema.tables "
+        "WHERE table_schema = 'public'").fetchall()}
+
+
+def _ensure_current_schema():
+    """讓下面兩條測試自己把 current schema 建好，不依賴別的測試先碰過 DB。
+
+    `PostgresStorage.__init__` 只記下 DSN、**不跑 DDL**——schema 是在第一次
+    `_connect()` 時由 `_ensure_schema()` 惰性建立的。LEGACY-DROP-AUDIT-001
+    實測過：只呼叫建構子、再用獨立連線查 `information_schema`，在一個乾淨
+    的空 DB 上單獨執行時，正向測試會把全部表誤報成不存在，反向測試更糟，
+    會在 0 張表的 DB 上假綠。
+
+    `_schema_ready` 是模組層級的「這個 DSN 已建過」快取；先把這個 DSN 從
+    裡面拿掉，`_ensure_schema()` 就一定會真的送 DDL（全是 `IF NOT EXISTS`，
+    重送無害），而不是因為同一個 process 早先建過而直接 return。只動測試
+    這一側的狀態，不改 production 行為。
+    """
+    from api_app.storage import postgres as pg
+
+    pg._schema_ready.discard(TEST_DB_URL)
+    pg.PostgresStorage(TEST_DB_URL)._ensure_schema()
+
+
+def test_every_owner_scoped_table_actually_exists_in_the_schema():
+    """正向：`_OWNER_SCOPED_TABLES` 只能列真的建得出來的表。
+
+    這正是 SW-12 那個 bug 的形狀——清單裡留著一張 DDL 已經不建的表。
+    """
+    if not TEST_DB_URL:
+        pytest.skip("需要 OC_TEST_DATABASE_URL（一個跑著的 Postgres）")
+    import psycopg
+
+    from api_app.storage import postgres as pg
+
+    _ensure_current_schema()
+    with psycopg.connect(TEST_DB_URL, autocommit=True) as conn:
+        live = _live_tables(conn)
+
+    phantom = [t for t in pg.PostgresStorage._OWNER_SCOPED_TABLES if t not in live]
+    assert not phantom, (
+        f"`_OWNER_SCOPED_TABLES` 列了這些不存在的表：{phantom}。"
+        "全新部署上 migrate_owner()／delete_owner() 會對它們下 SQL 而炸掉。")
+
+
+def test_no_table_with_an_owner_id_column_is_silently_left_out_of_the_lifecycle():
+    """反向：帶 `owner_id` 欄位的表，不能默默不在 owner lifecycle 清單裡。
+
+    漏在清單外的後果是這張表的資料 `delete_owner()` 刪不掉、
+    `migrate_owner()` 搬不走——使用者刪除帳號後仍留著他的資料，是
+    PB-04（#296）「刪除我的所有資料」講的那件事。
+
+    例外必須明文列舉在下面，讓「刻意不 owner-scope」是一個需要表態的
+    決定，而不是忘記加清單的預設結果。
+    """
+    if not TEST_DB_URL:
+        pytest.skip("需要 OC_TEST_DATABASE_URL（一個跑著的 Postgres）")
+    import psycopg
+
+    # `owners` 是 owner registry 本身（PB-01／#292）——它的主鍵就是
+    # owner，由 `delete_owner()` 最後單獨處理，不是被它掃過的資料表。
+    # `browser_identities`／`role_sessions` 是 AUTH 身分層，生命週期
+    # 綁在 session 而非 owner 資料（AUTH-06／#313）。
+    # `superuser_audit_log` 是稽核軌跡：依設計**不得**隨被稽核的 owner
+    # 一起消失，否則稽核就失去意義（PB-09／#301）。
+    EXPECTED_EXCEPTIONS = {
+        "owners", "browser_identities", "role_sessions", "superuser_audit_log",
+    }
+
+    from api_app.storage import postgres as pg
+
+    _ensure_current_schema()
+    with psycopg.connect(TEST_DB_URL, autocommit=True) as conn:
+        with_owner_col = {r[0] for r in conn.execute(
+            "SELECT table_name FROM information_schema.columns "
+            "WHERE table_schema = 'public' AND column_name = 'owner_id'"
+        ).fetchall()}
+
+    # 前置條件：這條測試靠「差集為空」判定通過，所以 schema 若根本不存在，
+    # 差集也會是空的——那就是 false-green。先確認真的讀到了 owner-scoped
+    # 的表，才讓下面的差集有意義。
+    assert set(pg.PostgresStorage._OWNER_SCOPED_TABLES) <= with_owner_col, (
+        "沒讀到預期的 owner-scoped 表，schema 可能沒建起來——"
+        "這種情況下差集為空不代表通過。")
+
+    unaccounted = (with_owner_col
+                   - set(pg.PostgresStorage._OWNER_SCOPED_TABLES)
+                   - EXPECTED_EXCEPTIONS)
+    assert not unaccounted, (
+        f"這些表有 owner_id 欄位但不在 owner lifecycle 清單也不在例外清單："
+        f"{sorted(unaccounted)}。請加進 `_OWNER_SCOPED_TABLES`，或在本測試的"
+        "`EXPECTED_EXCEPTIONS` 明文說明為什麼刻意不跟著 owner 生命週期走。")

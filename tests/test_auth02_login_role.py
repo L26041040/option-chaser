@@ -104,6 +104,101 @@ def test_successful_login_response_never_contains_the_token_or_a_password():
     assert SA_PASSWORD not in r.text
 
 
+def test_a_trailing_newline_on_the_submitted_password_still_logs_in():
+    """SW-10（#340，Owner 真機驗收）：真機回報 Super User／Super Admin
+    密碼皆顯示 unauthorized——程式碼審閱（不觸碰任何真實密碼明文，
+    CLAUDE.md 規則 5）找到的其中一個可能成因：使用者從密碼管理工具
+    複製貼上時，剪貼簿內容經常帶著看不見的頭尾空白或換行，
+    `secrets.compare_digest()` 逐位元組精確比對，多一個字元就整把
+    失敗。這裡驗證登入表單這一側送出的密碼即使多帶換行／空白，也
+    不會被這個原因誤擋。"""
+    r = _client().post("/api/auth/login", json={"password": f"  {SU_PASSWORD}\n"})
+    assert r.status_code == 200
+    assert r.json() == {"role": "superuser"}
+
+
+def test_a_trailing_newline_on_the_configured_password_still_logs_in():
+    """同一個成因的另一半：部署平台的環境變數設定介面（透過 CLI／CI
+    腳本寫入，或從別處複製貼上）也很容易在值的尾端多帶一個換行字元
+    ——這裡用 DI 模擬「設定值本身帶換行」，驗證使用者送出乾淨密碼時
+    仍然登入得進去，不會因為平台那一側的隱形字元被誤擋。"""
+    r = _client(superuser_password=f"{SU_PASSWORD}\n",
+               superadmin_password=f"{SA_PASSWORD}\n").post(
+        "/api/auth/login", json={"password": SU_PASSWORD})
+    assert r.status_code == 200
+    assert r.json() == {"role": "superuser"}
+
+
+def test_stripping_does_not_let_a_merely_similar_password_through():
+    """`.strip()` 只處理頭尾空白，不是模糊比對——中間多一個空格、或
+    整串密碼只是恰好共用前綴／後綴，仍然必須整串精確相符才能登入，
+    不能因為新增了 `.strip()` 就意外放寬成部分比對。"""
+    r = _client().post("/api/auth/login",
+                       json={"password": SU_PASSWORD.replace("-", " ", 1)})
+    assert r.status_code == 401
+
+
+# AUTH-P1-FIX-001（PR #344 Codex review P1）：SW-10 為了容忍部署平台在
+# 環境變數尾端多帶的換行而加了 `.strip()`，但 truthy 檢查當時做在 strip
+# 之前——設定值若整串只有空白（例如不小心存成一個換行字元），檢查會
+# 通過、strip 後卻是空字串，再配上同樣 strip 成空字串的空密碼提交，
+# `compare_digest("", "")` 為真，直接拿到該角色。
+_WHITESPACE_ONLY_SECRETS = ("   ", "\n", "\t\r\n ")
+_BLANKISH_SUBMISSIONS = ("", " ", "\n", "  \t\n")
+
+
+def test_whitespace_only_superadmin_secret_cannot_be_matched_by_a_blank_password():
+    for configured in _WHITESPACE_ONLY_SECRETS:
+        c = _client(superuser_password=SU_PASSWORD, superadmin_password=configured)
+        for submitted in _BLANKISH_SUBMISSIONS:
+            r = c.post("/api/auth/login", json={"password": submitted})
+            assert r.status_code == 401, (repr(configured), repr(submitted))
+            assert c.cookies.get(ROLE_COOKIE) is None
+
+
+def test_whitespace_only_superuser_secret_cannot_be_matched_by_a_blank_password():
+    for configured in _WHITESPACE_ONLY_SECRETS:
+        c = _client(superuser_password=configured, superadmin_password=SA_PASSWORD)
+        for submitted in _BLANKISH_SUBMISSIONS:
+            r = c.post("/api/auth/login", json={"password": submitted})
+            assert r.status_code == 401, (repr(configured), repr(submitted))
+            assert c.cookies.get(ROLE_COOKIE) is None
+
+
+def test_both_secrets_whitespace_only_fail_closed_like_unset():
+    """兩把都只有空白＝兩把都沒設定：任何提交（含空白）一律 401，跟
+    `test_missing_env_vars_fail_closed_regardless_of_password_sent` 同一個
+    保證。"""
+    c = _client(superuser_password=" \n", superadmin_password="\t")
+    for submitted in (*_BLANKISH_SUBMISSIONS, "anything", SU_PASSWORD):
+        assert c.post("/api/auth/login",
+                      json={"password": submitted}).status_code == 401
+
+
+def test_a_whitespace_only_secret_disables_only_its_own_role():
+    """其中一把只有空白時，另一把正常設定的角色照常可以登入——修正只
+    讓「空白設定」視同未設定，不影響另一個角色。"""
+    r = _client(superuser_password=SU_PASSWORD, superadmin_password="  \n").post(
+        "/api/auth/login", json={"password": SU_PASSWORD})
+    assert r.status_code == 200
+    assert r.json() == {"role": "superuser"}
+
+    r = _client(superuser_password="\n", superadmin_password=SA_PASSWORD).post(
+        "/api/auth/login", json={"password": SA_PASSWORD})
+    assert r.status_code == 200
+    assert r.json() == {"role": "superadmin"}
+
+
+def test_normalization_still_works_with_padding_on_both_sides():
+    """頭尾空白 normalization 的既有預期（SW-10）在修正後仍成立：設定值與
+    提交值兩側都帶頭尾空白時，照樣登入成功。"""
+    r = _client(superuser_password=f"  {SU_PASSWORD}\n",
+               superadmin_password=f"\t{SA_PASSWORD} ").post(
+        "/api/auth/login", json={"password": f"\n{SA_PASSWORD}  "})
+    assert r.status_code == 200
+    assert r.json() == {"role": "superadmin"}
+
+
 # ---------- 2. 角色解析 ----------
 
 

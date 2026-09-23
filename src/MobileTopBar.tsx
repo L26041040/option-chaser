@@ -41,14 +41,12 @@ export default function MobileTopBar({
           <BrandMark />
           Option Chaser
         </span>
-        {/* Artifact 的 `.mnav` 中間留了一個給頁面標題用的空位，劇本庫
-            板刻意留白（品牌字本身已經夠）——這裡不新增可見文字，但保留
-            一個 `sr-only` 的 `<h1>` landmark：手機首頁在拿掉 `Toolbar`
-            的 `<h1 class="toolbar-title">劇本庫</h1>` 之後，需要某個地方
-            仍然可以被 `getByRole("heading", {name:"劇本庫"})` 找到（既有
-            測試拿它確認「現在確實在劇本庫首頁」），螢幕閱讀器也需要一個
-            頁面標題可以唸。 */}
-        <h1 className="sr-only">劇本庫</h1>
+        {/* SW-04（#333）：原本這裡有一個 `sr-only` 的 `<h1>劇本庫</h1>`
+            landmark（拿掉 `Toolbar` 的 `<h1 class="toolbar-title">` 之後
+            補的過渡方案）——手機首頁標題列（`App.tsx` 的
+            `.mobile-home-title`）現在有真正可見的 `<h1>劇本庫</h1>`，
+            兩個 `<h1>` 同時存在會讓 `getByRole("heading", {name:
+            "劇本庫"})` 撞到「找到不只一個」，這裡不再需要重複一份。 */}
         <span className="spacer" />
         {/* 同桌面 TopBar 既有裁示：Normal User 不顯示角色徽章。 */}
         {role !== "normal" && (

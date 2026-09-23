@@ -9,41 +9,40 @@
 5. Do not expose, request, log, copy, or test real plaintext passwords/secrets.
 6. Do not take or paste screenshots unless the Owner explicitly asks. Browser verification is allowed when required by a ticket, but keep screenshot-heavy work to explicit visual-acceptance stages.
 7. Session reports: Traditional Chinese with English technical terms kept in English. Put substantive report content in one complete code block. Number reports as `［回報#NNN］`.
-8. Current report sequence: **097 used; next report is 098**.
+8. Current report sequence: **107 used; next report is 108**.
 9. **Do not append detailed ticket history to this file.** Keep this file short. After a ticket, update only the active checkpoint below in 1–2 lines. Detailed evidence belongs in GitHub issues, commits, and code review comments.
 10. `CLAUDE_HISTORY.md` is the archived legacy project journal. **Do not read it by default.** Read it only when a specific historical question cannot be answered from the current issue/commit/docs.
 
-## 2. Current active project — Obsidian Gold UI
+## 2. Current active project — Seed Warm UI
 
-Mother issue: **#316**
+**Status: complete, including SW-10/SW-11/SW-12 real-device acceptance
+and final cleanup rounds.** SW-01–SW-09 (#331–#339, mother issue
+**#330** SEED-WARM-SPEC-001), SW-10 (#340), SW-11 (#341), and SW-12
+(#342, final cleanup: ⚠️/🚩 user-UI removed entirely, Spread net-cost
+history feature fully retired — UI/API/write-path/tests, Heatmap/
+Crossover explanation collapsed to one sentence + ⓘ, desktop normal
+signal-dot removed) all implemented, tested, code-reviewed, and pushed
+to `ui-redesign/seed-warm`. Full detail: closed issues #331-#342. Per
+rule 3, **no PR opened** — waiting on Owner real-device acceptance
+before cue to open one. Two open items still need Owner action outside
+this repo (unchanged since SW-11): (1) from SW-10 #340, confirm
+`SUPERUSER_PASSWORD`/`SUPERADMIN_PASSWORD` are scoped to the Preview
+environment in Vercel's project settings (see `docs/deploy-vercel.md`),
+not just Production; (2) from SW-11 #341, desktop `ScenarioList.tsx`'s
+normal-state signal-dot has since also been removed in SW-12 #342, so
+this item is now resolved.
 
-Canonical visual spec:
-`https://claude.ai/artifact/28tqiXF2o9UyQK6vDUXf5q`
+ARCH-REVIEW-001 (#343) followed: a five-track architecture health check
+of the finished branch. Three tracks returned "no material finding" and
+were left alone; fixed only a stale-detail-cache bug after edit, an
+archived-edit lifecycle gap, a `request_scope` Protocol leak, table-list
+drift guards, and dead symbols/docs (commit `a039a85`). Its one open
+item is closed: the Owner dropped the Production `narrow_history` table
+(LEGACY-CLEANUP-003).
 
-Working branch:
-`ui-redesign/graphite-amber`
-
-Goal:
-Implement the approved **Obsidian Gold** Binance-inspired visual design without changing product semantics.
-
-### Completed
-- **OG-01 #317** — Foundations: Obsidian Gold tokens, Geist + Noto Sans TC, shared primitives, StockLogo contract.
-- **OG-02 #318** — Desktop chrome: 64px top bar, page-level navigation, full-width desktop shell.
-- **OG-09 #319** — Mobile scenario library: 52px mobile top bar, dense rows, persistent bottom navigation.
-- **OG-03 #320** — Desktop Markets-style scenario table + trash-page table skin (code-review follow-up) + required-move sub-text.
-- **OG-06 #321** — Desktop detail page part I: 3-column shell, identity row, family/expiry/ranking table, Heatmap-follows-selection, PriceLadder. Right column + bottom tabs left as empty containers for OG-07.
-- **OG-11 #322** — Settings subnav (desktop) / Super Admin backdoor (ops-metrics stats, owner status filter, type-to-confirm delete modals).
-- **OG-07 #325** — desktop detail part II: right-column candidate panel (Entry/Payoff/Greeks/Report tabs, follows ranking-row selection) + bottom 4 tabs (cost history/pool diagnostics/analysis report/raw data). AnalysisReport renders exactly once (bottom tab, test-locked); right "Report" tab is a teaser + disclaimer + jump link. Desktop-only single-leg cost-history support added (frontend-only relaxation).
-- **OG-04 #323** — scenario-list cost sparkline (the approved additive backend field). New `Storage.cost_sparklines()` batched query (VALUES+LATERAL, memory+Postgres contract tests, structural "no results.view" test, 100-row latency benchmark proving no N+1). `representative_candidate` projection gained a `candidate_key` field (needed to look up narrow history at list-time). Desktop-only `CostSparkline.tsx` hand-rolled SVG, green/red by direction, gap-broken. Mobile untouched.
-- **OG-05 #324** — read-only `GET /api/me/usage-summary` (active scenarios/quota/AUTH-05 exemption/last activity/throttle interval, sourced from the same closure variables the create/refresh gates use, never touches `last_activity_at`) + desktop-only stats strip in `ScenarioList.tsx` (`UsageStatsStrip`, role via `useAuthRole()`). Super-Admin-only extra blocks (`OpsSuperAdminStats`) read the existing `/api/ops/metrics`, which gained one additive `vendor_fuse: {used, budget}` field; conditionally mounted so non-Super-Admin issues zero ops-metrics requests. Mobile untouched.
-- **OG-08 #326** — desktop right column shows `<IvHistory>` (unmodified, self-gating, existing content) instead of `<CandidatePanel>` when the ranking table's *selected* candidate (not the cross-family champion — deliberate, documented, test-locked interpretation for internal consistency with OG-07's "right column follows selection" convention) is single-leg + role ≥ Super User + feature enabled. Gate logic (`useIvHistoryAccess()`/`supportsIvHistory()`/`isSuperUserRole()`) extracted from `IvHistory.tsx` as named exports so both consumers share one source of truth. Old global full-width mount now `!isDesktop`-gated (mobile-only); mobile behavior unchanged. Zero backend/API changes.
-- **OG-10 #327** — mobile detail page reordered to artifact order: `FamilyTabs` (ranking table, unchanged native-`<details>`-per-row-expand mechanism — deliberately NOT switched to desktop's single-selection model, since the AC itself names "candidate-expand zero-request" as an existing, must-survive test) now renders before the main "劇本主圖" `Chart`; two previously mobile-absent blocks added — `PriceLadder` (reused verbatim from OG-06) and a new `EntryPanel` (leg worst-price rows + reused `RiskPayoff`/`PositionSensitivity` from `AnalysisReport.tsx`, both champion-anchored per QA1-06) — right after `Chart`; `IvHistory` moved to after `EntryPanel`. Disclosed scope-limiting call: `CandidatePool`/`AnalysisReport` stay family-scoped inside `FamilyTabs` (pre-existing T11/#229 architecture) rather than being pulled out to join `SpreadHistory`/`RawData` as a literal "3 adjacent rows" — both `/code-review` axes independently confirmed this defensible. Desktop DOM byte-for-byte unchanged (zero diff to `DesktopDetail.tsx`). Zero backend/API changes.
-- **OG-12 #328** — final acceptance sweep, no new features. Added missing responsive geometry e2e (1100px breakpoint transition, 1100–1280px mid-width no-overflow, 375px mobile no-horizontal-scroll) and a forced-light-mode token e2e; the mid-width test caught and fixed one real pre-existing CSS drift (`.toolbar`'s full-bleed negative margin vs. `.detail-page .screen`'s QA-FIX-3 padding override, 8px overflow at 1100–1280px). Verified and documented: zero backend/engine semantic drift since before OG-01 (only OG-04/OG-05's approved additive files touched), contract-sample diff scope, Logo.dev-only static scan, full regression (typecheck/1041 Vitest/build/143 Playwright ×2 stable runs/full real-Postgres backend suite). Produced `docs/obsidian-gold-acceptance-checklist.md` for the Owner, including 3 disclosed (not fixed) artifact-vs-implementation gaps: no manual dark/light toggle, desktop library missing the artifact's fuller stats/Family-filter/search (out of OG-03/04/05's own approved scope), mobile settings page structured differently than its artifact board.
-
-### Obsidian Gold: complete
-All of OG-01 through OG-12 (#317–#328) are done. See `docs/obsidian-gold-acceptance-checklist.md` for the Owner's real-device acceptance pass. No PR opened yet per project rule — waiting for Owner cue after that review.
-
-Do not redesign the approved artifact. Implementation questions should be resolved from the artifact + current issue body unless a true HITL decision is required.
+PR #344 (`ui-redesign/seed-warm` → master) is open; post-review fixes
+pushed to it: AUTH-P1-FIX-001 (`8fdc1e3`) and SW-13 usage-summary
+refresh (shared `src/usageSummaryStore.ts`). Do not merge without Owner.
 
 ## 3. Product semantics that must not drift during OG work
 
@@ -107,7 +106,7 @@ If local Postgres is missing, use `scripts/dev_env.sh` first. Do not silently ac
 Use the narrowest source needed; do not preload the project history.
 
 - Active work/spec: latest GitHub issue body under #316 / child ticket.
-- Visual truth: Obsidian Gold artifact above.
+- Visual truth: Seed Warm Direction A artifact (`https://claude.ai/artifact/TS2KZEjtYPkzGuYDTFd4HA`), superseding the retired Obsidian Gold artifact.
 - Code truth: current branch + tests.
 - Deployment instructions: `docs/deploy-vercel.md`.
 - Older requirement history only if specifically needed: relevant `docs/` file or GitHub issue/commit.

@@ -37,7 +37,10 @@ export default function CandidatePool({ view, result }: {
   if (result.status !== "ok") {
     return (
       <div className="card">
-        <h2 className="section-title">候選池</h2>
+        {/* SW-06（#335）文案去術語：「候選池」是內部工程詞彙（見檔頭
+            FB4-01 命名），一般使用者只需要知道「這裡是候選策略的細節」
+            ——語意不變，換個看得懂的講法，同一份判斷、同一套資料。 */}
+        <h2 className="section-title">候選策略</h2>
         <p className="caption">{result.message || "這個策略沒有產生結果。"}</p>
       </div>
     );
@@ -49,7 +52,7 @@ export default function CandidatePool({ view, result }: {
 
   return (
     <div className="card">
-      <h2 className="section-title">候選池</h2>
+      <h2 className="section-title">候選策略</h2>
 
       {/* 不是「整條鏈抓到幾筆」——引擎的 FilterReport.total 已經先篩過
           策略對應的買賣權別（filters.apply_filters）與選定到期日

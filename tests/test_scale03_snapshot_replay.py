@@ -18,6 +18,13 @@ Prototype #065（4,626 筆歷史快照比對、0 mismatch）。
   canonical helper 前後逐位元不變。
 - AC-5：`cost_from_snapshot()` 本身未被任何生產路徑呼叫
   （`git grep` 可自行核對），本票只交付函式。
+  **ARCH-REVIEW-001（#343）補註**：當初要接它的 SCALE-09 resolver
+  （`history_resolver.py`）已隨 SW-12（#342）退休刪除，所以這句話
+  從「還沒接上」變成「永久不會接上」。本檔案因此不只是 SCALE-03 的
+  驗收，也是 SW-12 刪掉的 `test_scale12_parity_proof.py` 那半邊
+  full-pool `cost_from_snapshot()` ↔ `natural_cost()` 比對的接班人
+  ——刪掉它會真的失去一個仍然有效的不變量，見
+  `option_chaser/snapshot_replay.py` 檔頭。
 - AC-6：全套既有測試（`test_scenarios.py`／`test_valuation*.py`／
   CLI golden／selection regression）在本票的 PR 裡零改動、零漂移
   ——`scenarios.natural_cost()` 的輸出值本身未變，只是內部呼叫路徑

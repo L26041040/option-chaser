@@ -133,7 +133,7 @@ def test_editing_a_scenario_touches_activity():
 
 
 def test_manual_single_scenario_refresh_touches_activity():
-    c, storage = _client(anonymous_refresh_min_interval_minutes=0)
+    c, storage = _client()
     created = c.post("/api/scenarios", json=NEW).raise_for_status().json()
     owner_id = _only_owner(storage).owner_id
     storage.touch_owner_activity(owner_id, now="2000-01-01T00:00:00+00:00")
@@ -144,7 +144,7 @@ def test_manual_single_scenario_refresh_touches_activity():
 
 
 def test_manual_refresh_run_touches_activity():
-    c, storage = _client(anonymous_refresh_min_interval_minutes=0)
+    c, storage = _client()
     c.post("/api/scenarios", json=NEW).raise_for_status()
     owner_id = _only_owner(storage).owner_id
     storage.touch_owner_activity(owner_id, now="2000-01-01T00:00:00+00:00")
@@ -195,7 +195,7 @@ def test_auto_refresh_does_not_touch_activity():
     """單一劇本刷新端點省略 `manual`（預設 `False`）——`App.tsx` 內部
     `runBatch()` 的失敗隔離 fallback 走的正是這條路徑，不該把它算成
     真人操作。"""
-    c, storage = _client(anonymous_refresh_min_interval_minutes=0)
+    c, storage = _client()
     created = c.post("/api/scenarios", json=NEW).raise_for_status().json()
     owner_id = _only_owner(storage).owner_id
     assert storage.get_owner(owner_id).last_activity_at is not None  # 建立本身已算一次
@@ -210,7 +210,7 @@ def test_refresh_run_without_manual_does_not_touch_activity():
     """開站自動觸發的整輪刷新（前端 `manual=false`，或乾脆省略）不算
     活動——這是 spec §7 點名『若也算，任何被背景分頁或搜尋引擎打開過
     的 owner 都會永遠不過期，清理機制形同虛設』的那個風險。"""
-    c, storage = _client(anonymous_refresh_min_interval_minutes=0)
+    c, storage = _client()
     c.post("/api/scenarios", json=NEW).raise_for_status()
     owner_id = _only_owner(storage).owner_id
     storage.touch_owner_activity(owner_id, now="2000-01-01T00:00:00+00:00")

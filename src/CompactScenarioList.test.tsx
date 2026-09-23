@@ -2,6 +2,7 @@ import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { BANNED_JARGON } from "./bannedCopy";
 import CompactScenarioList from "./CompactScenarioList";
 import sampleRow from "../contracts/scenario_row_sample.json";
 import type { RefreshFailure, ScenarioSummary } from "./api";
@@ -71,9 +72,15 @@ describe("Compact 劇本列（MVP-v2／#77、#82）", () => {
       // class 鎖定畫面上那個節點，不靠文字比對消歧義。
       expect(within(card).getByText("TLT")).toBeInTheDocument();
       // QA 修正：現價擠進同一行的目標價前面（`現價 → 目標`）。
+      // SW-10（#340，Owner 真機驗收）：補回「還需 +xx%」（Artifact A
+      // 首頁劇本卡的既有欄位），跟桌面版 `ScenarioList.tsx` 用同一個
+      // `requiredMovePct()`／`formatMove()`。
       expect(card.querySelector(".compact-target")!.textContent)
-        .toBe("$100.00 → $120.00　2028-05");
-      expect(within(card).getByTitle("狀態：正常")).toBeInTheDocument();
+        .toBe("$100.00 → $120.00　2028-05 · 還需 +20.0%");
+      // SW-11（#341，Owner 真機驗收）：正常成功狀態不再畫綠點——幾乎
+      // 每張卡平常都是這個狀態，額外的 icon 只剩視覺噪音，見下方
+      // 「只在需要注意的狀態才顯示 signal-dot」那條測試。
+      expect(within(card).queryByTitle("狀態：正常")).not.toBeInTheDocument();
 
       // 第二層
       expect(within(card).getByText("123.4%")).toBeInTheDocument();
@@ -148,9 +155,12 @@ describe("Compact 劇本列（MVP-v2／#77、#82）", () => {
     list([row({ days_to_anchor: -3 })]);
     const card = screen.getByRole("listitem");
     expect(within(card).getByText("已過期 3 天")).toBeInTheDocument();
-    // 三層仍是三個區塊，不是四個——沒有第四個獨立的「距到期」區塊。
+    // SW-10（#340）：`.compact-tier1`／`.compact-tier2` 合併成單一
+    // `.compact-main-row`（見 `styles.css` 同名選擇器說明）後，主要
+    // 資訊列＋第三層是兩個區塊，不是三個——沒有第三個獨立的「距到期」
+    // 區塊。
     expect(card.querySelectorAll(
-      ".compact-tier1, .compact-tier2, .compact-tier3").length).toBe(3);
+      ".compact-main-row, .compact-tier3").length).toBe(2);
   });
 
   it("整列是真正的連結，可及名稱不被 aria-label 取代掉列上內容", () => {
@@ -193,24 +203,33 @@ describe("Compact 劇本列（MVP-v2／#77、#82）", () => {
     expect(screen.queryByRole("button", { name: /重試/ })).not.toBeInTheDocument();
   });
 
-  it("久未刷新標「舊資料」，跟燈號並存、不互相取代", () => {
+  it("久未刷新標「舊資料」，正常燈號不畫（SW-11／#341）", () => {
     list([row({ latest_analyzed_at: "2026-08-01T09:30:00+00:00" })]);
     const card = screen.getByRole("listitem");
     expect(within(card).getByText("舊資料")).toBeInTheDocument();
-    expect(within(card).getByTitle("狀態：正常")).toBeInTheDocument();
+    expect(within(card).queryByTitle("狀態：正常")).not.toBeInTheDocument();
+  });
+
+  it("SW-11（#341，Owner 真機驗收）：signal-dot 只在真正需要注意的狀態顯示——刷新失敗畫黃點、已過期畫紅點，正常成功不畫", () => {
+    list(
+      [row({ id: "a", expired: false }), row({ id: "b", expired: true })],
+      { failures: { a: { stage: "fetch", message: "抓不到 TLT 的報價" } } },
+    );
+    const cards = screen.getAllByRole("listitem");
+    expect(within(cards[0]).getByTitle("狀態：刷新失敗")).toBeInTheDocument();
+    expect(within(cards[1]).getByTitle("狀態：已過期")).toBeInTheDocument();
   });
 
   it("一個劇本都沒有時指引使用者往上面的新增入口，不是空白畫面", () => {
     list([]);
     expect(screen.getByText(/還沒有劇本/)).toBeInTheDocument();
-    expect(screen.getByText(/新增劇本/)).toBeInTheDocument();
+    expect(screen.getByText(/建立劇本/)).toBeInTheDocument();
   });
 
-  it("畫面上寫明收益率的口徑（V4／#52 既有裁示，compact 版沿用）", () => {
+  it("SW-10（#340，Owner 真機驗收）：畫面上不再印計算口徑說明——完整" +
+     "說法收進設定→免責聲明", () => {
     list([row()]);
-    const note = screen.getByText(/最差成交價/);
-    expect(note).toHaveTextContent(/買腿 Ask/);
-    expect(note).toHaveTextContent(/賣腿 Bid/);
+    expect(screen.queryByText(/最差成交價/)).not.toBeInTheDocument();
   });
 });
 
@@ -633,5 +652,15 @@ describe("Logo 404 留白（OG-09／#319，row 層級覆蓋——`StockLogo.test
     expect(container.querySelector("img")).not.toBeInTheDocument();
     // 代號文字仍在，卡片其餘內容不受影響。
     expect(within(card).getByText("TLT")).toBeInTheDocument();
+  });
+});
+
+describe("文案去術語（SW-09／#339 全站掃描，手機劇本庫）", () => {
+  it("清單文字不含開發者詞彙", () => {
+    const { container } = list([row()]);
+    const text = container.textContent ?? "";
+    for (const banned of BANNED_JARGON) {
+      expect(text).not.toContain(banned);
+    }
   });
 });

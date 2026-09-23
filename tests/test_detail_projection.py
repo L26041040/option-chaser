@@ -196,11 +196,14 @@ def test_representative_candidate_and_best_return_still_resolve_against_projecte
     assert store.best_return(projected_view) == store.best_return(full_view)
 
 
-def test_spread_history_and_raw_data_are_unaffected_because_they_read_storage_directly():
-    """V9 Spread 淨成本走勢／V8 原始資料兩個既有端點都是從 `_db()`
-    （storage）直接讀最新結果或逐筆快照，完全不經過
-    `GET /api/scenarios/{id}` 這個端點、也就不經過 `project_for_
-    detail()`——這裡用真實端點呼叫直接證明，不只是推論程式碼路徑。"""
+def test_raw_data_is_unaffected_because_it_reads_storage_directly():
+    """V8 原始資料端點是從 `_db()`（storage）直接讀逐筆快照，完全不
+    經過 `GET /api/scenarios/{id}` 這個端點、也就不經過 `project_for_
+    detail()`——這裡用真實端點呼叫直接證明，不只是推論程式碼路徑。
+
+    SW-12（#342）：這條原本還一併驗證 V9 Spread 淨成本走勢的
+    `GET /history` 端點——該功能已整個退休，`/history` 端點已刪除，
+    這裡只保留 raw-data 半邊的既有覆蓋。"""
     storage = MemoryStorage()
     c = _client(storage)
     r = c.post("/api/scenarios", json={
@@ -208,14 +211,6 @@ def test_spread_history_and_raw_data_are_unaffected_because_they_read_storage_di
         "strategies": ["vertical-spread"]})
     sc_id = r.json()["id"]
     c.post(f"/api/scenarios/{sc_id}/refresh").raise_for_status()
-
-    view = storage.latest_result(sc_id, owner="solo").view
-    candidate_key = view["results"][0]["expiry_top10"][0]["candidate_keys"][0]
-
-    history = c.get(f"/api/scenarios/{sc_id}/history"
-                    f"?candidate_key={candidate_key}")
-    assert history.status_code == 200
-    assert history.json()["entries"]
 
     raw = c.get(f"/api/scenarios/{sc_id}/raw-data")
     assert raw.status_code == 200

@@ -1,7 +1,7 @@
 /**
- * PB-12（#302，Anonymous Public Beta）：Beta 首頁說明／頁尾／隱私頁的
- * 禁詞掃描——票面 §7 明文「不得出現『推薦』『建議』『應該』或任何投資
- * 建議暗示」。
+ * PB-12（#302，Anonymous Public Beta）：設定頁免責聲明（SW-10／#340
+ * 起取代原本常駐首頁的 `BetaNotice`）／頁尾／隱私頁的禁詞掃描——票面
+ * §7 明文「不得出現『推薦』『建議』『應該』或任何投資建議暗示」。
  *
  * 仿 `src/percentileCopy.test.ts` 的既有慣例獨立成一個檔案，但這裡的
  * 禁詞規則比那份更細——不能對「建議」整個字串一律禁止：本站既有的
@@ -20,7 +20,7 @@
 import { render } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 
-import BetaNotice from "./BetaNotice";
+import DisclaimerSection from "./DisclaimerSection";
 import Footer from "./Footer";
 import PrivacyPage from "./PrivacyPage";
 
@@ -35,7 +35,7 @@ const STRICTLY_BANNED = ["推薦", "應該", "recommend", "should"];
 const ALLOWED_SUGGESTION_PATTERN = /(不(是|構成|應被視為|提供)|非).{0,10}投資建議/;
 
 const COMPONENTS: [string, () => JSX.Element][] = [
-  ["首頁 Beta 說明", () => <BetaNotice />],
+  ["設定頁免責聲明（SW-10／#340 起取代首頁常駐 Beta 說明）", () => <DisclaimerSection />],
   ["全站頁尾", () => <Footer />],
   ["隱私頁", () => <PrivacyPage />],
 ];

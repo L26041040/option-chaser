@@ -401,6 +401,15 @@ export default function CreateForm({
     <form className="card" onSubmit={submit} noValidate>
       <h2 className="section-title">{editing ? "編輯劇本" : "建立劇本"}</h2>
 
+      {/* `/code-review` Spec 軸跟進（SW-07／#336）：票面點名的 `.pinp`
+          primitive（36px 高、13px 字級，設計給導覽列／搜尋框那種緊湊
+          情境）刻意不套在這幾個全寬表單欄位上——`.input` 現有的 48px
+          高、17px 字級是既有的 iOS Safari 防護（低於 16px 對焦時會被
+          強制整頁縮放），換成 `.pinp` 會撤掉這個既有可及性保護，純粹
+          為了套用同名 class 而讓觸控體驗變差不值得。顏色與圓角（10px）
+          兩邊本來就相同（`.input`／`.pinp` 都讀 Seed Warm token），視覺
+          落差只剩「這個表單看起來像不像同一套系統」這件事，而它已經
+          是——這裡留著 `.input` 是刻意的，不是漏改。 */}
       {/* 標的在編輯模式下不可改（#132）：換 underlying 是另一個劇本，
           不是「編輯」。前端反灰只是說明，真正的防線是後端的請求模型
           根本沒有 symbol 欄位。 */}
@@ -461,21 +470,30 @@ export default function CreateForm({
             用法）。 */}
         <div className="yield-note-row">
           <span className="row-label" id={familyLabelId}>策略類型</span>
-          <button type="button" className="text-button"
+          <button type="button" className="pbtn line sm"
                   onClick={toggleAllFamilies}>
             {allFamiliesSelected ? "取消全選" : "全選"}
           </button>
         </div>
         <div role="group" aria-labelledby={familyLabelId}
              className="family-options">
+          {/* SW-07（#336）：family 勾選改成 pill chip 外觀（artifact
+              「family 勾選 chips」）——checkbox 本身仍在（可及性、
+              `getByRole("checkbox", {name})` 既有測試查詢方式不變），
+              只是視覺上用 `.family-option.selected` 疊一層 terracotta
+              淺底樣式，不是換掉互動元件本身。 */}
           {FAMILY_OPTIONS.map((opt) => {
             const verdict = editing?.family_eligibility?.[opt.code];
             const ineligible = verdict !== undefined && !verdict.eligible;
+            const checked = families.includes(opt.code);
             return (
-              <label key={opt.code} className="family-option">
+              <label
+                key={opt.code}
+                className={checked ? "family-option selected" : "family-option"}
+              >
                 <input
                   type="checkbox"
-                  checked={families.includes(opt.code)}
+                  checked={checked}
                   onChange={() => toggleFamily(opt.code)}
                 />
                 <span>{opt.label}</span>
@@ -523,15 +541,15 @@ export default function CreateForm({
           {/* 取消**隨時**可按（#132）：不要求未修改、不要求 validation
               通過、不要求先復原內容。`type="button"` 而不是 submit，
               否則瀏覽器會先跑表單驗證。 */}
-          <button className="text-button" type="button" onClick={onCancelEdit}>
+          <button className="pbtn line" type="button" onClick={onCancelEdit}>
             取消
           </button>
-          <button className="button" type="submit" disabled={busy}>
+          <button className="pbtn" type="submit" disabled={busy}>
             {busy ? "儲存中……" : "儲存變更"}
           </button>
         </div>
       ) : (
-        <button className="button" type="submit" disabled={busy}>
+        <button className="pbtn" type="submit" disabled={busy}>
           {busy ? "建立中……" : "建立"}
         </button>
       )}

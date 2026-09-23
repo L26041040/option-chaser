@@ -180,7 +180,6 @@ def test_exit_2_global_vendor_fuse_is_actually_triggered_under_synthetic_load():
     storage = MemoryStorage()
     app = create_app(cboe_fetch=mock, storage=storage, cron_secret=CRON_SECRET,
                      global_vendor_daily_budget=3,
-                     anonymous_refresh_min_interval_minutes=0,
                      anonymous_max_active_scenarios=0)
     _owner_id, token = _make_synthetic_owner(storage)
     c = _client_for(app, token)
@@ -207,8 +206,7 @@ def test_exit_3_no_500_across_every_degradation_path():
     storage = MemoryStorage()
     app = create_app(cboe_fetch=mock, storage=storage, cron_secret=CRON_SECRET,
                      global_vendor_daily_budget=5,
-                     anonymous_max_active_scenarios=2,
-                     anonymous_refresh_min_interval_minutes=0)
+                     anonymous_max_active_scenarios=2)
 
     all_statuses: list[int] = []
     for _ in range(4):
@@ -309,7 +307,6 @@ def test_zero_real_vendor_calls_across_the_whole_harness(monkeypatch):
     storage = MemoryStorage()
     app = create_app(cboe_fetch=mock, storage=storage, cron_secret=CRON_SECRET,
                      global_vendor_daily_budget=2, anonymous_max_active_scenarios=2,
-                     anonymous_refresh_min_interval_minutes=0,
                      anonymous_abandoned_after_days=1, anonymous_grace_period_days=1)
 
     last_token = None
@@ -370,7 +367,7 @@ def test_synthetic_data_can_be_cleared_in_one_batch():
 # ---------- Exit 第 6 項：DB 成長速率外推（僅真實 Postgres） ----------
 
 _GROWTH_TABLES = ("scenarios", "results", "current_results", "snapshots",
-                  "events", "narrow_history", "owners", "browser_identities")
+                  "events", "owners", "browser_identities")
 
 
 def _total_db_bytes(conn) -> int:
@@ -390,11 +387,12 @@ def _total_db_bytes(conn) -> int:
 def test_exit_6_db_growth_rate_extrapolates_to_a_concrete_neon_free_owner_count():
     """production-scale fixture（600 張合約，`PRODUCTION_SCALE_FIXTURE`）
     ——沿用 SCALE-16／REPAIR-10 既有教訓：小 fixture（六到期日、
-    數十張合約）量不出真實比例，必須量到收斂才能外推。量測涵蓋全部
-    8 張 owner-scoped 表（`_GROWTH_TABLES`，與 PB-04 `_OWNER_SCOPED_
+    數十張合約）量不出真實比例，必須量到收斂才能外推。量測涵蓋
+    7 張 owner-scoped 表（`_GROWTH_TABLES`，與 PB-04 `_OWNER_SCOPED_
     TABLES` 同一份清單邏輯，這裡額外加 `owners`／`browser_identities`
-    本身），VACUUM FULL 後才量——否則量到的是 MVCC 冷啟動膨脹，不是
-    production 穩態足跡（SCALE-16 既有教訓）。"""
+    本身；SW-12／#342 起原本第 8 張 `narrow_history` 隨 Spread 淨成本
+    走勢功能整個退休一併移除），VACUUM FULL 後才量——否則量到的是
+    MVCC 冷啟動膨脹，不是 production 穩態足跡（SCALE-16 既有教訓）。"""
     import psycopg
 
     from api_app.storage import postgres as pg
@@ -403,7 +401,7 @@ def test_exit_6_db_growth_rate_extrapolates_to_a_concrete_neon_free_owner_count(
     with psycopg.connect(TEST_DB_URL, autocommit=True) as conn:  # type: ignore[arg-type]
         conn.execute(
             "TRUNCATE scenarios, results, current_results, snapshots, events, "
-            "narrow_history, owners, browser_identities RESTART IDENTITY")
+            "owners, browser_identities RESTART IDENTITY")
 
     pg._schema_ready.discard(TEST_DB_URL)  # 這個程序只建一次 schema 的快取
     storage = PostgresStorage(TEST_DB_URL)  # type: ignore[arg-type]
@@ -412,8 +410,7 @@ def test_exit_6_db_growth_rate_extrapolates_to_a_concrete_neon_free_owner_count(
     app = create_app(cboe_fetch=mock, storage=storage, cron_secret=CRON_SECRET,
                      rate_loader=offline_rate_loader,
                      dividend_loader=real_dividend_loader,
-                     anonymous_max_active_scenarios=0,
-                     anonymous_refresh_min_interval_minutes=0)
+                     anonymous_max_active_scenarios=0)
 
     with psycopg.connect(TEST_DB_URL, autocommit=True) as conn:  # type: ignore[arg-type]
         for table in _GROWTH_TABLES:

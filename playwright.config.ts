@@ -21,13 +21,48 @@ const chromiumLaunchOptions = {
     : {}),
 };
 
+// PR #344 真因（三次 CI 失敗＋一次帶 retry 仍失敗後，撈到失敗截圖才
+// 抓到）：Playwright 近版本 headless 模式預設改用「Chromium Headless
+// Shell」——一個跟一般 Chromium 分開打包、行為不完全相同的精簡二進位
+// 檔。CI 沒有設定 `PLAYWRIGHT_CHROMIUM_PATH`，`launch()` 因此吃
+// Playwright 自己的預設值，選中的正是這個 headless shell；本地沙箱
+// 因為一路明確指定 `PLAYWRIGHT_CHROMIUM_PATH` 指向完整版 Chromium，
+// 從頭到尾沒有踩過這個分支，這也是「本地重現十幾次全過、CI 每次都
+// 倒」的真正原因。
+//
+// 失敗截圖證實了後果：`iPhone` project 的頁面渲染成明顯寬於 390px 的
+// 版面（文字被裁切、stats 卡片橫向占滿寬版面）——headless shell 底下
+// `devices["iPhone 13"]` 的裝置模擬（viewport／DPR／touch）沒有正確
+// 套用，整頁事實上是用桌面寬度畫的，`.mtabs` 與其子元素的實際版面
+// 因此跟測試預期的手機窄版面完全不同，才會讓點擊座標踩進被 `#root`
+// 攔截的區域。
+//
+// 修法是明確要求 Playwright 用一般 Chromium 這個 channel、退出「自動
+// 選 headless shell」的預設行為——`channel` 與 `executablePath`
+// 互斥，只在沒有指定本地覆寫路徑時才加這個 channel（有指定路徑時，
+// 那個路徑本身就是完整版 Chromium，channel 沒有意義）。
+const chromiumChannel = process.env.PLAYWRIGHT_CHROMIUM_PATH
+  ? {}
+  : { channel: "chromium" as const };
+
 export default defineConfig({
   testDir: "./e2e",
   fullyParallel: true,
   reporter: process.env.CI ? "line" : "list",
+  // PR #344：CI 的 `Playwright smoke subset` 連續 4 次失敗（跨兩個
+  // commit、一次明確重跑、外加加了 retry 後原始嘗試＋retry 都失敗）
+  // 才逼出真因，見上面 `chromiumChannel` 的完整說明——headless shell
+  // 底下 iPhone 裝置模擬失真，不是這個 diff 的邏輯回歸，也不是單純
+  // CI 資源雜訊。這裡的 `retries: 1` 留著當一般防禦（真正壞掉的測試
+  // 不會因為多重試一次就穩定變綠），但這次的根因已經在瀏覽器選擇上
+  // 修掉了，不是靠這個 retry 撐過去的。
+  retries: process.env.CI ? 1 : 0,
   use: {
     baseURL: "http://127.0.0.1:5173",
     trace: "on-first-retry",
+    // 同一輪順便補上：之前沒有任何失敗現場證據（本輪這次調查完全
+    // 只能看純文字 log），下次再發生同類問題時至少有張圖可看。
+    screenshot: "only-on-failure",
   },
   projects: [
     {
@@ -38,6 +73,7 @@ export default defineConfig({
       use: {
         ...devices["iPhone 13"],
         browserName: "chromium",
+        ...chromiumChannel,
         launchOptions: chromiumLaunchOptions,
       },
     },
@@ -53,6 +89,7 @@ export default defineConfig({
         ...devices["Desktop Chrome"],
         browserName: "chromium",
         viewport: { width: 1280, height: 800 },
+        ...chromiumChannel,
         launchOptions: chromiumLaunchOptions,
       },
     },

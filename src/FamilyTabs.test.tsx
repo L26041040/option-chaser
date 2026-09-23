@@ -7,6 +7,7 @@ import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
 
+import { BANNED_JARGON } from "./bannedCopy";
 import FamilyTabs from "./FamilyTabs";
 import { candidate, result, view } from "./family.fixtures";
 
@@ -20,7 +21,8 @@ describe("單一 family——不出現多餘 UI（AC 明文）", () => {
 
     expect(screen.queryByRole("group", { name: "策略家族" })).not.toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "到期日" })).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "候選池" })).toBeInTheDocument();
+    // SW-06（#335）文案去術語：「候選池」→「候選策略」，語意不變
+    expect(screen.getByRole("heading", { name: "候選策略" })).toBeInTheDocument();
   });
 });
 
@@ -103,7 +105,7 @@ describe("多 family——分頁切換", () => {
     expect(screen.getByText("這個策略家族目前還沒有任何已啟用的具體結構。"))
       .toBeInTheDocument();
     // 不可選分頁不渲染排名內容
-    expect(screen.queryByRole("heading", { name: "候選池" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "候選策略" })).not.toBeInTheDocument();
   });
 });
 
@@ -152,5 +154,31 @@ describe("邊界", () => {
   it("`strategies` 為空、且 view.results 也沒東西時整塊不顯示", () => {
     const { container } = render(<FamilyTabs view={view([], {})} strategies={[]} />);
     expect(container).toBeEmptyDOMElement();
+  });
+});
+
+describe("文案去術語（SW-09／#339 全站掃描）", () => {
+  it("多 family 分頁全部切過一輪，文字不含開發者詞彙", async () => {
+    const v = view(
+      [
+        result("long-call", "ok", { "2026-09-18": ["lc"] }),
+        result("bull-call-spread", "ok", { "2026-09-18": ["bc"] }),
+      ],
+      {
+        lc: candidate("lc", "long-call", 0.3),
+        bc: candidate("bc", "bull-call-spread", 0.9),
+      },
+    );
+    const { container } = render(
+      <FamilyTabs view={v} strategies={["single-leg", "vertical-spread"]} />);
+
+    const tabs = screen.getByRole("group", { name: "策略家族" });
+    for (const name of ["Call / Put", "Vertical Spread"]) {
+      await userEvent.click(within(tabs).getByRole("button", { name }));
+      const text = container.textContent ?? "";
+      for (const banned of BANNED_JARGON) {
+        expect(text).not.toContain(banned);
+      }
+    }
   });
 });

@@ -169,6 +169,33 @@ def test_deleting_an_unarchived_scenario_is_rejected():
     assert c.get(f"/api/scenarios/{sc['id']}").status_code == 200
 
 
+def test_editing_an_archived_scenario_is_rejected():
+    """ARCH-REVIEW-001（#343）：垃圾桶劇本不接受編輯——跟 `refresh` 的
+    409 同一條理由（使用者主動丟掉的東西不該再有任何狀態改變），補上
+    這條之前 `edit` 是這條規則唯一的缺口。
+
+    被拒絕時不能留下任何痕跡：既然 thesis 改變會 `clear_results()`，
+    一個「擋下來了但結果已經被清掉」的半套失敗比不擋還糟，所以這裡
+    連帶驗證劇本本身原封不動。
+    """
+    c = _client()
+    sc = _create(c)
+    c.post(f"/api/scenarios/{sc['id']}/refresh").raise_for_status()
+    before = c.get(f"/api/scenarios/{sc['id']}").json()
+    assert before["latest_analyzed_at"] is not None   # 確實有結果可被清掉
+    c.post(f"/api/scenarios/{sc['id']}/archive").raise_for_status()
+
+    resp = c.patch(f"/api/scenarios/{sc['id']}",
+                   json={**NEW, "target_price": 999.0})
+
+    assert resp.status_code == 409
+    # 分層形狀（沿用 refresh 的 `{stage, message}`），前端才分辨得出原因
+    assert resp.json()["detail"]["stage"] == "archived"
+    after = c.get(f"/api/scenarios/{sc['id']}").json()
+    assert after["target_price"] == before["target_price"]
+    assert after["latest_analyzed_at"] == before["latest_analyzed_at"]
+
+
 def test_deleting_an_unknown_scenario_is_404():
     assert _client().delete("/api/scenarios/nope").status_code == 404
 

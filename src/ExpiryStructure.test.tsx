@@ -67,7 +67,13 @@ describe("到期日按鈕", () => {
   it("每個到期日一顆，並附該期最高收益", () => {
     show();
 
-    const chips = screen.getAllByRole("button");
+    // SW-11（#341，Owner 真機驗收）：`Heatmap`（本元件內部渲染）新增了
+    // `InfoTooltip` 的 ⓘ 按鈕（見該檔），全頁 `getAllByRole("button")`
+    // 因此不再只有到期日 chips——改用 `aria-label="到期日"` 的
+    // chip-strip 範圍查詢，只鎖定這裡真正要驗證的按鈕。
+    const chips = within(
+      screen.getByRole("group", { name: "到期日" }),
+    ).getAllByRole("button");
     expect(chips).toHaveLength(groups.length);
     for (const [i, group] of groups.entries()) {
       const top = firstCandidate(view, group.expiry);
@@ -122,22 +128,24 @@ describe("候選窄列", () => {
     expect(row).toHaveTextContent(`淨成本 $${prices.net.toFixed(2)}`);
   });
 
-  it("Bid/Ask 過寬的候選帶 ⚠ 徽章，文案明確寫「Bid/Ask 過寬」（MVP V3／#104）", () => {
+  it("SW-12（#342，Owner 真機驗收）：Bid/Ask 過寬旗標即使為真，⚠ 徽章也完全不" +
+     "顯示——收合、展開皆然（不是 SW-10／#340 那種「移到展開內容」，是整個退出" +
+     "使用者 UI；底層 `wide_spread_warning` 欄位本身不受影響，只是不再渲染）", () => {
     const expiry = view.baseline_expiry!;
     const { resultOverrides, poolPatch } = withCandidates(expiry, 2,
       (c, i) => ({ ...c, wide_spread_warning: i === 0 }));
     show(resultOverrides, poolPatch);
 
     const rows = screen.getAllByRole("listitem");
-    expect(within(rows[0]).getByText("⚠")).toBeInTheDocument();
-    expect(within(rows[0]).getByTitle("Bid/Ask 過寬")).toBeInTheDocument();
-    expect(within(rows[1]).queryByText("⚠")).not.toBeInTheDocument();
+    expect(within(rows[0]).queryByText(/⚠/)).not.toBeInTheDocument();
+    expect(within(rows[0]).queryByText(/Bid\/Ask 過寬/)).not.toBeInTheDocument();
+    expect(within(rows[0]).queryByTitle("Bid/Ask 過寬")).not.toBeInTheDocument();
     // 舊泛稱字串不得復發（MVP V3／#104 AC：新舊字串皆需明文檢查封鎖）。
     expect(screen.queryByText(/報價品質有疑慮/)).not.toBeInTheDocument();
     expect(screen.queryByText(/報價非最新/)).not.toBeInTheDocument();
   });
 
-  it("零成交量的候選不再帶 ⚠ 徽章（MVP V3／#104：LEAPS／冷門履約價零成交是常態）", () => {
+  it("零成交量的候選不再帶 Bid/Ask 過寬警示（MVP V3／#104：LEAPS／冷門履約價零成交是常態）", () => {
     const expiry = view.baseline_expiry!;
     const { resultOverrides, poolPatch } = withCandidates(expiry, 2,
       (c) => ({ ...c, wide_spread_warning: false }));
@@ -145,14 +153,12 @@ describe("候選窄列", () => {
 
     const rows = screen.getAllByRole("listitem");
     for (const row of rows) {
-      expect(within(row).queryByText("⚠")).not.toBeInTheDocument();
+      expect(within(row).queryByText(/Bid\/Ask 過寬/)).not.toBeInTheDocument();
     }
   });
 
-  it("單調性違反的候選帶獨立徽章，不跟 Bid/Ask 過寬的 ⚠ 混在一起", () => {
-    // FB5-03（#64）：`monotonicity_warning` 是獨立欄位，成因與嚴重性都
-    // 跟 `wide_spread_warning` 不同（配對關係違反 vs 單一數值超標），
-    // 徽章要分得開，不能共用同一個符號，否則使用者無法分辨兩種警示。
+  it("SW-12（#342，Owner 真機驗收）：單調性違反旗標即使為真，🚩 徽章也完全不顯示" +
+     "——同一原則，底層 `monotonicity_warning` 欄位與 eligibility 計算不受影響", () => {
     const expiry = view.baseline_expiry!;
     const { resultOverrides, poolPatch } = withCandidates(expiry, 2, (c, i) => ({
       ...c, wide_spread_warning: false, monotonicity_warning: i === 0,
@@ -160,9 +166,9 @@ describe("候選窄列", () => {
     show(resultOverrides, poolPatch);
 
     const rows = screen.getAllByRole("listitem");
-    expect(within(rows[0]).getByText("🚩")).toBeInTheDocument();
-    expect(within(rows[0]).queryByText("⚠")).not.toBeInTheDocument();
-    expect(within(rows[1]).queryByText("🚩")).not.toBeInTheDocument();
+    expect(within(rows[0]).queryByText(/🚩/)).not.toBeInTheDocument();
+    expect(within(rows[0]).queryByText(/疑似陳舊報價/)).not.toBeInTheDocument();
+    expect(within(rows[1]).queryByText(/疑似陳舊報價/)).not.toBeInTheDocument();
   });
 
   it("引擎給幾筆就畫幾筆、名次照它排好的順序，前端不自己截斷", () => {

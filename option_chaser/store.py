@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import dataclasses
 from datetime import date
-from typing import Iterable
 
 from . import __version__
 from .models import (AnalysisParams, ChainSnapshot, FAMILIES, STRATEGY_FAMILY,
@@ -21,18 +20,18 @@ from .valuation import (ButterflyValuation, ContractValuation, SpreadValuation,
                         spread_guidance_judgments)
 
 
-SCENARIO_SCHEMA_VERSION = 2   # v2: target_date（YYYY-MM-DD）→ target_month（YYYY-MM）
-
 # SCALE-01（#252，Scaling Foundation Stage 1-0）：凍結「candidate-specific
 # historical membership replay」語意的版本號——不是 `view["schema_version"]`
 # （那個描述 view *形狀*）也不是 `engine_version`（描述引擎程式碼版本），
 # 是描述「這一列歷史 fact 的 eligibility／filter／pair-validity 語意」。
-# 目前唯一的消費者是尚未建立的 SCALE-09 candidate-specific resolver：
-# 未來若 eligibility 規則改變（例如過濾門檻、pair validity 判準），
-# resolver 必須依這個版本號決定怎麼重放舊資料，不得對所有既有列直接
-# 套用新規則重新解讀（那會讓「當時到底發生了什麼」這個歷史事實跟著
-# 現在的程式碼改變）。今天只有版本 1；SCALE-01 把它寫進每一列
-# （新寫入與 backfill 皆同），版本本身尚未被任何邏輯讀取或分派。
+#
+# ARCH-REVIEW-001（#343）：原註解寫「目前唯一的消費者是尚未建立的
+# SCALE-09 candidate-specific resolver」——那個 resolver（`history_
+# resolver.py`）已隨 SW-12（#342）Spread 淨成本走勢整個退休而刪除，
+# 所以現在沒有、也不預期會有讀取端。這個欄位仍然值得繼續寫進每一列：
+# 它記錄的是「這列資料是用哪一版 eligibility 語意算出來的」這個歷史
+# 事實，將來任何要重放舊列的東西都需要它，而事後補不回來。寫入但不
+# 讀取在這裡是刻意的，不是待辦。
 HISTORY_REPLAY_VERSION = 1
 
 
@@ -181,54 +180,6 @@ def representative_candidates_by_family(view: dict | None) -> dict:
     }
 
 
-def visible_candidate_keys(view: dict | None) -> set[str]:
-    """SCALE-09（#261，Scaling Foundation Stage 1-1，FR-2.2）：narrow
-    history dual-write 要覆蓋的「visible candidate」集合——票面明定的
-    三者聯集，逐 family、逐到期日：
-    1. 各到期日的 `expiry_top10`（使用者在到期日結構區點得到的前十名）
-    2. 各到期日的 `expiry_best`
-    3. 跨 family champion（`representative_candidate`）與 per-family
-       代表（`per_family`）
-
-    第 3 項不直接呼叫 `representative_candidate()`／
-    `representative_candidates_by_family()`——那兩個函式回傳的是清單
-    卡片要的**投影**（`{strategy, legs, expiry, baseline_return}`，
-    見 `_project_representative_row()`），不含 `candidate_key` 本身，
-    加這個欄位會是清單卡片契約的破壞性變動、牽動前端型別與契約樣本，
-    超出本票範圍。這裡改為直接收 `_baseline_group()` 這個小池子（每個
-    subtype 各一列，baseline 期）裡**全部**列的 `candidate_key`——
-    `representative_candidate`／`per_family` 兩者的選擇本來就是從這個
-    小池子裡 `max()` 出來的，因此這裡收全部列必然是包含兩者選中結果
-    的超集合，不會漏掉任何一個，多收的那幾個非冠軍 subtype 候選也
-    不違反任何 AC（dual-write 多寫幾個 visible candidate 不是問題，
-    漏寫才是）。
-    """
-    if view is None:
-        return set()
-    keys: set[str] = set()
-    for r in view["results"]:
-        for group in r["expiry_top10"]:
-            keys.update(group["candidate_keys"])
-        keys.update(r["expiry_best"])
-    baseline_group = _baseline_group(view)
-    if baseline_group is not None:
-        keys.update(row["candidate_key"] for row in baseline_group["rows"])
-    return keys
-
-
-def visible_candidate_costs(view: dict | None) -> dict[str, float]:
-    """`visible_candidate_keys(view)` 逐一查 `candidate_pool[key]
-    ["natural_cost"]`——與 V9（#57）`spread_cost_history()` 讀
-    `all_candidates` 裡的 `cost` 欄位是同一個數字的兩種讀法（皆源自
-    `scenarios.natural_cost()`），這裡改讀 `candidate_pool` 是因為
-    T09（#191）之後那才是唯一完整保存全部候選欄位的容器，且不依賴
-    `all_candidates`（SCALE-17 之後會被移除的既有欄位）存續。"""
-    if view is None:
-        return {}
-    pool = view["candidate_pool"]
-    return {key: pool[key]["natural_cost"] for key in visible_candidate_keys(view)}
-
-
 def best_return(view: dict | None) -> float | None:
     """baseline 期（最接近目標年月的到期日）本身的最高收益率——與 Step 2
     主圖同一口徑（QA1-03／#30：先前誤取全部到期日的全域最大值，較早到期日
@@ -323,47 +274,6 @@ def _validate_leg_count(legs: list) -> None:
         raise ValueError(
             f"候選腿數必須介於 1 到 4 之間（contract 容量上限），"
             f"實際 {len(legs)}")
-
-
-def spread_cost_history(views: Iterable[dict], candidate_key: str) -> list[dict]:
-    """V9（#57）：跨一個劇本的全部歷史快照（序列化 view dict），依 Spread
-    身份鍵（`candidate_key`，已含策略／買賣履約價／到期日，見
-    `service.valuation_key`）聚合出時間序列。
-
-    與 Streamlit 版 `workspace.spread_history()`（T11／#25）同一套語意，
-    只是輸入從「讀檔案路徑」換成「呼叫端已經備妥的 view dict 序列」——
-    新架構（`api_app`）的 `Storage.result_history()` 回傳的是
-    `ResultRecord`（`.view` 已經是這個形狀），沒有檔案路徑可讀；
-    `workspace.spread_history()` 改為委派本函式，兩邊共用同一份邏輯。
-
-    唯讀聚合：只讀 view dict，不寫入、不改變任何計算或保存範圍。某次
-    快照的 `all_candidates` 找不到這個鍵（該候選當次不是有效候選，例如
-    缺報價被過濾）→ 該筆仍然入列，但 cost／baseline_return／
-    rank_in_expiry 皆為 None：如實呈現斷點，不插值、不跳過、不報錯；
-    `analyzed_at`／`spot` 仍取自那次成功更新本身。範圍限定 Spread 路徑
-    （`all_candidates` 只有 spread 策略填入，T9 附錄A13 既有 MVP 範圍）。
-
-    **SCALE-14（#265）之後**：`GET /history` 已改讀 narrow history／
-    candidate-specific resolver（`api_app.main.get_spread_history()`，
-    不再呼叫這個函式），**本函式刻意保留、非死碼**——票面明文
-    `Rollback Point`：「Feature/read-path switch 可切回 legacy
-    `spread_cost_history`」，是那條回退路徑本身，也是
-    `tests/test_scale14_history_read_path.py` 裡 AC-4 benchmark 的
-    legacy baseline 對照組。
-    """
-    out = []
-    for view in views:
-        entry = next((e for r in view["results"]
-                     for e in r.get("all_candidates", [])
-                     if e["candidate_key"] == candidate_key), None)
-        out.append({
-            "analyzed_at": view["analyzed_at"],
-            "spot": view["meta"]["spot"],
-            "cost": entry["cost"] if entry else None,
-            "baseline_return": entry["baseline_return"] if entry else None,
-            "rank_in_expiry": entry["rank_in_expiry"] if entry else None,
-        })
-    return out
 
 
 def raw_snapshot_json(snap: ChainSnapshot) -> dict:
@@ -944,16 +854,18 @@ def project_for_detail(view: dict) -> dict:
     """T13（#231，Initial V2）：詳細頁端點（`GET /api/scenarios/{id}`）
     傳輸投影——**只服務這一個 HTTP 端點**，不動儲存層。落盤的
     `ResultRecord.view` 維持 `serialize_result()` 原樣的全保真輸出；
-    V9 Spread 淨成本走勢（`spread_cost_history()`）、`find_candidate()`
-    （`/iv-history` 用）等既有 server 端路徑都直接讀 storage 裡完整的
-    `rec.view`，完全不經過這個函式，因此零回歸。
+    `find_candidate()`（`/iv-history` 用）等既有 server 端路徑都直接讀
+    storage 裡完整的 `rec.view`，完全不經過這個函式，因此零回歸。
 
     移除兩個前端從未消費、只服務 server 端歷史查詢的完整候選序列
     （`Candidate` 這個 TS 型別本身就沒有 `strategy` 以外的容器層欄位
     宣告——`src/api.ts` 從未宣告過 `results[].candidates` 或
     `results[].all_candidates`）：
-    - `all_candidates`（附錄A7：`spread_cost_history()` 專用，該函式吃
-      的是 storage 裡完整的 `rec.view`，不吃這個投影後的結果）
+    - `all_candidates`（附錄A7：SW-12／#342 之前是 V9 Spread 淨成本
+      走勢 `spread_cost_history()` 專用讀取來源，該功能已整個退休、
+      該函式已刪除；`all_candidates` 欄位本身是 `serialize_result()`
+      核心引擎輸出的一部分，這裡不因此順手移除，只是保留理由不再是
+      spread cost history）
     - `candidates`（引擎全量候選 key 清單——這才是「每多啟用一個
       spread 策略就多約 495KB」的真正成因：它會把**每一筆**通過過濾的
       候選都拉進 `candidate_pool`，遠遠超出 `expiry_top10` 每期前十名

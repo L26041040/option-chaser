@@ -52,7 +52,7 @@ function ConfirmDeleteMyData({
           <button className="text-button" onClick={onCancel} disabled={busy}>
             取消
           </button>
-          <button className="batch-pill" onClick={onConfirm} disabled={busy}>
+          <button className="batch-pill danger" onClick={onConfirm} disabled={busy}>
             {busy ? "刪除中……" : "確定刪除"}
           </button>
         </div>
@@ -80,7 +80,10 @@ export default function DeleteMyData() {
   }
 
   return (
-    <section className="card settings-section" aria-label="刪除我的資料">
+    // SW-07（#336）：destructive 區塊——artifact 明文要求紅描邊，跟卡片
+    // 上「危險文字鈕」用同一個紅色慣例（`--down` 這份既有 token，SW-09
+    // 之後舊名 `--red` 已整段移除），不是新發明一種警示色。
+    <section className="card settings-section danger-zone" aria-label="刪除我的資料">
       <h2 className="section-title">刪除我的資料</h2>
       <p className="caption">
         立刻、不可逆地刪除你在本站儲存的全部資料——劇本、分析歷史、報價

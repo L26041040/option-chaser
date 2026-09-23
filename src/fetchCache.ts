@@ -119,6 +119,35 @@ const scenarioAnalyzedAt = new Map<string, string | null>();
  * 不同時，才視為資料已經比手上這份新、判定快取過期並重抓——這正是
  * deep-link cascade（3 次全量下載）裡唯一「真的需要」的那一次。
  */
+/**
+ * 劇本本身被 mutate（編輯／封存／還原／永久刪除）後，主動讓它的詳細頁
+ * 快取失效。
+ *
+ * ARCH-REVIEW-001（#343）：在這之前，詳細頁快取的新鮮度**只**靠
+ * `getScenarioCached()` 比對 `hintAnalyzedAt`（見下方）——而
+ * `hintAnalyzedAt === null` 同時承載兩種完全不同的語意：
+ *
+ * - 「劇本庫清單還沒回來，我還不知道正確的 analyzed_at」（此時沿用
+ *   既有快取是**對的**，那正是下面那段刻意不 invalidate 的理由）；
+ * - 「後端剛把結果清空了」（編輯 thesis 後 `clear_results()`，PATCH
+ *   回傳的 `latest_analyzed_at` 就是 `null`）。
+ *
+ * 兩者在型別上無法分辨，所以第二種情況會沿用一份後端已經刪掉的分析。
+ * 編輯後的 `void refreshOne(id)` 平常會蓋掉它，但那一次刷新失敗時
+ * （quota／rate limit／vendor fuse，在這個產品裡都是一級公民），詳細
+ * 頁就會一直顯示已經不存在的結果。
+ *
+ * 修法不是去讓 hint 更聰明（它本質上分辨不了），而是讓**改動端自己
+ * 說**：mutation 發生的當下就是最確定的時機點。
+ */
+export function invalidateScenarioCache(id: string): void {
+  invalidate(scenarioKey(id));
+  // 一併忘掉「這份快取對應哪個 analyzed_at」——留著它不會造成錯誤
+  // （快取已清，下一次一定重抓），但會讓這個 Map 對已經不存在的快取
+  // 保有紀錄，之後讀起來容易誤以為那份快取還在。
+  scenarioAnalyzedAt.delete(id);
+}
+
 export function getScenarioCached(
   id: string,
   hintAnalyzedAt: string | null,

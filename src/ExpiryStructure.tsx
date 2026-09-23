@@ -39,42 +39,36 @@ function CandidateRow({ view, candidate, rank }: {
     <li>
       <details className="candidate">
         <summary>
+          {/* SW-10（#340，Owner 真機驗收）：`.candidate-title`（買 X／
+              賣 Y 這句 legs 描述）原本跟 rank／subtype／return 擠在
+              同一個 `align-items:baseline` 橫向列裡，自己卻沒有
+              `white-space:nowrap` 保護——手機窄螢幕上四個元素爭同一行
+              寬度，legs 描述常常是最長的那個，擠不下就在瀏覽器預設
+              斷行規則下被硬拆成兩行，看起來就是 Owner 點名的「被擠成
+              很奇怪的直向排列」。改成兩層：上排 rank／subtype／return
+              維持橫向、彼此都是短字串不會擠；legs 描述改成獨立一整行
+              （`.candidate-title` 現在有整行寬度可以用，不再需要跟
+              別人搶），這樣 strategy name／legs／return 三者各自一層，
+              視覺層級更清楚，也不必再靠犧牲可讀性的截斷來換取密度。 */}
           <span className="candidate-head">
-            <span className="rank">#{rank}</span>
-            {/* T11（#229，Initial V2）：這組候選實際跑的 subtype——多
-                family 並存後，同一個排名池裡的候選可能來自不同
-                subtype（今天仍恆為單一 subtype，見 `family.ts` 說明），
-                每一列都標示出來，不是等到真的混合時才補。 */}
-            <span className="candidate-subtype">{strategyLabel(candidate.strategy)}</span>
-            {/* MVP V3（#104，spec #102 決策 F）：⚠ 只在 Bid/Ask 過寬時
-                出現，文案明確寫「Bid/Ask 過寬」——零成交量不再觸發這個
-                徽章（LEAPS／冷門履約價零成交是常態，不是報價可疑的
-                證據）。T04（#220）起 friction 已自 canonical model
-                整個退場，不再是這個徽章曾經的觸發條件之一。 */}
-            {candidate.wide_spread_warning && (
-              <span className="tag warn" title="Bid/Ask 過寬">
-                ⚠
+            <span className="candidate-head-top">
+              <span className="rank">#{rank}</span>
+              {/* T11（#229，Initial V2）：這組候選實際跑的 subtype——多
+                  family 並存後，同一個排名池裡的候選可能來自不同
+                  subtype（今天仍恆為單一 subtype，見 `family.ts` 說明），
+                  每一列都標示出來，不是等到真的混合時才補。 */}
+              <span className="candidate-subtype">{strategyLabel(candidate.strategy)}</span>
+              <span
+                className={
+                  candidate.baseline_return >= 0
+                    ? "candidate-return positive"
+                    : "candidate-return negative"
+                }
+              >
+                {formatReturn(candidate.baseline_return)}
               </span>
-            )}
-            {/* FB5-03（#64）：獨立徽章，不跟 wide_spread_warning 共用 ⚠
-                ——這一個是配對關係違反（跟鄰近履約價比較），不是單一
-                數值超標，嚴重性不同，不能讓使用者以為是同一種提醒。 */}
-            {candidate.monotonicity_warning && (
-              <span className="tag suspect"
-                    title="報價與鄰近履約價不一致，疑似陳舊報價">
-                🚩
-              </span>
-            )}
-            <span className="candidate-title">{candidateTitle(candidate)}</span>
-            <span
-              className={
-                candidate.baseline_return >= 0
-                  ? "candidate-return positive"
-                  : "candidate-return negative"
-              }
-            >
-              {formatReturn(candidate.baseline_return)}
             </span>
+            <span className="candidate-title">{candidateTitle(candidate)}</span>
           </span>
           {/* 三個價格就在收合狀態下看得到——要比較幾組候選時，把每一組
               都展開一次才看得到成本是折磨。
@@ -101,6 +95,14 @@ function CandidateRow({ view, candidate, rank }: {
             <span>淨成本 {money(prices.net)}</span>
           </span>
         </summary>
+        {/* SW-12（#342，Owner 真機驗收）：⚠／🚩 徽章整個退出使用者 UI
+            ——SW-10（#340）當時只是把它從收合排名列搬到展開候選細節，
+            Owner 這次明講「不是搬，是不再屬於產品 UI」，收合／展開／
+            候選卡／詳細頁都不要再顯示。`wide_spread_warning`／
+            `monotonicity_warning` 這兩個欄位本身（`./api` 的
+            `Candidate` 型別）與底層 eligibility／ranking 計算原封不動
+            ——只拿掉這裡的渲染，不改資料或金融語意，也不換成別的
+            warning icon。 */}
         {/* Crossover Boundary（#116）：同 `ScenarioDetail.tsx` 的判準
             ——單腿候選不傳 `comparator`，不是渲染成「缺席」。 */}
         <Heatmap {...heatmapProps(view, candidate)} />

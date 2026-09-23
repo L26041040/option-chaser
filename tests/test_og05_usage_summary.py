@@ -27,9 +27,8 @@ def _create(client, **kw):
     return r.json()
 
 
-def test_reports_active_count_and_effective_quota_throttle():
-    client = _client(anonymous_max_active_scenarios=5,
-                     anonymous_refresh_min_interval_minutes=7)
+def test_reports_active_count_and_effective_quota():
+    client = _client(anonymous_max_active_scenarios=5)
     _create(client, symbol="AAA")
     _create(client, symbol="BBB")
 
@@ -38,9 +37,7 @@ def test_reports_active_count_and_effective_quota_throttle():
     body = r.json()
     assert body["active_scenarios"] == 2
     assert body["max_active_scenarios"] == 5
-    assert body["refresh_min_interval_minutes"] == 7
     assert body["quota_exempt"] is False
-    assert body["throttle_exempt"] is False
 
 
 def test_archived_scenarios_do_not_count_as_active():
@@ -59,16 +56,13 @@ def test_max_active_scenarios_null_when_quota_disabled():
     assert body["max_active_scenarios"] is None
 
 
-def test_refresh_min_interval_null_when_throttle_disabled():
-    client = _client(anonymous_refresh_min_interval_minutes=0)
-    body = client.get("/api/me/usage-summary").json()
-    assert body["refresh_min_interval_minutes"] is None
+def test_super_user_and_super_admin_are_exempt_from_quota():
+    """AUTH-05（#312）：`role >= Role.SUPERUSER` 豁免 quota——跟
+    `create_scenario()` 既有豁免門檻同一個判準。
 
-
-def test_super_user_and_super_admin_are_exempt_from_both():
-    """AUTH-05（#312）：`role >= Role.SUPERUSER` 豁免 quota／throttle
-    ——跟 `create_scenario()`／`_refresh_and_save()` 既有豁免門檻
-    同一個判準。"""
+    SW-10（#340，Owner 真機驗收）：這條原本也斷言 `throttle_exempt`
+    ——節流本身已經整段移除，那個回應欄位也跟著刪除，這裡只留 quota
+    這一半仍然成立的斷言。"""
     storage = MemoryStorage()
     client = _client(storage=storage)
 
@@ -76,20 +70,76 @@ def test_super_user_and_super_admin_are_exempt_from_both():
         body = client.get("/api/me/usage-summary",
                           cookies=role_cookies(storage, role)).json()
         assert body["quota_exempt"] is True, role
-        assert body["throttle_exempt"] is True, role
 
 
 def test_normal_role_is_not_exempt():
     client = _client()
     body = client.get("/api/me/usage-summary").json()
     assert body["quota_exempt"] is False
-    assert body["throttle_exempt"] is False
 
 
-def test_quota_and_throttle_values_are_the_same_source_the_gates_actually_use():
-    """AC：「端點對 quota／throttle 設定值的來源與既有 create／refresh
-    閘門是同一份」——改一次設定值，兩邊（用量摘要回報的數字、真的擋人
-    的 409）必須同步，不是各自讀出可能兜不起來的兩份答案。"""
+def test_best_return_is_null_when_nothing_has_ever_analyzed_successfully():
+    client = _client()
+    body = client.get("/api/me/usage-summary").json()
+    assert body["best_return"] is None
+    assert body["best_return_symbol"] is None
+    assert body["best_return_strategy"] is None
+    assert body["best_return_target_month"] is None
+
+
+def test_best_return_reports_the_scenario_with_the_highest_return():
+    """SW-10（#340，Owner 真機驗收）：Artifact A 首頁 stats 板第二格
+    「最佳劇本報酬」——建立本身不分析（`create_scenario()` 回應
+    `best_return=None`，見其註解），真正的結果來自既有 Refresh
+    Trigger 之一（這裡用單一劇本刷新端點）。兩個劇本刻意用不同
+    `target_price`（110／120，經驗證對這份 fixture 分別產生 -1.0／
+    1.0，非同分平手）而非只換 `symbol`——`fetch=` 對任何 symbol 都
+    回傳同一份快照，同分時「哪個算贏」會退化成依賴 `list_scenarios()`
+    迭代順序的巧合斷言。這裡不假造一筆結果，直接讀兩個真劇本各自的
+    `best_return`，斷言 usage-summary 回報的是兩者裡較高的那一個，
+    數字、標的、策略、目標年月四項都對得上同一個 `representative_
+    candidate`，不是四個各自獨立算出來、恰好對得上的巧合。"""
+    client = _client()
+    a = _create(client, symbol="AAA", target_price=110.0, target_month="2026-09")
+    b = _create(client, symbol="BBB", target_price=120.0, target_month="2026-09")
+    client.post(f"/api/scenarios/{a['id']}/refresh").raise_for_status()
+    client.post(f"/api/scenarios/{b['id']}/refresh").raise_for_status()
+
+    detail_a = client.get(f"/api/scenarios/{a['id']}").json()
+    detail_b = client.get(f"/api/scenarios/{b['id']}").json()
+    winner = detail_a if detail_a["best_return"] >= detail_b["best_return"] else detail_b
+
+    body = client.get("/api/me/usage-summary").json()
+    assert body["best_return"] == winner["best_return"]
+    assert body["best_return_symbol"] == winner["symbol"]
+    assert (body["best_return_strategy"]
+            == winner["representative_candidate"]["strategy"])
+    assert body["best_return_target_month"] == winner["target_month"]
+
+
+def test_best_return_excludes_archived_scenarios():
+    """跟 `active_scenarios` 同一個「封存＝使用者主動整理，不該再影響
+    首頁摘要」的既有原則——封存掉唯一有結果的劇本後，最佳報酬應該
+    誠實回 `None`，不是繼續回報一個已經被丟進垃圾桶的劇本。"""
+    client = _client()
+    sc = _create(client)
+    client.post(f"/api/scenarios/{sc['id']}/refresh").raise_for_status()
+    assert client.get("/api/me/usage-summary").json()["best_return"] is not None
+
+    client.post(f"/api/scenarios/{sc['id']}/archive").raise_for_status()
+    body = client.get("/api/me/usage-summary").json()
+    assert body["best_return"] is None
+    assert body["best_return_symbol"] is None
+
+
+def test_quota_values_are_the_same_source_the_create_gate_actually_uses():
+    """AC：「端點對 quota 設定值的來源與既有 create 閘門是同一份」——
+    改一次設定值，兩邊（用量摘要回報的數字、真的擋人的 409）必須同步，
+    不是各自讀出可能兜不起來的兩份答案。SW-10（#340）：節流（throttle）
+    已經整段移除，這條測試原本也覆蓋 throttle 那一半，`/code-review`
+    Standards 軸抓到函式名稱與 docstring 還留著「throttle」字樣但測試
+    本體只剩 quota 斷言——這裡把名字與說明改回跟測試本體一致，不是
+    弱化斷言範圍。"""
     client = _client(anonymous_max_active_scenarios=1)
     _create(client, symbol="AAA")
 

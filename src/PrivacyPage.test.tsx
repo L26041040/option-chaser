@@ -6,11 +6,12 @@
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 
+import { BANNED_JARGON } from "./bannedCopy";
 import PrivacyPage from "./PrivacyPage";
 import {
   ANONYMOUS_ABANDONED_AFTER_DAYS,
   ANONYMOUS_GRACE_PERIOD_DAYS,
-} from "./BetaNotice";
+} from "./DisclaimerSection";
 
 const SECTIONS = [
   "存了什麼", "留多久", "怎麼刪", "清除瀏覽器 cookie 的後果",
@@ -32,7 +33,7 @@ describe("PrivacyPage（PB-12／#302）", () => {
     expect(links[0]).toHaveAttribute("href", "#/settings");
   });
 
-  it("留多久的天數與 BetaNotice 共用同一份具名常數", () => {
+  it("留多久的天數與 DisclaimerSection 共用同一份具名常數", () => {
     render(<PrivacyPage />);
     const text = screen.getByRole("heading", { name: "留多久" })
       .closest("section")!.textContent!;
@@ -59,5 +60,13 @@ describe("PrivacyPage（PB-12／#302）", () => {
     expect(link).toHaveAttribute(
       "href", "https://github.com/L26041040/option-chaser/issues");
     expect(screen.getByText(/不要在裡面貼出/)).toBeInTheDocument();
+  });
+
+  it("文字不含開發者詞彙（SW-09／#339 收斂成共用清單 BANNED_JARGON）", () => {
+    const { container } = render(<PrivacyPage />);
+    const text = container.textContent ?? "";
+    for (const banned of BANNED_JARGON) {
+      expect(text).not.toContain(banned);
+    }
   });
 });

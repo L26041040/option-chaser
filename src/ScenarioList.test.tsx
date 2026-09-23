@@ -2,17 +2,19 @@ import { fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { BANNED_JARGON } from "./bannedCopy";
 import ScenarioList from "./ScenarioList";
 import sampleRow from "../contracts/scenario_row_sample.json";
 import type { RefreshFailure, ScenarioSummary } from "./api";
 import { formatAnalyzedAt } from "./scenarios";
 
 // OG-05（#324）：`ScenarioList` 現在掛載就打 `GET /api/me/usage-
-// summary`（`UsageStatsStrip`）與（Super Admin 才會掛載的）`GET
-// /api/ops/metrics`——這個檔案原本沒有任何測試需要 mock 網路請求
-// （OG-04／#323 之前 `CostSparkline` 都是純 prop 渲染），全域 stub
-// 一次，讓既有測試對這個新 side effect 得到一個確定、不依賴真實網路
-// 的回應，而不是讓每個既有測試各自撞一次無法預期的 fetch 失敗。
+// summary`（`UsageStatsStrip`）——這個檔案原本沒有任何測試需要 mock
+// 網路請求（OG-04／#323 之前 `CostSparkline` 都是純 prop 渲染），
+// 全域 stub 一次，讓既有測試對這個新 side effect 得到一個確定、不
+// 依賴真實網路的回應，而不是讓每個既有測試各自撞一次無法預期的
+// fetch 失敗。SW-03（#334）起 `/api/ops/metrics` 那兩格已經整個搬到
+// Super Admin 後台，這個檔案不再需要為它 mock 任何東西。
 function mockFetch() {
   vi.stubGlobal("fetch", vi.fn(async () => ({
     ok: true, status: 200, json: async () => ({}),
@@ -100,22 +102,16 @@ describe("劇本清單", () => {
   it("依收益率降序，沒跑過的排最後並顯示「—」", () => {
     list([
       row({ id: "a", symbol: "AAA", best_return: 0.2 }),
-      // OG-04（#323）：真的沒跑過的劇本 `cost_sparkline` 也該是 `null`
-      // （跟 `best_return`／`latest_analyzed_at` 同步，後端同一次
-      // `_summary_of()` 決定），不是繼承 `sampleRow` 預設值裡那筆
-      // 假的既有序列——不然這張卡片會變成「沒分析過卻有走勢圖」的
-      // 不實際組合。
       row({ id: "b", symbol: "BBB", best_return: null,
-            latest_analyzed_at: null, cost_sparkline: null }),
+            latest_analyzed_at: null }),
       row({ id: "c", symbol: "CCC", best_return: 2.0 }),
     ]);
 
     const items = screen.getAllByRole("listitem");
     const symbols = items.map((li) => li.querySelector(".compact-symbol")!.textContent);
     expect(symbols).toEqual(["CCC", "AAA", "BBB"]);
-    // 「—」在畫面上不只一處（劇本報酬／淨成本走勢等多個欄位沒資料時
-    // 都顯示它），`getByText` 因此不唯一，範圍限定回沒跑過的那張卡
-    // （BBB）。
+    // 「—」在畫面上不只一處（劇本報酬等多個欄位沒資料時都顯示它），
+    // `getByText` 因此不唯一，範圍限定回沒跑過的那張卡（BBB）。
     const bbb = items.find(
       (li) => li.querySelector(".compact-symbol")!.textContent === "BBB")!;
     expect(within(bbb).getAllByText("—").length).toBeGreaterThanOrEqual(1);
@@ -182,8 +178,11 @@ describe("決策 K（#108）：桌面卡片瘦身後七項決策資訊一項不�
     expect(within(card).getByText(/買 118 \/ 賣 122/)).toBeInTheDocument();
     // 5. 實際到期日
     expect(within(card).getByText(/2026-09-18/)).toBeInTheDocument();
-    // 6. 燈號（顏色不是唯一管道，但圓點本身要在）
-    expect(card.querySelector(".signal-dot")).toBeTruthy();
+    // 6. 燈號——SW-12（#342，Owner 真機驗收）起，這筆 fixture 是正常
+    //    成功狀態，正常態不再畫 `.signal-dot`（見下方「劇本級燈號」
+    //    一節），「燈號」這個決策資訊本身沒有消失，只是預設狀態不需要
+    //    額外 icon，黃／紅燈仍會畫。
+    expect(card.querySelector(".signal-dot")).toBeNull();
     // 7. 最後更新（資料時間）——直接拿純函式算預期字串，不在測試裡
     //    另外硬編一個跟時區綁死的字串。`toLocaleString` 在日期與時間
     //    之間塞的是 U+2009 THIN SPACE 不是普通空白，Testing Library
@@ -374,10 +373,13 @@ describe("代表候選（MVP-v2／#77、#78）", () => {
 });
 
 describe("劇本級燈號（MVP-v2／#77、#80）", () => {
-  it("正常劇本是綠燈", () => {
+  it("SW-12（#342，Owner 真機驗收）：正常劇本（綠燈）不畫 signal-dot 也不印" +
+     "「● 正常」文字——正常態是預設狀態，不需要反覆佔據每一列；`scenarioSignal()`" +
+     "仍會算出 \"green\"（sr-only 摘要仍讀得到，見下方可及性測試），只是這裡" +
+     "刻意不視覺化", () => {
     list([row({ expired: false })]);
-    expect(screen.getByTitle("狀態：正常")).toBeInTheDocument();
-    expect(document.querySelector(".signal-dot.signal-green")).toBeTruthy();
+    expect(screen.queryByTitle("狀態：正常")).not.toBeInTheDocument();
+    expect(document.querySelector(".signal-dot.signal-green")).toBeNull();
   });
 
   it("目標月已過完是紅燈，即使同時帶著刷新失敗紀錄", () => {
@@ -415,12 +417,10 @@ describe("劇本級燈號（MVP-v2／#77、#80）", () => {
   });
 });
 
-describe("收益率口徑（V4／#52）", () => {
-  it("畫面上寫明收益率怎麼算的——最差成交價", () => {
+describe("SW-10（#340，Owner 真機驗收）：收益率口徑說明已移出主流程", () => {
+  it("畫面上不再印計算口徑說明——完整說法收進設定→免責聲明", () => {
     list([row()]);
-    const note = screen.getByText(/最差成交價/);
-    expect(note).toHaveTextContent(/買腿 Ask/);
-    expect(note).toHaveTextContent(/賣腿 Bid/);
+    expect(screen.queryByText(/最差成交價/)).not.toBeInTheDocument();
   });
 });
 
@@ -809,14 +809,14 @@ describe("方向與狀態篩選 chip（OG-03／#320）：純前端過濾，不�
 });
 
 describe("目標價所需漲跌幅小字（OG-ALL-001 跟進 OG-03／#320）", () => {
-  it("spot 存在時，目標價欄下方顯示所需漲跌幅（正負號＋一位小數百分比）", () => {
+  it("spot 存在時，目標價欄下方顯示所需漲跌幅（正負號＋一位小數百分比；SW-03／#334 起前面帶「還需」）", () => {
     list([row({ id: "a", symbol: "AAA", spot: 100, target_price: 120 })]);
-    expect(screen.getByText("+20.0%")).toBeInTheDocument();
+    expect(screen.getByText("還需 +20.0%")).toBeInTheDocument();
   });
 
   it("目標價低於現價時顯示負號", () => {
     list([row({ id: "a", symbol: "AAA", spot: 100, target_price: 90 })]);
-    expect(screen.getByText("-10.0%")).toBeInTheDocument();
+    expect(screen.getByText("還需 -10.0%")).toBeInTheDocument();
   });
 
   it("尚未分析（spot 為 null）時不顯示所需漲跌幅小字，只顯示價格與目標年月", () => {
@@ -856,20 +856,20 @@ describe("頁首刷新入口（OG-03／#320，併入原本 Toolbar.tsx 的三個
   });
 });
 
-describe("OG-05（#324）：劇本庫 stats strip", () => {
+describe("OG-05（#324）：劇本庫 stats strip；SW-03（#334）起 Super Admin 專屬兩格已搬到 Super Admin 後台", () => {
   /** URL 感知的 fetch mock——`/api/auth/status` 決定 `useAuthRole()`
-   *  查到的角色，`/api/me/usage-summary`／`/api/ops/metrics` 各自回
-   *  對應的 body；記錄每個 URL 被打了幾次，供「非 Super Admin 零 ops
-   *  metrics 請求」這條 AC 直接斷言呼叫次數。 */
+   *  查到的角色，`/api/me/usage-summary` 回對應的 body；記錄每個 URL
+   *  被打了幾次，供「劇本庫頁面零 /api/ops/metrics 請求」這條 AC
+   *  直接斷言呼叫次數（SW-03 起這條件不再依角色而定——那兩格已經
+   *  整個搬到 Super Admin 後台，劇本庫頁面對任何角色都不再打這條
+   *  端點）。 */
   function routeFetch(role: "normal" | "superuser" | "superadmin" = "normal") {
     const usage = {
       active_scenarios: 3, max_active_scenarios: 10,
-      quota_exempt: role !== "normal", refresh_min_interval_minutes: 30,
-      throttle_exempt: role !== "normal", last_activity_at: "2026-08-04T09:30:00+00:00",
-    };
-    const opsMetrics = {
-      vendor_fuse: { used: 400, budget: 2000 },
-      alerts: [{ key: "chain_sustained_incident", triggered: true, message: "x" }],
+      quota_exempt: role !== "normal",
+      last_activity_at: "2026-08-04T09:30:00+00:00",
+      best_return: 0.42, best_return_symbol: "XYZ",
+      best_return_strategy: "bull-call-spread", best_return_target_month: "2026-09",
     };
     const calls: string[] = [];
     const spy = vi.fn(async (url: string) => {
@@ -880,63 +880,45 @@ describe("OG-05（#324）：劇本庫 stats strip", () => {
       if (url.includes("/api/me/usage-summary")) {
         return { ok: true, status: 200, json: async () => usage };
       }
-      if (url.includes("/api/ops/metrics")) {
-        return { ok: true, status: 200, json: async () => opsMetrics };
-      }
       return { ok: true, status: 200, json: async () => ({}) };
     });
     vi.stubGlobal("fetch", spy);
     return calls;
   }
 
-  it("Normal User：看得到自己的用量三格，看不到 Super Admin 兩格", async () => {
+  it("看得到自己的用量兩格（進行中劇本／最佳劇本報酬）；最近活動／刷新節流間隔已整段移除（SW-10／#340）", async () => {
     routeFetch("normal");
     list([row()]);
 
     expect(await screen.findByText("3 / 10")).toBeInTheDocument();
     expect(screen.getByText("進行中劇本")).toBeInTheDocument();
-    expect(screen.getByText("最近活動")).toBeInTheDocument();
-    expect(screen.getByText("30 分鐘")).toBeInTheDocument();
+    expect(screen.getByText("最佳劇本報酬")).toBeInTheDocument();
+    expect(screen.getByText("42.0%")).toBeInTheDocument();
+    expect(screen.queryByText("最近活動")).not.toBeInTheDocument();
+    expect(screen.queryByText("刷新節流間隔")).not.toBeInTheDocument();
+    expect(screen.queryByText("30 分鐘")).not.toBeInTheDocument();
     expect(screen.queryByText("Vendor 每日預算")).not.toBeInTheDocument();
     expect(screen.queryByText("429 事故")).not.toBeInTheDocument();
   });
 
-  it("豁免角色（Super User）：進行中劇本／節流間隔顯示「豁免」", async () => {
+  it("豁免角色（Super User）：進行中劇本顯示「豁免」", async () => {
     routeFetch("superuser");
     list([row()]);
 
-    await screen.findByText("最近活動");
+    await screen.findByText("最佳劇本報酬");
     const strip = document.querySelector(".lib-stats-strip") as HTMLElement;
-    expect(within(strip).getAllByText("豁免")).toHaveLength(2);
+    expect(within(strip).getByText("豁免")).toBeInTheDocument();
   });
 
-  it("Super Admin：額外看到 Vendor 每日預算與 429 事故兩格", async () => {
-    routeFetch("superadmin");
-    list([row()]);
-
-    expect(await screen.findByText("400 / 2000")).toBeInTheDocument();
-    expect(screen.getByText("Vendor 每日預算")).toBeInTheDocument();
-    expect(screen.getByText("429 事故")).toBeInTheDocument();
-    expect(screen.getByText("進行中")).toBeInTheDocument();   // 事故 triggered=true
-  });
-
-  it("非 Super Admin：零 /api/ops/metrics 請求（AC 明文）", async () => {
-    const calls = routeFetch("normal");
-    list([row()]);
-
-    await screen.findByText("3 / 10");   // 等 usage-summary 落地，確定第一輪 effect 都跑過
-    expect(calls.some((u) => u.includes("/api/ops/metrics"))).toBe(false);
-  });
-
-  it("Super Admin：確實發出 /api/ops/metrics 請求", async () => {
+  it("劇本庫頁面零 /api/ops/metrics 請求——即使角色是 Super Admin（SW-03／#334 AC）", async () => {
     const calls = routeFetch("superadmin");
     list([row()]);
 
-    await screen.findByText("Vendor 每日預算");
-    expect(calls.some((u) => u.includes("/api/ops/metrics"))).toBe(true);
+    await screen.findByText("進行中劇本");   // 等 usage-summary 落地，確定第一輪 effect 都跑過
+    expect(calls.some((u) => u.includes("/api/ops/metrics"))).toBe(false);
   });
 
-  it("last_activity_at 為 null 時顯示「尚無紀錄」，不是「尚未分析」", async () => {
+  it("best_return 為 null 時第二格顯示「—」，不假造一筆報酬（SW-10／#340：last_activity_at 顯示已整段移出這個元件，改由 Super Admin 後台的 SuperUserAdmin 負責）", async () => {
     const spy = vi.fn(async (url: string) => {
       if (url.includes("/api/auth/status")) {
         return { ok: true, status: 200, json: async () => ({ role: "normal" }) };
@@ -944,8 +926,9 @@ describe("OG-05（#324）：劇本庫 stats strip", () => {
       if (url.includes("/api/me/usage-summary")) {
         return { ok: true, status: 200, json: async () => ({
           active_scenarios: 0, max_active_scenarios: null,
-          quota_exempt: false, refresh_min_interval_minutes: null,
-          throttle_exempt: false, last_activity_at: null,
+          quota_exempt: false, last_activity_at: null,
+          best_return: null, best_return_symbol: null,
+          best_return_strategy: null, best_return_target_month: null,
         }) };
       }
       return { ok: true, status: 200, json: async () => ({}) };
@@ -953,7 +936,18 @@ describe("OG-05（#324）：劇本庫 stats strip", () => {
     vi.stubGlobal("fetch", spy);
     list([row()]);
 
-    expect(await screen.findByText("尚無紀錄")).toBeInTheDocument();
-    expect(screen.queryByText("尚未分析")).not.toBeInTheDocument();
+    await screen.findByText("最佳劇本報酬");
+    const strip = document.querySelector(".lib-stats-strip") as HTMLElement;
+    expect(within(strip).getByText("—")).toBeInTheDocument();
+  });
+});
+
+describe("文案去術語（SW-09／#339 全站掃描，桌面劇本庫）", () => {
+  it("清單文字不含開發者詞彙", () => {
+    const { container } = list([row()]);
+    const text = container.textContent ?? "";
+    for (const banned of BANNED_JARGON) {
+      expect(text).not.toContain(banned);
+    }
   });
 });

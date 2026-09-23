@@ -50,13 +50,16 @@ const OWNER_B = {
  *  這個新元件的內容，只需要它不 throw、不讓 effect 掛掉。 */
 const EMPTY_OPS_METRICS = {
   chain_fetch_count: [], chain_429_count: [], stale_serve_count: [],
-  cold_miss_count: [], refresh_duration_ms: [], history_read_volume: [],
+  cold_miss_count: [], refresh_duration_ms: [],
   abandoned_owner_cleanup_count: [],
   table_size: {},
   anonymous_owners: { active: 0, abandoned: 0, eligible_for_hard_delete: 0,
                      protected: 0, total: 0 },
   scenarios: { total: 0, average_per_owner: 0 },
   alerts: [],
+  // SW-03（#334，Seed Warm）：`OpsStats` 新增讀取這個既有欄位（原本
+  // 只有劇本庫頁首的 `OpsSuperAdminStats` 讀，現在搬來這裡）。
+  vendor_fuse: { used: 0, budget: null },
 };
 
 describe("SuperUserAdmin", () => {
@@ -358,7 +361,7 @@ describe("OG-11（#322）：系統指標方塊（既有 GET /api/ops/metrics，�
 
     // Chain Fetch 累計＝3+2=5；刷新耗時平均＝400/2=200ms。
     const chainFetchStat =
-      screen.getByText("Chain Fetch（累計）").closest(".stat") as HTMLElement;
+      screen.getByText("Chain Fetch（累計）").closest(".pstat") as HTMLElement;
     expect(within(chainFetchStat).getByText("5")).toBeInTheDocument();
     expect(screen.getByText("200 ms")).toBeInTheDocument();
     expect(screen.getByText("42 列")).toBeInTheDocument();

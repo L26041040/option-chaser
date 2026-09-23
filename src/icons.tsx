@@ -121,25 +121,6 @@ export function HomeIcon({ size = 20 }: { size?: number }) {
   );
 }
 
-/** 建立圖示——手機版底部導覽的「建立」分頁（UI-IMPL-002／#092）。 */
-export function CreateIcon({ size = 20 }: { size?: number }) {
-  return (
-    <svg
-      viewBox="0 0 24 24"
-      width={size}
-      height={size}
-      fill="none"
-      stroke="currentColor"
-      strokeWidth={2}
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-      className="icon-glyph"
-    >
-      <path d="M12 5v14M5 12h14" />
-    </svg>
-  );
-}
 
 /** 重新整理圖示（OG-09／#319，手機頂欄 `MobileTopBar` 的刷新按鈕；
  *  比照 artifact `Mobile-Library.dc.html` `.mnav` 圖示——弧形箭頭＋

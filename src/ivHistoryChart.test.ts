@@ -1,13 +1,15 @@
 /**
- * IV 相對位置走勢圖純函式（#140）。`contiguousRuns`／`xAxisTicks` 是
- * 從 `./spreadHistory` 沿用的既有幾何函式，這裡不重測——已有
- * `spreadHistory.test.ts` 覆蓋。只測本檔案新增的 `ivYAxisDomain`／
- * `ivChartPoints`。
+ * IV 相對位置走勢圖純函式（#140）。SW-12（#342）前，`contiguousRuns`／
+ * `xAxisTicks` 是從 `./spreadHistory` 沿用的既有幾何函式，測試留在
+ * 那邊的 `spreadHistory.test.ts`；該功能整個退休、原始檔案與測試都
+ * 已刪除後，兩個函式本身搬進 `./ivHistoryChart.ts`（現在唯一的消費
+ * 端），對應測試一併搬來這裡，不是新增覆蓋、也不是遺失覆蓋。
  */
 import { describe, expect, it } from "vitest";
 
-import { ivChartPoints, ivYAxisDomain, nearestIndexForClientX,
-        projectOntoDomain } from "./ivHistoryChart";
+import { contiguousRuns, ivChartPoints, ivYAxisDomain,
+        nearestIndexForClientX, projectOntoDomain, xAxisTicks,
+        type ChartPoint } from "./ivHistoryChart";
 
 describe("ivYAxisDomain", () => {
   it("非空值各留 10% 邊界", () => {
@@ -202,5 +204,78 @@ describe("projectOntoDomain（HIVT-05／#156：四條疊加序列共用同一個
 
   it("空序列投影到任何日期軸上全部是 null", () => {
     expect(projectOntoDomain(domainDates, [])).toEqual([null, null, null]);
+  });
+});
+
+// SW-12（#342）：以下兩組測試從已刪除的 `spreadHistory.test.ts` 搬來
+// ——`xAxisTicks`／`contiguousRuns` 本身也搬進了 `./ivHistoryChart.ts`
+// （見該檔案檔頭說明），測試內容逐字不變，只是換了 import 來源。
+
+describe("xAxisTicks：X 軸日期刻度均勻取樣（MVP V3／#106）", () => {
+  function point(label: string): ChartPoint {
+    return { x: 0, y: 0.5, label };
+  }
+
+  it("空序列回傳空陣列", () => {
+    expect(xAxisTicks([])).toEqual([]);
+  });
+
+  it("單點：只有一個刻度，就是它自己", () => {
+    expect(xAxisTicks([point("a")])).toEqual([{ index: 0, label: "a" }]);
+  });
+
+  it("點數不超過 4 個：每個點都是刻度，不省略任何一個", () => {
+    const points = [point("a"), point("b"), point("c")];
+    expect(xAxisTicks(points)).toEqual([
+      { index: 0, label: "a" }, { index: 1, label: "b" }, { index: 2, label: "c" },
+    ]);
+  });
+
+  it("點數超過 4 個：最多 4 個刻度，且一定含頭尾", () => {
+    const points = Array.from({ length: 12 }, (_, i) => point(`p${i}`));
+    const ticks = xAxisTicks(points);
+    expect(ticks.length).toBeLessThanOrEqual(4);
+    expect(ticks[0]).toEqual({ index: 0, label: "p0" });
+    expect(ticks[ticks.length - 1]).toEqual({ index: 11, label: "p11" });
+  });
+
+  it("刻度的 index 嚴格遞增——不會前後顛倒或重複", () => {
+    const points = Array.from({ length: 20 }, (_, i) => point(`p${i}`));
+    const indices = xAxisTicks(points).map((t) => t.index);
+    for (let i = 1; i < indices.length; i++) {
+      expect(indices[i]).toBeGreaterThan(indices[i - 1]);
+    }
+  });
+});
+
+describe("contiguousRuns：依斷點切段，段間不連線", () => {
+  it("沒有斷點時是一整段", () => {
+    const points = [{ x: 0, y: 0.5, label: "a" }, { x: 1, y: 0.3, label: "b" }];
+    expect(contiguousRuns(points)).toEqual([points]);
+  });
+
+  it("斷點把序列切成兩段，斷點本身不出現在任何一段裡", () => {
+    const a = { x: 0, y: 0.5, label: "a" };
+    const gap = { x: 0.5, y: null, label: "gap" };
+    const b = { x: 1, y: 0.3, label: "b" };
+    expect(contiguousRuns([a, gap, b])).toEqual([[a], [b]]);
+  });
+
+  it("連續多個斷點不會產生空段", () => {
+    const a = { x: 0, y: 0.5, label: "a" };
+    const gap1 = { x: 0.3, y: null, label: "g1" };
+    const gap2 = { x: 0.6, y: null, label: "g2" };
+    const b = { x: 1, y: 0.3, label: "b" };
+    expect(contiguousRuns([a, gap1, gap2, b])).toEqual([[a], [b]]);
+  });
+
+  it("開頭或結尾就是斷點，仍正確切段", () => {
+    const gap = { x: 0, y: null, label: "gap" };
+    const a = { x: 0.5, y: 0.5, label: "a" };
+    expect(contiguousRuns([gap, a])).toEqual([[a]]);
+  });
+
+  it("全部都是斷點時回傳空陣列", () => {
+    expect(contiguousRuns([{ x: 0, y: null, label: "g" }])).toEqual([]);
   });
 });

@@ -182,9 +182,9 @@ function avgRefreshDurationMs(buckets: OpsMetricBucket[]): number | null {
  *  另刻一份一模一樣的 `.stat`／`.stat-label`／`.stat-value` 結構。 */
 export function Stat({ label, children }: { label: string; children: React.ReactNode }) {
   return (
-    <div className="stat">
-      <span className="stat-label">{label}</span>
-      <span className="stat-value">{children}</span>
+    <div className="pstat">
+      <span className="pstat-k">{label}</span>
+      <span className="pstat-v">{children}</span>
     </div>
   );
 }
@@ -229,12 +229,29 @@ function OpsStats() {
   return (
     <section className="card settings-section" aria-label="系統指標">
       <h3 className="settings-usage-title">系統指標</h3>
-      <div className="summary-grid">
+      {/* `/code-review` Spec 軸跟進（SW-07／#336）：劇本庫頁首的
+          `UsageStatsStrip`（同一批 SW-03／#334 施工）已經改用 `.pstat`
+          白卡呈現這種「一格標籤＋數字」的統計方塊，這裡是同一個視覺
+          概念（票面明文「ops-metrics stats 卡」），之前漏了同步套用，
+          這裡補上——`.pstat-grid` 是新增的自動換行版本（`UsageStatsStrip`
+          固定 3 欄的 `.lib-stats-strip` 裝不下這裡近 20 格指標）。 */}
+      <div className="pstat-grid">
         <Stat label="Chain Fetch（累計）">
           {sumMetricCount(metrics.chain_fetch_count)}
         </Stat>
         <Stat label="429 限流（累計）">
           {sumMetricCount(metrics.chain_429_count)}
+        </Stat>
+        {/* SW-03（#334，Seed Warm）：原本在劇本庫頁首（`ScenarioList.tsx
+            ::OpsSuperAdminStats`）給 Super Admin 看的「Vendor 每日
+            預算」搬過來——同一份既有 `metrics`，零新增請求，只是換了
+            掛載的畫面。429 事故本身已經由下面既有的 `triggeredAlerts`
+            警示列涵蓋（`chain_sustained_incident` 觸發時會出現在那
+            裡），不重複做一個恆常顯示「正常／進行中」的方塊。 */}
+        <Stat label="Vendor 每日預算">
+          {metrics.vendor_fuse.budget === null
+            ? "停用"
+            : `${metrics.vendor_fuse.used} / ${metrics.vendor_fuse.budget}`}
         </Stat>
         <Stat label="陳舊備援（累計）">
           {sumMetricCount(metrics.stale_serve_count)}
@@ -245,9 +262,14 @@ function OpsStats() {
         <Stat label="刷新耗時（平均）">
           {avgRefresh === null ? "—" : `${Math.round(avgRefresh)} ms`}
         </Stat>
-        <Stat label="History 讀取量（累計）">
-          {sumMetricCount(metrics.history_read_volume)}
-        </Stat>
+        {/* PR #344 review（Codex）：這裡原本還有一格「History 讀取量
+            （累計）」讀 `metrics.history_read_volume`——SW-12（#342）
+            退休 Spread 淨成本走勢時，後端 `METRIC_CATALOGUE` 已經拿掉
+            這個 metric（`api_app/metrics.py`），`/api/ops/metrics` 在
+            沒有歷史殘留列的乾淨資料庫上根本不會回這個欄位，導致
+            `sumMetricCount(undefined)` 直接讓整個系統指標面板炸掉。
+            退休一個功能卻漏拔它在後台的觀測格，是 SW-12 的疏漏，這裡
+            整格拿掉（不是加防呆），跟 SW-12「完整移除」的精神一致。 */}
         <Stat label="Results 資料表">
           {(metrics.table_size.results?.row_count ?? "—")} 列
         </Stat>

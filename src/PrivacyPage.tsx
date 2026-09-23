@@ -13,14 +13,14 @@
  * 裝置寬度**——隱私頁不屬於任何工作區脈絡，手機與桌面共用同一個
  * 渲染路徑）。
  *
- * 天數與 `BetaNotice.tsx` 共用同一份具名常數（見那份檔案的
- * docstring：與後端實際預設值的一致性由
- * `tests/test_pb12_beta_copy.py` 守住）。
+ * 天數與 `DisclaimerSection.tsx`（SW-10／#340 起取代原本
+ * `BetaNotice.tsx`）共用同一份具名常數（見那份檔案的 docstring：與
+ * 後端實際預設值的一致性由 `tests/test_pb12_beta_copy.py` 守住）。
  */
 import {
   ANONYMOUS_ABANDONED_AFTER_DAYS,
   ANONYMOUS_GRACE_PERIOD_DAYS,
-} from "./BetaNotice";
+} from "./DisclaimerSection";
 import { settingsHash } from "./route";
 
 export default function PrivacyPage() {

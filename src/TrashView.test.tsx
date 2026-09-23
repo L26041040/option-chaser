@@ -6,6 +6,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import sampleRow from "../contracts/scenario_row_sample.json";
+import { BANNED_JARGON } from "./bannedCopy";
 import TrashView from "./TrashView";
 import type { ScenarioSummary } from "./api";
 import { fakeMediaQueryList } from "./test-setup";
@@ -374,5 +375,18 @@ describe("批次永久刪除（TR5／#93）", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent("劇本尚未移入垃圾桶");
     expect(screen.getByText("TLT")).toBeInTheDocument();          // 失敗的留著
     expect(screen.queryByText("SPY")).not.toBeInTheDocument();    // 成功的消失
+  });
+});
+
+describe("文案去術語（SW-09／#339 全站掃描）", () => {
+  it("垃圾桶清單文字不含開發者詞彙", async () => {
+    mockFetch(async () => [row()]);
+    const { container } = render(<TrashView onRestore={vi.fn()} />);
+    await screen.findByText("TLT");
+
+    const text = container.textContent ?? "";
+    for (const banned of BANNED_JARGON) {
+      expect(text).not.toContain(banned);
+    }
   });
 });

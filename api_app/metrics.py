@@ -5,13 +5,16 @@
 **PB-08（#300，Anonymous Public Beta）刻意打破這個封頂、新增第八類**
 ——`abandoned_owner_cleanup_count`，見下方 `METRIC_CATALOGUE` 定義處
 的說明；這是這個清單第一次、也是目前唯一一次擴充，非隨意鬆綁。
-既有七類分兩種形狀：
+**SW-12（#342）**：`history_read_volume`（唯一生產者是 Spread 淨成本
+走勢的 `GET /history` 端點）隨該功能整個退休，從清單移除——目前恰好
+再度是七類，純屬巧合，不是回退 PB-08 的擴充。
+現有七類分兩種形狀：
 
 - **持久化計數／量級**（`record()` 寫進獨立、極小的 `operational_metrics`
   表，`Storage.record_metric()`／`metric_summary()`）：
   `chain_fetch_count`、`chain_429_count`、`stale_serve_count`、
-  `cold_miss_count`、`refresh_duration_ms`、`history_read_volume`、
-  以及新增的 `abandoned_owner_cleanup_count`。
+  `cold_miss_count`、`refresh_duration_ms`、
+  以及 PB-08 新增的 `abandoned_owner_cleanup_count`。
 - **query-time gauge**（不持久化，`Storage.table_size_metrics()` 即時
   查詢 `results`／`snapshots` 兩表大小、列數、單列大小分布）：`table_size`。
 
@@ -41,7 +44,6 @@ METRIC_CATALOGUE = (
     "cold_miss_count",
     "refresh_duration_ms",
     "table_size",
-    "history_read_volume",
     # PB-08（#300，Anonymous Public Beta §7／§22 AC5）：唯一一次刻意
     # 打破「七類封頂」的新增——票面明文要求 cleanup volume（清了幾個
     # owner、多少列）必須被「記錄」，不是只回在單次 HTTP 回應裡就算

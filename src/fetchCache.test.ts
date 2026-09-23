@@ -4,7 +4,10 @@
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { _resetCacheForTests, cachedFetch, invalidate, setCached } from "./fetchCache";
+import * as api from "./api";
+import type { getScenario } from "./api";
+import { _resetCacheForTests, cachedFetch, getScenarioCached, invalidate,
+        invalidateScenarioCache, setCached } from "./fetchCache";
 
 afterEach(() => {
   _resetCacheForTests();
@@ -158,5 +161,57 @@ describe("invalidate／setCached", () => {
     expect(await result.promise).toBe("known-value");
     expect(fetcher).not.toHaveBeenCalled();
     result.release();
+  });
+});
+
+describe("invalidateScenarioCache（ARCH-REVIEW-001／#343）", () => {
+  /** `getScenarioCached()` 內部打的是 `api.getScenario()`，這裡把它換成
+   *  一個計次的假實作，才能斷言「有沒有真的重抓」。 */
+  function mockDetail(analyzedAt: string | null) {
+    return { id: "s1", latest_analyzed_at: analyzedAt } as unknown as
+      Awaited<ReturnType<typeof getScenario>>;
+  }
+
+  it("編輯清空結果後（hint 為 null），詳細頁不再沿用舊快取——這正是 "
+   + "hintAnalyzedAt 分辨不出來的那個情境", async () => {
+    const spy = vi.spyOn(api, "getScenario")
+      .mockResolvedValue(mockDetail("2026-09-01T00:00:00Z"));
+
+    // 1. 先看過一次詳細頁——快取裡現在有一份「有結果」的版本。
+    const first = getScenarioCached("s1", null);
+    await first.promise;
+    first.release();
+    expect(spy).toHaveBeenCalledTimes(1);
+
+    // 2. 使用者編輯 thesis：後端 `clear_results()`，PATCH 回來的
+    //    `latest_analyzed_at` 是 null。沒有這一行的話，下面那次
+    //    `hintAnalyzedAt === null` 會被當成「還不知道版本」而沿用快取。
+    invalidateScenarioCache("s1");
+    spy.mockResolvedValue(mockDetail(null));
+
+    // 3. 接著使用者（在刷新失敗、或刷新還在飛的時候）打開詳細頁。
+    const second = getScenarioCached("s1", null);
+    expect(await second.promise).toMatchObject({ latest_analyzed_at: null });
+    second.release();
+
+    expect(spy).toHaveBeenCalledTimes(2);
+    spy.mockRestore();
+  });
+
+  it("沒有 mutation 時，hint 為 null 仍照舊沿用快取（不因為這次修正 "
+   + "而退化成每次都重抓）", async () => {
+    const spy = vi.spyOn(api, "getScenario")
+      .mockResolvedValue(mockDetail("2026-09-01T00:00:00Z"));
+
+    const first = getScenarioCached("s1", null);
+    await first.promise;
+    first.release();
+
+    const second = getScenarioCached("s1", null);
+    await second.promise;
+    second.release();
+
+    expect(spy).toHaveBeenCalledTimes(1);
+    spy.mockRestore();
   });
 });

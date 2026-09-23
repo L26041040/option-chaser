@@ -9,8 +9,9 @@
 """
 from __future__ import annotations
 
+from contextlib import AbstractContextManager
 from dataclasses import dataclass, replace
-from typing import Iterable, Protocol, Sequence
+from typing import Protocol, Sequence
 
 from ..diagnostics import DiagnosticEvent
 
@@ -413,43 +414,6 @@ class ChainBackoffEntry:
     consecutive_failures: int
     observed_at: str
     last_success_at: str | None = None
-
-
-@dataclass(frozen=True)
-class NarrowHistoryEntry:
-    """SCALE-09（#261，Scaling Foundation Stage 1-1）：narrow history
-    表的一列——票面明訂的最小欄位集合。PK 是
-    `(scenario_id, analyzed_at, candidate_key)` 這三個 identity 欄，
-    **`cost` 不屬於 PK**（AC-2）。
-
-    三種快取狀態全部由這個型別加上「查不查得到列」共同表達，呼叫端
-    （`get_narrow_history_entry()`）用回傳值本身分辨：
-    - 回傳非 `None`、`cost` 非 `None` ＝已知有效歷史點。
-    - 回傳非 `None`、`cost` 為 `None` ＝已驗證的 genuine gap
-      （negative cache——resolver 已經判定過這個 candidate 當時不
-      eligible，不必每次查詢都重跑一次 resolver）。
-    - 回傳 `None`（沒有這一列）＝尚未 materialize／cache miss，
-      **不是** gap——SCALE-09 本票的 dual-write 只寫「已知有效」這一
-      種狀態（票面：「每次 refresh 只 dual-write visible candidate 的
-      non-null cost」），negative cache 的寫入是 resolver 實際被呼叫
-      之後（SCALE-12／14 的範圍）才會發生，這個型別本身兩種語意都能
-      承載，不需要因為未來加上 negative cache 而改 schema。
-
-    RL：narrow history **永久保存，暫不設 retention**（OD-07）——
-    這裡不像 `diagnostics`／`operational_metrics` 有 trim-on-write。
-
-    `owner_id`（SCALE-14／#265 補記）：SCALE-09 出貨時這張表遺漏了
-    `owner_id`——SCALE-06／SCALE-11 當初列舉的「5 張 row-scoped 表」
-    寫在 `narrow_history` 存在之前，這張新表因此漏接。SCALE-14 要把它
-    真正接進一個 owner-gated 的 production 端點（`GET /history`），
-    在那之前先補齊，與其餘 row-scoped 表同一個模式（nullable、本身
-    不查詢過濾，過濾邏輯在讀寫方法簽章的 `owner` 參數）——不是本票
-    順手做的無關 cleanup，是接線前必要的正確性前提。"""
-    scenario_id: str
-    analyzed_at: str
-    candidate_key: str
-    cost: float | None
-    owner_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -990,16 +954,16 @@ class Storage(Protocol):
     # ---------- Ownership A-1 Expand（SCALE-06／#256） ----------
 
     def backfill_missing_owner_ids(self, owner_id: str) -> dict[str, int]:
-        """對 6 張 row-scoped 表（`scenarios`／`results`／`snapshots`／
-        `events`／`diagnostics`——SCALE-06／#256 原始 5 張；
-        `narrow_history`——SCALE-14／#265 補上，SCALE-09 出貨時漏接
-        `owner_id`，見該方法 postgres/memory 實作的 docstring）
-        **既有** `owner_id IS NULL` 的列，整批補上 `owner_id`。回傳
+        """對 5 張 row-scoped 表（`scenarios`／`results`／`snapshots`／
+        `events`／`diagnostics`——SCALE-06／#256 原始 5 張；SW-12／
+        #342 前還多一張 SCALE-14／#265 補上的 `narrow_history`，該表
+        隨 Spread 淨成本走勢功能整個退休一併移除）**既有**
+        `owner_id IS NULL` 的列，整批補上 `owner_id`。回傳
         `{table_name: 更新筆數}`。
 
         冪等、可重跑：條件式的 `WHERE owner_id IS NULL` 讓重跑只影響
         「還沒補過」的列，不會覆蓋已經有值（含未來若真的支援多重
-        owner）的既有資料，重跑第二次全部回 0。**這 6 張表以外的表
+        owner）的既有資料，重跑第二次全部回 0。**這 5 張表以外的表
         （3 張 singleton user tables、system-wide 市場事實表、
         `chain_backoff`）本方法不觸碰**——見票面範圍界線。
 
@@ -1023,9 +987,10 @@ class Storage(Protocol):
 
         **5 張**＝SCALE-06 原始 row-scoped 表（`scenarios`／`results`／
         `snapshots`／`events`／`diagnostics`，跟 `backfill_missing_
-        owner_ids()` 同一份清單，**不含** `narrow_history`——票面
-        （#264）明文只算「5＋3」，`narrow_history` 是 SCALE-09／14 才
-        出現、不在這張票枚舉的表列裡，本方法刻意不多加）。**3 張**＝
+        owner_ids()` 同一份清單——票面（#264）明文只算「5＋3」，
+        SCALE-09／14 才出現的 `narrow_history` 不在這張票枚舉的表列
+        裡，本方法刻意不多加；該表已隨 SW-12／#342 Spread 淨成本走勢
+        功能退休整個移除，這句話現在恆真）。**3 張**＝
         本票新增的 `owner_settings`／`owner_credentials`／
         `owner_verifications`——它們的 `owner_id` 是 PK 的一部分，
         Postgres／記憶體兩邊都結構上不可能存在 NULL（查詢它們只是
@@ -1058,26 +1023,25 @@ class Storage(Protocol):
         **冪等**：搬過一次後 `from_owner` 底下已無列，重跑對已搬過的表
         全部回 0（PB-03 AC「腳本重跑第二次為 no-op」）。
 
-        涵蓋**這 10 張表**（PB-03／#295 §6 明文要求不得沿用既有任一份
+        涵蓋**這 9 張表**（PB-03／#295 §6 明文要求不得沿用既有任一份
         既有清單——見下方差異說明；PB-04／#296 的 `delete_owner()`
         共用同一份清單，兩者是本站僅有的兩個「owner-scoped 表」全量
-        操作）：
+        操作。SW-12／#342 起原本第 10 張 `narrow_history` 隨 Spread
+        淨成本走勢功能整個退休一併移除）：
         `scenarios`／`results`／`snapshots`／`events`／`diagnostics`／
-        `narrow_history`／`current_results`／`owner_settings`／
+        `current_results`／`owner_settings`／
         `owner_credentials`／`owner_verifications`。
 
         **與既有兩份清單的差異**（PB-03 施工前 repo 現況已確認兩份
         既有清單互相不一致，此處記錄避免未來誤以為可以照抄）：
-        - `backfill_missing_owner_ids()` 只有 6 張（同上少
+        - `backfill_missing_owner_ids()` 只有 5 張（同上少
           `current_results`／`owner_settings`／`owner_credentials`／
           `owner_verifications`）——它服務的是「把 `NULL` 補成某個
           值」（`WHERE owner_id IS NULL`），本方法服務的是「把某個
           既有值換成另一個值」（`WHERE owner_id = from_owner`），
           目的不同、範圍也因此不同，不能互相替代。
         - `owner_id_null_counts()` 涵蓋另外 8 張（5 張 row-scoped ＋
-          3 張 `owner_*`）——**不含 `narrow_history`**（SCALE-09 出貨
-          時漏接 `owner_id`，SCALE-14／#265 才補上，比那份清單當初
-          列舉的表晚出現）。
+          3 張 `owner_*`）。
 
         回傳 `{table_name: 受影響列數}`。"""
 
@@ -1086,7 +1050,7 @@ class Storage(Protocol):
 
     def delete_owner(self, owner_id: str) -> dict[str, int]:
         """把 `owner_id` 名下全部資料徹底清除——沿用
-        `migrate_owner()` 那份 10 張表清單（本站目前**唯一**「owner-
+        `migrate_owner()` 那份 9 張表清單（本站目前**唯一**「owner-
         scoped 表清單」，兩個方法共用，見兩後端實作裡的
         `_OWNER_SCOPED_TABLES` 常數／等義結構），**外加**
         `browser_identities`／`owners` 兩張身份基礎表本身——本方法是
@@ -1248,140 +1212,24 @@ class Storage(Protocol):
         SCALE-08 AC-7 紅線（`operational_metrics` 無 `owner_id`）
         自然成立的原因之一：這裡連 `operational_metrics` 表都不碰。"""
 
-    # ---------- Narrow visible-candidate history（SCALE-09／#261） ----------
-
-    def save_narrow_history(self, entries: Iterable[NarrowHistoryEntry]) -> None:
-        """Upsert 一批 narrow history 列（PK 衝突即覆蓋——同一個
-        `(scenario_id, analyzed_at, candidate_key)` 重複寫入是合法的
-        冪等操作，不是錯誤）。SCALE-09 本票唯一呼叫端只會傳入
-        `cost` 全部非 `None` 的列（visible candidate 的 dual-write，
-        票面：「每次 refresh 只 dual-write visible candidate 的
-        non-null cost」）；`cost=None`（negative cache）是 SCALE-14
-        write-through 才會真正產生的資料——`resolve_historical_cost()`
-        判定 genuine gap 時也要落盤，避免下次同一個 (analyzed_at,
-        candidate_key) 又重跑一次 resolver。`entry.owner_id`（SCALE-14／
-        #265 補上）比照既有 `save_result()`／`save_snapshot()`：寫入
-        本身不強制非 `None`（SCALE-06 Expand 階段「寫入寬鬆、讀取才
-        強制」的既有慣例，讓 `backfill_missing_owner_ids()` 能處理既有
-        無 owner 的舊列）——production 呼叫端一律傳入解析過的真實
-        owner，讀取方法（`get_narrow_history_entry()`／
-        `narrow_history_for_candidate()`）才是真正強制 `owner` 非
-        `None` 的地方。"""
-
-    def get_narrow_history_entry(
-        self, scenario_id: str, analyzed_at: str, candidate_key: str,
-        *, owner: str,
-    ) -> NarrowHistoryEntry | None:
-        """單筆查詢——`None` ＝沒有這一列（尚未 materialize，不是
-        gap）；非 `None` 時 `.cost` 才是三態裡「已知有效」或「已驗證
-        gap」的分野。本票主要用途是儲存契約測試的 round-trip 驗證；
-        SCALE-14 的 batch 方法（`narrow_history_for_candidate()`）才是
-        `/history` 端點真正的消費端。"""
-
-    def narrow_history_for_candidate(
-        self, scenario_id: str, candidate_key: str, analyzed_ats: Sequence[str],
-        *, owner: str,
-    ) -> dict[str, float | None]:
-        """SCALE-14（#265）：`GET /history` 讀取路徑的核心批次查詢——
-        一次回答「這個 candidate_key 在這些日期裡，narrow 已經知道
-        什麼」，避免對 `analyzed_ats`（可能是整個劇本的完整歷史）逐一
-        呼叫 `get_narrow_history_entry()` 造成 N+1。
-
-        回傳 `{analyzed_at: cost}`：只包含**真的存在**的列（`cost`
-        本身可能是 `None`，代表已驗證的 genuine gap）；不在回傳 dict
-        裡的 `analyzed_at` ＝ narrow 尚未 materialize（cache miss，
-        需要呼叫端接著跑 resolver），呼叫端據此用
-        `analyzed_at in result` 分辨「查過但是 gap」與「還沒查過」，
-        不能用 `result.get(analyzed_at) is None` 混淆兩者。"""
-
-    def cost_sparklines(
-        self, pairs: Sequence[tuple[str, str]], *, owner: str, limit: int,
-    ) -> dict[str, list[tuple[str, float | None]]]:
-        """OG-04（#323）：劇本清單「淨成本走勢」sparkline 欄——一次批次
-        查詢**多個劇本**各自冠軍候選最近 `limit` 筆 narrow history，這是
-        `narrow_history_for_candidate()`（單一劇本、呼叫端指定確切
-        `analyzed_ats`）辦不到的查詢形狀：清單頁事先不知道每個劇本各自
-        「最近幾次刷新」落在哪些日期，需要的是「這個 (scenario_id,
-        candidate_key) 配對最近 N 筆是什麼」，不是「這幾個確切日期查得
-        到什麼」——因此不是同一個方法加參數就能重用，是真的不同的查詢
-        形狀（批次維度從「同一劇本的多個日期」換成「多個劇本各自一個
-        候選」）。
-
-        `pairs`：`[(scenario_id, candidate_key), ...]`——呼叫端（清單
-        端點）已經從 `latest_summaries()` 拿到每個劇本的
-        `representative_candidate["candidate_key"]`，這裡只負責批次撈
-        對應的 cost 序列，不重新判斷誰是冠軍。
-
-        回傳 `{scenario_id: [(analyzed_at, cost), ...]}`，依 `analyzed_at`
-        **升冪**排列（跟 `narrow_history_for_candidate()`／`/history`
-        端點同一個順序慣例），每個劇本最多 `limit` 筆（截尾邏輯在資料庫
-        端用 `ORDER BY analyzed_at DESC LIMIT` 做，不是撈全部回來前端
-        再切）。`pairs` 裡沒有任何 narrow_history 列的劇本，或
-        `candidate_key` 為空字串／`None`（呼叫端自行濾掉，不傳進來），
-        不會出現在回傳 dict 的鍵裡——呼叫端用 `.get(scenario_id)` 取，
-        缺席即 `None`，前端據此顯示「—」，跟「這個劇本沒有 narrow
-        history」是同一件事，不需要額外的三態判斷。
-
-        **不 SELECT `results.view`／不觸碰 `all_candidates`**（票面硬性
-        要求）——只讀 `narrow_history` 這張表，跟
-        `narrow_history_for_candidate()` 同一份資料來源，只是換一種
-        批次維度。"""
-
-    def result_spot_timestamps(
-        self, scenario_id: str, *, owner: str,
-    ) -> list[tuple[str, float | None]]:
-        """SCALE-14（#265）：`GET /history` 需要的完整時間軸——`(analyzed_
-        at, spot)` 依 `analyzed_at` 升冪排列，`spot` 讀自 `snapshots`
-        表（JSONB 路徑取值，不整份解析），**不 SELECT `results.view`**
-        （AC-5 硬性紅線）。日期集合沿用 `result_timestamps()` 既有的
-        UNION 判準（`snapshots` 主鍵為主、`results` 補孤兒列）；只存在
-        於 `results`（缺對應 `snapshots` 列的孤兒）的日期，`spot` 誠實
-        回 `None`——這是既有孤兒列本來就是邊界情況（`save_result()`／
-        `save_snapshot()` 兩次獨立呼叫、未包交易）的自然延伸，不寫入
-        `results.view` 的代價。"""
-
-    def result_fact_contexts(
-        self, scenario_id: str, analyzed_ats: Sequence[str], *, owner: str,
-    ) -> dict[str, ResultFactContext]:
-        """SCALE-14（#265）：`result_fact_context()` 的批次版本——一次
-        取得多個 `analyzed_at` 各自的 fact context（供 narrow cache
-        miss 時餵給 `resolve_historical_cost()`），避免逐一呼叫造成
-        N+1。回傳只包含真的查得到的列；`view_schema_version` 全部
-        `None` 的舊列（尚未 backfill）呼叫端必須視為 AC-7 的 fail-safe
-        情境，不得假裝有 fact context 可用。"""
-
-    def snapshots_batch(
-        self, scenario_id: str, analyzed_ats: Sequence[str], *, owner: str,
-    ) -> dict[str, dict]:
-        """SCALE-14（#265）：`get_snapshot()` 的批次版本——resolver 對
-        每一個 narrow cache miss 都需要那一天的完整原始快照（`cost_
-        from_snapshot()`／`find_contract()` 要在整條鏈裡找合約，不能
-        只給單一候選的報價），一次把全部需要的日期批次取回，避免對
-        `analyzed_ats` 逐一查詢造成 N+1（每份快照數百 KB，是這整條
-        讀取路徑裡最貴的部分，批次拿的是「減少往返次數」，不是「減少
-        傳輸位元組」——後者無法避免，resolver 需要哪幾天的完整快照，
-        哪幾天就得整份傳輸）。回傳只包含真的查得到的列。
-
-        **AC-7 相容性回退的裁決（本票明文記錄，非遺漏）**：票面「在
-        legacy view 尚存在時可走明確 compatibility fallback」是「可」
-        （選用），不是「必須」——真正的硬性要求只有「replay version
-        不支援時 fail-safe，不猜測、不回錯值」，而
-        `resolve_historical_cost()` 本身（SCALE-09）在
-        `history_replay_version` 不匹配／`resolved_params`／
-        `requested_strategies` 缺席（尚未 backfill）時已經安全回傳
-        `cost=None, reason="version_mismatch"／"missing_fact_context"`
-        （genuine gap，write-through 落盤成 negative cache），不猜測、
-        不回錯值——硬性要求已滿足。**不額外建置讀取單一歷史列完整
-        `view` 的相容回退路徑**：`HISTORY_REPLAY_VERSION` 目前恆為
-        `1`（SCALE-01 才剛引入這個常數），沒有任何存量資料帶著不同的
-        版本號，這條回退路徑今天無法針對真實資料驗證；等未來真的調高
-        這個常數（版本不相容的既有歷史資料因此出現）才是這個決策真正
-        有輸入可以決定怎麼做的時間點，現在建置屬於沒有具體情境可驗證
-        的推測性程式碼。"""
-
     @property
     def kind(self) -> str:
         """"memory" | "postgres"——供 /api/health 如實回報實際用的是哪個。"""
+
+    def request_scope(self) -> AbstractContextManager[None]:
+        """一次 HTTP request 期間的資源 scope——由 `main.py` 的
+        `_request_scope_middleware` 在每個 request 最外層 `with` 起來。
+
+        ARCH-REVIEW-001（#343）：兩個後端本來就都實作了這個方法
+        （`postgres.py` 共用同一條惰性連線；`memory.py` 是純 no-op，
+        它的 docstring 明說「存在的唯一理由是讓 middleware 走跟
+        production 同一條分支」），唯獨 Protocol 沒宣告，於是 middleware
+        只能 `getattr(_db(), "request_scope", None)` 去猜——抽象在這裡
+        是漏的：契約沒講的東西，呼叫端卻依賴它存在。補進契約後
+        middleware 直接呼叫，契約測試也涵蓋得到。
+
+        對沒有連線概念的後端，實作成 no-op contextmanager 即可，不是
+        選配。"""
 
 
 @dataclass(frozen=True)

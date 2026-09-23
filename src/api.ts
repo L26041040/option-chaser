@@ -131,13 +131,6 @@ export interface RepresentativeCandidate {
   legs: RepresentativeCandidateLeg[];
   expiry: string;
   baseline_return: number;
-  /**
-   * OG-04（#323）：這組候選的 `candidate_key`——後端用它批次查詢
-   * narrow history 組出 `ScenarioSummary.cost_sparkline`，前端目前
-   * 不需要直接讀它。可選：本票落地前最後一次成功分析留下的舊資料
-   * 沒有這個欄位（`.get()` 誠實省略，不是每一筆都補齊）。
-   */
-  candidate_key?: string;
 }
 
 /**
@@ -735,15 +728,6 @@ export interface ScenarioSummary {
    * （不是假造一份「全部可選」）。
    */
   family_eligibility: Record<string, FamilyEligibility> | null;
-  /**
-   * OG-04（#323）：桌面劇本庫「淨成本走勢」欄——冠軍候選最近幾次
-   * 刷新的淨成本序列，`[analyzed_at, cost|null]`，依時間升冪排列，
-   * 後端已截尾（見 `api_app/main.py::_COST_SPARKLINE_POINTS`）。
-   * `null` ＝ 沒有可畫的序列（從未成功分析、單腿以外沒有 narrow
-   * row、或冠軍本身為 `null`），前端顯示「—」，不是空陣列。手機列
-   * 不顯示這欄（`CompactScenarioList.tsx` 不讀這個欄位）。
-   */
-  cost_sparkline: [string, number | null][] | null;
 }
 
 /**
@@ -1055,27 +1039,6 @@ export function rawDataCsvUrl(id: string, analyzedAt?: string | null): string {
 }
 
 /**
- * V9（#57，T11／#25 既有語意）：一個 Spread 身份鍵（`candidate_key`）
- * 跨這個劇本全部歷史結果的淨成本時間序列。缺席快照如實回傳斷點
- * （`cost` 等三欄為 null），不插值、不跳過。
- */
-export interface HistoryEntry {
-  analyzed_at: string;
-  spot: number;
-  cost: number | null;
-  baseline_return: number | null;
-  rank_in_expiry: number | null;
-}
-
-export function getSpreadHistory(
-  id: string, candidateKey: string,
-): Promise<{ entries: HistoryEntry[] }> {
-  return request<{ entries: HistoryEntry[] }>(
-    `/api/scenarios/${encodeURIComponent(id)}/history` +
-    `?candidate_key=${encodeURIComponent(candidateKey)}`);
-}
-
-/**
  * baseline 到期日那一組的第 1 名候選。引擎已把各期候選依收益率排好序，
  * 這裡只是取出，不做任何排序或計算。
  *
@@ -1380,7 +1343,6 @@ export interface OpsMetrics {
   stale_serve_count: OpsMetricBucket[];
   cold_miss_count: OpsMetricBucket[];
   refresh_duration_ms: OpsMetricBucket[];
-  history_read_volume: OpsMetricBucket[];
   abandoned_owner_cleanup_count: OpsMetricBucket[];
   table_size: Record<string, {
     row_count: number;
@@ -1416,10 +1378,16 @@ export interface UsageSummary {
   /** `null`＝quota 停用（後端 `<=0` 即停用），不是「上限是 0」。 */
   max_active_scenarios: number | null;
   quota_exempt: boolean;
-  /** `null`＝節流停用。 */
-  refresh_min_interval_minutes: number | null;
-  throttle_exempt: boolean;
   last_activity_at: string | null;
+  // SW-10（#340，Owner 真機驗收）：`refresh_min_interval_minutes`／
+  // `throttle_exempt` 兩個欄位已隨後端節流機制整段移除——不再有
+  // 「按了要等」這件事，這兩個欄位不再有意義。以下四個 `best_return*`
+  // 欄位取而代之（Artifact A 首頁 stats 板第二格「最佳劇本報酬」），
+  // 全部由後端一次算好；從未成功分析過任何劇本時皆為 `null`。
+  best_return: number | null;
+  best_return_symbol: string | null;
+  best_return_strategy: string | null;
+  best_return_target_month: string | null;
 }
 
 export function getUsageSummary(): Promise<UsageSummary> {

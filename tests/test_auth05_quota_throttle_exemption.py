@@ -1,11 +1,18 @@
 """AUTH-05（#312，Anonymous Public Beta，三層角色模型 spec #307）：
-Scenario quota／refresh throttle 的 Super User／Super Admin 角色豁免。
+Scenario quota 的 Super User／Super Admin 角色豁免。
 
 **Global vendor fuse（PB-06／#299）明確不在本票豁免範圍內**——這是
 本檔案最重要的一組測試（見「豁免不得波及 fuse」小節）：角色短路只
-解除 per-owner 額度與 30 分鐘節流這兩處使用者體驗類的既有限制，
-`_fetch_chain()` 內對三層角色一視同仁的全站每日 vendor 預算保險絲
-完全不受影響。
+解除 per-owner 額度這一處使用者體驗類的既有限制，`_fetch_chain()`
+內對三層角色一視同仁的全站每日 vendor 預算保險絲完全不受影響。
+
+SW-10（#340，Owner 真機驗收）跟進：這個檔案原本還有一整組「refresh
+throttle 豁免」測試——30 分鐘節流本身是 Owner 直接裁示整段移除的
+產品層限制（見 `api_app/main.py::_refresh_and_save()` 檔頭說明），
+角色對它的「豁免」這個概念因此也一併不存在了：現在不分角色、每次
+呼叫刷新都會真的再抓一次。原本那組測試改寫成更簡單的「刷新永遠真的
+再抓一次」regression 守門，其餘涉及 fuse 的測試移除節流窗設置後
+保留（fuse 本身不受這輪改動影響）。
 
 沿用既有 `tests/test_pb05_quota_and_throttle.py`／
 `tests/test_pb06_global_vendor_fuse.py` 的 `_client()`／`_create()`
@@ -128,13 +135,14 @@ def test_mixed_batch_normal_is_still_blocked_super_user_still_succeeds():
     assert _create(exempt, symbol="SYX").status_code == 201
 
 
-# ---------- Refresh throttle 豁免 ----------
+# ---------- 刷新永遠真的再抓一次（節流整段移除後的 regression 守門）----------
 
-@pytest.mark.parametrize("role", ["superuser", "superadmin"])
-def test_refresh_within_the_throttle_window_still_fetches_for_an_exempt_role(
-        role):
-    """AC：Super User／Super Admin 在 30 分鐘內重複刷新不被節流——
-    第二次呼叫真的又打了一次 vendor，不是沿用既有資料。"""
+@pytest.mark.parametrize("role", [None, "superuser", "superadmin"])
+def test_refresh_always_fetches_again_regardless_of_role(role):
+    """SW-10（#340，Owner 真機驗收）：節流整段移除後，不分角色，第二次
+    呼叫刷新一律真的再抓一次——不再有「30 分鐘內沿用舊資料」這件事，
+    也不再需要角色豁免這個概念（`role=None` 即無角色 cookie，等同
+    Normal User）。"""
     storage = MemoryStorage()
     calls: list[str] = []
     c = _client(storage=storage, role=role, fetch_calls=calls)
@@ -146,31 +154,12 @@ def test_refresh_within_the_throttle_window_still_fetches_for_an_exempt_role(
 
     r2 = c.post(f"/api/scenarios/{sid}/refresh")
     assert r2.status_code == 200
-    assert len(calls) == 2  # 豁免：窗內依然真的再抓一次，不是短路
+    assert len(calls) == 2
 
 
-def test_normal_user_throttle_behavior_is_unchanged_by_this_ticket():
-    """AC：Normal User 的既有節流行為與 PB-05 上線後完全不變。"""
-    storage = MemoryStorage()
-    calls: list[str] = []
-    c = _client(storage=storage, fetch_calls=calls)  # 無角色 cookie
-    sid = _create(c).json()["id"]
-
-    r1 = c.post(f"/api/scenarios/{sid}/refresh")
-    assert r1.status_code == 200
-    assert len(calls) == 1
-    first_analyzed_at = r1.json()["latest_analyzed_at"]
-
-    r2 = c.post(f"/api/scenarios/{sid}/refresh")
-    assert r2.status_code == 200
-    assert len(calls) == 1  # 窗內：仍然沒有再打一次
-    assert r2.json()["latest_analyzed_at"] == first_analyzed_at
-
-
-@pytest.mark.parametrize("role", ["superuser", "superadmin"])
-def test_refresh_run_within_the_throttle_window_also_fetches_for_an_exempt_role(
-        role):
-    """節流豁免同時涵蓋批次端點（`POST /api/scenarios/refresh-run`）
+@pytest.mark.parametrize("role", [None, "superuser", "superadmin"])
+def test_refresh_run_also_always_fetches_again_regardless_of_role(role):
+    """同一條規則同時涵蓋批次端點（`POST /api/scenarios/refresh-run`）
     ——不只是單劇本刷新那一條路徑。"""
     storage = MemoryStorage()
     calls: list[str] = []
@@ -185,36 +174,23 @@ def test_refresh_run_within_the_throttle_window_also_fetches_for_an_exempt_role(
     body = r.json()
     assert body["results"] == [{"scenario_id": sid, "ok": True,
                                 "row": body["results"][0]["row"]}]
-    assert len(calls) == 2  # 豁免：批次端點內同樣真的再抓一次
+    assert len(calls) == 2
 
 
-def test_refresh_run_normal_user_throttle_behavior_is_unchanged():
-    storage = MemoryStorage()
-    calls: list[str] = []
-    c = _client(storage=storage, fetch_calls=calls)
-    sid = _create(c).json()["id"]
-
-    c.post(f"/api/scenarios/{sid}/refresh")
-    assert len(calls) == 1
-
-    r = c.post("/api/scenarios/refresh-run", json={"scenario_ids": [sid]})
-    assert r.status_code == 200
-    assert len(calls) == 1  # 窗內：批次端點同樣不會再打一次
-
-
-# ---------- 豁免不得波及全站 vendor fuse（票面核心正面驗收） ----------
+# ---------- 角色豁免不得波及全站 vendor fuse（票面核心正面驗收） ----------
 
 @pytest.mark.parametrize("role", ["superuser", "superadmin"])
-def test_exempt_role_refresh_within_the_throttle_window_is_still_blocked_by_a_tripped_fuse(
-        role):
-    """整張票最重要的一條：這個 scenario 正處於 30 分鐘節流窗內——若
-    沒有本票的豁免，這次呼叫本該直接短路沿用既有資料，根本不會嘗試
-    抓鏈；豁免讓它真的嘗試去抓，但全站每日 vendor 預算已經用盡（模擬
-    「其他流量把預算燒光了」，沿用既有 PB-06 測試的 `_seed_today_
-    count()` 手法——`_client()` 的 `fetch=` 覆寫繞過了 metering，
-    不能依賴第一次刷新自然把預算用完，得直接灌值），`_fetch_chain()`
-    內的 fuse 一樣擋下它、非 500——證明本票的角色短路完全沒有波及
-    fuse 檢查本身。"""
+def test_exempt_role_refresh_is_still_blocked_by_a_tripped_fuse(role):
+    """整張票最重要的一條：即使是 quota 豁免角色，全站每日 vendor
+    預算已經用盡時（模擬「其他流量把預算燒光了」，沿用既有 PB-06
+    測試的 `_seed_today_count()` 手法——`_client()` 的 `fetch=`
+    覆寫繞過了 metering，不能依賴第一次刷新自然把預算用完，得直接
+    灌值），`_fetch_chain()` 內的 fuse 一樣擋下它、非 500——證明本票
+    的角色短路完全沒有波及 fuse 檢查本身。
+
+    SW-10（#340）跟進：原本這裡還會先讓 scenario「處於節流窗內」才
+    測 fuse——節流本身已經整段移除，fuse 現在對**每一次**刷新呼叫
+    都無條件生效，不需要先製造一個節流窗場景才測得到。"""
     storage = MemoryStorage()
     c = _client(storage=storage, role=role, global_vendor_daily_budget=1)
     sid = _create(c).json()["id"]
@@ -272,13 +248,17 @@ def test_normal_user_is_blocked_by_the_same_tripped_fuse_for_comparison():
 # ---------- 豁免而成功的動作仍計入既有 operational_metrics ----------
 
 @pytest.mark.parametrize("role", ["superuser", "superadmin"])
-def test_an_exempt_refresh_that_bypasses_the_throttle_still_records_the_existing_metric(
+def test_a_second_refresh_by_an_exempt_role_still_records_the_existing_metric(
         role):
-    """AC：Super User／Super Admin 因豁免而成功的動作，仍正確計入既有
-    `operational_metrics`——豁免只是跳過節流判斷，不是連帶跳過既有
-    的觀測記錄。用 `_client_with_metering()`（見該函式 docstring）而
-    非一般的 `_client()`，否則 `fetch=` 覆寫會讓 metering 整層被繞過、
-    這條測試永遠量不出任何東西。"""
+    """AC：Super User／Super Admin 的刷新動作，仍正確計入既有
+    `operational_metrics`。用 `_client_with_metering()`（見該函式
+    docstring）而非一般的 `_client()`，否則 `fetch=` 覆寫會讓
+    metering 整層被繞過、這條測試永遠量不出任何東西。
+
+    SW-10（#340）跟進：原本這裡的敘事是「這次刷新本該被節流但因豁免
+    而真的再抓一次」——節流整段移除後，第二次刷新本來就會真的再抓一次
+    （不分角色），這裡只是確認這個動作仍然被既有指標記錄，不是節流
+    豁免帶出的特殊行為。"""
     storage = MemoryStorage()
     c = _client_with_metering(storage=storage, role=role)
     sid = _create(c).json()["id"]
@@ -288,8 +268,6 @@ def test_an_exempt_refresh_that_bypasses_the_throttle_still_records_the_existing
                                     ny_today().isoformat())
     assert baseline >= 1
 
-    # 窗內、豁免角色，這次刷新本該被節流但因豁免而真的再抓一次；
-    # 這次「豁免而成功」的動作也要記進同一個既有指標。
     c.post(f"/api/scenarios/{sid}/refresh")
     after = storage.metric_total("chain_fetch_count", ny_today().isoformat())
     assert after == baseline + 1

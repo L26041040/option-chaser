@@ -287,9 +287,9 @@ describe("Crossover Boundary overlay（#116，spec #117 §4）", () => {
       // 每一格最多吃到兩條邊（邊界在這裡轉角），絕不會是四邊全包。
       expect(sides.length).toBeGreaterThanOrEqual(1);
       expect(sides.length).toBeLessThanOrEqual(2);
-      // 用的是琥珀色 token，不是 --tint（藍）或 --red。
+      // 用的是琥珀色 token，不是 --acc-text（藍）或 --down（紅）。
       expect(cell.style.boxShadow).toContain("var(--crossover)");
-      expect(cell.style.boxShadow).not.toContain("var(--tint)");
+      expect(cell.style.boxShadow).not.toContain("var(--acc-text)");
     }
   });
 

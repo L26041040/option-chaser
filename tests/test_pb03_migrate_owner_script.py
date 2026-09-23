@@ -36,7 +36,7 @@ def db():
     with psycopg.connect(TEST_DB_URL, autocommit=True) as conn:
         conn.execute(
             "TRUNCATE scenarios, results, current_results, snapshots, events, "
-            "diagnostics, narrow_history, owner_settings, owner_credentials, "
+            "diagnostics, owner_settings, owner_credentials, "
             "owner_verifications, owners, browser_identities RESTART IDENTITY")
     yield st
 

@@ -9,6 +9,7 @@ import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { BANNED_JARGON } from "./bannedCopy";
 import Settings from "./Settings";
 import type { SettingsView } from "./api";
 import { _resetCacheForTests } from "./fetchCache";
@@ -66,13 +67,17 @@ const CONFIGURED = {
  *  都存在的最小假體，讓這個新的非同步 effect 不會拋錯打斷其他斷言。 */
 const EMPTY_OPS_METRICS = {
   chain_fetch_count: [], chain_429_count: [], stale_serve_count: [],
-  cold_miss_count: [], refresh_duration_ms: [], history_read_volume: [],
+  cold_miss_count: [], refresh_duration_ms: [],
   abandoned_owner_cleanup_count: [],
   table_size: {},
   anonymous_owners: { active: 0, abandoned: 0, eligible_for_hard_delete: 0,
                      protected: 0, total: 0 },
   scenarios: { total: 0, average_per_owner: 0 },
   alerts: [],
+  // SW-03（#334，Seed Warm）：`SuperUserAdmin.tsx::OpsStats` 新增讀取
+  // 這個既有欄位（原本只有劇本庫頁首的 `OpsSuperAdminStats` 讀，現在
+  // 搬來這裡）。
+  vendor_fuse: { used: 0, budget: null },
 };
 
 function mockApi(views: SettingsView[], { role = "superadmin" as Role } = {}) {
@@ -839,5 +844,22 @@ describe("OG-11（#322）：桌面版左側 subnav（手機版單欄堆疊零改
     expect(screen.queryByRole("tablist")).not.toBeInTheDocument();
     expect(screen.getByText("Data / API")).toBeInTheDocument();
     expect(screen.getByText("Super User 管理面板")).toBeInTheDocument();
+  });
+});
+
+describe("SW-07（#336，Seed Warm）：一般使用者可見文案不含開發者詞彙", () => {
+  it("Normal User（登入表單／資料來源／刪除我的資料）文字不含開發者詞彙" +
+     "（SW-09／#339 收斂成共用清單 BANNED_JARGON）——Vendor 相關字樣只在" +
+     "Super Admin 後台出現，Normal User 這裡連 `<SuperUserAdmin>` 都" +
+     "沒有掛載", async () => {
+    mockApi([view()], { role: "normal" });
+    const { container } = render(<Settings />);
+    await ready("Market Data", { expectRole: "normal" });
+
+    expect(screen.queryByText("Super User 管理面板")).not.toBeInTheDocument();
+    const text = container.textContent ?? "";
+    for (const banned of BANNED_JARGON) {
+      expect(text).not.toContain(banned);
+    }
   });
 });

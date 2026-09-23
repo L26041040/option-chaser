@@ -103,56 +103,26 @@ test("OG-02（#318）：點劇本進全寬詳細頁，劇本庫清單不再同�
   await expect(page.getByLabel("標的代號")).toBeVisible();
 });
 
-test("OPTION-CHASER-CLOSEOUT-001：桌面版劇本設定卡在劇本摘要卡之前，呈現" +
-     "使用者原本建立的劇本 context（標的／目標價／目標年月／方向／" +
-     "啟用的策略）", async ({ page }) => {
+test("SW-10（#340，Owner 真機驗收）：桌面版身分列呈現使用者原本建立的" +
+     "劇本 context（標的／目標價／目標年月／方向／啟用的策略）——" +
+     "`ScenarioContext`（劇本設定卡）／`Summary`（劇本摘要卡）已整段" +
+     "刪除，這些欄位跟身分列其餘欄位（現價／還需／距目標／來源）合併" +
+     "成同一個 `.toolbar` 身分列，不再是排在前面的兩張獨立卡片" +
+     "（OPTION-CHASER-CLOSEOUT-001 原始 AC 的「先後順序」訴求，隨兩張" +
+     "卡本身一起被『同一個位置、不再重複』取代）", async ({ page }) => {
   await routeTwoScenarios(page);
   await page.goto("/#/s/s1");
 
-  const detail = page.locator(".detail-page");
-  const context = detail.getByRole("region", { name: "劇本設定" });
-  await expect(context).toContainText("XYZ");
-  await expect(context).toContainText(`$${sample.params.target_price.toFixed(2)}`);
-  await expect(context).toContainText(sample.params.target_month);
-  await expect(context).toContainText("看漲");
-  await expect(context).toContainText("Vertical Spread");
+  const header = page.locator(".detail-page .toolbar");
+  await expect(header).toContainText("XYZ");
+  await expect(header.getByText(new RegExp(
+    `目標 \\$${sample.params.target_price.toFixed(2)} · ${sample.params.target_month}`)))
+    .toBeVisible();
+  await expect(header).toContainText("看漲");
+  await expect(header).toContainText("啟用的策略類型：Vertical Spread");
 
-  const summary = detail.getByRole("region", { name: "劇本摘要" });
-  const contextBox = await context.boundingBox();
-  const summaryBox = await summary.boundingBox();
-  expect(contextBox!.y).toBeLessThan(summaryBox!.y);
-});
-
-test("Spread 淨成本走勢：桌面 hover 資料點顯示 tooltip（MVP V3／#106）", async ({ page }) => {
-  await routeTwoScenarios(page);
-  const history = {
-    entries: [
-      { analyzed_at: "2026-07-01T21:30:00-04:00", spot: 100.0, cost: 5.0,
-       baseline_return: 0.3, rank_in_expiry: 2 },
-      { analyzed_at: "2026-07-15T21:30:00-04:00", spot: 99.0, cost: 5.5,
-       baseline_return: 0.5, rank_in_expiry: 1 },
-    ],
-  };
-  await page.route("**/api/scenarios/*/history*", (route) =>
-    route.fulfill({ json: history }));
-
-  // OG-07（#325）：桌面版「Spread 淨成本走勢」不再是要展開的
-  // `<details>`（那是手機版 `SpreadHistory.tsx` 保留的既有行為）——
-  // 桌面換成底部「淨成本走勢」tab（`DesktopSpreadHistory.tsx`），
-  // 預設就是啟用中的分頁，圖表掛載就直接看得到，不用先點開任何東西。
-  await page.goto("/#/s/s1");
-  const chart = page.locator(".spread-history-panel");
-  const point = chart.getByRole("button", { name: /2026-07-01/ });
-  await expect(point).toBeVisible();
-
-  // 桌面滑鼠移到資料點上（hover，非點擊）就該看到 tooltip；移開後消失。
-  await expect(chart.getByText(/日期 2026-07-01/)).not.toBeVisible();
-  await point.hover();
-  await expect(chart.getByText(/日期 2026-07-01/)).toBeVisible();
-  await expect(chart.getByText(/淨成本 \$5\.00/)).toBeVisible();
-
-  await page.mouse.move(0, 0);
-  await expect(chart.getByText(/日期 2026-07-01/)).not.toBeVisible();
+  await expect(page.getByRole("region", { name: "劇本設定" })).toHaveCount(0);
+  await expect(page.getByRole("region", { name: "劇本摘要" })).toHaveCount(0);
 });
 
 /* ---------- Historical IV 一年走勢圖：桌面版（#140／#141；exact-contract
@@ -512,8 +482,9 @@ test("Heatmap ±% 在最右欄：桌面 viewport 每一列都看得到完整格�
   }
 });
 
-test("Crossover Boundary（#116）：桌面 viewport 圖例與邊界標示可見，" +
-     "既有 ±% 欄與橫向捲動不受影響", async ({ page }) => {
+test("Crossover Boundary（#116；SW-12／#342 起主畫面精簡）：桌面 viewport 一句話" +
+     "＋邊界標示可見，comparator 細節收進 ⓘ，既有 ±% 欄與橫向捲動不受影響",
+     async ({ page }) => {
   await routeTwoScenarios(page);
   await page.goto("/#/s/s1");
 
@@ -521,7 +492,20 @@ test("Crossover Boundary（#116）：桌面 viewport 圖例與邊界標示可見
   const table = mainChart.locator("table.heatmap-table");
   await expect(table).toBeVisible();
 
-  // 圖例：格子仍是 Spread 報酬、邊界是兩者相等處、comparator 標籤與成本。
+  // 主畫面一句話：格子仍是 Spread 報酬、邊界是兩者相等處——不需互動。
+  await expect(mainChart.getByText(/琥珀線為 Spread 與 (Long Call|Long Put) 報酬相同的分界/))
+    .toBeVisible();
+
+  // 邊界確實畫在網格上（契約樣本的 baseline 候選有真實交叉）——不是
+  // 每次都落在「網格外」那個分支。
+  const marked = table.locator("td.heatmap-crossover-cell");
+  await expect(marked.first()).toBeVisible();
+
+  // SW-12（#342）：comparator 身分／成本／兩側各自較優的完整說明收進
+  // ⓘ——預設不可見，focus 到 `InfoTooltip` 按鈕才看得到。
+  const infoButton = mainChart.getByRole("button", { name: "分界怎麼算" });
+  await expect(mainChart.getByText(/報酬相等的分界/)).not.toBeVisible();
+  await infoButton.focus();
   await expect(mainChart.getByText(/格子是 Spread 報酬率/)).toBeVisible();
   await expect(mainChart.getByText(/報酬相等的分界/)).toBeVisible();
   await expect(mainChart.getByText(/Long Call|Long Put/).first()).toBeVisible();
@@ -530,11 +514,6 @@ test("Crossover Boundary（#116）：桌面 viewport 圖例與邊界標示可見
   await expect(mainChart.locator(".crossover-sides")).toBeVisible();
   await expect(mainChart.locator(".crossover-sides"))
     .toHaveText(/Spread 較高，.*(Long Call|Long Put) 較高/);
-
-  // 邊界確實畫在網格上（契約樣本的 baseline 候選有真實交叉）——不是
-  // 每次都落在「網格外」那個分支。
-  const marked = table.locator("td.heatmap-crossover-cell");
-  await expect(marked.first()).toBeVisible();
 
   // #109／QA-FIX-1 的 ±% 欄仍在、仍是每列最右邊——overlay 沒有蓋掉它。
   await expect(table.locator("th.heatmap-move-head")).toHaveText("vs 現價");
@@ -934,62 +913,40 @@ test("OG-02（#318）：建立劇本／垃圾桶／設定入口在常駐頂欄�
 
 /* ---------- OG-03（#320）：桌面劇本庫 Markets 式資料表 ---------- */
 
-test("OG-03（#320）：表格欄位齊全（標的／方向／現價／目標價／冠軍策略／" +
-     "劇本報酬／淨成本走勢／到期／狀態／更新時間），且每一列仍是" +
-     "可點進詳細頁的完整連結", async ({ page }) => {
+test("OG-03（#320）；SW-03（#334）起 8 欄：表格欄位齊全（標的／方向／" +
+     "現價 → 目標價／冠軍策略／劇本報酬／到期／狀態，" +
+     "「更新時間」併入「狀態」欄），且每一列仍是可點進詳細頁的完整" +
+     "連結。SW-12（#342）：淨成本走勢欄隨該功能整個退休一併移除", async ({ page }) => {
   await routeTwoScenarios(page);
   await page.goto("/");
 
   const head = page.locator(".lib-thead");
   await expect(head).toContainText("標的");
   await expect(head).toContainText("方向");
-  await expect(head).toContainText("現價");
-  await expect(head).toContainText("目標價");
+  await expect(head).toContainText("現價 → 目標價");
   await expect(head).toContainText("冠軍策略");
   await expect(head).toContainText("劇本報酬");
-  await expect(head).toContainText("淨成本走勢");
   await expect(head).toContainText("到期");
   await expect(head).toContainText("狀態");
-  await expect(head).toContainText("更新時間");
 
   const xyzRow = page.locator(".compact-card").filter({ hasText: "XYZ" });
-  // OG-04（#323）：`sampleRow` 契約樣本本身帶著一筆真的 narrow history
-  // 點，`libraryRow()` 沒有覆寫 `cost_sparkline`——這一列因此看得到
-  // 真的 sparkline（`CostSparkline.tsx` 的 `<svg role="img">`），不是
-  // 佔位符「—」。細部行為（顏色、斷點、`null` 顯示「—」）由
-  // `CostSparkline.test.tsx`／`sparkline.test.ts` 覆蓋，這裡只證明
-  // 它真的畫在頁面上（AC：「Playwright 至少一條看得到 sparkline」）。
-  await expect(xyzRow.getByRole("img", { name: /淨成本走勢/ })).toBeVisible();
   await expect(xyzRow.getByRole("link", { name: /XYZ/ })).toHaveAttribute(
     "href", "#/s/s1");
 });
 
-test("OG-04（#323）：沒有 narrow history 序列的劇本，淨成本走勢欄" +
-     "誠實顯示「—」，不是硬畫一條假線", async ({ page }) => {
-  await page.route("**/api/scenarios", (route) =>
-    route.fulfill({ json: [libraryRow({ id: "s1", symbol: "XYZ",
-                                        cost_sparkline: null })] }));
-  await page.route("**/api/scenarios/s1", (route) =>
-    route.fulfill({ json: { ...libraryRow({ id: "s1", symbol: "XYZ",
-                                            cost_sparkline: null }),
-                            latest_result: sample } }));
-  await page.goto("/");
-
-  const xyzRow = page.locator(".compact-card").filter({ hasText: "XYZ" });
-  await expect(xyzRow.locator(".lib-cell-sparkline")).toHaveText("—");
-  await expect(xyzRow.getByRole("img", { name: /淨成本走勢/ })).toHaveCount(0);
-});
-
 test("OG-05（#324）：劇本庫頁首 stats strip 顯示唯讀使用量摘要，Normal" +
-     "User 看不到 Super Admin 專屬方塊也不打 ops metrics 請求",
+     "User 看不到 Super Admin 專屬方塊也不打 ops metrics 請求；SW-10" +
+     "（#340，Owner 真機驗收）起「最近活動」／「刷新節流間隔」兩格" +
+     "已整段移除，改為「進行中劇本」／「最佳劇本報酬」兩格",
    async ({ page }) => {
   const opsCalls: string[] = [];
   await routeTwoScenarios(page);
   await page.route("**/api/me/usage-summary", (route) =>
     route.fulfill({ json: {
       active_scenarios: 2, max_active_scenarios: 10,
-      quota_exempt: false, refresh_min_interval_minutes: 30,
-      throttle_exempt: false, last_activity_at: "2026-08-04T09:30:00+00:00",
+      quota_exempt: false, last_activity_at: "2026-08-04T09:30:00+00:00",
+      best_return: 0.855, best_return_symbol: "XYZ",
+      best_return_strategy: "bull-call-spread", best_return_target_month: "2026-09",
     } }));
   await page.route("**/api/ops/metrics", (route) => {
     opsCalls.push(route.request().url());
@@ -1001,8 +958,10 @@ test("OG-05（#324）：劇本庫頁首 stats strip 顯示唯讀使用量摘要�
   const strip = page.locator(".lib-stats-strip");
   await expect(strip.getByText("2 / 10")).toBeVisible();
   await expect(strip.getByText("進行中劇本")).toBeVisible();
-  await expect(strip.getByText("刷新節流間隔")).toBeVisible();
-  await expect(strip.getByText("30 分鐘")).toBeVisible();
+  await expect(strip.getByText("最佳劇本報酬")).toBeVisible();
+  await expect(strip.getByText("85.5%")).toBeVisible();
+  await expect(strip.getByText("最近活動")).toHaveCount(0);
+  await expect(strip.getByText("刷新節流間隔")).toHaveCount(0);
   // Normal User（既有 mock 角色，未特別解鎖）：看不到 Super Admin 兩格，
   // 也真的沒發出 `/api/ops/metrics` 請求（AC 明文）。
   await expect(strip.getByText("Vendor 每日預算")).toHaveCount(0);
@@ -1069,10 +1028,11 @@ test("OG-02（#318）：垃圾桶是獨立全寬頁面，不再是側欄切換�
   // （側欄已退場）；劇本庫清單同時不再顯示。
   await expect(page.getByRole("heading", { name: "垃圾桶" })).toBeVisible();
   await expect(page.getByRole("link", { name: /XYZ/ })).not.toBeVisible();
-  // 頂欄導覽「垃圾桶」項目本身有金色底線指示當前頁。
+  // 頂欄導覽「垃圾桶」項目本身用 aria-current="page" 指示當前頁
+  // （SW-02／#332 起：pill 導覽淺填色靠這個屬性驅動，不是 class）。
   const nav = topbarNav(page);
   await expect(nav.getByRole("link", { name: "垃圾桶", exact: true }))
-    .toHaveClass("on");
+    .toHaveAttribute("aria-current", "page");
 
   await page.getByText("‹ 劇本庫").click();
   await expect(page.getByRole("link", { name: /XYZ/ })).toBeVisible();
@@ -1244,29 +1204,25 @@ test("詳細頁密度：桌面一屏能看到的比例明顯提高（QA-FIX-3／
     .evaluate((el) => el.scrollHeight);
   expect(total / vh).toBeLessThan(2.70);
 
-  // 資訊一項不減少：QA 修正把「劇本摘要／基準候選／進場成本」三張卡
-  // 合成一張，十一項全部都要還在——合併是為了壓高度，不是砍資訊。
-  // OPTION-CHASER-CLOSEOUT-001 新增的「劇本設定」卡排在它前面、也
-  // 共用 `.summary-card` 密度樣式，`.first()` 現在會撈到那張而非這裡
-  // 要驗的基準候選摘要卡——改用 `aria-label` scope 回正確的那一張。
-  const summary = page.locator(".detail-page")
-    .getByRole("region", { name: "劇本摘要" });
-  for (const label of ["策略", "現價", "目標價", "目標年月",
-                      "買腿 Ask", "賣腿 Bid", "淨成本",
-                      "資料時間", "資料來源"]) {
-    await expect(summary.getByText(label, { exact: true })).toBeVisible();
+  // 資訊一項不減少：SW-10（#340，Owner 真機驗收）起「劇本設定」／
+  // 「劇本摘要」兩張卡已整段刪除（逐項比對後跟身分列／進場面板全部
+  // 重複），這裡改成驗證這些欄位確實還在新的位置，不是隨兩張卡一起
+  // 無聲消失。
+  const header = page.locator(".detail-page .toolbar");
+  for (const label of ["現價", "還需", "距目標"]) {
+    await expect(header.getByText(new RegExp(label))).toBeVisible();
   }
-  // 候選身分與名次在標頭那一行，跟著一起搬過來了。`exact` 是必要的：
-  // 候選池過少的警語同一張卡裡也提到「第 1 名」。
-  await expect(summary.getByText("第 1 名", { exact: true })).toBeVisible();
-  await expect(summary.locator(".summary-title")).toBeVisible();
 
-  // 真的排成多欄（同一視覺列的兩格 y 相同、x 不同），不是只是變窄。
-  const stats = summary.locator(".stat");
-  const a = (await stats.nth(0).boundingBox())!;
-  const b = (await stats.nth(1).boundingBox())!;
-  expect(Math.abs(a.y - b.y)).toBeLessThan(2);
-  expect(b.x).toBeGreaterThan(a.x);
+  const entryPanel = page.locator(".detail-page .candidate-panel-body");
+  await expect(entryPanel.getByText("淨成本 / 股")).toBeVisible();
+  await expect(entryPanel.locator("th", { hasText: "Bid" })).toBeVisible();
+  await expect(entryPanel.locator("th", { hasText: "Ask" })).toBeVisible();
+
+  await expect(page.locator(".detail-page .detail-rank-list").getByText("#1"))
+    .toBeVisible();
+
+  await expect(page.getByRole("region", { name: "劇本設定" })).toHaveCount(0);
+  await expect(page.getByRole("region", { name: "劇本摘要" })).toHaveCount(0);
 
   // Heatmap 格子字級：QA 修正明文要求「格子再縮小、降低 padding」，
   // 13px→12px 是那一輪刻意調的值，不是被密度壓縮波及的副作用。12px
@@ -1397,13 +1353,14 @@ async function routeSettings(page: import("@playwright/test").Page) {
     (route) => route.fulfill({ json: [] }));
   await page.route("**/api/ops/metrics", (route) => route.fulfill({ json: {
     chain_fetch_count: [], chain_429_count: [], stale_serve_count: [],
-    cold_miss_count: [], refresh_duration_ms: [], history_read_volume: [],
+    cold_miss_count: [], refresh_duration_ms: [],
     abandoned_owner_cleanup_count: [],
     table_size: {},
     anonymous_owners: { active: 0, abandoned: 0, eligible_for_hard_delete: 0,
                        protected: 0, total: 0 },
     scenarios: { total: 0, average_per_owner: 0 },
     alerts: [],
+    vendor_fuse: { used: 0, budget: null },
   } }));
 }
 
@@ -1650,13 +1607,14 @@ async function routeRoleJourney(page: import("@playwright/test").Page) {
   // 掛的 `OpsStats` 一律打這個端點。
   await page.route("**/api/ops/metrics", (route) => route.fulfill({ json: {
     chain_fetch_count: [], chain_429_count: [], stale_serve_count: [],
-    cold_miss_count: [], refresh_duration_ms: [], history_read_volume: [],
+    cold_miss_count: [], refresh_duration_ms: [],
     abandoned_owner_cleanup_count: [],
     table_size: {},
     anonymous_owners: { active: 0, abandoned: 0, eligible_for_hard_delete: 0,
                        protected: 0, total: 0 },
     scenarios: { total: 0, average_per_owner: 0 },
     alerts: [],
+    vendor_fuse: { used: 0, budget: null },
   } }));
 
   await page.route("**/api/auth/login", async (route) => {
@@ -2064,8 +2022,11 @@ test("桌面版：多 family 並存——分頁列出、預設打開冠軍所屬
   await expect(tabs.getByRole("button", { name: "Vertical Spread" }))
     .toHaveAttribute("aria-pressed", "true");
 
-  const summary = detail.getByRole("region", { name: "劇本摘要" });
-  await expect(summary.getByText("Bull Call Spread")).toBeVisible();
+  // SW-10（#340）起頭條在身分列（`Summary` 摘要卡已整段刪除），顯示的
+  // 是冠軍所屬 family（「Vertical Spread」），不是確切策略子類——那個
+  // 仍在左欄排名表裡（下面切分頁後另外驗證）。
+  const header = detail.locator(".toolbar");
+  await expect(header.getByText(/劇本報酬 · Vertical Spread/)).toBeVisible();
 
   await tabs.getByRole("button", { name: "Call / Put" }).click();
   await expect(tabs.getByRole("button", { name: "Call / Put" }))
@@ -2073,7 +2034,7 @@ test("桌面版：多 family 並存——分頁列出、預設打開冠軍所屬
   await expect(detail.getByText("Long Call").first()).toBeVisible();
 
   // 分頁切走了，頭條依然是冠軍，不隨分頁切換而改變。
-  await expect(summary.getByText("Bull Call Spread")).toBeVisible();
+  await expect(header.getByText(/劇本報酬 · Vertical Spread/)).toBeVisible();
 });
 
 test("OG-06／OG-07（#321／#325）：桌面詳細頁三欄外殼與身分列——左欄 family" +
@@ -2105,12 +2066,14 @@ test("OG-06／OG-07（#321／#325）：桌面詳細頁三欄外殼與身分列�
     .toHaveAttribute("aria-selected", "true");
   await expect(rightPanel.getByText("淨成本 / 股")).toBeVisible();
 
-  // 底部四個 tab（淨成本走勢／候選池診斷／分析報告／原始資料），預設
-  // 停在「淨成本走勢」——圖表掛載就直接看得到，不用先點開。
+  // 底部三個 tab（候選策略／分析報告／原始資料），預設停在「候選
+  // 策略」——SW-12（#342）：原本第一個「淨成本走勢」tab 隨該功能
+  // 整個退休移除，「候選策略」變成預設分頁。
   const bottomTabs = detail.locator(".detail-bottom-tabs");
-  await expect(bottomTabs.getByRole("tab", { name: "淨成本走勢" }))
+  await expect(bottomTabs.getByRole("tab", { name: "候選策略" }))
     .toHaveAttribute("aria-selected", "true");
-  await expect(bottomTabs.locator(".spread-history-panel")).toBeVisible();
+  await expect(bottomTabs.getByRole("heading", { name: "候選策略" }))
+    .toBeVisible();
 
   // 左欄：family tabs（已由上一條測試驗過切換行為，這裡只驗結構齊全）
   // ／到期日 chip／排名表。
@@ -2129,11 +2092,19 @@ test("OG-06／OG-07（#321／#325）：桌面詳細頁三欄外殼與身分列�
   const header = page.locator("header.toolbar");
   await expect(header.getByText("看漲")).toBeVisible();
   await expect(header.getByRole("button", { name: "編輯" })).toBeVisible();
-  // `/code-review` Spec 軸跟進：身分列票面明文要求的現價／目標價（含
-  // 所需漲跌幅）／目標年月／資料時間／資料來源都要在這一列，不能只
-  // 留在下方的劇本摘要卡（真實契約樣本：spot 100、target_price 130）。
+  // `/code-review` Spec 軸跟進（OG-06）＋ SW-05（#337）收成跟手機版
+  // `MobileHero` 同一組四格：身分列票面明文要求的現價／目標價（含所需
+  // 漲跌幅）／目標年月／資料時間／資料來源都要在這一列，不能只留在
+  // 下方的劇本摘要卡（真實契約樣本：spot 100、target_price 130、
+  // days_to_anchor 45），SW-05 起額外要求冠軍報酬大字＋family 副標
+  // （契約樣本冠軍：Bull Call Spread／300.0%／family Vertical Spread）。
+  await expect(header.getByText(/目標 \$130\.00 · 2026-09/)).toBeVisible();
+  await expect(header.getByText("300.0%")).toBeVisible();
+  await expect(header.getByText(/劇本報酬 · Vertical Spread/)).toBeVisible();
   await expect(header.getByText(/現價 \$100\.00/)).toBeVisible();
-  await expect(header.getByText(/目標 \$130\.00（\+30\.0%）/)).toBeVisible();
+  await expect(header.getByText(/還需 \+30\.0%/)).toBeVisible();
+  await expect(header.getByText("距目標 45 天")).toBeVisible();
+  await expect(header.getByText(/test/)).toBeVisible();
 });
 
 /* ---------- OG-08（#326）：右欄 Historical IV 面板版位 ---------- */
@@ -2417,7 +2388,7 @@ test("T17（#234）：桌面版建立持平劇本（目標價＝現價）全程�
   await expect(detail.getByText(/持平/)).toBeVisible();
   await tabs.getByRole("button", { name: "Vertical Spread" }).click();
   await expect(detail.getByText(/持平/)).toBeVisible();
-  await expect(detail.getByRole("heading", { name: "候選池" })).toHaveCount(0);
+  await expect(detail.getByRole("heading", { name: "候選策略" })).toHaveCount(0);
 });
 
 /* ---------- T18（#235，Initial V2）：最終回歸與驗收，桌面 viewport ---------- */
@@ -2452,22 +2423,20 @@ test("T18（#235）紅線 12：桌面版展開一般 Vertical Spread 候選（�
   expect(requestUrls).toEqual([]);
 });
 
-/* ---------- PB-12（#302，Anonymous Public Beta）：首頁 Beta 說明＋
-   全站頁尾＋隱私頁，桌面 viewport ---------- */
+/* ---------- SW-10（#340）／PB-12（#302，Anonymous Public Beta）：首頁
+   常駐頁尾＋隱私頁，桌面 viewport；Beta／cookie 說明已從首頁移入
+   設定→免責聲明 ---------- */
 
-test("桌面版：首頁 Beta 說明常駐在劇本庫頁面，頁尾在整個 desktop-shell" +
-     "之下，隱私頁可達（與手機版 smoke.spec.ts 同一條首次進站流程，" +
-     "OG-02／#318 起側欄退場，改為單一全寬頁面）",
+test("桌面版：首頁不再常駐 Beta 說明，頁尾在整個 desktop-shell 之下，" +
+     "隱私頁與設定→免責聲明皆可達（與手機版 smoke.spec.ts 同一條首次" +
+     "進站流程，OG-02／#318 起側欄退場，改為單一全寬頁面）",
    async ({ page }) => {
   await page.route("**/api/scenarios", (route) =>
     route.fulfill({ json: [] }));
   await page.goto("/");
 
-  const notice = page.locator(".beta-notice");
-  await expect(notice).toBeVisible();
-  await expect(notice).toContainText("Beta");
-  await expect(notice).toContainText("cookie");
-  await expect(notice).toContainText("非投資建議");
+  // SW-10（#340）：首頁不再有這個常駐區塊——完整說法收進設定頁。
+  await expect(page.locator(".beta-notice")).toHaveCount(0);
 
   const footer = page.locator("footer.site-footer");
   await expect(footer).toBeVisible();
@@ -2484,6 +2453,13 @@ test("桌面版：首頁 Beta 說明常駐在劇本庫頁面，頁尾在整個 d
 
   await page.getByRole("link", { name: "設定頁" }).click();
   await expect(page).toHaveURL(/#\/settings$/);
+
+  // 桌面版設定頁是 subnav 分頁，得先點「免責聲明」才看得到內容。
+  await page.getByRole("tab", { name: "免責聲明" }).click();
+  const disclaimer = page.getByRole("region", { name: "免責聲明" });
+  await expect(disclaimer).toContainText("Beta");
+  await expect(disclaimer).toContainText("cookie");
+  await expect(disclaimer).toContainText("非投資建議");
 });
 
 /* ---------- OG-12（#328）：1100px 斷點與中間寬度 ---------- */
@@ -2513,6 +2489,22 @@ test("OG-12（#328）：1100px 斷點兩側切換乾淨——寬度未達 1100px
   await expect(page.locator(".topbar")).toHaveCount(0);
 });
 
+test("SW-02（#332）：桌面頂欄在 1440px 是 68px 高、暖米色頂列，且整頁不" +
+     "橫向捲動", async ({ page }) => {
+  await routeTwoScenarios(page);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto("/");
+  await page.waitForSelector(".topbar");
+
+  const box = await page.locator(".topbar").boundingBox();
+  expect(box?.height).toBe(68);
+
+  const hasHorizontalScroll = await page.evaluate(
+    () => document.documentElement.scrollWidth > document.documentElement.clientWidth,
+  );
+  expect(hasHorizontalScroll).toBe(false);
+});
+
 test("OG-12（#328）：1100–1280px 中間寬度——劇本庫表格與詳細頁三欄外殼" +
      "都不溢出，整頁不橫向捲動", async ({ page }) => {
   await routeTwoScenarios(page, sampleLongCall);
@@ -2538,4 +2530,92 @@ test("OG-12（#328）：1100–1280px 中間寬度——劇本庫表格與詳細
   const detailOverflowX = await page.evaluate(
     () => document.documentElement.scrollWidth > window.innerWidth);
   expect(detailOverflowX).toBe(false);
+});
+
+test("SW-05（#337）：桌面詳細頁三欄外殼在 1440px 無水平捲動，分頁切換可見",
+   async ({ page }) => {
+  await routeTwoScenarios(page);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto("/#/s/s1");
+
+  const shell = page.locator(".detail-shell");
+  await expect(shell.locator(".detail-col-left")).toBeVisible();
+  await expect(shell.locator(".detail-col-center")).toBeVisible();
+  await expect(shell.locator(".detail-col-right")).toBeVisible();
+  const detailOverflowX = await page.evaluate(
+    () => document.documentElement.scrollWidth > window.innerWidth);
+  expect(detailOverflowX).toBe(false);
+
+  // AC「分頁切換可見」：底部四分頁切換後內容真的看得到（不是切了但
+  // 還藏在 hidden 裡）。
+  const bottomTabs = page.locator(".detail-bottom-tabs");
+  await bottomTabs.getByRole("tab", { name: "候選策略" }).click();
+  await expect(bottomTabs.getByRole("tab", { name: "候選策略" }))
+    .toHaveAttribute("aria-selected", "true");
+  // scope 到分頁本體（不是分頁按鈕列）——`CandidatePool.tsx` 的標題
+  // 跟 tab 按鈕本身字面上同一句「候選策略」，避免撞出「找到多個」。
+  await expect(bottomTabs.locator(".detail-bottom-tab-body")
+    .getByText("候選策略")).toBeVisible();
+});
+
+test("SW-07（#336）：桌面設定頁／隱私頁在 1440px 無水平捲動", async ({ page }) => {
+  await routeSettings(page);
+  await page.setViewportSize({ width: 1440, height: 900 });
+
+  await page.goto("/#/settings");
+  await expect(page.getByRole("heading", { name: "設定" })).toBeVisible();
+  const settingsOverflowX = await page.evaluate(
+    () => document.documentElement.scrollWidth > window.innerWidth);
+  expect(settingsOverflowX).toBe(false);
+
+  await page.goto("/#/privacy");
+  await expect(page.getByRole("heading", { name: "隱私與資料政策" })).toBeVisible();
+  const privacyOverflowX = await page.evaluate(
+    () => document.documentElement.scrollWidth > window.innerWidth);
+  expect(privacyOverflowX).toBe(false);
+});
+
+/* ---------- SW-09（#339）：四寬度 responsive 缺口補齊——垃圾桶之前
+   從未在任何寬度測過水平捲動，設定／隱私也只測過 1440px 一個桌面
+   寬度，這裡補齊 1100px 斷點／1100–1280px 中間寬度兩格。 ---------- */
+
+test("SW-09（#339）：桌面垃圾桶在 1100px／1150px／1440px 三個寬度下皆無" +
+     "水平捲動", async ({ page }) => {
+  const trashed = Array.from({ length: 6 }, (_, i) => libraryRow({
+    id: `s${i}`, symbol: `SYM${i}`, target_month: "2028-05",
+    archived_at: "2026-08-05T00:00:00+00:00" }));
+  await page.route("**/api/scenarios", (route) => route.fulfill({ json: [] }));
+  await page.route("**/api/scenarios?include_archived=true", (route) =>
+    route.fulfill({ json: trashed }));
+
+  for (const width of [1100, 1150, 1440]) {
+    await page.setViewportSize({ width, height: 900 });
+    await page.goto("/#/trash");
+    await expect(page.getByRole("heading", { name: "垃圾桶" })).toBeVisible();
+    await expect(page.getByText("SYM0")).toBeVisible();
+    const overflowX = await page.evaluate(
+      () => document.documentElement.scrollWidth > window.innerWidth);
+    expect(overflowX).toBe(false);
+  }
+});
+
+test("SW-09（#339）：桌面設定頁／隱私頁在 1100px 斷點與 1100–1280px 中間" +
+     "寬度也無水平捲動（1440px 已由 SW-07 既有測試覆蓋）", async ({ page }) => {
+  await routeSettings(page);
+
+  for (const width of [1100, 1150]) {
+    await page.setViewportSize({ width, height: 900 });
+
+    await page.goto("/#/settings");
+    await expect(page.getByRole("heading", { name: "設定" })).toBeVisible();
+    const settingsOverflowX = await page.evaluate(
+      () => document.documentElement.scrollWidth > window.innerWidth);
+    expect(settingsOverflowX).toBe(false);
+
+    await page.goto("/#/privacy");
+    await expect(page.getByRole("heading", { name: "隱私與資料政策" })).toBeVisible();
+    const privacyOverflowX = await page.evaluate(
+      () => document.documentElement.scrollWidth > window.innerWidth);
+    expect(privacyOverflowX).toBe(false);
+  }
 });

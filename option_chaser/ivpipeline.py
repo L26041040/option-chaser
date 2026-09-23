@@ -87,11 +87,6 @@ class _IvBackfillRunLike(Protocol):
     note: str | None
 
 
-class _IvObservationLike(Protocol):
-    observed_on: str
-    surface: dict
-
-
 @dataclasses.dataclass(frozen=True)
 class StoragePorts:
     """六個 storage 方法，duck-typed 對照 `api_app.storage.Storage` 的

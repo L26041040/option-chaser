@@ -2,6 +2,7 @@ import { fireEvent, render, screen, waitFor, within } from "@testing-library/rea
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { BANNED_JARGON } from "./bannedCopy";
 import ScenarioDetail from "./ScenarioDetail";
 import sample from "../contracts/analysis_sample.json";
 import sampleRow from "../contracts/scenario_row_sample.json";
@@ -51,7 +52,7 @@ function withTopCandidate(patch: Record<string, unknown>): AnalysisView {
  * 候選收合著一張），所以這裡的斷言一律鎖定主圖那一區，不用全頁查找。
  *
  * MVP V3（#103）起，主圖只剩 Heatmap 本身——候選身分／名次／目標報酬
- * 在頂部摘要卡，見 `summarySection()`。
+ * 在手機頭條 Hero 卡／桌面身分列，見 `heroSection()`。
  */
 function mainChart() {
   return within(screen.getByRole("heading", { name: "劇本主圖" })
@@ -59,23 +60,16 @@ function mainChart() {
 }
 
 /**
- * 頂部摘要卡（QA 修正後三卡合一）：劇本設定（現價／目標／年月／策略／
- * 資料時間／來源）、基準候選身分（履約、到期日、名次、劇本報酬）與
- * 進場成本（買腿 Ask／賣腿 Bid／淨成本）全部在這一張，外加候選池
- * 過少的警語。
- */
-function summarySection() {
-  return within(screen.getByRole("region", { name: "劇本摘要" }));
-}
-
-/**
- * 劇本設定卡（OPTION-CHASER-CLOSEOUT-001）：使用者原本建立劇本時填的
- * 東西——標的、目標價、目標年月、系統依此推導的方向、以及啟用的
- * Strategy Family。跟上面的「劇本摘要」（哪一組候選表現最好）是
- * 兩張不同的卡，各自獨立的 `aria-label`。
- */
-function scenarioContextSection() {
-  return within(screen.getByRole("region", { name: "劇本設定" }));
+ * SW-10（#340，Owner 真機驗收）：`ScenarioContext`（劇本設定卡）／
+ * `Summary`（摘要卡）已整段刪除——逐項比對後跟手機版 `MobileHero`
+ * （這裡）／桌面版 `.toolbar` 身分列（見 OG-06 describe block 自己的
+ * `header()` helper）全部重複，不是兩張獨立卡片各自的內容。這個檔案
+ * 的測試預設在手機分支下執行（沒有 stub `matchMedia` 時 `useIsDesktop()`
+ * 回 `false`），因此這裡固定指向 `MobileHero` 的 `aria-label="劇本
+ * 頭條"` 區塊；桌面分支的等價查詢在各自的 describe block 裡用
+ * `header()`。 */
+function heroSection() {
+  return within(screen.getByRole("region", { name: "劇本頭條" }));
 }
 
 function mockDetail(body: unknown, ok = true, status = 200) {
@@ -89,21 +83,23 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-describe("劇本設定（OPTION-CHASER-CLOSEOUT-001，項目 2）", () => {
+describe("手機頭條 Hero 卡承接原「劇本設定」獨有欄位（OPTION-CHASER-" +
+        "CLOSEOUT-001，項目 2；SW-10／#340 起 `ScenarioContext` 整段刪除）", () => {
   it("顯示標的、目標價、目標年月、方向、啟用的策略類型——使用者原本" +
      "建立劇本時填的東西，不是最佳策略的內容", async () => {
     mockDetail(detail());
     render(<ScenarioDetail id="s1" />);
     await screen.findByText(/劇本主圖/);
 
-    const ctx = scenarioContextSection();
-    expect(ctx.getByText(view.meta.symbol)).toBeInTheDocument();
-    expect(ctx.getByText(`$${view.params.target_price.toFixed(2)}`)).toBeInTheDocument();
-    expect(ctx.getByText(view.params.target_month)).toBeInTheDocument();
+    const hero = heroSection();
+    expect(hero.getByText(view.meta.symbol)).toBeInTheDocument();
+    expect(hero.getByText(new RegExp(
+      `目標 .?\\$?${view.params.target_price.toFixed(2)} · ${view.params.target_month}`)))
+      .toBeInTheDocument();
     // 契約樣本 target=130 高於 spot，方向應為看漲。
-    expect(ctx.getByText("看漲")).toBeInTheDocument();
+    expect(hero.getByText("看漲")).toBeInTheDocument();
     // 契約樣本劇本只啟用 Vertical Spread 這一個 family。
-    expect(ctx.getByText("Vertical Spread")).toBeInTheDocument();
+    expect(hero.getByText(/啟用的策略類型：Vertical Spread/)).toBeInTheDocument();
   });
 
   it("啟用多個 family 時全部列出", async () => {
@@ -111,8 +107,8 @@ describe("劇本設定（OPTION-CHASER-CLOSEOUT-001，項目 2）", () => {
     render(<ScenarioDetail id="s1" />);
     await screen.findByText(/劇本主圖/);
 
-    const ctx = scenarioContextSection();
-    expect(ctx.getByText("Call / Put、Butterfly")).toBeInTheDocument();
+    const hero = heroSection();
+    expect(hero.getByText(/啟用的策略類型：Call \/ Put、Butterfly/)).toBeInTheDocument();
   });
 
   it("舊存 View 沒有 direction 欄位時顯示「—」，不假裝算得出方向", async () => {
@@ -121,74 +117,53 @@ describe("劇本設定（OPTION-CHASER-CLOSEOUT-001，項目 2）", () => {
     render(<ScenarioDetail id="s1" />);
     await screen.findByText(/劇本主圖/);
 
-    const ctx = scenarioContextSection();
-    expect(ctx.getByText("—")).toBeInTheDocument();
+    const hero = heroSection();
+    expect(hero.getByText("—")).toBeInTheDocument();
   });
 });
 
-describe("詳細頁摘要（QA 修正：劇本摘要／基準候選／進場成本三卡合一）", () => {
-  it("顯示現價、目標價與所需漲幅、目標年月、策略", async () => {
-    mockDetail(detail());
-    render(<ScenarioDetail id="s1" />);
-
-    expect(await screen.findByText(`$${view.meta.spot.toFixed(2)}`)).toBeInTheDocument();
-    const summary = summarySection();
-    expect(summary.getByText(`$${view.params.target_price.toFixed(2)}`)).toBeInTheDocument();
-    // 所需漲幅寫在目標價旁的括號裡，所以用子字串比對
-    expect(summary.getByText(`+${(view.meta.target_move * 100).toFixed(1)}%`,
-                            { exact: false })).toBeInTheDocument();
-    expect(summary.getByText(view.params.target_month)).toBeInTheDocument();
-    expect(summary.getByText("Bull Call Spread")).toBeInTheDocument();
-  });
-
-  it("資料時間與資料來源沒有在合併過程中被弄丟", async () => {
+describe("手機頭條 Hero 卡（SW-10／#340 起併吞 `Summary` 摘要卡的識別／" +
+        "報酬欄位，進場成本與確切策略子類則留在既有的下方區塊）", () => {
+  it("顯示現價、還需（所需漲幅）、目標價與目標年月", async () => {
     mockDetail(detail());
     render(<ScenarioDetail id="s1" />);
     await screen.findByText(/劇本主圖/);
 
-    const summary = summarySection();
-    expect(summary.getByText("資料時間")).toBeInTheDocument();
-    expect(summary.getByText("資料來源")).toBeInTheDocument();
-    expect(summary.getByText(view.meta.source)).toBeInTheDocument();
+    // SW-10 起頁面上只剩這一處會顯示現價／目標價（`ScenarioContext`／
+    // `Summary` 已刪除），不必再刻意縮小範圍避免撞出「找到多個」。
+    const hero = heroSection();
+    expect(hero.getByText(`$${view.meta.spot.toFixed(2)}`)).toBeInTheDocument();
+    expect(hero.getByText(new RegExp(
+      `目標 .?\\$?${view.params.target_price.toFixed(2)} · ${view.params.target_month}`)))
+      .toBeInTheDocument();
+    expect(hero.getByText(`+${(view.meta.target_move * 100).toFixed(1)}%`,
+                          { exact: false })).toBeInTheDocument();
   });
 
-  it("基準候選身分同卡呈現：B/S 履約、名次、到期日與目標報酬", async () => {
+  it("候選身分＝跨 family 冠軍：劇本報酬與所屬 family（確切策略子類仍在" +
+     "下方到期日排名表，見「候選窄列」既有測試）", async () => {
     mockDetail(detail());
     render(<ScenarioDetail id="s1" />);
+    await screen.findByText(/劇本主圖/);
 
     const top = baselineTopCandidate(view)!;
-    const buy = top.legs.find((leg) => leg.side === "buy")!;
-    const sell = top.legs.find((leg) => leg.side === "sell")!;
-    await screen.findByText(/劇本主圖/);
-    const summary = summarySection();
-    expect(summary.getByText(`買 ${buy.strike} / 賣 ${sell.strike}`))
+    const hero = heroSection();
+    expect(hero.getByText(`${(top.baseline_return * 100).toFixed(1)}%`))
       .toBeInTheDocument();
-    expect(summary.getByText("第 1 名")).toBeInTheDocument();
-    expect(summary.getByText(view.baseline_expiry!)).toBeInTheDocument();
-    // 這組候選的劇本報酬——引擎算好的那個數字，口徑與合併前相同
-    expect(summary.getByText(`${(top.baseline_return * 100).toFixed(1)}%`))
-      .toBeInTheDocument();
+    expect(hero.getByText(/劇本報酬 · Vertical Spread/)).toBeInTheDocument();
   });
 
-  it("進場成本三項同卡呈現：買腿 Ask／賣腿 Bid／淨成本，口徑與到期日結構清單相同",
-     async () => {
+  it("資料時間與資料來源沒有在刪除摘要卡的過程中被弄丟", async () => {
     mockDetail(detail());
     render(<ScenarioDetail id="s1" />);
-
-    const top = baselineTopCandidate(view)!;
-    const buy = top.legs.find((leg) => leg.side === "buy")!;
-    const sell = top.legs.find((leg) => leg.side === "sell")!;
     await screen.findByText(/劇本主圖/);
-    const summary = summarySection();
-    expect(summary.getByText("買腿 Ask")).toBeInTheDocument();
-    expect(summary.getByText("賣腿 Bid")).toBeInTheDocument();
-    expect(summary.getByText("淨成本")).toBeInTheDocument();
-    expect(summary.getByText(`$${buy.ask.toFixed(2)}`)).toBeInTheDocument();
-    expect(summary.getByText(`$${sell.bid.toFixed(2)}`)).toBeInTheDocument();
-    expect(summary.getByText(`$${top.natural_cost.toFixed(2)}`)).toBeInTheDocument();
+
+    const hero = heroSection();
+    expect(hero.getByText(view.meta.source)).toBeInTheDocument();
   });
 
-  it("最高／最低同卡呈現——它們是 Heatmap 價格軸上下限的來源（QA 修正）",
+  it("最高／最低（原 `Summary` 唯一的獨有欄位）條件式顯示——它們是" +
+     "Heatmap 價格軸上下限的來源（QA 修正既有裁示，沿用到新位置）",
      async () => {
     mockDetail(detail({ latest_result: {
       ...view,
@@ -197,30 +172,32 @@ describe("詳細頁摘要（QA 修正：劇本摘要／基準候選／進場成�
     render(<ScenarioDetail id="s1" />);
     await screen.findByText(/劇本主圖/);
 
-    const summary = summarySection();
-    expect(summary.getByText("最高")).toBeInTheDocument();
-    expect(summary.getByText("最低")).toBeInTheDocument();
-    expect(summary.getByText("$150.00")).toBeInTheDocument();
-    expect(summary.getByText("$90.00")).toBeInTheDocument();
+    const hero = heroSection();
+    expect(hero.getByText("最高")).toBeInTheDocument();
+    expect(hero.getByText("最低")).toBeInTheDocument();
+    expect(hero.getByText("$150.00")).toBeInTheDocument();
+    expect(hero.getByText("$90.00")).toBeInTheDocument();
   });
 
-  it("沒填最高／最低時那兩格顯示破折號，不是整格消失", async () => {
+  it("沒填最高／最低時那兩格整個不畫——跟劇本庫卡片 `.compact-range`" +
+     "同一個既有慣例（沒填就不畫，不是顯示假的破折號）", async () => {
     mockDetail(detail());
     render(<ScenarioDetail id="s1" />);
     await screen.findByText(/劇本主圖/);
 
-    const summary = summarySection();
-    const stat = (label: string) =>
-      summary.getByText(label).closest(".stat")!;
-    expect(stat("最高").textContent).toContain("—");
-    expect(stat("最低").textContent).toContain("—");
+    const hero = heroSection();
+    expect(hero.queryByText("最高")).not.toBeInTheDocument();
+    expect(hero.queryByText("最低")).not.toBeInTheDocument();
   });
 
-  it("原本的三張獨立卡片不再存在——真的合併了，不是把舊卡藏起來", async () => {
+  it("原本的『劇本設定』『劇本摘要』獨立卡片不再存在——真的刪除了，" +
+     "不是把舊卡藏起來", async () => {
     mockDetail(detail());
     render(<ScenarioDetail id="s1" />);
     await screen.findByText(/劇本主圖/);
 
+    expect(screen.queryByRole("region", { name: "劇本設定" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "劇本摘要" })).not.toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "基準候選" })).not.toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "進場成本" })).not.toBeInTheDocument();
   });
@@ -280,7 +257,7 @@ describe("OG-10（#327）：手機版三價位階梯／進場面板（artifact�
     await screen.findByText(/劇本主圖/);
 
     const entryPanel = within(
-      screen.getByRole("heading", { name: "進場 · 最差成交口徑" }).closest("section")!);
+      screen.getByRole("heading", { name: "進場 · 以最差成交價計算" }).closest("section")!);
     const champion = baselineTopCandidate(view)!;
     for (const leg of champion.legs) {
       expect(entryPanel.getByText(new RegExp(`^(買|賣).*${leg.strike}$`)))
@@ -296,7 +273,7 @@ describe("OG-10（#327）：手機版三價位階梯／進場面板（artifact�
     await screen.findByText(/劇本主圖/);
 
     const entryPanel = within(
-      screen.getByRole("heading", { name: "進場 · 最差成交口徑" }).closest("section")!);
+      screen.getByRole("heading", { name: "進場 · 以最差成交價計算" }).closest("section")!);
     expect(entryPanel.getByText("Max Loss")).toBeInTheDocument();
     expect(entryPanel.getByText("Net Delta")).toBeInTheDocument();
   });
@@ -311,7 +288,7 @@ describe("OG-10（#327）：手機版三價位階梯／進場面板（artifact�
     render(<ScenarioDetail id="s1" />);
     await screen.findByText("無合格候選");
 
-    expect(screen.queryByText("進場 · 最差成交口徑")).not.toBeInTheDocument();
+    expect(screen.queryByText("進場 · 以最差成交價計算")).not.toBeInTheDocument();
   });
 });
 
@@ -347,38 +324,33 @@ describe("區塊順序（spec #102 決策 A／#103）", () => {
       .map((card) => card.querySelector(".section-title")?.textContent ?? null)
       .filter((t): t is string => t !== null);
 
-    // OG-10（#327）：Family tabs／到期日／排名表（`FamilyTabs` 內部，
-    // 含既有候選池／分析報告）排在「劇本主圖」常駐 Heatmap 之前，
-    // 新增的「進場」面板緊接在主圖之後，Historical IV（此測試未解鎖，
-    // 不輸出節點）與底部兩張收合卡排在最後——這是本票明文要求的順序
-    // 變動，不是既有測試被弱化，舊順序（主圖在最前）本身就是這次要
-    // 修正的地方。
+    // SW-10（#340，Owner 真機驗收）：「劇本主圖」常駐 Heatmap 排回
+    // Family tabs／到期日／排名表（`FamilyTabs` 內部，含既有候選池／
+    // 分析報告）之前——OG-10（#327）當時的順序依據是已退休的
+    // Obsidian Gold artifact（見 issue #327 本文與 `ScenarioDetail.tsx`
+    // 檔頭說明），不是現在的 source of truth；Owner 真機驗收明文指出
+    // 「第二區原本應該有最佳劇本熱力圖，目前不見」，這裡把它排回來。
+    // 「進場」面板緊接在排名表之後，Historical IV（此測試未解鎖，不
+    // 輸出節點）與底部收合卡排在最後不變。SW-12（#342）：原本排在
+    // 「原始資料」之前的「Spread 淨成本走勢」隨該功能整個退休移除。
     expect(titles).toEqual([
-      "到期日", "候選池", "📄 分析報告",
-      "劇本主圖", "進場 · 最差成交口徑",
-      "Spread 淨成本走勢", "原始資料（當次快照）",
+      // SW-06（#335）文案去術語：「候選池」→「候選策略」、「最差成交
+      // 口徑」→「以最差成交價計算」，語意不變，僅順序本身鎖定的既有
+      // 斷言跟著新文案更新。
+      "劇本主圖", "到期日", "候選策略", "📄 分析報告",
+      "進場 · 以最差成交價計算",
+      "原始資料（當次快照）",
     ]);
 
     // IV History 插槽本身不輸出任何 DOM 節點——不是一張空卡片，直接就
-    // 不存在於 DOM 裡。卡片總數固定為上面 7 張加上摘要卡與劇本設定卡
-    // （OPTION-CHASER-CLOSEOUT-001，兩張都無 section-title，改用
-    // aria-label），插槽若渲染出任何東西（哪怕只是空卡），這裡就會
-    // 多一張。
-    expect(container.querySelectorAll(".card")).toHaveLength(9);
+    // 不存在於 DOM 裡。卡片總數固定為上面 6 張加上 SW-06（#335）新增的
+    // Hero 白卡（無 section-title，改用 aria-label）——SW-10（#340，
+    // Owner 真機驗收）起原本另外兩張無 title 的卡（`ScenarioContext`
+    // 劇本設定卡／`Summary` 摘要卡）已整段刪除；SW-12（#342）起
+    // 「Spread 淨成本走勢」卡也整個退休移除，總數因此從 8 降到 7，
+    // 插槽若渲染出任何東西（哪怕只是空卡），這裡就會多一張。
+    expect(container.querySelectorAll(".card")).toHaveLength(7);
     expect(screen.queryByText(/Historical IV|IV Position/)).not.toBeInTheDocument();
-  });
-
-  it("劇本設定卡排在劇本摘要卡之前（OPTION-CHASER-CLOSEOUT-001）", async () => {
-    mockDetail(detail());
-    render(<ScenarioDetail id="s1" />);
-    await screen.findByText(/劇本主圖/);
-
-    const contextCard = screen.getByRole("region", { name: "劇本設定" });
-    const summaryCard = screen.getByRole("region", { name: "劇本摘要" });
-    expect(
-      contextCard.compareDocumentPosition(summaryCard)
-        & Node.DOCUMENT_POSITION_FOLLOWING,
-    ).toBeTruthy();
   });
 });
 
@@ -598,10 +570,11 @@ describe("詳細頁刷新入口（#70）", () => {
 });
 
 describe("進階區隨新分析失效，不混用新舊 cache（#69）", () => {
-  const HISTORY = { entries: [
-    { analyzed_at: "2026-08-01T00:00:00+00:00", spot: 100.0, cost: 5.0,
-     baseline_return: 0.3, rank_in_expiry: 1 },
-  ] };
+  // SW-12（#342）：這個 describe 原本同時覆蓋「Spread 淨成本走勢」
+  // 與「原始資料」兩個展開才抓取的區塊——前者隨該功能整個退休移除，
+  // `HISTORY` fixture／`historyCalls` 追蹤／`/history` 路由分支一併
+  // 拿掉，只留「原始資料」半邊既有覆蓋。AC2（歷史走勢跟著候選換）
+  // 專屬於已刪除的功能，整條測試一併移除，不是弱化斷言範圍。
   const RAW = {
     meta: { symbol: "XYZ", spot: 100.0, fetched_at: "2026-08-04T09:00:00+00:00",
            source: "cboe", contract_count: 1 },
@@ -614,13 +587,8 @@ describe("進階區隨新分析失效，不混用新舊 cache（#69）", () => {
   function mockDetailSequence(first: unknown, second: unknown) {
     let scenarioCalls = 0;
     let resolveSecond: (() => void) | null = null;
-    const historyCalls: string[] = [];
     const rawDataCalls: string[] = [];
     const spy = vi.fn(async (url: string) => {
-      if (url.startsWith("/api/scenarios/s1/history")) {
-        historyCalls.push(url);
-        return { ok: true, status: 200, json: async () => HISTORY };
-      }
       if (url.startsWith("/api/scenarios/s1/raw-data")) {
         rawDataCalls.push(url);
         return { ok: true, status: 200, json: async () => RAW };
@@ -638,10 +606,10 @@ describe("進階區隨新分析失效，不混用新舊 cache（#69）", () => {
       throw new Error(`測試沒有為 ${url} 準備回應`);
     });
     vi.stubGlobal("fetch", spy);
-    return { historyCalls, rawDataCalls, resolveSecond: () => resolveSecond!() };
+    return { rawDataCalls, resolveSecond: () => resolveSecond!() };
   }
 
-  it("刷新後，先前展開過的兩區都收合，不再顯示上一輪的內容", async () => {
+  it("刷新後，先前展開過的原始資料區收合，不再顯示上一輪的內容", async () => {
     const first = detail({ latest_analyzed_at: "2026-08-04T09:00:00+00:00" });
     const second = detail({ latest_analyzed_at: "2026-08-04T10:00:00+00:00" });
     const { resolveSecond } = mockDetailSequence(first, second);
@@ -649,8 +617,6 @@ describe("進階區隨新分析失效，不混用新舊 cache（#69）", () => {
     const { rerender } = render(<ScenarioDetail id="s1" refreshedAt={null} />);
     await screen.findByText(/劇本主圖/);
 
-    await userEvent.click(screen.getByText("Spread 淨成本走勢"));
-    await screen.findByRole("img");
     await userEvent.click(screen.getByText("原始資料（當次快照）"));
     await screen.findByText("XYZ261016C00110000");
 
@@ -658,42 +624,36 @@ describe("進階區隨新分析失效，不混用新舊 cache（#69）", () => {
 
     // 新一輪還沒回來之前，既有規則「刷新造成的重取不清空」仍成立——
     // 先前展開的內容不該憑空消失。
-    expect(screen.getByRole("img")).toBeInTheDocument();
     expect(screen.getByText("XYZ261016C00110000")).toBeInTheDocument();
 
     resolveSecond();
 
-    // 新一輪真的落地之後，兩區才收合、內部狀態一起重置。
-    await waitFor(() => expect(screen.queryByRole("img")).not.toBeInTheDocument());
-    expect(screen.queryByText("XYZ261016C00110000")).not.toBeInTheDocument();
+    // 新一輪真的落地之後才收合、內部狀態重置。
+    await waitFor(() =>
+      expect(screen.queryByText("XYZ261016C00110000")).not.toBeInTheDocument());
   });
 
   it("收合後再展開，是真的重新取得，不是沿用上一輪的舊資料", async () => {
     const first = detail({ latest_analyzed_at: "2026-08-04T09:00:00+00:00" });
     const second = detail({ latest_analyzed_at: "2026-08-04T10:00:00+00:00" });
-    const { historyCalls, rawDataCalls, resolveSecond } =
+    const { rawDataCalls, resolveSecond } =
       mockDetailSequence(first, second);
 
     const { rerender } = render(<ScenarioDetail id="s1" refreshedAt={null} />);
     await screen.findByText(/劇本主圖/);
-    await userEvent.click(screen.getByText("Spread 淨成本走勢"));
-    await screen.findByRole("img");
     await userEvent.click(screen.getByText("原始資料（當次快照）"));
     await screen.findByText("XYZ261016C00110000");
-    expect(historyCalls).toHaveLength(1);
     expect(rawDataCalls).toHaveLength(1);
 
     rerender(<ScenarioDetail id="s1" refreshedAt="2026-08-04T10:00:00+00:00" />);
     resolveSecond();
-    await waitFor(() => expect(screen.queryByRole("img")).not.toBeInTheDocument());
+    await waitFor(() =>
+      expect(screen.queryByText("XYZ261016C00110000")).not.toBeInTheDocument());
 
-    await userEvent.click(screen.getByText("Spread 淨成本走勢"));
-    await screen.findByRole("img");
     await userEvent.click(screen.getByText("原始資料（當次快照）"));
     await screen.findByText("XYZ261016C00110000");
 
-    // 各自又多打了一次——不是沿用元件裡「已經抓過」的舊旗標。
-    expect(historyCalls).toHaveLength(2);
+    // 又多打了一次——不是沿用元件裡「已經抓過」的舊旗標。
     expect(rawDataCalls).toHaveLength(2);
   });
 
@@ -718,54 +678,33 @@ describe("進階區隨新分析失效，不混用新舊 cache（#69）", () => {
 
     expect(after).not.toBe(before);
   });
-
-  it("主圖候選因新分析換掉時，歷史走勢跟著換成新候選的序列（AC2）", async () => {
-    const originalKey = baselineTopCandidate(view)!.candidate_key;
-    const first = detail({ latest_analyzed_at: "2026-08-04T09:00:00+00:00" });
-    const second = detail({
-      latest_analyzed_at: "2026-08-04T10:00:00+00:00",
-      latest_result: withTopCandidate({ candidate_key: "different-candidate" }),
-    });
-    const { historyCalls, resolveSecond } = mockDetailSequence(first, second);
-
-    const { rerender } = render(<ScenarioDetail id="s1" refreshedAt={null} />);
-    await screen.findByText(/劇本主圖/);
-    await userEvent.click(screen.getByText("Spread 淨成本走勢"));
-    await screen.findByRole("img");
-    expect(historyCalls[0]).toContain(
-      `candidate_key=${encodeURIComponent(originalKey)}`);
-
-    rerender(<ScenarioDetail id="s1" refreshedAt="2026-08-04T10:00:00+00:00" />);
-    resolveSecond();
-    await waitFor(() => expect(screen.queryByRole("img")).not.toBeInTheDocument());
-
-    await userEvent.click(screen.getByText("Spread 淨成本走勢"));
-    await screen.findByRole("img");
-
-    // 換一輪之後再展開，帶的是新候選自己的身份鍵，不是沿用第一輪那個。
-    expect(historyCalls).toHaveLength(2);
-    expect(historyCalls[1]).toContain(
-      `candidate_key=${encodeURIComponent("different-candidate")}`);
-  });
 });
 
-describe("基準候選的候選池警語（V6／#54 檢視回饋，隨 QA 修正搬進摘要卡）", () => {
-  it("警語跟著基準候選走，不會因為把清單切到別期就消失", async () => {
-    // 基準候選固定是 baseline 期第 1 名。警語只掛在下面那份會切換的
-    // 清單上的話，使用者一切到別期，頭條數字就沒人幫它說「這只是整池
-    // 僅存者」。
+describe("基準候選的候選池警語（V6／#54 檢視回饋；SW-10／#340 起原本" +
+        "搬進去的摘要卡整段刪除，改由 `ExpiryStructure` 自己那句同樣" +
+        "的提示覆蓋——baseline 到期日本來就是預設選中的 chip，回到它" +
+        "身上警語自然還在，不需要另外維護一份固定黏著 baseline 的副本）",
+        () => {
+  function expirySection() {
+    return within(screen.getByRole("heading", { name: "到期日" })
+      .closest("section") as HTMLElement);
+  }
+
+  it("baseline 到期日顯示候選池過少的警語，切走再切回來還在", async () => {
     mockDetail(detail());
     render(<ScenarioDetail id="s1" />);
     await screen.findByText(/劇本主圖/);
 
-    expect(summarySection().getByText(/只有 1 組候選/)).toBeInTheDocument();
+    expect(expirySection().getByText(/僅 1 組候選/)).toBeInTheDocument();
 
     const other = view.results[0].expiry_top10!
       .find((g) => g.expiry !== view.baseline_expiry)!;
     await userEvent.click(
       screen.getByRole("button", { name: new RegExp(other.expiry) }));
+    await userEvent.click(
+      screen.getByRole("button", { name: new RegExp(view.baseline_expiry!) }));
 
-    expect(summarySection().getByText(/只有 1 組候選/)).toBeInTheDocument();
+    expect(expirySection().getByText(/僅 1 組候選/)).toBeInTheDocument();
   });
 });
 
@@ -857,10 +796,18 @@ describe("多 family 並存（T11／#229）", () => {
     render(<ScenarioDetail id="s1" />);
     await screen.findByText(/劇本主圖/);
 
-    const summary = summarySection();
-    expect(summary.getByText("Bull Call Spread")).toBeInTheDocument();
-    expect(summary.getByText("90.0%")).toBeInTheDocument();
+    // SW-10（#340）起頭條 Hero 卡顯示的是冠軍所屬的 family（跟已刪除的
+    // `Summary` 摘要卡不同——那張卡顯示的是確切策略子類「Bull Call
+    // Spread」，這裡改用 family 層級的「Vertical Spread」，確切子類仍
+    // 在下面到期日排名表的 #1 名那一列，見下一條斷言）。
+    const hero = heroSection();
+    expect(hero.getByText(/劇本報酬 · Vertical Spread/)).toBeInTheDocument();
+    expect(hero.getByText("90.0%")).toBeInTheDocument();
     expect(screen.queryByText("無合格候選")).not.toBeInTheDocument();
+
+    const expiryStructure = screen.getByRole("heading", { name: "到期日" })
+      .closest("section") as HTMLElement;
+    expect(within(expiryStructure).getByText("Bull Call Spread")).toBeInTheDocument();
   });
 
   it("分頁列出兩個啟用的 family，預設打開冠軍所屬的 Vertical Spread", async () => {
@@ -890,9 +837,11 @@ describe("多 family 並存（T11／#229）", () => {
     const expiryStructure = screen.getByRole("heading", { name: "到期日" })
       .closest("section") as HTMLElement;
     expect(within(expiryStructure).getByText("買 100")).toBeInTheDocument();
-    // 頭條（摘要卡）依然是 Bull Call Spread 冠軍，不隨分頁切換而改變
-    expect(summarySection().getByText("Bull Call Spread")).toBeInTheDocument();
-    expect(summarySection().getByText("90.0%")).toBeInTheDocument();
+    // 頭條（Hero 卡）依然是 Bull Call Spread 所屬 family 的冠軍報酬，
+    // 不隨分頁切換而改變。
+    const hero = heroSection();
+    expect(hero.getByText(/劇本報酬 · Vertical Spread/)).toBeInTheDocument();
+    expect(hero.getByText("90.0%")).toBeInTheDocument();
   });
 });
 
@@ -909,10 +858,10 @@ describe("OG-06（#321）：桌面詳細頁身分列——方向 tag／編輯入
     return detail({ strategies: ["single-leg", "vertical-spread"], latest_result: v });
   }
 
-  /** 身分列本身——桌面新增的方向 tag／編輯鈕只加在這裡，跟
-   *  `ScenarioContext`（劇本設定卡）自己那份「方向」`Stat` 是兩個獨立
-   *  位置，會顯示同一個字（"看漲"），查詢一律縮小到這個容器，避免
-   *  跟劇本設定卡那份撞出「找到多個」的假失敗。 */
+  /** 身分列本身——桌面新增的方向 tag／編輯鈕只加在這裡。SW-10（#340）
+   *  起唯一顯示「看漲」這個字的地方已經只剩這裡（`ScenarioContext`／
+   *  `Summary` 已整段刪除），仍縮小到這個容器查詢，純粹是保守，不是
+   *  真的還有第二個位置會撞名。 */
   function header(container: HTMLElement) {
     return container.querySelector(".toolbar") as HTMLElement;
   }
@@ -927,16 +876,22 @@ describe("OG-06（#321）：桌面詳細頁身分列——方向 tag／編輯入
     await screen.findByText(/劇本主圖/);
 
     expect(within(header(container)).getByText("看漲")).toBeInTheDocument();
-    // `/code-review` Spec 軸跟進：身分列票面明文要求的五項——現價／
-    // 目標價（含所需漲跌幅）／目標年月／資料時間／資料來源——都要在
-    // 這一列，不能只留在下方的 `Summary` 卡。
+    // `/code-review` Spec 軸跟進（OG-06）＋ SW-05（#337）收成跟手機版
+    // `MobileHero` 同一組四格：身分列票面明文要求的現價／目標價（含所需
+    // 漲跌幅）／目標年月／資料時間／資料來源都要在這一列，不能只留在
+    // 下方的 `Summary` 卡；SW-05 起額外要求冠軍報酬大字＋family 副標。
     // 假體預設值（`family.fixtures.ts::view()`）：spot 100／target_price
-    // 110／target_move 0／target_month "2026-09"／source "cboe"。
-    expect(within(header(container)).getByText(/現價 \$100\.00/)).toBeInTheDocument();
-    expect(within(header(container)).getByText(/目標 \$110\.00（\+0\.0%）/))
+    // 110／target_move 0／target_month "2026-09"／source "cboe"／
+    // days_to_anchor 653（`scenario_row_sample.json`）。
+    expect(within(header(container)).getByText(/目標 \$110\.00 · 2026-09/))
       .toBeInTheDocument();
-    expect(within(header(container)).getByText("2026-09")).toBeInTheDocument();
-    expect(within(header(container)).getByText("cboe")).toBeInTheDocument();
+    expect(within(header(container)).getByText("90.0%")).toBeInTheDocument();
+    expect(within(header(container)).getByText(/劇本報酬 · Vertical Spread/))
+      .toBeInTheDocument();
+    expect(within(header(container)).getByText(/現價 \$100\.00/)).toBeInTheDocument();
+    expect(within(header(container)).getByText(/還需 \+0\.0%/)).toBeInTheDocument();
+    expect(within(header(container)).getByText("距目標 653 天")).toBeInTheDocument();
+    expect(within(header(container)).getByText(/cboe/)).toBeInTheDocument();
 
     await userEvent.click(within(header(container))
       .getByRole("button", { name: "編輯" }));
@@ -945,8 +900,9 @@ describe("OG-06（#321）：桌面詳細頁身分列——方向 tag／編輯入
     const tabs = screen.getByRole("group", { name: "策略家族" });
     await userEvent.click(within(tabs).getByRole("button", { name: "Call / Put" }));
 
-    expect(summarySection().getByText("Bull Call Spread")).toBeInTheDocument();
-    expect(summarySection().getByText("90.0%")).toBeInTheDocument();
+    expect(within(header(container)).getByText(/劇本報酬 · Vertical Spread/))
+      .toBeInTheDocument();
+    expect(within(header(container)).getByText("90.0%")).toBeInTheDocument();
   });
 
   it("桌面：Logo.dev 對假造代號回 404 後，身分列的 <img> 整個從 DOM 消失" +
@@ -964,14 +920,85 @@ describe("OG-06（#321）：桌面詳細頁身分列——方向 tag／編輯入
   });
 
   it("手機版（預設 matchMedia）：身分列不出現方向 tag 與編輯入口——這兩項" +
-     "是桌面限定的加法，不是手機版本來就有的東西（手機版零改動）", async () => {
+     "是桌面限定的加法，不是手機版本來就有的東西（手機版零改動）。" +
+     "SW-06（#335）起手機版連 `.toolbar` 本身都不存在——換成獨立的" +
+     "60px `.detail-bar`，兩者結構上互斥，不是同一個 header 藏了不同" +
+     "內容", async () => {
     const onEdit = vi.fn();
     mockDetail(desktopMultiFamilyDetail());
     const { container } = render(<ScenarioDetail id="s1" onEdit={onEdit} />);
     await screen.findByText(/劇本主圖/);
 
-    expect(within(header(container)).queryByText("看漲")).not.toBeInTheDocument();
-    expect(within(header(container))
-      .queryByRole("button", { name: "編輯" })).not.toBeInTheDocument();
+    expect(container.querySelector(".toolbar")).not.toBeInTheDocument();
+    const mobileBar = within(container.querySelector(".detail-bar") as HTMLElement);
+    expect(mobileBar.queryByText("看漲")).not.toBeInTheDocument();
+    expect(mobileBar.queryByRole("button", { name: "編輯" })).not.toBeInTheDocument();
+  });
+});
+
+describe("SW-06（#335，Seed Warm）：手機詳細頁 60px header／Hero 白卡", () => {
+  it("60px header：回劇本庫、代號、刷新——桌面 `.toolbar` 完全不掛載", async () => {
+    mockDetail(detail());
+    const { container } = render(<ScenarioDetail id="s1" />);
+    await screen.findByText(/劇本主圖/);
+
+    const bar = container.querySelector(".detail-bar") as HTMLElement;
+    expect(bar).toBeInTheDocument();
+    expect(container.querySelector(".toolbar")).not.toBeInTheDocument();
+    expect(within(bar).getByRole("link", { name: /劇本庫/ }))
+      .toHaveAttribute("href", "#/");
+    expect(within(bar).getByText("XYZ")).toBeInTheDocument();
+    expect(within(bar).getByRole("button", { name: "重新整理" })).toBeInTheDocument();
+  });
+
+  it("Hero 白卡：logo＋代號＋方向 pill、冠軍報酬與 family 副標、" +
+     "目標價＋目標月、四格關鍵指標（現價／還需／距目標／來源＋時間）", async () => {
+    mockDetail(detail());
+    render(<ScenarioDetail id="s1" />);
+    await screen.findByText(/劇本主圖/);
+
+    const hero = within(screen.getByRole("region", { name: "劇本頭條" }));
+    const top = baselineTopCandidate(view)!;
+    expect(hero.getByText(view.meta.symbol)).toBeInTheDocument();
+    expect(hero.getByText("看漲")).toBeInTheDocument();
+    expect(hero.getByText(`${(top.baseline_return * 100).toFixed(1)}%`))
+      .toBeInTheDocument();
+    expect(hero.getByText(/劇本報酬 · Vertical Spread/)).toBeInTheDocument();
+    expect(hero.getByText(new RegExp(
+      `目標 \\$${view.params.target_price.toFixed(2)} · ${view.params.target_month}`,
+    ))).toBeInTheDocument();
+    expect(hero.getByText("現價")).toBeInTheDocument();
+    expect(hero.getByText("還需")).toBeInTheDocument();
+    expect(hero.getByText("距目標")).toBeInTheDocument();
+    // 契約樣本 `scenario_row_sample.json`：days_to_anchor = 653
+    expect(hero.getByText("653 天")).toBeInTheDocument();
+    expect(hero.getByText("來源")).toBeInTheDocument();
+    expect(hero.getByText(view.meta.source)).toBeInTheDocument();
+  });
+
+  it("沒有合格候選（冠軍為 null）時，Hero 白卡不輸出任何節點", async () => {
+    const empty: AnalysisView = {
+      ...view,
+      results: view.results.map((r) => ({ ...r, status: "empty" as const,
+                                          expiry_top10: [], expiry_counts: [] })),
+    };
+    mockDetail(detail({ latest_result: empty }));
+    render(<ScenarioDetail id="s1" />);
+    await screen.findByText("無合格候選");
+
+    expect(screen.queryByRole("region", { name: "劇本頭條" })).not.toBeInTheDocument();
+  });
+
+  it("文案去術語：手機詳細頁全頁文字不含開發者詞彙" +
+     "（SW-09／#339 收斂成共用清單 BANNED_JARGON，取代原本各票自帶的" +
+     "小清單）", async () => {
+    mockDetail(detail({ strategies: ["single-leg", "vertical-spread", "butterfly"] }));
+    const { container } = render(<ScenarioDetail id="s1" />);
+    await screen.findByText(/劇本主圖/);
+
+    const text = container.textContent ?? "";
+    for (const banned of BANNED_JARGON) {
+      expect(text).not.toContain(banned);
+    }
   });
 });

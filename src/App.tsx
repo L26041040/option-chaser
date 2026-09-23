@@ -43,16 +43,14 @@ import {
   useState,
 } from "react";
 
-import BetaNotice from "./BetaNotice";
 import BottomNav from "./BottomNav";
 import CompactScenarioList from "./CompactScenarioList";
-import CreateEntry from "./CreateEntry";
 import CreateForm, {
   type DraftScenario,
   type EditTarget,
 } from "./CreateForm";
-import Dashboard from "./Dashboard";
 import Footer from "./Footer";
+import MobileStatsStrip from "./MobileStatsStrip";
 import MobileTopBar from "./MobileTopBar";
 import PrivacyPage from "./PrivacyPage";
 import ScenarioDetail from "./ScenarioDetail";
@@ -62,6 +60,8 @@ import TopBar from "./TopBar";
 import TrashView from "./TrashView";
 import { useIsDesktop } from "./useIsDesktop";
 import { CloseIcon } from "./icons";
+import { invalidateScenarioCache } from "./fetchCache";
+import { invalidateUsageSummary } from "./usageSummaryStore";
 import {
   archiveScenario,
   createScenario,
@@ -80,7 +80,7 @@ import {
   isTrashHash,
   scenarioIdFromHash,
 } from "./route";
-import { formatRunSummary, scenarioRowDomId } from "./scenarios";
+import { formatAnalyzedAt, formatRunSummary, scenarioRowDomId } from "./scenarios";
 
 /**
  * 桌面／手機兩套 responsive layout 的斷點判斷（#72 引入，OG-02／#318
@@ -186,6 +186,9 @@ export default function App() {
         const { [id]: _gone, ...rest } = prev;
         return rest;
       });
+      // SW-13（PR #344 P2）：新結果可能改變「最佳報酬」。只在成功分支
+      // 失效——失敗的刷新沒有改動後端，摘要本來就還是對的。
+      invalidateUsageSummary();
       return true;
     } catch (e) {
       setFailures((prev) => ({ ...prev, [id]: toFailure(e) }));
@@ -286,6 +289,11 @@ export default function App() {
       }
     } finally {
       setRunSummary(formatRunSummary(succeeded, failed));
+      // SW-13（PR #344 P2）：一整輪結束才失效一次（不是每個結果各一次），
+      // 而且至少有一個劇本真的拿到新結果才需要——全失敗代表後端沒變。
+      // 失敗隔離 fallback 走 `refreshOne()` 時它自己也會失效，重複的
+      // 失效由 `usageSummaryStore` 合併成最多一個進行中＋一個補抓。
+      if (succeeded > 0) invalidateUsageSummary();
     }
   }, [markUpdating, clearUpdating, refreshOne]);
 
@@ -414,6 +422,9 @@ export default function App() {
     // 與 `archive()` 的回滾同一個道理，做法要一致。
     setRows((prev) => [...prev, created]);
     setError(null);
+    // SW-13（PR #344 P2）：「進行中劇本」多了一個。建立失敗的話例外在
+    // 上面就已經往外拋，走不到這裡。
+    invalidateUsageSummary();
     // A2：建立成功才收合表單、捲動並聚焦到新卡片——失敗時 `createScenario`
     // 的例外會在這一行之前就往上拋出整個函式（見上面 `try/finally`），
     // 不會走到這裡，表單因此留在原地（draft 由 `CreateForm` 自己的
@@ -472,6 +483,17 @@ export default function App() {
     } finally {
       setBusy(false);
     }
+    // ARCH-REVIEW-001（#343）：thesis 改了的話後端已經 `clear_results()`，
+    // 手上那份詳細頁快取講的是一組已經不存在的結果。這裡主動作廢它，
+    // 不靠 `getScenarioCached()` 的 `hintAnalyzedAt` 推斷——編輯後的
+    // hint 正好是 `null`，而 `null` 在那邊的語意是「還不知道版本，沿用
+    // 快取」，推斷不出「後端剛清空」，見 `fetchCache.invalidateScenario
+    // Cache()` 檔內說明。下面的 `refreshOne(id)` 成功時會把新結果帶回
+    // 來，但它失敗（quota／rate limit／vendor fuse）時就是這一行在擋。
+    invalidateScenarioCache(id);
+    // SW-13（PR #344 P2）：同一個理由，改 thesis 會清掉舊結果，「最佳
+    // 報酬」可能因此換人或變成空的——下面的重新分析失敗時也要對得上。
+    invalidateUsageSummary();
     // 函式式更新：編輯這段期間刷新佇列很可能正在跑並且已經 setRows 過。
     setRows((prev) => prev.map((r) => (r.id === id ? updated : r)));
     setEditing(null);
@@ -495,6 +517,9 @@ export default function App() {
     setRows((prev) => prev.filter((r) => r.id !== id));
     try {
       await archiveScenario(id);
+      // SW-13（PR #344 P2）：畫面是樂觀移除，摘要不是——只在後端確認
+      // 封存成功後才失效，失敗回滾時摘要從頭到尾都沒動過。
+      invalidateUsageSummary();
     } catch (e) {
       if (removed) {
         setRows((prev) =>
@@ -520,6 +545,14 @@ export default function App() {
     const restored: ScenarioSummary = { ...row, archived_at: null };
     setRows((prev) =>
       (prev.some((r) => r.id === restored.id) ? prev : [...prev, restored]));
+    // SW-13（PR #344 P2）：`TrashView` 只在還原端點成功後才呼叫這裡。
+    // 人還在垃圾桶頁、stats strip 沒有掛著時只會標記過期，回到劇本庫
+    // 才抓一次——批量還原 N 筆也不會打出 N 個請求。
+    //
+    // 永久刪除（`TrashView` 的 `deleteScenario()`）刻意不接：它只作用
+    // 在已封存的劇本上，而後端摘要本來就不算已封存的劇本
+    // （`list_scenarios()` 預設排除），刪了也不會改變任何一格數字。
+    invalidateUsageSummary();
   }
 
   // ---------- 批次選取移入垃圾桶（TR6／#91） ----------
@@ -558,9 +591,11 @@ export default function App() {
   async function confirmBatchArchive() {
     const ids = [...selectedIds];
     const errors: Record<string, string> = {};
+    let archivedAny = false;
     for (const id of ids) {
       try {
         await archiveScenario(id);
+        archivedAny = true;
         setRows((prev) => prev.filter((r) => r.id !== id));
         setSelectedIds((prev) => {
           const next = new Set(prev);
@@ -571,6 +606,8 @@ export default function App() {
         errors[id] = e instanceof Error ? e.message : String(e);
       }
     }
+    // SW-13（PR #344 P2）：整批跑完失效一次，不是每筆各打一次摘要。
+    if (archivedAny) invalidateUsageSummary();
     // 全部成功才自動離開選取模式——有失敗的話留在選取模式裡，讓使用者
     // 看得到哪些還沒處理成功、為什麼，而不是靜靜地退出、下次得自己
     // 重新想起哪些沒成功。
@@ -633,24 +670,17 @@ export default function App() {
     );
   }
 
-  // UI-IMPL-002（#092）：手機版底部導覽的「建立」分頁——先回劇本庫首頁
-  // （清空 hash），同一批 setState 裡順帶展開建立表單。hash 變化觸發
-  // `hashchange` 監聽器更新 `hash` state、下一次渲染落到下面的手機首頁
-  // 分支時，`showCreateForm` 已經是 true，表單因此立刻可見，不需要
-  // 額外的跨畫面狀態管線。
-  const openCreateFromAnywhere = () => {
-    window.location.hash = "";
-    setShowCreateForm(true);
-  };
-
   // 手機版：設定是整頁替換（跟垃圾桶、詳細頁同樣的既有模式）。排在
-  // 垃圾桶之前只是順序，兩個 hash 互斥。
+  // 垃圾桶之前只是順序，兩個 hash 互斥。SW-04（#333）起 `BottomNav`
+  // 只剩三格、不再帶建立入口（見 `BottomNav.tsx` 檔頭說明）——想從
+  // 這幾個畫面建立劇本，先點「劇本庫」分頁回首頁，再按標題列的唯一
+  // 入口，不再有第二條捷徑。
   if (!isDesktop && showSettings) {
     return (
       <>
         <Settings />
         <Footer />
-        <BottomNav active="settings" onOpenCreate={openCreateFromAnywhere} />
+        <BottomNav active="settings" />
       </>
     );
   }
@@ -660,7 +690,7 @@ export default function App() {
       <>
         <TrashView onRestore={restoreFromTrash} />
         <Footer />
-        <BottomNav active="trash" onOpenCreate={openCreateFromAnywhere} />
+        <BottomNav active="trash" />
       </>
     );
   }
@@ -672,21 +702,34 @@ export default function App() {
         <Footer />
         {/* 貼齊設計稿（Mobile-Detail 板）：看著某個劇本的詳細頁仍視為
             「在劇本庫這個大分類底下」，「劇本庫」分頁維持標記 active。 */}
-        <BottomNav active="library" onOpenCreate={openCreateFromAnywhere} />
+        <BottomNav active="library" />
       </>
     );
   }
 
   if (!isDesktop) {
-    // 手機首頁（MVP-v2／#77、#81、#82）：Dashboard 佔位 → 就地展開的
-    // 新增劇本入口 → 高密度劇本庫，由上而下三段。與桌面版（下方
-    // `library`）是兩個獨立的 JSX 分支，不共用同一段標記——這樣手機版
-    // 的版面決定不會意外牽動桌面版現狀（#72／#75，spec #77 硬紅線一）。
+    // 手機首頁（MVP-v2／#77、#81、#82；SW-04／#333 起版面重排）：
+    // 標題列（標題＋唯一建立入口）→ stat 卡 → 高密度劇本庫，由上而下
+    // 三段。與桌面版（下方 `library`）是兩個獨立的 JSX 分支，不共用
+    // 同一段標記——這樣手機版的版面決定不會意外牽動桌面版現狀
+    // （#72／#75，spec #77 硬紅線一）。
     //
-    // OG-09（#319）：手機頂欄換成 52px `MobileTopBar`——垃圾桶／設定
-    // 入口不再重複顯示在這裡，兩者都已經在下面的 `BottomNav` 有一份
-    // （UI-IMPL-002／#092 既有），建立入口同樣已經在下面的
-    // `CreateEntry`。這裡只剩品牌、角色徽章、刷新（時機三）。
+    // SW-04（#333）：原本的 Dashboard 佔位（「跨劇本指標規劃中」）與
+    // 手機版專屬的第二個建立入口（`CreateEntry`）整個移除——
+    // VISUAL-IDENTITY-001／SEED-WARM-SPEC-001（#330）Owner 明確裁示
+    // 「不要同時存在兩個主要建立入口」；`showCreateForm`／
+    // `createPanelId` 這組既有狀態原封不動，只是面板的掛載點換成這裡
+    // 的標題列 CTA＋原位展開面板，`hidden` 屬性切換可見度的既有教訓
+    // （#75：使用者打到一半不小心點到收合鈕，剛打的字不會被清空）
+    // 不變。
+    const lastAnalyzedAt = rows.reduce<string | null>((latest, row) => {
+      if (row.latest_analyzed_at === null) return latest;
+      if (latest === null || row.latest_analyzed_at > latest) {
+        return row.latest_analyzed_at;
+      }
+      return latest;
+    }, null);
+
     return (
       <div className="screen">
         <MobileTopBar
@@ -703,31 +746,52 @@ export default function App() {
         )}
         {batchArchiveErrorNotice}
 
-        {/* PB-12（#302）：首頁 Beta 說明——固定可見，非彈窗，排在
-            Dashboard 之前，是使用者最先看到的內容（Toolbar／錯誤提示
-            之後）。與 `Dashboard` 包在同一個 flex 容器、用比 `.screen`
-            自己更小的內距——`BetaNotice` 若自成一個 `.screen` 直接
-            子元素，會多佔一整份既有的 `--gap`（16px），在手機一屏
-            至少要看到 4 個劇本這條硬性密度要求（MVP-v2／#77、#82）下
-            划不來；包成一組只多付一份小得多的內距，不影響 `Dashboard`
-            自己的既有樣式。 */}
-        <div className="beta-notice-and-dashboard">
-          <BetaNotice />
-          <Dashboard />
-        </div>
+        {/* MVP-v2／#77、#82 既有硬性密度要求（手機一屏至少看得到 N 個
+            劇本，`smoke.spec.ts` 鎖住）：標題列／Beta 說明／建立面板／
+            stat 卡包成一個 wrapper，只吃一份 `.screen` 的 `--gap`
+            （16px），內部自己用更窄的間距——沿用已退場的
+            `.beta-notice-and-dashboard` 同一種「必要新增區塊，但density
+            預算不能因此被吃光」的既有手法，只是這次包的區塊變多了。 */}
+        <div className="mobile-home-intro">
+          <div className="mobile-home-head">
+            <div>
+              <h1 className="mobile-home-title">劇本庫</h1>
+              <p className="mobile-home-sub caption">
+                {rows.length} 個劇本
+                {lastAnalyzedAt !== null &&
+                  ` · 上次更新 ${formatAnalyzedAt(lastAnalyzedAt)}`}
+              </p>
+            </div>
+            <button
+              type="button"
+              className="pbtn"
+              onClick={() => setShowCreateForm((v) => !v)}
+              aria-expanded={showCreateForm}
+              aria-controls={createPanelId}
+            >
+              {showCreateForm ? "收合建立表單" : "＋ 建立劇本"}
+            </button>
+          </div>
 
-        {/* #81：手機版專屬的建立入口，位置固定在 Dashboard 下方、劇本庫
-            上方——不是桌面版工具列膠囊鈕的重複，是同一個 `showCreateForm`
-            狀態的另一個進入點（切換裝置寬度時開合狀態不會跟著重置）。 */}
-        <CreateEntry
-          open={showCreateForm}
-          panelId={createPanelId}
-          onToggle={() => setShowCreateForm((v) => !v)}
-        >
-          <CreateForm onCreate={create} onSaveEdit={saveEdit}
-                    onCancelEdit={cancelEdit} editing={editing}
-                    busy={busy} today={now} />
-        </CreateEntry>
+          {/* SW-10（#340，Owner 真機驗收）：首頁常駐 Beta／cookie／非
+              投資建議說明已移除——PB-12（#302）當時的 AC9 要求「固定
+              可見」，SW-04 施工時也確認過這跟「文案降級」精神有衝突，
+              但選擇維持不動；這是 Owner 直接看過真機後的裁示：主流程
+              不該塞這類解釋式文案，整段搬進「設定 → 免責聲明」
+              （`DisclaimerSection.tsx`），取代這裡原本的 `<BetaNotice
+              />`。全站頁尾（`Footer.tsx`）仍保留最精簡的一行連結，
+              沒有讓這件事在主流程上完全不可得。 */}
+
+          {/* 面板一律掛著、用 `hidden` 屬性切換可見度，不是條件渲染整個
+              卸載重掛——沿用 #75 的既有教訓。 */}
+          <div id={createPanelId} hidden={!showCreateForm}>
+            <CreateForm onCreate={create} onSaveEdit={saveEdit}
+                      onCancelEdit={cancelEdit} editing={editing}
+                      busy={busy} today={now} />
+          </div>
+
+          <MobileStatsStrip />
+        </div>
 
         {/* #82：券商 App 式的高密度三層 compact row，取代大卡片——一個
             手機螢幕能掃過多個劇本。下方 `library` 的 `ScenarioList` 是
@@ -754,10 +818,7 @@ export default function App() {
 
         {/* PB-12（#302）：全站常駐頁尾——手機首頁也不例外。 */}
         <Footer />
-        <BottomNav
-          active={showCreateForm ? "create" : "library"}
-          onOpenCreate={openCreateFromAnywhere}
-        />
+        <BottomNav active="library" />
       </div>
     );
   }
@@ -827,11 +888,6 @@ export default function App() {
         createOpen={showCreateForm}
         createPanelId={createPanelId}
       />
-      {/* PB-12（#302）：首頁 Beta 說明——桌面版沒有獨立的「首頁」，劇本庫
-          頁面（未選中詳細頁、未開垃圾桶／設定）是這個裝置寬度下唯一
-          對應「首頁」的畫面，比照手機版只在那個分支顯示、不在其餘頁面
-          重複。 */}
-      {!showTrash && !showSettings && !detailProps && <BetaNotice />}
       <div className="page">{page}</div>
 
       {/* UI-IMPL-002（#092）：桌面版建立劇本走右側抽屜＋遮罩（Artifact

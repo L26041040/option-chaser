@@ -27,7 +27,7 @@
  * 誠實的缺席原因，不假造一條線。
  *
  * QA 修正三點：標示改成畫在格子**單一邊**上的細線（不是整格粗框）、
- * 顏色改用琥珀（`--crossover`；藍會跟 `--tint` 的互動語意混淆、紅會被
+ * 顏色改用琥珀（`--crossover`；藍會跟 `--acc-text` 的互動語意混淆、紅會被
  * 讀成警告），而且線一律畫在 **Spread 較高的那一側**——方向是從矩陣
  * 算出來的，不預設「左上是 Spread、右下是 Long Call」。
  */
@@ -38,6 +38,7 @@ import {
   formatMovePctShort, priceTags,
   type CrossoverSide, type CrossoverSides, type ResolvedComparator,
 } from "./heatmap";
+import InfoTooltip from "./InfoTooltip";
 import { money } from "./scenarios";
 
 /** 「Long Call」／「Long Put」——直接讀 `option_type`，不從 strategy
@@ -79,6 +80,18 @@ function sidesSentence(sides: CrossoverSides, kind: string): string {
     : `越接近到期 Spread 較高，較早的日期 ${kind} 較高。`;
 }
 
+/**
+ * SW-12（#342，Owner 真機驗收）：SW-11（#341）當時保留了這整段常駐
+ * 說明——理由是既有 #116 硬性 AC「不需要額外互動就看得到圖例與邊界
+ * 標示」，且 Owner 當時對 crossover 只用「若仍需要」的伸縮用詞。這輪
+ * Owner 明講「主畫面最多保留一句，其餘（成本／comparator／兩側較優
+ * 區域細節）收進 ⓘ」，並明文裁示「若舊測試或舊 issue AC（含 #116）
+ * 要求完整說明常駐可見，這次修測試，不要為舊 AC 保留冗長 UI」——
+ * 因此這裡改把 #116 那份既有 e2e AC 一併更新（見 `e2e/smoke.spec.ts`／
+ * `e2e/desktop.spec.ts` 對應測試），不是繼續讓舊 AC 擋住這次精簡。
+ * comparator 身分／成本／兩側各自較優的完整說明搬進 `InfoTooltip`
+ * （跟主 caption 同一個既有元件），不是刪掉這些金融資訊。
+ */
 function CrossoverLegend({ comparator, edges, favoredSide, sides }: {
   comparator: ResolvedComparator;
   edges: ReturnType<typeof crossoverEdges>;
@@ -90,20 +103,26 @@ function CrossoverLegend({ comparator, edges, favoredSide, sides }: {
     <p className="caption crossover-legend">
       <span className="crossover-swatch" aria-hidden="true" />
       <span>
-        格子是 Spread 報酬率。琥珀線＝與直接買{" "}
-        <strong>{comparatorLabel(comparator)}</strong>（成本{" "}
-        {money(comparator.cost)}）報酬相等的分界。
+        琥珀線為 Spread 與 {kind} 報酬相同的分界；線兩側表示各自較有利
+        的區域。
       </span>
-      {sides && <span className="crossover-sides">{sidesSentence(sides, kind)}</span>}
-      {edges.length === 0 && (
+      <InfoTooltip label="分界怎麼算">
         <span>
-          {favoredSide === "spread"
-            ? "此圖範圍內沒有分界：整張都是 Spread 較高。"
-            : favoredSide === "comparator"
-            ? `此圖範圍內沒有分界：整張都是 ${kind} 較高。`
-            : "資料不足以判定哪一側較高。"}
+          格子是 Spread 報酬率。琥珀線＝與直接買{" "}
+          <strong>{comparatorLabel(comparator)}</strong>（成本{" "}
+          {money(comparator.cost)}）報酬相等的分界。
         </span>
-      )}
+        {sides && <span className="crossover-sides">{sidesSentence(sides, kind)}</span>}
+        {edges.length === 0 && (
+          <span>
+            {favoredSide === "spread"
+              ? "此圖範圍內沒有分界：整張都是 Spread 較高。"
+              : favoredSide === "comparator"
+              ? `此圖範圍內沒有分界：整張都是 ${kind} 較高。`
+              : "資料不足以判定哪一側較高。"}
+          </span>
+        )}
+      </InfoTooltip>
     </p>
   );
 }
@@ -151,8 +170,17 @@ export default function Heatmap({ matrix, comparator }: {
             {order.map((i) => {
               const [price, label, movePct] = prices[i];
               const tags = priceTags(label);
+              // SW-08（#338）：目標列高亮 terracotta、現價列高亮暖灰
+              // ——兩個既有標籤字串各自對到一個 class，同一列可能兩個
+              // tag 都有（使用者的目標價恰好等於現價），classList 直接
+              // 都掛上去，CSS 決定疊色順序（見 styles.css 同名 class）。
+              const rowClass = [
+                tags.length > 0 && "anchor",
+                tags.includes("目標") && "anchor-target",
+                tags.includes("現價") && "anchor-spot",
+              ].filter(Boolean).join(" ") || undefined;
               return (
-                <tr key={price} className={tags.length ? "anchor" : undefined}>
+                <tr key={price} className={rowClass}>
                   <th scope="row" className="heatmap-price">
                     {price.toFixed(2)}
                     {tags.map((t) => (
@@ -192,9 +220,17 @@ export default function Heatmap({ matrix, comparator }: {
           </tbody>
         </table>
       </div>
-      <p className="caption">
-        以最差成交價（買付 Ask、賣收 Bid）進場的報酬率（%）；標記列是錨點
-        價格，其餘為內插。
+      {/* SW-11（#341，Owner 真機驗收）：主畫面只留使用者真正需要知道的
+          看圖方式——格子是什麼、顏色深淺代表什麼、標記列是什麼；Ask／
+          Bid 進場口徑與內插這種「怎麼算出來的」細節屬於進階說明，移入
+          ⓘ（`InfoTooltip`），不是刪掉，滑鼠移過去／鍵盤 focus 到還是
+          看得到完整口徑。 */}
+      <p className="caption heatmap-caption">
+        <span>格子為報酬率；顏色越深代表幅度越大；標記列為錨點價格。</span>
+        <InfoTooltip label="報酬率怎麼算">
+          以最差成交價（買付 Ask、賣收 Bid）進場的報酬率（%）；除錨點列
+          （現價／目標價等）本身是引擎給的實際值外，其餘格子為內插。
+        </InfoTooltip>
       </p>
       {/* `comparator === undefined`（呼叫端根本沒傳，見 `ScenarioDetail.tsx`／
           `ExpiryStructure.tsx`——單腿候選不傳這個 prop）＝這個候選沒有

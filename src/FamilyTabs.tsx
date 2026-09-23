@@ -98,6 +98,19 @@ export default function FamilyTabs({
               onClick={() => setPicked(family)}
             >
               <span className="chip-label">{FAMILY_LABELS[family] ?? family}</span>
+              {/* SW-06（#335）：冠軍所屬 family 加一個 terracotta 小標——
+                  純視覺提示「主圖／劇本報酬目前顯示的是哪個 family」，
+                  不影響 `resolveFamily()` 的預設分頁選取邏輯（那條既有
+                  規則本來就已經是「預設打開冠軍所屬分頁」，這裡只是把
+                  同一個既有事實也標在非目前選取的分頁上，讓使用者切走
+                  之後仍看得出哪個是冠軍）。`aria-hidden`：純視覺標示，
+                  不進入按鈕的 accessible name——否則會把既有
+                  `getByRole("button", { name: "Vertical Spread" })` 這類
+                  既有測試斷言（多個 family 場景下冠軍恰好是其中一個
+                  family 時）撞成「Vertical Spread 冠軍」而找不到。 */}
+              {family === championFamily && (
+                <span className="chip-champion-badge" aria-hidden="true">冠軍</span>
+              )}
             </button>
           ))}
         </div>

@@ -95,5 +95,15 @@ jobs:
         if: failure()
         with:
           name: playwright-report
-          path: playwright-report/
+          # PR #344：這裡原本只收 `playwright-report/`——但上面那個 test
+          # 步驟用的是 `reporter: "line"`（見 `playwright.config.ts`），
+          # 從來不會產生那個 HTML report 目錄，所以這條 upload 步驟本身
+          # 雖然回報成功，實際上傳的是 0 個檔案。真正有截圖／trace 的
+          # 是 Playwright 預設寫入的 `test-results/`（`playwright.config.
+          # ts` 剛加上 `screenshot: "only-on-failure"` 之後才有東西可
+          # 撿）。兩個路徑都收，不管以後 reporter 設定怎麼調，失敗現場
+          # 都撈得到。
+          path: |
+            playwright-report/
+            test-results/
           retention-days: 7

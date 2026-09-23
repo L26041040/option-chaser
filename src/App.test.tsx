@@ -32,7 +32,7 @@ async function pickMonth(year: number, month: number) {
 /**
  * 建立劇本表單預設收合，得先展開入口才看得到欄位。入口位置依裝置寬度
  * 而不同（MVP-v2／#77、#81）：桌面（#75 現狀）在工具列的「＋ 建立劇本」，
- * 手機在 Dashboard 下方的「＋ 新增劇本」（`CreateEntry`）——這裡不管
+ * 手機在標題列的「＋ 建立劇本」（SW-04／#333 起，唯一入口）——這裡不管
  * 呼叫端跑在哪個視窗寬度，找得到哪個按鈕就點哪個。真的要測特定入口的
  * 精確文字與位置時，各自的測試會直接斷言，不靠這個共用小工具。
  *
@@ -1122,7 +1122,7 @@ describe("Phase A2：建立成功後自動收合表單、捲動並聚焦到新�
 
     // 收合：入口按鈕字樣變回收合態，欄位不再看得到（不是清空 draft，
     // 是送出成功後表單本來就會清空，見 `CreateForm.tsx` 的 `submit()`）。
-    expect(await screen.findByRole("button", { name: "＋ 新增劇本" })).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "＋ 建立劇本" })).toBeInTheDocument();
     expect(screen.queryByLabelText("標的代號")).not.toBeVisible();
 
     // 捲動＋聚焦：新卡片是一個真正的 `<a>`，聚焦它才會讓螢幕閱讀器唸出
@@ -1641,10 +1641,10 @@ describe("桌面版頁面級導覽（OG-02／#318，取代 #72／#75 側欄常�
 });
 
 describe("桌面版：主要操作入口收攏到工作區上方（#75，MVP-v2／#77 起僅桌面）", () => {
-  // #75 原本涵蓋所有寬度；MVP-v2（#77、#81）裁示手機改走 Dashboard 下方
-  // 的獨立入口（見「手機版：新增劇本入口」），#75 的工具列頂部入口自此
-  // 縮限成桌面現狀——這裡的每個案例都先切到桌面寬度，斷言才對得上現在
-  // 實際覆蓋的範圍。
+  // #75 原本涵蓋所有寬度；MVP-v2（#77、#81）裁示手機改走標題列的獨立
+  // 入口（SW-04／#333 起見 `App.tsx` 手機首頁分支），#75 的工具列頂部
+  // 入口自此縮限成桌面現狀——這裡的每個案例都先切到桌面寬度，斷言才
+  // 對得上現在實際覆蓋的範圍。
   const row = {
     ...(sampleRow as unknown as Record<string, unknown>),
     id: "s1", symbol: "TLT", target_price: 120, target_month: "2028-05",
@@ -1735,7 +1735,8 @@ describe("桌面版：主要操作入口收攏到工作區上方（#75，MVP-v2�
   });
 
   it("常駐頂欄導覽：劇本庫／垃圾桶／設定三個入口都在，當前頁有明確" +
-     "指示（OG-02／#318）", async () => {
+     "指示（OG-02／#318；SW-02／#332 起用 aria-current=page，不是 " +
+     "class）", async () => {
     stubDesktopViewport();
     mockRoutes({
       "/api/scenarios": { json: async () => [row] },
@@ -1749,9 +1750,9 @@ describe("桌面版：主要操作入口收攏到工作區上方（#75，MVP-v2�
     const names = within(nav).getAllByRole("link").map((a) => a.textContent);
     expect(names).toEqual(["劇本庫", "垃圾桶", "設定"]);
     expect(within(nav).getByRole("link", { name: "劇本庫" }))
-      .toHaveClass("on");
+      .toHaveAttribute("aria-current", "page");
     expect(within(nav).getByRole("link", { name: "垃圾桶" }))
-      .not.toHaveClass("on");
+      .not.toHaveAttribute("aria-current");
   });
 
   it("劇本清單下方已無任何主要操作——建立入口在工作區最上方", async () => {
@@ -1793,7 +1794,8 @@ describe("手機版頂欄（OG-09／#319，取代 iOS Large Title 版式的 " +
   };
 
   it("頂欄只有品牌、（角色，若非 Normal User）、重新整理——沒有垃圾桶／" +
-     "設定按鈕；底部導覽四個分頁都在，且能各自導向正確 hash", async () => {
+     "設定按鈕；底部導覽三個分頁都在，且能各自導向正確 hash（SW-04／" +
+     "#333 起無建立分頁）", async () => {
     mockRoutes({
       "/api/scenarios": { json: async () => [row] },
       "/api/scenarios/": { json: async () => row },
@@ -1821,7 +1823,57 @@ describe("手機版頂欄（OG-09／#319，取代 iOS Large Title 版式的 " +
   });
 });
 
-describe("PB-12（#302）：全站常駐頁尾＋首頁 Beta 說明＋隱私頁路由", () => {
+describe("SW-04（#333，Seed Warm）：手機首頁只有一個建立入口，Dashboard 佔位整個移除", () => {
+  const row = {
+    ...(sampleRow as unknown as Record<string, unknown>),
+    id: "s1", symbol: "TLT", target_price: 120, target_month: "2028-05",
+    latest_analyzed_at: "2026-08-04T09:30:00+00:00", best_return: 1.5,
+    target_anchor: "2028-05-19", days_to_anchor: 653,
+  };
+
+  it("整個手機首頁只有一顆「建立劇本」按鈕，標題列與底部導覽都不重複", async () => {
+    mockRoutes({
+      "/api/scenarios": { json: async () => [row] },
+      "/api/scenarios/": { json: async () => row },
+      "/api/me/usage-summary": { json: async () => ({
+        active_scenarios: 1, max_active_scenarios: 10, quota_exempt: false,
+        last_activity_at: null,
+        best_return: null, best_return_symbol: null,
+        best_return_strategy: null, best_return_target_month: null,
+      }) },
+    });
+    render(<App />);
+    await screen.findByText("TLT");
+
+    expect(screen.getAllByRole("button", { name: /建立劇本/ })).toHaveLength(1);
+    expect(screen.queryByLabelText("Dashboard")).not.toBeInTheDocument();
+    expect(screen.queryByText(/跨劇本指標規劃中/)).not.toBeInTheDocument();
+
+    // 底部導覽三格，沒有第二個建立入口。
+    const bottomNav = screen.getByRole("navigation", { name: "主要導覽" });
+    expect(within(bottomNav).getAllByRole("link")).toHaveLength(3);
+    expect(within(bottomNav).queryByRole("link", { name: /建立/ }))
+      .not.toBeInTheDocument();
+  });
+
+  it("標題列的建立入口點下去，原位展開既有建立表單（不換頁）", async () => {
+    mockRoutes({
+      "/api/scenarios": { json: async () => [row] },
+      "/api/scenarios/": { json: async () => row },
+    });
+    render(<App />);
+    await screen.findByText("TLT");
+
+    expect(screen.queryByLabelText("標的代號")).not.toBeVisible();
+    await userEvent.click(screen.getByRole("button", { name: "＋ 建立劇本" }));
+    expect(screen.getByLabelText("標的代號")).toBeVisible();
+    expect(screen.getByRole("button", { name: "收合建立表單" }))
+      .toHaveAttribute("aria-expanded", "true");
+  });
+});
+
+describe("SW-10（#340）／PB-12（#302）：全站常駐頁尾；首頁 Beta 說明已移入" +
+         "設定→免責聲明，不再常駐主流程", () => {
   const row = {
     ...(sampleRow as unknown as Record<string, unknown>),
     id: "s1", symbol: "TLT", target_price: 120, target_month: "2028-05",
@@ -1831,7 +1883,7 @@ describe("PB-12（#302）：全站常駐頁尾＋首頁 Beta 說明＋隱私頁�
 
   afterEach(() => { window.location.hash = ""; });
 
-  it("手機首頁：Beta 說明＋頁尾皆常駐可見", async () => {
+  it("手機首頁：頁尾常駐可見，`.beta-notice` 常駐區塊已不存在", async () => {
     mockRoutes({
       "/api/scenarios": { json: async () => [row] },
       "/api/scenarios/": { json: async () => row },
@@ -1839,16 +1891,14 @@ describe("PB-12（#302）：全站常駐頁尾＋首頁 Beta 說明＋隱私頁�
     const { container } = render(<App />);
 
     await screen.findByText("TLT");
-    const notice = container.querySelector(".beta-notice");
-    expect(notice).toBeInTheDocument();
-    expect(notice).toHaveTextContent(/Beta/);
+    expect(container.querySelector(".beta-notice")).not.toBeInTheDocument();
     const footer = container.querySelector("footer.site-footer");
     expect(footer).toBeInTheDocument();
     expect(footer).toHaveTextContent(/非投資建議/);
   });
 
-  it("桌面首頁：Beta 說明常駐在劇本庫頁面、頁尾在整個 desktop-shell 之下" +
-     "（OG-02／#318 起側欄退場，改為單一全寬頁面）", async () => {
+  it("桌面首頁：頁尾在整個 desktop-shell 之下常駐（OG-02／#318 起側欄退場，" +
+     "改為單一全寬頁面），`.beta-notice` 常駐區塊已不存在", async () => {
     stubDesktopViewport();
     mockRoutes({
       "/api/scenarios": { json: async () => [row] },
@@ -1857,12 +1907,12 @@ describe("PB-12（#302）：全站常駐頁尾＋首頁 Beta 說明＋隱私頁�
     const { container } = render(<App />);
 
     await screen.findByText("TLT");
-    expect(container.querySelector(".beta-notice")).toBeInTheDocument();
+    expect(container.querySelector(".beta-notice")).not.toBeInTheDocument();
     expect(container.querySelector("footer.site-footer")).toBeInTheDocument();
   });
 
-  it("桌面版切到垃圾桶頁面，Beta 說明不重複顯示——比照手機版只在真正的" +
-     "首頁出現一次（OG-02／#318）", async () => {
+  it("桌面版切到垃圾桶頁面，頁尾依然常駐，`.beta-notice` 兩個頁面都不存在" +
+     "（不是「只在首頁顯示」，是整個常駐區塊已經整組移除）", async () => {
     stubDesktopViewport();
     mockRoutes({
       "/api/scenarios": { json: async () => [row] },
@@ -1871,6 +1921,7 @@ describe("PB-12（#302）：全站常駐頁尾＋首頁 Beta 說明＋隱私頁�
     });
     const { container } = render(<App />);
     await screen.findByText("TLT");
+    expect(container.querySelector(".beta-notice")).not.toBeInTheDocument();
 
     window.location.hash = "#/trash";
     await screen.findByRole("heading", { name: "垃圾桶" });
@@ -1976,5 +2027,242 @@ describe("PB-12（#302）：全站常駐頁尾＋首頁 Beta 說明＋隱私頁�
     const posted = spy.mock.calls.some(
       ([, init]) => (init as RequestInit | undefined)?.method === "POST");
     expect(posted).toBe(false);
+  });
+});
+
+describe("SW-13（PR #344 P2）：首頁 usage summary 在操作成功後即時同步，" +
+         "無關互動不多打請求", () => {
+  const baseRow = {
+    ...(sampleRow as unknown as Record<string, unknown>),
+    id: "s1", symbol: "TLT", target_price: 120, target_month: "2028-05",
+    latest_analyzed_at: "2026-08-04T09:30:00+00:00", best_return: 1.5,
+    target_anchor: "2028-05-19", days_to_anchor: 653,
+  };
+  const secondRow = { ...baseRow, id: "s2", symbol: "SPY" };
+
+  afterEach(() => {
+    window.location.hash = "";
+  });
+
+  /**
+   * 一個最小的假後端：`active`／`archived` 兩份清單＋目前的最佳報酬，
+   * `/api/me/usage-summary` 每次都照「現在」的狀態算——跟真後端一樣
+   * 是後端真相，前端要看到新數字就只能真的重抓。`refreshBest` 是下一次
+   * 刷新成功後後端會算出的最佳報酬（測試中途改它，模擬行情變了）。
+   */
+  function fakeBackend(initial: { active: Record<string, unknown>[];
+                                  archived?: Record<string, unknown>[] }) {
+    const state = {
+      active: [...initial.active],
+      archived: [...(initial.archived ?? [])],
+      best: 1.5 as number | null,
+      refreshBest: 1.5,
+      archiveFails: false,
+      refreshFails: false,
+    };
+    const ok = (json: unknown, status = 200) =>
+      ({ ok: true, status, json: async () => json });
+    const spy = vi.fn(withRefreshRunBridge(async (url, init) => {
+      if (url === "/api/me/usage-summary") {
+        return ok({
+          active_scenarios: state.active.length, max_active_scenarios: 10,
+          quota_exempt: false, last_activity_at: null,
+          best_return: state.best,
+          best_return_symbol: state.best === null ? null : "TLT",
+          best_return_strategy: null, best_return_target_month: null,
+        });
+      }
+      if (url === "/api/scenarios" && init?.method === "POST") {
+        const created = { ...baseRow, id: "s-new", symbol: "SPY",
+                          latest_analyzed_at: null, best_return: null };
+        state.active.push(created);
+        return ok(created, 201);
+      }
+      if (url === "/api/scenarios") return ok(state.active);
+      if (url === "/api/scenarios?include_archived=true") {
+        return ok([...state.active,
+                   ...state.archived.map((r) => ({ ...r, archived_at: "2026-08-05T00:00:00+00:00" }))]);
+      }
+      const id = decodeURIComponent(url.split("/")[3] ?? "");
+      if (url.endsWith("/archive")) {
+        if (state.archiveFails) {
+          return { ok: false, status: 500, json: async () => ({ detail: "封存失敗" }) };
+        }
+        const row = state.active.find((r) => r.id === id)!;
+        state.active = state.active.filter((r) => r.id !== id);
+        state.archived.push(row);
+        return ok({ archived: true });
+      }
+      if (url.endsWith("/restore")) {
+        const row = state.archived.find((r) => r.id === id)!;
+        state.archived = state.archived.filter((r) => r.id !== id);
+        state.active.push(row);
+        return ok({ restored: true });
+      }
+      if (url.endsWith("/refresh")) {
+        if (state.refreshFails) {
+          return { ok: false, status: 502,
+                   json: async () => ({ detail: { stage: "fetch", message: "抓不到報價" } }) };
+        }
+        state.best = state.refreshBest;
+        const row = state.active.find((r) => r.id === id) ?? baseRow;
+        return ok({ ...row, best_return: state.refreshBest });
+      }
+      if (url.startsWith("/api/scenarios/")) {
+        return ok(state.active.find((r) => r.id === id) ?? baseRow);
+      }
+      if (url === "/api/auth/status") return ok({ role: "normal" });
+      return ok({});
+    }));
+    vi.stubGlobal("fetch", spy);
+    const usageCalls = () =>
+      spy.mock.calls.filter(([u]) => u === "/api/me/usage-summary").length;
+    return { state, usageCalls };
+  }
+
+  /** 等開站那輪（掛載時抓一次＋開站刷新成功後失效重抓一次）完全落地。 */
+  async function settleStartup(usageCalls: () => number, strip: () => HTMLElement,
+                               text: string) {
+    await screen.findByRole("button", { name: "重新整理" });
+    await waitFor(() => expect(usageCalls()).toBe(2));
+    await waitFor(() => expect(within(strip()).getByText(text)).toBeInTheDocument());
+  }
+
+  const mobileStrip = () =>
+    document.querySelector(".mobile-stats-grid") as HTMLElement;
+  const desktopStrip = () =>
+    document.querySelector(".lib-stats-strip") as HTMLElement;
+  /** 換頁回來後 strip 重新掛載，等它出現在 DOM 上。 */
+  const mounted = (strip: () => HTMLElement | null) => waitFor(() => {
+    const el = strip();
+    expect(el).not.toBeNull();
+    return el as HTMLElement;
+  });
+
+  it("開站自動刷新成功後，最佳報酬跟上刷新結果（不再停在刷新前的舊值）", async () => {
+    const { state, usageCalls } = fakeBackend({ active: [baseRow] });
+    state.best = null;          // 開站前：還沒分析過
+    state.refreshBest = 1.8;    // 開站那輪刷新算出來的新值
+    render(<App />);
+
+    await settleStartup(usageCalls, mobileStrip, "180.0%");
+  });
+
+  it("手機：建立成功後「進行中劇本」立即 +1", async () => {
+    const { usageCalls } = fakeBackend({ active: [baseRow] });
+    render(<App />);
+    await settleStartup(usageCalls, mobileStrip, "1 / 10");
+
+    await openCreateForm();
+    await userEvent.type(screen.getByLabelText("標的代號"), "spy");
+    await userEvent.type(screen.getByLabelText("目標價位"), "700");
+    await pickMonth(2028, 5);
+    await userEvent.click(screen.getByRole("checkbox", { name: "Call / Put" }));
+    await userEvent.click(screen.getByRole("button", { name: "建立" }));
+
+    expect(await within(mobileStrip()).findByText("2 / 10")).toBeInTheDocument();
+  });
+
+  it("桌面：封存成功後「進行中劇本」立即 -1", async () => {
+    stubDesktopViewport();
+    const { usageCalls } = fakeBackend({ active: [baseRow, secondRow] });
+    render(<App />);
+    await settleStartup(usageCalls, desktopStrip, "2 / 10");
+
+    await userEvent.click(screen.getByRole("button", { name: "封存 TLT 2028-05" }));
+
+    expect(await within(desktopStrip()).findByText("1 / 10")).toBeInTheDocument();
+  });
+
+  it("封存失敗：摘要不重抓、數字不變（不顯示不存在的新狀態）", async () => {
+    const { state, usageCalls } = fakeBackend({ active: [baseRow, secondRow] });
+    render(<App />);
+    await settleStartup(usageCalls, mobileStrip, "2 / 10");
+    state.archiveFails = true;
+
+    await userEvent.click(screen.getByRole("button", { name: "封存 TLT 2028-05" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("封存失敗");
+    expect(usageCalls()).toBe(2);
+    expect(within(mobileStrip()).getByText("2 / 10")).toBeInTheDocument();
+  });
+
+  it("桌面：垃圾桶還原成功後，回到劇本庫「進行中劇本」已 +1；人在垃圾桶頁時不打摘要", async () => {
+    stubDesktopViewport();
+    const { usageCalls } = fakeBackend({ active: [baseRow], archived: [secondRow] });
+    render(<App />);
+    await settleStartup(usageCalls, desktopStrip, "1 / 10");
+
+    window.location.hash = "#/trash";
+    await userEvent.click(
+      await screen.findByRole("button", { name: "還原 SPY 2028-05" }));
+    await waitFor(() =>
+      expect(screen.queryByRole("button", { name: "還原 SPY 2028-05" }))
+        .not.toBeInTheDocument());
+    expect(usageCalls()).toBe(2);
+
+    window.location.hash = "";
+    expect(await within(await mounted(desktopStrip)).findByText("2 / 10"))
+      .toBeInTheDocument();
+    expect(usageCalls()).toBe(3);
+  });
+
+  it("手機：手動重新整理成功後，最佳報酬更新", async () => {
+    const { state, usageCalls } = fakeBackend({ active: [baseRow] });
+    render(<App />);
+    await settleStartup(usageCalls, mobileStrip, "150.0%");
+    state.refreshBest = 2.2;
+
+    await userEvent.click(screen.getByRole("button", { name: "重新整理" }));
+
+    expect(await within(mobileStrip()).findByText("220.0%")).toBeInTheDocument();
+  });
+
+  it("手動重新整理全部失敗：摘要不重抓、最佳報酬不變", async () => {
+    const { state, usageCalls } = fakeBackend({ active: [baseRow] });
+    render(<App />);
+    await settleStartup(usageCalls, mobileStrip, "150.0%");
+    state.refreshFails = true;
+    state.refreshBest = 9.9;   // 就算後端「本來會」算出新值，失敗的刷新也不能讓它出現
+
+    await userEvent.click(screen.getByRole("button", { name: "重新整理" }));
+    expect(await screen.findByText("0 成功／1 失敗")).toBeInTheDocument();
+
+    expect(usageCalls()).toBe(2);
+    expect(within(mobileStrip()).getByText("150.0%")).toBeInTheDocument();
+  });
+
+  it("手機：進詳細頁再返回劇本庫，不新增任何 usage-summary 請求", async () => {
+    const { usageCalls } = fakeBackend({ active: [baseRow] });
+    render(<App />);
+    await settleStartup(usageCalls, mobileStrip, "1 / 10");
+
+    // 「TLT」同時出現在卡片與 stats strip 的最佳報酬標的上，直接點卡片本身。
+    await userEvent.click(
+      document.querySelector<HTMLAnchorElement>(".compact-card-tap")!);
+    await screen.findByRole("link", { name: "‹ 劇本庫" });
+    window.location.hash = "";
+    expect(await within(await mounted(mobileStrip)).findByText("1 / 10"))
+      .toBeInTheDocument();
+
+    expect(usageCalls()).toBe(2);
+  });
+
+  it("桌面：切換篩選不新增任何 usage-summary 請求", async () => {
+    stubDesktopViewport();
+    const { usageCalls } = fakeBackend({ active: [baseRow, secondRow] });
+    render(<App />);
+    await settleStartup(usageCalls, desktopStrip, "2 / 10");
+
+    const direction = screen.getByRole("group", { name: "依方向篩選" });
+    for (const button of within(direction).getAllByRole("button")) {
+      await userEvent.click(button);
+    }
+    const status = screen.getByRole("group", { name: "依狀態篩選" });
+    for (const button of within(status).getAllByRole("button")) {
+      await userEvent.click(button);
+    }
+
+    expect(usageCalls()).toBe(2);
   });
 });

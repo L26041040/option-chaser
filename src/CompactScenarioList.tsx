@@ -19,6 +19,7 @@
  */
 import type { RefreshFailure, ScenarioSummary } from "./api";
 import { CheckIcon, EditIcon, TrashIcon } from "./icons";
+import { formatMove } from "./detail";
 import { detailHash } from "./route";
 import StockLogo from "./StockLogo";
 import {
@@ -40,6 +41,7 @@ import {
   money,
   moneyOrDash,
   rateLimitDetailText,
+  requiredMovePct,
   scenarioRowDomId,
   scenarioSignal,
   signalLabel,
@@ -86,6 +88,12 @@ function CompactScenarioCard({
   // OG-09（#319）：方向標籤——只是把既有 T08／#225 衍生方向語意畫出來，
   // 尚未分析過（`spot === null`）時回傳 `null`、不畫任何標籤。
   const direction = deriveDirectionTag(row.spot, row.target_price);
+  // SW-10（#340，Owner 真機驗收）：Artifact A 的手機劇本卡在「現價 →
+  // 目標價」後面接了一段「還需 ±x%」——桌面版 `ScenarioList.tsx` 早就
+  // 用同一個 `requiredMovePct()` 補過這行小字，這裡補齊 Owner 點名
+  // 「首頁跟 Artifact A 差異太大」的其中一項具體缺口。`spot` 為
+  // `null`（尚未分析過）時同樣不畫，跟方向標籤同一個既有前提。
+  const requiredMove = requiredMovePct(row.spot, row.target_price);
   // REPAIR-05（#242，OD-03）：刷新失敗的兩態——`updating` 與 `failure`
   // 是兩個獨立 state，`cardFailureVariant` 已經把兩者互斥的判準收進
   // 純函式，這裡只讀結果決定要不要反灰、顯示哪一句頭條。
@@ -133,7 +141,12 @@ function CompactScenarioCard({
                e.preventDefault();
              }
            }}>
-          <div className="compact-tier1">
+          {/* SW-10（#340，Owner 真機驗收）：`.compact-main-row` 取代原本
+              各自獨立、上下堆疊的 `.compact-tier1`／`.compact-tier2`
+              ——Artifact A 的手機劇本列其實是「左側身分資訊＋右側報酬」
+              左右兩欄的一行卡片，不是兩層各自橫向、彼此垂直堆疊。見
+              `styles.css` `.compact-main-row` 一段的完整說明。 */}
+          <div className="compact-main-row">
             {selectMode && (
               <span
                 className={isChecked ? "row-checkbox checked" : "row-checkbox"}
@@ -149,54 +162,82 @@ function CompactScenarioCard({
                 皆由 e2e 鎖住）留給這一行的空間有限，20px 貼齊設計稿
                 「20 手機頂欄」那一級，視覺上仍看得出是真實 Logo。 */}
             <StockLogo symbol={row.symbol} size="s" />
-            <span className="compact-symbol">{row.symbol}</span>
-            {/* OG-09（#319）：方向標籤——貼齊 artifact Mobile-Library
-                板第一行「ticker＋方向 tag」的順序，沿用既有 `.tag.up`／
-                `.tag.down`／`.tag.flat`（OG-01 primitives）。 */}
-            {direction && (
-              <span className={`tag ${directionTagClass(direction)}`}>
-                {directionTagLabel(direction)}
+            <div className="compact-info">
+              <div className="compact-headline">
+                <span className="compact-symbol">{row.symbol}</span>
+                {/* OG-09（#319）：方向標籤——貼齊 artifact Mobile-Library
+                    板第一行「ticker＋方向 tag」的順序，沿用既有
+                    `.tag.up`／`.tag.down`／`.tag.flat`（OG-01
+                    primitives）。 */}
+                {direction && (
+                  <span className={`tag ${directionTagClass(direction)}`}>
+                    {directionTagLabel(direction)}
+                  </span>
+                )}
+                {/* T08／#196 P1：更新中徽章跟著身分一起顯示——舊燈號則
+                    移到這一整行的最後（見下面 `.compact-right` 後面），
+                    避免「這一輪還沒有結論」跟「上一輪的結果」兩種語意
+                    的圖示疊在同一個位置。 */}
+                {updating && <span className="tag updating-tag">更新中</span>}
+              </div>
+              {/* QA 修正：現價擠進同一行的目標價前面（`現價 → 目標`），
+                  不多佔一列高度——沒有現價當基準，一排目標價只是孤立
+                  數字，劇本庫就失去概覽的作用。 */}
+              <span className="compact-target">
+                <span className="compact-spot">{moneyOrDash(row.spot)}</span>
+                {" → "}
+                {money(row.target_price)}　{row.target_month}
+                {requiredMove !== null && (
+                  <span className="compact-required-move">
+                    {" · 還需 "}
+                    {formatMove(requiredMove)}
+                  </span>
+                )}
               </span>
-            )}
-            {/* QA 修正：現價擠進同一行的目標價前面（`現價 → 目標`），
-                不多佔一列高度——沒有現價當基準，一排目標價只是孤立
-                數字，劇本庫就失去概覽的作用。 */}
-            <span className="compact-target">
-              <span className="compact-spot">{moneyOrDash(row.spot)}</span>
-              {" → "}
-              {money(row.target_price)}　{row.target_month}
-            </span>
-            {/* T08／#196 P1：燈號講的是上一輪的結果，更新中時換成
-                「更新中」徽章，不讓舊燈號看起來像這一輪的狀態。 */}
-            {updating ? (
-              <span className="tag updating-tag">更新中</span>
-            ) : (
+            </div>
+            <div className="compact-right">
+              <span
+                className={
+                  ran ? `metric compact-metric ${row.best_return! >= 0 ? "positive" : "negative"}`
+                      : "metric compact-metric muted"
+                }
+              >
+                {formatReturn(row.best_return)}
+              </span>
+              {/* OG-09（#319）：視覺上比照 artifact 的「腿位 pill」
+                  語彙（`.legs` 底色＋圓角），文字內容逐字沿用既有
+                  `formatRepresentativeSummary()`，不拆成逐腿分色
+                  `<span>`。SW-10（#340，Owner 真機驗收）`/code-review`
+                  Spec 軸跟進：這裡原本的理由引用已經整段退場的
+                  CLOSEOUT-002「卡片寬高與版面不得變動」——本票（見
+                  `.compact-main-row` 一段）已經把這張卡的版面／密度
+                  重做過一輪，不再有那條舊約束，繼續拿它當理由會被誤讀
+                  成「用既有 component 限制擋掉這輪的更新」，Owner 明文
+                  禁止這種說法。真正的理由很單純：逐腿分色是 issue #340
+                  十一項裡沒有人要求的額外加法，不是這一輪的範圍，不是
+                  被舊規則擋住——真的需要的話，之後另外開一張票評估
+                  自動換行風險，不在這裡順手夾帶。 */}
+              <span className="compact-strategy compact-strategy-pill">
+                {formatRepresentativeSummary(rep)}
+              </span>
+            </div>
+            {/* T08／#196 P1：燈號講的是上一輪的結果，更新中時已經在上面
+                身分那一行換成「更新中」徽章，這裡就不重複畫，避免同一
+                件事被兩個圖示各講一次。
+                SW-11（#341，Owner 真機驗收）：`signal === "green"`（一切
+                正常、上一輪成功）額外多加 `signal !== "green"` 這道門檻
+                ——正常成功不需要額外 icon 提醒，幾乎每張卡都是綠燈時
+                （多數劇本平常就是正常狀態）反而變成純視覺噪音；只在真的
+                需要使用者注意的狀態（`scenarioSignal()` 的 `"yellow"`＝
+                刷新失敗、`"red"`＝已過期）才畫這顆點。`updating` 分支
+                （已經有獨立徽章）不受影響。 */}
+            {!updating && signal !== "green" && (
               <span
                 className={`signal-dot signal-${signal}`}
                 title={signalLabel(signal)}
                 aria-hidden="true"
               />
             )}
-          </div>
-
-          <div className="compact-tier2">
-            <span
-              className={
-                ran ? `metric compact-metric ${row.best_return! >= 0 ? "positive" : "negative"}`
-                    : "metric compact-metric muted"
-              }
-            >
-              {formatReturn(row.best_return)}
-            </span>
-            {/* OG-09（#319）：視覺上比照 artifact 的「腿位 pill」
-                語彙（`.legs` 底色＋圓角），文字內容逐字沿用既有
-                `formatRepresentativeSummary()`——不拆成逐腿分色
-                `<span>`：CLOSEOUT-002 已明文「卡片寬高與版面不得
-                變動」，逐腿拆分需要換一套不同的自動換行風險評估，
-                留給未來若真有需要再開票，這裡只做安全的視覺加法。 */}
-            <span className="compact-strategy compact-strategy-pill">
-              {formatRepresentativeSummary(rep)}
-            </span>
           </div>
 
           {/* 每個格式化值各自一個 span、分隔號是獨立文字節點：跟桌面版
@@ -326,7 +367,7 @@ export default function CompactScenarioList({
   onConfirmBatchArchive: () => void;
 }) {
   if (rows.length === 0) {
-    return <p className="caption">還沒有劇本，用上面的「＋ 新增劇本」建立。</p>;
+    return <p className="caption">還沒有劇本，按上面的「＋ 建立劇本」開始。</p>;
   }
   // T08／#196 P1：正在更新的劇本照樣參與排序（用它上一輪的
   // `best_return`），不再像舊版 `partitionByLock`（V4 跟進票／#136，
@@ -335,13 +376,12 @@ export default function CompactScenarioList({
   const sorted = sortScenarios(rows);
   return (
     <>
-      {/* 收益率口徑就寫在數字旁邊（V4／#52 既有裁示），沿用大卡片版式
-          同一句話，compact 版不因為省空間就把它拿掉。TR6（#91）：批次
-          選取入口貼在同一列右側。 */}
+      {/* SW-10（#340，Owner 真機驗收）：原本這裡跟大卡片版式一樣印一句
+          計算口徑說明（V4／#52 既有裁示），現在移除——完整說法收進
+          設定→免責聲明（`DisclaimerSection.tsx`）。批次選取入口本身
+          單獨保留在這一列右側，不需要靠這句說明文字撐起這一整行。
+          TR6（#91）：批次選取入口貼在同一列右側。 */}
       <div className="yield-note-row">
-        <p className="caption">
-          收益率以最差成交價計算（買腿 Ask − 賣腿 Bid）
-        </p>
         {!selectMode && (
           <button
             className="icon-button"
@@ -363,7 +403,7 @@ export default function CompactScenarioList({
         </div>
       )}
 
-      <ul className="compact-list">
+      <ul className="compact-list pcard">
         {sorted.map((row) => (
           <CompactScenarioCard
             key={row.id}
