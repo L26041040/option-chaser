@@ -2029,3 +2029,240 @@ describe("SW-10（#340）／PB-12（#302）：全站常駐頁尾；首頁 Beta �
     expect(posted).toBe(false);
   });
 });
+
+describe("SW-13（PR #344 P2）：首頁 usage summary 在操作成功後即時同步，" +
+         "無關互動不多打請求", () => {
+  const baseRow = {
+    ...(sampleRow as unknown as Record<string, unknown>),
+    id: "s1", symbol: "TLT", target_price: 120, target_month: "2028-05",
+    latest_analyzed_at: "2026-08-04T09:30:00+00:00", best_return: 1.5,
+    target_anchor: "2028-05-19", days_to_anchor: 653,
+  };
+  const secondRow = { ...baseRow, id: "s2", symbol: "SPY" };
+
+  afterEach(() => {
+    window.location.hash = "";
+  });
+
+  /**
+   * 一個最小的假後端：`active`／`archived` 兩份清單＋目前的最佳報酬，
+   * `/api/me/usage-summary` 每次都照「現在」的狀態算——跟真後端一樣
+   * 是後端真相，前端要看到新數字就只能真的重抓。`refreshBest` 是下一次
+   * 刷新成功後後端會算出的最佳報酬（測試中途改它，模擬行情變了）。
+   */
+  function fakeBackend(initial: { active: Record<string, unknown>[];
+                                  archived?: Record<string, unknown>[] }) {
+    const state = {
+      active: [...initial.active],
+      archived: [...(initial.archived ?? [])],
+      best: 1.5 as number | null,
+      refreshBest: 1.5,
+      archiveFails: false,
+      refreshFails: false,
+    };
+    const ok = (json: unknown, status = 200) =>
+      ({ ok: true, status, json: async () => json });
+    const spy = vi.fn(withRefreshRunBridge(async (url, init) => {
+      if (url === "/api/me/usage-summary") {
+        return ok({
+          active_scenarios: state.active.length, max_active_scenarios: 10,
+          quota_exempt: false, last_activity_at: null,
+          best_return: state.best,
+          best_return_symbol: state.best === null ? null : "TLT",
+          best_return_strategy: null, best_return_target_month: null,
+        });
+      }
+      if (url === "/api/scenarios" && init?.method === "POST") {
+        const created = { ...baseRow, id: "s-new", symbol: "SPY",
+                          latest_analyzed_at: null, best_return: null };
+        state.active.push(created);
+        return ok(created, 201);
+      }
+      if (url === "/api/scenarios") return ok(state.active);
+      if (url === "/api/scenarios?include_archived=true") {
+        return ok([...state.active,
+                   ...state.archived.map((r) => ({ ...r, archived_at: "2026-08-05T00:00:00+00:00" }))]);
+      }
+      const id = decodeURIComponent(url.split("/")[3] ?? "");
+      if (url.endsWith("/archive")) {
+        if (state.archiveFails) {
+          return { ok: false, status: 500, json: async () => ({ detail: "封存失敗" }) };
+        }
+        const row = state.active.find((r) => r.id === id)!;
+        state.active = state.active.filter((r) => r.id !== id);
+        state.archived.push(row);
+        return ok({ archived: true });
+      }
+      if (url.endsWith("/restore")) {
+        const row = state.archived.find((r) => r.id === id)!;
+        state.archived = state.archived.filter((r) => r.id !== id);
+        state.active.push(row);
+        return ok({ restored: true });
+      }
+      if (url.endsWith("/refresh")) {
+        if (state.refreshFails) {
+          return { ok: false, status: 502,
+                   json: async () => ({ detail: { stage: "fetch", message: "抓不到報價" } }) };
+        }
+        state.best = state.refreshBest;
+        const row = state.active.find((r) => r.id === id) ?? baseRow;
+        return ok({ ...row, best_return: state.refreshBest });
+      }
+      if (url.startsWith("/api/scenarios/")) {
+        return ok(state.active.find((r) => r.id === id) ?? baseRow);
+      }
+      if (url === "/api/auth/status") return ok({ role: "normal" });
+      return ok({});
+    }));
+    vi.stubGlobal("fetch", spy);
+    const usageCalls = () =>
+      spy.mock.calls.filter(([u]) => u === "/api/me/usage-summary").length;
+    return { state, usageCalls };
+  }
+
+  /** 等開站那輪（掛載時抓一次＋開站刷新成功後失效重抓一次）完全落地。 */
+  async function settleStartup(usageCalls: () => number, strip: () => HTMLElement,
+                               text: string) {
+    await screen.findByRole("button", { name: "重新整理" });
+    await waitFor(() => expect(usageCalls()).toBe(2));
+    await waitFor(() => expect(within(strip()).getByText(text)).toBeInTheDocument());
+  }
+
+  const mobileStrip = () =>
+    document.querySelector(".mobile-stats-grid") as HTMLElement;
+  const desktopStrip = () =>
+    document.querySelector(".lib-stats-strip") as HTMLElement;
+  /** 換頁回來後 strip 重新掛載，等它出現在 DOM 上。 */
+  const mounted = (strip: () => HTMLElement | null) => waitFor(() => {
+    const el = strip();
+    expect(el).not.toBeNull();
+    return el as HTMLElement;
+  });
+
+  it("開站自動刷新成功後，最佳報酬跟上刷新結果（不再停在刷新前的舊值）", async () => {
+    const { state, usageCalls } = fakeBackend({ active: [baseRow] });
+    state.best = null;          // 開站前：還沒分析過
+    state.refreshBest = 1.8;    // 開站那輪刷新算出來的新值
+    render(<App />);
+
+    await settleStartup(usageCalls, mobileStrip, "180.0%");
+  });
+
+  it("手機：建立成功後「進行中劇本」立即 +1", async () => {
+    const { usageCalls } = fakeBackend({ active: [baseRow] });
+    render(<App />);
+    await settleStartup(usageCalls, mobileStrip, "1 / 10");
+
+    await openCreateForm();
+    await userEvent.type(screen.getByLabelText("標的代號"), "spy");
+    await userEvent.type(screen.getByLabelText("目標價位"), "700");
+    await pickMonth(2028, 5);
+    await userEvent.click(screen.getByRole("checkbox", { name: "Call / Put" }));
+    await userEvent.click(screen.getByRole("button", { name: "建立" }));
+
+    expect(await within(mobileStrip()).findByText("2 / 10")).toBeInTheDocument();
+  });
+
+  it("桌面：封存成功後「進行中劇本」立即 -1", async () => {
+    stubDesktopViewport();
+    const { usageCalls } = fakeBackend({ active: [baseRow, secondRow] });
+    render(<App />);
+    await settleStartup(usageCalls, desktopStrip, "2 / 10");
+
+    await userEvent.click(screen.getByRole("button", { name: "封存 TLT 2028-05" }));
+
+    expect(await within(desktopStrip()).findByText("1 / 10")).toBeInTheDocument();
+  });
+
+  it("封存失敗：摘要不重抓、數字不變（不顯示不存在的新狀態）", async () => {
+    const { state, usageCalls } = fakeBackend({ active: [baseRow, secondRow] });
+    render(<App />);
+    await settleStartup(usageCalls, mobileStrip, "2 / 10");
+    state.archiveFails = true;
+
+    await userEvent.click(screen.getByRole("button", { name: "封存 TLT 2028-05" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("封存失敗");
+    expect(usageCalls()).toBe(2);
+    expect(within(mobileStrip()).getByText("2 / 10")).toBeInTheDocument();
+  });
+
+  it("桌面：垃圾桶還原成功後，回到劇本庫「進行中劇本」已 +1；人在垃圾桶頁時不打摘要", async () => {
+    stubDesktopViewport();
+    const { usageCalls } = fakeBackend({ active: [baseRow], archived: [secondRow] });
+    render(<App />);
+    await settleStartup(usageCalls, desktopStrip, "1 / 10");
+
+    window.location.hash = "#/trash";
+    await userEvent.click(
+      await screen.findByRole("button", { name: "還原 SPY 2028-05" }));
+    await waitFor(() =>
+      expect(screen.queryByRole("button", { name: "還原 SPY 2028-05" }))
+        .not.toBeInTheDocument());
+    expect(usageCalls()).toBe(2);
+
+    window.location.hash = "";
+    expect(await within(await mounted(desktopStrip)).findByText("2 / 10"))
+      .toBeInTheDocument();
+    expect(usageCalls()).toBe(3);
+  });
+
+  it("手機：手動重新整理成功後，最佳報酬更新", async () => {
+    const { state, usageCalls } = fakeBackend({ active: [baseRow] });
+    render(<App />);
+    await settleStartup(usageCalls, mobileStrip, "150.0%");
+    state.refreshBest = 2.2;
+
+    await userEvent.click(screen.getByRole("button", { name: "重新整理" }));
+
+    expect(await within(mobileStrip()).findByText("220.0%")).toBeInTheDocument();
+  });
+
+  it("手動重新整理全部失敗：摘要不重抓、最佳報酬不變", async () => {
+    const { state, usageCalls } = fakeBackend({ active: [baseRow] });
+    render(<App />);
+    await settleStartup(usageCalls, mobileStrip, "150.0%");
+    state.refreshFails = true;
+    state.refreshBest = 9.9;   // 就算後端「本來會」算出新值，失敗的刷新也不能讓它出現
+
+    await userEvent.click(screen.getByRole("button", { name: "重新整理" }));
+    expect(await screen.findByText("0 成功／1 失敗")).toBeInTheDocument();
+
+    expect(usageCalls()).toBe(2);
+    expect(within(mobileStrip()).getByText("150.0%")).toBeInTheDocument();
+  });
+
+  it("手機：進詳細頁再返回劇本庫，不新增任何 usage-summary 請求", async () => {
+    const { usageCalls } = fakeBackend({ active: [baseRow] });
+    render(<App />);
+    await settleStartup(usageCalls, mobileStrip, "1 / 10");
+
+    // 「TLT」同時出現在卡片與 stats strip 的最佳報酬標的上，直接點卡片本身。
+    await userEvent.click(
+      document.querySelector<HTMLAnchorElement>(".compact-card-tap")!);
+    await screen.findByRole("link", { name: "‹ 劇本庫" });
+    window.location.hash = "";
+    expect(await within(await mounted(mobileStrip)).findByText("1 / 10"))
+      .toBeInTheDocument();
+
+    expect(usageCalls()).toBe(2);
+  });
+
+  it("桌面：切換篩選不新增任何 usage-summary 請求", async () => {
+    stubDesktopViewport();
+    const { usageCalls } = fakeBackend({ active: [baseRow, secondRow] });
+    render(<App />);
+    await settleStartup(usageCalls, desktopStrip, "2 / 10");
+
+    const direction = screen.getByRole("group", { name: "依方向篩選" });
+    for (const button of within(direction).getAllByRole("button")) {
+      await userEvent.click(button);
+    }
+    const status = screen.getByRole("group", { name: "依狀態篩選" });
+    for (const button of within(status).getAllByRole("button")) {
+      await userEvent.click(button);
+    }
+
+    expect(usageCalls()).toBe(2);
+  });
+});

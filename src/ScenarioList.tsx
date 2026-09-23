@@ -39,10 +39,8 @@
  * 直接依賴「三層堆疊」DOM 形狀本身（而非文字／class 存在性）的測試
  * 需要跟著改寫，改寫處皆附理由註解。
  */
-import { useEffect, useState } from "react";
-import { getUsageSummary,
-        type RefreshFailure, type ScenarioSummary,
-        type UsageSummary } from "./api";
+import { useState } from "react";
+import { type RefreshFailure, type ScenarioSummary } from "./api";
 import { CheckIcon, EditIcon, TrashIcon } from "./icons";
 import { formatMove, strategyLabel } from "./detail";
 import { detailHash } from "./route";
@@ -77,6 +75,7 @@ import {
   type StatusFilter,
 } from "./scenarios";
 import { useCountdownSeconds } from "./useCountdown";
+import { useUsageSummary } from "./usageSummaryStore";
 
 const DIRECTION_FILTER_OPTIONS: { value: DirectionFilter; label: string }[] = [
   { value: "all", label: "全部" },
@@ -386,8 +385,10 @@ function ScenarioCard({
 /**
  * OG-05（#324）：劇本庫頁首 stats strip——「我自己」的使用量，數字
  * 全部由 `GET /api/me/usage-summary` 一次給、前端零推算（票面明文）。
- * 掛載即抓、不快取（跟 `SuperUserAdmin.tsx::OpsStats()` 同一套簡單
- * 慣例——這是操作性統計，不是需要跨頁面共用或需要失效機制的資料）。
+ * SW-13（PR #344 P2）：原本「掛載即抓、不快取」——但 `App` 的開站
+ * 刷新／建立／編輯／封存／還原都不會讓這裡重新 mount，數字因此停在
+ * 舊值。改讀 `useUsageSummary()`（`./usageSummaryStore`），跟手機
+ * `MobileStatsStrip` 共用同一份、由 `App` 在操作成功後失效重抓。
  *
  * SW-03（#334，Seed Warm）：原本 Super Admin 額外看到的「Vendor 每日
  * 預算」／「429 事故」兩格（`OpsSuperAdminStats`）整個搬到 Super
@@ -398,16 +399,7 @@ function ScenarioCard({
  * 語彙，兩邊各自換皮、互不牽動）。
  */
 function UsageStatsStrip() {
-  const [usage, setUsage] = useState<UsageSummary | null>(null);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    let alive = true;
-    getUsageSummary()
-      .then((u) => alive && setUsage(u))
-      .catch((e) => alive && setError(e instanceof Error ? e.message : String(e)));
-    return () => { alive = false; };
-  }, []);
+  const { usage, error } = useUsageSummary();
 
   if (error) {
     // 刻意不用 `role="alert"`——這是一個背景 stats 方塊讀取失敗，不是

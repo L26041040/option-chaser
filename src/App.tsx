@@ -61,6 +61,7 @@ import TrashView from "./TrashView";
 import { useIsDesktop } from "./useIsDesktop";
 import { CloseIcon } from "./icons";
 import { invalidateScenarioCache } from "./fetchCache";
+import { invalidateUsageSummary } from "./usageSummaryStore";
 import {
   archiveScenario,
   createScenario,
@@ -185,6 +186,9 @@ export default function App() {
         const { [id]: _gone, ...rest } = prev;
         return rest;
       });
+      // SW-13（PR #344 P2）：新結果可能改變「最佳報酬」。只在成功分支
+      // 失效——失敗的刷新沒有改動後端，摘要本來就還是對的。
+      invalidateUsageSummary();
       return true;
     } catch (e) {
       setFailures((prev) => ({ ...prev, [id]: toFailure(e) }));
@@ -285,6 +289,11 @@ export default function App() {
       }
     } finally {
       setRunSummary(formatRunSummary(succeeded, failed));
+      // SW-13（PR #344 P2）：一整輪結束才失效一次（不是每個結果各一次），
+      // 而且至少有一個劇本真的拿到新結果才需要——全失敗代表後端沒變。
+      // 失敗隔離 fallback 走 `refreshOne()` 時它自己也會失效，重複的
+      // 失效由 `usageSummaryStore` 合併成最多一個進行中＋一個補抓。
+      if (succeeded > 0) invalidateUsageSummary();
     }
   }, [markUpdating, clearUpdating, refreshOne]);
 
@@ -413,6 +422,9 @@ export default function App() {
     // 與 `archive()` 的回滾同一個道理，做法要一致。
     setRows((prev) => [...prev, created]);
     setError(null);
+    // SW-13（PR #344 P2）：「進行中劇本」多了一個。建立失敗的話例外在
+    // 上面就已經往外拋，走不到這裡。
+    invalidateUsageSummary();
     // A2：建立成功才收合表單、捲動並聚焦到新卡片——失敗時 `createScenario`
     // 的例外會在這一行之前就往上拋出整個函式（見上面 `try/finally`），
     // 不會走到這裡，表單因此留在原地（draft 由 `CreateForm` 自己的
@@ -479,6 +491,9 @@ export default function App() {
     // Cache()` 檔內說明。下面的 `refreshOne(id)` 成功時會把新結果帶回
     // 來，但它失敗（quota／rate limit／vendor fuse）時就是這一行在擋。
     invalidateScenarioCache(id);
+    // SW-13（PR #344 P2）：同一個理由，改 thesis 會清掉舊結果，「最佳
+    // 報酬」可能因此換人或變成空的——下面的重新分析失敗時也要對得上。
+    invalidateUsageSummary();
     // 函式式更新：編輯這段期間刷新佇列很可能正在跑並且已經 setRows 過。
     setRows((prev) => prev.map((r) => (r.id === id ? updated : r)));
     setEditing(null);
@@ -502,6 +517,9 @@ export default function App() {
     setRows((prev) => prev.filter((r) => r.id !== id));
     try {
       await archiveScenario(id);
+      // SW-13（PR #344 P2）：畫面是樂觀移除，摘要不是——只在後端確認
+      // 封存成功後才失效，失敗回滾時摘要從頭到尾都沒動過。
+      invalidateUsageSummary();
     } catch (e) {
       if (removed) {
         setRows((prev) =>
@@ -527,6 +545,14 @@ export default function App() {
     const restored: ScenarioSummary = { ...row, archived_at: null };
     setRows((prev) =>
       (prev.some((r) => r.id === restored.id) ? prev : [...prev, restored]));
+    // SW-13（PR #344 P2）：`TrashView` 只在還原端點成功後才呼叫這裡。
+    // 人還在垃圾桶頁、stats strip 沒有掛著時只會標記過期，回到劇本庫
+    // 才抓一次——批量還原 N 筆也不會打出 N 個請求。
+    //
+    // 永久刪除（`TrashView` 的 `deleteScenario()`）刻意不接：它只作用
+    // 在已封存的劇本上，而後端摘要本來就不算已封存的劇本
+    // （`list_scenarios()` 預設排除），刪了也不會改變任何一格數字。
+    invalidateUsageSummary();
   }
 
   // ---------- 批次選取移入垃圾桶（TR6／#91） ----------
@@ -565,9 +591,11 @@ export default function App() {
   async function confirmBatchArchive() {
     const ids = [...selectedIds];
     const errors: Record<string, string> = {};
+    let archivedAny = false;
     for (const id of ids) {
       try {
         await archiveScenario(id);
+        archivedAny = true;
         setRows((prev) => prev.filter((r) => r.id !== id));
         setSelectedIds((prev) => {
           const next = new Set(prev);
@@ -578,6 +606,8 @@ export default function App() {
         errors[id] = e instanceof Error ? e.message : String(e);
       }
     }
+    // SW-13（PR #344 P2）：整批跑完失效一次，不是每筆各打一次摘要。
+    if (archivedAny) invalidateUsageSummary();
     // 全部成功才自動離開選取模式——有失敗的話留在選取模式裡，讓使用者
     // 看得到哪些還沒處理成功、為什麼，而不是靜靜地退出、下次得自己
     // 重新想起哪些沒成功。

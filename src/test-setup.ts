@@ -2,6 +2,7 @@ import { afterEach } from "vitest";
 
 import "@testing-library/jest-dom/vitest";
 import { _resetCacheForTests } from "./fetchCache";
+import { _resetUsageSummaryForTests } from "./usageSummaryStore";
 
 // T03（#187）：`fetchCache` 是模組層級的單例快取，會在測試之間持續
 // 存在——不清空的話，前一個測試 mock 的回應會被後一個測試沿用，兩者
@@ -9,6 +10,8 @@ import { _resetCacheForTests } from "./fetchCache";
 // 的既有假設。
 afterEach(() => {
   _resetCacheForTests();
+  // SW-13：usage-summary 共用 store 同理，也是模組層級單例。
+  _resetUsageSummaryForTests();
 });
 
 /**

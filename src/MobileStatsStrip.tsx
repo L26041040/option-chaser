@@ -1,8 +1,6 @@
-import { useEffect, useState } from "react";
-import type { UsageSummary } from "./api";
-import { getUsageSummary } from "./api";
 import { strategyLabel } from "./detail";
 import { formatReturn } from "./scenarios";
+import { useUsageSummary } from "./usageSummaryStore";
 
 /**
  * SW-04（#333，Seed Warm）→ SW-10（#340，Owner 真機驗收）：手機首頁
@@ -23,20 +21,13 @@ import { formatReturn } from "./scenarios";
  * 要求要有這一格、且核准過「不能再用既有 component 限制當理由」，
  * 所以不是撤回這個功能，而是既有 e2e 斷言改用 `.mobile-stats-grid`
  * 這類容器 scope 查詢來消歧義（見 e2e 測試改動）。
+ *
+ * SW-13（PR #344 P2）：資料改由 `useUsageSummary()`（`./usageSummary
+ * Store`）供應——跟桌面版共讀同一份，mutation／刷新成功後即時更新，
+ * 不再是掛載時抓一次就停住。
  */
 export default function MobileStatsStrip() {
-  const [usage, setUsage] = useState<UsageSummary | null>(null);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    let alive = true;
-    getUsageSummary()
-      .then((u) => alive && setUsage(u))
-      .catch((e) => alive && setError(e instanceof Error ? e.message : String(e)));
-    return () => {
-      alive = false;
-    };
-  }, []);
+  const { usage, error } = useUsageSummary();
 
   if (error) {
     // 同 `UsageStatsStrip` 既有理由：背景 stats 讀取失敗不搶頁面既有
