@@ -3175,6 +3175,26 @@ def _live_tables(conn) -> set[str]:
         "WHERE table_schema = 'public'").fetchall()}
 
 
+def _ensure_current_schema():
+    """讓下面兩條測試自己把 current schema 建好，不依賴別的測試先碰過 DB。
+
+    `PostgresStorage.__init__` 只記下 DSN、**不跑 DDL**——schema 是在第一次
+    `_connect()` 時由 `_ensure_schema()` 惰性建立的。LEGACY-DROP-AUDIT-001
+    實測過：只呼叫建構子、再用獨立連線查 `information_schema`，在一個乾淨
+    的空 DB 上單獨執行時，正向測試會把全部表誤報成不存在，反向測試更糟，
+    會在 0 張表的 DB 上假綠。
+
+    `_schema_ready` 是模組層級的「這個 DSN 已建過」快取；先把這個 DSN 從
+    裡面拿掉，`_ensure_schema()` 就一定會真的送 DDL（全是 `IF NOT EXISTS`，
+    重送無害），而不是因為同一個 process 早先建過而直接 return。只動測試
+    這一側的狀態，不改 production 行為。
+    """
+    from api_app.storage import postgres as pg
+
+    pg._schema_ready.discard(TEST_DB_URL)
+    pg.PostgresStorage(TEST_DB_URL)._ensure_schema()
+
+
 def test_every_owner_scoped_table_actually_exists_in_the_schema():
     """正向：`_OWNER_SCOPED_TABLES` 只能列真的建得出來的表。
 
@@ -3186,7 +3206,7 @@ def test_every_owner_scoped_table_actually_exists_in_the_schema():
 
     from api_app.storage import postgres as pg
 
-    pg.PostgresStorage(TEST_DB_URL)          # 建 schema（建構子會跑 DDL）
+    _ensure_current_schema()
     with psycopg.connect(TEST_DB_URL, autocommit=True) as conn:
         live = _live_tables(conn)
 
@@ -3210,8 +3230,6 @@ def test_no_table_with_an_owner_id_column_is_silently_left_out_of_the_lifecycle(
         pytest.skip("需要 OC_TEST_DATABASE_URL（一個跑著的 Postgres）")
     import psycopg
 
-    from api_app.storage import postgres as pg
-
     # `owners` 是 owner registry 本身（PB-01／#292）——它的主鍵就是
     # owner，由 `delete_owner()` 最後單獨處理，不是被它掃過的資料表。
     # `browser_identities`／`role_sessions` 是 AUTH 身分層，生命週期
@@ -3221,32 +3239,22 @@ def test_no_table_with_an_owner_id_column_is_silently_left_out_of_the_lifecycle(
     EXPECTED_EXCEPTIONS = {
         "owners", "browser_identities", "role_sessions", "superuser_audit_log",
     }
-    # ⚠ `narrow_history` 不是設計決定，是一個**待 Owner 裁示的已知問題**
-    # （ARCH-REVIEW-001／#343 發現，由這條測試抓到）：
-    #
-    # SW-12（#342）讓 Spread 淨成本走勢整個退休時，把這張表的 DDL 與所有
-    # 讀寫路徑都移除了，也從 `_OWNER_SCOPED_TABLES` 拿掉（留著會讓全新
-    # 部署炸）。Owner 當時明示「舊資料可暫留資料庫，不做高風險 migration」。
-    #
-    # 副作用當時沒有被看見：**既有部署**（含 Production）裡這張表還在，
-    # 而且帶 `owner_id`。它現在既不在 lifecycle 清單、也沒有任何程式碼
-    # 碰它，所以使用者按「刪除我的所有資料」（PB-04／#296）時，他存在
-    # 這張表裡的舊列不會被刪掉。
-    #
-    # 三個處置方向（選哪個是 Owner 的決定，不是這條測試的）：
-    #   (a) 在既有部署 `DROP TABLE narrow_history`——徹底，但是不可逆操作；
-    #   (b) 加回清單並讓 lifecycle 操作容忍「表不存在」，新舊部署都安全；
-    #   (c) 明確接受這批 orphan 資料留著。
-    # 在 Owner 裁示前，這裡列為例外以免整套測試紅著——但註解必須留著，
-    # 讓它是一個看得見的未決事項，而不是被靜音的問題。
-    EXPECTED_EXCEPTIONS.add("narrow_history")
 
-    pg.PostgresStorage(TEST_DB_URL)
+    from api_app.storage import postgres as pg
+
+    _ensure_current_schema()
     with psycopg.connect(TEST_DB_URL, autocommit=True) as conn:
         with_owner_col = {r[0] for r in conn.execute(
             "SELECT table_name FROM information_schema.columns "
             "WHERE table_schema = 'public' AND column_name = 'owner_id'"
         ).fetchall()}
+
+    # 前置條件：這條測試靠「差集為空」判定通過，所以 schema 若根本不存在，
+    # 差集也會是空的——那就是 false-green。先確認真的讀到了 owner-scoped
+    # 的表，才讓下面的差集有意義。
+    assert set(pg.PostgresStorage._OWNER_SCOPED_TABLES) <= with_owner_col, (
+        "沒讀到預期的 owner-scoped 表，schema 可能沒建起來——"
+        "這種情況下差集為空不代表通過。")
 
     unaccounted = (with_owner_col
                    - set(pg.PostgresStorage._OWNER_SCOPED_TABLES)

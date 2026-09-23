@@ -330,9 +330,9 @@ CREATE TABLE IF NOT EXISTS operational_metrics (
 );
 -- SW-12（#342）：`narrow_history`（SCALE-09／#261 引入的 Spread 淨
 -- 成本走勢熱快取）隨該功能整個退休——不再 `CREATE TABLE IF NOT
--- EXISTS`／`ALTER TABLE`。既有部署裡這張表若已經存在，資料原地保留
--- （Owner 明文裁示：不做高風險 migration 清舊資料，只要求新寫入流程
--- 不再依賴它），只是程式碼不再宣告、不再讀寫這張表。
+-- EXISTS`／`ALTER TABLE`，程式碼也不再讀寫這張表。Production 上的
+-- 實體表已由 Owner 在 dependency audit 後正式 DROP（LEGACY-CLEANUP-003），
+-- 不存在任何仍帶著這張表的部署需要相容。
 -- SCALE-13（#264，Scaling Foundation Ownership A-1 Contract）：3 張
 -- singleton／provider-key 表（`data_source_settings`／
 -- `provider_credentials`／`provider_verifications`）不能用「加欄位再
@@ -1111,9 +1111,9 @@ class PostgresStorage:
     #   3 張 `owner_*`）。
     # SW-12（#342）：`narrow_history`（SCALE-09／#261 引入，SCALE-14／
     # #265 補上 owner_id）隨 Spread 淨成本走勢功能整個退休，已從這份
-    # 清單移除——那張表若在既有部署裡還存在，不再由 `migrate_owner()`／
-    # `delete_owner()` 觸碰；新部署從頭就不會建立這張表，繼續把它留在
-    # 清單裡對新部署會是「表不存在」的執行期錯誤，不是保守選擇。
+    # 清單移除——任何部署都不再建立這張表（Production 的實體表也已由
+    # Owner 正式 DROP，LEGACY-CLEANUP-003），留在清單裡只會讓
+    # `migrate_owner()`／`delete_owner()` 對不存在的表下 SQL 而炸掉。
     _OWNER_SCOPED_TABLES = (
         "scenarios", "results", "snapshots", "events", "diagnostics",
         "current_results", "owner_settings",

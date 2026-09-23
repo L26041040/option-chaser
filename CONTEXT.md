@@ -280,9 +280,8 @@ audit log／event**——這是操作安全護欄，不是權限限制。
 **Hard Delete（永久清除）** — 對一個匿名擁有者執行的 **owner-wide
 deletion primitive**：必須完整處理 `scenarios`／`results`／
 `snapshots`／`events`／`current_results`（既有 5 張，但要接上真正
-owner-wide 呼叫）＋`narrow_history`（既有 `delete_scenario()` 遺漏
-的孤兒表）＋`diagnostics`／`owner_settings`／`owner_credentials`／
-`owner_verifications`。**Shared market facts 不跟著任何 owner 刪**
+owner-wide 呼叫）＋`diagnostics`／`owner_settings`／
+`owner_credentials`／`owner_verifications`。**Shared market facts 不跟著任何 owner 刪**
 ——`rate_cache`／`treasury_year_cache`／`dividend_cache`／
 `chain_backoff`／`operational_metrics`／`contract_iv_history`／
 `iv_observations`／`iv_backfill_runs` 這些 system-wide 表與單一
