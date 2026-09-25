@@ -330,7 +330,19 @@ class OwnerLifecycleFacts:
     last_seen_at: str | None
     has_data: bool
     protected: bool
-    is_synthetic: bool
+
+
+@dataclass(frozen=True)
+class RateLimitBucket:
+    """SECURITY-FIX-02：一個短時間窗計數格——`(scope, key)` 這個對象在
+    `[window_start, window_start + window_seconds)` 這段時間內最多
+    `limit` 次。視窗起點由呼叫端算（per-owner／source 用 UTC 對齊，
+    new-owner tier 用 global fuse 同一條紐約日界線）。"""
+    scope: str
+    key: str
+    window_seconds: int
+    window_start: int
+    limit: int
 
 
 @dataclass(frozen=True)
@@ -1152,19 +1164,19 @@ class Storage(Protocol):
         一次查詢取得。本方法不套用任何判準——判準在
         `api_app.anonymous_lifecycle.classify()`，這裡只供事實。"""
 
-    def rate_limit_consume(self, scope: str, key: str,
-                           windows: list[tuple[int, int, int]]) -> int | None:
-        """SECURITY-FIX-02：短時間窗濫用計數的「檢查＋扣一次」。
+    def rate_limit_consume(self, buckets: Sequence[RateLimitBucket]) -> int | None:
+        """SECURITY-FIX-02：短時間窗濫用計數的「檢查＋扣一次」，**跨所有
+        bucket 原子、全有或全無**。
 
-        `windows` 每一項是 `(window_seconds, window_start_epoch, limit)`
-        ——視窗起點由呼叫端算（per-owner／source 用 UTC 對齊，new-owner
-        tier 用 global fuse 同一條紐約日界線）。任何一個視窗已經達到上限
-        就回那個視窗的索引、**全部都不扣**；全部還有額度就全部加一、回
-        `None`。
+        任何一個 bucket 已經達到上限就回那個 bucket 在 `buckets` 裡的
+        索引、**全部都不扣**；全部還有額度才全部加一、回 `None`。呼叫端
+        因此可以把「這一次上游抓取」要過的每一層（per-owner、source、
+        new-owner tier）一次交進來：被任何一層擋下的那次，不會先在前面
+        幾層被扣掉額度——額度只算真的放行（＝真的打上游）的那幾次。
 
-        「先讀再加」在極端並發下可能多放行幾次（上限是軟性的）——這裡
-        擋的是自動化濫用的速率，不是需要精確到個位數的配額帳本；最後的
-        成本上限仍是 global vendor fuse。"""
+        並發下是精確的，不是軟性上限：多個 serverless instance 同時扣
+        同一格時，後到的會等先到的交易結束再讀到新的計數（Postgres 用
+        列鎖、依主鍵順序上鎖避免死結；記憶體後端用 lock）。"""
 
     def purge_rate_limits(self, *, before_epoch: int) -> int:
         """刪掉視窗在 `before_epoch` 之前就已經結束的計數列，回傳刪了

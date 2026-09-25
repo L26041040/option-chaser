@@ -154,20 +154,23 @@ metrics` 表的資料不影響任何產品資料，可保留或清空。這個�
 逆的 HMAC key（每天輪替），IP 本身從不寫進資料庫。沒設的話，來源層
 爆量限流與登入暴力猜測防護會**明確停用**（`/api/ops/metrics` 的
 `abuse_control.source_limiter` 會顯示 `disabled_missing_secret`），
-不會悄悄改用寫死的 key。
+不會悄悄改用寫死的 key；值跟 `CRON_SECRET` 或任一把角色密碼相同時
+同樣明確停用（顯示 `disabled_reused_secret`）。
 
 來源 IP：只在 Vercel 上（`VERCEL` 環境變數存在）才信任
 `x-forwarded-for`——Vercel 會覆寫這個 header、不轉送外部送進來的值
 （[官方文件](https://vercel.com/docs/headers/request-headers)）。其他
 環境一律用 TCP 對端位址。`TRUSTED_CLIENT_IP_HEADER` 可覆寫（`none`＝
-一律用對端位址）。
+一律用對端位址）。**不要**在非 Vercel 環境設成 `x-forwarded-for`：
+那種環境的這個 header 可由用戶端任意偽造。
 
-以下全部**選用**，不設就用程式內建的 Launch Safety Defaults；`<=0`
-停用該項：
+各層一次原子檢查：被任何一層擋下的那次不打上游，也不扣任何一層的
+額度。以下全部**選用**，不設就用程式內建的 Launch Safety Defaults；
+`<=0` 停用該項：
 
 | 環境變數 | 預設 | 意義 |
 |---|---|---|
-| `OWNER_VENDOR_QUOTA_PER_MINUTE`／`_PER_HOUR`／`_PER_DAY` | 60／300／800 | Normal User 每個瀏覽器準備打上游的次數；Super User／Super Admin 豁免 |
+| `OWNER_VENDOR_QUOTA_PER_MINUTE`／`_PER_HOUR`／`_PER_DAY` | 60／300／800 | Normal User 每個瀏覽器準備打上游的次數；Super User／Super Admin 豁免（source 爆量上限與 global fuse 照樣適用） |
 | `SOURCE_VENDOR_BURST_PER_MINUTE`／`_PER_HOUR` | 120／600 | 同一來源（IPv6 聚合到 /64）的爆量上限；刻意沒有每日上限（避免大型 NAT 誤傷） |
 | `NEW_OWNER_TIER_SHARE` | 0.4 | 建立未滿 24 小時的匿名 owner 全體最多用 global fuse 的比例 |
 | `NEW_OWNER_TIER_AGE_HOURS` | 24 | 多新算「新 owner」 |

@@ -18,6 +18,7 @@ from api_app import abuse_control as ac
 from api_app import metrics
 from api_app.clock import ny_today
 from api_app.main import create_app
+from api_app.storage import RateLimitBucket
 from api_app.storage.memory import MemoryStorage
 from option_chaser.data.snapshot import load_snapshot
 
@@ -86,7 +87,8 @@ def _stage(r):
 
 def _seed(storage, scope, key, seconds, start, count):
     for _ in range(count):
-        assert storage.rate_limit_consume(scope, key, [(seconds, start, 10**9)]) is None
+        assert storage.rate_limit_consume(
+            [RateLimitBucket(scope, key, seconds, start, 10**9)]) is None
 
 
 def _metric(storage, name):
@@ -142,6 +144,21 @@ def test_superuser_and_superadmin_are_exempt_from_owner_quota(env, password):
 
 
 @pytest.mark.parametrize("password", [SU_PW, SA_PW])
+def test_superuser_and_superadmin_are_still_subject_to_source_burst(env, password):
+    """豁免只到 owner 層；同一個來源的機器速率照樣擋。"""
+    app, storage, clock, cboe = env
+    c, sid, _ = _new_owner_with_scenario(app, storage)
+    c.post("/api/auth/login", json={"password": password}).raise_for_status()
+    key = ac.source_key(IP_A, SECRET, clock())
+    _seed(storage, "source_vendor", key, ac.MINUTE,
+          ac.window_start(clock(), ac.MINUTE), 120)
+    calls = cboe.calls
+    r = _refresh(c, sid)
+    assert r.status_code == 429 and _stage(r) == "usage_limited"
+    assert cboe.calls == calls
+
+
+@pytest.mark.parametrize("password", [SU_PW, SA_PW])
 def test_superuser_and_superadmin_still_hit_the_global_fuse(env, password):
     app, storage, _, cboe = env
     c, sid, _ = _new_owner_with_scenario(app, storage)
@@ -153,6 +170,38 @@ def test_superuser_and_superadmin_still_hit_the_global_fuse(env, password):
     assert _stage(r) == "vendor_budget_exhausted"
     assert cboe.calls == calls
     assert _metric(storage, "global_fuse_block_count") == 1
+
+
+# ---------- 被擋的那次不扣任何一層（額度只算真的上游抓取） ----------
+
+def _owner_counts(storage, owner):
+    return {slot[2]: n for slot, n in storage._rate_limits.items()
+            if slot[0] == "owner_vendor" and slot[1] == owner}
+
+
+def test_a_source_block_does_not_spend_the_owner_quota(env):
+    app, storage, clock, cboe = env
+    c, sid, owner = _new_owner_with_scenario(app, storage)
+    _age_owner(storage, owner, 2)
+    before = _owner_counts(storage, owner)
+    key = ac.source_key(IP_A, SECRET, clock())
+    _seed(storage, "source_vendor", key, ac.MINUTE,
+          ac.window_start(clock(), ac.MINUTE), 120)
+    for _ in range(3):
+        assert _refresh(c, sid).status_code == 429
+    assert _owner_counts(storage, owner) == before
+
+
+def test_a_new_owner_tier_block_spends_neither_owner_nor_source(env):
+    app, storage, clock, cboe = env
+    c, sid, owner = _new_owner_with_scenario(app, storage)     # 新 owner
+    day, start = ac.ny_day_bounds(clock())
+    _seed(storage, "new_owner_tier", day, ac.DAY, start, 800)
+    before = dict(storage._rate_limits)
+    r = _refresh(c, sid)
+    assert r.status_code == 429 and _stage(r) == "vendor_budget_exhausted"
+    assert dict(storage._rate_limits) == before
+    assert _metric(storage, "new_owner_tier_block_count") == 1
 
 
 # ---------- source burst（120／分、600／時，沒有每日上限） ----------
@@ -343,6 +392,24 @@ def test_missing_secret_explicitly_disables_source_and_login_limits():
     status = c.get("/api/ops/metrics").json()["abuse_control"]
     assert status["source_limiter"] == "disabled_missing_secret"
     assert SECRET not in repr(status) and "fake" not in repr(status)
+
+
+@pytest.mark.parametrize("reused", ["cron", "superuser", "superadmin"])
+def test_secret_reused_from_a_password_explicitly_disables_source_limits(reused):
+    values = {"cron": "fake-cron-secret", "superuser": SU_PW, "superadmin": SA_PW}
+    storage = MemoryStorage()
+    app = create_app(cboe_fetch=CountingCboe(), storage=storage,
+                     source_hmac_secret=f"  {values[reused]} ",
+                     trusted_ip_header="x-forwarded-for",
+                     superuser_password=SU_PW, superadmin_password=SA_PW,
+                     cron_secret="fake-cron-secret")
+    c = _browser(app)
+    for _ in range(15):
+        assert c.post("/api/auth/login", json={"password": "wrong"}).status_code == 401
+    assert not any(scope in ("login", "source_vendor") for scope, *_ in storage._rate_limits)
+    c.post("/api/auth/login", json={"password": SA_PW}).raise_for_status()
+    status = c.get("/api/ops/metrics").json()["abuse_control"]
+    assert status["source_limiter"] == "disabled_reused_secret"
 
 
 # ---------- 登入暴力猜測 ----------

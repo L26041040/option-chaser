@@ -17,6 +17,7 @@ Python dict，不需自己 `json.dumps`。時間欄位存 ISO 字串而非 times
 from __future__ import annotations
 
 import contextvars
+from collections.abc import Sequence
 from contextlib import contextmanager
 
 import psycopg
@@ -26,6 +27,7 @@ from . import (BrowserIdentity, ChainBackoffEntry, ContractHistory,
                DataSourceSettings, DividendCacheEntry, IvBackfillRun,
                IvObservation, MetricEntry, Owner, OwnerLifecycleFacts,
                ProviderCredential, ProviderVerification, RateCacheEntry,
+               RateLimitBucket,
                ResultFactContext, ResultRecord, ResultSummary, RoleSession,
                Scenario, ScenarioExists, SuperUserAuditEvent,
                TreasuryYearCacheEntry, UsageSetting, require_owner)
@@ -1256,7 +1258,7 @@ class PostgresStorage:
                 "(EXISTS (SELECT 1 FROM scenarios s WHERE s.owner_id = o.owner_id) "
                 " OR EXISTS (SELECT 1 FROM owner_settings st WHERE st.owner_id = o.owner_id) "
                 " OR EXISTS (SELECT 1 FROM owner_credentials c WHERE c.owner_id = o.owner_id)) "
-                "AS has_data, o.protected, o.is_synthetic "
+                "AS has_data, o.protected "
                 "FROM owners o "
                 "LEFT JOIN (SELECT owner_id, max(last_seen_at) AS last_seen "
                 "           FROM browser_identities GROUP BY owner_id) bi "
@@ -1264,32 +1266,41 @@ class PostgresStorage:
                 "ORDER BY o.created_at, o.owner_id").fetchall()
         return [OwnerLifecycleFacts(owner_id=r[0], created_at=r[1],
                                     last_seen_at=r[2], has_data=r[3],
-                                    protected=r[4], is_synthetic=r[5])
+                                    protected=r[4])
                 for r in rows]
 
-    def rate_limit_consume(self, scope: str, key: str,
-                           windows: list[tuple[int, int, int]]) -> int | None:
-        if not windows:
+    def rate_limit_consume(self, buckets: Sequence[RateLimitBucket]) -> int | None:
+        if not buckets:
             return None
+        # 依主鍵排序後逐列建立（不存在時 count=0）再逐列 `FOR UPDATE`：
+        # 所有交易都用同一個順序拿鎖，重疊的 bucket 集合不會互相死結。
+        order = sorted(range(len(buckets)), key=lambda i: (
+            buckets[i].scope, buckets[i].key, buckets[i].window_seconds,
+            buckets[i].window_start))
         with self._connect() as conn:
             with conn.transaction():
-                rows = conn.execute(
-                    "SELECT window_seconds, window_start, count FROM rate_limits "
-                    "WHERE scope = %s AND key = %s AND (window_seconds, window_start) "
-                    "IN (SELECT * FROM unnest(%s::int[], %s::bigint[]))",
-                    (scope, key, [w[0] for w in windows],
-                     [w[1] for w in windows])).fetchall()
-                current = {(r[0], r[1]): r[2] for r in rows}
-                for i, (seconds, start, limit) in enumerate(windows):
-                    if current.get((seconds, start), 0) >= limit:
-                        return i
-                for seconds, start, _limit in windows:
+                counts: dict[int, int] = {}
+                for i in order:
+                    b = buckets[i]
+                    pk = (b.scope, b.key, b.window_seconds, b.window_start)
                     conn.execute(
                         "INSERT INTO rate_limits (scope, key, window_seconds, "
-                        "window_start, count) VALUES (%s, %s, %s, %s, 1) "
+                        "window_start, count) VALUES (%s, %s, %s, %s, 0) "
                         "ON CONFLICT (scope, key, window_seconds, window_start) "
-                        "DO UPDATE SET count = rate_limits.count + 1",
-                        (scope, key, seconds, start))
+                        "DO NOTHING", pk)
+                    counts[i] = conn.execute(
+                        "SELECT count FROM rate_limits WHERE scope = %s AND "
+                        "key = %s AND window_seconds = %s AND window_start = %s "
+                        "FOR UPDATE", pk).fetchone()[0]
+                for i, b in enumerate(buckets):
+                    if counts[i] >= b.limit:
+                        return i
+                for i in order:
+                    b = buckets[i]
+                    conn.execute(
+                        "UPDATE rate_limits SET count = count + 1 WHERE scope = %s "
+                        "AND key = %s AND window_seconds = %s AND window_start = %s",
+                        (b.scope, b.key, b.window_seconds, b.window_start))
         return None
 
     def purge_rate_limits(self, *, before_epoch: int) -> int:

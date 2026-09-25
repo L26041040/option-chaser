@@ -10,12 +10,14 @@ import dataclasses
 import threading
 import json
 from collections import deque
+from collections.abc import Sequence
 from contextlib import contextmanager
 
 from . import (BrowserIdentity, ChainBackoffEntry, ContractHistory,
                DataSourceSettings, DividendCacheEntry, IvBackfillRun,
                IvObservation, MetricEntry, Owner, OwnerLifecycleFacts,
                ProviderCredential, ProviderVerification, RateCacheEntry,
+               RateLimitBucket,
                ResultFactContext, ResultRecord, ResultSummary, RoleSession,
                Scenario, ScenarioExists, SuperUserAuditEvent,
                TreasuryYearCacheEntry, require_owner)
@@ -495,18 +497,18 @@ class MemoryStorage:
                      has_data=(o.owner_id in with_scenarios
                                or o.owner_id in with_settings
                                or o.owner_id in with_credentials),
-                     protected=o.protected, is_synthetic=o.is_synthetic)
+                     protected=o.protected)
                  for o in self._owners.values()]
         return sorted(facts, key=lambda f: (f.created_at, f.owner_id))
 
-    def rate_limit_consume(self, scope: str, key: str,
-                           windows: list[tuple[int, int, int]]) -> int | None:
+    def rate_limit_consume(self, buckets: Sequence[RateLimitBucket]) -> int | None:
         with self._claim_lock:
-            for i, (seconds, start, limit) in enumerate(windows):
-                if self._rate_limits.get((scope, key, seconds, start), 0) >= limit:
+            slots = [(b.scope, b.key, b.window_seconds, b.window_start)
+                     for b in buckets]
+            for i, (slot, b) in enumerate(zip(slots, buckets)):
+                if self._rate_limits.get(slot, 0) >= b.limit:
                     return i
-            for seconds, start, _limit in windows:
-                slot = (scope, key, seconds, start)
+            for slot in slots:
                 self._rate_limits[slot] = self._rate_limits.get(slot, 0) + 1
         return None
 

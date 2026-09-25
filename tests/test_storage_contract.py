@@ -21,7 +21,7 @@ from api_app.storage import (BrowserIdentity, ChainBackoffEntry,
                              DividendCacheEntry, IvBackfillRun, IvObservation,
                              Owner, ProviderCredential,
                              ProviderVerification, RateCacheEntry,
-                             ResultRecord, RoleSession, Scenario,
+                             RateLimitBucket, ResultRecord, RoleSession, Scenario,
                              ScenarioExists, SuperUserAuditEvent,
                              TreasuryYearCacheEntry, UsageSetting)
 from api_app.storage.memory import MemoryStorage
@@ -903,37 +903,87 @@ def test_owner_lifecycle_facts_counts_archived_scenarios_as_data(storage):
 
 # ---------- SECURITY-FIX-02：短時間窗濫用計數 ----------
 
+def _bucket(scope, key, seconds, start, limit):
+    return RateLimitBucket(scope, key, seconds, start, limit)
+
+
 def test_rate_limit_consume_allows_up_to_the_limit_then_blocks(storage):
-    windows = [(60, 1_000_020, 3)]
-    assert [storage.rate_limit_consume("owner", "k1", windows) for _ in range(3)] \
-        == [None, None, None]
-    assert storage.rate_limit_consume("owner", "k1", windows) == 0
+    b = [_bucket("owner", "k1", 60, 1_000_020, 3)]
+    assert [storage.rate_limit_consume(b) for _ in range(3)] == [None, None, None]
+    assert storage.rate_limit_consume(b) == 0
     # 別的 key、別的 scope、下一個視窗各自獨立
-    assert storage.rate_limit_consume("owner", "k2", windows) is None
-    assert storage.rate_limit_consume("source", "k1", windows) is None
-    assert storage.rate_limit_consume("owner", "k1", [(60, 1_000_080, 3)]) is None
+    assert storage.rate_limit_consume([_bucket("owner", "k2", 60, 1_000_020, 3)]) is None
+    assert storage.rate_limit_consume([_bucket("source", "k1", 60, 1_000_020, 3)]) is None
+    assert storage.rate_limit_consume([_bucket("owner", "k1", 60, 1_000_080, 3)]) is None
 
 
 def test_rate_limit_consume_is_all_or_nothing_across_windows(storage):
-    minute, hour = (60, 1_000_020, 100), (3600, 997_200, 2)
-    assert storage.rate_limit_consume("owner", "k", [minute, hour]) is None
-    assert storage.rate_limit_consume("owner", "k", [minute, hour]) is None
-    assert storage.rate_limit_consume("owner", "k", [minute, hour]) == 1   # hour 滿了
+    minute = _bucket("owner", "k", 60, 1_000_020, 100)
+    hour = _bucket("owner", "k", 3600, 997_200, 2)
+    assert storage.rate_limit_consume([minute, hour]) is None
+    assert storage.rate_limit_consume([minute, hour]) is None
+    assert storage.rate_limit_consume([minute, hour]) == 1   # hour 滿了
     # 被擋的那次沒有扣 minute：minute 還剩 98，hour 仍然擋
-    assert storage.rate_limit_consume("owner", "k", [(60, 1_000_020, 2)]) == 0
+    assert storage.rate_limit_consume([_bucket("owner", "k", 60, 1_000_020, 2)]) == 0
+
+
+def test_rate_limit_consume_is_all_or_nothing_across_scopes(storage):
+    """一次交進多個 scope（per-owner＋source＋tier）：任何一個滿了，其他
+    scope 的計數也都不動——被擋的那次不在前面幾層偷偷扣額度。"""
+    owner = _bucket("owner_vendor", "o", 60, 1_000_020, 5)
+    source = _bucket("source_vendor", "s", 60, 1_000_020, 1)
+    assert storage.rate_limit_consume([owner, source]) is None
+    for _ in range(3):
+        assert storage.rate_limit_consume([owner, source]) == 1
+    # owner 只被扣了真正放行的那一次：還剩 4
+    only_owner = [_bucket("owner_vendor", "o", 60, 1_000_020, 5)]
+    assert [storage.rate_limit_consume(only_owner) for _ in range(5)] \
+        == [None, None, None, None, 0]
+
+
+def test_rate_limit_consume_is_exact_under_concurrency(storage):
+    """多個 instance 同時扣同一格：放行次數恰好等於上限，不會多放。"""
+    import threading
+
+    limit, workers = 5, 12
+    buckets = [_bucket("new_owner_tier", "2026-09-25", 86400, 1_000_000, limit),
+               _bucket("source_vendor", "shared", 60, 1_000_020, 1_000)]
+    barrier = threading.Barrier(workers)
+    results = []
+    lock = threading.Lock()
+
+    def worker():
+        barrier.wait()
+        r = storage.rate_limit_consume(buckets)
+        with lock:
+            results.append(r)
+
+    threads = [threading.Thread(target=worker) for _ in range(workers)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert results.count(None) == limit
+    assert results.count(0) == workers - limit
+    # 被擋的那幾次也沒有扣到 source
+    assert storage.rate_limit_consume(
+        [_bucket("source_vendor", "shared", 60, 1_000_020, limit + 1)]) is None
+    assert storage.rate_limit_consume(
+        [_bucket("source_vendor", "shared", 60, 1_000_020, limit + 1)]) == 0
 
 
 def test_purge_rate_limits_drops_only_finished_windows(storage):
-    storage.rate_limit_consume("source", "old", [(60, 1_000_000, 5)])
-    storage.rate_limit_consume("source", "live", [(3600, 1_000_000, 5)])
+    storage.rate_limit_consume([_bucket("source", "old", 60, 1_000_000, 5)])
+    storage.rate_limit_consume([_bucket("source", "live", 3600, 1_000_000, 5)])
     removed = storage.purge_rate_limits(before_epoch=1_000_061)
     assert removed == 1
     # 還活著的視窗計數保留：再扣 4 次到上限、第 5 次擋
+    live = [_bucket("source", "live", 3600, 1_000_000, 5)]
     for _ in range(4):
-        assert storage.rate_limit_consume("source", "live", [(3600, 1_000_000, 5)]) is None
-    assert storage.rate_limit_consume("source", "live", [(3600, 1_000_000, 5)]) == 0
+        assert storage.rate_limit_consume(live) is None
+    assert storage.rate_limit_consume(live) == 0
     # 已清掉的那個從零開始
-    assert storage.rate_limit_consume("source", "old", [(60, 1_000_000, 1)]) is None
+    assert storage.rate_limit_consume([_bucket("source", "old", 60, 1_000_000, 1)]) is None
 
 
 def test_is_synthetic_defaults_to_false_and_round_trips_true(storage):

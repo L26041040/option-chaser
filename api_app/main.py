@@ -49,8 +49,8 @@ from .rate_cache import cached_loader
 from .storage import (BrowserIdentity, ContractHistory, DataSourceSettings,
                       IvBackfillRun, IvObservation,
                       Owner, ProviderCredential, ProviderVerification,
-                      RateCacheEntry, ResultRecord, ResultSummary,
-                      RoleSession, Scenario, ScenarioExists, Storage,
+                      RateCacheEntry, RateLimitBucket, ResultRecord,
+                      ResultSummary, RoleSession, Scenario, ScenarioExists, Storage,
                       SuperUserAuditEvent, UsageSetting)
 from .storage.factory import database_url_candidates, storage_from_env
 from .treasury_cache import cached_rate_curve_rows
@@ -90,8 +90,10 @@ _OWNER_COOKIE_MAX_AGE_SECONDS = 180 * 24 * 60 * 60
 # cookie，重新簽發——不接受任意短字串當身份。
 _OWNER_TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{22,128}$")
 
-# AUTH-02（#309）：role-session cookie（軸二）沿用同一個持久 TTL 量級
-# ——票面明文「比照既有 owner cookie 的既有持久 TTL/Max-Age 慣例」。
+# AUTH-02（#309）：role-session cookie（軸二）沿用當時 owner cookie 的
+# 400 天持久 TTL——票面明文「比照既有 owner cookie 的既有持久 TTL/Max-Age
+# 慣例」。SECURITY-FIX-01 只把 owner cookie 改成 180 天，role cookie
+# 刻意維持 400 天不動（角色 session 不在這張票範圍內）。
 # **刻意不做滑動窗續命**：owner cookie 的續命邏輯活在
 # `_call_within_owner_scope()` 這個共用 middleware 裡，若要讓 role
 # cookie 也在每次請求後續命，middleware 就必須認識軸二的 cookie 名字
@@ -1118,12 +1120,23 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
     _effective_source_hmac_secret = (
         (source_hmac_secret if source_hmac_secret is not None
          else os.environ.get("SOURCE_HMAC_SECRET")) or None)
+    _source_limiter_state = "enabled"
+    if _effective_source_hmac_secret is None:
+        _source_limiter_state = "disabled_missing_secret"
+    elif _effective_source_hmac_secret.strip() in {
+            (v or "").strip() for v in (_effective_cron_secret,
+                                        _effective_superuser_password,
+                                        _effective_superadmin_password)} - {""}:
+        # 跟密碼／cron secret 同一個值：同樣明確停用（fail closed），
+        # 不拿登入密碼當 HMAC key。
+        _effective_source_hmac_secret = None
+        _source_limiter_state = "disabled_reused_secret"
     _effective_trusted_ip_header = (
         ac.default_trusted_ip_header() if trusted_ip_header is _AUTO
         else trusted_ip_header)
-    if _effective_source_hmac_secret is None and os.environ.get("VERCEL"):
-        _logger.warning(
-            "SOURCE_HMAC_SECRET 未設定：source burst 與登入限流已停用")
+    if _source_limiter_state != "enabled" and os.environ.get("VERCEL"):
+        _logger.warning("SOURCE_HMAC_SECRET 未設定或與其他密鑰相同：source "
+                        "burst 與登入限流已停用（%s）", _source_limiter_state)
     # PB-11（#303）：SMTP 設定沿用 `_effective_cron_secret`／
     # `_effective_superadmin_password` 同一套「顯式傳入（含空字串）
     # 完全採用，`None` 才讀環境變數」慣例——`digest_smtp_port` 是唯一
@@ -1385,9 +1398,7 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         return cached_treasury_rows["fn"]
 
     def _source_limiter_status() -> str:
-        if _effective_source_hmac_secret is None:
-            return "disabled_missing_secret"
-        return "enabled"
+        return _source_limiter_state
 
     def _request_source_key(request: Request | None) -> str | None:
         """這次 request 的 source key（HMAC，不是 IP）；secret 沒設、
@@ -1400,11 +1411,17 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
             return None
         return ac.source_key(ip, _effective_source_hmac_secret, _clock())
 
-    def _windows(now: float, *pairs: tuple[int, int]) -> list[tuple[int, int, int]]:
-        return [(seconds, ac.window_start(now, seconds), limit)
+    def _buckets(scope: str, key: str, now: float,
+                 *pairs: tuple[int, int]) -> list[RateLimitBucket]:
+        """`(視窗秒數, 上限)` → 對齊好起點的 bucket；上限 `<=0` 的視窗停用。"""
+        return [RateLimitBucket(scope, key, seconds, ac.window_start(now, seconds), limit)
                 for seconds, limit in pairs if limit > 0]
 
     def _is_new_owner(owner_id: str, now: float) -> bool:
+        # 還沒綁定的佔位 owner（正常流程不會走到抓鏈，見
+        # `_persistent_owner()`）保守視為新 owner：寧可多算進 tier。
+        if is_pending_owner(owner_id):
+            return True
         rec = _db().get_owner(owner_id)
         if rec is None or rec.protected:
             return False
@@ -1419,42 +1436,53 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         （見 `abuse_control` 檔頭）。只有「真的準備抓鏈」會走到這裡——
         頁面、詳細頁、usage-summary 等讀取完全不消耗任何額度。
 
-        Super User／Super Admin 整段豁免（per-owner quota、source burst、
-        new-owner tier）；global fuse 已經在呼叫端先擋過、對所有角色
-        一視同仁。被擋的那次不打上游，丟出 `FetchError` 子類，交給既有
-        `_classify_fetch_failure()` 分類。"""
+        三層的 bucket 一次交給 `rate_limit_consume()`（全有或全無）：
+        被任何一層擋下的那次不打上游，**也不扣任何一層的額度**——額度
+        只算真的放行的上游抓取。
+
+        Super User／Super Admin 豁免 owner 層（per-owner quota、new-owner
+        tier），source burst 與 global fuse（已在呼叫端先擋）照樣適用。
+        被擋時丟出 `FetchError` 子類，交給既有 `_classify_fetch_failure()`
+        分類。"""
         request = _current_request.get()
         role = (superuser.resolve_role(request, resolve_session=_db().resolve_role_session)
                 if request is not None else superuser.Role.NORMAL)
-        if role >= superuser.Role.SUPERUSER:
-            return
         now = _clock()
         owner = identity_resolver()
-        per_min, per_hour, per_day = _effective_owner_quota
-        owner_windows = _windows(now, (ac.MINUTE, per_min), (ac.HOUR, per_hour),
-                                 (ac.DAY, per_day))
-        if owner_windows and _db().rate_limit_consume(
-                "owner_vendor", owner, owner_windows) is not None:
-            _record_metric("owner_quota_block_count", ny_today())
-            raise ac.UsageLimited(f"{symbol}：這個瀏覽器短時間內查詢太多次", layer="owner")
+        layers: list[str] = []
+        buckets: list[RateLimitBucket] = []
+
+        def add(layer: str, layer_buckets: list[RateLimitBucket]) -> None:
+            layers.extend([layer] * len(layer_buckets))
+            buckets.extend(layer_buckets)
+
+        if role < superuser.Role.SUPERUSER:
+            per_min, per_hour, per_day = _effective_owner_quota
+            add("owner", _buckets("owner_vendor", owner, now, (ac.MINUTE, per_min),
+                                  (ac.HOUR, per_hour), (ac.DAY, per_day)))
         source = _request_source_key(request)
         if source is not None:
             src_min, src_hour = _effective_source_burst
-            source_windows = _windows(now, (ac.MINUTE, src_min), (ac.HOUR, src_hour))
-            if source_windows and _db().rate_limit_consume(
-                    "source_vendor", source, source_windows) is not None:
-                _record_metric("source_burst_block_count", ny_today())
-                raise ac.UsageLimited(f"{symbol}：這個網路來源短時間內查詢太多次",
-                                      layer="source")
+            add("source", _buckets("source_vendor", source, now,
+                                   (ac.MINUTE, src_min), (ac.HOUR, src_hour)))
         pool = ac.new_owner_tier_pool(_effective_global_vendor_daily_budget,
                                       _effective_tier_share)
-        if pool > 0 and _is_new_owner(owner, now):
+        if role < superuser.Role.SUPERUSER and pool > 0 and _is_new_owner(owner, now):
             day, day_start = ac.ny_day_bounds(now)
-            if _db().rate_limit_consume(
-                    "new_owner_tier", day, [(ac.DAY, day_start, pool)]) is not None:
-                _record_metric("new_owner_tier_block_count", ny_today())
-                raise ac.NewOwnerTierExhausted(
-                    f"新使用者今日共用的查詢預算已用完，暫停 {symbol} 的新抓鏈")
+            add("tier", [RateLimitBucket("new_owner_tier", day, ac.DAY, day_start, pool)])
+        blocked = _db().rate_limit_consume(buckets) if buckets else None
+        if blocked is None:
+            return
+        layer = layers[blocked]
+        if layer == "owner":
+            _record_metric("owner_quota_block_count", ny_today())
+            raise ac.UsageLimited(f"{symbol}：這個瀏覽器短時間內查詢太多次")
+        if layer == "source":
+            _record_metric("source_burst_block_count", ny_today())
+            raise ac.UsageLimited(f"{symbol}：這個網路來源短時間內查詢太多次")
+        _record_metric("new_owner_tier_block_count", ny_today())
+        raise ac.NewOwnerTierExhausted(
+            f"新使用者今日共用的查詢預算已用完，暫停 {symbol} 的新抓鏈")
 
     def _fetch_chain(symbol: str) -> ChainSnapshot:
         """依設定挑抓鏈路徑（Settings／#125）。
@@ -2012,10 +2040,10 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         login_source = _request_source_key(request)
         if login_source is not None:
             per_min, per_hour = _effective_login_limits
-            login_windows = _windows(_clock(), (abuse_control.MINUTE, per_min),
+            login_buckets = _buckets("login", login_source, _clock(),
+                                     (abuse_control.MINUTE, per_min),
                                      (abuse_control.HOUR, per_hour))
-            if login_windows and _db().rate_limit_consume(
-                    "login", login_source, login_windows) is not None:
+            if login_buckets and _db().rate_limit_consume(login_buckets) is not None:
                 _record_metric("login_rate_limit_block_count", ny_today())
                 raise HTTPException(status_code=429,
                                     detail="登入嘗試太頻繁，請稍後再試")

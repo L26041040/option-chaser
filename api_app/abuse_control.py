@@ -4,7 +4,8 @@
 一般頁面／詳細頁／usage-summary 讀取完全不經過這裡：
 
 1. **per-owner quota**（Normal User）：60／分、300／時、800／天。Super
-   User／Super Admin 豁免——但仍受下面的 global fuse。
+   User／Super Admin 豁免這一層與第 3 層（都是 owner 層）——但仍受
+   source burst 與下面的 global fuse。
 2. **source burst**：同一個來源（IP；IPv6 聚合到 /64）120／分、600／時，
    **刻意沒有每日上限**——大型 NAT（公司、學校、電信）後面的一群真人
    共用一個 IP，每日上限會誤殺他們；這一層只抓明顯的機器速率。
@@ -14,6 +15,8 @@
    其餘 60%。
 
 最後一道是既有的 global vendor fuse（`vendor_fuse.py`，不分角色）。
+三層一次原子檢查（`Storage.rate_limit_consume()` 全有或全無）：被任何
+一層擋下的那次不扣任何一層的額度。
 
 **IP 只拿來限流，永遠不是 owner 身分**，也從不落盤：寫進資料庫的只有
 `source_key()`——用獨立 secret（`SOURCE_HMAC_SECRET`）做的 HMAC，而且
@@ -27,7 +30,6 @@ import hashlib
 import hmac
 import ipaddress
 import os
-from dataclasses import dataclass
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -66,25 +68,10 @@ class UsageLimited(FetchError):
     失敗隔離、Refresh Run 分組失敗）不必為了它改變行為，只有
     `_classify_fetch_failure()` 會把它分類成 `usage_limited`。"""
 
-    def __init__(self, message: str, *, layer: str):
-        super().__init__(message)
-        self.layer = layer          # "owner" | "source"
-
 
 class NewOwnerTierExhausted(GlobalVendorFuseTripped):
     """新 owner 共用的那一份 fuse 額度今天用完了。對使用者來說就是
     「今天的查詢預算用完了」，所以直接沿用 fuse 的分類（子類別）。"""
-
-
-@dataclass(frozen=True)
-class Window:
-    seconds: int
-    limit: int
-
-
-def active_windows(*windows: Window) -> tuple[Window, ...]:
-    """`limit <= 0` 的視窗視為停用。"""
-    return tuple(w for w in windows if w.limit > 0)
 
 
 def window_start(now_epoch: float, seconds: int) -> int:
