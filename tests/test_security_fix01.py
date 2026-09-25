@@ -156,6 +156,7 @@ def test_reads_without_a_bound_owner_set_no_owner_cookie():
                  "/api/scenarios/nope"):
         r = _browser(app).get(path)
         assert _OWNER_COOKIE_NAME not in r.headers.get("set-cookie", ""), path
+        assert "x-oc-owner-bound" not in r.headers, path
     stale = "s" * 43                                   # 形狀合法但沒綁定的舊 cookie
     r = _browser(app).get("/api/scenarios",
                           headers={"Cookie": f"{_OWNER_COOKIE_NAME}={stale}"})
@@ -218,6 +219,8 @@ def test_owner_cookie_is_180_days_and_keeps_its_security_attributes():
     r = _browser(app).post("/api/scenarios", json=NEW)
     header = r.headers["set-cookie"]
     assert _max_age(r) == ONE_EIGHTY_DAYS
+    # 前端讀不到 HttpOnly cookie：綁定的回應明講一聲（只是布林，不含 token）
+    assert r.headers["x-oc-owner-bound"] == "1"
     assert header.startswith(f"{_OWNER_COOKIE_NAME}=")
     lowered = header.lower()
     assert "httponly" in lowered and "secure" in lowered

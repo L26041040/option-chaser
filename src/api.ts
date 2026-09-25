@@ -9,7 +9,7 @@
  * 本層與整個前端都不做金融計算：每個顯示數字都已由引擎算好。
  */
 import {
-  clearOwnerBootstrapToken, OWNER_BOOTSTRAP_HEADER, ownerBootstrapToken,
+  markOwnerBound, OWNER_BOOTSTRAP_HEADER, OWNER_BOUND_HEADER, ownerBootstrapToken,
 } from "./ownerBootstrap";
 import type { Role } from "./superuser";
 
@@ -792,8 +792,19 @@ function combineSignals(a: AbortSignal, b: AbortSignal): AbortSignal {
   return controller.signal;
 }
 
-/** 寫入請求帶上 owner bootstrap token（見 `ownerBootstrap.ts`）。呼叫端
- * 一律傳物件字面量的 headers；萬一是 `Headers` 物件也照樣補上。 */
+/**
+ * `ownerBootstrap`：這個寫入可能是第一次持久化資料、會在伺服器端建立
+ * owner（建立劇本、存設定、存 credential——對應後端 `_persistent_owner()`
+ * 的三個端點）。只有這些請求帶 bootstrap token（見 `ownerBootstrap.ts`）；
+ * 其他寫入（刷新、封存、刪除……）本來就只作用在既有 owner 上，不必讀
+ * 本機儲存、也不必多等那一下。
+ */
+interface ApiInit extends RequestInit {
+  ownerBootstrap?: boolean;
+}
+
+/** 補上 owner bootstrap header。呼叫端一律傳物件字面量的 headers；萬一
+ * 是 `Headers` 物件也照樣補上。 */
 function withOwnerBootstrap(init: RequestInit | undefined, token: string): RequestInit {
   const headers = init?.headers;
   if (headers instanceof Headers) {
@@ -808,10 +819,9 @@ function withOwnerBootstrap(init: RequestInit | undefined, token: string): Reque
   };
 }
 
-async function request<T>(url: string, init?: RequestInit): Promise<T> {
-  const method = (init?.method ?? "GET").toUpperCase();
-  const isWrite = method !== "GET" && method !== "HEAD";
-  const bootstrap = isWrite ? ownerBootstrapToken() : null;
+async function request<T>(url: string, apiInit?: ApiInit): Promise<T> {
+  const { ownerBootstrap = false, ...init } = apiInit ?? {};
+  const bootstrap = ownerBootstrap ? await ownerBootstrapToken() : null;
   const effectiveInit = bootstrap ? withOwnerBootstrap(init, bootstrap) : init;
   let resp: Response;
   try {
@@ -833,9 +843,10 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
     throw new ApiError(
       `連不到伺服器：${e instanceof Error ? e.message : String(e)}`);
   }
-  // 寫入成功＝cookie 已經是真正的身分（或這個寫入本來就不需要 owner），
-  // bootstrap token 功成身退。失敗（含逾時）時保留，重試才會沿用同一顆。
-  if (resp.ok && isWrite) clearOwnerBootstrapToken();
+  // 伺服器說 owner cookie 已經綁定：bootstrap token 功成身退（見
+  // `ownerBootstrap.ts`）。沒說（失敗、逾時、不需要 owner 的寫入）就保留，
+  // 重試才會沿用同一顆。`?.`：既有測試常用省略 headers 的假 Response。
+  if (resp.headers?.get(OWNER_BOUND_HEADER) === "1") await markOwnerBound();
   if (!resp.ok) {
     // 每個回應都帶（DG-02／#145，含錯誤回應）——連結不到某次特定失敗
     // 的細節時，這仍是使用者手上唯一能拿去對 Vercel runtime logs 的
@@ -914,7 +925,8 @@ export async function listArchivedScenarios(): Promise<ScenarioSummary[]> {
 export function createScenario(
   req: CreateScenarioRequest,
 ): Promise<ScenarioSummary> {
-  return request<ScenarioSummary>("/api/scenarios", POST_JSON(req));
+  return request<ScenarioSummary>("/api/scenarios",
+                                  { ...POST_JSON(req), ownerBootstrap: true });
 }
 
 /**
@@ -1164,6 +1176,7 @@ export function saveSettings(body: {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
+    ownerBootstrap: true,
   });
 }
 
@@ -1182,6 +1195,7 @@ export function saveCredential(
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ token }),
+      ownerBootstrap: true,
     },
   );
 }

@@ -1411,6 +1411,10 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
                 _OWNER_COOKIE_NAME, cookie["token"],
                 max_age=_OWNER_COOKIE_MAX_AGE_SECONDS,
                 httponly=True, secure=True, samesite="lax", path="/")
+            # cookie 是 HttpOnly，前端讀不到：明講「已綁定」，前端才知道
+            # 可以丟掉 bootstrap token、不必再碰本機儲存（見
+            # `src/ownerBootstrap.ts`）。只是一個布林，不含 token 本身。
+            response.headers["X-OC-Owner-Bound"] = "1"
         return response
 
     @app.middleware("http")
