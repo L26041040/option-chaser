@@ -20,8 +20,9 @@ per-owner 機制結構上擋不到的那一類，必須是 system-wide、不分 
   上的第二個狀態機，票面明文禁止）。
 
 **計數來源沿用既有機制，不新建平行計數**：`chain_fetch_count` 早就
-在 `api_app/main.py::_metered_chain_fetch()` 記錄「真的打了一次上游」
-（S0／SCALE-08 既有指標 #1）。這裡只新增一個**讀取**方法
+在 `api_app/main.py::_vendor_attempt()` 記錄「真的打了一次上游」
+（S0／SCALE-08 既有指標 #1；每個 provider attempt 各一次，自訂 provider
+也算）。這裡只新增一個**讀取**方法
 （`Storage.metric_total()`）——對同一張表、同一個既有欄位做一次
 targeted 的 SUM 查詢，取代呼叫端本來得撈出 `metric_summary()` 全部
 30 天視窗桶再自己過濾加總（那份是給 `/api/ops/metrics` 偶爾一次的

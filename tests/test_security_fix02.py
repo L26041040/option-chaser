@@ -9,7 +9,7 @@
 下一次被擋——不必真的打幾百次 HTTP。
 """
 import time
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from fastapi.testclient import TestClient
@@ -18,7 +18,7 @@ from api_app import abuse_control as ac
 from api_app import metrics
 from api_app.clock import ny_today
 from api_app.main import create_app
-from api_app.storage import RateLimitBucket
+from api_app.storage import ChainBackoffEntry, RateLimitBucket
 from api_app.storage.memory import MemoryStorage
 from option_chaser.data.snapshot import load_snapshot
 
@@ -453,3 +453,236 @@ def test_limits_are_configurable_without_code_changes(monkeypatch):
     assert status["new_owner_tier_share"] == 0.25
     assert status["source_limiter"] == "enabled"
     assert "env-provided-fake-secret" not in repr(c.get("/api/ops/metrics").json())
+
+
+# ---------- SECURITY-P1-VENDOR-ATTEMPT-001：每個上游 attempt 各扣一次 ----------
+#
+# 一次 logical 抓鏈最多三個真正的上游請求：自訂 provider →（失敗）Cboe →
+# （失敗）yfinance。每一個都要先過 global fuse＋原子扣 owner／source／tier，
+# 成功或失敗都算；被擋的那個 attempt 不送出、不扣其他層。
+
+PROVIDER = "marketdata-app"
+
+
+class ScriptedProvider:
+    """呼叫次數計數；`ok=False` 時丟 provider 自己的 `FetchError`。"""
+
+    def __init__(self, ok: bool):
+        self.ok = ok
+        self.calls = 0
+        self.snap = load_snapshot(FIX)
+
+    def __call__(self, symbol):
+        self.calls += 1
+        if not self.ok:
+            from option_chaser.models import FetchError
+            raise FetchError(f"{symbol}：provider 失敗（測試）")
+        return self.snap
+
+
+def _chain_env(monkeypatch, *, custom_provider: bool):
+    """custom／Cboe／yfinance 三個 attempt 各自可控；呼叫端設 `.ok`。
+    `yf.available()` 固定為真（yfinance 是選用依賴，不讓測試結果取決於
+    這台機器有沒有裝）。"""
+    from option_chaser.data import yf
+
+    custom, cboe, yfin = ScriptedProvider(True), ScriptedProvider(True), ScriptedProvider(True)
+    monkeypatch.setattr(yf, "fetch_chain", yfin)
+    monkeypatch.setattr(yf, "available", lambda: True)
+    storage = MemoryStorage()
+    clock = FakeClock()
+    app = create_app(custom_fetch=lambda provider, symbol, token: custom(symbol),
+                     cboe_fetch=cboe, storage=storage, clock=clock,
+                     source_hmac_secret=SECRET, trusted_ip_header="x-forwarded-for",
+                     superuser_password=SU_PW, superadmin_password=SA_PW,
+                     cron_secret="fake-cron-secret")
+    c, sid, owner = _new_owner_with_scenario(app, storage)
+    if custom_provider:
+        # 存 credential 需要 Super Admin（AUTH-04）：借登入設定好這個 owner
+        # 的自訂 provider，再登出——之後這個瀏覽器就是帶著自訂設定的
+        # Normal User。
+        c.post("/api/auth/login", json={"password": SA_PW}).raise_for_status()
+        c.put("/api/settings", json={
+            "market_data": {"mode": "custom", "provider": PROVIDER},
+            "historical_iv": {"mode": "default", "provider": None}}).raise_for_status()
+        c.put(f"/api/settings/credentials/{PROVIDER}",
+              json={"token": "fake-provider-token"}).raise_for_status()
+        c.post("/api/auth/logout").raise_for_status()
+    return dict(app=app, storage=storage, clock=clock, c=c, sid=sid, owner=owner,
+                custom=custom, cboe=cboe, yf=yfin)
+
+
+@pytest.fixture
+def chain(monkeypatch):
+    return _chain_env(monkeypatch, custom_provider=True)
+
+
+@pytest.fixture
+def default_chain(monkeypatch):
+    return _chain_env(monkeypatch, custom_provider=False)
+
+
+def _usage(ch) -> dict:
+    """目前各層已扣的次數（分鐘窗；tier 是當天）＋全站 chain_fetch_count。"""
+    storage, clock = ch["storage"], ch["clock"]
+    minute = ac.window_start(clock(), ac.MINUTE)
+    source = ac.source_key(IP_A, SECRET, clock())
+    day, day_start = ac.ny_day_bounds(clock())
+    rl = storage._rate_limits
+    return {
+        "owner": rl.get(("owner_vendor", ch["owner"], ac.MINUTE, minute), 0),
+        "source": rl.get(("source_vendor", source, ac.MINUTE, minute), 0),
+        "tier": rl.get(("new_owner_tier", day, ac.DAY, day_start), 0),
+        "fuse": storage.metric_total("chain_fetch_count", ny_today().isoformat()),
+    }
+
+
+def _delta(before, after):
+    return {k: after[k] - before[k] for k in before}
+
+
+def _calls(ch):
+    return (ch["custom"].calls, ch["cboe"].calls, ch["yf"].calls)
+
+
+def _call_delta(ch, before):
+    return tuple(a - b for a, b in zip(_calls(ch), before))
+
+
+def test_A_custom_success_is_exactly_one_attempt(chain):
+    before, calls = _usage(chain), _calls(chain)
+    assert _refresh(chain["c"], chain["sid"]).status_code == 200
+    assert _call_delta(chain, calls) == (1, 0, 0)
+    assert _delta(before, _usage(chain)) == {"owner": 1, "source": 1, "tier": 1, "fuse": 1}
+
+
+def test_B_custom_fail_then_default_success_is_two_attempts(chain):
+    chain["custom"].ok = False
+    before, calls = _usage(chain), _calls(chain)
+    assert _refresh(chain["c"], chain["sid"]).status_code == 200
+    assert _call_delta(chain, calls) == (1, 1, 0)
+    assert _delta(before, _usage(chain)) == {"owner": 2, "source": 2, "tier": 2, "fuse": 2}
+
+
+def test_C_custom_fail_cboe_fail_yfinance_success_is_three_attempts(chain):
+    chain["custom"].ok = chain["cboe"].ok = False
+    before, calls = _usage(chain), _calls(chain)
+    assert _refresh(chain["c"], chain["sid"]).status_code == 200
+    assert _call_delta(chain, calls) == (1, 1, 1)
+    assert _delta(before, _usage(chain)) == {"owner": 3, "source": 3, "tier": 3, "fuse": 3}
+
+
+def test_D_fallback_blocked_by_source_quota_is_not_sent_and_not_charged(chain):
+    chain["custom"].ok = False
+    storage, clock = chain["storage"], chain["clock"]
+    minute = ac.window_start(clock(), ac.MINUTE)
+    key = ac.source_key(IP_A, SECRET, clock())
+    already = _usage(chain)["source"]
+    _seed(storage, "source_vendor", key, ac.MINUTE, minute, 119 - already)  # 還剩 1
+    before, calls = _usage(chain), _calls(chain)
+
+    r = _refresh(chain["c"], chain["sid"])
+    assert r.status_code == 429 and _stage(r) == "usage_limited"
+    # 自訂 attempt 放行並失敗；Cboe／yfinance 都沒有送出
+    assert _call_delta(chain, calls) == (1, 0, 0)
+    # 只有第一個 attempt 扣到；被擋的第二個不扣 owner／tier
+    assert _delta(before, _usage(chain)) == {"owner": 1, "source": 1, "tier": 1, "fuse": 1}
+    assert _metric(storage, "source_burst_block_count") == 1
+    # provider 驗證紀錄是 provider 自己的失敗，不是我們的額度訊息
+    v = storage.get_verification(PROVIDER, owner=chain["owner"])
+    assert v is not None and v.ok is False and "provider 失敗" in v.reason
+
+
+def test_E_fallback_blocked_by_global_fuse_is_not_sent(chain):
+    chain["custom"].ok = False
+    storage = chain["storage"]
+    used = _usage(chain)["fuse"]
+    metrics.record(storage, "chain_fetch_count", ny_today(), count=2000 - 1 - used)
+    before, calls = _usage(chain), _calls(chain)
+
+    r = _refresh(chain["c"], chain["sid"])
+    assert r.status_code == 429 and _stage(r) == "vendor_budget_exhausted"
+    assert _call_delta(chain, calls) == (1, 0, 0)
+    assert _delta(before, _usage(chain)) == {"owner": 1, "source": 1, "tier": 1, "fuse": 1}
+    assert _usage(chain)["fuse"] == 2000
+    assert _metric(storage, "global_fuse_block_count") == 1
+
+
+@pytest.mark.parametrize("password", [SU_PW, SA_PW])
+def test_F_superuser_fallback_still_pays_source_and_fuse_per_attempt(chain, password):
+    chain["c"].post("/api/auth/login", json={"password": password}).raise_for_status()
+    chain["custom"].ok = chain["cboe"].ok = False
+    before, calls = _usage(chain), _calls(chain)
+    assert _refresh(chain["c"], chain["sid"]).status_code == 200
+    assert _call_delta(chain, calls) == (1, 1, 1)
+    assert _delta(before, _usage(chain)) == {"owner": 0, "source": 3, "tier": 0, "fuse": 3}
+
+
+def test_G_new_owner_tier_is_charged_per_attempt_not_per_refresh(chain):
+    chain["custom"].ok = chain["cboe"].ok = False
+    storage, clock = chain["storage"], chain["clock"]
+    day, start = ac.ny_day_bounds(clock())
+    already = _usage(chain)["tier"]
+    _seed(storage, "new_owner_tier", day, ac.DAY, start, 800 - 3 - already)  # 剛好剩 3
+    assert _refresh(chain["c"], chain["sid"]).status_code == 200
+    assert _usage(chain)["tier"] == 800
+    # 下一次 refresh 的第一個 attempt 就被 tier 擋下，任何上游都沒送
+    calls = _calls(chain)
+    r = _refresh(chain["c"], chain["sid"])
+    assert r.status_code == 429 and _stage(r) == "vendor_budget_exhausted"
+    assert _calls(chain) == calls
+    assert _metric(storage, "new_owner_tier_block_count") == 1
+
+
+def test_default_path_cboe_fail_then_yfinance_is_two_attempts(default_chain):
+    ch = default_chain
+    ch["cboe"].ok = False
+    before, calls = _usage(ch), _calls(ch)
+    assert _refresh(ch["c"], ch["sid"]).status_code == 200
+    assert _call_delta(ch, calls) == (0, 1, 1)
+    assert _delta(before, _usage(ch)) == {"owner": 2, "source": 2, "tier": 2, "fuse": 2}
+
+
+def test_yfinance_not_installed_is_not_an_attempt_and_charges_nothing(default_chain, monkeypatch):
+    """production 沒裝 yfinance：Cboe 失敗後不會有第二個上游請求，也就
+    不該再扣一次額度／fuse。"""
+    from option_chaser.data import yf
+
+    ch = default_chain
+    monkeypatch.setattr(yf, "available", lambda: False)
+    ch["cboe"].ok = False
+    before, calls = _usage(ch), _calls(ch)
+    r = _refresh(ch["c"], ch["sid"])
+    assert r.status_code != 200
+    assert _call_delta(ch, calls) == (0, 1, 0)
+    assert _delta(before, _usage(ch)) == {"owner": 1, "source": 1, "tier": 1, "fuse": 1}
+
+
+def test_cboe_backoff_window_charges_only_the_yfinance_attempt(default_chain):
+    """Cboe 在封鎖窗內＝這一步零上游請求（backoff 短路），不扣；接著的
+    yfinance 是唯一真的送出的 attempt。"""
+    ch = default_chain
+    until = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat(timespec="seconds")
+    ch["storage"].save_chain_backoff(ChainBackoffEntry(
+        source="cboe", blocked_until=until, retry_after_seconds=3600,
+        consecutive_failures=1, observed_at=until, last_success_at=None))
+    before, calls = _usage(ch), _calls(ch)
+    assert _refresh(ch["c"], ch["sid"]).status_code == 200
+    assert _call_delta(ch, calls) == (0, 0, 1)
+    assert _delta(before, _usage(ch)) == {"owner": 1, "source": 1, "tier": 1, "fuse": 1}
+
+
+def test_a_refused_cboe_attempt_leaves_cboe_backoff_untouched(default_chain):
+    """我們自己擋下的 attempt 不是 Cboe 在限流：不得寫入 provider-global
+    backoff（否則一個人撞額度就會讓全站暫停 Cboe），也不退回 yfinance。"""
+    ch = default_chain
+    storage, clock = ch["storage"], ch["clock"]
+    key = ac.source_key(IP_A, SECRET, clock())
+    minute = ac.window_start(clock(), ac.MINUTE)
+    _seed(storage, "source_vendor", key, ac.MINUTE, minute, 120 - _usage(ch)["source"])
+    backoff_before = storage.get_chain_backoff("cboe")
+    calls = _calls(ch)
+    r = _refresh(ch["c"], ch["sid"])
+    assert r.status_code == 429 and _stage(r) == "usage_limited"
+    assert _call_delta(ch, calls) == (0, 0, 0)
+    assert storage.get_chain_backoff("cboe") == backoff_before

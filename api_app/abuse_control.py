@@ -1,7 +1,10 @@
 """SECURITY-FIX-02：匿名濫用防護（vendor 成本）——純函式與設定值。
 
-三層，全部擋在「真的準備打上游」那一刻（`main.py::_fetch_chain()`），
-一般頁面／詳細頁／usage-summary 讀取完全不經過這裡：
+三層，全部擋在「真的準備送出一個上游請求」那一刻
+（`main.py::_vendor_attempt()`）——**每個 provider attempt 各扣一次**：
+自訂 provider 失敗退回 Cboe、Cboe 失敗退回 yfinance，一次刷新就是二到
+三個 attempt、扣二到三次（失敗的 attempt 也算，它一樣用掉了 vendor 的
+速率與成本）。一般頁面／詳細頁／usage-summary 讀取完全不經過這裡：
 
 1. **per-owner quota**（Normal User）：60／分、300／時、800／天。Super
    User／Super Admin 豁免這一層與第 3 層（都是 owner 層）——但仍受

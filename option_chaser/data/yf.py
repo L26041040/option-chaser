@@ -46,6 +46,16 @@ def map_rows(
     )
 
 
+def available() -> bool:
+    """yfinance 套件有沒有裝。它是選用依賴（pyproject 的 `yf` extra），
+    production（Vercel）沒有裝——沒裝時 `fetch_chain()` 不會送出任何
+    網路請求，呼叫端可以據此跳過這個 attempt，不必為一個不會發生的
+    上游請求扣額度。"""
+    import importlib.util
+
+    return importlib.util.find_spec("yfinance") is not None
+
+
 def fetch_chain(symbol: str) -> ChainSnapshot:
     try:
         import yfinance as yf  # lazy: tests never import the network stack

@@ -127,6 +127,14 @@ _AUTO = object()
 _logger = logging.getLogger(__name__)
 
 
+# 這些例外是**我們自己**在送出上游請求之前擋下來的（global fuse、
+# new-owner tier、per-owner／source 額度），不是 provider 回的失敗。
+# 降級鏈看到它們必須原樣往外拋（`except _ATTEMPT_REFUSALS: raise` 放在
+# `except FetchError` 前面）：退回下一個來源只會是另一個同樣會被擋的
+# attempt，而且不該被記成 provider 驗證失敗。
+_ATTEMPT_REFUSALS = (vendor_fuse.GlobalVendorFuseTripped, abuse_control.UsageLimited)
+
+
 def _is_owner_exempt_route(path: str) -> bool:
     """PB-02 spec §4 的**唯一路由判斷點**——集中在這一處，不得散落
     各端點各自判斷。
@@ -711,10 +719,12 @@ def _classify_fetch_failure(storage: Storage, e: FetchError, symbol: str) -> HTT
 
     1. `e` 是 `vendor_fuse.GlobalVendorFuseTripped`（PB-06）——全站今日
        vendor 預算已用完，我們自己選擇不打，與 vendor 有沒有抱怨無關。
-       這個判斷刻意放在最前面：`_fetch_chain()` 的 fuse 檢查發生在
-       任何真正的上游呼叫之前，這個例外類別因此**保證**代表這次失敗
-       的真正原因——不需要（也不該）回頭再問一次 `chain_backoff.
-       status()` 來猜測，那樣反而可能把「我們自己的預算」誤植成
+       這個判斷刻意放在最前面：`_vendor_attempt()` 的 fuse 檢查發生在
+       **那一個** attempt 的上游呼叫之前，這個例外類別因此**保證**代表
+       最後這次沒送出的真正原因（同一次抓鏈前面的 attempt 可能已經
+       送出並失敗——例如自訂 provider 失敗後 fallback 前 fuse 剛好滿——
+       回報的是最後擋下來的那一層）——不需要（也不該）回頭再問一次
+       `chain_backoff.status()` 來猜測，那樣反而可能把「我們自己的預算」誤植成
        「vendor 剛剛回應限流」，讓使用者看到不實的理由。`"vendor_
        budget_exhausted"`（429，非 5xx——spec §14 明文要求；facts-only，
        不帶評價字眼）。
@@ -943,10 +953,10 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
     `global_vendor_daily_budget`（PB-06／#299，Anonymous Public Beta
     §8）：per-owner 額度（上方）之上再加一道 system-wide 保險絲——
     全站今天累計真正打了幾次上游（`api_app.metrics` 既有
-    `chain_fetch_count` 指標，見 `_metered_chain_fetch()`）達到這個
+    `chain_fetch_count` 指標，見 `_vendor_attempt()`）達到這個
     數字後，**任何**新的抓鏈嘗試（不分 owner、不分是否為 Super User，
     spec §8 v3 明文「不豁免」）一律短路成
-    `vendor_fuse.GlobalVendorFuseTripped`（見 `_fetch_chain()`），由
+    `vendor_fuse.GlobalVendorFuseTripped`（見 `_vendor_attempt()`），由
     `_classify_fetch_failure()` 分類成 429＋`stage="vendor_budget_
     exhausted"`——與既有 `rate_limited`（真實 Cboe 429，被動反應）是
     兩個獨立分類，刻意不合併：那個代表「vendor 剛剛回我們沒有」，這個
@@ -1008,14 +1018,35 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
     # fetch_chain` 識別呼叫端有沒有覆寫整條複合鏈——覆寫時（幾乎全部
     # 既有測試都這樣做，注入固定快照）直接沿用呼叫端給的 `fetch`，
     # backoff 包裝無從套用也不需要套用。
-    def _metered_chain_fetch(fn: FetchChain, source: str) -> FetchChain:
-        """S0（SCALE-08／#258）指標 #1／#2：包住一個實際會打上游的抓鏈
-        函式，記錄「真的打了一次」與「這次是不是被 429 擋下來」。刻意
-        包在這一層、不是包在 `chain_backoff.backoff_aware_fetch()`
-        外面——backoff 短路（封鎖窗內、零上游呼叫）時 `fn` 根本不會被
-        呼叫到，指標因此天然只計真正發生過的上游請求，不會把「被我們
-        自己的 backoff 擋下來」誤算成一次 fetch。"""
-        def wrapped(symbol: str) -> ChainSnapshot:
+    def _vendor_attempt(fn: FetchChain, source: str, *, meter: bool = True) -> FetchChain:
+        """SECURITY-P1-VENDOR-ATTEMPT-001：**每一次真正要送出的上游請求**
+        的唯一關卡——自訂 provider、Cboe、yfinance 備援各自包一層，一次
+        logical 抓鏈裡的每個 attempt 都各自過一次：
+
+        1. global vendor fuse（不分角色）；
+        2. `_enforce_vendor_limits()`：owner／source／new-owner tier 的
+           bucket 一次原子扣一次（全有或全無）；
+        3. 兩者都放行才真的呼叫 `fn`——成功或失敗都已經算這一次。
+
+        被擋時丟出 `_ATTEMPT_REFUSALS` 之一、`fn` 完全不會被呼叫；呼叫端
+        的降級邏輯看到它必須原樣往外拋，不能當成 provider 失敗去試下一個
+        來源。
+
+        `meter`：S0（SCALE-08／#258）指標 #1／#2——記錄「真的打了一次」
+        （`chain_fetch_count`，global fuse 的計數來源）與「這次是不是被
+        429 擋下來」。包在 `chain_backoff.backoff_aware_fetch()` 裡面：
+        backoff 短路（封鎖窗內、零上游呼叫）時這層根本不會被呼叫，所以
+        不扣額度、也不計 fetch。只有 DI 整組覆寫抓鏈（`fetch=`，測試用）
+        時才關掉，沿用那條路徑一直以來不計數的既有行為。"""
+        def attempt(symbol: str) -> ChainSnapshot:
+            if vendor_fuse.tripped(_db(), ny_today(),
+                                   _effective_global_vendor_daily_budget):
+                _record_metric("global_fuse_block_count", ny_today())
+                raise vendor_fuse.GlobalVendorFuseTripped(
+                    f"全站今日 vendor 呼叫預算已用完，暫停 {symbol} 的新抓鏈")
+            _enforce_vendor_limits(symbol)
+            if not meter:
+                return fn(symbol)
             try:
                 snap = fn(symbol)
             except RateLimitedError:
@@ -1031,25 +1062,33 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
             _record_metric("chain_fetch_count", ny_today(),
                            source=source, symbol=symbol)
             return snap
-        return wrapped
+        return attempt
 
     def _default_fetch(symbol: str) -> ChainSnapshot:
         from option_chaser.data import cboe as cboe_module
 
-        actual_cboe_fetch = _metered_chain_fetch(
+        actual_cboe_fetch = _vendor_attempt(
             cboe_fetch if cboe_fetch is not None else cboe_module.fetch_chain,
             "cboe")
         try:
             return chain_backoff.backoff_aware_fetch(
                 _db(), "cboe", actual_cboe_fetch, symbol,
                 default_backoff=chain_backoff_default)
+        except _ATTEMPT_REFUSALS:
+            raise
         except FetchError:
             from option_chaser.data import yf
 
-            return _metered_chain_fetch(yf.fetch_chain, "yfinance")(symbol)
+            # yfinance 是選用依賴，production 沒裝：沒裝就不會有任何
+            # 上游請求，這個 attempt 整個跳過（不扣額度、不計 fetch），
+            # 直接讓 Cboe 的失敗往外走。
+            if not yf.available():
+                raise
+            return _vendor_attempt(yf.fetch_chain, "yfinance")(symbol)
 
     _effective_fetch: FetchChain = (
-        _default_fetch if fetch is service.fetch_chain else fetch)
+        _default_fetch if fetch is service.fetch_chain
+        else _vendor_attempt(fetch, "injected", meter=False))
 
     # SCALE-07（#257）：`None`＝呼叫端沒有覆寫，惰性讀真實環境變數；
     # 顯式傳入（含空字串）時完全採用那個值，測試才有決定性。
@@ -1433,8 +1472,10 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
 
     def _enforce_vendor_limits(symbol: str) -> None:
         """SECURITY-FIX-02：global fuse 之後、真的打上游之前的三層檢查
-        （見 `abuse_control` 檔頭）。只有「真的準備抓鏈」會走到這裡——
-        頁面、詳細頁、usage-summary 等讀取完全不消耗任何額度。
+        （見 `abuse_control` 檔頭）。只從 `_vendor_attempt()` 呼叫——每個
+        真正要送出的上游 attempt 各一次（自訂失敗退回 Cboe、Cboe 失敗
+        退回 yfinance，就是二到三次）；頁面、詳細頁、usage-summary 等
+        讀取完全不消耗任何額度。
 
         三層的 bucket 一次交給 `rate_limit_consume()`（全有或全無）：
         被任何一層擋下的那次不打上游，**也不扣任何一層的額度**——額度
@@ -1498,17 +1539,14 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         自訂成功時同樣記一次成功：那是比任何測試連線都真實的證據。
 
         PB-06（#299）：**這是全站唯一會真正打上游的入口**——不論走
-        自訂還是預設路徑，都得先經過這裡。Global Vendor Fuse 因此
-        擋在函式最上方、任何其他判斷之前，確保沒有任何路徑可以繞過
-        它（AC-9 安全考量）；Super User 使用產品本身（即使切了自訂
-        provider）同樣受這道煞車約束，不豁免（spec §8 v3）。
+        自訂還是預設路徑，都得先經過這裡。SECURITY-P1-VENDOR-ATTEMPT-001：
+        Global Vendor Fuse 與 abuse-control 額度不再只在這裡最上方檢查
+        一次，而是在**每一個真正的上游 attempt** 前各檢查一次（自訂
+        provider、Cboe、yfinance 備援各自包一層 `_vendor_attempt()`）：
+        一次 logical 抓鏈最多會送出三個上游請求，每一個都算。Super User
+        使用產品本身（即使切了自訂 provider）同樣受 fuse 約束，不豁免
+        （spec §8 v3）。
         """
-        if vendor_fuse.tripped(_db(), ny_today(),
-                               _effective_global_vendor_daily_budget):
-            _record_metric("global_fuse_block_count", ny_today())
-            raise vendor_fuse.GlobalVendorFuseTripped(
-                f"全站今日 vendor 呼叫預算已用完，暫停 {symbol} 的新抓鏈")
-        _enforce_vendor_limits(symbol)
         db = _db()
         owner = identity_resolver()
         stored = db.get_settings(owner=owner)
@@ -1523,7 +1561,13 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
             return _effective_fetch(symbol)
 
         try:
-            snap = custom_fetch(md.provider, symbol, cred.token)
+            snap = _vendor_attempt(
+                lambda sym: custom_fetch(md.provider, sym, cred.token),
+                md.provider)(symbol)
+        except _ATTEMPT_REFUSALS:
+            # 我們自己擋下的，不是 provider 失敗：不記驗證結果、不退回
+            # 預設來源（那只會是另一個同樣會被擋的 attempt）。
+            raise
         except FetchError as e:
             db.save_verification(ProviderVerification(
                 provider=md.provider, ok=False, reason=str(e),
@@ -1943,7 +1987,7 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
                # 序列化到任何回應——這裡補上，讀的是
                # `vendor_fuse.today_chain_fetch_count()`，跟真正決定
                # 要不要觸發 `GlobalVendorFuseTripped` 的**同一個**函式
-               # （見上方 `_fetch_chain()` 呼叫 `vendor_fuse.tripped()`
+               # （見上方 `_vendor_attempt()` 呼叫 `vendor_fuse.tripped()`
                # 那段），不是自己另外對 `by_metric["chain_fetch_count"]`
                # 的 30 天視窗桶重新加總算出可能兜不起來的第二個「今天」
                # 定義。`budget <= 0`＝停用，誠實回 `None`。
@@ -2646,7 +2690,7 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         沿用既有資料、Super User／Super Admin 豁免。Owner 直接裁示
         整段移除：「所有人都可以隨時按重新整理」，不再有這道「按了要
         等」的產品層限制。成本控制唯一剩下的防線是下面
-        `_analyze()`／`_fetch_chain()` 內既有的 `vendor_fuse.tripped()`
+        每個上游 attempt 前（`_vendor_attempt()`）的 `vendor_fuse.tripped()`
         （PB-06，對三層角色一視同仁，這輪沒有放寬），不是另外新增一套
         取代節流的防禦架構——這輪不堆新機制，上線前另外排一次完整的
         安全掃描。
