@@ -106,7 +106,9 @@ function idbGetOrCreate(): Promise<string> {
 function localStorageGetOrCreate(): string | null {
   try {
     let token = localStorage.getItem(STORAGE_KEY);
-    if (!token) {
+    // 形狀不對的值伺服器會直接拒絕（換一顆隨機的綁定），重試就對不上——
+    // 跟 IndexedDB 路徑一樣先驗形狀，不對就換一顆新的存回去。
+    if (!token || !TOKEN_SHAPE.test(token)) {
       token = randomToken();
       localStorage.setItem(STORAGE_KEY, token);
     }

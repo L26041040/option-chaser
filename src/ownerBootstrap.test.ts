@@ -42,6 +42,13 @@ describe("owner bootstrap token（Codex P1：首訪並發寫入共用同一顆�
     expect(localStorage.getItem("oc_owner_bootstrap")).toBeNull();
   });
 
+  it("本機存的值形狀不對（伺服器會拒絕）時換一顆新的並存回去", async () => {
+    localStorage.setItem("oc_owner_bootstrap", "bad value");
+    const t = await ownerBootstrapToken();
+    expect(t).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    expect(localStorage.getItem("oc_owner_bootstrap")).toBe(t);
+  });
+
   it("並發寫入帶同一顆 token；讀取不帶", async () => {
     const calls: RequestInit[] = [];
     let release!: () => void;
