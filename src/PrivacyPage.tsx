@@ -38,8 +38,10 @@ export default function PrivacyPage() {
         <h3 className="section-title">存了什麼</h3>
         <p className="caption">
           您建立的劇本、分析結果，以及一個用來識別「這是同一個瀏覽器」
-          的隨機代碼（存在瀏覽器的 cookie 裡）。使用本站不需要、也不會
-          要求您提供姓名、email 或任何其他個人身分資訊。
+          的隨機代碼（存在瀏覽器的 cookie 裡）。第一次儲存資料時，瀏覽器
+          會暫存一個一次性的隨機代碼（localStorage），儲存成功後立即刪除，
+          只用來避免同時送出的儲存被當成不同的瀏覽器。使用本站不需要、也
+          不會要求您提供姓名、email 或任何其他個人身分資訊。
         </p>
       </section>
 

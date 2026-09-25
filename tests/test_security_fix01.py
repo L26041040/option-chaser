@@ -13,6 +13,7 @@ storage 層的並發綁定（真 Postgres、多執行緒）在
 `tests/test_storage_contract.py`。
 """
 import threading
+from dataclasses import replace
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 
@@ -354,3 +355,84 @@ def test_legacy_analyze_endpoint_is_gone_and_creates_no_owner():
     assert r.status_code in (404, 405)
     assert storage.list_owners() == []
     assert not any(route.path == "/api/analyze" for route in app.routes)
+
+
+# ---------- Codex P1（PR #346）：首訪並發寫入共用 bootstrap token ----------
+#
+# 第一次造訪、還沒有 cookie 的瀏覽器同時送出多個寫入（連點、重試、兩個
+# 分頁）：前端把一顆存在 localStorage 的 bootstrap token 放在
+# `X-OC-Owner-Bootstrap` header（custom header，跨站請求帶不了），伺服器
+# 用它綁定——同一顆 token 靠 PK 收斂到同一個 owner。
+
+BOOTSTRAP = "X-OC-Owner-Bootstrap"
+
+
+def test_concurrent_first_writes_with_one_bootstrap_token_yield_one_owner():
+    app, storage = _app()
+    token = "b" * 43
+    barrier = threading.Barrier(6)
+
+    def create(i: int):
+        barrier.wait()
+        r = _browser(app).post("/api/scenarios", json={**NEW, "symbol": "ABCDEF"[i]},
+                               headers={BOOTSTRAP: token})
+        return r.status_code, r.cookies.get(_OWNER_COOKIE_NAME)
+
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        results = list(pool.map(create, range(6)))
+
+    assert [s for s, _ in results] == [201] * 6
+    assert {c for _, c in results} == {token}          # 每個回應發的都是同一顆
+    owners = storage.list_owners()
+    assert len(owners) == 1
+    assert len(storage.list_scenarios(owner=owners[0].owner_id)) == 6
+
+
+def test_a_retry_after_a_lost_response_reaches_the_same_owner():
+    """第一次寫入其實成功了、但回應（連同 Set-Cookie）沒回到瀏覽器；
+    重試仍帶同一顆 bootstrap token——在綁定後的短時間窗內視同那個 owner。"""
+    app, storage = _app()
+    token = "r" * 43
+    _browser(app).post("/api/scenarios", json=NEW,
+                       headers={BOOTSTRAP: token}).raise_for_status()
+    retry = _browser(app).post("/api/scenarios", json={**NEW, "symbol": "QQQ"},
+                               headers={BOOTSTRAP: token})
+    assert retry.status_code == 201
+    assert retry.cookies.get(_OWNER_COOKIE_NAME) == token
+    owners = storage.list_owners()
+    assert len(owners) == 1
+    assert len(storage.list_scenarios(owner=owners[0].owner_id)) == 2
+
+
+def test_an_old_bound_bootstrap_token_is_not_an_identity():
+    """綁定超過短時間窗的 bootstrap token 不再被接受：localStorage 不能
+    變成第二個身分載體（清掉 cookie 就是清掉身分，隱私頁承諾的語意）。"""
+    app, storage = _app()
+    token = "o" * 43
+    _browser(app).post("/api/scenarios", json=NEW,
+                       headers={BOOTSTRAP: token}).raise_for_status()
+    owner = storage.list_owners()[0]
+    storage._owners[owner.owner_id] = replace(owner, created_at=_ago(1))
+    stranger = _browser(app)
+    assert stranger.get("/api/scenarios", headers={BOOTSTRAP: token}).json() == []
+    r = stranger.post("/api/scenarios", json=NEW, headers={BOOTSTRAP: token})
+    assert r.status_code == 201
+    assert r.cookies.get(_OWNER_COOKIE_NAME) != token
+    assert len(storage.list_owners()) == 2
+
+
+def test_the_cookie_wins_over_the_bootstrap_header_and_bad_headers_are_ignored():
+    app, storage = _app()
+    c = _browser(app)
+    c.post("/api/scenarios", json=NEW).raise_for_status()
+    mine = c.cookies.get(_OWNER_COOKIE_NAME)
+    r = c.post("/api/scenarios", json={**NEW, "symbol": "QQQ"},
+               headers={BOOTSTRAP: "x" * 43})
+    assert r.cookies.get(_OWNER_COOKIE_NAME) == mine
+    assert len(storage.list_owners()) == 1
+    assert storage.resolve_owner_by_token("x" * 43) is None
+
+    r = _browser(app).post("/api/scenarios", json=NEW, headers={BOOTSTRAP: "short"})
+    assert r.status_code == 201
+    assert r.cookies.get(_OWNER_COOKIE_NAME) != "short"
+    assert storage.resolve_owner_by_token("short") is None

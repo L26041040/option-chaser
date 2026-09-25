@@ -8,6 +8,9 @@
  *
  * 本層與整個前端都不做金融計算：每個顯示數字都已由引擎算好。
  */
+import {
+  clearOwnerBootstrapToken, OWNER_BOOTSTRAP_HEADER, ownerBootstrapToken,
+} from "./ownerBootstrap";
 import type { Role } from "./superuser";
 
 export interface AnalysisMeta {
@@ -789,14 +792,34 @@ function combineSignals(a: AbortSignal, b: AbortSignal): AbortSignal {
   return controller.signal;
 }
 
+/** 寫入請求帶上 owner bootstrap token（見 `ownerBootstrap.ts`）。呼叫端
+ * 一律傳物件字面量的 headers；萬一是 `Headers` 物件也照樣補上。 */
+function withOwnerBootstrap(init: RequestInit | undefined, token: string): RequestInit {
+  const headers = init?.headers;
+  if (headers instanceof Headers) {
+    const copy = new Headers(headers);
+    copy.set(OWNER_BOOTSTRAP_HEADER, token);
+    return { ...init, headers: copy };
+  }
+  return {
+    ...init,
+    headers: { ...(headers as Record<string, string> | undefined),
+               [OWNER_BOOTSTRAP_HEADER]: token },
+  };
+}
+
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
+  const method = (init?.method ?? "GET").toUpperCase();
+  const isWrite = method !== "GET" && method !== "HEAD";
+  const bootstrap = isWrite ? ownerBootstrapToken() : null;
+  const effectiveInit = bootstrap ? withOwnerBootstrap(init, bootstrap) : init;
   let resp: Response;
   try {
     // `init.signal`（呼叫端要求可被中途取消）與既有的逾時 signal
     // 合併——任一個先觸發都算數，兩者不互相取代。
     const timeoutSignal = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
     resp = await fetch(url, {
-      ...init,
+      ...effectiveInit,
       signal: init?.signal
         ? combineSignals(init.signal, timeoutSignal)
         : timeoutSignal,
@@ -810,6 +833,9 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
     throw new ApiError(
       `連不到伺服器：${e instanceof Error ? e.message : String(e)}`);
   }
+  // 寫入成功＝cookie 已經是真正的身分（或這個寫入本來就不需要 owner），
+  // bootstrap token 功成身退。失敗（含逾時）時保留，重試才會沿用同一顆。
+  if (resp.ok && isWrite) clearOwnerBootstrapToken();
   if (!resp.ok) {
     // 每個回應都帶（DG-02／#145，含錯誤回應）——連結不到某次特定失敗
     // 的細節時，這仍是使用者手上唯一能拿去對 Vercel runtime logs 的

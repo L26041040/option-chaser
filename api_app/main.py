@@ -90,6 +90,18 @@ _OWNER_COOKIE_MAX_AGE_SECONDS = 180 * 24 * 60 * 60
 # cookie，重新簽發——不接受任意短字串當身份。
 _OWNER_TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{22,128}$")
 
+# Codex P1（PR #346）：第一次造訪、還沒有 cookie 的瀏覽器同時送出多個寫入
+# （連點、重試、兩個分頁）時，伺服器無從得知它們來自同一個瀏覽器（IP 不是
+# 身分）。前端因此在 localStorage 放一顆 bootstrap token（跨分頁共用、
+# 重試沿用），寫入時放在這個 header；沒有有效 cookie 時伺服器就用它當
+# 綁定的 token——同一顆靠 `browser_identities.token` PK 收斂到同一個
+# owner。custom header：跨站請求（沒有 CORS）帶不了。
+_OWNER_BOOTSTRAP_HEADER = "x-oc-owner-bootstrap"
+# 已經綁定的 bootstrap token 只在綁定後這麼短的時間內被接受（第一次寫入
+# 其實成功、回應卻沒回到瀏覽器時的重試）；超過就不算身分——localStorage
+# 不能變成 cookie 之外的第二個身分載體（清掉 cookie 就是清掉身分）。
+_OWNER_BOOTSTRAP_RETRY_WINDOW = timedelta(minutes=10)
+
 # AUTH-02（#309）：role-session cookie（軸二）沿用當時 owner cookie 的
 # 400 天持久 TTL——票面明文「比照既有 owner cookie 的既有持久 TTL/Max-Age
 # 慣例」。SECURITY-FIX-01 只把 owner cookie 改成 180 天，role cookie
@@ -1320,11 +1332,10 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
             return None, None, None
 
         token = request.cookies.get(_OWNER_COOKIE_NAME)
-        if token is None or not _OWNER_TOKEN_RE.match(token):
-            token = secrets.token_urlsafe(32)
-            owner_id = None
-        else:
+        if token is not None and _OWNER_TOKEN_RE.match(token):
             owner_id = _db().resolve_owner_by_token(token)
+        else:
+            token, owner_id = _bootstrap_token(request)
         if owner_id is not None:
             _db().touch_browser_identity(token, now=now_utc_iso())
             return owner_id, {"token": token, "bound": True}, None
@@ -1343,6 +1354,25 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
             return bound
 
         return pending_owner_placeholder(), cookie, materialize
+
+    def _bootstrap_token(request: Request) -> tuple[str, str | None]:
+        """沒有有效 cookie 時的 token 來源（見 `_OWNER_BOOTSTRAP_HEADER`）：
+        header 帶著形狀合法的 token——還沒綁定就沿用它（等 materializer
+        綁定），綁定未滿 `_OWNER_BOOTSTRAP_RETRY_WINDOW` 就視同那個 owner；
+        其他情況（沒帶、形狀不對、綁定太久）一律換一顆新的隨機 token。"""
+        candidate = request.headers.get(_OWNER_BOOTSTRAP_HEADER)
+        if candidate and _OWNER_TOKEN_RE.match(candidate):
+            bound = _db().resolve_owner_by_token(candidate)
+            if bound is None:
+                return candidate, None
+            rec = _db().get_owner(bound)
+            try:
+                age = datetime.now(timezone.utc) - datetime.fromisoformat(rec.created_at)
+            except (AttributeError, ValueError):
+                age = None
+            if age is not None and age < _OWNER_BOOTSTRAP_RETRY_WINDOW:
+                return candidate, bound
+        return secrets.token_urlsafe(32), None
 
     def _persistent_owner() -> str:
         """要持久化 owner-scoped 資料的端點用這個取 owner，不是
