@@ -33,3 +33,11 @@ test("兩個分頁同時首訪只會產生一顆 bootstrap token（跨分頁原�
     expect(b).toBe(a);
   }
 });
+
+test("IndexedDB 還沒有 token 時沿用 localStorage 既有的那顆（可能正等著重試）", async ({ page }) => {
+  await page.goto("/");
+  await call(page, "resetOwnerBootstrapForTests");
+  const legacy = "L".repeat(43);
+  await page.evaluate((t) => localStorage.setItem("oc_owner_bootstrap", t), legacy);
+  expect(await call(page, "ownerBootstrapToken")).toBe(legacy);
+});

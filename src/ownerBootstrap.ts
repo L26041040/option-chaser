@@ -61,6 +61,19 @@ async function inTransaction<T>(body: (store: IDBObjectStore, done: (v: T) => vo
   }
 }
 
+const TOKEN_SHAPE = /^[A-Za-z0-9_-]{22,128}$/;
+
+/** localStorage 裡既有的合法 token（前一版只用 localStorage、或這個瀏覽器
+ * 之前退回過 localStorage）；讀不到或形狀不對回 `null`。 */
+function existingLocalStorageToken(): string | null {
+  try {
+    const token = localStorage.getItem(STORAGE_KEY);
+    return token && TOKEN_SHAPE.test(token) ? token : null;
+  } catch {
+    return null;
+  }
+}
+
 function idbGetOrCreate(): Promise<string> {
   return inTransaction<string>((store, done) => {
     const get = store.get(STORAGE_KEY);
@@ -69,7 +82,9 @@ function idbGetOrCreate(): Promise<string> {
         done(get.result);
         return;
       }
-      const token = randomToken();
+      // IndexedDB 還沒有：先沿用 localStorage 裡既有的那顆（它可能已經被
+      // 綁定、正等著重試），沒有才產生新的。
+      const token = existingLocalStorageToken() ?? randomToken();
       store.put(token, STORAGE_KEY);
       done(token);
     };
