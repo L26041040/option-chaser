@@ -20,6 +20,7 @@ from option_chaser.data.snapshot import load_snapshot
 from option_chaser.filters import is_spread_wide
 from option_chaser.models import AnalysisParams
 from option_chaser.ratecurve import RateCurve
+from _adhoc import post_adhoc
 
 # 既有 fixture（`tests/test_service.py` 亦用它）：10 個 call。修法前
 # （FB5-01／FB5-02 之前）4 道硬門檻，池子只剩 6 組：
@@ -64,7 +65,7 @@ def _client():
 
 
 def test_low_open_interest_candidate_survives_and_pool_grows():
-    r = _client().post("/api/analyze", json=REQUEST)
+    r = post_adhoc(_client(), REQUEST)
     assert r.status_code == 200
     body = r.json()
     result = body["results"][0]
@@ -98,7 +99,7 @@ def test_wide_spread_candidate_survives_and_would_be_flagged():
     `wide_spread_warning`（MVP V3／#104）會不會被觸發的唯一判準，不是
     另外猜一個公式。
     """
-    r = _client().post("/api/analyze", json=REQUEST)
+    r = post_adhoc(_client(), REQUEST)
     result = r.json()["results"][0]
     assert result["filter_report"]["passed"] == 8   # 「進得了榜」
 
@@ -118,7 +119,7 @@ def test_per_expiry_pool_size_grows_not_just_the_aggregate():
     1 張合約，兩個關卡都沒擋過它們，數字理應不動——這一起斷言，證明
     修法不是全面亂動、只精準命中真正被卡住的那些合約。
     """
-    r = _client().post("/api/analyze", json=REQUEST)
+    r = post_adhoc(_client(), REQUEST)
     result = r.json()["results"][0]
     assert dict(result["expiry_counts"]) == {
         "2026-08-01": 1, "2026-10-16": 6, "2026-11-20": 1,
@@ -130,7 +131,7 @@ def test_filter_stages_only_data_integrity_and_iv_remain():
     `filter_stages` 只剩 A 類（報價健全性）／B 類（IV 數學前提）＋
     T05（#226，Initial V2）新增的 B 類導出層安全網（正常報價下恆為
     0 筆移除，仍會作為一個 stage 出現，讓剔除是可見的而非靜默）。"""
-    r = _client().post("/api/analyze", json=REQUEST)
+    r = post_adhoc(_client(), REQUEST)
     result = r.json()["results"][0]
     labels = [s["label"] for s in result["filter_stages"]]
     assert labels == ["報價異常", "IV 異常", "成本或報酬為不可能值（B 層安全網）"]
@@ -140,14 +141,14 @@ def test_filter_stages_only_data_integrity_and_iv_remain():
 
 def test_open_interest_still_visible_on_each_leg():
     """未平倉量不是消失——只是不再有生殺大權，資料仍隨候選一併回傳。"""
-    body = _client().post("/api/analyze", json=REQUEST).json()
+    body = post_adhoc(_client(), REQUEST).json()
     result, pool = body["results"][0], body["candidate_pool"]
     assert all("open_interest" in pool[k]["legs"][0] for k in result["candidates"])
 
 
 def test_cost_convention_unchanged():
     """spec #61：本輪只改「哪些候選進得了排名」，不改成本口徑（附錄 A14.2）。"""
-    body = _client().post("/api/analyze", json=REQUEST).json()
+    body = post_adhoc(_client(), REQUEST).json()
     result, pool = body["results"][0], body["candidate_pool"]
     for k in result["candidates"]:
         c = pool[k]
@@ -178,7 +179,7 @@ def test_ranking_formula_still_picks_highest_return_within_band():
     若排名公式（依基準情境報酬率降冪排序取級內第一）壞了或方向反了，
     這裡不會是 100.0 中選——不是憑空斷言，是這組真實數字逼出來的。
     """
-    body = _client().post("/api/analyze", json=REQUEST).json()
+    body = post_adhoc(_client(), REQUEST).json()
     result, pool = body["results"][0], body["candidate_pool"]
     balanced = next(pool[k] for k in result["candidates"]
                     if 0.35 <= abs(pool[k]["net_delta"]) <= 0.65)
@@ -210,7 +211,7 @@ def test_monotonicity_warning_reaches_the_serialized_candidate():
     旗標，取代已不對外序列化的 `quote_warning`）不該被單調性違反污染
     （XYZC100D 本身報價／價差都正常，`wide_spread_warning` 應為 False）。
     """
-    body = _client().post("/api/analyze", json=REQUEST).json()
+    body = post_adhoc(_client(), REQUEST).json()
     pool = body["candidate_pool"]
     xyzc100d = pool["long-call|100.5|2026-10-16"]
     assert xyzc100d["monotonicity_warning"] is True
@@ -222,7 +223,7 @@ def test_monotonicity_violation_does_not_shrink_the_pool():
     """FB5-03（#64）核心裁示：只標不刪。同一份 fixture 裡確實存在違反
     （見上一條測試），`filter_report.passed` 不因此減少——與 FB5-01／
     FB5-02 疊加的數字（8）完全一致。"""
-    r = _client().post("/api/analyze", json=REQUEST)
+    r = post_adhoc(_client(), REQUEST)
     result = r.json()["results"][0]
     assert result["filter_report"]["passed"] == 8
 
@@ -231,7 +232,7 @@ def test_filter_stages_carry_their_class_over_http():
     """FB5-04（#65，spec #61）票上驗收標準：分類要「在程式碼中明確可讀」
     ——這裡驗證它也確實走過序列化，到得了實際的 HTTP 回應，不是只活在
     `filters.py` 內部。"""
-    r = _client().post("/api/analyze", json=REQUEST)
+    r = post_adhoc(_client(), REQUEST)
     result = r.json()["results"][0]
     assert [(s["label"], s["filter_class"]) for s in result["filter_stages"]] == [
         ("報價異常", "A"), ("IV 異常", "B"),
@@ -247,7 +248,7 @@ def test_quality_flags_reach_http_response_and_never_shrink_the_pool():
     `test_monotonicity_warning_reaches_the_serialized_candidate`），
     另有 1 筆今日無成交。無論標示多少筆，`filter_report.passed` 都維持
     8——這是「標示」不是「排除」的直接證明。"""
-    r = _client().post("/api/analyze", json=REQUEST)
+    r = post_adhoc(_client(), REQUEST)
     result = r.json()["results"][0]
     flags = dict((f["label"], f["count"]) for f in result["quality_flags"])
     assert flags["買賣價差偏大"] == 1

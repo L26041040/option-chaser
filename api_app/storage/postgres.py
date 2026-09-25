@@ -24,7 +24,7 @@ from psycopg.types.json import Jsonb
 
 from . import (BrowserIdentity, ChainBackoffEntry, ContractHistory,
                DataSourceSettings, DividendCacheEntry, IvBackfillRun,
-               IvObservation, MetricEntry, Owner,
+               IvObservation, MetricEntry, Owner, OwnerLifecycleFacts,
                ProviderCredential, ProviderVerification, RateCacheEntry,
                ResultFactContext, ResultRecord, ResultSummary, RoleSession,
                Scenario, ScenarioExists, SuperUserAuditEvent,
@@ -1208,6 +1208,51 @@ class PostgresStorage:
                 "VALUES (%s, %s, %s, %s)",
                 (identity.token, identity.owner_id, identity.issued_at,
                  identity.last_seen_at))
+
+    def claim_browser_token(self, token: str, owner: Owner, *,
+                            now: str) -> tuple[str, bool]:
+        with self._connect() as conn:
+            with conn.transaction():
+                # token 是 PK：兩個 instance 同時執行時，後到的那一筆會等
+                # 前一筆 commit，然後 DO NOTHING——只有真正搶到的那一筆
+                # 會拿到 RETURNING，才去建 owner 列。
+                row = conn.execute(
+                    "INSERT INTO browser_identities "
+                    "(token, owner_id, issued_at, last_seen_at) "
+                    "VALUES (%s, %s, %s, %s) "
+                    "ON CONFLICT (token) DO NOTHING RETURNING owner_id",
+                    (token, owner.owner_id, now, now)).fetchone()
+                if row is not None:
+                    conn.execute(
+                        "INSERT INTO owners (owner_id, created_at, "
+                        "last_activity_at, protected, is_synthetic) "
+                        "VALUES (%s, %s, %s, %s, %s)",
+                        (owner.owner_id, owner.created_at,
+                         owner.last_activity_at, owner.protected,
+                         owner.is_synthetic))
+                    return owner.owner_id, True
+                existing = conn.execute(
+                    "SELECT owner_id FROM browser_identities WHERE token = %s",
+                    (token,)).fetchone()
+        return existing[0], False
+
+    def owner_lifecycle_facts(self) -> list[OwnerLifecycleFacts]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT o.owner_id, o.created_at, bi.last_seen, "
+                "(EXISTS (SELECT 1 FROM scenarios s WHERE s.owner_id = o.owner_id) "
+                " OR EXISTS (SELECT 1 FROM owner_settings st WHERE st.owner_id = o.owner_id) "
+                " OR EXISTS (SELECT 1 FROM owner_credentials c WHERE c.owner_id = o.owner_id)) "
+                "AS has_data, o.protected, o.is_synthetic "
+                "FROM owners o "
+                "LEFT JOIN (SELECT owner_id, max(last_seen_at) AS last_seen "
+                "           FROM browser_identities GROUP BY owner_id) bi "
+                "  ON bi.owner_id = o.owner_id "
+                "ORDER BY o.created_at, o.owner_id").fetchall()
+        return [OwnerLifecycleFacts(owner_id=r[0], created_at=r[1],
+                                    last_seen_at=r[2], has_data=r[3],
+                                    protected=r[4], is_synthetic=r[5])
+                for r in rows]
 
     def touch_browser_identity(self, token: str, *, now: str) -> bool:
         with self._connect() as conn:

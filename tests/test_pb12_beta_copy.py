@@ -1,5 +1,5 @@
 """PB-12（#302，Anonymous Public Beta）：首頁 Beta 說明／隱私頁的天數
-文案，與後端 `ANONYMOUS_ABANDONED_AFTER_DAYS`／`ANONYMOUS_GRACE_
+文案，與後端 `ANONYMOUS_RETENTION_DAYS`／`ANONYMOUS_GRACE_
 PERIOD_DAYS` 實際預設值不得漂移。
 
 票面 §7 明文：「若寫死在文案裡，需有測試或註解確保兩者不會漂移」——
@@ -20,7 +20,7 @@ SW-10（#340，Owner 真機驗收）跟進：常數原本宣告在 `src/BetaNoti
 import re
 from pathlib import Path
 
-from api_app.main import ANONYMOUS_ABANDONED_AFTER_DAYS, ANONYMOUS_GRACE_PERIOD_DAYS
+from api_app.main import ANONYMOUS_GRACE_PERIOD_DAYS, ANONYMOUS_RETENTION_DAYS
 
 _DISCLAIMER_SECTION_TSX = (
     Path(__file__).resolve().parent.parent / "src" / "DisclaimerSection.tsx")
@@ -36,16 +36,16 @@ def _frontend_constant(name: str) -> int:
 
 
 def test_the_days_hardcoded_in_the_frontend_copy_match_the_backend_defaults():
-    assert _frontend_constant("ANONYMOUS_ABANDONED_AFTER_DAYS") == (
-        ANONYMOUS_ABANDONED_AFTER_DAYS)
+    assert _frontend_constant("ANONYMOUS_RETENTION_DAYS") == (
+        ANONYMOUS_RETENTION_DAYS)
     assert _frontend_constant("ANONYMOUS_GRACE_PERIOD_DAYS") == (
         ANONYMOUS_GRACE_PERIOD_DAYS)
 
 
-def test_the_backend_defaults_are_still_thirty_and_seven():
-    """這兩個數字本身（30／7）也是需求方裁示的一部分（spec #291 OD-4）
-    ——若哪天真的要改，這條測試會提醒改動的人：前端文案（`src/
-    BetaNotice.tsx`）與這裡的隱私頁六項內容都要跟著更新，不是只改
-    後端常數就結束。"""
-    assert ANONYMOUS_ABANDONED_AFTER_DAYS == 30
+def test_the_backend_defaults_are_one_eighty_and_seven():
+    """這兩個數字本身（180／7）也是需求方裁示的一部分（SECURITY-FIX-01，
+    取代 spec #291 OD-4 的 30／7）——若哪天真的要改，這條測試會提醒改動
+    的人：前端文案（`src/DisclaimerSection.tsx`）與隱私頁內容都要跟著
+    更新，不是只改後端常數就結束。"""
+    assert ANONYMOUS_RETENTION_DAYS == 180
     assert ANONYMOUS_GRACE_PERIOD_DAYS == 7

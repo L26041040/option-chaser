@@ -823,6 +823,84 @@ def test_list_owners_returns_every_owner(storage):
     assert {"anon-list-0", "anon-list-1", "anon-list-2"} <= ids
 
 
+# ---------- SECURITY-FIX-01：deferred owner creation 的原子綁定 ----------
+
+_T0 = "2026-09-25T00:00:00+00:00"
+
+
+def test_claim_browser_token_creates_exactly_one_owner_bound_to_the_token(storage):
+    owner_id, created = storage.claim_browser_token(
+        "tok-claim-a", Owner(owner_id="own-claim-a", created_at=_T0), now=_T0)
+    assert (owner_id, created) == ("own-claim-a", True)
+    assert storage.resolve_owner_by_token("tok-claim-a") == "own-claim-a"
+    assert storage.get_owner("own-claim-a") is not None
+
+
+def test_claiming_an_already_bound_token_returns_the_existing_owner(storage):
+    storage.claim_browser_token(
+        "tok-claim-b", Owner(owner_id="own-claim-b1", created_at=_T0), now=_T0)
+    owner_id, created = storage.claim_browser_token(
+        "tok-claim-b", Owner(owner_id="own-claim-b2", created_at=_T0), now=_T0)
+    assert (owner_id, created) == ("own-claim-b1", False)
+    assert storage.get_owner("own-claim-b2") is None          # 輸家沒有留下 owner 列
+    assert {o.owner_id for o in storage.list_owners()} == {"own-claim-b1"}
+
+
+def test_concurrent_claims_on_one_token_yield_a_single_owner(storage):
+    """真正的並發（多執行緒、postgres 各自一條連線）：同一顆 token 同時
+    被 8 個請求搶著綁定，最後只能有一個 owner，且全部回同一個 owner_id。"""
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    barrier = threading.Barrier(8)
+
+    def claim(i: int):
+        barrier.wait()
+        return storage.claim_browser_token(
+            "tok-claim-race", Owner(owner_id=f"own-race-{i}", created_at=_T0), now=_T0)
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        results = list(pool.map(claim, range(8)))
+
+    winners = {owner_id for owner_id, _ in results}
+    assert len(winners) == 1
+    assert sum(1 for _, created in results if created) == 1
+    assert [o.owner_id for o in storage.list_owners()] == list(winners)
+
+
+def test_owner_lifecycle_facts_reports_last_seen_and_has_data(storage):
+    storage.claim_browser_token(
+        "tok-facts-data", Owner(owner_id="own-facts-data", created_at=_T0), now=_T0)
+    storage.touch_browser_identity("tok-facts-data", now="2026-09-26T00:00:00+00:00")
+    storage.create_scenario(_scenario("sc-facts", owner_id="own-facts-data"))
+    storage.claim_browser_token(
+        "tok-facts-empty", Owner(owner_id="own-facts-empty", created_at=_T0), now=_T0)
+    storage.create_owner_with_token(                              # 沒有 identity 以外的任何東西
+        Owner(owner_id="own-facts-settings", created_at=_T0),
+        BrowserIdentity(token="tok-facts-settings", owner_id="own-facts-settings",
+                        issued_at=_T0, last_seen_at=_T0))
+    storage.save_settings(DataSourceSettings(
+        market_data=UsageSetting(mode="default", provider=None),
+        historical_iv=UsageSetting(mode="default", provider=None),
+        updated_at=_T0, owner_id="own-facts-settings"))
+
+    facts = {f.owner_id: f for f in storage.owner_lifecycle_facts()}
+    assert facts["own-facts-data"].has_data is True
+    assert facts["own-facts-data"].last_seen_at == "2026-09-26T00:00:00+00:00"
+    assert facts["own-facts-empty"].has_data is False
+    assert facts["own-facts-settings"].has_data is True           # 設定也算持久資料
+    assert facts["own-facts-empty"].protected is False
+
+
+def test_owner_lifecycle_facts_counts_archived_scenarios_as_data(storage):
+    storage.claim_browser_token(
+        "tok-facts-arch", Owner(owner_id="own-facts-arch", created_at=_T0), now=_T0)
+    storage.create_scenario(_scenario("sc-arch", owner_id="own-facts-arch"))
+    storage.archive_scenario("sc-arch", owner="own-facts-arch", ts=_T0)
+    facts = {f.owner_id: f for f in storage.owner_lifecycle_facts()}
+    assert facts["own-facts-arch"].has_data is True
+
+
 def test_is_synthetic_defaults_to_false_and_round_trips_true(storage):
     """PB-07（#304，Anonymous Public Beta）：`is_synthetic` 純加法欄位
     ——既有（未顯式設定）的 owner 建構天然是 `False`，harness 建構時

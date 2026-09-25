@@ -9,7 +9,7 @@ import { describe, expect, it } from "vitest";
 import { BANNED_JARGON } from "./bannedCopy";
 import PrivacyPage from "./PrivacyPage";
 import {
-  ANONYMOUS_ABANDONED_AFTER_DAYS,
+  ANONYMOUS_RETENTION_DAYS,
   ANONYMOUS_GRACE_PERIOD_DAYS,
 } from "./DisclaimerSection";
 
@@ -37,7 +37,7 @@ describe("PrivacyPage（PB-12／#302）", () => {
     render(<PrivacyPage />);
     const text = screen.getByRole("heading", { name: "留多久" })
       .closest("section")!.textContent!;
-    expect(text).toContain(String(ANONYMOUS_ABANDONED_AFTER_DAYS));
+    expect(text).toContain(String(ANONYMOUS_RETENTION_DAYS));
     expect(text).toContain(String(ANONYMOUS_GRACE_PERIOD_DAYS));
   });
 

@@ -314,6 +314,26 @@ class BrowserIdentity:
 
 
 @dataclass(frozen=True)
+class OwnerLifecycleFacts:
+    """SECURITY-FIX-01：匿名 owner 清理判定需要的全部原始事實，一次查齊
+    （不是逐一 owner 再查 N 次）。
+
+    - `last_seen_at`：這個 owner 名下所有 browser identity 裡最近的一次
+      `last_seen_at`——任何帶有效 cookie 的請求都會推這個值，是新的
+      inactivity 錨點。沒有任何 identity 列時為 `None`（例如合成壓測
+      owner），呼叫端退回 `created_at`。
+    - `has_data`：名下還有沒有使用者真正存下來的東西——劇本（含已封存）、
+      per-owner 設定或 provider credential。沒有的就是「空 owner」。
+    """
+    owner_id: str
+    created_at: str
+    last_seen_at: str | None
+    has_data: bool
+    protected: bool
+    is_synthetic: bool
+
+
+@dataclass(frozen=True)
 class RoleSession:
     """AUTH-01（#308，三層角色模型 spec #307）：cookie 帶的不透明
     token → 角色（`"superuser" | "superadmin"`）的映射。
@@ -1114,6 +1134,23 @@ class Storage(Protocol):
         """讀寫 `protected` 旗標的寫入半邊；讀取走 `get_owner()`。owner
         不存在時安靜地什麼都不做（不拋錯，理由同 `touch_owner_
         activity()`）。"""
+
+    def claim_browser_token(self, token: str, owner: Owner, *,
+                            now: str) -> tuple[str, bool]:
+        """SECURITY-FIX-01（deferred owner creation）：把一顆「還沒綁定
+        任何 owner」的 cookie token 原子地綁到一個新 owner 上。
+
+        回傳 `(實際綁定的 owner_id, 這次是不是真的新建)`。同一顆 token
+        若已經被綁定（包含同一瞬間另一個 serverless instance 搶先綁定），
+        **不建立新 owner**，直接回既有的 owner_id 與 `False`——正確性
+        建立在 `browser_identities.token` 這個 PK 上，不靠任何
+        process-local lock，因此多個 instance 同時首次寫入也只會得到
+        一個 owner。"""
+
+    def owner_lifecycle_facts(self) -> list[OwnerLifecycleFacts]:
+        """全部 owner 的清理判定原始事實（見 `OwnerLifecycleFacts`），
+        一次查詢取得。本方法不套用任何判準——判準在
+        `api_app.anonymous_lifecycle.classify()`，這裡只供事實。"""
 
     def list_owners(self) -> list[Owner]:
         """跨 owner 的列舉逃生門——供 PB-08 依 lifecycle 條件（例如

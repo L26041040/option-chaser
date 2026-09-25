@@ -30,6 +30,7 @@ from api_app.storage.memory import MemoryStorage
 from option_chaser.data.snapshot import load_snapshot
 from option_chaser.models import FetchError
 from tests._role_session import role_cookies
+from _adhoc import post_adhoc
 
 FIX = "tests/fixtures/xyz_v4_six_expiries.json"
 NEW = {"symbol": "XYZ", "target_price": 130.0, "target_month": "2026-09",
@@ -334,7 +335,7 @@ def test_the_ad_hoc_analyze_endpoint_is_also_blocked_by_the_fuse():
     # `AnalyzeRequest.strategies` 認的是具體 subtype（`STRATEGIES`
     # 白名單），跟 `CreateScenarioRequest`／`NEW` 用的 family 白名單
     # 是兩個不同層次的詞彙（main.py 既有註解明講），不能沿用 `NEW`。
-    r = c.post("/api/analyze", json={
+    r = post_adhoc(c, {
         "symbol": "XYZ", "target_price": 130.0, "target_month": "2026-09",
         "strategies": ["bull-call-spread"]})
     assert r.status_code == 429

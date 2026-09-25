@@ -61,6 +61,12 @@ def _scrub_event(event: dict, secrets: tuple[str, ...]) -> dict:
                 if key.lower() in _STRIPPED_HEADERS:
                     headers[key] = "[redacted]"
         request.pop("cookies", None)
+        # SECURITY-FIX-01：request body 一律不送 Sentry。登入密碼
+        # （`/api/auth/login`）與 provider credential（`PUT /api/settings/
+        # credentials/*`）都在 JSON body 裡——Sentry 的 FastAPI／Starlette
+        # 整合會把 body 放進 `request.data`，這裡整塊拿掉，不靠逐欄位
+        # 遮蔽（漏遮一個欄位名就是明文外洩）。
+        request.pop("data", None)
         if isinstance(request.get("url"), str):
             request["url"] = request["url"].split("?")[0]
     message = event.get("message")

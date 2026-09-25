@@ -18,7 +18,7 @@
  * 後端實際預設值的一致性由 `tests/test_pb12_beta_copy.py` 守住）。
  */
 import {
-  ANONYMOUS_ABANDONED_AFTER_DAYS,
+  ANONYMOUS_RETENTION_DAYS,
   ANONYMOUS_GRACE_PERIOD_DAYS,
 } from "./DisclaimerSection";
 import { settingsHash } from "./route";
@@ -46,10 +46,10 @@ export default function PrivacyPage() {
       <section className="card">
         <h3 className="section-title">留多久</h3>
         <p className="caption">
-          連續 {ANONYMOUS_ABANDONED_AFTER_DAYS} 天沒有任何操作（開站
-          時自動刷新既有劇本不算操作），資料會先進入{" "}
-          {ANONYMOUS_GRACE_PERIOD_DAYS} 天緩衝期；緩衝期內只要有任何
-          操作即恢復正常。緩衝期滿仍無操作，系統會自動、永久清除。
+          連續 {ANONYMOUS_RETENTION_DAYS} 天沒有用這個瀏覽器打開本站
+          （只要打開過就重新起算），資料會先進入{" "}
+          {ANONYMOUS_GRACE_PERIOD_DAYS} 天緩衝期；緩衝期內只要回來
+          即恢復正常。緩衝期滿仍未回來，系統會自動、永久清除。
         </p>
       </section>
 

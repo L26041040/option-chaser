@@ -7,13 +7,14 @@
 from __future__ import annotations
 
 import dataclasses
+import threading
 import json
 from collections import deque
 from contextlib import contextmanager
 
 from . import (BrowserIdentity, ChainBackoffEntry, ContractHistory,
                DataSourceSettings, DividendCacheEntry, IvBackfillRun,
-               IvObservation, MetricEntry, Owner,
+               IvObservation, MetricEntry, Owner, OwnerLifecycleFacts,
                ProviderCredential, ProviderVerification, RateCacheEntry,
                ResultFactContext, ResultRecord, ResultSummary, RoleSession,
                Scenario, ScenarioExists, SuperUserAuditEvent,
@@ -50,6 +51,7 @@ class MemoryStorage:
         # `BrowserIdentity` docstring）。
         self._owners: dict[str, Owner] = {}
         self._browser_identities: dict[str, BrowserIdentity] = {}
+        self._claim_lock = threading.Lock()
         # AUTH-01（#308，三層角色模型）：與 owner registry／browser
         # identity 刻意獨立的第三張表——鍵是 role-session token，值不含
         # 任何 owner_id 關聯（軸一／軸二正交）。
@@ -461,6 +463,39 @@ class MemoryStorage:
                                 identity: BrowserIdentity) -> None:
         self._owners[owner.owner_id] = owner
         self._browser_identities[identity.token] = identity
+
+    def claim_browser_token(self, token: str, owner: Owner, *,
+                            now: str) -> tuple[str, bool]:
+        # 與 postgres 的 PK 等價：一把鎖保證「檢查＋寫入」不被並發
+        # 請求（TestClient 的多執行緒）切開。
+        with self._claim_lock:
+            existing = self._browser_identities.get(token)
+            if existing is not None:
+                return existing.owner_id, False
+            self._owners[owner.owner_id] = owner
+            self._browser_identities[token] = BrowserIdentity(
+                token=token, owner_id=owner.owner_id,
+                issued_at=now, last_seen_at=now)
+            return owner.owner_id, True
+
+    def owner_lifecycle_facts(self) -> list[OwnerLifecycleFacts]:
+        last_seen: dict[str, str] = {}
+        for identity in self._browser_identities.values():
+            prev = last_seen.get(identity.owner_id)
+            if prev is None or identity.last_seen_at > prev:
+                last_seen[identity.owner_id] = identity.last_seen_at
+        with_scenarios = {sc.owner_id for sc in self._scenarios.values()}
+        with_settings = set(self._owner_settings)
+        with_credentials = {owner_id for owner_id, _ in self._owner_credentials}
+        facts = [OwnerLifecycleFacts(
+                     owner_id=o.owner_id, created_at=o.created_at,
+                     last_seen_at=last_seen.get(o.owner_id),
+                     has_data=(o.owner_id in with_scenarios
+                               or o.owner_id in with_settings
+                               or o.owner_id in with_credentials),
+                     protected=o.protected, is_synthetic=o.is_synthetic)
+                 for o in self._owners.values()]
+        return sorted(facts, key=lambda f: (f.created_at, f.owner_id))
 
     def touch_browser_identity(self, token: str, *, now: str) -> bool:
         identity = self._browser_identities.get(token)

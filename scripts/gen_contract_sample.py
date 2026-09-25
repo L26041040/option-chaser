@@ -13,6 +13,7 @@
 import json
 from pathlib import Path
 
+from fastapi.encoders import jsonable_encoder
 from fastapi.testclient import TestClient
 
 from api_app.main import create_app
@@ -107,19 +108,24 @@ def _sample_dividend_loader(symbol, today):
            f"（{SAMPLE_DIVIDEND_HISTORY.as_of}，{n} 筆）")
 
 
+def analyze(app, body: dict) -> dict:
+    """SECURITY-FIX-01：公開的 `POST /api/analyze` 已退休，改走
+    `create_app()` 留下的內部 seam（沒有 HTTP 路由）。`jsonable_encoder`
+    ＝原本 HTTP 回應走的同一道序列化，產出的樣本逐位元不變。"""
+    return jsonable_encoder(app.state.analyze_request(body))
+
+
 def freeze_row(row: dict) -> dict:
     return {**row, **FROZEN}
 
 
 def main() -> None:
     snap = load_snapshot(FIXTURE)
-    client = TestClient(create_app(identity_resolver=lambda: "solo", fetch=lambda symbol: snap,
-                                   rate_loader=_sample_rate_loader,
-                                   dividend_loader=_sample_dividend_loader))
-    resp = client.post("/api/analyze", json=REQUEST)
-    resp.raise_for_status()
+    app = create_app(identity_resolver=lambda: "solo", fetch=lambda symbol: snap,
+                     rate_loader=_sample_rate_loader,
+                     dividend_loader=_sample_dividend_loader)
     OUT.parent.mkdir(exist_ok=True)
-    OUT.write_text(json.dumps(resp.json(), ensure_ascii=False, indent=2,
+    OUT.write_text(json.dumps(analyze(app, REQUEST), ensure_ascii=False, indent=2,
                               sort_keys=True) + "\n", encoding="utf-8")
     print(f"寫入 {OUT}（{OUT.stat().st_size:,} bytes）")
 
@@ -139,31 +145,25 @@ def main() -> None:
 
     # #115：獨立的 put-comparator 樣本，見上方 PUT_FIXTURE 註解。
     put_snap = load_snapshot(PUT_FIXTURE)
-    put_client = TestClient(create_app(identity_resolver=lambda: "solo", fetch=lambda symbol: put_snap,
-                                       rate_loader=_sample_rate_loader,
-                                       dividend_loader=_sample_dividend_loader))
-    put_resp = put_client.post("/api/analyze", json=PUT_REQUEST)
-    put_resp.raise_for_status()
-    PUT_OUT.write_text(json.dumps(put_resp.json(), ensure_ascii=False, indent=2,
+    put_app = create_app(identity_resolver=lambda: "solo", fetch=lambda symbol: put_snap,
+                         rate_loader=_sample_rate_loader,
+                         dividend_loader=_sample_dividend_loader)
+    PUT_OUT.write_text(json.dumps(analyze(put_app, PUT_REQUEST), ensure_ascii=False, indent=2,
                                   sort_keys=True) + "\n", encoding="utf-8")
     print(f"寫入 {PUT_OUT}（{PUT_OUT.stat().st_size:,} bytes）")
 
     # T09（#222）：獨立的單腿到期日分組樣本，見上方 LONG_CALL_OUT 註解。
-    lc_resp = client.post("/api/analyze", json=LONG_CALL_REQUEST)
-    lc_resp.raise_for_status()
-    LONG_CALL_OUT.write_text(json.dumps(lc_resp.json(), ensure_ascii=False,
+    LONG_CALL_OUT.write_text(json.dumps(analyze(app, LONG_CALL_REQUEST), ensure_ascii=False,
                                         indent=2, sort_keys=True) + "\n",
                              encoding="utf-8")
     print(f"寫入 {LONG_CALL_OUT}（{LONG_CALL_OUT.stat().st_size:,} bytes）")
 
     # T15（#230）：獨立的 Butterfly 樣本，見上方 BUTTERFLY_OUT 註解。
     butterfly_snap = load_snapshot(BUTTERFLY_FIXTURE)
-    butterfly_client = TestClient(create_app(identity_resolver=lambda: "solo", fetch=lambda symbol: butterfly_snap,
-                                             rate_loader=_sample_rate_loader,
-                                             dividend_loader=_sample_dividend_loader))
-    bf_resp = butterfly_client.post("/api/analyze", json=BUTTERFLY_REQUEST)
-    bf_resp.raise_for_status()
-    BUTTERFLY_OUT.write_text(json.dumps(bf_resp.json(), ensure_ascii=False,
+    butterfly_app = create_app(identity_resolver=lambda: "solo", fetch=lambda symbol: butterfly_snap,
+                               rate_loader=_sample_rate_loader,
+                               dividend_loader=_sample_dividend_loader)
+    BUTTERFLY_OUT.write_text(json.dumps(analyze(butterfly_app, BUTTERFLY_REQUEST), ensure_ascii=False,
                                         indent=2, sort_keys=True) + "\n",
                              encoding="utf-8")
     print(f"寫入 {BUTTERFLY_OUT}（{BUTTERFLY_OUT.stat().st_size:,} bytes）")

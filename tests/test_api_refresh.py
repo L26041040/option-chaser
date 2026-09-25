@@ -22,6 +22,7 @@ from api_app.storage.memory import MemoryStorage
 from option_chaser import service
 from option_chaser.data.snapshot import load_snapshot
 from option_chaser.models import FetchError, ParamError
+from _adhoc import post_adhoc
 
 FIX = "tests/fixtures/xyz_v4_six_expiries.json"
 NEW = {"symbol": "XYZ", "target_price": 130.0, "target_month": "2026-09",
@@ -236,7 +237,7 @@ def test_the_adhoc_endpoint_reports_the_same_stages(monkeypatch, stage_error,
             lambda *a, **k: (_ for _ in ()).throw(stage_error))
         c = _client()
 
-    resp = c.post("/api/analyze", json={**NEW, "strategies": ["bull-call-spread"]})
+    resp = post_adhoc(c, {**NEW, "strategies": ["bull-call-spread"]})
 
     assert resp.status_code == status
     assert _detail(resp)["stage"] == expected

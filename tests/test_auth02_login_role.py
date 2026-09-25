@@ -360,7 +360,10 @@ def test_status_does_not_create_any_owner():
 def test_logout_does_not_delete_or_change_any_owner():
     storage = MemoryStorage()
     c = _client(storage=storage)
-    c.get("/api/scenarios")  # lazy creation：建立一個 owner，拿到 owner cookie
+    # SECURITY-FIX-01：讀取不再建立 owner，建一個劇本才會。
+    c.post("/api/scenarios", json={"symbol": "XYZ", "target_price": 130.0,
+                                   "target_month": "2027-01",
+                                   "strategies": ["vertical-spread"]}).raise_for_status()
     assert len(storage.list_owners()) == 1
     owner_id = storage.list_owners()[0]
 

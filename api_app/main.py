@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import dataclasses
 import os
+import re
 import secrets
 import time
 import uuid
@@ -38,7 +39,9 @@ from .clock import now_utc_iso, ny_today
 from .digest import DigestSnapshot, build_digest_text, send_digest_email
 from .dividend_cache import cached_loader as cached_dividend_loader
 from .identity import (IdentityResolver, cookie_identity_resolver,
-                       default_identity_resolver, resolved_owner_scope)
+                       default_identity_resolver, is_pending_owner,
+                       materialize_owner, pending_owner_placeholder,
+                       resolved_owner_scope, set_resolved_owner)
 from .rate_cache import cached_loader
 from .storage import (BrowserIdentity, ContractHistory, DataSourceSettings,
                       IvBackfillRun, IvObservation,
@@ -73,9 +76,16 @@ RateCurveRowsFetch = Callable[[date, date], tuple]
 # `_call_within_owner_scope()` 的 `set_cookie()` 呼叫裡逐一滿足
 # （不設 `domain` 參數＝預設不帶）。
 _OWNER_COOKIE_NAME = "__Host-oc_owner"
-# 瀏覽器允許的上限量級（spec §4：「目前 Chrome 約 400 天」），每次
-# 成功請求都重新 `set_cookie()` 續命（滑動窗，不是固定到期）。
-_OWNER_COOKIE_MAX_AGE_SECONDS = 400 * 24 * 60 * 60
+# SECURITY-FIX-01：180 天（Owner 裁示，原為瀏覽器上限量級的 400 天），
+# 每次帶有效 cookie 的請求都重新 `set_cookie()` 續命（滑動窗，不是固定
+# 到期）——跟匿名資料的 180 天保留期是同一個數字：cookie 還活著，資料
+# 就還在。
+_OWNER_COOKIE_MAX_AGE_SECONDS = 180 * 24 * 60 * 60
+# 合法 cookie token 的形狀：base64url、至少 22 字元（≥128 bit 隨機，
+# 涵蓋正式簽發的 `token_urlsafe(32)`＝43 字元，以及 PB-07 合成壓測
+# harness 的 `token_urlsafe(16)`＝22 字元）。形狀不對的一律當作沒帶
+# cookie，重新簽發——不接受任意短字串當身份。
+_OWNER_TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{22,128}$")
 
 # AUTH-02（#309）：role-session cookie（軸二）沿用同一個持久 TTL 量級
 # ——票面明文「比照既有 owner cookie 的既有持久 TTL/Max-Age 慣例」。
@@ -87,7 +97,7 @@ _OWNER_COOKIE_MAX_AGE_SECONDS = 400 * 24 * 60 * 60
 # `/api/auth/*` 端點），瀏覽器重開後仍登入的 AC 因此仍然成立（票面
 # 沒有要求「越常用越不會過期」），且完全不需要動這個既有共用
 # middleware 一行。
-_ROLE_COOKIE_MAX_AGE_SECONDS = _OWNER_COOKIE_MAX_AGE_SECONDS
+_ROLE_COOKIE_MAX_AGE_SECONDS = 400 * 24 * 60 * 60
 
 # spec §4 的路由白名單——缺 cookie 時**不得**建立新 owner 的端點。
 # 白名單而非黑名單：未來新增的 owner-scoped 端點預設不豁免，漏列
@@ -190,8 +200,15 @@ GLOBAL_VENDOR_DAILY_BUDGET = 2000
 
 # PB-08（#300，Anonymous Public Beta）：匿名擁有者三段式生命週期
 # （spec §7）。三個數值皆可經 `create_app()` DI 或同名環境變數覆寫。
-ANONYMOUS_ABANDONED_AFTER_DAYS = 30
+#
+# SECURITY-FIX-01（Owner 裁示）：錨點改成 browser identity 的
+# `last_seen_at`（任何帶有效 cookie 的回訪都算），有資料的 owner 180 天
+# 沒回訪才進入 abandoned、再 7 天才可刪；空 owner 1 天。環境變數名稱
+# 刻意跟舊的 `ANONYMOUS_ABANDONED_AFTER_DAYS`（30 天、錨點是手動操作）
+# 不同——部署環境若還留著舊值，不會被悄悄沿用成新的保留期。
+ANONYMOUS_RETENTION_DAYS = 180
 ANONYMOUS_GRACE_PERIOD_DAYS = 7
+ANONYMOUS_EMPTY_OWNER_RETENTION_DAYS = 1
 # 每次 cron 執行最多處理幾個 owner——Vercel Cron 在 Hobby 方案每天
 # 只能觸發一次（研究 #276），這裡的上限因此不是「今天處理不完明天
 # 續跑」的 Continuation（那需要同一天能再被觸發一次，Hobby 做不到），
@@ -234,8 +251,9 @@ def _env_float(name: str, default: float) -> float:
 # 遺留，T06／#221 起不再被任何判斷邏輯讀取，見 `_scenario_json`）。
 _MVP_DIRECTION = "bullish"
 
-# V1（#48）的一次性分析端點沿用：無劇本身分時的 view dict 欄位值，
-# 不影響任何計算。V3 之後前端改走劇本端點，屆時此路徑可移除。
+# 一次性分析（無劇本身分）時 view dict 的 scenario_id 欄位值，不影響
+# 任何計算。公開端點已於 SECURITY-FIX-01 退休，只剩內部 seam 在用
+# （見 `create_app()` 裡的 `_analyze_request`）。
 _ADHOC_SCENARIO_ID = "adhoc"
 
 _SYMBOL = Field(pattern=r"^[A-Za-z.\-]{1,10}$")
@@ -243,6 +261,8 @@ _MONTH = Field(pattern=r"^\d{4}-\d{2}$")
 
 
 class AnalyzeRequest(BaseModel):
+    """內部一次性分析 seam 的參數（`app.state.analyze_request`）——沒有
+    任何 HTTP 路由接受這個形狀了。"""
     # symbol 會被代入資料源的 URL（`data/cboe.py`），因此限制成標的代號
     # 真正可能出現的字元，不讓 `../` 之類的東西有機會進到路徑裡。
     symbol: str = _SYMBOL
@@ -725,9 +745,10 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
                enable_metrics: bool = True,
                anonymous_max_active_scenarios: int | None = None,
                global_vendor_daily_budget: int | None = None,
-               anonymous_abandoned_after_days: int | None = None,
+               anonymous_retention_days: int | None = None,
                anonymous_grace_period_days: int | None = None,
                anonymous_cleanup_batch_size: int | None = None,
+               anonymous_empty_owner_retention_days: int | None = None,
                digest_smtp_host: str | None = None,
                digest_smtp_port: int | None = None,
                digest_smtp_user: str | None = None,
@@ -902,7 +923,9 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
     DAILY_BUDGET` 環境變數或落回上方常數；`<=0` 停用（今天的行為，
     供 rollback／測試）。
 
-    `anonymous_abandoned_after_days`／`anonymous_grace_period_days`／
+    `anonymous_retention_days`／`anonymous_grace_period_days`／
+    `anonymous_empty_owner_retention_days`（SECURITY-FIX-01：錨點改成
+    browser identity 的 `last_seen_at`，見 `api_app.anonymous_lifecycle`）／
     `anonymous_cleanup_batch_size`（PB-08／#300，Anonymous Public
     Beta §7）：匿名擁有者三段式生命週期——`last_activity_at`（PB-01
     既有欄位）距今超過前者天數＝Abandoned，再超過後者天數＝Eligible
@@ -1023,10 +1046,14 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         global_vendor_daily_budget if global_vendor_daily_budget is not None
         else _env_int("GLOBAL_VENDOR_DAILY_BUDGET", GLOBAL_VENDOR_DAILY_BUDGET))
     # PB-08（#300）：同一套慣例。
-    _effective_abandoned_after_days = (
-        anonymous_abandoned_after_days if anonymous_abandoned_after_days is not None
-        else _env_int("ANONYMOUS_ABANDONED_AFTER_DAYS",
-                      ANONYMOUS_ABANDONED_AFTER_DAYS))
+    _effective_retention_days = (
+        anonymous_retention_days if anonymous_retention_days is not None
+        else _env_int("ANONYMOUS_RETENTION_DAYS", ANONYMOUS_RETENTION_DAYS))
+    _effective_empty_owner_retention_days = (
+        anonymous_empty_owner_retention_days
+        if anonymous_empty_owner_retention_days is not None
+        else _env_int("ANONYMOUS_EMPTY_OWNER_RETENTION_DAYS",
+                      ANONYMOUS_EMPTY_OWNER_RETENTION_DAYS))
     _effective_grace_period_days = (
         anonymous_grace_period_days if anonymous_grace_period_days is not None
         else _env_int("ANONYMOUS_GRACE_PERIOD_DAYS", ANONYMOUS_GRACE_PERIOD_DAYS))
@@ -1138,49 +1165,76 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
     # 純驗證錯誤）因此不再付任何連線握手。
     _uses_cookie_identity = identity_resolver is cookie_identity_resolver
 
-    def _resolve_owner_for_request(request: Request) -> tuple[str | None, str | None]:
+    def _resolve_owner_for_request(
+            request: Request) -> tuple[str | None, str | None, Callable[[], str] | None]:
         """PB-02（#294）spec §4 的**唯一路由判斷點**——回傳
-        `(owner_id, cookie_token_to_set)`。`owner_id` 為 `None` 代表這個
-        路由被排除在 owner-scoped 流程之外（不得建立新 owner，見
-        `_OWNER_EXEMPT_*`）；`cookie_token_to_set` 非 `None` 時，呼叫端
-        要在回應上 `set_cookie()`（新建或續命皆要重設，讓 Max-Age
-        變成滑動窗）。
+        `(owner_id, cookie_token_to_set, materializer)`。
+
+        - `owner_id` 為 `None`：這個路由被排除在 owner-scoped 流程之外
+          （`_OWNER_EXEMPT_*`），不簽 cookie、不碰 owner。
+        - cookie 已綁定 owner：回真正的 owner_id，續命 `last_seen_at`。
+        - SECURITY-FIX-01（deferred owner creation）：沒帶 cookie、cookie
+          形狀不對、或帶著一顆還沒綁定的 token——**不建立任何 owner 列**。
+          回一個每個請求各自隨機的佔位 owner_id（讀取端點天然查不到任何
+          東西），加上一個 materializer：只有真正要持久化資料的端點呼叫
+          `materialize_owner()` 時才會用它把這顆 token 原子地綁到新
+          owner（`Storage.claim_browser_token()`，靠 token PK 保證並發
+          下只會得到一個 owner）。
+
+          沒綁定的 token 會**原樣沿用**（不是每次重簽）：首次造訪時前端
+          同時送出的幾個讀取請求各自拿到一顆新 token，瀏覽器最後留下
+          其中一顆，之後所有請求（包含第一次建立劇本）都帶著同一顆，
+          不會再因為並發首訪生出兩個 owner。
+
+        `cookie_token_to_set` 非 `None` 時，呼叫端要在回應上
+        `set_cookie()`（新簽或續命皆要重設，讓 Max-Age 變成滑動窗）。
 
         只在**沒有被 DI 覆寫**（`_uses_cookie_identity`，production
         唯一路徑）時才會做任何 cookie／storage owner 動作——顯式注入
-        別的 `identity_resolver`（既有 `test_scale06`／`test_scale11`
-        大量依賴的既有做法）時，這個函式直接回 `(None, None)`，呼叫端
-        改用 `identity_resolver()` 本身，行為與 PB-02 之前逐位元相同。
+        別的 `identity_resolver` 時，這個函式直接回 `(None, None, None)`，
+        呼叫端改用 `identity_resolver()` 本身。
         """
         if not _uses_cookie_identity:
-            return None, None
+            return None, None, None
         if _is_owner_exempt_route(request.url.path):
-            return None, None
+            return None, None, None
 
         token = request.cookies.get(_OWNER_COOKIE_NAME)
-        owner_id = _db().resolve_owner_by_token(token) if token else None
-
-        now = now_utc_iso()
-        if owner_id is not None:
-            # 續命：token 已知有效，只更新 last_seen_at，不重新建立。
-            _db().touch_browser_identity(token, now=now)
-        else:
-            # 缺 cookie，或帶著的 token 查不到（已被伺服器單方作廢、
-            # 或從未存在過）——一律視為新訪客，建立新 owner＋新 token。
-            # 兩個值各自獨立產生（PB-01 既有不變量：token 不是 owner_id）。
-            owner_id = secrets.token_urlsafe(32)
+        if token is None or not _OWNER_TOKEN_RE.match(token):
             token = secrets.token_urlsafe(32)
-            _db().create_owner_with_token(
-                Owner(owner_id=owner_id, created_at=now),
-                BrowserIdentity(token=token, owner_id=owner_id,
-                                issued_at=now, last_seen_at=now))
-        return owner_id, token
+            owner_id = None
+        else:
+            owner_id = _db().resolve_owner_by_token(token)
+        if owner_id is not None:
+            _db().touch_browser_identity(token, now=now_utc_iso())
+            return owner_id, token, None
+
+        def materialize(token: str = token) -> str:
+            now = now_utc_iso()
+            bound, created = _db().claim_browser_token(
+                token, Owner(owner_id=secrets.token_urlsafe(32), created_at=now),
+                now=now)
+            if created:
+                _record_metric("new_owner_count", ny_today())
+            set_resolved_owner(bound)
+            return bound
+
+        return pending_owner_placeholder(), token, materialize
+
+    def _persistent_owner() -> str:
+        """要持久化 owner-scoped 資料的端點用這個取 owner，不是
+        `identity_resolver()`——這是匿名 owner 唯一的建立入口（見
+        `identity.materialize_owner()`）。DI 覆寫身份時照舊用注入值。"""
+        return materialize_owner() if _uses_cookie_identity else identity_resolver()
 
     async def _call_within_owner_scope(request: Request, call_next) -> Response:
-        owner_id, cookie_token = _resolve_owner_for_request(request)
+        owner_id, cookie_token, materializer = _resolve_owner_for_request(request)
         effective_owner = owner_id if _uses_cookie_identity else identity_resolver()
-        with diagnostics.owner_scope(effective_owner), \
-             resolved_owner_scope(owner_id):
+        # 佔位 owner 不寫進診斷紀錄的 owner 欄位：它不屬於任何人，也不該
+        # 被任何人的 `/api/diagnostics` 讀到。
+        diag_owner = None if is_pending_owner(effective_owner) else effective_owner
+        with diagnostics.owner_scope(diag_owner), \
+             resolved_owner_scope(owner_id, materializer):
             response = await call_next(request)
         if cookie_token is not None:
             # `SameSite=Lax`：同源 SPA，沒有跨站表單提交或第三方
@@ -1192,10 +1246,7 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
             # 前端 mock 的 E2E／pytest TestClient，兩者皆已改用
             # `https://testserver` 分別見 `docs/pb02-cookie-testing-
             # notes.md`），瀏覽器會拒收這顆 cookie——這是明確記錄的
-            # 已知限制，不是靜默降級：程式碼不會偵測「是不是 HTTPS」
-            # 然後悄悄拿掉 `Secure`／`__Host-`，那樣才是真正的靜默
-            # 降級（會讓 production 與非 HTTPS 環境的 cookie 屬性不
-            # 一致、難以察覺）。
+            # 已知限制，不是靜默降級。
             response.set_cookie(
                 _OWNER_COOKIE_NAME, cookie_token,
                 max_age=_OWNER_COOKIE_MAX_AGE_SECONDS,
@@ -1513,45 +1564,64 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
             raise HTTPException(status_code=401, detail="unauthorized")
 
         now = datetime.now(timezone.utc)
-        candidates = [o for o in _db().list_owners() if not o.protected]
-        batch = candidates[:_effective_cleanup_batch_size]
+        # SECURITY-FIX-01：**先**判定、**再**套批次上限。原本是「全部
+        # owner 依建立時間排序 → 取最舊 200 個 → 才判定」：只要最舊的
+        # 200 個都還活躍，後面真正該清的 owner 永遠輪不到。現在先從全部
+        # （非 protected）owner 裡挑出真的可刪的，批次上限只限制「這次
+        # 刪幾個」，活躍的 owner 不再佔用任何批次名額。
+        facts = [f for f in _db().owner_lifecycle_facts() if not f.protected]
         abandoned = 0
-        hard_deleted = 0
-        rows_deleted = 0
-        for o in batch:
+        eligible = []
+        for f in facts:
             state = anonymous_lifecycle.classify(
-                last_activity_at=o.last_activity_at, created_at=o.created_at,
-                now=now, abandoned_after_days=_effective_abandoned_after_days,
-                grace_period_days=_effective_grace_period_days)
+                last_seen_at=f.last_seen_at, created_at=f.created_at,
+                has_data=f.has_data, now=now,
+                retention_days=_effective_retention_days,
+                grace_period_days=_effective_grace_period_days,
+                empty_retention_days=_effective_empty_owner_retention_days)
             if state == "abandoned":
                 abandoned += 1
             elif state == "eligible_for_hard_delete":
-                counts = _db().delete_owner(o.owner_id)
-                hard_deleted += 1
-                rows_deleted += sum(counts.values())
+                eligible.append(f)
+        batch = eligible[:_effective_cleanup_batch_size]
+        data_deleted = empty_deleted = 0
+        data_rows = empty_rows = 0
+        for f in batch:
+            rows = sum(_db().delete_owner(f.owner_id).values())
+            if f.has_data:
+                data_deleted += 1
+                data_rows += rows
+            else:
+                empty_deleted += 1
+                empty_rows += rows
         # 每次執行都記一筆（含 0），不只在真的刪到東西時才記——「今天
         # cron 有沒有真的跑過」本身也是有價值的訊號（PB-11）。
         _record_metric("abandoned_owner_cleanup_count", ny_today(),
-                       count=hard_deleted, amount=rows_deleted)
-        return {"owners_checked": len(candidates), "batch_size": len(batch),
-               "abandoned": abandoned, "hard_deleted": hard_deleted,
-               "rows_deleted": rows_deleted}
+                       count=data_deleted, amount=data_rows)
+        _record_metric("empty_owner_cleanup_count", ny_today(),
+                       count=empty_deleted, amount=empty_rows)
+        return {"owners_checked": len(facts), "eligible": len(eligible),
+               "batch_size": len(batch), "abandoned": abandoned,
+               "hard_deleted": data_deleted + empty_deleted,
+               "empty_owners_deleted": empty_deleted,
+               "rows_deleted": data_rows + empty_rows}
 
     def _anonymous_owner_distribution(today: date) -> dict:
-        """PB-11（#303）：query-time gauge——現在去數一次 `list_
-        owners()` 就有答案的東西，不持久化、不進 `METRIC_CATALOGUE`
-        （與既有 `table_size_metrics()` 同一種形狀）。分類邏輯直接
-        重用 PB-08 的 `anonymous_lifecycle.classify()`，不在這裡另外
-        寫一份可能漂移的 SQL 版本。"""
+        """PB-11（#303）：query-time gauge——現在去數一次就有答案的東西，
+        不持久化、不進 `METRIC_CATALOGUE`。分類邏輯直接重用
+        `anonymous_lifecycle.classify()`（SECURITY-FIX-01 起錨點是
+        `last_seen_at`），不在這裡另外寫一份可能漂移的版本。"""
         now = datetime.combine(today, datetime.min.time(), tzinfo=timezone.utc)
         active = abandoned = eligible = protected = 0
-        for o in _db().list_owners():
+        for o in _db().owner_lifecycle_facts():
             if o.protected:
                 protected += 1
             state = anonymous_lifecycle.classify(
-                last_activity_at=o.last_activity_at, created_at=o.created_at,
-                now=now, abandoned_after_days=_effective_abandoned_after_days,
-                grace_period_days=_effective_grace_period_days)
+                last_seen_at=o.last_seen_at, created_at=o.created_at,
+                has_data=o.has_data, now=now,
+                retention_days=_effective_retention_days,
+                grace_period_days=_effective_grace_period_days,
+                empty_retention_days=_effective_empty_owner_retention_days)
             if state == "active":
                 active += 1
             elif state == "abandoned":
@@ -2104,15 +2174,25 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
                 best_scenario.target_month if best_scenario is not None else None,
         }
 
-    # ---------- 一次性分析（V1 遺留，前端改走劇本端點後可移除） ----------
-
-    @app.post("/api/analyze")
-    def analyze_adhoc(req: AnalyzeRequest) -> dict:
+    # ---------- 一次性分析：已退休的公開端點，只剩內部 seam ----------
+    #
+    # SECURITY-FIX-01：`POST /api/analyze`（V1 遺留）已經移除——前端從
+    # V3 起就不再呼叫它，但它一直是一條不用建劇本、不受劇本額度限制、
+    # 任意 symbol 就打一次上游的公開攻擊面。
+    #
+    # 「引擎對某組參數算出來的完整 view」本身仍然有用：前端共用的契約
+    # 樣本（`contracts/*.json`，`scripts/gen_contract_sample.py`）與
+    # 一批引擎契約測試都靠它。所以留一個**不掛任何路由**的內部入口，
+    # 只能從 process 內（測試、產樣本腳本）呼叫，HTTP 碰不到。
+    def _analyze_request(body: dict) -> dict:
+        req = AnalyzeRequest(**body)
         view, _snapshot = _analyze(
             scenario_id=_ADHOC_SCENARIO_ID, symbol=req.symbol,
             target_price=req.target_price, target_month=req.target_month,
             strategies=tuple(req.strategies))
         return view
+
+    app.state.analyze_request = _analyze_request
 
     # ---------- 劇本 ----------
 
@@ -2137,7 +2217,10 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         # 就緊鄰這個既有檢查本身，不與任何其他角色豁免共用判斷式或工具
         # 函式（票面明確警告：絕不得意外波及 `vendor_fuse.tripped()`，
         # 那條檢查對三層角色一視同仁，PB-06 既有決策維持不變）。
-        owner = identity_resolver()
+        #
+        # SECURITY-FIX-01：建立劇本是第一個真正需要持久化 owner 的動作
+        # ——匿名 owner 在這裡（而不是第一次讀取時）才被建立。
+        owner = _persistent_owner()
         role = superuser.resolve_role(request,
                                       resolve_session=_db().resolve_role_session)
         if role < superuser.Role.SUPERUSER and _effective_max_active_scenarios > 0:
@@ -3117,7 +3200,7 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
                                      provider=req.market_data.provider),
             historical_iv=UsageSetting(mode=req.historical_iv.mode,
                                        provider=req.historical_iv.provider),
-            updated_at=now_utc_iso(), owner_id=identity_resolver()))
+            updated_at=now_utc_iso(), owner_id=_persistent_owner()))
         # 刻意不寫事件紀錄：這條路徑上有 provider id 沒問題，但把設定變更
         # 寫進 append-only 紀錄會讓「token 絕不進事件紀錄」這條 AC 從
         # 「結構上不可能」退成「靠這裡沒寫錯」。設定是單一狀態、不是需要
@@ -3144,7 +3227,7 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
                                 detail=f"不支援的資料源：{provider}")
         _db().save_credential(ProviderCredential(
             provider=provider, token=req.token, updated_at=now_utc_iso(),
-            owner_id=identity_resolver()))
+            owner_id=_persistent_owner()))
         return _settings_view()
 
     @app.post("/api/settings/credentials/{provider}/test")
