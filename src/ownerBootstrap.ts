@@ -63,8 +63,7 @@ async function inTransaction<T>(body: (store: IDBObjectStore, done: (v: T) => vo
 
 const TOKEN_SHAPE = /^[A-Za-z0-9_-]{22,128}$/;
 
-/** localStorage 裡既有的合法 token（前一版只用 localStorage、或這個瀏覽器
- * 之前退回過 localStorage）；讀不到或形狀不對回 `null`。 */
+/** localStorage 裡既有的合法 token；讀不到或形狀不對回 `null`。 */
 function existingLocalStorageToken(): string | null {
   try {
     const token = localStorage.getItem(STORAGE_KEY);
@@ -74,18 +73,31 @@ function existingLocalStorageToken(): string | null {
   }
 }
 
+function mirrorToLocalStorage(token: string): void {
+  try {
+    localStorage.setItem(STORAGE_KEY, token);
+  } catch {
+    // localStorage 不能用：之後也不會退回它，不必鏡像。
+  }
+}
+
+/**
+ * IndexedDB 是主儲存，localStorage 是它的鏡像（IndexedDB 暫時失敗時的
+ * 退路讀的就是這份）。平常兩邊相同；會不同只有兩種來源：前一版只用
+ * localStorage，或這個瀏覽器曾經退回 localStorage 產生過一顆——那顆可能
+ * 已經被綁定、正等著重試，所以**以 localStorage 為準**，把 IndexedDB 對齊
+ * 過去，不是把它蓋掉。整段在同一個 readwrite transaction 裡，跨分頁原子性
+ * 不變：後到的分頁讀到的 localStorage 不是空的就是先到那顆的鏡像。
+ */
 function idbGetOrCreate(): Promise<string> {
   return inTransaction<string>((store, done) => {
     const get = store.get(STORAGE_KEY);
     get.onsuccess = () => {
-      if (typeof get.result === "string" && get.result) {
-        done(get.result);
-        return;
-      }
-      // IndexedDB 還沒有：先沿用 localStorage 裡既有的那顆（它可能已經被
-      // 綁定、正等著重試），沒有才產生新的。
-      const token = existingLocalStorageToken() ?? randomToken();
-      store.put(token, STORAGE_KEY);
+      const stored = typeof get.result === "string" && TOKEN_SHAPE.test(get.result)
+        ? get.result : null;
+      const token = existingLocalStorageToken() ?? stored ?? randomToken();
+      if (token !== stored) store.put(token, STORAGE_KEY);
+      mirrorToLocalStorage(token);
       done(token);
     };
   });

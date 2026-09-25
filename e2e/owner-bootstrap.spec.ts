@@ -41,3 +41,20 @@ test("IndexedDB 還沒有 token 時沿用 localStorage 既有的那顆（可能�
   await page.evaluate((t) => localStorage.setItem("oc_owner_bootstrap", t), legacy);
   expect(await call(page, "ownerBootstrapToken")).toBe(legacy);
 });
+
+test("IndexedDB 已有 token、但 localStorage 有退路期間產生的另一顆時，以 localStorage 為準", async ({ page }) => {
+  await page.goto("/");
+  await call(page, "resetOwnerBootstrapForTests");
+  const fromIndexedDb = await call(page, "ownerBootstrapToken");
+  // IndexedDB 路徑拿到的 token 會同步鏡像到 localStorage（退路讀的就是它）
+  expect(await page.evaluate(() => localStorage.getItem("oc_owner_bootstrap")))
+    .toBe(fromIndexedDb);
+  // 模擬：IndexedDB 暫時失敗期間，退回 localStorage 產生了另一顆（可能已綁定、等著重試）
+  const fromFallback = "F".repeat(43);
+  await page.evaluate((t) => localStorage.setItem("oc_owner_bootstrap", t), fromFallback);
+  await page.reload();                       // 新的分頁生命週期：記憶體快取歸零
+  expect(await call(page, "ownerBootstrapToken")).toBe(fromFallback);
+  await page.reload();                       // IndexedDB 已經對齊，下次讀也是它
+  await page.evaluate(() => localStorage.removeItem("oc_owner_bootstrap"));
+  expect(await call(page, "ownerBootstrapToken")).toBe(fromFallback);
+});
