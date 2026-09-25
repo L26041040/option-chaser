@@ -88,13 +88,18 @@ def _create_and_refresh(client, symbol="XYZ"):
 
 def test_metric_catalogue_is_exactly_seven():
     """名稱保留（歷史），內容隨有意識的擴充更新：SECURITY-FIX-01 加了
-    `new_owner_count`／`empty_owner_cleanup_count`。"""
+    `new_owner_count`／`empty_owner_cleanup_count`，SECURITY-FIX-02 加了
+    五個防護擋下計數。"""
     assert set(METRIC_CATALOGUE) == {
         "chain_fetch_count", "chain_429_count", "stale_serve_count",
         "cold_miss_count", "refresh_duration_ms", "table_size",
         "abandoned_owner_cleanup_count",
-        "new_owner_count", "empty_owner_cleanup_count"}
-    assert len(METRIC_CATALOGUE) == 9
+        "new_owner_count", "empty_owner_cleanup_count",
+        # SECURITY-FIX-02：每一層防護的擋下次數
+        "owner_quota_block_count", "source_burst_block_count",
+        "new_owner_tier_block_count", "global_fuse_block_count",
+        "login_rate_limit_block_count"}
+    assert len(METRIC_CATALOGUE) == 14
 
 
 def test_table_size_is_the_only_non_persisted_metric():

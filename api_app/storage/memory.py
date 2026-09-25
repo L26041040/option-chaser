@@ -52,6 +52,8 @@ class MemoryStorage:
         self._owners: dict[str, Owner] = {}
         self._browser_identities: dict[str, BrowserIdentity] = {}
         self._claim_lock = threading.Lock()
+        # SECURITY-FIX-02：(scope, key, window_seconds, window_start) -> count
+        self._rate_limits: dict[tuple[str, str, int, int], int] = {}
         # AUTH-01（#308，三層角色模型）：與 owner registry／browser
         # identity 刻意獨立的第三張表——鍵是 role-session token，值不含
         # 任何 owner_id 關聯（軸一／軸二正交）。
@@ -496,6 +498,25 @@ class MemoryStorage:
                      protected=o.protected, is_synthetic=o.is_synthetic)
                  for o in self._owners.values()]
         return sorted(facts, key=lambda f: (f.created_at, f.owner_id))
+
+    def rate_limit_consume(self, scope: str, key: str,
+                           windows: list[tuple[int, int, int]]) -> int | None:
+        with self._claim_lock:
+            for i, (seconds, start, limit) in enumerate(windows):
+                if self._rate_limits.get((scope, key, seconds, start), 0) >= limit:
+                    return i
+            for seconds, start, _limit in windows:
+                slot = (scope, key, seconds, start)
+                self._rate_limits[slot] = self._rate_limits.get(slot, 0) + 1
+        return None
+
+    def purge_rate_limits(self, *, before_epoch: int) -> int:
+        with self._claim_lock:
+            dead = [slot for slot in self._rate_limits
+                    if slot[3] + slot[2] < before_epoch]
+            for slot in dead:
+                del self._rate_limits[slot]
+        return len(dead)
 
     def touch_browser_identity(self, token: str, *, now: str) -> bool:
         identity = self._browser_identities.get(token)

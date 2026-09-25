@@ -425,6 +425,8 @@ export function failureLabel(stage: FailureStage): string {
       return "資料來源目前限流中";
     case "vendor_budget_exhausted":
       return "今日查詢預算已用完，稍後或明天再試";
+    case "usage_limited":
+      return "查詢太頻繁，請稍後再試";
     default:
       return "刷新失敗";
   }

@@ -14,7 +14,9 @@ import dataclasses
 import os
 import re
 import secrets
+import logging
 import time
+from contextvars import ContextVar
 import uuid
 from datetime import date, datetime, timedelta, timezone
 from typing import Callable, Literal
@@ -33,6 +35,7 @@ from option_chaser.service import DividendLoader, RateCurveLoader
 from option_chaser.timeframe import (TargetMonth, calendar_anchor,
                                      ensure_month_open, month_is_over)
 
+from . import abuse_control
 from . import (anonymous_lifecycle, chain_backoff, diagnostics, metrics,
               ops_alerts, providers, superuser, vendor_fuse)
 from .clock import now_utc_iso, ny_today
@@ -105,6 +108,21 @@ _ROLE_COOKIE_MAX_AGE_SECONDS = 400 * 24 * 60 * 60
 _OWNER_EXEMPT_EXACT = ("/api/health",)
 _OWNER_EXEMPT_PREFIXES = ("/api/cron/", "/api/ops/", "/api/superuser/",
                          "/api/auth/")
+
+
+# SECURITY-FIX-02：這次 request 本身——`_fetch_chain()` 要知道角色（SU／SA
+# 豁免 per-owner quota）與來源（source burst），但它的簽章不帶 request；
+# 與 `identity.py` 的 owner ContextVar 同一種寫法，middleware 設定、
+# 下游讀取。request 之外（測試直接呼叫內部 seam）為 `None`＝當作
+# Normal、沒有來源資訊。
+_current_request: ContextVar[Request | None] = ContextVar("current_request", default=None)
+
+# `create_app(trusted_ip_header=...)` 的「沒指定」：讀環境（見
+# `abuse_control.default_trusted_ip_header()`）。`None` 本身是合法值
+# （＝一律用 TCP 對端位址），所以需要一個另外的哨兵。
+_AUTO = object()
+
+_logger = logging.getLogger(__name__)
 
 
 def _is_owner_exempt_route(path: str) -> bool:
@@ -709,6 +727,10 @@ def _classify_fetch_failure(storage: Storage, e: FetchError, symbol: str) -> HTT
 
     `.detail` 是純 dict，`refresh_run` 直接拿去併進批次結果的一筆
     失敗項，不必重新包一次 HTTPException。"""
+    if isinstance(e, abuse_control.UsageLimited):
+        # SECURITY-FIX-02：per-owner quota／source burst——我們自己擋下
+        # 的，一樣不回 5xx、不假裝是 vendor 的問題。
+        return _fail("usage_limited", 429, "查詢太頻繁，請稍後再試")
     if isinstance(e, vendor_fuse.GlobalVendorFuseTripped):
         return _fail("vendor_budget_exhausted", 429,
                      "今日全站報價查詢預算已用完，畫面沿用既有資料，"
@@ -749,6 +771,14 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
                anonymous_grace_period_days: int | None = None,
                anonymous_cleanup_batch_size: int | None = None,
                anonymous_empty_owner_retention_days: int | None = None,
+               owner_vendor_quota: tuple[int, int, int] | None = None,
+               source_vendor_burst: tuple[int, int] | None = None,
+               new_owner_tier_share: float | None = None,
+               new_owner_tier_age_hours: int | None = None,
+               login_attempt_limits: tuple[int, int] | None = None,
+               source_hmac_secret: str | None = None,
+               trusted_ip_header: object = _AUTO,
+               clock: Callable[[], float] | None = None,
                digest_smtp_host: str | None = None,
                digest_smtp_port: int | None = None,
                digest_smtp_user: str | None = None,
@@ -1061,6 +1091,39 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         anonymous_cleanup_batch_size if anonymous_cleanup_batch_size is not None
         else _env_int("ANONYMOUS_CLEANUP_BATCH_SIZE",
                       ANONYMOUS_CLEANUP_BATCH_SIZE))
+    # SECURITY-FIX-02：vendor 濫用防護的 Launch Safety Defaults（見
+    # `abuse_control` 檔頭）——同一套「DI 顯式傳入優先、否則讀環境變數、
+    # 再否則用常數」慣例，`<=0` 停用該視窗，不必改 code 就能調。
+    _clock: Callable[[], float] = clock or time.time
+    ac = abuse_control
+    _effective_owner_quota = owner_vendor_quota or (
+        _env_int("OWNER_VENDOR_QUOTA_PER_MINUTE", ac.OWNER_VENDOR_QUOTA_PER_MINUTE),
+        _env_int("OWNER_VENDOR_QUOTA_PER_HOUR", ac.OWNER_VENDOR_QUOTA_PER_HOUR),
+        _env_int("OWNER_VENDOR_QUOTA_PER_DAY", ac.OWNER_VENDOR_QUOTA_PER_DAY))
+    _effective_source_burst = source_vendor_burst or (
+        _env_int("SOURCE_VENDOR_BURST_PER_MINUTE", ac.SOURCE_VENDOR_BURST_PER_MINUTE),
+        _env_int("SOURCE_VENDOR_BURST_PER_HOUR", ac.SOURCE_VENDOR_BURST_PER_HOUR))
+    _effective_tier_share = (
+        new_owner_tier_share if new_owner_tier_share is not None
+        else _env_float("NEW_OWNER_TIER_SHARE", ac.NEW_OWNER_TIER_SHARE))
+    _effective_tier_age = timedelta(hours=(
+        new_owner_tier_age_hours if new_owner_tier_age_hours is not None
+        else _env_int("NEW_OWNER_TIER_AGE_HOURS", ac.NEW_OWNER_TIER_AGE_HOURS)))
+    _effective_login_limits = login_attempt_limits or (
+        _env_int("LOGIN_ATTEMPTS_PER_MINUTE", ac.LOGIN_ATTEMPTS_PER_MINUTE),
+        _env_int("LOGIN_ATTEMPTS_PER_HOUR", ac.LOGIN_ATTEMPTS_PER_HOUR))
+    # 獨立 secret，不重用任何密碼／cron secret。沒設（或空字串）＝source
+    # 層與登入限流**明確停用**（`/api/ops/metrics` 會標示），不會退回
+    # 寫死的 key。
+    _effective_source_hmac_secret = (
+        (source_hmac_secret if source_hmac_secret is not None
+         else os.environ.get("SOURCE_HMAC_SECRET")) or None)
+    _effective_trusted_ip_header = (
+        ac.default_trusted_ip_header() if trusted_ip_header is _AUTO
+        else trusted_ip_header)
+    if _effective_source_hmac_secret is None and os.environ.get("VERCEL"):
+        _logger.warning(
+            "SOURCE_HMAC_SECRET 未設定：source burst 與登入限流已停用")
     # PB-11（#303）：SMTP 設定沿用 `_effective_cron_secret`／
     # `_effective_superadmin_password` 同一套「顯式傳入（含空字串）
     # 完全採用，`None` 才讀環境變數」慣例——`digest_smtp_port` 是唯一
@@ -1228,6 +1291,13 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         return materialize_owner() if _uses_cookie_identity else identity_resolver()
 
     async def _call_within_owner_scope(request: Request, call_next) -> Response:
+        request_token = _current_request.set(request)
+        try:
+            return await _call_within_owner_scope_inner(request, call_next)
+        finally:
+            _current_request.reset(request_token)
+
+    async def _call_within_owner_scope_inner(request: Request, call_next) -> Response:
         owner_id, cookie_token, materializer = _resolve_owner_for_request(request)
         effective_owner = owner_id if _uses_cookie_identity else identity_resolver()
         # 佔位 owner 不寫進診斷紀錄的 owner 欄位：它不屬於任何人，也不該
@@ -1314,6 +1384,78 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
             cached_treasury_rows["fn"] = cached_rate_curve_rows(_db(), rate_curve_rows)
         return cached_treasury_rows["fn"]
 
+    def _source_limiter_status() -> str:
+        if _effective_source_hmac_secret is None:
+            return "disabled_missing_secret"
+        return "enabled"
+
+    def _request_source_key(request: Request | None) -> str | None:
+        """這次 request 的 source key（HMAC，不是 IP）；secret 沒設、
+        拿不到可信 IP 時回 `None`＝這一層不擋。"""
+        if request is None or _effective_source_hmac_secret is None:
+            return None
+        peer = request.client.host if request.client else None
+        ip = ac.client_ip(request.headers, peer, _effective_trusted_ip_header)
+        if ip is None:
+            return None
+        return ac.source_key(ip, _effective_source_hmac_secret, _clock())
+
+    def _windows(now: float, *pairs: tuple[int, int]) -> list[tuple[int, int, int]]:
+        return [(seconds, ac.window_start(now, seconds), limit)
+                for seconds, limit in pairs if limit > 0]
+
+    def _is_new_owner(owner_id: str, now: float) -> bool:
+        rec = _db().get_owner(owner_id)
+        if rec is None or rec.protected:
+            return False
+        try:
+            created = datetime.fromisoformat(rec.created_at)
+        except ValueError:
+            return False
+        return datetime.fromtimestamp(now, timezone.utc) - created < _effective_tier_age
+
+    def _enforce_vendor_limits(symbol: str) -> None:
+        """SECURITY-FIX-02：global fuse 之後、真的打上游之前的三層檢查
+        （見 `abuse_control` 檔頭）。只有「真的準備抓鏈」會走到這裡——
+        頁面、詳細頁、usage-summary 等讀取完全不消耗任何額度。
+
+        Super User／Super Admin 整段豁免（per-owner quota、source burst、
+        new-owner tier）；global fuse 已經在呼叫端先擋過、對所有角色
+        一視同仁。被擋的那次不打上游，丟出 `FetchError` 子類，交給既有
+        `_classify_fetch_failure()` 分類。"""
+        request = _current_request.get()
+        role = (superuser.resolve_role(request, resolve_session=_db().resolve_role_session)
+                if request is not None else superuser.Role.NORMAL)
+        if role >= superuser.Role.SUPERUSER:
+            return
+        now = _clock()
+        owner = identity_resolver()
+        per_min, per_hour, per_day = _effective_owner_quota
+        owner_windows = _windows(now, (ac.MINUTE, per_min), (ac.HOUR, per_hour),
+                                 (ac.DAY, per_day))
+        if owner_windows and _db().rate_limit_consume(
+                "owner_vendor", owner, owner_windows) is not None:
+            _record_metric("owner_quota_block_count", ny_today())
+            raise ac.UsageLimited(f"{symbol}：這個瀏覽器短時間內查詢太多次", layer="owner")
+        source = _request_source_key(request)
+        if source is not None:
+            src_min, src_hour = _effective_source_burst
+            source_windows = _windows(now, (ac.MINUTE, src_min), (ac.HOUR, src_hour))
+            if source_windows and _db().rate_limit_consume(
+                    "source_vendor", source, source_windows) is not None:
+                _record_metric("source_burst_block_count", ny_today())
+                raise ac.UsageLimited(f"{symbol}：這個網路來源短時間內查詢太多次",
+                                      layer="source")
+        pool = ac.new_owner_tier_pool(_effective_global_vendor_daily_budget,
+                                      _effective_tier_share)
+        if pool > 0 and _is_new_owner(owner, now):
+            day, day_start = ac.ny_day_bounds(now)
+            if _db().rate_limit_consume(
+                    "new_owner_tier", day, [(ac.DAY, day_start, pool)]) is not None:
+                _record_metric("new_owner_tier_block_count", ny_today())
+                raise ac.NewOwnerTierExhausted(
+                    f"新使用者今日共用的查詢預算已用完，暫停 {symbol} 的新抓鏈")
+
     def _fetch_chain(symbol: str) -> ChainSnapshot:
         """依設定挑抓鏈路徑（Settings／#125）。
 
@@ -1335,8 +1477,10 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         """
         if vendor_fuse.tripped(_db(), ny_today(),
                                _effective_global_vendor_daily_budget):
+            _record_metric("global_fuse_block_count", ny_today())
             raise vendor_fuse.GlobalVendorFuseTripped(
                 f"全站今日 vendor 呼叫預算已用完，暫停 {symbol} 的新抓鏈")
+        _enforce_vendor_limits(symbol)
         db = _db()
         owner = identity_resolver()
         stored = db.get_settings(owner=owner)
@@ -1600,7 +1744,12 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
                        count=data_deleted, amount=data_rows)
         _record_metric("empty_owner_cleanup_count", ny_today(),
                        count=empty_deleted, amount=empty_rows)
+        # SECURITY-FIX-02：短時間窗計數（含 source key）的保留期——視窗
+        # 結束一小時後就清掉，source 狀態不會被永久保存。
+        purged = _db().purge_rate_limits(
+            before_epoch=int(_clock()) - abuse_control.RATE_LIMIT_RETENTION_SECONDS)
         return {"owners_checked": len(facts), "eligible": len(eligible),
+               "rate_limit_rows_purged": purged,
                "batch_size": len(batch), "abandoned": abandoned,
                "hard_deleted": data_deleted + empty_deleted,
                "empty_owners_deleted": empty_deleted,
@@ -1770,6 +1919,13 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
                # 那段），不是自己另外對 `by_metric["chain_fetch_count"]`
                # 的 30 天視窗桶重新加總算出可能兜不起來的第二個「今天」
                # 定義。`budget <= 0`＝停用，誠實回 `None`。
+               # SECURITY-FIX-02：防護層現況（不含任何 secret 或 IP）。
+               "abuse_control": {
+                   "source_limiter": _source_limiter_status(),
+                   "client_ip_source": _effective_trusted_ip_header or "peer",
+                   "owner_vendor_quota": list(_effective_owner_quota),
+                   "source_vendor_burst": list(_effective_source_burst),
+                   "new_owner_tier_share": _effective_tier_share},
                "vendor_fuse": {
                    "used": vendor_fuse.today_chain_fetch_count(_db(), ny_today()),
                    "budget": (_effective_global_vendor_daily_budget
@@ -1824,7 +1980,7 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
     # 現行真相的疑惑。
 
     @app.post("/api/auth/login")
-    def auth_login(body: AuthLoginRequest, response: Response) -> dict:
+    def auth_login(body: AuthLoginRequest, response: Response, request: Request) -> dict:
         """依序比對 `SUPERADMIN_PASSWORD` → `SUPERUSER_PASSWORD`
         （`secrets.compare_digest`，常數時間，避免時序側信道洩漏
         比對結果），命中即建立 AUTH-01 的 role session＋簽發 cookie；
@@ -1849,6 +2005,20 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         設定，例如 Vercel 專案設定裡只勾了 Production 卻沒勾 Preview）
         不是程式碼能修的——已回報 Owner 另外確認部署平台設定，不在
         這裡假裝修好。"""
+        # SECURITY-FIX-02：來源層的高速猜密碼防護——每個來源（HMAC key，
+        # 不是 IP）各自計數，每次嘗試都算。刻意**沒有**全站或帳號層級
+        # 的鎖定：那會讓攻擊者可以故意讓 Owner 登不進去；這裡被擋的只有
+        # 那個來源本身。secret 沒設時這一層跟 source burst 一起停用。
+        login_source = _request_source_key(request)
+        if login_source is not None:
+            per_min, per_hour = _effective_login_limits
+            login_windows = _windows(_clock(), (abuse_control.MINUTE, per_min),
+                                     (abuse_control.HOUR, per_hour))
+            if login_windows and _db().rate_limit_consume(
+                    "login", login_source, login_windows) is not None:
+                _record_metric("login_rate_limit_block_count", ny_today())
+                raise HTTPException(status_code=429,
+                                    detail="登入嘗試太頻繁，請稍後再試")
         role: superuser.Role | None = None
         submitted = body.password.strip()
         # AUTH-P1-FIX-001（PR #344 Codex review P1）：設定值先 normalize、
@@ -2823,7 +2993,8 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         creds = credentials if credentials is not None else _credential_map()
         tokens = tuple(cred.token for cred in creds.values() if cred is not None)
         role_passwords = tuple(
-            p for p in (_effective_superuser_password, _effective_superadmin_password)
+            p for p in (_effective_superuser_password, _effective_superadmin_password,
+                        _effective_source_hmac_secret)
             if p)
         return tokens + role_passwords + database_url_candidates()
 

@@ -546,13 +546,15 @@ export function resolveCandidate(
  * 不同——那是 vendor 真的回我們限流，這是我們自己決定今天打夠了。
  * 不帶 `RateLimitInfo`（那個結構化事實是 Cboe backoff 專屬的，這裡
  * 沒有對應的倒數時間點可揭露）。
+ * `"usage_limited"`（SECURITY-FIX-02）：這個瀏覽器／網路來源短時間內
+ * 查詢次數超過上限（per-owner quota／source burst），稍後自然恢復。
  */
 export type FailureStage =
   | "fetch" | "analyze" | "params" | "archived" | "rate_limited"
-  | "vendor_budget_exhausted" | null;
+  | "vendor_budget_exhausted" | "usage_limited" | null;
 
 const STAGES = ["fetch", "analyze", "params", "archived", "rate_limited",
-                "vendor_budget_exhausted"] as const;
+                "vendor_budget_exhausted", "usage_limited"] as const;
 
 /**
  * SCALE-05（#260）：`stage === "rate_limited"` 時，後端額外揭露的

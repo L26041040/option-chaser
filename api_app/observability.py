@@ -44,7 +44,9 @@ _STRIPPED_HEADERS = frozenset({"cookie", "authorization"})
 # 空字串，被下面的 `if v` 濾掉，不影響行為）。`SUPERUSER_PASSWORD`／
 # `SUPERADMIN_PASSWORD`（AUTH-02／#309）才是現行真正在用的軸二密碼。
 _SECRET_ENV_VARS = ("CRON_SECRET", "OPS_SECRET", "ADMIN_SECRET",
-                   "SUPERUSER_PASSWORD", "SUPERADMIN_PASSWORD")
+                   "SUPERUSER_PASSWORD", "SUPERADMIN_PASSWORD",
+                   # SECURITY-FIX-02：source key 的 HMAC secret。
+                   "SOURCE_HMAC_SECRET")
 
 
 def known_env_secrets() -> tuple[str, ...]:

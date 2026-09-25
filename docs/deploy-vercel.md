@@ -146,6 +146,40 @@ metrics` 表的資料不影響任何產品資料，可保留或清空。這個�
 `SUPERADMIN_PASSWORD` 是否設定無關——即使停用觀測記錄，Super Admin
 角色仍然守著自訂 provider token 的讀寫路徑。
 
+## Public Beta 濫用防護與匿名資料保留（SECURITY-FIX-01／02，需求方操作一次）
+
+**必做**：新增 `SOURCE_HMAC_SECRET`，值設一個長隨機字串（例如
+`openssl rand -hex 32` 的輸出），**Production 與 Preview 都勾**，跟
+`CRON_SECRET`／兩把角色密碼都用不同的值。它只用來把來源 IP 轉成不可
+逆的 HMAC key（每天輪替），IP 本身從不寫進資料庫。沒設的話，來源層
+爆量限流與登入暴力猜測防護會**明確停用**（`/api/ops/metrics` 的
+`abuse_control.source_limiter` 會顯示 `disabled_missing_secret`），
+不會悄悄改用寫死的 key。
+
+來源 IP：只在 Vercel 上（`VERCEL` 環境變數存在）才信任
+`x-forwarded-for`——Vercel 會覆寫這個 header、不轉送外部送進來的值
+（[官方文件](https://vercel.com/docs/headers/request-headers)）。其他
+環境一律用 TCP 對端位址。`TRUSTED_CLIENT_IP_HEADER` 可覆寫（`none`＝
+一律用對端位址）。
+
+以下全部**選用**，不設就用程式內建的 Launch Safety Defaults；`<=0`
+停用該項：
+
+| 環境變數 | 預設 | 意義 |
+|---|---|---|
+| `OWNER_VENDOR_QUOTA_PER_MINUTE`／`_PER_HOUR`／`_PER_DAY` | 60／300／800 | Normal User 每個瀏覽器準備打上游的次數；Super User／Super Admin 豁免 |
+| `SOURCE_VENDOR_BURST_PER_MINUTE`／`_PER_HOUR` | 120／600 | 同一來源（IPv6 聚合到 /64）的爆量上限；刻意沒有每日上限（避免大型 NAT 誤傷） |
+| `NEW_OWNER_TIER_SHARE` | 0.4 | 建立未滿 24 小時的匿名 owner 全體最多用 global fuse 的比例 |
+| `NEW_OWNER_TIER_AGE_HOURS` | 24 | 多新算「新 owner」 |
+| `LOGIN_ATTEMPTS_PER_MINUTE`／`_PER_HOUR` | 10／60 | 每個來源的登入嘗試上限（沒有全站鎖定） |
+| `GLOBAL_VENDOR_DAILY_BUDGET` | 2000 | 既有；所有角色都受限 |
+| `ANONYMOUS_RETENTION_DAYS` | 180 | 有資料的匿名 owner 多久沒用這個瀏覽器回訪算 abandoned |
+| `ANONYMOUS_GRACE_PERIOD_DAYS` | 7 | abandoned 之後再多久才刪 |
+| `ANONYMOUS_EMPTY_OWNER_RETENTION_DAYS` | 1 | 沒有任何資料的 owner 多久清掉 |
+
+⚠ 舊的 `ANONYMOUS_ABANDONED_AFTER_DAYS`（30 天、錨點是手動操作）已經
+不再被讀取——如果 Vercel 上還留著，可以直接刪掉。
+
 ## 部署後的第一件事：確認 Cboe 可達性
 
 開部署網址 → 按「跑一次分析」→ 看卡片最下面那行「資料來源」：

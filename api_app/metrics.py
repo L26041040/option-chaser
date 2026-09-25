@@ -56,6 +56,14 @@ METRIC_CATALOGUE = (
     # 清理量（跟上面有資料 owner 的清理分開記）。
     "new_owner_count",
     "empty_owner_cleanup_count",
+    # SECURITY-FIX-02：每一層防護各擋了幾次（只有計數，不含 owner、IP、
+    # source key）——Public Beta 上線後拿來校準 limits。上游真實呼叫量
+    # 就是既有的 `chain_fetch_count`。
+    "owner_quota_block_count",
+    "source_burst_block_count",
+    "new_owner_tier_block_count",
+    "global_fuse_block_count",
+    "login_rate_limit_block_count",
 )
 
 # `table_size` 是 query-time gauge，不經過 `record()`／`operational_

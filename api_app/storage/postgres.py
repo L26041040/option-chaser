@@ -449,6 +449,19 @@ CREATE TABLE IF NOT EXISTS role_sessions (
     issued_at   TEXT NOT NULL,
     revoked_at  TEXT
 );
+-- SECURITY-FIX-02：短時間窗的濫用計數（per-owner vendor quota、source
+-- burst、new-owner tier、登入嘗試）。`key` 是 owner_id 或
+-- `abuse_control.source_key()` 算出的 HMAC——**從不存 IP**。沒有
+-- owner_id 欄位、不在 `_OWNER_SCOPED_TABLES`：每一列在視窗結束一小時
+-- 後就會被 `purge_rate_limits()` 清掉，最長也只活一天多。
+CREATE TABLE IF NOT EXISTS rate_limits (
+    scope           TEXT NOT NULL,
+    key             TEXT NOT NULL,
+    window_seconds  INTEGER NOT NULL,
+    window_start    BIGINT NOT NULL,
+    count           INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (scope, key, window_seconds, window_start)
+);
 """
 
 # 冷啟動競爭下的良性錯誤：別人已經建好／加好了。
@@ -1253,6 +1266,38 @@ class PostgresStorage:
                                     last_seen_at=r[2], has_data=r[3],
                                     protected=r[4], is_synthetic=r[5])
                 for r in rows]
+
+    def rate_limit_consume(self, scope: str, key: str,
+                           windows: list[tuple[int, int, int]]) -> int | None:
+        if not windows:
+            return None
+        with self._connect() as conn:
+            with conn.transaction():
+                rows = conn.execute(
+                    "SELECT window_seconds, window_start, count FROM rate_limits "
+                    "WHERE scope = %s AND key = %s AND (window_seconds, window_start) "
+                    "IN (SELECT * FROM unnest(%s::int[], %s::bigint[]))",
+                    (scope, key, [w[0] for w in windows],
+                     [w[1] for w in windows])).fetchall()
+                current = {(r[0], r[1]): r[2] for r in rows}
+                for i, (seconds, start, limit) in enumerate(windows):
+                    if current.get((seconds, start), 0) >= limit:
+                        return i
+                for seconds, start, _limit in windows:
+                    conn.execute(
+                        "INSERT INTO rate_limits (scope, key, window_seconds, "
+                        "window_start, count) VALUES (%s, %s, %s, %s, 1) "
+                        "ON CONFLICT (scope, key, window_seconds, window_start) "
+                        "DO UPDATE SET count = rate_limits.count + 1",
+                        (scope, key, seconds, start))
+        return None
+
+    def purge_rate_limits(self, *, before_epoch: int) -> int:
+        with self._connect() as conn:
+            cur = conn.execute(
+                "DELETE FROM rate_limits WHERE window_start + window_seconds < %s",
+                (before_epoch,))
+            return cur.rowcount
 
     def touch_browser_identity(self, token: str, *, now: str) -> bool:
         with self._connect() as conn:

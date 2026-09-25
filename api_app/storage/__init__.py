@@ -1152,6 +1152,24 @@ class Storage(Protocol):
         一次查詢取得。本方法不套用任何判準——判準在
         `api_app.anonymous_lifecycle.classify()`，這裡只供事實。"""
 
+    def rate_limit_consume(self, scope: str, key: str,
+                           windows: list[tuple[int, int, int]]) -> int | None:
+        """SECURITY-FIX-02：短時間窗濫用計數的「檢查＋扣一次」。
+
+        `windows` 每一項是 `(window_seconds, window_start_epoch, limit)`
+        ——視窗起點由呼叫端算（per-owner／source 用 UTC 對齊，new-owner
+        tier 用 global fuse 同一條紐約日界線）。任何一個視窗已經達到上限
+        就回那個視窗的索引、**全部都不扣**；全部還有額度就全部加一、回
+        `None`。
+
+        「先讀再加」在極端並發下可能多放行幾次（上限是軟性的）——這裡
+        擋的是自動化濫用的速率，不是需要精確到個位數的配額帳本；最後的
+        成本上限仍是 global vendor fuse。"""
+
+    def purge_rate_limits(self, *, before_epoch: int) -> int:
+        """刪掉視窗在 `before_epoch` 之前就已經結束的計數列，回傳刪了
+        幾列。source 狀態因此不會被永久保存。"""
+
     def list_owners(self) -> list[Owner]:
         """跨 owner 的列舉逃生門——供 PB-08 依 lifecycle 條件（例如
         `last_activity_at` 早於某個截止日、且 `protected` 為否）掃描

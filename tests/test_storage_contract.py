@@ -87,7 +87,7 @@ def storage(request):
                      "iv_observations, iv_backfill_runs, contract_iv_history, "
                      "diagnostics, operational_metrics, "
                      "owners, browser_identities, superuser_audit_log, "
-                     "role_sessions "
+                     "role_sessions, rate_limits "
                      "RESTART IDENTITY")
     yield st
 
@@ -899,6 +899,41 @@ def test_owner_lifecycle_facts_counts_archived_scenarios_as_data(storage):
     storage.archive_scenario("sc-arch", owner="own-facts-arch", ts=_T0)
     facts = {f.owner_id: f for f in storage.owner_lifecycle_facts()}
     assert facts["own-facts-arch"].has_data is True
+
+
+# ---------- SECURITY-FIX-02：短時間窗濫用計數 ----------
+
+def test_rate_limit_consume_allows_up_to_the_limit_then_blocks(storage):
+    windows = [(60, 1_000_020, 3)]
+    assert [storage.rate_limit_consume("owner", "k1", windows) for _ in range(3)] \
+        == [None, None, None]
+    assert storage.rate_limit_consume("owner", "k1", windows) == 0
+    # 別的 key、別的 scope、下一個視窗各自獨立
+    assert storage.rate_limit_consume("owner", "k2", windows) is None
+    assert storage.rate_limit_consume("source", "k1", windows) is None
+    assert storage.rate_limit_consume("owner", "k1", [(60, 1_000_080, 3)]) is None
+
+
+def test_rate_limit_consume_is_all_or_nothing_across_windows(storage):
+    minute, hour = (60, 1_000_020, 100), (3600, 997_200, 2)
+    assert storage.rate_limit_consume("owner", "k", [minute, hour]) is None
+    assert storage.rate_limit_consume("owner", "k", [minute, hour]) is None
+    assert storage.rate_limit_consume("owner", "k", [minute, hour]) == 1   # hour 滿了
+    # 被擋的那次沒有扣 minute：minute 還剩 98，hour 仍然擋
+    assert storage.rate_limit_consume("owner", "k", [(60, 1_000_020, 2)]) == 0
+
+
+def test_purge_rate_limits_drops_only_finished_windows(storage):
+    storage.rate_limit_consume("source", "old", [(60, 1_000_000, 5)])
+    storage.rate_limit_consume("source", "live", [(3600, 1_000_000, 5)])
+    removed = storage.purge_rate_limits(before_epoch=1_000_061)
+    assert removed == 1
+    # 還活著的視窗計數保留：再扣 4 次到上限、第 5 次擋
+    for _ in range(4):
+        assert storage.rate_limit_consume("source", "live", [(3600, 1_000_000, 5)]) is None
+    assert storage.rate_limit_consume("source", "live", [(3600, 1_000_000, 5)]) == 0
+    # 已清掉的那個從零開始
+    assert storage.rate_limit_consume("source", "old", [(60, 1_000_000, 1)]) is None
 
 
 def test_is_synthetic_defaults_to_false_and_round_trips_true(storage):
