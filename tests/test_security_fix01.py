@@ -107,8 +107,8 @@ def test_first_persistent_action_creates_exactly_one_owner():
 
 
 def test_concurrent_first_visit_then_create_yields_one_owner():
-    """前端首訪同時送出多個沒帶 cookie 的讀取：各自拿到一顆 token、
-    但沒有任何一個建立 owner。瀏覽器最後留下的那顆被用來建立劇本
+    """前端首訪同時送出多個沒帶 cookie 的讀取：沒有任何一個建立 owner、
+    也沒有任何一個發 cookie。接著的第一次建立劇本才簽發並綁定 token
     ——只會有一個 owner。"""
     app, storage = _app()
     barrier = threading.Barrier(4)
@@ -120,20 +120,53 @@ def test_concurrent_first_visit_then_create_yields_one_owner():
     with ThreadPoolExecutor(max_workers=4) as pool:
         tokens = list(pool.map(first_read, ["/api/scenarios", "/api/me/usage-summary",
                                             "/api/settings", "/api/scenarios"]))
+    assert tokens == [None] * 4
     assert storage.list_owners() == []
-    kept = tokens[-1]                        # 瀏覽器留下最後到的那顆
 
-    r = _browser(app).post("/api/scenarios", json=NEW,
-                           headers={"Cookie": f"{_OWNER_COOKIE_NAME}={kept}"})
+    r = _browser(app).post("/api/scenarios", json=NEW)
     assert r.status_code == 201
+    assert r.cookies.get(_OWNER_COOKIE_NAME)
     assert len(storage.list_owners()) == 1
+
+
+def test_a_slow_first_visit_read_cannot_overwrite_a_materialized_cookie():
+    """Codex P1（PR #346）：首訪同時送出多個沒帶 cookie 的讀取；使用者在
+    其中一個比較慢的讀取回來之前就建立了劇本。那個慢的回應**不得**帶一顆
+    新的（未綁定的）token 覆蓋掉剛綁定的 cookie——否則剛建立的 owner 與
+    劇本就再也存取不到。"""
+    app, storage = _app()
+    slow_read = _browser(app).get("/api/scenarios")      # 還在路上的首訪讀取
+    created = _browser(app).post("/api/scenarios", json=NEW)
+    assert created.status_code == 201
+    jar = created.cookies.get(_OWNER_COOKIE_NAME)         # 瀏覽器現在持有的
+    # 慢的回應這時才回到瀏覽器：它帶了什麼 Set-Cookie，瀏覽器就照單全收。
+    jar = slow_read.cookies.get(_OWNER_COOKIE_NAME) or jar
+    after = _browser(app).get("/api/scenarios",
+                              headers={"Cookie": f"{_OWNER_COOKIE_NAME}={jar}"})
+    assert [r["id"] for r in after.json()] == [created.json()["id"]]
+
+
+def test_reads_without_a_bound_owner_set_no_owner_cookie():
+    """沒有綁定 owner 的回應一律不發 owner cookie：只有「已綁定」或「這次
+    請求剛綁定」的回應才會 `Set-Cookie`，所以任何還在路上的首訪回應都沒有
+    東西可以覆蓋。"""
+    app, storage = _app()
+    for path in ("/api/scenarios", "/api/me/usage-summary", "/api/settings",
+                 "/api/scenarios/nope"):
+        r = _browser(app).get(path)
+        assert _OWNER_COOKIE_NAME not in r.headers.get("set-cookie", ""), path
+    stale = "s" * 43                                   # 形狀合法但沒綁定的舊 cookie
+    r = _browser(app).get("/api/scenarios",
+                          headers={"Cookie": f"{_OWNER_COOKIE_NAME}={stale}"})
+    assert _OWNER_COOKIE_NAME not in r.headers.get("set-cookie", "")
+    assert storage.list_owners() == []
 
 
 def test_concurrent_first_persistent_actions_with_one_token_yield_one_owner():
     """同一顆還沒綁定的 token 同時送出多個建立請求（連點、或多個分頁）
     ——綁定靠 token PK 原子完成，只會有一個 owner，所有劇本都在它名下。"""
     app, storage = _app()
-    token = _browser(app).get("/api/scenarios").cookies.get(_OWNER_COOKIE_NAME)
+    token = "t" * 43                  # 形狀合法、還沒綁定（例如 owner 被清掉後的舊 cookie）
     barrier = threading.Barrier(6)
 
     def create(i: int) -> int:
@@ -181,7 +214,7 @@ def _max_age(response) -> int:
 
 def test_owner_cookie_is_180_days_and_keeps_its_security_attributes():
     app, _ = _app()
-    r = _browser(app).get("/api/scenarios")
+    r = _browser(app).post("/api/scenarios", json=NEW)
     header = r.headers["set-cookie"]
     assert _max_age(r) == ONE_EIGHTY_DAYS
     assert header.startswith(f"{_OWNER_COOKIE_NAME}=")

@@ -378,7 +378,10 @@ def test_the_owner_cookie_never_changes_across_login_and_logout():
     ——兩顆 cookie 完全獨立，不得合併也不得互相牽動。"""
     storage = MemoryStorage()
     c = _client(storage=storage)
-    c.get("/api/scenarios")
+    # SECURITY-FIX-01／Codex P1：owner cookie 只在第一次持久化時簽發。
+    c.post("/api/scenarios", json={"symbol": "XYZ", "target_price": 130.0,
+                                   "target_month": "2027-01",
+                                   "strategies": ["vertical-spread"]})
     owner_cookie_before = c.cookies.get("__Host-oc_owner")
     assert owner_cookie_before is not None
 

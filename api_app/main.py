@@ -1281,9 +1281,9 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
     _uses_cookie_identity = identity_resolver is cookie_identity_resolver
 
     def _resolve_owner_for_request(
-            request: Request) -> tuple[str | None, str | None, Callable[[], str] | None]:
+            request: Request) -> tuple[str | None, dict | None, Callable[[], str] | None]:
         """PB-02（#294）spec §4 的**唯一路由判斷點**——回傳
-        `(owner_id, cookie_token_to_set, materializer)`。
+        `(owner_id, cookie, materializer)`。
 
         - `owner_id` 為 `None`：這個路由被排除在 owner-scoped 流程之外
           （`_OWNER_EXEMPT_*`），不簽 cookie、不碰 owner。
@@ -1294,15 +1294,20 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
           東西），加上一個 materializer：只有真正要持久化資料的端點呼叫
           `materialize_owner()` 時才會用它把這顆 token 原子地綁到新
           owner（`Storage.claim_browser_token()`，靠 token PK 保證並發
-          下只會得到一個 owner）。
+          下只會得到一個 owner）。請求帶著一顆形狀合法、但沒綁定的
+          token（例如 owner 被清理後的舊 cookie）時，綁的就是這一顆：
+          同一個瀏覽器同時送出的多個建立請求（連點、多個分頁）因此收斂到
+          同一個 owner。
 
-          沒綁定的 token 會**原樣沿用**（不是每次重簽）：首次造訪時前端
-          同時送出的幾個讀取請求各自拿到一顆新 token，瀏覽器最後留下
-          其中一顆，之後所有請求（包含第一次建立劇本）都帶著同一顆，
-          不會再因為並發首訪生出兩個 owner。
-
-        `cookie_token_to_set` 非 `None` 時，呼叫端要在回應上
-        `set_cookie()`（新簽或續命皆要重設，讓 Max-Age 變成滑動窗）。
+        `cookie`：`{"token": ..., "bound": bool}`。**只有 `bound` 為真的
+        回應才會 `set_cookie()`**——cookie 已綁定 owner（續命，讓 Max-Age
+        變成滑動窗），或這次請求剛呼叫 materializer 綁定（materializer
+        會把它翻成真）。沒綁定的回應（首訪讀取、404……）一律不發 owner
+        cookie：Codex P1（PR #346）——首訪同時送出好幾個沒帶 cookie 的
+        讀取時，若每個回應都各自發一顆新 token，使用者在某個慢回應回來
+        之前就建立劇本的話，那個慢回應會用一顆沒綁定的 token 蓋掉剛綁定
+        的 cookie，剛建立的 owner 與劇本從此存取不到。不發就沒有東西能
+        蓋。
 
         只在**沒有被 DI 覆寫**（`_uses_cookie_identity`，production
         唯一路徑）時才會做任何 cookie／storage owner 動作——顯式注入
@@ -1322,9 +1327,11 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
             owner_id = _db().resolve_owner_by_token(token)
         if owner_id is not None:
             _db().touch_browser_identity(token, now=now_utc_iso())
-            return owner_id, token, None
+            return owner_id, {"token": token, "bound": True}, None
 
-        def materialize(token: str = token) -> str:
+        cookie = {"token": token, "bound": False}
+
+        def materialize() -> str:
             now = now_utc_iso()
             bound, created = _db().claim_browser_token(
                 token, Owner(owner_id=secrets.token_urlsafe(32), created_at=now),
@@ -1332,9 +1339,10 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
             if created:
                 _record_metric("new_owner_count", ny_today())
             set_resolved_owner(bound)
+            cookie["bound"] = True
             return bound
 
-        return pending_owner_placeholder(), token, materialize
+        return pending_owner_placeholder(), cookie, materialize
 
     def _persistent_owner() -> str:
         """要持久化 owner-scoped 資料的端點用這個取 owner，不是
@@ -1350,7 +1358,7 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
             _current_request.reset(request_token)
 
     async def _call_within_owner_scope_inner(request: Request, call_next) -> Response:
-        owner_id, cookie_token, materializer = _resolve_owner_for_request(request)
+        owner_id, cookie, materializer = _resolve_owner_for_request(request)
         effective_owner = owner_id if _uses_cookie_identity else identity_resolver()
         # 佔位 owner 不寫進診斷紀錄的 owner 欄位：它不屬於任何人，也不該
         # 被任何人的 `/api/diagnostics` 讀到。
@@ -1358,7 +1366,7 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         with diagnostics.owner_scope(diag_owner), \
              resolved_owner_scope(owner_id, materializer):
             response = await call_next(request)
-        if cookie_token is not None:
+        if cookie is not None and cookie["bound"]:
             # `SameSite=Lax`：同源 SPA，沒有跨站表單提交或第三方
             # iframe 內嵌的需求，`Lax` 已足夠擋掉 CSRF 常見手法
             # （跨站 GET 導覽仍會帶上，但本站沒有靠 GET 產生副作用的
@@ -1370,7 +1378,7 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
             # notes.md`），瀏覽器會拒收這顆 cookie——這是明確記錄的
             # 已知限制，不是靜默降級。
             response.set_cookie(
-                _OWNER_COOKIE_NAME, cookie_token,
+                _OWNER_COOKIE_NAME, cookie["token"],
                 max_age=_OWNER_COOKIE_MAX_AGE_SECONDS,
                 httponly=True, secure=True, samesite="lax", path="/")
         return response
