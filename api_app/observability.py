@@ -6,7 +6,7 @@
 路徑的修改）。
 
 PII scrubbing：`before_send` hook 在事件真的要送出前，對 request
-headers（`Cookie`／`Authorization`）整個丟棄，並對事件裡的訊息／例外
+headers（`Cookie`／`Authorization`／`X-OC-Owner-Bootstrap`）整個丟棄，並對事件裡的訊息／例外
 文字套用既有 `diagnostics.sanitize_string()` 同一套「已知祕密值逐字
 比對 → 樣式遮蔽」規則——匿名身份 cookie token 與第三方 provider
 token（`owner_credentials`）都不該隨錯誤堆疊上傳到 Sentry。
@@ -33,7 +33,10 @@ import os
 from .diagnostics import sanitize_string, secret_forms
 from .storage.factory import database_url_candidates
 
-_STRIPPED_HEADERS = frozenset({"cookie", "authorization"})
+# Codex P1（PR #346）：`X-OC-Owner-Bootstrap` 也是身分憑證——綁定前可以
+# 拿去綁定、綁定後 10 分鐘內可以拿去存取該 owner（見 `main.
+# _OWNER_BOOTSTRAP_HEADER`），跟 cookie 一樣整個遮掉。
+_STRIPPED_HEADERS = frozenset({"cookie", "authorization", "x-oc-owner-bootstrap"})
 
 # 已知固定 secret 的環境變數名稱——與 `main.py::_known_secrets()`
 # （診斷用途，含目前設定的 provider token，request-scoped）刻意分開：

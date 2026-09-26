@@ -104,7 +104,9 @@ def test_known_env_secrets_skips_unset_names(monkeypatch):
     assert observability.known_env_secrets() == ()
 
 
-@pytest.mark.parametrize("header", ["Cookie", "cookie", "Authorization"])
+@pytest.mark.parametrize("header", ["Cookie", "cookie", "Authorization",
+                                    # Codex P1（PR #346）：bootstrap token 也是身分憑證
+                                    "X-OC-Owner-Bootstrap", "x-oc-owner-bootstrap"])
 def test_scrub_event_redacts_sensitive_headers(header):
     event = {"request": {"headers": {header: "secret-value"}, "cookies": {"oc_owner": "tok"}}}
 

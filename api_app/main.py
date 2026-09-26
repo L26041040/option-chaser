@@ -79,11 +79,13 @@ RateCurveRowsFetch = Callable[[date, date], tuple]
 # `_call_within_owner_scope()` 的 `set_cookie()` 呼叫裡逐一滿足
 # （不設 `domain` 參數＝預設不帶）。
 _OWNER_COOKIE_NAME = "__Host-oc_owner"
-# SECURITY-FIX-01：180 天（Owner 裁示，原為瀏覽器上限量級的 400 天），
-# 每次帶有效 cookie 的請求都重新 `set_cookie()` 續命（滑動窗，不是固定
-# 到期）——跟匿名資料的 180 天保留期是同一個數字：cookie 還活著，資料
-# 就還在。
-_OWNER_COOKIE_MAX_AGE_SECONDS = 180 * 24 * 60 * 60
+# SECURITY-FIX-01：owner cookie 的 Max-Age 不再是固定常數（原為瀏覽器
+# 上限量級的 400 天），而是在 `create_app()` 裡由「資料保留期＋緩衝期」
+# 算出（預設 180＋7 天，見 `_owner_cookie_max_age_seconds`）；每次帶有效
+# cookie 的請求都重新 `set_cookie()` 續命（滑動窗，不是固定到期）。
+# Codex P2（PR #346）：cookie 必須活過緩衝期——隱私頁承諾「緩衝期內只要
+# 回來即恢復正常」，cookie 若在 180 天就過期，回來的瀏覽器已經拿不到
+# 舊 owner，緩衝期形同虛設。
 # 合法 cookie token 的形狀：base64url、至少 22 字元（≥128 bit 隨機，
 # 涵蓋正式簽發的 `token_urlsafe(32)`＝43 字元，以及 PB-07 合成壓測
 # harness 的 `token_urlsafe(16)`＝22 字元）。形狀不對的一律當作沒帶
@@ -104,7 +106,7 @@ _OWNER_BOOTSTRAP_RETRY_WINDOW = timedelta(minutes=10)
 
 # AUTH-02（#309）：role-session cookie（軸二）沿用當時 owner cookie 的
 # 400 天持久 TTL——票面明文「比照既有 owner cookie 的既有持久 TTL/Max-Age
-# 慣例」。SECURITY-FIX-01 只把 owner cookie 改成 180 天，role cookie
+# 慣例」。SECURITY-FIX-01 只把 owner cookie 改成 180＋7 天，role cookie
 # 刻意維持 400 天不動（角色 session 不在這張票範圍內）。
 # **刻意不做滑動窗續命**：owner cookie 的續命邏輯活在
 # `_call_within_owner_scope()` 這個共用 middleware 裡，若要讓 role
@@ -1154,6 +1156,10 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
     _effective_grace_period_days = (
         anonymous_grace_period_days if anonymous_grace_period_days is not None
         else _env_int("ANONYMOUS_GRACE_PERIOD_DAYS", ANONYMOUS_GRACE_PERIOD_DAYS))
+    # owner cookie 要活過「保留期＋緩衝期」（見模組頂端 `_OWNER_COOKIE_NAME`
+    # 下方的說明），跟 cleanup 用同一組 effective 值，兩邊不會各算各的。
+    _owner_cookie_max_age_seconds = (
+        (_effective_retention_days + _effective_grace_period_days) * 24 * 60 * 60)
     _effective_cleanup_batch_size = (
         anonymous_cleanup_batch_size if anonymous_cleanup_batch_size is not None
         else _env_int("ANONYMOUS_CLEANUP_BATCH_SIZE",
@@ -1423,7 +1429,7 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
             # 已知限制，不是靜默降級。
             response.set_cookie(
                 _OWNER_COOKIE_NAME, cookie["token"],
-                max_age=_OWNER_COOKIE_MAX_AGE_SECONDS,
+                max_age=_owner_cookie_max_age_seconds,
                 httponly=True, secure=True, samesite="lax", path="/")
             # cookie 是 HttpOnly，前端讀不到：明講「已綁定」，前端才知道
             # 可以丟掉 bootstrap token、不必再碰本機儲存（見

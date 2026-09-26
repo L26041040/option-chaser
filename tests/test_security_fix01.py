@@ -3,7 +3,7 @@ correctness。
 
 - deferred owner creation：讀取、404、首頁載入、usage-summary 都不建立
   owner；第一次真正持久化才建立，而且只建立一個（含並發首訪）。
-- owner cookie 180 天、滑動續命。
+- owner cookie 活「保留期＋緩衝期」（預設 180＋7 天）、滑動續命。
 - cleanup：錨點是 browser identity 的 last_seen_at；有資料 180＋7 天、
   空 owner 1 天；先判定再套批次上限（活躍的舊 owner 不再卡住清理）。
 - `POST /api/analyze` 已不存在。
@@ -27,7 +27,10 @@ FIX = "tests/fixtures/xyz_v4_six_expiries.json"
 NEW = {"symbol": "XYZ", "target_price": 130.0, "target_month": "2027-01",
        "strategies": ["vertical-spread"]}
 AUTH = {"Authorization": "Bearer fake-cron-secret"}
-ONE_EIGHTY_DAYS = 180 * 24 * 60 * 60
+# owner cookie 活「保留期＋緩衝期」（預設 180＋7 天）——Codex P2（PR #346）：
+# 緩衝期內回來要能恢復，cookie 不能在 180 天就過期。
+COOKIE_DAYS = 180 + 7
+COOKIE_MAX_AGE = COOKIE_DAYS * 24 * 60 * 60
 
 
 def _app(storage=None, **kwargs):
@@ -214,11 +217,11 @@ def _max_age(response) -> int:
     return int(part.split("=")[1])
 
 
-def test_owner_cookie_is_180_days_and_keeps_its_security_attributes():
+def test_owner_cookie_covers_retention_plus_grace_and_keeps_its_security_attributes():
     app, _ = _app()
     r = _browser(app).post("/api/scenarios", json=NEW)
     header = r.headers["set-cookie"]
-    assert _max_age(r) == ONE_EIGHTY_DAYS
+    assert _max_age(r) == COOKIE_MAX_AGE
     # 前端讀不到 HttpOnly cookie：綁定的回應明講一聲（只是布林，不含 token）
     assert r.headers["x-oc-owner-bound"] == "1"
     assert header.startswith(f"{_OWNER_COOKIE_NAME}=")
@@ -229,7 +232,7 @@ def test_owner_cookie_is_180_days_and_keeps_its_security_attributes():
 
 
 def test_owner_cookie_renewal_is_sliding():
-    """每一次帶有效 cookie 的請求都重新簽 180 天（同一顆 token），不是
+    """每一次帶有效 cookie 的請求都重新簽 180＋7 天（同一顆 token），不是
     固定從第一次簽發起算。"""
     app, storage = _app()
     c = _browser(app)
@@ -237,7 +240,30 @@ def test_owner_cookie_renewal_is_sliding():
     token = first.cookies.get(_OWNER_COOKIE_NAME)
     again = c.get("/api/scenarios")
     assert again.cookies.get(_OWNER_COOKIE_NAME) == token
-    assert _max_age(again) == ONE_EIGHTY_DAYS
+    assert _max_age(again) == COOKIE_MAX_AGE
+
+
+def test_owner_cookie_lifetime_follows_the_configured_retention_and_grace():
+    app, _ = _app(anonymous_retention_days=30, anonymous_grace_period_days=3)
+    r = _browser(app).post("/api/scenarios", json=NEW)
+    assert _max_age(r) == 33 * 24 * 60 * 60
+
+
+def test_returning_inside_the_grace_period_restores_access():
+    """隱私頁承諾：180 天沒回來先進 7 天緩衝期，緩衝期內回來即恢復正常。
+    cookie 在第 183 天仍有效（Max-Age 涵蓋緩衝期），回來後 last_seen
+    重新起算，cleanup 不再刪它。"""
+    app, storage = _app()
+    c = _browser(app)
+    c.post("/api/scenarios", json=NEW).raise_for_status()
+    owner_id = storage.list_owners()[0].owner_id
+    _set_last_seen(storage, owner_id, _ago(183))
+    assert _max_age(c.get("/api/scenarios")) > 183 * 24 * 60 * 60
+
+    assert len(c.get("/api/scenarios").json()) == 1
+    body = c.get("/api/cron/cleanup-abandoned-owners", headers=AUTH).json()
+    assert body["hard_deleted"] == 0
+    assert storage.get_owner(owner_id) is not None
 
 
 def test_a_valid_cookie_return_updates_last_seen():
