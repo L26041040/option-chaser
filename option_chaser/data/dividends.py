@@ -29,7 +29,7 @@ from urllib.request import Request, urlopen
 from ..dividends import (DividendHistory, history_from_dict, history_to_dict,
                          parse_fmp_dividends, parse_nasdaq_dividends,
                          parse_yahoo_dividends)
-from ..models import FetchError
+from ..models import FetchError, describe_fetch_exception
 
 _TIMEOUT_SECONDS = 15.0
 _USER_AGENT = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -80,7 +80,7 @@ def fetch_dividends(symbol: str, today: date, http_get=_http_get) -> DividendHis
     try:
         return parse_yahoo_dividends(symbol, http_get(YAHOO_URL.format(symbol=symbol)), today)
     except Exception as e:  # noqa: BLE001 — 連線與解析失敗一律走下一備援
-        errors.append(f"Yahoo：{e}")
+        errors.append(f"Yahoo：{describe_fetch_exception(e)}")
 
     fmp_key = os.environ.get("FMP_API_KEY")
     if fmp_key:
@@ -88,7 +88,7 @@ def fetch_dividends(symbol: str, today: date, http_get=_http_get) -> DividendHis
             url = FMP_URL.format(symbol=symbol, key=fmp_key)
             return parse_fmp_dividends(symbol, http_get(url), today)
         except Exception as e:  # noqa: BLE001
-            errors.append(f"FMP：{e}")
+            errors.append(f"FMP：{describe_fetch_exception(e)}")
     else:
         errors.append("FMP：FMP_API_KEY 未設定，略過（研究文件 §13-6 待需求方裁示）")
 
@@ -98,7 +98,7 @@ def fetch_dividends(symbol: str, today: date, http_get=_http_get) -> DividendHis
             return parse_nasdaq_dividends(symbol, http_get(url, {"Accept": "application/json"}),
                                           today)
         except Exception as e:  # noqa: BLE001
-            errors.append(f"Nasdaq（{asset_class}）：{e}")
+            errors.append(f"Nasdaq（{asset_class}）：{describe_fetch_exception(e)}")
 
     raise FetchError(f"配息資料抓取失敗：{'; '.join(errors)}")
 

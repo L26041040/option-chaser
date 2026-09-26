@@ -198,6 +198,74 @@ def test_adapter_fetch_errors_do_not_carry_raw_exception_text(monkeypatch):
     assert "internal-proxy" in str(info.value.__cause__)      # 原文仍在 cause
 
 
+LEAK = "internal-proxy.example:3128"
+
+
+def _boom(*args, **kwargs):
+    raise OSError(f"connect to {LEAK} refused")
+
+
+def _adapter_calls():
+    from datetime import date
+
+    from option_chaser.data import dividends, marketdata, treasury
+
+    return {
+        "marketdata.fetch_chain": lambda: marketdata.fetch_chain("XYZ", "fake-tok", http_get=_boom),
+        "marketdata.fetch_surface": lambda: marketdata.fetch_surface(
+            "XYZ", "2026-09-01", "fake-tok", http_request=_boom),
+        "marketdata.fetch_contract_history": lambda: marketdata.fetch_contract_history(
+            "XYZ261218C00100000", "2026-08-01", "2026-09-01", "fake-tok", http_request=_boom),
+        "treasury.fetch_curve": lambda: treasury.fetch_curve(date(2026, 9, 25), http_get=_boom),
+        "dividends.fetch_dividends": lambda: dividends.fetch_dividends(
+            "XYZ", date(2026, 9, 25), http_get=_boom),
+    }
+
+
+@pytest.mark.parametrize("name", sorted(_adapter_calls()))
+def test_every_client_facing_adapter_error_hides_raw_exception_text(name):
+    """Codex P2：B-3 必須涵蓋所有會直達 client 的 adapter 錯誤訊息
+    （設定頁驗證、Historical IV 診斷、利率／配息 note），不只抓鏈。"""
+    from option_chaser.models import FetchError
+
+    with pytest.raises(FetchError) as info:
+        _adapter_calls()[name]()
+    assert LEAK not in str(info.value)
+    assert "OSError" in str(info.value)
+
+
+def test_marketdata_verify_hides_raw_exception_text():
+    from option_chaser.data import marketdata
+
+    result = marketdata.verify("fake-tok", http_get=_boom)
+    assert result.ok is False
+    assert LEAK not in result.reason and "OSError" in result.reason
+
+
+def test_describe_fetch_exception_keeps_curated_and_http_messages():
+    from urllib.error import HTTPError
+
+    from option_chaser.models import FetchError, describe_fetch_exception
+
+    assert describe_fetch_exception(FetchError("Cboe 回傳資料不足（XYZ）")) == "Cboe 回傳資料不足（XYZ）"
+    assert describe_fetch_exception(HTTPError("https://x", 503, "busy", None, None)) == "HTTP 503"
+    assert describe_fetch_exception(ValueError(f"bad {LEAK}")) == "ValueError"
+
+
 def test_secret_forms_cover_the_stripped_value():
-    assert main_module._secret_forms("  hunter2 \n", None, "", "   ", "plain") == (
+    from api_app.diagnostics import secret_forms
+
+    assert secret_forms("  hunter2 \n", None, "", "   ", "plain") == (
         "  hunter2 \n", "hunter2", "plain")
+
+
+def test_sentry_scrubber_also_covers_the_stripped_secret(monkeypatch):
+    """Codex P2：Sentry 那一側（`known_env_secrets()`）也要遮 strip 後的形式。"""
+    from api_app import observability
+
+    monkeypatch.setenv("SUPERADMIN_PASSWORD", "  fake-sa-pw  ")
+    secrets = observability.known_env_secrets()
+    assert "  fake-sa-pw  " in secrets and "fake-sa-pw" in secrets
+    event = {"exception": {"values": [{"value": "login failed for fake-sa-pw"}]}}
+    scrubbed = observability._scrub_event(event, secrets)
+    assert "fake-sa-pw" not in str(scrubbed)

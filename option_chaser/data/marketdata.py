@@ -25,8 +25,8 @@ from typing import Callable
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
-from ..models import (SCHEMA_VERSION, ChainSnapshot, FetchError,
-                      OptionContract, QuotaExhausted)
+from ..models import (SCHEMA_VERSION, ChainSnapshot, FetchError, OptionContract,
+                      QuotaExhausted, describe_fetch_exception)
 
 SOURCE = "marketdata-app"
 
@@ -192,9 +192,8 @@ def fetch_chain(symbol: str, token: str, http_get=_http_get) -> ChainSnapshot:
         raise
     except Exception as e:  # noqa: BLE001 — 任何網路／解析／形狀失敗都是
         # 抓取失敗，收斂成 FetchError 讓上游的備援鏈接得住。
-        # #345 B-3：訊息會直達 client——只放例外類別名，原文留在
-        # `__cause__`（server log／Sentry 看得到）。
-        raise FetchError(f"Market Data App 抓取失敗（{symbol}）: {type(e).__name__}") from e
+        # #345 B-3：訊息會直達 client（見 `describe_fetch_exception`）。
+        raise FetchError(f"Market Data App 抓取失敗（{symbol}）: {describe_fetch_exception(e)}") from e
 
 
 class VerifyResult:
@@ -224,7 +223,7 @@ def verify(token: str, http_get=_http_get) -> VerifyResult:
             return VerifyResult(False, "額度用盡——今日的請求配額已用完")
         return VerifyResult(False, f"資料源回應錯誤（HTTP {e.code}）")
     except Exception as e:  # noqa: BLE001 — 連不上／逾時／DNS 皆歸此類
-        return VerifyResult(False, f"連不上資料源：{e}")
+        return VerifyResult(False, f"連不上資料源：{describe_fetch_exception(e)}")
 
     try:
         payload = json.loads(raw)
@@ -390,13 +389,15 @@ def fetch_surface(symbol: str, on_date: str, token: str,
                           **_empty_row_counts()})
         _raise_for_quota(e)
         raise FetchError(
-            f"Market Data App 歷史鏈抓取失敗（{symbol} {on_date}）: {e}") from e
+            f"Market Data App 歷史鏈抓取失敗（{symbol} {on_date}）: "
+            f"{describe_fetch_exception(e)}") from e
     except Exception as e:  # noqa: BLE001
         _notify(observer, http_status=None, headers=None,
                telemetry={"vendor_status": None, "vendor_errmsg": None,
                           **_empty_row_counts()})
         raise FetchError(
-            f"Market Data App 歷史鏈抓取失敗（{symbol} {on_date}）: {e}") from e
+            f"Market Data App 歷史鏈抓取失敗（{symbol} {on_date}）: "
+            f"{describe_fetch_exception(e)}") from e
 
     try:
         payload = json.loads(resp.body)
@@ -405,7 +406,8 @@ def fetch_surface(symbol: str, on_date: str, token: str,
                telemetry={"vendor_status": None, "vendor_errmsg": None,
                           **_empty_row_counts()})
         raise FetchError(
-            f"Market Data App 歷史鏈抓取失敗（{symbol} {on_date}）: {e}") from e
+            f"Market Data App 歷史鏈抓取失敗（{symbol} {on_date}）: "
+            f"{describe_fetch_exception(e)}") from e
 
     points, telemetry = _parse_surface(payload)
     _notify(observer, http_status=resp.status, headers=resp.headers,
@@ -561,13 +563,15 @@ def fetch_contract_history(occ_symbol: str, from_date: str, to_date: str,
                           **_empty_history_counts()})
         _raise_for_quota(e)
         raise FetchError(
-            f"Market Data App 單合約歷史抓取失敗（{occ_symbol}）: {e}") from e
+            f"Market Data App 單合約歷史抓取失敗（{occ_symbol}）: "
+            f"{describe_fetch_exception(e)}") from e
     except Exception as e:  # noqa: BLE001
         _notify(observer, http_status=None, headers=None,
                telemetry={"vendor_status": None, "vendor_errmsg": None,
                           **_empty_history_counts()})
         raise FetchError(
-            f"Market Data App 單合約歷史抓取失敗（{occ_symbol}）: {e}") from e
+            f"Market Data App 單合約歷史抓取失敗（{occ_symbol}）: "
+            f"{describe_fetch_exception(e)}") from e
 
     try:
         payload = json.loads(resp.body)
@@ -576,7 +580,8 @@ def fetch_contract_history(occ_symbol: str, from_date: str, to_date: str,
                telemetry={"vendor_status": None, "vendor_errmsg": None,
                           **_empty_history_counts()})
         raise FetchError(
-            f"Market Data App 單合約歷史抓取失敗（{occ_symbol}）: {e}") from e
+            f"Market Data App 單合約歷史抓取失敗（{occ_symbol}）: "
+            f"{describe_fetch_exception(e)}") from e
 
     points, telemetry = _parse_contract_history(payload)
     _notify(observer, http_status=resp.status, headers=resp.headers,

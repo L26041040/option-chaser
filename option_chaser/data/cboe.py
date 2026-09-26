@@ -18,8 +18,8 @@ from email.utils import parsedate_to_datetime
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
-from ..models import (SCHEMA_VERSION, ChainSnapshot, FetchError,
-                      OptionContract, RateLimitedError)
+from ..models import (SCHEMA_VERSION, ChainSnapshot, FetchError, OptionContract,
+                      RateLimitedError, describe_fetch_exception)
 
 _URL = "https://cdn.cboe.com/api/global/delayed_quotes/options/{symbol}.json"
 _TIMEOUT_SECONDS = 15.0
@@ -140,6 +140,5 @@ def fetch_chain(symbol: str, http_get=_http_get) -> ChainSnapshot:
     except Exception as e:  # noqa: BLE001 — 任何網路／解析／形狀失敗都是
         # 抓取失敗：必須收斂成 FetchError，service.fetch_and_save 的
         # yfinance 備援才接得住（如 Cboe 回錯誤物件缺 "data" 鍵）。
-        # #345 B-3：訊息會直達 client——只放例外類別名，原文留在
-        # `__cause__`（server log／Sentry 看得到）。
-        raise FetchError(f"Cboe 抓取失敗（{symbol}）: {type(e).__name__}") from e
+        # #345 B-3：訊息會直達 client（見 `describe_fetch_exception`）。
+        raise FetchError(f"Cboe 抓取失敗（{symbol}）: {describe_fetch_exception(e)}") from e

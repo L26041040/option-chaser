@@ -30,7 +30,7 @@ from __future__ import annotations
 
 import os
 
-from .diagnostics import sanitize_string
+from .diagnostics import sanitize_string, secret_forms
 from .storage.factory import database_url_candidates
 
 _STRIPPED_HEADERS = frozenset({"cookie", "authorization"})
@@ -50,7 +50,8 @@ _SECRET_ENV_VARS = ("CRON_SECRET", "OPS_SECRET", "ADMIN_SECRET",
 
 
 def known_env_secrets() -> tuple[str, ...]:
-    values = tuple(v for v in (os.environ.get(n) for n in _SECRET_ENV_VARS) if v)
+    # #345 B-7：原值與 `.strip()` 後的形式都遮（登入比對用的是後者）。
+    values = secret_forms(*(os.environ.get(n) for n in _SECRET_ENV_VARS))
     return values + database_url_candidates()
 
 

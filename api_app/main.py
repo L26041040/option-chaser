@@ -173,15 +173,6 @@ def _is_owner_exempt_route(path: str) -> bool:
     return any(path.startswith(prefix) for prefix in _OWNER_EXEMPT_PREFIXES)
 
 
-def _secret_forms(*values: str | None) -> tuple[str, ...]:
-    """redaction 要遮的祕密字串形式（#345 B-7）：原值，加上去掉頭尾空白
-    的形式——登入比對用的是 `.strip()` 後的值，訊息裡出現的也可能是那個
-    形式。空值與只有空白的值不算祕密（不然會把空字串當成要遮的東西）。"""
-    return tuple(dict.fromkeys(
-        form for value in values if value
-        for form in (value, value.strip()) if form.strip()))
-
-
 def _the_protected_owner_id(candidates: list[Owner]) -> str | None:
     """AUTH-04（#311）「找 protected owner」的**唯一**判斷點——票面
     Implementation constraints 明文要求不得在多處各自重寫一份判準。
@@ -3136,9 +3127,9 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         算過一次），不傳時照舊自己查一次，行為不變。"""
         creds = credentials if credentials is not None else _credential_map()
         tokens = tuple(cred.token for cred in creds.values() if cred is not None)
-        role_passwords = _secret_forms(_effective_superuser_password,
-                                       _effective_superadmin_password,
-                                       _effective_source_hmac_secret)
+        role_passwords = diagnostics.secret_forms(_effective_superuser_password,
+                                                  _effective_superadmin_password,
+                                                  _effective_source_hmac_secret)
         return tokens + role_passwords + database_url_candidates()
 
     def _flush_diagnostics(diag: _CollectingDiagnostics) -> dict:
