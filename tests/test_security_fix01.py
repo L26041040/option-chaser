@@ -444,9 +444,41 @@ def test_an_old_bound_bootstrap_token_is_not_an_identity():
     storage._owners[owner.owner_id] = replace(owner, created_at=_ago(1))
     stranger = _browser(app)
     assert stranger.get("/api/scenarios", headers={BOOTSTRAP: token}).json() == []
-    r = stranger.post("/api/scenarios", json=NEW, headers={BOOTSTRAP: token})
+    assert len(storage.list_owners()) == 1
+
+
+def test_a_write_with_an_old_bound_bootstrap_token_is_refused_before_writing():
+    """Codex P2（PR #346）：過期的已綁定 token 用在寫入時，不能悄悄換一顆
+    只有伺服器知道的隨機 token 照樣寫——回應遺失的話，重試帶同一顆舊
+    token 又會換一顆，多出第二個 owner。寫入前就回 409＋stale header，
+    什麼都沒寫；前端換一顆新 token 重送就成功。"""
+    app, storage = _app()
+    token = "o" * 43
+    _browser(app).post("/api/scenarios", json=NEW,
+                       headers={BOOTSTRAP: token}).raise_for_status()
+    owner = storage.list_owners()[0]
+    storage._owners[owner.owner_id] = replace(owner, created_at=_ago(1))
+    stranger = _browser(app)
+
+    for _ in range(2):                                  # 重試也一樣被拒，不會多出 owner
+        r = stranger.post("/api/scenarios", json={**NEW, "symbol": "QQQ"},
+                          headers={BOOTSTRAP: token})
+        assert r.status_code == 409
+        assert r.headers["x-oc-owner-bootstrap-stale"] == "1"
+        assert _OWNER_COOKIE_NAME not in r.cookies
+        assert "x-oc-owner-bound" not in r.headers
+    assert len(storage.list_owners()) == 1
+    assert len(storage.list_scenarios(owner=owner.owner_id)) == 1
+    r = stranger.put("/api/settings", headers={BOOTSTRAP: token}, json={
+        "market_data": {"mode": "default", "provider": None},
+        "historical_iv": {"mode": "default", "provider": None}})
+    assert r.status_code == 409 and len(storage.list_owners()) == 1
+
+    fresh = "f" * 43
+    r = stranger.post("/api/scenarios", json={**NEW, "symbol": "QQQ"},
+                      headers={BOOTSTRAP: fresh})
     assert r.status_code == 201
-    assert r.cookies.get(_OWNER_COOKIE_NAME) != token
+    assert r.cookies.get(_OWNER_COOKIE_NAME) == fresh
     assert len(storage.list_owners()) == 2
 
 

@@ -9,7 +9,8 @@
  * 本層與整個前端都不做金融計算：每個顯示數字都已由引擎算好。
  */
 import {
-  markOwnerBound, OWNER_BOOTSTRAP_HEADER, OWNER_BOUND_HEADER, ownerBootstrapToken,
+  discardOwnerBootstrapToken, markOwnerBound, OWNER_BOOTSTRAP_HEADER,
+  OWNER_BOOTSTRAP_STALE_HEADER, OWNER_BOUND_HEADER, ownerBootstrapToken,
   withOwnerBindingLock,
 } from "./ownerBootstrap";
 import type { Role } from "./superuser";
@@ -844,11 +845,23 @@ async function send(url: string, init: RequestInit): Promise<Response> {
 
 /** 會建立 owner 的寫入：還沒綁定前跨分頁排隊（見 `ownerBootstrap.ts`
  * 的 `withOwnerBindingLock`），鎖裡取得 bootstrap token 並送出——後到的
- * 分頁送出時 cookie jar 裡已經有先到那顆 cookie。 */
+ * 分頁送出時 cookie jar 裡已經有先到那顆 cookie。伺服器說 token 過期
+ * （409＋`OWNER_BOOTSTRAP_STALE_HEADER`，寫入前就拒絕、什麼都沒寫）時
+ * 換一顆新的重送一次——之後的重試都沿用這顆新 token，回應遺失也不會多
+ * 出第二個 owner。 */
 function sendOwnerBootstrap(url: string, init: RequestInit): Promise<Response> {
-  return withOwnerBindingLock(async () => {
+  const attempt = async () => {
     const token = await ownerBootstrapToken();
-    return send(url, token ? withOwnerBootstrap(init, token) : init);
+    const resp = await send(url, token ? withOwnerBootstrap(init, token) : init);
+    return { token, resp };
+  };
+  return withOwnerBindingLock(async () => {
+    const first = await attempt();
+    if (!first.token || first.resp.headers?.get(OWNER_BOOTSTRAP_STALE_HEADER) !== "1") {
+      return first.resp;
+    }
+    await discardOwnerBootstrapToken(first.token);
+    return (await attempt()).resp;
   });
 }
 

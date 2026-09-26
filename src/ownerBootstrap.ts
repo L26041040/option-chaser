@@ -34,6 +34,9 @@
  */
 export const OWNER_BOOTSTRAP_HEADER = "X-OC-Owner-Bootstrap";
 export const OWNER_BOUND_HEADER = "X-OC-Owner-Bound";
+/** 伺服器說這顆 bootstrap token 早就綁定、超過重試窗（寫入被 409 拒絕、
+ * 什麼都沒寫）：換一顆新的重送。 */
+export const OWNER_BOOTSTRAP_STALE_HEADER = "X-OC-Owner-Bootstrap-Stale";
 const STORAGE_KEY = "oc_owner_bootstrap";
 const DB_NAME = "oc-owner-bootstrap";
 const STORE = "kv";
@@ -197,6 +200,35 @@ export async function markOwnerBound(): Promise<void> {
     } catch {
       // 清不掉只代表 IndexedDB 裡留著一顆已綁定的 token；伺服器只在綁定後
       // 很短的時間內接受它，之後就不算身分。
+    }
+  }
+}
+
+/**
+ * Codex P2（PR #346）：伺服器拒絕了這顆過期的 token（見
+ * `OWNER_BOOTSTRAP_STALE_HEADER`）——把它從本機儲存移除，下一次
+ * `ownerBootstrapToken()` 就會產生新的一顆。只在儲存的值**還是這一顆**時
+ * 才刪（compare-and-delete），不會誤刪別的分頁剛換好的新 token。
+ */
+export async function discardOwnerBootstrapToken(stale: string): Promise<void> {
+  loading = null;
+  try {
+    if (localStorage.getItem(STORAGE_KEY) === stale) localStorage.removeItem(STORAGE_KEY);
+  } catch {
+    // localStorage 不能用：沒有東西可刪。
+  }
+  if (typeof indexedDB !== "undefined") {
+    try {
+      await inTransaction<void>((store, done) => {
+        const get = store.get(STORAGE_KEY);
+        get.onsuccess = () => {
+          if (get.result === stale) store.delete(STORAGE_KEY);
+          done(undefined);
+        };
+      });
+    } catch {
+      // IndexedDB 刪不掉：下次讀到的若還是這顆，伺服器會再拒絕一次；
+      // 呼叫端只重送一次，不會無限重試。
     }
   }
 }

@@ -9,10 +9,11 @@ import {
 const BODY = { symbol: "XYZ", target_price: 1, target_month: "2027-01",
                strategies: ["vertical-spread"] };
 
-function reply(body: unknown, { ok = true, bound = false } = {}) {
+function reply(body: unknown, { ok = true, bound = false, stale = false } = {}) {
   const headers = new Headers();
   if (bound) headers.set(OWNER_BOUND_HEADER, "1");
-  return { ok, status: ok ? 200 : 503, json: async () => body, headers };
+  if (stale) headers.set("X-OC-Owner-Bootstrap-Stale", "1");
+  return { ok, status: ok ? 200 : stale ? 409 : 503, json: async () => body, headers };
 }
 
 function headerOf(init: RequestInit | undefined): string | undefined {
@@ -101,6 +102,37 @@ describe("owner bootstrap token（Codex P1：首訪並發寫入共用同一顆�
     vi.stubGlobal("fetch", fetchDown);
     await expect(createScenario(BODY as never)).rejects.toThrow();
     expect(fetchDown).toHaveBeenCalledTimes(1);
+  });
+
+  it("伺服器說 token 過期（409 stale）時換一顆新的重送一次，之後沿用新的（Codex P2）", async () => {
+    localStorage.setItem("oc_owner_bootstrap", "S".repeat(43));
+    const seen: (string | undefined)[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (_u: string, init?: RequestInit) => {
+      seen.push(headerOf(init));
+      return seen.length === 1
+        ? reply({ detail: "過期" }, { ok: false, stale: true })
+        : reply({ detail: "暫時失敗" }, { ok: false });       // 新 token 的寫入也失敗（例如回應遺失）
+    }));
+    await expect(createScenario(BODY as never)).rejects.toThrow("暫時失敗");
+    expect(seen).toHaveLength(2);                      // 只重送一次
+    expect(seen[0]).toBe("S".repeat(43));
+    expect(seen[1]).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    expect(seen[1]).not.toBe(seen[0]);
+    expect(localStorage.getItem("oc_owner_bootstrap")).toBe(seen[1]);   // 重試沿用新的
+
+    vi.stubGlobal("fetch", vi.fn(async (_u: string, init?: RequestInit) => {
+      seen.push(headerOf(init));
+      return reply({ id: "s1" }, { bound: true });
+    }));
+    await createScenario(BODY as never);
+    expect(seen[2]).toBe(seen[1]);
+  });
+
+  it("連新 token 都被說過期時不會無限重送", async () => {
+    const fetchStale = vi.fn(async () => reply({ detail: "過期" }, { ok: false, stale: true }));
+    vi.stubGlobal("fetch", fetchStale);
+    await expect(createScenario(BODY as never)).rejects.toThrow("過期");
+    expect(fetchStale).toHaveBeenCalledTimes(2);
   });
 
   it("並發寫入帶同一顆 token；讀取不帶", async () => {

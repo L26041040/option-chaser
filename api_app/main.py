@@ -103,6 +103,9 @@ _OWNER_BOOTSTRAP_HEADER = "x-oc-owner-bootstrap"
 # 其實成功、回應卻沒回到瀏覽器時的重試）；超過就不算身分——localStorage
 # 不能變成 cookie 之外的第二個身分載體（清掉 cookie 就是清掉身分）。
 _OWNER_BOOTSTRAP_RETRY_WINDOW = timedelta(minutes=10)
+# 超過重試窗的已綁定 bootstrap token 用在寫入時，伺服器回 409 加這個
+# header（布林）：前端據此換一顆新 token 重送（見 `_bootstrap_token`）。
+_OWNER_BOOTSTRAP_STALE_HEADER = "X-OC-Owner-Bootstrap-Stale"
 
 # AUTH-02（#309）：role-session cookie（軸二）沿用當時 owner cookie 的
 # 400 天持久 TTL——票面明文「比照既有 owner cookie 的既有持久 TTL/Max-Age
@@ -1352,10 +1355,11 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
             return None, None, None
 
         token = request.cookies.get(_OWNER_COOKIE_NAME)
+        stale_bootstrap = False
         if token is not None and _OWNER_TOKEN_RE.match(token):
             owner_id = _db().resolve_owner_by_token(token)
         else:
-            token, owner_id = _bootstrap_token(request)
+            token, owner_id, stale_bootstrap = _bootstrap_token(request)
         if owner_id is not None:
             _db().touch_browser_identity(token, now=now_utc_iso())
             return owner_id, {"token": token, "bound": True}, None
@@ -1363,6 +1367,16 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         cookie = {"token": token, "bound": False}
 
         def materialize() -> str:
+            if stale_bootstrap:
+                # Codex P2（PR #346）：header 帶的是一顆早就綁定、超過重試窗
+                # 的 token（例如前端清除失敗、cookie 又被清掉）。不能悄悄換
+                # 一顆只有伺服器知道的隨機 token 照樣寫入——回應一旦遺失，
+                # 重試還是帶那顆舊 token、又換一顆，就多出第二個 owner。
+                # 寫入之前就拒絕，前端換一顆新 token 重送（見
+                # `src/api.ts` 的 `sendOwnerBootstrap`）。
+                raise HTTPException(
+                    status_code=409, detail="瀏覽器暫存的身分已過期，請重試",
+                    headers={_OWNER_BOOTSTRAP_STALE_HEADER: "1"})
             now = now_utc_iso()
             bound, created = _db().claim_browser_token(
                 token, Owner(owner_id=secrets.token_urlsafe(32), created_at=now),
@@ -1375,24 +1389,27 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
 
         return pending_owner_placeholder(), cookie, materialize
 
-    def _bootstrap_token(request: Request) -> tuple[str, str | None]:
-        """沒有有效 cookie 時的 token 來源（見 `_OWNER_BOOTSTRAP_HEADER`）：
-        header 帶著形狀合法的 token——還沒綁定就沿用它（等 materializer
-        綁定），綁定未滿 `_OWNER_BOOTSTRAP_RETRY_WINDOW` 就視同那個 owner；
-        其他情況（沒帶、形狀不對、綁定太久）一律換一顆新的隨機 token。"""
+    def _bootstrap_token(request: Request) -> tuple[str, str | None, bool]:
+        """沒有有效 cookie 時的 token 來源（見 `_OWNER_BOOTSTRAP_HEADER`），
+        回傳 `(token, owner_id, stale)`：header 帶著形狀合法的 token——還沒
+        綁定就沿用它（等 materializer 綁定），綁定未滿
+        `_OWNER_BOOTSTRAP_RETRY_WINDOW` 就視同那個 owner；綁定太久的回
+        `stale=True`（讀取照舊當新訪客，寫入會被拒絕、要前端換 token）；
+        沒帶或形狀不對就換一顆新的隨機 token。"""
         candidate = request.headers.get(_OWNER_BOOTSTRAP_HEADER)
         if candidate and _OWNER_TOKEN_RE.match(candidate):
             bound = _db().resolve_owner_by_token(candidate)
             if bound is None:
-                return candidate, None
+                return candidate, None, False
             rec = _db().get_owner(bound)
             try:
                 age = datetime.now(timezone.utc) - datetime.fromisoformat(rec.created_at)
             except (AttributeError, ValueError):
                 age = None
             if age is not None and age < _OWNER_BOOTSTRAP_RETRY_WINDOW:
-                return candidate, bound
-        return secrets.token_urlsafe(32), None
+                return candidate, bound, False
+            return secrets.token_urlsafe(32), None, True
+        return secrets.token_urlsafe(32), None, False
 
     def _persistent_owner() -> str:
         """要持久化 owner-scoped 資料的端點用這個取 owner，不是

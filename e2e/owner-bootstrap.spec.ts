@@ -102,3 +102,23 @@ test("IndexedDB 已有 token、但 localStorage 有退路期間產生的另一�
   await page.evaluate(() => localStorage.removeItem("oc_owner_bootstrap"));
   expect(await call(page, "ownerBootstrapToken")).toBe(fromFallback);
 });
+
+test("伺服器說過期的 token 從 IndexedDB 與 localStorage 移除，只刪那一顆（compare-and-delete）", async ({ page }) => {
+  // Codex P2（PR #346）：409 stale 之後換新 token 重送——舊的要真的從
+  // IndexedDB 移除（不然下次讀到的還是它），但別的分頁剛換好的新 token 不能被誤刪。
+  await page.goto("/");
+  await call(page, "resetOwnerBootstrapForTests");
+  const discard = (t: string) => page.evaluate(async ([path, token]) => {
+    const mod = await import(/* @vite-ignore */ path);
+    await mod.discardOwnerBootstrapToken(token);
+  }, [MODULE, t] as const);
+  const current = await call(page, "ownerBootstrapToken");
+  await discard("N".repeat(43));                         // 不是現在那顆：不動
+  expect(await call(page, "ownerBootstrapToken")).toBe(current);
+  await discard(current);                                // 是那顆：兩邊都刪，下次換新的
+  expect(await page.evaluate(() => localStorage.getItem("oc_owner_bootstrap"))).toBeNull();
+  await page.reload();
+  const replaced = await call(page, "ownerBootstrapToken");
+  expect(replaced).toMatch(/^[A-Za-z0-9_-]{43}$/);
+  expect(replaced).not.toBe(current);
+});
