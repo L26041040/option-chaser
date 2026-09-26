@@ -34,6 +34,50 @@ test("兩個分頁同時首訪只會產生一顆 bootstrap token（跨分頁原�
   }
 });
 
+test("IndexedDB 不能用時，兩個分頁同時首次建立劇本會排隊送出，後到的帶著先到的 cookie", async ({ browser }) => {
+  // Codex P2（PR #346）：退回 localStorage 時兩個分頁可能各自產生不同 token
+  // （Chromium 的 localStorage 跨 renderer 是非同步同步的，上鎖也擋不住讀到
+  // 舊值）。所以改成：還沒綁定前，會建立 owner 的寫入跨分頁排隊（Web
+  // Locks），後到的請求送出時 cookie jar 已經有先到那顆 cookie——伺服器以
+  // cookie 為準。這裡用假後端記錄兩個請求的時間與 cookie。
+  const context = await browser.newContext();
+  await context.addInitScript(() => {
+    Object.defineProperty(window, "indexedDB", { value: undefined, configurable: true });
+  });
+  const log: { start: number; end: number; cookie: string | undefined }[] = [];
+  await context.route("**/api/scenarios", async (route) => {
+    if (route.request().method() !== "POST") return route.fallback();
+    const entry = { start: Date.now(), end: 0, cookie: route.request().headers()["cookie"] };
+    log.push(entry);
+    await new Promise((r) => setTimeout(r, 400));
+    entry.end = Date.now();
+    await route.fulfill({
+      status: 200, contentType: "application/json",
+      headers: { "Set-Cookie": "oc_e2e_owner=first-bound; Path=/", "X-OC-Owner-Bound": "1" },
+      body: JSON.stringify({ id: `s${log.length}` }),
+    });
+  });
+  const page = await context.newPage();
+  await page.goto("/");
+  const other = await context.newPage();
+  await other.goto("/");
+  expect(await page.evaluate(() => typeof indexedDB)).toBe("undefined");
+
+  const create = (p: Page) => p.evaluate(async (path) => {
+    const mod = await import(/* @vite-ignore */ path);
+    await mod.createScenario({ symbol: "XYZ", target_price: 1, target_month: "2027-01",
+                               strategies: ["vertical-spread"] });
+  }, "/src/api.ts");
+  await Promise.all([create(page), create(other)]);
+
+  expect(log).toHaveLength(2);
+  const [first, second] = [...log].sort((a, b) => a.start - b.start);
+  expect(second.start).toBeGreaterThanOrEqual(first.end);   // 沒有重疊：排隊送出
+  expect(first.cookie ?? "").not.toContain("oc_e2e_owner");
+  expect(second.cookie ?? "").toContain("oc_e2e_owner=first-bound");
+  await context.close();
+});
+
 test("IndexedDB 還沒有 token 時沿用 localStorage 既有的那顆（可能正等著重試）", async ({ page }) => {
   await page.goto("/");
   await call(page, "resetOwnerBootstrapForTests");

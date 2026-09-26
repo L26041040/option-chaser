@@ -15,6 +15,19 @@
  * 隱私模式）時退回 localStorage，再不行就回 `null`（不帶 header，沿用
  * 既有行為）。
  *
+ * **寫入本身也跨分頁排隊**（Codex P2，PR #346）：IndexedDB 不能用、退回
+ * localStorage 時，兩個分頁可能各自產生不同的 token——而且 Chromium 的
+ * localStorage 在不同分頁（不同 renderer process）之間是非同步同步的，
+ * 光是對「讀→產生→寫」上鎖也擋不住後到的分頁讀到舊值。所以改從另一端
+ * 保證：瀏覽器有 Web Locks（`navigator.locks`）時，**還沒綁定之前**，會
+ * 建立 owner 的寫入（取得 token＋送出＋處理回應）放在同一把 origin 範圍的
+ * 獨佔鎖裡依序進行（`withOwnerBindingLock`）。先到的請求一綁定，回應的
+ * `Set-Cookie` 就進了瀏覽器共用的 cookie jar；後到的請求送出時自然帶著
+ * 那顆 cookie，伺服器以 cookie 為準（cookie 優先於 header），兩個分頁因此
+ * 落在同一個 owner。IndexedDB 路徑也一樣走這把鎖（混用也涵蓋）；已綁定的
+ * 分頁不再上鎖。請求有逾時（`REQUEST_TIMEOUT_MS`），鎖不會被卡住的請求
+ * 永久佔住。
+ *
  * 伺服器回應帶 `X-OC-Owner-Bound: 1`（cookie 已綁定）時就清掉，這個分頁
  * 之後不再帶、也不再碰 IndexedDB。伺服器只在綁定後很短的時間內接受已綁定
  * 的 token（重試用），所以它不會變成 cookie 之外的第二個身分。
@@ -24,6 +37,7 @@ export const OWNER_BOUND_HEADER = "X-OC-Owner-Bound";
 const STORAGE_KEY = "oc_owner_bootstrap";
 const DB_NAME = "oc-owner-bootstrap";
 const STORE = "kv";
+const BINDING_LOCK = "oc-owner-binding";
 
 function randomToken(): string {
   const bytes = new Uint8Array(32);
@@ -133,6 +147,26 @@ async function loadToken(): Promise<string | null> {
     }
   }
   return localStorageGetOrCreate();
+}
+
+/**
+ * 會建立 owner 的寫入在還沒綁定前，放在跨分頁獨佔鎖裡跑（見檔頭）。已綁定、
+ * 或瀏覽器沒有 Web Locks 時直接跑。鎖 API 本身出錯（`body` 還沒開始跑）
+ * 就不上鎖照舊跑；`body` 自己拋的錯照樣往外拋、不會重跑一次。
+ */
+export async function withOwnerBindingLock<T>(body: () => Promise<T>): Promise<T> {
+  const locks = typeof navigator !== "undefined" ? navigator.locks : undefined;
+  if (bound || !locks || typeof locks.request !== "function") return body();
+  let started = false;
+  try {
+    return await locks.request(BINDING_LOCK, () => {
+      started = true;
+      return body();
+    });
+  } catch (e) {
+    if (started) throw e;
+    return body();
+  }
 }
 
 /** 寫入請求要帶的 bootstrap token；已綁定（或本機儲存都不能用）時回

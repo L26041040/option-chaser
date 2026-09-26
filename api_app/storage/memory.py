@@ -16,8 +16,8 @@ from contextlib import contextmanager
 from . import (BrowserIdentity, ChainBackoffEntry, ContractHistory,
                DataSourceSettings, DividendCacheEntry, IvBackfillRun,
                IvObservation, MetricEntry, Owner, OwnerLifecycleFacts,
-               ProviderCredential, ProviderVerification, RateCacheEntry,
-               RateLimitBucket,
+               OWNER_RATE_LIMIT_SCOPE, ProviderCredential, ProviderVerification,
+               RateCacheEntry, RateLimitBucket,
                ResultFactContext, ResultRecord, ResultSummary, RoleSession,
                Scenario, ScenarioExists, SuperUserAuditEvent,
                TreasuryYearCacheEntry, require_owner)
@@ -441,6 +441,12 @@ class MemoryStorage:
                 del self._owner_verifications[key]
                 n += 1
         counts["owner_verifications"] = n
+
+        dead = [slot for slot in self._rate_limits
+                if slot[0] == OWNER_RATE_LIMIT_SCOPE and slot[1] == owner_id]
+        for slot in dead:
+            del self._rate_limits[slot]
+        counts["rate_limits"] = len(dead)
 
         n = 0
         for token in list(self._browser_identities):

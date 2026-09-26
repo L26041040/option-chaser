@@ -26,8 +26,8 @@ from psycopg.types.json import Jsonb
 from . import (BrowserIdentity, ChainBackoffEntry, ContractHistory,
                DataSourceSettings, DividendCacheEntry, IvBackfillRun,
                IvObservation, MetricEntry, Owner, OwnerLifecycleFacts,
-               ProviderCredential, ProviderVerification, RateCacheEntry,
-               RateLimitBucket,
+               OWNER_RATE_LIMIT_SCOPE, ProviderCredential, ProviderVerification,
+               RateCacheEntry, RateLimitBucket,
                ResultFactContext, ResultRecord, ResultSummary, RoleSession,
                Scenario, ScenarioExists, SuperUserAuditEvent,
                TreasuryYearCacheEntry, UsageSetting, require_owner)
@@ -455,7 +455,9 @@ CREATE TABLE IF NOT EXISTS role_sessions (
 -- burst、new-owner tier、登入嘗試）。`key` 是 owner_id 或
 -- `abuse_control.source_key()` 算出的 HMAC——**從不存 IP**。沒有
 -- owner_id 欄位、不在 `_OWNER_SCOPED_TABLES`：每一列在視窗結束一小時
--- 後就會被 `purge_rate_limits()` 清掉，最長也只活一天多。
+-- 後就會被 `purge_rate_limits()` 清掉，最長也只活一天多；per-owner
+-- quota 的列（scope = `OWNER_RATE_LIMIT_SCOPE`、key = owner_id）另外在
+-- `delete_owner()` 同一個交易裡直接刪。
 CREATE TABLE IF NOT EXISTS rate_limits (
     scope           TEXT NOT NULL,
     key             TEXT NOT NULL,
@@ -1171,7 +1173,8 @@ class PostgresStorage:
         簽發」邏輯，重用既有機制。
 
         回傳 `{table_name: 受影響列數}`，含 `owners`／
-        `browser_identities` 兩張（共 12 個鍵）。"""
+        `browser_identities` 兩張，以及 `rate_limits`（該 owner 的 per-owner
+        quota 計數列，共 13 個鍵）。"""
         counts: dict[str, int] = {}
         with self._connect() as conn:
             with conn.transaction():
@@ -1179,6 +1182,12 @@ class PostgresStorage:
                     cur = conn.execute(
                         f"DELETE FROM {table} WHERE owner_id = %s", (owner_id,))
                     counts[table] = cur.rowcount
+                # rate_limits 沒有 owner_id 欄位：per-owner quota 的列以
+                # owner_id 當 `key`（Codex P2，PR #346：刪除要立刻清乾淨）。
+                cur = conn.execute(
+                    "DELETE FROM rate_limits WHERE scope = %s AND key = %s",
+                    (OWNER_RATE_LIMIT_SCOPE, owner_id))
+                counts["rate_limits"] = cur.rowcount
                 cur = conn.execute(
                     "DELETE FROM browser_identities WHERE owner_id = %s",
                     (owner_id,))

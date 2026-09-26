@@ -1277,6 +1277,28 @@ def test_delete_owner_also_clears_the_identity_tables_themselves(storage):
     assert storage.resolve_owner_by_token("tok-doomed") is None
 
 
+def test_delete_owner_also_clears_that_owners_quota_rows(storage):
+    """Codex P2（PR #346）：per-owner vendor quota 的計數列以 owner_id 當
+    `key`——「刪除我的全部資料」要在同一次刪除裡清掉，不等 purge。別的
+    owner、source 層（HMAC key）的列不受影響。"""
+    from api_app.storage import OWNER_RATE_LIMIT_SCOPE
+
+    _register_owner(storage, "doomed", "tok-doomed")
+    mine = [_bucket(OWNER_RATE_LIMIT_SCOPE, "doomed", 60, 1_000_020, 1),
+            _bucket(OWNER_RATE_LIMIT_SCOPE, "doomed", 3600, 997_200, 1)]
+    other = [_bucket(OWNER_RATE_LIMIT_SCOPE, "survivor", 60, 1_000_020, 1)]
+    source = [_bucket("source_vendor", "doomed", 60, 1_000_020, 1)]
+    for b in (mine, other, source):
+        assert storage.rate_limit_consume(b) is None
+
+    counts = storage.delete_owner("doomed")
+
+    assert counts["rate_limits"] == 2
+    assert storage.rate_limit_consume(mine) is None       # 計數歸零、重新可扣
+    assert storage.rate_limit_consume(other) == 0         # 別人的還在
+    assert storage.rate_limit_consume(source) == 0        # 非 owner scope 不動
+
+
 def test_delete_owner_is_idempotent_deleting_a_nonexistent_owner_is_a_noop(storage):
     counts = storage.delete_owner("never-existed")
     assert all(n == 0 for n in counts.values()), counts

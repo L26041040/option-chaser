@@ -10,6 +10,7 @@
  */
 import {
   markOwnerBound, OWNER_BOOTSTRAP_HEADER, OWNER_BOUND_HEADER, ownerBootstrapToken,
+  withOwnerBindingLock,
 } from "./ownerBootstrap";
 import type { Role } from "./superuser";
 
@@ -819,18 +820,14 @@ function withOwnerBootstrap(init: RequestInit | undefined, token: string): Reque
   };
 }
 
-async function request<T>(url: string, apiInit?: ApiInit): Promise<T> {
-  const { ownerBootstrap = false, ...init } = apiInit ?? {};
-  const bootstrap = ownerBootstrap ? await ownerBootstrapToken() : null;
-  const effectiveInit = bootstrap ? withOwnerBootstrap(init, bootstrap) : init;
-  let resp: Response;
+async function send(url: string, init: RequestInit): Promise<Response> {
   try {
     // `init.signal`（呼叫端要求可被中途取消）與既有的逾時 signal
     // 合併——任一個先觸發都算數，兩者不互相取代。
     const timeoutSignal = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
-    resp = await fetch(url, {
-      ...effectiveInit,
-      signal: init?.signal
+    return await fetch(url, {
+      ...init,
+      signal: init.signal
         ? combineSignals(init.signal, timeoutSignal)
         : timeoutSignal,
     });
@@ -843,6 +840,21 @@ async function request<T>(url: string, apiInit?: ApiInit): Promise<T> {
     throw new ApiError(
       `連不到伺服器：${e instanceof Error ? e.message : String(e)}`);
   }
+}
+
+/** 會建立 owner 的寫入：還沒綁定前跨分頁排隊（見 `ownerBootstrap.ts`
+ * 的 `withOwnerBindingLock`），鎖裡取得 bootstrap token 並送出——後到的
+ * 分頁送出時 cookie jar 裡已經有先到那顆 cookie。 */
+function sendOwnerBootstrap(url: string, init: RequestInit): Promise<Response> {
+  return withOwnerBindingLock(async () => {
+    const token = await ownerBootstrapToken();
+    return send(url, token ? withOwnerBootstrap(init, token) : init);
+  });
+}
+
+async function request<T>(url: string, apiInit?: ApiInit): Promise<T> {
+  const { ownerBootstrap = false, ...init } = apiInit ?? {};
+  const resp = ownerBootstrap ? await sendOwnerBootstrap(url, init) : await send(url, init);
   // 伺服器說 owner cookie 已經綁定：bootstrap token 功成身退（見
   // `ownerBootstrap.ts`）。沒說（失敗、逾時、不需要 owner 的寫入）就保留，
   // 重試才會沿用同一顆。`?.`：既有測試常用省略 headers 的假 Response。

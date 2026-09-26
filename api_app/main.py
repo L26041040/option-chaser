@@ -47,7 +47,7 @@ from .identity import (IdentityResolver, cookie_identity_resolver,
                        resolved_owner_scope, set_resolved_owner)
 from .rate_cache import cached_loader
 from .storage import (BrowserIdentity, ContractHistory, DataSourceSettings,
-                      IvBackfillRun, IvObservation,
+                      IvBackfillRun, IvObservation, OWNER_RATE_LIMIT_SCOPE,
                       Owner, ProviderCredential, ProviderVerification,
                       RateCacheEntry, RateLimitBucket, ResultRecord,
                       ResultSummary, RoleSession, Scenario, ScenarioExists, Storage,
@@ -1561,8 +1561,9 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
 
         if role < superuser.Role.SUPERUSER:
             per_min, per_hour, per_day = _effective_owner_quota
-            add("owner", _buckets("owner_vendor", owner, now, (ac.MINUTE, per_min),
-                                  (ac.HOUR, per_hour), (ac.DAY, per_day)))
+            add("owner", _buckets(OWNER_RATE_LIMIT_SCOPE, owner, now,
+                                  (ac.MINUTE, per_min), (ac.HOUR, per_hour),
+                                  (ac.DAY, per_day)))
         source = _request_source_key(request)
         if source is not None:
             src_min, src_hour = _effective_source_burst

@@ -49,6 +49,60 @@ describe("owner bootstrap token（Codex P1：首訪並發寫入共用同一顆�
     expect(localStorage.getItem("oc_owner_bootstrap")).toBe(t);
   });
 
+  // Codex P2（PR #346）：還沒綁定前，會建立 owner 的寫入跨分頁排隊（Web Locks）。
+  function fakeLocks() {
+    const held: string[] = [];
+    let inside = false;
+    const request = vi.fn(async (name: string, cb: () => Promise<unknown>) => {
+      held.push(name);
+      inside = true;
+      try {
+        return await cb();
+      } finally {
+        inside = false;
+      }
+    });
+    vi.stubGlobal("navigator", { ...navigator, locks: { request } });
+    return { held, isInside: () => inside };
+  }
+
+  it("有 Web Locks 時，建立 owner 的寫入在跨分頁獨佔鎖裡送出；綁定後不再上鎖", async () => {
+    const locks = fakeLocks();
+    const sentInside: boolean[] = [];
+    vi.stubGlobal("fetch", vi.fn(async () => {
+      sentInside.push(locks.isInside());
+      return reply({ id: "s1" }, { bound: true });
+    }));
+    await createScenario(BODY as never);            // 綁定前：鎖裡送出
+    await createScenario(BODY as never);            // 已綁定：不上鎖
+    expect(locks.held).toEqual(["oc-owner-binding"]);
+    expect(sentInside).toEqual([true, false]);
+  });
+
+  it("不會建立 owner 的寫入（例如刷新）不上鎖", async () => {
+    const locks = fakeLocks();
+    vi.stubGlobal("fetch", vi.fn(async () => reply({ results: [], remaining: [] })));
+    await refreshRun(["a"], false);
+    expect(locks.held).toEqual([]);
+  });
+
+  it("Web Locks 本身出錯時照舊送出；請求本身的錯誤不會重送", async () => {
+    vi.stubGlobal("navigator", {
+      ...navigator,
+      locks: { request: vi.fn(async () => { throw new Error("SecurityError"); }) },
+    });
+    const fetchOk = vi.fn(async () => reply({ id: "s1" }));
+    vi.stubGlobal("fetch", fetchOk);
+    await createScenario(BODY as never);
+    expect(fetchOk).toHaveBeenCalledTimes(1);
+
+    fakeLocks();
+    const fetchDown = vi.fn(async () => { throw new TypeError("network down"); });
+    vi.stubGlobal("fetch", fetchDown);
+    await expect(createScenario(BODY as never)).rejects.toThrow();
+    expect(fetchDown).toHaveBeenCalledTimes(1);
+  });
+
   it("並發寫入帶同一顆 token；讀取不帶", async () => {
     const calls: RequestInit[] = [];
     let release!: () => void;

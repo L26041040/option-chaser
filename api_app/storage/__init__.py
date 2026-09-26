@@ -332,6 +332,12 @@ class OwnerLifecycleFacts:
     protected: bool
 
 
+# per-owner vendor quota 的 bucket scope：`key` 就是 owner_id。
+# `delete_owner()` 靠這個 scope 把該 owner 的計數列一起刪掉（Codex P2，
+# PR #346：「刪除我的全部資料」要立刻清乾淨，不等 purge）。
+OWNER_RATE_LIMIT_SCOPE = "owner_vendor"
+
+
 @dataclass(frozen=True)
 class RateLimitBucket:
     """SECURITY-FIX-02：一個短時間窗計數格——`(scope, key)` 這個對象在
@@ -1107,7 +1113,9 @@ class Storage(Protocol):
         「重新簽發」邏輯。
 
         回傳 `{table_name: 受影響列數}`，含 `owners`／
-        `browser_identities` 兩張（共 12 個鍵）。這個 owner_id 本來就
+        `browser_identities` 兩張，以及 `rate_limits`（這個 owner 的
+        per-owner quota 計數列，scope = `OWNER_RATE_LIMIT_SCOPE`；共 13 個
+        鍵）。這個 owner_id 本來就
         不存在時，全部鍵值皆為 0（不拋錯——「刪除一個不存在的東西」
         視同已經達成目標狀態，冪等）。"""
 
