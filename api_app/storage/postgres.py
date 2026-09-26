@@ -1338,6 +1338,15 @@ class PostgresStorage:
         return [Owner(owner_id=r[0], created_at=r[1], last_activity_at=r[2],
                       protected=r[3], is_synthetic=r[4]) for r in rows]
 
+    def list_protected_owners(self) -> list[Owner]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT owner_id, created_at, last_activity_at, protected, "
+                "is_synthetic FROM owners WHERE protected "
+                "ORDER BY created_at, owner_id").fetchall()
+        return [Owner(owner_id=r[0], created_at=r[1], last_activity_at=r[2],
+                      protected=r[3], is_synthetic=r[4]) for r in rows]
+
     # ---------- Role session（AUTH-01／#308，三層角色模型） ----------
 
     def create_role_session(self, session: RoleSession) -> None:

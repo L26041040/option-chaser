@@ -986,6 +986,23 @@ def test_purge_rate_limits_drops_only_finished_windows(storage):
     assert storage.rate_limit_consume([_bucket("source", "old", 60, 1_000_000, 1)]) is None
 
 
+def test_list_protected_owners_returns_only_protected_ones(storage):
+    """#345 A-4：Historical IV 的窄查詢——只回 `protected=True` 的 owner，
+    判準（恰好一個才算數）留給呼叫端。"""
+    for oid in ("p-a", "p-b", "p-c"):
+        storage.create_owner_with_token(
+            Owner(owner_id=oid, created_at="2026-09-14T00:00:00+00:00"),
+            BrowserIdentity(token=f"tok-{oid}-" + "x" * 20, owner_id=oid,
+                            issued_at="2026-09-14T00:00:00+00:00",
+                            last_seen_at="2026-09-14T00:00:00+00:00"))
+    assert storage.list_protected_owners() == []
+    storage.set_owner_protected("p-b", True)
+    assert [o.owner_id for o in storage.list_protected_owners()] == ["p-b"]
+    assert storage.list_protected_owners()[0].protected is True
+    storage.set_owner_protected("p-c", True)
+    assert sorted(o.owner_id for o in storage.list_protected_owners()) == ["p-b", "p-c"]
+
+
 def test_is_synthetic_defaults_to_false_and_round_trips_true(storage):
     """PB-07（#304，Anonymous Public Beta）：`is_synthetic` 純加法欄位
     ——既有（未顯式設定）的 owner 建構天然是 `False`，harness 建構時

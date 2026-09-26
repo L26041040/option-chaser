@@ -1190,6 +1190,12 @@ class Storage(Protocol):
         `list_scenarios(owner=None)`／`result_history(owner=None)`
         「刻意的跨 owner 逃生門，語意由呼叫端決定」先例）。"""
 
+    def list_protected_owners(self) -> list[Owner]:
+        """只回 `protected=True` 的 owner（#345 A-4）。Historical IV 每次
+        請求都要找「那一個」protected owner——用這個窄查詢，不必每次把
+        整張 `owners` 表載進記憶體。判準（恰好一個才算數）仍在
+        `api_app.main._the_protected_owner_id()`，這裡只負責篩出候選。"""
+
     # ---------- Role session（AUTH-01／#308，三層角色模型） ----------
     #
     # 本區塊是 spec #307 的儲存層地基，**純 expand**——不接任何 HTTP

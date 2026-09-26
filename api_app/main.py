@@ -138,6 +138,9 @@ _AUTO = object()
 
 _logger = logging.getLogger(__name__)
 
+# `GET /api/superuser/audit-log?limit=` 一次最多回幾筆（#345 B-4）。
+_AUDIT_LOG_MAX_LIMIT = 1000
+
 
 # 這些例外是**我們自己**在送出上游請求之前擋下來的（global fuse、
 # new-owner tier、per-owner／source 額度），不是 provider 回的失敗。
@@ -170,7 +173,16 @@ def _is_owner_exempt_route(path: str) -> bool:
     return any(path.startswith(prefix) for prefix in _OWNER_EXEMPT_PREFIXES)
 
 
-def _the_protected_owner_id(all_owners: list[Owner]) -> str | None:
+def _secret_forms(*values: str | None) -> tuple[str, ...]:
+    """redaction 要遮的祕密字串形式（#345 B-7）：原值，加上去掉頭尾空白
+    的形式——登入比對用的是 `.strip()` 後的值，訊息裡出現的也可能是那個
+    形式。空值與只有空白的值不算祕密（不然會把空字串當成要遮的東西）。"""
+    return tuple(dict.fromkeys(
+        form for value in values if value
+        for form in (value, value.strip()) if form.strip()))
+
+
+def _the_protected_owner_id(candidates: list[Owner]) -> str | None:
     """AUTH-04（#311）「找 protected owner」的**唯一**判斷點——票面
     Implementation constraints 明文要求不得在多處各自重寫一份判準。
 
@@ -180,9 +192,10 @@ def _the_protected_owner_id(all_owners: list[Owner]) -> str | None:
     這一個 protected owner；遷移尚未執行、或未來因某種原因同時存在
     多個 protected owner（例如手動用 PB-10 的 runtime 旗標又標記了
     另一個），本函式都誠實回報「不存在單一可信來源」而非挑一個將就。
-    純函式、零 I/O——呼叫端負責提供 `Storage.list_owners()` 的結果，
-    方便獨立單元測試不必真的起一個 app。"""
-    protected = [o.owner_id for o in all_owners if o.protected]
+    純函式、零 I/O——呼叫端負責提供候選 owner 清單（Historical IV 用
+    `Storage.list_protected_owners()` 的窄查詢，#345 A-4），方便獨立
+    單元測試不必真的起一個 app。"""
+    protected = [o.owner_id for o in candidates if o.protected]
     return protected[0] if len(protected) == 1 else None
 
 
@@ -1106,6 +1119,16 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
     # 顯式傳入（含空字串）時完全採用那個值，測試才有決定性。
     _effective_cron_secret = (cron_secret if cron_secret is not None
                               else os.environ.get("CRON_SECRET"))
+
+    def _cron_authorized(request: Request) -> bool:
+        """`Authorization: Bearer <CRON_SECRET>`。SECURITY（#345 B-1）：
+        固定時間比較（`secrets.compare_digest`），不用 `!=`；先轉 bytes，
+        header 裡的非 ASCII 字元不會讓比較本身丟例外。secret 沒設一律拒絕。"""
+        if not _effective_cron_secret:
+            return False
+        provided = (request.headers.get("authorization") or "").encode("utf-8", "replace")
+        expected = f"Bearer {_effective_cron_secret}".encode("utf-8")
+        return secrets.compare_digest(provided, expected)
     # AUTH-02／AUTH-03（#309／#310）：三層角色模型的登入密碼，軸二
     # 唯一的驗證機制，取代 PB-09 的 `admin_secret`（已整組退役，見
     # `create_app()` docstring）。同一套「`None`＝呼叫時才讀環境
@@ -1697,7 +1720,11 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         except ParamError as e:
             raise _fail("params", 400, str(e)) from e
         except Exception as e:  # noqa: BLE001 — 引擎任何失敗都要說是哪一段，不留白畫面
-            raise _fail("analyze", 500, f"分析失敗：{e}") from e
+            # SECURITY（#345 B-3）：非預期例外的原文可能帶內部細節，不直達
+            # client——分層（`analyze`）照舊，訊息固定，原文進 server log
+            # （回應 header 的 X-Correlation-Id 可以對上這一筆）。
+            _logger.error("analysis failed for %s", symbol, exc_info=True)
+            raise _fail("analyze", 500, "分析失敗（內部錯誤），請稍後重試") from e
         return (store.serialize_result(result, scenario_id, capital=None),
                 dataclasses.asdict(snap))
 
@@ -1737,8 +1764,11 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
                 rate = {"fetched_at": entry.fetched_at,
                        "ok": entry.curve is not None, "note": entry.note,
                        "last_success_at": entry.last_success_at}
-        except Exception as e:  # noqa: BLE001 — 連不上也要能回答，這正是本端點的用途
-            kind = f"unavailable: {e}"
+        except Exception:  # noqa: BLE001 — 連不上也要能回答，這正是本端點的用途
+            # SECURITY（#345 B-2）：這是未認證端點，例外原文（DB host／user
+            # 等連線細節）只進 server log，回應只說「unavailable」。
+            _logger.warning("health check: storage unavailable", exc_info=True)
+            kind = "unavailable"
         return {"status": "ok", "engine_version": __version__,
                 "storage": kind, "path": request.url.path, "rate": rate}
 
@@ -1763,8 +1793,7 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         授權失敗（secret 未設定或不符）**先驗證再呼叫 pipeline**——
         不合法的請求零 vendor／cache mutation（AC-2）。
         """
-        provided = request.headers.get("authorization")
-        if not _effective_cron_secret or provided != f"Bearer {_effective_cron_secret}":
+        if not _cron_authorized(request):
             raise HTTPException(status_code=401, detail="unauthorized")
         curve, note = _rate_curve_loader()(ny_today())
         return {"ok": curve is not None, "note": note}
@@ -1817,8 +1846,7 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         授權失敗先驗證再動作，比照既有 `cron_warm_rate_cache()`
         同一套 fail-closed 寫法（secret 未設定時一律視同不符）。
         """
-        provided = request.headers.get("authorization")
-        if not _effective_cron_secret or provided != f"Bearer {_effective_cron_secret}":
+        if not _cron_authorized(request):
             raise HTTPException(status_code=401, detail="unauthorized")
 
         now = datetime.now(timezone.utc)
@@ -2063,8 +2091,7 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         no-op，回應的 `sent` 欄位誠實回報有沒有真的寄出，不假裝
         成功）。回應同樣只含聚合數字與 alert key，不回傳信件全文
         （信件全文只會出現在真正寄出的那封信裡）。"""
-        provided = request.headers.get("authorization")
-        if not _effective_cron_secret or provided != f"Bearer {_effective_cron_secret}":
+        if not _cron_authorized(request):
             raise HTTPException(status_code=401, detail="unauthorized")
 
         today = ny_today()
@@ -2334,8 +2361,11 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         選擇）。"""
         superuser.require_role(request, superuser.Role.SUPERADMIN,
                                resolve_session=_db().resolve_role_session)
+        # SECURITY（#345 B-4）：比照 `/api/diagnostics` 夾住範圍——負值或
+        # 超大值不會變成 500 或一次撈整張表。
+        clamped = max(1, min(limit, _AUDIT_LOG_MAX_LIMIT))
         return [dataclasses.asdict(e)
-                for e in _db().list_audit_events(limit=limit)]
+                for e in _db().list_audit_events(limit=clamped)]
 
     # ---------- Application diagnostics（DG-02／#145） ----------
 
@@ -3106,10 +3136,9 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         算過一次），不傳時照舊自己查一次，行為不變。"""
         creds = credentials if credentials is not None else _credential_map()
         tokens = tuple(cred.token for cred in creds.values() if cred is not None)
-        role_passwords = tuple(
-            p for p in (_effective_superuser_password, _effective_superadmin_password,
-                        _effective_source_hmac_secret)
-            if p)
+        role_passwords = _secret_forms(_effective_superuser_password,
+                                       _effective_superadmin_password,
+                                       _effective_source_hmac_secret)
         return tokens + role_passwords + database_url_candidates()
 
     def _flush_diagnostics(diag: _CollectingDiagnostics) -> dict:
@@ -3205,7 +3234,7 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
             raise HTTPException(status_code=403,
                                 detail=_HISTORICAL_IV_DISABLED_DETAIL)
 
-        protected_owner = _the_protected_owner_id(_db().list_owners())
+        protected_owner = _the_protected_owner_id(_db().list_protected_owners())
         if protected_owner is None:
             raise HTTPException(status_code=403,
                                 detail=_HISTORICAL_IV_DISABLED_DETAIL)

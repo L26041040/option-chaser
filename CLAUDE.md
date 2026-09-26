@@ -9,7 +9,7 @@
 5. Do not expose, request, log, copy, or test real plaintext passwords/secrets.
 6. Do not take or paste screenshots unless the Owner explicitly asks. Browser verification is allowed when required by a ticket, but keep screenshot-heavy work to explicit visual-acceptance stages.
 7. Session reports: Traditional Chinese with English technical terms kept in English. Put substantive report content in one complete code block. Number reports as `［回報#NNN］`.
-8. Current report sequence: **107 used; next report is 108**.
+8. Current report sequence: **114 used; next report is 115**.
 9. **Do not append detailed ticket history to this file.** Keep this file short. After a ticket, update only the active checkpoint below in 1–2 lines. Detailed evidence belongs in GitHub issues, commits, and code review comments.
 10. `CLAUDE_HISTORY.md` is the archived legacy project journal. **Do not read it by default.** Read it only when a specific historical question cannot be answered from the current issue/commit/docs.
 
@@ -43,6 +43,9 @@ item is closed: the Owner dropped the Production `narrow_history` table
 PR #344 (`ui-redesign/seed-warm` → master) is open; post-review fixes
 pushed to it: AUTH-P1-FIX-001 (`8fdc1e3`) and SW-13 usage-summary
 refresh (shared `src/usageSummaryStore.ts`). Do not merge without Owner.
+
+Public Beta security hardening: PR #346 (`security/public-beta-hardening`)
+covers #345 A-1–A-4 and B-1–B-7 (B-8 is an Owner decision, record only). Waiting on Owner review; do not merge.
 
 ## 3. Product semantics that must not drift during OG work
 

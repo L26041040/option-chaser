@@ -192,7 +192,9 @@ def fetch_chain(symbol: str, token: str, http_get=_http_get) -> ChainSnapshot:
         raise
     except Exception as e:  # noqa: BLE001 — 任何網路／解析／形狀失敗都是
         # 抓取失敗，收斂成 FetchError 讓上游的備援鏈接得住。
-        raise FetchError(f"Market Data App 抓取失敗（{symbol}）: {e}") from e
+        # #345 B-3：訊息會直達 client——只放例外類別名，原文留在
+        # `__cause__`（server log／Sentry 看得到）。
+        raise FetchError(f"Market Data App 抓取失敗（{symbol}）: {type(e).__name__}") from e
 
 
 class VerifyResult:

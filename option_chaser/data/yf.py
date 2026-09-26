@@ -71,7 +71,9 @@ def fetch_chain(symbol: str) -> ChainSnapshot:
                     r["option_type"] = side
                     rows.append(r)
     except Exception as e:  # noqa: BLE001 — any yfinance failure is a fetch failure
-        raise FetchError(f"yfinance 抓取失敗（{symbol}）: {e}") from e
+        # #345 B-3：訊息會直達 client——只放例外類別名，原文留在
+        # `__cause__`（server log／Sentry 看得到）。
+        raise FetchError(f"yfinance 抓取失敗（{symbol}）: {type(e).__name__}") from e
     if not rows or spot <= 0 or math.isnan(spot):
         raise FetchError(f"yfinance 回傳資料不足（{symbol}）：無現價或無合約")
     fetched_at = datetime.now(timezone.utc).isoformat(timespec="seconds")

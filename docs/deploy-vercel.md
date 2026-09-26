@@ -185,6 +185,17 @@ Cboe → yfinance 的每一次 fallback 都算，失敗也算）。各層一次�
 ⚠ 舊的 `ANONYMOUS_ABANDONED_AFTER_DAYS`（30 天、錨點是手動操作）已經
 不再被讀取——如果 Vercel 上還留著，可以直接刪掉。
 
+### 安全 headers 與依賴版本（#345 B-5／B-6）
+
+- `vercel.json` 的 `headers` 對所有路徑加上 `X-Content-Type-Options:
+  nosniff`、`X-Frame-Options: DENY`、`Referrer-Policy`、`Permissions-Policy`
+  與只含 `frame-ancestors 'none'; base-uri 'self'; object-src 'none'` 的
+  CSP。完整的 `script-src`／`connect-src` CSP 刻意還沒加——要先盤點
+  Sentry、Logo.dev、字型等外部來源，否則會直接把頁面弄壞。
+- `pyproject.toml` 的 runtime 依賴一律用 `==` 釘在測過的版本（Vercel 依它
+  安裝），`requirements.txt` 保持同一份。升級依賴＝改版本號、跑完整測試、
+  兩個檔案一起改。
+
 ## 部署後的第一件事：確認 Cboe 可達性
 
 開部署網址 → 按「跑一次分析」→ 看卡片最下面那行「資料來源」：

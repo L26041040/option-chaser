@@ -545,6 +545,9 @@ class MemoryStorage:
     def list_owners(self) -> list[Owner]:
         return list(self._owners.values())
 
+    def list_protected_owners(self) -> list[Owner]:
+        return [o for o in self._owners.values() if o.protected]
+
     # ---------- Role session（AUTH-01／#308，三層角色模型） ----------
 
     def create_role_session(self, session: RoleSession) -> None:
