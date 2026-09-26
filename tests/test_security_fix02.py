@@ -379,10 +379,12 @@ def test_trusted_header_is_only_the_default_on_vercel(monkeypatch):
     assert ac.default_trusted_ip_header() is None
 
 
-def test_missing_secret_explicitly_disables_source_and_login_limits():
+@pytest.mark.parametrize("missing", ["", "   ", "\t\n"])
+def test_missing_secret_explicitly_disables_source_and_login_limits(missing):
+    """沒設、空字串、或只有空白（Codex P2：等於公開的 HMAC key）都明確停用。"""
     storage = MemoryStorage()
     app = create_app(cboe_fetch=CountingCboe(), storage=storage,
-                     source_hmac_secret="", trusted_ip_header="x-forwarded-for",
+                     source_hmac_secret=missing, trusted_ip_header="x-forwarded-for",
                      superadmin_password=SA_PW)
     c = _browser(app)
     for _ in range(15):

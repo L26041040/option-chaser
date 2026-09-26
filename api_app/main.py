@@ -1194,12 +1194,16 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
     _effective_login_limits = login_attempt_limits or (
         _env_int("LOGIN_ATTEMPTS_PER_MINUTE", ac.LOGIN_ATTEMPTS_PER_MINUTE),
         _env_int("LOGIN_ATTEMPTS_PER_HOUR", ac.LOGIN_ATTEMPTS_PER_HOUR))
-    # 獨立 secret，不重用任何密碼／cron secret。沒設（或空字串）＝source
-    # 層與登入限流**明確停用**（`/api/ops/metrics` 會標示），不會退回
-    # 寫死的 key。
+    # 獨立 secret，不重用任何密碼／cron secret。沒設（或空字串、或只有
+    # 空白——Codex P2（PR #346）：只有空白的 key 等於公開的 key，HMAC
+    # 假名化形同虛設）＝source 層與登入限流**明確停用**（`/api/ops/metrics`
+    # 會標示），不會退回寫死的 key。
+    _raw_source_hmac_secret = (
+        source_hmac_secret if source_hmac_secret is not None
+        else os.environ.get("SOURCE_HMAC_SECRET"))
     _effective_source_hmac_secret = (
-        (source_hmac_secret if source_hmac_secret is not None
-         else os.environ.get("SOURCE_HMAC_SECRET")) or None)
+        _raw_source_hmac_secret
+        if _raw_source_hmac_secret and _raw_source_hmac_secret.strip() else None)
     _source_limiter_state = "enabled"
     if _effective_source_hmac_secret is None:
         _source_limiter_state = "disabled_missing_secret"
