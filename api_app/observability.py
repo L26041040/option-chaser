@@ -6,7 +6,7 @@
 路徑的修改）。
 
 PII scrubbing：`before_send` hook 在事件真的要送出前，對 request
-headers（`Cookie`／`Authorization`）整個丟棄，並對事件裡的訊息／例外
+headers（`Cookie`／`Authorization`／`X-OC-Owner-Bootstrap`）整個丟棄，並對事件裡的訊息／例外
 文字套用既有 `diagnostics.sanitize_string()` 同一套「已知祕密值逐字
 比對 → 樣式遮蔽」規則——匿名身份 cookie token 與第三方 provider
 token（`owner_credentials`）都不該隨錯誤堆疊上傳到 Sentry。
@@ -30,10 +30,13 @@ from __future__ import annotations
 
 import os
 
-from .diagnostics import sanitize_string
+from .diagnostics import sanitize_string, secret_forms
 from .storage.factory import database_url_candidates
 
-_STRIPPED_HEADERS = frozenset({"cookie", "authorization"})
+# Codex P1（PR #346）：`X-OC-Owner-Bootstrap` 也是身分憑證——綁定前可以
+# 拿去綁定、綁定後 10 分鐘內可以拿去存取該 owner（見 `main.
+# _OWNER_BOOTSTRAP_HEADER`），跟 cookie 一樣整個遮掉。
+_STRIPPED_HEADERS = frozenset({"cookie", "authorization", "x-oc-owner-bootstrap"})
 
 # 已知固定 secret 的環境變數名稱——與 `main.py::_known_secrets()`
 # （診斷用途，含目前設定的 provider token，request-scoped）刻意分開：
@@ -44,11 +47,14 @@ _STRIPPED_HEADERS = frozenset({"cookie", "authorization"})
 # 空字串，被下面的 `if v` 濾掉，不影響行為）。`SUPERUSER_PASSWORD`／
 # `SUPERADMIN_PASSWORD`（AUTH-02／#309）才是現行真正在用的軸二密碼。
 _SECRET_ENV_VARS = ("CRON_SECRET", "OPS_SECRET", "ADMIN_SECRET",
-                   "SUPERUSER_PASSWORD", "SUPERADMIN_PASSWORD")
+                   "SUPERUSER_PASSWORD", "SUPERADMIN_PASSWORD",
+                   # SECURITY-FIX-02：source key 的 HMAC secret。
+                   "SOURCE_HMAC_SECRET")
 
 
 def known_env_secrets() -> tuple[str, ...]:
-    values = tuple(v for v in (os.environ.get(n) for n in _SECRET_ENV_VARS) if v)
+    # #345 B-7：原值與 `.strip()` 後的形式都遮（登入比對用的是後者）。
+    values = secret_forms(*(os.environ.get(n) for n in _SECRET_ENV_VARS))
     return values + database_url_candidates()
 
 
@@ -61,6 +67,12 @@ def _scrub_event(event: dict, secrets: tuple[str, ...]) -> dict:
                 if key.lower() in _STRIPPED_HEADERS:
                     headers[key] = "[redacted]"
         request.pop("cookies", None)
+        # SECURITY-FIX-01：request body 一律不送 Sentry。登入密碼
+        # （`/api/auth/login`）與 provider credential（`PUT /api/settings/
+        # credentials/*`）都在 JSON body 裡——Sentry 的 FastAPI／Starlette
+        # 整合會把 body 放進 `request.data`，這裡整塊拿掉，不靠逐欄位
+        # 遮蔽（漏遮一個欄位名就是明文外洩）。
+        request.pop("data", None)
         if isinstance(request.get("url"), str):
             request["url"] = request["url"].split("?")[0]
     message = event.get("message")

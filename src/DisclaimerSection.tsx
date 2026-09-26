@@ -20,7 +20,7 @@
  * 一併收進這裡——見 `ScenarioList.tsx`／`CompactScenarioList.tsx` 對應
  * 移除記錄。
  */
-export const ANONYMOUS_ABANDONED_AFTER_DAYS = 30;
+export const ANONYMOUS_RETENTION_DAYS = 180;
 export const ANONYMOUS_GRACE_PERIOD_DAYS = 7;
 
 export default function DisclaimerSection() {
@@ -34,9 +34,9 @@ export default function DisclaimerSection() {
       </p>
       <p className="caption">
         資料存在您目前使用的瀏覽器（cookie），清除瀏覽器資料、換一個
-        瀏覽器、或結束無痕視窗都會讓您無法再存取；連續 {ANONYMOUS_ABANDONED_AFTER_DAYS}{" "}
-        天沒有任何操作，資料會先進入 {ANONYMOUS_GRACE_PERIOD_DAYS} 天緩衝期，
-        緩衝期滿仍無操作即自動、永久清除。
+        瀏覽器、或結束無痕視窗都會讓您無法再存取；連續 {ANONYMOUS_RETENTION_DAYS}{" "}
+        天沒有用這個瀏覽器打開本站，資料會先進入 {ANONYMOUS_GRACE_PERIOD_DAYS} 天緩衝期，
+        緩衝期滿仍未回來即自動、永久清除。
       </p>
       <p className="caption">
         完整說明（存了什麼、怎麼刪、清除 cookie 的具體後果）見

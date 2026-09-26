@@ -21,7 +21,7 @@ from api_app.storage import (BrowserIdentity, ChainBackoffEntry,
                              DividendCacheEntry, IvBackfillRun, IvObservation,
                              Owner, ProviderCredential,
                              ProviderVerification, RateCacheEntry,
-                             ResultRecord, RoleSession, Scenario,
+                             RateLimitBucket, ResultRecord, RoleSession, Scenario,
                              ScenarioExists, SuperUserAuditEvent,
                              TreasuryYearCacheEntry, UsageSetting)
 from api_app.storage.memory import MemoryStorage
@@ -87,7 +87,7 @@ def storage(request):
                      "iv_observations, iv_backfill_runs, contract_iv_history, "
                      "diagnostics, operational_metrics, "
                      "owners, browser_identities, superuser_audit_log, "
-                     "role_sessions "
+                     "role_sessions, rate_limits "
                      "RESTART IDENTITY")
     yield st
 
@@ -823,6 +823,186 @@ def test_list_owners_returns_every_owner(storage):
     assert {"anon-list-0", "anon-list-1", "anon-list-2"} <= ids
 
 
+# ---------- SECURITY-FIX-01：deferred owner creation 的原子綁定 ----------
+
+_T0 = "2026-09-25T00:00:00+00:00"
+
+
+def test_claim_browser_token_creates_exactly_one_owner_bound_to_the_token(storage):
+    owner_id, created = storage.claim_browser_token(
+        "tok-claim-a", Owner(owner_id="own-claim-a", created_at=_T0), now=_T0)
+    assert (owner_id, created) == ("own-claim-a", True)
+    assert storage.resolve_owner_by_token("tok-claim-a") == "own-claim-a"
+    assert storage.get_owner("own-claim-a") is not None
+
+
+def test_claiming_an_already_bound_token_returns_the_existing_owner(storage):
+    storage.claim_browser_token(
+        "tok-claim-b", Owner(owner_id="own-claim-b1", created_at=_T0), now=_T0)
+    owner_id, created = storage.claim_browser_token(
+        "tok-claim-b", Owner(owner_id="own-claim-b2", created_at=_T0), now=_T0)
+    assert (owner_id, created) == ("own-claim-b1", False)
+    assert storage.get_owner("own-claim-b2") is None          # 輸家沒有留下 owner 列
+    assert {o.owner_id for o in storage.list_owners()} == {"own-claim-b1"}
+
+
+def test_concurrent_claims_on_one_token_yield_a_single_owner(storage):
+    """真正的並發（多執行緒、postgres 各自一條連線）：同一顆 token 同時
+    被 8 個請求搶著綁定，最後只能有一個 owner，且全部回同一個 owner_id。"""
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    barrier = threading.Barrier(8)
+
+    def claim(i: int):
+        barrier.wait()
+        return storage.claim_browser_token(
+            "tok-claim-race", Owner(owner_id=f"own-race-{i}", created_at=_T0), now=_T0)
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        results = list(pool.map(claim, range(8)))
+
+    winners = {owner_id for owner_id, _ in results}
+    assert len(winners) == 1
+    assert sum(1 for _, created in results if created) == 1
+    assert [o.owner_id for o in storage.list_owners()] == list(winners)
+
+
+def test_owner_lifecycle_facts_reports_last_seen_and_has_data(storage):
+    storage.claim_browser_token(
+        "tok-facts-data", Owner(owner_id="own-facts-data", created_at=_T0), now=_T0)
+    storage.touch_browser_identity("tok-facts-data", now="2026-09-26T00:00:00+00:00")
+    storage.create_scenario(_scenario("sc-facts", owner_id="own-facts-data"))
+    storage.claim_browser_token(
+        "tok-facts-empty", Owner(owner_id="own-facts-empty", created_at=_T0), now=_T0)
+    storage.create_owner_with_token(                              # 沒有 identity 以外的任何東西
+        Owner(owner_id="own-facts-settings", created_at=_T0),
+        BrowserIdentity(token="tok-facts-settings", owner_id="own-facts-settings",
+                        issued_at=_T0, last_seen_at=_T0))
+    storage.save_settings(DataSourceSettings(
+        market_data=UsageSetting(mode="default", provider=None),
+        historical_iv=UsageSetting(mode="default", provider=None),
+        updated_at=_T0, owner_id="own-facts-settings"))
+
+    facts = {f.owner_id: f for f in storage.owner_lifecycle_facts()}
+    assert facts["own-facts-data"].has_data is True
+    assert facts["own-facts-data"].last_seen_at == "2026-09-26T00:00:00+00:00"
+    assert facts["own-facts-empty"].has_data is False
+    assert facts["own-facts-settings"].has_data is True           # 設定也算持久資料
+    assert facts["own-facts-empty"].protected is False
+
+
+def test_owner_lifecycle_facts_counts_archived_scenarios_as_data(storage):
+    storage.claim_browser_token(
+        "tok-facts-arch", Owner(owner_id="own-facts-arch", created_at=_T0), now=_T0)
+    storage.create_scenario(_scenario("sc-arch", owner_id="own-facts-arch"))
+    storage.archive_scenario("sc-arch", owner="own-facts-arch", ts=_T0)
+    facts = {f.owner_id: f for f in storage.owner_lifecycle_facts()}
+    assert facts["own-facts-arch"].has_data is True
+
+
+# ---------- SECURITY-FIX-02：短時間窗濫用計數 ----------
+
+def _bucket(scope, key, seconds, start, limit):
+    return RateLimitBucket(scope, key, seconds, start, limit)
+
+
+def test_rate_limit_consume_allows_up_to_the_limit_then_blocks(storage):
+    b = [_bucket("owner", "k1", 60, 1_000_020, 3)]
+    assert [storage.rate_limit_consume(b) for _ in range(3)] == [None, None, None]
+    assert storage.rate_limit_consume(b) == 0
+    # 別的 key、別的 scope、下一個視窗各自獨立
+    assert storage.rate_limit_consume([_bucket("owner", "k2", 60, 1_000_020, 3)]) is None
+    assert storage.rate_limit_consume([_bucket("source", "k1", 60, 1_000_020, 3)]) is None
+    assert storage.rate_limit_consume([_bucket("owner", "k1", 60, 1_000_080, 3)]) is None
+
+
+def test_rate_limit_consume_is_all_or_nothing_across_windows(storage):
+    minute = _bucket("owner", "k", 60, 1_000_020, 100)
+    hour = _bucket("owner", "k", 3600, 997_200, 2)
+    assert storage.rate_limit_consume([minute, hour]) is None
+    assert storage.rate_limit_consume([minute, hour]) is None
+    assert storage.rate_limit_consume([minute, hour]) == 1   # hour 滿了
+    # 被擋的那次沒有扣 minute：minute 還剩 98，hour 仍然擋
+    assert storage.rate_limit_consume([_bucket("owner", "k", 60, 1_000_020, 2)]) == 0
+
+
+def test_rate_limit_consume_is_all_or_nothing_across_scopes(storage):
+    """一次交進多個 scope（per-owner＋source＋tier）：任何一個滿了，其他
+    scope 的計數也都不動——被擋的那次不在前面幾層偷偷扣額度。"""
+    owner = _bucket("owner_vendor", "o", 60, 1_000_020, 5)
+    source = _bucket("source_vendor", "s", 60, 1_000_020, 1)
+    assert storage.rate_limit_consume([owner, source]) is None
+    for _ in range(3):
+        assert storage.rate_limit_consume([owner, source]) == 1
+    # owner 只被扣了真正放行的那一次：還剩 4
+    only_owner = [_bucket("owner_vendor", "o", 60, 1_000_020, 5)]
+    assert [storage.rate_limit_consume(only_owner) for _ in range(5)] \
+        == [None, None, None, None, 0]
+
+
+def test_rate_limit_consume_is_exact_under_concurrency(storage):
+    """多個 instance 同時扣同一格：放行次數恰好等於上限，不會多放。"""
+    import threading
+
+    limit, workers = 5, 12
+    buckets = [_bucket("new_owner_tier", "2026-09-25", 86400, 1_000_000, limit),
+               _bucket("source_vendor", "shared", 60, 1_000_020, 1_000)]
+    barrier = threading.Barrier(workers)
+    results = []
+    lock = threading.Lock()
+
+    def worker():
+        barrier.wait()
+        r = storage.rate_limit_consume(buckets)
+        with lock:
+            results.append(r)
+
+    threads = [threading.Thread(target=worker) for _ in range(workers)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert results.count(None) == limit
+    assert results.count(0) == workers - limit
+    # 被擋的那幾次也沒有扣到 source
+    assert storage.rate_limit_consume(
+        [_bucket("source_vendor", "shared", 60, 1_000_020, limit + 1)]) is None
+    assert storage.rate_limit_consume(
+        [_bucket("source_vendor", "shared", 60, 1_000_020, limit + 1)]) == 0
+
+
+def test_purge_rate_limits_drops_only_finished_windows(storage):
+    storage.rate_limit_consume([_bucket("source", "old", 60, 1_000_000, 5)])
+    storage.rate_limit_consume([_bucket("source", "live", 3600, 1_000_000, 5)])
+    removed = storage.purge_rate_limits(before_epoch=1_000_061)
+    assert removed == 1
+    # 還活著的視窗計數保留：再扣 4 次到上限、第 5 次擋
+    live = [_bucket("source", "live", 3600, 1_000_000, 5)]
+    for _ in range(4):
+        assert storage.rate_limit_consume(live) is None
+    assert storage.rate_limit_consume(live) == 0
+    # 已清掉的那個從零開始
+    assert storage.rate_limit_consume([_bucket("source", "old", 60, 1_000_000, 1)]) is None
+
+
+def test_list_protected_owners_returns_only_protected_ones(storage):
+    """#345 A-4：Historical IV 的窄查詢——只回 `protected=True` 的 owner，
+    判準（恰好一個才算數）留給呼叫端。"""
+    for oid in ("p-a", "p-b", "p-c"):
+        storage.create_owner_with_token(
+            Owner(owner_id=oid, created_at="2026-09-14T00:00:00+00:00"),
+            BrowserIdentity(token=f"tok-{oid}-" + "x" * 20, owner_id=oid,
+                            issued_at="2026-09-14T00:00:00+00:00",
+                            last_seen_at="2026-09-14T00:00:00+00:00"))
+    assert storage.list_protected_owners() == []
+    storage.set_owner_protected("p-b", True)
+    assert [o.owner_id for o in storage.list_protected_owners()] == ["p-b"]
+    assert storage.list_protected_owners()[0].protected is True
+    storage.set_owner_protected("p-c", True)
+    assert sorted(o.owner_id for o in storage.list_protected_owners()) == ["p-b", "p-c"]
+
+
 def test_is_synthetic_defaults_to_false_and_round_trips_true(storage):
     """PB-07（#304，Anonymous Public Beta）：`is_synthetic` 純加法欄位
     ——既有（未顯式設定）的 owner 建構天然是 `False`，harness 建構時
@@ -1095,6 +1275,28 @@ def test_delete_owner_also_clears_the_identity_tables_themselves(storage):
     assert counts["browser_identities"] == 1
     assert storage.get_owner("doomed") is None
     assert storage.resolve_owner_by_token("tok-doomed") is None
+
+
+def test_delete_owner_also_clears_that_owners_quota_rows(storage):
+    """Codex P2（PR #346）：per-owner vendor quota 的計數列以 owner_id 當
+    `key`——「刪除我的全部資料」要在同一次刪除裡清掉，不等 purge。別的
+    owner、source 層（HMAC key）的列不受影響。"""
+    from api_app.storage import OWNER_RATE_LIMIT_SCOPE
+
+    _register_owner(storage, "doomed", "tok-doomed")
+    mine = [_bucket(OWNER_RATE_LIMIT_SCOPE, "doomed", 60, 1_000_020, 1),
+            _bucket(OWNER_RATE_LIMIT_SCOPE, "doomed", 3600, 997_200, 1)]
+    other = [_bucket(OWNER_RATE_LIMIT_SCOPE, "survivor", 60, 1_000_020, 1)]
+    source = [_bucket("source_vendor", "doomed", 60, 1_000_020, 1)]
+    for b in (mine, other, source):
+        assert storage.rate_limit_consume(b) is None
+
+    counts = storage.delete_owner("doomed")
+
+    assert counts["rate_limits"] == 2
+    assert storage.rate_limit_consume(mine) is None       # 計數歸零、重新可扣
+    assert storage.rate_limit_consume(other) == 0         # 別人的還在
+    assert storage.rate_limit_consume(source) == 0        # 非 owner scope 不動
 
 
 def test_delete_owner_is_idempotent_deleting_a_nonexistent_owner_is_a_noop(storage):

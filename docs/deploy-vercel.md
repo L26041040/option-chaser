@@ -146,6 +146,60 @@ metrics` 表的資料不影響任何產品資料，可保留或清空。這個�
 `SUPERADMIN_PASSWORD` 是否設定無關——即使停用觀測記錄，Super Admin
 角色仍然守著自訂 provider token 的讀寫路徑。
 
+## Public Beta 濫用防護與匿名資料保留（SECURITY-FIX-01／02，需求方操作一次）
+
+**必做**：新增 `SOURCE_HMAC_SECRET`，值設一個長隨機字串（例如
+`openssl rand -hex 32` 的輸出），**Production 與 Preview 都勾**，跟
+`CRON_SECRET`／兩把角色密碼都用不同的值。它只用來把來源 IP 轉成不可
+逆的 HMAC key（每天輪替），IP 本身從不寫進資料庫。沒設的話，來源層
+爆量限流與登入暴力猜測防護會**明確停用**（`/api/ops/metrics` 的
+`abuse_control.source_limiter` 會顯示 `disabled_missing_secret`），
+不會悄悄改用寫死的 key；值跟 `CRON_SECRET` 或任一把角色密碼相同時
+同樣明確停用（顯示 `disabled_reused_secret`）。
+
+來源 IP：只在 Vercel 上（`VERCEL` 環境變數存在）才信任
+`x-forwarded-for`——Vercel 會覆寫這個 header、不轉送外部送進來的值
+（[官方文件](https://vercel.com/docs/headers/request-headers)）。其他
+環境一律用 TCP 對端位址。`TRUSTED_CLIENT_IP_HEADER` 可覆寫（`none`＝
+一律用對端位址）。**不要**在非 Vercel 環境設成 `x-forwarded-for`：
+那種環境的這個 header 可由用戶端任意偽造。
+
+額度與 global fuse 都是**每個真正送出的上游請求**各算一次（自訂 provider →
+Cboe → yfinance 的每一次 fallback 都算，失敗也算）。各層一次原子檢查：
+被任何一層擋下的那次不打上游，也不扣任何一層的
+額度。以下全部**選用**，不設就用程式內建的 Launch Safety Defaults。
+額度、fuse、登入上限與 new-owner tier 設 `<=0` 會停用該項；**三個
+`ANONYMOUS_*_DAYS` 清理天數例外**——0 或負數不是「關掉清理」，照字面會變成
+「立刻可以刪」，所以程式一律忽略非正數、改用預設值（要暫停清理請改設
+`ANONYMOUS_CLEANUP_BATCH_SIZE=0`，那一次 cron 就不刪任何 owner）：
+
+| 環境變數 | 預設 | 意義 |
+|---|---|---|
+| `OWNER_VENDOR_QUOTA_PER_MINUTE`／`_PER_HOUR`／`_PER_DAY` | 60／300／800 | Normal User 每個瀏覽器準備打上游的次數；Super User／Super Admin 豁免（source 爆量上限與 global fuse 照樣適用） |
+| `SOURCE_VENDOR_BURST_PER_MINUTE`／`_PER_HOUR` | 120／600 | 同一來源（IPv6 聚合到 /64）的爆量上限；刻意沒有每日上限（避免大型 NAT 誤傷） |
+| `NEW_OWNER_TIER_SHARE` | 0.4 | 建立未滿 24 小時的匿名 owner 全體最多用 global fuse 的比例 |
+| `NEW_OWNER_TIER_AGE_HOURS` | 24 | 多新算「新 owner」 |
+| `LOGIN_ATTEMPTS_PER_MINUTE`／`_PER_HOUR` | 10／60 | 每個來源的登入嘗試上限（沒有全站鎖定） |
+| `GLOBAL_VENDOR_DAILY_BUDGET` | 2000 | 既有；所有角色都受限 |
+| `ANONYMOUS_RETENTION_DAYS` | 180 | 有資料的匿名 owner 多久沒用這個瀏覽器回訪算 abandoned（必須是正數，非正數會被忽略） |
+| `ANONYMOUS_GRACE_PERIOD_DAYS` | 7 | abandoned 之後再多久才刪（必須是正數，非正數會被忽略） |
+| `ANONYMOUS_EMPTY_OWNER_RETENTION_DAYS` | 1 | 沒有任何資料的 owner 多久清掉（必須是正數，非正數會被忽略） |
+| `ANONYMOUS_CLEANUP_BATCH_SIZE` | 200 | 每次 cron 最多刪幾個 owner；`<=0`＝這次不刪（暫停清理） |
+
+⚠ 舊的 `ANONYMOUS_ABANDONED_AFTER_DAYS`（30 天、錨點是手動操作）已經
+不再被讀取——如果 Vercel 上還留著，可以直接刪掉。
+
+### 安全 headers 與依賴版本（#345 B-5／B-6）
+
+- `vercel.json` 的 `headers` 對所有路徑加上 `X-Content-Type-Options:
+  nosniff`、`X-Frame-Options: DENY`、`Referrer-Policy`、`Permissions-Policy`
+  與只含 `frame-ancestors 'none'; base-uri 'self'; object-src 'none'` 的
+  CSP。完整的 `script-src`／`connect-src` CSP 刻意還沒加——要先盤點
+  Sentry、Logo.dev、字型等外部來源，否則會直接把頁面弄壞。
+- `pyproject.toml` 的 runtime 依賴一律用 `==` 釘在測過的版本（Vercel 依它
+  安裝），`requirements.txt` 保持同一份。升級依賴＝改版本號、跑完整測試、
+  兩個檔案一起改。
+
 ## 部署後的第一件事：確認 Cboe 可達性
 
 開部署網址 → 按「跑一次分析」→ 看卡片最下面那行「資料來源」：

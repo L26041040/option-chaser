@@ -51,6 +51,19 @@ METRIC_CATALOGUE = (
     # 這批 owner 加總刪掉的資料列數（`delete_owner()` 回傳的
     # `dict[str,int]` 逐表計數加總）。
     "abandoned_owner_cleanup_count",
+    # SECURITY-FIX-01：deferred owner creation 之後，「今天真的新建了幾個
+    # 匿名 owner」才有意義（以前任何讀取都會建一個）；以及空 owner
+    # 清理量（跟上面有資料 owner 的清理分開記）。
+    "new_owner_count",
+    "empty_owner_cleanup_count",
+    # SECURITY-FIX-02：每一層防護各擋了幾次（只有計數，不含 owner、IP、
+    # source key）——Public Beta 上線後拿來校準 limits。上游真實呼叫量
+    # 就是既有的 `chain_fetch_count`。
+    "owner_quota_block_count",
+    "source_burst_block_count",
+    "new_owner_tier_block_count",
+    "global_fuse_block_count",
+    "login_rate_limit_block_count",
 )
 
 # `table_size` 是 query-time gauge，不經過 `record()`／`operational_

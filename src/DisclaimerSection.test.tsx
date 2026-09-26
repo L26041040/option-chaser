@@ -7,7 +7,7 @@ import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 
 import DisclaimerSection, {
-  ANONYMOUS_ABANDONED_AFTER_DAYS,
+  ANONYMOUS_RETENTION_DAYS,
   ANONYMOUS_GRACE_PERIOD_DAYS,
 } from "./DisclaimerSection";
 
@@ -22,7 +22,7 @@ describe("DisclaimerSection（SW-10／#340）", () => {
     render(<DisclaimerSection />);
     const text = screen.getByRole("region", { name: "免責聲明" }).textContent!;
     expect(text).toContain("cookie");
-    expect(text).toContain(String(ANONYMOUS_ABANDONED_AFTER_DAYS));
+    expect(text).toContain(String(ANONYMOUS_RETENTION_DAYS));
     expect(text).toContain(String(ANONYMOUS_GRACE_PERIOD_DAYS));
     expect(text).toMatch(/清除/);
   });

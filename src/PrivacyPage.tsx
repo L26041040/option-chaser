@@ -18,7 +18,7 @@
  * 後端實際預設值的一致性由 `tests/test_pb12_beta_copy.py` 守住）。
  */
 import {
-  ANONYMOUS_ABANDONED_AFTER_DAYS,
+  ANONYMOUS_RETENTION_DAYS,
   ANONYMOUS_GRACE_PERIOD_DAYS,
 } from "./DisclaimerSection";
 import { settingsHash } from "./route";
@@ -38,18 +38,20 @@ export default function PrivacyPage() {
         <h3 className="section-title">存了什麼</h3>
         <p className="caption">
           您建立的劇本、分析結果，以及一個用來識別「這是同一個瀏覽器」
-          的隨機代碼（存在瀏覽器的 cookie 裡）。使用本站不需要、也不會
-          要求您提供姓名、email 或任何其他個人身分資訊。
+          的隨機代碼（存在瀏覽器的 cookie 裡）。第一次儲存資料時，瀏覽器
+          會在本機暫存一個一次性的隨機代碼，儲存成功後立即刪除，
+          只用來避免同時送出的儲存被當成不同的瀏覽器。使用本站不需要、也
+          不會要求您提供姓名、email 或任何其他個人身分資訊。
         </p>
       </section>
 
       <section className="card">
         <h3 className="section-title">留多久</h3>
         <p className="caption">
-          連續 {ANONYMOUS_ABANDONED_AFTER_DAYS} 天沒有任何操作（開站
-          時自動刷新既有劇本不算操作），資料會先進入{" "}
-          {ANONYMOUS_GRACE_PERIOD_DAYS} 天緩衝期；緩衝期內只要有任何
-          操作即恢復正常。緩衝期滿仍無操作，系統會自動、永久清除。
+          連續 {ANONYMOUS_RETENTION_DAYS} 天沒有用這個瀏覽器打開本站
+          （只要打開過就重新起算），資料會先進入{" "}
+          {ANONYMOUS_GRACE_PERIOD_DAYS} 天緩衝期；緩衝期內只要回來
+          即恢復正常。緩衝期滿仍未回來，系統會自動、永久清除。
         </p>
       </section>
 

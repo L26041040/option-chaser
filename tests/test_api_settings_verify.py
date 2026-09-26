@@ -17,6 +17,7 @@ from option_chaser.dividends import DividendHistory, DividendRecord
 from option_chaser.models import FetchError
 from option_chaser.ratecurve import RateCurve
 from tests._role_session import superadmin_cookies
+from _adhoc import post_adhoc
 
 # 沿用 `test_api_analyze.py` 的既有快照與假 loader：本檔案要驗的是抓鏈
 # **路徑的選擇**，不是引擎算得對不對，因此利率／配息一律注入固定值，
@@ -188,7 +189,7 @@ def test_token_never_appears_in_the_verification_response(db):
 # ---------- 生效來源與 fallback ----------
 
 def _analyze(client):
-    return client.post("/api/analyze", json={
+    return post_adhoc(client, {
         "symbol": "XYZ", "target_price": 130.0, "target_month": "2026-09",
         "strategies": ["bull-call-spread"]})
 

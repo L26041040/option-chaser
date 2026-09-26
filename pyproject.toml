@@ -8,15 +8,23 @@ requires-python = ">=3.11"
 # requirements.txt——build log 明寫「Installing required dependencies
 # from pyproject.toml」。放進來的每個套件都會進 lambda，因此刻意精簡：
 # 引擎與 Cboe 主資料源都是 stdlib-only，只有 API 層需要第三方套件。
+#
+# SECURITY（#345 B-6）：runtime 依賴一律釘死在測過的版本（`==`），不再用
+# `>=`——否則 Vercel 每次 build 都會裝到當下最新版，production 跑的是
+# 從沒測過的組合（supply-chain drift）。starlette／pydantic 是 fastapi 的
+# 間接依賴、也是最主要的攻擊面，一併明確釘住。升級＝改這裡的版本號、
+# 跑完整測試、同步 requirements.txt，是一次刻意的變更。
 dependencies = [
-  "fastapi>=0.117.1",
-  "psycopg[binary]>=3.2",
+  "fastapi==0.141.1",
+  "starlette==1.6.0",
+  "pydantic==2.13.5",
+  "psycopg[binary]==3.3.6",
   "tzdata; platform_system == 'Windows'",
   # PB-13（#293，Anonymous Public Beta）：錯誤堆疊上報（免費層，
   # FREE-FIRST）。純 Python、輕量，`api_app/observability.py` 只在
   # `SENTRY_DSN` 環境變數存在時才真的呼叫 `sentry_sdk.init()`——未設
   # 定時整個模組是 no-op，不改變既有行為。
-  "sentry-sdk>=2.0",
+  "sentry-sdk==2.69.2",
 ]
 
 [project.scripts]

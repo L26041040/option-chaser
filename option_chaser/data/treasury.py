@@ -26,7 +26,7 @@ from pathlib import Path
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
-from ..models import FetchError
+from ..models import FetchError, describe_fetch_exception
 from ..ratecurve import (CurveRows, RateCurve, curve_from_dict, curve_to_dict,
                          parse_treasury_csv, parse_treasury_csv_rows,
                          parse_treasury_xml, parse_treasury_xml_rows)
@@ -89,7 +89,7 @@ def fetch_curve(today: date, http_get=_http_get) -> RateCurve:
         except Exception as e:  # noqa: BLE001 — 連線與解析失敗一律走下一備援
             # 訊息要看得出是哪個來源、哪一段失敗（#74）：Treasury 本身
             # （不是「利率」這個籠統概念）、哪一年的哪種格式、失敗原因。
-            errors.append(f"Treasury {label}（{year}）：{e}")
+            errors.append(f"Treasury {label}（{year}）：{describe_fetch_exception(e)}")
     raise FetchError(f"Treasury 曲線抓取失敗：{'; '.join(errors)}")
 
 
@@ -109,7 +109,7 @@ def fetch_curve_rows_for_year(year: int, http_get=_http_get) -> CurveRows:
         try:
             return parse(http_get(url_tpl.format(year=year)))
         except Exception as e:  # noqa: BLE001 — 連線與解析失敗一律走下一備援
-            errors.append(f"Treasury {label}（{year}）：{e}")
+            errors.append(f"Treasury {label}（{year}）：{describe_fetch_exception(e)}")
     raise FetchError(f"Treasury 曲線抓取失敗：{'; '.join(errors)}")
 
 

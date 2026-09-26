@@ -17,6 +17,7 @@ Python dict，不需自己 `json.dumps`。時間欄位存 ISO 字串而非 times
 from __future__ import annotations
 
 import contextvars
+from collections.abc import Sequence
 from contextlib import contextmanager
 
 import psycopg
@@ -24,8 +25,9 @@ from psycopg.types.json import Jsonb
 
 from . import (BrowserIdentity, ChainBackoffEntry, ContractHistory,
                DataSourceSettings, DividendCacheEntry, IvBackfillRun,
-               IvObservation, MetricEntry, Owner,
-               ProviderCredential, ProviderVerification, RateCacheEntry,
+               IvObservation, MetricEntry, Owner, OwnerLifecycleFacts,
+               OWNER_RATE_LIMIT_SCOPE, ProviderCredential, ProviderVerification,
+               RateCacheEntry, RateLimitBucket,
                ResultFactContext, ResultRecord, ResultSummary, RoleSession,
                Scenario, ScenarioExists, SuperUserAuditEvent,
                TreasuryYearCacheEntry, UsageSetting, require_owner)
@@ -448,6 +450,21 @@ CREATE TABLE IF NOT EXISTS role_sessions (
     role        TEXT NOT NULL,
     issued_at   TEXT NOT NULL,
     revoked_at  TEXT
+);
+-- SECURITY-FIX-02：短時間窗的濫用計數（per-owner vendor quota、source
+-- burst、new-owner tier、登入嘗試）。`key` 是 owner_id 或
+-- `abuse_control.source_key()` 算出的 HMAC——**從不存 IP**。沒有
+-- owner_id 欄位、不在 `_OWNER_SCOPED_TABLES`：每一列在視窗結束一小時
+-- 後就會被 `purge_rate_limits()` 清掉，最長也只活一天多；per-owner
+-- quota 的列（scope = `OWNER_RATE_LIMIT_SCOPE`、key = owner_id）另外在
+-- `delete_owner()` 同一個交易裡直接刪。
+CREATE TABLE IF NOT EXISTS rate_limits (
+    scope           TEXT NOT NULL,
+    key             TEXT NOT NULL,
+    window_seconds  INTEGER NOT NULL,
+    window_start    BIGINT NOT NULL,
+    count           INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (scope, key, window_seconds, window_start)
 );
 """
 
@@ -1156,7 +1173,8 @@ class PostgresStorage:
         簽發」邏輯，重用既有機制。
 
         回傳 `{table_name: 受影響列數}`，含 `owners`／
-        `browser_identities` 兩張（共 12 個鍵）。"""
+        `browser_identities` 兩張，以及 `rate_limits`（該 owner 的 per-owner
+        quota 計數列，共 13 個鍵）。"""
         counts: dict[str, int] = {}
         with self._connect() as conn:
             with conn.transaction():
@@ -1164,6 +1182,12 @@ class PostgresStorage:
                     cur = conn.execute(
                         f"DELETE FROM {table} WHERE owner_id = %s", (owner_id,))
                     counts[table] = cur.rowcount
+                # rate_limits 沒有 owner_id 欄位：per-owner quota 的列以
+                # owner_id 當 `key`（Codex P2，PR #346：刪除要立刻清乾淨）。
+                cur = conn.execute(
+                    "DELETE FROM rate_limits WHERE scope = %s AND key = %s",
+                    (OWNER_RATE_LIMIT_SCOPE, owner_id))
+                counts["rate_limits"] = cur.rowcount
                 cur = conn.execute(
                     "DELETE FROM browser_identities WHERE owner_id = %s",
                     (owner_id,))
@@ -1209,6 +1233,92 @@ class PostgresStorage:
                 (identity.token, identity.owner_id, identity.issued_at,
                  identity.last_seen_at))
 
+    def claim_browser_token(self, token: str, owner: Owner, *,
+                            now: str) -> tuple[str, bool]:
+        with self._connect() as conn:
+            with conn.transaction():
+                # token 是 PK：兩個 instance 同時執行時，後到的那一筆會等
+                # 前一筆 commit，然後 DO NOTHING——只有真正搶到的那一筆
+                # 會拿到 RETURNING，才去建 owner 列。
+                row = conn.execute(
+                    "INSERT INTO browser_identities "
+                    "(token, owner_id, issued_at, last_seen_at) "
+                    "VALUES (%s, %s, %s, %s) "
+                    "ON CONFLICT (token) DO NOTHING RETURNING owner_id",
+                    (token, owner.owner_id, now, now)).fetchone()
+                if row is not None:
+                    conn.execute(
+                        "INSERT INTO owners (owner_id, created_at, "
+                        "last_activity_at, protected, is_synthetic) "
+                        "VALUES (%s, %s, %s, %s, %s)",
+                        (owner.owner_id, owner.created_at,
+                         owner.last_activity_at, owner.protected,
+                         owner.is_synthetic))
+                    return owner.owner_id, True
+                existing = conn.execute(
+                    "SELECT owner_id FROM browser_identities WHERE token = %s",
+                    (token,)).fetchone()
+        return existing[0], False
+
+    def owner_lifecycle_facts(self) -> list[OwnerLifecycleFacts]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT o.owner_id, o.created_at, bi.last_seen, "
+                "(EXISTS (SELECT 1 FROM scenarios s WHERE s.owner_id = o.owner_id) "
+                " OR EXISTS (SELECT 1 FROM owner_settings st WHERE st.owner_id = o.owner_id) "
+                " OR EXISTS (SELECT 1 FROM owner_credentials c WHERE c.owner_id = o.owner_id)) "
+                "AS has_data, o.protected "
+                "FROM owners o "
+                "LEFT JOIN (SELECT owner_id, max(last_seen_at) AS last_seen "
+                "           FROM browser_identities GROUP BY owner_id) bi "
+                "  ON bi.owner_id = o.owner_id "
+                "ORDER BY o.created_at, o.owner_id").fetchall()
+        return [OwnerLifecycleFacts(owner_id=r[0], created_at=r[1],
+                                    last_seen_at=r[2], has_data=r[3],
+                                    protected=r[4])
+                for r in rows]
+
+    def rate_limit_consume(self, buckets: Sequence[RateLimitBucket]) -> int | None:
+        if not buckets:
+            return None
+        # 依主鍵排序後逐列建立（不存在時 count=0）再逐列 `FOR UPDATE`：
+        # 所有交易都用同一個順序拿鎖，重疊的 bucket 集合不會互相死結。
+        order = sorted(range(len(buckets)), key=lambda i: (
+            buckets[i].scope, buckets[i].key, buckets[i].window_seconds,
+            buckets[i].window_start))
+        with self._connect() as conn:
+            with conn.transaction():
+                counts: dict[int, int] = {}
+                for i in order:
+                    b = buckets[i]
+                    pk = (b.scope, b.key, b.window_seconds, b.window_start)
+                    conn.execute(
+                        "INSERT INTO rate_limits (scope, key, window_seconds, "
+                        "window_start, count) VALUES (%s, %s, %s, %s, 0) "
+                        "ON CONFLICT (scope, key, window_seconds, window_start) "
+                        "DO NOTHING", pk)
+                    counts[i] = conn.execute(
+                        "SELECT count FROM rate_limits WHERE scope = %s AND "
+                        "key = %s AND window_seconds = %s AND window_start = %s "
+                        "FOR UPDATE", pk).fetchone()[0]
+                for i, b in enumerate(buckets):
+                    if counts[i] >= b.limit:
+                        return i
+                for i in order:
+                    b = buckets[i]
+                    conn.execute(
+                        "UPDATE rate_limits SET count = count + 1 WHERE scope = %s "
+                        "AND key = %s AND window_seconds = %s AND window_start = %s",
+                        (b.scope, b.key, b.window_seconds, b.window_start))
+        return None
+
+    def purge_rate_limits(self, *, before_epoch: int) -> int:
+        with self._connect() as conn:
+            cur = conn.execute(
+                "DELETE FROM rate_limits WHERE window_start + window_seconds < %s",
+                (before_epoch,))
+            return cur.rowcount
+
     def touch_browser_identity(self, token: str, *, now: str) -> bool:
         with self._connect() as conn:
             cur = conn.execute(
@@ -1233,6 +1343,15 @@ class PostgresStorage:
             rows = conn.execute(
                 "SELECT owner_id, created_at, last_activity_at, protected, "
                 "is_synthetic FROM owners "
+                "ORDER BY created_at, owner_id").fetchall()
+        return [Owner(owner_id=r[0], created_at=r[1], last_activity_at=r[2],
+                      protected=r[3], is_synthetic=r[4]) for r in rows]
+
+    def list_protected_owners(self) -> list[Owner]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT owner_id, created_at, last_activity_at, protected, "
+                "is_synthetic FROM owners WHERE protected "
                 "ORDER BY created_at, owner_id").fetchall()
         return [Owner(owner_id=r[0], created_at=r[1], last_activity_at=r[2],
                       protected=r[3], is_synthetic=r[4]) for r in rows]

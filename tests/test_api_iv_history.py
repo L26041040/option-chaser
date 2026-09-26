@@ -30,6 +30,7 @@ from api_app.clock import ny_today
 from api_app import main as api_main
 from tests._protected_owner import ensure_protected_owner
 from tests._role_session import superadmin_cookies
+from _adhoc import post_adhoc
 
 FIX = "tests/fixtures/xyz_v4_six_expiries.json"
 
@@ -385,7 +386,7 @@ def _long_call_candidate_key_and_view(client):
 
     單腳策略沒有 `expiry_top10` 分組（T9 附錄A7：範圍限定 Spread 路徑）
     ——候選在扁平的 `r["candidates"]` 清單裡（#139 施工中查證）。"""
-    resp = client.post("/api/analyze", json={
+    resp = post_adhoc(client, {
         "symbol": "XYZ", "target_price": 130.0, "target_month": "2026-09",
         "strategies": ["long-call"]})
     assert resp.status_code == 200, resp.text

@@ -8,6 +8,11 @@
  *
  * 本層與整個前端都不做金融計算：每個顯示數字都已由引擎算好。
  */
+import {
+  discardOwnerBootstrapToken, markOwnerBound, OWNER_BOOTSTRAP_HEADER,
+  OWNER_BOOTSTRAP_STALE_HEADER, OWNER_BOUND_HEADER, ownerBootstrapToken,
+  withOwnerBindingLock,
+} from "./ownerBootstrap";
 import type { Role } from "./superuser";
 
 export interface AnalysisMeta {
@@ -546,13 +551,15 @@ export function resolveCandidate(
  * 不同——那是 vendor 真的回我們限流，這是我們自己決定今天打夠了。
  * 不帶 `RateLimitInfo`（那個結構化事實是 Cboe backoff 專屬的，這裡
  * 沒有對應的倒數時間點可揭露）。
+ * `"usage_limited"`（SECURITY-FIX-02）：這個瀏覽器／網路來源短時間內
+ * 查詢次數超過上限（per-owner quota／source burst），稍後自然恢復。
  */
 export type FailureStage =
   | "fetch" | "analyze" | "params" | "archived" | "rate_limited"
-  | "vendor_budget_exhausted" | null;
+  | "vendor_budget_exhausted" | "usage_limited" | null;
 
 const STAGES = ["fetch", "analyze", "params", "archived", "rate_limited",
-                "vendor_budget_exhausted"] as const;
+                "vendor_budget_exhausted", "usage_limited"] as const;
 
 /**
  * SCALE-05（#260）：`stage === "rate_limited"` 時，後端額外揭露的
@@ -787,15 +794,41 @@ function combineSignals(a: AbortSignal, b: AbortSignal): AbortSignal {
   return controller.signal;
 }
 
-async function request<T>(url: string, init?: RequestInit): Promise<T> {
-  let resp: Response;
+/**
+ * `ownerBootstrap`：這個寫入可能是第一次持久化資料、會在伺服器端建立
+ * owner（建立劇本、存設定、存 credential——對應後端 `_persistent_owner()`
+ * 的三個端點）。只有這些請求帶 bootstrap token（見 `ownerBootstrap.ts`）；
+ * 其他寫入（刷新、封存、刪除……）本來就只作用在既有 owner 上，不必讀
+ * 本機儲存、也不必多等那一下。
+ */
+interface ApiInit extends RequestInit {
+  ownerBootstrap?: boolean;
+}
+
+/** 補上 owner bootstrap header。呼叫端一律傳物件字面量的 headers；萬一
+ * 是 `Headers` 物件也照樣補上。 */
+function withOwnerBootstrap(init: RequestInit | undefined, token: string): RequestInit {
+  const headers = init?.headers;
+  if (headers instanceof Headers) {
+    const copy = new Headers(headers);
+    copy.set(OWNER_BOOTSTRAP_HEADER, token);
+    return { ...init, headers: copy };
+  }
+  return {
+    ...init,
+    headers: { ...(headers as Record<string, string> | undefined),
+               [OWNER_BOOTSTRAP_HEADER]: token },
+  };
+}
+
+async function send(url: string, init: RequestInit): Promise<Response> {
   try {
     // `init.signal`（呼叫端要求可被中途取消）與既有的逾時 signal
     // 合併——任一個先觸發都算數，兩者不互相取代。
     const timeoutSignal = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
-    resp = await fetch(url, {
+    return await fetch(url, {
       ...init,
-      signal: init?.signal
+      signal: init.signal
         ? combineSignals(init.signal, timeoutSignal)
         : timeoutSignal,
     });
@@ -808,6 +841,37 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
     throw new ApiError(
       `連不到伺服器：${e instanceof Error ? e.message : String(e)}`);
   }
+}
+
+/** 會建立 owner 的寫入：還沒綁定前跨分頁排隊（見 `ownerBootstrap.ts`
+ * 的 `withOwnerBindingLock`），鎖裡取得 bootstrap token 並送出——後到的
+ * 分頁送出時 cookie jar 裡已經有先到那顆 cookie。伺服器說 token 過期
+ * （409＋`OWNER_BOOTSTRAP_STALE_HEADER`，寫入前就拒絕、什麼都沒寫）時
+ * 換一顆新的重送一次——之後的重試都沿用這顆新 token，回應遺失也不會多
+ * 出第二個 owner。 */
+function sendOwnerBootstrap(url: string, init: RequestInit): Promise<Response> {
+  const attempt = async () => {
+    const token = await ownerBootstrapToken();
+    const resp = await send(url, token ? withOwnerBootstrap(init, token) : init);
+    return { token, resp };
+  };
+  return withOwnerBindingLock(async () => {
+    const first = await attempt();
+    if (!first.token || first.resp.headers?.get(OWNER_BOOTSTRAP_STALE_HEADER) !== "1") {
+      return first.resp;
+    }
+    await discardOwnerBootstrapToken(first.token);
+    return (await attempt()).resp;
+  });
+}
+
+async function request<T>(url: string, apiInit?: ApiInit): Promise<T> {
+  const { ownerBootstrap = false, ...init } = apiInit ?? {};
+  const resp = ownerBootstrap ? await sendOwnerBootstrap(url, init) : await send(url, init);
+  // 伺服器說 owner cookie 已經綁定：bootstrap token 功成身退（見
+  // `ownerBootstrap.ts`）。沒說（失敗、逾時、不需要 owner 的寫入）就保留，
+  // 重試才會沿用同一顆。`?.`：既有測試常用省略 headers 的假 Response。
+  if (resp.headers?.get(OWNER_BOUND_HEADER) === "1") await markOwnerBound();
   if (!resp.ok) {
     // 每個回應都帶（DG-02／#145，含錯誤回應）——連結不到某次特定失敗
     // 的細節時，這仍是使用者手上唯一能拿去對 Vercel runtime logs 的
@@ -886,7 +950,8 @@ export async function listArchivedScenarios(): Promise<ScenarioSummary[]> {
 export function createScenario(
   req: CreateScenarioRequest,
 ): Promise<ScenarioSummary> {
-  return request<ScenarioSummary>("/api/scenarios", POST_JSON(req));
+  return request<ScenarioSummary>("/api/scenarios",
+                                  { ...POST_JSON(req), ownerBootstrap: true });
 }
 
 /**
@@ -1136,6 +1201,7 @@ export function saveSettings(body: {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
+    ownerBootstrap: true,
   });
 }
 
@@ -1154,6 +1220,7 @@ export function saveCredential(
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ token }),
+      ownerBootstrap: true,
     },
   );
 }
