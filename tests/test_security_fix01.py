@@ -17,6 +17,7 @@ from dataclasses import replace
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 
+import pytest
 from fastapi.testclient import TestClient
 
 from api_app.main import _OWNER_COOKIE_NAME, create_app
@@ -247,6 +248,53 @@ def test_owner_cookie_lifetime_follows_the_configured_retention_and_grace():
     app, _ = _app(anonymous_retention_days=30, anonymous_grace_period_days=3)
     r = _browser(app).post("/api/scenarios", json=NEW)
     assert _max_age(r) == 33 * 24 * 60 * 60
+
+
+@pytest.mark.parametrize("kwargs", [
+    {"anonymous_retention_days": 0}, {"anonymous_retention_days": -5},
+    {"anonymous_grace_period_days": 0}])
+def test_nonpositive_lifecycle_days_fall_back_to_defaults_instead_of_deleting(kwargs):
+    """Codex P1（PR #346）：清理天數設 0／負數不是「停用」而是「立刻可刪」——
+    程式忽略非正數、改用預設值（180＋7、空 owner 1 天），不會觸發破壞性清理；
+    cookie 壽命也照預設算。"""
+    app, storage = _app(**kwargs)
+    c = _browser(app)
+    r = c.post("/api/scenarios", json=NEW)
+    assert _max_age(r) == COOKIE_MAX_AGE
+    owner_id = storage.list_owners()[0].owner_id
+    _set_last_seen(storage, owner_id, _ago(10))
+    body = c.get("/api/cron/cleanup-abandoned-owners", headers=AUTH).json()
+    assert body["hard_deleted"] == 0
+    assert storage.get_owner(owner_id) is not None
+
+
+@pytest.mark.parametrize("days", [0, -1])
+def test_nonpositive_empty_owner_retention_falls_back_to_one_day(days):
+    """空 owner 天數設 0／負數同樣退回預設 1 天：才空了幾小時的 owner 不刪。"""
+    app, storage = _app(anonymous_empty_owner_retention_days=days)
+    c = _browser(app)
+    created = c.post("/api/scenarios", json=NEW).json()
+    c.post(f"/api/scenarios/{created['id']}/archive").raise_for_status()
+    c.delete(f"/api/scenarios/{created['id']}").raise_for_status()
+    owner_id = storage.list_owners()[0].owner_id
+    _set_last_seen(storage, owner_id, _ago(0.25))
+    body = c.get("/api/cron/cleanup-abandoned-owners", headers=AUTH).json()
+    assert body["empty_owners_deleted"] == 0
+    assert storage.get_owner(owner_id) is not None
+
+
+@pytest.mark.parametrize("batch", [0, -1])
+def test_nonpositive_cleanup_batch_size_deletes_nothing(batch):
+    """`ANONYMOUS_CLEANUP_BATCH_SIZE<=0`＝這次不刪（暫停清理）；負數不能變成
+    `eligible[:-1]`（刪到只剩最後一個）。"""
+    app, storage = _app(anonymous_cleanup_batch_size=batch)
+    for sym in ("AAA", "BBB"):
+        _browser(app).post("/api/scenarios", json={**NEW, "symbol": sym}).raise_for_status()
+    for o in storage.list_owners():
+        _set_last_seen(storage, o.owner_id, _ago(400))
+    body = _browser(app).get("/api/cron/cleanup-abandoned-owners", headers=AUTH).json()
+    assert body["hard_deleted"] == 0
+    assert len(storage.list_owners()) == 2
 
 
 def test_returning_inside_the_grace_period_restores_access():

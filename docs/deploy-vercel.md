@@ -167,8 +167,11 @@ metrics` 表的資料不影響任何產品資料，可保留或清空。這個�
 額度與 global fuse 都是**每個真正送出的上游請求**各算一次（自訂 provider →
 Cboe → yfinance 的每一次 fallback 都算，失敗也算）。各層一次原子檢查：
 被任何一層擋下的那次不打上游，也不扣任何一層的
-額度。以下全部**選用**，不設就用程式內建的 Launch Safety Defaults；
-`<=0` 停用該項：
+額度。以下全部**選用**，不設就用程式內建的 Launch Safety Defaults。
+額度、fuse、登入上限與 new-owner tier 設 `<=0` 會停用該項；**三個
+`ANONYMOUS_*_DAYS` 清理天數例外**——0 或負數不是「關掉清理」，照字面會變成
+「立刻可以刪」，所以程式一律忽略非正數、改用預設值（要暫停清理請改設
+`ANONYMOUS_CLEANUP_BATCH_SIZE=0`，那一次 cron 就不刪任何 owner）：
 
 | 環境變數 | 預設 | 意義 |
 |---|---|---|
@@ -178,9 +181,10 @@ Cboe → yfinance 的每一次 fallback 都算，失敗也算）。各層一次�
 | `NEW_OWNER_TIER_AGE_HOURS` | 24 | 多新算「新 owner」 |
 | `LOGIN_ATTEMPTS_PER_MINUTE`／`_PER_HOUR` | 10／60 | 每個來源的登入嘗試上限（沒有全站鎖定） |
 | `GLOBAL_VENDOR_DAILY_BUDGET` | 2000 | 既有；所有角色都受限 |
-| `ANONYMOUS_RETENTION_DAYS` | 180 | 有資料的匿名 owner 多久沒用這個瀏覽器回訪算 abandoned |
-| `ANONYMOUS_GRACE_PERIOD_DAYS` | 7 | abandoned 之後再多久才刪 |
-| `ANONYMOUS_EMPTY_OWNER_RETENTION_DAYS` | 1 | 沒有任何資料的 owner 多久清掉 |
+| `ANONYMOUS_RETENTION_DAYS` | 180 | 有資料的匿名 owner 多久沒用這個瀏覽器回訪算 abandoned（必須是正數，非正數會被忽略） |
+| `ANONYMOUS_GRACE_PERIOD_DAYS` | 7 | abandoned 之後再多久才刪（必須是正數，非正數會被忽略） |
+| `ANONYMOUS_EMPTY_OWNER_RETENTION_DAYS` | 1 | 沒有任何資料的 owner 多久清掉（必須是正數，非正數會被忽略） |
+| `ANONYMOUS_CLEANUP_BATCH_SIZE` | 200 | 每次 cron 最多刪幾個 owner；`<=0`＝這次不刪（暫停清理） |
 
 ⚠ 舊的 `ANONYMOUS_ABANDONED_AFTER_DAYS`（30 天、錨點是手動操作）已經
 不再被讀取——如果 Vercel 上還留著，可以直接刪掉。

@@ -1147,26 +1147,32 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
     _effective_global_vendor_daily_budget = (
         global_vendor_daily_budget if global_vendor_daily_budget is not None
         else _env_int("GLOBAL_VENDOR_DAILY_BUDGET", GLOBAL_VENDOR_DAILY_BUDGET))
-    # PB-08（#300）：同一套慣例。
-    _effective_retention_days = (
-        anonymous_retention_days if anonymous_retention_days is not None
-        else _env_int("ANONYMOUS_RETENTION_DAYS", ANONYMOUS_RETENTION_DAYS))
-    _effective_empty_owner_retention_days = (
-        anonymous_empty_owner_retention_days
-        if anonymous_empty_owner_retention_days is not None
-        else _env_int("ANONYMOUS_EMPTY_OWNER_RETENTION_DAYS",
-                      ANONYMOUS_EMPTY_OWNER_RETENTION_DAYS))
-    _effective_grace_period_days = (
-        anonymous_grace_period_days if anonymous_grace_period_days is not None
-        else _env_int("ANONYMOUS_GRACE_PERIOD_DAYS", ANONYMOUS_GRACE_PERIOD_DAYS))
+    # PB-08（#300）：同一套注入／環境變數慣例，但**沒有**「`<=0` 停用」
+    # 語意——Codex P1（PR #346）：這三個是清理的天數，0 或負數不是
+    # 「關掉清理」，而是「立刻就可以刪」。照其他變數的 `<=0` 慣例設下去
+    # 會觸發破壞性清理，所以非正數一律忽略、退回內建預設值（文件也明寫）。
+    def _positive_days(value: int | None, env: str, default: int) -> int:
+        days = value if value is not None else _env_int(env, default)
+        return days if days > 0 else default
+
+    _effective_retention_days = _positive_days(
+        anonymous_retention_days, "ANONYMOUS_RETENTION_DAYS", ANONYMOUS_RETENTION_DAYS)
+    _effective_empty_owner_retention_days = _positive_days(
+        anonymous_empty_owner_retention_days, "ANONYMOUS_EMPTY_OWNER_RETENTION_DAYS",
+        ANONYMOUS_EMPTY_OWNER_RETENTION_DAYS)
+    _effective_grace_period_days = _positive_days(
+        anonymous_grace_period_days, "ANONYMOUS_GRACE_PERIOD_DAYS",
+        ANONYMOUS_GRACE_PERIOD_DAYS)
     # owner cookie 要活過「保留期＋緩衝期」（見模組頂端 `_OWNER_COOKIE_NAME`
     # 下方的說明），跟 cleanup 用同一組 effective 值，兩邊不會各算各的。
     _owner_cookie_max_age_seconds = (
         (_effective_retention_days + _effective_grace_period_days) * 24 * 60 * 60)
-    _effective_cleanup_batch_size = (
+    # 批次上限 `<=0`＝這次不刪任何 owner（停用）；負數不能當 slice 用
+    # （`eligible[:-1]` 會變成「刪到只剩最後一個」）。
+    _effective_cleanup_batch_size = max(0, (
         anonymous_cleanup_batch_size if anonymous_cleanup_batch_size is not None
         else _env_int("ANONYMOUS_CLEANUP_BATCH_SIZE",
-                      ANONYMOUS_CLEANUP_BATCH_SIZE))
+                      ANONYMOUS_CLEANUP_BATCH_SIZE)))
     # SECURITY-FIX-02：vendor 濫用防護的 Launch Safety Defaults（見
     # `abuse_control` 檔頭）——同一套「DI 顯式傳入優先、否則讀環境變數、
     # 再否則用常數」慣例，`<=0` 停用該視窗，不必改 code 就能調。
