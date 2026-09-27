@@ -865,43 +865,32 @@ class Storage(Protocol):
 
     # ---------- 資料源設定與 credential（Settings／#124，owner 化 SCALE-13／#264） ----------
     #
-    # SCALE-13（#264）：這 3 個概念從「單例／provider-key」升級成
-    # per-owner。**不是原地改 PK**——那需要在同一個 migration 裡先
-    # backfill 舊列的 owner_id 才能安全套用新 PK 約束，風險與部署順序
-    # 依賴都比「另開一組新表」高。改成 additive-first：新表
-    # （`owner_settings`／`owner_credentials`／`owner_verifications`）
-    # 從第一天就是正確的 per-owner 形狀，舊表（`data_source_settings`／
-    # `provider_credentials`／`provider_verifications`）原樣保留、
-    # **停止寫入但仍可讀**——這就是票面「先 dual-read...再停止舊 shape
-    # 的 production read/write」的落地：write 全部只進新表；read 對
-    # 新表 miss 時 fall back 讀舊表（read-through），讀到就順手 write-
-    # through 進新表（下次直接命中新表），讓 AC-1「solo-owner 下行為
-    # 逐位元不變」不必依賴任何人先手動跑過 backfill 腳本才成立——正式
-    # 環境既有資料（若存在）在被讀到的當下就自動遷移完畢。`delete_
-    # credential()` 因此必須**同時清舊表與新表**：否則使用者明確刪除
-    # 後，下次讀取的 read-through 還是會把舊表裡沒被清掉的資料復活
-    # （唯一會被這條「殭屍復活」風險咬到的操作）。
+    # SCALE-13（#264）起寫入只進 per-owner 表（`owner_settings`／
+    # `owner_credentials`／`owner_verifications`）。CLAUDE-DB-HYGIENE-002
+    # 退役了 3 張 legacy singleton 表（`data_source_settings`／
+    # `provider_credentials`／`provider_verifications`）與 `solo` 的
+    # read-through 相容分支：PB-02 之後沒有任何請求會解析成 `solo`，
+    # read-through 永遠不會再被觸發；legacy 內容改由 maintenance script
+    # 一次性收進 owner-scoped 表（`adopt_legacy_settings()`）後 DROP。
 
     def get_settings(self, *, owner: str) -> DataSourceSettings | None:
-        """這個 owner 從未存過任何設定、也沒有可 read-through 的舊資料
-        時回 `None`（呼叫端據此用兩列的預設值）。"""
+        """這個 owner 從未存過任何設定時回 `None`（呼叫端據此用兩列的
+        預設值）。"""
 
     def save_settings(self, settings: DataSourceSettings) -> None:
         """寫進新表 `owner_settings`，覆蓋既有那一筆——單一狀態，不是
         歷史序列。`settings.owner_id` 必須非 `None`（`require_owner()`
-        守門）；舊表 `data_source_settings` 這個方法起不再寫入。"""
+        守門）。"""
 
     def get_credential(self, provider: str, *, owner: str) -> ProviderCredential | None: ...
 
     def save_credential(self, cred: ProviderCredential) -> None:
         """寫進新表 `owner_credentials`，同一個 (owner, provider) 重複
         寫入即覆蓋（換 token 就是這條路徑）。`cred.owner_id` 必須非
-        `None`；舊表這個方法起不再寫入。"""
+        `None`。"""
 
     def delete_credential(self, provider: str, *, owner: str) -> bool:
-        """回傳是否真的刪了東西（本來就沒存過回 `False`）——只看新表
-        `owner_credentials` 有沒有這一列決定回傳值，但**新舊兩張表都
-        會清**（見上方區塊說明的殭屍復活風險）。
+        """回傳是否真的刪了東西（本來就沒存過回 `False`）。
 
         一併清掉該 (owner, provider) 的驗證結果——那筆結果講的是
         「**那把** token 能不能用」，token 沒了它就失去意義，留著會讓
@@ -928,33 +917,30 @@ class Storage(Protocol):
         """覆蓋該 symbol 既有那一筆——單一狀態，不是歷史序列。"""
 
     def get_verification(self, provider: str, *, owner: str) -> ProviderVerification | None:
-        """從未測過、也沒有可 read-through 的舊資料時回 `None`
-        （＝「未設定」或「尚未驗證」）。"""
+        """從未測過時回 `None`（＝「未設定」或「尚未驗證」）。"""
 
     def save_verification(self, v: ProviderVerification) -> None:
         """寫進新表 `owner_verifications`，覆蓋該 (owner, provider)
         既有那一筆——單一狀態，不是歷史序列。`v.owner_id` 必須非
-        `None`；舊表這個方法起不再寫入。"""
+        `None`。"""
 
-    def backfill_settings_to_owner(self, owner: str) -> dict[str, int]:
-        """SCALE-13（#264）：**明確、可重跑**的批次遷移（AC-3）——不是
-        只靠上面三個 read-through 方法「有人剛好去讀才順便搬」，而是
-        比照既有 `backfill_missing_owner_ids()` 給操作者一個可以主動
-        執行、結果可驗證的動作。
+    def owner_settings_bundle(self, owner_id: str) -> OwnerSettingsBundle:
+        """這個 owner 名下 3 張 singleton／provider 表的全部內容——搬遷前
+        的衝突比對用（`settings_bundle_merge_plan()`）。沒有任何資料時回
+        一個全空的 bundle，不是 `None`。"""
 
-        只搬「新表這個 owner 還沒有」的那一列／那幾列（settings 用
-        `owner` 本身查、credentials／verifications 用 `(owner,
-        provider)` 逐一查）——**永遠不覆蓋新表已經存在的資料**，不論
-        那份資料是先前跑過這個方法留下的，還是使用者在這之間透過
-        `save_*()` 自己存過的新值。這讓它天生冪等：重跑對「已經搬過」
-        的部分全部回 0，且不會用舊表的陳舊值蓋掉更新的新表資料
-        （AC-3「可重跑、可中斷續跑」）。
+    def legacy_settings_bundle(self) -> OwnerSettingsBundle | None:
+        """CLAUDE-DB-HYGIENE-002：3 張已退役 legacy singleton 表
+        （`LEGACY_SINGLETON_TABLES`）現在還實體存在時，回它們的內容；
+        全都不存在（已 DROP，或從來沒有這些表的後端）時回 `None`。
+        純讀取，只給 maintenance 用。"""
 
-        回傳 `{"settings": 0|1, "credentials": N, "verifications": M}`
-        ——與 `backfill_missing_owner_ids()` 同一種「表名 → 補了幾筆」
-        的計數形狀。舊表（`data_source_settings`／`provider_
-        credentials`／`provider_verifications`）本身**不受影響、不被
-        清空**——這是 additive-first 遷移的一部分，不是單向搬家。"""
+    def adopt_legacy_settings(self, owner: str) -> dict[str, int]:
+        """把 legacy singleton 表的內容收進 `owner` 的 owner-scoped 表——
+        **只補 owner 還沒有的那幾列，絕不覆蓋**（owner-scoped 表是
+        SCALE-13 起的 canonical 來源，可能比 legacy 新）。legacy 表不存在
+        時是 no-op。回傳 `{"settings": 0|1, "credentials": N,
+        "verifications": M}`。"""
 
     # ---------- Exact-contract 歷史 IV 快取（HIVT-02／#153） ----------
 
@@ -1014,7 +1000,8 @@ class Storage(Protocol):
         「讀不到」而已，是連 `_require()` 這個 chokepoint 都會回
         404，等於那些劇本連編輯／封存／刷新都做不到。這是刻意的
         fail-closed 設計，**不是遺漏**，但正式環境部署 SCALE-11 之前
-        必須先跑過 `scripts/backfill_owner_ids.py`（呼叫本方法）——
+        必須先完成 NULL-owner 救援（CLAUDE-DB-HYGIENE-002 起由
+        `scripts/repair_production_data_lifecycle.py` 只救劇本血緣）——
         順序顛倒會讓既有存量資料看起來像全部憑空消失。"""
 
     # ---------- Ownership A-1 Contract（SCALE-13／#264） ----------
@@ -1056,32 +1043,121 @@ class Storage(Protocol):
     # Public Beta） ----------
 
     def migrate_owner(self, *, from_owner: str, to_owner: str) -> dict[str, int]:
-        """把 `from_owner` 名下全部資料搬到 `to_owner`——逐表
-        `UPDATE ... SET owner_id = to_owner WHERE owner_id = from_owner`。
-        **冪等**：搬過一次後 `from_owner` 底下已無列，重跑對已搬過的表
-        全部回 0（PB-03 AC「腳本重跑第二次為 no-op」）。
+        """把 `from_owner` 名下全部資料搬到 `to_owner`（涵蓋
+        `_OWNER_SCOPED_TABLES` 這 9 張表：`scenarios`／`results`／
+        `snapshots`／`events`／`diagnostics`／`current_results`／
+        `owner_settings`／`owner_credentials`／`owner_verifications`）。
 
-        涵蓋**這 9 張表**（PB-03／#295 §6 明文要求不得沿用既有任一份
-        既有清單——見下方差異說明；PB-04／#296 的 `delete_owner()`
-        共用同一份清單，兩者是本站僅有的兩個「owner-scoped 表」全量
-        操作。SW-12／#342 起原本第 10 張 `narrow_history` 隨 Spread
-        淨成本走勢功能整個退休一併移除）：
-        `scenarios`／`results`／`snapshots`／`events`／`diagnostics`／
-        `current_results`／`owner_settings`／
-        `owner_credentials`／`owner_verifications`。
+        CLAUDE-DB-HYGIENE-002（修 audit P1-A）：
 
-        **與既有兩份清單的差異**（PB-03 施工前 repo 現況已確認兩份
-        既有清單互相不一致，此處記錄避免未來誤以為可以照抄）：
-        - `backfill_missing_owner_ids()` 只有 5 張（同上少
-          `current_results`／`owner_settings`／`owner_credentials`／
-          `owner_verifications`）——它服務的是「把 `NULL` 補成某個
-          值」（`WHERE owner_id IS NULL`），本方法服務的是「把某個
-          既有值換成另一個值」（`WHERE owner_id = from_owner`），
-          目的不同、範圍也因此不同，不能互相替代。
-        - `owner_id_null_counts()` 涵蓋另外 8 張（5 張 row-scoped ＋
-          3 張 `owner_*`）。
+        - **原子**：整個搬遷在一個 `transaction()` 裡，任何一步失敗都
+          整批 rollback，不會留下半搬遷狀態。
+        - **先預檢、再寫入**：3 張 singleton／provider 表用
+          `settings_bundle_merge_plan()` 比對——target 沒有就照搬；內容
+          等價就當作已經搬過（丟掉 source 那一列）；內容不同就在第一次
+          寫入之前拋 `OwnerMigrationConflict`，零寫入。**絕不**替使用者
+          挑一把 credential。
+        - **冪等**：搬過一次後 `from_owner` 底下已無列，重跑全部回 0。
+        - 兩個後端語意一致（契約測試同時跑）。
 
-        回傳 `{table_name: 受影響列數}`。"""
+        回傳 `{table_name: 受影響列數}`（等價而被丟掉的 source 列也算
+        進該表的數字——結果一樣是「這一列現在由 target 持有」）。"""
+
+    def claim_null_owner_lineage(self, *, to_owner: str,
+                                 legacy_owners: Sequence[str] = (),
+                                 dry_run: bool = False) -> dict[str, int]:
+        """CLAUDE-DB-HYGIENE-002：救援 SCALE-06 backfill 之前遺留的
+        `owner_id IS NULL` 劇本血緣——**只**限劇本本身與它的子列，不做
+        全庫 NULL→owner 的通用轉換（無關的 NULL diagnostics、
+        `scenario_id IS NULL` 的 events、指向不存在劇本的子列一律不碰）。
+
+        1. `scenarios.owner_id IS NULL` → `to_owner`（archived 狀態、
+           時間戳、id 全部保留）。
+        2. 子表（`SCENARIO_CHILD_TABLES`）裡，`owner_id IS NULL` 且所屬
+           劇本現在由 `to_owner` 持有的列 → `to_owner`（包含原本就屬於
+           `to_owner` 的劇本底下殘留的 NULL 子列）。
+
+        預檢（第一次寫入之前）：NULL 劇本底下若有子列掛在
+        `to_owner`／`legacy_owners`／NULL 以外的某個 owner 名下 →
+        `OwnerMigrationConflict`，零寫入。原子、冪等。回傳
+        `{table_name: 更新筆數}`。
+
+        `dry_run=True`：同樣的預檢，但不寫入，回傳「會更新幾筆」——把
+        `legacy_owners` 名下的劇本也當成「搬遷後會歸 `to_owner`」來數
+        （maintenance 的 dry-run 在 solo 還沒搬之前就要預估）。"""
+
+    def lineage_report(self, owner_id: str) -> LineageReport:
+        """這個 owner 名下劇本血緣的一致性核對（純讀取），maintenance 的
+        post-condition 用。"""
+
+    def transaction(self) -> AbstractContextManager[None]:
+        """CLAUDE-DB-HYGIENE-002：把一串 Storage 呼叫包成一個原子單位——
+        區塊內任何例外都讓區塊內的全部寫入 rollback。巢狀呼叫會併入最外層
+        的那一個（內層不是獨立的交易）。給 maintenance 這種「多步驟、
+        不得留下半狀態」的操作用；一般 request 路徑不需要。"""
+
+    def owner_row_counts(self, owner_id: str | None) -> dict[str, int]:
+        """`_OWNER_SCOPED_TABLES` 9 張表各有幾列屬於 `owner_id`
+        （`None` ＝ `owner_id IS NULL`）。純讀取，maintenance 的 dry-run／
+        before-after 摘要用。"""
+
+    def table_row_counts(self) -> dict[str, dict]:
+        """每張 code 認得的表：`{"rows": N, "bytes": B | None}`（`bytes`
+        只有 Postgres 量得到）。純讀取。"""
+
+    # ---------- 資料生命週期 retention（CLAUDE-DB-HYGIENE-002） ----------
+    #
+    # 每個 purge 方法都支援 `dry_run=True`（只數、不刪），回傳「會刪／
+    # 已刪」的列數；時間一律由呼叫端傳入 ISO 字串（storage 零 wall-clock）。
+
+    def snapshot_timestamps(self, scenario_id: str, *, owner: str) -> list[str]:
+        """這個劇本目前還留著原始快照的 `analyzed_at`（遞增）。窄查詢，
+        不撈 snapshot 本體。"""
+
+    def purge_snapshots(self, *, historical_since: str, max_historical: int,
+                        dry_run: bool = False) -> int:
+        """Snapshot bounded retention：
+
+        - 每個劇本**最新**那一份（`analyzed_at` 最大）永遠保留，
+          `current_results.analyzed_at` 指到的那一份也永遠保留
+          （raw-data／CSV 的唯一來源）；
+        - 其餘「歷史份」同時受兩個上限約束（取較緊者）：只留
+          `analyzed_at >= historical_since` 的，而且每個劇本最多
+          `max_historical` 份（新的優先）；
+        - 已封存的劇本同一套規則；刪除劇本本來就會刪光它的快照。
+
+        對應的 `results` fact 列不受影響（輕量歷史 ledger）。"""
+
+    def result_view_stats(self) -> dict[str, int]:
+        """`results`（fact ledger）上仍帶著 SCALE-16 之前完整 `view` 的
+        列：`with_view`（總數）、`missing_fact_context`（6 個 SCALE-01
+        fact 欄位不齊）、`clearable`（fact 欄位齊全、可以安全清掉 view）。"""
+
+    def clear_historical_result_views(self, *, dry_run: bool = False) -> int:
+        """把 `results.view` 設成 NULL——**只**限 SCALE-01 fact context
+        6 個欄位都已經齊全的列（fact 還沒補齊的列保留 view，由呼叫端回報
+        「無法 backfill」的數量）。`current_results.view` 完全不碰。"""
+
+    def purge_role_sessions(self, *, revoked_before: str, issued_before: str,
+                            dry_run: bool = False) -> int:
+        """刪掉兩種已經不可能再被使用的 role session：`revoked_at <
+        revoked_before`（撤銷超過保留期），以及 `issued_at <
+        issued_before`（已超過 role cookie 的 Max-Age，瀏覽器不可能再
+        送出這顆 token）。有效、未過期的 session 一律不動。"""
+
+    def purge_audit_events(self, *, before: str, dry_run: bool = False) -> int:
+        """刪掉 `ts < before` 的 Super User audit 紀錄（保留窗之外）。"""
+
+    def purge_events(self, *, before: str, dry_run: bool = False) -> int:
+        """刪掉 `ts < before` 的 scenario events（保留窗之外）。只碰
+        `events` 表，劇本本身與它的結果／快照完全不受影響。"""
+
+    def retired_tables_present(self) -> list[str]:
+        """`RETIRED_TABLES` 裡目前還實體存在的表（依清單順序）。"""
+
+    def drop_retired_tables(self, tables: Sequence[str]) -> list[str]:
+        """DROP `tables`（必須是 `RETIRED_TABLES` 的子集，否則拋
+        `ValueError`）裡目前還存在的表，回傳真的 DROP 掉的那幾張。"""
 
     # ---------- Owner-wide 刪除原語（PB-04／#296，Anonymous Public
     # Beta） ----------
@@ -1346,3 +1422,103 @@ class MetricEntry:
 
 class ScenarioExists(Exception):
     pass
+
+
+# ---------- Owner 資料搬遷／legacy 救援（CLAUDE-DB-HYGIENE-002） ----------
+
+
+class OwnerMigrationConflict(Exception):
+    """`migrate_owner()`／legacy 救援在**第一次寫入之前**就發現無法安全
+    合併的衝突——整個操作不動任何資料（fail closed）。
+
+    `conflicts` 只放**描述**（例如 `"owner_settings"`、
+    `"owner_credentials:marketdata-app"`、`"scenario_child:results:s1"`），
+    絕不放 credential／token 的值本身。"""
+
+    def __init__(self, conflicts: Sequence[str]) -> None:
+        self.conflicts = tuple(conflicts)
+        super().__init__("無法安全搬遷，衝突項目：" + ", ".join(self.conflicts))
+
+
+@dataclass(frozen=True)
+class OwnerSettingsBundle:
+    """一個 owner 名下 3 張 singleton／provider 表的內容——搬遷前比對
+    「目標已經有沒有、內容一不一樣」用。`credentials`／`verifications`
+    的鍵是 provider。"""
+    settings: DataSourceSettings | None
+    credentials: dict[str, ProviderCredential]
+    verifications: dict[str, ProviderVerification]
+
+
+def _settings_equivalent(a: DataSourceSettings, b: DataSourceSettings) -> bool:
+    # updated_at 只是寫入時間，不是設定內容。
+    return a.market_data == b.market_data and a.historical_iv == b.historical_iv
+
+
+def _credential_equivalent(a: ProviderCredential, b: ProviderCredential) -> bool:
+    import secrets
+    return secrets.compare_digest(a.token.encode(), b.token.encode())
+
+
+def _verification_equivalent(a: ProviderVerification,
+                             b: ProviderVerification) -> bool:
+    # checked_at 只是測試時間；「那把 token 能不能用」的結論才是內容。
+    return a.ok == b.ok and a.reason == b.reason
+
+
+def settings_bundle_merge_plan(source: OwnerSettingsBundle,
+                               target: OwnerSettingsBundle
+                               ) -> tuple[list[str], list[str]]:
+    """比對 source 與 target 的 3 張 singleton／provider 表，回傳
+    `(conflicts, redundant)`：
+
+    - target 沒有 → source 照常搬過去（兩個清單都不列）；
+    - 內容等價 → 視為已經搬過（`redundant`：source 那一列直接丟掉，冪等）；
+    - 內容不同 → `conflicts`，呼叫端必須在寫入前 fail closed，**絕不**
+      替使用者挑一把 credential。
+
+    兩個清單都只有描述字串，不含任何值。"""
+    conflicts: list[str] = []
+    redundant: list[str] = []
+    if source.settings is not None and target.settings is not None:
+        (redundant if _settings_equivalent(source.settings, target.settings)
+         else conflicts).append("owner_settings")
+    for provider, cred in sorted(source.credentials.items()):
+        other = target.credentials.get(provider)
+        if other is not None:
+            (redundant if _credential_equivalent(cred, other)
+             else conflicts).append(f"owner_credentials:{provider}")
+    for provider, ver in sorted(source.verifications.items()):
+        other = target.verifications.get(provider)
+        if other is not None:
+            (redundant if _verification_equivalent(ver, other)
+             else conflicts).append(f"owner_verifications:{provider}")
+    return conflicts, redundant
+
+
+@dataclass(frozen=True)
+class LineageReport:
+    """一個 owner 名下劇本血緣的一致性核對（maintenance 的 post-condition）。
+
+    - `child_owner_mismatch`：子列（results／current_results／snapshots／
+      events）指向這個 owner 的劇本，自己的 owner_id 卻不是這個 owner。
+    - `child_orphans`：這個 owner 名下的子列，指向不存在的劇本。"""
+    child_owner_mismatch: dict[str, int]
+    child_orphans: dict[str, int]
+
+    @property
+    def ok(self) -> bool:
+        return not any(self.child_owner_mismatch.values()) and \
+            not any(self.child_orphans.values())
+
+
+# 劇本的子表：搬遷／救援／一致性核對共用同一份清單。
+SCENARIO_CHILD_TABLES = ("results", "current_results", "snapshots", "events")
+
+# CLAUDE-DB-HYGIENE-002：已退役、code 完全不再讀寫的實體表。
+# `narrow_history`（SW-12／#342 退役）、`chain_cache`（沒有任何消費端）、
+# 以及 SCALE-13（#264）凍結的 3 張 singleton／provider legacy 表。
+RETIRED_TABLES = ("narrow_history", "chain_cache", "data_source_settings",
+                  "provider_credentials", "provider_verifications")
+LEGACY_SINGLETON_TABLES = ("data_source_settings", "provider_credentials",
+                           "provider_verifications")

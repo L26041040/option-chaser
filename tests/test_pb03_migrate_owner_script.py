@@ -1,7 +1,10 @@
 """PB-03（#295，Anonymous Public Beta）：`scripts/migrate_solo_to_
-owner.py` 的行為契約與 HTTP 層端到端驗證。腳本本身硬綁
-`PostgresStorage`（正式環境唯一會用到它的地方），因此這裡的測試需要
-一個真的 Postgres（`OC_TEST_DATABASE_URL`），沒有時整組跳過。
+owner.py` 的行為契約與 HTTP 層端到端驗證。CLAUDE-DB-HYGIENE-002 起它只是
+`scripts/repair_production_data_lifecycle.py` 的薄殼（同一份實作），這裡
+驗證舊入口的指令介面照舊可用。腳本本身硬綁 `PostgresStorage`（正式環境
+唯一會用到它的地方），因此這裡的測試需要一個真的 Postgres
+（`OC_TEST_DATABASE_URL`），沒有時整組跳過。完整的修復行為見
+`tests/test_db_hygiene_002.py`。
 """
 import importlib
 import os
@@ -12,7 +15,7 @@ from fastapi.testclient import TestClient
 
 from api_app.identity import SOLO_OWNER
 from api_app.main import create_app
-from api_app.storage import BrowserIdentity, Owner
+from api_app.storage import RETIRED_TABLES, BrowserIdentity, Owner
 from api_app.storage.postgres import PostgresStorage
 from option_chaser.data.snapshot import load_snapshot
 
@@ -34,6 +37,7 @@ def db():
     st = PostgresStorage(TEST_DB_URL)
     st._ensure_schema()
     with psycopg.connect(TEST_DB_URL, autocommit=True) as conn:
+        conn.execute("DROP TABLE IF EXISTS " + ", ".join(RETIRED_TABLES))
         conn.execute(
             "TRUNCATE scenarios, results, current_results, snapshots, events, "
             "diagnostics, owner_settings, owner_credentials, "
@@ -41,15 +45,19 @@ def db():
     yield st
 
 
-def _run_script(argv, monkeypatch):
+def _run_script(argv, monkeypatch) -> int:
     monkeypatch.setenv("DATABASE_URL", TEST_DB_URL)
     monkeypatch.setattr(sys, "argv", ["migrate_solo_to_owner.py", *argv])
-    migrate_module.main()
+    with pytest.raises(SystemExit) as exit_info:
+        migrate_module.main()
+    return exit_info.value.code
 
 
-def test_refuses_to_run_against_a_target_owner_that_does_not_exist(db, monkeypatch):
-    with pytest.raises(SystemExit, match="不存在"):
-        _run_script(["--target-owner-id", "ghost-owner", "--confirm"], monkeypatch)
+def test_refuses_to_run_against_a_target_owner_that_does_not_exist(
+        db, monkeypatch, capsys):
+    assert _run_script(["--target-owner-id", "ghost-owner", "--confirm"],
+                       monkeypatch) == 2
+    assert "不存在" in capsys.readouterr().out
 
 
 def test_dry_run_without_confirm_does_not_write_anything(db, monkeypatch, capsys):
@@ -63,7 +71,7 @@ def test_dry_run_without_confirm_does_not_write_anything(db, monkeypatch, capsys
                         issued_at="2026-09-14T00:00:00+00:00",
                         last_seen_at="2026-09-14T00:00:00+00:00"))
 
-    _run_script(["--target-owner-id", "anon-real"], monkeypatch)
+    assert _run_script(["--target-owner-id", "anon-real"], monkeypatch) == 0
 
     out = capsys.readouterr().out
     assert "未帶 --confirm" in out
@@ -84,17 +92,19 @@ def test_confirmed_run_migrates_and_protects_and_is_idempotent(db, monkeypatch, 
                         issued_at="2026-09-14T00:00:00+00:00",
                         last_seen_at="2026-09-14T00:00:00+00:00"))
 
-    _run_script(["--target-owner-id", "anon-real", "--confirm"], monkeypatch)
+    assert _run_script(["--target-owner-id", "anon-real", "--confirm"],
+                       monkeypatch) == 0
 
     assert db.get_scenario(created["id"], owner="anon-real") is not None
     assert db.get_scenario(created["id"], owner=SOLO_OWNER) is None
     assert db.get_owner("anon-real").protected is True
 
     out = capsys.readouterr().out
-    assert "solo 底下 10 張表皆已清空" in out
+    assert "所有 invariant 驗證通過" in out
 
     # 第二次跑：完全冪等，不報錯、不重複搬動。
-    _run_script(["--target-owner-id", "anon-real", "--confirm"], monkeypatch)
+    assert _run_script(["--target-owner-id", "anon-real", "--confirm"],
+                       monkeypatch) == 0
     assert db.get_scenario(created["id"], owner="anon-real") is not None
 
 
@@ -125,7 +135,8 @@ def test_end_to_end_owner_sees_all_legacy_scenarios_through_their_own_cookie(
                         issued_at="2026-09-14T00:00:00+00:00",
                         last_seen_at="2026-09-14T00:00:00+00:00"))
 
-    _run_script(["--target-owner-id", "anon-real", "--confirm"], monkeypatch)
+    assert _run_script(["--target-owner-id", "anon-real", "--confirm"],
+                       monkeypatch) == 0
 
     owner_client = TestClient(
         create_app(fetch=lambda symbol: snap, storage=db),

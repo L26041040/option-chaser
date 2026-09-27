@@ -23,16 +23,18 @@ from contextlib import contextmanager
 import psycopg
 from psycopg.types.json import Jsonb
 
-from . import (BrowserIdentity, ChainBackoffEntry, ContractHistory,
+from . import (LEGACY_SINGLETON_TABLES, RETIRED_TABLES, SCENARIO_CHILD_TABLES,
+               BrowserIdentity, ChainBackoffEntry, ContractHistory,
                DataSourceSettings, DividendCacheEntry, IvBackfillRun,
-               IvObservation, MetricEntry, Owner, OwnerLifecycleFacts,
+               IvObservation, LineageReport, MetricEntry, Owner,
+               OwnerLifecycleFacts, OwnerMigrationConflict, OwnerSettingsBundle,
                OWNER_RATE_LIMIT_SCOPE, ProviderCredential, ProviderVerification,
                RateCacheEntry, RateLimitBucket,
                ResultFactContext, ResultRecord, ResultSummary, RoleSession,
                Scenario, ScenarioExists, SuperUserAuditEvent,
-               TreasuryYearCacheEntry, UsageSetting, require_owner)
+               TreasuryYearCacheEntry, UsageSetting, require_owner,
+               settings_bundle_merge_plan)
 from ..diagnostics import RETENTION_LIMIT, DiagnosticEvent
-from ..identity import SOLO_OWNER
 from ..metrics import retention_cutoff
 
 # 每個 lambda 程序只需建表一次。`IF NOT EXISTS` 在 Postgres 並非完全
@@ -63,6 +65,13 @@ class _ScopeState:
 # 借到的連線也不會被錯誤的實例借走。
 _request_scope_state: contextvars.ContextVar = contextvars.ContextVar(
     "postgres_request_scope_state", default=None)
+
+# CLAUDE-DB-HYGIENE-002：`PostgresStorage.transaction()` 的狀態——
+# `(dsn, conn)`。區塊內所有 Storage 呼叫都借用這條連線，因此整串操作是
+# 同一個 Postgres transaction；方法內部原本的 `conn.transaction()` 在這裡
+# 自動變成 savepoint。
+_transaction_state: contextvars.ContextVar = contextvars.ContextVar(
+    "postgres_transaction_state", default=None)
 
 
 class _BorrowedConnection:
@@ -182,33 +191,12 @@ CREATE TABLE IF NOT EXISTS chain_backoff (
     observed_at           TEXT NOT NULL,
     last_success_at       TEXT
 );
--- 資料源設定（Settings／#124）：兩列的模式選擇，單一一筆狀態——跟
--- `rate_cache` 同一個 `id = 1` ＋ `CHECK` 的寫法。存 JSONB 而不是攤平成
--- 欄位：這份結構會隨資料用途增減而變（目前兩列），JSONB 讓它變動時
--- 不必每次都補一條 ALTER。
-CREATE TABLE IF NOT EXISTS data_source_settings (
-    id            INTEGER PRIMARY KEY DEFAULT 1,
-    settings      JSONB NOT NULL,
-    updated_at    TEXT NOT NULL,
-    CHECK (id = 1)
-);
--- Provider credential（Settings／#124）：key 是 **provider**，不是資料
--- 用途——兩個用途選同一個 Provider 時共用這一列，使用者因此不必輸入
--- 同一把 token 兩次。
-CREATE TABLE IF NOT EXISTS provider_credentials (
-    provider      TEXT PRIMARY KEY,
-    token         TEXT NOT NULL,
-    updated_at    TEXT NOT NULL
-);
--- 測試連線的結果（Settings／#125）：per-provider 單一狀態。與
--- credential 分兩張表——刪 token 時連帶刪這一筆（見 delete_credential），
--- 但存 token 不必動它（還沒測過就是還沒測過）。
-CREATE TABLE IF NOT EXISTS provider_verifications (
-    provider      TEXT PRIMARY KEY,
-    ok            BOOLEAN NOT NULL,
-    reason        TEXT,
-    checked_at    TEXT NOT NULL
-);
+-- 資料源設定／provider credential／測試結果：SCALE-13（#264）起改用
+-- per-owner 的 `owner_settings`／`owner_credentials`／`owner_verifications`
+-- （見 `_MIGRATIONS`）。原本的 3 張 singleton legacy 表
+-- （`data_source_settings`／`provider_credentials`／`provider_verifications`）
+-- 在 CLAUDE-DB-HYGIENE-002 退役：不再建立，既有部署由
+-- `scripts/repair_production_data_lifecycle.py` 收進 owner-scoped 表後 DROP。
 -- 歷史 IV 觀測（#129）：鍵是 **(symbol, 日期)**，沒有 scenario 欄位——
 -- 同一 ticker 的所有 Scenario 共用同一份，資料模型上就不可能因 scenario
 -- 不同而分家、重複燒 vendor 額度。
@@ -286,7 +274,7 @@ ALTER TABLE results ADD COLUMN IF NOT EXISTS family_eligibility JSONB;
 -- JSONB 內部的估值輸入與 provenance 複製成獨立、可窄查詢的欄位（見
 -- `option_chaser.store.historical_fact_context()`）。既有部署的舊列
 -- 讀回時全部是 NULL——backfill 腳本
--- （`scripts/backfill_result_fact_context.py`）負責補齊，讀取端在
+-- （`scripts/repair_production_data_lifecycle.py`）負責補齊，讀取端在
 -- backfill 完成前必須容忍 NULL。純加法，不影響 `view` 本身。
 ALTER TABLE results ADD COLUMN IF NOT EXISTS resolved_params JSONB;
 ALTER TABLE results ADD COLUMN IF NOT EXISTS requested_strategies JSONB;
@@ -342,9 +330,9 @@ CREATE TABLE IF NOT EXISTS operational_metrics (
 -- 就是「全站只有一份」的形狀，加一欄 owner_id 不會讓它變成
 -- per-owner，只會讓同一列被不同 owner 互相覆寫。改用 additive-first：
 -- 建立 3 張全新、從第一天就是正確 per-owner 形狀的表；owner_id 是
--- PK 的一部分，因此天生 NOT NULL，不需要另外的收斂步驟。舊表凍結但
--- 保留、仍可讀（見 postgres.py 對應方法的 read-through 說明），
--- **不做不可逆 DROP**（Rollback Point）。
+-- PK 的一部分，因此天生 NOT NULL，不需要另外的收斂步驟。舊表當時凍結
+-- 保留（Rollback Point）；CLAUDE-DB-HYGIENE-002 起退役（見 `_SCHEMA`
+-- 對應說明），read-through 相容分支一併移除。
 CREATE TABLE IF NOT EXISTS owner_settings (
     owner_id      TEXT PRIMARY KEY,
     settings      JSONB NOT NULL,
@@ -520,6 +508,19 @@ def _usage_from_dict(d: dict | None) -> UsageSetting:
     return UsageSetting(mode=d.get("mode", "default"), provider=d.get("provider"))
 
 
+def _settings_blob(settings: DataSourceSettings) -> dict:
+    return {"market_data": _usage_to_dict(settings.market_data),
+            "historical_iv": _usage_to_dict(settings.historical_iv)}
+
+
+def _settings_from_row(row, owner_id: str | None) -> DataSourceSettings:
+    blob = row[0]
+    return DataSourceSettings(
+        market_data=_usage_from_dict(blob.get("market_data")),
+        historical_iv=_usage_from_dict(blob.get("historical_iv")),
+        updated_at=row[1], owner_id=owner_id)
+
+
 def _row_to_scenario(row) -> Scenario:
     return Scenario(id=row[0], symbol=row[1], direction=row[2],
                     target_price=row[3], target_month=row[4], notes=row[5],
@@ -546,6 +547,9 @@ class PostgresStorage:
         """實際借用／開連線的邏輯，不含 schema 就緒檢查——供 `_connect()`
         （已確保 schema 就緒後）與 `_ensure_schema()` 自己（就緒檢查
         本身要用連線）共用，避免兩者互相呼叫造成無窮遞迴。"""
+        txn = _transaction_state.get()
+        if txn is not None and txn[0] == self._dsn:
+            return _BorrowedConnection(txn[1])
         state = _request_scope_state.get()
         if state is None or state.dsn != self._dsn or state.failed:
             return psycopg.connect(self._dsn, autocommit=True)
@@ -607,6 +611,26 @@ class PostgresStorage:
                     state.conn.close()
                 except Exception:  # noqa: BLE001 — 關閉失敗不影響這次 request 已經跑完的結果
                     pass
+
+    @contextmanager
+    def transaction(self):
+        """CLAUDE-DB-HYGIENE-002：區塊內全部 Storage 呼叫共用一條連線、
+        包在同一個 Postgres transaction 裡；任何例外 → 整批 rollback。
+        巢狀呼叫併入最外層。schema 就緒檢查在開交易之前先做——冷啟動
+        的 `CREATE TABLE IF NOT EXISTS` 撞上良性 duplicate 錯誤時會讓
+        交易進入 aborted 狀態，不能放在交易裡面跑。"""
+        if _transaction_state.get() is not None:
+            yield
+            return
+        self._ensure_schema()
+        conn = psycopg.connect(self._dsn, autocommit=True)
+        token = _transaction_state.set((self._dsn, conn))
+        try:
+            with conn.transaction():
+                yield
+        finally:
+            _transaction_state.reset(token)
+            conn.close()
 
     def _ensure_schema(self) -> None:
         """`CREATE TABLE IF NOT EXISTS` 冪等——單人專案不值得為此扛一整套
@@ -1140,14 +1164,124 @@ class PostgresStorage:
     # ---------- solo → Owner 一次性遷移（PB-03／#295） ----------
 
     def migrate_owner(self, *, from_owner: str, to_owner: str) -> dict[str, int]:
-        counts: dict[str, int] = {}
+        # CLAUDE-DB-HYGIENE-002（audit P1-A）：原本 9 條 autocommit UPDATE、
+        # 沒有交易也不處理衝突——`owner_settings` 撞 PK 時會留下「劇本已經
+        # 搬走、設定還卡在 solo」的半狀態。現在：同一個交易裡先預檢（任何
+        # 寫入之前），衝突就零寫入地拋錯；等價的 source 列直接丟掉。
+        with self.transaction():
+            conflicts, redundant = settings_bundle_merge_plan(
+                self.owner_settings_bundle(from_owner),
+                self.owner_settings_bundle(to_owner))
+            if conflicts:
+                raise OwnerMigrationConflict(conflicts)
+            counts: dict[str, int] = {}
+            with self._connect() as conn:
+                for item in redundant:
+                    table, _, provider = item.partition(":")
+                    if table == "owner_settings":
+                        conn.execute("DELETE FROM owner_settings "
+                                     "WHERE owner_id = %s", (from_owner,))
+                    else:
+                        conn.execute(f"DELETE FROM {table} "
+                                     "WHERE owner_id = %s AND provider = %s",
+                                     (from_owner, provider))
+                    counts[table] = counts.get(table, 0) + 1
+                for table in self._OWNER_SCOPED_TABLES:
+                    cur = conn.execute(
+                        f"UPDATE {table} SET owner_id = %s WHERE owner_id = %s",
+                        (to_owner, from_owner))
+                    counts[table] = counts.get(table, 0) + cur.rowcount
+            return counts
+
+    # ---------- legacy NULL-owner 劇本血緣救援（CLAUDE-DB-HYGIENE-002） ----------
+
+    def claim_null_owner_lineage(self, *, to_owner: str,
+                                 legacy_owners: Sequence[str] = (),
+                                 dry_run: bool = False) -> dict[str, int]:
+        to_owner = require_owner(to_owner)
+        allowed = [to_owner, *legacy_owners]
+        future = allowed if dry_run else [to_owner]
+        with self.transaction(), self._connect() as conn:
+            conflicts: list[str] = []
+            for table in SCENARIO_CHILD_TABLES:
+                rows = conn.execute(
+                    f"SELECT DISTINCT c.scenario_id FROM {table} c "
+                    "JOIN scenarios s ON s.id = c.scenario_id "
+                    "WHERE s.owner_id IS NULL AND c.owner_id IS NOT NULL "
+                    "AND NOT (c.owner_id = ANY(%s))", (allowed,)).fetchall()
+                conflicts += [f"scenario_child:{table}:{r[0]}" for r in rows]
+            if conflicts:
+                raise OwnerMigrationConflict(sorted(conflicts))
+            # 子列：owner 還是 NULL、所屬劇本是 NULL（這次一起救）或已經／
+            # 即將歸 to_owner。先更新子列、再更新劇本本身，條件才一致。
+            child_where = (
+                "c.owner_id IS NULL AND EXISTS ("
+                "  SELECT 1 FROM scenarios s WHERE s.id = c.scenario_id"
+                "  AND (s.owner_id IS NULL OR s.owner_id = ANY(%s)))")
+            counts = {"scenarios": conn.execute(
+                "SELECT COUNT(*) FROM scenarios WHERE owner_id IS NULL"
+            ).fetchone()[0]}
+            for table in SCENARIO_CHILD_TABLES:
+                if dry_run:
+                    counts[table] = conn.execute(
+                        f"SELECT COUNT(*) FROM {table} c WHERE {child_where}",
+                        (future,)).fetchone()[0]
+                else:
+                    counts[table] = conn.execute(
+                        f"UPDATE {table} c SET owner_id = %s WHERE {child_where}",
+                        (to_owner, future)).rowcount
+            if not dry_run:
+                conn.execute(
+                    "UPDATE scenarios SET owner_id = %s WHERE owner_id IS NULL",
+                    (to_owner,))
+            return counts
+
+    def lineage_report(self, owner_id: str) -> LineageReport:
+        mismatch: dict[str, int] = {}
+        orphans: dict[str, int] = {}
         with self._connect() as conn:
-            for table in self._OWNER_SCOPED_TABLES:
-                cur = conn.execute(
-                    f"UPDATE {table} SET owner_id = %s WHERE owner_id = %s",
-                    (to_owner, from_owner))
-                counts[table] = cur.rowcount
-        return counts
+            for table in SCENARIO_CHILD_TABLES:
+                mismatch[table] = conn.execute(
+                    f"SELECT COUNT(*) FROM {table} c "
+                    "JOIN scenarios s ON s.id = c.scenario_id "
+                    "WHERE s.owner_id = %s AND c.owner_id IS DISTINCT FROM %s",
+                    (owner_id, owner_id)).fetchone()[0]
+                orphans[table] = conn.execute(
+                    f"SELECT COUNT(*) FROM {table} c "
+                    "WHERE c.owner_id = %s AND c.scenario_id IS NOT NULL "
+                    "AND NOT EXISTS (SELECT 1 FROM scenarios s "
+                    "                WHERE s.id = c.scenario_id)",
+                    (owner_id,)).fetchone()[0]
+        return LineageReport(child_owner_mismatch=mismatch, child_orphans=orphans)
+
+    def owner_row_counts(self, owner_id: str | None) -> dict[str, int]:
+        cond = "owner_id IS NULL" if owner_id is None else "owner_id = %s"
+        params = () if owner_id is None else (owner_id,)
+        with self._connect() as conn:
+            return {table: conn.execute(
+                        f"SELECT COUNT(*) FROM {table} WHERE {cond}",
+                        params).fetchone()[0]
+                    for table in self._OWNER_SCOPED_TABLES}
+
+    # code 認得的全部表（`table_row_counts()` 用；`RETIRED_TABLES` 另外報）。
+    _KNOWN_TABLES = (
+        "scenarios", "results", "current_results", "snapshots", "events",
+        "diagnostics", "owner_settings", "owner_credentials",
+        "owner_verifications", "owners", "browser_identities", "role_sessions",
+        "superuser_audit_log", "rate_limits", "operational_metrics",
+        "iv_observations", "iv_backfill_runs", "contract_iv_history",
+        "rate_cache", "dividend_cache", "treasury_year_cache", "chain_backoff")
+
+    def table_row_counts(self) -> dict[str, dict]:
+        out: dict[str, dict] = {}
+        with self._connect() as conn:
+            for table in (*self._KNOWN_TABLES,
+                          *self._present_tables(conn, RETIRED_TABLES)):
+                row = conn.execute(
+                    f"SELECT COUNT(*), pg_total_relation_size(%s) FROM {table}",
+                    (table,)).fetchone()
+                out[table] = {"rows": row[0], "bytes": row[1]}
+        return out
 
     # ---------- Owner-wide 刪除原語（PB-04／#296） ----------
 
@@ -1412,41 +1546,10 @@ class PostgresStorage:
             row = conn.execute(
                 "SELECT settings, updated_at FROM owner_settings "
                 "WHERE owner_id = %s", (owner,)).fetchone()
-            if row is not None:
-                blob = row[0]
-                return DataSourceSettings(
-                    market_data=_usage_from_dict(blob.get("market_data")),
-                    historical_iv=_usage_from_dict(blob.get("historical_iv")),
-                    updated_at=row[1], owner_id=owner)
-            if owner != SOLO_OWNER:
-                return None
-            # read-through：新表沒有，舊表（全站唯一一份）有——舊表結構
-            # 上沒有 owner 維度，只能代表 solo owner。
-            legacy = conn.execute(
-                "SELECT settings, updated_at FROM data_source_settings "
-                "WHERE id = 1").fetchone()
-            if legacy is None:
-                return None
-            blob = legacy[0]
-            migrated = DataSourceSettings(
-                market_data=_usage_from_dict(blob.get("market_data")),
-                historical_iv=_usage_from_dict(blob.get("historical_iv")),
-                updated_at=legacy[1], owner_id=owner)
-            conn.execute(
-                "INSERT INTO owner_settings (owner_id, settings, updated_at) "
-                "VALUES (%s, %s, %s) "
-                "ON CONFLICT (owner_id) DO UPDATE SET "
-                "settings = EXCLUDED.settings, "
-                "updated_at = EXCLUDED.updated_at",
-                (owner, Jsonb(blob), migrated.updated_at))   # write-through
-            return migrated
+        return _settings_from_row(row, owner) if row is not None else None
 
     def save_settings(self, settings: DataSourceSettings) -> None:
         owner = require_owner(settings.owner_id)
-        blob = {"market_data": _usage_to_dict(settings.market_data),
-                "historical_iv": _usage_to_dict(settings.historical_iv)}
-        # 舊表 `data_source_settings` 這個方法起不再寫入
-        # （write-forward-only，見 Protocol docstring）。
         with self._connect() as conn:
             conn.execute(
                 "INSERT INTO owner_settings (owner_id, settings, updated_at) "
@@ -1454,7 +1557,7 @@ class PostgresStorage:
                 "ON CONFLICT (owner_id) DO UPDATE SET "
                 "settings = EXCLUDED.settings, "
                 "updated_at = EXCLUDED.updated_at",
-                (owner, Jsonb(blob), settings.updated_at))
+                (owner, Jsonb(_settings_blob(settings)), settings.updated_at))
 
     def get_credential(self, provider: str, *, owner: str) -> ProviderCredential | None:
         owner = require_owner(owner)
@@ -1463,24 +1566,7 @@ class PostgresStorage:
                 "SELECT provider, token, updated_at FROM owner_credentials "
                 "WHERE owner_id = %s AND provider = %s",
                 (owner, provider)).fetchone()
-            if row is not None:
-                return ProviderCredential(*row, owner_id=owner)
-            if owner != SOLO_OWNER:
-                return None
-            legacy = conn.execute(
-                "SELECT provider, token, updated_at FROM provider_credentials "
-                "WHERE provider = %s", (provider,)).fetchone()
-            if legacy is None:
-                return None
-            migrated = ProviderCredential(*legacy, owner_id=owner)
-            conn.execute(
-                "INSERT INTO owner_credentials "
-                "(owner_id, provider, token, updated_at) "
-                "VALUES (%s, %s, %s, %s) "
-                "ON CONFLICT (owner_id, provider) DO UPDATE SET "
-                "token = EXCLUDED.token, updated_at = EXCLUDED.updated_at",
-                (owner, migrated.provider, migrated.token, migrated.updated_at))
-            return migrated
+        return ProviderCredential(*row, owner_id=owner) if row is not None else None
 
     def save_credential(self, cred: ProviderCredential) -> None:
         owner = require_owner(cred.owner_id)
@@ -1499,23 +1585,11 @@ class PostgresStorage:
             cur = conn.execute(
                 "DELETE FROM owner_credentials "
                 "WHERE owner_id = %s AND provider = %s", (owner, provider))
-            new_removed = cur.rowcount == 1   # 連線關閉前讀
+            removed = cur.rowcount == 1   # 連線關閉前讀
             conn.execute(
                 "DELETE FROM owner_verifications "
                 "WHERE owner_id = %s AND provider = %s", (owner, provider))
-            old_removed = False
-            if owner == SOLO_OWNER:
-                # 新舊兩張表都要清——否則使用者明確刪除後，下次讀取的
-                # read-through 還是會把舊表裡沒被清掉的資料復活（殭屍
-                # 復活風險，見 Protocol docstring）。
-                cur2 = conn.execute(
-                    "DELETE FROM provider_credentials WHERE provider = %s",
-                    (provider,))
-                old_removed = cur2.rowcount == 1
-                conn.execute(
-                    "DELETE FROM provider_verifications WHERE provider = %s",
-                    (provider,))
-            return new_removed or old_removed
+            return removed
 
     def get_verification(self, provider: str, *, owner: str) -> ProviderVerification | None:
         owner = require_owner(owner)
@@ -1524,27 +1598,7 @@ class PostgresStorage:
                 "SELECT provider, ok, reason, checked_at FROM "
                 "owner_verifications WHERE owner_id = %s AND provider = %s",
                 (owner, provider)).fetchone()
-            if row is not None:
-                return ProviderVerification(*row, owner_id=owner)
-            if owner != SOLO_OWNER:
-                return None
-            legacy = conn.execute(
-                "SELECT provider, ok, reason, checked_at FROM "
-                "provider_verifications WHERE provider = %s",
-                (provider,)).fetchone()
-            if legacy is None:
-                return None
-            migrated = ProviderVerification(*legacy, owner_id=owner)
-            conn.execute(
-                "INSERT INTO owner_verifications "
-                "(owner_id, provider, ok, reason, checked_at) "
-                "VALUES (%s, %s, %s, %s, %s) "
-                "ON CONFLICT (owner_id, provider) DO UPDATE SET "
-                "ok = EXCLUDED.ok, reason = EXCLUDED.reason, "
-                "checked_at = EXCLUDED.checked_at",
-                (owner, migrated.provider, migrated.ok, migrated.reason,
-                 migrated.checked_at))
-            return migrated
+        return ProviderVerification(*row, owner_id=owner) if row is not None else None
 
     def save_verification(self, v: ProviderVerification) -> None:
         owner = require_owner(v.owner_id)
@@ -1558,42 +1612,78 @@ class PostgresStorage:
                 "checked_at = EXCLUDED.checked_at",
                 (owner, v.provider, v.ok, v.reason, v.checked_at))
 
-    def backfill_settings_to_owner(self, owner: str) -> dict[str, int]:
-        counts = {"settings": 0, "credentials": 0, "verifications": 0}
+    def owner_settings_bundle(self, owner_id: str) -> OwnerSettingsBundle:
         with self._connect() as conn:
-            legacy_settings = conn.execute(
-                "SELECT settings, updated_at FROM data_source_settings "
-                "WHERE id = 1").fetchone()
-            if legacy_settings is not None:
-                cur = conn.execute(
+            settings = conn.execute(
+                "SELECT settings, updated_at FROM owner_settings "
+                "WHERE owner_id = %s", (owner_id,)).fetchone()
+            creds = conn.execute(
+                "SELECT provider, token, updated_at FROM owner_credentials "
+                "WHERE owner_id = %s", (owner_id,)).fetchall()
+            vers = conn.execute(
+                "SELECT provider, ok, reason, checked_at FROM owner_verifications "
+                "WHERE owner_id = %s", (owner_id,)).fetchall()
+        return OwnerSettingsBundle(
+            settings=_settings_from_row(settings, owner_id) if settings else None,
+            credentials={r[0]: ProviderCredential(*r, owner_id=owner_id)
+                         for r in creds},
+            verifications={r[0]: ProviderVerification(*r, owner_id=owner_id)
+                           for r in vers})
+
+    def _present_tables(self, conn, tables) -> list[str]:
+        return [t for t in tables
+                if conn.execute("SELECT to_regclass(%s)", (t,)).fetchone()[0]
+                is not None]
+
+    def legacy_settings_bundle(self) -> OwnerSettingsBundle | None:
+        with self._connect() as conn:
+            present = set(self._present_tables(conn, LEGACY_SINGLETON_TABLES))
+            if not present:
+                return None
+            settings = None
+            if "data_source_settings" in present:
+                row = conn.execute(
+                    "SELECT settings, updated_at FROM data_source_settings "
+                    "WHERE id = 1").fetchone()
+                settings = _settings_from_row(row, None) if row else None
+            creds = (conn.execute(
+                "SELECT provider, token, updated_at FROM provider_credentials"
+            ).fetchall() if "provider_credentials" in present else [])
+            vers = (conn.execute(
+                "SELECT provider, ok, reason, checked_at FROM provider_verifications"
+            ).fetchall() if "provider_verifications" in present else [])
+        return OwnerSettingsBundle(
+            settings=settings,
+            credentials={r[0]: ProviderCredential(*r) for r in creds},
+            verifications={r[0]: ProviderVerification(*r) for r in vers})
+
+    def adopt_legacy_settings(self, owner: str) -> dict[str, int]:
+        owner = require_owner(owner)
+        counts = {"settings": 0, "credentials": 0, "verifications": 0}
+        legacy = self.legacy_settings_bundle()
+        if legacy is None:
+            return counts
+        with self._connect() as conn:
+            if legacy.settings is not None:
+                counts["settings"] += conn.execute(
                     "INSERT INTO owner_settings (owner_id, settings, updated_at) "
                     "VALUES (%s, %s, %s) ON CONFLICT (owner_id) DO NOTHING",
-                    (owner, Jsonb(legacy_settings[0]), legacy_settings[1]))
-                counts["settings"] += cur.rowcount
-
-            legacy_creds = conn.execute(
-                "SELECT provider, token, updated_at "
-                "FROM provider_credentials").fetchall()
-            for provider, token, updated_at in legacy_creds:
-                cur = conn.execute(
+                    (owner, Jsonb(_settings_blob(legacy.settings)),
+                     legacy.settings.updated_at)).rowcount
+            for cred in legacy.credentials.values():
+                counts["credentials"] += conn.execute(
                     "INSERT INTO owner_credentials "
                     "(owner_id, provider, token, updated_at) "
                     "VALUES (%s, %s, %s, %s) "
                     "ON CONFLICT (owner_id, provider) DO NOTHING",
-                    (owner, provider, token, updated_at))
-                counts["credentials"] += cur.rowcount
-
-            legacy_verifications = conn.execute(
-                "SELECT provider, ok, reason, checked_at "
-                "FROM provider_verifications").fetchall()
-            for provider, ok, reason, checked_at in legacy_verifications:
-                cur = conn.execute(
+                    (owner, cred.provider, cred.token, cred.updated_at)).rowcount
+            for v in legacy.verifications.values():
+                counts["verifications"] += conn.execute(
                     "INSERT INTO owner_verifications "
                     "(owner_id, provider, ok, reason, checked_at) "
                     "VALUES (%s, %s, %s, %s, %s) "
                     "ON CONFLICT (owner_id, provider) DO NOTHING",
-                    (owner, provider, ok, reason, checked_at))
-                counts["verifications"] += cur.rowcount
+                    (owner, v.provider, v.ok, v.reason, v.checked_at)).rowcount
         return counts
 
     # ---------- 歷史 IV 觀測快取（#129，per-symbol） ----------
@@ -1845,3 +1935,108 @@ class PostgresStorage:
         with self._connect() as conn:
             row = conn.execute("SELECT COUNT(*) FROM scenarios").fetchone()
         return row[0]
+
+    # ---------- 資料生命週期 retention（CLAUDE-DB-HYGIENE-002） ----------
+
+    def snapshot_timestamps(self, scenario_id: str, *, owner: str) -> list[str]:
+        owner = require_owner(owner)
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT analyzed_at FROM snapshots "
+                "WHERE scenario_id = %s AND owner_id = %s ORDER BY analyzed_at",
+                (scenario_id, owner)).fetchall()
+        return [r[0] for r in rows]
+
+    # 「歷史份」快照：扣掉每個劇本最新那一份、以及 current_results 指到的
+    # 那一份之後，依新到舊編號（`hrn` 從 1 起算）。
+    _HISTORICAL_SNAPSHOTS_CTE = (
+        "WITH ranked AS ("
+        "  SELECT s.scenario_id, s.analyzed_at,"
+        "         ROW_NUMBER() OVER (PARTITION BY s.scenario_id"
+        "                            ORDER BY s.analyzed_at DESC) AS rn,"
+        "         (cr.analyzed_at = s.analyzed_at) IS TRUE AS is_current"
+        "  FROM snapshots s"
+        "  LEFT JOIN current_results cr ON cr.scenario_id = s.scenario_id"
+        "), hist AS ("
+        "  SELECT scenario_id, analyzed_at,"
+        "         ROW_NUMBER() OVER (PARTITION BY scenario_id"
+        "                            ORDER BY analyzed_at DESC) AS hrn"
+        "  FROM ranked WHERE rn > 1 AND NOT is_current"
+        ") ")
+
+    def purge_snapshots(self, *, historical_since: str, max_historical: int,
+                        dry_run: bool = False) -> int:
+        params = (max_historical, historical_since)
+        with self._connect() as conn:
+            if dry_run:
+                return conn.execute(
+                    self._HISTORICAL_SNAPSHOTS_CTE +
+                    "SELECT COUNT(*) FROM hist WHERE hrn > %s OR analyzed_at < %s",
+                    params).fetchone()[0]
+            return conn.execute(
+                self._HISTORICAL_SNAPSHOTS_CTE +
+                "DELETE FROM snapshots s USING hist h "
+                "WHERE s.scenario_id = h.scenario_id "
+                "AND s.analyzed_at = h.analyzed_at "
+                "AND (h.hrn > %s OR h.analyzed_at < %s)", params).rowcount
+
+    _FACT_COMPLETE_SQL = (
+        "resolved_params IS NOT NULL AND requested_strategies IS NOT NULL "
+        "AND engine_version IS NOT NULL AND view_schema_version IS NOT NULL "
+        "AND history_replay_version IS NOT NULL AND snapshot_source IS NOT NULL")
+
+    def result_view_stats(self) -> dict[str, int]:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT COUNT(*), COUNT(*) FILTER (WHERE "
+                + self._FACT_COMPLETE_SQL +
+                ") FROM results WHERE view IS NOT NULL").fetchone()
+        return {"with_view": row[0], "missing_fact_context": row[0] - row[1],
+                "clearable": row[1]}
+
+    def clear_historical_result_views(self, *, dry_run: bool = False) -> int:
+        where = "view IS NOT NULL AND " + self._FACT_COMPLETE_SQL
+        with self._connect() as conn:
+            if dry_run:
+                return conn.execute(
+                    f"SELECT COUNT(*) FROM results WHERE {where}").fetchone()[0]
+            return conn.execute(
+                f"UPDATE results SET view = NULL WHERE {where}").rowcount
+
+    def _purge(self, table: str, where: str, params: tuple,
+               dry_run: bool) -> int:
+        # `table`／`where` 只會是下面幾個 method 寫死的字面值，不是外部輸入。
+        with self._connect() as conn:
+            if dry_run:
+                return conn.execute(f"SELECT COUNT(*) FROM {table} WHERE {where}",
+                                    params).fetchone()[0]
+            return conn.execute(f"DELETE FROM {table} WHERE {where}",
+                                params).rowcount
+
+    def purge_role_sessions(self, *, revoked_before: str, issued_before: str,
+                            dry_run: bool = False) -> int:
+        return self._purge(
+            "role_sessions",
+            "(revoked_at IS NOT NULL AND revoked_at < %s) OR issued_at < %s",
+            (revoked_before, issued_before), dry_run)
+
+    def purge_audit_events(self, *, before: str, dry_run: bool = False) -> int:
+        return self._purge("superuser_audit_log", "ts < %s", (before,), dry_run)
+
+    def purge_events(self, *, before: str, dry_run: bool = False) -> int:
+        return self._purge("events", "ts < %s", (before,), dry_run)
+
+    def retired_tables_present(self) -> list[str]:
+        with self._connect() as conn:
+            return self._present_tables(conn, RETIRED_TABLES)
+
+    def drop_retired_tables(self, tables: Sequence[str]) -> list[str]:
+        unknown = set(tables) - set(RETIRED_TABLES)
+        if unknown:
+            raise ValueError(f"不是已退役的表：{sorted(unknown)}")
+        with self._connect() as conn:
+            present = self._present_tables(
+                conn, [t for t in RETIRED_TABLES if t in tables])
+            for table in present:
+                conn.execute(f"DROP TABLE {table}")
+        return present

@@ -16,7 +16,7 @@ import pytest
 from dataclasses import replace
 
 from api_app.diagnostics import RETENTION_LIMIT, DiagnosticEvent
-from api_app.storage import (BrowserIdentity, ChainBackoffEntry,
+from api_app.storage import (RETIRED_TABLES, BrowserIdentity, ChainBackoffEntry,
                              ContractHistory, DataSourceSettings,
                              DividendCacheEntry, IvBackfillRun, IvObservation,
                              Owner, ProviderCredential,
@@ -78,11 +78,12 @@ def storage(request):
     # 第一個真正打到這個 adapter 的請求），schema 才會就緒。
     st._ensure_schema()
     # 清庫是測試自己的事，不放進正式 adapter（正式環境不該有 TRUNCATE）。
+    # CLAUDE-DB-HYGIENE-002：已退役的表不再由 schema 建立——舊的測試資料庫
+    # 可能還留著，每個測試都從「不存在」開始，需要的測試自己建。
     with psycopg.connect(TEST_DB_URL, autocommit=True) as conn:
+        conn.execute("DROP TABLE IF EXISTS " + ", ".join(RETIRED_TABLES))
         conn.execute("TRUNCATE scenarios, results, current_results, snapshots, events, rate_cache, "
                      "dividend_cache, treasury_year_cache, chain_backoff, "
-                     "data_source_settings, "
-                     "provider_credentials, provider_verifications, "
                      "owner_settings, owner_credentials, owner_verifications, "
                      "iv_observations, iv_backfill_runs, contract_iv_history, "
                      "diagnostics, operational_metrics, "
@@ -1229,6 +1230,302 @@ def test_migrate_owner_does_not_touch_a_third_owners_data(storage):
     assert storage.get_credential("marketdata_app", owner="carol") is not None
 
 
+# ---------- migrate_owner 原子性與衝突預檢（CLAUDE-DB-HYGIENE-002） ----------
+
+def _snapshot_state(storage, *owners):
+    """比對「有沒有被動到」用：每個 owner 在 9 張表的列數＋3 張 singleton
+    表的內容。"""
+    return {o: (storage.owner_row_counts(o), storage.owner_settings_bundle(o))
+            for o in owners}
+
+
+def test_migrate_owner_is_clean_when_the_target_has_nothing(storage):
+    _seed_all_nine_tables_under(storage, "solo")
+    counts = storage.migrate_owner(from_owner="solo", to_owner="target")
+    assert all(n == 1 for n in counts.values()), counts
+    assert all(n == 0 for n in storage.owner_row_counts("solo").values())
+    assert storage.lineage_report("target").ok
+
+
+def test_migrate_owner_equivalent_settings_are_treated_as_already_migrated(storage):
+    """target 已經有一模一樣的設定／credential／驗證結果（只差時間戳）
+    ——視為已經搬過，不算衝突，source 那一列丟掉。"""
+    _seed_all_nine_tables_under(storage, "solo")
+    storage.save_settings(DataSourceSettings(
+        market_data=UsageSetting(mode="default"),
+        historical_iv=UsageSetting(mode="default"),
+        updated_at="2030-01-01T00:00:00+00:00", owner_id="target"))
+    storage.save_credential(ProviderCredential(
+        provider="marketdata_app", token="tok-abc",
+        updated_at="2030-01-01T00:00:00+00:00", owner_id="target"))
+    storage.save_verification(ProviderVerification(
+        provider="marketdata_app", ok=True, reason=None,
+        checked_at="2030-01-01T00:00:00+00:00", owner_id="target"))
+
+    counts = storage.migrate_owner(from_owner="solo", to_owner="target")
+
+    assert counts["owner_settings"] == 1 and counts["owner_credentials"] == 1
+    assert all(n == 0 for n in storage.owner_row_counts("solo").values())
+    # target 自己那份原封不動（不被 source 覆寫）
+    assert storage.get_settings(owner="target").updated_at == "2030-01-01T00:00:00+00:00"
+    assert storage.migrate_owner(from_owner="solo", to_owner="target") == {
+        t: 0 for t in counts}
+
+
+@pytest.mark.parametrize("conflict", ["settings", "credential", "verification"])
+def test_migrate_owner_conflict_fails_closed_before_any_write(storage, conflict):
+    from api_app.storage import OwnerMigrationConflict
+
+    _seed_all_nine_tables_under(storage, "solo")
+    if conflict == "settings":
+        storage.save_settings(DataSourceSettings(
+            market_data=_CUSTOM, historical_iv=UsageSetting(mode="default"),
+            updated_at="2030-01-01T00:00:00+00:00", owner_id="target"))
+        expected = "owner_settings"
+    elif conflict == "credential":
+        storage.save_credential(ProviderCredential(
+            provider="marketdata_app", token="a-different-token",
+            updated_at="2030-01-01T00:00:00+00:00", owner_id="target"))
+        expected = "owner_credentials:marketdata_app"
+    else:
+        storage.save_verification(ProviderVerification(
+            provider="marketdata_app", ok=False, reason="401",
+            checked_at="2030-01-01T00:00:00+00:00", owner_id="target"))
+        expected = "owner_verifications:marketdata_app"
+    before = _snapshot_state(storage, "solo", "target")
+
+    with pytest.raises(OwnerMigrationConflict) as info:
+        storage.migrate_owner(from_owner="solo", to_owner="target")
+
+    assert info.value.conflicts == (expected,)
+    assert "a-different-token" not in str(info.value)       # 絕不帶出 token
+    assert "tok-abc" not in str(info.value)
+    assert _snapshot_state(storage, "solo", "target") == before   # 零寫入
+
+
+def test_migrate_owner_rolls_back_completely_on_a_mid_migration_failure(
+        storage, monkeypatch):
+    """搬到一半炸掉（前面幾張表已經 UPDATE 過）→ 整批 rollback，
+    source 與 target 都跟搬遷前一模一樣。"""
+    _seed_all_nine_tables_under(storage, "solo")
+    before = _snapshot_state(storage, "solo", "target")
+    if isinstance(storage, MemoryStorage):
+        def boom(*_a):
+            raise RuntimeError("injected failure after 5 tables")
+        monkeypatch.setattr(storage, "_migrate_current_results", boom)
+    else:
+        monkeypatch.setattr(type(storage), "_OWNER_SCOPED_TABLES",
+                            (*type(storage)._OWNER_SCOPED_TABLES[:5],
+                             "no_such_table"))
+
+    with pytest.raises(Exception):
+        storage.migrate_owner(from_owner="solo", to_owner="target")
+
+    monkeypatch.undo()
+    assert _snapshot_state(storage, "solo", "target") == before
+
+
+def test_transaction_rolls_back_every_write_in_the_block(storage):
+    storage.create_scenario(_scenario("keep"))
+    with pytest.raises(RuntimeError):
+        with storage.transaction():
+            storage.create_scenario(_scenario("gone"))
+            storage.archive_scenario("keep", owner=OWNER, ts="2026-09-01T00:00:00+00:00")
+            with storage.transaction():            # 巢狀：併入外層
+                storage.append_event(ts="t", scenario_id="gone", event="X",
+                                     payload={}, owner_id=OWNER)
+            raise RuntimeError("abort")
+    assert storage.get_scenario("gone", owner=OWNER) is None
+    assert storage.get_scenario("keep", owner=OWNER).archived_at is None
+    assert storage.list_events(owner=OWNER) == []
+
+
+# ---------- legacy NULL-owner 劇本血緣救援（CLAUDE-DB-HYGIENE-002） ----------
+
+def _seed_null_lineage(storage, sid="legacy1", *, archived=False):
+    sc = _scenario(sid, owner_id=None)
+    if archived:
+        sc = replace(sc, archived_at="2026-08-20T00:00:00+00:00")
+    storage.create_scenario(sc)
+    for ts in ("2026-08-10T00:00:00+00:00", "2026-08-11T00:00:00+00:00"):
+        storage.save_result(ResultRecord(sid, ts, {"results": []}, owner_id=None))
+        storage.save_snapshot(sid, ts, {"n": 1}, owner_id=None)
+    storage.append_event(ts="2026-08-10T00:00:00+00:00", scenario_id=sid,
+                         event="SCENARIO_CREATED", payload={}, owner_id=None)
+
+
+def test_claim_null_owner_lineage_moves_the_scenario_and_all_its_children(storage):
+    _seed_null_lineage(storage, "legacy1")
+    _seed_null_lineage(storage, "legacy2", archived=True)
+
+    counts = storage.claim_null_owner_lineage(to_owner="target")
+
+    assert counts == {"scenarios": 2, "results": 4, "current_results": 0,
+                      "snapshots": 4, "events": 2}
+    got = storage.get_scenario("legacy2", owner="target")
+    assert got.archived_at == "2026-08-20T00:00:00+00:00"           # 保留封存
+    assert got.created_at == "2026-08-01T00:00:00+00:00"            # 保留時間
+    assert storage.lineage_report("target").ok
+    assert storage.owner_row_counts(None)["scenarios"] == 0
+    # 冪等
+    assert storage.claim_null_owner_lineage(to_owner="target") == {
+        "scenarios": 0, "results": 0, "current_results": 0, "snapshots": 0,
+        "events": 0}
+
+
+def test_claim_null_owner_lineage_does_not_touch_unrelated_null_rows(storage):
+    """只救劇本血緣：NULL diagnostics、`scenario_id IS NULL` 的 events、
+    指向不存在劇本的子列一律不碰。"""
+    _seed_null_lineage(storage, "legacy1")
+    storage.append_diagnostic(_diag(event_id="orphan-diag", owner_id=None))
+    storage.append_event(ts="2026-08-10T00:00:00+00:00", scenario_id=None,
+                         event="SYSTEM", payload={}, owner_id=None)
+    storage.save_result(ResultRecord("ghost", "2026-08-10T00:00:00+00:00",
+                                     None, owner_id=None))
+
+    storage.claim_null_owner_lineage(to_owner="target")
+
+    nulls = storage.owner_row_counts(None)
+    assert nulls["diagnostics"] == 1
+    assert nulls["events"] == 1
+    assert nulls["results"] == 1
+
+
+def test_claim_null_owner_lineage_also_fixes_null_children_of_target_scenarios(storage):
+    storage.create_scenario(_scenario("mine", owner_id="target"))
+    storage.save_result(ResultRecord("mine", "2026-08-10T00:00:00+00:00",
+                                     None, owner_id=None))
+    counts = storage.claim_null_owner_lineage(to_owner="target")
+    assert counts["results"] == 1
+    assert storage.lineage_report("target").ok
+
+
+def test_claim_null_owner_lineage_conflict_fails_closed(storage):
+    from api_app.storage import OwnerMigrationConflict
+
+    _seed_null_lineage(storage, "legacy1")
+    storage.save_result(ResultRecord("legacy1", "2026-08-12T00:00:00+00:00",
+                                     None, owner_id="someone-else"))
+    with pytest.raises(OwnerMigrationConflict) as info:
+        storage.claim_null_owner_lineage(to_owner="target")
+    assert info.value.conflicts == ("scenario_child:results:legacy1",)
+    assert storage.owner_row_counts(None)["scenarios"] == 1       # 零寫入
+
+
+def test_claim_null_owner_lineage_dry_run_counts_without_writing(storage):
+    _seed_null_lineage(storage, "legacy1")
+    storage.create_scenario(_scenario("solo1", owner_id="solo"))
+    storage.save_result(ResultRecord("solo1", "2026-08-10T00:00:00+00:00",
+                                     None, owner_id=None))
+    counts = storage.claim_null_owner_lineage(
+        to_owner="target", legacy_owners=("solo",), dry_run=True)
+    assert counts["scenarios"] == 1 and counts["results"] == 3
+    assert storage.owner_row_counts(None)["scenarios"] == 1
+
+
+def test_lineage_report_flags_owner_mismatch_and_orphans(storage):
+    storage.create_scenario(_scenario("mine", owner_id="target"))
+    storage.save_result(ResultRecord("mine", "2026-08-10T00:00:00+00:00",
+                                     None, owner_id="other"))
+    storage.save_snapshot("ghost", "2026-08-10T00:00:00+00:00", {}, owner_id="target")
+    report = storage.lineage_report("target")
+    assert not report.ok
+    assert report.child_owner_mismatch["results"] == 1
+    assert report.child_orphans["snapshots"] == 1
+
+
+# ---------- retention（CLAUDE-DB-HYGIENE-002） ----------
+
+def _ts(day: int) -> str:
+    return f"2026-09-{day:02d}T00:00:00+00:00"
+
+
+def test_purge_snapshots_keeps_latest_and_bounds_history_by_age_and_count(storage):
+    storage.create_scenario(_scenario("s1"))
+    for day in range(1, 16):                  # 15 份：9/01 … 9/15
+        storage.save_snapshot("s1", _ts(day), {"d": day}, owner_id=OWNER)
+    # 歷史份＝9/01…9/14；只留 9/05 之後、且最多 10 份 → 9/05…9/14 共 10 份
+    assert storage.purge_snapshots(historical_since=_ts(5), max_historical=10,
+                                   dry_run=True) == 4
+    assert storage.snapshot_timestamps("s1", owner=OWNER) == [
+        _ts(d) for d in range(1, 16)]            # dry-run 沒刪
+    assert storage.purge_snapshots(historical_since=_ts(5), max_historical=10) == 4
+    assert storage.snapshot_timestamps("s1", owner=OWNER) == [
+        _ts(d) for d in range(5, 16)]
+    # 數量上限比較緊時
+    assert storage.purge_snapshots(historical_since=_ts(1), max_historical=3) == 7
+    assert storage.snapshot_timestamps("s1", owner=OWNER) == [
+        _ts(d) for d in (12, 13, 14, 15)]
+
+
+def test_purge_snapshots_always_keeps_the_latest_and_the_current_one(storage):
+    storage.create_scenario(_scenario("s1"))
+    for day in (1, 2, 3):
+        storage.save_snapshot("s1", _ts(day), {}, owner_id=OWNER)
+    storage.save_current_result(ResultRecord("s1", _ts(1), {"x": 1}, owner_id=OWNER))
+    # 歷史上限 0、截止日在未來：只剩「最新」與「current 指到的」
+    storage.purge_snapshots(historical_since=_ts(30), max_historical=0)
+    assert storage.snapshot_timestamps("s1", owner=OWNER) == [_ts(1), _ts(3)]
+
+
+def test_clear_historical_result_views_only_clears_fact_complete_rows(storage):
+    fact = dict(resolved_params={"r": 1}, requested_strategies=("a",),
+                engine_version="e", view_schema_version=4,
+                history_replay_version=1, snapshot_source="cboe")
+    storage.save_result(ResultRecord("s1", _ts(1), {"big": 1}, owner_id=OWNER, **fact))
+    storage.save_result(ResultRecord("s1", _ts(2), {"big": 2}, owner_id=OWNER))
+    storage.save_result(ResultRecord("s1", _ts(3), None, owner_id=OWNER, **fact))
+    assert storage.result_view_stats() == {
+        "with_view": 2, "missing_fact_context": 1, "clearable": 1}
+    assert storage.clear_historical_result_views(dry_run=True) == 1
+    assert storage.clear_historical_result_views() == 1
+    views = {r.analyzed_at: r.view for r in storage.result_history("s1", owner=OWNER)}
+    assert views == {_ts(1): None, _ts(2): {"big": 2}, _ts(3): None}
+
+
+def test_clear_historical_result_views_never_touches_current_results(storage):
+    fact = dict(resolved_params={"r": 1}, requested_strategies=("a",),
+                engine_version="e", view_schema_version=4,
+                history_replay_version=1, snapshot_source="cboe")
+    rec = ResultRecord("s1", _ts(1), {"big": 1}, owner_id=OWNER, **fact)
+    storage.create_scenario(_scenario("s1"))
+    storage.save_result(rec)
+    storage.save_current_result(rec)
+    storage.clear_historical_result_views()
+    assert storage.latest_result("s1", owner=OWNER).view == {"big": 1}
+
+
+def test_purge_role_sessions_only_removes_unusable_sessions(storage):
+    storage.create_role_session(RoleSession("active", "superadmin", _ts(20)))
+    storage.create_role_session(RoleSession("revoked-old", "superuser", _ts(1),
+                                            revoked_at=_ts(2)))
+    storage.create_role_session(RoleSession("revoked-new", "superuser", _ts(1),
+                                            revoked_at=_ts(25)))
+    storage.create_role_session(RoleSession("expired", "superadmin",
+                                            "2025-01-01T00:00:00+00:00"))
+    assert storage.purge_role_sessions(revoked_before=_ts(10),
+                                       issued_before="2025-06-01T00:00:00+00:00") == 2
+    assert storage.resolve_role_session("active") is not None
+    assert storage.resolve_role_session("expired") is None
+    # revoked-new 仍在表裡（撤銷未滿保留期），只是本來就解析不到
+    assert storage.purge_role_sessions(revoked_before=_ts(26),
+                                       issued_before="2025-06-01T00:00:00+00:00") == 1
+
+
+def test_purge_audit_events_and_events_respect_the_cutoff(storage):
+    for day in (1, 20):
+        storage.append_audit_event(SuperUserAuditEvent(
+            event_id=f"a{day}", ts=_ts(day), actor="superadmin", action="x",
+            target_owner_id=None, detail={}))
+        storage.append_event(ts=_ts(day), scenario_id="s1", event="E",
+                             payload={}, owner_id=OWNER)
+    assert storage.purge_audit_events(before=_ts(10), dry_run=True) == 1
+    assert storage.purge_audit_events(before=_ts(10)) == 1
+    assert [e.event_id for e in storage.list_audit_events()] == ["a20"]
+    assert storage.purge_events(before=_ts(10)) == 1
+    assert [e["ts"] for e in storage.list_events(owner=OWNER)] == [_ts(20)]
+
+
 # ---------- Owner-wide 刪除原語（PB-04／#296，Anonymous Public Beta） ----------
 
 
@@ -1718,22 +2015,40 @@ def _settings(market=_CUSTOM, iv=_DEFAULT_USAGE, owner=OWNER):
                               owner_id=owner)
 
 
-def _seed_legacy_settings(storage, settings: DataSourceSettings) -> None:
-    """SCALE-13（#264）：直接寫進舊表 `data_source_settings`，模擬
-    「這筆資料是在本票上線之前就已經存在」——正式寫入路徑
-    `save_settings()` 這個方法起不再寫舊表，要驗證 read-through 只能
-    繞過它、直接戳舊表本身（`settings.owner_id` 在這裡刻意被忽略，
-    舊表結構上沒有 owner 欄位）。"""
+# 已退役的 legacy singleton 表（CLAUDE-DB-HYGIENE-002 起 schema 不再建立）
+# ——只有「還沒跑過修復的舊部署」會有。測試需要時自己建出當年的形狀。
+_LEGACY_DDL = """
+CREATE TABLE IF NOT EXISTS data_source_settings (
+    id INTEGER PRIMARY KEY DEFAULT 1, settings JSONB NOT NULL,
+    updated_at TEXT NOT NULL, CHECK (id = 1));
+CREATE TABLE IF NOT EXISTS provider_credentials (
+    provider TEXT PRIMARY KEY, token TEXT NOT NULL, updated_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS provider_verifications (
+    provider TEXT PRIMARY KEY, ok BOOLEAN NOT NULL, reason TEXT,
+    checked_at TEXT NOT NULL);
+"""
+
+
+def _require_postgres(storage) -> None:
     if isinstance(storage, MemoryStorage):
-        storage._settings = replace(settings, owner_id=None)
-        return
+        pytest.skip("記憶體假體從來沒有 legacy singleton 表")
+
+
+def _legacy_conn():
     import psycopg
+    conn = psycopg.connect(TEST_DB_URL, autocommit=True)
+    conn.execute(_LEGACY_DDL)
+    return conn
+
+
+def _seed_legacy_settings(storage, settings: DataSourceSettings) -> None:
     from psycopg.types.json import Jsonb
 
     from api_app.storage.postgres import _usage_to_dict
+    _require_postgres(storage)
     blob = {"market_data": _usage_to_dict(settings.market_data),
            "historical_iv": _usage_to_dict(settings.historical_iv)}
-    with psycopg.connect(TEST_DB_URL, autocommit=True) as conn:
+    with _legacy_conn() as conn:
         conn.execute(
             "INSERT INTO data_source_settings (id, settings, updated_at) "
             "VALUES (1, %s, %s) ON CONFLICT (id) DO UPDATE SET "
@@ -1742,11 +2057,8 @@ def _seed_legacy_settings(storage, settings: DataSourceSettings) -> None:
 
 
 def _seed_legacy_credential(storage, cred: ProviderCredential) -> None:
-    if isinstance(storage, MemoryStorage):
-        storage._credentials[cred.provider] = replace(cred, owner_id=None)
-        return
-    import psycopg
-    with psycopg.connect(TEST_DB_URL, autocommit=True) as conn:
+    _require_postgres(storage)
+    with _legacy_conn() as conn:
         conn.execute(
             "INSERT INTO provider_credentials (provider, token, updated_at) "
             "VALUES (%s, %s, %s) ON CONFLICT (provider) DO UPDATE SET "
@@ -1755,11 +2067,8 @@ def _seed_legacy_credential(storage, cred: ProviderCredential) -> None:
 
 
 def _seed_legacy_verification(storage, v: ProviderVerification) -> None:
-    if isinstance(storage, MemoryStorage):
-        storage._verifications[v.provider] = replace(v, owner_id=None)
-        return
-    import psycopg
-    with psycopg.connect(TEST_DB_URL, autocommit=True) as conn:
+    _require_postgres(storage)
+    with _legacy_conn() as conn:
         conn.execute(
             "INSERT INTO provider_verifications "
             "(provider, ok, reason, checked_at) VALUES (%s, %s, %s, %s) "
@@ -1963,115 +2272,93 @@ def test_two_owners_verifications_do_not_collide(storage):
     assert got_bob.ok is False and got_bob.reason == "連不上"
 
 
-# ---------- Ownership A-1 Contract（SCALE-13／#264）：舊資料 read-through（AC-1／AC-3／AC-4） ----------
+# ---------- legacy singleton 表退役（CLAUDE-DB-HYGIENE-002） ----------
 
-def test_solo_owner_settings_read_through_from_the_legacy_table(storage):
-    """AC-1／AC-4：即使沒有人手動跑過 backfill，solo owner 第一次讀取
-    就能看到「本票上線之前」就存在的舊資料——不需要等待任何窗口。"""
-    _seed_legacy_settings(storage, _settings(market=_CUSTOM))
-    got = storage.get_settings(owner=OWNER)
-    assert got is not None
-    assert got.market_data == _CUSTOM
-    assert got.owner_id == OWNER
+_LEGACY_TOKEN = "legacy-token"
 
 
-def test_solo_owner_settings_read_through_writes_through_on_hit(storage):
-    """讀到舊資料後順手 write-through 進新表——下次不必再靠舊表。"""
-    _seed_legacy_settings(storage, _settings(market=_CUSTOM))
-    storage.get_settings(owner=OWNER)   # 觸發一次 read-through
-    # 舊表之後改成別的值——若新表沒有真的被寫入，第二次讀取會拿到
-    # 舊表這個新值而非第一次 read-through 存下的那份。
-    _seed_legacy_settings(storage, _settings(market=_DEFAULT_USAGE))
-    got_again = storage.get_settings(owner=OWNER)
-    assert got_again.market_data == _CUSTOM
-
-
-def test_a_non_solo_owner_gets_no_legacy_fallback(storage):
-    """舊表結構上沒有 owner 維度，只能代表 solo owner 存在過的資料
-    ——任何其他 owner 不該意外繼承到它。"""
-    _seed_legacy_settings(storage, _settings(market=_CUSTOM))
-    assert storage.get_settings(owner=ALICE) is None
-
-
-def test_solo_owner_credential_read_through_from_the_legacy_table(storage):
-    _seed_legacy_credential(storage, ProviderCredential(
-        provider="marketdata-app", token="legacy-token",
-        updated_at="2026-08-12T00:00:00+00:00"))
-    got = storage.get_credential("marketdata-app", owner=OWNER)
-    assert got is not None
-    assert got.token == "legacy-token"
-    assert got.owner_id == OWNER
-
-
-def test_solo_owner_verification_read_through_from_the_legacy_table(storage):
-    _seed_legacy_verification(storage, ProviderVerification(
-        provider="marketdata-app", ok=True, reason=None,
-        checked_at="2026-08-12T01:00:00+00:00"))
-    got = storage.get_verification("marketdata-app", owner=OWNER)
-    assert got is not None
-    assert got.ok is True
-    assert got.owner_id == OWNER
-
-
-def test_deleting_a_credential_purges_the_legacy_table_too(storage):
-    """殭屍復活防線：只清新表的話，下次讀取的 read-through 會把舊表
-    裡沒被清掉的資料復活。"""
-    _seed_legacy_credential(storage, ProviderCredential(
-        provider="marketdata-app", token="legacy-token",
-        updated_at="2026-08-12T00:00:00+00:00"))
-    storage.get_credential("marketdata-app", owner=OWNER)   # write-through
-    assert storage.delete_credential("marketdata-app", owner=OWNER) is True
-    assert storage.get_credential("marketdata-app", owner=OWNER) is None
-
-
-def test_deleting_a_credential_that_only_exists_in_the_legacy_table_still_removes_it(storage):
-    """就算從來沒被讀過（新表因此完全沒有這一列），刪除仍要清到舊表
-    ——否則下一次讀取的 read-through 一樣會把它復活。"""
-    _seed_legacy_credential(storage, ProviderCredential(
-        provider="marketdata-app", token="legacy-token",
-        updated_at="2026-08-12T00:00:00+00:00"))
-    assert storage.delete_credential("marketdata-app", owner=OWNER) is True
-    assert storage.get_credential("marketdata-app", owner=OWNER) is None
-
-
-def test_backfill_settings_to_owner_copies_all_three_legacy_tables(storage):
-    """AC-3：明確、可重跑的批次遷移——不依賴任何人先讀過。"""
+def _seed_full_legacy(storage) -> None:
     _seed_legacy_settings(storage, _settings(market=_CUSTOM))
     _seed_legacy_credential(storage, ProviderCredential(
-        provider="marketdata-app", token="legacy-token",
+        provider="marketdata-app", token=_LEGACY_TOKEN,
         updated_at="2026-08-12T00:00:00+00:00"))
     _seed_legacy_verification(storage, ProviderVerification(
         provider="marketdata-app", ok=True, reason=None,
         checked_at="2026-08-12T01:00:00+00:00"))
-    counts = storage.backfill_settings_to_owner(OWNER)
+
+
+def test_solo_read_through_is_retired(storage):
+    """read-through 相容分支已移除：legacy 表還在也不會被一般讀取路徑
+    讀到（PB-02 之後本來就沒有請求會解析成 solo）。"""
+    _seed_full_legacy(storage)
+    assert storage.get_settings(owner=OWNER) is None
+    assert storage.get_credential("marketdata-app", owner=OWNER) is None
+    assert storage.get_verification("marketdata-app", owner=OWNER) is None
+
+
+def test_legacy_bundle_is_none_when_the_tables_do_not_exist(storage):
+    assert storage.legacy_settings_bundle() is None
+    assert storage.adopt_legacy_settings(OWNER) == {
+        "settings": 0, "credentials": 0, "verifications": 0}
+
+
+def test_legacy_bundle_reads_whatever_is_physically_left(storage):
+    _seed_full_legacy(storage)
+    legacy = storage.legacy_settings_bundle()
+    assert legacy.settings.market_data == _CUSTOM
+    assert set(legacy.credentials) == {"marketdata-app"}
+    assert legacy.verifications["marketdata-app"].ok is True
+
+
+def test_adopt_legacy_settings_copies_all_three_tables(storage):
+    _seed_full_legacy(storage)
+    counts = storage.adopt_legacy_settings(OWNER)
     assert counts == {"settings": 1, "credentials": 1, "verifications": 1}
     assert storage.get_settings(owner=OWNER).market_data == _CUSTOM
-    assert storage.get_credential("marketdata-app", owner=OWNER).token == "legacy-token"
+    assert storage.get_credential("marketdata-app", owner=OWNER).token == _LEGACY_TOKEN
     assert storage.get_verification("marketdata-app", owner=OWNER).ok is True
 
 
-def test_backfill_settings_to_owner_is_idempotent_on_rerun(storage):
-    _seed_legacy_settings(storage, _settings(market=_CUSTOM))
-    first = storage.backfill_settings_to_owner(OWNER)
-    second = storage.backfill_settings_to_owner(OWNER)
-    assert first == {"settings": 1, "credentials": 0, "verifications": 0}
-    assert second == {"settings": 0, "credentials": 0, "verifications": 0}
-
-
-def test_backfill_settings_to_owner_never_overwrites_a_newer_value_already_in_the_new_table(storage):
-    """可中斷續跑：backfill 跑之前使用者若已經自己存過新值（例如靠
-    read-through 或直接呼叫 `save_settings()`），重跑不能用舊表的
-    陳舊值蓋掉它。"""
-    _seed_legacy_settings(storage, _settings(market=_CUSTOM))
-    storage.save_settings(_settings(market=_DEFAULT_USAGE))   # 使用者換了設定
-    counts = storage.backfill_settings_to_owner(OWNER)
-    assert counts["settings"] == 0   # 新表已經有了，不算搬移
-    assert storage.get_settings(owner=OWNER).market_data == _DEFAULT_USAGE
-
-
-def test_backfill_settings_to_owner_on_an_empty_store_reports_all_zero(storage):
-    assert storage.backfill_settings_to_owner(OWNER) == {
+def test_adopt_legacy_settings_is_idempotent(storage):
+    _seed_full_legacy(storage)
+    storage.adopt_legacy_settings(OWNER)
+    assert storage.adopt_legacy_settings(OWNER) == {
         "settings": 0, "credentials": 0, "verifications": 0}
+
+
+def test_adopt_legacy_settings_never_overwrites_the_canonical_owner_copy(storage):
+    """owner-scoped 表是 SCALE-13 起的 canonical 來源，可能比 legacy 新。"""
+    _seed_full_legacy(storage)
+    storage.save_settings(_settings(market=_DEFAULT_USAGE))
+    storage.save_credential(ProviderCredential(
+        provider="marketdata-app", token="newer-token",
+        updated_at="2026-09-01T00:00:00+00:00", owner_id=OWNER))
+    counts = storage.adopt_legacy_settings(OWNER)
+    assert counts["settings"] == 0 and counts["credentials"] == 0
+    assert storage.get_settings(owner=OWNER).market_data == _DEFAULT_USAGE
+    assert storage.get_credential("marketdata-app", owner=OWNER).token == "newer-token"
+
+
+def test_drop_retired_tables_only_drops_retired_tables(storage):
+    with pytest.raises(ValueError):
+        storage.drop_retired_tables(["scenarios"])
+    if isinstance(storage, MemoryStorage):
+        assert storage.retired_tables_present() == []
+        assert storage.drop_retired_tables(list(RETIRED_TABLES)) == []
+        return
+    _seed_full_legacy(storage)
+    import psycopg
+    with psycopg.connect(TEST_DB_URL, autocommit=True) as conn:
+        conn.execute("CREATE TABLE narrow_history (x INT)")
+        conn.execute("CREATE TABLE chain_cache (x INT)")
+    assert storage.retired_tables_present() == list(RETIRED_TABLES)
+    assert storage.drop_retired_tables(["narrow_history", "chain_cache"]) == [
+        "narrow_history", "chain_cache"]
+    assert storage.retired_tables_present() == [
+        "data_source_settings", "provider_credentials", "provider_verifications"]
+    storage.drop_retired_tables(list(RETIRED_TABLES))
+    assert storage.retired_tables_present() == []
+    assert storage.legacy_settings_bundle() is None
 
 
 # ---------- Ownership A-1 Contract（SCALE-13／#264）：結構性 NULL 核對（AC-5） ----------
@@ -3022,8 +3309,7 @@ def test_existing_results_table_gains_the_new_column():
         # 得自己清乾淨——否則殘留的劇本會讓它以 ScenarioExists 失敗，
         # 看起來像遷移壞了，其實是測試自己髒。
         conn.execute("TRUNCATE scenarios, results, current_results, snapshots, events, rate_cache, "
-                     "dividend_cache, treasury_year_cache, data_source_settings, "
-                     "provider_credentials, provider_verifications, "
+                     "dividend_cache, treasury_year_cache, "
                      "iv_observations, iv_backfill_runs, contract_iv_history "
                      "RESTART IDENTITY")
         conn.execute("DROP TABLE IF EXISTS results")
@@ -3055,8 +3341,7 @@ def test_existing_results_table_gains_the_representative_candidate_column():
 
     with psycopg.connect(TEST_DB_URL, autocommit=True) as conn:
         conn.execute("TRUNCATE scenarios, results, current_results, snapshots, events, rate_cache, "
-                     "dividend_cache, treasury_year_cache, data_source_settings, "
-                     "provider_credentials, provider_verifications, "
+                     "dividend_cache, treasury_year_cache, "
                      "iv_observations, iv_backfill_runs, contract_iv_history "
                      "RESTART IDENTITY")
         conn.execute("DROP TABLE IF EXISTS results")
@@ -3088,8 +3373,7 @@ def test_existing_results_table_gains_the_per_family_column():
 
     with psycopg.connect(TEST_DB_URL, autocommit=True) as conn:
         conn.execute("TRUNCATE scenarios, results, current_results, snapshots, events, rate_cache, "
-                     "dividend_cache, treasury_year_cache, data_source_settings, "
-                     "provider_credentials, provider_verifications, "
+                     "dividend_cache, treasury_year_cache, "
                      "iv_observations, iv_backfill_runs, contract_iv_history "
                      "RESTART IDENTITY")
         conn.execute("DROP TABLE IF EXISTS results")
@@ -3124,8 +3408,7 @@ def test_existing_results_table_gains_the_family_eligibility_column():
 
     with psycopg.connect(TEST_DB_URL, autocommit=True) as conn:
         conn.execute("TRUNCATE scenarios, results, current_results, snapshots, events, rate_cache, "
-                     "dividend_cache, treasury_year_cache, data_source_settings, "
-                     "provider_credentials, provider_verifications, "
+                     "dividend_cache, treasury_year_cache, "
                      "iv_observations, iv_backfill_runs, contract_iv_history "
                      "RESTART IDENTITY")
         conn.execute("DROP TABLE IF EXISTS results")
@@ -3162,8 +3445,7 @@ def test_migration_still_applies_when_table_creation_hits_a_race():
 
     with psycopg.connect(TEST_DB_URL, autocommit=True) as conn:
         conn.execute("TRUNCATE scenarios, results, current_results, snapshots, events, rate_cache, "
-                     "dividend_cache, treasury_year_cache, data_source_settings, "
-                     "provider_credentials, provider_verifications, "
+                     "dividend_cache, treasury_year_cache, "
                      "iv_observations, iv_backfill_runs, contract_iv_history "
                      "RESTART IDENTITY")
         conn.execute("DROP TABLE IF EXISTS results")
@@ -3206,8 +3488,7 @@ def test_multiple_calls_within_a_request_scope_share_a_single_connection():
     st = pg.PostgresStorage(TEST_DB_URL)
     with psycopg.connect(TEST_DB_URL, autocommit=True) as conn:
         conn.execute("TRUNCATE scenarios, results, current_results, snapshots, events, rate_cache, "
-                     "dividend_cache, treasury_year_cache, data_source_settings, "
-                     "provider_credentials, provider_verifications, "
+                     "dividend_cache, treasury_year_cache, "
                      "iv_observations, iv_backfill_runs, contract_iv_history "
                      "RESTART IDENTITY")
 
@@ -3294,8 +3575,7 @@ def test_request_scope_reconnects_correctly_for_a_fresh_request_afterwards():
     st = pg.PostgresStorage(TEST_DB_URL)
     with psycopg.connect(TEST_DB_URL, autocommit=True) as conn:
         conn.execute("TRUNCATE scenarios, results, current_results, snapshots, events, rate_cache, "
-                     "dividend_cache, treasury_year_cache, data_source_settings, "
-                     "provider_credentials, provider_verifications, "
+                     "dividend_cache, treasury_year_cache, "
                      "iv_observations, iv_backfill_runs, contract_iv_history "
                      "RESTART IDENTITY")
 
@@ -3320,8 +3600,7 @@ def test_a_failure_opening_the_shared_connection_falls_back_to_a_per_call_one():
     st = pg.PostgresStorage(TEST_DB_URL)
     with psycopg.connect(TEST_DB_URL, autocommit=True) as conn:
         conn.execute("TRUNCATE scenarios, results, current_results, snapshots, events, rate_cache, "
-                     "dividend_cache, treasury_year_cache, data_source_settings, "
-                     "provider_credentials, provider_verifications, "
+                     "dividend_cache, treasury_year_cache, "
                      "iv_observations, iv_backfill_runs, contract_iv_history "
                      "RESTART IDENTITY")
 

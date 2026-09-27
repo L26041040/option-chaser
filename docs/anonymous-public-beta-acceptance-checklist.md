@@ -111,9 +111,10 @@ what_target_and_when_for_high_risk_actions`。
 一串技術術語），封存一個舊劇本後又能建立新的** ✅
 自動化：`test_pb05_quota_and_throttle.py`。
 
-**17. 30 分鐘內對同一個劇本重複按「刷新」，不會真的重新去抓一次
-報價（可以觀察：資料時間戳不會變）** ✅
-自動化：`test_pb05_quota_and_throttle.py` 節流窗測試。
+**17. ~~30 分鐘內對同一個劇本重複按「刷新」，不會真的重新去抓一次
+報價~~** 已退役：產品層的刷新節流在 SW-10（#340）依 Owner 裁示整段
+移除，所有人都可以隨時刷新；成本控制改由 global vendor fuse（Normal／
+Super User／Super Admin 一視同仁）與 SECURITY-FIX-02 的額度負責。
 
 **18. 全站當日 vendor 呼叫量觸頂時，刷新會顯示「額度已用盡，稍後
 再試」這類清楚訊息，而不是白屏或伺服器錯誤** ✅
@@ -126,8 +127,10 @@ what_target_and_when_for_high_risk_actions`。
 **19. Owner 自己的劇本不會被匿名清理排程動到（即使刻意讓它看起來
 很久沒有活動）** ✅
 自動化：`test_pb08_anonymous_lifecycle.py::test_protected_owner_
-survives_even_when_long_overdue`；PB-03 遷移腳本已把 Owner 的
-`solo` 資料標記為 protected（`scripts/migrate_solo_to_owner.py`）。
+survives_even_when_long_overdue`；AUTH-07 的修復腳本
+（`scripts/repair_production_data_lifecycle.py`，CLAUDE-DB-HYGIENE-002）
+把 Owner 的 `solo` 資料與 NULL-owner 舊劇本一起搬到 Owner 自己的 owner，
+並標記為 protected。
 
 **20. 清理排程（Vercel Cron）每天至少跑一次，這件事本身可以在
 Vercel 後台的 Cron 執行紀錄裡看到** ⚠
