@@ -59,7 +59,7 @@ def test_dry_run_without_confirm_does_not_write_anything(db, monkeypatch, capsys
     client.post("/api/scenarios", json=NEW).raise_for_status()
     db.create_owner_with_token(
         Owner(owner_id="anon-real", created_at="2026-09-14T00:00:00+00:00"),
-        BrowserIdentity(token="tok-real", owner_id="anon-real",
+        BrowserIdentity(token=_REAL_TOKEN, owner_id="anon-real",
                         issued_at="2026-09-14T00:00:00+00:00",
                         last_seen_at="2026-09-14T00:00:00+00:00"))
 
@@ -80,7 +80,7 @@ def test_confirmed_run_migrates_and_protects_and_is_idempotent(db, monkeypatch, 
 
     db.create_owner_with_token(
         Owner(owner_id="anon-real", created_at="2026-09-14T00:00:00+00:00"),
-        BrowserIdentity(token="tok-real", owner_id="anon-real",
+        BrowserIdentity(token=_REAL_TOKEN, owner_id="anon-real",
                         issued_at="2026-09-14T00:00:00+00:00",
                         last_seen_at="2026-09-14T00:00:00+00:00"))
 
@@ -96,6 +96,11 @@ def test_confirmed_run_migrates_and_protects_and_is_idempotent(db, monkeypatch, 
     # 第二次跑：完全冪等，不報錯、不重複搬動。
     _run_script(["--target-owner-id", "anon-real", "--confirm"], monkeypatch)
     assert db.get_scenario(created["id"], owner="anon-real") is not None
+
+
+# 形狀要像真的 cookie token（`secrets.token_urlsafe(32)`，43 字元）——
+# SECURITY-FIX-01 起 middleware 不接受太短的任意字串當身份。
+_REAL_TOKEN = "tok-real-" + "x" * 34
 
 
 def test_end_to_end_owner_sees_all_legacy_scenarios_through_their_own_cookie(
@@ -116,7 +121,7 @@ def test_end_to_end_owner_sees_all_legacy_scenarios_through_their_own_cookie(
 
     db.create_owner_with_token(
         Owner(owner_id="anon-real", created_at="2026-09-14T00:00:00+00:00"),
-        BrowserIdentity(token="tok-real", owner_id="anon-real",
+        BrowserIdentity(token=_REAL_TOKEN, owner_id="anon-real",
                         issued_at="2026-09-14T00:00:00+00:00",
                         last_seen_at="2026-09-14T00:00:00+00:00"))
 
@@ -125,7 +130,7 @@ def test_end_to_end_owner_sees_all_legacy_scenarios_through_their_own_cookie(
     owner_client = TestClient(
         create_app(fetch=lambda symbol: snap, storage=db),
         base_url="https://testserver")
-    owner_client.cookies.set("__Host-oc_owner", "tok-real")
+    owner_client.cookies.set("__Host-oc_owner", _REAL_TOKEN)
 
     seen = {row["id"] for row in owner_client.get("/api/scenarios").json()}
     assert seen == set(created)

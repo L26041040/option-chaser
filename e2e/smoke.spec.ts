@@ -3304,7 +3304,7 @@ test("手機版：首頁不再常駐 Beta 說明，頁尾在每個畫面都在�
   const disclaimer = page.getByRole("region", { name: "免責聲明" });
   await expect(disclaimer).toContainText("Beta");
   await expect(disclaimer).toContainText("cookie");
-  await expect(disclaimer).toContainText("30");
+  await expect(disclaimer).toContainText("180");
   await expect(disclaimer).toContainText("7");
   await expect(disclaimer).toContainText("非投資建議");
 });

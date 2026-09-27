@@ -55,59 +55,72 @@ def _client(storage=None, **kwargs):
     return TestClient(app, base_url="https://testserver"), storage
 
 
+def _set_last_seen(storage, owner_id: str, when: str) -> None:
+    """把這個 owner 名下所有 browser identity 的 `last_seen_at` 設成
+    `when`——SECURITY-FIX-01 起清理倒數的錨點就是它。"""
+    for token, identity in list(storage._browser_identities.items()):
+        if identity.owner_id == owner_id:
+            storage.touch_browser_identity(token, now=when)
+
+
 def _only_owner(storage) -> Owner:
     owners = storage.list_owners()
     assert len(owners) == 1
     return owners[0]
 
 
-# ---------- 純函式：`classify()` ----------
+# ---------- 純函式：`classify()`（SECURITY-FIX-01：錨點＝last_seen_at） ----------
 
-def test_classify_recent_activity_is_active():
-    now = datetime(2026, 6, 1, tzinfo=timezone.utc)
-    recent = (now - timedelta(days=1)).isoformat()
-    assert classify(last_activity_at=recent, created_at=recent, now=now,
-                    abandoned_after_days=30, grace_period_days=7) == "active"
+_NOW = datetime(2026, 6, 1, tzinfo=timezone.utc)
+_DAYS = dict(retention_days=180, grace_period_days=7, empty_retention_days=1)
 
 
-def test_classify_exactly_at_the_abandoned_threshold_is_abandoned():
-    now = datetime(2026, 6, 1, tzinfo=timezone.utc)
-    at_threshold = (now - timedelta(days=30)).isoformat()
-    assert classify(last_activity_at=at_threshold, created_at=at_threshold, now=now,
-                    abandoned_after_days=30, grace_period_days=7) == "abandoned"
+def _ago(days: float) -> str:
+    return (_NOW - timedelta(days=days)).isoformat()
+
+
+def test_classify_recent_visit_is_active():
+    assert classify(last_seen_at=_ago(1), created_at=_ago(400), has_data=True,
+                    now=_NOW, **_DAYS) == "active"
+
+
+def test_classify_just_inside_retention_is_still_active():
+    assert classify(last_seen_at=_ago(179), created_at=_ago(400), has_data=True,
+                    now=_NOW, **_DAYS) == "active"
+
+
+def test_classify_exactly_at_the_retention_threshold_is_abandoned():
+    assert classify(last_seen_at=_ago(180), created_at=_ago(400), has_data=True,
+                    now=_NOW, **_DAYS) == "abandoned"
 
 
 def test_classify_within_the_grace_period_is_still_abandoned_not_deleted():
-    now = datetime(2026, 6, 1, tzinfo=timezone.utc)
-    mid_grace = (now - timedelta(days=33)).isoformat()
-    assert classify(last_activity_at=mid_grace, created_at=mid_grace, now=now,
-                    abandoned_after_days=30, grace_period_days=7) == "abandoned"
+    assert classify(last_seen_at=_ago(184), created_at=_ago(400), has_data=True,
+                    now=_NOW, **_DAYS) == "abandoned"
 
 
-def test_classify_past_the_full_window_is_eligible_for_hard_delete():
-    now = datetime(2026, 6, 1, tzinfo=timezone.utc)
-    long_overdue = (now - timedelta(days=37)).isoformat()
-    assert classify(last_activity_at=long_overdue, created_at=long_overdue, now=now,
-                    abandoned_after_days=30, grace_period_days=7) \
-        == "eligible_for_hard_delete"
+def test_classify_past_retention_plus_grace_is_eligible_for_hard_delete():
+    assert classify(last_seen_at=_ago(187), created_at=_ago(400), has_data=True,
+                    now=_NOW, **_DAYS) == "eligible_for_hard_delete"
 
 
-def test_classify_falls_back_to_created_at_when_never_active():
-    """從未被記過任何一次真人 activity（lazy creation 只是造訪過、
-    什麼都沒做）——不是特例，倒數的起點就是被建立的那一刻。"""
-    now = datetime(2026, 6, 1, tzinfo=timezone.utc)
-    old_creation = (now - timedelta(days=40)).isoformat()
-    assert classify(last_activity_at=None, created_at=old_creation, now=now,
-                    abandoned_after_days=30, grace_period_days=7) \
-        == "eligible_for_hard_delete"
+def test_classify_falls_back_to_created_at_when_never_seen():
+    """沒有任何 identity 列（例如合成壓測 owner）時退回 `created_at`。"""
+    assert classify(last_seen_at=None, created_at=_ago(200), has_data=True,
+                    now=_NOW, **_DAYS) == "eligible_for_hard_delete"
+
+
+def test_classify_empty_owner_is_cleaned_after_one_day():
+    assert classify(last_seen_at=_ago(0.5), created_at=_ago(3), has_data=False,
+                    now=_NOW, **_DAYS) == "active"
+    assert classify(last_seen_at=_ago(1), created_at=_ago(3), has_data=False,
+                    now=_NOW, **_DAYS) == "eligible_for_hard_delete"
 
 
 def test_classify_unparseable_timestamps_conservatively_stay_active():
-    """分類失敗的後果不該是誤刪——讀不懂任一時間戳就保守回
-    `"active"`，寧可這一輪不清、留給下一次成功解析。"""
-    now = datetime(2026, 6, 1, tzinfo=timezone.utc)
-    assert classify(last_activity_at="not-a-timestamp", created_at="also-not-one",
-                    now=now, abandoned_after_days=30, grace_period_days=7) == "active"
+    """分類失敗的後果不該是誤刪——讀不懂任一時間戳就保守回 `"active"`。"""
+    assert classify(last_seen_at="not-a-timestamp", created_at="also-not-one",
+                    has_data=True, now=_NOW, **_DAYS) == "active"
 
 
 # ---------- 六類真人操作各自 touch activity ----------
@@ -223,14 +236,14 @@ def test_refresh_run_without_manual_does_not_touch_activity():
 # ---------- protected owner 結構性排除 ----------
 
 def test_protected_owner_survives_even_when_long_overdue():
-    c, storage = _client(anonymous_abandoned_after_days=1, anonymous_grace_period_days=1)
+    c, storage = _client(anonymous_retention_days=1, anonymous_grace_period_days=1)
     c.post("/api/scenarios", json=NEW).raise_for_status()
     owner = _only_owner(storage)
     storage.set_owner_protected(owner.owner_id, True)
-    # 遠遠超過 abandoned(1) + grace(1) = 2 天——若沒被 protected 濾掉，
+    # 遠遠超過 retention(1) + grace(1) = 2 天——若沒被 protected 濾掉，
     # 這個 owner 會被判定為 eligible_for_hard_delete 並真的被刪掉。
-    storage.touch_owner_activity(
-        owner.owner_id, now=(datetime.now(timezone.utc) - timedelta(days=365)).isoformat())
+    _set_last_seen(
+        storage, owner.owner_id, (datetime.now(timezone.utc) - timedelta(days=365)).isoformat())
 
     resp = c.get("/api/cron/cleanup-abandoned-owners", headers=AUTH)
 
@@ -248,27 +261,27 @@ def test_protected_owner_survives_even_when_long_overdue():
 def test_full_lifecycle_active_then_abandoned_then_hard_deleted():
     """用極短天數（1 天 abandoned＋1 天 grace）真正走過整條生命週期，
     透過 cron 端點本身觸發，不是直接呼叫純函式模擬。"""
-    c, storage = _client(anonymous_abandoned_after_days=1, anonymous_grace_period_days=1)
+    c, storage = _client(anonymous_retention_days=1, anonymous_grace_period_days=1)
     c.post("/api/scenarios", json=NEW).raise_for_status()
     owner_id = _only_owner(storage).owner_id
     now = datetime.now(timezone.utc)
 
     # 階段一：剛剛才活動過——仍是 active，cron 不動它。
-    storage.touch_owner_activity(owner_id, now=now.isoformat())
+    _set_last_seen(storage, owner_id, now.isoformat())
     body = c.get("/api/cron/cleanup-abandoned-owners", headers=AUTH).json()
     assert body["abandoned"] == 0
     assert body["hard_deleted"] == 0
     assert storage.get_owner(owner_id) is not None
 
-    # 階段二：1.5 天前——超過 abandoned_after_days(1)，未過 grace(+1)。
-    storage.touch_owner_activity(owner_id, now=(now - timedelta(days=1, hours=12)).isoformat())
+    # 階段二：1.5 天前——超過 retention_days(1)，未過 grace(+1)。
+    _set_last_seen(storage, owner_id, (now - timedelta(days=1, hours=12)).isoformat())
     body = c.get("/api/cron/cleanup-abandoned-owners", headers=AUTH).json()
     assert body["abandoned"] == 1
     assert body["hard_deleted"] == 0
     assert storage.get_owner(owner_id) is not None   # 還在，只是被標記 abandoned（衍生、不落盤）
 
-    # 階段三：2.5 天前——超過 abandoned_after_days(1) + grace_period_days(1)。
-    storage.touch_owner_activity(owner_id, now=(now - timedelta(days=2, hours=12)).isoformat())
+    # 階段三：2.5 天前——超過 retention_days(1) + grace_period_days(1)。
+    _set_last_seen(storage, owner_id, (now - timedelta(days=2, hours=12)).isoformat())
     body = c.get("/api/cron/cleanup-abandoned-owners", headers=AUTH).json()
     assert body["abandoned"] == 0
     assert body["hard_deleted"] == 1
@@ -277,27 +290,43 @@ def test_full_lifecycle_active_then_abandoned_then_hard_deleted():
     assert storage.list_owners() == []
 
 
-def test_a_human_action_resets_an_abandoned_owner_back_to_active():
-    """Abandoned／Grace 不是不可逆的——任何真人操作都把
-    `last_activity_at` 拉回現在，下一次 cron 掃描時會重新落回
-    `"active"`，不被清除。"""
-    c, storage = _client(anonymous_abandoned_after_days=1, anonymous_grace_period_days=1)
-    created = c.post("/api/scenarios", json=NEW).raise_for_status().json()
+def test_any_visit_resets_an_abandoned_owner_back_to_active():
+    """SECURITY-FIX-01：abandoned／grace 不是不可逆的——任何帶有效 cookie
+    的回訪（**就算只是打開來看**，沒有任何建立／編輯／手動刷新）都把
+    `last_seen_at` 拉回現在，下一次 cron 掃描時落回 `"active"`。"""
+    c, storage = _client(anonymous_retention_days=1, anonymous_grace_period_days=1)
+    c.post("/api/scenarios", json=NEW).raise_for_status()
     owner_id = _only_owner(storage).owner_id
     now = datetime.now(timezone.utc)
 
-    # 推到 abandoned 狀態（1.5 天前）。
-    storage.touch_owner_activity(owner_id, now=(now - timedelta(days=1, hours=12)).isoformat())
+    _set_last_seen(storage, owner_id, (now - timedelta(days=1, hours=12)).isoformat())
     body = c.get("/api/cron/cleanup-abandoned-owners", headers=AUTH).json()
     assert body["abandoned"] == 1
 
-    # 真人操作：封存一次。
-    c.post(f"/api/scenarios/{created['id']}/archive").raise_for_status()
+    c.get("/api/scenarios").raise_for_status()          # 純讀取的回訪
 
     body = c.get("/api/cron/cleanup-abandoned-owners", headers=AUTH).json()
     assert body["abandoned"] == 0
     assert body["hard_deleted"] == 0
     assert storage.get_owner(owner_id) is not None
+
+
+def test_passive_viewer_is_never_deleted_by_the_old_manual_activity_rule():
+    """這次要修的資料遺失：劇本建好後只打開來看的人，`last_activity_at`
+    停在一年前，但每天都有回訪——預設天數下絕不能被清掉。"""
+    c, storage = _client()
+    c.post("/api/scenarios", json=NEW).raise_for_status()
+    owner_id = _only_owner(storage).owner_id
+    storage.touch_owner_activity(
+        owner_id, now=(datetime.now(timezone.utc) - timedelta(days=365)).isoformat())
+
+    c.get("/api/scenarios").raise_for_status()
+    c.post("/api/scenarios/refresh-run", json={"scenario_ids": None, "manual": False})
+
+    body = c.get("/api/cron/cleanup-abandoned-owners", headers=AUTH).json()
+    assert body["hard_deleted"] == 0
+    assert body["abandoned"] == 0
+    assert len(storage.list_scenarios(owner=owner_id)) == 1
 
 
 # ---------- cron 端點本身：fail-closed 授權＋不建立 owner ----------
@@ -306,8 +335,8 @@ def test_missing_secret_is_401_and_deletes_nothing():
     c, storage = _client()
     c.post("/api/scenarios", json=NEW).raise_for_status()
     owner_id = _only_owner(storage).owner_id
-    storage.touch_owner_activity(
-        owner_id, now=(datetime.now(timezone.utc) - timedelta(days=365)).isoformat())
+    _set_last_seen(
+        storage, owner_id, (datetime.now(timezone.utc) - timedelta(days=365)).isoformat())
 
     resp = c.get("/api/cron/cleanup-abandoned-owners")   # 沒帶 Authorization
 
@@ -319,8 +348,8 @@ def test_wrong_secret_is_401_and_deletes_nothing():
     c, storage = _client()
     c.post("/api/scenarios", json=NEW).raise_for_status()
     owner_id = _only_owner(storage).owner_id
-    storage.touch_owner_activity(
-        owner_id, now=(datetime.now(timezone.utc) - timedelta(days=365)).isoformat())
+    _set_last_seen(
+        storage, owner_id, (datetime.now(timezone.utc) - timedelta(days=365)).isoformat())
 
     resp = c.get("/api/cron/cleanup-abandoned-owners",
                 headers={"Authorization": "Bearer wrong-secret"})
@@ -349,11 +378,11 @@ def test_cleanup_volume_is_recorded_as_a_metric_not_only_in_the_response():
     """AC 明文要求『cleanup volume 有被記錄』——不是只回在這次 HTTP
     回應裡就算數。`METRIC_CATALOGUE` 因此有意識擴為八類（見
     `api_app/metrics.py`）。"""
-    c, storage = _client(anonymous_abandoned_after_days=1, anonymous_grace_period_days=1)
+    c, storage = _client(anonymous_retention_days=1, anonymous_grace_period_days=1)
     c.post("/api/scenarios", json=NEW).raise_for_status()
     owner_id = _only_owner(storage).owner_id
-    storage.touch_owner_activity(
-        owner_id, now=(datetime.now(timezone.utc) - timedelta(days=365)).isoformat())
+    _set_last_seen(
+        storage, owner_id, (datetime.now(timezone.utc) - timedelta(days=365)).isoformat())
 
     body = c.get("/api/cron/cleanup-abandoned-owners", headers=AUTH).json()
     assert body["hard_deleted"] == 1
@@ -382,17 +411,17 @@ def test_a_run_that_cleans_nothing_still_records_a_zero_valued_metric():
 # 不遺漏不重複 ----------
 
 def test_owners_beyond_one_batch_are_all_processed_across_repeated_cron_hits():
-    c, storage = _client(anonymous_abandoned_after_days=1, anonymous_grace_period_days=1,
+    c, storage = _client(anonymous_retention_days=1, anonymous_grace_period_days=1,
                          anonymous_cleanup_batch_size=1)
     very_old = (datetime.now(timezone.utc) - timedelta(days=365)).isoformat()
     for symbol in ("AAA", "BBB", "CCC"):   # symbol 只准英文字母（見驗證規則）
-        cc, _ = _client(storage=storage, anonymous_abandoned_after_days=1,
+        cc, _ = _client(storage=storage, anonymous_retention_days=1,
                         anonymous_grace_period_days=1, anonymous_cleanup_batch_size=1)
         cc.post("/api/scenarios", json={**NEW, "symbol": symbol}).raise_for_status()
     owner_ids = [o.owner_id for o in storage.list_owners()]
     assert len(owner_ids) == 3
     for oid in owner_ids:
-        storage.touch_owner_activity(oid, now=very_old)
+        _set_last_seen(storage, oid, very_old)
 
     total_hard_deleted = 0
     for _ in range(3):   # 批次上限 1，三次呼叫恰好處理完全部三個

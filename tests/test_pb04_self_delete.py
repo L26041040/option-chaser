@@ -47,9 +47,14 @@ def test_the_old_cookie_gets_a_fresh_empty_identity_on_the_next_request():
 
     listed = c.get("/api/scenarios").json()
     assert listed == []
-    new_token = c.cookies.get(_OWNER_COOKIE_NAME)
-    assert new_token != old_token   # 拿到一顆全新的 cookie
-    assert len(storage.list_owners()) == 1   # 舊的沒了，只有這個新的
+    # SECURITY-FIX-01：舊 token 的綁定已經隨 `delete_owner()` 刪掉，它現在
+    # 只是一顆「還沒綁定」的 token——讀取不再順手建立新 owner。
+    assert storage.list_owners() == []
+    assert storage.resolve_owner_by_token(c.cookies.get(_OWNER_COOKIE_NAME)) is None
+
+    # 下一次真的建立東西時才拿到一個全新、跟舊 owner 無關的身份。
+    c.post("/api/scenarios", json=NEW).raise_for_status()
+    assert len(storage.list_owners()) == 1
 
 
 def test_deleting_my_own_data_does_not_touch_another_owner():

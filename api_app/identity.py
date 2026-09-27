@@ -23,6 +23,7 @@ default_identity_resolver)`（或等價的 `lambda: SOLO_OWNER`）顯式選用�
 """
 from __future__ import annotations
 
+import secrets
 from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import Callable, Iterator
@@ -61,17 +62,66 @@ def default_identity_resolver() -> str:
 _resolved_owner_id: ContextVar[str | None] = ContextVar(
     "resolved_owner_id", default=None)
 
+# ---------- SECURITY-FIX-01：deferred owner creation ----------
+#
+# 沒有綁定 owner 的 cookie（第一次來、只讀過東西）不再建立任何 owner
+# 列。這種請求的 owner_id 是一個**每個請求各自隨機**的佔位值：讀取
+# 端點照常用它查詢，天然查不到任何資料（空清單、零額度、404），不需要
+# 每個讀取端點各自判斷「有沒有 owner」。佔位值每個請求都不同，就算
+# 哪條程式路徑不小心用它寫了東西，也不會被別的訪客讀到。
+#
+# 真正要持久化 owner-scoped 資料的地方（建立劇本、存設定／credential）
+# 改呼叫 `materialize_owner()`——這是整個系統**唯一**會建立匿名 owner
+# 的入口。
+PENDING_OWNER_PREFIX = "pending:"
+
+_owner_materializer: ContextVar[Callable[[], str] | None] = ContextVar(
+    "owner_materializer", default=None)
+
+
+def pending_owner_placeholder() -> str:
+    return PENDING_OWNER_PREFIX + secrets.token_hex(16)
+
+
+def is_pending_owner(owner_id: str | None) -> bool:
+    return owner_id is not None and owner_id.startswith(PENDING_OWNER_PREFIX)
+
 
 @contextmanager
-def resolved_owner_scope(owner_id: str | None) -> Iterator[str | None]:
-    """`main.py` 的 cookie middleware 解析／建立出這次 request 的
-    owner_id 之後（或判定這個路由被排除、`owner_id` 為 `None`）用這個
-    context manager 包住 `call_next()`。"""
+def resolved_owner_scope(owner_id: str | None,
+                         materializer: Callable[[], str] | None = None
+                         ) -> Iterator[str | None]:
+    """`main.py` 的 cookie middleware 解析出這次 request 的 owner_id
+    （或待綁定的佔位值；或判定這個路由被排除、`owner_id` 為 `None`）
+    之後用這個 context manager 包住 `call_next()`。`materializer` 是
+    佔位值請求第一次需要持久化時要呼叫的綁定函式。"""
     token = _resolved_owner_id.set(owner_id)
+    mat_token = _owner_materializer.set(materializer)
     try:
         yield owner_id
     finally:
+        _owner_materializer.reset(mat_token)
         _resolved_owner_id.reset(token)
+
+
+def set_resolved_owner(owner_id: str) -> None:
+    """綁定完成後，把這個請求後續的 `identity_resolver()` 換成真正的
+    owner_id（同一個請求裡「先建立 owner、再寫劇本」要看到同一個值）。"""
+    _resolved_owner_id.set(owner_id)
+
+
+def materialize_owner() -> str:
+    """需要持久化 owner-scoped 資料時呼叫：已經有 owner 就原樣回傳；
+    還是佔位值就綁定一個新 owner（見 `main.py` 的 materializer）。"""
+    owner_id = _resolved_owner_id.get()
+    if owner_id is not None and not is_pending_owner(owner_id):
+        return owner_id
+    materializer = _owner_materializer.get()
+    if materializer is None:
+        raise RuntimeError(
+            "materialize_owner() 在沒有 cookie middleware 設定 materializer "
+            "的情況下被呼叫——這個路由不該建立 owner")
+    return materializer()
 
 
 def cookie_identity_resolver() -> str:

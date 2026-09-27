@@ -26,6 +26,7 @@ from api_app.storage.memory import MemoryStorage
 from option_chaser import service, store
 from option_chaser.data.snapshot import load_snapshot
 from option_chaser.models import AnalysisParams
+from _adhoc import post_adhoc
 
 TEST_DB_URL = os.environ.get("OC_TEST_DATABASE_URL")
 FIX = "tests/fixtures/xyz_v8_production_scale.json"
@@ -160,7 +161,7 @@ def test_api_analyze_response_still_carries_all_candidates_uncut():
     c = _client()
     body = {"symbol": "XYZ", "target_price": 110.0, "target_month": "2026-10",
            "strategies": ["bull-call-spread"]}
-    resp = c.post("/api/analyze", json=body).json()
+    resp = post_adhoc(c, body).json()
 
     assert any(r.get("all_candidates") for r in resp["results"]), (
         "測試前提：這份請求真的能產生非空 all_candidates，否則測不出"
@@ -184,25 +185,20 @@ def test_api_analyze_response_still_carries_all_candidates_uncut():
 
 
 def test_analyze_endpoint_source_never_calls_the_strip_function():
-    """AC-3（結構性保證，不是行為巧合）：`analyze_adhoc()`（`/api/
-    analyze` 的 handler）直接回傳 `_analyze()` 給的 view，原始碼裡
-    結構上就不含 `strip_persisted_all_candidates` 這個名字——與既有
-    `test_selection_regression.py` 用原始碼文字掃描證明「ranking.py
-    不 import ivhistory」是同一種手法，比執行期斷言更強：即使未來
-    改寫 `_refresh_and_save()` 的實作細節，只要沒有人明確在
-    `analyze_adhoc()` 裡加一行呼叫，這條路徑就不可能被剝除函式碰到。
-    """
+    """AC-3（結構性保證，不是行為巧合）：一次性分析直接回傳 `_analyze()`
+    給的 view，原始碼裡結構上就不含 `strip_persisted_all_candidates`。
+
+    SECURITY-FIX-01：公開的 `POST /api/analyze` 已退休，同一段邏輯只剩
+    `create_app()` 裡不掛路由的 `_analyze_request` seam——掃描對象跟著
+    換成那個 seam 的區塊（從 `def _analyze_request(` 到把它掛上
+    `app.state` 為止）。"""
     import inspect
 
     from api_app import main as main_module
 
-    # `analyze_adhoc()` 是定義在 `create_app()` 內部的巢狀函式，不是
-    # 模組層級屬性，`inspect.getsource()` 拿不到它本身——改對整個
-    # `main.py` 原始碼文字掃描，鎖定從
-    # `@app.post("/api/analyze")` 這個裝飾器開始、到下一個
-    # `@app.post`／`@app.get` 之前為止的區塊（handler 本身的邊界）。
     src = inspect.getsource(main_module)
-    start = src.index('@app.post("/api/analyze")')
-    end = src.index("@app.", start + 1)
+    assert '@app.post("/api/analyze")' not in src      # 公開路由已不存在
+    start = src.index("def _analyze_request(")
+    end = src.index("app.state.analyze_request = _analyze_request", start)
     handler_src = src[start:end]
     assert "strip_persisted_all_candidates" not in handler_src

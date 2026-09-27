@@ -40,39 +40,66 @@ def _create(client, **overrides):
 
 
 def test_the_first_owner_scoped_request_issues_a_cookie():
+    """SECURITY-FIX-01（deferred owner creation）＋ Codex P1（PR #346）改寫：
+    讀取**不建立 owner、也不發 cookie**（首訪並發讀取的慢回應才不會蓋掉
+    剛綁定的 cookie）；第一次真正持久化資料的請求才建立 owner 並簽發
+    cookie。"""
     c, storage = _client()
     assert storage.list_owners() == []
 
     c.get("/api/scenarios")
+    assert storage.list_owners() == []
+    assert _OWNER_COOKIE_NAME not in c.cookies
 
-    owners = storage.list_owners()
-    assert len(owners) == 1
+    _create(c)
+    assert len(storage.list_owners()) == 1
     assert _OWNER_COOKIE_NAME in c.cookies
 
 
 def test_repeated_requests_on_the_same_client_reuse_the_same_owner():
+    """第一次建立劇本時簽發並綁定 token；之後的讀取與建立都沿用同一顆、
+    同一個 owner（每次回應續命同一顆 token）。"""
     c, storage = _client()
     c.get("/api/scenarios")
-    c.get("/api/scenarios")
     c.get("/api/settings")
+    assert storage.list_owners() == []
 
+    _create(c)
+    token = c.cookies.get(_OWNER_COOKIE_NAME)
+    c.get("/api/scenarios")
+    _create(c, symbol="YYY")
     assert len(storage.list_owners()) == 1
+    assert c.cookies.get(_OWNER_COOKIE_NAME) == token
+    assert storage.resolve_owner_by_token(token) == storage.list_owners()[0].owner_id
 
 
 def test_a_request_carrying_an_unknown_token_gets_a_brand_new_owner():
-    """cookie 存在但查不到（已被伺服器單方作廢，或根本是偽造的）
-    ——視同新訪客，不得報錯、不得沿用那個查不到的值。"""
+    """cookie 查不到綁定：讀取一律不建立 owner、不發 cookie。建立劇本時，
+    形狀正確的「還沒綁定的 token」原樣綁定；形狀不對（偽造的任意字串）
+    換一顆新的綁定——兩者都不得報錯，也都不會沿用到任何既有 owner。"""
     c, storage = _client()
-    c.cookies.set(_OWNER_COOKIE_NAME, "totally-made-up-token")
-
-    r = c.get("/api/scenarios")
-
+    r = c.get("/api/scenarios",
+              headers={"Cookie": f"{_OWNER_COOKIE_NAME}=totally-made-up-token"})
     assert r.status_code == 200
-    assert len(storage.list_owners()) == 1
-    assert storage.list_owners()[0].owner_id
+    assert r.cookies.get(_OWNER_COOKIE_NAME) is None
+    assert storage.list_owners() == []
 
+    r = c.post("/api/scenarios", json=NEW,
+               headers={"Cookie": f"{_OWNER_COOKIE_NAME}=totally-made-up-token"})
+    assert r.status_code == 201
+    issued = r.cookies.get(_OWNER_COOKIE_NAME)
+    assert issued and issued != "totally-made-up-token"     # 偽造值被換掉
+    assert storage.resolve_owner_by_token("totally-made-up-token") is None
 
-# ---------- 隔離 ----------
+    well_formed = "A" * 43                                  # 形狀正確、但從沒綁定過
+    r = c.get("/api/scenarios", headers={"Cookie": f"{_OWNER_COOKIE_NAME}={well_formed}"})
+    assert r.cookies.get(_OWNER_COOKIE_NAME) is None
+    r = c.post("/api/scenarios", json=NEW,
+               headers={"Cookie": f"{_OWNER_COOKIE_NAME}={well_formed}"})
+    assert r.status_code == 201
+    assert r.cookies.get(_OWNER_COOKIE_NAME) == well_formed
+    assert len(storage.list_owners()) == 2
+    assert storage.resolve_owner_by_token(well_formed) is not None
 
 
 def test_two_different_browsers_see_completely_isolated_data():

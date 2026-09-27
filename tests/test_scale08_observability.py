@@ -87,11 +87,19 @@ def _create_and_refresh(client, symbol="XYZ"):
 # 證明不是隨意鬆綁。 ----------
 
 def test_metric_catalogue_is_exactly_seven():
-    assert len(METRIC_CATALOGUE) == 7
+    """名稱保留（歷史），內容隨有意識的擴充更新：SECURITY-FIX-01 加了
+    `new_owner_count`／`empty_owner_cleanup_count`，SECURITY-FIX-02 加了
+    五個防護擋下計數。"""
     assert set(METRIC_CATALOGUE) == {
         "chain_fetch_count", "chain_429_count", "stale_serve_count",
         "cold_miss_count", "refresh_duration_ms", "table_size",
-        "abandoned_owner_cleanup_count"}
+        "abandoned_owner_cleanup_count",
+        "new_owner_count", "empty_owner_cleanup_count",
+        # SECURITY-FIX-02：每一層防護的擋下次數
+        "owner_quota_block_count", "source_burst_block_count",
+        "new_owner_tier_block_count", "global_fuse_block_count",
+        "login_rate_limit_block_count"}
+    assert len(METRIC_CATALOGUE) == 14
 
 
 def test_table_size_is_the_only_non_persisted_metric():
@@ -99,7 +107,7 @@ def test_table_size_is_the_only_non_persisted_metric():
     （含 PB-08／#300 新增的 `abandoned_owner_cleanup_count`）才是真的
     寫進 `operational_metrics` 表的。"""
     assert set(METRIC_CATALOGUE) - set(PERSISTED_METRICS) == {"table_size"}
-    assert len(PERSISTED_METRICS) == 6
+    assert len(PERSISTED_METRICS) == len(METRIC_CATALOGUE) - 1
 
 
 def test_recording_an_unknown_metric_name_is_rejected():

@@ -15,6 +15,24 @@ class FetchError(Exception):
     pass
 
 
+def describe_fetch_exception(e: BaseException) -> str:
+    """adapter 把「底層失敗」包進會直達 client 的訊息時用這個，不要直接
+    放 `{e}`（#345 B-3）：
+
+    - 我們自己丟的 `FetchError`：訊息本來就是寫給人看的，原樣保留；
+    - HTTP 錯誤：只留狀態碼；
+    - 其他（DNS／proxy／TLS／解析例外……）：只留例外類別名——原文可能帶
+      內部主機名稱之類的細節，留在 `__cause__`（server log／Sentry 看得到）。
+    """
+    from urllib.error import HTTPError
+
+    if isinstance(e, FetchError):
+        return str(e)
+    if isinstance(e, HTTPError):
+        return f"HTTP {e.code}"
+    return type(e).__name__
+
+
 class QuotaExhausted(FetchError):
     """vendor 今日額度用完（#130）。
 

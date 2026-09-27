@@ -12,8 +12,11 @@ from __future__ import annotations
 
 import dataclasses
 import os
+import re
 import secrets
+import logging
 import time
+from contextvars import ContextVar
 import uuid
 from datetime import date, datetime, timedelta, timezone
 from typing import Callable, Literal
@@ -32,19 +35,22 @@ from option_chaser.service import DividendLoader, RateCurveLoader
 from option_chaser.timeframe import (TargetMonth, calendar_anchor,
                                      ensure_month_open, month_is_over)
 
+from . import abuse_control
 from . import (anonymous_lifecycle, chain_backoff, diagnostics, metrics,
               ops_alerts, providers, superuser, vendor_fuse)
 from .clock import now_utc_iso, ny_today
 from .digest import DigestSnapshot, build_digest_text, send_digest_email
 from .dividend_cache import cached_loader as cached_dividend_loader
 from .identity import (IdentityResolver, cookie_identity_resolver,
-                       default_identity_resolver, resolved_owner_scope)
+                       default_identity_resolver, is_pending_owner,
+                       materialize_owner, pending_owner_placeholder,
+                       resolved_owner_scope, set_resolved_owner)
 from .rate_cache import cached_loader
 from .storage import (BrowserIdentity, ContractHistory, DataSourceSettings,
-                      IvBackfillRun, IvObservation,
+                      IvBackfillRun, IvObservation, OWNER_RATE_LIMIT_SCOPE,
                       Owner, ProviderCredential, ProviderVerification,
-                      RateCacheEntry, ResultRecord, ResultSummary,
-                      RoleSession, Scenario, ScenarioExists, Storage,
+                      RateCacheEntry, RateLimitBucket, ResultRecord,
+                      ResultSummary, RoleSession, Scenario, ScenarioExists, Storage,
                       SuperUserAuditEvent, UsageSetting)
 from .storage.factory import database_url_candidates, storage_from_env
 from .treasury_cache import cached_rate_curve_rows
@@ -73,12 +79,38 @@ RateCurveRowsFetch = Callable[[date, date], tuple]
 # `_call_within_owner_scope()` 的 `set_cookie()` 呼叫裡逐一滿足
 # （不設 `domain` 參數＝預設不帶）。
 _OWNER_COOKIE_NAME = "__Host-oc_owner"
-# 瀏覽器允許的上限量級（spec §4：「目前 Chrome 約 400 天」），每次
-# 成功請求都重新 `set_cookie()` 續命（滑動窗，不是固定到期）。
-_OWNER_COOKIE_MAX_AGE_SECONDS = 400 * 24 * 60 * 60
+# SECURITY-FIX-01：owner cookie 的 Max-Age 不再是固定常數（原為瀏覽器
+# 上限量級的 400 天），而是在 `create_app()` 裡由「資料保留期＋緩衝期」
+# 算出（預設 180＋7 天，見 `_owner_cookie_max_age_seconds`）；每次帶有效
+# cookie 的請求都重新 `set_cookie()` 續命（滑動窗，不是固定到期）。
+# Codex P2（PR #346）：cookie 必須活過緩衝期——隱私頁承諾「緩衝期內只要
+# 回來即恢復正常」，cookie 若在 180 天就過期，回來的瀏覽器已經拿不到
+# 舊 owner，緩衝期形同虛設。
+# 合法 cookie token 的形狀：base64url、至少 22 字元（≥128 bit 隨機，
+# 涵蓋正式簽發的 `token_urlsafe(32)`＝43 字元，以及 PB-07 合成壓測
+# harness 的 `token_urlsafe(16)`＝22 字元）。形狀不對的一律當作沒帶
+# cookie，重新簽發——不接受任意短字串當身份。
+_OWNER_TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{22,128}$")
 
-# AUTH-02（#309）：role-session cookie（軸二）沿用同一個持久 TTL 量級
-# ——票面明文「比照既有 owner cookie 的既有持久 TTL/Max-Age 慣例」。
+# Codex P1（PR #346）：第一次造訪、還沒有 cookie 的瀏覽器同時送出多個寫入
+# （連點、重試、兩個分頁）時，伺服器無從得知它們來自同一個瀏覽器（IP 不是
+# 身分）。前端因此在 localStorage 放一顆 bootstrap token（跨分頁共用、
+# 重試沿用），寫入時放在這個 header；沒有有效 cookie 時伺服器就用它當
+# 綁定的 token——同一顆靠 `browser_identities.token` PK 收斂到同一個
+# owner。custom header：跨站請求（沒有 CORS）帶不了。
+_OWNER_BOOTSTRAP_HEADER = "x-oc-owner-bootstrap"
+# 已經綁定的 bootstrap token 只在綁定後這麼短的時間內被接受（第一次寫入
+# 其實成功、回應卻沒回到瀏覽器時的重試）；超過就不算身分——localStorage
+# 不能變成 cookie 之外的第二個身分載體（清掉 cookie 就是清掉身分）。
+_OWNER_BOOTSTRAP_RETRY_WINDOW = timedelta(minutes=10)
+# 超過重試窗的已綁定 bootstrap token 用在寫入時，伺服器回 409 加這個
+# header（布林）：前端據此換一顆新 token 重送（見 `_bootstrap_token`）。
+_OWNER_BOOTSTRAP_STALE_HEADER = "X-OC-Owner-Bootstrap-Stale"
+
+# AUTH-02（#309）：role-session cookie（軸二）沿用當時 owner cookie 的
+# 400 天持久 TTL——票面明文「比照既有 owner cookie 的既有持久 TTL/Max-Age
+# 慣例」。SECURITY-FIX-01 只把 owner cookie 改成 180＋7 天，role cookie
+# 刻意維持 400 天不動（角色 session 不在這張票範圍內）。
 # **刻意不做滑動窗續命**：owner cookie 的續命邏輯活在
 # `_call_within_owner_scope()` 這個共用 middleware 裡，若要讓 role
 # cookie 也在每次請求後續命，middleware 就必須認識軸二的 cookie 名字
@@ -87,7 +119,7 @@ _OWNER_COOKIE_MAX_AGE_SECONDS = 400 * 24 * 60 * 60
 # `/api/auth/*` 端點），瀏覽器重開後仍登入的 AC 因此仍然成立（票面
 # 沒有要求「越常用越不會過期」），且完全不需要動這個既有共用
 # middleware 一行。
-_ROLE_COOKIE_MAX_AGE_SECONDS = _OWNER_COOKIE_MAX_AGE_SECONDS
+_ROLE_COOKIE_MAX_AGE_SECONDS = 400 * 24 * 60 * 60
 
 # spec §4 的路由白名單——缺 cookie 時**不得**建立新 owner 的端點。
 # 白名單而非黑名單：未來新增的 owner-scoped 端點預設不豁免，漏列
@@ -95,6 +127,32 @@ _ROLE_COOKIE_MAX_AGE_SECONDS = _OWNER_COOKIE_MAX_AGE_SECONDS
 _OWNER_EXEMPT_EXACT = ("/api/health",)
 _OWNER_EXEMPT_PREFIXES = ("/api/cron/", "/api/ops/", "/api/superuser/",
                          "/api/auth/")
+
+
+# SECURITY-FIX-02：這次 request 本身——`_fetch_chain()` 要知道角色（SU／SA
+# 豁免 per-owner quota）與來源（source burst），但它的簽章不帶 request；
+# 與 `identity.py` 的 owner ContextVar 同一種寫法，middleware 設定、
+# 下游讀取。request 之外（測試直接呼叫內部 seam）為 `None`＝當作
+# Normal、沒有來源資訊。
+_current_request: ContextVar[Request | None] = ContextVar("current_request", default=None)
+
+# `create_app(trusted_ip_header=...)` 的「沒指定」：讀環境（見
+# `abuse_control.default_trusted_ip_header()`）。`None` 本身是合法值
+# （＝一律用 TCP 對端位址），所以需要一個另外的哨兵。
+_AUTO = object()
+
+_logger = logging.getLogger(__name__)
+
+# `GET /api/superuser/audit-log?limit=` 一次最多回幾筆（#345 B-4）。
+_AUDIT_LOG_MAX_LIMIT = 1000
+
+
+# 這些例外是**我們自己**在送出上游請求之前擋下來的（global fuse、
+# new-owner tier、per-owner／source 額度），不是 provider 回的失敗。
+# 降級鏈看到它們必須原樣往外拋（`except _ATTEMPT_REFUSALS: raise` 放在
+# `except FetchError` 前面）：退回下一個來源只會是另一個同樣會被擋的
+# attempt，而且不該被記成 provider 驗證失敗。
+_ATTEMPT_REFUSALS = (vendor_fuse.GlobalVendorFuseTripped, abuse_control.UsageLimited)
 
 
 def _is_owner_exempt_route(path: str) -> bool:
@@ -120,7 +178,7 @@ def _is_owner_exempt_route(path: str) -> bool:
     return any(path.startswith(prefix) for prefix in _OWNER_EXEMPT_PREFIXES)
 
 
-def _the_protected_owner_id(all_owners: list[Owner]) -> str | None:
+def _the_protected_owner_id(candidates: list[Owner]) -> str | None:
     """AUTH-04（#311）「找 protected owner」的**唯一**判斷點——票面
     Implementation constraints 明文要求不得在多處各自重寫一份判準。
 
@@ -130,9 +188,10 @@ def _the_protected_owner_id(all_owners: list[Owner]) -> str | None:
     這一個 protected owner；遷移尚未執行、或未來因某種原因同時存在
     多個 protected owner（例如手動用 PB-10 的 runtime 旗標又標記了
     另一個），本函式都誠實回報「不存在單一可信來源」而非挑一個將就。
-    純函式、零 I/O——呼叫端負責提供 `Storage.list_owners()` 的結果，
-    方便獨立單元測試不必真的起一個 app。"""
-    protected = [o.owner_id for o in all_owners if o.protected]
+    純函式、零 I/O——呼叫端負責提供候選 owner 清單（Historical IV 用
+    `Storage.list_protected_owners()` 的窄查詢，#345 A-4），方便獨立
+    單元測試不必真的起一個 app。"""
+    protected = [o.owner_id for o in candidates if o.protected]
     return protected[0] if len(protected) == 1 else None
 
 
@@ -190,8 +249,15 @@ GLOBAL_VENDOR_DAILY_BUDGET = 2000
 
 # PB-08（#300，Anonymous Public Beta）：匿名擁有者三段式生命週期
 # （spec §7）。三個數值皆可經 `create_app()` DI 或同名環境變數覆寫。
-ANONYMOUS_ABANDONED_AFTER_DAYS = 30
+#
+# SECURITY-FIX-01（Owner 裁示）：錨點改成 browser identity 的
+# `last_seen_at`（任何帶有效 cookie 的回訪都算），有資料的 owner 180 天
+# 沒回訪才進入 abandoned、再 7 天才可刪；空 owner 1 天。環境變數名稱
+# 刻意跟舊的 `ANONYMOUS_ABANDONED_AFTER_DAYS`（30 天、錨點是手動操作）
+# 不同——部署環境若還留著舊值，不會被悄悄沿用成新的保留期。
+ANONYMOUS_RETENTION_DAYS = 180
 ANONYMOUS_GRACE_PERIOD_DAYS = 7
+ANONYMOUS_EMPTY_OWNER_RETENTION_DAYS = 1
 # 每次 cron 執行最多處理幾個 owner——Vercel Cron 在 Hobby 方案每天
 # 只能觸發一次（研究 #276），這裡的上限因此不是「今天處理不完明天
 # 續跑」的 Continuation（那需要同一天能再被觸發一次，Hobby 做不到），
@@ -234,8 +300,9 @@ def _env_float(name: str, default: float) -> float:
 # 遺留，T06／#221 起不再被任何判斷邏輯讀取，見 `_scenario_json`）。
 _MVP_DIRECTION = "bullish"
 
-# V1（#48）的一次性分析端點沿用：無劇本身分時的 view dict 欄位值，
-# 不影響任何計算。V3 之後前端改走劇本端點，屆時此路徑可移除。
+# 一次性分析（無劇本身分）時 view dict 的 scenario_id 欄位值，不影響
+# 任何計算。公開端點已於 SECURITY-FIX-01 退休，只剩內部 seam 在用
+# （見 `create_app()` 裡的 `_analyze_request`）。
 _ADHOC_SCENARIO_ID = "adhoc"
 
 _SYMBOL = Field(pattern=r"^[A-Za-z.\-]{1,10}$")
@@ -243,6 +310,8 @@ _MONTH = Field(pattern=r"^\d{4}-\d{2}$")
 
 
 class AnalyzeRequest(BaseModel):
+    """內部一次性分析 seam 的參數（`app.state.analyze_request`）——沒有
+    任何 HTTP 路由接受這個形狀了。"""
     # symbol 會被代入資料源的 URL（`data/cboe.py`），因此限制成標的代號
     # 真正可能出現的字元，不讓 `../` 之類的東西有機會進到路徑裡。
     symbol: str = _SYMBOL
@@ -671,10 +740,12 @@ def _classify_fetch_failure(storage: Storage, e: FetchError, symbol: str) -> HTT
 
     1. `e` 是 `vendor_fuse.GlobalVendorFuseTripped`（PB-06）——全站今日
        vendor 預算已用完，我們自己選擇不打，與 vendor 有沒有抱怨無關。
-       這個判斷刻意放在最前面：`_fetch_chain()` 的 fuse 檢查發生在
-       任何真正的上游呼叫之前，這個例外類別因此**保證**代表這次失敗
-       的真正原因——不需要（也不該）回頭再問一次 `chain_backoff.
-       status()` 來猜測，那樣反而可能把「我們自己的預算」誤植成
+       這個判斷刻意放在最前面：`_vendor_attempt()` 的 fuse 檢查發生在
+       **那一個** attempt 的上游呼叫之前，這個例外類別因此**保證**代表
+       最後這次沒送出的真正原因（同一次抓鏈前面的 attempt 可能已經
+       送出並失敗——例如自訂 provider 失敗後 fallback 前 fuse 剛好滿——
+       回報的是最後擋下來的那一層）——不需要（也不該）回頭再問一次
+       `chain_backoff.status()` 來猜測，那樣反而可能把「我們自己的預算」誤植成
        「vendor 剛剛回應限流」，讓使用者看到不實的理由。`"vendor_
        budget_exhausted"`（429，非 5xx——spec §14 明文要求；facts-only，
        不帶評價字眼）。
@@ -689,6 +760,10 @@ def _classify_fetch_failure(storage: Storage, e: FetchError, symbol: str) -> HTT
 
     `.detail` 是純 dict，`refresh_run` 直接拿去併進批次結果的一筆
     失敗項，不必重新包一次 HTTPException。"""
+    if isinstance(e, abuse_control.UsageLimited):
+        # SECURITY-FIX-02：per-owner quota／source burst——我們自己擋下
+        # 的，一樣不回 5xx、不假裝是 vendor 的問題。
+        return _fail("usage_limited", 429, "查詢太頻繁，請稍後再試")
     if isinstance(e, vendor_fuse.GlobalVendorFuseTripped):
         return _fail("vendor_budget_exhausted", 429,
                      "今日全站報價查詢預算已用完，畫面沿用既有資料，"
@@ -725,9 +800,18 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
                enable_metrics: bool = True,
                anonymous_max_active_scenarios: int | None = None,
                global_vendor_daily_budget: int | None = None,
-               anonymous_abandoned_after_days: int | None = None,
+               anonymous_retention_days: int | None = None,
                anonymous_grace_period_days: int | None = None,
                anonymous_cleanup_batch_size: int | None = None,
+               anonymous_empty_owner_retention_days: int | None = None,
+               owner_vendor_quota: tuple[int, int, int] | None = None,
+               source_vendor_burst: tuple[int, int] | None = None,
+               new_owner_tier_share: float | None = None,
+               new_owner_tier_age_hours: int | None = None,
+               login_attempt_limits: tuple[int, int] | None = None,
+               source_hmac_secret: str | None = None,
+               trusted_ip_header: object = _AUTO,
+               clock: Callable[[], float] | None = None,
                digest_smtp_host: str | None = None,
                digest_smtp_port: int | None = None,
                digest_smtp_user: str | None = None,
@@ -890,10 +974,10 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
     `global_vendor_daily_budget`（PB-06／#299，Anonymous Public Beta
     §8）：per-owner 額度（上方）之上再加一道 system-wide 保險絲——
     全站今天累計真正打了幾次上游（`api_app.metrics` 既有
-    `chain_fetch_count` 指標，見 `_metered_chain_fetch()`）達到這個
+    `chain_fetch_count` 指標，見 `_vendor_attempt()`）達到這個
     數字後，**任何**新的抓鏈嘗試（不分 owner、不分是否為 Super User，
     spec §8 v3 明文「不豁免」）一律短路成
-    `vendor_fuse.GlobalVendorFuseTripped`（見 `_fetch_chain()`），由
+    `vendor_fuse.GlobalVendorFuseTripped`（見 `_vendor_attempt()`），由
     `_classify_fetch_failure()` 分類成 429＋`stage="vendor_budget_
     exhausted"`——與既有 `rate_limited`（真實 Cboe 429，被動反應）是
     兩個獨立分類，刻意不合併：那個代表「vendor 剛剛回我們沒有」，這個
@@ -902,7 +986,9 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
     DAILY_BUDGET` 環境變數或落回上方常數；`<=0` 停用（今天的行為，
     供 rollback／測試）。
 
-    `anonymous_abandoned_after_days`／`anonymous_grace_period_days`／
+    `anonymous_retention_days`／`anonymous_grace_period_days`／
+    `anonymous_empty_owner_retention_days`（SECURITY-FIX-01：錨點改成
+    browser identity 的 `last_seen_at`，見 `api_app.anonymous_lifecycle`）／
     `anonymous_cleanup_batch_size`（PB-08／#300，Anonymous Public
     Beta §7）：匿名擁有者三段式生命週期——`last_activity_at`（PB-01
     既有欄位）距今超過前者天數＝Abandoned，再超過後者天數＝Eligible
@@ -953,14 +1039,35 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
     # fetch_chain` 識別呼叫端有沒有覆寫整條複合鏈——覆寫時（幾乎全部
     # 既有測試都這樣做，注入固定快照）直接沿用呼叫端給的 `fetch`，
     # backoff 包裝無從套用也不需要套用。
-    def _metered_chain_fetch(fn: FetchChain, source: str) -> FetchChain:
-        """S0（SCALE-08／#258）指標 #1／#2：包住一個實際會打上游的抓鏈
-        函式，記錄「真的打了一次」與「這次是不是被 429 擋下來」。刻意
-        包在這一層、不是包在 `chain_backoff.backoff_aware_fetch()`
-        外面——backoff 短路（封鎖窗內、零上游呼叫）時 `fn` 根本不會被
-        呼叫到，指標因此天然只計真正發生過的上游請求，不會把「被我們
-        自己的 backoff 擋下來」誤算成一次 fetch。"""
-        def wrapped(symbol: str) -> ChainSnapshot:
+    def _vendor_attempt(fn: FetchChain, source: str, *, meter: bool = True) -> FetchChain:
+        """SECURITY-P1-VENDOR-ATTEMPT-001：**每一次真正要送出的上游請求**
+        的唯一關卡——自訂 provider、Cboe、yfinance 備援各自包一層，一次
+        logical 抓鏈裡的每個 attempt 都各自過一次：
+
+        1. global vendor fuse（不分角色）；
+        2. `_enforce_vendor_limits()`：owner／source／new-owner tier 的
+           bucket 一次原子扣一次（全有或全無）；
+        3. 兩者都放行才真的呼叫 `fn`——成功或失敗都已經算這一次。
+
+        被擋時丟出 `_ATTEMPT_REFUSALS` 之一、`fn` 完全不會被呼叫；呼叫端
+        的降級邏輯看到它必須原樣往外拋，不能當成 provider 失敗去試下一個
+        來源。
+
+        `meter`：S0（SCALE-08／#258）指標 #1／#2——記錄「真的打了一次」
+        （`chain_fetch_count`，global fuse 的計數來源）與「這次是不是被
+        429 擋下來」。包在 `chain_backoff.backoff_aware_fetch()` 裡面：
+        backoff 短路（封鎖窗內、零上游呼叫）時這層根本不會被呼叫，所以
+        不扣額度、也不計 fetch。只有 DI 整組覆寫抓鏈（`fetch=`，測試用）
+        時才關掉，沿用那條路徑一直以來不計數的既有行為。"""
+        def attempt(symbol: str) -> ChainSnapshot:
+            if vendor_fuse.tripped(_db(), ny_today(),
+                                   _effective_global_vendor_daily_budget):
+                _record_metric("global_fuse_block_count", ny_today())
+                raise vendor_fuse.GlobalVendorFuseTripped(
+                    f"全站今日 vendor 呼叫預算已用完，暫停 {symbol} 的新抓鏈")
+            _enforce_vendor_limits(symbol)
+            if not meter:
+                return fn(symbol)
             try:
                 snap = fn(symbol)
             except RateLimitedError:
@@ -976,30 +1083,48 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
             _record_metric("chain_fetch_count", ny_today(),
                            source=source, symbol=symbol)
             return snap
-        return wrapped
+        return attempt
 
     def _default_fetch(symbol: str) -> ChainSnapshot:
         from option_chaser.data import cboe as cboe_module
 
-        actual_cboe_fetch = _metered_chain_fetch(
+        actual_cboe_fetch = _vendor_attempt(
             cboe_fetch if cboe_fetch is not None else cboe_module.fetch_chain,
             "cboe")
         try:
             return chain_backoff.backoff_aware_fetch(
                 _db(), "cboe", actual_cboe_fetch, symbol,
                 default_backoff=chain_backoff_default)
+        except _ATTEMPT_REFUSALS:
+            raise
         except FetchError:
             from option_chaser.data import yf
 
-            return _metered_chain_fetch(yf.fetch_chain, "yfinance")(symbol)
+            # yfinance 是選用依賴，production 沒裝：沒裝就不會有任何
+            # 上游請求，這個 attempt 整個跳過（不扣額度、不計 fetch），
+            # 直接讓 Cboe 的失敗往外走。
+            if not yf.available():
+                raise
+            return _vendor_attempt(yf.fetch_chain, "yfinance")(symbol)
 
     _effective_fetch: FetchChain = (
-        _default_fetch if fetch is service.fetch_chain else fetch)
+        _default_fetch if fetch is service.fetch_chain
+        else _vendor_attempt(fetch, "injected", meter=False))
 
     # SCALE-07（#257）：`None`＝呼叫端沒有覆寫，惰性讀真實環境變數；
     # 顯式傳入（含空字串）時完全採用那個值，測試才有決定性。
     _effective_cron_secret = (cron_secret if cron_secret is not None
                               else os.environ.get("CRON_SECRET"))
+
+    def _cron_authorized(request: Request) -> bool:
+        """`Authorization: Bearer <CRON_SECRET>`。SECURITY（#345 B-1）：
+        固定時間比較（`secrets.compare_digest`），不用 `!=`；先轉 bytes，
+        header 裡的非 ASCII 字元不會讓比較本身丟例外。secret 沒設一律拒絕。"""
+        if not _effective_cron_secret:
+            return False
+        provided = (request.headers.get("authorization") or "").encode("utf-8", "replace")
+        expected = f"Bearer {_effective_cron_secret}".encode("utf-8")
+        return secrets.compare_digest(provided, expected)
     # AUTH-02／AUTH-03（#309／#310）：三層角色模型的登入密碼，軸二
     # 唯一的驗證機制，取代 PB-09 的 `admin_secret`（已整組退役，見
     # `create_app()` docstring）。同一套「`None`＝呼叫時才讀環境
@@ -1022,18 +1147,80 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
     _effective_global_vendor_daily_budget = (
         global_vendor_daily_budget if global_vendor_daily_budget is not None
         else _env_int("GLOBAL_VENDOR_DAILY_BUDGET", GLOBAL_VENDOR_DAILY_BUDGET))
-    # PB-08（#300）：同一套慣例。
-    _effective_abandoned_after_days = (
-        anonymous_abandoned_after_days if anonymous_abandoned_after_days is not None
-        else _env_int("ANONYMOUS_ABANDONED_AFTER_DAYS",
-                      ANONYMOUS_ABANDONED_AFTER_DAYS))
-    _effective_grace_period_days = (
-        anonymous_grace_period_days if anonymous_grace_period_days is not None
-        else _env_int("ANONYMOUS_GRACE_PERIOD_DAYS", ANONYMOUS_GRACE_PERIOD_DAYS))
-    _effective_cleanup_batch_size = (
+    # PB-08（#300）：同一套注入／環境變數慣例，但**沒有**「`<=0` 停用」
+    # 語意——Codex P1（PR #346）：這三個是清理的天數，0 或負數不是
+    # 「關掉清理」，而是「立刻就可以刪」。照其他變數的 `<=0` 慣例設下去
+    # 會觸發破壞性清理，所以非正數一律忽略、退回內建預設值（文件也明寫）。
+    def _positive_days(value: int | None, env: str, default: int) -> int:
+        days = value if value is not None else _env_int(env, default)
+        return days if days > 0 else default
+
+    _effective_retention_days = _positive_days(
+        anonymous_retention_days, "ANONYMOUS_RETENTION_DAYS", ANONYMOUS_RETENTION_DAYS)
+    _effective_empty_owner_retention_days = _positive_days(
+        anonymous_empty_owner_retention_days, "ANONYMOUS_EMPTY_OWNER_RETENTION_DAYS",
+        ANONYMOUS_EMPTY_OWNER_RETENTION_DAYS)
+    _effective_grace_period_days = _positive_days(
+        anonymous_grace_period_days, "ANONYMOUS_GRACE_PERIOD_DAYS",
+        ANONYMOUS_GRACE_PERIOD_DAYS)
+    # owner cookie 要活過「保留期＋緩衝期」（見模組頂端 `_OWNER_COOKIE_NAME`
+    # 下方的說明），跟 cleanup 用同一組 effective 值，兩邊不會各算各的。
+    _owner_cookie_max_age_seconds = (
+        (_effective_retention_days + _effective_grace_period_days) * 24 * 60 * 60)
+    # 批次上限 `<=0`＝這次不刪任何 owner（停用）；負數不能當 slice 用
+    # （`eligible[:-1]` 會變成「刪到只剩最後一個」）。
+    _effective_cleanup_batch_size = max(0, (
         anonymous_cleanup_batch_size if anonymous_cleanup_batch_size is not None
         else _env_int("ANONYMOUS_CLEANUP_BATCH_SIZE",
-                      ANONYMOUS_CLEANUP_BATCH_SIZE))
+                      ANONYMOUS_CLEANUP_BATCH_SIZE)))
+    # SECURITY-FIX-02：vendor 濫用防護的 Launch Safety Defaults（見
+    # `abuse_control` 檔頭）——同一套「DI 顯式傳入優先、否則讀環境變數、
+    # 再否則用常數」慣例，`<=0` 停用該視窗，不必改 code 就能調。
+    _clock: Callable[[], float] = clock or time.time
+    ac = abuse_control
+    _effective_owner_quota = owner_vendor_quota or (
+        _env_int("OWNER_VENDOR_QUOTA_PER_MINUTE", ac.OWNER_VENDOR_QUOTA_PER_MINUTE),
+        _env_int("OWNER_VENDOR_QUOTA_PER_HOUR", ac.OWNER_VENDOR_QUOTA_PER_HOUR),
+        _env_int("OWNER_VENDOR_QUOTA_PER_DAY", ac.OWNER_VENDOR_QUOTA_PER_DAY))
+    _effective_source_burst = source_vendor_burst or (
+        _env_int("SOURCE_VENDOR_BURST_PER_MINUTE", ac.SOURCE_VENDOR_BURST_PER_MINUTE),
+        _env_int("SOURCE_VENDOR_BURST_PER_HOUR", ac.SOURCE_VENDOR_BURST_PER_HOUR))
+    _effective_tier_share = (
+        new_owner_tier_share if new_owner_tier_share is not None
+        else _env_float("NEW_OWNER_TIER_SHARE", ac.NEW_OWNER_TIER_SHARE))
+    _effective_tier_age = timedelta(hours=(
+        new_owner_tier_age_hours if new_owner_tier_age_hours is not None
+        else _env_int("NEW_OWNER_TIER_AGE_HOURS", ac.NEW_OWNER_TIER_AGE_HOURS)))
+    _effective_login_limits = login_attempt_limits or (
+        _env_int("LOGIN_ATTEMPTS_PER_MINUTE", ac.LOGIN_ATTEMPTS_PER_MINUTE),
+        _env_int("LOGIN_ATTEMPTS_PER_HOUR", ac.LOGIN_ATTEMPTS_PER_HOUR))
+    # 獨立 secret，不重用任何密碼／cron secret。沒設（或空字串、或只有
+    # 空白——Codex P2（PR #346）：只有空白的 key 等於公開的 key，HMAC
+    # 假名化形同虛設）＝source 層與登入限流**明確停用**（`/api/ops/metrics`
+    # 會標示），不會退回寫死的 key。
+    _raw_source_hmac_secret = (
+        source_hmac_secret if source_hmac_secret is not None
+        else os.environ.get("SOURCE_HMAC_SECRET"))
+    _effective_source_hmac_secret = (
+        _raw_source_hmac_secret
+        if _raw_source_hmac_secret and _raw_source_hmac_secret.strip() else None)
+    _source_limiter_state = "enabled"
+    if _effective_source_hmac_secret is None:
+        _source_limiter_state = "disabled_missing_secret"
+    elif _effective_source_hmac_secret.strip() in {
+            (v or "").strip() for v in (_effective_cron_secret,
+                                        _effective_superuser_password,
+                                        _effective_superadmin_password)} - {""}:
+        # 跟密碼／cron secret 同一個值：同樣明確停用（fail closed），
+        # 不拿登入密碼當 HMAC key。
+        _effective_source_hmac_secret = None
+        _source_limiter_state = "disabled_reused_secret"
+    _effective_trusted_ip_header = (
+        ac.default_trusted_ip_header() if trusted_ip_header is _AUTO
+        else trusted_ip_header)
+    if _source_limiter_state != "enabled" and os.environ.get("VERCEL"):
+        _logger.warning("SOURCE_HMAC_SECRET 未設定或與其他密鑰相同：source "
+                        "burst 與登入限流已停用（%s）", _source_limiter_state)
     # PB-11（#303）：SMTP 設定沿用 `_effective_cron_secret`／
     # `_effective_superadmin_password` 同一套「顯式傳入（含空字串）
     # 完全採用，`None` 才讀環境變數」慣例——`digest_smtp_port` 是唯一
@@ -1138,51 +1325,125 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
     # 純驗證錯誤）因此不再付任何連線握手。
     _uses_cookie_identity = identity_resolver is cookie_identity_resolver
 
-    def _resolve_owner_for_request(request: Request) -> tuple[str | None, str | None]:
+    def _resolve_owner_for_request(
+            request: Request) -> tuple[str | None, dict | None, Callable[[], str] | None]:
         """PB-02（#294）spec §4 的**唯一路由判斷點**——回傳
-        `(owner_id, cookie_token_to_set)`。`owner_id` 為 `None` 代表這個
-        路由被排除在 owner-scoped 流程之外（不得建立新 owner，見
-        `_OWNER_EXEMPT_*`）；`cookie_token_to_set` 非 `None` 時，呼叫端
-        要在回應上 `set_cookie()`（新建或續命皆要重設，讓 Max-Age
-        變成滑動窗）。
+        `(owner_id, cookie, materializer)`。
+
+        - `owner_id` 為 `None`：這個路由被排除在 owner-scoped 流程之外
+          （`_OWNER_EXEMPT_*`），不簽 cookie、不碰 owner。
+        - cookie 已綁定 owner：回真正的 owner_id，續命 `last_seen_at`。
+        - SECURITY-FIX-01（deferred owner creation）：沒帶 cookie、cookie
+          形狀不對、或帶著一顆還沒綁定的 token——**不建立任何 owner 列**。
+          回一個每個請求各自隨機的佔位 owner_id（讀取端點天然查不到任何
+          東西），加上一個 materializer：只有真正要持久化資料的端點呼叫
+          `materialize_owner()` 時才會用它把這顆 token 原子地綁到新
+          owner（`Storage.claim_browser_token()`，靠 token PK 保證並發
+          下只會得到一個 owner）。請求帶著一顆形狀合法、但沒綁定的
+          token（例如 owner 被清理後的舊 cookie）時，綁的就是這一顆：
+          同一個瀏覽器同時送出的多個建立請求（連點、多個分頁）因此收斂到
+          同一個 owner。
+
+        `cookie`：`{"token": ..., "bound": bool}`。**只有 `bound` 為真的
+        回應才會 `set_cookie()`**——cookie 已綁定 owner（續命，讓 Max-Age
+        變成滑動窗），或這次請求剛呼叫 materializer 綁定（materializer
+        會把它翻成真）。沒綁定的回應（首訪讀取、404……）一律不發 owner
+        cookie：Codex P1（PR #346）——首訪同時送出好幾個沒帶 cookie 的
+        讀取時，若每個回應都各自發一顆新 token，使用者在某個慢回應回來
+        之前就建立劇本的話，那個慢回應會用一顆沒綁定的 token 蓋掉剛綁定
+        的 cookie，剛建立的 owner 與劇本從此存取不到。不發就沒有東西能
+        蓋。
 
         只在**沒有被 DI 覆寫**（`_uses_cookie_identity`，production
         唯一路徑）時才會做任何 cookie／storage owner 動作——顯式注入
-        別的 `identity_resolver`（既有 `test_scale06`／`test_scale11`
-        大量依賴的既有做法）時，這個函式直接回 `(None, None)`，呼叫端
-        改用 `identity_resolver()` 本身，行為與 PB-02 之前逐位元相同。
+        別的 `identity_resolver` 時，這個函式直接回 `(None, None, None)`，
+        呼叫端改用 `identity_resolver()` 本身。
         """
         if not _uses_cookie_identity:
-            return None, None
+            return None, None, None
         if _is_owner_exempt_route(request.url.path):
-            return None, None
+            return None, None, None
 
         token = request.cookies.get(_OWNER_COOKIE_NAME)
-        owner_id = _db().resolve_owner_by_token(token) if token else None
-
-        now = now_utc_iso()
-        if owner_id is not None:
-            # 續命：token 已知有效，只更新 last_seen_at，不重新建立。
-            _db().touch_browser_identity(token, now=now)
+        stale_bootstrap = False
+        if token is not None and _OWNER_TOKEN_RE.match(token):
+            owner_id = _db().resolve_owner_by_token(token)
         else:
-            # 缺 cookie，或帶著的 token 查不到（已被伺服器單方作廢、
-            # 或從未存在過）——一律視為新訪客，建立新 owner＋新 token。
-            # 兩個值各自獨立產生（PB-01 既有不變量：token 不是 owner_id）。
-            owner_id = secrets.token_urlsafe(32)
-            token = secrets.token_urlsafe(32)
-            _db().create_owner_with_token(
-                Owner(owner_id=owner_id, created_at=now),
-                BrowserIdentity(token=token, owner_id=owner_id,
-                                issued_at=now, last_seen_at=now))
-        return owner_id, token
+            token, owner_id, stale_bootstrap = _bootstrap_token(request)
+        if owner_id is not None:
+            _db().touch_browser_identity(token, now=now_utc_iso())
+            return owner_id, {"token": token, "bound": True}, None
+
+        cookie = {"token": token, "bound": False}
+
+        def materialize() -> str:
+            if stale_bootstrap:
+                # Codex P2（PR #346）：header 帶的是一顆早就綁定、超過重試窗
+                # 的 token（例如前端清除失敗、cookie 又被清掉）。不能悄悄換
+                # 一顆只有伺服器知道的隨機 token 照樣寫入——回應一旦遺失，
+                # 重試還是帶那顆舊 token、又換一顆，就多出第二個 owner。
+                # 寫入之前就拒絕，前端換一顆新 token 重送（見
+                # `src/api.ts` 的 `sendOwnerBootstrap`）。
+                raise HTTPException(
+                    status_code=409, detail="瀏覽器暫存的身分已過期，請重試",
+                    headers={_OWNER_BOOTSTRAP_STALE_HEADER: "1"})
+            now = now_utc_iso()
+            bound, created = _db().claim_browser_token(
+                token, Owner(owner_id=secrets.token_urlsafe(32), created_at=now),
+                now=now)
+            if created:
+                _record_metric("new_owner_count", ny_today())
+            set_resolved_owner(bound)
+            cookie["bound"] = True
+            return bound
+
+        return pending_owner_placeholder(), cookie, materialize
+
+    def _bootstrap_token(request: Request) -> tuple[str, str | None, bool]:
+        """沒有有效 cookie 時的 token 來源（見 `_OWNER_BOOTSTRAP_HEADER`），
+        回傳 `(token, owner_id, stale)`：header 帶著形狀合法的 token——還沒
+        綁定就沿用它（等 materializer 綁定），綁定未滿
+        `_OWNER_BOOTSTRAP_RETRY_WINDOW` 就視同那個 owner；綁定太久的回
+        `stale=True`（讀取照舊當新訪客，寫入會被拒絕、要前端換 token）；
+        沒帶或形狀不對就換一顆新的隨機 token。"""
+        candidate = request.headers.get(_OWNER_BOOTSTRAP_HEADER)
+        if candidate and _OWNER_TOKEN_RE.match(candidate):
+            bound = _db().resolve_owner_by_token(candidate)
+            if bound is None:
+                return candidate, None, False
+            rec = _db().get_owner(bound)
+            try:
+                age = datetime.now(timezone.utc) - datetime.fromisoformat(rec.created_at)
+            except (AttributeError, ValueError):
+                age = None
+            if age is not None and age < _OWNER_BOOTSTRAP_RETRY_WINDOW:
+                return candidate, bound, False
+            return secrets.token_urlsafe(32), None, True
+        return secrets.token_urlsafe(32), None, False
+
+    def _persistent_owner() -> str:
+        """要持久化 owner-scoped 資料的端點用這個取 owner，不是
+        `identity_resolver()`——這是匿名 owner 唯一的建立入口（見
+        `identity.materialize_owner()`）。DI 覆寫身份時照舊用注入值。"""
+        return materialize_owner() if _uses_cookie_identity else identity_resolver()
 
     async def _call_within_owner_scope(request: Request, call_next) -> Response:
-        owner_id, cookie_token = _resolve_owner_for_request(request)
+        request_token = _current_request.set(request)
+        try:
+            return await _call_within_owner_scope_inner(request, call_next)
+        finally:
+            _current_request.reset(request_token)
+
+    async def _call_within_owner_scope_inner(request: Request, call_next) -> Response:
+        owner_id, cookie, materializer = _resolve_owner_for_request(request)
         effective_owner = owner_id if _uses_cookie_identity else identity_resolver()
-        with diagnostics.owner_scope(effective_owner), \
-             resolved_owner_scope(owner_id):
+        # 佔位 owner 不寫進診斷紀錄的 owner 欄位：它不屬於任何人，也不該
+        # 被任何人的 `/api/diagnostics` 讀到。
+        diag_owner = None if is_pending_owner(effective_owner) else effective_owner
+        with diagnostics.owner_scope(diag_owner), \
+             resolved_owner_scope(owner_id, materializer):
             response = await call_next(request)
-        if cookie_token is not None:
+        if cookie is not None and cookie["bound"]:
             # `SameSite=Lax`：同源 SPA，沒有跨站表單提交或第三方
             # iframe 內嵌的需求，`Lax` 已足夠擋掉 CSRF 常見手法
             # （跨站 GET 導覽仍會帶上，但本站沒有靠 GET 產生副作用的
@@ -1192,14 +1453,15 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
             # 前端 mock 的 E2E／pytest TestClient，兩者皆已改用
             # `https://testserver` 分別見 `docs/pb02-cookie-testing-
             # notes.md`），瀏覽器會拒收這顆 cookie——這是明確記錄的
-            # 已知限制，不是靜默降級：程式碼不會偵測「是不是 HTTPS」
-            # 然後悄悄拿掉 `Secure`／`__Host-`，那樣才是真正的靜默
-            # 降級（會讓 production 與非 HTTPS 環境的 cookie 屬性不
-            # 一致、難以察覺）。
+            # 已知限制，不是靜默降級。
             response.set_cookie(
-                _OWNER_COOKIE_NAME, cookie_token,
-                max_age=_OWNER_COOKIE_MAX_AGE_SECONDS,
+                _OWNER_COOKIE_NAME, cookie["token"],
+                max_age=_owner_cookie_max_age_seconds,
                 httponly=True, secure=True, samesite="lax", path="/")
+            # cookie 是 HttpOnly，前端讀不到：明講「已綁定」，前端才知道
+            # 可以丟掉 bootstrap token、不必再碰本機儲存（見
+            # `src/ownerBootstrap.ts`）。只是一個布林，不含 token 本身。
+            response.headers["X-OC-Owner-Bound"] = "1"
         return response
 
     @app.middleware("http")
@@ -1263,6 +1525,96 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
             cached_treasury_rows["fn"] = cached_rate_curve_rows(_db(), rate_curve_rows)
         return cached_treasury_rows["fn"]
 
+    def _source_limiter_status() -> str:
+        return _source_limiter_state
+
+    def _request_source_key(request: Request | None) -> str | None:
+        """這次 request 的 source key（HMAC，不是 IP）；secret 沒設、
+        拿不到可信 IP 時回 `None`＝這一層不擋。"""
+        if request is None or _effective_source_hmac_secret is None:
+            return None
+        peer = request.client.host if request.client else None
+        ip = ac.client_ip(request.headers, peer, _effective_trusted_ip_header)
+        if ip is None:
+            return None
+        return ac.source_key(ip, _effective_source_hmac_secret, _clock())
+
+    def _buckets(scope: str, key: str, now: float,
+                 *pairs: tuple[int, int]) -> list[RateLimitBucket]:
+        """`(視窗秒數, 上限)` → 對齊好起點的 bucket；上限 `<=0` 的視窗停用。"""
+        return [RateLimitBucket(scope, key, seconds, ac.window_start(now, seconds), limit)
+                for seconds, limit in pairs if limit > 0]
+
+    def _is_new_owner(owner_id: str, now: float) -> bool:
+        # 還沒綁定的佔位 owner（正常流程不會走到抓鏈，見
+        # `_persistent_owner()`）保守視為新 owner：寧可多算進 tier。
+        if is_pending_owner(owner_id):
+            return True
+        rec = _db().get_owner(owner_id)
+        if rec is None or rec.protected:
+            return False
+        try:
+            created = datetime.fromisoformat(rec.created_at)
+        except ValueError:
+            return False
+        return datetime.fromtimestamp(now, timezone.utc) - created < _effective_tier_age
+
+    def _enforce_vendor_limits(symbol: str) -> None:
+        """SECURITY-FIX-02：global fuse 之後、真的打上游之前的三層檢查
+        （見 `abuse_control` 檔頭）。只從 `_vendor_attempt()` 呼叫——每個
+        真正要送出的上游 attempt 各一次（自訂失敗退回 Cboe、Cboe 失敗
+        退回 yfinance，就是二到三次）；頁面、詳細頁、usage-summary 等
+        讀取完全不消耗任何額度。
+
+        三層的 bucket 一次交給 `rate_limit_consume()`（全有或全無）：
+        被任何一層擋下的那次不打上游，**也不扣任何一層的額度**——額度
+        只算真的放行的上游抓取。
+
+        Super User／Super Admin 豁免 owner 層（per-owner quota、new-owner
+        tier），source burst 與 global fuse（已在呼叫端先擋）照樣適用。
+        被擋時丟出 `FetchError` 子類，交給既有 `_classify_fetch_failure()`
+        分類。"""
+        request = _current_request.get()
+        role = (superuser.resolve_role(request, resolve_session=_db().resolve_role_session)
+                if request is not None else superuser.Role.NORMAL)
+        now = _clock()
+        owner = identity_resolver()
+        layers: list[str] = []
+        buckets: list[RateLimitBucket] = []
+
+        def add(layer: str, layer_buckets: list[RateLimitBucket]) -> None:
+            layers.extend([layer] * len(layer_buckets))
+            buckets.extend(layer_buckets)
+
+        if role < superuser.Role.SUPERUSER:
+            per_min, per_hour, per_day = _effective_owner_quota
+            add("owner", _buckets(OWNER_RATE_LIMIT_SCOPE, owner, now,
+                                  (ac.MINUTE, per_min), (ac.HOUR, per_hour),
+                                  (ac.DAY, per_day)))
+        source = _request_source_key(request)
+        if source is not None:
+            src_min, src_hour = _effective_source_burst
+            add("source", _buckets("source_vendor", source, now,
+                                   (ac.MINUTE, src_min), (ac.HOUR, src_hour)))
+        pool = ac.new_owner_tier_pool(_effective_global_vendor_daily_budget,
+                                      _effective_tier_share)
+        if role < superuser.Role.SUPERUSER and pool > 0 and _is_new_owner(owner, now):
+            day, day_start = ac.ny_day_bounds(now)
+            add("tier", [RateLimitBucket("new_owner_tier", day, ac.DAY, day_start, pool)])
+        blocked = _db().rate_limit_consume(buckets) if buckets else None
+        if blocked is None:
+            return
+        layer = layers[blocked]
+        if layer == "owner":
+            _record_metric("owner_quota_block_count", ny_today())
+            raise ac.UsageLimited(f"{symbol}：這個瀏覽器短時間內查詢太多次")
+        if layer == "source":
+            _record_metric("source_burst_block_count", ny_today())
+            raise ac.UsageLimited(f"{symbol}：這個網路來源短時間內查詢太多次")
+        _record_metric("new_owner_tier_block_count", ny_today())
+        raise ac.NewOwnerTierExhausted(
+            f"新使用者今日共用的查詢預算已用完，暫停 {symbol} 的新抓鏈")
+
     def _fetch_chain(symbol: str) -> ChainSnapshot:
         """依設定挑抓鏈路徑（Settings／#125）。
 
@@ -1277,15 +1629,14 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         自訂成功時同樣記一次成功：那是比任何測試連線都真實的證據。
 
         PB-06（#299）：**這是全站唯一會真正打上游的入口**——不論走
-        自訂還是預設路徑，都得先經過這裡。Global Vendor Fuse 因此
-        擋在函式最上方、任何其他判斷之前，確保沒有任何路徑可以繞過
-        它（AC-9 安全考量）；Super User 使用產品本身（即使切了自訂
-        provider）同樣受這道煞車約束，不豁免（spec §8 v3）。
+        自訂還是預設路徑，都得先經過這裡。SECURITY-P1-VENDOR-ATTEMPT-001：
+        Global Vendor Fuse 與 abuse-control 額度不再只在這裡最上方檢查
+        一次，而是在**每一個真正的上游 attempt** 前各檢查一次（自訂
+        provider、Cboe、yfinance 備援各自包一層 `_vendor_attempt()`）：
+        一次 logical 抓鏈最多會送出三個上游請求，每一個都算。Super User
+        使用產品本身（即使切了自訂 provider）同樣受 fuse 約束，不豁免
+        （spec §8 v3）。
         """
-        if vendor_fuse.tripped(_db(), ny_today(),
-                               _effective_global_vendor_daily_budget):
-            raise vendor_fuse.GlobalVendorFuseTripped(
-                f"全站今日 vendor 呼叫預算已用完，暫停 {symbol} 的新抓鏈")
         db = _db()
         owner = identity_resolver()
         stored = db.get_settings(owner=owner)
@@ -1300,7 +1651,13 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
             return _effective_fetch(symbol)
 
         try:
-            snap = custom_fetch(md.provider, symbol, cred.token)
+            snap = _vendor_attempt(
+                lambda sym: custom_fetch(md.provider, sym, cred.token),
+                md.provider)(symbol)
+        except _ATTEMPT_REFUSALS:
+            # 我們自己擋下的，不是 provider 失敗：不記驗證結果、不退回
+            # 預設來源（那只會是另一個同樣會被擋的 attempt）。
+            raise
         except FetchError as e:
             db.save_verification(ProviderVerification(
                 provider=md.provider, ok=False, reason=str(e),
@@ -1388,7 +1745,11 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         except ParamError as e:
             raise _fail("params", 400, str(e)) from e
         except Exception as e:  # noqa: BLE001 — 引擎任何失敗都要說是哪一段，不留白畫面
-            raise _fail("analyze", 500, f"分析失敗：{e}") from e
+            # SECURITY（#345 B-3）：非預期例外的原文可能帶內部細節，不直達
+            # client——分層（`analyze`）照舊，訊息固定，原文進 server log
+            # （回應 header 的 X-Correlation-Id 可以對上這一筆）。
+            _logger.error("analysis failed for %s", symbol, exc_info=True)
+            raise _fail("analyze", 500, "分析失敗（內部錯誤），請稍後重試") from e
         return (store.serialize_result(result, scenario_id, capital=None),
                 dataclasses.asdict(snap))
 
@@ -1428,8 +1789,11 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
                 rate = {"fetched_at": entry.fetched_at,
                        "ok": entry.curve is not None, "note": entry.note,
                        "last_success_at": entry.last_success_at}
-        except Exception as e:  # noqa: BLE001 — 連不上也要能回答，這正是本端點的用途
-            kind = f"unavailable: {e}"
+        except Exception:  # noqa: BLE001 — 連不上也要能回答，這正是本端點的用途
+            # SECURITY（#345 B-2）：這是未認證端點，例外原文（DB host／user
+            # 等連線細節）只進 server log，回應只說「unavailable」。
+            _logger.warning("health check: storage unavailable", exc_info=True)
+            kind = "unavailable"
         return {"status": "ok", "engine_version": __version__,
                 "storage": kind, "path": request.url.path, "rate": rate}
 
@@ -1454,8 +1818,7 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         授權失敗（secret 未設定或不符）**先驗證再呼叫 pipeline**——
         不合法的請求零 vendor／cache mutation（AC-2）。
         """
-        provided = request.headers.get("authorization")
-        if not _effective_cron_secret or provided != f"Bearer {_effective_cron_secret}":
+        if not _cron_authorized(request):
             raise HTTPException(status_code=401, detail="unauthorized")
         curve, note = _rate_curve_loader()(ny_today())
         return {"ok": curve is not None, "note": note}
@@ -1508,50 +1871,73 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         授權失敗先驗證再動作，比照既有 `cron_warm_rate_cache()`
         同一套 fail-closed 寫法（secret 未設定時一律視同不符）。
         """
-        provided = request.headers.get("authorization")
-        if not _effective_cron_secret or provided != f"Bearer {_effective_cron_secret}":
+        if not _cron_authorized(request):
             raise HTTPException(status_code=401, detail="unauthorized")
 
         now = datetime.now(timezone.utc)
-        candidates = [o for o in _db().list_owners() if not o.protected]
-        batch = candidates[:_effective_cleanup_batch_size]
+        # SECURITY-FIX-01：**先**判定、**再**套批次上限。原本是「全部
+        # owner 依建立時間排序 → 取最舊 200 個 → 才判定」：只要最舊的
+        # 200 個都還活躍，後面真正該清的 owner 永遠輪不到。現在先從全部
+        # （非 protected）owner 裡挑出真的可刪的，批次上限只限制「這次
+        # 刪幾個」，活躍的 owner 不再佔用任何批次名額。
+        facts = [f for f in _db().owner_lifecycle_facts() if not f.protected]
         abandoned = 0
-        hard_deleted = 0
-        rows_deleted = 0
-        for o in batch:
+        eligible = []
+        for f in facts:
             state = anonymous_lifecycle.classify(
-                last_activity_at=o.last_activity_at, created_at=o.created_at,
-                now=now, abandoned_after_days=_effective_abandoned_after_days,
-                grace_period_days=_effective_grace_period_days)
+                last_seen_at=f.last_seen_at, created_at=f.created_at,
+                has_data=f.has_data, now=now,
+                retention_days=_effective_retention_days,
+                grace_period_days=_effective_grace_period_days,
+                empty_retention_days=_effective_empty_owner_retention_days)
             if state == "abandoned":
                 abandoned += 1
             elif state == "eligible_for_hard_delete":
-                counts = _db().delete_owner(o.owner_id)
-                hard_deleted += 1
-                rows_deleted += sum(counts.values())
+                eligible.append(f)
+        batch = eligible[:_effective_cleanup_batch_size]
+        data_deleted = empty_deleted = 0
+        data_rows = empty_rows = 0
+        for f in batch:
+            rows = sum(_db().delete_owner(f.owner_id).values())
+            if f.has_data:
+                data_deleted += 1
+                data_rows += rows
+            else:
+                empty_deleted += 1
+                empty_rows += rows
         # 每次執行都記一筆（含 0），不只在真的刪到東西時才記——「今天
         # cron 有沒有真的跑過」本身也是有價值的訊號（PB-11）。
         _record_metric("abandoned_owner_cleanup_count", ny_today(),
-                       count=hard_deleted, amount=rows_deleted)
-        return {"owners_checked": len(candidates), "batch_size": len(batch),
-               "abandoned": abandoned, "hard_deleted": hard_deleted,
-               "rows_deleted": rows_deleted}
+                       count=data_deleted, amount=data_rows)
+        _record_metric("empty_owner_cleanup_count", ny_today(),
+                       count=empty_deleted, amount=empty_rows)
+        # SECURITY-FIX-02：短時間窗計數（含 source key）的保留期——視窗
+        # 結束一小時後就清掉，source 狀態不會被永久保存。
+        purged = _db().purge_rate_limits(
+            before_epoch=int(_clock()) - abuse_control.RATE_LIMIT_RETENTION_SECONDS)
+        return {"owners_checked": len(facts), "eligible": len(eligible),
+               "rate_limit_rows_purged": purged,
+               "batch_size": len(batch), "abandoned": abandoned,
+               "hard_deleted": data_deleted + empty_deleted,
+               "empty_owners_deleted": empty_deleted,
+               "rows_deleted": data_rows + empty_rows}
 
     def _anonymous_owner_distribution(today: date) -> dict:
-        """PB-11（#303）：query-time gauge——現在去數一次 `list_
-        owners()` 就有答案的東西，不持久化、不進 `METRIC_CATALOGUE`
-        （與既有 `table_size_metrics()` 同一種形狀）。分類邏輯直接
-        重用 PB-08 的 `anonymous_lifecycle.classify()`，不在這裡另外
-        寫一份可能漂移的 SQL 版本。"""
+        """PB-11（#303）：query-time gauge——現在去數一次就有答案的東西，
+        不持久化、不進 `METRIC_CATALOGUE`。分類邏輯直接重用
+        `anonymous_lifecycle.classify()`（SECURITY-FIX-01 起錨點是
+        `last_seen_at`），不在這裡另外寫一份可能漂移的版本。"""
         now = datetime.combine(today, datetime.min.time(), tzinfo=timezone.utc)
         active = abandoned = eligible = protected = 0
-        for o in _db().list_owners():
+        for o in _db().owner_lifecycle_facts():
             if o.protected:
                 protected += 1
             state = anonymous_lifecycle.classify(
-                last_activity_at=o.last_activity_at, created_at=o.created_at,
-                now=now, abandoned_after_days=_effective_abandoned_after_days,
-                grace_period_days=_effective_grace_period_days)
+                last_seen_at=o.last_seen_at, created_at=o.created_at,
+                has_data=o.has_data, now=now,
+                retention_days=_effective_retention_days,
+                grace_period_days=_effective_grace_period_days,
+                empty_retention_days=_effective_empty_owner_retention_days)
             if state == "active":
                 active += 1
             elif state == "abandoned":
@@ -1696,10 +2082,17 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
                # 序列化到任何回應——這裡補上，讀的是
                # `vendor_fuse.today_chain_fetch_count()`，跟真正決定
                # 要不要觸發 `GlobalVendorFuseTripped` 的**同一個**函式
-               # （見上方 `_fetch_chain()` 呼叫 `vendor_fuse.tripped()`
+               # （見上方 `_vendor_attempt()` 呼叫 `vendor_fuse.tripped()`
                # 那段），不是自己另外對 `by_metric["chain_fetch_count"]`
                # 的 30 天視窗桶重新加總算出可能兜不起來的第二個「今天」
                # 定義。`budget <= 0`＝停用，誠實回 `None`。
+               # SECURITY-FIX-02：防護層現況（不含任何 secret 或 IP）。
+               "abuse_control": {
+                   "source_limiter": _source_limiter_status(),
+                   "client_ip_source": _effective_trusted_ip_header or "peer",
+                   "owner_vendor_quota": list(_effective_owner_quota),
+                   "source_vendor_burst": list(_effective_source_burst),
+                   "new_owner_tier_share": _effective_tier_share},
                "vendor_fuse": {
                    "used": vendor_fuse.today_chain_fetch_count(_db(), ny_today()),
                    "budget": (_effective_global_vendor_daily_budget
@@ -1723,8 +2116,7 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         no-op，回應的 `sent` 欄位誠實回報有沒有真的寄出，不假裝
         成功）。回應同樣只含聚合數字與 alert key，不回傳信件全文
         （信件全文只會出現在真正寄出的那封信裡）。"""
-        provided = request.headers.get("authorization")
-        if not _effective_cron_secret or provided != f"Bearer {_effective_cron_secret}":
+        if not _cron_authorized(request):
             raise HTTPException(status_code=401, detail="unauthorized")
 
         today = ny_today()
@@ -1754,7 +2146,7 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
     # 現行真相的疑惑。
 
     @app.post("/api/auth/login")
-    def auth_login(body: AuthLoginRequest, response: Response) -> dict:
+    def auth_login(body: AuthLoginRequest, response: Response, request: Request) -> dict:
         """依序比對 `SUPERADMIN_PASSWORD` → `SUPERUSER_PASSWORD`
         （`secrets.compare_digest`，常數時間，避免時序側信道洩漏
         比對結果），命中即建立 AUTH-01 的 role session＋簽發 cookie；
@@ -1779,6 +2171,20 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         設定，例如 Vercel 專案設定裡只勾了 Production 卻沒勾 Preview）
         不是程式碼能修的——已回報 Owner 另外確認部署平台設定，不在
         這裡假裝修好。"""
+        # SECURITY-FIX-02：來源層的高速猜密碼防護——每個來源（HMAC key，
+        # 不是 IP）各自計數，每次嘗試都算。刻意**沒有**全站或帳號層級
+        # 的鎖定：那會讓攻擊者可以故意讓 Owner 登不進去；這裡被擋的只有
+        # 那個來源本身。secret 沒設時這一層跟 source burst 一起停用。
+        login_source = _request_source_key(request)
+        if login_source is not None:
+            per_min, per_hour = _effective_login_limits
+            login_buckets = _buckets("login", login_source, _clock(),
+                                     (abuse_control.MINUTE, per_min),
+                                     (abuse_control.HOUR, per_hour))
+            if login_buckets and _db().rate_limit_consume(login_buckets) is not None:
+                _record_metric("login_rate_limit_block_count", ny_today())
+                raise HTTPException(status_code=429,
+                                    detail="登入嘗試太頻繁，請稍後再試")
         role: superuser.Role | None = None
         submitted = body.password.strip()
         # AUTH-P1-FIX-001（PR #344 Codex review P1）：設定值先 normalize、
@@ -1980,8 +2386,11 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         選擇）。"""
         superuser.require_role(request, superuser.Role.SUPERADMIN,
                                resolve_session=_db().resolve_role_session)
+        # SECURITY（#345 B-4）：比照 `/api/diagnostics` 夾住範圍——負值或
+        # 超大值不會變成 500 或一次撈整張表。
+        clamped = max(1, min(limit, _AUDIT_LOG_MAX_LIMIT))
         return [dataclasses.asdict(e)
-                for e in _db().list_audit_events(limit=limit)]
+                for e in _db().list_audit_events(limit=clamped)]
 
     # ---------- Application diagnostics（DG-02／#145） ----------
 
@@ -2104,15 +2513,25 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
                 best_scenario.target_month if best_scenario is not None else None,
         }
 
-    # ---------- 一次性分析（V1 遺留，前端改走劇本端點後可移除） ----------
-
-    @app.post("/api/analyze")
-    def analyze_adhoc(req: AnalyzeRequest) -> dict:
+    # ---------- 一次性分析：已退休的公開端點，只剩內部 seam ----------
+    #
+    # SECURITY-FIX-01：`POST /api/analyze`（V1 遺留）已經移除——前端從
+    # V3 起就不再呼叫它，但它一直是一條不用建劇本、不受劇本額度限制、
+    # 任意 symbol 就打一次上游的公開攻擊面。
+    #
+    # 「引擎對某組參數算出來的完整 view」本身仍然有用：前端共用的契約
+    # 樣本（`contracts/*.json`，`scripts/gen_contract_sample.py`）與
+    # 一批引擎契約測試都靠它。所以留一個**不掛任何路由**的內部入口，
+    # 只能從 process 內（測試、產樣本腳本）呼叫，HTTP 碰不到。
+    def _analyze_request(body: dict) -> dict:
+        req = AnalyzeRequest(**body)
         view, _snapshot = _analyze(
             scenario_id=_ADHOC_SCENARIO_ID, symbol=req.symbol,
             target_price=req.target_price, target_month=req.target_month,
             strategies=tuple(req.strategies))
         return view
+
+    app.state.analyze_request = _analyze_request
 
     # ---------- 劇本 ----------
 
@@ -2137,7 +2556,10 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         # 就緊鄰這個既有檢查本身，不與任何其他角色豁免共用判斷式或工具
         # 函式（票面明確警告：絕不得意外波及 `vendor_fuse.tripped()`，
         # 那條檢查對三層角色一視同仁，PB-06 既有決策維持不變）。
-        owner = identity_resolver()
+        #
+        # SECURITY-FIX-01：建立劇本是第一個真正需要持久化 owner 的動作
+        # ——匿名 owner 在這裡（而不是第一次讀取時）才被建立。
+        owner = _persistent_owner()
         role = superuser.resolve_role(request,
                                       resolve_session=_db().resolve_role_session)
         if role < superuser.Role.SUPERUSER and _effective_max_active_scenarios > 0:
@@ -2365,7 +2787,7 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         沿用既有資料、Super User／Super Admin 豁免。Owner 直接裁示
         整段移除：「所有人都可以隨時按重新整理」，不再有這道「按了要
         等」的產品層限制。成本控制唯一剩下的防線是下面
-        `_analyze()`／`_fetch_chain()` 內既有的 `vendor_fuse.tripped()`
+        每個上游 attempt 前（`_vendor_attempt()`）的 `vendor_fuse.tripped()`
         （PB-06，對三層角色一視同仁，這輪沒有放寬），不是另外新增一套
         取代節流的防禦架構——這輪不堆新機制，上線前另外排一次完整的
         安全掃描。
@@ -2739,9 +3161,9 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         算過一次），不傳時照舊自己查一次，行為不變。"""
         creds = credentials if credentials is not None else _credential_map()
         tokens = tuple(cred.token for cred in creds.values() if cred is not None)
-        role_passwords = tuple(
-            p for p in (_effective_superuser_password, _effective_superadmin_password)
-            if p)
+        role_passwords = diagnostics.secret_forms(_effective_superuser_password,
+                                                  _effective_superadmin_password,
+                                                  _effective_source_hmac_secret)
         return tokens + role_passwords + database_url_candidates()
 
     def _flush_diagnostics(diag: _CollectingDiagnostics) -> dict:
@@ -2837,7 +3259,7 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
             raise HTTPException(status_code=403,
                                 detail=_HISTORICAL_IV_DISABLED_DETAIL)
 
-        protected_owner = _the_protected_owner_id(_db().list_owners())
+        protected_owner = _the_protected_owner_id(_db().list_protected_owners())
         if protected_owner is None:
             raise HTTPException(status_code=403,
                                 detail=_HISTORICAL_IV_DISABLED_DETAIL)
@@ -3117,7 +3539,7 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
                                      provider=req.market_data.provider),
             historical_iv=UsageSetting(mode=req.historical_iv.mode,
                                        provider=req.historical_iv.provider),
-            updated_at=now_utc_iso(), owner_id=identity_resolver()))
+            updated_at=now_utc_iso(), owner_id=_persistent_owner()))
         # 刻意不寫事件紀錄：這條路徑上有 provider id 沒問題，但把設定變更
         # 寫進 append-only 紀錄會讓「token 絕不進事件紀錄」這條 AC 從
         # 「結構上不可能」退成「靠這裡沒寫錯」。設定是單一狀態、不是需要
@@ -3144,7 +3566,7 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
                                 detail=f"不支援的資料源：{provider}")
         _db().save_credential(ProviderCredential(
             provider=provider, token=req.token, updated_at=now_utc_iso(),
-            owner_id=identity_resolver()))
+            owner_id=_persistent_owner()))
         return _settings_view()
 
     @app.post("/api/settings/credentials/{provider}/test")

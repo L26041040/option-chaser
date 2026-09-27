@@ -171,7 +171,10 @@ def test_role_session_presence_does_not_change_which_owner_a_cookie_resolves_to(
     從 HTTP 層驗證這件事真的落地成一致的可觀察行為。"""
     storage = MemoryStorage()
     c = _client(storage=storage)
-    c.get("/api/scenarios")  # lazy creation：建立一個 owner，拿到 cookie
+    # SECURITY-FIX-01：讀取不再建立 owner，建一個劇本才會。
+    c.post("/api/scenarios", json={"symbol": "XYZ", "target_price": 130.0,
+                                   "target_month": "2027-01",
+                                   "strategies": ["vertical-spread"]}).raise_for_status()
     assert len(storage.list_owners()) == 1
     owner_id = storage.list_owners()[0]
 

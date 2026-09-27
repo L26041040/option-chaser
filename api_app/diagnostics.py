@@ -282,6 +282,17 @@ def _mask_known_secrets(value: str, secrets: tuple[str, ...]) -> str:
     return out
 
 
+def secret_forms(*values: str | None) -> tuple[str, ...]:
+    """redaction 要遮的祕密字串形式（#345 B-7）：原值，加上去掉頭尾空白
+    的形式——登入比對用的是 `.strip()` 後的值，訊息裡出現的也可能是那個
+    形式。空值與只有空白的值不算祕密（不然會把空字串當成要遮的東西）。
+    診斷（`main.py::_known_secrets()`）與 Sentry（`observability.
+    known_env_secrets()`）共用這一個規則。"""
+    return tuple(dict.fromkeys(
+        form for value in values if value
+        for form in (value, value.strip()) if form.strip()))
+
+
 def sanitize_string(value: str, *, secrets: tuple[str, ...] = ()) -> str:
     """一句話要進 diagnostics（event 的 `message`，或 context 裡任何字串
     值）之前，一律先過這裡：已知祕密值逐字比對替換 → 樣式遮蔽 → 長度

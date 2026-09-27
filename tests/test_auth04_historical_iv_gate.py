@@ -224,14 +224,17 @@ def test_normal_user_request_never_even_queries_for_a_protected_owner(
     """票面 Security considerations 的直接落地：角色檢查沒過之前，
     連「有沒有 protected owner 存在」這個查詢都不該發生——不只是
     「不洩漏借用了誰的 credential」，是連查都不查。"""
-    calls: list[None] = []
-    original = MemoryStorage.list_owners
+    calls: list[str] = []
+    # #345 A-4 起 Historical IV 改用窄查詢 `list_protected_owners()`；兩個
+    # 找 owner 的入口都要監看，否則這條測試會因為換了方法名而空轉通過。
+    for name in ("list_owners", "list_protected_owners"):
+        original = getattr(MemoryStorage, name)
 
-    def _recording_list_owners(self):
-        calls.append(None)
-        return original(self)
+        def _recording(self, _original=original, _name=name):
+            calls.append(_name)
+            return _original(self)
 
-    monkeypatch.setattr(MemoryStorage, "list_owners", _recording_list_owners)
+        monkeypatch.setattr(MemoryStorage, name, _recording)
 
     client = _client(storage=storage, identity_resolver=lambda: "a-normal-user")
     sid = _create_and_refresh(client)

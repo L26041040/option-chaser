@@ -7,5 +7,9 @@
 #
 # 要改 lambda 的依賴，請改 pyproject.toml。這裡保留同一份內容只是為了
 # 讓「直接 pip install -r」的人也能跑起來，兩邊必須一致。
-fastapi>=0.117.1
-psycopg[binary]>=3.2
+fastapi==0.141.1
+starlette==1.6.0
+pydantic==2.13.5
+psycopg[binary]==3.3.6
+tzdata; platform_system == 'Windows'
+sentry-sdk==2.69.2

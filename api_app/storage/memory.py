@@ -7,14 +7,17 @@
 from __future__ import annotations
 
 import dataclasses
+import threading
 import json
 from collections import deque
+from collections.abc import Sequence
 from contextlib import contextmanager
 
 from . import (BrowserIdentity, ChainBackoffEntry, ContractHistory,
                DataSourceSettings, DividendCacheEntry, IvBackfillRun,
-               IvObservation, MetricEntry, Owner,
-               ProviderCredential, ProviderVerification, RateCacheEntry,
+               IvObservation, MetricEntry, Owner, OwnerLifecycleFacts,
+               OWNER_RATE_LIMIT_SCOPE, ProviderCredential, ProviderVerification,
+               RateCacheEntry, RateLimitBucket,
                ResultFactContext, ResultRecord, ResultSummary, RoleSession,
                Scenario, ScenarioExists, SuperUserAuditEvent,
                TreasuryYearCacheEntry, require_owner)
@@ -50,6 +53,9 @@ class MemoryStorage:
         # `BrowserIdentity` docstring）。
         self._owners: dict[str, Owner] = {}
         self._browser_identities: dict[str, BrowserIdentity] = {}
+        self._claim_lock = threading.Lock()
+        # SECURITY-FIX-02：(scope, key, window_seconds, window_start) -> count
+        self._rate_limits: dict[tuple[str, str, int, int], int] = {}
         # AUTH-01（#308，三層角色模型）：與 owner registry／browser
         # identity 刻意獨立的第三張表——鍵是 role-session token，值不含
         # 任何 owner_id 關聯（軸一／軸二正交）。
@@ -436,6 +442,12 @@ class MemoryStorage:
                 n += 1
         counts["owner_verifications"] = n
 
+        dead = [slot for slot in self._rate_limits
+                if slot[0] == OWNER_RATE_LIMIT_SCOPE and slot[1] == owner_id]
+        for slot in dead:
+            del self._rate_limits[slot]
+        counts["rate_limits"] = len(dead)
+
         n = 0
         for token in list(self._browser_identities):
             if self._browser_identities[token].owner_id == owner_id:
@@ -462,6 +474,58 @@ class MemoryStorage:
         self._owners[owner.owner_id] = owner
         self._browser_identities[identity.token] = identity
 
+    def claim_browser_token(self, token: str, owner: Owner, *,
+                            now: str) -> tuple[str, bool]:
+        # 與 postgres 的 PK 等價：一把鎖保證「檢查＋寫入」不被並發
+        # 請求（TestClient 的多執行緒）切開。
+        with self._claim_lock:
+            existing = self._browser_identities.get(token)
+            if existing is not None:
+                return existing.owner_id, False
+            self._owners[owner.owner_id] = owner
+            self._browser_identities[token] = BrowserIdentity(
+                token=token, owner_id=owner.owner_id,
+                issued_at=now, last_seen_at=now)
+            return owner.owner_id, True
+
+    def owner_lifecycle_facts(self) -> list[OwnerLifecycleFacts]:
+        last_seen: dict[str, str] = {}
+        for identity in self._browser_identities.values():
+            prev = last_seen.get(identity.owner_id)
+            if prev is None or identity.last_seen_at > prev:
+                last_seen[identity.owner_id] = identity.last_seen_at
+        with_scenarios = {sc.owner_id for sc in self._scenarios.values()}
+        with_settings = set(self._owner_settings)
+        with_credentials = {owner_id for owner_id, _ in self._owner_credentials}
+        facts = [OwnerLifecycleFacts(
+                     owner_id=o.owner_id, created_at=o.created_at,
+                     last_seen_at=last_seen.get(o.owner_id),
+                     has_data=(o.owner_id in with_scenarios
+                               or o.owner_id in with_settings
+                               or o.owner_id in with_credentials),
+                     protected=o.protected)
+                 for o in self._owners.values()]
+        return sorted(facts, key=lambda f: (f.created_at, f.owner_id))
+
+    def rate_limit_consume(self, buckets: Sequence[RateLimitBucket]) -> int | None:
+        with self._claim_lock:
+            slots = [(b.scope, b.key, b.window_seconds, b.window_start)
+                     for b in buckets]
+            for i, (slot, b) in enumerate(zip(slots, buckets)):
+                if self._rate_limits.get(slot, 0) >= b.limit:
+                    return i
+            for slot in slots:
+                self._rate_limits[slot] = self._rate_limits.get(slot, 0) + 1
+        return None
+
+    def purge_rate_limits(self, *, before_epoch: int) -> int:
+        with self._claim_lock:
+            dead = [slot for slot in self._rate_limits
+                    if slot[3] + slot[2] < before_epoch]
+            for slot in dead:
+                del self._rate_limits[slot]
+        return len(dead)
+
     def touch_browser_identity(self, token: str, *, now: str) -> bool:
         identity = self._browser_identities.get(token)
         if identity is None:
@@ -486,6 +550,9 @@ class MemoryStorage:
 
     def list_owners(self) -> list[Owner]:
         return list(self._owners.values())
+
+    def list_protected_owners(self) -> list[Owner]:
+        return [o for o in self._owners.values() if o.protected]
 
     # ---------- Role session（AUTH-01／#308，三層角色模型） ----------
 

@@ -4,7 +4,8 @@ from __future__ import annotations
 import math
 from datetime import datetime, timezone
 
-from ..models import SCHEMA_VERSION, ChainSnapshot, FetchError, OptionContract
+from ..models import (SCHEMA_VERSION, ChainSnapshot, FetchError, OptionContract,
+                      describe_fetch_exception)
 
 
 def _clean_float(value) -> float | None:
@@ -46,6 +47,16 @@ def map_rows(
     )
 
 
+def available() -> bool:
+    """yfinance 套件有沒有裝。它是選用依賴（pyproject 的 `yf` extra），
+    production（Vercel）沒有裝——沒裝時 `fetch_chain()` 不會送出任何
+    網路請求，呼叫端可以據此跳過這個 attempt，不必為一個不會發生的
+    上游請求扣額度。"""
+    import importlib.util
+
+    return importlib.util.find_spec("yfinance") is not None
+
+
 def fetch_chain(symbol: str) -> ChainSnapshot:
     try:
         import yfinance as yf  # lazy: tests never import the network stack
@@ -61,7 +72,8 @@ def fetch_chain(symbol: str) -> ChainSnapshot:
                     r["option_type"] = side
                     rows.append(r)
     except Exception as e:  # noqa: BLE001 — any yfinance failure is a fetch failure
-        raise FetchError(f"yfinance 抓取失敗（{symbol}）: {e}") from e
+        # #345 B-3：訊息會直達 client（見 `describe_fetch_exception`）。
+        raise FetchError(f"yfinance 抓取失敗（{symbol}）: {describe_fetch_exception(e)}") from e
     if not rows or spot <= 0 or math.isnan(spot):
         raise FetchError(f"yfinance 回傳資料不足（{symbol}）：無現價或無合約")
     fetched_at = datetime.now(timezone.utc).isoformat(timespec="seconds")

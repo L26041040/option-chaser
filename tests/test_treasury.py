@@ -81,7 +81,8 @@ def test_fetch_curve_all_fail_raises_fetch_error():
 
 def test_fetch_curve_failure_message_names_the_source_and_stage():
     """#74：失敗訊息要看得出是哪個來源、哪一段失敗，不是一句籠統的
-    「抓取失敗」。"""
+    「抓取失敗」。#345 B-3：失敗原因只帶例外類別名，不帶原文（原文
+    可能含內部主機／proxy 細節，這則訊息會直達 client）。"""
     def http_get(url):
         raise OSError("connection refused")
 
@@ -91,7 +92,8 @@ def test_fetch_curve_failure_message_names_the_source_and_stage():
     message = str(exc_info.value)
     assert "Treasury" in message
     assert "CSV" in message and "XML" in message   # 兩種格式都試過
-    assert "connection refused" in message
+    assert "OSError" in message
+    assert "connection refused" not in message
 
 
 # ---------- fetch_curve_rows_for_year／fetch_curve_range（issue #160 前置件） ----------

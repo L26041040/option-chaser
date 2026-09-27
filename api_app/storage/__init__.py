@@ -314,6 +314,44 @@ class BrowserIdentity:
 
 
 @dataclass(frozen=True)
+class OwnerLifecycleFacts:
+    """SECURITY-FIX-01：匿名 owner 清理判定需要的全部原始事實，一次查齊
+    （不是逐一 owner 再查 N 次）。
+
+    - `last_seen_at`：這個 owner 名下所有 browser identity 裡最近的一次
+      `last_seen_at`——任何帶有效 cookie 的請求都會推這個值，是新的
+      inactivity 錨點。沒有任何 identity 列時為 `None`（例如合成壓測
+      owner），呼叫端退回 `created_at`。
+    - `has_data`：名下還有沒有使用者真正存下來的東西——劇本（含已封存）、
+      per-owner 設定或 provider credential。沒有的就是「空 owner」。
+    """
+    owner_id: str
+    created_at: str
+    last_seen_at: str | None
+    has_data: bool
+    protected: bool
+
+
+# per-owner vendor quota 的 bucket scope：`key` 就是 owner_id。
+# `delete_owner()` 靠這個 scope 把該 owner 的計數列一起刪掉（Codex P2，
+# PR #346：「刪除我的全部資料」要立刻清乾淨，不等 purge）。
+OWNER_RATE_LIMIT_SCOPE = "owner_vendor"
+
+
+@dataclass(frozen=True)
+class RateLimitBucket:
+    """SECURITY-FIX-02：一個短時間窗計數格——`(scope, key)` 這個對象在
+    `[window_start, window_start + window_seconds)` 這段時間內最多
+    `limit` 次。視窗起點由呼叫端算（per-owner／source 用 UTC 對齊，
+    new-owner tier 用 global fuse 同一條紐約日界線）。"""
+    scope: str
+    key: str
+    window_seconds: int
+    window_start: int
+    limit: int
+
+
+@dataclass(frozen=True)
 class RoleSession:
     """AUTH-01（#308，三層角色模型 spec #307）：cookie 帶的不透明
     token → 角色（`"superuser" | "superadmin"`）的映射。
@@ -1075,7 +1113,9 @@ class Storage(Protocol):
         「重新簽發」邏輯。
 
         回傳 `{table_name: 受影響列數}`，含 `owners`／
-        `browser_identities` 兩張（共 12 個鍵）。這個 owner_id 本來就
+        `browser_identities` 兩張，以及 `rate_limits`（這個 owner 的
+        per-owner quota 計數列，scope = `OWNER_RATE_LIMIT_SCOPE`；共 13 個
+        鍵）。這個 owner_id 本來就
         不存在時，全部鍵值皆為 0（不拋錯——「刪除一個不存在的東西」
         視同已經達成目標狀態，冪等）。"""
 
@@ -1115,6 +1155,41 @@ class Storage(Protocol):
         不存在時安靜地什麼都不做（不拋錯，理由同 `touch_owner_
         activity()`）。"""
 
+    def claim_browser_token(self, token: str, owner: Owner, *,
+                            now: str) -> tuple[str, bool]:
+        """SECURITY-FIX-01（deferred owner creation）：把一顆「還沒綁定
+        任何 owner」的 cookie token 原子地綁到一個新 owner 上。
+
+        回傳 `(實際綁定的 owner_id, 這次是不是真的新建)`。同一顆 token
+        若已經被綁定（包含同一瞬間另一個 serverless instance 搶先綁定），
+        **不建立新 owner**，直接回既有的 owner_id 與 `False`——正確性
+        建立在 `browser_identities.token` 這個 PK 上，不靠任何
+        process-local lock，因此多個 instance 同時首次寫入也只會得到
+        一個 owner。"""
+
+    def owner_lifecycle_facts(self) -> list[OwnerLifecycleFacts]:
+        """全部 owner 的清理判定原始事實（見 `OwnerLifecycleFacts`），
+        一次查詢取得。本方法不套用任何判準——判準在
+        `api_app.anonymous_lifecycle.classify()`，這裡只供事實。"""
+
+    def rate_limit_consume(self, buckets: Sequence[RateLimitBucket]) -> int | None:
+        """SECURITY-FIX-02：短時間窗濫用計數的「檢查＋扣一次」，**跨所有
+        bucket 原子、全有或全無**。
+
+        任何一個 bucket 已經達到上限就回那個 bucket 在 `buckets` 裡的
+        索引、**全部都不扣**；全部還有額度才全部加一、回 `None`。呼叫端
+        因此可以把「這一次上游抓取」要過的每一層（per-owner、source、
+        new-owner tier）一次交進來：被任何一層擋下的那次，不會先在前面
+        幾層被扣掉額度——額度只算真的放行（＝真的打上游）的那幾次。
+
+        並發下是精確的，不是軟性上限：多個 serverless instance 同時扣
+        同一格時，後到的會等先到的交易結束再讀到新的計數（Postgres 用
+        列鎖、依主鍵順序上鎖避免死結；記憶體後端用 lock）。"""
+
+    def purge_rate_limits(self, *, before_epoch: int) -> int:
+        """刪掉視窗在 `before_epoch` 之前就已經結束的計數列，回傳刪了
+        幾列。source 狀態因此不會被永久保存。"""
+
     def list_owners(self) -> list[Owner]:
         """跨 owner 的列舉逃生門——供 PB-08 依 lifecycle 條件（例如
         `last_activity_at` 早於某個截止日、且 `protected` 為否）掃描
@@ -1122,6 +1197,12 @@ class Storage(Protocol):
         原樣回傳全部 owner 列；篩選邏輯留給 PB-08（沿用既有
         `list_scenarios(owner=None)`／`result_history(owner=None)`
         「刻意的跨 owner 逃生門，語意由呼叫端決定」先例）。"""
+
+    def list_protected_owners(self) -> list[Owner]:
+        """只回 `protected=True` 的 owner（#345 A-4）。Historical IV 每次
+        請求都要找「那一個」protected owner——用這個窄查詢，不必每次把
+        整張 `owners` 表載進記憶體。判準（恰好一個才算數）仍在
+        `api_app.main._the_protected_owner_id()`，這裡只負責篩出候選。"""
 
     # ---------- Role session（AUTH-01／#308，三層角色模型） ----------
     #

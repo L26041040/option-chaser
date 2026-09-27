@@ -236,33 +236,33 @@ def test_exit_4_full_cleanup_lifecycle_across_many_synthetic_owners_at_once():
     mock = _cboe_mock(snap)
     storage = MemoryStorage()
     app = create_app(cboe_fetch=mock, storage=storage, cron_secret=CRON_SECRET,
-                     anonymous_abandoned_after_days=1, anonymous_grace_period_days=1)
+                     anonymous_retention_days=1, anonymous_grace_period_days=1)
     now = datetime.now(timezone.utc)
 
     active_id, active_token = _make_synthetic_owner(storage)
     _client_for(app, active_token).post(
         "/api/scenarios", json=_scenario_payload(symbol="AAA")).raise_for_status()
-    storage.touch_owner_activity(active_id, now=now.isoformat())
+    storage.touch_browser_identity(active_token, now=now.isoformat())
 
     abandoned_id, abandoned_token = _make_synthetic_owner(storage)
     _client_for(app, abandoned_token).post(
         "/api/scenarios", json=_scenario_payload(symbol="BBB")).raise_for_status()
-    storage.touch_owner_activity(
-        abandoned_id, now=(now - timedelta(days=1, hours=12)).isoformat())
+    storage.touch_browser_identity(
+        abandoned_token, now=(now - timedelta(days=1, hours=12)).isoformat())
 
     eligible_id, eligible_token = _make_synthetic_owner(storage)
     _client_for(app, eligible_token).post(
         "/api/scenarios", json=_scenario_payload(symbol="CCC")).raise_for_status()
-    storage.touch_owner_activity(
-        eligible_id, now=(now - timedelta(days=2, hours=12)).isoformat())
+    storage.touch_browser_identity(
+        eligible_token, now=(now - timedelta(days=2, hours=12)).isoformat())
 
     # protected——遠遠超過 abandoned+grace，若沒被正確濾掉會被判定為
     # eligible_for_hard_delete 並真的被刪掉（交叉驗證 PB-08 既有斷言）。
     protected_id, protected_token = _make_synthetic_owner(storage, protected=True)
     _client_for(app, protected_token).post(
         "/api/scenarios", json=_scenario_payload(symbol="DDD")).raise_for_status()
-    storage.touch_owner_activity(
-        protected_id, now=(now - timedelta(days=365)).isoformat())
+    storage.touch_browser_identity(
+        protected_token, now=(now - timedelta(days=365)).isoformat())
 
     resp = _client_for(app, active_token).get(
         "/api/cron/cleanup-abandoned-owners", headers=CRON_AUTH)
@@ -307,7 +307,7 @@ def test_zero_real_vendor_calls_across_the_whole_harness(monkeypatch):
     storage = MemoryStorage()
     app = create_app(cboe_fetch=mock, storage=storage, cron_secret=CRON_SECRET,
                      global_vendor_daily_budget=2, anonymous_max_active_scenarios=2,
-                     anonymous_abandoned_after_days=1, anonymous_grace_period_days=1)
+                     anonymous_retention_days=1, anonymous_grace_period_days=1)
 
     last_token = None
     for _ in range(4):

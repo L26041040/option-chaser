@@ -27,6 +27,7 @@ from api_app.storage.memory import MemoryStorage
 from option_chaser import service, store
 from option_chaser.data.snapshot import load_snapshot
 from option_chaser.models import AnalysisParams
+from _adhoc import post_adhoc
 
 TEST_DB_URL = os.environ.get("OC_TEST_DATABASE_URL")
 FIX = "tests/fixtures/xyz_v7_butterfly_moderate.json"
@@ -181,7 +182,7 @@ def test_current_detail_response_has_serialized_parity_with_the_pre_cutover_shap
     # subtype 會少一筆、逐位元比對必然失敗——不是 SCALE-16/17 造成的
     # 差異，是兩個端點本身的既有語意不同（family 展開 vs 明確
     # subtype），對照組要按照這個既有語意建構才公平。
-    raw_view = c.post("/api/analyze", json={
+    raw_view = post_adhoc(c, {
         "symbol": "XYZ", "target_price": 110.0, "target_month": "2026-10",
         "strategies": ["bull-call-spread", "bear-put-spread"]}).json()
     pre_cutover_shape = store.project_for_detail(raw_view)

@@ -238,7 +238,8 @@ def test_ops_metrics_reports_correct_anonymous_owner_distribution():
     c2.post("/api/scenarios", json=NEW).raise_for_status()  # owner B：即將是 abandoned
     owner_ids = [o.owner_id for o in storage.list_owners()]
     old = (date.today() - timedelta(days=999)).isoformat() + "T00:00:00+00:00"
-    storage.touch_owner_activity(owner_ids[1], now=old)
+    # SECURITY-FIX-01：lifecycle 錨點是 browser identity 的 last_seen_at。
+    storage.touch_browser_identity(c2.cookies.get("__Host-oc_owner"), now=old)
     storage.set_owner_protected(owner_ids[0], True)
 
     r = c.get("/api/ops/metrics", cookies=_admin_cookies(storage))

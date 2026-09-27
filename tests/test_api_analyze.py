@@ -14,6 +14,7 @@ from option_chaser.data.snapshot import load_snapshot
 from option_chaser.dividends import DividendHistory, DividendRecord
 from option_chaser.models import FetchError, ParamError
 from option_chaser.ratecurve import RateCurve
+from _adhoc import post_adhoc
 
 FIX = "tests/fixtures/xyz_v4_six_expiries.json"
 CONTRACT_SAMPLE = Path("contracts/analysis_sample.json")
@@ -66,7 +67,7 @@ def test_health_reports_ok_and_engine_version():
 
 
 def test_analyze_returns_the_engine_view_dict():
-    r = _client().post("/api/analyze", json=REQUEST)
+    r = post_adhoc(_client(), REQUEST)
     assert r.status_code == 200
     view = r.json()
     # 契約＝既有 `store.serialize_result` 的 view dict，前端零金融計算：
@@ -87,7 +88,7 @@ def test_analyze_passes_the_requested_symbol_to_the_data_source():
         seen.append(symbol)
         return snap
 
-    _client(fetch).post("/api/analyze", json=dict(REQUEST, symbol="TLT"))
+    post_adhoc(_client(fetch), dict(REQUEST, symbol="TLT"))
     assert seen == ["TLT"]
 
 
@@ -95,7 +96,7 @@ def test_analyze_does_not_write_to_the_filesystem(tmp_path, monkeypatch):
     """serverless 檔案系統唯讀——分析路徑不得落盤。"""
     client = _client()
     monkeypatch.chdir(tmp_path)
-    assert client.post("/api/analyze", json=REQUEST).status_code == 200
+    assert post_adhoc(client, REQUEST).status_code == 200
     assert list(tmp_path.iterdir()) == []
 
 
@@ -103,7 +104,7 @@ def test_fetch_failure_maps_to_502():
     def boom(symbol):
         raise FetchError("both sources down")
 
-    r = _client(boom).post("/api/analyze", json=REQUEST)
+    r = post_adhoc(_client(boom), REQUEST)
     assert r.status_code == 502
     assert "detail" in r.json()
 
@@ -117,12 +118,12 @@ def test_engine_param_error_maps_to_400(monkeypatch):
         raise ParamError("bad month")
 
     monkeypatch.setattr(service, "run_with_snapshot", boom)
-    r = _client().post("/api/analyze", json=REQUEST)
+    r = post_adhoc(_client(), REQUEST)
     assert r.status_code == 400
 
 
 def test_malformed_body_maps_to_422():
-    r = _client().post("/api/analyze", json={"symbol": "XYZ"})   # 缺必填欄位
+    r = post_adhoc(_client(), {"symbol": "XYZ"})   # 缺必填欄位
     assert r.status_code == 422
 
 
@@ -133,8 +134,7 @@ def test_unknown_strategy_is_rejected_before_reaching_the_engine():
         called.append(symbol)
         return load_snapshot(FIX)
 
-    r = _client(fetch).post("/api/analyze",
-                            json=dict(REQUEST, strategies=["not-a-strategy"]))
+    r = post_adhoc(_client(fetch), dict(REQUEST, strategies=["not-a-strategy"]))
     assert r.status_code == 422
     assert called == []
 
@@ -147,7 +147,7 @@ def test_contract_sample_matches_the_live_api_response():
     assert CONTRACT_SAMPLE.exists(), (
         "契約樣本不存在，請跑 scripts/gen_contract_sample.py")
     expected = json.loads(CONTRACT_SAMPLE.read_text(encoding="utf-8"))
-    actual = _client().post("/api/analyze", json=REQUEST).json()
+    actual = post_adhoc(_client(), REQUEST).json()
     assert actual == expected, (
         "API 回應與契約樣本不一致——契約已變動，請跑 "
         "scripts/gen_contract_sample.py 重產樣本，並確認前端跟著更新")
@@ -167,8 +167,7 @@ def test_bear_put_contract_sample_matches_the_live_api_response():
     put_fixture = load_snapshot("tests/fixtures/xyz_v5_put_ladder.json")
     put_request = {"symbol": "XYZ", "target_price": 70.0, "target_month": "2026-09",
                    "strategies": ["bear-put-spread"]}
-    actual = _client(lambda symbol: put_fixture).post(
-        "/api/analyze", json=put_request).json()
+    actual = post_adhoc(_client(lambda symbol: put_fixture), put_request).json()
     assert actual == expected, (
         "put comparator 契約樣本與 API 回應不一致——請跑 "
         "scripts/gen_contract_sample.py 重產樣本")
@@ -190,7 +189,7 @@ def test_long_call_contract_sample_matches_the_live_api_response():
     expected = json.loads(lc_sample.read_text(encoding="utf-8"))
     lc_request = {"symbol": "XYZ", "target_price": 130.0,
                  "target_month": "2026-09", "strategies": ["long-call"]}
-    actual = _client().post("/api/analyze", json=lc_request).json()
+    actual = post_adhoc(_client(), lc_request).json()
     assert actual == expected, (
         "單腿到期日分組契約樣本與 API 回應不一致——請跑 "
         "scripts/gen_contract_sample.py 重產樣本")
@@ -216,8 +215,7 @@ def test_call_fly_contract_sample_matches_the_live_api_response():
     bf_fixture = load_snapshot("tests/fixtures/xyz_v7_butterfly_moderate.json")
     bf_request = {"symbol": "XYZ", "target_price": 106.0,
                  "target_month": "2026-10", "strategies": ["call-fly"]}
-    actual = _client(lambda symbol: bf_fixture).post(
-        "/api/analyze", json=bf_request).json()
+    actual = post_adhoc(_client(lambda symbol: bf_fixture), bf_request).json()
     assert actual == expected, (
         "Butterfly 契約樣本與 API 回應不一致——請跑 "
         "scripts/gen_contract_sample.py 重產樣本")
@@ -234,13 +232,12 @@ def test_call_fly_contract_sample_matches_the_live_api_response():
 def test_symbol_is_restricted_to_ticker_shaped_input():
     """symbol 會被代入資料源 URL，不讓路徑片段之類的東西進去。"""
     for bad in ("../evil", "A/B", "", "TOOLONGSYMBOL"):
-        r = _client().post("/api/analyze", json=dict(REQUEST, symbol=bad))
+        r = post_adhoc(_client(), dict(REQUEST, symbol=bad))
         assert r.status_code == 422, bad
 
 
 def test_duplicate_strategies_are_analysed_once():
-    r = _client().post("/api/analyze",
-                       json=dict(REQUEST,
+    r = post_adhoc(_client(), dict(REQUEST,
                                  strategies=["bull-call-spread"] * 3))
     assert r.status_code == 200
     assert len(r.json()["results"]) == 1

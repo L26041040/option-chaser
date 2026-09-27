@@ -104,7 +104,9 @@ def test_known_env_secrets_skips_unset_names(monkeypatch):
     assert observability.known_env_secrets() == ()
 
 
-@pytest.mark.parametrize("header", ["Cookie", "cookie", "Authorization"])
+@pytest.mark.parametrize("header", ["Cookie", "cookie", "Authorization",
+                                    # Codex P1（PR #346）：bootstrap token 也是身分憑證
+                                    "X-OC-Owner-Bootstrap", "x-oc-owner-bootstrap"])
 def test_scrub_event_redacts_sensitive_headers(header):
     event = {"request": {"headers": {header: "secret-value"}, "cookies": {"oc_owner": "tok"}}}
 
@@ -138,3 +140,24 @@ def test_scrub_event_masks_bearer_tokens_in_exception_values():
     scrubbed = observability._scrub_event(event, ())
 
     assert "abc123XYZ" not in scrubbed["exception"]["values"][0]["value"]
+
+
+def test_scrub_event_removes_the_request_body_entirely():
+    """SECURITY-FIX-01：登入密碼與 provider credential 都在 JSON body——
+    `request.data` 整塊拿掉，不做逐欄位遮蔽。"""
+    event = {"request": {
+        "url": "https://example.test/api/auth/login",
+        "method": "POST",
+        "data": {"password": "fake-password-for-test"},
+        "headers": {"content-type": "application/json"}}}
+    scrubbed = observability._scrub_event(event, ())
+    assert "data" not in scrubbed["request"]
+    assert "fake-password-for-test" not in repr(scrubbed)
+
+
+def test_scrub_event_removes_a_raw_string_request_body_too():
+    event = {"request": {"url": "https://example.test/api/settings/credentials/x",
+                         "data": '{"token": "fake-provider-token"}'}}
+    scrubbed = observability._scrub_event(event, ())
+    assert "data" not in scrubbed["request"]
+    assert "fake-provider-token" not in repr(scrubbed)
