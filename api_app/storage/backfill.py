@@ -27,6 +27,25 @@ from option_chaser.store import historical_fact_context
 from . import Storage
 
 
+# SCALE-01 的 6 個 fact context 欄位（`ResultRecord` 上的欄位名）。
+FACT_FIELDS = ("resolved_params", "requested_strategies", "engine_version",
+               "view_schema_version", "history_replay_version",
+               "snapshot_source")
+
+
+def derive_fact_context(view) -> dict | None:
+    """CLAUDE-DB-HYGIENE-002：從一份 legacy `view` 確定推導 fact context；
+    view 形狀太舊、缺了推導需要的欄位時回 `None`（呼叫端記成「無法
+    backfill」，不捏造）。推導邏輯本身只有 `historical_fact_context()`
+    一份。"""
+    if not isinstance(view, dict):
+        return None
+    try:
+        return historical_fact_context(view)
+    except (KeyError, TypeError):
+        return None
+
+
 def backfill_result_fact_context(db: Storage) -> dict:
     """對每個劇本（含已封存）的每一筆歷史結果，補齊 SCALE-01 新增的
     6 個歷史 fact 欄位（`resolved_params`／`requested_strategies`／

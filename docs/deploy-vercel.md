@@ -200,6 +200,61 @@ Cboe → yfinance 的每一次 fallback 都算，失敗也算）。各層一次�
   安裝），`requirements.txt` 保持同一份。升級依賴＝改版本號、跑完整測試、
   兩個檔案一起改。
 
+## 資料生命週期：AUTH-07 修復與 retention（CLAUDE-DB-HYGIENE-002）
+
+### 一次性修復（Owner 操作一次，merge＋部署之後）
+
+把 Owner 的舊資料全部收回自己的 owner、清掉退役資料，**只有一個指令**：
+
+1. 用自己的瀏覽器打開正式站，**建立一個劇本**。SECURITY-FIX-01 起只有
+   「寫入」才會建立 owner——單純打開首頁不會建立。**不要用「存設定」來
+   建立**：target 一旦有了自己的設定，跟 `solo` 的設定不同時，修復會
+   依規定 fail closed（不替你挑一份）。
+2. 用 Super Admin 登入，從 owner 清單找到剛剛那個 owner 的 `owner_id`。
+3. Dry-run（零寫入，只印列數、大小、衝突預檢、預計動作）：
+
+   ```bash
+   DATABASE_URL=postgresql://... python scripts/repair_production_data_lifecycle.py \
+       --target-owner-id <REAL_OWNER_ID>
+   ```
+
+   核對：`conflicts` 必須是空的；`expected_active_scenarios_after` 是搬遷後
+   的進行中劇本數（可以超過 10，見下）。
+4. 確認無誤後加 `--confirm` 再跑一次。重跑是安全的 no-op。
+
+這個指令依序做：legacy singleton 設定收進 `solo` → `solo` 搬到 target
+（先預檢 `owner_settings`／`owner_credentials`／`owner_verifications`：
+target 沒有就照搬、內容相同就視為已搬、內容不同就整個停下、零寫入）→
+`owner_id IS NULL` 的舊劇本血緣（劇本＋它自己的 results／snapshots／
+events）救給 target → 重建舊劇本的 `current_results`（用最新一筆歷史
+結果，不打任何 vendor）→ 標記 protected → 補 SCALE-01 fact context →
+清掉已補齊列的 legacy `results.view` → retention → DROP 已退役的表
+（`narrow_history`、`chain_cache`、`data_source_settings`、
+`provider_credentials`、`provider_verifications`；legacy 內容沒有 canonical
+副本時拒絕 DROP）→ 驗證所有 invariant。搬遷段是單一交易，任何一步失敗
+整段 rollback。輸出只有列數與描述，不含任何 token／cookie／IP。
+
+`scripts/migrate_solo_to_owner.py` 保留為同一支程式的薄殼（參數相同），
+舊的 `backfill_owner_ids.py`／`backfill_settings_to_owner.py`／
+`backfill_result_fact_context.py` 已移除——不再有第二份搬遷實作。
+
+**額度**：搬遷不走「建立劇本」的額度檢查，target 搬完後可以合法地有超過
+10 個進行中劇本。清單、詳細頁、刷新、封存、刪除都照常；Normal User 只是
+不能再**新建**，直到進行中的少於 10 個；Super User／Super Admin 照舊豁免。
+Refresh 沒有產品層節流（SW-10 已移除），global vendor fuse 對三種角色一視
+同仁。
+
+### Retention 政策（每日 cleanup cron 自動執行）
+
+| 資料 | 保留 |
+|---|---|
+| `snapshots` | 每個劇本最新一份（以及 current result 指到的那份）永遠保留；其餘歷史份最多 30 天、且最多 10 份，取較緊者 |
+| `results`（fact ledger） | 保留（輕量）；`GET /api/scenarios/{id}/results` 每一筆帶 `raw_snapshot_available`，明講那個時間點的原始快照還在不在 |
+| `events` | 180 天 |
+| `superuser_audit_log` | 180 天 |
+| `role_sessions` | 撤銷超過 30 天的刪除；`issued_at` 超過 role cookie 400 天 Max-Age 的刪除（瀏覽器已不可能送出）。有效 session 不動 |
+| `diagnostics`／`operational_metrics`／`rate_limits` | 維持既有規則（200 筆／30 天／視窗結束後 1 小時） |
+
 ## 部署後的第一件事：確認 Cboe 可達性
 
 開部署網址 → 按「跑一次分析」→ 看卡片最下面那行「資料來源」：

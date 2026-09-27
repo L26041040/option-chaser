@@ -85,6 +85,10 @@ if TYPE_CHECKING:
 # 本身就是「cookie token → 角色」的擁有者，把名字放在這裡讓
 # `resolve_role()`／`require_role()` 不需要呼叫端額外傳入它。
 ROLE_COOKIE_NAME = "__Host-oc_role"
+# role cookie 的固定 Max-Age（400 天，不續命——見 `main.py` 使用處的說明）。
+# 放在這裡讓 `data_lifecycle` 的 role-session retention 跟發 cookie 的端點
+# 讀同一個數字：`issued_at` 超過它的 session，瀏覽器已經不可能再送出。
+ROLE_COOKIE_MAX_AGE_SECONDS = 400 * 24 * 60 * 60
 
 _ROLE_RANK = {"normal": 0, "superuser": 1, "superadmin": 2}
 

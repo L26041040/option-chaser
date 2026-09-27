@@ -35,7 +35,7 @@ from option_chaser.service import DividendLoader, RateCurveLoader
 from option_chaser.timeframe import (TargetMonth, calendar_anchor,
                                      ensure_month_open, month_is_over)
 
-from . import abuse_control
+from . import abuse_control, data_lifecycle
 from . import (anonymous_lifecycle, chain_backoff, diagnostics, metrics,
               ops_alerts, providers, superuser, vendor_fuse)
 from .clock import now_utc_iso, ny_today
@@ -119,7 +119,7 @@ _OWNER_BOOTSTRAP_STALE_HEADER = "X-OC-Owner-Bootstrap-Stale"
 # `/api/auth/*` 端點），瀏覽器重開後仍登入的 AC 因此仍然成立（票面
 # 沒有要求「越常用越不會過期」），且完全不需要動這個既有共用
 # middleware 一行。
-_ROLE_COOKIE_MAX_AGE_SECONDS = 400 * 24 * 60 * 60
+_ROLE_COOKIE_MAX_AGE_SECONDS = superuser.ROLE_COOKIE_MAX_AGE_SECONDS
 
 # spec §4 的路由白名單——缺 cookie 時**不得**建立新 owner 的端點。
 # 白名單而非黑名單：未來新增的 owner-scoped 端點預設不豁免，漏列
@@ -1915,8 +1915,13 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         # 結束一小時後就清掉，source 狀態不會被永久保存。
         purged = _db().purge_rate_limits(
             before_epoch=int(_clock()) - abuse_control.RATE_LIMIT_RETENTION_SECONDS)
+        # CLAUDE-DB-HYGIENE-002：活躍 owner 與 protected owner 不會被上面的
+        # owner 清理碰到，它們的 snapshots／events 以及全站的 role
+        # sessions／audit log 靠這裡保持有界（政策見 `data_lifecycle`）。
+        retention = data_lifecycle.run_retention(_db(), now=now)
         return {"owners_checked": len(facts), "eligible": len(eligible),
                "rate_limit_rows_purged": purged,
+               "retention_rows_purged": retention,
                "batch_size": len(batch), "abandoned": abandoned,
                "hard_deleted": data_deleted + empty_deleted,
                "empty_owners_deleted": empty_deleted,
@@ -3079,10 +3084,19 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         約 1.58×，後者連每一列的完整 `view` JSONB 都撈出來，Prototype
         #065 實測那條路徑對未來 narrow 表做 `DISTINCT` 會慢 12.6×，
         本票直接繞開這整條問題路徑），輔以 `results` 表窄查詢 UNION
-        補回任何缺 snapshot 的孤兒列（見該方法 docstring）。"""
+        補回任何缺 snapshot 的孤兒列（見該方法 docstring）。
+
+        `raw_snapshot_available`（CLAUDE-DB-HYGIENE-002，純加法）：那個
+        時間點的原始快照還在不在——歷史快照最多留 30 天／10 份。"""
         _require(scenario_id)
-        return [{"analyzed_at": ts} for ts in
-               _db().result_timestamps(scenario_id, owner=identity_resolver())]
+        owner = identity_resolver()
+        # CLAUDE-DB-HYGIENE-002：snapshot 有 bounded retention 之後，歷史
+        # 時間點不一定還留著原始快照（`results` fact 列仍在，當作輕量
+        # ledger）。每一筆明講那個時間點的原始資料還在不在，不讓人誤以為
+        # 每個時間戳都能重播。
+        with_snapshot = set(_db().snapshot_timestamps(scenario_id, owner=owner))
+        return [{"analyzed_at": ts, "raw_snapshot_available": ts in with_snapshot}
+               for ts in _db().result_timestamps(scenario_id, owner=owner)]
 
     def _load_raw_snapshot(scenario_id: str) -> ChainSnapshot:
         """V8（#56）：原始資料（當次快照）——`refresh_scenario` 早就在

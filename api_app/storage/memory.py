@@ -6,6 +6,7 @@
 """
 from __future__ import annotations
 
+import copy
 import dataclasses
 import threading
 import json
@@ -13,17 +14,25 @@ from collections import deque
 from collections.abc import Sequence
 from contextlib import contextmanager
 
-from . import (BrowserIdentity, ChainBackoffEntry, ContractHistory,
+from . import (RETIRED_TABLES, SCENARIO_CHILD_TABLES, BrowserIdentity,
+               ChainBackoffEntry, ContractHistory,
                DataSourceSettings, DividendCacheEntry, IvBackfillRun,
-               IvObservation, MetricEntry, Owner, OwnerLifecycleFacts,
+               IvObservation, LineageReport, MetricEntry, Owner,
+               OwnerLifecycleFacts, OwnerMigrationConflict, OwnerSettingsBundle,
                OWNER_RATE_LIMIT_SCOPE, ProviderCredential, ProviderVerification,
                RateCacheEntry, RateLimitBucket,
                ResultFactContext, ResultRecord, ResultSummary, RoleSession,
                Scenario, ScenarioExists, SuperUserAuditEvent,
-               TreasuryYearCacheEntry, require_owner)
+               TreasuryYearCacheEntry, require_owner,
+               settings_bundle_merge_plan)
 from ..diagnostics import RETENTION_LIMIT, DiagnosticEvent
-from ..identity import SOLO_OWNER
 from ..metrics import retention_cutoff
+
+# SCALE-01 的 6 個 fact context 欄位——全部齊全的 ledger 列才可以安全地
+# 清掉 SCALE-16 之前留下的完整 `view`。
+_FACT_FIELDS = ("resolved_params", "requested_strategies", "engine_version",
+                "view_schema_version", "history_replay_version",
+                "snapshot_source")
 
 
 class MemoryStorage:
@@ -64,12 +73,8 @@ class MemoryStorage:
         # `self._diagnostics` 刻意不同的保留政策，見
         # `SuperUserAuditEvent` docstring。
         self._audit_log: list[SuperUserAuditEvent] = []
-        # 舊表（SCALE-13／#264 之前）——凍結但仍可讀，供 read-through
-        # 相容分支使用；這個方法起不再寫入。
-        self._settings: DataSourceSettings | None = None
-        self._credentials: dict[str, ProviderCredential] = {}
-        self._verifications: dict[str, ProviderVerification] = {}
-        # 新表（SCALE-13／#264）：per-owner 正確形狀。settings 鍵是
+        # SCALE-13（#264）：per-owner 正確形狀。（legacy singleton 表已在
+        # CLAUDE-DB-HYGIENE-002 退役，記憶體假體不再模擬它們。）settings 鍵是
         # `owner_id` 本身；credentials／verifications 鍵是
         # `(owner_id, provider)`。
         self._owner_settings: dict[str, DataSourceSettings] = {}
@@ -88,6 +93,8 @@ class MemoryStorage:
         # S0（SCALE-08／#258）：鍵是 (metric, bucket, source, symbol)——
         # 與 `MetricEntry` 的複合主鍵一一對應。
         self._metrics: dict[tuple[str, str, str, str], MetricEntry] = {}
+        # `transaction()` 的巢狀深度——只有最外層負責快照／還原。
+        self._txn_depth = 0
 
     @property
     def kind(self) -> str:
@@ -102,6 +109,31 @@ class MemoryStorage:
         套件，才真正涵蓋到這段 middleware 控制流（而不只是那幾條
         Postgres-only 的 adapter 層測試）。"""
         yield
+
+    _NON_STATE_ATTRS = ("_claim_lock", "_txn_depth")
+
+    @contextmanager
+    def transaction(self):
+        """CLAUDE-DB-HYGIENE-002：最外層進入時整份狀態深拷貝一份，區塊內
+        拋例外就整份還原——跟 Postgres 的 rollback 同一種「全有或全無」
+        語意，契約測試才比得起來。巢狀呼叫併入最外層。"""
+        if self._txn_depth:
+            self._txn_depth += 1
+            try:
+                yield
+            finally:
+                self._txn_depth -= 1
+            return
+        saved = {k: copy.deepcopy(v) for k, v in self.__dict__.items()
+                 if k not in self._NON_STATE_ATTRS}
+        self._txn_depth = 1
+        try:
+            yield
+        except BaseException:
+            self.__dict__.update(saved)
+            raise
+        finally:
+            self._txn_depth = 0
 
     # ---------- 劇本 ----------
 
@@ -299,84 +331,225 @@ class MemoryStorage:
 
     # ---------- solo → Owner 一次性遷移（PB-03／#295） ----------
 
-    def migrate_owner(self, *, from_owner: str, to_owner: str) -> dict[str, int]:
-        counts: dict[str, int] = {}
+    # 搬遷的逐表步驟——依序執行、全部包在 `transaction()` 裡（測試可以把
+    # 其中一步換成會拋錯的版本，驗證中途失敗會整批還原）。
+    _MIGRATE_STEPS = ("scenarios", "results", "snapshots", "events",
+                      "diagnostics", "current_results", "owner_settings",
+                      "owner_credentials", "owner_verifications")
 
+    def migrate_owner(self, *, from_owner: str, to_owner: str) -> dict[str, int]:
+        with self.transaction():
+            conflicts, redundant = settings_bundle_merge_plan(
+                self.owner_settings_bundle(from_owner),
+                self.owner_settings_bundle(to_owner))
+            if conflicts:
+                raise OwnerMigrationConflict(conflicts)
+            self._drop_redundant_source_rows(from_owner, redundant)
+            return {table: getattr(self, f"_migrate_{table}")(
+                        from_owner, to_owner, redundant)
+                    for table in self._MIGRATE_STEPS}
+
+    def _drop_redundant_source_rows(self, from_owner: str,
+                                    redundant: list[str]) -> None:
+        """內容跟 target 等價的 source 列：target 已經有同一份，source 那一
+        列直接丟掉（視同已經搬過）。"""
+        for item in redundant:
+            table, _, provider = item.partition(":")
+            if table == "owner_settings":
+                self._owner_settings.pop(from_owner, None)
+            elif table == "owner_credentials":
+                self._owner_credentials.pop((from_owner, provider), None)
+            elif table == "owner_verifications":
+                self._owner_verifications.pop((from_owner, provider), None)
+
+    @staticmethod
+    def _redundant_count(table: str, redundant: list[str]) -> int:
+        return sum(1 for item in redundant if item.partition(":")[0] == table)
+
+    def _migrate_scenarios(self, frm: str, to: str, _r) -> int:
         n = 0
         for sid, sc in list(self._scenarios.items()):
-            if sc.owner_id == from_owner:
-                self._scenarios[sid] = dataclasses.replace(sc, owner_id=to_owner)
+            if sc.owner_id == frm:
+                self._scenarios[sid] = dataclasses.replace(sc, owner_id=to)
                 n += 1
-        counts["scenarios"] = n
+        return n
 
+    def _migrate_results(self, frm: str, to: str, _r) -> int:
         n = 0
         for by_ts in self._results.values():
             for ts, rec in list(by_ts.items()):
-                if rec.owner_id == from_owner:
-                    by_ts[ts] = dataclasses.replace(rec, owner_id=to_owner)
+                if rec.owner_id == frm:
+                    by_ts[ts] = dataclasses.replace(rec, owner_id=to)
                     n += 1
-        counts["results"] = n
+        return n
 
+    def _migrate_snapshots(self, frm: str, to: str, _r) -> int:
         n = 0
         for key, (snap, owner_id) in list(self._snapshots.items()):
-            if owner_id == from_owner:
-                self._snapshots[key] = (snap, to_owner)
+            if owner_id == frm:
+                self._snapshots[key] = (snap, to)
                 n += 1
-        counts["snapshots"] = n
+        return n
 
+    def _migrate_events(self, frm: str, to: str, _r) -> int:
         n = 0
         for event in self._events:
-            if event.get("owner_id") == from_owner:
-                event["owner_id"] = to_owner
+            if event.get("owner_id") == frm:
+                event["owner_id"] = to
                 n += 1
-        counts["events"] = n
+        return n
 
+    def _migrate_diagnostics(self, frm: str, to: str, _r) -> int:
         n = 0
-        migrated_diag = deque(maxlen=self._diagnostics.maxlen)
+        migrated = deque(maxlen=self._diagnostics.maxlen)
         for ev in self._diagnostics:
-            if ev.owner_id == from_owner:
-                ev = dataclasses.replace(ev, owner_id=to_owner)
+            if ev.owner_id == frm:
+                ev = dataclasses.replace(ev, owner_id=to)
                 n += 1
-            migrated_diag.append(ev)
-        self._diagnostics = migrated_diag
-        counts["diagnostics"] = n
+            migrated.append(ev)
+        self._diagnostics = migrated
+        return n
 
+    def _migrate_current_results(self, frm: str, to: str, _r) -> int:
         n = 0
         for sid, rec in list(self._current_results.items()):
-            if rec.owner_id == from_owner:
-                self._current_results[sid] = dataclasses.replace(rec, owner_id=to_owner)
+            if rec.owner_id == frm:
+                self._current_results[sid] = dataclasses.replace(rec, owner_id=to)
                 n += 1
-        counts["current_results"] = n
+        return n
 
-        n = 0
-        if from_owner in self._owner_settings:
-            settings = self._owner_settings.pop(from_owner)
-            self._owner_settings[to_owner] = dataclasses.replace(
-                settings, owner_id=to_owner)
-            n = 1
-        counts["owner_settings"] = n
+    def _migrate_owner_settings(self, frm: str, to: str, redundant) -> int:
+        n = self._redundant_count("owner_settings", redundant)
+        if frm in self._owner_settings:
+            settings = self._owner_settings.pop(frm)
+            self._owner_settings[to] = dataclasses.replace(settings, owner_id=to)
+            n += 1
+        return n
 
-        n = 0
+    def _migrate_owner_credentials(self, frm: str, to: str, redundant) -> int:
+        n = self._redundant_count("owner_credentials", redundant)
         for key in list(self._owner_credentials):
-            owner_id, provider = key
-            if owner_id == from_owner:
+            if key[0] == frm:
                 cred = self._owner_credentials.pop(key)
-                self._owner_credentials[(to_owner, provider)] = dataclasses.replace(
-                    cred, owner_id=to_owner)
+                self._owner_credentials[(to, key[1])] = dataclasses.replace(
+                    cred, owner_id=to)
                 n += 1
-        counts["owner_credentials"] = n
+        return n
 
-        n = 0
+    def _migrate_owner_verifications(self, frm: str, to: str, redundant) -> int:
+        n = self._redundant_count("owner_verifications", redundant)
         for key in list(self._owner_verifications):
-            owner_id, provider = key
-            if owner_id == from_owner:
+            if key[0] == frm:
                 ver = self._owner_verifications.pop(key)
-                self._owner_verifications[(to_owner, provider)] = dataclasses.replace(
-                    ver, owner_id=to_owner)
+                self._owner_verifications[(to, key[1])] = dataclasses.replace(
+                    ver, owner_id=to)
                 n += 1
-        counts["owner_verifications"] = n
+        return n
 
-        return counts
+    # ---------- legacy NULL-owner 劇本血緣救援（CLAUDE-DB-HYGIENE-002） ----------
+
+    def _child_rows(self):
+        """`(table, scenario_id, owner_id, setter)`：逐一走訪 4 張劇本子表。
+        `setter(new_owner)` 就地改那一列的 owner。"""
+        for by_ts in self._results.values():
+            for ts, rec in list(by_ts.items()):
+                yield ("results", rec.scenario_id, rec.owner_id,
+                       lambda o, by_ts=by_ts, ts=ts, rec=rec:
+                       by_ts.__setitem__(ts, dataclasses.replace(rec, owner_id=o)))
+        for sid, rec in list(self._current_results.items()):
+            yield ("current_results", sid, rec.owner_id,
+                   lambda o, sid=sid, rec=rec: self._current_results.__setitem__(
+                       sid, dataclasses.replace(rec, owner_id=o)))
+        for key, (snap, owner_id) in list(self._snapshots.items()):
+            yield ("snapshots", key[0], owner_id,
+                   lambda o, key=key, snap=snap:
+                   self._snapshots.__setitem__(key, (snap, o)))
+        for event in self._events:
+            if event["scenario_id"] is None:
+                continue
+            yield ("events", event["scenario_id"], event.get("owner_id"),
+                   lambda o, event=event: event.__setitem__("owner_id", o))
+
+    def claim_null_owner_lineage(self, *, to_owner: str, legacy_owners=(),
+                                 dry_run: bool = False) -> dict[str, int]:
+        to_owner = require_owner(to_owner)
+        with self.transaction():
+            null_ids = {sid for sid, sc in self._scenarios.items()
+                        if sc.owner_id is None}
+            allowed = {None, to_owner, *legacy_owners}
+            conflicts = sorted({f"scenario_child:{table}:{sid}"
+                                for table, sid, owner, _set in self._child_rows()
+                                if sid in null_ids and owner not in allowed})
+            if conflicts:
+                raise OwnerMigrationConflict(conflicts)
+            future = {to_owner, *legacy_owners} if dry_run else {to_owner}
+            claimed = null_ids | {sid for sid, sc in self._scenarios.items()
+                                  if sc.owner_id in future}
+            counts = {"scenarios": len(null_ids),
+                      **{t: 0 for t in SCENARIO_CHILD_TABLES}}
+            for table, sid, owner, setter in list(self._child_rows()):
+                if owner is None and sid in claimed:
+                    counts[table] += 1
+                    if not dry_run:
+                        setter(to_owner)
+            if not dry_run:
+                for sid in null_ids:
+                    self._scenarios[sid] = dataclasses.replace(
+                        self._scenarios[sid], owner_id=to_owner)
+            return counts
+
+    def lineage_report(self, owner_id: str) -> LineageReport:
+        owned = {sid for sid, sc in self._scenarios.items()
+                 if sc.owner_id == owner_id}
+        mismatch = {t: 0 for t in SCENARIO_CHILD_TABLES}
+        orphans = {t: 0 for t in SCENARIO_CHILD_TABLES}
+        for table, sid, owner, _set in self._child_rows():
+            if sid in owned and owner != owner_id:
+                mismatch[table] += 1
+            if owner == owner_id and sid not in self._scenarios:
+                orphans[table] += 1
+        return LineageReport(child_owner_mismatch=mismatch, child_orphans=orphans)
+
+    def owner_row_counts(self, owner_id: str | None) -> dict[str, int]:
+        return {
+            "scenarios": sum(1 for sc in self._scenarios.values()
+                             if sc.owner_id == owner_id),
+            "results": sum(1 for by_ts in self._results.values()
+                           for r in by_ts.values() if r.owner_id == owner_id),
+            "snapshots": sum(1 for (_s, o) in self._snapshots.values()
+                             if o == owner_id),
+            "events": sum(1 for e in self._events if e.get("owner_id") == owner_id),
+            "diagnostics": sum(1 for d in self._diagnostics
+                               if d.owner_id == owner_id),
+            "current_results": sum(1 for r in self._current_results.values()
+                                   if r.owner_id == owner_id),
+            "owner_settings": int(owner_id in self._owner_settings),
+            "owner_credentials": sum(1 for k in self._owner_credentials
+                                     if k[0] == owner_id),
+            "owner_verifications": sum(1 for k in self._owner_verifications
+                                       if k[0] == owner_id),
+        }
+
+    def table_row_counts(self) -> dict[str, dict]:
+        def entry(n: int) -> dict:
+            return {"rows": n, "bytes": None}
+        return {
+            "scenarios": entry(len(self._scenarios)),
+            "results": entry(sum(len(v) for v in self._results.values())),
+            "current_results": entry(len(self._current_results)),
+            "snapshots": entry(len(self._snapshots)),
+            "events": entry(len(self._events)),
+            "diagnostics": entry(len(self._diagnostics)),
+            "owner_settings": entry(len(self._owner_settings)),
+            "owner_credentials": entry(len(self._owner_credentials)),
+            "owner_verifications": entry(len(self._owner_verifications)),
+            "owners": entry(len(self._owners)),
+            "browser_identities": entry(len(self._browser_identities)),
+            "role_sessions": entry(len(self._role_sessions)),
+            "superuser_audit_log": entry(len(self._audit_log)),
+            "rate_limits": entry(len(self._rate_limits)),
+            "operational_metrics": entry(len(self._metrics)),
+        }
 
     # ---------- Owner-wide 刪除原語（PB-04／#296） ----------
 
@@ -585,93 +758,48 @@ class MemoryStorage:
 
     def get_settings(self, *, owner: str) -> DataSourceSettings | None:
         owner = require_owner(owner)
-        got = self._owner_settings.get(owner)
-        if got is not None:
-            return got
-        # read-through：新表沒有，舊表（全站唯一一份）有——只有這個
-        # owner 是 solo owner 時舊資料才有意義（舊表結構上沒有 owner
-        # 維度，只能代表這個唯一存在過的 owner）。
-        if owner == SOLO_OWNER and self._settings is not None:
-            migrated = dataclasses.replace(self._settings, owner_id=owner)
-            self._owner_settings[owner] = migrated   # write-through
-            return migrated
-        return None
+        return self._owner_settings.get(owner)
 
     def save_settings(self, settings: DataSourceSettings) -> None:
         owner = require_owner(settings.owner_id)
         self._owner_settings[owner] = settings
-        # 舊表這個方法起不再寫入（write-forward-only，見 Protocol
-        # docstring）——`self._settings` 因此在這次呼叫之後會落後，
-        # 這是刻意接受的代價：若真的切回舊程式碼路徑，讀到的會是遷移
-        # 當下那一刻的值，不是最新值。
 
     def get_credential(self, provider: str, *, owner: str) -> ProviderCredential | None:
         owner = require_owner(owner)
-        got = self._owner_credentials.get((owner, provider))
-        if got is not None:
-            return got
-        if owner == SOLO_OWNER:
-            legacy = self._credentials.get(provider)
-            if legacy is not None:
-                migrated = dataclasses.replace(legacy, owner_id=owner)
-                self._owner_credentials[(owner, provider)] = migrated
-                return migrated
-        return None
+        return self._owner_credentials.get((owner, provider))
 
     def save_credential(self, cred: ProviderCredential) -> None:
         owner = require_owner(cred.owner_id)
         self._owner_credentials[(owner, cred.provider)] = cred
-        # 舊表這個方法起不再寫入（write-forward-only）。
 
     def delete_credential(self, provider: str, *, owner: str) -> bool:
         owner = require_owner(owner)
         # 驗證結果跟著走：它講的是「那把 token 能不能用」。
         self._owner_verifications.pop((owner, provider), None)
-        new_removed = self._owner_credentials.pop((owner, provider), None) is not None
-        old_removed = False
-        if owner == SOLO_OWNER:
-            # 新舊兩張表都要清——否則使用者明確刪除後，下次讀取的
-            # read-through 還是會把舊表裡沒被清掉的資料復活（殭屍
-            # 復活風險，見 Protocol docstring）。
-            self._verifications.pop(provider, None)
-            old_removed = self._credentials.pop(provider, None) is not None
-        return new_removed or old_removed
+        return self._owner_credentials.pop((owner, provider), None) is not None
 
     def get_verification(self, provider: str, *, owner: str) -> ProviderVerification | None:
         owner = require_owner(owner)
-        got = self._owner_verifications.get((owner, provider))
-        if got is not None:
-            return got
-        if owner == SOLO_OWNER:
-            legacy = self._verifications.get(provider)
-            if legacy is not None:
-                migrated = dataclasses.replace(legacy, owner_id=owner)
-                self._owner_verifications[(owner, provider)] = migrated
-                return migrated
-        return None
+        return self._owner_verifications.get((owner, provider))
 
     def save_verification(self, v: ProviderVerification) -> None:
         owner = require_owner(v.owner_id)
         self._owner_verifications[(owner, v.provider)] = v
-        # 舊表這個方法起不再寫入（write-forward-only）。
 
-    def backfill_settings_to_owner(self, owner: str) -> dict[str, int]:
-        counts = {"settings": 0, "credentials": 0, "verifications": 0}
-        if self._settings is not None and owner not in self._owner_settings:
-            self._owner_settings[owner] = dataclasses.replace(
-                self._settings, owner_id=owner)
-            counts["settings"] += 1
-        for provider, cred in self._credentials.items():
-            if (owner, provider) not in self._owner_credentials:
-                self._owner_credentials[(owner, provider)] = dataclasses.replace(
-                    cred, owner_id=owner)
-                counts["credentials"] += 1
-        for provider, v in self._verifications.items():
-            if (owner, provider) not in self._owner_verifications:
-                self._owner_verifications[(owner, provider)] = dataclasses.replace(
-                    v, owner_id=owner)
-                counts["verifications"] += 1
-        return counts
+    def owner_settings_bundle(self, owner_id: str) -> OwnerSettingsBundle:
+        return OwnerSettingsBundle(
+            settings=self._owner_settings.get(owner_id),
+            credentials={p: c for (o, p), c in self._owner_credentials.items()
+                         if o == owner_id},
+            verifications={p: v for (o, p), v in self._owner_verifications.items()
+                           if o == owner_id})
+
+    def legacy_settings_bundle(self) -> OwnerSettingsBundle | None:
+        # 記憶體假體從來沒有 legacy singleton 表。
+        return None
+
+    def adopt_legacy_settings(self, owner: str) -> dict[str, int]:
+        return {"settings": 0, "credentials": 0, "verifications": 0}
 
     # ---------- 歷史 IV 觀測快取（#129，per-symbol） ----------
 
@@ -845,3 +973,86 @@ class MemoryStorage:
 
     def scenario_count_total(self) -> int:
         return len(self._scenarios)
+
+    # ---------- 資料生命週期 retention（CLAUDE-DB-HYGIENE-002） ----------
+
+    def snapshot_timestamps(self, scenario_id: str, *, owner: str) -> list[str]:
+        owner = require_owner(owner)
+        return sorted(ts for (sid, ts), (_snap, o) in self._snapshots.items()
+                      if sid == scenario_id and o == owner)
+
+    def purge_snapshots(self, *, historical_since: str, max_historical: int,
+                        dry_run: bool = False) -> int:
+        by_scenario: dict[str, list[str]] = {}
+        for sid, ts in self._snapshots:
+            by_scenario.setdefault(sid, []).append(ts)
+        doomed: list[tuple[str, str]] = []
+        for sid, stamps in by_scenario.items():
+            stamps.sort(reverse=True)
+            pinned = {stamps[0]}
+            current = self._current_results.get(sid)
+            if current is not None:
+                pinned.add(current.analyzed_at)
+            historical = [ts for ts in stamps if ts not in pinned]
+            for rank, ts in enumerate(historical):
+                if rank >= max_historical or ts < historical_since:
+                    doomed.append((sid, ts))
+        if not dry_run:
+            for key in doomed:
+                del self._snapshots[key]
+        return len(doomed)
+
+    @staticmethod
+    def _fact_complete(rec: ResultRecord) -> bool:
+        return all(getattr(rec, f) is not None for f in _FACT_FIELDS)
+
+    def result_view_stats(self) -> dict[str, int]:
+        with_view = [r for by_ts in self._results.values()
+                     for r in by_ts.values() if r.view is not None]
+        clearable = sum(1 for r in with_view if self._fact_complete(r))
+        return {"with_view": len(with_view),
+                "missing_fact_context": len(with_view) - clearable,
+                "clearable": clearable}
+
+    def clear_historical_result_views(self, *, dry_run: bool = False) -> int:
+        n = 0
+        for by_ts in self._results.values():
+            for ts, rec in list(by_ts.items()):
+                if rec.view is not None and self._fact_complete(rec):
+                    n += 1
+                    if not dry_run:
+                        by_ts[ts] = dataclasses.replace(rec, view=None)
+        return n
+
+    def purge_role_sessions(self, *, revoked_before: str, issued_before: str,
+                            dry_run: bool = False) -> int:
+        doomed = [t for t, s in self._role_sessions.items()
+                  if (s.revoked_at is not None and s.revoked_at < revoked_before)
+                  or s.issued_at < issued_before]
+        if not dry_run:
+            for t in doomed:
+                del self._role_sessions[t]
+        return len(doomed)
+
+    def purge_audit_events(self, *, before: str, dry_run: bool = False) -> int:
+        kept = [e for e in self._audit_log if e.ts >= before]
+        n = len(self._audit_log) - len(kept)
+        if not dry_run:
+            self._audit_log = kept
+        return n
+
+    def purge_events(self, *, before: str, dry_run: bool = False) -> int:
+        kept = [e for e in self._events if e["ts"] >= before]
+        n = len(self._events) - len(kept)
+        if not dry_run:
+            self._events = kept
+        return n
+
+    def retired_tables_present(self) -> list[str]:
+        return []
+
+    def drop_retired_tables(self, tables) -> list[str]:
+        unknown = set(tables) - set(RETIRED_TABLES)
+        if unknown:
+            raise ValueError(f"不是已退役的表：{sorted(unknown)}")
+        return []
