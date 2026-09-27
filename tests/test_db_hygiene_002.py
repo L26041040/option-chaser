@@ -443,3 +443,34 @@ def test_daily_cleanup_cron_applies_the_retention_policy(db):
     assert old not in db.snapshot_timestamps("mine", owner=TARGET)
     assert db.resolve_role_session("live") is not None
     assert db.get_scenario("mine", owner=TARGET) is not None     # 劇本本身不受影響
+
+
+# ---------- cleanup invariant：有 current result 就必須有對應快照 ----------
+
+def test_cleanup_fails_and_rolls_back_when_a_current_result_has_no_snapshot(db):
+    """CLAUDE-DB-HYGIENE-003：current_result 存在、快照卻一份都沒有（空清單）
+    也必須讓清理驗證失敗——不能因為「沒有任何快照」而靜默通過。清理段
+    整段 rollback：fact 回填、legacy view 清除、retention、DROP 都不留下。"""
+    _seed_production_shape(db, null_active=1, null_archived=0, solo=0)
+    for day in range(1, 16):          # 讓 retention 有東西可刪，才驗得出 rollback
+        db.save_snapshot("legacy0", f"2026-09-{day:02d}T00:00:00+00:00",
+                         SNAPSHOT, owner_id=None)
+    # 目標 owner 自己的劇本：有 current result，但 0 份快照
+    db.save_current_result(ResultRecord(
+        "mine0", "2026-09-20T00:00:00+00:00", {"results": []}, owner_id=TARGET))
+    assert db.snapshot_timestamps("mine0", owner=TARGET) == []
+    snapshots_before = db.table_row_counts()["snapshots"]["rows"]
+
+    with pytest.raises(data_lifecycle.MaintenanceError,
+                       match="mine0 的最新結果沒有對應快照"):
+        data_lifecycle.execute(db, target_owner_id=TARGET, now=NOW)
+
+    # 清理段完全沒有留下任何變更
+    assert db.result_view_stats() == {"with_view": 2, "missing_fact_context": 2,
+                                      "clearable": 0}
+    assert db.result_fact_context(
+        "legacy0", "2026-08-06T00:00:00+00:00").engine_version is None
+    assert db.table_row_counts()["snapshots"]["rows"] == snapshots_before
+    # 搬遷段是獨立的原子段落，已經完成且可以安全重跑
+    assert db.get_scenario("legacy0", owner=TARGET) is not None
+    assert db.get_owner(TARGET).protected is True

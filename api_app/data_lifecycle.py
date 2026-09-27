@@ -412,12 +412,13 @@ def _verify_cleanup(db: Storage, target_owner_id: str) -> list[str]:
     lineage = db.lineage_report(target_owner_id)
     if not lineage.ok:
         problems.append("target 劇本血緣不一致")
-    # raw-data 的錨點：每個有 current result 的劇本，那個時間點的快照都還在。
+    # raw-data 的錨點：每個有 current result 的劇本，那個時間點的快照都必須
+    # 還在——快照一份都沒有（空清單）也算違反，不能讓驗證靜默通過。
     for sc in db.list_scenarios(owner=target_owner_id, include_archived=True):
         current = db.latest_result(sc.id, owner=target_owner_id)
         if current is None:
             continue
-        stamps = db.snapshot_timestamps(sc.id, owner=target_owner_id)
-        if stamps and current.analyzed_at not in stamps:
+        if current.analyzed_at not in db.snapshot_timestamps(
+                sc.id, owner=target_owner_id):
             problems.append(f"劇本 {sc.id} 的最新結果沒有對應快照")
     return problems
