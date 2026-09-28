@@ -1539,7 +1539,6 @@ test("手機版：未登入的設定頁只有意見回饋、刪除我的資料�
   expect(regions).toEqual(["意見回饋", "刪除我的資料", "免責聲明", "登入"]);
   await expect(page.getByText("Data / API")).toHaveCount(0);
   await expect(page.getByRole("region", { name: "Diagnostics" })).toHaveCount(0);
-  await expect(page.getByText("需要 Super Admin 身份才能設定 API Token")).toHaveCount(0);
   await expect(page.getByRole("link", { name: /進入管理中心/ })).toHaveCount(0);
 });
 

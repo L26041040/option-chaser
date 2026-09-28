@@ -381,3 +381,91 @@ def test_reset_clears_feedback(db):
     r = _reset(db, superadmin_cookies(db))
     assert r.json()["counts"]["feedback"] == 2
     assert db.list_feedback() == []
+
+
+# ---------- C：Super User 管理自己的 credential ----------
+
+CRED_PATH = "/api/settings/credentials/marketdata-app"
+
+
+def _cred_client(db, token: str, cookies: dict[str, str] | None = None) -> TestClient:
+    snap = load_snapshot(FIX)
+    verified: list[tuple[str, str]] = []
+
+    def verify(provider, tok):
+        from api_app.providers import VerifyOutcome
+        verified.append((provider, tok))
+        return VerifyOutcome(ok=True, reason=None)
+
+    client = TestClient(create_app(fetch=lambda s: snap, storage=db, verify_provider=verify),
+                        base_url="https://testserver", cookies=cookies or {})
+    client.cookies.set("__Host-oc_owner", token)
+    client.verified = verified            # type: ignore[attr-defined]
+    return client
+
+
+def _crud(client):
+    return (client.put(CRED_PATH, json={"token": "tok-mine-1234"}).status_code,
+            client.post(CRED_PATH + "/test").status_code,
+            client.delete(CRED_PATH).status_code)
+
+
+def test_normal_user_cannot_touch_credentials(db):
+    owner = _owner_with_scenario(db, TOK_BETA_1)
+    assert _crud(_cred_client(db, TOK_BETA_1)) == (401, 401, 401)
+    assert db.get_credential("marketdata-app", owner=owner) is None
+
+
+@pytest.mark.parametrize("role", ["superuser", "superadmin"])
+def test_superuser_and_superadmin_manage_their_own_credential(db, role):
+    mine = _owner_with_scenario(db, TOK_BETA_1)
+    other = _owner_with_scenario(db, TOK_BETA_2)
+    db.save_credential(ProviderCredential(provider="marketdata-app", token="tok-other-9999",
+                                          updated_at=TS, owner_id=other))
+    cookies = superuser_cookies(db) if role == "superuser" else superadmin_cookies(db)
+    client = _cred_client(db, TOK_BETA_1, cookies)
+
+    r = client.put(CRED_PATH, json={"token": "tok-mine-1234"})
+    assert r.status_code == 200
+    assert "tok-mine-1234" not in r.text                     # 回應只有遮罩
+    assert db.get_credential("marketdata-app", owner=mine).token == "tok-mine-1234"
+
+    assert client.post(CRED_PATH + "/test").status_code == 200
+    assert client.verified == [("marketdata-app", "tok-mine-1234")]
+    assert db.get_verification("marketdata-app", owner=mine).ok is True
+    assert db.get_verification("marketdata-app", owner=other) is None
+
+    assert client.delete(CRED_PATH).status_code == 200
+    assert db.get_credential("marketdata-app", owner=mine) is None
+    # 別人的 token 自始至終沒被碰到。
+    assert db.get_credential("marketdata-app", owner=other).token == "tok-other-9999"
+
+
+def test_superuser_cannot_reach_another_owners_credential(db):
+    """沒有任何 owner 參數：query string、body 多塞 owner_id 都被忽略，
+    寫入／測試／刪除永遠落在這次請求自己的 owner。"""
+    mine = _owner_with_scenario(db, TOK_BETA_1)
+    other = _owner_with_scenario(db, TOK_BETA_2)
+    db.save_credential(ProviderCredential(provider="marketdata-app", token="tok-other-9999",
+                                          updated_at=TS, owner_id=other))
+    client = _cred_client(db, TOK_BETA_1, superuser_cookies(db))
+
+    assert client.put(f"{CRED_PATH}?owner_id={other}",
+                      json={"token": "tok-mine-1234", "owner_id": other}).status_code == 200
+    assert client.delete(f"{CRED_PATH}?owner_id={other}").status_code == 200
+    assert db.get_credential("marketdata-app", owner=other).token == "tok-other-9999"
+    assert db.get_credential("marketdata-app", owner=mine) is None
+    # Super Admin 的跨 owner 端點仍然擋 Super User。
+    assert client.get("/api/superuser/owners").status_code == 401
+    assert client.post("/api/superuser/owners/batch-delete",
+                       json={"owner_ids": [other], "confirm_owner_ids": [other]}
+                       ).status_code == 401
+
+
+def test_credential_routes_expose_no_owner_parameter():
+    spec = create_app(storage=MemoryStorage()).openapi()
+    for path in ("/api/settings/credentials/{provider}",
+                 "/api/settings/credentials/{provider}/test"):
+        for op in spec["paths"][path].values():
+            names = {p["name"] for p in op.get("parameters", [])}
+            assert names == {"provider"}, (path, names)

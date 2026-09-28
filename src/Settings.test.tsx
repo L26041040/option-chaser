@@ -670,8 +670,7 @@ describe("三層角色登入（AUTH-06／#313）", () => {
     await readyNormal();
     expect(screen.queryByRole("region", { name: "Market Data" })).not.toBeInTheDocument();
     expect(screen.queryByText("Data / API")).not.toBeInTheDocument();
-    expect(screen.queryByText("需要 Super Admin 身份才能設定 API Token"))
-      .not.toBeInTheDocument();
+    expect(screen.queryByLabelText("API Token")).not.toBeInTheDocument();
   });
 
   it("測試連線／清除 token 按鈕在未登入時不呈現", async () => {
@@ -683,10 +682,11 @@ describe("三層角色登入（AUTH-06／#313）", () => {
     expect(screen.queryByRole("button", { name: "清除 token" })).not.toBeInTheDocument();
   });
 
-  it("Super User 密碼登入後看得到身分，但仍看不到 credential CRUD", async () => {
-    // AUTH-03 起 credential CRUD 收斂為 Super-Admin-only——Super User
-    // 這一層的正確行為是「看得見自己已登入」但輸入框依然不出現。
-    mockApiWithLogin([view()]);
+  it("Super User 密碼登入後可以管理自己的 credential（CLAUDE-BETA-LAUNCH-FINAL-001）",
+     async () => {
+    // AUTH-03 當時 credential CRUD 收斂為 Super-Admin-only；Owner 決策改為
+    // Super User 也能設定／測試／清除**自己 owner** 的 token。
+    mockApiWithLogin([view({ ...CUSTOM_MD, credentials: cred({ status: "ok" }) })]);
     render(<Settings />);
     await readyNormal();
 
@@ -697,11 +697,10 @@ describe("三層角色登入（AUTH-06／#313）", () => {
       expect(screen.getByText("目前身分：Super User。")).toBeInTheDocument());
     await waitFor(() => expect(section("Market Data")).toBeInTheDocument());
     const md = within(section("Market Data"));
-    await userEvent.click(md.getByRole("radio", { name: "自訂" }));
-    expect(md.queryByLabelText("API Token")).not.toBeInTheDocument();
-    expect(
-      md.getByText("需要 Super Admin 身份才能設定 API Token"),
-    ).toBeInTheDocument();
+    await waitFor(() => expect(md.getByLabelText("API Token")).toBeInTheDocument());
+    expect(md.getByRole("button", { name: "測試連線" })).toBeInTheDocument();
+    expect(md.getByRole("button", { name: "清除 token" })).toBeInTheDocument();
+    expect(screen.queryByText(/需要 Super Admin 身份/)).not.toBeInTheDocument();
   });
 
   it("Super Admin 密碼登入後，Token 輸入框出現", async () => {
@@ -915,7 +914,7 @@ describe("CLAUDE-SETTINGS-ROLE-IA-001：依角色整理的設定頁", () => {
   });
 
   it("Super User：Data / API、診斷、刪除、免責聲明照舊，沒有管理中心入口，" +
-     "credential 仍不可設定", async () => {
+     "可以設定自己的 credential", async () => {
     mockApi([view()], { role: "superuser" });
     render(<Settings />);
     await ready("Market Data", { expectRole: "superuser" });
@@ -926,7 +925,8 @@ describe("CLAUDE-SETTINGS-ROLE-IA-001：依角色整理的設定頁", () => {
     expect(screen.queryByRole("link", { name: /進入管理中心/ })).not.toBeInTheDocument();
     const md = within(section("Market Data"));
     await userEvent.click(md.getByRole("radio", { name: "自訂" }));
-    expect(md.queryByLabelText("API Token")).not.toBeInTheDocument();
+    // CLAUDE-BETA-LAUNCH-FINAL-001：Super User 可以設定自己的 token。
+    expect(md.getByLabelText("API Token")).toBeInTheDocument();
   });
 
   it("Super Admin：Data / API、診斷都在，多一個管理中心入口，Settings 不掛管理面板",

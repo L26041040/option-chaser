@@ -3697,14 +3697,14 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
     def put_credential(provider: str, req: CredentialRequest,
                        request: Request) -> dict:
         """PB-09（#298）第一個 User Level 授權規則、AUTH-03（#310）
-        起改用三層角色：`owner_credentials` 的寫入路徑 gate 在 Super
-        Admin——Normal User 的 Anonymous Owner 結構性寫不進任何第三方
-        token（OD-3）。**先驗證軸二、再驗證 provider 白名單、才碰
-        storage**：沒有有效 Super Admin role session 的請求連白名單
-        檢查的副作用（若日後那段變重）都不該享有。owner_id（軸一）
-        維持不變——寫進去的仍是目前解析出的那個 owner，Super Admin
-        不會因為這個動作而變成別人。"""
-        superuser.require_role(request, superuser.Role.SUPERADMIN,
+        起改用三層角色：Normal User 的 Anonymous Owner 結構性寫不進任何
+        第三方 token（OD-3）。CLAUDE-BETA-LAUNCH-FINAL-001：最低角色從
+        Super Admin 降為 **Super User**（Owner 決策：SU 要能管理自己的
+        API／Data Source credential）。**先驗證軸二、再驗證 provider
+        白名單、才碰 storage**。owner_id（軸一）維持不變——寫進去的
+        永遠是這次請求解析出的那個 owner，沒有任何 owner 參數，SU／SA
+        都不會因為這個動作而變成別人、也管不到別人的 token。"""
+        superuser.require_role(request, superuser.Role.SUPERUSER,
                                resolve_session=_db().resolve_role_session)
         if not providers.is_supported(provider):
             # 自訂不等於任意資料源：不在白名單就是不支援，不接受任何
@@ -3724,13 +3724,13 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         「這把 token 不能用」是這個端點的正常答案之一，回 200 帶狀態，
         呼叫端才不必為了讀一個預期內的結果去 catch。
 
-        PB-09（#298）／AUTH-03（#310）：同一組 gate——即使這個
-        provider 剛好已經有 credential（例如 Super Admin 稍早已設
-        好），沒帶有效 Super Admin role session 的請求一樣拿不到
-        「拿別人已存好的 token 去打一次外部 API」這個能力，不能只靠
-        「Normal User 反正沒有 credential 可測」這個間接後果當防線。
+        PB-09（#298）／AUTH-03（#310）：同一組 gate（CLAUDE-BETA-LAUNCH-
+        FINAL-001 起最低 Super User）——沒帶有效 SU／SA role session 的
+        請求拿不到「用已存好的 token 打一次外部 API」這個能力，不能只靠
+        「Normal User 反正沒有 credential 可測」這個間接後果當防線。只測
+        這次請求自己 owner 的 credential。
         """
-        superuser.require_role(request, superuser.Role.SUPERADMIN,
+        superuser.require_role(request, superuser.Role.SUPERUSER,
                                resolve_session=_db().resolve_role_session)
         if not providers.is_supported(provider):
             raise HTTPException(status_code=400,
@@ -3749,9 +3749,10 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
     @app.delete("/api/settings/credentials/{provider}")
     def delete_credential(provider: str, request: Request) -> dict:
         """PB-09（#298）／AUTH-03（#310）：刪除也是對
-        `owner_credentials` 的寫入，同一套 gate——一致性優先於
-        「反正 Normal User 也刪不到自己沒有的東西」這個間接推論。"""
-        superuser.require_role(request, superuser.Role.SUPERADMIN,
+        `owner_credentials` 的寫入，同一套 gate（最低 Super User，只刪
+        這次請求自己 owner 的那把）——一致性優先於「反正 Normal User 也
+        刪不到自己沒有的東西」這個間接推論。"""
+        superuser.require_role(request, superuser.Role.SUPERUSER,
                                resolve_session=_db().resolve_role_session)
         if not providers.is_supported(provider):
             raise HTTPException(status_code=400,

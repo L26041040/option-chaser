@@ -113,16 +113,31 @@ def test_an_unresolvable_cookie_value_is_rejected_everywhere_not_just_missing():
         assert r.status_code == 401, f"{method} {path}: {r.status_code}"
 
 
-def test_a_superuser_session_is_rejected_everywhere_these_routes_require_superadmin():
-    """AUTH-03 的核心變化：這四個端點的門檻從舊機制唯一一層的
-    『Super User』升級成三層角色模型的『Super Admin』——這裡直接證明
-    中間那一層（Super User）依然進不去，不是只驗證兩端（無 session／
-    Super Admin），否則升級可能只是換了密碼名字、門檻其實沒變嚴。"""
+# CLAUDE-BETA-LAUNCH-FINAL-001：credential CRUD 的最低角色降為 Super User
+# （Owner 決策）；ops metrics 仍是 Super Admin 專屬。
+_SUPERADMIN_ONLY_ROUTES = [r for r in _PROTECTED_ROUTES if r[1] == "/api/ops/metrics"]
+_CREDENTIAL_ROUTES = [r for r in _PROTECTED_ROUTES if r not in _SUPERADMIN_ONLY_ROUTES]
+
+
+def test_a_superuser_session_is_rejected_where_superadmin_is_required():
+    """AUTH-03 的核心變化：ops metrics 的門檻是三層角色模型的
+    『Super Admin』——這裡直接證明中間那一層（Super User）依然進不去，
+    不是只驗證兩端（無 session／Super Admin）。"""
     storage = MemoryStorage()
     c = _client(storage=storage, cookies=role_cookies(storage, "superuser"))
-    for method, path in _PROTECTED_ROUTES:
+    for method, path in _SUPERADMIN_ONLY_ROUTES:
         r = _call(c, method, path)
         assert r.status_code == 401, f"{method} {path}: {r.status_code}"
+
+
+def test_a_superuser_session_can_manage_its_own_credentials():
+    """CLAUDE-BETA-LAUNCH-FINAL-001：Super User 可以設定／測試／清除自己
+    owner 的 credential（三個端點都不再回 401）。"""
+    storage = MemoryStorage()
+    c = _client(storage=storage, cookies=role_cookies(storage, "superuser"))
+    for method, path in _CREDENTIAL_ROUTES:
+        r = _call(c, method, path)
+        assert r.status_code != 401, f"{method} {path}: {r.status_code} {r.text}"
 
 
 # ---------- 2. 角色只能由伺服器端 session 決定 ----------
