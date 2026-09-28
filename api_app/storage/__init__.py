@@ -422,6 +422,21 @@ class SuperUserAuditEvent:
 
 
 @dataclass(frozen=True)
+class Feedback:
+    """CLAUDE-BETA-LAUNCH-FINAL-001：Normal User 的一則意見回饋——只有
+    「稱呼」與「內容」兩個使用者欄位，純文字。
+
+    `owner_id`：送出當下這個瀏覽器**已經綁定**的 owner；還沒綁定的新訪客
+    為 `None`——送回饋本身絕不建立 owner（不為了一張回饋製造 ghost owner）。
+    只給 Super Admin 的 inbox 讀，一般使用者讀不到任何一則。"""
+    feedback_id: str
+    display_name: str
+    content: str
+    created_at: str
+    owner_id: str | None = None
+
+
+@dataclass(frozen=True)
 class ChainBackoffEntry:
     """SCALE-04（#255，Scaling Foundation Cboe 429 韌性）：上游限流的
     控制狀態——**provider-global 鍵**（`source` 單獨，不分 symbol，
@@ -1190,8 +1205,9 @@ class Storage(Protocol):
 
         回傳 `{table_name: 受影響列數}`，含 `owners`／
         `browser_identities` 兩張，以及 `rate_limits`（這個 owner 的
-        per-owner quota 計數列，scope = `OWNER_RATE_LIMIT_SCOPE`；共 13 個
-        鍵）。這個 owner_id 本來就
+        per-owner quota 計數列，scope = `OWNER_RATE_LIMIT_SCOPE`）與
+        `feedback`（這個人送過的意見回饋；CLAUDE-BETA-LAUNCH-FINAL-001），
+        共 14 個鍵。這個 owner_id 本來就
         不存在時，全部鍵值皆為 0（不拋錯——「刪除一個不存在的東西」
         視同已經達成目標狀態，冪等）。"""
 
@@ -1212,6 +1228,7 @@ class Storage(Protocol):
           `chain_fetch_count`——global vendor fuse 唯一的真相來源，清掉
           等於用 reset 把今天的 vendor 預算歸零）。
         - protected owner 的 `last_activity_at` 歸 `None`。
+        - `feedback` 全部（封測回饋跟封測數據一起歸零）。
 
         保留：protected owner 本身、它的 browser identity 與 provider
         settings／credentials／verifications；`role_sessions`（執行 reset 的
@@ -1348,6 +1365,14 @@ class Storage(Protocol):
         只決定這次查詢回幾筆，不是保留政策本身——底層紀錄不會因為
         沒被查詢就消失（與 `list_diagnostics(limit=...)` 的
         `RETENTION_LIMIT` 語意不同，那裡的上限是真的物理刪除）。"""
+
+    # ---------- 意見回饋（CLAUDE-BETA-LAUNCH-FINAL-001） ----------
+
+    def add_feedback(self, feedback: Feedback) -> None:
+        """寫入一則意見回饋（append-only；呼叫端已驗證長度）。"""
+
+    def list_feedback(self, *, limit: int = 100) -> list[Feedback]:
+        """最新在最上，最多 `limit` 則——Super Admin inbox 專用。"""
 
     # ---------- S0 最小可觀測性（SCALE-08／#258） ----------
 

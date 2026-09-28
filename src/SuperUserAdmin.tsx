@@ -36,6 +36,7 @@ import {
   type SuperUserAuditEntry,
   type SuperUserOwnerInfo,
 } from "./api";
+import FeedbackInbox from "./FeedbackInbox";
 import { formatArchivedAt, formatReturn } from "./scenarios";
 
 type ConfirmTarget =
@@ -403,6 +404,8 @@ export default function SuperUserAdmin() {
   // OG-11（#322）：owners 表狀態篩選，純前端過濾，不打任何新請求
   // （見 `filterOwners()` docstring：為什麼只有這兩個篩選值）。
   const [ownerFilter, setOwnerFilter] = useState<OwnerFilter>("all");
+  // Reset 之後 inbox 要重讀（清場連回饋一起清掉）。
+  const [feedbackReload, setFeedbackReload] = useState(0);
 
   async function load() {
     try {
@@ -690,7 +693,14 @@ export default function SuperUserAdmin() {
           )}
         </ul>
       )}
-      <DangerZone onDone={() => { setExpandedOwner(null); void load(); }} />
+      <FeedbackInbox reloadKey={feedbackReload} />
+      <DangerZone
+        onDone={() => {
+          setExpandedOwner(null);
+          setFeedbackReload((n) => n + 1);
+          void load();
+        }}
+      />
       {confirmTarget && (
         <ConfirmHighRiskAction
           target={confirmTarget}

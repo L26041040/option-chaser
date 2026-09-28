@@ -28,6 +28,7 @@ import {
   type UsageChoice,
 } from "./api";
 import DeleteMyData from "./DeleteMyData";
+import FeedbackForm from "./FeedbackForm";
 import Diagnostics from "./Diagnostics";
 import DisclaimerSection from "./DisclaimerSection";
 import { getAuthStatusCached, getSettingsCached, setSettingsCache } from "./fetchCache";
@@ -275,6 +276,7 @@ export default function Settings() {
     return (
       <div className="screen settings-simple">
         {head}
+        <FeedbackForm />
         <DeleteMyData />
         <DisclaimerSection />
         <div className="settings-login-foot">

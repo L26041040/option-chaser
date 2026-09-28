@@ -1518,7 +1518,7 @@ test("手機版：Historical IV 切自訂、存 token，只看得到遮罩（Set
   await expect(page.locator("body")).not.toContainText("tok-secret-abcd");
 });
 
-test("手機版：未登入的設定頁只有刪除我的資料、免責聲明與底部登入" +
+test("手機版：未登入的設定頁只有意見回饋、刪除我的資料、免責聲明與底部登入" +
      "（CLAUDE-SETTINGS-ROLE-IA-001）", async ({ page }) => {
   // 刻意不用 `routeSettingsMobile`——那個 helper 為了讓其餘既有測試
   // 繼續測「設定頁資料流」而非登入流程，預設模擬已登入 Super Admin；
@@ -1536,11 +1536,33 @@ test("手機版：未登入的設定頁只有刪除我的資料、免責聲明�
   await expect(page.getByLabel("密碼")).toBeVisible();
   const regions = await page.getByRole("region")
     .evaluateAll((els) => els.map((e) => e.getAttribute("aria-label")));
-  expect(regions).toEqual(["刪除我的資料", "免責聲明", "登入"]);
+  expect(regions).toEqual(["意見回饋", "刪除我的資料", "免責聲明", "登入"]);
   await expect(page.getByText("Data / API")).toHaveCount(0);
   await expect(page.getByRole("region", { name: "Diagnostics" })).toHaveCount(0);
   await expect(page.getByText("需要 Super Admin 身份才能設定 API Token")).toHaveCount(0);
   await expect(page.getByRole("link", { name: /進入管理中心/ })).toHaveCount(0);
+});
+
+test("手機版：Normal User 送出意見回饋——只有稱呼與內容，成功後清空內容" +
+     "（CLAUDE-BETA-LAUNCH-FINAL-001）", async ({ page }) => {
+  await page.route("**/api/scenarios", (route) => route.fulfill({ json: [] }));
+  await page.route("**/api/auth/status",
+    (route) => route.fulfill({ json: { role: "normal" } }));
+  const posted: unknown[] = [];
+  await page.route("**/api/feedback", (route) => {
+    posted.push(route.request().postDataJSON());
+    return route.fulfill({ status: 201, json: { ok: true } });
+  });
+
+  await page.goto("/#/settings");
+  const section = page.getByRole("region", { name: "意見回饋" });
+  await section.getByLabel("稱呼").fill("小明");
+  await section.getByLabel("反饋內容").fill("希望多支援幾檔 ETF");
+  await section.getByRole("button", { name: "送出" }).click();
+
+  await expect(section.getByText("收到，謝謝你的回饋。")).toBeVisible();
+  await expect(section.getByLabel("反饋內容")).toHaveValue("");
+  expect(posted).toEqual([{ display_name: "小明", content: "希望多支援幾檔 ETF" }]);
 });
 
 /* ---------- 三層角色持久登入（AUTH-06／#313） ---------- */

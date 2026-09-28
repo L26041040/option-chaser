@@ -1054,6 +1054,30 @@ export function deleteMyData(): Promise<void> {
   return request<void>("/api/me", { method: "DELETE" });
 }
 
+/** CLAUDE-BETA-LAUNCH-FINAL-001：意見回饋——只有「稱呼」「反饋內容」兩個
+ *  純文字欄位，長度上限與後端 `FeedbackRequest` 一致。送回饋不會替還沒
+ *  建立 owner 的新訪客建 owner（後端刻意不 materialize）。 */
+export const FEEDBACK_NAME_MAX = 40;
+export const FEEDBACK_CONTENT_MAX = 2000;
+
+export function submitFeedback(displayName: string, content: string): Promise<{ ok: boolean }> {
+  return request("/api/feedback", POST_JSON({ display_name: displayName, content }));
+}
+
+/** Super Admin inbox 的一則回饋。`owner_hint` 是 owner_id 前 6 碼（沒綁
+ *  owner 的匿名回饋為 `null`），不是完整 owner_id。 */
+export interface FeedbackEntry {
+  feedback_id: string;
+  display_name: string;
+  content: string;
+  created_at: string;
+  owner_hint: string | null;
+}
+
+export function superuserListFeedback(limit = 100): Promise<FeedbackEntry[]> {
+  return request(`/api/superuser/feedback?limit=${limit}`);
+}
+
 /** V8（#56）：原始資料表（當次快照）的合約列——逐筆合約完整原樣，
  *  不是候選腿的精簡子集，欄位跟 CSV 下載一致。 */
 export interface RawContract {

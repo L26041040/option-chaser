@@ -2571,6 +2571,30 @@ body {
   min-width: 0;
 }
 
+/* 意見回饋的內容欄：可以往下拉高，但不能橫向拉出卡片。 */
+.feedback-content {
+  resize: vertical;
+  min-height: 96px;
+}
+
+/* 管理中心的意見回饋 inbox：一則一列，內容保留使用者的換行。 */
+.feedback-inbox {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+}
+
+.feedback-inbox li {
+  padding: 10px 0;
+  border-top: 0.5px solid var(--line);
+}
+
+.feedback-inbox-text {
+  margin: 4px 0 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 /* 管理中心 owner 清單的「全選」勾選框（批次列最左邊）。 */
 .select-all {
   display: inline-flex;

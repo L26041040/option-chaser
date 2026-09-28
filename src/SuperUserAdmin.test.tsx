@@ -13,6 +13,7 @@ const batchDeleteOwnersMock = vi.fn();
 const setOwnerProtectedMock = vi.fn();
 const getAuditLogMock = vi.fn();
 const resetBetaDataMock = vi.fn();
+const listFeedbackMock = vi.fn();
 // OG-11（#322）：新增的系統指標方塊（`OpsStats`）掛載時無條件呼叫這個
 // client——既有測試沒有一條在乎它回什麼，預設給一份最小、全部欄位
 // 都存在的假體，讓既有斷言不受這個新元件的非同步 effect 干擾。
@@ -28,6 +29,7 @@ vi.mock("./api", () => ({
   superuserSetOwnerProtected: (...args: unknown[]) => setOwnerProtectedMock(...args),
   superuserGetAuditLog: (...args: unknown[]) => getAuditLogMock(...args),
   superuserResetBetaData: (...args: unknown[]) => resetBetaDataMock(...args),
+  superuserListFeedback: (...args: unknown[]) => listFeedbackMock(...args),
   getOpsMetrics: (...args: unknown[]) => getOpsMetricsMock(...args),
 }));
 
@@ -84,6 +86,7 @@ describe("SuperUserAdmin", () => {
     });
     getAuditLogMock.mockReset().mockResolvedValue([]);
     resetBetaDataMock.mockReset().mockResolvedValue({ reset: true, counts: {} });
+    listFeedbackMock.mockReset().mockResolvedValue([]);
     getOpsMetricsMock.mockReset().mockResolvedValue(EMPTY_OPS_METRICS);
   });
 
@@ -342,6 +345,8 @@ describe("SuperUserAdmin", () => {
       expect(within(status).getByText("意見回饋").nextSibling).toHaveTextContent("4");
       expect(within(status).getByText("Metrics／Rate-limit").nextSibling).toHaveTextContent("11");
       await waitFor(() => expect(listOwnersMock).toHaveBeenCalledTimes(2));
+      // 清場連回饋一起清掉：inbox 跟著重讀。
+      await waitFor(() => expect(listFeedbackMock).toHaveBeenCalledTimes(2));
     });
 
     it("Reset 失敗時顯示錯誤，不顯示成功摘要", async () => {

@@ -25,7 +25,7 @@ from psycopg.types.json import Jsonb
 
 from . import (LEGACY_SINGLETON_TABLES, RETIRED_TABLES, SCENARIO_CHILD_TABLES,
                BrowserIdentity, ChainBackoffEntry, ContractHistory,
-               DataSourceSettings, DividendCacheEntry, IvBackfillRun,
+               DataSourceSettings, DividendCacheEntry, Feedback, IvBackfillRun,
                IvObservation, LineageReport, MetricEntry, Owner,
                OwnerLifecycleFacts, OwnerMigrationConflict, OwnerSettingsBundle,
                OWNER_RATE_LIMIT_SCOPE, ProviderCredential, ProviderVerification,
@@ -453,6 +453,17 @@ CREATE TABLE IF NOT EXISTS rate_limits (
     window_start    BIGINT NOT NULL,
     count           INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (scope, key, window_seconds, window_start)
+);
+-- CLAUDE-BETA-LAUNCH-FINAL-001：Normal User 的意見回饋——稱呼＋內容兩個
+-- 純文字欄位。`owner_id` nullable：還沒綁定 owner 的新訪客送回饋時為
+-- NULL（送回饋本身不建立 owner）。`seq` 只用來排序（最新在最上）。
+CREATE TABLE IF NOT EXISTS feedback (
+    seq           BIGSERIAL PRIMARY KEY,
+    feedback_id   TEXT NOT NULL,
+    display_name  TEXT NOT NULL,
+    content       TEXT NOT NULL,
+    created_at    TEXT NOT NULL,
+    owner_id      TEXT
 );
 """
 
@@ -1269,7 +1280,7 @@ class PostgresStorage:
         "diagnostics", "owner_settings", "owner_credentials",
         "owner_verifications", "owners", "browser_identities", "role_sessions",
         "superuser_audit_log", "rate_limits", "operational_metrics",
-        "iv_observations", "iv_backfill_runs", "contract_iv_history",
+        "feedback", "iv_observations", "iv_backfill_runs", "contract_iv_history",
         "rate_cache", "dividend_cache", "treasury_year_cache", "chain_backoff")
 
     def table_row_counts(self) -> dict[str, dict]:
@@ -1308,7 +1319,7 @@ class PostgresStorage:
 
         回傳 `{table_name: 受影響列數}`，含 `owners`／
         `browser_identities` 兩張，以及 `rate_limits`（該 owner 的 per-owner
-        quota 計數列，共 13 個鍵）。"""
+        quota 計數列）與 `feedback`（這個人送過的意見回饋），共 14 個鍵。"""
         counts: dict[str, int] = {}
         with self._connect() as conn:
             with conn.transaction():
@@ -1322,6 +1333,10 @@ class PostgresStorage:
                     "DELETE FROM rate_limits WHERE scope = %s AND key = %s",
                     (OWNER_RATE_LIMIT_SCOPE, owner_id))
                 counts["rate_limits"] = cur.rowcount
+                # 「刪除我的資料」也帶走這個人送過的意見回饋。
+                cur = conn.execute(
+                    "DELETE FROM feedback WHERE owner_id = %s", (owner_id,))
+                counts["feedback"] = cur.rowcount
                 cur = conn.execute(
                     "DELETE FROM browser_identities WHERE owner_id = %s",
                     (owner_id,))
@@ -1357,6 +1372,7 @@ class PostgresStorage:
                 "WHERE last_activity_at IS NOT NULL").rowcount
             counts["rate_limits"] = conn.execute(
                 "DELETE FROM rate_limits").rowcount
+            counts["feedback"] = conn.execute("DELETE FROM feedback").rowcount
             keep_sql = " AND ".join(
                 "NOT (metric = %s AND bucket = %s)" for _ in keep_metrics)
             counts["operational_metrics"] = conn.execute(
@@ -1561,6 +1577,22 @@ class PostgresStorage:
                 "VALUES (%s, %s, %s, %s, %s, %s)",
                 (event.event_id, event.ts, event.actor, event.action,
                  event.target_owner_id, Jsonb(event.detail)))
+
+    def add_feedback(self, feedback: Feedback) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO feedback (feedback_id, display_name, content, "
+                "created_at, owner_id) VALUES (%s, %s, %s, %s, %s)",
+                (feedback.feedback_id, feedback.display_name, feedback.content,
+                 feedback.created_at, feedback.owner_id))
+
+    def list_feedback(self, *, limit: int = 100) -> list[Feedback]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT feedback_id, display_name, content, created_at, owner_id "
+                "FROM feedback ORDER BY seq DESC LIMIT %s", (limit,)).fetchall()
+        return [Feedback(feedback_id=r[0], display_name=r[1], content=r[2],
+                         created_at=r[3], owner_id=r[4]) for r in rows]
 
     def list_audit_events(self, *, limit: int = 200) -> list[SuperUserAuditEvent]:
         with self._connect() as conn:

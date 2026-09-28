@@ -873,13 +873,13 @@ describe("CLAUDE-SETTINGS-ROLE-IA-001：依角色整理的設定頁", () => {
   it.each([
     ["手機", false],
     ["桌面", true],
-  ])("Normal（%s）：只有刪除我的資料、免責聲明，登入區在最底下", async (_, desktop) => {
+  ])("Normal（%s）：只有意見回饋、刪除我的資料、免責聲明，登入區在最底下", async (_, desktop) => {
     if (desktop) vi.stubGlobal("matchMedia", (q: string) => fakeMediaQueryList(true, q));
     mockApi([view()], { role: "normal" });
     render(<Settings />);
     await readyNormal();
 
-    expect(regionNames()).toEqual(["刪除我的資料", "免責聲明", "登入"]);
+    expect(regionNames()).toEqual(["意見回饋", "刪除我的資料", "免責聲明", "登入"]);
     expect(screen.queryByText("Data / API")).not.toBeInTheDocument();
     expect(screen.queryByRole("region", { name: "Diagnostics" })).not.toBeInTheDocument();
     expect(screen.queryByRole("link", { name: /進入管理中心/ })).not.toBeInTheDocument();
@@ -957,7 +957,7 @@ describe("CLAUDE-SETTINGS-ROLE-IA-001：依角色整理的設定頁", () => {
 
     await userEvent.click(screen.getByRole("button", { name: "登出" }));
     await readyNormal();
-    expect(regionNames()).toEqual(["刪除我的資料", "免責聲明", "登入"]);
+    expect(regionNames()).toEqual(["意見回饋", "刪除我的資料", "免責聲明", "登入"]);
     expect(screen.queryByRole("link", { name: /進入管理中心/ })).not.toBeInTheDocument();
   });
 
@@ -981,7 +981,7 @@ describe("CLAUDE-SETTINGS-ROLE-IA-001：依角色整理的設定頁", () => {
 
     await userEvent.click(screen.getByRole("button", { name: "登出" }));
     await readyNormal();
-    expect(regionNames()).toEqual(["刪除我的資料", "免責聲明", "登入"]);
+    expect(regionNames()).toEqual(["意見回饋", "刪除我的資料", "免責聲明", "登入"]);
   });
 });
 

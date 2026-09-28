@@ -50,7 +50,7 @@ def db(request):
             "TRUNCATE scenarios, results, current_results, snapshots, events, "
             "diagnostics, owner_settings, owner_credentials, owner_verifications, "
             "owners, browser_identities, role_sessions, superuser_audit_log, "
-            "rate_limits, operational_metrics, rate_cache RESTART IDENTITY")
+            "rate_limits, operational_metrics, rate_cache, feedback RESTART IDENTITY")
     yield st
 
 
@@ -290,3 +290,94 @@ def test_batch_delete_is_forbidden_below_superadmin(db, role):
     cookies = superuser_cookies(db) if role == "superuser" else {}
     assert _batch_delete(db, cookies, [ids["beta_1"]]).status_code == 401
     assert db.get_owner(ids["beta_1"]) is not None
+
+
+# ---------- B：意見回饋 ----------
+
+
+def _feedback(client, name="小明", content="很好用"):
+    return client.post("/api/feedback", json={"display_name": name, "content": content})
+
+
+def test_anonymous_feedback_does_not_create_an_owner(db):
+    client = _client(db)                     # 全新訪客：沒有任何 owner cookie
+    r = _feedback(client)
+    assert r.status_code == 201
+    assert r.json() == {"ok": True}
+    assert db.list_owners() == []
+    [fb] = db.list_feedback()
+    assert fb.owner_id is None
+    assert (fb.display_name, fb.content) == ("小明", "很好用")
+    # 同一個瀏覽器再送一次也一樣不建 owner。
+    assert _feedback(client, content="第二則").status_code == 201
+    assert db.list_owners() == []
+
+
+def test_bound_owner_feedback_records_the_owner(db):
+    owner_id = _owner_with_scenario(db, TOK_BETA_1)
+    r = _feedback(_client(db, owner_token=TOK_BETA_1))
+    assert r.status_code == 201
+    assert owner_id not in r.text
+    [fb] = db.list_feedback()
+    assert fb.owner_id == owner_id
+    assert len(db.list_owners()) == 1
+
+
+@pytest.mark.parametrize("name,content", [
+    ("", "內容"), ("   ", "內容"), ("名字", ""), ("名字", " \n "),
+    ("x" * 41, "內容"), ("名字", "y" * 2001),
+])
+def test_feedback_validation(db, name, content):
+    r = _feedback(_client(db), name=name, content=content)
+    assert r.status_code == 422
+    assert db.list_feedback() == []
+
+
+def test_feedback_is_stored_as_trimmed_plain_text(db):
+    raw = "  <script>alert(1)</script> **粗體**  "
+    assert _feedback(_client(db), name="  <b>阿華</b> ", content=raw).status_code == 201
+    [fb] = db.list_feedback()
+    assert fb.display_name == "<b>阿華</b>"
+    assert fb.content == "<script>alert(1)</script> **粗體**"   # 原樣存，前端純文字 render
+
+
+def test_feedback_is_rate_limited_per_owner(db):
+    _owner_with_scenario(db, TOK_BETA_1)
+    client = _client(db, owner_token=TOK_BETA_1)
+    codes = [_feedback(client, content=f"第 {i} 則").status_code for i in range(5)]
+    assert codes[:3] == [201, 201, 201]
+    assert codes[3:] == [429, 429]
+    assert len(db.list_feedback()) == 3
+
+
+@pytest.mark.parametrize("role", ["normal", "superuser"])
+def test_feedback_inbox_is_superadmin_only(db, role):
+    _feedback(_client(db))
+    cookies = superuser_cookies(db) if role == "superuser" else {}
+    r = _client(db, cookies=cookies).get("/api/superuser/feedback")
+    assert r.status_code == 401
+    assert "小明" not in r.text
+
+
+def test_superadmin_reads_feedback_newest_first_with_masked_owner(db):
+    owner_id = _owner_with_scenario(db, TOK_BETA_1)
+    _feedback(_client(db), name="甲", content="匿名的")
+    _feedback(_client(db, owner_token=TOK_BETA_1), name="乙", content="有 owner 的")
+    r = _client(db, cookies=superadmin_cookies(db)).get("/api/superuser/feedback")
+    assert r.status_code == 200
+    rows = r.json()
+    assert [row["display_name"] for row in rows] == ["乙", "甲"]
+    assert rows[0]["owner_hint"] == owner_id[:6] + "…"
+    assert rows[1]["owner_hint"] is None
+    assert owner_id not in r.text
+    assert set(rows[0]) == {"feedback_id", "display_name", "content",
+                            "created_at", "owner_hint"}
+
+
+def test_reset_clears_feedback(db):
+    _seed_world(db)
+    _feedback(_client(db))
+    _feedback(_client(db, owner_token=TOK_PROTECTED), content="protected owner 的回饋")
+    r = _reset(db, superadmin_cookies(db))
+    assert r.json()["counts"]["feedback"] == 2
+    assert db.list_feedback() == []

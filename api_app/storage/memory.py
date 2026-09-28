@@ -16,7 +16,7 @@ from contextlib import contextmanager
 
 from . import (RETIRED_TABLES, SCENARIO_CHILD_TABLES, BrowserIdentity,
                ChainBackoffEntry, ContractHistory,
-               DataSourceSettings, DividendCacheEntry, IvBackfillRun,
+               DataSourceSettings, DividendCacheEntry, Feedback, IvBackfillRun,
                IvObservation, LineageReport, MetricEntry, Owner,
                OwnerLifecycleFacts, OwnerMigrationConflict, OwnerSettingsBundle,
                OWNER_RATE_LIMIT_SCOPE, ProviderCredential, ProviderVerification,
@@ -73,6 +73,8 @@ class MemoryStorage:
         # `self._diagnostics` 刻意不同的保留政策，見
         # `SuperUserAuditEvent` docstring。
         self._audit_log: list[SuperUserAuditEvent] = []
+        # CLAUDE-BETA-LAUNCH-FINAL-001：意見回饋，append-only。
+        self._feedback: list[Feedback] = []
         # SCALE-13（#264）：per-owner 正確形狀。（legacy singleton 表已在
         # CLAUDE-DB-HYGIENE-002 退役，記憶體假體不再模擬它們。）settings 鍵是
         # `owner_id` 本身；credentials／verifications 鍵是
@@ -615,6 +617,10 @@ class MemoryStorage:
                 n += 1
         counts["owner_verifications"] = n
 
+        before = len(self._feedback)
+        self._feedback = [f for f in self._feedback if f.owner_id != owner_id]
+        counts["feedback"] = before - len(self._feedback)
+
         dead = [slot for slot in self._rate_limits
                 if slot[0] == OWNER_RATE_LIMIT_SCOPE and slot[1] == owner_id]
         for slot in dead:
@@ -674,6 +680,8 @@ class MemoryStorage:
             counts["owner_activity"] = len(active)
             counts["rate_limits"] = len(self._rate_limits)
             self._rate_limits.clear()
+            counts["feedback"] = len(self._feedback)
+            self._feedback = []
             keep = set(keep_metrics)
             dead_metrics = [k for k in self._metrics if (k[0], k[1]) not in keep]
             for k in dead_metrics:
@@ -801,6 +809,12 @@ class MemoryStorage:
 
     def list_audit_events(self, *, limit: int = 200) -> list[SuperUserAuditEvent]:
         return list(reversed(self._audit_log))[:limit]
+
+    def add_feedback(self, feedback: Feedback) -> None:
+        self._feedback.append(feedback)
+
+    def list_feedback(self, *, limit: int = 100) -> list[Feedback]:
+        return list(reversed(self._feedback))[:limit]
 
     # ---------- 資料源設定與 credential（Settings／#124，owner 化 SCALE-13／#264） ----------
 
