@@ -633,6 +633,54 @@ class MemoryStorage:
 
         return counts
 
+    def reset_beta_data(self, *,
+                        keep_metrics: Sequence[tuple[str, str]] = ()) -> dict[str, int]:
+        with self.transaction():
+            kept = {oid for oid, o in self._owners.items() if o.protected}
+            counts = {
+                "scenarios": len(self._scenarios),
+                "results": sum(len(v) for v in self._results.values()),
+                "current_results": len(self._current_results),
+                "snapshots": len(self._snapshots),
+                "events": len(self._events),
+                "diagnostics": len(self._diagnostics),
+            }
+            self._scenarios.clear()
+            self._results.clear()
+            self._current_results.clear()
+            self._snapshots.clear()
+            self._events = []
+            self._diagnostics.clear()
+
+            def drop(table: dict, owner_of) -> int:
+                dead = [k for k, v in table.items() if owner_of(k, v) not in kept]
+                for k in dead:
+                    del table[k]
+                return len(dead)
+
+            counts["owner_settings"] = drop(self._owner_settings, lambda k, v: k)
+            counts["owner_credentials"] = drop(self._owner_credentials,
+                                               lambda k, v: k[0])
+            counts["owner_verifications"] = drop(self._owner_verifications,
+                                                 lambda k, v: k[0])
+            counts["browser_identities"] = drop(self._browser_identities,
+                                                lambda k, v: v.owner_id)
+            counts["owners"] = drop(self._owners, lambda k, v: k)
+            active = [oid for oid, o in self._owners.items()
+                      if o.last_activity_at is not None]
+            for oid in active:
+                self._owners[oid] = dataclasses.replace(
+                    self._owners[oid], last_activity_at=None)
+            counts["owner_activity"] = len(active)
+            counts["rate_limits"] = len(self._rate_limits)
+            self._rate_limits.clear()
+            keep = set(keep_metrics)
+            dead_metrics = [k for k in self._metrics if (k[0], k[1]) not in keep]
+            for k in dead_metrics:
+                del self._metrics[k]
+            counts["operational_metrics"] = len(dead_metrics)
+        return counts
+
     # ---------- Owner registry ＋ Browser Identity（PB-01／#292） ----------
 
     def get_owner(self, owner_id: str) -> Owner | None:

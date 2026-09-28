@@ -1357,6 +1357,22 @@ export function superuserBatchDeleteOwners(
   });
 }
 
+/** CLAUDE-BETA-LAUNCH-FINAL-001：封測一鍵清場。`confirm` 必須逐字等於
+ *  `"Reset"`（伺服器端比對，這裡原樣送出使用者打的字）。回應只有各表
+ *  被清掉的列數。 */
+export interface BetaResetResult {
+  reset: boolean;
+  counts: Record<string, number>;
+}
+
+export function superuserResetBetaData(confirm: string): Promise<BetaResetResult> {
+  return request("/api/superuser/reset-beta-data", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ confirm }),
+  });
+}
+
 /** 高風險：runtime 設定／取消 `protected` lifecycle 旗標，同一套
  *  二次確認紀律。 */
 export function superuserSetOwnerProtected(

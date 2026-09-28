@@ -26,7 +26,9 @@ import {
   superuserGetOwnerScenario,
   superuserListOwners,
   superuserListOwnerScenarios,
+  superuserResetBetaData,
   superuserSetOwnerProtected,
+  type BetaResetResult,
   type OpsMetricBucket,
   type OpsMetrics,
   type ScenarioDetail,
@@ -299,6 +301,89 @@ function OpsStats() {
   );
 }
 
+/** Reset 結果摘要要顯示的數字（CLAUDE-BETA-LAUNCH-FINAL-001 票面列的那幾項）。
+ *  metrics／rate-limit 合成一格——對 Owner 來說都是「封測數據歸零」。 */
+function resetSummary(counts: Record<string, number>): { label: string; value: number }[] {
+  const n = (key: string) => counts[key] ?? 0;
+  return [
+    { label: "Owners", value: n("owners") },
+    { label: "劇本", value: n("scenarios") },
+    { label: "分析結果", value: n("results") },
+    { label: "報價快照", value: n("snapshots") },
+    { label: "意見回饋", value: n("feedback") },
+    { label: "Metrics／Rate-limit", value: n("operational_metrics") + n("rate_limits") },
+  ];
+}
+
+/**
+ * Danger Zone（CLAUDE-BETA-LAUNCH-FINAL-001）：封測一鍵清場。Owner 明確
+ * 裁定的確認方式——只要逐字打「Reset」，不要求 owner_id、不加第二層
+ * modal。按鈕在打對之前不能按；真正的護欄仍是伺服器端的逐字比對與
+ * Super Admin gate。清場語意全部在後端 `Storage.reset_beta_data()`。
+ */
+function DangerZone({ onDone }: { onDone: () => void }) {
+  const [typed, setTyped] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [result, setResult] = useState<BetaResetResult | null>(null);
+
+  async function reset() {
+    setBusy(true);
+    setError(null);
+    try {
+      setResult(await superuserResetBetaData(typed));
+      setTyped("");
+      onDone();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <section className="danger-zone beta-reset" aria-label="Danger Zone">
+      <h3 className="danger-zone-title">Danger Zone</h3>
+      <p className="danger-zone-name">Reset Beta Data</p>
+      <p className="caption">
+        清掉所有非 protected owner 與全部劇本資料、意見回饋、封測指標與
+        rate-limit；protected owner 的 provider 設定、shared market cache、
+        audit log 保留。無法復原。
+      </p>
+      <div className="danger-zone-row">
+        <input
+          className="settings-input"
+          type="text"
+          autoComplete="off"
+          spellCheck={false}
+          value={typed}
+          onChange={(e) => setTyped(e.target.value)}
+          placeholder="Reset"
+          aria-label="輸入 Reset 以確認"
+        />
+        <button
+          className="batch-pill danger"
+          onClick={() => void reset()}
+          disabled={busy || typed !== "Reset"}
+        >
+          {busy ? "Reset 中……" : "Reset"}
+        </button>
+      </div>
+      {error && <p className="notice error" role="alert">{error}</p>}
+      {result && (
+        <div role="status">
+          <p className="caption">已清場，刪除：</p>
+          <div className="pstat-grid">
+            {resetSummary(result.counts).map((row) => (
+              <Stat key={row.label} label={row.label}>{row.value}</Stat>
+            ))}
+          </div>
+        </div>
+      )}
+    </section>
+  );
+}
+
 export default function SuperUserAdmin() {
   const [owners, setOwners] = useState<SuperUserOwnerInfo[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -323,6 +408,9 @@ export default function SuperUserAdmin() {
     try {
       const rows = await superuserListOwners();
       setOwners(rows);
+      // 已經不存在（被刪掉、被 reset 掉）的 owner 不能留在選取集合裡。
+      const alive = new Set(rows.map((o) => o.owner_id));
+      setSelected((prev) => new Set([...prev].filter((id) => alive.has(id))));
       setError(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -428,6 +516,20 @@ export default function SuperUserAdmin() {
   }
 
   const shownOwners = owners ? filterOwners(owners, ownerFilter) : [];
+  // protected owner 不能被批次刪除（伺服器端同樣拒絕），所以不列入可選取。
+  const selectableIds = shownOwners.filter((o) => !o.protected).map((o) => o.owner_id);
+  const allShownSelected =
+    selectableIds.length > 0 && selectableIds.every((id) => selected.has(id));
+  const someShownSelected = selectableIds.some((id) => selected.has(id));
+
+  function toggleSelectAll() {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (allShownSelected) selectableIds.forEach((id) => next.delete(id));
+      else selectableIds.forEach((id) => next.add(id));
+      return next;
+    });
+  }
 
   return (
     <section className="card settings-section" aria-label="Super User 管理面板">
@@ -455,9 +557,26 @@ export default function SuperUserAdmin() {
               </button>
             ))}
           </div>
-          {selected.size > 0 && (
-            <div className="batch-action-bar">
-              <span className="caption">已選 {selected.size} 個 owner</span>
+          <div className="batch-action-bar">
+            <label className="select-all">
+              <input
+                type="checkbox"
+                checked={allShownSelected}
+                ref={(el) => {
+                  if (el) el.indeterminate = someShownSelected && !allShownSelected;
+                }}
+                disabled={selectableIds.length === 0}
+                onChange={toggleSelectAll}
+              />
+              <span>全選</span>
+            </label>
+            <span className="caption">已選 {selected.size} 個 owner</span>
+            {selected.size > 0 && (
+              <button className="text-button" onClick={() => setSelected(new Set())}>
+                清除選取
+              </button>
+            )}
+            {selected.size > 0 && (
               <button
                 className="batch-pill danger"
                 onClick={() =>
@@ -469,8 +588,8 @@ export default function SuperUserAdmin() {
               >
                 永久刪除已選
               </button>
-            </div>
-          )}
+            )}
+          </div>
           {shownOwners.length === 0 ? (
             <p className="caption">沒有符合篩選條件的 owner。</p>
           ) : (
@@ -482,6 +601,8 @@ export default function SuperUserAdmin() {
                     type="checkbox"
                     aria-label={`選取 owner ${owner.owner_id}`}
                     checked={selected.has(owner.owner_id)}
+                    disabled={owner.protected}
+                    title={owner.protected ? "protected owner 不能批次刪除" : undefined}
                     onChange={() => toggleSelect(owner.owner_id)}
                   />
                   <code className="superuser-owner-id">{owner.owner_id}</code>
@@ -569,6 +690,7 @@ export default function SuperUserAdmin() {
           )}
         </ul>
       )}
+      <DangerZone onDone={() => { setExpandedOwner(null); void load(); }} />
       {confirmTarget && (
         <ConfirmHighRiskAction
           target={confirmTarget}

@@ -1331,6 +1331,40 @@ class PostgresStorage:
                 counts["owners"] = cur.rowcount
         return counts
 
+    # 封測清場時不分 owner 全部清掉的劇本產品資料（protected owner 的也清）。
+    _BETA_PRODUCT_TABLES = ("scenarios", "results", "current_results",
+                            "snapshots", "events", "diagnostics")
+    # 只清非 protected owner 的列：protected owner 的 provider 設定要留著。
+    _BETA_OWNER_TABLES = ("owner_settings", "owner_credentials",
+                          "owner_verifications", "browser_identities")
+
+    def reset_beta_data(self, *,
+                        keep_metrics: Sequence[tuple[str, str]] = ()) -> dict[str, int]:
+        counts: dict[str, int] = {}
+        with self.transaction(), self._connect() as conn:
+            kept = [r[0] for r in conn.execute(
+                "SELECT owner_id FROM owners WHERE protected").fetchall()]
+            for table in self._BETA_PRODUCT_TABLES:
+                counts[table] = conn.execute(f"DELETE FROM {table}").rowcount
+            for table in self._BETA_OWNER_TABLES:
+                counts[table] = conn.execute(
+                    f"DELETE FROM {table} WHERE NOT (owner_id = ANY(%s))",
+                    (kept,)).rowcount
+            counts["owners"] = conn.execute(
+                "DELETE FROM owners WHERE NOT protected").rowcount
+            counts["owner_activity"] = conn.execute(
+                "UPDATE owners SET last_activity_at = NULL "
+                "WHERE last_activity_at IS NOT NULL").rowcount
+            counts["rate_limits"] = conn.execute(
+                "DELETE FROM rate_limits").rowcount
+            keep_sql = " AND ".join(
+                "NOT (metric = %s AND bucket = %s)" for _ in keep_metrics)
+            counts["operational_metrics"] = conn.execute(
+                "DELETE FROM operational_metrics"
+                + (f" WHERE {keep_sql}" if keep_sql else ""),
+                [v for pair in keep_metrics for v in pair]).rowcount
+        return counts
+
     # ---------- Owner registry ＋ Browser Identity（PB-01／#292） ----------
 
     def get_owner(self, owner_id: str) -> Owner | None:

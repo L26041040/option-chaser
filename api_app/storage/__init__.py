@@ -1195,6 +1195,33 @@ class Storage(Protocol):
         不存在時，全部鍵值皆為 0（不拋錯——「刪除一個不存在的東西」
         視同已經達成目標狀態，冪等）。"""
 
+    def reset_beta_data(self, *,
+                        keep_metrics: Sequence[tuple[str, str]] = ()) -> dict[str, int]:
+        """CLAUDE-BETA-LAUNCH-FINAL-001：封測清場——回到「乾淨封測狀態」，
+        不是 DROP 任何表。**單一交易**，任何一步失敗整批 rollback。
+
+        刪除：
+        - 劇本產品資料**全部**（不分 owner，含 protected owner 與 legacy
+          NULL owner 的列）：`scenarios`／`results`／`current_results`／
+          `snapshots`／`events`／`diagnostics`。
+        - 非 protected owner 本身與它的 `browser_identities`、
+          `owner_settings`／`owner_credentials`／`owner_verifications`。
+        - `rate_limits` 全部（per-owner quota、source burst、登入嘗試、
+          過期 bucket）；`operational_metrics` 全部，**除了**
+          `keep_metrics` 列出的 `(metric, bucket)`（呼叫端用它保住今天的
+          `chain_fetch_count`——global vendor fuse 唯一的真相來源，清掉
+          等於用 reset 把今天的 vendor 預算歸零）。
+        - protected owner 的 `last_activity_at` 歸 `None`。
+
+        保留：protected owner 本身、它的 browser identity 與 provider
+        settings／credentials／verifications；`role_sessions`（執行 reset 的
+        Super Admin 不會被自己踢出去）；`superuser_audit_log`；全部 shared
+        market cache（rate／dividend／treasury／IV／contract history／
+        chain_backoff）。
+
+        回傳 `{名稱: 受影響列數}`（`owner_activity` 是被歸零的 protected
+        owner 數）。冪等：已經是乾淨狀態時全部為 0。"""
+
     # ---------- Owner registry ＋ Browser Identity（PB-01／#292，
     # Anonymous Public Beta，expand，零行為變更） ----------
 

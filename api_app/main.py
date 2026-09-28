@@ -427,6 +427,16 @@ class SuperUserSetProtectedRequest(BaseModel):
     confirm_owner_id: str
 
 
+# CLAUDE-BETA-LAUNCH-FINAL-001：Owner 明確裁定的封測清場確認字——逐字相同、
+# 大小寫也要相同，不要求 owner_id、不要第二層 modal。
+BETA_RESET_CONFIRM_PHRASE = "Reset"
+
+
+class SuperAdminResetBetaRequest(BaseModel):
+    """`confirm` 必須逐字等於 `BETA_RESET_CONFIRM_PHRASE`。"""
+    confirm: str
+
+
 class AuthLoginRequest(BaseModel):
     """AUTH-02（#309）：三層角色模型的登入請求體——**只有一個密碼
     欄位**，沒有 username／email／角色選單／account／OAuth。同一份
@@ -2346,7 +2356,13 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         這種部分確認。每個 owner 各自呼叫一次 `delete_owner()`、各自
         留一筆 audit 紀錄（保持「一筆紀錄對應一個目標」的既有粒度，
         不因為是批次操作就把多個目標塞進同一筆看不出各自結果的
-        紀錄）。"""
+        紀錄）。
+
+        CLAUDE-BETA-LAUNCH-FINAL-001：整批包在同一個交易裡（任何一筆刪除
+        或 audit 寫入失敗 → 全部 rollback，不留「刪了一半」），而且
+        **protected owner 不能被批次刪除**——清單裡只要有一個 protected
+        就整批 409、零寫入（要刪 protected owner 必須先取消 protected，
+        或走單筆刪除）。"""
         superuser.require_role(request, superuser.Role.SUPERADMIN,
                                resolve_session=_db().resolve_role_session)
         if set(body.confirm_owner_ids) != set(body.owner_ids):
@@ -2354,13 +2370,48 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
                 status_code=400,
                 detail="二次確認不符：confirm_owner_ids 必須等於 "
                        "owner_ids，操作已取消")
+        targets = list(dict.fromkeys(body.owner_ids))
         results: dict[str, dict[str, int]] = {}
-        for oid in body.owner_ids:
-            counts = _db().delete_owner(oid)
-            results[oid] = counts
-            _record_audit("batch_delete_owner", target_owner_id=oid,
+        with _db().transaction():
+            protected = [oid for oid in targets
+                         if (o := _db().get_owner(oid)) is not None and o.protected]
+            if protected:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"protected owner 不能批次刪除（{len(protected)} 個），"
+                           "操作已取消")
+            for oid in targets:
+                counts = _db().delete_owner(oid)
+                results[oid] = counts
+                _record_audit("batch_delete_owner", target_owner_id=oid,
+                              detail={"deleted_rows": counts})
+        return {"deleted": targets, "counts": results}
+
+    @app.post("/api/superuser/reset-beta-data")
+    def superuser_reset_beta_data(body: SuperAdminResetBetaRequest,
+                                  request: Request) -> dict:
+        """CLAUDE-BETA-LAUNCH-FINAL-001：封測一鍵清場（Danger Zone）。
+        語意全部在 canonical 的 `Storage.reset_beta_data()`，這裡只負責
+        授權、確認字與 audit；reset 和 audit 在**同一個交易**裡，audit
+        寫不進去就整批 rollback（不會有「清掉了卻沒留紀錄」）。
+
+        今天的 `chain_fetch_count` 刻意保留：它是 global vendor fuse 唯一
+        的真相來源（`vendor_fuse.today_chain_fetch_count()`），清掉等於
+        把今天的 vendor 預算歸零。回應只有各表列數，沒有任何 owner_id
+        或 credential。"""
+        superuser.require_role(request, superuser.Role.SUPERADMIN,
+                               resolve_session=_db().resolve_role_session)
+        if body.confirm != BETA_RESET_CONFIRM_PHRASE:
+            raise HTTPException(
+                status_code=400,
+                detail=f"確認字不符：請輸入「{BETA_RESET_CONFIRM_PHRASE}」，"
+                       "操作已取消")
+        with _db().transaction():
+            counts = _db().reset_beta_data(
+                keep_metrics=[("chain_fetch_count", ny_today().isoformat())])
+            _record_audit("reset_beta_data", target_owner_id=None,
                           detail={"deleted_rows": counts})
-        return {"deleted": list(body.owner_ids), "counts": results}
+        return {"reset": True, "counts": counts}
 
     @app.put("/api/superuser/owners/{owner_id}/protected")
     def superuser_set_protected(owner_id: str,
