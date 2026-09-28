@@ -1799,6 +1799,7 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         # 【臨時】CLAUDE-DB-HYGIENE-008：cold-start 修復 hook 的 sanitized
         # 狀態（只有計數），cleanup PR 移除。
         from . import oneshot_db_rescue
+        oneshot_db_rescue.recheck_if_lock_was_held()
         if oneshot_db_rescue.STATUS:
             body["db_rescue"] = dict(oneshot_db_rescue.STATUS)
         return body

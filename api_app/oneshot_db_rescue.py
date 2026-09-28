@@ -25,6 +25,7 @@ from __future__ import annotations
 import contextlib
 import logging
 import os
+import time
 from collections.abc import Callable, Iterator
 from datetime import datetime, timezone
 
@@ -143,14 +144,35 @@ def _record(status: str, **fields) -> None:
     _logger.warning("DB-HYGIENE-008 %s %s", status, fields)
 
 
+def recheck_if_lock_was_held(env: dict[str, str] | None = None, **kwargs) -> None:
+    """`/api/health` 呼叫：cold start 時搶輸 lock 的 instance，`STATUS` 會停在
+    `skipped_lock_held`，即使別的 instance 早已做完。這裡最多每
+    `RECHECK_SECONDS` 秒重跑一次 `run()`——lock 已釋放時它會重看共享的 DB
+    狀態（通常得到 no-op），仍被持有時就再記一次 skipped。這條路徑**不施工**
+    （`execute_allowed=False`）：若持有者失敗、工作仍待辦，只記
+    `pending_after_lock_released` 並停止重查，重試照設計留給下一次 cold
+    start，不在 request path 上反覆跑重工作。"""
+    if STATUS.get("status") != "skipped_lock_held":
+        return
+    if time.monotonic() - _last_attempt[0] < RECHECK_SECONDS:
+        return
+    run(env, execute_allowed=False, **kwargs)
+
+
+RECHECK_SECONDS = 60
+_last_attempt = [0.0]
+
+
 def run(env: dict[str, str] | None = None, *,
         storage_factory: Callable | None = None,
         lock: Callable | None = None,
-        now: Callable[[], datetime] | None = None) -> None:
-    """cold start 呼叫一次。永不拋例外。參數只供測試注入假體。"""
+        now: Callable[[], datetime] | None = None,
+        execute_allowed: bool = True) -> None:
+    """cold start 呼叫一次。永不拋例外。其餘參數只供測試注入假體。"""
     env = os.environ if env is None else env
     if env.get("VERCEL_ENV") != "production":
         return
+    _last_attempt[0] = time.monotonic()
     try:
         from .storage.factory import database_url, storage_from_env
         dsn = database_url(env)
@@ -177,6 +199,9 @@ def run(env: dict[str, str] | None = None, *,
             if not pending:
                 _record("noop_already_complete", plan=state,
                         verification=_verification(db))
+                return
+            if not execute_allowed:
+                _record("pending_after_lock_released", pending=pending, plan=state)
                 return
             result = data_lifecycle.execute(
                 db, target_owner_id=TARGET_OWNER_ID, now=clock())

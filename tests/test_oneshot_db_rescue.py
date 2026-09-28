@@ -76,6 +76,44 @@ def test_lock_held_elsewhere_skips_without_planning(db, monkeypatch):
     assert oneshot_db_rescue.STATUS["status"] == "skipped_lock_held"
 
 
+def _recheck(db, *, acquired=True):
+    oneshot_db_rescue.recheck_if_lock_was_held(
+        PROD_ENV, storage_factory=lambda env: db, lock=_lock(acquired),
+        now=lambda: NOW)
+
+
+def test_lock_loser_rechecks_shared_state_after_the_holder_finishes(db, monkeypatch):
+    """Codex P2（PR #348）：搶輸 lock 的 warm instance 不能永遠停在
+    skipped_lock_held。"""
+    _seed_production_shape(db)
+    _run(db, acquired=False)                        # 這個 instance 搶輸
+    _REAL_EXECUTE(db, target_owner_id=TARGET, now=NOW)   # 持有者做完
+    monkeypatch.setattr(oneshot_db_rescue, "RECHECK_SECONDS", 0)
+    calls = _count_execute(monkeypatch)
+    _recheck(db)
+    assert calls == []
+    assert oneshot_db_rescue.STATUS["status"] == "noop_already_complete"
+
+
+def test_recheck_is_throttled_and_never_executes_on_the_request_path(
+        db, monkeypatch):
+    _seed_production_shape(db)
+    _run(db, acquired=False)
+    calls = _count_execute(monkeypatch)
+    plans = []
+    real_plan = data_lifecycle.plan
+    monkeypatch.setattr(data_lifecycle, "plan",
+                        lambda *a, **k: plans.append(1) or real_plan(*a, **k))
+    _recheck(db)                                    # 60 秒內：不重查
+    assert plans == [] and oneshot_db_rescue.STATUS["status"] == "skipped_lock_held"
+    monkeypatch.setattr(oneshot_db_rescue, "RECHECK_SECONDS", 0)
+    _recheck(db)                                    # 持有者失敗、工作仍待辦
+    assert calls == []
+    assert oneshot_db_rescue.STATUS["status"] == "pending_after_lock_released"
+    _recheck(db)                                    # 已不是 skipped：不再重查
+    assert len(plans) == 1
+
+
 def test_pending_work_calls_canonical_execute_exactly_once(db, monkeypatch):
     _seed_production_shape(db)
     calls = _count_execute(monkeypatch)
