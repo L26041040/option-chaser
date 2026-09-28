@@ -26,9 +26,4 @@ from api_app.observability import init_sentry  # noqa: E402
 # `SENTRY_DSN` 時這一行是 no-op（見 `init_sentry()` docstring）。
 init_sentry()
 
-# 【臨時】CLAUDE-DB-HYGIENE-008：Production cold start 跑一次 canonical 資料
-# 修復（非 production 直接 return；永不拋例外）。完成後 cleanup PR 移除。
-from api_app import oneshot_db_rescue  # noqa: E402
-oneshot_db_rescue.run()
-
 app = create_app()   # 直接賦值：進入點偵測認的是這個，不是匯入再轉出
