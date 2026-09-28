@@ -59,7 +59,7 @@ describe("AdminPage", () => {
     render(<AdminPage />);
 
     expect(screen.getByRole("heading", { name: "管理中心" })).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "‹ 設定" })).toHaveAttribute("href", "#/settings");
+    expect(screen.getByRole("link", { name: "← 設定" })).toHaveAttribute("href", "#/settings");
     expect(await screen.findByRole("region", { name: "Super User 管理面板" }))
       .toBeInTheDocument();
     expect(adminCalls(spy).length).toBeGreaterThan(0);

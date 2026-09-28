@@ -53,7 +53,7 @@ export default function AdminPage() {
     <div className="screen admin-page">
       <div className="settings-head">
         <a className="nav-back" href={settingsHash()}>
-          ‹ 設定
+          ← 設定
         </a>
         <div className="admin-page-title">
           <p className="admin-page-eyebrow">Super Admin</p>

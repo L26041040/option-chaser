@@ -1722,9 +1722,8 @@ test("桌面版：角色可見度矩陣——Normal／Super User／Super Admin �
   await page.getByRole("button", { name: "登出" }).click();
   // 明確等到畫面真的换回登入表單（Normal User 狀態已經真的落地），
   // 才離開設定頁——避免詳細頁在 `getAuthStatusCached()` 的快取值真正
-  // 換成 "normal" 之前就搶先掛載、讀到還沒更新完的舊角色（OG-11／
-  // #322 跟進：管理後台收進 subnav 分頁後，這個流程比改版前多轉一手
-  // tab 切換，光靠「管理面板消失」這個斷言不足以保證快取已經寫定）。
+  // 換成 "normal" 之前就搶先掛載、讀到還沒更新完的舊角色（光靠「管理
+  // 面板消失」這個斷言不足以保證快取已經寫定）。
   await expect(page.getByLabel("密碼")).toBeVisible();
   await page.goto("/#/admin");
   await expect(page).toHaveURL(/#\/settings$/);

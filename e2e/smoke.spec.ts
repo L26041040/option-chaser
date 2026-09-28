@@ -1534,7 +1534,7 @@ test("手機版：未登入的設定頁只有刪除我的資料、免責聲明�
   await page.goto("/#/settings");
 
   await expect(page.getByLabel("密碼")).toBeVisible();
-  const regions = await page.locator(".screen section[aria-label]")
+  const regions = await page.getByRole("region")
     .evaluateAll((els) => els.map((e) => e.getAttribute("aria-label")));
   expect(regions).toEqual(["刪除我的資料", "免責聲明", "登入"]);
   await expect(page.getByText("Data / API")).toHaveCount(0);

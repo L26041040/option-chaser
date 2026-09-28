@@ -30,7 +30,7 @@ import {
 import DeleteMyData from "./DeleteMyData";
 import Diagnostics from "./Diagnostics";
 import DisclaimerSection from "./DisclaimerSection";
-import { getSettingsCached, setSettingsCache } from "./fetchCache";
+import { getAuthStatusCached, getSettingsCached, setSettingsCache } from "./fetchCache";
 import RoleLogin from "./RoleLogin";
 import { adminHash } from "./route";
 import { roleAtLeast, type Role } from "./superuser";
@@ -106,15 +106,34 @@ export default function Settings() {
   // AUTH-06（#313）：軸二狀態——三層角色，決定要不要顯示自訂 provider
   // token 輸入（>= superadmin，AUTH-03 起 credential CRUD 收斂為
   // Super-Admin-only）與跨 owner 管理面板（== superadmin）。
-  const [role, setRole] = useState<Role>("normal");
+  // CLAUDE-SETTINGS-ROLE-IA-001：`null`＝還不知道角色。三種角色的版面
+  // 完全不同，先預設 `"normal"` 的話，Super User／Super Admin 每次進來都會
+  // 先閃一下 Normal 版面再整個換掉。
+  const [roleState, setRole] = useState<Role | null>(null);
+  const role: Role = roleState ?? "normal";
   const isDesktop = useIsDesktop();
   // OG-11（#322）：桌面版 subnav 目前選中哪一塊——手機版不需要這個
   // state（單欄堆疊全部一次顯示），只在 `isDesktop` 分支使用。
   const [activeSection, setActiveSection] = useState<SettingsSection>("general");
 
-  // CLAUDE-SETTINGS-ROLE-IA-001：Normal User 的設定頁只有「刪除我的資料」
-  // 「免責聲明」與底部登入——Data / API、診斷、管理中心入口都只給登入後
-  // 的角色，Normal 連掛載都不掛（也就不會看到任何「你沒有權限」的說明）。
+  // 角色查詢跟 `RoleLogin` 共用同一份快取（只有第一個真的發請求）。
+  // 查不到時當作 Normal——跟 `RoleLogin` 查詢失敗「維持現況」一致，
+  // 現況就是還沒登入。之後的登入／登出由 `RoleLogin` 的 `onChange` 更新。
+  useEffect(() => {
+    let alive = true;
+    const { promise, release } = getAuthStatusCached();
+    promise
+      .then((s) => alive && setRole((prev) => prev ?? s.role))
+      .catch(() => alive && setRole((prev) => prev ?? "normal"));
+    return () => {
+      alive = false;
+      release();
+    };
+  }, []);
+
+  // Normal User 的設定頁只有「刪除我的資料」「免責聲明」與底部登入——
+  // Data / API、診斷、管理中心入口都只給登入後的角色，Normal 連掛載都
+  // 不掛（也就不會看到任何「你沒有權限」的說明）。
   const privileged = roleAtLeast(role, "superuser");
 
   // T03（#187）：走快取——與 `IvHistory` 自己那次讀取共用同一份
@@ -240,6 +259,15 @@ export default function Settings() {
     </div>
   );
 
+  if (roleState === null) {
+    return (
+      <div className="screen settings-simple">
+        {head}
+        <p className="caption">載入中……</p>
+      </div>
+    );
+  }
+
   // Normal User：這裡本來就只有這幾件需要設定的事——桌面／手機同一個
   // 單欄版面，不為了三塊內容硬撐一個左側 subnav。登入區放在最底下、
   // 視覺上收斂（`.settings-login-foot`），不搶主要內容。
@@ -261,11 +289,6 @@ export default function Settings() {
   // `SuperUserAdmin`，也就不打任何 `/api/superuser/*` 請求。
   const adminEntry = roleAtLeast(role, "superadmin") && <AdminEntry />;
 
-  // 角色降級（例如登出後再登入 Super User）時若目前分頁已不存在，退回
-  // 第一個可用分頁——與 `FamilyTabs.tsx::resolveFamily()` 同一種寫法。
-  const currentSection = SECTION_ORDER.includes(activeSection)
-    ? activeSection : SECTION_ORDER[0];
-
   return (
     <div className="screen">
       {head}
@@ -284,8 +307,8 @@ export default function Settings() {
                 <button
                   key={key}
                   role="tab"
-                  aria-selected={currentSection === key}
-                  className={currentSection === key ? "chip selected" : "chip"}
+                  aria-selected={activeSection === key}
+                  className={activeSection === key ? "chip selected" : "chip"}
                   onClick={() => setActiveSection(key)}
                 >
                   {SECTION_LABELS[key]}
@@ -295,13 +318,13 @@ export default function Settings() {
             {adminEntry}
           </div>
           <div className="settings-panel">
-            {currentSection === "general" && (
+            {activeSection === "general" && (
               <RoleLogin role={role} onChange={setRole} />
             )}
-            {currentSection === "datasource" && datasourcePanel}
-            {currentSection === "diagnostics" && <Diagnostics />}
-            {currentSection === "delete" && <DeleteMyData />}
-            {currentSection === "disclaimer" && <DisclaimerSection />}
+            {activeSection === "datasource" && datasourcePanel}
+            {activeSection === "diagnostics" && <Diagnostics />}
+            {activeSection === "delete" && <DeleteMyData />}
+            {activeSection === "disclaimer" && <DisclaimerSection />}
           </div>
         </div>
       ) : (
@@ -329,8 +352,9 @@ function AdminEntry() {
   return (
     <a className="card settings-section settings-admin-entry" href={adminHash()}>
       <span className="settings-admin-eyebrow">Super Admin</span>
-      <span className="settings-admin-title">進入管理中心 →</span>
-      <span className="caption">跨 owner 管理、稽核紀錄與系統指標</span>
+      <span className="settings-admin-title">
+        進入管理中心<span aria-hidden="true"> →</span>
+      </span>
     </a>
   );
 }

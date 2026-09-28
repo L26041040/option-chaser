@@ -2053,7 +2053,7 @@ describe("SW-10（#340）／PB-12（#302）：全站常駐頁尾；首頁 Beta �
       .toBeInTheDocument();
 
     // 回設定頁登出，再直接打 #/admin：不再掛載管理面板，被導回設定頁。
-    await userEvent.click(screen.getByRole("link", { name: "‹ 設定" }));
+    await userEvent.click(screen.getByRole("link", { name: "← 設定" }));
     await userEvent.click(await screen.findByRole("button", { name: "登出" }));
     await screen.findByLabelText("密碼");
     act(() => { window.location.hash = "#/admin"; });

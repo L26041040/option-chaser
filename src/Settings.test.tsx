@@ -885,6 +885,26 @@ describe("CLAUDE-SETTINGS-ROLE-IA-001：依角色整理的設定頁", () => {
     expect(screen.queryByRole("link", { name: /進入管理中心/ })).not.toBeInTheDocument();
   });
 
+  it("角色確認前只顯示載入中——Super Admin 進來不會先閃一下 Normal 版面", async () => {
+    let resolveAuth!: (r: Response) => void;
+    vi.stubGlobal("fetch", vi.fn((url: string) => {
+      const u = String(url);
+      if (u.startsWith("/api/auth/status")) {
+        return new Promise<Response>((r) => { resolveAuth = r; });
+      }
+      const body = u.startsWith("/api/diagnostics") ? [] : view();
+      return Promise.resolve({ ok: true, status: 200, json: async () => body } as Response);
+    }));
+    render(<Settings />);
+
+    expect(screen.getByText("載入中……")).toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "刪除我的資料" })).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("密碼")).not.toBeInTheDocument();
+
+    resolveAuth({ ok: true, status: 200, json: async () => ({ role: "superadmin" }) } as Response);
+    expect(await screen.findByRole("link", { name: /進入管理中心/ })).toBeInTheDocument();
+  });
+
   it("Normal：只查角色，不讀設定、診斷或任何管理端點", async () => {
     const spy = mockApi([view()], { role: "normal" });
     render(<Settings />);
@@ -900,8 +920,9 @@ describe("CLAUDE-SETTINGS-ROLE-IA-001：依角色整理的設定頁", () => {
     render(<Settings />);
     await ready("Market Data", { expectRole: "superuser" });
 
-    expect(regionNames()).toEqual(expect.arrayContaining(
-      ["登入", "Market Data", "Historical IV", "Diagnostics", "刪除我的資料", "免責聲明"]));
+    // 手機版單欄堆疊的既有順序，一格不多一格不少。
+    expect(regionNames()).toEqual(
+      ["登入", "Market Data", "Historical IV", "Diagnostics", "刪除我的資料", "免責聲明"]);
     expect(screen.queryByRole("link", { name: /進入管理中心/ })).not.toBeInTheDocument();
     const md = within(section("Market Data"));
     await userEvent.click(md.getByRole("radio", { name: "自訂" }));
@@ -914,8 +935,8 @@ describe("CLAUDE-SETTINGS-ROLE-IA-001：依角色整理的設定頁", () => {
     render(<Settings />);
     await ready();
 
-    expect(regionNames()).toEqual(expect.arrayContaining(
-      ["Market Data", "Historical IV", "Diagnostics", "刪除我的資料", "免責聲明"]));
+    expect(regionNames()).toEqual(
+      ["登入", "Market Data", "Historical IV", "Diagnostics", "刪除我的資料", "免責聲明"]);
     expect(screen.getByRole("link", { name: /進入管理中心/ })).toHaveAttribute("href", "#/admin");
     expect(screen.queryByRole("region", { name: "Super User 管理面板" })).not.toBeInTheDocument();
     expect(spy.mock.calls.some(([u]) => /^\/api\/(superuser|ops)\//.test(String(u))))
@@ -951,6 +972,16 @@ describe("CLAUDE-SETTINGS-ROLE-IA-001：依角色整理的設定頁", () => {
     await waitFor(() => expect(section("Market Data")).toBeInTheDocument());
     expect(screen.getByRole("region", { name: "Diagnostics" })).toBeInTheDocument();
     expect(screen.queryByRole("link", { name: /進入管理中心/ })).not.toBeInTheDocument();
+  });
+
+  it("角色切換即時生效：Super User 登出立刻回到 Normal 極簡版", async () => {
+    mockApiWithLogin([view()], { initialRole: "superuser" });
+    render(<Settings />);
+    await ready("Market Data", { expectRole: "superuser" });
+
+    await userEvent.click(screen.getByRole("button", { name: "登出" }));
+    await readyNormal();
+    expect(regionNames()).toEqual(["刪除我的資料", "免責聲明", "登入"]);
   });
 });
 

@@ -2485,7 +2485,6 @@ body {
   display: flex;
   flex-direction: column;
   gap: 4px;
-  flex: 0 0 200px;
 }
 
 .settings-panel {
@@ -2562,18 +2561,14 @@ body {
   color: var(--mute);
 }
 
-/* 桌面：subnav 與管理中心入口同一欄。`.settings-subnav` 原本自己帶
-   `flex: 0 0 200px`（橫向 flex 裡的寬度），放進直向的 `.settings-side`
-   後改由外層負責寬度，內層取消 basis（直向 flex 裡 basis 會變成高度）。 */
+/* 桌面：subnav 與管理中心入口同一欄。200px 欄寬原本寫在
+   `.settings-subnav` 自己身上，現在它一律包在直向的 `.settings-side` 裡，
+   欄寬改由外層負責（直向 flex 裡的 basis 會變成高度）。 */
 .settings-side {
   display: flex;
   flex-direction: column;
   gap: 12px;
   flex: 0 0 200px;
-}
-
-.settings-side .settings-subnav {
-  flex: none;
 }
 
 /* Super Admin 進入管理中心的入口卡：明顯但不誇張——跟其他卡片同一套
