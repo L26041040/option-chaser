@@ -75,13 +75,12 @@ Logo policy:
 
 AUTH-01–06 are already merged to master and deployed.
 
-**AUTH-07 #314** remains blocked on real Owner HITL:
-- Owner browser identity must exist in production.
-- Owner must identify the real production `owner_id`.
-- PB-03 migration must be run against production `DATABASE_URL` (dry-run → confirm → idempotency rerun).
-- Real-password SU/SA boundary checks are Owner-only.
-
-This does not block Obsidian Gold UI implementation.
+**AUTH-07 #314** data migration is **done** (2026-09-28, 台灣): the Owner's
+production identity exists, its `owner_id` was identified, and the canonical
+rescue (PB-03 solo migration + NULL-owner lineage) ran in Production via
+HYGIENE-008 (dry-run reviewed → executed → post-run plan all zero). Do not
+rerun it. The only remaining AUTH-07 item is Owner-only: real-password SU/SA
+boundary checks.
 
 ## 5. Testing / verification
 
