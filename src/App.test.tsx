@@ -8,7 +8,7 @@
  * 只測外部行為（畫面呈現什麼、失敗時說什麼），不測實作細節。
  * 詳細頁本身的測試在 `ScenarioDetail.test.tsx`。
  */
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -1998,9 +1998,68 @@ describe("SW-10（#340）／PB-12（#302）：全站常駐頁尾；首頁 Beta �
     window.location.hash = "#/settings";
     const { container } = render(<App />);
 
-    await screen.findByText("Market Data");
+    // CLAUDE-SETTINGS-ROLE-IA-001：Normal User 的設定頁沒有 Data / API，
+    // 改等 Normal 版面必有的登入表單。
+    await screen.findByLabelText("密碼");
     expect(container.querySelector("footer.site-footer")).toBeInTheDocument();
     expect(container.querySelector(`a[href="${"#/privacy"}"]`)).toBeInTheDocument();
+  });
+
+  it("CLAUDE-SETTINGS-ROLE-IA-001：Super Admin 從設定頁的入口進到獨立管理中心，" +
+     "登出後管理中心不再可用", async () => {
+    let role = "superadmin";
+    const spy = vi.fn(async (url: string) => {
+      const u = String(url);
+      if (u.startsWith("/api/auth/status")) {
+        return { ok: true, status: 200, json: async () => ({ role }) };
+      }
+      if (u === "/api/auth/logout") {
+        role = "normal";
+        return { ok: true, status: 200, json: async () => ({ role }) };
+      }
+      if (u.startsWith("/api/ops/metrics")) {
+        return { ok: true, status: 200, json: async () => ({
+          chain_fetch_count: [], chain_429_count: [], stale_serve_count: [],
+          cold_miss_count: [], refresh_duration_ms: [],
+          abandoned_owner_cleanup_count: [], table_size: {},
+          anonymous_owners: { active: 0, abandoned: 0, eligible_for_hard_delete: 0,
+                             protected: 0, total: 0 },
+          scenarios: { total: 0, average_per_owner: 0 }, alerts: [],
+          vendor_fuse: { used: 0, budget: null },
+        }) };
+      }
+      if (u.startsWith("/api/settings")) {
+        return { ok: true, status: 200, json: async () => ({
+          supported_providers: [],
+          market_data: { mode: "default", provider: null, default_label: "Cboe" },
+          historical_iv: { mode: "default", provider: null, default_label: "無" },
+          credentials: {},
+          market_data_effective: { source: "Cboe", fallback: false, reason: null },
+          historical_iv_enabled: false, updated_at: null,
+        }) };
+      }
+      if (u === "/api/scenarios/refresh-run") {
+        return { ok: true, status: 200, json: async () => ({ results: [], remaining: [] }) };
+      }
+      return { ok: true, status: 200, json: async () => [] };
+    });
+    vi.stubGlobal("fetch", spy);
+    window.location.hash = "#/settings";
+    render(<App />);
+
+    await userEvent.click(await screen.findByRole("link", { name: /進入管理中心/ }));
+    expect(await screen.findByRole("heading", { name: "管理中心" })).toBeInTheDocument();
+    expect(await screen.findByRole("region", { name: "Super User 管理面板" }))
+      .toBeInTheDocument();
+
+    // 回設定頁登出，再直接打 #/admin：不再掛載管理面板，被導回設定頁。
+    await userEvent.click(screen.getByRole("link", { name: "← 設定" }));
+    await userEvent.click(await screen.findByRole("button", { name: "登出" }));
+    await screen.findByLabelText("密碼");
+    act(() => { window.location.hash = "#/admin"; });
+    await waitFor(() => expect(window.location.hash).toBe("#/settings"));
+    expect(screen.queryByRole("region", { name: "Super User 管理面板" }))
+      .not.toBeInTheDocument();
   });
 
   it("隱私頁路由可達，內容齊全，頁尾也在——不分裝置寬度", async () => {

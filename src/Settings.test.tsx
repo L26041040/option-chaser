@@ -140,9 +140,16 @@ async function ready(name = "Market Data",
   }
 }
 
+/** CLAUDE-SETTINGS-ROLE-IA-001：Normal User 的設定頁沒有 Data / API，
+ *  `ready()` 等不到 Market Data——改等 Normal 版面必有的登入表單。 */
+async function readyNormal() {
+  await waitFor(() => expect(screen.getByLabelText("密碼")).toBeInTheDocument());
+}
+
 afterEach(() => {
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
+  _resetCacheForTests();
 });
 
 describe("兩列與預設值", () => {
@@ -450,9 +457,13 @@ describe("錯誤", () => {
     // 這個假體對所有路徑都回同一個失敗——`<Diagnostics />`（DG-06／
     // #149）自己也會打 `/api/diagnostics` 並顯示自己的 alert，因此畫面
     // 上會有不只一個 `role="alert"`，用 `getAllByRole` 找出這一個。
-    vi.stubGlobal("fetch", vi.fn(async () => ({
-      ok: false, status: 500, json: async () => ({ detail: "資料庫連不上" }),
-    } as Response)));
+    // CLAUDE-SETTINGS-ROLE-IA-001：只有登入後的角色才會讀設定，角色查詢
+    // 本身照常回 Super Admin，其餘路徑一律失敗。
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => (
+      String(url).startsWith("/api/auth/status")
+        ? { ok: true, status: 200, json: async () => ({ role: "superadmin" }) }
+        : { ok: false, status: 500, json: async () => ({ detail: "資料庫連不上" }) }
+    ) as Response));
     render(<Settings />);
     await waitFor(() =>
       expect(screen.getAllByRole("alert").some(
@@ -650,28 +661,26 @@ function mockApiWithLogin(views: SettingsView[],
 }
 
 describe("三層角色登入（AUTH-06／#313）", () => {
-  it("預設（未登入）看不到 API Token 輸入框，但模式選項照常可用", async () => {
+  it("預設（未登入）完全不呈現 Data / API——不是給一個「需要權限」的說明",
+     async () => {
+    // CLAUDE-SETTINGS-ROLE-IA-001：Normal User 連 Market Data／Historical
+    // IV 這兩列都看不到，也就沒有任何 Token 輸入框或權限說明文字。
     mockApiWithLogin([view()]);
     render(<Settings />);
-    await ready("Market Data", { expectRole: "normal" });
-    const md = within(section("Market Data"));
-    await userEvent.click(md.getByRole("radio", { name: "自訂" }));
-    expect(md.queryByLabelText("API Token")).not.toBeInTheDocument();
-    expect(
-      md.getByText("需要 Super Admin 身份才能設定 API Token"),
-    ).toBeInTheDocument();
-    // 模式選擇本身不是 credential 寫入路徑——不該因此一起被擋。
-    expect(md.getByRole("radio", { name: "自訂" })).toBeChecked();
+    await readyNormal();
+    expect(screen.queryByRole("region", { name: "Market Data" })).not.toBeInTheDocument();
+    expect(screen.queryByText("Data / API")).not.toBeInTheDocument();
+    expect(screen.queryByText("需要 Super Admin 身份才能設定 API Token"))
+      .not.toBeInTheDocument();
   });
 
   it("測試連線／清除 token 按鈕在未登入時不呈現", async () => {
     mockApiWithLogin(
       [view({ ...CUSTOM_MD, credentials: cred({ status: "ok" }) })]);
     render(<Settings />);
-    await ready("Market Data", { expectRole: "normal" });
-    const md = within(section("Market Data"));
-    expect(md.queryByRole("button", { name: "測試連線" })).not.toBeInTheDocument();
-    expect(md.queryByRole("button", { name: "清除 token" })).not.toBeInTheDocument();
+    await readyNormal();
+    expect(screen.queryByRole("button", { name: "測試連線" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "清除 token" })).not.toBeInTheDocument();
   });
 
   it("Super User 密碼登入後看得到身分，但仍看不到 credential CRUD", async () => {
@@ -679,13 +688,14 @@ describe("三層角色登入（AUTH-06／#313）", () => {
     // 這一層的正確行為是「看得見自己已登入」但輸入框依然不出現。
     mockApiWithLogin([view()]);
     render(<Settings />);
-    await ready("Market Data", { expectRole: "normal" });
+    await readyNormal();
 
     await userEvent.type(screen.getByLabelText("密碼"), SUPERUSER_PASSWORD);
     await userEvent.click(screen.getByRole("button", { name: "登入" }));
 
     await waitFor(() =>
       expect(screen.getByText("目前身分：Super User。")).toBeInTheDocument());
+    await waitFor(() => expect(section("Market Data")).toBeInTheDocument());
     const md = within(section("Market Data"));
     await userEvent.click(md.getByRole("radio", { name: "自訂" }));
     expect(md.queryByLabelText("API Token")).not.toBeInTheDocument();
@@ -697,13 +707,14 @@ describe("三層角色登入（AUTH-06／#313）", () => {
   it("Super Admin 密碼登入後，Token 輸入框出現", async () => {
     mockApiWithLogin([view()]);
     render(<Settings />);
-    await ready("Market Data", { expectRole: "normal" });
+    await readyNormal();
 
     await userEvent.type(screen.getByLabelText("密碼"), SUPERADMIN_PASSWORD);
     await userEvent.click(screen.getByRole("button", { name: "登入" }));
 
     await waitFor(() =>
       expect(screen.getByText("目前身分：Super Admin。")).toBeInTheDocument());
+    await waitFor(() => expect(section("Market Data")).toBeInTheDocument());
     const md = within(section("Market Data"));
     await userEvent.click(md.getByRole("radio", { name: "自訂" }));
     expect(md.getByLabelText("API Token")).toBeInTheDocument();
@@ -712,7 +723,7 @@ describe("三層角色登入（AUTH-06／#313）", () => {
   it("密碼錯誤時顯示錯誤、不會誤登入", async () => {
     mockApiWithLogin([view()]);
     render(<Settings />);
-    await ready("Market Data", { expectRole: "normal" });
+    await readyNormal();
 
     await userEvent.type(screen.getByLabelText("密碼"), "wrong-password");
     await userEvent.click(screen.getByRole("button", { name: "登入" }));
@@ -721,17 +732,16 @@ describe("三層角色登入（AUTH-06／#313）", () => {
     expect(screen.queryByText(/目前身分：/)).not.toBeInTheDocument();
   });
 
-  it("登出後回到 Normal User，Token 輸入框重新消失", async () => {
+  it("登出後回到 Normal User，Data / API 整塊跟著消失（不必重新整理）", async () => {
     mockApiWithLogin([view()], { initialRole: "superadmin" });
     render(<Settings />);
     await ready();
 
     await userEvent.click(screen.getByRole("button", { name: "登出" }));
 
-    await waitFor(() => expect(screen.getByLabelText("密碼")).toBeInTheDocument());
-    const md = within(section("Market Data"));
-    await userEvent.click(md.getByRole("radio", { name: "自訂" }));
-    expect(md.queryByLabelText("API Token")).not.toBeInTheDocument();
+    await readyNormal();
+    expect(screen.queryByRole("region", { name: "Market Data" })).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("API Token")).not.toBeInTheDocument();
   });
 
   it("重新整理頁面（模擬瀏覽器重啟）仍保持登入狀態", async () => {
@@ -757,7 +767,7 @@ describe("三層角色登入（AUTH-06／#313）", () => {
      async () => {
     mockApiWithLogin([view()]);
     render(<Settings />);
-    await ready("Market Data", { expectRole: "normal" });
+    await readyNormal();
 
     await userEvent.type(screen.getByLabelText("密碼"), SUPERADMIN_PASSWORD);
     await userEvent.click(screen.getByRole("button", { name: "登入" }));
@@ -812,38 +822,166 @@ describe("OG-11（#322）：桌面版左側 subnav（手機版單欄堆疊零改
     expect(screen.queryByText(/目前身分：/)).not.toBeInTheDocument();
   });
 
-  it("桌面：Super Admin 才看得到「管理後台」分頁，點下去顯示管理面板", async () => {
+  it("桌面：Super Admin 的 subnav 不再有「管理後台」分頁，改成旁邊一個" +
+     "進入管理中心的入口；Settings 本身不掛管理面板", async () => {
     goDesktop();
-    mockApi([view()], { role: "superadmin" });
+    const spy = mockApi([view()], { role: "superadmin" });
     render(<Settings />);
     await readyDesktop();
-    await waitFor(() =>
-      expect(screen.getByRole("tab", { name: "管理後台" })).toBeInTheDocument());
+    const entry = await screen.findByRole("link", { name: /進入管理中心/ });
 
-    await userEvent.click(screen.getByRole("tab", { name: "管理後台" }));
-    expect(await screen.findByText("Super User 管理面板")).toBeInTheDocument();
+    expect(entry).toHaveAttribute("href", "#/admin");
+    expect(screen.queryByRole("tab", { name: "管理後台" })).not.toBeInTheDocument();
+    expect(within(screen.getByRole("tablist")).getAllByRole("tab")
+      .map((t) => t.textContent))
+      .toEqual(["一般", "資料來源", "診斷", "刪除我的資料", "免責聲明"]);
+    expect(screen.queryByText("Super User 管理面板")).not.toBeInTheDocument();
+    expect(spy.mock.calls.some(([u]) => String(u).startsWith("/api/superuser/")))
+      .toBe(false);
   });
 
-  it("桌面：Normal User 看不到「管理後台」分頁——不是隱藏起來，是根本" +
-     "不在 subnav 清單裡", async () => {
+  it("桌面：Normal User 沒有 subnav——內容只有三塊，不硬撐一個分頁導覽", async () => {
     goDesktop();
     mockApi([view()], { role: "normal" });
     render(<Settings />);
-    await readyDesktop();
-    await waitFor(() => expect(screen.getByLabelText("密碼")).toBeInTheDocument());
+    await readyNormal();
 
-    expect(screen.queryByRole("tab", { name: "管理後台" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("tablist")).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: /進入管理中心/ })).not.toBeInTheDocument();
   });
 
-  it("手機（預設 matchMedia）：不出現 subnav，全部區塊一次堆疊顯示" +
-     "——手機版零改動", async () => {
+  it("手機（預設 matchMedia）：Super Admin 不出現 subnav、區塊一次堆疊，" +
+     "管理面板換成入口連結", async () => {
     mockApi([view()], { role: "superadmin" });
     render(<Settings />);
     await ready();
 
     expect(screen.queryByRole("tablist")).not.toBeInTheDocument();
     expect(screen.getByText("Data / API")).toBeInTheDocument();
-    expect(screen.getByText("Super User 管理面板")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /進入管理中心/ }))
+      .toHaveAttribute("href", "#/admin");
+    expect(screen.queryByText("Super User 管理面板")).not.toBeInTheDocument();
+  });
+});
+
+describe("CLAUDE-SETTINGS-ROLE-IA-001：依角色整理的設定頁", () => {
+  /** 目前畫面上所有設定區塊（`<section aria-label>`）的名稱，依文件順序。 */
+  function regionNames(): string[] {
+    return screen.getAllByRole("region").map((r) => r.getAttribute("aria-label") ?? "");
+  }
+
+  it.each([
+    ["手機", false],
+    ["桌面", true],
+  ])("Normal（%s）：只有刪除我的資料、免責聲明，登入區在最底下", async (_, desktop) => {
+    if (desktop) vi.stubGlobal("matchMedia", (q: string) => fakeMediaQueryList(true, q));
+    mockApi([view()], { role: "normal" });
+    render(<Settings />);
+    await readyNormal();
+
+    expect(regionNames()).toEqual(["刪除我的資料", "免責聲明", "登入"]);
+    expect(screen.queryByText("Data / API")).not.toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "Diagnostics" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: /進入管理中心/ })).not.toBeInTheDocument();
+  });
+
+  it("角色確認前只顯示載入中——Super Admin 進來不會先閃一下 Normal 版面", async () => {
+    let resolveAuth!: (r: Response) => void;
+    vi.stubGlobal("fetch", vi.fn((url: string) => {
+      const u = String(url);
+      if (u.startsWith("/api/auth/status")) {
+        return new Promise<Response>((r) => { resolveAuth = r; });
+      }
+      const body = u.startsWith("/api/diagnostics") ? [] : view();
+      return Promise.resolve({ ok: true, status: 200, json: async () => body } as Response);
+    }));
+    render(<Settings />);
+
+    expect(screen.getByText("載入中……")).toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "刪除我的資料" })).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("密碼")).not.toBeInTheDocument();
+
+    resolveAuth({ ok: true, status: 200, json: async () => ({ role: "superadmin" }) } as Response);
+    expect(await screen.findByRole("link", { name: /進入管理中心/ })).toBeInTheDocument();
+  });
+
+  it("Normal：只查角色，不讀設定、診斷或任何管理端點", async () => {
+    const spy = mockApi([view()], { role: "normal" });
+    render(<Settings />);
+    await readyNormal();
+
+    const urls = spy.mock.calls.map(([u]) => String(u));
+    expect(urls.every((u) => u.startsWith("/api/auth/status"))).toBe(true);
+  });
+
+  it("Super User：Data / API、診斷、刪除、免責聲明照舊，沒有管理中心入口，" +
+     "credential 仍不可設定", async () => {
+    mockApi([view()], { role: "superuser" });
+    render(<Settings />);
+    await ready("Market Data", { expectRole: "superuser" });
+
+    // 手機版單欄堆疊的既有順序，一格不多一格不少。
+    expect(regionNames()).toEqual(
+      ["登入", "Market Data", "Historical IV", "Diagnostics", "刪除我的資料", "免責聲明"]);
+    expect(screen.queryByRole("link", { name: /進入管理中心/ })).not.toBeInTheDocument();
+    const md = within(section("Market Data"));
+    await userEvent.click(md.getByRole("radio", { name: "自訂" }));
+    expect(md.queryByLabelText("API Token")).not.toBeInTheDocument();
+  });
+
+  it("Super Admin：Data / API、診斷都在，多一個管理中心入口，Settings 不掛管理面板",
+     async () => {
+    const spy = mockApi([view()], { role: "superadmin" });
+    render(<Settings />);
+    await ready();
+
+    expect(regionNames()).toEqual(
+      ["登入", "Market Data", "Historical IV", "Diagnostics", "刪除我的資料", "免責聲明"]);
+    expect(screen.getByRole("link", { name: /進入管理中心/ })).toHaveAttribute("href", "#/admin");
+    expect(screen.queryByRole("region", { name: "Super User 管理面板" })).not.toBeInTheDocument();
+    expect(spy.mock.calls.some(([u]) => /^\/api\/(superuser|ops)\//.test(String(u))))
+      .toBe(false);
+  });
+
+  it("角色切換即時生效：Normal → 登入 Super Admin 出現入口 → 登出回到極簡版",
+     async () => {
+    mockApiWithLogin([view()]);
+    render(<Settings />);
+    await readyNormal();
+    expect(screen.queryByRole("link", { name: /進入管理中心/ })).not.toBeInTheDocument();
+
+    await userEvent.type(screen.getByLabelText("密碼"), SUPERADMIN_PASSWORD);
+    await userEvent.click(screen.getByRole("button", { name: "登入" }));
+    expect(await screen.findByRole("link", { name: /進入管理中心/ })).toBeInTheDocument();
+    await waitFor(() => expect(section("Market Data")).toBeInTheDocument());
+
+    await userEvent.click(screen.getByRole("button", { name: "登出" }));
+    await readyNormal();
+    expect(regionNames()).toEqual(["刪除我的資料", "免責聲明", "登入"]);
+    expect(screen.queryByRole("link", { name: /進入管理中心/ })).not.toBeInTheDocument();
+  });
+
+  it("角色切換即時生效：Normal → 登入 Super User 變成既有 SU 設定頁（無入口）",
+     async () => {
+    mockApiWithLogin([view()]);
+    render(<Settings />);
+    await readyNormal();
+
+    await userEvent.type(screen.getByLabelText("密碼"), SUPERUSER_PASSWORD);
+    await userEvent.click(screen.getByRole("button", { name: "登入" }));
+    await waitFor(() => expect(section("Market Data")).toBeInTheDocument());
+    expect(screen.getByRole("region", { name: "Diagnostics" })).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: /進入管理中心/ })).not.toBeInTheDocument();
+  });
+
+  it("角色切換即時生效：Super User 登出立刻回到 Normal 極簡版", async () => {
+    mockApiWithLogin([view()], { initialRole: "superuser" });
+    render(<Settings />);
+    await ready("Market Data", { expectRole: "superuser" });
+
+    await userEvent.click(screen.getByRole("button", { name: "登出" }));
+    await readyNormal();
+    expect(regionNames()).toEqual(["刪除我的資料", "免責聲明", "登入"]);
   });
 });
 
@@ -854,7 +992,7 @@ describe("SW-07（#336，Seed Warm）：一般使用者可見文案不含開發�
      "沒有掛載", async () => {
     mockApi([view()], { role: "normal" });
     const { container } = render(<Settings />);
-    await ready("Market Data", { expectRole: "normal" });
+    await readyNormal();
 
     expect(screen.queryByText("Super User 管理面板")).not.toBeInTheDocument();
     const text = container.textContent ?? "";

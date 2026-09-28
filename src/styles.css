@@ -2485,7 +2485,6 @@ body {
   display: flex;
   flex-direction: column;
   gap: 4px;
-  flex: 0 0 200px;
 }
 
 .settings-panel {
@@ -2535,6 +2534,76 @@ body {
    讓危險動作在還沒點進去之前就先醒目一眼可辨。 */
 .danger-zone {
   border-color: var(--down);
+}
+
+/* CLAUDE-SETTINGS-ROLE-IA-001：Normal User 的極簡設定頁——單欄、內容
+   不拉滿整個桌面寬度，看起來是「本來就只有這幾件事」而不是被砍空。
+   登入區收在最底下：透明底、無陰影、上方一條細分隔線，視覺上退一階。 */
+.settings-simple {
+  max-width: 640px;
+}
+
+.settings-login-foot {
+  margin-top: calc(var(--gap) * 2);
+  padding-top: var(--gap);
+  border-top: 1px solid var(--line);
+}
+
+.settings-login-foot .card {
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  padding: 0;
+}
+
+.settings-login-foot .section-title {
+  font-size: 13px;
+  color: var(--mute);
+}
+
+/* 桌面：subnav 與管理中心入口同一欄。200px 欄寬原本寫在
+   `.settings-subnav` 自己身上，現在它一律包在直向的 `.settings-side` 裡，
+   欄寬改由外層負責（直向 flex 裡的 basis 會變成高度）。 */
+.settings-side {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  flex: 0 0 200px;
+}
+
+/* Super Admin 進入管理中心的入口卡：明顯但不誇張——跟其他卡片同一套
+   底色與邊框，只用 terracotta 小標與箭頭標示它是往下一層的入口。 */
+.settings-admin-entry {
+  gap: 4px;
+  text-decoration: none;
+  color: var(--ink);
+}
+
+.settings-admin-entry:hover {
+  background: var(--card-hover);
+  border-color: var(--line-2);
+}
+
+.settings-admin-eyebrow,
+.admin-page-eyebrow {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--acc-text);
+  margin: 0;
+}
+
+.settings-admin-title {
+  font-size: 15px;
+  font-weight: 700;
+}
+
+/* 管理中心頁（`AdminPage`）頁首：返回設定＋兩行標題。 */
+.admin-page-title {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
 }
 
 .settings-usage-title {
