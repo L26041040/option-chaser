@@ -1794,8 +1794,15 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
             # 等連線細節）只進 server log，回應只說「unavailable」。
             _logger.warning("health check: storage unavailable", exc_info=True)
             kind = "unavailable"
-        return {"status": "ok", "engine_version": __version__,
+        body = {"status": "ok", "engine_version": __version__,
                 "storage": kind, "path": request.url.path, "rate": rate}
+        # 【臨時】CLAUDE-DB-HYGIENE-008：cold-start 修復 hook 的 sanitized
+        # 狀態（只有計數），cleanup PR 移除。
+        from . import oneshot_db_rescue
+        oneshot_db_rescue.recheck_if_lock_was_held()
+        if oneshot_db_rescue.STATUS:
+            body["db_rescue"] = dict(oneshot_db_rescue.STATUS)
+        return body
 
     # ---------- Treasury Cron 預熱（SCALE-07／#257） ----------
 

@@ -9,7 +9,8 @@
 5. Do not expose, request, log, copy, or test real plaintext passwords/secrets.
 6. Do not take or paste screenshots unless the Owner explicitly asks. Browser verification is allowed when required by a ticket, but keep screenshot-heavy work to explicit visual-acceptance stages.
 7. Session reports: Traditional Chinese with English technical terms kept in English. Put substantive report content in one complete code block. Number reports as `［回報#NNN］`.
-8. Current report sequence: **117 used; next report is 118**.
+   All times in reports use **Taiwan time (Asia/Taipei, UTC+8)**, written like `2026-09-27 22:09 (台灣)`; convert any UTC timestamp from tools/APIs before reporting.
+8. Current report sequence: **120 used; next report is 121**.
 9. **Do not append detailed ticket history to this file.** Keep this file short. After a ticket, update only the active checkpoint below in 1–2 lines. Detailed evidence belongs in GitHub issues, commits, and code review comments.
 10. `CLAUDE_HISTORY.md` is the archived legacy project journal. **Do not read it by default.** Read it only when a specific historical question cannot be answered from the current issue/commit/docs.
 
@@ -45,7 +46,7 @@ pushed to it: AUTH-P1-FIX-001 (`8fdc1e3`) and SW-13 usage-summary
 refresh (shared `src/usageSummaryStore.ts`). Do not merge without Owner.
 
 DB-LIFECYCLE-AUDIT-001 (audit only): `docs/audits/db-lifecycle-audit-2026-09.md`. Its P1s are implemented by
-CLAUDE-DB-HYGIENE-002 (branch `claude/context-mhpwv6`, PR open): one command `scripts/repair_production_data_lifecycle.py` (see `docs/deploy-vercel.md`); Owner runs it after merge.
+CLAUDE-DB-HYGIENE-002/003 (PR #347, merged `68d8e30`, deployed): one command `scripts/repair_production_data_lifecycle.py` (see `docs/deploy-vercel.md`); Owner runs it after merge.
 
 Public Beta security hardening: PR #346 (`security/public-beta-hardening`)
 covers #345 A-1–A-4 and B-1–B-7 — merged.

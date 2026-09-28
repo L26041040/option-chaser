@@ -14,5 +14,9 @@
         ]
       }
     ]
-  }
+  },
+  "env": {
+    "TZ": "Asia/Taipei"
+  },
+  "timeZone": "Asia/Taipei"
 }
