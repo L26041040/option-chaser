@@ -14,7 +14,8 @@
  */
 import { useEffect, useState } from "react";
 
-import { getAuthStatusCached, subscribeAuthStatus } from "./fetchCache";
+import { getAuthStatus } from "./api";
+import { setAuthStatusCache, subscribeAuthStatus } from "./fetchCache";
 import { settingsHash } from "./route";
 import SuperUserAdmin from "./SuperUserAdmin";
 import { type Role } from "./superuser";
@@ -26,9 +27,17 @@ export default function AdminPage() {
 
   useEffect(() => {
     let alive = true;
-    const { promise, release } = getAuthStatusCached();
-    promise
-      .then((s) => alive && setRole(s.role))
+    const controller = new AbortController();
+    // 進這頁一定重新問伺服器，不吃 `getAuthStatusCached()` 的快取：快取
+    // 只會被同一分頁的登入／登出更新，在另一個分頁登出後這裡的舊
+    // `superadmin` 還會留著。拿到的新角色順手寫回共用快取並廣播，
+    // 讓 TopBar／Settings 也一起跟上。
+    getAuthStatus(controller.signal)
+      .then((s) => {
+        if (!alive) return;
+        setRole(s.role);
+        setAuthStatusCache(s);
+      })
       // 查不到角色就當作沒有權限——這裡 fail closed，跟 `RoleLogin`
       // 「查詢失敗維持現況」不同：管理畫面不該在不確定時開著。
       .catch(() => alive && setRole("normal"));
@@ -38,7 +47,7 @@ export default function AdminPage() {
     });
     return () => {
       alive = false;
-      release();
+      controller.abort();
       unsubscribe();
     };
   }, []);

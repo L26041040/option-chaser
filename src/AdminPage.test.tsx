@@ -86,6 +86,18 @@ describe("AdminPage", () => {
     expect(adminCalls(spy)).toEqual([]);
   });
 
+  it("快取還留著 superadmin（例如在別的分頁已登出）：進頁重新查角色，以伺服器為準導回設定頁", async () => {
+    setAuthStatusCache({ role: "superadmin" });
+    const spy = mockApi({ role: "normal" });
+    render(<AdminPage />);
+
+    await waitFor(() => expect(window.location.hash).toBe("#/settings"));
+    expect(spy.mock.calls.some(([u]) => String(u).startsWith("/api/auth/status"))).toBe(true);
+    expect(screen.queryByRole("region", { name: "Super User 管理面板" }))
+      .not.toBeInTheDocument();
+    expect(adminCalls(spy)).toEqual([]);
+  });
+
   it("角色確認前只顯示載入中，不先掛載管理面板", () => {
     vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>(() => {})));
     render(<AdminPage />);
