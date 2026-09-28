@@ -41,6 +41,18 @@ export function isSettingsHash(hash: string): boolean {
   return hash === settingsHash();
 }
 
+/** Super Admin 管理中心的 hash（CLAUDE-SETTINGS-ROLE-IA-001）：從 Settings
+ *  裡的一個分頁升格成獨立頁面，同一套 hash 慣例。進得來不代表看得到——
+ *  `AdminPage` 自己依角色守門，未達 Super Admin 一律導回設定頁。 */
+export function adminHash(): string {
+  return "#/admin";
+}
+
+/** 目前是不是在管理中心。 */
+export function isAdminHash(hash: string): boolean {
+  return hash === adminHash();
+}
+
 /** 隱私頁的 hash（PB-12／#302，Anonymous Public Beta）。跟其餘三對
  *  同一套慣例——它是全站頁尾／首頁 Beta 說明的連結目標，不屬於
  *  任何裝置寬度專屬的版面（手機／桌面共用同一個渲染路徑，見

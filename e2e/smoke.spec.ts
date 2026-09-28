@@ -1518,7 +1518,8 @@ test("手機版：Historical IV 切自訂、存 token，只看得到遮罩（Set
   await expect(page.locator("body")).not.toContainText("tok-secret-abcd");
 });
 
-test("手機版：未登入時看不到 API Token 輸入框，模式選項仍可正常切換（AUTH-06／#313）", async ({ page }) => {
+test("手機版：未登入的設定頁只有刪除我的資料、免責聲明與底部登入" +
+     "（CLAUDE-SETTINGS-ROLE-IA-001）", async ({ page }) => {
   // 刻意不用 `routeSettingsMobile`——那個 helper 為了讓其餘既有測試
   // 繼續測「設定頁資料流」而非登入流程，預設模擬已登入 Super Admin；
   // 這裡就是要驗證真正的預設（未登入）狀態，在真實瀏覽器層級而非只
@@ -1532,13 +1533,14 @@ test("手機版：未登入時看不到 API Token 輸入框，模式選項仍可
 
   await page.goto("/#/settings");
 
-  const md = page.getByRole("region", { name: "Market Data" });
-  await md.getByRole("radio", { name: "自訂" }).click();
-  await expect(md.getByRole("radio", { name: "自訂" })).toBeChecked();
-  await expect(md.getByLabel("API Token")).toHaveCount(0);
-  await expect(
-    md.getByText("需要 Super Admin 身份才能設定 API Token"),
-  ).toBeVisible();
+  await expect(page.getByLabel("密碼")).toBeVisible();
+  const regions = await page.locator(".screen section[aria-label]")
+    .evaluateAll((els) => els.map((e) => e.getAttribute("aria-label")));
+  expect(regions).toEqual(["刪除我的資料", "免責聲明", "登入"]);
+  await expect(page.getByText("Data / API")).toHaveCount(0);
+  await expect(page.getByRole("region", { name: "Diagnostics" })).toHaveCount(0);
+  await expect(page.getByText("需要 Super Admin 身份才能設定 API Token")).toHaveCount(0);
+  await expect(page.getByRole("link", { name: /進入管理中心/ })).toHaveCount(0);
 });
 
 /* ---------- 三層角色持久登入（AUTH-06／#313） ---------- */
@@ -1662,8 +1664,9 @@ test("手機版：角色可見度矩陣——Normal／Super User／Super Admin �
   await expect(page.locator(".iv-history")).toBeVisible();
 
   // 換成 Super Admin：得先登出（單一 cookie 一次只代表一個角色，不是
-  // 「已登入時再打一次不同密碼」）——Historical IV 依然可見，管理面板
-  // 也跟著出現。
+  // 「已登入時再打一次不同密碼」）——Historical IV 依然可見。
+  // CLAUDE-SETTINGS-ROLE-IA-001：管理面板不再掛在設定頁裡，設定頁只多
+  // 一個入口，點進去才是獨立的管理中心（`#/admin`）。
   await page.goto("/#/settings");
   await page.getByRole("button", { name: "登出" }).click();
   await page.getByLabel("密碼").fill(ROLE_SUPERADMIN_PASSWORD);
@@ -1671,13 +1674,22 @@ test("手機版：角色可見度矩陣——Normal／Super User／Super Admin �
   await expect(page.getByText(/目前身分：Super Admin/)).toBeVisible();
   await expect(
     page.getByRole("region", { name: "Super User 管理面板" }),
+  ).toHaveCount(0);
+  await page.getByRole("link", { name: /進入管理中心/ }).click();
+  await expect(page).toHaveURL(/#\/admin$/);
+  await expect(page.getByRole("heading", { name: "管理中心" })).toBeVisible();
+  await expect(
+    page.getByRole("region", { name: "Super User 管理面板" }),
   ).toBeVisible();
   await page.goto("/#/s/s1");
   await expect(page.locator(".iv-history")).toBeVisible();
 
-  // 登出：兩者都不再可見
+  // 登出：兩者都不再可見，直接打 #/admin 也會被導回設定頁
   await page.goto("/#/settings");
   await page.getByRole("button", { name: "登出" }).click();
+  await expect(page.getByLabel("密碼")).toBeVisible();
+  await page.goto("/#/admin");
+  await expect(page).toHaveURL(/#\/settings$/);
   await expect(
     page.getByRole("region", { name: "Super User 管理面板" }),
   ).toHaveCount(0);

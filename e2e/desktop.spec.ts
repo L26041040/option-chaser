@@ -1699,16 +1699,18 @@ test("桌面版：角色可見度矩陣——Normal／Super User／Super Admin �
   await expect(page.locator(".iv-history")).toBeVisible();
 
   // 換成 Super Admin：得先登出（單一 cookie 一次只代表一個角色，不是
-  // 「已登入時再打一次不同密碼」）——Historical IV 依然可見，管理面板
-  // 也跟著出現。
+  // 「已登入時再打一次不同密碼」）——Historical IV 依然可見。
+  // CLAUDE-SETTINGS-ROLE-IA-001：subnav 不再有「管理後台」分頁，旁邊一個
+  // 入口連到獨立的管理中心頁（`#/admin`）。
   await page.goto("/#/settings");
   await page.getByRole("button", { name: "登出" }).click();
   await page.getByLabel("密碼").fill(ROLE_SUPERADMIN_PASSWORD);
   await page.getByRole("button", { name: "登入" }).click();
   await expect(page.getByText(/目前身分：Super Admin/)).toBeVisible();
-  // OG-11（#322）：管理後台收進桌面 subnav 的「管理後台」分頁，不再
-  // 隨頁面一次全部可見，登入成功後得先點分頁才看得到。
-  await openSettingsTab(page, "管理後台");
+  await expect(page.getByRole("tab", { name: "管理後台" })).toHaveCount(0);
+  await page.getByRole("link", { name: /進入管理中心/ }).click();
+  await expect(page).toHaveURL(/#\/admin$/);
+  await expect(page.getByRole("heading", { name: "管理中心" })).toBeVisible();
   await expect(
     page.getByRole("region", { name: "Super User 管理面板" }),
   ).toBeVisible();
@@ -1724,6 +1726,8 @@ test("桌面版：角色可見度矩陣——Normal／Super User／Super Admin �
   // #322 跟進：管理後台收進 subnav 分頁後，這個流程比改版前多轉一手
   // tab 切換，光靠「管理面板消失」這個斷言不足以保證快取已經寫定）。
   await expect(page.getByLabel("密碼")).toBeVisible();
+  await page.goto("/#/admin");
+  await expect(page).toHaveURL(/#\/settings$/);
   await expect(
     page.getByRole("region", { name: "Super User 管理面板" }),
   ).toHaveCount(0);
@@ -2454,8 +2458,9 @@ test("桌面版：首頁不再常駐 Beta 說明，頁尾在整個 desktop-shell
   await page.getByRole("link", { name: "設定頁" }).click();
   await expect(page).toHaveURL(/#\/settings$/);
 
-  // 桌面版設定頁是 subnav 分頁，得先點「免責聲明」才看得到內容。
-  await page.getByRole("tab", { name: "免責聲明" }).click();
+  // CLAUDE-SETTINGS-ROLE-IA-001：Normal User 的桌面設定頁沒有 subnav，
+  // 三塊內容直接單欄呈現，免責聲明不必切分頁就看得到。
+  await expect(page.getByRole("tablist")).toHaveCount(0);
   const disclaimer = page.getByRole("region", { name: "免責聲明" });
   await expect(disclaimer).toContainText("Beta");
   await expect(disclaimer).toContainText("cookie");

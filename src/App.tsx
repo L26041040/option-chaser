@@ -52,6 +52,7 @@ import CreateForm, {
 import Footer from "./Footer";
 import MobileStatsStrip from "./MobileStatsStrip";
 import MobileTopBar from "./MobileTopBar";
+import AdminPage from "./AdminPage";
 import PrivacyPage from "./PrivacyPage";
 import ScenarioDetail from "./ScenarioDetail";
 import ScenarioList from "./ScenarioList";
@@ -75,6 +76,7 @@ import {
   type ScenarioSummary,
 } from "./api";
 import {
+  isAdminHash,
   isPrivacyHash,
   isSettingsHash,
   isTrashHash,
@@ -339,6 +341,9 @@ export default function App() {
   const showTrash = isTrashHash(hash);
   // Settings（#124）：同一套 hash 慣例。
   const showSettings = isSettingsHash(hash);
+  // CLAUDE-SETTINGS-ROLE-IA-001：Super Admin 管理中心，從 Settings 升格的
+  // 獨立頁面；角色守門在 `AdminPage` 自己身上。導覽上歸在「設定」底下。
+  const showAdmin = isAdminHash(hash);
   // 隱私頁（PB-12／#302）：同一套 hash 慣例，但**不分裝置寬度**——
   // 隱私頁不屬於任何工作區脈絡，手機與桌面共用同一個渲染路徑（見下方
   // 最優先的 early return，排在 `isDesktop` 判斷之前）。
@@ -675,10 +680,10 @@ export default function App() {
   // 只剩三格、不再帶建立入口（見 `BottomNav.tsx` 檔頭說明）——想從
   // 這幾個畫面建立劇本，先點「劇本庫」分頁回首頁，再按標題列的唯一
   // 入口，不再有第二條捷徑。
-  if (!isDesktop && showSettings) {
+  if (!isDesktop && (showSettings || showAdmin)) {
     return (
       <>
-        <Settings />
+        {showAdmin ? <AdminPage /> : <Settings />}
         <Footer />
         <BottomNav active="settings" />
       </>
@@ -838,6 +843,8 @@ export default function App() {
   // `runSummary`／`onRefresh` 三個 prop。
   const page = showTrash ? (
     <TrashView onRestore={restoreFromTrash} />
+  ) : showAdmin ? (
+    <AdminPage />
   ) : showSettings ? (
     <Settings />
   ) : detailProps ? (
@@ -883,7 +890,7 @@ export default function App() {
   return (
     <div className="desktop-shell">
       <TopBar
-        active={showSettings ? "settings" : showTrash ? "trash" : "library"}
+        active={showSettings || showAdmin ? "settings" : showTrash ? "trash" : "library"}
         onOpenCreate={() => setShowCreateForm(true)}
         createOpen={showCreateForm}
         createPanelId={createPanelId}
