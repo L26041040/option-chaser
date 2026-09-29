@@ -269,9 +269,10 @@ def test_single_branch_clone_still_recovers_archives_from_other_branches(repos, 
                     str(origin), str(single)], check=True, capture_output=True)
     git(single, "config", "user.name", "Test")
     git(single, "config", "user.email", "test@example.com")
-    assert git(single, "for-each-ref", "--format=%(refname)",
-               "refs/remotes").splitlines() == ["refs/remotes/origin/HEAD",
-                                                 "refs/remotes/origin/master"]
+    # 前提：這個 clone 根本不知道 feature/done（有沒有 origin/HEAD 依 git
+    # 版本而異，不是這條測試在乎的事）。
+    assert not [ref for ref in git(single, "for-each-ref", "--format=%(refname)").splitlines()
+                if "feature/done" in ref]
     t2 = Transcript(tmp_path / "t2.jsonl", "sess-jjjj0000")
     t2.say("新的 session", "答", "2026-09-28T13:00:00Z")
     r = run_hook(single, t2)
