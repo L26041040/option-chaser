@@ -250,3 +250,33 @@ def test_non_clear_reasons_are_ignored(repos, tmp_path):
                        input=json.dumps(payload), capture_output=True, text=True)
     assert r.returncode == 0
     assert archives(work) == []
+
+
+def test_single_branch_clone_still_recovers_archives_from_other_branches(repos, tmp_path):
+    """Codex P2（PR #351）：single-branch clone 沒有其他 branch 的 tracking
+    ref，仍要從 origin 找到並帶回卡住的 archive——而且不能因此建立任何
+    本地 ref／branch。"""
+    origin, work = repos
+    git(work, "checkout", "-b", "feature/done")
+    git(work, "push", "-u", "origin", "feature/done")
+    t1 = Transcript(tmp_path / "t1.jsonl", "sess-iiii9999")
+    t1.say("在舊 branch 上的對話", "答", "2026-09-28T12:00:00Z")
+    assert run_hook(work, t1).returncode == 0
+    stranded = archives(work)
+
+    single = tmp_path / "single"
+    subprocess.run(["git", "clone", "--single-branch", "--branch", "master",
+                    str(origin), str(single)], check=True, capture_output=True)
+    git(single, "config", "user.name", "Test")
+    git(single, "config", "user.email", "test@example.com")
+    assert git(single, "for-each-ref", "--format=%(refname)",
+               "refs/remotes").splitlines() == ["refs/remotes/origin/HEAD",
+                                                 "refs/remotes/origin/master"]
+    t2 = Transcript(tmp_path / "t2.jsonl", "sess-jjjj0000")
+    t2.say("新的 session", "答", "2026-09-28T13:00:00Z")
+    r = run_hook(single, t2)
+    assert r.returncode == 0, r.stderr
+    assert "recovered:" in r.stderr
+    assert set(stranded) <= set(archives(origin, "master"))
+    refs = git(single, "for-each-ref", "--format=%(refname)").splitlines()
+    assert not [ref for ref in refs if "feature/done" in ref]

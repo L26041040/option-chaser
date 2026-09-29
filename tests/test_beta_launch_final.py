@@ -469,3 +469,64 @@ def test_credential_routes_expose_no_owner_parameter():
         for op in spec["paths"][path].values():
             names = {p["name"] for p in op.get("parameters", [])}
             assert names == {"provider"}, (path, names)
+
+
+# ---------- Codex review（PR #351）：並行寫入的序列化 ----------
+
+
+def _pg_only(db):
+    if isinstance(db, MemoryStorage):
+        pytest.skip("鎖語意只存在於 Postgres")
+
+
+def _other_connection():
+    import psycopg
+    conn = psycopg.connect(TEST_DB_URL, autocommit=True)
+    conn.execute("SET lock_timeout = '200ms'")
+    return conn
+
+
+def test_reset_blocks_concurrent_writes_until_it_commits(db):
+    """Codex P1：reset 進行中（交易還沒結束），別的連線對產品表的寫入必須
+    等它 commit，不能在「刪完之後」偷偷寫進來而存活。"""
+    import psycopg
+    _pg_only(db)
+    _seed_world(db)
+    other = _other_connection()
+    try:
+        with db.transaction():
+            db.reset_beta_data()
+            with pytest.raises(psycopg.errors.LockNotAvailable):
+                other.execute("INSERT INTO feedback (feedback_id, display_name, content, "
+                              "created_at) VALUES ('x', 'n', 'c', 't')")
+            with pytest.raises(psycopg.errors.LockNotAvailable):
+                other.execute("DELETE FROM scenarios WHERE id = 'nope'")
+            # 讀照常。
+            assert other.execute("SELECT COUNT(*) FROM owners").fetchone()[0] >= 0
+    finally:
+        other.close()
+
+
+def test_batch_delete_locks_the_owner_rows_it_checked(db):
+    """Codex P2：檢查過 protected 的 owner 列在交易結束前不能被改成
+    protected（否則會照刪一個剛受保護的 owner）。"""
+    import psycopg
+    _pg_only(db)
+    ids = _seed_world(db)
+    other = _other_connection()
+    try:
+        with db.transaction():
+            [locked] = db.lock_owners([ids["beta_1"]])
+            assert not locked.protected
+            with pytest.raises(psycopg.errors.LockNotAvailable):
+                other.execute("UPDATE owners SET protected = TRUE WHERE owner_id = %s",
+                              (ids["beta_1"],))
+    finally:
+        other.close()
+
+
+def test_lock_owners_skips_unknown_ids(db):
+    ids = _seed_world(db)
+    with db.transaction():
+        got = db.lock_owners([ids["beta_2"], "no-such-owner"])
+    assert [o.owner_id for o in got] == [ids["beta_2"]]

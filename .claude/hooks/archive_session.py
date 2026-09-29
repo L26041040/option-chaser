@@ -78,11 +78,12 @@ later session. The hook therefore now:
 
   * never creates, switches or checks out a branch: it commits on the
     current branch and pushes only if that branch already exists on
-    origin (`git ls-remote`, not a possibly-stale tracking ref);
+    origin (asked with `git ls-remote`, not a possibly-stale tracking ref);
   * recovers stranded archives: any `session-history/*.md` that exists on
-    some `origin/*` branch (or is left untracked by an earlier failed run)
-    but not in HEAD is read with `git show` and committed first, as its
-    own "recover" commit, so it rides along with this branch;
+    some branch of origin (even one a single-branch clone never fetched;
+    missing heads are fetched into FETCH_HEAD only) or is left untracked by
+    an earlier failed run, but not in HEAD, is read with `git show` and
+    committed first as its own "recover" commit, so it rides along;
   * on a detached HEAD commits nothing (a detached commit is orphaned by
     the next checkout) and leaves the file in the working tree for the
     next archive to recover;
@@ -454,50 +455,89 @@ def _current_branch(repo_root: Path) -> str:
 
 
 ARCHIVE_DIR = "session-history"
-LS_REMOTE_TIMEOUT_SECONDS = 15
+# Network budget, all inside the hook's 60s cap: one ls-remote, at most one
+# fetch, one push.
+LS_REMOTE_TIMEOUT_SECONDS = 10
+FETCH_TIMEOUT_SECONDS = 12
+UNTRACKED = "untracked working tree"
 
 
 def _lines(r) -> list[str]:
     return [ln for ln in r.stdout.splitlines() if ln.strip()] if r.returncode == 0 else []
 
 
-def find_stranded(repo_root: Path, *, exclude: str) -> dict[str, str]:
-    """Archives that exist somewhere this repo can see but not in HEAD:
-    `{repo-relative path: where it was found}`.
+def list_remote_heads(repo_root: Path) -> dict[str, str] | None:
+    """`{branch: sha}` straight from origin (one `ls-remote`), or None when
+    the remote could not be asked. Asking the remote -- not the local
+    `refs/remotes/origin/*` -- matters twice: a tracking ref can be stale
+    after the branch was deleted on GitHub (pushing to it would recreate a
+    garbage branch), and a single-branch or shallow clone has no tracking
+    refs for the other branches that may hold stranded archives."""
+    r = run(["git", "-C", str(repo_root), "ls-remote", "--heads", "origin"],
+            timeout=LS_REMOTE_TIMEOUT_SECONDS)
+    if r.returncode != 0:
+        print(f"ls-remote failed:\n{r.stdout}{r.stderr}", file=sys.stderr)
+        return None
+    heads: dict[str, str] = {}
+    for line in _lines(r):
+        sha, _, ref = line.partition("\t")
+        if ref.startswith("refs/heads/"):
+            heads[ref[len("refs/heads/"):]] = sha
+    return heads
+
+
+def _ensure_local(repo_root: Path, heads: dict[str, str]) -> list[str]:
+    """Fetch the remote heads whose commits are not in this clone yet, in one
+    `git fetch` with no destination (objects + FETCH_HEAD only: no local ref
+    or branch is created). Returns the branches still unreadable."""
+    git = ["git", "-C", str(repo_root)]
+    missing = [b for b, sha in heads.items()
+               if run([*git, "cat-file", "-e", f"{sha}^{{commit}}"]).returncode != 0]
+    if missing:
+        run([*git, "fetch", "--no-tags", "--quiet", "origin",
+             *(f"refs/heads/{b}" for b in missing)], timeout=FETCH_TIMEOUT_SECONDS)
+    return [b for b in missing
+            if run([*git, "cat-file", "-e", f"{heads[b]}^{{commit}}"]).returncode != 0]
+
+
+def find_stranded(repo_root: Path, heads: dict[str, str], *,
+                  exclude: str) -> dict[str, tuple[str, str]]:
+    """Archives that exist somewhere this repo can reach but not in HEAD:
+    `{repo-relative path: (where it was found, tree-ish to read it from)}`.
 
     Two sources, both read-only: files left untracked in the working tree by
-    an earlier failed run, and files on any `origin/*` remote-tracking
-    branch. `exclude` is the archive this run is writing."""
+    an earlier failed run, and files on any branch of origin (`heads`, from
+    `list_remote_heads()`). `exclude` is the archive this run is writing."""
     git = ["git", "-C", str(repo_root)]
     in_head = set(_lines(run([*git, "ls-tree", "-r", "--name-only", "HEAD",
                               "--", ARCHIVE_DIR])))
-    found: dict[str, str] = {}
+    found: dict[str, tuple[str, str]] = {}
     for rel in _lines(run([*git, "ls-files", "--others", "--exclude-standard",
                            "--", ARCHIVE_DIR])):
         if rel.endswith(".md") and rel != exclude:
-            found[rel] = "untracked working tree"
-    refs = _lines(run([*git, "for-each-ref", "--format=%(refname:short)",
-                       "refs/remotes/origin"]))
-    for ref in sorted(refs):
-        if ref in ("origin", "origin/HEAD"):
-            continue
-        for rel in _lines(run([*git, "ls-tree", "-r", "--name-only", ref,
+            found[rel] = (UNTRACKED, "")
+    unreadable = _ensure_local(repo_root, heads)
+    if unreadable:
+        print(f"WARNING: could not fetch {len(unreadable)} origin branch(es) to scan "
+              f"for stranded archives: {', '.join(sorted(unreadable))}", file=sys.stderr)
+    for branch in sorted(set(heads) - set(unreadable)):
+        for rel in _lines(run([*git, "ls-tree", "-r", "--name-only", heads[branch],
                                "--", ARCHIVE_DIR])):
             if rel.endswith(".md") and rel != exclude and rel not in in_head \
                     and rel not in found:
-                found[rel] = ref
+                found[rel] = (f"origin/{branch}", heads[branch])
     return found
 
 
-def recover_stranded(repo_root: Path, stranded: dict[str, str]) -> bool:
-    """Write every stranded archive into the working tree (from its ref via
-    `git show`, never a checkout) and commit them together as one recover
-    commit containing exactly those files. Returns False on any failure."""
+def recover_stranded(repo_root: Path, stranded: dict[str, tuple[str, str]]) -> bool:
+    """Write every stranded archive into the working tree (via `git show`,
+    never a checkout) and commit them together as one recover commit
+    containing exactly those files. Returns False on any failure."""
     git = ["git", "-C", str(repo_root)]
-    for rel, source in stranded.items():
-        if source == "untracked working tree":
+    for rel, (source, treeish) in stranded.items():
+        if source == UNTRACKED:
             continue
-        shown = subprocess.run([*git, "show", f"{source}:{rel}"], capture_output=True)
+        shown = subprocess.run([*git, "show", f"{treeish}:{rel}"], capture_output=True)
         if shown.returncode != 0:
             print(f"FAIL: could not read {rel} from {source}", file=sys.stderr)
             return False
@@ -522,22 +562,8 @@ def recover_stranded(repo_root: Path, stranded: dict[str, str]) -> bool:
               file=sys.stderr)
         return False
     for rel in rels:
-        print(f"recovered: {rel} (from {stranded[rel]})", file=sys.stderr)
+        print(f"recovered: {rel} (from {stranded[rel][0]})", file=sys.stderr)
     return True
-
-
-def remote_branch_exists(repo_root: Path, branch: str) -> bool | None:
-    """True/False from the remote itself (a local tracking ref can be stale
-    after the branch was deleted on GitHub, and pushing to it would recreate
-    a garbage branch). None when the remote could not be asked."""
-    r = run(["git", "-C", str(repo_root), "ls-remote", "--exit-code", "--heads",
-             "origin", f"refs/heads/{branch}"], timeout=LS_REMOTE_TIMEOUT_SECONDS)
-    if r.returncode == 0:
-        return True
-    if r.returncode == 2:
-        return False
-    print(f"ls-remote failed:\n{r.stdout}{r.stderr}", file=sys.stderr)
-    return None
 
 
 def clear_boundary_ends(raw: list[dict]) -> list[int]:
@@ -670,7 +696,8 @@ def main() -> int:
         return 1
 
     status = 0
-    stranded = find_stranded(repo_root, exclude=str(rel))
+    heads = list_remote_heads(repo_root)
+    stranded = find_stranded(repo_root, heads or {}, exclude=str(rel))
     if stranded and not recover_stranded(repo_root, stranded):
         status = 1
 
@@ -692,12 +719,11 @@ def main() -> int:
     else:
         print(f"already committed: {rel} (resuming)", file=sys.stderr)
 
-    exists = remote_branch_exists(repo_root, branch)
-    if exists is None:
+    if heads is None:
         print(f"FAIL: could not reach origin; {rel} is committed on {branch} but NOT "
               "pushed", file=sys.stderr)
         return 1
-    if not exists:
+    if branch not in heads:
         # Never create a remote branch just to hold session history.
         print(f"FAIL: origin/{branch} does not exist and this hook never creates "
               f"branches; {rel} is committed locally on {branch} and goes up with "

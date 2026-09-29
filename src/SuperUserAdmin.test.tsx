@@ -310,6 +310,24 @@ describe("SuperUserAdmin", () => {
     });
   });
 
+  it("剛被設成 protected 的 owner 會從批次選取中剔除（Codex P2，PR #351）", async () => {
+    listOwnersMock.mockReset()
+      .mockResolvedValueOnce([OWNER_A, OWNER_B, OWNER_C])
+      .mockResolvedValueOnce([{ ...OWNER_A, protected: true }, OWNER_B, OWNER_C]);
+    const user = userEvent.setup();
+    render(<SuperUserAdmin />);
+    await screen.findByText("owner-a");
+    await user.click(screen.getByRole("checkbox", { name: "選取 owner owner-a" }));
+    await user.click(screen.getByRole("checkbox", { name: "選取 owner owner-c" }));
+    expect(screen.getByText("已選 2 個 owner")).toBeInTheDocument();
+
+    const rowA = screen.getByText("owner-a").closest("li") as HTMLElement;
+    await user.click(within(rowA).getByRole("button", { name: "設為 protected" }));
+
+    await waitFor(() => expect(screen.getByText("已選 1 個 owner")).toBeInTheDocument());
+    expect(screen.getByRole("checkbox", { name: "選取 owner owner-a" })).not.toBeChecked();
+  });
+
   describe("CLAUDE-BETA-LAUNCH-FINAL-001：Danger Zone — Reset Beta Data", () => {
     it("Reset 鈕要逐字打對「Reset」才能按，大小寫不同也不行", async () => {
       const user = userEvent.setup();

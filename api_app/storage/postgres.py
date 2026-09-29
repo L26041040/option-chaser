@@ -1355,11 +1355,19 @@ class PostgresStorage:
     # 只清非 protected owner 的列：protected owner 的 provider 設定要留著。
     _BETA_OWNER_TABLES = ("owner_settings", "owner_credentials",
                           "owner_verifications", "browser_identities")
+    _BETA_LOCK_TABLES = ("owners", *_BETA_OWNER_TABLES, *_BETA_PRODUCT_TABLES,
+                         "rate_limits", "operational_metrics", "feedback")
 
     def reset_beta_data(self, *,
                         keep_metrics: Sequence[tuple[str, str]] = ()) -> dict[str, int]:
         counts: dict[str, int] = {}
         with self.transaction(), self._connect() as conn:
+            # READ COMMITTED 下每條 DELETE 各自一個 snapshot，擋不住「刪完之後
+            # 才寫進來」的列（Codex P1，PR #351）。先把受影響的表全部上 SHARE
+            # ROW EXCLUSIVE：讀照常，所有並行寫入等到這次 reset commit 之後
+            # 才進來，回應的「已清場」因此是真的。固定順序上鎖。
+            conn.execute("LOCK TABLE " + ", ".join(self._BETA_LOCK_TABLES)
+                         + " IN SHARE ROW EXCLUSIVE MODE")
             kept = [r[0] for r in conn.execute(
                 "SELECT owner_id FROM owners WHERE protected").fetchall()]
             for table in self._BETA_PRODUCT_TABLES:
@@ -1531,6 +1539,15 @@ class PostgresStorage:
                 "SELECT owner_id, created_at, last_activity_at, protected, "
                 "is_synthetic FROM owners "
                 "ORDER BY created_at, owner_id").fetchall()
+        return [Owner(owner_id=r[0], created_at=r[1], last_activity_at=r[2],
+                      protected=r[3], is_synthetic=r[4]) for r in rows]
+
+    def lock_owners(self, owner_ids: Sequence[str]) -> list[Owner]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT owner_id, created_at, last_activity_at, protected, "
+                "is_synthetic FROM owners WHERE owner_id = ANY(%s) "
+                "ORDER BY owner_id FOR UPDATE", (list(owner_ids),)).fetchall()
         return [Owner(owner_id=r[0], created_at=r[1], last_activity_at=r[2],
                       protected=r[3], is_synthetic=r[4]) for r in rows]
 

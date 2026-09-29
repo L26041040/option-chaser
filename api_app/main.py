@@ -2405,8 +2405,9 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         targets = list(dict.fromkeys(body.owner_ids))
         results: dict[str, dict[str, int]] = {}
         with _db().transaction():
-            protected = [oid for oid in targets
-                         if (o := _db().get_owner(oid)) is not None and o.protected]
+            # 鎖住目標 owner 列到交易結束（Codex P2，PR #351）：檢查完之後
+            # 別人才能改 protected 旗標，不會「剛被設成 protected 卻照刪」。
+            protected = [o.owner_id for o in _db().lock_owners(targets) if o.protected]
             if protected:
                 raise HTTPException(
                     status_code=409,

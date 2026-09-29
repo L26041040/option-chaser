@@ -1319,6 +1319,12 @@ class Storage(Protocol):
         `list_scenarios(owner=None)`／`result_history(owner=None)`
         「刻意的跨 owner 逃生門，語意由呼叫端決定」先例）。"""
 
+    def lock_owners(self, owner_ids: Sequence[str]) -> list[Owner]:
+        """CLAUDE-BETA-LAUNCH-FINAL-001：在目前的 `transaction()` 裡讀出並
+        **鎖住**這些 owner 列（Postgres `SELECT ... FOR UPDATE`）直到交易
+        結束——批次刪除據此檢查 `protected`，之後別人才改得動旗標，檢查與
+        刪除之間不會有空窗。不存在的 id 直接略過。"""
+
     def list_protected_owners(self) -> list[Owner]:
         """只回 `protected=True` 的 owner（#345 A-4）。Historical IV 每次
         請求都要找「那一個」protected owner——用這個窄查詢，不必每次把

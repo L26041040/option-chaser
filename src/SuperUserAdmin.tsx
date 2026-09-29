@@ -411,8 +411,9 @@ export default function SuperUserAdmin() {
     try {
       const rows = await superuserListOwners();
       setOwners(rows);
-      // 已經不存在（被刪掉、被 reset 掉）的 owner 不能留在選取集合裡。
-      const alive = new Set(rows.map((o) => o.owner_id));
+      // 已經不存在（被刪掉、被 reset 掉）或剛被設成 protected 的 owner 不能
+      // 留在選取集合裡——protected 不能批次刪除，留著只會讓下一次送出 409。
+      const alive = new Set(rows.filter((o) => !o.protected).map((o) => o.owner_id));
       setSelected((prev) => new Set([...prev].filter((id) => alive.has(id))));
       setError(null);
     } catch (e) {
