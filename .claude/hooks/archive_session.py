@@ -511,6 +511,9 @@ def recover_stranded(repo_root: Path, stranded: dict[str, str]) -> bool:
     r = run([*git, "commit", "-m",
              f"session history: recover {len(rels)} stranded archive(s)", "--", *rels])
     if r.returncode != 0:
+        # Unstage (only unstage -- the files stay in the working tree) so a
+        # later plain `git commit` does not sweep them in by accident.
+        run([*git, "reset", "-q", "--", *rels])
         print(f"FAIL: recover commit failed:\n{r.stdout}{r.stderr}", file=sys.stderr)
         return False
     committed = sorted(_lines(run([*git, "show", "--name-only", "--format=", "HEAD"])))

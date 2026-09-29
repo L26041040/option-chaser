@@ -1319,7 +1319,8 @@ class PostgresStorage:
 
         回傳 `{table_name: 受影響列數}`，含 `owners`／
         `browser_identities` 兩張，以及 `rate_limits`（該 owner 的 per-owner
-        quota 計數列）與 `feedback`（這個人送過的意見回饋），共 14 個鍵。"""
+        quota 計數列）與 `feedback`（這個人送過的意見回饋——去識別化成
+        `owner_id = NULL`，內容保留），共 14 個鍵。"""
         counts: dict[str, int] = {}
         with self._connect() as conn:
             with conn.transaction():
@@ -1333,9 +1334,11 @@ class PostgresStorage:
                     "DELETE FROM rate_limits WHERE scope = %s AND key = %s",
                     (OWNER_RATE_LIMIT_SCOPE, owner_id))
                 counts["rate_limits"] = cur.rowcount
-                # 「刪除我的資料」也帶走這個人送過的意見回饋。
+                # 意見回饋只去識別化、不刪：匿名閒置清理也走這個原語，刪掉
+                # 會讓封測回饋隨著寄件人的 owner 被清而悄悄消失。
                 cur = conn.execute(
-                    "DELETE FROM feedback WHERE owner_id = %s", (owner_id,))
+                    "UPDATE feedback SET owner_id = NULL WHERE owner_id = %s",
+                    (owner_id,))
                 counts["feedback"] = cur.rowcount
                 cur = conn.execute(
                     "DELETE FROM browser_identities WHERE owner_id = %s",

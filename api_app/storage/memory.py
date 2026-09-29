@@ -617,9 +617,10 @@ class MemoryStorage:
                 n += 1
         counts["owner_verifications"] = n
 
-        before = len(self._feedback)
-        self._feedback = [f for f in self._feedback if f.owner_id != owner_id]
-        counts["feedback"] = before - len(self._feedback)
+        mine = [i for i, f in enumerate(self._feedback) if f.owner_id == owner_id]
+        for i in mine:
+            self._feedback[i] = dataclasses.replace(self._feedback[i], owner_id=None)
+        counts["feedback"] = len(mine)
 
         dead = [slot for slot in self._rate_limits
                 if slot[0] == OWNER_RATE_LIMIT_SCOPE and slot[1] == owner_id]

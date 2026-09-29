@@ -1206,8 +1206,9 @@ class Storage(Protocol):
         回傳 `{table_name: 受影響列數}`，含 `owners`／
         `browser_identities` 兩張，以及 `rate_limits`（這個 owner 的
         per-owner quota 計數列，scope = `OWNER_RATE_LIMIT_SCOPE`）與
-        `feedback`（這個人送過的意見回饋；CLAUDE-BETA-LAUNCH-FINAL-001），
-        共 14 個鍵。這個 owner_id 本來就
+        `feedback`（這個人送過的意見回饋，CLAUDE-BETA-LAUNCH-FINAL-001：
+        **去識別化**成 `owner_id = None`、內容保留——匿名閒置清理也呼叫
+        本方法，直接刪會讓封測回饋悄悄消失），共 14 個鍵。這個 owner_id 本來就
         不存在時，全部鍵值皆為 0（不拋錯——「刪除一個不存在的東西」
         視同已經達成目標狀態，冪等）。"""
 

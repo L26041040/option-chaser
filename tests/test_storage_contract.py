@@ -1596,9 +1596,10 @@ def test_delete_owner_also_clears_that_owners_quota_rows(storage):
     assert storage.rate_limit_consume(source) == 0        # 非 owner scope 不動
 
 
-def test_delete_owner_also_clears_that_owners_feedback(storage):
-    """CLAUDE-BETA-LAUNCH-FINAL-001：「刪除我的資料」也帶走這個人送過的
-    意見回饋；別人的、以及沒綁 owner 的匿名回饋不受影響。"""
+def test_delete_owner_anonymizes_that_owners_feedback(storage):
+    """CLAUDE-BETA-LAUNCH-FINAL-001：刪除 owner（自助刪除或匿名閒置清理）
+    時，這個人送過的意見回饋去識別化（owner_id → None）但內容保留——
+    封測回饋不能因為寄件人的 owner 被清掉就消失。別人的不受影響。"""
     from api_app.storage import Feedback
 
     _register_owner(storage, "doomed", "tok-doomed")
@@ -1610,7 +1611,8 @@ def test_delete_owner_also_clears_that_owners_feedback(storage):
     counts = storage.delete_owner("doomed")
 
     assert counts["feedback"] == 1
-    assert {f.feedback_id for f in storage.list_feedback()} == {"f2", "f3"}
+    owners = {f.feedback_id: f.owner_id for f in storage.list_feedback()}
+    assert owners == {"f1": None, "f2": "survivor", "f3": None}
 
 
 def test_feedback_is_listed_newest_first_and_limited(storage):
@@ -3747,8 +3749,8 @@ def test_no_table_with_an_owner_id_column_is_silently_left_out_of_the_lifecycle(
     # `superuser_audit_log` 是稽核軌跡：依設計**不得**隨被稽核的 owner
     # 一起消失，否則稽核就失去意義（PB-09／#301）。
     # `feedback`（CLAUDE-BETA-LAUNCH-FINAL-001）：`owner_id` 只是送出當下
-    # 綁定的 owner（可為 NULL）。`delete_owner()` 單獨把它刪掉（見下面
-    # `test_delete_owner_also_clears_that_owners_feedback`），但不隨
+    # 綁定的 owner（可為 NULL）。`delete_owner()` 單獨把它去識別化（見
+    # `test_delete_owner_anonymizes_that_owners_feedback`），但不隨
     # `migrate_owner()` 搬移——那是一次性的 solo 遷移，回饋不在其中。
     EXPECTED_EXCEPTIONS = {
         "owners", "browser_identities", "role_sessions", "superuser_audit_log",
