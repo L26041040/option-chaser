@@ -2536,6 +2536,73 @@ body {
   border-color: var(--down);
 }
 
+/* CLAUDE-BETA-LAUNCH-FINAL-001：管理中心的 Danger Zone（封測一鍵清場）
+   ——卡片裡的一塊紅框區，放在管理面板最後面。 */
+.beta-reset {
+  margin-top: calc(var(--gap) * 1.5);
+  padding: var(--gap);
+  border: 1px solid var(--down);
+  border-radius: 12px;
+}
+
+.danger-zone-title {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--down);
+}
+
+.danger-zone-name {
+  margin: 4px 0;
+  font-weight: 600;
+}
+
+.danger-zone-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-top: 8px;
+}
+
+.danger-zone-row .settings-input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* 意見回饋的內容欄：可以往下拉高，但不能橫向拉出卡片。 */
+.feedback-content {
+  resize: vertical;
+  min-height: 96px;
+}
+
+/* 管理中心的意見回饋 inbox：一則一列，內容保留使用者的換行。 */
+.feedback-inbox {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+}
+
+.feedback-inbox li {
+  padding: 10px 0;
+  border-top: 0.5px solid var(--line);
+}
+
+.feedback-inbox-text {
+  margin: 4px 0 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* 管理中心 owner 清單的「全選」勾選框（批次列最左邊）。 */
+.select-all {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+}
+
 /* CLAUDE-SETTINGS-ROLE-IA-001：Normal User 的極簡設定頁——單欄、內容
    不拉滿整個桌面寬度，看起來是「本來就只有這幾件事」而不是被砍空。
    登入區收在最底下：透明底、無陰影、上方一條細分隔線，視覺上退一階。 */

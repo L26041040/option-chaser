@@ -16,7 +16,7 @@ from contextlib import contextmanager
 
 from . import (RETIRED_TABLES, SCENARIO_CHILD_TABLES, BrowserIdentity,
                ChainBackoffEntry, ContractHistory,
-               DataSourceSettings, DividendCacheEntry, IvBackfillRun,
+               DataSourceSettings, DividendCacheEntry, Feedback, IvBackfillRun,
                IvObservation, LineageReport, MetricEntry, Owner,
                OwnerLifecycleFacts, OwnerMigrationConflict, OwnerSettingsBundle,
                OWNER_RATE_LIMIT_SCOPE, ProviderCredential, ProviderVerification,
@@ -73,6 +73,8 @@ class MemoryStorage:
         # `self._diagnostics` 刻意不同的保留政策，見
         # `SuperUserAuditEvent` docstring。
         self._audit_log: list[SuperUserAuditEvent] = []
+        # CLAUDE-BETA-LAUNCH-FINAL-001：意見回饋，append-only。
+        self._feedback: list[Feedback] = []
         # SCALE-13（#264）：per-owner 正確形狀。（legacy singleton 表已在
         # CLAUDE-DB-HYGIENE-002 退役，記憶體假體不再模擬它們。）settings 鍵是
         # `owner_id` 本身；credentials／verifications 鍵是
@@ -615,6 +617,11 @@ class MemoryStorage:
                 n += 1
         counts["owner_verifications"] = n
 
+        mine = [i for i, f in enumerate(self._feedback) if f.owner_id == owner_id]
+        for i in mine:
+            self._feedback[i] = dataclasses.replace(self._feedback[i], owner_id=None)
+        counts["feedback"] = len(mine)
+
         dead = [slot for slot in self._rate_limits
                 if slot[0] == OWNER_RATE_LIMIT_SCOPE and slot[1] == owner_id]
         for slot in dead:
@@ -631,6 +638,56 @@ class MemoryStorage:
         n = 1 if self._owners.pop(owner_id, None) is not None else 0
         counts["owners"] = n
 
+        return counts
+
+    def reset_beta_data(self, *,
+                        keep_metrics: Sequence[tuple[str, str]] = ()) -> dict[str, int]:
+        with self.transaction():
+            kept = {oid for oid, o in self._owners.items() if o.protected}
+            counts = {
+                "scenarios": len(self._scenarios),
+                "results": sum(len(v) for v in self._results.values()),
+                "current_results": len(self._current_results),
+                "snapshots": len(self._snapshots),
+                "events": len(self._events),
+                "diagnostics": len(self._diagnostics),
+            }
+            self._scenarios.clear()
+            self._results.clear()
+            self._current_results.clear()
+            self._snapshots.clear()
+            self._events = []
+            self._diagnostics.clear()
+
+            def drop(table: dict, owner_of) -> int:
+                dead = [k for k, v in table.items() if owner_of(k, v) not in kept]
+                for k in dead:
+                    del table[k]
+                return len(dead)
+
+            counts["owner_settings"] = drop(self._owner_settings, lambda k, v: k)
+            counts["owner_credentials"] = drop(self._owner_credentials,
+                                               lambda k, v: k[0])
+            counts["owner_verifications"] = drop(self._owner_verifications,
+                                                 lambda k, v: k[0])
+            counts["browser_identities"] = drop(self._browser_identities,
+                                                lambda k, v: v.owner_id)
+            counts["owners"] = drop(self._owners, lambda k, v: k)
+            active = [oid for oid, o in self._owners.items()
+                      if o.last_activity_at is not None]
+            for oid in active:
+                self._owners[oid] = dataclasses.replace(
+                    self._owners[oid], last_activity_at=None)
+            counts["owner_activity"] = len(active)
+            counts["rate_limits"] = len(self._rate_limits)
+            self._rate_limits.clear()
+            counts["feedback"] = len(self._feedback)
+            self._feedback = []
+            keep = set(keep_metrics)
+            dead_metrics = [k for k in self._metrics if (k[0], k[1]) not in keep]
+            for k in dead_metrics:
+                del self._metrics[k]
+            counts["operational_metrics"] = len(dead_metrics)
         return counts
 
     # ---------- Owner registry ＋ Browser Identity（PB-01／#292） ----------
@@ -727,6 +784,9 @@ class MemoryStorage:
     def list_protected_owners(self) -> list[Owner]:
         return [o for o in self._owners.values() if o.protected]
 
+    def lock_owners(self, owner_ids: Sequence[str]) -> list[Owner]:
+        return [self._owners[oid] for oid in owner_ids if oid in self._owners]
+
     # ---------- Role session（AUTH-01／#308，三層角色模型） ----------
 
     def create_role_session(self, session: RoleSession) -> None:
@@ -753,6 +813,12 @@ class MemoryStorage:
 
     def list_audit_events(self, *, limit: int = 200) -> list[SuperUserAuditEvent]:
         return list(reversed(self._audit_log))[:limit]
+
+    def add_feedback(self, feedback: Feedback) -> None:
+        self._feedback.append(feedback)
+
+    def list_feedback(self, *, limit: int = 100) -> list[Feedback]:
+        return list(reversed(self._feedback))[:limit]
 
     # ---------- 資料源設定與 credential（Settings／#124，owner 化 SCALE-13／#264） ----------
 

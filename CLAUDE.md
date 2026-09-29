@@ -10,7 +10,7 @@
 6. Do not take or paste screenshots unless the Owner explicitly asks. Browser verification is allowed when required by a ticket, but keep screenshot-heavy work to explicit visual-acceptance stages.
 7. Session reports: Traditional Chinese with English technical terms kept in English. Put substantive report content in one complete code block. Number reports as `［回報#NNN］`.
    All times in reports use **Taiwan time (Asia/Taipei, UTC+8)**, written like `2026-09-27 22:09 (台灣)`; convert any UTC timestamp from tools/APIs before reporting.
-8. Current report sequence: **123 used; next report is 124**.
+8. Current report sequence: **124 used; next report is 125**.
 9. **Do not append detailed ticket history to this file.** Keep this file short. After a ticket, update only the active checkpoint below in 1–2 lines. Detailed evidence belongs in GitHub issues, commits, and code review comments.
 10. `CLAUDE_HISTORY.md` is the archived legacy project journal. **Do not read it by default.** Read it only when a specific historical question cannot be answered from the current issue/commit/docs.
 
@@ -49,6 +49,8 @@ DB-LIFECYCLE-AUDIT-001 (audit only): `docs/audits/db-lifecycle-audit-2026-09.md`
 CLAUDE-DB-HYGIENE-002/003 (PR #347, merged `68d8e30`). **Production rescue done 2026-09-28 (台灣)** by HYGIENE-008's temporary cold-start hook (PR #348, removed by the follow-up cleanup PR): target 18 scenarios / 14 active, NULL + solo = 0, retired tables dropped, all invariants pass. AUTH-07 data migration is therefore complete.
 
 CLAUDE-SETTINGS-ROLE-IA-001: role-aware Settings — Normal sees only Delete / Disclaimer / Login (bottom); SU unchanged; SA gets an entry to the standalone Admin page `#/admin` (`src/AdminPage.tsx`, mounts existing `SuperUserAdmin`, redirects non-SA to `#/settings`).
+
+CLAUDE-BETA-LAUNCH-FINAL-001: `#/admin` Beta Reset (type `Reset`) + select-all batch delete (protected refused); Normal feedback → SA inbox; SU manages its own credentials; `/clear` hook never strands archives on dead branches (recovers them instead).
 
 Public Beta security hardening: PR #346 (`security/public-beta-hardening`)
 covers #345 A-1–A-4 and B-1–B-7 — merged.

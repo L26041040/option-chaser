@@ -25,7 +25,7 @@ from psycopg.types.json import Jsonb
 
 from . import (LEGACY_SINGLETON_TABLES, RETIRED_TABLES, SCENARIO_CHILD_TABLES,
                BrowserIdentity, ChainBackoffEntry, ContractHistory,
-               DataSourceSettings, DividendCacheEntry, IvBackfillRun,
+               DataSourceSettings, DividendCacheEntry, Feedback, IvBackfillRun,
                IvObservation, LineageReport, MetricEntry, Owner,
                OwnerLifecycleFacts, OwnerMigrationConflict, OwnerSettingsBundle,
                OWNER_RATE_LIMIT_SCOPE, ProviderCredential, ProviderVerification,
@@ -453,6 +453,17 @@ CREATE TABLE IF NOT EXISTS rate_limits (
     window_start    BIGINT NOT NULL,
     count           INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (scope, key, window_seconds, window_start)
+);
+-- CLAUDE-BETA-LAUNCH-FINAL-001：Normal User 的意見回饋——稱呼＋內容兩個
+-- 純文字欄位。`owner_id` nullable：還沒綁定 owner 的新訪客送回饋時為
+-- NULL（送回饋本身不建立 owner）。`seq` 只用來排序（最新在最上）。
+CREATE TABLE IF NOT EXISTS feedback (
+    seq           BIGSERIAL PRIMARY KEY,
+    feedback_id   TEXT NOT NULL,
+    display_name  TEXT NOT NULL,
+    content       TEXT NOT NULL,
+    created_at    TEXT NOT NULL,
+    owner_id      TEXT
 );
 """
 
@@ -1269,7 +1280,7 @@ class PostgresStorage:
         "diagnostics", "owner_settings", "owner_credentials",
         "owner_verifications", "owners", "browser_identities", "role_sessions",
         "superuser_audit_log", "rate_limits", "operational_metrics",
-        "iv_observations", "iv_backfill_runs", "contract_iv_history",
+        "feedback", "iv_observations", "iv_backfill_runs", "contract_iv_history",
         "rate_cache", "dividend_cache", "treasury_year_cache", "chain_backoff")
 
     def table_row_counts(self) -> dict[str, dict]:
@@ -1308,7 +1319,8 @@ class PostgresStorage:
 
         回傳 `{table_name: 受影響列數}`，含 `owners`／
         `browser_identities` 兩張，以及 `rate_limits`（該 owner 的 per-owner
-        quota 計數列，共 13 個鍵）。"""
+        quota 計數列）與 `feedback`（這個人送過的意見回饋——去識別化成
+        `owner_id = NULL`，內容保留），共 14 個鍵。"""
         counts: dict[str, int] = {}
         with self._connect() as conn:
             with conn.transaction():
@@ -1322,6 +1334,12 @@ class PostgresStorage:
                     "DELETE FROM rate_limits WHERE scope = %s AND key = %s",
                     (OWNER_RATE_LIMIT_SCOPE, owner_id))
                 counts["rate_limits"] = cur.rowcount
+                # 意見回饋只去識別化、不刪：匿名閒置清理也走這個原語，刪掉
+                # 會讓封測回饋隨著寄件人的 owner 被清而悄悄消失。
+                cur = conn.execute(
+                    "UPDATE feedback SET owner_id = NULL WHERE owner_id = %s",
+                    (owner_id,))
+                counts["feedback"] = cur.rowcount
                 cur = conn.execute(
                     "DELETE FROM browser_identities WHERE owner_id = %s",
                     (owner_id,))
@@ -1329,6 +1347,49 @@ class PostgresStorage:
                 cur = conn.execute(
                     "DELETE FROM owners WHERE owner_id = %s", (owner_id,))
                 counts["owners"] = cur.rowcount
+        return counts
+
+    # 封測清場時不分 owner 全部清掉的劇本產品資料（protected owner 的也清）。
+    _BETA_PRODUCT_TABLES = ("scenarios", "results", "current_results",
+                            "snapshots", "events", "diagnostics")
+    # 只清非 protected owner 的列：protected owner 的 provider 設定要留著。
+    _BETA_OWNER_TABLES = ("owner_settings", "owner_credentials",
+                          "owner_verifications", "browser_identities")
+    _BETA_LOCK_TABLES = ("owners", *_BETA_OWNER_TABLES, *_BETA_PRODUCT_TABLES,
+                         "rate_limits", "operational_metrics", "feedback")
+
+    def reset_beta_data(self, *,
+                        keep_metrics: Sequence[tuple[str, str]] = ()) -> dict[str, int]:
+        counts: dict[str, int] = {}
+        with self.transaction(), self._connect() as conn:
+            # READ COMMITTED 下每條 DELETE 各自一個 snapshot，擋不住「刪完之後
+            # 才寫進來」的列（Codex P1，PR #351）。先把受影響的表全部上 SHARE
+            # ROW EXCLUSIVE：讀照常，所有並行寫入等到這次 reset commit 之後
+            # 才進來，回應的「已清場」因此是真的。固定順序上鎖。
+            conn.execute("LOCK TABLE " + ", ".join(self._BETA_LOCK_TABLES)
+                         + " IN SHARE ROW EXCLUSIVE MODE")
+            kept = [r[0] for r in conn.execute(
+                "SELECT owner_id FROM owners WHERE protected").fetchall()]
+            for table in self._BETA_PRODUCT_TABLES:
+                counts[table] = conn.execute(f"DELETE FROM {table}").rowcount
+            for table in self._BETA_OWNER_TABLES:
+                counts[table] = conn.execute(
+                    f"DELETE FROM {table} WHERE NOT (owner_id = ANY(%s))",
+                    (kept,)).rowcount
+            counts["owners"] = conn.execute(
+                "DELETE FROM owners WHERE NOT protected").rowcount
+            counts["owner_activity"] = conn.execute(
+                "UPDATE owners SET last_activity_at = NULL "
+                "WHERE last_activity_at IS NOT NULL").rowcount
+            counts["rate_limits"] = conn.execute(
+                "DELETE FROM rate_limits").rowcount
+            counts["feedback"] = conn.execute("DELETE FROM feedback").rowcount
+            keep_sql = " AND ".join(
+                "NOT (metric = %s AND bucket = %s)" for _ in keep_metrics)
+            counts["operational_metrics"] = conn.execute(
+                "DELETE FROM operational_metrics"
+                + (f" WHERE {keep_sql}" if keep_sql else ""),
+                [v for pair in keep_metrics for v in pair]).rowcount
         return counts
 
     # ---------- Owner registry ＋ Browser Identity（PB-01／#292） ----------
@@ -1481,6 +1542,15 @@ class PostgresStorage:
         return [Owner(owner_id=r[0], created_at=r[1], last_activity_at=r[2],
                       protected=r[3], is_synthetic=r[4]) for r in rows]
 
+    def lock_owners(self, owner_ids: Sequence[str]) -> list[Owner]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT owner_id, created_at, last_activity_at, protected, "
+                "is_synthetic FROM owners WHERE owner_id = ANY(%s) "
+                "ORDER BY owner_id FOR UPDATE", (list(owner_ids),)).fetchall()
+        return [Owner(owner_id=r[0], created_at=r[1], last_activity_at=r[2],
+                      protected=r[3], is_synthetic=r[4]) for r in rows]
+
     def list_protected_owners(self) -> list[Owner]:
         with self._connect() as conn:
             rows = conn.execute(
@@ -1527,6 +1597,22 @@ class PostgresStorage:
                 "VALUES (%s, %s, %s, %s, %s, %s)",
                 (event.event_id, event.ts, event.actor, event.action,
                  event.target_owner_id, Jsonb(event.detail)))
+
+    def add_feedback(self, feedback: Feedback) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO feedback (feedback_id, display_name, content, "
+                "created_at, owner_id) VALUES (%s, %s, %s, %s, %s)",
+                (feedback.feedback_id, feedback.display_name, feedback.content,
+                 feedback.created_at, feedback.owner_id))
+
+    def list_feedback(self, *, limit: int = 100) -> list[Feedback]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT feedback_id, display_name, content, created_at, owner_id "
+                "FROM feedback ORDER BY seq DESC LIMIT %s", (limit,)).fetchall()
+        return [Feedback(feedback_id=r[0], display_name=r[1], content=r[2],
+                         created_at=r[3], owner_id=r[4]) for r in rows]
 
     def list_audit_events(self, *, limit: int = 200) -> list[SuperUserAuditEvent]:
         with self._connect() as conn:

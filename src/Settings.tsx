@@ -28,6 +28,7 @@ import {
   type UsageChoice,
 } from "./api";
 import DeleteMyData from "./DeleteMyData";
+import FeedbackForm from "./FeedbackForm";
 import Diagnostics from "./Diagnostics";
 import DisclaimerSection from "./DisclaimerSection";
 import { getAuthStatusCached, getSettingsCached, setSettingsCache } from "./fetchCache";
@@ -222,6 +223,9 @@ export default function Settings() {
   // 「Data / API」這一塊的內容手機／桌面逐字相同，抽成一個變數只是
   // 避免兩個分支各自貼一份一模一樣的 JSX（純提取，不改變任何條件式
   // 或渲染結果——手機分支拿到的還是原本那份 `USAGE_ORDER.map(...)`）。
+  // CLAUDE-BETA-LAUNCH-FINAL-001：只有 Super User／Super Admin 走得到這裡
+  // （Normal 分支更早就 return 了），兩者都能管理**自己 owner** 的
+  // credential（設定／測試／清除），所以這塊不再有任何權限說明分支。
   const datasourcePanel = (
     <>
       <h2 className="section-title">Data / API</h2>
@@ -238,7 +242,6 @@ export default function Settings() {
             busy={busy === usage}
             testing={testing === usage}
             justSaved={saved === usage}
-            canManageCredential={roleAtLeast(role, "superadmin")}
             onChoose={(choice) => choose(usage, choice)}
             onToken={(v) => setTokens((prev) => ({ ...prev, [usage]: v }))}
             onSave={() => void save(usage)}
@@ -275,6 +278,7 @@ export default function Settings() {
     return (
       <div className="screen settings-simple">
         {head}
+        <FeedbackForm />
         <DeleteMyData />
         <DisclaimerSection />
         <div className="settings-login-foot">
@@ -367,7 +371,6 @@ function UsageSection({
   busy,
   testing,
   justSaved,
-  canManageCredential,
   onChoose,
   onToken,
   onSave,
@@ -381,13 +384,6 @@ function UsageSection({
   busy: boolean;
   testing: boolean;
   justSaved: boolean;
-  /** AUTH-03（#310）：`owner_credentials` 的寫入路徑（設定／測試／
-   *  清除 token）gate 在 Super Admin——Normal／Super User 看得到
-   *  「自訂」這個選項本身（純偏好設定，不涉及 credential），但看不到
-   *  token 輸入框，見下方渲染區塊。呼叫端已經算好
-   *  `roleAtLeast(role, "superadmin")`，這裡只消費結果，不自己判斷
-   *  角色高低（票面 Implementation constraints）。 */
-  canManageCredential: boolean;
   onChoose: (choice: UsageChoice) => void;
   onToken: (value: string) => void;
   onSave: () => void;
@@ -481,14 +477,6 @@ function UsageSection({
             // token 打兩次沒有意義，而「還沒設定所以再給你一個輸入框」
             // 正是需求方要收掉的那條路徑（#127）。
             <p className="caption settings-shared">與上方共用 credential</p>
-          ) : !canManageCredential ? (
-            // AUTH-03（#310）：`owner_credentials` 寫入路徑 gate 在
-            // Super Admin（OD-3：匿名者不得存第三方 token）——輸入框
-            // 直接不呈現，不是呈現後靠後端 401 擋，事實陳述、非評價
-            // 字眼。
-            <p className="caption settings-shared">
-              需要 Super Admin 身份才能設定 API Token
-            </p>
           ) : (
             <label className="settings-field">
               <span className="caption">API Token</span>
@@ -519,7 +507,7 @@ function UsageSection({
               共用列重複一份，按下去做的是同一件事，只會讓人以為有兩把。
               「儲存」兩列都要有：模式選擇是各列自己的狀態，得存得起來。 */}
           <div className="settings-actions">
-            {ownsCredential && canManageCredential && (
+            {ownsCredential && (
               <button className="pbtn line sm" onClick={onTest}
                      disabled={testing || !configured}>
                 {testing ? "測試中……" : "測試連線"}
@@ -528,7 +516,7 @@ function UsageSection({
             <button className="pbtn sm" onClick={onSave} disabled={busy}>
               {busy ? "儲存中……" : "儲存"}
             </button>
-            {ownsCredential && canManageCredential && configured && provider && (
+            {ownsCredential && configured && provider && (
               <button
                 className="text-button danger"
                 onClick={() => onClear(provider)}

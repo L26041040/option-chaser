@@ -47,7 +47,7 @@ from .identity import (IdentityResolver, cookie_identity_resolver,
                        resolved_owner_scope, set_resolved_owner)
 from .rate_cache import cached_loader
 from .storage import (BrowserIdentity, ContractHistory, DataSourceSettings,
-                      IvBackfillRun, IvObservation, OWNER_RATE_LIMIT_SCOPE,
+                      Feedback, IvBackfillRun, IvObservation, OWNER_RATE_LIMIT_SCOPE,
                       Owner, ProviderCredential, ProviderVerification,
                       RateCacheEntry, RateLimitBucket, ResultRecord,
                       ResultSummary, RoleSession, Scenario, ScenarioExists, Storage,
@@ -145,6 +145,11 @@ _logger = logging.getLogger(__name__)
 
 # `GET /api/superuser/audit-log?limit=` 一次最多回幾筆（#345 B-4）。
 _AUDIT_LOG_MAX_LIMIT = 1000
+
+# CLAUDE-BETA-LAUNCH-FINAL-001：意見回饋的長度上限與 inbox 一次最多幾則。
+FEEDBACK_NAME_MAX = 40
+FEEDBACK_CONTENT_MAX = 2000
+_FEEDBACK_LIST_MAX_LIMIT = 500
 
 
 # 這些例外是**我們自己**在送出上游請求之前擋下來的（global fuse、
@@ -425,6 +430,43 @@ class SuperUserSetProtectedRequest(BaseModel):
     紀律。"""
     protected: bool
     confirm_owner_id: str
+
+
+class FeedbackRequest(BaseModel):
+    """CLAUDE-BETA-LAUNCH-FINAL-001：意見回饋只有兩個使用者欄位，都是純
+    文字。頭尾空白先去掉再驗長度——只有空白的欄位視同沒填。"""
+    display_name: str
+    content: str
+
+    @field_validator("display_name")
+    @classmethod
+    def _name(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError("請填寫稱呼")
+        if len(v) > FEEDBACK_NAME_MAX:
+            raise ValueError(f"稱呼最多 {FEEDBACK_NAME_MAX} 個字")
+        return v
+
+    @field_validator("content")
+    @classmethod
+    def _content(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError("請填寫反饋內容")
+        if len(v) > FEEDBACK_CONTENT_MAX:
+            raise ValueError(f"反饋內容最多 {FEEDBACK_CONTENT_MAX} 個字")
+        return v
+
+
+# CLAUDE-BETA-LAUNCH-FINAL-001：Owner 明確裁定的封測清場確認字——逐字相同、
+# 大小寫也要相同，不要求 owner_id、不要第二層 modal。
+BETA_RESET_CONFIRM_PHRASE = "Reset"
+
+
+class SuperAdminResetBetaRequest(BaseModel):
+    """`confirm` 必須逐字等於 `BETA_RESET_CONFIRM_PHRASE`。"""
+    confirm: str
 
 
 class AuthLoginRequest(BaseModel):
@@ -2346,7 +2388,13 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         這種部分確認。每個 owner 各自呼叫一次 `delete_owner()`、各自
         留一筆 audit 紀錄（保持「一筆紀錄對應一個目標」的既有粒度，
         不因為是批次操作就把多個目標塞進同一筆看不出各自結果的
-        紀錄）。"""
+        紀錄）。
+
+        CLAUDE-BETA-LAUNCH-FINAL-001：整批包在同一個交易裡（任何一筆刪除
+        或 audit 寫入失敗 → 全部 rollback，不留「刪了一半」），而且
+        **protected owner 不能被批次刪除**——清單裡只要有一個 protected
+        就整批 409、零寫入（要刪 protected owner 必須先取消 protected，
+        或走單筆刪除）。"""
         superuser.require_role(request, superuser.Role.SUPERADMIN,
                                resolve_session=_db().resolve_role_session)
         if set(body.confirm_owner_ids) != set(body.owner_ids):
@@ -2354,13 +2402,49 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
                 status_code=400,
                 detail="二次確認不符：confirm_owner_ids 必須等於 "
                        "owner_ids，操作已取消")
+        targets = list(dict.fromkeys(body.owner_ids))
         results: dict[str, dict[str, int]] = {}
-        for oid in body.owner_ids:
-            counts = _db().delete_owner(oid)
-            results[oid] = counts
-            _record_audit("batch_delete_owner", target_owner_id=oid,
+        with _db().transaction():
+            # 鎖住目標 owner 列到交易結束（Codex P2，PR #351）：檢查完之後
+            # 別人才能改 protected 旗標，不會「剛被設成 protected 卻照刪」。
+            protected = [o.owner_id for o in _db().lock_owners(targets) if o.protected]
+            if protected:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"protected owner 不能批次刪除（{len(protected)} 個），"
+                           "操作已取消")
+            for oid in targets:
+                counts = _db().delete_owner(oid)
+                results[oid] = counts
+                _record_audit("batch_delete_owner", target_owner_id=oid,
+                              detail={"deleted_rows": counts})
+        return {"deleted": targets, "counts": results}
+
+    @app.post("/api/superuser/reset-beta-data")
+    def superuser_reset_beta_data(body: SuperAdminResetBetaRequest,
+                                  request: Request) -> dict:
+        """CLAUDE-BETA-LAUNCH-FINAL-001：封測一鍵清場（Danger Zone）。
+        語意全部在 canonical 的 `Storage.reset_beta_data()`，這裡只負責
+        授權、確認字與 audit；reset 和 audit 在**同一個交易**裡，audit
+        寫不進去就整批 rollback（不會有「清掉了卻沒留紀錄」）。
+
+        今天的 `chain_fetch_count` 刻意保留：它是 global vendor fuse 唯一
+        的真相來源（`vendor_fuse.today_chain_fetch_count()`），清掉等於
+        把今天的 vendor 預算歸零。回應只有各表列數，沒有任何 owner_id
+        或 credential。"""
+        superuser.require_role(request, superuser.Role.SUPERADMIN,
+                               resolve_session=_db().resolve_role_session)
+        if body.confirm != BETA_RESET_CONFIRM_PHRASE:
+            raise HTTPException(
+                status_code=400,
+                detail=f"確認字不符：請輸入「{BETA_RESET_CONFIRM_PHRASE}」，"
+                       "操作已取消")
+        with _db().transaction():
+            counts = _db().reset_beta_data(
+                keep_metrics=[("chain_fetch_count", ny_today().isoformat())])
+            _record_audit("reset_beta_data", target_owner_id=None,
                           detail={"deleted_rows": counts})
-        return {"deleted": list(body.owner_ids), "counts": results}
+        return {"reset": True, "counts": counts}
 
     @app.put("/api/superuser/owners/{owner_id}/protected")
     def superuser_set_protected(owner_id: str,
@@ -2397,6 +2481,23 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         return [dataclasses.asdict(e)
                 for e in _db().list_audit_events(limit=clamped)]
 
+    def _feedback_owner_hint(owner_id: str | None) -> str | None:
+        """inbox 只顯示 owner_id 的前 6 碼——夠 Super Admin 看出「同一個人
+        送了好幾則」，又不把完整 owner_id 攤在畫面上。"""
+        return None if owner_id is None else owner_id[:6] + "…"
+
+    @app.get("/api/superuser/feedback")
+    def superuser_list_feedback(request: Request, limit: int = 100) -> list[dict]:
+        """CLAUDE-BETA-LAUNCH-FINAL-001：Super Admin 的意見回饋 inbox，最新在
+        最上。純瀏覽，不記 audit（同 audit-log 端點的理由）。"""
+        superuser.require_role(request, superuser.Role.SUPERADMIN,
+                               resolve_session=_db().resolve_role_session)
+        clamped = max(1, min(limit, _FEEDBACK_LIST_MAX_LIMIT))
+        return [{"feedback_id": f.feedback_id, "display_name": f.display_name,
+                 "content": f.content, "created_at": f.created_at,
+                 "owner_hint": _feedback_owner_hint(f.owner_id)}
+                for f in _db().list_feedback(limit=clamped)]
+
     # ---------- Application diagnostics（DG-02／#145） ----------
 
     @app.get("/api/diagnostics")
@@ -2414,6 +2515,39 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         """清空這個 owner 名下的診斷事件，回傳清掉的筆數（SCALE-11：
         過去無條件清空全部 owner 的資料）。"""
         return {"cleared": _db().clear_diagnostics(owner=identity_resolver())}
+
+    # ---------- 意見回饋（CLAUDE-BETA-LAUNCH-FINAL-001） ----------
+
+    @app.post("/api/feedback", status_code=201)
+    def submit_feedback(body: FeedbackRequest, request: Request) -> dict:
+        """任何人都能送（含沒登入的 Normal User）。記下這個瀏覽器**已經
+        綁定**的 owner；還沒綁定的新訪客記 `None`——刻意不呼叫
+        `materialize_owner()`：只填一張回饋不該製造一個 ghost owner。
+
+        輕量防灌沿用既有 rate-limit primitive：per source（HMAC，secret
+        沒設時停用）、per 已綁定 owner、再加一條全站每小時上限。回應不帶
+        任何 owner 資訊。"""
+        owner = identity_resolver()
+        owner_id = None if is_pending_owner(owner) else owner
+        now = _clock()
+        buckets = _buckets("feedback_global", "all", now,
+                           (ac.HOUR, ac.FEEDBACK_GLOBAL_PER_HOUR))
+        source = _request_source_key(request)
+        if source is not None:
+            buckets += _buckets("feedback_source", source, now,
+                                (ac.MINUTE, ac.FEEDBACK_PER_MINUTE),
+                                (ac.HOUR, ac.FEEDBACK_PER_HOUR))
+        if owner_id is not None:
+            buckets += _buckets("feedback_owner", owner_id, now,
+                                (ac.MINUTE, ac.FEEDBACK_PER_MINUTE),
+                                (ac.HOUR, ac.FEEDBACK_PER_HOUR))
+        if _db().rate_limit_consume(buckets) is not None:
+            raise HTTPException(status_code=429,
+                                detail="送出太頻繁，請稍後再試")
+        _db().add_feedback(Feedback(
+            feedback_id=str(uuid.uuid4()), display_name=body.display_name,
+            content=body.content, created_at=now_utc_iso(), owner_id=owner_id))
+        return {"ok": True}
 
     # ---------- 自助刪除（PB-04／#296，Anonymous Public Beta） ----------
 
@@ -3564,14 +3698,14 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
     def put_credential(provider: str, req: CredentialRequest,
                        request: Request) -> dict:
         """PB-09（#298）第一個 User Level 授權規則、AUTH-03（#310）
-        起改用三層角色：`owner_credentials` 的寫入路徑 gate 在 Super
-        Admin——Normal User 的 Anonymous Owner 結構性寫不進任何第三方
-        token（OD-3）。**先驗證軸二、再驗證 provider 白名單、才碰
-        storage**：沒有有效 Super Admin role session 的請求連白名單
-        檢查的副作用（若日後那段變重）都不該享有。owner_id（軸一）
-        維持不變——寫進去的仍是目前解析出的那個 owner，Super Admin
-        不會因為這個動作而變成別人。"""
-        superuser.require_role(request, superuser.Role.SUPERADMIN,
+        起改用三層角色：Normal User 的 Anonymous Owner 結構性寫不進任何
+        第三方 token（OD-3）。CLAUDE-BETA-LAUNCH-FINAL-001：最低角色從
+        Super Admin 降為 **Super User**（Owner 決策：SU 要能管理自己的
+        API／Data Source credential）。**先驗證軸二、再驗證 provider
+        白名單、才碰 storage**。owner_id（軸一）維持不變——寫進去的
+        永遠是這次請求解析出的那個 owner，沒有任何 owner 參數，SU／SA
+        都不會因為這個動作而變成別人、也管不到別人的 token。"""
+        superuser.require_role(request, superuser.Role.SUPERUSER,
                                resolve_session=_db().resolve_role_session)
         if not providers.is_supported(provider):
             # 自訂不等於任意資料源：不在白名單就是不支援，不接受任何
@@ -3591,13 +3725,13 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         「這把 token 不能用」是這個端點的正常答案之一，回 200 帶狀態，
         呼叫端才不必為了讀一個預期內的結果去 catch。
 
-        PB-09（#298）／AUTH-03（#310）：同一組 gate——即使這個
-        provider 剛好已經有 credential（例如 Super Admin 稍早已設
-        好），沒帶有效 Super Admin role session 的請求一樣拿不到
-        「拿別人已存好的 token 去打一次外部 API」這個能力，不能只靠
-        「Normal User 反正沒有 credential 可測」這個間接後果當防線。
+        PB-09（#298）／AUTH-03（#310）：同一組 gate（CLAUDE-BETA-LAUNCH-
+        FINAL-001 起最低 Super User）——沒帶有效 SU／SA role session 的
+        請求拿不到「用已存好的 token 打一次外部 API」這個能力，不能只靠
+        「Normal User 反正沒有 credential 可測」這個間接後果當防線。只測
+        這次請求自己 owner 的 credential。
         """
-        superuser.require_role(request, superuser.Role.SUPERADMIN,
+        superuser.require_role(request, superuser.Role.SUPERUSER,
                                resolve_session=_db().resolve_role_session)
         if not providers.is_supported(provider):
             raise HTTPException(status_code=400,
@@ -3616,9 +3750,10 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
     @app.delete("/api/settings/credentials/{provider}")
     def delete_credential(provider: str, request: Request) -> dict:
         """PB-09（#298）／AUTH-03（#310）：刪除也是對
-        `owner_credentials` 的寫入，同一套 gate——一致性優先於
-        「反正 Normal User 也刪不到自己沒有的東西」這個間接推論。"""
-        superuser.require_role(request, superuser.Role.SUPERADMIN,
+        `owner_credentials` 的寫入，同一套 gate（最低 Super User，只刪
+        這次請求自己 owner 的那把）——一致性優先於「反正 Normal User 也
+        刪不到自己沒有的東西」這個間接推論。"""
+        superuser.require_role(request, superuser.Role.SUPERUSER,
                                resolve_session=_db().resolve_role_session)
         if not providers.is_supported(provider):
             raise HTTPException(status_code=400,

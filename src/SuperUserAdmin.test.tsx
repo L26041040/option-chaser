@@ -12,6 +12,8 @@ const deleteOwnerMock = vi.fn();
 const batchDeleteOwnersMock = vi.fn();
 const setOwnerProtectedMock = vi.fn();
 const getAuditLogMock = vi.fn();
+const resetBetaDataMock = vi.fn();
+const listFeedbackMock = vi.fn();
 // OG-11（#322）：新增的系統指標方塊（`OpsStats`）掛載時無條件呼叫這個
 // client——既有測試沒有一條在乎它回什麼，預設給一份最小、全部欄位
 // 都存在的假體，讓既有斷言不受這個新元件的非同步 effect 干擾。
@@ -26,6 +28,8 @@ vi.mock("./api", () => ({
   superuserBatchDeleteOwners: (...args: unknown[]) => batchDeleteOwnersMock(...args),
   superuserSetOwnerProtected: (...args: unknown[]) => setOwnerProtectedMock(...args),
   superuserGetAuditLog: (...args: unknown[]) => getAuditLogMock(...args),
+  superuserResetBetaData: (...args: unknown[]) => resetBetaDataMock(...args),
+  superuserListFeedback: (...args: unknown[]) => listFeedbackMock(...args),
   getOpsMetrics: (...args: unknown[]) => getOpsMetricsMock(...args),
 }));
 
@@ -43,6 +47,13 @@ const OWNER_B = {
   created_at: "2026-09-02T00:00:00+00:00",
   last_activity_at: null,
   protected: true,
+  is_synthetic: false,
+};
+const OWNER_C = {
+  owner_id: "owner-c",
+  created_at: "2026-09-03T00:00:00+00:00",
+  last_activity_at: null,
+  protected: false,
   is_synthetic: false,
 };
 
@@ -74,6 +85,8 @@ describe("SuperUserAdmin", () => {
       protected: true,
     });
     getAuditLogMock.mockReset().mockResolvedValue([]);
+    resetBetaDataMock.mockReset().mockResolvedValue({ reset: true, counts: {} });
+    listFeedbackMock.mockReset().mockResolvedValue([]);
     getOpsMetricsMock.mockReset().mockResolvedValue(EMPTY_OPS_METRICS);
   });
 
@@ -226,18 +239,19 @@ describe("SuperUserAdmin", () => {
   });
 
   it("selecting several owners shows a batch action bar that lists them for confirmation", async () => {
+    listOwnersMock.mockReset().mockResolvedValue([OWNER_A, OWNER_B, OWNER_C]);
     const user = userEvent.setup();
     render(<SuperUserAdmin />);
     await screen.findByText("owner-a");
 
     await user.click(screen.getByRole("checkbox", { name: "選取 owner owner-a" }));
-    await user.click(screen.getByRole("checkbox", { name: "選取 owner owner-b" }));
+    await user.click(screen.getByRole("checkbox", { name: "選取 owner owner-c" }));
     expect(screen.getByText("已選 2 個 owner")).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "永久刪除已選" }));
     const dialog = screen.getByRole("alertdialog");
     expect(within(dialog).getByText("owner-a")).toBeInTheDocument();
-    expect(within(dialog).getByText("owner-b")).toBeInTheDocument();
+    expect(within(dialog).getByText("owner-c")).toBeInTheDocument();
 
     const confirmButton = within(dialog).getByRole("button", { name: "永久刪除" });
     const input = within(dialog).getByRole("textbox", { name: "輸入以確認" });
@@ -248,7 +262,121 @@ describe("SuperUserAdmin", () => {
 
     await user.click(confirmButton);
     await waitFor(() =>
-      expect(batchDeleteOwnersMock).toHaveBeenCalledWith(["owner-a", "owner-b"]));
+      expect(batchDeleteOwnersMock).toHaveBeenCalledWith(["owner-a", "owner-c"]));
+  });
+
+  describe("CLAUDE-BETA-LAUNCH-FINAL-001：全選／清除選取", () => {
+    it("protected owner 的勾選框停用，不能被選進批次刪除", async () => {
+      render(<SuperUserAdmin />);
+      await screen.findByText("owner-a");
+      expect(screen.getByRole("checkbox", { name: "選取 owner owner-b" })).toBeDisabled();
+      expect(screen.getByRole("checkbox", { name: "選取 owner owner-a" })).not.toBeDisabled();
+    });
+
+    it("全選只選畫面上所有非 protected owner；再按一次全部取消", async () => {
+      listOwnersMock.mockReset().mockResolvedValue([OWNER_A, OWNER_B, OWNER_C]);
+      const user = userEvent.setup();
+      render(<SuperUserAdmin />);
+      await screen.findByText("owner-a");
+      const selectAll = screen.getByRole("checkbox", { name: "全選" });
+
+      await user.click(selectAll);
+      expect(selectAll).toBeChecked();
+      expect(screen.getByText("已選 2 個 owner")).toBeInTheDocument();
+      expect(screen.getByRole("checkbox", { name: "選取 owner owner-a" })).toBeChecked();
+      expect(screen.getByRole("checkbox", { name: "選取 owner owner-c" })).toBeChecked();
+      expect(screen.getByRole("checkbox", { name: "選取 owner owner-b" })).not.toBeChecked();
+
+      await user.click(selectAll);
+      expect(selectAll).not.toBeChecked();
+      expect(screen.getByText("已選 0 個 owner")).toBeInTheDocument();
+    });
+
+    it("只選一部分時全選呈現 indeterminate；清除選取把選取歸零", async () => {
+      listOwnersMock.mockReset().mockResolvedValue([OWNER_A, OWNER_B, OWNER_C]);
+      const user = userEvent.setup();
+      render(<SuperUserAdmin />);
+      await screen.findByText("owner-a");
+
+      await user.click(screen.getByRole("checkbox", { name: "選取 owner owner-a" }));
+      const selectAll = screen.getByRole("checkbox", { name: "全選" }) as HTMLInputElement;
+      expect(selectAll.checked).toBe(false);
+      expect(selectAll.indeterminate).toBe(true);
+
+      await user.click(screen.getByRole("button", { name: "清除選取" }));
+      expect(screen.getByText("已選 0 個 owner")).toBeInTheDocument();
+      expect(screen.getByRole("checkbox", { name: "選取 owner owner-a" })).not.toBeChecked();
+      expect(screen.queryByRole("button", { name: "永久刪除已選" })).not.toBeInTheDocument();
+    });
+  });
+
+  it("剛被設成 protected 的 owner 會從批次選取中剔除（Codex P2，PR #351）", async () => {
+    listOwnersMock.mockReset()
+      .mockResolvedValueOnce([OWNER_A, OWNER_B, OWNER_C])
+      .mockResolvedValueOnce([{ ...OWNER_A, protected: true }, OWNER_B, OWNER_C]);
+    const user = userEvent.setup();
+    render(<SuperUserAdmin />);
+    await screen.findByText("owner-a");
+    await user.click(screen.getByRole("checkbox", { name: "選取 owner owner-a" }));
+    await user.click(screen.getByRole("checkbox", { name: "選取 owner owner-c" }));
+    expect(screen.getByText("已選 2 個 owner")).toBeInTheDocument();
+
+    const rowA = screen.getByText("owner-a").closest("li") as HTMLElement;
+    await user.click(within(rowA).getByRole("button", { name: "設為 protected" }));
+
+    await waitFor(() => expect(screen.getByText("已選 1 個 owner")).toBeInTheDocument());
+    expect(screen.getByRole("checkbox", { name: "選取 owner owner-a" })).not.toBeChecked();
+  });
+
+  describe("CLAUDE-BETA-LAUNCH-FINAL-001：Danger Zone — Reset Beta Data", () => {
+    it("Reset 鈕要逐字打對「Reset」才能按，大小寫不同也不行", async () => {
+      const user = userEvent.setup();
+      render(<SuperUserAdmin />);
+      const zone = await screen.findByRole("region", { name: "Danger Zone" });
+      const input = within(zone).getByRole("textbox", { name: "輸入 Reset 以確認" });
+      const button = within(zone).getByRole("button", { name: "Reset" });
+      expect(button).toBeDisabled();
+      await user.type(input, "reset");
+      expect(button).toBeDisabled();
+      await user.clear(input);
+      await user.type(input, "Reset");
+      expect(button).not.toBeDisabled();
+      expect(resetBetaDataMock).not.toHaveBeenCalled();
+    });
+
+    it("按下 Reset 送出使用者打的字、顯示刪除數量並重新載入 owner 清單", async () => {
+      resetBetaDataMock.mockResolvedValue({
+        reset: true,
+        counts: { owners: 3, scenarios: 7, results: 20, snapshots: 9, feedback: 4,
+                  operational_metrics: 5, rate_limits: 6 },
+      });
+      const user = userEvent.setup();
+      render(<SuperUserAdmin />);
+      const zone = await screen.findByRole("region", { name: "Danger Zone" });
+      await user.type(within(zone).getByRole("textbox", { name: "輸入 Reset 以確認" }), "Reset");
+      await user.click(within(zone).getByRole("button", { name: "Reset" }));
+
+      await waitFor(() => expect(resetBetaDataMock).toHaveBeenCalledWith("Reset"));
+      const status = await within(zone).findByRole("status");
+      expect(within(status).getByText("Owners").nextSibling).toHaveTextContent("3");
+      expect(within(status).getByText("劇本").nextSibling).toHaveTextContent("7");
+      expect(within(status).getByText("意見回饋").nextSibling).toHaveTextContent("4");
+      expect(within(status).getByText("Metrics／Rate-limit").nextSibling).toHaveTextContent("11");
+      await waitFor(() => expect(listOwnersMock).toHaveBeenCalledTimes(2));
+      // 清場連回饋一起清掉：inbox 跟著重讀。
+      await waitFor(() => expect(listFeedbackMock).toHaveBeenCalledTimes(2));
+    });
+
+    it("Reset 失敗時顯示錯誤，不顯示成功摘要", async () => {
+      resetBetaDataMock.mockRejectedValue(new Error("確認字不符"));
+      const user = userEvent.setup();
+      render(<SuperUserAdmin />);
+      const zone = await screen.findByRole("region", { name: "Danger Zone" });
+      await user.type(within(zone).getByRole("textbox", { name: "輸入 Reset 以確認" }), "Reset");
+      await user.click(within(zone).getByRole("button", { name: "Reset" }));
+      expect(await within(zone).findByRole("alert")).toHaveTextContent("確認字不符");
+      expect(within(zone).queryByRole("status")).not.toBeInTheDocument();
+    });
   });
 
   it("the audit trail is collapsed by default and only fetched when opened", async () => {

@@ -88,7 +88,7 @@ def storage(request):
                      "iv_observations, iv_backfill_runs, contract_iv_history, "
                      "diagnostics, operational_metrics, "
                      "owners, browser_identities, superuser_audit_log, "
-                     "role_sessions, rate_limits "
+                     "role_sessions, rate_limits, feedback "
                      "RESTART IDENTITY")
     yield st
 
@@ -1594,6 +1594,37 @@ def test_delete_owner_also_clears_that_owners_quota_rows(storage):
     assert storage.rate_limit_consume(mine) is None       # 計數歸零、重新可扣
     assert storage.rate_limit_consume(other) == 0         # 別人的還在
     assert storage.rate_limit_consume(source) == 0        # 非 owner scope 不動
+
+
+def test_delete_owner_anonymizes_that_owners_feedback(storage):
+    """CLAUDE-BETA-LAUNCH-FINAL-001：刪除 owner（自助刪除或匿名閒置清理）
+    時，這個人送過的意見回饋去識別化（owner_id → None）但內容保留——
+    封測回饋不能因為寄件人的 owner 被清掉就消失。別人的不受影響。"""
+    from api_app.storage import Feedback
+
+    _register_owner(storage, "doomed", "tok-doomed")
+    for fid, owner in (("f1", "doomed"), ("f2", "survivor"), ("f3", None)):
+        storage.add_feedback(Feedback(feedback_id=fid, display_name="n",
+                                      content="c", created_at="2026-09-28T00:00:00+00:00",
+                                      owner_id=owner))
+
+    counts = storage.delete_owner("doomed")
+
+    assert counts["feedback"] == 1
+    owners = {f.feedback_id: f.owner_id for f in storage.list_feedback()}
+    assert owners == {"f1": None, "f2": "survivor", "f3": None}
+
+
+def test_feedback_is_listed_newest_first_and_limited(storage):
+    from api_app.storage import Feedback
+
+    for i in range(5):
+        storage.add_feedback(Feedback(feedback_id=f"f{i}", display_name=f"n{i}",
+                                      content=f"c{i}", created_at=f"2026-09-28T00:0{i}:00+00:00"))
+    got = storage.list_feedback(limit=3)
+    assert [f.feedback_id for f in got] == ["f4", "f3", "f2"]
+    assert got[0].display_name == "n4" and got[0].content == "c4"
+    assert got[0].owner_id is None
 
 
 def test_delete_owner_is_idempotent_deleting_a_nonexistent_owner_is_a_noop(storage):
@@ -3717,8 +3748,13 @@ def test_no_table_with_an_owner_id_column_is_silently_left_out_of_the_lifecycle(
     # 綁在 session 而非 owner 資料（AUTH-06／#313）。
     # `superuser_audit_log` 是稽核軌跡：依設計**不得**隨被稽核的 owner
     # 一起消失，否則稽核就失去意義（PB-09／#301）。
+    # `feedback`（CLAUDE-BETA-LAUNCH-FINAL-001）：`owner_id` 只是送出當下
+    # 綁定的 owner（可為 NULL）。`delete_owner()` 單獨把它去識別化（見
+    # `test_delete_owner_anonymizes_that_owners_feedback`），但不隨
+    # `migrate_owner()` 搬移——那是一次性的 solo 遷移，回饋不在其中。
     EXPECTED_EXCEPTIONS = {
         "owners", "browser_identities", "role_sessions", "superuser_audit_log",
+        "feedback",
     }
 
     from api_app.storage import postgres as pg

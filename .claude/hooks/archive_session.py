@@ -67,6 +67,28 @@ flatten) is copied VERBATIM from claude-code-export:
 Everything OUTSIDE the block marked "BEGIN/END vendored" is original to this
 repo: the dialogue projection (which flat messages count as real OWNER<->
 Claude dialogue), /clear segmentation, rendering, and the git pipeline.
+
+Git policy (CLAUDE-BETA-LAUNCH-FINAL-001 §D, v1.2.0). Root cause of the
+"no history after /clear" regression: this hook archives onto whatever
+branch is checked out. In cloud sessions that is often a feature branch
+whose PR was already merged (09-24 `ui-redesign/seed-warm`, 09-27
+`security/public-beta-hardening`), so the archive commit was pushed to a
+dead branch and never reached master -- persisted, but invisible to every
+later session. The hook therefore now:
+
+  * never creates, switches or checks out a branch: it commits on the
+    current branch and pushes only if that branch already exists on
+    origin (asked with `git ls-remote`, not a possibly-stale tracking ref);
+  * recovers stranded archives: any `session-history/*.md` that exists on
+    some branch of origin (even one a single-branch clone never fetched;
+    missing heads are fetched into FETCH_HEAD only) or is left untracked by
+    an earlier failed run, but not in HEAD, is read with `git show` and
+    committed first as its own "recover" commit, so it rides along;
+  * on a detached HEAD commits nothing (a detached commit is orphaned by
+    the next checkout) and leaves the file in the working tree for the
+    next archive to recover;
+  * reports every one of these outcomes loudly and exits non-zero whenever
+    the archive is not on origin, so nothing is silently lost.
 ---------------------------------------------------------------------------
 """
 import json
@@ -85,7 +107,7 @@ except ImportError:
 
 # Bumped when this file changes, so `install.py check` can tell an installed
 # copy from the distribution copy. Not used by the archiving logic itself.
-SESSION_ARCHIVE_VERSION = "1.1.0"
+SESSION_ARCHIVE_VERSION = "1.2.0"
 
 # SessionEnd hooks share a 1.5s budget by default; setting an explicit
 # per-hook `timeout` raises that, capped at 60s -- that cap is the real
@@ -432,6 +454,118 @@ def _current_branch(repo_root: Path) -> str:
     return "" if branch in ("", "HEAD") else branch
 
 
+ARCHIVE_DIR = "session-history"
+# Network budget, all inside the hook's 60s cap: one ls-remote, at most one
+# fetch, one push.
+LS_REMOTE_TIMEOUT_SECONDS = 10
+FETCH_TIMEOUT_SECONDS = 12
+UNTRACKED = "untracked working tree"
+
+
+def _lines(r) -> list[str]:
+    return [ln for ln in r.stdout.splitlines() if ln.strip()] if r.returncode == 0 else []
+
+
+def list_remote_heads(repo_root: Path) -> dict[str, str] | None:
+    """`{branch: sha}` straight from origin (one `ls-remote`), or None when
+    the remote could not be asked. Asking the remote -- not the local
+    `refs/remotes/origin/*` -- matters twice: a tracking ref can be stale
+    after the branch was deleted on GitHub (pushing to it would recreate a
+    garbage branch), and a single-branch or shallow clone has no tracking
+    refs for the other branches that may hold stranded archives."""
+    r = run(["git", "-C", str(repo_root), "ls-remote", "--heads", "origin"],
+            timeout=LS_REMOTE_TIMEOUT_SECONDS)
+    if r.returncode != 0:
+        print(f"ls-remote failed:\n{r.stdout}{r.stderr}", file=sys.stderr)
+        return None
+    heads: dict[str, str] = {}
+    for line in _lines(r):
+        sha, _, ref = line.partition("\t")
+        if ref.startswith("refs/heads/"):
+            heads[ref[len("refs/heads/"):]] = sha
+    return heads
+
+
+def _ensure_local(repo_root: Path, heads: dict[str, str]) -> list[str]:
+    """Fetch the remote heads whose commits are not in this clone yet, in one
+    `git fetch` with no destination (objects + FETCH_HEAD only: no local ref
+    or branch is created). Returns the branches still unreadable."""
+    git = ["git", "-C", str(repo_root)]
+    missing = [b for b, sha in heads.items()
+               if run([*git, "cat-file", "-e", f"{sha}^{{commit}}"]).returncode != 0]
+    if missing:
+        run([*git, "fetch", "--no-tags", "--quiet", "origin",
+             *(f"refs/heads/{b}" for b in missing)], timeout=FETCH_TIMEOUT_SECONDS)
+    return [b for b in missing
+            if run([*git, "cat-file", "-e", f"{heads[b]}^{{commit}}"]).returncode != 0]
+
+
+def find_stranded(repo_root: Path, heads: dict[str, str], *,
+                  exclude: str) -> dict[str, tuple[str, str]]:
+    """Archives that exist somewhere this repo can reach but not in HEAD:
+    `{repo-relative path: (where it was found, tree-ish to read it from)}`.
+
+    Two sources, both read-only: files left untracked in the working tree by
+    an earlier failed run, and files on any branch of origin (`heads`, from
+    `list_remote_heads()`). `exclude` is the archive this run is writing."""
+    git = ["git", "-C", str(repo_root)]
+    in_head = set(_lines(run([*git, "ls-tree", "-r", "--name-only", "HEAD",
+                              "--", ARCHIVE_DIR])))
+    found: dict[str, tuple[str, str]] = {}
+    for rel in _lines(run([*git, "ls-files", "--others", "--exclude-standard",
+                           "--", ARCHIVE_DIR])):
+        if rel.endswith(".md") and rel != exclude:
+            found[rel] = (UNTRACKED, "")
+    unreadable = _ensure_local(repo_root, heads)
+    if unreadable:
+        print(f"WARNING: could not fetch {len(unreadable)} origin branch(es) to scan "
+              f"for stranded archives: {', '.join(sorted(unreadable))}", file=sys.stderr)
+    for branch in sorted(set(heads) - set(unreadable)):
+        for rel in _lines(run([*git, "ls-tree", "-r", "--name-only", heads[branch],
+                               "--", ARCHIVE_DIR])):
+            if rel.endswith(".md") and rel != exclude and rel not in in_head \
+                    and rel not in found:
+                found[rel] = (f"origin/{branch}", heads[branch])
+    return found
+
+
+def recover_stranded(repo_root: Path, stranded: dict[str, tuple[str, str]]) -> bool:
+    """Write every stranded archive into the working tree (via `git show`,
+    never a checkout) and commit them together as one recover commit
+    containing exactly those files. Returns False on any failure."""
+    git = ["git", "-C", str(repo_root)]
+    for rel, (source, treeish) in stranded.items():
+        if source == UNTRACKED:
+            continue
+        shown = subprocess.run([*git, "show", f"{treeish}:{rel}"], capture_output=True)
+        if shown.returncode != 0:
+            print(f"FAIL: could not read {rel} from {source}", file=sys.stderr)
+            return False
+        path = repo_root / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(shown.stdout)
+    rels = sorted(stranded)
+    if run([*git, "add", "--", *rels]).returncode != 0:
+        print("FAIL: git add of recovered archives failed", file=sys.stderr)
+        return False
+    r = run([*git, "commit", "-m",
+             f"session history: recover {len(rels)} stranded archive(s)", "--", *rels])
+    if r.returncode != 0:
+        # Unstage (only unstage -- the files stay in the working tree) so a
+        # later plain `git commit` does not sweep them in by accident.
+        run([*git, "reset", "-q", "--", *rels])
+        print(f"FAIL: recover commit failed:\n{r.stdout}{r.stderr}", file=sys.stderr)
+        return False
+    committed = sorted(_lines(run([*git, "show", "--name-only", "--format=", "HEAD"])))
+    if committed != rels:
+        print(f"FAIL: recover commit contains unexpected files: {committed}",
+              file=sys.stderr)
+        return False
+    for rel in rels:
+        print(f"recovered: {rel} (from {stranded[rel][0]})", file=sys.stderr)
+    return True
+
+
 def clear_boundary_ends(raw: list[dict]) -> list[int]:
     """Index of the last record of each /clear boundary block.
 
@@ -520,7 +654,7 @@ def main() -> int:
         return 1
 
     repo_root = Path(__file__).resolve().parents[2]
-    archive_dir = repo_root / "session-history"
+    archive_dir = repo_root / ARCHIVE_DIR
     tz = _get_tz()
     print(f"archiving session {session_id} (cwd={cwd}) from {transcript}", file=sys.stderr)
 
@@ -553,6 +687,20 @@ def main() -> int:
         dest.write_text(md, encoding="utf-8")
         print(f"wrote: {rel} ({dest.stat().st_size} bytes, {len(turns)} turns)", file=sys.stderr)
 
+    branch = _current_branch(repo_root)
+    if not branch:
+        # A commit on a detached HEAD is orphaned by the next checkout, so
+        # commit nothing; the next archive on a branch recovers this file.
+        print(f"FAIL: detached HEAD -- {rel} left UNCOMMITTED in the working tree; "
+              "the next /clear on a branch will recover it", file=sys.stderr)
+        return 1
+
+    status = 0
+    heads = list_remote_heads(repo_root)
+    stranded = find_stranded(repo_root, heads or {}, exclude=str(rel))
+    if stranded and not recover_stranded(repo_root, stranded):
+        status = 1
+
     if not _is_committed(repo_root, rel):
         if run(["git", "-C", str(repo_root), "add", "--", str(rel)]).returncode != 0:
             print("FAIL: git add failed", file=sys.stderr)
@@ -571,17 +719,22 @@ def main() -> int:
     else:
         print(f"already committed: {rel} (resuming)", file=sys.stderr)
 
-    branch = _current_branch(repo_root)
-    if not branch:
-        print(f"ARCHIVED {rel} (committed locally; detached HEAD, so no push)",
-              file=sys.stderr)
-        return 0
+    if heads is None:
+        print(f"FAIL: could not reach origin; {rel} is committed on {branch} but NOT "
+              "pushed", file=sys.stderr)
+        return 1
+    if branch not in heads:
+        # Never create a remote branch just to hold session history.
+        print(f"FAIL: origin/{branch} does not exist and this hook never creates "
+              f"branches; {rel} is committed locally on {branch} and goes up with "
+              "the branch's next normal push", file=sys.stderr)
+        return 1
 
     # A plain (non-force) push is its own correctness check: git rejects it
     # unless our HEAD is a fast-forward of origin/<branch>, and "everything
     # up-to-date" (exit 0) on a retry after an already-successful push is
     # exactly the idempotent-resume behaviour a separate pre/post fetch was
-    # standing in for. One network call instead of three.
+    # standing in for.
     r = run(["git", "-C", str(repo_root), "push", "origin", f"HEAD:{branch}"],
             timeout=PUSH_TIMEOUT_SECONDS)
     if r.returncode != 0:
@@ -589,7 +742,7 @@ def main() -> int:
         return 1
 
     print(f"ARCHIVED {rel} (pushed to origin/{branch})", file=sys.stderr)
-    return 0
+    return status
 
 
 if __name__ == "__main__":
