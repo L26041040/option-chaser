@@ -203,6 +203,8 @@ describe("Compact 劇本列（MVP-v2／#77、#82）", () => {
       expect(rowRule).not.toBeNull();
       expect(rowRule).toMatch(/display:\s*flex/);
       expect(rowRule).not.toMatch(/position:\s*absolute/);
+      // 明確的垂直間距：光是換列，pill 底邊到 Exp 列仍只有父層 1px gap。
+      expect(rowRule).toMatch(/margin-bottom:\s*[3-9]px/);
       // 沿用 SW-11 的 pill 尺寸規則（不改字級），選擇器換成新的列。
       expect(stylesCss).toMatch(/\.compact-strategy-row \.compact-strategy-pill,\s*\n\.lib-cell-champion \.compact-strategy-pill \{/);
       expect(stylesCss).not.toMatch(/\.compact-right \.compact-strategy-pill/);

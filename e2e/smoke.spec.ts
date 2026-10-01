@@ -3428,9 +3428,10 @@ for (const width of [390, 375]) {
     const main = (await card.locator(".compact-main-row").boundingBox())!;
     const p = (await pill.boundingBox())!;
     const e = (await exp.boundingBox())!;
-    // pill 整顆在主列之下、Exp 列之上：垂直方向完全不交疊。
+    // pill 整顆在主列之下、Exp 列之上，而且跟 Exp 列之間留有明確間距
+    // （舊結構只有父層 1px gap，Chromium 也只量得到 1px；這裡要求 ≥3px）。
     expect(p.y).toBeGreaterThanOrEqual(main.y + main.height - 0.5);
-    expect(p.y + p.height).toBeLessThanOrEqual(e.y + 0.5);
+    expect(e.y - (p.y + p.height)).toBeGreaterThanOrEqual(3);
     // Exp 列沒有被截斷成刪節號（文字完整可讀）。
     const clipped = await exp.evaluate((el) => el.scrollWidth > el.clientWidth);
     expect(clipped).toBe(false);

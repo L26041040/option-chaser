@@ -1136,12 +1136,15 @@ body {
 }
 
 /* CLAUDE-MOBILE-CARD-OVERLAP-001：手機卡片的策略 pill 自己一列、靠右
-   （對齊上方報酬率的右緣），不再跟 Exp 那一列擠在同一塊空間。pill
-   本身的尺寸規則見下方 SW-11 那條共用選擇器。 */
+   （對齊上方報酬率的右緣），不再跟 Exp 那一列擠在同一塊空間。光換列還
+   不夠——原本 pill 底邊到 Exp 列只隔父層 1px 的 gap（Codex review，
+   PR #352），iOS 字型一撐就蓋上去；`margin-bottom` 給出明確的垂直
+   間距。pill 本身的尺寸規則見下方 SW-11 那條共用選擇器。 */
 .compact-strategy-row {
   display: flex;
   justify-content: flex-end;
   min-width: 0;
+  margin-bottom: 4px;
 }
 
 /* 第二層是全卡最醒目的資訊（報酬率＋策略＋履約價）——比桌面版 `.metric`
