@@ -3437,3 +3437,123 @@ for (const width of [390, 375]) {
     expect(clipped).toBe(false);
   });
 }
+
+/* ---------- CLAUDE-MOBILE-TEXT-FIT-001：手機卡片兩行文字先縮字、縮到下限才 ellipsis ---------- */
+
+/** 量一個單行文字元素：實際字級、是否溢出、inline `font-size` 是否由
+ *  `useFitText` 寫入（證明縮字機制確實掛在這個 DOM target 上）。 */
+async function fitState(locator: import("@playwright/test").Locator) {
+  return locator.evaluate((el) => ({
+    px: parseFloat(getComputedStyle(el).fontSize),
+    inline: (el as HTMLElement).style.fontSize,
+    overflow: el.scrollWidth > el.clientWidth,
+  }));
+}
+
+function tslaRow(legs: unknown[], candidateKey: string, strategy: string) {
+  return libraryRow({
+    symbol: "TSLA", spot: 443.21, target_price: 1200, target_month: "2028-12",
+    best_return: 3.124, days_to_anchor: 806,
+    target_anchor: "2028-12-15", best_price: null, worst_price: null,
+    representative_candidate: {
+      strategy, candidate_key: candidateKey, legs,
+      expiry: "2028-12-15", baseline_return: 3.124,
+    },
+  });
+}
+
+const FIT_MIN_PX = 10;
+
+for (const width of [390, 375]) {
+  test(`手機版 ${width}px：目標價那一行與策略 pill 先縮字、縮到 ${FIT_MIN_PX}px 仍放不下才 ellipsis（CLAUDE-MOBILE-TEXT-FIT-001）`,
+       async ({ page }) => {
+    await page.setViewportSize({ width, height: 844 });
+    // 「Long Call　買 1000」在 CSS 原始 11px 下比 pill 的 max-width 寬一點，
+    // 縮半級就放得下——正好驗證「還有縮字空間時不會先出現刪節號」。
+    await routeLibrary(page, tslaRow(
+      [{ option_type: "call", side: "buy", strike: 1000, quantity: 1 }],
+      "long-call|1000|2028-12-15", "long-call"));
+    await page.goto("/#/");
+
+    const card = page.getByRole("listitem").filter({ hasText: "TSLA" });
+    const target = card.locator(".compact-target");
+    const pill = card.locator(".compact-strategy-pill");
+    await expect(target).toContainText("2028-12");
+    await expect(pill).toContainText("Long Call");
+
+    // 目標價那一行：12px 時明顯放不下（全文約 254px），一定有縮字；
+    // 只有縮到下限仍放不下時才允許溢出（交給 ellipsis）。
+    const t = await fitState(target);
+    expect(t.inline).not.toBe("");
+    expect(t.px).toBeLessThan(12);
+    expect(t.px).toBeGreaterThanOrEqual(FIT_MIN_PX);
+    if (t.overflow) expect(t.px).toBe(FIT_MIN_PX);
+    // 年月整段可見（不被 ellipsis 吃掉）：「2028-12」右緣在元素可視範圍內。
+    const monthVisible = await target.evaluate((el) => {
+      const box = el.getBoundingClientRect();
+      const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+      for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+        const i = (n.textContent ?? "").indexOf("2028-12");
+        if (i < 0) continue;
+        const r = document.createRange();
+        r.setStart(n, i);
+        r.setEnd(n, i + "2028-12".length);
+        return r.getBoundingClientRect().right <= box.right;
+      }
+      return false;
+    });
+    expect(monthVisible).toBe(true);
+
+    // pill：縮了，但還沒到下限就放得下 → 不溢出、不出現刪節號。
+    const p = await fitState(pill);
+    expect(p.px).toBeLessThan(11);
+    expect(p.px).toBeGreaterThan(FIT_MIN_PX - 0.01);
+    expect(p.overflow).toBe(false);
+
+    // PR #352 的結構不受影響：pill 仍在 Exp 列之上、間距 ≥3px，Exp 不被截斷。
+    const pb = (await pill.boundingBox())!;
+    const eb = (await card.locator(".compact-tier3").boundingBox())!;
+    expect(eb.y - (pb.y + pb.height)).toBeGreaterThanOrEqual(3);
+    expect(await card.locator(".compact-tier3")
+      .evaluate((el) => el.scrollWidth > el.clientWidth)).toBe(false);
+  });
+
+  test(`手機版 ${width}px：放得下的短文字維持 CSS 原始字級，不多縮（CLAUDE-MOBILE-TEXT-FIT-001）`,
+       async ({ page }) => {
+    await page.setViewportSize({ width, height: 844 });
+    await routeLibrary(page, libraryRow({
+      symbol: "TSLA", spot: null, target_price: 500, target_month: "2028-12",
+      best_return: 3.124, best_price: null, worst_price: null,
+      representative_candidate: {
+        strategy: "long-call", candidate_key: "long-call|90|2028-12-15",
+        legs: [{ option_type: "call", side: "buy", strike: 90, quantity: 1 }],
+        expiry: "2028-12-15", baseline_return: 3.124,
+      },
+    }));
+    await page.goto("/#/");
+
+    const card = page.getByRole("listitem").filter({ hasText: "TSLA" });
+    const t = await fitState(card.locator(".compact-target"));
+    const p = await fitState(card.locator(".compact-strategy-pill"));
+    expect(t).toEqual({ px: 12, inline: "", overflow: false });
+    expect(p).toEqual({ px: 11, inline: "", overflow: false });
+  });
+
+  test(`手機版 ${width}px：縮到下限仍放不下的 pill 停在 ${FIT_MIN_PX}px，交給 ellipsis（CLAUDE-MOBILE-TEXT-FIT-001）`,
+       async ({ page }) => {
+    await page.setViewportSize({ width, height: 844 });
+    await routeLibrary(page, tslaRow(
+      [{ option_type: "call", side: "buy", strike: 265, quantity: 1 },
+       { option_type: "call", side: "sell", strike: 345, quantity: 1 }],
+      "bull-call|265-345|2028-12-15", "bull-call-spread"));
+    await page.goto("/#/");
+
+    const pill = page.getByRole("listitem").filter({ hasText: "TSLA" })
+      .locator(".compact-strategy-pill");
+    const p = await fitState(pill);
+    expect(p.px).toBe(FIT_MIN_PX);
+    expect(p.overflow).toBe(true);
+    expect(await pill.evaluate((el) => getComputedStyle(el).textOverflow))
+      .toBe("ellipsis");
+  });
+}

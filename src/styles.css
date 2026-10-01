@@ -1131,7 +1131,12 @@ body {
   align-items: flex-end;
   gap: 1px;
   text-align: right;
-  flex: 0 1 42%;
+  /* CLAUDE-MOBILE-TEXT-FIT-001：右欄只剩報酬率（策略 pill 自 PR #352 起
+     獨立一列），寬度就等於報酬率本身。原本的 `0 1 42%` 是給「報酬率＋
+     pill」的上限；pill 移走後，42% 的 basis 會在左欄縮字（`useFitText`）
+     之後把空出來的寬度分給這個幾乎全空的右欄，左欄反而變窄、縮了字也
+     沒多顯示幾個字。 */
+  flex: 0 0 auto;
   min-width: 0;
 }
 
