@@ -3562,3 +3562,43 @@ for (const width of [375, 390]) {
     expect(b.y).toBeGreaterThanOrEqual(a.y + a.height - 0.5);
   });
 }
+
+for (const width of [375, 390]) {
+  test(`手機版 ${width}px：異常長的策略名稱才 ellipsis，仍是單行、不蓋到編輯鈕、卡片不無限長高（CLAUDE-MOBILE-CARD-VERTICAL-ROWS-001）`,
+       async ({ page }) => {
+    await page.setViewportSize({ width, height: 844 });
+    const normal = VERTICAL_CASES[1].row;
+    await routeLibrary(page, libraryRow({
+      ...normal,
+      representative_candidate: {
+        ...normal.representative_candidate,
+        strategy: "Extremely Long Hypothetical Strategy Name For Overflow",
+        legs: [{ option_type: "call", side: "buy", strike: 80, quantity: 1 },
+               { option_type: "call", side: "sell", strike: 95, quantity: 1 },
+               { option_type: "put", side: "sell", strike: 70, quantity: 1 },
+               { option_type: "put", side: "buy", strike: 60, quantity: 1 }],
+      },
+    }));
+    await page.goto("/#/");
+
+    const card = page.getByRole("listitem").filter({ hasText: "TLT" });
+    const pill = card.locator(".compact-strategy-pill");
+    await expect(pill).toContainText("Extremely Long");
+    const m = await card.evaluate((el) => {
+      const pillEl = el.querySelector(".compact-strategy-pill") as HTMLElement;
+      const p = pillEl.getBoundingClientRect();
+      const edit = el.querySelector(".compact-actions .icon-button")!.getBoundingClientRect();
+      return {
+        clipped: pillEl.scrollWidth > pillEl.clientWidth,
+        pillHeight: p.height,
+        hitsEdit: p.left < edit.right && p.right > edit.left && p.top < edit.bottom && p.bottom > edit.top,
+        gapToEdit: edit.left - p.right,
+        cardHeight: el.getBoundingClientRect().height,
+      };
+    });
+    expect(m.clipped).toBe(true);           // 最後手段：真的放不下才 ellipsis
+    expect(m.pillHeight).toBeLessThan(22);  // 仍是單行，不換行撐高
+    expect(m.hitsEdit).toBe(false);
+    expect(m.cardHeight).toBeLessThan(130); // 跟一般卡片（約 115px）同一個量級
+  });
+}

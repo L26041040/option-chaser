@@ -220,13 +220,15 @@ describe("Compact 劇本列（MVP-v2／#77、#82）", () => {
       list([row({ target_month: "2028-12" })]);
       const card = screen.getByRole("listitem");
       const tap = card.querySelector(".compact-card-tap") as HTMLElement;
-      const order = Array.from(tap.children)
-        .map((el) => el.className.split(" ")[0])
-        .filter((c) => c.startsWith("compact-") && c !== "compact-range");
-      expect(order).toEqual([
-        "compact-main-row", "compact-price-row", "compact-target-time-row",
-        "compact-strategy-row", "compact-tier3",
-      ]);
+      const rows = [
+        ".compact-main-row", ".compact-price-row", ".compact-target-time-row",
+        ".compact-strategy-row", ".compact-tier3",
+      ];
+      // 每一排都是 tap 區的直接子節點，且文件順序由上而下。
+      const positions = rows.map((sel) =>
+        Array.from(tap.children).findIndex((el) => el.matches(sel)));
+      expect(positions.every((i) => i >= 0)).toBe(true);
+      expect([...positions].sort((a, b) => a - b)).toEqual(positions);
       // 主列只剩身分＋報酬率：價格、目標時間不再擠在左欄裡跟報酬率搶寬度。
       const main = card.querySelector(".compact-main-row") as HTMLElement;
       expect(main.querySelector(".compact-price-row, .compact-target-time-row, .compact-spot")).toBeNull();
@@ -248,11 +250,15 @@ describe("Compact 劇本列（MVP-v2／#77、#82）", () => {
         return at < 0 ? null : stylesCss.slice(at, stylesCss.indexOf("\n}", at));
       };
       const rows = rule(".compact-target-time-row");
-      expect(stylesCss).toMatch(/\n\.compact-price-row,\s*\n\.compact-target-time-row \{/);
       expect(rows).toMatch(/font-size:\s*12px/);
       expect(rows).toMatch(/text-overflow:\s*ellipsis/);
-      expect(rule(".compact-strategy-row .compact-strategy-pill")).toMatch(/max-width:\s*100%/);
-      expect(stylesCss).toMatch(/\.lib-cell-champion \.compact-strategy-pill \{[^}]*max-width:\s*104px/);
+      // 手機 pill 用整排寬度（扣掉右下角動作鈕的避讓）；桌面欄位維持 104px。
+      expect(rule(".compact-strategy-row .compact-strategy-pill"))
+        .toMatch(/max-width:\s*calc\(100% - var\(--compact-actions-clearance\)\)/);
+      // 共用的 SW-11 規則也以這個選擇器開頭一行，桌面專屬的寬度規則是最後一條。
+      const desktopAt = stylesCss.lastIndexOf("\n.lib-cell-champion .compact-strategy-pill {");
+      expect(stylesCss.slice(desktopAt, stylesCss.indexOf("\n}", desktopAt)))
+        .toMatch(/max-width:\s*104px/);
       // 舊兩欄搶寬度的規則已退場。
       expect(rule(".compact-target")).toBeNull();
     });

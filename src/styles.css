@@ -1033,7 +1033,7 @@ body {
   /* Typography v2：這是 MVP-v2／#77、#82、#108 三票明訂受硬性密度
      預算保護的組件（手機一屏至少 4 張、桌面左側欄一次看到更多卡片，
      皆由 e2e 幾何斷言鎖住）——`.compact-tier1/2/3`／`.compact-symbol`／
-     `.compact-target`／`.compact-strategy` 等子元素都沒有自己的
+     `.compact-price-row`／`.compact-strategy` 等子元素都沒有自己的
      line-height，會被動吃到上面 body 新調的 1.5，讓卡片自然高度
      撐大、直接把既有兩條密度守門測試（手機「至少看得到 4 個劇本」、
      桌面 Butterfly champion 卡片「高度 < 80px」）推到邊界外——實測
@@ -1058,8 +1058,9 @@ body {
   text-decoration: none;
   /* QA-FIX-2：第三層字級 11px→12px 讓每張卡長高 ~1.5px，一個手機視窗
      就從 4 張掉到 3 張（#82 既有驗收要求 ≥4）。把上下內距 6px→4px
-     換回來——壓縮的是留白不是資訊，與 compact row 一貫的取捨相同；
-     整張卡仍有 ~78px 高，遠超過觸控目標下限。 */
+     換回來——壓縮的是留白不是資訊，與 compact row 一貫的取捨相同。
+     CLAUDE-MOBILE-CARD-VERTICAL-ROWS-001 起資訊一人一排，整張卡約
+     115px 高（一屏仍至少 3 張，見密度 e2e）。 */
   padding: 4px 12px;
   /* 右側留給疊在右下角的封存鈕，文字不會被蓋住。 */
   padding-right: 52px;
@@ -1076,8 +1077,9 @@ body {
    實際的「一行內左右分欄」差距明顯，Owner 驗收明文點名不能再用既有
    component 限制當理由。`.compact-tier1`／`.compact-tier2` 兩個類別
    （連同純視覺容器用途）已被下面 `.compact-main-row`／`.compact-info`／
-   `.compact-headline`／`.compact-right` 取代；`.compact-symbol`／
-   `.compact-target`／`.compact-spot`／`.compact-strategy`／
+   `.compact-headline`／`.compact-right` 取代（CLAUDE-MOBILE-CARD-VERTICAL-
+   ROWS-001 起價格／目標時間再拆成主列下方各自一排）；`.compact-symbol`／
+   `.compact-spot`／`.compact-strategy`／
    `.compact-strategy-pill`／`.compact-metric`（含桌面版 `ScenarioList.tsx`
    共用的那份，見上方檔頭說明）本身的規則不變，只是換了父層容器。 */
 .compact-main-row {
@@ -1145,6 +1147,7 @@ body {
   display: flex;
   min-width: 0;
   margin-bottom: 4px;
+  --compact-actions-clearance: 28px;
 }
 
 /* 第二層是全卡最醒目的資訊（報酬率＋策略＋履約價）——比桌面版 `.metric`
@@ -1171,7 +1174,7 @@ body {
   background: var(--fill);
 }
 
-/* #108：跟 `.compact-target` 同一個理由——桌面版窄欄位下，「Exp 到期日
+/* #108：單行＋ellipsis 的同一個理由——桌面版窄欄位下，「Exp 到期日
    ／距到期／資料時間」三段合併一行的原始字串常常裝不下，沒有這三條
    就會整段換行、把卡片撐高。裁成一行＋刪節號，比默默換行更符合「第三
    層是低權重資訊」的定位：讀不完整就滑進詳細頁看，不需要卡片上完整
@@ -4473,15 +4476,20 @@ body {
 .compact-strategy-row .compact-strategy-pill,
 .lib-cell-champion .compact-strategy-pill {
   display: inline-block;
-  max-width: 104px;
   font-size: 11px;
   padding: 1px 6px;
 }
 
-/* CLAUDE-MOBILE-CARD-VERTICAL-ROWS-001：手機版 pill 自己一整排，寬度上限
-   改成整排可用寬度——104px 是當年擠在右欄時的限制，一般策略名稱
-   （`Bull Call Spread　買 265 / 賣 345`）完整顯示，只有真的超過整排才
-   ellipsis。桌面 `.lib-cell-champion` 欄寬沒變，維持上面的 104px。 */
+.lib-cell-champion .compact-strategy-pill {
+  max-width: 104px;
+}
+
+/* CLAUDE-MOBILE-CARD-VERTICAL-ROWS-001：手機版 pill 自己一整排，不再有當年
+   擠在右欄時的 104px 上限——一般策略名稱（`Bull Call Spread　買 265 /
+   賣 345`）完整顯示，只有真的超過整排才 ellipsis。整排右側另外讓出
+   `--compact-actions-clearance`（定義在 `.compact-strategy-row`）：右下角
+   編輯／刪除兩顆鈕（`right:8px`）比卡片文字區保留的 52px 右內距多伸出約
+   22px（Playwright 實測），異常長的 pill 拉滿時才不會滑進編輯鈕底下。桌面 `.lib-cell-champion` 欄寬沒變，維持上面的 104px。 */
 .compact-strategy-row .compact-strategy-pill {
-  max-width: 100%;
+  max-width: calc(100% - var(--compact-actions-clearance));
 }
