@@ -73,6 +73,7 @@ from api_app.main import _OWNER_COOKIE_NAME, create_app
 from api_app.storage import BrowserIdentity, Owner
 from api_app.storage.memory import MemoryStorage
 from option_chaser.data.snapshot import load_snapshot
+from tests._frozen_clock import fresh_fetched_at
 from tests._production_scale_fixtures import (
     PRODUCTION_SCALE_FIXTURE, offline_rate_loader, real_dividend_loader)
 
@@ -98,7 +99,7 @@ def _cboe_mock(snapshot):
 
     def _fetch(symbol: str):
         calls["n"] += 1
-        return dataclasses.replace(snapshot, fetched_at=now_utc_iso())
+        return dataclasses.replace(snapshot, fetched_at=fresh_fetched_at())
 
     _fetch.calls = calls  # type: ignore[attr-defined]
     return _fetch

@@ -25,10 +25,11 @@ import dataclasses
 import pytest
 from fastapi.testclient import TestClient
 
-from api_app.clock import now_utc_iso, ny_today
+from api_app.clock import ny_today
 from api_app.main import create_app
 from api_app.storage.memory import MemoryStorage
 from option_chaser.data.snapshot import load_snapshot
+from tests._frozen_clock import fresh_fetched_at
 from tests._role_session import role_cookies
 
 FIX = "tests/fixtures/xyz_v4_six_expiries.json"
@@ -46,7 +47,7 @@ def _client(*, storage=None, owner="solo", role=None, fetch_calls=None,
             fetch_calls.append(symbol)
         # 既有 PB-05／PB-06 測試同一個理由：production 每次抓取都蓋成
         # 「現在」，固定 fixture 的歷史時間戳測不出節流窗是否生效。
-        return dataclasses.replace(base_snap, fetched_at=now_utc_iso())
+        return dataclasses.replace(base_snap, fetched_at=fresh_fetched_at())
 
     cookies = role_cookies(storage, role) if role else None
     return TestClient(create_app(
@@ -86,7 +87,7 @@ def _client_with_metering(*, storage=None, owner="solo", role=None,
     base_snap = load_snapshot(FIX)
 
     def _cboe_fetch(symbol: str):
-        return dataclasses.replace(base_snap, fetched_at=now_utc_iso())
+        return dataclasses.replace(base_snap, fetched_at=fresh_fetched_at())
 
     cookies = role_cookies(storage, role) if role else None
     return TestClient(create_app(

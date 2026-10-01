@@ -22,13 +22,13 @@ import dataclasses
 
 from fastapi.testclient import TestClient
 
-from api_app import clock
 from api_app.main import create_app
 from api_app.metrics import METRIC_CATALOGUE, PERSISTED_METRICS
 from api_app.storage.memory import MemoryStorage
 from api_app.superuser import ROLE_COOKIE_NAME
 from option_chaser.data.snapshot import load_snapshot
 from option_chaser.models import RateLimitedError
+from tests._frozen_clock import fresh_fetched_at
 from tests._role_session import role_cookies
 
 FIX = "tests/fixtures/xyz_v4_six_expiries.json"
@@ -39,7 +39,7 @@ NEW = {"symbol": "XYZ", "target_price": 130.0, "target_month": "2026-09",
 def _fresh_snapshot():
     snap = load_snapshot(FIX)
     return dataclasses.replace(
-        snap, fetched_at=clock.now_utc_iso())
+        snap, fetched_at=fresh_fetched_at())
 
 
 def _client(monkeypatch, *, storage=None, superadmin_password="admin-secret",
