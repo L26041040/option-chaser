@@ -1,8 +1,12 @@
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+
 import { fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { BANNED_JARGON } from "./bannedCopy";
+import { mockOverflowingCardText } from "./layout.fixtures";
 import ScenarioList from "./ScenarioList";
 import sampleRow from "../contracts/scenario_row_sample.json";
 import type { RefreshFailure, ScenarioSummary } from "./api";
@@ -962,3 +966,20 @@ describe("CLAUDE-MOBILE-CARD-OVERLAP-001：桌面版劇本列不受手機修正�
     expect(document.querySelector(".compact-strategy-row")).toBeNull();
   });
 });
+
+describe("CLAUDE-MOBILE-TEXT-FIT-001：桌面版劇本列不套用手機縮字", () => {
+  it("桌面策略 pill 就算放不下也不被改字級（維持 CSS 的 11px＋ellipsis）", () => {
+    const restore = mockOverflowingCardText(
+      readFileSync(resolve(process.cwd(), "src/styles.css"), "utf-8"));
+    try {
+      mockFetch();
+      list([row()]);
+      const pill = document.querySelector(".lib-cell-champion .compact-strategy-pill") as HTMLElement;
+      expect(pill).not.toBeNull();
+      expect(pill.style.fontSize).toBe("");
+    } finally {
+      restore();
+    }
+  });
+});
+

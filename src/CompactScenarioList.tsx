@@ -22,6 +22,7 @@ import { CheckIcon, EditIcon, TrashIcon } from "./icons";
 import { formatMove } from "./detail";
 import { detailHash } from "./route";
 import StockLogo from "./StockLogo";
+import { useFitText } from "./useFitText";
 import {
   cardFailureHeadline,
   cardFailureVariant,
@@ -101,6 +102,13 @@ function CompactScenarioCard({
   // SCALE-05（#260，AC-3）：只在限流失敗時才有倒數可言。
   const rateLimitRemaining = useCountdownSeconds(
     failure?.rateLimit?.blocked_until ?? null);
+  // CLAUDE-MOBILE-TEXT-FIT-001：「現價 → 目標價　年月 · 還需」與策略 pill
+  // 兩行空間不足時先縮字（下限見 `useFitText`），縮到下限仍放不下才交給
+  // 既有的 ellipsis。key 是實際顯示的文字來源，內容變了就重新量。
+  const targetRef = useFitText<HTMLSpanElement>(
+    [row.spot, row.target_price, row.target_month, requiredMove].join("|"));
+  const strategySummary = formatRepresentativeSummary(rep);
+  const strategyRef = useFitText<HTMLSpanElement>(strategySummary);
   const cardClass = [
     "compact-card", updating && "locked", failureVariant && "failed",
   ].filter(Boolean).join(" ");
@@ -183,7 +191,7 @@ function CompactScenarioCard({
               {/* QA 修正：現價擠進同一行的目標價前面（`現價 → 目標`），
                   不多佔一列高度——沒有現價當基準，一排目標價只是孤立
                   數字，劇本庫就失去概覽的作用。 */}
-              <span className="compact-target">
+              <span className="compact-target" ref={targetRef}>
                 <span className="compact-spot">{moneyOrDash(row.spot)}</span>
                 {" → "}
                 {money(row.target_price)}　{row.target_month}
@@ -243,8 +251,9 @@ function CompactScenarioCard({
               被舊規則擋住——真的需要的話，之後另外開一張票評估
               自動換行風險，不在這裡順手夾帶。 */}
           <div className="compact-strategy-row">
-            <span className="compact-strategy compact-strategy-pill">
-              {formatRepresentativeSummary(rep)}
+            <span className="compact-strategy compact-strategy-pill"
+                  ref={strategyRef}>
+              {strategySummary}
             </span>
           </div>
 

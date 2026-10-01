@@ -7,11 +7,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { BANNED_JARGON } from "./bannedCopy";
 import CompactScenarioList from "./CompactScenarioList";
+import { mockOverflowingCardText } from "./layout.fixtures";
 import sampleRow from "../contracts/scenario_row_sample.json";
 import type { RefreshFailure, ScenarioSummary } from "./api";
 
 // 跟 `seedWarm.test.ts` 同一個做法：直接讀 CSS 原始碼文字（vitest 不載入樣式）。
 const stylesCss = readFileSync(resolve(process.cwd(), "src/styles.css"), "utf-8");
+
 
 /** 卡片上的「資料時間」都以這個時刻為基準判斷新鮮度。 */
 const NOW = new Date("2026-08-04T10:00:00+00:00");
@@ -208,6 +210,34 @@ describe("Compact 劇本列（MVP-v2／#77、#82）", () => {
       // 沿用 SW-11 的 pill 尺寸規則（不改字級），選擇器換成新的列。
       expect(stylesCss).toMatch(/\.compact-strategy-row \.compact-strategy-pill,\s*\n\.lib-cell-champion \.compact-strategy-pill \{/);
       expect(stylesCss).not.toMatch(/\.compact-right \.compact-strategy-pill/);
+    });
+  });
+
+  describe("CLAUDE-MOBILE-TEXT-FIT-001：目標價那一行與策略 pill 空間不足時先縮字", () => {
+    let restoreLayout = () => {};
+    afterEach(() => restoreLayout());
+
+    it("縮字機制掛在手機卡片的兩個 target 上（PR #352 之後的 DOM），縮到下限 10px 為止", () => {
+      restoreLayout = mockOverflowingCardText(stylesCss);
+      list([row({ target_month: "2028-12" })]);
+      const card = screen.getByRole("listitem");
+      const target = card.querySelector(".compact-target") as HTMLElement;
+      const pill = card.querySelector(".compact-strategy-row .compact-strategy-pill") as HTMLElement;
+      expect(target).toHaveTextContent("2028-12");
+      expect(target.style.fontSize).toBe("10px");
+      expect(pill.style.fontSize).toBe("10px");
+      // 其餘單行元素（Exp 列）不在縮字範圍內。
+      expect((card.querySelector(".compact-tier3") as HTMLElement).style.fontSize).toBe("");
+    });
+
+    it("CSS：右欄寬度等於報酬率本身（不再保留給 pill 的 42% basis），兩個 target 仍保留 ellipsis 當最後手段", () => {
+      const rule = (selector: string) => {
+        const at = stylesCss.indexOf(`\n${selector} {`);
+        return at < 0 ? null : stylesCss.slice(at, stylesCss.indexOf("\n}", at));
+      };
+      expect(rule(".compact-right")).toMatch(/flex:\s*0 0 auto;/);
+      expect(rule(".compact-target")).toMatch(/text-overflow:\s*ellipsis/);
+      expect(rule(".compact-strategy")).toMatch(/text-overflow:\s*ellipsis/);
     });
   });
 
