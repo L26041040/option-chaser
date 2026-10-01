@@ -7,7 +7,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { BANNED_JARGON } from "./bannedCopy";
 import CompactScenarioList from "./CompactScenarioList";
-import { mockOverflowingCardText } from "./layout.fixtures";
 import sampleRow from "../contracts/scenario_row_sample.json";
 import type { RefreshFailure, ScenarioSummary } from "./api";
 
@@ -83,8 +82,11 @@ describe("Compact 劇本列（MVP-v2／#77、#82）", () => {
       // SW-10（#340，Owner 真機驗收）：補回「還需 +xx%」（Artifact A
       // 首頁劇本卡的既有欄位），跟桌面版 `ScenarioList.tsx` 用同一個
       // `requiredMovePct()`／`formatMove()`。
-      expect(card.querySelector(".compact-target")!.textContent)
-        .toBe("$100.00 → $120.00　2028-05 · 還需 +20.0%");
+      // CLAUDE-MOBILE-CARD-VERTICAL-ROWS-001：價格劇本與目標時間各自一排。
+      expect(card.querySelector(".compact-price-row")!.textContent)
+        .toBe("$100.00 → $120.00");
+      expect(card.querySelector(".compact-target-time-row")!.textContent)
+        .toBe("2028-05 · 還需 +20.0%");
       // SW-11（#341，Owner 真機驗收）：正常成功狀態不再畫綠點——幾乎
       // 每張卡平常都是這個狀態，額外的 icon 只剩視覺噪音，見下方
       // 「只在需要注意的狀態才顯示 signal-dot」那條測試。
@@ -213,31 +215,46 @@ describe("Compact 劇本列（MVP-v2／#77、#82）", () => {
     });
   });
 
-  describe("CLAUDE-MOBILE-TEXT-FIT-001：目標價那一行與策略 pill 空間不足時先縮字", () => {
-    let restoreLayout = () => {};
-    afterEach(() => restoreLayout());
-
-    it("縮字機制掛在手機卡片的兩個 target 上（PR #352 之後的 DOM），縮到下限 10px 為止", () => {
-      restoreLayout = mockOverflowingCardText(stylesCss);
+  describe("CLAUDE-MOBILE-CARD-VERTICAL-ROWS-001：資訊一人一排，不再搶橫向空間", () => {
+    it("DOM 順序：主列（身分＋報酬率）→ 價格 → 目標時間 → 策略 → Exp，都是同一層的兄弟節點", () => {
       list([row({ target_month: "2028-12" })]);
       const card = screen.getByRole("listitem");
-      const target = card.querySelector(".compact-target") as HTMLElement;
-      const pill = card.querySelector(".compact-strategy-row .compact-strategy-pill") as HTMLElement;
-      expect(target).toHaveTextContent("2028-12");
-      expect(target.style.fontSize).toBe("10px");
-      expect(pill.style.fontSize).toBe("10px");
-      // 其餘單行元素（Exp 列）不在縮字範圍內。
-      expect((card.querySelector(".compact-tier3") as HTMLElement).style.fontSize).toBe("");
+      const tap = card.querySelector(".compact-card-tap") as HTMLElement;
+      const order = Array.from(tap.children)
+        .map((el) => el.className.split(" ")[0])
+        .filter((c) => c.startsWith("compact-") && c !== "compact-range");
+      expect(order).toEqual([
+        "compact-main-row", "compact-price-row", "compact-target-time-row",
+        "compact-strategy-row", "compact-tier3",
+      ]);
+      // 主列只剩身分＋報酬率：價格、目標時間不再擠在左欄裡跟報酬率搶寬度。
+      const main = card.querySelector(".compact-main-row") as HTMLElement;
+      expect(main.querySelector(".compact-price-row, .compact-target-time-row, .compact-spot")).toBeNull();
+      expect(main.querySelector(".compact-right .compact-metric")).not.toBeNull();
+      expect(main.querySelector(".compact-headline")).toHaveTextContent("TLT");
     });
 
-    it("CSS：右欄寬度等於報酬率本身（不再保留給 pill 的 42% basis），兩個 target 仍保留 ellipsis 當最後手段", () => {
+    it("縮字機制已移除：價格／目標時間／策略都沒有 inline font-size", () => {
+      list([row()]);
+      const card = screen.getByRole("listitem");
+      for (const sel of [".compact-price-row", ".compact-target-time-row", ".compact-strategy-pill"]) {
+        expect((card.querySelector(sel) as HTMLElement).getAttribute("style")).toBeNull();
+      }
+    });
+
+    it("CSS：新的兩排沿用原本 12px、單行 ellipsis 只當最後手段；手機 pill 用整排寬度，桌面維持 104px", () => {
       const rule = (selector: string) => {
         const at = stylesCss.indexOf(`\n${selector} {`);
         return at < 0 ? null : stylesCss.slice(at, stylesCss.indexOf("\n}", at));
       };
-      expect(rule(".compact-right")).toMatch(/flex:\s*0 0 auto;/);
-      expect(rule(".compact-target")).toMatch(/text-overflow:\s*ellipsis/);
-      expect(rule(".compact-strategy")).toMatch(/text-overflow:\s*ellipsis/);
+      const rows = rule(".compact-target-time-row");
+      expect(stylesCss).toMatch(/\n\.compact-price-row,\s*\n\.compact-target-time-row \{/);
+      expect(rows).toMatch(/font-size:\s*12px/);
+      expect(rows).toMatch(/text-overflow:\s*ellipsis/);
+      expect(rule(".compact-strategy-row .compact-strategy-pill")).toMatch(/max-width:\s*100%/);
+      expect(stylesCss).toMatch(/\.lib-cell-champion \.compact-strategy-pill \{[^}]*max-width:\s*104px/);
+      // 舊兩欄搶寬度的規則已退場。
+      expect(rule(".compact-target")).toBeNull();
     });
   });
 

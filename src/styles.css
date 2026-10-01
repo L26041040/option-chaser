@@ -1086,9 +1086,8 @@ body {
   gap: 6px;
 }
 
-/* 左欄：身分（代號＋方向／狀態）＋現價目標價，兩者永遠各自一行、
-   `min-width:0` 讓長文字寧可被下面既有 `.compact-target` 的
-   `text-overflow:ellipsis` 裁掉，也不撐開整行高度。 */
+/* 左欄：身分（代號＋方向／狀態）。CLAUDE-MOBILE-CARD-VERTICAL-ROWS-001
+   起價格與目標時間移到主列下方各自一排，這一欄只剩身分那一行。 */
 .compact-info {
   display: flex;
   flex-direction: column;
@@ -1108,46 +1107,42 @@ body {
   font-weight: 700;
 }
 
-.compact-target {
+/* CLAUDE-MOBILE-CARD-VERTICAL-ROWS-001：價格劇本（`現價 → 目標價`）與
+   目標時間（`年月 · 還需 +xx%`）各自一整排，用滿整張卡的文字寬度，不再
+   跟右欄報酬率搶同一行——字級維持原本的 12px，不縮字。單行＋ellipsis
+   只是極端長內容的最後手段，一般資料在 375／390px 完整顯示。 */
+.compact-price-row,
+.compact-target-time-row {
   font-size: 12px;
   color: var(--ink-2);
-  /* #108：桌面版左側欄（約 220px）比手機版窄很多，這個 flex item 被
-     擠壓時若沒有 `overflow: hidden`，文字會在原地換成兩行、把整張卡
-     撐高，而不是裁成一行——密度前提是「每層只有一行」。`overflow`
-     設非 `visible` 同時讓 flex item 的自動最小寬度變成 0（flexbox
-     規範既有行為），該縮的時候才縮得下去。 */
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
-/* 右欄：報酬率＋策略腿位，貼齊 artifact 卡片右側「數字優先、貼右對齊」
-   的版式；`flex-basis` 給一個上限，長策略字串（英文全名＋買賣履約價）
-   不會把左欄身分資訊擠到看不見——兩欄都靠既有 `overflow:hidden` 規則
-   各自裁一行，不是其中一欄無限吃掉版面。 */
+/* 右欄：報酬率，貼齊 artifact 卡片右側「數字優先、貼右對齊」的版式。 */
 .compact-right {
   display: flex;
   flex-direction: column;
   align-items: flex-end;
   gap: 1px;
   text-align: right;
-  /* CLAUDE-MOBILE-TEXT-FIT-001：右欄只剩報酬率（策略 pill 自 PR #352 起
-     獨立一列），寬度就等於報酬率本身。原本的 `0 1 42%` 是給「報酬率＋
-     pill」的上限；pill 移走後，42% 的 basis 會在左欄縮字（`useFitText`）
-     之後把空出來的寬度分給這個幾乎全空的右欄，左欄反而變窄、縮了字也
-     沒多顯示幾個字。 */
+  /* 右欄只放報酬率（策略 pill、價格、目標時間都在主列下方各自一排），
+     寬度就等於報酬率本身、不被壓縮。 */
   flex: 0 0 auto;
   min-width: 0;
 }
 
-/* CLAUDE-MOBILE-CARD-OVERLAP-001：手機卡片的策略 pill 自己一列、靠右
-   （對齊上方報酬率的右緣），不再跟 Exp 那一列擠在同一塊空間。光換列還
-   不夠——原本 pill 底邊到 Exp 列只隔父層 1px 的 gap（Codex review，
-   PR #352），iOS 字型一撐就蓋上去；`margin-bottom` 給出明確的垂直
-   間距。pill 本身的尺寸規則見下方 SW-11 那條共用選擇器。 */
+/* CLAUDE-MOBILE-CARD-OVERLAP-001：手機卡片的策略 pill 自己一列，不再跟
+   Exp 那一列擠在同一塊空間。光換列還不夠——原本 pill 底邊到 Exp 列只隔
+   父層 1px 的 gap（Codex review，PR #352），iOS 字型一撐就蓋上去；
+   `margin-bottom` 給出明確的垂直間距。
+   CLAUDE-MOBILE-CARD-VERTICAL-ROWS-001：改成靠左，跟上面價格／目標時間
+   排成同一條垂直資訊欄；靠右時 pill 右緣正好落在右下角編輯鈕的正上方，
+   卡片長高後兩者會碰在一起（Playwright 實測）。pill 本身的尺寸規則見
+   下方 SW-11 那條共用選擇器。 */
 .compact-strategy-row {
   display: flex;
-  justify-content: flex-end;
   min-width: 0;
   margin-bottom: 4px;
 }
@@ -4481,4 +4476,12 @@ body {
   max-width: 104px;
   font-size: 11px;
   padding: 1px 6px;
+}
+
+/* CLAUDE-MOBILE-CARD-VERTICAL-ROWS-001：手機版 pill 自己一整排，寬度上限
+   改成整排可用寬度——104px 是當年擠在右欄時的限制，一般策略名稱
+   （`Bull Call Spread　買 265 / 賣 345`）完整顯示，只有真的超過整排才
+   ellipsis。桌面 `.lib-cell-champion` 欄寬沒變，維持上面的 104px。 */
+.compact-strategy-row .compact-strategy-pill {
+  max-width: 100%;
 }

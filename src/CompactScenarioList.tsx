@@ -22,7 +22,6 @@ import { CheckIcon, EditIcon, TrashIcon } from "./icons";
 import { formatMove } from "./detail";
 import { detailHash } from "./route";
 import StockLogo from "./StockLogo";
-import { useFitText } from "./useFitText";
 import {
   cardFailureHeadline,
   cardFailureVariant,
@@ -102,13 +101,6 @@ function CompactScenarioCard({
   // SCALE-05（#260，AC-3）：只在限流失敗時才有倒數可言。
   const rateLimitRemaining = useCountdownSeconds(
     failure?.rateLimit?.blocked_until ?? null);
-  // CLAUDE-MOBILE-TEXT-FIT-001：「現價 → 目標價　年月 · 還需」與策略 pill
-  // 兩行空間不足時先縮字（下限見 `useFitText`），縮到下限仍放不下才交給
-  // 既有的 ellipsis。key 是實際顯示的文字來源，內容變了就重新量。
-  const targetRef = useFitText<HTMLSpanElement>(
-    [row.spot, row.target_price, row.target_month, requiredMove].join("|"));
-  const strategySummary = formatRepresentativeSummary(rep);
-  const strategyRef = useFitText<HTMLSpanElement>(strategySummary);
   const cardClass = [
     "compact-card", updating && "locked", failureVariant && "failed",
   ].filter(Boolean).join(" ");
@@ -188,20 +180,6 @@ function CompactScenarioCard({
                     的圖示疊在同一個位置。 */}
                 {updating && <span className="tag updating-tag">更新中</span>}
               </div>
-              {/* QA 修正：現價擠進同一行的目標價前面（`現價 → 目標`），
-                  不多佔一列高度——沒有現價當基準，一排目標價只是孤立
-                  數字，劇本庫就失去概覽的作用。 */}
-              <span className="compact-target" ref={targetRef}>
-                <span className="compact-spot">{moneyOrDash(row.spot)}</span>
-                {" → "}
-                {money(row.target_price)}　{row.target_month}
-                {requiredMove !== null && (
-                  <span className="compact-required-move">
-                    {" · 還需 "}
-                    {formatMove(requiredMove)}
-                  </span>
-                )}
-              </span>
             </div>
             <div className="compact-right">
               <span
@@ -232,9 +210,32 @@ function CompactScenarioCard({
             )}
           </div>
 
+          {/* CLAUDE-MOBILE-CARD-VERTICAL-ROWS-001：主列只留「身分＋報酬率」，
+              價格劇本、目標時間、策略、Exp 各自一整排、上下排列——不再跟
+              右欄報酬率搶同一行的橫向空間（之前靠 ellipsis／縮字硬塞，明明
+              卡片下方有空間）。字級沿用原本的 12px，不縮字。
+              QA 修正：現價仍放在目標價前面（`現價 → 目標`）——沒有現價當
+              基準，一個目標價只是孤立數字。SW-10（#340）：「還需 +xx%」
+              跟桌面版 `ScenarioList.tsx` 用同一個 `requiredMovePct()`／
+              `formatMove()`。 */}
+          <div className="compact-price-row">
+            <span className="compact-spot">{moneyOrDash(row.spot)}</span>
+            {" → "}
+            {money(row.target_price)}
+          </div>
+          <div className="compact-target-time-row">
+            {row.target_month}
+            {requiredMove !== null && (
+              <span className="compact-required-move">
+                {" · 還需 "}
+                {formatMove(requiredMove)}
+              </span>
+            )}
+          </div>
+
           {/* CLAUDE-MOBILE-CARD-OVERLAP-001：策略 pill 原本疊在右欄報酬率
               底下，右欄因此比左欄高、pill 底邊直接貼著下一列 Exp（實機
-              iOS 字型一變就蓋住到期資訊）。改成自己獨立一列（仍靠右），
+              iOS 字型一變就蓋住到期資訊）。改成自己獨立一列（VERTICAL-ROWS-001 起靠左），
               不再跟 Exp 列爭同一塊空間；其餘元素位置與樣式不變。這個元件
               只服務手機版，桌面版 `ScenarioList.tsx` 不受影響。 */}
           {/* OG-09（#319）：視覺上比照 artifact 的「腿位 pill」
@@ -251,9 +252,8 @@ function CompactScenarioCard({
               被舊規則擋住——真的需要的話，之後另外開一張票評估
               自動換行風險，不在這裡順手夾帶。 */}
           <div className="compact-strategy-row">
-            <span className="compact-strategy compact-strategy-pill"
-                  ref={strategyRef}>
-              {strategySummary}
+            <span className="compact-strategy compact-strategy-pill">
+              {formatRepresentativeSummary(rep)}
             </span>
           </div>
 
