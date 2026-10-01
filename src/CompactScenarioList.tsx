@@ -204,22 +204,6 @@ function CompactScenarioCard({
               >
                 {formatReturn(row.best_return)}
               </span>
-              {/* OG-09（#319）：視覺上比照 artifact 的「腿位 pill」
-                  語彙（`.legs` 底色＋圓角），文字內容逐字沿用既有
-                  `formatRepresentativeSummary()`，不拆成逐腿分色
-                  `<span>`。SW-10（#340，Owner 真機驗收）`/code-review`
-                  Spec 軸跟進：這裡原本的理由引用已經整段退場的
-                  CLOSEOUT-002「卡片寬高與版面不得變動」——本票（見
-                  `.compact-main-row` 一段）已經把這張卡的版面／密度
-                  重做過一輪，不再有那條舊約束，繼續拿它當理由會被誤讀
-                  成「用既有 component 限制擋掉這輪的更新」，Owner 明文
-                  禁止這種說法。真正的理由很單純：逐腿分色是 issue #340
-                  十一項裡沒有人要求的額外加法，不是這一輪的範圍，不是
-                  被舊規則擋住——真的需要的話，之後另外開一張票評估
-                  自動換行風險，不在這裡順手夾帶。 */}
-              <span className="compact-strategy compact-strategy-pill">
-                {formatRepresentativeSummary(rep)}
-              </span>
             </div>
             {/* T08／#196 P1：燈號講的是上一輪的結果，更新中時已經在上面
                 身分那一行換成「更新中」徽章，這裡就不重複畫，避免同一
@@ -238,6 +222,30 @@ function CompactScenarioCard({
                 aria-hidden="true"
               />
             )}
+          </div>
+
+          {/* CLAUDE-MOBILE-CARD-OVERLAP-001：策略 pill 原本疊在右欄報酬率
+              底下，右欄因此比左欄高、pill 底邊直接貼著下一列 Exp（實機
+              iOS 字型一變就蓋住到期資訊）。改成自己獨立一列（仍靠右），
+              不再跟 Exp 列爭同一塊空間；其餘元素位置與樣式不變。這個元件
+              只服務手機版，桌面版 `ScenarioList.tsx` 不受影響。 */}
+          {/* OG-09（#319）：視覺上比照 artifact 的「腿位 pill」
+              語彙（`.legs` 底色＋圓角），文字內容逐字沿用既有
+              `formatRepresentativeSummary()`，不拆成逐腿分色
+              `<span>`。SW-10（#340，Owner 真機驗收）`/code-review`
+              Spec 軸跟進：這裡原本的理由引用已經整段退場的
+              CLOSEOUT-002「卡片寬高與版面不得變動」——本票（見
+              `.compact-main-row` 一段）已經把這張卡的版面／密度
+              重做過一輪，不再有那條舊約束，繼續拿它當理由會被誤讀
+              成「用既有 component 限制擋掉這輪的更新」，Owner 明文
+              禁止這種說法。真正的理由很單純：逐腿分色是 issue #340
+              十一項裡沒有人要求的額外加法，不是這一輪的範圍，不是
+              被舊規則擋住——真的需要的話，之後另外開一張票評估
+              自動換行風險，不在這裡順手夾帶。 */}
+          <div className="compact-strategy-row">
+            <span className="compact-strategy compact-strategy-pill">
+              {formatRepresentativeSummary(rep)}
+            </span>
           </div>
 
           {/* 每個格式化值各自一個 span、分隔號是獨立文字節點：跟桌面版

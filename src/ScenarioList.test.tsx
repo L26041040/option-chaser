@@ -951,3 +951,14 @@ describe("文案去術語（SW-09／#339 全站掃描，桌面劇本庫）", () 
     }
   });
 });
+
+describe("CLAUDE-MOBILE-CARD-OVERLAP-001：桌面版劇本列不受手機修正影響", () => {
+  it("桌面策略 pill 仍在 `.lib-cell-champion` 欄裡，沒有手機版的獨立 pill 列", () => {
+    mockFetch();
+    list([row()]);
+    const pill = document.querySelector(".compact-strategy-pill") as HTMLElement;
+    expect(pill).not.toBeNull();
+    expect(pill.closest(".lib-cell-champion")).not.toBeNull();
+    expect(document.querySelector(".compact-strategy-row")).toBeNull();
+  });
+});

@@ -1135,6 +1135,18 @@ body {
   min-width: 0;
 }
 
+/* CLAUDE-MOBILE-CARD-OVERLAP-001：手機卡片的策略 pill 自己一列、靠右
+   （對齊上方報酬率的右緣），不再跟 Exp 那一列擠在同一塊空間。光換列還
+   不夠——原本 pill 底邊到 Exp 列只隔父層 1px 的 gap（Codex review，
+   PR #352），iOS 字型一撐就蓋上去；`margin-bottom` 給出明確的垂直
+   間距。pill 本身的尺寸規則見下方 SW-11 那條共用選擇器。 */
+.compact-strategy-row {
+  display: flex;
+  justify-content: flex-end;
+  min-width: 0;
+  margin-bottom: 4px;
+}
+
 /* 第二層是全卡最醒目的資訊（報酬率＋策略＋履約價）——比桌面版 `.metric`
    （28px）小一號，但仍明顯大於第一、三層，維持「關鍵數字優先」的
    資訊層級（spec #77 §7）。 */
@@ -4441,7 +4453,8 @@ body {
 
 /* SW-11（#341，Owner 真機驗收）：首頁劇本卡「Strategy 欄位」（`Bull Call
    Spread　買265 / 賣345` 那顆 pill）降級為次要資訊層級——只鎖定手機版
-   `CompactScenarioList.tsx`（`.compact-right` 內）與桌面版
+   `CompactScenarioList.tsx`（CLAUDE-MOBILE-CARD-OVERLAP-001 起在
+   `.compact-strategy-row` 內，原本在 `.compact-right`）與桌面版
    `ScenarioList.tsx`（`.lib-cell-champion` 內）兩個「首頁劇本卡」consumer，
    不動 `DesktopDetail.tsx` 候選列表那顆同樣掛 `.compact-strategy-pill`
    的 `.candidate-title`（那是 SW-10／#340 才重排過的候選列表，不在這輪
@@ -4457,7 +4470,7 @@ body {
    `max-width`，ellipsis 才真的裁得下去；同時縮小字級／內距，讓它在
    視覺權重上明顯讓位給右欄真正的主視覺——報酬率（`.compact-metric`／
    `.metric`，20px／28px，未動）。 */
-.compact-right .compact-strategy-pill,
+.compact-strategy-row .compact-strategy-pill,
 .lib-cell-champion .compact-strategy-pill {
   display: inline-block;
   max-width: 104px;

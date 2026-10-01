@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -6,6 +9,9 @@ import { BANNED_JARGON } from "./bannedCopy";
 import CompactScenarioList from "./CompactScenarioList";
 import sampleRow from "../contracts/scenario_row_sample.json";
 import type { RefreshFailure, ScenarioSummary } from "./api";
+
+// 跟 `seedWarm.test.ts` 同一個做法：直接讀 CSS 原始碼文字（vitest 不載入樣式）。
+const stylesCss = readFileSync(resolve(process.cwd(), "src/styles.css"), "utf-8");
 
 /** 卡片上的「資料時間」都以這個時刻為基準判斷新鮮度。 */
 const NOW = new Date("2026-08-04T10:00:00+00:00");
@@ -149,6 +155,60 @@ describe("Compact 劇本列（MVP-v2／#77、#82）", () => {
     const symbols = screen.getAllByRole("listitem")
       .map((li) => li.querySelector(".compact-symbol")!.textContent);
     expect(symbols).toEqual(["CCC", "AAA", "BBB"]);
+  });
+
+  describe("CLAUDE-MOBILE-CARD-OVERLAP-001：策略 pill 不再壓到 Exp 那一列", () => {
+    const longCall = () => row({
+      best_return: 312.4, days_to_anchor: 806, target_anchor: "2028-12-15",
+      representative_candidate: {
+        strategy: "long-call",
+        legs: [{ strike: 900, option_type: "call", side: "buy", quantity: 1 }],
+        expiry: "2028-12-15", baseline_return: 312.4,
+      },
+    });
+
+    it("pill 在自己獨立的一列：不在右欄（報酬率底下）裡，排在主列與 Exp 列之間", () => {
+      list([longCall()]);
+      const card = screen.getByRole("listitem");
+      const pill = card.querySelector(".compact-strategy-pill") as HTMLElement;
+      expect(pill).toHaveTextContent("Long Call");
+      expect(pill).toHaveTextContent("買 900");
+      // 造成重疊的結構條件：pill 疊在右欄報酬率底下、讓右欄比左欄高。
+      expect(card.querySelector(".compact-right .compact-strategy-pill")).toBeNull();
+      expect(card.querySelector(".compact-main-row .compact-strategy-pill")).toBeNull();
+      const pillRow = pill.parentElement as HTMLElement;
+      expect(pillRow).toHaveClass("compact-strategy-row");
+      // 文件順序：主列 → pill 列 → Exp 列，三者是同一層的兄弟節點。
+      const blocks = Array.from(pillRow.parentElement!.children)
+        .map((el) => el.className.split(" ")[0])
+        .filter((c) => ["compact-main-row", "compact-strategy-row", "compact-tier3"].includes(c));
+      expect(blocks).toEqual(["compact-main-row", "compact-strategy-row", "compact-tier3"]);
+      // 報酬率仍留在右欄原位。
+      expect(card.querySelector(".compact-right .compact-metric")).toHaveTextContent("31240.0%");
+    });
+
+    it("Exp 列完整保留，文案不變", () => {
+      list([longCall()]);
+      const tier3 = screen.getByRole("listitem").querySelector(".compact-tier3")!;
+      expect(tier3).toHaveTextContent(/^Exp 2028-12-15 · 806 天 · /);
+      expect(tier3.querySelector(".compact-strategy-pill")).toBeNull();
+    });
+
+    it("CSS：pill 列走正常 flow（不是 absolute overlay），pill 規則改掛在新的列上", () => {
+      const rule = (selector: string) => {
+        const at = stylesCss.indexOf(`\n${selector} {`);
+        return at < 0 ? null : stylesCss.slice(at, stylesCss.indexOf("}", at));
+      };
+      const rowRule = rule(".compact-strategy-row");
+      expect(rowRule).not.toBeNull();
+      expect(rowRule).toMatch(/display:\s*flex/);
+      expect(rowRule).not.toMatch(/position:\s*absolute/);
+      // 明確的垂直間距：光是換列，pill 底邊到 Exp 列仍只有父層 1px gap。
+      expect(rowRule).toMatch(/margin-bottom:\s*[3-9]px/);
+      // 沿用 SW-11 的 pill 尺寸規則（不改字級），選擇器換成新的列。
+      expect(stylesCss).toMatch(/\.compact-strategy-row \.compact-strategy-pill,\s*\n\.lib-cell-champion \.compact-strategy-pill \{/);
+      expect(stylesCss).not.toMatch(/\.compact-right \.compact-strategy-pill/);
+    });
   });
 
   it("距到期天數保留但併入第三層，不獨立成一列", () => {

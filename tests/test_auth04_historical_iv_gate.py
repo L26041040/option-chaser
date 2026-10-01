@@ -40,6 +40,7 @@ from api_app.storage.memory import MemoryStorage
 from option_chaser.data.snapshot import load_snapshot
 from option_chaser.dividends import DividendHistory
 from option_chaser.ratecurve import RateCurve
+from tests._frozen_clock import fresh_fetched_at
 from tests._protected_owner import ensure_owner, ensure_protected_owner
 from tests._role_session import role_cookies
 
@@ -77,7 +78,7 @@ def _snap():
     # 的斷言只關心「借用了誰的 token」，不關心 percentile／Δ4w 這類
     # 對日期敏感的計算細節。
     return dataclasses.replace(load_snapshot(FIX), source="cboe",
-                               fetched_at=now_utc_iso())
+                               fetched_at=fresh_fetched_at())
 
 
 def _never_called_contract_history(*args, **kwargs):

@@ -29,6 +29,7 @@ from api_app.storage import (DataSourceSettings, ProviderCredential,
 from api_app.storage.memory import MemoryStorage
 from option_chaser.data.snapshot import load_snapshot
 from option_chaser.models import FetchError
+from tests._frozen_clock import fresh_fetched_at
 from tests._role_session import role_cookies
 from _adhoc import post_adhoc
 
@@ -46,7 +47,7 @@ def _client(*, storage=None, global_vendor_daily_budget=None,
         # 同 PB-05 既有測試的理由：production 每次抓取都蓋成「現在」，
         # fixture 本身的固定歷史時間戳不能拿來測 PB-05 節流窗——這裡
         # 雖然不測節流，但沿用同一份 helper 慣例維持一致性。
-        return dataclasses.replace(base_snap, fetched_at=now_utc_iso())
+        return dataclasses.replace(base_snap, fetched_at=fresh_fetched_at())
 
     cookies = role_cookies(storage, role) if role else None
     return TestClient(create_app(

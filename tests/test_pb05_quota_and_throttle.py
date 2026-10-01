@@ -19,10 +19,10 @@ import dataclasses
 
 from fastapi.testclient import TestClient
 
-from api_app.clock import now_utc_iso
 from api_app.main import create_app
 from api_app.storage.memory import MemoryStorage
 from option_chaser.data.snapshot import load_snapshot
+from tests._frozen_clock import fresh_fetched_at
 
 FIX = "tests/fixtures/xyz_v4_six_expiries.json"
 NEW = {"symbol": "XYZ", "target_price": 130.0, "target_month": "2026-09",
@@ -35,7 +35,7 @@ def _client(*, storage=None, owner="solo", fetch_calls=None, **overrides):
     def _fetch(symbol: str):
         if fetch_calls is not None:
             fetch_calls.append(symbol)
-        return dataclasses.replace(base_snap, fetched_at=now_utc_iso())
+        return dataclasses.replace(base_snap, fetched_at=fresh_fetched_at())
 
     return TestClient(create_app(
         identity_resolver=lambda: owner, fetch=_fetch,
