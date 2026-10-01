@@ -3400,3 +3400,39 @@ test("SW-09（#339）：手機垃圾桶在 375px 無水平捲動（之前四個�
     () => document.documentElement.scrollWidth > window.innerWidth);
   expect(trashOverflowX).toBe(false);
 });
+
+/* ---------- CLAUDE-MOBILE-CARD-OVERLAP-001：手機卡片策略 pill 不壓到 Exp 列 ---------- */
+
+for (const width of [390, 375]) {
+  test(`手機版 ${width}px：策略 pill 自己一列，不與 Exp 列重疊（CLAUDE-MOBILE-CARD-OVERLAP-001）`,
+       async ({ page }) => {
+    await page.setViewportSize({ width, height: 844 });
+    const row = libraryRow({
+      symbol: "TSLA", best_return: 312.4, days_to_anchor: 806,
+      target_anchor: "2028-12-15", best_price: null, worst_price: null,
+      representative_candidate: {
+        strategy: "long-call", candidate_key: "long-call|900|2028-12-15",
+        legs: [{ option_type: "call", side: "buy", strike: 900, quantity: 1 }],
+        expiry: "2028-12-15", baseline_return: 312.4,
+      },
+    });
+    await routeLibrary(page, row);
+    await page.goto("/#/");
+
+    const card = page.getByRole("listitem").filter({ hasText: "TSLA" });
+    const pill = card.locator(".compact-strategy-pill");
+    const exp = card.locator(".compact-tier3");
+    await expect(pill).toContainText("Long Call");
+    await expect(exp).toContainText("Exp 2028-12-15");
+
+    const main = (await card.locator(".compact-main-row").boundingBox())!;
+    const p = (await pill.boundingBox())!;
+    const e = (await exp.boundingBox())!;
+    // pill 整顆在主列之下、Exp 列之上：垂直方向完全不交疊。
+    expect(p.y).toBeGreaterThanOrEqual(main.y + main.height - 0.5);
+    expect(p.y + p.height).toBeLessThanOrEqual(e.y + 0.5);
+    // Exp 列沒有被截斷成刪節號（文字完整可讀）。
+    const clipped = await exp.evaluate((el) => el.scrollWidth > el.clientWidth);
+    expect(clipped).toBe(false);
+  });
+}
