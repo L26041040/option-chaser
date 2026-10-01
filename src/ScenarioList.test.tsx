@@ -6,6 +6,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { BANNED_JARGON } from "./bannedCopy";
+import { mockOverflowingCardText } from "./layout.fixtures";
 import ScenarioList from "./ScenarioList";
 import sampleRow from "../contracts/scenario_row_sample.json";
 import type { RefreshFailure, ScenarioSummary } from "./api";
@@ -968,7 +969,8 @@ describe("CLAUDE-MOBILE-CARD-OVERLAP-001：桌面版劇本列不受手機修正�
 
 describe("CLAUDE-MOBILE-TEXT-FIT-001：桌面版劇本列不套用手機縮字", () => {
   it("桌面策略 pill 就算放不下也不被改字級（維持 CSS 的 11px＋ellipsis）", () => {
-    const restore = mockOverflowingCardText();
+    const restore = mockOverflowingCardText(
+      readFileSync(resolve(process.cwd(), "src/styles.css"), "utf-8"));
     try {
       mockFetch();
       list([row()]);
@@ -981,27 +983,3 @@ describe("CLAUDE-MOBILE-TEXT-FIT-001：桌面版劇本列不套用手機縮字",
   });
 });
 
-/** jsdom 沒有版面：假裝 `.compact-target`／`.compact-strategy-pill` 永遠放不下
- *  （內容 500px、可視 100px），驗證縮字機制掛在哪些 DOM target 上。 */
-function mockOverflowingCardText() {
-  // 起始字級由真正的 styles.css 提供（jsdom 不會自己載入樣式表）。
-  const sheet = document.createElement("style");
-  sheet.textContent = readFileSync(resolve(process.cwd(), "src/styles.css"), "utf-8");
-  document.head.appendChild(sheet);
-  const proto = HTMLElement.prototype;
-  const sw = Object.getOwnPropertyDescriptor(proto, "scrollWidth");
-  const cw = Object.getOwnPropertyDescriptor(proto, "clientWidth");
-  const fits = (el: HTMLElement) =>
-    el.matches(".compact-target, .compact-strategy-pill");
-  Object.defineProperty(proto, "scrollWidth", {
-    configurable: true, get(this: HTMLElement) { return fits(this) ? 500 : 0; },
-  });
-  Object.defineProperty(proto, "clientWidth", {
-    configurable: true, get(this: HTMLElement) { return fits(this) ? 100 : 0; },
-  });
-  return () => {
-    sheet.remove();
-    if (sw) Object.defineProperty(proto, "scrollWidth", sw);
-    if (cw) Object.defineProperty(proto, "clientWidth", cw);
-  };
-}

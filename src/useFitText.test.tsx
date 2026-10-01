@@ -1,26 +1,20 @@
 import { render } from "@testing-library/react";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 
+import { injectStylesheet, mockElementWidths } from "./layout.fixtures";
 import { FIT_TEXT_MIN_PX, useFitText } from "./useFitText";
 
 /**
- * jsdom 沒有版面：`scrollWidth`／`clientWidth` 一律是 0。這裡用一個很單純的
- * 字寬模型取代——文字寬 = 字數 × 字級 × 0.6，可視寬固定 `BOX_PX`——讓
- * hook 的「量 → 縮 → 再量」迴圈有真實的回饋可以收斂。起始字級由樣式表
- * 提供（hook 從 computed style 讀，不寫死）。
+ * 字寬模型：文字寬 = 字數 × 字級 × 0.6，可視寬固定 `BOX_PX`——讓 hook
+ * 的「量 → 縮 → 再量」迴圈有真實的回饋可以收斂。起始字級由樣式表提供
+ * （hook 從 computed style 讀，不寫死）。
  */
 const BOX_PX = 100;
-let style: HTMLStyleElement;
-let restoreLayout = () => {};
+let restores: Array<() => void> = [];
 
-beforeEach(() => {
-  style = document.createElement("style");
-  style.textContent = ".fit { font-size: 12px; }";
-  document.head.appendChild(style);
-});
 afterEach(() => {
-  restoreLayout();
-  style.remove();
+  restores.forEach((restore) => restore());
+  restores = [];
 });
 
 function Probe({ text }: { text: string }) {
@@ -29,31 +23,15 @@ function Probe({ text }: { text: string }) {
 }
 
 function mount(text: string) {
-  // 先掛 layout 模型再 render：hook 在 layout effect（commit 當下）就量。
-  const proto = HTMLElement.prototype;
-  const sw = Object.getOwnPropertyDescriptor(proto, "scrollWidth");
-  const cw = Object.getOwnPropertyDescriptor(proto, "clientWidth");
-  Object.defineProperty(proto, "scrollWidth", {
-    configurable: true,
-    get(this: HTMLElement) {
-      if (!this.classList.contains("fit")) return 0;
-      const px = parseFloat(getComputedStyle(this).fontSize);
-      return Math.ceil((this.textContent ?? "").length * px * 0.6);
-    },
-  });
-  Object.defineProperty(proto, "clientWidth", {
-    configurable: true,
-    get(this: HTMLElement) {
-      if (!this.classList.contains("fit")) return 0;
-      return Math.min(BOX_PX, this.scrollWidth);
-    },
-  });
+  // 先掛版面模型再 render：hook 在 layout effect（commit 當下）就量。
+  restores.push(injectStylesheet(".fit { font-size: 12px; }"));
+  restores.push(mockElementWidths((el) => {
+    if (!el.classList.contains("fit")) return null;
+    const px = parseFloat(getComputedStyle(el).fontSize);
+    const textWidth = Math.ceil((el.textContent ?? "").length * px * 0.6);
+    return { scrollWidth: textWidth, clientWidth: Math.min(BOX_PX, textWidth) };
+  }));
   const result = render(<Probe text={text} />);
-  restoreLayout = () => {
-    if (sw) Object.defineProperty(proto, "scrollWidth", sw);
-    if (cw) Object.defineProperty(proto, "clientWidth", cw);
-    restoreLayout = () => {};
-  };
   return { ...result, el: result.container.querySelector(".fit") as HTMLElement };
 }
 
@@ -81,5 +59,14 @@ describe("useFitText（CLAUDE-MOBILE-TEXT-FIT-001）", () => {
     expect(el.style.fontSize).toBe(`${FIT_TEXT_MIN_PX}px`);
     rerender(<Probe text={"x".repeat(5)} />);
     expect(el.style.fontSize).toBe("");
+  });
+
+  it("還原函式真的把 jsdom 的寬度 getter 還回去（不污染同檔後續測試）", () => {
+    const restore = mockElementWidths(() => ({ scrollWidth: 500, clientWidth: 100 }));
+    expect(document.createElement("span").scrollWidth).toBe(500);
+    restore();
+    expect(document.createElement("span").scrollWidth).toBe(0);
+    expect(Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollWidth"))
+      .toBeUndefined();
   });
 });

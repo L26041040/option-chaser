@@ -3462,12 +3462,15 @@ function tslaRow(legs: unknown[], candidateKey: string, strategy: string) {
   });
 }
 
+/** 與 `src/useFitText.ts` 的 `FIT_TEXT_MIN_PX` 同值（e2e 不 import 前端原始碼）。 */
 const FIT_MIN_PX = 10;
 
 for (const width of [390, 375]) {
   test(`手機版 ${width}px：目標價那一行與策略 pill 先縮字、縮到 ${FIT_MIN_PX}px 仍放不下才 ellipsis（CLAUDE-MOBILE-TEXT-FIT-001）`,
        async ({ page }) => {
     await page.setViewportSize({ width, height: 844 });
+    const pageErrors: string[] = [];
+    page.on("pageerror", (err) => pageErrors.push(err.message));
     // 「Long Call　買 1000」在 CSS 原始 11px 下比 pill 的 max-width 寬一點，
     // 縮半級就放得下——正好驗證「還有縮字空間時不會先出現刪節號」。
     await routeLibrary(page, tslaRow(
@@ -3481,13 +3484,10 @@ for (const width of [390, 375]) {
     await expect(target).toContainText("2028-12");
     await expect(pill).toContainText("Long Call");
 
-    // 目標價那一行：12px 時明顯放不下（全文約 254px），一定有縮字；
-    // 只有縮到下限仍放不下時才允許溢出（交給 ellipsis）。
+    // 目標價那一行：12px 時全文約 254px，10px 時約 212px，375／390px 的
+    // 左欄（約 158／173px）都放不下——先縮到下限，才交給 ellipsis。
     const t = await fitState(target);
-    expect(t.inline).not.toBe("");
-    expect(t.px).toBeLessThan(12);
-    expect(t.px).toBeGreaterThanOrEqual(FIT_MIN_PX);
-    if (t.overflow) expect(t.px).toBe(FIT_MIN_PX);
+    expect(t).toEqual({ px: FIT_MIN_PX, inline: `${FIT_MIN_PX}px`, overflow: true });
     // 年月整段可見（不被 ellipsis 吃掉）：「2028-12」右緣在元素可視範圍內。
     const monthVisible = await target.evaluate((el) => {
       const box = el.getBoundingClientRect();
@@ -3516,6 +3516,13 @@ for (const width of [390, 375]) {
     expect(eb.y - (pb.y + pb.height)).toBeGreaterThanOrEqual(3);
     expect(await card.locator(".compact-tier3")
       .evaluate((el) => el.scrollWidth > el.clientWidth)).toBe(false);
+
+    // 轉成橫向（父元素變寬）後重新量：目標價那一行放得下了，字級回到
+    // CSS 原始的 12px；過程中不丟 ResizeObserver loop 之類的錯誤。
+    await page.setViewportSize({ width: 844, height: width });
+    await expect.poll(() => fitState(target))
+      .toEqual({ px: 12, inline: "", overflow: false });
+    expect(pageErrors).toEqual([]);
   });
 
   test(`手機版 ${width}px：放得下的短文字維持 CSS 原始字級，不多縮（CLAUDE-MOBILE-TEXT-FIT-001）`,
