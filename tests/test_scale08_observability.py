@@ -19,10 +19,10 @@
 - AC-7：見 `test_storage_contract.py::test_metric_entry_has_no_disallowed_fields`
 """
 import dataclasses
-from datetime import datetime, timezone
 
 from fastapi.testclient import TestClient
 
+from api_app import clock
 from api_app.main import create_app
 from api_app.metrics import METRIC_CATALOGUE, PERSISTED_METRICS
 from api_app.storage.memory import MemoryStorage
@@ -39,7 +39,7 @@ NEW = {"symbol": "XYZ", "target_price": 130.0, "target_month": "2026-09",
 def _fresh_snapshot():
     snap = load_snapshot(FIX)
     return dataclasses.replace(
-        snap, fetched_at=datetime.now(timezone.utc).isoformat(timespec="seconds"))
+        snap, fetched_at=clock.now_utc_iso())
 
 
 def _client(monkeypatch, *, storage=None, superadmin_password="admin-secret",

@@ -14,10 +14,11 @@ refresh-on-miss fallback）：`GET /api/cron/warm-rate-cache`。
 - AC-7：全套既有測試套件本身
 """
 import dataclasses
-from datetime import date, datetime, timezone
+from datetime import date
 
 from fastapi.testclient import TestClient
 
+from api_app import clock
 from api_app.main import create_app
 from api_app.storage.memory import MemoryStorage
 from option_chaser.data.snapshot import load_snapshot
@@ -38,7 +39,7 @@ def _fresh_snapshot():
     真正對齊，才對得起 AC-1『warms it for subsequent normal use』。"""
     snap = load_snapshot(FIX)
     return dataclasses.replace(
-        snap, fetched_at=datetime.now(timezone.utc).isoformat(timespec="seconds"))
+        snap, fetched_at=clock.now_utc_iso())
 
 
 def _client(*, cron_secret="test-secret", rate_loader=None, storage=None):
