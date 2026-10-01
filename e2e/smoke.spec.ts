@@ -3438,129 +3438,167 @@ for (const width of [390, 375]) {
   });
 }
 
-/* ---------- CLAUDE-MOBILE-TEXT-FIT-001：手機卡片兩行文字先縮字、縮到下限才 ellipsis ---------- */
+/* ---------- CLAUDE-MOBILE-CARD-VERTICAL-ROWS-001：手機卡片資訊一人一排 ---------- */
 
-/** 量一個單行文字元素：實際字級、是否溢出、inline `font-size` 是否由
- *  `useFitText` 寫入（證明縮字機制確實掛在這個 DOM target 上）。 */
-async function fitState(locator: import("@playwright/test").Locator) {
-  return locator.evaluate((el) => ({
-    px: parseFloat(getComputedStyle(el).fontSize),
-    inline: (el as HTMLElement).style.fontSize,
-    overflow: el.scrollWidth > el.clientWidth,
-  }));
-}
+/** 主列下方依序的資訊列（`.compact-range` 只在有填區間時出現，這裡不含）。 */
+const VERTICAL_ROWS = [
+  ".compact-main-row", ".compact-price-row", ".compact-target-time-row",
+  ".compact-strategy-row", ".compact-tier3",
+] as const;
 
-function tslaRow(legs: unknown[], candidateKey: string, strategy: string) {
-  return libraryRow({
-    symbol: "TSLA", spot: 443.21, target_price: 1200, target_month: "2028-12",
-    best_return: 3.124, days_to_anchor: 806,
-    target_anchor: "2028-12-15", best_price: null, worst_price: null,
-    representative_candidate: {
-      strategy, candidate_key: candidateKey, legs,
-      expiry: "2028-12-15", baseline_return: 3.124,
+/** 跟 Owner 截圖同型的兩個真實案例：長 Long Call（TSLA）與 Bull Call Spread（TLT）。 */
+const VERTICAL_CASES = [
+  {
+    name: "Long Call（TSLA $355 → $1500）",
+    row: {
+      id: "s1", symbol: "TSLA", spot: 355, target_price: 1500, target_month: "2028-12",
+      best_return: 3.124, days_to_anchor: 806, target_anchor: "2028-12-15",
+      best_price: null, worst_price: null,
+      representative_candidate: {
+        strategy: "long-call", candidate_key: "long-call|900|2028-12-15",
+        legs: [{ option_type: "call", side: "buy", strike: 900, quantity: 1 }],
+        expiry: "2028-12-15", baseline_return: 3.124,
+      },
     },
-  });
-}
+    price: "$355.00 → $1500.00", strategy: "Long Call　買 900",
+  },
+  {
+    name: "Bull Call Spread（TLT $77.78 → $105.00）",
+    row: {
+      id: "s1", symbol: "TLT", spot: 77.78, target_price: 105, target_month: "2028-12",
+      best_return: 7.257, days_to_anchor: 806, target_anchor: "2028-12-15",
+      best_price: null, worst_price: null,
+      representative_candidate: {
+        strategy: "bull-call-spread", candidate_key: "bull-call-spread|80|95|2028-12-15",
+        legs: [{ option_type: "call", side: "buy", strike: 80, quantity: 1 },
+               { option_type: "call", side: "sell", strike: 95, quantity: 1 }],
+        expiry: "2028-12-15", baseline_return: 7.257,
+      },
+    },
+    price: "$77.78 → $105.00", strategy: "Bull Call Spread　買 80 / 賣 95",
+  },
+];
 
-/** 與 `src/useFitText.ts` 的 `FIT_TEXT_MIN_PX` 同值（e2e 不 import 前端原始碼）。 */
-const FIT_MIN_PX = 10;
+for (const width of [375, 390]) {
+  for (const c of VERTICAL_CASES) {
+    test(`手機版 ${width}px ${c.name}：資訊一人一排、不重疊、原字級、不 ellipsis（CLAUDE-MOBILE-CARD-VERTICAL-ROWS-001）`,
+         async ({ page }) => {
+      await page.setViewportSize({ width, height: 844 });
+      await routeLibrary(page, libraryRow(c.row));
+      await page.goto("/#/");
 
-for (const width of [390, 375]) {
-  test(`手機版 ${width}px：目標價那一行與策略 pill 先縮字、縮到 ${FIT_MIN_PX}px 仍放不下才 ellipsis（CLAUDE-MOBILE-TEXT-FIT-001）`,
+      const card = page.getByRole("listitem").filter({ hasText: c.row.symbol });
+      await expect(card.locator(".compact-price-row")).toHaveText(c.price);
+      await expect(card.locator(".compact-target-time-row")).toContainText("2028-12 · 還需 ");
+      await expect(card.locator(".compact-strategy-pill")).toHaveText(c.strategy);
+      await expect(card.locator(".compact-tier3")).toContainText("Exp 2028-12-15 · 806 天");
+
+      const rows = await card.evaluate((el, sels) => sels.map((sel) => {
+        const node = el.querySelector(sel) as HTMLElement;
+        const box = node.getBoundingClientRect();
+        // 單行文字元素：實際字級、文字是否被裁掉（ellipsis）。
+        const text = node.matches(".compact-strategy-row")
+          ? node.querySelector(".compact-strategy-pill") as HTMLElement : node;
+        return {
+          sel, top: box.top, bottom: box.bottom,
+          fontSize: getComputedStyle(text).fontSize,
+          clipped: text.scrollWidth > text.clientWidth,
+          inlineStyle: text.getAttribute("style"),
+        };
+      }), [...VERTICAL_ROWS]);
+
+      // 1. 由上而下依序排列、彼此不重疊。
+      for (let i = 1; i < rows.length; i++) {
+        expect(rows[i].top, `${rows[i].sel} 在 ${rows[i - 1].sel} 下方`)
+          .toBeGreaterThanOrEqual(rows[i - 1].bottom - 0.5);
+      }
+      // 2. 一般資料完整顯示：價格、目標時間、策略、Exp 都沒有被 ellipsis 裁掉。
+      for (const r of rows.slice(1)) expect(r.clipped, `${r.sel} 沒有被裁掉`).toBe(false);
+      // 3. 原字級、沒有任何動態縮字留下的 inline font-size。
+      const bySel = Object.fromEntries(rows.map((r) => [r.sel, r]));
+      expect(bySel[".compact-price-row"].fontSize).toBe("12px");
+      expect(bySel[".compact-target-time-row"].fontSize).toBe("12px");
+      expect(bySel[".compact-strategy-row"].fontSize).toBe("11px");
+      expect(bySel[".compact-tier3"].fontSize).toBe("12px");
+      for (const r of rows.slice(1)) expect(r.inlineStyle).toBeNull();
+
+      // 4. 編輯／刪除鈕留在卡片內、不蓋到任何一排的文字。
+      const overlaps = await card.evaluate((el, sels) => {
+        const icons = Array.from(el.querySelectorAll<HTMLElement>(".compact-actions .icon-button"))
+          .map((b) => b.getBoundingClientRect());
+        const cardBox = el.getBoundingClientRect();
+        const inside = icons.every((i) => i.left >= cardBox.left && i.right <= cardBox.right
+          && i.top >= cardBox.top && i.bottom <= cardBox.bottom);
+        const hits: string[] = [];
+        for (const sel of sels) {
+          const range = document.createRange();
+          range.selectNodeContents(el.querySelector(sel)!);
+          for (const t of Array.from(range.getClientRects())) {
+            if (icons.some((i) => t.left < i.right && t.right > i.left
+                                  && t.top < i.bottom && t.bottom > i.top)) hits.push(sel);
+          }
+        }
+        return { iconCount: icons.length, inside, hits };
+      }, [...VERTICAL_ROWS]);
+      expect(overlaps.iconCount).toBe(2);
+      expect(overlaps.inside).toBe(true);
+      expect(overlaps.hits).toEqual([]);
+    });
+  }
+
+  test(`手機版 ${width}px：多張卡片上下排列不互相重疊（CLAUDE-MOBILE-CARD-VERTICAL-ROWS-001）`,
        async ({ page }) => {
     await page.setViewportSize({ width, height: 844 });
-    const pageErrors: string[] = [];
-    page.on("pageerror", (err) => pageErrors.push(err.message));
-    // 「Long Call　買 1000」在 CSS 原始 11px 下比 pill 的 max-width 寬一點，
-    // 縮半級就放得下——正好驗證「還有縮字空間時不會先出現刪節號」。
-    await routeLibrary(page, tslaRow(
-      [{ option_type: "call", side: "buy", strike: 1000, quantity: 1 }],
-      "long-call|1000|2028-12-15", "long-call"));
+    const rows = VERTICAL_CASES.map((c, i) => libraryRow({ ...c.row, id: `s${i}` }));
+    await page.route("**/api/scenarios", (route) => route.fulfill({ json: rows }));
+    await page.route("**/api/scenarios/refresh-run", (route) => route.fulfill({ json: {
+      results: rows.map((r) => ({ scenario_id: r.id, ok: true, row: r })), remaining: [] } }));
     await page.goto("/#/");
 
-    const card = page.getByRole("listitem").filter({ hasText: "TSLA" });
-    const target = card.locator(".compact-target");
-    const pill = card.locator(".compact-strategy-pill");
-    await expect(target).toContainText("2028-12");
-    await expect(pill).toContainText("Long Call");
-
-    // 目標價那一行：12px 時全文約 254px，10px 時約 212px，375／390px 的
-    // 左欄（約 158／173px）都放不下——先縮到下限，才交給 ellipsis。
-    const t = await fitState(target);
-    expect(t).toEqual({ px: FIT_MIN_PX, inline: `${FIT_MIN_PX}px`, overflow: true });
-    // 年月整段可見（不被 ellipsis 吃掉）：「2028-12」右緣在元素可視範圍內。
-    const monthVisible = await target.evaluate((el) => {
-      const box = el.getBoundingClientRect();
-      const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
-      for (let n = walker.nextNode(); n; n = walker.nextNode()) {
-        const i = (n.textContent ?? "").indexOf("2028-12");
-        if (i < 0) continue;
-        const r = document.createRange();
-        r.setStart(n, i);
-        r.setEnd(n, i + "2028-12".length);
-        return r.getBoundingClientRect().right <= box.right;
-      }
-      return false;
-    });
-    expect(monthVisible).toBe(true);
-
-    // pill：縮了，但還沒到下限就放得下 → 不溢出、不出現刪節號。
-    const p = await fitState(pill);
-    expect(p.px).toBeLessThan(11);
-    expect(p.px).toBeGreaterThan(FIT_MIN_PX - 0.01);
-    expect(p.overflow).toBe(false);
-
-    // PR #352 的結構不受影響：pill 仍在 Exp 列之上、間距 ≥3px，Exp 不被截斷。
-    const pb = (await pill.boundingBox())!;
-    const eb = (await card.locator(".compact-tier3").boundingBox())!;
-    expect(eb.y - (pb.y + pb.height)).toBeGreaterThanOrEqual(3);
-    expect(await card.locator(".compact-tier3")
-      .evaluate((el) => el.scrollWidth > el.clientWidth)).toBe(false);
-
-    // 轉成橫向（父元素變寬）後重新量：目標價那一行放得下了，字級回到
-    // CSS 原始的 12px；過程中不丟 ResizeObserver loop 之類的錯誤。
-    await page.setViewportSize({ width: 844, height: width });
-    await expect.poll(() => fitState(target))
-      .toEqual({ px: 12, inline: "", overflow: false });
-    expect(pageErrors).toEqual([]);
+    const cards = page.locator("li.compact-card");
+    await expect(cards).toHaveCount(2);
+    const a = (await cards.nth(0).boundingBox())!;
+    const b = (await cards.nth(1).boundingBox())!;
+    expect(b.y).toBeGreaterThanOrEqual(a.y + a.height - 0.5);
   });
+}
 
-  test(`手機版 ${width}px：放得下的短文字維持 CSS 原始字級，不多縮（CLAUDE-MOBILE-TEXT-FIT-001）`,
+for (const width of [375, 390]) {
+  test(`手機版 ${width}px：異常長的策略名稱才 ellipsis，仍是單行、不蓋到編輯鈕、卡片不無限長高（CLAUDE-MOBILE-CARD-VERTICAL-ROWS-001）`,
        async ({ page }) => {
     await page.setViewportSize({ width, height: 844 });
+    const normal = VERTICAL_CASES[1].row;
     await routeLibrary(page, libraryRow({
-      symbol: "TSLA", spot: null, target_price: 500, target_month: "2028-12",
-      best_return: 3.124, best_price: null, worst_price: null,
+      ...normal,
       representative_candidate: {
-        strategy: "long-call", candidate_key: "long-call|90|2028-12-15",
-        legs: [{ option_type: "call", side: "buy", strike: 90, quantity: 1 }],
-        expiry: "2028-12-15", baseline_return: 3.124,
+        ...normal.representative_candidate,
+        strategy: "Extremely Long Hypothetical Strategy Name For Overflow",
+        legs: [{ option_type: "call", side: "buy", strike: 80, quantity: 1 },
+               { option_type: "call", side: "sell", strike: 95, quantity: 1 },
+               { option_type: "put", side: "sell", strike: 70, quantity: 1 },
+               { option_type: "put", side: "buy", strike: 60, quantity: 1 }],
       },
     }));
     await page.goto("/#/");
 
-    const card = page.getByRole("listitem").filter({ hasText: "TSLA" });
-    const t = await fitState(card.locator(".compact-target"));
-    const p = await fitState(card.locator(".compact-strategy-pill"));
-    expect(t).toEqual({ px: 12, inline: "", overflow: false });
-    expect(p).toEqual({ px: 11, inline: "", overflow: false });
-  });
-
-  test(`手機版 ${width}px：縮到下限仍放不下的 pill 停在 ${FIT_MIN_PX}px，交給 ellipsis（CLAUDE-MOBILE-TEXT-FIT-001）`,
-       async ({ page }) => {
-    await page.setViewportSize({ width, height: 844 });
-    await routeLibrary(page, tslaRow(
-      [{ option_type: "call", side: "buy", strike: 265, quantity: 1 },
-       { option_type: "call", side: "sell", strike: 345, quantity: 1 }],
-      "bull-call|265-345|2028-12-15", "bull-call-spread"));
-    await page.goto("/#/");
-
-    const pill = page.getByRole("listitem").filter({ hasText: "TSLA" })
-      .locator(".compact-strategy-pill");
-    const p = await fitState(pill);
-    expect(p.px).toBe(FIT_MIN_PX);
-    expect(p.overflow).toBe(true);
-    expect(await pill.evaluate((el) => getComputedStyle(el).textOverflow))
-      .toBe("ellipsis");
+    const card = page.getByRole("listitem").filter({ hasText: "TLT" });
+    const pill = card.locator(".compact-strategy-pill");
+    await expect(pill).toContainText("Extremely Long");
+    const m = await card.evaluate((el) => {
+      const pillEl = el.querySelector(".compact-strategy-pill") as HTMLElement;
+      const p = pillEl.getBoundingClientRect();
+      const edit = el.querySelector(".compact-actions .icon-button")!.getBoundingClientRect();
+      return {
+        clipped: pillEl.scrollWidth > pillEl.clientWidth,
+        pillHeight: p.height,
+        hitsEdit: p.left < edit.right && p.right > edit.left && p.top < edit.bottom && p.bottom > edit.top,
+        gapToEdit: edit.left - p.right,
+        cardHeight: el.getBoundingClientRect().height,
+      };
+    });
+    expect(m.clipped).toBe(true);           // 最後手段：真的放不下才 ellipsis
+    expect(m.pillHeight).toBeLessThan(22);  // 仍是單行，不換行撐高
+    expect(m.hitsEdit).toBe(false);
+    expect(m.cardHeight).toBeLessThan(130); // 跟一般卡片（約 115px）同一個量級
   });
 }
