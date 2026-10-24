@@ -27,7 +27,7 @@ from fastapi.testclient import TestClient
 from api_app.main import create_app
 from api_app.storage import ProviderCredential
 from api_app.storage.memory import MemoryStorage
-from api_app.superuser import ROLE_COOKIE_NAME
+from api_app.superuser import LEGACY_ROLE_COOKIE_NAME as ROLE_COOKIE_NAME
 from option_chaser.data.snapshot import load_snapshot
 from tests._role_session import superadmin_cookies
 
@@ -234,14 +234,15 @@ def test_batch_delete_requires_the_confirmation_set_to_match_exactly():
                    json={"owner_ids": owner_ids,
                         "confirm_owner_ids": owner_ids[:1]})
     assert r.status_code == 400
-    assert len(storage.list_owners()) == 2
+    assert set(owner_ids) <= {o.owner_id for o in storage.list_owners()}
 
     r = admin.post("/api/superuser/owners/batch-delete",
                    json={"owner_ids": owner_ids, "confirm_owner_ids": owner_ids})
     assert r.status_code == 200
     body = r.json()
     assert sorted(body["deleted"]) == sorted(owner_ids)
-    assert storage.list_owners() == []
+    # 只剩執行刪除的 SA 自己（UNIFIED-IDENTITY-001：SA 本身就是一個 user）。
+    assert [o.role for o in storage.list_owners()] == ["superadmin"]
     # 每個目標各自一筆 audit 紀錄——不是把兩個目標塞進同一筆。
     audit = admin.get("/api/superuser/audit-log").json()
     assert len(audit) == 2

@@ -9,10 +9,9 @@
  * 本層與整個前端都不做金融計算：每個顯示數字都已由引擎算好。
  */
 import {
-  discardOwnerBootstrapToken, markOwnerBound, OWNER_BOOTSTRAP_HEADER,
-  OWNER_BOOTSTRAP_STALE_HEADER, OWNER_BOUND_HEADER, ownerBootstrapToken,
-  withOwnerBindingLock,
-} from "./ownerBootstrap";
+  credential, CREDENTIAL_HEADER, loadedCredential, markOwnerBound,
+  OWNER_BOUND_HEADER, storeCredential, withOwnerBindingLock,
+} from "./credentialStore";
 import type { Role } from "./superuser";
 
 export interface AnalysisMeta {
@@ -795,39 +794,45 @@ function combineSignals(a: AbortSignal, b: AbortSignal): AbortSignal {
 }
 
 /**
- * `ownerBootstrap`：這個寫入可能是第一次持久化資料、會在伺服器端建立
- * owner（建立劇本、存設定、存 credential——對應後端 `_persistent_owner()`
- * 的三個端點）。只有這些請求帶 bootstrap token（見 `ownerBootstrap.ts`）；
- * 其他寫入（刷新、封存、刪除……）本來就只作用在既有 owner 上，不必讀
- * 本機儲存、也不必多等那一下。
+ * `mayCreateUser`：這個請求可能在伺服器端建立 user——第一次持久化資料
+ * （建立劇本、存設定、存 credential）或輸入 SU／SA 密碼，對應後端
+ * `_persistent_owner()`。還沒綁定前這些請求跨分頁排隊（見
+ * `credentialStore.ts` 的 `withOwnerBindingLock`）；其他請求不必等。
  */
 interface ApiInit extends RequestInit {
-  ownerBootstrap?: boolean;
+  mayCreateUser?: boolean;
 }
 
-/** 補上 owner bootstrap header。呼叫端一律傳物件字面量的 headers；萬一
- * 是 `Headers` 物件也照樣補上。 */
-function withOwnerBootstrap(init: RequestInit | undefined, token: string): RequestInit {
-  const headers = init?.headers;
+/** 補上本機憑證 header。呼叫端一律傳物件字面量的 headers；萬一是
+ * `Headers` 物件也照樣補上。 */
+function withCredential(init: RequestInit, token: string): RequestInit {
+  const headers = init.headers;
   if (headers instanceof Headers) {
     const copy = new Headers(headers);
-    copy.set(OWNER_BOOTSTRAP_HEADER, token);
+    copy.set(CREDENTIAL_HEADER, token);
     return { ...init, headers: copy };
   }
   return {
     ...init,
     headers: { ...(headers as Record<string, string> | undefined),
-               [OWNER_BOOTSTRAP_HEADER]: token },
+               [CREDENTIAL_HEADER]: token },
   };
 }
 
+/** 全站唯一的 fetch 出口。OPTION-CHASER-UNIFIED-IDENTITY-001：每個請求都
+ * 帶上本機那份憑證，回應若交回正確的憑證就先存好再往下走——HttpOnly
+ * cookie 與本機副本因此每次往返都收斂成同一顆（見 `credentialStore.ts`）。 */
 async function send(url: string, init: RequestInit): Promise<Response> {
+  // 只有這個分頁的第一個請求要等本機儲存讀完；之後同步取用。
+  const known = loadedCredential();
+  const token = known !== undefined ? known : await credential();
+  let resp: Response;
   try {
     // `init.signal`（呼叫端要求可被中途取消）與既有的逾時 signal
     // 合併——任一個先觸發都算數，兩者不互相取代。
     const timeoutSignal = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
-    return await fetch(url, {
-      ...init,
+    resp = await fetch(url, {
+      ...(token ? withCredential(init, token) : init),
       signal: init.signal
         ? combineSignals(init.signal, timeoutSignal)
         : timeoutSignal,
@@ -841,37 +846,18 @@ async function send(url: string, init: RequestInit): Promise<Response> {
     throw new ApiError(
       `連不到伺服器：${e instanceof Error ? e.message : String(e)}`);
   }
-}
-
-/** 會建立 owner 的寫入：還沒綁定前跨分頁排隊（見 `ownerBootstrap.ts`
- * 的 `withOwnerBindingLock`），鎖裡取得 bootstrap token 並送出——後到的
- * 分頁送出時 cookie jar 裡已經有先到那顆 cookie。伺服器說 token 過期
- * （409＋`OWNER_BOOTSTRAP_STALE_HEADER`，寫入前就拒絕、什麼都沒寫）時
- * 換一顆新的重送一次——之後的重試都沿用這顆新 token，回應遺失也不會多
- * 出第二個 owner。 */
-function sendOwnerBootstrap(url: string, init: RequestInit): Promise<Response> {
-  const attempt = async () => {
-    const token = await ownerBootstrapToken();
-    const resp = await send(url, token ? withOwnerBootstrap(init, token) : init);
-    return { token, resp };
-  };
-  return withOwnerBindingLock(async () => {
-    const first = await attempt();
-    if (!first.token || first.resp.headers?.get(OWNER_BOOTSTRAP_STALE_HEADER) !== "1") {
-      return first.resp;
-    }
-    await discardOwnerBootstrapToken(first.token);
-    return (await attempt()).resp;
-  });
+  // `?.`：既有測試常用省略 headers 的假 Response。
+  const echoed = resp.headers?.get(CREDENTIAL_HEADER);
+  if (echoed) await storeCredential(echoed);
+  if (resp.headers?.get(OWNER_BOUND_HEADER) === "1") markOwnerBound();
+  return resp;
 }
 
 async function request<T>(url: string, apiInit?: ApiInit): Promise<T> {
-  const { ownerBootstrap = false, ...init } = apiInit ?? {};
-  const resp = ownerBootstrap ? await sendOwnerBootstrap(url, init) : await send(url, init);
-  // 伺服器說 owner cookie 已經綁定：bootstrap token 功成身退（見
-  // `ownerBootstrap.ts`）。沒說（失敗、逾時、不需要 owner 的寫入）就保留，
-  // 重試才會沿用同一顆。`?.`：既有測試常用省略 headers 的假 Response。
-  if (resp.headers?.get(OWNER_BOUND_HEADER) === "1") await markOwnerBound();
+  const { mayCreateUser = false, ...init } = apiInit ?? {};
+  const resp = mayCreateUser
+    ? await withOwnerBindingLock(() => send(url, init))
+    : await send(url, init);
   if (!resp.ok) {
     // 每個回應都帶（DG-02／#145，含錯誤回應）——連結不到某次特定失敗
     // 的細節時，這仍是使用者手上唯一能拿去對 Vercel runtime logs 的
@@ -951,7 +937,7 @@ export function createScenario(
   req: CreateScenarioRequest,
 ): Promise<ScenarioSummary> {
   return request<ScenarioSummary>("/api/scenarios",
-                                  { ...POST_JSON(req), ownerBootstrap: true });
+                                  { ...POST_JSON(req), mayCreateUser: true });
 }
 
 /**
@@ -1225,7 +1211,7 @@ export function saveSettings(body: {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
-    ownerBootstrap: true,
+    mayCreateUser: true,
   });
 }
 
@@ -1244,7 +1230,7 @@ export function saveCredential(
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ token }),
-      ownerBootstrap: true,
+      mayCreateUser: true,
     },
   );
 }
@@ -1286,13 +1272,16 @@ export function login(password: string): Promise<AuthStatus> {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ password }),
+    // 權限寫在 user 記錄上：還沒有 user 的瀏覽器在這裡建立（UNIFIED-
+    // IDENTITY-001），跟第一次建立劇本走同一套排隊。
+    mayCreateUser: true,
   });
 }
 
-/** 伺服器端撤銷 role session＋清除 cookie；重複登出優雅回
- *  `{role: "normal"}`，不是錯誤。 */
-export function logout(): Promise<AuthStatus> {
-  return request<AuthStatus>("/api/auth/logout", { method: "POST" });
+/** 明確的權限重設：把這個 user 的權限降回 Normal（劇本與身分都不動）。
+ *  本來就是 Normal 時也是 `{role: "normal"}`，不是錯誤。 */
+export function resetRole(): Promise<AuthStatus> {
+  return request<AuthStatus>("/api/auth/reset-role", { method: "POST" });
 }
 
 // ---------- Super Admin system/admin operations（PB-10／#301） ----------

@@ -192,7 +192,7 @@ def _client(db, *, surface=_surface_never_called,
         verify_provider=lambda p, t: providers.VerifyOutcome(True),
         historical_surface=surface, contract_history=contract_history,
         rate_curve_rows=_rate_curve_rows),
-        cookies=superadmin_cookies(db))
+        cookies=superadmin_cookies(db, owner_id="solo"))
 
 
 @pytest.fixture
@@ -284,7 +284,7 @@ def test_a_failed_verification_keeps_the_module_locked(db):
         dividend_loader=_dividend_loader,
         verify_provider=lambda p, t: providers.VerifyOutcome(False, "認證被拒"),
         historical_surface=_surface_never_called),
-        cookies=superadmin_cookies(db))
+        cookies=superadmin_cookies(db, owner_id="solo"))
     _unlock(client, verified=True)
     assert client.get("/api/settings").json()["historical_iv_enabled"] is False
 

@@ -105,7 +105,9 @@ def test_known_env_secrets_skips_unset_names(monkeypatch):
 
 
 @pytest.mark.parametrize("header", ["Cookie", "cookie", "Authorization",
-                                    # Codex P1（PR #346）：bootstrap token 也是身分憑證
+                                    # UNIFIED-IDENTITY-001：本機那份憑證就是身分
+                                    "X-OC-Credential", "x-oc-credential",
+                                    # Codex P1（PR #346）：舊版 bootstrap header
                                     "X-OC-Owner-Bootstrap", "x-oc-owner-bootstrap"])
 def test_scrub_event_redacts_sensitive_headers(header):
     event = {"request": {"headers": {header: "secret-value"}, "cookies": {"oc_owner": "tok"}}}

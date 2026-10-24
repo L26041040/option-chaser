@@ -10,14 +10,17 @@ regression。
    的證據，收進測試避免未來回歸。
 
 2. **重現缺陷本身**（`xfail(strict=True)`，等 Owner 裁決修法後翻綠）——
-   三種「身分不在」的狀態（沒 cookie／cookie token 伺服器不認得／
-   bootstrap token 過期）對讀取端點的回應與**首訪完全無法區分**：
+   「身分不在」的狀態對讀取端點的回應與**首訪完全無法區分**：
    同樣 200、同樣 `[]`、同樣沒有任何身分訊號。前端因此只能把它畫成
    「還沒有劇本」，下一次寫入再默默鑄一個新 owner（`claim_browser_
    token`），舊 owner 與舊劇本留在 DB 卻再也存取不到。這裡用最小的
    additive 介面描述期望：讀取回應帶 `X-OC-Owner-Identity`
    （`bound`／`unknown`／`none`），`/api/me/usage-summary` 多一個
    `identity` 欄位。欄位名只是提案，Owner 若另有裁示再改。
+
+   OPTION-CHASER-UNIFIED-IDENTITY-001 起，憑證同時存在 cookie 與前端本機
+   儲存、互相補回；只剩「兩份都對不上伺服器」才算身分不在。原本的「cookie
+   不在、只剩本機那份」改成正向測試：它現在就是還原路徑。
 """
 import os
 from dataclasses import replace
@@ -122,26 +125,38 @@ def _first_visit_signature(app):
 
 
 def _lost_identity_cases(storage, app):
-    """三種「這個瀏覽器以前有身分、現在請求帶不到」的伺服器端狀態。"""
-    # (a) cookie 還在、但 token 伺服器已不認得（identity 列不在了）
+    """「這個瀏覽器以前有身分、現在兩份憑證都對不上」的伺服器端狀態。"""
+    # cookie 還在、但 token 伺服器已不認得（identity 列不在了），也沒有本機那份
     b_unknown = _browser(app)
     b_unknown.post("/api/scenarios", json=NEW)
     tok = b_unknown.cookies.get(_OWNER_COOKIE_NAME)
     del storage._browser_identities[tok]
     yield "unknown-token", b_unknown, {}
-    # (b) cookie 不在，只剩一顆綁定超過 10 分鐘的 bootstrap token
-    b_stale_src = _browser(app)
-    boot = "stale-" + "x" * 40
-    b_stale_src.post("/api/scenarios", json=NEW, headers={"X-OC-Owner-Bootstrap": boot})
-    oid = storage.resolve_owner_by_token(boot)
+
+
+def test_a_cookie_less_browser_with_its_local_credential_is_not_a_lost_identity():
+    """UNIFIED-IDENTITY-001：cookie 不見了、但前端本機那份還在（不論綁定了
+    多久）——同一個 owner、看得到原本的劇本，cookie 補發回來，不會多出
+    owner。舊設計在這裡把它當新訪客，是「劇本消失＋多出 owner」的入口之一。"""
+    app, storage = _app()
+    local = "local-" + "x" * 40
+    _browser(app).post("/api/scenarios", json=NEW,
+                       headers={"X-OC-Credential": local}).raise_for_status()
+    oid = storage.resolve_owner_by_token(local)
     storage._owners[oid] = replace(
         storage._owners[oid],
-        created_at=(datetime.now(timezone.utc) - timedelta(minutes=11)).isoformat())
-    yield "stale-bootstrap", _browser(app), {"X-OC-Owner-Bootstrap": boot}
+        created_at=(datetime.now(timezone.utc) - timedelta(days=30)).isoformat())
+    r = _browser(app).get("/api/scenarios", headers={"X-OC-Credential": local})
+    assert len(r.json()) == 1
+    assert _owner_set_cookies(r)[0].startswith(f"{_OWNER_COOKIE_NAME}={local};")
+    w = _browser(app).post("/api/scenarios", json={**NEW, "symbol": "QQQ"},
+                           headers={"X-OC-Credential": local})
+    assert w.status_code == 201
+    assert [o.owner_id for o in storage.list_owners()] == [oid]
 
 
 def test_lost_identity_reads_are_today_indistinguishable_from_a_first_visit():
-    """這條**今天會過**——它就是缺陷的重現：兩種遺失狀態的讀取回應跟
+    """這條**今天會過**——它就是缺陷的重現：遺失狀態的讀取回應跟
     首訪一模一樣（200／[]／沒有 X-OC-Owner-Bound／沒有 Set-Cookie），
     前端拿不到任何線索。修法落地後這條應該改寫或刪除。"""
     app, storage = _app()
@@ -156,25 +171,20 @@ def test_lost_identity_reads_are_today_indistinguishable_from_a_first_visit():
 
 
 def test_next_write_after_losing_identity_silently_mints_a_new_owner():
-    """同樣是缺陷重現（今天會過）：三種遺失狀態下的第一次寫入都成功
+    """同樣是缺陷重現（今天會過）：遺失狀態下的第一次寫入都成功
     （201）、都多出一個 owner，舊 owner 的劇本仍在 DB 但這個瀏覽器
     再也看不到。這就是 production 同一個人累積出多個 owner 的機制。"""
     app, storage = _app()
     for name, browser, headers in _lost_identity_cases(storage, app):
         before = len(storage.list_owners())
-        if name == "stale-bootstrap":
-            # 伺服器會先 409；前端（src/api.ts sendOwnerBootstrap）換 token 重送
-            r = browser.post("/api/scenarios", json=NEW, headers=headers)
-            assert r.status_code == 409 and r.headers.get("X-OC-Owner-Bootstrap-Stale") == "1"
-            headers = {"X-OC-Owner-Bootstrap": "fresh-" + "y" * 40}
         r = browser.post("/api/scenarios", json=NEW, headers=headers)
         assert r.status_code == 201, name
         assert len(storage.list_owners()) == before + 1, name
         assert len(browser.get("/api/scenarios", headers=headers).json()) == 1, name
-    # 兩個「舊 owner」的劇本都還在，只是沒有任何 cookie 能指到它們
+    # 「舊 owner」的劇本還在，只是沒有任何憑證能指到它
     orphaned = [o for o in storage.list_owners()
                 if not any(i.owner_id == o.owner_id for i in storage._browser_identities.values())]
-    assert len(orphaned) == 1   # (a) 的舊 owner；(b) 的舊 owner 仍握有 stale token 那列
+    assert len(orphaned) == 1
     assert all(storage.list_scenarios(owner=o.owner_id) for o in orphaned)
 
 

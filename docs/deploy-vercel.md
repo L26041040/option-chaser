@@ -252,7 +252,7 @@ Refresh 沒有產品層節流（SW-10 已移除），global vendor fuse 對三�
 | `results`（fact ledger） | 保留（輕量）；`GET /api/scenarios/{id}/results` 每一筆帶 `raw_snapshot_available`，明講那個時間點的原始快照還在不在 |
 | `events` | 180 天 |
 | `superuser_audit_log` | 180 天 |
-| `role_sessions` | 撤銷超過 30 天的刪除；`issued_at` 超過 role cookie 400 天 Max-Age 的刪除（瀏覽器已不可能送出）。有效 session 不動 |
+| `role_sessions` | **UNIFIED-IDENTITY-001 起已退役**（權限改記在 `owners.role`），runtime 不再讀寫；只剩舊列的清理：撤銷超過 30 天的刪除、`issued_at` 超過舊 role cookie 400 天 Max-Age 的刪除。表本身保留不刪 |
 | `diagnostics`／`operational_metrics`／`rate_limits` | 維持既有規則（200 筆／30 天／視窗結束後 1 小時） |
 
 ## 部署後的第一件事：確認 Cboe 可達性

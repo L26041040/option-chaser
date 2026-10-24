@@ -19,7 +19,6 @@ from api_app.storage import (RETIRED_TABLES, DataSourceSettings,
                              RateCacheEntry, RateLimitBucket, SuperUserAuditEvent,
                              UsageSetting)
 from api_app.storage.memory import MemoryStorage
-from api_app.superuser import ROLE_COOKIE_NAME
 from option_chaser.data.snapshot import load_snapshot
 
 TEST_DB_URL = os.environ.get("OC_TEST_DATABASE_URL")
@@ -175,12 +174,14 @@ def test_reset_clears_beta_data_and_keeps_protected_owner_config(db):
     assert db.list_scenarios(owner=ids["protected"], include_archived=True) == []
     assert db.latest_summaries(owner=ids["protected"]) == {}
 
-    # shared cache、今天的 fuse 計數、role session、audit 全保留；audit 多一筆。
+    # shared cache、今天的 fuse 計數、audit 全保留；audit 多一筆。執行清場的
+    # SA 本人（有權限的 user，UNIFIED-IDENTITY-001）身分與權限都留著。
     assert db.get_rate_cache() is not None
     assert db.metric_total("chain_fetch_count", ny_today().isoformat()) == fuse_today
     assert db.metric_total("chain_fetch_count", "2026-09-01") == 0
     assert db.metric_total("cold_miss_count", ny_today().isoformat()) == 0
-    assert db.resolve_role_session(sa_cookies[ROLE_COOKIE_NAME]) is not None
+    [sa_token] = sa_cookies.values()
+    assert db.resolve_credential(sa_token).role == "superadmin"
     actions = [e.action for e in db.list_audit_events()]
     assert actions[0] == "reset_beta_data" and "set_owner_protected" in actions
     assert db.list_audit_events()[0].detail == {"deleted_rows": counts}
@@ -422,7 +423,10 @@ def test_superuser_and_superadmin_manage_their_own_credential(db, role):
     other = _owner_with_scenario(db, TOK_BETA_2)
     db.save_credential(ProviderCredential(provider="marketdata-app", token="tok-other-9999",
                                           updated_at=TS, owner_id=other))
-    cookies = superuser_cookies(db) if role == "superuser" else superadmin_cookies(db)
+    # UNIFIED-IDENTITY-001：權限掛在 user 記錄上——「SU／SA 管理自己的
+    # credential」就是把權限授給 mine 這個 user 本身。
+    cookies = (superuser_cookies(db, owner_id=mine) if role == "superuser"
+               else superadmin_cookies(db, owner_id=mine))
     client = _cred_client(db, TOK_BETA_1, cookies)
 
     r = client.put(CRED_PATH, json={"token": "tok-mine-1234"})
@@ -448,7 +452,7 @@ def test_superuser_cannot_reach_another_owners_credential(db):
     other = _owner_with_scenario(db, TOK_BETA_2)
     db.save_credential(ProviderCredential(provider="marketdata-app", token="tok-other-9999",
                                           updated_at=TS, owner_id=other))
-    client = _cred_client(db, TOK_BETA_1, superuser_cookies(db))
+    client = _cred_client(db, TOK_BETA_1, superuser_cookies(db, owner_id=mine))
 
     assert client.put(f"{CRED_PATH}?owner_id={other}",
                       json={"token": "tok-mine-1234", "owner_id": other}).status_code == 200

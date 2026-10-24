@@ -78,6 +78,13 @@ PENDING_OWNER_PREFIX = "pending:"
 _owner_materializer: ContextVar[Callable[[], str] | None] = ContextVar(
     "owner_materializer", default=None)
 
+# OPTION-CHASER-UNIFIED-IDENTITY-001：這次請求的 user 權限。值是字串，或是
+# 第一次讀取時才去查的 callable（DI 覆寫身分的測試路徑用，避免每個請求都
+# 多查一次 storage）。middleware 之外（cron、直接呼叫內部 seam）一律是
+# `"normal"`——fail-closed。
+_resolved_role: ContextVar[str | Callable[[], str]] = ContextVar(
+    "resolved_role", default="normal")
+
 
 def pending_owner_placeholder() -> str:
     return PENDING_OWNER_PREFIX + secrets.token_hex(16)
@@ -89,7 +96,8 @@ def is_pending_owner(owner_id: str | None) -> bool:
 
 @contextmanager
 def resolved_owner_scope(owner_id: str | None,
-                         materializer: Callable[[], str] | None = None
+                         materializer: Callable[[], str] | None = None,
+                         role: str | Callable[[], str] = "normal",
                          ) -> Iterator[str | None]:
     """`main.py` 的 cookie middleware 解析出這次 request 的 owner_id
     （或待綁定的佔位值；或判定這個路由被排除、`owner_id` 為 `None`）
@@ -97,9 +105,11 @@ def resolved_owner_scope(owner_id: str | None,
     佔位值請求第一次需要持久化時要呼叫的綁定函式。"""
     token = _resolved_owner_id.set(owner_id)
     mat_token = _owner_materializer.set(materializer)
+    role_token = _resolved_role.set(role)
     try:
         yield owner_id
     finally:
+        _resolved_role.reset(role_token)
         _owner_materializer.reset(mat_token)
         _resolved_owner_id.reset(token)
 
@@ -108,6 +118,21 @@ def set_resolved_owner(owner_id: str) -> None:
     """綁定完成後，把這個請求後續的 `identity_resolver()` 換成真正的
     owner_id（同一個請求裡「先建立 owner、再寫劇本」要看到同一個值）。"""
     _resolved_owner_id.set(owner_id)
+
+
+def set_resolved_role(role: str) -> None:
+    """UNIFIED-IDENTITY-001：同一個請求裡權限變了（登入升權、重設權限、
+    剛建立 user）之後，這個請求後續的判斷要看到新值。"""
+    _resolved_role.set(role)
+
+
+def resolved_role() -> str:
+    """這次請求的 user 權限字串（`superuser.current_role()` 的資料來源）。"""
+    value = _resolved_role.get()
+    if callable(value):
+        value = value()
+        _resolved_role.set(value)
+    return value
 
 
 def materialize_owner() -> str:

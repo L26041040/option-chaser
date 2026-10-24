@@ -1,42 +1,37 @@
 /**
- * Codex P1（PR #346）：首訪並發寫入共用的 bootstrap token。
+ * OPTION-CHASER-UNIFIED-IDENTITY-001：這個瀏覽器的持久身分憑證。
  *
- * 第一次造訪、還沒有 owner cookie 的瀏覽器同時送出多個寫入（連點、重試、
- * 兩個分頁）時，伺服器分不出它們來自同一個瀏覽器，會各自建立一個 owner，
- * 最後只有一個留得住。這裡在瀏覽器本機存一顆隨機 token（同源分頁共用、
- * 重試沿用），寫入請求放在 `X-OC-Owner-Bootstrap` header；伺服器沒有有效
- * cookie 時就用它綁定，同一顆 token 只會得到一個 owner。
+ * 比照 Supabase／Firebase 的匿名身分：一個 user、一份持久憑證存在瀏覽器裡，
+ * 只有明確清除才會遺失；權限（Normal／SU／SA）也掛在同一個 user 上。同一顆
+ * token 存兩份：
  *
- * **跨分頁原子性**：「讀→沒有就產生→寫回」必須對所有分頁互斥，否則兩個
- * 分頁同時首訪會各自產生不同的 token。localStorage 沒有 compare-and-set，
- * 所以放在 IndexedDB 的單一 readwrite transaction 裡做——規格保證同一個
- * origin 上 scope 重疊的 readwrite transaction 依序執行（跨分頁、跨
- * connection），後到的分頁一定讀到先到的那顆。IndexedDB 不能用（部分
- * 隱私模式）時退回 localStorage，再不行就回 `null`（不帶 header，沿用
- * 既有行為）。
+ * - 伺服器簽的 HttpOnly cookie（`__Host-oc_owner`，JS 讀不到）；
+ * - 這裡管理的本機副本：IndexedDB 為主、localStorage 為鏡像。
  *
- * **寫入本身也跨分頁排隊**（Codex P2，PR #346）：IndexedDB 不能用、退回
- * localStorage 時，兩個分頁可能各自產生不同的 token——而且 Chromium 的
- * localStorage 在不同分頁（不同 renderer process）之間是非同步同步的，
- * 光是對「讀→產生→寫」上鎖也擋不住後到的分頁讀到舊值。所以改從另一端
- * 保證：瀏覽器有 Web Locks（`navigator.locks`）時，**還沒綁定之前**，會
- * 建立 owner 的寫入（取得 token＋送出＋處理回應）放在同一把 origin 範圍的
- * 獨佔鎖裡依序進行（`withOwnerBindingLock`）。先到的請求一綁定，回應的
- * `Set-Cookie` 就進了瀏覽器共用的 cookie jar；後到的請求送出時自然帶著
- * 那顆 cookie，伺服器以 cookie 為準（cookie 優先於 header），兩個分頁因此
- * 落在同一個 owner。IndexedDB 路徑也一樣走這把鎖（混用也涵蓋）；已綁定的
- * 分頁不再上鎖。請求有逾時（`REQUEST_TIMEOUT_MS`），鎖不會被卡住的請求
- * 永久佔住。
+ * 每個 API 請求都把本機副本放在 `X-OC-Credential` header（`src/api.ts` 的
+ * `send()`）。伺服器先認 cookie、再認 header：cookie 不在就用這份並補發
+ * cookie；這份不在或不一樣，回應就用同名 header 交回正確的值，由
+ * `storeCredential()` 存起來。兩份每次回應都會收斂成同一顆——任何一份還在，
+ * 身分就不會掉。舊版（綁定後就刪掉本機副本、只剩 cookie）正是單點故障。
  *
- * 伺服器回應帶 `X-OC-Owner-Bound: 1`（cookie 已綁定）時就清掉，這個分頁
- * 之後不再帶、也不再碰 IndexedDB。伺服器只在綁定後很短的時間內接受已綁定
- * 的 token（重試用），所以它不會變成 cookie 之外的第二個身分。
+ * 首次造訪還沒有 user 時，這顆 token 就是第一次會建立 user 的請求（建立
+ * 劇本、存設定、輸入 SU／SA 密碼）要綁的那顆；所有分頁共用同一份本機副本，
+ * 所以只會得到一個 user。
+ *
+ * **跨分頁原子性**：「讀→沒有就產生→寫回」放在 IndexedDB 的單一 readwrite
+ * transaction 裡——規格保證同一個 origin 上 scope 重疊的 readwrite
+ * transaction 依序執行，後到的分頁一定讀到先到的那顆。IndexedDB 不能用時
+ * 退回 localStorage，再不行就回 `null`（只剩 cookie 那一份）。
+ *
+ * **還沒綁定前，會建立 user 的請求跨分頁排隊**（`withOwnerBindingLock`，
+ * Web Locks）：退回 localStorage 時兩個分頁可能各自產生不同的 token，
+ * 依序進行後，先到的綁定、cookie 進了共用的 cookie jar，後到的帶著那顆
+ * cookie，伺服器以 cookie 為準，並把正確的 token 交回給它存。請求有逾時
+ * （`REQUEST_TIMEOUT_MS`），鎖不會被卡住的請求永久佔住。
  */
-export const OWNER_BOOTSTRAP_HEADER = "X-OC-Owner-Bootstrap";
+export const CREDENTIAL_HEADER = "X-OC-Credential";
 export const OWNER_BOUND_HEADER = "X-OC-Owner-Bound";
-/** 伺服器說這顆 bootstrap token 早就綁定、超過重試窗（寫入被 409 拒絕、
- * 什麼都沒寫）：換一顆新的重送。 */
-export const OWNER_BOOTSTRAP_STALE_HEADER = "X-OC-Owner-Bootstrap-Stale";
+// 儲存位置沿用舊名：舊版前端留下、還沒綁定的那顆 token 會被直接沿用。
 const STORAGE_KEY = "oc_owner_bootstrap";
 const DB_NAME = "oc-owner-bootstrap";
 const STORE = "kv";
@@ -135,11 +130,14 @@ function localStorageGetOrCreate(): string | null {
   }
 }
 
-// 這個分頁的狀態：`bound` 之後（伺服器說 cookie 已經綁定）就不再需要
-// bootstrap token，也不再碰 IndexedDB；`loading` 讓同一個分頁的並發呼叫
-// 共用同一次讀取，之後直接用記憶體裡的值——每個分頁最多讀一次 IndexedDB。
+// 這個分頁的狀態：`bound`＝伺服器說這個瀏覽器已經有 user（之後會建立 user
+// 的請求不必再排隊）；`loading` 讓同一個分頁的並發呼叫共用同一次讀取，之後
+// 直接用記憶體裡的值——每個分頁最多讀一次 IndexedDB。
 let bound = false;
 let loading: Promise<string | null> | null = null;
+// 讀過之後的值（`null`＝本機儲存都不能用）；`undefined`＝這個分頁還沒讀過。
+// 讓 `send()` 在第一次之後同步取用，不必每個請求都多等一輪。
+let cached: string | null | undefined;
 
 async function loadToken(): Promise<string | null> {
   if (typeof indexedDB !== "undefined") {
@@ -172,71 +170,48 @@ export async function withOwnerBindingLock<T>(body: () => Promise<T>): Promise<T
   }
 }
 
-/** 寫入請求要帶的 bootstrap token；已綁定（或本機儲存都不能用）時回
- * `null`。 */
-export function ownerBootstrapToken(): Promise<string | null> {
-  if (bound) return Promise.resolve(null);
-  loading ??= loadToken();
+/** 每個請求要帶的本機憑證；本機儲存都不能用時回 `null`（只剩 cookie）。 */
+export function credential(): Promise<string | null> {
+  loading ??= loadToken().then((token) => (cached = token));
   return loading;
 }
 
-/** 伺服器回應帶著 `X-OC-Owner-Bound: 1`＝owner cookie 已經綁定：token 功成
- * 身退，清掉本機儲存，這個分頁之後的寫入都不再帶 header。 */
-export async function markOwnerBound(): Promise<void> {
-  if (bound) return;
-  bound = true;
-  loading = null;
-  try {
-    localStorage.removeItem(STORAGE_KEY);
-  } catch {
-    // 讀不到 localStorage 就本來也沒有東西可清。
-  }
+/** 已經讀過的本機憑證（同步）；還沒讀過回 `undefined`，呼叫端改等
+ * `credential()`。 */
+export function loadedCredential(): string | null | undefined {
+  return cached;
+}
+
+/** 伺服器在 `X-OC-Credential` 交回正確的憑證（本機副本不在或不一樣）：存進
+ * IndexedDB＋localStorage，這個分頁之後的請求就帶它。形狀不對的值不收。 */
+export async function storeCredential(token: string): Promise<void> {
+  if (!TOKEN_SHAPE.test(token)) return;
+  cached = token;
+  loading = Promise.resolve(token);
+  mirrorToLocalStorage(token);
   if (typeof indexedDB !== "undefined") {
     try {
       await inTransaction<void>((store, done) => {
-        store.delete(STORAGE_KEY);
+        store.put(token, STORAGE_KEY);
         done(undefined);
       });
     } catch {
-      // 清不掉只代表 IndexedDB 裡留著一顆已綁定的 token；伺服器只在綁定後
-      // 很短的時間內接受它，之後就不算身分。
+      // IndexedDB 寫不進去：localStorage 那份還在，下次讀取以它為準。
     }
   }
 }
 
-/**
- * Codex P2（PR #346）：伺服器拒絕了這顆過期的 token（見
- * `OWNER_BOOTSTRAP_STALE_HEADER`）——把它從本機儲存移除，下一次
- * `ownerBootstrapToken()` 就會產生新的一顆。只在儲存的值**還是這一顆**時
- * 才刪（compare-and-delete），不會誤刪別的分頁剛換好的新 token。
- */
-export async function discardOwnerBootstrapToken(stale: string): Promise<void> {
-  loading = null;
-  try {
-    if (localStorage.getItem(STORAGE_KEY) === stale) localStorage.removeItem(STORAGE_KEY);
-  } catch {
-    // localStorage 不能用：沒有東西可刪。
-  }
-  if (typeof indexedDB !== "undefined") {
-    try {
-      await inTransaction<void>((store, done) => {
-        const get = store.get(STORAGE_KEY);
-        get.onsuccess = () => {
-          if (get.result === stale) store.delete(STORAGE_KEY);
-          done(undefined);
-        };
-      });
-    } catch {
-      // IndexedDB 刪不掉：下次讀到的若還是這顆，伺服器會再拒絕一次；
-      // 呼叫端只重送一次，不會無限重試。
-    }
-  }
+/** 伺服器回應帶著 `X-OC-Owner-Bound: 1`＝這個瀏覽器已經有 user：之後會建立
+ * user 的請求不必再排隊。本機憑證**不刪**——它就是持久身分的其中一份。 */
+export function markOwnerBound(): void {
+  bound = true;
 }
 
 /** 測試用：回到「還沒綁定、還沒讀過」的初始狀態。 */
-export async function resetOwnerBootstrapForTests(): Promise<void> {
+export async function resetCredentialStoreForTests(): Promise<void> {
   bound = false;
   loading = null;
+  cached = undefined;
   try {
     localStorage.removeItem(STORAGE_KEY);
   } catch {

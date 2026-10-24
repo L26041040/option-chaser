@@ -1,6 +1,8 @@
-"""AUTH-02（#309，spec #307，Anonymous Public Beta）：三層角色模型
-（`normal < superuser < superadmin`）的單一判斷點＋登入／登出／狀態
-查詢端點＋持久 role-session cookie。
+"""AUTH-02（#309，spec #307）：三層角色模型（`normal < superuser <
+superadmin`）的登入／狀態查詢。OPTION-CHASER-UNIFIED-IDENTITY-001 起權限
+是 user 記錄（`owners.role`）的一個欄位：登入＝把這個 user 的權限寫進資料
+庫、只升不降；只有「重設權限」會降回 Normal；不再有 role session／role
+cookie。
 
 沿用第 1 個接縫（HTTP API）。`base_url="https://testserver"` 比照
 `test_pb02_cookie_identity.py`／`test_pb09_superuser.py` 既有慣例，
@@ -9,18 +11,15 @@
 `TestClient` 模擬（同一個 `app` 物件，代表 server 沒有重啟，只是
 client 端的瀏覽器行程重開了）。
 
-本檔案只驗證 AUTH-02 新增的行為——AUTH-01（#308）的 Storage 契約
-（`create_role_session`／`resolve_role_session`／`revoke_role_
-session` 本身）已在 `tests/test_storage_contract.py` 驗證過，這裡
-不重複驗證儲存層。
+`resolve_credential`／`set_owner_role` 的儲存層契約在
+`tests/test_storage_contract.py`，這裡不重複驗證。
 """
-import ast
 import inspect
 
 from fastapi.testclient import TestClient
 
 from api_app import superuser
-from api_app.main import create_app
+from api_app.main import _OWNER_COOKIE_NAME, create_app
 from api_app.storage import RoleSession
 from api_app.storage.memory import MemoryStorage
 
@@ -37,7 +36,6 @@ def _client(*, superuser_password=SU_PASSWORD, superadmin_password=SA_PASSWORD,
         base_url="https://testserver")
 
 
-ROLE_COOKIE = superuser.ROLE_COOKIE_NAME
 
 
 # ---------- 1. 登入 ----------
@@ -98,7 +96,7 @@ def test_successful_login_response_never_contains_the_token_or_a_password():
     c = _client()
     r = c.post("/api/auth/login", json={"password": SU_PASSWORD})
     assert r.json() == {"role": "superuser"}
-    token = c.cookies.get(ROLE_COOKIE)
+    token = c.cookies.get(_OWNER_COOKIE_NAME)
     assert token not in r.text
     assert SU_PASSWORD not in r.text
     assert SA_PASSWORD not in r.text
@@ -153,7 +151,7 @@ def test_whitespace_only_superadmin_secret_cannot_be_matched_by_a_blank_password
         for submitted in _BLANKISH_SUBMISSIONS:
             r = c.post("/api/auth/login", json={"password": submitted})
             assert r.status_code == 401, (repr(configured), repr(submitted))
-            assert c.cookies.get(ROLE_COOKIE) is None
+            assert c.cookies.get(_OWNER_COOKIE_NAME) is None
 
 
 def test_whitespace_only_superuser_secret_cannot_be_matched_by_a_blank_password():
@@ -162,7 +160,7 @@ def test_whitespace_only_superuser_secret_cannot_be_matched_by_a_blank_password(
         for submitted in _BLANKISH_SUBMISSIONS:
             r = c.post("/api/auth/login", json={"password": submitted})
             assert r.status_code == 401, (repr(configured), repr(submitted))
-            assert c.cookies.get(ROLE_COOKIE) is None
+            assert c.cookies.get(_OWNER_COOKIE_NAME) is None
 
 
 def test_both_secrets_whitespace_only_fail_closed_like_unset():
@@ -199,314 +197,161 @@ def test_normalization_still_works_with_padding_on_both_sides():
     assert r.json() == {"role": "superadmin"}
 
 
-# ---------- 2. 角色解析 ----------
+# ---------- 2. 權限掛在 user 記錄上（UNIFIED-IDENTITY-001） ----------
+
+CRED = "x-oc-credential"
 
 
-def test_no_cookie_resolves_to_normal():
-    r = _client().get("/api/auth/status")
-    assert r.status_code == 200
-    assert r.json() == {"role": "normal"}
+def _status(c, **kw) -> str:
+    return c.get("/api/auth/status", **kw).json()["role"]
 
 
-def test_valid_superuser_cookie_resolves_to_superuser():
-    c = _client()
-    c.post("/api/auth/login", json={"password": SU_PASSWORD})
-    r = c.get("/api/auth/status")
-    assert r.json() == {"role": "superuser"}
+def _owner_set_cookies(r) -> list[str]:
+    return [v for k, v in r.headers.multi_items()
+            if k.lower() == "set-cookie" and v.startswith(_OWNER_COOKIE_NAME + "=")]
 
 
-def test_valid_superadmin_cookie_resolves_to_superadmin():
-    c = _client()
-    c.post("/api/auth/login", json={"password": SA_PASSWORD})
-    r = c.get("/api/auth/status")
-    assert r.json() == {"role": "superadmin"}
+def test_no_user_is_normal_and_asking_creates_nobody():
+    storage = MemoryStorage()
+    c = _client(storage=storage)
+    assert _status(c) == "normal"
+    assert storage.list_owners() == []
 
 
-def test_unknown_token_resolves_to_normal():
-    c = _client()
-    c.cookies.set(ROLE_COOKIE, "this-token-was-never-issued-by-anyone")
-    r = c.get("/api/auth/status")
-    assert r.json() == {"role": "normal"}
-
-
-def test_revoked_token_resolves_to_normal():
-    c = _client()
-    c.post("/api/auth/login", json={"password": SU_PASSWORD})
-    c.post("/api/auth/logout")
-    r = c.get("/api/auth/status")
-    assert r.json() == {"role": "normal"}
-
-
-# ---------- 3. 持久 cookie ----------
-
-
-def test_login_sets_a_correctly_flagged_persistent_cookie():
-    c = _client()
+def test_login_creates_exactly_one_user_and_writes_the_role_on_it():
+    storage = MemoryStorage()
+    c = _client(storage=storage)
     r = c.post("/api/auth/login", json={"password": SU_PASSWORD})
-    set_cookie = r.headers.get("set-cookie")
-    assert set_cookie is not None
-    assert set_cookie.startswith(f"{ROLE_COOKIE}=")
-    assert "HttpOnly" in set_cookie
-    assert "Secure" in set_cookie
-    assert "SameSite=lax" in set_cookie
-    assert "Path=/" in set_cookie
-    assert "Domain=" not in set_cookie  # __Host- 前綴要求不得設 Domain
-    assert "Max-Age=" in set_cookie  # 不是 session-only cookie
-    max_age = int(set_cookie.split("Max-Age=")[1].split(";")[0])
-    assert max_age > 300 * 24 * 60 * 60  # 遠超過一個典型 session 的量級
+    assert r.json() == {"role": "superuser"}
+    [owner] = storage.list_owners()
+    assert owner.role == "superuser"
+    # 憑證就是 owner cookie——沒有第二顆 role cookie。
+    assert len(_owner_set_cookies(r)) == 1
+    assert "__Host-oc_role" not in r.headers.get("set-cookie", "")
+    assert storage.resolve_owner_by_token(c.cookies.get(_OWNER_COOKIE_NAME)) == owner.owner_id
+    assert _status(c) == "superuser"
 
 
-def test_cookie_value_is_neither_the_password_nor_the_role_name():
-    c = _client()
-    c.post("/api/auth/login", json={"password": SU_PASSWORD})
-    token = c.cookies.get(ROLE_COOKIE)
-    assert token not in (SU_PASSWORD, SA_PASSWORD, "superuser", "superadmin")
-    assert len(token) >= 32  # 密碼學安全隨機來源產生的不透明字串
-
-
-def test_cookie_survives_a_simulated_browser_restart():
-    """重開「瀏覽器」：捨棄整個 client（含它的 cookie jar），只把
-    cookie 的值移植進一顆全新的 `TestClient`——伺服器（`app` 物件與
-    底下的 storage）完全沒變，模擬的是瀏覽器行程重啟，不是伺服器
-    重啟。"""
-    storage = MemoryStorage()
-    c1 = _client(storage=storage)
-    c1.post("/api/auth/login", json={"password": SA_PASSWORD})
-    token = c1.cookies.get(ROLE_COOKIE)
-
-    c2 = TestClient(
-        create_app(storage=storage, superuser_password=SU_PASSWORD,
-                  superadmin_password=SA_PASSWORD),
-        base_url="https://testserver")
-    c2.cookies.set(ROLE_COOKIE, token)
-    r = c2.get("/api/auth/status")
-    assert r.json() == {"role": "superadmin"}
-
-
-# ---------- 4. 登出 ----------
-
-
-def test_logout_revokes_the_session_server_side():
-    """不是只在瀏覽器端清掉了事——伺服器自己的 `RoleSession` 記錄也
-    真的被標記撤銷（透過 AUTH-01 的 `resolve_role_session()` 之後回
-    `None` 間接驗證，不直接碰 storage 內部欄位）。"""
+def test_login_upgrades_the_existing_user_and_keeps_its_scenarios():
     storage = MemoryStorage()
     c = _client(storage=storage)
-    c.post("/api/auth/login", json={"password": SU_PASSWORD})
-    token = c.cookies.get(ROLE_COOKIE)
-    assert storage.resolve_role_session(token) is not None
-
-    c.post("/api/auth/logout")
-    assert storage.resolve_role_session(token) is None
-
-
-def test_logout_clears_the_cookie_on_the_client():
-    c = _client()
-    c.post("/api/auth/login", json={"password": SU_PASSWORD})
-    r = c.post("/api/auth/logout")
-    assert r.status_code == 200
-    assert r.json() == {"role": "normal"}
-    # httpx cookie jar 會依 Set-Cookie 的清除指示自行移除這個 key。
-    assert c.cookies.get(ROLE_COOKIE) is None
-
-
-def test_replaying_the_old_cookie_after_logout_resolves_to_normal():
-    """即使呼叫端硬是重放登出前那顆舊 cookie（例如攔截到舊值、繞過
-    瀏覽器自己清除的行為），`resolve_role()` 依然回 `normal`——這是
-    伺服器端撤銷的直接後果，不依賴瀏覽器乖乖清除 cookie。"""
-    c = _client()
-    c.post("/api/auth/login", json={"password": SU_PASSWORD})
-    token = c.cookies.get(ROLE_COOKIE)
-    c.post("/api/auth/logout")
-
-    c2 = _client()
-    c2.cookies.set(ROLE_COOKIE, token)
-    r = c2.get("/api/auth/status")
-    assert r.json() == {"role": "normal"}
-
-
-def test_logout_without_any_cookie_is_graceful_not_an_error():
-    r = _client().post("/api/auth/logout")
-    assert r.status_code == 200
-    assert r.json() == {"role": "normal"}
-
-
-def test_repeated_logout_is_graceful():
-    c = _client()
-    c.post("/api/auth/login", json={"password": SU_PASSWORD})
-    r1 = c.post("/api/auth/logout")
-    r2 = c.post("/api/auth/logout")
-    assert r1.status_code == r2.status_code == 200
-    assert r2.json() == {"role": "normal"}
-
-
-# ---------- 5. 正交性（軸一／軸二互不干擾） ----------
-
-
-def test_login_does_not_create_or_touch_any_owner():
-    storage = MemoryStorage()
-    c = _client(storage=storage)
-    c.post("/api/auth/login", json={"password": SU_PASSWORD})
-    assert storage.list_owners() == []
-
-
-def test_status_does_not_create_any_owner():
-    storage = MemoryStorage()
-    c = _client(storage=storage)
-    c.get("/api/auth/status")
-    assert storage.list_owners() == []
-
-
-def test_logout_does_not_delete_or_change_any_owner():
-    storage = MemoryStorage()
-    c = _client(storage=storage)
-    # SECURITY-FIX-01：讀取不再建立 owner，建一個劇本才會。
-    c.post("/api/scenarios", json={"symbol": "XYZ", "target_price": 130.0,
-                                   "target_month": "2027-01",
-                                   "strategies": ["vertical-spread"]}).raise_for_status()
-    assert len(storage.list_owners()) == 1
-    owner_id = storage.list_owners()[0]
-
-    c.post("/api/auth/login", json={"password": SU_PASSWORD})
-    c.post("/api/auth/logout")
-    assert storage.list_owners() == [owner_id]
-
-
-def test_the_owner_cookie_never_changes_across_login_and_logout():
-    """同一個瀏覽器（同一個 cookie jar）先建立 owner，登入／登出
-    Super User 角色的整個過程中，owner cookie 的值必須逐位元不變
-    ——兩顆 cookie 完全獨立，不得合併也不得互相牽動。"""
-    storage = MemoryStorage()
-    c = _client(storage=storage)
-    # SECURITY-FIX-01／Codex P1：owner cookie 只在第一次持久化時簽發。
-    c.post("/api/scenarios", json={"symbol": "XYZ", "target_price": 130.0,
-                                   "target_month": "2027-01",
-                                   "strategies": ["vertical-spread"]})
-    owner_cookie_before = c.cookies.get("__Host-oc_owner")
-    assert owner_cookie_before is not None
-
+    sid = c.post("/api/scenarios", json={
+        "symbol": "XYZ", "target_price": 130.0, "target_month": "2027-01",
+        "strategies": ["vertical-spread"]}).json()["id"]
+    owner_id = storage.list_owners()[0].owner_id
     c.post("/api/auth/login", json={"password": SA_PASSWORD})
-    c.get("/api/scenarios")
-    assert c.cookies.get("__Host-oc_owner") == owner_cookie_before
-
-    c.post("/api/auth/logout")
-    c.get("/api/scenarios")
-    assert c.cookies.get("__Host-oc_owner") == owner_cookie_before
+    assert [o.owner_id for o in storage.list_owners()] == [owner_id]
+    assert storage.get_owner(owner_id).role == "superadmin"
+    assert [row["id"] for row in c.get("/api/scenarios").json()] == [sid]
 
 
-def test_scenario_ownership_is_identical_before_and_after_login():
-    """同一瀏覽器登入前建立的劇本，登入 Super User／Super Admin 之後
-    走一般使用者路徑（`identity_resolver()`，非 `/api/superuser/*`）
-    仍然看得到、仍然是同一份——登入這個動作不改變 `owner_id` 本身。"""
+def test_login_never_downgrades():
     storage = MemoryStorage()
     c = _client(storage=storage)
-    r = c.post("/api/scenarios", json={
-        "symbol": "TLT", "target_price": 100.0, "target_month": "2028-05",
-        "strategies": ["vertical-spread"]})
-    assert r.status_code == 201
-    scenario_id = r.json()["id"]
-
-    c.post("/api/auth/login", json={"password": SU_PASSWORD})
-    r = c.get(f"/api/scenarios/{scenario_id}")
-    assert r.status_code == 200
-    assert r.json()["id"] == scenario_id
+    c.post("/api/auth/login", json={"password": SA_PASSWORD})
+    r = c.post("/api/auth/login", json={"password": SU_PASSWORD})
+    assert r.json() == {"role": "superadmin"}
+    assert _status(c) == "superadmin"
 
 
-def _code_identifiers(module) -> set[str]:
-    """模組程式碼裡出現的識別字，比照 `test_pb09_superuser.py` 既有
-    手法。"""
-    names: set[str] = set()
-    for node in ast.walk(ast.parse(inspect.getsource(module))):
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-            names.add(node.name)
-        elif isinstance(node, ast.arg):
-            names.add(node.arg)
-        elif isinstance(node, ast.Name):
-            names.add(node.id)
-        elif isinstance(node, ast.Attribute):
-            names.add(node.attr)
-        elif isinstance(node, ast.keyword) and node.arg:
-            names.add(node.arg)
-        elif isinstance(node, ast.Import):
-            names.update(a.asname or a.name.split(".")[0] for a in node.names)
-        elif isinstance(node, ast.ImportFrom):
-            if node.module:
-                names.add(node.module.split(".")[0])
-            names.update(a.asname or a.name for a in node.names)
-    return names
-
-
-def test_superuser_module_still_never_references_owner_identity_machinery():
-    """延伸既有 `test_pb09_superuser.py` 的同一條斷言——AUTH-02 的
-    新增內容（`Role`／`resolve_role`／`require_role`）與既有內容都在
-    同一個檔案（`api_app/superuser.py`），這條測試涵蓋整個檔案，
-    AUTH-02 新增的部分自動包含在內。"""
-    names = _code_identifiers(superuser)
-    for forbidden in ("identity", "owner_id", "identity_resolver",
-                      "resolved_owner_scope", "owner_scope"):
-        assert forbidden not in names, forbidden
-
-
-def test_resolve_role_signature_has_no_owner_parameter():
-    params = set(inspect.signature(superuser.resolve_role).parameters)
-    assert "owner_id" not in params
-    assert "owner" not in params
-
-
-def test_require_role_signature_has_no_owner_parameter():
-    params = set(inspect.signature(superuser.require_role).parameters)
-    assert "owner_id" not in params
-    assert "owner" not in params
-
-
-def test_superuser_module_does_not_import_the_identity_module():
-    import api_app.identity as identity_module
-    import api_app.superuser as superuser_module
-    assert identity_module not in vars(superuser_module).values()
-
-
-# ---------- 6. 沒有密碼變更偵測／指紋機制 ----------
-
-
-def test_role_session_dataclass_has_no_fingerprint_or_version_fields():
-    """程式碼審查的可執行版本——AUTH-01 定義的 `RoleSession` 只有
-    `token`／`role`／`issued_at`／`revoked_at` 四個欄位，沒有任何
-    密碼雜湊、指紋、或 session version 欄位。"""
-    fields = {f.name for f in RoleSession.__dataclass_fields__.values()}
-    assert fields == {"token", "role", "issued_at", "revoked_at"}
-
-
-def test_resolve_role_source_does_no_password_comparison():
-    """`resolve_role()` 的原始碼裡不出現任何密碼相關識別字——它只
-    查 session 記錄本身，不重新驗證密碼。"""
-    source = inspect.getsource(superuser.resolve_role)
-    for forbidden in ("password", "compare_digest", "secret"):
-        assert forbidden not in source.lower()
-
-
-def test_changing_the_configured_passwords_does_not_invalidate_an_existing_session():
-    """AC 明文要求的正面驗證（非驗證失效）：換掉環境變數重新部署後，
-    既有、尚未登出的 session 依然有效。用同一個 storage、換一組
-    密碼重新 `create_app()` 模擬「改環境變數重新部署」。"""
+def test_wrong_password_neither_creates_a_user_nor_changes_a_role():
     storage = MemoryStorage()
-    c1 = _client(storage=storage, superuser_password="old-su-password",
-                superadmin_password="old-sa-password")
-    c1.post("/api/auth/login", json={"password": "old-su-password"})
-    token = c1.cookies.get(ROLE_COOKIE)
+    c = _client(storage=storage)
+    assert c.post("/api/auth/login", json={"password": "nope"}).status_code == 401
+    assert storage.list_owners() == []
 
-    # 「重新部署」：新的密碼設定，同一個 storage（同一批既有 session）。
-    c2 = TestClient(
-        create_app(storage=storage, superuser_password="BRAND-NEW-su-password",
-                  superadmin_password="BRAND-NEW-sa-password"),
-        base_url="https://testserver")
-    c2.cookies.set(ROLE_COOKIE, token)
-    r = c2.get("/api/auth/status")
-    assert r.json() == {"role": "superuser"}, (
-        "換密碼不該讓既有 session 失效——這是 Owner 明確接受的取捨"
-        "（見 #307 Further Notes、#309 2026-09-17 修正），不是漏洞")
 
-    # 舊密碼登入新的 app 應該失敗（密碼真的換了）；新密碼應該成功。
-    r = c2.post("/api/auth/login", json={"password": "old-su-password"})
-    assert r.status_code == 401
-    r = c2.post("/api/auth/login", json={"password": "BRAND-NEW-su-password"})
-    assert r.status_code == 200
+def test_role_survives_reload_a_new_tab_and_a_redeploy():
+    storage = MemoryStorage()
+    c = _client(storage=storage)
+    c.post("/api/auth/login", json={"password": SU_PASSWORD})
+    token = c.cookies.get(_OWNER_COOKIE_NAME)
+    # 重新整理／新分頁：只帶瀏覽器存著的 cookie
+    tab = TestClient(c.app, base_url="https://testserver",
+                     cookies={_OWNER_COOKIE_NAME: token})
+    assert _status(tab) == "superuser"
+    # 重新部署：全新的 app instance，同一個資料庫
+    redeployed = TestClient(
+        create_app(storage=storage, superuser_password=SU_PASSWORD,
+                   superadmin_password=SA_PASSWORD),
+        base_url="https://testserver", cookies={_OWNER_COOKIE_NAME: token})
+    assert _status(redeployed) == "superuser"
+    assert len(storage.list_owners()) == 1
+
+
+def test_role_survives_losing_the_cookie_through_the_local_credential():
+    """cookie 不見了、本機那份還在：同一個 user、同一個權限，cookie 補發回來。"""
+    storage = MemoryStorage()
+    c = _client(storage=storage)
+    c.post("/api/auth/login", json={"password": SA_PASSWORD})
+    token = c.cookies.get(_OWNER_COOKIE_NAME)
+    no_cookie = _client(storage=storage)
+    r = no_cookie.get("/api/auth/status", headers={CRED: token})
+    assert r.json() == {"role": "superadmin"}
+    [reissued] = _owner_set_cookies(r)
+    assert reissued.startswith(f"{_OWNER_COOKIE_NAME}={token};")
+    assert len(storage.list_owners()) == 1
+
+
+def test_reset_role_is_the_only_way_down_and_keeps_user_and_scenarios():
+    storage = MemoryStorage()
+    c = _client(storage=storage)
+    c.post("/api/scenarios", json={
+        "symbol": "XYZ", "target_price": 130.0, "target_month": "2027-01",
+        "strategies": ["vertical-spread"]})
+    c.post("/api/auth/login", json={"password": SU_PASSWORD})
+    token = c.cookies.get(_OWNER_COOKIE_NAME)
+    assert c.post("/api/auth/reset-role").json() == {"role": "normal"}
+    assert _status(c) == "normal"
+    assert c.cookies.get(_OWNER_COOKIE_NAME) == token
+    assert len(storage.list_owners()) == 1
+    assert len(c.get("/api/scenarios").json()) == 1
+    assert c.post("/api/auth/reset-role").json() == {"role": "normal"}  # 重複也優雅
+
+
+def test_reset_role_without_a_user_is_graceful_and_creates_nobody():
+    storage = MemoryStorage()
+    r = _client(storage=storage).post("/api/auth/reset-role")
+    assert r.status_code == 200 and r.json() == {"role": "normal"}
+    assert storage.list_owners() == []
+
+
+def test_a_legacy_role_cookie_grants_nothing_and_is_cleared():
+    """AUTH-02 留下的 role session 與 `__Host-oc_role` cookie 已退役：就算
+    舊列還在資料庫、舊 cookie 還在瀏覽器，也什麼權限都不給，回應順手清掉它。"""
+    storage = MemoryStorage()
+    storage.create_role_session(RoleSession(
+        token="legacy-" + "x" * 30, role="superadmin",
+        issued_at="2026-09-20T00:00:00+00:00"))
+    c = _client(storage=storage)
+    r = c.get("/api/auth/status",
+              cookies={superuser.LEGACY_ROLE_COOKIE_NAME: "legacy-" + "x" * 30})
+    assert r.json() == {"role": "normal"}
+    assert f"{superuser.LEGACY_ROLE_COOKIE_NAME}=\"\"" in r.headers["set-cookie"]
+    assert c.get("/api/superuser/owners").status_code == 401
+
+
+# ---------- 3. 權限判斷本身 ----------
+
+def test_current_role_does_no_password_comparison():
+    """`current_role()`／`require_role()` 只讀 user 記錄上的權限——原始碼
+    裡不出現任何密碼相關識別字，比對密碼只發生在登入端點。"""
+    for fn in (superuser.current_role, superuser.require_role):
+        source = inspect.getsource(fn).lower()
+        assert "password" not in source and "secret" not in source
+
+
+def test_changing_the_configured_passwords_does_not_downgrade_an_existing_user():
+    """權限永久保留：換掉環境變數裡的密碼重新部署，已經升權的 user 不受影響
+    （只影響之後的登入）。"""
+    storage = MemoryStorage()
+    c = _client(storage=storage)
+    c.post("/api/auth/login", json={"password": SU_PASSWORD})
+    token = c.cookies.get(_OWNER_COOKIE_NAME)
+    rotated = TestClient(
+        create_app(storage=storage, superuser_password="rotated-su",
+                   superadmin_password="rotated-sa"),
+        base_url="https://testserver", cookies={_OWNER_COOKIE_NAME: token})
+    assert _status(rotated) == "superuser"
+    assert rotated.post("/api/auth/login",
+                        json={"password": SU_PASSWORD}).status_code == 401

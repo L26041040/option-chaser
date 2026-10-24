@@ -33,13 +33,13 @@ export default function DisclaimerSection() {
         賣腿 Bid）。
       </p>
       <p className="caption">
-        資料存在您目前使用的瀏覽器（cookie），清除瀏覽器資料、換一個
+        資料存在您目前使用的瀏覽器（cookie 與本機儲存），清除瀏覽器資料、換一個
         瀏覽器、或結束無痕視窗都會讓您無法再存取；連續 {ANONYMOUS_RETENTION_DAYS}{" "}
         天沒有用這個瀏覽器打開本站，資料會先進入 {ANONYMOUS_GRACE_PERIOD_DAYS} 天緩衝期，
         緩衝期滿仍未回來即自動、永久清除。
       </p>
       <p className="caption">
-        完整說明（存了什麼、怎麼刪、清除 cookie 的具體後果）見
+        完整說明（存了什麼、怎麼刪、清除瀏覽器資料的具體後果）見
         <a href="#/privacy">隱私與資料政策</a>。
       </p>
     </section>

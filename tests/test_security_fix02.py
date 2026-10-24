@@ -501,7 +501,7 @@ def _chain_env(monkeypatch, *, custom_provider: bool):
     c, sid, owner = _new_owner_with_scenario(app, storage)
     if custom_provider:
         # 存 credential 需要 Super Admin（AUTH-04）：借登入設定好這個 owner
-        # 的自訂 provider，再登出——之後這個瀏覽器就是帶著自訂設定的
+        # 的自訂 provider，再重設權限——之後這個瀏覽器就是帶著自訂設定的
         # Normal User。
         c.post("/api/auth/login", json={"password": SA_PW}).raise_for_status()
         c.put("/api/settings", json={
@@ -509,7 +509,7 @@ def _chain_env(monkeypatch, *, custom_provider: bool):
             "historical_iv": {"mode": "default", "provider": None}}).raise_for_status()
         c.put(f"/api/settings/credentials/{PROVIDER}",
               json={"token": "fake-provider-token"}).raise_for_status()
-        c.post("/api/auth/logout").raise_for_status()
+        c.post("/api/auth/reset-role").raise_for_status()
     return dict(app=app, storage=storage, clock=clock, c=c, sid=sid, owner=owner,
                 custom=custom, cboe=cboe, yf=yfin)
 

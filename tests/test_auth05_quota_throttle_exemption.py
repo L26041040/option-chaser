@@ -49,7 +49,7 @@ def _client(*, storage=None, owner="solo", role=None, fetch_calls=None,
         # 「現在」，固定 fixture 的歷史時間戳測不出節流窗是否生效。
         return dataclasses.replace(base_snap, fetched_at=fresh_fetched_at())
 
-    cookies = role_cookies(storage, role) if role else None
+    cookies = role_cookies(storage, role, owner_id=owner) if role else None
     return TestClient(create_app(
         identity_resolver=lambda: owner, fetch=_fetch, storage=storage,
         **overrides),
@@ -89,7 +89,7 @@ def _client_with_metering(*, storage=None, owner="solo", role=None,
     def _cboe_fetch(symbol: str):
         return dataclasses.replace(base_snap, fetched_at=fresh_fetched_at())
 
-    cookies = role_cookies(storage, role) if role else None
+    cookies = role_cookies(storage, role, owner_id=owner) if role else None
     return TestClient(create_app(
         identity_resolver=lambda: owner, cboe_fetch=_cboe_fetch,
         storage=storage, **overrides),

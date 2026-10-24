@@ -15,6 +15,7 @@ from collections.abc import Sequence
 from contextlib import contextmanager
 
 from . import (RETIRED_TABLES, SCENARIO_CHILD_TABLES, BrowserIdentity,
+               ResolvedCredential,
                ChainBackoffEntry, ContractHistory,
                DataSourceSettings, DividendCacheEntry, Feedback, IvBackfillRun,
                IvObservation, LineageReport, MetricEntry, Owner,
@@ -643,7 +644,10 @@ class MemoryStorage:
     def reset_beta_data(self, *,
                         keep_metrics: Sequence[tuple[str, str]] = ()) -> dict[str, int]:
         with self.transaction():
-            kept = {oid for oid, o in self._owners.items() if o.protected}
+            # UNIFIED-IDENTITY-001：有權限的 user（SU／SA，含執行清場的人
+            # 自己）跟 protected 一樣保留身分與權限，劇本照清。
+            kept = {oid for oid, o in self._owners.items()
+                    if o.protected or o.role != "normal"}
             counts = {
                 "scenarios": len(self._scenarios),
                 "results": sum(len(v) for v in self._results.values()),
@@ -699,8 +703,19 @@ class MemoryStorage:
         identity = self._browser_identities.get(token)
         return identity.owner_id if identity else None
 
-    def get_browser_identity(self, token: str) -> BrowserIdentity | None:
-        return self._browser_identities.get(token)
+    def resolve_credential(self, token: str) -> ResolvedCredential | None:
+        identity = self._browser_identities.get(token)
+        if identity is None:
+            return None
+        owner = self._owners.get(identity.owner_id)
+        return ResolvedCredential(owner_id=identity.owner_id,
+                                  role=owner.role if owner else "normal",
+                                  cookie_issued_at=identity.cookie_issued_at)
+
+    def set_owner_role(self, owner_id: str, role: str) -> None:
+        owner = self._owners.get(owner_id)
+        if owner is not None:
+            self._owners[owner_id] = dataclasses.replace(owner, role=role)
 
     def mark_owner_cookie_issued(self, token: str, *, now: str) -> None:
         identity = self._browser_identities.get(token)
@@ -742,7 +757,7 @@ class MemoryStorage:
                      has_data=(o.owner_id in with_scenarios
                                or o.owner_id in with_settings
                                or o.owner_id in with_credentials),
-                     protected=o.protected)
+                     protected=o.protected, role=o.role)
                  for o in self._owners.values()]
         return sorted(facts, key=lambda f: (f.created_at, f.owner_id))
 
@@ -800,20 +815,6 @@ class MemoryStorage:
 
     def create_role_session(self, session: RoleSession) -> None:
         self._role_sessions[session.token] = session
-
-    def resolve_role_session(self, token: str) -> RoleSession | None:
-        session = self._role_sessions.get(token)
-        if session is None or session.revoked_at is not None:
-            return None
-        return session
-
-    def revoke_role_session(self, token: str, *, now: str) -> bool:
-        session = self._role_sessions.get(token)
-        if session is None or session.revoked_at is not None:
-            return False
-        self._role_sessions[token] = dataclasses.replace(
-            session, revoked_at=now)
-        return True
 
     # ---------- Super User audit trail（PB-10／#301） ----------
 

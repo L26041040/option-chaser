@@ -25,6 +25,7 @@ from psycopg.types.json import Jsonb
 
 from . import (LEGACY_SINGLETON_TABLES, RETIRED_TABLES, SCENARIO_CHILD_TABLES,
                BrowserIdentity, ChainBackoffEntry, ContractHistory,
+               ResolvedCredential,
                DataSourceSettings, DividendCacheEntry, Feedback, IvBackfillRun,
                IvObservation, LineageReport, MetricEntry, Owner,
                OwnerLifecycleFacts, OwnerMigrationConflict, OwnerSettingsBundle,
@@ -416,6 +417,9 @@ ALTER TABLE browser_identities ADD COLUMN IF NOT EXISTS cookie_issued_at TEXT;
 -- 加法、`DEFAULT FALSE` 讓既有列讀回時天然是「不是 synthetic」，
 -- 不需要資料回填。
 ALTER TABLE owners ADD COLUMN IF NOT EXISTS is_synthetic BOOLEAN NOT NULL DEFAULT FALSE;
+-- OPTION-CHASER-UNIFIED-IDENTITY-001：權限掛在 user 記錄上，取代獨立的
+-- role session／role cookie。既有列讀回 'normal'，不需要資料回填。
+ALTER TABLE owners ADD COLUMN IF NOT EXISTS role TEXT NOT NULL DEFAULT 'normal';
 -- PB-10（#301，Anonymous Public Beta）：Super User 高風險操作 audit
 -- trail——刻意獨立於 `diagnostics`（owner-scoped、trim-on-write 只留
 -- 全域最新 200 筆）與 `events`（scenario-scoped 領域事實）。這張表
@@ -1373,7 +1377,8 @@ class PostgresStorage:
             conn.execute("LOCK TABLE " + ", ".join(self._BETA_LOCK_TABLES)
                          + " IN SHARE ROW EXCLUSIVE MODE")
             kept = [r[0] for r in conn.execute(
-                "SELECT owner_id FROM owners WHERE protected").fetchall()]
+                "SELECT owner_id FROM owners "
+                "WHERE protected OR role <> 'normal'").fetchall()]
             for table in self._BETA_PRODUCT_TABLES:
                 counts[table] = conn.execute(f"DELETE FROM {table}").rowcount
             for table in self._BETA_OWNER_TABLES:
@@ -1381,7 +1386,8 @@ class PostgresStorage:
                     f"DELETE FROM {table} WHERE NOT (owner_id = ANY(%s))",
                     (kept,)).rowcount
             counts["owners"] = conn.execute(
-                "DELETE FROM owners WHERE NOT protected").rowcount
+                "DELETE FROM owners WHERE NOT protected "
+                "AND role = 'normal'").rowcount
             counts["owner_activity"] = conn.execute(
                 "UPDATE owners SET last_activity_at = NULL "
                 "WHERE last_activity_at IS NOT NULL").rowcount
@@ -1402,11 +1408,11 @@ class PostgresStorage:
         with self._connect() as conn:
             row = conn.execute(
                 "SELECT owner_id, created_at, last_activity_at, protected, "
-                "is_synthetic FROM owners WHERE owner_id = %s",
+                "is_synthetic, role FROM owners WHERE owner_id = %s",
                 (owner_id,)).fetchone()
         return (Owner(owner_id=row[0], created_at=row[1],
                       last_activity_at=row[2], protected=row[3],
-                      is_synthetic=row[4])
+                      is_synthetic=row[4], role=row[5])
                 if row else None)
 
     def resolve_owner_by_token(self, token: str) -> str | None:
@@ -1416,16 +1422,21 @@ class PostgresStorage:
                 (token,)).fetchone()
         return row[0] if row else None
 
-    def get_browser_identity(self, token: str) -> BrowserIdentity | None:
+    def resolve_credential(self, token: str) -> ResolvedCredential | None:
         with self._connect() as conn:
             row = conn.execute(
-                "SELECT token, owner_id, issued_at, last_seen_at, "
-                "cookie_issued_at FROM browser_identities WHERE token = %s",
-                (token,)).fetchone()
-        return (BrowserIdentity(token=row[0], owner_id=row[1],
-                                issued_at=row[2], last_seen_at=row[3],
-                                cookie_issued_at=row[4])
+                "SELECT bi.owner_id, COALESCE(o.role, 'normal'), "
+                "bi.cookie_issued_at FROM browser_identities bi "
+                "LEFT JOIN owners o ON o.owner_id = bi.owner_id "
+                "WHERE bi.token = %s", (token,)).fetchone()
+        return (ResolvedCredential(owner_id=row[0], role=row[1],
+                                   cookie_issued_at=row[2])
                 if row else None)
+
+    def set_owner_role(self, owner_id: str, role: str) -> None:
+        with self._connect() as conn:
+            conn.execute("UPDATE owners SET role = %s WHERE owner_id = %s",
+                         (role, owner_id))
 
     def mark_owner_cookie_issued(self, token: str, *, now: str) -> None:
         with self._connect() as conn:
@@ -1483,7 +1494,7 @@ class PostgresStorage:
                 "(EXISTS (SELECT 1 FROM scenarios s WHERE s.owner_id = o.owner_id) "
                 " OR EXISTS (SELECT 1 FROM owner_settings st WHERE st.owner_id = o.owner_id) "
                 " OR EXISTS (SELECT 1 FROM owner_credentials c WHERE c.owner_id = o.owner_id)) "
-                "AS has_data, o.protected "
+                "AS has_data, o.protected, o.role "
                 "FROM owners o "
                 "LEFT JOIN (SELECT owner_id, max(last_seen_at) AS last_seen "
                 "           FROM browser_identities GROUP BY owner_id) bi "
@@ -1491,7 +1502,7 @@ class PostgresStorage:
                 "ORDER BY o.created_at, o.owner_id").fetchall()
         return [OwnerLifecycleFacts(owner_id=r[0], created_at=r[1],
                                     last_seen_at=r[2], has_data=r[3],
-                                    protected=r[4])
+                                    protected=r[4], role=r[5])
                 for r in rows]
 
     def rate_limit_consume(self, buckets: Sequence[RateLimitBucket]) -> int | None:
@@ -1558,28 +1569,28 @@ class PostgresStorage:
         with self._connect() as conn:
             rows = conn.execute(
                 "SELECT owner_id, created_at, last_activity_at, protected, "
-                "is_synthetic FROM owners "
+                "is_synthetic, role FROM owners "
                 "ORDER BY created_at, owner_id").fetchall()
         return [Owner(owner_id=r[0], created_at=r[1], last_activity_at=r[2],
-                      protected=r[3], is_synthetic=r[4]) for r in rows]
+                      protected=r[3], is_synthetic=r[4], role=r[5]) for r in rows]
 
     def lock_owners(self, owner_ids: Sequence[str]) -> list[Owner]:
         with self._connect() as conn:
             rows = conn.execute(
                 "SELECT owner_id, created_at, last_activity_at, protected, "
-                "is_synthetic FROM owners WHERE owner_id = ANY(%s) "
+                "is_synthetic, role FROM owners WHERE owner_id = ANY(%s) "
                 "ORDER BY owner_id FOR UPDATE", (list(owner_ids),)).fetchall()
         return [Owner(owner_id=r[0], created_at=r[1], last_activity_at=r[2],
-                      protected=r[3], is_synthetic=r[4]) for r in rows]
+                      protected=r[3], is_synthetic=r[4], role=r[5]) for r in rows]
 
     def list_protected_owners(self) -> list[Owner]:
         with self._connect() as conn:
             rows = conn.execute(
                 "SELECT owner_id, created_at, last_activity_at, protected, "
-                "is_synthetic FROM owners WHERE protected "
+                "is_synthetic, role FROM owners WHERE protected "
                 "ORDER BY created_at, owner_id").fetchall()
         return [Owner(owner_id=r[0], created_at=r[1], last_activity_at=r[2],
-                      protected=r[3], is_synthetic=r[4]) for r in rows]
+                      protected=r[3], is_synthetic=r[4], role=r[5]) for r in rows]
 
     # ---------- Role session（AUTH-01／#308，三層角色模型） ----------
 
@@ -1590,23 +1601,6 @@ class PostgresStorage:
                 "revoked_at) VALUES (%s, %s, %s, %s)",
                 (session.token, session.role, session.issued_at,
                  session.revoked_at))
-
-    def resolve_role_session(self, token: str) -> RoleSession | None:
-        with self._connect() as conn:
-            row = conn.execute(
-                "SELECT token, role, issued_at, revoked_at "
-                "FROM role_sessions WHERE token = %s", (token,)).fetchone()
-        if row is None or row[3] is not None:
-            return None
-        return RoleSession(token=row[0], role=row[1], issued_at=row[2],
-                           revoked_at=row[3])
-
-    def revoke_role_session(self, token: str, *, now: str) -> bool:
-        with self._connect() as conn:
-            cur = conn.execute(
-                "UPDATE role_sessions SET revoked_at = %s "
-                "WHERE token = %s AND revoked_at IS NULL", (now, token))
-            return cur.rowcount > 0
 
     # ---------- Super User audit trail（PB-10／#301） ----------
 

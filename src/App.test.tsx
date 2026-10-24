@@ -2006,14 +2006,14 @@ describe("SW-10（#340）／PB-12（#302）：全站常駐頁尾；首頁 Beta �
   });
 
   it("CLAUDE-SETTINGS-ROLE-IA-001：Super Admin 從設定頁的入口進到獨立管理中心，" +
-     "登出後管理中心不再可用", async () => {
+     "重設權限後管理中心不再可用", async () => {
     let role = "superadmin";
     const spy = vi.fn(async (url: string) => {
       const u = String(url);
       if (u.startsWith("/api/auth/status")) {
         return { ok: true, status: 200, json: async () => ({ role }) };
       }
-      if (u === "/api/auth/logout") {
+      if (u === "/api/auth/reset-role") {
         role = "normal";
         return { ok: true, status: 200, json: async () => ({ role }) };
       }
@@ -2052,9 +2052,9 @@ describe("SW-10（#340）／PB-12（#302）：全站常駐頁尾；首頁 Beta �
     expect(await screen.findByRole("region", { name: "Super User 管理面板" }))
       .toBeInTheDocument();
 
-    // 回設定頁登出，再直接打 #/admin：不再掛載管理面板，被導回設定頁。
+    // 回設定頁重設權限，再直接打 #/admin：不再掛載管理面板，被導回設定頁。
     await userEvent.click(screen.getByRole("link", { name: "← 設定" }));
-    await userEvent.click(await screen.findByRole("button", { name: "登出" }));
+    await userEvent.click(await screen.findByRole("button", { name: "重設為 Normal User" }));
     await screen.findByLabelText("密碼");
     act(() => { window.location.hash = "#/admin"; });
     await waitFor(() => expect(window.location.hash).toBe("#/settings"));

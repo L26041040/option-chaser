@@ -440,14 +440,14 @@ def test_legacy_analyze_endpoint_is_gone_and_creates_no_owner():
     assert not any(route.path == "/api/analyze" for route in app.routes)
 
 
-# ---------- Codex P1（PR #346）：首訪並發寫入共用 bootstrap token ----------
+# ---------- 本機憑證（UNIFIED-IDENTITY-001；源自 Codex P1，PR #346） ----------
 #
-# 第一次造訪、還沒有 cookie 的瀏覽器同時送出多個寫入（連點、重試、兩個
-# 分頁）：前端把一顆存在 localStorage 的 bootstrap token 放在
-# `X-OC-Owner-Bootstrap` header（custom header，跨站請求帶不了），伺服器
-# 用它綁定——同一顆 token 靠 PK 收斂到同一個 owner。
+# 前端把同一顆憑證存在 IndexedDB／localStorage，每個請求都放在
+# `X-OC-Credential` header（custom header，跨站請求帶不了）。首訪還沒有
+# user 時伺服器用它綁定——同一顆 token 靠 PK 收斂到同一個 owner；綁定之後
+# 它就是持久身分的另一份，cookie 不見時靠它還原。
 
-BOOTSTRAP = "X-OC-Owner-Bootstrap"
+BOOTSTRAP = "X-OC-Credential"
 
 
 def test_concurrent_first_writes_with_one_bootstrap_token_yield_one_owner():
@@ -473,7 +473,7 @@ def test_concurrent_first_writes_with_one_bootstrap_token_yield_one_owner():
 
 def test_a_retry_after_a_lost_response_reaches_the_same_owner():
     """第一次寫入其實成功了、但回應（連同 Set-Cookie）沒回到瀏覽器；
-    重試仍帶同一顆 bootstrap token——在綁定後的短時間窗內視同那個 owner。"""
+    重試仍帶同一顆本機憑證——就是那個 owner，cookie 補發回來。"""
     app, storage = _app()
     token = "r" * 43
     _browser(app).post("/api/scenarios", json=NEW,
@@ -487,53 +487,39 @@ def test_a_retry_after_a_lost_response_reaches_the_same_owner():
     assert len(storage.list_scenarios(owner=owners[0].owner_id)) == 2
 
 
-def test_an_old_bound_bootstrap_token_is_not_an_identity():
-    """綁定超過短時間窗的 bootstrap token 不再被接受：localStorage 不能
-    變成第二個身分載體（清掉 cookie 就是清掉身分，隱私頁承諾的語意）。"""
+def test_a_long_bound_local_credential_restores_the_identity_without_the_cookie():
+    """UNIFIED-IDENTITY-001（取代舊的「只在綁定後 10 分鐘內接受」）：本機
+    那份憑證就是持久身分。cookie 不見了（例如被瀏覽器清掉），帶著本機那份
+    的請求照樣是同一個 owner、看得到原本的劇本，cookie 補發回來。"""
     app, storage = _app()
     token = "o" * 43
     _browser(app).post("/api/scenarios", json=NEW,
                        headers={BOOTSTRAP: token}).raise_for_status()
     owner = storage.list_owners()[0]
-    storage._owners[owner.owner_id] = replace(owner, created_at=_ago(1))
-    stranger = _browser(app)
-    assert stranger.get("/api/scenarios", headers={BOOTSTRAP: token}).json() == []
+    storage._owners[owner.owner_id] = replace(owner, created_at=_ago(30))
+    no_cookie = _browser(app)
+    r = no_cookie.get("/api/scenarios", headers={BOOTSTRAP: token})
+    assert len(r.json()) == 1
+    assert r.cookies.get(_OWNER_COOKIE_NAME) == token
+    assert "x-oc-credential" not in r.headers            # 本機那份本來就對
     assert len(storage.list_owners()) == 1
 
 
-def test_a_write_with_an_old_bound_bootstrap_token_is_refused_before_writing():
-    """Codex P2（PR #346）：過期的已綁定 token 用在寫入時，不能悄悄換一顆
-    只有伺服器知道的隨機 token 照樣寫——回應遺失的話，重試帶同一顆舊
-    token 又會換一顆，多出第二個 owner。寫入前就回 409＋stale header，
-    什麼都沒寫；前端換一顆新 token 重送就成功。"""
+def test_a_write_with_a_long_bound_local_credential_lands_on_the_same_owner():
+    """舊設計在這裡回 409 要前端換一顆新 token——那正是「多出一個 owner」的
+    入口。現在寫入直接落在原本的 owner，不會多出第二個。"""
     app, storage = _app()
     token = "o" * 43
     _browser(app).post("/api/scenarios", json=NEW,
                        headers={BOOTSTRAP: token}).raise_for_status()
     owner = storage.list_owners()[0]
-    storage._owners[owner.owner_id] = replace(owner, created_at=_ago(1))
-    stranger = _browser(app)
-
-    for _ in range(2):                                  # 重試也一樣被拒，不會多出 owner
-        r = stranger.post("/api/scenarios", json={**NEW, "symbol": "QQQ"},
-                          headers={BOOTSTRAP: token})
-        assert r.status_code == 409
-        assert r.headers["x-oc-owner-bootstrap-stale"] == "1"
-        assert _OWNER_COOKIE_NAME not in r.cookies
-        assert "x-oc-owner-bound" not in r.headers
-    assert len(storage.list_owners()) == 1
-    assert len(storage.list_scenarios(owner=owner.owner_id)) == 1
-    r = stranger.put("/api/settings", headers={BOOTSTRAP: token}, json={
-        "market_data": {"mode": "default", "provider": None},
-        "historical_iv": {"mode": "default", "provider": None}})
-    assert r.status_code == 409 and len(storage.list_owners()) == 1
-
-    fresh = "f" * 43
-    r = stranger.post("/api/scenarios", json={**NEW, "symbol": "QQQ"},
-                      headers={BOOTSTRAP: fresh})
+    storage._owners[owner.owner_id] = replace(owner, created_at=_ago(30))
+    r = _browser(app).post("/api/scenarios", json={**NEW, "symbol": "QQQ"},
+                           headers={BOOTSTRAP: token})
     assert r.status_code == 201
-    assert r.cookies.get(_OWNER_COOKIE_NAME) == fresh
-    assert len(storage.list_owners()) == 2
+    assert "x-oc-owner-bootstrap-stale" not in r.headers
+    assert [o.owner_id for o in storage.list_owners()] == [owner.owner_id]
+    assert len(storage.list_scenarios(owner=owner.owner_id)) == 2
 
 
 def test_the_cookie_wins_over_the_bootstrap_header_and_bad_headers_are_ignored():
@@ -545,6 +531,8 @@ def test_the_cookie_wins_over_the_bootstrap_header_and_bad_headers_are_ignored()
                headers={BOOTSTRAP: "x" * 43})
     assert "set-cookie" not in r.headers      # 有效 cookie 不再被重簽
     assert c.cookies.get(_OWNER_COOKIE_NAME) == mine
+    # 本機那份跟 cookie 不一樣：回應把正確的那顆交給前端存。
+    assert r.headers["x-oc-credential"] == mine
     assert len(storage.list_owners()) == 1
     assert storage.resolve_owner_by_token("x" * 43) is None
 

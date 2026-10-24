@@ -71,7 +71,7 @@ def _client(db, *, verify=_ok, custom_fetch=None, fetch=None):
     if fetch is not None:
         kwargs["fetch"] = fetch
     return TestClient(create_app(identity_resolver=lambda: "solo", **kwargs),
-                      cookies=superadmin_cookies(db))
+                      cookies=superadmin_cookies(db, owner_id="solo"))
 
 
 def _configure(client, *, market="custom", iv="default"):

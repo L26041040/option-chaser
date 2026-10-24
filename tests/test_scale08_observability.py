@@ -25,7 +25,7 @@ from fastapi.testclient import TestClient
 from api_app.main import create_app
 from api_app.metrics import METRIC_CATALOGUE, PERSISTED_METRICS
 from api_app.storage.memory import MemoryStorage
-from api_app.superuser import ROLE_COOKIE_NAME
+from api_app.superuser import LEGACY_ROLE_COOKIE_NAME as ROLE_COOKIE_NAME
 from option_chaser.data.snapshot import load_snapshot
 from option_chaser.models import RateLimitedError
 from tests._frozen_clock import fresh_fetched_at
@@ -66,7 +66,7 @@ def _client(monkeypatch, *, storage=None, superadmin_password="admin-secret",
     storage = storage or MemoryStorage()
     snap = snap if snap is not None else _fresh_snapshot()
     monkeypatch.setattr(cboe, "fetch_chain", lambda symbol: snap)
-    cookies = role_cookies(storage, role) if role else None
+    cookies = role_cookies(storage, role, owner_id="solo") if role else None
     return TestClient(create_app(
         identity_resolver=lambda: "solo", storage=storage,
         superadmin_password=superadmin_password, **overrides),
@@ -233,7 +233,7 @@ def test_a_superadmin_session_is_independent_from_cron_secret(monkeypatch):
                  headers={"Authorization": "Bearer cron-only-secret"}
                  ).status_code == 401
     assert c.get("/api/cron/warm-rate-cache",
-                 cookies=role_cookies(storage, "superadmin")
+                 cookies=role_cookies(storage, "superadmin", owner_id="solo")
                  ).status_code == 401
 
 

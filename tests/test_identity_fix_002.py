@@ -22,7 +22,7 @@ FIX = "tests/fixtures/xyz_v4_six_expiries.json"
 NEW = {"symbol": "XYZ", "target_price": 130.0, "target_month": "2027-01",
        "strategies": ["vertical-spread"]}
 MAX_AGE = 400 * 24 * 60 * 60
-BOOTSTRAP = "X-OC-Owner-Bootstrap"
+BOOTSTRAP = "X-OC-Credential"   # UNIFIED-IDENTITY-001：本機那份憑證
 SU_PASSWORD = "test-only-su-password"
 
 
@@ -71,7 +71,7 @@ def test_first_bind_issues_exactly_one_fixed_cookie():
     assert r.headers["x-oc-owner-bound"] == "1"
     assert len(storage.list_owners()) == 1
     token = c.cookies.get(_OWNER_COOKIE_NAME)
-    assert storage.get_browser_identity(token).cookie_issued_at is not None
+    assert storage.resolve_credential(token).cookie_issued_at is not None
 
 
 def test_ordinary_requests_never_reissue_the_cookie_or_mint_an_owner():
@@ -118,7 +118,7 @@ def test_reload_and_a_new_tab_read_the_same_owner_and_scenarios():
     assert len(storage.list_owners()) == 1
 
 
-def test_role_login_and_logout_leave_the_owner_cookie_alone():
+def test_role_login_and_reset_leave_the_owner_cookie_alone():
     app, storage = _app()
     c = _browser(app)
     c.post("/api/scenarios", json=NEW).raise_for_status()
@@ -127,8 +127,8 @@ def test_role_login_and_logout_leave_the_owner_cookie_alone():
     assert login.json() == {"role": "superuser"}
     assert _owner_cookies(login) == []
     assert _owner_cookies(c.get("/api/scenarios")) == []
-    logout = c.post("/api/auth/logout")
-    assert _owner_cookies(logout) == []
+    reset = c.post("/api/auth/reset-role")
+    assert _owner_cookies(reset) == []
     assert c.get("/api/auth/status").json() == {"role": "normal"}
     assert c.cookies.get(_OWNER_COOKIE_NAME) == token
     assert len(c.get("/api/scenarios").json()) == 1
@@ -154,9 +154,9 @@ def test_a_legacy_sliding_cookie_keeps_working_and_is_upgraded_exactly_once():
     assert storage.list_scenarios(owner="legacy-owner")[0].id == created.json()["id"]
 
 
-def test_a_bootstrap_retry_after_a_lost_bind_response_still_gets_the_cookie():
+def test_a_retry_after_a_lost_bind_response_still_gets_the_cookie():
     """第一次寫入成功、回應（連同 Set-Cookie）卻沒回到瀏覽器：重試窗內帶同一
-    顆 bootstrap token 重送，伺服器沿用同一個 owner 並把 cookie 補發給它。"""
+    顆本機憑證重送，伺服器沿用同一個 owner 並把 cookie 補發給它。"""
     app, storage = _app()
     boot = secrets.token_urlsafe(32)
     _browser(app).post("/api/scenarios", json=NEW,
