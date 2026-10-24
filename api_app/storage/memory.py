@@ -699,6 +699,15 @@ class MemoryStorage:
         identity = self._browser_identities.get(token)
         return identity.owner_id if identity else None
 
+    def get_browser_identity(self, token: str) -> BrowserIdentity | None:
+        return self._browser_identities.get(token)
+
+    def mark_owner_cookie_issued(self, token: str, *, now: str) -> None:
+        identity = self._browser_identities.get(token)
+        if identity is not None:
+            self._browser_identities[token] = dataclasses.replace(
+                identity, cookie_issued_at=now)
+
     def create_owner_with_token(self, owner: Owner,
                                 identity: BrowserIdentity) -> None:
         self._owners[owner.owner_id] = owner

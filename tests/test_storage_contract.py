@@ -770,6 +770,37 @@ def test_touch_browser_identity_updates_last_seen_at(storage):
     assert changed is True
 
 
+def test_get_browser_identity_and_mark_owner_cookie_issued(storage):
+    """IDENTITY-FIX-002：既有建立路徑（`create_owner_with_token`／
+    `claim_browser_token`）留下的 identity 都還沒簽過固定期限 cookie
+    （`cookie_issued_at` 為空）；`mark_owner_cookie_issued` 只改這一欄；
+    不存在的 token 讀回 `None`、mark 不報錯。"""
+    t0, t1 = "2026-10-24T00:00:00+00:00", "2026-10-24T01:00:00+00:00"
+    token = "tok-fix2-" + "x" * 20
+    storage.create_owner_with_token(
+        Owner(owner_id="anon-fix2", created_at=t0),
+        BrowserIdentity(token=token, owner_id="anon-fix2",
+                        issued_at=t0, last_seen_at=t0))
+    before = storage.get_browser_identity(token)
+    assert before == BrowserIdentity(token=token, owner_id="anon-fix2",
+                                     issued_at=t0, last_seen_at=t0)
+    assert before.cookie_issued_at is None
+
+    storage.mark_owner_cookie_issued(token, now=t1)
+    assert storage.get_browser_identity(token) == BrowserIdentity(
+        token=token, owner_id="anon-fix2", issued_at=t0, last_seen_at=t0,
+        cookie_issued_at=t1)
+
+    claimed = "tok-fix2-claim-" + "y" * 20
+    storage.claim_browser_token(claimed, Owner(owner_id="anon-fix2-claim",
+                                               created_at=t0), now=t0)
+    assert storage.get_browser_identity(claimed).cookie_issued_at is None
+
+    assert storage.get_browser_identity("tok-fix2-unknown") is None
+    storage.mark_owner_cookie_issued("tok-fix2-unknown", now=t1)
+    assert storage.get_browser_identity("tok-fix2-unknown") is None
+
+
 def test_touch_browser_identity_returns_false_for_an_unknown_token(storage):
     assert storage.touch_browser_identity(
         "tok-nope", now="2026-09-15T00:00:00+00:00") is False

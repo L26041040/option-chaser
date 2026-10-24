@@ -4,9 +4,9 @@ regression。
 兩類測試：
 
 1. **鎖住已證實健全的部分**（今天就綠）——伺服器在 request 帶著一顆
-   可解析的 owner cookie 時，不會在任何回應（含 404／409）把它換掉或
-   改屬性；同一顆 cookie 跨 app instance（模擬重新部署）在 Postgres 上
-   解析到同一個 owner。這些是調查過程中逐一排除「伺服器端弄丟身分」
+   可解析的 owner cookie 時，不會在任何回應（含 404／409）重簽或改動它
+   （IDENTITY-FIX-002 起簽一次、固定期限）；同一顆 cookie 跨 app
+   instance（模擬重新部署）在 Postgres 上解析到同一個 owner。這些是調查過程中逐一排除「伺服器端弄丟身分」
    的證據，收進測試避免未來回歸。
 
 2. **重現缺陷本身**（`xfail(strict=True)`，等 Owner 裁決修法後翻綠）——
@@ -61,25 +61,25 @@ def _split(header: str) -> tuple[str, list[str]]:
 
 # ---------- 1. 伺服器端不會弄丟一顆可解析的 cookie ----------
 
-def test_every_response_with_a_resolvable_cookie_renews_the_same_token_and_attrs():
+def test_no_response_to_a_resolvable_cookie_touches_the_cookie():
     app, _ = _app(anonymous_max_active_scenarios=1)
     b = _browser(app)
     bind = b.post("/api/scenarios", json=NEW)
     assert bind.status_code == 201
     token, attrs = _split(_owner_set_cookies(bind)[0])
-    # 200、404、409（第二個劇本撞上 per-owner 額度）都要續命，而且一字不差。
-    renewals = [
+    assert "max-age=34560000" in attrs and "secure" in attrs and "httponly" in attrs
+    # 200、404、409（第二個劇本撞上 per-owner 額度）都不再發 owner cookie，
+    # 但照舊說「已綁定」。
+    later = [
         b.get("/api/scenarios"),
         b.get("/api/scenarios/does-not-exist"),
         b.post("/api/scenarios", json=NEW),
     ]
-    assert [r.status_code for r in renewals] == [200, 404, 409]
-    for r in renewals:
-        headers = _owner_set_cookies(r)
-        assert len(headers) == 1, r.status_code
-        assert _split(headers[0]) == (token, attrs), r.status_code
+    assert [r.status_code for r in later] == [200, 404, 409]
+    for r in later:
+        assert _owner_set_cookies(r) == [], r.status_code
         assert r.headers.get("X-OC-Owner-Bound") == "1"
-    assert "max-age=16156800" in attrs and "secure" in attrs and "httponly" in attrs
+    assert b.cookies.get(_OWNER_COOKIE_NAME) == token
 
 
 @pytest.mark.skipif(not os.environ.get("OC_TEST_DATABASE_URL"),
@@ -107,6 +107,8 @@ def test_same_cookie_resolves_across_app_instances_on_postgres():
     assert r.status_code == 200
     assert [row["id"] for row in r.json()] == [created.json()["id"]]
     assert r.headers.get("X-OC-Owner-Bound") == "1"
+    # instance A 綁定時記下的 cookie_issued_at 在 DB 裡：instance B 不重簽。
+    assert _owner_set_cookies(r) == []
     with psycopg.connect(dsn, autocommit=True) as conn:
         assert conn.execute("SELECT count(*) FROM owners").fetchone()[0] == 1
         assert conn.execute("SELECT count(*) FROM browser_identities").fetchone()[0] == 1

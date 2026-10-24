@@ -10,7 +10,7 @@
 6. Do not take or paste screenshots unless the Owner explicitly asks. Browser verification is allowed when required by a ticket, but keep screenshot-heavy work to explicit visual-acceptance stages.
 7. Session reports: Traditional Chinese with English technical terms kept in English. Put substantive report content in one complete code block. Number reports as `［回報#NNN］`.
    All times in reports use **Taiwan time (Asia/Taipei, UTC+8)**, written like `2026-09-27 22:09 (台灣)`; convert any UTC timestamp from tools/APIs before reporting.
-8. Current report sequence: **129 used; next report is 130** (#128 = CLAUDE-IDENTITY-LIFECYCLE-REVIEW-002, #129 = OPTION-CHASER-IDENTITY-ROOT-CAUSE-REVIEW-001).
+8. Current report sequence: **131 used; next report is 132** (#130 = IDENTITY-DEEP-REVIEW-002, #131 = IDENTITY-FIX-002).
 9. **Do not append detailed ticket history to this file.** Keep this file short. After a ticket, update only the active checkpoint below in 1–2 lines. Detailed evidence belongs in GitHub issues, commits, and code review comments.
 10. `CLAUDE_HISTORY.md` is the archived legacy project journal. **Do not read it by default.** Read it only when a specific historical question cannot be answered from the current issue/commit/docs.
 
@@ -56,7 +56,7 @@ CLAUDE-MOBILE-CARD-OVERLAP-001: mobile card strategy pill moved to its own `.com
 
 CLAUDE-MOBILE-CARD-VERTICAL-ROWS-001: mobile card is one-row-per-item (main row → `.compact-price-row` → `.compact-target-time-row` → left-aligned `.compact-strategy-row` → Exp), normal font sizes; PR #353's `useFitText` auto-fit was removed.
 
-OPTION-CHASER-IDENTITY-ROOT-CAUSE-REVIEW-001 (investigation only, no fix): server never drops/replaces a resolvable owner cookie; the "劇本消失" path is a request arriving without a resolvable cookie → indistinguishable-from-first-visit `200 []` → next write silently mints a new owner. Reproduced in `tests/test_identity_root_cause_001.py` (2 strict xfails encode the proposed additive `X-OC-Owner-Identity` signal; awaiting Owner decision).
+OPTION-CHASER-IDENTITY-FIX-002: owner cookie is now issued once, fixed 400 d (`_OWNER_COOKIE_MAX_AGE_SECONDS`), never renewed; pre-fix sliding cookies upgrade once via `browser_identities.cookie_issued_at`; cleanup/retention unchanged. Trigger of the original identity loss still unconfirmed (#129/#130; 2 strict xfails in `tests/test_identity_root_cause_001.py`). Awaiting Owner acceptance.
 
 Public Beta security hardening: PR #346 (`security/public-beta-hardening`)
 covers #345 A-1–A-4 and B-1–B-7 — merged.

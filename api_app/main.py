@@ -79,13 +79,15 @@ RateCurveRowsFetch = Callable[[date, date], tuple]
 # `_call_within_owner_scope()` 的 `set_cookie()` 呼叫裡逐一滿足
 # （不設 `domain` 參數＝預設不帶）。
 _OWNER_COOKIE_NAME = "__Host-oc_owner"
-# SECURITY-FIX-01：owner cookie 的 Max-Age 不再是固定常數（原為瀏覽器
-# 上限量級的 400 天），而是在 `create_app()` 裡由「資料保留期＋緩衝期」
-# 算出（預設 180＋7 天，見 `_owner_cookie_max_age_seconds`）；每次帶有效
-# cookie 的請求都重新 `set_cookie()` 續命（滑動窗，不是固定到期）。
-# Codex P2（PR #346）：cookie 必須活過緩衝期——隱私頁承諾「緩衝期內只要
-# 回來即恢復正常」，cookie 若在 180 天就過期，回來的瀏覽器已經拿不到
-# 舊 owner，緩衝期形同虛設。
+# OPTION-CHASER-IDENTITY-FIX-002：owner cookie 改成跟 role cookie 一樣
+# 「簽一次、固定到期」——只在瀏覽器手上還沒有這顆 cookie 時簽發（第一次
+# 綁定、bootstrap 重試、舊版滑動窗 cookie 的一次性升級，見
+# `_resolve_owner_for_request()`），已經帶著有效 cookie 的請求不再回
+# `Set-Cookie`。取代 SECURITY-FIX-01 的「每次請求都續命 180＋7 天滑動窗」。
+# 400 天是瀏覽器接受的 Max-Age 上限（RFC 6265bis），遠長於資料保留期＋
+# 緩衝期——Codex P2（PR #346）「cookie 必須活過緩衝期」的承諾不受影響；
+# 清理錨點仍是每次請求都會更新的 `last_seen_at`，資料清除政策不變。
+_OWNER_COOKIE_MAX_AGE_SECONDS = 400 * 24 * 60 * 60
 # 合法 cookie token 的形狀：base64url、至少 22 字元（≥128 bit 隨機，
 # 涵蓋正式簽發的 `token_urlsafe(32)`＝43 字元，以及 PB-07 合成壓測
 # harness 的 `token_urlsafe(16)`＝22 字元）。形狀不對的一律當作沒帶
@@ -109,16 +111,12 @@ _OWNER_BOOTSTRAP_STALE_HEADER = "X-OC-Owner-Bootstrap-Stale"
 
 # AUTH-02（#309）：role-session cookie（軸二）沿用當時 owner cookie 的
 # 400 天持久 TTL——票面明文「比照既有 owner cookie 的既有持久 TTL/Max-Age
-# 慣例」。SECURITY-FIX-01 只把 owner cookie 改成 180＋7 天，role cookie
-# 刻意維持 400 天不動（角色 session 不在這張票範圍內）。
-# **刻意不做滑動窗續命**：owner cookie 的續命邏輯活在
-# `_call_within_owner_scope()` 這個共用 middleware 裡，若要讓 role
-# cookie 也在每次請求後續命，middleware 就必須認識軸二的 cookie 名字
-# 與 session 查詢——那正是 spec §19 明令禁止的「兩段程式碼共用同一個
-# 函式或中間結果」。改為只在登入當下設一次固定到期（下方三個
+# 慣例」。IDENTITY-FIX-002 起 owner cookie 也是 400 天、簽一次不續命，
+# 兩軸行為一致，但常數刻意各自定義（軸一／軸二正交，spec §19）。
+# **刻意不做滑動窗續命**：只在登入當下設一次固定到期（下方三個
 # `/api/auth/*` 端點），瀏覽器重開後仍登入的 AC 因此仍然成立（票面
-# 沒有要求「越常用越不會過期」），且完全不需要動這個既有共用
-# middleware 一行。
+# 沒有要求「越常用越不會過期」），共用 middleware 也不必認識軸二的
+# cookie 名字與 session 查詢。
 _ROLE_COOKIE_MAX_AGE_SECONDS = superuser.ROLE_COOKIE_MAX_AGE_SECONDS
 
 # spec §4 的路由白名單——缺 cookie 時**不得**建立新 owner 的端點。
@@ -1205,10 +1203,6 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
     _effective_grace_period_days = _positive_days(
         anonymous_grace_period_days, "ANONYMOUS_GRACE_PERIOD_DAYS",
         ANONYMOUS_GRACE_PERIOD_DAYS)
-    # owner cookie 要活過「保留期＋緩衝期」（見模組頂端 `_OWNER_COOKIE_NAME`
-    # 下方的說明），跟 cleanup 用同一組 effective 值，兩邊不會各算各的。
-    _owner_cookie_max_age_seconds = (
-        (_effective_retention_days + _effective_grace_period_days) * 24 * 60 * 60)
     # 批次上限 `<=0`＝這次不刪任何 owner（停用）；負數不能當 slice 用
     # （`eligible[:-1]` 會變成「刪到只剩最後一個」）。
     _effective_cleanup_batch_size = max(0, (
@@ -1374,7 +1368,8 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
 
         - `owner_id` 為 `None`：這個路由被排除在 owner-scoped 流程之外
           （`_OWNER_EXEMPT_*`），不簽 cookie、不碰 owner。
-        - cookie 已綁定 owner：回真正的 owner_id，續命 `last_seen_at`。
+        - cookie 已綁定 owner：回真正的 owner_id，更新 `last_seen_at`（清理
+          錨點）。cookie 本身不再續簽（IDENTITY-FIX-002）。
         - SECURITY-FIX-01（deferred owner creation）：沒帶 cookie、cookie
           形狀不對、或帶著一顆還沒綁定的 token——**不建立任何 owner 列**。
           回一個每個請求各自隨機的佔位 owner_id（讀取端點天然查不到任何
@@ -1386,10 +1381,14 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
           同一個瀏覽器同時送出的多個建立請求（連點、多個分頁）因此收斂到
           同一個 owner。
 
-        `cookie`：`{"token": ..., "bound": bool}`。**只有 `bound` 為真的
-        回應才會 `set_cookie()`**——cookie 已綁定 owner（續命，讓 Max-Age
-        變成滑動窗），或這次請求剛呼叫 materializer 綁定（materializer
-        會把它翻成真）。沒綁定的回應（首訪讀取、404……）一律不發 owner
+        `cookie`：`{"token": ..., "bound": bool, "issue": bool}`。`bound`
+        ＝這次請求屬於一個真正的 owner（回應帶 `X-OC-Owner-Bound`）。
+        `issue`＝瀏覽器手上還沒有這顆 cookie、這次回應要 `set_cookie()`，
+        只有三種情況：materializer 剛綁定（把兩者都翻成真）、cookie 不在但
+        bootstrap header 在重試窗內解析到 owner（第一次寫入的回應遺失）、
+        以及舊版滑動窗 cookie 的一次性升級（`cookie_issued_at` 為空）。
+        已經帶著有效 cookie 的請求 `issue` 為假，不碰 cookie
+        （IDENTITY-FIX-002）。沒綁定的回應（首訪讀取、404……）一律不發 owner
         cookie：Codex P1（PR #346）——首訪同時送出好幾個沒帶 cookie 的
         讀取時，若每個回應都各自發一顆新 token，使用者在某個慢回應回來
         之前就建立劇本的話，那個慢回應會用一顆沒綁定的 token 蓋掉剛綁定
@@ -1409,14 +1408,22 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         token = request.cookies.get(_OWNER_COOKIE_NAME)
         stale_bootstrap = False
         if token is not None and _OWNER_TOKEN_RE.match(token):
-            owner_id = _db().resolve_owner_by_token(token)
+            identity = _db().get_browser_identity(token)
+            owner_id = identity.owner_id if identity else None
+            # 瀏覽器已經帶著這顆 cookie：不再續簽。只有 IDENTITY-FIX-002 之前
+            # 簽的滑動窗 cookie（`cookie_issued_at` 為空、剩餘壽命 ≤187 天）
+            # 升級一次成固定 400 天。
+            issue = identity is not None and identity.cookie_issued_at is None
         else:
             token, owner_id, stale_bootstrap = _bootstrap_token(request)
+            # cookie 不在、header 在重試窗內解析到 owner：瀏覽器沒收到第一次
+            # 綁定的回應，這次要把 cookie 補給它。
+            issue = owner_id is not None
         if owner_id is not None:
             _db().touch_browser_identity(token, now=now_utc_iso())
-            return owner_id, {"token": token, "bound": True}, None
+            return owner_id, {"token": token, "bound": True, "issue": issue}, None
 
-        cookie = {"token": token, "bound": False}
+        cookie = {"token": token, "bound": False, "issue": False}
 
         def materialize() -> str:
             if stale_bootstrap:
@@ -1436,7 +1443,7 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
             if created:
                 _record_metric("new_owner_count", ny_today())
             set_resolved_owner(bound)
-            cookie["bound"] = True
+            cookie["bound"] = cookie["issue"] = True
             return bound
 
         return pending_owner_placeholder(), cookie, materialize
@@ -1485,7 +1492,7 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         with diagnostics.owner_scope(diag_owner), \
              resolved_owner_scope(owner_id, materializer):
             response = await call_next(request)
-        if cookie is not None and cookie["bound"]:
+        if cookie is not None and cookie["issue"]:
             # `SameSite=Lax`：同源 SPA，沒有跨站表單提交或第三方
             # iframe 內嵌的需求，`Lax` 已足夠擋掉 CSRF 常見手法
             # （跨站 GET 導覽仍會帶上，但本站沒有靠 GET 產生副作用的
@@ -1498,8 +1505,13 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
             # 已知限制，不是靜默降級。
             response.set_cookie(
                 _OWNER_COOKIE_NAME, cookie["token"],
-                max_age=_owner_cookie_max_age_seconds,
+                max_age=_OWNER_COOKIE_MAX_AGE_SECONDS,
                 httponly=True, secure=True, samesite="lax", path="/")
+            try:
+                _db().mark_owner_cookie_issued(cookie["token"], now=now_utc_iso())
+            except Exception:  # noqa: BLE001 — 記不成只代表下次請求再簽一次同一顆 cookie，不能讓已經成功的寫入回成 500
+                pass
+        if cookie is not None and cookie["bound"]:
             # cookie 是 HttpOnly，前端讀不到：明講「已綁定」，前端才知道
             # 可以丟掉 bootstrap token、不必再碰本機儲存（見
             # `src/ownerBootstrap.ts`）。只是一個布林，不含 token 本身。
@@ -2563,11 +2575,7 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         owner_id 參數**——硬性安全邊界：這個端點如果接受任意 owner_id，
         就會變成任何人都能刪除別人資料的漏洞（PB-04 §10）。
 
-        刪除後這次 request 自己的回應仍會被 `_request_scope_
-        middleware` 重新蓋上原本那顆 cookie（`_call_within_owner_
-        scope()` 在 `call_next()` 之後才 `set_cookie()`，值是這次
-        request 一開始解析出的那個 token）——刻意選擇的較簡單設計：
-        不在這裡搶在 middleware 之前另外簽發一個新身份寫回應標頭。
+        刪除後不在這裡另外簽發新身份或清 cookie——刻意選擇的較簡單設計。
         那顆舊 cookie 雖然還留在瀏覽器裡，但它現在指向的
         `browser_identities` 列已經被 `delete_owner()` 清空；**下一次**
         帶著它的請求會被 `resolve_owner_by_token()` 判定為查無此

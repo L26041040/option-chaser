@@ -406,6 +406,10 @@ CREATE TABLE IF NOT EXISTS browser_identities (
     last_seen_at   TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS browser_identities_owner_idx ON browser_identities (owner_id);
+-- OPTION-CHASER-IDENTITY-FIX-002：owner cookie 改成簽一次、固定期限。
+-- nullable：既有列（舊版滑動窗 cookie）讀回 NULL，下一次帶著它的請求
+-- 升級一次，不需要資料回填。
+ALTER TABLE browser_identities ADD COLUMN IF NOT EXISTS cookie_issued_at TEXT;
 -- PB-07（#304，Anonymous Public Beta）：Controlled Beta 合成壓測
 -- harness 的清理標記——PB-01 當時刻意未預先加這個欄位（避免數週內
 -- 沒有消費端的欄位躺在 production），本票才是它真正的消費端。純
@@ -1411,6 +1415,23 @@ class PostgresStorage:
                 "SELECT owner_id FROM browser_identities WHERE token = %s",
                 (token,)).fetchone()
         return row[0] if row else None
+
+    def get_browser_identity(self, token: str) -> BrowserIdentity | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT token, owner_id, issued_at, last_seen_at, "
+                "cookie_issued_at FROM browser_identities WHERE token = %s",
+                (token,)).fetchone()
+        return (BrowserIdentity(token=row[0], owner_id=row[1],
+                                issued_at=row[2], last_seen_at=row[3],
+                                cookie_issued_at=row[4])
+                if row else None)
+
+    def mark_owner_cookie_issued(self, token: str, *, now: str) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE browser_identities SET cookie_issued_at = %s "
+                "WHERE token = %s", (now, token))
 
     def create_owner_with_token(self, owner: Owner,
                                 identity: BrowserIdentity) -> None:

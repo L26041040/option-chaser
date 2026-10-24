@@ -306,11 +306,16 @@ class BrowserIdentity:
     一次帶著這個 token 的請求時間——本票只建立欄位與續命方法
     （`touch_browser_identity()`），「多久沒見就算失效」屬 PB-02
     範圍。
+
+    `cookie_issued_at`（IDENTITY-FIX-002）：伺服器最近一次把這個 token
+    以固定期限 cookie 簽給瀏覽器的時間。`None`＝這顆 token 只被舊版
+    滑動窗 cookie 簽過，下一次帶著它的請求會升級一次。
     """
     token: str
     owner_id: str
     issued_at: str
     last_seen_at: str
+    cookie_issued_at: str | None = None
 
 
 @dataclass(frozen=True)
@@ -1250,6 +1255,14 @@ class Storage(Protocol):
         的，不代表 solo owner 不存在——它仍然活在既有 5+1 張表裡）。"""
 
     def resolve_owner_by_token(self, token: str) -> str | None: ...
+
+    def get_browser_identity(self, token: str) -> BrowserIdentity | None:
+        """IDENTITY-FIX-002：cookie 解析用的整列讀取——一次查詢同時拿到
+        owner 與 `cookie_issued_at`。token 不存在回 `None`。"""
+
+    def mark_owner_cookie_issued(self, token: str, *, now: str) -> None:
+        """IDENTITY-FIX-002：記下這次回應已把 token 以固定期限 cookie
+        簽給瀏覽器。token 不存在時安靜地什麼都不做。"""
 
     def create_owner_with_token(self, owner: Owner,
                                 identity: BrowserIdentity) -> None:
