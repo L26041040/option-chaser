@@ -1,8 +1,8 @@
 """OPTION-CHASER-OWNER-CONSOLIDATION-001：Owner 合併的狀態查詢與回滾。
 
-合併本身由 Production cold-start hook 執行一次（見
-`api_app/oneshot_owner_consolidation.py`）。這支腳本給 Owner 在本機用
-Neon 連線字串操作：
+合併本身已在 2026-10-25（台灣）由臨時的 Production cold-start hook 執行
+一次（PR #356；hook 已由 cleanup 移除）。這支腳本給 Owner 在本機用 Neon
+連線字串操作：
 
     # 預設：唯讀，印出合併狀態（未開始時附預檢結果）
     DATABASE_URL=postgresql://... python scripts/owner_consolidation.py
