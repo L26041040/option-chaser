@@ -1,6 +1,7 @@
-import { afterEach } from "vitest";
+import { afterEach, beforeEach } from "vitest";
 
 import "@testing-library/jest-dom/vitest";
+import { credential } from "./credentialStore";
 import { _resetCacheForTests } from "./fetchCache";
 import { _resetUsageSummaryForTests } from "./usageSummaryStore";
 
@@ -8,6 +9,14 @@ import { _resetUsageSummaryForTests } from "./usageSummaryStore";
 // 存在——不清空的話，前一個測試 mock 的回應會被後一個測試沿用，兩者
 // 互相汙染。每個測試結束都清空，回到「這個測試自己決定 mock 什麼」
 // 的既有假設。
+// UNIFIED-IDENTITY-001：每個請求都帶本機憑證，只有分頁的第一個請求要等
+// 本機儲存讀完（`credentialStore.ts`）。測試先把它讀好，`fetch` 就跟正式環境
+// 已載入後一樣同步送出——既有測試「render 完就斷言請求已送出」的時序不變。
+// 第一次讀取那一步本身由 `credentialStore.test.ts` 與 `api` 測試涵蓋。
+beforeEach(async () => {
+  await credential();
+});
+
 afterEach(() => {
   _resetCacheForTests();
   // SW-13：usage-summary 共用 store 同理，也是模組層級單例。

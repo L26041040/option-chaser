@@ -68,7 +68,7 @@ def test_super_user_and_super_admin_are_exempt_from_quota():
 
     for role in ("superuser", "superadmin"):
         body = client.get("/api/me/usage-summary",
-                          cookies=role_cookies(storage, role)).json()
+                          cookies=role_cookies(storage, role, owner_id="solo")).json()
         assert body["quota_exempt"] is True, role
 
 
@@ -210,7 +210,7 @@ def test_ops_metrics_reports_vendor_fuse_usage_against_the_real_budget():
     storage = MemoryStorage()
     client = _client(storage=storage, global_vendor_daily_budget=100)
     body = client.get("/api/ops/metrics",
-                      cookies=role_cookies(storage, "superadmin")).json()
+                      cookies=role_cookies(storage, "superadmin", owner_id="solo")).json()
     assert body["vendor_fuse"] == {"used": 0, "budget": 100}
 
 
@@ -218,5 +218,5 @@ def test_ops_metrics_vendor_fuse_budget_is_null_when_disabled():
     storage = MemoryStorage()
     client = _client(storage=storage, global_vendor_daily_budget=0)
     body = client.get("/api/ops/metrics",
-                      cookies=role_cookies(storage, "superadmin")).json()
+                      cookies=role_cookies(storage, "superadmin", owner_id="solo")).json()
     assert body["vendor_fuse"]["budget"] is None

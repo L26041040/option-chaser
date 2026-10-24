@@ -44,13 +44,14 @@ from .dividend_cache import cached_loader as cached_dividend_loader
 from .identity import (IdentityResolver, cookie_identity_resolver,
                        default_identity_resolver, is_pending_owner,
                        materialize_owner, pending_owner_placeholder,
-                       resolved_owner_scope, set_resolved_owner)
+                       resolved_owner_scope, set_resolved_owner,
+                       set_resolved_role)
 from .rate_cache import cached_loader
 from .storage import (BrowserIdentity, ContractHistory, DataSourceSettings,
                       Feedback, IvBackfillRun, IvObservation, OWNER_RATE_LIMIT_SCOPE,
                       Owner, ProviderCredential, ProviderVerification,
                       RateCacheEntry, RateLimitBucket, ResultRecord,
-                      ResultSummary, RoleSession, Scenario, ScenarioExists, Storage,
+                      ResultSummary, Scenario, ScenarioExists, Storage,
                       SuperUserAuditEvent, UsageSetting)
 from .storage.factory import database_url_candidates, storage_from_env
 from .treasury_cache import cached_rate_curve_rows
@@ -79,55 +80,38 @@ RateCurveRowsFetch = Callable[[date, date], tuple]
 # `_call_within_owner_scope()` 的 `set_cookie()` 呼叫裡逐一滿足
 # （不設 `domain` 參數＝預設不帶）。
 _OWNER_COOKIE_NAME = "__Host-oc_owner"
-# SECURITY-FIX-01：owner cookie 的 Max-Age 不再是固定常數（原為瀏覽器
-# 上限量級的 400 天），而是在 `create_app()` 裡由「資料保留期＋緩衝期」
-# 算出（預設 180＋7 天，見 `_owner_cookie_max_age_seconds`）；每次帶有效
-# cookie 的請求都重新 `set_cookie()` 續命（滑動窗，不是固定到期）。
-# Codex P2（PR #346）：cookie 必須活過緩衝期——隱私頁承諾「緩衝期內只要
-# 回來即恢復正常」，cookie 若在 180 天就過期，回來的瀏覽器已經拿不到
-# 舊 owner，緩衝期形同虛設。
+# OPTION-CHASER-IDENTITY-FIX-002：owner cookie 改成跟 role cookie 一樣
+# 「簽一次、固定到期」——只在瀏覽器手上還沒有這顆 cookie 時簽發（第一次
+# 綁定、bootstrap 重試、舊版滑動窗 cookie 的一次性升級，見
+# `_resolve_owner_for_request()`），已經帶著有效 cookie 的請求不再回
+# `Set-Cookie`。取代 SECURITY-FIX-01 的「每次請求都續命 180＋7 天滑動窗」。
+# 400 天是瀏覽器接受的 Max-Age 上限（RFC 6265bis），遠長於資料保留期＋
+# 緩衝期——Codex P2（PR #346）「cookie 必須活過緩衝期」的承諾不受影響；
+# 清理錨點仍是每次請求都會更新的 `last_seen_at`，資料清除政策不變。
+_OWNER_COOKIE_MAX_AGE_SECONDS = 400 * 24 * 60 * 60
 # 合法 cookie token 的形狀：base64url、至少 22 字元（≥128 bit 隨機，
 # 涵蓋正式簽發的 `token_urlsafe(32)`＝43 字元，以及 PB-07 合成壓測
 # harness 的 `token_urlsafe(16)`＝22 字元）。形狀不對的一律當作沒帶
 # cookie，重新簽發——不接受任意短字串當身份。
 _OWNER_TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{22,128}$")
 
-# Codex P1（PR #346）：第一次造訪、還沒有 cookie 的瀏覽器同時送出多個寫入
-# （連點、重試、兩個分頁）時，伺服器無從得知它們來自同一個瀏覽器（IP 不是
-# 身分）。前端因此在 localStorage 放一顆 bootstrap token（跨分頁共用、
-# 重試沿用），寫入時放在這個 header；沒有有效 cookie 時伺服器就用它當
-# 綁定的 token——同一顆靠 `browser_identities.token` PK 收斂到同一個
-# owner。custom header：跨站請求（沒有 CORS）帶不了。
-_OWNER_BOOTSTRAP_HEADER = "x-oc-owner-bootstrap"
-# 已經綁定的 bootstrap token 只在綁定後這麼短的時間內被接受（第一次寫入
-# 其實成功、回應卻沒回到瀏覽器時的重試）；超過就不算身分——localStorage
-# 不能變成 cookie 之外的第二個身分載體（清掉 cookie 就是清掉身分）。
-_OWNER_BOOTSTRAP_RETRY_WINDOW = timedelta(minutes=10)
-# 超過重試窗的已綁定 bootstrap token 用在寫入時，伺服器回 409 加這個
-# header（布林）：前端據此換一顆新 token 重送（見 `_bootstrap_token`）。
-_OWNER_BOOTSTRAP_STALE_HEADER = "X-OC-Owner-Bootstrap-Stale"
+# OPTION-CHASER-UNIFIED-IDENTITY-001：同一顆憑證存兩份——HttpOnly cookie
+# （上面的 `_OWNER_COOKIE_NAME`），以及前端放在 IndexedDB／localStorage 的
+# 那份（`src/credentialStore.ts`），每個請求都放在這個 header 帶上來。比照
+# Supabase／Firebase 的匿名身分：一個 user、一份持久憑證存在瀏覽器裡，只有
+# 明確的清除才會遺失。兩份互相補回——cookie 不在就用本機那份（並把 cookie
+# 補發回去），本機那份不在或不一樣就在回應的 `X-OC-Credential` 把正確的值
+# 交給前端存起來（見 `_resolve_owner_for_request()`）。custom header：跨站
+# 請求（沒有 CORS）帶不了，也讀不到回應裡的這個 header。
+_CREDENTIAL_HEADER = "x-oc-credential"
+_CREDENTIAL_RESPONSE_HEADER = "X-OC-Credential"
 
-# AUTH-02（#309）：role-session cookie（軸二）沿用當時 owner cookie 的
-# 400 天持久 TTL——票面明文「比照既有 owner cookie 的既有持久 TTL/Max-Age
-# 慣例」。SECURITY-FIX-01 只把 owner cookie 改成 180＋7 天，role cookie
-# 刻意維持 400 天不動（角色 session 不在這張票範圍內）。
-# **刻意不做滑動窗續命**：owner cookie 的續命邏輯活在
-# `_call_within_owner_scope()` 這個共用 middleware 裡，若要讓 role
-# cookie 也在每次請求後續命，middleware 就必須認識軸二的 cookie 名字
-# 與 session 查詢——那正是 spec §19 明令禁止的「兩段程式碼共用同一個
-# 函式或中間結果」。改為只在登入當下設一次固定到期（下方三個
-# `/api/auth/*` 端點），瀏覽器重開後仍登入的 AC 因此仍然成立（票面
-# 沒有要求「越常用越不會過期」），且完全不需要動這個既有共用
-# middleware 一行。
-_ROLE_COOKIE_MAX_AGE_SECONDS = superuser.ROLE_COOKIE_MAX_AGE_SECONDS
-
-# spec §4 的路由白名單——缺 cookie 時**不得**建立新 owner 的端點。
-# 白名單而非黑名單：未來新增的 owner-scoped 端點預設不豁免，漏列
-# 新端點不會意外洩漏成「缺 cookie 也能用」。
+# spec §4 的路由白名單——完全不碰身分解析的端點。白名單而非黑名單：未來
+# 新增的端點預設會解析身分。UNIFIED-IDENTITY-001 起 `/api/auth/*`、
+# `/api/ops/*`、`/api/superuser/*` 也要解析身分（權限就在 user 記錄上），
+# 但它們都只讀、不會建立 user——只有 `_persistent_owner()` 會。
 _OWNER_EXEMPT_EXACT = ("/api/health",)
-_OWNER_EXEMPT_PREFIXES = ("/api/cron/", "/api/ops/", "/api/superuser/",
-                         "/api/auth/")
-
+_OWNER_EXEMPT_PREFIXES = ("/api/cron/",)
 
 # SECURITY-FIX-02：這次 request 本身——`_fetch_chain()` 要知道角色（SU／SA
 # 豁免 per-owner quota）與來源（source burst），但它的簽章不帶 request；
@@ -168,15 +152,9 @@ def _is_owner_exempt_route(path: str) -> bool:
     - `/api/cron/*`：Vercel Cron 每個交易日觸發一次，若建立 owner 會
       洗出大量永遠不會再被使用的 Abandoned Owner，浪費 owner 表與
       PB-08 的清理排程。
-    - `/api/ops/*`：operator-only 端點，由 Super Admin capability
-      （AUTH-03／#310 起 `require_role(minimum=SUPERADMIN)`，軸二）
-      另外把關，與使用者身份無關。
-    - `/api/superuser/*`：PB-10 新增，跨 owner 管理端點，同樣與
-      owner-scoped 資料無關——這裡本來就是刻意讓 Super Admin 讀寫
-      別人資料的例外通道，不該先幫呼叫端建一個自己的 owner。
-    - `/api/auth/*`：AUTH-02（#309）新增，三層角色的登入／登出／狀態
-      查詢端點——同樣與 owner-scoped 資料無關，登入這個動作本身不該
-      附帶幫你建一個匿名 owner 的副作用。
+    - 其餘端點（含 `/api/auth/*`、`/api/ops/*`、`/api/superuser/*`）都會
+      解析身分：權限是 user 記錄的一個欄位（UNIFIED-IDENTITY-001），要判斷
+      權限就得先知道是誰。解析本身不建立 user。
     """
     if path in _OWNER_EXEMPT_EXACT:
         return True
@@ -1205,10 +1183,6 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
     _effective_grace_period_days = _positive_days(
         anonymous_grace_period_days, "ANONYMOUS_GRACE_PERIOD_DAYS",
         ANONYMOUS_GRACE_PERIOD_DAYS)
-    # owner cookie 要活過「保留期＋緩衝期」（見模組頂端 `_OWNER_COOKIE_NAME`
-    # 下方的說明），跟 cleanup 用同一組 effective 值，兩邊不會各算各的。
-    _owner_cookie_max_age_seconds = (
-        (_effective_retention_days + _effective_grace_period_days) * 24 * 60 * 60)
     # 批次上限 `<=0`＝這次不刪任何 owner（停用）；負數不能當 slice 用
     # （`eligible[:-1]` 會變成「刪到只剩最後一個」）。
     _effective_cleanup_batch_size = max(0, (
@@ -1367,105 +1341,84 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
     # 純驗證錯誤）因此不再付任何連線握手。
     _uses_cookie_identity = identity_resolver is cookie_identity_resolver
 
-    def _resolve_owner_for_request(
-            request: Request) -> tuple[str | None, dict | None, Callable[[], str] | None]:
-        """PB-02（#294）spec §4 的**唯一路由判斷點**——回傳
-        `(owner_id, cookie, materializer)`。
+    def _well_formed(token: str | None) -> str | None:
+        return token if token is not None and _OWNER_TOKEN_RE.match(token) else None
 
-        - `owner_id` 為 `None`：這個路由被排除在 owner-scoped 流程之外
-          （`_OWNER_EXEMPT_*`），不簽 cookie、不碰 owner。
-        - cookie 已綁定 owner：回真正的 owner_id，續命 `last_seen_at`。
-        - SECURITY-FIX-01（deferred owner creation）：沒帶 cookie、cookie
-          形狀不對、或帶著一顆還沒綁定的 token——**不建立任何 owner 列**。
-          回一個每個請求各自隨機的佔位 owner_id（讀取端點天然查不到任何
-          東西），加上一個 materializer：只有真正要持久化資料的端點呼叫
-          `materialize_owner()` 時才會用它把這顆 token 原子地綁到新
-          owner（`Storage.claim_browser_token()`，靠 token PK 保證並發
-          下只會得到一個 owner）。請求帶著一顆形狀合法、但沒綁定的
-          token（例如 owner 被清理後的舊 cookie）時，綁的就是這一顆：
-          同一個瀏覽器同時送出的多個建立請求（連點、多個分頁）因此收斂到
-          同一個 owner。
+    def _resolve_owner_for_request(request: Request) -> tuple[
+            str | None, str | Callable[[], str], dict | None, Callable[[], str] | None]:
+        """PB-02（#294）spec §4 的**唯一身分判斷點**——UNIFIED-IDENTITY-001
+        起同時回答「這個請求是哪個 user、是什麼權限」，回傳
+        `(owner_id, role, credential, materializer)`。
 
-        `cookie`：`{"token": ..., "bound": bool}`。**只有 `bound` 為真的
-        回應才會 `set_cookie()`**——cookie 已綁定 owner（續命，讓 Max-Age
-        變成滑動窗），或這次請求剛呼叫 materializer 綁定（materializer
-        會把它翻成真）。沒綁定的回應（首訪讀取、404……）一律不發 owner
-        cookie：Codex P1（PR #346）——首訪同時送出好幾個沒帶 cookie 的
-        讀取時，若每個回應都各自發一顆新 token，使用者在某個慢回應回來
-        之前就建立劇本的話，那個慢回應會用一顆沒綁定的 token 蓋掉剛綁定
-        的 cookie，剛建立的 owner 與劇本從此存取不到。不發就沒有東西能
-        蓋。
+        憑證來源有兩份、是同一顆 token：HttpOnly cookie，以及前端本機儲存
+        放在 `X-OC-Credential` header 的那份。依序用 cookie、再用 header
+        去查（`resolve_credential()`，一次 JOIN 拿到 user 與權限）：
 
-        只在**沒有被 DI 覆寫**（`_uses_cookie_identity`，production
-        唯一路徑）時才會做任何 cookie／storage owner 動作——顯式注入
-        別的 `identity_resolver` 時，這個函式直接回 `(None, None, None)`，
-        呼叫端改用 `identity_resolver()` 本身。
+        - 查到：回真正的 owner_id 與它的權限，更新 `last_seen_at`（清理
+          錨點）。`credential["issue"]`：這次查到的不是 cookie 那份（cookie
+          不在或對不上），或是 IDENTITY-FIX-002 之前的滑動窗 cookie → 回應
+          補發固定期限 cookie。`credential["echo"]`：前端那份不在或不一樣
+          → 回應的 `X-OC-Credential` 把正確的 token 交給前端存。兩份因此
+          每次回應都會收斂成同一顆；任何一份還在，身分就不會掉。
+        - 都查不到：**不建立任何 user**（SECURITY-FIX-01 deferred
+          creation）——回每個請求各自隨機的佔位 owner_id（讀取天然查不到
+          任何東西），加上 materializer：只有 `_persistent_owner()`（建立
+          劇本、存設定／credential、輸入 SU／SA 密碼）才會用它把憑證原子地
+          綁到新 user（`claim_browser_token()`，靠 token PK 保證並發下只會
+          得到一個 user）。綁的優先順序是前端那份（它活在本機儲存，所有
+          分頁共用）、再來是 cookie、都沒有才隨機產生。
+
+        只在**沒有被 DI 覆寫**（`_uses_cookie_identity`）時才碰憑證；顯式
+        注入別的 `identity_resolver` 時（測試），權限就是被注入那個 owner
+        記錄上的權限（第一次需要時才查）。
         """
-        if not _uses_cookie_identity:
-            return None, None, None
         if _is_owner_exempt_route(request.url.path):
-            return None, None, None
+            return None, "normal", None, None
+        if not _uses_cookie_identity:
+            injected = identity_resolver()
 
-        token = request.cookies.get(_OWNER_COOKIE_NAME)
-        stale_bootstrap = False
-        if token is not None and _OWNER_TOKEN_RE.match(token):
-            owner_id = _db().resolve_owner_by_token(token)
-        else:
-            token, owner_id, stale_bootstrap = _bootstrap_token(request)
-        if owner_id is not None:
+            def role_of_injected_owner() -> str:
+                rec = _db().get_owner(injected)
+                return rec.role if rec else "normal"
+            return None, role_of_injected_owner, None, None
+
+        cookie_token = _well_formed(request.cookies.get(_OWNER_COOKIE_NAME))
+        stored_token = _well_formed(request.headers.get(_CREDENTIAL_HEADER))
+        for token in dict.fromkeys(t for t in (cookie_token, stored_token) if t):
+            resolved = _db().resolve_credential(token)
+            if resolved is None:
+                continue
             _db().touch_browser_identity(token, now=now_utc_iso())
-            return owner_id, {"token": token, "bound": True}, None
+            credential = {
+                "token": token, "bound": True,
+                "issue": token != cookie_token or resolved.cookie_issued_at is None,
+                "echo": token != stored_token}
+            return resolved.owner_id, resolved.role, credential, None
 
-        cookie = {"token": token, "bound": False}
+        candidate = stored_token or cookie_token or secrets.token_urlsafe(32)
+        credential = {"token": candidate, "bound": False,
+                      "issue": False, "echo": False}
 
         def materialize() -> str:
-            if stale_bootstrap:
-                # Codex P2（PR #346）：header 帶的是一顆早就綁定、超過重試窗
-                # 的 token（例如前端清除失敗、cookie 又被清掉）。不能悄悄換
-                # 一顆只有伺服器知道的隨機 token 照樣寫入——回應一旦遺失，
-                # 重試還是帶那顆舊 token、又換一顆，就多出第二個 owner。
-                # 寫入之前就拒絕，前端換一顆新 token 重送（見
-                # `src/api.ts` 的 `sendOwnerBootstrap`）。
-                raise HTTPException(
-                    status_code=409, detail="瀏覽器暫存的身分已過期，請重試",
-                    headers={_OWNER_BOOTSTRAP_STALE_HEADER: "1"})
             now = now_utc_iso()
             bound, created = _db().claim_browser_token(
-                token, Owner(owner_id=secrets.token_urlsafe(32), created_at=now),
+                candidate, Owner(owner_id=secrets.token_urlsafe(32), created_at=now),
                 now=now)
             if created:
                 _record_metric("new_owner_count", ny_today())
+            else:
+                # 並發請求剛好先綁了這顆：沿用那個 user 與它的權限。
+                rec = _db().get_owner(bound)
+                set_resolved_role(rec.role if rec else "normal")
             set_resolved_owner(bound)
-            cookie["bound"] = True
+            credential.update(bound=True, issue=True, echo=candidate != stored_token)
             return bound
 
-        return pending_owner_placeholder(), cookie, materialize
-
-    def _bootstrap_token(request: Request) -> tuple[str, str | None, bool]:
-        """沒有有效 cookie 時的 token 來源（見 `_OWNER_BOOTSTRAP_HEADER`），
-        回傳 `(token, owner_id, stale)`：header 帶著形狀合法的 token——還沒
-        綁定就沿用它（等 materializer 綁定），綁定未滿
-        `_OWNER_BOOTSTRAP_RETRY_WINDOW` 就視同那個 owner；綁定太久的回
-        `stale=True`（讀取照舊當新訪客，寫入會被拒絕、要前端換 token）；
-        沒帶或形狀不對就換一顆新的隨機 token。"""
-        candidate = request.headers.get(_OWNER_BOOTSTRAP_HEADER)
-        if candidate and _OWNER_TOKEN_RE.match(candidate):
-            bound = _db().resolve_owner_by_token(candidate)
-            if bound is None:
-                return candidate, None, False
-            rec = _db().get_owner(bound)
-            try:
-                age = datetime.now(timezone.utc) - datetime.fromisoformat(rec.created_at)
-            except (AttributeError, ValueError):
-                age = None
-            if age is not None and age < _OWNER_BOOTSTRAP_RETRY_WINDOW:
-                return candidate, bound, False
-            return secrets.token_urlsafe(32), None, True
-        return secrets.token_urlsafe(32), None, False
+        return pending_owner_placeholder(), "normal", credential, materialize
 
     def _persistent_owner() -> str:
-        """要持久化 owner-scoped 資料的端點用這個取 owner，不是
-        `identity_resolver()`——這是匿名 owner 唯一的建立入口（見
+        """要持久化 owner-scoped 資料（或寫入權限）的端點用這個取 owner，
+        不是 `identity_resolver()`——這是 user 唯一的建立入口（見
         `identity.materialize_owner()`）。DI 覆寫身份時照舊用注入值。"""
         return materialize_owner() if _uses_cookie_identity else identity_resolver()
 
@@ -1477,33 +1430,39 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
             _current_request.reset(request_token)
 
     async def _call_within_owner_scope_inner(request: Request, call_next) -> Response:
-        owner_id, cookie, materializer = _resolve_owner_for_request(request)
+        owner_id, role, credential, materializer = _resolve_owner_for_request(request)
         effective_owner = owner_id if _uses_cookie_identity else identity_resolver()
         # 佔位 owner 不寫進診斷紀錄的 owner 欄位：它不屬於任何人，也不該
         # 被任何人的 `/api/diagnostics` 讀到。
         diag_owner = None if is_pending_owner(effective_owner) else effective_owner
         with diagnostics.owner_scope(diag_owner), \
-             resolved_owner_scope(owner_id, materializer):
+             resolved_owner_scope(owner_id, materializer, role):
             response = await call_next(request)
-        if cookie is not None and cookie["bound"]:
-            # `SameSite=Lax`：同源 SPA，沒有跨站表單提交或第三方
-            # iframe 內嵌的需求，`Lax` 已足夠擋掉 CSRF 常見手法
-            # （跨站 GET 導覽仍會帶上，但本站沒有靠 GET 產生副作用的
-            # 端點）。`__Host-` 前綴要求 `Secure`＋`Path=/`＋不得設
-            # `Domain`——production（Vercel）恆為 HTTPS，三個條件本身
-            # 就自然成立；本地若以純 HTTP 手動起 Python 後端（非透過
-            # 前端 mock 的 E2E／pytest TestClient，兩者皆已改用
-            # `https://testserver` 分別見 `docs/pb02-cookie-testing-
-            # notes.md`），瀏覽器會拒收這顆 cookie——這是明確記錄的
-            # 已知限制，不是靜默降級。
-            response.set_cookie(
-                _OWNER_COOKIE_NAME, cookie["token"],
-                max_age=_owner_cookie_max_age_seconds,
-                httponly=True, secure=True, samesite="lax", path="/")
-            # cookie 是 HttpOnly，前端讀不到：明講「已綁定」，前端才知道
-            # 可以丟掉 bootstrap token、不必再碰本機儲存（見
-            # `src/ownerBootstrap.ts`）。只是一個布林，不含 token 本身。
-            response.headers["X-OC-Owner-Bound"] = "1"
+        if credential is not None:
+            if credential["issue"]:
+                # `SameSite=Lax`：同源 SPA，沒有跨站表單提交或第三方 iframe
+                # 內嵌的需求。`__Host-` 前綴要求 `Secure`＋`Path=/`＋不得設
+                # `Domain`——production（Vercel）恆為 HTTPS；本地純 HTTP 的
+                # 限制見 `docs/pb02-cookie-testing-notes.md`。
+                response.set_cookie(
+                    _OWNER_COOKIE_NAME, credential["token"],
+                    max_age=_OWNER_COOKIE_MAX_AGE_SECONDS,
+                    httponly=True, secure=True, samesite="lax", path="/")
+                try:
+                    _db().mark_owner_cookie_issued(credential["token"], now=now_utc_iso())
+                except Exception:  # noqa: BLE001 — 記不成只代表下次請求再簽一次同一顆 cookie，不能讓已經成功的寫入回成 500
+                    pass
+            if credential["echo"]:
+                response.headers[_CREDENTIAL_RESPONSE_HEADER] = credential["token"]
+            if credential["bound"]:
+                response.headers["X-OC-Owner-Bound"] = "1"
+            # 內容依 user 而異，而且可能帶著憑證（Set-Cookie／X-OC-Credential）：
+            # 任何共享快取都不得存（Vercel 預設的 `public` 不適用這裡）。
+            response.headers["Cache-Control"] = "private, no-store"
+        if superuser.LEGACY_ROLE_COOKIE_NAME in request.cookies:
+            # 退役的 AUTH-02 role cookie：權限已改掛在 user 記錄上，順手清掉。
+            response.delete_cookie(superuser.LEGACY_ROLE_COOKIE_NAME, path="/",
+                                   httponly=True, secure=True, samesite="lax")
         return response
 
     @app.middleware("http")
@@ -1617,8 +1576,7 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         被擋時丟出 `FetchError` 子類，交給既有 `_classify_fetch_failure()`
         分類。"""
         request = _current_request.get()
-        role = (superuser.resolve_role(request, resolve_session=_db().resolve_role_session)
-                if request is not None else superuser.Role.NORMAL)
+        role = superuser.current_role()
         now = _clock()
         owner = identity_resolver()
         layers: list[str] = []
@@ -1922,7 +1880,10 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         # 200 個都還活躍，後面真正該清的 owner 永遠輪不到。現在先從全部
         # （非 protected）owner 裡挑出真的可刪的，批次上限只限制「這次
         # 刪幾個」，活躍的 owner 不再佔用任何批次名額。
-        facts = [f for f in _db().owner_lifecycle_facts() if not f.protected]
+        # UNIFIED-IDENTITY-001：有權限的 user 跟 protected 一樣不清——權限
+        # 永久保留，除非使用者主動重設。
+        facts = [f for f in _db().owner_lifecycle_facts()
+                 if not f.protected and f.role == "normal"]
         abandoned = 0
         eligible = []
         for f in facts:
@@ -1977,6 +1938,10 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         now = datetime.combine(today, datetime.min.time(), tzinfo=timezone.utc)
         active = abandoned = eligible = protected = 0
         for o in _db().owner_lifecycle_facts():
+            # UNIFIED-IDENTITY-001：有權限的 user（SU／SA）不屬於匿名生命週期
+            # ——清理排程跳過它們，這個分布也跟清理用同一個口徑。
+            if o.role != "normal":
+                continue
             if o.protected:
                 protected += 1
             state = anonymous_lifecycle.classify(
@@ -2102,8 +2067,7 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         未帶有效 Super Admin role session 一律 401；不對一般使用者
         或 Super User 開放，前端一般瀏覽路徑不會呼叫這個端點。
         """
-        superuser.require_role(request, superuser.Role.SUPERADMIN,
-                               resolve_session=_db().resolve_role_session)
+        superuser.require_role(superuser.Role.SUPERADMIN)
 
         by_metric: dict[str, list[dict]] = {m: [] for m in metrics.PERSISTED_METRICS}
         for e in _db().metric_summary():
@@ -2181,22 +2145,18 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         return {"sent": sent, "date": str(today),
                "alerts_triggered": [a.key for a in snapshot.alerts if a.triggered]}
 
-    # ---------- 三層角色模型（軸二，AUTH-02／#309）：登入／登出／
-    # 狀態查詢 ----------
+    # ---------- 三層權限：登入升權／重設權限／狀態查詢 ----------
     #
-    # 走獨立的 `/api/auth/` 前綴（已加進 `_OWNER_EXEMPT_PREFIXES`，
-    # 缺 cookie 呼叫這三個端點不會建立 owner）。AUTH-03（#310）已將
-    # 舊的 `GET /api/superuser/status`（PB-09，二值 `is_superuser`
-    # 布林，讀 `Authorization` 標頭比對 `ADMIN_SECRET`）整個移除——
-    # 這裡的 `/api/auth/status` 是它唯一、完全涵蓋其功能的正式後繼者
-    # （回傳完整三層角色而非二值布林），維持兩套並存只會製造哪個才是
-    # 現行真相的疑惑。
+    # UNIFIED-IDENTITY-001：權限是 user 記錄（`owners.role`）的一個欄位，
+    # 不再有獨立的 role session／role cookie。登入＝把這個 user 的權限寫進
+    # 資料庫；只有「重設權限」會降回 Normal。
 
     @app.post("/api/auth/login")
-    def auth_login(body: AuthLoginRequest, response: Response, request: Request) -> dict:
+    def auth_login(body: AuthLoginRequest, request: Request) -> dict:
         """依序比對 `SUPERADMIN_PASSWORD` → `SUPERUSER_PASSWORD`
         （`secrets.compare_digest`，常數時間，避免時序側信道洩漏
-        比對結果），命中即建立 AUTH-01 的 role session＋簽發 cookie；
+        比對結果），命中即把這個 user 的權限寫進資料庫（UNIFIED-IDENTITY-
+        001：只升不降；還沒有 user 時就在這裡建立，比照建立劇本）；
         兩者都不中一律 401——回應本身不透露密碼欄位是空的、缺席、
         還是純粹打錯，也不透露環境變數有沒有設定，三種情況對外
         觀察不到差異（fail-closed，同 `require_role()` 精神）。
@@ -2253,46 +2213,30 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         if role is None:
             raise HTTPException(status_code=401, detail="unauthorized")
 
-        token = secrets.token_urlsafe(32)
-        _db().create_role_session(RoleSession(
-            token=token, role=role.value, issued_at=now_utc_iso()))
-        # 旗標比照既有 owner cookie；**這裡是唯一設這顆 cookie 的
-        # 地方**——不像 owner cookie 靠共用 middleware 每次請求續命
-        # （見 `_ROLE_COOKIE_MAX_AGE_SECONDS` 檔頭說明，為維持軸一／
-        # 軸二正交，刻意不做滑動窗）。
-        response.set_cookie(
-            superuser.ROLE_COOKIE_NAME, token,
-            max_age=_ROLE_COOKIE_MAX_AGE_SECONDS,
-            httponly=True, secure=True, samesite="lax", path="/")
-        return {"role": role.value}
+        owner = _persistent_owner()
+        current = superuser.current_role()
+        granted = role if role > current else current
+        if granted != current:
+            _db().set_owner_role(owner, granted.value)
+        set_resolved_role(granted.value)
+        return {"role": granted.value}
 
-    @app.post("/api/auth/logout")
-    def auth_logout(request: Request, response: Response) -> dict:
-        """伺服器端撤銷（AUTH-01 的 `revoke_role_session()`）＋清除
-        cookie——不是只在瀏覽器端清掉了事：即使呼叫端之後重放同一顆
-        舊 cookie，`resolve_role()` 查到的 session 已經 `revoked_at`
-        非空，一律回 `normal`。沒有 cookie，或 cookie 早已撤銷過，
-        `revoke_role_session()` 回 `False`，這裡不視為錯誤——重複
-        登出必須優雅，一律回 200。**不清除 owner cookie**、不刪除
-        owner、不動任何 Product Core 資料（軸一／軸二正交）。"""
-        token = request.cookies.get(superuser.ROLE_COOKIE_NAME)
-        if token:
-            _db().revoke_role_session(token, now=now_utc_iso())
-        response.delete_cookie(
-            superuser.ROLE_COOKIE_NAME, path="/",
-            httponly=True, secure=True, samesite="lax")
+    @app.post("/api/auth/reset-role")
+    def auth_reset_role() -> dict:
+        """明確的權限重設——全站唯一會把權限降回 Normal 的路徑。只改這個
+        user 的 `role`：不刪 user、不動劇本、不動憑證。還沒有 user（首訪）
+        或本來就是 Normal 時什麼都不寫，一律回 200。"""
+        if superuser.current_role() > superuser.Role.NORMAL:
+            _db().set_owner_role(identity_resolver(), superuser.Role.NORMAL.value)
+            set_resolved_role(superuser.Role.NORMAL.value)
         return {"role": superuser.Role.NORMAL.value}
 
     @app.get("/api/auth/status")
-    def auth_status(request: Request) -> dict:
-        """無條件 200——查自己現在算 normal／superuser／superadmin
-        不該需要先證明自己是誰（雞生蛋問題）。已在 `_OWNER_EXEMPT_
-        PREFIXES`，呼叫這個端點不會建立 owner；回應只有角色名稱，
-        不洩漏 session token 或任何密碼資訊。前端判斷要不要顯示
-        Super User／Super Admin 專屬介面（Settings 頁自訂 provider
-        token 輸入、PB-10 跨 owner 管理面板等）的唯一真相來源。"""
-        return {"role": superuser.resolve_role(
-            request, resolve_session=_db().resolve_role_session).value}
+    def auth_status() -> dict:
+        """無條件 200——這個 user 現在的權限（還沒有 user 就是 normal）。
+        只讀、不建立 user；回應只有權限名稱，不含任何憑證或密碼資訊。前端
+        判斷要不要顯示 SU／SA 專屬介面的唯一真相來源。"""
+        return {"role": superuser.current_role().value}
 
     # ---------- Super Admin system/admin operations（PB-10／#301，
     # AUTH-03／#310 起改由 `require_role(minimum=SUPERADMIN)` 守門，
@@ -2324,8 +2268,7 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         純瀏覽，不強制二次確認、不記 audit（票面 §3「純瀏覽不強制」
         條款下的明確選擇：列出全部 owner 是最低風險的瀏覽動作，
         逐次記錄只會製造噪音、不會提升任何實質可稽核性）。"""
-        superuser.require_role(request, superuser.Role.SUPERADMIN,
-                               resolve_session=_db().resolve_role_session)
+        superuser.require_role(superuser.Role.SUPERADMIN)
         return [dataclasses.asdict(o) for o in _db().list_owners()]
 
     @app.get("/api/superuser/owners/{owner_id}/scenarios")
@@ -2336,8 +2279,7 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         目標 `owner_id`**（票面 §8：不得靠傳 `None` 繞過 `require_
         owner()` 的 fail-closed 行為）——這不是走 `identity_
         resolver()`，Super Admin 檢視的是別人的資料，不是自己的。"""
-        superuser.require_role(request, superuser.Role.SUPERADMIN,
-                               resolve_session=_db().resolve_role_session)
+        superuser.require_role(superuser.Role.SUPERADMIN)
         summaries = _db().latest_summaries(owner=owner_id)
         today = ny_today()
         scenarios = _db().list_scenarios(
@@ -2352,8 +2294,7 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         `GET /api/scenarios/{id}` 同一份投影（`store.project_for_
         detail()`），刻意重用同一個序列化函式：Super Admin 看到的形狀
         與該 owner 自己看到的一致，不是另外發明一種精簡格式。"""
-        superuser.require_role(request, superuser.Role.SUPERADMIN,
-                               resolve_session=_db().resolve_role_session)
+        superuser.require_role(superuser.Role.SUPERADMIN)
         sc = _db().get_scenario(scenario_id, owner=owner_id)
         if sc is None:
             raise HTTPException(status_code=404,
@@ -2371,8 +2312,7 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         呼叫 PB-04（#296）既有的 `delete_owner()` 原語——不重寫第二份
         可能漂移的清除邏輯。二次確認＋audit trail 兩者皆為硬性要求。
         """
-        superuser.require_role(request, superuser.Role.SUPERADMIN,
-                               resolve_session=_db().resolve_role_session)
+        superuser.require_role(superuser.Role.SUPERADMIN)
         _require_owner_confirmation(body.confirm_owner_id, owner_id)
         counts = _db().delete_owner(owner_id)
         _record_audit("delete_owner", target_owner_id=owner_id,
@@ -2395,8 +2335,7 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         **protected owner 不能被批次刪除**——清單裡只要有一個 protected
         就整批 409、零寫入（要刪 protected owner 必須先取消 protected，
         或走單筆刪除）。"""
-        superuser.require_role(request, superuser.Role.SUPERADMIN,
-                               resolve_session=_db().resolve_role_session)
+        superuser.require_role(superuser.Role.SUPERADMIN)
         if set(body.confirm_owner_ids) != set(body.owner_ids):
             raise HTTPException(
                 status_code=400,
@@ -2432,8 +2371,7 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         的真相來源（`vendor_fuse.today_chain_fetch_count()`），清掉等於
         把今天的 vendor 預算歸零。回應只有各表列數，沒有任何 owner_id
         或 credential。"""
-        superuser.require_role(request, superuser.Role.SUPERADMIN,
-                               resolve_session=_db().resolve_role_session)
+        superuser.require_role(superuser.Role.SUPERADMIN)
         if body.confirm != BETA_RESET_CONFIRM_PHRASE:
             raise HTTPException(
                 status_code=400,
@@ -2455,8 +2393,7 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         本身「不存在就安靜地什麼都不做」的既有寫入端行為不同，這裡是
         Super Admin 主動操作的端點，應該誠實回報「你要改的東西不存在」
         而不是假裝成功。"""
-        superuser.require_role(request, superuser.Role.SUPERADMIN,
-                               resolve_session=_db().resolve_role_session)
+        superuser.require_role(superuser.Role.SUPERADMIN)
         _require_owner_confirmation(body.confirm_owner_id, owner_id)
         if _db().get_owner(owner_id) is None:
             raise HTTPException(status_code=404,
@@ -2473,8 +2410,7 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         自我指涉的無限累積；查閱行為本身風險極低，記錄它不會提升
         任何實質可稽核性（票面 §3「純瀏覽不強制」條款下的另一個明確
         選擇）。"""
-        superuser.require_role(request, superuser.Role.SUPERADMIN,
-                               resolve_session=_db().resolve_role_session)
+        superuser.require_role(superuser.Role.SUPERADMIN)
         # SECURITY（#345 B-4）：比照 `/api/diagnostics` 夾住範圍——負值或
         # 超大值不會變成 500 或一次撈整張表。
         clamped = max(1, min(limit, _AUDIT_LOG_MAX_LIMIT))
@@ -2490,8 +2426,7 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
     def superuser_list_feedback(request: Request, limit: int = 100) -> list[dict]:
         """CLAUDE-BETA-LAUNCH-FINAL-001：Super Admin 的意見回饋 inbox，最新在
         最上。純瀏覽，不記 audit（同 audit-log 端點的理由）。"""
-        superuser.require_role(request, superuser.Role.SUPERADMIN,
-                               resolve_session=_db().resolve_role_session)
+        superuser.require_role(superuser.Role.SUPERADMIN)
         clamped = max(1, min(limit, _FEEDBACK_LIST_MAX_LIMIT))
         return [{"feedback_id": f.feedback_id, "display_name": f.display_name,
                  "content": f.content, "created_at": f.created_at,
@@ -2563,11 +2498,7 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         owner_id 參數**——硬性安全邊界：這個端點如果接受任意 owner_id，
         就會變成任何人都能刪除別人資料的漏洞（PB-04 §10）。
 
-        刪除後這次 request 自己的回應仍會被 `_request_scope_
-        middleware` 重新蓋上原本那顆 cookie（`_call_within_owner_
-        scope()` 在 `call_next()` 之後才 `set_cookie()`，值是這次
-        request 一開始解析出的那個 token）——刻意選擇的較簡單設計：
-        不在這裡搶在 middleware 之前另外簽發一個新身份寫回應標頭。
+        刪除後不在這裡另外簽發新身份或清 cookie——刻意選擇的較簡單設計。
         那顆舊 cookie 雖然還留在瀏覽器裡，但它現在指向的
         `browser_identities` 列已經被 `delete_owner()` 清空；**下一次**
         帶著它的請求會被 `resolve_owner_by_token()` 判定為查無此
@@ -2619,8 +2550,7 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         回 `None`（不是 0 或假造一個劇本）。
         """
         owner = identity_resolver()
-        role = superuser.resolve_role(request,
-                                      resolve_session=_db().resolve_role_session)
+        role = superuser.current_role()
         owner_row = _db().get_owner(owner)
         scenarios = _db().list_scenarios(owner=owner)
         summaries = _db().latest_summaries(owner=owner)
@@ -2699,8 +2629,7 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         # SECURITY-FIX-01：建立劇本是第一個真正需要持久化 owner 的動作
         # ——匿名 owner 在這裡（而不是第一次讀取時）才被建立。
         owner = _persistent_owner()
-        role = superuser.resolve_role(request,
-                                      resolve_session=_db().resolve_role_session)
+        role = superuser.current_role()
         if role < superuser.Role.SUPERUSER and _effective_max_active_scenarios > 0:
             active_count = len(_db().list_scenarios(owner=owner))
             if active_count >= _effective_max_active_scenarios:
@@ -3401,8 +3330,7 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         """
         sc = _require(scenario_id)
 
-        role = superuser.resolve_role(request,
-                                      resolve_session=_db().resolve_role_session)
+        role = superuser.current_role()
         if role < superuser.Role.SUPERUSER:
             raise HTTPException(status_code=403,
                                 detail=_HISTORICAL_IV_DISABLED_DETAIL)
@@ -3705,8 +3633,7 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         白名單、才碰 storage**。owner_id（軸一）維持不變——寫進去的
         永遠是這次請求解析出的那個 owner，沒有任何 owner 參數，SU／SA
         都不會因為這個動作而變成別人、也管不到別人的 token。"""
-        superuser.require_role(request, superuser.Role.SUPERUSER,
-                               resolve_session=_db().resolve_role_session)
+        superuser.require_role(superuser.Role.SUPERUSER)
         if not providers.is_supported(provider):
             # 自訂不等於任意資料源：不在白名單就是不支援，不接受任何
             # 「先存起來再說」的 provider id。
@@ -3731,8 +3658,7 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         「Normal User 反正沒有 credential 可測」這個間接後果當防線。只測
         這次請求自己 owner 的 credential。
         """
-        superuser.require_role(request, superuser.Role.SUPERUSER,
-                               resolve_session=_db().resolve_role_session)
+        superuser.require_role(superuser.Role.SUPERUSER)
         if not providers.is_supported(provider):
             raise HTTPException(status_code=400,
                                 detail=f"不支援的資料源：{provider}")
@@ -3753,8 +3679,7 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         `owner_credentials` 的寫入，同一套 gate（最低 Super User，只刪
         這次請求自己 owner 的那把）——一致性優先於「反正 Normal User 也
         刪不到自己沒有的東西」這個間接推論。"""
-        superuser.require_role(request, superuser.Role.SUPERUSER,
-                               resolve_session=_db().resolve_role_session)
+        superuser.require_role(superuser.Role.SUPERUSER)
         if not providers.is_supported(provider):
             raise HTTPException(status_code=400,
                                 detail=f"不支援的資料源：{provider}")

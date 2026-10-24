@@ -179,7 +179,7 @@ def _client(db, *, contract_history):
         verify_provider=lambda p, t: providers.VerifyOutcome(True),
         historical_surface=_rich_surface, contract_history=contract_history,
         rate_curve_rows=_rate_curve_rows_2arg),
-        cookies=superadmin_cookies(db))
+        cookies=superadmin_cookies(db, owner_id="solo"))
 
 
 def _unlock(client):

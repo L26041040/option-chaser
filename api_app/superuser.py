@@ -1,94 +1,41 @@
-"""User Level（軸二，AUTH-01／AUTH-02／AUTH-03，spec #307，Anonymous
-Public Beta）：Super User／Super Admin capability——與軸一（Owner
-Identity／owner_id，`api_app/identity.py`）完全獨立的第二段判斷。
+"""三層權限（Normal／Super User／Super Admin）。
+
+OPTION-CHASER-UNIFIED-IDENTITY-001 起，權限是 **user 記錄本身的一個欄位**
+（`owners.role`），不再是獨立於身分之外的第二套 session：
 
 ```
-軸一（所有人共用，含 Owner 自己）：
-  Browser Identity（cookie）→ owner_id → product data
-
-軸二（獨立於軸一）：
-  Authenticated context → User Level（normal < superuser < superadmin）
-  → capability
+瀏覽器憑證（HttpOnly cookie＋本機儲存，兩份互相補回，見 `main.py`）
+  → 一個 user（owner_id）
+      ├─ 劇本、設定、provider credential（owner-scoped 資料）
+      └─ role：normal < superuser < superadmin
 ```
 
-這個模組**只回答「這次請求的 role session cookie 對應到哪一層角色」**，
-從不讀取、不參與、不影響 owner_id 的解析——`resolve_role()`／
-`require_role()` 的唯一輸入是 `Request` 本身的 cookie 與呼叫端傳入的
-`resolve_session` 查詢函式，不接觸 `identity.py` 的任何函式、
-ContextVar 或中間結果。反過來，`identity.py`／cookie middleware 也
-完全不 import 這個模組。兩段程式碼各自獨立，呼叫端（`api_app/main.py`
-的 HTTP handler）分別呼叫兩者各自取得答案，這是 spec §19 明文要求的
-結構（不得共用同一個函式或同一個中間結果）。
+- 升權：`POST /api/auth/login` 輸入正確的 SU／SA 密碼 → 直接把這個 user
+  的 `role` 寫進資料庫（只升不降）。
+- 降權：只有使用者主動按「重設權限」（`POST /api/auth/reset-role`）。重新
+  整理、關閉重開、跨分頁、重新部署都不影響——權限跟著 user 走。
+- 判斷：`main.py` 的 middleware 解析憑證時一次查齊 user 與權限，放進
+  `identity` 的 ContextVar；`current_role()`／`require_role()` 是全站唯一
+  的讀取點，端點不得自行比對密碼或角色字串。
 
-**單一驗證機制、逐層各自一把密碼**（spec #307 §6）：`POST /api/
-auth/login` 依序比對 `SUPERADMIN_PASSWORD` → `SUPERUSER_PASSWORD`
-（`main.py::auth_login()`），成功即簽發對應角色的持久 role session
-（AUTH-01）；本模組之後只認 session 對應的角色，不再重新比對任何
-密碼字串——與 `CRON_SECRET` 用途正交（那是 machine-to-machine，這裡
-服務的是人類 Owner）、與軸一的 owner cookie 也正交。
-
-**「知道某個 owner_id」不等於「取得 Super User／Super Admin」**——
-這件事在這個模組裡是結構性成立的，不是靠約定：`resolve_role()`／
-`require_role()` 的簽章裡根本沒有 `owner_id` 這個參數，它完全無法
-讀取呼叫端的 owner_id 是什麼，自然也就無從「根據 owner_id 判斷」。
-
----
-
-**AUTH-03（#310）正式退役舊機制**：PB-09 當時唯二層級（Normal／
-Super User）留下的 `is_superuser()`／`require_superuser()`／
-`ADMIN_SECRET` 已於本票整組移除——`api_app/main.py` 全部改用下面的
-`require_role(..., minimum=Role.SUPERADMIN)`。`ADMIN_SECRET` 環境
-變數即使還留在部署環境裡也不再被任何程式碼讀取（純死配置，Owner
-可安全移除）；`SUPERADMIN_PASSWORD` 是它唯一的正式後繼者。
-
-下面的 `Role`／`resolve_role()`／`require_role()` 是**單一**授權
-判斷點，服務 `normal < superuser < superadmin` 三層。`resolve_role()`
-接受一個 `resolve_session` callable（呼叫端傳入 `Storage.resolve_
-role_session` 本身，而非整個 `Storage` 型別），維持這個模組除了
-`AUTH-01` 的 `RoleSession` 資料形狀外，不依賴任何更大的抽象。
-
-角色比較全部四個運算子（`<`／`<=`／`>`／`>=`）皆逐一手寫、**不用**
-`functools.total_ordering`——踩過一個真陷阱才確認：`Role` 繼承
-`str`，而 `str` 本身早就有 `__le__`／`__gt__`／`__ge__`，
-`total_ordering` 的偵測邏輯是「這三個是不是還等於 `object` 的預設值」，
-不是也不會判斷「這三個是不是我要的等級排序」——`str` 提供的那三個
-會被判定成「已經定義過了」而完全不被覆寫，於是 `Role.SUPERADMIN >=
-Role.SUPERUSER` 會用字典序比較（`"superadmin" < "superuser"`，因為
-`a < u`）算出 `False`，跟等級排序完全相反卻不會有任何錯誤或警告。
-手動定義全部四個，`require_role()` 用 `<` 做「未達最低等級」判斷，
-不區分「沒帶 cookie」與「帶了但角色不夠」，兩者對外都是同一個
-401（fail-closed，同既有 `require_superuser()` 精神）。
-
-Session 一旦簽發即長期有效，直到 `logout` 或 server-side 明確撤銷
-（AUTH-01 的 `revoke_role_session()`）——**沒有任何密碼變更偵測／
-指紋／session versioning**（Owner 明確裁示取消 password rotation，
-見 #307 Further Notes、#309 2026-09-17 修正）。`resolve_role()` 找到
-一筆 `revoked_at is None` 的 session 就直接信任它的 `role` 欄位，
-不做任何與密碼相關的二次驗證——這個設計本身就是 AC 要求的行為，不是
-待補的漏洞。
+AUTH-01／AUTH-02（#308／#309）的 role session 與 `__Host-oc_role` cookie
+已退役：沒有任何權限判斷讀它們；舊 cookie 只會被 middleware 清掉，舊列只
+剩保留期清理（`data_lifecycle`）。
 """
 from __future__ import annotations
 
 import enum
-from typing import TYPE_CHECKING, Callable
 
-from fastapi import HTTPException, Request
+from fastapi import HTTPException
 
-if TYPE_CHECKING:
-    from .storage import RoleSession
+from . import identity
 
-# ---------- 三層角色模型（AUTH-02／#309） ----------
-
-# 與 `_OWNER_COOKIE_NAME`（`main.py`）同一組 `__Host-` 前綴慣例，名字
-# 放在這個模組（而非 `main.py`）——`identity.py` 是不認識 HTTP cookie
-# 的 ContextVar 層，owner cookie 的名字因此活在 `main.py`；這個模組
-# 本身就是「cookie token → 角色」的擁有者，把名字放在這裡讓
-# `resolve_role()`／`require_role()` 不需要呼叫端額外傳入它。
-ROLE_COOKIE_NAME = "__Host-oc_role"
-# role cookie 的固定 Max-Age（400 天，不續命——見 `main.py` 使用處的說明）。
-# 放在這裡讓 `data_lifecycle` 的 role-session retention 跟發 cookie 的端點
-# 讀同一個數字：`issued_at` 超過它的 session，瀏覽器已經不可能再送出。
-ROLE_COOKIE_MAX_AGE_SECONDS = 400 * 24 * 60 * 60
+# 退役的 AUTH-02 role cookie 名稱：只用來在回應裡把瀏覽器手上的舊 cookie
+# 清掉，任何權限判斷都不讀它。
+LEGACY_ROLE_COOKIE_NAME = "__Host-oc_role"
+# 舊 role session 的最長壽命（當時 cookie 的固定 Max-Age）。`data_lifecycle`
+# 用它清掉瀏覽器已不可能再送出的舊列。
+LEGACY_ROLE_SESSION_MAX_AGE_SECONDS = 400 * 24 * 60 * 60
 
 _ROLE_RANK = {"normal": 0, "superuser": 1, "superadmin": 2}
 
@@ -128,39 +75,17 @@ class Role(str, enum.Enum):
         return _ROLE_RANK[self.value] >= _ROLE_RANK[other.value]
 
 
-# `resolve_session` 是呼叫端傳入的 `Storage.resolve_role_session`
-# 本身（一個 bound method，簽章即 `(token: str) -> RoleSession |
-# None`）——刻意只依賴這一個窄函式而非整個 `Storage` 型別，模組因此
-# 不需要 import `Storage`（避免任何不必要的抽象依賴，也讓單元測試
-# 可以直接塞一個 lambda 而不必造一份完整假體）。
-ResolveRoleSession = Callable[[str], "RoleSession | None"]
-
-
-def resolve_role(request: Request, *,
-                 resolve_session: ResolveRoleSession) -> Role:
-    """單一角色判斷點——沒有 cookie、cookie 查不到 session、或 session
-    已被撤銷，一律回 `Role.NORMAL`（三種情況對外觀察不到差異，這正是
-    fail-closed 的意思：不透露是哪一種原因造成)。找到未撤銷的 session
-    後，只讀它的 `role` 欄位——不做任何密碼相關的二次驗證。"""
-    token = request.cookies.get(ROLE_COOKIE_NAME)
-    if not token:
-        return Role.NORMAL
-    session = resolve_session(token)
-    if session is None:
-        return Role.NORMAL
+def current_role() -> Role:
+    """這次請求的 user 權限——還沒有 user（第一次來、尚未建立）、不在請求
+    裡，或資料庫裡的值不認得，一律 `Role.NORMAL`（fail-closed）。"""
     try:
-        return Role(session.role)
+        return Role(identity.resolved_role())
     except ValueError:
         return Role.NORMAL
 
 
-def require_role(request: Request, minimum: Role, *,
-                 resolve_session: ResolveRoleSession) -> None:
-    """HTTP handler 用的 fail-closed 守門——未達 `minimum` 一律 401，
-    不區分「沒帶 cookie」與「帶了但角色不夠」（比照舊 `require_
-    superuser()`——AUTH-03 已整組移除——同一種精神：兩種情況對外
-    看起來一致，不洩漏哪一種成立）。**全站唯一的授權判斷點**——
-    `main.py` 的每個受保護端點都直接呼叫這個函式，不得自行重新比對
-    密碼或角色字串。"""
-    if resolve_role(request, resolve_session=resolve_session) < minimum:
+def require_role(minimum: Role) -> None:
+    """HTTP handler 用的 fail-closed 守門——未達 `minimum` 一律 401，不區分
+    「沒有 user」與「權限不夠」（對外看起來一致，不洩漏哪一種成立）。"""
+    if current_role() < minimum:
         raise HTTPException(status_code=401, detail="unauthorized")

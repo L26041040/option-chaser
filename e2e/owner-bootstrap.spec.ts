@@ -3,11 +3,11 @@ import { expect, test, type Page } from "@playwright/test";
 // Codex P1（PR #346）：兩個首訪分頁同時要 bootstrap token 時，必須拿到
 // **同一顆**——否則兩個寫入會各自綁到不同 owner。jsdom 沒有 IndexedDB，
 // 跨分頁原子性只能在真瀏覽器裡驗：同一個 browser context 開兩個分頁
-// （同源、共用儲存），同時呼叫真正的 `src/ownerBootstrap.ts`（dev server
+// （同源、共用儲存），同時呼叫真正的 `src/credentialStore.ts`（dev server
 // 直接提供原始模組），反覆搶很多輪。
-const MODULE = "/src/ownerBootstrap.ts";
+const MODULE = "/src/credentialStore.ts";
 
-function call(page: Page, fn: "ownerBootstrapToken" | "resetOwnerBootstrapForTests") {
+function call(page: Page, fn: "credential" | "resetCredentialStoreForTests") {
   return page.evaluate(
     async ([path, name]) => {
       const mod = await import(/* @vite-ignore */ path);
@@ -23,11 +23,11 @@ test("兩個分頁同時首訪只會產生一顆 bootstrap token（跨分頁原�
   await other.goto("/");
   for (let round = 0; round < 30; round++) {
     // 兩個分頁都回到「還沒讀過」（各自的記憶體快取也清掉），再同時搶。
-    await Promise.all([call(page, "resetOwnerBootstrapForTests"),
-                       call(other, "resetOwnerBootstrapForTests")]);
+    await Promise.all([call(page, "resetCredentialStoreForTests"),
+                       call(other, "resetCredentialStoreForTests")]);
     const [a, b] = await Promise.all([
-      call(page, "ownerBootstrapToken"),
-      call(other, "ownerBootstrapToken"),
+      call(page, "credential"),
+      call(other, "credential"),
     ]);
     expect(a).toMatch(/^[A-Za-z0-9_-]{43}$/);
     expect(b).toBe(a);
@@ -80,16 +80,16 @@ test("IndexedDB 不能用時，兩個分頁同時首次建立劇本會排隊送�
 
 test("IndexedDB 還沒有 token 時沿用 localStorage 既有的那顆（可能正等著重試）", async ({ page }) => {
   await page.goto("/");
-  await call(page, "resetOwnerBootstrapForTests");
+  await call(page, "resetCredentialStoreForTests");
   const legacy = "L".repeat(43);
   await page.evaluate((t) => localStorage.setItem("oc_owner_bootstrap", t), legacy);
-  expect(await call(page, "ownerBootstrapToken")).toBe(legacy);
+  expect(await call(page, "credential")).toBe(legacy);
 });
 
 test("IndexedDB 已有 token、但 localStorage 有退路期間產生的另一顆時，以 localStorage 為準", async ({ page }) => {
   await page.goto("/");
-  await call(page, "resetOwnerBootstrapForTests");
-  const fromIndexedDb = await call(page, "ownerBootstrapToken");
+  await call(page, "resetCredentialStoreForTests");
+  const fromIndexedDb = await call(page, "credential");
   // IndexedDB 路徑拿到的 token 會同步鏡像到 localStorage（退路讀的就是它）
   expect(await page.evaluate(() => localStorage.getItem("oc_owner_bootstrap")))
     .toBe(fromIndexedDb);
@@ -97,28 +97,26 @@ test("IndexedDB 已有 token、但 localStorage 有退路期間產生的另一�
   const fromFallback = "F".repeat(43);
   await page.evaluate((t) => localStorage.setItem("oc_owner_bootstrap", t), fromFallback);
   await page.reload();                       // 新的分頁生命週期：記憶體快取歸零
-  expect(await call(page, "ownerBootstrapToken")).toBe(fromFallback);
+  expect(await call(page, "credential")).toBe(fromFallback);
   await page.reload();                       // IndexedDB 已經對齊，下次讀也是它
   await page.evaluate(() => localStorage.removeItem("oc_owner_bootstrap"));
-  expect(await call(page, "ownerBootstrapToken")).toBe(fromFallback);
+  expect(await call(page, "credential")).toBe(fromFallback);
 });
 
-test("伺服器說過期的 token 從 IndexedDB 與 localStorage 移除，只刪那一顆（compare-and-delete）", async ({ page }) => {
-  // Codex P2（PR #346）：409 stale 之後換新 token 重送——舊的要真的從
-  // IndexedDB 移除（不然下次讀到的還是它），但別的分頁剛換好的新 token 不能被誤刪。
+test("伺服器交回的憑證寫進 IndexedDB 與 localStorage；綁定、重新整理、清掉其中一份都還在（UNIFIED-IDENTITY-001）", async ({ page }) => {
+  // 本機那份就是持久身分的其中一份：舊版綁定後就刪掉它，cookie 一掉身分就
+  // 跟著掉。現在兩份都存、互相補回。
   await page.goto("/");
-  await call(page, "resetOwnerBootstrapForTests");
-  const discard = (t: string) => page.evaluate(async ([path, token]) => {
+  await call(page, "resetCredentialStoreForTests");
+  const fromServer = "S".repeat(43);
+  await page.evaluate(async ([path, token]) => {
     const mod = await import(/* @vite-ignore */ path);
-    await mod.discardOwnerBootstrapToken(token);
-  }, [MODULE, t] as const);
-  const current = await call(page, "ownerBootstrapToken");
-  await discard("N".repeat(43));                         // 不是現在那顆：不動
-  expect(await call(page, "ownerBootstrapToken")).toBe(current);
-  await discard(current);                                // 是那顆：兩邊都刪，下次換新的
-  expect(await page.evaluate(() => localStorage.getItem("oc_owner_bootstrap"))).toBeNull();
+    await mod.storeCredential(token);
+    mod.markOwnerBound();                                  // 綁定不刪本機那份
+  }, [MODULE, fromServer] as const);
+  expect(await call(page, "credential")).toBe(fromServer);
+  expect(await page.evaluate(() => localStorage.getItem("oc_owner_bootstrap"))).toBe(fromServer);
   await page.reload();
-  const replaced = await call(page, "ownerBootstrapToken");
-  expect(replaced).toMatch(/^[A-Za-z0-9_-]{43}$/);
-  expect(replaced).not.toBe(current);
+  await page.evaluate(() => localStorage.removeItem("oc_owner_bootstrap"));
+  expect(await call(page, "credential")).toBe(fromServer);  // 只剩 IndexedDB 那份也夠
 });

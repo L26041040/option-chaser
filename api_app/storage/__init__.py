@@ -289,6 +289,11 @@ class Owner:
     last_activity_at: str | None = None
     protected: bool = False
     is_synthetic: bool = False
+    # OPTION-CHASER-UNIFIED-IDENTITY-001：這個 user 的權限（`normal`／
+    # `superuser`／`superadmin`）直接掛在 user 記錄上，取代獨立的 role
+    # session／role cookie。只有輸入正確密碼才會升級，只有明確的「重設
+    # 權限」才會降回 `normal`。
+    role: str = "normal"
 
 
 @dataclass(frozen=True)
@@ -306,11 +311,27 @@ class BrowserIdentity:
     一次帶著這個 token 的請求時間——本票只建立欄位與續命方法
     （`touch_browser_identity()`），「多久沒見就算失效」屬 PB-02
     範圍。
+
+    `cookie_issued_at`（IDENTITY-FIX-002）：伺服器最近一次把這個 token
+    以固定期限 cookie 簽給瀏覽器的時間。`None`＝這顆 token 只被舊版
+    滑動窗 cookie 簽過，下一次帶著它的請求會升級一次。
     """
     token: str
     owner_id: str
     issued_at: str
     last_seen_at: str
+    cookie_issued_at: str | None = None
+
+
+@dataclass(frozen=True)
+class ResolvedCredential:
+    """UNIFIED-IDENTITY-001：一次請求的身分解析結果——這顆憑證屬於哪個
+    user、這個 user 是什麼權限、固定期限 cookie 簽過了沒。`browser_
+    identities` LEFT JOIN `owners` 一次查齊（owner 列不在時權限視為
+    `normal`，與既有「token 對到 owner_id 就算這個 owner」的語意一致）。"""
+    owner_id: str
+    role: str
+    cookie_issued_at: str | None
 
 
 @dataclass(frozen=True)
@@ -330,6 +351,9 @@ class OwnerLifecycleFacts:
     last_seen_at: str | None
     has_data: bool
     protected: bool
+    # UNIFIED-IDENTITY-001：有權限的 user（SU／SA）不是匿名閒置資料，
+    # 清理排程跳過它們——權限「永久保留，除非使用者主動重設」。
+    role: str = "normal"
 
 
 # per-owner vendor quota 的 bucket scope：`key` 就是 owner_id。
@@ -1251,6 +1275,18 @@ class Storage(Protocol):
 
     def resolve_owner_by_token(self, token: str) -> str | None: ...
 
+    def resolve_credential(self, token: str) -> ResolvedCredential | None:
+        """UNIFIED-IDENTITY-001：請求解析用——一次查詢拿到 token 對應的
+        user、它的權限與 `cookie_issued_at`。token 不存在回 `None`。"""
+
+    def set_owner_role(self, owner_id: str, role: str) -> None:
+        """UNIFIED-IDENTITY-001：更新 user 權限（`normal`／`superuser`／
+        `superadmin`）。owner 不存在時安靜地什麼都不做。"""
+
+    def mark_owner_cookie_issued(self, token: str, *, now: str) -> None:
+        """IDENTITY-FIX-002：記下這次回應已把 token 以固定期限 cookie
+        簽給瀏覽器。token 不存在時安靜地什麼都不做。"""
+
     def create_owner_with_token(self, owner: Owner,
                                 identity: BrowserIdentity) -> None:
         """依 cookie token 建立新 owner＋token（spec §3／§4 的唯一建立
@@ -1340,25 +1376,17 @@ class Storage(Protocol):
     # with_token()` 的既有分工：token 由呼叫端生成，Storage 只負責
     # 存取）與比對密碼，這裡只回答「這個 token 現在算哪個角色、還
     # 有沒有效」。
+    #
+    # **UNIFIED-IDENTITY-001 起 runtime 不再讀寫 role session**——權限改掛
+    # 在 user 記錄上（`Owner.role`／`set_owner_role()`）。這裡只留下寫入
+    # （測試種舊資料）與 `purge_role_sessions()`（既有舊列的保留期清理），
+    # 表本身保留不刪。
 
     def create_role_session(self, session: RoleSession) -> None:
         """寫入一筆全新的 role session（呼叫端已生成 token、決定好
         `role`）。token 須事先確定不存在（呼叫端用密碼學安全隨機來源
         產生，衝突機率可忽略）——本方法不檢查衝突後靜默覆寫，衝突時
         兩後端各自按資料庫既有的 PK 違反行為處理。"""
-
-    def resolve_role_session(self, token: str) -> RoleSession | None:
-        """依 token 查詢。找不到，或找到但 `revoked_at` 非 `None`
-        （已撤銷），皆回 `None`——呼叫端不需要另外檢查 `revoked_at`
-        欄位，這個方法已經把「還算不算有效」這個判斷做完了。"""
-
-    def revoke_role_session(self, token: str, *, now: str) -> bool:
-        """登出：把這個 token 標記為已撤銷（`revoked_at = now`）。
-        `now` 由呼叫端傳入（`api_app.clock.now_utc_iso()`），比照既有
-        `touch_browser_identity()`／`touch_owner_activity()` 的既有
-        分工——Storage 層不自己讀時鐘。回傳是否真的更新到東西（token
-        不存在或早已撤銷過時回 `False`），讓呼叫端能分辨「這個 token
-        本來就是無效的」與「這次操作真的生效了」。"""
 
     # ---------- Super User audit trail（PB-10／#301） ----------
 

@@ -14,7 +14,7 @@ import {
 } from "./DisclaimerSection";
 
 const SECTIONS = [
-  "存了什麼", "留多久", "怎麼刪", "清除瀏覽器 cookie 的後果",
+  "存了什麼", "留多久", "怎麼刪", "清除瀏覽器資料的後果",
   "不是投資建議", "Beta 狀態",
 ];
 
@@ -44,7 +44,7 @@ describe("PrivacyPage（PB-12／#302）", () => {
   it("『刪除全部資料』與『清 cookie 找不回』兩件事講清楚是不同的事", () => {
     render(<PrivacyPage />);
     const cookieSection = screen
-      .getByRole("heading", { name: "清除瀏覽器 cookie 的後果" })
+      .getByRole("heading", { name: "清除瀏覽器資料的後果" })
       .closest("section")!.textContent!;
     expect(cookieSection).toMatch(/不同的事|兩件不同/);
   });

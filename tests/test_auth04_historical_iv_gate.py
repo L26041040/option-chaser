@@ -259,7 +259,7 @@ def test_no_protected_owner_yet_reports_not_enabled_not_500(storage, role):
     ensure_owner(storage, "unrelated-anonymous-2", protected=False)
 
     client = _client(storage=storage, identity_resolver=lambda: "a-requester",
-                     cookies=role_cookies(storage, role))
+                     cookies=role_cookies(storage, role, owner_id="a-requester"))
     sid = _create_and_refresh(client)
     key = _first_two_leg_candidate_key(client, sid)
 
@@ -291,7 +291,7 @@ def test_borrows_the_protected_owners_credential_across_a_different_requesting_o
     recorder = _RecordingContractHistory()
     client = _client(storage=storage,
                      identity_resolver=lambda: "a-different-anonymous-owner",
-                     cookies=role_cookies(storage, role),
+                     cookies=role_cookies(storage, role, owner_id="a-different-anonymous-owner"),
                      contract_history=recorder)
     sid = _create_and_refresh(client)
     key = _first_two_leg_candidate_key(client, sid)
@@ -316,7 +316,7 @@ def test_the_requesting_owner_never_gets_its_own_settings_used_when_it_has_none(
     recorder = _RecordingContractHistory()
     client = _client(storage=storage,
                      identity_resolver=lambda: "a-different-anonymous-owner",
-                     cookies=role_cookies(storage, "superuser"),
+                     cookies=role_cookies(storage, "superuser", owner_id="a-different-anonymous-owner"),
                      contract_history=recorder)
     sid = _create_and_refresh(client)
     key = _first_two_leg_candidate_key(client, sid)
@@ -339,13 +339,13 @@ def test_the_scenario_itself_still_belongs_to_the_requesting_owner_not_the_prote
 
     requester = _client(storage=storage,
                         identity_resolver=lambda: "a-different-anonymous-owner",
-                        cookies=role_cookies(storage, "superuser"),
+                        cookies=role_cookies(storage, "superuser", owner_id="a-different-anonymous-owner"),
                         contract_history=_RecordingContractHistory())
     sid = _create_and_refresh(requester)
 
     as_protected_owner = _client(
         storage=storage, identity_resolver=lambda: protected_owner_id,
-        cookies=role_cookies(storage, "superuser"))
+        cookies=role_cookies(storage, "superuser", owner_id=protected_owner_id))
     assert as_protected_owner.get(f"/api/scenarios/{sid}").status_code == 404
 
 
@@ -360,7 +360,7 @@ def test_more_than_one_protected_owner_fails_closed_not_guessed(storage):
     _configure_owner_historical_iv(storage, "protected-two", token="token-two")
 
     client = _client(storage=storage, identity_resolver=lambda: "a-requester",
-                     cookies=role_cookies(storage, "superadmin"))
+                     cookies=role_cookies(storage, "superadmin", owner_id="a-requester"))
     sid = _create_and_refresh(client)
     key = _first_two_leg_candidate_key(client, sid)
 
@@ -376,7 +376,7 @@ def test_zero_protected_owner_among_several_unprotected_owners_fails_closed(
     ensure_owner(storage, "unrelated-2", protected=False)
 
     client = _client(storage=storage, identity_resolver=lambda: "a-requester",
-                     cookies=role_cookies(storage, "superadmin"))
+                     cookies=role_cookies(storage, "superadmin", owner_id="a-requester"))
     sid = _create_and_refresh(client)
     key = _first_two_leg_candidate_key(client, sid)
 

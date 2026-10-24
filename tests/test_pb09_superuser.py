@@ -41,7 +41,7 @@ from fastapi.testclient import TestClient
 from api_app import superuser
 from api_app.main import create_app
 from api_app.storage.memory import MemoryStorage
-from api_app.superuser import ROLE_COOKIE_NAME
+from api_app.superuser import LEGACY_ROLE_COOKIE_NAME as ROLE_COOKIE_NAME
 from tests._role_session import role_cookies, superadmin_cookies
 
 CRON_SECRET = "the-real-cron-secret"
@@ -180,39 +180,33 @@ def test_auth_status_is_always_200_regardless_of_the_cookies_validity():
 
 
 def test_role_session_presence_does_not_change_which_owner_a_cookie_resolves_to():
-    """同一個 owner cookie，不論這次請求有沒有附帶（或附帶對不對）
-    role session cookie，解析出來的 owner 必須是同一個——`resolve_
-    role()`／`require_role()` 的簽章裡根本沒有 `owner_id` 參數，這裡
-    從 HTTP 層驗證這件事真的落地成一致的可觀察行為。"""
+    """UNIFIED-IDENTITY-001：權限是同一個 user 記錄的欄位——升權不會換成另一
+    個 owner，帶一顆錯的（或退役的）role cookie 也不會讓它變成別的 owner。"""
     storage = MemoryStorage()
     c = _client(storage=storage)
     # SECURITY-FIX-01：讀取不再建立 owner，建一個劇本才會。
     c.post("/api/scenarios", json={"symbol": "XYZ", "target_price": 130.0,
                                    "target_month": "2027-01",
                                    "strategies": ["vertical-spread"]}).raise_for_status()
-    assert len(storage.list_owners()) == 1
-    owner_id = storage.list_owners()[0]
+    [owner] = storage.list_owners()
 
-    # 同一個 owner cookie（已經在 client 的 jar 裡），這次額外附上一顆
-    # 有效的 Super Admin role session cookie——per-request cookies 與
-    # jar 既有內容會合併，不會取代掉 owner cookie。
-    c.get("/api/scenarios", cookies=superadmin_cookies(storage))
-    assert storage.list_owners() == [owner_id]  # 沒有多生出第二個 owner
+    storage.set_owner_role(owner.owner_id, "superadmin")
+    assert c.get("/api/auth/status").json() == {"role": "superadmin"}
+    assert [o.owner_id for o in storage.list_owners()] == [owner.owner_id]
 
-    # 反過來，帶錯的 role cookie 也不該讓它變成別的 owner。
     c.get("/api/scenarios", cookies={ROLE_COOKIE_NAME: "wrong"})
-    assert storage.list_owners() == [owner_id]
-
+    assert [o.owner_id for o in storage.list_owners()] == [owner.owner_id]
+    assert len(c.get("/api/scenarios").json()) == 1
 
 def test_auth_status_endpoint_does_not_create_or_touch_any_owner():
-    """`/api/auth/*` 前綴整段排除在 lazy owner creation 之外
-    （PB-02 既有機制），這裡從軸二自己的端點角度重新驗證一次，
-    確保兩軸真的各自獨立、互不牽動對方的副作用。"""
+    """查詢權限只讀：還沒有 user 的瀏覽器問一次，不會因此多出一個 user；
+    已經有權限的 user 問，也不會多出第二個。"""
     storage = MemoryStorage()
-    c = _client(storage=storage, cookies=superadmin_cookies(storage))
-    c.get("/api/auth/status")
+    assert _client(storage=storage).get("/api/auth/status").json() == {"role": "normal"}
     assert storage.list_owners() == []
-
+    c = _client(storage=storage, cookies=superadmin_cookies(storage))
+    assert c.get("/api/auth/status").json() == {"role": "superadmin"}
+    assert len(storage.list_owners()) == 1
 
 # ---------- 4. 角色 session 與 service credential 互相隔離 ----------
 
@@ -292,26 +286,20 @@ def _code_identifiers(module) -> set[str]:
     return names
 
 
-def test_superuser_module_never_references_owner_identity_machinery():
-    """`api_app/superuser.py` 結構上不 import `api_app.identity`、
-    不出現 `owner_id`／`identity_resolver`／`resolved_owner_scope`
-    這類軸一專屬詞彙——這不只是慣例，是 spec §19「不得共用同一個
-    函式或同一個中間結果」的可執行證明。"""
+def test_superuser_module_never_reads_requests_or_cookies():
+    """UNIFIED-IDENTITY-001（取代 spec §19 的「兩軸不得共用」）：權限模組
+    只認 middleware 解析好的那個 user——結構上不碰 request／cookie，任何端點
+    都沒辦法繞過身分解析、自己從別處讀出一個權限。"""
     names = _code_identifiers(superuser)
-    for forbidden in ("identity", "owner_id", "identity_resolver",
-                      "resolved_owner_scope", "owner_scope"):
+    for forbidden in ("Request", "request", "cookies", "headers"):
         assert forbidden not in names, forbidden
 
-
-def test_require_role_signature_has_no_owner_parameter():
-    """比對 signature 而非只信任 docstring 的宣稱——`resolve_role()`／
-    `require_role()` 物理上就沒有能力讀取任何 owner_id，不是「寫了
-    但沒用到」。"""
-    for fn in (superuser.resolve_role, superuser.require_role):
-        params = set(inspect.signature(fn).parameters)
-        assert "owner_id" not in params
-        assert "owner" not in params
-
+def test_role_checks_take_no_caller_supplied_identity():
+    """比對 signature 而非只信任 docstring：`current_role()`／`require_role()`
+    沒有任何參數能讓呼叫端塞進 owner、token 或 request——權限只可能來自這次
+    請求解析出的 user。"""
+    assert set(inspect.signature(superuser.current_role).parameters) == set()
+    assert set(inspect.signature(superuser.require_role).parameters) == {"minimum"}
 
 def test_the_old_two_tier_mechanism_is_fully_gone():
     """AUTH-03（#310）AC：`ADMIN_SECRET`／`is_superuser()`／

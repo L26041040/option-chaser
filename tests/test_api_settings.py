@@ -33,7 +33,7 @@ def client(db):
     # 有效的 Super Admin role session cookie，讓既有斷言不必為了一個
     # 不相干的新前置條件逐一補頭。
     return TestClient(create_app(identity_resolver=lambda: "solo", storage=db),
-                      cookies=superadmin_cookies(db))
+                      cookies=superadmin_cookies(db, owner_id="solo"))
 
 
 def _custom(provider=PROVIDER):

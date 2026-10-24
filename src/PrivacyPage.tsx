@@ -38,9 +38,9 @@ export default function PrivacyPage() {
         <h3 className="section-title">存了什麼</h3>
         <p className="caption">
           您建立的劇本、分析結果，以及一個用來識別「這是同一個瀏覽器」
-          的隨機代碼（存在瀏覽器的 cookie 裡）。第一次儲存資料時，瀏覽器
-          會在本機暫存一個一次性的隨機代碼，儲存成功後立即刪除，
-          只用來避免同時送出的儲存被當成不同的瀏覽器。使用本站不需要、也
+          的隨機代碼。這個代碼在您的瀏覽器裡存兩份——cookie 與網站的本機
+          儲存（localStorage／IndexedDB）——任何一份還在都能認出您；Super
+          User／Super Admin 的權限也記在同一個身分上。使用本站不需要、也
           不會要求您提供姓名、email 或任何其他個人身分資訊。
         </p>
       </section>
@@ -65,11 +65,12 @@ export default function PrivacyPage() {
       </section>
 
       <section className="card">
-        <h3 className="section-title">清除瀏覽器 cookie 的後果</h3>
+        <h3 className="section-title">清除瀏覽器資料的後果</h3>
         <p className="caption">
           識別身份的代碼只存在您的瀏覽器裡，我們沒有其他方式能替您
-          找回它。清除瀏覽器資料、換一個瀏覽器、或結束無痕視窗，都會
-          讓您無法再存取先前建立的劇本——這與上一段「刪除我的全部
+          找回它。只清掉其中一份（例如只清 cookie）時，下次開站會用另一份
+          自動補回；清除這個網站的全部瀏覽器資料、換一個瀏覽器、或結束無痕
+          視窗，則會讓您無法再存取先前建立的劇本——這與上一段「刪除我的全部
           資料」是兩件不同的事：那是您主動、立即刪除；這裡說的是資料
           可能還在，只是這台瀏覽器已經找不到通往它的鑰匙。
         </p>

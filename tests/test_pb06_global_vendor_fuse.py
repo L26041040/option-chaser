@@ -49,7 +49,7 @@ def _client(*, storage=None, global_vendor_daily_budget=None,
         # 雖然不測節流，但沿用同一份 helper 慣例維持一致性。
         return dataclasses.replace(base_snap, fetched_at=fresh_fetched_at())
 
-    cookies = role_cookies(storage, role) if role else None
+    cookies = role_cookies(storage, role, owner_id="solo") if role else None
     return TestClient(create_app(
         identity_resolver=lambda: "solo", fetch=_fetch,
         storage=storage,

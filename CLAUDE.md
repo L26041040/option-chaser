@@ -10,7 +10,7 @@
 6. Do not take or paste screenshots unless the Owner explicitly asks. Browser verification is allowed when required by a ticket, but keep screenshot-heavy work to explicit visual-acceptance stages.
 7. Session reports: Traditional Chinese with English technical terms kept in English. Put substantive report content in one complete code block. Number reports as `［回報#NNN］`.
    All times in reports use **Taiwan time (Asia/Taipei, UTC+8)**, written like `2026-09-27 22:09 (台灣)`; convert any UTC timestamp from tools/APIs before reporting.
-8. Current report sequence: **127 used; next report is 128**.
+8. Current report sequence: **133 used; next report is 134** (#132 = ROOT-CAUSE-INVESTIGATION-003, #133 = UNIFIED-IDENTITY-001).
 9. **Do not append detailed ticket history to this file.** Keep this file short. After a ticket, update only the active checkpoint below in 1–2 lines. Detailed evidence belongs in GitHub issues, commits, and code review comments.
 10. `CLAUDE_HISTORY.md` is the archived legacy project journal. **Do not read it by default.** Read it only when a specific historical question cannot be answered from the current issue/commit/docs.
 
@@ -55,6 +55,8 @@ CLAUDE-BETA-LAUNCH-FINAL-001: `#/admin` Beta Reset (type `Reset`) + select-all b
 CLAUDE-MOBILE-CARD-OVERLAP-001: mobile card strategy pill moved to its own `.compact-strategy-row` (no longer overlays Exp); tests freeze `ny_today()` via `tests/conftest.py` + `tests/_frozen_clock.py`.
 
 CLAUDE-MOBILE-CARD-VERTICAL-ROWS-001: mobile card is one-row-per-item (main row → `.compact-price-row` → `.compact-target-time-row` → left-aligned `.compact-strategy-row` → Exp), normal font sizes; PR #353's `useFitText` auto-fit was removed.
+
+OPTION-CHASER-UNIFIED-IDENTITY-001 (builds on IDENTITY-FIX-002's fixed 400 d owner cookie): one user per browser; role lives on `owners.role` (login upgrades, `POST /api/auth/reset-role` downgrades; role session/`__Host-oc_role` retired). Credential kept twice — HttpOnly cookie + `src/credentialStore.ts` (IndexedDB/localStorage, sent as `X-OC-Credential`) — each restores the other. Not merged/deployed; awaiting Owner acceptance.
 
 Public Beta security hardening: PR #346 (`security/public-beta-hardening`)
 covers #345 A-1–A-4 and B-1–B-7 — merged.

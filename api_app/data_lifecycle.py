@@ -45,7 +45,7 @@ SNAPSHOT_HISTORY_MAX = 10
 # 撤銷超過 30 天的 role session 刪掉；超過 role cookie Max-Age 的也刪
 # （瀏覽器已經不可能再送出那顆 token）。
 ROLE_SESSION_REVOKED_RETENTION_DAYS = 30
-ROLE_SESSION_MAX_AGE_SECONDS = superuser.ROLE_COOKIE_MAX_AGE_SECONDS
+ROLE_SESSION_MAX_AGE_SECONDS = superuser.LEGACY_ROLE_SESSION_MAX_AGE_SECONDS
 # Super User audit log 與 scenario events 都保留 180 天。
 AUDIT_LOG_RETENTION_DAYS = 180
 EVENT_RETENTION_DAYS = 180

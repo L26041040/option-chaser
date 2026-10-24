@@ -2,7 +2,7 @@
  * SW-09（#339）全站文案掃描新增覆蓋：`RoleLogin.tsx` 本身原本沒有任何
  * 專屬測試檔（`Settings.test.tsx` 只是把它當子元件間接渲染），這裡只
  * 補這一項——不是要補齊 RoleLogin 完整行為測試（那不是這張票的範圍，
- * 既有的 `Settings.test.tsx`／後端 `AUTH-*` 測試已經覆蓋登入/登出流程）。
+ * 既有的 `Settings.test.tsx`／後端 `AUTH-*` 測試已經覆蓋登入/重設權限流程）。
  */
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -12,7 +12,7 @@ import { BANNED_JARGON } from "./bannedCopy";
 
 vi.mock("./api", () => ({
   login: vi.fn(),
-  logout: vi.fn(),
+  resetRole: vi.fn(),
 }));
 vi.mock("./fetchCache", () => ({
   getAuthStatusCached: () => ({
@@ -49,10 +49,10 @@ describe("基本渲染（補齊零覆蓋缺口）", () => {
     expect(screen.getByRole("button", { name: "登入" })).toBeInTheDocument();
   });
 
-  it("已登入時顯示目前身分與登出鈕，不顯示密碼欄", () => {
+  it("已登入時顯示目前身分與重設權限鈕，不顯示密碼欄", () => {
     render(<RoleLogin role="superadmin" onChange={vi.fn()} />);
     expect(screen.getByText(/目前身分：Super Admin/)).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "登出" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "重設為 Normal User" })).toBeInTheDocument();
     expect(screen.queryByLabelText("密碼")).not.toBeInTheDocument();
   });
 

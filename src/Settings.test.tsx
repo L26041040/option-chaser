@@ -609,9 +609,9 @@ const SUPERUSER_PASSWORD = "correct-superuser-secret";
 const SUPERADMIN_PASSWORD = "correct-superadmin-secret";
 
 /**
- * 登入／登出流程專屬的假體——`role` 是可變狀態（模擬伺服器端的
+ * 登入／重設權限流程專屬的假體——`role` 是可變狀態（模擬伺服器端的
  * `RoleSession`），`POST /api/auth/login` 依密碼命中哪一把改變它，
- * `POST /api/auth/logout` 把它撥回 `normal`，`GET /api/auth/status`
+ * `POST /api/auth/reset-role` 把它撥回 `normal`，`GET /api/auth/status`
  * 永遠回目前狀態——跟真實後端「單一真相來源」的語意一致。不透過
  * `Authorization` 標頭傳遞任何東西：`__Host-oc_role` 是 `HttpOnly`
  * cookie，前端 JS 讀不到也不需要讀到它，這個假體因此也不必（也不能）
@@ -636,7 +636,7 @@ function mockApiWithLogin(views: SettingsView[],
       }
       return { ok: true, status: 200, json: async () => ({ role }) } as Response;
     }
-    if (String(url) === "/api/auth/logout") {
+    if (String(url) === "/api/auth/reset-role") {
       role = "normal";
       return { ok: true, status: 200, json: async () => ({ role }) } as Response;
     }
@@ -731,12 +731,12 @@ describe("三層角色登入（AUTH-06／#313）", () => {
     expect(screen.queryByText(/目前身分：/)).not.toBeInTheDocument();
   });
 
-  it("登出後回到 Normal User，Data / API 整塊跟著消失（不必重新整理）", async () => {
+  it("重設權限後回到 Normal User，Data / API 整塊跟著消失（不必重新整理）", async () => {
     mockApiWithLogin([view()], { initialRole: "superadmin" });
     render(<Settings />);
     await ready();
 
-    await userEvent.click(screen.getByRole("button", { name: "登出" }));
+    await userEvent.click(screen.getByRole("button", { name: "重設為 Normal User" }));
 
     await readyNormal();
     expect(screen.queryByRole("region", { name: "Market Data" })).not.toBeInTheDocument();
@@ -943,7 +943,7 @@ describe("CLAUDE-SETTINGS-ROLE-IA-001：依角色整理的設定頁", () => {
       .toBe(false);
   });
 
-  it("角色切換即時生效：Normal → 登入 Super Admin 出現入口 → 登出回到極簡版",
+  it("角色切換即時生效：Normal → 登入 Super Admin 出現入口 → 重設權限回到極簡版",
      async () => {
     mockApiWithLogin([view()]);
     render(<Settings />);
@@ -955,7 +955,7 @@ describe("CLAUDE-SETTINGS-ROLE-IA-001：依角色整理的設定頁", () => {
     expect(await screen.findByRole("link", { name: /進入管理中心/ })).toBeInTheDocument();
     await waitFor(() => expect(section("Market Data")).toBeInTheDocument());
 
-    await userEvent.click(screen.getByRole("button", { name: "登出" }));
+    await userEvent.click(screen.getByRole("button", { name: "重設為 Normal User" }));
     await readyNormal();
     expect(regionNames()).toEqual(["意見回饋", "刪除我的資料", "免責聲明", "登入"]);
     expect(screen.queryByRole("link", { name: /進入管理中心/ })).not.toBeInTheDocument();
@@ -974,12 +974,12 @@ describe("CLAUDE-SETTINGS-ROLE-IA-001：依角色整理的設定頁", () => {
     expect(screen.queryByRole("link", { name: /進入管理中心/ })).not.toBeInTheDocument();
   });
 
-  it("角色切換即時生效：Super User 登出立刻回到 Normal 極簡版", async () => {
+  it("角色切換即時生效：Super User 重設權限立刻回到 Normal 極簡版", async () => {
     mockApiWithLogin([view()], { initialRole: "superuser" });
     render(<Settings />);
     await ready("Market Data", { expectRole: "superuser" });
 
-    await userEvent.click(screen.getByRole("button", { name: "登出" }));
+    await userEvent.click(screen.getByRole("button", { name: "重設為 Normal User" }));
     await readyNormal();
     expect(regionNames()).toEqual(["意見回饋", "刪除我的資料", "免責聲明", "登入"]);
   });

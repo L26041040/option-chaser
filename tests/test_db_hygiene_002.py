@@ -280,8 +280,9 @@ def test_normal_owner_over_quota_keeps_using_everything_but_cannot_create(db):
 def test_superuser_and_superadmin_stay_quota_exempt(db, cookies):
     _seed_production_shape(db)
     assert _run(db, confirm=True)[0] == 0
+    # UNIFIED-IDENTITY-001：權限掛在 user 記錄上——把權限授給 TARGET 本人。
     client = _owner_client(db)
-    client.cookies.update(cookies(db))
+    cookies(db, owner_id=TARGET)
 
     assert client.get("/api/me/usage-summary").json()["quota_exempt"] is True
     assert client.post("/api/scenarios/legacy3/refresh").status_code == 200
@@ -441,7 +442,6 @@ def test_daily_cleanup_cron_applies_the_retention_policy(db):
     assert body["retention_rows_purged"] == {
         "snapshots": 1, "role_sessions": 2, "audit_log": 1, "events": 1}
     assert old not in db.snapshot_timestamps("mine", owner=TARGET)
-    assert db.resolve_role_session("live") is not None
     assert db.get_scenario("mine", owner=TARGET) is not None     # 劇本本身不受影響
 
 

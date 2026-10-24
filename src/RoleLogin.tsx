@@ -5,13 +5,14 @@
  * 單一密碼輸入框——沒有 username、沒有角色選單。打
  * `POST /api/auth/login`（AUTH-02／#309），由伺服器依密碼命中哪一把
  * （`SUPERADMIN_PASSWORD` 或 `SUPERUSER_PASSWORD`）決定角色，這裡只
- * 負責顯示結果與登出，不自行判斷角色高低（比較邏輯集中在
+ * 負責顯示結果與重設權限，不自行判斷角色高低（比較邏輯集中在
  * `./superuser`）。
  *
  * 掛載位置與既有 `SuperUserUnlock` 相同（Settings 頁）。角色狀態的
- * 唯一真相來源是 `GET /api/auth/status`（`__Host-oc_role` cookie，
- * `HttpOnly`，前端 JS 讀不到也不需要讀）——持久 cookie 讓重新整理
- * 頁面（模擬瀏覽器重啟）仍維持登入狀態，不需要使用者重新輸入密碼。
+ * 唯一真相來源是 `GET /api/auth/status`。OPTION-CHASER-UNIFIED-IDENTITY-
+ * 001 起權限直接寫在這個瀏覽器的 user 記錄上（不再有獨立的 role cookie）：
+ * 重新整理、關閉重開、跨分頁、重新部署都維持同一個權限，只有按「重設為
+ * Normal User」才會降回去。
  * 密碼本身絕不寫進 `localStorage`／`sessionStorage`，只活在這次
  * `submit` 呼叫的請求 body 裡。
  *
@@ -23,7 +24,7 @@
  */
 import { useEffect, useState } from "react";
 
-import { login, logout } from "./api";
+import { login, resetRole } from "./api";
 import { getAuthStatusCached, setAuthStatusCache } from "./fetchCache";
 import { roleAtLeast, type Role } from "./superuser";
 
@@ -79,11 +80,11 @@ export default function RoleLogin({
     }
   }
 
-  async function doLogout() {
+  async function doReset() {
     setBusy(true);
     setError(null);
     try {
-      const status = await logout();
+      const status = await resetRole();
       setAuthStatusCache(status);
       onChange(status.role);
     } catch (err) {
@@ -99,13 +100,14 @@ export default function RoleLogin({
       {roleAtLeast(role, "superuser") ? (
         <>
           <p className="caption">目前身分：{ROLE_LABELS[role]}。</p>
+          <p className="caption">這個權限會一直留在這個瀏覽器上，直到你按下面的重設。</p>
           <button
             type="button"
             className="text-button"
             disabled={busy}
-            onClick={() => void doLogout()}
+            onClick={() => void doReset()}
           >
-            {busy ? "登出中……" : "登出"}
+            {busy ? "重設中……" : "重設為 Normal User"}
           </button>
         </>
       ) : (

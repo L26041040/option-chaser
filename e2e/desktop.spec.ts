@@ -1628,7 +1628,7 @@ async function routeRoleJourney(page: import("@playwright/test").Page) {
     }
     await route.fulfill({ json: { role } });
   });
-  await page.route("**/api/auth/logout", async (route) => {
+  await page.route("**/api/auth/reset-role", async (route) => {
     role = "normal";
     await route.fulfill({ json: { role } });
   });
@@ -1636,7 +1636,7 @@ async function routeRoleJourney(page: import("@playwright/test").Page) {
     route.fulfill({ json: { role } }));
 }
 
-test("桌面版：持久登入——登入後重新整理仍維持身分，不必重打密碼；登出後" +
+test("桌面版：持久登入——登入後重新整理仍維持身分，不必重打密碼；重設權限後" +
      "回到 Normal User（AUTH-06／#313）", async ({ page }) => {
   await routeRoleJourney(page);
   await page.goto("/#/settings");
@@ -1664,12 +1664,12 @@ test("桌面版：持久登入——登入後重新整理仍維持身分，不�
     .getByText(/目前身分：Super User/)).toBeVisible();
   await expect(page.getByLabel("密碼")).toHaveCount(0);
 
-  // 登出：立刻回到 Normal User，密碼輸入框重新出現
-  await page.getByRole("button", { name: "登出" }).click();
+  // 重設權限：立刻回到 Normal User，密碼輸入框重新出現
+  await page.getByRole("button", { name: "重設為 Normal User" }).click();
   await expect(page.getByLabel("密碼")).toBeVisible();
   await expect(page.getByText(/目前身分：/)).toHaveCount(0);
 
-  // 登出後再重新整理依然是 Normal User——不是「登出只在這次分頁生效」
+  // 重設權限後再重新整理依然是 Normal User——不是「重設只在這次分頁生效」
   await page.reload();
   await expect(page.getByLabel("密碼")).toBeVisible();
   await expect(page.getByText(/目前身分：/)).toHaveCount(0);
@@ -1698,12 +1698,12 @@ test("桌面版：角色可見度矩陣——Normal／Super User／Super Admin �
   await page.goto("/#/s/s1");
   await expect(page.locator(".iv-history")).toBeVisible();
 
-  // 換成 Super Admin：得先登出（單一 cookie 一次只代表一個角色，不是
+  // 換成 Super Admin：得先重設權限（單一 cookie 一次只代表一個角色，不是
   // 「已登入時再打一次不同密碼」）——Historical IV 依然可見。
   // CLAUDE-SETTINGS-ROLE-IA-001：subnav 不再有「管理後台」分頁，旁邊一個
   // 入口連到獨立的管理中心頁（`#/admin`）。
   await page.goto("/#/settings");
-  await page.getByRole("button", { name: "登出" }).click();
+  await page.getByRole("button", { name: "重設為 Normal User" }).click();
   await page.getByLabel("密碼").fill(ROLE_SUPERADMIN_PASSWORD);
   await page.getByRole("button", { name: "登入" }).click();
   await expect(page.getByText(/目前身分：Super Admin/)).toBeVisible();
@@ -1717,9 +1717,9 @@ test("桌面版：角色可見度矩陣——Normal／Super User／Super Admin �
   await page.goto("/#/s/s1");
   await expect(page.locator(".iv-history")).toBeVisible();
 
-  // 登出：兩者都不再可見
+  // 重設權限：兩者都不再可見
   await page.goto("/#/settings");
-  await page.getByRole("button", { name: "登出" }).click();
+  await page.getByRole("button", { name: "重設為 Normal User" }).click();
   // 明確等到畫面真的换回登入表單（Normal User 狀態已經真的落地），
   // 才離開設定頁——避免詳細頁在 `getAuthStatusCached()` 的快取值真正
   // 換成 "normal" 之前就搶先掛載、讀到還沒更新完的舊角色（光靠「管理
@@ -2448,7 +2448,7 @@ test("桌面版：首頁不再常駐 Beta 說明，頁尾在整個 desktop-shell
   await footer.getByRole("link", { name: "隱私與資料政策" }).click();
   await expect(page).toHaveURL(/#\/privacy$/);
   for (const title of ["存了什麼", "留多久", "怎麼刪",
-                        "清除瀏覽器 cookie 的後果", "不是投資建議",
+                        "清除瀏覽器資料的後果", "不是投資建議",
                         "Beta 狀態"]) {
     await expect(page.getByRole("heading", { name: title })).toBeVisible();
   }
