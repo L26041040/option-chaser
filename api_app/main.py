@@ -1794,15 +1794,8 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
             # 等連線細節）只進 server log，回應只說「unavailable」。
             _logger.warning("health check: storage unavailable", exc_info=True)
             kind = "unavailable"
-        body = {"status": "ok", "engine_version": __version__,
+        return {"status": "ok", "engine_version": __version__,
                 "storage": kind, "path": request.url.path, "rate": rate}
-        # 【臨時】OPTION-CHASER-OWNER-CONSOLIDATION-001：cold-start 合併 hook
-        # 的 sanitized 狀態（只有計數），cleanup 移除。
-        from . import oneshot_owner_consolidation
-        oneshot_owner_consolidation.recheck_if_lock_was_held()
-        if oneshot_owner_consolidation.STATUS:
-            body["owner_consolidation"] = dict(oneshot_owner_consolidation.STATUS)
-        return body
 
     # ---------- Treasury Cron 預熱（SCALE-07／#257） ----------
 
