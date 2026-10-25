@@ -9,10 +9,11 @@
  * `./superuser`）。
  *
  * 掛載位置與既有 `SuperUserUnlock` 相同（Settings 頁）。角色狀態的
- * 唯一真相來源是 `GET /api/auth/status`。OPTION-CHASER-UNIFIED-IDENTITY-
- * 001 起權限直接寫在這個瀏覽器的 user 記錄上（不再有獨立的 role cookie）：
- * 重新整理、關閉重開、跨分頁、重新部署都維持同一個權限，只有按「重設為
- * Normal User」才會降回去。
+ * 唯一真相來源是 `GET /api/auth/status`。OPTION-CHASER-CROSS-DEVICE-
+ * ACCOUNT-001 起：任何裝置輸入正確密碼都登入**同一個主帳號**（這台裝置原本
+ * 的匿名劇本一併併進去），權限依這次輸入的密碼掛在這台裝置的憑證上；按
+ * 「重設為 Normal User」＝這台裝置登出主帳號。兩者都換了身分，成功後整頁
+ * 重新載入（`reloadAfterAccountSwitch()`）。
  * 密碼本身絕不寫進 `localStorage`／`sessionStorage`，只活在這次
  * `submit` 呼叫的請求 body 裡。
  *
@@ -24,6 +25,7 @@
  */
 import { useEffect, useState } from "react";
 
+import { reloadAfterAccountSwitch } from "./accountSwitch";
 import { login, resetRole } from "./api";
 import { getAuthStatusCached, setAuthStatusCache } from "./fetchCache";
 import { roleAtLeast, type Role } from "./superuser";
@@ -73,6 +75,7 @@ export default function RoleLogin({
       setAuthStatusCache(status);
       onChange(status.role);
       setPassword("");
+      reloadAfterAccountSwitch();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -87,6 +90,7 @@ export default function RoleLogin({
       const status = await resetRole();
       setAuthStatusCache(status);
       onChange(status.role);
+      reloadAfterAccountSwitch();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -100,7 +104,9 @@ export default function RoleLogin({
       {roleAtLeast(role, "superuser") ? (
         <>
           <p className="caption">目前身分：{ROLE_LABELS[role]}。</p>
-          <p className="caption">這個權限會一直留在這個瀏覽器上，直到你按下面的重設。</p>
+          <p className="caption">
+            這台裝置已登入主帳號：任何裝置輸入同一組密碼，看到的都是同一份劇本。按下面的重設，這台裝置就登出主帳號，回到匿名的 Normal User。
+          </p>
           <button
             type="button"
             className="text-button"

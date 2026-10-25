@@ -1091,19 +1091,33 @@ def test_a_new_owner_is_normal_and_set_owner_role_persists(storage):
     assert storage.get_owner("no-such-owner") is None
 
 
-def test_resolve_credential_carries_the_owners_role(storage):
-    """一次查詢拿到 token 對應的 user 與它的權限；權限變了，下一次查詢就
-    看得到。owner 列缺席時權限視為 normal（不因此拒絕解析）。"""
+def test_resolve_credential_carries_this_credentials_own_role(storage):
+    """一次查詢拿到 token 對應的 user 與**這顆憑證**的權限
+    （CROSS-DEVICE-ACCOUNT-001）：同一個 owner 的兩顆憑證可以是不同權限，
+    owner 層級的權限標記不影響任何一顆。"""
+    now = "2026-10-24T00:00:00+00:00"
     token = "cred-token-" + "y" * 20
+    other = "cred-token-" + "z" * 20
     storage.create_owner_with_token(
-        Owner(owner_id="cred-owner", created_at="2026-10-24T00:00:00+00:00"),
+        Owner(owner_id="cred-owner", created_at=now),
         BrowserIdentity(token=token, owner_id="cred-owner",
-                        issued_at="2026-10-24T00:00:00+00:00",
-                        last_seen_at="2026-10-24T00:00:00+00:00"))
+                        issued_at=now, last_seen_at=now))
     assert storage.resolve_credential(token) == ResolvedCredential(
         owner_id="cred-owner", role="normal", cookie_issued_at=None)
-    storage.set_owner_role("cred-owner", "superuser")
+    storage.set_owner_role("cred-owner", "superadmin")
+    assert storage.resolve_credential(token).role == "normal"
+    storage.set_credential_role(token, "superuser")
+    storage.add_browser_identity(BrowserIdentity(
+        token=other, owner_id="cred-owner", issued_at=now, last_seen_at=now,
+        role="superadmin"))
     assert storage.resolve_credential(token).role == "superuser"
+    assert storage.resolve_credential(other) == ResolvedCredential(
+        owner_id="cred-owner", role="superadmin", cookie_issued_at=None)
+    storage.set_credential_role(token, None)
+    assert storage.resolve_credential(token).role == "normal"
+    assert storage.delete_browser_identity(other) is True
+    assert storage.delete_browser_identity(other) is False
+    assert storage.resolve_credential(other) is None
     assert storage.resolve_credential("cred-token-unknown") is None
 
 

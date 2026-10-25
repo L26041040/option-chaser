@@ -118,20 +118,30 @@ def test_reload_and_a_new_tab_read_the_same_owner_and_scenarios():
     assert len(storage.list_owners()) == 1
 
 
-def test_role_login_and_reset_leave_the_owner_cookie_alone():
+def test_login_rotates_the_owner_cookie_once_and_reset_detaches_it():
+    """CROSS-DEVICE-ACCOUNT-001：登入主帳號＝換一顆新憑證——固定期限 cookie
+    簽一次（本機副本同時從 `X-OC-Credential` 拿到同一顆），之後的請求不再
+    簽；舊的那顆作廢。重設＝登出主帳號，換一顆還沒綁定的新憑證。"""
     app, storage = _app()
     c = _browser(app)
     c.post("/api/scenarios", json=NEW).raise_for_status()
     token = c.cookies.get(_OWNER_COOKIE_NAME)
     login = c.post("/api/auth/login", json={"password": SU_PASSWORD})
     assert login.json() == {"role": "superuser"}
-    assert _owner_cookies(login) == []
+    [header] = _owner_cookies(login)
+    rotated = c.cookies.get(_OWNER_COOKIE_NAME)
+    assert rotated != token
+    assert header.split(";")[0] == f"{_OWNER_COOKIE_NAME}={rotated}"
+    assert _max_age(header) == MAX_AGE
+    assert login.headers["X-OC-Credential"] == rotated
+    assert storage.resolve_owner_by_token(token) is None
     assert _owner_cookies(c.get("/api/scenarios")) == []
-    reset = c.post("/api/auth/reset-role")
-    assert _owner_cookies(reset) == []
-    assert c.get("/api/auth/status").json() == {"role": "normal"}
-    assert c.cookies.get(_OWNER_COOKIE_NAME) == token
     assert len(c.get("/api/scenarios").json()) == 1
+    reset = c.post("/api/auth/reset-role")
+    assert len(_owner_cookies(reset)) == 1
+    assert c.cookies.get(_OWNER_COOKIE_NAME) not in (token, rotated)
+    assert c.get("/api/auth/status").json() == {"role": "normal"}
+    assert c.get("/api/scenarios").json() == []
     assert len(storage.list_owners()) == 1
 
 

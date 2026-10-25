@@ -10,7 +10,7 @@
 6. Do not take or paste screenshots unless the Owner explicitly asks. Browser verification is allowed when required by a ticket, but keep screenshot-heavy work to explicit visual-acceptance stages.
 7. Session reports: Traditional Chinese with English technical terms kept in English. Put substantive report content in one complete code block. Number reports as `［回報#NNN］`.
    All times in reports use **Taiwan time (Asia/Taipei, UTC+8)**, written like `2026-09-27 22:09 (台灣)`; convert any UTC timestamp from tools/APIs before reporting.
-8. Current report sequence: **135 used; next report is 136** (#134 = UNIFIED-IDENTITY-DEPLOY-001, #135 = OWNER-CONSOLIDATION-001).
+8. Current report sequence: **136 used; next report is 137** (#135 = OWNER-CONSOLIDATION-001, #136 = CROSS-DEVICE-ACCOUNT-001).
 9. **Do not append detailed ticket history to this file.** Keep this file short. After a ticket, update only the active checkpoint below in 1–2 lines. Detailed evidence belongs in GitHub issues, commits, and code review comments.
 10. `CLAUDE_HISTORY.md` is the archived legacy project journal. **Do not read it by default.** Read it only when a specific historical question cannot be answered from the current issue/commit/docs.
 
@@ -59,6 +59,8 @@ CLAUDE-MOBILE-CARD-VERTICAL-ROWS-001: mobile card is one-row-per-item (main row 
 OPTION-CHASER-UNIFIED-IDENTITY-001 (builds on IDENTITY-FIX-002's fixed 400 d owner cookie): one user per browser; role lives on `owners.role` (login upgrades, `POST /api/auth/reset-role` downgrades; role session/`__Host-oc_role` retired). Credential kept twice — HttpOnly cookie + `src/credentialStore.ts` (IndexedDB/localStorage, sent as `X-OC-Credential`) — each restores the other. **Merged PR #355 (`0b21c1f`), Production deployed 2026-10-25 04:52 (台灣)**; awaiting Owner real-device acceptance (SU/SA re-enter password once).
 
 OPTION-CHASER-OWNER-CONSOLIDATION-001: **Production done 2026-10-25 06:59 (台灣)** via PR #356's temporary cold-start hook (removed by the cleanup): 9 owners → 1 (the sole Super User, role unchanged, now protected), all 20 scenarios + history on it, old browser identities deleted (not rebound). Restorable backup kept in schema `oc_backup_owner_consolidation_001`; `scripts/owner_consolidation.py --rollback --confirm` reverts. Do not rerun.
+
+OPTION-CHASER-CROSS-DEVICE-ACCOUNT-001: one main account across devices (`api_app/main_account.py`, persisted full id in `main_account`, seeded once from prefix `Tcf2_BUR`); role lives on each device credential (`browser_identities.role`); SU/SA login binds a fresh rotated credential to the main account and absorbs the device's anonymous owner (`Storage.absorb_owner`, conflicts archived in `owner_merge_archive`); reset = log this device out; `DELETE /api/me` refuses the main account. Real 3-browser check: `scripts/cross_device_verify*.{py,mjs}`.
 
 Public Beta security hardening: PR #346 (`security/public-beta-hardening`)
 covers #345 A-1–A-4 and B-1–B-7 — merged.

@@ -1,8 +1,8 @@
 """AUTH-02（#309，spec #307）：三層角色模型（`normal < superuser <
-superadmin`）的登入／狀態查詢。OPTION-CHASER-UNIFIED-IDENTITY-001 起權限
-是 user 記錄（`owners.role`）的一個欄位：登入＝把這個 user 的權限寫進資料
-庫、只升不降；只有「重設權限」會降回 Normal；不再有 role session／role
-cookie。
+superadmin`）的登入／狀態查詢。OPTION-CHASER-CROSS-DEVICE-ACCOUNT-001 起：
+登入＝這台裝置登入唯一的主帳號（發一顆新憑證，權限依這次輸入的密碼掛在
+**這顆憑證**上）；「重設權限」＝這台裝置登出主帳號；不再有 role
+session／role cookie。跨裝置的完整驗證在 `tests/test_cross_device_account.py`。
 
 沿用第 1 個接縫（HTTP API）。`base_url="https://testserver"` 比照
 `test_pb02_cookie_identity.py`／`test_pb09_superuser.py` 既有慣例，
@@ -232,7 +232,8 @@ def test_login_creates_exactly_one_user_and_writes_the_role_on_it():
     assert _status(c) == "superuser"
 
 
-def test_login_upgrades_the_existing_user_and_keeps_its_scenarios():
+def test_first_login_makes_this_device_the_main_account_and_keeps_its_scenarios():
+    """還沒有主帳號（全新部署）：第一台登入的裝置，它的 owner 就是主帳號。"""
     storage = MemoryStorage()
     c = _client(storage=storage)
     sid = c.post("/api/scenarios", json={
@@ -241,17 +242,21 @@ def test_login_upgrades_the_existing_user_and_keeps_its_scenarios():
     owner_id = storage.list_owners()[0].owner_id
     c.post("/api/auth/login", json={"password": SA_PASSWORD})
     assert [o.owner_id for o in storage.list_owners()] == [owner_id]
-    assert storage.get_owner(owner_id).role == "superadmin"
+    assert storage.get_main_account() == owner_id
+    assert _status(c) == "superadmin"
     assert [row["id"] for row in c.get("/api/scenarios").json()] == [sid]
 
 
-def test_login_never_downgrades():
+def test_each_login_sets_this_devices_role_from_the_password_it_used():
+    """權限看這次登入用的是哪一把密碼，不是「只升不降」——同一台裝置先用 SA
+    再用 SU 登入，這台裝置就是 SU（另一台 SA 裝置不受影響，見
+    `test_cross_device_account.py`）。"""
     storage = MemoryStorage()
     c = _client(storage=storage)
     c.post("/api/auth/login", json={"password": SA_PASSWORD})
     r = c.post("/api/auth/login", json={"password": SU_PASSWORD})
-    assert r.json() == {"role": "superadmin"}
-    assert _status(c) == "superadmin"
+    assert r.json() == {"role": "superuser"}
+    assert _status(c) == "superuser"
 
 
 def test_wrong_password_neither_creates_a_user_nor_changes_a_role():
@@ -293,7 +298,9 @@ def test_role_survives_losing_the_cookie_through_the_local_credential():
     assert len(storage.list_owners()) == 1
 
 
-def test_reset_role_is_the_only_way_down_and_keeps_user_and_scenarios():
+def test_reset_role_logs_this_device_out_of_the_main_account_and_keeps_it():
+    """重設＝這台裝置登出主帳號：憑證作廢、換一顆還沒綁定的新憑證，這台
+    裝置回到全新的匿名 Normal User；主帳號與它的劇本原封不動。"""
     storage = MemoryStorage()
     c = _client(storage=storage)
     c.post("/api/scenarios", json={
@@ -301,11 +308,14 @@ def test_reset_role_is_the_only_way_down_and_keeps_user_and_scenarios():
         "strategies": ["vertical-spread"]})
     c.post("/api/auth/login", json={"password": SU_PASSWORD})
     token = c.cookies.get(_OWNER_COOKIE_NAME)
+    main = storage.get_main_account()
     assert c.post("/api/auth/reset-role").json() == {"role": "normal"}
     assert _status(c) == "normal"
-    assert c.cookies.get(_OWNER_COOKIE_NAME) == token
-    assert len(storage.list_owners()) == 1
-    assert len(c.get("/api/scenarios").json()) == 1
+    assert c.cookies.get(_OWNER_COOKIE_NAME) != token
+    assert storage.resolve_owner_by_token(token) is None
+    assert [o.owner_id for o in storage.list_owners()] == [main]
+    assert len(storage.list_scenarios(owner=main)) == 1
+    assert c.get("/api/scenarios").json() == []
     assert c.post("/api/auth/reset-role").json() == {"role": "normal"}  # 重複也優雅
 
 

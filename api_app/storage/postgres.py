@@ -473,6 +473,33 @@ CREATE TABLE IF NOT EXISTS feedback (
     created_at    TEXT NOT NULL,
     owner_id      TEXT
 );
+-- OPTION-CHASER-CROSS-DEVICE-ACCOUNT-001：權限改掛在每一顆裝置憑證上
+-- （SU 登入的裝置、SA 登入的裝置各自判斷，互不污染）。NULL＝normal。
+-- 既有特權 owner 的憑證回填一次 owner 層級的權限（只碰 role 還是 NULL、
+-- owner 不是 normal 的列；之後特權帳號的憑證只會由登入建立、一定帶 role，
+-- 重跑是 no-op）。
+ALTER TABLE browser_identities ADD COLUMN IF NOT EXISTS role TEXT;
+UPDATE browser_identities bi SET role = o.role FROM owners o
+ WHERE bi.owner_id = o.owner_id AND bi.role IS NULL AND o.role <> 'normal';
+-- 主帳號的持久對應：任何裝置輸入正確的 SU／SA 密碼都登入這個 owner。
+-- 單列表（id 恆為 1）；欄位刻意不叫 `owner_id`——它不是 owner-scoped
+-- 資料，是指向 owner 的系統設定。
+CREATE TABLE IF NOT EXISTS main_account (
+    id              INTEGER PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+    main_owner_id   TEXT NOT NULL,
+    established_at  TEXT NOT NULL
+);
+-- 裝置登入主帳號時併入的匿名資料裡，跟主帳號衝突（主帳號已經有同一項
+-- 設定／同一家 provider 的憑證）而沒被採用的那一列：完整留存，不遺失。
+-- 主帳號被刪時一併清掉（`delete_owner()`）。
+CREATE TABLE IF NOT EXISTS owner_merge_archive (
+    seq              BIGSERIAL PRIMARY KEY,
+    merged_at        TEXT NOT NULL,
+    source_owner_id  TEXT NOT NULL,
+    target_owner_id  TEXT NOT NULL,
+    table_name       TEXT NOT NULL,
+    row_data         JSONB NOT NULL
+);
 """
 
 # 冷啟動競爭下的良性錯誤：別人已經建好／加好了。
@@ -1289,7 +1316,8 @@ class PostgresStorage:
         "owner_verifications", "owners", "browser_identities", "role_sessions",
         "superuser_audit_log", "rate_limits", "operational_metrics",
         "feedback", "iv_observations", "iv_backfill_runs", "contract_iv_history",
-        "rate_cache", "dividend_cache", "treasury_year_cache", "chain_backoff")
+        "rate_cache", "dividend_cache", "treasury_year_cache", "chain_backoff",
+        "main_account", "owner_merge_archive")
 
     def table_row_counts(self) -> dict[str, dict]:
         out: dict[str, dict] = {}
@@ -1352,6 +1380,11 @@ class PostgresStorage:
                     "DELETE FROM browser_identities WHERE owner_id = %s",
                     (owner_id,))
                 counts["browser_identities"] = cur.rowcount
+                # CROSS-DEVICE-ACCOUNT-001：併入時留存的衝突列屬於主帳號本人。
+                cur = conn.execute(
+                    "DELETE FROM owner_merge_archive WHERE target_owner_id = %s",
+                    (owner_id,))
+                counts["owner_merge_archive"] = cur.rowcount
                 cur = conn.execute(
                     "DELETE FROM owners WHERE owner_id = %s", (owner_id,))
                 counts["owners"] = cur.rowcount
@@ -1425,10 +1458,8 @@ class PostgresStorage:
     def resolve_credential(self, token: str) -> ResolvedCredential | None:
         with self._connect() as conn:
             row = conn.execute(
-                "SELECT bi.owner_id, COALESCE(o.role, 'normal'), "
-                "bi.cookie_issued_at FROM browser_identities bi "
-                "LEFT JOIN owners o ON o.owner_id = bi.owner_id "
-                "WHERE bi.token = %s", (token,)).fetchone()
+                "SELECT owner_id, COALESCE(role, 'normal'), cookie_issued_at "
+                "FROM browser_identities WHERE token = %s", (token,)).fetchone()
         return (ResolvedCredential(owner_id=row[0], role=row[1],
                                    cookie_issued_at=row[2])
                 if row else None)
@@ -1437,6 +1468,132 @@ class PostgresStorage:
         with self._connect() as conn:
             conn.execute("UPDATE owners SET role = %s WHERE owner_id = %s",
                          (role, owner_id))
+
+    def set_credential_role(self, token: str, role: str | None) -> None:
+        with self._connect() as conn:
+            conn.execute("UPDATE browser_identities SET role = %s WHERE token = %s",
+                         (role, token))
+
+    def add_browser_identity(self, identity: BrowserIdentity) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO browser_identities (token, owner_id, issued_at, "
+                "last_seen_at, cookie_issued_at, role) "
+                "VALUES (%s, %s, %s, %s, %s, %s)",
+                (identity.token, identity.owner_id, identity.issued_at,
+                 identity.last_seen_at, identity.cookie_issued_at, identity.role))
+
+    def delete_browser_identity(self, token: str) -> bool:
+        with self._connect() as conn:
+            return conn.execute("DELETE FROM browser_identities WHERE token = %s",
+                                (token,)).rowcount > 0
+
+    def get_main_account(self) -> str | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT main_owner_id FROM main_account WHERE id = 1").fetchone()
+        return row[0] if row else None
+
+    def set_main_account(self, owner_id: str, *, now: str,
+                         expected: str | None) -> str:
+        with self._connect() as conn:
+            if expected is None:
+                conn.execute(
+                    "INSERT INTO main_account (id, main_owner_id, established_at) "
+                    "VALUES (1, %s, %s) ON CONFLICT (id) DO NOTHING",
+                    (owner_id, now))
+            else:
+                conn.execute(
+                    "UPDATE main_account SET main_owner_id = %s, "
+                    "established_at = %s WHERE id = 1 AND main_owner_id = %s",
+                    (owner_id, now, expected))
+            return conn.execute(
+                "SELECT main_owner_id FROM main_account WHERE id = 1").fetchone()[0]
+
+    def owners_with_id_prefix(self, prefix: str) -> list[Owner]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT owner_id, created_at, last_activity_at, protected, "
+                "is_synthetic, role FROM owners "
+                "WHERE left(owner_id, char_length(%s)) = %s", (prefix, prefix)
+                ).fetchall()
+        return [Owner(owner_id=r[0], created_at=r[1], last_activity_at=r[2],
+                      protected=r[3], is_synthetic=r[4], role=r[5]) for r in rows]
+
+    # 併入時 owner_id 直接改掛的內容表（設定表另外處理衝突）。
+    _ABSORB_CONTENT_TABLES = ("scenarios", "results", "current_results",
+                              "snapshots", "events", "diagnostics", "feedback")
+    _ABSORB_LOCK_TABLES = ("owners", "browser_identities", "owner_settings",
+                           "owner_credentials", "owner_verifications",
+                           "scenarios", "results", "current_results",
+                           "snapshots", "events", "diagnostics", "feedback",
+                           "rate_limits")
+
+    def absorb_owner(self, source: str, *, into: str, now: str) -> dict[str, int]:
+        if source == into:
+            return {}
+        counts: dict[str, int] = {}
+        with self.transaction(), self._connect() as conn:
+            # 併入期間擋住兩邊的並行寫入（讀照常），不會有一筆劇本在搬完之後
+            # 才寫進即將被刪掉的 source。登入併入很少發生，鎖只持有幾毫秒。
+            conn.execute("LOCK TABLE " + ", ".join(self._ABSORB_LOCK_TABLES)
+                         + " IN SHARE ROW EXCLUSIVE MODE")
+            for table in SCENARIO_CHILD_TABLES:
+                conn.execute(
+                    f"UPDATE {table} SET owner_id = %s WHERE owner_id IS NULL "
+                    "AND scenario_id IN (SELECT id FROM scenarios "
+                    "WHERE owner_id = %s)", (into, source))
+
+            def settle(table: str, conflict: str) -> None:
+                """`conflict`（以 `s` 指 source 那一列、`%(into)s` 指主帳號）
+                成立的列：主帳號優先，source 那一列存進 archive 後移除；
+                其餘直接改掛主帳號。"""
+                params = {"now": now, "source": source, "into": into,
+                          "table": table}
+                conn.execute(
+                    "INSERT INTO owner_merge_archive (merged_at, source_owner_id, "
+                    "target_owner_id, table_name, row_data) "
+                    "SELECT %(now)s, %(source)s, %(into)s, %(table)s, to_jsonb(s) "
+                    f"FROM {table} s WHERE s.owner_id = %(source)s AND ({conflict})",
+                    params)
+                archived = conn.execute(
+                    f"DELETE FROM {table} s WHERE s.owner_id = %(source)s "
+                    f"AND ({conflict})", params).rowcount
+                moved = conn.execute(
+                    f"UPDATE {table} SET owner_id = %(into)s "
+                    "WHERE owner_id = %(source)s", params).rowcount
+                counts[table] = moved
+                counts[f"{table}_archived"] = archived
+
+            settle("owner_settings",
+                   "EXISTS (SELECT 1 FROM owner_settings t "
+                   "WHERE t.owner_id = %(into)s)")
+            # verification 描述的是同一家 provider 的那把 credential：主帳號
+            # 已經有那家的 credential（或自己的 verification）時，source 的
+            # verification 跟著 source 的 credential 一起留存，不跟主帳號的
+            # credential 配錯對。先處理 verification，判斷才看得到主帳號原本
+            # 的 credential。
+            settle("owner_verifications",
+                   "EXISTS (SELECT 1 FROM owner_verifications t "
+                   "WHERE t.owner_id = %(into)s AND t.provider = s.provider) "
+                   "OR EXISTS (SELECT 1 FROM owner_credentials t "
+                   "WHERE t.owner_id = %(into)s AND t.provider = s.provider)")
+            settle("owner_credentials",
+                   "EXISTS (SELECT 1 FROM owner_credentials t "
+                   "WHERE t.owner_id = %(into)s AND t.provider = s.provider)")
+            for table in self._ABSORB_CONTENT_TABLES:
+                counts[table] = conn.execute(
+                    f"UPDATE {table} SET owner_id = %s WHERE owner_id = %s",
+                    (into, source)).rowcount
+            counts["rate_limits"] = conn.execute(
+                "DELETE FROM rate_limits WHERE scope = %s AND key = %s",
+                (OWNER_RATE_LIMIT_SCOPE, source)).rowcount
+            counts["browser_identities"] = conn.execute(
+                "DELETE FROM browser_identities WHERE owner_id = %s",
+                (source,)).rowcount
+            counts["owners"] = conn.execute(
+                "DELETE FROM owners WHERE owner_id = %s", (source,)).rowcount
+        return counts
 
     def mark_owner_cookie_issued(self, token: str, *, now: str) -> None:
         with self._connect() as conn:

@@ -62,7 +62,9 @@ describe("AdminPage", () => {
     expect(screen.getByRole("link", { name: "← 設定" })).toHaveAttribute("href", "#/settings");
     expect(await screen.findByRole("region", { name: "Super User 管理面板" }))
       .toBeInTheDocument();
-    expect(adminCalls(spy).length).toBeGreaterThan(0);
+    // 管理面板是掛載之後才在 effect 裡發請求——等它真的發出去，不要在掛載
+    // 的同一刻就斷言（原本這裡是時序競賽，偶發 0 次）。
+    await waitFor(() => expect(adminCalls(spy).length).toBeGreaterThan(0));
     expect(window.location.hash).toBe("#/admin");
   });
 

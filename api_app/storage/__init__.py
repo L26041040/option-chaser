@@ -321,14 +321,17 @@ class BrowserIdentity:
     issued_at: str
     last_seen_at: str
     cookie_issued_at: str | None = None
+    # OPTION-CHASER-CROSS-DEVICE-ACCOUNT-001：權限掛在**這顆憑證**上，不是
+    # owner 上——同一個主帳號可以同時有 SU 登入的裝置與 SA 登入的裝置，
+    # 各自依當初輸入的密碼判斷，互不污染。`None`＝normal（匿名裝置）。
+    role: str | None = None
 
 
 @dataclass(frozen=True)
 class ResolvedCredential:
-    """UNIFIED-IDENTITY-001：一次請求的身分解析結果——這顆憑證屬於哪個
-    user、這個 user 是什麼權限、固定期限 cookie 簽過了沒。`browser_
-    identities` LEFT JOIN `owners` 一次查齊（owner 列不在時權限視為
-    `normal`，與既有「token 對到 owner_id 就算這個 owner」的語意一致）。"""
+    """一次請求的身分解析結果——這顆憑證屬於哪個 user、**這顆憑證**是什麼
+    權限（CROSS-DEVICE-ACCOUNT-001 起看 `browser_identities.role`，不再看
+    `owners.role`）、固定期限 cookie 簽過了沒。"""
     owner_id: str
     role: str
     cookie_issued_at: str | None
@@ -1280,8 +1283,52 @@ class Storage(Protocol):
         user、它的權限與 `cookie_issued_at`。token 不存在回 `None`。"""
 
     def set_owner_role(self, owner_id: str, role: str) -> None:
-        """UNIFIED-IDENTITY-001：更新 user 權限（`normal`／`superuser`／
-        `superadmin`）。owner 不存在時安靜地什麼都不做。"""
+        """更新 owner 層級的權限標記（`normal`／`superuser`／`superadmin`）。
+        CROSS-DEVICE-ACCOUNT-001 起它只代表「這是特權帳號」（匿名清理與
+        Beta Reset 跳過它），請求的權限看憑證（`set_credential_role()`）；
+        只有 DI 覆寫身分的測試路徑仍以它當權限。owner 不存在時安靜地什麼
+        都不做。"""
+
+    def set_credential_role(self, token: str, role: str | None) -> None:
+        """CROSS-DEVICE-ACCOUNT-001：設定這顆憑證的權限（`None`＝normal）。
+        token 不存在時安靜地什麼都不做。"""
+
+    def add_browser_identity(self, identity: BrowserIdentity) -> None:
+        """CROSS-DEVICE-ACCOUNT-001：替**既有** owner 再綁一顆裝置憑證（登入
+        主帳號）。一個 owner 可以有任意多顆；token 是 PK，撞到時照資料庫的
+        PK 違反行為處理（呼叫端用密碼學安全隨機值產生）。"""
+
+    def delete_browser_identity(self, token: str) -> bool:
+        """作廢一顆憑證（重新登入的輪替、登出主帳號）。回傳是否真的刪到。"""
+
+    def get_main_account(self) -> str | None:
+        """主帳號的完整 owner_id（持久對應，`main_account` 單列表）；還沒
+        建立時回 `None`。"""
+
+    def set_main_account(self, owner_id: str, *, now: str,
+                         expected: str | None) -> str:
+        """compare-and-set：目前的對應等於 `expected`（`None`＝還沒有）時才
+        改成 `owner_id`。回傳寫入後**實際**的主帳號——並發下兩台裝置同時
+        建立時只會有一個贏，輸的那邊拿到贏家，自己再併進去。"""
+
+    def owners_with_id_prefix(self, prefix: str) -> list[Owner]:
+        """owner_id 以 `prefix` 開頭的 owner（字面比對，`_`／`%` 不是萬用
+        字元）。主帳號第一次建立對應時用。"""
+
+    def absorb_owner(self, source: str, *, into: str, now: str) -> dict[str, int]:
+        """CROSS-DEVICE-ACCOUNT-001：把 `source` 名下全部資料安全併進 `into`
+        （已經有匿名劇本的裝置登入主帳號時），單一交易：
+
+        - 劇本與它的結果／current results／快照／事件、診斷、意見回饋全部
+          改掛 `into`（所屬劇本歸 `into`、自己 owner 是 NULL 的子列一併補上）；
+        - 三張設定表：`into` 沒有的直接搬過去；`into` 已經有的保留
+          `into` 的，`source` 那一列完整存進 `owner_merge_archive`（不覆蓋
+          主帳號、也不遺失）；
+        - 刪掉 `source` 的 browser identity（**不**改綁）、per-owner quota
+          計數列與 owner 列本身。
+
+        回傳各表受影響的列數。`source == into` 或 `source` 不存在時什麼都
+        不做。"""
 
     def mark_owner_cookie_issued(self, token: str, *, now: str) -> None:
         """IDENTITY-FIX-002：記下這次回應已把 token 以固定期限 cookie

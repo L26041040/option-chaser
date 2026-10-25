@@ -1266,20 +1266,24 @@ export function getAuthStatus(signal?: AbortSignal): Promise<AuthStatus> {
 
 /** 單一密碼登入——沒有 username、沒有角色選單，由伺服器依密碼命中
  *  哪一把（`SUPERADMIN_PASSWORD` 或 `SUPERUSER_PASSWORD`）決定角色。
- *  回應只有角色名稱，絕不回傳密碼或 session token 本身。 */
+ *  OPTION-CHASER-CROSS-DEVICE-ACCOUNT-001：這台裝置登入唯一的主帳號——伺服器
+ *  換發一顆新的裝置憑證（HttpOnly cookie＋`X-OC-Credential`，`send()` 會存
+ *  進本機），這台裝置原本的匿名劇本併進主帳號。回應只有角色名稱，絕不回傳
+ *  密碼；呼叫端成功後整頁重新載入（`accountSwitch.ts`）。 */
 export function login(password: string): Promise<AuthStatus> {
   return request<AuthStatus>("/api/auth/login", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ password }),
-    // 權限寫在 user 記錄上：還沒有 user 的瀏覽器在這裡建立（UNIFIED-
-    // IDENTITY-001），跟第一次建立劇本走同一套排隊。
+    // 還沒有主帳號的全新部署：第一台登入的裝置就是主帳號，可能在這裡建立
+    // user——跟第一次建立劇本走同一套排隊。
     mayCreateUser: true,
   });
 }
 
-/** 明確的權限重設：把這個 user 的權限降回 Normal（劇本與身分都不動）。
- *  本來就是 Normal 時也是 `{role: "normal"}`，不是錯誤。 */
+/** 明確的權限重設：這台裝置若登入的是主帳號，就是**登出**——換成一顆還沒
+ *  綁定的新憑證，回到匿名 Normal User（主帳號與其他裝置不受影響）。本來就是
+ *  Normal 時也是 `{role: "normal"}`，不是錯誤。 */
 export function resetRole(): Promise<AuthStatus> {
   return request<AuthStatus>("/api/auth/reset-role", { method: "POST" });
 }

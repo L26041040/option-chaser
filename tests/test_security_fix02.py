@@ -18,7 +18,8 @@ from api_app import abuse_control as ac
 from api_app import metrics
 from api_app.clock import ny_today
 from api_app.main import create_app
-from api_app.storage import ChainBackoffEntry, RateLimitBucket
+from api_app.storage import (ChainBackoffEntry, DataSourceSettings,
+                             ProviderCredential, RateLimitBucket, UsageSetting)
 from api_app.storage.memory import MemoryStorage
 from option_chaser.data.snapshot import load_snapshot
 
@@ -500,16 +501,17 @@ def _chain_env(monkeypatch, *, custom_provider: bool):
                      cron_secret="fake-cron-secret")
     c, sid, owner = _new_owner_with_scenario(app, storage)
     if custom_provider:
-        # 存 credential 需要 Super Admin（AUTH-04）：借登入設定好這個 owner
-        # 的自訂 provider，再重設權限——之後這個瀏覽器就是帶著自訂設定的
-        # Normal User。
-        c.post("/api/auth/login", json={"password": SA_PW}).raise_for_status()
-        c.put("/api/settings", json={
-            "market_data": {"mode": "custom", "provider": PROVIDER},
-            "historical_iv": {"mode": "default", "provider": None}}).raise_for_status()
-        c.put(f"/api/settings/credentials/{PROVIDER}",
-              json={"token": "fake-provider-token"}).raise_for_status()
-        c.post("/api/auth/reset-role").raise_for_status()
+        # 一個帶著自訂 provider 設定與 credential 的 Normal User。存
+        # credential 的端點需要 SU／SA；CROSS-DEVICE-ACCOUNT-001 起登入＝登入
+        # 主帳號、重設＝離開主帳號，不能再拿來「借權限設定這個匿名 owner」，
+        # 所以直接寫進 storage。
+        storage.save_settings(DataSourceSettings(
+            market_data=UsageSetting(mode="custom", provider=PROVIDER),
+            historical_iv=UsageSetting(mode="default", provider=None),
+            updated_at="2026-09-01T00:00:00+00:00", owner_id=owner))
+        storage.save_credential(ProviderCredential(
+            provider=PROVIDER, token="fake-provider-token",
+            updated_at="2026-09-01T00:00:00+00:00", owner_id=owner))
     return dict(app=app, storage=storage, clock=clock, c=c, sid=sid, owner=owner,
                 custom=custom, cboe=cboe, yf=yfin)
 

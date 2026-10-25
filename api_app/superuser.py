@@ -1,22 +1,27 @@
 """三層權限（Normal／Super User／Super Admin）。
 
-OPTION-CHASER-UNIFIED-IDENTITY-001 起，權限是 **user 記錄本身的一個欄位**
-（`owners.role`），不再是獨立於身分之外的第二套 session：
+OPTION-CHASER-CROSS-DEVICE-ACCOUNT-001 起，權限掛在**每一顆裝置憑證**上
+（`browser_identities.role`），不再是 owner 記錄的欄位，也不是獨立的第二套
+session：
 
 ```
-瀏覽器憑證（HttpOnly cookie＋本機儲存，兩份互相補回，見 `main.py`）
-  → 一個 user（owner_id）
-      ├─ 劇本、設定、provider credential（owner-scoped 資料）
-      └─ role：normal < superuser < superadmin
+主帳號（`main_account` 持久對應 → 一個 owner_id，見 `main_account.py`）
+  ├─ 裝置憑證（HttpOnly cookie＋本機儲存，兩份互相補回，見 `main.py`）
+  │    └─ role：用哪一把密碼登入的就是哪一級（superuser／superadmin）
+  └─ 劇本、設定、provider credential（owner-scoped 資料）
+匿名裝置 → 各自的匿名 owner，憑證 role 是 normal
 ```
 
-- 升權：`POST /api/auth/login` 輸入正確的 SU／SA 密碼 → 直接把這個 user
-  的 `role` 寫進資料庫（只升不降）。
-- 降權：只有使用者主動按「重設權限」（`POST /api/auth/reset-role`）。重新
-  整理、關閉重開、跨分頁、重新部署都不影響——權限跟著 user 走。
-- 判斷：`main.py` 的 middleware 解析憑證時一次查齊 user 與權限，放進
-  `identity` 的 ContextVar；`current_role()`／`require_role()` 是全站唯一
-  的讀取點，端點不得自行比對密碼或角色字串。
+- 登入：`POST /api/auth/login` 輸入正確的 SU／SA 密碼 → 這台裝置登入主帳號
+  （換發一顆新憑證、舊的作廢；原本的匿名資料併進主帳號），新憑證的權限＝這次
+  命中的那一級。同一個主帳號的 SU 裝置與 SA 裝置互不污染。
+- 降回 Normal：只有使用者主動按「重設權限」（`POST /api/auth/reset-role`）＝
+  這台裝置登出主帳號。重新整理、關閉重開、跨分頁、重新部署都不影響。
+- 判斷：`main.py` 的 middleware 解析憑證時一次查齊 user 與這顆憑證的權限，
+  放進 `identity` 的 ContextVar；`current_role()`／`require_role()` 是全站
+  唯一的讀取點，端點不得自行比對密碼或角色字串。
+- `owners.role` 只剩「這是特權帳號」的標記（匿名清理與 Beta Reset 跳過它）；
+  只有 DI 覆寫身分的測試路徑仍以它當權限。
 
 AUTH-01／AUTH-02（#308／#309）的 role session 與 `__Host-oc_role` cookie
 已退役：沒有任何權限判斷讀它們；舊 cookie 只會被 middleware 清掉，舊列只

@@ -42,7 +42,7 @@ from api_app import superuser
 from api_app.main import create_app
 from api_app.storage.memory import MemoryStorage
 from api_app.superuser import LEGACY_ROLE_COOKIE_NAME as ROLE_COOKIE_NAME
-from tests._role_session import role_cookies, superadmin_cookies
+from tests._role_session import grant_role, role_cookies, superadmin_cookies
 
 CRON_SECRET = "the-real-cron-secret"
 SUPERUSER_PASSWORD = "the-real-superuser-password"
@@ -180,8 +180,8 @@ def test_auth_status_is_always_200_regardless_of_the_cookies_validity():
 
 
 def test_role_session_presence_does_not_change_which_owner_a_cookie_resolves_to():
-    """UNIFIED-IDENTITY-001：權限是同一個 user 記錄的欄位——升權不會換成另一
-    個 owner，帶一顆錯的（或退役的）role cookie 也不會讓它變成別的 owner。"""
+    """權限掛在這個瀏覽器的憑證上（CROSS-DEVICE-ACCOUNT-001）——授權不會換成
+    另一個 owner，帶一顆錯的（或退役的）role cookie 也不會讓它變成別的 owner。"""
     storage = MemoryStorage()
     c = _client(storage=storage)
     # SECURITY-FIX-01：讀取不再建立 owner，建一個劇本才會。
@@ -190,7 +190,7 @@ def test_role_session_presence_does_not_change_which_owner_a_cookie_resolves_to(
                                    "strategies": ["vertical-spread"]}).raise_for_status()
     [owner] = storage.list_owners()
 
-    storage.set_owner_role(owner.owner_id, "superadmin")
+    grant_role(storage, "superadmin", owner_id=owner.owner_id)
     assert c.get("/api/auth/status").json() == {"role": "superadmin"}
     assert [o.owner_id for o in storage.list_owners()] == [owner.owner_id]
 

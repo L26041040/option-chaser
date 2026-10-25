@@ -14,6 +14,9 @@ vi.mock("./api", () => ({
   login: vi.fn(),
   resetRole: vi.fn(),
 }));
+vi.mock("./accountSwitch", () => ({
+  reloadAfterAccountSwitch: vi.fn(),
+}));
 vi.mock("./fetchCache", () => ({
   getAuthStatusCached: () => ({
     promise: new Promise(() => {}), // 永遠不 resolve，測試不關心掛載後的查詢結果
@@ -22,6 +25,8 @@ vi.mock("./fetchCache", () => ({
   setAuthStatusCache: vi.fn(),
 }));
 
+import { reloadAfterAccountSwitch } from "./accountSwitch";
+import { login, resetRole } from "./api";
 import RoleLogin from "./RoleLogin";
 
 describe("文案去術語（SW-09／#339 全站掃描）", () => {
@@ -61,5 +66,39 @@ describe("基本渲染（補齊零覆蓋缺口）", () => {
     expect(screen.getByRole("button", { name: "登入" })).toBeDisabled();
     await userEvent.type(screen.getByLabelText("密碼"), "x");
     expect(screen.getByRole("button", { name: "登入" })).toBeEnabled();
+  });
+});
+
+describe("登入／登出主帳號後整頁換身分（CROSS-DEVICE-ACCOUNT-001）", () => {
+  it("登入成功：更新角色後整頁重新載入", async () => {
+    vi.mocked(login).mockResolvedValueOnce({ role: "superuser" });
+    vi.mocked(reloadAfterAccountSwitch).mockClear();
+    const onChange = vi.fn();
+    render(<RoleLogin role="normal" onChange={onChange} />);
+    await userEvent.type(screen.getByLabelText("密碼"), "pw");
+    await userEvent.click(screen.getByRole("button", { name: "登入" }));
+    expect(login).toHaveBeenCalledWith("pw");
+    expect(onChange).toHaveBeenCalledWith("superuser");
+    expect(reloadAfterAccountSwitch).toHaveBeenCalledTimes(1);
+  });
+
+  it("密碼錯誤：顯示錯誤、不重新載入", async () => {
+    vi.mocked(login).mockRejectedValueOnce(new Error("unauthorized"));
+    vi.mocked(reloadAfterAccountSwitch).mockClear();
+    render(<RoleLogin role="normal" onChange={vi.fn()} />);
+    await userEvent.type(screen.getByLabelText("密碼"), "wrong");
+    await userEvent.click(screen.getByRole("button", { name: "登入" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("unauthorized");
+    expect(reloadAfterAccountSwitch).not.toHaveBeenCalled();
+  });
+
+  it("重設（登出主帳號）：回到 Normal 後整頁重新載入", async () => {
+    vi.mocked(resetRole).mockResolvedValueOnce({ role: "normal" });
+    vi.mocked(reloadAfterAccountSwitch).mockClear();
+    const onChange = vi.fn();
+    render(<RoleLogin role="superuser" onChange={onChange} />);
+    await userEvent.click(screen.getByRole("button", { name: "重設為 Normal User" }));
+    expect(onChange).toHaveBeenCalledWith("normal");
+    expect(reloadAfterAccountSwitch).toHaveBeenCalledTimes(1);
   });
 });

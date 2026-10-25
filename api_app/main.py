@@ -11,6 +11,7 @@ serverless 前提：全程不碰檔案系統（Vercel 唯讀），走
 from __future__ import annotations
 
 import dataclasses
+import hashlib
 import os
 import re
 import secrets
@@ -20,6 +21,7 @@ from contextvars import ContextVar
 import uuid
 from datetime import date, datetime, timedelta, timezone
 from typing import Callable, Literal
+from urllib.parse import urlsplit
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import Response
@@ -35,7 +37,7 @@ from option_chaser.service import DividendLoader, RateCurveLoader
 from option_chaser.timeframe import (TargetMonth, calendar_anchor,
                                      ensure_month_open, month_is_over)
 
-from . import abuse_control, data_lifecycle
+from . import abuse_control, data_lifecycle, main_account
 from . import (anonymous_lifecycle, chain_backoff, diagnostics, metrics,
               ops_alerts, providers, superuser, vendor_fuse)
 from .clock import now_utc_iso, ny_today
@@ -53,7 +55,7 @@ from .storage import (BrowserIdentity, ContractHistory, DataSourceSettings,
                       RateCacheEntry, RateLimitBucket, ResultRecord,
                       ResultSummary, Scenario, ScenarioExists, Storage,
                       SuperUserAuditEvent, UsageSetting)
-from .storage.factory import database_url_candidates, storage_from_env
+from .storage.factory import database_url, database_url_candidates, storage_from_env
 from .treasury_cache import cached_rate_curve_rows
 
 FetchChain = Callable[[str], ChainSnapshot]
@@ -119,6 +121,13 @@ _OWNER_EXEMPT_PREFIXES = ("/api/cron/",)
 # 下游讀取。request 之外（測試直接呼叫內部 seam）為 `None`＝當作
 # Normal、沒有來源資訊。
 _current_request: ContextVar[Request | None] = ContextVar("current_request", default=None)
+
+# OPTION-CHASER-CROSS-DEVICE-ACCOUNT-001：這次請求的憑證狀態——middleware 建立
+# 的那個 dict 本身（`_resolve_owner_for_request()` 的 `credential`）。登入／
+# 登出要換掉回應簽給瀏覽器的憑證時直接改它：它是共享的可變物件，同步端點在
+# threadpool 裡（複製出來的 context）改的內容，middleware 回寫 cookie 時看得到。
+_current_credential: ContextVar[dict | None] = ContextVar(
+    "current_credential", default=None)
 
 # `create_app(trusted_ip_header=...)` 的「沒指定」：讀環境（見
 # `abuse_control.default_trusted_ip_header()`）。`None` 本身是合法值
@@ -1407,9 +1416,9 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
             if created:
                 _record_metric("new_owner_count", ny_today())
             else:
-                # 並發請求剛好先綁了這顆：沿用那個 user 與它的權限。
-                rec = _db().get_owner(bound)
-                set_resolved_role(rec.role if rec else "normal")
+                # 並發請求剛好先綁了這顆：沿用那個 user 與這顆憑證的權限。
+                resolved = _db().resolve_credential(candidate)
+                set_resolved_role(resolved.role if resolved else "normal")
             set_resolved_owner(bound)
             credential.update(bound=True, issue=True, echo=candidate != stored_token)
             return bound
@@ -1435,9 +1444,13 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         # 佔位 owner 不寫進診斷紀錄的 owner 欄位：它不屬於任何人，也不該
         # 被任何人的 `/api/diagnostics` 讀到。
         diag_owner = None if is_pending_owner(effective_owner) else effective_owner
-        with diagnostics.owner_scope(diag_owner), \
-             resolved_owner_scope(owner_id, materializer, role):
-            response = await call_next(request)
+        credential_token = _current_credential.set(credential)
+        try:
+            with diagnostics.owner_scope(diag_owner), \
+                 resolved_owner_scope(owner_id, materializer, role):
+                response = await call_next(request)
+        finally:
+            _current_credential.reset(credential_token)
         if credential is not None:
             if credential["issue"]:
                 # `SameSite=Lax`：同源 SPA，沒有跨站表單提交或第三方 iframe
@@ -1795,7 +1808,25 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
             _logger.warning("health check: storage unavailable", exc_info=True)
             kind = "unavailable"
         return {"status": "ok", "engine_version": __version__,
-                "storage": kind, "path": request.url.path, "rate": rate}
+                "storage": kind, "path": request.url.path, "rate": rate,
+                "backend": _backend_identity()}
+
+    def _backend_identity() -> dict:
+        """OPTION-CHASER-CROSS-DEVICE-ACCOUNT-001：任何網址（正式網域、分支
+        預覽、外部檢視器開的連結）打 `/api/health` 比對這一段，就知道是不是
+        同一份後端——部署環境、commit，以及資料庫端點指紋（連線字串的
+        host＋資料庫名稱取 SHA-256 前 12 碼：不含帳密，也還原不回 host）。"""
+        url = database_url()
+        database = None
+        if url:
+            parts = urlsplit(url)
+            database = hashlib.sha256(
+                f"{parts.hostname or ''}/{parts.path.lstrip('/')}".encode()
+            ).hexdigest()[:12]
+        commit = os.environ.get("VERCEL_GIT_COMMIT_SHA")
+        return {"env": os.environ.get("VERCEL_ENV"),
+                "commit": commit[:7] if commit else None,
+                "database": database}
 
     # ---------- Treasury Cron 預熱（SCALE-07／#257） ----------
 
@@ -2145,18 +2176,50 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         return {"sent": sent, "date": str(today),
                "alerts_triggered": [a.key for a in snapshot.alerts if a.triggered]}
 
-    # ---------- 三層權限：登入升權／重設權限／狀態查詢 ----------
+    # ---------- 三層權限：登入主帳號／登出／狀態查詢 ----------
     #
-    # UNIFIED-IDENTITY-001：權限是 user 記錄（`owners.role`）的一個欄位，
-    # 不再有獨立的 role session／role cookie。登入＝把這個 user 的權限寫進
-    # 資料庫；只有「重設權限」會降回 Normal。
+    # OPTION-CHASER-CROSS-DEVICE-ACCOUNT-001（見 `main_account.py` 檔頭）：
+    # 任何裝置輸入正確的 SU／SA 密碼都登入同一個主帳號（發一顆新的裝置憑證、
+    # 舊的作廢、這台裝置原本的匿名資料併進來）；權限掛在每一顆憑證上。
+    # DI 覆寫身分的測試路徑沒有裝置憑證可換，維持權限寫在被注入的 owner 上。
+
+    def _login_main_account(role: superuser.Role) -> dict:
+        credential = _current_credential.get()
+        db = _db()
+        now = now_utc_iso()
+        with db.transaction():
+            main = main_account.resolve(db, now=now)
+            if main is None:
+                # 全新部署還沒有主帳號：正在登入的這台裝置的 owner 就是主帳號
+                # （並發下另一台先建好的話，下面把這台併進去）。
+                main = main_account.designate(db, _persistent_owner(), now=now,
+                                              stale=db.get_main_account())
+            device_owner = identity_resolver()
+            if not is_pending_owner(device_owner) and device_owner != main:
+                # 這台裝置原本的匿名資料安全併進主帳號；它的舊憑證一併作廢，
+                # **不**改綁到主帳號。
+                db.absorb_owner(device_owner, into=main, now=now)
+            elif credential is not None and credential["bound"]:
+                # 已經是主帳號的裝置重新登入：舊憑證作廢，換一顆新的（輪替）。
+                db.delete_browser_identity(credential["token"])
+            token = secrets.token_urlsafe(32)
+            db.add_browser_identity(BrowserIdentity(
+                token=token, owner_id=main, issued_at=now, last_seen_at=now,
+                role=role.value))
+        if credential is not None:
+            # middleware 據此回寫 HttpOnly cookie 與 `X-OC-Credential`（前端
+            # 存進本機副本）——兩份同時換成新憑證。
+            credential.update(token=token, bound=True, issue=True, echo=True)
+        set_resolved_owner(main)
+        set_resolved_role(role.value)
+        return {"role": role.value}
 
     @app.post("/api/auth/login")
     def auth_login(body: AuthLoginRequest, request: Request) -> dict:
         """依序比對 `SUPERADMIN_PASSWORD` → `SUPERUSER_PASSWORD`
         （`secrets.compare_digest`，常數時間，避免時序側信道洩漏
-        比對結果），命中即把這個 user 的權限寫進資料庫（UNIFIED-IDENTITY-
-        001：只升不降；還沒有 user 時就在這裡建立，比照建立劇本）；
+        比對結果），命中即讓這台裝置登入主帳號（CROSS-DEVICE-ACCOUNT-001，
+        見 `_login_main_account()`：換發一顆權限＝命中那一級的新憑證）；
         兩者都不中一律 401——回應本身不透露密碼欄位是空的、缺席、
         還是純粹打錯，也不透露環境變數有沒有設定，三種情況對外
         觀察不到差異（fail-closed，同 `require_role()` 精神）。
@@ -2213,6 +2276,8 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         if role is None:
             raise HTTPException(status_code=401, detail="unauthorized")
 
+        if _uses_cookie_identity:
+            return _login_main_account(role)
         owner = _persistent_owner()
         current = superuser.current_role()
         granted = role if role > current else current
@@ -2223,13 +2288,34 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
 
     @app.post("/api/auth/reset-role")
     def auth_reset_role() -> dict:
-        """明確的權限重設——全站唯一會把權限降回 Normal 的路徑。只改這個
-        user 的 `role`：不刪 user、不動劇本、不動憑證。還沒有 user（首訪）
-        或本來就是 Normal 時什麼都不寫，一律回 200。"""
-        if superuser.current_role() > superuser.Role.NORMAL:
-            _db().set_owner_role(identity_resolver(), superuser.Role.NORMAL.value)
-            set_resolved_role(superuser.Role.NORMAL.value)
-        return {"role": superuser.Role.NORMAL.value}
+        """明確的權限重設——全站唯一會把權限降回 Normal 的路徑。還沒有 user
+        （首訪）或本來就是 Normal 時什麼都不寫，一律回 200。
+
+        CROSS-DEVICE-ACCOUNT-001：這台裝置若登入的是主帳號，重設＝**登出**：
+        作廢這顆裝置憑證、換成一顆還沒綁定的新憑證，這台裝置回到全新的匿名
+        Normal User；主帳號、它的劇本與其他裝置都不受影響。不是主帳號的特權
+        憑證（舊版遺留）只把這顆憑證降回 Normal。"""
+        normal = superuser.Role.NORMAL.value
+        if superuser.current_role() == superuser.Role.NORMAL:
+            return {"role": normal}
+        owner = identity_resolver()
+        credential = _current_credential.get()
+        if not _uses_cookie_identity or credential is None:
+            _db().set_owner_role(owner, normal)
+            set_resolved_role(normal)
+            return {"role": normal}
+        if owner == _db().get_main_account():
+            _db().delete_browser_identity(credential["token"])
+            credential.update(token=secrets.token_urlsafe(32), bound=False,
+                              issue=True, echo=True)
+            set_resolved_owner(pending_owner_placeholder())
+            set_resolved_role(normal)
+            return {"role": normal}
+        _db().set_credential_role(credential["token"], None)
+        # owner 層級的舊權限標記也拿掉，冷啟動的回填才不會把它又補回來。
+        _db().set_owner_role(owner, normal)
+        set_resolved_role(normal)
+        return {"role": normal}
 
     @app.get("/api/auth/status")
     def auth_status() -> dict:
@@ -2503,8 +2589,17 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         `browser_identities` 列已經被 `delete_owner()` 清空；**下一次**
         帶著它的請求會被 `resolve_owner_by_token()` 判定為查無此
         token，自然走 PB-02（#294）既有的「新訪客」lazy-creation
-        路徑拿到一個全新身份，不需要另外寫一套「立即重新簽發」邏輯。"""
-        _db().delete_owner(identity_resolver())
+        路徑拿到一個全新身份，不需要另外寫一套「立即重新簽發」邏輯。
+
+        CROSS-DEVICE-ACCOUNT-001：主帳號是很多台裝置共用的那一個帳號，不能
+        從某一台裝置的「刪除我的資料」整個刪掉——一律 409，什麼都不刪。"""
+        owner = identity_resolver()
+        if owner == _db().get_main_account():
+            raise HTTPException(
+                status_code=409,
+                detail="這是主帳號，不能在這裡刪除；如果只是要讓這台裝置離開"
+                       "主帳號，請到「登入」按「重設為 Normal User」")
+        _db().delete_owner(owner)
 
     # ---------- OG-05（#324）：唯讀使用量摘要 ----------
 
