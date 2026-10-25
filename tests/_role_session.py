@@ -26,8 +26,12 @@ _CREATED_AT = "2026-01-01T00:00:00+00:00"
 
 def grant_role(storage, role: str, *, owner_id: str | None = None) -> str:
     """把 `owner_id`（沒給就新建一個 user）的權限設成 `role`，回傳一顆憑證
-    token。新建的 user 這顆 token 就指向它；`owner_id` 已存在時只改權限
-    （DI 測試用，回傳的 token 不指向任何人）。"""
+    token。新建的 user 這顆 token 就指向它。
+
+    CROSS-DEVICE-ACCOUNT-001 起權限看**憑證**：這裡把這個 user 名下每一顆
+    裝置憑證的權限都設成 `role`（等於這個 user 的每台裝置都用那把密碼登入
+    過），同時寫 owner 層級的權限（DI 覆寫身分的測試讀的是它）。`owner_id`
+    已存在時回傳的 token 不指向任何人（DI 測試用）。"""
     owner_id = owner_id or f"role-{secrets.token_hex(8)}"
     token = secrets.token_urlsafe(32)
     if storage.get_owner(owner_id) is None:
@@ -35,8 +39,21 @@ def grant_role(storage, role: str, *, owner_id: str | None = None) -> str:
             Owner(owner_id=owner_id, created_at=_CREATED_AT),
             BrowserIdentity(token=token, owner_id=owner_id,
                             issued_at=_CREATED_AT, last_seen_at=_CREATED_AT))
+    for device in owner_tokens(storage, owner_id):
+        storage.set_credential_role(device, None if role == "normal" else role)
     storage.set_owner_role(owner_id, role)
     return token
+
+
+def owner_tokens(storage, owner_id: str) -> list[str]:
+    """這個 owner 名下全部裝置憑證（測試用，直接讀兩個後端的底層）。"""
+    if hasattr(storage, "_browser_identities"):
+        return [t for t, bi in storage._browser_identities.items()
+                if bi.owner_id == owner_id]
+    with storage._connect() as conn:
+        return [r[0] for r in conn.execute(
+            "SELECT token FROM browser_identities WHERE owner_id = %s",
+            (owner_id,))]
 
 
 def role_cookies(storage, role: str, *, owner_id: str | None = None) -> dict[str, str]:

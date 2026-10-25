@@ -96,6 +96,10 @@ class MemoryStorage:
         # S0（SCALE-08／#258）：鍵是 (metric, bucket, source, symbol)——
         # 與 `MetricEntry` 的複合主鍵一一對應。
         self._metrics: dict[tuple[str, str, str, str], MetricEntry] = {}
+        # CROSS-DEVICE-ACCOUNT-001：主帳號的持久對應（`main_account` 單列表），
+        # 與併入時沒被採用的衝突列（`owner_merge_archive`）。
+        self._main_account: str | None = None
+        self._owner_merge_archive: list[dict] = []
         # `transaction()` 的巢狀深度——只有最外層負責快照／還原。
         self._txn_depth = 0
 
@@ -636,6 +640,11 @@ class MemoryStorage:
                 n += 1
         counts["browser_identities"] = n
 
+        before = len(self._owner_merge_archive)
+        self._owner_merge_archive = [a for a in self._owner_merge_archive
+                                     if a["target_owner_id"] != owner_id]
+        counts["owner_merge_archive"] = before - len(self._owner_merge_archive)
+
         n = 1 if self._owners.pop(owner_id, None) is not None else 0
         counts["owners"] = n
 
@@ -707,15 +716,109 @@ class MemoryStorage:
         identity = self._browser_identities.get(token)
         if identity is None:
             return None
-        owner = self._owners.get(identity.owner_id)
         return ResolvedCredential(owner_id=identity.owner_id,
-                                  role=owner.role if owner else "normal",
+                                  role=identity.role or "normal",
                                   cookie_issued_at=identity.cookie_issued_at)
 
     def set_owner_role(self, owner_id: str, role: str) -> None:
         owner = self._owners.get(owner_id)
         if owner is not None:
             self._owners[owner_id] = dataclasses.replace(owner, role=role)
+
+    def set_credential_role(self, token: str, role: str | None) -> None:
+        identity = self._browser_identities.get(token)
+        if identity is not None:
+            self._browser_identities[token] = dataclasses.replace(identity, role=role)
+
+    def add_browser_identity(self, identity: BrowserIdentity) -> None:
+        with self._claim_lock:
+            if identity.token in self._browser_identities:
+                raise KeyError("browser identity token already exists")
+            self._browser_identities[identity.token] = identity
+
+    def delete_browser_identity(self, token: str) -> bool:
+        return self._browser_identities.pop(token, None) is not None
+
+    def get_main_account(self) -> str | None:
+        return self._main_account
+
+    def set_main_account(self, owner_id: str, *, now: str,
+                         expected: str | None) -> str:
+        with self._claim_lock:
+            if self._main_account == expected:
+                self._main_account = owner_id
+            return self._main_account
+
+    def owners_with_id_prefix(self, prefix: str) -> list[Owner]:
+        return [o for o in self._owners.values() if o.owner_id.startswith(prefix)]
+
+    def absorb_owner(self, source: str, *, into: str, now: str) -> dict[str, int]:
+        if source == into:
+            return {}
+        counts: dict[str, int] = {}
+        with self.transaction():
+            source_scenarios = {sid for sid, sc in self._scenarios.items()
+                                if sc.owner_id == source}
+            for _table, sid, owner, setter in list(self._child_rows()):
+                if owner is None and sid in source_scenarios:
+                    setter(into)
+
+            def archive(table: str, row) -> None:
+                self._owner_merge_archive.append({
+                    "merged_at": now, "source_owner_id": source,
+                    "target_owner_id": into, "table_name": table,
+                    "row_data": dataclasses.asdict(row)})
+
+            moved = archived = 0
+            if source in self._owner_settings:
+                row = self._owner_settings.pop(source)
+                if into in self._owner_settings:
+                    archive("owner_settings", row)
+                    archived = 1
+                else:
+                    self._owner_settings[into] = dataclasses.replace(row, owner_id=into)
+                    moved = 1
+            counts["owner_settings"] = moved
+            counts["owner_settings_archived"] = archived
+            # verification 先處理：判斷要看主帳號**原本**的 credential（見
+            # postgres 版的說明）。
+            for table, store, extra_conflict in (
+                    ("owner_verifications", self._owner_verifications,
+                     self._owner_credentials),
+                    ("owner_credentials", self._owner_credentials, None)):
+                moved = archived = 0
+                for key in [k for k in store if k[0] == source]:
+                    row = store.pop(key)
+                    provider = key[1]
+                    if (into, provider) in store or (
+                            extra_conflict is not None
+                            and (into, provider) in extra_conflict):
+                        archive(table, row)
+                        archived += 1
+                    else:
+                        store[(into, provider)] = dataclasses.replace(row, owner_id=into)
+                        moved += 1
+                counts[table] = moved
+                counts[f"{table}_archived"] = archived
+            for table in ("scenarios", "results", "current_results",
+                          "snapshots", "events", "diagnostics"):
+                counts[table] = getattr(self, f"_migrate_{table}")(source, into, ())
+            mine = [i for i, f in enumerate(self._feedback) if f.owner_id == source]
+            for i in mine:
+                self._feedback[i] = dataclasses.replace(self._feedback[i], owner_id=into)
+            counts["feedback"] = len(mine)
+            dead = [slot for slot in self._rate_limits
+                    if slot[0] == OWNER_RATE_LIMIT_SCOPE and slot[1] == source]
+            for slot in dead:
+                del self._rate_limits[slot]
+            counts["rate_limits"] = len(dead)
+            tokens = [t for t, bi in self._browser_identities.items()
+                      if bi.owner_id == source]
+            for token in tokens:
+                del self._browser_identities[token]
+            counts["browser_identities"] = len(tokens)
+            counts["owners"] = 1 if self._owners.pop(source, None) is not None else 0
+        return counts
 
     def mark_owner_cookie_issued(self, token: str, *, now: str) -> None:
         identity = self._browser_identities.get(token)

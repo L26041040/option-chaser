@@ -92,12 +92,17 @@ def test_role_follows_the_user_through_every_way_back_in():
     local = "R" * 43
     c = _browser(app, local=local)
     c.post("/api/scenarios", json=NEW).raise_for_status()
-    assert c.post("/api/auth/login", json={"password": SA}).json() == {"role": "superadmin"}
-
-    assert _status(_browser(app, cookie=local)) == "superadmin"      # 重新整理／新分頁
-    assert _status(_browser(app, local=local)) == "superadmin"       # cookie 掉了
+    login = c.post("/api/auth/login", json={"password": SA})
+    assert login.json() == {"role": "superadmin"}
+    # CROSS-DEVICE-ACCOUNT-001：登入換了一顆新憑證（cookie 與本機副本同一顆），
+    # 舊的那顆作廢；之後每一條回來的路都靠新的這顆。
+    rotated = login.headers[CRED]
+    assert rotated != local and login.cookies.get(_OWNER_COOKIE_NAME) == rotated
+    assert _status(_browser(app, cookie=rotated)) == "superadmin"      # 重新整理／新分頁
+    assert _status(_browser(app, local=rotated)) == "superadmin"       # cookie 掉了
     redeployed, _ = _app(storage)
-    assert _status(_browser(redeployed, cookie=local)) == "superadmin"   # 重新部署
+    assert _status(_browser(redeployed, cookie=rotated)) == "superadmin"   # 重新部署
+    assert _status(_browser(app, local=local)) == "normal"             # 舊憑證已作廢
     assert len(storage.list_owners()) == 1
 
 
@@ -124,7 +129,7 @@ def test_beta_reset_keeps_the_admin_who_ran_it():
     admin.post("/api/auth/login", json={"password": SA}).raise_for_status()
     r = admin.post("/api/superuser/reset-beta-data", json={"confirm": "Reset"})
     assert r.status_code == 200
-    assert [o.role for o in storage.list_owners()] == ["superadmin"]
+    assert [o.owner_id for o in storage.list_owners()] == [storage.get_main_account()]
     assert _status(admin) == "superadmin"
 
 
@@ -140,18 +145,23 @@ def test_reads_status_and_reset_never_create_a_user():
     assert storage.list_owners() == []
 
 
-def test_login_on_a_new_browser_binds_its_local_credential():
-    """還沒有 user 的瀏覽器輸入密碼：建立恰好一個 user，綁的就是本機那份
-    憑證（cookie 跟著簽同一顆），之後的寫入都落在這個 user。"""
+def test_login_on_a_new_browser_gets_one_fresh_main_account_credential():
+    """還沒有 user 的瀏覽器輸入密碼：拿到一顆新的主帳號憑證——cookie 與
+    `X-OC-Credential`（本機副本）是同一顆，不是原本那顆還沒綁定的本機憑證；
+    之後的寫入都落在主帳號，整個系統恰好一個 user。"""
     app, storage = _app()
     local = "S" * 43
     c = _browser(app, local=local)
     r = c.post("/api/auth/login", json={"password": SU})
     assert r.json() == {"role": "superuser"}
-    assert r.cookies.get(_OWNER_COOKIE_NAME) == local
+    issued = r.headers[CRED]
+    assert issued != local and r.cookies.get(_OWNER_COOKIE_NAME) == issued
+    c.headers[CRED] = issued                     # 前端 `storeCredential()`
     c.post("/api/scenarios", json=NEW).raise_for_status()
     [owner] = storage.list_owners()
-    assert storage.resolve_owner_by_token(local) == owner.owner_id
+    assert owner.owner_id == storage.get_main_account()
+    assert storage.resolve_owner_by_token(issued) == owner.owner_id
+    assert storage.resolve_owner_by_token(local) is None
     assert len(storage.list_scenarios(owner=owner.owner_id)) == 1
 
 
@@ -200,12 +210,17 @@ def test_user_scenarios_and_role_survive_across_instances_on_postgres():
     app_a, _ = _app(PostgresStorage(dsn))
     a = _browser(app_a, local=local)
     sid = a.post("/api/scenarios", json=NEW).json()["id"]
-    a.post("/api/auth/login", json={"password": SA}).raise_for_status()
+    login = a.post("/api/auth/login", json={"password": SA})
+    login.raise_for_status()
+    rotated = login.headers[CRED]
 
     app_b, _ = _app(PostgresStorage(dsn))                 # 另一個 instance／重新部署
-    for b in (_browser(app_b, cookie=local), _browser(app_b, local=local)):
+    for b in (_browser(app_b, cookie=rotated), _browser(app_b, local=rotated)):
         assert [row["id"] for row in b.get("/api/scenarios").json()] == [sid]
         assert _status(b) == "superadmin"
     with psycopg.connect(dsn, autocommit=True) as conn:
         assert conn.execute("SELECT count(*) FROM owners").fetchone()[0] == 1
-        assert conn.execute("SELECT role FROM owners").fetchone()[0] == "superadmin"
+        # 權限掛在這顆裝置憑證上；owner 層級只標記「這是特權帳號」。
+        assert conn.execute("SELECT role FROM browser_identities").fetchall() == [
+            ("superadmin",)]
+        assert conn.execute("SELECT role FROM owners").fetchone()[0] == "superuser"
