@@ -36,6 +36,24 @@
  * 那一腿完好。所以每一次 IndexedDB 操作（讀取、寫入）都跟 `IDB_TIMEOUT_MS`
  * 賽跑：逾時就當它不可用，退回 localStorage（再不行就只剩 cookie），下一次
  * 寫入照樣再試 IndexedDB——卡住的 promise 不會被永久快取成這個分頁的答案。
+ *
+ * **分頁快取會失效，不會永遠相信自己**（IRI-02／NIR-10，研究 #366）：每個
+ * 分頁只在第一次讀一次本機儲存，之後用記憶體裡的 `cached`／`bound`。另一個
+ * 分頁登入或登出主帳號、或刪除自己的資料時，憑證換了一顆，這個分頁的
+ * 記憶體副本就過期了——正常情況下靠「伺服器以 cookie 為準、回應 echo 正確
+ * 的值」收斂，但「cookie 剛好不在＋另一分頁剛換過憑證」或「登出後兩分頁同時
+ * 首寫、過期的 `bound` 跳過排隊」這類雙重故障會各綁一個 owner。兩個便宜的
+ * 修法，都只是「讓下一次請求重讀本機儲存」、不新增任何狀態來源：
+ *
+ * - 回應**沒有** `X-OC-Owner-Bound: 1` 而這個分頁以為自己已綁定 → 重置快取
+ *   （`noteOwnerBound(false)`）；下一次 `send()` 重讀 IndexedDB，會建立 user 的
+ *   寫入重新排隊。
+ * - 其他分頁改了 localStorage 鏡像（`storage` 事件）→ 同樣只重置快取，**不**
+ *   拿 `event.newValue` 當憑證（PostHog PR #4659 的做法）：下一次讀的是本機
+ *   儲存的實際內容。
+ *
+ * 不用 BroadcastChannel：它解的是「憑證會自己定期輪替」的問題（Supabase／
+ * Firebase 每小時換 token），本產品沒有；多一個狀態來源就多一組競態。
  */
 export const CREDENTIAL_HEADER = "X-OC-Credential";
 export const OWNER_BOUND_HEADER = "X-OC-Owner-Bound";
@@ -162,12 +180,33 @@ function localStorageGetOrCreate(): string | null {
 
 // 這個分頁的狀態：`bound`＝伺服器說這個瀏覽器已經有 user（之後會建立 user
 // 的請求不必再排隊）；`loading` 讓同一個分頁的並發呼叫共用同一次讀取，之後
-// 直接用記憶體裡的值——每個分頁最多讀一次 IndexedDB。
+// 直接用記憶體裡的值——每個分頁最多讀一次 IndexedDB，直到快取被重置
+// （`invalidateTabCache()`，見檔頭）。
 let bound = false;
 let loading: Promise<string | null> | null = null;
 // 讀過之後的值（`null`＝本機儲存都不能用）；`undefined`＝這個分頁還沒讀過。
 // 讓 `send()` 在第一次之後同步取用，不必每個請求都多等一輪。
 let cached: string | null | undefined;
+// `storage` 事件監聯只掛一次（第一次 `credential()` 時）；測試的 reset 不拆它。
+let crossTabSyncInstalled = false;
+
+/** 忘掉這個分頁記憶體裡的憑證與綁定狀態：下一次 `send()` 重讀本機儲存，
+ *  會建立 user 的寫入重新排隊。不碰本機儲存本身。 */
+export function invalidateTabCache(): void {
+  bound = false;
+  loading = null;
+  cached = undefined;
+}
+
+function installCrossTabSync(): void {
+  if (crossTabSyncInstalled || typeof window === "undefined") return;
+  crossTabSyncInstalled = true;
+  window.addEventListener("storage", (event: StorageEvent) => {
+    // `key === null`＝另一個分頁 `localStorage.clear()`。只重置、不讀
+    // `event.newValue`：值一律以本機儲存的實際內容為準。
+    if (event.key === null || event.key === STORAGE_KEY) invalidateTabCache();
+  });
+}
 
 async function loadToken(): Promise<string | null> {
   if (typeof indexedDB !== "undefined") {
@@ -202,6 +241,7 @@ export async function withOwnerBindingLock<T>(body: () => Promise<T>): Promise<T
 
 /** 每個請求要帶的本機憑證；本機儲存都不能用時回 `null`（只剩 cookie）。 */
 export function credential(): Promise<string | null> {
+  installCrossTabSync();
   loading ??= loadToken().then((token) => (cached = token));
   return loading;
 }
@@ -231,10 +271,22 @@ export async function storeCredential(token: string): Promise<void> {
   }
 }
 
-/** 伺服器回應帶著 `X-OC-Owner-Bound: 1`＝這個瀏覽器已經有 user：之後會建立
- * user 的請求不必再排隊。本機憑證**不刪**——它就是持久身分的其中一份。 */
+/** 伺服器在每個解析身分的回應裡說了這次請求的憑證有沒有綁到 user
+ * （`X-OC-Owner-Bound: 1` 有／沒有這個 header 沒有）。有：之後會建立 user
+ * 的請求不必再排隊；本機憑證**不刪**——它就是持久身分的其中一份。沒有、
+ * 而這個分頁以為自己已綁定：記憶體副本過期了（另一個分頁換過憑證），重置
+ * 快取讓下一次請求重讀本機儲存（見檔頭）。首訪（本來就沒綁定）什麼都不做。 */
+export function noteOwnerBound(isBound: boolean): void {
+  if (isBound) {
+    bound = true;
+  } else if (bound) {
+    invalidateTabCache();
+  }
+}
+
+/** `noteOwnerBound(true)` 的舊名，既有測試在用。 */
 export function markOwnerBound(): void {
-  bound = true;
+  noteOwnerBound(true);
 }
 
 /** 測試用：回到「還沒綁定、還沒讀過」的初始狀態。 */

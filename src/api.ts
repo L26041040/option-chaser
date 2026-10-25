@@ -9,7 +9,7 @@
  * 本層與整個前端都不做金融計算：每個顯示數字都已由引擎算好。
  */
 import {
-  credential, CREDENTIAL_HEADER, loadedCredential, markOwnerBound,
+  credential, CREDENTIAL_HEADER, loadedCredential, noteOwnerBound,
   OWNER_BOUND_HEADER, storeCredential, withOwnerBindingLock,
 } from "./credentialStore";
 import type { Role } from "./superuser";
@@ -846,10 +846,11 @@ async function send(url: string, init: RequestInit): Promise<Response> {
     throw new ApiError(
       `連不到伺服器：${e instanceof Error ? e.message : String(e)}`);
   }
-  // `?.`：既有測試常用省略 headers 的假 Response。
+  // `?.`：既有測試常用省略 headers 的假 Response——那種回應不帶任何身分
+  // 訊號，綁定狀態維持原樣；真的 Response 一定有 headers。
   const echoed = resp.headers?.get(CREDENTIAL_HEADER);
   if (echoed) await storeCredential(echoed);
-  if (resp.headers?.get(OWNER_BOUND_HEADER) === "1") markOwnerBound();
+  if (resp.headers) noteOwnerBound(resp.headers.get(OWNER_BOUND_HEADER) === "1");
   return resp;
 }
 

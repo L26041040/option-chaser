@@ -2,8 +2,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { createScenario, listScenarios, login, refreshRun } from "./api";
 import {
-  credential, CREDENTIAL_HEADER, IDB_TIMEOUT_MS, markOwnerBound, OWNER_BOUND_HEADER,
-  resetCredentialStoreForTests, storeCredential,
+  credential, CREDENTIAL_HEADER, IDB_TIMEOUT_MS, loadedCredential, markOwnerBound,
+  OWNER_BOUND_HEADER, resetCredentialStoreForTests, storeCredential,
 } from "./credentialStore";
 
 const BODY = { symbol: "XYZ", target_price: 1, target_month: "2027-01",
@@ -204,3 +204,71 @@ describe("IndexedDB 逾時退路（IRI-01）", () => {
     expect(headerOf(fetchMock.mock.calls[0][1])).toMatch(/^[A-Za-z0-9_-]{43}$/);
   });
 });
+
+// IRI-02／NIR-10（研究 #366）：分頁的記憶體副本會過期（另一分頁登入／登出
+// 換了憑證）。兩個修法都只是「讓下一次請求重讀本機儲存」。
+describe("分頁快取失效（IRI-02）", () => {
+  const FORGED = "F".repeat(43);
+
+  beforeEach(async () => {
+    localStorage.clear();
+    await resetCredentialStoreForTests();
+  });
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("曾經綁定的分頁收到沒有 X-OC-Owner-Bound 的回應 → 重讀本機儲存、建立 user 的寫入重新排隊", async () => {
+    const locks = fakeLocksShared();
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(reply({ id: "s1" }, { bound: true }))   // 綁定
+      .mockResolvedValueOnce(reply([]))                              // 另一分頁登出後：伺服器說沒綁定
+      .mockResolvedValue(reply({ id: "s2" }));
+    vi.stubGlobal("fetch", fetchMock);
+    await createScenario(BODY as never);
+    const original = await credential();
+    // 另一個分頁登出主帳號、換了一顆新憑證，鏡像寫進共用的 localStorage。
+    localStorage.setItem("oc_owner_bootstrap", OTHER);
+    await listScenarios();                       // 回應沒有 Owner-Bound → 快取重置
+    expect(loadedCredential()).toBeUndefined();
+    await createScenario(BODY as never);
+    expect(headerOf(fetchMock.mock.calls[2][1] as RequestInit)).toBe(OTHER);
+    expect(headerOf(fetchMock.mock.calls[2][1] as RequestInit)).not.toBe(original);
+    expect(locks.held).toEqual(["oc-owner-binding", "oc-owner-binding"]);  // 重新排隊
+  });
+
+  it("從未綁定的分頁收到沒有 Owner-Bound 的回應不會每次重讀（首訪的正常狀態）", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => reply([])));
+    await listScenarios();
+    const t = loadedCredential();
+    expect(t).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    await listScenarios();
+    expect(loadedCredential()).toBe(t);
+  });
+
+  it("另一個分頁改了 localStorage 鏡像（storage 事件）→ 重讀本機儲存，不信 event.newValue", async () => {
+    const t = await credential();
+    localStorage.setItem("oc_owner_bootstrap", OTHER);
+    window.dispatchEvent(new StorageEvent("storage", {
+      key: "oc_owner_bootstrap", oldValue: t, newValue: FORGED,
+    }));
+    expect(loadedCredential()).toBeUndefined();
+    expect(await credential()).toBe(OTHER);       // 本機儲存的實際內容，不是事件帶的值
+  });
+
+  it("另一個分頁 localStorage.clear()（key 為 null）也重置；無關的 key 不重置", async () => {
+    const t = await credential();
+    window.dispatchEvent(new StorageEvent("storage", { key: "something-else", newValue: "x" }));
+    expect(loadedCredential()).toBe(t);
+    window.dispatchEvent(new StorageEvent("storage", { key: null }));
+    expect(loadedCredential()).toBeUndefined();
+  });
+});
+
+function fakeLocksShared() {
+  const held: string[] = [];
+  const request = vi.fn(async (name: string, cb: () => Promise<unknown>) => {
+    held.push(name);
+    return cb();
+  });
+  vi.stubGlobal("navigator", { ...navigator, locks: { request } });
+  return { held };
+}
