@@ -12,7 +12,7 @@
 
 - **現有架構是對的，不需要推翻。** 「不透明 token＋伺服器查表、同一顆 token 存兩份（HttpOnly cookie＋本機副本）、每次回應收斂、第一次寫入才建立 user、PK 原子綁定」這套骨架已經涵蓋九種完成標準裡的七種半（§1d）。過去三輪分裂（每次請求重簽 cookie、本機副本綁定後被刪、權限掛 owner 導致每台裝置一個 SU）都已在 PR #346／#355／#358 修掉。
 - **真正剩下的缺口是「邊緣」而不是「骨架」**（§2）：① 身分遺失與首訪無法區分、不可觀測；② cookie 簽一次固定 400 天＝第 400 天斷崖，而本機副本是較弱的一腿；③ 本機副本沒有要求持久化、IndexedDB 卡住會讓整站停住；④ 三個 Production 網址各自一個身分；⑤ 查無此 token 時沿用舊 token 綁新 owner，讓診斷失真。
-- **方案**（§3）：保留骨架，補五件事——憑證耐久性（門檻式續簽、`navigator.storage.persist()`、IndexedDB 逾時退路）、單一正式網址、身分狀態訊號＋墓碑、身分健康指標、真瀏覽器持久性酷刑測試。十張施工票（§4），其中五張不等任何決策就能開工。研究票 #366 已回填：不加 BroadcastChannel，改修分頁快取失效的單一根因（§3.7）。
+- **方案**（§3）：保留骨架，補五件事——憑證耐久性（門檻式續簽、IndexedDB 逾時退路；`persist()` 經 #365 查證不採用）、單一正式網址、身分狀態訊號＋墓碑、身分健康指標、真瀏覽器持久性酷刑測試。十張施工票（§4），其中五張不等任何決策就能開工。兩張研究票都已回填：#366——不加 BroadcastChannel，改修分頁快取失效的單一根因（§3.7）；#365——Safari ITP 只吃本機腿、400 天上限只吃 cookie 腿，**唯一無需使用者動作的全損窗口是「第 400 天且本機腿已失」**，門檻式續簽值得、`navigator.storage.persist()` 現在不值得、IndexedDB 逾時退路必做。
 - **能力邊界**（§7）：兩份憑證皆遺失、瀏覽器完全封鎖 cookie 與 site data、資料庫回復到更早時點——這三種系統**不可能**自動恢復；本輪建議維持「不做找回機制」（#361），把力氣放在「不要同時遺失」。
 - **需要 Owner 裁示的只有五題**（§9），每題都附老弟建議；三題（#360、#361、#362）現在就能答，一題（#363）等研究票 #365 的瀏覽器事實，一題（#364）等前兩題。
 
@@ -92,11 +92,11 @@
 
 **G-A 🟠 身分遺失與首訪無法區分、不可觀測。** 形狀合法但查無此 token 的憑證進來，回應與首訪完全一樣（200、`[]`、無訊號）；前端畫成「還沒有劇本」，下一次寫入默默鑄新 owner。`tests/test_identity_root_cause_001.py` 兩條 `xfail(strict=True)` 在等裁示（#360）。沒有任何指標記錄這件事發生過幾次。
 
-**G-B 🔴 cookie 第 400 天斷崖。** IDENTITY-FIX-002 改成簽一次、固定 400 天、之後**永不**再 `Set-Cookie`（`credential["issue"]` 只在 token≠cookie 或 `cookie_issued_at IS NULL` 時為真）。每天都在用的人也會在簽發後第 400 天失去腿 A；只剩腿 B。配上 G-C，長期忠實使用者反而是最可能整個遺失的一群。`CONTEXT.md`「每次來訪續命」已與程式碼漂移。（#363）
+**G-B 🔴 cookie 第 400 天斷崖。** IDENTITY-FIX-002 改成簽一次、固定 400 天、之後**永不**再 `Set-Cookie`（`credential["issue"]` 只在 token≠cookie 或 `cookie_issued_at IS NULL` 時為真）。每天都在用的人也會在簽發後第 400 天失去腿 A；只剩腿 B。配上 G-C，長期忠實使用者反而是最可能整個遺失的一群。`CONTEXT.md`「每次來訪續命」已與程式碼漂移。（#363）#365 查證：Chrome 104（M118 回溯）與 **Firefox 140 起都封頂 400 天**，且重設同名 cookie 會重新計算到期（RFC 6265bis §5.7）——門檻式續簽在三家瀏覽器都有效。
 
-**G-C 🟠 本機副本是較弱的一腿，卻沒有加固。** 未呼叫 `navigator.storage.persist()`；Safari ITP 對 script-writable storage（IndexedDB／localStorage）有 7 天無互動上限、Chrome 在儲存壓力下 LRU 清除非 persistent origin（確切規則由 #365 回填）。今天「兩腿互補」在 Safari 上實際接近「只有腿 A」。
+**G-C 🟠 本機副本是較弱的一腿。** #365 查證：Safari ITP「7-Day Cap on All Script-Writeable Storage」自 13.1／iOS 13.4 起適用**每一個** first-party 站（不限 tracker）、以 **7 個 Safari 使用日**計、只有 click／tap／鍵盤算互動、**IndexedDB 與 localStorage 都刪**；iOS 14 起所有 WKWebView（含 iOS Chrome／Firefox）皆在 ITP 下。伺服器 `Set-Cookie`（含 HttpOnly）**不受**此上限。Chrome／Firefox 的 quota 驅逐只在磁碟壓力下整個 origin LRU、不碰 cookie。結論：Safari 上「兩腿互補」實際接近「只有腿 A」，腿 A 的續簽（G-B）因此是關鍵；`navigator.storage.persist()` **不採用**——Chrome 對一般站靜默拒絕、Firefox 跳提示（違反零負擔）、Safari 只有加到主畫面才算，且對 ITP 與 400 天兩個真風險皆無效。
 
-**G-D 🔴 IndexedDB 開啟卡住＝整站卡住。** `credential()` 第一次 `await idbGetOrCreate()`，`openDb()` 只處理 `onerror`／`onblocked`，**沒有逾時**；已知某些 iOS／Safari 版本 `indexedDB.open()` 永不觸發任何事件（#365 查證），此時 `send()` 永遠等不到 token，所有 API 請求掛死，連純讀取都不行。（`src/credentialStore.ts` `openDb`／`loadToken`）
+**G-D 🔴 IndexedDB 開啟卡住＝整站卡住。** `credential()` 第一次 `await idbGetOrCreate()`，`openDb()` 只處理 `onerror`／`onblocked`，**沒有逾時**；而 `send()` 在建立 90 秒 `AbortSignal.timeout` **之前**就 `await credential()`，且 `credential()` 把 pending promise 記在 `loading`——一次卡住就讓這個分頁**所有** API 請求永遠等待、永不退回 localStorage，即使 cookie 腿完好。#365 查證：真正會 hang 的只有 WebKit bug 226547（Safari 14.1.1／iOS 14.6，14.7 修）；其餘不可用情境（Firefox <115 私密視窗、iOS 17.4 連線中斷、Chromium 封鎖儲存）都是**報錯**，既有 catch 已處理。發生率低但後果是整站不可用，且修法便宜。（`src/credentialStore.ts` `openDb`／`loadToken`；`src/api.ts` `send`）
 
 **G-E 🔴 三個 Production 網址各自一個身分。** `option-chaser.vercel.app`、`option-chaser-<team>.vercel.app`、`option-chaser-git-master-<team>.vercel.app` 同時可用（回報#136）；cookie 與 site storage 都是 per-origin。同一人換個網址＝新人。這正是 CROSS-DEVICE-ACCOUNT-001 根因 2，當時只替 SU／SA 用主帳號解掉。（#362）
 
@@ -129,8 +129,8 @@
 ### 3.1 憑證耐久性（修 G-B／G-C／G-D）
 
 - **門檻式續簽**（#363 建議 (b)）：`_call_within_owner_scope_inner()` 在「已解析到 owner」且 `now − cookie_issued_at ≥ RENEW_AFTER_DAYS`（建議 30）時，以**同一顆 token** 重新 `Set-Cookie`（新的 400 天）並更新 `cookie_issued_at`。pending 請求永不簽；永不把可解析的 cookie 改成別顆。斷崖消失、`Set-Cookie` 頻率有上界（每顆 token 每 30 天一次）。
-- **`navigator.storage.persist()`**：前端啟動時呼叫一次（fire-and-forget、結果只進 console／指標，不打擾使用者）。Chrome 依互動分數靜默核准；Firefox 可能彈提示（#365 查證——若會彈，改為只在「已綁定且有劇本」後呼叫，或不呼叫）。
-- **IndexedDB 逾時退路**：`loadToken()` 把 `idbGetOrCreate()` 與一個短逾時（建議 1500 ms）賽跑；逾時→走 `localStorageGetOrCreate()`（再不行→`null`＝只剩腿 A）；IDB 之後若醒來，`storeCredential()` 照舊寫回。整站不再因 IDB 卡住而掛死。
+- **`navigator.storage.persist()`：不採用**（#365）：Chrome 對一般站靜默拒絕、Firefox 跳權限提示、Safari 只對主畫面 app 有意義，且對 ITP 7 日上限與 400 天 cookie 皆無效。日後若做 PWA 再議。
+- **IndexedDB 逾時退路**：`loadToken()` 把 `idbGetOrCreate()` 與一個短逾時（建議 1500 ms）賽跑；逾時→走 `localStorageGetOrCreate()`（再不行→`null`＝只剩腿 A）；**逾時的 promise 不得被 `loading` 永久快取**（下一次 `credential()` 重試 IDB）；IDB 之後若醒來，`storeCredential()` 照舊寫回。整站不再因 IDB 卡住而掛死。
 
 ### 3.2 單一正式網址（修 G-E）
 
@@ -170,13 +170,12 @@
 ### 依賴圖
 
 ```
-#365 研究：儲存耐久性 ──▶ #363 Cookie 續命 ──▶ NIR-03
-                     └─▶ NIR-04（persist 的呼叫時機）
+#365 研究：儲存耐久性（已回填）──▶ #363 Cookie 續命 ──▶ NIR-03
 #360 可見性＋墓碑 ──▶ NIR-01（UI 半邊）、NIR-02、NIR-06（reason 維度）
 #361 找回邊界 ─┐
 #360 ─────────┴─▶ #364 天數＋文案 ──▶ NIR-09
 #362 正式網址 ──▶ NIR-05
-（不等任何決策）：NIR-01 後端半邊、NIR-04（逾時退路）、NIR-06 基本指標、NIR-07、NIR-08 骨架、NIR-10（#366 已裁）
+（不等任何決策）：NIR-01 後端半邊、NIR-04（#365 已裁）、NIR-06 基本指標、NIR-07、NIR-08 骨架、NIR-10（#366 已裁）
 NIR-01～05、NIR-10 ──▶ NIR-08 完整跑
 ```
 
@@ -195,10 +194,10 @@ NIR-01～05、NIR-10 ──▶ NIR-08 完整跑
 - **依賴**：#363（含 N）。
 - **驗收**：`test_identity_fix_002.py`「後續請求不再 Set-Cookie」改寫為「30 天內不再、滿 30 天恰簽一次且 token 相同、再 30 天內不再」；pending 請求與 404／409 仍不簽；`test_identity_root_cause_001.py` 的「不改動可解析 cookie」改為「不改成別顆」；`CONTEXT.md` 條目更新。
 
-### NIR-04 前端耐久性：`persist()`＋IndexedDB 逾時退路
-- **改動**：`credentialStore.ts` `loadToken()` 與逾時賽跑；App 啟動呼叫 `navigator.storage.persist()`（時機依 #365）；兩者結果以 `console.info` 與（若有）指標回報，不顯示 UI。
-- **依賴**：逾時退路無；`persist()` 時機等 #365。
-- **驗收**：vitest：模擬 `indexedDB.open` 永不回應→`credential()` 在逾時內 resolve 為 localStorage 的 token；IDB 之後成功→下次 `storeCredential()` 寫入 IDB；`persist` 不存在／reject 時無例外；`e2e/owner-bootstrap.spec.ts` 既有兩條仍綠；新 e2e：注入卡死的 `indexedDB.open`，首頁仍能列出劇本。
+### NIR-04 前端耐久性：IndexedDB 逾時退路（`persist()` 經 #365 不採用）
+- **改動**：`credentialStore.ts` `loadToken()` 與 1500 ms 逾時賽跑；逾時不快取 pending promise；`inTransaction()` 同樣加逾時（STP 248 之前的交易阻塞情境）；結果以 `console.info` 與指標回報，不顯示 UI。
+- **依賴**：無（#365 已回填）。
+- **驗收**：vitest：模擬 `indexedDB.open` 永不回應→`credential()` 在逾時內 resolve 為 localStorage 的 token，且下一次 `credential()` 會再嘗試 IDB；IDB 之後成功→下次 `storeCredential()` 寫入 IDB；`e2e/owner-bootstrap.spec.ts` 既有兩條仍綠；新 e2e：注入卡死的 `indexedDB.open`，首頁仍能在 2 秒內列出劇本（cookie 腿完好）。
 
 ### NIR-05 單一正式網址
 - **改動**：`vercel.json` `redirects`（host 條件、排除 `/api/`）；`docs/deploy-vercel.md` 說明。
@@ -263,7 +262,7 @@ NIR-01～05、NIR-10 ──▶ NIR-08 完整跑
 
 | 情境 | 系統行為（目標狀態） | 使用者可見 |
 |---|---|---|
-| 兩腿皆遺失（清除瀏覽資料、換瀏覽器、無痕結束、裝置重灌） | 下次寫入＝乾淨的新匿名身分；舊 owner 依 180＋7 天清理；若舊憑證**仍被帶來**（只清了一腿不在此列）才會有 unknown 訊號 | 依 #360：預設沉默 |
+| 兩腿皆遺失（清除瀏覽資料、Chrome／Firefox「關閉時清除」、iOS「封鎖所有 Cookie」、換瀏覽器、無痕結束、裝置重灌；#365：沒有任何**自動**瀏覽器行為會同時殺兩腿） | 下次寫入＝乾淨的新匿名身分；舊 owner 依 180＋7 天清理；若舊憑證**仍被帶來**（只清了一腿不在此列）才會有 unknown 訊號 | 依 #360：預設沉默 |
 | 瀏覽器完全封鎖 cookie 與 site data | 每次來訪都是新人；每次寫入一個 owner；空 owner 1 天清 | 沉默；`identity_cookie_not_returned` 指標供 Owner 觀察 |
 | 資料庫回復到更早時點 | 回復點後簽的 token 全部 unknown（無墓碑） | 沉默（reason＝none）；Owner 從指標突增得知 |
 | 使用者自己 `DELETE /api/me` | 墓碑 `self_deleted`；下次寫入新身分 | 沉默（是本人意圖） |
@@ -290,7 +289,7 @@ NIR-01～05、NIR-10 ──▶ NIR-08 完整跑
 | #360 | 身分遺失可見性＋墓碑＋unknown 鑄新 token | 訊號做；墓碑最小版做；前端只在 `retention_expired` 一行提示；鑄新 token 採納 | 現在 |
 | #361 | 找回機制範圍 | 維持不做（(a)）；schema 已預留 | 現在 |
 | #362 | 單一正式網址 | 做；`option-chaser.vercel.app`；只重導非 `/api/*` | 現在 |
-| #363 | Cookie 續命政策 | 門檻式續簽 N＝30 天（(b)） | 等 #365 |
+| #363 | Cookie 續命政策 | 門檻式續簽 N＝30 天（(b)）——#365 已證實三家瀏覽器都封頂 400 天且重設會重新計時 | 現在（#365 已回填） |
 | #364 | 天數相容性＋邊界文案 | 天數不動；空 owner 清除永遠沉默；隱私頁一行 | 等 #360／#361 |
 
 ---
