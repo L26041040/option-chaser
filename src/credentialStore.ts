@@ -28,6 +28,14 @@
  * 依序進行後，先到的綁定、cookie 進了共用的 cookie jar，後到的帶著那顆
  * cookie，伺服器以 cookie 為準，並把正確的 token 交回給它存。請求有逾時
  * （`REQUEST_TIMEOUT_MS`），鎖不會被卡住的請求永久佔住。
+ *
+ * **IndexedDB 永遠不能卡住整站**（IRI-01／NIR-04，研究 #365）：已知
+ * Safari 14.1.1／iOS 14.6 的 `indexedDB.open()` 會永遠 pending、不觸發任何
+ * 事件；而 `send()` 在自己的請求逾時之前就先等本機憑證。沒有逾時的話，
+ * 一個卡住的 open 會讓這個分頁**所有** API 請求永遠等待——即使 cookie
+ * 那一腿完好。所以每一次 IndexedDB 操作（讀取、寫入）都跟 `IDB_TIMEOUT_MS`
+ * 賽跑：逾時就當它不可用，退回 localStorage（再不行就只剩 cookie），下一次
+ * 寫入照樣再試 IndexedDB——卡住的 promise 不會被永久快取成這個分頁的答案。
  */
 export const CREDENTIAL_HEADER = "X-OC-Credential";
 export const OWNER_BOUND_HEADER = "X-OC-Owner-Bound";
@@ -36,6 +44,21 @@ const STORAGE_KEY = "oc_owner_bootstrap";
 const DB_NAME = "oc-owner-bootstrap";
 const STORE = "kv";
 const BINDING_LOCK = "oc-owner-binding";
+/** 任何一次 IndexedDB 操作最多等這麼久；超過就視為不可用、走退路（見檔頭）。
+ *  比 `src/api.ts` 的請求逾時短很多：這裡等的是本機磁碟，不是網路。 */
+export const IDB_TIMEOUT_MS = 1500;
+
+/** `promise` 在 `ms` 內沒有定案就 reject。計時器在定案後清掉，不留懸掛的
+ *  timer（測試用 fake timers 時也乾淨）。 */
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(
+      () => reject(new Error(`indexedDB operation timed out after ${ms}ms`)), ms);
+    promise.then(
+      (v) => { clearTimeout(timer); resolve(v); },
+      (e) => { clearTimeout(timer); reject(e); });
+  });
+}
 
 function randomToken(): string {
   const bytes = new Uint8Array(32);
@@ -56,21 +79,28 @@ function openDb(): Promise<IDBDatabase> {
 }
 
 /** 在單一 readwrite transaction 裡跑 `body`，transaction 真的 commit
- * 之後才 resolve（`oncomplete`）。 */
-async function inTransaction<T>(body: (store: IDBObjectStore, done: (v: T) => void) => void): Promise<T> {
-  const db = await openDb();
-  try {
-    return await new Promise<T>((resolve, reject) => {
-      const tx = db.transaction(STORE, "readwrite");
-      let value: T;
-      body(tx.objectStore(STORE), (v) => { value = v; });
-      tx.oncomplete = () => resolve(value);
-      tx.onerror = () => reject(tx.error);
-      tx.onabort = () => reject(tx.error ?? new Error("transaction aborted"));
-    });
-  } finally {
-    db.close();
-  }
+ * 之後才 resolve（`oncomplete`）。開啟與交易合起來受 `IDB_TIMEOUT_MS`
+ * 約束：逾時 reject，呼叫端走退路；若 IndexedDB 之後才醒來，連線照樣
+ * 關掉、不留懸掛。 */
+function inTransaction<T>(body: (store: IDBObjectStore, done: (v: T) => void) => void): Promise<T> {
+  const run = (async () => {
+    const db = await openDb();
+    try {
+      return await new Promise<T>((resolve, reject) => {
+        const tx = db.transaction(STORE, "readwrite");
+        let value: T;
+        body(tx.objectStore(STORE), (v) => { value = v; });
+        tx.oncomplete = () => resolve(value);
+        tx.onerror = () => reject(tx.error);
+        tx.onabort = () => reject(tx.error ?? new Error("transaction aborted"));
+      });
+    } finally {
+      db.close();
+    }
+  })();
+  // 逾時後 `run` 若仍 reject，沒有人在聽——避免 unhandled rejection。
+  run.catch(() => {});
+  return withTimeout(run, IDB_TIMEOUT_MS);
 }
 
 const TOKEN_SHAPE = /^[A-Za-z0-9_-]{22,128}$/;
@@ -144,7 +174,7 @@ async function loadToken(): Promise<string | null> {
     try {
       return await idbGetOrCreate();
     } catch {
-      // 退回 localStorage。
+      // 報錯或逾時（`IDB_TIMEOUT_MS`）都一樣：退回 localStorage。
     }
   }
   return localStorageGetOrCreate();
@@ -196,7 +226,7 @@ export async function storeCredential(token: string): Promise<void> {
         done(undefined);
       });
     } catch {
-      // IndexedDB 寫不進去：localStorage 那份還在，下次讀取以它為準。
+      // IndexedDB 寫不進去或逾時：localStorage 那份還在，下次讀取以它為準。
     }
   }
 }

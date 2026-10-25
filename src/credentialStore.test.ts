@@ -2,8 +2,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { createScenario, listScenarios, login, refreshRun } from "./api";
 import {
-  credential, CREDENTIAL_HEADER, markOwnerBound, OWNER_BOUND_HEADER,
-  resetCredentialStoreForTests,
+  credential, CREDENTIAL_HEADER, IDB_TIMEOUT_MS, markOwnerBound, OWNER_BOUND_HEADER,
+  resetCredentialStoreForTests, storeCredential,
 } from "./credentialStore";
 
 const BODY = { symbol: "XYZ", target_price: 1, target_month: "2027-01",
@@ -141,5 +141,66 @@ describe("持久身分憑證（OPTION-CHASER-UNIFIED-IDENTITY-001）", () => {
     vi.stubGlobal("fetch", vi.fn(async () => reply({ role: "superuser" }, { bound: true })));
     await login("pw");
     expect(locks.held).toEqual(["oc-owner-binding"]);
+  });
+});
+
+// IRI-01／NIR-04（研究 #365）：Safari 14.1.1／iOS 14.6 的 `indexedDB.open()`
+// 會永遠 pending。jsdom 沒有 IndexedDB，這裡用一個「永遠不觸發任何事件」的
+// 假 `indexedDB` 重現，驗證逾時後退回 localStorage、而且 `send()` 不會掛死。
+describe("IndexedDB 逾時退路（IRI-01）", () => {
+  function hangingIndexedDB() {
+    const open = vi.fn(() => ({
+      result: undefined, error: null,
+      onsuccess: null, onerror: null, onupgradeneeded: null, onblocked: null,
+    }));
+    vi.stubGlobal("indexedDB", { open });
+    return open;
+  }
+
+  beforeEach(async () => {
+    localStorage.clear();
+    await resetCredentialStoreForTests();
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  it("open() 永遠不回應時，恰在 IDB_TIMEOUT_MS 退回 localStorage 的 token", async () => {
+    const open = hangingIndexedDB();
+    let settled = false;
+    const pending = credential().then((t) => { settled = true; return t; });
+    await vi.advanceTimersByTimeAsync(IDB_TIMEOUT_MS - 1);
+    expect(settled).toBe(false);                 // 逾時前真的在等 IndexedDB
+    await vi.advanceTimersByTimeAsync(2);
+    const t = await pending;
+    expect(t).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    expect(localStorage.getItem("oc_owner_bootstrap")).toBe(t);
+    expect(open).toHaveBeenCalledTimes(1);
+  });
+
+  it("逾時後的 storeCredential 先同步鏡像到 localStorage、再試 IndexedDB，呼叫端不會被卡住", async () => {
+    const open = hangingIndexedDB();
+    const first = credential();
+    await vi.advanceTimersByTimeAsync(IDB_TIMEOUT_MS + 1);
+    await first;
+    const store = storeCredential(OTHER);
+    expect(localStorage.getItem("oc_owner_bootstrap")).toBe(OTHER);
+    await vi.advanceTimersByTimeAsync(IDB_TIMEOUT_MS + 1);
+    await store;                                  // 逾時 → resolve，不是永遠 pending
+    expect(open).toHaveBeenCalledTimes(2);        // 卡住的結果沒有被永久快取：又試了一次
+    expect(await credential()).toBe(OTHER);
+  });
+
+  it("send() 不因卡住的 IndexedDB 而掛死：分頁第一個請求在逾時後照常帶著憑證送出", async () => {
+    hangingIndexedDB();
+    const fetchMock = vi.fn(async (_url: string, _init?: RequestInit) => reply([]));
+    vi.stubGlobal("fetch", fetchMock);
+    const call = listScenarios();
+    await vi.advanceTimersByTimeAsync(IDB_TIMEOUT_MS + 1);
+    await call;
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(headerOf(fetchMock.mock.calls[0][1])).toMatch(/^[A-Za-z0-9_-]{43}$/);
   });
 });
