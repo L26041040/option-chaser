@@ -583,6 +583,11 @@ class MemoryStorage:
 
     def delete_owner(self, owner_id: str, *,
                      reason: str = "deleted") -> dict[str, int]:
+        # IRI-06：跟 Postgres 一樣整段在一個交易裡（契約平行）。
+        with self.transaction():
+            return self._delete_owner(owner_id, reason)
+
+    def _delete_owner(self, owner_id: str, reason: str) -> dict[str, int]:
         counts: dict[str, int] = {}
 
         removed = [sid for sid, sc in self._scenarios.items()

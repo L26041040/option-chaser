@@ -17,7 +17,7 @@ Python dict，不需自己 `json.dumps`。時間欄位存 ISO 字串而非 times
 from __future__ import annotations
 
 import contextvars
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from contextlib import contextmanager
 
 import psycopg
@@ -511,6 +511,25 @@ CREATE TABLE IF NOT EXISTS identity_tombstones (
     deleted_at   TEXT NOT NULL
 );
 """
+
+# IRI-06：所有「一次鎖多張 owner 相關表」的操作（Beta Reset、absorb）共用
+# **這一份**順序，各自取子序列——兩份各寫一次、順序不一致，就是並發 absorb
+# 與 reset 死鎖的來源（2026-10-26 稽核實際發現兩份不一致）。
+_OWNER_LOCK_ORDER = (
+    "owners", "browser_identities", "identity_tombstones", "owner_settings",
+    "owner_credentials", "owner_verifications", "owner_merge_archive",
+    "scenarios", "results", "current_results", "snapshots", "events",
+    "diagnostics", "feedback", "rate_limits", "operational_metrics")
+
+
+def _lock_order(tables: Iterable[str]) -> tuple[str, ...]:
+    """`tables` 依 `_OWNER_LOCK_ORDER` 排序；不在清單裡的表是程式錯誤。"""
+    missing = set(tables) - set(_OWNER_LOCK_ORDER)
+    if missing:
+        raise ValueError(f"不在 canonical 鎖序裡的表：{sorted(missing)}")
+    wanted = set(tables)
+    return tuple(t for t in _OWNER_LOCK_ORDER if t in wanted)
+
 
 # 冷啟動競爭下的良性錯誤：別人已經建好／加好了。
 _BENIGN = (psycopg.errors.DuplicateTable, psycopg.errors.DuplicateObject,
@@ -1434,8 +1453,10 @@ class PostgresStorage:
     # 只清非 protected owner 的列：protected owner 的 provider 設定要留著。
     _BETA_OWNER_TABLES = ("owner_settings", "owner_credentials",
                           "owner_verifications", "browser_identities")
-    _BETA_LOCK_TABLES = ("owners", *_BETA_OWNER_TABLES, *_BETA_PRODUCT_TABLES,
-                         "rate_limits", "operational_metrics", "feedback")
+    # IRI-06：見模組層 `_OWNER_LOCK_ORDER`／`_lock_order()`。
+    _BETA_LOCK_TABLES = _lock_order((
+        "owners", *_BETA_OWNER_TABLES, *_BETA_PRODUCT_TABLES,
+        "rate_limits", "operational_metrics", "feedback"))
 
     def reset_beta_data(self, *,
                         keep_metrics: Sequence[tuple[str, str]] = ()) -> dict[str, int]:
@@ -1587,11 +1608,10 @@ class PostgresStorage:
     # 併入時 owner_id 直接改掛的內容表（設定表另外處理衝突）。
     _ABSORB_CONTENT_TABLES = ("scenarios", "results", "current_results",
                               "snapshots", "events", "diagnostics", "feedback")
-    _ABSORB_LOCK_TABLES = ("owners", "browser_identities", "owner_settings",
-                           "owner_credentials", "owner_verifications",
-                           "scenarios", "results", "current_results",
-                           "snapshots", "events", "diagnostics", "feedback",
-                           "rate_limits")
+    _ABSORB_LOCK_TABLES = _lock_order((
+        "owners", "browser_identities", "owner_settings", "owner_credentials",
+        "owner_verifications", "scenarios", "results", "current_results",
+        "snapshots", "events", "diagnostics", "feedback", "rate_limits"))
 
     def absorb_owner(self, source: str, *, into: str, now: str) -> dict[str, int]:
         if source == into:

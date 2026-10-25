@@ -92,6 +92,16 @@ _OWNER_COOKIE_NAME = "__Host-oc_owner"
 # 緩衝期——Codex P2（PR #346）「cookie 必須活過緩衝期」的承諾不受影響；
 # 清理錨點仍是每次請求都會更新的 `last_seen_at`，資料清除政策不變。
 _OWNER_COOKIE_MAX_AGE_SECONDS = 400 * 24 * 60 * 60
+# IRI-03（#363，研究 #365）：補掉 IDENTITY-FIX-002「簽一次」留下的第 400 天斷崖
+# ——每天都在用的人 cookie 也會在首次簽發後第 400 天過期，而本機那一腿在
+# Safari 上 7 個使用日沒互動就被清，兩腿一斷一弱就是唯一「不需要使用者動作
+# 的全損窗口」。做法：**已解析到 owner** 的請求，若這顆 cookie 距上次簽發已滿
+# N 天，就用**同一顆** token 重新 `Set-Cookie`（新的 400 天）並更新
+# `cookie_issued_at`。FIX-002 真正要的性質都保留：佔位（pending）請求永不簽；
+# 可解析的 cookie 永不被改成別顆；404／409 一樣。Chrome 104／Firefox 140 都確認
+# 重設同名 cookie 會重新計算到期。N 可由 `create_app(owner_cookie_renew_after_
+# days=…)` 或環境變數 `OWNER_COOKIE_RENEW_AFTER_DAYS` 調整。
+OWNER_COOKIE_RENEW_AFTER_DAYS = 30
 # 合法 cookie token 的形狀：base64url、至少 22 字元（≥128 bit 隨機，
 # 涵蓋正式簽發的 `token_urlsafe(32)`＝43 字元，以及 PB-07 合成壓測
 # harness 的 `token_urlsafe(16)`＝22 字元）。形狀不對的一律當作沒帶
@@ -851,6 +861,7 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
                anonymous_grace_period_days: int | None = None,
                anonymous_cleanup_batch_size: int | None = None,
                anonymous_empty_owner_retention_days: int | None = None,
+               owner_cookie_renew_after_days: int | None = None,
                owner_vendor_quota: tuple[int, int, int] | None = None,
                source_vendor_burst: tuple[int, int] | None = None,
                new_owner_tier_share: float | None = None,
@@ -1210,6 +1221,10 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
     _effective_grace_period_days = _positive_days(
         anonymous_grace_period_days, "ANONYMOUS_GRACE_PERIOD_DAYS",
         ANONYMOUS_GRACE_PERIOD_DAYS)
+    # IRI-03：cookie 續簽門檻（天）。非正數照 `_positive_days` 慣例退回預設。
+    _effective_cookie_renew_after_days = _positive_days(
+        owner_cookie_renew_after_days, "OWNER_COOKIE_RENEW_AFTER_DAYS",
+        OWNER_COOKIE_RENEW_AFTER_DAYS)
     # 批次上限 `<=0`＝這次不刪任何 owner（停用）；負數不能當 slice 用
     # （`eligible[:-1]` 會變成「刪到只剩最後一個」）。
     _effective_cleanup_batch_size = max(0, (
@@ -1371,6 +1386,21 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
     def _well_formed(token: str | None) -> str | None:
         return token if token is not None and _OWNER_TOKEN_RE.match(token) else None
 
+    def _cookie_due_for_renewal(cookie_issued_at: str | None) -> bool:
+        """IRI-03：這顆 cookie 距上次簽發是否已滿門檻天數。還沒簽過（`None`，
+        舊滑動窗 cookie）由既有的升級路徑處理；時間戳讀不懂時保守回 False
+        ——寧可這次不續簽，也不要每個請求都重簽。"""
+        if cookie_issued_at is None:
+            return False
+        try:
+            issued = datetime.fromisoformat(cookie_issued_at)
+        except ValueError:
+            return False
+        if issued.tzinfo is None:
+            issued = issued.replace(tzinfo=timezone.utc)
+        return (datetime.now(timezone.utc) - issued
+                >= timedelta(days=_effective_cookie_renew_after_days))
+
     def _resolve_owner_for_request(request: Request) -> tuple[
             str | None, str | Callable[[], str], dict | None, Callable[[], str] | None]:
         """PB-02（#294）spec §4 的**唯一身分判斷點**——UNIFIED-IDENTITY-001
@@ -1416,10 +1446,25 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
             if resolved is None:
                 continue
             _db().touch_browser_identity(token, now=now_utc_iso())
+            renew = (token == cookie_token
+                     and _cookie_due_for_renewal(resolved.cookie_issued_at))
             credential = {
                 "token": token, "bound": True, "state": "bound", "reason": None,
-                "issue": token != cookie_token or resolved.cookie_issued_at is None,
-                "echo": token != stored_token}
+                "issue": (token != cookie_token or resolved.cookie_issued_at is None
+                          or renew),
+                "echo": token != stored_token,
+                # IRI-03：這次 Set-Cookie 是「同顆續簽」而不是補發／升級（指標用）。
+                "renewed": renew,
+                # IRI-05：哪一腿補回了哪一腿（指標用）。cookie 不在或不是解析到
+                # 的那顆＝cookie 腿從本機那份補回；本機那份**有帶但不一樣**＝從
+                # cookie 補回（正式站的前端一定帶 header——本機儲存被清掉時帶的
+                # 是一顆新產生的 token，所以「不一樣」才是遺失訊號；完全沒帶
+                # header 的是非前端呼叫端，不算）。
+                "heal_metric": (
+                    "identity_heal_cookie_from_local" if token != cookie_token
+                    else "identity_heal_local_from_cookie"
+                    if stored_token is not None and token != stored_token
+                    else None)}
             return resolved.owner_id, resolved.role, credential, None
 
         # IRI-04：兩份都查不到。先問墓碑（`lookup_identity_tombstone()`）：帶來的
@@ -1451,6 +1496,9 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
                 now=now)
             if created:
                 _record_metric("new_owner_count", ny_today())
+                if credential["state"] == "unknown":
+                    _record_metric("identity_new_owner_after_unknown", ny_today(),
+                                   source=credential["reason"])
             else:
                 # 並發請求剛好先綁了這顆：沿用那個 user 與這顆憑證的權限。
                 resolved = _db().resolve_credential(candidate)
@@ -1467,6 +1515,12 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         不是 `identity_resolver()`——這是 user 唯一的建立入口（見
         `identity.materialize_owner()`）。DI 覆寫身份時照舊用注入值。"""
         return materialize_owner() if _uses_cookie_identity else identity_resolver()
+
+    def _is_main_account(owner_id: str | None) -> bool:
+        """IRI-06：「這是不是全部裝置共用的主帳號」的**唯一**判斷點——cron
+        清理、SA 單筆／批次刪除、`DELETE /api/me`、重設權限都問這裡。"""
+        main = _db().get_main_account()
+        return main is not None and owner_id == main
 
     def _identity_state() -> tuple[str, str | None]:
         """IRI-04：這次請求的身分狀態（`bound`／`none`／`unknown`，見
@@ -1519,6 +1573,14 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
             response.headers[_IDENTITY_STATE_HEADER] = credential["state"]
             if credential["state"] == "unknown" and credential["reason"]:
                 response.headers[_IDENTITY_REASON_HEADER] = credential["reason"]
+            # IRI-05：身分健康指標（fail-open，`enable_metrics=False` 時全 no-op）。
+            if credential["state"] == "unknown":
+                _record_metric("identity_unknown_token", ny_today(),
+                               source=credential["reason"])
+            if credential.get("heal_metric"):
+                _record_metric(credential["heal_metric"], ny_today())
+            if credential.get("renewed"):
+                _record_metric("identity_renew_cookie", ny_today())
             # 內容依 user 而異，而且可能帶著憑證（Set-Cookie／X-OC-Credential）：
             # 任何共享快取都不得存（Vercel 預設的 `public` 不適用這裡）。
             response.headers["Cache-Control"] = "private, no-store"
@@ -1963,8 +2025,10 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         # 刪幾個」，活躍的 owner 不再佔用任何批次名額。
         # UNIFIED-IDENTITY-001：有權限的 user 跟 protected 一樣不清——權限
         # 永久保留，除非使用者主動重設。
+        # IRI-06：主帳號**明確**排除——不再只靠它剛好是 protected／有權限。
         facts = [f for f in _db().owner_lifecycle_facts()
-                 if not f.protected and f.role == "normal"]
+                 if not f.protected and f.role == "normal"
+                 and not _is_main_account(f.owner_id)]
         abandoned = 0
         eligible = []
         for f in facts:
@@ -2078,6 +2142,14 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         for e in _db().metric_summary():
             if e.metric == "abandoned_owner_cleanup_count" and e.bucket == str(today):
                 cleanup_rows_today += e.total
+        # IRI-05：身分健康——同一天的四個計數。
+        def _today_total(metric: str) -> int:
+            return int(_db().metric_total(metric, str(today)))
+        identity_unknown = _today_total("identity_unknown_token")
+        identity_heals = (_today_total("identity_heal_cookie_from_local")
+                          + _today_total("identity_heal_local_from_cookie"))
+        identity_new_after_unknown = _today_total("identity_new_owner_after_unknown")
+        identity_renewals = _today_total("identity_renew_cookie")
 
         incident_sources = tuple(
             src for src in ("cboe", "yfinance")
@@ -2108,7 +2180,11 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
             scenarios_average_per_owner=avg_per_owner,
             cleanup_owners_deleted_today=cleanup_today,
             cleanup_rows_deleted_today=int(cleanup_rows_today),
-            alerts=alerts)
+            alerts=alerts,
+            identity_unknown_today=identity_unknown,
+            identity_heals_today=identity_heals,
+            identity_new_owners_after_unknown_today=identity_new_after_unknown,
+            identity_cookie_renewals_today=identity_renewals)
 
     # ---------- S0 最小可觀測性（SCALE-08／#258） ----------
 
@@ -2357,7 +2433,7 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
             _db().set_owner_role(owner, normal)
             set_resolved_role(normal)
             return {"role": normal}
-        if owner == _db().get_main_account():
+        if _is_main_account(owner):
             _db().delete_browser_identity(credential["token"], reason="logged_out")
             credential.update(token=secrets.token_urlsafe(32), bound=False,
                               state="none", issue=True, echo=True)
@@ -2453,6 +2529,12 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         """
         superuser.require_role(superuser.Role.SUPERADMIN)
         _require_owner_confirmation(body.confirm_owner_id, owner_id)
+        # IRI-06：主帳號是全部裝置共用的那一個，從任何入口都不能整個刪掉
+        # （`DELETE /api/me` 同一條邊界）。protected 仍可走單筆刪除（既有設計：
+        # 批次擋 protected，單筆是刻意的例外）。
+        if _is_main_account(owner_id):
+            raise HTTPException(status_code=409,
+                                detail="這是主帳號，不能刪除；操作已取消")
         counts = _db().delete_owner(owner_id, reason="admin_deleted")
         _record_audit("delete_owner", target_owner_id=owner_id,
                       detail={"deleted_rows": counts})
@@ -2491,6 +2573,10 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
                     status_code=409,
                     detail=f"protected owner 不能批次刪除（{len(protected)} 個），"
                            "操作已取消")
+            # IRI-06：主帳號即使被取消 protected 也不能被批次刪掉。
+            if any(_is_main_account(oid) for oid in targets):
+                raise HTTPException(status_code=409,
+                                    detail="清單含主帳號，不能批次刪除；操作已取消")
             for oid in targets:
                 counts = _db().delete_owner(oid, reason="admin_deleted")
                 results[oid] = counts
@@ -2645,7 +2731,7 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         CROSS-DEVICE-ACCOUNT-001：主帳號是很多台裝置共用的那一個帳號，不能
         從某一台裝置的「刪除我的資料」整個刪掉——一律 409，什麼都不刪。"""
         owner = identity_resolver()
-        if owner == _db().get_main_account():
+        if _is_main_account(owner):
             raise HTTPException(
                 status_code=409,
                 detail="這是主帳號，不能在這裡刪除；如果只是要讓這台裝置離開"

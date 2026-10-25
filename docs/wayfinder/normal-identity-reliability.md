@@ -145,7 +145,7 @@
 
 ### 3.4 身分健康可觀測（修 G-H／G-N）
 
-`METRIC_CATALOGUE` 新增：`identity_heal_cookie_from_local`、`identity_heal_local_from_cookie`、`identity_unknown_token`（依 reason 分 source）、`identity_new_owner_after_unknown`、`identity_renew_cookie`、`identity_cookie_not_returned`（啟發式：上一回應 issue、下一請求同 header 卻無 cookie）。`/api/ops/metrics` 自動涵蓋；每日摘要加一列「身分健康」。
+`METRIC_CATALOGUE` 新增五類：`identity_heal_cookie_from_local`、`identity_heal_local_from_cookie`、`identity_unknown_token`（依 reason 分 source）、`identity_new_owner_after_unknown`、`identity_renew_cookie`（施工時拿掉原列的第六類 `identity_cookie_not_returned`：啟發式且需要跨請求狀態，#373 以五類為準）。`/api/ops/metrics` 自動涵蓋；每日摘要加一列「身分健康」。
 
 ### 3.5 驗證（修 G-K）
 
@@ -192,7 +192,7 @@ NIR-01～05、NIR-10 ──▶ NIR-08 完整跑
 ### NIR-03 門檻式 cookie 續簽
 - **改動**：`credential["issue"]` 多一條件 `resolved.cookie_issued_at` 早於 `now − RENEW_AFTER_DAYS`；續簽同 token；`mark_owner_cookie_issued()` 更新時間；`create_app(cookie_renew_after_days=…)` 可注入。
 - **依賴**：#363（含 N）。
-- **驗收**：`test_identity_fix_002.py`「後續請求不再 Set-Cookie」改寫為「30 天內不再、滿 30 天恰簽一次且 token 相同、再 30 天內不再」；pending 請求與 404／409 仍不簽；`test_identity_root_cause_001.py` 的「不改動可解析 cookie」改為「不改成別顆」；`CONTEXT.md` 條目更新。
+- **驗收**：`test_identity_fix_002.py`「後續請求不再 Set-Cookie」改寫為「30 天內不再、滿 30 天恰簽一次且 token 相同、再 30 天內不再」；佔位（pending）請求仍不簽；404／409 只可能發生同顆續簽、永不改顆（施工時定案：續簽與回應狀態碼無關，簡單且安全）；`test_identity_root_cause_001.py` 的「不改動可解析 cookie」改為「不改成別顆」；`CONTEXT.md` 條目更新。
 
 ### NIR-04 前端耐久性：IndexedDB 逾時退路（`persist()` 經 #365 不採用）
 - **改動**：`credentialStore.ts` `loadToken()` 與 1500 ms 逾時賽跑；逾時不快取 pending promise；`inTransaction()` 同樣加逾時（STP 248 之前的交易阻塞情境）；結果以 `console.info` 與指標回報，不顯示 UI。

@@ -4,8 +4,9 @@ regression。
 兩類測試：
 
 1. **鎖住已證實健全的部分**（今天就綠）——伺服器在 request 帶著一顆
-   可解析的 owner cookie 時，不會在任何回應（含 404／409）重簽或改動它
-   （IDENTITY-FIX-002 起簽一次、固定期限）；同一顆 cookie 跨 app
+   可解析的 owner cookie 時，不會在任何回應（含 404／409）把它**改成別顆**
+   （IDENTITY-FIX-002 起簽一次、固定期限；IRI-03 起唯一會再 Set-Cookie 的
+   情況是簽發滿 30 天的**同顆**續簽，見 `test_identity_reliability_001.py`）；同一顆 cookie 跨 app
    instance（模擬重新部署）在 Postgres 上解析到同一個 owner。這些是調查過程中逐一排除「伺服器端弄丟身分」
    的證據，收進測試避免未來回歸。
 
