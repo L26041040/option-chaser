@@ -12,7 +12,7 @@
 
 - **現有架構是對的，不需要推翻。** 「不透明 token＋伺服器查表、同一顆 token 存兩份（HttpOnly cookie＋本機副本）、每次回應收斂、第一次寫入才建立 user、PK 原子綁定」這套骨架已經涵蓋九種完成標準裡的七種半（§1d）。過去三輪分裂（每次請求重簽 cookie、本機副本綁定後被刪、權限掛 owner 導致每台裝置一個 SU）都已在 PR #346／#355／#358 修掉。
 - **真正剩下的缺口是「邊緣」而不是「骨架」**（§2）：① 身分遺失與首訪無法區分、不可觀測；② cookie 簽一次固定 400 天＝第 400 天斷崖，而本機副本是較弱的一腿；③ 本機副本沒有要求持久化、IndexedDB 卡住會讓整站停住；④ 三個 Production 網址各自一個身分；⑤ 查無此 token 時沿用舊 token 綁新 owner，讓診斷失真。
-- **方案**（§3）：保留骨架，補五件事——憑證耐久性（門檻式續簽、`navigator.storage.persist()`、IndexedDB 逾時退路）、單一正式網址、身分狀態訊號＋墓碑、身分健康指標、真瀏覽器持久性酷刑測試。十張施工票（§4），其中四張不等任何決策就能開工。
+- **方案**（§3）：保留骨架，補五件事——憑證耐久性（門檻式續簽、`navigator.storage.persist()`、IndexedDB 逾時退路）、單一正式網址、身分狀態訊號＋墓碑、身分健康指標、真瀏覽器持久性酷刑測試。十張施工票（§4），其中五張不等任何決策就能開工。研究票 #366 已回填：不加 BroadcastChannel，改修分頁快取失效的單一根因（§3.7）。
 - **能力邊界**（§7）：兩份憑證皆遺失、瀏覽器完全封鎖 cookie 與 site data、資料庫回復到更早時點——這三種系統**不可能**自動恢復；本輪建議維持「不做找回機制」（#361），把力氣放在「不要同時遺失」。
 - **需要 Owner 裁示的只有五題**（§9），每題都附老弟建議；三題（#360、#361、#362）現在就能答，一題（#363）等研究票 #365 的瀏覽器事實，一題（#364）等前兩題。
 
@@ -65,6 +65,7 @@
 5. **DB-backed、無程序內狀態**：重新部署、冷啟動、多 instance 都不影響（同一顆 cookie 跨 app instance 在 Postgres 上解析到同一 owner，已有測試）。
 6. **`Cache-Control: private, no-store`**：帶憑證的回應不會被任何共享快取吃掉。
 7. **匿名→SU／SA**：`absorb_owner()` 單一交易併入、衝突設定存 `owner_merge_archive`、不改綁舊憑證（PR #358 三瀏覽器實測）。
+8. **伺服器錯誤不刪憑證**：`send()` 對 5xx／逾時／網路中斷只拋 `ApiError`，任何路徑都不會清除任一腿（Firebase #10438——啟動時一個暫時 5xx 清掉已持久化 user——是本產品要明文避免的反例，#366）。本輪把它升格為不變量並加否定測試（NIR-08）。
 
 ### 1d. 九種完成標準情境 vs 現況
 
@@ -111,7 +112,7 @@
 
 **G-K 🟡 缺真瀏覽器＋真後端的 Normal 持久性測試。** `e2e/*` 全部 mock `/api/*`；後端測試用 `TestClient`。沒有一條測試在真 Chromium 上做「關閉重開（persistent context）→只清 cookie→只清 site data→兩分頁→換 instance」對真 FastAPI。SU 的 `scripts/cross_device_verify*.{py,mjs}` 已證明這種 harness 可行。
 
-**G-L 🟡 跨分頁記憶體副本不即時同步。** 分頁 B 的 `cached`／`bound` 不會因分頁 A 收到新憑證而更新；靠「cookie 優先＋下一回應 echo」收斂，推演過登出／自刪／首寫等組合都只會收斂到一個 owner。可接受；是否加 BroadcastChannel 等 #366 回填再判斷（地圖 fog）。
+**G-L 🟡 跨分頁記憶體副本不即時同步。** 分頁 B 的 `cached`／`bound` 不會因分頁 A 收到新憑證而更新；靠「cookie 優先＋下一回應 echo」收斂。#366 回填：分析 SDK 無一用 BroadcastChannel 處理身分，PostHog 同樣是「下一次活動前重讀 storage」；真正會分裂的只有**雙重故障**——另一分頁剛登入／登出輪替憑證**且** cookie 不在，或 SU 登出後兩分頁同時首寫、過期的 `bound` 跳過鎖（兩分頁各帶不同 candidate → 兩個 owner）。Normal User 本身不會走登入／登出路徑，但 SU 裝置會。修法見 §3.7（不加 BroadcastChannel）。
 
 **G-M（範圍外，記錄）** 腿 B 可被 JS 讀到，XSS 即身分外洩；CSP 無 `script-src`。安全強化軌另案。
 
@@ -154,6 +155,12 @@
 
 §7 的不可恢復清單進規格與隱私頁（#364）；§8 詞彙進 `CONTEXT.md`。
 
+### 3.7 分頁快取失效（修 G-L；#366 已裁，取代 BroadcastChannel）
+
+- (a) `send()` 收到的回應**沒有** `X-OC-Owner-Bound: 1` 時，重置該分頁的 `cached`／`bound`（回到「還沒讀過」），下一次 `send()` 重讀 IndexedDB；這讓剛被別的分頁登出／自刪的分頁在第一個讀取回應後就追上。
+- (b) 對 localStorage 鏡像鍵 `oc_owner_bootstrap` 掛 `storage` listener：事件到達只觸發「重讀 storage」，**不信 `event.newValue`**（PostHog PR #4659 的做法）；這補掉 (a) 追不到的「第一個請求就是寫入」的競態。
+- 不引入 BroadcastChannel：它解「狀態自行輪替」的問題（Supabase／Firebase 每小時換 token），本產品沒有；多一個狀態來源就多一組競態。只有日後引入週期性憑證輪替時才重新考慮。
+
 ---
 
 ## 4. 施工任務拆解、依賴與驗收條件
@@ -169,8 +176,8 @@
 #361 找回邊界 ─┐
 #360 ─────────┴─▶ #364 天數＋文案 ──▶ NIR-09
 #362 正式網址 ──▶ NIR-05
-（不等任何決策）：NIR-01 後端半邊、NIR-04（逾時退路）、NIR-06 基本指標、NIR-07、NIR-08 骨架
-NIR-01～05 ──▶ NIR-08 完整跑 ──▶ NIR-10（選用）
+（不等任何決策）：NIR-01 後端半邊、NIR-04（逾時退路）、NIR-06 基本指標、NIR-07、NIR-08 骨架、NIR-10（#366 已裁）
+NIR-01～05、NIR-10 ──▶ NIR-08 完整跑
 ```
 
 ### NIR-01 身分狀態訊號＋unknown 鑄新 token（後端＋前端）
@@ -218,10 +225,10 @@ NIR-01～05 ──▶ NIR-08 完整跑 ──▶ NIR-10（選用）
 - **依賴**：#364。
 - **驗收**：`PrivacyPage.test.tsx` 斷言該行存在；`CONTEXT.md` 無與程式碼矛盾的敘述（code review 逐條對照）。
 
-### NIR-10（選用）跨分頁即時同步
-- **改動**：`storeCredential()` 後 BroadcastChannel／`storage` event 通知其他分頁更新 `cached`／`bound`。
-- **依賴**：#366 回填說值得才開；NIR-08 先綠。
-- **驗收**：e2e：分頁 A 登出（SU）後分頁 B 的下一請求已帶新憑證、無多餘 round trip；不做則在地圖 Out of scope 記一行理由。
+### NIR-10 分頁快取失效（取代 BroadcastChannel；#366 已裁）
+- **改動**：`credentialStore.ts` 新增 `invalidateTabCache()`；`send()` 在回應缺 `X-OC-Owner-Bound: 1` 時呼叫；`storage` listener（鍵 `oc_owner_bootstrap`）只觸發重讀、不信 `event.newValue`；`bound` 被重置後，會建立 user 的寫入重新進 Web Locks 排隊。
+- **依賴**：無（#366 已回填）；由 NIR-08 驗證。
+- **驗收**：vitest：模擬回應無 Owner-Bound → 下一次 `send()` 重讀 IDB 並帶新 token；`storage` 事件帶偽造 `newValue` 時仍以 storage 實際內容為準；e2e（NIR-08）：SU 在分頁 A 登出後分頁 B 的下一請求已帶新憑證，且兩分頁同時首寫只產生一個 owner（`owners` 計數＋1）。
 
 ---
 
