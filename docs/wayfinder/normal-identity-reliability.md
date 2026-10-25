@@ -2,7 +2,7 @@
 
 > **OPTION-CHASER-NORMAL-IDENTITY-RELIABILITY-001 ／ 回報#137 ／ 2026-10-25（台灣）**
 >
-> 狀態：**研究＋設計＋規劃，本輪不施工。** Wayfinder 地圖 **#359**；決策票 #360～#364、研究票 #365／#366、Task 票 #367（Production 稽核）。本文件是地圖 Destination 指向的規格草案——§4 的施工票（NIR-01～NIR-10）在 §9 的決策票關閉後才開成 GitHub issue，以免被尚未裁示的決定改寫。「老弟建議」不是 Owner Decision，任何未來 session 不得混用。
+> 狀態（2026-10-26 更新）：**施工完成一輪**——Owner 施工令 OPTION-CHASER-IDENTITY-RELIABILITY-IMPROVEMENT-001（母票 **#368**）把 NIR-01／02／03／04／06／07／08／10 以 IRI-01～IRI-07 落地在 `claude/context-mhpwv6`（未部署、未開 PR）；NIR-05（單一正式網址，#362）與 NIR-09（邊界文案，#364）仍等 Owner 裁示；#360 剩 UI 提示半邊。Wayfinder 地圖 **#359**；研究票 #365／#366 已回填；Task 票 #367（Production 稽核 SQL 已寫好：`docs/audits/identity-health-audit.sql`，等 Owner 在 Neon 執行）。§3／§4 已依施工時的修正更新（三態定義、決定性導出、九個墓碑原因、五類指標、`persist()` 不採用）。「老弟建議」不是 Owner Decision，任何未來 session 不得混用。
 >
 > 依據：`api_app/main.py`（`_resolve_owner_for_request`／`_call_within_owner_scope_inner`／`_login_main_account`／`auth_reset_role`／`delete_my_data`／`cron_cleanup_abandoned_owners`）、`api_app/identity.py`、`api_app/anonymous_lifecycle.py`、`api_app/storage/{__init__,postgres}.py`、`src/credentialStore.ts`、`src/api.ts`、`tests/test_identity_*.py`、`tests/test_unified_identity_001.py`、`tests/test_cross_device_account.py`、`e2e/owner-bootstrap.spec.ts`、`docs/research/anonymous-identity-session-patterns.md`、PR #346／#355／#358、回報#136。
 
