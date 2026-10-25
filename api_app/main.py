@@ -1518,7 +1518,7 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
 
     def _is_main_account(owner_id: str | None) -> bool:
         """IRI-06：「這是不是全部裝置共用的主帳號」的**唯一**判斷點——cron
-        清理、SA 單筆／批次刪除、`DELETE /api/me`、重設權限都問這裡。"""
+        清理、SA 單筆／批次刪除、自助刪除（`/api/me`）、重設權限都問這裡。"""
         main = _db().get_main_account()
         return main is not None and owner_id == main
 
@@ -2530,7 +2530,7 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         superuser.require_role(superuser.Role.SUPERADMIN)
         _require_owner_confirmation(body.confirm_owner_id, owner_id)
         # IRI-06：主帳號是全部裝置共用的那一個，從任何入口都不能整個刪掉
-        # （`DELETE /api/me` 同一條邊界）。protected 仍可走單筆刪除（既有設計：
+        # （自助刪除 `/api/me` 同一條邊界）。protected 仍可走單筆刪除（既有設計：
         # 批次擋 protected，單筆是刻意的例外）。
         if _is_main_account(owner_id):
             raise HTTPException(status_code=409,
