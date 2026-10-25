@@ -105,6 +105,10 @@ def _owner(db, owner_id: str, tokens: tuple[str, ...], *, role="normal",
              "last_seen_at) VALUES (%s, %s, %s, %s)", (tok, owner_id, CREATED, CREATED))
     if role != "normal":
         db.set_owner_role(owner_id, role)
+        # CROSS-DEVICE-ACCOUNT-001：權限看憑證——跟 Production 冷啟動回填後
+        # 的狀態一樣，這個特權 owner 的每顆裝置憑證都帶著它的權限。
+        for tok in tokens:
+            db.set_credential_role(tok, role)
     if protected:
         db.set_owner_protected(owner_id, True)
 
