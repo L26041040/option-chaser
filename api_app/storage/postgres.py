@@ -23,7 +23,7 @@ from contextlib import contextmanager
 import psycopg
 from psycopg.types.json import Jsonb
 
-from . import (LEGACY_SINGLETON_TABLES, RETIRED_TABLES, SCENARIO_CHILD_TABLES,
+from . import (identity_token_hash, require_tombstone_reason, LEGACY_SINGLETON_TABLES, RETIRED_TABLES, SCENARIO_CHILD_TABLES,
                BrowserIdentity, ChainBackoffEntry, ContractHistory,
                ResolvedCredential,
                DataSourceSettings, DividendCacheEntry, Feedback, IvBackfillRun,
@@ -35,6 +35,7 @@ from . import (LEGACY_SINGLETON_TABLES, RETIRED_TABLES, SCENARIO_CHILD_TABLES,
                Scenario, ScenarioExists, SuperUserAuditEvent,
                TreasuryYearCacheEntry, UsageSetting, require_owner,
                settings_bundle_merge_plan)
+from ..clock import now_utc_iso
 from ..diagnostics import RETENTION_LIMIT, DiagnosticEvent
 from ..metrics import retention_cutoff
 
@@ -499,6 +500,15 @@ CREATE TABLE IF NOT EXISTS owner_merge_archive (
     target_owner_id  TEXT NOT NULL,
     table_name       TEXT NOT NULL,
     row_data         JSONB NOT NULL
+);
+-- IRI-04：身分墓碑——我們自己作廢過的憑證（只存 sha256、原因、時間；見
+-- `storage/__init__.py` 的 `IDENTITY_TOMBSTONE_REASONS`）。讓「形狀合法但
+-- 查無此 token」分得出「以前有過身分」與「前端剛產生、還沒綁定」。保留
+-- 400 天（cookie 最長壽命）後由 retention 清掉。
+CREATE TABLE IF NOT EXISTS identity_tombstones (
+    token_hash   TEXT PRIMARY KEY,
+    reason       TEXT NOT NULL,
+    deleted_at   TEXT NOT NULL
 );
 """
 
@@ -1317,7 +1327,7 @@ class PostgresStorage:
         "superuser_audit_log", "rate_limits", "operational_metrics",
         "feedback", "iv_observations", "iv_backfill_runs", "contract_iv_history",
         "rate_cache", "dividend_cache", "treasury_year_cache", "chain_backoff",
-        "main_account", "owner_merge_archive")
+        "main_account", "owner_merge_archive", "identity_tombstones")
 
     def table_row_counts(self) -> dict[str, dict]:
         out: dict[str, dict] = {}
@@ -1332,7 +1342,32 @@ class PostgresStorage:
 
     # ---------- Owner-wide 刪除原語（PB-04／#296） ----------
 
-    def delete_owner(self, owner_id: str) -> dict[str, int]:
+    @staticmethod
+    def _tombstone_owner_identities(conn, owner_id: str, reason: str,
+                                    now: str) -> int:
+        """同一交易內，替 `owner_id` 名下每一顆憑證留墓碑（再由呼叫端刪
+        identity 列）。重複作廢同一顆 token 以最新的原因與時間為準。回傳
+        留了幾顆。"""
+        rows = conn.execute(
+            "SELECT token FROM browser_identities WHERE owner_id = %s",
+            (owner_id,)).fetchall()
+        PostgresStorage._tombstone_tokens(conn, [r[0] for r in rows], reason, now)
+        return len(rows)
+
+    @staticmethod
+    def _tombstone_tokens(conn, tokens: Sequence[str], reason: str, now: str) -> None:
+        require_tombstone_reason(reason)
+        if not tokens:
+            return
+        with conn.cursor() as cur:
+            cur.executemany(
+                "INSERT INTO identity_tombstones (token_hash, reason, deleted_at) "
+                "VALUES (%s, %s, %s) ON CONFLICT (token_hash) DO UPDATE SET "
+                "reason = EXCLUDED.reason, deleted_at = EXCLUDED.deleted_at",
+                [(identity_token_hash(t), reason, now) for t in tokens])
+
+    def delete_owner(self, owner_id: str, *,
+                     reason: str = "deleted") -> dict[str, int]:
         """完整清除這個 owner 名下全部資料，含 owner registry
         （`owners`）與 browser identity 對照（`browser_identities`）
         本身——**單一交易內完成**（`conn.transaction()`，postgres 這些
@@ -1376,6 +1411,9 @@ class PostgresStorage:
                     "UPDATE feedback SET owner_id = NULL WHERE owner_id = %s",
                     (owner_id,))
                 counts["feedback"] = cur.rowcount
+                # IRI-04：先留墓碑、再刪憑證——同一交易。
+                counts["identity_tombstones"] = self._tombstone_owner_identities(
+                    conn, owner_id, reason, now_utc_iso())
                 cur = conn.execute(
                     "DELETE FROM browser_identities WHERE owner_id = %s",
                     (owner_id,))
@@ -1414,6 +1452,12 @@ class PostgresStorage:
                 "WHERE protected OR role <> 'normal'").fetchall()]
             for table in self._BETA_PRODUCT_TABLES:
                 counts[table] = conn.execute(f"DELETE FROM {table}").rowcount
+            # IRI-04：被清掉的匿名 owner 的憑證先留墓碑（同一交易）。
+            doomed = conn.execute(
+                "SELECT token FROM browser_identities WHERE NOT (owner_id = ANY(%s))",
+                (kept,)).fetchall()
+            self._tombstone_tokens(conn, [r[0] for r in doomed], "beta_reset",
+                                   now_utc_iso())
             for table in self._BETA_OWNER_TABLES:
                 counts[table] = conn.execute(
                     f"DELETE FROM {table} WHERE NOT (owner_id = ANY(%s))",
@@ -1483,10 +1527,30 @@ class PostgresStorage:
                 (identity.token, identity.owner_id, identity.issued_at,
                  identity.last_seen_at, identity.cookie_issued_at, identity.role))
 
-    def delete_browser_identity(self, token: str) -> bool:
+    def delete_browser_identity(self, token: str, *,
+                                reason: str = "rotated") -> bool:
         with self._connect() as conn:
-            return conn.execute("DELETE FROM browser_identities WHERE token = %s",
-                                (token,)).rowcount > 0
+            with conn.transaction():
+                deleted = conn.execute(
+                    "DELETE FROM browser_identities WHERE token = %s",
+                    (token,)).rowcount > 0
+                # 只替真的存在過的憑證留墓碑：從未綁定的 token 之後仍是首訪
+                # （`none`），不會被誤判成「以前有過身分」。
+                if deleted:
+                    self._tombstone_tokens(conn, [token], reason, now_utc_iso())
+                return deleted
+
+    def lookup_identity_tombstone(self, token: str) -> str | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT reason FROM identity_tombstones WHERE token_hash = %s",
+                (identity_token_hash(token),)).fetchone()
+        return row[0] if row else None
+
+    def purge_identity_tombstones(self, *, before: str,
+                                  dry_run: bool = False) -> int:
+        return self._purge("identity_tombstones", "deleted_at < %s", (before,),
+                           dry_run)
 
     def get_main_account(self) -> str | None:
         with self._connect() as conn:
@@ -1588,6 +1652,8 @@ class PostgresStorage:
             counts["rate_limits"] = conn.execute(
                 "DELETE FROM rate_limits WHERE scope = %s AND key = %s",
                 (OWNER_RATE_LIMIT_SCOPE, source)).rowcount
+            # IRI-04：這台裝置的舊憑證作廢（不改綁）——先留墓碑。
+            self._tombstone_owner_identities(conn, source, "absorbed_into_main", now)
             counts["browser_identities"] = conn.execute(
                 "DELETE FROM browser_identities WHERE owner_id = %s",
                 (source,)).rowcount

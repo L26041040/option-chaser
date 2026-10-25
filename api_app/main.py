@@ -14,6 +14,7 @@ import dataclasses
 import hashlib
 import os
 import re
+import base64
 import secrets
 import logging
 import time
@@ -107,6 +108,23 @@ _OWNER_TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{22,128}$")
 # 請求（沒有 CORS）帶不了，也讀不到回應裡的這個 header。
 _CREDENTIAL_HEADER = "x-oc-credential"
 _CREDENTIAL_RESPONSE_HEADER = "X-OC-Credential"
+# IRI-04：每個解析身分的回應都說這次請求的身分狀態——`bound`（解析到 user）、
+# `none`（沒帶任何合法憑證，或帶的是前端自己產生、還沒綁定的 token＝首訪）、
+# `unknown`（帶了形狀合法的 token，但它是我們自己作廢過的——這個瀏覽器以前
+# 有過身分）。owner_id 一樣不出現在任何回應。
+_IDENTITY_STATE_HEADER = "X-OC-Owner-Identity"
+# `unknown` 時附帶墓碑原因（`IDENTITY_TOMBSTONE_REASONS` 之一）；其他狀態不帶。
+_IDENTITY_REASON_HEADER = "X-OC-Owner-Identity-Reason"
+
+
+def _derive_fresh_token(stale: str) -> str:
+    """IRI-04：`unknown`（帶來的 token 已被我們作廢）時要鑄的新憑證。**從舊
+    token 決定性地導出**而不是每個請求各自隨機：兩個分頁帶著同一顆舊 token
+    同時首寫，會算出同一顆新 token，`claim_browser_token()` 的 PK 仍然把它們
+    收斂成一個 owner（隨機的話會變成兩個）。單向 hash：拿到新 token 推不回
+    舊的；知道舊 token 的人本來就能用它走到同一個綁定，沒有多給任何能力。"""
+    digest = hashlib.sha256(b"oc-identity-rebind:" + stale.encode("utf-8")).digest()
+    return base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
 
 # spec §4 的路由白名單——完全不碰身分解析的端點。白名單而非黑名單：未來
 # 新增的端點預設會解析身分。UNIFIED-IDENTITY-001 起 `/api/auth/*`、
@@ -1399,14 +1417,32 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
                 continue
             _db().touch_browser_identity(token, now=now_utc_iso())
             credential = {
-                "token": token, "bound": True,
+                "token": token, "bound": True, "state": "bound", "reason": None,
                 "issue": token != cookie_token or resolved.cookie_issued_at is None,
                 "echo": token != stored_token}
             return resolved.owner_id, resolved.role, credential, None
 
-        candidate = stored_token or cookie_token or secrets.token_urlsafe(32)
-        credential = {"token": candidate, "bound": False,
-                      "issue": False, "echo": False}
+        # IRI-04：兩份都查不到。先問墓碑（`lookup_identity_tombstone()`）：帶來的
+        # token 是不是我們自己作廢過的（retention 清理、自刪、併入主帳號、登出
+        # ……）——是，這個瀏覽器**以前有過身分**（`unknown`）：鑄一顆全新的憑證，
+        # 首寫時兩腿一起換掉，**絕不**把舊 token 再綁到新 owner（舊 token 的
+        # 歷史才說得清、墓碑與指標才有意義）；不是（`none`）：首訪，前端自己產生
+        # 還沒綁定的 token，照舊以它為候選——所有分頁共用同一顆、靠 token PK 保證
+        # 只建一個 owner。墓碑之外被刪掉的 token（例如資料庫回復到更早時點）
+        # 分不出來，當 `none` 處理，是已知的能力邊界。
+        reason = None
+        # `dict.fromkeys(...)`＝保序去重（cookie 與 header 常是同一顆）。
+        for token in dict.fromkeys(t for t in (cookie_token, stored_token) if t):
+            reason = _db().lookup_identity_tombstone(token)
+            if reason is not None:
+                break
+        if reason is not None:
+            state, candidate = "unknown", _derive_fresh_token(token)
+        else:
+            state = "none"
+            candidate = stored_token or cookie_token or secrets.token_urlsafe(32)
+        credential = {"token": candidate, "bound": False, "state": state,
+                      "reason": reason, "issue": False, "echo": False}
 
         def materialize() -> str:
             now = now_utc_iso()
@@ -1420,7 +1456,8 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
                 resolved = _db().resolve_credential(candidate)
                 set_resolved_role(resolved.role if resolved else "normal")
             set_resolved_owner(bound)
-            credential.update(bound=True, issue=True, echo=candidate != stored_token)
+            credential.update(bound=True, state="bound", issue=True,
+                              echo=candidate != stored_token)
             return bound
 
         return pending_owner_placeholder(), "normal", credential, materialize
@@ -1430,6 +1467,16 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         不是 `identity_resolver()`——這是 user 唯一的建立入口（見
         `identity.materialize_owner()`）。DI 覆寫身份時照舊用注入值。"""
         return materialize_owner() if _uses_cookie_identity else identity_resolver()
+
+    def _identity_state() -> tuple[str, str | None]:
+        """IRI-04：這次請求的身分狀態（`bound`／`none`／`unknown`，見
+        `_IDENTITY_STATE_HEADER`）與 `unknown` 時的墓碑原因。DI 覆寫身份時沒有
+        憑證可言，注入的 owner 就是真的身分：`bound`。"""
+        credential = _current_credential.get()
+        if credential is None:
+            return "bound", None
+        return credential["state"], (credential["reason"]
+                                     if credential["state"] == "unknown" else None)
 
     async def _call_within_owner_scope(request: Request, call_next) -> Response:
         request_token = _current_request.set(request)
@@ -1469,6 +1516,9 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
                 response.headers[_CREDENTIAL_RESPONSE_HEADER] = credential["token"]
             if credential["bound"]:
                 response.headers["X-OC-Owner-Bound"] = "1"
+            response.headers[_IDENTITY_STATE_HEADER] = credential["state"]
+            if credential["state"] == "unknown" and credential["reason"]:
+                response.headers[_IDENTITY_REASON_HEADER] = credential["reason"]
             # 內容依 user 而異，而且可能帶著憑證（Set-Cookie／X-OC-Credential）：
             # 任何共享快取都不得存（Vercel 預設的 `public` 不適用這裡）。
             response.headers["Cache-Control"] = "private, no-store"
@@ -1932,7 +1982,10 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         data_deleted = empty_deleted = 0
         data_rows = empty_rows = 0
         for f in batch:
-            rows = sum(_db().delete_owner(f.owner_id).values())
+            rows = sum(_db().delete_owner(
+                f.owner_id,
+                reason="retention_expired" if f.has_data else "empty_owner_cleanup",
+            ).values())
             if f.has_data:
                 data_deleted += 1
                 data_rows += rows
@@ -2201,7 +2254,7 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
                 db.absorb_owner(device_owner, into=main, now=now)
             elif credential is not None and credential["bound"]:
                 # 已經是主帳號的裝置重新登入：舊憑證作廢，換一顆新的（輪替）。
-                db.delete_browser_identity(credential["token"])
+                db.delete_browser_identity(credential["token"], reason="rotated")
             token = secrets.token_urlsafe(32)
             db.add_browser_identity(BrowserIdentity(
                 token=token, owner_id=main, issued_at=now, last_seen_at=now,
@@ -2305,9 +2358,9 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
             set_resolved_role(normal)
             return {"role": normal}
         if owner == _db().get_main_account():
-            _db().delete_browser_identity(credential["token"])
+            _db().delete_browser_identity(credential["token"], reason="logged_out")
             credential.update(token=secrets.token_urlsafe(32), bound=False,
-                              issue=True, echo=True)
+                              state="none", issue=True, echo=True)
             set_resolved_owner(pending_owner_placeholder())
             set_resolved_role(normal)
             return {"role": normal}
@@ -2400,7 +2453,7 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         """
         superuser.require_role(superuser.Role.SUPERADMIN)
         _require_owner_confirmation(body.confirm_owner_id, owner_id)
-        counts = _db().delete_owner(owner_id)
+        counts = _db().delete_owner(owner_id, reason="admin_deleted")
         _record_audit("delete_owner", target_owner_id=owner_id,
                       detail={"deleted_rows": counts})
         return {"deleted": True, "counts": counts}
@@ -2439,7 +2492,7 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
                     detail=f"protected owner 不能批次刪除（{len(protected)} 個），"
                            "操作已取消")
             for oid in targets:
-                counts = _db().delete_owner(oid)
+                counts = _db().delete_owner(oid, reason="admin_deleted")
                 results[oid] = counts
                 _record_audit("batch_delete_owner", target_owner_id=oid,
                               detail={"deleted_rows": counts})
@@ -2584,12 +2637,10 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         owner_id 參數**——硬性安全邊界：這個端點如果接受任意 owner_id，
         就會變成任何人都能刪除別人資料的漏洞（PB-04 §10）。
 
-        刪除後不在這裡另外簽發新身份或清 cookie——刻意選擇的較簡單設計。
-        那顆舊 cookie 雖然還留在瀏覽器裡，但它現在指向的
-        `browser_identities` 列已經被 `delete_owner()` 清空；**下一次**
-        帶著它的請求會被 `resolve_owner_by_token()` 判定為查無此
-        token，自然走 PB-02（#294）既有的「新訪客」lazy-creation
-        路徑拿到一個全新身份，不需要另外寫一套「立即重新簽發」邏輯。
+        IRI-04：刪除後這顆憑證進墓碑（`self_deleted`），回應立刻把兩腿都
+        換成一顆全新、還沒綁定的憑證（跟登出主帳號同一套做法）——瀏覽器
+        不會帶著一顆已作廢的 token 繼續走，下一次寫入是乾淨的首訪
+        （`none`）；回應也不再說「已綁定」，前端據此重置分頁快取。
 
         CROSS-DEVICE-ACCOUNT-001：主帳號是很多台裝置共用的那一個帳號，不能
         從某一台裝置的「刪除我的資料」整個刪掉——一律 409，什麼都不刪。"""
@@ -2599,7 +2650,12 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
                 status_code=409,
                 detail="這是主帳號，不能在這裡刪除；如果只是要讓這台裝置離開"
                        "主帳號，請到「登入」按「重設為 Normal User」")
-        _db().delete_owner(owner)
+        _db().delete_owner(owner, reason="self_deleted")
+        credential = _current_credential.get()
+        if credential is not None and credential["bound"]:
+            credential.update(token=secrets.token_urlsafe(32), bound=False,
+                              state="none", reason=None, issue=True, echo=True)
+            set_resolved_owner(pending_owner_placeholder())
 
     # ---------- OG-05（#324）：唯讀使用量摘要 ----------
 
@@ -2663,6 +2719,10 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
             if best_scenario is not None else None)
         return {
             "active_scenarios": len(scenarios),
+            # IRI-04：讀取端的身分狀態（跟回應 header 同一個值），讓前端能分
+            # 「還沒有劇本」與「這個瀏覽器以前的身分已不在」；後者附墓碑原因。
+            "identity": _identity_state()[0],
+            "identity_reason": _identity_state()[1],
             "max_active_scenarios": (
                 _effective_max_active_scenarios
                 if _effective_max_active_scenarios > 0 else None),

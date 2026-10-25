@@ -44,7 +44,7 @@ _TABLES = ("scenarios", "results", "current_results", "snapshots", "events",
            "diagnostics", "owner_settings", "owner_credentials",
            "owner_verifications", "owners", "browser_identities", "role_sessions",
            "superuser_audit_log", "rate_limits", "operational_metrics", "feedback",
-           "main_account", "owner_merge_archive")
+           "main_account", "owner_merge_archive", "identity_tombstones")
 
 
 @pytest.fixture(params=["memory", "postgres"])

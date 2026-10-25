@@ -14,7 +14,8 @@ from collections import deque
 from collections.abc import Sequence
 from contextlib import contextmanager
 
-from . import (RETIRED_TABLES, SCENARIO_CHILD_TABLES, BrowserIdentity,
+from ..clock import now_utc_iso
+from . import (identity_token_hash, require_tombstone_reason, RETIRED_TABLES, SCENARIO_CHILD_TABLES, BrowserIdentity,
                ResolvedCredential,
                ChainBackoffEntry, ContractHistory,
                DataSourceSettings, DividendCacheEntry, Feedback, IvBackfillRun,
@@ -34,6 +35,11 @@ from ..metrics import retention_cutoff
 _FACT_FIELDS = ("resolved_params", "requested_strategies", "engine_version",
                 "view_schema_version", "history_replay_version",
                 "snapshot_source")
+
+
+def _now_iso() -> str:
+    """墓碑的時間戳（IRI-04）；跟 Postgres 後端同一個時鐘來源。"""
+    return now_utc_iso()
 
 
 class MemoryStorage:
@@ -63,6 +69,8 @@ class MemoryStorage:
         # `BrowserIdentity` docstring）。
         self._owners: dict[str, Owner] = {}
         self._browser_identities: dict[str, BrowserIdentity] = {}
+        # IRI-04：sha256(token) → (reason, deleted_at)
+        self._identity_tombstones: dict[str, tuple[str, str]] = {}
         self._claim_lock = threading.Lock()
         # SECURITY-FIX-02：(scope, key, window_seconds, window_start) -> count
         self._rate_limits: dict[tuple[str, str, int, int], int] = {}
@@ -560,7 +568,21 @@ class MemoryStorage:
 
     # ---------- Owner-wide 刪除原語（PB-04／#296） ----------
 
-    def delete_owner(self, owner_id: str) -> dict[str, int]:
+    def _tombstone(self, tokens: Sequence[str], reason: str, now: str) -> None:
+        require_tombstone_reason(reason)
+        for token in tokens:
+            self._identity_tombstones[identity_token_hash(token)] = (reason, now)
+
+    def _tombstone_owner_identities(self, owner_ids, reason: str, now: str) -> int:
+        """`owner_ids` 名下每一顆憑證留墓碑（再由呼叫端刪 identity 列）。
+        回傳留了幾顆。"""
+        tokens = [t for t, bi in self._browser_identities.items()
+                  if bi.owner_id in owner_ids]
+        self._tombstone(tokens, reason, now)
+        return len(tokens)
+
+    def delete_owner(self, owner_id: str, *,
+                     reason: str = "deleted") -> dict[str, int]:
         counts: dict[str, int] = {}
 
         removed = [sid for sid, sc in self._scenarios.items()
@@ -633,6 +655,8 @@ class MemoryStorage:
             del self._rate_limits[slot]
         counts["rate_limits"] = len(dead)
 
+        counts["identity_tombstones"] = self._tombstone_owner_identities(
+            {owner_id}, reason, _now_iso())
         n = 0
         for token in list(self._browser_identities):
             if self._browser_identities[token].owner_id == owner_id:
@@ -683,6 +707,9 @@ class MemoryStorage:
                                                lambda k, v: k[0])
             counts["owner_verifications"] = drop(self._owner_verifications,
                                                  lambda k, v: k[0])
+            self._tombstone_owner_identities(
+                {bi.owner_id for bi in self._browser_identities.values()} - kept,
+                "beta_reset", _now_iso())
             counts["browser_identities"] = drop(self._browser_identities,
                                                 lambda k, v: v.owner_id)
             counts["owners"] = drop(self._owners, lambda k, v: k)
@@ -736,8 +763,24 @@ class MemoryStorage:
                 raise KeyError("browser identity token already exists")
             self._browser_identities[identity.token] = identity
 
-    def delete_browser_identity(self, token: str) -> bool:
-        return self._browser_identities.pop(token, None) is not None
+    def delete_browser_identity(self, token: str, *,
+                                reason: str = "rotated") -> bool:
+        deleted = self._browser_identities.pop(token, None) is not None
+        if deleted:   # 從未綁定的 token 不留墓碑（之後仍是首訪）
+            self._tombstone([token], reason, _now_iso())
+        return deleted
+
+    def lookup_identity_tombstone(self, token: str) -> str | None:
+        hit = self._identity_tombstones.get(identity_token_hash(token))
+        return hit[0] if hit else None
+
+    def purge_identity_tombstones(self, *, before: str,
+                                  dry_run: bool = False) -> int:
+        dead = [h for h, (_, at) in self._identity_tombstones.items() if at < before]
+        if not dry_run:
+            for h in dead:
+                del self._identity_tombstones[h]
+        return len(dead)
 
     def get_main_account(self) -> str | None:
         return self._main_account
@@ -814,6 +857,7 @@ class MemoryStorage:
             counts["rate_limits"] = len(dead)
             tokens = [t for t, bi in self._browser_identities.items()
                       if bi.owner_id == source]
+            self._tombstone_owner_identities({source}, "absorbed_into_main", now)
             for token in tokens:
                 del self._browser_identities[token]
             counts["browser_identities"] = len(tokens)

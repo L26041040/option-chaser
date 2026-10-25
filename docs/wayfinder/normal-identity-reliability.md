@@ -138,9 +138,9 @@
 
 ### 3.3 身分狀態訊號、鑄新 token、墓碑（修 G-A／G-F／G-G）
 
-- **訊號**：所有解析身分的回應加 `X-OC-Owner-Identity: bound | none | unknown`；`/api/me/usage-summary` 加 `identity` 欄位（`xfail` 測試已定義）。`none`＝沒帶任何合法憑證；`unknown`＝帶了合法形狀但查無。
-- **鑄新 token**：`unknown` 時 `candidate` 一律隨機新 token，不沿用舊 token；回應 `echo`＋`issue` 讓兩腿同步換成新顆。
-- **墓碑**：`identity_tombstones(token_hash TEXT PK, reason TEXT, deleted_at TEXT)`，`reason ∈ {retention_expired, empty_owner_cleanup, self_deleted, absorbed_into_main, admin_deleted, beta_reset}`；由 `delete_owner()`／`absorb_owner()`／cleanup 寫入（同一交易）；只在 unknown 路徑查一次，結果進訊號（`X-OC-Owner-Identity-Reason`，或併入 `identity` 欄位）與指標；保留 400 天後由 `run_retention()` 清掉。token 只存 SHA-256，不存明文。
+- **訊號**（IRI-04 已落地）：所有解析身分的回應加 `X-OC-Owner-Identity: bound | none | unknown`；`unknown` 另附 `X-OC-Owner-Identity-Reason`；`/api/me/usage-summary` 加 `identity`／`identity_reason`。**三態定義（施工時修正）**：`bound`＝解析到 user；`unknown`＝帶來的 token **有墓碑**（我們自己作廢過＝這個瀏覽器以前有身分）；`none`＝沒帶，或帶的 token 沒有墓碑——正式站首訪一定帶著前端自己產生、還沒綁定的 token，它**必須**是 `none` 並原樣綁定，跨分頁共用同一顆才能靠 PK 只建一個 owner。
+- **鑄新 token**：`unknown` 時候選＝從舊 token **決定性導出**（`sha256("oc-identity-rebind:"+stale)`），不是每個請求各自隨機——兩個分頁帶同一顆舊 token 同時首寫會算出同一顆新 token，PK 仍收斂成一個 owner；首寫回應 `echo`＋`issue` 讓兩腿同步換新；舊 token 永不重綁。`DELETE /api/me` 的回應則立刻把兩腿換成一顆全新未綁定憑證（與登出主帳號同一套）。
+- **墓碑**：`identity_tombstones(token_hash TEXT PK, reason TEXT, deleted_at TEXT)`，`reason ∈ {retention_expired, empty_owner_cleanup, self_deleted, admin_deleted, beta_reset, absorbed_into_main, rotated, logged_out, deleted}`（`IDENTITY_TOMBSTONE_REASONS`，兩後端寫入前驗證）；由 `delete_owner(reason=)`／`delete_browser_identity(reason=)`／`absorb_owner()`／`reset_beta_data()` 在同一交易內寫入（`delete_owner()` 回傳的列數含 `identity_tombstones`）；只在兩份都查不到的路徑查一次；保留 400 天後由 `run_retention()` 清掉。token 只存 SHA-256，不存明文、不存 owner_id。
 - **前端行為**（#360 裁示）：建議只在 `unknown` 且 reason＝`retention_expired` 顯示一行可關閉說明；其他一律沉默。
 
 ### 3.4 身分健康可觀測（修 G-H／G-N）
@@ -264,7 +264,7 @@ NIR-01～05、NIR-10 ──▶ NIR-08 完整跑
 |---|---|---|
 | 兩腿皆遺失（清除瀏覽資料、Chrome／Firefox「關閉時清除」、iOS「封鎖所有 Cookie」、換瀏覽器、無痕結束、裝置重灌；#365：沒有任何**自動**瀏覽器行為會同時殺兩腿） | 下次寫入＝乾淨的新匿名身分；舊 owner 依 180＋7 天清理；若舊憑證**仍被帶來**（只清了一腿不在此列）才會有 unknown 訊號 | 依 #360：預設沉默 |
 | 瀏覽器完全封鎖 cookie 與 site data | 每次來訪都是新人；每次寫入一個 owner；空 owner 1 天清 | 沉默；`identity_cookie_not_returned` 指標供 Owner 觀察 |
-| 資料庫回復到更早時點 | 回復點後簽的 token 全部 unknown（無墓碑） | 沉默（reason＝none）；Owner 從指標突增得知 |
+| 資料庫回復到更早時點 | 回復點後簽的 token **沒有墓碑**→讀成 `none`、首寫原樣綁定（跟首訪一樣，不猜配對） | 沉默；Owner 只能從 `new_owner_count` 突增得知（已明寫為能力邊界，`test_tokens_deleted_outside_the_storage_primitives_read_as_none`） |
 | 使用者自己 `DELETE /api/me` | 墓碑 `self_deleted`；下次寫入新身分 | 沉默（是本人意圖） |
 | 匿名裝置登入 SU／SA 後重設為 Normal | 劇本已併入主帳號（by design，PR #358）；裝置回到全新匿名 | 既有登入頁說明 |
 
@@ -275,8 +275,8 @@ NIR-01～05、NIR-10 ──▶ NIR-08 完整跑
 ## 8. 詞彙（提案，待 #363／#364 關閉後寫入 `CONTEXT.md`）
 
 - **Credential Leg（憑證腿）**：同一顆 Browser Identity token 的其中一份存放處。**Cookie leg**＝伺服器簽的 HttpOnly `__Host-oc_owner`；**Local leg**＝IndexedDB／localStorage 副本（請求以 `X-OC-Credential` 帶上）。任何一腿可解析即為同一 user。
-- **Identity State（身分狀態）**：一次請求的身分判定結果，三態：`bound`（解析到 owner）、`none`（未帶任何合法憑證＝首訪或純讀）、`unknown`（帶了合法形狀的憑證但伺服器查無）。
-- **Identity Tombstone（身分墓碑）**：憑證被作廢時留下的「token hash → 原因 → 時間」紀錄，只用來把 `unknown` 分類（`retention_expired`／`empty_owner_cleanup`／`self_deleted`／`absorbed_into_main`／`admin_deleted`／`beta_reset`）與計數；保留 400 天；不含明文 token、不含 owner_id。
+- **Identity State（身分狀態）**：一次請求的身分判定結果，三態：`bound`（解析到 owner）、`none`（未帶合法憑證，或帶的是沒有墓碑的 token＝首訪／前端剛產生還沒綁定）、`unknown`（帶來的 token 有墓碑＝這個瀏覽器以前有過身分、已被作廢）。
+- **Identity Tombstone（身分墓碑）**：憑證被我們自己作廢時留下的「token hash → 原因 → 時間」紀錄，是 `unknown` 的唯一判據，也是指標的維度（`retention_expired`／`empty_owner_cleanup`／`self_deleted`／`admin_deleted`／`beta_reset`／`absorbed_into_main`／`rotated`／`logged_out`／`deleted`）；保留 400 天；不含明文 token、不含 owner_id。
 - **Cookie Renewal（cookie 續簽）**：對已解析的請求，在 cookie 簽發滿 N 天後以**同一顆** token 重新 `Set-Cookie`。取代 `CONTEXT.md` 現行「每次來訪續命」一句。
 - **Canonical Host（正式網址）**：唯一承載 SPA 的 origin；其他 Production 網址只做 308 重導（`/api/*` 除外）。
 

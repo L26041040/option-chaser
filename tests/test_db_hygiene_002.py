@@ -60,7 +60,7 @@ def db(request):
             "TRUNCATE scenarios, results, current_results, snapshots, events, "
             "diagnostics, owner_settings, owner_credentials, owner_verifications, "
             "owners, browser_identities, role_sessions, superuser_audit_log, "
-            "rate_limits, operational_metrics RESTART IDENTITY")
+            "rate_limits, operational_metrics, identity_tombstones RESTART IDENTITY")
     yield st
 
 
@@ -440,7 +440,8 @@ def test_daily_cleanup_cron_applies_the_retention_policy(db):
         headers={"Authorization": "Bearer fake-cron-secret"}).json()
 
     assert body["retention_rows_purged"] == {
-        "snapshots": 1, "role_sessions": 2, "audit_log": 1, "events": 1}
+        "snapshots": 1, "role_sessions": 2, "audit_log": 1, "events": 1,
+        "identity_tombstones": 0}
     assert old not in db.snapshot_timestamps("mine", owner=TARGET)
     assert db.get_scenario("mine", owner=TARGET) is not None     # 劇本本身不受影響
 

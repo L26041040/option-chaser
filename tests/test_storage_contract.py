@@ -89,7 +89,7 @@ def storage(request):
                      "iv_observations, iv_backfill_runs, contract_iv_history, "
                      "diagnostics, operational_metrics, "
                      "owners, browser_identities, superuser_audit_log, "
-                     "role_sessions, rate_limits, feedback "
+                     "role_sessions, rate_limits, feedback, identity_tombstones "
                      "RESTART IDENTITY")
     yield st
 
@@ -3753,3 +3753,72 @@ def test_no_table_with_an_owner_id_column_is_silently_left_out_of_the_lifecycle(
         f"這些表有 owner_id 欄位但不在 owner lifecycle 清單也不在例外清單："
         f"{sorted(unaccounted)}。請加進 `_OWNER_SCOPED_TABLES`，或在本測試的"
         "`EXPECTED_EXCEPTIONS` 明文說明為什麼刻意不跟著 owner 生命週期走。")
+
+
+
+# ---------- IRI-04：身分墓碑 ----------
+
+def test_identity_tombstones_follow_every_deletion_path_and_purge(storage):
+    now = "2026-10-26T00:00:00+00:00"
+
+    def seed(oid, tok):
+        storage.create_owner_with_token(
+            Owner(owner_id=oid, created_at=now),
+            BrowserIdentity(token=tok, owner_id=oid, issued_at=now, last_seen_at=now))
+
+    seed("tomb-a", "tomb-a-token-" + "a" * 30)
+    seed("tomb-b", "tomb-b-token-" + "b" * 30)
+    seed("tomb-c", "tomb-c-token-" + "c" * 30)
+    seed("tomb-d", "tomb-d-token-" + "d" * 30)
+    extra = "tomb-b-second-" + "b" * 29
+    storage.add_browser_identity(BrowserIdentity(token=extra, owner_id="tomb-b",
+                                                 issued_at=now, last_seen_at=now))
+    assert storage.lookup_identity_tombstone("tomb-a-token-" + "a" * 30) is None
+
+    storage.delete_owner("tomb-a", reason="self_deleted")
+    assert storage.lookup_identity_tombstone("tomb-a-token-" + "a" * 30) == "self_deleted"
+    assert storage.resolve_owner_by_token("tomb-a-token-" + "a" * 30) is None
+
+    assert storage.delete_browser_identity(extra, reason="logged_out") is True
+    assert storage.lookup_identity_tombstone(extra) == "logged_out"
+    assert storage.resolve_owner_by_token("tomb-b-token-" + "b" * 30) == "tomb-b"
+
+    storage.absorb_owner("tomb-c", into="tomb-d", now=now)
+    assert storage.lookup_identity_tombstone("tomb-c-token-" + "c" * 30) == "absorbed_into_main"
+    assert storage.lookup_identity_tombstone("tomb-d-token-" + "d" * 30) is None
+
+    storage.reset_beta_data()
+    assert storage.lookup_identity_tombstone("tomb-b-token-" + "b" * 30) == "beta_reset"
+    assert storage.lookup_identity_tombstone("tomb-d-token-" + "d" * 30) == "beta_reset"
+
+    # 重複作廢同一顆：以最新原因為準（墓碑是 upsert）。
+    seed("tomb-e", "tomb-a-token-" + "a" * 30)
+    storage.delete_owner("tomb-e", reason="admin_deleted")
+    assert storage.lookup_identity_tombstone("tomb-a-token-" + "a" * 30) == "admin_deleted"
+
+    assert storage.purge_identity_tombstones(before="2000-01-01T00:00:00+00:00") == 0
+    far = "2999-01-01T00:00:00+00:00"
+    n = storage.purge_identity_tombstones(before=far, dry_run=True)
+    assert n == 5
+    assert storage.lookup_identity_tombstone(extra) == "logged_out"      # dry run 不刪
+    assert storage.purge_identity_tombstones(before=far) == 5
+    assert storage.lookup_identity_tombstone(extra) is None
+
+
+def test_identity_tombstones_store_only_hashes(storage):
+    """墓碑表裡永遠不出現明文 token（也不出現 owner_id）。"""
+    import psycopg
+    from api_app.storage import identity_token_hash
+    from api_app.storage.postgres import PostgresStorage
+    if not isinstance(storage, PostgresStorage):
+        pytest.skip("只有 Postgres 有真的表可以檢查")
+    now = "2026-10-26T00:00:00+00:00"
+    tok = "plaintext-must-not-appear-" + "p" * 20
+    storage.create_owner_with_token(
+        Owner(owner_id="hash-only-owner", created_at=now),
+        BrowserIdentity(token=tok, owner_id="hash-only-owner", issued_at=now, last_seen_at=now))
+    storage.delete_owner("hash-only-owner", reason="self_deleted")
+    with psycopg.connect(storage._dsn, autocommit=True) as conn:
+        rows = conn.execute("SELECT token_hash, reason, deleted_at FROM identity_tombstones").fetchall()
+    assert (identity_token_hash(tok), "self_deleted") in {(r[0], r[1]) for r in rows}
+    assert all(len(r[0]) == 64 and tok not in r[0] and "hash-only-owner" not in r[0] for r in rows)

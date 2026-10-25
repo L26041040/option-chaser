@@ -9,11 +9,47 @@
 """
 from __future__ import annotations
 
+import hashlib
 from contextlib import AbstractContextManager
 from dataclasses import dataclass, replace
 from typing import Protocol, Sequence
 
 from ..diagnostics import DiagnosticEvent
+
+
+# ---------- IRI-04：身分墓碑（identity tombstones） ----------
+#
+# 憑證被我們自己作廢時（retention 清理、使用者自刪、SA 刪除、Beta Reset、
+# 登入時併入主帳號、登入輪替、登出）留下 `sha256(token) → 原因`。它只服務
+# 一件事：之後再收到一顆形狀合法、伺服器卻不認得的 token 時，分得出
+# 「這個瀏覽器以前有過身分、被作廢了」（`unknown`，要鑄一顆全新的憑證，
+# 不沿用舊顆）與「前端第一次來自己產生、還沒綁定的 token」（`none`，照舊
+# 原樣綁定——跨分頁共用同一顆才能靠 PK 保證只建一個 owner）。不存明文
+# token、不存 owner_id；只存 hash、原因與時間。
+IDENTITY_TOMBSTONE_REASONS = (
+    "retention_expired",    # 匿名 owner 180＋7 天沒有任何有效憑證回訪
+    "empty_owner_cleanup",  # 沒有劇本／設定／credential 的 owner 1 天沒回訪
+    "self_deleted",         # 使用者自己按「刪除我的資料」
+    "admin_deleted",        # Super Admin 單筆／批次刪除
+    "beta_reset",           # Super Admin Beta Reset
+    "absorbed_into_main",   # 匿名裝置登入主帳號，資料併入、舊憑證作廢
+    "rotated",              # 主帳號裝置重新登入，舊憑證輪替
+    "logged_out",           # 主帳號裝置重設為 Normal（登出）
+    "deleted",              # 其他（直接呼叫 storage 原語、腳本）
+)
+
+
+def identity_token_hash(token: str) -> str:
+    """墓碑的 key：token 的 SHA-256 hex。墓碑表裡永遠不出現明文 token。"""
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def require_tombstone_reason(reason: str) -> str:
+    """兩個後端寫墓碑前都經過這裡：原因必須是 `IDENTITY_TOMBSTONE_REASONS`
+    之一——它是指標的維度與日後前端提示的依據，不接受自由字串。"""
+    if reason not in IDENTITY_TOMBSTONE_REASONS:
+        raise ValueError(f"不是已定義的身分墓碑原因：{reason!r}")
+    return reason
 
 
 @dataclass(frozen=True)
@@ -1204,7 +1240,8 @@ class Storage(Protocol):
     # ---------- Owner-wide 刪除原語（PB-04／#296，Anonymous Public
     # Beta） ----------
 
-    def delete_owner(self, owner_id: str) -> dict[str, int]:
+    def delete_owner(self, owner_id: str, *,
+                     reason: str = "deleted") -> dict[str, int]:
         """把 `owner_id` 名下全部資料徹底清除——沿用
         `migrate_owner()` 那份 9 張表清單（本站目前**唯一**「owner-
         scoped 表清單」，兩個方法共用，見兩後端實作裡的
@@ -1298,8 +1335,20 @@ class Storage(Protocol):
         主帳號）。一個 owner 可以有任意多顆；token 是 PK，撞到時照資料庫的
         PK 違反行為處理（呼叫端用密碼學安全隨機值產生）。"""
 
-    def delete_browser_identity(self, token: str) -> bool:
-        """作廢一顆憑證（重新登入的輪替、登出主帳號）。回傳是否真的刪到。"""
+    def delete_browser_identity(self, token: str, *,
+                                reason: str = "rotated") -> bool:
+        """作廢一顆憑證（重新登入的輪替、登出主帳號）。回傳是否真的刪到。
+        同一交易內先留墓碑（`reason`，見 `identity_token_hash()`）。"""
+
+    def lookup_identity_tombstone(self, token: str) -> str | None:
+        """IRI-04：這顆（伺服器已不認得的）token 以前是不是被我們自己作廢
+        的——是就回作廢原因（`IDENTITY_TOMBSTONE_REASONS` 之一），不是回
+        `None`。只在「兩份憑證都查不到」的路徑上查一次。"""
+
+    def purge_identity_tombstones(self, *, before: str,
+                                  dry_run: bool = False) -> int:
+        """刪掉 `deleted_at < before` 的墓碑（保留窗＝cookie 最長壽命，瀏覽
+        器已不可能再送出那顆 token）。"""
 
     def get_main_account(self) -> str | None:
         """主帳號的完整 owner_id（持久對應，`main_account` 單列表）；還沒

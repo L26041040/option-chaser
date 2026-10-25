@@ -41,7 +41,8 @@ def db():
         conn.execute(
             "TRUNCATE scenarios, results, current_results, snapshots, events, "
             "diagnostics, owner_settings, owner_credentials, "
-            "owner_verifications, owners, browser_identities RESTART IDENTITY")
+            "owner_verifications, owners, browser_identities, identity_tombstones "
+            "RESTART IDENTITY")
     yield st
 
 
