@@ -437,6 +437,17 @@ def test_cleanup_cron_excludes_the_main_account_even_if_unprotected_and_normal()
     assert storage.get_owner(main) is not None and storage.resolve_owner_by_token(tok) == main
 
 
+def test_cleanup_cron_looks_up_the_main_account_once_not_once_per_owner():
+    app, storage = _app(anonymous_retention_days=1, anonymous_grace_period_days=1)
+    for _ in range(3):
+        _browser(app).post("/api/scenarios", json=NEW).raise_for_status()
+    calls = []
+    real = storage.get_main_account
+    storage.get_main_account = lambda: (calls.append(1), real())[1]
+    _browser(app).get("/api/cron/cleanup-abandoned-owners", headers=CRON).raise_for_status()
+    assert len(calls) == 1
+
+
 def test_lock_table_orders_are_subsequences_of_one_canonical_order():
     from api_app.storage import postgres as pg_module
     from api_app.storage.postgres import PostgresStorage as PG

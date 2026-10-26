@@ -2052,9 +2052,13 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         # UNIFIED-IDENTITY-001：有權限的 user 跟 protected 一樣不清——權限
         # 永久保留，除非使用者主動重設。
         # IRI-06：主帳號**明確**排除——不再只靠它剛好是 protected／有權限。
+        # 主帳號 id 一次查好再比對：逐個 owner 呼叫 `_is_main_account()` 在
+        # Postgres 上是每個匿名 owner 一次連線＋SELECT，owner 一多就吃掉
+        # 60 秒預算。
+        main_account_id = _db().get_main_account()
         facts = [f for f in _db().owner_lifecycle_facts()
                  if not f.protected and f.role == "normal"
-                 and not _is_main_account(f.owner_id)]
+                 and f.owner_id != main_account_id]
         abandoned = 0
         eligible = []
         for f in facts:
