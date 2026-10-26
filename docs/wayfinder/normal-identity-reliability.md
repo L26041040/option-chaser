@@ -134,7 +134,11 @@
 
 ### 3.2 單一正式網址（修 G-E）
 
-`vercel.json` `redirects`：`has: [{type: "host", value: "<非正式網址>"}]` 且 `source` 排除 `/api/(.*)` → 308 到正式網址同路徑。`/api/health` 三個網址皆保留可達（部署驗證在用）。零程式碼、可在 Vercel 設定頁驗證。（#362 選正式網址）
+`vercel.json` `redirects`：`has: [{type: "host", value: "<非正式網址>"}]` 且 `source` 排除 `/api/(.*)` → 到正式網址同路徑。`/api/health` 三個網址皆保留可達（部署驗證在用）。零程式碼、可在 Vercel 設定頁驗證。（#362 選正式網址）
+
+**實際落地（RELEASE-001，與上面原案的差異）**：正式網址 `option-chaser.vercel.app`；只綁兩個已確認的別名網址（`option-chaser-ofriedoriceo-5352s-projects.vercel.app`、`option-chaser-git-master-ofriedoriceo-5352s-projects.vercel.app`，host 完全比對，Preview／deployment 專屬網址不受影響）；規則另加 `missing: [{type: "cookie", key: "__Host-oc_owner"}]`——**舊網址上已經有身分 cookie 的瀏覽器不重導**，因為它的劇本掛在那個 origin 的身分上，轉去正式網址就是一個全新的人、舊劇本變孤兒；只有「在舊網址上還沒有身分」的訪客才被導走（他們沒有東西可以失去）。狀態碼用 **307**（可回滾；308 會被瀏覽器永久快取）。守護測試：`tests/test_canonical_host_redirect.py`。
+
+**未解的殘餘（刻意保留）**：(1) 舊網址上已有身分的人仍留在舊網址——要把他們也搬過去需要「一次性交接碼」（舊 origin 簽發、正式網址兌換、`absorb_owner` 併入），那是新的憑證傳遞面，未在本次範圍，另票處理；(2) 只清了 cookie、但 IndexedDB／localStorage 還留著憑證的舊網址訪客（極少數），重導後那份憑證留在舊 origin，劇本在 DB 裡但這個瀏覽器不再指向它。
 
 ### 3.3 身分狀態訊號、鑄新 token、墓碑（修 G-A／G-F／G-G）
 

@@ -20,6 +20,42 @@
       "schedule": "0 13 * * *"
     }
   ],
+  "redirects": [
+    {
+      "source": "/((?!api/).*)",
+      "has": [
+        {
+          "type": "host",
+          "value": "option-chaser-ofriedoriceo-5352s-projects.vercel.app"
+        }
+      ],
+      "missing": [
+        {
+          "type": "cookie",
+          "key": "__Host-oc_owner"
+        }
+      ],
+      "destination": "https://option-chaser.vercel.app/$1",
+      "statusCode": 307
+    },
+    {
+      "source": "/((?!api/).*)",
+      "has": [
+        {
+          "type": "host",
+          "value": "option-chaser-git-master-ofriedoriceo-5352s-projects.vercel.app"
+        }
+      ],
+      "missing": [
+        {
+          "type": "cookie",
+          "key": "__Host-oc_owner"
+        }
+      ],
+      "destination": "https://option-chaser.vercel.app/$1",
+      "statusCode": 307
+    }
+  ],
   "rewrites": [
     {
       "source": "/api/(.*)",
