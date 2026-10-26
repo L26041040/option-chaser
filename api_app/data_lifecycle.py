@@ -49,6 +49,9 @@ ROLE_SESSION_MAX_AGE_SECONDS = superuser.LEGACY_ROLE_SESSION_MAX_AGE_SECONDS
 # Super User audit log 與 scenario events 都保留 180 天。
 AUDIT_LOG_RETENTION_DAYS = 180
 EVENT_RETENTION_DAYS = 180
+# IRI-04：身分墓碑保留 400 天＝owner cookie 的 Max-Age 上限（瀏覽器之後不可能
+# 再送出那顆 token，墓碑也就沒有人會查到）。
+IDENTITY_TOMBSTONE_RETENTION_DAYS = 400
 
 
 def _iso(dt: datetime) -> str:
@@ -74,6 +77,9 @@ def run_retention(db: Storage, *, now: datetime, dry_run: bool = False) -> dict:
             dry_run=dry_run),
         "events": db.purge_events(
             before=_iso(now - timedelta(days=EVENT_RETENTION_DAYS)),
+            dry_run=dry_run),
+        "identity_tombstones": db.purge_identity_tombstones(
+            before=_iso(now - timedelta(days=IDENTITY_TOMBSTONE_RETENTION_DAYS)),
             dry_run=dry_run),
     }
 

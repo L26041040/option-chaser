@@ -27,8 +27,9 @@ system-wide（不分 owner）＋day-bucket 聚合的**運維計數**（服務
 互相污染，因此獨立成這個模組與獨立的資料表。
 
 **只存允許的維度**：`source`（哪個上游，例如 `cboe`／`yfinance`／
-`treasury`／`dividend`）與 `symbol`（哪個標的，只在真的按標的分的
-指標上有意義）。**不存 `scenario_id`、`owner_id`、任何報價／合約／
+`treasury`／`dividend`；IRI-05 起身分健康指標借用這個欄位放**墓碑原因**
+——`IDENTITY_TOMBSTONE_REASONS` 的封閉清單，仍不是任何個別使用者的
+識別）與 `symbol`（哪個標的，只在真的按標的分的指標上有意義）。**不存 `scenario_id`、`owner_id`、任何報價／合約／
 chain payload**——見 `tests/test_scale08_observability.py` 的結構性
 守門。
 """
@@ -64,6 +65,14 @@ METRIC_CATALOGUE = (
     "new_owner_tier_block_count",
     "global_fuse_block_count",
     "login_rate_limit_block_count",
+    # IRI-05（IDENTITY-RELIABILITY-IMPROVEMENT-001）：身分健康——「身分分裂
+    # 還在不在發生」第一次有數字可答。維度只用 `source` 放墓碑原因
+    # （`IDENTITY_TOMBSTONE_REASONS`），絕不放 owner_id／token。
+    "identity_heal_cookie_from_local",   # cookie 不在／不認得，本機那份補回
+    "identity_heal_local_from_cookie",   # 本機那份不在／不一樣，cookie 補回
+    "identity_unknown_token",            # 帶著作廢過的 token 來（source＝原因）
+    "identity_unknown_write_refused",    # 用已作廢憑證嘗試寫入，被 409 拒絕（換發新憑證）
+    "identity_renew_cookie",             # 同顆 cookie 門檻式續簽
 )
 
 # `table_size` 是 query-time gauge，不經過 `record()`／`operational_

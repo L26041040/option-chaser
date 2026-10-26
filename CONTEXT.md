@@ -209,7 +209,7 @@ spec OPTION-PUBLIC-BETA-SPEC-005）
 **Browser Identity（瀏覽器身份）** — 那顆識別匿名擁有者的 cookie
 本身：**隨機無意義 id＋伺服器端查表**（不是帶簽章的 token——這樣
 才能被伺服器單方立即作廢）。`HttpOnly`／`Secure`／`SameSite`（技術
-條件允許時採 `__Host-` 前綴）；長效期，每次來訪續命。清掉 cookie、
+條件允許時採 `__Host-` 前綴）；長效期（400 天，瀏覽器上限）；簽一次、固定到期（IDENTITY-FIX-002），已解析的請求在這顆 cookie 簽發滿 30 天（`OWNER_COOKIE_RENEW_AFTER_DAYS`，可設定）後以**同一顆** token 續簽（IRI-03／#363）——佔位請求永不簽、可解析的 cookie 永不被改成別顆。清掉 cookie、
 換瀏覽器、或用無痕結束＝這個匿名擁有者的資料永久找不回來（Owner
 Decision，Beta 階段接受，不做找回碼／email／帳號系統）——但 owner
 identity 的 schema 設計本身不得阻礙未來加上這類機制。**建立時機是

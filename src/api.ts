@@ -9,7 +9,7 @@
  * 本層與整個前端都不做金融計算：每個顯示數字都已由引擎算好。
  */
 import {
-  credential, CREDENTIAL_HEADER, loadedCredential, markOwnerBound,
+  credential, CREDENTIAL_HEADER, loadedCredential, noteOwnerBound,
   OWNER_BOUND_HEADER, storeCredential, withOwnerBindingLock,
 } from "./credentialStore";
 import type { Role } from "./superuser";
@@ -846,18 +846,40 @@ async function send(url: string, init: RequestInit): Promise<Response> {
     throw new ApiError(
       `連不到伺服器：${e instanceof Error ? e.message : String(e)}`);
   }
-  // `?.`：既有測試常用省略 headers 的假 Response。
+  // `?.`：既有測試常用省略 headers 的假 Response——那種回應不帶任何身分
+  // 訊號，綁定狀態維持原樣；真的 Response 一定有 headers。
   const echoed = resp.headers?.get(CREDENTIAL_HEADER);
-  if (echoed) await storeCredential(echoed);
-  if (resp.headers?.get(OWNER_BOUND_HEADER) === "1") markOwnerBound();
+  // TOKEN-REPLAY-FIX-001：`unknown` 回應交回的是一顆**未綁定**的換發憑證。這個
+  // 請求在路上的時候，另一個分頁可能已經換發並綁定了別顆（分頁快取被 storage
+  // 事件重置、或本機副本已不是送出時那顆）——遲到的未綁定憑證不得把它蓋掉，
+  // 否則剛綁好的 owner 兩腿都被換走、變成孤兒。已綁定（bound）的 echo 是伺服器
+  // 解析到的身分，永遠可信。
+  const stillMine = loadedCredential() === token;
+  if (echoed && (resp.headers?.get("X-OC-Owner-Identity") !== "unknown" || stillMine)) {
+    await storeCredential(echoed);
+  }
+  if (resp.headers) noteOwnerBound(resp.headers.get(OWNER_BOUND_HEADER) === "1");
   return resp;
+}
+
+/** 伺服器說「這個瀏覽器先前的身分已失效」（TOKEN-REPLAY-FIX-001）：帶著已作廢的
+ *  憑證建立 user 會被 409 拒絕，回應同時交回一顆全新、還沒綁定的憑證
+ *  （`send()` 已存好、分頁快取已重置）。只重送一次，而且重新進 Web Locks
+ *  排隊——多個分頁同時拿著同一顆作廢憑證時，後到的重送會看見先到那顆已
+ *  綁定的 cookie，不會各建一個 owner。 */
+const IDENTITY_STATE_HEADER = "X-OC-Owner-Identity";
+function isRevokedCredentialRefusal(resp: Response): boolean {
+  return resp.status === 409 && resp.headers?.get(IDENTITY_STATE_HEADER) === "unknown";
 }
 
 async function request<T>(url: string, apiInit?: ApiInit): Promise<T> {
   const { mayCreateUser = false, ...init } = apiInit ?? {};
-  const resp = mayCreateUser
+  let resp = mayCreateUser
     ? await withOwnerBindingLock(() => send(url, init))
     : await send(url, init);
+  if (mayCreateUser && isRevokedCredentialRefusal(resp)) {
+    resp = await withOwnerBindingLock(() => send(url, init));
+  }
   if (!resp.ok) {
     // 每個回應都帶（DG-02／#145，含錯誤回應）——連結不到某次特定失敗
     // 的細節時，這仍是使用者手上唯一能拿去對 Vercel runtime logs 的

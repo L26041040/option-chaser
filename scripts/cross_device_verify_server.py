@@ -43,7 +43,8 @@ def seed(dsn: str) -> None:
     tables = ("scenarios", "results", "current_results", "snapshots", "events",
               "diagnostics", "owner_settings", "owner_credentials",
               "owner_verifications", "owners", "browser_identities",
-              "rate_limits", "feedback", "main_account", "owner_merge_archive")
+              "rate_limits", "feedback", "main_account", "owner_merge_archive",
+              "identity_tombstones")
     with psycopg.connect(dsn, autocommit=True) as conn:
         conn.execute("TRUNCATE " + ", ".join(tables) + " RESTART IDENTITY")
     main = main_account.SEED_OWNER_PREFIX + secrets.token_urlsafe(26)

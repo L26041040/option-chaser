@@ -402,7 +402,7 @@ def test_exit_6_db_growth_rate_extrapolates_to_a_concrete_neon_free_owner_count(
     with psycopg.connect(TEST_DB_URL, autocommit=True) as conn:  # type: ignore[arg-type]
         conn.execute(
             "TRUNCATE scenarios, results, current_results, snapshots, events, "
-            "owners, browser_identities RESTART IDENTITY")
+            "owners, browser_identities, identity_tombstones RESTART IDENTITY")
 
     pg._schema_ready.discard(TEST_DB_URL)  # 這個程序只建一次 schema 的快取
     storage = PostgresStorage(TEST_DB_URL)  # type: ignore[arg-type]

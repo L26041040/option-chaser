@@ -49,7 +49,8 @@ def db(request):
             "TRUNCATE scenarios, results, current_results, snapshots, events, "
             "diagnostics, owner_settings, owner_credentials, owner_verifications, "
             "owners, browser_identities, role_sessions, superuser_audit_log, "
-            "rate_limits, operational_metrics, rate_cache, feedback RESTART IDENTITY")
+            "rate_limits, operational_metrics, rate_cache, feedback, "
+            "identity_tombstones RESTART IDENTITY")
     yield st
 
 

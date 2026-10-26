@@ -11,3 +11,6 @@ dist/
 test-results/
 playwright-report/
 .vercel/
+
+# Claude Code subagent worktrees (harness-managed, never commit)
+.claude/worktrees/

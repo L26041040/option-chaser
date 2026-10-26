@@ -50,7 +50,7 @@ def _tables() -> tuple[str, ...]:
             "diagnostics", "owner_settings", "owner_credentials",
             "owner_verifications", "owners", "browser_identities",
             "role_sessions", "superuser_audit_log", "rate_limits",
-            "operational_metrics", "feedback")
+            "operational_metrics", "feedback", "identity_tombstones")
 
 
 @pytest.fixture

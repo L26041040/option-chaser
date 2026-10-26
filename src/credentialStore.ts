@@ -28,6 +28,32 @@
  * 依序進行後，先到的綁定、cookie 進了共用的 cookie jar，後到的帶著那顆
  * cookie，伺服器以 cookie 為準，並把正確的 token 交回給它存。請求有逾時
  * （`REQUEST_TIMEOUT_MS`），鎖不會被卡住的請求永久佔住。
+ *
+ * **IndexedDB 永遠不能卡住整站**（IRI-01／NIR-04，研究 #365）：已知
+ * Safari 14.1.1／iOS 14.6 的 `indexedDB.open()` 會永遠 pending、不觸發任何
+ * 事件；而 `send()` 在自己的請求逾時之前就先等本機憑證。沒有逾時的話，
+ * 一個卡住的 open 會讓這個分頁**所有** API 請求永遠等待——即使 cookie
+ * 那一腿完好。所以每一次 IndexedDB 操作（讀取、寫入）都跟 `IDB_TIMEOUT_MS`
+ * 賽跑：逾時就當它不可用，退回 localStorage（再不行就只剩 cookie），下一次
+ * 寫入照樣再試 IndexedDB——卡住的 promise 不會被永久快取成這個分頁的答案。
+ *
+ * **分頁快取會失效，不會永遠相信自己**（IRI-02／NIR-10，研究 #366）：每個
+ * 分頁只在第一次讀一次本機儲存，之後用記憶體裡的 `cached`／`bound`。另一個
+ * 分頁登入或登出主帳號、或刪除自己的資料時，憑證換了一顆，這個分頁的
+ * 記憶體副本就過期了——正常情況下靠「伺服器以 cookie 為準、回應 echo 正確
+ * 的值」收斂，但「cookie 剛好不在＋另一分頁剛換過憑證」或「登出後兩分頁同時
+ * 首寫、過期的 `bound` 跳過排隊」這類雙重故障會各綁一個 owner。兩個便宜的
+ * 修法，都只是「讓下一次請求重讀本機儲存」、不新增任何狀態來源：
+ *
+ * - 回應**沒有** `X-OC-Owner-Bound: 1` 而這個分頁以為自己已綁定 → 重置快取
+ *   （`noteOwnerBound(false)`）；下一次 `send()` 重讀 IndexedDB，會建立 user 的
+ *   寫入重新排隊。
+ * - 其他分頁改了 localStorage 鏡像（`storage` 事件）→ 同樣只重置快取，**不**
+ *   拿 `event.newValue` 當憑證（PostHog PR #4659 的做法）：下一次讀的是本機
+ *   儲存的實際內容。
+ *
+ * 不用 BroadcastChannel：它解的是「憑證會自己定期輪替」的問題（Supabase／
+ * Firebase 每小時換 token），本產品沒有；多一個狀態來源就多一組競態。
  */
 export const CREDENTIAL_HEADER = "X-OC-Credential";
 export const OWNER_BOUND_HEADER = "X-OC-Owner-Bound";
@@ -36,6 +62,21 @@ const STORAGE_KEY = "oc_owner_bootstrap";
 const DB_NAME = "oc-owner-bootstrap";
 const STORE = "kv";
 const BINDING_LOCK = "oc-owner-binding";
+/** 任何一次 IndexedDB 操作最多等這麼久；超過就視為不可用、走退路（見檔頭）。
+ *  比 `src/api.ts` 的請求逾時短很多：這裡等的是本機磁碟，不是網路。 */
+export const IDB_TIMEOUT_MS = 1500;
+
+/** `promise` 在 `ms` 內沒有定案就 reject。計時器在定案後清掉，不留懸掛的
+ *  timer（測試用 fake timers 時也乾淨）。 */
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(
+      () => reject(new Error(`indexedDB operation timed out after ${ms}ms`)), ms);
+    promise.then(
+      (v) => { clearTimeout(timer); resolve(v); },
+      (e) => { clearTimeout(timer); reject(e); });
+  });
+}
 
 function randomToken(): string {
   const bytes = new Uint8Array(32);
@@ -56,21 +97,28 @@ function openDb(): Promise<IDBDatabase> {
 }
 
 /** 在單一 readwrite transaction 裡跑 `body`，transaction 真的 commit
- * 之後才 resolve（`oncomplete`）。 */
-async function inTransaction<T>(body: (store: IDBObjectStore, done: (v: T) => void) => void): Promise<T> {
-  const db = await openDb();
-  try {
-    return await new Promise<T>((resolve, reject) => {
-      const tx = db.transaction(STORE, "readwrite");
-      let value: T;
-      body(tx.objectStore(STORE), (v) => { value = v; });
-      tx.oncomplete = () => resolve(value);
-      tx.onerror = () => reject(tx.error);
-      tx.onabort = () => reject(tx.error ?? new Error("transaction aborted"));
-    });
-  } finally {
-    db.close();
-  }
+ * 之後才 resolve（`oncomplete`）。開啟與交易合起來受 `IDB_TIMEOUT_MS`
+ * 約束：逾時 reject，呼叫端走退路；若 IndexedDB 之後才醒來，連線照樣
+ * 關掉、不留懸掛。 */
+function inTransaction<T>(body: (store: IDBObjectStore, done: (v: T) => void) => void): Promise<T> {
+  const run = (async () => {
+    const db = await openDb();
+    try {
+      return await new Promise<T>((resolve, reject) => {
+        const tx = db.transaction(STORE, "readwrite");
+        let value: T;
+        body(tx.objectStore(STORE), (v) => { value = v; });
+        tx.oncomplete = () => resolve(value);
+        tx.onerror = () => reject(tx.error);
+        tx.onabort = () => reject(tx.error ?? new Error("transaction aborted"));
+      });
+    } finally {
+      db.close();
+    }
+  })();
+  // 逾時後 `run` 若仍 reject，沒有人在聽——避免 unhandled rejection。
+  run.catch(() => {});
+  return withTimeout(run, IDB_TIMEOUT_MS);
 }
 
 const TOKEN_SHAPE = /^[A-Za-z0-9_-]{22,128}$/;
@@ -132,19 +180,40 @@ function localStorageGetOrCreate(): string | null {
 
 // 這個分頁的狀態：`bound`＝伺服器說這個瀏覽器已經有 user（之後會建立 user
 // 的請求不必再排隊）；`loading` 讓同一個分頁的並發呼叫共用同一次讀取，之後
-// 直接用記憶體裡的值——每個分頁最多讀一次 IndexedDB。
+// 直接用記憶體裡的值——每個分頁最多讀一次 IndexedDB，直到快取被重置
+// （`invalidateTabCache()`，見檔頭）。
 let bound = false;
 let loading: Promise<string | null> | null = null;
 // 讀過之後的值（`null`＝本機儲存都不能用）；`undefined`＝這個分頁還沒讀過。
 // 讓 `send()` 在第一次之後同步取用，不必每個請求都多等一輪。
 let cached: string | null | undefined;
+// `storage` 事件監聯只掛一次（第一次 `credential()` 時）；測試的 reset 不拆它。
+let crossTabSyncInstalled = false;
+
+/** 忘掉這個分頁記憶體裡的憑證與綁定狀態：下一次 `send()` 重讀本機儲存，
+ *  會建立 user 的寫入重新排隊。不碰本機儲存本身。 */
+export function invalidateTabCache(): void {
+  bound = false;
+  loading = null;
+  cached = undefined;
+}
+
+function installCrossTabSync(): void {
+  if (crossTabSyncInstalled || typeof window === "undefined") return;
+  crossTabSyncInstalled = true;
+  window.addEventListener("storage", (event: StorageEvent) => {
+    // `key === null`＝另一個分頁 `localStorage.clear()`。只重置、不讀
+    // `event.newValue`：值一律以本機儲存的實際內容為準。
+    if (event.key === null || event.key === STORAGE_KEY) invalidateTabCache();
+  });
+}
 
 async function loadToken(): Promise<string | null> {
   if (typeof indexedDB !== "undefined") {
     try {
       return await idbGetOrCreate();
     } catch {
-      // 退回 localStorage。
+      // 報錯或逾時（`IDB_TIMEOUT_MS`）都一樣：退回 localStorage。
     }
   }
   return localStorageGetOrCreate();
@@ -172,6 +241,7 @@ export async function withOwnerBindingLock<T>(body: () => Promise<T>): Promise<T
 
 /** 每個請求要帶的本機憑證；本機儲存都不能用時回 `null`（只剩 cookie）。 */
 export function credential(): Promise<string | null> {
+  installCrossTabSync();
   loading ??= loadToken().then((token) => (cached = token));
   return loading;
 }
@@ -196,15 +266,27 @@ export async function storeCredential(token: string): Promise<void> {
         done(undefined);
       });
     } catch {
-      // IndexedDB 寫不進去：localStorage 那份還在，下次讀取以它為準。
+      // IndexedDB 寫不進去或逾時：localStorage 那份還在，下次讀取以它為準。
     }
   }
 }
 
-/** 伺服器回應帶著 `X-OC-Owner-Bound: 1`＝這個瀏覽器已經有 user：之後會建立
- * user 的請求不必再排隊。本機憑證**不刪**——它就是持久身分的其中一份。 */
+/** 伺服器在每個解析身分的回應裡說了這次請求的憑證有沒有綁到 user
+ * （`X-OC-Owner-Bound: 1` 有／沒有這個 header 沒有）。有：之後會建立 user
+ * 的請求不必再排隊；本機憑證**不刪**——它就是持久身分的其中一份。沒有、
+ * 而這個分頁以為自己已綁定：記憶體副本過期了（另一個分頁換過憑證），重置
+ * 快取讓下一次請求重讀本機儲存（見檔頭）。首訪（本來就沒綁定）什麼都不做。 */
+export function noteOwnerBound(isBound: boolean): void {
+  if (isBound) {
+    bound = true;
+  } else if (bound) {
+    invalidateTabCache();
+  }
+}
+
+/** `noteOwnerBound(true)` 的舊名，既有測試在用。 */
 export function markOwnerBound(): void {
-  bound = true;
+  noteOwnerBound(true);
 }
 
 /** 測試用：回到「還沒綁定、還沒讀過」的初始狀態。 */
