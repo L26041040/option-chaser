@@ -384,7 +384,14 @@ def test_empty_owner_is_cleaned_quickly_and_counted_separately():
     assert _metric(storage, "empty_owner_cleanup_count") == 1
     assert _metric(storage, "abandoned_owner_cleanup_count") == 0
 
-    c.post("/api/scenarios", json=NEW).raise_for_status()      # 同一個瀏覽器繼續用
+    # 同一個瀏覽器繼續用：TOKEN-REPLAY-FIX-001 起被清掉的憑證不會被重綁——第一次
+    # 寫入 409、回應換發一顆新憑證（TestClient 的 cookie jar 自動收下），前端會重送
+    # 一次；重送就是乾淨的首訪，拿到新 owner。沒有任何東西因此遺失（本來就空）。
+    refused = c.post("/api/scenarios", json=NEW)
+    assert refused.status_code == 409
+    assert refused.headers.get("X-OC-Owner-Identity-Reason") == "empty_owner_cleanup"
+    assert storage.list_owners() == []
+    c.post("/api/scenarios", json=NEW).raise_for_status()
     assert len(storage.list_owners()) == 1
 
 

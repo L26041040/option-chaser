@@ -101,15 +101,23 @@ def test_self_delete_tombstones_the_credential_and_replaces_both_legs_at_once():
     s = stale.get("/api/scenarios")
     assert s.headers.get(IDENTITY) == "unknown"
     assert s.headers.get("X-OC-Owner-Identity-Reason") == "self_deleted"
+    assert s.headers.get(CRED) not in (None, local)                # 換發新隨機憑證
     summary = stale.get("/api/me/usage-summary").json()
     assert (summary["identity"], summary["identity_reason"]) == ("unknown", "self_deleted")
+    # 仍帶著舊 token 寫入 → 拒絕、不綁；拿掉舊 header、用換發的憑證才會成功
+    refused = stale.post("/api/scenarios", json=NEW)
+    assert refused.status_code == 409 and refused.headers.get(IDENTITY) == "unknown"
+    del stale.headers[CRED]
+    assert stale.post("/api/scenarios", json=NEW).status_code == 201
     assert storage.resolve_owner_by_token(local) is None
 
 
-def test_two_tabs_holding_the_same_stale_token_still_collapse_into_one_owner():
-    """並發首寫的原子性不因 `unknown` 而退化：新憑證是從舊 token 決定性導出
-    的，兩個分頁各自算出同一顆，`claim_browser_token()` 的 PK 收斂成一個
-    owner（每個請求各自隨機就會變成兩個）。"""
+def test_revoked_credentials_are_refused_and_fresh_tokens_are_unpredictable():
+    """TOKEN-REPLAY-FIX-001：兩個分頁拿著同一顆作廢 token 寫入 → 都被 409 拒絕、
+    都沒有 owner 被建立；兩顆換發的新憑證彼此不同、也都不是從舊 token 推導
+    出來的（不可預測）。並發收斂是前端的事（Web Locks＋重送，見
+    `src/credentialStore.test.ts` 與 `scripts/identity_torture.mjs`）。"""
+    import hashlib, base64
     app, storage = _app()
     stale = "stale-shared-token-" + "z" * 24
     _browser(app, local=stale).post("/api/scenarios", json=NEW).raise_for_status()
@@ -118,10 +126,45 @@ def test_two_tabs_holding_the_same_stale_token_still_collapse_into_one_owner():
     tab_a, tab_b = _browser(app, local=stale), _browser(app, local=stale)   # 各自的 cookie jar
     ra = tab_a.post("/api/scenarios", json=NEW)
     rb = tab_b.post("/api/scenarios", json={**NEW, "symbol": "QQQ"})
-    assert ra.status_code == rb.status_code == 201
-    assert ra.headers.get(CRED) == rb.headers.get(CRED) != stale
-    assert len(storage.list_owners()) == before + 1
-    assert len(tab_b.get("/api/scenarios").json()) == 2       # 同一個 owner 的兩個劇本
+    assert ra.status_code == rb.status_code == 409
+    assert len(storage.list_owners()) == before
+    fa, fb = ra.headers.get(CRED), rb.headers.get(CRED)
+    derived = base64.urlsafe_b64encode(
+        hashlib.sha256(b"oc-identity-rebind:" + stale.encode()).digest()).rstrip(b"=").decode()
+    assert fa and fb and fa != fb and stale not in (fa, fb) and derived not in (fa, fb)
+    assert storage.resolve_owner_by_token(stale) is None
+
+
+def test_replaying_a_revoked_token_after_its_successor_is_bound_never_reaches_the_successor():
+    """A 作廢 → 用換發的 B 建了 owner X → 再重放 A：unknown、409、又一顆新隨機
+    憑證，看不到 X。接著 B 也作廢、再重放 A 與 B：一樣。撤銷不可繞過。"""
+    app, storage = _app()
+    a_tok = "token-a-" + "a" * 35
+    victim = _browser(app, local=a_tok)
+    victim.post("/api/scenarios", json=NEW).raise_for_status()
+    victim.delete("/api/me").raise_for_status()                         # A 作廢（self_deleted）
+    b_tok = victim.cookies.get(_OWNER_COOKIE_NAME)
+    assert b_tok != a_tok
+    victim.headers[CRED] = b_tok
+    victim.post("/api/scenarios", json={**NEW, "symbol": "QQQ"}).raise_for_status()   # B 綁了 owner X
+    x = storage.resolve_owner_by_token(b_tok)
+    assert x is not None
+    replay = _browser(app, local=a_tok)
+    r = replay.get("/api/scenarios")
+    assert r.headers.get(IDENTITY) == "unknown" and r.json() == []
+    assert r.headers.get(CRED) not in (None, a_tok, b_tok)
+    refused = _browser(app, local=a_tok).post("/api/scenarios", json=NEW)   # 只拿著 A 寫入
+    assert refused.status_code == 409 and refused.headers.get(IDENTITY) == "unknown"
+    assert refused.headers.get(CRED) not in (None, a_tok, b_tok)
+    assert storage.resolve_owner_by_token(a_tok) is None
+    assert len(storage.list_scenarios(owner=x)) == 1                     # X 沒有被重放者碰到
+    # B 也作廢
+    storage.delete_owner(x, reason="admin_deleted")
+    for tok in (a_tok, b_tok):
+        again = _browser(app, local=tok).get("/api/scenarios")
+        assert again.headers.get(IDENTITY) == "unknown"
+        assert again.headers.get(CRED) not in (None, a_tok, b_tok)
+    assert storage.resolve_owner_by_token(a_tok) is None and storage.resolve_owner_by_token(b_tok) is None
 
 
 def test_identity_exempt_routes_carry_no_identity_header():
@@ -325,11 +368,10 @@ def test_identity_metrics_count_heals_unknowns_rebuilds_and_renewals():
     # 作廢 → unknown（依原因計）→ 重建
     storage.delete_owner(storage.resolve_owner_by_token(local), reason="retention_expired")
     stale = _browser(app, local=local)
-    stale.get("/api/scenarios")
-    stale.post("/api/scenarios", json=NEW).raise_for_status()
-    # 讀取那次以 unknown 結束（計 1）；首寫那次結束時已是 bound，計的是「重建」。
-    assert _totals(storage, "identity_unknown_token") == {"retention_expired": 1.0}
-    assert _totals(storage, "identity_new_owner_after_unknown") == {"retention_expired": 1.0}
+    stale.get("/api/scenarios")                                 # unknown
+    assert stale.post("/api/scenarios", json=NEW).status_code == 409   # unknown＋拒絕
+    assert _totals(storage, "identity_unknown_token") == {"retention_expired": 2.0}
+    assert _totals(storage, "identity_unknown_write_refused") == {"retention_expired": 1.0}
 
 
 def test_identity_metrics_are_a_noop_when_metrics_are_disabled():
@@ -351,7 +393,7 @@ def test_daily_digest_carries_an_identity_health_section():
         alerts=ops_alerts.evaluate_alerts(sustained_incident_sources=(), cleanup_missed_days=0,
                                           storage_bytes=0, chain_429_count=0, chain_fetch_count=1),
         identity_unknown_today=4, identity_heals_today=2,
-        identity_new_owners_after_unknown_today=1, identity_cookie_renewals_today=7))
+        identity_unknown_writes_refused_today=1, identity_cookie_renewals_today=7))
     assert "身分健康" in text
     assert "帶著已作廢憑證來的請求：4" in text and "cookie 門檻式續簽：7" in text
 
@@ -445,7 +487,7 @@ def test_daily_digest_text_never_carries_tokens_or_owner_ids():
         alerts=ops_alerts.evaluate_alerts(sustained_incident_sources=(), cleanup_missed_days=0,
                                           storage_bytes=0, chain_429_count=0, chain_fetch_count=1),
         identity_unknown_today=1, identity_heals_today=1,
-        identity_new_owners_after_unknown_today=1, identity_cookie_renewals_today=1))
+        identity_unknown_writes_refused_today=1, identity_cookie_renewals_today=1))
     assert "owner_id" not in text and "token" not in text.lower()
 
 
@@ -484,3 +526,58 @@ def test_the_identity_health_audit_sql_runs_on_postgres():
     sql = open("docs/audits/identity-health-audit.sql", encoding="utf-8").read()
     with psycopg.connect(dsn, autocommit=True) as conn:
         conn.execute(sql)          # 七段 SELECT 全部可執行（多語句、無參數）
+
+
+# ---------- TOKEN-REPLAY-FIX-001 補強 ----------
+
+def test_a_surviving_unbound_candidate_is_kept_instead_of_minting_a_new_one():
+    """cookie 已作廢、但 header 是另一顆沒有墓碑的候選（別的分頁剛換發、鏡像過來
+    的）：沿用它、不鑄新的——狀態仍 unknown、寫入仍 409，重送（cookie 已是它）就
+    走首訪綁定。"""
+    app, storage = _app()
+    b = _browser(app)
+    b.post("/api/scenarios", json=NEW).raise_for_status()
+    dead = b.cookies.get(_OWNER_COOKIE_NAME)
+    storage.delete_owner(storage.resolve_owner_by_token(dead), reason="self_deleted")
+    keep = "survivor-" + "k" * 34
+    r = b.get("/api/scenarios", headers={CRED: keep})
+    assert r.headers.get(IDENTITY) == "unknown"
+    assert b.cookies.get(_OWNER_COOKIE_NAME) == keep and CRED not in r.headers
+    w = b.post("/api/scenarios", json=NEW, headers={CRED: keep})
+    assert w.status_code == 201 and storage.resolve_owner_by_token(keep) is not None
+    assert storage.resolve_owner_by_token(dead) is None
+
+
+def test_replaying_credentials_revoked_by_logout_and_admin_delete_is_refused():
+    app, storage = _app(superadmin_password="test-only-sa-password")
+    main, _ = _seed_main(storage)
+    dev = _browser(app)
+    dev.post("/api/auth/login", json={"password": SU}).raise_for_status()
+    logged_in = dev.cookies.get(_OWNER_COOKIE_NAME)
+    dev.post("/api/auth/reset-role").raise_for_status()                 # 登出 → logged_out
+    replay = _browser(app, local=logged_in)
+    r = replay.post("/api/scenarios", json=NEW)
+    assert r.status_code == 409 and r.headers.get("X-OC-Owner-Identity-Reason") == "logged_out"
+    assert len(storage.list_scenarios(owner=main)) == 0 and storage.resolve_owner_by_token(logged_in) is None
+    victim = _browser(app)
+    victim.post("/api/scenarios", json=NEW).raise_for_status()
+    vtok = victim.cookies.get(_OWNER_COOKIE_NAME)
+    vid = storage.resolve_owner_by_token(vtok)
+    admin = _browser(app)
+    admin.post("/api/auth/login", json={"password": "test-only-sa-password"}).raise_for_status()
+    admin.post(f"/api/superuser/owners/{vid}/delete", json={"confirm_owner_id": vid}).raise_for_status()
+    r2 = _browser(app, local=vtok).post("/api/scenarios", json=NEW)
+    assert r2.status_code == 409 and r2.headers.get("X-OC-Owner-Identity-Reason") == "admin_deleted"
+    assert storage.resolve_owner_by_token(vtok) is None
+
+
+def test_login_with_a_revoked_device_credential_still_binds_the_device_to_the_main_account():
+    app, storage = _app()
+    main, _ = _seed_main(storage)
+    b = _browser(app)
+    b.post("/api/scenarios", json=NEW).raise_for_status()
+    dead = b.cookies.get(_OWNER_COOKIE_NAME)
+    storage.delete_owner(storage.resolve_owner_by_token(dead), reason="retention_expired")
+    r = b.post("/api/auth/login", json={"password": SU})
+    assert r.status_code == 200 and r.headers.get(IDENTITY) == "bound"
+    assert storage.resolve_owner_by_token(b.cookies.get(_OWNER_COOKIE_NAME)) == main

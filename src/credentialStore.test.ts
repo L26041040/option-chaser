@@ -272,3 +272,80 @@ function fakeLocksShared() {
   vi.stubGlobal("navigator", { ...navigator, locks: { request } });
   return { held };
 }
+
+// TOKEN-REPLAY-FIX-001：帶著已作廢憑證建立 user 被 409 拒絕時，伺服器已換發新憑證；
+// 只重送一次、重新排隊（Web Locks）——多分頁同時拿著同一顆作廢憑證不會各建一個 owner。
+describe("已作廢憑證的 409 重送（TOKEN-REPLAY-FIX-001）", () => {
+  const FRESH = "G".repeat(43);
+  function refusal(echo: string) {
+    const headers = new Headers();
+    headers.set("X-OC-Owner-Identity", "unknown");
+    headers.set(CREDENTIAL_HEADER, echo);
+    return { ok: false, status: 409, json: async () => ({ detail: "身分已失效" }), headers };
+  }
+
+  beforeEach(async () => {
+    localStorage.clear();
+    await resetCredentialStoreForTests();
+  });
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("409＋unknown：存下新憑證、重置綁定狀態、在鎖裡重送一次並帶新憑證", async () => {
+    const locks = fakeLocksShared();
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(reply({ id: "s0" }, { bound: true }))      // 先綁定（鎖一次）
+      .mockResolvedValueOnce(refusal(FRESH))                            // 之後憑證被作廢 → 409
+      .mockResolvedValueOnce(reply({ id: "s1" }, { bound: true }));     // 重送成功
+    vi.stubGlobal("fetch", fetchMock);
+    await createScenario(BODY as never);
+    const stale = await credential();
+    const created = await createScenario(BODY as never);
+    expect(created).toEqual({ id: "s1" });
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(headerOf(fetchMock.mock.calls[1][1] as RequestInit)).toBe(stale);
+    expect(headerOf(fetchMock.mock.calls[2][1] as RequestInit)).toBe(FRESH);  // 重送帶新憑證
+    expect(localStorage.getItem("oc_owner_bootstrap")).toBe(FRESH);
+    expect(locks.held).toEqual(["oc-owner-binding", "oc-owner-binding"]);  // 重送重新排隊
+  });
+
+  it("只重送一次：連續兩個 409 就把錯誤丟給呼叫端", async () => {
+    vi.stubGlobal("fetch", vi.fn()
+      .mockResolvedValueOnce(refusal(FRESH))
+      .mockResolvedValueOnce(refusal("H".repeat(43))));
+    await expect(createScenario(BODY as never)).rejects.toThrow();
+  });
+
+  it("其他 409（例如額度）或非建立 user 的請求不重送", async () => {
+    const quota = { ok: false, status: 409, json: async () => ({ detail: "額度" }),
+                    headers: new Headers([["X-OC-Owner-Identity", "bound"]]) };
+    const fetchMock = vi.fn().mockResolvedValue(quota);
+    vi.stubGlobal("fetch", fetchMock);
+    await expect(createScenario(BODY as never)).rejects.toThrow();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("遲到的 unknown 回應不得蓋掉別的分頁剛換好的憑證（TOKEN-REPLAY-FIX-001）", () => {
+  beforeEach(async () => { localStorage.clear(); await resetCredentialStoreForTests(); });
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("送出後本機副本已被換掉（另一分頁）→ unknown 回應的 echo 被忽略；bound 的 echo 照存", async () => {
+    const original = await credential();
+    let resolveFetch: (v: unknown) => void = () => {};
+    const slow = new Promise((r) => { resolveFetch = r; });
+    vi.stubGlobal("fetch", vi.fn(() => slow));
+    const inflight = listScenarios();
+    // 另一個分頁換發並綁定了 C1，鏡像寫進 localStorage → storage 事件 → 本分頁快取重置
+    localStorage.setItem("oc_owner_bootstrap", "C".repeat(43));
+    window.dispatchEvent(new StorageEvent("storage", { key: "oc_owner_bootstrap", newValue: "C".repeat(43) }));
+    const headers = new Headers([["X-OC-Owner-Identity", "unknown"], [CREDENTIAL_HEADER, "Z".repeat(43)]]);
+    resolveFetch({ ok: true, status: 200, json: async () => [], headers });
+    await inflight;
+    expect(localStorage.getItem("oc_owner_bootstrap")).toBe("C".repeat(43));   // 沒被 Z 蓋掉
+    expect(original).not.toBe("C".repeat(43));
+    // 同樣情境但回應是 bound：伺服器解析到的身分，照存
+    vi.stubGlobal("fetch", vi.fn(async () => reply([], { bound: true, echo: "D".repeat(43) })));
+    await listScenarios();
+    expect(localStorage.getItem("oc_owner_bootstrap")).toBe("D".repeat(43));
+  });
+});

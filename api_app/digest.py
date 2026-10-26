@@ -42,7 +42,7 @@ class DigestSnapshot:
     # IRI-05：身分健康（有預設值——既有呼叫端與測試不必跟著改）。
     identity_unknown_today: int = 0
     identity_heals_today: int = 0
-    identity_new_owners_after_unknown_today: int = 0
+    identity_unknown_writes_refused_today: int = 0
     identity_cookie_renewals_today: int = 0
 
 
@@ -80,7 +80,7 @@ def build_digest_text(snapshot: DigestSnapshot) -> str:
 
     lines.append("身分健康（identity health）——決定要不要追查身分分裂")
     lines.append(f"  帶著已作廢憑證來的請求：{snapshot.identity_unknown_today}")
-    lines.append(f"  作廢後重建的新 owner：{snapshot.identity_new_owners_after_unknown_today}")
+    lines.append(f"  用已作廢憑證嘗試寫入（被拒、已換發）：{snapshot.identity_unknown_writes_refused_today}")
     lines.append(f"  兩腿互補（任一腿補回另一腿）：{snapshot.identity_heals_today}")
     lines.append(f"  cookie 門檻式續簽：{snapshot.identity_cookie_renewals_today}")
     lines.append("")

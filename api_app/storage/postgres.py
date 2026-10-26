@@ -23,7 +23,7 @@ from contextlib import contextmanager
 import psycopg
 from psycopg.types.json import Jsonb
 
-from . import (identity_token_hash, require_tombstone_reason, LEGACY_SINGLETON_TABLES, RETIRED_TABLES, SCENARIO_CHILD_TABLES,
+from . import (RevokedCredential, identity_token_hash, require_tombstone_reason, LEGACY_SINGLETON_TABLES, RETIRED_TABLES, SCENARIO_CHILD_TABLES,
                BrowserIdentity, ChainBackoffEntry, ContractHistory,
                ResolvedCredential,
                DataSourceSettings, DividendCacheEntry, Feedback, IvBackfillRun,
@@ -1540,7 +1540,11 @@ class PostgresStorage:
                          (role, token))
 
     def add_browser_identity(self, identity: BrowserIdentity) -> None:
-        with self._connect() as conn:
+        with self._connect() as conn, conn.transaction():
+            if conn.execute(
+                    "SELECT 1 FROM identity_tombstones WHERE token_hash = %s",
+                    (identity_token_hash(identity.token),)).fetchone():
+                raise RevokedCredential(identity_token_hash(identity.token))
             conn.execute(
                 "INSERT INTO browser_identities (token, owner_id, issued_at, "
                 "last_seen_at, cookie_issued_at, role) "
@@ -1707,6 +1711,11 @@ class PostgresStorage:
                             now: str) -> tuple[str, bool]:
         with self._connect() as conn:
             with conn.transaction():
+                # TOKEN-REPLAY-FIX-001：已作廢的 token 永不重綁（同一交易內查）。
+                if conn.execute(
+                        "SELECT 1 FROM identity_tombstones WHERE token_hash = %s",
+                        (identity_token_hash(token),)).fetchone():
+                    raise RevokedCredential(identity_token_hash(token))
                 # token 是 PK：兩個 instance 同時執行時，後到的那一筆會等
                 # 前一筆 commit，然後 DO NOTHING——只有真正搶到的那一筆
                 # 會拿到 RETURNING，才去建 owner 列。

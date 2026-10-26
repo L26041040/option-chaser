@@ -101,7 +101,7 @@ def test_metric_catalogue_is_exactly_seven():
         "login_rate_limit_block_count",
         # IRI-05：身分健康五類
         "identity_heal_cookie_from_local", "identity_heal_local_from_cookie",
-        "identity_unknown_token", "identity_new_owner_after_unknown",
+        "identity_unknown_token", "identity_unknown_write_refused",
         "identity_renew_cookie"}
     assert len(METRIC_CATALOGUE) == 19
 

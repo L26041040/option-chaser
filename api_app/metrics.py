@@ -71,7 +71,7 @@ METRIC_CATALOGUE = (
     "identity_heal_cookie_from_local",   # cookie 不在／不認得，本機那份補回
     "identity_heal_local_from_cookie",   # 本機那份不在／不一樣，cookie 補回
     "identity_unknown_token",            # 帶著作廢過的 token 來（source＝原因）
-    "identity_new_owner_after_unknown",  # 作廢後第一次寫入建了新 owner
+    "identity_unknown_write_refused",    # 用已作廢憑證嘗試寫入，被 409 拒絕（換發新憑證）
     "identity_renew_cookie",             # 同顆 cookie 門檻式續簽
 )
 

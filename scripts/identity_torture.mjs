@@ -18,6 +18,7 @@
 // `OC_SERVER_CMD`（選用）：給了才跑「重新部署」情境——腳本會把它當 shell 指令
 // 重新起一個同 port 的 instance（先 kill 舊的）。密碼只從環境變數讀，不印出。
 import { execFileSync, spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -58,6 +59,26 @@ function ageCookie(token, days) {
   sql(`UPDATE browser_identities SET cookie_issued_at = to_char(now() - interval '${days} days', 'YYYY-MM-DD"T"HH24:MI:SS+00:00')
        WHERE token = '${token.replace(/'/g, "''")}'`);
 }
+
+/** 模擬 retention 清理把一顆憑證作廢：留墓碑、刪 identity、刪 owner 與它的劇本
+ *  （跟 `delete_owner(reason="retention_expired")` 同一個結果）。 */
+function revokeServerSide(token) {
+  const hash = createHash("sha256").update(token, "utf8").digest("hex");
+  const owner = ownerOf(token);
+  const q = token.replace(/'/g, "''");
+  sql(`INSERT INTO identity_tombstones (token_hash, reason, deleted_at)
+       VALUES ('${hash}', 'retention_expired', to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS+00:00'))
+       ON CONFLICT (token_hash) DO UPDATE SET reason = EXCLUDED.reason, deleted_at = EXCLUDED.deleted_at`);
+  if (owner) {
+    sql(`DELETE FROM results WHERE scenario_id IN (SELECT id FROM scenarios WHERE owner_id = '${owner}')`);
+    sql(`DELETE FROM current_results WHERE owner_id = '${owner}'`);
+    sql(`DELETE FROM scenarios WHERE owner_id = '${owner}'`);
+    sql(`DELETE FROM browser_identities WHERE token = '${q}'`);
+    sql(`DELETE FROM owners WHERE owner_id = '${owner}'`);
+  }
+  return owner;
+}
+const scenariosOfOwner = (owner) => Number(sql(`SELECT count(*) FROM scenarios WHERE owner_id = '${owner}'`)[0][0]);
 
 // ---------- 瀏覽器 ----------
 const MOBILE = { width: 390, height: 844 };   // 跟 smoke e2e 一樣走手機版面
@@ -335,6 +356,74 @@ try {
     await ctx.close();
   } else {
     check("10 SU 登出雙分頁：略過（沒有 OC_SU_PASSWORD）", true);
+  }
+
+  // ===== 11. 重放已作廢憑證（TOKEN-REPLAY-FIX-001）=====
+  {
+    const ctx = await newContext(browser);
+    const page = await openApp(ctx);
+    await api(page, "POST", "/api/scenarios", NEW);
+    const a = (await legs(ctx, page)).cookie;
+    // A 作廢（自刪），瀏覽器拿到 B；用 B 建 owner X
+    await page.goto(`${BASE}/#/settings`); await page.waitForLoadState("networkidle");
+    await page.locator("button.text-button.danger").first().click();
+    const reloaded = page.waitForEvent("load");
+    await page.locator("button:has-text('確定刪除')").first().click();
+    await reloaded; await page.waitForLoadState("networkidle");
+    await api(page, "POST", "/api/scenarios", NEW);
+    const b = (await legs(ctx, page)).cookie;
+    const x = ownerOf(b);
+    check("11-pre A 作廢、B 已綁 owner X", a && b && a !== b && x, { x: Boolean(x) });
+    const before = ownersCount();
+    // 另一個「只拿著 A」的分頁重放
+    const attacker = await newContext(browser);
+    const ap = await attacker.newPage(); await ap.goto(`${BASE}/#/`); await ap.waitForLoadState("networkidle");
+    const replay = await ap.evaluate(async ([p, t]) => {
+      const r = await fetch(p, { headers: { "X-OC-Credential": t } });
+      const w = await fetch(p, { method: "POST", headers: { "X-OC-Credential": t, "Content-Type": "application/json" },
+                              body: JSON.stringify({ symbol: "QQQ", target_price: 130, target_month: "2027-01", strategies: ["vertical-spread"] }) });
+      return { read: { identity: r.headers.get("X-OC-Owner-Identity"), echo: r.headers.get("X-OC-Credential"), n: (await r.json()).length },
+               write: { status: w.status, identity: w.headers.get("X-OC-Owner-Identity"), echo: w.headers.get("X-OC-Credential") } };
+    }, ["/api/scenarios", a]);
+    check("11a 重放 A 讀：unknown、空、換發的新憑證不是 A 也不是 B",
+          replay.read.identity === "unknown" && replay.read.n === 0 && replay.read.echo && ![a, b].includes(replay.read.echo), replay.read);
+    check("11b 重放 A 寫：409、不綁、不碰 X", replay.write.status === 409 && replay.write.identity === "unknown"
+          && ownersCount() === before && scenariosOfOwner(x) === 1 && ownerOf(a) === null, replay.write);
+    // B 也作廢後，重放 A 與 B 都一樣
+    revokeServerSide(b);
+    for (const t of [a, b]) {
+      const again = await ap.evaluate(async ([p, tok]) => {
+        const r = await fetch(p, { headers: { "X-OC-Credential": tok } });
+        return { identity: r.headers.get("X-OC-Owner-Identity"), echo: r.headers.get("X-OC-Credential") };
+      }, ["/api/scenarios", t]);
+      check(`11c A、B 先後作廢後重放 ${t === a ? "A" : "B"}：unknown、新憑證不是 A/B`,
+            again.identity === "unknown" && again.echo && ![a, b].includes(again.echo), again);
+    }
+    check("11d A、B 都沒有被重綁", ownerOf(a) === null && ownerOf(b) === null);
+    await attacker.close(); await ctx.close();
+  }
+
+  // ===== 12. 兩個分頁同時拿著失效憑證建立劇本 → 只多一個 owner、兩分頁收斂 =====
+  // ===== 13. 四個分頁高並發 =====
+  for (const tabs of [2, 4]) {
+    const ctx = await newContext(browser);
+    const pages = [await openApp(ctx)];
+    await api(pages[0], "POST", "/api/scenarios", NEW);                 // 綁定
+    for (let i = 1; i < tabs; i++) pages.push(await openApp(ctx));      // 其餘分頁載入時都是 bound
+    const tok = (await legs(ctx, pages[0])).cookie;
+    revokeServerSide(tok);                                              // 伺服器端作廢（分頁不知道）
+    const before = ownersCount();
+    const outcomes = await Promise.all(pages.map((p, i) =>
+      createViaUi(p, i % 2 ? "QQQ" : "XYZ").then(() => "ok", (e) => e.message.split("\n")[0])));
+    const n = ownersCount() - before;
+    const l = await Promise.all(pages.map((p) => legs(ctx, p)));
+    const owners = new Set(l.map((x) => ownerOf(x.local)));
+    check(`${tabs === 2 ? "12" : "13"} ${tabs} 個分頁拿著失效憑證同時建立：只多一個 owner、全部收斂到同一顆憑證`,
+          n === 1 && outcomes.every((o) => o === "ok") && owners.size === 1 && l.every((x) => x.cookie === l[0].cookie)
+          && scenariosOfOwner([...owners][0]) === tabs,
+          { n, outcomes, distinctOwners: owners.size, scenarios: scenariosOfOwner([...owners][0]) });
+    check(`${tabs === 2 ? "12b" : "13b"} 作廢的 token 沒有被重綁`, ownerOf(tok) === null);
+    await ctx.close();
   }
 
   rmSync(profile, { recursive: true, force: true });

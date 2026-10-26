@@ -14,7 +14,6 @@ import dataclasses
 import hashlib
 import os
 import re
-import base64
 import secrets
 import logging
 import time
@@ -50,7 +49,7 @@ from .identity import (IdentityResolver, cookie_identity_resolver,
                        resolved_owner_scope, set_resolved_owner,
                        set_resolved_role)
 from .rate_cache import cached_loader
-from .storage import (BrowserIdentity, ContractHistory, DataSourceSettings,
+from .storage import (RevokedCredential, BrowserIdentity, ContractHistory, DataSourceSettings,
                       Feedback, IvBackfillRun, IvObservation, OWNER_RATE_LIMIT_SCOPE,
                       Owner, ProviderCredential, ProviderVerification,
                       RateCacheEntry, RateLimitBucket, ResultRecord,
@@ -127,14 +126,6 @@ _IDENTITY_STATE_HEADER = "X-OC-Owner-Identity"
 _IDENTITY_REASON_HEADER = "X-OC-Owner-Identity-Reason"
 
 
-def _derive_fresh_token(stale: str) -> str:
-    """IRI-04：`unknown`（帶來的 token 已被我們作廢）時要鑄的新憑證。**從舊
-    token 決定性地導出**而不是每個請求各自隨機：兩個分頁帶著同一顆舊 token
-    同時首寫，會算出同一顆新 token，`claim_browser_token()` 的 PK 仍然把它們
-    收斂成一個 owner（隨機的話會變成兩個）。單向 hash：拿到新 token 推不回
-    舊的；知道舊 token 的人本來就能用它走到同一個綁定，沒有多給任何能力。"""
-    digest = hashlib.sha256(b"oc-identity-rebind:" + stale.encode("utf-8")).digest()
-    return base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
 
 # spec §4 的路由白名單——完全不碰身分解析的端點。白名單而非黑名單：未來
 # 新增的端點預設會解析身分。UNIFIED-IDENTITY-001 起 `/api/auth/*`、
@@ -1386,6 +1377,16 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
     def _well_formed(token: str | None) -> str | None:
         return token if token is not None and _OWNER_TOKEN_RE.match(token) else None
 
+    def _revoked_credential(reason: str, keep: str | None,
+                            cookie_token: str | None, stored_token: str | None) -> dict:
+        """TOKEN-REPLAY-FIX-001：帶來的憑證有墓碑（`unknown`）時這個請求的憑證
+        狀態——不綁任何 owner、寫入會被 409 拒絕；回應把兩腿換成 `keep`（另一腿
+        還沒作廢、未綁定的候選）或一顆全新隨機 token，與作廢的 token 無任何可
+        推導關係。哪一腿已經是這顆就不必再寫。"""
+        token = keep or secrets.token_urlsafe(32)
+        return {"token": token, "bound": False, "state": "unknown", "reason": reason,
+                "issue": token != cookie_token, "echo": token != stored_token}
+
     def _cookie_due_for_renewal(cookie_issued_at: str | None) -> bool:
         """IRI-03：這顆 cookie 距上次簽發是否已滿門檻天數。還沒簽過（`None`，
         舊滑動窗 cookie）由既有的升級路徑處理；時間戳讀不懂時保守回 False
@@ -1467,38 +1468,63 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
                     else None)}
             return resolved.owner_id, resolved.role, credential, None
 
-        # IRI-04：兩份都查不到。先問墓碑（`lookup_identity_tombstone()`）：帶來的
-        # token 是不是我們自己作廢過的（retention 清理、自刪、併入主帳號、登出
-        # ……）——是，這個瀏覽器**以前有過身分**（`unknown`）：鑄一顆全新的憑證，
-        # 首寫時兩腿一起換掉，**絕不**把舊 token 再綁到新 owner（舊 token 的
-        # 歷史才說得清、墓碑與指標才有意義）；不是（`none`）：首訪，前端自己產生
-        # 還沒綁定的 token，照舊以它為候選——所有分頁共用同一顆、靠 token PK 保證
-        # 只建一個 owner。墓碑之外被刪掉的 token（例如資料庫回復到更早時點）
-        # 分不出來，當 `none` 處理，是已知的能力邊界。
-        reason = None
+        # IRI-04／TOKEN-REPLAY-FIX-001：兩份都查不到。先問墓碑
+        # （`lookup_identity_tombstone()`）：帶來的 token 是不是我們自己作廢過的
+        # （retention 清理、自刪、併入主帳號、登出……）——是，這個瀏覽器**以前有過
+        # 身分**（`unknown`）。**撤銷就是死**：這個請求不綁任何 owner（寫入會被
+        # `materialize()` 以 409 拒絕）、不從舊 token 推導任何東西；回應只交回一顆
+        # 全新、**隨機**、還沒綁定的憑證（跟首訪拿到的一樣什麼都開不了），兩腿一起
+        # 換掉，下一個請求就是乾淨的首訪。多分頁同時拿著同一顆作廢 token 的收斂
+        # 不靠伺服器（那會讓 A 永遠能換到 B＝重放），靠前端：回應沒有
+        # `X-OC-Owner-Bound` → 分頁快取重置 → 重試的首寫進 Web Locks 排隊，後到的
+        # 看見先到那顆已綁定的 cookie。不是（`none`）：首訪，前端自己產生還沒綁定的
+        # token，照舊以它為候選——所有分頁共用同一顆、靠 token PK 保證只建一個
+        # owner。墓碑之外被刪掉的 token（例如資料庫回復到更早時點）分不出來，當
+        # `none` 處理，是已知的能力邊界。
         # `dict.fromkeys(...)`＝保序去重（cookie 與 header 常是同一顆）。
-        for token in dict.fromkeys(t for t in (cookie_token, stored_token) if t):
-            reason = _db().lookup_identity_tombstone(token)
-            if reason is not None:
-                break
-        if reason is not None:
-            state, candidate = "unknown", _derive_fresh_token(token)
+        presented = list(dict.fromkeys(t for t in (cookie_token, stored_token) if t))
+        tombstoned = {t: _db().lookup_identity_tombstone(t) for t in presented}
+        revoked = [t for t in presented if tombstoned[t] is not None]
+        if revoked:
+            # 兩腿裡若還有一顆**沒有**墓碑的候選（另一個分頁已經換發、鏡像過來
+            # 的那顆），就沿用它、不再鑄新的——少一次隨機換發就少一次「遲到的
+            # 回應把別人剛綁好的憑證蓋掉」的機會；完全沒有才隨機換發。
+            survivors = [t for t in presented if tombstoned[t] is None]
+            credential = _revoked_credential(
+                tombstoned[revoked[0]], survivors[0] if survivors else None,
+                cookie_token, stored_token)
         else:
-            state = "none"
             candidate = stored_token or cookie_token or secrets.token_urlsafe(32)
-        credential = {"token": candidate, "bound": False, "state": state,
-                      "reason": reason, "issue": False, "echo": False}
+            credential = {"token": candidate, "bound": False, "state": "none",
+                          "reason": None, "issue": False, "echo": False}
+
+        def refuse_revoked() -> HTTPException:
+            _record_metric("identity_unknown_write_refused", ny_today(),
+                           source=credential["reason"] or "")
+            return HTTPException(
+                status_code=409,
+                detail="這個瀏覽器先前的身分已失效；已換發新的憑證，請重試這個操作")
 
         def materialize() -> str:
+            if credential["state"] == "unknown":
+                # 已作廢的憑證不得綁任何 owner，也不得在這個請求裡「順便」用剛
+                # 換發的那顆綁——那會讓兩個同時拿著作廢 token 的分頁各建一個
+                # owner。拒絕，讓前端帶著新憑證重送（走 Web Locks 排隊）。
+                raise refuse_revoked()
             now = now_utc_iso()
-            bound, created = _db().claim_browser_token(
-                candidate, Owner(owner_id=secrets.token_urlsafe(32), created_at=now),
-                now=now)
+            candidate = credential["token"]
+            try:
+                bound, created = _db().claim_browser_token(
+                    candidate, Owner(owner_id=secrets.token_urlsafe(32), created_at=now),
+                    now=now)
+            except RevokedCredential:
+                # 解析與綁定之間剛好被作廢（極窄競態）：同樣視為 unknown。
+                credential.update(_revoked_credential(
+                    _db().lookup_identity_tombstone(candidate) or "deleted", None,
+                    cookie_token, stored_token))
+                raise refuse_revoked()
             if created:
                 _record_metric("new_owner_count", ny_today())
-                if credential["state"] == "unknown":
-                    _record_metric("identity_new_owner_after_unknown", ny_today(),
-                                   source=credential["reason"])
             else:
                 # 並發請求剛好先綁了這顆：沿用那個 user 與這顆憑證的權限。
                 resolved = _db().resolve_credential(candidate)
@@ -2148,7 +2174,7 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         identity_unknown = _today_total("identity_unknown_token")
         identity_heals = (_today_total("identity_heal_cookie_from_local")
                           + _today_total("identity_heal_local_from_cookie"))
-        identity_new_after_unknown = _today_total("identity_new_owner_after_unknown")
+        identity_unknown_refused = _today_total("identity_unknown_write_refused")
         identity_renewals = _today_total("identity_renew_cookie")
 
         incident_sources = tuple(
@@ -2183,7 +2209,7 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
             alerts=alerts,
             identity_unknown_today=identity_unknown,
             identity_heals_today=identity_heals,
-            identity_new_owners_after_unknown_today=identity_new_after_unknown,
+            identity_unknown_writes_refused_today=identity_unknown_refused,
             identity_cookie_renewals_today=identity_renewals)
 
     # ---------- S0 最小可觀測性（SCALE-08／#258） ----------
@@ -2338,7 +2364,8 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         if credential is not None:
             # middleware 據此回寫 HttpOnly cookie 與 `X-OC-Credential`（前端
             # 存進本機副本）——兩份同時換成新憑證。
-            credential.update(token=token, bound=True, issue=True, echo=True)
+            credential.update(token=token, bound=True, state="bound", reason=None,
+                              issue=True, echo=True)
         set_resolved_owner(main)
         set_resolved_role(role.value)
         return {"role": role.value}

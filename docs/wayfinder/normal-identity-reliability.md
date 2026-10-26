@@ -139,7 +139,7 @@
 ### 3.3 身分狀態訊號、鑄新 token、墓碑（修 G-A／G-F／G-G）
 
 - **訊號**（IRI-04 已落地）：所有解析身分的回應加 `X-OC-Owner-Identity: bound | none | unknown`；`unknown` 另附 `X-OC-Owner-Identity-Reason`；`/api/me/usage-summary` 加 `identity`／`identity_reason`。**三態定義（施工時修正）**：`bound`＝解析到 user；`unknown`＝帶來的 token **有墓碑**（我們自己作廢過＝這個瀏覽器以前有身分）；`none`＝沒帶，或帶的 token 沒有墓碑——正式站首訪一定帶著前端自己產生、還沒綁定的 token，它**必須**是 `none` 並原樣綁定，跨分頁共用同一顆才能靠 PK 只建一個 owner。
-- **鑄新 token**：`unknown` 時候選＝從舊 token **決定性導出**（`sha256("oc-identity-rebind:"+stale)`），不是每個請求各自隨機——兩個分頁帶同一顆舊 token 同時首寫會算出同一顆新 token，PK 仍收斂成一個 owner；首寫回應 `echo`＋`issue` 讓兩腿同步換新；舊 token 永不重綁。`DELETE /api/me` 的回應則立刻把兩腿換成一顆全新未綁定憑證（與登出主帳號同一套）。
+- **撤銷即死（TOKEN-REPLAY-FIX-001，取代原「決定性導出」）**：`unknown` 的請求**不綁任何 owner**——寫入由 `materialize()` 以 409 拒絕；回應（讀與寫都一樣）立刻換發一顆**隨機**、未綁定、與舊 token 無任何可推導關係的憑證（`issue`＋`echo`），下一個請求就是乾淨的首訪。原本從舊 token 決定性導出新 token 的做法被撤掉：它讓持有已撤銷 A 的人永遠能算出 B 並取得 B 綁定的 owner（重放），撤銷形同虛設。多分頁同時拿著同一顆作廢 token 的收斂改由前端負責：409 回應沒有 `X-OC-Owner-Bound` → 分頁快取重置 → `request()` 只重送一次且重新進 Web Locks 排隊，後到的看見先到那顆已綁定的 cookie。storage 層另加一道 `RevokedCredential` 守門：有墓碑的 token 永不 insert。自助刪除的回應同樣立刻換發新憑證。
 - **墓碑**：`identity_tombstones(token_hash TEXT PK, reason TEXT, deleted_at TEXT)`，`reason ∈ {retention_expired, empty_owner_cleanup, self_deleted, admin_deleted, beta_reset, absorbed_into_main, rotated, logged_out, deleted}`（`IDENTITY_TOMBSTONE_REASONS`，兩後端寫入前驗證）；由 `delete_owner(reason=)`／`delete_browser_identity(reason=)`／`absorb_owner()`／`reset_beta_data()` 在同一交易內寫入（`delete_owner()` 回傳的列數含 `identity_tombstones`）；只在兩份都查不到的路徑查一次；保留 400 天後由 `run_retention()` 清掉。token 只存 SHA-256，不存明文、不存 owner_id。
 - **前端行為**（#360 裁示）：建議只在 `unknown` 且 reason＝`retention_expired` 顯示一行可關閉說明；其他一律沉默。
 

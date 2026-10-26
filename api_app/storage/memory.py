@@ -15,7 +15,7 @@ from collections.abc import Sequence
 from contextlib import contextmanager
 
 from ..clock import now_utc_iso
-from . import (identity_token_hash, require_tombstone_reason, RETIRED_TABLES, SCENARIO_CHILD_TABLES, BrowserIdentity,
+from . import (RevokedCredential, identity_token_hash, require_tombstone_reason, RETIRED_TABLES, SCENARIO_CHILD_TABLES, BrowserIdentity,
                ResolvedCredential,
                ChainBackoffEntry, ContractHistory,
                DataSourceSettings, DividendCacheEntry, Feedback, IvBackfillRun,
@@ -764,6 +764,8 @@ class MemoryStorage:
 
     def add_browser_identity(self, identity: BrowserIdentity) -> None:
         with self._claim_lock:
+            if identity_token_hash(identity.token) in self._identity_tombstones:
+                raise RevokedCredential(identity_token_hash(identity.token))
             if identity.token in self._browser_identities:
                 raise KeyError("browser identity token already exists")
             self._browser_identities[identity.token] = identity
@@ -885,6 +887,8 @@ class MemoryStorage:
         # 與 postgres 的 PK 等價：一把鎖保證「檢查＋寫入」不被並發
         # 請求（TestClient 的多執行緒）切開。
         with self._claim_lock:
+            if identity_token_hash(token) in self._identity_tombstones:
+                raise RevokedCredential(identity_token_hash(token))   # TOKEN-REPLAY-FIX-001
             existing = self._browser_identities.get(token)
             if existing is not None:
                 return existing.owner_id, False

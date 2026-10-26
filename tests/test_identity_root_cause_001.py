@@ -162,40 +162,52 @@ def test_a_cookie_less_browser_with_its_local_credential_is_not_a_lost_identity(
     assert [o.owner_id for o in storage.list_owners()] == [oid]
 
 
-def test_lost_identity_reads_are_signalled_as_unknown_but_otherwise_look_like_a_first_visit():
-    """IRI-04：遺失狀態的讀取仍是 200／[]／不簽 cookie／沒有 Owner-Bound
-    （不建立任何東西），**但**身分訊號說 `unknown`——前端與觀測從此分得出
-    「還沒有劇本」與「以前的身分已不在」。"""
+def test_lost_identity_reads_are_signalled_as_unknown_and_immediately_re_credentialed():
+    """IRI-04／TOKEN-REPLAY-FIX-001：遺失狀態的讀取仍是 200／[]／沒有
+    Owner-Bound（不建立任何東西），身分訊號說 `unknown`，**而且**回應立刻把兩腿
+    換成一顆全新、隨機、未綁定的憑證——跟首訪不同的只有這兩點。"""
     app, storage = _app()
-    status, body, bound, cookies = _first_visit_signature(app)
+    status, body, bound, _ = _first_visit_signature(app)
     for name, browser, headers in _lost_identity_cases(storage, app):
+        stale = headers.get("X-OC-Credential") or browser.cookies.get(_OWNER_COOKIE_NAME)
         r = browser.get("/api/scenarios", headers=headers)
-        assert (r.status_code, r.json(), r.headers.get("X-OC-Owner-Bound"),
-                _owner_set_cookies(r)) == (status, body, bound, cookies), name
+        assert (r.status_code, r.json(), r.headers.get("X-OC-Owner-Bound")) == (status, body, bound), name
         assert r.headers.get(IDENTITY_HEADER) == "unknown", name
-        summary = browser.get("/api/me/usage-summary", headers=headers).json()
+        fresh, _ = _split(_owner_set_cookies(r)[0])
+        assert fresh != stale and r.headers.get("X-OC-Credential") == fresh, name
+        assert len(storage.list_owners()) == 0 or storage.resolve_owner_by_token(fresh) is None, name
+        # 同一顆作廢 token 再來一次：還是 unknown，又一顆不同的新憑證（不可預測）。
+        again = _browser(app).get("/api/scenarios", headers={"X-OC-Credential": stale})
+        assert again.headers.get(IDENTITY_HEADER) == "unknown", name
+        assert again.headers.get("X-OC-Credential") not in (fresh, stale), name
+        summary = _browser(app).get("/api/me/usage-summary",
+                                    headers={"X-OC-Credential": stale}).json()
         assert summary["active_scenarios"] == 0 and summary["identity"] == "unknown", name
 
 
-def test_next_write_after_losing_identity_mints_a_new_owner_with_a_fresh_credential():
-    """兩份憑證都對不上伺服器＝能力邊界：第一次寫入仍會得到一個**新**
-    owner（舊劇本無法安全配對回來，不猜）。但 IRI-04 起新 owner 綁的是一顆
-    全新的 token，兩腿同時換掉；舊 token 留在墓碑裡、不會被重新綁定。"""
+def test_a_write_with_a_revoked_credential_is_refused_and_the_retry_binds_a_fresh_one():
+    """兩份憑證都對不上伺服器＝能力邊界：舊劇本無法安全配對回來（不猜）。
+    TOKEN-REPLAY-FIX-001：帶著**已作廢**的 token 寫入 → 409、不綁任何 owner、
+    回應交回一顆全新**隨機**憑證（兩腿同換）；帶著新憑證重送才建立新 owner。
+    舊 token 留在墓碑裡、永不重綁、也推導不出任何有效 token。"""
     app, storage = _app()
     for name, browser, headers in _lost_identity_cases(storage, app):
         stale = headers.get("X-OC-Credential") or browser.cookies.get(_OWNER_COOKIE_NAME)
         before = len(storage.list_owners())
         r = browser.post("/api/scenarios", json=NEW, headers=headers)
-        assert r.status_code == 201, name
-        assert r.headers.get(IDENTITY_HEADER) == "bound", name
-        assert len(storage.list_owners()) == before + 1, name
+        assert r.status_code == 409, name
+        assert r.headers.get(IDENTITY_HEADER) == "unknown", name
+        assert r.headers.get("X-OC-Owner-Bound") is None, name
+        assert len(storage.list_owners()) == before, name              # 沒有綁任何 owner
         fresh, _ = _split(_owner_set_cookies(r)[0])
-        assert fresh != stale, name
-        assert r.headers.get("X-OC-Credential") == fresh, name      # 本機那份也換
-        assert storage.resolve_owner_by_token(stale) is None, name  # 舊 token 沒被重綁
+        assert fresh != stale and r.headers.get("X-OC-Credential") == fresh, name
+        retry = browser.post("/api/scenarios", json=NEW,
+                             headers={**headers, "X-OC-Credential": fresh})
+        assert retry.status_code == 201 and retry.headers.get(IDENTITY_HEADER) == "bound", name
+        assert len(storage.list_owners()) == before + 1, name
+        assert storage.resolve_owner_by_token(stale) is None, name     # 舊 token 沒被重綁
         assert storage.lookup_identity_tombstone(stale) is not None, name
-        follow = browser.get("/api/scenarios", headers={**headers, "X-OC-Credential": fresh}
-                             if headers else {})
+        follow = browser.get("/api/scenarios", headers={**headers, "X-OC-Credential": fresh})
         assert len(follow.json()) == 1, name
     orphaned = [o for o in storage.list_owners()
                 if not any(i.owner_id == o.owner_id for i in storage._browser_identities.values())]
@@ -205,10 +217,11 @@ def test_next_write_after_losing_identity_mints_a_new_owner_with_a_fresh_credent
 def test_reads_with_an_unknown_but_well_formed_token_are_signalled():
     app, storage = _app()
     cases = dict((name, (b, h)) for name, b, h in _lost_identity_cases(storage, app))
-    browser, headers = cases["unknown-cookie"]
+    browser, headers = cases["unknown-local"]
     r = browser.get("/api/scenarios", headers=headers)
     assert r.headers.get(IDENTITY_HEADER) == "unknown"
-    assert browser.get("/api/me/usage-summary", headers=headers).json()["identity"] == "unknown"
+    # 明確帶同一顆作廢 token（cookie jar 已被換發的新憑證更新，故用 header 固定）。
+    assert _browser(app).get("/api/me/usage-summary", headers=headers).json()["identity"] == "unknown"
 
 
 def test_bound_and_anonymous_reads_expose_their_identity_state():

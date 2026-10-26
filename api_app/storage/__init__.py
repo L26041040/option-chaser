@@ -39,6 +39,12 @@ IDENTITY_TOMBSTONE_REASONS = (
 )
 
 
+class RevokedCredential(Exception):
+    """TOKEN-REPLAY-FIX-001：企圖把一顆**已作廢**（有墓碑）的 token 綁到 owner。
+    撤銷就是死——兩個後端的 `claim_browser_token()`／`add_browser_identity()`
+    在同一交易內先查墓碑，命中就拋這個例外，絕不 insert。"""
+
+
 def identity_token_hash(token: str) -> str:
     """墓碑的 key：token 的 SHA-256 hex。墓碑表裡永遠不出現明文 token。"""
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
@@ -1412,6 +1418,8 @@ class Storage(Protocol):
                             now: str) -> tuple[str, bool]:
         """SECURITY-FIX-01（deferred owner creation）：把一顆「還沒綁定
         任何 owner」的 cookie token 原子地綁到一個新 owner 上。
+        TOKEN-REPLAY-FIX-001：token 若有墓碑（已作廢）→ 拋 `RevokedCredential`，
+        不 insert。
 
         回傳 `(實際綁定的 owner_id, 這次是不是真的新建)`。同一顆 token
         若已經被綁定（包含同一瞬間另一個 serverless instance 搶先綁定），

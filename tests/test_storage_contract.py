@@ -3822,3 +3822,37 @@ def test_identity_tombstones_store_only_hashes(storage):
         rows = conn.execute("SELECT token_hash, reason, deleted_at FROM identity_tombstones").fetchall()
     assert (identity_token_hash(tok), "self_deleted") in {(r[0], r[1]) for r in rows}
     assert all(len(r[0]) == 64 and tok not in r[0] and "hash-only-owner" not in r[0] for r in rows)
+
+
+def test_claim_browser_token_never_rebinds_a_revoked_token(storage):
+    """TOKEN-REPLAY-FIX-001：有墓碑的 token 永不重綁——兩後端都拋 `RevokedCredential`，
+    不 insert、不建 owner。"""
+    from api_app.storage import RevokedCredential
+    now = "2026-10-26T00:00:00+00:00"
+    tok = "revoked-claim-" + "r" * 29
+    storage.create_owner_with_token(
+        Owner(owner_id="revoked-claim-owner", created_at=now),
+        BrowserIdentity(token=tok, owner_id="revoked-claim-owner", issued_at=now, last_seen_at=now))
+    storage.delete_owner("revoked-claim-owner", reason="self_deleted")
+    with pytest.raises(RevokedCredential):
+        storage.claim_browser_token(tok, Owner(owner_id="should-not-exist", created_at=now), now=now)
+    assert storage.get_owner("should-not-exist") is None
+    assert storage.resolve_owner_by_token(tok) is None
+
+
+def test_add_browser_identity_refuses_a_revoked_token(storage):
+    from api_app.storage import RevokedCredential
+    now = "2026-10-26T00:00:00+00:00"
+    tok = "revoked-add-" + "q" * 31
+    storage.create_owner_with_token(
+        Owner(owner_id="revoked-add-owner", created_at=now),
+        BrowserIdentity(token=tok, owner_id="revoked-add-owner", issued_at=now, last_seen_at=now))
+    storage.create_owner_with_token(
+        Owner(owner_id="revoked-add-target", created_at=now),
+        BrowserIdentity(token="target-" + "t" * 36, owner_id="revoked-add-target",
+                        issued_at=now, last_seen_at=now))
+    storage.delete_owner("revoked-add-owner", reason="logged_out")
+    with pytest.raises(RevokedCredential):
+        storage.add_browser_identity(BrowserIdentity(token=tok, owner_id="revoked-add-target",
+                                                     issued_at=now, last_seen_at=now))
+    assert storage.resolve_owner_by_token(tok) is None
