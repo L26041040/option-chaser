@@ -239,6 +239,64 @@ export async function withOwnerBindingLock<T>(body: () => Promise<T>): Promise<T
   }
 }
 
+/** `peekCredential()` 的結果。`unreadable`＝至少有一份本機儲存讀不到（報錯或
+ *  逾時）而另一份沒有憑證：**不能**據此說「這個瀏覽器沒有身分」。 */
+export type CredentialPeek =
+  | { state: "present"; token: string }
+  | { state: "empty" }
+  | { state: "unreadable" };
+
+/** 只讀的 IndexedDB 查詢：不產生、不寫入憑證。報錯或逾時 reject。 */
+function idbPeek(): Promise<string | null> {
+  const run = (async () => {
+    const db = await openDb();
+    try {
+      return await new Promise<string | null>((resolve, reject) => {
+        const tx = db.transaction(STORE, "readonly");
+        const get = tx.objectStore(STORE).get(STORAGE_KEY);
+        tx.oncomplete = () => resolve(
+          typeof get.result === "string" && TOKEN_SHAPE.test(get.result)
+            ? get.result : null);
+        tx.onerror = () => reject(tx.error);
+        tx.onabort = () => reject(tx.error ?? new Error("transaction aborted"));
+      });
+    } finally {
+      db.close();
+    }
+  })();
+  run.catch(() => {});
+  return withTimeout(run, IDB_TIMEOUT_MS);
+}
+
+/**
+ * 這個瀏覽器的本機儲存裡有沒有身分憑證——**只看、不建立**（`credential()` 會在
+ * 沒有時產生一顆；這個不會）。給「要不要離開這個網址」這類決定用：兩份
+ * （IndexedDB、localStorage）都讀成功而且都沒有才是 `empty`；任何一份讀不到
+ * 又沒有在另一份找到憑證，是 `unreadable`，不是 `empty`。
+ */
+export async function peekCredential(): Promise<CredentialPeek> {
+  let local: string | null = null;
+  let localFailed = false;
+  try {
+    const v = localStorage.getItem(STORAGE_KEY);
+    local = v && TOKEN_SHAPE.test(v) ? v : null;
+  } catch {
+    localFailed = true;
+  }
+  let idb: string | null = null;
+  let idbFailed = false;
+  if (typeof indexedDB !== "undefined") {
+    try {
+      idb = await idbPeek();
+    } catch {
+      idbFailed = true;
+    }
+  }
+  const token = local ?? idb;
+  if (token) return { state: "present", token };
+  return localFailed || idbFailed ? { state: "unreadable" } : { state: "empty" };
+}
+
 /** 每個請求要帶的本機憑證；本機儲存都不能用時回 `null`（只剩 cookie）。 */
 export function credential(): Promise<string | null> {
   installCrossTabSync();

@@ -136,9 +136,15 @@
 
 `vercel.json` `redirects`：`has: [{type: "host", value: "<非正式網址>"}]` 且 `source` 排除 `/api/(.*)` → 到正式網址同路徑。`/api/health` 三個網址皆保留可達（部署驗證在用）。零程式碼、可在 Vercel 設定頁驗證。（#362 選正式網址）
 
-**實際落地（RELEASE-001，與上面原案的差異）**：正式網址 `option-chaser.vercel.app`；只綁兩個已確認的別名網址（`option-chaser-ofriedoriceo-5352s-projects.vercel.app`、`option-chaser-git-master-ofriedoriceo-5352s-projects.vercel.app`，host 完全比對，Preview／deployment 專屬網址不受影響）；規則另加 `missing: [{type: "cookie", key: "__Host-oc_owner"}]`——**舊網址上已經有身分 cookie 的瀏覽器不重導**，因為它的劇本掛在那個 origin 的身分上，轉去正式網址就是一個全新的人、舊劇本變孤兒；只有「在舊網址上還沒有身分」的訪客才被導走（他們沒有東西可以失去）。狀態碼用 **307**（可回滾；308 會被瀏覽器永久快取）。守護測試：`tests/test_canonical_host_redirect.py`。
+**實際落地（RELEASE-001 → CANONICAL-REDIRECT-FIX-001，與上面原案的差異）**：正式網址 `option-chaser.vercel.app`；別名網址只有兩個已確認的（`option-chaser-ofriedoriceo-5352s-projects.vercel.app`、`option-chaser-git-master-ofriedoriceo-5352s-projects.vercel.app`，host 完全比對，正式網址／Preview／部署專屬網址不受影響）。
 
-**未解的殘餘（刻意保留）**：(1) 舊網址上已有身分的人仍留在舊網址——要把他們也搬過去需要「一次性交接碼」（舊 origin 簽發、正式網址兌換、`absorb_owner` 併入），那是新的憑證傳遞面，未在本次範圍，另票處理；(2) 只清了 cookie、但 IndexedDB／localStorage 還留著憑證的舊網址訪客（極少數），重導後那份憑證留在舊 origin，劇本在 DB 裡但這個瀏覽器不再指向它。
+**不是 `vercel.json` `redirects`**：RELEASE-001 先用「`missing` cookie 才轉址」的邊緣轉址，但邊緣只看得到 cookie，看不到 IndexedDB／localStorage——cookie 被清、本機憑證還在的舊使用者會在前端有機會恢復身分之前被導走，劇本變孤兒。`vercel.json` 因此**不得再有 `redirects`**（`tests/test_canonical_host_redirect.py` 守著）。
+
+**改成前端啟動閘門**（`src/canonicalHost.ts`，`src/main.tsx` 在掛載 App 之前呼叫）：只有在別名網址上才動作，且只在以下全部成立時 `location.replace` 到正式網址同路徑（保留 path／query／hash，**不帶任何 token**）：(1) `peekCredential()`（只讀、不建立）確認 IndexedDB 與 localStorage 都**讀成功**——任何一份讀不到（報錯／逾時）而另一份沒有憑證＝`unreadable`，不轉址，連探測請求都不送；(2) 對 `/api/me/usage-summary` 發一個只讀探測（帶本機憑證 header，cookie 自動帶），回應 `X-OC-Owner-Identity: none`。`bound`（cookie 或本機憑證認得）、`unknown`（以前有過身分、已作廢）、缺 header、非 2xx、逾時（5 秒）、網路中斷一律不轉址；逾時後晚到的答案也不會事後轉址。`bound` 的使用者因此留在別名網址，伺服器順手補發 cookie／本機憑證。
+
+**真瀏覽器驗證**：`scripts/canonical_redirect_verify.mjs`（34 項：cookie 在／cookie 掉了但 IndexedDB＋localStorage 有效／僅 localStorage／僅 IndexedDB／首次訪客／IndexedDB 丟例外與永遠不回應／探測斷線與卡住／4 分頁並發（舊使用者與新訪客）／正式網址、Preview、部署專屬網址不動／`/api/*` 不轉址／SU cookie 遺失）。⚠ 該腳本**必須**帶 `--no-proxy-server` 並通過金絲雀檢查：本環境有 `HTTPS_PROXY`，Chromium 會沿用，走代理時 `--host-resolver-rules` 對映不生效，請求會打到真正的 Production（2026-10-27 事故，見 回報#141）。
+
+**未解的殘餘（刻意保留）**：舊網址上已有身分的人仍留在舊網址——要把他們也搬過去需要「一次性交接碼」（舊 origin 簽發、正式網址兌換、`absorb_owner` 併入），那是新的憑證傳遞面，未在範圍內，另票處理。
 
 ### 3.3 身分狀態訊號、鑄新 token、墓碑（修 G-A／G-F／G-G）
 

@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createScenario, listScenarios, login, refreshRun } from "./api";
 import {
   credential, CREDENTIAL_HEADER, IDB_TIMEOUT_MS, loadedCredential, markOwnerBound,
-  OWNER_BOUND_HEADER, resetCredentialStoreForTests, storeCredential,
+  OWNER_BOUND_HEADER, peekCredential, resetCredentialStoreForTests, storeCredential,
 } from "./credentialStore";
 
 const BODY = { symbol: "XYZ", target_price: 1, target_month: "2027-01",
@@ -347,5 +347,103 @@ describe("遲到的 unknown 回應不得蓋掉別的分頁剛換好的憑證（T
     vi.stubGlobal("fetch", vi.fn(async () => reply([], { bound: true, echo: "D".repeat(43) })));
     await listScenarios();
     expect(localStorage.getItem("oc_owner_bootstrap")).toBe("D".repeat(43));
+  });
+});
+
+// CANONICAL-REDIRECT-FIX-001：`peekCredential()` 只看、不建立；「空」與「讀不到」
+// 必須分得出來，轉址決定才不會把讀取失敗當成沒有身分。
+describe("peekCredential（只讀，區分空與讀不到）", () => {
+  const TOKEN = "C".repeat(43);
+
+  /** 最小的假 IndexedDB：`open()` 成功，`get` 回 `value`，交易 commit。 */
+  function fakeIdb(value: unknown) {
+    const open = vi.fn(() => {
+      const req: Record<string, unknown> = {};
+      queueMicrotask(() => {
+        req.result = {
+          close: () => {},
+          transaction: () => {
+            const tx: Record<string, unknown> = {};
+            tx.objectStore = () => ({
+              get: () => {
+                const g = { result: value } as { result: unknown };
+                queueMicrotask(() => (tx.oncomplete as () => void)());
+                return g;
+              },
+            });
+            return tx;
+          },
+        };
+        (req.onsuccess as () => void)();
+      });
+      return req;
+    });
+    vi.stubGlobal("indexedDB", { open });
+    return open;
+  }
+
+  beforeEach(async () => {
+    localStorage.clear();
+    await resetCredentialStoreForTests();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  it("兩份都沒有 → empty，而且什麼都不寫（不像 credential() 會產生一顆）", async () => {
+    vi.stubGlobal("indexedDB", undefined);
+    expect(await peekCredential()).toEqual({ state: "empty" });
+    expect(localStorage.getItem("oc_owner_bootstrap")).toBeNull();
+  });
+
+  it("只有 localStorage 有 → present", async () => {
+    localStorage.setItem("oc_owner_bootstrap", TOKEN);
+    expect(await peekCredential()).toEqual({ state: "present", token: TOKEN });
+  });
+
+  it("只有 IndexedDB 有（localStorage 被清）→ present", async () => {
+    fakeIdb(TOKEN);
+    expect(await peekCredential()).toEqual({ state: "present", token: TOKEN });
+    expect(localStorage.getItem("oc_owner_bootstrap")).toBeNull();
+  });
+
+  it("IndexedDB 與 localStorage 都讀成功而且都沒有 → empty", async () => {
+    fakeIdb(undefined);
+    expect(await peekCredential()).toEqual({ state: "empty" });
+  });
+
+  it("形狀不對的值不算憑證", async () => {
+    localStorage.setItem("oc_owner_bootstrap", "bad value");
+    fakeIdb("also bad");
+    expect(await peekCredential()).toEqual({ state: "empty" });
+  });
+
+  it("IndexedDB 報錯、localStorage 空 → unreadable（不是 empty）", async () => {
+    vi.stubGlobal("indexedDB", { open: () => {
+      const req: Record<string, unknown> = { error: new Error("denied") };
+      queueMicrotask(() => (req.onerror as () => void)());
+      return req;
+    } });
+    expect(await peekCredential()).toEqual({ state: "unreadable" });
+  });
+
+  it("IndexedDB 永遠不回應 → 逾時後 unreadable；但 localStorage 有就仍是 present", async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal("indexedDB", { open: () => ({ onsuccess: null, onerror: null }) });
+    const hung = peekCredential();
+    await vi.advanceTimersByTimeAsync(IDB_TIMEOUT_MS + 1);
+    expect(await hung).toEqual({ state: "unreadable" });
+    localStorage.setItem("oc_owner_bootstrap", TOKEN);
+    const second = peekCredential();
+    await vi.advanceTimersByTimeAsync(IDB_TIMEOUT_MS + 1);
+    expect(await second).toEqual({ state: "present", token: TOKEN });
+  });
+
+  it("localStorage 丟例外、IndexedDB 空 → unreadable", async () => {
+    fakeIdb(undefined);
+    vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => { throw new Error("blocked"); });
+    expect(await peekCredential()).toEqual({ state: "unreadable" });
+    vi.restoreAllMocks();
   });
 });
