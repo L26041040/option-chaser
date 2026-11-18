@@ -25,6 +25,10 @@ import {
 } from "./api";
 import { FAMILY_LABELS } from "./family";
 
+/** 區塊的 DOM id：機會搜尋頁「調整門檻」連到 `#/settings/opportunity`
+ *  時，手機版設定頁捲到這裡（OS-05／#394）。 */
+export const OPPORTUNITY_SETTINGS_ID = "settings-opportunity";
+
 type Threshold = "percentile_max" | "dispersion_max";
 
 const THRESHOLDS: Array<{ key: Threshold; label: string; hint: string }> = [
@@ -148,7 +152,8 @@ export default function OpportunitySearchSettings({
   }
 
   return (
-    <section className="card settings-section" aria-label="機會搜尋">
+    <section className="card settings-section" aria-label="機會搜尋"
+             id={OPPORTUNITY_SETTINGS_ID}>
       <h3 className="settings-usage-title">機會搜尋</h3>
 
       {THRESHOLDS.map(({ key, label, hint }) => (

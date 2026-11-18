@@ -121,6 +121,27 @@ export function HomeIcon({ size = 20 }: { size?: number }) {
   );
 }
 
+/** 放大鏡圖示——手機版底部導覽的「機會」分頁（OS-05／#394）。 */
+export function SearchIcon({ size = 20 }: { size?: number }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      width={size}
+      height={size}
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={2}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+      className="icon-glyph"
+    >
+      <circle cx="11" cy="11" r="7" />
+      <line x1="21" y1="21" x2="16.65" y2="16.65" />
+    </svg>
+  );
+}
+
 
 /** 重新整理圖示（OG-09／#319，手機頂欄 `MobileTopBar` 的刷新按鈕；
  *  比照 artifact `Mobile-Library.dc.html` `.mnav` 圖示——弧形箭頭＋

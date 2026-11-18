@@ -14,6 +14,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import App from "./App";
 import sampleRow from "../contracts/scenario_row_sample.json";
+import consensusSample from "../contracts/opportunity_consensus_sample.json";
+import searchSample from "../contracts/opportunity_search_sample.json";
 import { fakeMediaQueryList } from "./test-setup";
 
 /**
@@ -2333,5 +2335,101 @@ describe("SW-13（PR #344 P2）：首頁 usage summary 在操作成功後即時�
     }
 
     expect(usageCalls()).toBe(2);
+  });
+});
+
+describe("機會搜尋頁（OS-05／#394）：路由、導覽與存成劇本", () => {
+  const consensus = consensusSample as unknown as Record<string, unknown>;
+  const search = { ...(searchSample as unknown as Record<string, unknown>), remaining: [] };
+
+  function opportunityBackend(role: "normal" | "superuser" | "superadmin") {
+    const created = {
+      ...(sampleRow as unknown as Record<string, unknown>),
+      id: "opp-new", symbol: "AAA", target_price: 120, target_month: "2027-09",
+      latest_analyzed_at: null, best_return: null,
+    };
+    const ok = (body: unknown) => ({ ok: true, status: 200, json: async () => body });
+    const spy = vi.fn(withRefreshRunBridge(async (url: string, init?: RequestInit) => {
+      if (url === "/api/auth/status") return ok({ role });
+      if (url === "/api/opportunity/consensus") return ok(consensus);
+      if (url === "/api/opportunity/search") return ok(search);
+      if (url === "/api/scenarios" && init?.method === "POST") return ok(created);
+      if (url === "/api/scenarios") return ok([]);
+      if (url === "/api/scenarios/opp-new/refresh") return ok(created);
+      if (url.startsWith("/api/scenarios/opp-new")) return ok({ ...created, latest_result: null });
+      if (url === "/api/me/usage-summary") {
+        return ok({ active_scenarios: 0, max_active_scenarios: 10, quota_exempt: true,
+                    last_activity_at: null, best_return: null, best_return_symbol: null,
+                    best_return_strategy: null, best_return_target_month: null });
+      }
+      return { ok: false, status: 404, json: async () => ({ detail: `not mocked: ${url}` }) };
+    }));
+    vi.stubGlobal("fetch", spy);
+    return spy;
+  }
+
+  afterEach(() => {
+    window.location.hash = "";
+  });
+
+  it("手機 SU：底部導覽多一格「機會」且為目前頁；存成劇本送出該列 scenario、" +
+     "接著刷新那個新劇本並導到詳細頁", async () => {
+    window.location.hash = "#/opportunity";
+    const spy = opportunityBackend("superuser");
+    render(<App />);
+
+    expect(await screen.findByRole("heading", { name: "機會搜尋" })).toBeInTheDocument();
+    const nav = screen.getByRole("navigation", { name: "主要導覽" });
+    const tab = await within(nav).findByRole("link", { name: /機會/ });
+    expect(tab).toHaveAttribute("href", "#/opportunity");
+    expect(tab).toHaveAttribute("aria-current", "page");
+
+    await userEvent.click(await screen.findByRole("button", { name: "搜尋選擇權" }));
+    const results = await screen.findByRole("region", { name: "搜尋結果" });
+    const row = await within(results).findByRole("row", { name: /^AAA Long Call/ });
+    await userEvent.click(within(row).getByRole("button", { name: "存成劇本" }));
+
+    await waitFor(() => expect(window.location.hash).toBe("#/s/opp-new"));
+    const posts = spy.mock.calls.filter(
+      ([u, init]) => u === "/api/scenarios" && init?.method === "POST");
+    expect(posts).toHaveLength(1);
+    expect(JSON.parse(String(posts[0][1]?.body)))
+      .toEqual((searchSample as { rows: { scenario: unknown }[] }).rows[1].scenario);
+    await waitFor(() => expect(spy.mock.calls.some(
+      ([u, init]) => u === "/api/scenarios/refresh-run"
+        && JSON.parse(String(init?.body)).scenario_ids?.includes("opp-new"))).toBe(true));
+  });
+
+  it("手機 Normal：沒有「機會」分頁；直接打網址導回首頁", async () => {
+    window.location.hash = "#/opportunity";
+    const spy = opportunityBackend("normal");
+    render(<App />);
+
+    await waitFor(() => expect(window.location.hash).toBe("#/"));
+    const nav = await screen.findByRole("navigation", { name: "主要導覽" });
+    expect(within(nav).queryByRole("link", { name: /機會/ })).not.toBeInTheDocument();
+    expect(spy.mock.calls.filter(([u]) => String(u).startsWith("/api/opportunity")))
+      .toEqual([]);
+  });
+
+  it("桌面 SA：頂欄有「機會搜尋」且為目前頁", async () => {
+    stubDesktopViewport();
+    window.location.hash = "#/opportunity";
+    opportunityBackend("superadmin");
+    render(<App />);
+    expect(await screen.findByRole("heading", { name: "機會搜尋" })).toBeInTheDocument();
+    const top = screen.getByRole("navigation", { name: "主導覽" });
+    const link = await within(top).findByRole("link", { name: "機會搜尋" });
+    expect(link).toHaveAttribute("href", "#/opportunity");
+    expect(link).toHaveAttribute("aria-current", "page");
+  });
+
+  it("桌面 Normal：頂欄沒有機會搜尋入口", async () => {
+    stubDesktopViewport();
+    opportunityBackend("normal");
+    render(<App />);
+    const top = await screen.findByRole("navigation", { name: "主導覽" });
+    await screen.findByRole("button", { name: "重新整理" });
+    expect(within(top).queryByRole("link", { name: "機會搜尋" })).not.toBeInTheDocument();
   });
 });

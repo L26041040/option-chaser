@@ -29,12 +29,12 @@ import {
 } from "./api";
 import DeleteMyData from "./DeleteMyData";
 import FeedbackForm from "./FeedbackForm";
-import OpportunitySearchSettings from "./OpportunitySearchSettings";
+import OpportunitySearchSettings, { OPPORTUNITY_SETTINGS_ID } from "./OpportunitySearchSettings";
 import Diagnostics from "./Diagnostics";
 import DisclaimerSection from "./DisclaimerSection";
 import { getAuthStatusCached, getSettingsCached, setSettingsCache } from "./fetchCache";
 import RoleLogin from "./RoleLogin";
-import { adminHash } from "./route";
+import { adminHash, settingsSectionFromHash } from "./route";
 import { roleAtLeast, type Role } from "./superuser";
 import { useIsDesktop } from "./useIsDesktop";
 
@@ -117,7 +117,11 @@ export default function Settings() {
   const isDesktop = useIsDesktop();
   // OG-11（#322）：桌面版 subnav 目前選中哪一塊——手機版不需要這個
   // state（單欄堆疊全部一次顯示），只在 `isDesktop` 分支使用。
-  const [activeSection, setActiveSection] = useState<SettingsSection>("general");
+  // OS-05（#394）：從機會搜尋頁「調整門檻」（`#/settings/opportunity`）
+  // 進來時直接停在那一塊——桌面選中分頁，手機（單欄堆疊）載入後捲過去。
+  const [linkedSection] = useState(() => settingsSectionFromHash(window.location.hash));
+  const [activeSection, setActiveSection] =
+    useState<SettingsSection>(linkedSection ?? "general");
 
   // 角色查詢跟 `RoleLogin` 共用同一份快取（只有第一個真的發請求）。
   // 查不到時當作 Normal——跟 `RoleLogin` 查詢失敗「維持現況」一致，
@@ -133,6 +137,12 @@ export default function Settings() {
       release();
     };
   }, []);
+
+  const opportunityReady = view !== null && roleAtLeast(roleState ?? "normal", "superuser");
+  useEffect(() => {
+    if (isDesktop || linkedSection !== "opportunity" || !opportunityReady) return;
+    document.getElementById(OPPORTUNITY_SETTINGS_ID)?.scrollIntoView({ block: "start" });
+  }, [isDesktop, linkedSection, opportunityReady]);
 
   // Normal User 的設定頁只有「刪除我的資料」「免責聲明」與底部登入——
   // Data / API、診斷、管理中心入口都只給登入後的角色，Normal 連掛載都

@@ -53,6 +53,7 @@ import Footer from "./Footer";
 import MobileStatsStrip from "./MobileStatsStrip";
 import MobileTopBar from "./MobileTopBar";
 import AdminPage from "./AdminPage";
+import OpportunityPage from "./OpportunityPage";
 import PrivacyPage from "./PrivacyPage";
 import ScenarioDetail from "./ScenarioDetail";
 import ScenarioList from "./ScenarioList";
@@ -72,11 +73,13 @@ import {
   refreshRun,
   refreshScenario,
   toFailure,
+  type CreateScenarioRequest,
   type RefreshFailure,
   type ScenarioSummary,
 } from "./api";
 import {
   isAdminHash,
+  isOpportunityHash,
   isPrivacyHash,
   isSettingsHash,
   isTrashHash,
@@ -348,6 +351,9 @@ export default function App() {
   // 隱私頁不屬於任何工作區脈絡，手機與桌面共用同一個渲染路徑（見下方
   // 最優先的 early return，排在 `isDesktop` 判斷之前）。
   const showPrivacy = isPrivacyHash(hash);
+  // OS-05（#394）：機會搜尋頁，同一套 hash 慣例；角色守門在
+  // `OpportunityPage` 自己身上（只給 Super User／Super Admin）。
+  const showOpportunity = isOpportunityHash(hash);
   const isDesktop = useIsDesktop();
 
   // 手機版返回劇本庫要停在原本的捲動位置（MVP-v2／#77、#83）：手機版
@@ -446,6 +452,22 @@ export default function App() {
     // （`create_scenario()`），這裡只是它的自動後續，不是獨立的
     // 第二次真人操作。
     void runBatch([created.id]);
+  }
+
+  /**
+   * OS-05（#394）機會搜尋頁的「存成劇本」：走跟 `create()` 同一條既有
+   * 路徑——既有建立端點（額度等規則照舊，失敗時例外原樣往外拋給機會搜尋
+   * 頁顯示）→ 併進清單 → usage summary 失效 → 只刷新這一個新劇本。
+   * 不碰建立表單（收合／捲動／聚焦是劇本庫畫面的收尾，這裡呼叫端接著會
+   * 導到詳細頁）。`scenario` 原封不動送出，與手動建立同參數劇本相同。
+   */
+  async function saveAsScenario(scenario: CreateScenarioRequest): Promise<ScenarioSummary> {
+    const created = await createScenario(scenario);
+    setRows((prev) => [...prev, created]);
+    setError(null);
+    invalidateUsageSummary();
+    void runBatch([created.id]);
+    return created;
   }
 
   /** 點卡片上的編輯：把原資料交給既有表單並展開它。
@@ -690,6 +712,16 @@ export default function App() {
     );
   }
 
+  if (!isDesktop && showOpportunity) {
+    return (
+      <>
+        <OpportunityPage onSaveAsScenario={saveAsScenario} />
+        <Footer />
+        <BottomNav active="opportunity" />
+      </>
+    );
+  }
+
   if (!isDesktop && showTrash) {
     return (
       <>
@@ -845,6 +877,8 @@ export default function App() {
     <TrashView onRestore={restoreFromTrash} />
   ) : showAdmin ? (
     <AdminPage />
+  ) : showOpportunity ? (
+    <OpportunityPage onSaveAsScenario={saveAsScenario} />
   ) : showSettings ? (
     <Settings />
   ) : detailProps ? (
@@ -890,7 +924,8 @@ export default function App() {
   return (
     <div className="desktop-shell">
       <TopBar
-        active={showSettings || showAdmin ? "settings" : showTrash ? "trash" : "library"}
+        active={showSettings || showAdmin ? "settings" : showTrash ? "trash"
+          : showOpportunity ? "opportunity" : "library"}
         onOpenCreate={() => setShowCreateForm(true)}
         createOpen={showCreateForm}
         createPanelId={createPanelId}

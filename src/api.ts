@@ -1344,7 +1344,7 @@ export interface OpportunityRow {
   family: string;
   subtype: string;
   candidate_key: string;
-  legs: { strike: number; option_type: string; side: string; quantity: number }[];
+  legs: RepresentativeCandidateLeg[];
   expiry: string;
   target_month: string;
   buffer_days: number;

@@ -878,6 +878,40 @@ describe("OG-11（#322）：桌面版左側 subnav（手機版單欄堆疊零改
     expect(screen.queryByText("Data / API")).not.toBeInTheDocument();
   });
 
+  it("桌面：從機會搜尋頁的「調整門檻」連結（#/settings/opportunity）進來，" +
+     "直接停在「機會搜尋」分頁（OS-05／#394）", async () => {
+    goDesktop();
+    window.location.hash = "#/settings/opportunity";
+    try {
+      mockApi([view()], { role: "superuser" });
+      render(<Settings />);
+      await readyDesktop();
+
+      expect(screen.getByRole("tab", { name: "機會搜尋" }))
+        .toHaveAttribute("aria-selected", "true");
+      expect(await screen.findByRole("region", { name: "機會搜尋" })).toBeInTheDocument();
+    } finally {
+      window.location.hash = "";
+    }
+  });
+
+  it("手機：從 #/settings/opportunity 進來，載入後捲到「機會搜尋」區塊（OS-05／#394）",
+     async () => {
+    window.location.hash = "#/settings/opportunity";
+    const scrolled: Element[] = [];
+    vi.spyOn(Element.prototype, "scrollIntoView").mockImplementation(function (this: Element) {
+      scrolled.push(this);
+    });
+    try {
+      mockApi([view()], { role: "superuser" });
+      render(<Settings />);
+      const block = await screen.findByRole("region", { name: "機會搜尋" });
+      await waitFor(() => expect(scrolled).toContain(block));
+    } finally {
+      window.location.hash = "";
+    }
+  });
+
   it("桌面：Super Admin 的 subnav 不再有「管理後台」分頁，改成旁邊一個" +
      "進入管理中心的入口；Settings 本身不掛管理面板", async () => {
     goDesktop();
