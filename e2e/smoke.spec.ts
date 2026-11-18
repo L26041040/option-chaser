@@ -1408,6 +1408,15 @@ test("手機垃圾桶：全選後批次動作立刻在視窗內可操作（QA-FI
 
 /* ---------- 設定頁（Settings／#124） ---------- */
 
+const OPPORTUNITY_SEARCH_DEFAULTS = {
+  universe_id: "sample-large-cap",
+  custom_symbols: [] as string[],
+  percentile_max: 20,
+  dispersion_max: 10,
+  strategies: ["single-leg", "vertical-spread", "butterfly"],
+  sort: "return",
+};
+
 const SETTINGS_VIEW = {
   supported_providers: [{ id: "marketdata-app", label: "Market Data App" }],
   market_data: { mode: "default", provider: null, default_label: "Cboe" },
@@ -1420,6 +1429,19 @@ const SETTINGS_VIEW = {
   },
   market_data_effective: { source: "Cboe", fallback: false, reason: null },
   historical_iv_enabled: false,
+  // OS-02（#391）：機會搜尋設定（後端沒存過時回的預設值）與其選項。
+  opportunity_search: OPPORTUNITY_SEARCH_DEFAULTS,
+  opportunity_search_options: {
+    universes: [
+      { id: "sample-large-cap", label: "大型股樣本（暫定，清單來源待 #382）",
+        provisional: true, symbol_count: 50 },
+      { id: "custom", label: "自訂清單", provisional: false, symbol_count: null },
+    ],
+    strategies: ["single-leg", "vertical-spread", "butterfly"],
+    sorts: ["return", "cost", "max_loss"],
+    custom_symbols_max: 50,
+    defaults: OPPORTUNITY_SEARCH_DEFAULTS,
+  },
   updated_at: null,
 };
 
@@ -1544,6 +1566,35 @@ test("手機版：未登入的設定頁只有意見回饋、刪除我的資料�
   await expect(page.getByText("Data / API")).toHaveCount(0);
   await expect(page.getByRole("region", { name: "Diagnostics" })).toHaveCount(0);
   await expect(page.getByRole("link", { name: /進入管理中心/ })).toHaveCount(0);
+  await expect(page.getByRole("region", { name: "機會搜尋" })).toHaveCount(0);
+});
+
+test("手機版：Super Admin 的「機會搜尋」區塊——恢復預設真的送出、版面不橫向" +
+     "捲動（OS-02／#391）", async ({ page }) => {
+  await routeSettingsMobile(page);
+  const puts: unknown[] = [];
+  await page.route("**/api/settings", (route) => {
+    if (route.request().method() === "PUT") puts.push(route.request().postDataJSON());
+    return route.fulfill({ json: SETTINGS_VIEW });
+  });
+  await page.goto("/#/settings");
+
+  const block = page.getByRole("region", { name: "機會搜尋" });
+  await expect(block).toBeVisible();
+  await expect(block.getByText("大型股樣本（暫定，清單來源待 #382）")).toBeVisible();
+  const percentile = block.getByLabel("共識百分位門檻（%）");
+  await percentile.fill("35");
+  await block.getByRole("button", { name: "恢復預設" }).first().click();
+
+  await expect(block.getByRole("status")).toHaveText("已恢復預設（20%）");
+  await expect(percentile).toHaveValue("20");
+  expect(puts).toEqual([{
+    market_data: { mode: "default", provider: null },
+    historical_iv: { mode: "default", provider: null },
+    opportunity_search: { percentile_max: 20 },
+  }]);
+  expect(await page.evaluate(
+    () => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 });
 
 test("手機版：Normal User 送出意見回饋——只有稱呼與內容，成功後清空內容" +

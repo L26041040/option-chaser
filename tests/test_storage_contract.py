@@ -19,12 +19,13 @@ from api_app.diagnostics import RETENTION_LIMIT, DiagnosticEvent
 from api_app.storage import (RETIRED_TABLES, BrowserIdentity, ChainBackoffEntry,
                              ContractHistory, DataSourceSettings,
                              DividendCacheEntry, IvBackfillRun, IvObservation,
-                             Owner, ProviderCredential,
+                             Owner, OwnerSettingsBundle, ProviderCredential,
                              ProviderVerification, RateCacheEntry,
                              RateLimitBucket, ResolvedCredential, ResultRecord,
                              RoleSession, Scenario,
                              ScenarioExists, SuperUserAuditEvent,
-                             TreasuryYearCacheEntry, UsageSetting)
+                             TreasuryYearCacheEntry, UsageSetting,
+                             settings_bundle_merge_plan)
 from api_app.storage.memory import MemoryStorage
 
 TEST_DB_URL = os.environ.get("OC_TEST_DATABASE_URL")
@@ -2089,6 +2090,32 @@ def test_settings_start_out_unset(storage):
 def test_saved_settings_read_back_identically(storage):
     storage.save_settings(_settings())
     assert storage.get_settings(owner=OWNER) == _settings()
+
+
+def test_opportunity_search_roundtrips_inside_the_settings_row(storage):
+    """OS-02（#391）：選填鍵跟兩列資料源存在同一份 JSON，不需要 DDL。"""
+    opp = {"universe_id": "custom", "custom_symbols": ["TSLA", "BRK.B"],
+           "percentile_max": 12.5, "dispersion_max": 8.0,
+           "strategies": ["single-leg", "butterfly"], "sort": "cost"}
+    storage.save_settings(replace(_settings(), opportunity_search=opp))
+    got = storage.get_settings(owner=OWNER)
+    assert got.opportunity_search == opp
+    assert got.market_data == _settings().market_data
+
+
+def test_settings_saved_without_opportunity_search_read_it_back_as_none(storage):
+    storage.save_settings(_settings())
+    assert storage.get_settings(owner=OWNER).opportunity_search is None
+
+
+def test_differing_opportunity_search_is_a_settings_conflict():
+    """搬遷比對把它當設定內容：兩邊不同就不能替使用者挑一份。"""
+    a = _settings()
+    b = replace(a, opportunity_search={"sort": "cost"})
+    conflicts, redundant = settings_bundle_merge_plan(
+        OwnerSettingsBundle(settings=a, credentials={}, verifications={}),
+        OwnerSettingsBundle(settings=b, credentials={}, verifications={}))
+    assert conflicts == ["owner_settings"] and redundant == []
 
 
 def test_saving_settings_again_overwrites_the_single_row(storage):

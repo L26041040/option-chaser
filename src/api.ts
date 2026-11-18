@@ -872,6 +872,20 @@ function isRevokedCredentialRefusal(resp: Response): boolean {
   return resp.status === 409 && resp.headers?.get(IDENTITY_STATE_HEADER) === "unknown";
 }
 
+/**
+ * OS-02（#391）：FastAPI 422 的物件陣列裡，後端自己寫的 `ValueError`
+ * 訊息（pydantic 會加上 `"Value error, "` 前綴）是給人看的中文句子——
+ * 取第一則顯示。pydantic 內建的英文型別錯誤不在此列，仍退回通用訊息，
+ * 不把英文技術字串直接丟到畫面上。
+ */
+function validationMessage(detail: unknown): string | null {
+  if (!Array.isArray(detail)) return null;
+  const msg = (detail[0] as { msg?: unknown } | undefined)?.msg;
+  const prefix = "Value error, ";
+  return typeof msg === "string" && msg.startsWith(prefix)
+    ? msg.slice(prefix.length) : null;
+}
+
 async function request<T>(url: string, apiInit?: ApiInit): Promise<T> {
   const { mayCreateUser = false, ...init } = apiInit ?? {};
   let resp = mayCreateUser
@@ -913,7 +927,8 @@ async function request<T>(url: string, apiInit?: ApiInit): Promise<T> {
       }
     }
     const message =
-      typeof detail === "string" ? detail : `請求失敗（HTTP ${resp.status}）`;
+      typeof detail === "string" ? detail
+        : validationMessage(detail) ?? `請求失敗（HTTP ${resp.status}）`;
     throw new ApiError(message, null, correlationId);
   }
   // TR3（#90）：永久刪除回 204 No Content——沒有主體可解析，`.json()`
@@ -1212,8 +1227,46 @@ export interface SettingsView {
    *  重推這條規則，推兩份遲早漂移，而漂移的後果正好是 AC 禁止的
    *  「畫面以為鎖著、其實已經發了請求」。 */
   historical_iv_enabled: boolean;
+  /** OS-02（#391）：機會搜尋設定——沒存過時後端回預設值，不會缺。 */
+  opportunity_search: OpportunitySearchSettings;
+  /** 設定頁要用的選項與預設值，由後端給（母體文案、家族、排序不在前端
+   *  另寫一份）。 */
+  opportunity_search_options: OpportunitySearchOptions;
   updated_at: string | null;
 }
+
+/** OS-02（#391）：Settings 選填鍵 `opportunity_search`。兩道門檻是百分比
+ *  數字 0–100（20 ＝ 20%）。 */
+export interface OpportunitySearchSettings {
+  universe_id: string;
+  custom_symbols: string[];
+  percentile_max: number;
+  dispersion_max: number;
+  strategies: string[];
+  sort: "return" | "cost" | "max_loss";
+}
+
+export interface UniverseOption {
+  id: string;
+  label: string;
+  /** 清單來源尚未定案（#382）——畫面照實標示，不包裝成正式清單。 */
+  provisional: boolean;
+  symbol_count: number | null;
+}
+
+export interface OpportunitySearchOptions {
+  universes: UniverseOption[];
+  strategies: string[];
+  sorts: OpportunitySearchSettings["sort"][];
+  custom_symbols_max: number;
+  defaults: OpportunitySearchSettings;
+}
+
+/** PUT 時的 `opportunity_search`：欄位層級的部分更新，沒送的欄位後端沿用
+ *  已存的值；值的驗證一律交給後端（前端不先吞掉不合法的輸入）。 */
+export type OpportunitySearchPatch = {
+  [K in keyof OpportunitySearchSettings]?: OpportunitySearchSettings[K] | string;
+};
 
 /** 送出時只需要模式與 provider，`default_label` 是後端給的顯示用資訊。 */
 export interface UsageChoice {
@@ -1228,6 +1281,8 @@ export function getSettings(signal?: AbortSignal): Promise<SettingsView> {
 export function saveSettings(body: {
   market_data: UsageChoice;
   historical_iv: UsageChoice;
+  /** 省略＝後端保留已存的機會搜尋設定（OS-02／#391）。 */
+  opportunity_search?: OpportunitySearchPatch;
 }): Promise<SettingsView> {
   return request<SettingsView>("/api/settings", {
     method: "PUT",

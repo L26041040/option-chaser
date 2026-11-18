@@ -584,8 +584,12 @@ def _usage_from_dict(d: dict | None) -> UsageSetting:
 
 
 def _settings_blob(settings: DataSourceSettings) -> dict:
-    return {"market_data": _usage_to_dict(settings.market_data),
+    blob = {"market_data": _usage_to_dict(settings.market_data),
             "historical_iv": _usage_to_dict(settings.historical_iv)}
+    # OS-02（#391）：選填鍵——沒存過就不寫這個鍵，舊資料的 JSON 形狀不變。
+    if settings.opportunity_search is not None:
+        blob["opportunity_search"] = settings.opportunity_search
+    return blob
 
 
 def _settings_from_row(row, owner_id: str | None) -> DataSourceSettings:
@@ -593,7 +597,8 @@ def _settings_from_row(row, owner_id: str | None) -> DataSourceSettings:
     return DataSourceSettings(
         market_data=_usage_from_dict(blob.get("market_data")),
         historical_iv=_usage_from_dict(blob.get("historical_iv")),
-        updated_at=row[1], owner_id=owner_id)
+        updated_at=row[1], owner_id=owner_id,
+        opportunity_search=blob.get("opportunity_search"))
 
 
 def _row_to_scenario(row) -> Scenario:

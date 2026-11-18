@@ -568,6 +568,10 @@ class DataSourceSettings:
     historical_iv: UsageSetting
     updated_at: str
     owner_id: str | None = None
+    # OS-02（#391）：機會搜尋的選填設定（已驗證、正規化的完整 dict，
+    # 契約見 `api_app/opportunity_settings.py`）。`None`＝從沒存過，讀取端
+    # 一律回預設。跟兩列資料源存在同一份 JSON 裡，不需要 DDL。
+    opportunity_search: dict | None = None
 
 
 @dataclass(frozen=True)
@@ -1643,7 +1647,8 @@ class OwnerSettingsBundle:
 
 def _settings_equivalent(a: DataSourceSettings, b: DataSourceSettings) -> bool:
     # updated_at 只是寫入時間，不是設定內容。
-    return a.market_data == b.market_data and a.historical_iv == b.historical_iv
+    return (a.market_data == b.market_data and a.historical_iv == b.historical_iv
+            and a.opportunity_search == b.opportunity_search)
 
 
 def _credential_equivalent(a: ProviderCredential, b: ProviderCredential) -> bool:

@@ -24,6 +24,7 @@ from typing import Callable, Literal
 from urllib.parse import urlsplit
 
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import Response
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -37,7 +38,7 @@ from option_chaser.service import DividendLoader, RateCurveLoader
 from option_chaser.timeframe import (TargetMonth, calendar_anchor,
                                      ensure_month_open, month_is_over)
 
-from . import abuse_control, data_lifecycle, main_account
+from . import abuse_control, data_lifecycle, main_account, opportunity_settings
 from . import (anonymous_lifecycle, chain_backoff, diagnostics, metrics,
               ops_alerts, providers, superuser, vendor_fuse)
 from .clock import now_utc_iso, ny_today
@@ -508,6 +509,10 @@ class UsageRequest(BaseModel):
 class SettingsRequest(BaseModel):
     market_data: UsageRequest
     historical_iv: UsageRequest
+    # OS-02（#391）：選填。**省略＝保留已存的值**——只送既有兩鍵的舊版
+    # 前端（例如只存資料來源）不能順手把機會搜尋設定抹掉。送了也只更新
+    # 有送的欄位（`opportunity_settings.merge()`）。
+    opportunity_search: opportunity_settings.OpportunitySearchRequest | None = None
 
 
 class CredentialRequest(BaseModel):
@@ -3842,6 +3847,11 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
             # 「畫面以為鎖著、其實已經發了請求」這種正好違反 AC 的狀態。
             "historical_iv_enabled": _historical_iv_enabled(
                 usages[providers.HISTORICAL_IV], creds),
+            # OS-02（#391）：沒存過就是預設；選項清單與預設值也由後端給，
+            # 前端不自己寫一份母體文案或家族清單。
+            "opportunity_search": opportunity_settings.effective(
+                stored.opportunity_search if stored else None),
+            "opportunity_search_options": opportunity_settings.options(),
             "updated_at": stored.updated_at if stored else None,
         }
 
@@ -3882,12 +3892,29 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
 
     @app.put("/api/settings")
     def put_settings(req: SettingsRequest) -> dict:
+        owner = _persistent_owner()
+        stored = _db().get_settings(owner=owner)
+        previous = stored.opportunity_search if stored else None
+        opportunity = previous
+        if req.opportunity_search is not None:
+            try:
+                opportunity = opportunity_settings.merge(previous,
+                                                         req.opportunity_search)
+            except opportunity_settings.OpportunitySearchInvalid as e:
+                # 跨欄位規則合併後才看得出來；組成與欄位驗證相同形狀的
+                # 422，前端只需要認一種錯誤格式。
+                raise RequestValidationError([{
+                    "type": "value_error",
+                    "loc": ("body", "opportunity_search", e.field),
+                    "msg": f"Value error, {e}",
+                    "input": None}]) from None
         _db().save_settings(DataSourceSettings(
             market_data=UsageSetting(mode=req.market_data.mode,
                                      provider=req.market_data.provider),
             historical_iv=UsageSetting(mode=req.historical_iv.mode,
                                        provider=req.historical_iv.provider),
-            updated_at=now_utc_iso(), owner_id=_persistent_owner()))
+            updated_at=now_utc_iso(), owner_id=owner,
+            opportunity_search=opportunity))
         # 刻意不寫事件紀錄：這條路徑上有 provider id 沒問題，但把設定變更
         # 寫進 append-only 紀錄會讓「token 絕不進事件紀錄」這條 AC 從
         # 「結構上不可能」退成「靠這裡沒寫錯」。設定是單一狀態、不是需要

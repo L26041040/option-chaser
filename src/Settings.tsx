@@ -29,6 +29,7 @@ import {
 } from "./api";
 import DeleteMyData from "./DeleteMyData";
 import FeedbackForm from "./FeedbackForm";
+import OpportunitySearchSettings from "./OpportunitySearchSettings";
 import Diagnostics from "./Diagnostics";
 import DisclaimerSection from "./DisclaimerSection";
 import { getAuthStatusCached, getSettingsCached, setSettingsCache } from "./fetchCache";
@@ -47,18 +48,19 @@ import { useIsDesktop } from "./useIsDesktop";
  * 設定，Super Admin 另外多一個進入管理中心的入口。
  */
 type SettingsSection =
-  | "general" | "datasource" | "diagnostics" | "delete" | "disclaimer";
+  | "general" | "datasource" | "opportunity" | "diagnostics" | "delete" | "disclaimer";
 
 const SECTION_LABELS: Record<SettingsSection, string> = {
   general: "一般",
   datasource: "資料來源",
+  opportunity: "機會搜尋",
   diagnostics: "診斷",
   delete: "刪除我的資料",
   disclaimer: "免責聲明",
 };
 
 const SECTION_ORDER: SettingsSection[] =
-  ["general", "datasource", "diagnostics", "delete", "disclaimer"];
+  ["general", "datasource", "opportunity", "diagnostics", "delete", "disclaimer"];
 
 /** 兩列的識別鍵——與後端 `api_app/providers.py` 的 `USAGES` 同名。 */
 type UsageKey = "market_data" | "historical_iv";
@@ -253,6 +255,21 @@ export default function Settings() {
     </>
   );
 
+  // OS-02（#391）：機會搜尋區塊——同樣只有 Super User／Super Admin 走得到。
+  // 它自己管草稿與存檔；存好後回來的 view 更新這裡與共用快取，但**不**
+  // 重設 Data / API 的草稿（那邊還沒按儲存的修改不該被別塊的存檔蓋掉）。
+  const opportunityPanel = !view ? (
+    <p className="caption">載入中……</p>
+  ) : (
+    <OpportunitySearchSettings
+      view={view}
+      onSaved={(next) => {
+        setView(next);
+        setSettingsCache(next);
+      }}
+    />
+  );
+
   const head = (
     <div className="settings-head">
       <a className="nav-back" href="#/">
@@ -326,6 +343,7 @@ export default function Settings() {
               <RoleLogin role={role} onChange={setRole} />
             )}
             {activeSection === "datasource" && datasourcePanel}
+            {activeSection === "opportunity" && opportunityPanel}
             {activeSection === "diagnostics" && <Diagnostics />}
             {activeSection === "delete" && <DeleteMyData />}
             {activeSection === "disclaimer" && <DisclaimerSection />}
@@ -338,6 +356,8 @@ export default function Settings() {
           {adminEntry}
 
           {datasourcePanel}
+
+          {opportunityPanel}
 
           <Diagnostics />
 

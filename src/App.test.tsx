@@ -2008,6 +2008,10 @@ describe("SW-10（#340）／PB-12（#302）：全站常駐頁尾；首頁 Beta �
   it("CLAUDE-SETTINGS-ROLE-IA-001：Super Admin 從設定頁的入口進到獨立管理中心，" +
      "重設權限後管理中心不再可用", async () => {
     let role = "superadmin";
+    const OPP_DEFAULTS = {
+      universe_id: "sample-large-cap", custom_symbols: [], percentile_max: 20,
+      dispersion_max: 10, strategies: ["single-leg"], sort: "return",
+    };
     const spy = vi.fn(async (url: string) => {
       const u = String(url);
       if (u.startsWith("/api/auth/status")) {
@@ -2036,6 +2040,12 @@ describe("SW-10（#340）／PB-12（#302）：全站常駐頁尾；首頁 Beta �
           credentials: {},
           market_data_effective: { source: "Cboe", fallback: false, reason: null },
           historical_iv_enabled: false, updated_at: null,
+          // OS-02（#391）：Super Admin 的設定頁也掛著機會搜尋區塊。
+          opportunity_search: OPP_DEFAULTS,
+          opportunity_search_options: {
+            universes: [], strategies: [], sorts: ["return"],
+            custom_symbols_max: 50, defaults: OPP_DEFAULTS,
+          },
         }) };
       }
       if (u === "/api/scenarios/refresh-run") {

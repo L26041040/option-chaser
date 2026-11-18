@@ -1295,6 +1295,15 @@ test("桌面主劇本庫：批次選取後動作列同樣吸底（QA-FIX-4／QA-
 
 /* ---------- 設定頁（Settings／#124） ---------- */
 
+const OPPORTUNITY_SEARCH_DEFAULTS = {
+  universe_id: "sample-large-cap",
+  custom_symbols: [] as string[],
+  percentile_max: 20,
+  dispersion_max: 10,
+  strategies: ["single-leg", "vertical-spread", "butterfly"],
+  sort: "return",
+};
+
 const settingsView = {
   supported_providers: [{ id: "marketdata-app", label: "Market Data App" }],
   market_data: { mode: "default", provider: null, default_label: "Cboe" },
@@ -1307,6 +1316,19 @@ const settingsView = {
   },
   market_data_effective: { source: "Cboe", fallback: false, reason: null },
   historical_iv_enabled: false,
+  // OS-02（#391）：機會搜尋設定（後端沒存過時回的預設值）與其選項。
+  opportunity_search: OPPORTUNITY_SEARCH_DEFAULTS,
+  opportunity_search_options: {
+    universes: [
+      { id: "sample-large-cap", label: "大型股樣本（暫定，清單來源待 #382）",
+        provisional: true, symbol_count: 50 },
+      { id: "custom", label: "自訂清單", provisional: false, symbol_count: null },
+    ],
+    strategies: ["single-leg", "vertical-spread", "butterfly"],
+    sorts: ["return", "cost", "max_loss"],
+    custom_symbols_max: 50,
+    defaults: OPPORTUNITY_SEARCH_DEFAULTS,
+  },
   updated_at: null,
 };
 
