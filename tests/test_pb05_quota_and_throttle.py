@@ -184,11 +184,14 @@ def test_max_active_scenarios_can_be_set_via_environment_variable(monkeypatch):
 # ---------- 結構性：刷新入口只有既有兩個 ----------
 
 def test_refresh_capable_routes_are_still_exactly_the_existing_two():
+    # `/api/cron/*`（例如 OS-03／#392 的 consensus-refresh）只接受
+    # CRON_SECRET、不刷新任何劇本，不是使用者可觸發的刷新入口。
     c = _client()
     refresh_routes = sorted(
         (route.path, tuple(sorted(route.methods)))
         for route in c.app.routes
-        if "refresh" in getattr(route, "path", ""))
+        if "refresh" in getattr(route, "path", "")
+        and not route.path.startswith("/api/cron/"))
     assert refresh_routes == [
         ("/api/scenarios/refresh-run", ("POST",)),
         ("/api/scenarios/{scenario_id}/refresh", ("POST",)),

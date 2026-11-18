@@ -38,7 +38,8 @@ from option_chaser.service import DividendLoader, RateCurveLoader
 from option_chaser.timeframe import (TargetMonth, calendar_anchor,
                                      ensure_month_open, month_is_over)
 
-from . import abuse_control, data_lifecycle, main_account, opportunity_settings
+from . import abuse_control, consensus_cache, data_lifecycle, main_account, opportunity_settings
+from .analyst_source import AnalystSource
 from . import (anonymous_lifecycle, chain_backoff, diagnostics, metrics,
               ops_alerts, providers, superuser, vendor_fuse)
 from .clock import now_utc_iso, ny_today
@@ -875,6 +876,7 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
                storage_alert_cap_bytes: int | None = None,
                cleanup_missed_days_threshold: int | None = None,
                chain_error_rate_threshold: float | None = None,
+               analyst_source: AnalystSource | None = None,
                ) -> FastAPI:
     """`fetch`／`storage`／`rate_loader`／`dividend_loader` 皆可注入：
     測試傳入固定快照、記憶體假體與假來源，因此不打真網路、不碰真資料庫，
@@ -960,6 +962,11 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
     設計——production 永遠只有一條路徑（cookie），這條分支只服務主動
     選擇繞過它的呼叫端（既有 `test_scale06`／`test_scale11` 大量依賴
     這個 DI 注入點做多身份隔離測試）。
+
+    `analyst_source`（OS-03／#392）：分析師目標價資料來源
+    （`api_app.analyst_source.AnalystSource`）。**預設 `None`＝尚未設定**：
+    本輪沒有任何真實來源，共識清單回 `configured: false`、每日 cron
+    回 `skipped`。測試與本機驗證腳本才注入 `FixtureAnalystSource`。
 
     `cron_secret`（SCALE-07／#257，Treasury Cron）：`GET /api/cron/
     warm-rate-cache` 驗證 `Authorization: Bearer <cron_secret>` 用的
@@ -1997,6 +2004,25 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         curve, note = _rate_curve_loader()(ny_today())
         return {"ok": curve is not None, "note": note}
 
+    # ---------- 分析師共識每日更新（OS-03／#392） ----------
+
+    @app.get("/api/cron/consensus-refresh")
+    def cron_consensus_refresh(request: Request) -> dict:
+        """每日一次（`vercel.json` crons）。來源未設定時什麼都不做。
+
+        母體 = 大型股樣本 ∪ 所有 owner 的自訂清單；同一交易日每檔最多抓
+        一次上游，一次呼叫受 `refresh_run_budget` 約束，跑不完的由下一次
+        觸發接續（游標＝每檔的 attempted_day，見 `api_app/consensus_cache.py`）。
+        授權失敗先驗證再動作，比照其他 cron。"""
+        if not _cron_authorized(request):
+            raise HTTPException(status_code=401, detail="unauthorized")
+        if analyst_source is None:
+            return {"skipped": "source_not_configured"}
+        deadline = time.monotonic() + refresh_run_budget.total_seconds()
+        return consensus_cache.refresh_symbols(
+            _db(), analyst_source, consensus_cache.refresh_universe(_db()),
+            ny_today(), budget_exhausted=lambda: time.monotonic() >= deadline)
+
     # ---------- 匿名擁有者生命週期清理（PB-08／#300） ----------
 
     @app.get("/api/cron/cleanup-abandoned-owners")
@@ -2219,7 +2245,8 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
             identity_unknown_today=identity_unknown,
             identity_heals_today=identity_heals,
             identity_unknown_writes_refused_today=identity_unknown_refused,
-            identity_cookie_renewals_today=identity_renewals)
+            identity_cookie_renewals_today=identity_renewals,
+            consensus=consensus_cache.digest_counts(_db(), analyst_source, today))
 
     # ---------- S0 最小可觀測性（SCALE-08／#258） ----------
 
@@ -3854,6 +3881,25 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
             "opportunity_search_options": opportunity_settings.options(),
             "updated_at": stored.updated_at if stored else None,
         }
+
+    # ---------- 機會搜尋：共識清單（OS-03／#392） ----------
+
+    def _require_opportunity_role() -> None:
+        """資料顯示授權未確認前只開放 SU／SA（#389 §7）；Normal 回 403。"""
+        if superuser.current_role() < superuser.Role.SUPERUSER:
+            raise HTTPException(status_code=403,
+                                detail="機會搜尋目前只開放 Super User／Super Admin")
+
+    @app.get("/api/opportunity/consensus")
+    def opportunity_consensus() -> dict:
+        """共識清單：只讀全站共識快取、不打上游；讀取時才套用這位使用者的
+        兩道門檻（`opportunity_search` 設定），改門檻立即生效。"""
+        _require_opportunity_role()
+        stored = _db().get_settings(owner=identity_resolver())
+        opportunity = opportunity_settings.effective(
+            stored.opportunity_search if stored else None)
+        return consensus_cache.consensus_view(_db(), analyst_source, opportunity,
+                                              ny_today())
 
     def _historical_iv_enabled(iv: UsageSetting, creds: dict[str, dict]) -> bool:
         """Historical IV 模組解鎖的唯一判準（#126）。

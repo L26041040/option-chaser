@@ -1268,6 +1268,63 @@ export type OpportunitySearchPatch = {
   [K in keyof OpportunitySearchSettings]?: OpportunitySearchSettings[K] | string;
 };
 
+/** OS-03（#392）：`GET /api/opportunity/consensus` 的回應（只限 SU／SA）。
+ *  形狀以 `contracts/opportunity_consensus_sample.json` 為準。比例欄位
+ *  （dispersion／percentile／freshness_share）是 0–1；`thresholds` 是使用者
+ *  設定的百分比 0–100。`source.is_fixture` 為真時畫面必須標示
+ *  「測試資料，非真實市場資料」；`source.configured` 為假時 `items` 為空、
+ *  帶 `message`。 */
+export interface OpportunityConsensusResponse {
+  source: { configured: boolean; name: string | null; is_fixture: boolean };
+  universe: {
+    id: string;
+    label: string;
+    provisional: boolean;
+    symbols: number;
+    with_data: number;
+    insufficient: number;
+    coverage: Record<string, number>;
+    as_of: string | null;
+  };
+  thresholds: { percentile_max: number; dispersion_max: number };
+  rules: { rules_version: string; provisional: boolean } & Record<string, unknown>;
+  items: ConsensusItem[];
+  message?: string;
+}
+
+export type ConsensusStatus =
+  | "ok" | "insufficient_analysts" | "insufficient_history" | "stale"
+  | "no_data" | "source_error" | "split_unresolved";
+
+export interface ConsensusItem {
+  symbol: string;
+  status: ConsensusStatus;
+  as_of: string | null;
+  n_analysts: number;
+  mean: number | null;
+  stdev: number | null;
+  dispersion: number | null;
+  percentile: number | null;
+  history_points: number;
+  coverage: string | null;
+  freshness_share: number | null;
+  high: number | null;
+  low: number | null;
+  median_published_on: string | null;
+  reasons: string[];
+  gate: { first: boolean; second: boolean; selected: boolean; reasons: string[] };
+  target_month: string | null;
+  rules_version: string | null;
+  /** 最新一次更新失敗、沿用上一份資料時才有（`as_of` 照實是上一份的日期）。 */
+  refresh_error: { day: string; message: string } | null;
+}
+
+export function getOpportunityConsensus(
+  signal?: AbortSignal,
+): Promise<OpportunityConsensusResponse> {
+  return request<OpportunityConsensusResponse>("/api/opportunity/consensus", { signal });
+}
+
 /** 送出時只需要模式與 provider，`default_label` 是後端給的顯示用資訊。 */
 export interface UsageChoice {
   mode: "default" | "custom";

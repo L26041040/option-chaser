@@ -24,7 +24,8 @@ import psycopg
 from psycopg.types.json import Jsonb
 
 from . import (RevokedCredential, identity_token_hash, require_tombstone_reason, LEGACY_SINGLETON_TABLES, RETIRED_TABLES, SCENARIO_CHILD_TABLES,
-               BrowserIdentity, ChainBackoffEntry, ContractHistory,
+               BrowserIdentity, ChainBackoffEntry, ConsensusRefreshState,
+               ConsensusSnapshotRecord, ContractHistory,
                ResolvedCredential,
                DataSourceSettings, DividendCacheEntry, Feedback, IvBackfillRun,
                IvObservation, LineageReport, MetricEntry, Owner,
@@ -163,6 +164,25 @@ CREATE TABLE IF NOT EXISTS dividend_cache (
     last_success_at   TEXT,
     market_day        TEXT,
     attempted_day     TEXT
+);
+-- 分析師共識快取（OS-03／#392）：**全站共用、不含 owner**。每個 symbol
+-- 每個美東交易日一筆 Snapshot（point-in-time 稽核紀錄，跨天累積）。
+CREATE TABLE IF NOT EXISTS consensus_snapshots (
+    symbol            TEXT NOT NULL,
+    as_of             TEXT NOT NULL,
+    source            TEXT NOT NULL,
+    is_fixture        BOOLEAN NOT NULL,
+    snapshot          JSONB NOT NULL,
+    computed_at       TEXT NOT NULL,
+    PRIMARY KEY (symbol, as_of)
+);
+-- 每個 symbol 最後一次向資料來源嘗試的狀態（同日最多抓一次＋cron 游標）。
+CREATE TABLE IF NOT EXISTS consensus_refresh_state (
+    symbol            TEXT PRIMARY KEY,
+    source            TEXT NOT NULL,
+    attempted_day     TEXT NOT NULL,
+    attempted_at      TEXT NOT NULL,
+    error             TEXT
 );
 -- Treasury 利率曲線列快取（PERF-03／#179）：per-year——歷史 reconstruction
 -- 逐一觀測日查表，任何歷史日期的查詢結構上只可能被它所在年份的這筆
@@ -1153,6 +1173,69 @@ class PostgresStorage:
                  entry.note, entry.last_success_at, entry.market_day,
                  entry.attempted_day))
 
+    # ---------- 分析師共識快取（OS-03／#392） ----------
+
+    def save_consensus_snapshot(self, record: ConsensusSnapshotRecord) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO consensus_snapshots "
+                "(symbol, as_of, source, is_fixture, snapshot, computed_at) "
+                "VALUES (%s, %s, %s, %s, %s, %s) "
+                "ON CONFLICT (symbol, as_of) DO UPDATE "
+                "SET source = EXCLUDED.source, is_fixture = EXCLUDED.is_fixture, "
+                "snapshot = EXCLUDED.snapshot, computed_at = EXCLUDED.computed_at",
+                (record.symbol, record.as_of, record.source, record.is_fixture,
+                 Jsonb(record.snapshot), record.computed_at))
+
+    def latest_consensus_snapshots(self, symbols: Sequence[str], *,
+                                   source: str) -> dict[str, ConsensusSnapshotRecord]:
+        symbols = list(symbols)
+        if not symbols:
+            return {}
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT DISTINCT ON (symbol) symbol, as_of, source, is_fixture, "
+                "snapshot, computed_at FROM consensus_snapshots "
+                "WHERE symbol = ANY(%s) AND source = %s "
+                "ORDER BY symbol, as_of DESC", (symbols, source)).fetchall()
+        return {r[0]: ConsensusSnapshotRecord(symbol=r[0], as_of=r[1], source=r[2],
+                                              is_fixture=r[3], snapshot=r[4],
+                                              computed_at=r[5])
+                for r in rows}
+
+    def save_consensus_refresh_state(self, state: ConsensusRefreshState) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO consensus_refresh_state "
+                "(symbol, source, attempted_day, attempted_at, error) "
+                "VALUES (%s, %s, %s, %s, %s) "
+                "ON CONFLICT (symbol) DO UPDATE "
+                "SET source = EXCLUDED.source, "
+                "attempted_day = EXCLUDED.attempted_day, "
+                "attempted_at = EXCLUDED.attempted_at, error = EXCLUDED.error",
+                (state.symbol, state.source, state.attempted_day,
+                 state.attempted_at, state.error))
+
+    def consensus_refresh_states(self) -> dict[str, ConsensusRefreshState]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT symbol, source, attempted_day, attempted_at, error "
+                "FROM consensus_refresh_state").fetchall()
+        return {r[0]: ConsensusRefreshState(symbol=r[0], source=r[1],
+                                            attempted_day=r[2], attempted_at=r[3],
+                                            error=r[4])
+                for r in rows}
+
+    def opportunity_custom_symbols(self) -> list[str]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT DISTINCT jsonb_array_elements_text("
+                "settings->'opportunity_search'->'custom_symbols') "
+                "FROM owner_settings "
+                "WHERE jsonb_typeof(settings->'opportunity_search'->'custom_symbols') "
+                "= 'array'").fetchall()
+        return sorted(r[0] for r in rows)
+
     # ---------- Treasury 曲線列快取（PERF-03／#179，per-year） ----------
 
     def get_treasury_year_cache(self, year: int) -> TreasuryYearCacheEntry | None:
@@ -1351,7 +1434,8 @@ class PostgresStorage:
         "superuser_audit_log", "rate_limits", "operational_metrics",
         "feedback", "iv_observations", "iv_backfill_runs", "contract_iv_history",
         "rate_cache", "dividend_cache", "treasury_year_cache", "chain_backoff",
-        "main_account", "owner_merge_archive", "identity_tombstones")
+        "main_account", "owner_merge_archive", "identity_tombstones",
+        "consensus_snapshots", "consensus_refresh_state")
 
     def table_row_counts(self) -> dict[str, dict]:
         out: dict[str, dict] = {}
@@ -1401,7 +1485,8 @@ class PostgresStorage:
         **明確不觸碰**的 shared market facts 表（system-wide，與任何
         單一 owner 無關）：`rate_cache`／`treasury_year_cache`／
         `dividend_cache`／`chain_backoff`／`operational_metrics`／
-        `contract_iv_history`／`iv_observations`／`iv_backfill_runs`
+        `contract_iv_history`／`iv_observations`／`iv_backfill_runs`／
+        `consensus_snapshots`／`consensus_refresh_state`
         ——這些表結構上就沒有 `owner_id` 欄位，本方法從不觸碰它們。
 
         刪除 `browser_identities`／`owners` 的理由（PB-04 §7

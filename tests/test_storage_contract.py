@@ -17,6 +17,7 @@ from dataclasses import replace
 
 from api_app.diagnostics import RETENTION_LIMIT, DiagnosticEvent
 from api_app.storage import (RETIRED_TABLES, BrowserIdentity, ChainBackoffEntry,
+                             ConsensusRefreshState, ConsensusSnapshotRecord,
                              ContractHistory, DataSourceSettings,
                              DividendCacheEntry, IvBackfillRun, IvObservation,
                              Owner, OwnerSettingsBundle, ProviderCredential,
@@ -90,7 +91,8 @@ def storage(request):
                      "iv_observations, iv_backfill_runs, contract_iv_history, "
                      "diagnostics, operational_metrics, "
                      "owners, browser_identities, superuser_audit_log, "
-                     "role_sessions, rate_limits, feedback, identity_tombstones "
+                     "role_sessions, rate_limits, feedback, identity_tombstones, "
+                     "consensus_snapshots, consensus_refresh_state "
                      "RESTART IDENTITY")
     yield st
 
@@ -536,6 +538,84 @@ def test_rate_cache_overwrites_rather_than_accumulates(storage):
     entry = storage.get_rate_cache()
     assert entry.fetched_at == "2026-08-05T06:00:00+00:00"
     assert entry.note == "Treasury 曲線 2026-08-05"
+
+
+# ---------- 分析師共識快取（OS-03／#392，全站共用、不含 owner） ----------
+#
+# 每個 symbol 每個交易日一筆 Snapshot（point-in-time 稽核紀錄），另外
+# 每個 symbol 一筆「最後一次嘗試」狀態（attempted_day＋錯誤），供「同一
+# 交易日最多抓一次上游」與 cron 接續判斷。
+
+
+def _consensus_record(symbol="AAA", as_of="2026-09-28", *, source="fixture",
+                      status="ok", is_fixture=True):
+    return ConsensusSnapshotRecord(
+        symbol=symbol, as_of=as_of, source=source, is_fixture=is_fixture,
+        snapshot={"symbol": symbol, "as_of": as_of, "status": status,
+                  "mean": "120.5", "reasons": []},
+        computed_at=f"{as_of}T14:00:00+00:00")
+
+
+def test_consensus_cache_starts_empty(storage):
+    assert storage.latest_consensus_snapshots(["AAA"], source="fixture") == {}
+    assert storage.consensus_refresh_states() == {}
+
+
+def test_consensus_snapshot_roundtrips(storage):
+    rec = _consensus_record()
+    storage.save_consensus_snapshot(rec)
+    assert storage.latest_consensus_snapshots(["AAA"], source="fixture") == {"AAA": rec}
+
+
+def test_consensus_snapshots_keep_one_row_per_trading_day_and_return_the_latest(storage):
+    storage.save_consensus_snapshot(_consensus_record(as_of="2026-09-25"))
+    storage.save_consensus_snapshot(_consensus_record(as_of="2026-09-28"))
+    storage.save_consensus_snapshot(_consensus_record(as_of="2026-09-24"))
+    got = storage.latest_consensus_snapshots(["AAA"], source="fixture")
+    assert got["AAA"].as_of == "2026-09-28"
+
+
+def test_consensus_snapshot_same_day_is_overwritten_not_duplicated(storage):
+    storage.save_consensus_snapshot(_consensus_record(status="stale"))
+    storage.save_consensus_snapshot(_consensus_record(status="ok"))
+    got = storage.latest_consensus_snapshots(["AAA"], source="fixture")
+    assert got["AAA"].snapshot["status"] == "ok"
+
+
+def test_consensus_snapshots_are_filtered_by_symbol_and_source(storage):
+    storage.save_consensus_snapshot(_consensus_record("AAA"))
+    storage.save_consensus_snapshot(_consensus_record("BBB"))
+    storage.save_consensus_snapshot(
+        _consensus_record("CCC", source="other", is_fixture=False))
+    got = storage.latest_consensus_snapshots(["AAA", "CCC", "ZZZ"], source="fixture")
+    assert set(got) == {"AAA"}
+    other = storage.latest_consensus_snapshots(["CCC"], source="other")
+    assert other["CCC"].is_fixture is False
+
+
+def test_consensus_refresh_state_is_one_row_per_symbol(storage):
+    first = ConsensusRefreshState(symbol="AAA", source="fixture",
+                                  attempted_day="2026-09-25",
+                                  attempted_at="2026-09-25T10:00:00+00:00",
+                                  error="逾時")
+    storage.save_consensus_refresh_state(first)
+    later = replace(first, attempted_day="2026-09-28",
+                    attempted_at="2026-09-28T10:00:00+00:00", error=None)
+    storage.save_consensus_refresh_state(later)
+    storage.save_consensus_refresh_state(replace(first, symbol="BBB"))
+    assert storage.consensus_refresh_states() == {"AAA": later,
+                                                  "BBB": replace(first, symbol="BBB")}
+
+
+def test_opportunity_custom_symbols_unions_every_owner_settings(storage):
+    storage.save_settings(_settings(owner="o1"))  # 沒存 opportunity_search
+    storage.save_settings(replace(_settings(owner="o2"), opportunity_search={
+        "universe_id": "custom", "custom_symbols": ["TSLA", "BRK.B"]}))
+    storage.save_settings(replace(_settings(owner="o3"), opportunity_search={
+        "universe_id": "sample-large-cap", "custom_symbols": ["PLTR", "TSLA"]}))
+    storage.save_settings(replace(_settings(owner="o4"), opportunity_search={
+        "sort": "cost"}))
+    assert storage.opportunity_custom_symbols() == ["BRK.B", "PLTR", "TSLA"]
 
 
 # ---------- 配息資料快取（#123，per-symbol） ----------

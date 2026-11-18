@@ -271,6 +271,39 @@ class DividendCacheEntry:
 
 
 @dataclass(frozen=True)
+class ConsensusSnapshotRecord:
+    """分析師共識快取的一筆（OS-03／#392）：某 symbol 在某美東交易日
+    `as_of` 由資料來源 `source` 算出的 Consensus Snapshot。**全站共用、
+    不含 owner**——同一檔股票的共識不因人而異。
+
+    每個 (symbol, as_of) 一筆；同一天重算覆蓋，跨天累積成 point-in-time
+    稽核紀錄（保存年限待 #385/#386，本輪不修剪）。`snapshot` 是
+    `api_app.consensus_cache.snapshot_to_dict()` 的輸出（Decimal 存成
+    字串，不失精度）。`is_fixture` 為真代表這筆來自測試用固定資料，
+    畫面必須標示「測試資料，非真實市場資料」。"""
+    symbol: str
+    as_of: str               # YYYY-MM-DD（美東交易日）
+    source: str
+    is_fixture: bool
+    snapshot: dict
+    computed_at: str
+
+
+@dataclass(frozen=True)
+class ConsensusRefreshState:
+    """每個 symbol 最後一次向分析師資料來源嘗試的狀態（OS-03／#392）。
+
+    `attempted_day` 是「同一交易日最多抓一次上游」的依據，也是每日 cron
+    的進度游標（最久沒嘗試的先跑，跑不完的下次接續）。`error` 非 `None`
+    代表那次失敗——上一份成功的 Snapshot 原樣保留。"""
+    symbol: str
+    source: str
+    attempted_day: str       # YYYY-MM-DD（美東）
+    attempted_at: str        # ISO UTC
+    error: str | None = None
+
+
+@dataclass(frozen=True)
 class TreasuryYearCacheEntry:
     """Treasury 利率曲線列的快取，**per-year**（PERF-03／#179）——鍵是
     年份，不是「今天」：歷史 reconstruction 對任一觀測日 D 的查詢，結構
@@ -933,6 +966,26 @@ class Storage(Protocol):
     def save_dividend_cache(self, entry: DividendCacheEntry) -> None:
         """覆蓋該 symbol 既有那一筆——per-symbol 單一狀態，不是歷史序列。"""
 
+    # ---------- 分析師共識快取（OS-03／#392，全站共用、不含 owner） ----------
+
+    def save_consensus_snapshot(self, record: ConsensusSnapshotRecord) -> None:
+        """upsert 一筆 (symbol, as_of)：同一天覆蓋，跨天累積。"""
+
+    def latest_consensus_snapshots(self, symbols: Sequence[str], *,
+                                   source: str) -> dict[str, ConsensusSnapshotRecord]:
+        """每個 symbol 由 `source` 產生的最新一筆（as_of 最大）。沒有任何
+        紀錄的 symbol 不出現在回傳的 dict 裡。一次查完，不逐檔連線。"""
+
+    def save_consensus_refresh_state(self, state: ConsensusRefreshState) -> None:
+        """覆蓋該 symbol 的嘗試狀態——per-symbol 單一狀態。"""
+
+    def consensus_refresh_states(self) -> dict[str, ConsensusRefreshState]:
+        """全部 symbol 的最後一次嘗試狀態（數量 ≈ 母體大小，數百筆以內）。"""
+
+    def opportunity_custom_symbols(self) -> list[str]:
+        """所有 owner 的 `opportunity_search.custom_symbols` 聯集（排序、
+        去重）——每日共識更新的母體之一。只回 ticker，不回任何 owner 資訊。"""
+
     # ---------- Treasury 曲線列快取（PERF-03／#179，per-year） ----------
 
     def get_treasury_year_cache(self, year: int) -> TreasuryYearCacheEntry | None:
@@ -1264,7 +1317,8 @@ class Storage(Protocol):
         **明確不觸碰**的 shared market facts 表（system-wide，與任何
         單一 owner 無關）：`rate_cache`／`treasury_year_cache`／
         `dividend_cache`／`chain_backoff`／`operational_metrics`／
-        `contract_iv_history`／`iv_observations`／`iv_backfill_runs`
+        `contract_iv_history`／`iv_observations`／`iv_backfill_runs`／
+        `consensus_snapshots`／`consensus_refresh_state`
         ——這些表結構上沒有 `owner_id` 欄位。
 
         **單一交易內完成**（postgres 無 FK cascade，全部手動
@@ -1309,7 +1363,7 @@ class Storage(Protocol):
         settings／credentials／verifications；`role_sessions`（執行 reset 的
         Super Admin 不會被自己踢出去）；`superuser_audit_log`；全部 shared
         market cache（rate／dividend／treasury／IV／contract history／
-        chain_backoff）。
+        chain_backoff／analyst consensus）。
 
         回傳 `{名稱: 受影響列數}`（`owner_activity` 是被歸零的 protected
         owner 數）。冪等：已經是乾淨狀態時全部為 0。"""

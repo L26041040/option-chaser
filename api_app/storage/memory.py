@@ -17,7 +17,8 @@ from contextlib import contextmanager
 from ..clock import now_utc_iso
 from . import (RevokedCredential, identity_token_hash, require_tombstone_reason, RETIRED_TABLES, SCENARIO_CHILD_TABLES, BrowserIdentity,
                ResolvedCredential,
-               ChainBackoffEntry, ContractHistory,
+               ChainBackoffEntry, ConsensusRefreshState,
+               ConsensusSnapshotRecord, ContractHistory,
                DataSourceSettings, DividendCacheEntry, Feedback, IvBackfillRun,
                IvObservation, LineageReport, MetricEntry, Owner,
                OwnerLifecycleFacts, OwnerMigrationConflict, OwnerSettingsBundle,
@@ -61,6 +62,9 @@ class MemoryStorage:
         self._events: list[dict] = []
         self._rate_cache: RateCacheEntry | None = None
         self._dividend_cache: dict[str, DividendCacheEntry] = {}
+        # OS-03（#392）：分析師共識快取——鍵 (symbol, as_of)／symbol。
+        self._consensus_snapshots: dict[tuple[str, str], ConsensusSnapshotRecord] = {}
+        self._consensus_refresh_state: dict[str, ConsensusRefreshState] = {}
         self._treasury_year_cache: dict[int, TreasuryYearCacheEntry] = {}
         self._chain_backoff: dict[str, ChainBackoffEntry] = {}
         # PB-01（#292，Anonymous Public Beta）：owner registry ＋
@@ -329,6 +333,35 @@ class MemoryStorage:
 
     def save_dividend_cache(self, entry: DividendCacheEntry) -> None:
         self._dividend_cache[entry.symbol] = entry
+
+    # ---------- 分析師共識快取（OS-03／#392） ----------
+
+    def save_consensus_snapshot(self, record: ConsensusSnapshotRecord) -> None:
+        self._consensus_snapshots[(record.symbol, record.as_of)] = record
+
+    def latest_consensus_snapshots(self, symbols: Sequence[str], *,
+                                   source: str) -> dict[str, ConsensusSnapshotRecord]:
+        wanted = set(symbols)
+        out: dict[str, ConsensusSnapshotRecord] = {}
+        for (symbol, as_of), rec in self._consensus_snapshots.items():
+            if symbol not in wanted or rec.source != source:
+                continue
+            if symbol not in out or as_of > out[symbol].as_of:
+                out[symbol] = rec
+        return out
+
+    def save_consensus_refresh_state(self, state: ConsensusRefreshState) -> None:
+        self._consensus_refresh_state[state.symbol] = state
+
+    def consensus_refresh_states(self) -> dict[str, ConsensusRefreshState]:
+        return dict(self._consensus_refresh_state)
+
+    def opportunity_custom_symbols(self) -> list[str]:
+        out: set[str] = set()
+        for settings in self._owner_settings.values():
+            opp = settings.opportunity_search or {}
+            out.update(opp.get("custom_symbols") or ())
+        return sorted(out)
 
     # ---------- Treasury 曲線列快取（PERF-03／#179，per-year） ----------
 
