@@ -39,6 +39,7 @@ from option_chaser.timeframe import (TargetMonth, calendar_anchor,
                                      ensure_month_open, month_is_over)
 
 from . import abuse_control, consensus_cache, data_lifecycle, main_account, opportunity_settings
+from . import opportunity_search
 from .analyst_source import AnalystSource
 from . import (anonymous_lifecycle, chain_backoff, diagnostics, metrics,
               ops_alerts, providers, superuser, vendor_fuse)
@@ -877,6 +878,7 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
                cleanup_missed_days_threshold: int | None = None,
                chain_error_rate_threshold: float | None = None,
                analyst_source: AnalystSource | None = None,
+               opportunity_fetch_cap: int | None = None,
                ) -> FastAPI:
     """`fetch`／`storage`／`rate_loader`／`dividend_loader` 皆可注入：
     測試傳入固定快照、記憶體假體與假來源，因此不打真網路、不碰真資料庫，
@@ -967,6 +969,11 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
     （`api_app.analyst_source.AnalystSource`）。**預設 `None`＝尚未設定**：
     本輪沒有任何真實來源，共識清單回 `configured: false`、每日 cron
     回 `skipped`。測試與本機驗證腳本才注入 `FixtureAnalystSource`。
+
+    `opportunity_fetch_cap`（OS-04／#393）：一次機會搜尋最多處理幾檔
+    （入選數或 `symbols` 超過就只取前 N 檔、回應標 `truncated`）。`None`
+    讀環境變數 `OPPORTUNITY_FETCH_CAP`，再落回
+    `opportunity_search.DEFAULT_FETCH_CAP`（50，數值待 #386）。
 
     `cron_secret`（SCALE-07／#257，Treasury Cron）：`GET /api/cron/
     warm-rate-cache` 驗證 `Authorization: Bearer <cron_secret>` 用的
@@ -1208,6 +1215,10 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
     _effective_global_vendor_daily_budget = (
         global_vendor_daily_budget if global_vendor_daily_budget is not None
         else _env_int("GLOBAL_VENDOR_DAILY_BUDGET", GLOBAL_VENDOR_DAILY_BUDGET))
+    # OS-04（#393）：同一套慣例；至少 1 檔（0 或負數沒有「停用搜尋」的意思）。
+    _effective_opportunity_fetch_cap = max(1, (
+        opportunity_fetch_cap if opportunity_fetch_cap is not None
+        else _env_int("OPPORTUNITY_FETCH_CAP", opportunity_search.DEFAULT_FETCH_CAP)))
     # PB-08（#300）：同一套注入／環境變數慣例，但**沒有**「`<=0` 停用」
     # 語意——Codex P1（PR #346）：這三個是清理的天數，0 或負數不是
     # 「關掉清理」，而是「立刻就可以刪」。照其他變數的 `<=0` 慣例設下去
@@ -3900,6 +3911,115 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
             stored.opportunity_search if stored else None)
         return consensus_cache.consensus_view(_db(), analyst_source, opportunity,
                                               ny_today())
+
+    # ---------- 機會搜尋：跨標的搜尋（OS-04／#393） ----------
+
+    @app.post("/api/opportunity/search")
+    def opportunity_search_run(body: opportunity_search.SearchRequest) -> dict:
+        """為共識入選股逐檔跑**既有**分析，回傳每個家族的代表候選摘要列。
+
+        - 省略 `symbols` ＝ 共識清單的入選集合（`consensus_cache.
+          selected_items()`，與 `GET /api/opportunity/consensus` 同一份）；
+          傳了必須是它的子集（續跑時傳回上次的 `remaining`），否則 400。
+          超過 `fetch_cap` 只取前 N 檔、`truncated: true`。
+        - 每檔：`target_price = mean`、`target_month` 取清單項目（#390 暫定
+          規則）→ **既有** `_fetch_chain()`（Global Vendor Fuse、429 退避）
+          → **既有** `_analyze()` → `opportunity_search.rows_for_symbol()`
+          （既有 `store.representative_candidates_by_family()` 投影）。搜尋
+          自己不算任何損益／報酬／成本、不過濾；完整 view 不落地。
+        - 沿用 Refresh Run 的 `refresh_run_group_limit`（每次一檔）與
+          `refresh_run_budget`；其餘放 `remaining`。`processed` ∪
+          `remaining` ＝ 本次輸入，互不重疊；`failures` ⊆ `processed`。
+        - Global Vendor Fuse 熔斷：停止、該檔與其後全部回 `remaining`、
+          `stopped_reason: "fused"`，`message` 沿用既有降級文案。
+        """
+        _require_opportunity_role()
+        if analyst_source is None:
+            raise HTTPException(status_code=409,
+                                detail=consensus_cache.NOT_CONFIGURED_MESSAGE)
+        db = _db()
+        today = ny_today()
+        stored = db.get_settings(owner=identity_resolver())
+        settings = opportunity_settings.effective(
+            stored.opportunity_search if stored else None)
+        families = [f for f in FAMILIES
+                    if f in (body.strategies or settings["strategies"])]
+        sort = body.sort or settings["sort"]
+        selected = {i["symbol"]: i for i in consensus_cache.selected_items(
+            db, analyst_source, settings, today)}
+        if body.symbols is None:
+            requested = list(selected)
+        else:
+            requested = list(dict.fromkeys(body.symbols))
+            outside = [s for s in requested if s not in selected]
+            if outside:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"這些代號不在目前的入選清單：{'、'.join(outside)}")
+        cap = _effective_opportunity_fetch_cap
+        queue, truncated = requested[:cap], len(requested) > cap
+        subtypes = subtypes_of(normalize_families(families))
+
+        rows: list[dict] = []
+        failures: list[dict] = []
+        processed: list[str] = []
+        remaining: list[str] = []
+        stopped_reason: str | None = None
+        message: str | None = None
+        fetches_used = 0
+        deadline = time.monotonic() + refresh_run_budget.total_seconds()
+
+        def fail(symbol: str, reason: str, text: str, **extra) -> None:
+            failures.append({"symbol": symbol, "reason": reason,
+                             "message": text, **extra})
+
+        for index, symbol in enumerate(queue):
+            if fetches_used and (fetches_used >= refresh_run_group_limit
+                                 or time.monotonic() >= deadline):
+                remaining = queue[index:]
+                break
+            item = selected[symbol]
+            month = item["target_month"]
+            if month is None or month_is_over(TargetMonth.from_key(month), today):
+                processed.append(symbol)
+                fail(symbol, "invalid_month", f"{symbol} 的目標月份無效，略過")
+                continue
+            scenario = opportunity_search.scenario_params(symbol, item, month, families)
+            fetches_used += 1
+            try:
+                snap = _fetch_chain(symbol)
+            except FetchError as e:
+                detail = _classify_fetch_failure(db, e, symbol).detail
+                if isinstance(e, vendor_fuse.GlobalVendorFuseTripped):
+                    stopped_reason, message = "fused", detail["message"]
+                    remaining = queue[index:]
+                    break
+                processed.append(symbol)
+                fail(symbol, "fetch_failed", detail["message"], stage=detail["stage"])
+                continue
+            processed.append(symbol)
+            try:
+                view, _snapshot = _analyze(
+                    scenario_id=f"opportunity-search:{symbol}", symbol=symbol,
+                    target_price=scenario["target_price"], target_month=month,
+                    strategies=subtypes, snap=snap)
+            except HTTPException as e:
+                detail = e.detail if isinstance(e.detail, dict) else {}
+                fail(symbol, "analysis_failed",
+                     detail.get("message", str(e.detail)), stage=detail.get("stage"))
+                continue
+            found = opportunity_search.rows_for_symbol(view, item=item,
+                                                       scenario=scenario)
+            if not found:
+                fail(symbol, "no_candidates", f"{symbol} 沒有合格候選")
+                continue
+            rows.extend(found)
+        return {"rows": opportunity_search.sort_rows(rows, sort),
+                "failures": failures, "remaining": remaining,
+                "processed": processed, "fetches_used": fetches_used,
+                "fetch_cap": cap, "truncated": truncated,
+                "stopped_reason": stopped_reason, "message": message,
+                "sort": sort, "strategies": families}
 
     def _historical_iv_enabled(iv: UsageSetting, creds: dict[str, dict]) -> bool:
         """Historical IV 模組解鎖的唯一判準（#126）。

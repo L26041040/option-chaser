@@ -245,6 +245,24 @@ def _items(storage: Storage, source: AnalystSource, symbols: Sequence[str],
     return items
 
 
+def _universe_items(storage: Storage, source: AnalystSource,
+                    opportunity: dict, today: date) -> list[dict]:
+    """這位使用者母體裡每一檔的清單項目（含依其門檻算出的 `gate`）——
+    共識清單與搜尋（`selected_items()`）共用同一份，入選集合不會分家。"""
+    universe = search_universe.resolve_universe(opportunity)
+    return _items(storage, source, universe.symbols, today,
+                  _pct_to_ratio(opportunity["percentile_max"]),
+                  _pct_to_ratio(opportunity["dispersion_max"]))
+
+
+def selected_items(storage: Storage, source: AnalystSource,
+                   opportunity: dict, today: date) -> list[dict]:
+    """共識清單裡 `gate.selected` 的項目（母體順序）——機會搜尋（OS-04／
+    #393）省略 `symbols` 時的預設集合，與 `consensus_view()` 逐項相同。"""
+    return [i for i in _universe_items(storage, source, opportunity, today)
+            if i["gate"]["selected"]]
+
+
 def consensus_view(storage: Storage, source: AnalystSource | None,
                    opportunity: dict, today: date) -> dict:
     """`GET /api/opportunity/consensus` 的完整回應。`opportunity` 是
@@ -256,9 +274,7 @@ def consensus_view(storage: Storage, source: AnalystSource | None,
         items: list[dict] = []
         source_view = {"configured": False, "name": None, "is_fixture": False}
     else:
-        items = _items(storage, source, universe.symbols, today,
-                       _pct_to_ratio(thresholds["percentile_max"]),
-                       _pct_to_ratio(thresholds["dispersion_max"]))
+        items = _universe_items(storage, source, opportunity, today)
         source_view = {"configured": True, "name": source.name,
                        "is_fixture": bool(source.is_fixture)}
     with_data = [i for i in items if i["status"] not in ("no_data", "source_error")]

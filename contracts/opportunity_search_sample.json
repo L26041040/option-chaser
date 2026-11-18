@@ -1,0 +1,163 @@
+{
+  "rows": [
+    {
+      "symbol": "AAA",
+      "family": "vertical-spread",
+      "subtype": "bull-call-spread",
+      "candidate_key": "bull-call-spread|112|115|2026-12-18",
+      "legs": [
+        {
+          "strike": 112.0,
+          "option_type": "call",
+          "side": "buy",
+          "quantity": 1
+        },
+        {
+          "strike": 115.0,
+          "option_type": "call",
+          "side": "sell",
+          "quantity": 1
+        }
+      ],
+      "expiry": "2026-12-18",
+      "target_month": "2027-09",
+      "buffer_days": -273,
+      "entry_cost": 0.81,
+      "max_loss_per_contract": 81.0,
+      "target_return": 2.7037037037037033,
+      "breakeven": 112.81,
+      "consensus": {
+        "mean": 120.0,
+        "n_analysts": 7,
+        "dispersion": 0.09001028747788695,
+        "percentile": 0.13636363636363635,
+        "as_of": "2026-09-28",
+        "coverage": "partial"
+      },
+      "scenario": {
+        "symbol": "AAA",
+        "target_price": 120.0,
+        "target_month": "2027-09",
+        "strategies": [
+          "single-leg",
+          "vertical-spread",
+          "butterfly"
+        ]
+      }
+    },
+    {
+      "symbol": "AAA",
+      "family": "single-leg",
+      "subtype": "long-call",
+      "candidate_key": "long-call|106|2026-12-18",
+      "legs": [
+        {
+          "strike": 106.0,
+          "option_type": "call",
+          "side": "buy",
+          "quantity": 1
+        }
+      ],
+      "expiry": "2026-12-18",
+      "target_month": "2027-09",
+      "buffer_days": -273,
+      "entry_cost": 5.6,
+      "max_loss_per_contract": 560.0,
+      "target_return": 1.5000000000000002,
+      "breakeven": 111.6,
+      "consensus": {
+        "mean": 120.0,
+        "n_analysts": 7,
+        "dispersion": 0.09001028747788695,
+        "percentile": 0.13636363636363635,
+        "as_of": "2026-09-28",
+        "coverage": "partial"
+      },
+      "scenario": {
+        "symbol": "AAA",
+        "target_price": 120.0,
+        "target_month": "2027-09",
+        "strategies": [
+          "single-leg",
+          "vertical-spread",
+          "butterfly"
+        ]
+      }
+    },
+    {
+      "symbol": "AAA",
+      "family": "butterfly",
+      "subtype": "call-fly",
+      "candidate_key": "call-fly|103|112|115|2026-12-18",
+      "legs": [
+        {
+          "strike": 103.0,
+          "option_type": "call",
+          "side": "buy",
+          "quantity": 1
+        },
+        {
+          "strike": 112.0,
+          "option_type": "call",
+          "side": "sell",
+          "quantity": 2
+        },
+        {
+          "strike": 115.0,
+          "option_type": "call",
+          "side": "buy",
+          "quantity": 1
+        }
+      ],
+      "expiry": "2026-12-18",
+      "target_month": "2027-09",
+      "buffer_days": -273,
+      "entry_cost": 2.59,
+      "max_loss_per_contract": 259.0,
+      "target_return": 1.3166023166023166,
+      "breakeven": 105.59,
+      "consensus": {
+        "mean": 120.0,
+        "n_analysts": 7,
+        "dispersion": 0.09001028747788695,
+        "percentile": 0.13636363636363635,
+        "as_of": "2026-09-28",
+        "coverage": "partial"
+      },
+      "scenario": {
+        "symbol": "AAA",
+        "target_price": 120.0,
+        "target_month": "2027-09",
+        "strategies": [
+          "single-leg",
+          "vertical-spread",
+          "butterfly"
+        ]
+      }
+    }
+  ],
+  "failures": [
+    {
+      "symbol": "EEE",
+      "reason": "fetch_failed",
+      "message": "抓不到 EEE 的報價：測試資料模擬上游失敗",
+      "stage": "fetch"
+    }
+  ],
+  "remaining": [],
+  "processed": [
+    "AAA",
+    "EEE"
+  ],
+  "fetches_used": 2,
+  "fetch_cap": 50,
+  "truncated": false,
+  "stopped_reason": null,
+  "message": null,
+  "sort": "return",
+  "strategies": [
+    "single-leg",
+    "vertical-spread",
+    "butterfly"
+  ]
+}

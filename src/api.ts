@@ -1325,6 +1325,74 @@ export function getOpportunityConsensus(
   return request<OpportunityConsensusResponse>("/api/opportunity/consensus", { signal });
 }
 
+/** OS-04（#393）：`POST /api/opportunity/search` 的請求（每個欄位都可省略：
+ *  `symbols` 省略＝目前入選清單，續跑時傳回上次的 `remaining`；
+ *  `strategies`／`sort` 省略＝使用者設定）。 */
+export interface OpportunitySearchRequest {
+  symbols?: string[];
+  strategies?: OpportunitySearchSettings["strategies"];
+  sort?: OpportunitySearchSettings["sort"];
+}
+
+/** 一個家族的代表候選摘要列。每個數字都是既有引擎的原值：
+ *  `target_return`＝代表候選 `baseline_return`（劇本頭條同口徑）、
+ *  `entry_cost`＝`natural_cost`（每股，最差成交）、
+ *  `max_loss_per_contract`／`breakeven`／`buffer_days` 取同一個候選。
+ *  `scenario` 原封不動送進 `createScenario()` 即為「存成劇本」。 */
+export interface OpportunityRow {
+  symbol: string;
+  family: string;
+  subtype: string;
+  candidate_key: string;
+  legs: { strike: number; option_type: string; side: string; quantity: number }[];
+  expiry: string;
+  target_month: string;
+  buffer_days: number;
+  entry_cost: number;
+  max_loss_per_contract: number;
+  target_return: number;
+  breakeven: number | null;
+  consensus: {
+    mean: number;
+    n_analysts: number;
+    dispersion: number;
+    percentile: number;
+    as_of: string;
+    coverage: string;
+  };
+  scenario: CreateScenarioRequest;
+}
+
+export interface OpportunitySearchFailure {
+  symbol: string;
+  reason: "fetch_failed" | "no_candidates" | "invalid_month" | "analysis_failed";
+  message: string;
+  stage?: string | null;
+}
+
+/** 形狀以 `contracts/opportunity_search_sample.json` 為準。`remaining` 非空
+ *  時以它當 `symbols` 再呼叫一次；`stopped_reason: "fused"` 時 `message` 是
+ *  既有降級文案。 */
+export interface OpportunitySearchResponse {
+  rows: OpportunityRow[];
+  failures: OpportunitySearchFailure[];
+  remaining: string[];
+  processed: string[];
+  fetches_used: number;
+  fetch_cap: number;
+  truncated: boolean;
+  stopped_reason: "fused" | null;
+  message: string | null;
+  sort: OpportunitySearchSettings["sort"];
+  strategies: OpportunitySearchSettings["strategies"];
+}
+
+export function searchOpportunities(
+  body: OpportunitySearchRequest = {},
+): Promise<OpportunitySearchResponse> {
+  return request<OpportunitySearchResponse>("/api/opportunity/search", POST_JSON(body));
+}
+
 /** 送出時只需要模式與 provider，`default_label` 是後端給的顯示用資訊。 */
 export interface UsageChoice {
   mode: "default" | "custom";
