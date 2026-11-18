@@ -322,7 +322,7 @@ degradation／cleanup lifecycle 可驗證／CI 正常／storage 成長可
 
 ---
 
-## 選擇權機會搜尋器（設計中，未施工；`docs/spec/options-scanner/`）
+## 選擇權機會搜尋器（已施工，只接固定測試資料；真實資料源未接；規格 #389、`docs/spec/options-scanner/`）
 
 **Opportunity Search（選擇權機會搜尋器）** — 在使用者選的搜尋母體內，用分析師共識篩出
 標的並產生劇本，再由既有引擎窮舉、跨標的排序的功能。排名口徑與 Scenario Bet Ranking
@@ -351,6 +351,35 @@ _Avoid_: 推薦、預測
 **Opportunity（機會）** — 一個 Consensus Scenario 底下的一個 Candidate，放在跨標的
 比較表上的一列。它顯示的報酬是目標價成立時的條件情境報酬。
 _Avoid_: 期望報酬、勝率、預期獲利
+
+**Analyst Target Record（個別目標價紀錄）** — 一位分析師（或一家機構）對一檔股票、在某
+一天發布的**一個**目標價，附來源與抓取時間。只有共識平均／高低／中位數／人數、或只有評級
+沒有目標價的資料都**不是**這種紀錄，不得拿來算標準差。
+_Avoid_: 共識資料（指的是彙總值，不是個別紀錄）
+
+**Analyst Source（分析師資料來源）** — 回傳 Analyst Target Record（與分割事件、覆蓋程度）
+的可注入介面。目前**沒有任何真實來源**：正式站「尚未設定」（`analyst_source=None`），
+畫面照實顯示「尚未設定分析師資料來源」、不能搜尋。
+_Avoid_: 爬蟲、API key（來源未定，不預設任何供應商）
+
+**Fixture Source（固定測試資料來源）** — `FixtureAnalystSource`：讀
+`tests/fixtures/analyst_targets_fixture.json`（虛構 ticker AAA…GGG）的 Analyst Source，
+只在測試與本機驗證站注入。它的結果一路帶 `is_fixture`，畫面固定標示「測試資料，非真實
+市場資料」。
+_Avoid_: 範例資料、demo 資料（聽起來像可以上線）
+
+**Consensus Snapshot（共識快照）** — 某檔股票在某個美東交易日由 Analyst Target Record
+算出的一筆結果：有效分析師數、Consensus Target、標準差、Target Dispersion、Dispersion
+Percentile、覆蓋程度、資料品質狀態（`status`）與原因。全站共用、不屬於任何使用者（不含
+owner_id），存在共識快取；每個交易日最多向來源抓一次，失敗時保留上一份成功的快照並標
+它的日期。Consensus Gate 在**讀取時**才用每位使用者自己的門檻套上去，所以改門檻不必
+重抓來源。
+_Avoid_: 共識分數、評分
+
+**Opportunity 的最大損失（每股）** — 結果表的「最大損失 / 股」＝候選的
+`max_loss_per_contract ÷ 100`，與淨成本同一個每股口徑，也與既有詳細頁 Max Loss 的顯示
+值相同；存成劇本後兩邊是同一個數字。（既有桌面詳細頁那一列的標籤寫「每口」但數字是
+÷100 後的每股值——已知、未改，交由 Owner 決定。）
 
 ---
 

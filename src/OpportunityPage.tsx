@@ -16,8 +16,11 @@
  *   測試資料來源（`is_fixture`）在頁首常駐標示，不隨捲動或狀態消失。
  * - 「停止」是真的不再續跑：已經送出的那一次照樣等它回來並顯示（上游
  *   額度已經花了），之後不再送下一次；剩下的檔留著，可以「繼續搜尋」。
- * - 每個數字都是後端原值，這裡只排序與格式化。單位照實標：投入成本是
- *   每股（`entry_cost`），最大損失是每口（`max_loss_per_contract`，100 股）。
+ * - 每個數字都是後端原值，這裡只排序與格式化。單位照實標，而且跟既有
+ *   詳細頁同一口徑（#395）：投入成本是每股（`entry_cost`）；最大損失也顯示
+ *   每股＝`max_loss_per_contract / 100`（後端欄位是每口、100 股；既有詳細頁
+ *   的 Max Loss 也是這樣 ÷100 顯示），存成劇本後詳細頁與這一列是同一個數字。
+ *   排序仍用後端的每口原值（÷100 是單調的，順序不變）。
  * - 文案只說「目標價情境報酬」，並固定一句它不是期望值或勝率。
  */
 import { useEffect, useRef, useState } from "react";
@@ -458,7 +461,7 @@ function ConfiguredBody({
                 <th scope="col">到期日</th>
                 <th scope="col">目標月份</th>
                 <th scope="col" className="r">淨成本 / 股</th>
-                <th scope="col" className="r">最大損失 / 口</th>
+                <th scope="col" className="r">最大損失 / 股</th>
                 <th scope="col" className="r">目標價情境報酬</th>
                 <th scope="col" className="r">損益兩平</th>
                 <th scope="col"><span className="sr-only">動作</span></th>
@@ -485,8 +488,8 @@ function ConfiguredBody({
                     </td>
                     <td data-label="目標月份">{row.target_month}</td>
                     <td data-label="淨成本 / 股" className="r num">{money(row.entry_cost)}</td>
-                    <td data-label="最大損失 / 口" className="r num">
-                      {money(row.max_loss_per_contract)}
+                    <td data-label="最大損失 / 股" className="r num">
+                      {money(row.max_loss_per_contract / 100)}
                     </td>
                     <td data-label="目標價情境報酬" className="r num opp-return">
                       {formatReturn(row.target_return)}

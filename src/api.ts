@@ -1337,7 +1337,8 @@ export interface OpportunitySearchRequest {
 /** 一個家族的代表候選摘要列。每個數字都是既有引擎的原值：
  *  `target_return`＝代表候選 `baseline_return`（劇本頭條同口徑）、
  *  `entry_cost`＝`natural_cost`（每股，最差成交）、
- *  `max_loss_per_contract`／`breakeven`／`buffer_days` 取同一個候選。
+ *  `max_loss_per_contract`（每口、100 股；結果表顯示 ÷100 的每股值，與既有
+ *  詳細頁同口徑，#395）／`breakeven`／`buffer_days` 取同一個候選。
  *  `scenario` 原封不動送進 `createScenario()` 即為「存成劇本」。 */
 export interface OpportunityRow {
   symbol: string;

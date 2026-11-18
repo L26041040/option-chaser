@@ -1,11 +1,17 @@
 # 選擇權機會搜尋器（Opportunity Search）— 設計文件 v2
 
-> 狀態：**設計與施工規劃，未施工**（OPTION-CHASER-SCANNER-DESIGN-WAYFINDER-003，取代 v1）。
+> 狀態：**設計文件**（施工現況見下方「施工狀態」）（OPTION-CHASER-SCANNER-DESIGN-WAYFINDER-003，取代 v1）。
 > v1（價格帶＋成真機率）保留在 git 歷史（commit `3d9f879`），**已被 Owner 的新方案取代**。
 > 研究證據見 [`02-wayfinder-research.md`](./02-wayfinder-research.md)，施工分期見
 > [`03-construction-plan.md`](./03-construction-plan.md)。
 > 標記：✅ **已決策**（Owner 確認）／❓ **待決策**（列在 Wayfinder 地圖的決策票，Owner 決定）。
 > ⚠️ **2026-11-19 更新**：Owner 已鎖定新外部資料預算 **US$0**。正式規格見 [#389 OPTION-CHASER-OPPORTUNITY-SCANNER-SPEC-001](https://github.com/L26041040/option-chaser/issues/389)，與本文件衝突時**以 #389 為準**；免費資料源研究見 [`docs/research/free-analyst-price-target-sources.md`](../../research/free-analyst-price-target-sources.md)。本文件中任何付費資料源的建議只保留作背景。
+
+> 🧭 **施工狀態（2026-11-19，OS-01–OS-06：#390–#395，分支 `claude/context-mhpwv6`，未部署、未開 PR）**
+> - **已實作（只接固定測試資料）**：U1 共識計算純函式（`option_chaser/consensus.py`）；U2 的資料來源**介面**＋全站共識快取（不含 owner_id）＋每日 cron（`api_app/analyst_source.py`、`consensus_cache.py`、`GET /api/cron/consensus-refresh`）；U3 跨標的搜尋後端（`POST /api/opportunity/search`，重用既有 `_analyze()`，計算等價、續跑、錯誤隔離、fetch_cap、Global Vendor Fuse）；U4 Settings 選填鍵 `opportunity_search`＋設定頁區塊；U5 機會搜尋頁 `#/opportunity`（共識清單、逐檔結果、跨標的排序、存成劇本；只限 SU/SA）。真瀏覽器＋本機後端驗證：`scripts/opportunity_verify.mjs`。
+> - **仍缺**：**真實分析師資料來源**——正式站預設「尚未設定」，畫面照實顯示，不能搜尋；接哪個來源、能不能接，待 #384（阻礙 B1 公開顯示、B2 自動化擷取條款、B3 覆蓋偏差與分割，見 #389 §12）。**U0**（小樣本免費資料探測）、**U6**（擴到 500 檔＋成本護欄）、**U7**（歷史達標率研究）**都沒有做**；U8 ETF 另案。
+> - **暫定值（可設定、未寫死，待決策票定案後只改設定）**：#381 目標月份＝今天所在月＋12 個月（`fixed_12m`）；#382 母體＝「大型股樣本（暫定）」50 檔靜態清單或自訂清單；#383 每檔每家族一列、不帶 best/worst、排序報酬／成本／最大損失；#385 資料品質規則 `provisional-389`（N_min 5、V 12 月、F 90 天、φ 0.5、H_min 24、L 60）；#386 fetch_cap 50、cron 平日一次、只開放 SU/SA；#387 未做；#388 UI 依 OS-05 現況，未經 Owner 原型審核。
+> - 結果表的「最大損失 / 股」＝`max_loss_per_contract ÷ 100`，與淨成本、與既有詳細頁 Max Loss 同一個每股口徑（#395）。
 
 **一句話原則（Owner）**：分析師共識負責**篩選**與**產生目標價**；現有引擎負責**機械化搜尋**與
 **收益排序**。

@@ -118,7 +118,9 @@ test("SU：導覽進頁 → 入選清單 → 搜尋（續跑）→ 切換排序 
 
   const longCall = results.getByRole("row", { name: /^AAA Long Call/ });
   await expect(longCall).toContainText("$5.60");
-  await expect(longCall).toContainText("$560.00");
+  // 最大損失與既有詳細頁同口徑：每股（後端每口 560 ÷ 100），不是 $560.00（#395）。
+  await expect(longCall.locator('td[data-label="最大損失 / 股"]')).toHaveText("$5.60");
+  await expect(longCall).not.toContainText("$560.00");
   await longCall.getByRole("button", { name: "存成劇本" }).click();
 
   await expect(page).toHaveURL(/#\/s\/opp-new$/);

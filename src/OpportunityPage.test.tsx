@@ -278,7 +278,7 @@ describe("OpportunityPage：搜尋與續跑", () => {
     expect(searchBodies(spy)).toHaveLength(1);
   });
 
-  it("結果列顯示策略、履約價、到期日、目標月份、成本（每股）、最大損失（每口）、報酬、損益兩平", async () => {
+  it("結果列顯示策略、履約價、到期日、目標月份、成本（每股）、最大損失（每股）、報酬、損益兩平", async () => {
     await renderReady({ search: [{ status: 200, body: { ...SEARCH, remaining: [] } }] });
     await userEvent.click(await screen.findByRole("button", { name: "搜尋選擇權" }));
     const results = await screen.findByRole("region", { name: "搜尋結果" });
@@ -287,9 +287,23 @@ describe("OpportunityPage：搜尋與續跑", () => {
     expect(spread).toHaveTextContent("2026-12-18");
     expect(spread).toHaveTextContent("2027-09");
     expect(spread).toHaveTextContent("$0.81");
-    expect(spread).toHaveTextContent("$81.00");
     expect(spread).toHaveTextContent("270.4%");
     expect(spread).toHaveTextContent("$112.81");
+  });
+
+  it("最大損失與詳細頁同一口徑：每股（後端每口 ÷ 100），欄名如實寫每股", async () => {
+    await renderReady({ search: [{ status: 200, body: { ...SEARCH, remaining: [] } }] });
+    await userEvent.click(await screen.findByRole("button", { name: "搜尋選擇權" }));
+    const results = await screen.findByRole("region", { name: "搜尋結果" });
+    expect(within(results).getByRole("columnheader", { name: "最大損失 / 股" })).toBeInTheDocument();
+    expect(within(results).queryByRole("columnheader", { name: /每口|\/ 口/ })).not.toBeInTheDocument();
+    const maxLoss = (name: RegExp) => within(results).getByRole("row", { name })
+      .querySelector('td[data-label="最大損失 / 股"]')?.textContent;
+    // 樣本：max_loss_per_contract 81 / 560 / 259（每口，100 股）。
+    expect(maxLoss(/^AAA Bull Call Spread/)).toBe("$0.81");
+    expect(maxLoss(/^AAA Long Call/)).toBe("$5.60");
+    expect(maxLoss(/^AAA Call Butterfly/)).toBe("$2.59");
+    expect(results).not.toHaveTextContent("$560.00");
   });
 });
 
