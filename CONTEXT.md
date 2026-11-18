@@ -324,41 +324,33 @@ degradation／cleanup lifecycle 可驗證／CI 正常／storage 成長可
 
 ## 選擇權機會搜尋器（設計中，未施工；`docs/spec/options-scanner/`）
 
-**Opportunity Search（選擇權機會搜尋器）** — 在使用者選的範圍內，由系統產生價格帶、
-再窮舉並排序選擇權組合的功能。與 Scenario Bet Ranking 的差別只在劇本由系統產生、
-並附成真機率；帶內排序口徑相同。
+**Opportunity Search（選擇權機會搜尋器）** — 在使用者選的搜尋母體內，用分析師共識篩出
+標的並產生劇本，再由既有引擎窮舉、跨標的排序的功能。排名口徑與 Scenario Bet Ranking
+相同。
 _Avoid_: 掃描器推薦、選股器
 
-**Search Universe（搜尋範圍）** — 使用者選定、以**當日成分**計的標的集合。
-_Avoid_: 股票池（不指明時點時）
+**Search Universe（搜尋母體）** — 使用者選定的標的集合。
+_Avoid_: 股票池
 
-**Consensus Target（共識目標價）** — 某時點仍有效的個別分析師 12 個月目標價的中位數。
-_Avoid_: 目標價（單獨使用時會和劇本的 target_price 混淆）
+**Consensus Target（共識目標價）** — 某檔股票目前有效的個別分析師目標價的**平均**。
+_Avoid_: 目標價（單獨使用時會和劇本的 target_price 混淆）、中位目標價
 
-**Target Dispersion（目標價分歧度）** — 個別目標價彼此差異的程度，以現價標準化。
+**Target Dispersion（目標價分歧度）** — 個別目標價的標準差除以平均。
 
-**Target Age（目標價新舊）** — 構成共識的目標價距今多久沒更新。
+**Dispersion Percentile（分歧度歷史百分位）** — 今天的分歧度在**該股票自身**歷史分歧度
+序列中的位置；越低代表比它自己平常更有共識。
+_Avoid_: 橫斷面排名（跟別的股票比不是這個詞）
 
-**Price Band（價格帶）** — 對「某標的在某個 Band Horizon 時，股價落在下緣 L 到上緣 U
-之間」的預測；看漲時可只有下緣。永遠附帶 Band Probability。是預測與選擇權搜尋之間的
-交接物。
-_Avoid_: 目標區間、預測價（點）
+**Consensus Gate（共識門檻）** — 兩道都要通過的篩選：Dispersion Percentile 不高於
+使用者設定值，且 Target Dispersion 不高於使用者設定的絕對上限。兩個設定各自獨立。
 
-**Band Horizon（價格帶期間）** — 價格帶對準的那一個選擇權到期日，以距今天數表示。
-與劇本的月級 `target_month` 是不同概念。
-_Avoid_: 目標日期
+**Consensus Scenario（共識劇本）** — 通過 Consensus Gate 的股票，由系統以 Consensus
+Target 為目標價產生的 Scenario；形狀與使用者自建的 Scenario 相同，時間語意仍是月級。
+_Avoid_: 推薦、預測
 
-**Band Probability（價格帶成真機率）** — 股價落在價格帶內的機率，必須是樣本外驗證過的
-命中率，對使用者顯示保守值。
-_Avoid_: 勝率（未說明是價格帶還是交易時）、名目機率
-
-**Conditional Band Return（條件情境報酬）** — 假設股價落在價格帶內，一個組合的報酬
-範圍（帶內最差到帶內最佳）。不含帶外結果。
-_Avoid_: 期望報酬
-
-**Full Expected Value（完整期望值）** — 帶內與帶外所有結果按機率加權的平均報酬。
-只作參考，不是主排序。
-_Avoid_: EV（不說明是下界還是歷史類比估計時）
+**Opportunity（機會）** — 一個 Consensus Scenario 底下的一個 Candidate，放在跨標的
+比較表上的一列。它顯示的報酬是目標價成立時的條件情境報酬。
+_Avoid_: 期望報酬、勝率、預期獲利
 
 ---
 
