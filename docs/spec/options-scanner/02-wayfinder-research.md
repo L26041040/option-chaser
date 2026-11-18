@@ -7,6 +7,7 @@
 > **證據標籤**：〔程式〕本 repo 實際程式碼／〔文件〕本 repo 既有研究或 ADR／
 > 〔外部〕資料源官方文件或二手資料（詳見 `docs/research/analyst-price-target-data-sources.md`）／
 > 〔推測〕老弟的推論，未經量測。
+> ⚠️ **2026-11-19 更新**：Owner 已鎖定新外部資料預算 **US$0**。正式規格見 [#389 OPTION-CHASER-OPPORTUNITY-SCANNER-SPEC-001](https://github.com/L26041040/option-chaser/issues/389)，與本文件衝突時**以 #389 為準**；免費資料源研究見 [`docs/research/free-analyst-price-target-sources.md`](../../research/free-analyst-price-target-sources.md)。本文件中任何付費資料源的建議只保留作背景。
 
 ---
 
@@ -53,6 +54,8 @@
 （本節由研究票
 [研究：分析師個別目標價資料源](https://github.com/L26041040/option-chaser/issues/380)
 回填，完整內容見 `docs/research/analyst-price-target-data-sources.md`。）
+
+> **已被 US$0 預算取代（2026-11-19）**：以下為付費資料源的結論，只保留作背景。免費來源的結論見 #389 §10 與 `docs/research/free-analyst-price-target-sources.md`：唯一有個別目標價的免費來源是 Yahoo `upgradeDowngradeHistory`（非正式端點，條款禁止自動化擷取與商業使用），US$0 下沒有合法的公開顯示路徑。
 
 **結論（查證日 2026-11-18；價格與條款會變，採用前要重查）**
 

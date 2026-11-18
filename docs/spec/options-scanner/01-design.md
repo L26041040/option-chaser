@@ -5,6 +5,7 @@
 > 研究證據見 [`02-wayfinder-research.md`](./02-wayfinder-research.md)，施工分期見
 > [`03-construction-plan.md`](./03-construction-plan.md)。
 > 標記：✅ **已決策**（Owner 確認）／❓ **待決策**（列在 Wayfinder 地圖的決策票，Owner 決定）。
+> ⚠️ **2026-11-19 更新**：Owner 已鎖定新外部資料預算 **US$0**。正式規格見 [#389 OPTION-CHASER-OPPORTUNITY-SCANNER-SPEC-001](https://github.com/L26041040/option-chaser/issues/389)，與本文件衝突時**以 #389 為準**；免費資料源研究見 [`docs/research/free-analyst-price-target-sources.md`](../../research/free-analyst-price-target-sources.md)。本文件中任何付費資料源的建議只保留作背景。
 
 **一句話原則（Owner）**：分析師共識負責**篩選**與**產生目標價**；現有引擎負責**機械化搜尋**與
 **收益排序**。
