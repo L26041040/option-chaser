@@ -129,14 +129,20 @@ def _dec(x) -> Decimal:
 
 
 def dispersion_percentile(history: Iterable, today) -> Decimal:
-    """A1：歷史中**嚴格小於**今天分歧度的比例（差距 ≤ 1e-9 視為相等）。
-    意義：歷史上有多少比例的時間比今天更有共識；今天等於歷史最低值 → 0。"""
+    """Midrank 百分位（OPTION-CHASER-SCANNER-PR-REVIEW-001，取代 A1 的嚴格小於）：
+    `(#{D < 今天} + 0.5 × #{D = 今天}) / n`，差距 ≤ 1e-9 視為相等。
+
+    為什麼不用嚴格小於：歷史每期都 8%、今天也 8% 時，嚴格小於得 0%，會把
+    「跟平常一樣」誤判成「歷史最低 20%」。Midrank 讓同值落在中間（50%）；
+    歷史全 0、今天 0 也是 50%，不另設特例放行。"""
     values = [_dec(h) for h in history]
     if not values:
         raise ValueError("dispersion_percentile 需要至少一個歷史點")
     with localcontext(_CTX):
-        cut = _dec(today) - EPSILON
-        return Decimal(sum(1 for v in values if v < cut)) / len(values)
+        t = _dec(today)
+        lower = sum(1 for v in values if v < t - EPSILON)
+        equal = sum(1 for v in values if abs(v - t) <= EPSILON)
+        return (Decimal(lower) + Decimal(equal) / 2) / len(values)
 
 
 def _add_months(d: date, months: int) -> date:

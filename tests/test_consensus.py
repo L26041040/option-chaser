@@ -195,17 +195,39 @@ def test_a4_split_effective_after_as_of_is_not_applied():
     assert snap.mean == Decimal(614)
 
 
-# --- §4.3／A1 百分位：嚴格小於，容許 1e-9 -----------------------------------
+# --- §4.3 百分位：midrank（PR-REVIEW-001 取代 A1 的嚴格小於），容許 1e-9 ------
+
+E8 = Decimal("0.08")
+
 
 @pytest.mark.parametrize("history, today, expected", [
-    ([0] * 30, 0, Decimal(0)),                  # 與歷史最佳同值 → 0%，過
-    ([0] * 30, Decimal("0.01"), Decimal(1)),    # 比整段歷史都分歧 → 100%
-    ([Decimal("0.05")] * 30, Decimal("0.05"), Decimal(0)),
-    ([0.1 + 0.2] * 10, 0.3, Decimal(0)),        # 浮點誤差視為相等
-    ([0.3] * 10, 0.1 + 0.2, Decimal(0)),
+    ([E8] * 30, E8, Decimal("0.5")),                    # 1. 全 8%、今天 8% → 50%
+    ([E8] * 30, Decimal("0.05"), Decimal(0)),           # 2. 今天 5% → 0%
+    ([E8] * 30, Decimal("0.12"), Decimal(1)),           # 3. 今天 12% → 100%
+    ([0] * 30, 0, Decimal("0.5")),                      # 5. 全 0、今天 0 → 50%（不特例放行）
+    ([Decimal("0.01")] * 20, 0, Decimal(0)),            # 6. 今天 0、歷史全 > 0 → 0%
+    ([0.1 + 0.2] * 10, 0.3, Decimal("0.5")),            # 浮點誤差視為相等
+    ([0.3] * 10, 0.1 + 0.2, Decimal("0.5")),
 ])
-def test_a1_percentile_counts_strictly_lower_history(history, today, expected):
+def test_percentile_uses_midrank_for_ties(history, today, expected):
     assert dispersion_percentile(history, today) == expected
+
+
+def test_partial_ties_get_the_middle_rank():
+    # 4. 部分同值：10 點中 2 點較低、4 點相等、4 點較高 → (2 + 0.5×4) / 10 = 40%
+    history = ([Decimal("0.03")] * 2 + [Decimal("0.05")] * 4
+               + [Decimal("0.09")] * 4)
+    assert dispersion_percentile(history, Decimal("0.05")) == Decimal("0.4")
+
+
+@pytest.mark.parametrize("today, expected", [
+    (E8, False),                # 50% > 20%
+    (Decimal("0.05"), True),    # 0% ≤ 20%
+    (Decimal("0.12"), False),   # 100%
+])
+def test_flat_history_first_gate_outcomes(today, expected):
+    p = dispersion_percentile([E8] * 30, today)
+    assert (p <= Decimal("0.20")) is expected
 
 
 def test_example_2_nine_of_sixty_lower_is_15_percent():
@@ -490,9 +512,9 @@ def test_example_6_identical_targets_have_zero_dispersion_and_pass_second_gate()
     history = monthly([0] * 30)                 # 歷史一直全員一致
     snap = compute_snapshot(history + today_records(0), [], AS_OF)
     assert (snap.stdev, snap.dispersion) == (Decimal(0), Decimal(0))
-    assert snap.percentile == Decimal(0)        # A1：與歷史最佳同值 → 0%
+    assert snap.percentile == Decimal("0.5")    # midrank：與歷史全同值 → 50%
     g = evaluate_gate(snap, Decimal("0.20"), Decimal("0.10"))
-    assert (g.first, g.second) == (True, True)
+    assert (g.first, g.second) == (False, True)  # 不特例放行第一關
 
 
 @pytest.mark.parametrize("p_max", ["0", "0.10", "0.15", "0.5", "1"])

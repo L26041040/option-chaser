@@ -339,6 +339,7 @@ _Avoid_: 目標價（單獨使用時會和劇本的 target_price 混淆）、中
 
 **Dispersion Percentile（分歧度歷史百分位）** — 今天的分歧度在**該股票自身**歷史分歧度
 序列中的位置；越低代表比它自己平常更有共識。
+計算採 midrank：`(較低筆數 + 0.5 × 同值筆數) / 歷史筆數`，所以歷史全同值時是 50%。
 _Avoid_: 橫斷面排名（跟別的股票比不是這個詞）
 
 **Consensus Gate（共識門檻）** — 兩道都要通過的篩選：Dispersion Percentile 不高於
