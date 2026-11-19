@@ -613,3 +613,36 @@ def test_integer_split_ratio_is_accepted():
 def test_invalid_rules_are_rejected(kwargs):
     with pytest.raises(ValueError):
         ConsensusRules(**kwargs)
+
+
+# --- A2 延伸（PR #396 Codex 審查）：回推到分割之前時，要還原「已調整」紀錄 ----
+
+def _split_history_snapshot(first_record):
+    rules = ConsensusRules(n_min=2, h_min=1, freshness_min_share=Decimal(0))
+    split = SplitEvent(symbol="XYZ", effective_on=date(2026, 8, 3),
+                       ratio=Decimal(4))
+    records = [first_record, rec("Firm B", 620, date(2026, 7, 10))]
+    return compute_snapshot(records, [split], date(2026, 7, 31), rules)
+
+
+def test_already_adjusted_record_is_unadjusted_back_to_a_pre_split_date():
+    raw = _split_history_snapshot(rec("Firm A", 600, date(2026, 7, 6)))
+    adjusted = _split_history_snapshot(
+        rec("Firm A", 150, date(2026, 7, 6),
+            split_adjusted_through=date(2026, 8, 3)))
+    # 同一筆目標價（600 原始＝150 已調整到 8/3）在 7/31 的基準必須相同
+    assert adjusted.mean == raw.mean == Decimal(610)
+    assert adjusted.dispersion == raw.dispersion
+
+
+def test_adjusted_and_raw_records_agree_after_the_split_too():
+    rules = ConsensusRules(n_min=2, h_min=1, freshness_min_share=Decimal(0))
+    split = SplitEvent(symbol="XYZ", effective_on=date(2026, 8, 3),
+                       ratio=Decimal(4))
+    other = rec("Firm B", 155, date(2026, 8, 10))
+    raw = compute_snapshot([rec("Firm A", 600, date(2026, 7, 6)), other],
+                           [split], date(2026, 8, 31), rules)
+    adj = compute_snapshot([rec("Firm A", 150, date(2026, 7, 6),
+                                split_adjusted_through=date(2026, 8, 3)), other],
+                           [split], date(2026, 8, 31), rules)
+    assert raw.mean == adj.mean == Decimal("152.5")

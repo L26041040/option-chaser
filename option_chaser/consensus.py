@@ -179,17 +179,24 @@ def _recency(r: AnalystTargetRecord) -> tuple:
 
 def _adjusted_price(r: AnalystTargetRecord, splits: list[SplitEvent],
                     t: date) -> Decimal:
-    """以 t 為基準的分割調整價（§4.1 步驟 2＋A2＋A4）。分割 s 只在
-    published_on < s.effective_on ≤ t 且 s.effective_on > split_adjusted_through
-    時套用。每次都從原始值重算，不回寫。"""
+    """以 t 為基準的分割調整價（§4.1 步驟 2＋A2＋A4）。每次都從來源給的值重算，
+    不回寫。只看發布日之後的分割 s（published_on < s.effective_on）：
+
+    - 該套用（s.effective_on ≤ t）但來源尚未反映（> split_adjusted_through）→ ÷ ratio
+    - 來源已反映（≤ split_adjusted_through）但 t 還在分割前（> t）→ × ratio 還原
+      （PR #396 Codex 審查：否則回推歷史取樣點時，已調整與原始紀錄基準不一）
+    - 其餘不動，所以 A2「不重複調整」仍成立。"""
     price = _dec(r.target_price)
+    through = r.split_adjusted_through
     for s in splits:
-        if not r.published_on < s.effective_on <= t:
+        if s.effective_on <= r.published_on:
             continue
-        if (r.split_adjusted_through is not None
-                and s.effective_on <= r.split_adjusted_through):
-            continue
-        price = price / _dec(s.ratio)
+        wanted = s.effective_on <= t
+        reflected = through is not None and s.effective_on <= through
+        if wanted and not reflected:
+            price = price / _dec(s.ratio)
+        elif reflected and not wanted:
+            price = price * _dec(s.ratio)
     return price
 
 
