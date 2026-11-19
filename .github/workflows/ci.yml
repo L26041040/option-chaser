@@ -16,10 +16,13 @@ on:
   push:
     branches: [master]
 
+# 2026-11 PR #396：`ubuntu-latest` 換成 ubuntu-26.04 後，新 libm 讓浮點數最後
+# 幾位改變，逐位元凍結的數值基準與契約樣本因此失敗（引擎未改）。釘回產生基準
+# 的 ubuntu-24.04；要升級映像檔時，連同基準一起重產。
 jobs:
   backend:
     name: Backend (memory + Postgres)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     services:
       postgres:
         image: postgres:16
@@ -61,7 +64,7 @@ jobs:
 
   frontend:
     name: Frontend (typecheck / vitest / build)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -77,7 +80,7 @@ jobs:
     name: Playwright smoke subset
     # spec #291 §12 明文只要求第一版跑核心 smoke 子集；全套 Playwright
     # 接入 CI 屬 §21 deferred scope，本票不做。
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: [frontend]
     steps:
       - uses: actions/checkout@v4
