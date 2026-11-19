@@ -54,7 +54,9 @@ class SearchRequest(BaseModel):
     - `strategies`／`sort`：省略＝使用者的 `opportunity_search` 設定。"""
     model_config = ConfigDict(extra="forbid")
 
-    symbols: list[str] | None = Field(default=None, min_length=1)
+    # 上限＝一次搜尋處理量的十倍，擋掉超長清單（含 400 訊息逐一回顯）。
+    symbols: list[str] | None = Field(default=None, min_length=1,
+                                      max_length=DEFAULT_FETCH_CAP * 10)
     strategies: list[Literal[FAMILIES]] | None = Field(  # type: ignore[valid-type]
         default=None, min_length=1)
     sort: Literal[SORTS] | None = None  # type: ignore[valid-type]

@@ -212,3 +212,13 @@ describe("儲存", () => {
     expect(putBodies(spy)[0].opportunity_search.dispersion_max).toBe("");
   });
 });
+
+describe("舊後端沒有機會搜尋欄位（回滾期間的過期分頁）", () => {
+  it("不渲染、也不讓設定頁崩潰", () => {
+    const legacy = { ...view() } as Partial<SettingsView>;
+    delete legacy.opportunity_search_options;
+    const { container } = render(
+      <OpportunitySearchSettings view={legacy as SettingsView} onSaved={() => {}} />);
+    expect(container).toBeEmptyDOMElement();
+  });
+});

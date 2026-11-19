@@ -343,6 +343,14 @@ def test_symbols_outside_the_selected_list_are_400():
                                 json={"symbols": ["BBB"]}).json()["detail"]
 
 
+def test_overlong_symbols_list_is_rejected_with_422():
+    client, _ = _app()
+    _ready(client)
+    r = client.post("/api/opportunity/search",
+                    json={"symbols": [f"S{i}" for i in range(501)]})
+    assert r.status_code == 422, r.text
+
+
 def test_unknown_family_or_sort_is_422():
     client, _ = _app()
     _ready(client)

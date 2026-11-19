@@ -76,7 +76,17 @@ function parseSymbols(text: string): string[] {
   return text.split(/[\s,，、]+/).filter(Boolean).map((s) => s.toUpperCase());
 }
 
-export default function OpportunitySearchSettings({
+/** 舊後端（回滾期間的過期分頁）沒有 `opportunity_search_options` 時不渲染，
+ *  不讓整個 Settings 頁崩潰。 */
+export default function OpportunitySearchSettings(props: {
+  view: SettingsView;
+  onSaved: (next: SettingsView) => void;
+}) {
+  if (!props.view.opportunity_search_options || !props.view.opportunity_search) return null;
+  return <OpportunitySearchSettingsForm {...props} />;
+}
+
+function OpportunitySearchSettingsForm({
   view,
   onSaved,
 }: {
