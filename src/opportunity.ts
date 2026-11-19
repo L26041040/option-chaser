@@ -33,7 +33,9 @@ export function rankOpportunities(
   );
 }
 
-const rowId = (r: OpportunityRow) => `${r.symbol}\u0000${r.family}`;
+/** 一列的身分：一個 symbol＋family 只有一列（合併、React key、存檔狀態
+ *  都用這一個）。 */
+export const opportunityRowKey = (r: OpportunityRow) => `${r.symbol}\u0000${r.family}`;
 
 /**
  * 續跑（`remaining`）回來的一批列併進既有結果：一個 symbol＋family 只留
@@ -44,11 +46,11 @@ export function mergeSearchRows(
   incoming: readonly OpportunityRow[],
 ): OpportunityRow[] {
   const merged = [...existing];
-  const index = new Map(merged.map((r, i) => [rowId(r), i]));
+  const index = new Map(merged.map((r, i) => [opportunityRowKey(r), i]));
   for (const r of incoming) {
-    const at = index.get(rowId(r));
+    const at = index.get(opportunityRowKey(r));
     if (at === undefined) {
-      index.set(rowId(r), merged.length);
+      index.set(opportunityRowKey(r), merged.length);
       merged.push(r);
     } else {
       merged[at] = r;

@@ -376,6 +376,45 @@ def test_known_split_or_ordinary_target_cut_is_not_flagged():
     assert "split_unresolved" not in statuses(compute_snapshot(cut, [], AS_OF))
 
 
+def jump_years_ago():
+    """同一家多年前 200 → 100（剛好 2:1），沒有任何分割資訊；其後早已過期。"""
+    return [rec("Jumper", 200, date(2022, 1, 3)), rec("Jumper", 100, date(2022, 2, 1))]
+
+
+def test_old_target_halving_outside_the_validity_window_does_not_flag_today():
+    records = monthly([3] * 60) + jump_years_ago() + today_records()
+    snap = compute_snapshot(records, [], AS_OF)
+    assert "split_unresolved" not in statuses(snap)
+
+
+def test_history_point_whose_window_holds_an_unexplained_jump_is_dropped():
+    # 兩筆都落在 [t − 12 個月, t] 的取樣日：2022-02 … 2022-12 的月底（11 點）；
+    # 60 個取樣點（2021-11 … 2026-10）剩 49 點。
+    records = monthly([3] * 60) + jump_years_ago() + today_records()
+    snap = compute_snapshot(records, [], AS_OF)
+    assert snap.history_points == 49
+    dropped = {(2022, m) for m in range(2, 13)}
+    assert not [d for d, _ in snap.history if (d.year, d.month) in dropped]
+    assert (2022, 1) in {(d.year, d.month) for d, _ in snap.history}
+
+
+def test_jump_whose_earlier_record_already_expired_is_not_a_suspect():
+    # 前一筆在 V 之外（已過期）、後一筆在 V 之內：不能拿過期的值去比。
+    records = (good_history() + today_records()
+               + [rec("Jumper", 200, date(2025, 10, 1)),
+                  rec("Jumper", 100, date(2026, 11, 3))])
+    assert "split_unresolved" not in statuses(compute_snapshot(records, [], AS_OF))
+
+
+def test_jump_within_the_validity_window_without_split_info_is_a_suspect():
+    records = (good_history() + today_records()
+               + [rec("Jumper", 200, date(2026, 3, 2)),
+                  rec("Jumper", 100, date(2026, 11, 3))])
+    snap = compute_snapshot(records, [], AS_OF)
+    assert snap.status == "split_unresolved"
+    assert "Jumper" in snap.reasons[0]
+
+
 def test_every_failed_rule_is_reported_and_status_is_the_most_basic_one():
     four = [rec(f"Firm {i}", 100 + i, date(2026, 6, 1)) for i in range(4)]
     snap = compute_snapshot(four, [], AS_OF)

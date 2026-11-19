@@ -49,7 +49,9 @@ function view(overrides: Partial<SettingsView> = {}): SettingsView {
         { id: "custom", label: "自訂清單", provisional: false, symbol_count: null },
       ],
       strategies: ["single-leg", "vertical-spread", "butterfly"],
-      sorts: ["return", "cost", "max_loss"],
+      sorts: [{ id: "return", label: "目標價情境報酬（高→低）" },
+              { id: "cost", label: "投入成本（低→高）" },
+              { id: "max_loss", label: "最大損失（低→高）" }],
       custom_symbols_max: 50,
       defaults: OPP_DEFAULTS,
     },
@@ -874,7 +876,7 @@ describe("OG-11（#322）：桌面版左側 subnav（手機版單欄堆疊零改
     await userEvent.click(screen.getByRole("tab", { name: "機會搜尋" }));
 
     const block = await screen.findByRole("region", { name: "機會搜尋" });
-    expect(within(block).getByLabelText("共識百分位門檻（%）")).toHaveValue(20);
+    expect(within(block).getByLabelText("分歧度歷史百分位門檻（%）")).toHaveValue(20);
     expect(screen.queryByText("Data / API")).not.toBeInTheDocument();
   });
 

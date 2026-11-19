@@ -152,6 +152,7 @@
   "fetches_used": 2,
   "fetch_cap": 50,
   "truncated": false,
+  "deferred": [],
   "stopped_reason": null,
   "message": null,
   "sort": "return",
@@ -159,5 +160,19 @@
     "single-leg",
     "vertical-spread",
     "butterfly"
+  ],
+  "sort_options": [
+    {
+      "id": "return",
+      "label": "目標價情境報酬（高→低）"
+    },
+    {
+      "id": "cost",
+      "label": "投入成本（低→高）"
+    },
+    {
+      "id": "max_loss",
+      "label": "最大損失（低→高）"
+    }
   ]
 }

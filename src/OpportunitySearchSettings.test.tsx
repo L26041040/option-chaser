@@ -37,7 +37,9 @@ function view(opp: Partial<Opp> = {}): SettingsView {
         { id: "custom", label: "自訂清單", provisional: false, symbol_count: null },
       ],
       strategies: ["single-leg", "vertical-spread", "butterfly"],
-      sorts: ["return", "cost", "max_loss"],
+      sorts: [{ id: "return", label: "排序甲（後端文字）" },
+              { id: "cost", label: "排序乙（後端文字）" },
+              { id: "max_loss", label: "排序丙（後端文字）" }],
       custom_symbols_max: 50,
       defaults: DEFAULTS,
     },
@@ -80,7 +82,7 @@ describe("渲染", () => {
     render(<OpportunitySearchSettings view={view({ percentile_max: 35, sort: "cost" })}
                                       onSaved={() => {}} />);
     const b = block();
-    expect(b.getByLabelText("共識百分位門檻（%）")).toHaveValue(35);
+    expect(b.getByLabelText("分歧度歷史百分位門檻（%）")).toHaveValue(35);
     expect(b.getByLabelText("分歧度門檻（%）")).toHaveValue(10);
     expect(b.getByRole("radio", { name: "大型股樣本（暫定，清單來源待 #382）" })).toBeChecked();
     expect(b.getByRole("checkbox", { name: "Call / Put" })).toBeChecked();
@@ -88,6 +90,13 @@ describe("渲染", () => {
     expect(b.getByRole("checkbox", { name: "Butterfly" })).toBeChecked();
     expect(b.getByLabelText("排序方式")).toHaveValue("cost");
     expect(b.getAllByRole("button", { name: "恢復預設" })).toHaveLength(2);
+  });
+
+  it("排序選項的文字來自後端（與搜尋頁同一份），前端不另寫一份", () => {
+    render(<OpportunitySearchSettings view={view()} onSaved={() => {}} />);
+    const select = block().getByLabelText("排序方式");
+    expect(within(select).getAllByRole("option").map((o) => o.textContent))
+      .toEqual(["排序甲（後端文字）", "排序乙（後端文字）", "排序丙（後端文字）"]);
   });
 
   it("母體文案絕不稱為 S&P 500", () => {
@@ -122,7 +131,7 @@ describe("恢復預設", () => {
       historical_iv: { mode: "default", provider: null },
       opportunity_search: { percentile_max: 20 },
     }]);
-    expect(b.getByLabelText("共識百分位門檻（%）")).toHaveValue(20);
+    expect(b.getByLabelText("分歧度歷史百分位門檻（%）")).toHaveValue(20);
     expect(b.getByLabelText("分歧度門檻（%）")).toHaveValue(4);
     expect(b.getByRole("status")).toHaveTextContent("已恢復預設");
   });
@@ -131,7 +140,7 @@ describe("恢復預設", () => {
     mockPut([{ status: 200, body: view({ dispersion_max: 10 }) }]);
     render(<OpportunitySearchSettings view={view({ dispersion_max: 4 })} onSaved={() => {}} />);
     const b = block();
-    const percentile = b.getByLabelText("共識百分位門檻（%）");
+    const percentile = b.getByLabelText("分歧度歷史百分位門檻（%）");
     await userEvent.clear(percentile);
     await userEvent.type(percentile, "15");
     await userEvent.click(b.getAllByRole("button", { name: "恢復預設" })[1]);
@@ -148,7 +157,7 @@ describe("儲存", () => {
     render(<OpportunitySearchSettings view={view()} onSaved={onSaved} />);
     const b = block();
 
-    const percentile = b.getByLabelText("共識百分位門檻（%）");
+    const percentile = b.getByLabelText("分歧度歷史百分位門檻（%）");
     await userEvent.clear(percentile);
     await userEvent.type(percentile, "12.5");
     await userEvent.click(b.getByRole("radio", { name: "自訂清單" }));
@@ -176,16 +185,16 @@ describe("儲存", () => {
   it("後端驗證失敗時顯示後端訊息，不顯示已儲存", async () => {
     mockPut([{ status: 422, body: { detail: [{
       type: "value_error", loc: ["body", "opportunity_search", "percentile_max"],
-      msg: "Value error, 共識百分位門檻必須介於 0 到 100", input: 101 }] } }]);
+      msg: "Value error, 分歧度歷史百分位門檻必須介於 0 到 100", input: 101 }] } }]);
     const onSaved = vi.fn();
     render(<OpportunitySearchSettings view={view()} onSaved={onSaved} />);
     const b = block();
-    const percentile = b.getByLabelText("共識百分位門檻（%）");
+    const percentile = b.getByLabelText("分歧度歷史百分位門檻（%）");
     await userEvent.clear(percentile);
     await userEvent.type(percentile, "101");
     await userEvent.click(b.getByRole("button", { name: "儲存" }));
 
-    expect(await b.findByRole("alert")).toHaveTextContent("共識百分位門檻必須介於 0 到 100");
+    expect(await b.findByRole("alert")).toHaveTextContent("分歧度歷史百分位門檻必須介於 0 到 100");
     expect(b.queryByRole("status")).not.toBeInTheDocument();
     expect(onSaved).not.toHaveBeenCalled();
   });

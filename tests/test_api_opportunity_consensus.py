@@ -287,6 +287,51 @@ def test_cron_on_the_next_trading_day_refetches(monkeypatch):
     assert _items(_consensus(client))["AAA"]["as_of"] == "2026-09-29"
 
 
+def _seed_custom_list(storage, owner_id, role, symbols):
+    """直接寫 storage：Normal 透過 API 本來就寫不進（403），這裡模擬「升權時
+    存下、後來被降回 Normal」或舊資料殘留的情況。"""
+    from api_app.storage import DataSourceSettings, UsageSetting
+    grant_role(storage, role, owner_id=owner_id)
+    storage.save_settings(DataSourceSettings(
+        market_data=UsageSetting(mode="default"), historical_iv=UsageSetting(mode="default"),
+        updated_at="2026-09-01T00:00:00+00:00", owner_id=owner_id,
+        opportunity_search={"universe_id": "custom", "custom_symbols": symbols}))
+
+
+def test_cron_merges_custom_lists_only_from_superuser_and_superadmin_owners():
+    storage = MemoryStorage()
+    source = CountingSource(FixtureAnalystSource(FIXTURE))
+    client = _app(storage, source=source)
+    _seed_custom_list(storage, "su-owner", "superuser", ["SUONE"])
+    _seed_custom_list(storage, "sa-owner", "superadmin", ["SAONE"])
+    _seed_custom_list(storage, "normal-owner", "normal", ["NORMONE"])
+    _run_cron(client)
+    assert sorted(source.calls) == sorted({*_sample_symbols(), "SUONE", "SAONE"})
+
+
+def test_cron_universe_is_capped_with_the_sample_first_then_sorted_custom():
+    storage = MemoryStorage()
+    source = CountingSource(FixtureAnalystSource(FIXTURE))
+    client = _app(storage, source=source, consensus_refresh_symbol_cap=52)
+    _seed_custom_list(storage, "su-owner", "superuser", ["ZZZ", "MMM", "AAPL", "BBB"])
+    body = _run_cron(client)
+    # 樣本 50 檔（含 AAPL）先；自訂清單去重後依代號排序 BBB、MMM、ZZZ，只剩 2 個名額。
+    assert sorted(source.calls) == sorted({*_sample_symbols(), "BBB", "MMM"})
+    assert body["remaining"] == []
+
+
+def test_cron_universe_cap_defaults_to_200():
+    storage = MemoryStorage()
+    source = CountingSource(FixtureAnalystSource(FIXTURE))
+    client = _app(storage, source=source)
+    for n in range(5):
+        _seed_custom_list(storage, f"su-{n}", "superuser",
+                          [f"X{n}{chr(65 + i // 26)}{chr(65 + i % 26)}" for i in range(50)])
+    _run_cron(client)
+    assert len(source.calls) == 200
+    assert set(_sample_symbols()) <= set(source.calls)
+
+
 class FlakySource:
     """第一次成功（五位分析師）、`fail` 打開後一律丟例外。"""
 
@@ -443,3 +488,117 @@ def test_opportunity_consensus_sample_matches_the_live_response():
     assert sample["source"]["is_fixture"] is True
     assert {i["status"] for i in sample["items"]} == {
         "ok", "insufficient_analysts", "no_data", "source_error"}
+
+
+# ---------- 規則可設定、不寫死（user story 40） ----------
+
+def test_injected_n_min_changes_outcomes_without_code_changes():
+    """`create_app(consensus_rules=...)`：同一份資料，N_min 從 5 降到 3，
+    DDD（3 位分析師）就不再是 insufficient_analysts；規則區塊照實回報。"""
+    from option_chaser.consensus import ConsensusRules
+    client, _ = _fixture_client(consensus_rules=ConsensusRules(n_min=3, version="r-test"))
+    _run_cron(client)
+    body = _consensus(client)
+    ddd = _items(body)["DDD"]
+    assert not any(r.startswith("insufficient_analysts") for r in ddd["reasons"])
+    assert body["rules"]["n_min"] == 3
+    assert body["rules"]["rules_version"] == "r-test"
+    assert ddd["rules_version"] == "r-test"
+
+
+class MarchSource:
+    """五位分析師都在 2026-03-02 發布——發布日中位數與「今天」差半年。"""
+
+    name = "march"
+    is_fixture = True
+
+    def fetch(self, symbol, today):
+        recs = tuple(AnalystTargetRecord(symbol=symbol, analyst_key=f"F{i}",
+                                         firm=f"F{i}", target_price=Decimal(p),
+                                         published_on=date(2026, 3, 2))
+                     for i, p in enumerate(("110", "115", "120", "125", "130")))
+        return ProviderResult(records=recs, coverage="complete")
+
+
+@pytest.mark.parametrize("rule, expected", [
+    (None, "2027-09"),                             # 暫定預設 fixed_12m：今天所在月 + 12
+    ("median_published_plus_12m", "2027-03"),      # 發布日中位數 2026-03-02 + 12
+])
+def test_injected_target_month_rule_is_used_and_reported(rule, expected):
+    storage = MemoryStorage()
+    client = _app(storage, source=MarchSource(), target_month_rule=rule)
+    _use_custom_universe(client, ["AAA"])
+    _run_cron(client)
+    body = _consensus(client)
+    assert body["rules"]["target_month_rule"] == (rule or "fixed_12m")
+    assert _items(body)["AAA"]["target_month"] == expected
+
+
+def test_unknown_target_month_rule_is_rejected_at_startup():
+    with pytest.raises(ValueError):
+        create_app(identity_resolver=lambda: "solo", storage=MemoryStorage(),
+                   target_month_rule="next-blue-moon")
+
+
+# ---------- FixtureAnalystSource 帶完整欄位（A2／A3 走 provider） ----------
+
+def _write_fixture(tmp_path, symbols):
+    import json
+    path = tmp_path / "targets.json"
+    path.write_text(json.dumps({"name": "fixture-tmp", "symbols": symbols}),
+                    encoding="utf-8")
+    return FixtureAnalystSource(path)
+
+
+def _post_split(n=4):
+    return [{"analyst_key": f"Post {i}", "firm": f"Post {i}",
+             "target_price": str(150 + 5 * (i % 3)), "published_on": "2026-09-01"}
+            for i in range(n)]
+
+
+def test_a2_record_already_split_adjusted_is_not_adjusted_twice_through_the_api(tmp_path):
+    source = _write_fixture(tmp_path, {"SPL": {
+        "coverage": "complete",
+        "splits": [{"effective_on": "2026-08-03", "ratio": "4"}],
+        "records": [{"analyst_key": "Pre", "firm": "Pre", "target_price": "150",
+                     "published_on": "2026-07-01",
+                     "split_adjusted_through": "2026-08-10"}, *_post_split()]}})
+    client = _app(MemoryStorage(), source=source)
+    _use_custom_universe(client, ["SPL"])
+    _run_cron(client)
+    spl = _items(_consensus(client))["SPL"]
+    assert spl["n_analysts"] == 5
+    assert spl["low"] == 150.0                     # 不會變成 150 / 4 = 37.5
+
+
+def test_a3_same_day_records_pick_the_latest_retrieval_through_the_api(tmp_path):
+    source = _write_fixture(tmp_path, {"TIE": {
+        "coverage": "complete", "splits": [],
+        "records": [
+            {"analyst_key": "Firm X", "firm": "Firm X", "target_price": "100",
+             "published_on": "2026-09-01", "retrieved_at": "2026-09-01T10:00:00+00:00"},
+            {"analyst_key": "firm  x ", "firm": "Firm X", "target_price": "200",
+             "published_on": "2026-09-01", "retrieved_at": "2026-09-01T09:00:00+00:00"},
+            *_post_split()]}})
+    client = _app(MemoryStorage(), source=source)
+    _use_custom_universe(client, ["TIE"])
+    _run_cron(client)
+    tie = _items(_consensus(client))["TIE"]
+    assert tie["n_analysts"] == 5                  # 兩種寫法是同一位分析師
+    assert (tie["low"], tie["high"]) == (100.0, 160.0)   # 晚抓到的 100 勝，不是較高的 200
+
+
+def test_fixture_source_populates_retrieved_at_and_split_adjusted_through(tmp_path):
+    from datetime import datetime, timezone
+    source = _write_fixture(tmp_path, {"SPL": {"records": [
+        {"analyst_key": "A", "firm": "A", "target_price": "10",
+         "published_on": "2026-07-01", "split_adjusted_through": "2026-08-10",
+         "retrieved_at": "2026-09-27T21:00:00+00:00"},
+        {"analyst_key": "B", "firm": "B", "target_price": "11",
+         "published_on": "2026-07-02"}]}})
+    a, b = source.fetch("SPL", date(2026, 9, 28)).records
+    assert a.split_adjusted_through == date(2026, 8, 10)
+    assert a.retrieved_at == datetime(2026, 9, 27, 21, 0, tzinfo=timezone.utc)
+    # 檔案沒寫抓取時間：以這次抓取的日期（UTC 零時）為準，絕不留空。
+    assert b.retrieved_at == datetime(2026, 9, 28, tzinfo=timezone.utc)
+    assert b.split_adjusted_through is None

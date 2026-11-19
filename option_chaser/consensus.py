@@ -251,21 +251,27 @@ def _sample_dates(as_of: date, count: int) -> list[date]:
     return out[::-1]
 
 
-def _split_suspects(records: Keyed, splits: list[SplitEvent],
-                    as_of: date, since: date, rules: ConsensusRules) -> list[str]:
-    """同一 analyst_key 相鄰兩筆（已套用已知分割）的比值接近常見分割比例
-    → 疑似有分割但缺分割資訊。只看後一筆發布於 [since, as_of] 的配對。"""
+def _split_suspects(records: Keyed, splits: list[SplitEvent], t: date,
+                    rules: ConsensusRules) -> list[str]:
+    """評估日 t 的疑似分割：同一 analyst_key（同一券商的同一位分析師）前後
+    兩筆、**兩筆都落在有效期 V 內**（published_on ∈ [t − V, t]），套用以 t
+    為基準的已知分割後，比值仍接近常見分割比例 → 疑似有分割但缺分割資訊。
+
+    只看有效期內的配對：已經過期的舊紀錄不在任何 S(t) 裡，多年前的一次
+    目標價腰斬不能讓今天變成 `split_unresolved`。歷史取樣點也用同一條規則、
+    以各自的取樣日為 t 判斷（`compute_snapshot()`）。"""
+    oldest_valid = _add_months(t, -rules.validity_months)
     by_key: dict[str, list[AnalystTargetRecord]] = {}
     for key, r in records:
-        if r.published_on <= as_of:
+        if oldest_valid <= r.published_on <= t:
             by_key.setdefault(key, []).append(r)
     found = []
     for key in sorted(by_key):
         seq = sorted(by_key[key], key=_recency)
         for prev, nxt in zip(seq, seq[1:]):
-            if nxt.published_on < since or prev.published_on == nxt.published_on:
+            if prev.published_on == nxt.published_on:
                 continue
-            q = _adjusted_price(prev, splits, as_of) / _adjusted_price(nxt, splits, as_of)
+            q = _adjusted_price(prev, splits, t) / _adjusted_price(nxt, splits, t)
             for ratio in rules.split_ratios:
                 if any(abs(x - ratio) <= ratio * rules.split_ratio_tolerance
                        for x in (q, 1 / q)):
@@ -318,7 +324,9 @@ def compute_snapshot(records: Iterable[AnalystTargetRecord],
         history = []
         for t in sample_dates:
             past = _day_stats(records, splits, t, rules)
-            if past.n >= rules.n_min and past.dispersion is not None:
+            # 取樣日自己的有效期內有無法解釋的疑似分割 → D(t) 不可信，不計入。
+            if (past.n >= rules.n_min and past.dispersion is not None
+                    and not _split_suspects(records, splits, t, rules)):
                 history.append((t, past.dispersion))
         percentile = None
         if history and today.dispersion is not None:
@@ -329,8 +337,7 @@ def compute_snapshot(records: Iterable[AnalystTargetRecord],
             fresh = sum(1 for r in today.effective
                         if (as_of - r.published_on).days <= rules.freshness_days)
             freshness = Decimal(fresh) / today.n
-        since = _add_months(sample_dates[0], -rules.validity_months)
-        suspects = _split_suspects(records, splits, as_of, since, rules)
+        suspects = _split_suspects(records, splits, as_of, rules)
 
     found: dict[str, list[str]] = {k: [] for k in _PRIORITY}
     if not any(r.published_on <= as_of for _, r in records):

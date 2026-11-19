@@ -148,7 +148,7 @@ async function saveThresholds(page, { percentile, dispersion, symbols }) {
   await page.goto(`${BASE}/#/settings/opportunity`);
   const section = page.getByRole("region", { name: "機會搜尋" });
   await section.waitFor();
-  await section.getByLabel("共識百分位門檻（%）").fill(String(percentile));
+  await section.getByLabel("分歧度歷史百分位門檻（%）").fill(String(percentile));
   await section.getByLabel("分歧度門檻（%）").fill(String(dispersion));
   if (symbols) {
     await section.getByRole("radio", { name: "自訂清單" }).check();
@@ -414,6 +414,15 @@ async function normalFlow(browser) {
     const search = await api(page, "POST", "/api/opportunity/search", { body: {} });
     check(`${label} Normal：共識清單與搜尋 API 都回 403`,
           consensus.status === 403 && search.status === 403, [consensus.status, search.status]);
+    const usage = { mode: "default", provider: null };
+    const write = await api(page, "PUT", "/api/settings", { body: {
+      market_data: usage, historical_iv: usage,
+      opportunity_search: { universe_id: "custom", custom_symbols: ["NORMX"] } } });
+    const view = (await api(page, "GET", "/api/settings")).body;
+    check(`${label} Normal：寫 opportunity_search（自訂清單）被拒 403，讀回仍是預設`,
+          write.status === 403 && view?.opportunity_search?.universe_id === "sample-large-cap"
+          && view.opportunity_search.custom_symbols.length === 0,
+          { status: write.status, universe: view?.opportunity_search?.universe_id });
     if (label === "手機") check("手機 Normal：首頁無水平捲動", await noHorizontalScroll(page));
     await ctx.close();
   }

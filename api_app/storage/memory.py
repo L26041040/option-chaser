@@ -76,6 +76,7 @@ class MemoryStorage:
         # IRI-04：sha256(token) → (reason, deleted_at)
         self._identity_tombstones: dict[str, tuple[str, str]] = {}
         self._claim_lock = threading.Lock()
+        self._settings_lock = threading.Lock()
         # SECURITY-FIX-02：(scope, key, window_seconds, window_start) -> count
         self._rate_limits: dict[tuple[str, str, int, int], int] = {}
         # AUTH-01（#308，三層角色模型）：與 owner registry／browser
@@ -129,7 +130,7 @@ class MemoryStorage:
         Postgres-only 的 adapter 層測試）。"""
         yield
 
-    _NON_STATE_ATTRS = ("_claim_lock", "_txn_depth")
+    _NON_STATE_ATTRS = ("_claim_lock", "_settings_lock", "_txn_depth")
 
     @contextmanager
     def transaction(self):
@@ -357,8 +358,14 @@ class MemoryStorage:
         return dict(self._consensus_refresh_state)
 
     def opportunity_custom_symbols(self) -> list[str]:
+        privileged = ("superuser", "superadmin")
+        allowed = {oid for oid, o in self._owners.items() if o.role in privileged}
+        allowed |= {bi.owner_id for bi in self._browser_identities.values()
+                    if bi.role in privileged and bi.owner_id in self._owners}
         out: set[str] = set()
-        for settings in self._owner_settings.values():
+        for owner_id, settings in self._owner_settings.items():
+            if owner_id not in allowed:
+                continue
             opp = settings.opportunity_search or {}
             out.update(opp.get("custom_symbols") or ())
         return sorted(out)
@@ -1028,6 +1035,15 @@ class MemoryStorage:
     def save_settings(self, settings: DataSourceSettings) -> None:
         owner = require_owner(settings.owner_id)
         self._owner_settings[owner] = settings
+
+    def update_settings(self, owner, mutate):
+        owner = require_owner(owner)
+        with self._settings_lock:
+            updated = mutate(self._owner_settings.get(owner))
+            if require_owner(updated.owner_id) != owner:
+                raise ValueError("update_settings 不能改寫成別的 owner")
+            self._owner_settings[owner] = updated
+        return updated
 
     def get_credential(self, provider: str, *, owner: str) -> ProviderCredential | None:
         owner = require_owner(owner)

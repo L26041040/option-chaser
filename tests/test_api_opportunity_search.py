@@ -289,12 +289,26 @@ def test_fuse_tripping_mid_search_keeps_the_finished_part():
     assert {r["symbol"] for r in body["rows"]} == {"AAA"}
 
 
-def test_fetch_cap_truncates_the_selected_list():
+def test_fetch_cap_overflow_is_returned_as_deferred_not_dropped():
+    """§8「單次搜尋達 fetch_cap：停止並回傳 remaining；使用者可稍後接續」：
+    超出上限的檔放在 `deferred`（不自動續跑——那會繞過上限），使用者
+    明確再發一次搜尋才處理。"""
     client, _ = _app(opportunity_fetch_cap=1, refresh_run_group_limit=10)
     _ready(client)
     body = _search(client)
     assert body["fetch_cap"] == 1 and body["truncated"] is True
     assert body["processed"] == ["AAA"] and body["remaining"] == []
+    assert body["deferred"] == ["EEE"]
+    later = _search(client, {"symbols": body["deferred"]})
+    assert later["processed"] == ["EEE"] and later["deferred"] == []
+    assert later["truncated"] is False
+
+
+def test_deferred_symbols_are_capped_again_when_searched():
+    client, _ = _app(opportunity_fetch_cap=1, refresh_run_group_limit=10)
+    _ready(client)
+    body = _search(client, {"symbols": ["EEE", "AAA"]})
+    assert body["processed"] == ["EEE"] and body["deferred"] == ["AAA"]
 
 
 def test_fetch_cap_defaults_to_50():
@@ -302,6 +316,19 @@ def test_fetch_cap_defaults_to_50():
     _ready(client)
     body = _search(client)
     assert body["fetch_cap"] == 50 and body["truncated"] is False
+    assert body["deferred"] == []
+
+
+def test_search_response_carries_the_sort_options_from_settings():
+    """排序選項（含顯示文字）只有一份來源：`opportunity_settings`，設定頁
+    與搜尋頁都讀後端給的。"""
+    client, _ = _app()
+    _ready(client)
+    body = _search(client, {"symbols": ["AAA"]})
+    settings = client.get("/api/settings").json()["opportunity_search_options"]
+    assert body["sort_options"] == settings["sorts"]
+    assert [o["id"] for o in body["sort_options"]] == ["return", "cost", "max_loss"]
+    assert all(o["label"] for o in body["sort_options"])
 
 
 # ---------- 請求驗證 ----------

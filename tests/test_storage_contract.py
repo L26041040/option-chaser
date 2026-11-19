@@ -607,14 +607,42 @@ def test_consensus_refresh_state_is_one_row_per_symbol(storage):
                                                   "BBB": replace(first, symbol="BBB")}
 
 
-def test_opportunity_custom_symbols_unions_every_owner_settings(storage):
-    storage.save_settings(_settings(owner="o1"))  # 沒存 opportunity_search
-    storage.save_settings(replace(_settings(owner="o2"), opportunity_search={
-        "universe_id": "custom", "custom_symbols": ["TSLA", "BRK.B"]}))
-    storage.save_settings(replace(_settings(owner="o3"), opportunity_search={
-        "universe_id": "sample-large-cap", "custom_symbols": ["PLTR", "TSLA"]}))
-    storage.save_settings(replace(_settings(owner="o4"), opportunity_search={
-        "sort": "cost"}))
+def _owner_with_role(storage, owner_id, *, owner_role="normal", device_role=None):
+    now = "2026-10-24T00:00:00+00:00"
+    token = f"tok-{owner_id}-" + "q" * 24
+    storage.create_owner_with_token(
+        Owner(owner_id=owner_id, created_at=now),
+        BrowserIdentity(token=token, owner_id=owner_id, issued_at=now,
+                        last_seen_at=now))
+    storage.set_owner_role(owner_id, owner_role)
+    storage.set_credential_role(token, device_role)
+    return token
+
+
+def _custom(storage, owner, symbols, universe="custom"):
+    storage.save_settings(replace(_settings(owner=owner), opportunity_search={
+        "universe_id": universe, "custom_symbols": symbols}))
+
+
+def test_opportunity_custom_symbols_unions_only_privileged_owners(storage):
+    """每日共識更新的母體只併入**目前**權限為 SU／SA 的 owner 的自訂清單：
+    owner 層級是特權帳號，或名下任一顆裝置憑證是 SU／SA。Normal、沒有
+    owner 紀錄的、被降回 Normal 的都不算（Normal 本來就寫不進這個鍵，
+    這裡是第二道防線）。"""
+    _owner_with_role(storage, "su", owner_role="superuser")
+    _owner_with_role(storage, "sa-device", device_role="superadmin")
+    _owner_with_role(storage, "normal")
+    demoted = _owner_with_role(storage, "demoted", owner_role="superuser",
+                               device_role="superuser")
+    storage.save_settings(_settings(owner="su"))      # 沒存 opportunity_search
+    _custom(storage, "su", ["TSLA", "BRK.B"])
+    _custom(storage, "sa-device", ["PLTR", "TSLA"], universe="sample-large-cap")
+    _custom(storage, "normal", ["NORM"])
+    _custom(storage, "ghost", ["GHOST"])              # 沒有 owner 紀錄
+    _custom(storage, "demoted", ["DEMO"])
+    assert storage.opportunity_custom_symbols() == ["BRK.B", "DEMO", "PLTR", "TSLA"]
+    storage.set_owner_role("demoted", "normal")
+    storage.set_credential_role(demoted, None)
     assert storage.opportunity_custom_symbols() == ["BRK.B", "PLTR", "TSLA"]
 
 
@@ -2181,6 +2209,48 @@ def test_opportunity_search_roundtrips_inside_the_settings_row(storage):
     got = storage.get_settings(owner=OWNER)
     assert got.opportunity_search == opp
     assert got.market_data == _settings().market_data
+
+
+def test_update_settings_is_an_atomic_read_modify_write(storage):
+    """兩個請求同時對同一 owner 做「讀 → 合併 → 寫」：各自改不同欄位，
+    兩個改動都要留下（不是後寫的蓋掉先寫的）。`mutate` 刻意在讀到之後
+    停一下，讓非原子的實作一定撞上 lost update。"""
+    import threading
+    import time as _time
+
+    storage.save_settings(replace(_settings(), opportunity_search={}))
+
+    def patch(field, value):
+        def mutate(current):
+            opp = dict(current.opportunity_search or {})
+            _time.sleep(0.2)
+            opp[field] = value
+            return replace(current, opportunity_search=opp)
+        return lambda: storage.update_settings(OWNER, mutate)
+
+    threads = [threading.Thread(target=patch("percentile_max", 30.0)),
+               threading.Thread(target=patch("dispersion_max", 5.0))]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert storage.get_settings(owner=OWNER).opportunity_search == {
+        "percentile_max": 30.0, "dispersion_max": 5.0}
+
+
+def test_update_settings_sees_none_first_and_writes_nothing_when_mutate_raises(storage):
+    seen = []
+
+    def boom(current):
+        seen.append(current)
+        raise ValueError("驗證失敗")
+
+    with pytest.raises(ValueError):
+        storage.update_settings(OWNER, boom)
+    assert seen == [None]
+    assert storage.get_settings(owner=OWNER) is None
+    saved = storage.update_settings(OWNER, lambda current: _settings())
+    assert saved == _settings() == storage.get_settings(owner=OWNER)
 
 
 def test_settings_saved_without_opportunity_search_read_it_back_as_none(storage):

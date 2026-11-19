@@ -34,7 +34,7 @@ type Threshold = "percentile_max" | "dispersion_max";
 const THRESHOLDS: Array<{ key: Threshold; label: string; hint: string }> = [
   {
     key: "percentile_max",
-    label: "共識百分位門檻（%）",
+    label: "分歧度歷史百分位門檻（%）",
     hint: "今天的目標價分歧度在這檔股票自己歷史中的百分位，越低代表共識越集中",
   },
   {
@@ -43,12 +43,6 @@ const THRESHOLDS: Array<{ key: Threshold; label: string; hint: string }> = [
     hint: "分析師目標價的標準差 ÷ 平均",
   },
 ];
-
-const SORT_LABELS: Record<Opp["sort"], string> = {
-  return: "目標價情境報酬（由高到低）",
-  cost: "投入成本",
-  max_loss: "最大損失",
-};
 
 interface Draft {
   percentile_max: string;
@@ -237,8 +231,8 @@ export default function OpportunitySearchSettings({
           onChange={(e) => edit({ sort: e.target.value as Opp["sort"] })}
         >
           {options.sorts.map((s) => (
-            <option key={s} value={s}>
-              {SORT_LABELS[s] ?? s}
+            <option key={s.id} value={s.id}>
+              {s.label}
             </option>
           ))}
         </select>

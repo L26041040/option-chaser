@@ -147,7 +147,8 @@ describe("OpportunityPage：資料來源狀態與共識清單", () => {
     expect(universe).toHaveTextContent("2026-09-28");
     // coverage：partial 2 ＋ unknown 2
     expect(universe).toHaveTextContent("4 檔分析師覆蓋不完整");
-    expect(universe).toHaveTextContent("共識百分位 ≤ 20%");
+    expect(universe).toHaveTextContent("分歧度歷史百分位 ≤ 20%");
+    expect(universe).not.toHaveTextContent("共識百分位");
     expect(universe).toHaveTextContent("分歧度 ≤ 10%");
     expect(within(universe).getByRole("link", { name: "調整門檻" }))
       .toHaveAttribute("href", "#/settings/opportunity");
@@ -254,6 +255,44 @@ describe("OpportunityPage：搜尋與續跑", () => {
       .toHaveTextContent("今日全站報價查詢預算已用完");
     expect(screen.getByRole("button", { name: "繼續搜尋剩下 2 檔" })).toBeInTheDocument();
     expect(searchBodies(spy)).toEqual([{}]);
+  });
+
+  it("超過單次上限：照實說還有幾檔沒搜，按鈕對那些檔發起新的一次搜尋（不自動續跑）", async () => {
+    const capped: OpportunitySearchResponse = {
+      ...SEARCH, failures: [], processed: ["AAA"], remaining: [], fetches_used: 1,
+      fetch_cap: 1, truncated: true, deferred: ["EEE"],
+    };
+    const { spy } = await renderReady({
+      search: [{ status: 200, body: capped }, { status: 200, body: EEE_FAILED }],
+    });
+    await userEvent.click(await screen.findByRole("button", { name: "搜尋選擇權" }));
+    expect(await screen.findByText("超過單次上限，尚有 1 檔未搜尋")).toBeInTheDocument();
+    expect(searchBodies(spy)).toEqual([{}]);                 // 沒有自動續跑
+
+    await userEvent.click(screen.getByRole("button", { name: "搜尋未搜尋的 1 檔" }));
+    await waitFor(() => expect(searchBodies(spy)).toEqual([{}, { symbols: ["EEE"] }]));
+    expect(await screen.findByRole("region", { name: "搜尋失敗" })).toBeInTheDocument();
+    // 前一次的結果保留；這次沒有再超過上限，提示與按鈕都消失。
+    expect(within(screen.getByRole("region", { name: "搜尋結果" }))
+      .getAllByRole("row", { name: /^AAA/ })).toHaveLength(3);
+    expect(screen.queryByText(/超過單次上限/)).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /搜尋未搜尋/ })).not.toBeInTheDocument();
+    expect(screen.getByText("已搜尋 2 / 2 檔")).toBeInTheDocument();
+  });
+
+  it("排序選項的文字來自後端回應", async () => {
+    const labelled: OpportunitySearchResponse = {
+      ...SEARCH, remaining: [],
+      sort_options: [{ id: "return", label: "報酬（後端文字）" },
+                     { id: "cost", label: "成本（後端文字）" },
+                     { id: "max_loss", label: "損失（後端文字）" }],
+    };
+    await renderReady({ search: [{ status: 200, body: labelled }] });
+    await userEvent.click(await screen.findByRole("button", { name: "搜尋選擇權" }));
+    const results = await screen.findByRole("region", { name: "搜尋結果" });
+    const select = within(results).getByRole("combobox", { name: "排序" });
+    expect(within(select).getAllByRole("option").map((o) => o.textContent))
+      .toEqual(["報酬（後端文字）", "成本（後端文字）", "損失（後端文字）"]);
   });
 
   it("409（來源未設定）：顯示後端訊息，不顯示任何結果", async () => {

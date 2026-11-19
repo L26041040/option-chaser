@@ -1438,7 +1438,9 @@ const SETTINGS_VIEW = {
       { id: "custom", label: "自訂清單", provisional: false, symbol_count: null },
     ],
     strategies: ["single-leg", "vertical-spread", "butterfly"],
-    sorts: ["return", "cost", "max_loss"],
+    sorts: [{ id: "return", label: "目標價情境報酬（高→低）" },
+              { id: "cost", label: "投入成本（低→高）" },
+              { id: "max_loss", label: "最大損失（低→高）" }],
     custom_symbols_max: 50,
     defaults: OPPORTUNITY_SEARCH_DEFAULTS,
   },
@@ -1582,7 +1584,7 @@ test("手機版：Super Admin 的「機會搜尋」區塊——恢復預設真�
   const block = page.getByRole("region", { name: "機會搜尋" });
   await expect(block).toBeVisible();
   await expect(block.getByText("大型股樣本（暫定，清單來源待 #382）")).toBeVisible();
-  const percentile = block.getByLabel("共識百分位門檻（%）");
+  const percentile = block.getByLabel("分歧度歷史百分位門檻（%）");
   await percentile.fill("35");
   await block.getByRole("button", { name: "恢復預設" }).first().click();
 

@@ -1231,9 +1231,15 @@ class PostgresStorage:
             rows = conn.execute(
                 "SELECT DISTINCT jsonb_array_elements_text("
                 "settings->'opportunity_search'->'custom_symbols') "
-                "FROM owner_settings "
+                "FROM owner_settings s "
                 "WHERE jsonb_typeof(settings->'opportunity_search'->'custom_symbols') "
-                "= 'array'").fetchall()
+                "= 'array' AND ("
+                "EXISTS (SELECT 1 FROM owners o WHERE o.owner_id = s.owner_id "
+                "AND o.role IN ('superuser', 'superadmin')) OR "
+                "EXISTS (SELECT 1 FROM browser_identities b "
+                "JOIN owners o2 ON o2.owner_id = b.owner_id "
+                "WHERE b.owner_id = s.owner_id "
+                "AND b.role IN ('superuser', 'superadmin')))").fetchall()
         return sorted(r[0] for r in rows)
 
     # ---------- Treasury 曲線列快取（PERF-03／#179，per-year） ----------
@@ -2001,6 +2007,30 @@ class PostgresStorage:
                 "settings = EXCLUDED.settings, "
                 "updated_at = EXCLUDED.updated_at",
                 (owner, Jsonb(_settings_blob(settings)), settings.updated_at))
+
+    def update_settings(self, owner, mutate):
+        owner = require_owner(owner)
+        with self._connect() as conn:
+            with conn.transaction():
+                # advisory lock 先排隊：從沒存過（還沒有列可鎖）的 owner 也一樣
+                # 依序執行；交易結束自動釋放。
+                conn.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+                             (f"owner_settings:{owner}",))
+                row = conn.execute(
+                    "SELECT settings, updated_at FROM owner_settings "
+                    "WHERE owner_id = %s FOR UPDATE", (owner,)).fetchone()
+                updated = mutate(_settings_from_row(row, owner)
+                                 if row is not None else None)
+                if require_owner(updated.owner_id) != owner:
+                    raise ValueError("update_settings 不能改寫成別的 owner")
+                conn.execute(
+                    "INSERT INTO owner_settings (owner_id, settings, updated_at) "
+                    "VALUES (%s, %s, %s) "
+                    "ON CONFLICT (owner_id) DO UPDATE SET "
+                    "settings = EXCLUDED.settings, "
+                    "updated_at = EXCLUDED.updated_at",
+                    (owner, Jsonb(_settings_blob(updated)), updated.updated_at))
+        return updated
 
     def get_credential(self, provider: str, *, owner: str) -> ProviderCredential | None:
         owner = require_owner(owner)

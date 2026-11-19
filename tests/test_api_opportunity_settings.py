@@ -65,7 +65,10 @@ def test_view_carries_the_options_the_settings_block_needs(client):
     assert universes["sample-large-cap"]["provisional"] is True
     assert universes["custom"]["label"] == "自訂清單"
     assert options["strategies"] == ["single-leg", "vertical-spread", "butterfly"]
-    assert options["sorts"] == ["return", "cost", "max_loss"]
+    assert options["sorts"] == [
+        {"id": "return", "label": "目標價情境報酬（高→低）"},
+        {"id": "cost", "label": "投入成本（低→高）"},
+        {"id": "max_loss", "label": "最大損失（低→高）"}]
     assert options["custom_symbols_max"] == 50
     assert options["defaults"] == EXPECTED_DEFAULTS
 
@@ -145,7 +148,7 @@ def test_thresholds_reject_out_of_range_and_non_numbers(client, field, bad):
 
 def test_rejected_threshold_carries_a_readable_message(client):
     detail = _put(client, {"percentile_max": 101}).json()["detail"]
-    assert detail[0]["msg"] == "Value error, 共識百分位門檻必須介於 0 到 100"
+    assert detail[0]["msg"] == "Value error, 分歧度歷史百分位門檻必須介於 0 到 100"
 
 
 def test_empty_strategies_are_rejected(client):
@@ -224,3 +227,42 @@ def test_old_stored_settings_without_the_key_read_back_unchanged(client, db):
     assert body["market_data"]["provider"] == "marketdata-app"
     assert body["updated_at"] == "2026-01-01T00:00:00+00:00"
     assert body["opportunity_search"] == EXPECTED_DEFAULTS
+
+
+# ---------- 權限：只有 SU／SA 能寫 opportunity_search ----------
+
+@pytest.fixture
+def normal_client(db):
+    return TestClient(create_app(identity_resolver=lambda: "solo", storage=db))
+
+
+def test_normal_user_cannot_write_opportunity_search(normal_client, db):
+    resp = _put(normal_client, {"universe_id": "custom", "custom_symbols": ["AAPL"]})
+    assert resp.status_code == 403
+    assert db.get_settings(owner="solo") is None          # 什麼都沒寫
+    assert _opp(normal_client) == EXPECTED_DEFAULTS
+
+
+def test_normal_user_still_saves_the_existing_keys(normal_client):
+    custom_md = {"mode": "custom", "provider": "marketdata-app"}
+    resp = _put(normal_client, market_data=custom_md)
+    assert resp.status_code == 200
+    assert resp.json()["market_data"]["provider"] == "marketdata-app"
+    assert resp.json()["opportunity_search"] == EXPECTED_DEFAULTS
+
+
+def test_anonymous_cookie_identity_cannot_write_opportunity_search():
+    db = MemoryStorage()
+    client = TestClient(create_app(storage=db), base_url="https://testserver")
+    resp = _put(client, {"percentile_max": 5})
+    assert resp.status_code == 403
+    assert client.get("/api/settings").json()["opportunity_search"] == EXPECTED_DEFAULTS
+
+
+@pytest.mark.parametrize("role", ["superuser", "superadmin"])
+def test_superuser_and_superadmin_can_write_opportunity_search(db, role):
+    from tests._role_session import role_cookies
+    client = TestClient(create_app(storage=db), base_url="https://testserver",
+                        cookies=role_cookies(db, role))
+    assert _put(client, {"percentile_max": 5}).status_code == 200
+    assert _opp(client)["percentile_max"] == 5

@@ -16,6 +16,10 @@
  *   測試資料來源（`is_fixture`）在頁首常駐標示，不隨捲動或狀態消失。
  * - 「停止」是真的不再續跑：已經送出的那一次照樣等它回來並顯示（上游
  *   額度已經花了），之後不再送下一次；剩下的檔留著，可以「繼續搜尋」。
+ * - 超過單次上限（`fetch_cap`）的檔不會被默默丟掉：後端放在 `deferred`、
+ *   這頁照實說「尚有 N 檔未搜尋」，使用者按鈕才對那些檔發起新的一輪
+ *   （同樣受上限約束）——不自動續跑，否則上限形同虛設。
+ * - 排序選項的文字由後端給（搜尋回應的 `sort_options`，與設定頁同一份）。
  * - 每個數字都是後端原值，這裡只排序與格式化。單位照實標，而且跟既有
  *   詳細頁同一口徑（#395）：投入成本是每股（`entry_cost`）；最大損失也顯示
  *   每股＝`max_loss_per_contract / 100`（後端欄位是每口、100 股；既有詳細頁
@@ -36,22 +40,22 @@ import {
   type OpportunityRow,
   type OpportunitySearchFailure,
   type OpportunitySearchRequest,
+  type SortOption,
 } from "./api";
 import { strategyLabel } from "./detail";
 import { setAuthStatusCache, subscribeAuthStatus } from "./fetchCache";
-import { mergeSearchRows, rankOpportunities, type OpportunitySort } from "./opportunity";
+import {
+  mergeSearchRows,
+  opportunityRowKey as rowKey,
+  rankOpportunities,
+  type OpportunitySort,
+} from "./opportunity";
 import { detailHash, opportunitySettingsHash } from "./route";
 import { formatReturn, money } from "./scenarios";
 import { roleAtLeast, type Role } from "./superuser";
 
 export const RETURN_DISCLAIMER =
   "此報酬是『分析師平均目標價在目標月份成立時』的條件情境報酬，不是期望值或勝率";
-
-const SORT_OPTIONS: Array<{ value: OpportunitySort; label: string }> = [
-  { value: "return", label: "目標價情境報酬（高→低）" },
-  { value: "cost", label: "投入成本（低→高）" },
-  { value: "max_loss", label: "最大損失（低→高）" },
-];
 
 const STATUS_LABELS: Record<string, string> = {
   insufficient_analysts: "分析師人數不足",
@@ -93,8 +97,6 @@ function expiryDistance(bufferDays: number): string {
     : `比目標月份晚 ${bufferDays} 天到期`;
 }
 
-const rowKey = (r: OpportunityRow) => `${r.symbol}|${r.family}`;
-
 type Load =
   | { state: "loading" }
   | { state: "error"; message: string }
@@ -106,14 +108,21 @@ interface SearchState {
   processed: string[];
   total: number;
   remaining: string[];
-  fetchCap: number | null;
-  truncated: boolean;
+  /** 超過單次上限、這一輪沒搜的檔（後端 `deferred`）。不自動續跑。 */
+  deferred: string[];
+  /** 排序選項（含文字）照後端給的；還沒搜過時是空的（下拉選單只在有結果時出現）。 */
+  sortOptions: SortOption[];
 }
 
 const EMPTY_SEARCH: SearchState = {
   rows: [], failures: [], processed: [], total: 0, remaining: [],
-  fetchCap: null, truncated: false,
+  deferred: [], sortOptions: [],
 };
+
+/** `new`：重新搜尋入選股；`resume`：接續 `remaining`（同一輪）；
+ *  `deferred`：對超過上限而沒搜的檔發起新的一輪（同樣受上限約束），
+ *  先前的結果保留。 */
+type RunMode = "new" | "resume" | "deferred";
 
 function errorMessage(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
@@ -183,35 +192,42 @@ export default function OpportunityPage({
     };
   }, []);
 
-  async function run(resume: boolean) {
+  async function run(mode: RunMode) {
     stopRef.current = false;
     setStopRequested(false);
     setStopped(false);
     setNotice(null);
     setRunning(true);
     setStarted(true);
-    let body: OpportunitySearchRequest = resume ? { symbols: search.remaining } : {};
-    if (!resume) setSearch(EMPTY_SEARCH);
-    let first = !resume;
+    let body: OpportunitySearchRequest =
+      mode === "resume" ? { symbols: search.remaining }
+        : mode === "deferred" ? { symbols: search.deferred }
+          : {};
+    if (mode === "new") setSearch(EMPTY_SEARCH);
+    // 一輪的第一次回應決定這一輪的總數與 `deferred`；續跑只是同一輪的後半。
+    let first = mode !== "resume";
     try {
       for (;;) {
         const r = await searchOpportunities(body);
         if (!mounted.current) return;
         const isFirst = first;
         first = false;
-        if (isFirst) setSort(r.sort);
-        setSearch((prev) => ({
-          rows: mergeSearchRows(prev.rows, r.rows),
-          failures: [
-            ...prev.failures.filter((f) => !r.failures.some((g) => g.symbol === f.symbol)),
-            ...r.failures,
-          ],
-          processed: [...new Set([...prev.processed, ...r.processed])],
-          total: isFirst ? r.processed.length + r.remaining.length : prev.total,
-          remaining: r.remaining,
-          fetchCap: r.fetch_cap,
-          truncated: isFirst ? r.truncated : prev.truncated,
-        }));
+        if (isFirst && mode === "new") setSort(r.sort);
+        setSearch((prev) => {
+          const processed = [...new Set([...prev.processed, ...r.processed])];
+          return {
+            rows: mergeSearchRows(prev.rows, r.rows),
+            failures: [
+              ...prev.failures.filter((f) => !r.failures.some((g) => g.symbol === f.symbol)),
+              ...r.failures,
+            ],
+            processed,
+            total: isFirst ? processed.length + r.remaining.length : prev.total,
+            remaining: r.remaining,
+            deferred: isFirst ? r.deferred : prev.deferred,
+            sortOptions: r.sort_options,
+          };
+        });
         if (r.stopped_reason === "fused") {
           setNotice(r.message ?? "今日報價查詢已暫停，請稍後再試");
           break;
@@ -313,9 +329,10 @@ export default function OpportunityPage({
           onSort={setSort}
           onSearch={() => {
             setSaveErrors({});
-            void run(false);
+            void run("new");
           }}
-          onResume={() => void run(true)}
+          onResume={() => void run("resume")}
+          onSearchDeferred={() => void run("deferred")}
           onStop={stop}
           savingKey={savingKey}
           saveErrors={saveErrors}
@@ -328,7 +345,7 @@ export default function OpportunityPage({
 
 function ConfiguredBody({
   data, search, started, running, stopRequested, stopped, notice, sort, onSort,
-  onSearch, onResume, onStop, savingKey, saveErrors, onSave,
+  onSearch, onResume, onSearchDeferred, onStop, savingKey, saveErrors, onSave,
 }: {
   data: OpportunityConsensusResponse;
   search: SearchState;
@@ -341,6 +358,7 @@ function ConfiguredBody({
   onSort: (s: OpportunitySort) => void;
   onSearch: () => void;
   onResume: () => void;
+  onSearchDeferred: () => void;
   onStop: () => void;
   savingKey: string | null;
   saveErrors: Record<string, string>;
@@ -393,6 +411,11 @@ function ConfiguredBody({
               繼續搜尋剩下 {search.remaining.length} 檔
             </button>
           )}
+          {!running && search.remaining.length === 0 && search.deferred.length > 0 && (
+            <button type="button" className="pbtn line" onClick={onSearchDeferred}>
+              搜尋未搜尋的 {search.deferred.length} 檔
+            </button>
+          )}
         </div>
         {selected.length === 0 && (
           <p className="caption">沒有入選股，所以沒有可以搜尋的標的。</p>
@@ -406,10 +429,8 @@ function ConfiguredBody({
         {stopped && (
           <p className="caption">已停止，剩下的檔還沒搜尋。</p>
         )}
-        {search.truncated && search.fetchCap !== null && (
-          <p className="caption">
-            入選股超過單次搜尋上限（{search.fetchCap} 檔），這次只搜尋前 {search.fetchCap} 檔。
-          </p>
+        {search.deferred.length > 0 && (
+          <p className="caption">超過單次上限，尚有 {search.deferred.length} 檔未搜尋</p>
         )}
         {notice && (
           <div className="notice error" role="alert">
@@ -443,8 +464,8 @@ function ConfiguredBody({
                 value={sort}
                 onChange={(e) => onSort(e.target.value as OpportunitySort)}
               >
-                {SORT_OPTIONS.map((o) => (
-                  <option key={o.value} value={o.value}>
+                {search.sortOptions.map((o) => (
+                  <option key={o.id} value={o.id}>
                     {o.label}
                   </option>
                 ))}
@@ -549,7 +570,7 @@ function weakReasons(
 ): string[] {
   const out: string[] = [];
   if (!item.gate.first) {
-    out.push(`百分位 ${ratioPct(item.percentile)} 高於門檻 ${t.percentile_max}%`);
+    out.push(`分歧度歷史百分位 ${ratioPct(item.percentile)} 高於門檻 ${t.percentile_max}%`);
   }
   if (!item.gate.second) {
     out.push(`分歧度 ${ratioPct(item.dispersion)} 高於門檻 ${t.dispersion_max}%`);
@@ -581,7 +602,7 @@ function UniverseCard({ data }: { data: OpportunityConsensusResponse }) {
         <p className="caption">資料品質規則目前是暫定值。</p>
       )}
       <p className="opp-thresholds">
-        目前門檻：共識百分位 ≤ {data.thresholds.percentile_max}%、分歧度 ≤ {data.thresholds.dispersion_max}%
+        目前門檻：分歧度歷史百分位 ≤ {data.thresholds.percentile_max}%、分歧度 ≤ {data.thresholds.dispersion_max}%
         <a href={opportunitySettingsHash()}>調整門檻</a>
       </p>
     </section>
@@ -598,7 +619,7 @@ function ItemSummary({ item }: { item: ConsensusItem }) {
       <p className="opp-facts">
         <span>{item.n_analysts} 位分析師</span>
         <span>分歧度 {ratioPct(item.dispersion)}</span>
-        <span>百分位 {ratioPct(item.percentile)}</span>
+        <span>歷史百分位 {ratioPct(item.percentile)}</span>
         <span>{item.history_points} 個歷史點</span>
         <span>資料日 {item.as_of ?? "—"}</span>
         {item.coverage && item.coverage !== "complete" && (

@@ -128,6 +128,34 @@ test("SU：導覽進頁 → 入選清單 → 搜尋（續跑）→ 切換排序 
   await expect(page.getByRole("heading", { name: "機會搜尋" })).toHaveCount(0);
 });
 
+test("超過單次上限：顯示尚有幾檔未搜尋，按鈕對那些檔發起新的一次搜尋", async ({ page }) => {
+  await routeBase(page, "superuser");
+  await page.route("**/api/opportunity/consensus", (route) => route.fulfill({ json: consensus }));
+  const bodies: unknown[] = [];
+  await page.route("**/api/opportunity/search", (route) => {
+    bodies.push(route.request().postDataJSON());
+    return route.fulfill({ json: bodies.length === 1
+      ? { ...search, failures: [], processed: ["AAA"], remaining: [], fetches_used: 1,
+          fetch_cap: 1, truncated: true, deferred: ["EEE"] }
+      : { ...search, rows: [], processed: ["EEE"], remaining: [], fetches_used: 1 } });
+  });
+
+  await page.goto("/#/opportunity");
+  await page.getByRole("button", { name: "搜尋選擇權" }).click();
+  await expect(page.getByText("超過單次上限，尚有 1 檔未搜尋")).toBeVisible();
+  await expect(page.getByRole("region", { name: "搜尋結果" })
+    .getByRole("row", { name: /^AAA / })).toHaveCount(3);
+  expect(bodies).toEqual([{}]);
+  await noHorizontalScroll(page);
+
+  await page.getByRole("button", { name: "搜尋未搜尋的 1 檔" }).click();
+  await expect(page.getByRole("region", { name: "搜尋失敗" })
+    .getByRole("listitem", { name: "EEE" })).toBeVisible();
+  expect(bodies).toEqual([{}, { symbols: ["EEE"] }]);
+  await expect(page.getByText(/超過單次上限/)).toHaveCount(0);
+  await expect(page.getByText("已搜尋 2 / 2 檔")).toBeVisible();
+});
+
 test("來源未設定：顯示「尚未設定分析師資料來源」，沒有搜尋按鈕，不打搜尋端點", async ({ page }) => {
   await routeBase(page, "superadmin");
   await page.route("**/api/opportunity/consensus", (route) => route.fulfill({ json: {

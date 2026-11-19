@@ -35,10 +35,15 @@ from .opportunity_settings import DEFAULT_DISPERSION_MAX, DEFAULT_PERCENTILE_MAX
 from .analyst_source import AnalystSource
 from .storage import ConsensusRefreshState, ConsensusSnapshotRecord, Storage
 
-# 資料品質規則 R：全站一份（不在使用者設定，#389 §6），數值待 #385。
-RULES = ConsensusRules()
-# target_month 規則待 #381；暫定 today + 12 個月。
-TARGET_MONTH_RULE = "fixed_12m"
+# 資料品質規則 R 與 target_month 規則：全站一份（不在使用者設定，#389 §6），
+# 數值待 #385／#381。這裡只是**暫定預設**——實際值由
+# `create_app(consensus_rules=, target_month_rule=)` 注入、一路傳進本模組，
+# 改規則不必改程式（user story 40）。
+DEFAULT_RULES = ConsensusRules()
+DEFAULT_TARGET_MONTH_RULE = "fixed_12m"
+# 每日更新母體的總上限（樣本優先；數值待 #386，`create_app(
+# consensus_refresh_symbol_cap=)` 可覆寫）。
+DEFAULT_REFRESH_SYMBOL_CAP = 200
 NOT_CONFIGURED_MESSAGE = "尚未設定分析師資料來源"
 _NOT_REFRESHED = "no_data: 尚未更新"
 # 「有資料但不足」：資料品質規則沒過（不含完全沒資料、來源失敗）。
@@ -48,31 +53,35 @@ _INSUFFICIENT = ("insufficient_analysts", "insufficient_history", "stale",
 
 # ---------- Snapshot ⇄ JSON（Decimal 存字串，不失精度） ----------
 
-def _s(x):
+def _decimal_to_str(x: Decimal | None) -> str | None:
     return None if x is None else str(x)
 
 
 def snapshot_to_dict(s: ConsensusSnapshot) -> dict:
     return {
         "symbol": s.symbol, "as_of": s.as_of.isoformat(), "status": s.status,
-        "n_analysts": s.n_analysts, "mean": _s(s.mean), "stdev": _s(s.stdev),
-        "dispersion": _s(s.dispersion), "high": _s(s.high), "low": _s(s.low),
-        "history_points": s.history_points, "percentile": _s(s.percentile),
+        "n_analysts": s.n_analysts, "mean": _decimal_to_str(s.mean),
+        "stdev": _decimal_to_str(s.stdev),
+        "dispersion": _decimal_to_str(s.dispersion),
+        "high": _decimal_to_str(s.high), "low": _decimal_to_str(s.low),
+        "history_points": s.history_points,
+        "percentile": _decimal_to_str(s.percentile),
         "history": [[t.isoformat(), str(d)] for t, d in s.history],
-        "reasons": list(s.reasons), "freshness_share": _s(s.freshness_share),
+        "reasons": list(s.reasons),
+        "freshness_share": _decimal_to_str(s.freshness_share),
         "median_published_on": (s.median_published_on.isoformat()
                                 if s.median_published_on else None),
         "coverage": s.coverage, "source": s.source,
         "rules_version": s.rules_version,
         "cross_check": ({"consensus_mean_from_source":
-                             _s(s.cross_check.consensus_mean_from_source),
+                             _decimal_to_str(s.cross_check.consensus_mean_from_source),
                          "n_from_source": s.cross_check.n_from_source}
                         if s.cross_check else None),
         "computed_at": s.computed_at.isoformat() if s.computed_at else None,
     }
 
 
-def _d(x):
+def _str_to_decimal(x: str | None) -> Decimal | None:
     return None if x is None else Decimal(x)
 
 
@@ -80,27 +89,39 @@ def snapshot_from_dict(d: dict) -> ConsensusSnapshot:
     cross = d.get("cross_check")
     return ConsensusSnapshot(
         symbol=d["symbol"], as_of=date.fromisoformat(d["as_of"]), status=d["status"],
-        n_analysts=d["n_analysts"], mean=_d(d["mean"]), stdev=_d(d["stdev"]),
-        dispersion=_d(d["dispersion"]), high=_d(d["high"]), low=_d(d["low"]),
-        history_points=d["history_points"], percentile=_d(d["percentile"]),
+        n_analysts=d["n_analysts"], mean=_str_to_decimal(d["mean"]),
+        stdev=_str_to_decimal(d["stdev"]),
+        dispersion=_str_to_decimal(d["dispersion"]),
+        high=_str_to_decimal(d["high"]), low=_str_to_decimal(d["low"]),
+        history_points=d["history_points"],
+        percentile=_str_to_decimal(d["percentile"]),
         history=tuple((date.fromisoformat(t), Decimal(v)) for t, v in d["history"]),
-        reasons=tuple(d["reasons"]), freshness_share=_d(d["freshness_share"]),
+        reasons=tuple(d["reasons"]),
+        freshness_share=_str_to_decimal(d["freshness_share"]),
         median_published_on=(date.fromisoformat(d["median_published_on"])
                              if d.get("median_published_on") else None),
         coverage=d["coverage"], source=d["source"], rules_version=d["rules_version"],
-        cross_check=(ConsensusCrossCheck(_d(cross["consensus_mean_from_source"]),
-                                         cross["n_from_source"]) if cross else None),
+        cross_check=(ConsensusCrossCheck(
+            _str_to_decimal(cross["consensus_mean_from_source"]),
+            cross["n_from_source"]) if cross else None),
         computed_at=(datetime.fromisoformat(d["computed_at"])
                      if d.get("computed_at") else None))
 
 
 # ---------- 更新 ----------
 
-def refresh_universe(storage: Storage) -> list[str]:
-    """每日更新的母體 = 大型股樣本 ∪ 所有 owner 的自訂清單（#392）。"""
+def refresh_universe(storage: Storage, *,
+                     cap: int = DEFAULT_REFRESH_SYMBOL_CAP) -> list[str]:
+    """每日更新的母體 = 大型股樣本 ∪ **目前權限為 SU／SA** 的 owner 的自訂
+    清單（#392；Normal 寫不進、也不會被併入——
+    `Storage.opportunity_custom_symbols()` 只回特權 owner 的清單）。
+
+    總數不超過 `cap`：樣本永遠排最前面，自訂清單依代號排序接在後面——
+    決定性，同一份資料每天選出同一批，不會因為某位使用者的清單很長就把
+    樣本擠出去。"""
     sample = search_universe.resolve_universe(None).symbols
     custom = storage.opportunity_custom_symbols()
-    return list(dict.fromkeys([*sample, *custom]))
+    return list(dict.fromkeys([*sample, *sorted(custom)]))[:cap]
 
 
 def _now() -> datetime:
@@ -134,7 +155,7 @@ def _refresh_one(storage: Storage, source: AnalystSource, symbol: str,
 
 def refresh_symbols(storage: Storage, source: AnalystSource, symbols: Sequence[str],
                     today: date, *, budget_exhausted: Callable[[], bool],
-                    rules: ConsensusRules = RULES) -> dict:
+                    rules: ConsensusRules = DEFAULT_RULES) -> dict:
     """處理今天（同一來源）還沒嘗試過的 symbol，最久沒嘗試的先；每處理完
     一檔檢查一次預算，至少處理一檔。回傳本次統計與 `remaining`（下次
     接續的 symbol，依處理順序）。"""
@@ -166,7 +187,7 @@ def refresh_symbols(storage: Storage, source: AnalystSource, symbols: Sequence[s
 
 # ---------- 清單 view ----------
 
-def _f(x: Decimal | None) -> float | None:
+def _decimal_to_float(x: Decimal | None) -> float | None:
     return None if x is None else float(x)
 
 
@@ -174,14 +195,16 @@ def _pct_to_ratio(pct) -> Decimal:
     return Decimal(str(pct)) / 100
 
 
-def rules_view(rules: ConsensusRules = RULES) -> dict:
+def rules_view(rules: ConsensusRules = DEFAULT_RULES,
+               target_month_rule: str = DEFAULT_TARGET_MONTH_RULE) -> dict:
+    """清單回應的 `rules` 區塊——照實回報**這個 app 實際注入**的規則。"""
     return {"rules_version": rules.version, "provisional": True,
             "n_min": rules.n_min, "validity_months": rules.validity_months,
             "freshness_days": rules.freshness_days,
             "freshness_min_share": float(rules.freshness_min_share),
             "h_min": rules.h_min, "stdev_kind": rules.stdev_kind,
             "lookback_points": rules.lookback_points, "sampling": "month_end",
-            "target_month_rule": TARGET_MONTH_RULE}
+            "target_month_rule": target_month_rule}
 
 
 def _gate_view(gate: consensus.GateResult) -> dict:
@@ -189,40 +212,50 @@ def _gate_view(gate: consensus.GateResult) -> dict:
             "reasons": list(gate.reasons)}
 
 
-def _empty_item(symbol: str, status: str, reason: str) -> dict:
-    return {"symbol": symbol, "status": status, "as_of": None, "n_analysts": 0,
-            "mean": None, "stdev": None, "dispersion": None, "percentile": None,
-            "history_points": 0, "coverage": None, "freshness_share": None,
-            "high": None, "low": None, "median_published_on": None,
-            "reasons": [reason],
-            "gate": {"first": False, "second": False, "selected": False,
-                     "reasons": [reason]},
-            "target_month": None, "rules_version": None, "refresh_error": None}
-
-
-def _snapshot_item(snap: ConsensusSnapshot, today: date, p_max: Decimal,
-                   d_max: Decimal) -> dict:
-    try:
-        month = consensus.target_month(snap, today, TARGET_MONTH_RULE)
-    except ValueError:
-        month = None
-    return {"symbol": snap.symbol, "status": snap.status,
-            "as_of": snap.as_of.isoformat(), "n_analysts": snap.n_analysts,
-            "mean": _f(snap.mean), "stdev": _f(snap.stdev),
-            "dispersion": _f(snap.dispersion), "percentile": _f(snap.percentile),
-            "history_points": snap.history_points, "coverage": snap.coverage,
-            "freshness_share": _f(snap.freshness_share),
-            "high": _f(snap.high), "low": _f(snap.low),
+def _item(symbol: str, status: str, *, reasons: Sequence[str], gate: dict,
+          snap: ConsensusSnapshot | None = None,
+          target_month: str | None = None) -> dict:
+    """清單項目的唯一形狀（有無 Snapshot 都走這裡，鍵不會分家）。沒有
+    Snapshot 時數值一律 `None`、人數與歷史點數為 0。"""
+    def number(name: str) -> float | None:
+        return _decimal_to_float(getattr(snap, name)) if snap else None
+    return {"symbol": symbol, "status": status,
+            "as_of": snap.as_of.isoformat() if snap else None,
+            "n_analysts": snap.n_analysts if snap else 0,
+            "mean": number("mean"), "stdev": number("stdev"),
+            "dispersion": number("dispersion"), "percentile": number("percentile"),
+            "history_points": snap.history_points if snap else 0,
+            "coverage": snap.coverage if snap else None,
+            "freshness_share": number("freshness_share"),
+            "high": number("high"), "low": number("low"),
             "median_published_on": (snap.median_published_on.isoformat()
-                                    if snap.median_published_on else None),
-            "reasons": list(snap.reasons),
-            "gate": _gate_view(consensus.evaluate_gate(snap, p_max, d_max)),
-            "target_month": month, "rules_version": snap.rules_version,
+                                    if snap and snap.median_published_on else None),
+            "reasons": list(reasons), "gate": gate,
+            "target_month": target_month,
+            "rules_version": snap.rules_version if snap else None,
             "refresh_error": None}
 
 
+def _empty_item(symbol: str, status: str, reason: str) -> dict:
+    return _item(symbol, status, reasons=[reason],
+                 gate={"first": False, "second": False, "selected": False,
+                       "reasons": [reason]})
+
+
+def _snapshot_item(snap: ConsensusSnapshot, today: date, p_max: Decimal,
+                   d_max: Decimal, target_month_rule: str) -> dict:
+    try:
+        month = consensus.target_month(snap, today, target_month_rule)
+    except ValueError:
+        month = None
+    return _item(snap.symbol, snap.status, reasons=snap.reasons, snap=snap,
+                 gate=_gate_view(consensus.evaluate_gate(snap, p_max, d_max)),
+                 target_month=month)
+
+
 def _items(storage: Storage, source: AnalystSource, symbols: Sequence[str],
-           today: date, p_max: Decimal, d_max: Decimal) -> list[dict]:
+           today: date, p_max: Decimal, d_max: Decimal,
+           target_month_rule: str) -> list[dict]:
     snapshots = storage.latest_consensus_snapshots(symbols, source=source.name)
     states = storage.consensus_refresh_states()
     items = []
@@ -236,7 +269,8 @@ def _items(storage: Storage, source: AnalystSource, symbols: Sequence[str],
                                      f"source_error: {failure.error}")
                          if failure else _empty_item(symbol, "no_data", _NOT_REFRESHED))
             continue
-        item = _snapshot_item(snapshot_from_dict(rec.snapshot), today, p_max, d_max)
+        item = _snapshot_item(snapshot_from_dict(rec.snapshot), today, p_max, d_max,
+                              target_month_rule)
         if failure is not None and failure.attempted_day > rec.as_of:
             # 最新一次嘗試失敗：沿用上一份成功資料，as_of 照實是那一天。
             item["refresh_error"] = {"day": failure.attempted_day,
@@ -246,25 +280,30 @@ def _items(storage: Storage, source: AnalystSource, symbols: Sequence[str],
 
 
 def _universe_items(storage: Storage, source: AnalystSource,
-                    opportunity: dict, today: date) -> list[dict]:
+                    opportunity: dict, today: date,
+                    target_month_rule: str) -> list[dict]:
     """這位使用者母體裡每一檔的清單項目（含依其門檻算出的 `gate`）——
     共識清單與搜尋（`selected_items()`）共用同一份，入選集合不會分家。"""
     universe = search_universe.resolve_universe(opportunity)
     return _items(storage, source, universe.symbols, today,
                   _pct_to_ratio(opportunity["percentile_max"]),
-                  _pct_to_ratio(opportunity["dispersion_max"]))
+                  _pct_to_ratio(opportunity["dispersion_max"]), target_month_rule)
 
 
 def selected_items(storage: Storage, source: AnalystSource,
-                   opportunity: dict, today: date) -> list[dict]:
+                   opportunity: dict, today: date, *,
+                   target_month_rule: str = DEFAULT_TARGET_MONTH_RULE) -> list[dict]:
     """共識清單裡 `gate.selected` 的項目（母體順序）——機會搜尋（OS-04／
     #393）省略 `symbols` 時的預設集合，與 `consensus_view()` 逐項相同。"""
-    return [i for i in _universe_items(storage, source, opportunity, today)
+    return [i for i in _universe_items(storage, source, opportunity, today,
+                                       target_month_rule)
             if i["gate"]["selected"]]
 
 
 def consensus_view(storage: Storage, source: AnalystSource | None,
-                   opportunity: dict, today: date) -> dict:
+                   opportunity: dict, today: date, *,
+                   rules: ConsensusRules = DEFAULT_RULES,
+                   target_month_rule: str = DEFAULT_TARGET_MONTH_RULE) -> dict:
     """`GET /api/opportunity/consensus` 的完整回應。`opportunity` 是
     `opportunity_settings.effective()` 的輸出（門檻為百分比 0–100）。"""
     universe = search_universe.resolve_universe(opportunity)
@@ -274,7 +313,8 @@ def consensus_view(storage: Storage, source: AnalystSource | None,
         items: list[dict] = []
         source_view = {"configured": False, "name": None, "is_fixture": False}
     else:
-        items = _universe_items(storage, source, opportunity, today)
+        items = _universe_items(storage, source, opportunity, today,
+                                target_month_rule)
         source_view = {"configured": True, "name": source.name,
                        "is_fixture": bool(source.is_fixture)}
     with_data = [i for i in items if i["status"] not in ("no_data", "source_error")]
@@ -293,7 +333,7 @@ def consensus_view(storage: Storage, source: AnalystSource | None,
                      "as_of": max((i["as_of"] for i in items if i["as_of"]),
                                   default=None)},
         "thresholds": thresholds,
-        "rules": rules_view(),
+        "rules": rules_view(rules, target_month_rule),
         "items": items,
     }
     if source is None:

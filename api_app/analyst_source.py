@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime, time, timezone
 from decimal import Decimal
 from pathlib import Path
 from typing import Protocol
@@ -78,13 +78,21 @@ class FixtureAnalystSource:
                                   error=entry["error"])
         cross = entry.get("cross_check")
         history_from = entry.get("history_from")
+        # 檔案沒寫抓取時間的紀錄：以這次抓取的日期（UTC 零時）為準——A3 的
+        # 同日決勝靠 retrieved_at，不能留空。
+        fetched = datetime.combine(today, time(0), tzinfo=timezone.utc)
         return ProviderResult(
             records=tuple(
                 AnalystTargetRecord(
                     symbol=symbol, analyst_key=r["analyst_key"], firm=r["firm"],
                     target_price=Decimal(r["target_price"]),
                     published_on=date.fromisoformat(r["published_on"]),
-                    source=f"{self.name}:file", action=r.get("action"))
+                    source=f"{self.name}:file", action=r.get("action"),
+                    retrieved_at=(datetime.fromisoformat(r["retrieved_at"])
+                                  if r.get("retrieved_at") else fetched),
+                    split_adjusted_through=(
+                        date.fromisoformat(r["split_adjusted_through"])
+                        if r.get("split_adjusted_through") else None))
                 for r in entry.get("records", ())),
             splits=tuple(
                 SplitEvent(symbol=symbol,

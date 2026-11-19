@@ -12,7 +12,7 @@ from __future__ import annotations
 import hashlib
 from contextlib import AbstractContextManager
 from dataclasses import dataclass, replace
-from typing import Protocol, Sequence
+from typing import Callable, Protocol, Sequence
 
 from ..diagnostics import DiagnosticEvent
 
@@ -983,8 +983,11 @@ class Storage(Protocol):
         """全部 symbol 的最後一次嘗試狀態（數量 ≈ 母體大小，數百筆以內）。"""
 
     def opportunity_custom_symbols(self) -> list[str]:
-        """所有 owner 的 `opportunity_search.custom_symbols` 聯集（排序、
-        去重）——每日共識更新的母體之一。只回 ticker，不回任何 owner 資訊。"""
+        """**目前權限為 SU／SA** 的 owner 的 `opportunity_search.custom_symbols`
+        聯集（排序、去重）——每日共識更新的母體之一。「目前權限」＝owner
+        層級是特權帳號（`owners.role`），或名下任一顆裝置憑證是 SU／SA
+        （`browser_identities.role`）；Normal、沒有 owner 紀錄、已被降回
+        Normal 的 owner 的清單一律不併入。只回 ticker，不回任何 owner 資訊。"""
 
     # ---------- Treasury 曲線列快取（PERF-03／#179，per-year） ----------
 
@@ -1022,6 +1025,17 @@ class Storage(Protocol):
         """寫進新表 `owner_settings`，覆蓋既有那一筆——單一狀態，不是
         歷史序列。`settings.owner_id` 必須非 `None`（`require_owner()`
         守門）。"""
+
+    def update_settings(
+            self, owner: str,
+            mutate: Callable[[DataSourceSettings | None], DataSourceSettings],
+    ) -> DataSourceSettings:
+        """原子的「讀 → 改 → 寫」：鎖住這個 owner 的設定（Postgres：同一個
+        交易裡的 advisory lock＋列鎖；記憶體：互斥鎖），把目前的值（從沒
+        存過是 `None`）交給 `mutate`，存下它回傳的新值並回傳。同一 owner
+        的並發更新因此依序執行，各自的部分更新都不會被另一個蓋掉（lost
+        update）。`mutate` 拋例外 → 什麼都不寫、例外原樣往外拋。回傳值的
+        `owner_id` 必須就是 `owner`。"""
 
     def get_credential(self, provider: str, *, owner: str) -> ProviderCredential | None: ...
 

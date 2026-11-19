@@ -1254,10 +1254,17 @@ export interface UniverseOption {
   symbol_count: number | null;
 }
 
+/** 排序方式＋顯示文字。唯一來源是後端（`opportunity_settings`）：設定頁讀
+ *  `opportunity_search_options.sorts`，搜尋頁讀搜尋回應的 `sort_options`。 */
+export interface SortOption {
+  id: OpportunitySearchSettings["sort"];
+  label: string;
+}
+
 export interface OpportunitySearchOptions {
   universes: UniverseOption[];
   strategies: string[];
-  sorts: OpportunitySearchSettings["sort"][];
+  sorts: SortOption[];
   custom_symbols_max: number;
   defaults: OpportunitySearchSettings;
 }
@@ -1382,10 +1389,14 @@ export interface OpportunitySearchResponse {
   fetches_used: number;
   fetch_cap: number;
   truncated: boolean;
+  /** 超過 `fetch_cap` 而這次沒搜的檔（`truncated` ＝ 非空）。後端不自動
+   *  續跑；使用者明確以它當 `symbols` 再搜尋一次（同樣受上限約束）。 */
+  deferred: string[];
   stopped_reason: "fused" | null;
   message: string | null;
   sort: OpportunitySearchSettings["sort"];
   strategies: OpportunitySearchSettings["strategies"];
+  sort_options: SortOption[];
 }
 
 export function searchOpportunities(
