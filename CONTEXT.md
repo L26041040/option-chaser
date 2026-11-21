@@ -322,7 +322,7 @@ degradation／cleanup lifecycle 可驗證／CI 正常／storage 成長可
 
 ---
 
-## 選擇權機會搜尋器（已施工，只接固定測試資料；真實資料源未接；規格 #389、`docs/spec/options-scanner/`）
+## 選擇權機會搜尋器（施工中：真實資料源 Yahoo 已接線，#397；規格 #389、`docs/spec/options-scanner/`）
 
 **Opportunity Search（選擇權機會搜尋器）** — 在使用者選的搜尋母體內，用分析師共識篩出
 標的並產生劇本，再由既有引擎窮舉、跨標的排序的功能。排名口徑與 Scenario Bet Ranking
@@ -359,9 +359,17 @@ _Avoid_: 期望報酬、勝率、預期獲利
 _Avoid_: 共識資料（指的是彙總值，不是個別紀錄）
 
 **Analyst Source（分析師資料來源）** — 回傳 Analyst Target Record（與分割事件、覆蓋程度）
-的可注入介面。目前**沒有任何真實來源**：正式站「尚未設定」（`analyst_source=None`），
-畫面照實顯示「尚未設定分析師資料來源」、不能搜尋。
-_Avoid_: 爬蟲、API key（來源未定，不預設任何供應商）
+的可注入介面。唯一的真實來源是 `YahooAnalystSource`（Yahoo `upgradeDowngradeHistory`，
+US$0、不需金鑰；Owner 以個人自用為優先採用，#389 決策、#397 接線）：部署環境預設啟用，
+`OC_ANALYST_SOURCE=off`（或任何非 `yahoo`／`on` 的值）關閉，關閉時照實顯示「尚未設定
+分析師資料來源」。`create_app()` 本身預設仍是「未設定」（測試不連外）。
+_Avoid_: 爬蟲（它走的是 Yahoo 網頁本身的公開 cookie＋crumb 流程，不繞過任何防護）、
+API key（這個來源不需要）
+
+**Split Basis（分割基準）** — 一筆目標價是用哪次分割之後的股數寫的。Yahoo 的事件史在
+分割前後混著兩種基準（AAPL 2020：同一天 470 與 121.25），所以每筆紀錄依發布當週實際股價
+判斷，寫進 `split_adjusted_through`，再由共識引擎換算；比例小於 2 倍的分割不判斷。
+_Avoid_: 「Yahoo 目標價未做分割調整」（只對了一半）
 
 **Fixture Source（固定測試資料來源）** — `FixtureAnalystSource`：讀
 `tests/fixtures/analyst_targets_fixture.json`（虛構 ticker AAA…GGG）的 Analyst Source，

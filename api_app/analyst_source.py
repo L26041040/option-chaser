@@ -21,6 +21,7 @@ ticker 為不存在的 AAA…GGG），**只在測試與本機驗證腳本裡注�
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass
 from datetime import date, datetime, time, timezone
 from decimal import Decimal
@@ -29,6 +30,8 @@ from typing import Protocol
 
 from option_chaser.consensus import (AnalystTargetRecord, ConsensusCrossCheck,
                                      SplitEvent)
+from option_chaser.data.yahoo_analyst import (YahooClient, YahooError,
+                                              YahooSymbolData, split_basis_through)
 
 COVERAGES = ("complete", "partial", "unknown")
 
@@ -110,8 +113,11 @@ class FixtureAnalystSource:
 class YahooAnalystSource:
     """真實來源：Yahoo `upgradeDowngradeHistory`（LIVE-T1／#397）。不需要金鑰。
 
-    - 每筆紀錄的 `analyst_key` 是券商名稱經 `FIRM_ALIASES` 正規化後的值；
-      `firm` 保留 Yahoo 的原名供顯示。
+    - `analyst_key` 就是 Yahoo 的券商名稱；改名別名表（`FIRM_ALIASES`）交給
+      共識引擎既有的 `ConsensusRules.aliases`（#389 A3），部署環境由
+      `api/index.py` 帶入。
+    - 每筆紀錄的 `split_adjusted_through` 依發布當週股價判斷（Yahoo 的目標價
+      混著分割前／後兩種基準，見 `split_basis_through`）。
     - Yahoo 沒有「終止覆蓋」事件 → `coverage` 一律 `partial`（研究已確認）。
     - `financialData` 的共識平均／人數只進 `cross_check`（L9）。
     - 失敗收斂成 `ProviderResult(error=...)`，不丟例外。
@@ -121,56 +127,54 @@ class YahooAnalystSource:
     is_fixture = False
 
     def __init__(self, transport=None):
-        from option_chaser.data.yahoo_analyst import YahooClient
-        self._client = YahooClient(transport)
+        self.client = YahooClient(transport)
 
     def fetch(self, symbol: str, today: date) -> ProviderResult:
-        from option_chaser.data.yahoo_analyst import YahooError
         try:
-            data = self._client.fetch(symbol)
+            data = self.client.fetch(symbol)
         except YahooError as e:
             hint = f"（Retry-After {e.retry_after} 秒）" if e.retry_after else ""
             return ProviderResult(coverage="partial", error=f"{e}{hint}")
-        return self.result_from(symbol, data)
+        return self.to_provider_result(symbol, data)
 
-    def result_from(self, symbol: str, data) -> ProviderResult:
-        """把已抓到的 `YahooSymbolData` 轉成 `ProviderResult`（實測腳本也用它，
-        免得為了統計再打一次上游）。"""
-        from option_chaser.data.yahoo_analyst import FIRM_ALIASES, split_basis_through
+    def to_provider_result(self, symbol: str, data: YahooSymbolData) -> ProviderResult:
+        """已抓到的 `YahooSymbolData` → `ProviderResult`（純轉換，不打上游）。"""
         retrieved = datetime.now(timezone.utc)
-        splits = tuple(SplitEvent(symbol=symbol, effective_on=s.effective_on,
-                                  ratio=s.ratio) for s in data.splits)
-        records = []
-        for t in data.targets:
-            key = " ".join(t.firm.split()).casefold()
-            records.append(AnalystTargetRecord(
-                symbol=symbol, analyst_key=FIRM_ALIASES.get(key, t.firm),
-                firm=t.firm, target_price=t.target_price,
-                published_on=t.published_on, source=f"{self.name}:quoteSummary",
-                action=t.action, prior_target=t.prior_target,
-                retrieved_at=retrieved,
+        records = tuple(
+            AnalystTargetRecord(
+                symbol=symbol, analyst_key=t.firm, firm=t.firm,
+                target_price=t.target_price, published_on=t.published_on,
+                source=f"{self.name}:quoteSummary", action=t.action,
+                prior_target=t.prior_target, retrieved_at=retrieved,
                 split_adjusted_through=split_basis_through(
-                    t, data.splits, data.weekly_closes)))
-        cross = (ConsensusCrossCheck(consensus_mean_from_source=data.consensus_mean,
-                                     n_from_source=data.analyst_count)
-                 if data.consensus_mean is not None else None)
+                    t, data.splits, data.weekly_closes))
+            for t in data.summary.targets)
+        summary = data.summary
+        cross = (ConsensusCrossCheck(consensus_mean_from_source=summary.consensus_mean,
+                                     n_from_source=summary.analyst_count)
+                 if summary.consensus_mean is not None else None)
         return ProviderResult(
-            records=tuple(records), splits=splits, coverage="partial",
+            records=records,
+            splits=tuple(SplitEvent(symbol=symbol, effective_on=s.effective_on,
+                                    ratio=s.ratio) for s in data.splits),
+            coverage="partial",
             history_from=min((r.published_on for r in records), default=None),
             cross_check=cross)
 
 
 ANALYST_SOURCE_ENV = "OC_ANALYST_SOURCE"
-_DISABLED = {"off", "none", "disabled", "0", "false"}
+_ENABLED_VALUES = {"", "yahoo", "on"}
 
 
 def analyst_source_from_env(env=None) -> AnalystSource | None:
-    """部署環境（`api/index.py`）用的來源：**預設啟用 Yahoo**（不需要金鑰）；
-    `OC_ANALYST_SOURCE=off` 是緊急關閉開關，關閉時回到「尚未設定」。
+    """部署環境（`api/index.py`）用的來源：**未設定時啟用 Yahoo**（不需要金鑰）。
+    `OC_ANALYST_SOURCE` 只認 `yahoo`／`on`（或不設）為啟用，其他任何值（`off`
+    或打錯字）一律關閉、回到「尚未設定」——寧可關掉也不誤開。只在函式冷啟動
+    （模組載入）時讀一次，改了環境變數要重新部署才生效。
+
     `create_app()` 本身的預設仍是 `None`——上千條測試直接呼叫它，不能讓測試
     意外連外網。"""
-    import os
     value = ((env if env is not None else os.environ).get(ANALYST_SOURCE_ENV) or "").strip()
-    if value.casefold() in _DISABLED:
+    if value.casefold() not in _ENABLED_VALUES:
         return None
     return YahooAnalystSource()

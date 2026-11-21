@@ -18,6 +18,8 @@ if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
 from api_app.analyst_source import analyst_source_from_env  # noqa: E402
+from option_chaser.consensus import ConsensusRules  # noqa: E402
+from option_chaser.data.yahoo_analyst import FIRM_ALIASES  # noqa: E402
 from api_app.main import create_app  # noqa: E402
 from api_app.observability import init_sentry  # noqa: E402
 
@@ -28,5 +30,8 @@ from api_app.observability import init_sentry  # noqa: E402
 init_sentry()
 
 # LIVE-T1（#397）：只在唯一的 production 進入點注入真實分析師資料來源
-# （預設 Yahoo，`OC_ANALYST_SOURCE=off` 關閉）；`create_app()` 預設維持 None。
-app = create_app(analyst_source=analyst_source_from_env())   # 直接賦值：進入點偵測認的是這個，不是匯入再轉出
+# （預設 Yahoo，`OC_ANALYST_SOURCE=off` 關閉）與券商改名別名表（共識引擎既有
+# 的 `ConsensusRules.aliases`）；`create_app()` 預設維持 None。
+app = create_app(   # 直接賦值：進入點偵測認的是這個，不是匯入再轉出
+    analyst_source=analyst_source_from_env(),
+    consensus_rules=ConsensusRules(aliases=FIRM_ALIASES))

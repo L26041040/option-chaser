@@ -129,15 +129,18 @@ def test_no_adjusted_target_is_off_by_a_split_factor(as_of, low, high):
     assert low < snap.low and snap.high < high, (snap.low, snap.high)
 
 
-def test_renamed_firms_count_as_one_analyst():
-    aapl, _ = _fetch("AAPL")
-    keys = {r.firm: r.analyst_key for r in aapl.records}
-    assert keys["Cowen & Co."] == keys["TD Cowen"] == "TD Cowen"
-    nomura = {r.analyst_key for r in aapl.records if r.firm.startswith("Nomura")}
-    assert nomura == {"Nomura"}
-    nvda, _ = _fetch("NVDA")
-    keys = {r.firm: r.analyst_key for r in nvda.records}
-    assert keys["SunTrust Robinson Humphrey"] == "Truist Securities"
+def test_renamed_firms_count_as_one_analyst_through_the_engine_alias_table():
+    from option_chaser.consensus import ConsensusRules, compute_snapshot
+    from option_chaser.data.yahoo_analyst import FIRM_ALIASES
+    result, _ = _fetch("AAPL")
+    # Adapter 不改名：analyst_key 就是 Yahoo 的券商名稱
+    assert all(r.analyst_key == r.firm for r in result.records)
+    # 2020-05-01 同一天出現「Nomura」與「Nomura Instinet」兩筆（同一研究部門）
+    as_of = date(2020, 5, 29)
+    plain = compute_snapshot(result.records, result.splits, as_of, ConsensusRules(h_min=1))
+    merged = compute_snapshot(result.records, result.splits, as_of,
+                              ConsensusRules(h_min=1, aliases=FIRM_ALIASES))
+    assert merged.n_analysts == plain.n_analysts - 1
 
 
 # --- 新鮮度與覆蓋缺口（真實樣本） ---------------------------------------------
@@ -153,14 +156,16 @@ def test_coverage_gap_is_visible_against_yahoos_own_analyst_count():
     assert 5 <= snap.n_analysts < 39
 
 
-def test_targets_left_unrefreshed_for_months_are_flagged_stale():
+def test_targets_not_refreshed_recently_are_flagged_stale():
     from option_chaser.consensus import ConsensusRules, compute_snapshot
     result, _ = _fetch("BABA")
-    # 錄製後 8 個月都沒有新資料 → 近 90 天內更新的比例為 0 → stale
-    later = date(2027, 7, 20)
-    snap = compute_snapshot(result.records, result.splits, later, ConsensusRules())
-    assert snap.status in ("stale", "insufficient_analysts")
-    assert snap.status != "ok"
+    # BABA 2014-09 上市，券商集中在上市後啟動覆蓋：一個月後大多是新目標價，
+    # 隔年 2 月時大多已超過 90 天沒更新 → stale（真實歷史狀態，不是編的日期）
+    fresh = compute_snapshot(result.records, result.splits, date(2014, 11, 15), ConsensusRules())
+    assert fresh.freshness_share >= Decimal("0.5")
+    stale = compute_snapshot(result.records, result.splits, date(2015, 2, 15), ConsensusRules())
+    assert stale.status == "stale"
+    assert stale.freshness_share < Decimal("0.5")
 
 
 # --- 失敗處理：回報原因，不丟例外、不讓整批失敗 -------------------------------
@@ -191,9 +196,20 @@ def test_crumb_endpoint_refusal_is_a_reported_failure():
 def test_connection_failure_is_a_reported_failure():
     class Down:
         def get(self, url):
-            raise TimeoutError("timed out")
+            raise TimeoutError("connect to internal-proxy.corp:3128 timed out")
     result = YahooAnalystSource(transport=Down()).fetch("AAPL", TODAY)
     assert result.records == () and "逾時" in result.error
+    assert "internal-proxy" not in result.error          # 不外洩例外原文（#345 B-3）
+
+
+def test_truncated_response_is_a_reported_failure():
+    import http.client
+
+    class Truncated:
+        def get(self, url):
+            raise http.client.IncompleteRead(b"{", 100)
+    result = YahooAnalystSource(transport=Truncated()).fetch("AAPL", TODAY)
+    assert result.records == () and result.error
 
 
 # --- 接線：部署環境預設啟用，緊急關閉開關可回到「尚未設定」 -------------------
@@ -205,8 +221,96 @@ def test_deployed_app_uses_the_real_source_by_default(monkeypatch):
     assert isinstance(source, YahooAnalystSource) and source.is_fixture is False
 
 
-@pytest.mark.parametrize("value", ["off", "OFF", "none", "disabled"])
-def test_kill_switch_returns_to_not_configured(monkeypatch, value):
+@pytest.mark.parametrize("value", ["yahoo", "Yahoo", "on", ""])
+def test_explicit_enable_values_keep_the_real_source(monkeypatch, value):
     from api_app.analyst_source import analyst_source_from_env
     monkeypatch.setenv("OC_ANALYST_SOURCE", value)
-    assert analyst_source_from_env() is None
+    assert isinstance(analyst_source_from_env(), YahooAnalystSource)
+
+
+@pytest.mark.parametrize("value", ["off", "OFF", "none", "disabled", "of", "yahooo"])
+def test_kill_switch_and_typos_return_to_not_configured(monkeypatch, value):
+    from api_app.analyst_source import analyst_source_from_env
+    monkeypatch.setenv("OC_ANALYST_SOURCE", value)
+    assert analyst_source_from_env() is None             # 寧可關掉也不誤開
+
+
+# --- 分割基準的邊界：比例太小不判、反向合股照判 -------------------------------
+
+def _target(price, published_on):
+    from option_chaser.data.yahoo_analyst import RawTarget
+    return RawTarget(firm="X", target_price=Decimal(price), published_on=published_on,
+                     action=None, prior_target=None)
+
+
+def _weekly(day, adjusted_close):
+    return ((day, Decimal(adjusted_close)),)
+
+
+def test_small_split_ratios_are_not_guessed():
+    from option_chaser.data.yahoo_analyst import RawSplit, split_basis_through
+    split = RawSplit(date(2024, 3, 1), Decimal("1.5"))          # 3:2
+    # 分割前股價 150（調整後收盤 100）；看空目標 112 介於兩種基準之間 → 不猜
+    assert split_basis_through(_target("112", date(2024, 2, 1)), (split,),
+                               _weekly(date(2024, 1, 29), "100")) is None
+
+
+def test_reverse_split_basis_is_detected():
+    from option_chaser.data.yahoo_analyst import RawSplit, split_basis_through
+    reverse = RawSplit(date(2024, 3, 1), Decimal("0.1"))        # 1:10 合股
+    weekly = _weekly(date(2024, 1, 29), "50")                   # 調整後 50 → 當時實際 5
+    assert split_basis_through(_target("6", date(2024, 2, 1)), (reverse,), weekly) is None
+    assert split_basis_through(_target("60", date(2024, 2, 1)), (reverse,), weekly) \
+        == date(2024, 3, 1)
+
+
+def test_missing_price_week_leaves_the_target_as_raw():
+    from option_chaser.data.yahoo_analyst import RawSplit, split_basis_through
+    split = RawSplit(date(2024, 3, 1), Decimal(4))
+    assert split_basis_through(_target("120", date(2024, 2, 1)), (split,), ()) is None
+
+
+# --- 格式異常：壞掉的列跳過、整體結構不對才報錯，都不丟例外 -----------------
+
+def test_malformed_rows_are_skipped_not_raised():
+    import json
+    from option_chaser.data.yahoo_analyst import parse_quote_summary
+    body = json.dumps({"quoteSummary": {"result": [{"upgradeDowngradeHistory": {"history": [
+        "not-a-row",
+        {"firm": "A", "currentPriceTarget": "abc", "epochGradeDate": 1700000000},
+        {"firm": "B", "currentPriceTarget": 100, "epochGradeDate": "soon"},
+        {"firm": "C", "currentPriceTarget": -5, "epochGradeDate": 1700000000},
+        {"firm": "D", "currentPriceTarget": 120, "epochGradeDate": 1700000000},
+    ]}}]}})
+    summary = parse_quote_summary(body)
+    assert [t.firm for t in summary.targets] == ["D"]
+    assert summary.history_rows == 5
+
+
+@pytest.mark.parametrize("body", ["<html>blocked</html>", '{"quoteSummary": {"result": [{}]}}'])
+def test_unexpected_shape_is_a_reported_failure(body):
+    class Odd(ReplayTransport):
+        def get(self, url):
+            if "quoteSummary" in url:
+                self.calls.append(url)
+                return HttpResponse(200, body, {})
+            return super().get(url)
+    result = YahooAnalystSource(transport=Odd()).fetch("AAPL", TODAY)
+    assert result.records == () and result.error
+
+
+def test_bad_split_entries_are_skipped():
+    import json
+    from option_chaser.data.yahoo_analyst import parse_chart
+    body = json.dumps({"chart": {"result": [{
+        "events": {"splits": {"a": {"numerator": 4, "denominator": 1},
+                              "b": {"date": 1598880600, "numerator": 4, "denominator": 1}}},
+        "timestamp": [1598880600, "x"], "indicators": {"quote": [{"close": [120.0, None]}]}}]}})
+    splits, weekly = parse_chart(body)
+    assert [(s.effective_on, s.ratio) for s in splits] == [(date(2020, 8, 31), Decimal(4))]
+    assert len(weekly) == 1
+
+
+def test_unparseable_retry_after_is_ignored():
+    result, _ = _fetch("AAPL", summary_statuses=[(429, {"Retry-After": "inf"})])
+    assert "429" in result.error and "Retry-After" not in result.error
